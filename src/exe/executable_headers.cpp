@@ -508,6 +508,123 @@ bool AnalyzeLeFixups(const std::vector<std::uint8_t>& data,
     return true;
 }
 
+bool DecodeLeFixupRecords(const std::vector<std::uint8_t>& data,
+                          const LeHeader& header,
+                          const LeFixupInfo& fixup_info,
+                          LeFixupRecordInfo* record_info,
+                          ParseError* error)
+{
+    if (record_info == nullptr)
+    {
+        SetError(header.file_offset, "LE fixup record output is null", error);
+        return false;
+    }
+
+    *record_info = LeFixupRecordInfo{};
+
+    if (!fixup_info.valid)
+    {
+        SetError(header.file_offset + header.fixup_page_table_offset,
+                 "LE fixup info is not valid", error);
+        return false;
+    }
+
+    record_info->records.reserve(fixup_info.record_table_size / 6);
+
+    for (const LeFixupPageSpan& span : fixup_info.page_spans)
+    {
+        std::uint32_t cursor = span.record_offset;
+        const std::uint32_t span_end = span.record_offset + span.record_size;
+
+        while (cursor < span_end)
+        {
+            const std::uint32_t record_file_offset =
+                fixup_info.record_table_file_offset + cursor;
+            const std::uint32_t remaining = span_end - cursor;
+            if (remaining < 4)
+            {
+                SetError(record_file_offset,
+                         "LE fixup record is too small for its prefix",
+                         error);
+                return false;
+            }
+
+            LeFixupRecord record;
+            record.page_index = span.page_index;
+            record.record_table_offset = cursor;
+            record.source_type = ReadU8(data, record_file_offset + 0);
+            record.target_flags = ReadU8(data, record_file_offset + 1);
+            record.source_offset = ReadLe16(data, record_file_offset + 2);
+
+            std::uint32_t record_size = 4;
+            const bool internal_target = (record.target_flags & 0x03) == 0;
+            const bool has_32_bit_target_offset =
+                (record.target_flags & 0x10) != 0;
+            const bool has_unsupported_flags =
+                (record.target_flags & static_cast<std::uint8_t>(~0x10)) != 0;
+
+            if (!internal_target || has_unsupported_flags)
+            {
+                record.supported = false;
+                ++record_info->unsupported_record_count;
+                if (record_info->first_unsupported_record_offset == 0)
+                {
+                    record_info->first_unsupported_record_offset = cursor;
+                }
+                SetError(record_file_offset,
+                         "unsupported LE fixup target flags encountered",
+                         error);
+                return false;
+            }
+
+            const std::uint32_t target_offset_size =
+                has_32_bit_target_offset ? 4 : 2;
+            const std::uint32_t required_size = 4 + 1 + target_offset_size;
+            if (remaining < required_size)
+            {
+                SetError(record_file_offset,
+                         "LE fixup record target extends past page span",
+                         error);
+                return false;
+            }
+
+            record.target_object = ReadU8(data, record_file_offset + 4);
+            if (has_32_bit_target_offset)
+            {
+                record.target_offset = ReadLe32(data, record_file_offset + 5);
+                ++record_info->offset32_count;
+            }
+            else
+            {
+                record.target_offset = ReadLe16(data, record_file_offset + 5);
+                ++record_info->offset16_count;
+            }
+
+            record_size = required_size;
+            record.record_size = record_size;
+            record.supported = true;
+
+            ++record_info->decoded_record_count;
+            ++record_info->internal_target_count;
+            record_info->consumed_record_bytes += record_size;
+            record_info->records.push_back(record);
+            cursor += record_size;
+        }
+    }
+
+    if (record_info->consumed_record_bytes != fixup_info.record_table_size)
+    {
+        SetError(fixup_info.record_table_file_offset +
+                     record_info->consumed_record_bytes,
+                 "decoded LE fixup bytes do not match record table size",
+                 error);
+        return false;
+    }
+
+    record_info->valid = true;
+    return true;
+}
+
 std::string CpuTypeName(std::uint16_t cpu_type)
 {
     switch (cpu_type)

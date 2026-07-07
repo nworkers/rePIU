@@ -67,3 +67,13 @@ The fixup record range for page N starts at `offset[N]` and ends immediately bef
 This step only validates whether the ranges are monotonic, fit inside the fixup record table size, and how large each per-page fixup span is.
 
 The variable-length fixup record structure and relocation application are handled in a later design step.
+
+## LE Fixup Record First-Pass Decoding
+
+Fixup records are variable length, so the current step first supports the internal reference forms observed in `PIU.EXE`.
+
+The common record prefix is interpreted as `source_type`, `target_flags`, and a 16-bit `source_offset`.
+
+Internal targets are interpreted as a 1-byte object number and a target offset. The target offset size is treated as 16-bit or 32-bit depending on the 32-bit offset flag in `target_flags`.
+
+Unsupported flag combinations are counted as unsupported records rather than relocation failures.

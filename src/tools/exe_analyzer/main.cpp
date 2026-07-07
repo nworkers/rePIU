@@ -246,6 +246,45 @@ void PrintFixupSummary(const repiu::exe::LeFixupInfo& fixup_info)
     }
 }
 
+void PrintFixupRecordSummary(
+    const repiu::exe::LeFixupRecordInfo& record_info)
+{
+    std::cout << "LE fixup records: "
+              << (record_info.valid ? "valid" : "invalid") << "\n";
+    std::cout << "LE decoded fixup records: "
+              << record_info.decoded_record_count << "\n";
+    std::cout << "LE unsupported fixup records: "
+              << record_info.unsupported_record_count << "\n";
+    std::cout << "LE internal target fixups: "
+              << record_info.internal_target_count << "\n";
+    std::cout << "LE 16-bit target offset fixups: "
+              << record_info.offset16_count << "\n";
+    std::cout << "LE 32-bit target offset fixups: "
+              << record_info.offset32_count << "\n";
+    std::cout << "LE consumed fixup record bytes: "
+              << record_info.consumed_record_bytes << "\n";
+
+    if (!record_info.records.empty())
+    {
+        const repiu::exe::LeFixupRecord& first = record_info.records.front();
+        const repiu::exe::LeFixupRecord& last = record_info.records.back();
+        std::cout << "LE first decoded fixup: page=" << first.page_index
+                  << " source_type=" << Hex16(first.source_type)
+                  << " flags=" << Hex16(first.target_flags)
+                  << " source_offset=" << Hex16(first.source_offset)
+                  << " target_object=" << first.target_object
+                  << " target_offset=" << Hex32(first.target_offset)
+                  << "\n";
+        std::cout << "LE last decoded fixup: page=" << last.page_index
+                  << " source_type=" << Hex16(last.source_type)
+                  << " flags=" << Hex16(last.target_flags)
+                  << " source_offset=" << Hex16(last.source_offset)
+                  << " target_object=" << last.target_object
+                  << " target_offset=" << Hex32(last.target_offset)
+                  << "\n";
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -306,5 +345,15 @@ int main(int argc, char** argv)
     }
 
     PrintFixupSummary(fixup_info);
+
+    repiu::exe::LeFixupRecordInfo fixup_record_info;
+    if (!repiu::exe::DecodeLeFixupRecords(data, le_header, fixup_info,
+                                          &fixup_record_info, &error))
+    {
+        PrintParseError(error);
+        return 1;
+    }
+
+    PrintFixupRecordSummary(fixup_record_info);
     return 0;
 }

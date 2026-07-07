@@ -67,3 +67,13 @@ page N의 fixup record 범위는 `offset[N]`부터 `offset[N + 1]` 직전까지�
 현재 단계에서는 이 범위가 단조 증가하는지, fixup record table 크기 안에 들어오는지, page별 fixup span이 얼마나 되는지만 검증한다.
 
 fixup record의 가변 길이 구조와 relocation 적용은 다음 단계에서 별도 설계로 진행한다.
+
+## LE Fixup Record 1차 디코딩
+
+fixup record는 가변 길이이므로, 현재 단계에서는 `PIU.EXE`에서 관찰되는 내부 참조 형태를 우선 지원한다.
+
+공통 record 시작 구조는 `source_type`, `target_flags`, 16-bit `source_offset`으로 해석한다.
+
+내부 target은 1바이트 object 번호와 target offset으로 해석한다. target offset 크기는 `target_flags`의 32-bit offset flag 여부에 따라 16-bit 또는 32-bit로 처리한다.
+
+지원하지 않는 flag 조합은 relocation 실패로 처리하지 않고 unsupported record로 집계한다.

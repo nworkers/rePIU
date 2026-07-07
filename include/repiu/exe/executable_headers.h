@@ -117,6 +117,32 @@ struct LeFixupInfo
     std::uint32_t largest_page_span = 0;
 };
 
+struct LeFixupRecord
+{
+    std::uint32_t page_index = 0;
+    std::uint32_t record_table_offset = 0;
+    std::uint32_t record_size = 0;
+    std::uint8_t source_type = 0;
+    std::uint8_t target_flags = 0;
+    std::uint16_t source_offset = 0;
+    std::uint32_t target_object = 0;
+    std::uint32_t target_offset = 0;
+    bool supported = false;
+};
+
+struct LeFixupRecordInfo
+{
+    bool valid = false;
+    std::vector<LeFixupRecord> records;
+    std::uint32_t decoded_record_count = 0;
+    std::uint32_t unsupported_record_count = 0;
+    std::uint32_t internal_target_count = 0;
+    std::uint32_t offset16_count = 0;
+    std::uint32_t offset32_count = 0;
+    std::uint32_t consumed_record_bytes = 0;
+    std::uint32_t first_unsupported_record_offset = 0;
+};
+
 bool ParseMzHeader(const std::vector<std::uint8_t>& data,
                    MzHeader* header,
                    ParseError* error);
@@ -145,6 +171,12 @@ bool AnalyzeLeFixups(const std::vector<std::uint8_t>& data,
                      const LeHeader& header,
                      LeFixupInfo* fixup_info,
                      ParseError* error);
+
+bool DecodeLeFixupRecords(const std::vector<std::uint8_t>& data,
+                          const LeHeader& header,
+                          const LeFixupInfo& fixup_info,
+                          LeFixupRecordInfo* record_info,
+                          ParseError* error);
 
 std::string CpuTypeName(std::uint16_t cpu_type);
 
