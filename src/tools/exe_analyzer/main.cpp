@@ -1,4 +1,5 @@
 #include "repiu/exe/executable_headers.h"
+#include "repiu/target/target_profile.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -398,9 +399,17 @@ void PrintRelocationDryRunSummary(
 
 int main(int argc, char** argv)
 {
+    const repiu::target::TargetProfile* default_profile =
+        repiu::target::FindTargetProfileById("piu_1st");
+    if (default_profile == nullptr)
+    {
+        std::cerr << "Default target profile was not found\n";
+        return 1;
+    }
+
     const std::filesystem::path path =
         argc >= 2 ? std::filesystem::path(argv[1])
-                  : std::filesystem::path("MASTER/PIU_1ST/PIU.EXE");
+                  : default_profile->executable_path;
 
     std::vector<std::uint8_t> data;
     std::string read_error;
@@ -411,7 +420,17 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    std::cout << "Target: piu_1st\n";
+    std::cout << "Target: " << default_profile->id << "\n";
+    std::cout << "Target name: " << default_profile->display_name << "\n";
+    std::cout << "Format hint: "
+              << repiu::target::ExecutableFormatHintName(
+                     default_profile->format_hint)
+              << "\n";
+    std::cout << "Working directory: "
+              << default_profile->working_directory.string() << "\n";
+    std::cout << "Asset root: "
+              << default_profile->asset_root.string() << "\n";
+    std::cout << "HLE profile: " << default_profile->hle_profile_id << "\n";
     std::cout << "Path: " << path.string() << "\n";
     std::cout << "File size: " << data.size() << " bytes\n";
 
