@@ -197,3 +197,15 @@ Each LE object buffer is copied from the existing mapped object memory. The fixu
 The first applied sample verifies that the existing original relocation value `0x002A4B3D` is replaced with relocated value `0x01294B3D`.
 
 This step still does not use `VirtualAlloc` executable memory and does not call the original entry point.
+
+## Win32 Relocated Image Placement
+
+Win32 relocated image placement places the relocated image buffer into actual Win32 process memory.
+
+The previous Win32 host image base `0x01000000` conflicts with the relocated image base, so the Win32 x86 host image base is moved to `0x10000000`.
+
+The relocated image is allocated at `0x01000000` with `VirtualAlloc(MEM_RESERVE | MEM_COMMIT)`, and each object buffer is copied to its relocated address.
+
+After copying, `VirtualProtect` is applied based on object flags. The current minimal policy uses writable bit `0x2` and executable bit `0x4` to choose one of `PAGE_READWRITE`, `PAGE_EXECUTE_READ`, `PAGE_EXECUTE_READWRITE`, or `PAGE_READONLY`.
+
+This step does not call the original entry point. Its purpose is to verify that the relocated image can be placed in Win32 x86 process memory in an execution-ready layout.

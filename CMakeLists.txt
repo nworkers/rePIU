@@ -10,12 +10,12 @@ function(repiu_configure_win32_execution_host target_name)
     if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4)
         target_link_options(${target_name}
             PRIVATE
-                /BASE:0x01000000
+                /BASE:0x10000000
                 /DYNAMICBASE:NO
         )
         target_compile_definitions(${target_name}
             PRIVATE
-                REPIU_WIN32_HOST_IMAGE_BASE=0x01000000
+                REPIU_WIN32_HOST_IMAGE_BASE=0x10000000
         )
     endif()
 endfunction()
