@@ -143,6 +143,29 @@ struct LeFixupRecordInfo
     std::uint32_t first_unsupported_record_offset = 0;
 };
 
+struct LeAppliedRelocation
+{
+    std::uint32_t source_object = 0;
+    std::uint32_t source_object_offset = 0;
+    std::uint32_t target_object = 0;
+    std::uint32_t target_offset = 0;
+    std::uint32_t previous_value = 0;
+    std::uint32_t applied_value = 0;
+};
+
+struct LeRelocationDryRun
+{
+    bool valid = false;
+    std::uint32_t applied_count = 0;
+    std::uint32_t failed_count = 0;
+    std::uint32_t unsupported_source_type_count = 0;
+    std::uint32_t source_out_of_range_count = 0;
+    std::uint32_t skipped_count = 0;
+    std::uint32_t first_failed_record_offset = 0;
+    LeAppliedRelocation first_applied;
+    bool has_first_applied = false;
+};
+
 bool ParseMzHeader(const std::vector<std::uint8_t>& data,
                    MzHeader* header,
                    ParseError* error);
@@ -177,6 +200,12 @@ bool DecodeLeFixupRecords(const std::vector<std::uint8_t>& data,
                           const LeFixupInfo& fixup_info,
                           LeFixupRecordInfo* record_info,
                           ParseError* error);
+
+bool ApplyLeInternalRelocations(const LeHeader& header,
+                                const LeFixupRecordInfo& record_info,
+                                LeImage* image,
+                                LeRelocationDryRun* dry_run,
+                                ParseError* error);
 
 std::string CpuTypeName(std::uint16_t cpu_type);
 

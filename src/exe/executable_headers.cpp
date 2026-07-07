@@ -53,6 +53,25 @@ std::uint32_t ReadLe32(const std::vector<std::uint8_t>& data,
            (static_cast<std::uint32_t>(data[offset + 3]) << 24);
 }
 
+std::uint32_t ReadMemoryLe32(const std::vector<std::uint8_t>& data,
+                             std::uint32_t offset)
+{
+    return static_cast<std::uint32_t>(data[offset]) |
+           (static_cast<std::uint32_t>(data[offset + 1]) << 8) |
+           (static_cast<std::uint32_t>(data[offset + 2]) << 16) |
+           (static_cast<std::uint32_t>(data[offset + 3]) << 24);
+}
+
+void WriteMemoryLe32(std::vector<std::uint8_t>* data,
+                     std::uint32_t offset,
+                     std::uint32_t value)
+{
+    (*data)[offset] = static_cast<std::uint8_t>(value & 0xff);
+    (*data)[offset + 1] = static_cast<std::uint8_t>((value >> 8) & 0xff);
+    (*data)[offset + 2] = static_cast<std::uint8_t>((value >> 16) & 0xff);
+    (*data)[offset + 3] = static_cast<std::uint8_t>((value >> 24) & 0xff);
+}
+
 std::uint32_t ReadBe24(const std::vector<std::uint8_t>& data,
                        std::uint32_t offset)
 {
@@ -622,6 +641,134 @@ bool DecodeLeFixupRecords(const std::vector<std::uint8_t>& data,
     }
 
     record_info->valid = true;
+    return true;
+}
+
+bool ApplyLeInternalRelocations(const LeHeader& header,
+                                const LeFixupRecordInfo& record_info,
+                                LeImage* image,
+                                LeRelocationDryRun* dry_run,
+                                ParseError* error)
+{
+    if (image == nullptr)
+    {
+        SetError(header.file_offset, "LE image is null", error);
+        return false;
+    }
+
+    if (dry_run == nullptr)
+    {
+        SetError(header.file_offset, "LE relocation dry-run output is null",
+                 error);
+        return false;
+    }
+
+    *dry_run = LeRelocationDryRun{};
+
+    if (!image->valid || !record_info.valid)
+    {
+        SetError(header.file_offset, "LE image or fixup records are invalid",
+                 error);
+        return false;
+    }
+
+    for (const LeFixupRecord& record : record_info.records)
+    {
+        const std::uint8_t source_kind = record.source_type & 0x0f;
+        if (source_kind != 0x07)
+        {
+            ++dry_run->unsupported_source_type_count;
+            ++dry_run->skipped_count;
+            continue;
+        }
+
+        if (record.target_object == 0 ||
+            record.target_object > image->mapped_objects.size())
+        {
+            ++dry_run->failed_count;
+            dry_run->first_failed_record_offset = record.record_table_offset;
+            SetError(header.file_offset + header.fixup_record_table_offset +
+                         record.record_table_offset,
+                     "LE relocation target object is outside the image",
+                     error);
+            return false;
+        }
+
+        LeMappedObject& target_object =
+            image->mapped_objects[record.target_object - 1];
+        const std::uint32_t applied_value =
+            target_object.record.relocation_base_address +
+            record.target_offset;
+
+        LeMappedObject* source_object = nullptr;
+        std::uint32_t source_object_index = 0;
+        std::uint32_t source_object_offset = 0;
+        for (std::uint32_t index = 0; index < image->mapped_objects.size();
+             ++index)
+        {
+            LeMappedObject& candidate = image->mapped_objects[index];
+            const std::uint32_t first_page =
+                candidate.record.page_table_index - 1;
+            const std::uint32_t page_count = candidate.record.page_count;
+            if (record.page_index >= first_page &&
+                record.page_index < first_page + page_count)
+            {
+                const std::uint32_t object_page_index =
+                    record.page_index - first_page;
+                const std::uint64_t offset =
+                    static_cast<std::uint64_t>(object_page_index) *
+                        header.page_size +
+                    record.source_offset;
+                if (offset > UINT32_MAX)
+                {
+                    break;
+                }
+
+                source_object = &candidate;
+                source_object_index = index + 1;
+                source_object_offset = static_cast<std::uint32_t>(offset);
+                break;
+            }
+        }
+
+        if (source_object == nullptr)
+        {
+            ++dry_run->failed_count;
+            dry_run->first_failed_record_offset = record.record_table_offset;
+            SetError(header.file_offset + header.fixup_record_table_offset +
+                         record.record_table_offset,
+                     "LE relocation source page has no owning object", error);
+            return false;
+        }
+
+        if (source_object_offset > source_object->memory.size() ||
+            source_object->memory.size() - source_object_offset < 4)
+        {
+            ++dry_run->source_out_of_range_count;
+            ++dry_run->skipped_count;
+            continue;
+        }
+
+        const std::uint32_t previous_value =
+            ReadMemoryLe32(source_object->memory, source_object_offset);
+        WriteMemoryLe32(&source_object->memory, source_object_offset,
+                        applied_value);
+
+        if (!dry_run->has_first_applied)
+        {
+            dry_run->first_applied.source_object = source_object_index;
+            dry_run->first_applied.source_object_offset = source_object_offset;
+            dry_run->first_applied.target_object = record.target_object;
+            dry_run->first_applied.target_offset = record.target_offset;
+            dry_run->first_applied.previous_value = previous_value;
+            dry_run->first_applied.applied_value = applied_value;
+            dry_run->has_first_applied = true;
+        }
+
+        ++dry_run->applied_count;
+    }
+
+    dry_run->valid = true;
     return true;
 }
 

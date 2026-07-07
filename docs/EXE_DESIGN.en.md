@@ -77,3 +77,17 @@ The common record prefix is interpreted as `source_type`, `target_flags`, and a 
 Internal targets are interpreted as a 1-byte object number and a target offset. The target offset size is treated as 16-bit or 32-bit depending on the 32-bit offset flag in `target_flags`.
 
 Unsupported flag combinations are counted as unsupported records rather than relocation failures.
+
+## Internal Relocation Dry-Run
+
+All current `PIU.EXE` fixup records decode as internal targets.
+
+The internal relocation value is calculated as the target object's `relocation_base_address` plus `target_offset`.
+
+The source location is converted to an offset inside the owning object buffer using the fixup record's page index and source offset.
+
+The observed source kind `0x07` is handled as a 32-bit little-endian write. Other source kinds need more selector/pointer interpretation, so this step counts them as skipped.
+
+Some records use source offsets that cannot be written directly in the current 4 KB page buffer model, so they are counted as source out-of-range skipped.
+
+This step writes only to the analysis LE image buffers, not to executable memory.

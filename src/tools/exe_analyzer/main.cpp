@@ -285,6 +285,38 @@ void PrintFixupRecordSummary(
     }
 }
 
+void PrintRelocationDryRunSummary(
+    const repiu::exe::LeRelocationDryRun& dry_run)
+{
+    std::cout << "LE relocation dry run: "
+              << (dry_run.valid ? "valid" : "invalid") << "\n";
+    std::cout << "LE applied relocations: "
+              << dry_run.applied_count << "\n";
+    std::cout << "LE failed relocations: "
+              << dry_run.failed_count << "\n";
+    std::cout << "LE skipped relocations: "
+              << dry_run.skipped_count << "\n";
+    std::cout << "LE unsupported relocation source types: "
+              << dry_run.unsupported_source_type_count << "\n";
+    std::cout << "LE source out-of-range relocations: "
+              << dry_run.source_out_of_range_count << "\n";
+
+    if (dry_run.has_first_applied)
+    {
+        const repiu::exe::LeAppliedRelocation& relocation =
+            dry_run.first_applied;
+        std::cout << "LE first applied relocation: source_object="
+                  << relocation.source_object
+                  << " source_offset="
+                  << Hex32(relocation.source_object_offset)
+                  << " target_object=" << relocation.target_object
+                  << " target_offset=" << Hex32(relocation.target_offset)
+                  << " previous=" << Hex32(relocation.previous_value)
+                  << " applied=" << Hex32(relocation.applied_value)
+                  << "\n";
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -355,5 +387,16 @@ int main(int argc, char** argv)
     }
 
     PrintFixupRecordSummary(fixup_record_info);
+
+    repiu::exe::LeRelocationDryRun relocation_dry_run;
+    if (!repiu::exe::ApplyLeInternalRelocations(
+            le_header, fixup_record_info, &image, &relocation_dry_run,
+            &error))
+    {
+        PrintParseError(error);
+        return 1;
+    }
+
+    PrintRelocationDryRunSummary(relocation_dry_run);
     return 0;
 }

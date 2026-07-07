@@ -77,3 +77,17 @@ fixup record는 가변 길이이므로, 현재 단계에서는 `PIU.EXE`에서 �
 내부 target은 1바이트 object 번호와 target offset으로 해석한다. target offset 크기는 `target_flags`의 32-bit offset flag 여부에 따라 16-bit 또는 32-bit로 처리한다.
 
 지원하지 않는 flag 조합은 relocation 실패로 처리하지 않고 unsupported record로 집계한다.
+
+## 내부 Relocation Dry-Run
+
+현재 `PIU.EXE`의 fixup record는 모두 내부 target으로 디코딩된다.
+
+내부 relocation 값은 target object의 `relocation_base_address`와 `target_offset`을 더한 값으로 계산한다.
+
+source 위치는 fixup record의 page index와 source offset을 통해 해당 오브젝트 버퍼 내 offset으로 변환한다.
+
+현재 관찰된 source kind `0x07`은 32-bit little-endian write로 처리한다. 다른 source kind는 selector/포인터 의미가 더 필요하므로 이 단계에서는 skipped로 집계한다.
+
+일부 record는 현재 4KB page buffer 모델에서 직접 write할 수 없는 source offset을 사용하므로 source out-of-range skipped로 집계한다.
+
+이 단계는 실행 가능한 메모리에 쓰지 않고, 분석용 LE 이미지 버퍼에만 값을 적용한다.
