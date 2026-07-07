@@ -90,4 +90,10 @@ source 위치는 fixup record의 page index와 source offset을 통해 해당 �
 
 일부 record는 현재 4KB page buffer 모델에서 직접 write할 수 없는 source offset을 사용하므로 source out-of-range skipped로 집계한다.
 
+## Relocation Skipped Source 분석
+
+skipped relocation은 아직 의미를 확정하지 않고, source kind별 count와 첫 sample을 출력해 다음 단계 설계 근거로 사용한다.
+
+현재 출력해야 하는 sample은 첫 unsupported source kind record와 첫 source out-of-range record이다.
+
 이 단계는 실행 가능한 메모리에 쓰지 않고, 분석용 LE 이미지 버퍼에만 값을 적용한다.

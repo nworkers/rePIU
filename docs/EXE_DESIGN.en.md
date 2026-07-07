@@ -90,4 +90,10 @@ The observed source kind `0x07` is handled as a 32-bit little-endian write. Othe
 
 Some records use source offsets that cannot be written directly in the current 4 KB page buffer model, so they are counted as source out-of-range skipped.
 
+## Relocation Skipped Source Analysis
+
+Skipped relocations are not assigned final semantics yet. The analyzer prints counts by source kind and first samples so the next design step can be based on observed data.
+
+The required samples are the first unsupported source kind record and the first source out-of-range record.
+
 This step writes only to the analysis LE image buffers, not to executable memory.

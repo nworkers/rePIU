@@ -1,6 +1,7 @@
 #ifndef REPIU_EXE_EXECUTABLE_HEADERS_H_
 #define REPIU_EXE_EXECUTABLE_HEADERS_H_
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -153,6 +154,19 @@ struct LeAppliedRelocation
     std::uint32_t applied_value = 0;
 };
 
+struct LeSkippedRelocation
+{
+    std::uint32_t page_index = 0;
+    std::uint32_t record_table_offset = 0;
+    std::uint8_t source_type = 0;
+    std::uint8_t source_kind = 0;
+    std::uint16_t source_offset = 0;
+    std::uint32_t source_object = 0;
+    std::uint32_t source_object_offset = 0;
+    std::uint32_t target_object = 0;
+    std::uint32_t target_offset = 0;
+};
+
 struct LeRelocationDryRun
 {
     bool valid = false;
@@ -162,8 +176,13 @@ struct LeRelocationDryRun
     std::uint32_t source_out_of_range_count = 0;
     std::uint32_t skipped_count = 0;
     std::uint32_t first_failed_record_offset = 0;
+    std::array<std::uint32_t, 16> source_kind_counts = {};
     LeAppliedRelocation first_applied;
     bool has_first_applied = false;
+    LeSkippedRelocation first_unsupported_source;
+    bool has_first_unsupported_source = false;
+    LeSkippedRelocation first_out_of_range;
+    bool has_first_out_of_range = false;
 };
 
 bool ParseMzHeader(const std::vector<std::uint8_t>& data,

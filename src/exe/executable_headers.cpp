@@ -98,6 +98,19 @@ std::string UnknownName(std::uint32_t value)
     return stream.str();
 }
 
+LeSkippedRelocation MakeSkippedRelocation(const LeFixupRecord& record)
+{
+    LeSkippedRelocation skipped;
+    skipped.page_index = record.page_index;
+    skipped.record_table_offset = record.record_table_offset;
+    skipped.source_type = record.source_type;
+    skipped.source_kind = record.source_type & 0x0f;
+    skipped.source_offset = record.source_offset;
+    skipped.target_object = record.target_object;
+    skipped.target_offset = record.target_offset;
+    return skipped;
+}
+
 }  // namespace
 
 bool ParseMzHeader(const std::vector<std::uint8_t>& data,
@@ -675,10 +688,17 @@ bool ApplyLeInternalRelocations(const LeHeader& header,
     for (const LeFixupRecord& record : record_info.records)
     {
         const std::uint8_t source_kind = record.source_type & 0x0f;
+        ++dry_run->source_kind_counts[source_kind];
         if (source_kind != 0x07)
         {
             ++dry_run->unsupported_source_type_count;
             ++dry_run->skipped_count;
+            if (!dry_run->has_first_unsupported_source)
+            {
+                dry_run->first_unsupported_source =
+                    MakeSkippedRelocation(record);
+                dry_run->has_first_unsupported_source = true;
+            }
             continue;
         }
 
@@ -746,6 +766,15 @@ bool ApplyLeInternalRelocations(const LeHeader& header,
         {
             ++dry_run->source_out_of_range_count;
             ++dry_run->skipped_count;
+            if (!dry_run->has_first_out_of_range)
+            {
+                dry_run->first_out_of_range = MakeSkippedRelocation(record);
+                dry_run->first_out_of_range.source_object =
+                    source_object_index;
+                dry_run->first_out_of_range.source_object_offset =
+                    source_object_offset;
+                dry_run->has_first_out_of_range = true;
+            }
             continue;
         }
 

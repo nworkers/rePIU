@@ -300,6 +300,17 @@ void PrintRelocationDryRunSummary(
               << dry_run.unsupported_source_type_count << "\n";
     std::cout << "LE source out-of-range relocations: "
               << dry_run.source_out_of_range_count << "\n";
+    std::cout << "LE relocation source kind counts:";
+    for (std::size_t index = 0; index < dry_run.source_kind_counts.size();
+         ++index)
+    {
+        if (dry_run.source_kind_counts[index] != 0)
+        {
+            std::cout << " kind" << index << "="
+                      << dry_run.source_kind_counts[index];
+        }
+    }
+    std::cout << "\n";
 
     if (dry_run.has_first_applied)
     {
@@ -313,6 +324,39 @@ void PrintRelocationDryRunSummary(
                   << " target_offset=" << Hex32(relocation.target_offset)
                   << " previous=" << Hex32(relocation.previous_value)
                   << " applied=" << Hex32(relocation.applied_value)
+                  << "\n";
+    }
+
+    if (dry_run.has_first_unsupported_source)
+    {
+        const repiu::exe::LeSkippedRelocation& skipped =
+            dry_run.first_unsupported_source;
+        std::cout << "LE first unsupported source relocation: page="
+                  << skipped.page_index
+                  << " record_offset=" << Hex32(skipped.record_table_offset)
+                  << " source_type=" << Hex16(skipped.source_type)
+                  << " source_kind=" << Hex16(skipped.source_kind)
+                  << " source_offset=" << Hex16(skipped.source_offset)
+                  << " target_object=" << skipped.target_object
+                  << " target_offset=" << Hex32(skipped.target_offset)
+                  << "\n";
+    }
+
+    if (dry_run.has_first_out_of_range)
+    {
+        const repiu::exe::LeSkippedRelocation& skipped =
+            dry_run.first_out_of_range;
+        std::cout << "LE first out-of-range relocation: page="
+                  << skipped.page_index
+                  << " record_offset=" << Hex32(skipped.record_table_offset)
+                  << " source_type=" << Hex16(skipped.source_type)
+                  << " source_kind=" << Hex16(skipped.source_kind)
+                  << " source_offset=" << Hex16(skipped.source_offset)
+                  << " source_object=" << skipped.source_object
+                  << " source_object_offset="
+                  << Hex32(skipped.source_object_offset)
+                  << " target_object=" << skipped.target_object
+                  << " target_offset=" << Hex32(skipped.target_offset)
                   << "\n";
     }
 }
