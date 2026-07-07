@@ -18,3 +18,28 @@
 * 실행 파일 분석은 MZ 파서와 LE 파서로 분리한다.
 * 버전별 실행 경로와 자산 루트는 타깃 프로파일로 관리한다.
 * 첫 실행 전에는 비실행 분석 도구로 엔트리 포인트, 오브젝트 테이블, 페이지 테이블, fixup 정보를 확인한다.
+
+## 비실행 분석 도구
+
+첫 C++ 도구는 `PIU.EXE`를 실행하지 않고 읽어서 MZ/LE 고정 헤더 정보를 출력한다.
+
+초기 LE 파서는 다음 고정 필드를 해석한다.
+
+* byte order
+* word order
+* CPU type
+* OS type
+* module flags
+* module page count
+* entry object/index
+* entry offset
+* stack object/index
+* stack offset
+* page size
+* object table offset/count
+* object page table offset
+* fixup page table offset
+* fixup record table offset
+* data pages offset
+
+오브젝트 테이블, 페이지 테이블, fixup record의 상세 파싱은 다음 단계에서 누적한다.

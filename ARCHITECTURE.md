@@ -14,13 +14,13 @@ When code structure changes or a new subsystem is added, this document must be u
 
 ## 현재 상태
 
-현재 저장소는 문서와 원본 자산 중심이며, 아직 C++ 런타임 구현은 시작되지 않았다.
+현재 저장소는 문서와 원본 자산 중심이며, 첫 C++ 구현으로 비실행 실행 파일 분석 도구를 추가한다.
 
 첫 구현 대상은 `MASTER\PIU_1ST\PIU.EXE`를 실행하지 않고 분석하는 도구이다.
 
 ## Current State
 
-The repository currently contains documentation and original assets, and C++ runtime implementation has not started yet.
+The repository currently contains documentation and original assets, and the first C++ implementation adds a non-executing executable analysis tool.
 
 The first implementation target is a non-executing analysis tool for `MASTER\PIU_1ST\PIU.EXE`.
 
@@ -33,6 +33,12 @@ The first implementation target is a non-executing analysis tool for `MASTER\PIU
 * `src/platform/win32/`: Win32 전용 실행, 메모리, 창, 입력, 파일 시스템 세부 구현
 * `src/platform/linux/`: Linux 전용 세부 구현
 * `src/platform/web/`: Web 전용 세부 구현
+
+현재 추가되는 디렉터리:
+
+* `include/repiu/exe/`: MZ/LE 실행 파일 분석용 공용 헤더
+* `src/exe/`: MZ/LE 파서 구현
+* `src/tools/exe_analyzer/`: 비실행 콘솔 분석 도구
 
 예정된 주요 모듈:
 
@@ -56,6 +62,12 @@ Planned shared structure:
 * `src/platform/win32/`: Win32-specific execution, memory, window, input, and filesystem details
 * `src/platform/linux/`: Linux-specific details
 * `src/platform/web/`: Web-specific details
+
+Directories added now:
+
+* `include/repiu/exe/`: public headers for MZ/LE executable analysis
+* `src/exe/`: MZ/LE parser implementation
+* `src/tools/exe_analyzer/`: non-executing console analysis tool
 
 Planned major modules:
 
