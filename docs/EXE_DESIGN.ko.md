@@ -121,3 +121,15 @@ entry linear address는 entry object base와 entry offset을 더해 계산한다
 stack top linear address는 stack object base와 stack offset을 더해 계산한다. stack offset은 object 끝을 가리킬 수 있으므로 object size와 같은 값도 유효하게 본다.
 
 HLE reserve base는 모든 object region 끝의 최댓값을 4KB 단위로 올림 정렬해 계산한다.
+
+## Win32/x86 Runtime Memory Policy
+
+Win32/x86 실행 정책은 runtime memory dry-run 결과를 기반으로 직접 실행 가능성과 필요한 예약 주소 범위를 보고한다.
+
+원본 32-bit x86 entry로 직접 제어를 넘기는 방식은 32-bit host process에서만 지원한다.
+
+64-bit host process에서는 직접 entry 호출을 unsupported로 보고하며, 향후 32-bit helper process 또는 별도 execution backend가 필요하다.
+
+preferred allocation base는 runtime object region 중 가장 낮은 base address이다.
+
+required reserve size는 HLE reserve base에서 preferred allocation base를 뺀 값이다.

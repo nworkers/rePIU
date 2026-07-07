@@ -1,6 +1,7 @@
 #include "repiu/exe/dos4gw_loader.h"
 #include "repiu/exe/executable_headers.h"
 #include "repiu/hle/hle_profile.h"
+#include "repiu/platform/win32/runtime_memory_policy.h"
 #include "repiu/runtime/runtime_memory.h"
 #include "repiu/target/target_profile.h"
 
@@ -428,6 +429,27 @@ void PrintRuntimeMemoryPlan(const repiu::runtime::RuntimeMemoryPlan& plan)
     }
 }
 
+void PrintWin32RuntimeMemoryPolicy(
+    const repiu::platform::win32::Win32RuntimeMemoryPolicy& policy)
+{
+    std::cout << "Win32 runtime memory policy: "
+              << (policy.valid ? "valid" : "invalid") << "\n";
+    std::cout << "Win32 host pointer bits: "
+              << policy.host_pointer_bits << "\n";
+    std::cout << "Win32 direct x86 execution: "
+              << (policy.direct_x86_execution_supported ? "supported"
+                                                        : "unsupported")
+              << "\n";
+    std::cout << "Win32 preferred allocation base: "
+              << Hex32(policy.preferred_allocation_base) << "\n";
+    std::cout << "Win32 required reserve size: "
+              << Hex32(policy.required_reserve_size) << "\n";
+    std::cout << "Win32 HLE reserve base: "
+              << Hex32(policy.hle_reserve_base) << "\n";
+    std::cout << "Win32 memory policy message: "
+              << policy.message << "\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -509,5 +531,15 @@ int main(int argc, char** argv)
     }
 
     PrintRuntimeMemoryPlan(runtime_plan);
+
+    repiu::platform::win32::Win32RuntimeMemoryPolicy win32_policy;
+    if (!repiu::platform::win32::BuildWin32RuntimeMemoryPolicy(
+            runtime_plan, &win32_policy))
+    {
+        std::cerr << "Failed to build Win32 runtime memory policy\n";
+        return 1;
+    }
+
+    PrintWin32RuntimeMemoryPolicy(win32_policy);
     return 0;
 }

@@ -121,3 +121,15 @@ The entry linear address is calculated from the entry object base plus entry off
 The stack top linear address is calculated from the stack object base plus stack offset. A stack offset equal to the object size is considered valid because it can point to the end of the object.
 
 The HLE reserve base is calculated by rounding the maximum end of all object regions up to a 4 KB boundary.
+
+## Win32/x86 Runtime Memory Policy
+
+The Win32/x86 execution policy reports direct execution capability and the required reserve address range from the runtime memory dry-run result.
+
+Direct control transfer to the original 32-bit x86 entry point is supported only from a 32-bit host process.
+
+In a 64-bit host process, direct entry calls are reported as unsupported, and a future 32-bit helper process or separate execution backend is required.
+
+The preferred allocation base is the lowest base address among runtime object regions.
+
+The required reserve size is the HLE reserve base minus the preferred allocation base.
