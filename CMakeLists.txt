@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(repiu_exe
     src/exe/executable_headers.cpp
+    src/hle/hle_profile.cpp
     src/target/target_profile.cpp
 )
 

@@ -37,8 +37,10 @@ The first implementation target is a non-executing analysis tool for `MASTER\PIU
 현재 추가되는 디렉터리:
 
 * `include/repiu/exe/`: MZ/LE 실행 파일 분석용 공용 헤더
+* `include/repiu/hle/`: 정적 HLE profile과 서비스 범위 공용 헤더
 * `include/repiu/target/`: 정적 target profile과 target registry 공용 헤더
 * `src/exe/`: MZ/LE 파서 구현
+* `src/hle/`: 정적 HLE profile 등록 구현
 * `src/target/`: 정적 target profile 등록 구현
 * `src/tools/exe_analyzer/`: 비실행 콘솔 분석 도구
 
@@ -46,6 +48,8 @@ The first implementation target is a non-executing analysis tool for `MASTER\PIU
 
 * `TargetRegistry`: 게임 타깃과 버전 선택. 현재 단계에서는 정적 C++ 등록 구조로 `piu_1st`를 제공한다.
 * `TargetProfile`: 실행 파일 경로, 작업 디렉터리, 자산 루트, 포맷 힌트, HLE 프로파일 id, 버전별 메타데이터
+* `HleProfileRegistry`: target이 참조하는 HLE 프로파일 선택. 현재 단계에서는 정적 C++ 등록 구조로 `piu_common`을 제공한다.
+* `HleProfile`: target이 요구하는 DOS/DPMI/하드웨어 HLE 서비스 범위
 * `ExecutableReader`: 원본 실행 파일과 관련 파일을 읽는 공용 파일 입력 계층
 * `MzParser`: DOS MZ 헤더와 LE/LX 위치 파악
 * `LeParser`: LE 헤더, 오브젝트 테이블, 페이지 테이블, fixup page table, fixup record table 범위, 1차 fixup record 디코딩, 엔트리 포인트 파싱
@@ -68,8 +72,10 @@ Planned shared structure:
 Directories added now:
 
 * `include/repiu/exe/`: public headers for MZ/LE executable analysis
+* `include/repiu/hle/`: public headers for static HLE profiles and service scopes
 * `include/repiu/target/`: public headers for static target profiles and target registry
 * `src/exe/`: MZ/LE parser implementation
+* `src/hle/`: static HLE profile registration implementation
 * `src/target/`: static target profile registration implementation
 * `src/tools/exe_analyzer/`: non-executing console analysis tool
 
@@ -77,6 +83,8 @@ Planned major modules:
 
 * `TargetRegistry`: game target and version selection. The current step provides `piu_1st` through static C++ registration.
 * `TargetProfile`: executable path, working directory, asset root, format hint, HLE profile id, and version metadata
+* `HleProfileRegistry`: HLE profile selection referenced by targets. The current step provides `piu_common` through static C++ registration.
+* `HleProfile`: DOS/DPMI/hardware HLE service scope required by a target
 * `ExecutableReader`: shared file input layer for original executables and related files
 * `MzParser`: DOS MZ header and LE/LX location
 * `LeParser`: LE header, object table, page table, fixup page table, fixup record table range, first-pass fixup record decoding, and entry point parsing

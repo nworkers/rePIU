@@ -1,4 +1,5 @@
 #include "repiu/exe/executable_headers.h"
+#include "repiu/hle/hle_profile.h"
 #include "repiu/target/target_profile.h"
 
 #include <cstdint>
@@ -410,6 +411,14 @@ int main(int argc, char** argv)
     const std::filesystem::path path =
         argc >= 2 ? std::filesystem::path(argv[1])
                   : default_profile->executable_path;
+    const repiu::hle::HleProfile* hle_profile =
+        repiu::hle::FindHleProfileById(default_profile->hle_profile_id);
+    if (hle_profile == nullptr)
+    {
+        std::cerr << "HLE profile was not found: "
+                  << default_profile->hle_profile_id << "\n";
+        return 1;
+    }
 
     std::vector<std::uint8_t> data;
     std::string read_error;
@@ -431,6 +440,13 @@ int main(int argc, char** argv)
     std::cout << "Asset root: "
               << default_profile->asset_root.string() << "\n";
     std::cout << "HLE profile: " << default_profile->hle_profile_id << "\n";
+    std::cout << "HLE profile name: " << hle_profile->display_name << "\n";
+    std::cout << "HLE services:";
+    for (repiu::hle::HleService service : hle_profile->services)
+    {
+        std::cout << " " << repiu::hle::HleServiceName(service);
+    }
+    std::cout << "\n";
     std::cout << "Path: " << path.string() << "\n";
     std::cout << "File size: " << data.size() << " bytes\n";
 

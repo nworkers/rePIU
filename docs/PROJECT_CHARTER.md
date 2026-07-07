@@ -30,6 +30,7 @@ Because multiple versions must be supported later, executable paths, working dir
 * DOSBox 또는 전체 PC 에뮬레이터를 통합하지 않는다.
 * 실행 파일 분석, 메모리 매핑, DPMI/DOS HLE, 그래픽, 입력, 타이밍, 오디오는 독립 하위 시스템으로 분리한다.
 * DOS/4GW 로더 코어는 공용으로 유지하고, 게임/버전별 차이는 정적 target profile과 향후 HLE profile/override로 분리한다.
+* HLE profile은 실제 게임 로직을 대체하지 않고, 원본 코드 주변 환경 서비스의 범위를 선언한다.
 * 플랫폼 공용 코어를 먼저 설계하고 Win32/Linux/Web 세부 구현은 플랫폼 계층에 둔다.
 * 코드 변경 전에는 설계와 작업 계획을 문서화한다.
 
@@ -39,5 +40,6 @@ Because multiple versions must be supported later, executable paths, working dir
 * Do not integrate DOSBox or a full PC emulator.
 * Keep executable analysis, memory mapping, DPMI/DOS HLE, graphics, input, timing, and audio as independent subsystems.
 * Keep the DOS/4GW loader core shared, and separate game/version-specific differences into static target profiles and future HLE profiles/overrides.
+* HLE profiles declare the scope of surrounding environment services and do not replace original game logic.
 * Design the shared platform-neutral core first and keep Win32/Linux/Web specifics in platform layers.
 * Document design and work plans before changing code.
