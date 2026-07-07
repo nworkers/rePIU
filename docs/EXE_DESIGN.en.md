@@ -173,3 +173,17 @@ The next steps will prioritize loading the original LE image at a safe new runti
 Fixed-address loading remains a comparison and verification fallback, while the main execution path moves toward a relocatable runtime image.
 
 This does not rewrite original game logic. The original 32-bit x86 code remains the execution target, and the loader only changes memory placement by applying the original relocation metadata.
+
+## Relocatable Runtime Image Dry-Run
+
+The relocatable runtime image dry-run calculates a plan that moves the full image to a new base while preserving the relative placement of original LE objects.
+
+The current default relocated image base is `0x01000000`.
+
+The original image base is treated as the lowest LE object base, `0x00010000`, so the relocation delta is `0x00FF0000`.
+
+Each relocated object base is calculated as `original_object_base + delta`. This preserves object spacing and object-local offsets while avoiding the low-address conflict in Win32 x86.
+
+Entry and stack top are also recalculated from the same object indices and offsets, but using relocated object bases.
+
+The relocation dry-run treats source kind `0x07` records as 32-bit internal pointer writes and calculates the new applied value as `relocated_target_object_base + target_offset`. Other source kinds and source out-of-range records remain skipped so their risk can continue to be tracked.

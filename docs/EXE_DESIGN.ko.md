@@ -142,6 +142,20 @@ Win32 runtime memory policy가 계산한 `preferred_allocation_base`와 `require
 범위 안에서 `MEM_RESERVE` 또는 `MEM_COMMIT` 등 비어 있지 않은 region이 발견되면 analyzer는 실패하지 않고 첫 blocking block의 base, size, state를 출력한다.
 
 이 결과는 이후 실제 executable memory allocation 정책을 정할 때 사용한다. 특히 목표 주소 범위가 이미 점유된 경우, 32-bit helper process 초기화 순서 조정 또는 relocation fallback 필요 여부를 판단하는 근거가 된다.
+# Relocatable Runtime Image Dry-Run
+
+Relocatable runtime image dry-run은 원본 LE object의 상대 배치를 유지하면서 전체 image를 새 base로 이동하는 계획을 계산한다.
+
+현재 기본 relocated image base는 `0x01000000`이다.
+
+원본 image base는 가장 낮은 LE object base인 `0x00010000`으로 보고, relocation delta는 `0x00FF0000`으로 계산한다.
+
+각 object의 새 base는 `original_object_base + delta`로 계산한다. 이 방식은 object 사이 간격과 object 내부 offset을 유지하면서 Windows 32-bit 낮은 주소 충돌을 피하기 위한 것이다.
+
+entry와 stack top도 같은 object index와 offset을 사용해 새 object base 기준으로 다시 계산한다.
+
+relocation dry-run은 source kind `0x07` record를 32-bit internal pointer write로 보고, target object의 relocated base와 target offset을 더한 값을 새 적용 값으로 계산한다. 나머지 source kind와 source out-of-range record는 기존과 같이 skipped로 남겨 위험을 추적한다.
+
 # Relocation 기반 로드 결정
 
 Win32 x86 프로세스에서 원본 DOS/4GW 이미지가 기대하는 낮은 주소 범위를 그대로 예약하는 방식은 안정적인 기본 경로로 보기 어렵다.

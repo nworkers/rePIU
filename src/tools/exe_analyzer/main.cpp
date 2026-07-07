@@ -429,6 +429,72 @@ void PrintRuntimeMemoryPlan(const repiu::runtime::RuntimeMemoryPlan& plan)
     }
 }
 
+void PrintRelocatableRuntimeImagePlan(
+    const repiu::runtime::RelocatableRuntimeImagePlan& plan)
+{
+    std::cout << "Relocatable runtime image dry run: "
+              << (plan.valid ? "valid" : "invalid") << "\n";
+    std::cout << "Relocatable original image base: "
+              << Hex32(plan.original_image_base) << "\n";
+    std::cout << "Relocatable image base: "
+              << Hex32(plan.relocated_image_base) << "\n";
+    std::cout << "Relocatable delta: "
+              << Hex32(plan.relocation_delta) << "\n";
+    std::cout << "Relocatable entry: "
+              << (plan.entry_valid
+                      ? Hex32(plan.relocated_entry_linear_address)
+                      : "invalid")
+              << "\n";
+    std::cout << "Relocatable stack top: "
+              << (plan.stack_valid
+                      ? Hex32(plan.relocated_stack_top_linear_address)
+                      : "invalid")
+              << "\n";
+    std::cout << "Relocatable HLE reserve base: "
+              << Hex32(plan.relocated_hle_reserve_base) << "\n";
+    std::cout << "Relocatable object regions: "
+              << plan.object_regions.size() << "\n";
+
+    for (const repiu::runtime::RelocatableRuntimeObjectRegion& region :
+         plan.object_regions)
+    {
+        std::cout << "  reloc_object[" << region.object_index << "] old="
+                  << Hex32(region.original_base_address)
+                  << " new=" << Hex32(region.relocated_base_address)
+                  << " size=" << Hex32(region.virtual_size)
+                  << " copied=" << region.copied_bytes
+                  << " flags=" << Hex32(region.flags) << "\n";
+    }
+
+    const repiu::runtime::RelocatableRuntimeRelocationDryRun& dry_run =
+        plan.relocation_dry_run;
+    std::cout << "Relocatable relocation dry run: "
+              << (dry_run.valid ? "valid" : "invalid") << "\n";
+    std::cout << "Relocatable applied relocations: "
+              << dry_run.applied_count << "\n";
+    std::cout << "Relocatable skipped relocations: "
+              << dry_run.skipped_count << "\n";
+    std::cout << "Relocatable failed relocations: "
+              << dry_run.failed_count << "\n";
+    std::cout << "Relocatable unsupported relocation source types: "
+              << dry_run.unsupported_source_type_count << "\n";
+    std::cout << "Relocatable source out-of-range relocations: "
+              << dry_run.source_out_of_range_count << "\n";
+    if (dry_run.has_first_applied)
+    {
+        std::cout << "Relocatable first applied relocation: source_object="
+                  << dry_run.first_source_object
+                  << " source_offset="
+                  << Hex32(dry_run.first_source_object_offset)
+                  << " target_object=" << dry_run.first_target_object
+                  << " target_offset="
+                  << Hex32(dry_run.first_target_offset)
+                  << " original=" << Hex32(dry_run.first_original_value)
+                  << " relocated="
+                  << Hex32(dry_run.first_relocated_value) << "\n";
+    }
+}
+
 void PrintWin32RuntimeMemoryPolicy(
     const repiu::platform::win32::Win32RuntimeMemoryPolicy& policy)
 {
@@ -559,6 +625,16 @@ int main(int argc, char** argv)
     }
 
     PrintRuntimeMemoryPlan(runtime_plan);
+
+    repiu::runtime::RelocatableRuntimeImagePlan relocatable_plan;
+    if (!repiu::runtime::BuildRelocatableRuntimeImagePlan(
+            load_result, 0x01000000, &relocatable_plan, &error))
+    {
+        PrintParseError(error);
+        return 1;
+    }
+
+    PrintRelocatableRuntimeImagePlan(relocatable_plan);
 
     repiu::platform::win32::Win32RuntimeMemoryPolicy win32_policy;
     if (!repiu::platform::win32::BuildWin32RuntimeMemoryPolicy(
