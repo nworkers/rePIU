@@ -109,3 +109,15 @@ This step writes only to the analysis LE image buffers, not to executable memory
 `Dos4gwLoadResult` groups the MZ header, LE header, mapped LE image, fixup section analysis result, fixup record decoding result, and relocation dry-run result.
 
 `LoadDos4gwExecutable` first checks that the target profile format hint is `DOS4GW_LE`, then fills the result using the existing MZ/LE/image/fixup/relocation sequence.
+
+## Runtime Memory Dry-Run
+
+The runtime memory dry-run calculates a pre-execution runtime memory layout plan from `Dos4gwLoadResult`.
+
+The current dry-run records each LE object's relocation base address and virtual size as a runtime object region.
+
+The entry linear address is calculated from the entry object base plus entry offset.
+
+The stack top linear address is calculated from the stack object base plus stack offset. A stack offset equal to the object size is considered valid because it can point to the end of the object.
+
+The HLE reserve base is calculated by rounding the maximum end of all object regions up to a 4 KB boundary.

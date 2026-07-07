@@ -109,3 +109,15 @@ unsupported source는 kind별 첫 sample을 출력해 `source_type=0x13`과 순�
 `Dos4gwLoadResult`는 MZ 헤더, LE 헤더, 매핑된 LE 이미지, fixup section 분석 결과, fixup record 디코딩 결과, relocation dry-run 결과를 하나로 묶는다.
 
 `LoadDos4gwExecutable`은 target profile의 format hint가 `DOS4GW_LE`인지 확인한 뒤 기존 MZ/LE/image/fixup/relocation 순서로 결과를 채운다.
+
+## Runtime Memory Dry-Run
+
+`Dos4gwLoadResult`를 입력으로 받아 실행 전 runtime memory 배치 계획을 계산한다.
+
+현재 dry-run은 LE object의 relocation base address와 virtual size를 runtime object region으로 기록한다.
+
+entry linear address는 entry object base와 entry offset을 더해 계산한다.
+
+stack top linear address는 stack object base와 stack offset을 더해 계산한다. stack offset은 object 끝을 가리킬 수 있으므로 object size와 같은 값도 유효하게 본다.
+
+HLE reserve base는 모든 object region 끝의 최댓값을 4KB 단위로 올림 정렬해 계산한다.

@@ -1,6 +1,7 @@
 #include "repiu/exe/dos4gw_loader.h"
 #include "repiu/exe/executable_headers.h"
 #include "repiu/hle/hle_profile.h"
+#include "repiu/runtime/runtime_memory.h"
 #include "repiu/target/target_profile.h"
 
 #include <cstdint>
@@ -397,6 +398,36 @@ void PrintRelocationDryRunSummary(
     }
 }
 
+void PrintRuntimeMemoryPlan(const repiu::runtime::RuntimeMemoryPlan& plan)
+{
+    std::cout << "Runtime memory dry run: "
+              << (plan.valid ? "valid" : "invalid") << "\n";
+    std::cout << "Runtime object regions: "
+              << plan.object_regions.size() << "\n";
+    std::cout << "Runtime total object virtual bytes: "
+              << plan.total_object_virtual_bytes << "\n";
+    std::cout << "Runtime entry: "
+              << (plan.entry_valid ? Hex32(plan.entry_linear_address)
+                                   : "invalid")
+              << "\n";
+    std::cout << "Runtime stack top: "
+              << (plan.stack_valid ? Hex32(plan.stack_top_linear_address)
+                                   : "invalid")
+              << "\n";
+    std::cout << "Runtime HLE reserve base: "
+              << Hex32(plan.hle_reserve_base) << "\n";
+
+    for (const repiu::runtime::RuntimeObjectRegion& region :
+         plan.object_regions)
+    {
+        std::cout << "  runtime_object[" << region.object_index << "] base="
+                  << Hex32(region.base_address)
+                  << " size=" << Hex32(region.virtual_size)
+                  << " copied=" << region.copied_bytes
+                  << " flags=" << Hex32(region.flags) << "\n";
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -468,5 +499,15 @@ int main(int argc, char** argv)
     PrintFixupSummary(load_result.fixup_info);
     PrintFixupRecordSummary(load_result.fixup_record_info);
     PrintRelocationDryRunSummary(load_result.relocation_dry_run);
+
+    repiu::runtime::RuntimeMemoryPlan runtime_plan;
+    if (!repiu::runtime::BuildRuntimeMemoryPlan(load_result, &runtime_plan,
+                                                &error))
+    {
+        PrintParseError(error);
+        return 1;
+    }
+
+    PrintRuntimeMemoryPlan(runtime_plan);
     return 0;
 }
