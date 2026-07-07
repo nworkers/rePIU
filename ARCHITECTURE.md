@@ -39,6 +39,7 @@ The first implementation target is a non-executing analysis tool for `MASTER\PIU
 * `include/repiu/exe/`: MZ/LE 실행 파일 분석용 공용 헤더
 * `include/repiu/hle/`: 정적 HLE profile과 서비스 범위 공용 헤더
 * `include/repiu/target/`: 정적 target profile과 target registry 공용 헤더
+* `scripts/`: 반복 검증용 빌드 스크립트
 * `src/exe/`: MZ/LE 파서 구현
 * `src/hle/`: 정적 HLE profile 등록 구현
 * `src/platform/win32/`: Win32 전용 실행 메모리 정책과 이후 실행 backend 구현 위치
@@ -58,6 +59,7 @@ The first implementation target is a non-executing analysis tool for `MASTER\PIU
 * `ImageMapper`: 원본 보호 모드 코드가 기대하는 메모리 이미지 구성. 현재 단계에서는 `Dos4gwExecutableLoader`를 통해 내부 relocation dry-run, skipped source 관찰 정보, full source type 분포를 제공한다.
 * `RuntimeMemory`: 실행 메모리, 스택, 힙, selector 추상화, HLE 영역 관리. 현재 단계에서는 실행 메모리를 할당하지 않고 object region, entry, stack top, HLE reserve base를 계산하는 dry-run을 제공한다.
 * `Win32RuntimeMemoryPolicy`: Win32 host pointer size, 32-bit direct execution 가능 여부, preferred allocation base, reserve size를 보고한다. 현재 단계에서는 실제 메모리를 할당하지 않는다.
+* `Win32 x86 Build`: 원본 32-bit x86 entry 직접 실행을 준비하기 위해 `scripts/build_win32_x86.bat`로 `build\vs2022_win32_debug` 구성을 생성하고 검증한다.
 * `ExecutionEngine`: 원본 32-bit x86 코드로 제어 이전
 * `HleDispatcher`: DOS, DPMI, 타이머, 입력, 그래픽, 오디오, 파일 시스템 호출 처리
 * `TraceLogger`: 로더 결정, HLE 호출, 예외, 실행 단계 기록
@@ -77,6 +79,7 @@ Directories added now:
 * `include/repiu/exe/`: public headers for MZ/LE executable analysis
 * `include/repiu/hle/`: public headers for static HLE profiles and service scopes
 * `include/repiu/target/`: public headers for static target profiles and target registry
+* `scripts/`: build scripts for repeated verification
 * `src/exe/`: MZ/LE parser implementation
 * `src/hle/`: static HLE profile registration implementation
 * `src/platform/win32/`: Win32-specific executable memory policy and future execution backend location
@@ -96,6 +99,7 @@ Planned major modules:
 * `ImageMapper`: memory image expected by the original protected-mode code. The current step provides internal relocation dry-run, skipped source observability, and full source type distribution through `Dos4gwExecutableLoader`.
 * `RuntimeMemory`: executable memory, stack, heap, selector abstraction, and HLE regions. The current step provides a dry-run that calculates object regions, entry, stack top, and HLE reserve base without allocating executable memory.
 * `Win32RuntimeMemoryPolicy`: reports Win32 host pointer size, 32-bit direct execution support, preferred allocation base, and reserve size. The current step does not allocate memory.
+* `Win32 x86 Build`: prepares direct original 32-bit x86 entry execution by generating and verifying the `build\vs2022_win32_debug` configuration through `scripts/build_win32_x86.bat`.
 * `ExecutionEngine`: control transfer to original 32-bit x86 code
 * `HleDispatcher`: DOS, DPMI, timer, input, graphics, audio, and filesystem calls
 * `TraceLogger`: loader decisions, HLE calls, exceptions, and execution milestones
