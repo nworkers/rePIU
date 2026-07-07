@@ -155,6 +155,60 @@ void PrintLeHeader(const repiu::exe::LeHeader& header)
               << header.auto_data_object << "\n";
 }
 
+void PrintObjectTable(const std::vector<repiu::exe::LeObjectRecord>& objects)
+{
+    std::cout << "LE objects:\n";
+    for (std::size_t index = 0; index < objects.size(); ++index)
+    {
+        const repiu::exe::LeObjectRecord& object = objects[index];
+        std::cout << "  [" << (index + 1) << "] virtual_size="
+                  << Hex32(object.virtual_size)
+                  << " base=" << Hex32(object.relocation_base_address)
+                  << " flags=" << Hex32(object.flags)
+                  << " page_table_index=" << object.page_table_index
+                  << " page_count=" << object.page_count << "\n";
+    }
+}
+
+void PrintPageSummary(const std::vector<repiu::exe::LePageRecord>& pages)
+{
+    std::cout << "LE page records: " << pages.size() << "\n";
+    if (pages.empty())
+    {
+        return;
+    }
+
+    const repiu::exe::LePageRecord& first = pages.front();
+    const repiu::exe::LePageRecord& last = pages.back();
+    std::cout << "LE first page: data_page=" << first.data_page_number
+              << " flags=" << Hex16(first.flags) << "\n";
+    std::cout << "LE last page: data_page=" << last.data_page_number
+              << " flags=" << Hex16(last.flags) << "\n";
+}
+
+void PrintImageSummary(const repiu::exe::LeImage& image)
+{
+    std::cout << "LE image map: " << (image.valid ? "valid" : "invalid")
+              << "\n";
+    std::cout << "LE mapped objects: "
+              << image.mapped_objects.size() << "\n";
+    std::cout << "LE total virtual size: "
+              << image.total_virtual_size << " bytes\n";
+    std::cout << "LE total copied bytes: "
+              << image.total_copied_bytes << " bytes\n";
+    std::cout << "LE entry mapping: "
+              << (image.entry_point_valid ? "valid" : "invalid") << "\n";
+
+    for (std::size_t index = 0; index < image.mapped_objects.size(); ++index)
+    {
+        const repiu::exe::LeMappedObject& object =
+            image.mapped_objects[index];
+        std::cout << "  mapped[" << (index + 1) << "] size="
+                  << object.memory.size()
+                  << " copied=" << object.copied_bytes << "\n";
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -195,5 +249,16 @@ int main(int argc, char** argv)
     }
 
     PrintLeHeader(le_header);
+
+    repiu::exe::LeImage image;
+    if (!repiu::exe::BuildLeImage(data, le_header, &image, &error))
+    {
+        PrintParseError(error);
+        return 1;
+    }
+
+    PrintObjectTable(image.objects);
+    PrintPageSummary(image.pages);
+    PrintImageSummary(image);
     return 0;
 }

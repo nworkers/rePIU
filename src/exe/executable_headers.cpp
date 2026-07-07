@@ -1,7 +1,9 @@
 #include "repiu/exe/executable_headers.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <sstream>
+#include <utility>
 
 namespace repiu::exe
 {
@@ -20,6 +22,8 @@ constexpr std::uint32_t kMzLeOffsetOffset = 0x3c;
 
 constexpr std::uint32_t kLeHeaderMinimumSize = 0xa0;
 constexpr std::uint32_t kLeSignatureOffset = 0x00;
+constexpr std::uint32_t kLeObjectRecordSize = 24;
+constexpr std::uint32_t kLePageRecordSize = 4;
 
 bool HasBytes(const std::vector<std::uint8_t>& data,
               std::uint32_t offset,
@@ -47,6 +51,14 @@ std::uint32_t ReadLe32(const std::vector<std::uint8_t>& data,
            (static_cast<std::uint32_t>(data[offset + 1]) << 8) |
            (static_cast<std::uint32_t>(data[offset + 2]) << 16) |
            (static_cast<std::uint32_t>(data[offset + 3]) << 24);
+}
+
+std::uint32_t ReadBe24(const std::vector<std::uint8_t>& data,
+                       std::uint32_t offset)
+{
+    return (static_cast<std::uint32_t>(data[offset]) << 16) |
+           (static_cast<std::uint32_t>(data[offset + 1]) << 8) |
+           static_cast<std::uint32_t>(data[offset + 2]);
 }
 
 void SetError(std::uint32_t file_offset,
@@ -176,6 +188,199 @@ bool ParseLeHeader(const std::vector<std::uint8_t>& data,
     header->preload_page_count = ReadLe32(data, file_offset + 0x84);
     header->auto_data_object = ReadLe32(data, file_offset + 0x94);
 
+    return true;
+}
+
+bool ParseLeObjectTable(const std::vector<std::uint8_t>& data,
+                        const LeHeader& header,
+                        std::vector<LeObjectRecord>* objects,
+                        ParseError* error)
+{
+    if (objects == nullptr)
+    {
+        SetError(header.file_offset, "LE object output vector is null", error);
+        return false;
+    }
+
+    objects->clear();
+
+    const std::uint32_t table_offset =
+        header.file_offset + header.object_table_offset;
+    const std::uint64_t table_size =
+        static_cast<std::uint64_t>(header.object_count) * kLeObjectRecordSize;
+    if (table_size > UINT32_MAX ||
+        !HasBytes(data, table_offset, static_cast<std::uint32_t>(table_size)))
+    {
+        SetError(table_offset, "LE object table points outside the file",
+                 error);
+        return false;
+    }
+
+    objects->reserve(header.object_count);
+    for (std::uint32_t index = 0; index < header.object_count; ++index)
+    {
+        const std::uint32_t offset =
+            table_offset + index * kLeObjectRecordSize;
+        LeObjectRecord object;
+        object.virtual_size = ReadLe32(data, offset + 0x00);
+        object.relocation_base_address = ReadLe32(data, offset + 0x04);
+        object.flags = ReadLe32(data, offset + 0x08);
+        object.page_table_index = ReadLe32(data, offset + 0x0c);
+        object.page_count = ReadLe32(data, offset + 0x10);
+        object.reserved = ReadLe32(data, offset + 0x14);
+        objects->push_back(object);
+    }
+
+    return true;
+}
+
+bool ParseLePageTable(const std::vector<std::uint8_t>& data,
+                      const LeHeader& header,
+                      std::vector<LePageRecord>* pages,
+                      ParseError* error)
+{
+    if (pages == nullptr)
+    {
+        SetError(header.file_offset, "LE page output vector is null", error);
+        return false;
+    }
+
+    pages->clear();
+
+    const std::uint32_t table_offset =
+        header.file_offset + header.object_page_table_offset;
+    const std::uint64_t table_size =
+        static_cast<std::uint64_t>(header.page_count) * kLePageRecordSize;
+    if (table_size > UINT32_MAX ||
+        !HasBytes(data, table_offset, static_cast<std::uint32_t>(table_size)))
+    {
+        SetError(table_offset, "LE page table points outside the file", error);
+        return false;
+    }
+
+    pages->reserve(header.page_count);
+    for (std::uint32_t index = 0; index < header.page_count; ++index)
+    {
+        const std::uint32_t offset = table_offset + index * kLePageRecordSize;
+        LePageRecord page;
+        page.data_page_number = ReadBe24(data, offset);
+        page.flags = ReadU8(data, offset + 0x03);
+        pages->push_back(page);
+    }
+
+    return true;
+}
+
+bool BuildLeImage(const std::vector<std::uint8_t>& data,
+                  const LeHeader& header,
+                  LeImage* image,
+                  ParseError* error)
+{
+    if (image == nullptr)
+    {
+        SetError(header.file_offset, "LE image output is null", error);
+        return false;
+    }
+
+    *image = LeImage{};
+
+    if (!ParseLeObjectTable(data, header, &image->objects, error) ||
+        !ParseLePageTable(data, header, &image->pages, error))
+    {
+        return false;
+    }
+
+    image->mapped_objects.reserve(image->objects.size());
+    for (const LeObjectRecord& object : image->objects)
+    {
+        if (object.page_table_index == 0)
+        {
+            SetError(header.file_offset + header.object_table_offset,
+                     "LE object uses a zero page table index", error);
+            return false;
+        }
+
+        const std::uint32_t first_page_index = object.page_table_index - 1;
+        if (first_page_index > image->pages.size() ||
+            object.page_count > image->pages.size() - first_page_index)
+        {
+            SetError(header.file_offset + header.object_page_table_offset,
+                     "LE object page range exceeds the page table", error);
+            return false;
+        }
+
+        LeMappedObject mapped_object;
+        mapped_object.record = object;
+        mapped_object.memory.resize(object.virtual_size);
+        image->total_virtual_size += object.virtual_size;
+
+        for (std::uint32_t page_index = 0; page_index < object.page_count;
+             ++page_index)
+        {
+            const std::uint64_t object_offset =
+                static_cast<std::uint64_t>(page_index) * header.page_size;
+            if (object_offset >= mapped_object.memory.size())
+            {
+                continue;
+            }
+
+            const LePageRecord& page =
+                image->pages[first_page_index + page_index];
+            if (page.data_page_number == 0)
+            {
+                continue;
+            }
+
+            const std::uint64_t file_offset =
+                static_cast<std::uint64_t>(header.data_pages_offset) +
+                static_cast<std::uint64_t>(page.data_page_number - 1) *
+                    header.page_size;
+            if (file_offset > data.size())
+            {
+                SetError(static_cast<std::uint32_t>(
+                             std::min<std::uint64_t>(file_offset, UINT32_MAX)),
+                         "LE page data points outside the file", error);
+                return false;
+            }
+
+            std::uint32_t page_bytes = header.page_size;
+            if (page.data_page_number == header.page_count &&
+                header.last_page_size != 0)
+            {
+                page_bytes = header.last_page_size;
+            }
+
+            const std::uint64_t remaining_object_bytes =
+                mapped_object.memory.size() - object_offset;
+            const std::uint64_t remaining_file_bytes =
+                data.size() - file_offset;
+            const std::uint64_t copy_size =
+                std::min<std::uint64_t>(
+                    page_bytes,
+                    std::min(remaining_object_bytes, remaining_file_bytes));
+
+            std::copy_n(data.begin() + static_cast<std::ptrdiff_t>(file_offset),
+                        static_cast<std::ptrdiff_t>(copy_size),
+                        mapped_object.memory.begin() +
+                            static_cast<std::ptrdiff_t>(object_offset));
+
+            mapped_object.copied_bytes += static_cast<std::uint32_t>(copy_size);
+            image->total_copied_bytes += copy_size;
+        }
+
+        image->mapped_objects.push_back(std::move(mapped_object));
+    }
+
+    if (header.entry_object > 0 &&
+        header.entry_object <= image->mapped_objects.size())
+    {
+        const LeMappedObject& entry_object =
+            image->mapped_objects[header.entry_object - 1];
+        image->entry_point_valid =
+            header.entry_offset < entry_object.memory.size();
+    }
+
+    image->valid = true;
     return true;
 }
 

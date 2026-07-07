@@ -62,6 +62,40 @@ struct LeHeader
     std::uint32_t auto_data_object = 0;
 };
 
+struct LeObjectRecord
+{
+    std::uint32_t virtual_size = 0;
+    std::uint32_t relocation_base_address = 0;
+    std::uint32_t flags = 0;
+    std::uint32_t page_table_index = 0;
+    std::uint32_t page_count = 0;
+    std::uint32_t reserved = 0;
+};
+
+struct LePageRecord
+{
+    std::uint32_t data_page_number = 0;
+    std::uint8_t flags = 0;
+};
+
+struct LeMappedObject
+{
+    LeObjectRecord record;
+    std::vector<std::uint8_t> memory;
+    std::uint32_t copied_bytes = 0;
+};
+
+struct LeImage
+{
+    bool valid = false;
+    std::vector<LeObjectRecord> objects;
+    std::vector<LePageRecord> pages;
+    std::vector<LeMappedObject> mapped_objects;
+    std::uint64_t total_virtual_size = 0;
+    std::uint64_t total_copied_bytes = 0;
+    bool entry_point_valid = false;
+};
+
 bool ParseMzHeader(const std::vector<std::uint8_t>& data,
                    MzHeader* header,
                    ParseError* error);
@@ -70,6 +104,21 @@ bool ParseLeHeader(const std::vector<std::uint8_t>& data,
                    std::uint32_t file_offset,
                    LeHeader* header,
                    ParseError* error);
+
+bool ParseLeObjectTable(const std::vector<std::uint8_t>& data,
+                        const LeHeader& header,
+                        std::vector<LeObjectRecord>* objects,
+                        ParseError* error);
+
+bool ParseLePageTable(const std::vector<std::uint8_t>& data,
+                      const LeHeader& header,
+                      std::vector<LePageRecord>* pages,
+                      ParseError* error);
+
+bool BuildLeImage(const std::vector<std::uint8_t>& data,
+                  const LeHeader& header,
+                  LeImage* image,
+                  ParseError* error);
 
 std::string CpuTypeName(std::uint16_t cpu_type);
 
