@@ -209,6 +209,43 @@ void PrintImageSummary(const repiu::exe::LeImage& image)
     }
 }
 
+void PrintFixupSummary(const repiu::exe::LeFixupInfo& fixup_info)
+{
+    std::cout << "LE fixup page table: "
+              << (fixup_info.valid ? "valid" : "invalid") << "\n";
+    std::cout << "LE fixup page table file offset: "
+              << Hex32(fixup_info.page_table_file_offset) << "\n";
+    std::cout << "LE fixup record table file offset: "
+              << Hex32(fixup_info.record_table_file_offset) << "\n";
+    std::cout << "LE fixup record table size: "
+              << fixup_info.record_table_size << " bytes\n";
+    std::cout << "LE fixup page table entries: "
+              << fixup_info.page_offsets.size() << "\n";
+    std::cout << "LE fixup page table monotonic: "
+              << (fixup_info.page_table_monotonic ? "true" : "false")
+              << "\n";
+    std::cout << "LE pages with fixups: "
+              << fixup_info.pages_with_fixups << "\n";
+    std::cout << "LE largest fixup page span: "
+              << fixup_info.largest_page_span << " bytes\n";
+    std::cout << "LE trailing fixup record bytes: "
+              << fixup_info.trailing_record_bytes << "\n";
+
+    if (!fixup_info.page_spans.empty())
+    {
+        const repiu::exe::LeFixupPageSpan& first =
+            fixup_info.page_spans.front();
+        const repiu::exe::LeFixupPageSpan& last =
+            fixup_info.page_spans.back();
+        std::cout << "LE first fixup span: page=" << first.page_index
+                  << " offset=" << Hex32(first.record_offset)
+                  << " size=" << first.record_size << "\n";
+        std::cout << "LE last fixup span: page=" << last.page_index
+                  << " offset=" << Hex32(last.record_offset)
+                  << " size=" << last.record_size << "\n";
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -260,5 +297,14 @@ int main(int argc, char** argv)
     PrintObjectTable(image.objects);
     PrintPageSummary(image.pages);
     PrintImageSummary(image);
+
+    repiu::exe::LeFixupInfo fixup_info;
+    if (!repiu::exe::AnalyzeLeFixups(data, le_header, &fixup_info, &error))
+    {
+        PrintParseError(error);
+        return 1;
+    }
+
+    PrintFixupSummary(fixup_info);
     return 0;
 }

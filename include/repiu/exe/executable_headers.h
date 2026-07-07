@@ -96,6 +96,27 @@ struct LeImage
     bool entry_point_valid = false;
 };
 
+struct LeFixupPageSpan
+{
+    std::uint32_t page_index = 0;
+    std::uint32_t record_offset = 0;
+    std::uint32_t record_size = 0;
+};
+
+struct LeFixupInfo
+{
+    bool valid = false;
+    std::uint32_t page_table_file_offset = 0;
+    std::uint32_t record_table_file_offset = 0;
+    std::uint32_t record_table_size = 0;
+    std::uint32_t trailing_record_bytes = 0;
+    bool page_table_monotonic = false;
+    std::vector<std::uint32_t> page_offsets;
+    std::vector<LeFixupPageSpan> page_spans;
+    std::uint32_t pages_with_fixups = 0;
+    std::uint32_t largest_page_span = 0;
+};
+
 bool ParseMzHeader(const std::vector<std::uint8_t>& data,
                    MzHeader* header,
                    ParseError* error);
@@ -119,6 +140,11 @@ bool BuildLeImage(const std::vector<std::uint8_t>& data,
                   const LeHeader& header,
                   LeImage* image,
                   ParseError* error);
+
+bool AnalyzeLeFixups(const std::vector<std::uint8_t>& data,
+                     const LeHeader& header,
+                     LeFixupInfo* fixup_info,
+                     ParseError* error);
 
 std::string CpuTypeName(std::uint16_t cpu_type);
 

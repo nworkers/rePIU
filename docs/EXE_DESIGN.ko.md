@@ -55,3 +55,15 @@
 현재 dry-run 매핑은 각 오브젝트의 `virtual_size`만큼 버퍼를 만들고, 오브젝트가 참조하는 페이지를 해당 버퍼에 복사한다. 마지막 페이지와 오브젝트 끝은 가상 크기를 넘지 않도록 잘라서 복사한다.
 
 이 단계에서는 fixup record를 해석하거나 relocation을 적용하지 않는다.
+
+## LE Fixup Section 분석
+
+LE fixup page table은 `page_count + 1`개의 32-bit little-endian offset으로 해석한다.
+
+각 offset은 fixup record table 시작 기준 상대 offset이다.
+
+page N의 fixup record 범위는 `offset[N]`부터 `offset[N + 1]` 직전까지이다.
+
+현재 단계에서는 이 범위가 단조 증가하는지, fixup record table 크기 안에 들어오는지, page별 fixup span이 얼마나 되는지만 검증한다.
+
+fixup record의 가변 길이 구조와 relocation 적용은 다음 단계에서 별도 설계로 진행한다.

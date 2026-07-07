@@ -384,6 +384,130 @@ bool BuildLeImage(const std::vector<std::uint8_t>& data,
     return true;
 }
 
+bool AnalyzeLeFixups(const std::vector<std::uint8_t>& data,
+                     const LeHeader& header,
+                     LeFixupInfo* fixup_info,
+                     ParseError* error)
+{
+    if (fixup_info == nullptr)
+    {
+        SetError(header.file_offset, "LE fixup output is null", error);
+        return false;
+    }
+
+    *fixup_info = LeFixupInfo{};
+
+    if (header.fixup_record_table_offset < header.fixup_page_table_offset)
+    {
+        SetError(header.file_offset + header.fixup_record_table_offset,
+                 "LE fixup record table appears before fixup page table",
+                 error);
+        return false;
+    }
+
+    if (header.import_module_name_table_offset <
+        header.fixup_record_table_offset)
+    {
+        SetError(header.file_offset + header.import_module_name_table_offset,
+                 "LE import module table appears before fixup record table",
+                 error);
+        return false;
+    }
+
+    const std::uint64_t page_entry_count =
+        static_cast<std::uint64_t>(header.page_count) + 1;
+    const std::uint64_t page_table_size = page_entry_count * sizeof(uint32_t);
+    if (page_entry_count > UINT32_MAX || page_table_size > UINT32_MAX)
+    {
+        SetError(header.file_offset + header.fixup_page_table_offset,
+                 "LE fixup page table is too large", error);
+        return false;
+    }
+
+    const std::uint32_t page_table_file_offset =
+        header.file_offset + header.fixup_page_table_offset;
+    const std::uint32_t record_table_file_offset =
+        header.file_offset + header.fixup_record_table_offset;
+    const std::uint32_t record_table_size =
+        header.import_module_name_table_offset -
+        header.fixup_record_table_offset;
+
+    if (!HasBytes(data, page_table_file_offset,
+                  static_cast<std::uint32_t>(page_table_size)))
+    {
+        SetError(page_table_file_offset,
+                 "LE fixup page table points outside the file", error);
+        return false;
+    }
+
+    if (!HasBytes(data, record_table_file_offset, record_table_size))
+    {
+        SetError(record_table_file_offset,
+                 "LE fixup record table points outside the file", error);
+        return false;
+    }
+
+    fixup_info->page_table_file_offset = page_table_file_offset;
+    fixup_info->record_table_file_offset = record_table_file_offset;
+    fixup_info->record_table_size = record_table_size;
+    fixup_info->page_table_monotonic = true;
+    fixup_info->page_offsets.reserve(
+        static_cast<std::size_t>(page_entry_count));
+    fixup_info->page_spans.reserve(header.page_count);
+
+    for (std::uint32_t index = 0; index < page_entry_count; ++index)
+    {
+        const std::uint32_t offset =
+            ReadLe32(data, page_table_file_offset + index * sizeof(uint32_t));
+        fixup_info->page_offsets.push_back(offset);
+
+        if (index > 0 && offset < fixup_info->page_offsets[index - 1])
+        {
+            fixup_info->page_table_monotonic = false;
+        }
+
+        if (offset > record_table_size)
+        {
+            SetError(page_table_file_offset + index * sizeof(uint32_t),
+                     "LE fixup page table offset exceeds record table size",
+                     error);
+            return false;
+        }
+    }
+
+    for (std::uint32_t page_index = 0; page_index < header.page_count;
+         ++page_index)
+    {
+        const std::uint32_t begin = fixup_info->page_offsets[page_index];
+        const std::uint32_t end = fixup_info->page_offsets[page_index + 1];
+        if (end < begin)
+        {
+            SetError(page_table_file_offset + page_index * sizeof(uint32_t),
+                     "LE fixup page span is negative", error);
+            return false;
+        }
+
+        LeFixupPageSpan span;
+        span.page_index = page_index;
+        span.record_offset = begin;
+        span.record_size = end - begin;
+        fixup_info->page_spans.push_back(span);
+
+        if (span.record_size > 0)
+        {
+            ++fixup_info->pages_with_fixups;
+            fixup_info->largest_page_span =
+                std::max(fixup_info->largest_page_span, span.record_size);
+        }
+    }
+
+    const std::uint32_t consumed_record_bytes = fixup_info->page_offsets.back();
+    fixup_info->trailing_record_bytes =
+        record_table_size - consumed_record_bytes;
+    fixup_info->valid = true;
+    return true;
+}
+
 std::string CpuTypeName(std::uint16_t cpu_type)
 {
     switch (cpu_type)

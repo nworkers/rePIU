@@ -55,3 +55,15 @@ The page table uses 4-byte records. The first three bytes are interpreted as a b
 The current dry-run mapping creates one buffer per object using `virtual_size`, then copies referenced pages into that buffer. The final page and object end are clamped so copying does not exceed the virtual size.
 
 This step does not interpret fixup records or apply relocations.
+
+## LE Fixup Section Analysis
+
+The LE fixup page table is interpreted as `page_count + 1` 32-bit little-endian offsets.
+
+Each offset is relative to the start of the fixup record table.
+
+The fixup record range for page N starts at `offset[N]` and ends immediately before `offset[N + 1]`.
+
+This step only validates whether the ranges are monotonic, fit inside the fixup record table size, and how large each per-page fixup span is.
+
+The variable-length fixup record structure and relocation application are handled in a later design step.
