@@ -6,6 +6,20 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+function(repiu_configure_win32_execution_host target_name)
+    if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+        target_link_options(${target_name}
+            PRIVATE
+                /BASE:0x01000000
+                /DYNAMICBASE:NO
+        )
+        target_compile_definitions(${target_name}
+            PRIVATE
+                REPIU_WIN32_HOST_IMAGE_BASE=0x01000000
+        )
+    endif()
+endfunction()
+
 add_library(repiu_exe
     src/exe/dos4gw_loader.cpp
     src/exe/executable_headers.cpp
@@ -28,3 +42,5 @@ target_link_libraries(repiu_exe_analyzer
     PRIVATE
         repiu_exe
 )
+
+repiu_configure_win32_execution_host(repiu_exe_analyzer)

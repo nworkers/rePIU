@@ -527,6 +527,10 @@ int main(int argc, char** argv)
     std::cout << "\n";
     std::cout << "Path: " << path.string() << "\n";
     std::cout << "File size: " << data.size() << " bytes\n";
+#if defined(REPIU_WIN32_HOST_IMAGE_BASE)
+    std::cout << "Win32 host image base policy: "
+              << Hex32(REPIU_WIN32_HOST_IMAGE_BASE) << "\n";
+#endif
 
     repiu::exe::ParseError error;
     repiu::exe::Dos4gwLoadResult load_result;

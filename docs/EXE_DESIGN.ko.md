@@ -142,3 +142,12 @@ Win32 runtime memory policy가 계산한 `preferred_allocation_base`와 `require
 범위 안에서 `MEM_RESERVE` 또는 `MEM_COMMIT` 등 비어 있지 않은 region이 발견되면 analyzer는 실패하지 않고 첫 blocking block의 base, size, state를 출력한다.
 
 이 결과는 이후 실제 executable memory allocation 정책을 정할 때 사용한다. 특히 목표 주소 범위가 이미 점유된 경우, 32-bit helper process 초기화 순서 조정 또는 relocation fallback 필요 여부를 판단하는 근거가 된다.
+# Win32 Host Image Base 정책
+
+Win32 x86 host executable이 원본 DOS/4GW 이미지의 고정 주소 범위와 직접 충돌하지 않도록 CMake에 `repiu_configure_win32_execution_host` 정책 함수를 추가한다.
+
+현재 `PIU.EXE` runtime memory dry-run의 HLE reserve base는 `0x005E7000`이므로, Win32 x86 host image base는 이보다 높은 `0x01000000`으로 지정한다.
+
+MSVC 32-bit 빌드에서는 `/BASE:0x01000000`과 `/DYNAMICBASE:NO`를 적용한다. 현재는 dedicated execution host가 없으므로 `repiu_exe_analyzer`에 먼저 적용하고, 이후 실행 전용 host target이 생기면 같은 정책을 재사용한다.
+
+이 정책은 실제 메모리 예약을 수행하지 않는다. host executable 자체가 낮은 주소 범위를 차지하는 위험을 줄이고, 이후 `VirtualAlloc` 기반 예약 단계의 전제 조건을 정리하기 위한 것이다.

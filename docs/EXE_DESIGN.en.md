@@ -143,3 +143,13 @@ This step does not call `VirtualAlloc`. The Win32-specific `ProbeWin32RuntimeAdd
 If the range contains a non-free region such as `MEM_RESERVE` or `MEM_COMMIT`, the analyzer does not fail. It reports the first blocking block base, size, and state.
 
 This result will guide the later executable memory allocation policy. In particular, if the target range is already occupied, it provides evidence for deciding whether to adjust 32-bit helper process startup order or introduce a relocation fallback.
+
+## Win32 Host Image Base Policy
+
+CMake now provides a `repiu_configure_win32_execution_host` policy function so a Win32 x86 host executable does not directly collide with the fixed address range required by the original DOS/4GW image.
+
+The current `PIU.EXE` runtime memory dry-run places the HLE reserve base at `0x005E7000`, so the Win32 x86 host image base is set higher at `0x01000000`.
+
+For MSVC 32-bit builds, the policy applies `/BASE:0x01000000` and `/DYNAMICBASE:NO`. Because there is no dedicated execution host yet, it is first applied to `repiu_exe_analyzer`. A later execution-only host target should reuse the same policy.
+
+This policy does not reserve memory. It reduces the risk that the host executable itself occupies the low address range and prepares the assumptions needed for a later `VirtualAlloc` reservation step.
