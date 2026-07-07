@@ -450,6 +450,30 @@ void PrintWin32RuntimeMemoryPolicy(
               << policy.message << "\n";
 }
 
+void PrintWin32AddressRangeProbe(
+    const repiu::platform::win32::Win32AddressRangeProbe& probe)
+{
+    std::cout << "Win32 allocation dry run: "
+              << (probe.valid ? "valid" : "invalid") << "\n";
+    std::cout << "Win32 target range available: "
+              << (probe.range_available ? "true" : "false") << "\n";
+    std::cout << "Win32 checked base: "
+              << Hex32(probe.checked_base) << "\n";
+    std::cout << "Win32 checked size: "
+              << Hex32(probe.checked_size) << "\n";
+    if (probe.valid && !probe.range_available)
+    {
+        std::cout << "Win32 first blocking block base: "
+                  << Hex32(probe.first_block_base) << "\n";
+        std::cout << "Win32 first blocking block size: "
+                  << Hex32(probe.first_block_size) << "\n";
+        std::cout << "Win32 first blocking block state: "
+                  << probe.first_block_state << "\n";
+    }
+    std::cout << "Win32 allocation dry run message: "
+              << probe.message << "\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -541,5 +565,16 @@ int main(int argc, char** argv)
     }
 
     PrintWin32RuntimeMemoryPolicy(win32_policy);
+
+    repiu::platform::win32::Win32AddressRangeProbe win32_probe;
+    if (!repiu::platform::win32::ProbeWin32RuntimeAddressRange(
+            win32_policy, &win32_probe))
+    {
+        std::cerr << "Failed to probe Win32 runtime address range: "
+                  << win32_probe.message << "\n";
+        return 1;
+    }
+
+    PrintWin32AddressRangeProbe(win32_probe);
     return 0;
 }

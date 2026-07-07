@@ -20,9 +20,25 @@ struct Win32RuntimeMemoryPolicy
     std::string message;
 };
 
+struct Win32AddressRangeProbe
+{
+    bool valid = false;
+    bool range_available = false;
+    std::uint32_t checked_base = 0;
+    std::uint32_t checked_size = 0;
+    std::uint32_t first_block_base = 0;
+    std::uint32_t first_block_size = 0;
+    std::string first_block_state;
+    std::string message;
+};
+
 bool BuildWin32RuntimeMemoryPolicy(
     const runtime::RuntimeMemoryPlan& memory_plan,
     Win32RuntimeMemoryPolicy* policy);
+
+bool ProbeWin32RuntimeAddressRange(
+    const Win32RuntimeMemoryPolicy& policy,
+    Win32AddressRangeProbe* probe);
 
 }  // namespace repiu::platform::win32
 

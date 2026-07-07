@@ -133,3 +133,13 @@ In a 64-bit host process, direct entry calls are reported as unsupported, and a 
 The preferred allocation base is the lowest base address among runtime object regions.
 
 The required reserve size is the HLE reserve base minus the preferred allocation base.
+
+## Win32 Address Range Dry-Run
+
+The Win32 runtime memory policy now feeds a pre-allocation probe using `preferred_allocation_base` and `required_reserve_size`.
+
+This step does not call `VirtualAlloc`. The Win32-specific `ProbeWin32RuntimeAddressRange` function walks the `[preferred_allocation_base, hle_reserve_base)` range with `VirtualQuery` and checks whether every region is `MEM_FREE`.
+
+If the range contains a non-free region such as `MEM_RESERVE` or `MEM_COMMIT`, the analyzer does not fail. It reports the first blocking block base, size, and state.
+
+This result will guide the later executable memory allocation policy. In particular, if the target range is already occupied, it provides evidence for deciding whether to adjust 32-bit helper process startup order or introduce a relocation fallback.

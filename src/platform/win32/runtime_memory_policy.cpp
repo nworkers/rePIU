@@ -1,6 +1,12 @@
 #include "repiu/platform/win32/runtime_memory_policy.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
+
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 
 namespace repiu::platform::win32
 {
@@ -14,6 +20,31 @@ bool IsDirectX86ExecutionSupported()
 #else
     return false;
 #endif
+}
+
+std::string MemoryStateName(DWORD state)
+{
+    switch (state)
+    {
+        case MEM_COMMIT:
+            return "MEM_COMMIT";
+        case MEM_FREE:
+            return "MEM_FREE";
+        case MEM_RESERVE:
+            return "MEM_RESERVE";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+std::uint32_t ClampToUint32(std::uintptr_t value)
+{
+    if (value > std::numeric_limits<std::uint32_t>::max())
+    {
+        return std::numeric_limits<std::uint32_t>::max();
+    }
+
+    return static_cast<std::uint32_t>(value);
 }
 
 }  // namespace
@@ -63,6 +94,89 @@ bool BuildWin32RuntimeMemoryPolicy(
     }
 
     policy->valid = true;
+    return true;
+}
+
+bool ProbeWin32RuntimeAddressRange(
+    const Win32RuntimeMemoryPolicy& policy,
+    Win32AddressRangeProbe* probe)
+{
+    if (probe == nullptr)
+    {
+        return false;
+    }
+
+    *probe = Win32AddressRangeProbe{};
+    probe->checked_base = policy.preferred_allocation_base;
+    probe->checked_size = policy.required_reserve_size;
+
+    if (!policy.valid)
+    {
+        probe->message = "Win32 runtime memory policy is not valid";
+        return false;
+    }
+
+    if (policy.required_reserve_size == 0)
+    {
+        probe->message = "required reserve size is zero";
+        return false;
+    }
+
+    const std::uintptr_t base =
+        static_cast<std::uintptr_t>(policy.preferred_allocation_base);
+    const std::uintptr_t size =
+        static_cast<std::uintptr_t>(policy.required_reserve_size);
+    const std::uintptr_t end = base + size;
+
+    if (end <= base)
+    {
+        probe->message = "address range overflows host pointer size";
+        return false;
+    }
+
+    std::uintptr_t current = base;
+    while (current < end)
+    {
+        MEMORY_BASIC_INFORMATION memory_info{};
+        const SIZE_T query_size = VirtualQuery(
+            reinterpret_cast<LPCVOID>(current),
+            &memory_info,
+            sizeof(memory_info));
+        if (query_size == 0)
+        {
+            probe->message = "VirtualQuery failed while probing address range";
+            return false;
+        }
+
+        const std::uintptr_t region_base =
+            reinterpret_cast<std::uintptr_t>(memory_info.BaseAddress);
+        const std::uintptr_t region_size =
+            static_cast<std::uintptr_t>(memory_info.RegionSize);
+        const std::uintptr_t region_end = region_base + region_size;
+
+        if (memory_info.State != MEM_FREE)
+        {
+            probe->valid = true;
+            probe->range_available = false;
+            probe->first_block_base = ClampToUint32(region_base);
+            probe->first_block_size = ClampToUint32(region_size);
+            probe->first_block_state = MemoryStateName(memory_info.State);
+            probe->message = "target address range is not fully free";
+            return true;
+        }
+
+        if (region_end <= current)
+        {
+            probe->message = "VirtualQuery returned a non-advancing region";
+            return false;
+        }
+
+        current = region_end;
+    }
+
+    probe->valid = true;
+    probe->range_available = true;
+    probe->message = "target address range is fully free";
     return true;
 }
 
