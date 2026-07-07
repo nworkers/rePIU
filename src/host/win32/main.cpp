@@ -1,4 +1,5 @@
 #include "repiu/exe/dos4gw_loader.h"
+#include "repiu/platform/win32/execution_trampoline.h"
 #include "repiu/platform/win32/runtime_memory_policy.h"
 #include "repiu/runtime/runtime_memory.h"
 #include "repiu/target/target_profile.h"
@@ -84,7 +85,7 @@ void PrintParseError(const repiu::exe::ParseError& error)
 void PrintPolicy(
     const repiu::platform::win32::Win32RuntimeMemoryPolicy& policy)
 {
-    std::cout << "Win32 execution host policy: "
+    std::cout << "Win32 loader policy: "
               << (policy.valid ? "valid" : "invalid") << "\n";
     std::cout << "Win32 host pointer bits: "
               << policy.host_pointer_bits << "\n";
@@ -98,7 +99,7 @@ void PrintPolicy(
               << Hex32(policy.required_reserve_size) << "\n";
     std::cout << "Win32 fixed reserve end: "
               << Hex32(policy.hle_reserve_base) << "\n";
-    std::cout << "Win32 execution host policy message: "
+    std::cout << "Win32 loader policy message: "
               << policy.message << "\n";
 }
 
@@ -185,6 +186,36 @@ void PrintPlacement(
               << placement.message << "\n";
 }
 
+void PrintExecutionAttempt(
+    const repiu::platform::win32::Win32MinimalExecutionAttempt& attempt)
+{
+    std::cout << "Win32 minimal execution attempt: "
+              << (attempt.valid ? "valid" : "invalid") << "\n";
+    std::cout << "Win32 minimal execution supported: "
+              << (attempt.supported ? "true" : "false") << "\n";
+    std::cout << "Win32 minimal execution attempted: "
+              << (attempt.attempted ? "true" : "false") << "\n";
+    std::cout << "Win32 minimal execution entry: "
+              << Hex32(attempt.entry_address) << "\n";
+    std::cout << "Win32 minimal execution returned: "
+              << (attempt.returned ? "true" : "false") << "\n";
+    std::cout << "Win32 minimal execution exception caught: "
+              << (attempt.exception_caught ? "true" : "false") << "\n";
+    if (attempt.exception_caught)
+    {
+        std::cout << "Win32 minimal execution exception code: "
+                  << Hex32(attempt.seh_exception_code) << "\n";
+        std::cout << "Win32 minimal execution exception address: "
+                  << Hex32(attempt.seh_exception_address) << "\n";
+    }
+    std::cout << "Win32 minimal execution timed out: "
+              << (attempt.timed_out ? "true" : "false") << "\n";
+    std::cout << "Win32 minimal execution thread exit code: "
+              << attempt.thread_exit_code << "\n";
+    std::cout << "Win32 minimal execution message: "
+              << attempt.message << "\n";
+}
+
 bool SelectRelocatedImageBase(std::uint32_t reserve_size,
                               std::uint32_t* selected_base)
 {
@@ -247,7 +278,7 @@ int main()
         return 1;
     }
 
-    std::cout << "Execution host target: " << profile->id << "\n";
+    std::cout << "Win32 loader target: " << profile->id << "\n";
 #if defined(REPIU_WIN32_HOST_IMAGE_BASE)
     std::cout << "Win32 host image base policy: "
               << Hex32(REPIU_WIN32_HOST_IMAGE_BASE) << "\n";
@@ -348,6 +379,19 @@ int main()
     }
 
     PrintPlacement(placement);
+    repiu::platform::win32::Win32MinimalExecutionAttempt attempt;
+    if (!repiu::platform::win32::AttemptWin32MinimalExecution(
+            placement,
+            relocated_image.relocated_entry_linear_address,
+            1000,
+            &attempt))
+    {
+        std::cerr << "Failed to attempt minimal original entry execution\n";
+        repiu::platform::win32::ReleaseWin32RelocatedImage(placement);
+        return 1;
+    }
+
+    PrintExecutionAttempt(attempt);
     repiu::platform::win32::ReleaseWin32RelocatedImage(placement);
     return 0;
 }

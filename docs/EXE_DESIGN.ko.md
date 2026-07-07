@@ -142,6 +142,16 @@ Win32 runtime memory policy가 계산한 `preferred_allocation_base`와 `require
 범위 안에서 `MEM_RESERVE` 또는 `MEM_COMMIT` 등 비어 있지 않은 region이 발견되면 analyzer는 실패하지 않고 첫 blocking block의 base, size, state를 출력한다.
 
 이 결과는 이후 실제 executable memory allocation 정책을 정할 때 사용한다. 특히 목표 주소 범위가 이미 점유된 경우, 32-bit helper process 초기화 순서 조정 또는 relocation fallback 필요 여부를 판단하는 근거가 된다.
+# Minimal Execution Trampoline
+
+Minimal execution trampoline은 relocated image가 Win32 x86 process memory에 배치된 뒤 원본 entry를 별도 thread에서 한 번 호출해 보는 관찰용 경로다.
+
+현재 단계는 guest stack 전환을 하지 않는다. thread proc 안에서 relocated entry를 함수 포인터로 호출하고, `__try/__except`로 예외를 잡아 process가 바로 종료되지 않도록 한다.
+
+결과는 정상 return, SEH exception, timeout 중 하나로 기록한다. timeout은 장기 실행 모델이 아니며 첫 관찰을 위한 안전장치다.
+
+이 단계는 HLE dispatcher, INT/DPMI trap, 정상 게임 실행을 제공하지 않는다.
+
 # Win32 Relocated Image Placement
 
 Win32 relocated image placement는 relocated image buffer를 실제 Win32 process memory에 배치한다.
@@ -207,3 +217,12 @@ Win32 x86 host executable이 원본 DOS/4GW 이미지의 고정 주소 범위와
 MSVC 32-bit 빌드에서는 `/BASE:0x01000000`과 `/DYNAMICBASE:NO`를 적용한다. 현재는 dedicated execution host가 없으므로 `repiu_exe_analyzer`에 먼저 적용하고, 이후 실행 전용 host target이 생기면 같은 정책을 재사용한다.
 
 이 정책은 실제 메모리 예약을 수행하지 않는다. host executable 자체가 낮은 주소 범위를 차지하는 위험을 줄이고, 이후 `VirtualAlloc` 기반 예약 단계의 전제 조건을 정리하기 위한 것이다.
+# Win32 로더 앱 진입점
+
+현재 실제 로더 executable target은 `repiu_loader_win32`이다.
+
+진입점은 `src/host/win32/main.cpp`에 둔다. 이 경로는 분석 도구가 아니라 원본 DOS/4GW executable을 실제로 로드하고 실행을 시도하는 host 애플리케이션 영역이다.
+
+기존 `src/tools/win32_execution_host/main.cpp` 위치와 `repiu_win32_execution_host` 이름은 초기 실행 관찰 단계의 임시 구조였으므로 더 이상 현재 구조 기준으로 사용하지 않는다.
+
+`repiu_loader_win32`는 현재 `PIU.EXE` 읽기, DOS/4GW load result 생성, relocated runtime image plan 생성, relocated image buffer 생성, Win32 process memory placement, minimal execution trampoline 호출을 순서대로 수행한다.

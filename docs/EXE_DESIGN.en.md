@@ -146,11 +146,11 @@ This result will guide the later executable memory allocation policy. In particu
 
 ## Win32 Host Image Base Policy
 
-CMake now provides a `repiu_configure_win32_execution_host` policy function so a Win32 x86 host executable does not directly collide with the fixed address range required by the original DOS/4GW image.
+CMake now provides a `repiu_configure_win32_loader_host` policy function so a Win32 x86 host executable does not directly collide with the fixed address range required by the original DOS/4GW image.
 
 The current `PIU.EXE` runtime memory dry-run places the HLE reserve base at `0x005E7000`, so the Win32 x86 host image base is set higher at `0x01000000`.
 
-For MSVC 32-bit builds, the policy applies `/BASE:0x01000000` and `/DYNAMICBASE:NO`. Because there is no dedicated execution host yet, it is first applied to `repiu_exe_analyzer`. A later execution-only host target should reuse the same policy.
+For MSVC 32-bit builds, the policy applies `/BASE:0x10000000` and `/DYNAMICBASE:NO`. The policy is applied to `repiu_exe_analyzer` and the dedicated `repiu_loader_win32` target.
 
 This policy does not reserve memory. It reduces the risk that the host executable itself occupies the low address range and prepares the assumptions needed for a later `VirtualAlloc` reservation step.
 
@@ -160,7 +160,7 @@ This policy does not reserve memory. It reduces the risk that the host executabl
 
 The current `piu_1st` profile records `base=0x00010000` and `size=0x005D7000` from the previous runtime memory dry-run result.
 
-`repiu_win32_execution_host` uses this hint to build a Win32 fixed-range policy and attempts to reserve the target range with `VirtualAlloc(MEM_RESERVE)` before reading the executable or copying the LE image.
+`repiu_loader_win32` uses this hint to build a Win32 fixed-range policy and attempts to reserve the target range with `VirtualAlloc(MEM_RESERVE)` before reading the executable or copying the LE image.
 
 This step only observes whether the reservation succeeds. Original image copy, page commit/protection, HLE dispatch, and original entry calls are left for later steps.
 
@@ -209,3 +209,22 @@ The relocated image is allocated at `0x01000000` with `VirtualAlloc(MEM_RESERVE 
 After copying, `VirtualProtect` is applied based on object flags. The current minimal policy uses writable bit `0x2` and executable bit `0x4` to choose one of `PAGE_READWRITE`, `PAGE_EXECUTE_READ`, `PAGE_EXECUTE_READWRITE`, or `PAGE_READONLY`.
 
 This step does not call the original entry point. Its purpose is to verify that the relocated image can be placed in Win32 x86 process memory in an execution-ready layout.
+
+## Minimal Execution Trampoline
+
+The minimal execution trampoline is an observation-only path that calls the relocated entry once from a separate thread after the relocated image has been placed in Win32 x86 process memory.
+
+The current step does not switch to the guest stack. The thread proc calls the relocated entry as a function pointer and wraps it in `__try/__except` so an exception does not immediately terminate the process.
+
+The result is recorded as return, SEH exception, or timeout. Timeout handling is only a first-observation guard and is not a long-term execution model.
+
+This step does not provide HLE dispatch, INT/DPMI traps, or normal game execution.
+# Win32 Loader App Entry Point
+
+The current practical loader executable target is `repiu_loader_win32`.
+
+The entry point lives in `src/host/win32/main.cpp`. This path is the host application area that actually loads the original DOS/4GW executable and attempts execution, not an analysis tool location.
+
+The previous `src/tools/win32_execution_host/main.cpp` path and `repiu_win32_execution_host` name were temporary structures from the early execution-observation stage and are no longer the current structural baseline.
+
+`repiu_loader_win32` currently reads `PIU.EXE`, creates the DOS/4GW load result, builds the relocated runtime image plan, builds the relocated image buffer, places it in Win32 process memory, and invokes the minimal execution trampoline in sequence.
