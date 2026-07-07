@@ -101,3 +101,11 @@ source kind만으로는 상위 source flag 의미를 구분할 수 없으므로 
 unsupported source는 kind별 첫 sample을 출력해 `source_type=0x13`과 순수 `source kind 0x05` 같은 사례를 분리한다.
 
 이 단계는 실행 가능한 메모리에 쓰지 않고, 분석용 LE 이미지 버퍼에만 값을 적용한다.
+
+## DOS/4GW Loader Result
+
+분석 도구와 향후 runtime이 같은 로딩 흐름을 사용하도록 `Dos4gwLoadResult`를 추가한다.
+
+`Dos4gwLoadResult`는 MZ 헤더, LE 헤더, 매핑된 LE 이미지, fixup section 분석 결과, fixup record 디코딩 결과, relocation dry-run 결과를 하나로 묶는다.
+
+`LoadDos4gwExecutable`은 target profile의 format hint가 `DOS4GW_LE`인지 확인한 뒤 기존 MZ/LE/image/fixup/relocation 순서로 결과를 채운다.

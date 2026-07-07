@@ -1,3 +1,4 @@
+#include "repiu/exe/dos4gw_loader.h"
 #include "repiu/exe/executable_headers.h"
 #include "repiu/hle/hle_profile.h"
 #include "repiu/target/target_profile.h"
@@ -450,65 +451,22 @@ int main(int argc, char** argv)
     std::cout << "Path: " << path.string() << "\n";
     std::cout << "File size: " << data.size() << " bytes\n";
 
-    repiu::exe::MzHeader mz_header;
     repiu::exe::ParseError error;
-    if (!repiu::exe::ParseMzHeader(data, &mz_header, &error))
+    repiu::exe::Dos4gwLoadResult load_result;
+    if (!repiu::exe::LoadDos4gwExecutable(data, *default_profile,
+                                          &load_result, &error))
     {
         PrintParseError(error);
         return 1;
     }
 
-    PrintMzHeader(mz_header);
-
-    repiu::exe::LeHeader le_header;
-    if (!repiu::exe::ParseLeHeader(data, mz_header.le_offset, &le_header,
-                                   &error))
-    {
-        PrintParseError(error);
-        return 1;
-    }
-
-    PrintLeHeader(le_header);
-
-    repiu::exe::LeImage image;
-    if (!repiu::exe::BuildLeImage(data, le_header, &image, &error))
-    {
-        PrintParseError(error);
-        return 1;
-    }
-
-    PrintObjectTable(image.objects);
-    PrintPageSummary(image.pages);
-    PrintImageSummary(image);
-
-    repiu::exe::LeFixupInfo fixup_info;
-    if (!repiu::exe::AnalyzeLeFixups(data, le_header, &fixup_info, &error))
-    {
-        PrintParseError(error);
-        return 1;
-    }
-
-    PrintFixupSummary(fixup_info);
-
-    repiu::exe::LeFixupRecordInfo fixup_record_info;
-    if (!repiu::exe::DecodeLeFixupRecords(data, le_header, fixup_info,
-                                          &fixup_record_info, &error))
-    {
-        PrintParseError(error);
-        return 1;
-    }
-
-    PrintFixupRecordSummary(fixup_record_info);
-
-    repiu::exe::LeRelocationDryRun relocation_dry_run;
-    if (!repiu::exe::ApplyLeInternalRelocations(
-            le_header, fixup_record_info, &image, &relocation_dry_run,
-            &error))
-    {
-        PrintParseError(error);
-        return 1;
-    }
-
-    PrintRelocationDryRunSummary(relocation_dry_run);
+    PrintMzHeader(load_result.mz_header);
+    PrintLeHeader(load_result.le_header);
+    PrintObjectTable(load_result.image.objects);
+    PrintPageSummary(load_result.image.pages);
+    PrintImageSummary(load_result.image);
+    PrintFixupSummary(load_result.fixup_info);
+    PrintFixupRecordSummary(load_result.fixup_record_info);
+    PrintRelocationDryRunSummary(load_result.relocation_dry_run);
     return 0;
 }

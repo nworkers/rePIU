@@ -101,3 +101,11 @@ Because source kind alone cannot distinguish high source flag meanings, the anal
 Unsupported sources print the first sample for each kind so cases such as `source_type=0x13` and plain `source kind 0x05` can be separated.
 
 This step writes only to the analysis LE image buffers, not to executable memory.
+
+## DOS/4GW Loader Result
+
+`Dos4gwLoadResult` is added so the analysis tool and the future runtime can use the same loading flow.
+
+`Dos4gwLoadResult` groups the MZ header, LE header, mapped LE image, fixup section analysis result, fixup record decoding result, and relocation dry-run result.
+
+`LoadDos4gwExecutable` first checks that the target profile format hint is `DOS4GW_LE`, then fills the result using the existing MZ/LE/image/fixup/relocation sequence.
