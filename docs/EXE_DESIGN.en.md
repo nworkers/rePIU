@@ -153,3 +153,23 @@ The current `PIU.EXE` runtime memory dry-run places the HLE reserve base at `0x0
 For MSVC 32-bit builds, the policy applies `/BASE:0x01000000` and `/DYNAMICBASE:NO`. Because there is no dedicated execution host yet, it is first applied to `repiu_exe_analyzer`. A later execution-only host target should reuse the same policy.
 
 This policy does not reserve memory. It reduces the risk that the host executable itself occupies the low address range and prepares the assumptions needed for a later `VirtualAlloc` reservation step.
+
+## Win32 Execution Host Early Reservation
+
+`TargetProfile` now includes `TargetRuntimeReservationHint` so each target can carry its early runtime reservation range.
+
+The current `piu_1st` profile records `base=0x00010000` and `size=0x005D7000` from the previous runtime memory dry-run result.
+
+`repiu_win32_execution_host` uses this hint to build a Win32 fixed-range policy and attempts to reserve the target range with `VirtualAlloc(MEM_RESERVE)` before reading the executable or copying the LE image.
+
+This step only observes whether the reservation succeeds. Original image copy, page commit/protection, HLE dispatch, and original entry calls are left for later steps.
+
+## Relocation-Based Loading Decision
+
+Reserving the low address range expected by the original DOS/4GW image is not reliable enough to use as the default Win32 x86 path.
+
+The next steps will prioritize loading the original LE image at a safe new runtime base using the original relocation metadata.
+
+Fixed-address loading remains a comparison and verification fallback, while the main execution path moves toward a relocatable runtime image.
+
+This does not rewrite original game logic. The original 32-bit x86 code remains the execution target, and the loader only changes memory placement by applying the original relocation metadata.

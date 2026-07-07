@@ -1,6 +1,7 @@
 #ifndef REPIU_TARGET_TARGET_PROFILE_H_
 #define REPIU_TARGET_TARGET_PROFILE_H_
 
+#include <cstdint>
 #include <filesystem>
 #include <string_view>
 #include <vector>
@@ -13,6 +14,13 @@ enum class ExecutableFormatHint
     kDos4gwLe,
 };
 
+struct TargetRuntimeReservationHint
+{
+    bool valid = false;
+    std::uint32_t base_address = 0;
+    std::uint32_t reserve_size = 0;
+};
+
 struct TargetProfile
 {
     std::string_view id;
@@ -22,6 +30,7 @@ struct TargetProfile
     std::filesystem::path asset_root;
     ExecutableFormatHint format_hint = ExecutableFormatHint::kDos4gwLe;
     std::string_view hle_profile_id;
+    TargetRuntimeReservationHint runtime_reservation_hint;
 };
 
 const std::vector<TargetProfile>& GetBuiltInTargetProfiles();

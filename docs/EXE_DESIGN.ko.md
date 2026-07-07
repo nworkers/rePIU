@@ -142,6 +142,26 @@ Win32 runtime memory policy가 계산한 `preferred_allocation_base`와 `require
 범위 안에서 `MEM_RESERVE` 또는 `MEM_COMMIT` 등 비어 있지 않은 region이 발견되면 analyzer는 실패하지 않고 첫 blocking block의 base, size, state를 출력한다.
 
 이 결과는 이후 실제 executable memory allocation 정책을 정할 때 사용한다. 특히 목표 주소 범위가 이미 점유된 경우, 32-bit helper process 초기화 순서 조정 또는 relocation fallback 필요 여부를 판단하는 근거가 된다.
+# Relocation 기반 로드 결정
+
+Win32 x86 프로세스에서 원본 DOS/4GW 이미지가 기대하는 낮은 주소 범위를 그대로 예약하는 방식은 안정적인 기본 경로로 보기 어렵다.
+
+따라서 다음 단계부터는 원본 LE relocation 정보를 사용해 안전한 새 runtime base에 이미지를 올리는 방식을 우선 설계한다.
+
+원본 주소 고정 로드는 비교와 검증용 fallback으로 남기며, 실행 주 경로는 relocatable runtime image로 이동한다.
+
+이 방식은 원본 게임 로직을 재작성하는 것이 아니다. 원본 32-bit x86 코드는 그대로 실행 대상으로 유지하고, loader가 원본 relocation metadata를 적용해 주소 배치만 바꾼다.
+
+# Win32 Execution Host 초기 예약
+
+`TargetProfile`에 `TargetRuntimeReservationHint`를 추가하여 target별 초기 runtime 예약 범위를 보관한다.
+
+현재 `piu_1st`는 이전 runtime memory dry-run 결과를 바탕으로 `base=0x00010000`, `size=0x005D7000`을 예약 힌트로 가진다.
+
+`repiu_win32_execution_host`는 실행 파일을 읽거나 LE image를 복사하기 전에 이 힌트를 사용해 Win32 fixed range policy를 만들고, `VirtualAlloc(MEM_RESERVE)`로 목표 범위 예약을 시도한다.
+
+이번 단계는 예약 성공 여부만 관찰한다. 원본 image copy, page commit/protection, HLE dispatcher, 원본 entry 호출은 이후 단계에서 추가한다.
+
 # Win32 Host Image Base 정책
 
 Win32 x86 host executable이 원본 DOS/4GW 이미지의 고정 주소 범위와 직접 충돌하지 않도록 CMake에 `repiu_configure_win32_execution_host` 정책 함수를 추가한다.

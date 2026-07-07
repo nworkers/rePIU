@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <sstream>
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -97,6 +98,47 @@ bool BuildWin32RuntimeMemoryPolicy(
     return true;
 }
 
+bool BuildWin32RuntimeMemoryPolicyFromFixedRange(
+    std::uint32_t preferred_allocation_base,
+    std::uint32_t required_reserve_size,
+    Win32RuntimeMemoryPolicy* policy)
+{
+    if (policy == nullptr)
+    {
+        return false;
+    }
+
+    *policy = Win32RuntimeMemoryPolicy{};
+    policy->host_pointer_bits = static_cast<std::uint32_t>(sizeof(void*) * 8);
+    policy->direct_x86_execution_supported =
+        IsDirectX86ExecutionSupported();
+    policy->preferred_allocation_base = preferred_allocation_base;
+    policy->required_reserve_size = required_reserve_size;
+    policy->hle_reserve_base =
+        preferred_allocation_base + required_reserve_size;
+
+    if (required_reserve_size == 0 ||
+        policy->hle_reserve_base <= preferred_allocation_base)
+    {
+        policy->message = "fixed runtime memory range is not valid";
+        return false;
+    }
+
+    if (policy->direct_x86_execution_supported)
+    {
+        policy->message =
+            "32-bit host process can reserve original x86 runtime range";
+    }
+    else
+    {
+        policy->message =
+            "fixed runtime range reservation is intended for 32-bit hosts";
+    }
+
+    policy->valid = true;
+    return true;
+}
+
 bool ProbeWin32RuntimeAddressRange(
     const Win32RuntimeMemoryPolicy& policy,
     Win32AddressRangeProbe* probe)
@@ -178,6 +220,75 @@ bool ProbeWin32RuntimeAddressRange(
     probe->range_available = true;
     probe->message = "target address range is fully free";
     return true;
+}
+
+bool ReserveWin32RuntimeAddressRange(
+    const Win32RuntimeMemoryPolicy& policy,
+    Win32AddressRangeReservation* reservation)
+{
+    if (reservation == nullptr)
+    {
+        return false;
+    }
+
+    *reservation = Win32AddressRangeReservation{};
+    reservation->requested_base = policy.preferred_allocation_base;
+    reservation->requested_size = policy.required_reserve_size;
+
+    if (!policy.valid)
+    {
+        reservation->message = "Win32 runtime memory policy is not valid";
+        return false;
+    }
+
+    void* requested_address = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(policy.preferred_allocation_base));
+    void* reserved_address = VirtualAlloc(
+        requested_address,
+        static_cast<SIZE_T>(policy.required_reserve_size),
+        MEM_RESERVE,
+        PAGE_READWRITE);
+
+    reservation->valid = true;
+    if (reserved_address == nullptr)
+    {
+        reservation->windows_error = GetLastError();
+        std::ostringstream stream;
+        stream << "VirtualAlloc MEM_RESERVE failed with error "
+               << reservation->windows_error;
+        reservation->message = stream.str();
+        return true;
+    }
+
+    reservation->reserved = true;
+    reservation->reserved_base = ClampToUint32(
+        reinterpret_cast<std::uintptr_t>(reserved_address));
+    reservation->reserved_size = policy.required_reserve_size;
+
+    if (reserved_address == requested_address)
+    {
+        reservation->message = "target address range reserved";
+    }
+    else
+    {
+        reservation->message =
+            "VirtualAlloc reserved a different address than requested";
+    }
+
+    return true;
+}
+
+bool ReleaseWin32RuntimeAddressRange(
+    const Win32AddressRangeReservation& reservation)
+{
+    if (!reservation.valid || !reservation.reserved)
+    {
+        return true;
+    }
+
+    void* reserved_address = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(reservation.reserved_base));
+    return VirtualFree(reserved_address, 0, MEM_RELEASE) != 0;
 }
 
 }  // namespace repiu::platform::win32

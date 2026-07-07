@@ -89,7 +89,7 @@ Directories added now:
 Planned major modules:
 
 * `TargetRegistry`: game target and version selection. The current step provides `piu_1st` through static C++ registration.
-* `TargetProfile`: executable path, working directory, asset root, format hint, HLE profile id, and version metadata
+* `TargetProfile`: executable path, working directory, asset root, format hint, HLE profile id, version metadata, and target-specific early runtime reservation hints
 * `HleProfileRegistry`: HLE profile selection referenced by targets. The current step provides `piu_common` through static C++ registration.
 * `HleProfile`: DOS/DPMI/hardware HLE service scope required by a target
 * `ExecutableReader`: shared file input layer for original executables and related files
@@ -98,9 +98,12 @@ Planned major modules:
 * `LeParser`: LE header, object table, page table, fixup page table, fixup record table range, first-pass fixup record decoding, and entry point parsing
 * `ImageMapper`: memory image expected by the original protected-mode code. The current step provides internal relocation dry-run, skipped source observability, and full source type distribution through `Dos4gwExecutableLoader`.
 * `RuntimeMemory`: executable memory, stack, heap, selector abstraction, and HLE regions. The current step provides a dry-run that calculates object regions, entry, stack top, and HLE reserve base without allocating executable memory.
+* `RelocatableRuntimeImage`: primary execution memory direction after fixed low-address reservation proved unreliable in Win32 x86. This subsystem will map original LE object bases to a safe runtime base, reapply LE relocation records for the new addresses, and calculate relocated entry and stack addresses while preserving original game code.
 * `Win32RuntimeMemoryPolicy`: reports Win32 host pointer size, 32-bit direct execution support, preferred allocation base, and reserve size. The current step does not allocate memory.
 * `Win32AddressRangeProbe`: checks the required Win32 runtime address range with `VirtualQuery` before any allocation. It reports whether the fixed DOS/4GW image range is free and records the first blocking memory block when it is occupied. This is a dry-run only and does not reserve executable memory.
+* `Win32AddressRangeReservation`: attempts to reserve the fixed original runtime address range with `VirtualAlloc(MEM_RESERVE)` and reports success or the Windows error code without executing original code.
 * `Win32HostImageBasePolicy`: configures 32-bit Win32 executable targets so the host image base stays outside the original DOS/4GW fixed image range. The current baseline applies `/BASE:0x01000000` and `/DYNAMICBASE:NO` to `repiu_exe_analyzer`; a later dedicated execution host should reuse the same policy.
+* `Win32ExecutionHost`: dedicated 32-bit execution host target. The current step reserves the target runtime range from the target profile hint before loader image copy or HLE execution is introduced.
 * `Win32 x86 Build`: prepares direct original 32-bit x86 entry execution by generating and verifying the `build\vs2022_win32_debug` configuration through `scripts/build_win32_x86.bat`.
 * `ExecutionEngine`: control transfer to original 32-bit x86 code
 * `HleDispatcher`: DOS, DPMI, timer, input, graphics, audio, and filesystem calls

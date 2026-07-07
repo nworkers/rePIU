@@ -16,6 +16,11 @@ const std::vector<TargetProfile>& BuiltInTargetProfiles()
             std::filesystem::path("MASTER/PIU_1ST"),
             ExecutableFormatHint::kDos4gwLe,
             "piu_common",
+            TargetRuntimeReservationHint{
+                true,
+                0x00010000,
+                0x005D7000,
+            },
         },
     };
     return profiles;

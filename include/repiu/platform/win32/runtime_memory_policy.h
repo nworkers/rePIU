@@ -32,13 +32,37 @@ struct Win32AddressRangeProbe
     std::string message;
 };
 
+struct Win32AddressRangeReservation
+{
+    bool valid = false;
+    bool reserved = false;
+    std::uint32_t requested_base = 0;
+    std::uint32_t requested_size = 0;
+    std::uint32_t reserved_base = 0;
+    std::uint32_t reserved_size = 0;
+    std::uint32_t windows_error = 0;
+    std::string message;
+};
+
 bool BuildWin32RuntimeMemoryPolicy(
     const runtime::RuntimeMemoryPlan& memory_plan,
+    Win32RuntimeMemoryPolicy* policy);
+
+bool BuildWin32RuntimeMemoryPolicyFromFixedRange(
+    std::uint32_t preferred_allocation_base,
+    std::uint32_t required_reserve_size,
     Win32RuntimeMemoryPolicy* policy);
 
 bool ProbeWin32RuntimeAddressRange(
     const Win32RuntimeMemoryPolicy& policy,
     Win32AddressRangeProbe* probe);
+
+bool ReserveWin32RuntimeAddressRange(
+    const Win32RuntimeMemoryPolicy& policy,
+    Win32AddressRangeReservation* reservation);
+
+bool ReleaseWin32RuntimeAddressRange(
+    const Win32AddressRangeReservation& reservation);
 
 }  // namespace repiu::platform::win32
 
