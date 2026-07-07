@@ -495,6 +495,59 @@ void PrintRelocatableRuntimeImagePlan(
     }
 }
 
+void PrintRelocatedRuntimeImage(
+    const repiu::runtime::RelocatedRuntimeImage& image)
+{
+    std::cout << "Relocated image buffer: "
+              << (image.valid ? "valid" : "invalid") << "\n";
+    std::cout << "Relocated image buffer base: "
+              << Hex32(image.relocated_image_base) << "\n";
+    std::cout << "Relocated image buffer entry: "
+              << Hex32(image.relocated_entry_linear_address) << "\n";
+    std::cout << "Relocated image buffer stack top: "
+              << Hex32(image.relocated_stack_top_linear_address) << "\n";
+    std::cout << "Relocated image buffer objects: "
+              << image.objects.size() << "\n";
+
+    for (const repiu::runtime::RelocatedRuntimeObject& object :
+         image.objects)
+    {
+        std::cout << "  relocated_buffer[" << object.object_index
+                  << "] base=" << Hex32(object.relocated_base_address)
+                  << " size=" << Hex32(object.virtual_size)
+                  << " bytes=" << object.memory.size()
+                  << " flags=" << Hex32(object.flags) << "\n";
+    }
+
+    const repiu::runtime::RelocatableRuntimeRelocationDryRun& result =
+        image.relocation_result;
+    std::cout << "Relocated image relocation write: "
+              << (result.valid ? "valid" : "invalid") << "\n";
+    std::cout << "Relocated image applied relocations: "
+              << result.applied_count << "\n";
+    std::cout << "Relocated image skipped relocations: "
+              << result.skipped_count << "\n";
+    std::cout << "Relocated image failed relocations: "
+              << result.failed_count << "\n";
+    std::cout << "Relocated image unsupported relocation source types: "
+              << result.unsupported_source_type_count << "\n";
+    std::cout << "Relocated image source out-of-range relocations: "
+              << result.source_out_of_range_count << "\n";
+    if (result.has_first_applied)
+    {
+        std::cout << "Relocated image first written relocation: "
+                  << "source_object=" << result.first_source_object
+                  << " source_offset="
+                  << Hex32(result.first_source_object_offset)
+                  << " target_object=" << result.first_target_object
+                  << " target_offset="
+                  << Hex32(result.first_target_offset)
+                  << " previous=" << Hex32(result.first_original_value)
+                  << " applied="
+                  << Hex32(result.first_relocated_value) << "\n";
+    }
+}
+
 void PrintWin32RuntimeMemoryPolicy(
     const repiu::platform::win32::Win32RuntimeMemoryPolicy& policy)
 {
@@ -635,6 +688,16 @@ int main(int argc, char** argv)
     }
 
     PrintRelocatableRuntimeImagePlan(relocatable_plan);
+
+    repiu::runtime::RelocatedRuntimeImage relocated_image;
+    if (!repiu::runtime::BuildRelocatedRuntimeImage(
+            load_result, relocatable_plan, &relocated_image, &error))
+    {
+        PrintParseError(error);
+        return 1;
+    }
+
+    PrintRelocatedRuntimeImage(relocated_image);
 
     repiu::platform::win32::Win32RuntimeMemoryPolicy win32_policy;
     if (!repiu::platform::win32::BuildWin32RuntimeMemoryPolicy(

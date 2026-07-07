@@ -187,3 +187,13 @@ Each relocated object base is calculated as `original_object_base + delta`. This
 Entry and stack top are also recalculated from the same object indices and offsets, but using relocated object bases.
 
 The relocation dry-run treats source kind `0x07` records as 32-bit internal pointer writes and calculates the new applied value as `relocated_target_object_base + target_offset`. Other source kinds and source out-of-range records remain skipped so their risk can continue to be tracked.
+
+## Relocated Image Buffer
+
+The relocated image buffer materializes the relocatable runtime image plan into C++ owned buffers.
+
+Each LE object buffer is copied from the existing mapped object memory. The fixup records are then walked again, and source kind `0x07` records write the relocated target address into the source location as a 32-bit little-endian value.
+
+The first applied sample verifies that the existing original relocation value `0x002A4B3D` is replaced with relocated value `0x01294B3D`.
+
+This step still does not use `VirtualAlloc` executable memory and does not call the original entry point.

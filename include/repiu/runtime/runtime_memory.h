@@ -73,6 +73,25 @@ struct RelocatableRuntimeImagePlan
     RelocatableRuntimeRelocationDryRun relocation_dry_run;
 };
 
+struct RelocatedRuntimeObject
+{
+    std::uint32_t object_index = 0;
+    std::uint32_t relocated_base_address = 0;
+    std::uint32_t virtual_size = 0;
+    std::uint32_t flags = 0;
+    std::vector<std::uint8_t> memory;
+};
+
+struct RelocatedRuntimeImage
+{
+    bool valid = false;
+    std::uint32_t relocated_image_base = 0;
+    std::uint32_t relocated_entry_linear_address = 0;
+    std::uint32_t relocated_stack_top_linear_address = 0;
+    std::vector<RelocatedRuntimeObject> objects;
+    RelocatableRuntimeRelocationDryRun relocation_result;
+};
+
 bool BuildRuntimeMemoryPlan(const exe::Dos4gwLoadResult& load_result,
                             RuntimeMemoryPlan* plan,
                             exe::ParseError* error);
@@ -81,6 +100,12 @@ bool BuildRelocatableRuntimeImagePlan(
     const exe::Dos4gwLoadResult& load_result,
     std::uint32_t relocated_image_base,
     RelocatableRuntimeImagePlan* plan,
+    exe::ParseError* error);
+
+bool BuildRelocatedRuntimeImage(
+    const exe::Dos4gwLoadResult& load_result,
+    const RelocatableRuntimeImagePlan& plan,
+    RelocatedRuntimeImage* image,
     exe::ParseError* error);
 
 }  // namespace repiu::runtime

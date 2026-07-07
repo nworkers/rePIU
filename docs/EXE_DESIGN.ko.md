@@ -142,6 +142,16 @@ Win32 runtime memory policy가 계산한 `preferred_allocation_base`와 `require
 범위 안에서 `MEM_RESERVE` 또는 `MEM_COMMIT` 등 비어 있지 않은 region이 발견되면 analyzer는 실패하지 않고 첫 blocking block의 base, size, state를 출력한다.
 
 이 결과는 이후 실제 executable memory allocation 정책을 정할 때 사용한다. 특히 목표 주소 범위가 이미 점유된 경우, 32-bit helper process 초기화 순서 조정 또는 relocation fallback 필요 여부를 판단하는 근거가 된다.
+# Relocated Image Buffer
+
+Relocated image buffer는 relocatable runtime image plan을 실제 C++ owned buffer로 구체화한다.
+
+각 LE object buffer는 기존 mapped object memory에서 복사한다. 그 뒤 fixup record를 다시 순회하면서 source kind `0x07` record에 대해 relocated target address를 source 위치에 32-bit little-endian 값으로 기록한다.
+
+첫 적용 sample은 기존 original relocation 값 `0x002A4B3D`가 relocated 값 `0x01294B3D`로 교체되는지 확인하는 기준으로 사용한다.
+
+이번 단계는 아직 `VirtualAlloc` executable memory를 사용하지 않으며, 원본 entry도 호출하지 않는다.
+
 # Relocatable Runtime Image Dry-Run
 
 Relocatable runtime image dry-run은 원본 LE object의 상대 배치를 유지하면서 전체 image를 새 base로 이동하는 계획을 계산한다.

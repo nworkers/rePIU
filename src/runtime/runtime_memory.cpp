@@ -82,6 +82,45 @@ const exe::LeMappedObject* FindSourceObjectForPage(
     return nullptr;
 }
 
+RelocatedRuntimeObject* FindRelocatedImageObject(
+    RelocatedRuntimeImage* image,
+    std::uint32_t object_index)
+{
+    if (image == nullptr)
+    {
+        return nullptr;
+    }
+
+    for (RelocatedRuntimeObject& object : image->objects)
+    {
+        if (object.object_index == object_index)
+        {
+            return &object;
+        }
+    }
+
+    return nullptr;
+}
+
+std::uint32_t ReadLe32(const std::vector<std::uint8_t>& data,
+                       std::uint32_t offset)
+{
+    return static_cast<std::uint32_t>(data[offset]) |
+           (static_cast<std::uint32_t>(data[offset + 1]) << 8) |
+           (static_cast<std::uint32_t>(data[offset + 2]) << 16) |
+           (static_cast<std::uint32_t>(data[offset + 3]) << 24);
+}
+
+void WriteLe32(std::vector<std::uint8_t>* data,
+               std::uint32_t offset,
+               std::uint32_t value)
+{
+    (*data)[offset] = static_cast<std::uint8_t>(value & 0xff);
+    (*data)[offset + 1] = static_cast<std::uint8_t>((value >> 8) & 0xff);
+    (*data)[offset + 2] = static_cast<std::uint8_t>((value >> 16) & 0xff);
+    (*data)[offset + 3] = static_cast<std::uint8_t>((value >> 24) & 0xff);
+}
+
 }  // namespace
 
 bool BuildRuntimeMemoryPlan(const exe::Dos4gwLoadResult& load_result,
@@ -353,6 +392,139 @@ bool BuildRelocatableRuntimeImagePlan(
     dry_run.valid = true;
     plan->relocation_dry_run = dry_run;
     plan->valid = plan->entry_valid && plan->stack_valid && dry_run.valid;
+    return true;
+}
+
+bool BuildRelocatedRuntimeImage(
+    const exe::Dos4gwLoadResult& load_result,
+    const RelocatableRuntimeImagePlan& plan,
+    RelocatedRuntimeImage* image,
+    exe::ParseError* error)
+{
+    if (image == nullptr)
+    {
+        SetError("relocated runtime image output is null", error);
+        return false;
+    }
+
+    *image = RelocatedRuntimeImage{};
+
+    if (!load_result.image.valid ||
+        !load_result.fixup_record_info.valid ||
+        !plan.valid)
+    {
+        SetError("relocated runtime image input is invalid", error);
+        return false;
+    }
+
+    image->relocated_image_base = plan.relocated_image_base;
+    image->relocated_entry_linear_address =
+        plan.relocated_entry_linear_address;
+    image->relocated_stack_top_linear_address =
+        plan.relocated_stack_top_linear_address;
+    image->objects.reserve(load_result.image.mapped_objects.size());
+
+    for (const RelocatableRuntimeObjectRegion& region :
+         plan.object_regions)
+    {
+        if (region.object_index == 0 ||
+            region.object_index > load_result.image.mapped_objects.size())
+        {
+            SetError("relocated runtime object index is invalid", error);
+            return false;
+        }
+
+        const exe::LeMappedObject& mapped_object =
+            load_result.image.mapped_objects[region.object_index - 1];
+
+        RelocatedRuntimeObject object;
+        object.object_index = region.object_index;
+        object.relocated_base_address = region.relocated_base_address;
+        object.virtual_size = region.virtual_size;
+        object.flags = region.flags;
+        object.memory = mapped_object.memory;
+        image->objects.push_back(object);
+    }
+
+    RelocatableRuntimeRelocationDryRun result;
+    for (const exe::LeFixupRecord& record :
+         load_result.fixup_record_info.records)
+    {
+        const std::uint8_t source_kind = record.source_type & 0x0f;
+        if (source_kind != 0x07)
+        {
+            ++result.unsupported_source_type_count;
+            ++result.skipped_count;
+            continue;
+        }
+
+        const RelocatableRuntimeObjectRegion* target_region =
+            FindRelocatedObject(plan, record.target_object);
+        if (target_region == nullptr)
+        {
+            ++result.failed_count;
+            SetError("relocated image target object is invalid", error);
+            return false;
+        }
+
+        std::uint32_t source_object_index = 0;
+        std::uint32_t source_object_offset = 0;
+        const exe::LeMappedObject* source_mapped_object =
+            FindSourceObjectForPage(load_result.image,
+                                    record,
+                                    load_result.le_header.page_size,
+                                    &source_object_index,
+                                    &source_object_offset);
+        if (source_mapped_object == nullptr)
+        {
+            ++result.failed_count;
+            SetError("relocated image source page is invalid", error);
+            return false;
+        }
+
+        RelocatedRuntimeObject* source_object =
+            FindRelocatedImageObject(image, source_object_index);
+        if (source_object == nullptr)
+        {
+            ++result.failed_count;
+            SetError("relocated image source object is invalid", error);
+            return false;
+        }
+
+        if (source_object_offset > source_object->memory.size() ||
+            source_object->memory.size() - source_object_offset < 4)
+        {
+            ++result.source_out_of_range_count;
+            ++result.skipped_count;
+            continue;
+        }
+
+        const std::uint32_t relocated_value =
+            target_region->relocated_base_address + record.target_offset;
+        const std::uint32_t previous_value =
+            ReadLe32(source_object->memory, source_object_offset);
+
+        WriteLe32(&source_object->memory,
+                  source_object_offset,
+                  relocated_value);
+
+        if (!result.has_first_applied)
+        {
+            result.first_relocated_value = relocated_value;
+            result.first_original_value = previous_value;
+            result.first_source_object = source_object_index;
+            result.first_source_object_offset = source_object_offset;
+            result.first_target_object = record.target_object;
+            result.first_target_offset = record.target_offset;
+            result.has_first_applied = true;
+        }
+
+        ++result.applied_count;
+    }
+
+    result.valid = true;
+    image->relocation_result = result;
+    image->valid = result.valid;
     return true;
 }
 
