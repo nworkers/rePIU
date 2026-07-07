@@ -96,4 +96,8 @@ Skipped relocations are not assigned final semantics yet. The analyzer prints co
 
 The required samples are the first unsupported source kind record and the first source out-of-range record.
 
+Because source kind alone cannot distinguish high source flag meanings, the analyzer also prints counts by full source type.
+
+Unsupported sources print the first sample for each kind so cases such as `source_type=0x13` and plain `source kind 0x05` can be separated.
+
 This step writes only to the analysis LE image buffers, not to executable memory.

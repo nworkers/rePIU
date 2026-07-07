@@ -689,6 +689,7 @@ bool ApplyLeInternalRelocations(const LeHeader& header,
     {
         const std::uint8_t source_kind = record.source_type & 0x0f;
         ++dry_run->source_kind_counts[source_kind];
+        ++dry_run->source_type_counts[record.source_type];
         if (source_kind != 0x07)
         {
             ++dry_run->unsupported_source_type_count;
@@ -698,6 +699,13 @@ bool ApplyLeInternalRelocations(const LeHeader& header,
                 dry_run->first_unsupported_source =
                     MakeSkippedRelocation(record);
                 dry_run->has_first_unsupported_source = true;
+            }
+            if (!dry_run->has_first_unsupported_source_by_kind[source_kind])
+            {
+                dry_run->first_unsupported_source_by_kind[source_kind] =
+                    MakeSkippedRelocation(record);
+                dry_run->has_first_unsupported_source_by_kind[source_kind] =
+                    true;
             }
             continue;
         }

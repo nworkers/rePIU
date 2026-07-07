@@ -47,7 +47,7 @@ The first implementation target is a non-executing analysis tool for `MASTER\PIU
 * `ExecutableReader`: 원본 실행 파일과 관련 파일을 읽는 공용 파일 입력 계층
 * `MzParser`: DOS MZ 헤더와 LE/LX 위치 파악
 * `LeParser`: LE 헤더, 오브젝트 테이블, 페이지 테이블, fixup page table, fixup record table 범위, 1차 fixup record 디코딩, 엔트리 포인트 파싱
-* `ImageMapper`: 원본 보호 모드 코드가 기대하는 메모리 이미지 구성. 현재 단계에서는 내부 relocation dry-run과 skipped source 관찰 정보를 제공한다.
+* `ImageMapper`: 원본 보호 모드 코드가 기대하는 메모리 이미지 구성. 현재 단계에서는 내부 relocation dry-run, skipped source 관찰 정보, full source type 분포를 제공한다.
 * `RuntimeMemory`: 실행 메모리, 스택, 힙, selector 추상화, HLE 영역 관리
 * `ExecutionEngine`: 원본 32-bit x86 코드로 제어 이전
 * `HleDispatcher`: DOS, DPMI, 타이머, 입력, 그래픽, 오디오, 파일 시스템 호출 처리
@@ -76,7 +76,7 @@ Planned major modules:
 * `ExecutableReader`: shared file input layer for original executables and related files
 * `MzParser`: DOS MZ header and LE/LX location
 * `LeParser`: LE header, object table, page table, fixup page table, fixup record table range, first-pass fixup record decoding, and entry point parsing
-* `ImageMapper`: memory image expected by the original protected-mode code. The current step provides internal relocation dry-run and skipped source observability.
+* `ImageMapper`: memory image expected by the original protected-mode code. The current step provides internal relocation dry-run, skipped source observability, and full source type distribution.
 * `RuntimeMemory`: executable memory, stack, heap, selector abstraction, and HLE regions
 * `ExecutionEngine`: control transfer to original 32-bit x86 code
 * `HleDispatcher`: DOS, DPMI, timer, input, graphics, audio, and filesystem calls

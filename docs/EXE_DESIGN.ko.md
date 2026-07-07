@@ -96,4 +96,8 @@ skipped relocation은 아직 의미를 확정하지 않고, source kind별 count
 
 현재 출력해야 하는 sample은 첫 unsupported source kind record와 첫 source out-of-range record이다.
 
+source kind만으로는 상위 source flag 의미를 구분할 수 없으므로 full source type별 count도 함께 출력한다.
+
+unsupported source는 kind별 첫 sample을 출력해 `source_type=0x13`과 순수 `source kind 0x05` 같은 사례를 분리한다.
+
 이 단계는 실행 가능한 메모리에 쓰지 않고, 분석용 LE 이미지 버퍼에만 값을 적용한다.

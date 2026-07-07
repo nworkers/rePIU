@@ -177,10 +177,13 @@ struct LeRelocationDryRun
     std::uint32_t skipped_count = 0;
     std::uint32_t first_failed_record_offset = 0;
     std::array<std::uint32_t, 16> source_kind_counts = {};
+    std::array<std::uint32_t, 256> source_type_counts = {};
     LeAppliedRelocation first_applied;
     bool has_first_applied = false;
     LeSkippedRelocation first_unsupported_source;
     bool has_first_unsupported_source = false;
+    std::array<LeSkippedRelocation, 16> first_unsupported_source_by_kind;
+    std::array<bool, 16> has_first_unsupported_source_by_kind = {};
     LeSkippedRelocation first_out_of_range;
     bool has_first_out_of_range = false;
 };
