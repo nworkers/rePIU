@@ -1,7 +1,11 @@
 #include "repiu/exe/dos4gw_loader.h"
+#include "repiu/hle/hle_dispatcher.h"
 #include "repiu/platform/win32/execution_trampoline.h"
 #include "repiu/platform/win32/runtime_memory_policy.h"
+#include "repiu/runtime/guest_context.h"
+#include "repiu/runtime/image_address.h"
 #include "repiu/runtime/runtime_memory.h"
+#include "repiu/runtime/selector_table.h"
 #include "repiu/target/target_profile.h"
 
 #include <cstdint>
@@ -74,6 +78,76 @@ bool ReadBinaryFile(const std::filesystem::path& path,
     }
 
     return true;
+}
+
+
+void PrintByteWindow(
+    const repiu::runtime::RelocatedImageByteWindow& window)
+{
+    std::cout << "Relocated exception byte window: "
+              << (window.valid ? "valid" : "invalid") << "\n";
+    std::cout << "Relocated exception byte window message: "
+              << window.message << "\n";
+    if (!window.valid)
+    {
+        return;
+    }
+
+    std::cout << "Relocated exception byte object: "
+              << window.object_index << "\n";
+    std::cout << "Relocated exception byte base: "
+              << Hex32(window.window_base) << "\n";
+    std::cout << "Relocated exception byte focus offset: "
+              << Hex32(window.focus_offset) << "\n";
+    std::cout << "Relocated exception bytes:";
+    for (std::size_t index = 0; index < window.bytes.size(); ++index)
+    {
+        if (index == window.focus_offset)
+        {
+            std::cout << " [";
+        }
+        else
+        {
+            std::cout << " ";
+        }
+        std::cout << std::uppercase << std::hex << std::setw(2)
+                  << std::setfill('0')
+                  << static_cast<unsigned>(window.bytes[index])
+                  << std::dec << std::setfill(' ');
+        if (index == window.focus_offset)
+        {
+            std::cout << "]";
+        }
+    }
+    std::cout << "\n";
+}
+
+void PrintGuestStackPlan(
+    const repiu::runtime::GuestStackSwitchPlan& plan)
+{
+    std::cout << "Guest stack switch plan: "
+              << (plan.valid ? "valid" : "invalid") << "\n";
+    std::cout << "Guest stack switch entry: "
+              << Hex32(plan.entry_eip) << "\n";
+    std::cout << "Guest stack switch stack base: "
+              << Hex32(plan.stack_base) << "\n";
+    std::cout << "Guest stack switch stack limit: "
+              << Hex32(plan.stack_limit) << "\n";
+    std::cout << "Guest stack switch initial ESP: "
+              << Hex32(plan.initial_esp) << "\n";
+    std::cout << "Guest stack switch message: "
+              << plan.message << "\n";
+}
+
+void PrintHleDispatcherTable(
+    const repiu::hle::HleDispatcherTable& table)
+{
+    std::cout << "HLE dispatcher table: "
+              << (table.valid ? "valid" : "invalid") << "\n";
+    std::cout << "HLE dispatcher trap count: "
+              << table.traps.size() << "\n";
+    std::cout << "HLE dispatcher message: "
+              << table.message << "\n";
 }
 
 void PrintParseError(const repiu::exe::ParseError& error)
@@ -370,6 +444,34 @@ int main()
         return 1;
     }
 
+    repiu::runtime::GuestStackSwitchPlan stack_plan;
+    std::uint32_t stack_base = relocated_image.relocated_image_base;
+    std::uint32_t stack_limit =
+        relocated_image.relocated_stack_top_linear_address;
+    if (load_result.le_header.stack_object > 0 &&
+        load_result.le_header.stack_object <=
+            relocatable_plan.object_regions.size())
+    {
+        const repiu::runtime::RelocatableRuntimeObjectRegion& stack_region =
+            relocatable_plan
+                .object_regions[load_result.le_header.stack_object - 1];
+        stack_base = stack_region.relocated_base_address;
+        stack_limit = stack_region.relocated_base_address +
+                      stack_region.virtual_size;
+    }
+    repiu::runtime::BuildGuestStackSwitchPlan(
+        relocated_image.relocated_entry_linear_address,
+        stack_base,
+        stack_limit,
+        relocated_image.relocated_stack_top_linear_address,
+        4096,
+        &stack_plan);
+    PrintGuestStackPlan(stack_plan);
+
+    repiu::hle::HleDispatcherTable hle_dispatcher;
+    repiu::hle::BuildInitialHleDispatcherTable(&hle_dispatcher);
+    PrintHleDispatcherTable(hle_dispatcher);
+
     repiu::platform::win32::Win32RelocatedImagePlacement placement;
     if (!repiu::platform::win32::PlaceWin32RelocatedImage(
             relocated_image, &placement))
@@ -392,6 +494,17 @@ int main()
     }
 
     PrintExecutionAttempt(attempt);
+    if (attempt.exception_caught)
+    {
+        repiu::runtime::RelocatedImageByteWindow window;
+        repiu::runtime::BuildRelocatedImageByteWindow(
+            relocated_image,
+            attempt.seh_exception_address,
+            16,
+            16,
+            &window);
+        PrintByteWindow(window);
+    }
     repiu::platform::win32::ReleaseWin32RelocatedImage(placement);
     return 0;
 }

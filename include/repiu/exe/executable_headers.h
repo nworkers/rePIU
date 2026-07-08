@@ -186,6 +186,7 @@ struct LeRelocationDryRun
     std::array<bool, 16> has_first_unsupported_source_by_kind = {};
     LeSkippedRelocation first_out_of_range;
     bool has_first_out_of_range = false;
+    std::vector<LeSkippedRelocation> skipped_relocations;
 };
 
 bool ParseMzHeader(const std::vector<std::uint8_t>& data,

@@ -6,9 +6,20 @@
 #include <limits>
 #include <sstream>
 
+#if defined(_WIN32)
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+using DWORD = unsigned long;
+constexpr DWORD MEM_COMMIT = 0x00001000;
+constexpr DWORD MEM_FREE = 0x00010000;
+constexpr DWORD MEM_RESERVE = 0x00002000;
+constexpr DWORD PAGE_READONLY = 0x02;
+constexpr DWORD PAGE_READWRITE = 0x04;
+constexpr DWORD PAGE_EXECUTE_READ = 0x20;
+constexpr DWORD PAGE_EXECUTE_READWRITE = 0x40;
+#endif
 
 namespace repiu::platform::win32
 {
@@ -17,7 +28,7 @@ namespace
 
 bool IsDirectX86ExecutionSupported()
 {
-#if defined(_M_IX86) || defined(__i386__)
+#if defined(_WIN32) && (defined(_M_IX86) || defined(__i386__))
     return true;
 #else
     return false;
@@ -178,6 +189,16 @@ bool ProbeWin32RuntimeAddressRange(
     const Win32RuntimeMemoryPolicy& policy,
     Win32AddressRangeProbe* probe)
 {
+#if !defined(_WIN32)
+    if (probe == nullptr)
+    {
+        return false;
+    }
+    *probe = Win32AddressRangeProbe{};
+    probe->message = "Win32 runtime address probing requires Win32 host APIs";
+    return false;
+#else
+
     if (probe == nullptr)
     {
         return false;
@@ -255,12 +276,23 @@ bool ProbeWin32RuntimeAddressRange(
     probe->range_available = true;
     probe->message = "target address range is fully free";
     return true;
+#endif
 }
 
 bool ReserveWin32RuntimeAddressRange(
     const Win32RuntimeMemoryPolicy& policy,
     Win32AddressRangeReservation* reservation)
 {
+#if !defined(_WIN32)
+    if (reservation == nullptr)
+    {
+        return false;
+    }
+    *reservation = Win32AddressRangeReservation{};
+    reservation->message = "Win32 runtime address reservation requires Win32 host APIs";
+    return false;
+#else
+
     if (reservation == nullptr)
     {
         return false;
@@ -311,6 +343,7 @@ bool ReserveWin32RuntimeAddressRange(
     }
 
     return true;
+#endif
 }
 
 bool ReleaseWin32RuntimeAddressRange(
@@ -321,15 +354,29 @@ bool ReleaseWin32RuntimeAddressRange(
         return true;
     }
 
+#if defined(_WIN32)
     void* reserved_address = reinterpret_cast<void*>(
         static_cast<std::uintptr_t>(reservation.reserved_base));
     return VirtualFree(reserved_address, 0, MEM_RELEASE) != 0;
+#else
+    return true;
+#endif
 }
 
 bool PlaceWin32RelocatedImage(
     const runtime::RelocatedRuntimeImage& image,
     Win32RelocatedImagePlacement* placement)
 {
+#if !defined(_WIN32)
+    if (placement == nullptr)
+    {
+        return false;
+    }
+    *placement = Win32RelocatedImagePlacement{};
+    placement->message = "Win32 relocated image placement requires Win32 host APIs";
+    return false;
+#else
+
     if (placement == nullptr)
     {
         return false;
@@ -442,6 +489,7 @@ bool PlaceWin32RelocatedImage(
     placement->placed = true;
     placement->message = "relocated image placed in Win32 process memory";
     return true;
+#endif
 }
 
 bool ReleaseWin32RelocatedImage(
@@ -452,9 +500,13 @@ bool ReleaseWin32RelocatedImage(
         return true;
     }
 
+#if defined(_WIN32)
     void* placed_address = reinterpret_cast<void*>(
         static_cast<std::uintptr_t>(placement.placed_base));
     return VirtualFree(placed_address, 0, MEM_RELEASE) != 0;
+#else
+    return true;
+#endif
 }
 
 }  // namespace repiu::platform::win32

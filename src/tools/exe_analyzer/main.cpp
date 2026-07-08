@@ -397,6 +397,31 @@ void PrintRelocationDryRunSummary(
                   << " target_offset=" << Hex32(skipped.target_offset)
                   << "\n";
     }
+
+    if (!dry_run.skipped_relocations.empty())
+    {
+        std::cout << "LE skipped relocation details: "
+                  << dry_run.skipped_relocations.size() << "\n";
+        for (std::size_t index = 0;
+             index < dry_run.skipped_relocations.size(); ++index)
+        {
+            const repiu::exe::LeSkippedRelocation& skipped =
+                dry_run.skipped_relocations[index];
+            std::cout << "  skipped[" << index << "] page="
+                      << skipped.page_index
+                      << " record_offset="
+                      << Hex32(skipped.record_table_offset)
+                      << " source_type=" << Hex16(skipped.source_type)
+                      << " source_kind=" << Hex16(skipped.source_kind)
+                      << " source_offset=" << Hex16(skipped.source_offset)
+                      << " source_object=" << skipped.source_object
+                      << " source_object_offset="
+                      << Hex32(skipped.source_object_offset)
+                      << " target_object=" << skipped.target_object
+                      << " target_offset=" << Hex32(skipped.target_offset)
+                      << "\n";
+        }
+    }
 }
 
 void PrintRuntimeMemoryPlan(const repiu::runtime::RuntimeMemoryPlan& plan)

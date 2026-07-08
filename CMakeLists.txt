@@ -23,10 +23,14 @@ endfunction()
 add_library(repiu_exe
     src/exe/dos4gw_loader.cpp
     src/exe/executable_headers.cpp
+    src/hle/hle_dispatcher.cpp
     src/hle/hle_profile.cpp
     src/platform/win32/execution_trampoline.cpp
     src/platform/win32/runtime_memory_policy.cpp
+    src/runtime/guest_context.cpp
+    src/runtime/image_address.cpp
     src/runtime/runtime_memory.cpp
+    src/runtime/selector_table.cpp
     src/target/target_profile.cpp
 )
 
