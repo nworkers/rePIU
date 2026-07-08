@@ -448,6 +448,24 @@ void PrintExecutionAttempt(
                     Hex16(static_cast<std::uint16_t>(
                         attempt.last_segment_load_selector & 0xFFFFU)));
     }
+    logger.info("Win32 handled segment store count: {}",
+                attempt.handled_segment_store_count);
+    if (attempt.handled_segment_store_count > 0)
+    {
+        logger.info("Win32 last handled segment store address: {}",
+                    Hex32(attempt.last_segment_store_address));
+        logger.info("Win32 last handled segment store opcode: {}",
+                    Hex8(static_cast<std::uint8_t>(
+                        attempt.last_segment_store_opcode & 0xFFU)));
+        logger.info("Win32 last stored segment register: {}",
+                    SegmentRegisterName(
+                        attempt.last_segment_store_register));
+        logger.info("Win32 last stored segment selector: {}",
+                    Hex16(static_cast<std::uint16_t>(
+                        attempt.last_segment_store_selector & 0xFFFFU)));
+        logger.info("Win32 last segment store destination: {}",
+                    Hex32(attempt.last_segment_store_destination));
+    }
     logger.info("Win32 minimal execution thread exit code: {}",
                 attempt.thread_exit_code);
     if (!attempt.hle_console_output.empty())

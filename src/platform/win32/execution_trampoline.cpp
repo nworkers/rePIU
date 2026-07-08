@@ -61,6 +61,12 @@ struct ThreadContext
     std::uint32_t last_segment_load_opcode = 0;
     std::uint32_t last_segment_load_register = 0;
     std::uint32_t last_segment_load_selector = 0;
+    std::uint32_t handled_segment_store_count = 0;
+    std::uint32_t last_segment_store_address = 0;
+    std::uint32_t last_segment_store_opcode = 0;
+    std::uint32_t last_segment_store_register = 0;
+    std::uint32_t last_segment_store_selector = 0;
+    std::uint32_t last_segment_store_destination = 0;
     std::uint16_t guest_es = 0;
     std::uint16_t guest_ss = 0;
     std::uint16_t guest_ds = 0;
@@ -201,6 +207,45 @@ bool IsGuestRangeReadable(ThreadContext* context,
     const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(source);
     const std::uintptr_t end = address + byte_count;
     return address >= base && end >= address && end <= base + size;
+}
+
+bool IsGuestRangeWritable(ThreadContext* context,
+                          void* destination,
+                          std::uint32_t byte_count)
+{
+    return IsGuestRangeReadable(context, destination, byte_count);
+}
+
+bool WriteGuestUInt16(ThreadContext* context,
+                      void* destination,
+                      std::uint16_t value)
+{
+    if (!IsGuestRangeWritable(context, destination, sizeof(value)))
+    {
+        return false;
+    }
+
+    DWORD previous_protect = 0;
+    if (!VirtualProtect(destination,
+                        sizeof(value),
+                        PAGE_EXECUTE_READWRITE,
+                        &previous_protect))
+    {
+        std::ostringstream stream;
+        stream << "VirtualProtect failed for guest segment store with error "
+               << GetLastError();
+        context->hle_message = stream.str();
+        return false;
+    }
+
+    std::memcpy(destination, &value, sizeof(value));
+
+    DWORD ignored_protect = 0;
+    VirtualProtect(destination,
+                   sizeof(value),
+                   previous_protect,
+                   &ignored_protect);
+    return true;
 }
 
 bool AppendConsoleOutput(ThreadContext* context,
@@ -466,6 +511,52 @@ void RecordGuestSegmentLoad(CONTEXT* win32_context,
     }
 }
 
+std::uint16_t ReadGuestSegmentSelector(const ThreadContext& context,
+                                       std::uint8_t segment_register)
+{
+    switch (segment_register)
+    {
+        case 0:
+            return context.guest_es;
+        case 2:
+            return context.guest_ss;
+        case 3:
+            return context.guest_ds;
+        case 4:
+            return context.guest_fs;
+        case 5:
+            return context.guest_gs;
+        default:
+            return 0;
+    }
+}
+
+void RecordGuestSegmentStore(CONTEXT* win32_context,
+                             ThreadContext* context,
+                             std::uint8_t segment_register,
+                             std::uint16_t selector,
+                             std::uint32_t destination)
+{
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return;
+    }
+
+    ++context->handled_segment_store_count;
+    context->last_segment_store_address =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    context->last_segment_store_opcode = 0x8C;
+    context->last_segment_store_register = segment_register;
+    context->last_segment_store_selector = selector;
+    context->last_segment_store_destination = destination;
+}
+
+bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
+                                  ThreadContext* context);
+
+bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
+                                   ThreadContext* context);
+
 bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
                                   ThreadContext* context)
 {
@@ -499,6 +590,61 @@ bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
                            segment_register,
                            selector);
     win32_context->Eip += 2;
+    HandleSegmentStoreInstruction(win32_context, context);
+    return true;
+}
+
+bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
+                                   ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0x66 || instruction[1] != 0x26 ||
+        instruction[2] != 0x8C)
+    {
+        return false;
+    }
+
+    const std::uint8_t modrm = instruction[3];
+    const std::uint8_t mod = static_cast<std::uint8_t>((modrm >> 6) & 0x03);
+    const std::uint8_t segment_register =
+        static_cast<std::uint8_t>((modrm >> 3) & 0x07);
+    const std::uint8_t rm = static_cast<std::uint8_t>(modrm & 0x07);
+    if (mod != 0x00 || rm != 0x05)
+    {
+        return false;
+    }
+
+    if (segment_register == 1 || segment_register > 5)
+    {
+        return false;
+    }
+
+    const std::uint32_t destination =
+        static_cast<std::uint32_t>(instruction[4]) |
+        (static_cast<std::uint32_t>(instruction[5]) << 8) |
+        (static_cast<std::uint32_t>(instruction[6]) << 16) |
+        (static_cast<std::uint32_t>(instruction[7]) << 24);
+    void* destination_pointer = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(destination));
+    if (!IsGuestRangeWritable(context, destination_pointer, 2))
+    {
+        return false;
+    }
+
+    const std::uint16_t selector =
+        ReadGuestSegmentSelector(*context, segment_register);
+    if (!WriteGuestUInt16(context, destination_pointer, selector))
+    {
+        return false;
+    }
+
+    RecordGuestSegmentStore(win32_context,
+                            context,
+                            segment_register,
+                            selector,
+                            destination);
+    win32_context->Eip += 8;
     return true;
 }
 
@@ -704,6 +850,11 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     }
     if (context->enable_segment_load_hle &&
         HandleSegmentLoadInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleSegmentStoreInstruction(win32_context, context))
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
@@ -968,6 +1119,17 @@ bool RunWin32ExecutionThread(
         context.last_segment_load_register;
     attempt->last_segment_load_selector =
         context.last_segment_load_selector;
+    attempt->handled_segment_store_count =
+        context.handled_segment_store_count;
+    attempt->last_segment_store_address =
+        context.last_segment_store_address;
+    attempt->last_segment_store_opcode = context.last_segment_store_opcode;
+    attempt->last_segment_store_register =
+        context.last_segment_store_register;
+    attempt->last_segment_store_selector =
+        context.last_segment_store_selector;
+    attempt->last_segment_store_destination =
+        context.last_segment_store_destination;
     attempt->thread_exit_code = exit_code;
     attempt->hle_console_output.assign(
         context.hle_console_output,

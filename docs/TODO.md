@@ -1,5 +1,25 @@
 # TODO
 
+## 2026-07-09 segment register store HLE 진행
+
+`66 26 8C 1D` segment register store 중단 지점은 guest selector shadow state를 relocated runtime memory에 쓰는 HLE 요구사항으로 분류되었다.
+이번 작업에서는 이 지점을 직접 처리하여 다음 중단 지점을 관찰한다.
+
+## 2026-07-09 Segment Register Store HLE Progress
+
+The `66 26 8C 1D` segment-register store stop is classified as an HLE requirement that writes guest selector shadow state into relocated runtime memory.
+This task handles that stop directly and observes the next execution stop.
+
+## 2026-07-09 segment register store HLE 완료
+
+`66 26 8C 1D` segment register store는 처리되었고, `DS=0x0024`가 relocated destination `0x020F3AED`에 기록되는 것을 확인했다.
+다음 중단 지점은 `0x020F39C8`의 `66 8E 05 E4 65 1A 02` memory-source segment register load이다.
+
+## 2026-07-09 Segment Register Store HLE Complete
+
+`66 26 8C 1D` segment-register store is handled, and `DS=0x0024` is written to relocated destination `0x020F3AED`.
+The next stop is the memory-source segment-register load `66 8E 05 E4 65 1A 02` at `0x020F39C8`.
+
 ## 2026-07-09 현재 상태
 
 이전 TODO/PLAN의 분석 및 기반 구조 작업은 완료되었다.
@@ -32,7 +52,7 @@ Remaining real implementation work:
 1. Implement the HLE dispatcher handler calling convention and guest context return path.
 2. Implement only the INT21/INT31 services confirmed by actual traces.
 3. Connect selector/descriptor permission checks and DPMI descriptor APIs.
-4. Classify the `66 26 8C 1D` segment-register store stop as a selector/descriptor memory-write HLE requirement.
+4. Extend segment-register load HLE for the `66 8E 05 E4 65 1A 02` memory-source form.
 
 ## 현재 우선순위 상태
 
@@ -86,10 +106,11 @@ As of 2026-07-08, the previous TODO/PLAN remaining work is summarized in `docs/2
 7. `INT 21h AH=0x30` DOS version query handling and observation of the next `AH=0xFF` stop: complete.
 8. `INT 21h AH=0xFF` minimal handling and observation of the next `8E D9` stop: complete.
 9. `8E /r` register-source segment load handling and observation of the next `66 26 8C 1D` stop: complete.
+10. `66 26 8C /r` absolute-destination segment store handling and observation of the next `66 8E 05` stop: complete.
 
 ## Remaining Real Implementation Work
 
 1. Implement the HLE dispatcher handler calling convention and guest context return path.
 2. Implement only the INT21/INT31 services confirmed by actual traces.
 3. Connect selector/descriptor permission checks and DPMI descriptor APIs.
-4. Connect `66 26 8C 1D` segment-register store to guest selector shadow state and relocated memory-write policy.
+4. Extend `66 8E 05 E4 65 1A 02` memory-source segment-register load through relocated memory-read policy.

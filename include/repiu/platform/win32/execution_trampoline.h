@@ -42,6 +42,12 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t last_segment_load_opcode = 0;
     std::uint32_t last_segment_load_register = 0;
     std::uint32_t last_segment_load_selector = 0;
+    std::uint32_t handled_segment_store_count = 0;
+    std::uint32_t last_segment_store_address = 0;
+    std::uint32_t last_segment_store_opcode = 0;
+    std::uint32_t last_segment_store_register = 0;
+    std::uint32_t last_segment_store_selector = 0;
+    std::uint32_t last_segment_store_destination = 0;
     std::uint32_t thread_exit_code = 0;
     std::string hle_console_output;
     std::string message;
