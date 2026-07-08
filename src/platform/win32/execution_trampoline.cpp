@@ -2,9 +2,11 @@
 
 #include <sstream>
 
+#if defined(_WIN32)
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#endif
 
 namespace repiu::platform::win32
 {
@@ -22,13 +24,14 @@ struct ThreadContext
 
 bool IsDirectX86ExecutionSupported()
 {
-#if defined(_M_IX86) || defined(__i386__)
+#if defined(_WIN32) && (defined(_M_IX86) || defined(__i386__))
     return true;
 #else
     return false;
 #endif
 }
 
+#if defined(_WIN32)
 int CaptureException(EXCEPTION_POINTERS* exception_info,
                      ThreadContext* context)
 {
@@ -69,6 +72,8 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
     }
 }
 
+#endif
+
 }  // namespace
 
 bool AttemptWin32MinimalExecution(
@@ -89,11 +94,22 @@ bool AttemptWin32MinimalExecution(
     if (!attempt->supported)
     {
         attempt->valid = true;
+#if defined(_WIN32)
         attempt->message =
             "minimal original entry execution requires a 32-bit host";
+#else
+        attempt->message =
+            "minimal original entry execution requires Win32 host APIs";
+#endif
         return true;
     }
 
+#if !defined(_WIN32)
+    attempt->valid = true;
+    attempt->message =
+        "minimal original entry execution requires Win32 host APIs";
+    return true;
+#else
     if (!placement.valid || !placement.placed)
     {
         attempt->message = "relocated image is not placed";
@@ -160,6 +176,7 @@ bool AttemptWin32MinimalExecution(
     }
 
     return true;
+#endif
 }
 
 }  // namespace repiu::platform::win32

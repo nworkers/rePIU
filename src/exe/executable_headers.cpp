@@ -694,16 +694,17 @@ bool ApplyLeInternalRelocations(const LeHeader& header,
         {
             ++dry_run->unsupported_source_type_count;
             ++dry_run->skipped_count;
+            const LeSkippedRelocation skipped = MakeSkippedRelocation(record);
+            dry_run->skipped_relocations.push_back(skipped);
             if (!dry_run->has_first_unsupported_source)
             {
-                dry_run->first_unsupported_source =
-                    MakeSkippedRelocation(record);
+                dry_run->first_unsupported_source = skipped;
                 dry_run->has_first_unsupported_source = true;
             }
             if (!dry_run->has_first_unsupported_source_by_kind[source_kind])
             {
                 dry_run->first_unsupported_source_by_kind[source_kind] =
-                    MakeSkippedRelocation(record);
+                    skipped;
                 dry_run->has_first_unsupported_source_by_kind[source_kind] =
                     true;
             }
@@ -774,13 +775,13 @@ bool ApplyLeInternalRelocations(const LeHeader& header,
         {
             ++dry_run->source_out_of_range_count;
             ++dry_run->skipped_count;
+            LeSkippedRelocation skipped = MakeSkippedRelocation(record);
+            skipped.source_object = source_object_index;
+            skipped.source_object_offset = source_object_offset;
+            dry_run->skipped_relocations.push_back(skipped);
             if (!dry_run->has_first_out_of_range)
             {
-                dry_run->first_out_of_range = MakeSkippedRelocation(record);
-                dry_run->first_out_of_range.source_object =
-                    source_object_index;
-                dry_run->first_out_of_range.source_object_offset =
-                    source_object_offset;
+                dry_run->first_out_of_range = skipped;
                 dry_run->has_first_out_of_range = true;
             }
             continue;
