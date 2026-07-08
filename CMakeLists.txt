@@ -2,9 +2,22 @@ cmake_minimum_required(VERSION 3.20)
 
 project(rePIU LANGUAGES CXX)
 
+include(FetchContent)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+find_package(spdlog CONFIG QUIET)
+if(NOT spdlog_FOUND)
+    FetchContent_Declare(
+        spdlog
+        GIT_REPOSITORY https://github.com/gabime/spdlog.git
+        GIT_TAG v1.14.1
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(spdlog)
+endif()
 
 function(repiu_configure_win32_loader_host target_name)
     if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4)
@@ -25,6 +38,7 @@ add_library(repiu_exe
     src/exe/executable_headers.cpp
     src/hle/hle_dispatcher.cpp
     src/hle/hle_profile.cpp
+    src/hle/privileged_instruction.cpp
     src/platform/win32/execution_trampoline.cpp
     src/platform/win32/runtime_memory_policy.cpp
     src/runtime/guest_context.cpp
@@ -55,6 +69,7 @@ target_link_libraries(repiu_exe_analyzer
 target_link_libraries(repiu_loader_win32
     PRIVATE
         repiu_exe
+        spdlog::spdlog_header_only
 )
 
 repiu_configure_win32_loader_host(repiu_exe_analyzer)

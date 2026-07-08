@@ -4,25 +4,27 @@
 
 이전 TODO/PLAN의 분석 및 기반 구조 작업은 완료되었다.
 이번 단계에서 Win32 x86 guest ESP 전환 trampoline도 구현되었다.
+privileged instruction 예외 위치를 HLE trap 후보와 CPU/DPMI 상태 초기화 후보로 분류하는 초기 classifier도 추가되었다.
 
 남은 실제 구현 작업은 다음과 같다.
 
 1. HLE dispatcher handler 호출 규약과 guest context 복귀 경로 구현
 2. 실제 trace로 확인된 INT21/INT31 서비스 최소 구현
 3. selector/descriptor 권한 검사와 DPMI descriptor API 연결
-4. privileged instruction 예외 위치를 HLE trap 또는 CPU/DPMI 상태 초기화 요구로 분류
+4. privileged instruction classifier 결과를 바탕으로 첫 HLE trap 처리 경로 구현
 
 ## Status As Of 2026-07-09
 
 The previous TODO/PLAN analysis and foundation work is complete.
 This step also implements the Win32 x86 guest ESP-switching trampoline.
+It also adds the initial classifier that separates privileged-instruction exceptions into HLE trap candidates and CPU/DPMI state initialization candidates.
 
 Remaining real implementation work:
 
 1. Implement the HLE dispatcher handler calling convention and guest context return path.
 2. Implement only the INT21/INT31 services confirmed by actual traces.
 3. Connect selector/descriptor permission checks and DPMI descriptor APIs.
-4. Classify the privileged-instruction exception location as an HLE trap or a CPU/DPMI state initialization requirement.
+4. Implement the first HLE trap handling path based on the privileged instruction classifier result.
 
 ## 현재 우선순위 상태
 
@@ -41,13 +43,14 @@ Remaining real implementation work:
 2. guest context 구조체와 guest stack switch plan 구조: 완료.
 3. HLE dispatcher table 초안: 완료.
 4. selector/descriptor table 최소 모델: 완료.
+5. privileged instruction 초기 분류기와 loader 출력 연결: 완료.
 
 ## 남은 실제 구현 작업
 
-1. Win32 x86 assembly 기반 실제 ESP 전환 trampoline 구현.
-2. HLE dispatcher handler 호출 규약과 guest context 복귀 경로 구현.
-3. INT21/INT31 중 실제 trace로 확인된 서비스부터 최소 구현.
-4. selector/descriptor 권한 검사와 DPMI descriptor API 연결.
+1. HLE dispatcher handler 호출 규약과 guest context 복귀 경로 구현.
+2. INT21/INT31 중 실제 trace로 확인된 서비스부터 최소 구현.
+3. selector/descriptor 권한 검사와 DPMI descriptor API 연결.
+4. privileged instruction classifier 결과를 실제 trap 처리 정책에 연결.
 
 ## Current Priority Status
 
@@ -66,10 +69,11 @@ As of 2026-07-08, the previous TODO/PLAN remaining work is summarized in `docs/2
 2. Guest context and guest stack switch plan structures: complete.
 3. HLE dispatcher table draft: complete.
 4. Minimal selector/descriptor table model: complete.
+5. Initial privileged instruction classifier and loader output wiring: complete.
 
 ## Remaining Real Implementation Work
 
 1. Implement the HLE dispatcher handler calling convention and guest context return path.
 2. Implement only the INT21/INT31 services confirmed by actual traces.
 3. Connect selector/descriptor permission checks and DPMI descriptor APIs.
-4. Classify the privileged-instruction exception location as an HLE trap or a CPU/DPMI state initialization requirement.
+4. Connect privileged instruction classifier results to a real trap handling policy.

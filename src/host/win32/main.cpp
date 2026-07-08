@@ -1,5 +1,6 @@
 #include "repiu/exe/dos4gw_loader.h"
 #include "repiu/hle/hle_dispatcher.h"
+#include "repiu/hle/privileged_instruction.h"
 #include "repiu/platform/win32/execution_trampoline.h"
 #include "repiu/platform/win32/runtime_memory_policy.h"
 #include "repiu/runtime/guest_context.h"
@@ -8,11 +9,15 @@
 #include "repiu/runtime/selector_table.h"
 #include "repiu/target/target_profile.h"
 
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
+
+#include <cstdio>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
-#include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -21,12 +26,44 @@
 namespace
 {
 
+std::shared_ptr<spdlog::logger> CreateLoaderLogger()
+{
+    std::shared_ptr<spdlog::logger> logger =
+        spdlog::stderr_color_mt("loader");
+    logger->set_pattern("[%l] [%n] %v");
+    logger->set_level(spdlog::level::info);
+    return logger;
+}
+
 std::string Hex32(std::uint32_t value)
 {
     std::ostringstream stream;
     stream << "0x" << std::uppercase << std::hex << std::setw(8)
            << std::setfill('0') << value;
     return stream.str();
+}
+
+std::string Hex8(std::uint8_t value)
+{
+    std::ostringstream stream;
+    stream << "0x" << std::uppercase << std::hex << std::setw(2)
+           << std::setfill('0') << static_cast<unsigned>(value);
+    return stream.str();
+}
+
+void WriteGuestOutput(std::string_view output)
+{
+    if (output.empty())
+    {
+        return;
+    }
+
+    std::fwrite(output.data(), 1, output.size(), stdout);
+    if (output.back() != '\n')
+    {
+        std::fwrite("\n", 1, 1, stdout);
+    }
+    std::fflush(stdout);
 }
 
 bool ReadBinaryFile(const std::filesystem::path& path,
@@ -82,253 +119,284 @@ bool ReadBinaryFile(const std::filesystem::path& path,
 }
 
 
-void PrintByteWindow(
+std::string BuildByteWindowText(
     const repiu::runtime::RelocatedImageByteWindow& window)
 {
-    std::cout << "Relocated exception byte window: "
-              << (window.valid ? "valid" : "invalid") << "\n";
-    std::cout << "Relocated exception byte window message: "
-              << window.message << "\n";
+    std::ostringstream stream;
+    for (std::size_t index = 0; index < window.bytes.size(); ++index)
+    {
+        if (index == window.focus_offset)
+        {
+            stream << " [";
+        }
+        else
+        {
+            stream << " ";
+        }
+        stream << std::uppercase << std::hex << std::setw(2)
+               << std::setfill('0')
+               << static_cast<unsigned>(window.bytes[index])
+               << std::dec << std::setfill(' ');
+        if (index == window.focus_offset)
+        {
+            stream << "]";
+        }
+    }
+    return stream.str();
+}
+
+void PrintByteWindow(
+    spdlog::logger& logger,
+    const repiu::runtime::RelocatedImageByteWindow& window)
+{
+    logger.info("Relocated exception byte window: {}",
+                window.valid ? "valid" : "invalid");
+    logger.info("Relocated exception byte window message: {}",
+                window.message);
     if (!window.valid)
     {
         return;
     }
 
-    std::cout << "Relocated exception byte object: "
-              << window.object_index << "\n";
-    std::cout << "Relocated exception byte base: "
-              << Hex32(window.window_base) << "\n";
-    std::cout << "Relocated exception byte focus offset: "
-              << Hex32(window.focus_offset) << "\n";
-    std::cout << "Relocated exception bytes:";
-    for (std::size_t index = 0; index < window.bytes.size(); ++index)
+    logger.info("Relocated exception byte object: {}",
+                window.object_index);
+    logger.info("Relocated exception byte base: {}",
+                Hex32(window.window_base));
+    logger.info("Relocated exception byte focus offset: {}",
+                Hex32(window.focus_offset));
+    logger.info("Relocated exception bytes:{}",
+                BuildByteWindowText(window));
+}
+
+void PrintPrivilegedInstructionClassification(
+    spdlog::logger& logger,
+    const repiu::hle::PrivilegedInstructionClassification& classification)
+{
+    logger.info("Privileged instruction classification: {}",
+                classification.valid ? "valid" : "unknown");
+    logger.info("Privileged instruction opcode: {}",
+                Hex8(classification.opcode));
+    if (classification.valid)
     {
-        if (index == window.focus_offset)
-        {
-            std::cout << " [";
-        }
-        else
-        {
-            std::cout << " ";
-        }
-        std::cout << std::uppercase << std::hex << std::setw(2)
-                  << std::setfill('0')
-                  << static_cast<unsigned>(window.bytes[index])
-                  << std::dec << std::setfill(' ');
-        if (index == window.focus_offset)
-        {
-            std::cout << "]";
-        }
+        logger.info("Privileged instruction mnemonic: {}",
+                    classification.mnemonic);
+        logger.info("Privileged instruction length: {}",
+                    classification.length);
+        logger.info("Privileged instruction class: {}",
+                    repiu::hle::PrivilegedInstructionClassName(
+                        classification.instruction_class));
+        logger.info("Privileged instruction HLE trap candidate: {}",
+                    classification.hle_trap_candidate ? "true" : "false");
+        logger.info("Privileged instruction CPU/DPMI state candidate: {}",
+                    classification.cpu_state_initialization_candidate
+                        ? "true"
+                        : "false");
     }
-    std::cout << "\n";
+    logger.info("Privileged instruction classification message: {}",
+                classification.message);
 }
 
 void PrintGuestStackPlan(
+    spdlog::logger& logger,
     const repiu::runtime::GuestStackSwitchPlan& plan)
 {
-    std::cout << "Guest stack switch plan: "
-              << (plan.valid ? "valid" : "invalid") << "\n";
-    std::cout << "Guest stack switch entry: "
-              << Hex32(plan.entry_eip) << "\n";
-    std::cout << "Guest stack switch stack base: "
-              << Hex32(plan.stack_base) << "\n";
-    std::cout << "Guest stack switch stack limit: "
-              << Hex32(plan.stack_limit) << "\n";
-    std::cout << "Guest stack switch initial ESP: "
-              << Hex32(plan.initial_esp) << "\n";
-    std::cout << "Guest stack switch message: "
-              << plan.message << "\n";
+    logger.info("Guest stack switch plan: {}",
+                plan.valid ? "valid" : "invalid");
+    logger.info("Guest stack switch entry: {}", Hex32(plan.entry_eip));
+    logger.info("Guest stack switch stack base: {}",
+                Hex32(plan.stack_base));
+    logger.info("Guest stack switch stack limit: {}",
+                Hex32(plan.stack_limit));
+    logger.info("Guest stack switch initial ESP: {}",
+                Hex32(plan.initial_esp));
+    logger.info("Guest stack switch message: {}", plan.message);
 }
 
 void PrintHleDispatcherTable(
+    spdlog::logger& logger,
     const repiu::hle::HleDispatcherTable& table)
 {
-    std::cout << "HLE dispatcher table: "
-              << (table.valid ? "valid" : "invalid") << "\n";
-    std::cout << "HLE dispatcher trap count: "
-              << table.traps.size() << "\n";
-    std::cout << "HLE dispatcher message: "
-              << table.message << "\n";
+    logger.info("HLE dispatcher table: {}",
+                table.valid ? "valid" : "invalid");
+    logger.info("HLE dispatcher trap count: {}", table.traps.size());
+    logger.info("HLE dispatcher message: {}", table.message);
 }
 
-void PrintParseError(const repiu::exe::ParseError& error)
+void PrintParseError(spdlog::logger& logger,
+                     const repiu::exe::ParseError& error)
 {
-    std::cerr << "Parse error at " << Hex32(error.file_offset) << ": "
-              << error.message << "\n";
+    logger.error("Parse error at {}: {}",
+                 Hex32(error.file_offset),
+                 error.message);
 }
 
 void PrintPolicy(
+    spdlog::logger& logger,
     const repiu::platform::win32::Win32RuntimeMemoryPolicy& policy)
 {
-    std::cout << "Win32 loader policy: "
-              << (policy.valid ? "valid" : "invalid") << "\n";
-    std::cout << "Win32 host pointer bits: "
-              << policy.host_pointer_bits << "\n";
-    std::cout << "Win32 direct x86 execution: "
-              << (policy.direct_x86_execution_supported ? "supported"
-                                                        : "unsupported")
-              << "\n";
-    std::cout << "Win32 fixed reserve base: "
-              << Hex32(policy.preferred_allocation_base) << "\n";
-    std::cout << "Win32 fixed reserve size: "
-              << Hex32(policy.required_reserve_size) << "\n";
-    std::cout << "Win32 fixed reserve end: "
-              << Hex32(policy.hle_reserve_base) << "\n";
-    std::cout << "Win32 loader policy message: "
-              << policy.message << "\n";
+    logger.info("Win32 loader policy: {}",
+                policy.valid ? "valid" : "invalid");
+    logger.info("Win32 host pointer bits: {}", policy.host_pointer_bits);
+    logger.info("Win32 direct x86 execution: {}",
+                policy.direct_x86_execution_supported ? "supported"
+                                                       : "unsupported");
+    logger.info("Win32 fixed reserve base: {}",
+                Hex32(policy.preferred_allocation_base));
+    logger.info("Win32 fixed reserve size: {}",
+                Hex32(policy.required_reserve_size));
+    logger.info("Win32 fixed reserve end: {}",
+                Hex32(policy.hle_reserve_base));
+    logger.info("Win32 loader policy message: {}", policy.message);
 }
 
 void PrintReservation(
+    spdlog::logger& logger,
     const repiu::platform::win32::Win32AddressRangeReservation& reservation)
 {
-    std::cout << "Win32 early reservation attempt: "
-              << (reservation.valid ? "valid" : "invalid") << "\n";
-    std::cout << "Win32 early reservation result: "
-              << (reservation.reserved ? "reserved" : "not reserved")
-              << "\n";
-    std::cout << "Win32 requested reserve base: "
-              << Hex32(reservation.requested_base) << "\n";
-    std::cout << "Win32 requested reserve size: "
-              << Hex32(reservation.requested_size) << "\n";
+    logger.info("Win32 early reservation attempt: {}",
+                reservation.valid ? "valid" : "invalid");
+    logger.info("Win32 early reservation result: {}",
+                reservation.reserved ? "reserved" : "not reserved");
+    logger.info("Win32 requested reserve base: {}",
+                Hex32(reservation.requested_base));
+    logger.info("Win32 requested reserve size: {}",
+                Hex32(reservation.requested_size));
     if (reservation.reserved)
     {
-        std::cout << "Win32 reserved base: "
-                  << Hex32(reservation.reserved_base) << "\n";
-        std::cout << "Win32 reserved size: "
-                  << Hex32(reservation.reserved_size) << "\n";
+        logger.info("Win32 reserved base: {}",
+                    Hex32(reservation.reserved_base));
+        logger.info("Win32 reserved size: {}",
+                    Hex32(reservation.reserved_size));
     }
     if (reservation.windows_error != 0)
     {
-        std::cout << "Win32 reservation error: "
-                  << reservation.windows_error << "\n";
+        logger.info("Win32 reservation error: {}",
+                    reservation.windows_error);
     }
-    std::cout << "Win32 early reservation message: "
-              << reservation.message << "\n";
+    logger.info("Win32 early reservation message: {}",
+                reservation.message);
 }
 
 void PrintProbe(
+    spdlog::logger& logger,
     const repiu::platform::win32::Win32AddressRangeProbe& probe)
 {
-    std::cout << "Win32 host range probe: "
-              << (probe.valid ? "valid" : "invalid") << "\n";
-    std::cout << "Win32 host range available: "
-              << (probe.range_available ? "true" : "false") << "\n";
-    std::cout << "Win32 host probe base: "
-              << Hex32(probe.checked_base) << "\n";
-    std::cout << "Win32 host probe size: "
-              << Hex32(probe.checked_size) << "\n";
+    logger.info("Win32 host range probe: {}",
+                probe.valid ? "valid" : "invalid");
+    logger.info("Win32 host range available: {}",
+                probe.range_available ? "true" : "false");
+    logger.info("Win32 host probe base: {}",
+                Hex32(probe.checked_base));
+    logger.info("Win32 host probe size: {}",
+                Hex32(probe.checked_size));
     if (probe.valid && !probe.range_available)
     {
-        std::cout << "Win32 host first blocking block base: "
-                  << Hex32(probe.first_block_base) << "\n";
-        std::cout << "Win32 host first blocking block size: "
-                  << Hex32(probe.first_block_size) << "\n";
-        std::cout << "Win32 host first blocking block state: "
-                  << probe.first_block_state << "\n";
+        logger.info("Win32 host first blocking block base: {}",
+                    Hex32(probe.first_block_base));
+        logger.info("Win32 host first blocking block size: {}",
+                    Hex32(probe.first_block_size));
+        logger.info("Win32 host first blocking block state: {}",
+                    probe.first_block_state);
     }
-    std::cout << "Win32 host range probe message: "
-              << probe.message << "\n";
+    logger.info("Win32 host range probe message: {}", probe.message);
 }
 
 void PrintPlacement(
+    spdlog::logger& logger,
     const repiu::platform::win32::Win32RelocatedImagePlacement& placement)
 {
-    std::cout << "Win32 relocated image placement: "
-              << (placement.valid ? "valid" : "invalid") << "\n";
-    std::cout << "Win32 relocated image placement result: "
-              << (placement.placed ? "placed" : "not placed") << "\n";
-    std::cout << "Win32 relocated image requested base: "
-              << Hex32(placement.requested_base) << "\n";
-    std::cout << "Win32 relocated image requested size: "
-              << Hex32(placement.requested_size) << "\n";
+    logger.info("Win32 relocated image placement: {}",
+                placement.valid ? "valid" : "invalid");
+    logger.info("Win32 relocated image placement result: {}",
+                placement.placed ? "placed" : "not placed");
+    logger.info("Win32 relocated image requested base: {}",
+                Hex32(placement.requested_base));
+    logger.info("Win32 relocated image requested size: {}",
+                Hex32(placement.requested_size));
     if (placement.placed)
     {
-        std::cout << "Win32 relocated image placed base: "
-                  << Hex32(placement.placed_base) << "\n";
-        std::cout << "Win32 relocated image placed size: "
-                  << Hex32(placement.placed_size) << "\n";
+        logger.info("Win32 relocated image placed base: {}",
+                    Hex32(placement.placed_base));
+        logger.info("Win32 relocated image placed size: {}",
+                    Hex32(placement.placed_size));
     }
-    std::cout << "Win32 relocated image copied objects: "
-              << placement.copied_object_count << "\n";
-    std::cout << "Win32 relocated image protected objects: "
-              << placement.protected_object_count << "\n";
+    logger.info("Win32 relocated image copied objects: {}",
+                placement.copied_object_count);
+    logger.info("Win32 relocated image protected objects: {}",
+                placement.protected_object_count);
     if (placement.windows_error != 0)
     {
-        std::cout << "Win32 relocated image placement error: "
-                  << placement.windows_error << "\n";
+        logger.info("Win32 relocated image placement error: {}",
+                    placement.windows_error);
     }
-    std::cout << "Win32 relocated image placement message: "
-              << placement.message << "\n";
+    logger.info("Win32 relocated image placement message: {}",
+                placement.message);
 }
 
 void PrintExecutionAttempt(
+    spdlog::logger& logger,
     const repiu::platform::win32::Win32MinimalExecutionAttempt& attempt)
 {
-    std::cout << "Win32 minimal execution attempt: "
-              << (attempt.valid ? "valid" : "invalid") << "\n";
-    std::cout << "Win32 minimal execution supported: "
-              << (attempt.supported ? "true" : "false") << "\n";
-    std::cout << "Win32 minimal execution attempted: "
-              << (attempt.attempted ? "true" : "false") << "\n";
-    std::cout << "Win32 minimal execution entry: "
-              << Hex32(attempt.entry_address) << "\n";
-    std::cout << "Win32 minimal execution returned: "
-              << (attempt.returned ? "true" : "false") << "\n";
-    std::cout << "Win32 minimal execution exception caught: "
-              << (attempt.exception_caught ? "true" : "false") << "\n";
+    logger.info("Win32 minimal execution attempt: {}",
+                attempt.valid ? "valid" : "invalid");
+    logger.info("Win32 minimal execution supported: {}",
+                attempt.supported ? "true" : "false");
+    logger.info("Win32 minimal execution attempted: {}",
+                attempt.attempted ? "true" : "false");
+    logger.info("Win32 minimal execution entry: {}",
+                Hex32(attempt.entry_address));
+    logger.info("Win32 minimal execution returned: {}",
+                attempt.returned ? "true" : "false");
+    logger.info("Win32 minimal execution exception caught: {}",
+                attempt.exception_caught ? "true" : "false");
     if (attempt.exception_caught)
     {
-        std::cout << "Win32 minimal execution exception code: "
-                  << Hex32(attempt.seh_exception_code) << "\n";
-        std::cout << "Win32 minimal execution exception address: "
-                  << Hex32(attempt.seh_exception_address) << "\n";
-        std::cout << "Win32 minimal execution exception EAX: "
-                  << Hex32(attempt.exception_eax) << "\n";
-        std::cout << "Win32 minimal execution exception EBX: "
-                  << Hex32(attempt.exception_ebx) << "\n";
-        std::cout << "Win32 minimal execution exception ECX: "
-                  << Hex32(attempt.exception_ecx) << "\n";
-        std::cout << "Win32 minimal execution exception EDX: "
-                  << Hex32(attempt.exception_edx) << "\n";
-        std::cout << "Win32 minimal execution exception ESI: "
-                  << Hex32(attempt.exception_esi) << "\n";
-        std::cout << "Win32 minimal execution exception EDI: "
-                  << Hex32(attempt.exception_edi) << "\n";
+        logger.info("Win32 minimal execution exception code: {}",
+                    Hex32(attempt.seh_exception_code));
+        logger.info("Win32 minimal execution exception address: {}",
+                    Hex32(attempt.seh_exception_address));
+        logger.info("Win32 minimal execution exception EAX: {}",
+                    Hex32(attempt.exception_eax));
+        logger.info("Win32 minimal execution exception EBX: {}",
+                    Hex32(attempt.exception_ebx));
+        logger.info("Win32 minimal execution exception ECX: {}",
+                    Hex32(attempt.exception_ecx));
+        logger.info("Win32 minimal execution exception EDX: {}",
+                    Hex32(attempt.exception_edx));
+        logger.info("Win32 minimal execution exception ESI: {}",
+                    Hex32(attempt.exception_esi));
+        logger.info("Win32 minimal execution exception EDI: {}",
+                    Hex32(attempt.exception_edi));
     }
-    std::cout << "Win32 minimal execution timed out: "
-              << (attempt.timed_out ? "true" : "false") << "\n";
-    std::cout << "Win32 guest stack switch supported: "
-              << (attempt.guest_stack_switch_supported ? "true" : "false")
-              << "\n";
-    std::cout << "Win32 guest stack switch attempted: "
-              << (attempt.guest_stack_switch_attempted ? "true" : "false")
-              << "\n";
+    logger.info("Win32 minimal execution timed out: {}",
+                attempt.timed_out ? "true" : "false");
+    logger.info("Win32 guest stack switch supported: {}",
+                attempt.guest_stack_switch_supported ? "true" : "false");
+    logger.info("Win32 guest stack switch attempted: {}",
+                attempt.guest_stack_switch_attempted ? "true" : "false");
     if (attempt.guest_stack_switch_attempted)
     {
-        std::cout << "Win32 guest stack initial ESP: "
-                  << Hex32(attempt.guest_stack_initial_esp) << "\n";
+        logger.info("Win32 guest stack initial ESP: {}",
+                    Hex32(attempt.guest_stack_initial_esp));
         if (attempt.guest_stack_return_esp != 0)
         {
-            std::cout << "Win32 guest stack return ESP: "
-                      << Hex32(attempt.guest_stack_return_esp) << "\n";
+            logger.info("Win32 guest stack return ESP: {}",
+                        Hex32(attempt.guest_stack_return_esp));
         }
     }
-    std::cout << "Win32 minimal execution thread exit code: "
-              << attempt.thread_exit_code << "\n";
+    logger.info("Win32 minimal execution thread exit code: {}",
+                attempt.thread_exit_code);
     if (!attempt.hle_console_output.empty())
     {
-        std::cout << "Win32 HLE console output:\n"
-                  << attempt.hle_console_output;
-        if (attempt.hle_console_output.back() != '\n')
-        {
-            std::cout << "\n";
-        }
+        logger.info("Win32 HLE console output bytes: {}",
+                    attempt.hle_console_output.size());
+        WriteGuestOutput(attempt.hle_console_output);
     }
-    std::cout << "Win32 minimal execution message: "
-              << attempt.message << "\n";
+    logger.info("Win32 minimal execution message: {}", attempt.message);
 }
 
 bool SelectRelocatedImageBase(std::uint32_t reserve_size,
+                              spdlog::logger& logger,
                               std::uint32_t* selected_base)
 {
     if (selected_base == nullptr)
@@ -364,10 +432,9 @@ bool SelectRelocatedImageBase(std::uint32_t reserve_size,
             continue;
         }
 
-        std::cout << "Win32 relocated base candidate "
-                  << Hex32(candidate) << ": "
-                  << (probe.range_available ? "available" : "occupied")
-                  << "\n";
+        logger.info("Win32 relocated base candidate {}: {}",
+                    Hex32(candidate),
+                    probe.range_available ? "available" : "occupied");
         if (probe.range_available)
         {
             *selected_base = candidate;
@@ -394,23 +461,25 @@ const repiu::target::TargetProfile* SelectTargetProfile(int argc,
 
 int main(int argc, char** argv)
 {
+    std::shared_ptr<spdlog::logger> logger = CreateLoaderLogger();
+
     const repiu::target::TargetProfile* profile =
         SelectTargetProfile(argc, argv);
     if (profile == nullptr)
     {
-        std::cerr << "Target profile was not found\n";
+        logger->error("Target profile was not found");
         return 1;
     }
 
-    std::cout << "Win32 loader target: " << profile->id << "\n";
+    logger->info("Win32 loader target: {}", profile->id);
 #if defined(REPIU_WIN32_HOST_IMAGE_BASE)
-    std::cout << "Win32 host image base policy: "
-              << Hex32(REPIU_WIN32_HOST_IMAGE_BASE) << "\n";
+    logger->info("Win32 host image base policy: {}",
+                 Hex32(REPIU_WIN32_HOST_IMAGE_BASE));
 #endif
 
     if (!profile->runtime_reservation_hint.valid)
     {
-        std::cerr << "Target has no runtime reservation hint\n";
+        logger->error("Target has no runtime reservation hint");
         return 1;
     }
 
@@ -420,41 +489,41 @@ int main(int argc, char** argv)
             profile->runtime_reservation_hint.reserve_size,
             &policy))
     {
-        std::cerr << "Failed to build fixed range policy\n";
+        logger->error("Failed to build fixed range policy");
         return 1;
     }
 
-    PrintPolicy(policy);
+    PrintPolicy(*logger, policy);
 
     repiu::platform::win32::Win32AddressRangeProbe probe;
     if (!repiu::platform::win32::ProbeWin32RuntimeAddressRange(
             policy, &probe))
     {
-        std::cerr << "Failed to probe fixed runtime range: "
-                  << probe.message << "\n";
+        logger->error("Failed to probe fixed runtime range: {}",
+                      probe.message);
         return 1;
     }
 
-    PrintProbe(probe);
+    PrintProbe(*logger, probe);
 
     repiu::platform::win32::Win32AddressRangeReservation reservation;
     if (!repiu::platform::win32::ReserveWin32RuntimeAddressRange(
             policy, &reservation))
     {
-        std::cerr << "Failed to run early reservation attempt\n";
+        logger->error("Failed to run early reservation attempt");
         return 1;
     }
 
-    PrintReservation(reservation);
+    PrintReservation(*logger, reservation);
     repiu::platform::win32::ReleaseWin32RuntimeAddressRange(reservation);
 
     std::vector<std::uint8_t> data;
     std::string read_error;
     if (!ReadBinaryFile(profile->executable_path, &data, &read_error))
     {
-        std::cerr << "Failed to read "
-                  << profile->executable_path.string()
-                  << ": " << read_error << "\n";
+        logger->error("Failed to read {}: {}",
+                      profile->executable_path.string(),
+                      read_error);
         return 1;
     }
 
@@ -463,26 +532,27 @@ int main(int argc, char** argv)
     if (!repiu::exe::LoadDos4gwExecutable(data, *profile, &load_result,
                                           &error))
     {
-        PrintParseError(error);
+        PrintParseError(*logger, error);
         return 1;
     }
 
     std::uint32_t relocated_image_base = 0;
     if (!SelectRelocatedImageBase(profile->runtime_reservation_hint.reserve_size,
+                                  *logger,
                                   &relocated_image_base))
     {
-        std::cerr << "Failed to find an available relocated image base\n";
+        logger->error("Failed to find an available relocated image base");
         return 1;
     }
 
-    std::cout << "Win32 selected relocated image base: "
-              << Hex32(relocated_image_base) << "\n";
+    logger->info("Win32 selected relocated image base: {}",
+                 Hex32(relocated_image_base));
 
     repiu::runtime::RelocatableRuntimeImagePlan relocatable_plan;
     if (!repiu::runtime::BuildRelocatableRuntimeImagePlan(
             load_result, relocated_image_base, &relocatable_plan, &error))
     {
-        PrintParseError(error);
+        PrintParseError(*logger, error);
         return 1;
     }
 
@@ -490,7 +560,7 @@ int main(int argc, char** argv)
     if (!repiu::runtime::BuildRelocatedRuntimeImage(
             load_result, relocatable_plan, &relocated_image, &error))
     {
-        PrintParseError(error);
+        PrintParseError(*logger, error);
         return 1;
     }
 
@@ -520,11 +590,11 @@ int main(int argc, char** argv)
         relocated_image.relocated_stack_top_linear_address,
         guard_bytes,
         &stack_plan);
-    PrintGuestStackPlan(stack_plan);
+    PrintGuestStackPlan(*logger, stack_plan);
 
     repiu::hle::HleDispatcherTable hle_dispatcher;
     repiu::hle::BuildInitialHleDispatcherTable(&hle_dispatcher);
-    PrintHleDispatcherTable(hle_dispatcher);
+    PrintHleDispatcherTable(*logger, hle_dispatcher);
 
     repiu::platform::win32::Win32RelocatedImagePlacement placement;
     if (!repiu::platform::win32::PlaceWin32RelocatedImage(
@@ -532,12 +602,12 @@ int main(int argc, char** argv)
             profile->runtime_reservation_hint.reserve_size,
             &placement))
     {
-        std::cerr << "Failed to place relocated image\n";
+        logger->error("Failed to place relocated image");
         return 1;
     }
 
-    PrintPlacement(placement);
-    std::cout.flush();
+    PrintPlacement(*logger, placement);
+    logger->flush();
     repiu::platform::win32::Win32MinimalExecutionAttempt attempt;
     const bool use_dos_console_hle = profile->id == "dos4gw_hello";
     const bool attempted_execution =
@@ -554,12 +624,12 @@ int main(int argc, char** argv)
                   &attempt);
     if (!attempted_execution)
     {
-        std::cerr << "Failed to attempt minimal original entry execution\n";
+        logger->error("Failed to attempt minimal original entry execution");
         repiu::platform::win32::ReleaseWin32RelocatedImage(placement);
         return 1;
     }
 
-    PrintExecutionAttempt(attempt);
+    PrintExecutionAttempt(*logger, attempt);
     if (attempt.exception_caught)
     {
         repiu::runtime::RelocatedImageByteWindow window;
@@ -569,7 +639,16 @@ int main(int argc, char** argv)
             16,
             16,
             &window);
-        PrintByteWindow(window);
+        PrintByteWindow(*logger, window);
+        if (window.valid)
+        {
+            repiu::hle::PrivilegedInstructionClassification classification;
+            repiu::hle::ClassifyPrivilegedInstruction(
+                window.bytes,
+                window.focus_offset,
+                &classification);
+            PrintPrivilegedInstructionClassification(*logger, classification);
+        }
     }
     repiu::platform::win32::ReleaseWin32RelocatedImage(placement);
     return 0;
