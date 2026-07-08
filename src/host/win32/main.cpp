@@ -394,6 +394,17 @@ void PrintExecutionAttempt(
                     Hex8(static_cast<std::uint8_t>(
                         attempt.last_hle_trap_opcode & 0xFFU)));
     }
+    logger.info("Win32 handled DOS interrupt count: {}",
+                attempt.handled_dos_interrupt_count);
+    if (attempt.handled_dos_interrupt_count > 0)
+    {
+        logger.info("Win32 last handled DOS interrupt vector: {}",
+                    Hex8(static_cast<std::uint8_t>(
+                        attempt.last_dos_interrupt_vector & 0xFFU)));
+        logger.info("Win32 last handled DOS interrupt AH: {}",
+                    Hex8(static_cast<std::uint8_t>(
+                        attempt.last_dos_interrupt_ah & 0xFFU)));
+    }
     logger.info("Win32 minimal execution thread exit code: {}",
                 attempt.thread_exit_code);
     if (!attempt.hle_console_output.empty())

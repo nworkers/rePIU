@@ -5,28 +5,30 @@
 이전 TODO/PLAN의 분석 및 기반 구조 작업은 완료되었다.
 이번 단계에서 Win32 x86 guest ESP 전환 trampoline도 구현되었다.
 privileged instruction 예외 위치를 HLE trap 후보와 CPU/DPMI 상태 초기화 후보로 분류하는 초기 classifier도 추가되었다.
-`STI`는 첫 HLE trap으로 처리되어 다음 중단 지점인 `INT 21h`까지 진행된다.
+`STI`는 첫 HLE trap으로 처리되었다.
+`INT 21h AH=0x30`도 처리되어 다음 중단 지점인 `INT 21h AH=0xFF`까지 진행된다.
 
 남은 실제 구현 작업은 다음과 같다.
 
 1. HLE dispatcher handler 호출 규약과 guest context 복귀 경로 구현
 2. 실제 trace로 확인된 INT21/INT31 서비스 최소 구현
 3. selector/descriptor 권한 검사와 DPMI descriptor API 연결
-4. `INT 21h`를 첫 DOS HLE dispatcher 서비스로 연결
+4. `INT 21h AH=0xFF`를 다음 DOS HLE dispatcher 서비스로 연결
 
 ## Status As Of 2026-07-09
 
 The previous TODO/PLAN analysis and foundation work is complete.
 This step also implements the Win32 x86 guest ESP-switching trampoline.
 It also adds the initial classifier that separates privileged-instruction exceptions into HLE trap candidates and CPU/DPMI state initialization candidates.
-`STI` is now handled as the first HLE trap, allowing execution to proceed to the next stop at `INT 21h`.
+`STI` is now handled as the first HLE trap.
+`INT 21h AH=0x30` is also handled, allowing execution to proceed to the next stop at `INT 21h AH=0xFF`.
 
 Remaining real implementation work:
 
 1. Implement the HLE dispatcher handler calling convention and guest context return path.
 2. Implement only the INT21/INT31 services confirmed by actual traces.
 3. Connect selector/descriptor permission checks and DPMI descriptor APIs.
-4. Connect `INT 21h` as the first DOS HLE dispatcher service.
+4. Connect `INT 21h AH=0xFF` as the next DOS HLE dispatcher service.
 
 ## 현재 우선순위 상태
 
@@ -47,13 +49,14 @@ Remaining real implementation work:
 4. selector/descriptor table 최소 모델: 완료.
 5. privileged instruction 초기 분류기와 loader 출력 연결: 완료.
 6. `STI` HLE trap 처리와 다음 `INT 21h` 중단 지점 관찰: 완료.
+7. `INT 21h AH=0x30` DOS version query 처리와 다음 `AH=0xFF` 중단 지점 관찰: 완료.
 
 ## 남은 실제 구현 작업
 
 1. HLE dispatcher handler 호출 규약과 guest context 복귀 경로 구현.
 2. INT21/INT31 중 실제 trace로 확인된 서비스부터 최소 구현.
 3. selector/descriptor 권한 검사와 DPMI descriptor API 연결.
-4. `INT 21h`의 첫 관찰 함수 `AH=0x30`을 DOS HLE dispatcher 경로에 연결.
+4. `INT 21h AH=0xFF`를 DOS HLE dispatcher 경로에 연결.
 
 ## Current Priority Status
 
@@ -74,10 +77,11 @@ As of 2026-07-08, the previous TODO/PLAN remaining work is summarized in `docs/2
 4. Minimal selector/descriptor table model: complete.
 5. Initial privileged instruction classifier and loader output wiring: complete.
 6. `STI` HLE trap handling and observation of the next `INT 21h` stop: complete.
+7. `INT 21h AH=0x30` DOS version query handling and observation of the next `AH=0xFF` stop: complete.
 
 ## Remaining Real Implementation Work
 
 1. Implement the HLE dispatcher handler calling convention and guest context return path.
 2. Implement only the INT21/INT31 services confirmed by actual traces.
 3. Connect selector/descriptor permission checks and DPMI descriptor APIs.
-4. Connect the first observed `INT 21h` function `AH=0x30` to the DOS HLE dispatcher path.
+4. Connect `INT 21h AH=0xFF` to the DOS HLE dispatcher path.
