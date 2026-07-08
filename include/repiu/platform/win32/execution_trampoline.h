@@ -37,6 +37,11 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t handled_dos_interrupt_count = 0;
     std::uint32_t last_dos_interrupt_vector = 0;
     std::uint32_t last_dos_interrupt_ah = 0;
+    std::uint32_t handled_segment_load_count = 0;
+    std::uint32_t last_segment_load_address = 0;
+    std::uint32_t last_segment_load_opcode = 0;
+    std::uint32_t last_segment_load_register = 0;
+    std::uint32_t last_segment_load_selector = 0;
     std::uint32_t thread_exit_code = 0;
     std::string hle_console_output;
     std::string message;

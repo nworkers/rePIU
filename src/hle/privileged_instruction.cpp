@@ -124,6 +124,20 @@ bool ClassifyPrivilegedInstruction(
                 "port I/O should be routed to a hardware or DOS extender HLE service",
                 classification);
             return true;
+        case 0x8E:
+            if (offset + 1 < bytes.size())
+            {
+                SetClassification(
+                    opcode,
+                    2,
+                    "MOV Sreg, r/m16",
+                    PrivilegedInstructionClass::
+                        kCpuStateInitializationCandidate,
+                    "segment-register load requires selector/descriptor state HLE",
+                    classification);
+                return true;
+            }
+            break;
         case 0x0F:
             if (offset + 1 >= bytes.size())
             {

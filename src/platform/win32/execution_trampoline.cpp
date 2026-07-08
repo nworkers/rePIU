@@ -37,6 +37,7 @@ struct ThreadContext
     bool use_guest_stack = false;
     bool enable_privileged_trap_hle = false;
     bool enable_traced_dos_hle = false;
+    bool enable_segment_load_hle = false;
     bool enable_dos_hle = false;
     bool returned = false;
     bool process_exit = false;
@@ -55,6 +56,16 @@ struct ThreadContext
     std::uint32_t handled_dos_interrupt_count = 0;
     std::uint32_t last_dos_interrupt_vector = 0;
     std::uint32_t last_dos_interrupt_ah = 0;
+    std::uint32_t handled_segment_load_count = 0;
+    std::uint32_t last_segment_load_address = 0;
+    std::uint32_t last_segment_load_opcode = 0;
+    std::uint32_t last_segment_load_register = 0;
+    std::uint32_t last_segment_load_selector = 0;
+    std::uint16_t guest_es = 0;
+    std::uint16_t guest_ss = 0;
+    std::uint16_t guest_ds = 0;
+    std::uint16_t guest_fs = 0;
+    std::uint16_t guest_gs = 0;
     char hle_console_output[4096] = {};
     std::uint32_t hle_console_output_size = 0;
     std::string hle_message;
@@ -390,6 +401,107 @@ void RecordHandledDosInterrupt(ThreadContext* context,
     context->last_dos_interrupt_ah = ah;
 }
 
+std::uint16_t ReadRegister16(const CONTEXT& win32_context,
+                             std::uint8_t register_id)
+{
+    switch (register_id & 0x07)
+    {
+        case 0:
+            return static_cast<std::uint16_t>(win32_context.Eax & 0xFFFFU);
+        case 1:
+            return static_cast<std::uint16_t>(win32_context.Ecx & 0xFFFFU);
+        case 2:
+            return static_cast<std::uint16_t>(win32_context.Edx & 0xFFFFU);
+        case 3:
+            return static_cast<std::uint16_t>(win32_context.Ebx & 0xFFFFU);
+        case 4:
+            return static_cast<std::uint16_t>(win32_context.Esp & 0xFFFFU);
+        case 5:
+            return static_cast<std::uint16_t>(win32_context.Ebp & 0xFFFFU);
+        case 6:
+            return static_cast<std::uint16_t>(win32_context.Esi & 0xFFFFU);
+        case 7:
+            return static_cast<std::uint16_t>(win32_context.Edi & 0xFFFFU);
+        default:
+            return 0;
+    }
+}
+
+void RecordGuestSegmentLoad(CONTEXT* win32_context,
+                            ThreadContext* context,
+                            std::uint8_t segment_register,
+                            std::uint16_t selector)
+{
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return;
+    }
+
+    ++context->handled_segment_load_count;
+    context->last_segment_load_address =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    context->last_segment_load_opcode = 0x8E;
+    context->last_segment_load_register = segment_register;
+    context->last_segment_load_selector = selector;
+
+    switch (segment_register)
+    {
+        case 0:
+            context->guest_es = selector;
+            break;
+        case 2:
+            context->guest_ss = selector;
+            break;
+        case 3:
+            context->guest_ds = selector;
+            break;
+        case 4:
+            context->guest_fs = selector;
+            break;
+        case 5:
+            context->guest_gs = selector;
+            break;
+        default:
+            break;
+    }
+}
+
+bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
+                                  ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0x8E)
+    {
+        return false;
+    }
+
+    const std::uint8_t modrm = instruction[1];
+    const std::uint8_t mod = static_cast<std::uint8_t>((modrm >> 6) & 0x03);
+    const std::uint8_t segment_register =
+        static_cast<std::uint8_t>((modrm >> 3) & 0x07);
+    const std::uint8_t source_register =
+        static_cast<std::uint8_t>(modrm & 0x07);
+    if (mod != 0x03)
+    {
+        return false;
+    }
+
+    if (segment_register == 1 || segment_register > 5)
+    {
+        return false;
+    }
+
+    const std::uint16_t selector =
+        ReadRegister16(*win32_context, source_register);
+    RecordGuestSegmentLoad(win32_context,
+                           context,
+                           segment_register,
+                           selector);
+    win32_context->Eip += 2;
+    return true;
+}
+
 bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
                                 ThreadContext* context)
 {
@@ -590,6 +702,11 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
+    if (context->enable_segment_load_hle &&
+        HandleSegmentLoadInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     if (context->enable_dos_hle &&
         HandleDosHleInstruction(win32_context, context))
     {
@@ -729,6 +846,7 @@ bool RunWin32ExecutionThread(
     bool use_guest_stack,
     bool enable_privileged_trap_hle,
     bool enable_traced_dos_hle,
+    bool enable_segment_load_hle,
     bool enable_dos_hle,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
@@ -785,6 +903,7 @@ bool RunWin32ExecutionThread(
     context.use_guest_stack = use_guest_stack;
     context.enable_privileged_trap_hle = enable_privileged_trap_hle;
     context.enable_traced_dos_hle = enable_traced_dos_hle;
+    context.enable_segment_load_hle = enable_segment_load_hle;
     context.enable_dos_hle = enable_dos_hle;
 
     HANDLE thread = CreateThread(nullptr,
@@ -841,6 +960,14 @@ bool RunWin32ExecutionThread(
         context.handled_dos_interrupt_count;
     attempt->last_dos_interrupt_vector = context.last_dos_interrupt_vector;
     attempt->last_dos_interrupt_ah = context.last_dos_interrupt_ah;
+    attempt->handled_segment_load_count =
+        context.handled_segment_load_count;
+    attempt->last_segment_load_address = context.last_segment_load_address;
+    attempt->last_segment_load_opcode = context.last_segment_load_opcode;
+    attempt->last_segment_load_register =
+        context.last_segment_load_register;
+    attempt->last_segment_load_selector =
+        context.last_segment_load_selector;
     attempt->thread_exit_code = exit_code;
     attempt->hle_console_output.assign(
         context.hle_console_output,
@@ -884,6 +1011,7 @@ bool AttemptWin32MinimalExecution(
         false,
         false,
         false,
+        false,
         timeout_milliseconds,
         attempt);
 }
@@ -913,6 +1041,7 @@ bool AttemptWin32GuestStackExecution(
         stack_plan.entry_eip,
         stack_plan.initial_esp,
         true,
+        false,
         false,
         false,
         false,
@@ -947,6 +1076,7 @@ bool AttemptWin32GuestStackTrapExecution(
         true,
         true,
         true,
+        true,
         false,
         timeout_milliseconds,
         attempt);
@@ -976,6 +1106,7 @@ bool AttemptWin32GuestStackHleExecution(
         placement,
         stack_plan.entry_eip,
         stack_plan.initial_esp,
+        true,
         true,
         true,
         true,

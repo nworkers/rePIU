@@ -8,13 +8,14 @@ privileged instruction 예외 위치를 HLE trap 후보와 CPU/DPMI 상태 초�
 `STI`는 첫 HLE trap으로 처리되었다.
 `INT 21h AH=0x30`도 처리되어 다음 중단 지점인 `INT 21h AH=0xFF`까지 진행된다.
 `INT 21h AH=0xFF`도 최소 응답으로 처리되어 다음 중단 지점인 segment register load 계열 명령 `8E D9`까지 진행된다.
+segment register load는 guest selector shadow state로 처리되어 다음 중단 지점인 segment register store 계열 명령 `66 26 8C 1D`까지 진행된다.
 
 남은 실제 구현 작업은 다음과 같다.
 
 1. HLE dispatcher handler 호출 규약과 guest context 복귀 경로 구현
 2. 실제 trace로 확인된 INT21/INT31 서비스 최소 구현
 3. selector/descriptor 권한 검사와 DPMI descriptor API 연결
-4. `8E D9` segment register load 중단 지점을 selector/descriptor HLE 요구사항으로 분류
+4. `66 26 8C 1D` segment register store 중단 지점을 selector/descriptor memory write HLE 요구사항으로 분류
 
 ## Status As Of 2026-07-09
 
@@ -24,13 +25,14 @@ It also adds the initial classifier that separates privileged-instruction except
 `STI` is now handled as the first HLE trap.
 `INT 21h AH=0x30` is also handled, allowing execution to proceed to the next stop at `INT 21h AH=0xFF`.
 `INT 21h AH=0xFF` is also handled with a minimal response, allowing execution to proceed to the next stop at segment-register load instruction `8E D9`.
+Segment-register loads are handled through guest selector shadow state, allowing execution to proceed to the next stop at segment-register store instruction `66 26 8C 1D`.
 
 Remaining real implementation work:
 
 1. Implement the HLE dispatcher handler calling convention and guest context return path.
 2. Implement only the INT21/INT31 services confirmed by actual traces.
 3. Connect selector/descriptor permission checks and DPMI descriptor APIs.
-4. Classify the `8E D9` segment-register load stop as a selector/descriptor HLE requirement.
+4. Classify the `66 26 8C 1D` segment-register store stop as a selector/descriptor memory-write HLE requirement.
 
 ## 현재 우선순위 상태
 
@@ -53,13 +55,14 @@ Remaining real implementation work:
 6. `STI` HLE trap 처리와 다음 `INT 21h` 중단 지점 관찰: 완료.
 7. `INT 21h AH=0x30` DOS version query 처리와 다음 `AH=0xFF` 중단 지점 관찰: 완료.
 8. `INT 21h AH=0xFF` 최소 처리와 다음 `8E D9` 중단 지점 관찰: 완료.
+9. `8E /r` register source segment load 처리와 다음 `66 26 8C 1D` 중단 지점 관찰: 완료.
 
 ## 남은 실제 구현 작업
 
 1. HLE dispatcher handler 호출 규약과 guest context 복귀 경로 구현.
 2. INT21/INT31 중 실제 trace로 확인된 서비스부터 최소 구현.
 3. selector/descriptor 권한 검사와 DPMI descriptor API 연결.
-4. `8E D9`가 어떤 segment register load인지 분류하고 selector/descriptor 처리 정책을 설계.
+4. `66 26 8C 1D` segment register store를 guest selector shadow state와 relocated memory write 정책으로 연결.
 
 ## Current Priority Status
 
@@ -82,10 +85,11 @@ As of 2026-07-08, the previous TODO/PLAN remaining work is summarized in `docs/2
 6. `STI` HLE trap handling and observation of the next `INT 21h` stop: complete.
 7. `INT 21h AH=0x30` DOS version query handling and observation of the next `AH=0xFF` stop: complete.
 8. `INT 21h AH=0xFF` minimal handling and observation of the next `8E D9` stop: complete.
+9. `8E /r` register-source segment load handling and observation of the next `66 26 8C 1D` stop: complete.
 
 ## Remaining Real Implementation Work
 
 1. Implement the HLE dispatcher handler calling convention and guest context return path.
 2. Implement only the INT21/INT31 services confirmed by actual traces.
 3. Connect selector/descriptor permission checks and DPMI descriptor APIs.
-4. Classify which segment-register load `8E D9` performs and design the selector/descriptor handling policy.
+4. Connect `66 26 8C 1D` segment-register store to guest selector shadow state and relocated memory-write policy.

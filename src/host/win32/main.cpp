@@ -51,6 +51,33 @@ std::string Hex8(std::uint8_t value)
     return stream.str();
 }
 
+std::string Hex16(std::uint16_t value)
+{
+    std::ostringstream stream;
+    stream << "0x" << std::uppercase << std::hex << std::setw(4)
+           << std::setfill('0') << value;
+    return stream.str();
+}
+
+const char* SegmentRegisterName(std::uint32_t segment_register)
+{
+    switch (segment_register)
+    {
+        case 0:
+            return "ES";
+        case 2:
+            return "SS";
+        case 3:
+            return "DS";
+        case 4:
+            return "FS";
+        case 5:
+            return "GS";
+        default:
+            return "unknown";
+    }
+}
+
 void WriteGuestOutput(std::string_view output)
 {
     if (output.empty())
@@ -404,6 +431,22 @@ void PrintExecutionAttempt(
         logger.info("Win32 last handled DOS interrupt AH: {}",
                     Hex8(static_cast<std::uint8_t>(
                         attempt.last_dos_interrupt_ah & 0xFFU)));
+    }
+    logger.info("Win32 handled segment load count: {}",
+                attempt.handled_segment_load_count);
+    if (attempt.handled_segment_load_count > 0)
+    {
+        logger.info("Win32 last handled segment load address: {}",
+                    Hex32(attempt.last_segment_load_address));
+        logger.info("Win32 last handled segment load opcode: {}",
+                    Hex8(static_cast<std::uint8_t>(
+                        attempt.last_segment_load_opcode & 0xFFU)));
+        logger.info("Win32 last handled segment register: {}",
+                    SegmentRegisterName(
+                        attempt.last_segment_load_register));
+        logger.info("Win32 last handled segment selector: {}",
+                    Hex16(static_cast<std::uint16_t>(
+                        attempt.last_segment_load_selector & 0xFFFFU)));
     }
     logger.info("Win32 minimal execution thread exit code: {}",
                 attempt.thread_exit_code);
