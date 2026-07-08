@@ -284,6 +284,22 @@ void PrintExecutionAttempt(
     }
     std::cout << "Win32 minimal execution timed out: "
               << (attempt.timed_out ? "true" : "false") << "\n";
+    std::cout << "Win32 guest stack switch supported: "
+              << (attempt.guest_stack_switch_supported ? "true" : "false")
+              << "\n";
+    std::cout << "Win32 guest stack switch attempted: "
+              << (attempt.guest_stack_switch_attempted ? "true" : "false")
+              << "\n";
+    if (attempt.guest_stack_switch_attempted)
+    {
+        std::cout << "Win32 guest stack initial ESP: "
+                  << Hex32(attempt.guest_stack_initial_esp) << "\n";
+        if (attempt.guest_stack_return_esp != 0)
+        {
+            std::cout << "Win32 guest stack return ESP: "
+                      << Hex32(attempt.guest_stack_return_esp) << "\n";
+        }
+    }
     std::cout << "Win32 minimal execution thread exit code: "
               << attempt.thread_exit_code << "\n";
     std::cout << "Win32 minimal execution message: "
@@ -482,9 +498,9 @@ int main()
 
     PrintPlacement(placement);
     repiu::platform::win32::Win32MinimalExecutionAttempt attempt;
-    if (!repiu::platform::win32::AttemptWin32MinimalExecution(
+    if (!repiu::platform::win32::AttemptWin32GuestStackExecution(
             placement,
-            relocated_image.relocated_entry_linear_address,
+            stack_plan,
             1000,
             &attempt))
     {
