@@ -36,7 +36,7 @@ struct ThreadContext
     StackSwitchCallState* active_call_state = nullptr;
     bool use_guest_stack = false;
     bool enable_privileged_trap_hle = false;
-    bool enable_dos_version_hle = false;
+    bool enable_traced_dos_hle = false;
     bool enable_dos_hle = false;
     bool returned = false;
     bool process_exit = false;
@@ -390,8 +390,8 @@ void RecordHandledDosInterrupt(ThreadContext* context,
     context->last_dos_interrupt_ah = ah;
 }
 
-bool HandleDosVersionQueryInterrupt(CONTEXT* win32_context,
-                                    ThreadContext* context)
+bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
+                                ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
@@ -402,18 +402,26 @@ bool HandleDosVersionQueryInterrupt(CONTEXT* win32_context,
 
     const std::uint8_t ah = static_cast<std::uint8_t>(
         (win32_context->Eax >> 8) & 0xFF);
-    if (ah != 0x30)
+    switch (ah)
     {
-        return false;
+        case 0x30:
+            RecordHandledDosInterrupt(context, 0x21, ah);
+            win32_context->Eax =
+                (win32_context->Eax & 0xFFFF0000U) | 0x0007U;
+            win32_context->Ebx = 0;
+            win32_context->Ecx = 0;
+            win32_context->EFlags &= ~1U;
+            win32_context->Eip += 2;
+            return true;
+        case 0xFF:
+            RecordHandledDosInterrupt(context, 0x21, ah);
+            win32_context->Eax &= 0xFFFFFF00U;
+            win32_context->EFlags &= ~1U;
+            win32_context->Eip += 2;
+            return true;
+        default:
+            return false;
     }
-
-    RecordHandledDosInterrupt(context, 0x21, ah);
-    win32_context->Eax = (win32_context->Eax & 0xFFFF0000U) | 0x0007U;
-    win32_context->Ebx = 0;
-    win32_context->Ecx = 0;
-    win32_context->EFlags &= ~1U;
-    win32_context->Eip += 2;
-    return true;
 }
 
 bool HandlePrivilegedTrapInstruction(CONTEXT* win32_context,
@@ -577,8 +585,8 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
-    if (context->enable_dos_version_hle &&
-        HandleDosVersionQueryInterrupt(win32_context, context))
+    if (context->enable_traced_dos_hle &&
+        HandleTracedDosInterrupt21(win32_context, context))
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
@@ -720,7 +728,7 @@ bool RunWin32ExecutionThread(
     std::uint32_t guest_initial_esp,
     bool use_guest_stack,
     bool enable_privileged_trap_hle,
-    bool enable_dos_version_hle,
+    bool enable_traced_dos_hle,
     bool enable_dos_hle,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
@@ -776,7 +784,7 @@ bool RunWin32ExecutionThread(
     context.guest_initial_esp = guest_initial_esp;
     context.use_guest_stack = use_guest_stack;
     context.enable_privileged_trap_hle = enable_privileged_trap_hle;
-    context.enable_dos_version_hle = enable_dos_version_hle;
+    context.enable_traced_dos_hle = enable_traced_dos_hle;
     context.enable_dos_hle = enable_dos_hle;
 
     HANDLE thread = CreateThread(nullptr,
