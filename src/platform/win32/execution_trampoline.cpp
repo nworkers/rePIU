@@ -61,6 +61,7 @@ struct ThreadContext
     std::uint32_t last_segment_load_opcode = 0;
     std::uint32_t last_segment_load_register = 0;
     std::uint32_t last_segment_load_selector = 0;
+    std::uint32_t last_segment_load_source = 0;
     std::uint32_t handled_segment_store_count = 0;
     std::uint32_t last_segment_store_address = 0;
     std::uint32_t last_segment_store_opcode = 0;
@@ -475,7 +476,8 @@ std::uint16_t ReadRegister16(const CONTEXT& win32_context,
 void RecordGuestSegmentLoad(CONTEXT* win32_context,
                             ThreadContext* context,
                             std::uint8_t segment_register,
-                            std::uint16_t selector)
+                            std::uint16_t selector,
+                            std::uint32_t source)
 {
     if (win32_context == nullptr || context == nullptr)
     {
@@ -488,6 +490,7 @@ void RecordGuestSegmentLoad(CONTEXT* win32_context,
     context->last_segment_load_opcode = 0x8E;
     context->last_segment_load_register = segment_register;
     context->last_segment_load_selector = selector;
+    context->last_segment_load_source = source;
 
     switch (segment_register)
     {
@@ -562,34 +565,74 @@ bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
-    if (instruction[0] != 0x8E)
+    std::uint32_t prefix_length = 0;
+    while (instruction[prefix_length] == 0x26 ||
+           instruction[prefix_length] == 0x2E ||
+           instruction[prefix_length] == 0x36 ||
+           instruction[prefix_length] == 0x3E ||
+           instruction[prefix_length] == 0x64 ||
+           instruction[prefix_length] == 0x65 ||
+           instruction[prefix_length] == 0x66 ||
+           instruction[prefix_length] == 0x67)
+    {
+        ++prefix_length;
+    }
+
+    if (instruction[prefix_length] != 0x8E)
     {
         return false;
     }
 
-    const std::uint8_t modrm = instruction[1];
+    const std::uint8_t modrm = instruction[prefix_length + 1];
     const std::uint8_t mod = static_cast<std::uint8_t>((modrm >> 6) & 0x03);
     const std::uint8_t segment_register =
         static_cast<std::uint8_t>((modrm >> 3) & 0x07);
     const std::uint8_t source_register =
         static_cast<std::uint8_t>(modrm & 0x07);
-    if (mod != 0x03)
-    {
-        return false;
-    }
 
     if (segment_register == 1 || segment_register > 5)
     {
         return false;
     }
 
-    const std::uint16_t selector =
-        ReadRegister16(*win32_context, source_register);
+    std::uint16_t selector = 0;
+    std::uint32_t source = 0;
+    std::uint32_t instruction_length = prefix_length + 2;
+    if (mod == 0x03)
+    {
+        selector = ReadRegister16(*win32_context, source_register);
+    }
+    else if (mod == 0x00 && source_register == 0x05)
+    {
+        source =
+            static_cast<std::uint32_t>(instruction[prefix_length + 2]) |
+            (static_cast<std::uint32_t>(instruction[prefix_length + 3])
+             << 8) |
+            (static_cast<std::uint32_t>(instruction[prefix_length + 4])
+             << 16) |
+            (static_cast<std::uint32_t>(instruction[prefix_length + 5])
+             << 24);
+        const void* source_pointer = reinterpret_cast<const void*>(
+            static_cast<std::uintptr_t>(source));
+        if (!IsGuestRangeReadable(context, source_pointer, 2))
+        {
+            return false;
+        }
+
+        std::memcpy(&selector, source_pointer, sizeof(selector));
+        instruction_length += 4;
+    }
+    else
+    {
+        return false;
+    }
+
     RecordGuestSegmentLoad(win32_context,
                            context,
                            segment_register,
-                           selector);
-    win32_context->Eip += 2;
+                           selector,
+                           source);
+    win32_context->Eip += instruction_length;
     HandleSegmentStoreInstruction(win32_context, context);
     return true;
 }
@@ -1119,6 +1162,7 @@ bool RunWin32ExecutionThread(
         context.last_segment_load_register;
     attempt->last_segment_load_selector =
         context.last_segment_load_selector;
+    attempt->last_segment_load_source = context.last_segment_load_source;
     attempt->handled_segment_store_count =
         context.handled_segment_store_count;
     attempt->last_segment_store_address =

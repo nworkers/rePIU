@@ -447,6 +447,11 @@ void PrintExecutionAttempt(
         logger.info("Win32 last handled segment selector: {}",
                     Hex16(static_cast<std::uint16_t>(
                         attempt.last_segment_load_selector & 0xFFFFU)));
+        if (attempt.last_segment_load_source != 0)
+        {
+            logger.info("Win32 last segment load source: {}",
+                        Hex32(attempt.last_segment_load_source));
+        }
     }
     logger.info("Win32 handled segment store count: {}",
                 attempt.handled_segment_store_count);

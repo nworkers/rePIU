@@ -20,6 +20,16 @@ This task handles that stop directly and observes the next execution stop.
 `66 26 8C 1D` segment-register store is handled, and `DS=0x0024` is written to relocated destination `0x020F3AED`.
 The next stop is the memory-source segment-register load `66 8E 05 E4 65 1A 02` at `0x020F39C8`.
 
+## 2026-07-09 memory-source segment register load HLE 완료
+
+`66 8E 05 E4 65 1A 02` memory-source segment register load는 처리되었고, relocated source `0x021A65E4`에서 읽은 selector `0x0024`가 guest `ES`에 기록되는 것을 확인했다.
+다음 중단 지점은 `0x020F39DD`의 `26 8A 4F FF` segment override byte memory load이다.
+
+## 2026-07-09 Memory-Source Segment Register Load HLE Complete
+
+`66 8E 05 E4 65 1A 02` memory-source segment-register load is handled, and selector `0x0024` read from relocated source `0x021A65E4` is recorded into guest `ES`.
+The next stop is the segment-override byte memory load `26 8A 4F FF` at `0x020F39DD`.
+
 ## 2026-07-09 현재 상태
 
 이전 TODO/PLAN의 분석 및 기반 구조 작업은 완료되었다.
@@ -52,7 +62,7 @@ Remaining real implementation work:
 1. Implement the HLE dispatcher handler calling convention and guest context return path.
 2. Implement only the INT21/INT31 services confirmed by actual traces.
 3. Connect selector/descriptor permission checks and DPMI descriptor APIs.
-4. Extend segment-register load HLE for the `66 8E 05 E4 65 1A 02` memory-source form.
+4. Clarify and implement the segment-override byte memory load policy for `26 8A 4F FF`.
 
 ## 현재 우선순위 상태
 
@@ -107,10 +117,11 @@ As of 2026-07-08, the previous TODO/PLAN remaining work is summarized in `docs/2
 8. `INT 21h AH=0xFF` minimal handling and observation of the next `8E D9` stop: complete.
 9. `8E /r` register-source segment load handling and observation of the next `66 26 8C 1D` stop: complete.
 10. `66 26 8C /r` absolute-destination segment store handling and observation of the next `66 8E 05` stop: complete.
+11. `66 8E /r` absolute-source segment load handling and observation of the next `26 8A 4F FF` stop: complete.
 
 ## Remaining Real Implementation Work
 
 1. Implement the HLE dispatcher handler calling convention and guest context return path.
 2. Implement only the INT21/INT31 services confirmed by actual traces.
 3. Connect selector/descriptor permission checks and DPMI descriptor APIs.
-4. Extend `66 8E 05 E4 65 1A 02` memory-source segment-register load through relocated memory-read policy.
+4. Clarify and implement `26 8A 4F FF` segment-override byte memory load through selector shadow state and address translation policy.
