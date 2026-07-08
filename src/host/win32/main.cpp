@@ -384,6 +384,16 @@ void PrintExecutionAttempt(
                         Hex32(attempt.guest_stack_return_esp));
         }
     }
+    logger.info("Win32 handled HLE trap count: {}",
+                attempt.handled_hle_trap_count);
+    if (attempt.handled_hle_trap_count > 0)
+    {
+        logger.info("Win32 last handled HLE trap address: {}",
+                    Hex32(attempt.last_hle_trap_address));
+        logger.info("Win32 last handled HLE trap opcode: {}",
+                    Hex8(static_cast<std::uint8_t>(
+                        attempt.last_hle_trap_opcode & 0xFFU)));
+    }
     logger.info("Win32 minimal execution thread exit code: {}",
                 attempt.thread_exit_code);
     if (!attempt.hle_console_output.empty())
@@ -617,7 +627,7 @@ int main(int argc, char** argv)
                   stack_plan,
                   1000,
                   &attempt)
-            : repiu::platform::win32::AttemptWin32GuestStackExecution(
+            : repiu::platform::win32::AttemptWin32GuestStackTrapExecution(
                   placement,
                   stack_plan,
                   1000,

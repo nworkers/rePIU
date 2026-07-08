@@ -35,6 +35,7 @@ struct ThreadContext
     std::uint32_t guest_return_esp = 0;
     StackSwitchCallState* active_call_state = nullptr;
     bool use_guest_stack = false;
+    bool enable_privileged_trap_hle = false;
     bool enable_dos_hle = false;
     bool returned = false;
     bool process_exit = false;
@@ -47,6 +48,9 @@ struct ThreadContext
     std::uint32_t exception_edx = 0;
     std::uint32_t exception_esi = 0;
     std::uint32_t exception_edi = 0;
+    std::uint32_t handled_hle_trap_count = 0;
+    std::uint32_t last_hle_trap_address = 0;
+    std::uint32_t last_hle_trap_opcode = 0;
     char hle_console_output[4096] = {};
     std::uint32_t hle_console_output_size = 0;
     std::string hle_message;
@@ -348,17 +352,49 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
     return false;
 }
 
-bool HandlePrivilegedInstruction(CONTEXT* win32_context,
-                                 ThreadContext* context)
+void RecordHandledHleTrap(CONTEXT* win32_context,
+                          ThreadContext* context,
+                          std::uint8_t opcode)
+{
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return;
+    }
+
+    ++context->handled_hle_trap_count;
+    context->last_hle_trap_address =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    context->last_hle_trap_opcode = opcode;
+}
+
+bool HandlePrivilegedTrapInstruction(CONTEXT* win32_context,
+                                     ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
-    if (*instruction == 0xFA || *instruction == 0xFB)
+    if (*instruction == 0xFA)
     {
+        RecordHandledHleTrap(win32_context, context, *instruction);
+        win32_context->EFlags &= ~0x00000200U;
+        ++win32_context->Eip;
+        return true;
+    }
+    if (*instruction == 0xFB)
+    {
+        RecordHandledHleTrap(win32_context, context, *instruction);
+        win32_context->EFlags |= 0x00000200U;
         ++win32_context->Eip;
         return true;
     }
 
+    return false;
+}
+
+bool HandleDosHleInstruction(CONTEXT* win32_context,
+                             ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
     if (instruction[0] == 0xCD && instruction[1] == 0x21)
     {
         return HandleDosInterrupt21(win32_context, context);
@@ -487,8 +523,13 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     }
 
     CONTEXT* win32_context = exception_info->ContextRecord;
+    if (context->enable_privileged_trap_hle &&
+        HandlePrivilegedTrapInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     if (context->enable_dos_hle &&
-        HandlePrivilegedInstruction(win32_context, context))
+        HandleDosHleInstruction(win32_context, context))
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
@@ -624,6 +665,7 @@ bool RunWin32ExecutionThread(
     std::uint32_t entry_address,
     std::uint32_t guest_initial_esp,
     bool use_guest_stack,
+    bool enable_privileged_trap_hle,
     bool enable_dos_hle,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
@@ -678,6 +720,7 @@ bool RunWin32ExecutionThread(
     context.runtime_size = placement.placed_size;
     context.guest_initial_esp = guest_initial_esp;
     context.use_guest_stack = use_guest_stack;
+    context.enable_privileged_trap_hle = enable_privileged_trap_hle;
     context.enable_dos_hle = enable_dos_hle;
 
     HANDLE thread = CreateThread(nullptr,
@@ -727,6 +770,9 @@ bool RunWin32ExecutionThread(
     attempt->exception_edx = context.exception_edx;
     attempt->exception_esi = context.exception_esi;
     attempt->exception_edi = context.exception_edi;
+    attempt->handled_hle_trap_count = context.handled_hle_trap_count;
+    attempt->last_hle_trap_address = context.last_hle_trap_address;
+    attempt->last_hle_trap_opcode = context.last_hle_trap_opcode;
     attempt->thread_exit_code = exit_code;
     attempt->hle_console_output.assign(
         context.hle_console_output,
@@ -768,6 +814,7 @@ bool AttemptWin32MinimalExecution(
         0,
         false,
         false,
+        false,
         timeout_milliseconds,
         attempt);
 }
@@ -798,6 +845,38 @@ bool AttemptWin32GuestStackExecution(
         stack_plan.initial_esp,
         true,
         false,
+        false,
+        timeout_milliseconds,
+        attempt);
+}
+
+bool AttemptWin32GuestStackTrapExecution(
+    const Win32RelocatedImagePlacement& placement,
+    const runtime::GuestStackSwitchPlan& stack_plan,
+    std::uint32_t timeout_milliseconds,
+    Win32MinimalExecutionAttempt* attempt)
+{
+    if (attempt == nullptr)
+    {
+        return false;
+    }
+
+    if (!stack_plan.valid)
+    {
+        *attempt = Win32MinimalExecutionAttempt{};
+        attempt->entry_address = stack_plan.entry_eip;
+        attempt->guest_stack_initial_esp = stack_plan.initial_esp;
+        attempt->message = "guest stack switch plan is not valid";
+        return false;
+    }
+
+    return RunWin32ExecutionThread(
+        placement,
+        stack_plan.entry_eip,
+        stack_plan.initial_esp,
+        true,
+        true,
+        false,
         timeout_milliseconds,
         attempt);
 }
@@ -826,6 +905,7 @@ bool AttemptWin32GuestStackHleExecution(
         placement,
         stack_plan.entry_eip,
         stack_plan.initial_esp,
+        true,
         true,
         true,
         timeout_milliseconds,
