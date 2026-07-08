@@ -1,4 +1,8 @@
 build/
+MASTER/
+tools/openwatcom/
+tools/downloads/
+samples/*/build/
 *.user
 *.suo
 *.tmp

@@ -9,6 +9,21 @@ const std::vector<TargetProfile>& BuiltInTargetProfiles()
 {
     static const std::vector<TargetProfile> profiles = {
         TargetProfile{
+            "dos4gw_hello",
+            "DOS/4GW Hello",
+            std::filesystem::path(
+                "samples/dos4gw_hello/build/hello.exe"),
+            std::filesystem::path("samples/dos4gw_hello/build"),
+            std::filesystem::path("samples/dos4gw_hello"),
+            ExecutableFormatHint::kDos4gwLe,
+            "dos4gw_console_sample",
+            TargetRuntimeReservationHint{
+                true,
+                0x00010000,
+                0x00200000,
+            },
+        },
+        TargetProfile{
             "piu_1st",
             "PIU 1st",
             std::filesystem::path("MASTER/PIU_1ST/PIU.EXE"),

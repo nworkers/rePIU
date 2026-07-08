@@ -25,7 +25,14 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t guest_stack_return_esp = 0;
     std::uint32_t seh_exception_code = 0;
     std::uint32_t seh_exception_address = 0;
+    std::uint32_t exception_eax = 0;
+    std::uint32_t exception_ebx = 0;
+    std::uint32_t exception_ecx = 0;
+    std::uint32_t exception_edx = 0;
+    std::uint32_t exception_esi = 0;
+    std::uint32_t exception_edi = 0;
     std::uint32_t thread_exit_code = 0;
+    std::string hle_console_output;
     std::string message;
 };
 
@@ -36,6 +43,12 @@ bool AttemptWin32MinimalExecution(
     Win32MinimalExecutionAttempt* attempt);
 
 bool AttemptWin32GuestStackExecution(
+    const Win32RelocatedImagePlacement& placement,
+    const runtime::GuestStackSwitchPlan& stack_plan,
+    std::uint32_t timeout_milliseconds,
+    Win32MinimalExecutionAttempt* attempt);
+
+bool AttemptWin32GuestStackHleExecution(
     const Win32RelocatedImagePlacement& placement,
     const runtime::GuestStackSwitchPlan& stack_plan,
     std::uint32_t timeout_milliseconds,

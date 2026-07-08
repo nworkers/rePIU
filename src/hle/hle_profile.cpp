@@ -9,6 +9,15 @@ const std::vector<HleProfile>& BuiltInHleProfiles()
 {
     static const std::vector<HleProfile> profiles = {
         HleProfile{
+            "dos4gw_console_sample",
+            "DOS/4GW console sample HLE",
+            "Minimal HLE service scope for DOS/4GW console samples",
+            std::vector<HleService>{
+                HleService::kDosConsole,
+                HleService::kDpmi,
+            },
+        },
+        HleProfile{
             "piu_common",
             "PIU common HLE",
             "Shared HLE service scope for PIU DOS/4GW targets",
@@ -56,6 +65,8 @@ std::string_view HleServiceName(HleService service)
             return "DOS memory";
         case HleService::kDpmi:
             return "DPMI";
+        case HleService::kDosConsole:
+            return "DOS console";
         case HleService::kTimer:
             return "timer";
         case HleService::kInput:

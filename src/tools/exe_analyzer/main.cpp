@@ -12,6 +12,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace
@@ -618,27 +619,59 @@ void PrintWin32AddressRangeProbe(
               << probe.message << "\n";
 }
 
+const repiu::target::TargetProfile* SelectTargetProfile(
+    int argc,
+    char** argv,
+    std::filesystem::path* explicit_path)
+{
+    const repiu::target::TargetProfile* default_profile =
+        repiu::target::FindTargetProfileById("piu_1st");
+    if (argc < 2)
+    {
+        return default_profile;
+    }
+
+    const std::string_view first_arg(argv[1]);
+    const repiu::target::TargetProfile* selected_profile =
+        repiu::target::FindTargetProfileById(first_arg);
+    if (selected_profile != nullptr)
+    {
+        if (argc >= 3 && explicit_path != nullptr)
+        {
+            *explicit_path = std::filesystem::path(argv[2]);
+        }
+        return selected_profile;
+    }
+
+    if (explicit_path != nullptr)
+    {
+        *explicit_path = std::filesystem::path(argv[1]);
+    }
+    return default_profile;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
 {
-    const repiu::target::TargetProfile* default_profile =
-        repiu::target::FindTargetProfileById("piu_1st");
-    if (default_profile == nullptr)
+    std::filesystem::path explicit_path;
+    const repiu::target::TargetProfile* target_profile =
+        SelectTargetProfile(argc, argv, &explicit_path);
+    if (target_profile == nullptr)
     {
         std::cerr << "Default target profile was not found\n";
         return 1;
     }
 
     const std::filesystem::path path =
-        argc >= 2 ? std::filesystem::path(argv[1])
-                  : default_profile->executable_path;
+        explicit_path.empty() ? target_profile->executable_path
+                              : explicit_path;
     const repiu::hle::HleProfile* hle_profile =
-        repiu::hle::FindHleProfileById(default_profile->hle_profile_id);
+        repiu::hle::FindHleProfileById(target_profile->hle_profile_id);
     if (hle_profile == nullptr)
     {
         std::cerr << "HLE profile was not found: "
-                  << default_profile->hle_profile_id << "\n";
+                  << target_profile->hle_profile_id << "\n";
         return 1;
     }
 
@@ -651,17 +684,17 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    std::cout << "Target: " << default_profile->id << "\n";
-    std::cout << "Target name: " << default_profile->display_name << "\n";
+    std::cout << "Target: " << target_profile->id << "\n";
+    std::cout << "Target name: " << target_profile->display_name << "\n";
     std::cout << "Format hint: "
               << repiu::target::ExecutableFormatHintName(
-                     default_profile->format_hint)
+                     target_profile->format_hint)
               << "\n";
     std::cout << "Working directory: "
-              << default_profile->working_directory.string() << "\n";
+              << target_profile->working_directory.string() << "\n";
     std::cout << "Asset root: "
-              << default_profile->asset_root.string() << "\n";
-    std::cout << "HLE profile: " << default_profile->hle_profile_id << "\n";
+              << target_profile->asset_root.string() << "\n";
+    std::cout << "HLE profile: " << target_profile->hle_profile_id << "\n";
     std::cout << "HLE profile name: " << hle_profile->display_name << "\n";
     std::cout << "HLE services:";
     for (repiu::hle::HleService service : hle_profile->services)
@@ -678,7 +711,7 @@ int main(int argc, char** argv)
 
     repiu::exe::ParseError error;
     repiu::exe::Dos4gwLoadResult load_result;
-    if (!repiu::exe::LoadDos4gwExecutable(data, *default_profile,
+    if (!repiu::exe::LoadDos4gwExecutable(data, *target_profile,
                                           &load_result, &error))
     {
         PrintParseError(error);

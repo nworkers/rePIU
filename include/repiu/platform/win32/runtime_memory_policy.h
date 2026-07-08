@@ -82,6 +82,11 @@ bool PlaceWin32RelocatedImage(
     const runtime::RelocatedRuntimeImage& image,
     Win32RelocatedImagePlacement* placement);
 
+bool PlaceWin32RelocatedImage(
+    const runtime::RelocatedRuntimeImage& image,
+    std::uint32_t minimum_reserve_size,
+    Win32RelocatedImagePlacement* placement);
+
 bool ReleaseWin32RelocatedImage(
     const Win32RelocatedImagePlacement& placement);
 

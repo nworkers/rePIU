@@ -201,6 +201,11 @@ bool BuildRuntimeMemoryPlan(const exe::Dos4gwLoadResult& load_result,
 
     plan->hle_reserve_base =
         AlignUp(static_cast<std::uint32_t>(max_region_end), kRuntimePageSize);
+    if (!plan->stack_valid && load_result.le_header.stack_object == 0)
+    {
+        plan->stack_valid = true;
+        plan->stack_top_linear_address = plan->hle_reserve_base;
+    }
     plan->valid = plan->entry_valid && plan->stack_valid;
     return true;
 }
@@ -324,6 +329,12 @@ bool BuildRelocatableRuntimeImagePlan(
     plan->relocated_hle_reserve_base =
         AlignUp(static_cast<std::uint32_t>(max_region_end),
                 kRuntimePageSize);
+    if (!plan->stack_valid && load_result.le_header.stack_object == 0)
+    {
+        plan->stack_valid = true;
+        plan->relocated_stack_top_linear_address =
+            plan->relocated_hle_reserve_base;
+    }
 
     RelocatableRuntimeRelocationDryRun dry_run;
     for (const exe::LeFixupRecord& record :

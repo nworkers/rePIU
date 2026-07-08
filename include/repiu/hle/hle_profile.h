@@ -12,6 +12,7 @@ enum class HleService
     kDosFile,
     kDosMemory,
     kDpmi,
+    kDosConsole,
     kTimer,
     kInput,
     kVideo,

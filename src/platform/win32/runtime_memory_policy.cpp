@@ -367,6 +367,14 @@ bool PlaceWin32RelocatedImage(
     const runtime::RelocatedRuntimeImage& image,
     Win32RelocatedImagePlacement* placement)
 {
+    return PlaceWin32RelocatedImage(image, 0, placement);
+}
+
+bool PlaceWin32RelocatedImage(
+    const runtime::RelocatedRuntimeImage& image,
+    std::uint32_t minimum_reserve_size,
+    Win32RelocatedImagePlacement* placement)
+{
 #if !defined(_WIN32)
     if (placement == nullptr)
     {
@@ -409,8 +417,10 @@ bool PlaceWin32RelocatedImage(
         return false;
     }
 
-    const std::uint32_t reserve_size =
+    const std::uint32_t image_reserve_size =
         AlignUp(static_cast<std::uint32_t>(max_end) - min_base, 4096);
+    const std::uint32_t reserve_size =
+        std::max(image_reserve_size, AlignUp(minimum_reserve_size, 4096));
     placement->requested_base = min_base;
     placement->requested_size = reserve_size;
 

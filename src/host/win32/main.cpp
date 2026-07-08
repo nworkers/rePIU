@@ -15,6 +15,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace
@@ -281,6 +282,18 @@ void PrintExecutionAttempt(
                   << Hex32(attempt.seh_exception_code) << "\n";
         std::cout << "Win32 minimal execution exception address: "
                   << Hex32(attempt.seh_exception_address) << "\n";
+        std::cout << "Win32 minimal execution exception EAX: "
+                  << Hex32(attempt.exception_eax) << "\n";
+        std::cout << "Win32 minimal execution exception EBX: "
+                  << Hex32(attempt.exception_ebx) << "\n";
+        std::cout << "Win32 minimal execution exception ECX: "
+                  << Hex32(attempt.exception_ecx) << "\n";
+        std::cout << "Win32 minimal execution exception EDX: "
+                  << Hex32(attempt.exception_edx) << "\n";
+        std::cout << "Win32 minimal execution exception ESI: "
+                  << Hex32(attempt.exception_esi) << "\n";
+        std::cout << "Win32 minimal execution exception EDI: "
+                  << Hex32(attempt.exception_edi) << "\n";
     }
     std::cout << "Win32 minimal execution timed out: "
               << (attempt.timed_out ? "true" : "false") << "\n";
@@ -302,6 +315,15 @@ void PrintExecutionAttempt(
     }
     std::cout << "Win32 minimal execution thread exit code: "
               << attempt.thread_exit_code << "\n";
+    if (!attempt.hle_console_output.empty())
+    {
+        std::cout << "Win32 HLE console output:\n"
+                  << attempt.hle_console_output;
+        if (attempt.hle_console_output.back() != '\n')
+        {
+            std::cout << "\n";
+        }
+    }
     std::cout << "Win32 minimal execution message: "
               << attempt.message << "\n";
 }
@@ -356,15 +378,27 @@ bool SelectRelocatedImageBase(std::uint32_t reserve_size,
     return false;
 }
 
+const repiu::target::TargetProfile* SelectTargetProfile(int argc,
+                                                        char** argv)
+{
+    std::string_view target_id = "piu_1st";
+    if (argc >= 2)
+    {
+        target_id = argv[1];
+    }
+
+    return repiu::target::FindTargetProfileById(target_id);
+}
+
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
     const repiu::target::TargetProfile* profile =
-        repiu::target::FindTargetProfileById("piu_1st");
+        SelectTargetProfile(argc, argv);
     if (profile == nullptr)
     {
-        std::cerr << "Target profile was not found: piu_1st\n";
+        std::cerr << "Target profile was not found\n";
         return 1;
     }
 
@@ -475,12 +509,16 @@ int main()
         stack_limit = stack_region.relocated_base_address +
                       stack_region.virtual_size;
     }
+    const std::uint32_t stack_size = stack_limit > stack_base
+                                         ? stack_limit - stack_base
+                                         : 0;
+    const std::uint32_t guard_bytes = stack_size > 8192 ? 4096 : 256;
     repiu::runtime::BuildGuestStackSwitchPlan(
         relocated_image.relocated_entry_linear_address,
         stack_base,
         stack_limit,
         relocated_image.relocated_stack_top_linear_address,
-        4096,
+        guard_bytes,
         &stack_plan);
     PrintGuestStackPlan(stack_plan);
 
@@ -490,19 +528,31 @@ int main()
 
     repiu::platform::win32::Win32RelocatedImagePlacement placement;
     if (!repiu::platform::win32::PlaceWin32RelocatedImage(
-            relocated_image, &placement))
+            relocated_image,
+            profile->runtime_reservation_hint.reserve_size,
+            &placement))
     {
         std::cerr << "Failed to place relocated image\n";
         return 1;
     }
 
     PrintPlacement(placement);
+    std::cout.flush();
     repiu::platform::win32::Win32MinimalExecutionAttempt attempt;
-    if (!repiu::platform::win32::AttemptWin32GuestStackExecution(
-            placement,
-            stack_plan,
-            1000,
-            &attempt))
+    const bool use_dos_console_hle = profile->id == "dos4gw_hello";
+    const bool attempted_execution =
+        use_dos_console_hle
+            ? repiu::platform::win32::AttemptWin32GuestStackHleExecution(
+                  placement,
+                  stack_plan,
+                  1000,
+                  &attempt)
+            : repiu::platform::win32::AttemptWin32GuestStackExecution(
+                  placement,
+                  stack_plan,
+                  1000,
+                  &attempt);
+    if (!attempted_execution)
     {
         std::cerr << "Failed to attempt minimal original entry execution\n";
         repiu::platform::win32::ReleaseWin32RelocatedImage(placement);
