@@ -674,6 +674,19 @@ void PrintExecutionAttempt(
                             attempt.last_segment_memory_load_value & 0xFFU)));
         }
     }
+    logger.info("Win32 handled memory store count: {}",
+                attempt.handled_memory_store_count);
+    if (attempt.handled_memory_store_count > 0)
+    {
+        logger.info("Win32 last handled memory store address: {}",
+                    Hex32(attempt.last_memory_store_address));
+        logger.info("Win32 last memory store destination: {}",
+                    Hex32(attempt.last_memory_store_destination));
+        logger.info("Win32 last memory store value: {}",
+                    Hex32(attempt.last_memory_store_value));
+        logger.info("Win32 last memory store applied: {}",
+                    attempt.last_memory_store_applied ? "true" : "false");
+    }
     logger.info("Win32 minimal execution thread exit code: {}",
                 attempt.thread_exit_code);
     if (!attempt.hle_console_output.empty())

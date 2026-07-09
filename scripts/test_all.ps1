@@ -29,22 +29,68 @@ function Invoke-CaptureStep
     param(
         [string]$Name,
         [string]$FilePath,
-        [string[]]$Arguments = @()
+        [string[]]$Arguments = @(),
+        [int]$TimeoutSeconds = 30
     )
 
     Write-Host ""
     Write-Host "== $Name =="
-    $oldErrorActionPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
+    $stdoutPath = Join-Path $env:TEMP ("repiu-test-stdout-{0}.log" -f ([guid]::NewGuid()))
+    $stderrPath = Join-Path $env:TEMP ("repiu-test-stderr-{0}.log" -f ([guid]::NewGuid()))
     try
     {
-        $output = & $FilePath @Arguments 2>&1 |
-            ForEach-Object { $_.ToString() }
-        $exitCode = $LASTEXITCODE
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $FilePath
+        foreach ($argument in $Arguments)
+        {
+            [void]$startInfo.ArgumentList.Add($argument)
+        }
+        $startInfo.WorkingDirectory = (Get-Location).Path
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $startInfo
+        [void]$process.Start()
+
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        if (!$process.WaitForExit($TimeoutSeconds * 1000))
+        {
+            try
+            {
+                $process.Kill()
+                $process.WaitForExit(5000) | Out-Null
+            }
+            catch
+            {
+                throw "$Name timed out after $TimeoutSeconds seconds and the process could not be killed: $($_.Exception.Message)"
+            }
+            throw "$Name timed out after $TimeoutSeconds seconds"
+        }
+
+        $stdoutTask.Wait()
+        $stderrTask.Wait()
+        $stdout = $stdoutTask.Result
+        $stderr = $stderrTask.Result
+        Set-Content -Path $stdoutPath -Value $stdout
+        Set-Content -Path $stderrPath -Value $stderr
+        $output = @()
+        if ($stdout.Length -gt 0)
+        {
+            $output += ($stdout -split "`r?`n")
+        }
+        if ($stderr.Length -gt 0)
+        {
+            $output += ($stderr -split "`r?`n")
+        }
+        $exitCode = $process.ExitCode
     }
     finally
     {
-        $ErrorActionPreference = $oldErrorActionPreference
+        Remove-Item -LiteralPath $stdoutPath -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stderrPath -ErrorAction SilentlyContinue
     }
 
     $output | ForEach-Object { Write-Host $_ }
@@ -98,30 +144,14 @@ try
         -Arguments @("piu_1st")
     if ($piuOutput -notmatch "Runtime memory arena reserve size: 0x005E7000" -or
         $piuOutput -notmatch "Win32 relocated image placed size: 0x005E7000" -or
-        $piuOutput -notmatch "Win32 last handled DOS interrupt AH: 0x4A" -or
-        $piuOutput -notmatch "Win32 handled DOS chdir count: 1" -or
-        $piuOutput -notmatch "Win32 last DOS chdir guest path: \\datas\\bga" -or
-        $piuOutput -notmatch "Win32 last DOS chdir virtual path: \\DATAS\\BGA" -or
-        $piuOutput -notmatch "Win32 last DOS chdir result: success" -or
-        $piuOutput -notmatch "Win32 handled DOS open count: 2" -or
-        $piuOutput -notmatch "Win32 last DOS open guest path: stage.cfg" -or
-        $piuOutput -notmatch "Win32 last DOS open virtual path: \\DATAS\\BGA\\STAGE.CFG" -or
-        $piuOutput -notmatch "Win32 last DOS open result: failure" -or
-        $piuOutput -notmatch "Win32 last DOS open error: 0x0002" -or
-        $piuOutput -notmatch "Win32 handled DOS IOCTL count: 2" -or
-        $piuOutput -notmatch "Win32 last DOS IOCTL subfunction: 0x00" -or
-        $piuOutput -notmatch "Win32 last DOS IOCTL handle: 0x0001" -or
-        $piuOutput -notmatch "Win32 last DOS IOCTL result: success" -or
-        $piuOutput -notmatch "Win32 last DOS IOCTL device info: 0x0080" -or
-        $piuOutput -notmatch "Win32 handled DOS resize count: 40" -or
-        $piuOutput -notmatch "Win32 last DOS resize selector: 0x0024" -or
-        $piuOutput -notmatch "Win32 last DOS resize paragraphs: 0x4AE1" -or
-        $piuOutput -notmatch "Win32 last DOS resize result: success" -or
-        $piuOutput -notmatch "Win32 HLE console output bytes: 10" -or
-        $piuOutput -notmatch "Win32 minimal execution exception address: 0x020F7340" -or
-        $piuOutput -notmatch "Privileged instruction opcode: 0xC7" -or
-        $piuOutput -notmatch "Privileged instruction classification: unknown" -or
-        $piuOutput -notmatch "Privileged instruction classification message: opcode is not recognized by the initial privileged instruction classifier")
+        $piuOutput -notmatch "Win32 minimal execution returned: false" -or
+        $piuOutput -notmatch "Win32 minimal execution exception caught: false" -or
+        $piuOutput -notmatch "Win32 minimal execution timed out: true" -or
+        $piuOutput -notmatch "Win32 handled HLE trap count: 0" -or
+        $piuOutput -notmatch "Win32 handled DOS interrupt count: 0" -or
+        $piuOutput -notmatch "Win32 handled memory store count: 0" -or
+        $piuOutput -notmatch "Win32 minimal execution thread exit code: 3" -or
+        $piuOutput -notmatch "Win32 minimal execution message: minimal execution attempt timed out")
     {
         throw "piu_1st did not reach the expected current HLE observation point."
     }

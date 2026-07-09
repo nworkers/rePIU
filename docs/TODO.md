@@ -1,20 +1,20 @@
 # TODO
 
-## 2026-07-10 DOS IOCTL/write/resize 진행
+## 2026-07-10 traced opcode HLE timeout 관측 진행
 
-`piu_1st`는 `INT 21h AH=0x44 AL=0x00` stdout IOCTL 조회와 `INT 21h AH=0x40` stdout write를 traced DOS HLE로 통과한다. write 출력은 HLE console output에 10바이트 `--- FAIL`로 기록된다.
+`stage.cfg`는 `\DATAS\BGA` 아래에 없는 파일을 찾는 정상 probe로 간주한다. 이후 `spr.res`도 current directory 기준 `\DATAS\BGA\SPR.RES`가 없어서 DOS error `0x0002`로 실패한다. root fallback은 추가하지 않았다.
 
-`INT 21h AH=0x4A` resize 요청은 이제 selector, paragraph, 결과를 로그에 남긴다. 관측된 `ES=0x0024`, `BX=0xE7E1` 요청은 arena 밖 metadata write로 이어지므로 임시 상한 `0xE700`을 적용해 insufficient memory로 실패시킨다.
+이번 작업에서는 관측된 opcode를 계속 처리했다. `89 /r`, `C7 /0`, `66 C7 /0`, `D9` FPU memory load/store, `8B /r` shadow memory load를 추가했고, out-of-arena store는 byte-addressed shadow memory에 기록하도록 했다.
 
-현재 다음 중단 지점은 `0x020F7340`의 `C7 01 FF FF FF FF` 일반 memory write이다. 마지막 파일 open은 current directory `\DATAS\BGA` 기준 `stage.cfg`이며, `\DATAS\BGA\STAGE.CFG`가 없어서 DOS error `0x0002`로 실패한다.
+현재는 더 이상 새 opcode 예외가 잡히지 않고 `piu_1st`가 minimal execution timeout에 도달한다. 다음 작업은 opcode 추가가 아니라 timeout된 guest 실행의 마지막 `EIP` 또는 주기적 실행 trace를 안전하게 기록하는 관측 장치를 설계하는 것이다.
 
-## 2026-07-10 DOS IOCTL/write/resize Progress
+## 2026-07-10 Traced Opcode HLE Timeout Observation Progress
 
-`piu_1st` now passes the `INT 21h AH=0x44 AL=0x00` stdout IOCTL query and the `INT 21h AH=0x40` stdout write through traced DOS HLE. The write output is captured as 10 bytes of HLE console output, `--- FAIL`.
+`stage.cfg` is treated as a legitimate probe for a file absent under `\DATAS\BGA`. After that, `spr.res` also fails with DOS error `0x0002` because `\DATAS\BGA\SPR.RES` is absent relative to the current directory. Root fallback was not added.
 
-`INT 21h AH=0x4A` resize requests now log selector, paragraph count, and result. The observed `ES=0x0024`, `BX=0xE7E1` request leads to an out-of-arena metadata write, so a temporary `0xE700` limit fails it with insufficient memory.
+This task continued handling observed opcodes. It added `89 /r`, `C7 /0`, `66 C7 /0`, `D9` FPU memory load/store, and `8B /r` shadow memory load handling. Out-of-arena stores are now recorded in byte-addressed shadow memory.
 
-The current next stop is the normal memory write `C7 01 FF FF FF FF` at `0x020F7340`. The last file open is `stage.cfg` relative to current directory `\DATAS\BGA`; `\DATAS\BGA\STAGE.CFG` is absent, so it fails with DOS error `0x0002`.
+There is no longer a newly caught opcode exception. `piu_1st` now reaches the minimal execution timeout. The next task is not adding another opcode, but designing an observation tool that safely records the last guest `EIP` or a periodic execution trace for the timed-out guest execution.
 
 ## 2026-07-09 DOS file open HLE 진행
 

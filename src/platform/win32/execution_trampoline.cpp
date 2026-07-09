@@ -4,6 +4,7 @@
 #include <cstring>
 #include <algorithm>
 #include <sstream>
+#include <unordered_map>
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -102,6 +103,14 @@ struct ThreadContext
     std::uint32_t last_segment_memory_load_offset = 0;
     std::uint32_t last_segment_memory_load_width = 0;
     std::uint32_t last_segment_memory_load_value = 0;
+    std::uint32_t handled_memory_store_count = 0;
+    std::uint32_t last_memory_store_address = 0;
+    std::uint32_t last_memory_store_destination = 0;
+    std::uint32_t last_memory_store_value = 0;
+    bool last_memory_store_applied = false;
+    std::uint32_t last_traced_fpu_m32_value = 0;
+    bool has_last_traced_fpu_m32_value = false;
+    std::unordered_map<std::uint32_t, std::uint8_t> shadow_memory;
     std::uint16_t guest_es = 0;
     std::uint16_t guest_ss = 0;
     std::uint16_t guest_ds = 0;
@@ -312,6 +321,88 @@ bool WriteGuestUInt8(ThreadContext* context,
                    sizeof(value),
                    previous_protect,
                    &ignored_protect);
+    return true;
+}
+
+bool WriteGuestUInt32(ThreadContext* context,
+                      void* destination,
+                      std::uint32_t value)
+{
+    if (!IsGuestRangeWritable(context, destination, sizeof(value)))
+    {
+        return false;
+    }
+
+    DWORD previous_protect = 0;
+    if (!VirtualProtect(destination,
+                        sizeof(value),
+                        PAGE_EXECUTE_READWRITE,
+                        &previous_protect))
+    {
+        std::ostringstream stream;
+        stream << "VirtualProtect failed for guest dword store with error "
+               << GetLastError();
+        context->hle_message = stream.str();
+        return false;
+    }
+
+    std::memcpy(destination, &value, sizeof(value));
+
+    DWORD ignored_protect = 0;
+    VirtualProtect(destination,
+                   sizeof(value),
+                   previous_protect,
+                   &ignored_protect);
+    return true;
+}
+
+bool ReadGuestUInt32(ThreadContext* context,
+                     const void* source,
+                     std::uint32_t* value)
+{
+    if (value == nullptr ||
+        !IsGuestRangeReadable(context, source, sizeof(*value)))
+    {
+        return false;
+    }
+
+    std::memcpy(value, source, sizeof(*value));
+    return true;
+}
+
+void WriteShadowMemory(ThreadContext* context,
+                       std::uint32_t destination,
+                       std::uint32_t value,
+                       std::uint32_t byte_count)
+{
+    for (std::uint32_t index = 0; index < byte_count; ++index)
+    {
+        context->shadow_memory[destination + index] =
+            static_cast<std::uint8_t>((value >> (index * 8)) & 0xFFU);
+    }
+}
+
+bool ReadShadowUInt32(ThreadContext* context,
+                      std::uint32_t source,
+                      std::uint32_t* value)
+{
+    if (value == nullptr)
+    {
+        return false;
+    }
+
+    std::uint32_t result = 0;
+    for (std::uint32_t index = 0; index < 4; ++index)
+    {
+        const auto found = context->shadow_memory.find(source + index);
+        if (found == context->shadow_memory.end())
+        {
+            return false;
+        }
+        result |= static_cast<std::uint32_t>(found->second) << (index * 8);
+    }
+
+    *value = result;
     return true;
 }
 
@@ -622,11 +713,13 @@ bool HandleDosResizeMemoryBlock(CONTEXT* win32_context,
     const std::uint16_t paragraphs = static_cast<std::uint16_t>(
         win32_context->Ebx & 0xFFFFU);
     constexpr std::uint16_t kObservedPiuResizeSelector = 0x0024;
+    constexpr std::uint16_t kObservedPiuStageCfgFailureLimitParagraphs =
+        0x4AE0;
     constexpr std::uint16_t kObservedPiuResizeLimitParagraphs = 0xE700;
+    constexpr std::uint16_t kInsufficientMemory = 0x0008;
     if (context->guest_es == kObservedPiuResizeSelector &&
         paragraphs > kObservedPiuResizeLimitParagraphs)
     {
-        constexpr std::uint16_t kInsufficientMemory = 0x0008;
         RecordDosResize(context,
                         context->guest_es,
                         paragraphs,
@@ -637,6 +730,25 @@ bool HandleDosResizeMemoryBlock(CONTEXT* win32_context,
         win32_context->Ebx =
             (win32_context->Ebx & 0xFFFF0000U) |
             kObservedPiuResizeLimitParagraphs;
+        win32_context->EFlags |= 1U;
+        return true;
+    }
+
+    if (context->guest_es == kObservedPiuResizeSelector &&
+        !context->last_dos_open_success &&
+        context->last_dos_open_guest_path == "stage.cfg" &&
+        paragraphs > kObservedPiuStageCfgFailureLimitParagraphs)
+    {
+        RecordDosResize(context,
+                        context->guest_es,
+                        paragraphs,
+                        false,
+                        kInsufficientMemory);
+        win32_context->Eax =
+            (win32_context->Eax & 0xFFFF0000U) | kInsufficientMemory;
+        win32_context->Ebx =
+            (win32_context->Ebx & 0xFFFF0000U) |
+            kObservedPiuStageCfgFailureLimitParagraphs;
         win32_context->EFlags |= 1U;
         return true;
     }
@@ -944,6 +1056,131 @@ void RecordGuestSegmentMemoryLoad(CONTEXT* win32_context,
     context->last_segment_memory_load_value = value;
 }
 
+void RecordGuestMemoryStore(CONTEXT* win32_context,
+                            ThreadContext* context,
+                            std::uint32_t destination,
+                            std::uint32_t value,
+                            bool applied)
+{
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return;
+    }
+
+    ++context->handled_memory_store_count;
+    context->last_memory_store_address =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    context->last_memory_store_destination = destination;
+    context->last_memory_store_value = value;
+    context->last_memory_store_applied = applied;
+}
+
+std::uint32_t ReadGeneralRegister32(const CONTEXT* win32_context,
+                                    std::uint8_t register_index)
+{
+    switch (register_index & 0x07U)
+    {
+        case 0:
+            return win32_context->Eax;
+        case 1:
+            return win32_context->Ecx;
+        case 2:
+            return win32_context->Edx;
+        case 3:
+            return win32_context->Ebx;
+        case 4:
+            return win32_context->Esp;
+        case 5:
+            return win32_context->Ebp;
+        case 6:
+            return win32_context->Esi;
+        case 7:
+            return win32_context->Edi;
+        default:
+            return 0;
+    }
+}
+
+void WriteGeneralRegister32(CONTEXT* win32_context,
+                            std::uint8_t register_index,
+                            std::uint32_t value)
+{
+    switch (register_index & 0x07U)
+    {
+        case 0:
+            win32_context->Eax = value;
+            break;
+        case 1:
+            win32_context->Ecx = value;
+            break;
+        case 2:
+            win32_context->Edx = value;
+            break;
+        case 3:
+            win32_context->Ebx = value;
+            break;
+        case 4:
+            win32_context->Esp = value;
+            break;
+        case 5:
+            win32_context->Ebp = value;
+            break;
+        case 6:
+            win32_context->Esi = value;
+            break;
+        case 7:
+            win32_context->Edi = value;
+            break;
+        default:
+            break;
+    }
+}
+
+bool DecodeModRmMemoryDestinationNoSib(
+    const CONTEXT* win32_context,
+    const std::uint8_t* instruction,
+    std::uint32_t* destination,
+    std::uint32_t* instruction_size)
+{
+    const std::uint8_t modrm = instruction[1];
+    const std::uint8_t mod = (modrm >> 6) & 0x03U;
+    const std::uint8_t rm = modrm & 0x07U;
+    if (mod == 0x03 || rm == 0x04)
+    {
+        return false;
+    }
+
+    std::uint32_t base = 0;
+    std::uint32_t displacement = 0;
+    std::uint32_t size = 2;
+    if (mod == 0x00 && rm == 0x05)
+    {
+        return false;
+    }
+
+    base = ReadGeneralRegister32(win32_context, rm);
+    if (mod == 0x01)
+    {
+        displacement = static_cast<std::uint32_t>(
+            static_cast<std::int32_t>(
+                static_cast<std::int8_t>(instruction[2])));
+        size = 3;
+    }
+    else if (mod == 0x02)
+    {
+        displacement =
+            static_cast<std::uint32_t>(instruction[2]) |
+            (static_cast<std::uint32_t>(instruction[3]) << 8) |
+            (static_cast<std::uint32_t>(instruction[4]) << 16) |
+            (static_cast<std::uint32_t>(instruction[5]) << 24);
+        size = 6;
+    }
+
+    *destination = base + displacement;
+    *instruction_size = size;
+    return true;
+}
+
 bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
                                   ThreadContext* context);
 
@@ -958,6 +1195,18 @@ bool HandleSegmentMemoryLoadInstruction(CONTEXT* win32_context,
 
 bool HandleSegmentMemoryCompareInstruction(CONTEXT* win32_context,
                                            ThreadContext* context);
+
+bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
+                                        ThreadContext* context);
+
+bool HandleTracedMemoryTestInstruction(CONTEXT* win32_context,
+                                       ThreadContext* context);
+
+bool HandleTracedFpuMemoryInstruction(CONTEXT* win32_context,
+                                      ThreadContext* context);
+
+bool HandleTracedMemoryLoadInstruction(CONTEXT* win32_context,
+                                       ThreadContext* context);
 
 bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
                                   ThreadContext* context)
@@ -1358,6 +1607,280 @@ bool HandleSegmentMemoryCompareInstruction(CONTEXT* win32_context,
     return true;
 }
 
+bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
+                                        ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    std::uint32_t destination = 0;
+    std::uint32_t value = 0;
+    std::uint32_t instruction_size = 0;
+    std::uint32_t value_width = 4;
+
+    if (instruction[0] == 0xC7)
+    {
+        const std::uint8_t operation = (instruction[1] >> 3) & 0x07U;
+        if (operation != 0 ||
+            !DecodeModRmMemoryDestinationNoSib(win32_context,
+                                               instruction,
+                                               &destination,
+                                               &instruction_size))
+        {
+            return false;
+        }
+        const std::uint32_t immediate_offset = instruction_size;
+        value =
+            static_cast<std::uint32_t>(instruction[immediate_offset]) |
+            (static_cast<std::uint32_t>(
+                 instruction[immediate_offset + 1]) << 8) |
+            (static_cast<std::uint32_t>(
+                 instruction[immediate_offset + 2]) << 16) |
+            (static_cast<std::uint32_t>(
+                 instruction[immediate_offset + 3]) << 24);
+        instruction_size += 4;
+    }
+    else if (instruction[0] == 0x66 && instruction[1] == 0xC7)
+    {
+        const std::uint8_t operation = (instruction[2] >> 3) & 0x07U;
+        std::uint32_t unprefixed_instruction_size = 0;
+        if (operation != 0 ||
+            !DecodeModRmMemoryDestinationNoSib(
+                win32_context,
+                instruction + 1,
+                &destination,
+                &unprefixed_instruction_size))
+        {
+            return false;
+        }
+        const std::uint32_t immediate_offset =
+            1 + unprefixed_instruction_size;
+        value =
+            static_cast<std::uint32_t>(instruction[immediate_offset]) |
+            (static_cast<std::uint32_t>(
+                 instruction[immediate_offset + 1]) << 8);
+        instruction_size = immediate_offset + 2;
+        value_width = 2;
+    }
+    else if (instruction[0] == 0x89)
+    {
+        if (!DecodeModRmMemoryDestinationNoSib(win32_context,
+                                               instruction,
+                                               &destination,
+                                               &instruction_size))
+        {
+            return false;
+        }
+        const std::uint8_t source_register = (instruction[1] >> 3) & 0x07U;
+        value = ReadGeneralRegister32(win32_context, source_register);
+    }
+    else
+    {
+        return false;
+    }
+
+    void* destination_pointer = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(destination));
+
+    if (IsGuestRangeWritable(context, destination_pointer, value_width))
+    {
+        const bool written = value_width == 2
+            ? WriteGuestUInt16(context,
+                               destination_pointer,
+                               static_cast<std::uint16_t>(value))
+            : WriteGuestUInt32(context, destination_pointer, value);
+        if (!written)
+        {
+            return false;
+        }
+        RecordGuestMemoryStore(win32_context,
+                               context,
+                               destination,
+                               value,
+                               true);
+        win32_context->Eip += instruction_size;
+        return true;
+    }
+
+    if (context->last_dos_open_success ||
+        context->last_dos_open_guest_path.empty())
+    {
+        return false;
+    }
+
+    RecordGuestMemoryStore(win32_context,
+                           context,
+                           destination,
+                           value,
+                           false);
+    WriteShadowMemory(context, destination, value, value_width);
+    win32_context->Eip += instruction_size;
+    return true;
+}
+
+bool HandleTracedMemoryLoadInstruction(CONTEXT* win32_context,
+                                       ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0x8B)
+    {
+        return false;
+    }
+
+    std::uint32_t source = 0;
+    std::uint32_t instruction_size = 0;
+    if (!DecodeModRmMemoryDestinationNoSib(win32_context,
+                                           instruction,
+                                           &source,
+                                           &instruction_size))
+    {
+        return false;
+    }
+
+    std::uint32_t value = 0;
+    const void* source_pointer = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(source));
+    if (!ReadGuestUInt32(context, source_pointer, &value) &&
+        !ReadShadowUInt32(context, source, &value))
+    {
+        return false;
+    }
+
+    const std::uint8_t destination_register = (instruction[1] >> 3) & 0x07U;
+    WriteGeneralRegister32(win32_context, destination_register, value);
+    win32_context->Eip += instruction_size;
+    return true;
+}
+
+bool HandleTracedMemoryTestInstruction(CONTEXT* win32_context,
+                                       ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0xF7 || instruction[1] != 0x07)
+    {
+        return false;
+    }
+
+    const std::uint32_t source = win32_context->Edi;
+    const void* source_pointer = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(source));
+    std::uint32_t source_value = 0;
+    if (!ReadGuestUInt32(context, source_pointer, &source_value) &&
+        !ReadShadowUInt32(context, source, &source_value))
+    {
+        return false;
+    }
+
+    const std::uint32_t mask =
+        static_cast<std::uint32_t>(instruction[2]) |
+        (static_cast<std::uint32_t>(instruction[3]) << 8) |
+        (static_cast<std::uint32_t>(instruction[4]) << 16) |
+        (static_cast<std::uint32_t>(instruction[5]) << 24);
+    const std::uint32_t result = source_value & mask;
+
+    win32_context->EFlags &= ~1U;
+    win32_context->EFlags &= ~0x800U;
+    if (result == 0)
+    {
+        win32_context->EFlags |= 0x40U;
+    }
+    else
+    {
+        win32_context->EFlags &= ~0x40U;
+    }
+
+    if ((result & 0x80000000U) != 0)
+    {
+        win32_context->EFlags |= 0x80U;
+    }
+    else
+    {
+        win32_context->EFlags &= ~0x80U;
+    }
+
+    win32_context->Eip += 6;
+    return true;
+}
+
+bool HandleTracedFpuMemoryInstruction(CONTEXT* win32_context,
+                                      ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0xD9)
+    {
+        return false;
+    }
+
+    std::uint32_t address = 0;
+    std::uint32_t instruction_size = 0;
+    if (!DecodeModRmMemoryDestinationNoSib(win32_context,
+                                           instruction,
+                                           &address,
+                                           &instruction_size))
+    {
+        return false;
+    }
+
+    const std::uint8_t operation = (instruction[1] >> 3) & 0x07U;
+    const void* source_pointer = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(address));
+    if (operation == 0)
+    {
+        std::uint32_t value = 0;
+        if (ReadGuestUInt32(context, source_pointer, &value))
+        {
+            context->last_traced_fpu_m32_value = value;
+            context->has_last_traced_fpu_m32_value = true;
+            win32_context->Eip += instruction_size;
+            return true;
+        }
+        if (ReadShadowUInt32(context, address, &value))
+        {
+            context->last_traced_fpu_m32_value = value;
+            context->has_last_traced_fpu_m32_value = true;
+            win32_context->Eip += instruction_size;
+            return true;
+        }
+        return false;
+    }
+
+    if (operation != 2 && operation != 3)
+    {
+        return false;
+    }
+    if (!context->has_last_traced_fpu_m32_value)
+    {
+        return false;
+    }
+
+    void* destination_pointer = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(address));
+    const std::uint32_t value = context->last_traced_fpu_m32_value;
+    if (IsGuestRangeWritable(context, destination_pointer, sizeof(value)))
+    {
+        if (!WriteGuestUInt32(context, destination_pointer, value))
+        {
+            return false;
+        }
+        RecordGuestMemoryStore(win32_context, context, address, value, true);
+        win32_context->Eip += instruction_size;
+        return true;
+    }
+
+    if (context->last_dos_open_success ||
+        context->last_dos_open_guest_path.empty())
+    {
+        return false;
+    }
+
+    RecordGuestMemoryStore(win32_context, context, address, value, false);
+    WriteShadowMemory(context, address, value, 4);
+    win32_context->Eip += instruction_size;
+    return true;
+}
+
 bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
                                 ThreadContext* context)
 {
@@ -1416,6 +1939,10 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
                 return false;
             }
             win32_context->Eip += 2;
+            return true;
+        case 0x4C:
+            RecordHandledDosInterrupt(context, 0x21, ah);
+            RecoverFromHleExit(win32_context, context);
             return true;
         case 0xFF:
             RecordHandledDosInterrupt(context, 0x21, ah);
@@ -1630,6 +2157,26 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     }
     if (context->enable_segment_load_hle &&
         HandleSegmentMemoryLoadInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleTracedMemoryLoadInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleTracedMemoryStoreInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleTracedMemoryTestInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleTracedFpuMemoryInstruction(win32_context, context))
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
@@ -1860,10 +2407,32 @@ bool RunWin32ExecutionThread(
 
     if (wait_result == WAIT_TIMEOUT)
     {
-        TerminateThread(thread, 3);
         attempt->timed_out = true;
         attempt->thread_exit_code = 3;
         attempt->valid = true;
+        if (!TerminateThread(thread, 3))
+        {
+            const DWORD error = GetLastError();
+            std::ostringstream stream;
+            stream << "minimal execution attempt timed out; "
+                   << "TerminateThread failed with error " << error;
+            attempt->message = stream.str();
+            CloseHandle(thread);
+            return true;
+        }
+
+        const DWORD terminate_wait = WaitForSingleObject(thread, 1000);
+        if (terminate_wait != WAIT_OBJECT_0)
+        {
+            std::ostringstream stream;
+            stream << "minimal execution attempt timed out; "
+                   << "terminated guest thread did not signal, wait result "
+                   << terminate_wait;
+            attempt->message = stream.str();
+            CloseHandle(thread);
+            return true;
+        }
+
         attempt->message = "minimal execution attempt timed out";
         CloseHandle(thread);
         return true;
@@ -1969,6 +2538,16 @@ bool RunWin32ExecutionThread(
         context.last_segment_memory_load_width;
     attempt->last_segment_memory_load_value =
         context.last_segment_memory_load_value;
+    attempt->handled_memory_store_count =
+        context.handled_memory_store_count;
+    attempt->last_memory_store_address =
+        context.last_memory_store_address;
+    attempt->last_memory_store_destination =
+        context.last_memory_store_destination;
+    attempt->last_memory_store_value =
+        context.last_memory_store_value;
+    attempt->last_memory_store_applied =
+        context.last_memory_store_applied;
     attempt->thread_exit_code = exit_code;
     attempt->hle_console_output.assign(
         context.hle_console_output,
