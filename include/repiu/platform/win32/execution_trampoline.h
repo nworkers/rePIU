@@ -52,6 +52,17 @@ struct Win32MinimalExecutionAttempt
     std::uint16_t last_dos_open_error = 0;
     std::uint16_t last_dos_open_handle = 0;
     std::uint8_t last_dos_open_access_mode = 0;
+    std::uint32_t handled_dos_ioctl_count = 0;
+    std::uint8_t last_dos_ioctl_subfunction = 0;
+    std::uint16_t last_dos_ioctl_handle = 0;
+    bool last_dos_ioctl_success = false;
+    std::uint16_t last_dos_ioctl_error = 0;
+    std::uint16_t last_dos_ioctl_device_info = 0;
+    std::uint32_t handled_dos_resize_count = 0;
+    std::uint16_t last_dos_resize_selector = 0;
+    std::uint16_t last_dos_resize_paragraphs = 0;
+    bool last_dos_resize_success = false;
+    std::uint16_t last_dos_resize_error = 0;
     std::uint32_t handled_segment_load_count = 0;
     std::uint32_t last_segment_load_address = 0;
     std::uint32_t last_segment_load_opcode = 0;

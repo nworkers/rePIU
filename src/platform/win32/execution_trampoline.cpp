@@ -71,6 +71,17 @@ struct ThreadContext
     std::uint16_t last_dos_open_error = 0;
     std::uint16_t last_dos_open_handle = 0;
     std::uint8_t last_dos_open_access_mode = 0;
+    std::uint32_t handled_dos_ioctl_count = 0;
+    std::uint8_t last_dos_ioctl_subfunction = 0;
+    std::uint16_t last_dos_ioctl_handle = 0;
+    bool last_dos_ioctl_success = false;
+    std::uint16_t last_dos_ioctl_error = 0;
+    std::uint16_t last_dos_ioctl_device_info = 0;
+    std::uint32_t handled_dos_resize_count = 0;
+    std::uint16_t last_dos_resize_selector = 0;
+    std::uint16_t last_dos_resize_paragraphs = 0;
+    bool last_dos_resize_success = false;
+    std::uint16_t last_dos_resize_error = 0;
     std::uint32_t handled_segment_load_count = 0;
     std::uint32_t last_segment_load_address = 0;
     std::uint32_t last_segment_load_opcode = 0;
@@ -519,6 +530,122 @@ bool HandleDosOpenFile(CONTEXT* win32_context, ThreadContext* context)
     return true;
 }
 
+void RecordDosIoctl(ThreadContext* context,
+                    std::uint8_t subfunction,
+                    std::uint16_t handle,
+                    bool success,
+                    std::uint16_t error,
+                    std::uint16_t device_info)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+
+    ++context->handled_dos_ioctl_count;
+    context->last_dos_ioctl_subfunction = subfunction;
+    context->last_dos_ioctl_handle = handle;
+    context->last_dos_ioctl_success = success;
+    context->last_dos_ioctl_error = error;
+    context->last_dos_ioctl_device_info = device_info;
+}
+
+bool HandleDosIoctl(CONTEXT* win32_context, ThreadContext* context)
+{
+    const std::uint8_t subfunction = static_cast<std::uint8_t>(
+        win32_context->Eax & 0xFFU);
+    const std::uint16_t handle = static_cast<std::uint16_t>(
+        win32_context->Ebx & 0xFFFFU);
+    if (subfunction != 0x00)
+    {
+        std::ostringstream stream;
+        stream << "unsupported DOS IOCTL subfunction AL=0x"
+               << std::hex << static_cast<unsigned>(subfunction);
+        context->hle_message = stream.str();
+        return false;
+    }
+
+    std::uint16_t device_info = 0;
+    if (handle < 5)
+    {
+        device_info = 0x0080;
+        RecordDosIoctl(context, subfunction, handle, true, 0, device_info);
+        win32_context->Edx =
+            (win32_context->Edx & 0xFFFF0000U) | device_info;
+        win32_context->EFlags &= ~1U;
+        return true;
+    }
+
+    if (repiu::hle::IsDosFileHandleOpen(context->dos_file_system, handle))
+    {
+        RecordDosIoctl(context, subfunction, handle, true, 0, device_info);
+        win32_context->Edx =
+            (win32_context->Edx & 0xFFFF0000U) | device_info;
+        win32_context->EFlags &= ~1U;
+        return true;
+    }
+
+    constexpr std::uint16_t kInvalidHandle = 0x0006;
+    RecordDosIoctl(context,
+                   subfunction,
+                   handle,
+                   false,
+                   kInvalidHandle,
+                   0);
+    win32_context->Eax =
+        (win32_context->Eax & 0xFFFF0000U) | kInvalidHandle;
+    win32_context->EFlags |= 1U;
+    return true;
+}
+
+void RecordDosResize(ThreadContext* context,
+                     std::uint16_t selector,
+                     std::uint16_t paragraphs,
+                     bool success,
+                     std::uint16_t error)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+
+    ++context->handled_dos_resize_count;
+    context->last_dos_resize_selector = selector;
+    context->last_dos_resize_paragraphs = paragraphs;
+    context->last_dos_resize_success = success;
+    context->last_dos_resize_error = error;
+}
+
+bool HandleDosResizeMemoryBlock(CONTEXT* win32_context,
+                                ThreadContext* context)
+{
+    const std::uint16_t paragraphs = static_cast<std::uint16_t>(
+        win32_context->Ebx & 0xFFFFU);
+    constexpr std::uint16_t kObservedPiuResizeSelector = 0x0024;
+    constexpr std::uint16_t kObservedPiuResizeLimitParagraphs = 0xE700;
+    if (context->guest_es == kObservedPiuResizeSelector &&
+        paragraphs > kObservedPiuResizeLimitParagraphs)
+    {
+        constexpr std::uint16_t kInsufficientMemory = 0x0008;
+        RecordDosResize(context,
+                        context->guest_es,
+                        paragraphs,
+                        false,
+                        kInsufficientMemory);
+        win32_context->Eax =
+            (win32_context->Eax & 0xFFFF0000U) | kInsufficientMemory;
+        win32_context->Ebx =
+            (win32_context->Ebx & 0xFFFF0000U) |
+            kObservedPiuResizeLimitParagraphs;
+        win32_context->EFlags |= 1U;
+        return true;
+    }
+
+    RecordDosResize(context, context->guest_es, paragraphs, true, 0);
+    win32_context->EFlags &= ~1U;
+    return true;
+}
+
 bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
 {
     const std::uint8_t ah = static_cast<std::uint8_t>(
@@ -581,15 +708,21 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
             break;
         }
         case 0x44:
-            win32_context->Edx =
-                (win32_context->Edx & 0xFFFF0000U) | 0x0080U;
-            win32_context->EFlags &= ~1U;
+            RecordHandledDosInterrupt(context, 0x21, ah);
+            if (!HandleDosIoctl(win32_context, context))
+            {
+                return false;
+            }
             break;
         case 0x4C:
             RecoverFromHleExit(win32_context, context);
             return true;
         case 0x4A:
-            win32_context->EFlags &= ~1U;
+            RecordHandledDosInterrupt(context, 0x21, ah);
+            if (!HandleDosResizeMemoryBlock(win32_context, context))
+            {
+                return false;
+            }
             break;
         case 0xFF:
             win32_context->Eax &= 0xFFFFFF00U;
@@ -1264,6 +1397,26 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
             }
             win32_context->Eip += 2;
             return true;
+        case 0x40:
+        {
+            RecordHandledDosInterrupt(context, 0x21, ah);
+            const void* text = reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(win32_context->Edx));
+            const std::uint32_t byte_count = win32_context->Ecx;
+            AppendConsoleOutput(context, text, byte_count);
+            win32_context->Eax = byte_count;
+            win32_context->EFlags &= ~1U;
+            win32_context->Eip += 2;
+            return true;
+        }
+        case 0x44:
+            RecordHandledDosInterrupt(context, 0x21, ah);
+            if (!HandleDosIoctl(win32_context, context))
+            {
+                return false;
+            }
+            win32_context->Eip += 2;
+            return true;
         case 0xFF:
             RecordHandledDosInterrupt(context, 0x21, ah);
             win32_context->Eax &= 0xFFFFFF00U;
@@ -1278,7 +1431,10 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
             return true;
         case 0x4A:
             RecordHandledDosInterrupt(context, 0x21, ah);
-            win32_context->EFlags &= ~1U;
+            if (!HandleDosResizeMemoryBlock(win32_context, context))
+            {
+                return false;
+            }
             win32_context->Eip += 2;
             return true;
         default:
@@ -1761,6 +1917,22 @@ bool RunWin32ExecutionThread(
         context.last_dos_open_handle;
     attempt->last_dos_open_access_mode =
         context.last_dos_open_access_mode;
+    attempt->handled_dos_ioctl_count = context.handled_dos_ioctl_count;
+    attempt->last_dos_ioctl_subfunction =
+        context.last_dos_ioctl_subfunction;
+    attempt->last_dos_ioctl_handle = context.last_dos_ioctl_handle;
+    attempt->last_dos_ioctl_success = context.last_dos_ioctl_success;
+    attempt->last_dos_ioctl_error = context.last_dos_ioctl_error;
+    attempt->last_dos_ioctl_device_info =
+        context.last_dos_ioctl_device_info;
+    attempt->handled_dos_resize_count = context.handled_dos_resize_count;
+    attempt->last_dos_resize_selector =
+        context.last_dos_resize_selector;
+    attempt->last_dos_resize_paragraphs =
+        context.last_dos_resize_paragraphs;
+    attempt->last_dos_resize_success =
+        context.last_dos_resize_success;
+    attempt->last_dos_resize_error = context.last_dos_resize_error;
     attempt->handled_segment_load_count =
         context.handled_segment_load_count;
     attempt->last_segment_load_address = context.last_segment_load_address;

@@ -1,5 +1,21 @@
 # TODO
 
+## 2026-07-10 DOS IOCTL/write/resize 진행
+
+`piu_1st`는 `INT 21h AH=0x44 AL=0x00` stdout IOCTL 조회와 `INT 21h AH=0x40` stdout write를 traced DOS HLE로 통과한다. write 출력은 HLE console output에 10바이트 `--- FAIL`로 기록된다.
+
+`INT 21h AH=0x4A` resize 요청은 이제 selector, paragraph, 결과를 로그에 남긴다. 관측된 `ES=0x0024`, `BX=0xE7E1` 요청은 arena 밖 metadata write로 이어지므로 임시 상한 `0xE700`을 적용해 insufficient memory로 실패시킨다.
+
+현재 다음 중단 지점은 `0x020F7340`의 `C7 01 FF FF FF FF` 일반 memory write이다. 마지막 파일 open은 current directory `\DATAS\BGA` 기준 `stage.cfg`이며, `\DATAS\BGA\STAGE.CFG`가 없어서 DOS error `0x0002`로 실패한다.
+
+## 2026-07-10 DOS IOCTL/write/resize Progress
+
+`piu_1st` now passes the `INT 21h AH=0x44 AL=0x00` stdout IOCTL query and the `INT 21h AH=0x40` stdout write through traced DOS HLE. The write output is captured as 10 bytes of HLE console output, `--- FAIL`.
+
+`INT 21h AH=0x4A` resize requests now log selector, paragraph count, and result. The observed `ES=0x0024`, `BX=0xE7E1` request leads to an out-of-arena metadata write, so a temporary `0xE700` limit fails it with insufficient memory.
+
+The current next stop is the normal memory write `C7 01 FF FF FF FF` at `0x020F7340`. The last file open is `stage.cfg` relative to current directory `\DATAS\BGA`; `\DATAS\BGA\STAGE.CFG` is absent, so it fails with DOS error `0x0002`.
+
 ## 2026-07-09 DOS file open HLE 진행
 
 `INT 21h AH=0x3D` file open 요청을 가상 DOS current directory 기반 path resolver로 처리했다. `piu_1st`는 `\DATAS\BGA` current directory 상태에서 `intro.ani`를 열려고 하며, 이는 `\DATAS\BGA\INTRO.ANI`로 해석된다. 해당 host file은 존재하지 않으므로 DOS error `0x0002`로 실패 처리된다.

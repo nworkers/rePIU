@@ -60,6 +60,9 @@ bool OpenDosFile(DosVirtualFileSystemState* state,
                  DosResolvedPath* resolved,
                  std::uint16_t* handle);
 
+bool IsDosFileHandleOpen(const DosVirtualFileSystemState& state,
+                         std::uint16_t handle);
+
 std::uint16_t DosPathResultToErrorCode(DosPathResult result);
 
 }  // namespace repiu::hle

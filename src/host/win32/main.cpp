@@ -566,6 +566,43 @@ void PrintExecutionAttempt(
                         Hex16(attempt.last_dos_open_error));
         }
     }
+    logger.info("Win32 handled DOS IOCTL count: {}",
+                attempt.handled_dos_ioctl_count);
+    if (attempt.handled_dos_ioctl_count > 0)
+    {
+        logger.info("Win32 last DOS IOCTL subfunction: {}",
+                    Hex8(attempt.last_dos_ioctl_subfunction));
+        logger.info("Win32 last DOS IOCTL handle: {}",
+                    Hex16(attempt.last_dos_ioctl_handle));
+        logger.info("Win32 last DOS IOCTL result: {}",
+                    attempt.last_dos_ioctl_success ? "success" : "failure");
+        if (attempt.last_dos_ioctl_success)
+        {
+            logger.info("Win32 last DOS IOCTL device info: {}",
+                        Hex16(attempt.last_dos_ioctl_device_info));
+        }
+        else
+        {
+            logger.info("Win32 last DOS IOCTL error: {}",
+                        Hex16(attempt.last_dos_ioctl_error));
+        }
+    }
+    logger.info("Win32 handled DOS resize count: {}",
+                attempt.handled_dos_resize_count);
+    if (attempt.handled_dos_resize_count > 0)
+    {
+        logger.info("Win32 last DOS resize selector: {}",
+                    Hex16(attempt.last_dos_resize_selector));
+        logger.info("Win32 last DOS resize paragraphs: {}",
+                    Hex16(attempt.last_dos_resize_paragraphs));
+        logger.info("Win32 last DOS resize result: {}",
+                    attempt.last_dos_resize_success ? "success" : "failure");
+        if (!attempt.last_dos_resize_success)
+        {
+            logger.info("Win32 last DOS resize error: {}",
+                        Hex16(attempt.last_dos_resize_error));
+        }
+    }
     logger.info("Win32 handled segment load count: {}",
                 attempt.handled_segment_load_count);
     if (attempt.handled_segment_load_count > 0)

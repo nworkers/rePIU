@@ -264,6 +264,20 @@ bool OpenDosFile(DosVirtualFileSystemState* state,
     return true;
 }
 
+bool IsDosFileHandleOpen(const DosVirtualFileSystemState& state,
+                         std::uint16_t handle)
+{
+    for (const DosOpenFileHandle& open_file : state.open_files)
+    {
+        if (open_file.open && open_file.handle == handle)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 std::uint16_t DosPathResultToErrorCode(DosPathResult result)
 {
     switch (result)
