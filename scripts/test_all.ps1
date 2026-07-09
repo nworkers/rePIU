@@ -96,8 +96,10 @@ try
         -Name "Run piu_1st target" `
         -FilePath $Loader `
         -Arguments @("piu_1st")
-    if ($piuOutput -notmatch "Win32 handled segment memory load count: 1" -or
-        $piuOutput -notmatch "\[8B\] 06")
+    if ($piuOutput -notmatch "Win32 last handled DOS interrupt AH: 0x4A" -or
+        $piuOutput -notmatch "Win32 minimal execution exception address: 0x020F8405" -or
+        $piuOutput -notmatch "Privileged instruction opcode: 0xC7" -or
+        $piuOutput -notmatch "Current execution blocker: unhandled or unclassified instruction/memory access at exception point")
     {
         throw "piu_1st did not reach the expected current HLE observation point."
     }

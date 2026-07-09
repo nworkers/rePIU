@@ -55,6 +55,7 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t last_segment_memory_load_register = 0;
     std::uint32_t last_segment_memory_load_selector = 0;
     std::uint32_t last_segment_memory_load_offset = 0;
+    std::uint32_t last_segment_memory_load_width = 0;
     std::uint32_t last_segment_memory_load_value = 0;
     std::uint32_t thread_exit_code = 0;
     std::string hle_console_output;

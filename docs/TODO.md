@@ -1,5 +1,25 @@
 # TODO
 
+## 2026-07-09 DS low-memory 읽기 HLE 진행
+
+`8B 06` / `mov eax, dword ptr ds:[esi]` 중단 지점을 segment HLE에서 처리했다.
+이어지는 command-line 또는 DOS low-memory probe 흐름에서 `80 3E 00`, `AC`, `A4`도 DS shadow selector와 `ESI < 0x10000` 조건으로 0을 반환하도록 처리했다.
+
+`INT 21h AH=0xED`도 최소 응답으로 처리했다.
+`INT 21h AH=0x4A`도 일반 DOS HLE와 같은 최소 성공 응답으로 처리했다.
+현재 다음 중단 지점은 `0x020F8405`의 `C7 04 02 FF FF FF FF`이다. 이 명령은 `EDX + EAX` 위치에 `0xFFFFFFFF`를 쓰려는 일반 메모리 write이며, 관측된 대상 주소 `0x025D7E54`는 현재 relocated placement 끝 `0x025D7000`을 넘어선다.
+따라서 다음 작업은 opcode 특례가 아니라 `INT 21h AH=0x4A` 이후 DOS 메모리 블록 resize/heap 확장 정책을 설계하는 것이다.
+
+## 2026-07-09 DS Low-Memory Read HLE Progress
+
+The `8B 06` / `mov eax, dword ptr ds:[esi]` stop is now handled by segment HLE.
+The following command-line or DOS low-memory probe flow also handles `80 3E 00`, `AC`, and `A4` as zero reads/copies when the DS shadow selector exists and `ESI < 0x10000`.
+
+`INT 21h AH=0xED` is also handled with a minimal response.
+`INT 21h AH=0x4A` is also handled with the same minimal success response as the general DOS HLE path.
+The current next stop is `C7 04 02 FF FF FF FF` at `0x020F8405`. This instruction attempts a normal memory write of `0xFFFFFFFF` to `EDX + EAX`; the observed target address `0x025D7E54` is beyond the current relocated placement end `0x025D7000`.
+Therefore, the next task is not an opcode special case. It needs a design for DOS memory block resize/heap expansion policy after `INT 21h AH=0x4A`.
+
 ## 2026-07-09 segment register store HLE 진행
 
 `66 26 8C 1D` segment register store 중단 지점은 guest selector shadow state를 relocated runtime memory에 쓰는 HLE 요구사항으로 분류되었다.

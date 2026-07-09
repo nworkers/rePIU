@@ -542,9 +542,19 @@ void PrintExecutionAttempt(
                         0xFFFFU)));
         logger.info("Win32 last segment memory load offset: {}",
                     Hex32(attempt.last_segment_memory_load_offset));
-        logger.info("Win32 last segment memory load value: {}",
-                    Hex8(static_cast<std::uint8_t>(
-                        attempt.last_segment_memory_load_value & 0xFFU)));
+        logger.info("Win32 last segment memory load width: {}",
+                    attempt.last_segment_memory_load_width);
+        if (attempt.last_segment_memory_load_width == 4)
+        {
+            logger.info("Win32 last segment memory load value: {}",
+                        Hex32(attempt.last_segment_memory_load_value));
+        }
+        else
+        {
+            logger.info("Win32 last segment memory load value: {}",
+                        Hex8(static_cast<std::uint8_t>(
+                            attempt.last_segment_memory_load_value & 0xFFU)));
+        }
     }
     logger.info("Win32 minimal execution thread exit code: {}",
                 attempt.thread_exit_code);

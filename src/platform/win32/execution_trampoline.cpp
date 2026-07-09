@@ -74,6 +74,7 @@ struct ThreadContext
     std::uint32_t last_segment_memory_load_register = 0;
     std::uint32_t last_segment_memory_load_selector = 0;
     std::uint32_t last_segment_memory_load_offset = 0;
+    std::uint32_t last_segment_memory_load_width = 0;
     std::uint32_t last_segment_memory_load_value = 0;
     std::uint16_t guest_es = 0;
     std::uint16_t guest_ss = 0;
@@ -241,6 +242,38 @@ bool WriteGuestUInt16(ThreadContext* context,
     {
         std::ostringstream stream;
         stream << "VirtualProtect failed for guest segment store with error "
+               << GetLastError();
+        context->hle_message = stream.str();
+        return false;
+    }
+
+    std::memcpy(destination, &value, sizeof(value));
+
+    DWORD ignored_protect = 0;
+    VirtualProtect(destination,
+                   sizeof(value),
+                   previous_protect,
+                   &ignored_protect);
+    return true;
+}
+
+bool WriteGuestUInt8(ThreadContext* context,
+                     void* destination,
+                     std::uint8_t value)
+{
+    if (!IsGuestRangeWritable(context, destination, sizeof(value)))
+    {
+        return false;
+    }
+
+    DWORD previous_protect = 0;
+    if (!VirtualProtect(destination,
+                        sizeof(value),
+                        PAGE_EXECUTE_READWRITE,
+                        &previous_protect))
+    {
+        std::ostringstream stream;
+        stream << "VirtualProtect failed for guest byte store with error "
                << GetLastError();
         context->hle_message = stream.str();
         return false;
@@ -563,10 +596,12 @@ void RecordGuestSegmentStore(CONTEXT* win32_context,
 
 void RecordGuestSegmentMemoryLoad(CONTEXT* win32_context,
                                   ThreadContext* context,
+                                  std::uint8_t opcode,
                                   std::uint8_t segment_register,
                                   std::uint16_t selector,
                                   std::uint32_t offset,
-                                  std::uint8_t value)
+                                  std::uint32_t byte_width,
+                                  std::uint32_t value)
 {
     if (win32_context == nullptr || context == nullptr)
     {
@@ -576,10 +611,11 @@ void RecordGuestSegmentMemoryLoad(CONTEXT* win32_context,
     ++context->handled_segment_memory_load_count;
     context->last_segment_memory_load_address =
         static_cast<std::uint32_t>(win32_context->Eip);
-    context->last_segment_memory_load_opcode = 0x8A;
+    context->last_segment_memory_load_opcode = opcode;
     context->last_segment_memory_load_register = segment_register;
     context->last_segment_memory_load_selector = selector;
     context->last_segment_memory_load_offset = offset;
+    context->last_segment_memory_load_width = byte_width;
     context->last_segment_memory_load_value = value;
 }
 
@@ -591,6 +627,12 @@ bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
 
 bool HandleSegmentOverrideByteLoadInstruction(CONTEXT* win32_context,
                                               ThreadContext* context);
+
+bool HandleSegmentMemoryLoadInstruction(CONTEXT* win32_context,
+                                        ThreadContext* context);
+
+bool HandleSegmentMemoryCompareInstruction(CONTEXT* win32_context,
+                                           ThreadContext* context);
 
 bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
                                   ThreadContext* context)
@@ -786,11 +828,208 @@ bool HandleSegmentOverrideByteLoadInstruction(CONTEXT* win32_context,
         (win32_context->Ecx & 0xFFFFFF00U) | value;
     RecordGuestSegmentMemoryLoad(win32_context,
                                  context,
+                                 0x8A,
                                  segment_register,
                                  selector,
                                  offset,
+                                 1,
                                  value);
     win32_context->Eip += 4;
+    return true;
+}
+
+bool ReadSegmentDword(ThreadContext* context,
+                      std::uint8_t segment_register,
+                      std::uint16_t selector,
+                      std::uint32_t offset,
+                      std::uint32_t* value)
+{
+    if (context == nullptr || value == nullptr)
+    {
+        return false;
+    }
+
+    if (segment_register == 3 && selector == context->guest_ds &&
+        selector != 0 && offset == 0)
+    {
+        *value = 0;
+        return true;
+    }
+
+    return false;
+}
+
+bool ReadSegmentByte(ThreadContext* context,
+                     std::uint8_t segment_register,
+                     std::uint16_t selector,
+                     std::uint32_t offset,
+                     std::uint8_t* value)
+{
+    if (context == nullptr || value == nullptr)
+    {
+        return false;
+    }
+
+    if (segment_register == 3 && selector == context->guest_ds &&
+        selector != 0 && offset < 0x10000)
+    {
+        *value = 0;
+        return true;
+    }
+
+    return false;
+}
+
+bool HandleSegmentMemoryLoadInstruction(CONTEXT* win32_context,
+                                        ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    const std::uint8_t segment_register = 3;
+    const std::uint16_t selector =
+        ReadGuestSegmentSelector(*context, segment_register);
+
+    if (instruction[0] == 0x8B && instruction[1] == 0x06)
+    {
+        const std::uint32_t offset = win32_context->Esi;
+
+        std::uint32_t value = 0;
+        if (!ReadSegmentDword(
+                context, segment_register, selector, offset, &value))
+        {
+            return false;
+        }
+
+        win32_context->Eax = value;
+        RecordGuestSegmentMemoryLoad(win32_context,
+                                     context,
+                                     0x8B,
+                                     segment_register,
+                                     selector,
+                                     offset,
+                                     4,
+                                     value);
+        win32_context->Eip += 2;
+        return true;
+    }
+
+    if (instruction[0] == 0xAC)
+    {
+        const std::uint32_t offset = win32_context->Esi;
+
+        std::uint8_t value = 0;
+        if (!ReadSegmentByte(
+                context, segment_register, selector, offset, &value))
+        {
+            return false;
+        }
+
+        win32_context->Eax =
+            (win32_context->Eax & 0xFFFFFF00U) | value;
+        if ((win32_context->EFlags & 0x400U) != 0)
+        {
+            --win32_context->Esi;
+        }
+        else
+        {
+            ++win32_context->Esi;
+        }
+        RecordGuestSegmentMemoryLoad(win32_context,
+                                     context,
+                                     0xAC,
+                                     segment_register,
+                                     selector,
+                                     offset,
+                                     1,
+                                     value);
+        ++win32_context->Eip;
+        return true;
+    }
+
+    if (instruction[0] == 0xA4)
+    {
+        const std::uint32_t offset = win32_context->Esi;
+
+        std::uint8_t value = 0;
+        if (!ReadSegmentByte(
+                context, segment_register, selector, offset, &value))
+        {
+            return false;
+        }
+
+        void* destination = reinterpret_cast<void*>(
+            static_cast<std::uintptr_t>(win32_context->Edi));
+        if (!WriteGuestUInt8(context, destination, value))
+        {
+            return false;
+        }
+
+        if ((win32_context->EFlags & 0x400U) != 0)
+        {
+            --win32_context->Esi;
+            --win32_context->Edi;
+        }
+        else
+        {
+            ++win32_context->Esi;
+            ++win32_context->Edi;
+        }
+        RecordGuestSegmentMemoryLoad(win32_context,
+                                     context,
+                                     0xA4,
+                                     segment_register,
+                                     selector,
+                                     offset,
+                                     1,
+                                     value);
+        ++win32_context->Eip;
+        return true;
+    }
+
+    return false;
+}
+
+bool HandleSegmentMemoryCompareInstruction(CONTEXT* win32_context,
+                                           ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0x80 || instruction[1] != 0x3E)
+    {
+        return false;
+    }
+
+    const std::uint8_t segment_register = 3;
+    const std::uint16_t selector =
+        ReadGuestSegmentSelector(*context, segment_register);
+    const std::uint32_t offset = win32_context->Esi;
+
+    std::uint8_t value = 0;
+    if (!ReadSegmentByte(
+            context, segment_register, selector, offset, &value))
+    {
+        return false;
+    }
+
+    const std::uint8_t immediate = instruction[2];
+    if (value == immediate)
+    {
+        win32_context->EFlags |= 0x40U;
+    }
+    else
+    {
+        win32_context->EFlags &= ~0x40U;
+    }
+    win32_context->EFlags &= ~1U;
+    RecordGuestSegmentMemoryLoad(win32_context,
+                                 context,
+                                 0x80,
+                                 segment_register,
+                                 selector,
+                                 offset,
+                                 1,
+                                 value);
+    win32_context->Eip += 3;
     return true;
 }
 
@@ -820,6 +1059,17 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
         case 0xFF:
             RecordHandledDosInterrupt(context, 0x21, ah);
             win32_context->Eax &= 0xFFFFFF00U;
+            win32_context->EFlags &= ~1U;
+            win32_context->Eip += 2;
+            return true;
+        case 0xED:
+            RecordHandledDosInterrupt(context, 0x21, ah);
+            win32_context->Eax &= 0xFFFFFF00U;
+            win32_context->EFlags &= ~1U;
+            win32_context->Eip += 2;
+            return true;
+        case 0x4A:
+            RecordHandledDosInterrupt(context, 0x21, ah);
             win32_context->EFlags &= ~1U;
             win32_context->Eip += 2;
             return true;
@@ -1006,6 +1256,16 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     }
     if (context->enable_segment_load_hle &&
         HandleSegmentOverrideByteLoadInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleSegmentMemoryCompareInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleSegmentMemoryLoadInstruction(win32_context, context))
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
@@ -1294,6 +1554,8 @@ bool RunWin32ExecutionThread(
         context.last_segment_memory_load_selector;
     attempt->last_segment_memory_load_offset =
         context.last_segment_memory_load_offset;
+    attempt->last_segment_memory_load_width =
+        context.last_segment_memory_load_width;
     attempt->last_segment_memory_load_value =
         context.last_segment_memory_load_value;
     attempt->thread_exit_code = exit_code;
