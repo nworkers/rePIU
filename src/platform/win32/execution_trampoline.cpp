@@ -68,6 +68,13 @@ struct ThreadContext
     std::uint32_t last_segment_store_register = 0;
     std::uint32_t last_segment_store_selector = 0;
     std::uint32_t last_segment_store_destination = 0;
+    std::uint32_t handled_segment_memory_load_count = 0;
+    std::uint32_t last_segment_memory_load_address = 0;
+    std::uint32_t last_segment_memory_load_opcode = 0;
+    std::uint32_t last_segment_memory_load_register = 0;
+    std::uint32_t last_segment_memory_load_selector = 0;
+    std::uint32_t last_segment_memory_load_offset = 0;
+    std::uint32_t last_segment_memory_load_value = 0;
     std::uint16_t guest_es = 0;
     std::uint16_t guest_ss = 0;
     std::uint16_t guest_ds = 0;
@@ -554,11 +561,36 @@ void RecordGuestSegmentStore(CONTEXT* win32_context,
     context->last_segment_store_destination = destination;
 }
 
+void RecordGuestSegmentMemoryLoad(CONTEXT* win32_context,
+                                  ThreadContext* context,
+                                  std::uint8_t segment_register,
+                                  std::uint16_t selector,
+                                  std::uint32_t offset,
+                                  std::uint8_t value)
+{
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return;
+    }
+
+    ++context->handled_segment_memory_load_count;
+    context->last_segment_memory_load_address =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    context->last_segment_memory_load_opcode = 0x8A;
+    context->last_segment_memory_load_register = segment_register;
+    context->last_segment_memory_load_selector = selector;
+    context->last_segment_memory_load_offset = offset;
+    context->last_segment_memory_load_value = value;
+}
+
 bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
                                   ThreadContext* context);
 
 bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
                                    ThreadContext* context);
+
+bool HandleSegmentOverrideByteLoadInstruction(CONTEXT* win32_context,
+                                              ThreadContext* context);
 
 bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
                                   ThreadContext* context)
@@ -688,6 +720,77 @@ bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
                             selector,
                             destination);
     win32_context->Eip += 8;
+    return true;
+}
+
+bool ReadSegmentOverrideByte(ThreadContext* context,
+                             std::uint8_t segment_register,
+                             std::uint16_t selector,
+                             std::uint32_t offset,
+                             std::uint8_t* value)
+{
+    if (context == nullptr || value == nullptr)
+    {
+        return false;
+    }
+
+    if (segment_register == 0 && selector == context->guest_es &&
+        selector != 0 && offset == 0x80)
+    {
+        *value = 0;
+        return true;
+    }
+
+    return false;
+}
+
+bool HandleSegmentOverrideByteLoadInstruction(CONTEXT* win32_context,
+                                              ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0x26 || instruction[1] != 0x8A ||
+        instruction[2] != 0x4F)
+    {
+        return false;
+    }
+
+    const std::uint8_t modrm = instruction[2];
+    const std::uint8_t mod = static_cast<std::uint8_t>((modrm >> 6) & 0x03);
+    const std::uint8_t destination_register =
+        static_cast<std::uint8_t>((modrm >> 3) & 0x07);
+    const std::uint8_t base_register =
+        static_cast<std::uint8_t>(modrm & 0x07);
+    if (mod != 0x01 || destination_register != 0x01 ||
+        base_register != 0x07)
+    {
+        return false;
+    }
+
+    const std::int8_t displacement =
+        static_cast<std::int8_t>(instruction[3]);
+    const std::uint32_t offset =
+        static_cast<std::uint32_t>(win32_context->Edi + displacement);
+    const std::uint8_t segment_register = 0;
+    const std::uint16_t selector =
+        ReadGuestSegmentSelector(*context, segment_register);
+
+    std::uint8_t value = 0;
+    if (!ReadSegmentOverrideByte(
+            context, segment_register, selector, offset, &value))
+    {
+        return false;
+    }
+
+    win32_context->Ecx =
+        (win32_context->Ecx & 0xFFFFFF00U) | value;
+    RecordGuestSegmentMemoryLoad(win32_context,
+                                 context,
+                                 segment_register,
+                                 selector,
+                                 offset,
+                                 value);
+    win32_context->Eip += 4;
     return true;
 }
 
@@ -898,6 +1001,11 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     }
     if (context->enable_segment_load_hle &&
         HandleSegmentStoreInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleSegmentOverrideByteLoadInstruction(win32_context, context))
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
@@ -1174,6 +1282,20 @@ bool RunWin32ExecutionThread(
         context.last_segment_store_selector;
     attempt->last_segment_store_destination =
         context.last_segment_store_destination;
+    attempt->handled_segment_memory_load_count =
+        context.handled_segment_memory_load_count;
+    attempt->last_segment_memory_load_address =
+        context.last_segment_memory_load_address;
+    attempt->last_segment_memory_load_opcode =
+        context.last_segment_memory_load_opcode;
+    attempt->last_segment_memory_load_register =
+        context.last_segment_memory_load_register;
+    attempt->last_segment_memory_load_selector =
+        context.last_segment_memory_load_selector;
+    attempt->last_segment_memory_load_offset =
+        context.last_segment_memory_load_offset;
+    attempt->last_segment_memory_load_value =
+        context.last_segment_memory_load_value;
     attempt->thread_exit_code = exit_code;
     attempt->hle_console_output.assign(
         context.hle_console_output,

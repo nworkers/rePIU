@@ -124,4 +124,22 @@ As of 2026-07-08, the previous TODO/PLAN remaining work is summarized in `docs/2
 1. Implement the HLE dispatcher handler calling convention and guest context return path.
 2. Implement only the INT21/INT31 services confirmed by actual traces.
 3. Connect selector/descriptor permission checks and DPMI descriptor APIs.
-4. Clarify and implement `26 8A 4F FF` segment-override byte memory load through selector shadow state and address translation policy.
+4. Clarify and implement the `[8B] 06` DS-based low-memory or descriptor-based 32-bit memory read through selector shadow state and address translation policy.
+
+## 2026-07-09 segment override byte memory load HLE 완료
+
+`26 8A 4F FF` segment override byte memory load를 HLE로 처리했다.
+현재 관찰된 형태는 `ES:[EDI - 1]`이며, `ES=0x0024`, `EDI=0x00000081` 상태에서 DOS command tail length byte인 `ES:0x80`을 읽는 것으로 분류했다.
+이 값은 빈 command tail로 보고 `0x00`을 반환한다.
+
+다음 중단 지점은 `0x020F4DAC`의 `[8B] 06`이다.
+직전에는 `DS=0x002C`가 load되며, 예외 시점의 `ESI=0x00000000` 상태에서 DS 기반 low-memory 또는 descriptor 기반 32-bit memory read 정책이 필요하다.
+
+## 2026-07-09 Segment Override Byte Memory Load HLE Complete
+
+Handled the `26 8A 4F FF` segment-override byte memory load through HLE.
+The observed form is `ES:[EDI - 1]`; with `ES=0x0024` and `EDI=0x00000081`, this is classified as a DOS command tail length byte read at `ES:0x80`.
+The value is treated as an empty command tail and returns `0x00`.
+
+The next stop is `[8B] 06` at `0x020F4DAC`.
+Immediately before the stop, `DS=0x002C` is loaded, and the exception state has `ESI=0x00000000`, so the next policy needed is a DS-based low-memory or descriptor-based 32-bit memory read.

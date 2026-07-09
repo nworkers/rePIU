@@ -96,7 +96,8 @@ try
         -Name "Run piu_1st target" `
         -FilePath $Loader `
         -Arguments @("piu_1st")
-    if ($piuOutput -notmatch "Win32 handled segment load count: 3")
+    if ($piuOutput -notmatch "Win32 handled segment memory load count: 1" -or
+        $piuOutput -notmatch "\[8B\] 06")
     {
         throw "piu_1st did not reach the expected current HLE observation point."
     }
