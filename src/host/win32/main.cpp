@@ -30,7 +30,7 @@ std::shared_ptr<spdlog::logger> CreateLoaderLogger()
 {
     std::shared_ptr<spdlog::logger> logger =
         spdlog::stderr_color_mt("loader");
-    logger->set_pattern("[%l] [%n] %v");
+    logger->set_pattern("[%X.%e] [%8l] [%n] %v");
     logger->set_level(spdlog::level::info);
     return logger;
 }
@@ -176,33 +176,42 @@ void PrintByteWindow(
     spdlog::logger& logger,
     const repiu::runtime::RelocatedImageByteWindow& window)
 {
-    logger.info("Relocated exception byte window: {}",
-                window.valid ? "valid" : "invalid");
-    logger.info("Relocated exception byte window message: {}",
-                window.message);
+    logger.error("Relocated exception byte window: {}",
+                 window.valid ? "valid" : "invalid");
+    logger.error("Relocated exception byte window message: {}",
+                 window.message);
     if (!window.valid)
     {
         return;
     }
 
-    logger.info("Relocated exception byte object: {}",
-                window.object_index);
-    logger.info("Relocated exception byte base: {}",
-                Hex32(window.window_base));
-    logger.info("Relocated exception byte focus offset: {}",
-                Hex32(window.focus_offset));
-    logger.info("Relocated exception bytes:{}",
-                BuildByteWindowText(window));
+    logger.error("Relocated exception byte object: {}",
+                 window.object_index);
+    logger.error("Relocated exception byte base: {}",
+                 Hex32(window.window_base));
+    logger.error("Relocated exception byte focus offset: {}",
+                 Hex32(window.focus_offset));
+    logger.error("Relocated exception bytes:{}",
+                 BuildByteWindowText(window));
 }
 
 void PrintPrivilegedInstructionClassification(
     spdlog::logger& logger,
     const repiu::hle::PrivilegedInstructionClassification& classification)
 {
-    logger.info("Privileged instruction classification: {}",
-                classification.valid ? "valid" : "unknown");
-    logger.info("Privileged instruction opcode: {}",
-                Hex8(classification.opcode));
+    const bool current_blocker = !classification.valid;
+    if (current_blocker)
+    {
+        logger.error("Privileged instruction classification: unknown");
+        logger.error("Privileged instruction opcode: {}",
+                     Hex8(classification.opcode));
+    }
+    else
+    {
+        logger.info("Privileged instruction classification: valid");
+        logger.info("Privileged instruction opcode: {}",
+                    Hex8(classification.opcode));
+    }
     if (classification.valid)
     {
         logger.info("Privileged instruction mnemonic: {}",
@@ -219,8 +228,18 @@ void PrintPrivilegedInstructionClassification(
                         ? "true"
                         : "false");
     }
-    logger.info("Privileged instruction classification message: {}",
-                classification.message);
+    if (current_blocker)
+    {
+        logger.error("Privileged instruction classification message: {}",
+                     classification.message);
+        logger.error("Current execution blocker: unhandled or unclassified "
+                     "instruction/memory access at exception point");
+    }
+    else
+    {
+        logger.info("Privileged instruction classification message: {}",
+                    classification.message);
+    }
 }
 
 void PrintGuestStackPlan(
@@ -282,8 +301,14 @@ void PrintReservation(
 {
     logger.info("Win32 early reservation attempt: {}",
                 reservation.valid ? "valid" : "invalid");
-    logger.info("Win32 early reservation result: {}",
-                reservation.reserved ? "reserved" : "not reserved");
+    if (reservation.reserved)
+    {
+        logger.info("Win32 early reservation result: reserved");
+    }
+    else
+    {
+        logger.warn("Win32 early reservation result: not reserved");
+    }
     logger.info("Win32 requested reserve base: {}",
                 Hex32(reservation.requested_base));
     logger.info("Win32 requested reserve size: {}",
@@ -297,11 +322,19 @@ void PrintReservation(
     }
     if (reservation.windows_error != 0)
     {
-        logger.info("Win32 reservation error: {}",
+        logger.warn("Win32 reservation error: {}",
                     reservation.windows_error);
     }
-    logger.info("Win32 early reservation message: {}",
-                reservation.message);
+    if (reservation.reserved)
+    {
+        logger.info("Win32 early reservation message: {}",
+                    reservation.message);
+    }
+    else
+    {
+        logger.warn("Win32 early reservation message: {}",
+                    reservation.message);
+    }
 }
 
 void PrintProbe(
@@ -310,22 +343,35 @@ void PrintProbe(
 {
     logger.info("Win32 host range probe: {}",
                 probe.valid ? "valid" : "invalid");
-    logger.info("Win32 host range available: {}",
-                probe.range_available ? "true" : "false");
+    if (probe.range_available)
+    {
+        logger.info("Win32 host range available: true");
+    }
+    else
+    {
+        logger.warn("Win32 host range available: false");
+    }
     logger.info("Win32 host probe base: {}",
                 Hex32(probe.checked_base));
     logger.info("Win32 host probe size: {}",
                 Hex32(probe.checked_size));
     if (probe.valid && !probe.range_available)
     {
-        logger.info("Win32 host first blocking block base: {}",
+        logger.warn("Win32 host first blocking block base: {}",
                     Hex32(probe.first_block_base));
-        logger.info("Win32 host first blocking block size: {}",
+        logger.warn("Win32 host first blocking block size: {}",
                     Hex32(probe.first_block_size));
-        logger.info("Win32 host first blocking block state: {}",
+        logger.warn("Win32 host first blocking block state: {}",
                     probe.first_block_state);
     }
-    logger.info("Win32 host range probe message: {}", probe.message);
+    if (probe.range_available)
+    {
+        logger.info("Win32 host range probe message: {}", probe.message);
+    }
+    else
+    {
+        logger.warn("Win32 host range probe message: {}", probe.message);
+    }
 }
 
 void PrintPlacement(
@@ -374,26 +420,32 @@ void PrintExecutionAttempt(
                 Hex32(attempt.entry_address));
     logger.info("Win32 minimal execution returned: {}",
                 attempt.returned ? "true" : "false");
-    logger.info("Win32 minimal execution exception caught: {}",
-                attempt.exception_caught ? "true" : "false");
     if (attempt.exception_caught)
     {
-        logger.info("Win32 minimal execution exception code: {}",
-                    Hex32(attempt.seh_exception_code));
-        logger.info("Win32 minimal execution exception address: {}",
-                    Hex32(attempt.seh_exception_address));
-        logger.info("Win32 minimal execution exception EAX: {}",
-                    Hex32(attempt.exception_eax));
-        logger.info("Win32 minimal execution exception EBX: {}",
-                    Hex32(attempt.exception_ebx));
-        logger.info("Win32 minimal execution exception ECX: {}",
-                    Hex32(attempt.exception_ecx));
-        logger.info("Win32 minimal execution exception EDX: {}",
-                    Hex32(attempt.exception_edx));
-        logger.info("Win32 minimal execution exception ESI: {}",
-                    Hex32(attempt.exception_esi));
-        logger.info("Win32 minimal execution exception EDI: {}",
-                    Hex32(attempt.exception_edi));
+        logger.error("Win32 minimal execution exception caught: true");
+    }
+    else
+    {
+        logger.info("Win32 minimal execution exception caught: false");
+    }
+    if (attempt.exception_caught)
+    {
+        logger.error("Win32 minimal execution exception code: {}",
+                     Hex32(attempt.seh_exception_code));
+        logger.error("Win32 minimal execution exception address: {}",
+                     Hex32(attempt.seh_exception_address));
+        logger.error("Win32 minimal execution exception EAX: {}",
+                     Hex32(attempt.exception_eax));
+        logger.error("Win32 minimal execution exception EBX: {}",
+                     Hex32(attempt.exception_ebx));
+        logger.error("Win32 minimal execution exception ECX: {}",
+                     Hex32(attempt.exception_ecx));
+        logger.error("Win32 minimal execution exception EDX: {}",
+                     Hex32(attempt.exception_edx));
+        logger.error("Win32 minimal execution exception ESI: {}",
+                     Hex32(attempt.exception_esi));
+        logger.error("Win32 minimal execution exception EDI: {}",
+                     Hex32(attempt.exception_edi));
     }
     logger.info("Win32 minimal execution timed out: {}",
                 attempt.timed_out ? "true" : "false");
@@ -479,7 +531,14 @@ void PrintExecutionAttempt(
                     attempt.hle_console_output.size());
         WriteGuestOutput(attempt.hle_console_output);
     }
-    logger.info("Win32 minimal execution message: {}", attempt.message);
+    if (attempt.exception_caught)
+    {
+        logger.error("Win32 minimal execution message: {}", attempt.message);
+    }
+    else
+    {
+        logger.info("Win32 minimal execution message: {}", attempt.message);
+    }
 }
 
 bool SelectRelocatedImageBase(std::uint32_t reserve_size,

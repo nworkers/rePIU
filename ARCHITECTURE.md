@@ -144,3 +144,16 @@ Its entry point lives in `src/host/win32/main.cpp`, separate from analysis tools
 This entry point currently owns target profile selection, original executable reading, DOS/4GW load result creation, relocated runtime image planning, relocated image buffer creation, Win32 process-memory placement, and minimal execution trampoline invocation.
 
 `src/tools/exe_analyzer/` remains a non-executing analysis tool.
+
+## Win32 Loader Log Level Policy
+
+Win32 loader logs use levels to separate normal progress from the current implementation blocker.
+
+The loader log pattern is `[%X.%e] [%8l] [%n] %v`.
+This prints millisecond timestamps, fixed-width level names, logger name, and message text.
+
+`info` is used for normal loader progress, selected runtime addresses, successful placement, handled HLE/DOS/segment counts, and normal guest output.
+
+`warn` is used for expected host-environment constraints that the loader can work around, such as fixed low-address range probe or reservation failure followed by relocated execution.
+
+`error` is used for loader-stage failures and for the current original-code execution blocker. When original entry execution stops with a caught SEH exception, the exception registers, relocated byte window, unknown instruction classification, and current blocker message are printed as `error` while preserving the existing observation-oriented process exit behavior.
