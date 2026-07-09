@@ -107,6 +107,10 @@ function Get-ResultStatus
 {
     param([object]$Result)
 
+    if ($Result.BuildSkipped)
+    {
+        return "build_skip"
+    }
     if (!$Result.BuildPassed)
     {
         return "build_fail"
@@ -130,6 +134,7 @@ function Get-Summary
     )
 
     $total = $Results.Count
+    $buildSkip = @($Results | Where-Object { $_.BuildSkipped }).Count
     $buildPass = @($Results | Where-Object { $_.BuildPassed }).Count
     $runEligible = @($Results | Where-Object { $_.BuildPassed -and (Test-Path $_.Executable) }).Count
     $runPass = @($Results | Where-Object { $_.RunPassed }).Count
@@ -145,6 +150,7 @@ function Get-Summary
         Suites = @($Manifest.Suites)
         Total = $total
         BuildPassed = $buildPass
+        BuildSkipped = $buildSkip
         RunEligible = $runEligible
         RunPassed = $runPass
         OverallPassed = $overallPass
@@ -166,6 +172,7 @@ function Get-BaselineSamples
             Status = Get-ResultStatus $result
             BuildStatus = $result.BuildStatus
             RunStatus = $result.RunStatus
+            BuildSkipReason = $result.BuildSkipReason
         }
     }
 }
@@ -281,6 +288,7 @@ function Write-Report
     )
 
     $total = $Results.Count
+    $buildSkip = @($Results | Where-Object { $_.BuildSkipped }).Count
     $buildPass = @($Results | Where-Object { $_.BuildPassed }).Count
     $runEligible = @($Results | Where-Object { $_.BuildPassed -and (Test-Path $_.Executable) }).Count
     $runPass = @($Results | Where-Object { $_.RunPassed }).Count
@@ -299,6 +307,8 @@ function Write-Report
     {
         $class = if ($result.BuildPassed -and $result.RunPassed) {
             "pass"
+        } elseif ($result.BuildSkipped) {
+            "build-skip"
         } elseif (!$result.BuildPassed) {
             "build-fail"
         } else {
@@ -337,6 +347,7 @@ table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { border: 1px solid #d1d5db; padding: 6px 8px; vertical-align: top; }
 th { background: #f3f4f6; text-align: left; }
 tr.pass { background: #ecfdf5; }
+tr.build-skip { background: #eff6ff; }
 tr.build-fail { background: #fff7ed; }
 tr.run-fail { background: #fef2f2; }
 pre { white-space: pre-wrap; margin: 0; max-height: 140px; overflow: auto; }
@@ -350,6 +361,7 @@ pre { white-space: pre-wrap; margin: 0; max-height: 140px; overflow: auto; }
 <div class="metric"><span>Total</span><strong>$total</strong></div>
 <div class="metric"><span>Overall pass</span><strong>$(Rate $overallPass $total)</strong><small>$overallPass / $total</small></div>
 <div class="metric"><span>Build pass</span><strong>$(Rate $buildPass $total)</strong><small>$buildPass / $total</small></div>
+<div class="metric"><span>Build skip</span><strong>$buildSkip</strong><small>explicitly not built</small></div>
 <div class="metric"><span>Run pass</span><strong>$(Rate $runPass $runEligible)</strong><small>$runPass / $runEligible runnable</small></div>
 </div>
 $comparisonHtml
@@ -400,9 +412,20 @@ try
         Write-Host "[$index/$($samples.Count)] test $($sample.Suite) $($sample.Relative)"
 
         $buildPassed = [bool]$sample.BuildPassed
+        $buildSkipped = $false
+        if ($sample.PSObject.Properties["BuildSkipped"])
+        {
+            $buildSkipped = [bool]$sample.BuildSkipped
+        }
         $runPassed = $false
         $runStatus = "not run"
         $detail = $sample.BuildOutput
+        $buildStatus = if ($buildPassed) { "pass" } elseif ($buildSkipped) { "skip" } else { "fail" }
+        $buildSkipReason = ""
+        if ($sample.PSObject.Properties["BuildSkipReason"])
+        {
+            $buildSkipReason = [string]$sample.BuildSkipReason
+        }
 
         if ($buildPassed -and (Test-Path $sample.Executable))
         {
@@ -422,7 +445,9 @@ try
             Relative = $sample.Relative
             Executable = $sample.Executable
             BuildPassed = $buildPassed
-            BuildStatus = if ($buildPassed) { "pass" } else { "fail" }
+            BuildSkipped = $buildSkipped
+            BuildStatus = $buildStatus
+            BuildSkipReason = $buildSkipReason
             RunPassed = $runPassed
             RunStatus = $runStatus
             Detail = $detail
@@ -468,12 +493,15 @@ try
 
         Write-JsonFile -Value $baselineRecord -Path ([string]$ResolvedBaselinePath)
 
-        $historyFileName = "{0}-{1}.json" -f (Get-Date -Format "yyyyMMdd-HHmmss"), $summary.Version
-        $resolvedHistoryFile = Join-Path $ResolvedHistoryPath $historyFileName
+        $historyBaseName = "{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), $summary.Version
+        $resolvedHistoryFile = Join-Path $ResolvedHistoryPath "$historyBaseName.json"
+        $resolvedHistoryReportFile = Join-Path $ResolvedHistoryPath "$historyBaseName.html"
         Write-JsonFile -Value $baselineRecord -Path ([string]$resolvedHistoryFile)
+        Copy-Item -LiteralPath $ResolvedReportPath -Destination $resolvedHistoryReportFile -Force
 
         Write-Host "OpenWatcom sample baseline: $ResolvedBaselinePath"
         Write-Host "OpenWatcom sample history: $resolvedHistoryFile"
+        Write-Host "OpenWatcom sample history report: $resolvedHistoryReportFile"
     }
 
     Write-Host ""

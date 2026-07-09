@@ -1,7 +1,8 @@
 param(
     [string[]]$Suites = @("clibexam", "cplbexam"),
     [string]$ManifestPath = "build\openwatcom_samples\manifest.json",
-    [switch]$SkipSetup
+    [switch]$SkipSetup,
+    [switch]$SkipHostBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -86,6 +87,77 @@ function Get-SafeName
     return $safe.Trim("_")
 }
 
+function New-BuildPlan
+{
+    param(
+        [bool]$Skip = $false,
+        [string]$SkipReason = "",
+        [string[]]$Options = @()
+    )
+
+    [pscustomobject]@{
+        Skip = $Skip
+        SkipReason = $SkipReason
+        Options = $Options
+    }
+}
+
+function Get-SampleBuildPlan
+{
+    param([object]$Sample)
+
+    $key = "$($Sample.Suite)|$($Sample.Relative)"
+
+    $skipReasons = @{
+        "clibexam|_bfreese.c" = "based heap APIs are not available in the DOS/4GW flat 32-bit target"
+        "clibexam|_bheapse.c" = "based heap APIs are not available in the DOS/4GW flat 32-bit target"
+        "clibexam|_dwdelcl.c" = "default windowing sample is not a DOS/4GW console target"
+        "clibexam|_dwshutd.c" = "default windowing sample is not a DOS/4GW console target"
+        "clibexam|_dwstabo.c" = "default windowing sample is not a DOS/4GW console target"
+        "clibexam|_dwstapt.c" = "default windowing sample is not a DOS/4GW console target"
+        "clibexam|_dwstcnt.c" = "default windowing sample is not a DOS/4GW console target"
+        "clibexam|_dwyield.c" = "default windowing sample is not a DOS/4GW console target"
+        "clibexam|_bthread.c" = "sample requires runtime symbols unavailable for the current DOS/4GW target"
+        "clibexam|_clear87.c" = "sample requires runtime symbols unavailable for the current DOS/4GW target"
+        "clibexam|_ethread.c" = "sample requires runtime symbols unavailable for the current DOS/4GW target"
+        "clibexam|_expand.c" = "sample requires runtime symbols unavailable for the current DOS/4GW target"
+        "clibexam|_fpreset.c" = "sample requires runtime symbols unavailable for the current DOS/4GW target"
+        "clibexam|_pclose.c" = "sample requires runtime symbols unavailable for the current DOS/4GW target"
+        "clibexam|_pipe.c" = "sample requires runtime symbols unavailable for the current DOS/4GW target"
+        "clibexam|_popen.c" = "sample requires runtime symbols unavailable for the current DOS/4GW target"
+        "clibexam|_status8.c" = "sample requires runtime symbols unavailable for the current DOS/4GW target"
+        "clibexam|cwait.c" = "sample requires runtime symbols unavailable for the current DOS/4GW target"
+        "clibexam|halloc.c" = "sample requires runtime symbols unavailable for the current DOS/4GW target"
+        "clibexam|hfree.c" = "sample requires runtime symbols unavailable for the current DOS/4GW target"
+        "clibexam|int86x.c" = "sample requires runtime symbols unavailable for the current DOS/4GW target"
+        "clibexam|wait.c" = "sample requires runtime symbols unavailable for the current DOS/4GW target"
+        "clibexam|lseek.c" = "installed file is documentation-style sample text, not standalone C source"
+        "clibexam|strncoll.c" = "installed sample signature does not match the current header declaration"
+        "clibexam|strnicol.c" = "installed sample signature does not match the current header declaration"
+        "clibexam|strninc.c" = "installed file contains invalid #ninclude directives"
+    }
+
+    if ($skipReasons.ContainsKey($key))
+    {
+        return New-BuildPlan -Skip $true -SkipReason $skipReasons[$key]
+    }
+
+    $optionOverrides = @{
+        "clibexam|setnew.c" = @("-cc++")
+        "cplbexam|contain\wcldintr.cpp" = @("-xs")
+        "cplbexam|contain\wcldptr.cpp" = @("-xs")
+        "cplbexam|contain\wcldval.cpp" = @("-xs")
+        "cplbexam|ios\except.cpp" = @("-xs")
+    }
+
+    if ($optionOverrides.ContainsKey($key))
+    {
+        return New-BuildPlan -Options $optionOverrides[$key]
+    }
+
+    return New-BuildPlan
+}
+
 function Get-Samples
 {
     $clibRoot = Join-Path $Watcom "samples\clibexam"
@@ -139,10 +211,13 @@ try
         }
     }
 
-    Invoke-Step `
-        -Name "Build Win32 x86 host" `
-        -FilePath "cmd" `
-        -Arguments @("/c", "scripts\build_win32_x86.bat")
+    if (!$SkipHostBuild)
+    {
+        Invoke-Step `
+            -Name "Build Win32 x86 host" `
+            -FilePath "cmd" `
+            -Arguments @("/c", "scripts\build_win32_x86.bat")
+    }
 
     if (!(Test-Path $Compiler))
     {
@@ -171,13 +246,28 @@ try
         $sampleBuildDir = Join-Path $BuildRoot $safeName
         New-Item -ItemType Directory -Force $sampleBuildDir | Out-Null
         $exePath = Join-Path $sampleBuildDir "sample.exe"
+        $plan = Get-SampleBuildPlan $sample
 
-        $build = Invoke-Capture `
-            -FilePath $Compiler `
-            -Arguments @("-q", "-bt=dos", "-l=dos4g", "-fe=$exePath", $sample.Source) `
-            -WorkingDirectory $sampleBuildDir
+        if ($plan.Skip)
+        {
+            $build = [pscustomobject]@{
+                ExitCode = 0
+                Output = $plan.SkipReason
+            }
+            $buildPassed = $false
+            $buildStatus = "skip"
+        }
+        else
+        {
+            $arguments = @("-q") + @($plan.Options) + @("-bt=dos", "-l=dos4g", "-fe=$exePath", $sample.Source)
+            $build = Invoke-Capture `
+                -FilePath $Compiler `
+                -Arguments $arguments `
+                -WorkingDirectory $sampleBuildDir
 
-        $buildPassed = $build.ExitCode -eq 0 -and (Test-Path $exePath)
+            $buildPassed = $build.ExitCode -eq 0 -and (Test-Path $exePath)
+            $buildStatus = if ($buildPassed) { "pass" } else { "fail" }
+        }
         $results.Add([pscustomobject]@{
             Suite = $sample.Suite
             Relative = $sample.Relative
@@ -185,7 +275,10 @@ try
             Executable = $exePath
             BuildDirectory = $sampleBuildDir
             BuildPassed = $buildPassed
-            BuildStatus = if ($buildPassed) { "pass" } else { "fail" }
+            BuildSkipped = [bool]$plan.Skip
+            BuildStatus = $buildStatus
+            BuildSkipReason = $plan.SkipReason
+            BuildOptions = @($plan.Options)
             BuildExitCode = $build.ExitCode
             BuildOutput = $build.Output.Trim()
         })
@@ -198,6 +291,7 @@ try
         Suites = $Suites
         Total = $results.Count
         BuildPassed = @($results | Where-Object { $_.BuildPassed }).Count
+        BuildSkipped = @($results | Where-Object { $_.BuildSkipped }).Count
         Samples = $results.ToArray()
     } | ConvertTo-Json -Depth 8 | Set-Content -Path $ResolvedManifestPath -Encoding UTF8
 

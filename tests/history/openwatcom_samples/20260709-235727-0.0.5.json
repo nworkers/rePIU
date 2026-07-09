@@ -1,7 +1,7 @@
 ﻿{
-    "GeneratedAt":  "2026-07-10 00:00:37",
+    "GeneratedAt":  "2026-07-09 23:57:27",
     "Version":  "0.0.5",
-    "GitCommit":  "1e6308d9db78d7008274c18862b8f37a3fd7b7a0",
+    "GitCommit":  "18285a7306541bd65eccc7e1629288d136def835",
     "GitBranch":  "feature-openwatcom-build-failures",
     "ManifestGeneratedAt":  "2026-07-09 23:50:56",
     "Suites":  [
@@ -9,9 +9,9 @@
                    "cplbexam"
                ],
     "Summary":  {
-                    "GeneratedAt":  "2026-07-10 00:00:37",
+                    "GeneratedAt":  "2026-07-09 23:57:27",
                     "Version":  "0.0.5",
-                    "GitCommit":  "1e6308d9db78d7008274c18862b8f37a3fd7b7a0",
+                    "GitCommit":  "18285a7306541bd65eccc7e1629288d136def835",
                     "GitBranch":  "feature-openwatcom-build-failures",
                     "ManifestPath":  "build\\openwatcom_samples\\manifest.json",
                     "ManifestGeneratedAt":  "2026-07-09 23:50:56",
