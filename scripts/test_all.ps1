@@ -98,8 +98,17 @@ try
         -Arguments @("piu_1st")
     if ($piuOutput -notmatch "Runtime memory arena reserve size: 0x005E7000" -or
         $piuOutput -notmatch "Win32 relocated image placed size: 0x005E7000" -or
-        $piuOutput -notmatch "Win32 last handled DOS interrupt AH: 0x4A" -or
-        $piuOutput -notmatch "Win32 minimal execution exception address: 0x020F5637" -or
+        $piuOutput -notmatch "Win32 last handled DOS interrupt AH: 0x3D" -or
+        $piuOutput -notmatch "Win32 handled DOS chdir count: 1" -or
+        $piuOutput -notmatch "Win32 last DOS chdir guest path: \\datas\\bga" -or
+        $piuOutput -notmatch "Win32 last DOS chdir virtual path: \\DATAS\\BGA" -or
+        $piuOutput -notmatch "Win32 last DOS chdir result: success" -or
+        $piuOutput -notmatch "Win32 handled DOS open count: 1" -or
+        $piuOutput -notmatch "Win32 last DOS open guest path: intro.ani" -or
+        $piuOutput -notmatch "Win32 last DOS open virtual path: \\DATAS\\BGA\\INTRO.ANI" -or
+        $piuOutput -notmatch "Win32 last DOS open result: failure" -or
+        $piuOutput -notmatch "Win32 last DOS open error: 0x0002" -or
+        $piuOutput -notmatch "Win32 minimal execution exception address: 0x020FAA81" -or
         $piuOutput -notmatch "Privileged instruction opcode: 0xCD" -or
         $piuOutput -notmatch "Privileged instruction mnemonic: INT imm8" -or
         $piuOutput -notmatch "Privileged instruction classification message: software interrupt should be dispatched through DOS/DPMI HLE")

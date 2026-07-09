@@ -1,5 +1,29 @@
 # TODO
 
+## 2026-07-09 DOS file open HLE 진행
+
+`INT 21h AH=0x3D` file open 요청을 가상 DOS current directory 기반 path resolver로 처리했다. `piu_1st`는 `\DATAS\BGA` current directory 상태에서 `intro.ani`를 열려고 하며, 이는 `\DATAS\BGA\INTRO.ANI`로 해석된다. 해당 host file은 존재하지 않으므로 DOS error `0x0002`로 실패 처리된다.
+
+현재 다음 중단 지점은 `0x020FAA81`의 `CD 21`이다. 직전 명령이 `B4 44`이므로 이는 `INT 21h AH=0x44` DOS IOCTL 요청으로 분류된다. 다음 작업은 trace에서 관측된 IOCTL subfunction과 handle 의미를 확인하고 최소 HLE 응답을 설계하는 것이다.
+
+## 2026-07-09 DOS File Open HLE Progress
+
+`INT 21h AH=0x3D` file open requests are now handled through the virtual DOS current-directory path resolver. In `piu_1st`, `intro.ani` is opened while the virtual current directory is `\DATAS\BGA`, so it resolves to `\DATAS\BGA\INTRO.ANI`. That host file does not exist, so the request fails with DOS error `0x0002`.
+
+The current next stop is `CD 21` at `0x020FAA81`. The preceding instruction is `B4 44`, so this is classified as a DOS IOCTL request through `INT 21h AH=0x44`. The next task is to inspect the traced IOCTL subfunction and handle meaning, then design the minimal HLE response.
+
+## 2026-07-09 DOS current-directory HLE 진행
+
+`INT 21h AH=0x3B` current-directory 변경 요청을 가상 DOS current directory로 처리했다. `piu_1st`는 `\datas\bga` 요청을 target working directory 아래의 `\DATAS\BGA`로 성공 처리한 뒤 다음 지점까지 진행한다.
+
+현재 다음 중단 지점은 `0x020F740C`의 `CD 21`이다. 직전 명령이 `B4 3D`이므로 이는 `INT 21h AH=0x3D` DOS open 요청으로 분류된다. 다음 작업은 current-directory 기반 path resolver를 재사용해 DOS file open handle HLE를 설계하는 것이다.
+
+## 2026-07-09 DOS Current-Directory HLE Progress
+
+`INT 21h AH=0x3B` current-directory changes are now handled through the virtual DOS current directory. `piu_1st` successfully resolves `\datas\bga` to `\DATAS\BGA` under the target working directory and advances to the next point.
+
+The current next stop is `CD 21` at `0x020F740C`. The preceding instruction is `B4 3D`, so this is classified as a DOS open request through `INT 21h AH=0x3D`. The next task is to design DOS file-open handle HLE on top of the current-directory path resolver.
+
 ## 2026-07-09 런타임 메모리 아레나 진행
 
 `INT 21h AH=0x4A` 이후 관측된 `0x020F8405`의 `C7 04 02 FF FF FF FF` write blocker는 runtime memory arena reserve를 `0x005E7000`으로 확장하면서 통과했다. 현재 arena는 relocated base `0x02000000`, image reserve `0x005D7000`, expansion slack `0x00010000`, arena end `0x025E7000`을 사용한다.

@@ -56,6 +56,21 @@ struct ThreadContext
     std::uint32_t handled_dos_interrupt_count = 0;
     std::uint32_t last_dos_interrupt_vector = 0;
     std::uint32_t last_dos_interrupt_ah = 0;
+    repiu::hle::DosVirtualFileSystemState dos_file_system;
+    std::uint32_t handled_dos_chdir_count = 0;
+    std::string last_dos_chdir_guest_path;
+    std::string last_dos_chdir_host_path;
+    std::string last_dos_chdir_virtual_path;
+    bool last_dos_chdir_success = false;
+    std::uint16_t last_dos_chdir_error = 0;
+    std::uint32_t handled_dos_open_count = 0;
+    std::string last_dos_open_guest_path;
+    std::string last_dos_open_host_path;
+    std::string last_dos_open_virtual_path;
+    bool last_dos_open_success = false;
+    std::uint16_t last_dos_open_error = 0;
+    std::uint16_t last_dos_open_handle = 0;
+    std::uint8_t last_dos_open_access_mode = 0;
     std::uint32_t handled_segment_load_count = 0;
     std::uint32_t last_segment_load_address = 0;
     std::uint32_t last_segment_load_opcode = 0;
@@ -321,6 +336,37 @@ bool AppendConsoleOutput(ThreadContext* context,
     return true;
 }
 
+bool ReadGuestAsciz(ThreadContext* context,
+                    std::uint32_t address,
+                    std::uint32_t max_length,
+                    std::string* value)
+{
+    if (context == nullptr || value == nullptr || max_length == 0)
+    {
+        return false;
+    }
+
+    value->clear();
+    const char* text = reinterpret_cast<const char*>(
+        static_cast<std::uintptr_t>(address));
+    for (std::uint32_t index = 0; index < max_length; ++index)
+    {
+        if (!IsGuestRangeReadable(context, text + index, 1))
+        {
+            return false;
+        }
+
+        const char ch = text[index];
+        if (ch == '\0')
+        {
+            return true;
+        }
+        value->push_back(ch);
+    }
+
+    return false;
+}
+
 void RecoverFromHleExit(CONTEXT* win32_context,
                         ThreadContext* thread_context)
 {
@@ -340,6 +386,138 @@ void RecoverFromHleExit(CONTEXT* win32_context,
 void RecordHandledDosInterrupt(ThreadContext* context,
                                std::uint8_t vector,
                                std::uint8_t ah);
+
+void RecordDosChangeDirectory(ThreadContext* context,
+                              const std::string& guest_path,
+                              const repiu::hle::DosResolvedPath& resolved)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+
+    ++context->handled_dos_chdir_count;
+    context->last_dos_chdir_guest_path = guest_path;
+    context->last_dos_chdir_host_path = resolved.host_path.string();
+    context->last_dos_chdir_virtual_path = resolved.dos_path;
+    context->last_dos_chdir_success =
+        resolved.result == repiu::hle::DosPathResult::kOk;
+    context->last_dos_chdir_error =
+        repiu::hle::DosPathResultToErrorCode(resolved.result);
+}
+
+bool HandleDosChangeDirectory(CONTEXT* win32_context, ThreadContext* context)
+{
+    std::string guest_path;
+    repiu::hle::DosResolvedPath resolved;
+    if (!ReadGuestAsciz(context,
+                        static_cast<std::uint32_t>(win32_context->Edx),
+                        260,
+                        &guest_path))
+    {
+        resolved.result = repiu::hle::DosPathResult::kPathNotFound;
+        resolved.guest_path = "";
+        resolved.message = "DOS chdir path is outside runtime memory";
+        RecordDosChangeDirectory(context, guest_path, resolved);
+        win32_context->Eax =
+            (win32_context->Eax & 0xFFFF0000U) | 0x0003U;
+        win32_context->EFlags |= 1U;
+        return true;
+    }
+
+    if (!repiu::hle::ChangeDosCurrentDirectory(
+            &context->dos_file_system,
+            guest_path,
+            &resolved))
+    {
+        return false;
+    }
+
+    RecordDosChangeDirectory(context, guest_path, resolved);
+    if (resolved.result == repiu::hle::DosPathResult::kOk)
+    {
+        win32_context->EFlags &= ~1U;
+    }
+    else
+    {
+        win32_context->Eax =
+            (win32_context->Eax & 0xFFFF0000U) |
+            repiu::hle::DosPathResultToErrorCode(resolved.result);
+        win32_context->EFlags |= 1U;
+    }
+    return true;
+}
+
+void RecordDosOpen(ThreadContext* context,
+                   const std::string& guest_path,
+                   const repiu::hle::DosResolvedPath& resolved,
+                   std::uint16_t handle,
+                   std::uint8_t access_mode)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+
+    ++context->handled_dos_open_count;
+    context->last_dos_open_guest_path = guest_path;
+    context->last_dos_open_host_path = resolved.host_path.string();
+    context->last_dos_open_virtual_path = resolved.dos_path;
+    context->last_dos_open_success =
+        resolved.result == repiu::hle::DosPathResult::kOk;
+    context->last_dos_open_error =
+        repiu::hle::DosPathResultToErrorCode(resolved.result);
+    context->last_dos_open_handle = handle;
+    context->last_dos_open_access_mode = access_mode;
+}
+
+bool HandleDosOpenFile(CONTEXT* win32_context, ThreadContext* context)
+{
+    std::string guest_path;
+    repiu::hle::DosResolvedPath resolved;
+    const std::uint8_t access_mode = static_cast<std::uint8_t>(
+        win32_context->Eax & 0xFFU);
+    if (!ReadGuestAsciz(context,
+                        static_cast<std::uint32_t>(win32_context->Edx),
+                        260,
+                        &guest_path))
+    {
+        resolved.result = repiu::hle::DosPathResult::kFileNotFound;
+        resolved.guest_path = "";
+        resolved.message = "DOS open path is outside runtime memory";
+        RecordDosOpen(context, guest_path, resolved, 0, access_mode);
+        win32_context->Eax =
+            (win32_context->Eax & 0xFFFF0000U) | 0x0002U;
+        win32_context->EFlags |= 1U;
+        return true;
+    }
+
+    std::uint16_t handle = 0;
+    if (!repiu::hle::OpenDosFile(&context->dos_file_system,
+                                 guest_path,
+                                 access_mode,
+                                 &resolved,
+                                 &handle))
+    {
+        return false;
+    }
+
+    RecordDosOpen(context, guest_path, resolved, handle, access_mode);
+    if (resolved.result == repiu::hle::DosPathResult::kOk)
+    {
+        win32_context->Eax =
+            (win32_context->Eax & 0xFFFF0000U) | handle;
+        win32_context->EFlags &= ~1U;
+    }
+    else
+    {
+        win32_context->Eax =
+            (win32_context->Eax & 0xFFFF0000U) |
+            repiu::hle::DosPathResultToErrorCode(resolved.result);
+        win32_context->EFlags |= 1U;
+    }
+    return true;
+}
 
 bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
 {
@@ -377,6 +555,20 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
                 (win32_context->Eax & 0xFFFF0000U) | 0x0007U;
             win32_context->Ebx = 0;
             win32_context->Ecx = 0;
+            break;
+        case 0x3B:
+            RecordHandledDosInterrupt(context, 0x21, ah);
+            if (!HandleDosChangeDirectory(win32_context, context))
+            {
+                return false;
+            }
+            break;
+        case 0x3D:
+            RecordHandledDosInterrupt(context, 0x21, ah);
+            if (!HandleDosOpenFile(win32_context, context))
+            {
+                return false;
+            }
             break;
         case 0x40:
         {
@@ -1056,6 +1248,22 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
             win32_context->EFlags &= ~1U;
             win32_context->Eip += 2;
             return true;
+        case 0x3B:
+            RecordHandledDosInterrupt(context, 0x21, ah);
+            if (!HandleDosChangeDirectory(win32_context, context))
+            {
+                return false;
+            }
+            win32_context->Eip += 2;
+            return true;
+        case 0x3D:
+            RecordHandledDosInterrupt(context, 0x21, ah);
+            if (!HandleDosOpenFile(win32_context, context))
+            {
+                return false;
+            }
+            win32_context->Eip += 2;
+            return true;
         case 0xFF:
             RecordHandledDosInterrupt(context, 0x21, ah);
             win32_context->Eax &= 0xFFFFFF00U;
@@ -1410,6 +1618,7 @@ bool RunWin32ExecutionThread(
     bool enable_traced_dos_hle,
     bool enable_segment_load_hle,
     bool enable_dos_hle,
+    const hle::DosVirtualFileSystemState* dos_file_system,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
 {
@@ -1467,6 +1676,10 @@ bool RunWin32ExecutionThread(
     context.enable_traced_dos_hle = enable_traced_dos_hle;
     context.enable_segment_load_hle = enable_segment_load_hle;
     context.enable_dos_hle = enable_dos_hle;
+    if (dos_file_system != nullptr)
+    {
+        context.dos_file_system = *dos_file_system;
+    }
 
     HANDLE thread = CreateThread(nullptr,
                                  0,
@@ -1522,6 +1735,32 @@ bool RunWin32ExecutionThread(
         context.handled_dos_interrupt_count;
     attempt->last_dos_interrupt_vector = context.last_dos_interrupt_vector;
     attempt->last_dos_interrupt_ah = context.last_dos_interrupt_ah;
+    attempt->handled_dos_chdir_count = context.handled_dos_chdir_count;
+    attempt->last_dos_chdir_guest_path =
+        context.last_dos_chdir_guest_path;
+    attempt->last_dos_chdir_host_path =
+        context.last_dos_chdir_host_path;
+    attempt->last_dos_chdir_virtual_path =
+        context.last_dos_chdir_virtual_path;
+    attempt->last_dos_chdir_success =
+        context.last_dos_chdir_success;
+    attempt->last_dos_chdir_error =
+        context.last_dos_chdir_error;
+    attempt->handled_dos_open_count = context.handled_dos_open_count;
+    attempt->last_dos_open_guest_path =
+        context.last_dos_open_guest_path;
+    attempt->last_dos_open_host_path =
+        context.last_dos_open_host_path;
+    attempt->last_dos_open_virtual_path =
+        context.last_dos_open_virtual_path;
+    attempt->last_dos_open_success =
+        context.last_dos_open_success;
+    attempt->last_dos_open_error =
+        context.last_dos_open_error;
+    attempt->last_dos_open_handle =
+        context.last_dos_open_handle;
+    attempt->last_dos_open_access_mode =
+        context.last_dos_open_access_mode;
     attempt->handled_segment_load_count =
         context.handled_segment_load_count;
     attempt->last_segment_load_address = context.last_segment_load_address;
@@ -1602,6 +1841,7 @@ bool AttemptWin32MinimalExecution(
         false,
         false,
         false,
+        nullptr,
         timeout_milliseconds,
         attempt);
 }
@@ -1635,6 +1875,7 @@ bool AttemptWin32GuestStackExecution(
         false,
         false,
         false,
+        nullptr,
         timeout_milliseconds,
         attempt);
 }
@@ -1642,6 +1883,7 @@ bool AttemptWin32GuestStackExecution(
 bool AttemptWin32GuestStackTrapExecution(
     const Win32RelocatedImagePlacement& placement,
     const runtime::GuestStackSwitchPlan& stack_plan,
+    const hle::DosVirtualFileSystemState& dos_file_system,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
 {
@@ -1668,6 +1910,7 @@ bool AttemptWin32GuestStackTrapExecution(
         true,
         true,
         false,
+        &dos_file_system,
         timeout_milliseconds,
         attempt);
 }
@@ -1675,6 +1918,7 @@ bool AttemptWin32GuestStackTrapExecution(
 bool AttemptWin32GuestStackHleExecution(
     const Win32RelocatedImagePlacement& placement,
     const runtime::GuestStackSwitchPlan& stack_plan,
+    const hle::DosVirtualFileSystemState& dos_file_system,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
 {
@@ -1701,6 +1945,7 @@ bool AttemptWin32GuestStackHleExecution(
         true,
         true,
         true,
+        &dos_file_system,
         timeout_milliseconds,
         attempt);
 }

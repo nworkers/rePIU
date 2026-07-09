@@ -3,6 +3,7 @@
 
 #include "repiu/platform/win32/runtime_memory_policy.h"
 #include "repiu/runtime/guest_context.h"
+#include "repiu/hle/dos_file_system.h"
 
 #include <cstdint>
 #include <string>
@@ -37,6 +38,20 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t handled_dos_interrupt_count = 0;
     std::uint32_t last_dos_interrupt_vector = 0;
     std::uint32_t last_dos_interrupt_ah = 0;
+    std::uint32_t handled_dos_chdir_count = 0;
+    std::string last_dos_chdir_guest_path;
+    std::string last_dos_chdir_host_path;
+    std::string last_dos_chdir_virtual_path;
+    bool last_dos_chdir_success = false;
+    std::uint16_t last_dos_chdir_error = 0;
+    std::uint32_t handled_dos_open_count = 0;
+    std::string last_dos_open_guest_path;
+    std::string last_dos_open_host_path;
+    std::string last_dos_open_virtual_path;
+    bool last_dos_open_success = false;
+    std::uint16_t last_dos_open_error = 0;
+    std::uint16_t last_dos_open_handle = 0;
+    std::uint8_t last_dos_open_access_mode = 0;
     std::uint32_t handled_segment_load_count = 0;
     std::uint32_t last_segment_load_address = 0;
     std::uint32_t last_segment_load_opcode = 0;
@@ -77,12 +92,14 @@ bool AttemptWin32GuestStackExecution(
 bool AttemptWin32GuestStackTrapExecution(
     const Win32RelocatedImagePlacement& placement,
     const runtime::GuestStackSwitchPlan& stack_plan,
+    const hle::DosVirtualFileSystemState& dos_file_system,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt);
 
 bool AttemptWin32GuestStackHleExecution(
     const Win32RelocatedImagePlacement& placement,
     const runtime::GuestStackSwitchPlan& stack_plan,
+    const hle::DosVirtualFileSystemState& dos_file_system,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt);
 

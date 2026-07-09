@@ -1,4 +1,5 @@
 #include "repiu/exe/dos4gw_loader.h"
+#include "repiu/hle/dos_file_system.h"
 #include "repiu/hle/hle_dispatcher.h"
 #include "repiu/hle/privileged_instruction.h"
 #include "repiu/platform/win32/execution_trampoline.h"
@@ -295,6 +296,17 @@ void PrintRuntimeMemoryArenaPlan(
     }
 }
 
+void PrintDosVirtualFileSystem(
+    spdlog::logger& logger,
+    const repiu::hle::DosVirtualFileSystemState& state)
+{
+    logger.info("DOS virtual filesystem: {}",
+                state.valid ? "valid" : "invalid");
+    logger.info("DOS virtual filesystem root: {}",
+                state.host_root.string());
+    logger.info("DOS virtual filesystem message: {}", state.message);
+}
+
 void PrintParseError(spdlog::logger& logger,
                      const repiu::exe::ParseError& error)
 {
@@ -510,6 +522,49 @@ void PrintExecutionAttempt(
         logger.info("Win32 last handled DOS interrupt AH: {}",
                     Hex8(static_cast<std::uint8_t>(
                         attempt.last_dos_interrupt_ah & 0xFFU)));
+    }
+    logger.info("Win32 handled DOS chdir count: {}",
+                attempt.handled_dos_chdir_count);
+    if (attempt.handled_dos_chdir_count > 0)
+    {
+        logger.info("Win32 last DOS chdir guest path: {}",
+                    attempt.last_dos_chdir_guest_path);
+        logger.info("Win32 last DOS chdir virtual path: {}",
+                    attempt.last_dos_chdir_virtual_path);
+        logger.info("Win32 last DOS chdir host path: {}",
+                    attempt.last_dos_chdir_host_path);
+        logger.info("Win32 last DOS chdir result: {}",
+                    attempt.last_dos_chdir_success ? "success" : "failure");
+        if (!attempt.last_dos_chdir_success)
+        {
+            logger.info("Win32 last DOS chdir error: {}",
+                        Hex16(attempt.last_dos_chdir_error));
+        }
+    }
+    logger.info("Win32 handled DOS open count: {}",
+                attempt.handled_dos_open_count);
+    if (attempt.handled_dos_open_count > 0)
+    {
+        logger.info("Win32 last DOS open guest path: {}",
+                    attempt.last_dos_open_guest_path);
+        logger.info("Win32 last DOS open virtual path: {}",
+                    attempt.last_dos_open_virtual_path);
+        logger.info("Win32 last DOS open host path: {}",
+                    attempt.last_dos_open_host_path);
+        logger.info("Win32 last DOS open access mode: {}",
+                    Hex8(attempt.last_dos_open_access_mode));
+        logger.info("Win32 last DOS open result: {}",
+                    attempt.last_dos_open_success ? "success" : "failure");
+        if (attempt.last_dos_open_success)
+        {
+            logger.info("Win32 last DOS open handle: {}",
+                        Hex16(attempt.last_dos_open_handle));
+        }
+        else
+        {
+            logger.info("Win32 last DOS open error: {}",
+                        Hex16(attempt.last_dos_open_error));
+        }
     }
     logger.info("Win32 handled segment load count: {}",
                 attempt.handled_segment_load_count);
@@ -876,6 +931,18 @@ int main(int argc, char** argv)
     repiu::hle::BuildInitialHleDispatcherTable(&hle_dispatcher);
     PrintHleDispatcherTable(*logger, hle_dispatcher);
 
+    repiu::hle::DosVirtualFileSystemState dos_file_system;
+    if (!repiu::hle::InitializeDosVirtualFileSystem(
+            profile->working_directory,
+            &dos_file_system) ||
+        !dos_file_system.valid)
+    {
+        PrintDosVirtualFileSystem(*logger, dos_file_system);
+        logger->error("Failed to initialize DOS virtual filesystem");
+        return 1;
+    }
+    PrintDosVirtualFileSystem(*logger, dos_file_system);
+
     repiu::platform::win32::Win32RelocatedImagePlacement placement;
     if (!repiu::platform::win32::PlaceWin32RelocatedImage(
             relocated_image,
@@ -896,11 +963,13 @@ int main(int argc, char** argv)
             ? repiu::platform::win32::AttemptWin32GuestStackHleExecution(
                   placement,
                   stack_plan,
+                  dos_file_system,
                   1000,
                   &attempt)
             : repiu::platform::win32::AttemptWin32GuestStackTrapExecution(
                   placement,
                   stack_plan,
+                  dos_file_system,
                   1000,
                   &attempt);
     if (!attempted_execution)
