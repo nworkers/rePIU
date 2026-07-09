@@ -6,6 +6,7 @@
 #include "repiu/runtime/guest_context.h"
 #include "repiu/runtime/image_address.h"
 #include "repiu/runtime/runtime_memory.h"
+#include "repiu/runtime/runtime_memory_arena.h"
 #include "repiu/runtime/selector_table.h"
 #include "repiu/target/target_profile.h"
 
@@ -267,6 +268,31 @@ void PrintHleDispatcherTable(
                 table.valid ? "valid" : "invalid");
     logger.info("HLE dispatcher trap count: {}", table.traps.size());
     logger.info("HLE dispatcher message: {}", table.message);
+}
+
+void PrintRuntimeMemoryArenaPlan(
+    spdlog::logger& logger,
+    const repiu::runtime::RuntimeMemoryArenaPlan& plan)
+{
+    logger.info("Runtime memory arena plan: {}",
+                plan.valid ? "valid" : "invalid");
+    logger.info("Runtime memory arena base: {}",
+                Hex32(plan.base_address));
+    logger.info("Runtime memory arena image reserve size: {}",
+                Hex32(plan.image_reserve_size));
+    logger.info("Runtime memory arena expansion slack size: {}",
+                Hex32(plan.expansion_slack_size));
+    if (plan.valid)
+    {
+        logger.info("Runtime memory arena reserve size: {}",
+                    Hex32(plan.arena_reserve_size));
+        logger.info("Runtime memory arena end: {}",
+                    Hex32(plan.arena_end_address));
+    }
+    if (!plan.message.empty())
+    {
+        logger.info("Runtime memory arena message: {}", plan.message);
+    }
 }
 
 void PrintParseError(spdlog::logger& logger,
@@ -761,8 +787,22 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    constexpr std::uint32_t kRuntimeArenaExpansionSlack = 0x00010000;
+    repiu::runtime::RuntimeMemoryArenaPlan arena_size_plan;
+    if (!repiu::runtime::BuildRuntimeMemoryArenaPlan(
+            profile->runtime_reservation_hint.base_address,
+            profile->runtime_reservation_hint.reserve_size,
+            kRuntimeArenaExpansionSlack,
+            &arena_size_plan) ||
+        !arena_size_plan.valid)
+    {
+        PrintRuntimeMemoryArenaPlan(*logger, arena_size_plan);
+        logger->error("Failed to build runtime memory arena plan");
+        return 1;
+    }
+
     std::uint32_t relocated_image_base = 0;
-    if (!SelectRelocatedImageBase(profile->runtime_reservation_hint.reserve_size,
+    if (!SelectRelocatedImageBase(arena_size_plan.arena_reserve_size,
                                   *logger,
                                   &relocated_image_base))
     {
@@ -772,6 +812,21 @@ int main(int argc, char** argv)
 
     logger->info("Win32 selected relocated image base: {}",
                  Hex32(relocated_image_base));
+
+    repiu::runtime::RuntimeMemoryArenaPlan arena_plan;
+    if (!repiu::runtime::BuildRuntimeMemoryArenaPlan(
+            relocated_image_base,
+            profile->runtime_reservation_hint.reserve_size,
+            kRuntimeArenaExpansionSlack,
+            &arena_plan) ||
+        !arena_plan.valid)
+    {
+        PrintRuntimeMemoryArenaPlan(*logger, arena_plan);
+        logger->error("Failed to build relocated runtime memory arena plan");
+        return 1;
+    }
+
+    PrintRuntimeMemoryArenaPlan(*logger, arena_plan);
 
     repiu::runtime::RelocatableRuntimeImagePlan relocatable_plan;
     if (!repiu::runtime::BuildRelocatableRuntimeImagePlan(
@@ -824,7 +879,7 @@ int main(int argc, char** argv)
     repiu::platform::win32::Win32RelocatedImagePlacement placement;
     if (!repiu::platform::win32::PlaceWin32RelocatedImage(
             relocated_image,
-            profile->runtime_reservation_hint.reserve_size,
+            arena_plan.arena_reserve_size,
             &placement))
     {
         logger->error("Failed to place relocated image");

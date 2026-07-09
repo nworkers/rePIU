@@ -1,5 +1,17 @@
 # TODO
 
+## 2026-07-09 런타임 메모리 아레나 진행
+
+`INT 21h AH=0x4A` 이후 관측된 `0x020F8405`의 `C7 04 02 FF FF FF FF` write blocker는 runtime memory arena reserve를 `0x005E7000`으로 확장하면서 통과했다. 현재 arena는 relocated base `0x02000000`, image reserve `0x005D7000`, expansion slack `0x00010000`, arena end `0x025E7000`을 사용한다.
+
+현재 다음 중단 지점은 `0x020F5637`의 `CD 21`이다. 직전 명령이 `B4 3B`이므로 이는 `INT 21h AH=0x3B` DOS current directory 변경 요청으로 분류된다. 다음 작업은 opcode 구현이 아니라 DOS 파일시스템/current-directory HLE 정책을 정리하는 것이다.
+
+## 2026-07-09 Runtime Memory Arena Progress
+
+The previous `C7 04 02 FF FF FF FF` write blocker at `0x020F8405`, observed after `INT 21h AH=0x4A`, is now passed by expanding the runtime memory arena reserve to `0x005E7000`. The current arena uses relocated base `0x02000000`, image reserve `0x005D7000`, expansion slack `0x00010000`, and arena end `0x025E7000`.
+
+The current next stop is `CD 21` at `0x020F5637`. The preceding instruction is `B4 3B`, so this is classified as a DOS current-directory change request through `INT 21h AH=0x3B`. The next task is not opcode implementation; it is a DOS filesystem/current-directory HLE policy.
+
 ## 2026-07-09 DS low-memory 읽기 HLE 진행
 
 `8B 06` / `mov eax, dword ptr ds:[esi]` 중단 지점을 segment HLE에서 처리했다.

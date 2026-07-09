@@ -96,10 +96,13 @@ try
         -Name "Run piu_1st target" `
         -FilePath $Loader `
         -Arguments @("piu_1st")
-    if ($piuOutput -notmatch "Win32 last handled DOS interrupt AH: 0x4A" -or
-        $piuOutput -notmatch "Win32 minimal execution exception address: 0x020F8405" -or
-        $piuOutput -notmatch "Privileged instruction opcode: 0xC7" -or
-        $piuOutput -notmatch "Current execution blocker: unhandled or unclassified instruction/memory access at exception point")
+    if ($piuOutput -notmatch "Runtime memory arena reserve size: 0x005E7000" -or
+        $piuOutput -notmatch "Win32 relocated image placed size: 0x005E7000" -or
+        $piuOutput -notmatch "Win32 last handled DOS interrupt AH: 0x4A" -or
+        $piuOutput -notmatch "Win32 minimal execution exception address: 0x020F5637" -or
+        $piuOutput -notmatch "Privileged instruction opcode: 0xCD" -or
+        $piuOutput -notmatch "Privileged instruction mnemonic: INT imm8" -or
+        $piuOutput -notmatch "Privileged instruction classification message: software interrupt should be dispatched through DOS/DPMI HLE")
     {
         throw "piu_1st did not reach the expected current HLE observation point."
     }

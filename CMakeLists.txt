@@ -43,6 +43,7 @@ add_library(repiu_exe
     src/platform/win32/runtime_memory_policy.cpp
     src/runtime/guest_context.cpp
     src/runtime/image_address.cpp
+    src/runtime/runtime_memory_arena.cpp
     src/runtime/runtime_memory.cpp
     src/runtime/selector_table.cpp
     src/target/target_profile.cpp
