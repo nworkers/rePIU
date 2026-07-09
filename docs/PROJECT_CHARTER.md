@@ -34,6 +34,8 @@ Because multiple versions must be supported later, executable paths, working dir
 * 원본 32-bit x86 코드 직접 실행은 Win32 x86 host build를 기준으로 검증한다.
 * 플랫폼 공용 코어를 먼저 설계하고 Win32/Linux/Web 세부 구현은 플랫폼 계층에 둔다.
 * 코드 변경 전에는 설계와 작업 계획을 문서화한다.
+* 프로젝트 버전은 `VERSION` 파일의 `major.minor.patch` 형식으로 관리한다.
+* 호환성 테스트 milestone 결과는 dashboard 입력으로 활용할 수 있도록 날짜와 버전이 포함된 JSON history로 누적한다.
 
 ## Direction
 
@@ -45,3 +47,5 @@ Because multiple versions must be supported later, executable paths, working dir
 * Direct execution of original 32-bit x86 code is verified against a Win32 x86 host build.
 * Design the shared platform-neutral core first and keep Win32/Linux/Web specifics in platform layers.
 * Document design and work plans before changing code.
+* Manage the project version in the `VERSION` file using `major.minor.patch`.
+* Accumulate compatibility-test milestone results as dated and versioned JSON history for future dashboard input.

@@ -203,6 +203,10 @@ If the requirement is a simple question or confirmation request, answer it direc
 * 사용자가 작업을 요청하면 먼저 현재 Git 브랜치명을 확인한다.
 * 현재 브랜치가 `main`이면 사용자가 요청한 작업 내용을 바탕으로 작업용 브랜치를 새로 만든 뒤 작업한다.
 * 작업 단위가 하나 끝날 때마다 관련 변경을 Git 커밋으로 남긴다.
+* 프로젝트 버전은 저장소 루트의 `VERSION` 파일에서 `major.minor.patch` 형식으로 관리한다.
+* 사용자가 머지를 요청하면 `main`에 머지하기 전에 patch 버전을 1 증가시킨다.
+* 사용자가 minor 버전 증가를 요청하면 minor 버전을 1 증가시키고 patch 버전은 0으로 리셋한다.
+* 사용자가 major 버전 증가를 요청하면 major 버전을 1 증가시키고 minor와 patch 버전은 0으로 리셋한다.
 * 사용자가 머지를 요청하면 현재 작업 브랜치의 모든 커밋을 하나로 합쳐 `main`에 머지한다.
 * `main`에 머지할 때는 작업 브랜치 안의 커밋 제목들을 확인하고, 전체 변경 내용을 잘 표현하는 최종 커밋 제목을 만들어 사용한다.
 * 머지가 완료되면 현재 작업 브랜치를 삭제한다.
@@ -212,6 +216,10 @@ If the requirement is a simple question or confirmation request, answer it direc
 * When the user requests work, first check the current Git branch name.
 * If the current branch is `main`, create a task branch based on the user's requested work before making changes.
 * Leave a Git commit for the related changes whenever one task unit is complete.
+* Manage the project version in the repository-root `VERSION` file using `major.minor.patch`.
+* When the user requests a merge, increment the patch version by 1 before merging into `main`.
+* When the user requests a minor version bump, increment the minor version by 1 and reset the patch version to 0.
+* When the user requests a major version bump, increment the major version by 1 and reset the minor and patch versions to 0.
 * When the user requests a merge, squash all commits from the current task branch into `main`.
 * When merging into `main`, inspect the commit titles in the task branch and create a final commit title that best describes the complete change.
 * Delete the task branch after the merge is complete.

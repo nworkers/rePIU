@@ -18,6 +18,7 @@
 #include <fstream>
 #include <iomanip>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -625,6 +626,44 @@ const repiu::target::TargetProfile* SelectTargetProfile(int argc,
     return repiu::target::FindTargetProfileById(target_id);
 }
 
+std::optional<repiu::target::TargetProfile> BuildDirectExecutableProfile(
+    int argc,
+    char** argv)
+{
+    if (argc < 2)
+    {
+        return std::nullopt;
+    }
+
+    std::filesystem::path executable_path = argv[1];
+    if (!std::filesystem::is_regular_file(executable_path))
+    {
+        return std::nullopt;
+    }
+
+    std::filesystem::path working_directory =
+        executable_path.parent_path();
+    if (working_directory.empty())
+    {
+        working_directory = ".";
+    }
+
+    return repiu::target::TargetProfile{
+        "direct_executable",
+        "Direct executable",
+        executable_path,
+        working_directory,
+        working_directory,
+        repiu::target::ExecutableFormatHint::kDos4gwLe,
+        "dos4gw_console_sample",
+        repiu::target::TargetRuntimeReservationHint{
+            true,
+            0x00010000,
+            0x00800000,
+        },
+    };
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -633,13 +672,21 @@ int main(int argc, char** argv)
 
     const repiu::target::TargetProfile* profile =
         SelectTargetProfile(argc, argv);
+    std::optional<repiu::target::TargetProfile> direct_profile;
     if (profile == nullptr)
     {
-        logger->error("Target profile was not found");
-        return 1;
+        direct_profile = BuildDirectExecutableProfile(argc, argv);
+        if (!direct_profile.has_value())
+        {
+            logger->error("Target profile or executable path was not found");
+            return 1;
+        }
+        profile = &direct_profile.value();
     }
 
     logger->info("Win32 loader target: {}", profile->id);
+    logger->info("Win32 loader executable: {}",
+                 profile->executable_path.string());
 #if defined(REPIU_WIN32_HOST_IMAGE_BASE)
     logger->info("Win32 host image base policy: {}",
                  Hex32(REPIU_WIN32_HOST_IMAGE_BASE));
@@ -777,7 +824,8 @@ int main(int argc, char** argv)
     PrintPlacement(*logger, placement);
     logger->flush();
     repiu::platform::win32::Win32MinimalExecutionAttempt attempt;
-    const bool use_dos_console_hle = profile->id == "dos4gw_hello";
+    const bool use_dos_console_hle =
+        profile->hle_profile_id == "dos4gw_console_sample";
     const bool attempted_execution =
         use_dos_console_hle
             ? repiu::platform::win32::AttemptWin32GuestStackHleExecution(
