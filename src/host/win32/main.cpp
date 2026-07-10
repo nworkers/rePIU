@@ -842,6 +842,60 @@ void PrintExecutionAttempt(
                         Hex16(attempt.last_dos_open_error));
         }
     }
+    logger.info("Win32 handled DOS read count: {}",
+                attempt.handled_dos_read_count);
+    if (attempt.handled_dos_read_count > 0)
+    {
+        logger.info("Win32 last DOS read handle: {}",
+                    Hex16(attempt.last_dos_read_handle));
+        logger.info("Win32 last DOS read requested bytes: {}",
+                    attempt.last_dos_read_requested_bytes);
+        logger.info("Win32 last DOS read actual bytes: {}",
+                    attempt.last_dos_read_actual_bytes);
+        logger.info("Win32 last DOS read buffer: {}",
+                    Hex32(attempt.last_dos_read_buffer));
+        logger.info("Win32 last DOS read result: {}",
+                    attempt.last_dos_read_success ? "success" : "failure");
+        if (!attempt.last_dos_read_success)
+        {
+            logger.info("Win32 last DOS read error: {}",
+                        Hex16(attempt.last_dos_read_error));
+        }
+    }
+    logger.info("Win32 handled DOS seek count: {}",
+                attempt.handled_dos_seek_count);
+    if (attempt.handled_dos_seek_count > 0)
+    {
+        logger.info("Win32 last DOS seek handle: {}",
+                    Hex16(attempt.last_dos_seek_handle));
+        logger.info("Win32 last DOS seek origin: {}",
+                    Hex8(attempt.last_dos_seek_origin));
+        logger.info("Win32 last DOS seek offset: {}",
+                    attempt.last_dos_seek_offset);
+        logger.info("Win32 last DOS seek position: {}",
+                    attempt.last_dos_seek_position);
+        logger.info("Win32 last DOS seek result: {}",
+                    attempt.last_dos_seek_success ? "success" : "failure");
+        if (!attempt.last_dos_seek_success)
+        {
+            logger.info("Win32 last DOS seek error: {}",
+                        Hex16(attempt.last_dos_seek_error));
+        }
+    }
+    logger.info("Win32 handled DOS close count: {}",
+                attempt.handled_dos_close_count);
+    if (attempt.handled_dos_close_count > 0)
+    {
+        logger.info("Win32 last DOS close handle: {}",
+                    Hex16(attempt.last_dos_close_handle));
+        logger.info("Win32 last DOS close result: {}",
+                    attempt.last_dos_close_success ? "success" : "failure");
+        if (!attempt.last_dos_close_success)
+        {
+            logger.info("Win32 last DOS close error: {}",
+                        Hex16(attempt.last_dos_close_error));
+        }
+    }
     logger.info("Win32 handled DOS IOCTL count: {}",
                 attempt.handled_dos_ioctl_count);
     if (attempt.handled_dos_ioctl_count > 0)

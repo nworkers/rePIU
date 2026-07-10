@@ -22,6 +22,7 @@ struct DosOpenFileHandle
     bool open = false;
     std::uint16_t handle = 0;
     std::uint8_t access_mode = 0;
+    std::uint64_t file_offset = 0;
     std::string guest_path;
     std::filesystem::path host_path;
     std::string dos_path;
@@ -66,6 +67,24 @@ bool OpenDosFile(DosVirtualFileSystemState* state,
                  std::uint8_t access_mode,
                  DosResolvedPath* resolved,
                  std::uint16_t* handle);
+
+bool ReadDosFile(DosVirtualFileSystemState* state,
+                 std::uint16_t handle,
+                 std::uint32_t requested_bytes,
+                 std::vector<std::uint8_t>* bytes,
+                 std::uint32_t* actual_bytes,
+                 std::uint16_t* dos_error);
+
+bool SeekDosFile(DosVirtualFileSystemState* state,
+                 std::uint16_t handle,
+                 std::uint8_t origin,
+                 std::int32_t offset,
+                 std::uint32_t* new_position,
+                 std::uint16_t* dos_error);
+
+bool CloseDosFile(DosVirtualFileSystemState* state,
+                  std::uint16_t handle,
+                  std::uint16_t* dos_error);
 
 bool IsDosFileHandleOpen(const DosVirtualFileSystemState& state,
                          std::uint16_t handle);

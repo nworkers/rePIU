@@ -97,6 +97,24 @@ struct ThreadContext
     std::uint16_t last_dos_open_error = 0;
     std::uint16_t last_dos_open_handle = 0;
     std::uint8_t last_dos_open_access_mode = 0;
+    std::uint32_t handled_dos_read_count = 0;
+    std::uint16_t last_dos_read_handle = 0;
+    std::uint32_t last_dos_read_requested_bytes = 0;
+    std::uint32_t last_dos_read_actual_bytes = 0;
+    std::uint32_t last_dos_read_buffer = 0;
+    bool last_dos_read_success = false;
+    std::uint16_t last_dos_read_error = 0;
+    std::uint32_t handled_dos_seek_count = 0;
+    std::uint16_t last_dos_seek_handle = 0;
+    std::uint8_t last_dos_seek_origin = 0;
+    std::int32_t last_dos_seek_offset = 0;
+    std::uint32_t last_dos_seek_position = 0;
+    bool last_dos_seek_success = false;
+    std::uint16_t last_dos_seek_error = 0;
+    std::uint32_t handled_dos_close_count = 0;
+    std::uint16_t last_dos_close_handle = 0;
+    bool last_dos_close_success = false;
+    std::uint16_t last_dos_close_error = 0;
     std::uint32_t handled_dos_ioctl_count = 0;
     std::uint8_t last_dos_ioctl_subfunction = 0;
     std::uint16_t last_dos_ioctl_handle = 0;
@@ -605,6 +623,26 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->last_dos_open_error = context.last_dos_open_error;
     attempt->last_dos_open_handle = context.last_dos_open_handle;
     attempt->last_dos_open_access_mode = context.last_dos_open_access_mode;
+    attempt->handled_dos_read_count = context.handled_dos_read_count;
+    attempt->last_dos_read_handle = context.last_dos_read_handle;
+    attempt->last_dos_read_requested_bytes =
+        context.last_dos_read_requested_bytes;
+    attempt->last_dos_read_actual_bytes =
+        context.last_dos_read_actual_bytes;
+    attempt->last_dos_read_buffer = context.last_dos_read_buffer;
+    attempt->last_dos_read_success = context.last_dos_read_success;
+    attempt->last_dos_read_error = context.last_dos_read_error;
+    attempt->handled_dos_seek_count = context.handled_dos_seek_count;
+    attempt->last_dos_seek_handle = context.last_dos_seek_handle;
+    attempt->last_dos_seek_origin = context.last_dos_seek_origin;
+    attempt->last_dos_seek_offset = context.last_dos_seek_offset;
+    attempt->last_dos_seek_position = context.last_dos_seek_position;
+    attempt->last_dos_seek_success = context.last_dos_seek_success;
+    attempt->last_dos_seek_error = context.last_dos_seek_error;
+    attempt->handled_dos_close_count = context.handled_dos_close_count;
+    attempt->last_dos_close_handle = context.last_dos_close_handle;
+    attempt->last_dos_close_success = context.last_dos_close_success;
+    attempt->last_dos_close_error = context.last_dos_close_error;
     attempt->handled_dos_ioctl_count = context.handled_dos_ioctl_count;
     attempt->last_dos_ioctl_subfunction =
         context.last_dos_ioctl_subfunction;
@@ -1544,6 +1582,220 @@ bool HandleDosOpenFile(CONTEXT* win32_context, ThreadContext* context)
     return true;
 }
 
+void RecordDosRead(ThreadContext* context,
+                   std::uint16_t handle,
+                   std::uint32_t requested_bytes,
+                   std::uint32_t actual_bytes,
+                   std::uint32_t buffer,
+                   bool success,
+                   std::uint16_t error)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+
+    ++context->handled_dos_read_count;
+    context->last_dos_read_handle = handle;
+    context->last_dos_read_requested_bytes = requested_bytes;
+    context->last_dos_read_actual_bytes = actual_bytes;
+    context->last_dos_read_buffer = buffer;
+    context->last_dos_read_success = success;
+    context->last_dos_read_error = error;
+}
+
+bool HandleDosReadFile(CONTEXT* win32_context, ThreadContext* context)
+{
+    const std::uint16_t handle = static_cast<std::uint16_t>(
+        win32_context->Ebx & 0xFFFFU);
+    const std::uint32_t requested_bytes =
+        static_cast<std::uint32_t>(win32_context->Ecx & 0xFFFFU);
+    const std::uint32_t buffer =
+        static_cast<std::uint32_t>(win32_context->Edx);
+
+    std::vector<std::uint8_t> bytes;
+    std::uint32_t actual_bytes = 0;
+    std::uint16_t dos_error = 0;
+    if (!repiu::hle::ReadDosFile(&context->dos_file_system,
+                                 handle,
+                                 requested_bytes,
+                                 &bytes,
+                                 &actual_bytes,
+                                 &dos_error))
+    {
+        return false;
+    }
+
+    if (dos_error != 0)
+    {
+        RecordDosRead(context,
+                      handle,
+                      requested_bytes,
+                      0,
+                      buffer,
+                      false,
+                      dos_error);
+        win32_context->Eax =
+            (win32_context->Eax & 0xFFFF0000U) | dos_error;
+        win32_context->EFlags |= 1U;
+        return true;
+    }
+
+    if (!bytes.empty() &&
+        !WriteGuestBytes(context,
+                         reinterpret_cast<void*>(
+                             static_cast<std::uintptr_t>(buffer)),
+                         bytes.data(),
+                         bytes.size()))
+    {
+        constexpr std::uint16_t kPathNotFound = 0x0003;
+        RecordDosRead(context,
+                      handle,
+                      requested_bytes,
+                      0,
+                      buffer,
+                      false,
+                      kPathNotFound);
+        win32_context->Eax =
+            (win32_context->Eax & 0xFFFF0000U) | kPathNotFound;
+        win32_context->EFlags |= 1U;
+        return true;
+    }
+
+    RecordDosRead(context,
+                  handle,
+                  requested_bytes,
+                  actual_bytes,
+                  buffer,
+                  true,
+                  0);
+    win32_context->Eax =
+        (win32_context->Eax & 0xFFFF0000U) |
+        static_cast<std::uint16_t>(actual_bytes & 0xFFFFU);
+    win32_context->EFlags &= ~1U;
+    return true;
+}
+
+void RecordDosSeek(ThreadContext* context,
+                   std::uint16_t handle,
+                   std::uint8_t origin,
+                   std::int32_t offset,
+                   std::uint32_t position,
+                   bool success,
+                   std::uint16_t error)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+
+    ++context->handled_dos_seek_count;
+    context->last_dos_seek_handle = handle;
+    context->last_dos_seek_origin = origin;
+    context->last_dos_seek_offset = offset;
+    context->last_dos_seek_position = position;
+    context->last_dos_seek_success = success;
+    context->last_dos_seek_error = error;
+}
+
+bool HandleDosSeekFile(CONTEXT* win32_context, ThreadContext* context)
+{
+    const std::uint8_t origin = static_cast<std::uint8_t>(
+        win32_context->Eax & 0xFFU);
+    const std::uint16_t handle = static_cast<std::uint16_t>(
+        win32_context->Ebx & 0xFFFFU);
+    const std::uint32_t raw_offset =
+        ((win32_context->Ecx & 0xFFFFU) << 16) |
+        (win32_context->Edx & 0xFFFFU);
+    const std::int32_t offset = static_cast<std::int32_t>(raw_offset);
+
+    std::uint32_t new_position = 0;
+    std::uint16_t dos_error = 0;
+    if (!repiu::hle::SeekDosFile(&context->dos_file_system,
+                                 handle,
+                                 origin,
+                                 offset,
+                                 &new_position,
+                                 &dos_error))
+    {
+        return false;
+    }
+
+    if (dos_error != 0)
+    {
+        RecordDosSeek(context,
+                      handle,
+                      origin,
+                      offset,
+                      0,
+                      false,
+                      dos_error);
+        win32_context->Eax =
+            (win32_context->Eax & 0xFFFF0000U) | dos_error;
+        win32_context->EFlags |= 1U;
+        return true;
+    }
+
+    RecordDosSeek(context,
+                  handle,
+                  origin,
+                  offset,
+                  new_position,
+                  true,
+                  0);
+    win32_context->Eax =
+        (win32_context->Eax & 0xFFFF0000U) |
+        (new_position & 0xFFFFU);
+    win32_context->Edx =
+        (win32_context->Edx & 0xFFFF0000U) |
+        ((new_position >> 16) & 0xFFFFU);
+    win32_context->EFlags &= ~1U;
+    return true;
+}
+
+void RecordDosClose(ThreadContext* context,
+                    std::uint16_t handle,
+                    bool success,
+                    std::uint16_t error)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+
+    ++context->handled_dos_close_count;
+    context->last_dos_close_handle = handle;
+    context->last_dos_close_success = success;
+    context->last_dos_close_error = error;
+}
+
+bool HandleDosCloseFile(CONTEXT* win32_context, ThreadContext* context)
+{
+    const std::uint16_t handle = static_cast<std::uint16_t>(
+        win32_context->Ebx & 0xFFFFU);
+
+    std::uint16_t dos_error = 0;
+    if (!repiu::hle::CloseDosFile(&context->dos_file_system,
+                                  handle,
+                                  &dos_error))
+    {
+        return false;
+    }
+
+    if (dos_error != 0)
+    {
+        RecordDosClose(context, handle, false, dos_error);
+        win32_context->Eax =
+            (win32_context->Eax & 0xFFFF0000U) | dos_error;
+        win32_context->EFlags |= 1U;
+        return true;
+    }
+
+    RecordDosClose(context, handle, true, 0);
+    win32_context->EFlags &= ~1U;
+    return true;
+}
+
 void RecordDosIoctl(ThreadContext* context,
                     std::uint8_t subfunction,
                     std::uint16_t handle,
@@ -1801,6 +2053,20 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
                 return false;
             }
             break;
+        case 0x3E:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            if (!HandleDosCloseFile(win32_context, context))
+            {
+                return false;
+            }
+            break;
+        case 0x3F:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            if (!HandleDosReadFile(win32_context, context))
+            {
+                return false;
+            }
+            break;
         case 0x40:
         {
             const void* text = reinterpret_cast<const void*>(
@@ -1811,6 +2077,13 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
             win32_context->EFlags &= ~1U;
             break;
         }
+        case 0x42:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            if (!HandleDosSeekFile(win32_context, context))
+            {
+                return false;
+            }
+            break;
         case 0x44:
             RecordHandledDosInterrupt(context, 0x21, ax);
             if (!HandleDosIoctl(win32_context, context))
@@ -3230,6 +3503,22 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
             }
             win32_context->Eip += 2;
             return true;
+        case 0x3E:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            if (!HandleDosCloseFile(win32_context, context))
+            {
+                return false;
+            }
+            win32_context->Eip += 2;
+            return true;
+        case 0x3F:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            if (!HandleDosReadFile(win32_context, context))
+            {
+                return false;
+            }
+            win32_context->Eip += 2;
+            return true;
         case 0x40:
         {
             RecordHandledDosInterrupt(context, 0x21, ax);
@@ -3242,6 +3531,14 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
             win32_context->Eip += 2;
             return true;
         }
+        case 0x42:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            if (!HandleDosSeekFile(win32_context, context))
+            {
+                return false;
+            }
+            win32_context->Eip += 2;
+            return true;
         case 0x44:
             RecordHandledDosInterrupt(context, 0x21, ax);
             if (!HandleDosIoctl(win32_context, context))

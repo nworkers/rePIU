@@ -170,9 +170,9 @@ try
         $piuOutput -notmatch "Win32 minimal execution returned: false" -or
         $piuOutput -notmatch "Win32 minimal execution exception caught: true" -or
         $piuOutput -notmatch "Win32 minimal execution exception code: 0xC0000005" -or
-        $piuOutput -notmatch "Win32 minimal execution exception address: 0x0[1-9]0F87B7" -or
+        $piuOutput -notmatch "Win32 minimal execution exception address: 0x0[1-9]0F86E0" -or
         $piuOutput -notmatch "Win32 minimal execution exception context captured: true" -or
-        $piuOutput -notmatch "Win32 minimal execution exception EIP: 0x0[1-9]0F87B7" -or
+        $piuOutput -notmatch "Win32 minimal execution exception EIP: 0x0[1-9]0F86E0" -or
         $piuOutput -notmatch "Win32 minimal execution exception ESP: 0x0[1-9][0-9A-F]{6}" -or
         $piuOutput -notmatch "Win32 minimal execution exception EFLAGS: 0x[0-9A-F]{8}" -or
         $piuOutput -notmatch "Win32 minimal execution exception CS: 0x[0-9A-F]{4}" -or
@@ -193,6 +193,7 @@ try
         $piuOutput -notmatch "Win32 DOS path trace #2 service=open result=success error=0x0000 drive=0x00 access=0x00 guest=intro.ani virtual=\\PIU\\INTRO.ANI" -or
         $piuOutput -notmatch "Win32 handled DOS interrupt count: [1-9]" -or
         $piuOutput -notmatch "Win32 last handled DOS interrupt vector: 0x21" -or
+        $piuOutput -notmatch "Win32 last handled DOS interrupt AH: 0x4A" -or
         $piuOutput -notmatch "Win32 last handled DOS interrupt AX: 0x4A2B" -or
         $piuOutput -notmatch "Win32 handled DOS chdir count: [1-9]" -or
         $piuOutput -notmatch "Win32 last DOS chdir guest path: \\datas\\bga" -or
@@ -204,6 +205,21 @@ try
         $piuOutput -notmatch "Win32 last DOS open virtual path: \\PIU\\INTRO.ANI" -or
         $piuOutput -notmatch "Win32 last DOS open result: success" -or
         $piuOutput -notmatch "Win32 last DOS open handle: 0x0005" -or
+        $piuOutput -notmatch "Win32 handled DOS read count: [1-9]" -or
+        $piuOutput -notmatch "Win32 last DOS read handle: 0x0005" -or
+        $piuOutput -notmatch "Win32 last DOS read requested bytes: 0" -or
+        $piuOutput -notmatch "Win32 last DOS read actual bytes: 0" -or
+        $piuOutput -notmatch "Win32 last DOS read buffer: 0x0[1-9][0-9A-F]{6}" -or
+        $piuOutput -notmatch "Win32 last DOS read result: success" -or
+        $piuOutput -notmatch "Win32 handled DOS seek count: [1-9]" -or
+        $piuOutput -notmatch "Win32 last DOS seek handle: 0x0005" -or
+        $piuOutput -notmatch "Win32 last DOS seek origin: 0x00" -or
+        $piuOutput -notmatch "Win32 last DOS seek offset: 44544" -or
+        $piuOutput -notmatch "Win32 last DOS seek position: 44544" -or
+        $piuOutput -notmatch "Win32 last DOS seek result: success" -or
+        $piuOutput -notmatch "Win32 handled DOS close count: [1-9]" -or
+        $piuOutput -notmatch "Win32 last DOS close handle: 0x0005" -or
+        $piuOutput -notmatch "Win32 last DOS close result: success" -or
         $piuOutput -notmatch "Win32 handled DOS resize count: [1-9]" -or
         $piuOutput -notmatch "Win32 handled low-memory access count: [1-9]" -or
         $piuOutput -notmatch "Win32 handled segment memory load count: [1-9]" -or
@@ -220,12 +236,9 @@ try
         $piuOutput -notmatch "Win32 shadow memory range valid: false" -or
         $piuOutput -notmatch "Win32 minimal execution thread exit code: 2" -or
         $piuOutput -notmatch "Win32 minimal execution message: original entry raised a caught exception" -or
-        $piuOutput -notmatch "Privileged instruction classification: valid" -or
-        $piuOutput -notmatch "Privileged instruction opcode: 0xCD" -or
-        $piuOutput -notmatch "Privileged instruction mnemonic: INT imm8" -or
-        $piuOutput -notmatch "Privileged instruction class: HLE trap candidate" -or
-        $piuOutput -notmatch "Privileged instruction HLE trap candidate: true" -or
-        $piuOutput -notmatch "Current execution blocker: unhandled HLE trap candidate")
+        $piuOutput -notmatch "Privileged instruction classification: unknown" -or
+        $piuOutput -notmatch "Privileged instruction opcode: 0xC7" -or
+        $piuOutput -notmatch "Current execution blocker: unhandled or unclassified instruction/memory access at exception point")
     {
         throw "piu_1st did not reach the expected current HLE observation point."
     }
