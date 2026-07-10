@@ -50,6 +50,11 @@ bool InitializeDosVirtualFileSystem(
     const std::filesystem::path& host_root,
     DosVirtualFileSystemState* state);
 
+bool InitializeDosVirtualFileSystem(
+    const std::filesystem::path& host_root,
+    const std::filesystem::path& initial_current_directory,
+    DosVirtualFileSystemState* state);
+
 bool ChangeDosCurrentDirectory(DosVirtualFileSystemState* state,
                                const std::string& guest_path,
                                DosResolvedPath* resolved);

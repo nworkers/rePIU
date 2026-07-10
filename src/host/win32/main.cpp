@@ -261,6 +261,12 @@ void PrintPrivilegedInstructionClassification(
                      classification.message);
         logger.error("Current execution blocker: guest breakpoint trap");
     }
+    else if (classification.hle_trap_candidate)
+    {
+        logger.error("Privileged instruction classification message: {}",
+                     classification.message);
+        logger.error("Current execution blocker: unhandled HLE trap candidate");
+    }
     else
     {
         logger.info("Privileged instruction classification message: {}",
@@ -358,6 +364,12 @@ void PrintDosVirtualFileSystem(
                 state.valid ? "valid" : "invalid");
     logger.info("DOS virtual filesystem root: {}",
                 state.host_root.string());
+    const std::string current_directory =
+        repiu::hle::GetDosCurrentDirectory(state);
+    logger.info("DOS virtual filesystem current directory: {}",
+                current_directory.empty()
+                    ? "\\"
+                    : "\\" + current_directory);
     logger.info("DOS virtual filesystem message: {}", state.message);
 }
 
@@ -705,6 +717,47 @@ void PrintExecutionAttempt(
                 entry.width,
                 Hex32(entry.value),
                 entry.handled ? "true" : "false");
+        }
+    }
+    logger.info("Win32 DOS path trace stored count: {}",
+                attempt.dos_path.trace_stored_count);
+    logger.info("Win32 DOS path trace limit reached: {}",
+                attempt.dos_path.trace_limit_reached ? "true" : "false");
+    if (attempt.dos_path.trace_stored_count > 0)
+    {
+        const std::uint32_t first_sequence =
+            attempt.dos_path.observed_count >
+                    attempt.dos_path.trace_stored_count
+                ? attempt.dos_path.observed_count -
+                      attempt.dos_path.trace_stored_count + 1
+                : 1;
+        const std::uint32_t last_sequence =
+            attempt.dos_path.observed_count;
+        for (std::uint32_t sequence = first_sequence;
+             sequence <= last_sequence;
+             ++sequence)
+        {
+            const std::uint32_t slot =
+                (sequence - 1) % repiu::platform::win32::
+                    kWin32DosPathTraceCapacity;
+            const repiu::platform::win32::Win32DosPathTraceEntry& entry =
+                attempt.dos_path.trace[slot];
+            if (!entry.valid || entry.sequence != sequence)
+            {
+                continue;
+            }
+
+            logger.info(
+                "Win32 DOS path trace #{} service={} result={} error={} drive={} access={} guest={} virtual={} host={}",
+                entry.sequence,
+                entry.service,
+                entry.result,
+                Hex16(entry.dos_error),
+                Hex8(entry.drive),
+                Hex8(entry.access_mode),
+                entry.guest_path,
+                entry.virtual_path,
+                entry.host_path);
         }
     }
     logger.info("Win32 handled DOS interrupt count: {}",
@@ -1291,6 +1344,7 @@ int main(int argc, char** argv)
 
     repiu::hle::DosVirtualFileSystemState dos_file_system;
     if (!repiu::hle::InitializeDosVirtualFileSystem(
+            profile->asset_root,
             profile->working_directory,
             &dos_file_system) ||
         !dos_file_system.valid)

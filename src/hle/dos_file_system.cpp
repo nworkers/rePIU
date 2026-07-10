@@ -35,6 +35,49 @@ std::string BuildDosPath(const std::vector<std::string>& components)
     return result;
 }
 
+bool BuildCurrentComponentsFromHostPath(
+    const std::filesystem::path& absolute_root,
+    const std::filesystem::path& absolute_current_directory,
+    std::vector<std::string>* components,
+    std::string* message)
+{
+    if (components == nullptr || message == nullptr)
+    {
+        return false;
+    }
+
+    components->clear();
+    const std::filesystem::path relative =
+        absolute_current_directory.lexically_relative(absolute_root);
+    if (relative.empty() &&
+        absolute_current_directory != absolute_root)
+    {
+        *message = "DOS initial current directory is outside the host root";
+        return true;
+    }
+
+    for (const std::filesystem::path& component : relative)
+    {
+        const std::string part = component.string();
+        if (part.empty() || part == ".")
+        {
+            continue;
+        }
+        if (part == "..")
+        {
+            *message =
+                "DOS initial current directory escapes the host root";
+            components->clear();
+            return true;
+        }
+
+        components->push_back(ToUpperAscii(part));
+    }
+
+    *message = "DOS initial current directory resolved";
+    return true;
+}
+
 bool ResolveGuestPath(const DosVirtualFileSystemState& state,
                       const std::string& guest_path,
                       DosResolvedPath* resolved,
@@ -144,6 +187,14 @@ bool InitializeDosVirtualFileSystem(
     const std::filesystem::path& host_root,
     DosVirtualFileSystemState* state)
 {
+    return InitializeDosVirtualFileSystem(host_root, host_root, state);
+}
+
+bool InitializeDosVirtualFileSystem(
+    const std::filesystem::path& host_root,
+    const std::filesystem::path& initial_current_directory,
+    DosVirtualFileSystemState* state)
+{
     if (state == nullptr)
     {
         return false;
@@ -167,9 +218,47 @@ bool InitializeDosVirtualFileSystem(
         return true;
     }
 
+    const std::filesystem::path absolute_current_directory =
+        std::filesystem::absolute(initial_current_directory, error)
+            .lexically_normal();
+    if (error)
+    {
+        state->host_root = absolute_root;
+        state->message = "failed to resolve DOS initial current directory";
+        return true;
+    }
+
+    if (!std::filesystem::exists(absolute_current_directory, error) ||
+        error ||
+        !std::filesystem::is_directory(absolute_current_directory, error) ||
+        error)
+    {
+        state->host_root = absolute_root;
+        state->message =
+            "DOS initial current directory is not an existing directory";
+        return true;
+    }
+
+    std::vector<std::string> current_components;
+    std::string current_message;
+    if (!BuildCurrentComponentsFromHostPath(
+            absolute_root,
+            absolute_current_directory,
+            &current_components,
+            &current_message))
+    {
+        return false;
+    }
+    if (current_message != "DOS initial current directory resolved")
+    {
+        state->host_root = absolute_root;
+        state->message = current_message;
+        return true;
+    }
+
     state->valid = true;
     state->host_root = absolute_root;
-    state->current_components.clear();
+    state->current_components = current_components;
     state->message = "DOS virtual filesystem is ready";
     return true;
 }

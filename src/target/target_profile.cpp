@@ -26,8 +26,8 @@ const std::vector<TargetProfile>& BuiltInTargetProfiles()
         TargetProfile{
             "piu_1st",
             "PIU 1st",
-            std::filesystem::path("MASTER/PIU_1ST/PIU.EXE"),
-            std::filesystem::path("MASTER/PIU_1ST"),
+            std::filesystem::path("MASTER/PIU_1ST/PIU/PIU.EXE"),
+            std::filesystem::path("MASTER/PIU_1ST/PIU"),
             std::filesystem::path("MASTER/PIU_1ST"),
             ExecutableFormatHint::kDos4gwLe,
             "piu_common",

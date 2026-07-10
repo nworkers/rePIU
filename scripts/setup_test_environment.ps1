@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $VsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
 $OpenWatcomCompiler = Join-Path $Root "tools\openwatcom\binnt\wcl386.exe"
-$PiuExecutable = Join-Path $Root "MASTER\PIU_1ST\PIU.EXE"
+$PiuExecutable = Join-Path $Root "MASTER\PIU_1ST\PIU\PIU.EXE"
 
 function Write-CheckOk
 {
@@ -126,9 +126,9 @@ try
 
     if (!(Test-Path $PiuExecutable))
     {
-        throw "Original executable was not found at MASTER\PIU_1ST\PIU.EXE. Copy the original asset tree before running piu_1st tests."
+        throw "Original executable was not found at MASTER\PIU_1ST\PIU\PIU.EXE. Copy the original asset tree before running piu_1st tests."
     }
-    Write-CheckOk "Original PIU executable: MASTER\PIU_1ST\PIU.EXE"
+    Write-CheckOk "Original PIU executable: MASTER\PIU_1ST\PIU\PIU.EXE"
 
     if (!(Test-Path $OpenWatcomCompiler))
     {

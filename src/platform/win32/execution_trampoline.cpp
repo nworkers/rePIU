@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <filesystem>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
@@ -69,6 +70,7 @@ struct ThreadContext
     std::uint32_t last_hle_trap_address = 0;
     std::uint32_t last_hle_trap_opcode = 0;
     Win32PortIoObservation port_io;
+    Win32DosPathObservation dos_path;
     std::uint32_t handled_dos_interrupt_count = 0;
     std::uint32_t last_dos_interrupt_vector = 0;
     std::uint32_t last_dos_interrupt_ah = 0;
@@ -572,6 +574,7 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->last_hle_trap_address = context.last_hle_trap_address;
     attempt->last_hle_trap_opcode = context.last_hle_trap_opcode;
     attempt->port_io = context.port_io;
+    attempt->dos_path = context.dos_path;
     attempt->handled_dos_interrupt_count =
         context.handled_dos_interrupt_count;
     attempt->last_dos_interrupt_vector = context.last_dos_interrupt_vector;
@@ -1252,6 +1255,71 @@ void RecordDosChangeDirectory(ThreadContext* context,
         repiu::hle::DosPathResultToErrorCode(resolved.result);
 }
 
+void RecordDosPathTrace(ThreadContext* context,
+                        const char* service,
+                        const std::string& guest_path,
+                        const std::string& virtual_path,
+                        const std::string& host_path,
+                        bool success,
+                        std::uint16_t dos_error,
+                        std::uint8_t drive,
+                        std::uint8_t access_mode)
+{
+    if (context == nullptr || service == nullptr)
+    {
+        return;
+    }
+
+    Win32DosPathObservation& observation = context->dos_path;
+    const std::uint32_t sequence = observation.observed_count + 1;
+    const std::uint32_t slot =
+        (sequence - 1) % kWin32DosPathTraceCapacity;
+    Win32DosPathTraceEntry& entry = observation.trace[slot];
+    entry.valid = true;
+    entry.sequence = sequence;
+    entry.service = service;
+    entry.guest_path = guest_path;
+    entry.virtual_path = virtual_path;
+    entry.host_path = host_path;
+    entry.result = success ? "success" : "failure";
+    entry.dos_error = dos_error;
+    entry.drive = drive;
+    entry.access_mode = access_mode;
+    observation.observed_count = sequence;
+    if (observation.trace_stored_count < kWin32DosPathTraceCapacity)
+    {
+        ++observation.trace_stored_count;
+    }
+    else
+    {
+        observation.trace_limit_reached = true;
+    }
+}
+
+std::string BuildCurrentDosVirtualPath(
+    const repiu::hle::DosVirtualFileSystemState& state)
+{
+    const std::string current_directory =
+        repiu::hle::GetDosCurrentDirectory(state);
+    if (current_directory.empty())
+    {
+        return "\\";
+    }
+
+    return "\\" + current_directory;
+}
+
+std::string BuildCurrentDosHostPath(
+    const repiu::hle::DosVirtualFileSystemState& state)
+{
+    std::filesystem::path host_path = state.host_root;
+    for (const std::string& component : state.current_components)
+    {
+        host_path /= component;
+    }
+    return host_path.lexically_normal().string();
+}
+
 bool HandleDosChangeDirectory(CONTEXT* win32_context, ThreadContext* context)
 {
     std::string guest_path;
@@ -1280,6 +1348,16 @@ bool HandleDosChangeDirectory(CONTEXT* win32_context, ThreadContext* context)
     }
 
     RecordDosChangeDirectory(context, guest_path, resolved);
+    RecordDosPathTrace(context,
+                       "chdir",
+                       guest_path,
+                       resolved.dos_path,
+                       resolved.host_path.string(),
+                       resolved.result == repiu::hle::DosPathResult::kOk,
+                       repiu::hle::DosPathResultToErrorCode(
+                           resolved.result),
+                       0,
+                       0);
     if (resolved.result == repiu::hle::DosPathResult::kOk)
     {
         win32_context->EFlags &= ~1U;
@@ -1308,6 +1386,16 @@ bool HandleDosGetCurrentDirectory(CONTEXT* win32_context,
     {
         context->last_dos_getcwd_success = false;
         context->last_dos_getcwd_error = 0x0005U;
+        RecordDosPathTrace(context,
+                           "getcwd",
+                           "",
+                           BuildCurrentDosVirtualPath(
+                               context->dos_file_system),
+                           BuildCurrentDosHostPath(context->dos_file_system),
+                           false,
+                           context->last_dos_getcwd_error,
+                           drive,
+                           0);
         win32_context->Eax =
             (win32_context->Eax & 0xFFFF0000U) | 0x0005U;
         win32_context->EFlags |= 1U;
@@ -1325,6 +1413,16 @@ bool HandleDosGetCurrentDirectory(CONTEXT* win32_context,
     {
         context->last_dos_getcwd_success = false;
         context->last_dos_getcwd_error = 0x0003U;
+        RecordDosPathTrace(context,
+                           "getcwd",
+                           "",
+                           BuildCurrentDosVirtualPath(
+                               context->dos_file_system),
+                           BuildCurrentDosHostPath(context->dos_file_system),
+                           false,
+                           context->last_dos_getcwd_error,
+                           drive,
+                           0);
         win32_context->Eax =
             (win32_context->Eax & 0xFFFF0000U) | 0x0003U;
         win32_context->EFlags |= 1U;
@@ -1333,6 +1431,15 @@ bool HandleDosGetCurrentDirectory(CONTEXT* win32_context,
 
     context->last_dos_getcwd_success = true;
     context->last_dos_getcwd_error = 0;
+    RecordDosPathTrace(context,
+                       "getcwd",
+                       "",
+                       BuildCurrentDosVirtualPath(context->dos_file_system),
+                       BuildCurrentDosHostPath(context->dos_file_system),
+                       true,
+                       0,
+                       drive,
+                       0);
     win32_context->EFlags &= ~1U;
     return true;
 }
@@ -1342,6 +1449,15 @@ void HandleDosGetCurrentDrive(CONTEXT* win32_context, ThreadContext* context)
     constexpr std::uint8_t kDefaultDriveC = 2;
     ++context->handled_dos_getdrive_count;
     context->last_dos_getdrive_value = kDefaultDriveC;
+    RecordDosPathTrace(context,
+                       "getdrive",
+                       "",
+                       "",
+                       "",
+                       true,
+                       0,
+                       kDefaultDriveC,
+                       0);
     win32_context->Eax =
         (win32_context->Eax & 0xFFFFFF00U) | kDefaultDriveC;
     win32_context->EFlags &= ~1U;
@@ -1368,6 +1484,16 @@ void RecordDosOpen(ThreadContext* context,
         repiu::hle::DosPathResultToErrorCode(resolved.result);
     context->last_dos_open_handle = handle;
     context->last_dos_open_access_mode = access_mode;
+    RecordDosPathTrace(context,
+                       "open",
+                       guest_path,
+                       resolved.dos_path,
+                       resolved.host_path.string(),
+                       resolved.result == repiu::hle::DosPathResult::kOk,
+                       repiu::hle::DosPathResultToErrorCode(
+                           resolved.result),
+                       0,
+                       access_mode);
 }
 
 bool HandleDosOpenFile(CONTEXT* win32_context, ThreadContext* context)

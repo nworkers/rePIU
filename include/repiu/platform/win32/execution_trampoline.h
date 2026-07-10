@@ -12,6 +12,7 @@ namespace repiu::platform::win32
 {
 
 constexpr std::uint32_t kWin32PortIoTraceCapacity = 16;
+constexpr std::uint32_t kWin32DosPathTraceCapacity = 16;
 constexpr std::uint32_t kWin32DeferredPortIoLimit = 1024;
 
 struct X86ExecutionSnapshot
@@ -64,6 +65,28 @@ struct Win32PortIoObservation
     Win32PortIoTraceEntry trace[kWin32PortIoTraceCapacity];
 };
 
+struct Win32DosPathTraceEntry
+{
+    bool valid = false;
+    std::uint32_t sequence = 0;
+    std::string service;
+    std::string guest_path;
+    std::string virtual_path;
+    std::string host_path;
+    std::string result;
+    std::uint16_t dos_error = 0;
+    std::uint8_t drive = 0;
+    std::uint8_t access_mode = 0;
+};
+
+struct Win32DosPathObservation
+{
+    std::uint32_t observed_count = 0;
+    std::uint32_t trace_stored_count = 0;
+    bool trace_limit_reached = false;
+    Win32DosPathTraceEntry trace[kWin32DosPathTraceCapacity];
+};
+
 struct Win32MinimalExecutionAttempt
 {
     bool valid = false;
@@ -102,6 +125,7 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t last_hle_trap_address = 0;
     std::uint32_t last_hle_trap_opcode = 0;
     Win32PortIoObservation port_io;
+    Win32DosPathObservation dos_path;
     std::uint32_t handled_dos_interrupt_count = 0;
     std::uint32_t last_dos_interrupt_vector = 0;
     std::uint32_t last_dos_interrupt_ah = 0;
