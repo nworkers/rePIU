@@ -168,6 +168,16 @@ This step only observes whether the reservation succeeds. Original image copy, p
 
 Reserving the low address range expected by the original DOS/4GW image is not reliable enough to use as the default Win32 x86 path.
 
+# piu_1st Single-Step Trace Observation
+
+The `piu_1st` trap execution path now has a diagnostic path where the guest thread's vectored exception handler processes `EXCEPTION_SINGLE_STEP` and records the last guest `EIP`, instead of forcing thread context capture at timeout.
+
+The current stable last observed location is `0x020F4DC1`, and the byte window focus opcode is `80 3E 00`. This appears to be part of a low-memory string scanning loop.
+
+In the same run, the timeout result accumulates observations for the `FB` privileged trap, `INT 21h`, segment load/store, and traced memory stores. The current observation example is HLE trap count `1`, DOS interrupt count `254`, last DOS AH `0x4A`, and roughly `3k` memory stores.
+
+The next task is to split this low-memory string loop into a clearer helper and keep the single-step diagnostic budget separate from the long-term timeout/execution model.
+
 The next steps will prioritize loading the original LE image at a safe new runtime base using the original relocation metadata.
 
 Fixed-address loading remains a comparison and verification fallback, while the main execution path moves toward a relocatable runtime image.

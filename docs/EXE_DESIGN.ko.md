@@ -226,3 +226,12 @@ MSVC 32-bit 빌드에서는 `/BASE:0x01000000`과 `/DYNAMICBASE:NO`를 적용한
 기존 `src/tools/win32_execution_host/main.cpp` 위치와 `repiu_win32_execution_host` 이름은 초기 실행 관찰 단계의 임시 구조였으므로 더 이상 현재 구조 기준으로 사용하지 않는다.
 
 `repiu_loader_win32`는 현재 `PIU.EXE` 읽기, DOS/4GW load result 생성, relocated runtime image plan 생성, relocated image buffer 생성, Win32 process memory placement, minimal execution trampoline 호출을 순서대로 수행한다.
+# piu_1st Single-Step Trace 관측
+
+`piu_1st` trap 실행 경로에는 timeout 순간의 강제 thread context capture 대신, guest thread 내부의 vectored exception handler가 `EXCEPTION_SINGLE_STEP`를 처리하며 마지막 guest `EIP`를 기록하는 진단 경로를 추가했다.
+
+현재 안정적으로 관측되는 마지막 위치는 `0x020F4DC1`이며, byte window의 focus opcode는 `80 3E 00`이다. 이 지점은 low-memory 문자열 검사 루프로 보인다.
+
+같은 실행에서 `FB` privileged trap, `INT 21h`, segment load/store, traced memory store가 timeout 결과에 누적 출력된다. 현재 관측 예시는 HLE trap count `1`, DOS interrupt count `254`, 마지막 DOS AH `0x4A`, memory store count 약 `3천` 회 수준이다.
+
+다음 작업은 이 low-memory 문자열 루프를 더 명확한 helper로 분리하고, single-step 진단 budget과 timeout 판정을 장기 실행 모델과 분리하는 것이다.

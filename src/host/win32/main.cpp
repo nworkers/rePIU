@@ -529,6 +529,54 @@ void PrintExecutionAttempt(
                         Hex16(snapshot.gs));
         }
     }
+    logger.info("Win32 single-step trace count: {}",
+                attempt.single_step_trace_count);
+    logger.info("Win32 diagnostic poll iterations: {}",
+                attempt.diagnostic_poll_iteration_count);
+    logger.info("Win32 diagnostic progress count: {}",
+                attempt.diagnostic_progress_count);
+    logger.info("Win32 diagnostic quiet iterations: {}",
+                attempt.diagnostic_quiet_iteration_count);
+    logger.info("Win32 last single-step context captured: {}",
+                attempt.last_single_step_snapshot.captured ? "true"
+                                                           : "false");
+    if (attempt.last_single_step_snapshot.captured)
+    {
+        const auto& snapshot = attempt.last_single_step_snapshot;
+        logger.info("Win32 last single-step EIP: {}", Hex32(snapshot.eip));
+        logger.info("Win32 last single-step EAX: {}", Hex32(snapshot.eax));
+        logger.info("Win32 last single-step EBX: {}", Hex32(snapshot.ebx));
+        logger.info("Win32 last single-step ECX: {}", Hex32(snapshot.ecx));
+        logger.info("Win32 last single-step EDX: {}", Hex32(snapshot.edx));
+        logger.info("Win32 last single-step ESI: {}", Hex32(snapshot.esi));
+        logger.info("Win32 last single-step EDI: {}", Hex32(snapshot.edi));
+        logger.info("Win32 last single-step ESP: {}", Hex32(snapshot.esp));
+        logger.info("Win32 last single-step EBP: {}", Hex32(snapshot.ebp));
+        logger.info("Win32 last single-step EFLAGS: {}",
+                    Hex32(snapshot.eflags));
+        logger.info("Win32 last single-step CS: {}", Hex16(snapshot.cs));
+        logger.info("Win32 last single-step DS: {}", Hex16(snapshot.ds));
+        logger.info("Win32 last single-step ES: {}", Hex16(snapshot.es));
+        logger.info("Win32 last single-step SS: {}", Hex16(snapshot.ss));
+        logger.info("Win32 last single-step FS: {}", Hex16(snapshot.fs));
+        logger.info("Win32 last single-step GS: {}", Hex16(snapshot.gs));
+    }
+    logger.info("Win32 DOS environment block bytes: {}",
+                attempt.dos_environment_block_size);
+    logger.info("Win32 DOS environment access observed: {}",
+                attempt.last_dos_environment_access_valid ? "true" :
+                                                            "false");
+    if (attempt.last_dos_environment_access_valid)
+    {
+        logger.info("Win32 last DOS environment read offset: {}",
+                    Hex32(attempt.last_dos_environment_access_offset));
+        logger.info("Win32 last DOS environment entry offset: {}",
+                    Hex32(attempt.last_dos_environment_entry_offset));
+        logger.info("Win32 last DOS environment entry: {}=<redacted>",
+                    attempt.last_dos_environment_entry_name);
+        logger.info("Win32 last DOS environment value bytes: {}",
+                    attempt.last_dos_environment_value_length);
+    }
     logger.info("Win32 guest stack switch supported: {}",
                 attempt.guest_stack_switch_supported ? "true" : "false");
     logger.info("Win32 guest stack switch attempted: {}",
@@ -553,6 +601,29 @@ void PrintExecutionAttempt(
                     Hex8(static_cast<std::uint8_t>(
                         attempt.last_hle_trap_opcode & 0xFFU)));
     }
+    logger.info("Win32 port I/O observation count: {}",
+                attempt.port_io.observed_count);
+    if (attempt.port_io.observed_count > 0)
+    {
+        logger.info("Win32 last port I/O address: {}",
+                    Hex32(attempt.port_io.last_address));
+        logger.info("Win32 last port I/O opcode: {}",
+                    Hex16(static_cast<std::uint16_t>(
+                        attempt.port_io.last_opcode & 0xFFFFU)));
+        logger.info("Win32 last port I/O direction: {}",
+                    attempt.port_io.last_is_input ? "in" : "out");
+        logger.info("Win32 last port I/O port: {}",
+                    Hex16(static_cast<std::uint16_t>(
+                        attempt.port_io.last_port & 0xFFFFU)));
+        logger.info("Win32 last port I/O width: {}",
+                    attempt.port_io.last_width);
+        logger.info("Win32 last port I/O value: {}",
+                    Hex32(attempt.port_io.last_value));
+        logger.info("Win32 last port I/O handled: {}",
+                    attempt.port_io.last_handled ? "true" : "false");
+        logger.info("Win32 last port I/O result: {}",
+                    attempt.port_io.last_result);
+    }
     logger.info("Win32 handled DOS interrupt count: {}",
                 attempt.handled_dos_interrupt_count);
     if (attempt.handled_dos_interrupt_count > 0)
@@ -563,6 +634,9 @@ void PrintExecutionAttempt(
         logger.info("Win32 last handled DOS interrupt AH: {}",
                     Hex8(static_cast<std::uint8_t>(
                         attempt.last_dos_interrupt_ah & 0xFFU)));
+        logger.info("Win32 last handled DOS interrupt AX: {}",
+                    Hex16(static_cast<std::uint16_t>(
+                        attempt.last_dos_interrupt_ax & 0xFFFFU)));
     }
     logger.info("Win32 handled DOS chdir count: {}",
                 attempt.handled_dos_chdir_count);
@@ -715,18 +789,67 @@ void PrintExecutionAttempt(
                             attempt.last_segment_memory_load_value & 0xFFU)));
         }
     }
+    logger.info("Win32 handled low-memory access count: {}",
+                attempt.handled_low_memory_access_count);
+    if (attempt.handled_low_memory_access_count > 0)
+    {
+        logger.info("Win32 last low-memory access address: {}",
+                    Hex32(attempt.last_low_memory_access_address));
+        logger.info("Win32 last low-memory access opcode: {}",
+                    Hex8(static_cast<std::uint8_t>(
+                        attempt.last_low_memory_access_opcode & 0xFFU)));
+        logger.info("Win32 last low-memory access ESI: {}",
+                    Hex32(attempt.last_low_memory_access_esi));
+        logger.info("Win32 last low-memory access EDI: {}",
+                    Hex32(attempt.last_low_memory_access_edi));
+        logger.info("Win32 last low-memory access destination: {}",
+                    Hex32(attempt.last_low_memory_access_destination));
+        logger.info("Win32 last low-memory access value: {}",
+                    Hex32(attempt.last_low_memory_access_value));
+    }
     logger.info("Win32 handled memory store count: {}",
                 attempt.handled_memory_store_count);
     if (attempt.handled_memory_store_count > 0)
     {
         logger.info("Win32 last handled memory store address: {}",
                     Hex32(attempt.last_memory_store_address));
+        if (attempt.last_memory_store_opcode > 0xFFU)
+        {
+            logger.info("Win32 last memory store opcode: {}",
+                        Hex16(static_cast<std::uint16_t>(
+                            attempt.last_memory_store_opcode & 0xFFFFU)));
+        }
+        else
+        {
+            logger.info("Win32 last memory store opcode: {}",
+                        Hex8(static_cast<std::uint8_t>(
+                            attempt.last_memory_store_opcode & 0xFFU)));
+        }
+        logger.info("Win32 last memory store width: {}",
+                    attempt.last_memory_store_width);
+        logger.info("Win32 last memory store source kind: {}",
+                    attempt.last_memory_store_source_kind);
         logger.info("Win32 last memory store destination: {}",
                     Hex32(attempt.last_memory_store_destination));
         logger.info("Win32 last memory store value: {}",
                     Hex32(attempt.last_memory_store_value));
         logger.info("Win32 last memory store applied: {}",
                     attempt.last_memory_store_applied ? "true" : "false");
+    }
+    logger.info("Win32 shadow memory write count: {}",
+                attempt.shadow_memory_write_count);
+    logger.info("Win32 shadow memory read hit count: {}",
+                attempt.shadow_memory_read_hit_count);
+    logger.info("Win32 shadow memory byte count: {}",
+                attempt.shadow_memory_byte_count);
+    logger.info("Win32 shadow memory range valid: {}",
+                attempt.shadow_memory_range_valid ? "true" : "false");
+    if (attempt.shadow_memory_range_valid)
+    {
+        logger.info("Win32 shadow memory min address: {}",
+                    Hex32(attempt.shadow_memory_min_address));
+        logger.info("Win32 shadow memory max address: {}",
+                    Hex32(attempt.shadow_memory_max_address));
     }
     logger.info("Win32 minimal execution thread exit code: {}",
                 attempt.thread_exit_code);
@@ -933,7 +1056,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    constexpr std::uint32_t kRuntimeArenaExpansionSlack = 0x00010000;
+    constexpr std::uint32_t kRuntimeArenaExpansionSlack = 0x00100000;
     repiu::runtime::RuntimeMemoryArenaPlan arena_size_plan;
     if (!repiu::runtime::BuildRuntimeMemoryArenaPlan(
             profile->runtime_reservation_hint.base_address,
@@ -1090,6 +1213,17 @@ int main(int argc, char** argv)
                 &classification);
             PrintPrivilegedInstructionClassification(*logger, classification);
         }
+    }
+    if (attempt.last_single_step_snapshot.captured)
+    {
+        repiu::runtime::RelocatedImageByteWindow window;
+        repiu::runtime::BuildRelocatedImageByteWindow(
+            relocated_image,
+            attempt.last_single_step_snapshot.eip,
+            16,
+            16,
+            &window);
+        PrintByteWindow(*logger, window);
     }
     if (!attempt.timed_out)
     {

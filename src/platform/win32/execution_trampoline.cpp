@@ -3,8 +3,11 @@
 #include <cstddef>
 #include <cstring>
 #include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <sstream>
 #include <unordered_map>
+#include <vector>
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -24,6 +27,7 @@ struct StackSwitchCallState
     std::uint32_t host_esp = 0;
     std::uint32_t guest_return_esp = 0;
     std::uint32_t result_code = 0;
+    std::uint32_t enable_single_step_trace = 0;
 };
 
 struct ThreadContext
@@ -40,6 +44,7 @@ struct ThreadContext
     bool enable_traced_dos_hle = false;
     bool enable_segment_load_hle = false;
     bool enable_dos_hle = false;
+    bool enable_single_step_trace = false;
     bool returned = false;
     bool process_exit = false;
     bool exception_caught = false;
@@ -54,9 +59,11 @@ struct ThreadContext
     std::uint32_t handled_hle_trap_count = 0;
     std::uint32_t last_hle_trap_address = 0;
     std::uint32_t last_hle_trap_opcode = 0;
+    Win32PortIoObservation port_io;
     std::uint32_t handled_dos_interrupt_count = 0;
     std::uint32_t last_dos_interrupt_vector = 0;
     std::uint32_t last_dos_interrupt_ah = 0;
+    std::uint32_t last_dos_interrupt_ax = 0;
     repiu::hle::DosVirtualFileSystemState dos_file_system;
     std::uint32_t handled_dos_chdir_count = 0;
     std::string last_dos_chdir_guest_path;
@@ -103,13 +110,54 @@ struct ThreadContext
     std::uint32_t last_segment_memory_load_offset = 0;
     std::uint32_t last_segment_memory_load_width = 0;
     std::uint32_t last_segment_memory_load_value = 0;
+    std::uint32_t handled_low_memory_access_count = 0;
+    std::uint32_t last_low_memory_access_address = 0;
+    std::uint32_t last_low_memory_access_opcode = 0;
+    std::uint32_t last_low_memory_access_esi = 0;
+    std::uint32_t last_low_memory_access_edi = 0;
+    std::uint32_t last_low_memory_access_destination = 0;
+    std::uint32_t last_low_memory_access_value = 0;
+    std::vector<std::uint8_t> dos_environment_block;
+    bool last_dos_environment_access_valid = false;
+    std::uint32_t last_dos_environment_access_offset = 0;
+    std::uint32_t last_dos_environment_entry_offset = 0;
+    std::uint32_t last_dos_environment_value_length = 0;
+    std::string last_dos_environment_entry_name;
     std::uint32_t handled_memory_store_count = 0;
     std::uint32_t last_memory_store_address = 0;
+    std::uint32_t last_memory_store_opcode = 0;
     std::uint32_t last_memory_store_destination = 0;
     std::uint32_t last_memory_store_value = 0;
+    std::uint32_t last_memory_store_width = 0;
+    std::string last_memory_store_source_kind;
     bool last_memory_store_applied = false;
+    std::uint32_t shadow_memory_write_count = 0;
+    std::uint32_t shadow_memory_read_hit_count = 0;
+    bool shadow_memory_range_valid = false;
+    std::uint32_t shadow_memory_min_address = 0;
+    std::uint32_t shadow_memory_max_address = 0;
     std::uint32_t last_traced_fpu_m32_value = 0;
     bool has_last_traced_fpu_m32_value = false;
+    std::atomic<std::uint32_t> single_step_trace_count{0};
+    std::atomic<std::uint32_t> single_step_eip{0};
+    std::atomic<std::uint32_t> single_step_eax{0};
+    std::atomic<std::uint32_t> single_step_ebx{0};
+    std::atomic<std::uint32_t> single_step_ecx{0};
+    std::atomic<std::uint32_t> single_step_edx{0};
+    std::atomic<std::uint32_t> single_step_esi{0};
+    std::atomic<std::uint32_t> single_step_edi{0};
+    std::atomic<std::uint32_t> single_step_esp{0};
+    std::atomic<std::uint32_t> single_step_ebp{0};
+    std::atomic<std::uint32_t> single_step_eflags{0};
+    std::atomic<std::uint32_t> single_step_cs{0};
+    std::atomic<std::uint32_t> single_step_ds{0};
+    std::atomic<std::uint32_t> single_step_es{0};
+    std::atomic<std::uint32_t> single_step_ss{0};
+    std::atomic<std::uint32_t> single_step_fs{0};
+    std::atomic<std::uint32_t> single_step_gs{0};
+    std::atomic<std::uint32_t> diagnostic_progress_count{0};
+    std::uint32_t diagnostic_poll_iteration_count = 0;
+    std::uint32_t diagnostic_quiet_iteration_count = 0;
     std::unordered_map<std::uint32_t, std::uint8_t> shadow_memory;
     std::uint16_t guest_es = 0;
     std::uint16_t guest_ss = 0;
@@ -155,6 +203,7 @@ using GetLastErrorFn = DWORD(WINAPI*)();
 using GetThreadContextFn = BOOL(WINAPI*)(HANDLE, LPCONTEXT);
 using ResumeThreadFn = DWORD(WINAPI*)(HANDLE);
 using SuspendThreadFn = DWORD(WINAPI*)(HANDLE);
+using TerminateThreadFn = BOOL(WINAPI*)(HANDLE, DWORD);
 
 struct Win32ThreadApi
 {
@@ -165,6 +214,7 @@ struct Win32ThreadApi
     GetThreadContextFn get_thread_context = nullptr;
     ResumeThreadFn resume_thread = nullptr;
     SuspendThreadFn suspend_thread = nullptr;
+    TerminateThreadFn terminate_thread = nullptr;
 };
 
 template <typename FunctionType>
@@ -204,6 +254,10 @@ const Win32ThreadApi& GetWin32ThreadApi()
             ResolveKernel32Function<SuspendThreadFn>(
                 kernel32,
                 "SuspendThread");
+        resolved.terminate_thread =
+            ResolveKernel32Function<TerminateThreadFn>(
+                kernel32,
+                "TerminateThread");
         return resolved;
     }();
 
@@ -212,6 +266,7 @@ const Win32ThreadApi& GetWin32ThreadApi()
 
 DWORD PollThreadUntilExit(HANDLE thread,
                           DWORD timeout_milliseconds,
+                          ThreadContext* progress_context,
                           DWORD* exit_code)
 {
     const Win32ThreadApi& api = GetWin32ThreadApi();
@@ -220,10 +275,28 @@ DWORD PollThreadUntilExit(HANDLE thread,
         return WAIT_FAILED;
     }
 
-    const DWORD max_iterations =
-        timeout_milliseconds == INFINITE ? 100000U : 100000U;
-    for (DWORD iteration = 0; iteration < max_iterations; ++iteration)
+    const DWORD quiet_iteration_limit = 100000U;
+    const DWORD start_tick = GetTickCount();
+    std::uint32_t last_progress_count = 0;
+    std::uint32_t last_single_step_count = 0;
+    if (progress_context != nullptr)
     {
+        last_progress_count =
+            progress_context->diagnostic_progress_count.load(
+                std::memory_order_relaxed);
+        last_single_step_count =
+            progress_context->single_step_trace_count.load(
+                std::memory_order_relaxed);
+    }
+
+    DWORD quiet_iterations = 0;
+    for (DWORD iteration = 0;; ++iteration)
+    {
+        if (progress_context != nullptr)
+        {
+            progress_context->diagnostic_poll_iteration_count =
+                iteration + 1;
+        }
         DWORD current_exit_code = 0;
         if (!api.get_exit_code_thread(thread, &current_exit_code))
         {
@@ -238,9 +311,48 @@ DWORD PollThreadUntilExit(HANDLE thread,
             }
             return WAIT_OBJECT_0;
         }
-    }
 
-    return WAIT_TIMEOUT;
+        bool progressed = false;
+        if (progress_context != nullptr)
+        {
+            const std::uint32_t progress_count =
+                progress_context->diagnostic_progress_count.load(
+                    std::memory_order_relaxed);
+            const std::uint32_t single_step_count =
+                progress_context->single_step_trace_count.load(
+                    std::memory_order_relaxed);
+            progressed =
+                progress_count != last_progress_count ||
+                single_step_count != last_single_step_count;
+            last_progress_count = progress_count;
+            last_single_step_count = single_step_count;
+        }
+
+        if (progressed)
+        {
+            quiet_iterations = 0;
+        }
+        else
+        {
+            ++quiet_iterations;
+        }
+        if (progress_context != nullptr)
+        {
+            progress_context->diagnostic_quiet_iteration_count =
+                quiet_iterations;
+        }
+
+        if (quiet_iterations >= quiet_iteration_limit)
+        {
+            return WAIT_TIMEOUT;
+        }
+
+        if (timeout_milliseconds != INFINITE &&
+            GetTickCount() - start_tick >= timeout_milliseconds)
+        {
+            return WAIT_TIMEOUT;
+        }
+    }
 }
 
 void CopySnapshotFromContextRecord(const CONTEXT& source,
@@ -310,6 +422,244 @@ void CaptureSuspendedThreadSnapshot(HANDLE thread,
 #endif
 }
 
+std::vector<std::uint8_t> BuildDosEnvironmentBlock()
+{
+    std::vector<std::uint8_t> block;
+
+#if defined(_WIN32)
+    LPCH environment = GetEnvironmentStringsA();
+    if (environment != nullptr)
+    {
+        const char* cursor = environment;
+        while (*cursor != '\0')
+        {
+            const char* entry_begin = cursor;
+            while (*cursor != '\0')
+            {
+                ++cursor;
+            }
+
+            bool before_equals = true;
+            for (const char* current = entry_begin; current != cursor;
+                 ++current)
+            {
+                unsigned char byte = static_cast<unsigned char>(*current);
+                if (before_equals && byte == '=')
+                {
+                    before_equals = false;
+                }
+                else if (before_equals)
+                {
+                    byte = static_cast<unsigned char>(
+                        std::toupper(static_cast<unsigned char>(byte)));
+                }
+                block.push_back(static_cast<std::uint8_t>(byte));
+            }
+            block.push_back(0);
+            ++cursor;
+        }
+        FreeEnvironmentStringsA(environment);
+    }
+#endif
+
+    if (block.empty() || block.back() != 0)
+    {
+        block.push_back(0);
+    }
+    block.push_back(0);
+    return block;
+}
+
+bool BuildSingleStepSnapshot(const ThreadContext& context,
+                             X86ExecutionSnapshot* snapshot)
+{
+    if (snapshot == nullptr)
+    {
+        return false;
+    }
+
+    const std::uint32_t count =
+        context.single_step_trace_count.load(std::memory_order_relaxed);
+    if (count == 0)
+    {
+        *snapshot = X86ExecutionSnapshot{};
+        return false;
+    }
+
+    snapshot->captured = true;
+    snapshot->eip =
+        context.single_step_eip.load(std::memory_order_relaxed);
+    snapshot->eax =
+        context.single_step_eax.load(std::memory_order_relaxed);
+    snapshot->ebx =
+        context.single_step_ebx.load(std::memory_order_relaxed);
+    snapshot->ecx =
+        context.single_step_ecx.load(std::memory_order_relaxed);
+    snapshot->edx =
+        context.single_step_edx.load(std::memory_order_relaxed);
+    snapshot->esi =
+        context.single_step_esi.load(std::memory_order_relaxed);
+    snapshot->edi =
+        context.single_step_edi.load(std::memory_order_relaxed);
+    snapshot->esp =
+        context.single_step_esp.load(std::memory_order_relaxed);
+    snapshot->ebp =
+        context.single_step_ebp.load(std::memory_order_relaxed);
+    snapshot->eflags =
+        context.single_step_eflags.load(std::memory_order_relaxed);
+    snapshot->cs = static_cast<std::uint16_t>(
+        context.single_step_cs.load(std::memory_order_relaxed));
+    snapshot->ds = static_cast<std::uint16_t>(
+        context.single_step_ds.load(std::memory_order_relaxed));
+    snapshot->es = static_cast<std::uint16_t>(
+        context.single_step_es.load(std::memory_order_relaxed));
+    snapshot->ss = static_cast<std::uint16_t>(
+        context.single_step_ss.load(std::memory_order_relaxed));
+    snapshot->fs = static_cast<std::uint16_t>(
+        context.single_step_fs.load(std::memory_order_relaxed));
+    snapshot->gs = static_cast<std::uint16_t>(
+        context.single_step_gs.load(std::memory_order_relaxed));
+    return true;
+}
+
+void CopyThreadObservationToAttempt(const ThreadContext& context,
+                                    Win32MinimalExecutionAttempt* attempt)
+{
+    if (attempt == nullptr)
+    {
+        return;
+    }
+
+    attempt->single_step_trace_count =
+        context.single_step_trace_count.load(std::memory_order_relaxed);
+    attempt->diagnostic_poll_iteration_count =
+        context.diagnostic_poll_iteration_count;
+    attempt->diagnostic_progress_count =
+        context.diagnostic_progress_count.load(std::memory_order_relaxed);
+    attempt->diagnostic_quiet_iteration_count =
+        context.diagnostic_quiet_iteration_count;
+    BuildSingleStepSnapshot(context, &attempt->last_single_step_snapshot);
+    attempt->dos_environment_block_size =
+        static_cast<std::uint32_t>(context.dos_environment_block.size());
+    attempt->last_dos_environment_access_valid =
+        context.last_dos_environment_access_valid;
+    attempt->last_dos_environment_access_offset =
+        context.last_dos_environment_access_offset;
+    attempt->last_dos_environment_entry_offset =
+        context.last_dos_environment_entry_offset;
+    attempt->last_dos_environment_value_length =
+        context.last_dos_environment_value_length;
+    attempt->last_dos_environment_entry_name =
+        context.last_dos_environment_entry_name;
+    attempt->handled_hle_trap_count = context.handled_hle_trap_count;
+    attempt->last_hle_trap_address = context.last_hle_trap_address;
+    attempt->last_hle_trap_opcode = context.last_hle_trap_opcode;
+    attempt->port_io = context.port_io;
+    attempt->handled_dos_interrupt_count =
+        context.handled_dos_interrupt_count;
+    attempt->last_dos_interrupt_vector = context.last_dos_interrupt_vector;
+    attempt->last_dos_interrupt_ah = context.last_dos_interrupt_ah;
+    attempt->last_dos_interrupt_ax = context.last_dos_interrupt_ax;
+    attempt->handled_dos_chdir_count = context.handled_dos_chdir_count;
+    attempt->last_dos_chdir_guest_path =
+        context.last_dos_chdir_guest_path;
+    attempt->last_dos_chdir_host_path = context.last_dos_chdir_host_path;
+    attempt->last_dos_chdir_virtual_path =
+        context.last_dos_chdir_virtual_path;
+    attempt->last_dos_chdir_success = context.last_dos_chdir_success;
+    attempt->last_dos_chdir_error = context.last_dos_chdir_error;
+    attempt->handled_dos_open_count = context.handled_dos_open_count;
+    attempt->last_dos_open_guest_path = context.last_dos_open_guest_path;
+    attempt->last_dos_open_host_path = context.last_dos_open_host_path;
+    attempt->last_dos_open_virtual_path =
+        context.last_dos_open_virtual_path;
+    attempt->last_dos_open_success = context.last_dos_open_success;
+    attempt->last_dos_open_error = context.last_dos_open_error;
+    attempt->last_dos_open_handle = context.last_dos_open_handle;
+    attempt->last_dos_open_access_mode = context.last_dos_open_access_mode;
+    attempt->handled_dos_ioctl_count = context.handled_dos_ioctl_count;
+    attempt->last_dos_ioctl_subfunction =
+        context.last_dos_ioctl_subfunction;
+    attempt->last_dos_ioctl_handle = context.last_dos_ioctl_handle;
+    attempt->last_dos_ioctl_success = context.last_dos_ioctl_success;
+    attempt->last_dos_ioctl_error = context.last_dos_ioctl_error;
+    attempt->last_dos_ioctl_device_info =
+        context.last_dos_ioctl_device_info;
+    attempt->handled_dos_resize_count = context.handled_dos_resize_count;
+    attempt->last_dos_resize_selector = context.last_dos_resize_selector;
+    attempt->last_dos_resize_paragraphs =
+        context.last_dos_resize_paragraphs;
+    attempt->last_dos_resize_success = context.last_dos_resize_success;
+    attempt->last_dos_resize_error = context.last_dos_resize_error;
+    attempt->handled_segment_load_count =
+        context.handled_segment_load_count;
+    attempt->last_segment_load_address = context.last_segment_load_address;
+    attempt->last_segment_load_opcode = context.last_segment_load_opcode;
+    attempt->last_segment_load_register =
+        context.last_segment_load_register;
+    attempt->last_segment_load_selector =
+        context.last_segment_load_selector;
+    attempt->last_segment_load_source = context.last_segment_load_source;
+    attempt->handled_segment_store_count =
+        context.handled_segment_store_count;
+    attempt->last_segment_store_address = context.last_segment_store_address;
+    attempt->last_segment_store_opcode = context.last_segment_store_opcode;
+    attempt->last_segment_store_register =
+        context.last_segment_store_register;
+    attempt->last_segment_store_selector =
+        context.last_segment_store_selector;
+    attempt->last_segment_store_destination =
+        context.last_segment_store_destination;
+    attempt->handled_segment_memory_load_count =
+        context.handled_segment_memory_load_count;
+    attempt->last_segment_memory_load_address =
+        context.last_segment_memory_load_address;
+    attempt->last_segment_memory_load_opcode =
+        context.last_segment_memory_load_opcode;
+    attempt->last_segment_memory_load_register =
+        context.last_segment_memory_load_register;
+    attempt->last_segment_memory_load_selector =
+        context.last_segment_memory_load_selector;
+    attempt->last_segment_memory_load_offset =
+        context.last_segment_memory_load_offset;
+    attempt->last_segment_memory_load_width =
+        context.last_segment_memory_load_width;
+    attempt->last_segment_memory_load_value =
+        context.last_segment_memory_load_value;
+    attempt->handled_low_memory_access_count =
+        context.handled_low_memory_access_count;
+    attempt->last_low_memory_access_address =
+        context.last_low_memory_access_address;
+    attempt->last_low_memory_access_opcode =
+        context.last_low_memory_access_opcode;
+    attempt->last_low_memory_access_esi =
+        context.last_low_memory_access_esi;
+    attempt->last_low_memory_access_edi =
+        context.last_low_memory_access_edi;
+    attempt->last_low_memory_access_destination =
+        context.last_low_memory_access_destination;
+    attempt->last_low_memory_access_value =
+        context.last_low_memory_access_value;
+    attempt->handled_memory_store_count = context.handled_memory_store_count;
+    attempt->last_memory_store_address = context.last_memory_store_address;
+    attempt->last_memory_store_opcode = context.last_memory_store_opcode;
+    attempt->last_memory_store_destination =
+        context.last_memory_store_destination;
+    attempt->last_memory_store_value = context.last_memory_store_value;
+    attempt->last_memory_store_width = context.last_memory_store_width;
+    attempt->last_memory_store_source_kind =
+        context.last_memory_store_source_kind;
+    attempt->last_memory_store_applied = context.last_memory_store_applied;
+    attempt->shadow_memory_write_count = context.shadow_memory_write_count;
+    attempt->shadow_memory_read_hit_count =
+        context.shadow_memory_read_hit_count;
+    attempt->shadow_memory_byte_count =
+        static_cast<std::uint32_t>(context.shadow_memory.size());
+    attempt->shadow_memory_range_valid = context.shadow_memory_range_valid;
+    attempt->shadow_memory_min_address = context.shadow_memory_min_address;
+    attempt->shadow_memory_max_address = context.shadow_memory_max_address;
+}
+
 int CaptureException(EXCEPTION_POINTERS* exception_info,
                      ThreadContext* context)
 {
@@ -340,6 +690,7 @@ static_assert(offsetof(StackSwitchCallState, initial_esp) == 4);
 static_assert(offsetof(StackSwitchCallState, host_esp) == 8);
 static_assert(offsetof(StackSwitchCallState, guest_return_esp) == 12);
 static_assert(offsetof(StackSwitchCallState, result_code) == 16);
+static_assert(offsetof(StackSwitchCallState, enable_single_step_trace) == 20);
 
 extern "C" void RecoverHostStackException();
 
@@ -360,6 +711,12 @@ CallGuestEntryWithStack(StackSwitchCallState* state)
         mov [ecx + 8], esp
 
         mov esp, edx
+        cmp dword ptr [ecx + 20], 0
+        je no_single_step_trace
+        pushfd
+        or dword ptr [esp], 100h
+        popfd
+no_single_step_trace:
         push ecx
         call eax
         pop ecx
@@ -426,6 +783,141 @@ bool IsGuestRangeWritable(ThreadContext* context,
                           std::uint32_t byte_count)
 {
     return IsGuestRangeReadable(context, destination, byte_count);
+}
+
+bool HandlePrivilegedTrapInstruction(CONTEXT* win32_context,
+                                     ThreadContext* context);
+bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context);
+bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
+                                ThreadContext* context);
+bool HandleTracedDosInterrupt2F(CONTEXT* win32_context,
+                                ThreadContext* context);
+bool HandleTracedDpmiInterrupt31(CONTEXT* win32_context,
+                                 ThreadContext* context);
+bool HandleTracedMouseInterrupt33(CONTEXT* win32_context,
+                                  ThreadContext* context);
+bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
+                                  ThreadContext* context);
+bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
+                                   ThreadContext* context);
+bool HandleSegmentOverrideByteLoadInstruction(CONTEXT* win32_context,
+                                              ThreadContext* context);
+bool HandleSegmentMemoryCompareInstruction(CONTEXT* win32_context,
+                                           ThreadContext* context);
+bool HandleSegmentMemoryLoadInstruction(CONTEXT* win32_context,
+                                        ThreadContext* context);
+bool HandleTracedMemoryLoadInstruction(CONTEXT* win32_context,
+                                       ThreadContext* context);
+bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
+                                        ThreadContext* context);
+bool HandleTracedMemoryTestInstruction(CONTEXT* win32_context,
+                                       ThreadContext* context);
+bool HandleTracedFpuMemoryInstruction(CONTEXT* win32_context,
+                                      ThreadContext* context);
+bool HandleDosMemoryAccess(CONTEXT* win32_context,
+                           ThreadContext* context);
+
+bool IsGuestInstructionPointer(ThreadContext* context, std::uint32_t eip)
+{
+    if (context == nullptr || context->runtime_size == 0)
+    {
+        return false;
+    }
+
+    const std::uint32_t runtime_end =
+        context->runtime_base + context->runtime_size;
+    return eip >= context->runtime_base &&
+           runtime_end >= context->runtime_base &&
+           eip < runtime_end;
+}
+
+bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
+{
+    if (win32_context == nullptr || context == nullptr ||
+        !context->enable_single_step_trace)
+    {
+        return false;
+    }
+
+    const std::uint32_t eip =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    if (IsGuestInstructionPointer(context, eip))
+    {
+        context->single_step_eip.store(eip, std::memory_order_relaxed);
+        context->single_step_eax.store(win32_context->Eax,
+                                       std::memory_order_relaxed);
+        context->single_step_ebx.store(win32_context->Ebx,
+                                       std::memory_order_relaxed);
+        context->single_step_ecx.store(win32_context->Ecx,
+                                       std::memory_order_relaxed);
+        context->single_step_edx.store(win32_context->Edx,
+                                       std::memory_order_relaxed);
+        context->single_step_esi.store(win32_context->Esi,
+                                       std::memory_order_relaxed);
+        context->single_step_edi.store(win32_context->Edi,
+                                       std::memory_order_relaxed);
+        context->single_step_esp.store(win32_context->Esp,
+                                       std::memory_order_relaxed);
+        context->single_step_ebp.store(win32_context->Ebp,
+                                       std::memory_order_relaxed);
+        context->single_step_eflags.store(win32_context->EFlags,
+                                          std::memory_order_relaxed);
+        context->single_step_cs.store(win32_context->SegCs,
+                                      std::memory_order_relaxed);
+        context->single_step_ds.store(win32_context->SegDs,
+                                      std::memory_order_relaxed);
+        context->single_step_es.store(win32_context->SegEs,
+                                      std::memory_order_relaxed);
+        context->single_step_ss.store(win32_context->SegSs,
+                                      std::memory_order_relaxed);
+        context->single_step_fs.store(win32_context->SegFs,
+                                      std::memory_order_relaxed);
+        context->single_step_gs.store(win32_context->SegGs,
+                                      std::memory_order_relaxed);
+        context->single_step_trace_count.fetch_add(
+            1,
+            std::memory_order_relaxed);
+    }
+
+    if (context->enable_privileged_trap_hle &&
+        HandlePrivilegedTrapInstruction(win32_context, context))
+    {
+        win32_context->EFlags |= 0x00000100U;
+        return true;
+    }
+    if (context->enable_privileged_trap_hle &&
+        HandlePortIoInstruction(win32_context, context))
+    {
+        win32_context->EFlags |= 0x00000100U;
+        return true;
+    }
+    if (context->enable_traced_dos_hle &&
+        (HandleTracedDosInterrupt21(win32_context, context) ||
+         HandleTracedDosInterrupt2F(win32_context, context) ||
+         HandleTracedDpmiInterrupt31(win32_context, context) ||
+         HandleTracedMouseInterrupt33(win32_context, context)))
+    {
+        win32_context->EFlags |= 0x00000100U;
+        return true;
+    }
+    if (context->enable_segment_load_hle &&
+        (HandleSegmentLoadInstruction(win32_context, context) ||
+         HandleSegmentStoreInstruction(win32_context, context) ||
+         HandleSegmentOverrideByteLoadInstruction(win32_context, context) ||
+         HandleSegmentMemoryCompareInstruction(win32_context, context) ||
+         HandleSegmentMemoryLoadInstruction(win32_context, context) ||
+         HandleTracedMemoryLoadInstruction(win32_context, context) ||
+         HandleTracedMemoryStoreInstruction(win32_context, context) ||
+         HandleTracedMemoryTestInstruction(win32_context, context) ||
+         HandleTracedFpuMemoryInstruction(win32_context, context) ||
+         HandleDosMemoryAccess(win32_context, context)))
+    {
+        win32_context->EFlags |= 0x00000100U;
+        return true;
+    }
+
+    win32_context->EFlags |= 0x00000100U;
+    return true;
 }
 
 bool WriteGuestUInt16(ThreadContext* context,
@@ -543,10 +1035,30 @@ void WriteShadowMemory(ThreadContext* context,
                        std::uint32_t value,
                        std::uint32_t byte_count)
 {
+    if (context == nullptr || byte_count == 0)
+    {
+        return;
+    }
+
+    ++context->shadow_memory_write_count;
     for (std::uint32_t index = 0; index < byte_count; ++index)
     {
-        context->shadow_memory[destination + index] =
+        const std::uint32_t address = destination + index;
+        context->shadow_memory[address] =
             static_cast<std::uint8_t>((value >> (index * 8)) & 0xFFU);
+        if (!context->shadow_memory_range_valid)
+        {
+            context->shadow_memory_range_valid = true;
+            context->shadow_memory_min_address = address;
+            context->shadow_memory_max_address = address;
+        }
+        else
+        {
+            context->shadow_memory_min_address =
+                std::min(context->shadow_memory_min_address, address);
+            context->shadow_memory_max_address =
+                std::max(context->shadow_memory_max_address, address);
+        }
     }
 }
 
@@ -571,6 +1083,7 @@ bool ReadShadowUInt32(ThreadContext* context,
     }
 
     *value = result;
+    ++context->shadow_memory_read_hit_count;
     return true;
 }
 
@@ -655,7 +1168,7 @@ void RecoverFromHleExit(CONTEXT* win32_context,
 
 void RecordHandledDosInterrupt(ThreadContext* context,
                                std::uint8_t vector,
-                               std::uint8_t ah);
+                               std::uint16_t ax);
 
 void RecordDosChangeDirectory(ThreadContext* context,
                               const std::string& guest_path,
@@ -875,6 +1388,27 @@ void RecordDosResize(ThreadContext* context,
     context->last_dos_resize_error = error;
 }
 
+void RecordLowMemoryAccess(CONTEXT* win32_context,
+                           ThreadContext* context,
+                           std::uint8_t opcode,
+                           std::uint32_t destination,
+                           std::uint32_t value)
+{
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return;
+    }
+
+    ++context->handled_low_memory_access_count;
+    context->last_low_memory_access_address =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    context->last_low_memory_access_opcode = opcode;
+    context->last_low_memory_access_esi = win32_context->Esi;
+    context->last_low_memory_access_edi = win32_context->Edi;
+    context->last_low_memory_access_destination = destination;
+    context->last_low_memory_access_value = value;
+}
+
 bool HandleDosResizeMemoryBlock(CONTEXT* win32_context,
                                 ThreadContext* context)
 {
@@ -928,6 +1462,8 @@ bool HandleDosResizeMemoryBlock(CONTEXT* win32_context,
 
 bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
 {
+    const std::uint16_t ax = static_cast<std::uint16_t>(
+        win32_context->Eax & 0xFFFFU);
     const std::uint8_t ah = static_cast<std::uint8_t>(
         (win32_context->Eax >> 8) & 0xFF);
 
@@ -957,21 +1493,21 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
             break;
         }
         case 0x30:
-            RecordHandledDosInterrupt(context, 0x21, ah);
+            RecordHandledDosInterrupt(context, 0x21, ax);
             win32_context->Eax =
                 (win32_context->Eax & 0xFFFF0000U) | 0x0007U;
             win32_context->Ebx = 0;
             win32_context->Ecx = 0;
             break;
         case 0x3B:
-            RecordHandledDosInterrupt(context, 0x21, ah);
+            RecordHandledDosInterrupt(context, 0x21, ax);
             if (!HandleDosChangeDirectory(win32_context, context))
             {
                 return false;
             }
             break;
         case 0x3D:
-            RecordHandledDosInterrupt(context, 0x21, ah);
+            RecordHandledDosInterrupt(context, 0x21, ax);
             if (!HandleDosOpenFile(win32_context, context))
             {
                 return false;
@@ -988,7 +1524,7 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
             break;
         }
         case 0x44:
-            RecordHandledDosInterrupt(context, 0x21, ah);
+            RecordHandledDosInterrupt(context, 0x21, ax);
             if (!HandleDosIoctl(win32_context, context))
             {
                 return false;
@@ -998,7 +1534,7 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
             RecoverFromHleExit(win32_context, context);
             return true;
         case 0x4A:
-            RecordHandledDosInterrupt(context, 0x21, ah);
+            RecordHandledDosInterrupt(context, 0x21, ax);
             if (!HandleDosResizeMemoryBlock(win32_context, context))
             {
                 return false;
@@ -1032,6 +1568,7 @@ bool HandleDosInterrupt2F(CONTEXT* win32_context, ThreadContext* context)
         win32_context->Eax & 0xFFFF);
     if (ax == 0x1686)
     {
+        RecordHandledDosInterrupt(context, 0x2F, ax);
         win32_context->Eax &= 0xFFFF0000U;
         win32_context->Eip += 2;
         return true;
@@ -1050,6 +1587,7 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
         win32_context->Eax & 0xFFFF);
     if (ax == 0x0400)
     {
+        RecordHandledDosInterrupt(context, 0x31, ax);
         win32_context->Eax &= 0xFFFF0000U;
         win32_context->EFlags &= ~1U;
         win32_context->Eip += 2;
@@ -1058,6 +1596,32 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
 
     std::ostringstream stream;
     stream << "unsupported DPMI INT 31h AX=0x"
+           << std::hex << static_cast<unsigned>(ax);
+    context->hle_message = stream.str();
+    return false;
+}
+
+bool HandleMouseInterrupt33(CONTEXT* win32_context, ThreadContext* context)
+{
+    const std::uint16_t ax = static_cast<std::uint16_t>(
+        win32_context->Eax & 0xFFFF);
+    if (ax == 0x0000)
+    {
+        RecordHandledDosInterrupt(context, 0x33, ax);
+        win32_context->Eax &= 0xFFFF0000U;
+        win32_context->Ebx &= 0xFFFF0000U;
+        win32_context->Eip += 2;
+        return true;
+    }
+    if (ax == 0x0002)
+    {
+        RecordHandledDosInterrupt(context, 0x33, ax);
+        win32_context->Eip += 2;
+        return true;
+    }
+
+    std::ostringstream stream;
+    stream << "unsupported mouse INT 33h AX=0x"
            << std::hex << static_cast<unsigned>(ax);
     context->hle_message = stream.str();
     return false;
@@ -1080,7 +1644,7 @@ void RecordHandledHleTrap(CONTEXT* win32_context,
 
 void RecordHandledDosInterrupt(ThreadContext* context,
                                std::uint8_t vector,
-                               std::uint8_t ah)
+                               std::uint16_t ax)
 {
     if (context == nullptr)
     {
@@ -1089,7 +1653,8 @@ void RecordHandledDosInterrupt(ThreadContext* context,
 
     ++context->handled_dos_interrupt_count;
     context->last_dos_interrupt_vector = vector;
-    context->last_dos_interrupt_ah = ah;
+    context->last_dos_interrupt_ah = static_cast<std::uint8_t>(ax >> 8);
+    context->last_dos_interrupt_ax = ax;
 }
 
 std::uint16_t ReadRegister16(const CONTEXT& win32_context,
@@ -1226,8 +1791,11 @@ void RecordGuestSegmentMemoryLoad(CONTEXT* win32_context,
 
 void RecordGuestMemoryStore(CONTEXT* win32_context,
                             ThreadContext* context,
+                            std::uint32_t opcode,
                             std::uint32_t destination,
                             std::uint32_t value,
+                            std::uint32_t byte_width,
+                            const char* source_kind,
                             bool applied)
 {
     if (win32_context == nullptr || context == nullptr)
@@ -1238,8 +1806,12 @@ void RecordGuestMemoryStore(CONTEXT* win32_context,
     ++context->handled_memory_store_count;
     context->last_memory_store_address =
         static_cast<std::uint32_t>(win32_context->Eip);
+    context->last_memory_store_opcode = opcode;
     context->last_memory_store_destination = destination;
     context->last_memory_store_value = value;
+    context->last_memory_store_width = byte_width;
+    context->last_memory_store_source_kind =
+        source_kind != nullptr ? source_kind : "unknown";
     context->last_memory_store_applied = applied;
 }
 
@@ -1580,6 +2152,66 @@ bool HandleSegmentOverrideByteLoadInstruction(CONTEXT* win32_context,
     return true;
 }
 
+void RecordDosEnvironmentAccess(ThreadContext* context, std::uint32_t offset)
+{
+    if (context == nullptr ||
+        offset >= context->dos_environment_block.size())
+    {
+        return;
+    }
+
+    const auto& block = context->dos_environment_block;
+    std::size_t cursor = 0;
+    while (cursor < block.size() && block[cursor] != 0)
+    {
+        const std::size_t entry_begin = cursor;
+        while (cursor < block.size() && block[cursor] != 0)
+        {
+            ++cursor;
+        }
+        const std::size_t entry_end = cursor;
+
+        if (offset >= entry_begin && offset <= entry_end)
+        {
+            std::size_t equals = entry_begin;
+            while (equals < entry_end && block[equals] != '=')
+            {
+                ++equals;
+            }
+
+            const std::size_t name_end =
+                equals < entry_end ? equals : entry_end;
+            const std::size_t value_begin =
+                equals < entry_end ? equals + 1 : entry_end;
+            context->last_dos_environment_access_valid = true;
+            context->last_dos_environment_access_offset = offset;
+            context->last_dos_environment_entry_offset =
+                static_cast<std::uint32_t>(entry_begin);
+            context->last_dos_environment_value_length =
+                static_cast<std::uint32_t>(entry_end - value_begin);
+            if (name_end > entry_begin)
+            {
+                context->last_dos_environment_entry_name.assign(
+                    reinterpret_cast<const char*>(&block[entry_begin]),
+                    name_end - entry_begin);
+            }
+            else
+            {
+                context->last_dos_environment_entry_name = "<unnamed>";
+            }
+            context->diagnostic_progress_count.fetch_add(
+                1,
+                std::memory_order_relaxed);
+            return;
+        }
+
+        if (cursor < block.size())
+        {
+            ++cursor;
+        }
+    }
+}
+
 bool ReadSegmentDword(ThreadContext* context,
                       std::uint8_t segment_register,
                       std::uint16_t selector,
@@ -1592,9 +2224,22 @@ bool ReadSegmentDword(ThreadContext* context,
     }
 
     if (segment_register == 3 && selector == context->guest_ds &&
-        selector != 0 && offset == 0)
+        selector != 0 && offset < 0x10000)
     {
-        *value = 0;
+        RecordDosEnvironmentAccess(context, offset);
+        std::uint32_t result = 0;
+        for (std::uint32_t index = 0; index < 4; ++index)
+        {
+            std::uint8_t byte = 0;
+            const std::uint32_t byte_offset = offset + index;
+            if (byte_offset >= offset &&
+                byte_offset < context->dos_environment_block.size())
+            {
+                byte = context->dos_environment_block[byte_offset];
+            }
+            result |= static_cast<std::uint32_t>(byte) << (index * 8);
+        }
+        *value = result;
         return true;
     }
 
@@ -1615,7 +2260,15 @@ bool ReadSegmentByte(ThreadContext* context,
     if (segment_register == 3 && selector == context->guest_ds &&
         selector != 0 && offset < 0x10000)
     {
-        *value = 0;
+        RecordDosEnvironmentAccess(context, offset);
+        if (offset < context->dos_environment_block.size())
+        {
+            *value = context->dos_environment_block[offset];
+        }
+        else
+        {
+            *value = 0;
+        }
         return true;
     }
 
@@ -1651,6 +2304,11 @@ bool HandleSegmentMemoryLoadInstruction(CONTEXT* win32_context,
                                      offset,
                                      4,
                                      value);
+        RecordLowMemoryAccess(win32_context,
+                              context,
+                              instruction[0],
+                              offset,
+                              value);
         win32_context->Eip += 2;
         return true;
     }
@@ -1684,6 +2342,11 @@ bool HandleSegmentMemoryLoadInstruction(CONTEXT* win32_context,
                                      offset,
                                      1,
                                      value);
+        RecordLowMemoryAccess(win32_context,
+                              context,
+                              instruction[0],
+                              offset,
+                              value);
         ++win32_context->Eip;
         return true;
     }
@@ -1699,8 +2362,9 @@ bool HandleSegmentMemoryLoadInstruction(CONTEXT* win32_context,
             return false;
         }
 
+        const std::uint32_t destination_address = win32_context->Edi;
         void* destination = reinterpret_cast<void*>(
-            static_cast<std::uintptr_t>(win32_context->Edi));
+            static_cast<std::uintptr_t>(destination_address));
         if (!WriteGuestUInt8(context, destination, value))
         {
             return false;
@@ -1724,6 +2388,11 @@ bool HandleSegmentMemoryLoadInstruction(CONTEXT* win32_context,
                                      offset,
                                      1,
                                      value);
+        RecordLowMemoryAccess(win32_context,
+                              context,
+                              instruction[0],
+                              destination_address,
+                              value);
         ++win32_context->Eip;
         return true;
     }
@@ -1771,6 +2440,11 @@ bool HandleSegmentMemoryCompareInstruction(CONTEXT* win32_context,
                                  offset,
                                  1,
                                  value);
+    RecordLowMemoryAccess(win32_context,
+                          context,
+                          instruction[0],
+                          offset,
+                          value);
     win32_context->Eip += 3;
     return true;
 }
@@ -1784,9 +2458,12 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
     std::uint32_t value = 0;
     std::uint32_t instruction_size = 0;
     std::uint32_t value_width = 4;
+    std::uint32_t store_opcode = instruction[0];
+    const char* source_kind = "unknown";
 
     if (instruction[0] == 0xC7)
     {
+        source_kind = "mov-imm32";
         const std::uint8_t operation = (instruction[1] >> 3) & 0x07U;
         if (operation != 0 ||
             !DecodeModRmMemoryDestinationNoSib(win32_context,
@@ -1809,6 +2486,8 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
     }
     else if (instruction[0] == 0x66 && instruction[1] == 0xC7)
     {
+        store_opcode = 0x66C7;
+        source_kind = "mov-imm16";
         const std::uint8_t operation = (instruction[2] >> 3) & 0x07U;
         std::uint32_t unprefixed_instruction_size = 0;
         if (operation != 0 ||
@@ -1831,6 +2510,7 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
     }
     else if (instruction[0] == 0x89)
     {
+        source_kind = "mov-reg32";
         if (!DecodeModRmMemoryDestinationNoSib(win32_context,
                                                instruction,
                                                &destination,
@@ -1862,8 +2542,11 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
         }
         RecordGuestMemoryStore(win32_context,
                                context,
+                               store_opcode,
                                destination,
                                value,
+                               value_width,
+                               source_kind,
                                true);
         win32_context->Eip += instruction_size;
         return true;
@@ -1877,8 +2560,11 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
 
     RecordGuestMemoryStore(win32_context,
                            context,
+                           store_opcode,
                            destination,
                            value,
+                           value_width,
+                           source_kind,
                            false);
     WriteShadowMemory(context, destination, value, value_width);
     win32_context->Eip += instruction_size;
@@ -2032,7 +2718,14 @@ bool HandleTracedFpuMemoryInstruction(CONTEXT* win32_context,
         {
             return false;
         }
-        RecordGuestMemoryStore(win32_context, context, address, value, true);
+        RecordGuestMemoryStore(win32_context,
+                               context,
+                               0xD9,
+                               address,
+                               value,
+                               4,
+                               "fpu-m32",
+                               true);
         win32_context->Eip += instruction_size;
         return true;
     }
@@ -2043,7 +2736,14 @@ bool HandleTracedFpuMemoryInstruction(CONTEXT* win32_context,
         return false;
     }
 
-    RecordGuestMemoryStore(win32_context, context, address, value, false);
+    RecordGuestMemoryStore(win32_context,
+                           context,
+                           0xD9,
+                           address,
+                           value,
+                           4,
+                           "fpu-m32",
+                           false);
     WriteShadowMemory(context, address, value, 4);
     win32_context->Eip += instruction_size;
     return true;
@@ -2059,12 +2759,14 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
         return false;
     }
 
+    const std::uint16_t ax = static_cast<std::uint16_t>(
+        win32_context->Eax & 0xFFFFU);
     const std::uint8_t ah = static_cast<std::uint8_t>(
         (win32_context->Eax >> 8) & 0xFF);
     switch (ah)
     {
         case 0x30:
-            RecordHandledDosInterrupt(context, 0x21, ah);
+            RecordHandledDosInterrupt(context, 0x21, ax);
             win32_context->Eax =
                 (win32_context->Eax & 0xFFFF0000U) | 0x0007U;
             win32_context->Ebx = 0;
@@ -2073,7 +2775,7 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
             win32_context->Eip += 2;
             return true;
         case 0x3B:
-            RecordHandledDosInterrupt(context, 0x21, ah);
+            RecordHandledDosInterrupt(context, 0x21, ax);
             if (!HandleDosChangeDirectory(win32_context, context))
             {
                 return false;
@@ -2081,7 +2783,7 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
             win32_context->Eip += 2;
             return true;
         case 0x3D:
-            RecordHandledDosInterrupt(context, 0x21, ah);
+            RecordHandledDosInterrupt(context, 0x21, ax);
             if (!HandleDosOpenFile(win32_context, context))
             {
                 return false;
@@ -2090,7 +2792,7 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
             return true;
         case 0x40:
         {
-            RecordHandledDosInterrupt(context, 0x21, ah);
+            RecordHandledDosInterrupt(context, 0x21, ax);
             const void* text = reinterpret_cast<const void*>(
                 static_cast<std::uintptr_t>(win32_context->Edx));
             const std::uint32_t byte_count = win32_context->Ecx;
@@ -2101,7 +2803,7 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
             return true;
         }
         case 0x44:
-            RecordHandledDosInterrupt(context, 0x21, ah);
+            RecordHandledDosInterrupt(context, 0x21, ax);
             if (!HandleDosIoctl(win32_context, context))
             {
                 return false;
@@ -2109,23 +2811,23 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
             win32_context->Eip += 2;
             return true;
         case 0x4C:
-            RecordHandledDosInterrupt(context, 0x21, ah);
+            RecordHandledDosInterrupt(context, 0x21, ax);
             RecoverFromHleExit(win32_context, context);
             return true;
         case 0xFF:
-            RecordHandledDosInterrupt(context, 0x21, ah);
+            RecordHandledDosInterrupt(context, 0x21, ax);
             win32_context->Eax &= 0xFFFFFF00U;
             win32_context->EFlags &= ~1U;
             win32_context->Eip += 2;
             return true;
         case 0xED:
-            RecordHandledDosInterrupt(context, 0x21, ah);
+            RecordHandledDosInterrupt(context, 0x21, ax);
             win32_context->Eax &= 0xFFFFFF00U;
             win32_context->EFlags &= ~1U;
             win32_context->Eip += 2;
             return true;
         case 0x4A:
-            RecordHandledDosInterrupt(context, 0x21, ah);
+            RecordHandledDosInterrupt(context, 0x21, ax);
             if (!HandleDosResizeMemoryBlock(win32_context, context))
             {
                 return false;
@@ -2135,6 +2837,45 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
         default:
             return false;
     }
+}
+
+bool HandleTracedDosInterrupt2F(CONTEXT* win32_context,
+                                ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0xCD || instruction[1] != 0x2F)
+    {
+        return false;
+    }
+
+    return HandleDosInterrupt2F(win32_context, context);
+}
+
+bool HandleTracedDpmiInterrupt31(CONTEXT* win32_context,
+                                 ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0xCD || instruction[1] != 0x31)
+    {
+        return false;
+    }
+
+    return HandleDpmiInterrupt31(win32_context, context);
+}
+
+bool HandleTracedMouseInterrupt33(CONTEXT* win32_context,
+                                  ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0xCD || instruction[1] != 0x33)
+    {
+        return false;
+    }
+
+    return HandleMouseInterrupt33(win32_context, context);
 }
 
 bool HandlePrivilegedTrapInstruction(CONTEXT* win32_context,
@@ -2160,6 +2901,91 @@ bool HandlePrivilegedTrapInstruction(CONTEXT* win32_context,
     return false;
 }
 
+void RecordPortIo(ThreadContext* context,
+                  std::uint32_t address,
+                  std::uint32_t opcode,
+                  std::uint16_t port,
+                  std::uint32_t width,
+                  std::uint32_t value,
+                  bool is_input,
+                  bool handled,
+                  const std::string& result)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+
+    ++context->port_io.observed_count;
+    context->port_io.last_address = address;
+    context->port_io.last_opcode = opcode;
+    context->port_io.last_port = port;
+    context->port_io.last_width = width;
+    context->port_io.last_value = value;
+    context->port_io.last_is_input = is_input;
+    context->port_io.last_handled = handled;
+    context->port_io.last_result = result;
+}
+
+bool IsObservedPortInitializationWrite(std::uint16_t port,
+                                       std::uint32_t width,
+                                       std::uint32_t value)
+{
+    if (width != 4)
+    {
+        return false;
+    }
+
+    return (port == 0x02AC && value == 0x00000010U) ||
+           (port == 0x02A0 && value == 0x00000001U) ||
+           (port == 0x02A2 && value == 0x00000000U);
+}
+
+bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0x66 || instruction[1] != 0xEF)
+    {
+        return false;
+    }
+
+    const std::uint16_t port = static_cast<std::uint16_t>(
+        win32_context->Edx & 0xFFFFU);
+    const std::uint32_t value = win32_context->Eax;
+    const std::uint32_t width = 4;
+    if (IsObservedPortInitializationWrite(port, width, value))
+    {
+        RecordPortIo(context,
+                     static_cast<std::uint32_t>(win32_context->Eip),
+                     0x66EF,
+                     port,
+                     width,
+                     value,
+                     false,
+                     true,
+                     "ignored");
+        win32_context->Eip += 2;
+        return true;
+    }
+
+    RecordPortIo(context,
+                 static_cast<std::uint32_t>(win32_context->Eip),
+                 0x66EF,
+                 port,
+                 width,
+                 value,
+                 false,
+                 false,
+                 "unsupported");
+    std::ostringstream stream;
+    stream << "unsupported port I/O OUT DX,EAX port=0x"
+           << std::hex << static_cast<unsigned>(port)
+           << " value=0x" << value;
+    context->hle_message = stream.str();
+    return false;
+}
+
 bool HandleDosHleInstruction(CONTEXT* win32_context,
                              ThreadContext* context)
 {
@@ -2177,6 +3003,10 @@ bool HandleDosHleInstruction(CONTEXT* win32_context,
     {
         return HandleDpmiInterrupt31(win32_context, context);
     }
+    if (instruction[0] == 0xCD && instruction[1] == 0x33)
+    {
+        return HandleMouseInterrupt33(win32_context, context);
+    }
 
     if (instruction[0] == 0xCD)
     {
@@ -2190,8 +3020,6 @@ bool HandleDosHleInstruction(CONTEXT* win32_context,
 
 bool HandleDosMemoryAccess(CONTEXT* win32_context, ThreadContext* context)
 {
-    (void)context;
-
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
     if (instruction[0] == 0x66 && instruction[1] == 0x26 &&
@@ -2209,12 +3037,27 @@ bool HandleDosMemoryAccess(CONTEXT* win32_context, ThreadContext* context)
         }
         win32_context->Ecx =
             (win32_context->Ecx & 0xFFFF0000U) | value;
+        RecordLowMemoryAccess(win32_context,
+                              context,
+                              instruction[2],
+                              offset,
+                              value);
         win32_context->Eip += 8;
         return true;
     }
     if (instruction[0] == 0x66 && instruction[1] == 0x26 &&
         instruction[2] == 0x8C && instruction[3] == 0x1D)
     {
+        const std::uint32_t offset =
+            static_cast<std::uint32_t>(instruction[4]) |
+            (static_cast<std::uint32_t>(instruction[5]) << 8) |
+            (static_cast<std::uint32_t>(instruction[6]) << 16) |
+            (static_cast<std::uint32_t>(instruction[7]) << 24);
+        RecordLowMemoryAccess(win32_context,
+                              context,
+                              instruction[2],
+                              offset,
+                              0);
         win32_context->Eip += 8;
         return true;
     }
@@ -2222,6 +3065,11 @@ bool HandleDosMemoryAccess(CONTEXT* win32_context, ThreadContext* context)
         instruction[2] == 0x4F && instruction[3] == 0xFF)
     {
         win32_context->Ecx &= 0xFFFFFF00U;
+        RecordLowMemoryAccess(win32_context,
+                              context,
+                              instruction[1],
+                              win32_context->Edi - 1,
+                              0);
         win32_context->Eip += 4;
         return true;
     }
@@ -2229,6 +3077,11 @@ bool HandleDosMemoryAccess(CONTEXT* win32_context, ThreadContext* context)
         win32_context->Esi < 0x10000)
     {
         win32_context->Eax = 0;
+        RecordLowMemoryAccess(win32_context,
+                              context,
+                              instruction[0],
+                              win32_context->Esi,
+                              0);
         win32_context->Eip += 2;
         return true;
     }
@@ -2237,12 +3090,22 @@ bool HandleDosMemoryAccess(CONTEXT* win32_context, ThreadContext* context)
     {
         win32_context->EFlags |= 0x40U;
         win32_context->EFlags &= ~1U;
+        RecordLowMemoryAccess(win32_context,
+                              context,
+                              instruction[0],
+                              win32_context->Esi,
+                              0);
         win32_context->Eip += 3;
         return true;
     }
     if (instruction[0] == 0xAC && win32_context->Esi < 0x10000)
     {
         win32_context->Eax &= 0xFFFFFF00U;
+        RecordLowMemoryAccess(win32_context,
+                              context,
+                              instruction[0],
+                              win32_context->Esi,
+                              0);
         ++win32_context->Esi;
         ++win32_context->Eip;
         return true;
@@ -2256,6 +3119,11 @@ bool HandleDosMemoryAccess(CONTEXT* win32_context, ThreadContext* context)
         {
             *destination = '\0';
         }
+        RecordLowMemoryAccess(win32_context,
+                              context,
+                              instruction[0],
+                              win32_context->Edi,
+                              0);
         ++win32_context->Esi;
         ++win32_context->Edi;
         ++win32_context->Eip;
@@ -2293,13 +3161,28 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     }
 
     CONTEXT* win32_context = exception_info->ContextRecord;
+    if (exception_info->ExceptionRecord != nullptr &&
+        exception_info->ExceptionRecord->ExceptionCode ==
+            EXCEPTION_SINGLE_STEP &&
+        HandleSingleStepTrace(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     if (context->enable_privileged_trap_hle &&
         HandlePrivilegedTrapInstruction(win32_context, context))
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
+    if (context->enable_privileged_trap_hle &&
+        HandlePortIoInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     if (context->enable_traced_dos_hle &&
-        HandleTracedDosInterrupt21(win32_context, context))
+        (HandleTracedDosInterrupt21(win32_context, context) ||
+         HandleTracedDosInterrupt2F(win32_context, context) ||
+         HandleTracedDpmiInterrupt31(win32_context, context) ||
+         HandleTracedMouseInterrupt33(win32_context, context)))
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
@@ -2409,6 +3292,8 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
             StackSwitchCallState state;
             state.entry_address = context->entry_address;
             state.initial_esp = context->guest_initial_esp;
+            state.enable_single_step_trace =
+                context->enable_single_step_trace ? 1U : 0U;
             context->active_call_state = &state;
             g_active_thread_context = context;
             void* vectored_handler = AddVectoredExceptionHandler(
@@ -2489,6 +3374,7 @@ bool RunWin32ExecutionThread(
     bool enable_traced_dos_hle,
     bool enable_segment_load_hle,
     bool enable_dos_hle,
+    bool enable_single_step_trace,
     const hle::DosVirtualFileSystemState* dos_file_system,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
@@ -2547,6 +3433,8 @@ bool RunWin32ExecutionThread(
     context.enable_traced_dos_hle = enable_traced_dos_hle;
     context.enable_segment_load_hle = enable_segment_load_hle;
     context.enable_dos_hle = enable_dos_hle;
+    context.enable_single_step_trace = enable_single_step_trace;
+    context.dos_environment_block = BuildDosEnvironmentBlock();
     if (dos_file_system != nullptr)
     {
         context.dos_file_system = *dos_file_system;
@@ -2581,15 +3469,21 @@ bool RunWin32ExecutionThread(
     DWORD exit_code = 0;
     const DWORD wait_result = PollThreadUntilExit(
         thread,
-        1000,
+        timeout_milliseconds,
+        enable_single_step_trace ? &context : nullptr,
         &exit_code);
 
     if (wait_result == WAIT_TIMEOUT)
     {
         attempt->timed_out = true;
         attempt->thread_exit_code = 3;
+        CopyThreadObservationToAttempt(context, attempt);
         attempt->valid = true;
         attempt->message = "minimal execution attempt timed out";
+        if (api.terminate_thread != nullptr)
+        {
+            api.terminate_thread(thread, 3);
+        }
         api.close_handle(thread);
         return true;
     }
@@ -2607,101 +3501,7 @@ bool RunWin32ExecutionThread(
     attempt->exception_edx = context.exception_edx;
     attempt->exception_esi = context.exception_esi;
     attempt->exception_edi = context.exception_edi;
-    attempt->handled_hle_trap_count = context.handled_hle_trap_count;
-    attempt->last_hle_trap_address = context.last_hle_trap_address;
-    attempt->last_hle_trap_opcode = context.last_hle_trap_opcode;
-    attempt->handled_dos_interrupt_count =
-        context.handled_dos_interrupt_count;
-    attempt->last_dos_interrupt_vector = context.last_dos_interrupt_vector;
-    attempt->last_dos_interrupt_ah = context.last_dos_interrupt_ah;
-    attempt->handled_dos_chdir_count = context.handled_dos_chdir_count;
-    attempt->last_dos_chdir_guest_path =
-        context.last_dos_chdir_guest_path;
-    attempt->last_dos_chdir_host_path =
-        context.last_dos_chdir_host_path;
-    attempt->last_dos_chdir_virtual_path =
-        context.last_dos_chdir_virtual_path;
-    attempt->last_dos_chdir_success =
-        context.last_dos_chdir_success;
-    attempt->last_dos_chdir_error =
-        context.last_dos_chdir_error;
-    attempt->handled_dos_open_count = context.handled_dos_open_count;
-    attempt->last_dos_open_guest_path =
-        context.last_dos_open_guest_path;
-    attempt->last_dos_open_host_path =
-        context.last_dos_open_host_path;
-    attempt->last_dos_open_virtual_path =
-        context.last_dos_open_virtual_path;
-    attempt->last_dos_open_success =
-        context.last_dos_open_success;
-    attempt->last_dos_open_error =
-        context.last_dos_open_error;
-    attempt->last_dos_open_handle =
-        context.last_dos_open_handle;
-    attempt->last_dos_open_access_mode =
-        context.last_dos_open_access_mode;
-    attempt->handled_dos_ioctl_count = context.handled_dos_ioctl_count;
-    attempt->last_dos_ioctl_subfunction =
-        context.last_dos_ioctl_subfunction;
-    attempt->last_dos_ioctl_handle = context.last_dos_ioctl_handle;
-    attempt->last_dos_ioctl_success = context.last_dos_ioctl_success;
-    attempt->last_dos_ioctl_error = context.last_dos_ioctl_error;
-    attempt->last_dos_ioctl_device_info =
-        context.last_dos_ioctl_device_info;
-    attempt->handled_dos_resize_count = context.handled_dos_resize_count;
-    attempt->last_dos_resize_selector =
-        context.last_dos_resize_selector;
-    attempt->last_dos_resize_paragraphs =
-        context.last_dos_resize_paragraphs;
-    attempt->last_dos_resize_success =
-        context.last_dos_resize_success;
-    attempt->last_dos_resize_error = context.last_dos_resize_error;
-    attempt->handled_segment_load_count =
-        context.handled_segment_load_count;
-    attempt->last_segment_load_address = context.last_segment_load_address;
-    attempt->last_segment_load_opcode = context.last_segment_load_opcode;
-    attempt->last_segment_load_register =
-        context.last_segment_load_register;
-    attempt->last_segment_load_selector =
-        context.last_segment_load_selector;
-    attempt->last_segment_load_source = context.last_segment_load_source;
-    attempt->handled_segment_store_count =
-        context.handled_segment_store_count;
-    attempt->last_segment_store_address =
-        context.last_segment_store_address;
-    attempt->last_segment_store_opcode = context.last_segment_store_opcode;
-    attempt->last_segment_store_register =
-        context.last_segment_store_register;
-    attempt->last_segment_store_selector =
-        context.last_segment_store_selector;
-    attempt->last_segment_store_destination =
-        context.last_segment_store_destination;
-    attempt->handled_segment_memory_load_count =
-        context.handled_segment_memory_load_count;
-    attempt->last_segment_memory_load_address =
-        context.last_segment_memory_load_address;
-    attempt->last_segment_memory_load_opcode =
-        context.last_segment_memory_load_opcode;
-    attempt->last_segment_memory_load_register =
-        context.last_segment_memory_load_register;
-    attempt->last_segment_memory_load_selector =
-        context.last_segment_memory_load_selector;
-    attempt->last_segment_memory_load_offset =
-        context.last_segment_memory_load_offset;
-    attempt->last_segment_memory_load_width =
-        context.last_segment_memory_load_width;
-    attempt->last_segment_memory_load_value =
-        context.last_segment_memory_load_value;
-    attempt->handled_memory_store_count =
-        context.handled_memory_store_count;
-    attempt->last_memory_store_address =
-        context.last_memory_store_address;
-    attempt->last_memory_store_destination =
-        context.last_memory_store_destination;
-    attempt->last_memory_store_value =
-        context.last_memory_store_value;
-    attempt->last_memory_store_applied =
-        context.last_memory_store_applied;
+    CopyThreadObservationToAttempt(context, attempt);
     attempt->thread_exit_code = exit_code;
     attempt->hle_console_output.assign(
         context.hle_console_output,
@@ -2746,6 +3546,7 @@ bool AttemptWin32MinimalExecution(
         false,
         false,
         false,
+        false,
         nullptr,
         timeout_milliseconds,
         attempt);
@@ -2776,6 +3577,7 @@ bool AttemptWin32GuestStackExecution(
         stack_plan.entry_eip,
         stack_plan.initial_esp,
         true,
+        false,
         false,
         false,
         false,
@@ -2815,6 +3617,7 @@ bool AttemptWin32GuestStackTrapExecution(
         true,
         true,
         false,
+        true,
         &dos_file_system,
         timeout_milliseconds,
         attempt);
@@ -2850,6 +3653,7 @@ bool AttemptWin32GuestStackHleExecution(
         true,
         true,
         true,
+        false,
         &dos_file_system,
         timeout_milliseconds,
         attempt);

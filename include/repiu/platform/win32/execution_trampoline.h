@@ -32,6 +32,19 @@ struct X86ExecutionSnapshot
     std::uint16_t gs = 0;
 };
 
+struct Win32PortIoObservation
+{
+    std::uint32_t observed_count = 0;
+    std::uint32_t last_address = 0;
+    std::uint32_t last_opcode = 0;
+    std::uint32_t last_port = 0;
+    std::uint32_t last_width = 0;
+    std::uint32_t last_value = 0;
+    bool last_is_input = false;
+    bool last_handled = false;
+    std::string last_result;
+};
+
 struct Win32MinimalExecutionAttempt
 {
     bool valid = false;
@@ -54,12 +67,25 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t exception_esi = 0;
     std::uint32_t exception_edi = 0;
     X86ExecutionSnapshot timeout_snapshot;
+    X86ExecutionSnapshot last_single_step_snapshot;
+    std::uint32_t single_step_trace_count = 0;
+    std::uint32_t diagnostic_poll_iteration_count = 0;
+    std::uint32_t diagnostic_progress_count = 0;
+    std::uint32_t diagnostic_quiet_iteration_count = 0;
+    std::uint32_t dos_environment_block_size = 0;
+    bool last_dos_environment_access_valid = false;
+    std::uint32_t last_dos_environment_access_offset = 0;
+    std::uint32_t last_dos_environment_entry_offset = 0;
+    std::uint32_t last_dos_environment_value_length = 0;
+    std::string last_dos_environment_entry_name;
     std::uint32_t handled_hle_trap_count = 0;
     std::uint32_t last_hle_trap_address = 0;
     std::uint32_t last_hle_trap_opcode = 0;
+    Win32PortIoObservation port_io;
     std::uint32_t handled_dos_interrupt_count = 0;
     std::uint32_t last_dos_interrupt_vector = 0;
     std::uint32_t last_dos_interrupt_ah = 0;
+    std::uint32_t last_dos_interrupt_ax = 0;
     std::uint32_t handled_dos_chdir_count = 0;
     std::string last_dos_chdir_guest_path;
     std::string last_dos_chdir_host_path;
@@ -105,11 +131,27 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t last_segment_memory_load_offset = 0;
     std::uint32_t last_segment_memory_load_width = 0;
     std::uint32_t last_segment_memory_load_value = 0;
+    std::uint32_t handled_low_memory_access_count = 0;
+    std::uint32_t last_low_memory_access_address = 0;
+    std::uint32_t last_low_memory_access_opcode = 0;
+    std::uint32_t last_low_memory_access_esi = 0;
+    std::uint32_t last_low_memory_access_edi = 0;
+    std::uint32_t last_low_memory_access_destination = 0;
+    std::uint32_t last_low_memory_access_value = 0;
     std::uint32_t handled_memory_store_count = 0;
     std::uint32_t last_memory_store_address = 0;
+    std::uint32_t last_memory_store_opcode = 0;
     std::uint32_t last_memory_store_destination = 0;
     std::uint32_t last_memory_store_value = 0;
+    std::uint32_t last_memory_store_width = 0;
+    std::string last_memory_store_source_kind;
     bool last_memory_store_applied = false;
+    std::uint32_t shadow_memory_write_count = 0;
+    std::uint32_t shadow_memory_read_hit_count = 0;
+    std::uint32_t shadow_memory_byte_count = 0;
+    bool shadow_memory_range_valid = false;
+    std::uint32_t shadow_memory_min_address = 0;
+    std::uint32_t shadow_memory_max_address = 0;
     std::uint32_t thread_exit_code = 0;
     std::string hle_console_output;
     std::string message;

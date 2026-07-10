@@ -162,17 +162,47 @@ try
         -Name "Run piu_1st target" `
         -FilePath $Loader `
         -Arguments @("piu_1st")
-    if ($piuOutput -notmatch "Runtime memory arena reserve size: 0x005E7000" -or
-        $piuOutput -notmatch "Win32 relocated image placed size: 0x005E7000" -or
+    if ($piuOutput -notmatch "Runtime memory arena reserve size: 0x006D7000" -or
+        $piuOutput -notmatch "Win32 relocated image placed size: 0x006D7000" -or
         $piuOutput -notmatch "Win32 minimal execution returned: false" -or
-        $piuOutput -notmatch "Win32 minimal execution exception caught: false" -or
-        $piuOutput -notmatch "Win32 minimal execution timed out: true" -or
-        $piuOutput -notmatch "Win32 minimal execution timeout context captured: false" -or
-        $piuOutput -notmatch "Win32 handled HLE trap count: 0" -or
-        $piuOutput -notmatch "Win32 handled DOS interrupt count: 0" -or
+        $piuOutput -notmatch "Win32 minimal execution exception caught: true" -or
+        $piuOutput -notmatch "Win32 minimal execution exception code: 0xC0000096" -or
+        $piuOutput -notmatch "Win32 minimal execution exception address: 0x020F5726" -or
+        $piuOutput -notmatch "Win32 minimal execution timed out: false" -or
+        $piuOutput -notmatch "Win32 last single-step context captured: true" -or
+        $piuOutput -notmatch "Win32 diagnostic poll iterations: [1-9]" -or
+        $piuOutput -notmatch "Win32 diagnostic progress count: [1-9]" -or
+        $piuOutput -notmatch "Win32 DOS environment block bytes: [1-9]" -or
+        $piuOutput -notmatch "Win32 DOS environment access observed: true" -or
+        $piuOutput -notmatch "Win32 last DOS environment entry: .+=<redacted>" -or
+        $piuOutput -notmatch "Win32 last DOS environment value bytes: [0-9]" -or
+        $piuOutput -notmatch "Win32 handled HLE trap count: [1-9]" -or
+        $piuOutput -notmatch "Win32 port I/O observation count: [1-9]" -or
+        $piuOutput -notmatch "Win32 last port I/O address: 0x020F5726" -or
+        $piuOutput -notmatch "Win32 last port I/O opcode: 0x66EF" -or
+        $piuOutput -notmatch "Win32 last port I/O direction: out" -or
+        $piuOutput -notmatch "Win32 last port I/O port: 0x02A0" -or
+        $piuOutput -notmatch "Win32 last port I/O width: 4" -or
+        $piuOutput -notmatch "Win32 last port I/O value: 0x00000005" -or
+        $piuOutput -notmatch "Win32 last port I/O handled: false" -or
+        $piuOutput -notmatch "Win32 last port I/O result: unsupported" -or
+        $piuOutput -notmatch "Win32 handled DOS interrupt count: [1-9]" -or
+        $piuOutput -notmatch "Win32 last handled DOS interrupt vector: 0x33" -or
+        $piuOutput -notmatch "Win32 last handled DOS interrupt AX: 0x0002" -or
+        $piuOutput -notmatch "Win32 handled DOS chdir count: [1-9]" -or
+        $piuOutput -notmatch "Win32 last DOS chdir guest path: \\datas\\bga" -or
+        $piuOutput -notmatch "Win32 last DOS chdir result: success" -or
+        $piuOutput -notmatch "Win32 handled DOS open count: [1-9]" -or
+        $piuOutput -notmatch "Win32 handled DOS resize count: [1-9]" -or
+        $piuOutput -notmatch "Win32 handled low-memory access count: [1-9]" -or
         $piuOutput -notmatch "Win32 handled memory store count: 0" -or
-        $piuOutput -notmatch "Win32 minimal execution thread exit code: 3" -or
-        $piuOutput -notmatch "Win32 minimal execution message: minimal execution attempt timed out")
+        $piuOutput -notmatch "Win32 shadow memory write count: 0" -or
+        $piuOutput -notmatch "Win32 shadow memory byte count: 0" -or
+        $piuOutput -notmatch "Win32 shadow memory range valid: false" -or
+        $piuOutput -notmatch "Win32 minimal execution thread exit code: 2" -or
+        $piuOutput -notmatch "Win32 minimal execution message: unsupported port I/O OUT DX,EAX port=0x2a0 value=0x5" -or
+        $piuOutput -notmatch "Privileged instruction opcode: 0xEF" -or
+        $piuOutput -notmatch "Privileged instruction mnemonic: port I/O")
     {
         throw "piu_1st did not reach the expected current HLE observation point."
     }
