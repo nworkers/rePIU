@@ -167,7 +167,7 @@ try
         $piuOutput -notmatch "Win32 minimal execution returned: false" -or
         $piuOutput -notmatch "Win32 minimal execution exception caught: true" -or
         $piuOutput -notmatch "Win32 minimal execution exception code: 0xC0000005" -or
-        $piuOutput -notmatch "Win32 minimal execution exception address: 0x0[1-9]0F4221" -or
+        $piuOutput -notmatch "Win32 minimal execution exception address: 0x0[1-9]0F423B" -or
         $piuOutput -notmatch "Win32 minimal execution timed out: false" -or
         $piuOutput -notmatch "Win32 last single-step context captured: true" -or
         $piuOutput -notmatch "Win32 diagnostic poll iterations: [1-9]" -or
@@ -191,10 +191,14 @@ try
         $piuOutput -notmatch "Win32 port I/O trace #16 address=0x0[1-9]0F4386 opcode=0x66EF direction=out port=0x02A0 width=4 value=0x0000001D handled=true" -or
         $piuOutput -notmatch "Win32 handled DOS interrupt count: [1-9]" -or
         $piuOutput -notmatch "Win32 last handled DOS interrupt vector: 0x21" -or
-        $piuOutput -notmatch "Win32 last handled DOS interrupt AX: 0x2509" -or
+        $piuOutput -notmatch "Win32 last handled DOS interrupt AX: 0x4700" -or
         $piuOutput -notmatch "Win32 handled DOS chdir count: [1-9]" -or
         $piuOutput -notmatch "Win32 last DOS chdir guest path: \\datas\\bga" -or
         $piuOutput -notmatch "Win32 last DOS chdir result: success" -or
+        $piuOutput -notmatch "Win32 handled DOS getcwd count: [1-9]" -or
+        $piuOutput -notmatch "Win32 last DOS getcwd drive: 0x00" -or
+        $piuOutput -notmatch "Win32 last DOS getcwd path: DATAS\\BGA" -or
+        $piuOutput -notmatch "Win32 last DOS getcwd result: success" -or
         $piuOutput -notmatch "Win32 handled DOS open count: [1-9]" -or
         $piuOutput -notmatch "Win32 handled DOS resize count: [1-9]" -or
         $piuOutput -notmatch "Win32 handled low-memory access count: [1-9]" -or

@@ -54,6 +54,8 @@ bool ChangeDosCurrentDirectory(DosVirtualFileSystemState* state,
                                const std::string& guest_path,
                                DosResolvedPath* resolved);
 
+std::string GetDosCurrentDirectory(const DosVirtualFileSystemState& state);
+
 bool OpenDosFile(DosVirtualFileSystemState* state,
                  const std::string& guest_path,
                  std::uint8_t access_mode,

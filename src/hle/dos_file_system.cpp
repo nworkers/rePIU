@@ -209,6 +209,21 @@ bool ChangeDosCurrentDirectory(DosVirtualFileSystemState* state,
     return true;
 }
 
+std::string GetDosCurrentDirectory(const DosVirtualFileSystemState& state)
+{
+    std::string result;
+    for (std::size_t index = 0; index < state.current_components.size();
+         ++index)
+    {
+        if (index != 0)
+        {
+            result += "\\";
+        }
+        result += state.current_components[index];
+    }
+    return result;
+}
+
 bool OpenDosFile(DosVirtualFileSystemState* state,
                  const std::string& guest_path,
                  std::uint8_t access_mode,

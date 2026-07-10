@@ -79,6 +79,11 @@ struct ThreadContext
     std::string last_dos_chdir_virtual_path;
     bool last_dos_chdir_success = false;
     std::uint16_t last_dos_chdir_error = 0;
+    std::uint32_t handled_dos_getcwd_count = 0;
+    std::uint8_t last_dos_getcwd_drive = 0;
+    std::string last_dos_getcwd_path;
+    bool last_dos_getcwd_success = false;
+    std::uint16_t last_dos_getcwd_error = 0;
     std::uint32_t handled_dos_open_count = 0;
     std::string last_dos_open_guest_path;
     std::string last_dos_open_host_path;
@@ -577,6 +582,11 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.last_dos_chdir_virtual_path;
     attempt->last_dos_chdir_success = context.last_dos_chdir_success;
     attempt->last_dos_chdir_error = context.last_dos_chdir_error;
+    attempt->handled_dos_getcwd_count = context.handled_dos_getcwd_count;
+    attempt->last_dos_getcwd_drive = context.last_dos_getcwd_drive;
+    attempt->last_dos_getcwd_path = context.last_dos_getcwd_path;
+    attempt->last_dos_getcwd_success = context.last_dos_getcwd_success;
+    attempt->last_dos_getcwd_error = context.last_dos_getcwd_error;
     attempt->handled_dos_open_count = context.handled_dos_open_count;
     attempt->last_dos_open_guest_path = context.last_dos_open_guest_path;
     attempt->last_dos_open_host_path = context.last_dos_open_host_path;
@@ -1025,6 +1035,40 @@ bool WriteGuestUInt32(ThreadContext* context,
     return true;
 }
 
+bool WriteGuestBytes(ThreadContext* context,
+                     void* destination,
+                     const void* source,
+                     std::size_t byte_count)
+{
+    if (source == nullptr ||
+        !IsGuestRangeWritable(context, destination, byte_count))
+    {
+        return false;
+    }
+
+    DWORD previous_protect = 0;
+    if (!VirtualProtect(destination,
+                        byte_count,
+                        PAGE_EXECUTE_READWRITE,
+                        &previous_protect))
+    {
+        std::ostringstream stream;
+        stream << "VirtualProtect failed for guest byte store with error "
+               << GetLastError();
+        context->hle_message = stream.str();
+        return false;
+    }
+
+    std::memcpy(destination, source, byte_count);
+
+    DWORD ignored_protect = 0;
+    VirtualProtect(destination,
+                   byte_count,
+                   previous_protect,
+                   &ignored_protect);
+    return true;
+}
+
 bool ReadGuestUInt32(ThreadContext* context,
                      const void* source,
                      std::uint32_t* value)
@@ -1237,6 +1281,49 @@ bool HandleDosChangeDirectory(CONTEXT* win32_context, ThreadContext* context)
             repiu::hle::DosPathResultToErrorCode(resolved.result);
         win32_context->EFlags |= 1U;
     }
+    return true;
+}
+
+bool HandleDosGetCurrentDirectory(CONTEXT* win32_context,
+                                  ThreadContext* context)
+{
+    const std::string current_directory =
+        repiu::hle::GetDosCurrentDirectory(context->dos_file_system);
+    const std::uint8_t drive = static_cast<std::uint8_t>(
+        win32_context->Edx & 0xFFU);
+    ++context->handled_dos_getcwd_count;
+    context->last_dos_getcwd_drive = drive;
+    context->last_dos_getcwd_path = current_directory;
+    if (current_directory.size() >= 64)
+    {
+        context->last_dos_getcwd_success = false;
+        context->last_dos_getcwd_error = 0x0005U;
+        win32_context->Eax =
+            (win32_context->Eax & 0xFFFF0000U) | 0x0005U;
+        win32_context->EFlags |= 1U;
+        return true;
+    }
+
+    std::string asciz = current_directory;
+    asciz.push_back('\0');
+    void* destination = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(win32_context->Esi));
+    if (!WriteGuestBytes(context,
+                         destination,
+                         asciz.data(),
+                         asciz.size()))
+    {
+        context->last_dos_getcwd_success = false;
+        context->last_dos_getcwd_error = 0x0003U;
+        win32_context->Eax =
+            (win32_context->Eax & 0xFFFF0000U) | 0x0003U;
+        win32_context->EFlags |= 1U;
+        return true;
+    }
+
+    context->last_dos_getcwd_success = true;
+    context->last_dos_getcwd_error = 0;
+    win32_context->EFlags &= ~1U;
     return true;
 }
 
@@ -1577,6 +1664,13 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
         case 0x44:
             RecordHandledDosInterrupt(context, 0x21, ax);
             if (!HandleDosIoctl(win32_context, context))
+            {
+                return false;
+            }
+            break;
+        case 0x47:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            if (!HandleDosGetCurrentDirectory(win32_context, context))
             {
                 return false;
             }
@@ -2866,6 +2960,14 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
         case 0x44:
             RecordHandledDosInterrupt(context, 0x21, ax);
             if (!HandleDosIoctl(win32_context, context))
+            {
+                return false;
+            }
+            win32_context->Eip += 2;
+            return true;
+        case 0x47:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            if (!HandleDosGetCurrentDirectory(win32_context, context))
             {
                 return false;
             }

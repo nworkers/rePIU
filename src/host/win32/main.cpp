@@ -682,6 +682,24 @@ void PrintExecutionAttempt(
                         Hex16(attempt.last_dos_chdir_error));
         }
     }
+    logger.info("Win32 handled DOS getcwd count: {}",
+                attempt.handled_dos_getcwd_count);
+    if (attempt.handled_dos_getcwd_count > 0)
+    {
+        logger.info("Win32 last DOS getcwd drive: {}",
+                    Hex8(attempt.last_dos_getcwd_drive));
+        logger.info("Win32 last DOS getcwd path: {}",
+                    attempt.last_dos_getcwd_path);
+        logger.info("Win32 last DOS getcwd result: {}",
+                    attempt.last_dos_getcwd_success
+                        ? "success"
+                        : "failure");
+        if (!attempt.last_dos_getcwd_success)
+        {
+            logger.info("Win32 last DOS getcwd error: {}",
+                        Hex16(attempt.last_dos_getcwd_error));
+        }
+    }
     logger.info("Win32 handled DOS open count: {}",
                 attempt.handled_dos_open_count);
     if (attempt.handled_dos_open_count > 0)

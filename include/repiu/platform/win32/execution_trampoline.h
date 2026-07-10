@@ -111,6 +111,11 @@ struct Win32MinimalExecutionAttempt
     std::string last_dos_chdir_virtual_path;
     bool last_dos_chdir_success = false;
     std::uint16_t last_dos_chdir_error = 0;
+    std::uint32_t handled_dos_getcwd_count = 0;
+    std::uint8_t last_dos_getcwd_drive = 0;
+    std::string last_dos_getcwd_path;
+    bool last_dos_getcwd_success = false;
+    std::uint16_t last_dos_getcwd_error = 0;
     std::uint32_t handled_dos_open_count = 0;
     std::string last_dos_open_guest_path;
     std::string last_dos_open_host_path;
