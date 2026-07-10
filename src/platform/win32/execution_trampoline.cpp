@@ -142,6 +142,174 @@ bool IsGuestStackSwitchSupported()
 #if defined(_WIN32)
 thread_local ThreadContext* g_active_thread_context = nullptr;
 
+using CreateThreadFn = HANDLE(WINAPI*)(
+    LPSECURITY_ATTRIBUTES,
+    SIZE_T,
+    LPTHREAD_START_ROUTINE,
+    LPVOID,
+    DWORD,
+    LPDWORD);
+using CloseHandleFn = BOOL(WINAPI*)(HANDLE);
+using GetExitCodeThreadFn = BOOL(WINAPI*)(HANDLE, LPDWORD);
+using GetLastErrorFn = DWORD(WINAPI*)();
+using GetThreadContextFn = BOOL(WINAPI*)(HANDLE, LPCONTEXT);
+using ResumeThreadFn = DWORD(WINAPI*)(HANDLE);
+using SuspendThreadFn = DWORD(WINAPI*)(HANDLE);
+
+struct Win32ThreadApi
+{
+    CreateThreadFn create_thread = nullptr;
+    CloseHandleFn close_handle = nullptr;
+    GetExitCodeThreadFn get_exit_code_thread = nullptr;
+    GetLastErrorFn get_last_error = nullptr;
+    GetThreadContextFn get_thread_context = nullptr;
+    ResumeThreadFn resume_thread = nullptr;
+    SuspendThreadFn suspend_thread = nullptr;
+};
+
+template <typename FunctionType>
+FunctionType ResolveKernel32Function(HMODULE kernel32, const char* name)
+{
+    return reinterpret_cast<FunctionType>(GetProcAddress(kernel32, name));
+}
+
+const Win32ThreadApi& GetWin32ThreadApi()
+{
+    static const Win32ThreadApi api = []
+    {
+        HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
+        Win32ThreadApi resolved;
+        if (kernel32 == nullptr)
+        {
+            return resolved;
+        }
+
+        resolved.create_thread =
+            ResolveKernel32Function<CreateThreadFn>(kernel32, "CreateThread");
+        resolved.close_handle =
+            ResolveKernel32Function<CloseHandleFn>(kernel32, "CloseHandle");
+        resolved.get_exit_code_thread =
+            ResolveKernel32Function<GetExitCodeThreadFn>(
+                kernel32,
+                "GetExitCodeThread");
+        resolved.get_last_error =
+            ResolveKernel32Function<GetLastErrorFn>(kernel32, "GetLastError");
+        resolved.get_thread_context =
+            ResolveKernel32Function<GetThreadContextFn>(
+                kernel32,
+                "GetThreadContext");
+        resolved.resume_thread =
+            ResolveKernel32Function<ResumeThreadFn>(kernel32, "ResumeThread");
+        resolved.suspend_thread =
+            ResolveKernel32Function<SuspendThreadFn>(
+                kernel32,
+                "SuspendThread");
+        return resolved;
+    }();
+
+    return api;
+}
+
+DWORD PollThreadUntilExit(HANDLE thread,
+                          DWORD timeout_milliseconds,
+                          DWORD* exit_code)
+{
+    const Win32ThreadApi& api = GetWin32ThreadApi();
+    if (api.get_exit_code_thread == nullptr)
+    {
+        return WAIT_FAILED;
+    }
+
+    const DWORD max_iterations =
+        timeout_milliseconds == INFINITE ? 100000U : 100000U;
+    for (DWORD iteration = 0; iteration < max_iterations; ++iteration)
+    {
+        DWORD current_exit_code = 0;
+        if (!api.get_exit_code_thread(thread, &current_exit_code))
+        {
+            return WAIT_FAILED;
+        }
+
+        if (current_exit_code != STILL_ACTIVE)
+        {
+            if (exit_code != nullptr)
+            {
+                *exit_code = current_exit_code;
+            }
+            return WAIT_OBJECT_0;
+        }
+    }
+
+    return WAIT_TIMEOUT;
+}
+
+void CopySnapshotFromContextRecord(const CONTEXT& source,
+                                   X86ExecutionSnapshot* snapshot)
+{
+    if (snapshot == nullptr)
+    {
+        return;
+    }
+
+#if defined(_M_IX86)
+    snapshot->captured = true;
+    snapshot->eip = source.Eip;
+    snapshot->eax = source.Eax;
+    snapshot->ebx = source.Ebx;
+    snapshot->ecx = source.Ecx;
+    snapshot->edx = source.Edx;
+    snapshot->esi = source.Esi;
+    snapshot->edi = source.Edi;
+    snapshot->esp = source.Esp;
+    snapshot->ebp = source.Ebp;
+    snapshot->eflags = source.EFlags;
+    snapshot->cs = static_cast<std::uint16_t>(source.SegCs);
+    snapshot->ds = static_cast<std::uint16_t>(source.SegDs);
+    snapshot->es = static_cast<std::uint16_t>(source.SegEs);
+    snapshot->ss = static_cast<std::uint16_t>(source.SegSs);
+    snapshot->fs = static_cast<std::uint16_t>(source.SegFs);
+    snapshot->gs = static_cast<std::uint16_t>(source.SegGs);
+#else
+    (void)source;
+    snapshot->captured = false;
+#endif
+}
+
+void CaptureSuspendedThreadSnapshot(HANDLE thread,
+                                    X86ExecutionSnapshot* snapshot)
+{
+    if (thread == nullptr || snapshot == nullptr)
+    {
+        return;
+    }
+
+#if defined(_M_IX86)
+    const Win32ThreadApi& api = GetWin32ThreadApi();
+    if (api.suspend_thread == nullptr ||
+        api.get_thread_context == nullptr ||
+        api.resume_thread == nullptr)
+    {
+        return;
+    }
+
+    if (api.suspend_thread(thread) == static_cast<DWORD>(-1))
+    {
+        return;
+    }
+
+    CONTEXT thread_context = {};
+    thread_context.ContextFlags = CONTEXT_FULL | CONTEXT_SEGMENTS;
+    if (api.get_thread_context(thread, &thread_context))
+    {
+        CopySnapshotFromContextRecord(thread_context, snapshot);
+    }
+    api.resume_thread(thread);
+#else
+    (void)thread;
+    snapshot->captured = false;
+#endif
+}
+
 int CaptureException(EXCEPTION_POINTERS* exception_info,
                      ThreadContext* context)
 {
@@ -2384,15 +2552,24 @@ bool RunWin32ExecutionThread(
         context.dos_file_system = *dos_file_system;
     }
 
-    HANDLE thread = CreateThread(nullptr,
-                                 0,
-                                 GuestEntryThreadProc,
-                                 &context,
-                                 0,
-                                 nullptr);
+    const Win32ThreadApi& api = GetWin32ThreadApi();
+    if (api.create_thread == nullptr ||
+        api.close_handle == nullptr ||
+        api.get_last_error == nullptr)
+    {
+        attempt->message = "failed to resolve required Win32 thread APIs";
+        return false;
+    }
+
+    HANDLE thread = api.create_thread(nullptr,
+                                      0,
+                                      GuestEntryThreadProc,
+                                      &context,
+                                      0,
+                                      nullptr);
     if (thread == nullptr)
     {
-        const DWORD error = GetLastError();
+        const DWORD error = api.get_last_error();
         std::ostringstream stream;
         stream << "CreateThread failed with error " << error;
         attempt->message = stream.str();
@@ -2401,46 +2578,23 @@ bool RunWin32ExecutionThread(
 
     attempt->attempted = true;
     attempt->guest_stack_switch_attempted = use_guest_stack;
-    const DWORD wait_result = WaitForSingleObject(
+    DWORD exit_code = 0;
+    const DWORD wait_result = PollThreadUntilExit(
         thread,
-        timeout_milliseconds);
+        1000,
+        &exit_code);
 
     if (wait_result == WAIT_TIMEOUT)
     {
         attempt->timed_out = true;
         attempt->thread_exit_code = 3;
         attempt->valid = true;
-        if (!TerminateThread(thread, 3))
-        {
-            const DWORD error = GetLastError();
-            std::ostringstream stream;
-            stream << "minimal execution attempt timed out; "
-                   << "TerminateThread failed with error " << error;
-            attempt->message = stream.str();
-            CloseHandle(thread);
-            return true;
-        }
-
-        const DWORD terminate_wait = WaitForSingleObject(thread, 1000);
-        if (terminate_wait != WAIT_OBJECT_0)
-        {
-            std::ostringstream stream;
-            stream << "minimal execution attempt timed out; "
-                   << "terminated guest thread did not signal, wait result "
-                   << terminate_wait;
-            attempt->message = stream.str();
-            CloseHandle(thread);
-            return true;
-        }
-
         attempt->message = "minimal execution attempt timed out";
-        CloseHandle(thread);
+        api.close_handle(thread);
         return true;
     }
 
-    DWORD exit_code = 0;
-    GetExitCodeThread(thread, &exit_code);
-    CloseHandle(thread);
+    api.close_handle(thread);
 
     attempt->returned = context.returned;
     attempt->exception_caught = context.exception_caught;

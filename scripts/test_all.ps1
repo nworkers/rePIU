@@ -24,6 +24,18 @@ function Invoke-Step
     }
 }
 
+function ConvertTo-ProcessArgument
+{
+    param([string]$Value)
+
+    if ($Value -notmatch '[\s"]')
+    {
+        return $Value
+    }
+
+    return '"' + ($Value -replace '\\(?=\\*")', '$0$0' -replace '"', '\"') + '"'
+}
+
 function Invoke-CaptureStep
 {
     param(
@@ -41,9 +53,17 @@ function Invoke-CaptureStep
     {
         $startInfo = New-Object System.Diagnostics.ProcessStartInfo
         $startInfo.FileName = $FilePath
-        foreach ($argument in $Arguments)
+        if ($null -ne $startInfo.ArgumentList)
         {
-            [void]$startInfo.ArgumentList.Add($argument)
+            foreach ($argument in $Arguments)
+            {
+                [void]$startInfo.ArgumentList.Add($argument)
+            }
+        }
+        else
+        {
+            $startInfo.Arguments =
+                (($Arguments | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join " ")
         }
         $startInfo.WorkingDirectory = (Get-Location).Path
         $startInfo.UseShellExecute = $false
@@ -147,6 +167,7 @@ try
         $piuOutput -notmatch "Win32 minimal execution returned: false" -or
         $piuOutput -notmatch "Win32 minimal execution exception caught: false" -or
         $piuOutput -notmatch "Win32 minimal execution timed out: true" -or
+        $piuOutput -notmatch "Win32 minimal execution timeout context captured: false" -or
         $piuOutput -notmatch "Win32 handled HLE trap count: 0" -or
         $piuOutput -notmatch "Win32 handled DOS interrupt count: 0" -or
         $piuOutput -notmatch "Win32 handled memory store count: 0" -or

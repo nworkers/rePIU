@@ -488,6 +488,47 @@ void PrintExecutionAttempt(
     }
     logger.info("Win32 minimal execution timed out: {}",
                 attempt.timed_out ? "true" : "false");
+    if (attempt.timed_out)
+    {
+        const auto& snapshot = attempt.timeout_snapshot;
+        logger.info("Win32 minimal execution timeout context captured: {}",
+                    snapshot.captured ? "true" : "false");
+        if (snapshot.captured)
+        {
+            logger.info("Win32 minimal execution timeout EIP: {}",
+                        Hex32(snapshot.eip));
+            logger.info("Win32 minimal execution timeout EAX: {}",
+                        Hex32(snapshot.eax));
+            logger.info("Win32 minimal execution timeout EBX: {}",
+                        Hex32(snapshot.ebx));
+            logger.info("Win32 minimal execution timeout ECX: {}",
+                        Hex32(snapshot.ecx));
+            logger.info("Win32 minimal execution timeout EDX: {}",
+                        Hex32(snapshot.edx));
+            logger.info("Win32 minimal execution timeout ESI: {}",
+                        Hex32(snapshot.esi));
+            logger.info("Win32 minimal execution timeout EDI: {}",
+                        Hex32(snapshot.edi));
+            logger.info("Win32 minimal execution timeout ESP: {}",
+                        Hex32(snapshot.esp));
+            logger.info("Win32 minimal execution timeout EBP: {}",
+                        Hex32(snapshot.ebp));
+            logger.info("Win32 minimal execution timeout EFLAGS: {}",
+                        Hex32(snapshot.eflags));
+            logger.info("Win32 minimal execution timeout CS: {}",
+                        Hex16(snapshot.cs));
+            logger.info("Win32 minimal execution timeout DS: {}",
+                        Hex16(snapshot.ds));
+            logger.info("Win32 minimal execution timeout ES: {}",
+                        Hex16(snapshot.es));
+            logger.info("Win32 minimal execution timeout SS: {}",
+                        Hex16(snapshot.ss));
+            logger.info("Win32 minimal execution timeout FS: {}",
+                        Hex16(snapshot.fs));
+            logger.info("Win32 minimal execution timeout GS: {}",
+                        Hex16(snapshot.gs));
+        }
+    }
     logger.info("Win32 guest stack switch supported: {}",
                 attempt.guest_stack_switch_supported ? "true" : "false");
     logger.info("Win32 guest stack switch attempted: {}",
@@ -1050,6 +1091,9 @@ int main(int argc, char** argv)
             PrintPrivilegedInstructionClassification(*logger, classification);
         }
     }
-    repiu::platform::win32::ReleaseWin32RelocatedImage(placement);
+    if (!attempt.timed_out)
+    {
+        repiu::platform::win32::ReleaseWin32RelocatedImage(placement);
+    }
     return 0;
 }

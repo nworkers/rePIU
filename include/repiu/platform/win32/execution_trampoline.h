@@ -11,6 +11,27 @@
 namespace repiu::platform::win32
 {
 
+struct X86ExecutionSnapshot
+{
+    bool captured = false;
+    std::uint32_t eip = 0;
+    std::uint32_t eax = 0;
+    std::uint32_t ebx = 0;
+    std::uint32_t ecx = 0;
+    std::uint32_t edx = 0;
+    std::uint32_t esi = 0;
+    std::uint32_t edi = 0;
+    std::uint32_t esp = 0;
+    std::uint32_t ebp = 0;
+    std::uint32_t eflags = 0;
+    std::uint16_t cs = 0;
+    std::uint16_t ds = 0;
+    std::uint16_t es = 0;
+    std::uint16_t ss = 0;
+    std::uint16_t fs = 0;
+    std::uint16_t gs = 0;
+};
+
 struct Win32MinimalExecutionAttempt
 {
     bool valid = false;
@@ -32,6 +53,7 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t exception_edx = 0;
     std::uint32_t exception_esi = 0;
     std::uint32_t exception_edi = 0;
+    X86ExecutionSnapshot timeout_snapshot;
     std::uint32_t handled_hle_trap_count = 0;
     std::uint32_t last_hle_trap_address = 0;
     std::uint32_t last_hle_trap_opcode = 0;
