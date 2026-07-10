@@ -13,6 +13,7 @@ enum class PrivilegedInstructionClass
     kUnknown,
     kHleTrapCandidate,
     kCpuStateInitializationCandidate,
+    kGuestBreakpointTrap,
 };
 
 struct PrivilegedInstructionClassification

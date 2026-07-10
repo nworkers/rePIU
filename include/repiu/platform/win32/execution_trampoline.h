@@ -85,6 +85,7 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t exception_edx = 0;
     std::uint32_t exception_esi = 0;
     std::uint32_t exception_edi = 0;
+    X86ExecutionSnapshot exception_snapshot;
     X86ExecutionSnapshot timeout_snapshot;
     X86ExecutionSnapshot last_single_step_snapshot;
     std::uint32_t single_step_trace_count = 0;
@@ -116,6 +117,8 @@ struct Win32MinimalExecutionAttempt
     std::string last_dos_getcwd_path;
     bool last_dos_getcwd_success = false;
     std::uint16_t last_dos_getcwd_error = 0;
+    std::uint32_t handled_dos_getdrive_count = 0;
+    std::uint8_t last_dos_getdrive_value = 0;
     std::uint32_t handled_dos_open_count = 0;
     std::string last_dos_open_guest_path;
     std::string last_dos_open_host_path;

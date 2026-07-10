@@ -64,6 +64,7 @@ struct ThreadContext
     std::uint32_t exception_edx = 0;
     std::uint32_t exception_esi = 0;
     std::uint32_t exception_edi = 0;
+    X86ExecutionSnapshot exception_snapshot;
     std::uint32_t handled_hle_trap_count = 0;
     std::uint32_t last_hle_trap_address = 0;
     std::uint32_t last_hle_trap_opcode = 0;
@@ -84,6 +85,8 @@ struct ThreadContext
     std::string last_dos_getcwd_path;
     bool last_dos_getcwd_success = false;
     std::uint16_t last_dos_getcwd_error = 0;
+    std::uint32_t handled_dos_getdrive_count = 0;
+    std::uint8_t last_dos_getdrive_value = 0;
     std::uint32_t handled_dos_open_count = 0;
     std::string last_dos_open_guest_path;
     std::string last_dos_open_host_path;
@@ -587,6 +590,9 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->last_dos_getcwd_path = context.last_dos_getcwd_path;
     attempt->last_dos_getcwd_success = context.last_dos_getcwd_success;
     attempt->last_dos_getcwd_error = context.last_dos_getcwd_error;
+    attempt->handled_dos_getdrive_count =
+        context.handled_dos_getdrive_count;
+    attempt->last_dos_getdrive_value = context.last_dos_getdrive_value;
     attempt->handled_dos_open_count = context.handled_dos_open_count;
     attempt->last_dos_open_guest_path = context.last_dos_open_guest_path;
     attempt->last_dos_open_host_path = context.last_dos_open_host_path;
@@ -691,6 +697,8 @@ int CaptureException(EXCEPTION_POINTERS* exception_info,
             reinterpret_cast<std::uintptr_t>(
                 exception_info->ExceptionRecord->ExceptionAddress));
 #if defined(_M_IX86)
+        CopySnapshotFromContextRecord(*exception_info->ContextRecord,
+                                      &context->exception_snapshot);
         context->exception_eax = exception_info->ContextRecord->Eax;
         context->exception_ebx = exception_info->ContextRecord->Ebx;
         context->exception_ecx = exception_info->ContextRecord->Ecx;
@@ -821,6 +829,8 @@ bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
                                    ThreadContext* context);
 bool HandleSegmentOverrideByteLoadInstruction(CONTEXT* win32_context,
                                               ThreadContext* context);
+bool HandleFsSegmentWordLoadInstruction(CONTEXT* win32_context,
+                                        ThreadContext* context);
 bool HandleSegmentMemoryCompareInstruction(CONTEXT* win32_context,
                                            ThreadContext* context);
 bool HandleSegmentMemoryLoadInstruction(CONTEXT* win32_context,
@@ -1327,6 +1337,16 @@ bool HandleDosGetCurrentDirectory(CONTEXT* win32_context,
     return true;
 }
 
+void HandleDosGetCurrentDrive(CONTEXT* win32_context, ThreadContext* context)
+{
+    constexpr std::uint8_t kDefaultDriveC = 2;
+    ++context->handled_dos_getdrive_count;
+    context->last_dos_getdrive_value = kDefaultDriveC;
+    win32_context->Eax =
+        (win32_context->Eax & 0xFFFFFF00U) | kDefaultDriveC;
+    win32_context->EFlags &= ~1U;
+}
+
 void RecordDosOpen(ThreadContext* context,
                    const std::string& guest_path,
                    const repiu::hle::DosResolvedPath& resolved,
@@ -1622,6 +1642,10 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
                 (win32_context->Eax & 0xFFFFFF00U) | static_cast<DWORD>('$');
             break;
         }
+        case 0x19:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            HandleDosGetCurrentDrive(win32_context, context);
+            break;
         case 0x30:
             RecordHandledDosInterrupt(context, 0x21, ax);
             win32_context->Eax =
@@ -1825,6 +1849,49 @@ std::uint16_t ReadRegister16(const CONTEXT& win32_context,
             return static_cast<std::uint16_t>(win32_context.Edi & 0xFFFFU);
         default:
             return 0;
+    }
+}
+
+void WriteRegister16(CONTEXT* win32_context,
+                     std::uint8_t register_id,
+                     std::uint16_t value)
+{
+    switch (register_id & 0x07)
+    {
+        case 0:
+            win32_context->Eax =
+                (win32_context->Eax & 0xFFFF0000U) | value;
+            break;
+        case 1:
+            win32_context->Ecx =
+                (win32_context->Ecx & 0xFFFF0000U) | value;
+            break;
+        case 2:
+            win32_context->Edx =
+                (win32_context->Edx & 0xFFFF0000U) | value;
+            break;
+        case 3:
+            win32_context->Ebx =
+                (win32_context->Ebx & 0xFFFF0000U) | value;
+            break;
+        case 4:
+            win32_context->Esp =
+                (win32_context->Esp & 0xFFFF0000U) | value;
+            break;
+        case 5:
+            win32_context->Ebp =
+                (win32_context->Ebp & 0xFFFF0000U) | value;
+            break;
+        case 6:
+            win32_context->Esi =
+                (win32_context->Esi & 0xFFFF0000U) | value;
+            break;
+        case 7:
+            win32_context->Edi =
+                (win32_context->Edi & 0xFFFF0000U) | value;
+            break;
+        default:
+            break;
     }
 }
 
@@ -2420,6 +2487,93 @@ bool ReadSegmentByte(ThreadContext* context,
     return false;
 }
 
+bool ReadFsSegmentWord(ThreadContext* context,
+                       std::uint16_t selector,
+                       std::uint32_t offset,
+                       std::uint16_t* value)
+{
+    if (context == nullptr || value == nullptr)
+    {
+        return false;
+    }
+
+    if (selector == context->guest_fs && selector != 0 && offset < 0x10000)
+    {
+        *value = 0;
+        return true;
+    }
+
+    return false;
+}
+
+bool HandleFsSegmentWordLoadInstruction(CONTEXT* win32_context,
+                                        ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0x66 || instruction[1] != 0x65 ||
+        instruction[2] != 0x8B)
+    {
+        return false;
+    }
+
+    const std::uint8_t modrm = instruction[3];
+    const std::uint8_t mod = static_cast<std::uint8_t>((modrm >> 6) & 0x03);
+    const std::uint8_t destination_register =
+        static_cast<std::uint8_t>((modrm >> 3) & 0x07);
+    const std::uint8_t base_register =
+        static_cast<std::uint8_t>(modrm & 0x07);
+    if (mod == 0x03 || base_register == 0x04)
+    {
+        return false;
+    }
+
+    std::uint32_t instruction_length = 4;
+    std::uint32_t offset = 0;
+    if (mod == 0x00)
+    {
+        if (base_register == 0x05)
+        {
+            return false;
+        }
+        offset = ReadGeneralRegister32(win32_context, base_register);
+    }
+    else if (mod == 0x01)
+    {
+        const std::int8_t displacement =
+            static_cast<std::int8_t>(instruction[4]);
+        offset = ReadGeneralRegister32(win32_context, base_register) +
+            static_cast<std::uint32_t>(
+                static_cast<std::int32_t>(displacement));
+        instruction_length = 5;
+    }
+    else
+    {
+        return false;
+    }
+
+    constexpr std::uint8_t kFsSegmentRegister = 4;
+    const std::uint16_t selector =
+        ReadGuestSegmentSelector(*context, kFsSegmentRegister);
+    std::uint16_t value = 0;
+    if (!ReadFsSegmentWord(context, selector, offset, &value))
+    {
+        return false;
+    }
+
+    WriteRegister16(win32_context, destination_register, value);
+    RecordGuestSegmentMemoryLoad(win32_context,
+                                 context,
+                                 0x8B,
+                                 kFsSegmentRegister,
+                                 selector,
+                                 offset,
+                                 2,
+                                 value);
+    win32_context->Eip += instruction_length;
+    return true;
+}
+
 bool HandleSegmentMemoryLoadInstruction(CONTEXT* win32_context,
                                         ThreadContext* context)
 {
@@ -2910,6 +3064,11 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
         (win32_context->Eax >> 8) & 0xFF);
     switch (ah)
     {
+        case 0x19:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            HandleDosGetCurrentDrive(win32_context, context);
+            win32_context->Eip += 2;
+            return true;
         case 0x30:
             RecordHandledDosInterrupt(context, 0x21, ax);
             win32_context->Eax =
@@ -3443,6 +3602,11 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
         return EXCEPTION_CONTINUE_EXECUTION;
     }
     if (context->enable_segment_load_hle &&
+        HandleFsSegmentWordLoadInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
         HandleSegmentMemoryCompareInstruction(win32_context, context))
     {
         return EXCEPTION_CONTINUE_EXECUTION;
@@ -3742,6 +3906,7 @@ bool RunWin32ExecutionThread(
     attempt->exception_edx = context.exception_edx;
     attempt->exception_esi = context.exception_esi;
     attempt->exception_edi = context.exception_edi;
+    attempt->exception_snapshot = context.exception_snapshot;
     CopyThreadObservationToAttempt(context, attempt);
     attempt->thread_exit_code = exit_code;
     attempt->hle_console_output.assign(

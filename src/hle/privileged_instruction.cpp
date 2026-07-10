@@ -80,6 +80,15 @@ bool ClassifyPrivilegedInstruction(
         static_cast<std::uint32_t>(instruction_offset - offset);
     switch (opcode)
     {
+        case 0xCC:
+            SetClassification(
+                opcode,
+                prefix_length + 1,
+                "INT3",
+                PrivilegedInstructionClass::kGuestBreakpointTrap,
+                "guest breakpoint trap reached; stop execution and inspect the failure path",
+                classification);
+            return true;
         case 0xFA:
             SetClassification(
                 opcode,
@@ -280,6 +289,8 @@ const char* PrivilegedInstructionClassName(
             return "HLE trap candidate";
         case PrivilegedInstructionClass::kCpuStateInitializationCandidate:
             return "CPU/DPMI state initialization candidate";
+        case PrivilegedInstructionClass::kGuestBreakpointTrap:
+            return "guest breakpoint trap";
         case PrivilegedInstructionClass::kUnknown:
         default:
             return "unknown";

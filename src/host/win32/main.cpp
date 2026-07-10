@@ -202,10 +202,18 @@ void PrintPrivilegedInstructionClassification(
     spdlog::logger& logger,
     const repiu::hle::PrivilegedInstructionClassification& classification)
 {
-    const bool current_blocker = !classification.valid;
-    if (current_blocker)
+    const bool breakpoint_trap =
+        classification.instruction_class ==
+        repiu::hle::PrivilegedInstructionClass::kGuestBreakpointTrap;
+    if (!classification.valid)
     {
         logger.error("Privileged instruction classification: unknown");
+        logger.error("Privileged instruction opcode: {}",
+                     Hex8(classification.opcode));
+    }
+    else if (breakpoint_trap)
+    {
+        logger.error("Privileged instruction classification: breakpoint");
         logger.error("Privileged instruction opcode: {}",
                      Hex8(classification.opcode));
     }
@@ -217,32 +225,78 @@ void PrintPrivilegedInstructionClassification(
     }
     if (classification.valid)
     {
-        logger.info("Privileged instruction mnemonic: {}",
-                    classification.mnemonic);
-        logger.info("Privileged instruction length: {}",
-                    classification.length);
-        logger.info("Privileged instruction class: {}",
-                    repiu::hle::PrivilegedInstructionClassName(
-                        classification.instruction_class));
-        logger.info("Privileged instruction HLE trap candidate: {}",
-                    classification.hle_trap_candidate ? "true" : "false");
-        logger.info("Privileged instruction CPU/DPMI state candidate: {}",
-                    classification.cpu_state_initialization_candidate
-                        ? "true"
-                        : "false");
+        spdlog::logger& output_logger = logger;
+        const spdlog::level::level_enum level =
+            breakpoint_trap ? spdlog::level::err : spdlog::level::info;
+        output_logger.log(level,
+                          "Privileged instruction mnemonic: {}",
+                          classification.mnemonic);
+        output_logger.log(level,
+                          "Privileged instruction length: {}",
+                          classification.length);
+        output_logger.log(level,
+                          "Privileged instruction class: {}",
+                          repiu::hle::PrivilegedInstructionClassName(
+                              classification.instruction_class));
+        output_logger.log(level,
+                          "Privileged instruction HLE trap candidate: {}",
+                          classification.hle_trap_candidate ? "true"
+                                                            : "false");
+        output_logger.log(
+            level,
+            "Privileged instruction CPU/DPMI state candidate: {}",
+            classification.cpu_state_initialization_candidate ? "true"
+                                                             : "false");
     }
-    if (current_blocker)
+    if (!classification.valid)
     {
         logger.error("Privileged instruction classification message: {}",
                      classification.message);
         logger.error("Current execution blocker: unhandled or unclassified "
                      "instruction/memory access at exception point");
     }
+    else if (breakpoint_trap)
+    {
+        logger.error("Privileged instruction classification message: {}",
+                     classification.message);
+        logger.error("Current execution blocker: guest breakpoint trap");
+    }
     else
     {
         logger.info("Privileged instruction classification message: {}",
                     classification.message);
     }
+}
+
+void PrintX86ExecutionSnapshot(spdlog::logger& logger,
+                               std::string_view label,
+                               const repiu::platform::win32::
+                                   X86ExecutionSnapshot& snapshot)
+{
+    logger.error("{} context captured: {}",
+                 label,
+                 snapshot.captured ? "true" : "false");
+    if (!snapshot.captured)
+    {
+        return;
+    }
+
+    logger.error("{} EIP: {}", label, Hex32(snapshot.eip));
+    logger.error("{} EAX: {}", label, Hex32(snapshot.eax));
+    logger.error("{} EBX: {}", label, Hex32(snapshot.ebx));
+    logger.error("{} ECX: {}", label, Hex32(snapshot.ecx));
+    logger.error("{} EDX: {}", label, Hex32(snapshot.edx));
+    logger.error("{} ESI: {}", label, Hex32(snapshot.esi));
+    logger.error("{} EDI: {}", label, Hex32(snapshot.edi));
+    logger.error("{} ESP: {}", label, Hex32(snapshot.esp));
+    logger.error("{} EBP: {}", label, Hex32(snapshot.ebp));
+    logger.error("{} EFLAGS: {}", label, Hex32(snapshot.eflags));
+    logger.error("{} CS: {}", label, Hex16(snapshot.cs));
+    logger.error("{} DS: {}", label, Hex16(snapshot.ds));
+    logger.error("{} ES: {}", label, Hex16(snapshot.es));
+    logger.error("{} SS: {}", label, Hex16(snapshot.ss));
+    logger.error("{} FS: {}", label, Hex16(snapshot.fs));
+    logger.error("{} GS: {}", label, Hex16(snapshot.gs));
 }
 
 void PrintGuestStackPlan(
@@ -485,6 +539,9 @@ void PrintExecutionAttempt(
                      Hex32(attempt.exception_esi));
         logger.error("Win32 minimal execution exception EDI: {}",
                      Hex32(attempt.exception_edi));
+        PrintX86ExecutionSnapshot(logger,
+                                  "Win32 minimal execution exception",
+                                  attempt.exception_snapshot);
     }
     logger.info("Win32 minimal execution timed out: {}",
                 attempt.timed_out ? "true" : "false");
@@ -699,6 +756,13 @@ void PrintExecutionAttempt(
             logger.info("Win32 last DOS getcwd error: {}",
                         Hex16(attempt.last_dos_getcwd_error));
         }
+    }
+    logger.info("Win32 handled DOS get drive count: {}",
+                attempt.handled_dos_getdrive_count);
+    if (attempt.handled_dos_getdrive_count > 0)
+    {
+        logger.info("Win32 last DOS get drive value: {}",
+                    Hex8(attempt.last_dos_getdrive_value));
     }
     logger.info("Win32 handled DOS open count: {}",
                 attempt.handled_dos_open_count);
