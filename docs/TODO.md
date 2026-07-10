@@ -1,5 +1,35 @@
 # TODO
 
+## 2026-07-11 Port I/O 0x02A0 계열 의미 분석 보류
+
+`piu_1st`에서 `0x02A0` 계열 Port I/O trace를 수집한 결과, 다음 패턴이 관측되었다.
+
+* `0x02AC <- 0x00000010`
+* `0x02A0 <- 0x00000001`
+* `0x02A2 <- 0x00000000`
+* `0x02A0 <- 0x00000005`
+* `0x02A2 <- 0x00000000`
+* 이후 `0x02A0` 값이 `+4`씩 증가하고 `0x02A2 <- 0`이 반복된다.
+
+이 패턴은 index/data 형태의 register 초기화 또는 작은 I/O register block처럼 보이지만, 실제 장치 의미는 아직 확정하지 않는다. 현재까지 `IN` 응답이 관측되지 않았으므로, 보안 장치나 응답형 하드웨어로 단정하지 않는다.
+
+다음 단계에서는 이 항목을 당장 구현하지 않고 TODO로 보류한다. 이후 필요할 때 `0x02A0` 계열 trace를 더 길게 수집하거나, `OUT DX,EAX` wrapper의 caller를 추적해서 어떤 코드가 index/value를 구성하는지 분석한다.
+
+## 2026-07-11 Port I/O 0x02A0-Family Meaning Deferred
+
+The `piu_1st` Port I/O trace for the `0x02A0` family showed this pattern:
+
+* `0x02AC <- 0x00000010`
+* `0x02A0 <- 0x00000001`
+* `0x02A2 <- 0x00000000`
+* `0x02A0 <- 0x00000005`
+* `0x02A2 <- 0x00000000`
+* Then the `0x02A0` value increases by `+4`, with `0x02A2 <- 0` repeated between writes.
+
+This looks like indexed register initialization or a small I/O register block, but the actual device meaning is not confirmed yet. No `IN` response has been observed so far, so do not classify it as a security device or response-driven hardware yet.
+
+For now, defer this item as TODO instead of implementing it. If needed later, collect a longer `0x02A0` family trace or trace the caller of the `OUT DX,EAX` wrapper to identify which code builds the index/value sequence.
+
 ## 2026-07-10 traced opcode HLE timeout 관측 진행
 
 `stage.cfg`는 `\DATAS\BGA` 아래에 없는 파일을 찾는 정상 probe로 간주한다. 이후 `spr.res`도 current directory 기준 `\DATAS\BGA\SPR.RES`가 없어서 DOS error `0x0002`로 실패한다. root fallback은 추가하지 않았다.

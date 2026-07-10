@@ -166,8 +166,8 @@ try
         $piuOutput -notmatch "Win32 relocated image placed size: 0x006D7000" -or
         $piuOutput -notmatch "Win32 minimal execution returned: false" -or
         $piuOutput -notmatch "Win32 minimal execution exception caught: true" -or
-        $piuOutput -notmatch "Win32 minimal execution exception code: 0xC0000096" -or
-        $piuOutput -notmatch "Win32 minimal execution exception address: 0x020F5726" -or
+        $piuOutput -notmatch "Win32 minimal execution exception code: 0xC0000005" -or
+        $piuOutput -notmatch "Win32 minimal execution exception address: 0x0[1-9]0F4221" -or
         $piuOutput -notmatch "Win32 minimal execution timed out: false" -or
         $piuOutput -notmatch "Win32 last single-step context captured: true" -or
         $piuOutput -notmatch "Win32 diagnostic poll iterations: [1-9]" -or
@@ -178,17 +178,20 @@ try
         $piuOutput -notmatch "Win32 last DOS environment value bytes: [0-9]" -or
         $piuOutput -notmatch "Win32 handled HLE trap count: [1-9]" -or
         $piuOutput -notmatch "Win32 port I/O observation count: [1-9]" -or
-        $piuOutput -notmatch "Win32 last port I/O address: 0x020F5726" -or
+        $piuOutput -notmatch "Win32 last port I/O address: 0x0[1-9]0F4386" -or
         $piuOutput -notmatch "Win32 last port I/O opcode: 0x66EF" -or
         $piuOutput -notmatch "Win32 last port I/O direction: out" -or
-        $piuOutput -notmatch "Win32 last port I/O port: 0x02A0" -or
+        $piuOutput -notmatch "Win32 last port I/O port: 0x02A2" -or
         $piuOutput -notmatch "Win32 last port I/O width: 4" -or
-        $piuOutput -notmatch "Win32 last port I/O value: 0x00000005" -or
-        $piuOutput -notmatch "Win32 last port I/O handled: false" -or
-        $piuOutput -notmatch "Win32 last port I/O result: unsupported" -or
+        $piuOutput -notmatch "Win32 last port I/O value: 0x000000D0" -or
+        $piuOutput -notmatch "Win32 last port I/O handled: true" -or
+        $piuOutput -notmatch "Win32 last port I/O result: deferred-ignored" -or
+        $piuOutput -notmatch "Win32 port I/O trace stored count: 16" -or
+        $piuOutput -notmatch "Win32 port I/O trace limit reached: false" -or
+        $piuOutput -notmatch "Win32 port I/O trace #16 address=0x0[1-9]0F4386 opcode=0x66EF direction=out port=0x02A0 width=4 value=0x0000001D handled=true" -or
         $piuOutput -notmatch "Win32 handled DOS interrupt count: [1-9]" -or
-        $piuOutput -notmatch "Win32 last handled DOS interrupt vector: 0x33" -or
-        $piuOutput -notmatch "Win32 last handled DOS interrupt AX: 0x0002" -or
+        $piuOutput -notmatch "Win32 last handled DOS interrupt vector: 0x21" -or
+        $piuOutput -notmatch "Win32 last handled DOS interrupt AX: 0x2509" -or
         $piuOutput -notmatch "Win32 handled DOS chdir count: [1-9]" -or
         $piuOutput -notmatch "Win32 last DOS chdir guest path: \\datas\\bga" -or
         $piuOutput -notmatch "Win32 last DOS chdir result: success" -or
@@ -200,9 +203,9 @@ try
         $piuOutput -notmatch "Win32 shadow memory byte count: 0" -or
         $piuOutput -notmatch "Win32 shadow memory range valid: false" -or
         $piuOutput -notmatch "Win32 minimal execution thread exit code: 2" -or
-        $piuOutput -notmatch "Win32 minimal execution message: unsupported port I/O OUT DX,EAX port=0x2a0 value=0x5" -or
-        $piuOutput -notmatch "Privileged instruction opcode: 0xEF" -or
-        $piuOutput -notmatch "Privileged instruction mnemonic: port I/O")
+        $piuOutput -notmatch "Win32 minimal execution message: original entry raised a caught exception" -or
+        $piuOutput -notmatch "Privileged instruction opcode: 0xCD" -or
+        $piuOutput -notmatch "Privileged instruction mnemonic: INT imm8")
     {
         throw "piu_1st did not reach the expected current HLE observation point."
     }

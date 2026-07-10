@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstring>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <sstream>
@@ -28,6 +29,13 @@ struct StackSwitchCallState
     std::uint32_t guest_return_esp = 0;
     std::uint32_t result_code = 0;
     std::uint32_t enable_single_step_trace = 0;
+};
+
+struct DosInterruptVectorShadow
+{
+    std::uint16_t segment = 0;
+    std::uint16_t offset = 0;
+    bool valid = false;
 };
 
 struct ThreadContext
@@ -164,6 +172,7 @@ struct ThreadContext
     std::uint16_t guest_ds = 0;
     std::uint16_t guest_fs = 0;
     std::uint16_t guest_gs = 0;
+    std::array<DosInterruptVectorShadow, 256> dos_interrupt_vectors = {};
     char hle_console_output[4096] = {};
     std::uint32_t hle_console_output_size = 0;
     std::string hle_message;
@@ -1460,6 +1469,40 @@ bool HandleDosResizeMemoryBlock(CONTEXT* win32_context,
     return true;
 }
 
+void HandleDosGetInterruptVector(CONTEXT* win32_context,
+                                 ThreadContext* context)
+{
+    const std::uint8_t vector = static_cast<std::uint8_t>(
+        win32_context->Eax & 0xFFU);
+    const DosInterruptVectorShadow& entry =
+        context->dos_interrupt_vectors[vector];
+    const std::uint16_t segment = entry.valid ? entry.segment : 0;
+    const std::uint16_t offset = entry.valid ? entry.offset : 0;
+
+    context->guest_es = segment;
+    win32_context->SegEs = segment;
+    win32_context->Ebx =
+        (win32_context->Ebx & 0xFFFF0000U) | offset;
+    win32_context->EFlags &= ~1U;
+}
+
+void HandleDosSetInterruptVector(CONTEXT* win32_context,
+                                 ThreadContext* context)
+{
+    const std::uint8_t vector = static_cast<std::uint8_t>(
+        win32_context->Eax & 0xFFU);
+    DosInterruptVectorShadow& entry =
+        context->dos_interrupt_vectors[vector];
+
+    entry.segment = context->guest_ds != 0
+        ? context->guest_ds
+        : static_cast<std::uint16_t>(win32_context->SegDs);
+    entry.offset = static_cast<std::uint16_t>(
+        win32_context->Edx & 0xFFFFU);
+    entry.valid = true;
+    win32_context->EFlags &= ~1U;
+}
+
 bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
 {
     const std::uint16_t ax = static_cast<std::uint16_t>(
@@ -1498,6 +1541,14 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
                 (win32_context->Eax & 0xFFFF0000U) | 0x0007U;
             win32_context->Ebx = 0;
             win32_context->Ecx = 0;
+            break;
+        case 0x25:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            HandleDosSetInterruptVector(win32_context, context);
+            break;
+        case 0x35:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            HandleDosGetInterruptVector(win32_context, context);
             break;
         case 0x3B:
             RecordHandledDosInterrupt(context, 0x21, ax);
@@ -2774,6 +2825,16 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
             win32_context->EFlags &= ~1U;
             win32_context->Eip += 2;
             return true;
+        case 0x25:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            HandleDosSetInterruptVector(win32_context, context);
+            win32_context->Eip += 2;
+            return true;
+        case 0x35:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            HandleDosGetInterruptVector(win32_context, context);
+            win32_context->Eip += 2;
+            return true;
         case 0x3B:
             RecordHandledDosInterrupt(context, 0x21, ax);
             if (!HandleDosChangeDirectory(win32_context, context))
@@ -2925,6 +2986,21 @@ void RecordPortIo(ThreadContext* context,
     context->port_io.last_is_input = is_input;
     context->port_io.last_handled = handled;
     context->port_io.last_result = result;
+    if (context->port_io.trace_stored_count < kWin32PortIoTraceCapacity)
+    {
+        Win32PortIoTraceEntry& entry =
+            context->port_io.trace[context->port_io.trace_stored_count];
+        entry.valid = true;
+        entry.sequence = context->port_io.observed_count;
+        entry.address = address;
+        entry.opcode = opcode;
+        entry.port = port;
+        entry.width = width;
+        entry.value = value;
+        entry.is_input = is_input;
+        entry.handled = handled;
+        ++context->port_io.trace_stored_count;
+    }
 }
 
 bool IsObservedPortInitializationWrite(std::uint16_t port,
@@ -2941,24 +3017,52 @@ bool IsObservedPortInitializationWrite(std::uint16_t port,
            (port == 0x02A2 && value == 0x00000000U);
 }
 
+bool IsPortIoTraceCandidate(std::uint16_t port,
+                            std::uint32_t width,
+                            bool is_input)
+{
+    return !is_input && width == 4 && port >= 0x02A0 && port <= 0x02AF;
+}
+
 bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
-    if (instruction[0] != 0x66 || instruction[1] != 0xEF)
+    if (instruction[0] != 0x66 ||
+        (instruction[1] != 0xEF && instruction[1] != 0xED))
     {
         return false;
     }
 
     const std::uint16_t port = static_cast<std::uint16_t>(
         win32_context->Edx & 0xFFFFU);
-    const std::uint32_t value = win32_context->Eax;
+    const bool is_input = instruction[1] == 0xED;
+    const std::uint32_t value = is_input ? 0 : win32_context->Eax;
     const std::uint32_t width = 4;
+    const std::uint32_t opcode = is_input ? 0x66ED : 0x66EF;
+    if (is_input)
+    {
+        RecordPortIo(context,
+                     static_cast<std::uint32_t>(win32_context->Eip),
+                     opcode,
+                     port,
+                     width,
+                     value,
+                     true,
+                     false,
+                     "unsupported-in");
+        std::ostringstream stream;
+        stream << "unsupported port I/O IN EAX,DX port=0x"
+               << std::hex << static_cast<unsigned>(port);
+        context->hle_message = stream.str();
+        return false;
+    }
+
     if (IsObservedPortInitializationWrite(port, width, value))
     {
         RecordPortIo(context,
                      static_cast<std::uint32_t>(win32_context->Eip),
-                     0x66EF,
+                     opcode,
                      port,
                      width,
                      value,
@@ -2969,9 +3073,44 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
         return true;
     }
 
+    if (IsPortIoTraceCandidate(port, width, false))
+    {
+        if (context->port_io.observed_count >= kWin32DeferredPortIoLimit)
+        {
+            context->port_io.trace_limit_reached = true;
+            RecordPortIo(context,
+                         static_cast<std::uint32_t>(win32_context->Eip),
+                         opcode,
+                         port,
+                         width,
+                         value,
+                         false,
+                         false,
+                         "deferred-limit");
+            std::ostringstream stream;
+            stream << "deferred port I/O limit reached for OUT DX,EAX port=0x"
+                   << std::hex << static_cast<unsigned>(port)
+                   << " value=0x" << value;
+            context->hle_message = stream.str();
+            return false;
+        }
+
+        RecordPortIo(context,
+                     static_cast<std::uint32_t>(win32_context->Eip),
+                     opcode,
+                     port,
+                     width,
+                     value,
+                     false,
+                     true,
+                     "deferred-ignored");
+        win32_context->Eip += 2;
+        return true;
+    }
+
     RecordPortIo(context,
                  static_cast<std::uint32_t>(win32_context->Eip),
-                 0x66EF,
+                 opcode,
                  port,
                  width,
                  value,
@@ -2979,8 +3118,8 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
                  false,
                  "unsupported");
     std::ostringstream stream;
-    stream << "unsupported port I/O OUT DX,EAX port=0x"
-           << std::hex << static_cast<unsigned>(port)
+    stream << "unsupported port I/O OUT DX,EAX port=0x";
+    stream << std::hex << static_cast<unsigned>(port)
            << " value=0x" << value;
     context->hle_message = stream.str();
     return false;

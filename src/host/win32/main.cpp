@@ -623,6 +623,32 @@ void PrintExecutionAttempt(
                     attempt.port_io.last_handled ? "true" : "false");
         logger.info("Win32 last port I/O result: {}",
                     attempt.port_io.last_result);
+        logger.info("Win32 port I/O trace stored count: {}",
+                    attempt.port_io.trace_stored_count);
+        logger.info("Win32 port I/O trace limit reached: {}",
+                    attempt.port_io.trace_limit_reached ? "true" : "false");
+        for (std::uint32_t index = 0;
+             index < attempt.port_io.trace_stored_count &&
+             index < repiu::platform::win32::kWin32PortIoTraceCapacity;
+             ++index)
+        {
+            const repiu::platform::win32::Win32PortIoTraceEntry& entry =
+                attempt.port_io.trace[index];
+            if (!entry.valid)
+            {
+                continue;
+            }
+            logger.info(
+                "Win32 port I/O trace #{} address={} opcode={} direction={} port={} width={} value={} handled={}",
+                entry.sequence,
+                Hex32(entry.address),
+                Hex16(static_cast<std::uint16_t>(entry.opcode & 0xFFFFU)),
+                entry.is_input ? "in" : "out",
+                Hex16(static_cast<std::uint16_t>(entry.port & 0xFFFFU)),
+                entry.width,
+                Hex32(entry.value),
+                entry.handled ? "true" : "false");
+        }
     }
     logger.info("Win32 handled DOS interrupt count: {}",
                 attempt.handled_dos_interrupt_count);
@@ -869,14 +895,16 @@ void PrintExecutionAttempt(
     }
 }
 
-bool SelectRelocatedImageBase(std::uint32_t reserve_size,
-                              spdlog::logger& logger,
-                              std::uint32_t* selected_base)
+bool SelectAndReserveRelocatedImageBase(
+    std::uint32_t reserve_size,
+    spdlog::logger& logger,
+    repiu::platform::win32::Win32AddressRangeReservation* reservation)
 {
-    if (selected_base == nullptr)
+    if (reservation == nullptr)
     {
         return false;
     }
+    *reservation = repiu::platform::win32::Win32AddressRangeReservation{};
 
     const std::vector<std::uint32_t> candidates = {
         0x01000000,
@@ -909,11 +937,34 @@ bool SelectRelocatedImageBase(std::uint32_t reserve_size,
         logger.info("Win32 relocated base candidate {}: {}",
                     Hex32(candidate),
                     probe.range_available ? "available" : "occupied");
-        if (probe.range_available)
+        if (!probe.range_available)
         {
-            *selected_base = candidate;
-            return true;
+            continue;
         }
+
+        repiu::platform::win32::Win32AddressRangeReservation candidate_reservation;
+        if (!repiu::platform::win32::ReserveAndCommitWin32RuntimeAddressRange(
+                policy, &candidate_reservation))
+        {
+            continue;
+        }
+
+        if (!candidate_reservation.reserved ||
+            candidate_reservation.reserved_base != candidate)
+        {
+            logger.warn("Win32 relocated base candidate {} reserve result: {}",
+                        Hex32(candidate),
+                        candidate_reservation.message);
+            repiu::platform::win32::ReleaseWin32RuntimeAddressRange(
+                candidate_reservation);
+            continue;
+        }
+
+        logger.info("Win32 relocated base candidate {} reserved size: {}",
+                    Hex32(candidate),
+                    Hex32(candidate_reservation.reserved_size));
+        *reservation = candidate_reservation;
+        return true;
     }
 
     return false;
@@ -1070,14 +1121,19 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    std::uint32_t relocated_image_base = 0;
-    if (!SelectRelocatedImageBase(arena_size_plan.arena_reserve_size,
-                                  *logger,
-                                  &relocated_image_base))
+    repiu::platform::win32::Win32AddressRangeReservation
+        relocated_arena_reservation;
+    if (!SelectAndReserveRelocatedImageBase(
+            arena_size_plan.arena_reserve_size,
+            *logger,
+            &relocated_arena_reservation))
     {
-        logger->error("Failed to find an available relocated image base");
+        logger->error("Failed to reserve an available relocated image base");
         return 1;
     }
+
+    const std::uint32_t relocated_image_base =
+        relocated_arena_reservation.reserved_base;
 
     logger->info("Win32 selected relocated image base: {}",
                  Hex32(relocated_image_base));
@@ -1092,6 +1148,8 @@ int main(int argc, char** argv)
     {
         PrintRuntimeMemoryArenaPlan(*logger, arena_plan);
         logger->error("Failed to build relocated runtime memory arena plan");
+        repiu::platform::win32::ReleaseWin32RuntimeAddressRange(
+            relocated_arena_reservation);
         return 1;
     }
 
@@ -1102,6 +1160,8 @@ int main(int argc, char** argv)
             load_result, relocated_image_base, &relocatable_plan, &error))
     {
         PrintParseError(*logger, error);
+        repiu::platform::win32::ReleaseWin32RuntimeAddressRange(
+            relocated_arena_reservation);
         return 1;
     }
 
@@ -1110,6 +1170,8 @@ int main(int argc, char** argv)
             load_result, relocatable_plan, &relocated_image, &error))
     {
         PrintParseError(*logger, error);
+        repiu::platform::win32::ReleaseWin32RuntimeAddressRange(
+            relocated_arena_reservation);
         return 1;
     }
 
@@ -1153,21 +1215,32 @@ int main(int argc, char** argv)
     {
         PrintDosVirtualFileSystem(*logger, dos_file_system);
         logger->error("Failed to initialize DOS virtual filesystem");
+        repiu::platform::win32::ReleaseWin32RuntimeAddressRange(
+            relocated_arena_reservation);
         return 1;
     }
     PrintDosVirtualFileSystem(*logger, dos_file_system);
 
     repiu::platform::win32::Win32RelocatedImagePlacement placement;
-    if (!repiu::platform::win32::PlaceWin32RelocatedImage(
+    if (!repiu::platform::win32::PlaceWin32RelocatedImageInReservedRange(
             relocated_image,
-            arena_plan.arena_reserve_size,
+            relocated_arena_reservation,
             &placement))
     {
         logger->error("Failed to place relocated image");
+        repiu::platform::win32::ReleaseWin32RuntimeAddressRange(
+            relocated_arena_reservation);
         return 1;
     }
 
     PrintPlacement(*logger, placement);
+    if (!placement.placed)
+    {
+        repiu::platform::win32::ReleaseWin32RuntimeAddressRange(
+            relocated_arena_reservation);
+        logger->error("Failed to place relocated image");
+        return 1;
+    }
     logger->flush();
     repiu::platform::win32::Win32MinimalExecutionAttempt attempt;
     const bool use_dos_console_hle =

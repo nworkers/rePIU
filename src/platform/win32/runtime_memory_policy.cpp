@@ -279,8 +279,10 @@ bool ProbeWin32RuntimeAddressRange(
 #endif
 }
 
-bool ReserveWin32RuntimeAddressRange(
+bool ReserveWin32RuntimeAddressRangeWithType(
     const Win32RuntimeMemoryPolicy& policy,
+    DWORD allocation_type,
+    const char* operation_name,
     Win32AddressRangeReservation* reservation)
 {
 #if !defined(_WIN32)
@@ -289,7 +291,8 @@ bool ReserveWin32RuntimeAddressRange(
         return false;
     }
     *reservation = Win32AddressRangeReservation{};
-    reservation->message = "Win32 runtime address reservation requires Win32 host APIs";
+    reservation->message =
+        "Win32 runtime address reservation requires Win32 host APIs";
     return false;
 #else
 
@@ -313,7 +316,7 @@ bool ReserveWin32RuntimeAddressRange(
     void* reserved_address = VirtualAlloc(
         requested_address,
         static_cast<SIZE_T>(policy.required_reserve_size),
-        MEM_RESERVE,
+        allocation_type,
         PAGE_READWRITE);
 
     reservation->valid = true;
@@ -321,8 +324,8 @@ bool ReserveWin32RuntimeAddressRange(
     {
         reservation->windows_error = GetLastError();
         std::ostringstream stream;
-        stream << "VirtualAlloc MEM_RESERVE failed with error "
-               << reservation->windows_error;
+        stream << "VirtualAlloc " << operation_name
+               << " failed with error " << reservation->windows_error;
         reservation->message = stream.str();
         return true;
     }
@@ -334,7 +337,8 @@ bool ReserveWin32RuntimeAddressRange(
 
     if (reserved_address == requested_address)
     {
-        reservation->message = "target address range reserved";
+        reservation->message = operation_name;
+        reservation->message += " target address range";
     }
     else
     {
@@ -344,6 +348,25 @@ bool ReserveWin32RuntimeAddressRange(
 
     return true;
 #endif
+}
+
+bool ReserveWin32RuntimeAddressRange(
+    const Win32RuntimeMemoryPolicy& policy,
+    Win32AddressRangeReservation* reservation)
+{
+    return ReserveWin32RuntimeAddressRangeWithType(
+        policy, MEM_RESERVE, "MEM_RESERVE", reservation);
+}
+
+bool ReserveAndCommitWin32RuntimeAddressRange(
+    const Win32RuntimeMemoryPolicy& policy,
+    Win32AddressRangeReservation* reservation)
+{
+    return ReserveWin32RuntimeAddressRangeWithType(
+        policy,
+        MEM_RESERVE | MEM_COMMIT,
+        "MEM_RESERVE|MEM_COMMIT",
+        reservation);
 }
 
 bool ReleaseWin32RuntimeAddressRange(
@@ -498,6 +521,122 @@ bool PlaceWin32RelocatedImage(
     FlushInstructionCache(GetCurrentProcess(), placed_address, reserve_size);
     placement->placed = true;
     placement->message = "relocated image placed in Win32 process memory";
+    return true;
+#endif
+}
+
+bool PlaceWin32RelocatedImageInReservedRange(
+    const runtime::RelocatedRuntimeImage& image,
+    const Win32AddressRangeReservation& reservation,
+    Win32RelocatedImagePlacement* placement)
+{
+#if !defined(_WIN32)
+    if (placement == nullptr)
+    {
+        return false;
+    }
+    *placement = Win32RelocatedImagePlacement{};
+    placement->message = "Win32 relocated image placement requires Win32 host APIs";
+    return false;
+#else
+
+    if (placement == nullptr)
+    {
+        return false;
+    }
+
+    *placement = Win32RelocatedImagePlacement{};
+    placement->requested_base = reservation.requested_base;
+    placement->requested_size = reservation.requested_size;
+
+    if (!reservation.valid || !reservation.reserved)
+    {
+        placement->message = "relocated image placement requires a reserved range";
+        return false;
+    }
+
+    if (!image.valid || image.objects.empty())
+    {
+        placement->message = "relocated runtime image is not valid";
+        return false;
+    }
+
+    std::uint32_t min_base = image.objects.front().relocated_base_address;
+    std::uint64_t max_end = 0;
+    for (const runtime::RelocatedRuntimeObject& object : image.objects)
+    {
+        min_base = std::min(min_base, object.relocated_base_address);
+        const std::uint64_t object_end =
+            static_cast<std::uint64_t>(object.relocated_base_address) +
+            object.virtual_size;
+        max_end = std::max(max_end, object_end);
+    }
+
+    if (max_end > std::numeric_limits<std::uint32_t>::max() ||
+        max_end <= min_base)
+    {
+        placement->message = "relocated image range is not valid";
+        return false;
+    }
+
+    const std::uint32_t image_reserve_size =
+        AlignUp(static_cast<std::uint32_t>(max_end) - min_base, 4096);
+    if (reservation.reserved_base != min_base ||
+        reservation.reserved_size < image_reserve_size)
+    {
+        placement->message =
+            "reserved range does not cover relocated image range";
+        return false;
+    }
+
+    placement->valid = true;
+    placement->placed_base = reservation.reserved_base;
+    placement->placed_size = reservation.reserved_size;
+
+    for (const runtime::RelocatedRuntimeObject& object : image.objects)
+    {
+        void* destination = reinterpret_cast<void*>(
+            static_cast<std::uintptr_t>(object.relocated_base_address));
+        if (!object.memory.empty())
+        {
+            std::memcpy(destination, object.memory.data(),
+                        object.memory.size());
+        }
+        ++placement->copied_object_count;
+    }
+
+    for (const runtime::RelocatedRuntimeObject& object : image.objects)
+    {
+        void* object_address = reinterpret_cast<void*>(
+            static_cast<std::uintptr_t>(object.relocated_base_address));
+        const SIZE_T object_size =
+            static_cast<SIZE_T>(AlignUp(object.virtual_size, 4096));
+        DWORD old_protection = 0;
+        if (VirtualProtect(object_address,
+                           object_size,
+                           ProtectionFromObjectFlags(object.flags),
+                           &old_protection) == 0)
+        {
+            placement->windows_error = GetLastError();
+            std::ostringstream stream;
+            stream << "VirtualProtect relocated object failed with error "
+                   << placement->windows_error;
+            placement->message = stream.str();
+            placement->placed_base = 0;
+            placement->placed_size = 0;
+            return true;
+        }
+        ++placement->protected_object_count;
+    }
+
+    FlushInstructionCache(
+        GetCurrentProcess(),
+        reinterpret_cast<void*>(
+            static_cast<std::uintptr_t>(placement->placed_base)),
+        placement->placed_size);
+    placement->placed = true;
+    placement->message =
+        "relocated image placed in precommitted Win32 process memory";
     return true;
 #endif
 }

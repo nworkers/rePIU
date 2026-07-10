@@ -75,6 +75,10 @@ bool ReserveWin32RuntimeAddressRange(
     const Win32RuntimeMemoryPolicy& policy,
     Win32AddressRangeReservation* reservation);
 
+bool ReserveAndCommitWin32RuntimeAddressRange(
+    const Win32RuntimeMemoryPolicy& policy,
+    Win32AddressRangeReservation* reservation);
+
 bool ReleaseWin32RuntimeAddressRange(
     const Win32AddressRangeReservation& reservation);
 
@@ -85,6 +89,11 @@ bool PlaceWin32RelocatedImage(
 bool PlaceWin32RelocatedImage(
     const runtime::RelocatedRuntimeImage& image,
     std::uint32_t minimum_reserve_size,
+    Win32RelocatedImagePlacement* placement);
+
+bool PlaceWin32RelocatedImageInReservedRange(
+    const runtime::RelocatedRuntimeImage& image,
+    const Win32AddressRangeReservation& reservation,
     Win32RelocatedImagePlacement* placement);
 
 bool ReleaseWin32RelocatedImage(

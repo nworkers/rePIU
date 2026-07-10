@@ -11,6 +11,9 @@
 namespace repiu::platform::win32
 {
 
+constexpr std::uint32_t kWin32PortIoTraceCapacity = 16;
+constexpr std::uint32_t kWin32DeferredPortIoLimit = 1024;
+
 struct X86ExecutionSnapshot
 {
     bool captured = false;
@@ -32,6 +35,19 @@ struct X86ExecutionSnapshot
     std::uint16_t gs = 0;
 };
 
+struct Win32PortIoTraceEntry
+{
+    bool valid = false;
+    std::uint32_t sequence = 0;
+    std::uint32_t address = 0;
+    std::uint32_t opcode = 0;
+    std::uint32_t port = 0;
+    std::uint32_t width = 0;
+    std::uint32_t value = 0;
+    bool is_input = false;
+    bool handled = false;
+};
+
 struct Win32PortIoObservation
 {
     std::uint32_t observed_count = 0;
@@ -43,6 +59,9 @@ struct Win32PortIoObservation
     bool last_is_input = false;
     bool last_handled = false;
     std::string last_result;
+    std::uint32_t trace_stored_count = 0;
+    bool trace_limit_reached = false;
+    Win32PortIoTraceEntry trace[kWin32PortIoTraceCapacity];
 };
 
 struct Win32MinimalExecutionAttempt
