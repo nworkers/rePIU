@@ -34,6 +34,7 @@ function(repiu_configure_win32_loader_host target_name)
 endfunction()
 
 add_library(repiu_exe
+    src/exe/dos16m_bound_module.cpp
     src/exe/dos4gw_loader.cpp
     src/exe/executable_headers.cpp
     src/hle/dos_file_system.cpp

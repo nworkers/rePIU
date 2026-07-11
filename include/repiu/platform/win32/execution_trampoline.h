@@ -4,6 +4,7 @@
 #include "repiu/platform/win32/runtime_memory_policy.h"
 #include "repiu/runtime/guest_context.h"
 #include "repiu/hle/dos_file_system.h"
+#include "repiu/exe/dos16m_bound_module.h"
 
 #include <cstdint>
 #include <string>
@@ -288,6 +289,21 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t linexe_export_count_load_edx = 0;
     std::uint16_t linexe_export_count_load_gs = 0;
     std::uint32_t linexe_scan_return_count = 0;
+    std::uint32_t linexe_bridge_entry_count = 0;
+    bool linexe_bridge_gate_valid = false;
+    std::uint16_t linexe_bridge_selector = 0;
+    std::uint32_t linexe_bridge_offset = 0;
+    std::uint32_t linexe_bridge_service = 0;
+    std::uint32_t linexe_bridge_esp = 0;
+    std::uint32_t linexe_bridge_ebp = 0;
+    std::uint32_t linexe_bridge_stack[6] = {};
+    std::uint32_t linexe_scan_return_eax = 0;
+    std::uint32_t linexe_scan_return_ebp = 0;
+    std::uint32_t linexe_scan_caller_eax = 0;
+    std::uint32_t linexe_selector_init_results[3] = {};
+    std::uint32_t dpmi_allocate_call_count = 0;
+    std::uint16_t dpmi_last_allocate_requested_count = 0;
+    std::uint16_t dpmi_last_allocated_selector = 0;
     bool dos_low_memory_valid = false;
     std::uint32_t dos_low_memory_size = 0;
     std::uint32_t dos_environment_block_size = 0;
@@ -420,6 +436,7 @@ bool AttemptWin32GuestStackTrapExecution(
     const Win32RelocatedImagePlacement& placement,
     const runtime::GuestStackSwitchPlan& stack_plan,
     const hle::DosVirtualFileSystemState& dos_file_system,
+    const exe::Dos16mBoundModule* linexe_module,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt);
 

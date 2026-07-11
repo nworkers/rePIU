@@ -1,4 +1,5 @@
 #include "repiu/exe/dos4gw_loader.h"
+#include "repiu/exe/dos16m_bound_module.h"
 #include "repiu/hle/dos_file_system.h"
 #include "repiu/hle/hle_dispatcher.h"
 #include "repiu/hle/privileged_instruction.h"
@@ -766,6 +767,34 @@ void PrintExecutionAttempt(
                 Hex32(attempt.linexe_export_value_load_selector),
                 Hex32(attempt.linexe_export_value_load_offset),
                 Hex32(attempt.linexe_export_value_load_value));
+    logger.info("Win32 LINEXE bridge entry/gate/target/service: {}/{}/{}:{}/{}",
+                attempt.linexe_bridge_entry_count,
+                attempt.linexe_bridge_gate_valid ? "valid" : "invalid",
+                Hex32(attempt.linexe_bridge_selector),
+                Hex32(attempt.linexe_bridge_offset),
+                attempt.linexe_bridge_service);
+    logger.info("Win32 LINEXE bridge ESP/EBP: {}/{}",
+                Hex32(attempt.linexe_bridge_esp),
+                Hex32(attempt.linexe_bridge_ebp));
+    logger.info("Win32 LINEXE bridge stack: {} {} {} {} {} {}",
+                Hex32(attempt.linexe_bridge_stack[0]),
+                Hex32(attempt.linexe_bridge_stack[1]),
+                Hex32(attempt.linexe_bridge_stack[2]),
+                Hex32(attempt.linexe_bridge_stack[3]),
+                Hex32(attempt.linexe_bridge_stack[4]),
+                Hex32(attempt.linexe_bridge_stack[5]));
+    logger.info("Win32 LINEXE scan return EAX/EBP/caller EAX: {}/{}/{}",
+                Hex32(attempt.linexe_scan_return_eax),
+                Hex32(attempt.linexe_scan_return_ebp),
+                Hex32(attempt.linexe_scan_caller_eax));
+    logger.info("Win32 LINEXE selector init results: {} {} {}",
+                Hex32(attempt.linexe_selector_init_results[0]),
+                Hex32(attempt.linexe_selector_init_results[1]),
+                Hex32(attempt.linexe_selector_init_results[2]));
+    logger.info("Win32 DPMI selector allocations count/request/result: {}/{}/{}",
+                attempt.dpmi_allocate_call_count,
+                attempt.dpmi_last_allocate_requested_count,
+                Hex32(attempt.dpmi_last_allocated_selector));
     logger.info("Win32 LINEXE root selector EAX/GS: {}/{}",
                 Hex32(attempt.linexe_root_selector_eax),
                 Hex32(attempt.linexe_root_read_gs));
@@ -1647,6 +1676,60 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    const std::filesystem::path dos4gw_path =
+        profile->executable_path.parent_path() / "DOS4GW.EXE";
+    std::optional<repiu::exe::Dos16mBoundModule> linexe_runtime_module;
+    if (std::filesystem::exists(dos4gw_path))
+    {
+        std::vector<std::uint8_t> dos4gw_data;
+        if (!ReadBinaryFile(dos4gw_path, &dos4gw_data, &read_error))
+        {
+            logger->error("Failed to read user DOS4GW asset {}: {}",
+                          dos4gw_path.string(),
+                          read_error);
+            return 1;
+        }
+        std::vector<repiu::exe::Dos16mBoundModule> dos16m_modules;
+        repiu::exe::ParseError dos16m_error;
+        if (!repiu::exe::ParseDos16mBoundModules(
+                dos4gw_data, &dos16m_modules, &dos16m_error))
+        {
+            PrintParseError(*logger, dos16m_error);
+            return 1;
+        }
+        const repiu::exe::Dos16mBoundModule* linexe_module =
+            repiu::exe::FindDos16mBoundModule(
+                dos16m_modules, "LINEXE.EXP");
+        if (linexe_module == nullptr)
+        {
+            logger->error("User DOS4GW asset contains no LINEXE.EXP module");
+            return 1;
+        }
+        linexe_runtime_module = *linexe_module;
+        logger->info("DOS4GW bound module count: {}", dos16m_modules.size());
+        logger->info("LINEXE runtime extraction: header={} next={} entry={}:{} segments={} relocations={}",
+                     Hex32(linexe_module->header_file_offset),
+                     Hex32(linexe_module->next_header_file_offset),
+                     Hex32(linexe_module->initial_cs),
+                     Hex32(linexe_module->initial_ip),
+                     linexe_module->segments.size(),
+                     linexe_module->relocation_count);
+        for (const repiu::exe::Dos16mBoundSegment& segment :
+             linexe_module->segments)
+        {
+            logger->info("LINEXE extracted segment: selector={} limit={} access={} image={} relocations={}",
+                         Hex32(segment.selector),
+                         Hex32(segment.limit),
+                         Hex32(segment.access),
+                         segment.image.size(),
+                         segment.selector_relocation_offsets.size());
+        }
+    }
+    else
+    {
+        logger->info("No adjacent user DOS4GW asset; LINEXE extraction skipped");
+    }
+
     repiu::exe::ParseError error;
     repiu::exe::Dos4gwLoadResult load_result;
     if (!repiu::exe::LoadDos4gwExecutable(data, *profile, &load_result,
@@ -1811,6 +1894,7 @@ int main(int argc, char** argv)
                   placement,
                   stack_plan,
                   dos_file_system,
+                  linexe_runtime_module ? &*linexe_runtime_module : nullptr,
                   execution_timeout_milliseconds,
                   &attempt);
     if (!attempted_execution)

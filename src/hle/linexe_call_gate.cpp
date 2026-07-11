@@ -1,5 +1,6 @@
 #include "repiu/hle/linexe_call_gate.h"
 
+#include <algorithm>
 #include <cstddef>
 
 namespace repiu::hle
@@ -59,6 +60,9 @@ constexpr std::array<LinexeCallGate, 8> kRecoveredGates = {{
 
 bool BuildLinexeArenaLayout(std::uint32_t relocated_hle_reserve_base,
                             std::uint32_t arena_end,
+                            std::uint32_t code_size,
+                            std::uint32_t bss_size,
+                            std::uint32_t data_size,
                             LinexeArenaLayout* layout)
 {
     if (layout == nullptr)
@@ -73,10 +77,22 @@ bool BuildLinexeArenaLayout(std::uint32_t relocated_hle_reserve_base,
     const std::uint64_t aligned_end =
         static_cast<std::uint64_t>(arena_end) &
         ~(static_cast<std::uint64_t>(kPageSize) - 1);
+    const auto page_align = [](std::uint32_t size) -> std::uint64_t {
+        if (size == 0)
+        {
+            return 0;
+        }
+        return (static_cast<std::uint64_t>(size) +
+                kPageSize - 1U) & ~(static_cast<std::uint64_t>(kPageSize) - 1U);
+    };
+    const std::uint64_t client_size = kPageSize;
+    const std::uint64_t aligned_code_size = page_align(code_size);
+    const std::uint64_t aligned_bss_size = page_align(bss_size);
+    const std::uint64_t aligned_data_size = page_align(data_size);
+    const std::uint64_t total_size = client_size + aligned_code_size +
+                                     aligned_bss_size + aligned_data_size;
     const std::uint64_t client_base =
-        aligned_end >= 3U * kPageSize
-            ? aligned_end - 3U * kPageSize
-            : 0;
+        aligned_end >= total_size ? aligned_end - total_size : 0;
     if (relocated_hle_reserve_base == 0 || arena_end == 0 ||
         aligned_base > UINT32_MAX || client_base < aligned_base ||
         aligned_end > UINT32_MAX)
@@ -86,14 +102,21 @@ bool BuildLinexeArenaLayout(std::uint32_t relocated_hle_reserve_base,
     }
 
     layout->client_data_base = static_cast<std::uint32_t>(client_base);
-    layout->private_data_base = layout->client_data_base + kPageSize;
-    layout->gate_code_base = layout->private_data_base + kPageSize;
+    layout->gate_code_base = layout->client_data_base + kPageSize;
+    layout->bss_base = layout->gate_code_base +
+        static_cast<std::uint32_t>(aligned_code_size);
+    layout->private_data_base = layout->bss_base +
+        static_cast<std::uint32_t>(aligned_bss_size);
+    layout->client_data_size = static_cast<std::uint32_t>(client_size);
+    layout->gate_code_size = static_cast<std::uint32_t>(aligned_code_size);
+    layout->bss_size = static_cast<std::uint32_t>(aligned_bss_size);
+    layout->private_data_size = static_cast<std::uint32_t>(aligned_data_size);
     layout->dynamic_allocator_base = static_cast<std::uint32_t>(aligned_base);
     layout->dynamic_allocator_end = layout->client_data_base;
     layout->arena_end = arena_end;
     layout->valid = true;
     layout->message =
-        "dynamic allocator range precedes three LINEXE HLE top pages";
+        "dynamic allocator range precedes extracted LINEXE segments";
     return true;
 }
 

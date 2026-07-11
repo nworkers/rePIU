@@ -49,6 +49,11 @@ struct LinexeArenaLayout
     std::uint32_t client_data_base = 0;
     std::uint32_t private_data_base = 0;
     std::uint32_t gate_code_base = 0;
+    std::uint32_t bss_base = 0;
+    std::uint32_t client_data_size = 0;
+    std::uint32_t private_data_size = 0;
+    std::uint32_t gate_code_size = 0;
+    std::uint32_t bss_size = 0;
     std::uint32_t dynamic_allocator_base = 0;
     std::uint32_t dynamic_allocator_end = 0;
     std::uint32_t arena_end = 0;
@@ -63,6 +68,9 @@ bool BuildLinexeCallGatePlan(LinexeCallGatePlan* plan);
 
 bool BuildLinexeArenaLayout(std::uint32_t relocated_hle_reserve_base,
                             std::uint32_t arena_end,
+                            std::uint32_t code_size,
+                            std::uint32_t bss_size,
+                            std::uint32_t data_size,
                             LinexeArenaLayout* layout);
 
 bool DecodeLinexeCallGate(const LinexeCallGatePlan& plan,
