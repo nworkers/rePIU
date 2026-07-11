@@ -1,6 +1,7 @@
 #include "repiu/exe/executable_headers.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <sstream>
 #include <utility>
@@ -301,6 +302,81 @@ bool ParseLePageTable(const std::vector<std::uint8_t>& data,
     }
 
     return true;
+}
+
+bool ParseLeResidentNames(const std::vector<std::uint8_t>& data,
+                          const LeHeader& header,
+                          std::vector<LeResidentName>* names,
+                          ParseError* error)
+{
+    if (names == nullptr || !header.valid ||
+        header.resident_name_table_offset >= header.entry_table_offset)
+    {
+        SetError(header.file_offset + header.resident_name_table_offset,
+                 "invalid LE resident-name table range",
+                 error);
+        return false;
+    }
+
+    names->clear();
+    std::uint32_t cursor =
+        header.file_offset + header.resident_name_table_offset;
+    const std::uint32_t end = header.file_offset + header.entry_table_offset;
+    while (cursor < end)
+    {
+        if (!HasBytes(data, cursor, 1U))
+        {
+            SetError(cursor, "truncated LE resident-name length", error);
+            return false;
+        }
+        const std::uint32_t length = data[cursor++];
+        if (length == 0)
+        {
+            return true;
+        }
+        if (cursor > end || length + 2U > end - cursor ||
+            !HasBytes(data, cursor, length + 2U))
+        {
+            SetError(cursor, "truncated LE resident-name entry", error);
+            return false;
+        }
+
+        LeResidentName entry;
+        entry.name.assign(reinterpret_cast<const char*>(data.data() + cursor),
+                          length);
+        cursor += length;
+        entry.ordinal = ReadLe16(data, cursor);
+        cursor += 2U;
+
+        const std::size_t suffix = entry.name.rfind('@');
+        if (suffix != std::string::npos && suffix + 1U < entry.name.size())
+        {
+            std::uint32_t argument_bytes = 0;
+            bool valid = true;
+            for (std::size_t index = suffix + 1U;
+                 index < entry.name.size();
+                 ++index)
+            {
+                const unsigned char value = static_cast<unsigned char>(
+                    entry.name[index]);
+                const std::uint32_t digit =
+                    static_cast<std::uint32_t>(value - '0');
+                if (!std::isdigit(value) || argument_bytes > 409U ||
+                    (argument_bytes == 409U && digit > 6U))
+                {
+                    valid = false;
+                    break;
+                }
+                argument_bytes = argument_bytes * 10U + digit;
+            }
+            entry.decorated_argument_size_valid = valid;
+            entry.argument_byte_count = valid ? argument_bytes : 0U;
+        }
+        names->push_back(std::move(entry));
+    }
+
+    SetError(end, "unterminated LE resident-name table", error);
+    return false;
 }
 
 bool BuildLeImage(const std::vector<std::uint8_t>& data,

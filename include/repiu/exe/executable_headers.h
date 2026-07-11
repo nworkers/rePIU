@@ -97,6 +97,14 @@ struct LeImage
     bool entry_point_valid = false;
 };
 
+struct LeResidentName
+{
+    std::string name;
+    std::uint16_t ordinal = 0;
+    std::uint32_t argument_byte_count = 0;
+    bool decorated_argument_size_valid = false;
+};
+
 struct LeFixupPageSpan
 {
     std::uint32_t page_index = 0;
@@ -206,7 +214,12 @@ bool ParseLeObjectTable(const std::vector<std::uint8_t>& data,
 bool ParseLePageTable(const std::vector<std::uint8_t>& data,
                       const LeHeader& header,
                       std::vector<LePageRecord>* pages,
-                      ParseError* error);
+                        ParseError* error);
+
+bool ParseLeResidentNames(const std::vector<std::uint8_t>& data,
+                          const LeHeader& header,
+                          std::vector<LeResidentName>* names,
+                          ParseError* error);
 
 bool BuildLeImage(const std::vector<std::uint8_t>& data,
                   const LeHeader& header,

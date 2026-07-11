@@ -1,6 +1,8 @@
 #include "repiu/platform/win32/execution_trampoline.h"
 #include "repiu/platform/win32/live_telemetry.h"
 #include "repiu/hle/linexe_call_gate.h"
+#include "repiu/hle/glide_hle.h"
+#include "repiu/platform/win32/glide_opengl_backend.h"
 #include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/selector_table.h"
 
@@ -78,6 +80,8 @@ constexpr std::uint16_t kDos4gwPrivateRootOffset = 0x0042U;
 constexpr std::uint16_t kDos4gwLinexeDataSelector = 0x0090U;
 constexpr std::uint16_t kDos4gwLinexeLoaderOffset = 0x059AU;
 constexpr std::uint16_t kDos4gwLinexeCodeSelector = 0x0080U;
+constexpr std::uint16_t kGlideFirstGateOffset = 0x9200U;
+constexpr std::uint32_t kGlideGateStride = 8U;
 
 struct ThreadContext
 {
@@ -179,8 +183,29 @@ struct ThreadContext
     std::uint32_t linexe_bridge_service = 0;
     std::uint32_t linexe_bridge_esp = 0;
     std::uint32_t linexe_bridge_ebp = 0;
-    std::uint32_t linexe_bridge_stack[12] = {};
+    std::uint32_t linexe_bridge_stack[20] = {};
     char linexe_bridge_argument_text[128] = {};
+    char linexe_bridge_stack_text[20][64] = {};
+    std::uint32_t linexe_virtual_module_load_count = 0;
+    std::uint32_t linexe_virtual_module_handle = 0;
+    std::uint32_t linexe_get_proc_count = 0;
+    std::uint32_t linexe_get_proc_result_pointer = 0;
+    char linexe_get_proc_name[64] = {};
+    std::uint32_t glide_gate_entry_count = 0;
+    std::uint32_t glide_gate_handled_count = 0;
+    std::uint32_t glide_gate_esp = 0;
+    std::uint32_t glide_gate_stack[8] = {};
+    std::uint16_t glide_gate_ordinal = 0;
+    std::uint32_t glide_gate_argument_bytes = 0;
+    char glide_gate_name[64] = {};
+    std::uint32_t glide_window_open_count = 0;
+    std::uint32_t glide_logical_width = 0;
+    std::uint32_t glide_logical_height = 0;
+    std::string glide_backend_message;
+    std::vector<exe::LeResidentName> glide_exports;
+    repiu::hle::GlideGatePlan glide_gate_plan;
+    repiu::hle::GlideLogicalState glide_state;
+    GlideOpenGlBackend glide_backend;
     std::uint32_t linexe_scan_return_eax = 0;
     std::uint32_t linexe_scan_return_ebp = 0;
     std::uint32_t linexe_scan_caller_eax = 0;
@@ -1074,6 +1099,39 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     std::memcpy(attempt->linexe_bridge_argument_text,
                 context.linexe_bridge_argument_text,
                 sizeof(attempt->linexe_bridge_argument_text));
+    std::memcpy(attempt->linexe_bridge_stack_text,
+                context.linexe_bridge_stack_text,
+                sizeof(attempt->linexe_bridge_stack_text));
+    attempt->linexe_virtual_module_load_count =
+        context.linexe_virtual_module_load_count;
+    attempt->linexe_virtual_module_handle =
+        context.linexe_virtual_module_handle;
+    attempt->linexe_get_proc_count = context.linexe_get_proc_count;
+    attempt->linexe_get_proc_result_pointer =
+        context.linexe_get_proc_result_pointer;
+    std::memcpy(attempt->linexe_get_proc_name,
+                context.linexe_get_proc_name,
+                sizeof(attempt->linexe_get_proc_name));
+    attempt->glide_gate_entry_count = context.glide_gate_entry_count;
+    attempt->glide_gate_handled_count = context.glide_gate_handled_count;
+    attempt->glide_gate_esp = context.glide_gate_esp;
+    std::memcpy(attempt->glide_gate_stack,
+                context.glide_gate_stack,
+                sizeof(attempt->glide_gate_stack));
+    attempt->glide_gate_ordinal = context.glide_gate_ordinal;
+    attempt->glide_gate_argument_bytes = context.glide_gate_argument_bytes;
+    std::memcpy(attempt->glide_gate_name,
+                context.glide_gate_name,
+                sizeof(attempt->glide_gate_name));
+    attempt->glide_window_open_count = context.glide_window_open_count;
+    attempt->glide_logical_width = context.glide_logical_width;
+    attempt->glide_logical_height = context.glide_logical_height;
+    attempt->glide_backend_message = context.glide_backend_message;
+    attempt->glide_texture_memory_bytes =
+        context.glide_state.texture_memory_bytes;
+    repiu::hle::CalculateGlideTextureMaxAddress(
+        context.glide_state.texture_memory_bytes,
+        &attempt->glide_texture_max_address);
     attempt->linexe_scan_return_eax = context.linexe_scan_return_eax;
     attempt->linexe_scan_return_ebp = context.linexe_scan_return_ebp;
     attempt->linexe_scan_caller_eax = context.linexe_scan_caller_eax;
@@ -5008,6 +5066,22 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
                  instruction[immediate_offset + 3]) << 24);
         instruction_size += 4;
     }
+    else if (instruction[0] == 0xC6)
+    {
+        source_kind = "mov-imm8";
+        const std::uint8_t operation = (instruction[1] >> 3) & 0x07U;
+        if (operation != 0 ||
+            !DecodeModRmMemoryAddress(win32_context,
+                                      instruction,
+                                      &destination,
+                                      &instruction_size))
+        {
+            return false;
+        }
+        value = instruction[instruction_size];
+        ++instruction_size;
+        value_width = 1;
+    }
     else if (instruction[0] == 0x66 && instruction[1] == 0xC7)
     {
         store_opcode = 0x66C7;
@@ -5095,11 +5169,16 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
                 &context->shared_live_telemetry->guest_handler_phase,
                 22);
         }
-        const bool written = value_width == 2
-            ? WriteGuestUInt16(context,
-                               destination_pointer,
-                               static_cast<std::uint16_t>(value))
-            : WriteGuestUInt32(context, destination_pointer, value);
+        const bool written = value_width == 1
+            ? WriteGuestBytes(context,
+                              destination_pointer,
+                              &value,
+                              value_width)
+            : value_width == 2
+                ? WriteGuestUInt16(context,
+                                   destination_pointer,
+                                   static_cast<std::uint16_t>(value))
+                : WriteGuestUInt32(context, destination_pointer, value);
         if (!written)
         {
             return false;
@@ -6833,13 +6912,13 @@ void RecordAllocatorControlFlowException(
     }
 }
 
-void RecordLinexeFarTransferBoundary(CONTEXT* win32_context,
+bool HandleLinexeFarTransferBoundary(CONTEXT* win32_context,
                                      ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr ||
         !context->linexe_environment_active)
     {
-        return;
+        return false;
     }
 
     const auto* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -6852,7 +6931,7 @@ void RecordLinexeFarTransferBoundary(CONTEXT* win32_context,
                     kFarTransferPrefix,
                     sizeof(kFarTransferPrefix)) != 0)
     {
-        return;
+        return false;
     }
 
     const std::uint16_t target_selector = static_cast<std::uint16_t>(
@@ -6866,7 +6945,7 @@ void RecordLinexeFarTransferBoundary(CONTEXT* win32_context,
             target_offset,
             &service))
     {
-        return;
+        return false;
     }
 
     ++context->linexe_bridge_entry_count;
@@ -6886,6 +6965,47 @@ void RecordLinexeFarTransferBoundary(CONTEXT* win32_context,
                     stack,
                     sizeof(context->linexe_bridge_stack));
     }
+    std::memset(context->linexe_bridge_argument_text,
+                0,
+                sizeof(context->linexe_bridge_argument_text));
+    std::memset(context->linexe_bridge_stack_text,
+                0,
+                sizeof(context->linexe_bridge_stack_text));
+    for (std::size_t stack_index = 0;
+         stack_index < std::size(context->linexe_bridge_stack);
+         ++stack_index)
+    {
+        const auto* candidate = reinterpret_cast<const char*>(
+            static_cast<std::uintptr_t>(
+                context->linexe_bridge_stack[stack_index]));
+        std::size_t text_length = 0;
+        for (; text_length + 1U <
+                   sizeof(context->linexe_bridge_stack_text[stack_index]);
+             ++text_length)
+        {
+            if (!IsGuestRangeReadable(context, candidate + text_length, 1U))
+            {
+                break;
+            }
+            const unsigned char value = static_cast<unsigned char>(
+                candidate[text_length]);
+            if (value == 0)
+            {
+                break;
+            }
+            if (!std::isprint(value))
+            {
+                text_length = 0;
+                break;
+            }
+            context->linexe_bridge_stack_text[stack_index][text_length] =
+                static_cast<char>(value);
+        }
+        if (text_length == 0)
+        {
+            context->linexe_bridge_stack_text[stack_index][0] = '\0';
+        }
+    }
     const auto* argument = reinterpret_cast<const char*>(
         static_cast<std::uintptr_t>(context->linexe_bridge_stack[9]));
     for (std::size_t index = 0;
@@ -6902,6 +7022,486 @@ void RecordLinexeFarTransferBoundary(CONTEXT* win32_context,
             break;
         }
     }
+
+    constexpr std::uint32_t kVirtualGlideModuleHandle = 1U;
+    // The bridge consumes its three dwords and restores the ES value saved by
+    // the wrapper.  The shared epilogue then owns EBX/ESI/EDI/EBP and RET.
+    const bool is_glide_module =
+        _stricmp(context->linexe_bridge_argument_text, "glide2x.ovl") == 0;
+    const repiu::hle::GlideExportGate* glide_export =
+        repiu::hle::FindGlideExportByName(
+            context->glide_gate_plan,
+            context->linexe_bridge_stack_text[12]);
+    if (service == repiu::hle::LinexeService::kGetProcedureAddress &&
+        context->linexe_bridge_stack[11] == kVirtualGlideModuleHandle &&
+        glide_export != nullptr)
+    {
+        const std::uint32_t result_pointer =
+            context->linexe_bridge_stack[13];
+        const std::uint32_t gate_address =
+            context->linexe_arena_layout.gate_code_base +
+            glide_export->gate_offset;
+        const std::uint32_t procedure_pointer[2] = {
+            gate_address,
+            static_cast<std::uint32_t>(win32_context->SegCs),
+        };
+        if (!WriteGuestBytes(
+                context,
+                reinterpret_cast<void*>(
+                    static_cast<std::uintptr_t>(result_pointer)),
+                procedure_pointer,
+                sizeof(procedure_pointer)))
+        {
+            return false;
+        }
+
+        ++context->linexe_get_proc_count;
+        context->linexe_get_proc_result_pointer = gate_address;
+        std::strncpy(context->linexe_get_proc_name,
+                     glide_export->name.c_str(),
+                     sizeof(context->linexe_get_proc_name) - 1U);
+        win32_context->Eax = 1U;
+        context->guest_es = static_cast<std::uint16_t>(
+            context->linexe_bridge_stack[5] & 0xFFFFU);
+        win32_context->Ebx = context->linexe_bridge_stack[6];
+        win32_context->Esi = context->linexe_bridge_stack[7];
+        win32_context->Edi = context->linexe_bridge_stack[8];
+        win32_context->Ebp = context->linexe_bridge_stack[9];
+        win32_context->Eip = context->linexe_bridge_stack[10];
+        win32_context->Esp += 11U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (service != repiu::hle::LinexeService::kLoadModule ||
+        !is_glide_module)
+    {
+        return false;
+    }
+
+    ++context->linexe_virtual_module_load_count;
+    context->linexe_virtual_module_handle = kVirtualGlideModuleHandle;
+    win32_context->Eax = kVirtualGlideModuleHandle;
+    context->guest_es = static_cast<std::uint16_t>(
+        context->linexe_bridge_stack[3] & 0xFFFFU);
+    win32_context->Ebx = context->linexe_bridge_stack[4];
+    win32_context->Esi = context->linexe_bridge_stack[5];
+    win32_context->Edi = context->linexe_bridge_stack[6];
+    win32_context->Ebp = context->linexe_bridge_stack[7];
+    win32_context->Eip = context->linexe_bridge_stack[8];
+    win32_context->Esp += 9U * sizeof(std::uint32_t);
+    return true;
+}
+
+bool HandleGlideGateBoundary(CONTEXT* win32_context,
+                             ThreadContext* context)
+{
+    const std::uint32_t gate_begin =
+        context != nullptr
+            ? context->linexe_arena_layout.gate_code_base +
+                context->glide_gate_plan.first_gate_offset
+            : 0U;
+    if (win32_context == nullptr || context == nullptr ||
+        !context->linexe_environment_active ||
+        win32_context->Eip < gate_begin)
+    {
+        return false;
+    }
+
+    const std::uint32_t gate_offset =
+        static_cast<std::uint32_t>(win32_context->Eip) -
+        context->linexe_arena_layout.gate_code_base;
+    const repiu::hle::GlideExportGate* glide_export =
+        repiu::hle::DecodeGlideGate(context->glide_gate_plan, gate_offset);
+    if (glide_export == nullptr)
+    {
+        return false;
+    }
+
+    ++context->glide_gate_entry_count;
+    context->glide_backend.PumpEvents();
+    context->glide_gate_ordinal = glide_export->ordinal;
+    context->glide_gate_argument_bytes = glide_export->argument_byte_count;
+    std::memset(context->glide_gate_name,
+                0,
+                sizeof(context->glide_gate_name));
+    std::strncpy(context->glide_gate_name,
+                 glide_export->name.c_str(),
+                 sizeof(context->glide_gate_name) - 1U);
+    context->glide_gate_esp = win32_context->Esp;
+    const auto* stack = reinterpret_cast<const std::uint32_t*>(
+        static_cast<std::uintptr_t>(win32_context->Esp));
+    if (IsGuestRangeReadable(context,
+                             stack,
+                             sizeof(context->glide_gate_stack)))
+    {
+        std::memcpy(context->glide_gate_stack,
+                    stack,
+                    sizeof(context->glide_gate_stack));
+    }
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(
+            &context->shared_live_telemetry->glide_gate_ordinal,
+            static_cast<long>(glide_export->ordinal));
+        InterlockedExchange(
+            &context->shared_live_telemetry->glide_gate_esp,
+            static_cast<long>(win32_context->Esp));
+        InterlockedExchange(
+            &context->shared_live_telemetry->glide_gate_ebx,
+            static_cast<long>(win32_context->Ebx));
+        InterlockedExchange(
+            &context->shared_live_telemetry->glide_gate_ecx,
+            static_cast<long>(win32_context->Ecx));
+        InterlockedExchange(
+            &context->shared_live_telemetry->glide_gate_edx,
+            static_cast<long>(win32_context->Edx));
+        for (std::size_t index = 0; index < 8U; ++index)
+        {
+            InterlockedExchange(
+                &context->shared_live_telemetry->glide_gate_stack[index],
+                static_cast<long>(context->glide_gate_stack[index]));
+        }
+    }
+    const std::uint32_t return_address = context->glide_gate_stack[0];
+    if (!IsGuestInstructionPointer(context, return_address))
+    {
+        return false;
+    }
+    const repiu::hle::GlideSignature* signature =
+        repiu::hle::FindGlideSignature(glide_export->name);
+    if (signature == nullptr ||
+        signature->argument_byte_count !=
+            glide_export->argument_byte_count)
+    {
+        return false;
+    }
+    if (glide_export->name == "_GRGLIDEINIT@0")
+    {
+        context->glide_state.initialized = true;
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRSSTQUERYHARDWARE@4")
+    {
+        void* configuration = reinterpret_cast<void*>(
+            static_cast<std::uintptr_t>(context->glide_gate_stack[1]));
+        if (!WriteGuestUInt32(context, configuration, 1U))
+        {
+            return false;
+        }
+        ++context->glide_gate_handled_count;
+        win32_context->Eax = 1U;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRSSTSELECT@4" &&
+        context->glide_gate_stack[1] == 0U)
+    {
+        context->glide_state.selected_board = 0U;
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRSSTWINOPEN@28")
+    {
+        const std::uint32_t window = context->glide_gate_stack[1];
+        const std::uint32_t resolution = context->glide_gate_stack[2];
+        const std::uint32_t refresh = context->glide_gate_stack[3];
+        const std::uint32_t color_format = context->glide_gate_stack[4];
+        const std::uint32_t origin = context->glide_gate_stack[5];
+        const std::uint32_t color_buffers = context->glide_gate_stack[6];
+        const std::uint32_t auxiliary_buffers =
+            context->glide_gate_stack[7];
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+        const bool mode_supported = window == 0U && refresh == 0U &&
+            repiu::hle::DecodeGlideResolution(
+                resolution, &width, &height);
+        const bool opened = mode_supported &&
+            context->glide_backend.OpenWindowed(
+                width, height, color_buffers, auxiliary_buffers);
+        context->glide_backend_message = context->glide_backend.message();
+        if (opened)
+        {
+            ++context->glide_window_open_count;
+            context->glide_logical_width = width;
+            context->glide_logical_height = height;
+            context->glide_state.window_open = true;
+            context->glide_state.width = width;
+            context->glide_state.height = height;
+            context->glide_state.color_format = color_format;
+            context->glide_state.origin = origin;
+            context->glide_state.color_buffer_count = color_buffers;
+            context->glide_state.auxiliary_buffer_count = auxiliary_buffers;
+        }
+        win32_context->Eax = opened ? 1U : 0U;
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 8U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRSSTSCREENWIDTH@0" ||
+        glide_export->name == "_GRSSTSCREENHEIGHT@0")
+    {
+        win32_context->Eax = glide_export->name == "_GRSSTSCREENWIDTH@0"
+            ? context->glide_state.width
+            : context->glide_state.height;
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRTEXMINADDRESS@4" &&
+        context->glide_gate_stack[1] == 0U)
+    {
+        ++context->glide_gate_handled_count;
+        win32_context->Eax = 0U;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRTEXMAXADDRESS@4" &&
+        context->glide_gate_stack[1] == 0U)
+    {
+        std::uint32_t maximum_address = 0;
+        if (!repiu::hle::CalculateGlideTextureMaxAddress(
+                context->glide_state.texture_memory_bytes,
+                &maximum_address))
+        {
+            return false;
+        }
+        ++context->glide_gate_handled_count;
+        win32_context->Eax = maximum_address;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRCOLORMASK@8")
+    {
+        const bool rgb = context->glide_gate_stack[1] != 0U;
+        const bool alpha = context->glide_gate_stack[2] != 0U;
+        if (!context->glide_backend.SetColorMask(rgb, alpha))
+        {
+            context->glide_backend_message =
+                context->glide_backend.message();
+            return false;
+        }
+        context->glide_backend_message = context->glide_backend.message();
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 3U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRRENDERBUFFER@4")
+    {
+        if (!context->glide_backend.SetRenderBuffer(
+                context->glide_gate_stack[1]))
+        {
+            context->glide_backend_message =
+                context->glide_backend.message();
+            return false;
+        }
+        context->glide_backend_message = context->glide_backend.message();
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRDEPTHMASK@4")
+    {
+        if (!context->glide_backend.SetDepthMask(
+                context->glide_gate_stack[1] != 0U))
+        {
+            context->glide_backend_message =
+                context->glide_backend.message();
+            return false;
+        }
+        context->glide_backend_message = context->glide_backend.message();
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRDEPTHBUFFERMODE@4")
+    {
+        if (!context->glide_backend.SetDepthBufferMode(
+                context->glide_gate_stack[1]))
+        {
+            context->glide_backend_message =
+                context->glide_backend.message();
+            return false;
+        }
+        context->glide_backend_message = context->glide_backend.message();
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRLFBWRITECOLORFORMAT@4")
+    {
+        context->glide_state.lfb_write_color_format =
+            context->glide_gate_stack[1];
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRALPHACOMBINE@20")
+    {
+        repiu::hle::GlideAlphaCombineState state;
+        state.function = context->glide_gate_stack[1];
+        state.factor = context->glide_gate_stack[2];
+        state.local = context->glide_gate_stack[3];
+        state.other = context->glide_gate_stack[4];
+        state.invert = context->glide_gate_stack[5] != 0U;
+        state.valid = true;
+        if (!context->glide_backend.SetAlphaCombine(state))
+        {
+            context->glide_backend_message =
+                context->glide_backend.message();
+            return false;
+        }
+        context->glide_state.alpha_combine = state;
+        context->glide_backend_message = context->glide_backend.message();
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 6U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRCOLORCOMBINE@20")
+    {
+        repiu::hle::GlideColorCombineState state;
+        state.function = context->glide_gate_stack[1];
+        state.factor = context->glide_gate_stack[2];
+        state.local = context->glide_gate_stack[3];
+        state.other = context->glide_gate_stack[4];
+        state.invert = context->glide_gate_stack[5] != 0U;
+        state.valid = true;
+        if (!context->glide_backend.SetColorCombine(state))
+        {
+            context->glide_backend_message =
+                context->glide_backend.message();
+            return false;
+        }
+        context->glide_state.color_combine = state;
+        context->glide_backend_message = context->glide_backend.message();
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 6U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRALPHABLENDFUNCTION@16")
+    {
+        repiu::hle::GlideAlphaBlendState state;
+        state.rgb_source = context->glide_gate_stack[1];
+        state.rgb_destination = context->glide_gate_stack[2];
+        state.alpha_source = context->glide_gate_stack[3];
+        state.alpha_destination = context->glide_gate_stack[4];
+        state.valid = true;
+        if (!context->glide_backend.SetAlphaBlend(state))
+        {
+            context->glide_backend_message =
+                context->glide_backend.message();
+            return false;
+        }
+        context->glide_state.alpha_blend = state;
+        context->glide_backend_message = context->glide_backend.message();
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 5U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRALPHATESTFUNCTION@4")
+    {
+        const std::uint32_t function = context->glide_gate_stack[1];
+        if (!context->glide_backend.SetAlphaTestFunction(function))
+        {
+            context->glide_backend_message =
+                context->glide_backend.message();
+            return false;
+        }
+        context->glide_state.alpha_test_function = function;
+        context->glide_backend_message = context->glide_backend.message();
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRDEPTHBUFFERFUNCTION@4")
+    {
+        const std::uint32_t function = context->glide_gate_stack[1];
+        if (!context->glide_backend.SetDepthBufferFunction(function))
+        {
+            context->glide_backend_message =
+                context->glide_backend.message();
+            return false;
+        }
+        context->glide_state.depth_buffer_function = function;
+        context->glide_backend_message = context->glide_backend.message();
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRFOGMODE@4")
+    {
+        const std::uint32_t mode = context->glide_gate_stack[1];
+        if (!context->glide_backend.SetFogMode(mode))
+        {
+            context->glide_backend_message =
+                context->glide_backend.message();
+            return false;
+        }
+        context->glide_state.fog_mode = mode;
+        context->glide_backend_message = context->glide_backend.message();
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRCLIPWINDOW@16")
+    {
+        const std::uint32_t min_x = context->glide_gate_stack[1];
+        const std::uint32_t min_y = context->glide_gate_stack[2];
+        const std::uint32_t max_x = context->glide_gate_stack[3];
+        const std::uint32_t max_y = context->glide_gate_stack[4];
+        if (!context->glide_backend.SetClipWindow(
+                min_x, min_y, max_x, max_y))
+        {
+            context->glide_backend_message =
+                context->glide_backend.message();
+            return false;
+        }
+        context->glide_state.clip_min_x = min_x;
+        context->glide_state.clip_min_y = min_y;
+        context->glide_state.clip_max_x = max_x;
+        context->glide_state.clip_max_y = max_y;
+        context->glide_backend_message = context->glide_backend.message();
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 5U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRCULLMODE@4")
+    {
+        const std::uint32_t mode = context->glide_gate_stack[1];
+        if (!context->glide_backend.SetCullMode(mode))
+        {
+            context->glide_backend_message =
+                context->glide_backend.message();
+            return false;
+        }
+        context->glide_state.cull_mode = mode;
+        context->glide_backend_message = context->glide_backend.message();
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    return false;
 }
 
 LONG WINAPI GuestStackVectoredExceptionHandler(
@@ -6955,7 +7555,14 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
         context,
         static_cast<std::uint32_t>(win32_context->Eip));
     RecordAllocatorControlFlowException(exception_info, context);
-    RecordLinexeFarTransferBoundary(win32_context, context);
+    if (HandleGlideGateBoundary(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (HandleLinexeFarTransferBoundary(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     if (exception_info->ExceptionRecord != nullptr &&
         exception_info->ExceptionRecord->ExceptionCode ==
             EXCEPTION_SINGLE_STEP &&
@@ -7229,6 +7836,7 @@ bool RunWin32ExecutionThread(
     bool enable_single_step_trace,
     const hle::DosVirtualFileSystemState* dos_file_system,
     const exe::Dos16mBoundModule* linexe_module,
+    const std::vector<exe::LeResidentName>* glide_exports,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
 {
@@ -7294,6 +7902,12 @@ bool RunWin32ExecutionThread(
     context.enable_segment_load_hle = enable_segment_load_hle;
     context.enable_dos_hle = enable_dos_hle;
     context.enable_single_step_trace = enable_single_step_trace;
+    context.glide_state.texture_memory_bytes =
+        repiu::hle::kPiuBansheeVirtualTextureMemoryBytes;
+    if (glide_exports != nullptr)
+    {
+        context.glide_exports = *glide_exports;
+    }
     context.dos_environment_block = BuildDosEnvironmentBlock();
     repiu::runtime::InitializeSelectorTable(&context.selector_table);
     repiu::runtime::InitializeSelectorAllocator(
@@ -7358,6 +7972,16 @@ bool RunWin32ExecutionThread(
         const auto address = [](std::uint32_t value) {
             return reinterpret_cast<void*>(static_cast<std::uintptr_t>(value));
         };
+        const bool glide_gate_fits =
+            context.linexe_arena_layout.gate_code_size >
+                kGlideFirstGateOffset &&
+            repiu::hle::BuildGlideGatePlan(
+                context.glide_exports,
+                kGlideFirstGateOffset,
+                kGlideGateStride,
+                context.linexe_arena_layout.gate_code_size -
+                    kGlideFirstGateOffset,
+                &context.glide_gate_plan);
         const bool images_written =
             WriteGuestBytes(&context,
                             address(context.linexe_arena_layout.client_data_base),
@@ -7371,6 +7995,13 @@ bool RunWin32ExecutionThread(
                             extracted_linexe_valid
                                 ? extracted_code->image.size()
                                 : context.linexe_gate_plan.gate_image.size()) &&
+            glide_gate_fits &&
+            WriteGuestBytes(
+                &context,
+                address(context.linexe_arena_layout.gate_code_base +
+                        kGlideFirstGateOffset),
+                context.glide_gate_plan.image.data(),
+                context.glide_gate_plan.image.size()) &&
             (!extracted_linexe_valid || WriteGuestBytes(
                 &context,
                 address(context.linexe_arena_layout.bss_base),
@@ -7400,7 +8031,7 @@ bool RunWin32ExecutionThread(
                 &context.selector_table,
                 {kDos4gwLinexeCodeSelector,
                  context.linexe_arena_layout.gate_code_base,
-                 extracted_linexe_valid ? extracted_code->limit : 0x0FFFU,
+                 context.linexe_arena_layout.gate_code_size - 1U,
                  0, true}) &&
             (!extracted_linexe_valid || repiu::runtime::RegisterDescriptor(
                 &context.selector_table,
@@ -7553,6 +8184,7 @@ bool AttemptWin32MinimalExecution(
         false,
         nullptr,
         nullptr,
+        nullptr,
         timeout_milliseconds,
         attempt);
 }
@@ -7589,6 +8221,7 @@ bool AttemptWin32GuestStackExecution(
         false,
         nullptr,
         nullptr,
+        nullptr,
         timeout_milliseconds,
         attempt);
 }
@@ -7598,6 +8231,7 @@ bool AttemptWin32GuestStackTrapExecution(
     const runtime::GuestStackSwitchPlan& stack_plan,
     const hle::DosVirtualFileSystemState& dos_file_system,
     const exe::Dos16mBoundModule* linexe_module,
+    const std::vector<exe::LeResidentName>* glide_exports,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
 {
@@ -7627,6 +8261,7 @@ bool AttemptWin32GuestStackTrapExecution(
         true,
         &dos_file_system,
         linexe_module,
+        glide_exports,
         timeout_milliseconds,
         attempt);
 }
@@ -7663,6 +8298,7 @@ bool AttemptWin32GuestStackHleExecution(
         true,
         false,
         &dos_file_system,
+        nullptr,
         nullptr,
         timeout_milliseconds,
         attempt);

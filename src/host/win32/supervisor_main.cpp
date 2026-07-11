@@ -47,6 +47,27 @@ void PrintSnapshot(
                      ReadInterlocked(&telemetry.last_guest_esp))
               << " handler_phase="
               << ReadInterlocked(&telemetry.guest_handler_phase)
+              << " glide_ordinal="
+              << ReadInterlocked(&telemetry.glide_gate_ordinal)
+              << " glide_esp=0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.glide_gate_esp))
+              << " glide_ebx/ecx/edx=0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.glide_gate_ebx)) << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.glide_gate_ecx)) << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.glide_gate_edx))
+              << " glide_stack="
+              << ReadInterlocked(&telemetry.glide_gate_stack[0]) << ","
+              << ReadInterlocked(&telemetry.glide_gate_stack[1]) << ","
+              << ReadInterlocked(&telemetry.glide_gate_stack[2]) << ","
+              << ReadInterlocked(&telemetry.glide_gate_stack[3]) << ","
+              << ReadInterlocked(&telemetry.glide_gate_stack[4]) << ","
+              << ReadInterlocked(&telemetry.glide_gate_stack[5]) << ","
+              << ReadInterlocked(&telemetry.glide_gate_stack[6]) << ","
+              << ReadInterlocked(&telemetry.glide_gate_stack[7])
               << std::dec << "\n";
     std::cout.flush();
 }

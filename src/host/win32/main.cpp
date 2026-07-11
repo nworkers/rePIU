@@ -790,8 +790,61 @@ void PrintExecutionAttempt(
                 Hex32(attempt.linexe_bridge_stack[9]),
                 Hex32(attempt.linexe_bridge_stack[10]),
                 Hex32(attempt.linexe_bridge_stack[11]));
+    logger.info("Win32 LINEXE bridge stack tail: {} {} {} {} {} {} {} {}",
+                Hex32(attempt.linexe_bridge_stack[12]),
+                Hex32(attempt.linexe_bridge_stack[13]),
+                Hex32(attempt.linexe_bridge_stack[14]),
+                Hex32(attempt.linexe_bridge_stack[15]),
+                Hex32(attempt.linexe_bridge_stack[16]),
+                Hex32(attempt.linexe_bridge_stack[17]),
+                Hex32(attempt.linexe_bridge_stack[18]),
+                Hex32(attempt.linexe_bridge_stack[19]));
+    for (std::size_t index = 0;
+         index < std::size(attempt.linexe_bridge_stack_text);
+         ++index)
+    {
+        if (attempt.linexe_bridge_stack_text[index][0] != '\0')
+        {
+            logger.info("Win32 LINEXE bridge stack text #{}: {}",
+                        index,
+                        attempt.linexe_bridge_stack_text[index]);
+        }
+    }
     logger.info("Win32 LINEXE bridge argument text: {}",
                 attempt.linexe_bridge_argument_text);
+    logger.info("Win32 LINEXE virtual module loads/handle: {}/{}",
+                attempt.linexe_virtual_module_load_count,
+                Hex32(attempt.linexe_virtual_module_handle));
+    logger.info("Win32 LINEXE get-proc count/name/result: {}/{}/{}",
+                attempt.linexe_get_proc_count,
+                attempt.linexe_get_proc_name,
+                Hex32(attempt.linexe_get_proc_result_pointer));
+    logger.info("Win32 Glide gate entries/handled/ESP: {}/{}/{}",
+                attempt.glide_gate_entry_count,
+                attempt.glide_gate_handled_count,
+                Hex32(attempt.glide_gate_esp));
+    logger.info("Win32 Glide gate ordinal/name/argument bytes: {}/{}/{}",
+                attempt.glide_gate_ordinal,
+                attempt.glide_gate_name,
+                attempt.glide_gate_argument_bytes);
+    logger.info("Win32 Glide window opens/logical size: {}/{}x{}",
+                attempt.glide_window_open_count,
+                attempt.glide_logical_width,
+                attempt.glide_logical_height);
+    logger.info("Win32 Glide backend message: {}",
+                attempt.glide_backend_message);
+    logger.info("Win32 Glide virtual texture bytes/max address: {}/{}",
+                attempt.glide_texture_memory_bytes,
+                Hex32(attempt.glide_texture_max_address));
+    logger.info("Win32 Glide gate stack: {} {} {} {} {} {} {} {}",
+                Hex32(attempt.glide_gate_stack[0]),
+                Hex32(attempt.glide_gate_stack[1]),
+                Hex32(attempt.glide_gate_stack[2]),
+                Hex32(attempt.glide_gate_stack[3]),
+                Hex32(attempt.glide_gate_stack[4]),
+                Hex32(attempt.glide_gate_stack[5]),
+                Hex32(attempt.glide_gate_stack[6]),
+                Hex32(attempt.glide_gate_stack[7]));
     logger.info("Win32 LINEXE scan return EAX/EBP/caller EAX: {}/{}/{}",
                 Hex32(attempt.linexe_scan_return_eax),
                 Hex32(attempt.linexe_scan_return_ebp),
@@ -1739,6 +1792,30 @@ int main(int argc, char** argv)
         logger->info("No adjacent user DOS4GW asset; LINEXE extraction skipped");
     }
 
+    std::vector<repiu::exe::LeResidentName> glide_exports;
+    const std::filesystem::path glide_path =
+        profile->executable_path.parent_path() / "Glide2x.ovl";
+    if (std::filesystem::exists(glide_path))
+    {
+        std::vector<std::uint8_t> glide_data;
+        repiu::exe::MzHeader glide_mz;
+        repiu::exe::LeHeader glide_le;
+        repiu::exe::ParseError glide_error;
+        if (!ReadBinaryFile(glide_path, &glide_data, &read_error) ||
+            !repiu::exe::ParseMzHeader(
+                glide_data, &glide_mz, &glide_error) ||
+            !repiu::exe::ParseLeHeader(
+                glide_data, glide_mz.le_offset, &glide_le, &glide_error) ||
+            !repiu::exe::ParseLeResidentNames(
+                glide_data, glide_le, &glide_exports, &glide_error))
+        {
+            logger->error("Failed to parse Glide2x.ovl export metadata");
+            return 1;
+        }
+        logger->info("Glide2x resident export metadata count: {}",
+                     glide_exports.size());
+    }
+
     repiu::exe::ParseError error;
     repiu::exe::Dos4gwLoadResult load_result;
     if (!repiu::exe::LoadDos4gwExecutable(data, *profile, &load_result,
@@ -1904,6 +1981,7 @@ int main(int argc, char** argv)
                   stack_plan,
                   dos_file_system,
                   linexe_runtime_module ? &*linexe_runtime_module : nullptr,
+                  glide_exports.empty() ? nullptr : &glide_exports,
                   execution_timeout_milliseconds,
                   &attempt);
     if (!attempted_execution)

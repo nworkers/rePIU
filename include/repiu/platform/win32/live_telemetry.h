@@ -7,7 +7,7 @@ namespace repiu::platform::win32
 {
 
 constexpr std::uint32_t kWin32LiveTelemetryMagic = 0x5250544CU;
-constexpr std::uint32_t kWin32LiveTelemetryVersion = 2;
+constexpr std::uint32_t kWin32LiveTelemetryVersion = 5;
 constexpr const char* kWin32LiveTelemetryEnvironment =
     "REPIU_LIVE_TELEMETRY_MAPPING";
 constexpr const char* kWin32ExecutionTimeoutEnvironment =
@@ -27,6 +27,12 @@ struct Win32SharedLiveTelemetry
     volatile long last_guest_eax = 0;
     volatile long last_guest_esp = 0;
     volatile long guest_handler_phase = 0;
+    volatile long glide_gate_ordinal = 0;
+    volatile long glide_gate_esp = 0;
+    volatile long glide_gate_ebx = 0;
+    volatile long glide_gate_ecx = 0;
+    volatile long glide_gate_edx = 0;
+    volatile long glide_gate_stack[8] = {};
 };
 
 static_assert(sizeof(long) == 4);

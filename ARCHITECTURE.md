@@ -63,6 +63,15 @@ The first implementation target is a non-executing analysis tool for `MASTER\PIU
 * `ExecutionEngine`: 원본 32-bit x86 코드로 제어 이전
 * `HleDispatcher`: DOS, DPMI, 타이머, 입력, 그래픽, 오디오, 파일 시스템 호출 처리
 * `TraceLogger`: 로더 결정, HLE 호출, 예외, 실행 단계 기록
+* `LeResidentName`: LE resident-name/ordinal과 decorated `@N` 인자 크기를 asset에서 복원한다.
+* `VirtualGlideModule`: `glide2x.ovl`의 hardware code를 실행하지 않고 LINEXE handle과 asset-validated export gate를 제공한다.
+* `GlideGateDispatcher`: `{linear address, client CS}` procedure pointer를 제공하고 ordinal별 trap에서 guest stdcall ABI를 해석한다. 현재 init/query/select까지 관찰 기반 최소 의미를 제공하며 `grSstWinOpen` presentation 정책이 다음 경계다.
+* `GlideHle` (`include/repiu/hle/glide_hle.h`, `src/hle/glide_hle.cpp`): asset-derived export registry, ordinal gate image, decorated argument size, resolution decoding과 플랫폼 공용 논리 상태를 담당한다.
+* `Win32GlideOpenGlBackend` (`include/repiu/platform/win32/glide_opengl_backend.h`, `src/platform/win32/glide_opengl_backend.cpp`): resizable 640×480 client window, WGL context, pixel/depth format, initial clear와 message pump를 담당한다.
+* `Win32ExecutionTrampoline`은 Glide 구현을 직접 소유하지 않고 guest stack/register ABI를 공용 Glide HLE와 platform backend에 연결한다.
+* `GlideSignatureCatalog`: 실제 관찰된 API의 stack byte count와 void/EAX/x87 반환 kind를 중앙에서 관리하며 asset `@N`과 교차 검증한다.
+* `GlideLogicalState`는 lazy OpenGL texture object와 독립적으로 8 MiB virtual TMU 범위(`0..0x007FFFF8`)와 LFB pixel-format 상태를 보존한다.
+* `Win32X87Context` (`include/repiu/platform/win32/x87_context.h`, `src/platform/win32/x87_context.cpp`): SEH `CONTEXT`의 x87 TOP/tag/80-bit register를 갱신하여 guest float 반환을 독립적으로 처리한다.
 
 ## Planned Structure
 
@@ -133,6 +142,15 @@ Planned major modules:
 * `ExecutionEngine`: control transfer to original 32-bit x86 code
 * `HleDispatcher`: DOS, DPMI, timer, input, graphics, audio, and filesystem calls
 * `TraceLogger`: loader decisions, HLE calls, exceptions, and execution milestones
+* `LeResidentName`: recovers LE resident names, ordinals, and decorated `@N` argument sizes from the user asset.
+* `VirtualGlideModule`: exposes a LINEXE handle and asset-validated export gates without executing `glide2x.ovl` hardware code.
+* `GlideGateDispatcher`: returns `{linear address, client CS}` procedure pointers and decodes guest stdcall ABI at ordinal traps. Observation-backed init/query/select semantics are present; `grSstWinOpen` presentation policy is the next boundary.
+* `GlideHle` (`include/repiu/hle/glide_hle.h`, `src/hle/glide_hle.cpp`) owns the asset-derived export registry, ordinal gate image, decorated argument sizes, resolution decoding, and platform-neutral logical state.
+* `Win32GlideOpenGlBackend` (`include/repiu/platform/win32/glide_opengl_backend.h`, `src/platform/win32/glide_opengl_backend.cpp`) owns the resizable 640×480 client window, WGL context, pixel/depth format, initial clear, and message pump.
+* `Win32ExecutionTrampoline` does not own Glide implementation details; it connects guest stack/register ABI to shared Glide HLE and the platform backend.
+* `GlideSignatureCatalog` centrally records observed API stack-byte counts and void/EAX/x87 return kinds, cross-checked against asset `@N` metadata.
+* `GlideLogicalState` exposes an 8 MiB virtual TMU range (`0..0x007FFFF8`) independently of lazy OpenGL texture objects and retains LFB pixel-format state.
+* `Win32X87Context` (`include/repiu/platform/win32/x87_context.h`, `src/platform/win32/x87_context.cpp`) independently updates x87 TOP, tags, and 80-bit registers in an SEH `CONTEXT` for guest float returns.
 
 ## 갱신 규칙
 
@@ -145,6 +163,25 @@ Planned major modules:
 * Update this document in the same task unit whenever code structure is added or changed.
 * Record platform-neutral structure separately from platform-specific details.
 * Even for temporary implementation, record the intended follow-up direction.
+
+## Glide GLSL renderer boundary
+
+`GlideLogicalState`는 원본 Glide enum과 초기 raster state를 플랫폼 중립적으로 보존합니다. `GlideOpenGlBackend`는 WGL window/context와 OpenGL 상태 변환을 소유하고, 별도 `GlideOpenGlShader`가 shader entry-point 해석, compile/link, program과 combine uniform을 소유합니다. `execution_trampoline`은 guest stack ABI 해석과 상태 전달만 담당합니다.
+
+```mermaid
+flowchart LR
+    GUEST["Original Glide calls"] --> ABI["execution_trampoline"]
+    ABI --> STATE["GlideLogicalState"]
+    ABI --> BACKEND["GlideOpenGlBackend"]
+    BACKEND --> SHADER["GlideOpenGlShader"]
+    SHADER --> GLSL["WGL GLSL program"]
+```
+
+## Glide GLSL renderer boundary
+
+`GlideLogicalState` preserves original Glide enums and initial raster state without platform dependencies. `GlideOpenGlBackend` owns the WGL window/context and OpenGL state translation, while the separate `GlideOpenGlShader` owns shader entry-point resolution, compilation/linking, the program, and combine uniforms. `execution_trampoline` is limited to guest stack ABI decoding and state forwarding.
+
+Glide gate live telemetry version 5 publishes ordinal, ESP, EBX/ECX/EDX, and eight stack dwords. This diagnostic boundary preserves caller evidence when an unimplemented gate terminates the child. Screen width/height return integer values in EAX as proven by the original caller; documented API type assumptions never override binary call-site evidence.
 
 ## Win32 로더 앱 배치
 

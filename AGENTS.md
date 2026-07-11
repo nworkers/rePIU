@@ -197,6 +197,8 @@ If the requirement is a simple question or confirmation request, answer it direc
 * 코드 수정이 있는 작업은 영향 범위에 맞는 빌드 검증을 수행하고, 불가능하면 이유를 작업 로그에 남긴다.
 * 자산, 런타임 경로, 플랫폼 분기 정책은 코드와 문서에서 함께 관리한다.
 * 코딩 스타일 세부 규칙은 `docs/CODING_STYLE.md`에서 관리한다.
+* 큰 기능은 하나의 거대 파일에 누적하지 않는다. 플랫폼 공용 상태/정책, 플랫폼 backend, guest ABI 연결처럼 책임이 다른 부분을 별도 header/source로 분리한다.
+* 기존 파일에 기능을 추가할 때 독립적으로 이름 붙일 수 있는 하위 시스템이면 전용 파일로 추출하고, 통합 지점에는 orchestration과 adapter 코드만 남긴다.
 * 프로젝트 기본 라이선스는 `BSD 3-Clause License`를 기준으로 한다.
 * 서드파티 오픈소스 도입 시 GPL, LGPL, AGPL 같은 전염성 라이선스는 사용하지 않는다.
 * 서드파티 라이선스는 도입 전에 확인하고, 예외가 필요하면 먼저 문서화와 사용자 확인을 거친다.
@@ -208,6 +210,8 @@ If the requirement is a simple question or confirmation request, answer it direc
 * For tasks that modify code, run build verification appropriate to the impact. If verification is impossible, record the reason in the work log.
 * Manage assets, runtime paths, and platform branching policy in both code and documentation.
 * Maintain detailed coding style rules in `docs/CODING_STYLE.md`.
+* Do not accumulate major features in one monolithic file. Separate platform-neutral state/policy, platform backends, and guest ABI integration into dedicated headers and sources.
+* When adding to an existing file, extract any independently named subsystem and leave only orchestration or adapter code at the integration point.
 * Use the `BSD 3-Clause License` as the default project license baseline.
 * Do not introduce third-party open source with copyleft licenses such as GPL, LGPL, or AGPL.
 * Check third-party licenses before adoption. If an exception is needed, document it and confirm with the user first.

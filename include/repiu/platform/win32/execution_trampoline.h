@@ -296,8 +296,27 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t linexe_bridge_service = 0;
     std::uint32_t linexe_bridge_esp = 0;
     std::uint32_t linexe_bridge_ebp = 0;
-    std::uint32_t linexe_bridge_stack[12] = {};
+    std::uint32_t linexe_bridge_stack[20] = {};
     char linexe_bridge_argument_text[128] = {};
+    char linexe_bridge_stack_text[20][64] = {};
+    std::uint32_t linexe_virtual_module_load_count = 0;
+    std::uint32_t linexe_virtual_module_handle = 0;
+    std::uint32_t linexe_get_proc_count = 0;
+    std::uint32_t linexe_get_proc_result_pointer = 0;
+    char linexe_get_proc_name[64] = {};
+    std::uint32_t glide_gate_entry_count = 0;
+    std::uint32_t glide_gate_handled_count = 0;
+    std::uint32_t glide_gate_esp = 0;
+    std::uint32_t glide_gate_stack[8] = {};
+    std::uint16_t glide_gate_ordinal = 0;
+    std::uint32_t glide_gate_argument_bytes = 0;
+    char glide_gate_name[64] = {};
+    std::uint32_t glide_window_open_count = 0;
+    std::uint32_t glide_logical_width = 0;
+    std::uint32_t glide_logical_height = 0;
+    std::string glide_backend_message;
+    std::uint32_t glide_texture_memory_bytes = 0;
+    std::uint32_t glide_texture_max_address = 0;
     std::uint32_t linexe_scan_return_eax = 0;
     std::uint32_t linexe_scan_return_ebp = 0;
     std::uint32_t linexe_scan_caller_eax = 0;
@@ -438,6 +457,7 @@ bool AttemptWin32GuestStackTrapExecution(
     const runtime::GuestStackSwitchPlan& stack_plan,
     const hle::DosVirtualFileSystemState& dos_file_system,
     const exe::Dos16mBoundModule* linexe_module,
+    const std::vector<exe::LeResidentName>* glide_exports,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt);
 

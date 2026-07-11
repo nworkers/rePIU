@@ -38,11 +38,15 @@ add_library(repiu_exe
     src/exe/dos4gw_loader.cpp
     src/exe/executable_headers.cpp
     src/hle/dos_file_system.cpp
+    src/hle/glide_hle.cpp
     src/hle/hle_dispatcher.cpp
     src/hle/hle_profile.cpp
     src/hle/linexe_call_gate.cpp
     src/hle/privileged_instruction.cpp
     src/platform/win32/execution_trampoline.cpp
+    src/platform/win32/glide_opengl_backend.cpp
+    src/platform/win32/glide_opengl_shader.cpp
+    src/platform/win32/x87_context.cpp
     src/platform/win32/runtime_memory_policy.cpp
     src/runtime/guest_context.cpp
     src/runtime/dos_low_memory.cpp
@@ -86,6 +90,15 @@ target_link_libraries(repiu_loader_win32
         repiu_exe
         spdlog::spdlog_header_only
 )
+
+if(WIN32)
+    target_link_libraries(repiu_exe
+        PUBLIC
+            opengl32
+            gdi32
+            user32
+    )
+endif()
 
 repiu_configure_win32_loader_host(repiu_exe_analyzer)
 repiu_configure_win32_loader_host(repiu_loader_win32)

@@ -9,6 +9,8 @@
 * 플랫폼 공용 코어와 플랫폼 종속 구현을 분리한다.
 * 큰 구조 변경은 설계 문서에 근거를 남긴다.
 * 새 기능에는 최소 검증 절차를 함께 문서화한다.
+* 독립된 책임을 갖는 큰 기능은 전용 header/source pair로 분리한다.
+* 공용 data/state와 플랫폼 backend를 섞지 않으며, execution trampoline과 application entry에는 ABI 변환과 orchestration만 둔다.
 
 ## Basic Principles
 
@@ -19,6 +21,8 @@
 * Separate the platform-neutral core from platform-specific implementations.
 * Document the rationale for large structural changes in design documents.
 * Document a minimum verification procedure with each new feature.
+* Give major independently responsible features dedicated header/source pairs.
+* Keep shared data/state separate from platform backends, leaving only ABI adaptation and orchestration in execution trampolines and application entry points.
 
 ## C++ 기본 기준
 

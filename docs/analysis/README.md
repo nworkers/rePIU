@@ -35,6 +35,7 @@ flowchart LR
 * [DOS/16M loader symbolic replay와 service 0 mapping](dos16m-symbolic-replay.md)
 * [DOS/4G AX=FF00h saved frame과 반환 데이터 흐름](dos4g-service-zero-frame-dataflow.md)
 * [DOS/4G client GS와 GS:0x42 private environment](dos4g-client-gs-private-environment.md)
+* [Glide2x.ovl과 OpenGL HLE 분석](glide2x-ovl-and-opengl-hle.md)
 
 # rePIU Binary Analysis Index
 
