@@ -214,4 +214,26 @@ bool DecodeLinexeCallGate(const LinexeCallGatePlan& plan,
     return false;
 }
 
+bool DecodeLinexeOriginalExport(const LinexeCallGatePlan& plan,
+                                std::uint16_t selector,
+                                std::uint16_t original_offset,
+                                LinexeService* service)
+{
+    if (!plan.valid || service == nullptr ||
+        selector != plan.linexe_code_selector)
+    {
+        return false;
+    }
+
+    for (const LinexeCallGate& gate : plan.gates)
+    {
+        if (gate.original_offset == original_offset)
+        {
+            *service = gate.service;
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace repiu::hle

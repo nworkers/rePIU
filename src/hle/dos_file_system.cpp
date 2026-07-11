@@ -600,6 +600,76 @@ bool IsDosFileHandleOpen(const DosVirtualFileSystemState& state,
     return false;
 }
 
+bool QueryDosFileAttributes(DosVirtualFileSystemState* state,
+                            const std::string& guest_path,
+                            DosResolvedPath* resolved,
+                            std::uint16_t* attributes)
+{
+    if (state == nullptr || resolved == nullptr || attributes == nullptr ||
+        !state->valid)
+    {
+        return false;
+    }
+    std::vector<std::string> components;
+    if (!ResolveGuestPath(*state, guest_path, resolved, &components))
+    {
+        return false;
+    }
+    std::error_code status_error;
+    const std::filesystem::file_status status =
+        std::filesystem::status(resolved->host_path, status_error);
+    if (status_error || !std::filesystem::exists(status))
+    {
+        resolved->result = DosPathResult::kFileNotFound;
+        resolved->message = "DOS attribute path does not exist";
+        return false;
+    }
+    for (const auto& override_entry : state->attribute_overrides)
+    {
+        if (override_entry.first == resolved->dos_path)
+        {
+            *attributes = override_entry.second;
+            resolved->result = DosPathResult::kOk;
+            return true;
+        }
+    }
+    *attributes = std::filesystem::is_directory(status) ? 0x0010U : 0x0020U;
+    resolved->result = DosPathResult::kOk;
+    resolved->message = "DOS attributes resolved";
+    return true;
+}
+
+bool SetDosFileAttributes(DosVirtualFileSystemState* state,
+                          const std::string& guest_path,
+                          std::uint16_t attributes,
+                          DosResolvedPath* resolved)
+{
+    std::uint16_t current = 0;
+    if (!QueryDosFileAttributes(state, guest_path, resolved, &current))
+    {
+        return false;
+    }
+    constexpr std::uint16_t kMutableAttributes = 0x0027U;
+    if ((attributes & ~kMutableAttributes) != 0 ||
+        (current & 0x0010U) != 0)
+    {
+        resolved->result = DosPathResult::kAccessDenied;
+        resolved->message = "DOS directory or unsupported attributes are immutable";
+        return false;
+    }
+    for (auto& override_entry : state->attribute_overrides)
+    {
+        if (override_entry.first == resolved->dos_path)
+        {
+            override_entry.second = attributes & kMutableAttributes;
+            return true;
+        }
+    }
+    state->attribute_overrides.emplace_back(
+        resolved->dos_path, attributes & kMutableAttributes);
+    return true;
+}
+
 std::uint16_t DosPathResultToErrorCode(DosPathResult result)
 {
     switch (result)

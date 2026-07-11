@@ -783,6 +783,15 @@ void PrintExecutionAttempt(
                 Hex32(attempt.linexe_bridge_stack[3]),
                 Hex32(attempt.linexe_bridge_stack[4]),
                 Hex32(attempt.linexe_bridge_stack[5]));
+    logger.info("Win32 LINEXE bridge stack continued: {} {} {} {} {} {}",
+                Hex32(attempt.linexe_bridge_stack[6]),
+                Hex32(attempt.linexe_bridge_stack[7]),
+                Hex32(attempt.linexe_bridge_stack[8]),
+                Hex32(attempt.linexe_bridge_stack[9]),
+                Hex32(attempt.linexe_bridge_stack[10]),
+                Hex32(attempt.linexe_bridge_stack[11]));
+    logger.info("Win32 LINEXE bridge argument text: {}",
+                attempt.linexe_bridge_argument_text);
     logger.info("Win32 LINEXE scan return EAX/EBP/caller EAX: {}/{}/{}",
                 Hex32(attempt.linexe_scan_return_eax),
                 Hex32(attempt.linexe_scan_return_ebp),

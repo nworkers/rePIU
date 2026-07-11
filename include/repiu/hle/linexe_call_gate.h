@@ -77,6 +77,11 @@ bool DecodeLinexeCallGate(const LinexeCallGatePlan& plan,
                           std::uint32_t gate_offset,
                           LinexeService* service);
 
+bool DecodeLinexeOriginalExport(const LinexeCallGatePlan& plan,
+                                std::uint16_t selector,
+                                std::uint16_t original_offset,
+                                LinexeService* service);
+
 }  // namespace repiu::hle
 
 #endif  // REPIU_HLE_LINEXE_CALL_GATE_H_

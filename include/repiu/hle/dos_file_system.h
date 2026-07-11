@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace repiu::hle
@@ -35,6 +36,7 @@ struct DosVirtualFileSystemState
     std::vector<std::string> current_components;
     std::uint16_t next_file_handle = 5;
     std::vector<DosOpenFileHandle> open_files;
+    std::vector<std::pair<std::string, std::uint16_t>> attribute_overrides;
     std::string message;
 };
 
@@ -88,6 +90,16 @@ bool CloseDosFile(DosVirtualFileSystemState* state,
 
 bool IsDosFileHandleOpen(const DosVirtualFileSystemState& state,
                          std::uint16_t handle);
+
+bool QueryDosFileAttributes(DosVirtualFileSystemState* state,
+                            const std::string& guest_path,
+                            DosResolvedPath* resolved,
+                            std::uint16_t* attributes);
+
+bool SetDosFileAttributes(DosVirtualFileSystemState* state,
+                          const std::string& guest_path,
+                          std::uint16_t attributes,
+                          DosResolvedPath* resolved);
 
 std::uint16_t DosPathResultToErrorCode(DosPathResult result);
 

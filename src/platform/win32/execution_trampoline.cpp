@@ -179,7 +179,8 @@ struct ThreadContext
     std::uint32_t linexe_bridge_service = 0;
     std::uint32_t linexe_bridge_esp = 0;
     std::uint32_t linexe_bridge_ebp = 0;
-    std::uint32_t linexe_bridge_stack[6] = {};
+    std::uint32_t linexe_bridge_stack[12] = {};
+    char linexe_bridge_argument_text[128] = {};
     std::uint32_t linexe_scan_return_eax = 0;
     std::uint32_t linexe_scan_return_ebp = 0;
     std::uint32_t linexe_scan_caller_eax = 0;
@@ -1070,6 +1071,9 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     std::memcpy(attempt->linexe_bridge_stack,
                 context.linexe_bridge_stack,
                 sizeof(attempt->linexe_bridge_stack));
+    std::memcpy(attempt->linexe_bridge_argument_text,
+                context.linexe_bridge_argument_text,
+                sizeof(attempt->linexe_bridge_argument_text));
     attempt->linexe_scan_return_eax = context.linexe_scan_return_eax;
     attempt->linexe_scan_return_ebp = context.linexe_scan_return_ebp;
     attempt->linexe_scan_caller_eax = context.linexe_scan_caller_eax;
@@ -2488,6 +2492,73 @@ bool HandleDosOpenFile(CONTEXT* win32_context, ThreadContext* context)
     return true;
 }
 
+bool HandleDosFileAttributes(CONTEXT* win32_context,
+                             ThreadContext* context)
+{
+    const std::uint8_t subfunction = static_cast<std::uint8_t>(
+        win32_context->Eax & 0xFFU);
+    std::string guest_path;
+    repiu::hle::DosResolvedPath resolved;
+    if (!ReadGuestAsciz(context, win32_context->Edx, 260, &guest_path))
+    {
+        win32_context->Eax =
+            (win32_context->Eax & 0xFFFF0000U) | 0x0003U;
+        win32_context->EFlags |= 1U;
+        return true;
+    }
+
+    bool success = false;
+    if (subfunction == 0x00)
+    {
+        std::uint16_t attributes = 0;
+        success = repiu::hle::QueryDosFileAttributes(
+            &context->dos_file_system,
+            guest_path,
+            &resolved,
+            &attributes);
+        if (success)
+        {
+            win32_context->Ecx =
+                (win32_context->Ecx & 0xFFFF0000U) | attributes;
+        }
+    }
+    else if (subfunction == 0x01)
+    {
+        success = repiu::hle::SetDosFileAttributes(
+            &context->dos_file_system,
+            guest_path,
+            static_cast<std::uint16_t>(win32_context->Ecx & 0xFFFFU),
+            &resolved);
+    }
+    else
+    {
+        resolved.result = repiu::hle::DosPathResult::kAccessDenied;
+        resolved.message = "unsupported DOS file attribute subfunction";
+    }
+
+    RecordDosPathTrace(context,
+                       subfunction == 0 ? "attributes-query" : "attributes-set",
+                       guest_path,
+                       resolved.dos_path,
+                       resolved.host_path.string(),
+                       success,
+                       repiu::hle::DosPathResultToErrorCode(resolved.result),
+                       0,
+                       0);
+    if (success)
+    {
+        win32_context->EFlags &= ~1U;
+    }
+    else
+    {
+        win32_context->Eax =
+            (win32_context->Eax & 0xFFFF0000U) |
+            repiu::hle::DosPathResultToErrorCode(resolved.result);
+        win32_context->EFlags |= 1U;
+    }
+    return true;
+}
+
 void RecordDosRead(ThreadContext* context,
                    std::uint16_t handle,
                    std::uint32_t requested_bytes,
@@ -2987,6 +3058,13 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
         case 0x42:
             RecordHandledDosInterrupt(context, 0x21, ax);
             if (!HandleDosSeekFile(win32_context, context))
+            {
+                return false;
+            }
+            break;
+        case 0x43:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            if (!HandleDosFileAttributes(win32_context, context))
             {
                 return false;
             }
@@ -5974,6 +6052,14 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
             }
             win32_context->Eip += 2;
             return true;
+        case 0x43:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            if (!HandleDosFileAttributes(win32_context, context))
+            {
+                return false;
+            }
+            win32_context->Eip += 2;
+            return true;
         case 0x44:
             RecordHandledDosInterrupt(context, 0x21, ax);
             if (!HandleDosIoctl(win32_context, context))
@@ -6747,6 +6833,77 @@ void RecordAllocatorControlFlowException(
     }
 }
 
+void RecordLinexeFarTransferBoundary(CONTEXT* win32_context,
+                                     ThreadContext* context)
+{
+    if (win32_context == nullptr || context == nullptr ||
+        !context->linexe_environment_active)
+    {
+        return;
+    }
+
+    const auto* instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(win32_context->Eip));
+    constexpr std::uint8_t kFarTransferPrefix[] =
+        {0x66U, 0xEAU, 0x04U, 0x00U};
+    if (!IsGuestRangeReadable(
+            context, instruction, sizeof(kFarTransferPrefix) + 2U) ||
+        std::memcmp(instruction,
+                    kFarTransferPrefix,
+                    sizeof(kFarTransferPrefix)) != 0)
+    {
+        return;
+    }
+
+    const std::uint16_t target_selector = static_cast<std::uint16_t>(
+        win32_context->Edi >> 16U);
+    const std::uint16_t target_offset = static_cast<std::uint16_t>(
+        win32_context->Edi & 0xFFFFU);
+    repiu::hle::LinexeService service{};
+    if (!repiu::hle::DecodeLinexeOriginalExport(
+            context->linexe_gate_plan,
+            target_selector,
+            target_offset,
+            &service))
+    {
+        return;
+    }
+
+    ++context->linexe_bridge_entry_count;
+    context->linexe_bridge_gate_valid = true;
+    context->linexe_bridge_selector = target_selector;
+    context->linexe_bridge_offset = target_offset;
+    context->linexe_bridge_service = static_cast<std::uint32_t>(service);
+    context->linexe_bridge_esp = win32_context->Esp;
+    context->linexe_bridge_ebp = win32_context->Ebp;
+    const auto* stack = reinterpret_cast<const std::uint32_t*>(
+        static_cast<std::uintptr_t>(win32_context->Esp));
+    if (IsGuestRangeReadable(context,
+                             stack,
+                             sizeof(context->linexe_bridge_stack)))
+    {
+        std::memcpy(context->linexe_bridge_stack,
+                    stack,
+                    sizeof(context->linexe_bridge_stack));
+    }
+    const auto* argument = reinterpret_cast<const char*>(
+        static_cast<std::uintptr_t>(context->linexe_bridge_stack[9]));
+    for (std::size_t index = 0;
+         index + 1U < sizeof(context->linexe_bridge_argument_text);
+         ++index)
+    {
+        if (!IsGuestRangeReadable(context, argument + index, 1U))
+        {
+            break;
+        }
+        context->linexe_bridge_argument_text[index] = argument[index];
+        if (argument[index] == '\0')
+        {
+            break;
+        }
+    }
+}
+
 LONG WINAPI GuestStackVectoredExceptionHandler(
     EXCEPTION_POINTERS* exception_info)
 {
@@ -6798,6 +6955,7 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
         context,
         static_cast<std::uint32_t>(win32_context->Eip));
     RecordAllocatorControlFlowException(exception_info, context);
+    RecordLinexeFarTransferBoundary(win32_context, context);
     if (exception_info->ExceptionRecord != nullptr &&
         exception_info->ExceptionRecord->ExceptionCode ==
             EXCEPTION_SINGLE_STEP &&

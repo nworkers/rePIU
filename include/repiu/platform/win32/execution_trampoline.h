@@ -296,7 +296,8 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t linexe_bridge_service = 0;
     std::uint32_t linexe_bridge_esp = 0;
     std::uint32_t linexe_bridge_ebp = 0;
-    std::uint32_t linexe_bridge_stack[6] = {};
+    std::uint32_t linexe_bridge_stack[12] = {};
+    char linexe_bridge_argument_text[128] = {};
     std::uint32_t linexe_scan_return_eax = 0;
     std::uint32_t linexe_scan_return_ebp = 0;
     std::uint32_t linexe_scan_caller_eax = 0;
