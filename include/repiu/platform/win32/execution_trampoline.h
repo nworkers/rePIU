@@ -198,6 +198,11 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t exception_esi = 0;
     std::uint32_t exception_edi = 0;
     X86ExecutionSnapshot exception_snapshot;
+    std::uint32_t handled_fatal_breakpoint_count = 0;
+    std::uint32_t last_fatal_breakpoint_address = 0;
+    std::uint32_t last_fatal_message_address = 0;
+    std::string last_fatal_message;
+    bool fatal_halt_reached = false;
     X86ExecutionSnapshot timeout_snapshot;
     X86ExecutionSnapshot last_single_step_snapshot;
     std::uint32_t single_step_trace_count = 0;

@@ -59,6 +59,10 @@ int main(int argc, char** argv)
     const std::uint32_t timeout_milliseconds =
         argc >= 3 ? static_cast<std::uint32_t>(std::stoul(argv[2]))
                   : 10000U;
+    const std::uint32_t child_timeout_milliseconds =
+        timeout_milliseconds >= 2000U
+            ? timeout_milliseconds - 1000U
+            : 1000U;
 
     char module_path[MAX_PATH] = {};
     if (GetModuleFileNameA(nullptr, module_path, MAX_PATH) == 0)
@@ -96,6 +100,11 @@ int main(int argc, char** argv)
     SetEnvironmentVariableA(
         repiu::platform::win32::kWin32LiveTelemetryEnvironment,
         mapping_name.c_str());
+    const std::string child_timeout =
+        std::to_string(child_timeout_milliseconds);
+    SetEnvironmentVariableA(
+        repiu::platform::win32::kWin32ExecutionTimeoutEnvironment,
+        child_timeout.c_str());
     std::string command =
         "\"" + loader_path.string() + "\" " + target;
     STARTUPINFOA startup = {};
@@ -114,6 +123,9 @@ int main(int argc, char** argv)
         &process);
     SetEnvironmentVariableA(
         repiu::platform::win32::kWin32LiveTelemetryEnvironment,
+        nullptr);
+    SetEnvironmentVariableA(
+        repiu::platform::win32::kWin32ExecutionTimeoutEnvironment,
         nullptr);
     if (!created)
     {

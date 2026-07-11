@@ -29,6 +29,7 @@ flowchart LR
 * [Interrupt와 port I/O 관찰](interrupts-and-port-io.md)
 * [현재 실행 frontier와 다음 분석 대상](current-execution-frontier.md)
 * [DOS4GW loader와 selector 할당 분석](dos4gw-loader-selector-allocation.md)
+* [DOS/4G DLL loader와 INT 21h AX=FF00h 역추적](dll-loader-int21-ff00.md)
 
 # rePIU Binary Analysis Index
 

@@ -82,6 +82,12 @@ struct ThreadContext
     std::uint32_t exception_esi = 0;
     std::uint32_t exception_edi = 0;
     X86ExecutionSnapshot exception_snapshot;
+    std::uint32_t handled_fatal_breakpoint_count = 0;
+    std::uint32_t last_fatal_breakpoint_address = 0;
+    std::uint32_t last_fatal_message_address = 0;
+    std::string last_fatal_message;
+    bool fatal_breakpoint_continued = false;
+    bool fatal_halt_reached = false;
     std::uint32_t handled_hle_trap_count = 0;
     std::uint32_t last_hle_trap_address = 0;
     std::uint32_t last_hle_trap_opcode = 0;
@@ -972,6 +978,14 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->shadow_memory_range_valid = context.shadow_memory_range_valid;
     attempt->shadow_memory_min_address = context.shadow_memory_min_address;
     attempt->shadow_memory_max_address = context.shadow_memory_max_address;
+    attempt->handled_fatal_breakpoint_count =
+        context.handled_fatal_breakpoint_count;
+    attempt->last_fatal_breakpoint_address =
+        context.last_fatal_breakpoint_address;
+    attempt->last_fatal_message_address =
+        context.last_fatal_message_address;
+    attempt->last_fatal_message = context.last_fatal_message;
+    attempt->fatal_halt_reached = context.fatal_halt_reached;
 }
 
 int CaptureException(EXCEPTION_POINTERS* exception_info,
@@ -1118,6 +1132,8 @@ bool HandleSegmentPopInstruction(CONTEXT* win32_context,
                                  ThreadContext* context);
 bool HandleRepStosdInstruction(CONTEXT* win32_context,
                                ThreadContext* context);
+bool HandleRepMovsInstruction(CONTEXT* win32_context,
+                              ThreadContext* context);
 bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
                                    ThreadContext* context);
 bool HandleSegmentOverrideByteLoadInstruction(CONTEXT* win32_context,
@@ -1239,6 +1255,7 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
         (HandleSegmentLoadInstruction(win32_context, context) ||
          HandleSegmentPopInstruction(win32_context, context) ||
          HandleRepStosdInstruction(win32_context, context) ||
+         HandleRepMovsInstruction(win32_context, context) ||
          HandleSegmentStoreInstruction(win32_context, context) ||
          HandleSegmentOverrideByteLoadInstruction(win32_context, context) ||
          HandleSegmentMemoryCompareInstruction(win32_context, context) ||
@@ -2319,6 +2336,7 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
     {
         case 0x09:
         {
+            RecordHandledDosInterrupt(context, 0x21, ax);
             const char* text = reinterpret_cast<const char*>(
                 static_cast<std::uintptr_t>(win32_context->Edx));
             if (text == nullptr ||
@@ -2473,6 +2491,14 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
 {
     const std::uint16_t ax = static_cast<std::uint16_t>(
         win32_context->Eax & 0xFFFF);
+    if (ax == 0x0300 && context->fatal_breakpoint_continued &&
+        (win32_context->Ebx & 0xFFU) == 0x2FU)
+    {
+        RecordHandledDosInterrupt(context, 0x31, ax);
+        win32_context->EFlags &= ~1U;
+        win32_context->Eip += 2;
+        return true;
+    }
     if (ax == 0x0400)
     {
         RecordHandledDosInterrupt(context, 0x31, ax);
@@ -4788,6 +4814,8 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
         (win32_context->Eax >> 8) & 0xFF);
     switch (ah)
     {
+        case 0x09:
+            return HandleDosInterrupt21(win32_context, context);
         case 0x19:
             RecordHandledDosInterrupt(context, 0x21, ax);
             HandleDosGetCurrentDrive(win32_context, context);
@@ -4948,6 +4976,237 @@ bool HandleTracedMouseInterrupt33(CONTEXT* win32_context,
     return HandleMouseInterrupt33(win32_context, context);
 }
 
+bool HandleOriginalFatalBreakpoint(EXCEPTION_POINTERS* exception_info,
+                                   CONTEXT* win32_context,
+                                   ThreadContext* context)
+{
+    if (exception_info == nullptr ||
+        exception_info->ExceptionRecord == nullptr ||
+        exception_info->ExceptionRecord->ExceptionCode !=
+            EXCEPTION_BREAKPOINT ||
+        win32_context == nullptr || context == nullptr ||
+        win32_context->Eip == 0)
+    {
+        return false;
+    }
+
+    const std::uint32_t context_eip =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    std::uint32_t breakpoint = context_eip;
+    bool advance_to_continuation = false;
+    if (IsGuestRangeReadable(
+            context,
+            reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(context_eip)),
+            1U) &&
+        *reinterpret_cast<const std::uint8_t*>(
+            static_cast<std::uintptr_t>(context_eip)) == 0xCC)
+    {
+        advance_to_continuation = true;
+    }
+    else
+    {
+        breakpoint = context_eip - 1U;
+    }
+    if (!IsGuestRangeReadable(
+            context,
+            reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(breakpoint)),
+            8U))
+    {
+        return false;
+    }
+
+    const auto* instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(breakpoint));
+    if (instruction[0] != 0xCC || instruction[1] != 0x52 ||
+        instruction[2] != 0xE8 || instruction[7] != 0xF4)
+    {
+        return false;
+    }
+
+    context->handled_fatal_breakpoint_count += 1U;
+    context->last_fatal_breakpoint_address = breakpoint;
+    context->last_fatal_message_address =
+        static_cast<std::uint32_t>(win32_context->Edx);
+    context->last_fatal_message.clear();
+    ReadGuestAsciz(context,
+                   context->last_fatal_message_address,
+                   512U,
+                   &context->last_fatal_message);
+    context->fatal_breakpoint_continued = true;
+    if (advance_to_continuation)
+    {
+        win32_context->Eip += 1U;
+    }
+    return true;
+}
+
+bool ResolveSegmentLinearRange(ThreadContext* context,
+                               std::uint16_t selector,
+                               std::uint32_t offset,
+                               std::uint32_t byte_count,
+                               bool writable,
+                               std::uint32_t* linear_address)
+{
+    if (context == nullptr || linear_address == nullptr)
+    {
+        return false;
+    }
+
+    std::uint32_t translated = 0;
+    if (!repiu::runtime::TranslateSelectorOffset(
+            context->selector_table,
+            selector,
+            offset,
+            byte_count,
+            &translated))
+    {
+        translated = offset;
+    }
+    void* pointer = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(translated));
+    const bool valid = writable
+        ? IsGuestRangeWritable(context, pointer, byte_count)
+        : IsGuestRangeReadable(context, pointer, byte_count);
+    if (!valid)
+    {
+        translated = offset;
+        pointer = reinterpret_cast<void*>(
+            static_cast<std::uintptr_t>(translated));
+        const bool direct_valid = writable
+            ? IsGuestRangeWritable(context, pointer, byte_count)
+            : IsGuestRangeReadable(context, pointer, byte_count);
+        if (!direct_valid)
+        {
+            return false;
+        }
+    }
+    *linear_address = translated;
+    return true;
+}
+
+bool HandleRepMovsInstruction(CONTEXT* win32_context,
+                              ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if ((instruction[0] != 0xF2 && instruction[0] != 0xF3) ||
+        (instruction[1] != 0xA4 && instruction[1] != 0xA5) ||
+        (win32_context->EFlags & 0x00000400U) != 0)
+    {
+        return false;
+    }
+
+    const std::uint32_t width = instruction[1] == 0xA5 ? 4U : 1U;
+    const std::uint64_t byte_count64 =
+        static_cast<std::uint64_t>(win32_context->Ecx) * width;
+    if (byte_count64 > 0xFFFFFFFFULL)
+    {
+        return false;
+    }
+    const std::uint32_t byte_count =
+        static_cast<std::uint32_t>(byte_count64);
+    std::uint32_t source = 0;
+    std::uint32_t destination = 0;
+    bool source_is_low_memory = false;
+    bool destination_is_low_memory = false;
+    if (byte_count != 0 &&
+        static_cast<std::uint64_t>(win32_context->Esi) + byte_count <=
+            repiu::runtime::kDosLowMemorySize)
+    {
+        source = static_cast<std::uint32_t>(win32_context->Esi);
+        source_is_low_memory = true;
+    }
+    else if (byte_count != 0 &&
+             !ResolveSegmentLinearRange(context,
+                                        context->guest_ds,
+                                        win32_context->Esi,
+                                        byte_count,
+                                        false,
+                                        &source))
+    {
+        return false;
+    }
+    if (byte_count != 0)
+    {
+        if (static_cast<std::uint64_t>(win32_context->Edi) + byte_count <=
+                repiu::runtime::kDosLowMemorySize)
+        {
+            destination = static_cast<std::uint32_t>(win32_context->Edi);
+            destination_is_low_memory = true;
+        }
+        else if (repiu::runtime::TranslateSelectorOffset(
+                context->selector_table,
+                context->guest_es,
+                win32_context->Edi,
+                byte_count,
+                &destination) &&
+            destination < repiu::runtime::kDosLowMemorySize &&
+            static_cast<std::uint64_t>(destination) + byte_count <=
+                repiu::runtime::kDosLowMemorySize)
+        {
+            destination_is_low_memory = true;
+        }
+        else if (!ResolveSegmentLinearRange(context,
+                                            context->guest_es,
+                                            win32_context->Edi,
+                                            byte_count,
+                                            true,
+                                            &destination))
+        {
+            return false;
+        }
+    }
+    if (byte_count != 0)
+    {
+        if (destination_is_low_memory)
+        {
+            const auto* bytes = source_is_low_memory
+                ? context->dos_low_memory.bytes.data() + source
+                : reinterpret_cast<const std::uint8_t*>(
+                      static_cast<std::uintptr_t>(source));
+            for (std::uint32_t index = 0; index < byte_count; ++index)
+            {
+                if (!repiu::runtime::WriteDosLowMemory(
+                        &context->dos_low_memory,
+                        destination + index,
+                        bytes[index],
+                        1U))
+                {
+                    return false;
+                }
+            }
+        }
+        else
+        {
+            if (source_is_low_memory)
+            {
+                std::memcpy(reinterpret_cast<void*>(
+                                static_cast<std::uintptr_t>(destination)),
+                            context->dos_low_memory.bytes.data() + source,
+                            byte_count);
+            }
+            else
+            {
+                std::memmove(reinterpret_cast<void*>(
+                                 static_cast<std::uintptr_t>(destination)),
+                             reinterpret_cast<const void*>(
+                                 static_cast<std::uintptr_t>(source)),
+                             byte_count);
+            }
+        }
+    }
+    win32_context->Esi += byte_count;
+    win32_context->Edi += byte_count;
+    win32_context->Ecx = 0;
+    win32_context->Eip += 2;
+    context->diagnostic_progress_count.fetch_add(
+        1,
+        std::memory_order_relaxed);
+    return true;
+}
+
 bool HandlePrivilegedTrapInstruction(CONTEXT* win32_context,
                                      ThreadContext* context)
 {
@@ -4965,6 +5224,13 @@ bool HandlePrivilegedTrapInstruction(CONTEXT* win32_context,
         RecordHandledHleTrap(win32_context, context, *instruction);
         win32_context->EFlags |= 0x00000200U;
         ++win32_context->Eip;
+        return true;
+    }
+    if (*instruction == 0xF4 && context->fatal_breakpoint_continued)
+    {
+        RecordHandledHleTrap(win32_context, context, *instruction);
+        context->fatal_halt_reached = true;
+        RecoverFromHleExit(win32_context, context);
         return true;
     }
 
@@ -5518,6 +5784,17 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
         exception_info->ExceptionRecord->ExceptionCode ==
             EXCEPTION_ACCESS_VIOLATION &&
         HandleDosMemoryAccess(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleRepMovsInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (HandleOriginalFatalBreakpoint(exception_info,
+                                      win32_context,
+                                      context))
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }

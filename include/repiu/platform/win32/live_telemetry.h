@@ -10,6 +10,8 @@ constexpr std::uint32_t kWin32LiveTelemetryMagic = 0x5250544CU;
 constexpr std::uint32_t kWin32LiveTelemetryVersion = 2;
 constexpr const char* kWin32LiveTelemetryEnvironment =
     "REPIU_LIVE_TELEMETRY_MAPPING";
+constexpr const char* kWin32ExecutionTimeoutEnvironment =
+    "REPIU_EXECUTION_TIMEOUT_MS";
 
 struct Win32SharedLiveTelemetry
 {

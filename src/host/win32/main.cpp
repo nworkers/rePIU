@@ -3,6 +3,7 @@
 #include "repiu/hle/hle_dispatcher.h"
 #include "repiu/hle/privileged_instruction.h"
 #include "repiu/platform/win32/execution_trampoline.h"
+#include "repiu/platform/win32/live_telemetry.h"
 #include "repiu/platform/win32/runtime_memory_policy.h"
 #include "repiu/runtime/guest_context.h"
 #include "repiu/runtime/image_address.h"
@@ -14,7 +15,9 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
+#include <charconv>
 #include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -28,6 +31,31 @@
 
 namespace
 {
+
+constexpr std::uint32_t kDefaultExecutionTimeoutMilliseconds = 1000U;
+
+std::uint32_t ReadExecutionTimeoutMilliseconds()
+{
+    const char* text = std::getenv(
+        repiu::platform::win32::kWin32ExecutionTimeoutEnvironment);
+    if (text == nullptr || *text == '\0')
+    {
+        return kDefaultExecutionTimeoutMilliseconds;
+    }
+
+    std::uint32_t value = 0;
+    const char* end = text;
+    while (*end != '\0')
+    {
+        ++end;
+    }
+    const auto result = std::from_chars(text, end, value);
+    if (result.ec != std::errc{} || result.ptr != end || value == 0)
+    {
+        return kDefaultExecutionTimeoutMilliseconds;
+    }
+    return value;
+}
 
 std::shared_ptr<spdlog::logger> CreateLoaderLogger()
 {
@@ -567,6 +595,19 @@ void PrintExecutionAttempt(
                                   "Win32 minimal execution exception",
                                   attempt.exception_snapshot);
     }
+    logger.info("Win32 handled original fatal breakpoint count: {}",
+                attempt.handled_fatal_breakpoint_count);
+    if (attempt.handled_fatal_breakpoint_count != 0)
+    {
+        logger.error("Win32 last original fatal breakpoint address: {}",
+                     Hex32(attempt.last_fatal_breakpoint_address));
+        logger.error("Win32 last original fatal message address: {}",
+                     Hex32(attempt.last_fatal_message_address));
+        logger.error("Win32 last original fatal message: {}",
+                     attempt.last_fatal_message);
+    }
+    logger.info("Win32 original fatal halt reached: {}",
+                attempt.fatal_halt_reached ? "true" : "false");
     logger.info("Win32 minimal execution timed out: {}",
                 attempt.timed_out ? "true" : "false");
     if (attempt.timed_out)
@@ -1639,19 +1680,23 @@ int main(int argc, char** argv)
     repiu::platform::win32::Win32MinimalExecutionAttempt attempt;
     const bool use_dos_console_hle =
         profile->hle_profile_id == "dos4gw_console_sample";
+    const std::uint32_t execution_timeout_milliseconds =
+        ReadExecutionTimeoutMilliseconds();
+    logger->info("Win32 guest execution timeout: {} ms",
+                 execution_timeout_milliseconds);
     const bool attempted_execution =
         use_dos_console_hle
             ? repiu::platform::win32::AttemptWin32GuestStackHleExecution(
                   placement,
                   stack_plan,
                   dos_file_system,
-                  1000,
+                  execution_timeout_milliseconds,
                   &attempt)
             : repiu::platform::win32::AttemptWin32GuestStackTrapExecution(
                   placement,
                   stack_plan,
                   dos_file_system,
-                  1000,
+                  execution_timeout_milliseconds,
                   &attempt);
     if (!attempted_execution)
     {
