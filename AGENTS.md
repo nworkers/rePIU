@@ -146,6 +146,10 @@ If the requirement is a simple question or confirmation request, answer it direc
 * 원본 파일 분석으로 확인한 구조와 설계는 `docs/EXE_DESIGN.ko.md`, `docs/EXE_DESIGN.en.md`에 누적 반영한다.
 * 규칙이 바뀌면 `AGENTS.md`와 관련 문서를 함께 갱신한다.
 * 작업 단위 문서 파일명은 가능하면 `YYYYMMDD-###-slug.md` 형식을 사용한다.
+* Markdown 문서에서 구조, 관계, 흐름, 호출 순서, 상태 전이, 주소 변환을 도식화할 수 있으면 이해를 돕기 위해 Mermaid를 적극적으로 사용한다.
+* 세 개 이상의 구성요소·단계·분기·계층이 있으면 Mermaid 적용 가능성을 검토하고, flowchart, sequenceDiagram, stateDiagram, classDiagram 등 내용에 맞는 형식을 선택한다.
+* 도식이 본문 이해를 실질적으로 개선하는 경우 최대한 포함하되, 단순 사실 하나나 한 단계 설명에는 불필요한 도식을 강제하지 않는다.
+* Mermaid 도식은 본문과 같은 사실 및 확인 상태를 표현해야 하며, 본문 설명을 완전히 대체하지 않는다.
 
 ## Documentation Rules
 
@@ -159,6 +163,10 @@ If the requirement is a simple question or confirmation request, answer it direc
 * Accumulate original executable analysis findings and design notes in `docs/EXE_DESIGN.ko.md` and `docs/EXE_DESIGN.en.md`.
 * When rules change, update `AGENTS.md` and the related documents together.
 * Use the `YYYYMMDD-###-slug.md` filename format for task documents whenever possible.
+* Actively use Mermaid in Markdown documents whenever structure, relationships, flows, call sequences, state transitions, or address translation can be visualized to improve understanding.
+* Evaluate Mermaid whenever content has three or more components, steps, branches, or layers, choosing an appropriate form such as flowchart, sequenceDiagram, stateDiagram, or classDiagram.
+* Include useful diagrams as broadly as practical when they materially improve the prose, but do not force them into single-fact or one-step explanations.
+* Mermaid diagrams must express the same facts and confirmation status as the prose and must not completely replace the written explanation.
 
 ## 분석 및 지식 기반 유지 규칙
 

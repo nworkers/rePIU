@@ -195,6 +195,11 @@ struct ThreadContext
     std::uint32_t diagnostic_poll_iteration_count = 0;
     std::uint32_t diagnostic_quiet_iteration_count = 0;
     std::unordered_map<std::uint32_t, std::uint8_t> shadow_memory;
+    bool pending_shadow_allocation_valid = false;
+    std::uint32_t pending_shadow_allocation_size = 0;
+    bool shadow_zero_payload_valid = false;
+    std::uint32_t shadow_zero_payload_begin = 0;
+    std::uint32_t shadow_zero_payload_end = 0;
     bool boundary_object_chain_valid = false;
     std::uint32_t boundary_object_chain_base = 0;
     std::uint32_t boundary_object_chain_frontier = 0;
@@ -882,6 +887,14 @@ bool HandleSegmentMemoryLoadInstruction(CONTEXT* win32_context,
                                         ThreadContext* context);
 bool HandleTracedMemoryLoadInstruction(CONTEXT* win32_context,
                                        ThreadContext* context);
+
+bool HandleTracedMemoryAddInstruction(CONTEXT* win32_context,
+                                      ThreadContext* context);
+
+bool HandleTracedMemoryOrInstruction(CONTEXT* win32_context,
+                                     ThreadContext* context);
+bool HandleTracedMemoryCompareByteInstruction(CONTEXT* win32_context,
+                                              ThreadContext* context);
 bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
                                         ThreadContext* context);
 bool HandleTracedMemoryTestInstruction(CONTEXT* win32_context,
@@ -981,6 +994,9 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
          HandleSegmentMemoryCompareInstruction(win32_context, context) ||
          HandleSegmentMemoryLoadInstruction(win32_context, context) ||
          HandleTracedMemoryLoadInstruction(win32_context, context) ||
+         HandleTracedMemoryAddInstruction(win32_context, context) ||
+         HandleTracedMemoryOrInstruction(win32_context, context) ||
+         HandleTracedMemoryCompareByteInstruction(win32_context, context) ||
          HandleTracedMemoryStoreInstruction(win32_context, context) ||
          HandleTracedMemoryTestInstruction(win32_context, context) ||
          HandleTracedFpuMemoryInstruction(win32_context, context) ||
@@ -1174,7 +1190,7 @@ bool ReadShadowUInt32(ThreadContext* context,
                       std::uint32_t source,
                       std::uint32_t* value)
 {
-    if (value == nullptr)
+    if (context == nullptr || value == nullptr)
     {
         return false;
     }
@@ -1183,14 +1199,51 @@ bool ReadShadowUInt32(ThreadContext* context,
     for (std::uint32_t index = 0; index < 4; ++index)
     {
         const auto found = context->shadow_memory.find(source + index);
-        if (found == context->shadow_memory.end())
+        if (found != context->shadow_memory.end())
+        {
+            result |=
+                static_cast<std::uint32_t>(found->second) << (index * 8);
+            continue;
+        }
+
+        const std::uint32_t address = source + index;
+        if (!context->shadow_zero_payload_valid ||
+            address < context->shadow_zero_payload_begin ||
+            address >= context->shadow_zero_payload_end)
         {
             return false;
         }
-        result |= static_cast<std::uint32_t>(found->second) << (index * 8);
     }
 
     *value = result;
+    ++context->shadow_memory_read_hit_count;
+    return true;
+}
+
+bool ReadShadowUInt8(ThreadContext* context,
+                     std::uint32_t source,
+                     std::uint8_t* value)
+{
+    if (context == nullptr || value == nullptr)
+    {
+        return false;
+    }
+
+    const auto found = context->shadow_memory.find(source);
+    if (found != context->shadow_memory.end())
+    {
+        *value = found->second;
+    }
+    else if (context->shadow_zero_payload_valid &&
+             source >= context->shadow_zero_payload_begin &&
+             source < context->shadow_zero_payload_end)
+    {
+        *value = 0;
+    }
+    else
+    {
+        return false;
+    }
     ++context->shadow_memory_read_hit_count;
     return true;
 }
@@ -3388,11 +3441,306 @@ bool HandleTracedMemoryLoadInstruction(CONTEXT* win32_context,
         {
             return false;
         }
+        const std::uint64_t instruction_offset =
+            static_cast<std::uint64_t>(win32_context->Eip) -
+            context->runtime_base;
+        const bool has_confirmed_allocation_size =
+            win32_context->Eax == 0x0000002CU ||
+            win32_context->Eax == 0x00001008U;
+        if (!context->pending_shadow_allocation_valid &&
+            instruction_offset == 0x000F7A71ULL &&
+            source == 0 &&
+            has_confirmed_allocation_size)
+        {
+            context->pending_shadow_allocation_valid = true;
+            context->pending_shadow_allocation_size = win32_context->Eax;
+        }
         value = 0;
     }
 
     const std::uint8_t destination_register = (instruction[1] >> 3) & 0x07U;
     WriteGeneralRegister32(win32_context, destination_register, value);
+    win32_context->Eip += instruction_size;
+    return true;
+}
+
+bool HasEvenParity(std::uint8_t value)
+{
+    bool even_parity = true;
+    while (value != 0)
+    {
+        even_parity = !even_parity;
+        value = static_cast<std::uint8_t>(value & (value - 1U));
+    }
+    return even_parity;
+}
+
+void UpdateAdd32Flags(CONTEXT* win32_context,
+                      std::uint32_t left,
+                      std::uint32_t right,
+                      std::uint32_t result)
+{
+    constexpr std::uint32_t kCarryFlag = 0x00000001U;
+    constexpr std::uint32_t kParityFlag = 0x00000004U;
+    constexpr std::uint32_t kAuxiliaryCarryFlag = 0x00000010U;
+    constexpr std::uint32_t kZeroFlag = 0x00000040U;
+    constexpr std::uint32_t kSignFlag = 0x00000080U;
+    constexpr std::uint32_t kOverflowFlag = 0x00000800U;
+    constexpr std::uint32_t kArithmeticFlags =
+        kCarryFlag | kParityFlag | kAuxiliaryCarryFlag | kZeroFlag |
+        kSignFlag | kOverflowFlag;
+
+    win32_context->EFlags &= ~kArithmeticFlags;
+    if (static_cast<std::uint64_t>(left) + right > 0xFFFFFFFFULL)
+    {
+        win32_context->EFlags |= kCarryFlag;
+    }
+    if (HasEvenParity(static_cast<std::uint8_t>(result & 0xFFU)))
+    {
+        win32_context->EFlags |= kParityFlag;
+    }
+    if (((left ^ right ^ result) & 0x10U) != 0)
+    {
+        win32_context->EFlags |= kAuxiliaryCarryFlag;
+    }
+    if (result == 0)
+    {
+        win32_context->EFlags |= kZeroFlag;
+    }
+    if ((result & 0x80000000U) != 0)
+    {
+        win32_context->EFlags |= kSignFlag;
+    }
+    if (((~(left ^ right) & (left ^ result)) & 0x80000000U) != 0)
+    {
+        win32_context->EFlags |= kOverflowFlag;
+    }
+}
+
+std::uint8_t ReadGeneralRegister8(const CONTEXT* win32_context,
+                                  std::uint8_t register_index)
+{
+    const std::uint8_t byte_register = register_index & 0x07U;
+    if (byte_register < 4)
+    {
+        return static_cast<std::uint8_t>(
+            ReadGeneralRegister32(win32_context, byte_register) & 0xFFU);
+    }
+    return static_cast<std::uint8_t>(
+        (ReadGeneralRegister32(win32_context, byte_register - 4U) >> 8) &
+        0xFFU);
+}
+
+void UpdateLogical32Flags(CONTEXT* win32_context, std::uint32_t result)
+{
+    constexpr std::uint32_t kCarryFlag = 0x00000001U;
+    constexpr std::uint32_t kParityFlag = 0x00000004U;
+    constexpr std::uint32_t kZeroFlag = 0x00000040U;
+    constexpr std::uint32_t kSignFlag = 0x00000080U;
+    constexpr std::uint32_t kOverflowFlag = 0x00000800U;
+    constexpr std::uint32_t kDefinedLogicalFlags =
+        kCarryFlag | kParityFlag | kZeroFlag | kSignFlag | kOverflowFlag;
+
+    win32_context->EFlags &= ~kDefinedLogicalFlags;
+    if (HasEvenParity(static_cast<std::uint8_t>(result & 0xFFU)))
+    {
+        win32_context->EFlags |= kParityFlag;
+    }
+    if (result == 0)
+    {
+        win32_context->EFlags |= kZeroFlag;
+    }
+    if ((result & 0x80000000U) != 0)
+    {
+        win32_context->EFlags |= kSignFlag;
+    }
+}
+
+void UpdateSubtract8Flags(CONTEXT* win32_context,
+                          std::uint8_t left,
+                          std::uint8_t right,
+                          std::uint8_t result)
+{
+    constexpr std::uint32_t kCarryFlag = 0x00000001U;
+    constexpr std::uint32_t kParityFlag = 0x00000004U;
+    constexpr std::uint32_t kAuxiliaryCarryFlag = 0x00000010U;
+    constexpr std::uint32_t kZeroFlag = 0x00000040U;
+    constexpr std::uint32_t kSignFlag = 0x00000080U;
+    constexpr std::uint32_t kOverflowFlag = 0x00000800U;
+    constexpr std::uint32_t kArithmeticFlags =
+        kCarryFlag | kParityFlag | kAuxiliaryCarryFlag | kZeroFlag |
+        kSignFlag | kOverflowFlag;
+
+    win32_context->EFlags &= ~kArithmeticFlags;
+    if (left < right)
+    {
+        win32_context->EFlags |= kCarryFlag;
+    }
+    if (HasEvenParity(result))
+    {
+        win32_context->EFlags |= kParityFlag;
+    }
+    if (((left ^ right ^ result) & 0x10U) != 0)
+    {
+        win32_context->EFlags |= kAuxiliaryCarryFlag;
+    }
+    if (result == 0)
+    {
+        win32_context->EFlags |= kZeroFlag;
+    }
+    if ((result & 0x80U) != 0)
+    {
+        win32_context->EFlags |= kSignFlag;
+    }
+    if ((((left ^ right) & (left ^ result)) & 0x80U) != 0)
+    {
+        win32_context->EFlags |= kOverflowFlag;
+    }
+}
+
+bool HandleTracedMemoryAddInstruction(CONTEXT* win32_context,
+                                      ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0x03)
+    {
+        return false;
+    }
+
+    std::uint32_t source = 0;
+    std::uint32_t instruction_size = 0;
+    if (!DecodeModRmMemoryDestinationNoSib(win32_context,
+                                           instruction,
+                                           &source,
+                                           &instruction_size))
+    {
+        return false;
+    }
+
+    std::uint32_t source_value = 0;
+    if (!ReadShadowUInt32(context, source, &source_value))
+    {
+        return false;
+    }
+
+    const std::uint8_t destination_register = (instruction[1] >> 3) & 0x07U;
+    const std::uint32_t destination_value =
+        ReadGeneralRegister32(win32_context, destination_register);
+    const std::uint32_t result = destination_value + source_value;
+    WriteGeneralRegister32(win32_context, destination_register, result);
+    UpdateAdd32Flags(win32_context,
+                     destination_value,
+                     source_value,
+                     result);
+    win32_context->Eip += instruction_size;
+    return true;
+}
+
+bool HandleTracedMemoryOrInstruction(CONTEXT* win32_context,
+                                     ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0x83 ||
+        ((instruction[1] >> 3) & 0x07U) != 0x01U)
+    {
+        return false;
+    }
+
+    std::uint32_t destination = 0;
+    std::uint32_t instruction_size = 0;
+    if (!DecodeModRmMemoryDestinationNoSib(win32_context,
+                                           instruction,
+                                           &destination,
+                                           &instruction_size))
+    {
+        return false;
+    }
+
+    std::uint32_t destination_value = 0;
+    if (!ReadShadowUInt32(context, destination, &destination_value))
+    {
+        return false;
+    }
+
+    const std::uint32_t immediate = static_cast<std::uint32_t>(
+        static_cast<std::int32_t>(
+            static_cast<std::int8_t>(instruction[instruction_size])));
+    const std::uint32_t result = destination_value | immediate;
+    RecordGuestMemoryStore(win32_context,
+                           context,
+                           0x83,
+                           destination,
+                           result,
+                           4,
+                           "or-imm8",
+                           false);
+    WriteShadowMemory(context, destination, result, 4);
+    const std::uint64_t instruction_offset =
+        static_cast<std::uint64_t>(win32_context->Eip) -
+        context->runtime_base;
+    if (context->pending_shadow_allocation_valid &&
+        instruction_offset == 0x000F7AD4ULL)
+    {
+        const std::uint32_t allocation_size =
+            context->pending_shadow_allocation_size;
+        const std::uint64_t payload_begin =
+            static_cast<std::uint64_t>(destination) + 4U;
+        const std::uint64_t payload_end =
+            static_cast<std::uint64_t>(destination) +
+            allocation_size - 4U;
+        if (payload_begin < payload_end && payload_end <= 0xFFFFFFFFULL)
+        {
+            context->shadow_zero_payload_valid = true;
+            context->shadow_zero_payload_begin =
+                static_cast<std::uint32_t>(payload_begin);
+            context->shadow_zero_payload_end =
+                static_cast<std::uint32_t>(payload_end);
+        }
+        context->pending_shadow_allocation_valid = false;
+        context->pending_shadow_allocation_size = 0;
+    }
+    UpdateLogical32Flags(win32_context, result);
+    win32_context->Eip += instruction_size + 1;
+    return true;
+}
+
+bool HandleTracedMemoryCompareByteInstruction(CONTEXT* win32_context,
+                                              ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0x38)
+    {
+        return false;
+    }
+
+    std::uint32_t source = 0;
+    std::uint32_t instruction_size = 0;
+    if (!DecodeModRmMemoryDestinationNoSib(win32_context,
+                                           instruction,
+                                           &source,
+                                           &instruction_size))
+    {
+        return false;
+    }
+
+    std::uint8_t source_value = 0;
+    if (!ReadShadowUInt8(context, source, &source_value))
+    {
+        return false;
+    }
+
+    const std::uint8_t register_index = (instruction[1] >> 3) & 0x07U;
+    const std::uint8_t register_value =
+        ReadGeneralRegister8(win32_context, register_index);
+    const std::uint8_t result = static_cast<std::uint8_t>(
+        source_value - register_value);
+    UpdateSubtract8Flags(win32_context,
+                         source_value,
+                         register_value,
+                         result);
     win32_context->Eip += instruction_size;
     return true;
 }
@@ -4187,6 +4535,21 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     }
     if (context->enable_segment_load_hle &&
         HandleTracedMemoryLoadInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleTracedMemoryAddInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleTracedMemoryOrInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleTracedMemoryCompareByteInstruction(win32_context, context))
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }

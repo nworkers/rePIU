@@ -35,6 +35,25 @@ flowchart TD
 
 **확인됨:** `8B 16`과 `ESI=0`은 host null pointer가 아니라 guest `DS:0` 접근이다. relocated base를 더하지 않고, guest `DS`가 활성화된 unprefixed `8B /r`의 첫 4 KiB miss만 zero-backed DOS low memory로 처리한다. `0xFF000000` 같은 고주소는 계속 거부한다.
 
+## Shadow arithmetic source
+
+**확인됨:** `03 07` (`add eax,[edi]`)이 allocator metadata shadow dword를 source로 읽는다. source 전체가 shadow에 있을 때만 ADD를 수행하고 destination register와 여섯 산술 flag를 복원한다. 다음 명령 `83 0E 01`은 같은 metadata의 bit 0을 설정하는 read-modify-write로 관찰되었다.
+
+**확인됨:** `83 0E 01`의 OR 결과를 같은 shadow dword에 기록한 뒤 allocator 호출이 반환했고, 다음 field byte를 읽는 `38 10` (`cmp [eax],dl`)까지 진행했다. 이는 metadata가 단순 write-only 진단 값이 아니라 원본 allocator control flow에서 다시 읽히는 실제 자료구조임을 강화한다.
+
+**확인됨:** 첫 shadow byte CMP 뒤 같은 block offset `+0x20`의 unwritten byte compare가 관찰되었다. allocator probe에서 확인된 요청 크기 `0x2C`와 `0x1008`만 pending 상태로 보존하고 header OR에서 block base와 결합했다. `[block+4, block+size-4)` 안의 unwritten byte만 0으로 읽고 explicit shadow store를 우선하자 `38 50 20`을 통과해 파일 파싱 루프와 quiet timeout까지 진행했다.
+
+```mermaid
+flowchart LR
+    P["Probe: size 0x2C or 0x1008"] --> H["Header OR confirms block B"]
+    H --> Z["Zero payload: B+4 .. B+size-4"]
+    Z --> C["Unwritten CMP reads 0"]
+    W["Explicit shadow write"] --> C
+    U["Unknown size / outside range"] --> F["Keep fault"]
+```
+
+**안전성 확인:** 단순히 `8 <= EAX <= 1 MiB`를 허용하면 allocator와 무관한 값을 크기로 오인해 Windows heap corruption `0xC0000374`가 발생했다. 확인된 두 크기의 allowlist로 제한한 뒤 전체 테스트가 통과했고 손상이 재현되지 않았다.
+
 # Runtime Arena, Shadow Memory, and Sentinel Analysis
 
 The runtime arena contains the relocated LE image, guest stack, and observed heap expansion. Byte-addressed shadow memory preserves only analyzed out-of-arena stores and serves reads only when every requested byte exists.

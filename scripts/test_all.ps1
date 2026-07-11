@@ -165,12 +165,12 @@ try
     $piuStoppedAtExpectedException =
         $piuOutput -match "Win32 minimal execution exception caught: true" -and
         $piuOutput -match "Win32 minimal execution exception code: 0xC0000005" -and
-        $piuOutput -match "Win32 minimal execution exception address: 0x0[1-9](01E1[0-9A-F]{2}|0F7[AB][0-9A-F]{2})" -and
+        $piuOutput -match "Win32 minimal execution exception address: 0x0[1-9](01E1[0-9A-F]{2}|0F5F[0-9A-F]{2}|0F7[AB][0-9A-F]{2})" -and
         $piuOutput -match "Win32 minimal execution exception context captured: true" -and
-        $piuOutput -match "Win32 minimal execution exception EIP: 0x0[1-9](01E1[0-9A-F]{2}|0F7[AB][0-9A-F]{2})" -and
+        $piuOutput -match "Win32 minimal execution exception EIP: 0x0[1-9](01E1[0-9A-F]{2}|0F5F[0-9A-F]{2}|0F7[AB][0-9A-F]{2})" -and
         $piuOutput -match "Win32 minimal execution thread exit code: 2" -and
         $piuOutput -match "Win32 minimal execution message: original entry raised a caught exception" -and
-        $piuOutput -match "Privileged instruction opcode: 0x(03|8B|89|C7)"
+        $piuOutput -match "Privileged instruction opcode: 0x(03|38|83|8B|89|C7)"
     $piuTimedOutAfterProgress =
         $piuOutput -match "Win32 minimal execution exception caught: false" -and
         $piuOutput -match "Win32 minimal execution timed out: true" -and
@@ -236,9 +236,9 @@ try
         $piuOutput -notmatch "Win32 last segment memory load width: 1" -or
         $piuOutput -notmatch "Win32 last segment memory load value: 0x00" -or
         $piuOutput -notmatch "Win32 handled memory store count: [1-9][0-9]{4}" -or
-        $piuOutput -notmatch "Win32 last handled memory store address: 0x0[1-9]01E1[0-9A-F]{2}" -or
-        $piuOutput -notmatch "Win32 last memory store opcode: 0x89" -or
-        $piuOutput -notmatch "Win32 last memory store source kind: mov-reg32" -or
+        $piuOutput -notmatch "Win32 last handled memory store address: 0x0[1-9](01E1[0-9A-F]{2}|0F5F[0-9A-F]{2}|0F7AD4)" -or
+        $piuOutput -notmatch "Win32 last memory store opcode: 0x(66C7|83|89|C7)" -or
+        $piuOutput -notmatch "Win32 last memory store source kind: (mov-imm16|mov-imm32|mov-reg32|or-imm8)" -or
         $piuOutput -notmatch "Win32 last memory store applied: false" -or
         $piuOutput -notmatch "Win32 shadow memory write count: [1-9][0-9]{4}" -or
         $piuOutput -notmatch "Win32 shadow memory read hit count: [1-9][0-9]{3,}" -or
