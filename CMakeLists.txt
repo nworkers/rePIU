@@ -39,6 +39,7 @@ add_library(repiu_exe
     src/hle/dos_file_system.cpp
     src/hle/hle_dispatcher.cpp
     src/hle/hle_profile.cpp
+    src/hle/linexe_call_gate.cpp
     src/hle/privileged_instruction.cpp
     src/platform/win32/execution_trampoline.cpp
     src/platform/win32/runtime_memory_policy.cpp

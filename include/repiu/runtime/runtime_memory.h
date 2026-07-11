@@ -94,6 +94,7 @@ struct RelocatedRuntimeImage
 {
     bool valid = false;
     std::uint32_t relocated_image_base = 0;
+    std::uint32_t relocated_hle_reserve_base = 0;
     std::uint32_t relocated_entry_linear_address = 0;
     std::uint32_t relocated_stack_top_linear_address = 0;
     std::vector<RelocatedRuntimeObject> objects;

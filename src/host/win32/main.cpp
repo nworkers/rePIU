@@ -677,6 +677,121 @@ void PrintExecutionAttempt(
                 attempt.selector_table_valid ? "true" : "false");
     logger.info("Win32 selector descriptor count: {}",
                 attempt.selector_descriptor_count);
+    logger.info("Win32 LINEXE environment active: {}",
+                attempt.linexe_environment_active ? "true" : "false");
+    logger.info("Win32 LINEXE saved client GS: {}",
+                Hex32(attempt.linexe_saved_client_gs));
+    logger.info("Win32 LINEXE client descriptor: {} base={} limit={}",
+                attempt.linexe_client_descriptor_valid ? "valid" : "invalid",
+                Hex32(attempt.linexe_client_descriptor_base),
+                Hex32(attempt.linexe_client_descriptor_limit));
+    logger.info("Win32 LINEXE direct root: {}:{}",
+                Hex32(attempt.linexe_root_selector),
+                Hex32(attempt.linexe_root_offset));
+    logger.info("Win32 LINEXE data descriptor: {} base={}",
+                attempt.linexe_data_descriptor_valid ? "valid" : "invalid",
+                Hex32(attempt.linexe_data_descriptor_base));
+    logger.info("Win32 LINEXE module name pointer: {}:{}",
+                Hex32(attempt.linexe_module_name_selector),
+                Hex32(attempt.linexe_module_name_offset));
+    logger.info("Win32 LINEXE direct module name: {}",
+                attempt.linexe_direct_module_name);
+    logger.info("Win32 LINEXE direct exports: count={} table={}:{}",
+                attempt.linexe_direct_export_count,
+                Hex32(attempt.linexe_direct_export_table_selector),
+                Hex32(attempt.linexe_direct_export_table_offset));
+    logger.info("Win32 LINEXE direct first export name: {}:{}",
+                Hex32(attempt.linexe_direct_first_export_name_selector),
+                Hex32(attempt.linexe_direct_first_export_name_offset));
+    logger.info("Win32 LINEXE GS byte loads: {} first_offset={} first_value={}",
+                attempt.linexe_gs_byte_load_count,
+                Hex32(attempt.linexe_first_gs_byte_offset),
+                Hex32(attempt.linexe_first_gs_byte_value));
+    logger.info("Win32 LINEXE resolved export count: {}",
+                attempt.linexe_resolved_export_count);
+    logger.info("Win32 LINEXE scan entry/match/return: {}/{}/{}",
+                attempt.linexe_scan_entry_count,
+                attempt.linexe_export_match_count,
+                attempt.linexe_scan_return_count);
+    logger.info("Win32 LINEXE export entry loop count: {}",
+                attempt.linexe_export_entry_loop_count);
+    logger.info("Win32 LINEXE export compare count/EAX/ECX/EFLAGS: {}/{}/{}/{}",
+                attempt.linexe_export_compare_count,
+                Hex32(attempt.linexe_export_compare_eax),
+                Hex32(attempt.linexe_export_compare_ecx),
+                Hex32(attempt.linexe_export_compare_eflags));
+    logger.info("Win32 LINEXE export count load EDX/GS: {}/{}",
+                Hex32(attempt.linexe_export_count_load_edx),
+                Hex32(attempt.linexe_export_count_load_gs));
+    logger.info("Win32 LINEXE module candidate/match: {}/{}",
+                attempt.linexe_module_candidate_count,
+                attempt.linexe_module_match_count);
+    logger.info("Win32 LINEXE name pointer/byte instruction: {}/{}",
+                attempt.linexe_name_pointer_valid_count,
+                attempt.linexe_name_byte_instruction_count);
+    logger.info("Win32 LINEXE GS=0090h load count: {}",
+                attempt.linexe_data_gs_load_count);
+    logger.info("Win32 LINEXE module selector stack value: {}",
+                Hex32(attempt.linexe_module_selector_stack_value));
+    logger.info("Win32 LINEXE module/export stack pointer: {}:{}/{}:{}",
+                Hex32(attempt.linexe_module_selector_stack_value),
+                Hex32(attempt.linexe_module_offset_stack_value),
+                Hex32(attempt.linexe_export_selector_stack_value),
+                Hex32(attempt.linexe_export_offset_stack_value));
+    logger.info("Win32 LINEXE export jump source ESP/module: {}/{}:{}",
+                Hex32(attempt.linexe_export_jump_source_esp),
+                Hex32(attempt.linexe_export_jump_source_module_selector),
+                Hex32(attempt.linexe_export_jump_source_module_offset));
+    logger.info("Win32 LINEXE export jump target ESP/module: {}/{}:{}",
+                Hex32(attempt.linexe_export_jump_target_esp),
+                Hex32(attempt.linexe_export_jump_target_module_selector),
+                Hex32(attempt.linexe_export_jump_target_module_offset));
+    logger.info("Win32 LINEXE export name compare count/GS/EDI/ESI/bytes: {}/{}/{}/{}/{}/{}",
+                attempt.linexe_export_name_compare_count,
+                Hex32(attempt.linexe_export_name_compare_gs),
+                Hex32(attempt.linexe_export_name_compare_edi),
+                Hex32(attempt.linexe_export_name_compare_esi),
+                Hex32(attempt.linexe_export_name_actual_byte),
+                Hex32(attempt.linexe_export_name_expected_byte));
+    logger.info("Win32 LINEXE export name stage mask: {}",
+                Hex32(attempt.linexe_export_name_stage_mask));
+    logger.info("Win32 LINEXE export entry name loaded offset/selector: {}/{}",
+                Hex32(attempt.linexe_export_entry_name_offset_value),
+                Hex32(attempt.linexe_export_entry_name_selector_value));
+    logger.info("Win32 LINEXE export result stores count/destination/value: {}/{}/{}",
+                attempt.linexe_export_result_store_count,
+                Hex32(attempt.linexe_export_result_store_destination),
+                Hex32(attempt.linexe_export_result_store_value));
+    logger.info("Win32 LINEXE export value load selector/offset/value: {}/{}/{}",
+                Hex32(attempt.linexe_export_value_load_selector),
+                Hex32(attempt.linexe_export_value_load_offset),
+                Hex32(attempt.linexe_export_value_load_value));
+    logger.info("Win32 LINEXE root selector EAX/GS: {}/{}",
+                Hex32(attempt.linexe_root_selector_eax),
+                Hex32(attempt.linexe_root_read_gs));
+    logger.info("Win32 LINEXE shared segment loads entry/read: {}/{}",
+                attempt.linexe_shared_load_entry_count,
+                attempt.linexe_shared_load_read_count);
+    logger.info("Win32 LINEXE shared segment last selector/offset/value: {}/{}/{}",
+                Hex32(attempt.linexe_shared_load_selector),
+                Hex32(attempt.linexe_shared_load_offset),
+                Hex32(attempt.linexe_shared_load_value));
+    logger.info("Win32 LINEXE root word loads offset/selector: {}({})/{}({})",
+                Hex32(attempt.linexe_root_offset_load_value),
+                attempt.linexe_root_offset_load_success,
+                Hex32(attempt.linexe_root_selector_load_value),
+                attempt.linexe_root_selector_load_success);
+    for (std::uint32_t index = 0; index < 8; ++index)
+    {
+        logger.info("Win32 LINEXE export slot #{}: {}",
+                    index,
+                    Hex32(attempt.linexe_resolved_exports[index]));
+    }
+    logger.info("Win32 LINEXE selector words: {} {} {} {}",
+                Hex32(attempt.linexe_selector_words[0]),
+                Hex32(attempt.linexe_selector_words[1]),
+                Hex32(attempt.linexe_selector_words[2]),
+                Hex32(attempt.linexe_selector_words[3]));
     logger.info("Win32 DOS low memory valid: {}",
                 attempt.dos_low_memory_valid ? "true" : "false");
     logger.info("Win32 DOS low memory bytes: {}",

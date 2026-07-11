@@ -82,6 +82,28 @@ sequenceDiagram
 
 # DOS/4G DLL Loader and INT 21h AX=FF00h Provenance
 
+## DOS/32A 교차 확인과 적용 한계
+
+[DOS/32A 공식 `INT 21h` 구현](https://github.com/amindlost/dos32a/blob/master/src/dos32a/text/client/int21h.asm)은 DOS/4G identification call을 `AX=FF00h`, `DX=0078h`로 판별하고 `EAX=FFFF3447h`, `GS=client data selector`를 반환한다. [공식 프로그래머 문서](https://github.com/amindlost/dos32a/blob/master/docs/html/prog/int21h/0ff00.htm)도 이 signature를 확인한다. 이는 기존에 미확정이었던 성공 `EAX` 값과 `GS`의 역할을 독립적으로 교차 확인한다.
+
+다만 DOS/32A 저장소 전체에서 PIU가 검색하는 `LINEXE_LOADER` 및 네 `LINEXE_*` export의 근거는 발견되지 않았다. 따라서 DOS/32A의 drop-in replacement 성격만으로 `GS:0x42` 이후 private layout이 DOS/4GW와 동일하다고 간주하지 않는다. rePIU는 DOS/32A 코드를 사용하지 않고 register contract만 참고하며, private module chain은 PIU consumer와 DOS/4GW 바이너리 증거로 복원한다.
+
+후속 [DOS4GW 원본 frame/data-flow 분석](dos4g-service-zero-frame-dataflow.md)에서 동일 입력의 원본 반환을 `AX=FFFFh`, CF=1, GS preserved로 확정했다. DOS/32A의 `EAX=FFFF3447h`, explicit GS assignment는 consumer-visible compatibility를 제공하는 다른 구현 방식이다.
+
+```mermaid
+sequenceDiagram
+    participant P as PIU
+    participant H as rePIU HLE
+    participant E as private environment
+    P->>H: AX=FF00h, DX=0078h
+    H->>E: 유효한 GS:0x42 구조 확인
+    alt 구조 준비 완료
+        H-->>P: EAX=FFFF3447h, GS=selector
+    else 구조 미완성
+        H-->>P: unsupported/fallback
+    end
+```
+
 ## Conclusion
 
 **Confirmed:** The `INT 3` at arena `+0xF3438` is the common fatal path of an Open Watcom-style DLL lazy loader. Runtime `EDX=0x021A623C` selects the first of three messages: `Fatal error: unable to initialize DLL loader.` The other branches represent DLL-load and entry-point lookup failures.
@@ -91,6 +113,8 @@ The direct cause is the current temporary `INT 21h AX=FF00h` response. Startup c
 Changing only `AL` is unsafe: the original code subsequently dereferences a DOS/4G private structure beginning through `GS:0x42`. The exact success flags, selector, structure layout, and module-chain fields remain unresolved. The next faithful implementation must derive and model that contract or capture it from an actual DOS4GW execution; the breakpoint must not be skipped.
 
 ## GS:0x42 최소 field map
+
+후속 [provider-side private environment 분석](dos4g-client-gs-private-environment.md)에서 원본 값을 확정했다. GS는 `0x20`, root는 `0020:0042 -> 0090:059A`, module은 `LINEXE_LOADER`, export table은 `0090:0522`이며 15개 entry를 가진다.
 
 PIU consumer `object2+0xE37E8`의 load width와 offset으로 다음 구조를 확인했다. 모든 pointer는 16-bit offset과 16-bit selector로 구성된 far pointer이다.
 
@@ -135,6 +159,16 @@ DOS4GW의 16-bit INT 21h router에서는 `AH=FFh`가 명시적으로 special dis
 
 PIU's consumer confirms a far pointer at `GS:0x42` to a linked module record. The record contains next and name far pointers at offsets `0x00` and `0x04`, an export count at `0x10`, and an export-table far pointer at `0x12`. Each export entry is eight bytes: a name far pointer followed by a dword value. PIU locates `LINEXE_LOADER` and resolves `LINEXE_LOADMODULE`, `LINEXE_FREEMODULE`, `GETLOADTABLE`, and `GETLOADNAME`.
 
-The consumer proves that success requires nonzero `AL` and a valid private-environment selector in `GS`; the exact nonzero value remains inferred until the provider target is fully mapped. DOS4GW's 16-bit INT 21h router explicitly maps `AH=FFh` to special service index zero.
+## 공용 segment load 실행 관찰 / Shared segment-load observation
+
+공용 segment override decoder 적용 후 root pointer와 `LINEXE_LOADER` module 이름 비교는 통과했다. 합성 레코드의 export count/table도 `8`, `0090:0522`로 직접 확인됐다. 현재 실패 경계는 module 후보에서 유효했던 stack-local pointer `0090:059A`가 export count 비교 전에 `0000:0000`으로 사라지는 구간이다. 따라서 private environment 레이아웃 문제가 아니라 module match 뒤 stack-local 보존 명령의 실행 의미가 다음 분석 대상이다.
+
+After enabling the shared segment-override decoder, root-pointer resolution and the `LINEXE_LOADER` module-name comparison succeed. Direct inspection also confirms export count/table values of `8` and `0090:0522`. The remaining failure boundary is the stack-local module pointer changing from `0090:059A` at the candidate to `0000:0000` before the export-count comparison, making stack-local instruction semantics the next target rather than the private-environment layout.
+
+후속 계측에서 pointer 자체는 jump target에서도 정상임을 확인했다. 0 관찰값은 HLE가 EIP를 민감 명령으로 옮긴 뒤 host segment로 native 실행한 결과였다. 후속 segment load/store drain과 `8C /r` memory-form guest selector 저장을 구현한 뒤 export 8개가 모두 resolve됐다. 마지막 관찰값은 `0090:055E -> 0080:0138`이다. 현재 실패 경계는 export 구조가 아니라 resolve된 `0080:xxxx` call gate 호출이다.
+
+Later observation proved that the pointer remained valid at the jump target. The zero arose when HLE advanced EIP and native execution used a host segment. Draining following sensitive loads/stores and implementing guest-selector `8C /r` memory stores resolves all eight exports; the last observed mapping is `0090:055E -> 0080:0138`. The active boundary is now call-gate invocation rather than export structure recovery.
+
+The consumer proves that success requires nonzero `AL` and a valid private-environment selector in `GS`. DOS/32A supplies this as `EAX=0xFFFF3447` plus explicit GS assignment. Original DOS4GW returns low `AX=FFFFh`, carry set, and preserved `GS=0x20`. Provider-side recovery establishes `0020:0042 -> 0090:059A`, the `LINEXE_LOADER` record and its 15-entry export table at `0090:0522`.
 
 Continuing only the recognized fatal-tail breakpoint caused the original error printer to emit the fatal message. The path then used DOS `AH=09h`, low-memory register-frame copies, DPMI `AX=0300h/BL=2Fh`, and finally DOS terminate `AX=4C01h`. The following `HLT` is a fallback if termination returns.

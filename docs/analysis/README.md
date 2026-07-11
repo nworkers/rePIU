@@ -30,8 +30,18 @@ flowchart LR
 * [현재 실행 frontier와 다음 분석 대상](current-execution-frontier.md)
 * [DOS4GW loader와 selector 할당 분석](dos4gw-loader-selector-allocation.md)
 * [DOS/4G DLL loader와 INT 21h AX=FF00h 역추적](dll-loader-int21-ff00.md)
+* [DOS4GW 결합 EXP module과 segment map](dos4gw-bound-module-map.md)
+* [DOS/16M resident copy/relocation table 정적 복원](dos16m-resident-copy-relocation-table.md)
+* [DOS/16M loader symbolic replay와 service 0 mapping](dos16m-symbolic-replay.md)
+* [DOS/4G AX=FF00h saved frame과 반환 데이터 흐름](dos4g-service-zero-frame-dataflow.md)
+* [DOS/4G client GS와 GS:0x42 private environment](dos4g-client-gs-private-environment.md)
 
 # rePIU Binary Analysis Index
+
+* [PIU LINEXE call-gate ABI](piu-linexe-call-gate-abi.md)
+* [LINEXE arena runtime frontier](linexe-arena-runtime-frontier.md)
+
+The DOS/4G DLL loader analysis also records the [DOS/32A behavioral cross-reference and clean-room boundary](dll-loader-int21-ff00.md#dos32a-교차-확인과-적용-한계).
 
 This directory accumulates project-specific facts directly confirmed from the original PIU executable and rePIU execution. Chronological evidence remains in `docs/work-logs/`; these files consolidate the currently valid conclusions by topic.
 

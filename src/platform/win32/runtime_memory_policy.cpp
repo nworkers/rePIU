@@ -593,6 +593,9 @@ bool PlaceWin32RelocatedImageInReservedRange(
     placement->valid = true;
     placement->placed_base = reservation.reserved_base;
     placement->placed_size = reservation.reserved_size;
+    placement->hle_reserve_base = image.relocated_hle_reserve_base;
+    placement->arena_end_address =
+        reservation.reserved_base + reservation.reserved_size;
     placement->selector_bindings = image.selector_bindings;
 
     for (const runtime::RelocatedRuntimeObject& object : image.objects)

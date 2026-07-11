@@ -1,5 +1,6 @@
 #include "repiu/platform/win32/execution_trampoline.h"
 #include "repiu/platform/win32/live_telemetry.h"
+#include "repiu/hle/linexe_call_gate.h"
 #include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/selector_table.h"
 
@@ -55,6 +56,29 @@ struct ShadowWriteProvenance
 
 constexpr std::uint32_t kShadowWriteProvenanceCapacity = 256;
 
+// DOS/32A is used only as an independent behavioral reference for this
+// DOS/4G-compatible identification call; no DOS/32A source code is included.
+// Reference: https://github.com/amindlost/dos32a/blob/master/src/dos32a/text/client/int21h.asm
+constexpr std::uint16_t kDos4gIdentificationAx = 0xFF00U;
+constexpr std::uint16_t kDos4gIdentificationDx = 0x0078U;
+constexpr std::uint32_t kDos32aIdentificationSignature = 0xFFFF3447U;
+
+// Static replay of the original DOS4GW resident handler establishes a
+// different implementation contract: low AX=FFFFh, carry set, and the
+// already-installed client-data GS preserved. Keep this disabled until the
+// corresponding GS:0042h private environment is available atomically.
+constexpr std::uint16_t kDos4gwIdentificationAxResult = 0xFFFFU;
+constexpr bool kDos4gwIdentificationCarry = true;
+
+// Original DOS4GW/LINEXE private-environment topology recovered by static
+// replay. These are evidence constants, not active descriptors: the 0080h
+// exports are 16-bit code and require HLE call gates before exposure.
+constexpr std::uint16_t kDos4gwClientDataSelector = 0x0020U;
+constexpr std::uint16_t kDos4gwPrivateRootOffset = 0x0042U;
+constexpr std::uint16_t kDos4gwLinexeDataSelector = 0x0090U;
+constexpr std::uint16_t kDos4gwLinexeLoaderOffset = 0x059AU;
+constexpr std::uint16_t kDos4gwLinexeCodeSelector = 0x0080U;
+
 struct ThreadContext
 {
     std::uint32_t entry_address = 0;
@@ -91,6 +115,63 @@ struct ThreadContext
     std::uint32_t handled_hle_trap_count = 0;
     std::uint32_t last_hle_trap_address = 0;
     std::uint32_t last_hle_trap_opcode = 0;
+    repiu::hle::LinexeCallGatePlan linexe_gate_plan;
+    repiu::hle::LinexeArenaLayout linexe_arena_layout;
+    bool linexe_environment_active = false;
+    std::uint32_t linexe_gs_byte_load_count = 0;
+    std::uint32_t linexe_first_gs_byte_offset = 0;
+    std::uint32_t linexe_first_gs_byte_value = 0;
+    std::uint32_t linexe_scan_entry_count = 0;
+    std::uint32_t linexe_module_candidate_count = 0;
+    std::uint32_t linexe_module_match_count = 0;
+    std::uint32_t linexe_name_pointer_valid_count = 0;
+    std::uint32_t linexe_name_byte_instruction_count = 0;
+    std::uint32_t linexe_data_gs_load_count = 0;
+    std::uint16_t linexe_module_selector_stack_value = 0;
+    std::uint32_t linexe_module_offset_stack_value = 0;
+    std::uint32_t linexe_export_offset_stack_value = 0;
+    std::uint16_t linexe_export_selector_stack_value = 0;
+    std::uint32_t linexe_export_jump_source_esp = 0;
+    std::uint32_t linexe_export_jump_source_module_offset = 0;
+    std::uint16_t linexe_export_jump_source_module_selector = 0;
+    std::uint32_t linexe_export_jump_target_esp = 0;
+    std::uint32_t linexe_export_jump_target_module_offset = 0;
+    std::uint16_t linexe_export_jump_target_module_selector = 0;
+    std::uint32_t linexe_export_name_compare_count = 0;
+    std::uint16_t linexe_export_name_compare_gs = 0;
+    std::uint32_t linexe_export_name_compare_edi = 0;
+    std::uint32_t linexe_export_name_compare_esi = 0;
+    std::uint8_t linexe_export_name_actual_byte = 0;
+    std::uint8_t linexe_export_name_expected_byte = 0;
+    std::uint32_t linexe_export_name_stage_mask = 0;
+    std::uint32_t linexe_export_entry_name_offset_value = 0;
+    std::uint32_t linexe_export_entry_name_selector_value = 0;
+    std::uint32_t linexe_export_result_store_destination = 0;
+    std::uint32_t linexe_export_result_store_value = 0;
+    std::uint32_t linexe_export_result_store_count = 0;
+    std::uint16_t linexe_export_value_load_selector = 0;
+    std::uint32_t linexe_export_value_load_offset = 0;
+    std::uint32_t linexe_export_value_load_value = 0;
+    std::uint32_t linexe_root_selector_eax = 0;
+    std::uint16_t linexe_root_read_gs = 0;
+    std::uint32_t linexe_shared_load_entry_count = 0;
+    std::uint32_t linexe_shared_load_read_count = 0;
+    std::uint16_t linexe_shared_load_selector = 0;
+    std::uint32_t linexe_shared_load_offset = 0;
+    std::uint32_t linexe_shared_load_value = 0;
+    std::uint32_t linexe_root_offset_load_value = 0;
+    std::uint32_t linexe_root_selector_load_value = 0;
+    std::uint32_t linexe_root_offset_load_success = 0;
+    std::uint32_t linexe_root_selector_load_success = 0;
+    std::uint32_t linexe_export_match_count = 0;
+    std::uint32_t linexe_export_entry_loop_count = 0;
+    std::uint32_t linexe_export_compare_count = 0;
+    std::uint32_t linexe_export_compare_eax = 0;
+    std::uint32_t linexe_export_compare_ecx = 0;
+    std::uint32_t linexe_export_compare_eflags = 0;
+    std::uint32_t linexe_export_count_load_edx = 0;
+    std::uint16_t linexe_export_count_load_gs = 0;
+    std::uint32_t linexe_scan_return_count = 0;
     Win32PortIoObservation port_io;
     Win32DosPathObservation dos_path;
     Win32AllocatorProbeObservation allocator_probe;
@@ -823,6 +904,179 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->selector_descriptor_count =
         static_cast<std::uint32_t>(
             context.selector_table.descriptors.size());
+    attempt->linexe_environment_active = context.linexe_environment_active;
+    attempt->linexe_gs_byte_load_count = context.linexe_gs_byte_load_count;
+    attempt->linexe_first_gs_byte_offset = context.linexe_first_gs_byte_offset;
+    attempt->linexe_first_gs_byte_value = context.linexe_first_gs_byte_value;
+    const repiu::runtime::GuestDescriptor* client_descriptor =
+        repiu::runtime::FindDescriptor(context.selector_table,
+                                       kDos4gwClientDataSelector);
+    if (client_descriptor != nullptr && client_descriptor->present)
+    {
+        attempt->linexe_client_descriptor_valid = true;
+        attempt->linexe_client_descriptor_base = client_descriptor->base;
+        attempt->linexe_client_descriptor_limit = client_descriptor->limit;
+        if (client_descriptor->limit >= kDos4gwPrivateRootOffset + 3U &&
+            static_cast<std::uint64_t>(client_descriptor->base) +
+                    kDos4gwPrivateRootOffset + 4U <=
+                static_cast<std::uint64_t>(context.runtime_base) +
+                    context.runtime_size)
+        {
+            const auto* root = reinterpret_cast<const std::uint16_t*>(
+                static_cast<std::uintptr_t>(client_descriptor->base +
+                                            kDos4gwPrivateRootOffset));
+            attempt->linexe_root_offset = root[0];
+            attempt->linexe_root_selector = root[1];
+        }
+    }
+    const repiu::runtime::GuestDescriptor* data_descriptor =
+        repiu::runtime::FindDescriptor(context.selector_table,
+                                       kDos4gwLinexeDataSelector);
+    if (data_descriptor != nullptr && data_descriptor->present)
+    {
+        attempt->linexe_data_descriptor_valid = true;
+        attempt->linexe_data_descriptor_base = data_descriptor->base;
+        const auto* module = reinterpret_cast<const std::uint16_t*>(
+            static_cast<std::uintptr_t>(data_descriptor->base +
+                                        kDos4gwLinexeLoaderOffset));
+        attempt->linexe_module_name_offset = module[2];
+        attempt->linexe_module_name_selector = module[3];
+        attempt->linexe_direct_export_count = module[8];
+        attempt->linexe_direct_export_table_offset = module[9];
+        attempt->linexe_direct_export_table_selector = module[10];
+        const auto* first_export = reinterpret_cast<const std::uint16_t*>(
+            static_cast<std::uintptr_t>(data_descriptor->base + module[9]));
+        attempt->linexe_direct_first_export_name_offset = first_export[0];
+        attempt->linexe_direct_first_export_name_selector = first_export[1];
+        const char* name = reinterpret_cast<const char*>(
+            static_cast<std::uintptr_t>(data_descriptor->base + module[2]));
+        for (std::uint32_t index = 0; index < 64 && name[index] != '\0'; ++index)
+        {
+            attempt->linexe_direct_module_name.push_back(name[index]);
+        }
+    }
+    attempt->linexe_scan_entry_count = context.linexe_scan_entry_count;
+    attempt->linexe_module_candidate_count =
+        context.linexe_module_candidate_count;
+    attempt->linexe_module_match_count = context.linexe_module_match_count;
+    attempt->linexe_name_pointer_valid_count =
+        context.linexe_name_pointer_valid_count;
+    attempt->linexe_name_byte_instruction_count =
+        context.linexe_name_byte_instruction_count;
+    attempt->linexe_data_gs_load_count = context.linexe_data_gs_load_count;
+    attempt->linexe_module_selector_stack_value =
+        context.linexe_module_selector_stack_value;
+    attempt->linexe_module_offset_stack_value =
+        context.linexe_module_offset_stack_value;
+    attempt->linexe_export_offset_stack_value =
+        context.linexe_export_offset_stack_value;
+    attempt->linexe_export_selector_stack_value =
+        context.linexe_export_selector_stack_value;
+    attempt->linexe_export_jump_source_esp =
+        context.linexe_export_jump_source_esp;
+    attempt->linexe_export_jump_source_module_offset =
+        context.linexe_export_jump_source_module_offset;
+    attempt->linexe_export_jump_source_module_selector =
+        context.linexe_export_jump_source_module_selector;
+    attempt->linexe_export_jump_target_esp =
+        context.linexe_export_jump_target_esp;
+    attempt->linexe_export_jump_target_module_offset =
+        context.linexe_export_jump_target_module_offset;
+    attempt->linexe_export_jump_target_module_selector =
+        context.linexe_export_jump_target_module_selector;
+    attempt->linexe_export_name_compare_count =
+        context.linexe_export_name_compare_count;
+    attempt->linexe_export_name_compare_gs =
+        context.linexe_export_name_compare_gs;
+    attempt->linexe_export_name_compare_edi =
+        context.linexe_export_name_compare_edi;
+    attempt->linexe_export_name_compare_esi =
+        context.linexe_export_name_compare_esi;
+    attempt->linexe_export_name_actual_byte =
+        context.linexe_export_name_actual_byte;
+    attempt->linexe_export_name_expected_byte =
+        context.linexe_export_name_expected_byte;
+    attempt->linexe_export_name_stage_mask =
+        context.linexe_export_name_stage_mask;
+    attempt->linexe_export_entry_name_offset_value =
+        context.linexe_export_entry_name_offset_value;
+    attempt->linexe_export_entry_name_selector_value =
+        context.linexe_export_entry_name_selector_value;
+    attempt->linexe_export_result_store_destination =
+        context.linexe_export_result_store_destination;
+    attempt->linexe_export_result_store_value =
+        context.linexe_export_result_store_value;
+    attempt->linexe_export_result_store_count =
+        context.linexe_export_result_store_count;
+    attempt->linexe_export_value_load_selector =
+        context.linexe_export_value_load_selector;
+    attempt->linexe_export_value_load_offset =
+        context.linexe_export_value_load_offset;
+    attempt->linexe_export_value_load_value =
+        context.linexe_export_value_load_value;
+    attempt->linexe_root_selector_eax = context.linexe_root_selector_eax;
+    attempt->linexe_root_read_gs = context.linexe_root_read_gs;
+    attempt->linexe_shared_load_entry_count =
+        context.linexe_shared_load_entry_count;
+    attempt->linexe_shared_load_read_count =
+        context.linexe_shared_load_read_count;
+    attempt->linexe_shared_load_selector = context.linexe_shared_load_selector;
+    attempt->linexe_shared_load_offset = context.linexe_shared_load_offset;
+    attempt->linexe_shared_load_value = context.linexe_shared_load_value;
+    attempt->linexe_root_offset_load_value =
+        context.linexe_root_offset_load_value;
+    attempt->linexe_root_selector_load_value =
+        context.linexe_root_selector_load_value;
+    attempt->linexe_root_offset_load_success =
+        context.linexe_root_offset_load_success;
+    attempt->linexe_root_selector_load_success =
+        context.linexe_root_selector_load_success;
+    attempt->linexe_export_match_count = context.linexe_export_match_count;
+    attempt->linexe_export_entry_loop_count =
+        context.linexe_export_entry_loop_count;
+    attempt->linexe_export_compare_count = context.linexe_export_compare_count;
+    attempt->linexe_export_compare_eax = context.linexe_export_compare_eax;
+    attempt->linexe_export_compare_ecx = context.linexe_export_compare_ecx;
+    attempt->linexe_export_compare_eflags =
+        context.linexe_export_compare_eflags;
+    attempt->linexe_export_count_load_edx =
+        context.linexe_export_count_load_edx;
+    attempt->linexe_export_count_load_gs =
+        context.linexe_export_count_load_gs;
+    attempt->linexe_scan_return_count = context.linexe_scan_return_count;
+    constexpr std::uint32_t kSelectorWordsOffset = 0x000C68C0U;
+    constexpr std::uint32_t kResolvedExportsOffset = 0x001A62C4U;
+    constexpr std::uint32_t kSavedClientGsOffset = 0x001A6354U;
+    const std::uint64_t runtime_end =
+        static_cast<std::uint64_t>(context.runtime_base) +
+        context.runtime_size;
+    if (context.linexe_environment_active &&
+        static_cast<std::uint64_t>(context.runtime_base) +
+                kResolvedExportsOffset + 8U * 8U <= runtime_end)
+    {
+        const auto* saved_gs = reinterpret_cast<const std::uint16_t*>(
+            static_cast<std::uintptr_t>(context.runtime_base +
+                                        kSavedClientGsOffset));
+        attempt->linexe_saved_client_gs = *saved_gs;
+        const auto* selector_words = reinterpret_cast<const std::uint16_t*>(
+            static_cast<std::uintptr_t>(context.runtime_base +
+                                        kSelectorWordsOffset));
+        std::memcpy(attempt->linexe_selector_words,
+                    selector_words,
+                    sizeof(attempt->linexe_selector_words));
+        for (std::uint32_t index = 0; index < 8; ++index)
+        {
+            const auto* value = reinterpret_cast<const std::uint32_t*>(
+                static_cast<std::uintptr_t>(
+                    context.runtime_base + kResolvedExportsOffset +
+                    index * 8U));
+            attempt->linexe_resolved_exports[index] = *value;
+            if (*value != 0)
+            {
+                ++attempt->linexe_resolved_export_count;
+            }
+        }
+    }
     attempt->dos_low_memory_valid = context.dos_low_memory.valid;
     attempt->dos_low_memory_size =
         repiu::runtime::kDosLowMemorySize;
@@ -1134,10 +1388,14 @@ bool HandleRepStosdInstruction(CONTEXT* win32_context,
                                ThreadContext* context);
 bool HandleRepMovsInstruction(CONTEXT* win32_context,
                               ThreadContext* context);
+bool HandleLodsbInstruction(CONTEXT* win32_context,
+                            ThreadContext* context);
 bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
                                    ThreadContext* context);
 bool HandleSegmentOverrideByteLoadInstruction(CONTEXT* win32_context,
                                               ThreadContext* context);
+bool HandleSegmentOverrideMemoryLoadInstruction(CONTEXT* win32_context,
+                                                ThreadContext* context);
 bool HandleFsSegmentWordLoadInstruction(CONTEXT* win32_context,
                                         ThreadContext* context);
 bool HandleSegmentMemoryCompareInstruction(CONTEXT* win32_context,
@@ -1189,7 +1447,145 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
     {
         return false;
     }
-
+    const std::uint32_t eip_offset =
+        static_cast<std::uint32_t>(win32_context->Eip) -
+        context->runtime_base;
+    if (eip_offset >= 0x000F38F6U && eip_offset <= 0x000F3902U)
+    {
+        constexpr std::uint32_t stages[] = {
+            0x000F38F6U, 0x000F38FAU, 0x000F38FEU,
+            0x000F3900U, 0x000F3902U};
+        for (std::uint32_t index = 0; index < 5; ++index)
+        {
+            if (eip_offset == stages[index])
+            {
+                context->linexe_export_name_stage_mask |= 1U << index;
+            }
+        }
+    }
+    if (eip_offset == 0x000F37E8U)
+    {
+        ++context->linexe_scan_entry_count;
+    }
+    else if (eip_offset == 0x000F382DU)
+    {
+        ++context->linexe_module_candidate_count;
+        const auto* selector = reinterpret_cast<const std::uint16_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esp + 0x10U));
+        if (IsGuestRangeReadable(context, selector, sizeof(*selector)))
+        {
+            context->linexe_module_selector_stack_value = *selector;
+        }
+        const auto* offset = reinterpret_cast<const std::uint32_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esp + 0x08U));
+        if (IsGuestRangeReadable(context, offset, sizeof(*offset)))
+        {
+            context->linexe_module_offset_stack_value = *offset;
+        }
+    }
+    else if (eip_offset == 0x000F3818U)
+    {
+        context->linexe_root_selector_eax = win32_context->Eax;
+        context->linexe_root_read_gs = context->guest_gs;
+    }
+    else if (eip_offset == 0x000F3889U)
+    {
+        ++context->linexe_module_match_count;
+    }
+    else if (eip_offset == 0x000F384CU)
+    {
+        ++context->linexe_name_pointer_valid_count;
+    }
+    else if (eip_offset == 0x000F3853U)
+    {
+        ++context->linexe_name_byte_instruction_count;
+    }
+    else if (eip_offset == 0x000F393FU)
+    {
+        ++context->linexe_export_match_count;
+    }
+    else if (eip_offset == 0x000F38BEU)
+    {
+        ++context->linexe_export_entry_loop_count;
+    }
+    else if (eip_offset == 0x000F3974U)
+    {
+        ++context->linexe_export_compare_count;
+        context->linexe_export_compare_eax = win32_context->Eax;
+        context->linexe_export_compare_ecx = win32_context->Ecx;
+        context->linexe_export_compare_eflags = win32_context->EFlags;
+    }
+    else if (eip_offset == 0x000F396DU)
+    {
+        context->linexe_export_count_load_edx = win32_context->Edx;
+        context->linexe_export_count_load_gs = context->guest_gs;
+    }
+    else if (eip_offset == 0x000F3963U)
+    {
+        const auto* offset = reinterpret_cast<const std::uint32_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esp + 0x08U));
+        const auto* selector = reinterpret_cast<const std::uint16_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esp + 0x10U));
+        if (IsGuestRangeReadable(context, offset, sizeof(*offset)))
+        {
+            context->linexe_export_offset_stack_value = *offset;
+        }
+        if (IsGuestRangeReadable(context, selector, sizeof(*selector)))
+        {
+            context->linexe_export_selector_stack_value = *selector;
+        }
+    }
+    else if (eip_offset == 0x000F38B9U ||
+             eip_offset == 0x000F395FU)
+    {
+        const auto* offset = reinterpret_cast<const std::uint32_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esp + 0x08U));
+        const auto* selector = reinterpret_cast<const std::uint16_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esp + 0x10U));
+        const std::uint32_t module_offset =
+            IsGuestRangeReadable(context, offset, sizeof(*offset)) ?
+                *offset : 0;
+        const std::uint16_t module_selector =
+            IsGuestRangeReadable(context, selector, sizeof(*selector)) ?
+                *selector : 0;
+        if (eip_offset == 0x000F38B9U)
+        {
+            context->linexe_export_jump_source_esp = win32_context->Esp;
+            context->linexe_export_jump_source_module_offset = module_offset;
+            context->linexe_export_jump_source_module_selector =
+                module_selector;
+        }
+        else
+        {
+            context->linexe_export_jump_target_esp = win32_context->Esp;
+            context->linexe_export_jump_target_module_offset = module_offset;
+            context->linexe_export_jump_target_module_selector =
+                module_selector;
+        }
+    }
+    else if (eip_offset == 0x000F3900U)
+    {
+        ++context->linexe_export_name_compare_count;
+        context->linexe_export_name_compare_gs = context->guest_gs;
+        context->linexe_export_name_compare_edi = win32_context->Edi;
+        context->linexe_export_name_compare_esi = win32_context->Esi;
+        std::uint8_t actual = 0;
+        if (ReadSegmentByte(context, 5, context->guest_gs,
+                            win32_context->Edi, &actual))
+        {
+            context->linexe_export_name_actual_byte = actual;
+        }
+        const auto* expected = reinterpret_cast<const std::uint8_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esi));
+        if (IsGuestRangeReadable(context, expected, sizeof(*expected)))
+        {
+            context->linexe_export_name_expected_byte = *expected;
+        }
+    }
+    else if (eip_offset == 0x000F39A6U)
+    {
+        ++context->linexe_scan_return_count;
+    }
     const std::uint32_t eip =
         static_cast<std::uint32_t>(win32_context->Eip);
     if (IsGuestInstructionPointer(context, eip))
@@ -1256,8 +1652,11 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
          HandleSegmentPopInstruction(win32_context, context) ||
          HandleRepStosdInstruction(win32_context, context) ||
          HandleRepMovsInstruction(win32_context, context) ||
+         HandleLodsbInstruction(win32_context, context) ||
          HandleSegmentStoreInstruction(win32_context, context) ||
+         HandleSegmentOverrideMemoryLoadInstruction(win32_context, context) ||
          HandleSegmentOverrideByteLoadInstruction(win32_context, context) ||
+         HandleFsSegmentWordLoadInstruction(win32_context, context) ||
          HandleSegmentMemoryCompareInstruction(win32_context, context) ||
          HandleSegmentMemoryLoadInstruction(win32_context, context) ||
          HandleTracedMemoryLoadInstruction(win32_context, context) ||
@@ -1269,6 +1668,8 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
          HandleTracedFpuMemoryInstruction(win32_context, context) ||
          HandleDosMemoryAccess(win32_context, context)))
     {
+        HandleSegmentStoreInstruction(win32_context, context);
+        HandleSegmentOverrideMemoryLoadInstruction(win32_context, context);
         win32_context->EFlags |= 0x00000100U;
         return true;
     }
@@ -2447,8 +2848,24 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
             }
             break;
         case 0xFF:
-            win32_context->Eax &= 0xFFFFFF00U;
-            win32_context->EFlags &= ~1U;
+            if (ax == kDos4gIdentificationAx &&
+                (win32_context->Edx & 0xFFFFU) == kDos4gIdentificationDx &&
+                context->linexe_environment_active)
+            {
+                win32_context->Eax =
+                    (win32_context->Eax & 0xFFFF0000U) |
+                    kDos4gwIdentificationAxResult;
+                context->guest_gs = kDos4gwClientDataSelector;
+                if (kDos4gwIdentificationCarry)
+                {
+                    win32_context->EFlags |= 1U;
+                }
+            }
+            else
+            {
+                win32_context->Eax &= 0xFFFFFF00U;
+                win32_context->EFlags &= ~1U;
+            }
             break;
         case 0xED:
             win32_context->Eax &= 0xFFFFFF00U;
@@ -2496,6 +2913,62 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
     {
         RecordHandledDosInterrupt(context, 0x31, ax);
         win32_context->EFlags &= ~1U;
+        win32_context->Eip += 2;
+        return true;
+    }
+
+    if (ax == 0x0006)
+    {
+        const std::uint16_t selector = static_cast<std::uint16_t>(
+            win32_context->Ebx & 0xFFFFU);
+        const repiu::runtime::GuestDescriptor* descriptor =
+            repiu::runtime::FindDescriptor(context->selector_table, selector);
+        RecordHandledDosInterrupt(context, 0x31, ax);
+        if (descriptor == nullptr || !descriptor->present)
+        {
+            win32_context->Eax =
+                (win32_context->Eax & 0xFFFF0000U) | 0x8022U;
+            win32_context->EFlags |= 1U;
+        }
+        else
+        {
+            win32_context->Ecx =
+                (win32_context->Ecx & 0xFFFF0000U) |
+                ((descriptor->base >> 16) & 0xFFFFU);
+            win32_context->Edx =
+                (win32_context->Edx & 0xFFFF0000U) |
+                (descriptor->base & 0xFFFFU);
+            win32_context->EFlags &= ~1U;
+        }
+        win32_context->Eip += 2;
+        return true;
+    }
+
+    if (ax == 0x0007)
+    {
+        const std::uint16_t selector = static_cast<std::uint16_t>(
+            win32_context->Ebx & 0xFFFFU);
+        const repiu::runtime::GuestDescriptor* existing =
+            repiu::runtime::FindDescriptor(context->selector_table, selector);
+        RecordHandledDosInterrupt(context, 0x31, ax);
+        if (existing == nullptr || !existing->present)
+        {
+            win32_context->Eax =
+                (win32_context->Eax & 0xFFFF0000U) | 0x8022U;
+            win32_context->EFlags |= 1U;
+        }
+        else
+        {
+            repiu::runtime::GuestDescriptor updated = *existing;
+            updated.base = ((win32_context->Ecx & 0xFFFFU) << 16) |
+                           (win32_context->Edx & 0xFFFFU);
+            if (!repiu::runtime::RegisterDescriptor(
+                    &context->selector_table, updated))
+            {
+                return false;
+            }
+            win32_context->EFlags &= ~1U;
+        }
         win32_context->Eip += 2;
         return true;
     }
@@ -2722,6 +3195,11 @@ void RecordGuestSegmentLoad(CONTEXT* win32_context,
         return;
     }
 
+    if (segment_register == 5 && selector == kDos4gwLinexeDataSelector)
+    {
+        ++context->linexe_data_gs_load_count;
+    }
+
     ++context->handled_segment_load_count;
     context->last_segment_load_address =
         static_cast<std::uint32_t>(win32_context->Eip);
@@ -2946,7 +3424,7 @@ void WriteGeneralRegister32(CONTEXT* win32_context,
     }
 }
 
-bool DecodeModRmMemoryDestinationNoSib(
+bool DecodeModRmMemoryAddress(
     const CONTEXT* win32_context,
     const std::uint8_t* instruction,
     std::uint32_t* destination,
@@ -2955,38 +3433,61 @@ bool DecodeModRmMemoryDestinationNoSib(
     const std::uint8_t modrm = instruction[1];
     const std::uint8_t mod = (modrm >> 6) & 0x03U;
     const std::uint8_t rm = modrm & 0x07U;
-    if (mod == 0x03 || rm == 0x04)
+    if (mod == 0x03)
     {
         return false;
     }
 
     std::uint32_t base = 0;
+    std::uint32_t index = 0;
     std::uint32_t displacement = 0;
     std::uint32_t size = 2;
-    if (mod == 0x00 && rm == 0x05)
+    std::uint32_t displacement_offset = 2;
+    if (rm == 0x04)
     {
-        return false;
+        const std::uint8_t sib = instruction[2];
+        const std::uint8_t scale = (sib >> 6) & 0x03U;
+        const std::uint8_t index_register = (sib >> 3) & 0x07U;
+        const std::uint8_t base_register = sib & 0x07U;
+        if (index_register != 0x04)
+        {
+            index = ReadGeneralRegister32(win32_context, index_register)
+                    << scale;
+        }
+        if (!(mod == 0x00 && base_register == 0x05))
+        {
+            base = ReadGeneralRegister32(win32_context, base_register);
+        }
+        displacement_offset = 3;
+        size = 3;
+    }
+    else if (!(mod == 0x00 && rm == 0x05))
+    {
+        base = ReadGeneralRegister32(win32_context, rm);
     }
 
-    base = ReadGeneralRegister32(win32_context, rm);
-    if (mod == 0x01)
+    const bool absolute_displacement =
+        mod == 0x00 &&
+        (rm == 0x05 ||
+         (rm == 0x04 && (instruction[2] & 0x07U) == 0x05));
+    if (absolute_displacement || mod == 0x02)
+    {
+        displacement =
+            static_cast<std::uint32_t>(instruction[displacement_offset]) |
+            (static_cast<std::uint32_t>(instruction[displacement_offset + 1]) << 8) |
+            (static_cast<std::uint32_t>(instruction[displacement_offset + 2]) << 16) |
+            (static_cast<std::uint32_t>(instruction[displacement_offset + 3]) << 24);
+        size = displacement_offset + 4;
+    }
+    else if (mod == 0x01)
     {
         displacement = static_cast<std::uint32_t>(
             static_cast<std::int32_t>(
-                static_cast<std::int8_t>(instruction[2])));
-        size = 3;
-    }
-    else if (mod == 0x02)
-    {
-        displacement =
-            static_cast<std::uint32_t>(instruction[2]) |
-            (static_cast<std::uint32_t>(instruction[3]) << 8) |
-            (static_cast<std::uint32_t>(instruction[4]) << 16) |
-            (static_cast<std::uint32_t>(instruction[5]) << 24);
-        size = 6;
+                static_cast<std::int8_t>(instruction[displacement_offset])));
+        size = displacement_offset + 1;
     }
 
-    *destination = base + displacement;
+    *destination = base + index + displacement;
     *instruction_size = size;
     return true;
 }
@@ -3062,16 +3563,16 @@ bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
     {
         selector = ReadRegister16(*win32_context, source_register);
     }
-    else if (mod == 0x00 && source_register == 0x05)
+    else
     {
-        source =
-            static_cast<std::uint32_t>(instruction[prefix_length + 2]) |
-            (static_cast<std::uint32_t>(instruction[prefix_length + 3])
-             << 8) |
-            (static_cast<std::uint32_t>(instruction[prefix_length + 4])
-             << 16) |
-            (static_cast<std::uint32_t>(instruction[prefix_length + 5])
-             << 24);
+        std::uint32_t unprefixed_length = 0;
+        if (!DecodeModRmMemoryAddress(win32_context,
+                                      instruction + prefix_length,
+                                      &source,
+                                      &unprefixed_length))
+        {
+            return false;
+        }
         const void* source_pointer = reinterpret_cast<const void*>(
             static_cast<std::uintptr_t>(source));
         if (!IsGuestRangeReadable(context, source_pointer, 2))
@@ -3080,11 +3581,7 @@ bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
         }
 
         std::memcpy(&selector, source_pointer, sizeof(selector));
-        instruction_length += 4;
-    }
-    else
-    {
-        return false;
+        instruction_length = prefix_length + unprefixed_length;
     }
 
     RecordGuestSegmentLoad(win32_context,
@@ -3170,11 +3667,56 @@ bool HandleRepStosdInstruction(CONTEXT* win32_context,
     return true;
 }
 
+bool HandleLodsbInstruction(CONTEXT* win32_context,
+                            ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0xAC)
+    {
+        return false;
+    }
+    std::uint8_t value = 0;
+    if (!ReadSegmentByte(context, 3, context->guest_ds,
+                         win32_context->Esi, &value))
+    {
+        return false;
+    }
+    win32_context->Eax =
+        (win32_context->Eax & 0xFFFFFF00U) | value;
+    win32_context->Esi +=
+        (win32_context->EFlags & 0x00000400U) != 0 ? -1 : 1;
+    ++win32_context->Eip;
+    return true;
+}
+
 bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
                                    ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
+    if (instruction[0] == 0x66 && instruction[1] == 0x8C)
+    {
+        const std::uint8_t modrm = instruction[2];
+        const std::uint8_t mod = (modrm >> 6) & 0x03U;
+        const std::uint8_t segment_register = (modrm >> 3) & 0x07U;
+        const std::uint8_t destination_register = modrm & 0x07U;
+        if (mod != 0x03 || segment_register == 1 ||
+            segment_register > 5)
+        {
+            return false;
+        }
+        const std::uint16_t selector =
+            ReadGuestSegmentSelector(*context, segment_register);
+        WriteRegister16(win32_context, destination_register, selector);
+        RecordGuestSegmentStore(win32_context,
+                                context,
+                                segment_register,
+                                selector,
+                                destination_register);
+        win32_context->Eip += 3;
+        return true;
+    }
     if (instruction[0] == 0x8C)
     {
         const std::uint8_t modrm = instruction[1];
@@ -3182,25 +3724,51 @@ bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
             static_cast<std::uint8_t>((modrm >> 6) & 0x03);
         const std::uint8_t segment_register =
             static_cast<std::uint8_t>((modrm >> 3) & 0x07);
-        const std::uint8_t destination_register =
-            static_cast<std::uint8_t>(modrm & 0x07);
-        if (mod != 0x03 || segment_register == 1 ||
-            segment_register > 5)
+        if (segment_register == 1 || segment_register > 5)
         {
             return false;
         }
 
         const std::uint16_t selector =
             ReadGuestSegmentSelector(*context, segment_register);
-        WriteRegister16(win32_context,
-                        destination_register,
-                        selector);
+        if (mod == 0x03)
+        {
+            const std::uint8_t destination_register =
+                static_cast<std::uint8_t>(modrm & 0x07);
+            WriteRegister16(win32_context,
+                            destination_register,
+                            selector);
+            RecordGuestSegmentStore(win32_context,
+                                    context,
+                                    segment_register,
+                                    selector,
+                                    destination_register);
+            win32_context->Eip += 2;
+            return true;
+        }
+
+        std::uint32_t destination = 0;
+        std::uint32_t instruction_size = 0;
+        if (!DecodeModRmMemoryAddress(win32_context,
+                                      instruction,
+                                      &destination,
+                                      &instruction_size))
+        {
+            return false;
+        }
+        void* destination_pointer = reinterpret_cast<void*>(
+            static_cast<std::uintptr_t>(destination));
+        if (!IsGuestRangeWritable(context, destination_pointer, 2) ||
+            !WriteGuestUInt16(context, destination_pointer, selector))
+        {
+            return false;
+        }
         RecordGuestSegmentStore(win32_context,
                                 context,
                                 segment_register,
                                 selector,
-                                destination_register);
-        win32_context->Eip += 2;
+                                destination);
+        win32_context->Eip += instruction_size;
         return true;
     }
     if (instruction[0] != 0x66 || instruction[1] != 0x26 ||
@@ -3278,6 +3846,54 @@ bool HandleSegmentOverrideByteLoadInstruction(CONTEXT* win32_context,
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
+    if ((instruction[0] == 0x64 || instruction[0] == 0x65) &&
+        instruction[1] == 0x8A)
+    {
+        std::uint32_t offset = 0;
+        std::uint32_t unprefixed_size = 0;
+        if (!DecodeModRmMemoryAddress(win32_context,
+                                      instruction + 1,
+                                      &offset,
+                                      &unprefixed_size))
+        {
+            return false;
+        }
+        const std::uint8_t segment_register =
+            instruction[0] == 0x64 ? 4 : 5;
+        const std::uint16_t selector =
+            ReadGuestSegmentSelector(*context, segment_register);
+        std::uint8_t value = 0;
+        if (!ReadSegmentByte(context,
+                             segment_register,
+                             selector,
+                             offset,
+                             &value))
+        {
+            return false;
+        }
+        if (segment_register == 5)
+        {
+            if (context->linexe_gs_byte_load_count == 0)
+            {
+                context->linexe_first_gs_byte_offset = offset;
+                context->linexe_first_gs_byte_value = value;
+            }
+            ++context->linexe_gs_byte_load_count;
+        }
+        const std::uint8_t destination_register =
+            (instruction[2] >> 3) & 0x07U;
+        WriteRegister8(win32_context, destination_register, value);
+        RecordGuestSegmentMemoryLoad(win32_context,
+                                     context,
+                                     instruction[1],
+                                     segment_register,
+                                     selector,
+                                     offset,
+                                     1,
+                                     value);
+        win32_context->Eip += 1 + unprefixed_size;
+        return true;
+    }
     if (instruction[0] == 0x26 &&
         (instruction[1] == 0x8A || instruction[1] == 0x3A))
     {
@@ -3574,10 +4190,10 @@ bool ReadSegmentByte(ThreadContext* context,
     return true;
 }
 
-bool ReadFsSegmentWord(ThreadContext* context,
-                       std::uint16_t selector,
-                       std::uint32_t offset,
-                       std::uint16_t* value)
+bool ReadSegmentWord(ThreadContext* context,
+                     std::uint16_t selector,
+                     std::uint32_t offset,
+                     std::uint16_t* value)
 {
     if (context == nullptr || value == nullptr)
     {
@@ -3585,8 +4201,7 @@ bool ReadFsSegmentWord(ThreadContext* context,
     }
 
     std::uint32_t linear_address = 0;
-    if (selector == context->guest_fs &&
-        repiu::runtime::TranslateSelectorOffset(
+    if (repiu::runtime::TranslateSelectorOffset(
             context->selector_table,
             selector,
             offset,
@@ -3613,12 +4228,171 @@ bool ReadFsSegmentWord(ThreadContext* context,
     return false;
 }
 
+bool HandleSegmentOverrideMemoryLoadInstruction(CONTEXT* win32_context,
+                                                ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    std::uint32_t prefix_length = 0;
+    std::uint8_t segment_register = 0xFFU;
+    bool operand_word = false;
+    while (true)
+    {
+        const std::uint8_t prefix = instruction[prefix_length];
+        if (prefix == 0x66)
+        {
+            operand_word = true;
+        }
+        else if (prefix == 0x26)
+        {
+            segment_register = 0;
+        }
+        else if (prefix == 0x36)
+        {
+            segment_register = 2;
+        }
+        else if (prefix == 0x3E)
+        {
+            segment_register = 3;
+        }
+        else if (prefix == 0x64)
+        {
+            segment_register = 4;
+        }
+        else if (prefix == 0x65)
+        {
+            segment_register = 5;
+        }
+        else if (prefix == 0x2E || prefix == 0x67)
+        {
+            return false;
+        }
+        else
+        {
+            break;
+        }
+        ++prefix_length;
+    }
+
+    const std::uint8_t opcode = instruction[prefix_length];
+    if (segment_register == 0xFFU ||
+        (opcode != 0x8A && opcode != 0x8B))
+    {
+        return false;
+    }
+    ++context->linexe_shared_load_entry_count;
+    const std::uint8_t modrm = instruction[prefix_length + 1];
+    if (((modrm >> 6) & 0x03U) == 0x03U)
+    {
+        return false;
+    }
+    std::uint32_t offset = 0;
+    std::uint32_t unprefixed_size = 0;
+    if (!DecodeModRmMemoryAddress(win32_context,
+                                  instruction + prefix_length,
+                                  &offset,
+                                  &unprefixed_size))
+    {
+        return false;
+    }
+    const std::uint8_t destination_register = (modrm >> 3) & 0x07U;
+    const std::uint16_t selector =
+        ReadGuestSegmentSelector(*context, segment_register);
+    context->linexe_shared_load_selector = selector;
+    context->linexe_shared_load_offset = offset;
+    std::uint32_t value = 0;
+    std::uint32_t width = 0;
+    if (opcode == 0x8A)
+    {
+        std::uint8_t byte = 0;
+        if (!ReadSegmentByte(context, segment_register, selector,
+                             offset, &byte))
+        {
+            return false;
+        }
+        value = byte;
+        width = 1;
+        WriteRegister8(win32_context, destination_register, byte);
+    }
+    else if (operand_word)
+    {
+        std::uint16_t word = 0;
+        if (!ReadSegmentWord(context, selector, offset, &word))
+        {
+            return false;
+        }
+        value = word;
+        width = 2;
+        WriteRegister16(win32_context, destination_register, word);
+    }
+    else
+    {
+        if (!ReadSegmentDword(context, segment_register, selector,
+                              offset, &value))
+        {
+            return false;
+        }
+        width = 4;
+        WriteGeneralRegister32(win32_context, destination_register, value);
+    }
+    RecordGuestSegmentMemoryLoad(win32_context,
+                                 context,
+                                 opcode,
+                                 segment_register,
+                                 selector,
+                                 offset,
+                                 width,
+                                 value);
+    ++context->linexe_shared_load_read_count;
+    context->linexe_shared_load_value = value;
+    const std::uint32_t instruction_offset =
+        static_cast<std::uint32_t>(win32_context->Eip) -
+        context->runtime_base;
+    if (instruction_offset == 0x000F380FU)
+    {
+        context->linexe_root_offset_load_value = value;
+        ++context->linexe_root_offset_load_success;
+    }
+    else if (instruction_offset == 0x000F3813U)
+    {
+        context->linexe_root_selector_load_value = value;
+        ++context->linexe_root_selector_load_success;
+    }
+    else if (instruction_offset == 0x000F38C7U)
+    {
+        context->linexe_export_entry_name_offset_value = value;
+    }
+    else if (instruction_offset == 0x000F38CBU)
+    {
+        context->linexe_export_entry_name_selector_value = value;
+    }
+    else if (instruction_offset == 0x000F393AU)
+    {
+        context->linexe_export_value_load_selector = selector;
+        context->linexe_export_value_load_offset = offset;
+        context->linexe_export_value_load_value = value;
+    }
+    if (segment_register == 5 && width == 1)
+    {
+        if (context->linexe_gs_byte_load_count == 0)
+        {
+            context->linexe_first_gs_byte_offset = offset;
+            context->linexe_first_gs_byte_value = value;
+        }
+        ++context->linexe_gs_byte_load_count;
+    }
+    win32_context->Eip += prefix_length + unprefixed_size;
+    HandleSegmentOverrideMemoryLoadInstruction(win32_context, context);
+    return true;
+}
+
 bool HandleFsSegmentWordLoadInstruction(CONTEXT* win32_context,
                                         ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
-    if (instruction[0] != 0x66 || instruction[1] != 0x65 ||
+    if (instruction[0] != 0x66 ||
+        (instruction[1] != 0x64 && instruction[1] != 0x65) ||
         instruction[2] != 0x8B)
     {
         return false;
@@ -3659,11 +4433,12 @@ bool HandleFsSegmentWordLoadInstruction(CONTEXT* win32_context,
         return false;
     }
 
-    constexpr std::uint8_t kFsSegmentRegister = 4;
+    const std::uint8_t segment_register =
+        instruction[1] == 0x64 ? 4 : 5;
     const std::uint16_t selector =
-        ReadGuestSegmentSelector(*context, kFsSegmentRegister);
+        ReadGuestSegmentSelector(*context, segment_register);
     std::uint16_t value = 0;
-    if (!ReadFsSegmentWord(context, selector, offset, &value))
+    if (!ReadSegmentWord(context, selector, offset, &value))
     {
         return false;
     }
@@ -3672,7 +4447,7 @@ bool HandleFsSegmentWordLoadInstruction(CONTEXT* win32_context,
     RecordGuestSegmentMemoryLoad(win32_context,
                                  context,
                                  0x8B,
-                                 kFsSegmentRegister,
+                                 segment_register,
                                  selector,
                                  offset,
                                  2,
@@ -3866,6 +4641,11 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
     }
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
+    const std::uint32_t modrm_offset = instruction[0] == 0x66 ? 2U : 1U;
+    if ((instruction[modrm_offset] & 0xC0U) == 0xC0U)
+    {
+        return false;
+    }
     std::uint32_t destination = 0;
     std::uint32_t value = 0;
     std::uint32_t instruction_size = 0;
@@ -3878,7 +4658,7 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
         source_kind = "mov-imm32";
         const std::uint8_t operation = (instruction[1] >> 3) & 0x07U;
         if (operation != 0 ||
-            !DecodeModRmMemoryDestinationNoSib(win32_context,
+            !DecodeModRmMemoryAddress(win32_context,
                                                instruction,
                                                &destination,
                                                &instruction_size))
@@ -3903,7 +4683,7 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
         const std::uint8_t operation = (instruction[2] >> 3) & 0x07U;
         std::uint32_t unprefixed_instruction_size = 0;
         if (operation != 0 ||
-            !DecodeModRmMemoryDestinationNoSib(
+            !DecodeModRmMemoryAddress(
                 win32_context,
                 instruction + 1,
                 &destination,
@@ -3923,7 +4703,7 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
     else if (instruction[0] == 0x89)
     {
         source_kind = "mov-reg32";
-        if (!DecodeModRmMemoryDestinationNoSib(win32_context,
+        if (!DecodeModRmMemoryAddress(win32_context,
                                                instruction,
                                                &destination,
                                                &instruction_size))
@@ -3936,6 +4716,16 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
     else
     {
         return false;
+    }
+
+    const std::uint32_t instruction_offset =
+        static_cast<std::uint32_t>(win32_context->Eip) -
+        context->runtime_base;
+    if (instruction_offset == 0x000F393FU)
+    {
+        ++context->linexe_export_result_store_count;
+        context->linexe_export_result_store_destination = destination;
+        context->linexe_export_result_store_value = value;
     }
 
     void* destination_pointer = reinterpret_cast<void*>(
@@ -4193,10 +4983,14 @@ bool HandleTracedMemoryLoadInstruction(CONTEXT* win32_context,
     {
         return false;
     }
+    if ((instruction[1] & 0xC0U) == 0xC0U)
+    {
+        return false;
+    }
 
     std::uint32_t source = 0;
     std::uint32_t instruction_size = 0;
-    if (!DecodeModRmMemoryDestinationNoSib(win32_context,
+    if (!DecodeModRmMemoryAddress(win32_context,
                                            instruction,
                                            &source,
                                            &instruction_size))
@@ -4318,6 +5112,7 @@ bool HandleTracedMemoryLoadInstruction(CONTEXT* win32_context,
     const std::uint8_t destination_register = (instruction[1] >> 3) & 0x07U;
     WriteGeneralRegister32(win32_context, destination_register, value);
     win32_context->Eip += instruction_size;
+    HandleSegmentOverrideMemoryLoadInstruction(win32_context, context);
     return true;
 }
 
@@ -4467,7 +5262,7 @@ bool HandleTracedMemoryAddInstruction(CONTEXT* win32_context,
 
     std::uint32_t source = 0;
     std::uint32_t instruction_size = 0;
-    if (!DecodeModRmMemoryDestinationNoSib(win32_context,
+    if (!DecodeModRmMemoryAddress(win32_context,
                                            instruction,
                                            &source,
                                            &instruction_size))
@@ -4507,7 +5302,7 @@ bool HandleTracedMemoryOrInstruction(CONTEXT* win32_context,
 
     std::uint32_t destination = 0;
     std::uint32_t instruction_size = 0;
-    if (!DecodeModRmMemoryDestinationNoSib(win32_context,
+    if (!DecodeModRmMemoryAddress(win32_context,
                                            instruction,
                                            &destination,
                                            &instruction_size))
@@ -4516,7 +5311,12 @@ bool HandleTracedMemoryOrInstruction(CONTEXT* win32_context,
     }
 
     std::uint32_t destination_value = 0;
-    if (!ReadShadowUInt32(context, destination, &destination_value))
+    void* destination_pointer = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(destination));
+    const bool real_destination =
+        ReadGuestUInt32(context, destination_pointer, &destination_value);
+    if (!real_destination &&
+        !ReadShadowUInt32(context, destination, &destination_value))
     {
         return false;
     }
@@ -4525,6 +5325,17 @@ bool HandleTracedMemoryOrInstruction(CONTEXT* win32_context,
         static_cast<std::int32_t>(
             static_cast<std::int8_t>(instruction[instruction_size])));
     const std::uint32_t result = destination_value | immediate;
+    if (real_destination)
+    {
+        if (!WriteGuestUInt32(context, destination_pointer, result))
+        {
+            return false;
+        }
+    }
+    else
+    {
+        WriteShadowMemory(context, destination, result, 4);
+    }
     RecordGuestMemoryStore(win32_context,
                            context,
                            0x83,
@@ -4532,12 +5343,11 @@ bool HandleTracedMemoryOrInstruction(CONTEXT* win32_context,
                            result,
                            4,
                            "or-imm8",
-                           false);
-    WriteShadowMemory(context, destination, result, 4);
+                           real_destination);
     const std::uint64_t instruction_offset =
         static_cast<std::uint64_t>(win32_context->Eip) -
         context->runtime_base;
-    if (context->pending_shadow_allocation_valid &&
+    if (!real_destination && context->pending_shadow_allocation_valid &&
         instruction_offset == 0x000F7AD4ULL)
     {
         const std::uint32_t allocation_size =
@@ -4575,7 +5385,7 @@ bool HandleTracedMemoryCompareByteInstruction(CONTEXT* win32_context,
 
     std::uint32_t source = 0;
     std::uint32_t instruction_size = 0;
-    if (!DecodeModRmMemoryDestinationNoSib(win32_context,
+    if (!DecodeModRmMemoryAddress(win32_context,
                                            instruction,
                                            &source,
                                            &instruction_size))
@@ -4665,7 +5475,7 @@ bool HandleTracedFpuMemoryInstruction(CONTEXT* win32_context,
 
     std::uint32_t address = 0;
     std::uint32_t instruction_size = 0;
-    if (!DecodeModRmMemoryDestinationNoSib(win32_context,
+    if (!DecodeModRmMemoryAddress(win32_context,
                                            instruction,
                                            &address,
                                            &instruction_size))
@@ -4914,10 +5724,7 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
             return true;
         case 0xFF:
             RecordHandledDosInterrupt(context, 0x21, ax);
-            win32_context->Eax &= 0xFFFFFF00U;
-            win32_context->EFlags &= ~1U;
-            win32_context->Eip += 2;
-            return true;
+            return HandleDosInterrupt21(win32_context, context);
         case 0xED:
             RecordHandledDosInterrupt(context, 0x21, ax);
             win32_context->Eax &= 0xFFFFFF00U;
@@ -5447,7 +6254,7 @@ bool HandleDosMemoryAccess(CONTEXT* win32_context, ThreadContext* context)
         std::uint16_t value = 0;
         if (offset == 0x2C)
         {
-            value = 0;
+            value = context->linexe_environment_active ? 0x002CU : 0;
         }
         win32_context->Ecx =
             (win32_context->Ecx & 0xFFFF0000U) | value;
@@ -5720,6 +6527,11 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
         return EXCEPTION_CONTINUE_EXECUTION;
     }
     if (context->enable_segment_load_hle &&
+        HandleSegmentOverrideMemoryLoadInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
         HandleSegmentOverrideByteLoadInstruction(win32_context, context))
     {
         return EXCEPTION_CONTINUE_EXECUTION;
@@ -5789,6 +6601,11 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     }
     if (context->enable_segment_load_hle &&
         HandleRepMovsInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleLodsbInstruction(win32_context, context))
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
@@ -6010,7 +6827,61 @@ bool RunWin32ExecutionThread(
                 binding.limit,
                 0,
                 true,
-            });
+        });
+    }
+    if (repiu::hle::BuildLinexeCallGatePlan(&context.linexe_gate_plan) &&
+        repiu::hle::BuildLinexeArenaLayout(
+            placement.hle_reserve_base,
+            placement.arena_end_address,
+            &context.linexe_arena_layout))
+    {
+        const auto address = [](std::uint32_t value) {
+            return reinterpret_cast<void*>(static_cast<std::uintptr_t>(value));
+        };
+        const bool images_written =
+            WriteGuestBytes(&context,
+                            address(context.linexe_arena_layout.client_data_base),
+                            context.linexe_gate_plan.client_data_image.data(),
+                            context.linexe_gate_plan.client_data_image.size()) &&
+            WriteGuestBytes(&context,
+                            address(context.linexe_arena_layout.private_data_base),
+                            context.linexe_gate_plan.private_data_image.data(),
+                            context.linexe_gate_plan.private_data_image.size()) &&
+            WriteGuestBytes(&context,
+                            address(context.linexe_arena_layout.gate_code_base),
+                            context.linexe_gate_plan.gate_image.data(),
+                            context.linexe_gate_plan.gate_image.size());
+        const bool descriptors_registered = images_written &&
+            repiu::runtime::RegisterDescriptor(
+                &context.selector_table,
+                {kDos4gwClientDataSelector,
+                 context.linexe_arena_layout.client_data_base,
+                 0x0FFFU, 0, true}) &&
+            repiu::runtime::RegisterDescriptor(
+                &context.selector_table,
+                {kDos4gwLinexeDataSelector,
+                 context.linexe_arena_layout.private_data_base,
+                 0x0FFFU, 0, true}) &&
+            repiu::runtime::RegisterDescriptor(
+                &context.selector_table,
+                {kDos4gwLinexeCodeSelector,
+                 context.linexe_arena_layout.gate_code_base,
+                 0x0FFFU, 0, true});
+        if (descriptors_registered)
+        {
+            DWORD ignored = 0;
+            const bool client_protected = VirtualProtect(
+                address(context.linexe_arena_layout.client_data_base),
+                0x1000U, PAGE_READONLY, &ignored) != 0;
+            const bool private_protected = VirtualProtect(
+                address(context.linexe_arena_layout.private_data_base),
+                0x1000U, PAGE_READONLY, &ignored) != 0;
+            const bool gates_protected = VirtualProtect(
+                address(context.linexe_arena_layout.gate_code_base),
+                0x1000U, PAGE_EXECUTE_READ, &ignored) != 0;
+            context.linexe_environment_active =
+                client_protected && private_protected && gates_protected;
+        }
     }
     if (dos_file_system != nullptr)
     {

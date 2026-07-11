@@ -441,6 +441,7 @@ bool BuildRelocatedRuntimeImage(
     }
 
     image->relocated_image_base = plan.relocated_image_base;
+    image->relocated_hle_reserve_base = plan.relocated_hle_reserve_base;
     image->relocated_entry_linear_address =
         plan.relocated_entry_linear_address;
     image->relocated_stack_top_linear_address =
