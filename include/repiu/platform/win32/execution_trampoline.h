@@ -15,6 +15,7 @@ constexpr std::uint32_t kWin32PortIoTraceCapacity = 16;
 constexpr std::uint32_t kWin32DosPathTraceCapacity = 16;
 constexpr std::uint32_t kWin32AllocatorProbeTraceCapacity = 16;
 constexpr std::uint32_t kWin32AllocatorControlFlowTraceCapacity = 32;
+constexpr std::uint32_t kWin32SegmentLoadTraceCapacity = 16;
 constexpr std::uint32_t kWin32DeferredPortIoLimit = 1024;
 
 struct X86ExecutionSnapshot
@@ -157,6 +158,24 @@ struct Win32AllocatorControlFlowObservation
         trace[kWin32AllocatorControlFlowTraceCapacity];
 };
 
+struct Win32SegmentLoadTraceEntry
+{
+    bool valid = false;
+    std::uint32_t sequence = 0;
+    std::uint32_t eip_offset = 0;
+    std::uint8_t segment_register = 0;
+    std::uint16_t selector = 0;
+    std::uint32_t source = 0;
+};
+
+struct Win32SegmentLoadObservation
+{
+    std::uint32_t observed_count = 0;
+    std::uint32_t trace_stored_count = 0;
+    bool trace_wrapped = false;
+    Win32SegmentLoadTraceEntry trace[kWin32SegmentLoadTraceCapacity];
+};
+
 struct Win32MinimalExecutionAttempt
 {
     bool valid = false;
@@ -188,6 +207,10 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t exception_dispatch_entry_count = 0;
     std::uint32_t exception_dispatch_exit_count = 0;
     std::uint32_t exception_dispatch_last_eip = 0;
+    bool selector_table_valid = false;
+    std::uint32_t selector_descriptor_count = 0;
+    bool dos_low_memory_valid = false;
+    std::uint32_t dos_low_memory_size = 0;
     std::uint32_t dos_environment_block_size = 0;
     bool last_dos_environment_access_valid = false;
     std::uint32_t last_dos_environment_access_offset = 0;
@@ -261,6 +284,7 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t last_segment_load_register = 0;
     std::uint32_t last_segment_load_selector = 0;
     std::uint32_t last_segment_load_source = 0;
+    Win32SegmentLoadObservation segment_load;
     std::uint32_t handled_segment_store_count = 0;
     std::uint32_t last_segment_store_address = 0;
     std::uint32_t last_segment_store_opcode = 0;

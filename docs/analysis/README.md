@@ -28,6 +28,7 @@ flowchart LR
 * [DOS 파일 I/O와 INT3 해결 이력](dos-file-io-and-int3.md)
 * [Interrupt와 port I/O 관찰](interrupts-and-port-io.md)
 * [현재 실행 frontier와 다음 분석 대상](current-execution-frontier.md)
+* [DOS4GW loader와 selector 할당 분석](dos4gw-loader-selector-allocation.md)
 
 # rePIU Binary Analysis Index
 

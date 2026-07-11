@@ -179,8 +179,11 @@ try
     if ($piuOutput -notmatch "Win32 loader executable: MASTER/PIU_1ST/PIU/PIU.EXE" -or
         $piuOutput -notmatch "DOS virtual filesystem root: .+MASTER\\PIU_1ST" -or
         $piuOutput -notmatch "DOS virtual filesystem current directory: \\PIU" -or
-        $piuOutput -notmatch "Runtime memory arena reserve size: 0x006D7000" -or
-        $piuOutput -notmatch "Win32 relocated image placed size: 0x006D7000" -or
+        $piuOutput -notmatch "Runtime memory arena reserve size: 0x015D7000" -or
+        $piuOutput -notmatch "Win32 relocated image placed size: 0x015D7000" -or
+        $piuOutput -notmatch "Win32 relocated selector binding count: 4" -or
+        $piuOutput -notmatch "Win32 relocated selector binding: selector=0x0024 object=2" -or
+        $piuOutput -notmatch "Win32 relocated selector binding: selector=0x002C object=3" -or
         $piuOutput -notmatch "Win32 minimal execution returned: false" -or
         -not ($piuStoppedAtExpectedException -or $piuTimedOutAfterProgress) -or
         $piuOutput -notmatch "Win32 last single-step context captured: true" -or
@@ -190,6 +193,10 @@ try
         $piuOutput -notmatch "Win32 exception dispatch exit count: [1-9]" -or
         $piuOutput -notmatch "Win32 exception dispatch outstanding count: [01]" -or
         $piuOutput -notmatch "Win32 exception dispatch last EIP: 0x0[1-9][0-9A-F]{6}" -or
+        $piuOutput -notmatch "Win32 selector table valid: true" -or
+        $piuOutput -notmatch "Win32 selector descriptor count: [1-9]" -or
+        $piuOutput -notmatch "Win32 DOS low memory valid: true" -or
+        $piuOutput -notmatch "Win32 DOS low memory bytes: 65536" -or
         $piuOutput -notmatch "Win32 DOS environment block bytes: [1-9]" -or
         $piuOutput -notmatch "Win32 DOS environment access observed: true" -or
         $piuOutput -notmatch "Win32 last DOS environment entry: .+=<redacted>" -or
@@ -237,6 +244,8 @@ try
         $piuOutput -notmatch "Win32 last DOS close result: success" -or
         $piuOutput -notmatch "Win32 handled DOS resize count: [1-9]" -or
         $piuOutput -notmatch "Win32 handled low-memory access count: [1-9]" -or
+        $piuOutput -notmatch "Win32 segment load trace stored count: [1-9]" -or
+        $piuOutput -notmatch "Win32 segment load trace wrapped: false" -or
         $piuOutput -notmatch "Win32 handled segment memory load count: [1-9]" -or
         $piuOutput -notmatch "Win32 last handled segment memory load address: 0x0[1-9]0F4DD2" -or
         $piuOutput -notmatch "Win32 last handled segment memory load opcode: 0xA4" -or

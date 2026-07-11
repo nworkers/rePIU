@@ -54,6 +54,7 @@ struct Win32RelocatedImagePlacement
     std::uint32_t placed_size = 0;
     std::uint32_t copied_object_count = 0;
     std::uint32_t protected_object_count = 0;
+    std::vector<runtime::RelocatedSelectorBinding> selector_bindings;
     std::uint32_t windows_error = 0;
     std::string message;
 };

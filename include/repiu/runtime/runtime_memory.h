@@ -82,6 +82,14 @@ struct RelocatedRuntimeObject
     std::vector<std::uint8_t> memory;
 };
 
+struct RelocatedSelectorBinding
+{
+    std::uint16_t selector = 0;
+    std::uint32_t target_object = 0;
+    std::uint32_t relocated_base_address = 0;
+    std::uint32_t limit = 0;
+};
+
 struct RelocatedRuntimeImage
 {
     bool valid = false;
@@ -89,6 +97,9 @@ struct RelocatedRuntimeImage
     std::uint32_t relocated_entry_linear_address = 0;
     std::uint32_t relocated_stack_top_linear_address = 0;
     std::vector<RelocatedRuntimeObject> objects;
+    std::vector<RelocatedSelectorBinding> selector_bindings;
+    std::uint32_t selector_binding_record_count = 0;
+    std::uint32_t selector_binding_conflict_count = 0;
     RelocatableRuntimeRelocationDryRun relocation_result;
 };
 

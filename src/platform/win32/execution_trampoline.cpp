@@ -1,4 +1,7 @@
 #include "repiu/platform/win32/execution_trampoline.h"
+#include "repiu/platform/win32/live_telemetry.h"
+#include "repiu/runtime/dos_low_memory.h"
+#include "repiu/runtime/selector_table.h"
 
 #include <cstddef>
 #include <cstring>
@@ -6,6 +9,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <cstdio>
 #include <filesystem>
 #include <sstream>
 #include <unordered_map>
@@ -146,6 +150,7 @@ struct ThreadContext
     std::uint32_t last_segment_load_register = 0;
     std::uint32_t last_segment_load_selector = 0;
     std::uint32_t last_segment_load_source = 0;
+    Win32SegmentLoadObservation segment_load;
     std::uint32_t handled_segment_store_count = 0;
     std::uint32_t last_segment_store_address = 0;
     std::uint32_t last_segment_store_opcode = 0;
@@ -211,6 +216,9 @@ struct ThreadContext
     std::atomic<std::uint32_t> exception_dispatch_entry_count{0};
     std::atomic<std::uint32_t> exception_dispatch_exit_count{0};
     std::atomic<std::uint32_t> exception_dispatch_last_eip{0};
+    std::atomic<std::uint32_t> live_telemetry_heartbeat{0};
+    std::atomic<std::uint32_t> live_telemetry_phase{0};
+    Win32SharedLiveTelemetry* shared_live_telemetry = nullptr;
     std::unordered_map<std::uint32_t, std::uint8_t> shadow_memory;
     std::array<ShadowWriteProvenance, kShadowWriteProvenanceCapacity>
         shadow_write_provenance = {};
@@ -229,6 +237,8 @@ struct ThreadContext
     std::uint16_t guest_ds = 0;
     std::uint16_t guest_fs = 0;
     std::uint16_t guest_gs = 0;
+    repiu::runtime::SelectorTable selector_table;
+    repiu::runtime::DosLowMemory dos_low_memory;
     std::array<DosInterruptVectorShadow, 256> dos_interrupt_vectors = {};
     char hle_console_output[4096] = {};
     std::uint32_t hle_console_output_size = 0;
@@ -247,6 +257,20 @@ public:
         context_->exception_dispatch_entry_count.fetch_add(
             1,
             std::memory_order_relaxed);
+        context_->live_telemetry_phase.store(2, std::memory_order_relaxed);
+        context_->live_telemetry_heartbeat.fetch_add(
+            1,
+            std::memory_order_relaxed);
+        if (context_->shared_live_telemetry != nullptr)
+        {
+            InterlockedExchange(
+                &context_->shared_live_telemetry->last_eip,
+                static_cast<long>(eip));
+            InterlockedIncrement(
+                &context_->shared_live_telemetry->dispatch_entry_count);
+            InterlockedIncrement(
+                &context_->shared_live_telemetry->heartbeat);
+        }
     }
 
     ~ExceptionDispatchScope()
@@ -254,6 +278,17 @@ public:
         context_->exception_dispatch_exit_count.fetch_add(
             1,
             std::memory_order_relaxed);
+        context_->live_telemetry_phase.store(3, std::memory_order_relaxed);
+        context_->live_telemetry_heartbeat.fetch_add(
+            1,
+            std::memory_order_relaxed);
+        if (context_->shared_live_telemetry != nullptr)
+        {
+            InterlockedIncrement(
+                &context_->shared_live_telemetry->dispatch_exit_count);
+            InterlockedIncrement(
+                &context_->shared_live_telemetry->heartbeat);
+        }
     }
 
     ExceptionDispatchScope(const ExceptionDispatchScope&) = delete;
@@ -358,6 +393,108 @@ const Win32ThreadApi& GetWin32ThreadApi()
     return api;
 }
 
+struct SharedTelemetryMapping
+{
+    HANDLE mapping = nullptr;
+    Win32SharedLiveTelemetry* telemetry = nullptr;
+
+    SharedTelemetryMapping() = default;
+    SharedTelemetryMapping(const SharedTelemetryMapping&) = delete;
+    SharedTelemetryMapping& operator=(const SharedTelemetryMapping&) = delete;
+    SharedTelemetryMapping(SharedTelemetryMapping&& other) noexcept
+        : mapping(other.mapping), telemetry(other.telemetry)
+    {
+        other.mapping = nullptr;
+        other.telemetry = nullptr;
+    }
+
+    ~SharedTelemetryMapping()
+    {
+        if (telemetry != nullptr)
+        {
+            UnmapViewOfFile(telemetry);
+        }
+        if (mapping != nullptr)
+        {
+            CloseHandle(mapping);
+        }
+    }
+};
+
+SharedTelemetryMapping OpenSharedTelemetryMapping()
+{
+    SharedTelemetryMapping result;
+    char mapping_name[256] = {};
+    if (GetEnvironmentVariableA(kWin32LiveTelemetryEnvironment,
+                                mapping_name,
+                                sizeof(mapping_name)) == 0)
+    {
+        return result;
+    }
+    result.mapping = OpenFileMappingA(
+        FILE_MAP_ALL_ACCESS,
+        FALSE,
+        mapping_name);
+    if (result.mapping == nullptr)
+    {
+        return result;
+    }
+    result.telemetry = static_cast<Win32SharedLiveTelemetry*>(
+        MapViewOfFile(result.mapping, FILE_MAP_ALL_ACCESS, 0, 0, 0));
+    if (result.telemetry == nullptr ||
+        result.telemetry->magic != kWin32LiveTelemetryMagic ||
+        result.telemetry->version != kWin32LiveTelemetryVersion)
+    {
+        if (result.telemetry != nullptr)
+        {
+            UnmapViewOfFile(result.telemetry);
+            result.telemetry = nullptr;
+        }
+        CloseHandle(result.mapping);
+        result.mapping = nullptr;
+    }
+    return result;
+}
+
+void WriteLiveTelemetrySnapshot(const ThreadContext& context,
+                                DWORD elapsed_milliseconds,
+                                DWORD poll_iteration)
+{
+    char buffer[320] = {};
+    const int length = std::snprintf(
+        buffer,
+        sizeof(buffer),
+        "[repiu-live] elapsed_ms=%lu poll=%lu phase=%u heartbeat=%u "
+        "dispatch_entry=%u dispatch_exit=%u last_eip=0x%08X "
+        "progress=%u single_step=%u\r\n",
+        static_cast<unsigned long>(elapsed_milliseconds),
+        static_cast<unsigned long>(poll_iteration),
+        context.live_telemetry_phase.load(std::memory_order_relaxed),
+        context.live_telemetry_heartbeat.load(std::memory_order_relaxed),
+        context.exception_dispatch_entry_count.load(
+            std::memory_order_relaxed),
+        context.exception_dispatch_exit_count.load(
+            std::memory_order_relaxed),
+        context.exception_dispatch_last_eip.load(std::memory_order_relaxed),
+        context.diagnostic_progress_count.load(std::memory_order_relaxed),
+        context.single_step_trace_count.load(std::memory_order_relaxed));
+    if (length <= 0)
+    {
+        return;
+    }
+
+    HANDLE stderr_handle = GetStdHandle(STD_ERROR_HANDLE);
+    if (stderr_handle == nullptr || stderr_handle == INVALID_HANDLE_VALUE)
+    {
+        return;
+    }
+    DWORD written = 0;
+    const DWORD byte_count = static_cast<DWORD>(
+        length < static_cast<int>(sizeof(buffer)) ? length
+                                                  : sizeof(buffer) - 1U);
+    WriteFile(stderr_handle, buffer, byte_count, &written, nullptr);
+}
+
 DWORD PollThreadUntilExit(HANDLE thread,
                           DWORD timeout_milliseconds,
                           ThreadContext* progress_context,
@@ -369,8 +506,9 @@ DWORD PollThreadUntilExit(HANDLE thread,
         return WAIT_FAILED;
     }
 
-    const DWORD quiet_iteration_limit = 100000U;
+    const DWORD quiet_timeout_milliseconds = 1000U;
     const DWORD start_tick = GetTickCount();
+    DWORD quiet_start_tick = start_tick;
     std::uint32_t last_progress_count = 0;
     std::uint32_t last_single_step_count = 0;
     if (progress_context != nullptr)
@@ -384,6 +522,14 @@ DWORD PollThreadUntilExit(HANDLE thread,
     }
 
     DWORD quiet_iterations = 0;
+    DWORD last_live_snapshot_tick = start_tick;
+    if (progress_context != nullptr)
+    {
+        progress_context->live_telemetry_phase.store(
+            1,
+            std::memory_order_relaxed);
+        WriteLiveTelemetrySnapshot(*progress_context, 0, 0);
+    }
     for (DWORD iteration = 0;; ++iteration)
     {
         if (progress_context != nullptr)
@@ -421,10 +567,10 @@ DWORD PollThreadUntilExit(HANDLE thread,
             last_progress_count = progress_count;
             last_single_step_count = single_step_count;
         }
-
         if (progressed)
         {
             quiet_iterations = 0;
+            quiet_start_tick = GetTickCount();
         }
         else
         {
@@ -436,16 +582,42 @@ DWORD PollThreadUntilExit(HANDLE thread,
                 quiet_iterations;
         }
 
-        if (quiet_iterations >= quiet_iteration_limit)
+        if (GetTickCount() - quiet_start_tick >=
+            quiet_timeout_milliseconds)
         {
+            if (progress_context != nullptr)
+            {
+                WriteLiveTelemetrySnapshot(
+                    *progress_context,
+                    GetTickCount() - start_tick,
+                    iteration + 1);
+            }
             return WAIT_TIMEOUT;
         }
 
         if (timeout_milliseconds != INFINITE &&
             GetTickCount() - start_tick >= timeout_milliseconds)
         {
+            if (progress_context != nullptr)
+            {
+                WriteLiveTelemetrySnapshot(
+                    *progress_context,
+                    GetTickCount() - start_tick,
+                    iteration + 1);
+            }
             return WAIT_TIMEOUT;
         }
+
+        const DWORD current_tick = GetTickCount();
+        if (progress_context != nullptr &&
+            current_tick - last_live_snapshot_tick >= 1000U)
+        {
+            WriteLiveTelemetrySnapshot(*progress_context,
+                                       current_tick - start_tick,
+                                       iteration + 1);
+            last_live_snapshot_tick = current_tick;
+        }
+        Sleep(1);
     }
 }
 
@@ -641,6 +813,13 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->exception_dispatch_last_eip =
         context.exception_dispatch_last_eip.load(
             std::memory_order_relaxed);
+    attempt->selector_table_valid = context.selector_table.valid;
+    attempt->selector_descriptor_count =
+        static_cast<std::uint32_t>(
+            context.selector_table.descriptors.size());
+    attempt->dos_low_memory_valid = context.dos_low_memory.valid;
+    attempt->dos_low_memory_size =
+        repiu::runtime::kDosLowMemorySize;
     BuildSingleStepSnapshot(context, &attempt->last_single_step_snapshot);
     attempt->dos_environment_block_size =
         static_cast<std::uint32_t>(context.dos_environment_block.size());
@@ -734,6 +913,7 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->last_segment_load_selector =
         context.last_segment_load_selector;
     attempt->last_segment_load_source = context.last_segment_load_source;
+    attempt->segment_load = context.segment_load;
     attempt->handled_segment_store_count =
         context.handled_segment_store_count;
     attempt->last_segment_store_address = context.last_segment_store_address;
@@ -934,6 +1114,10 @@ bool HandleTracedMouseInterrupt33(CONTEXT* win32_context,
                                   ThreadContext* context);
 bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
                                   ThreadContext* context);
+bool HandleSegmentPopInstruction(CONTEXT* win32_context,
+                                 ThreadContext* context);
+bool HandleRepStosdInstruction(CONTEXT* win32_context,
+                               ThreadContext* context);
 bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
                                    ThreadContext* context);
 bool HandleSegmentOverrideByteLoadInstruction(CONTEXT* win32_context,
@@ -944,6 +1128,11 @@ bool HandleSegmentMemoryCompareInstruction(CONTEXT* win32_context,
                                            ThreadContext* context);
 bool HandleSegmentMemoryLoadInstruction(CONTEXT* win32_context,
                                         ThreadContext* context);
+bool ReadSegmentByte(ThreadContext* context,
+                     std::uint8_t segment_register,
+                     std::uint16_t selector,
+                     std::uint32_t offset,
+                     std::uint8_t* value);
 bool HandleTracedMemoryLoadInstruction(CONTEXT* win32_context,
                                        ThreadContext* context);
 
@@ -1048,6 +1237,8 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
     }
     if (context->enable_segment_load_hle &&
         (HandleSegmentLoadInstruction(win32_context, context) ||
+         HandleSegmentPopInstruction(win32_context, context) ||
+         HandleRepStosdInstruction(win32_context, context) ||
          HandleSegmentStoreInstruction(win32_context, context) ||
          HandleSegmentOverrideByteLoadInstruction(win32_context, context) ||
          HandleSegmentMemoryCompareInstruction(win32_context, context) ||
@@ -2423,6 +2614,77 @@ void WriteRegister16(CONTEXT* win32_context,
     }
 }
 
+std::uint8_t ReadRegister8(const CONTEXT& win32_context,
+                           std::uint8_t register_index)
+{
+    const std::uint32_t registers[4] = {
+        win32_context.Eax,
+        win32_context.Ecx,
+        win32_context.Edx,
+        win32_context.Ebx,
+    };
+    const std::uint8_t base = register_index & 0x03U;
+    const std::uint32_t shift = register_index < 4 ? 0U : 8U;
+    return static_cast<std::uint8_t>((registers[base] >> shift) & 0xFFU);
+}
+
+void WriteRegister8(CONTEXT* win32_context,
+                    std::uint8_t register_index,
+                    std::uint8_t value)
+{
+    DWORD* registers[4] = {
+        &win32_context->Eax,
+        &win32_context->Ecx,
+        &win32_context->Edx,
+        &win32_context->Ebx,
+    };
+    const std::uint8_t base = register_index & 0x03U;
+    const std::uint32_t shift = register_index < 4 ? 0U : 8U;
+    const std::uint32_t mask = 0xFFU << shift;
+    *registers[base] =
+        (*registers[base] & ~mask) |
+        (static_cast<std::uint32_t>(value) << shift);
+}
+
+void SetCompareFlags8(CONTEXT* win32_context,
+                      std::uint8_t lhs,
+                      std::uint8_t rhs)
+{
+    constexpr std::uint32_t kArithmeticFlags =
+        0x000008D5U;
+    const std::uint8_t result = static_cast<std::uint8_t>(lhs - rhs);
+    std::uint32_t flags = win32_context->EFlags & ~kArithmeticFlags;
+    if (lhs < rhs)
+    {
+        flags |= 0x00000001U;
+    }
+    std::uint8_t parity = result;
+    parity ^= static_cast<std::uint8_t>(parity >> 4U);
+    parity ^= static_cast<std::uint8_t>(parity >> 2U);
+    parity ^= static_cast<std::uint8_t>(parity >> 1U);
+    if ((parity & 1U) == 0)
+    {
+        flags |= 0x00000004U;
+    }
+    if (((lhs ^ rhs ^ result) & 0x10U) != 0)
+    {
+        flags |= 0x00000010U;
+    }
+    if (result == 0)
+    {
+        flags |= 0x00000040U;
+    }
+    if ((result & 0x80U) != 0)
+    {
+        flags |= 0x00000080U;
+    }
+    if (((lhs ^ rhs) & (lhs ^ result) & 0x80U) != 0)
+    {
+        flags |= 0x00000800U;
+    }
+    win32_context->EFlags = flags;
+}
+
 void RecordGuestSegmentLoad(CONTEXT* win32_context,
                             ThreadContext* context,
                             std::uint8_t segment_register,
@@ -2441,6 +2703,45 @@ void RecordGuestSegmentLoad(CONTEXT* win32_context,
     context->last_segment_load_register = segment_register;
     context->last_segment_load_selector = selector;
     context->last_segment_load_source = source;
+    Win32SegmentLoadObservation& observation = context->segment_load;
+    const std::uint32_t sequence = observation.observed_count + 1;
+    const std::uint32_t slot =
+        (sequence - 1) % kWin32SegmentLoadTraceCapacity;
+    Win32SegmentLoadTraceEntry& entry = observation.trace[slot];
+    entry.valid = true;
+    entry.sequence = sequence;
+    entry.eip_offset =
+        static_cast<std::uint32_t>(win32_context->Eip) >=
+                context->runtime_base
+            ? static_cast<std::uint32_t>(win32_context->Eip) -
+                  context->runtime_base
+            : static_cast<std::uint32_t>(win32_context->Eip);
+    entry.segment_register = segment_register;
+    entry.selector = selector;
+    entry.source = source;
+    observation.observed_count = sequence;
+    if (observation.trace_stored_count < kWin32SegmentLoadTraceCapacity)
+    {
+        ++observation.trace_stored_count;
+    }
+    else
+    {
+        observation.trace_wrapped = true;
+    }
+    if (selector != 0 &&
+        repiu::runtime::FindDescriptor(
+            context->selector_table, selector) == nullptr)
+    {
+        repiu::runtime::RegisterDescriptor(
+            &context->selector_table,
+            repiu::runtime::GuestDescriptor{
+                selector,
+                0,
+                repiu::runtime::kDosLowMemorySize - 1U,
+                0,
+                true,
+            });
+    }
 
     switch (segment_register)
     {
@@ -2666,6 +2967,8 @@ bool DecodeModRmMemoryDestinationNoSib(
 
 bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
                                   ThreadContext* context);
+bool HandleSegmentPopInstruction(CONTEXT* win32_context,
+                                 ThreadContext* context);
 
 bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
                                    ThreadContext* context);
@@ -2764,7 +3067,80 @@ bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
                            selector,
                            source);
     win32_context->Eip += instruction_length;
+    HandleSegmentLoadInstruction(win32_context, context);
     HandleSegmentStoreInstruction(win32_context, context);
+    return true;
+}
+
+bool HandleSegmentPopInstruction(CONTEXT* win32_context,
+                                 ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0x1F)
+    {
+        return false;
+    }
+
+    const std::uint32_t source =
+        static_cast<std::uint32_t>(win32_context->Esp);
+    const void* source_pointer = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(source));
+    if (!IsGuestRangeReadable(context, source_pointer, 2))
+    {
+        return false;
+    }
+
+    std::uint16_t selector = 0;
+    std::memcpy(&selector, source_pointer, sizeof(selector));
+    RecordGuestSegmentLoad(win32_context,
+                           context,
+                           3,
+                           selector,
+                           source);
+    win32_context->Esp += 4;
+    ++win32_context->Eip;
+    return true;
+}
+
+bool HandleRepStosdInstruction(CONTEXT* win32_context,
+                               ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0xF3 || instruction[1] != 0xAB ||
+        win32_context->Eax != 0 ||
+        (win32_context->EFlags & 0x00000400U) != 0)
+    {
+        return false;
+    }
+
+    const std::uint64_t byte_count =
+        static_cast<std::uint64_t>(win32_context->Ecx) * 4U;
+    if (byte_count > 0xFFFFFFFFULL)
+    {
+        return false;
+    }
+    void* destination = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(win32_context->Edi));
+    if (byte_count != 0 &&
+        !IsGuestRangeWritable(context,
+                              destination,
+                              static_cast<std::uint32_t>(byte_count)))
+    {
+        return false;
+    }
+
+    if (byte_count != 0)
+    {
+        std::memset(destination, 0, static_cast<std::size_t>(byte_count));
+    }
+    win32_context->Edi += static_cast<std::uint32_t>(byte_count);
+    win32_context->Ecx = 0;
+    win32_context->Eip += 2;
+    context->diagnostic_progress_count.fetch_add(
+        1,
+        std::memory_order_relaxed);
     return true;
 }
 
@@ -2773,6 +3149,34 @@ bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
+    if (instruction[0] == 0x8C)
+    {
+        const std::uint8_t modrm = instruction[1];
+        const std::uint8_t mod =
+            static_cast<std::uint8_t>((modrm >> 6) & 0x03);
+        const std::uint8_t segment_register =
+            static_cast<std::uint8_t>((modrm >> 3) & 0x07);
+        const std::uint8_t destination_register =
+            static_cast<std::uint8_t>(modrm & 0x07);
+        if (mod != 0x03 || segment_register == 1 ||
+            segment_register > 5)
+        {
+            return false;
+        }
+
+        const std::uint16_t selector =
+            ReadGuestSegmentSelector(*context, segment_register);
+        WriteRegister16(win32_context,
+                        destination_register,
+                        selector);
+        RecordGuestSegmentStore(win32_context,
+                                context,
+                                segment_register,
+                                selector,
+                                destination_register);
+        win32_context->Eip += 2;
+        return true;
+    }
     if (instruction[0] != 0x66 || instruction[1] != 0x26 ||
         instruction[2] != 0x8C)
     {
@@ -2848,6 +3252,84 @@ bool HandleSegmentOverrideByteLoadInstruction(CONTEXT* win32_context,
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
+    if (instruction[0] == 0x26 &&
+        (instruction[1] == 0x8A || instruction[1] == 0x3A))
+    {
+        const std::uint8_t modrm = instruction[2];
+        const std::uint8_t mod =
+            static_cast<std::uint8_t>((modrm >> 6) & 0x03);
+        const std::uint8_t register_index =
+            static_cast<std::uint8_t>((modrm >> 3) & 0x07);
+        const std::uint8_t base_register =
+            static_cast<std::uint8_t>(modrm & 0x07);
+        if (mod == 0 && base_register == 0)
+        {
+            const std::uint8_t segment_register = 0;
+            const std::uint16_t selector =
+                ReadGuestSegmentSelector(*context, segment_register);
+            const std::uint32_t offset = win32_context->Eax;
+            std::uint8_t value = 0;
+            if (!ReadSegmentByte(
+                    context,
+                    segment_register,
+                    selector,
+                    offset,
+                    &value))
+            {
+                return false;
+            }
+
+            if (instruction[1] == 0x8A)
+            {
+                WriteRegister8(win32_context, register_index, value);
+            }
+            else
+            {
+                SetCompareFlags8(
+                    win32_context,
+                    ReadRegister8(*win32_context, register_index),
+                    value);
+            }
+            RecordGuestSegmentMemoryLoad(win32_context,
+                                         context,
+                                         instruction[1],
+                                         segment_register,
+                                         selector,
+                                         offset,
+                                         1,
+                                         value);
+            win32_context->Eip += 3;
+            return true;
+        }
+    }
+    if (instruction[0] == 0x26 && instruction[1] == 0x80 &&
+        instruction[2] == 0x38)
+    {
+        const std::uint8_t segment_register = 0;
+        const std::uint16_t selector =
+            ReadGuestSegmentSelector(*context, segment_register);
+        const std::uint32_t offset = win32_context->Eax;
+        std::uint8_t value = 0;
+        if (!ReadSegmentByte(context,
+                             segment_register,
+                             selector,
+                             offset,
+                             &value))
+        {
+            return false;
+        }
+        SetCompareFlags8(win32_context, value, instruction[3]);
+        RecordGuestSegmentMemoryLoad(win32_context,
+                                     context,
+                                     instruction[1],
+                                     segment_register,
+                                     selector,
+                                     offset,
+                                     1,
+                                     value);
+        win32_context->Eip += 4;
+        return true;
+    }
     if (instruction[0] != 0x26 || instruction[1] != 0x8A ||
         instruction[2] != 0x4F)
     {
@@ -2986,7 +3468,31 @@ bool ReadSegmentDword(ThreadContext* context,
         return true;
     }
 
-    return false;
+    std::uint32_t linear_address = 0;
+    if (!repiu::runtime::TranslateSelectorOffset(
+            context->selector_table,
+            selector,
+            offset,
+            sizeof(*value),
+            &linear_address))
+    {
+        return false;
+    }
+    if (linear_address < repiu::runtime::kDosLowMemorySize)
+    {
+        return repiu::runtime::ReadDosLowMemoryUInt32(
+            context->dos_low_memory,
+            linear_address,
+            value);
+    }
+    const void* source = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(linear_address));
+    if (!IsGuestRangeReadable(context, source, sizeof(*value)))
+    {
+        return false;
+    }
+    std::memcpy(value, source, sizeof(*value));
+    return true;
 }
 
 bool ReadSegmentByte(ThreadContext* context,
@@ -3015,7 +3521,31 @@ bool ReadSegmentByte(ThreadContext* context,
         return true;
     }
 
-    return false;
+    std::uint32_t linear_address = 0;
+    if (!repiu::runtime::TranslateSelectorOffset(
+            context->selector_table,
+            selector,
+            offset,
+            sizeof(*value),
+            &linear_address))
+    {
+        return false;
+    }
+    if (linear_address < repiu::runtime::kDosLowMemorySize)
+    {
+        return repiu::runtime::ReadDosLowMemoryUInt8(
+            context->dos_low_memory,
+            linear_address,
+            value);
+    }
+    const void* source = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(linear_address));
+    if (!IsGuestRangeReadable(context, source, sizeof(*value)))
+    {
+        return false;
+    }
+    std::memcpy(value, source, sizeof(*value));
+    return true;
 }
 
 bool ReadFsSegmentWord(ThreadContext* context,
@@ -3028,9 +3558,29 @@ bool ReadFsSegmentWord(ThreadContext* context,
         return false;
     }
 
-    if (selector == context->guest_fs && selector != 0 && offset < 0x10000)
+    std::uint32_t linear_address = 0;
+    if (selector == context->guest_fs &&
+        repiu::runtime::TranslateSelectorOffset(
+            context->selector_table,
+            selector,
+            offset,
+            sizeof(*value),
+            &linear_address))
     {
-        *value = 0;
+        if (linear_address < repiu::runtime::kDosLowMemorySize)
+        {
+            return repiu::runtime::ReadDosLowMemoryUInt16(
+                context->dos_low_memory,
+                linear_address,
+                value);
+        }
+        const void* source = reinterpret_cast<const void*>(
+            static_cast<std::uintptr_t>(linear_address));
+        if (!IsGuestRangeReadable(context, source, sizeof(*value)))
+        {
+            return false;
+        }
+        std::memcpy(value, source, sizeof(*value));
         return true;
     }
 
@@ -3282,6 +3832,12 @@ bool HandleSegmentMemoryCompareInstruction(CONTEXT* win32_context,
 bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
                                         ThreadContext* context)
 {
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(
+            &context->shared_live_telemetry->guest_handler_phase,
+            20);
+    }
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
     std::uint32_t destination = 0;
@@ -3358,9 +3914,21 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
 
     void* destination_pointer = reinterpret_cast<void*>(
         static_cast<std::uintptr_t>(destination));
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(
+            &context->shared_live_telemetry->guest_handler_phase,
+            21);
+    }
 
     if (IsGuestRangeWritable(context, destination_pointer, value_width))
     {
+        if (context->shared_live_telemetry != nullptr)
+        {
+            InterlockedExchange(
+                &context->shared_live_telemetry->guest_handler_phase,
+                22);
+        }
         const bool written = value_width == 2
             ? WriteGuestUInt16(context,
                                destination_pointer,
@@ -3447,6 +4015,12 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
                            value_width,
                            source_kind,
                            false);
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(
+            &context->shared_live_telemetry->guest_handler_phase,
+            23);
+    }
     WriteShadowMemory(context, destination, value, value_width);
     if (arena_boundary_object_store || chained_boundary_object_store)
     {
@@ -3654,10 +4228,29 @@ bool HandleTracedMemoryLoadInstruction(CONTEXT* win32_context,
         !read_from_guest && ReadShadowUInt32(context, source, &value);
     if (!read_from_guest && !read_from_shadow)
     {
-        constexpr std::uint64_t kDosZeroPageSize = 0x1000;
-        const std::uint64_t source_end =
-            static_cast<std::uint64_t>(source) + sizeof(value);
-        if (context->guest_ds == 0 || source_end > kDosZeroPageSize)
+        std::uint32_t linear_address = 0;
+        if (!repiu::runtime::TranslateSelectorOffset(
+                context->selector_table,
+                context->guest_ds,
+                source,
+                sizeof(value),
+                &linear_address))
+        {
+            record_allocator_probe("rejected");
+            return false;
+        }
+        const bool translated_read =
+            linear_address < repiu::runtime::kDosLowMemorySize
+                ? repiu::runtime::ReadDosLowMemoryUInt32(
+                      context->dos_low_memory,
+                      linear_address,
+                      &value)
+                : ReadGuestUInt32(
+                      context,
+                      reinterpret_cast<const void*>(
+                          static_cast<std::uintptr_t>(linear_address)),
+                      &value);
+        if (!translated_read)
         {
             record_allocator_probe("rejected");
             return false;
@@ -3675,7 +4268,6 @@ bool HandleTracedMemoryLoadInstruction(CONTEXT* win32_context,
             context->pending_shadow_allocation_size = win32_context->Eax;
             captured = true;
         }
-        value = 0;
         record_allocator_probe(
             captured ? "captured"
                      : context->pending_shadow_allocation_valid
@@ -4783,6 +5375,35 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     }
 
     CONTEXT* win32_context = exception_info->ContextRecord;
+    if (context->shared_live_telemetry != nullptr &&
+        exception_info->ExceptionRecord != nullptr)
+    {
+        InterlockedExchange(
+            &context->shared_live_telemetry->last_exception_code,
+            static_cast<long>(
+                exception_info->ExceptionRecord->ExceptionCode));
+        if (IsGuestInstructionPointer(
+                context,
+                static_cast<std::uint32_t>(win32_context->Eip)))
+        {
+            InterlockedExchange(
+                &context->shared_live_telemetry->last_guest_eip,
+                static_cast<long>(win32_context->Eip));
+            InterlockedExchange(
+                &context->shared_live_telemetry->last_guest_eax,
+                static_cast<long>(win32_context->Eax));
+            InterlockedExchange(
+                &context->shared_live_telemetry->last_guest_esp,
+                static_cast<long>(win32_context->Esp));
+            InterlockedExchange(
+                &context->shared_live_telemetry->guest_handler_phase,
+                1);
+        }
+    }
+    if (context->enable_single_step_trace)
+    {
+        win32_context->EFlags |= 0x00000100U;
+    }
     ExceptionDispatchScope dispatch_scope(
         context,
         static_cast<std::uint32_t>(win32_context->Eip));
@@ -4814,6 +5435,16 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     }
     if (context->enable_segment_load_hle &&
         HandleSegmentLoadInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleSegmentPopInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleRepStosdInstruction(win32_context, context))
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
@@ -4904,6 +5535,7 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
+    win32_context->EFlags &= ~0x00000100U;
     CaptureException(exception_info, context);
     context->guest_return_esp =
         static_cast<std::uint32_t>(exception_info->ContextRecord->Esp);
@@ -5070,6 +5702,13 @@ bool RunWin32ExecutionThread(
     }
 
     ThreadContext context;
+    SharedTelemetryMapping shared_telemetry =
+        OpenSharedTelemetryMapping();
+    context.shared_live_telemetry = shared_telemetry.telemetry;
+    if (context.shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(&context.shared_live_telemetry->host_phase, 1);
+    }
     context.entry_address = entry_address;
     context.runtime_base = placement.placed_base;
     context.runtime_size = placement.placed_size;
@@ -5081,6 +5720,21 @@ bool RunWin32ExecutionThread(
     context.enable_dos_hle = enable_dos_hle;
     context.enable_single_step_trace = enable_single_step_trace;
     context.dos_environment_block = BuildDosEnvironmentBlock();
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    repiu::runtime::InitializeDosLowMemory(&context.dos_low_memory);
+    for (const repiu::runtime::RelocatedSelectorBinding& binding :
+         placement.selector_bindings)
+    {
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            repiu::runtime::GuestDescriptor{
+                binding.selector,
+                binding.relocated_base_address,
+                binding.limit,
+                0,
+                true,
+            });
+    }
     if (dos_file_system != nullptr)
     {
         context.dos_file_system = *dos_file_system;
@@ -5111,6 +5765,10 @@ bool RunWin32ExecutionThread(
     }
 
     attempt->attempted = true;
+    if (context.shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(&context.shared_live_telemetry->host_phase, 2);
+    }
     attempt->guest_stack_switch_attempted = use_guest_stack;
     DWORD exit_code = 0;
     const DWORD wait_result = PollThreadUntilExit(
@@ -5123,13 +5781,14 @@ bool RunWin32ExecutionThread(
     {
         attempt->timed_out = true;
         attempt->thread_exit_code = 3;
-        CopyThreadObservationToAttempt(context, attempt);
-        attempt->valid = true;
-        attempt->message = "minimal execution attempt timed out";
         if (api.terminate_thread != nullptr)
         {
             api.terminate_thread(thread, 3);
+            WaitForSingleObject(thread, 5000U);
         }
+        CopyThreadObservationToAttempt(context, attempt);
+        attempt->valid = true;
+        attempt->message = "minimal execution attempt timed out";
         api.close_handle(thread);
         return true;
     }

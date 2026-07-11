@@ -1,5 +1,7 @@
 #include "repiu/runtime/runtime_memory.h"
 
+#include "repiu/runtime/selector_table.h"
+
 #include <algorithm>
 #include <limits>
 
@@ -9,6 +11,7 @@ namespace
 {
 
 constexpr std::uint32_t kRuntimePageSize = 4096;
+constexpr std::uint16_t kPiuDos4gwFirstObjectSelector = 0x1C;
 
 std::uint32_t AlignUp(std::uint32_t value, std::uint32_t alignment)
 {
@@ -119,6 +122,15 @@ void WriteLe32(std::vector<std::uint8_t>* data,
     (*data)[offset + 1] = static_cast<std::uint8_t>((value >> 8) & 0xff);
     (*data)[offset + 2] = static_cast<std::uint8_t>((value >> 16) & 0xff);
     (*data)[offset + 3] = static_cast<std::uint8_t>((value >> 24) & 0xff);
+}
+
+void WriteLe16(std::vector<std::uint8_t>* data,
+               std::uint32_t offset,
+               std::uint16_t value)
+{
+    (*data)[offset] = static_cast<std::uint8_t>(value & 0xff);
+    (*data)[offset + 1] =
+        static_cast<std::uint8_t>((value >> 8) & 0xff);
 }
 
 }  // namespace
@@ -434,6 +446,13 @@ bool BuildRelocatedRuntimeImage(
     image->relocated_stack_top_linear_address =
         plan.relocated_stack_top_linear_address;
     image->objects.reserve(load_result.image.mapped_objects.size());
+    SelectorAllocator selector_allocator;
+    if (!InitializeSelectorAllocator(&selector_allocator,
+                                     kPiuDos4gwFirstObjectSelector))
+    {
+        SetError("DOS4GW object selector allocator is invalid", error);
+        return false;
+    }
 
     for (const RelocatableRuntimeObjectRegion& region :
          plan.object_regions)
@@ -455,6 +474,20 @@ bool BuildRelocatedRuntimeImage(
         object.flags = region.flags;
         object.memory = mapped_object.memory;
         image->objects.push_back(object);
+
+        std::uint16_t selector = 0;
+        if (region.virtual_size == 0 ||
+            !AllocateSelector(&selector_allocator, &selector))
+        {
+            SetError("LE object selector binding is invalid", error);
+            return false;
+        }
+        image->selector_bindings.push_back({
+            selector,
+            region.object_index,
+            region.relocated_base_address,
+            region.virtual_size - 1U,
+        });
     }
 
     RelocatableRuntimeRelocationDryRun result;
@@ -462,7 +495,7 @@ bool BuildRelocatedRuntimeImage(
          load_result.fixup_record_info.records)
     {
         const std::uint8_t source_kind = record.source_type & 0x0f;
-        if (source_kind != 0x07)
+        if (source_kind != 0x07 && source_kind != 0x03)
         {
             ++result.unsupported_source_type_count;
             ++result.skipped_count;
@@ -507,6 +540,33 @@ bool BuildRelocatedRuntimeImage(
         {
             ++result.source_out_of_range_count;
             ++result.skipped_count;
+            continue;
+        }
+
+        if (source_kind == 0x03)
+        {
+            ++image->selector_binding_record_count;
+            const auto existing = std::find_if(
+                image->selector_bindings.begin(),
+                image->selector_bindings.end(),
+                [record](const RelocatedSelectorBinding& candidate) {
+                    return candidate.target_object == record.target_object;
+                });
+            if (existing == image->selector_bindings.end())
+            {
+                ++image->selector_binding_conflict_count;
+                ++result.failed_count;
+            }
+            else
+            {
+                WriteLe16(&source_object->memory,
+                          source_object_offset,
+                          static_cast<std::uint16_t>(record.target_offset));
+                WriteLe16(&source_object->memory,
+                          source_object_offset + 2,
+                          existing->selector);
+                ++result.applied_count;
+            }
             continue;
         }
 

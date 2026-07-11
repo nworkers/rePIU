@@ -1,5 +1,89 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-11 실제 arena 확장 결과
+
+16 MiB contiguous expansion으로 기존 `0x026E3578` allocator boundary와 `0xC0000374` heap corruption이 사라졌다. PIU는 supervisor 종료 없이 자체 timeout을 반환하고 dispatch는 `118438/118438`로 균형을 이룬다. 마지막 `+0xF520A`는 정상 compare 함수 종료 경로이므로 현재 명확한 fault frontier는 없다.
+
+## 2026-07-11 Real Arena Expansion Result
+
+A 16 MiB contiguous expansion removes the former `0x026E3578` allocator boundary and heap corruption `0xC0000374`. PIU returns its own timeout without supervisor termination and balances 118,438/118,438 dispatches. Last EIP `+0xF520A` is a normal comparison-function exit, so there is no current concrete fault frontier.
+
+## 2026-07-11 supervisor가 확인한 allocator 경계
+
+외부 shared telemetry는 PIU 정지 상태에서 exception `0xC0000374`, last guest EIP `+0x1E16A`, EAX=`0x026E3578`을 회수했다. arena end `0x026D7000`보다 약 `0xC578` 밖의 allocator 객체 초기화 중 host heap corruption이 발생한다. 다음 구현은 실제 arena 확장과 독립 backing 중 선택이 필요하다.
+
+## 2026-07-11 Allocator Boundary Confirmed by Supervisor
+
+External shared telemetry recovered exception `0xC0000374`, last guest EIP `+0x1E16A`, and EAX=`0x026E3578`. Host heap corruption occurs while initializing an allocator object about `0xC578` beyond arena end `0x026D7000`. The next implementation requires choosing real arena expansion or independent backing.
+
+## 2026-07-11 external supervisor 전환 근거
+
+ES=`0x2C` descriptor byte compare/load를 처리해 `+0xFC723`과 `+0xFC777`을 통과했다. 이후 실행은 계속되지만 동일 프로세스 live snapshot과 최종 결과가 모두 회수되지 않는다. 이전 timeout data race를 제거한 뒤에도 재현되므로 다음 진단 경계는 별도 supervisor 프로세스에 둔다.
+
+## 2026-07-11 Evidence for External Supervisor
+
+Descriptor-backed ES=`0x2C` byte compare/load processing passes `+0xFC723` and `+0xFC777`. Execution then continues while both in-process live snapshots and final results become unavailable. Because this reproduces after the prior timeout race was removed, the next diagnostic boundary belongs in an external supervisor process.
+
+## 2026-07-11 shadow segment register store
+
+`+0xFC717 MOV AX,FS`를 shadow store로 처리해 후속 ES가 `0x2C`로 설정된다. 현재 frontier는 `+0xFC723`의 ES override byte compare/load이며 descriptor-backed byte read 형식 확장이 필요하다.
+
+## 2026-07-11 Shadow Segment Register Store
+
+Shadowing MOV AX,FS at `+0xFC717` makes the following ES load use `0x2C`. The current frontier is the ES-override byte compare/load at `+0xFC723`, requiring descriptor-backed byte-read forms.
+
+## 2026-07-11 REP STOSD 이후
+
+`+0xF4E17`의 zero-fill REP STOSD를 범위 검증 후 일괄 처리하여 반복별 TF exception을 제거했다. 실행은 `+0xFC723`까지 진행한다. `+0xFC717 MOV EAX,FS`가 shadow FS=`0x2C` 대신 Win32 FS=`0x53`을 읽고, `+0xFC71F MOV ES,EAX`가 shadow ES를 `0x53`으로 오염시키는 것이 새 frontier다.
+
+## 2026-07-11 After REP STOSD
+
+Batching the checked zero-fill REP STOSD at `+0xF4E17` removes per-iteration TF exceptions and advances execution to `+0xFC723`. The new frontier is native `MOV EAX,FS` at `+0xFC717`, which reads Win32 FS=`0x53` instead of shadow FS=`0x2C`, followed by MOV ES contaminating shadow ES with `0x53`.
+
+## 2026-07-11 shadow DS 복원
+
+환경 scan의 임시 DS=`0x2C`는 `+0xF4DD5`의 `POP DS`에서 guest stack의 `0x2B`로 복원된다. access-violation HLE 뒤 TF를 보존하고 POP을 shadow 처리하자 기존 `+0xF7A71` fault가 사라졌다. 새 frontier는 `+0xF4E17`의 `REP STOSD` 반복별 single-step 비용이다.
+
+## 2026-07-11 Shadow DS Restoration
+
+The temporary environment-scan DS=`0x2C` is restored to guest-stack selector `0x2B` by POP DS at `+0xF4DD5`. Preserving TF after access-violation HLE and shadowing the POP removes the former `+0xF7A71` fault. The new frontier is per-iteration single-step overhead at `REP STOSD` at `+0xF4E17`.
+
+## 2026-07-11 live telemetry 결과
+
+selector binding 이후의 host 정지는 guest 교착이 아니었다. host busy poll이 guest 시작 전에 quiet iteration 100,000회를 소진하고, guest 종료 전에 비원자 observation을 복사하면서 data race가 발생했다. wall-clock quiet timeout과 terminate/join-before-copy 순서로 수정한 뒤 PIU는 반복 실행에서 안정적으로 최종 예외를 반환한다.
+
+현재 frontier는 relocated `+0xF7A71`의 opcode `0x8B` access violation이다. 세 번의 실행에서 dispatch entry/exit는 모두 `28182/28182`로 균형을 이루며 EAX=`0x1008`, ESI=`0x0007B839`가 반복된다. supervisor 프로세스는 현재 필요하지 않다.
+
+```mermaid
+flowchart LR
+    T["Live telemetry"] --> D["Timeout data race 확인"]
+    D --> F["Terminate + join + copy"]
+    F --> E["안정적 +0xF7A71 예외"]
+```
+
+## 2026-07-11 Live Telemetry Result
+
+The host stall after selector binding was not a guest deadlock. The host busy poll exhausted 100,000 quiet iterations before guest startup and raced while copying non-atomic observations before stopping the guest. Wall-clock quiet detection and terminate/join-before-copy restore stable result collection. The current frontier is the repeatable opcode-`0x8B` access violation at relocated `+0xF7A71`, with balanced 28,182/28,182 dispatch counts, EAX=`0x1008`, and ESI=`0x0007B839`. An external supervisor is not currently required.
+
+## 2026-07-11 selector frontier
+
+DOS4GW `LINEXE.EXP` 역분석으로 LE object selector가 DPMI function `0000h`의 동적 할당 결과임을 확인했다. PIU 프로필은 object 1~4에 `0x1C`, `0x24`, `0x2C`, `0x34`를 순차 할당하며 kind `0x03` fixup은 할당 selector를 source `+2`에 기록한다.
+
+실제 descriptor-backed translation을 활성화하면 PIU host가 45초 안에 내부 timeout snapshot을 반환하지 못한다. 현재 frontier는 selector 값 결정이 아니라, 실행 중 exception 반복 또는 guest 진행 상태를 host 종료 전에 회수할 수 있는 live telemetry다.
+
+```mermaid
+flowchart LR
+    C["Selector model confirmed"] --> T["Descriptor-backed translation"]
+    T --> H["Host result does not return"]
+    H --> W["Live watchdog / telemetry required"]
+```
+
+## 2026-07-11 Selector Frontier
+
+Reverse engineering of DOS4GW `LINEXE.EXP` confirmed that LE object selectors are dynamic results of DPMI function `0000h`. The PIU profile sequentially assigns `0x1C`, `0x24`, `0x2C`, and `0x34` to objects 1 through 4, and kind-03 fixups write the allocated selector at source `+2`.
+
+With real descriptor-backed translation enabled, the PIU host does not return its internal timeout snapshot within 45 seconds. The frontier is no longer selector selection; it is live telemetry that can recover repeated exception or guest progress state before host termination.
+
 ```mermaid
 flowchart LR
     ENV["DOS Environment Scan"] --> FILES["intro.ani / stage.cfg"]
@@ -132,10 +216,44 @@ flowchart TD
 
 프로젝트 원칙에는 DPMI selector와 low-memory 초기 상태를 명시적으로 모델링하는 방향이 더 부합한다. exact allocator synthetic sentinel은 빠르지만 원본에서 확인하지 못한 head pointer를 주입해야 한다.
 
+## DPMI selector/low-memory 기반 구조
+
+**구현됨:** 선택한 DPMI 방향의 첫 단계로 공용 `SelectorTable` translation과 고정 64 KiB `DosLowMemory` backing을 추가했다. observed segment load는 provisional base-zero/limit `0xFFFF` descriptor를 등록한다. generic DS low-memory dword와 FS word는 selector translation이 성공해야만 backing을 읽는다.
+
+```mermaid
+flowchart LR
+    LOAD["Observed segment load"] --> DESC["Provisional descriptor"]
+    DESC --> TRANS["selector:offset translation"]
+    TRANS --> LOW["64 KiB DosLowMemory"]
+    ENV["Synthetic environment view"] -. "not merged yet" .-> LOW
+```
+
+별도 Win32/x86 build의 PIU 실행에서 selector descriptor 4개와 valid 65,536-byte low memory가 확인됐고 기존 frontier가 유지됐다. backing은 근거 없는 sentinel 값을 넣지 않고 zero-initialized 상태다.
+
+## 새 의사결정 후보
+
+현재 environment scan은 selector `0x2C` offset 공간을 synthetic environment block으로 읽지만 generic allocator read는 같은 active DS selector를 low-memory backing으로 읽는다. descriptor base와 environment block의 실제 DOS linear 위치를 확인하기 전까지 둘을 합치면 allocator `DS:0`이 environment 문자열 첫 dword를 읽는 잘못된 결과가 된다.
+
+## Segment load provenance
+
+**확인됨:** PIU 반복 실행 4회에서 다음 7개 segment load sequence가 동일했다.
+
+| # | Offset | Register | Selector | Source |
+| ---: | --- | --- | --- | --- |
+| 1 | `+0xF4D35` | DS | `0x24` | immediate/register |
+| 2 | `+0xF4D3B` | DS | `0x2B` | immediate/register |
+| 3 | `+0xF4D50` | ES | `0x17` | immediate/register |
+| 4 | `+0xF4D68` | ES | `0x24` | `0x021A6624` |
+| 5 | `+0xF4D91` | DS | `0x2B` | immediate/register |
+| 6 | `+0xF4DA2` | DS | `0x2C` | `0x021A664D` |
+| 7 | `+0xFC70D` | FS | `0x2C` | `0x021A664D` |
+
+selector `0x24`와 `0x2C`는 8 간격이고 image memory에 fixup 값으로 존재한다. relocation builder가 현재 32-bit linear fixup `0x07`만 적용하고 selector source kind를 skip하므로, selector fixup record의 target object와 원본 16-bit selector 값을 결합하면 descriptor base를 relocated object base로 복원할 수 있다.
+
 ## 다음 검증 질문
 
-1. DPMI selector/low-memory sentinel 모델을 우선할지 exact allocator synthetic sentinel을 허용할지 결정해야 한다.
-2. 원본 DOS/4GW 환경에서 DS selector base와 linear page zero의 초기 allocator sentinel 값은 무엇인가?
+1. selector fixup source kind와 target object에서 `selector → relocated object region` binding을 안전하게 생성할 수 있는가?
+2. 동일 selector가 여러 target object를 가리키거나 원본 값이 불일치하는 conflict가 존재하는가?
 3. 단일 zero-backed range를 여러 동시 생존 allocation range로 확장해야 하는가?
 4. allocator 반복이 정상임이 확인된 뒤 quiet 판정을 wall-clock 기반으로 바꾸고 polling에서 CPU를 양보해야 하는가?
 
@@ -143,4 +261,4 @@ flowchart TD
 
 Execution now reaches DOS environment scanning, successful `intro.ani`/`stage.cfg` flow, DOS resize, boundary-object array initialization, and allocator sentinel/metadata stores. The `DS:0` form of `8B 16` at `0x000F7A71` has been handled without relocating low memory.
 
-The allocator trace identifies free-list traversal and split/update paths, but fixed-ring writer provenance disproves the shadow-link-corruption hypothesis. `ESI=0` and `0xFF000000` already come from mapped allocator state `[EBX+0x0C]`, outside the exception-based shadow path. The remaining decision is whether to implement a higher-fidelity DPMI selector/low-memory sentinel model or inject a narrowly scoped synthetic allocator sentinel. The former better matches the project charter; the latter is faster but depends on inferred state.
+The stable segment-load trace shows DS and FS loading selector `0x2C` from image address `0x021A664D`, with `0x24` and `0x2C` separated by one descriptor slot. Selector fixups are currently skipped while their original 16-bit values remain in the image. The next implementation can therefore derive selector-to-relocated-object descriptor bindings from selector fixup records rather than guessing base zero.

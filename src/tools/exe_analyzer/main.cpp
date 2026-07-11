@@ -545,6 +545,22 @@ void PrintRelocatedRuntimeImage(
                   << " flags=" << Hex32(object.flags) << "\n";
     }
 
+    std::cout << "Relocated image selector binding records: "
+              << image.selector_binding_record_count << "\n";
+    std::cout << "Relocated image selector binding conflicts: "
+              << image.selector_binding_conflict_count << "\n";
+    std::cout << "Relocated image selector bindings: "
+              << image.selector_bindings.size() << "\n";
+    for (const repiu::runtime::RelocatedSelectorBinding& binding :
+         image.selector_bindings)
+    {
+        std::cout << "  selector_binding selector="
+                  << Hex16(binding.selector)
+                  << " target_object=" << binding.target_object
+                  << " base=" << Hex32(binding.relocated_base_address)
+                  << " limit=" << Hex32(binding.limit) << "\n";
+    }
+
     const repiu::runtime::RelocatableRuntimeRelocationDryRun& result =
         image.relocation_result;
     std::cout << "Relocated image relocation write: "

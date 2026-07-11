@@ -469,6 +469,7 @@ bool PlaceWin32RelocatedImage(
     placement->placed_base = ClampToUint32(
         reinterpret_cast<std::uintptr_t>(placed_address));
     placement->placed_size = reserve_size;
+    placement->selector_bindings = image.selector_bindings;
 
     if (placement->placed_base != min_base)
     {
@@ -592,6 +593,7 @@ bool PlaceWin32RelocatedImageInReservedRange(
     placement->valid = true;
     placement->placed_base = reservation.reserved_base;
     placement->placed_size = reservation.reserved_size;
+    placement->selector_bindings = image.selector_bindings;
 
     for (const runtime::RelocatedRuntimeObject& object : image.objects)
     {

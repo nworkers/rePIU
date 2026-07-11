@@ -24,6 +24,19 @@ struct SelectorTable
     std::string message;
 };
 
+struct SelectorAllocator
+{
+    bool valid = false;
+    std::uint16_t next_selector = 0;
+    std::uint32_t allocated_count = 0;
+};
+
+bool InitializeSelectorAllocator(SelectorAllocator* allocator,
+                                 std::uint16_t first_selector);
+
+bool AllocateSelector(SelectorAllocator* allocator,
+                      std::uint16_t* selector);
+
 bool InitializeSelectorTable(SelectorTable* table);
 
 bool RegisterDescriptor(SelectorTable* table,
@@ -31,6 +44,12 @@ bool RegisterDescriptor(SelectorTable* table,
 
 const GuestDescriptor* FindDescriptor(const SelectorTable& table,
                                       std::uint16_t selector);
+
+bool TranslateSelectorOffset(const SelectorTable& table,
+                             std::uint16_t selector,
+                             std::uint32_t offset,
+                             std::uint32_t byte_count,
+                             std::uint32_t* linear_address);
 
 }  // namespace repiu::runtime
 

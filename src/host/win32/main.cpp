@@ -502,6 +502,18 @@ void PrintPlacement(
                 placement.copied_object_count);
     logger.info("Win32 relocated image protected objects: {}",
                 placement.protected_object_count);
+    logger.info("Win32 relocated selector binding count: {}",
+                placement.selector_bindings.size());
+    for (const repiu::runtime::RelocatedSelectorBinding& binding :
+         placement.selector_bindings)
+    {
+        logger.info(
+            "Win32 relocated selector binding: selector={} object={} base={} limit={}",
+            Hex16(binding.selector),
+            binding.target_object,
+            Hex32(binding.relocated_base_address),
+            Hex32(binding.limit));
+    }
     if (placement.windows_error != 0)
     {
         logger.info("Win32 relocated image placement error: {}",
@@ -620,6 +632,14 @@ void PrintExecutionAttempt(
                 outstanding_dispatch_count);
     logger.info("Win32 exception dispatch last EIP: {}",
                 Hex32(attempt.exception_dispatch_last_eip));
+    logger.info("Win32 selector table valid: {}",
+                attempt.selector_table_valid ? "true" : "false");
+    logger.info("Win32 selector descriptor count: {}",
+                attempt.selector_descriptor_count);
+    logger.info("Win32 DOS low memory valid: {}",
+                attempt.dos_low_memory_valid ? "true" : "false");
+    logger.info("Win32 DOS low memory bytes: {}",
+                attempt.dos_low_memory_size);
     logger.info("Win32 last single-step context captured: {}",
                 attempt.last_single_step_snapshot.captured ? "true"
                                                            : "false");
@@ -1101,9 +1121,42 @@ void PrintExecutionAttempt(
                         attempt.last_segment_load_selector & 0xFFFFU)));
         if (attempt.last_segment_load_source != 0)
         {
-            logger.info("Win32 last segment load source: {}",
-                        Hex32(attempt.last_segment_load_source));
+        logger.info("Win32 last segment load source: {}",
+                    Hex32(attempt.last_segment_load_source));
+    }
+    logger.info("Win32 segment load trace stored count: {}",
+                attempt.segment_load.trace_stored_count);
+    logger.info("Win32 segment load trace wrapped: {}",
+                attempt.segment_load.trace_wrapped ? "true" : "false");
+    if (attempt.segment_load.trace_stored_count > 0)
+    {
+        const std::uint32_t first_sequence =
+            attempt.segment_load.observed_count >
+                    attempt.segment_load.trace_stored_count
+                ? attempt.segment_load.observed_count -
+                      attempt.segment_load.trace_stored_count + 1
+                : 1;
+        for (std::uint32_t sequence = first_sequence;
+             sequence <= attempt.segment_load.observed_count;
+             ++sequence)
+        {
+            const std::uint32_t slot =
+                (sequence - 1) % repiu::platform::win32::
+                    kWin32SegmentLoadTraceCapacity;
+            const auto& entry = attempt.segment_load.trace[slot];
+            if (!entry.valid || entry.sequence != sequence)
+            {
+                continue;
+            }
+            logger.info(
+                "Win32 segment load trace #{} offset={} register={} selector={} source={}",
+                entry.sequence,
+                Hex32(entry.eip_offset),
+                SegmentRegisterName(entry.segment_register),
+                Hex16(entry.selector),
+                Hex32(entry.source));
         }
+    }
     }
     logger.info("Win32 handled segment store count: {}",
                 attempt.handled_segment_store_count);
@@ -1447,7 +1500,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    constexpr std::uint32_t kRuntimeArenaExpansionSlack = 0x00100000;
+    constexpr std::uint32_t kRuntimeArenaExpansionSlack = 0x01000000;
     repiu::runtime::RuntimeMemoryArenaPlan arena_size_plan;
     if (!repiu::runtime::BuildRuntimeMemoryArenaPlan(
             profile->runtime_reservation_hint.base_address,
