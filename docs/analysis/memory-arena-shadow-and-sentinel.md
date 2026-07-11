@@ -1,5 +1,18 @@
 # Runtime arena, shadow memory, sentinel 분석
 
+```mermaid
+flowchart TD
+    ACCESS["Guest Memory Access"] --> REAL{"Inside Runtime Arena?"}
+    REAL -->|yes| ARENA["Read / Write Real Memory"]
+    REAL -->|no| SHADOW{"Complete Shadow Value?"}
+    SHADOW -->|yes| MAP["Read / Write Shadow Memory"]
+    SHADOW -->|no| ZERO{"guest DS + first 4 KiB read?"}
+    ZERO -->|yes| ZPAGE["Zero-backed DOS Page"]
+    ZERO -->|no| FAULT["Keep Fault Visible"]
+    SENTINEL["Allocator Sentinel"] --> MAP
+    BOUNDARY["Boundary Object Chain"] --> MAP
+```
+
 ## Runtime arena
 
 **확인됨:** LE image, guest stack, heap 성격의 확장 영역을 하나의 Win32 precommitted arena에 배치한다. DOS resize 관찰에 따라 slack을 확장하여 정상적인 guest write가 실제 memory에 들어가도록 했다.

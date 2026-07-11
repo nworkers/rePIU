@@ -1,5 +1,19 @@
 # 주요 DOS/DPMI interrupt
 
+```mermaid
+flowchart LR
+    APP["Protected-mode Application"] --> I21["INT 21h"]
+    APP --> I2F["INT 2Fh"]
+    APP --> I31["INT 31h"]
+    APP --> I33["INT 33h"]
+    APP --> I3["INT3"]
+    I21 --> DOS["DOS Files / Paths / Memory / Vectors"]
+    I2F --> MULTI["Multiplex / Environment Detection"]
+    I31 --> DPMI["DPMI Host Services"]
+    I33 --> MOUSE["Mouse Driver Services"]
+    I3 --> BREAK["Breakpoint / Fatal Diagnostic"]
+```
+
 interrupt 세부 함수는 역사적으로 Ralf Brown’s Interrupt List가 가장 널리 쓰이는 색인 중 하나다. 원본 배포와 설명은 [CMU의 RBIL 페이지](https://www.cs.cmu.edu/~ralf/files.html)에서 확인할 수 있다. DPMI 함수는 [DPMI 1.0 사양](https://www.delorie.com/djgpp/doc/dpmi/)을 우선한다.
 
 ## INT 21h: DOS service

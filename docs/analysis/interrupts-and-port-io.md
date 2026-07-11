@@ -1,5 +1,21 @@
 # Interrupt와 port I/O 관찰
 
+```mermaid
+flowchart TD
+    TRAP["Guest Trap"] --> KIND{"Boundary Type"}
+    KIND --> I21["INT 21h: DOS"]
+    KIND --> I2F["INT 2Fh: Multiplex"]
+    KIND --> I31["INT 31h: DPMI"]
+    KIND --> I33["INT 33h: Mouse"]
+    KIND --> PORT["IN / OUT"]
+    I21 --> DOSSTATE["Files / Paths / Vectors / Memory"]
+    I2F --> CAP["Capability Result"]
+    I31 --> CAP
+    I33 --> DEVICE["Virtual Device State"]
+    PORT --> ROUTER["Port Router + Trace"]
+    ROUTER --> P2A0["Observed 0x02A0 Family"]
+```
+
 ## 확인된 software interrupt
 
 * `INT 21h`: DOS version, path, file, IOCTL, resize, vector service

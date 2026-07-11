@@ -1,5 +1,20 @@
 # LE 실행 형식과 fixup/relocation
 
+```mermaid
+flowchart TD
+    HEADER["LE Header"] --> OBJECTS["Object Table"]
+    HEADER --> PAGEMAP["Page Map"]
+    HEADER --> FIXUPS["Fixup Tables"]
+    OBJECTS --> IMAGE["Runtime Image Layout"]
+    PAGEMAP --> IMAGE
+    FIXUPS --> CLASSIFY{"Target Kind"}
+    CLASSIFY -->|image internal| RELOC["Apply Relocation Delta"]
+    CLASSIFY -->|selector / far pointer| SPECIAL["Apply Source-type Semantics"]
+    CLASSIFY -->|constant / DOS low memory| KEEP["Do Not Relocate"]
+    RELOC --> IMAGE
+    SPECIAL --> IMAGE
+```
+
 LE(Linear Executable)는 OS/2 및 DOS extender 생태계에서 사용된 segmented/object-based executable format이다. header는 object table, page map, entry point, stack object, fixup page/record table 등의 위치를 제공한다. Microsoft의 오래된 executable-format 자료는 [Microsoft PE/COFF specification 다운로드 페이지](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format)에서 PE 중심으로 제공되므로, LE field 자체는 Open Watcom 도구의 parser와 원본 format 문서를 함께 대조해야 한다.
 
 ## Object와 page

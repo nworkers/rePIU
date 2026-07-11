@@ -8,6 +8,18 @@
 * **추정**: 관측과 정황은 일치하지만 원본 환경 대조가 더 필요함
 * **미확정**: 다음 분석에서 검증해야 할 가설 또는 blocker
 
+```mermaid
+flowchart LR
+    EXE["Executable / LE"] --> LOAD["Loading & Relocation"]
+    LOAD --> RUN["Execution Trampoline"]
+    RUN --> DOS["DOS File / Interrupt HLE"]
+    RUN --> MEM["Arena / Shadow / Sentinel"]
+    RUN --> IO["Port I/O"]
+    DOS --> FRONTIER["Current Frontier"]
+    MEM --> FRONTIER
+    IO --> FRONTIER
+```
+
 ## 문서
 
 * [실행 파일 로딩과 relocation](executable-loading-and-relocation.md)

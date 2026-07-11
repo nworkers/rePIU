@@ -1,5 +1,16 @@
 # Arena, sentinel, shadow memory 용어
 
+```mermaid
+flowchart TD
+    ARENA["Arena: Real Backing Region"] --> FRONTIER["Frontier: Confirmed End"]
+    FRONTIER --> BOUNDARY["Boundary Object"]
+    BOUNDARY --> SHADOW["Shadow Memory: Separate Backing"]
+    SENTINEL["Sentinel: Reserved State Value"] --> STRUCT["Allocator / List Structure"]
+    STRUCT --> ARENA
+    STRUCT --> SHADOW
+    SELECTOR["Shadow State: Guest Selector"] -. "not host hardware state" .-> SHADOW
+```
+
 ## Arena
 
 arena는 여러 allocation을 하나의 큰 memory region에서 관리하는 방식 또는 그 region을 뜻한다. 이 프로젝트의 runtime arena는 allocator 알고리즘 이름이라기보다 relocated image, guest stack, 관찰된 heap 확장을 담는 host-owned 연속 주소 범위를 가리킨다.

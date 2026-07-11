@@ -1,5 +1,20 @@
 # DOS/4GW와 DPMI
 
+```mermaid
+flowchart TB
+    APP["32-bit DOS Application"]
+    EXT["DOS Extender / DOS4GW"]
+    DPMI["DPMI Host Interface"]
+    DOS["Real-mode DOS Services"]
+    CPU["x86 Protected Mode"]
+    APP --> EXT
+    APP --> DPMI
+    EXT --> DPMI
+    EXT --> DOS
+    DPMI --> DOS
+    DPMI --> CPU
+```
+
 ## DOS/4GW
 
 DOS/4GW는 Watcom C/C++로 만든 32-bit protected-mode DOS 프로그램에 포함되던 DOS extender다. 프로그램은 32-bit x86 코드를 실행하지만 파일, console, process 같은 DOS 기능은 real-mode DOS와 extender가 제공하는 변환 계층을 통해 사용한다. Open Watcom 문서와 도구는 [Open Watcom 공식 사이트](https://openwatcom.org/)와 [공식 GitHub 조직](https://github.com/open-watcom)에서 확인할 수 있다.

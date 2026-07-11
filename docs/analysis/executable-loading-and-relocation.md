@@ -1,5 +1,16 @@
 # 실행 파일 로딩과 relocation 분석
 
+```mermaid
+flowchart LR
+    MZ["MZ Stub"] --> LE["LE Header"]
+    LE --> OBJ["Object Table"]
+    OBJ --> PAGE["Map Object Pages"]
+    PAGE --> FIXUP["Apply Fixups"]
+    FIXUP --> ARENA["Relocated Runtime Arena"]
+    ARENA --> ENTRY["Original Entry Point"]
+    LOW["DOS Low Memory"] -. "separate domain" .-> ENTRY
+```
+
 ## 확인됨
 
 * 대상은 MZ stub 뒤에 LE(Linear Executable) 이미지를 가진 DOS/4G 실행 파일이다.

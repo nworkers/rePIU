@@ -1,5 +1,23 @@
 # DOS 파일 I/O와 INT3 해결 이력
 
+```mermaid
+sequenceDiagram
+    participant G as Original Game
+    participant H as DOS HLE
+    participant V as Virtual FS
+    participant F as Host Files
+    G->>H: chdir / open request
+    H->>V: resolve guest path
+    V->>F: open host path
+    alt missing path or service
+        F-->>G: DOS error
+        G->>G: failure path -> INT3
+    else resolved path and complete I/O
+        F-->>G: handle + read/seek/close results
+        G->>G: continue initialization
+    end
+```
+
 ## 초기 증상
 
 **확인됨:** 실행은 여러 파일 open 시도 뒤 `INT3`에 도달했다. `INT3` 자체가 파일 read 명령은 아니며, 원본 코드가 실패 경로에서 사용하는 breakpoint/fatal diagnostic 신호였다.

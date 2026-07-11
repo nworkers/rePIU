@@ -1,5 +1,16 @@
 # HLE와 예외 기반 직접 실행
 
+```mermaid
+flowchart LR
+    ORIGINAL["Original x86 Code"] --> DIRECT["Direct Host CPU Execution"]
+    DIRECT -->|ordinary instruction| ORIGINAL
+    DIRECT -->|OS / DPMI / I/O boundary| EXCEPTION["Win32 Exception"]
+    EXCEPTION --> CONTRACT["HLE Contract"]
+    CONTRACT --> STATE["Registers + Flags + Guest Memory"]
+    STATE --> ORIGINAL
+    EXCEPTION -->|unknown boundary| STOP["Diagnostic Stop"]
+```
+
 ## HLE
 
 High Level Emulation은 하드웨어나 운영체제의 모든 내부 동작을 재현하지 않고, guest가 관찰하는 interface와 결과를 더 높은 수준에서 구현하는 방식이다. rePIU에서는 DOS file service, DPMI query, selector shadow state, port router가 이에 해당한다.

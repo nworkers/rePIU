@@ -1,5 +1,16 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+```mermaid
+flowchart LR
+    ENV["DOS Environment Scan"] --> FILES["intro.ani / stage.cfg"]
+    FILES --> RESIZE["DOS Resize"]
+    RESIZE --> OBJECTS["Boundary Object Array"]
+    OBJECTS --> SENTINEL["Allocator Sentinel / Metadata"]
+    SENTINEL --> DS0["8B 16 with DS:0 handled"]
+    DS0 --> NEXT["03 07 at +0xF7BAD"]
+    NEXT --> TODO["Shadow operand + EFLAGS analysis"]
+```
+
 ## 현재까지 도달한 상태
 
 **확인됨:** DOS environment scan, `intro.ani`/`stage.cfg` file flow, DOS resize, arena 경계 객체 배열, allocator sentinel과 metadata store까지 진행한다. 실행 timing에 따라 생성자, allocator fault 또는 충분한 진척 뒤 quiet timeout이 먼저 관찰될 수 있다.

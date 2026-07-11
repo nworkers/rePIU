@@ -1,5 +1,16 @@
 # x86 segmentation과 16/32비트 처리
 
+```mermaid
+flowchart LR
+    SEL["Segment Selector"] --> DESC["Descriptor Table Entry"]
+    DESC --> BASE["Descriptor Base"]
+    OFF["Effective Offset"] --> ADD["Base + Offset"]
+    BASE --> ADD
+    ADD --> LINEAR["Linear Address"]
+    OP["0x66"] --> OPSIZE["Operand-size Override"]
+    AD["0x67"] --> ADSIZE["Address-size Override"]
+```
+
 ## 논리 주소와 선형 주소
 
 x86 memory operand는 일반적으로 `segment:offset` 논리 주소다. protected mode에서는 selector가 descriptor table entry를 선택하고, descriptor base와 offset을 더해 선형 주소를 만든다. 세부 동작은 Intel의 [Intel 64 and IA-32 Architectures Software Developer’s Manual](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), 특히 Volume 3의 protected-mode memory management에 정의되어 있다.

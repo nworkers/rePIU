@@ -1,5 +1,18 @@
 # Win32 실행 trampoline과 예외 기반 HLE 분석
 
+```mermaid
+flowchart TD
+    START["Call Original Entry on Guest Stack"] --> CPU["Host x86 Executes Instruction"]
+    CPU -->|normal instruction| CPU
+    CPU -->|return| RETURN["Recover Host Stack"]
+    CPU -->|fault / trap| VEH["Win32 Exception Handler"]
+    VEH --> DECODE{"Known guest boundary?"}
+    DECODE -->|yes| HLE["Apply HLE register / memory / flags"]
+    HLE --> ADVANCE["Advance EIP"]
+    ADVANCE --> CPU
+    DECODE -->|no| CAPTURE["Capture Context and Stop"]
+```
+
 ## 확인됨
 
 * host는 원본 entry point를 guest stack으로 호출하고 정상 return 또는 fault를 다시 host로 회수한다.
