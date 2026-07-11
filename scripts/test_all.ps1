@@ -186,6 +186,10 @@ try
         $piuOutput -notmatch "Win32 last single-step context captured: true" -or
         $piuOutput -notmatch "Win32 diagnostic poll iterations: [1-9]" -or
         $piuOutput -notmatch "Win32 diagnostic progress count: [1-9]" -or
+        $piuOutput -notmatch "Win32 exception dispatch entry count: [1-9]" -or
+        $piuOutput -notmatch "Win32 exception dispatch exit count: [1-9]" -or
+        $piuOutput -notmatch "Win32 exception dispatch outstanding count: [01]" -or
+        $piuOutput -notmatch "Win32 exception dispatch last EIP: 0x0[1-9][0-9A-F]{6}" -or
         $piuOutput -notmatch "Win32 DOS environment block bytes: [1-9]" -or
         $piuOutput -notmatch "Win32 DOS environment access observed: true" -or
         $piuOutput -notmatch "Win32 last DOS environment entry: .+=<redacted>" -or
@@ -194,6 +198,12 @@ try
         $piuOutput -notmatch "Win32 port I/O observation count: 0" -or
         $piuOutput -notmatch "Win32 DOS path trace stored count: [2-9]" -or
         $piuOutput -notmatch "Win32 DOS path trace limit reached: false" -or
+        $piuOutput -notmatch "Win32 allocator probe observation count: [0-9]+" -or
+        $piuOutput -notmatch "Win32 allocator probe trace stored count: ([0-9]|1[0-6])" -or
+        $piuOutput -notmatch "Win32 allocator probe trace wrapped: (true|false)" -or
+        $piuOutput -notmatch "Win32 allocator control-flow observation count: [0-9]+" -or
+        $piuOutput -notmatch "Win32 allocator control-flow trace stored count: ([0-9]|[12][0-9]|3[0-2])" -or
+        $piuOutput -notmatch "Win32 allocator control-flow trace wrapped: (true|false)" -or
         $piuOutput -notmatch "Win32 DOS path trace #1 service=chdir result=failure error=0x0003 drive=0x00 access=0x00 guest=\\datas\\bga virtual=\\DATAS\\BGA" -or
         $piuOutput -notmatch "Win32 DOS path trace #2 service=open result=success error=0x0000 drive=0x00 access=0x00 guest=intro.ani virtual=\\PIU\\INTRO.ANI" -or
         $piuOutput -notmatch "Win32 handled DOS interrupt count: [1-9]" -or

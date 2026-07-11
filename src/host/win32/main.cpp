@@ -606,6 +606,20 @@ void PrintExecutionAttempt(
                 attempt.diagnostic_progress_count);
     logger.info("Win32 diagnostic quiet iterations: {}",
                 attempt.diagnostic_quiet_iteration_count);
+    logger.info("Win32 exception dispatch entry count: {}",
+                attempt.exception_dispatch_entry_count);
+    logger.info("Win32 exception dispatch exit count: {}",
+                attempt.exception_dispatch_exit_count);
+    const std::uint32_t outstanding_dispatch_count =
+        attempt.exception_dispatch_entry_count >=
+                attempt.exception_dispatch_exit_count
+            ? attempt.exception_dispatch_entry_count -
+                  attempt.exception_dispatch_exit_count
+            : 0;
+    logger.info("Win32 exception dispatch outstanding count: {}",
+                outstanding_dispatch_count);
+    logger.info("Win32 exception dispatch last EIP: {}",
+                Hex32(attempt.exception_dispatch_last_eip));
     logger.info("Win32 last single-step context captured: {}",
                 attempt.last_single_step_snapshot.captured ? "true"
                                                            : "false");
@@ -760,6 +774,143 @@ void PrintExecutionAttempt(
                 entry.host_path);
         }
     }
+    logger.info("Win32 allocator probe observation count: {}",
+                attempt.allocator_probe.observed_count);
+    logger.info("Win32 allocator probe trace stored count: {}",
+                attempt.allocator_probe.trace_stored_count);
+    logger.info("Win32 allocator probe trace wrapped: {}",
+                attempt.allocator_probe.trace_wrapped ? "true" : "false");
+    if (attempt.allocator_probe.trace_stored_count > 0)
+    {
+        const std::uint32_t first_sequence =
+            attempt.allocator_probe.observed_count >
+                    attempt.allocator_probe.trace_stored_count
+                ? attempt.allocator_probe.observed_count -
+                      attempt.allocator_probe.trace_stored_count + 1
+                : 1;
+        for (std::uint32_t sequence = first_sequence;
+             sequence <= attempt.allocator_probe.observed_count;
+             ++sequence)
+        {
+            const std::uint32_t slot =
+                (sequence - 1) % repiu::platform::win32::
+                    kWin32AllocatorProbeTraceCapacity;
+            const auto& entry = attempt.allocator_probe.trace[slot];
+            if (!entry.valid || entry.sequence != sequence)
+            {
+                continue;
+            }
+            logger.info(
+                "Win32 allocator probe trace #{} EAX={} ESI={} source={} DS={} pending-before={} size-before={} pending-after={} size-after={} result={}",
+                entry.sequence,
+                Hex32(entry.eax),
+                Hex32(entry.esi),
+                Hex32(entry.source),
+                Hex16(entry.ds),
+                entry.pending_before ? "true" : "false",
+                Hex32(entry.pending_size_before),
+                entry.pending_after ? "true" : "false",
+                Hex32(entry.pending_size_after),
+                entry.result);
+        }
+    }
+    logger.info("Win32 allocator control-flow observation count: {}",
+                attempt.allocator_control_flow.observed_count);
+    logger.info("Win32 allocator control-flow trace stored count: {}",
+                attempt.allocator_control_flow.trace_stored_count);
+    logger.info("Win32 allocator control-flow trace wrapped: {}",
+                attempt.allocator_control_flow.trace_wrapped ? "true"
+                                                             : "false");
+    if (attempt.allocator_control_flow.trace_stored_count > 0)
+    {
+        const std::uint32_t first_sequence =
+            attempt.allocator_control_flow.observed_count >
+                    attempt.allocator_control_flow.trace_stored_count
+                ? attempt.allocator_control_flow.observed_count -
+                      attempt.allocator_control_flow.trace_stored_count + 1
+                : 1;
+        for (std::uint32_t sequence = first_sequence;
+             sequence <= attempt.allocator_control_flow.observed_count;
+             ++sequence)
+        {
+            const std::uint32_t slot =
+                (sequence - 1) % repiu::platform::win32::
+                    kWin32AllocatorControlFlowTraceCapacity;
+            const auto& entry =
+                attempt.allocator_control_flow.trace[slot];
+            if (!entry.valid || entry.sequence != sequence)
+            {
+                continue;
+            }
+            logger.info(
+                "Win32 allocator control-flow trace #{} offset={} exception={} bytes={:02X} {:02X} {:02X} {:02X} EAX={} EBX={} EDX={} ESI={} EDI={} EFLAGS={} pending={} size={} read={} address={} value={} explicit-shadow={} zero-backed={} writer={} writer-sequence={} writer-offset={} writer-opcode={} writer-destination={} writer-value={} writer-width={}",
+                entry.sequence,
+                Hex32(entry.eip_offset),
+                Hex32(entry.seh_code),
+                entry.opcode[0],
+                entry.opcode[1],
+                entry.opcode[2],
+                entry.opcode[3],
+                Hex32(entry.eax),
+                Hex32(entry.ebx),
+                Hex32(entry.edx),
+                Hex32(entry.esi),
+                Hex32(entry.edi),
+                Hex32(entry.eflags),
+                entry.pending_valid ? "true" : "false",
+                Hex32(entry.pending_size),
+                entry.read_valid ? "true" : "false",
+                Hex32(entry.read_address),
+                Hex32(entry.read_value),
+                entry.read_explicit_shadow ? "true" : "false",
+                entry.read_zero_backed ? "true" : "false",
+                entry.writer_valid ? "true" : "false",
+                entry.writer_sequence,
+                Hex32(entry.writer_eip_offset),
+                Hex32(entry.writer_opcode),
+                Hex32(entry.writer_destination),
+                Hex32(entry.writer_value),
+                entry.writer_width);
+        }
+    }
+    const auto log_allocator_link_transition = [&](const char* name,
+                                                    bool valid,
+                                                    const auto& entry) {
+        logger.info("Win32 allocator {} link transition valid: {}",
+                    name,
+                    valid ? "true" : "false");
+        if (!valid)
+        {
+            return;
+        }
+        logger.info(
+            "Win32 allocator {} link transition sequence={} node={} address={} value={} explicit-shadow={} zero-backed={} writer={} writer-offset={} writer-opcode={} writer-destination={} writer-value={} writer-width={}",
+            name,
+            entry.sequence,
+            Hex32(entry.esi),
+            Hex32(entry.read_address),
+            Hex32(entry.read_value),
+            entry.read_explicit_shadow ? "true" : "false",
+            entry.read_zero_backed ? "true" : "false",
+            entry.writer_valid ? "true" : "false",
+            Hex32(entry.writer_eip_offset),
+            Hex32(entry.writer_opcode),
+            Hex32(entry.writer_destination),
+            Hex32(entry.writer_value),
+            entry.writer_width);
+    };
+    log_allocator_link_transition(
+        "null",
+        attempt.allocator_control_flow.null_link_transition_valid,
+        attempt.allocator_control_flow.null_link_transition);
+    log_allocator_link_transition(
+        "poison",
+        attempt.allocator_control_flow.poison_link_transition_valid,
+        attempt.allocator_control_flow.poison_link_transition);
+    log_allocator_link_transition(
+        "root-null",
+        attempt.allocator_control_flow.root_transition_valid,
+        attempt.allocator_control_flow.root_transition);
     logger.info("Win32 handled DOS interrupt count: {}",
                 attempt.handled_dos_interrupt_count);
     if (attempt.handled_dos_interrupt_count > 0)

@@ -39,6 +39,18 @@ struct DosInterruptVectorShadow
     bool valid = false;
 };
 
+struct ShadowWriteProvenance
+{
+    std::uint32_t sequence = 0;
+    std::uint32_t eip = 0;
+    std::uint32_t opcode = 0;
+    std::uint32_t destination = 0;
+    std::uint32_t value = 0;
+    std::uint32_t width = 0;
+};
+
+constexpr std::uint32_t kShadowWriteProvenanceCapacity = 256;
+
 struct ThreadContext
 {
     std::uint32_t entry_address = 0;
@@ -71,6 +83,8 @@ struct ThreadContext
     std::uint32_t last_hle_trap_opcode = 0;
     Win32PortIoObservation port_io;
     Win32DosPathObservation dos_path;
+    Win32AllocatorProbeObservation allocator_probe;
+    Win32AllocatorControlFlowObservation allocator_control_flow;
     std::uint32_t handled_dos_interrupt_count = 0;
     std::uint32_t last_dos_interrupt_vector = 0;
     std::uint32_t last_dos_interrupt_ah = 0;
@@ -194,7 +208,13 @@ struct ThreadContext
     std::atomic<std::uint32_t> diagnostic_progress_count{0};
     std::uint32_t diagnostic_poll_iteration_count = 0;
     std::uint32_t diagnostic_quiet_iteration_count = 0;
+    std::atomic<std::uint32_t> exception_dispatch_entry_count{0};
+    std::atomic<std::uint32_t> exception_dispatch_exit_count{0};
+    std::atomic<std::uint32_t> exception_dispatch_last_eip{0};
     std::unordered_map<std::uint32_t, std::uint8_t> shadow_memory;
+    std::array<ShadowWriteProvenance, kShadowWriteProvenanceCapacity>
+        shadow_write_provenance = {};
+    std::uint32_t shadow_write_provenance_count = 0;
     bool pending_shadow_allocation_valid = false;
     std::uint32_t pending_shadow_allocation_size = 0;
     bool shadow_zero_payload_valid = false;
@@ -213,6 +233,34 @@ struct ThreadContext
     char hle_console_output[4096] = {};
     std::uint32_t hle_console_output_size = 0;
     std::string hle_message;
+};
+
+class ExceptionDispatchScope
+{
+public:
+    ExceptionDispatchScope(ThreadContext* context, std::uint32_t eip)
+        : context_(context)
+    {
+        context_->exception_dispatch_last_eip.store(
+            eip,
+            std::memory_order_relaxed);
+        context_->exception_dispatch_entry_count.fetch_add(
+            1,
+            std::memory_order_relaxed);
+    }
+
+    ~ExceptionDispatchScope()
+    {
+        context_->exception_dispatch_exit_count.fetch_add(
+            1,
+            std::memory_order_relaxed);
+    }
+
+    ExceptionDispatchScope(const ExceptionDispatchScope&) = delete;
+    ExceptionDispatchScope& operator=(const ExceptionDispatchScope&) = delete;
+
+private:
+    ThreadContext* context_;
 };
 
 bool IsDirectX86ExecutionSupported()
@@ -584,6 +632,15 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.diagnostic_progress_count.load(std::memory_order_relaxed);
     attempt->diagnostic_quiet_iteration_count =
         context.diagnostic_quiet_iteration_count;
+    attempt->exception_dispatch_entry_count =
+        context.exception_dispatch_entry_count.load(
+            std::memory_order_relaxed);
+    attempt->exception_dispatch_exit_count =
+        context.exception_dispatch_exit_count.load(
+            std::memory_order_relaxed);
+    attempt->exception_dispatch_last_eip =
+        context.exception_dispatch_last_eip.load(
+            std::memory_order_relaxed);
     BuildSingleStepSnapshot(context, &attempt->last_single_step_snapshot);
     attempt->dos_environment_block_size =
         static_cast<std::uint32_t>(context.dos_environment_block.size());
@@ -602,6 +659,8 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->last_hle_trap_opcode = context.last_hle_trap_opcode;
     attempt->port_io = context.port_io;
     attempt->dos_path = context.dos_path;
+    attempt->allocator_probe = context.allocator_probe;
+    attempt->allocator_control_flow = context.allocator_control_flow;
     attempt->handled_dos_interrupt_count =
         context.handled_dos_interrupt_count;
     attempt->last_dos_interrupt_vector = context.last_dos_interrupt_vector;
@@ -1165,6 +1224,19 @@ void WriteShadowMemory(ThreadContext* context,
     }
 
     ++context->shadow_memory_write_count;
+    const ShadowWriteProvenance provenance = {
+        context->shadow_write_provenance_count + 1,
+        context->last_memory_store_address,
+        context->last_memory_store_opcode,
+        destination,
+        value,
+        byte_count,
+    };
+    const std::uint32_t provenance_slot =
+        context->shadow_write_provenance_count %
+        kShadowWriteProvenanceCapacity;
+    context->shadow_write_provenance[provenance_slot] = provenance;
+    ++context->shadow_write_provenance_count;
     for (std::uint32_t index = 0; index < byte_count; ++index)
     {
         const std::uint32_t address = destination + index;
@@ -3408,6 +3480,110 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
     return true;
 }
 
+void AttachAllocatorReadProvenance(ThreadContext* context,
+                                   std::uint32_t eip_offset,
+                                   std::uint32_t source,
+                                   std::uint32_t value)
+{
+    if (context == nullptr ||
+        context->allocator_control_flow.observed_count == 0)
+    {
+        return;
+    }
+
+    const std::uint32_t sequence =
+        context->allocator_control_flow.observed_count;
+    const std::uint32_t slot =
+        (sequence - 1) % kWin32AllocatorControlFlowTraceCapacity;
+    Win32AllocatorControlFlowTraceEntry& entry =
+        context->allocator_control_flow.trace[slot];
+    if (!entry.valid || entry.sequence != sequence ||
+        entry.eip_offset != eip_offset)
+    {
+        return;
+    }
+
+    entry.read_valid = true;
+    entry.read_address = source;
+    entry.read_value = value;
+    entry.read_explicit_shadow = true;
+    for (std::uint32_t index = 0; index < 4; ++index)
+    {
+        if (context->shadow_memory.find(source + index) ==
+            context->shadow_memory.end())
+        {
+            entry.read_explicit_shadow = false;
+            break;
+        }
+    }
+    entry.read_zero_backed = !entry.read_explicit_shadow &&
+        context->shadow_zero_payload_valid &&
+        source >= context->shadow_zero_payload_begin &&
+        static_cast<std::uint64_t>(source) + 4U <=
+            context->shadow_zero_payload_end;
+
+    const std::uint32_t stored_count = std::min(
+        context->shadow_write_provenance_count,
+        kShadowWriteProvenanceCapacity);
+    const ShadowWriteProvenance* writer = nullptr;
+    for (std::uint32_t reverse_index = 0;
+         reverse_index < stored_count;
+         ++reverse_index)
+    {
+        const std::uint32_t sequence =
+            context->shadow_write_provenance_count - reverse_index;
+        const std::uint32_t slot =
+            (sequence - 1) % kShadowWriteProvenanceCapacity;
+        const ShadowWriteProvenance& candidate =
+            context->shadow_write_provenance[slot];
+        const std::uint64_t candidate_end =
+            static_cast<std::uint64_t>(candidate.destination) +
+            candidate.width;
+        if (candidate.sequence == sequence &&
+            source >= candidate.destination &&
+            static_cast<std::uint64_t>(source) + 4U <= candidate_end)
+        {
+            writer = &candidate;
+            break;
+        }
+    }
+    if (writer != nullptr)
+    {
+        entry.writer_valid = true;
+        entry.writer_sequence = writer->sequence;
+        entry.writer_eip_offset = writer->eip >= context->runtime_base
+            ? writer->eip - context->runtime_base
+            : writer->eip;
+        entry.writer_opcode = writer->opcode;
+        entry.writer_destination = writer->destination;
+        entry.writer_value = writer->value;
+        entry.writer_width = writer->width;
+    }
+
+    if (eip_offset == 0x000F7A62U && value == 0 &&
+        !context->allocator_control_flow.root_transition_valid)
+    {
+        context->allocator_control_flow.root_transition_valid = true;
+        context->allocator_control_flow.root_transition = entry;
+    }
+    if (eip_offset == 0x000F7A83U && source != 8U)
+    {
+        Win32AllocatorControlFlowObservation& observation =
+            context->allocator_control_flow;
+        if (value == 0 && !observation.null_link_transition_valid)
+        {
+            observation.null_link_transition_valid = true;
+            observation.null_link_transition = entry;
+        }
+        else if (value == 0xFF000000U &&
+                 !observation.poison_link_transition_valid)
+        {
+            observation.poison_link_transition_valid = true;
+            observation.poison_link_transition = entry;
+        }
+    }
+}
+
 bool HandleTracedMemoryLoadInstruction(CONTEXT* win32_context,
                                        ThreadContext* context)
 {
@@ -3428,34 +3604,97 @@ bool HandleTracedMemoryLoadInstruction(CONTEXT* win32_context,
         return false;
     }
 
+    const std::uint64_t instruction_offset =
+        static_cast<std::uint64_t>(win32_context->Eip) -
+        context->runtime_base;
+    const bool allocator_probe = instruction_offset == 0x000F7A71ULL;
+    const bool pending_before = context->pending_shadow_allocation_valid;
+    const std::uint32_t pending_size_before =
+        context->pending_shadow_allocation_size;
+    auto record_allocator_probe = [&](const char* result) {
+        if (!allocator_probe)
+        {
+            return;
+        }
+        Win32AllocatorProbeObservation& observation =
+            context->allocator_probe;
+        const std::uint32_t sequence = observation.observed_count + 1;
+        const std::uint32_t slot =
+            (sequence - 1) % kWin32AllocatorProbeTraceCapacity;
+        Win32AllocatorProbeTraceEntry& entry = observation.trace[slot];
+        entry.valid = true;
+        entry.sequence = sequence;
+        entry.eax = win32_context->Eax;
+        entry.esi = win32_context->Esi;
+        entry.source = source;
+        entry.ds = context->guest_ds;
+        entry.pending_before = pending_before;
+        entry.pending_size_before = pending_size_before;
+        entry.pending_after = context->pending_shadow_allocation_valid;
+        entry.pending_size_after = context->pending_shadow_allocation_size;
+        entry.result = result != nullptr ? result : "unknown";
+        observation.observed_count = sequence;
+        if (observation.trace_stored_count <
+            kWin32AllocatorProbeTraceCapacity)
+        {
+            ++observation.trace_stored_count;
+        }
+        else
+        {
+            observation.trace_wrapped = true;
+        }
+    };
+
     std::uint32_t value = 0;
     const void* source_pointer = reinterpret_cast<const void*>(
         static_cast<std::uintptr_t>(source));
-    if (!ReadGuestUInt32(context, source_pointer, &value) &&
-        !ReadShadowUInt32(context, source, &value))
+    const bool read_from_guest =
+        ReadGuestUInt32(context, source_pointer, &value);
+    const bool read_from_shadow =
+        !read_from_guest && ReadShadowUInt32(context, source, &value);
+    if (!read_from_guest && !read_from_shadow)
     {
         constexpr std::uint64_t kDosZeroPageSize = 0x1000;
         const std::uint64_t source_end =
             static_cast<std::uint64_t>(source) + sizeof(value);
         if (context->guest_ds == 0 || source_end > kDosZeroPageSize)
         {
+            record_allocator_probe("rejected");
             return false;
         }
-        const std::uint64_t instruction_offset =
-            static_cast<std::uint64_t>(win32_context->Eip) -
-            context->runtime_base;
         const bool has_confirmed_allocation_size =
             win32_context->Eax == 0x0000002CU ||
             win32_context->Eax == 0x00001008U;
+        bool captured = false;
         if (!context->pending_shadow_allocation_valid &&
-            instruction_offset == 0x000F7A71ULL &&
+            allocator_probe &&
             source == 0 &&
             has_confirmed_allocation_size)
         {
             context->pending_shadow_allocation_valid = true;
             context->pending_shadow_allocation_size = win32_context->Eax;
+            captured = true;
         }
         value = 0;
+        record_allocator_probe(
+            captured ? "captured"
+                     : context->pending_shadow_allocation_valid
+                           ? "pending-preserved"
+                           : "zero-page");
+    }
+    else
+    {
+        record_allocator_probe("mapped-or-shadow");
+    }
+
+    if (instruction_offset >= 0x000F7A60ULL &&
+        instruction_offset < 0x000F7AD5ULL)
+    {
+        AttachAllocatorReadProvenance(
+            context,
+            static_cast<std::uint32_t>(instruction_offset),
+            source,
+            value);
     }
 
     const std::uint8_t destination_register = (instruction[1] >> 3) & 0x07U;
@@ -4460,6 +4699,72 @@ RecoverHostStackException()
     }
 }
 
+void RecordAllocatorControlFlowException(
+    EXCEPTION_POINTERS* exception_info,
+    ThreadContext* context)
+{
+    if (exception_info == nullptr || context == nullptr ||
+        exception_info->ContextRecord == nullptr)
+    {
+        return;
+    }
+
+    const std::uint32_t eip = static_cast<std::uint32_t>(
+        exception_info->ContextRecord->Eip);
+    const std::uint64_t runtime_end =
+        static_cast<std::uint64_t>(context->runtime_base) +
+        context->runtime_size;
+    if (eip < context->runtime_base ||
+        static_cast<std::uint64_t>(eip) + 4U > runtime_end)
+    {
+        return;
+    }
+
+    const std::uint32_t eip_offset = eip - context->runtime_base;
+    constexpr std::uint32_t kAllocatorTraceBegin = 0x000F7A60U;
+    constexpr std::uint32_t kAllocatorTraceEnd = 0x000F7AD5U;
+    if (eip_offset < kAllocatorTraceBegin ||
+        eip_offset >= kAllocatorTraceEnd)
+    {
+        return;
+    }
+
+    Win32AllocatorControlFlowObservation& observation =
+        context->allocator_control_flow;
+    const std::uint32_t sequence = observation.observed_count + 1;
+    const std::uint32_t slot =
+        (sequence - 1) % kWin32AllocatorControlFlowTraceCapacity;
+    Win32AllocatorControlFlowTraceEntry& entry = observation.trace[slot];
+    entry.valid = true;
+    entry.sequence = sequence;
+    entry.eip_offset = eip_offset;
+    entry.seh_code = exception_info->ExceptionRecord != nullptr
+        ? exception_info->ExceptionRecord->ExceptionCode
+        : 0;
+    const std::uint8_t* instruction =
+        reinterpret_cast<const std::uint8_t*>(
+            static_cast<std::uintptr_t>(eip));
+    std::memcpy(entry.opcode, instruction, sizeof(entry.opcode));
+    entry.eax = exception_info->ContextRecord->Eax;
+    entry.ebx = exception_info->ContextRecord->Ebx;
+    entry.edx = exception_info->ContextRecord->Edx;
+    entry.esi = exception_info->ContextRecord->Esi;
+    entry.edi = exception_info->ContextRecord->Edi;
+    entry.eflags = exception_info->ContextRecord->EFlags;
+    entry.pending_valid = context->pending_shadow_allocation_valid;
+    entry.pending_size = context->pending_shadow_allocation_size;
+    observation.observed_count = sequence;
+    if (observation.trace_stored_count <
+        kWin32AllocatorControlFlowTraceCapacity)
+    {
+        ++observation.trace_stored_count;
+    }
+    else
+    {
+        observation.trace_wrapped = true;
+    }
+}
+
 LONG WINAPI GuestStackVectoredExceptionHandler(
     EXCEPTION_POINTERS* exception_info)
 {
@@ -4478,6 +4783,10 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     }
 
     CONTEXT* win32_context = exception_info->ContextRecord;
+    ExceptionDispatchScope dispatch_scope(
+        context,
+        static_cast<std::uint32_t>(win32_context->Eip));
+    RecordAllocatorControlFlowException(exception_info, context);
     if (exception_info->ExceptionRecord != nullptr &&
         exception_info->ExceptionRecord->ExceptionCode ==
             EXCEPTION_SINGLE_STEP &&

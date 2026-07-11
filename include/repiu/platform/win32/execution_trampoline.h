@@ -13,6 +13,8 @@ namespace repiu::platform::win32
 
 constexpr std::uint32_t kWin32PortIoTraceCapacity = 16;
 constexpr std::uint32_t kWin32DosPathTraceCapacity = 16;
+constexpr std::uint32_t kWin32AllocatorProbeTraceCapacity = 16;
+constexpr std::uint32_t kWin32AllocatorControlFlowTraceCapacity = 32;
 constexpr std::uint32_t kWin32DeferredPortIoLimit = 1024;
 
 struct X86ExecutionSnapshot
@@ -87,6 +89,74 @@ struct Win32DosPathObservation
     Win32DosPathTraceEntry trace[kWin32DosPathTraceCapacity];
 };
 
+struct Win32AllocatorProbeTraceEntry
+{
+    bool valid = false;
+    std::uint32_t sequence = 0;
+    std::uint32_t eax = 0;
+    std::uint32_t esi = 0;
+    std::uint32_t source = 0;
+    std::uint16_t ds = 0;
+    bool pending_before = false;
+    std::uint32_t pending_size_before = 0;
+    bool pending_after = false;
+    std::uint32_t pending_size_after = 0;
+    std::string result;
+};
+
+struct Win32AllocatorProbeObservation
+{
+    std::uint32_t observed_count = 0;
+    std::uint32_t trace_stored_count = 0;
+    bool trace_wrapped = false;
+    Win32AllocatorProbeTraceEntry
+        trace[kWin32AllocatorProbeTraceCapacity];
+};
+
+struct Win32AllocatorControlFlowTraceEntry
+{
+    bool valid = false;
+    std::uint32_t sequence = 0;
+    std::uint32_t eip_offset = 0;
+    std::uint32_t seh_code = 0;
+    std::uint8_t opcode[4] = {};
+    std::uint32_t eax = 0;
+    std::uint32_t ebx = 0;
+    std::uint32_t edx = 0;
+    std::uint32_t esi = 0;
+    std::uint32_t edi = 0;
+    std::uint32_t eflags = 0;
+    bool pending_valid = false;
+    std::uint32_t pending_size = 0;
+    bool read_valid = false;
+    std::uint32_t read_address = 0;
+    std::uint32_t read_value = 0;
+    bool read_explicit_shadow = false;
+    bool read_zero_backed = false;
+    bool writer_valid = false;
+    std::uint32_t writer_sequence = 0;
+    std::uint32_t writer_eip_offset = 0;
+    std::uint32_t writer_opcode = 0;
+    std::uint32_t writer_destination = 0;
+    std::uint32_t writer_value = 0;
+    std::uint32_t writer_width = 0;
+};
+
+struct Win32AllocatorControlFlowObservation
+{
+    std::uint32_t observed_count = 0;
+    std::uint32_t trace_stored_count = 0;
+    bool trace_wrapped = false;
+    bool null_link_transition_valid = false;
+    Win32AllocatorControlFlowTraceEntry null_link_transition;
+    bool poison_link_transition_valid = false;
+    Win32AllocatorControlFlowTraceEntry poison_link_transition;
+    bool root_transition_valid = false;
+    Win32AllocatorControlFlowTraceEntry root_transition;
+    Win32AllocatorControlFlowTraceEntry
+        trace[kWin32AllocatorControlFlowTraceCapacity];
+};
+
 struct Win32MinimalExecutionAttempt
 {
     bool valid = false;
@@ -115,6 +185,9 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t diagnostic_poll_iteration_count = 0;
     std::uint32_t diagnostic_progress_count = 0;
     std::uint32_t diagnostic_quiet_iteration_count = 0;
+    std::uint32_t exception_dispatch_entry_count = 0;
+    std::uint32_t exception_dispatch_exit_count = 0;
+    std::uint32_t exception_dispatch_last_eip = 0;
     std::uint32_t dos_environment_block_size = 0;
     bool last_dos_environment_access_valid = false;
     std::uint32_t last_dos_environment_access_offset = 0;
@@ -126,6 +199,8 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t last_hle_trap_opcode = 0;
     Win32PortIoObservation port_io;
     Win32DosPathObservation dos_path;
+    Win32AllocatorProbeObservation allocator_probe;
+    Win32AllocatorControlFlowObservation allocator_control_flow;
     std::uint32_t handled_dos_interrupt_count = 0;
     std::uint32_t last_dos_interrupt_vector = 0;
     std::uint32_t last_dos_interrupt_ah = 0;

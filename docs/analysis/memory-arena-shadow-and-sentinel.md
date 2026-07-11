@@ -54,6 +54,56 @@ flowchart LR
 
 **안전성 확인:** 단순히 `8 <= EAX <= 1 MiB`를 허용하면 allocator와 무관한 값을 크기로 오인해 Windows heap corruption `0xC0000374`가 발생했다. 확인된 두 크기의 allowlist로 제한한 뒤 전체 테스트가 통과했고 손상이 재현되지 않았다.
 
+## Allocator probe 반복
+
+**확인됨:** `+0xF7A71` 최근 16개 ring trace에서 timeout 실행은 모두 `EAX=0x1008`, `ESI=source=0`, `DS=0x2C`, pending-before/after `0x1008`, result `pending-preserved`였다. 총 관측은 실행별 약 2,800~2,900회였다. 새 request가 반복 capture되는 것이 아니라 첫 pending request가 `+0xF7AD4` header OR에서 소비되지 않은 채 allocator probe로 돌아오는 흐름이다.
+
+```mermaid
+flowchart LR
+    FIRST["First +0xF7A71: capture 0x1008"] --> P["pending=0x1008"]
+    P --> LOOP["Return to +0xF7A71"]
+    LOOP --> KEEP["pending-preserved"]
+    KEEP --> LOOP
+    P -. expected .-> OR["+0xF7AD4 header OR consumes pending"]
+```
+
+별도 timing 경로에서는 `EAX=0x1008`, `ESI=source=0xFF000000`, pending false가 한 번 관찰되고 `rejected`로 종료됐다. 이는 DS zero-page 접근이 아니므로 relocated base를 더하거나 0으로 처리하면 안 된다는 기존 결론을 재확인한다.
+
+## Allocator free-list control flow
+
+**확인됨:** allocator range exception trace에서 `+0xF7A71`은 `8B 16` (`mov edx,[esi]`), `+0xF7A83`은 `8B 76 08` (`mov esi,[esi+8]`)이다. 후자는 현재 free-list node의 offset `+8` next link를 따라간다.
+
+```mermaid
+flowchart LR
+    HEAD["ESI = free-list node"] --> SIZE["+F7A71: EDX=[ESI]"]
+    SIZE --> FIT{"size fits?"}
+    FIT -->|No| NEXT["+F7A83: ESI=[ESI+8]"]
+    NEXT --> SIZE
+    FIT -->|Yes| SPLIT["+F7A99..+F7AB2 metadata update"]
+    SPLIT --> OR["+F7AD4 header OR"]
+```
+
+metadata node `ESI=0x026E49C4` 경로에서는 `+0xF7A99`, `+0xF7AA8`, `+0xF7AAA`, `+0xF7AAC`, `+0xF7AAF`, `+0xF7AB2`, `+0xF7AD4`가 순서대로 관찰되어 split/update와 OR까지 도달했다. 이때 pending은 false였다.
+
+문제 경로에서는 next link를 따라간 뒤 `ESI=0`이 되고 `+0xF7A71` zero-page 처리만 반복한다. pending `0x1008`은 유지되지만 OR에 도달하지 않는다. 따라서 현재 핵심 가설은 allocator branch 자체보다 shadow free-list의 `node+8` link가 원본의 circular sentinel/back-link 관계를 보존하지 못해 null로 끝난다는 것이다.
+
+## Link provenance 결과와 가설 수정
+
+**확인됨:** 고정 256-entry shadow write provenance와 allocator read correlation에서 null/poison link transition은 관찰되지 않았다. `ESI=0` 또는 `0xFF000000`은 `+0xF7A83`의 `[ESI+8]` shadow read 결과가 아니다. allocator 앞부분의 mapped-memory `mov esi,[ebx+0x0C]`에서 이미 해당 값으로 들어온다. 이 instruction은 fault하지 않으므로 exception 기반 shadow writer가 존재하지 않는다.
+
+```mermaid
+flowchart LR
+    STATE["Mapped allocator state [EBX+0x0C]"] --> ESI["ESI = 0 or 0xFF000000"]
+    ESI --> PROBE["+0xF7A71 mov edx,[esi]"]
+    PROBE -->|ESI=0| ZERO["Current HLE returns zero page"]
+    PROBE -->|ESI=0xFF000000| FAULT["Rejected high source"]
+    SHADOW["Shadow write provenance"] -. "no writer found" .-> ESI
+```
+
+따라서 “shadow node의 `+8` link가 null로 손상됐다”는 가설은 기각한다. 남은 문제는 allocator state가 가리키는 low-memory sentinel을 현재 HLE가 전부 0으로 모델링하는 것이 올바른지, 또는 selector/low-memory 초기 상태를 별도로 구성해야 하는지다.
+
+**안전성 확인:** exception handler에서 per-byte `unordered_map` provenance를 확장한 초기 구현은 `0xC0000374` heap corruption 두 번과 hang 한 번을 일으켰다. 동적 container를 제거하고 고정 ring으로 바꾼 뒤 sample과 반복 PIU 실행에서 손상이 재현되지 않았다.
+
 # Runtime Arena, Shadow Memory, and Sentinel Analysis
 
 The runtime arena contains the relocated LE image, guest stack, and observed heap expansion. Byte-addressed shadow memory preserves only analyzed out-of-arena stores and serves reads only when every requested byte exists.
