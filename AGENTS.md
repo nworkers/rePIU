@@ -59,6 +59,8 @@ Priority order:
 * `docs/design/`
 * `docs/work-orders/`
 * `docs/work-logs/`
+* `docs/analysis/`
+* `docs/kb/`
 
 ## Reference Documents
 
@@ -150,11 +152,33 @@ If the requirement is a simple question or confirmation request, answer it direc
 * Put design documents under `docs/design/`.
 * Put work-order documents under `docs/work-orders/`.
 * Put work results and retrospectives under `docs/work-logs/`.
+* Put project-specific binary findings, confirmed behavior, hypotheses, and unresolved questions under `docs/analysis/`, organized by topic.
+* Put generally applicable technical definitions and background knowledge under `docs/kb/`, organized by topic and linked to external sources when derived from them.
 * Reflect the project's broad direction in `docs/PROJECT_CHARTER.md`.
 * Continuously reflect the design and structure of currently implemented code in `ARCHITECTURE.md`.
 * Accumulate original executable analysis findings and design notes in `docs/EXE_DESIGN.ko.md` and `docs/EXE_DESIGN.en.md`.
 * When rules change, update `AGENTS.md` and the related documents together.
 * Use the `YYYYMMDD-###-slug.md` filename format for task documents whenever possible.
+
+## 분석 및 지식 기반 유지 규칙
+
+* 바이너리 분석이나 구현 검증으로 새로운 사실이 확인되거나 기존 결론이 바뀌면 같은 작업에서 관련 `docs/analysis/` 문서를 갱신한다.
+* 작업 중 프로젝트 이해에 중요한 새로운 용어, 표준, interrupt, 실행 형식, CPU 동작이 등장하면 관련 `docs/kb/` 문서를 작성하거나 갱신한다.
+* 외부 자료에서 얻은 기술 지식에는 가능한 한 원 사양, CPU 제조사 문서, 공식 프로젝트 문서 같은 권위 있는 출처 링크를 가까운 위치에 남긴다.
+* `docs/analysis/`는 확인됨, 추정, 미확정 내용을 구분한다.
+* analysis 또는 kb 파일을 추가하거나 이름을 바꾸면 해당 디렉터리의 `README.md` 링크 색인을 같은 작업에서 갱신한다.
+* `docs/work-logs/`는 시간순 작업 증거로 유지하고, `docs/analysis/`와 `docs/kb/`는 주제별 누적 문서로 유지한다.
+* 요구사항 맥락을 확인한 뒤 설계 전에 관련 analysis와 kb 문서를 함께 확인하고, 구현·검증 후 새로 얻은 내용을 반영한다.
+
+## Analysis and Knowledge Base Maintenance Rules
+
+* When binary analysis or implementation verification confirms a new fact or changes an earlier conclusion, update the relevant `docs/analysis/` topic in the same task.
+* When important new terminology, standards, interrupts, executable formats, or CPU behavior arise, create or update the relevant `docs/kb/` topic.
+* Place authoritative external links near derived technical knowledge, preferring original specifications, CPU-vendor manuals, and official project documentation.
+* Distinguish confirmed, inferred, and unresolved statements in `docs/analysis/`.
+* When adding or renaming an analysis or knowledge file, update the linked index in that directory's `README.md` in the same task.
+* Keep `docs/work-logs/` as chronological evidence, while maintaining `docs/analysis/` and `docs/kb/` as cumulative topic references.
+* After inspecting requirement context, review relevant analysis and knowledge topics before design, then incorporate new findings after implementation and verification.
 
 ---
 

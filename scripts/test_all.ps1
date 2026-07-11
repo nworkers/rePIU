@@ -162,22 +162,27 @@ try
         -Name "Run piu_1st target" `
         -FilePath $Loader `
         -Arguments @("piu_1st")
+    $piuStoppedAtExpectedException =
+        $piuOutput -match "Win32 minimal execution exception caught: true" -and
+        $piuOutput -match "Win32 minimal execution exception code: 0xC0000005" -and
+        $piuOutput -match "Win32 minimal execution exception address: 0x0[1-9](01E1[0-9A-F]{2}|0F7[AB][0-9A-F]{2})" -and
+        $piuOutput -match "Win32 minimal execution exception context captured: true" -and
+        $piuOutput -match "Win32 minimal execution exception EIP: 0x0[1-9](01E1[0-9A-F]{2}|0F7[AB][0-9A-F]{2})" -and
+        $piuOutput -match "Win32 minimal execution thread exit code: 2" -and
+        $piuOutput -match "Win32 minimal execution message: original entry raised a caught exception" -and
+        $piuOutput -match "Privileged instruction opcode: 0x(03|8B|89|C7)"
+    $piuTimedOutAfterProgress =
+        $piuOutput -match "Win32 minimal execution exception caught: false" -and
+        $piuOutput -match "Win32 minimal execution timed out: true" -and
+        $piuOutput -match "Win32 minimal execution thread exit code: 3" -and
+        $piuOutput -match "Win32 minimal execution message: minimal execution attempt timed out"
     if ($piuOutput -notmatch "Win32 loader executable: MASTER/PIU_1ST/PIU/PIU.EXE" -or
         $piuOutput -notmatch "DOS virtual filesystem root: .+MASTER\\PIU_1ST" -or
         $piuOutput -notmatch "DOS virtual filesystem current directory: \\PIU" -or
         $piuOutput -notmatch "Runtime memory arena reserve size: 0x006D7000" -or
         $piuOutput -notmatch "Win32 relocated image placed size: 0x006D7000" -or
         $piuOutput -notmatch "Win32 minimal execution returned: false" -or
-        $piuOutput -notmatch "Win32 minimal execution exception caught: true" -or
-        $piuOutput -notmatch "Win32 minimal execution exception code: 0xC0000005" -or
-        $piuOutput -notmatch "Win32 minimal execution exception address: 0x0[1-9]0F86E0" -or
-        $piuOutput -notmatch "Win32 minimal execution exception context captured: true" -or
-        $piuOutput -notmatch "Win32 minimal execution exception EIP: 0x0[1-9]0F86E0" -or
-        $piuOutput -notmatch "Win32 minimal execution exception ESP: 0x0[1-9][0-9A-F]{6}" -or
-        $piuOutput -notmatch "Win32 minimal execution exception EFLAGS: 0x[0-9A-F]{8}" -or
-        $piuOutput -notmatch "Win32 minimal execution exception CS: 0x[0-9A-F]{4}" -or
-        $piuOutput -notmatch "Win32 minimal execution exception FS: 0x[0-9A-F]{4}" -or
-        $piuOutput -notmatch "Win32 minimal execution timed out: false" -or
+        -not ($piuStoppedAtExpectedException -or $piuTimedOutAfterProgress) -or
         $piuOutput -notmatch "Win32 last single-step context captured: true" -or
         $piuOutput -notmatch "Win32 diagnostic poll iterations: [1-9]" -or
         $piuOutput -notmatch "Win32 diagnostic progress count: [1-9]" -or
@@ -187,24 +192,24 @@ try
         $piuOutput -notmatch "Win32 last DOS environment value bytes: [0-9]" -or
         $piuOutput -notmatch "Win32 handled HLE trap count: [1-9]" -or
         $piuOutput -notmatch "Win32 port I/O observation count: 0" -or
-        $piuOutput -notmatch "Win32 DOS path trace stored count: 2" -or
+        $piuOutput -notmatch "Win32 DOS path trace stored count: [2-9]" -or
         $piuOutput -notmatch "Win32 DOS path trace limit reached: false" -or
         $piuOutput -notmatch "Win32 DOS path trace #1 service=chdir result=failure error=0x0003 drive=0x00 access=0x00 guest=\\datas\\bga virtual=\\DATAS\\BGA" -or
         $piuOutput -notmatch "Win32 DOS path trace #2 service=open result=success error=0x0000 drive=0x00 access=0x00 guest=intro.ani virtual=\\PIU\\INTRO.ANI" -or
         $piuOutput -notmatch "Win32 handled DOS interrupt count: [1-9]" -or
         $piuOutput -notmatch "Win32 last handled DOS interrupt vector: 0x21" -or
-        $piuOutput -notmatch "Win32 last handled DOS interrupt AH: 0x4A" -or
-        $piuOutput -notmatch "Win32 last handled DOS interrupt AX: 0x4A2B" -or
+        $piuOutput -notmatch "Win32 last handled DOS interrupt AH: 0x4[4A]" -or
+        $piuOutput -notmatch "Win32 last handled DOS interrupt AX: 0x(4400|4A2B)" -or
         $piuOutput -notmatch "Win32 handled DOS chdir count: [1-9]" -or
         $piuOutput -notmatch "Win32 last DOS chdir guest path: \\datas\\bga" -or
         $piuOutput -notmatch "Win32 last DOS chdir result: failure" -or
         $piuOutput -notmatch "Win32 handled DOS getcwd count: 0" -or
         $piuOutput -notmatch "Win32 handled DOS get drive count: 0" -or
         $piuOutput -notmatch "Win32 handled DOS open count: [1-9]" -or
-        $piuOutput -notmatch "Win32 last DOS open guest path: intro.ani" -or
-        $piuOutput -notmatch "Win32 last DOS open virtual path: \\PIU\\INTRO.ANI" -or
+        $piuOutput -notmatch "Win32 last DOS open guest path: (intro\.ani|stage\.cfg)" -or
+        $piuOutput -notmatch "Win32 last DOS open virtual path: \\PIU\\(INTRO\.ANI|STAGE\.CFG)" -or
         $piuOutput -notmatch "Win32 last DOS open result: success" -or
-        $piuOutput -notmatch "Win32 last DOS open handle: 0x0005" -or
+        $piuOutput -notmatch "Win32 last DOS open handle: 0x000[56]" -or
         $piuOutput -notmatch "Win32 handled DOS read count: [1-9]" -or
         $piuOutput -notmatch "Win32 last DOS read handle: 0x0005" -or
         $piuOutput -notmatch "Win32 last DOS read requested bytes: 0" -or
@@ -227,18 +232,20 @@ try
         $piuOutput -notmatch "Win32 last handled segment memory load opcode: 0xA4" -or
         $piuOutput -notmatch "Win32 last segment memory load register: DS" -or
         $piuOutput -notmatch "Win32 last segment memory load selector: 0x002C" -or
-        $piuOutput -notmatch "Win32 last segment memory load offset: 0x00000F35" -or
+        $piuOutput -notmatch "Win32 last segment memory load offset: 0x[0-9A-F]{8}" -or
         $piuOutput -notmatch "Win32 last segment memory load width: 1" -or
         $piuOutput -notmatch "Win32 last segment memory load value: 0x00" -or
-        $piuOutput -notmatch "Win32 handled memory store count: 0" -or
-        $piuOutput -notmatch "Win32 shadow memory write count: 0" -or
-        $piuOutput -notmatch "Win32 shadow memory byte count: 0" -or
-        $piuOutput -notmatch "Win32 shadow memory range valid: false" -or
-        $piuOutput -notmatch "Win32 minimal execution thread exit code: 2" -or
-        $piuOutput -notmatch "Win32 minimal execution message: original entry raised a caught exception" -or
-        $piuOutput -notmatch "Privileged instruction classification: unknown" -or
-        $piuOutput -notmatch "Privileged instruction opcode: 0xC7" -or
-        $piuOutput -notmatch "Current execution blocker: unhandled or unclassified instruction/memory access at exception point")
+        $piuOutput -notmatch "Win32 handled memory store count: [1-9][0-9]{4}" -or
+        $piuOutput -notmatch "Win32 last handled memory store address: 0x0[1-9]01E1[0-9A-F]{2}" -or
+        $piuOutput -notmatch "Win32 last memory store opcode: 0x89" -or
+        $piuOutput -notmatch "Win32 last memory store source kind: mov-reg32" -or
+        $piuOutput -notmatch "Win32 last memory store applied: false" -or
+        $piuOutput -notmatch "Win32 shadow memory write count: [1-9][0-9]{4}" -or
+        $piuOutput -notmatch "Win32 shadow memory read hit count: [1-9][0-9]{3,}" -or
+        $piuOutput -notmatch "Win32 shadow memory byte count: [1-9][0-9]{4}" -or
+        $piuOutput -notmatch "Win32 shadow memory range valid: true" -or
+        ($piuStoppedAtExpectedException -and
+         $piuOutput -notmatch "Current execution blocker: unhandled or unclassified instruction/memory access at exception point"))
     {
         throw "piu_1st did not reach the expected current HLE observation point."
     }

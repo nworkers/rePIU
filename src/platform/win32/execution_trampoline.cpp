@@ -195,6 +195,10 @@ struct ThreadContext
     std::uint32_t diagnostic_poll_iteration_count = 0;
     std::uint32_t diagnostic_quiet_iteration_count = 0;
     std::unordered_map<std::uint32_t, std::uint8_t> shadow_memory;
+    bool boundary_object_chain_valid = false;
+    std::uint32_t boundary_object_chain_base = 0;
+    std::uint32_t boundary_object_chain_frontier = 0;
+    std::uint64_t boundary_object_chain_limit = 0;
     std::uint16_t guest_es = 0;
     std::uint16_t guest_ss = 0;
     std::uint16_t guest_ds = 0;
@@ -2415,6 +2419,9 @@ void RecordGuestMemoryStore(CONTEXT* win32_context,
     }
 
     ++context->handled_memory_store_count;
+    context->diagnostic_progress_count.fetch_add(
+        1,
+        std::memory_order_relaxed);
     context->last_memory_store_address =
         static_cast<std::uint32_t>(win32_context->Eip);
     context->last_memory_store_opcode = opcode;
@@ -3250,8 +3257,59 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
         return true;
     }
 
-    if (context->last_dos_open_success ||
-        context->last_dos_open_guest_path.empty())
+    constexpr std::uint32_t kAllocatorSentinelShadowLimit = 0x00100000;
+    const std::uint64_t runtime_end =
+        static_cast<std::uint64_t>(context->runtime_base) +
+        context->runtime_size;
+    const std::uint64_t sentinel_limit =
+        runtime_end + kAllocatorSentinelShadowLimit;
+    const bool allocator_failure_sentinel =
+        instruction[0] == 0xC7 && value == 0xFFFFFFFFU &&
+        destination >= runtime_end && destination < sentinel_limit;
+    const std::uint64_t destination_end =
+        static_cast<std::uint64_t>(destination) + value_width;
+    const bool begins_allocator_metadata =
+        instruction[0] == 0x89 && context->shadow_memory_range_valid &&
+        destination < context->shadow_memory_min_address &&
+        context->shadow_memory_min_address - destination == value;
+    const bool extends_allocator_metadata =
+        instruction[0] == 0x89 && context->shadow_memory_range_valid &&
+        destination >= context->shadow_memory_min_address &&
+        static_cast<std::uint64_t>(destination) <=
+            static_cast<std::uint64_t>(
+                context->shadow_memory_max_address) + 1;
+    const bool allocator_metadata_store =
+        destination >= runtime_end && destination_end <= sentinel_limit &&
+        (begins_allocator_metadata || extends_allocator_metadata);
+    constexpr std::uint32_t kBoundaryObjectWindow = 64;
+    const std::uint8_t boundary_modrm =
+        instruction[0] == 0x66 ? instruction[2] : instruction[1];
+    const std::uint8_t mod =
+        static_cast<std::uint8_t>((boundary_modrm >> 6) & 0x03U);
+    const std::uint8_t rm =
+        static_cast<std::uint8_t>(boundary_modrm & 0x07U);
+    const std::uint64_t base =
+        ReadGeneralRegister32(win32_context, rm);
+    const bool supported_boundary_store =
+        instruction[0] == 0xC7 || instruction[0] == 0x89 ||
+        (instruction[0] == 0x66 && instruction[1] == 0xC7);
+    const bool arena_boundary_object_store =
+        supported_boundary_store && (mod == 0x01 || mod == 0x02) &&
+        base < runtime_end && base + kBoundaryObjectWindow >= runtime_end &&
+        destination >= runtime_end &&
+        destination_end <= runtime_end + kBoundaryObjectWindow;
+    const bool chained_boundary_object_store =
+        supported_boundary_store && context->boundary_object_chain_valid &&
+        (mod == 0x00 || mod == 0x01 || mod == 0x02) &&
+        (base == context->boundary_object_chain_base ||
+         base == context->boundary_object_chain_frontier) &&
+        destination >= base &&
+        destination_end <= base + kBoundaryObjectWindow &&
+        destination_end <= context->boundary_object_chain_limit;
+    if (!allocator_failure_sentinel && !allocator_metadata_store &&
+        !arena_boundary_object_store && !chained_boundary_object_store &&
+        (context->last_dos_open_success ||
+         context->last_dos_open_guest_path.empty()))
     {
         return false;
     }
@@ -3265,6 +3323,34 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
                            source_kind,
                            false);
     WriteShadowMemory(context, destination, value, value_width);
+    if (arena_boundary_object_store || chained_boundary_object_store)
+    {
+        if (!context->boundary_object_chain_valid ||
+            base == context->boundary_object_chain_frontier)
+        {
+            if (!context->boundary_object_chain_valid)
+            {
+                constexpr std::uint64_t kFallbackSpan = 4096;
+                constexpr std::uint64_t kMaximumSpan = 0x00100000;
+                const std::uint64_t observed_span =
+                    static_cast<std::uint64_t>(win32_context->Esi) *
+                    win32_context->Edx;
+                const std::uint64_t chain_span =
+                    observed_span >= kBoundaryObjectWindow &&
+                            observed_span <= kMaximumSpan
+                        ? observed_span
+                        : kFallbackSpan;
+                context->boundary_object_chain_limit =
+                    runtime_end + chain_span;
+            }
+            context->boundary_object_chain_valid = true;
+            context->boundary_object_chain_base =
+                static_cast<std::uint32_t>(base);
+        }
+        context->boundary_object_chain_frontier = std::max(
+            context->boundary_object_chain_frontier,
+            static_cast<std::uint32_t>(destination_end));
+    }
     win32_context->Eip += instruction_size;
     return true;
 }
@@ -3295,7 +3381,14 @@ bool HandleTracedMemoryLoadInstruction(CONTEXT* win32_context,
     if (!ReadGuestUInt32(context, source_pointer, &value) &&
         !ReadShadowUInt32(context, source, &value))
     {
-        return false;
+        constexpr std::uint64_t kDosZeroPageSize = 0x1000;
+        const std::uint64_t source_end =
+            static_cast<std::uint64_t>(source) + sizeof(value);
+        if (context->guest_ds == 0 || source_end > kDosZeroPageSize)
+        {
+            return false;
+        }
+        value = 0;
     }
 
     const std::uint8_t destination_register = (instruction[1] >> 3) & 0x07U;
@@ -3428,8 +3521,33 @@ bool HandleTracedFpuMemoryInstruction(CONTEXT* win32_context,
         return true;
     }
 
-    if (context->last_dos_open_success ||
-        context->last_dos_open_guest_path.empty())
+    constexpr std::uint32_t kBoundaryObjectWindow = 64;
+    const std::uint8_t mod =
+        static_cast<std::uint8_t>((instruction[1] >> 6) & 0x03U);
+    const std::uint8_t rm =
+        static_cast<std::uint8_t>(instruction[1] & 0x07U);
+    const std::uint64_t base =
+        ReadGeneralRegister32(win32_context, rm);
+    const std::uint64_t runtime_end =
+        static_cast<std::uint64_t>(context->runtime_base) +
+        context->runtime_size;
+    const std::uint64_t address_end =
+        static_cast<std::uint64_t>(address) + sizeof(value);
+    const bool arena_boundary_object_store =
+        (mod == 0x01 || mod == 0x02) && base < runtime_end &&
+        base + kBoundaryObjectWindow >= runtime_end &&
+        address >= runtime_end &&
+        address_end <= runtime_end + kBoundaryObjectWindow;
+    const bool chained_boundary_object_store =
+        context->boundary_object_chain_valid &&
+        (mod == 0x00 || mod == 0x01 || mod == 0x02) &&
+        (base == context->boundary_object_chain_base ||
+         base == context->boundary_object_chain_frontier) &&
+        address >= base && address_end <= base + kBoundaryObjectWindow &&
+        address_end <= context->boundary_object_chain_limit;
+    if (!arena_boundary_object_store && !chained_boundary_object_store &&
+        (context->last_dos_open_success ||
+         context->last_dos_open_guest_path.empty()))
     {
         return false;
     }
@@ -3443,6 +3561,34 @@ bool HandleTracedFpuMemoryInstruction(CONTEXT* win32_context,
                            "fpu-m32",
                            false);
     WriteShadowMemory(context, address, value, 4);
+    if (arena_boundary_object_store || chained_boundary_object_store)
+    {
+        if (!context->boundary_object_chain_valid ||
+            base == context->boundary_object_chain_frontier)
+        {
+            if (!context->boundary_object_chain_valid)
+            {
+                constexpr std::uint64_t kFallbackSpan = 4096;
+                constexpr std::uint64_t kMaximumSpan = 0x00100000;
+                const std::uint64_t observed_span =
+                    static_cast<std::uint64_t>(win32_context->Esi) *
+                    win32_context->Edx;
+                const std::uint64_t chain_span =
+                    observed_span >= kBoundaryObjectWindow &&
+                            observed_span <= kMaximumSpan
+                        ? observed_span
+                        : kFallbackSpan;
+                context->boundary_object_chain_limit =
+                    runtime_end + chain_span;
+            }
+            context->boundary_object_chain_valid = true;
+            context->boundary_object_chain_base =
+                static_cast<std::uint32_t>(base);
+        }
+        context->boundary_object_chain_frontier = std::max(
+            context->boundary_object_chain_frontier,
+            static_cast<std::uint32_t>(address_end));
+    }
     win32_context->Eip += instruction_size;
     return true;
 }
