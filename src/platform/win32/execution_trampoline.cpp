@@ -105,6 +105,11 @@ struct ThreadContext
     bool enable_single_step_trace = false;
     bool returned = false;
     bool process_exit = false;
+    bool dos_termination_captured = false;
+    std::uint32_t dos_termination_ax = 0;
+    std::uint32_t dos_termination_eip = 0;
+    std::uint32_t dos_termination_esp = 0;
+    std::uint32_t dos_termination_stack[kWin32DosTerminationStackCapacity] = {};
     bool exception_caught = false;
     std::uint32_t exception_code = 0;
     std::uint32_t exception_address = 0;
@@ -220,6 +225,7 @@ struct ThreadContext
     std::uint16_t dpmi_last_allocated_selector = 0;
     Win32PortIoObservation port_io;
     Win32DosPathObservation dos_path;
+    Win32DosFileIoObservation dos_file_io;
     Win32AllocatorProbeObservation allocator_probe;
     Win32AllocatorControlFlowObservation allocator_control_flow;
     std::uint32_t handled_dos_interrupt_count = 0;
@@ -940,6 +946,14 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         return;
     }
 
+    attempt->dos_termination_captured = context.dos_termination_captured;
+    attempt->dos_termination_ax = context.dos_termination_ax;
+    attempt->dos_termination_eip = context.dos_termination_eip;
+    attempt->dos_termination_esp = context.dos_termination_esp;
+    std::memcpy(attempt->dos_termination_stack,
+                context.dos_termination_stack,
+                sizeof(attempt->dos_termination_stack));
+
     attempt->single_step_trace_count =
         context.single_step_trace_count.load(std::memory_order_relaxed);
     attempt->diagnostic_poll_iteration_count =
@@ -1212,6 +1226,7 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->last_hle_trap_opcode = context.last_hle_trap_opcode;
     attempt->port_io = context.port_io;
     attempt->dos_path = context.dos_path;
+    attempt->dos_file_io = context.dos_file_io;
     attempt->allocator_probe = context.allocator_probe;
     attempt->allocator_control_flow = context.allocator_control_flow;
     attempt->handled_dos_interrupt_count =
@@ -2685,13 +2700,87 @@ bool HandleDosFileAttributes(CONTEXT* win32_context,
     return true;
 }
 
-void RecordDosRead(ThreadContext* context,
+const repiu::hle::DosOpenFileHandle* FindDosOpenFile(
+    const ThreadContext* context,
+    std::uint16_t handle)
+{
+    if (context == nullptr)
+    {
+        return nullptr;
+    }
+    for (const repiu::hle::DosOpenFileHandle& candidate :
+         context->dos_file_system.open_files)
+    {
+        if (candidate.open && candidate.handle == handle)
+        {
+            return &candidate;
+        }
+    }
+    return nullptr;
+}
+
+void CaptureDosTermination(CONTEXT* win32_context,
+                           ThreadContext* context)
+{
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return;
+    }
+    context->dos_termination_captured = true;
+    context->dos_termination_ax = win32_context->Eax & 0xFFFFU;
+    context->dos_termination_eip = win32_context->Eip;
+    context->dos_termination_esp = win32_context->Esp;
+    const void* stack = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(win32_context->Esp));
+    if (IsGuestRangeReadable(
+            context, stack, sizeof(context->dos_termination_stack)))
+    {
+        std::memcpy(context->dos_termination_stack,
+                    stack,
+                    sizeof(context->dos_termination_stack));
+    }
+}
+
+Win32DosFileIoTraceEntry& AllocateDosFileIoTrace(
+    ThreadContext* context,
+    const char* operation,
+    std::uint16_t handle)
+{
+    Win32DosFileIoObservation& observation = context->dos_file_io;
+    const std::uint32_t sequence = ++observation.observed_count;
+    const std::uint32_t slot =
+        (sequence - 1U) % kWin32DosFileIoTraceCapacity;
+    Win32DosFileIoTraceEntry& entry = observation.trace[slot];
+    entry = {};
+    entry.valid = true;
+    entry.sequence = sequence;
+    entry.operation = operation;
+    entry.handle = handle;
+    const repiu::hle::DosOpenFileHandle* open_file =
+        FindDosOpenFile(context, handle);
+    if (open_file != nullptr)
+    {
+        entry.host_path = open_file->host_path.string();
+        entry.position_before = static_cast<std::uint32_t>(
+            open_file->file_offset);
+        entry.position_after = entry.position_before;
+    }
+    observation.trace_stored_count = std::min(
+        observation.observed_count, kWin32DosFileIoTraceCapacity);
+    observation.trace_wrapped =
+        observation.observed_count > kWin32DosFileIoTraceCapacity;
+    return entry;
+}
+
+void RecordDosRead(const CONTEXT* win32_context,
+                   ThreadContext* context,
                    std::uint16_t handle,
                    std::uint32_t requested_bytes,
                    std::uint32_t actual_bytes,
                    std::uint32_t buffer,
                    bool success,
-                   std::uint16_t error)
+                   std::uint16_t error,
+                   const std::vector<std::uint8_t>* bytes)
 {
     if (context == nullptr)
     {
@@ -2705,6 +2794,43 @@ void RecordDosRead(ThreadContext* context,
     context->last_dos_read_buffer = buffer;
     context->last_dos_read_success = success;
     context->last_dos_read_error = error;
+    Win32DosFileIoTraceEntry& entry =
+        AllocateDosFileIoTrace(context, "read", handle);
+    if (win32_context != nullptr)
+    {
+        entry.guest_eip = win32_context->Eip;
+        entry.guest_esp = win32_context->Esp;
+        const auto* guest_stack = reinterpret_cast<const std::uint32_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esp));
+        if (IsGuestRangeReadable(context,
+                                 guest_stack,
+                                 sizeof(entry.guest_stack)))
+        {
+            std::memcpy(entry.guest_stack,
+                        guest_stack,
+                        sizeof(entry.guest_stack));
+        }
+    }
+    entry.requested_bytes = requested_bytes;
+    entry.actual_bytes = actual_bytes;
+    entry.dos_error = error;
+    const repiu::hle::DosOpenFileHandle* open_file =
+        FindDosOpenFile(context, handle);
+    if (open_file != nullptr)
+    {
+        entry.position_after = static_cast<std::uint32_t>(
+            open_file->file_offset);
+        entry.position_before = entry.position_after - actual_bytes;
+    }
+    if (bytes != nullptr)
+    {
+        entry.prefix_size = static_cast<std::uint32_t>(std::min<std::size_t>(
+            bytes->size(), kWin32DosFileIoPrefixCapacity));
+        if (entry.prefix_size != 0)
+        {
+            std::memcpy(entry.prefix, bytes->data(), entry.prefix_size);
+        }
+    }
 }
 
 bool HandleDosReadFile(CONTEXT* win32_context, ThreadContext* context)
@@ -2712,7 +2838,7 @@ bool HandleDosReadFile(CONTEXT* win32_context, ThreadContext* context)
     const std::uint16_t handle = static_cast<std::uint16_t>(
         win32_context->Ebx & 0xFFFFU);
     const std::uint32_t requested_bytes =
-        static_cast<std::uint32_t>(win32_context->Ecx & 0xFFFFU);
+        static_cast<std::uint32_t>(win32_context->Ecx);
     const std::uint32_t buffer =
         static_cast<std::uint32_t>(win32_context->Edx);
 
@@ -2731,13 +2857,15 @@ bool HandleDosReadFile(CONTEXT* win32_context, ThreadContext* context)
 
     if (dos_error != 0)
     {
-        RecordDosRead(context,
+        RecordDosRead(win32_context,
+                      context,
                       handle,
                       requested_bytes,
                       0,
                       buffer,
                       false,
-                      dos_error);
+                      dos_error,
+                      &bytes);
         win32_context->Eax =
             (win32_context->Eax & 0xFFFF0000U) | dos_error;
         win32_context->EFlags |= 1U;
@@ -2752,29 +2880,31 @@ bool HandleDosReadFile(CONTEXT* win32_context, ThreadContext* context)
                          bytes.size()))
     {
         constexpr std::uint16_t kPathNotFound = 0x0003;
-        RecordDosRead(context,
+        RecordDosRead(win32_context,
+                      context,
                       handle,
                       requested_bytes,
                       0,
                       buffer,
                       false,
-                      kPathNotFound);
+                      kPathNotFound,
+                      &bytes);
         win32_context->Eax =
             (win32_context->Eax & 0xFFFF0000U) | kPathNotFound;
         win32_context->EFlags |= 1U;
         return true;
     }
 
-    RecordDosRead(context,
+    RecordDosRead(win32_context,
+                  context,
                   handle,
                   requested_bytes,
                   actual_bytes,
                   buffer,
                   true,
-                  0);
-    win32_context->Eax =
-        (win32_context->Eax & 0xFFFF0000U) |
-        static_cast<std::uint16_t>(actual_bytes & 0xFFFFU);
+                  0,
+                  &bytes);
+    win32_context->Eax = actual_bytes;
     win32_context->EFlags &= ~1U;
     return true;
 }
@@ -2783,6 +2913,7 @@ void RecordDosSeek(ThreadContext* context,
                    std::uint16_t handle,
                    std::uint8_t origin,
                    std::int32_t offset,
+                   std::uint32_t position_before,
                    std::uint32_t position,
                    bool success,
                    std::uint16_t error)
@@ -2799,6 +2930,13 @@ void RecordDosSeek(ThreadContext* context,
     context->last_dos_seek_position = position;
     context->last_dos_seek_success = success;
     context->last_dos_seek_error = error;
+    Win32DosFileIoTraceEntry& entry =
+        AllocateDosFileIoTrace(context, "seek", handle);
+    entry.origin = origin;
+    entry.seek_offset = offset;
+    entry.position_before = position_before;
+    entry.position_after = success ? position : position_before;
+    entry.dos_error = error;
 }
 
 bool HandleDosSeekFile(CONTEXT* win32_context, ThreadContext* context)
@@ -2811,6 +2949,11 @@ bool HandleDosSeekFile(CONTEXT* win32_context, ThreadContext* context)
         ((win32_context->Ecx & 0xFFFFU) << 16) |
         (win32_context->Edx & 0xFFFFU);
     const std::int32_t offset = static_cast<std::int32_t>(raw_offset);
+    const repiu::hle::DosOpenFileHandle* open_file_before =
+        FindDosOpenFile(context, handle);
+    const std::uint32_t position_before = open_file_before != nullptr
+        ? static_cast<std::uint32_t>(open_file_before->file_offset)
+        : 0U;
 
     std::uint32_t new_position = 0;
     std::uint16_t dos_error = 0;
@@ -2830,6 +2973,7 @@ bool HandleDosSeekFile(CONTEXT* win32_context, ThreadContext* context)
                       handle,
                       origin,
                       offset,
+                      position_before,
                       0,
                       false,
                       dos_error);
@@ -2843,6 +2987,7 @@ bool HandleDosSeekFile(CONTEXT* win32_context, ThreadContext* context)
                   handle,
                   origin,
                   offset,
+                  position_before,
                   new_position,
                   true,
                   0);
@@ -3211,6 +3356,7 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
             }
             break;
         case 0x4C:
+            CaptureDosTermination(win32_context, context);
             RecoverFromHleExit(win32_context, context);
             return true;
         case 0x4A:
@@ -6298,6 +6444,7 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
             return true;
         case 0x4C:
             RecordHandledDosInterrupt(context, 0x21, ax);
+            CaptureDosTermination(win32_context, context);
             RecoverFromHleExit(win32_context, context);
             return true;
         case 0xFF:

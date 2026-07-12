@@ -14,6 +14,9 @@ namespace repiu::platform::win32
 
 constexpr std::uint32_t kWin32PortIoTraceCapacity = 16;
 constexpr std::uint32_t kWin32DosPathTraceCapacity = 16;
+constexpr std::uint32_t kWin32DosFileIoTraceCapacity = 64;
+constexpr std::uint32_t kWin32DosFileIoPrefixCapacity = 16;
+constexpr std::uint32_t kWin32DosTerminationStackCapacity = 128;
 constexpr std::uint32_t kWin32AllocatorProbeTraceCapacity = 16;
 constexpr std::uint32_t kWin32AllocatorControlFlowTraceCapacity = 32;
 constexpr std::uint32_t kWin32SegmentLoadTraceCapacity = 16;
@@ -89,6 +92,35 @@ struct Win32DosPathObservation
     std::uint32_t trace_stored_count = 0;
     bool trace_limit_reached = false;
     Win32DosPathTraceEntry trace[kWin32DosPathTraceCapacity];
+};
+
+struct Win32DosFileIoTraceEntry
+{
+    bool valid = false;
+    std::uint32_t sequence = 0;
+    std::string operation;
+    std::string host_path;
+    std::uint16_t handle = 0;
+    std::uint8_t origin = 0;
+    std::int32_t seek_offset = 0;
+    std::uint32_t position_before = 0;
+    std::uint32_t position_after = 0;
+    std::uint32_t requested_bytes = 0;
+    std::uint32_t actual_bytes = 0;
+    std::uint16_t dos_error = 0;
+    std::uint8_t prefix[kWin32DosFileIoPrefixCapacity] = {};
+    std::uint32_t prefix_size = 0;
+    std::uint32_t guest_eip = 0;
+    std::uint32_t guest_esp = 0;
+    std::uint32_t guest_stack[8] = {};
+};
+
+struct Win32DosFileIoObservation
+{
+    std::uint32_t observed_count = 0;
+    std::uint32_t trace_stored_count = 0;
+    bool trace_wrapped = false;
+    Win32DosFileIoTraceEntry trace[kWin32DosFileIoTraceCapacity];
 };
 
 struct Win32AllocatorProbeTraceEntry
@@ -337,6 +369,7 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t last_hle_trap_opcode = 0;
     Win32PortIoObservation port_io;
     Win32DosPathObservation dos_path;
+    Win32DosFileIoObservation dos_file_io;
     Win32AllocatorProbeObservation allocator_probe;
     Win32AllocatorControlFlowObservation allocator_control_flow;
     std::uint32_t handled_dos_interrupt_count = 0;
@@ -436,6 +469,11 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t shadow_memory_min_address = 0;
     std::uint32_t shadow_memory_max_address = 0;
     std::uint32_t thread_exit_code = 0;
+    bool dos_termination_captured = false;
+    std::uint32_t dos_termination_ax = 0;
+    std::uint32_t dos_termination_eip = 0;
+    std::uint32_t dos_termination_esp = 0;
+    std::uint32_t dos_termination_stack[kWin32DosTerminationStackCapacity] = {};
     std::string hle_stdout_output;
     std::string hle_stderr_output;
     std::string message;

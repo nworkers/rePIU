@@ -36,11 +36,13 @@ flowchart LR
 * [DOS/4G AX=FF00h saved frame과 반환 데이터 흐름](dos4g-service-zero-frame-dataflow.md)
 * [DOS/4G client GS와 GS:0x42 private environment](dos4g-client-gs-private-environment.md)
 * [Glide2x.ovl과 OpenGL HLE 분석](glide2x-ovl-and-opengl-hle.md)
+* [RES/PTX resource loading과 size truncation 분석](res-ptx-resource-loading.md)
 
 # rePIU Binary Analysis Index
 
 * [PIU LINEXE call-gate ABI](piu-linexe-call-gate-abi.md)
 * [LINEXE arena runtime frontier](linexe-arena-runtime-frontier.md)
+* [RES/PTX resource loading analysis](res-ptx-resource-loading.md)
 
 The DOS/4G DLL loader analysis also records the [DOS/32A behavioral cross-reference and clean-room boundary](dll-loader-int21-ff00.md#dos32a-교차-확인과-적용-한계).
 

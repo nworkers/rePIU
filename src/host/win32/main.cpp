@@ -1052,6 +1052,70 @@ void PrintExecutionAttempt(
                 entry.host_path);
         }
     }
+    logger.info("Win32 DOS file I/O trace observed/stored: {}/{}",
+                attempt.dos_file_io.observed_count,
+                attempt.dos_file_io.trace_stored_count);
+    logger.info("Win32 DOS file I/O trace wrapped: {}",
+                attempt.dos_file_io.trace_wrapped ? "true" : "false");
+    if (attempt.dos_file_io.trace_stored_count != 0)
+    {
+        const std::uint32_t first_sequence =
+            attempt.dos_file_io.observed_count -
+            attempt.dos_file_io.trace_stored_count + 1U;
+        for (std::uint32_t sequence = first_sequence;
+             sequence <= attempt.dos_file_io.observed_count;
+             ++sequence)
+        {
+            const std::uint32_t slot = (sequence - 1U) %
+                repiu::platform::win32::kWin32DosFileIoTraceCapacity;
+            const auto& entry = attempt.dos_file_io.trace[slot];
+            if (!entry.valid || entry.sequence != sequence)
+            {
+                continue;
+            }
+            std::ostringstream prefix;
+            std::ostringstream guest_stack;
+            for (std::uint32_t index = 0;
+                 index < entry.prefix_size;
+                 ++index)
+            {
+                if (index != 0)
+                {
+                    prefix << ' ';
+                }
+                prefix << std::uppercase << std::hex << std::setw(2)
+                       << std::setfill('0')
+                       << static_cast<unsigned>(entry.prefix[index]);
+            }
+            for (const std::uint32_t value : entry.guest_stack)
+            {
+                if (guest_stack.tellp() != std::streampos(0))
+                {
+                    guest_stack << ' ';
+                }
+                guest_stack << Hex32(value);
+            }
+            logger.info(
+                "Win32 DOS file I/O #{} op={} handle={} before={} after={} "
+                "origin={} offset={} requested={} actual={} error={} "
+                "eip={} esp={} stack=[{}] prefix=[{}] path={}",
+                entry.sequence,
+                entry.operation,
+                Hex16(entry.handle),
+                Hex32(entry.position_before),
+                Hex32(entry.position_after),
+                Hex8(entry.origin),
+                entry.seek_offset,
+                entry.requested_bytes,
+                entry.actual_bytes,
+                Hex16(entry.dos_error),
+                Hex32(entry.guest_eip),
+                Hex32(entry.guest_esp),
+                guest_stack.str(),
+                prefix.str(),
+                entry.host_path);
+        }
+    }
     logger.info("Win32 allocator probe observation count: {}",
                 attempt.allocator_probe.observed_count);
     logger.info("Win32 allocator probe trace stored count: {}",
@@ -1530,6 +1594,29 @@ void PrintExecutionAttempt(
     }
     logger.info("Win32 minimal execution thread exit code: {}",
                 attempt.thread_exit_code);
+    logger.info("Win32 DOS termination captured: {}",
+                attempt.dos_termination_captured ? "true" : "false");
+    if (attempt.dos_termination_captured)
+    {
+        logger.info("Win32 DOS termination AX/EIP/ESP: {}/{}/{}",
+                    Hex16(static_cast<std::uint16_t>(
+                        attempt.dos_termination_ax)),
+                    Hex32(attempt.dos_termination_eip),
+                    Hex32(attempt.dos_termination_esp));
+        std::ostringstream stack;
+        for (std::uint32_t index = 0;
+             index < repiu::platform::win32::
+                 kWin32DosTerminationStackCapacity;
+             ++index)
+        {
+            if (index != 0)
+            {
+                stack << ' ';
+            }
+            stack << Hex32(attempt.dos_termination_stack[index]);
+        }
+        logger.info("Win32 DOS termination stack: {}", stack.str());
+    }
     if (!attempt.hle_stdout_output.empty() ||
         !attempt.hle_stderr_output.empty())
     {
