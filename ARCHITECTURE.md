@@ -266,3 +266,5 @@ Guest breakpoints stop by default. Only a confirmed `CC 52 E8 rel32 F4` fatal-ta
 ## Win32 VEH and host recovery boundary
 
 The guest worker owns one process-global active VEH context because guest execution is serialized per loader process. The parent removes the VEH only after joining the worker. Host-side WGL exception `0x406D1388` is passed to the Windows exception chain. Guest-stack recovery records the entry-time segment selectors and clears TF/DF; reliable DS/FS restoration before returning to compiler-generated C++ remains the current recovery frontier.
+
+Host recovery now saves entry-time selectors in serialized global recovery slots and reads them with a `CS:` override before returning to C++. Residual single-step exceptions at host addresses clear TF and continue without nested guest recovery. The worker that created WGL resources closes them after recovery; the parent removes the VEH after join. DOS stdout and stderr are accumulated separately and emitted through an executable-name spdlog logger at info and error levels.

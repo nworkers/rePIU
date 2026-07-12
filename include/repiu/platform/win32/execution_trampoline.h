@@ -436,7 +436,8 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t shadow_memory_min_address = 0;
     std::uint32_t shadow_memory_max_address = 0;
     std::uint32_t thread_exit_code = 0;
-    std::string hle_console_output;
+    std::string hle_stdout_output;
+    std::string hle_stderr_output;
     std::string message;
 };
 

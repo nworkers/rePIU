@@ -375,8 +375,10 @@ struct ThreadContext
     repiu::runtime::SelectorAllocator dpmi_selector_allocator;
     repiu::runtime::DosLowMemory dos_low_memory;
     std::array<DosInterruptVectorShadow, 256> dos_interrupt_vectors = {};
-    char hle_console_output[4096] = {};
-    std::uint32_t hle_console_output_size = 0;
+    char hle_stdout_output[4096] = {};
+    std::uint32_t hle_stdout_output_size = 0;
+    char hle_stderr_output[4096] = {};
+    std::uint32_t hle_stderr_output_size = 0;
     std::string hle_message;
 };
 
@@ -456,6 +458,10 @@ bool IsGuestStackSwitchSupported()
 // VEH context outside Win32 TLS prevents a guest-modified FS selector from
 // escaping into compiler-generated TLS access during host recovery.
 ThreadContext* g_active_thread_context = nullptr;
+std::uint32_t g_recovery_host_fs = 0;
+std::uint32_t g_recovery_host_ds = 0;
+std::uint32_t g_recovery_host_es = 0;
+std::uint32_t g_recovery_host_gs = 0;
 
 using CreateThreadFn = HANDLE(WINAPI*)(
     LPSECURITY_ATTRIBUTES,
@@ -1408,12 +1414,16 @@ CallGuestEntryWithStack(StackSwitchCallState* state)
         xor ebx, ebx
         mov bx, fs
         mov [ecx + 24], ebx
+        mov g_recovery_host_fs, ebx
         mov bx, ds
         mov [ecx + 28], ebx
+        mov g_recovery_host_ds, ebx
         mov bx, es
         mov [ecx + 32], ebx
+        mov g_recovery_host_es, ebx
         mov bx, gs
         mov [ecx + 36], ebx
+        mov g_recovery_host_gs, ebx
         mov bx, ss
         mov [ecx + 40], ebx
         mov [ecx + 8], esp
@@ -1447,13 +1457,13 @@ RecoverGuestStackException()
 {
     __asm
     {
-        mov eax, ss:[ecx + 24]
+        mov eax, dword ptr cs:[g_recovery_host_fs]
         mov fs, ax
-        mov eax, ss:[ecx + 36]
+        mov eax, dword ptr cs:[g_recovery_host_gs]
         mov gs, ax
-        mov eax, ss:[ecx + 32]
+        mov eax, dword ptr cs:[g_recovery_host_es]
         mov es, ax
-        mov eax, ss:[ecx + 28]
+        mov eax, dword ptr cs:[g_recovery_host_ds]
         mov ds, ax
         pop edi
         pop esi
@@ -2211,7 +2221,8 @@ bool ReadShadowUInt8(ThreadContext* context,
 
 bool AppendConsoleOutput(ThreadContext* context,
                          const void* source,
-                         std::uint32_t byte_count)
+                         std::uint32_t byte_count,
+                         bool stderr_stream = false)
 {
     if (context == nullptr || source == nullptr || byte_count == 0)
     {
@@ -2224,9 +2235,16 @@ bool AppendConsoleOutput(ThreadContext* context,
         return false;
     }
 
-    const std::uint32_t available =
-        sizeof(context->hle_console_output) -
-        context->hle_console_output_size;
+    char* output = stderr_stream
+        ? context->hle_stderr_output
+        : context->hle_stdout_output;
+    std::uint32_t* output_size = stderr_stream
+        ? &context->hle_stderr_output_size
+        : &context->hle_stdout_output_size;
+    const std::uint32_t capacity = stderr_stream
+        ? sizeof(context->hle_stderr_output)
+        : sizeof(context->hle_stdout_output);
+    const std::uint32_t available = capacity - *output_size;
     const std::uint32_t copied = std::min(byte_count, available);
     if (copied == 0)
     {
@@ -2234,10 +2252,10 @@ bool AppendConsoleOutput(ThreadContext* context,
     }
 
     std::memcpy(
-        context->hle_console_output + context->hle_console_output_size,
+        output + *output_size,
         source,
         copied);
-    context->hle_console_output_size += copied;
+    *output_size += copied;
     return true;
 }
 
@@ -3158,7 +3176,8 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
             const void* text = reinterpret_cast<const void*>(
                 static_cast<std::uintptr_t>(win32_context->Edx));
             const std::uint32_t byte_count = win32_context->Ecx;
-            AppendConsoleOutput(context, text, byte_count);
+            AppendConsoleOutput(
+                context, text, byte_count, win32_context->Ebx == 2U);
             win32_context->Eax = byte_count;
             win32_context->EFlags &= ~1U;
             break;
@@ -6238,7 +6257,8 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
             const void* text = reinterpret_cast<const void*>(
                 static_cast<std::uintptr_t>(win32_context->Edx));
             const std::uint32_t byte_count = win32_context->Ecx;
-            AppendConsoleOutput(context, text, byte_count);
+            AppendConsoleOutput(
+                context, text, byte_count, win32_context->Ebx == 2U);
             win32_context->Eax = byte_count;
             win32_context->EFlags &= ~1U;
             win32_context->Eip += 2;
@@ -7695,7 +7715,31 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     }
 
     CONTEXT* win32_context = exception_info->ContextRecord;
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(
+            &context->shared_live_telemetry->recovery_host_fs,
+            static_cast<long>(g_recovery_host_fs));
+        InterlockedExchange(
+            &context->shared_live_telemetry->recovery_host_ds,
+            static_cast<long>(g_recovery_host_ds));
+        InterlockedExchange(
+            &context->shared_live_telemetry->recovery_host_es,
+            static_cast<long>(g_recovery_host_es));
+        InterlockedExchange(
+            &context->shared_live_telemetry->recovery_host_gs,
+            static_cast<long>(g_recovery_host_gs));
+    }
     constexpr DWORD kVisualCppThreadNameException = 0x406D1388U;
+    if (exception_info->ExceptionRecord != nullptr &&
+        exception_info->ExceptionRecord->ExceptionCode ==
+            EXCEPTION_SINGLE_STEP &&
+        !IsGuestInstructionPointer(
+            context, static_cast<std::uint32_t>(win32_context->Eip)))
+    {
+        win32_context->EFlags &= ~0x00000100U;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     if (exception_info->ExceptionRecord != nullptr &&
         exception_info->ExceptionRecord->ExceptionCode ==
             kVisualCppThreadNameException &&
@@ -7963,6 +8007,7 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
 
             CallGuestEntryWithStack(&state);
 
+            context->glide_backend.Close();
             g_active_thread_context = nullptr;
             context->active_call_state = nullptr;
             context->host_esp = state.host_esp;
@@ -8343,10 +8388,12 @@ bool RunWin32ExecutionThread(
     attempt->exception_snapshot = context.exception_snapshot;
     CopyThreadObservationToAttempt(context, attempt);
     attempt->thread_exit_code = exit_code;
-    attempt->hle_console_output.assign(
-        context.hle_console_output,
-        context.hle_console_output +
-            context.hle_console_output_size);
+    attempt->hle_stdout_output.assign(
+        context.hle_stdout_output,
+        context.hle_stdout_output + context.hle_stdout_output_size);
+    attempt->hle_stderr_output.assign(
+        context.hle_stderr_output,
+        context.hle_stderr_output + context.hle_stderr_output_size);
     attempt->valid = true;
 
     if (attempt->returned)

@@ -110,19 +110,29 @@ const char* SegmentRegisterName(std::uint32_t segment_register)
     }
 }
 
-void WriteGuestOutput(std::string_view output)
+void LogGuestOutput(spdlog::logger& logger,
+                    spdlog::level::level_enum level,
+                    std::string_view output)
 {
-    if (output.empty())
+    std::size_t begin = 0;
+    while (begin < output.size())
     {
-        return;
+        const std::size_t newline = output.find('\n', begin);
+        const std::size_t end = newline == std::string_view::npos
+            ? output.size()
+            : newline;
+        std::size_t content_end = end;
+        if (content_end > begin && output[content_end - 1U] == '\r')
+        {
+            --content_end;
+        }
+        logger.log(level, "{}", output.substr(begin, content_end - begin));
+        if (newline == std::string_view::npos)
+        {
+            break;
+        }
+        begin = newline + 1U;
     }
-
-    std::fwrite(output.data(), 1, output.size(), stdout);
-    if (output.back() != '\n')
-    {
-        std::fwrite("\n", 1, 1, stdout);
-    }
-    std::fflush(stdout);
 }
 
 bool ReadBinaryFile(const std::filesystem::path& path,
@@ -554,7 +564,8 @@ void PrintPlacement(
 
 void PrintExecutionAttempt(
     spdlog::logger& logger,
-    const repiu::platform::win32::Win32MinimalExecutionAttempt& attempt)
+    const repiu::platform::win32::Win32MinimalExecutionAttempt& attempt,
+    std::string_view executable_name)
 {
     logger.info("Win32 minimal execution attempt: {}",
                 attempt.valid ? "valid" : "invalid");
@@ -1519,11 +1530,27 @@ void PrintExecutionAttempt(
     }
     logger.info("Win32 minimal execution thread exit code: {}",
                 attempt.thread_exit_code);
-    if (!attempt.hle_console_output.empty())
+    if (!attempt.hle_stdout_output.empty() ||
+        !attempt.hle_stderr_output.empty())
     {
-        logger.info("Win32 HLE console output bytes: {}",
-                    attempt.hle_console_output.size());
-        WriteGuestOutput(attempt.hle_console_output);
+        logger.info("Win32 HLE stdout/stderr bytes: {}/{}",
+                    attempt.hle_stdout_output.size(),
+                    attempt.hle_stderr_output.size());
+        std::shared_ptr<spdlog::logger> guest_logger =
+            spdlog::get(std::string(executable_name));
+        if (guest_logger == nullptr)
+        {
+            guest_logger = spdlog::stderr_color_mt(
+                std::string(executable_name));
+            guest_logger->set_pattern("[%X.%e] [%8l] [%n] %v");
+            guest_logger->set_level(spdlog::level::info);
+        }
+        LogGuestOutput(*guest_logger,
+                       spdlog::level::info,
+                       attempt.hle_stdout_output);
+        LogGuestOutput(*guest_logger,
+                       spdlog::level::err,
+                       attempt.hle_stderr_output);
     }
     if (attempt.exception_caught)
     {
@@ -1991,7 +2018,9 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    PrintExecutionAttempt(*logger, attempt);
+    PrintExecutionAttempt(*logger,
+                          attempt,
+                          profile->executable_path.filename().string());
     if (attempt.exception_caught)
     {
         repiu::runtime::RelocatedImageByteWindow window;

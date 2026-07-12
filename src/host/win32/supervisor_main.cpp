@@ -57,6 +57,15 @@ void PrintSnapshot(
               << " guest_esp=0x"
               << static_cast<std::uint32_t>(
                      ReadInterlocked(&telemetry.last_guest_esp))
+              << " recovery_fs/ds/es/gs=0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.recovery_host_fs)) << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.recovery_host_ds)) << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.recovery_host_es)) << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.recovery_host_gs))
               << " dpmi_frame_eax/ebx/ecx=0x"
               << static_cast<std::uint32_t>(
                      ReadInterlocked(&telemetry.dpmi_frame_eax)) << "/0x"
