@@ -208,9 +208,8 @@ flowchart LR
 
 **Confirmed:** `_GRDITHERMODE@4(2)` enables `GL_DITHER` and persists mode 2 in logical state and state-image version 2. Execution passes the Glide startup path and later reaches a guest access violation at `0x030F968B`, not an unimplemented Glide gate. Exact Voodoo ordered dithering remains a GLSL fidelity TODO requiring matrix, quantization, and reference-capture evidence.
 
- # # #   ` g r T e x M a x A d d r e s s `   ¼  ` g r T e x M i n A d d r e s s `   ¤ÂÝÐ  A B I   P­È
- \ÍÍ  P I U   Œ¬„Ç  äÂ‰Õ  Ó|ÇXÇ  „½Á  °¬ü¬  ` _ G R T E X M A X A D D R E S S @ 4 `   ¼  ` _ G R T E X M I N A D D R E S S @ 4 `   8ÖœÍ  ü¬ÈÐÅÁ  ÆxÆ  è¸Õ( ` 0 x C 0 0 0 0 0 0 5 ` )  ¬   ­0Ì´ÈÅµÂÈ²ä².   
- ÐÆxÇ@Ç  G l i d e   2 . x   A P I  ¬  tÇ  hÕÂä´DÇ  ` s t d c a l l `   Ó|·ø»0Ñ  4 ¼tÇ¸Ò  È¬¹ÖÝÂ<Ç\¸  ÈXÇXÕà¬  ˆÇ<Ç˜°,   Œ¬„Ç  TÏÜ´”²  ` c d e c l `   )¼ÝÂ  9Ö@Ç  ¸ÀÉ¤Â0Ñ  Ó|·ø»0Ñ  8ÖœÍ  Ü­}ÅDÇ  ¬À©ÆXÕìÅ  ¤ÂÝÐÐÅ  xÇÇ|¹   ¼´Å#±ÀÉ  JÅà¬( P U S H   XÕÀÉ  JÅLÇ)   8ÖœÍXÕ0®  Lµ8»…ÇÈ²ä².   
- H L E   ˜Ì¬¹€½ÐÅÁ  Ü­}ÅÐÅ  Þ¹°Í  ` E S P   + =   8 ` ( ¼XÖ  üÈŒÁ  4   +   xÇÇ  4 ) DÇ  È¬¹XÕX³  €½„½DÇ  ` E S P   + =   4 ` ( ¼XÖ  üÈŒÁ  4 ) Ì¹  È¬¹XÕÄ³]¸  ÂÈhÕ<Ç\¸hÃ,   
- ä²LÇ  H L E   ”Æ­Ì  ÜÂ( ` _ G R C L I P W I N D O W @ 1 6 ` )   ¼ÝÀXÕ”²  xÇÇ  $ÆÈ,¸( m i s a l i g n m e n t ) ü¬  ˜Ç»º´  R e t u r n   P o i n t   \¸XÇ  „½0®|¹  )¼ÀÉˆÕµÂÈ²ä².  
- 
+## `grTexMaxAddress` ë° `grTexMinAddress` ì¸ìž ABI ë³´ì • / `grTexMaxAddress` and `grTexMinAddress` ABI Correction
+
+**í™•ì¸ë¨:** PIU ì‹¤í–‰ íë¦„ ì¤‘ `_GRTEXMAXADDRESS@4` ë° `_GRTEXMINADDRESS@4` í˜¸ì¶œ ì§í›„ ì ‘ê·¼ ìœ„ë°˜(`0xC0000005`)ì´ ë°œìƒí–ˆìŠµë‹ˆë‹¤. ì •ìƒì ì¸ Glide 2.x APIëŠ” ë‘ í•¨ìˆ˜ ëª¨ë‘ `stdcall` ì¸ìž 4ë°”ì´íŠ¸ë¥¼ ì‚¬ìš©í•˜ì§€ë§Œ, í•´ë‹¹ ê²Œìž„ ë°”ì´ë„ˆë¦¬ëŠ” `cdecl` ë°©ì‹ìœ¼ë¡œ ì»´íŒŒì¼ëœ ê²ƒìœ¼ë¡œ ì¶”ì •ë˜ë©° ì¸ìžë¥¼ í˜¸ì¶œìžê°€ ì •ë¦¬(ì •ìƒì ì¸ PUSH ì´í›„ í˜¸ì¶œ)í•˜ë ¤ê³  ì‹œë„í•©ë‹ˆë‹¤. HLE ê³„ì¸µì—ì„œ í•´ë‹¹ í˜¸ì¶œì„ `ESP += 8` (ê¸°ì¡´ ì¸ìž 4 + ì •ë¦¬ 4)ë¡œ ì²˜ë¦¬í•˜ë©´ í˜¸ì¶œ ì´í›„ ìŠ¤íƒ í”„ë ˆìž„ì´ ê¼¬ì—¬ì„œ `_GRCLIPWINDOW@16` ë“± ë‹¤ë¥¸ í˜¸ì¶œ ì‹œ ìŠ¤íƒ ë¶ˆì¼ì¹˜(misalignment)ë¡œ ì¸í•œ Return Point ë¶•ê´´ í˜„ìƒì´ ë°œìƒí–ˆìŠµë‹ˆë‹¤. HLEì—ì„œëŠ” ì •ìƒì ìœ¼ë¡œ `ESP += 4`ë¡œë§Œ ì²˜ë¦¬í•´ì•¼ ìŠ¤íƒì´ ì¼ì¹˜í•©ë‹ˆë‹¤.
+
+**Confirmed:** An access violation (`0xC0000005`) occurred immediately after calling `_GRTEXMAXADDRESS@4` and `_GRTEXMINADDRESS@4` during PIU execution. While standard Glide 2.x APIs use 4-byte `stdcall` arguments for both functions, the game binary appears to be compiled with `cdecl` and attempts to clean up the arguments itself. Handling these calls as `ESP += 8` (4 bytes for argument + 4 bytes for cleanup) in the HLE layer corrupts the stack frame, causing misalignment and Return Point destruction in subsequent calls like `_GRCLIPWINDOW@16`. The HLE must handle them as standard `ESP += 4` to keep the stack consistent.
