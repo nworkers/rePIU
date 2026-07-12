@@ -1,5 +1,6 @@
 build/
 MASTER/
+roms/
 tools/openwatcom/
 tools/downloads/
 samples/*/build/

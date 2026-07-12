@@ -14,3 +14,15 @@ Generated file SHA-256 values:
 - `Zydis.h`: `CE154FC859C134C1DF5BC62A9DFE1C427135812C1A7BC1C54BA180EA27A70E55`
 
 The vendored amalgamation is used only for x86 instruction decoding and metadata. Original PIU code continues to execute directly; Zydis does not replace game or resource-processing logic.
+
+## libchdr v0.3.0
+
+rePIU vendors libchdr tag `v0.3.0` (commit `93d8c239ff0d4e8d7722985992649fce12d2463b`) to read MAME CHDv1-v5 images. rePIU uses its read-only CHD hunk API and implements the pumpit1 ISO9660 mount separately.
+
+- Project: https://github.com/rtissera/libchdr
+- License: [`third_party/libchdr/LICENSE.txt`](third_party/libchdr/LICENSE.txt) (BSD 3-Clause)
+- Bundled LZMA SDK is public domain as recorded in [`deps/lzma-25.01/LICENSE`](third_party/libchdr/deps/lzma-25.01/LICENSE).
+- Bundled miniz uses the MIT license stated at the top of [`miniz.c`](third_party/libchdr/deps/miniz-3.1.1/miniz.c).
+- Bundled zstd decompressor is dual-licensed; rePIU selects its BSD license option as stated in [`zstddeclib.c`](third_party/libchdr/deps/zstd-1.5.7/zstddeclib.c). No GPL option is used.
+
+libchdr decodes storage assets only. It does not provide CPU, machine, game-logic, or full-system emulation.

@@ -37,6 +37,21 @@ const std::vector<TargetProfile>& BuiltInTargetProfiles()
                 0x005D7000,
             },
         },
+        TargetProfile{
+            "pumpit1",
+            "Pump It Up 1st (MAME CHD)",
+            std::filesystem::path(
+                "build/runtime_mounts/pumpit1/PIU/PIU.EXE"),
+            std::filesystem::path("build/runtime_mounts/pumpit1/PIU"),
+            std::filesystem::path("build/runtime_mounts/pumpit1"),
+            ExecutableFormatHint::kDos4gwLe,
+            "piu_common",
+            TargetRuntimeReservationHint{
+                true,
+                0x00010000,
+                0x005D7000,
+            },
+        },
     };
     return profiles;
 }

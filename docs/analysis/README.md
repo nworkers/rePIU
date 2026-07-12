@@ -40,6 +40,8 @@ flowchart LR
 
 # rePIU Binary Analysis Index
 
+* [pumpit1 CHD/ISO9660 mount 분석 / pumpit1 CHD/ISO9660 mount](pumpit1-chd-iso9660-mount.md)
+
 * [REP MOVS와 장시간 실행 경계 / REP MOVS and long-runtime boundary](rep-movs-and-long-runtime-boundary.md)
 
 * [PIU LINEXE call-gate ABI](piu-linexe-call-gate-abi.md)

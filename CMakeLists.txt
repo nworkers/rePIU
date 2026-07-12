@@ -4,6 +4,11 @@ project(rePIU LANGUAGES C CXX)
 
 include(FetchContent)
 
+set(INSTALL_STATIC_LIBS OFF CACHE BOOL "" FORCE)
+set(CHDR_WANT_RAW_DATA_SECTOR ON CACHE BOOL "" FORCE)
+set(CHDR_WANT_SUBCODE OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/libchdr EXCLUDE_FROM_ALL)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -46,6 +51,7 @@ function(repiu_configure_win32_loader_host target_name)
 endfunction()
 
 add_library(repiu_exe
+    src/assets/pumpit1_mount.cpp
     src/exe/dos16m_bound_module.cpp
     src/exe/dos4gw_loader.cpp
     src/exe/executable_headers.cpp
@@ -76,7 +82,7 @@ target_include_directories(repiu_exe
         include
 )
 
-target_link_libraries(repiu_exe PRIVATE repiu_zydis)
+target_link_libraries(repiu_exe PRIVATE repiu_zydis chdr-static)
 
 add_executable(repiu_exe_analyzer
     src/tools/exe_analyzer/main.cpp

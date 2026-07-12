@@ -305,3 +305,16 @@ flowchart LR
     L[loader timeout disabled] --> G[guest remains active]
     G --> P
 ```
+## MAME CHD asset mount
+
+The `pumpit1` target separates asset-container decoding from guest execution. Pinned libchdr exposes raw CHD CD frames, the project-owned ISO9660 reader resolves the file tree, and a deterministic build cache supplies the existing filesystem-based DOS VFS. Original ROM/CHD files remain read-only and outside Git.
+
+```mermaid
+flowchart LR
+    ROM[MAME ROM ZIP] --> CHECK[set validation]
+    CHD[CHD v5 CD] --> LIB[libchdr sectors]
+    LIB --> ISO[ISO9660 reader]
+    ISO --> CACHE[build mount cache]
+    CACHE --> VFS[DOS VFS]
+    VFS --> GUEST[original PIU code]
+```

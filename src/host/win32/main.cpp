@@ -1,4 +1,5 @@
 #include "repiu/exe/dos4gw_loader.h"
+#include "repiu/assets/pumpit1_mount.h"
 #include "repiu/exe/dos16m_bound_module.h"
 #include "repiu/hle/dos_file_system.h"
 #include "repiu/hle/hle_dispatcher.h"
@@ -1802,6 +1803,7 @@ int main(int argc, char** argv)
     const repiu::target::TargetProfile* profile =
         SelectTargetProfile(argc, argv);
     std::optional<repiu::target::TargetProfile> direct_profile;
+    std::optional<repiu::target::TargetProfile> mounted_profile;
     if (profile == nullptr)
     {
         direct_profile = BuildDirectExecutableProfile(argc, argv);
@@ -1811,6 +1813,31 @@ int main(int argc, char** argv)
             return 1;
         }
         profile = &direct_profile.value();
+    }
+
+    if (profile->id == "pumpit1")
+    {
+        repiu::assets::PumpIt1MountResult mount;
+        if (!repiu::assets::PreparePumpIt1Mount(
+                "roms", "build/runtime_mounts", &mount) ||
+            !mount.valid || !mount.mounted)
+        {
+            logger->error("pumpit1 CHD mount failed: {}", mount.message);
+            return 1;
+        }
+        logger->info("pumpit1 ROM ZIP: {}", mount.rom_zip_path.string());
+        logger->info("pumpit1 CHD: {}", mount.chd_path.string());
+        logger->info("pumpit1 mount root: {}", mount.mount_root.string());
+        logger->info("pumpit1 mount cache reused: {}",
+                     mount.cache_reused ? "true" : "false");
+        logger->info("pumpit1 extracted files/bytes: {}/{}",
+                     mount.extracted_file_count,
+                     mount.extracted_byte_count);
+        mounted_profile = *profile;
+        mounted_profile->executable_path = mount.executable_path;
+        mounted_profile->working_directory = mount.mount_root / "PIU";
+        mounted_profile->asset_root = mount.mount_root;
+        profile = &mounted_profile.value();
     }
 
     logger->info("Win32 loader target: {}", profile->id);

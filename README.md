@@ -87,6 +87,21 @@ MASTER/
 
 *Original game files are not distributed and `MASTER/` is ignored by Git. The standalone hello sample does not need PIU assets, but the integrated setup and test scripts currently verify that `PIU.EXE` exists.*
 
+### MAME CHD asset
+
+MAME 형식 asset으로 실행하려면 다음처럼 배치합니다. `roms/` 전체는 Git에서 제외됩니다.
+
+```text
+roms/
+├── pumpit1.zip
+└── pumpit1/
+    └── 19990930.chd
+```
+
+`pumpit1` profile은 ZIP의 ROM entry를 확인하고 CHD v5 Mode2 CD의 ISO9660 tree를 `build/runtime_mounts/pumpit1/`에 materialize합니다. 이후 실행에서는 CHD identity가 같으면 cache를 재사용합니다.
+
+*The `pumpit1` profile validates the MAME ROM set, mounts the CHD's ISO9660 tree under the ignored build cache, and starts `PIU/PIU.EXE`.*
+
 ### 3. 환경 준비와 전체 검증 / Set up and test
 
 PowerShell에서 저장소 루트를 기준으로 실행합니다.
@@ -125,6 +140,12 @@ Hello, world!
 
 ```powershell
 build\win32_x86_debug\Debug\repiu_loader_win32.exe piu_1st
+```
+
+MAME CHD profile은 supervisor로 실행합니다.
+
+```powershell
+build\win32_x86_debug\Debug\repiu_supervisor_win32.exe pumpit1 600000
 ```
 
 현재 이 명령은 완전한 게임 세션이 아니라 loader/HLE 진척과 진단 로그를 관찰하기 위한 개발 경로입니다.
