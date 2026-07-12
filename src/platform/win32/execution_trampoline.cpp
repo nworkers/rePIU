@@ -8238,17 +8238,15 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         win32_context->Esp += sizeof(std::uint32_t);
         return true;
     }
-    if (glide_export->name == "_GRTEXMINADDRESS@4" &&
-        context->glide_gate_stack[1] == 0U)
+    if (glide_export->name == "_GRTEXMINADDRESS@4")
     {
         ++context->glide_gate_handled_count;
         win32_context->Eax = 0U;
         win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        win32_context->Esp += sizeof(std::uint32_t);
         return true;
     }
-    if (glide_export->name == "_GRTEXMAXADDRESS@4" &&
-        context->glide_gate_stack[1] == 0U)
+    if (glide_export->name == "_GRTEXMAXADDRESS@4")
     {
         std::uint32_t maximum_address = 0;
         if (!repiu::hle::CalculateGlideTextureMaxAddress(
@@ -8260,7 +8258,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         ++context->glide_gate_handled_count;
         win32_context->Eax = maximum_address;
         win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        win32_context->Esp += sizeof(std::uint32_t);
         return true;
     }
     if (glide_export->name == "_GRCOLORMASK@8")

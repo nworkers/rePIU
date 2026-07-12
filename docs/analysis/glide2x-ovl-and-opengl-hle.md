@@ -207,3 +207,10 @@ flowchart LR
 ```
 
 **Confirmed:** `_GRDITHERMODE@4(2)` enables `GL_DITHER` and persists mode 2 in logical state and state-image version 2. Execution passes the Glide startup path and later reaches a guest access violation at `0x030F968B`, not an unimplemented Glide gate. Exact Voodoo ordered dithering remains a GLSL fidelity TODO requiring matrix, quantization, and reference-capture evidence.
+
+ # # #   ` g r T e x M a x A d d r e s s `   ¼  ` g r T e x M i n A d d r e s s `   ¤ÂÝÐ  A B I   P­È
+ \ÍÍ  P I U   Œ¬„Ç  äÂ‰Õ  Ó|ÇXÇ  „½Á  °¬ü¬  ` _ G R T E X M A X A D D R E S S @ 4 `   ¼  ` _ G R T E X M I N A D D R E S S @ 4 `   8ÖœÍ  ü¬ÈÐÅÁ  ÆxÆ  è¸Õ( ` 0 x C 0 0 0 0 0 0 5 ` )  ¬   ­0Ì´ÈÅµÂÈ²ä².   
+ ÐÆxÇ@Ç  G l i d e   2 . x   A P I  ¬  tÇ  hÕÂä´DÇ  ` s t d c a l l `   Ó|·ø»0Ñ  4 ¼tÇ¸Ò  È¬¹ÖÝÂ<Ç\¸  ÈXÇXÕà¬  ˆÇ<Ç˜°,   Œ¬„Ç  TÏÜ´”²  ` c d e c l `   )¼ÝÂ  9Ö@Ç  ¸ÀÉ¤Â0Ñ  Ó|·ø»0Ñ  8ÖœÍ  Ü­}ÅDÇ  ¬À©ÆXÕìÅ  ¤ÂÝÐÐÅ  xÇÇ|¹   ¼´Å#±ÀÉ  JÅà¬( P U S H   XÕÀÉ  JÅLÇ)   8ÖœÍXÕ0®  Lµ8»…ÇÈ²ä².   
+ H L E   ˜Ì¬¹€½ÐÅÁ  Ü­}ÅÐÅ  Þ¹°Í  ` E S P   + =   8 ` ( ¼XÖ  üÈŒÁ  4   +   xÇÇ  4 ) DÇ  È¬¹XÕX³  €½„½DÇ  ` E S P   + =   4 ` ( ¼XÖ  üÈŒÁ  4 ) Ì¹  È¬¹XÕÄ³]¸  ÂÈhÕ<Ç\¸hÃ,   
+ ä²LÇ  H L E   ”Æ­Ì  ÜÂ( ` _ G R C L I P W I N D O W @ 1 6 ` )   ¼ÝÀXÕ”²  xÇÇ  $ÆÈ,¸( m i s a l i g n m e n t ) ü¬  ˜Ç»º´  R e t u r n   P o i n t   \¸XÇ  „½0®|¹  )¼ÀÉˆÕµÂÈ²ä².  
+ 
