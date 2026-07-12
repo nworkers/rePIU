@@ -123,6 +123,9 @@ void RestoreWin32AotGuestPageWriteWatches(
 bool IsWin32AotGuestPageWriteWatched(
     const Win32AotPageWriteWatchSet& watch_set,
     std::uint32_t guest_address);
+void RemoveWin32AotPageWriteWatch(
+    Win32AotPageWriteWatchSet* watch_set,
+    std::uint32_t guest_address);
 bool HasPendingWin32AotGuestWrite(
     const Win32AotPageWriteWatchSet& watch_set);
 bool BeginWin32AotGuestWrite(

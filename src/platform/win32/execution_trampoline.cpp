@@ -8238,15 +8238,17 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         win32_context->Esp += sizeof(std::uint32_t);
         return true;
     }
-    if (glide_export->name == "_GRTEXMINADDRESS@4")
+    if (glide_export->name == "_GRTEXMINADDRESS@4" &&
+        context->glide_gate_stack[1] == 0U)
     {
         ++context->glide_gate_handled_count;
         win32_context->Eax = 0U;
         win32_context->Eip = return_address;
-        win32_context->Esp += sizeof(std::uint32_t);
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
         return true;
     }
-    if (glide_export->name == "_GRTEXMAXADDRESS@4")
+    if (glide_export->name == "_GRTEXMAXADDRESS@4" &&
+        context->glide_gate_stack[1] == 0U)
     {
         std::uint32_t maximum_address = 0;
         if (!repiu::hle::CalculateGlideTextureMaxAddress(
@@ -8258,7 +8260,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         ++context->glide_gate_handled_count;
         win32_context->Eax = maximum_address;
         win32_context->Eip = return_address;
-        win32_context->Esp += sizeof(std::uint32_t);
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
         return true;
     }
     if (glide_export->name == "_GRCOLORMASK@8")
@@ -8656,6 +8658,33 @@ bool RequestAotDynamicTranslation(ThreadContext* context,
     return true;
 }
 
+void ReleaseUnneededWin32AotGuestPageWatches(ThreadContext* context,
+                                             std::uint32_t address,
+                                             std::uint32_t size)
+{
+    if (context == nullptr || context->aot_placement == nullptr) return;
+
+    constexpr std::uint32_t kPageMask = 0xFFFFF000U;
+    const std::uint32_t first_page = address & kPageMask;
+    const std::uint64_t end = static_cast<std::uint64_t>(address) + size;
+    const std::uint32_t last_page = static_cast<std::uint32_t>((end - 1U) & kPageMask);
+
+    for (std::uint32_t page = first_page; page <= last_page; page += 0x1000U)
+    {
+        bool relevant = Win32AotGuestRangeHasActiveTranslation(
+            *context->aot_placement, page, 0x1000U);
+        if (!relevant)
+        {
+            relevant = IsWin32AotGuestPageRetired(*context->aot_placement, page) ||
+                       IsWin32AotGuestPageQuarantined(*context->aot_placement, page);
+        }
+        if (!relevant)
+        {
+            RemoveWin32AotPageWriteWatch(&context->aot_page_write_watch, page);
+        }
+    }
+}
+
 bool HandleAotGuestCodeWriteCompletion(EXCEPTION_POINTERS* exception_info,
                                        CONTEXT* win32_context,
                                        ThreadContext* context)
@@ -8676,6 +8705,7 @@ bool HandleAotGuestCodeWriteCompletion(EXCEPTION_POINTERS* exception_info,
         context->aot_terminal_failure.store(true, std::memory_order_release);
         return false;
     }
+    ReleaseUnneededWin32AotGuestPageWatches(context, completion.destination, completion.byte_count);
     if (completion.keep_single_step ||
         (completion.from_guest && context->aot_reentry_pending))
     {

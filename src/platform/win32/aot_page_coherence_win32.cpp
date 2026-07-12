@@ -705,6 +705,35 @@ bool IsWin32AotGuestPageWriteWatched(
 #endif
 }
 
+void RemoveWin32AotPageWriteWatch(
+    Win32AotPageWriteWatchSet* watch_set,
+    std::uint32_t guest_address)
+{
+#if defined(_WIN32)
+    if (watch_set == nullptr)
+    {
+        return;
+    }
+    const std::uint32_t guest_page = Win32AotGuestPage(guest_address);
+    auto watch = std::lower_bound(
+        watch_set->watches.begin(), watch_set->watches.end(), guest_page,
+        [](const Win32AotGuestPageWriteWatch& value, std::uint32_t page) {
+            return value.guest_page < page;
+        });
+    if (watch != watch_set->watches.end() && watch->guest_page == guest_page)
+    {
+        DWORD ignored = 0;
+        VirtualProtect(reinterpret_cast<void*>(static_cast<std::uintptr_t>(
+                           watch->guest_page)),
+                       kGuestPageSize, PAGE_EXECUTE_READWRITE, &ignored);
+        watch_set->watches.erase(watch);
+    }
+#else
+    static_cast<void>(watch_set);
+    static_cast<void>(guest_address);
+#endif
+}
+
 bool HasPendingWin32AotGuestWrite(
     const Win32AotPageWriteWatchSet& watch_set)
 {
