@@ -70,3 +70,4 @@ Status labels are **Confirmed**, **Inferred**, and **Unresolved**. See the linke
 
 * [pumpit1 MSCDEX ë° CHD CD ì˜¤ë””ì˜¤](pumpit1-mscdex-cd-audio.md)
 * [AOT ë³€í™˜ ê³„íš coverage](aot-translation-plan-coverage.md)
+* [AOT dynamic ½ºÅÃ ¿¹¿Ü ÆøÇ³ ºĞ¼® / AOT dynamic stack exception storm](20260713-aot-dynamic-stack-exception-storm.md)
