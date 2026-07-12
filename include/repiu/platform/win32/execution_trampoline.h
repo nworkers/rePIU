@@ -459,6 +459,12 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t last_low_memory_access_edi = 0;
     std::uint32_t last_low_memory_access_destination = 0;
     std::uint32_t last_low_memory_access_value = 0;
+    std::uint32_t rep_movs_copy_failure_count = 0;
+    std::uint32_t last_rep_movs_copy_failure_stage = 0;
+    std::uint32_t last_rep_movs_copy_error = 0;
+    std::uint32_t last_rep_movs_copy_source = 0;
+    std::uint32_t last_rep_movs_copy_destination = 0;
+    std::uint32_t last_rep_movs_copy_bytes = 0;
     std::uint32_t handled_memory_store_count = 0;
     std::uint32_t last_memory_store_address = 0;
     std::uint32_t last_memory_store_opcode = 0;

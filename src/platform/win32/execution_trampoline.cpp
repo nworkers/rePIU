@@ -313,6 +313,12 @@ struct ThreadContext
     std::uint32_t last_low_memory_access_edi = 0;
     std::uint32_t last_low_memory_access_destination = 0;
     std::uint32_t last_low_memory_access_value = 0;
+    std::uint32_t rep_movs_copy_failure_count = 0;
+    std::uint32_t last_rep_movs_copy_failure_stage = 0;
+    std::uint32_t last_rep_movs_copy_error = 0;
+    std::uint32_t last_rep_movs_copy_source = 0;
+    std::uint32_t last_rep_movs_copy_destination = 0;
+    std::uint32_t last_rep_movs_copy_bytes = 0;
     std::vector<std::uint8_t> dos_environment_block;
     bool last_dos_environment_access_valid = false;
     std::uint32_t last_dos_environment_access_offset = 0;
@@ -748,7 +754,8 @@ DWORD PollThreadUntilExit(HANDLE thread,
                 quiet_iterations;
         }
 
-        if (GetTickCount() - quiet_start_tick >=
+        if (timeout_milliseconds != INFINITE &&
+            GetTickCount() - quiet_start_tick >=
             quiet_timeout_milliseconds)
         {
             if (progress_context != nullptr)
@@ -1369,6 +1376,18 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.last_low_memory_access_destination;
     attempt->last_low_memory_access_value =
         context.last_low_memory_access_value;
+    attempt->rep_movs_copy_failure_count =
+        context.rep_movs_copy_failure_count;
+    attempt->last_rep_movs_copy_failure_stage =
+        context.last_rep_movs_copy_failure_stage;
+    attempt->last_rep_movs_copy_error =
+        context.last_rep_movs_copy_error;
+    attempt->last_rep_movs_copy_source =
+        context.last_rep_movs_copy_source;
+    attempt->last_rep_movs_copy_destination =
+        context.last_rep_movs_copy_destination;
+    attempt->last_rep_movs_copy_bytes =
+        context.last_rep_movs_copy_bytes;
     attempt->handled_memory_store_count = context.handled_memory_store_count;
     attempt->last_memory_store_address = context.last_memory_store_address;
     attempt->last_memory_store_opcode = context.last_memory_store_opcode;
@@ -6696,6 +6715,57 @@ bool HandleRepCmpsbInstruction(CONTEXT* win32_context,
     return true;
 }
 
+bool CopyHostMemoryWithoutVehRecursion(ThreadContext* context,
+                                       std::uint32_t destination,
+                                       const void* source,
+                                       std::uint32_t byte_count,
+                                       std::uint32_t* failure_stage,
+                                       std::uint32_t* windows_error)
+{
+    if (source == nullptr || byte_count == 0)
+    {
+        return byte_count == 0;
+    }
+    std::vector<std::uint8_t> temporary(byte_count);
+    SIZE_T bytes_read = 0;
+    HANDLE process = GetCurrentProcess();
+    if (!ReadProcessMemory(process,
+                           source,
+                           temporary.data(),
+                           byte_count,
+                           &bytes_read) ||
+        bytes_read != byte_count)
+    {
+        if (failure_stage != nullptr)
+        {
+            *failure_stage = 1;
+        }
+        if (windows_error != nullptr)
+        {
+            *windows_error = GetLastError();
+        }
+        return false;
+    }
+    if (!WriteGuestBytes(
+            context,
+            reinterpret_cast<void*>(
+                static_cast<std::uintptr_t>(destination)),
+            temporary.data(),
+            byte_count))
+    {
+        if (failure_stage != nullptr)
+        {
+            *failure_stage = 2;
+        }
+        if (windows_error != nullptr)
+        {
+            *windows_error = GetLastError();
+        }
+        return false;
+    }
+    return true;
+}
+
 bool HandleRepMovsInstruction(CONTEXT* win32_context,
                               ThreadContext* context)
 {
@@ -6790,20 +6860,27 @@ bool HandleRepMovsInstruction(CONTEXT* win32_context,
         }
         else
         {
-            if (source_is_low_memory)
+            const void* source_pointer = source_is_low_memory
+                ? static_cast<const void*>(
+                      context->dos_low_memory.bytes.data() + source)
+                : reinterpret_cast<const void*>(
+                      static_cast<std::uintptr_t>(source));
+            std::uint32_t failure_stage = 0;
+            std::uint32_t windows_error = 0;
+            if (!CopyHostMemoryWithoutVehRecursion(context,
+                                                   destination,
+                                                   source_pointer,
+                                                   byte_count,
+                                                   &failure_stage,
+                                                   &windows_error))
             {
-                std::memcpy(reinterpret_cast<void*>(
-                                static_cast<std::uintptr_t>(destination)),
-                            context->dos_low_memory.bytes.data() + source,
-                            byte_count);
-            }
-            else
-            {
-                std::memmove(reinterpret_cast<void*>(
-                                 static_cast<std::uintptr_t>(destination)),
-                             reinterpret_cast<const void*>(
-                                 static_cast<std::uintptr_t>(source)),
-                             byte_count);
+                ++context->rep_movs_copy_failure_count;
+                context->last_rep_movs_copy_failure_stage = failure_stage;
+                context->last_rep_movs_copy_error = windows_error;
+                context->last_rep_movs_copy_source = source;
+                context->last_rep_movs_copy_destination = destination;
+                context->last_rep_movs_copy_bytes = byte_count;
+                return false;
             }
         }
     }
@@ -7924,6 +8001,8 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
             static_cast<long>(g_recovery_host_gs));
     }
     constexpr DWORD kVisualCppThreadNameException = 0x406D1388U;
+    constexpr DWORD kDebugPrintExceptionAnsi = 0x40010006U;
+    constexpr DWORD kDebugPrintExceptionWide = 0x4001000AU;
     if (exception_info->ExceptionRecord != nullptr &&
         exception_info->ExceptionRecord->ExceptionCode ==
             EXCEPTION_SINGLE_STEP &&
@@ -7931,6 +8010,16 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
             context, static_cast<std::uint32_t>(win32_context->Eip)))
     {
         win32_context->EFlags &= ~0x00000100U;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (exception_info->ExceptionRecord != nullptr &&
+        (exception_info->ExceptionRecord->ExceptionCode ==
+             kDebugPrintExceptionAnsi ||
+         exception_info->ExceptionRecord->ExceptionCode ==
+             kDebugPrintExceptionWide) &&
+        !IsGuestInstructionPointer(
+            context, static_cast<std::uint32_t>(win32_context->Eip)))
+    {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
     if (exception_info->ExceptionRecord != nullptr &&

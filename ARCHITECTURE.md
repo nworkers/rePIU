@@ -272,3 +272,36 @@ Host recovery now saves entry-time selectors in serialized global recovery slots
 DOS file diagnostics include a bounded 64-entry read/seek ring. It preserves chronological handle, path, position, size, result, guest EIP/ESP, eight stack dwords, and bounded read-prefix evidence without changing guest-visible file behavior. The protected-mode DOS/4GW `INT 21h AH=3Fh` bridge consumes the 32-bit byte count in `ECX` and returns the 32-bit byte count in `EAX`; reducing these values to real-mode `CX/AX` breaks large Watcom reads.
 
 Win32 native execution uses a fail-closed function return fast path implemented by `native_fast_path.*` and `verified_region_analyzer.*`. Pinned Zydis v4.1.1 decodes observed direct-call targets in legacy 32-bit mode; rePIU recursively verifies runtime-bounded direct control flow and rejects privileged, interrupt, I/O, system, segment-dependent, indirect, far, or undecodable paths. An approved function runs with Trap Flag cleared until an x86 hardware execution breakpoint at its validated guest return address reenters VEH. Any intermediate exception restores debug registers and single-step state and permanently rejects that function for the current run.
+## Reentrancy-safe guest bulk copy
+
+Win32 VEH instruction handling must not directly dereference a guest range when the access can recursively enter the handler. `REP MOVS` reads through a temporary buffer with `ReadProcessMemory` and writes through the guest-write helper, which temporarily applies writable page protection and restores it afterward.
+
+```mermaid
+flowchart LR
+    VEH[VEH REP MOVS] --> RPM[ReadProcessMemory]
+    RPM --> TEMP[temporary buffer]
+    TEMP --> GW[guest write helper]
+    GW --> RESUME[guest resumes]
+```
+## Host exceptions in the guest VEH
+
+The Win32 guest VEH owns exceptions only when they belong to guest execution or an explicit HLE boundary. Host `DBG_PRINTEXCEPTION_C/W` events are consumed without guest recovery, while the Visual C++ thread-name exception is passed onward. Optional supervisor `debug-exceptions` mode observes first-chance events externally and preserves worker VEH ownership.
+
+```mermaid
+flowchart TD
+    E[Win32 exception] --> G{Guest EIP?}
+    G -->|yes| V[guest VEH/HLE]
+    G -->|no| D{debug-print?}
+    D -->|yes| C[continue execution]
+    D -->|no| S[continue search]
+```
+## Supervisor-owned execution deadline
+
+Supervised Win32 execution disables the loader's wall-clock and quiet timeouts with `REPIU_EXECUTION_TIMEOUT_MS=0`. The supervisor owns the deadline and terminates the complete child process, preventing `TerminateThread` from racing active VEH or host-call state.
+
+```mermaid
+flowchart LR
+    S[supervisor deadline] --> P[complete child process]
+    L[loader timeout disabled] --> G[guest remains active]
+    G --> P
+```

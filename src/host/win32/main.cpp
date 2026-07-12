@@ -51,11 +51,11 @@ std::uint32_t ReadExecutionTimeoutMilliseconds()
         ++end;
     }
     const auto result = std::from_chars(text, end, value);
-    if (result.ec != std::errc{} || result.ptr != end || value == 0)
+    if (result.ec != std::errc{} || result.ptr != end)
     {
         return kDefaultExecutionTimeoutMilliseconds;
     }
-    return value;
+    return value == 0 ? INFINITE : value;
 }
 
 std::shared_ptr<spdlog::logger> CreateLoaderLogger()
@@ -1586,6 +1586,18 @@ void PrintExecutionAttempt(
     }
     logger.info("Win32 shadow memory write count: {}",
                 attempt.shadow_memory_write_count);
+    logger.info("Win32 REP MOVS safe-copy failure count: {}",
+                attempt.rep_movs_copy_failure_count);
+    if (attempt.rep_movs_copy_failure_count != 0)
+    {
+        logger.info("Win32 last REP MOVS failure stage/error: {}/{}",
+                    attempt.last_rep_movs_copy_failure_stage,
+                    attempt.last_rep_movs_copy_error);
+        logger.info("Win32 last REP MOVS source/destination/bytes: {}/{}/{}",
+                    Hex32(attempt.last_rep_movs_copy_source),
+                    Hex32(attempt.last_rep_movs_copy_destination),
+                    attempt.last_rep_movs_copy_bytes);
+    }
     logger.info("Win32 shadow memory read hit count: {}",
                 attempt.shadow_memory_read_hit_count);
     logger.info("Win32 shadow memory byte count: {}",
@@ -2087,8 +2099,15 @@ int main(int argc, char** argv)
         profile->hle_profile_id == "dos4gw_console_sample";
     const std::uint32_t execution_timeout_milliseconds =
         ReadExecutionTimeoutMilliseconds();
-    logger->info("Win32 guest execution timeout: {} ms",
-                 execution_timeout_milliseconds);
+    if (execution_timeout_milliseconds == INFINITE)
+    {
+        logger->info("Win32 guest execution timeout: disabled");
+    }
+    else
+    {
+        logger->info("Win32 guest execution timeout: {} ms",
+                     execution_timeout_milliseconds);
+    }
     const bool attempted_execution =
         use_dos_console_hle
             ? repiu::platform::win32::AttemptWin32GuestStackHleExecution(

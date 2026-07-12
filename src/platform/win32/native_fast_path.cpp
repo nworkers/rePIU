@@ -23,6 +23,18 @@ bool IsRuntimeRange(std::uint32_t address,
            address >= runtime_base && end <= runtime_end;
 }
 
+bool NativeFastPathDisabled()
+{
+    static const bool disabled = []() {
+        char value[2] = {};
+        return GetEnvironmentVariableA(
+                   "REPIU_DISABLE_NATIVE_FAST_PATH",
+                   value,
+                   sizeof(value)) > 0;
+    }();
+    return disabled;
+}
+
 }  // namespace
 
 bool TryEnterNativeFastPath(CONTEXT* context,
@@ -30,7 +42,8 @@ bool TryEnterNativeFastPath(CONTEXT* context,
                             std::uint32_t runtime_base,
                             std::uint32_t runtime_size)
 {
-    if (context == nullptr || state == nullptr || state->active ||
+    if (NativeFastPathDisabled() || context == nullptr || state == nullptr ||
+        state->active ||
         !IsRuntimeRange(context->Esp,
                         sizeof(std::uint32_t),
                         runtime_base,
