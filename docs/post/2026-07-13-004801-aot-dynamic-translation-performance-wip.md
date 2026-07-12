@@ -17,6 +17,9 @@
 3. **자체 수정 코드(Self-Modifying Code, SMC) 일관성 해결**
    - PIU 게임 로직 특성상 발생하는 코드 변조(Import stub 등)를 처리하기 위해, 페이지 단위의 일관성 관리(Page Coherency) 모델을 도입했습니다.
    - 런타임에 코드가 변경되면 해당 캐시를 즉시 무효화(Retirement)하고, 새로운 상태를 기반으로 라이브 아레나 스냅샷을 생성해 새 기계어를 발행함으로써 버그 없이 실행 흐름을 이어가게 했습니다.
+4. **MAME CHD 에셋 마운트 및 MSCDEX CD 오디오 에뮬레이션**
+   - 개별 파일 추출 없이 MAME CHD 이미지 포맷에서 직접 PIU 에셋을 마운트하고 읽어들일 수 있는 기능을 추가했습니다.
+   - HLE 계층에 MSCDEX(Microsoft CD-ROM Extensions) 에뮬레이션을 구현하여, 마운트된 CHD 이미지로부터 CD 오디오(BGM) 트랙을 직접 재생하고 제어할 수 있게 되었습니다.
 
 ## 성능 비교 (Performance Comparison)
 
@@ -56,6 +59,9 @@ The major tasks completed since the last update include:
 3. **Self-Modifying Code (SMC) Coherency Resolution**
    - Implemented a page-level coherency model to handle runtime code modification (e.g., import stubs) inherent to PIU game logic.
    - Whenever code is modified at runtime, the active cache is immediately retired, and a new live arena snapshot is used to publish a new generation of native instructions, ensuring execution flow continues safely and without divergence.
+4. **MAME CHD Asset Mounting and MSCDEX CD Audio Emulation**
+   - Added functionality to mount and read PIU assets directly from MAME CHD image formats without needing individual file extraction.
+   - Implemented MSCDEX (Microsoft CD-ROM Extensions) emulation at the HLE layer, allowing CD audio (BGM) tracks to be played and controlled directly from the mounted CHD image.
 
 ## Performance Comparison
 
