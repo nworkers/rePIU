@@ -402,6 +402,26 @@ bool GlideOpenGlBackend::SetCullMode(std::uint32_t mode)
 #endif
 }
 
+bool GlideOpenGlBackend::SetDitherMode(std::uint32_t mode)
+{
+#if !defined(_WIN32)
+    return false;
+#else
+    constexpr std::uint32_t kObservedDitherMode = 2U;
+    if (!is_open() || mode != kObservedDitherMode)
+    {
+        message_ = "unsupported Glide dither mode";
+        return false;
+    }
+    // TODO(Glide fidelity): replace host dithering with a verified Voodoo
+    // ordered-dither GLSL path once mode-2 matrix and PIU color quantization
+    // are confirmed. See docs/design/20260712-158-glide-host-dither-policy.md.
+    glEnable(GL_DITHER);
+    message_ = "observed Glide dither mode delegated to OpenGL";
+    return glGetError() == GL_NO_ERROR;
+#endif
+}
+
 void GlideOpenGlBackend::Close()
 {
 #if defined(_WIN32)

@@ -4,6 +4,7 @@
 #include "repiu/exe/executable_headers.h"
 
 #include <cstdint>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -87,10 +88,23 @@ struct GlideLogicalState
     std::uint32_t clip_max_x = 0;
     std::uint32_t clip_max_y = 0;
     std::uint32_t cull_mode = 0;
+    std::uint32_t dither_mode = 0;
 };
 
 constexpr std::uint32_t kPiuBansheeVirtualTextureMemoryBytes =
     8U * 1024U * 1024U;
+// The 312-byte Glide2 compatibility observation is cross-checked against
+// PIU's 336-byte allocation gap. No external state layout or source is used.
+// References:
+// https://www.bitsavers.org/components/3dfx/Glide_Reference_Manual_2.4_199707.pdf
+// https://www.zeus-software.com/forum/viewtopic.php?start=10&t=2232
+constexpr std::size_t kGlide2StateImageBytes = 312U;
+using GlideStateImage = std::array<std::uint8_t, kGlide2StateImageBytes>;
+
+bool BuildGlideStateImage(const GlideLogicalState& state,
+                          GlideStateImage* image);
+bool ParseGlideStateImage(const GlideStateImage& image,
+                          GlideLogicalState* state);
 
 bool BuildGlideGatePlan(
     const std::vector<exe::LeResidentName>& resident_names,

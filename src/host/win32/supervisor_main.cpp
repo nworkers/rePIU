@@ -42,9 +42,28 @@ void PrintSnapshot(
               << " guest_eax=0x"
               << static_cast<std::uint32_t>(
                      ReadInterlocked(&telemetry.last_guest_eax))
+              << " guest_ebx/ecx/edx=0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.last_guest_ebx)) << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.last_guest_ecx)) << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.last_guest_edx))
+              << " guest_esi/edi=0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.last_guest_esi)) << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.last_guest_edi))
               << " guest_esp=0x"
               << static_cast<std::uint32_t>(
                      ReadInterlocked(&telemetry.last_guest_esp))
+              << " dpmi_frame_eax/ebx/ecx=0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.dpmi_frame_eax)) << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.dpmi_frame_ebx)) << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.dpmi_frame_ecx))
               << " handler_phase="
               << ReadInterlocked(&telemetry.guest_handler_phase)
               << " glide_ordinal="

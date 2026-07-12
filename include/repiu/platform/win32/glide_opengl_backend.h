@@ -39,6 +39,7 @@ public:
                        std::uint32_t max_x,
                        std::uint32_t max_y);
     bool SetCullMode(std::uint32_t mode);
+    bool SetDitherMode(std::uint32_t mode);
     void Close();
 
     bool is_open() const { return window_ != nullptr; }

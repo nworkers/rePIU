@@ -37,6 +37,11 @@ struct StackSwitchCallState
     std::uint32_t guest_return_esp = 0;
     std::uint32_t result_code = 0;
     std::uint32_t enable_single_step_trace = 0;
+    std::uint32_t host_fs = 0;
+    std::uint32_t host_ds = 0;
+    std::uint32_t host_es = 0;
+    std::uint32_t host_gs = 0;
+    std::uint32_t host_ss = 0;
 };
 
 struct DosInterruptVectorShadow
@@ -347,6 +352,7 @@ struct ThreadContext
     std::atomic<std::uint32_t> live_telemetry_heartbeat{0};
     std::atomic<std::uint32_t> live_telemetry_phase{0};
     Win32SharedLiveTelemetry* shared_live_telemetry = nullptr;
+    void* vectored_handler = nullptr;
     std::unordered_map<std::uint32_t, std::uint8_t> shadow_memory;
     std::array<ShadowWriteProvenance, kShadowWriteProvenanceCapacity>
         shadow_write_provenance = {};
@@ -446,7 +452,10 @@ bool IsGuestStackSwitchSupported()
 }
 
 #if defined(_WIN32)
-thread_local ThreadContext* g_active_thread_context = nullptr;
+// Guest execution is serialized to one worker per loader process. Keeping the
+// VEH context outside Win32 TLS prevents a guest-modified FS selector from
+// escaping into compiler-generated TLS access during host recovery.
+ThreadContext* g_active_thread_context = nullptr;
 
 using CreateThreadFn = HANDLE(WINAPI*)(
     LPSECURITY_ATTRIBUTES,
@@ -1374,6 +1383,11 @@ static_assert(offsetof(StackSwitchCallState, host_esp) == 8);
 static_assert(offsetof(StackSwitchCallState, guest_return_esp) == 12);
 static_assert(offsetof(StackSwitchCallState, result_code) == 16);
 static_assert(offsetof(StackSwitchCallState, enable_single_step_trace) == 20);
+static_assert(offsetof(StackSwitchCallState, host_fs) == 24);
+static_assert(offsetof(StackSwitchCallState, host_ds) == 28);
+static_assert(offsetof(StackSwitchCallState, host_es) == 32);
+static_assert(offsetof(StackSwitchCallState, host_gs) == 36);
+static_assert(offsetof(StackSwitchCallState, host_ss) == 40);
 
 extern "C" void RecoverHostStackException();
 
@@ -1391,6 +1405,17 @@ CallGuestEntryWithStack(StackSwitchCallState* state)
         mov ecx, [ebp + 8]
         mov eax, [ecx + 0]
         mov edx, [ecx + 4]
+        xor ebx, ebx
+        mov bx, fs
+        mov [ecx + 24], ebx
+        mov bx, ds
+        mov [ecx + 28], ebx
+        mov bx, es
+        mov [ecx + 32], ebx
+        mov bx, gs
+        mov [ecx + 36], ebx
+        mov bx, ss
+        mov [ecx + 40], ebx
         mov [ecx + 8], esp
 
         mov esp, edx
@@ -1422,6 +1447,14 @@ RecoverGuestStackException()
 {
     __asm
     {
+        mov eax, ss:[ecx + 24]
+        mov fs, ax
+        mov eax, ss:[ecx + 36]
+        mov gs, ax
+        mov eax, ss:[ecx + 32]
+        mov es, ax
+        mov eax, ss:[ecx + 28]
+        mov ds, ax
         pop edi
         pop esi
         pop ebx
@@ -1434,6 +1467,23 @@ RecoverGuestStackException()
 void RecoverToHost(CONTEXT* context, ThreadContext* thread_context)
 {
     context->Eip = reinterpret_cast<DWORD_PTR>(&RecoverGuestStackException);
+    context->EFlags &= ~0x00000100U;
+    context->EFlags &= ~0x00000400U;
+    if (thread_context->active_call_state != nullptr)
+    {
+        context->Ecx = reinterpret_cast<DWORD_PTR>(
+            thread_context->active_call_state);
+        context->SegFs = static_cast<DWORD>(
+            thread_context->active_call_state->host_fs);
+        context->SegDs = static_cast<DWORD>(
+            thread_context->active_call_state->host_ds);
+        context->SegEs = static_cast<DWORD>(
+            thread_context->active_call_state->host_es);
+        context->SegGs = static_cast<DWORD>(
+            thread_context->active_call_state->host_gs);
+        context->SegSs = static_cast<DWORD>(
+            thread_context->active_call_state->host_ss);
+    }
     std::uint32_t host_esp = thread_context->host_esp;
     if (host_esp == 0 && thread_context->active_call_state != nullptr)
     {
@@ -3200,6 +3250,14 @@ bool HandleDosInterrupt2F(CONTEXT* win32_context, ThreadContext* context)
         win32_context->Eip += 2;
         return true;
     }
+    if (ax == 0x1500)
+    {
+        RecordHandledDosInterrupt(context, 0x2F, ax);
+        win32_context->Ebx &= 0xFFFF0000U;
+        win32_context->Ecx &= 0xFFFF0000U;
+        win32_context->Eip += 2;
+        return true;
+    }
 
     std::ostringstream stream;
     stream << "unsupported DOS interrupt 0x2f AX=0x"
@@ -3250,9 +3308,72 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
         win32_context->Eip += 2;
         return true;
     }
-    if (ax == 0x0300 && context->fatal_breakpoint_continued &&
-        (win32_context->Ebx & 0xFFU) == 0x2FU)
+    if (ax == 0x0300 && (win32_context->Ebx & 0xFFU) == 0x2FU)
     {
+        constexpr std::size_t kRealModeFrameBytes = 0x32U;
+        constexpr std::size_t kFrameEbxOffset = 0x10U;
+        constexpr std::size_t kFrameEcxOffset = 0x18U;
+        constexpr std::size_t kFrameEaxOffset = 0x1CU;
+        constexpr std::size_t kFrameFlagsOffset = 0x20U;
+        void* frame = reinterpret_cast<void*>(static_cast<std::uintptr_t>(
+            win32_context->Edi));
+        if (!context->fatal_breakpoint_continued)
+        {
+            if (!IsGuestRangeWritable(
+                    context, frame, kRealModeFrameBytes))
+            {
+                return false;
+            }
+            auto* bytes = static_cast<std::uint8_t*>(frame);
+            std::uint32_t frame_eax = 0;
+            std::uint32_t frame_ebx = 0;
+            std::uint32_t frame_ecx = 0;
+            std::memcpy(&frame_eax, bytes + kFrameEaxOffset,
+                        sizeof(frame_eax));
+            std::memcpy(&frame_ebx, bytes + kFrameEbxOffset,
+                        sizeof(frame_ebx));
+            std::memcpy(&frame_ecx, bytes + kFrameEcxOffset,
+                        sizeof(frame_ecx));
+            if (context->shared_live_telemetry != nullptr)
+            {
+                InterlockedExchange(
+                    &context->shared_live_telemetry->dpmi_frame_eax,
+                    static_cast<long>(frame_eax));
+                InterlockedExchange(
+                    &context->shared_live_telemetry->dpmi_frame_ebx,
+                    static_cast<long>(frame_ebx));
+                InterlockedExchange(
+                    &context->shared_live_telemetry->dpmi_frame_ecx,
+                    static_cast<long>(frame_ecx));
+            }
+            const std::uint16_t frame_ax = static_cast<std::uint16_t>(
+                frame_eax & 0xFFFFU);
+            if (frame_ax == 0x1500U)
+            {
+                frame_ebx &= 0xFFFF0000U;
+                frame_ecx &= 0xFFFF0000U;
+                std::memcpy(bytes + kFrameEbxOffset, &frame_ebx,
+                            sizeof(frame_ebx));
+                std::memcpy(bytes + kFrameEcxOffset, &frame_ecx,
+                            sizeof(frame_ecx));
+            }
+            else if (frame_ax == 0x1510U)
+            {
+                std::uint32_t frame_flags = 0;
+                std::memcpy(&frame_flags, bytes + kFrameFlagsOffset,
+                            sizeof(frame_flags));
+                frame_eax = (frame_eax & 0xFFFF0000U) | 0x000FU;
+                frame_flags |= 1U;
+                std::memcpy(bytes + kFrameEaxOffset, &frame_eax,
+                            sizeof(frame_eax));
+                std::memcpy(bytes + kFrameFlagsOffset, &frame_flags,
+                            sizeof(frame_flags));
+            }
+            else
+            {
+                return false;
+            }
+        }
         RecordHandledDosInterrupt(context, 0x31, ax);
         win32_context->EFlags &= ~1U;
         win32_context->Eip += 2;
@@ -7501,6 +7622,58 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         win32_context->Esp += 2U * sizeof(std::uint32_t);
         return true;
     }
+    if (glide_export->name == "_GRGLIDEGETSTATE@4")
+    {
+        repiu::hle::GlideStateImage image;
+        void* output = reinterpret_cast<void*>(static_cast<std::uintptr_t>(
+            context->glide_gate_stack[1]));
+        if (!repiu::hle::BuildGlideStateImage(context->glide_state, &image) ||
+            !WriteGuestBytes(context, output, image.data(), image.size()))
+        {
+            return false;
+        }
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRGLIDESETSTATE@4")
+    {
+        repiu::hle::GlideStateImage image;
+        const void* input = reinterpret_cast<const void*>(
+            static_cast<std::uintptr_t>(context->glide_gate_stack[1]));
+        repiu::hle::GlideLogicalState restored = context->glide_state;
+        if (!IsGuestRangeReadable(context, input, image.size()))
+        {
+            return false;
+        }
+        std::memcpy(image.data(), input, image.size());
+        if (!repiu::hle::ParseGlideStateImage(image, &restored))
+        {
+            return false;
+        }
+        context->glide_state = restored;
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRDITHERMODE@4")
+    {
+        const std::uint32_t mode = context->glide_gate_stack[1];
+        if (!context->glide_backend.SetDitherMode(mode))
+        {
+            context->glide_backend_message =
+                context->glide_backend.message();
+            return false;
+        }
+        context->glide_state.dither_mode = mode;
+        context->glide_backend_message = context->glide_backend.message();
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
     return false;
 }
 
@@ -7522,6 +7695,15 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     }
 
     CONTEXT* win32_context = exception_info->ContextRecord;
+    constexpr DWORD kVisualCppThreadNameException = 0x406D1388U;
+    if (exception_info->ExceptionRecord != nullptr &&
+        exception_info->ExceptionRecord->ExceptionCode ==
+            kVisualCppThreadNameException &&
+        !IsGuestInstructionPointer(
+            context, static_cast<std::uint32_t>(win32_context->Eip)))
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     if (context->shared_live_telemetry != nullptr &&
         exception_info->ExceptionRecord != nullptr)
     {
@@ -7539,6 +7721,21 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
             InterlockedExchange(
                 &context->shared_live_telemetry->last_guest_eax,
                 static_cast<long>(win32_context->Eax));
+            InterlockedExchange(
+                &context->shared_live_telemetry->last_guest_ebx,
+                static_cast<long>(win32_context->Ebx));
+            InterlockedExchange(
+                &context->shared_live_telemetry->last_guest_ecx,
+                static_cast<long>(win32_context->Ecx));
+            InterlockedExchange(
+                &context->shared_live_telemetry->last_guest_edx,
+                static_cast<long>(win32_context->Edx));
+            InterlockedExchange(
+                &context->shared_live_telemetry->last_guest_esi,
+                static_cast<long>(win32_context->Esi));
+            InterlockedExchange(
+                &context->shared_live_telemetry->last_guest_edi,
+                static_cast<long>(win32_context->Edi));
             InterlockedExchange(
                 &context->shared_live_telemetry->last_guest_esp,
                 static_cast<long>(win32_context->Esp));
@@ -7755,9 +7952,9 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
                 context->enable_single_step_trace ? 1U : 0U;
             context->active_call_state = &state;
             g_active_thread_context = context;
-            void* vectored_handler = AddVectoredExceptionHandler(
+            context->vectored_handler = AddVectoredExceptionHandler(
                 1, GuestStackVectoredExceptionHandler);
-            if (vectored_handler == nullptr)
+            if (context->vectored_handler == nullptr)
             {
                 g_active_thread_context = nullptr;
                 context->active_call_state = nullptr;
@@ -7766,7 +7963,6 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
 
             CallGuestEntryWithStack(&state);
 
-            RemoveVectoredExceptionHandler(vectored_handler);
             g_active_thread_context = nullptr;
             context->active_call_state = nullptr;
             context->host_esp = state.host_esp;
@@ -7790,9 +7986,9 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
         {
 #if defined(_MSC_VER) && defined(_M_IX86)
             g_active_thread_context = context;
-            void* vectored_handler = AddVectoredExceptionHandler(
+            context->vectored_handler = AddVectoredExceptionHandler(
                 1, GuestStackVectoredExceptionHandler);
-            if (vectored_handler == nullptr)
+            if (context->vectored_handler == nullptr)
             {
                 g_active_thread_context = nullptr;
                 return 5;
@@ -7803,7 +7999,6 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
                 static_cast<std::uintptr_t>(context->entry_address));
             entry();
 #if defined(_MSC_VER) && defined(_M_IX86)
-            RemoveVectoredExceptionHandler(vectored_handler);
             g_active_thread_context = nullptr;
             if (context->process_exit)
             {
@@ -8106,6 +8301,14 @@ bool RunWin32ExecutionThread(
         enable_single_step_trace ? &context : nullptr,
         &exit_code);
 
+    const auto remove_vectored_handler = [&context]() {
+        if (context.vectored_handler != nullptr)
+        {
+            RemoveVectoredExceptionHandler(context.vectored_handler);
+            context.vectored_handler = nullptr;
+        }
+    };
+
     if (wait_result == WAIT_TIMEOUT)
     {
         attempt->timed_out = true;
@@ -8115,6 +8318,7 @@ bool RunWin32ExecutionThread(
             api.terminate_thread(thread, 3);
             WaitForSingleObject(thread, 5000U);
         }
+        remove_vectored_handler();
         CopyThreadObservationToAttempt(context, attempt);
         attempt->valid = true;
         attempt->message = "minimal execution attempt timed out";
@@ -8122,6 +8326,7 @@ bool RunWin32ExecutionThread(
         return true;
     }
 
+    remove_vectored_handler();
     api.close_handle(thread);
 
     attempt->returned = context.returned;

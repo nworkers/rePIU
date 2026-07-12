@@ -8,7 +8,7 @@ namespace repiu::hle
 namespace
 {
 
-constexpr std::array<GlideSignature, 22> kObservedSignatures = {{
+constexpr std::array<GlideSignature, 25> kObservedSignatures = {{
     {"_GRGLIDEINIT@0", 0U, GlideReturnKind::kVoid},
     {"_GRSSTQUERYHARDWARE@4", 4U, GlideReturnKind::kFxBool},
     {"_GRSSTSELECT@4", 4U, GlideReturnKind::kVoid},
@@ -30,10 +30,110 @@ constexpr std::array<GlideSignature, 22> kObservedSignatures = {{
     {"_GRFOGMODE@4", 4U, GlideReturnKind::kVoid},
     {"_GRCLIPWINDOW@16", 16U, GlideReturnKind::kVoid},
     {"_GRCULLMODE@4", 4U, GlideReturnKind::kVoid},
+    {"_GRGLIDEGETSTATE@4", 4U, GlideReturnKind::kVoid},
+    {"_GRGLIDESETSTATE@4", 4U, GlideReturnKind::kVoid},
+    {"_GRDITHERMODE@4", 4U, GlideReturnKind::kVoid},
     {"_GRGLIDESHUTDOWN@0", 0U, GlideReturnKind::kVoid},
 }};
 
 }  // namespace
+
+bool BuildGlideStateImage(const GlideLogicalState& state,
+                          GlideStateImage* image)
+{
+    if (image == nullptr)
+    {
+        return false;
+    }
+    image->fill(0U);
+    std::size_t cursor = 0;
+    const auto write_u32 = [&image, &cursor](std::uint32_t value) {
+        if (cursor + 4U > image->size())
+        {
+            return false;
+        }
+        (*image)[cursor] = static_cast<std::uint8_t>(value);
+        (*image)[cursor + 1U] = static_cast<std::uint8_t>(value >> 8U);
+        (*image)[cursor + 2U] = static_cast<std::uint8_t>(value >> 16U);
+        (*image)[cursor + 3U] = static_cast<std::uint8_t>(value >> 24U);
+        cursor += 4U;
+        return true;
+    };
+    constexpr std::uint32_t kStateMagic = 0x53504952U;
+    constexpr std::uint32_t kStateVersion = 2U;
+    return write_u32(kStateMagic) && write_u32(kStateVersion) &&
+        write_u32(state.initialized ? 1U : 0U) &&
+        write_u32(state.selected_board) &&
+        write_u32(state.window_open ? 1U : 0U) &&
+        write_u32(state.width) && write_u32(state.height) &&
+        write_u32(state.color_format) && write_u32(state.origin) &&
+        write_u32(state.color_buffer_count) &&
+        write_u32(state.auxiliary_buffer_count) &&
+        write_u32(state.texture_memory_bytes) &&
+        write_u32(state.lfb_write_color_format) &&
+        write_u32(state.alpha_test_function) &&
+        write_u32(state.depth_buffer_function) &&
+        write_u32(state.fog_mode) && write_u32(state.clip_min_x) &&
+        write_u32(state.clip_min_y) && write_u32(state.clip_max_x) &&
+        write_u32(state.clip_max_y) && write_u32(state.cull_mode) &&
+        write_u32(state.dither_mode);
+}
+
+bool ParseGlideStateImage(const GlideStateImage& image,
+                          GlideLogicalState* state)
+{
+    if (state == nullptr)
+    {
+        return false;
+    }
+    std::size_t cursor = 0;
+    const auto read_u32 = [&image, &cursor](std::uint32_t* value) {
+        if (value == nullptr || cursor + 4U > image.size())
+        {
+            return false;
+        }
+        *value = static_cast<std::uint32_t>(image[cursor]) |
+            (static_cast<std::uint32_t>(image[cursor + 1U]) << 8U) |
+            (static_cast<std::uint32_t>(image[cursor + 2U]) << 16U) |
+            (static_cast<std::uint32_t>(image[cursor + 3U]) << 24U);
+        cursor += 4U;
+        return true;
+    };
+    std::uint32_t magic = 0;
+    std::uint32_t version = 0;
+    std::uint32_t initialized = 0;
+    std::uint32_t window_open = 0;
+    GlideLogicalState restored = *state;
+    constexpr std::uint32_t kStateMagic = 0x53504952U;
+    constexpr std::uint32_t kStateVersion = 2U;
+    if (!read_u32(&magic) || !read_u32(&version) ||
+        magic != kStateMagic || version != kStateVersion ||
+        !read_u32(&initialized) || !read_u32(&restored.selected_board) ||
+        !read_u32(&window_open) || !read_u32(&restored.width) ||
+        !read_u32(&restored.height) ||
+        !read_u32(&restored.color_format) ||
+        !read_u32(&restored.origin) ||
+        !read_u32(&restored.color_buffer_count) ||
+        !read_u32(&restored.auxiliary_buffer_count) ||
+        !read_u32(&restored.texture_memory_bytes) ||
+        !read_u32(&restored.lfb_write_color_format) ||
+        !read_u32(&restored.alpha_test_function) ||
+        !read_u32(&restored.depth_buffer_function) ||
+        !read_u32(&restored.fog_mode) ||
+        !read_u32(&restored.clip_min_x) ||
+        !read_u32(&restored.clip_min_y) ||
+        !read_u32(&restored.clip_max_x) ||
+        !read_u32(&restored.clip_max_y) ||
+        !read_u32(&restored.cull_mode) ||
+        !read_u32(&restored.dither_mode))
+    {
+        return false;
+    }
+    restored.initialized = initialized != 0U;
+    restored.window_open = window_open != 0U;
+    *state = restored;
+    return true;
+}
 
 bool BuildGlideGatePlan(
     const std::vector<exe::LeResidentName>& resident_names,

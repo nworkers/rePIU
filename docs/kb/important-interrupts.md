@@ -55,3 +55,5 @@ mouse driver service다. `AX=0000h`는 reset/presence query로 사용된다. mou
 Use the [DPMI 1.0 specification](https://www.delorie.com/djgpp/doc/dpmi/) for DPMI contracts and [Ralf Brown’s Interrupt List distribution page](https://www.cs.cmu.edu/~ralf/files.html) as a broad historical DOS interrupt index.
 
 Important families are DOS services on `INT 21h`, multiplex/protected-mode detection on `INT 2Fh`, DPMI on `INT 31h`, mouse services on `INT 33h`, and the one-byte breakpoint instruction `INT3`. `INT3` may indicate an application fatal path and must not be blindly skipped.
+
+MSCDEX uses `INT 2Fh AX=1500h` for installation/drive-count queries and `AX=1510h` to send a device-driver request. See the [RBIL INT 2Fh index](https://fd.lod.bz/rbil/zint/index_2f.html) and [RBIL AX=1510h entry](https://fd.lod.bz/rbil/interrup/io_disk/2f1510.html).
