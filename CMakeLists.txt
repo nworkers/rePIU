@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(rePIU LANGUAGES CXX)
+project(rePIU LANGUAGES C CXX)
 
 include(FetchContent)
 
@@ -18,6 +18,18 @@ if(NOT spdlog_FOUND)
     )
     FetchContent_MakeAvailable(spdlog)
 endif()
+
+add_library(repiu_zydis STATIC
+    third_party/zydis/Zydis.c
+)
+target_include_directories(repiu_zydis
+    PUBLIC
+        third_party/zydis
+)
+target_compile_definitions(repiu_zydis
+    PUBLIC
+        ZYDIS_STATIC_BUILD
+)
 
 function(repiu_configure_win32_loader_host target_name)
     if(MSVC AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 4)
@@ -45,6 +57,7 @@ add_library(repiu_exe
     src/hle/privileged_instruction.cpp
     src/platform/win32/execution_trampoline.cpp
     src/platform/win32/native_fast_path.cpp
+    src/platform/win32/verified_region_analyzer.cpp
     src/platform/win32/glide_opengl_backend.cpp
     src/platform/win32/glide_opengl_shader.cpp
     src/platform/win32/x87_context.cpp
@@ -62,6 +75,8 @@ target_include_directories(repiu_exe
     PUBLIC
         include
 )
+
+target_link_libraries(repiu_exe PRIVATE repiu_zydis)
 
 add_executable(repiu_exe_analyzer
     src/tools/exe_analyzer/main.cpp

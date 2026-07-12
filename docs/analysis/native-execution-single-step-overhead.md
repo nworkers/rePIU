@@ -42,3 +42,11 @@ Most sampled EIPs after about 23 seconds fall in relocated `0x030EE1xx`, object 
 정확한 x86 instruction boundary와 operand/control-flow metadata를 위해 MIT License의 Zydis를 pinned dependency로 도입하기로 결정했다. 자체 decoder는 Zydis adapter와 rePIU 고유 안전 정책으로 교체할 예정이다.
 
 **Confirmed:** The in-house direct-call/CFG decoder prototype handled 207 function entries but split `29 CF` into opcode `29` followed by operand byte `CF` in the critical unpack call graph. Misclassifying that operand as `IRET` means instruction-boundary safety is not established. The prototype is disabled by a fail-closed constant and is not used as a production fast path. It will be replaced by a pinned MIT-licensed Zydis decoder plus rePIU-specific safety policy.
+
+## Zydis 기반 검증 결과 / Zydis-Based Verification Result
+
+**확인됨:** Zydis v4.1.1 legacy-32 decoder로 자체 instruction-length decoder를 교체했다. 첫 30초 실행에서 fast path는 `12,134`회 진입, `12,117`회 정상 반환, `17`회 안전 취소를 기록했다. 취소된 함수는 이후 cache에서 영구 거부하도록 보완했으며, 60초 재검증에서는 `19,437/19,431/6` entry/return/cancel을 기록했다. guest fatal이나 `Not PTX file`은 발생하지 않았다.
+
+기존 실행은 30~120초 동안 주로 object 2 `+0xDE1xx` bit-unpack loop에 머물렀다. Zydis 적용 후 30초 시점에는 `+0x76Dxx~+0x774xx`, 36초 이후 `+0x479xx`, 57초 이후 다시 여러 resource 처리 구간으로 진행했다. 따라서 원본 unpack call graph가 실제로 native 실행되어 기존 단일 병목을 통과한 것이 확인된다. 새로 확인된 필수 HLE 누락은 아직 없다.
+
+**Confirmed:** Replaced the in-house length decoder with pinned Zydis v4.1.1 legacy-32 decoding. The first 30-second run recorded `12,134/12,117/17` entries/returns/cancellations. After permanently rejecting a function on intermediate exception, a 60-second run recorded `19,437/19,431/6` without guest fatal output or `Not PTX file`. Execution no longer remains in object 2 `+0xDE1xx`; samples advance through `+0x76Dxx~+0x774xx`, `+0x479xx`, and subsequent resource-processing regions, confirming that the original unpack call graph passes the former bottleneck.
