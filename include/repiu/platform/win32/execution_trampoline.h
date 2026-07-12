@@ -239,6 +239,11 @@ struct Win32MinimalExecutionAttempt
     X86ExecutionSnapshot timeout_snapshot;
     X86ExecutionSnapshot last_single_step_snapshot;
     std::uint32_t single_step_trace_count = 0;
+    std::uint32_t native_fast_path_entry_count = 0;
+    std::uint32_t native_fast_path_return_count = 0;
+    std::uint32_t native_fast_path_cancel_count = 0;
+    std::uint32_t native_fast_path_last_entry = 0;
+    std::uint32_t native_fast_path_last_return = 0;
     std::uint32_t diagnostic_poll_iteration_count = 0;
     std::uint32_t diagnostic_progress_count = 0;
     std::uint32_t diagnostic_quiet_iteration_count = 0;

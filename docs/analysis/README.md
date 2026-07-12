@@ -49,3 +49,6 @@ The DOS/4G DLL loader analysis also records the [DOS/32A behavioral cross-refere
 This directory accumulates project-specific facts directly confirmed from the original PIU executable and rePIU execution. Chronological evidence remains in `docs/work-logs/`; these files consolidate the currently valid conclusions by topic.
 
 Status labels are **Confirmed**, **Inferred**, and **Unresolved**. See the linked Korean-first documents above; each includes an English section.
+## 추가 분석 / Additional Analysis
+
+* [네이티브 실행 single-step 병목 / Native execution single-step bottleneck](native-execution-single-step-overhead.md)

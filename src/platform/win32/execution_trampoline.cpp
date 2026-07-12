@@ -1,4 +1,5 @@
 #include "repiu/platform/win32/execution_trampoline.h"
+#include "native_fast_path.h"
 #include "repiu/platform/win32/live_telemetry.h"
 #include "repiu/hle/linexe_call_gate.h"
 #include "repiu/hle/glide_hle.h"
@@ -103,6 +104,7 @@ struct ThreadContext
     bool enable_segment_load_hle = false;
     bool enable_dos_hle = false;
     bool enable_single_step_trace = false;
+    detail::NativeFastPathState native_fast_path;
     bool returned = false;
     bool process_exit = false;
     bool dos_termination_captured = false;
@@ -616,7 +618,8 @@ void WriteLiveTelemetrySnapshot(const ThreadContext& context,
         sizeof(buffer),
         "[repiu-live] elapsed_ms=%lu poll=%lu phase=%u heartbeat=%u "
         "dispatch_entry=%u dispatch_exit=%u last_eip=0x%08X "
-        "progress=%u single_step=%u\r\n",
+        "progress=%u single_step=%u fast=%u/%u/%u "
+        "reject=0x%08X:0x%08X/0x%02X bytes=%08X%08X\r\n",
         static_cast<unsigned long>(elapsed_milliseconds),
         static_cast<unsigned long>(poll_iteration),
         context.live_telemetry_phase.load(std::memory_order_relaxed),
@@ -627,7 +630,20 @@ void WriteLiveTelemetrySnapshot(const ThreadContext& context,
             std::memory_order_relaxed),
         context.exception_dispatch_last_eip.load(std::memory_order_relaxed),
         context.diagnostic_progress_count.load(std::memory_order_relaxed),
-        context.single_step_trace_count.load(std::memory_order_relaxed));
+        context.single_step_trace_count.load(std::memory_order_relaxed),
+        context.native_fast_path.entry_count.load(std::memory_order_relaxed),
+        context.native_fast_path.return_count.load(std::memory_order_relaxed),
+        context.native_fast_path.cancel_count.load(std::memory_order_relaxed),
+        context.native_fast_path.last_rejected_candidate.load(
+            std::memory_order_relaxed),
+        context.native_fast_path.last_rejected_instruction.load(
+            std::memory_order_relaxed),
+        context.native_fast_path.last_rejected_opcode.load(
+            std::memory_order_relaxed),
+        context.native_fast_path.last_rejected_bytes_high.load(
+            std::memory_order_relaxed),
+        context.native_fast_path.last_rejected_bytes_low.load(
+            std::memory_order_relaxed));
     if (length <= 0)
     {
         return;
@@ -956,6 +972,16 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
 
     attempt->single_step_trace_count =
         context.single_step_trace_count.load(std::memory_order_relaxed);
+    attempt->native_fast_path_entry_count =
+        context.native_fast_path.entry_count.load(std::memory_order_relaxed);
+    attempt->native_fast_path_return_count =
+        context.native_fast_path.return_count.load(std::memory_order_relaxed);
+    attempt->native_fast_path_cancel_count =
+        context.native_fast_path.cancel_count.load(std::memory_order_relaxed);
+    attempt->native_fast_path_last_entry =
+        context.native_fast_path.last_entry;
+    attempt->native_fast_path_last_return =
+        context.native_fast_path.last_return;
     attempt->diagnostic_poll_iteration_count =
         context.diagnostic_poll_iteration_count;
     attempt->diagnostic_progress_count =
@@ -1979,6 +2005,13 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
         return true;
     }
 
+    if (detail::TryEnterNativeFastPath(win32_context,
+                                       &context->native_fast_path,
+                                       context->runtime_base,
+                                       context->runtime_size))
+    {
+        return true;
+    }
     win32_context->EFlags |= 0x00000100U;
     return true;
 }
@@ -7862,6 +7895,19 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     }
 
     CONTEXT* win32_context = exception_info->ContextRecord;
+    if (context->native_fast_path.active)
+    {
+        const bool returned =
+            exception_info->ExceptionRecord != nullptr &&
+            exception_info->ExceptionRecord->ExceptionCode ==
+                EXCEPTION_SINGLE_STEP &&
+            win32_context->Eip ==
+                context->native_fast_path.return_address &&
+            (win32_context->Dr6 & 0x1U) != 0;
+        detail::LeaveNativeFastPath(win32_context,
+                                    &context->native_fast_path,
+                                    returned);
+    }
     if (context->shared_live_telemetry != nullptr)
     {
         InterlockedExchange(

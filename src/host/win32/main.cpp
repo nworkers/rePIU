@@ -665,6 +665,13 @@ void PrintExecutionAttempt(
     }
     logger.info("Win32 single-step trace count: {}",
                 attempt.single_step_trace_count);
+    logger.info("Win32 native fast path entry/return/cancel: {}/{}/{}",
+                attempt.native_fast_path_entry_count,
+                attempt.native_fast_path_return_count,
+                attempt.native_fast_path_cancel_count);
+    logger.info("Win32 native fast path last entry/return: {}/{}",
+                Hex32(attempt.native_fast_path_last_entry),
+                Hex32(attempt.native_fast_path_last_return));
     logger.info("Win32 diagnostic poll iterations: {}",
                 attempt.diagnostic_poll_iteration_count);
     logger.info("Win32 diagnostic progress count: {}",
