@@ -185,6 +185,13 @@ void PrintSnapshot(
               << ReadInterlocked(&telemetry.glide_gate_stack[5]) << ","
               << ReadInterlocked(&telemetry.glide_gate_stack[6]) << ","
               << ReadInterlocked(&telemetry.glide_gate_stack[7])
+              << " mscdex_probe/request/cmd/status="
+              << ReadInterlocked(&telemetry.mscdex_probe_count) << "/"
+              << ReadInterlocked(&telemetry.mscdex_request_count) << "/"
+              << std::hex
+              << ReadInterlocked(&telemetry.mscdex_last_command) << "/"
+              << ReadInterlocked(&telemetry.mscdex_last_status)
+              << std::dec
               << std::dec << "\n";
     constexpr std::uint32_t kLongRuntimeBoundary = 0x030873F4U;
     if (child_process != nullptr && guest_eip == kLongRuntimeBoundary)

@@ -4,6 +4,8 @@
 #include "repiu/hle/linexe_call_gate.h"
 #include "repiu/hle/glide_hle.h"
 #include "repiu/platform/win32/glide_opengl_backend.h"
+#include "repiu/platform/win32/cd_audio_wave_out.h"
+#include "repiu/media/chd_cd_image.h"
 #include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/selector_table.h"
 
@@ -210,12 +212,21 @@ struct ThreadContext
     std::uint16_t glide_gate_ordinal = 0;
     std::uint32_t glide_gate_argument_bytes = 0;
     char glide_gate_name[64] = {};
+    std::array<std::uint32_t, 256> glide_call_counts = {};
+    std::array<std::array<std::uint32_t, 8>, 256> glide_first_stacks = {};
+    std::array<std::string, 256> glide_call_names = {};
     std::uint32_t glide_window_open_count = 0;
     std::uint32_t glide_logical_width = 0;
     std::uint32_t glide_logical_height = 0;
     std::string glide_backend_message;
     std::vector<exe::LeResidentName> glide_exports;
     repiu::hle::GlideGatePlan glide_gate_plan;
+    repiu::media::ChdCdImage cd_image;
+    CdAudioWaveOut cd_audio;
+    bool mscdex_available = false;
+    bool cd_audio_available = false;
+    std::uint8_t mscdex_drive = 3;
+    std::uint32_t mscdex_request_count = 0;
     repiu::hle::GlideLogicalState glide_state;
     GlideOpenGlBackend glide_backend;
     std::uint32_t linexe_scan_return_eax = 0;
@@ -1185,6 +1196,28 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     std::memcpy(attempt->glide_gate_name,
                 context.glide_gate_name,
                 sizeof(attempt->glide_gate_name));
+    for (std::size_t ordinal = 0;
+         ordinal < context.glide_call_counts.size(); ++ordinal)
+    {
+        if (context.glide_call_counts[ordinal] == 0U)
+        {
+            continue;
+        }
+        Win32MinimalExecutionAttempt::GlideCallObservation observation;
+        observation.ordinal = static_cast<std::uint16_t>(ordinal);
+        observation.count = context.glide_call_counts[ordinal];
+        observation.name = context.glide_call_names[ordinal];
+        std::copy(context.glide_first_stacks[ordinal].begin(),
+                  context.glide_first_stacks[ordinal].end(),
+                  observation.first_stack);
+        attempt->glide_calls.push_back(std::move(observation));
+    }
+    attempt->mscdex_available = context.mscdex_available;
+    attempt->cd_audio_available = context.cd_audio_available;
+    attempt->mscdex_track_count = static_cast<std::uint32_t>(
+        context.cd_image.tracks().size());
+    attempt->mscdex_request_count = context.mscdex_request_count;
+    attempt->cd_audio_current_lba = context.cd_audio.current_lba();
     attempt->glide_window_open_count = context.glide_window_open_count;
     attempt->glide_logical_width = context.glide_logical_width;
     attempt->glide_logical_height = context.glide_logical_height;
@@ -1616,6 +1649,15 @@ bool HandleTracedDpmiInterrupt31(CONTEXT* win32_context,
                                  ThreadContext* context);
 bool HandleTracedMouseInterrupt33(CONTEXT* win32_context,
                                   ThreadContext* context);
+bool ResolveSegmentLinearRange(ThreadContext* context,
+                               std::uint16_t selector,
+                               std::uint32_t offset,
+                               std::uint32_t byte_count,
+                               bool writable,
+                               std::uint32_t* linear_address);
+bool HandleMscdexRequest(ThreadContext* context,
+                         std::uint16_t segment,
+                         std::uint16_t offset);
 bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
                                   ThreadContext* context);
 
@@ -3470,8 +3512,37 @@ bool HandleDosInterrupt2F(CONTEXT* win32_context, ThreadContext* context)
     if (ax == 0x1500)
     {
         RecordHandledDosInterrupt(context, 0x2F, ax);
-        win32_context->Ebx &= 0xFFFF0000U;
-        win32_context->Ecx &= 0xFFFF0000U;
+        if (context->shared_live_telemetry != nullptr)
+        {
+            InterlockedIncrement(
+                &context->shared_live_telemetry->mscdex_probe_count);
+        }
+        win32_context->Ebx = (win32_context->Ebx & 0xFFFF0000U) |
+            (context->mscdex_available ? 1U : 0U);
+        win32_context->Ecx = (win32_context->Ecx & 0xFFFF0000U) |
+            (context->mscdex_available ? context->mscdex_drive : 0U);
+        win32_context->Eip += 2;
+        return true;
+    }
+    if (ax == 0x1510)
+    {
+        RecordHandledDosInterrupt(context, 0x2F, ax);
+        const bool called = context->mscdex_available &&
+            (win32_context->Ecx & 0xFFFFU) == context->mscdex_drive &&
+            HandleMscdexRequest(
+                context,
+                context->guest_es,
+                static_cast<std::uint16_t>(win32_context->Ebx & 0xFFFFU));
+        if (called)
+        {
+            win32_context->EFlags &= ~1U;
+        }
+        else
+        {
+            win32_context->Eax =
+                (win32_context->Eax & 0xFFFF0000U) | 0x000FU;
+            win32_context->EFlags |= 1U;
+        }
         win32_context->Eip += 2;
         return true;
     }
@@ -3481,6 +3552,198 @@ bool HandleDosInterrupt2F(CONTEXT* win32_context, ThreadContext* context)
            << std::hex << static_cast<unsigned>(ax);
     context->hle_message = stream.str();
     return false;
+}
+
+std::uint8_t* ResolveMscdexBuffer(ThreadContext* context,
+                                  std::uint16_t segment,
+                                  std::uint16_t offset,
+                                  std::uint32_t bytes)
+{
+    std::uint32_t linear = 0;
+    if (ResolveSegmentLinearRange(context, segment, offset, bytes, true,
+                                  &linear))
+    {
+        return reinterpret_cast<std::uint8_t*>(
+            static_cast<std::uintptr_t>(linear));
+    }
+    const std::uint32_t real_linear =
+        static_cast<std::uint32_t>(segment) * 16U + offset;
+    if (context->dos_low_memory.valid &&
+        static_cast<std::uint64_t>(real_linear) + bytes <=
+            context->dos_low_memory.bytes.size())
+    {
+        return context->dos_low_memory.bytes.data() + real_linear;
+    }
+    return nullptr;
+}
+
+std::uint32_t ReadPacketU32(const std::uint8_t* packet,
+                            std::size_t offset)
+{
+    std::uint32_t value = 0;
+    std::memcpy(&value, packet + offset, sizeof(value));
+    return value;
+}
+
+void WritePacketU16(std::uint8_t* packet, std::size_t offset,
+                    std::uint16_t value)
+{
+    std::memcpy(packet + offset, &value, sizeof(value));
+}
+
+void WritePacketU32(std::uint8_t* packet, std::size_t offset,
+                    std::uint32_t value)
+{
+    std::memcpy(packet + offset, &value, sizeof(value));
+}
+
+void WritePacketMsf3(std::uint8_t* packet, std::size_t offset,
+                     std::uint32_t msf)
+{
+    packet[offset] = static_cast<std::uint8_t>((msf >> 16U) & 0xFFU);
+    packet[offset + 1U] = static_cast<std::uint8_t>((msf >> 8U) & 0xFFU);
+    packet[offset + 2U] = static_cast<std::uint8_t>(msf & 0xFFU);
+}
+
+std::uint32_t MscdexMsfToLba(std::uint32_t msf)
+{
+    const std::uint32_t minute = (msf >> 16U) & 0xFFU;
+    const std::uint32_t second = (msf >> 8U) & 0xFFU;
+    const std::uint32_t frame = msf & 0xFFU;
+    const std::uint32_t absolute = (minute * 60U + second) * 75U + frame;
+    return absolute >= 150U ? absolute - 150U : 0U;
+}
+
+std::uint32_t MscdexLbaToMsf(std::uint32_t lba)
+{
+    lba += 150U;
+    return ((lba / (60U * 75U)) << 16U) |
+        (((lba / 75U) % 60U) << 8U) | (lba % 75U);
+}
+
+bool HandleMscdexIoctl(ThreadContext* context, std::uint8_t* request)
+{
+    const std::uint16_t offset = static_cast<std::uint16_t>(
+        request[14] | (static_cast<std::uint16_t>(request[15]) << 8U));
+    const std::uint16_t segment = static_cast<std::uint16_t>(
+        request[16] | (static_cast<std::uint16_t>(request[17]) << 8U));
+    const std::uint16_t length = static_cast<std::uint16_t>(
+        request[18] | (static_cast<std::uint16_t>(request[19]) << 8U));
+    std::uint8_t* control = ResolveMscdexBuffer(
+        context, segment, offset, std::max<std::uint16_t>(length, 16U));
+    if (control == nullptr)
+    {
+        return false;
+    }
+    const auto& tracks = context->cd_image.tracks();
+    switch (control[0])
+    {
+        case 6:  // device status
+            if (length < 5U) return false;
+            WritePacketU32(control, 1, 0x00000290U);
+            return true;
+        case 9:  // media changed
+            if (length < 2U) return false;
+            control[1] = 1U;
+            return true;
+        case 10:  // audio disc information
+            if (length < 7U || tracks.empty()) return false;
+            control[1] = tracks.front().number;
+            control[2] = tracks.back().number;
+            WritePacketU32(control, 3,
+                           MscdexLbaToMsf(context->cd_image.lead_out_lba()));
+            return true;
+        case 11:  // audio track information
+        {
+            if (length < 7U) return false;
+            const repiu::media::ChdCdTrack* track =
+                context->cd_image.FindTrack(control[1]);
+            if (track == nullptr) return false;
+            WritePacketU32(control, 2, MscdexLbaToMsf(track->start_lba));
+            control[6] = track->audio ? 0U : 0x40U;
+            return true;
+        }
+        case 12:  // Q-channel information
+        {
+            if (length < 11U) return false;
+            const std::uint32_t lba = context->cd_audio.current_lba();
+            const repiu::media::ChdCdTrack* track =
+                context->cd_image.FindTrackByLba(lba);
+            control[1] = track != nullptr && !track->audio ? 0x40U : 0U;
+            control[2] = track != nullptr ? track->number : 0U;
+            control[3] = 1U;
+            WritePacketMsf3(control, 4, MscdexLbaToMsf(
+                track != nullptr ? lba - track->start_lba : 0U));
+            control[7] = 0U;
+            WritePacketMsf3(control, 8, MscdexLbaToMsf(lba));
+            return true;
+        }
+        case 15:  // audio status
+            if (length < 11U) return false;
+            WritePacketU16(control, 1,
+                context->cd_audio.playing() ? 0U : 1U);
+            WritePacketU32(control, 3,
+                           MscdexLbaToMsf(context->cd_audio.current_lba()));
+            WritePacketU32(control, 7, 0U);
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool HandleMscdexRequest(ThreadContext* context,
+                         std::uint16_t segment,
+                         std::uint16_t offset)
+{
+    std::uint8_t* request = ResolveMscdexBuffer(context, segment, offset, 26U);
+    if (request == nullptr || request[0] < 13U)
+    {
+        return false;
+    }
+    ++context->mscdex_request_count;
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(
+            &context->shared_live_telemetry->mscdex_request_count,
+            static_cast<long>(context->mscdex_request_count));
+        InterlockedExchange(
+            &context->shared_live_telemetry->mscdex_last_command,
+            static_cast<long>(request[2]));
+    }
+    bool success = false;
+    switch (request[2])
+    {
+        case 0x03:
+            success = HandleMscdexIoctl(context, request);
+            break;
+        case 0x84:
+        {
+            const std::uint32_t start = request[13] == 1U
+                ? MscdexMsfToLba(ReadPacketU32(request, 14))
+                : ReadPacketU32(request, 14);
+            success = context->cd_audio_available &&
+                context->cd_audio.Play(start, ReadPacketU32(request, 18));
+            break;
+        }
+        case 0x85:
+            context->cd_audio.Stop();
+            success = true;
+            break;
+        case 0x88:
+            success = context->cd_audio.Resume();
+            break;
+        default:
+            break;
+    }
+    WritePacketU16(request, 3,
+                   success ? 0x0100U : 0x8103U);
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(
+            &context->shared_live_telemetry->mscdex_last_status,
+            success ? 0x0100L : 0x8103L);
+    }
+    return true;
 }
 
 bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
@@ -3527,11 +3790,12 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
     }
     if (ax == 0x0300 && (win32_context->Ebx & 0xFFU) == 0x2FU)
     {
-        constexpr std::size_t kRealModeFrameBytes = 0x32U;
+        constexpr std::size_t kRealModeFrameBytes = 0x34U;
         constexpr std::size_t kFrameEbxOffset = 0x10U;
         constexpr std::size_t kFrameEcxOffset = 0x18U;
         constexpr std::size_t kFrameEaxOffset = 0x1CU;
         constexpr std::size_t kFrameFlagsOffset = 0x20U;
+        constexpr std::size_t kFrameEsOffset = 0x24U;
         void* frame = reinterpret_cast<void*>(static_cast<std::uintptr_t>(
             win32_context->Edi));
         if (!context->fatal_breakpoint_continued)
@@ -3545,12 +3809,15 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
             std::uint32_t frame_eax = 0;
             std::uint32_t frame_ebx = 0;
             std::uint32_t frame_ecx = 0;
+            std::uint16_t frame_es = 0;
             std::memcpy(&frame_eax, bytes + kFrameEaxOffset,
                         sizeof(frame_eax));
             std::memcpy(&frame_ebx, bytes + kFrameEbxOffset,
                         sizeof(frame_ebx));
             std::memcpy(&frame_ecx, bytes + kFrameEcxOffset,
                         sizeof(frame_ecx));
+            std::memcpy(&frame_es, bytes + kFrameEsOffset,
+                        sizeof(frame_es));
             if (context->shared_live_telemetry != nullptr)
             {
                 InterlockedExchange(
@@ -3567,8 +3834,10 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
                 frame_eax & 0xFFFFU);
             if (frame_ax == 0x1500U)
             {
-                frame_ebx &= 0xFFFF0000U;
-                frame_ecx &= 0xFFFF0000U;
+                frame_ebx = (frame_ebx & 0xFFFF0000U) |
+                    (context->mscdex_available ? 1U : 0U);
+                frame_ecx = (frame_ecx & 0xFFFF0000U) |
+                    (context->mscdex_available ? context->mscdex_drive : 0U);
                 std::memcpy(bytes + kFrameEbxOffset, &frame_ebx,
                             sizeof(frame_ebx));
                 std::memcpy(bytes + kFrameEcxOffset, &frame_ecx,
@@ -3579,8 +3848,20 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
                 std::uint32_t frame_flags = 0;
                 std::memcpy(&frame_flags, bytes + kFrameFlagsOffset,
                             sizeof(frame_flags));
-                frame_eax = (frame_eax & 0xFFFF0000U) | 0x000FU;
-                frame_flags |= 1U;
+                const bool called = context->mscdex_available &&
+                    (frame_ecx & 0xFFFFU) == context->mscdex_drive &&
+                    HandleMscdexRequest(
+                        context, frame_es,
+                        static_cast<std::uint16_t>(frame_ebx & 0xFFFFU));
+                if (called)
+                {
+                    frame_flags &= ~1U;
+                }
+                else
+                {
+                    frame_eax = (frame_eax & 0xFFFF0000U) | 0x000FU;
+                    frame_flags |= 1U;
+                }
                 std::memcpy(bytes + kFrameEaxOffset, &frame_eax,
                             sizeof(frame_eax));
                 std::memcpy(bytes + kFrameFlagsOffset, &frame_flags,
@@ -7535,6 +7816,17 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                     stack,
                     sizeof(context->glide_gate_stack));
     }
+    if (glide_export->ordinal < context->glide_call_counts.size())
+    {
+        const std::size_t ordinal = glide_export->ordinal;
+        if (context->glide_call_counts[ordinal]++ == 0U)
+        {
+            context->glide_call_names[ordinal] = glide_export->name;
+            std::copy(std::begin(context->glide_gate_stack),
+                      std::end(context->glide_gate_stack),
+                      context->glide_first_stacks[ordinal].begin());
+        }
+    }
     if (context->shared_live_telemetry != nullptr)
     {
         InterlockedExchange(
@@ -8359,6 +8651,7 @@ bool RunWin32ExecutionThread(
     const hle::DosVirtualFileSystemState* dos_file_system,
     const exe::Dos16mBoundModule* linexe_module,
     const std::vector<exe::LeResidentName>* glide_exports,
+    const std::filesystem::path* cd_chd_path,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
 {
@@ -8429,6 +8722,11 @@ bool RunWin32ExecutionThread(
     if (glide_exports != nullptr)
     {
         context.glide_exports = *glide_exports;
+    }
+    if (cd_chd_path != nullptr && context.cd_image.Open(*cd_chd_path))
+    {
+        context.mscdex_available = true;
+        context.cd_audio_available = context.cd_audio.Open(*cd_chd_path);
     }
     context.dos_environment_block = BuildDosEnvironmentBlock();
     repiu::runtime::InitializeSelectorTable(&context.selector_table);
@@ -8719,6 +9017,7 @@ bool AttemptWin32MinimalExecution(
         nullptr,
         nullptr,
         nullptr,
+        nullptr,
         timeout_milliseconds,
         attempt);
 }
@@ -8756,6 +9055,7 @@ bool AttemptWin32GuestStackExecution(
         nullptr,
         nullptr,
         nullptr,
+        nullptr,
         timeout_milliseconds,
         attempt);
 }
@@ -8766,6 +9066,7 @@ bool AttemptWin32GuestStackTrapExecution(
     const hle::DosVirtualFileSystemState& dos_file_system,
     const exe::Dos16mBoundModule* linexe_module,
     const std::vector<exe::LeResidentName>* glide_exports,
+    const std::filesystem::path* cd_chd_path,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
 {
@@ -8796,6 +9097,7 @@ bool AttemptWin32GuestStackTrapExecution(
         &dos_file_system,
         linexe_module,
         glide_exports,
+        cd_chd_path,
         timeout_milliseconds,
         attempt);
 }
@@ -8832,6 +9134,7 @@ bool AttemptWin32GuestStackHleExecution(
         true,
         false,
         &dos_file_system,
+        nullptr,
         nullptr,
         nullptr,
         timeout_milliseconds,

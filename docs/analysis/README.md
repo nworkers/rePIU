@@ -56,3 +56,6 @@ Status labels are **Confirmed**, **Inferred**, and **Unresolved**. See the linke
 ## 추가 분석 / Additional Analysis
 
 * [네이티브 실행 single-step 병목 / Native execution single-step bottleneck](native-execution-single-step-overhead.md)
+# MSCDEX / CD audio
+
+* [pumpit1 MSCDEX 및 CHD CD 오디오](pumpit1-mscdex-cd-audio.md)

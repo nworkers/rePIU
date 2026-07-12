@@ -26,3 +26,6 @@ flowchart TD
 * [CHD와 ISO9660 / CHD and ISO9660](chd-and-iso9660.md)
 
 This directory documents generally applicable technical background needed to understand the project. Facts confirmed specifically from the PIU binary belong in `docs/analysis/`. Definitions and contracts derived from external material include source links.
+# MSCDEX / CD-DA
+
+* [MSCDEX와 CD-DA](mscdex-and-cd-da.md)

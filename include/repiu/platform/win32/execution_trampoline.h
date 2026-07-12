@@ -7,7 +7,9 @@
 #include "repiu/exe/dos16m_bound_module.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
+#include <vector>
 
 namespace repiu::platform::win32
 {
@@ -348,6 +350,19 @@ struct Win32MinimalExecutionAttempt
     std::uint16_t glide_gate_ordinal = 0;
     std::uint32_t glide_gate_argument_bytes = 0;
     char glide_gate_name[64] = {};
+    struct GlideCallObservation
+    {
+        std::uint16_t ordinal = 0;
+        std::uint32_t count = 0;
+        std::uint32_t first_stack[8] = {};
+        std::string name;
+    };
+    std::vector<GlideCallObservation> glide_calls;
+    bool mscdex_available = false;
+    bool cd_audio_available = false;
+    std::uint32_t mscdex_track_count = 0;
+    std::uint32_t mscdex_request_count = 0;
+    std::uint32_t cd_audio_current_lba = 0;
     std::uint32_t glide_window_open_count = 0;
     std::uint32_t glide_logical_width = 0;
     std::uint32_t glide_logical_height = 0;
@@ -508,6 +523,7 @@ bool AttemptWin32GuestStackTrapExecution(
     const hle::DosVirtualFileSystemState& dos_file_system,
     const exe::Dos16mBoundModule* linexe_module,
     const std::vector<exe::LeResidentName>* glide_exports,
+    const std::filesystem::path* cd_chd_path,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt);
 

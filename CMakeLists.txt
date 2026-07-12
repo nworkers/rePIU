@@ -61,6 +61,8 @@ add_library(repiu_exe
     src/hle/hle_profile.cpp
     src/hle/linexe_call_gate.cpp
     src/hle/privileged_instruction.cpp
+    src/media/chd_cd_image.cpp
+    src/platform/win32/cd_audio_wave_out.cpp
     src/platform/win32/execution_trampoline.cpp
     src/platform/win32/native_fast_path.cpp
     src/platform/win32/verified_region_analyzer.cpp
@@ -88,6 +90,10 @@ add_executable(repiu_exe_analyzer
     src/tools/exe_analyzer/main.cpp
 )
 
+add_executable(repiu_chd_cd_probe
+    src/tools/chd_cd_probe/main.cpp
+)
+
 add_executable(repiu_loader_win32
     src/host/win32/main.cpp
 )
@@ -107,6 +113,11 @@ target_link_libraries(repiu_exe_analyzer
         repiu_exe
 )
 
+target_link_libraries(repiu_chd_cd_probe
+    PRIVATE
+        repiu_exe
+)
+
 target_link_libraries(repiu_loader_win32
     PRIVATE
         repiu_exe
@@ -119,6 +130,7 @@ if(WIN32)
             opengl32
             gdi32
             user32
+            winmm
     )
 endif()
 

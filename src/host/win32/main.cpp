@@ -864,6 +864,27 @@ void PrintExecutionAttempt(
                 Hex32(attempt.glide_gate_stack[5]),
                 Hex32(attempt.glide_gate_stack[6]),
                 Hex32(attempt.glide_gate_stack[7]));
+    for (const auto& call : attempt.glide_calls)
+    {
+        logger.info("Win32 Glide call trace: ordinal={} name={} count={} first_stack={} {} {} {} {} {} {} {}",
+                    call.ordinal,
+                    call.name,
+                    call.count,
+                    Hex32(call.first_stack[0]),
+                    Hex32(call.first_stack[1]),
+                    Hex32(call.first_stack[2]),
+                    Hex32(call.first_stack[3]),
+                    Hex32(call.first_stack[4]),
+                    Hex32(call.first_stack[5]),
+                    Hex32(call.first_stack[6]),
+                    Hex32(call.first_stack[7]));
+    }
+    logger.info("Win32 MSCDEX available/audio/tracks/requests/current LBA: {}/{}/{}/{}/{}",
+                attempt.mscdex_available ? "true" : "false",
+                attempt.cd_audio_available ? "true" : "false",
+                attempt.mscdex_track_count,
+                attempt.mscdex_request_count,
+                attempt.cd_audio_current_lba);
     logger.info("Win32 LINEXE scan return EAX/EBP/caller EAX: {}/{}/{}",
                 Hex32(attempt.linexe_scan_return_eax),
                 Hex32(attempt.linexe_scan_return_ebp),
@@ -1804,6 +1825,7 @@ int main(int argc, char** argv)
         SelectTargetProfile(argc, argv);
     std::optional<repiu::target::TargetProfile> direct_profile;
     std::optional<repiu::target::TargetProfile> mounted_profile;
+    std::optional<std::filesystem::path> cd_chd_path;
     if (profile == nullptr)
     {
         direct_profile = BuildDirectExecutableProfile(argc, argv);
@@ -1837,6 +1859,7 @@ int main(int argc, char** argv)
         mounted_profile->executable_path = mount.executable_path;
         mounted_profile->working_directory = mount.mount_root / "PIU";
         mounted_profile->asset_root = mount.mount_root;
+        cd_chd_path = mount.chd_path;
         profile = &mounted_profile.value();
     }
 
@@ -2149,6 +2172,7 @@ int main(int argc, char** argv)
                   dos_file_system,
                   linexe_runtime_module ? &*linexe_runtime_module : nullptr,
                   glide_exports.empty() ? nullptr : &glide_exports,
+                  cd_chd_path ? &*cd_chd_path : nullptr,
                   execution_timeout_milliseconds,
                   &attempt);
     if (!attempted_execution)

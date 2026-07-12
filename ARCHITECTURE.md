@@ -318,3 +318,15 @@ flowchart LR
     CACHE --> VFS[DOS VFS]
     VFS --> GUEST[original PIU code]
 ```
+# MSCDEX CHD CD audio
+
+`pumpit1` CHD는 ISO9660 mount source와 가상 MSCDEX disc를 동시에 제공합니다. `media::ChdCdImage`가 CHT2/CHTR track 및 raw sector를 담당하고, execution trampoline이 원본 `INT 2Fh AX=1500h/1510h` request를 해석하며, Win32 `CdAudioWaveOut`이 CD-DA PCM 출력만 담당합니다. Glide gate 관찰은 ordinal별 count와 최초 인자를 누적합니다.
+
+```mermaid
+flowchart LR
+    G["Guest INT 2Fh"] --> M["MSCDEX adapter"] --> C["ChdCdImage"]
+    M --> A["CdAudioWaveOut"]
+    C --> A
+```
+
+The pumpit1 CHD is both the ISO9660 mount source and a virtual MSCDEX disc. `media::ChdCdImage` owns track metadata and raw sectors, the execution trampoline adapts original `AX=1500h/1510h` requests, and `CdAudioWaveOut` owns only Win32 CD-DA output. Glide observation accumulates counts and first arguments per ordinal.

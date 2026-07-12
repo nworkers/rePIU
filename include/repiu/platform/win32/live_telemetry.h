@@ -45,6 +45,10 @@ struct Win32SharedLiveTelemetry
     volatile long glide_gate_ecx = 0;
     volatile long glide_gate_edx = 0;
     volatile long glide_gate_stack[8] = {};
+    volatile long mscdex_probe_count = 0;
+    volatile long mscdex_request_count = 0;
+    volatile long mscdex_last_command = 0;
+    volatile long mscdex_last_status = 0;
 };
 
 static_assert(sizeof(long) == 4);
