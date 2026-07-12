@@ -330,3 +330,186 @@ flowchart LR
 ```
 
 The pumpit1 CHD is both the ISO9660 mount source and a virtual MSCDEX disc. `media::ChdCdImage` owns track metadata and raw sectors, the execution trampoline adapts original `AX=1500h/1510h` requests, and `CdAudioWaveOut` owns only Win32 CD-DA output. Glide observation accumulates counts and first arguments per ordinal.
+# AOT translation planning prototype
+
+`runtime::BuildAotTranslationPlan`은 relocated DOS/4GW LE image의 entry/direct edge에서 reachable CFG를 Zydis로 복원하고 copy, direct relocation, HLE boundary, return, indirect exit를 분류합니다. 이 단계는 실행 경로를 바꾸지 않으며 `repiu_aot_probe`가 coverage와 planning time을 측정합니다.
+
+```mermaid
+flowchart LR
+    LE["Relocated LE"] --> CFG["AOT CFG plan"]
+    CFG --> CACHE["Code-cache image"]
+    CFG --> HLE["HLE sentinels"]
+    CFG --> INDIRECT["Indirect dispatch sites"]
+```
+
+`runtime::BuildAotTranslationPlan` recovers a reachable Zydis CFG from relocated DOS/4GW LE images and classifies copy operations, direct relocations, HLE boundaries, returns, and indirect exits. It does not alter execution yet; `repiu_aot_probe` measures coverage and planning time.
+
+## AOT code-cache emission
+
+`runtime::BuildAotCodeCacheImage`는 instruction-level plan에서 플랫폼 공용 비실행
+byte image를 만듭니다. 일반 명령과 return을 보존하고 direct call/jump/Jcc를
+`rel32`로 정규화하며, guest-address/cache-offset map으로 내부 edge를 해결합니다.
+HLE 또는 간접 경계는 외부 sentinel fixup으로 남깁니다. basic-block 끝의 일반
+copy 명령에는 명시적인 `rel32` fall-through를 추가하므로 cache layout이 guest의
+선형 제어 흐름을 바꾸지 않습니다.
+
+```mermaid
+flowchart LR
+    PLAN["Instruction plan"] --> EMIT["Two-pass emitter"]
+    EMIT --> BYTES["Code-cache bytes"]
+    EMIT --> MAP["Guest/cache map"]
+    EMIT --> FIXUP["Resolved + external fixups"]
+    FIXUP --> ABI["Execution ABI sentinels"]
+```
+
+`runtime::BuildAotCodeCacheImage` consumes instruction-level plan records and
+builds a platform-neutral, non-executable byte image. It preserves ordinary
+instructions and returns, normalizes direct call/jump/Jcc edges to `rel32`,
+resolves internal edges through a guest-address/cache-offset map, and leaves HLE
+or indirect boundaries as external sentinel fixups. Explicit `rel32` fall-through
+links preserve guest linear control flow independently of cache layout.
+
+`platform::win32::PlaceWin32AotCodeCache`는 별도 Win32 cache allocation과
+RW copy 후 RX 전환, instruction-cache flush, 양방향 guest/cache lookup을
+담당합니다. `legacy`가 기본 backend이고 `REPIU_EXECUTION_BACKEND=aot`은 정적
+cache bridge를, `aot-dynamic`은 live arena snapshot에서 arbitrary-entry CFG를
+추가하는 실험 경로를 활성화합니다. cache sentinel은 기존 VEH/HLE dispatcher로
+복귀하며, 해결할 수 없는 target은 legacy single-step으로 fail-closed합니다.
+
+The Win32 placement layer owns executable cache allocation, RW copy followed by
+RX protection, instruction-cache flushing, and bidirectional guest/cache lookup.
+`legacy` remains the default backend. `REPIU_EXECUTION_BACKEND=aot` enables the
+static cache bridge, while `aot-dynamic` can append an arbitrary-entry CFG from a
+live arena snapshot. Cache sentinels return through the existing VEH/HLE
+dispatcher, and unresolved targets fail closed to legacy single-step execution.
+
+동적 translation, inline-cache patch, guest-page retirement는 guest가 VEH 경계에서
+대기하는 동안 serialized host-stack worker가 수행합니다. AOT VEH는 native 실행
+전에 near indirect `FF /2`, `FF /4`, `C3/C2`를 해석합니다. call은 guest
+fallthrough를 push하고 return은 guest/cache target을 명시적으로 map하므로 native
+return 주소와 guest return 주소를 추측으로 섞지 않습니다. segment-register
+operand는 명시적인 HLE boundary입니다.
+
+Dynamic translation, inline-cache patching, and guest-page retirement run on a
+serialized host-stack worker while the guest waits at a VEH boundary. Before
+native execution, the AOT VEH resolves near indirect `FF /2` calls, `FF /4`
+jumps, and `C3/C2` returns. Calls push guest fallthrough addresses, returns map
+guest or cache targets explicitly, and segment-register operands remain HLE
+boundaries. The dispatcher never scans for a plausible return address.
+
+## AOT worker inline cache
+
+반복되는 prefix 없는 legacy-32 `FF /2`, `FF /4`, `C3`, `C2 iw` 경계는
+platform-neutral emitter가 guarded inline-cache slot과 patch metadata로 만듭니다.
+첫 miss는 기존 VEH dispatcher에서 guest/cache target을 확인하고, serialized
+Win32 worker가 cache를 RX에서 RW로 바꿔 target과 rel32 edge를 기록한 다음 guard를
+마지막에 공개합니다. 이후 RX 복원과 `FlushInstructionCache`를 완료하기 전에는
+guest가 재개되지 않습니다.
+
+```mermaid
+flowchart LR
+    SLOT["Guarded call/jump/return slot"] -->|hit| EDGE["native rel32 cache edge"]
+    SLOT -->|miss| VEH["existing VEH dispatcher"]
+    VEH --> WORKER["serialized patch worker"]
+    WORKER --> W["RX -> RW -> patch"]
+    W --> X["RX + instruction-cache flush"]
+    X --> SLOT
+```
+
+call hit는 guest fallthrough를 push하며, return hit는 `[ESP]`가 학습한 guest
+return과 일치할 때만 `LEA`로 원래 pop을 수행합니다. operand/return 값이 바뀌거나
+encoding을 안전하게 변환할 수 없으면 기존 dispatcher로 fail-closed합니다.
+code cache는 RWX가 되지 않으며, 현재 page-wide protection 전환은 단일 guest
+실행 thread 전제를 사용합니다.
+
+Prefix-free legacy-32 `FF /2`, `FF /4`, `C3`, and `C2 iw` boundaries are emitted
+as guarded slots with platform-neutral patch metadata. The existing VEH resolves
+the first miss, and a serialized Win32 worker performs RX-to-RW patching, restores
+RX, and flushes the instruction cache before the guest resumes. Calls preserve
+guest fallthrough addresses; returns bypass the dispatcher only when the guarded
+guest return value matches. Unsupported or changed values fail closed. The cache
+never uses RWX, and the current page-wide protection transition assumes one guest
+execution thread per loader process.
+
+## AOT self-modifying page 세대
+
+AOT placement는 각 address-map entry의 guest page, 세대, active 상태와 영구적인
+cache-to-guest provenance를 별도로 보관합니다. 번역된 명령 범위와 겹치는 guest
+write가 확인되면 serialized worker가 그 page의 active entry 첫 바이트를 `INT3`로
+바꾸고 active guest lookup에서 제외합니다. 기존 cache 주소는 삭제하지 않으므로
+이미 연결된 direct edge나 inline cache가 도달해도 guest 주소를 복원할 수 있습니다.
+
+다른 page에서 patch한 retired page로 다음에 진입할 때 live guest byte를 snapshot해
+새 세대를 발행합니다. 길이가 5바이트 이상인 오래된 entry는 최신 entry로 가는
+`E9 rel32`로 재연결하고, 짧은 entry는 provenance trap으로 남깁니다. 같은 page의
+self-modification이나 번역·발행 실패는 해당 page만 legacy quarantine합니다.
+정상 경로는 inactive map이 없으면 추가 탐색을 하지 않으며, 재연결도 inactive
+index만 순회합니다.
+
+`aot_page_coherence_win32`는 translated instruction이 있는 guest page를
+`PAGE_EXECUTE_READ`로 감시합니다. native guest/cache store의 write fault에서는
+Zydis로 store 폭을 계산하고 관련 page만 한 명령 동안
+`PAGE_EXECUTE_READWRITE`로 전환한 뒤 Trap Flag 완료 시 다시 RX로 복원합니다.
+`WriteGuest*` HLE helper는 write와 보호 복원이 성공한 뒤 같은 retirement 정책에
+통지합니다. code cache 자체는 worker만 RX→RW→RX로 바꾸고 수정 후 항상
+`FlushInstructionCache`를 호출합니다.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Active
+    Active --> Retired: overlapping guest write
+    Retired --> Translating: next page entry
+    Translating --> Active: publish generation N+1
+    Translating --> Quarantined: translation/publication failure
+    Active --> Quarantined: same-page self modification
+```
+
+플랫폼 공용 번역 계획은 HLE가 소유한 guest 범위를 제외 범위로 받을 수 있습니다.
+LINEXE/Glide 합성 gate는 복사된 `UD2`로 실행하지 않고 cache sentinel에서 원본
+guest 주소로 나온 뒤 기존 HLE dispatcher가 처리합니다.
+
+파일 책임은 다음과 같습니다.
+
+* `aot_page_coherence_win32`: page index/state, overlap query, retirement,
+  write-watch 보호 전환
+* `aot_code_cache_win32`: placement, dynamic append, generation publication,
+  stale-entry relink 조율
+* `execution_trampoline`: exception을 guest-write event와 serialized worker 요청으로
+  연결하는 adapter
+
+현재 안전성은 loader process당 guest 실행 thread 하나를 전제로 합니다. retired
+provenance와 generation은 cache 수명 동안 유지되며 reclamation은 아직 없습니다.
+REP/string store가 여러 page를 넘는 일반 경우와 multi-thread publication은 후속
+검증 범위입니다.
+
+### AOT self-modifying page generations
+
+AOT placement keeps guest-page provenance, generation, and active state separate
+from the immutable address map. A write overlapping translated instruction bytes
+causes the serialized worker to replace active entry bytes with `INT3` and remove
+them from active guest lookup while preserving cache-to-guest provenance. Entry
+into the retired page snapshots live bytes and publishes the next generation.
+Stale entries of at least five bytes are relinked with `E9 rel32`; shorter entries
+remain provenance traps. Same-page modification or publication failure
+quarantines only that page. The common path performs no inactive-entry scan.
+
+The dedicated `aot_page_coherence_win32` subsystem write-watches guest pages that
+contain translated instructions as `PAGE_EXECUTE_READ`. On a native guest/cache
+store fault, Zydis estimates the write width, only the affected pages become
+`PAGE_EXECUTE_READWRITE` for one instruction, and Trap Flag completion restores
+RX before retirement is reported. Successful `WriteGuest*` HLE writes report to
+the same policy after restoring protection. Only the worker changes the code
+cache from RX to RW and back, followed by `FlushInstructionCache`.
+
+The platform-neutral planner also accepts HLE-owned excluded guest ranges.
+Synthetic LINEXE/Glide gates become cache sentinels that return to the original
+guest address and existing HLE dispatcher instead of copied `UD2` instructions.
+
+`aot_page_coherence_win32` owns page indexing, state, overlap queries,
+retirement, and write-watch protection transitions. `aot_code_cache_win32`
+orchestrates placement, dynamic append, generation publication, and stale-entry
+relinking. The execution trampoline only adapts exceptions into guest-write
+events and serialized worker requests. The current safety model assumes one guest
+execution thread per loader process. Retired provenance is retained for the cache
+lifetime; reclamation, cross-page REP/string stores, and multi-thread publication
+remain follow-up work.

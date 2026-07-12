@@ -75,6 +75,8 @@ Read and update the relevant documents before making architectural changes.
 * `docs/design/`
 * `docs/work-orders/`
 * `docs/work-logs/`
+* `docs/analysis/`
+* `docs/kb/`
 
 ---
 

@@ -1,0 +1,852 @@
+#include "repiu/platform/win32/aot_page_coherence_win32.h"
+#include "repiu/platform/win32/aot_code_cache_win32.h"
+
+#include <Zydis.h>
+
+#include <algorithm>
+#include <cstring>
+#include <limits>
+
+#if defined(_WIN32)
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
+namespace repiu::platform::win32
+{
+namespace
+{
+
+constexpr std::uint32_t kGuestPageSize = 4096U;
+constexpr std::uint32_t kGuestPageMask = ~(kGuestPageSize - 1U);
+
+auto FindGuestPageState(Win32AotCodeCachePlacement* placement,
+                        std::uint32_t guest_page)
+{
+    return std::lower_bound(
+        placement->guest_pages.begin(), placement->guest_pages.end(),
+        guest_page,
+        [](const Win32AotGuestPageState& state, std::uint32_t page) {
+            return state.guest_page < page;
+        });
+}
+
+auto FindGuestPageState(const Win32AotCodeCachePlacement& placement,
+                        std::uint32_t guest_page)
+{
+    return std::lower_bound(
+        placement.guest_pages.begin(), placement.guest_pages.end(),
+        guest_page,
+        [](const Win32AotGuestPageState& state, std::uint32_t page) {
+            return state.guest_page < page;
+        });
+}
+
+Win32AotGuestPageState* EnsureGuestPageState(
+    Win32AotCodeCachePlacement* placement,
+    std::uint32_t guest_page)
+{
+    auto found = FindGuestPageState(placement, guest_page);
+    if (found == placement->guest_pages.end() ||
+        found->guest_page != guest_page)
+    {
+        found = placement->guest_pages.insert(
+            found, Win32AotGuestPageState{guest_page});
+    }
+    return &*found;
+}
+
+bool RangesOverlap(std::uint32_t left_address,
+                   std::uint32_t left_size,
+                   std::uint32_t right_address,
+                   std::uint32_t right_size)
+{
+    const std::uint64_t left_end =
+        static_cast<std::uint64_t>(left_address) + left_size;
+    const std::uint64_t right_end =
+        static_cast<std::uint64_t>(right_address) + right_size;
+    return left_address < right_end && right_address < left_end;
+}
+
+void InsertRetiredGuestAddress(Win32AotCodeCachePlacement* placement,
+                               std::uint32_t guest_address)
+{
+    auto address = std::lower_bound(
+        placement->retired_guest_addresses.begin(),
+        placement->retired_guest_addresses.end(), guest_address);
+    if (address == placement->retired_guest_addresses.end() ||
+        *address != guest_address)
+    {
+        placement->retired_guest_addresses.insert(address, guest_address);
+    }
+}
+
+void RecordInactiveMap(Win32AotCodeCachePlacement* placement,
+                       std::uint32_t map_index)
+{
+    if (placement == nullptr || map_index >= placement->address_map.size())
+    {
+        return;
+    }
+    placement->inactive_map_indices.push_back(map_index);
+    const runtime::AotAddressMapEntry& entry =
+        placement->address_map[map_index];
+    placement->inactive_map_indices_by_guest_address[entry.guest_address]
+        .push_back(map_index);
+    placement->inactive_map_index_by_cache_offset[entry.cache_offset] =
+        map_index;
+    InsertRetiredGuestAddress(placement, entry.guest_address);
+}
+
+void InsertGuestPage(std::uint32_t page,
+                     std::vector<std::uint32_t>* pages)
+{
+    if (pages == nullptr)
+    {
+        return;
+    }
+    const auto position = std::lower_bound(pages->begin(), pages->end(), page);
+    if (position == pages->end() || *position != page)
+    {
+        pages->insert(position, page);
+    }
+}
+
+void RegisterAddressMapPages(Win32AotCodeCachePlacement* placement,
+                             const runtime::AotAddressMapEntry& entry,
+                             std::uint32_t map_index,
+                             std::vector<std::uint32_t>* active_guest_pages)
+{
+    if (entry.guest_length == 0U)
+    {
+        return;
+    }
+    const std::uint64_t last =
+        static_cast<std::uint64_t>(entry.guest_address) +
+        entry.guest_length - 1U;
+    if (last > std::numeric_limits<std::uint32_t>::max())
+    {
+        return;
+    }
+    const std::uint32_t first_page = Win32AotGuestPage(entry.guest_address);
+    const std::uint32_t last_page = Win32AotGuestPage(
+        static_cast<std::uint32_t>(last));
+    for (std::uint32_t page = first_page;; page += kGuestPageSize)
+    {
+        Win32AotGuestPageState* state =
+            EnsureGuestPageState(placement, page);
+        state->map_indices.push_back(map_index);
+        const Win32AotAddressMapState& map_state =
+            placement->address_map_states[map_index];
+        if (map_state.active)
+        {
+            state->latest_generation = std::max(
+                state->latest_generation, map_state.generation);
+            InsertGuestPage(page, active_guest_pages);
+        }
+        if (page == last_page || page > 0xFFFFEFFFU)
+        {
+            break;
+        }
+    }
+}
+
+struct DecodedGuestWrite
+{
+    std::uint32_t byte_count = 1U;
+    bool conservative_page = true;
+};
+
+DecodedGuestWrite DecodeGuestWrite(std::uint32_t execution_address)
+{
+    DecodedGuestWrite result;
+    ZydisDecoder decoder;
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(
+            &decoder, ZYDIS_MACHINE_MODE_LEGACY_32,
+            ZYDIS_STACK_WIDTH_32)))
+    {
+        return result;
+    }
+    ZydisDecodedInstruction instruction{};
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+    if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(
+            &decoder,
+            reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(execution_address)),
+            ZYDIS_MAX_INSTRUCTION_LENGTH,
+            &instruction,
+            operands)))
+    {
+        return result;
+    }
+    std::uint32_t write_operand_count = 0U;
+    for (std::uint8_t index = 0;
+         index < instruction.operand_count; ++index)
+    {
+        if (operands[index].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+            (operands[index].actions &
+             ZYDIS_OPERAND_ACTION_MASK_WRITE) != 0U)
+        {
+            ++write_operand_count;
+            result.byte_count = std::max<std::uint32_t>(
+                result.byte_count,
+                (static_cast<std::uint32_t>(operands[index].size) + 7U) /
+                    8U);
+        }
+    }
+    const bool repeated =
+        (instruction.attributes &
+         (ZYDIS_ATTRIB_HAS_REP | ZYDIS_ATTRIB_HAS_REPE |
+          ZYDIS_ATTRIB_HAS_REPNE)) != 0U;
+    result.conservative_page = write_operand_count != 1U || repeated ||
+        instruction.meta.category == ZYDIS_CATEGORY_STRINGOP ||
+        instruction.mnemonic == ZYDIS_MNEMONIC_ENTER ||
+        instruction.mnemonic == ZYDIS_MNEMONIC_PUSHA ||
+        instruction.mnemonic == ZYDIS_MNEMONIC_PUSHAD;
+    return result;
+}
+
+#if defined(_WIN32)
+auto FindWriteWatch(Win32AotPageWriteWatchSet* watch_set,
+                    std::uint32_t guest_page)
+{
+    return std::lower_bound(
+        watch_set->watches.begin(), watch_set->watches.end(), guest_page,
+        [](const Win32AotGuestPageWriteWatch& watch, std::uint32_t page) {
+            return watch.guest_page < page;
+        });
+}
+
+bool EnsureWriteWatch(Win32AotPageWriteWatchSet* watch_set,
+                      std::uint32_t guest_address)
+{
+    const std::uint32_t page = Win32AotGuestPage(guest_address);
+    auto found = FindWriteWatch(watch_set, page);
+    if (found != watch_set->watches.end() && found->guest_page == page)
+    {
+        return true;
+    }
+    MEMORY_BASIC_INFORMATION memory = {};
+    if (VirtualQuery(reinterpret_cast<const void*>(
+                         static_cast<std::uintptr_t>(page)),
+                     &memory, sizeof(memory)) == 0 ||
+        memory.State != MEM_COMMIT)
+    {
+        return false;
+    }
+    const DWORD original = memory.Protect;
+    if ((original & 0xFFU) != PAGE_EXECUTE_READ)
+    {
+        DWORD previous = 0;
+        if (VirtualProtect(reinterpret_cast<void*>(
+                               static_cast<std::uintptr_t>(page)),
+                           kGuestPageSize, PAGE_EXECUTE_READ,
+                           &previous) == 0)
+        {
+            return false;
+        }
+    }
+    watch_set->watches.insert(
+        found, {page, static_cast<std::uint32_t>(original)});
+    return true;
+}
+
+void ResetPendingWrite(Win32AotPageWriteWatchSet* watch_set)
+{
+    watch_set->pending = false;
+    watch_set->pending_from_guest = false;
+    watch_set->pending_keep_single_step = false;
+    watch_set->pending_page_count = 0U;
+    watch_set->pending_source = 0U;
+    watch_set->pending_destination = 0U;
+    watch_set->pending_byte_count = 0U;
+}
+
+bool PendingContainsPage(const Win32AotPageWriteWatchSet& watch_set,
+                         std::uint32_t page)
+{
+    for (std::uint32_t index = 0;
+         index < watch_set.pending_page_count; ++index)
+    {
+        if (watch_set.pending_pages[index] == page)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void RestorePendingPagesToExecuteRead(
+    Win32AotPageWriteWatchSet* watch_set)
+{
+    for (std::uint32_t index = 0;
+         index < watch_set->pending_page_count; ++index)
+    {
+        DWORD ignored = 0;
+        VirtualProtect(reinterpret_cast<void*>(static_cast<std::uintptr_t>(
+                           watch_set->pending_pages[index])),
+                       kGuestPageSize, PAGE_EXECUTE_READ, &ignored);
+    }
+}
+#endif
+
+}  // namespace
+
+std::uint32_t Win32AotGuestPage(std::uint32_t guest_address)
+{
+    return guest_address & kGuestPageMask;
+}
+
+void InitializeWin32AotPageCoherence(
+    Win32AotCodeCachePlacement* placement,
+    std::uint32_t initial_generation)
+{
+    if (placement == nullptr)
+    {
+        return;
+    }
+    placement->address_map_states.clear();
+    placement->guest_pages.clear();
+    placement->retired_guest_addresses.clear();
+    placement->inactive_map_indices.clear();
+    placement->inactive_map_indices_by_guest_address.clear();
+    placement->inactive_map_index_by_cache_offset.clear();
+    placement->next_generation = initial_generation + 1U;
+    for (std::uint32_t index = 0;
+         index < placement->address_map.size(); ++index)
+    {
+        RegisterWin32AotAddressMap(
+            placement, index, initial_generation, true, true,
+            Win32AotGuestPage(placement->address_map[index].guest_address),
+            nullptr);
+    }
+}
+
+std::uint32_t AllocateWin32AotGeneration(
+    Win32AotCodeCachePlacement* placement)
+{
+    return placement != nullptr ? placement->next_generation++ : 0U;
+}
+
+bool CanActivateWin32AotAddressMapEntry(
+    const Win32AotCodeCachePlacement& placement,
+    const runtime::AotAddressMapEntry& entry,
+    std::uint32_t requested_page)
+{
+    if (entry.guest_length == 0U)
+    {
+        return false;
+    }
+    const std::uint64_t last =
+        static_cast<std::uint64_t>(entry.guest_address) +
+        entry.guest_length - 1U;
+    if (last > std::numeric_limits<std::uint32_t>::max())
+    {
+        return false;
+    }
+    const std::uint32_t first_page = Win32AotGuestPage(entry.guest_address);
+    const std::uint32_t last_page = Win32AotGuestPage(
+        static_cast<std::uint32_t>(last));
+    for (std::uint32_t page = first_page;; page += kGuestPageSize)
+    {
+        const auto state = FindGuestPageState(placement, page);
+        if (state != placement.guest_pages.end() &&
+            state->guest_page == page &&
+            (state->quarantined ||
+             (state->retired && page != requested_page)))
+        {
+            return false;
+        }
+        if (page == last_page || page > 0xFFFFEFFFU)
+        {
+            break;
+        }
+    }
+    return true;
+}
+
+bool Win32AotAddressMapTracksGuestBytes(
+    const runtime::AotAddressMapEntry& entry,
+    const std::vector<runtime::AotExcludedGuestRange>& excluded_ranges)
+{
+    for (const runtime::AotExcludedGuestRange& range : excluded_ranges)
+    {
+        if (range.byte_count != 0U &&
+            RangesOverlap(entry.guest_address, entry.guest_length,
+                          range.guest_address, range.byte_count))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+void RegisterWin32AotAddressMap(
+    Win32AotCodeCachePlacement* placement,
+    std::uint32_t map_index,
+    std::uint32_t generation,
+    bool active,
+    bool tracks_guest_bytes,
+    std::uint32_t requested_page,
+    std::vector<std::uint32_t>* active_guest_pages)
+{
+    if (placement == nullptr || map_index >= placement->address_map.size())
+    {
+        return;
+    }
+    if (placement->address_map_states.size() <= map_index)
+    {
+        placement->address_map_states.resize(map_index + 1U);
+    }
+    placement->address_map_states[map_index] = {
+        generation, active, tracks_guest_bytes};
+    const runtime::AotAddressMapEntry& entry =
+        placement->address_map[map_index];
+    if (tracks_guest_bytes)
+    {
+        RegisterAddressMapPages(
+            placement, entry, map_index,
+            active ? active_guest_pages : nullptr);
+        if (active && Win32AotGuestPage(entry.guest_address) == requested_page)
+        {
+            Win32AotGuestPageState* state =
+                EnsureGuestPageState(placement, requested_page);
+            state->retired = false;
+            state->latest_generation = generation;
+        }
+    }
+    if (!active)
+    {
+        RecordInactiveMap(placement, map_index);
+    }
+}
+
+bool Win32AotGuestRangeHasActiveTranslation(
+    const Win32AotCodeCachePlacement& placement,
+    std::uint32_t guest_address,
+    std::uint32_t byte_count)
+{
+    if (!placement.placed || byte_count == 0U)
+    {
+        return false;
+    }
+    const std::uint64_t end =
+        static_cast<std::uint64_t>(guest_address) + byte_count;
+    if (end > static_cast<std::uint64_t>(
+                  std::numeric_limits<std::uint32_t>::max()) + 1U)
+    {
+        return false;
+    }
+    const std::uint32_t first_page = Win32AotGuestPage(guest_address);
+    const std::uint32_t last_page = Win32AotGuestPage(
+        static_cast<std::uint32_t>(end - 1U));
+    for (std::uint32_t page = first_page;; page += kGuestPageSize)
+    {
+        const auto state = FindGuestPageState(placement, page);
+        if (state != placement.guest_pages.end() &&
+            state->guest_page == page)
+        {
+            for (std::uint32_t index : state->map_indices)
+            {
+                if (index >= placement.address_map.size())
+                {
+                    continue;
+                }
+                const Win32AotAddressMapState& map_state =
+                    placement.address_map_states[index];
+                const runtime::AotAddressMapEntry& entry =
+                    placement.address_map[index];
+                if (map_state.active && map_state.tracks_guest_bytes &&
+                    RangesOverlap(guest_address, byte_count,
+                                  entry.guest_address,
+                                  entry.guest_length))
+                {
+                    return true;
+                }
+            }
+        }
+        if (page == last_page || page > 0xFFFFEFFFU)
+        {
+            break;
+        }
+    }
+    return false;
+}
+
+bool IsWin32AotGuestPageRetired(
+    const Win32AotCodeCachePlacement& placement,
+    std::uint32_t guest_address)
+{
+    const std::uint32_t page = Win32AotGuestPage(guest_address);
+    const auto state = FindGuestPageState(placement, page);
+    return state != placement.guest_pages.end() &&
+           state->guest_page == page && state->retired;
+}
+
+bool IsWin32AotGuestPageQuarantined(
+    const Win32AotCodeCachePlacement& placement,
+    std::uint32_t guest_address)
+{
+    const std::uint32_t page = Win32AotGuestPage(guest_address);
+    const auto state = FindGuestPageState(placement, page);
+    return state != placement.guest_pages.end() &&
+           state->guest_page == page && state->quarantined;
+}
+
+bool HasWin32AotRetiredGuestAddress(
+    const Win32AotCodeCachePlacement& placement,
+    std::uint32_t guest_address)
+{
+    return std::binary_search(
+        placement.retired_guest_addresses.begin(),
+        placement.retired_guest_addresses.end(), guest_address);
+}
+
+bool IsWin32AotCacheAddressRetired(
+    const Win32AotCodeCachePlacement& placement,
+    std::uint32_t cache_address)
+{
+    if (!placement.placed || cache_address < placement.base_address)
+    {
+        return false;
+    }
+    const std::uint32_t offset = cache_address - placement.base_address;
+    const auto found =
+        placement.inactive_map_index_by_cache_offset.find(offset);
+    return found != placement.inactive_map_index_by_cache_offset.end() &&
+        found->second < placement.address_map_states.size() &&
+        !placement.address_map_states[found->second].active;
+}
+
+bool RetireWin32AotGuestPage(
+    Win32AotCodeCachePlacement* placement,
+    std::uint32_t guest_address,
+    bool quarantine,
+    Win32AotGuestPageRetireResult* result)
+{
+    if (placement == nullptr || result == nullptr)
+    {
+        return false;
+    }
+    *result = Win32AotGuestPageRetireResult{};
+    result->attempted = true;
+    result->guest_page = Win32AotGuestPage(guest_address);
+    result->quarantined = quarantine;
+#if !defined(_WIN32)
+    result->message = "AOT guest-page retirement requires Win32";
+    return true;
+#else
+    if (!placement->placed)
+    {
+        result->message = "AOT code cache placement is unavailable";
+        return true;
+    }
+    auto state_position = FindGuestPageState(
+        placement, result->guest_page);
+    if (state_position == placement->guest_pages.end() ||
+        state_position->guest_page != result->guest_page)
+    {
+        result->message = "guest page has no AOT provenance";
+        return true;
+    }
+    std::vector<std::uint32_t> selected;
+    for (std::uint32_t map_index : state_position->map_indices)
+    {
+        if (map_index >= placement->address_map.size())
+        {
+            continue;
+        }
+        const runtime::AotAddressMapEntry& entry =
+            placement->address_map[map_index];
+        const Win32AotAddressMapState& map_state =
+            placement->address_map_states[map_index];
+        if (map_state.active && map_state.tracks_guest_bytes &&
+            RangesOverlap(result->guest_page, kGuestPageSize,
+                          entry.guest_address, entry.guest_length))
+        {
+            selected.push_back(map_index);
+        }
+    }
+    if (selected.empty())
+    {
+        state_position->retired = true;
+        state_position->quarantined =
+            state_position->quarantined || quarantine;
+        result->retired = true;
+        result->quarantined = state_position->quarantined;
+        result->message = quarantine
+            ? "AOT guest page quarantined without active entries"
+            : "AOT guest page was already retired";
+        return true;
+    }
+    void* cache = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(placement->base_address));
+    DWORD old_protection = 0;
+    if (VirtualProtect(cache, placement->capacity, PAGE_READWRITE,
+                       &old_protection) == 0)
+    {
+        result->windows_error = GetLastError();
+        result->message = "failed to make AOT cache writable for retirement";
+        return true;
+    }
+    auto* bytes = static_cast<std::uint8_t*>(cache);
+    for (std::uint32_t index : selected)
+    {
+        bytes[placement->address_map[index].cache_offset] = 0xCCU;
+    }
+    DWORD ignored = 0;
+    if (VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ,
+                       &ignored) == 0)
+    {
+        result->windows_error = GetLastError();
+        result->message = "failed to restore AOT cache after retirement";
+        return true;
+    }
+    for (std::uint32_t index : selected)
+    {
+        FlushInstructionCache(
+            GetCurrentProcess(),
+            bytes + placement->address_map[index].cache_offset, 1U);
+        placement->address_map_states[index].active = false;
+        RecordInactiveMap(placement, index);
+    }
+    state_position = FindGuestPageState(placement, result->guest_page);
+    state_position->retired = true;
+    state_position->quarantined =
+        state_position->quarantined || quarantine;
+    result->retired_entry_count =
+        static_cast<std::uint32_t>(selected.size());
+    result->retired = true;
+    result->quarantined = state_position->quarantined;
+    result->message = quarantine
+        ? "AOT guest page retired and quarantined"
+        : "AOT guest page retired for a new generation";
+    return true;
+#endif
+}
+
+bool InstallWin32AotGuestPageWriteWatches(
+    const Win32AotCodeCachePlacement& placement,
+    const std::vector<std::uint32_t>* selected_pages,
+    Win32AotPageWriteWatchSet* watch_set)
+{
+    if (watch_set == nullptr)
+    {
+        return false;
+    }
+#if !defined(_WIN32)
+    return false;
+#else
+    if (selected_pages != nullptr)
+    {
+        for (std::uint32_t page : *selected_pages)
+        {
+            if (!EnsureWriteWatch(watch_set, page))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    watch_set->watches.reserve(placement.guest_pages.size());
+    for (const Win32AotGuestPageState& page : placement.guest_pages)
+    {
+        if (!EnsureWriteWatch(watch_set, page.guest_page))
+        {
+            return false;
+        }
+    }
+    return true;
+#endif
+}
+
+void RestoreWin32AotGuestPageWriteWatches(
+    Win32AotPageWriteWatchSet* watch_set)
+{
+    if (watch_set == nullptr)
+    {
+        return;
+    }
+#if defined(_WIN32)
+    for (const Win32AotGuestPageWriteWatch& watch : watch_set->watches)
+    {
+        DWORD ignored = 0;
+        VirtualProtect(reinterpret_cast<void*>(static_cast<std::uintptr_t>(
+                           watch.guest_page)),
+                       kGuestPageSize,
+                       static_cast<DWORD>(watch.original_protection),
+                       &ignored);
+    }
+#endif
+    watch_set->watches.clear();
+    watch_set->pending = false;
+    watch_set->pending_page_count = 0U;
+}
+
+bool IsWin32AotGuestPageWriteWatched(
+    const Win32AotPageWriteWatchSet& watch_set,
+    std::uint32_t guest_address)
+{
+#if !defined(_WIN32)
+    static_cast<void>(watch_set);
+    static_cast<void>(guest_address);
+    return false;
+#else
+    const std::uint32_t guest_page = Win32AotGuestPage(guest_address);
+    const auto watch = std::lower_bound(
+        watch_set.watches.begin(), watch_set.watches.end(), guest_page,
+        [](const Win32AotGuestPageWriteWatch& value,
+           std::uint32_t page) {
+            return value.guest_page < page;
+        });
+    return watch != watch_set.watches.end() &&
+           watch->guest_page == guest_page;
+#endif
+}
+
+bool HasPendingWin32AotGuestWrite(
+    const Win32AotPageWriteWatchSet& watch_set)
+{
+    return watch_set.pending;
+}
+
+bool BeginWin32AotGuestWrite(
+    Win32AotPageWriteWatchSet* watch_set,
+    std::uint32_t execution_address,
+    std::uint32_t fault_address,
+    bool from_guest,
+    bool keep_single_step,
+    std::uint32_t guest_source)
+{
+    if (watch_set == nullptr)
+    {
+        return false;
+    }
+#if !defined(_WIN32)
+    return false;
+#else
+    const std::uint32_t fault_page = Win32AotGuestPage(fault_address);
+    const auto fault_watch = FindWriteWatch(watch_set, fault_page);
+    if (fault_watch == watch_set->watches.end() ||
+        fault_watch->guest_page != fault_page)
+    {
+        return false;
+    }
+    const DecodedGuestWrite decoded = DecodeGuestWrite(execution_address);
+    const std::uint32_t range_begin = decoded.conservative_page
+        ? fault_page : fault_address;
+    const std::uint32_t range_size = decoded.conservative_page
+        ? kGuestPageSize : decoded.byte_count;
+    const std::uint64_t range_end =
+        static_cast<std::uint64_t>(range_begin) + range_size;
+    if (range_end > static_cast<std::uint64_t>(
+                        std::numeric_limits<std::uint32_t>::max()) + 1U)
+    {
+        return false;
+    }
+
+    if (!watch_set->pending)
+    {
+        watch_set->pending = true;
+        watch_set->pending_from_guest = from_guest;
+        watch_set->pending_keep_single_step = keep_single_step;
+        watch_set->pending_source = guest_source;
+        watch_set->pending_destination = range_begin;
+        watch_set->pending_byte_count = range_size;
+    }
+    else
+    {
+        const std::uint32_t combined_begin = std::min(
+            watch_set->pending_destination, range_begin);
+        const std::uint64_t current_end =
+            static_cast<std::uint64_t>(
+                watch_set->pending_destination) +
+            watch_set->pending_byte_count;
+        const std::uint64_t combined_end = std::max(current_end, range_end);
+        watch_set->pending_destination = combined_begin;
+        watch_set->pending_byte_count = static_cast<std::uint32_t>(
+            combined_end - combined_begin);
+        watch_set->pending_keep_single_step =
+            watch_set->pending_keep_single_step || keep_single_step;
+        if (watch_set->pending_source == 0U)
+        {
+            watch_set->pending_source = guest_source;
+        }
+    }
+
+    const std::uint32_t first_page = Win32AotGuestPage(range_begin);
+    const std::uint32_t last_page = Win32AotGuestPage(
+        static_cast<std::uint32_t>(range_end - 1U));
+    for (std::uint32_t page = first_page;; page += kGuestPageSize)
+    {
+        const auto watch = FindWriteWatch(watch_set, page);
+        if (watch != watch_set->watches.end() &&
+            watch->guest_page == page &&
+            !PendingContainsPage(*watch_set, page))
+        {
+            if (watch_set->pending_page_count >=
+                Win32AotPageWriteWatchSet::kPendingPageCapacity)
+            {
+                RestorePendingPagesToExecuteRead(watch_set);
+                ResetPendingWrite(watch_set);
+                return false;
+            }
+            DWORD ignored = 0;
+            if (VirtualProtect(reinterpret_cast<void*>(
+                                   static_cast<std::uintptr_t>(page)),
+                               kGuestPageSize, PAGE_EXECUTE_READWRITE,
+                               &ignored) == 0)
+            {
+                RestorePendingPagesToExecuteRead(watch_set);
+                ResetPendingWrite(watch_set);
+                return false;
+            }
+            watch_set->pending_pages[watch_set->pending_page_count++] = page;
+        }
+        if (page == last_page || page > 0xFFFFEFFFU)
+        {
+            break;
+        }
+    }
+    return watch_set->pending_page_count != 0U;
+#endif
+}
+
+bool CompleteWin32AotGuestWrite(
+    Win32AotPageWriteWatchSet* watch_set,
+    Win32AotGuestWriteCompletion* completion)
+{
+    if (watch_set == nullptr || completion == nullptr ||
+        !watch_set->pending || watch_set->pending_page_count == 0U)
+    {
+        return false;
+    }
+#if !defined(_WIN32)
+    return false;
+#else
+    bool restored = true;
+    for (std::uint32_t index = 0;
+         index < watch_set->pending_page_count; ++index)
+    {
+        DWORD ignored = 0;
+        restored = VirtualProtect(
+            reinterpret_cast<void*>(static_cast<std::uintptr_t>(
+                watch_set->pending_pages[index])),
+            kGuestPageSize, PAGE_EXECUTE_READ, &ignored) != 0 && restored;
+    }
+    if (!restored)
+    {
+        return false;
+    }
+    completion->from_guest = watch_set->pending_from_guest;
+    completion->keep_single_step = watch_set->pending_keep_single_step;
+    completion->source = watch_set->pending_source;
+    completion->destination = watch_set->pending_destination;
+    completion->byte_count = watch_set->pending_byte_count;
+    ResetPendingWrite(watch_set);
+    return true;
+#endif
+}
+
+}  // namespace repiu::platform::win32

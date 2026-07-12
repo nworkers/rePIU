@@ -372,6 +372,12 @@ int main(int argc, char** argv)
                                             event,
                                             exception);
                     }
+                    if (code == EXCEPTION_ACCESS_VIOLATION)
+                    {
+                        PrintGuardPageEvent(process.hProcess,
+                                            event,
+                                            exception);
+                    }
                     if (code != EXCEPTION_BREAKPOINT)
                     {
                         continue_status = DBG_EXCEPTION_NOT_HANDLED;

@@ -238,3 +238,50 @@ The entry point lives in `src/host/win32/main.cpp`. This path is the host applic
 The previous `src/tools/win32_execution_host/main.cpp` path and `repiu_win32_execution_host` name were temporary structures from the early execution-observation stage and are no longer the current structural baseline.
 
 `repiu_loader_win32` currently reads `PIU.EXE`, creates the DOS/4GW load result, builds the relocated runtime image plan, builds the relocated image buffer, places it in Win32 process memory, and invokes the minimal execution trampoline in sequence.
+
+# AOT Self-modifying Import Stub
+
+The addresses below are relocated guest linear addresses observed with the
+current `pumpit1` profile, not file offsets. LINEXE service 5 GETPROCADDR writes
+Glide HLE gate address `0x045D0300` and client CS `0x0023` to result buffer
+`0x035D6AA4`, then returns to continuation `0x030F3418`.
+
+After validating the result, the continuation modifies the import stub at
+`EDI=0x030FED0E` with two stores and jumps back to it:
+
+```text
+030F342C  C6 07 E9       mov byte ptr [edi], 0E9h
+030F3432  89 47 01       mov dword ptr [edi+1], eax
+030F3436  FF E0          jmp eax
+```
+
+The static stub at `0x030FED0E` is an `E8 rel32` call to resolver
+`0x030F33B4`. After both stores, its first five bytes are an `E9 rel32` edge to
+synthetic Glide gate `0x045D0300`. PIU therefore modifies executable code after
+loading; the containing guest page is `0x030FE000`.
+
+```mermaid
+sequenceDiagram
+    participant PIU as PIU continuation 030F3418
+    participant LIN as LINEXE service 5
+    participant STUB as Import stub 030FED0E
+    participant GLIDE as Glide gate 045D0300
+    PIU->>LIN: GETPROCADDR(_GRGLIDEINIT@0)
+    LIN-->>PIU: {linear=045D0300, CS=0023}
+    PIU->>STUB: C6 writes E9
+    PIU->>STUB: 89 writes rel32
+    PIU->>STUB: jmp 030FED0E
+    STUB->>GLIDE: E9 rel32
+```
+
+A ten-second AOT diagnosis that kept selecting the pre-patch cache entry recorded
+19,611 GETPROCADDR calls and zero Glide-gate entries. After page-generation
+coherency was implemented, the path recorded two code writes, one retirement of
+page `0x030FE000`, one generation publication, two stale-entry relinks, and only
+one GETPROCADDR call. These observations separate the correct original ABI from
+the stale AOT-cache fault.
+
+Synthetic LINEXE/Glide gates are HLE-owned addresses, not original executable
+code. If the AOT CFG copies gate tag bytes `0F 0B 20 00` as ordinary code, the
+cache executes `UD2` and raises an illegal instruction. The range must remain a
+sentinel HLE boundary.

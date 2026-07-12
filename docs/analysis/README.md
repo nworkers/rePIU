@@ -40,6 +40,16 @@ flowchart LR
 
 # rePIU Binary Analysis Index
 
+* [AOT return stack divergence](aot-return-stack-divergence.md)
+* [AOT worker inline cache / AOT worker-backed inline cache](aot-worker-inline-cache.md)
+* [AOT self-modifying code 일관성 / AOT self-modifying code coherency](aot-self-modifying-code.md)
+* [AOT 기본 블록 fall-through / AOT basic-block fall-through](aot-basic-block-fallthrough.md)
+* [AOT 조건 분기 dispatcher / AOT conditional transfer dispatcher](aot-conditional-transfer-dispatch.md)
+* [AOT 간접 전송 dispatcher / AOT indirect transfer dispatcher](aot-indirect-transfer-dispatch.md)
+* [Runtime AOT 동적 변환 / Runtime AOT dynamic translation](runtime-aot-dynamic-translation.md)
+* [AOT 실행 backend 준비 / AOT execution backend preparation](aot-execution-backend.md)
+* [AOT 코드 캐시 생성 분석 / AOT code-cache emission](aot-code-cache-emission.md)
+
 * [pumpit1 CHD/ISO9660 mount 분석 / pumpit1 CHD/ISO9660 mount](pumpit1-chd-iso9660-mount.md)
 
 * [REP MOVS와 장시간 실행 경계 / REP MOVS and long-runtime boundary](rep-movs-and-long-runtime-boundary.md)
@@ -59,3 +69,4 @@ Status labels are **Confirmed**, **Inferred**, and **Unresolved**. See the linke
 # MSCDEX / CD audio
 
 * [pumpit1 MSCDEX 및 CHD CD 오디오](pumpit1-mscdex-cd-audio.md)
+* [AOT 변환 계획 coverage](aot-translation-plan-coverage.md)

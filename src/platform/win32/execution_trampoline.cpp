@@ -9,6 +9,8 @@
 #include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/selector_table.h"
 
+#include <Zydis.h>
+
 #include <cstddef>
 #include <cstring>
 #include <algorithm>
@@ -16,6 +18,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <sstream>
 #include <unordered_map>
@@ -66,6 +69,13 @@ struct ShadowWriteProvenance
 
 constexpr std::uint32_t kShadowWriteProvenanceCapacity = 256;
 
+enum class AotWorkerOperation : std::uint32_t
+{
+    kTranslate = 0,
+    kPatchInlineCache = 1,
+    kRetireGuestPage = 2,
+};
+
 // DOS/32A is used only as an independent behavioral reference for this
 // DOS/4G-compatible identification call; no DOS/32A source code is included.
 // Reference: https://github.com/amindlost/dos32a/blob/master/src/dos32a/text/client/int21h.asm
@@ -93,6 +103,13 @@ constexpr std::uint32_t kGlideGateStride = 8U;
 
 struct ThreadContext
 {
+    struct AotCallFrame
+    {
+        std::uint32_t source = 0;
+        std::uint32_t target = 0;
+        std::uint32_t fallthrough = 0;
+    };
+    static constexpr std::uint32_t kAotCallFrameCapacity = 1024;
     std::uint32_t entry_address = 0;
     std::uint32_t runtime_base = 0;
     std::uint32_t runtime_size = 0;
@@ -106,6 +123,82 @@ struct ThreadContext
     bool enable_segment_load_hle = false;
     bool enable_dos_hle = false;
     bool enable_single_step_trace = false;
+    Win32AotCodeCachePlacement* aot_placement = nullptr;
+    bool aot_reentry_pending = false;
+    bool aot_legacy_fallback = false;
+    bool aot_dynamic_translation_enabled = false;
+    HANDLE aot_translation_thread = nullptr;
+    HANDLE aot_translation_request_event = nullptr;
+    HANDLE aot_translation_complete_event = nullptr;
+    std::atomic<bool> aot_translation_shutdown{false};
+    std::atomic<std::uint32_t> aot_translation_target{0};
+    std::atomic<std::uint32_t> aot_worker_operation{
+        static_cast<std::uint32_t>(AotWorkerOperation::kTranslate)};
+    std::atomic<std::uint32_t> aot_patch_cache_miss_address{0};
+    std::atomic<std::uint32_t> aot_patch_guest_target{0};
+    std::atomic<std::uint32_t> aot_patch_cache_target{0};
+    std::atomic<std::uint32_t> aot_retire_guest_page{0};
+    std::atomic<bool> aot_retire_quarantine{false};
+    Win32AotDynamicAppendResult aot_translation_result;
+    std::vector<runtime::AotExcludedGuestRange> aot_excluded_guest_ranges;
+    Win32AotInlineCachePatchResult aot_inline_cache_patch_result;
+    Win32AotGuestPageRetireResult aot_guest_page_retire_result;
+    Win32AotPageWriteWatchSet aot_page_write_watch;
+    std::atomic<bool> aot_terminal_failure{false};
+    std::uint32_t aot_reentry_cache_address = 0;
+    std::atomic<std::uint32_t> aot_cache_entry_count{0};
+    std::atomic<std::uint32_t> aot_boundary_count{0};
+    std::atomic<std::uint32_t> aot_reentry_count{0};
+    std::atomic<std::uint32_t> aot_legacy_fallback_count{0};
+    std::atomic<std::uint32_t> aot_last_fallback_address{0};
+    std::atomic<std::uint32_t> aot_dynamic_attempt_count{0};
+    std::atomic<std::uint32_t> aot_dynamic_success_count{0};
+    std::atomic<std::uint32_t> aot_dynamic_added_bytes{0};
+    std::atomic<std::uint32_t> aot_indirect_dispatch_count{0};
+    std::atomic<std::uint32_t> aot_inline_cache_patch_attempt_count{0};
+    std::atomic<std::uint32_t> aot_inline_cache_patch_success_count{0};
+    std::atomic<std::uint32_t> aot_code_write_count{0};
+    std::atomic<std::uint32_t> aot_page_retire_attempt_count{0};
+    std::atomic<std::uint32_t> aot_page_retire_success_count{0};
+    std::atomic<std::uint32_t> aot_generation_publish_count{0};
+    std::atomic<std::uint32_t> aot_generation_failure_count{0};
+    std::atomic<std::uint32_t> aot_generation_relinked_entry_count{0};
+    std::atomic<std::uint32_t> aot_retired_entry_trap_count{0};
+    std::atomic<std::uint32_t> aot_quarantine_count{0};
+    std::atomic<std::uint32_t> aot_last_code_write_source{0};
+    std::atomic<std::uint32_t> aot_last_code_write_destination{0};
+    std::atomic<std::uint32_t> aot_last_retired_page{0};
+    std::atomic<std::uint32_t> aot_last_published_generation{0};
+    bool aot_exception_mapping_valid = false;
+    std::uint32_t aot_exception_cache_address = 0;
+    std::uint32_t aot_exception_guest_address = 0;
+    std::uint8_t aot_exception_cache_bytes[16] = {};
+    std::uint8_t aot_exception_guest_bytes[16] = {};
+    std::atomic<std::uint32_t> aot_last_indirect_source{0};
+    std::atomic<std::uint32_t> aot_last_indirect_target{0};
+    std::atomic<std::uint32_t> aot_return_dispatch_count{0};
+    std::atomic<std::uint32_t> aot_last_return_target{0};
+    std::atomic<std::uint32_t> aot_last_return_source{0};
+    std::uint32_t aot_last_return_stack[4] = {};
+    bool execution_probe_configured = false;
+    bool execution_probe_hit = false;
+    std::uint32_t execution_probe_offset = 0;
+    X86ExecutionSnapshot execution_probe_snapshot;
+    std::uint32_t execution_probe_stack[8] = {};
+    std::uint32_t aot_call_depth = 0;
+    AotCallFrame aot_call_frames[kAotCallFrameCapacity] = {};
+    bool aot_last_return_matches_call = false;
+    std::uint32_t aot_last_expected_return = 0;
+    std::uint32_t aot_last_call_source = 0;
+    std::uint32_t aot_last_call_target = 0;
+    std::uint32_t aot_last_expected_call_source = 0;
+    std::uint32_t aot_last_expected_call_target = 0;
+    std::uint32_t aot_return_trace_count = 0;
+    Win32AotReturnTraceEntry
+        aot_return_trace[kWin32AotReturnTraceCapacity] = {};
+    std::uint32_t aot_transfer_trace_count = 0;
+    Win32AotTransferTraceEntry
+        aot_transfer_trace[kWin32AotTransferTraceCapacity] = {};
     detail::NativeFastPathState native_fast_path;
     bool returned = false;
     bool process_exit = false;
@@ -694,6 +787,7 @@ DWORD PollThreadUntilExit(HANDLE thread,
     DWORD quiet_start_tick = start_tick;
     std::uint32_t last_progress_count = 0;
     std::uint32_t last_single_step_count = 0;
+    std::uint32_t last_aot_progress_count = 0;
     if (progress_context != nullptr)
     {
         last_progress_count =
@@ -701,6 +795,11 @@ DWORD PollThreadUntilExit(HANDLE thread,
                 std::memory_order_relaxed);
         last_single_step_count =
             progress_context->single_step_trace_count.load(
+                std::memory_order_relaxed);
+        last_aot_progress_count =
+            progress_context->aot_boundary_count.load(
+                std::memory_order_relaxed) +
+            progress_context->aot_reentry_count.load(
                 std::memory_order_relaxed);
     }
 
@@ -744,11 +843,18 @@ DWORD PollThreadUntilExit(HANDLE thread,
             const std::uint32_t single_step_count =
                 progress_context->single_step_trace_count.load(
                     std::memory_order_relaxed);
+            const std::uint32_t aot_progress_count =
+                progress_context->aot_boundary_count.load(
+                    std::memory_order_relaxed) +
+                progress_context->aot_reentry_count.load(
+                    std::memory_order_relaxed);
             progressed =
                 progress_count != last_progress_count ||
-                single_step_count != last_single_step_count;
+                single_step_count != last_single_step_count ||
+                aot_progress_count != last_aot_progress_count;
             last_progress_count = progress_count;
             last_single_step_count = single_step_count;
+            last_aot_progress_count = aot_progress_count;
         }
         if (progressed)
         {
@@ -1000,6 +1106,112 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.native_fast_path.last_entry;
     attempt->native_fast_path_last_return =
         context.native_fast_path.last_return;
+    attempt->aot_backend_active = context.aot_placement != nullptr;
+    attempt->aot_cache_entry_count = context.aot_cache_entry_count.load(
+        std::memory_order_relaxed);
+    attempt->aot_boundary_count = context.aot_boundary_count.load(
+        std::memory_order_relaxed);
+    attempt->aot_reentry_count = context.aot_reentry_count.load(
+        std::memory_order_relaxed);
+    attempt->aot_legacy_fallback_count =
+        context.aot_legacy_fallback_count.load(std::memory_order_relaxed);
+    attempt->aot_last_fallback_address =
+        context.aot_last_fallback_address.load(std::memory_order_relaxed);
+    attempt->aot_dynamic_attempt_count =
+        context.aot_dynamic_attempt_count.load(std::memory_order_relaxed);
+    attempt->aot_dynamic_success_count =
+        context.aot_dynamic_success_count.load(std::memory_order_relaxed);
+    attempt->aot_dynamic_added_bytes =
+        context.aot_dynamic_added_bytes.load(std::memory_order_relaxed);
+    attempt->aot_indirect_dispatch_count =
+        context.aot_indirect_dispatch_count.load(std::memory_order_relaxed);
+    attempt->aot_inline_cache_patch_attempt_count =
+        context.aot_inline_cache_patch_attempt_count.load(
+            std::memory_order_relaxed);
+    attempt->aot_inline_cache_patch_success_count =
+        context.aot_inline_cache_patch_success_count.load(
+            std::memory_order_relaxed);
+    attempt->aot_inline_cache_site_count = context.aot_placement != nullptr
+        ? static_cast<std::uint32_t>(
+              context.aot_placement->indirect_inline_cache_sites.size())
+        : 0U;
+    attempt->aot_last_reentry_cache_address =
+        context.aot_reentry_cache_address;
+    attempt->aot_code_write_count =
+        context.aot_code_write_count.load(std::memory_order_relaxed);
+    attempt->aot_page_retire_attempt_count =
+        context.aot_page_retire_attempt_count.load(std::memory_order_relaxed);
+    attempt->aot_page_retire_success_count =
+        context.aot_page_retire_success_count.load(std::memory_order_relaxed);
+    attempt->aot_generation_publish_count =
+        context.aot_generation_publish_count.load(std::memory_order_relaxed);
+    attempt->aot_generation_failure_count =
+        context.aot_generation_failure_count.load(std::memory_order_relaxed);
+    attempt->aot_generation_relinked_entry_count =
+        context.aot_generation_relinked_entry_count.load(
+            std::memory_order_relaxed);
+    attempt->aot_retired_entry_trap_count =
+        context.aot_retired_entry_trap_count.load(std::memory_order_relaxed);
+    attempt->aot_quarantine_count =
+        context.aot_quarantine_count.load(std::memory_order_relaxed);
+    attempt->aot_last_code_write_source =
+        context.aot_last_code_write_source.load(std::memory_order_relaxed);
+    attempt->aot_last_code_write_destination =
+        context.aot_last_code_write_destination.load(
+            std::memory_order_relaxed);
+    attempt->aot_last_retired_page =
+        context.aot_last_retired_page.load(std::memory_order_relaxed);
+    attempt->aot_last_published_generation =
+        context.aot_last_published_generation.load(
+            std::memory_order_relaxed);
+    attempt->aot_exception_mapping_valid =
+        context.aot_exception_mapping_valid;
+    attempt->aot_exception_cache_address =
+        context.aot_exception_cache_address;
+    attempt->aot_exception_guest_address =
+        context.aot_exception_guest_address;
+    std::memcpy(attempt->aot_exception_cache_bytes,
+                context.aot_exception_cache_bytes,
+                sizeof(attempt->aot_exception_cache_bytes));
+    std::memcpy(attempt->aot_exception_guest_bytes,
+                context.aot_exception_guest_bytes,
+                sizeof(attempt->aot_exception_guest_bytes));
+    attempt->aot_last_indirect_source =
+        context.aot_last_indirect_source.load(std::memory_order_relaxed);
+    attempt->aot_last_indirect_target =
+        context.aot_last_indirect_target.load(std::memory_order_relaxed);
+    attempt->aot_return_dispatch_count =
+        context.aot_return_dispatch_count.load(std::memory_order_relaxed);
+    attempt->aot_last_return_target =
+        context.aot_last_return_target.load(std::memory_order_relaxed);
+    attempt->aot_last_return_source =
+        context.aot_last_return_source.load(std::memory_order_relaxed);
+    std::memcpy(attempt->aot_last_return_stack,
+                context.aot_last_return_stack,
+                sizeof(attempt->aot_last_return_stack));
+    attempt->execution_probe_configured = context.execution_probe_configured;
+    attempt->execution_probe_hit = context.execution_probe_hit;
+    attempt->execution_probe_offset = context.execution_probe_offset;
+    attempt->execution_probe_snapshot = context.execution_probe_snapshot;
+    std::memcpy(attempt->execution_probe_stack,
+                context.execution_probe_stack,
+                sizeof(attempt->execution_probe_stack));
+    attempt->aot_call_depth = context.aot_call_depth;
+    attempt->aot_last_return_matches_call =
+        context.aot_last_return_matches_call;
+    attempt->aot_last_expected_return = context.aot_last_expected_return;
+    attempt->aot_last_call_source = context.aot_last_call_source;
+    attempt->aot_last_call_target = context.aot_last_call_target;
+    attempt->aot_last_expected_call_source =
+        context.aot_last_expected_call_source;
+    attempt->aot_last_expected_call_target =
+        context.aot_last_expected_call_target;
+    attempt->aot_return_trace_count = context.aot_return_trace_count;
+    std::memcpy(attempt->aot_return_trace, context.aot_return_trace,
+                sizeof(attempt->aot_return_trace));
+    attempt->aot_transfer_trace_count = context.aot_transfer_trace_count;
+    std::memcpy(attempt->aot_transfer_trace, context.aot_transfer_trace,
+                sizeof(attempt->aot_transfer_trace));
     attempt->diagnostic_poll_iteration_count =
         context.diagnostic_poll_iteration_count;
     attempt->diagnostic_progress_count =
@@ -1765,8 +1977,15 @@ bool HandleTracedFpuMemoryInstruction(CONTEXT* win32_context,
                                       ThreadContext* context);
 bool HandleDosMemoryAccess(CONTEXT* win32_context,
                            ThreadContext* context);
+bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
+                                 std::uint32_t destination,
+                                 std::uint32_t byte_count);
+std::uint32_t AotGuestAddressForExecutionAddress(
+    const ThreadContext* context,
+    std::uint32_t execution_address);
 
-bool IsGuestInstructionPointer(ThreadContext* context, std::uint32_t eip)
+bool IsGuestInstructionPointer(const ThreadContext* context,
+                               std::uint32_t eip)
 {
     if (context == nullptr || context->runtime_size == 0)
     {
@@ -1780,6 +1999,29 @@ bool IsGuestInstructionPointer(ThreadContext* context, std::uint32_t eip)
            eip < runtime_end;
 }
 
+void RecordExecutionProbe(CONTEXT* win32_context, ThreadContext* context)
+{
+    if (win32_context == nullptr || context == nullptr ||
+        !context->execution_probe_configured || context->execution_probe_hit ||
+        win32_context->Eip < context->runtime_base ||
+        static_cast<std::uint32_t>(win32_context->Eip) -
+                context->runtime_base != context->execution_probe_offset)
+    {
+        return;
+    }
+    context->execution_probe_hit = true;
+    CopySnapshotFromContextRecord(*win32_context,
+                                  &context->execution_probe_snapshot);
+    const void* stack = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(win32_context->Esp));
+    if (IsGuestRangeReadable(context, stack,
+                             sizeof(context->execution_probe_stack)))
+    {
+        std::memcpy(context->execution_probe_stack, stack,
+                    sizeof(context->execution_probe_stack));
+    }
+}
+
 bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr ||
@@ -1787,6 +2029,7 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
     {
         return false;
     }
+    RecordExecutionProbe(win32_context, context);
     const std::uint32_t eip_offset =
         static_cast<std::uint32_t>(win32_context->Eip) -
         context->runtime_base;
@@ -2102,11 +2345,18 @@ bool WriteGuestUInt16(ThreadContext* context,
     std::memcpy(destination, &value, sizeof(value));
 
     DWORD ignored_protect = 0;
-    VirtualProtect(destination,
-                   sizeof(value),
-                   previous_protect,
-                   &ignored_protect);
-    return true;
+    if (!VirtualProtect(destination,
+                        sizeof(value),
+                        previous_protect,
+                        &ignored_protect))
+    {
+        return false;
+    }
+    return NoteSuccessfulAotGuestWrite(
+        context,
+        static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(destination)),
+        sizeof(value));
 }
 
 bool WriteGuestUInt8(ThreadContext* context,
@@ -2134,11 +2384,18 @@ bool WriteGuestUInt8(ThreadContext* context,
     std::memcpy(destination, &value, sizeof(value));
 
     DWORD ignored_protect = 0;
-    VirtualProtect(destination,
-                   sizeof(value),
-                   previous_protect,
-                   &ignored_protect);
-    return true;
+    if (!VirtualProtect(destination,
+                        sizeof(value),
+                        previous_protect,
+                        &ignored_protect))
+    {
+        return false;
+    }
+    return NoteSuccessfulAotGuestWrite(
+        context,
+        static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(destination)),
+        sizeof(value));
 }
 
 bool WriteGuestUInt32(ThreadContext* context,
@@ -2166,11 +2423,18 @@ bool WriteGuestUInt32(ThreadContext* context,
     std::memcpy(destination, &value, sizeof(value));
 
     DWORD ignored_protect = 0;
-    VirtualProtect(destination,
-                   sizeof(value),
-                   previous_protect,
-                   &ignored_protect);
-    return true;
+    if (!VirtualProtect(destination,
+                        sizeof(value),
+                        previous_protect,
+                        &ignored_protect))
+    {
+        return false;
+    }
+    return NoteSuccessfulAotGuestWrite(
+        context,
+        static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(destination)),
+        sizeof(value));
 }
 
 bool WriteGuestBytes(ThreadContext* context,
@@ -2200,11 +2464,22 @@ bool WriteGuestBytes(ThreadContext* context,
     std::memcpy(destination, source, byte_count);
 
     DWORD ignored_protect = 0;
-    VirtualProtect(destination,
-                   byte_count,
-                   previous_protect,
-                   &ignored_protect);
-    return true;
+    if (!VirtualProtect(destination,
+                        byte_count,
+                        previous_protect,
+                        &ignored_protect))
+    {
+        return false;
+    }
+    if (byte_count > std::numeric_limits<std::uint32_t>::max())
+    {
+        return false;
+    }
+    return NoteSuccessfulAotGuestWrite(
+        context,
+        static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(destination)),
+        static_cast<std::uint32_t>(byte_count));
 }
 
 bool ReadGuestUInt32(ThreadContext* context,
@@ -5085,6 +5360,12 @@ bool ReadSegmentDword(ThreadContext* context,
     {
         return false;
     }
+    if (selector == 0U &&
+        offset <= repiu::runtime::kDosLowMemorySize - sizeof(*value))
+    {
+        return repiu::runtime::ReadDosLowMemoryUInt32(
+            context->dos_low_memory, offset, value);
+    }
 
     if (segment_register == 3 && selector == context->guest_ds &&
         selector != 0 && offset < 0x10000)
@@ -5144,6 +5425,12 @@ bool ReadSegmentByte(ThreadContext* context,
         return false;
     }
 
+    if (selector == 0U && offset < repiu::runtime::kDosLowMemorySize)
+    {
+        return repiu::runtime::ReadDosLowMemoryUInt8(
+            context->dos_low_memory, offset, value);
+    }
+
     if (segment_register == 3 && selector == context->guest_ds &&
         selector != 0 && offset < 0x10000)
     {
@@ -5194,6 +5481,13 @@ bool ReadSegmentWord(ThreadContext* context,
     if (context == nullptr || value == nullptr)
     {
         return false;
+    }
+
+    if (selector == 0U &&
+        offset <= repiu::runtime::kDosLowMemorySize - sizeof(*value))
+    {
+        return repiu::runtime::ReadDosLowMemoryUInt16(
+            context->dos_low_memory, offset, value);
     }
 
     std::uint32_t linear_address = 0;
@@ -8246,6 +8540,933 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
     return false;
 }
 
+bool IsAotCacheAddress(const ThreadContext* context, std::uint32_t address)
+{
+    if (context == nullptr || context->aot_placement == nullptr ||
+        !context->aot_placement->placed)
+    {
+        return false;
+    }
+    const std::uint64_t end =
+        static_cast<std::uint64_t>(context->aot_placement->base_address) +
+        context->aot_placement->size;
+    return address >= context->aot_placement->base_address && address < end;
+}
+
+DWORD WINAPI AotTranslationWorkerProc(void* parameter)
+{
+    ThreadContext* context = static_cast<ThreadContext*>(parameter);
+    if (context == nullptr || context->aot_translation_request_event == nullptr ||
+        context->aot_translation_complete_event == nullptr)
+    {
+        return 1;
+    }
+    for (;;)
+    {
+        if (WaitForSingleObject(context->aot_translation_request_event,
+                                INFINITE) != WAIT_OBJECT_0)
+        {
+            return 2;
+        }
+        if (context->aot_translation_shutdown.load(std::memory_order_acquire))
+        {
+            return 0;
+        }
+        const auto operation = static_cast<AotWorkerOperation>(
+            context->aot_worker_operation.load(std::memory_order_acquire));
+        if (operation == AotWorkerOperation::kPatchInlineCache)
+        {
+            context->aot_inline_cache_patch_result =
+                Win32AotInlineCachePatchResult{};
+            PatchWin32AotIndirectInlineCache(
+                context->aot_placement,
+                context->aot_patch_cache_miss_address.load(
+                    std::memory_order_acquire),
+                context->aot_patch_guest_target.load(
+                    std::memory_order_acquire),
+                context->aot_patch_cache_target.load(
+                    std::memory_order_acquire),
+                &context->aot_inline_cache_patch_result);
+        }
+        else if (operation == AotWorkerOperation::kRetireGuestPage)
+        {
+            context->aot_guest_page_retire_result =
+                Win32AotGuestPageRetireResult{};
+            RetireWin32AotGuestPage(
+                context->aot_placement,
+                context->aot_retire_guest_page.load(
+                    std::memory_order_acquire),
+                context->aot_retire_quarantine.load(
+                    std::memory_order_acquire),
+                &context->aot_guest_page_retire_result);
+        }
+        else
+        {
+            const std::uint32_t target = context->aot_translation_target.load(
+                std::memory_order_acquire);
+            context->aot_translation_result = Win32AotDynamicAppendResult{};
+            AppendWin32DynamicAotTranslation(
+                context->runtime_base, context->runtime_size, target,
+                context->aot_excluded_guest_ranges,
+                &context->aot_page_write_watch, context->aot_placement,
+                &context->aot_translation_result);
+            if (context->aot_translation_result.unsafe_failure)
+            {
+                context->aot_terminal_failure.store(
+                    true, std::memory_order_release);
+            }
+        }
+        SetEvent(context->aot_translation_complete_event);
+    }
+}
+
+bool RequestAotDynamicTranslation(ThreadContext* context,
+                                  std::uint32_t target,
+                                  std::uint32_t* cache_entry,
+                                  std::uint32_t* added_bytes)
+{
+    if (context == nullptr || cache_entry == nullptr || added_bytes == nullptr ||
+        context->aot_translation_thread == nullptr ||
+        context->aot_translation_request_event == nullptr ||
+        context->aot_translation_complete_event == nullptr)
+    {
+        return false;
+    }
+    ResetEvent(context->aot_translation_complete_event);
+    context->aot_worker_operation.store(
+        static_cast<std::uint32_t>(AotWorkerOperation::kTranslate),
+        std::memory_order_release);
+    context->aot_translation_target.store(target, std::memory_order_release);
+    if (SetEvent(context->aot_translation_request_event) == 0 ||
+        WaitForSingleObject(context->aot_translation_complete_event,
+                            INFINITE) != WAIT_OBJECT_0)
+    {
+        context->aot_terminal_failure.store(true, std::memory_order_release);
+        return false;
+    }
+    if (context->aot_translation_result.unsafe_failure)
+    {
+        context->aot_terminal_failure.store(true, std::memory_order_release);
+        return false;
+    }
+    if (!context->aot_translation_result.appended)
+    {
+        return false;
+    }
+    *cache_entry = context->aot_translation_result.cache_entry;
+    *added_bytes = context->aot_translation_result.added_bytes;
+    return true;
+}
+
+bool HandleAotGuestCodeWriteCompletion(EXCEPTION_POINTERS* exception_info,
+                                       CONTEXT* win32_context,
+                                       ThreadContext* context)
+{
+    if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
+        win32_context == nullptr || context == nullptr ||
+        !HasPendingWin32AotGuestWrite(context->aot_page_write_watch) ||
+        exception_info->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP)
+    {
+        return false;
+    }
+    Win32AotGuestWriteCompletion completion;
+    if (!CompleteWin32AotGuestWrite(
+            &context->aot_page_write_watch, &completion) ||
+        !NoteSuccessfulAotGuestWrite(
+            context, completion.destination, completion.byte_count))
+    {
+        context->aot_terminal_failure.store(true, std::memory_order_release);
+        return false;
+    }
+    if (completion.keep_single_step ||
+        (completion.from_guest && context->aot_reentry_pending))
+    {
+        win32_context->EFlags |= 0x00000100U;
+    }
+    else
+    {
+        win32_context->EFlags &= ~0x00000100U;
+    }
+    return true;
+}
+
+bool HandleAotGuestCodeWriteFault(EXCEPTION_POINTERS* exception_info,
+                                  CONTEXT* win32_context,
+                                  ThreadContext* context)
+{
+    if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
+        win32_context == nullptr || context == nullptr ||
+        context->aot_placement == nullptr ||
+        exception_info->ExceptionRecord->ExceptionCode !=
+            EXCEPTION_ACCESS_VIOLATION ||
+        exception_info->ExceptionRecord->NumberParameters < 2U ||
+        exception_info->ExceptionRecord->ExceptionInformation[0] != 1U)
+    {
+        return false;
+    }
+    const std::uintptr_t destination_value =
+        exception_info->ExceptionRecord->ExceptionInformation[1];
+    if (destination_value > std::numeric_limits<std::uint32_t>::max())
+    {
+        return false;
+    }
+    const std::uint32_t destination =
+        static_cast<std::uint32_t>(destination_value);
+    if (!IsWin32AotGuestPageWriteWatched(
+            context->aot_page_write_watch, destination))
+    {
+        return false;
+    }
+    const std::uint32_t execution_address =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    const bool from_guest = IsGuestInstructionPointer(
+        context, execution_address);
+    if (!from_guest && !IsAotCacheAddress(context, execution_address))
+    {
+        return false;
+    }
+    const bool keep_single_step =
+        (win32_context->EFlags & 0x00000100U) != 0U ||
+        context->enable_single_step_trace ||
+        context->aot_reentry_pending || context->aot_legacy_fallback;
+    if (!BeginWin32AotGuestWrite(
+            &context->aot_page_write_watch, execution_address, destination,
+            from_guest, keep_single_step,
+            AotGuestAddressForExecutionAddress(context, execution_address)))
+    {
+        context->aot_terminal_failure.store(true, std::memory_order_release);
+        return false;
+    }
+    context->exception_dispatch_last_eip.store(
+        execution_address, std::memory_order_relaxed);
+    win32_context->EFlags |= 0x00000100U;
+    return true;
+}
+
+bool RequestAotInlineCachePatch(ThreadContext* context,
+                                std::uint32_t cache_miss_address,
+                                std::uint32_t guest_target,
+                                std::uint32_t cache_target)
+{
+    if (context == nullptr || context->aot_translation_thread == nullptr ||
+        context->aot_translation_request_event == nullptr ||
+        context->aot_translation_complete_event == nullptr)
+    {
+        return false;
+    }
+    ResetEvent(context->aot_translation_complete_event);
+    context->aot_patch_cache_miss_address.store(
+        cache_miss_address, std::memory_order_release);
+    context->aot_patch_guest_target.store(guest_target,
+                                           std::memory_order_release);
+    context->aot_patch_cache_target.store(cache_target,
+                                           std::memory_order_release);
+    context->aot_worker_operation.store(
+        static_cast<std::uint32_t>(AotWorkerOperation::kPatchInlineCache),
+        std::memory_order_release);
+    if (SetEvent(context->aot_translation_request_event) == 0 ||
+        WaitForSingleObject(context->aot_translation_complete_event,
+                            INFINITE) != WAIT_OBJECT_0)
+    {
+        context->aot_terminal_failure.store(true, std::memory_order_release);
+        return false;
+    }
+    return context->aot_inline_cache_patch_result.patched;
+}
+
+bool RequestAotGuestPageRetirement(ThreadContext* context,
+                                   std::uint32_t guest_page,
+                                   bool quarantine)
+{
+    if (context == nullptr || context->aot_translation_thread == nullptr ||
+        context->aot_translation_request_event == nullptr ||
+        context->aot_translation_complete_event == nullptr)
+    {
+        return false;
+    }
+    ResetEvent(context->aot_translation_complete_event);
+    context->aot_retire_guest_page.store(
+        guest_page, std::memory_order_release);
+    context->aot_retire_quarantine.store(
+        quarantine, std::memory_order_release);
+    context->aot_worker_operation.store(
+        static_cast<std::uint32_t>(AotWorkerOperation::kRetireGuestPage),
+        std::memory_order_release);
+    if (SetEvent(context->aot_translation_request_event) == 0 ||
+        WaitForSingleObject(context->aot_translation_complete_event,
+                            INFINITE) != WAIT_OBJECT_0)
+    {
+        context->aot_terminal_failure.store(true, std::memory_order_release);
+        return false;
+    }
+    return context->aot_guest_page_retire_result.retired;
+}
+
+std::uint32_t AotGuestAddressForExecutionAddress(
+    const ThreadContext* context,
+    std::uint32_t execution_address)
+{
+    if (context == nullptr)
+    {
+        return 0U;
+    }
+    if (IsGuestInstructionPointer(context, execution_address))
+    {
+        return execution_address;
+    }
+    std::uint32_t guest_address = 0U;
+    if (context->aot_placement != nullptr &&
+        FindAotGuestAddress(*context->aot_placement,
+                            execution_address, &guest_address))
+    {
+        return guest_address;
+    }
+    return 0U;
+}
+
+bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
+                                 std::uint32_t destination,
+                                 std::uint32_t byte_count)
+{
+    if (context == nullptr || context->aot_placement == nullptr ||
+        context->aot_translation_thread == nullptr || byte_count == 0U)
+    {
+        return true;
+    }
+    constexpr std::uint32_t kPageMask = 0xFFFFF000U;
+    const std::uint32_t first_page = destination & kPageMask;
+    const std::uint64_t write_end =
+        static_cast<std::uint64_t>(destination) + byte_count;
+    if (write_end == 0U ||
+        write_end > static_cast<std::uint64_t>(
+                        std::numeric_limits<std::uint32_t>::max()) + 1U)
+    {
+        return false;
+    }
+    const std::uint32_t last_page = static_cast<std::uint32_t>(
+        (write_end - 1U) & kPageMask);
+    bool relevant = Win32AotGuestRangeHasActiveTranslation(
+        *context->aot_placement, destination, byte_count);
+    for (std::uint32_t page = first_page;
+         !relevant; page += 0x1000U)
+    {
+        relevant = IsWin32AotGuestPageRetired(
+                       *context->aot_placement, page) ||
+            IsWin32AotGuestPageQuarantined(
+                *context->aot_placement, page);
+        if (page == last_page || page > 0xFFFFEFFFU)
+        {
+            break;
+        }
+    }
+    if (!relevant)
+    {
+        return true;
+    }
+    const std::uint32_t source = AotGuestAddressForExecutionAddress(
+        context,
+        context->exception_dispatch_last_eip.load(
+            std::memory_order_relaxed));
+    bool observed = false;
+    bool retired_provenance = false;
+    for (std::uint32_t page = first_page;; page += 0x1000U)
+    {
+        const std::uint32_t range_begin = std::max(destination, page);
+        const std::uint64_t page_end =
+            static_cast<std::uint64_t>(page) + 0x1000U;
+        const std::uint32_t range_size = static_cast<std::uint32_t>(
+            std::min(write_end, page_end) - range_begin);
+        const bool active = Win32AotGuestRangeHasActiveTranslation(
+            *context->aot_placement, range_begin, range_size);
+        retired_provenance = retired_provenance ||
+            IsWin32AotGuestPageRetired(*context->aot_placement, page) ||
+            IsWin32AotGuestPageQuarantined(
+                *context->aot_placement, page);
+        if (active)
+        {
+            const bool same_page = source == 0U ||
+                (source & kPageMask) == page;
+            context->aot_page_retire_attempt_count.fetch_add(
+                1, std::memory_order_relaxed);
+            if (!RequestAotGuestPageRetirement(
+                    context, page, same_page))
+            {
+                context->aot_terminal_failure.store(
+                    true, std::memory_order_release);
+                return false;
+            }
+            context->aot_page_retire_success_count.fetch_add(
+                1, std::memory_order_relaxed);
+            context->aot_last_retired_page.store(
+                page, std::memory_order_relaxed);
+            if (same_page)
+            {
+                context->aot_quarantine_count.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+            observed = true;
+        }
+        if (page == last_page || page > 0xFFFFEFFFU)
+        {
+            break;
+        }
+    }
+    if (observed || retired_provenance)
+    {
+        context->aot_code_write_count.fetch_add(
+            1, std::memory_order_relaxed);
+        context->aot_last_code_write_source.store(
+            source, std::memory_order_relaxed);
+        context->aot_last_code_write_destination.store(
+            destination, std::memory_order_relaxed);
+    }
+    return true;
+}
+
+bool IsAotInlineCacheMiss(const ThreadContext* context,
+                          std::uint32_t cache_address)
+{
+    if (context == nullptr || context->aot_placement == nullptr ||
+        cache_address < context->aot_placement->base_address)
+    {
+        return false;
+    }
+    const std::uint32_t offset =
+        cache_address - context->aot_placement->base_address;
+    for (const auto& site :
+         context->aot_placement->indirect_inline_cache_sites)
+    {
+        if (offset == site.miss_cache_offset ||
+            offset == site.miss_cache_offset + 1U)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsAotHleBoundaryAddress(const ThreadContext* context,
+                             std::uint32_t guest_address)
+{
+    if (context == nullptr)
+    {
+        return false;
+    }
+    for (const runtime::AotExcludedGuestRange& range :
+         context->aot_excluded_guest_ranges)
+    {
+        const std::uint64_t end =
+            static_cast<std::uint64_t>(range.guest_address) +
+            range.byte_count;
+        if (range.byte_count != 0U && guest_address >= range.guest_address &&
+            guest_address < end)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ResolveAotTransferTarget(ThreadContext* context,
+                              std::uint32_t target,
+                              std::uint32_t* cache_target,
+                              bool force_generation = false)
+{
+    if (context == nullptr || cache_target == nullptr ||
+        context->aot_placement == nullptr)
+    {
+        return false;
+    }
+    if (IsAotHleBoundaryAddress(context, target))
+    {
+        return false;
+    }
+    if (IsWin32AotGuestPageQuarantined(
+            *context->aot_placement, target))
+    {
+        return false;
+    }
+    if (IsAotCacheAddress(context, target) ||
+        FindAotCacheAddress(*context->aot_placement, target, cache_target))
+    {
+        return true;
+    }
+    const bool retired_target = force_generation ||
+        IsWin32AotGuestPageRetired(*context->aot_placement, target) ||
+        HasWin32AotRetiredGuestAddress(*context->aot_placement, target);
+    std::uint32_t dynamic_cache_entry = 0;
+    std::uint32_t dynamic_added_bytes = 0;
+    if (context->aot_dynamic_translation_enabled)
+    {
+        context->aot_dynamic_attempt_count.fetch_add(
+            1, std::memory_order_relaxed);
+    }
+    if ((!context->aot_dynamic_translation_enabled && !retired_target) ||
+        !RequestAotDynamicTranslation(
+            context, target, &dynamic_cache_entry, &dynamic_added_bytes))
+    {
+        if (retired_target)
+        {
+            context->aot_generation_failure_count.fetch_add(
+                1, std::memory_order_relaxed);
+            if (!context->aot_terminal_failure.load(
+                    std::memory_order_acquire) &&
+                RequestAotGuestPageRetirement(context, target, true))
+            {
+                context->aot_quarantine_count.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+            else
+            {
+                context->aot_terminal_failure.store(
+                    true, std::memory_order_release);
+            }
+        }
+        return false;
+    }
+    context->aot_dynamic_success_count.fetch_add(
+        1, std::memory_order_relaxed);
+    context->aot_dynamic_added_bytes.fetch_add(
+        dynamic_added_bytes, std::memory_order_relaxed);
+    if (retired_target)
+    {
+        context->aot_generation_publish_count.fetch_add(
+            1, std::memory_order_relaxed);
+        context->aot_generation_relinked_entry_count.fetch_add(
+            context->aot_translation_result.relinked_entry_count,
+            std::memory_order_relaxed);
+        context->aot_last_published_generation.store(
+            context->aot_translation_result.generation,
+            std::memory_order_relaxed);
+    }
+    *cache_target = dynamic_cache_entry;
+    return true;
+}
+
+bool EvaluateAotCondition(std::uint8_t condition, std::uint32_t eflags)
+{
+    const bool carry = (eflags & 0x00000001U) != 0U;
+    const bool parity = (eflags & 0x00000004U) != 0U;
+    const bool zero = (eflags & 0x00000040U) != 0U;
+    const bool sign = (eflags & 0x00000080U) != 0U;
+    const bool overflow = (eflags & 0x00000800U) != 0U;
+    switch (condition & 0x0FU)
+    {
+        case 0x0U: return overflow;
+        case 0x1U: return !overflow;
+        case 0x2U: return carry;
+        case 0x3U: return !carry;
+        case 0x4U: return zero;
+        case 0x5U: return !zero;
+        case 0x6U: return carry || zero;
+        case 0x7U: return !carry && !zero;
+        case 0x8U: return sign;
+        case 0x9U: return !sign;
+        case 0xAU: return parity;
+        case 0xBU: return !parity;
+        case 0xCU: return sign != overflow;
+        case 0xDU: return sign == overflow;
+        case 0xEU: return zero || sign != overflow;
+        case 0xFU: return !zero && sign == overflow;
+    }
+    return false;
+}
+
+bool HandleAotConditionalTransfer(EXCEPTION_POINTERS* exception_info,
+                                  CONTEXT* win32_context,
+                                  ThreadContext* context)
+{
+    if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
+        win32_context == nullptr || context == nullptr ||
+        context->aot_placement == nullptr || !context->aot_reentry_pending ||
+        exception_info->ExceptionRecord->ExceptionCode != EXCEPTION_BREAKPOINT)
+    {
+        return false;
+    }
+    const std::uint32_t source = static_cast<std::uint32_t>(win32_context->Eip);
+    const auto* instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(source));
+    std::uint8_t condition = 0;
+    std::uint32_t instruction_size = 0;
+    std::int32_t displacement = 0;
+    if (instruction[0] >= 0x70U && instruction[0] <= 0x7FU)
+    {
+        condition = instruction[0] & 0x0FU;
+        instruction_size = 2U;
+        displacement = static_cast<std::int8_t>(instruction[1]);
+    }
+    else if (instruction[0] == 0x0FU && instruction[1] >= 0x80U &&
+             instruction[1] <= 0x8FU)
+    {
+        condition = instruction[1] & 0x0FU;
+        instruction_size = 6U;
+        std::memcpy(&displacement, instruction + 2U, sizeof(displacement));
+    }
+    else
+    {
+        return false;
+    }
+    const bool taken = EvaluateAotCondition(
+        condition, static_cast<std::uint32_t>(win32_context->EFlags));
+    const std::uint32_t target = taken
+        ? source + instruction_size + displacement
+        : source + instruction_size;
+    std::uint32_t cache_target = target;
+    if (!ResolveAotTransferTarget(context, target, &cache_target))
+    {
+        context->aot_last_indirect_source.store(source,
+                                                 std::memory_order_relaxed);
+        context->aot_last_indirect_target.store(target,
+                                                 std::memory_order_relaxed);
+        return false;
+    }
+    win32_context->Eip = cache_target;
+    win32_context->EFlags &= ~0x00000100U;
+    context->aot_reentry_pending = false;
+    context->aot_legacy_fallback = false;
+    context->enable_single_step_trace = false;
+    context->aot_indirect_dispatch_count.fetch_add(1, std::memory_order_relaxed);
+    context->aot_transfer_trace[
+        context->aot_transfer_trace_count % kWin32AotTransferTraceCapacity] = {
+            source, target, false};
+    ++context->aot_transfer_trace_count;
+    context->aot_last_indirect_source.store(source, std::memory_order_relaxed);
+    context->aot_last_indirect_target.store(target, std::memory_order_relaxed);
+    context->aot_reentry_count.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
+                               CONTEXT* win32_context,
+                               ThreadContext* context)
+{
+    if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
+        win32_context == nullptr || context == nullptr ||
+        context->aot_placement == nullptr ||
+        !context->aot_reentry_pending ||
+        exception_info->ExceptionRecord->ExceptionCode != EXCEPTION_BREAKPOINT)
+    {
+        return false;
+    }
+    const std::uint32_t source = static_cast<std::uint32_t>(win32_context->Eip);
+    const auto* instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(source));
+    bool is_call = false;
+    std::uint32_t target = 0;
+    std::uint32_t instruction_size = 0;
+    if (instruction[0] == 0xE8U || instruction[0] == 0xE9U)
+    {
+        std::int32_t displacement = 0;
+        std::memcpy(&displacement, instruction + 1, sizeof(displacement));
+        instruction_size = 5U;
+        target = source + instruction_size + displacement;
+        is_call = instruction[0] == 0xE8U;
+    }
+    else if (instruction[0] == 0xEBU)
+    {
+        instruction_size = 2U;
+        target = source + instruction_size +
+            static_cast<std::int8_t>(instruction[1]);
+    }
+    else if (instruction[0] != 0xFFU)
+    {
+        return false;
+    }
+    else
+    {
+        const std::uint8_t operation = (instruction[1] >> 3) & 0x07U;
+        is_call = operation == 2U;
+        if (!is_call && operation != 4U)
+        {
+            return false;
+        }
+        const std::uint8_t mod = instruction[1] >> 6;
+        const std::uint8_t rm = instruction[1] & 0x07U;
+        instruction_size = 2U;
+        if (mod == 3U)
+        {
+            target = ReadGeneralRegister32(win32_context, rm);
+        }
+        else
+        {
+            std::uint32_t pointer_address = 0;
+            if (!DecodeModRmMemoryAddress(win32_context, instruction,
+                                          &pointer_address,
+                                          &instruction_size) ||
+                !ReadGuestUInt32(
+                    context,
+                    reinterpret_cast<const void*>(
+                        static_cast<std::uintptr_t>(pointer_address)),
+                    &target))
+            {
+                return false;
+            }
+        }
+    }
+    std::uint32_t cache_target = target;
+    if (!ResolveAotTransferTarget(context, target, &cache_target))
+    {
+        context->aot_last_indirect_source.store(source,
+                                                 std::memory_order_relaxed);
+        context->aot_last_indirect_target.store(target,
+                                                 std::memory_order_relaxed);
+        return false;
+    }
+    if (IsAotInlineCacheMiss(context, context->aot_reentry_cache_address))
+    {
+        context->aot_inline_cache_patch_attempt_count.fetch_add(
+            1, std::memory_order_relaxed);
+        if (RequestAotInlineCachePatch(
+                context, context->aot_reentry_cache_address,
+                target, cache_target))
+        {
+            context->aot_inline_cache_patch_success_count.fetch_add(
+                1, std::memory_order_relaxed);
+        }
+    }
+    if (is_call)
+    {
+        const std::uint32_t return_address = source + instruction_size;
+        const std::uint32_t stack_address = win32_context->Esp - 4U;
+        if (!WriteGuestUInt32(
+                context,
+                reinterpret_cast<void*>(
+                    static_cast<std::uintptr_t>(stack_address)),
+                return_address))
+        {
+            return false;
+        }
+        win32_context->Esp = stack_address;
+        if (context->aot_call_depth < ThreadContext::kAotCallFrameCapacity)
+        {
+            ThreadContext::AotCallFrame& frame =
+                context->aot_call_frames[context->aot_call_depth++];
+            frame.source = source;
+            frame.target = target;
+            frame.fallthrough = return_address;
+            context->aot_last_call_source = source;
+            context->aot_last_call_target = target;
+        }
+    }
+    win32_context->Eip = cache_target;
+    win32_context->EFlags &= ~0x00000100U;
+    context->aot_reentry_pending = false;
+    context->aot_legacy_fallback = false;
+    context->enable_single_step_trace = false;
+    context->aot_indirect_dispatch_count.fetch_add(
+        1, std::memory_order_relaxed);
+    const std::uint32_t transfer_slot =
+        context->aot_transfer_trace_count % kWin32AotTransferTraceCapacity;
+    context->aot_transfer_trace[transfer_slot] = {source, target, is_call};
+    ++context->aot_transfer_trace_count;
+    context->aot_last_indirect_source.store(source,
+                                             std::memory_order_relaxed);
+    context->aot_last_indirect_target.store(target,
+                                             std::memory_order_relaxed);
+    context->aot_reentry_count.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
+                             CONTEXT* win32_context,
+                             ThreadContext* context)
+{
+    if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
+        win32_context == nullptr || context == nullptr ||
+        context->aot_placement == nullptr ||
+        !context->aot_reentry_pending ||
+        exception_info->ExceptionRecord->ExceptionCode != EXCEPTION_BREAKPOINT)
+    {
+        return false;
+    }
+    const auto* instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(win32_context->Eip));
+    if (instruction[0] != 0xC3U && instruction[0] != 0xC2U)
+    {
+        return false;
+    }
+    std::uint32_t target = 0;
+    if (!ReadGuestUInt32(
+            context,
+            reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(win32_context->Esp)),
+            &target))
+    {
+        return false;
+    }
+    context->aot_last_return_target.store(target,
+                                           std::memory_order_relaxed);
+    context->aot_last_return_source.store(
+        static_cast<std::uint32_t>(win32_context->Eip),
+        std::memory_order_relaxed);
+    const void* return_stack = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(win32_context->Esp));
+    if (IsGuestRangeReadable(context, return_stack,
+                             sizeof(context->aot_last_return_stack)))
+    {
+        std::memcpy(context->aot_last_return_stack, return_stack,
+                    sizeof(context->aot_last_return_stack));
+    }
+    context->aot_last_return_matches_call = false;
+    context->aot_last_expected_return = 0;
+    if (context->aot_call_depth != 0U)
+    {
+        const ThreadContext::AotCallFrame& frame =
+            context->aot_call_frames[context->aot_call_depth - 1U];
+        context->aot_last_expected_return = frame.fallthrough;
+        context->aot_last_expected_call_source = frame.source;
+        context->aot_last_expected_call_target = frame.target;
+        context->aot_last_return_matches_call =
+            target == frame.fallthrough;
+        if (context->aot_last_return_matches_call)
+        {
+            --context->aot_call_depth;
+        }
+    }
+    const std::uint32_t trace_slot =
+        context->aot_return_trace_count % kWin32AotReturnTraceCapacity;
+    context->aot_return_trace[trace_slot] = {
+        static_cast<std::uint32_t>(win32_context->Eip), target,
+        context->aot_last_expected_return, win32_context->Esp,
+        context->aot_last_return_matches_call};
+    ++context->aot_return_trace_count;
+    std::uint32_t cache_target = target;
+    if (!ResolveAotTransferTarget(context, target, &cache_target))
+    {
+        return false;
+    }
+    if (IsAotInlineCacheMiss(context, context->aot_reentry_cache_address))
+    {
+        context->aot_inline_cache_patch_attempt_count.fetch_add(
+            1, std::memory_order_relaxed);
+        if (RequestAotInlineCachePatch(
+                context, context->aot_reentry_cache_address,
+                target, cache_target))
+        {
+            context->aot_inline_cache_patch_success_count.fetch_add(
+                1, std::memory_order_relaxed);
+        }
+    }
+    std::uint32_t pop_bytes = 4U;
+    if (instruction[0] == 0xC2U)
+    {
+        pop_bytes += static_cast<std::uint32_t>(instruction[1]) |
+                     (static_cast<std::uint32_t>(instruction[2]) << 8U);
+    }
+    win32_context->Esp += pop_bytes;
+    win32_context->Eip = cache_target;
+    win32_context->EFlags &= ~0x00000100U;
+    context->aot_reentry_pending = false;
+    context->aot_legacy_fallback = false;
+    context->enable_single_step_trace = false;
+    context->aot_return_dispatch_count.fetch_add(
+        1, std::memory_order_relaxed);
+    context->aot_reentry_count.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
+                      CONTEXT* win32_context,
+                      ThreadContext* context)
+{
+    if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
+        win32_context == nullptr || context == nullptr ||
+        context->aot_placement == nullptr)
+    {
+        return false;
+    }
+    const DWORD code = exception_info->ExceptionRecord->ExceptionCode;
+    if (code == EXCEPTION_BREAKPOINT)
+    {
+        const std::uint32_t cache_address = static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(
+                exception_info->ExceptionRecord->ExceptionAddress));
+        std::uint32_t guest_address = 0;
+        if (!FindAotGuestAddress(*context->aot_placement, cache_address,
+                                 &guest_address))
+        {
+            return false;
+        }
+        context->aot_reentry_cache_address = cache_address;
+        if (IsWin32AotCacheAddressRetired(
+                *context->aot_placement, cache_address))
+        {
+            context->aot_retired_entry_trap_count.fetch_add(
+                1, std::memory_order_relaxed);
+            std::uint32_t latest_cache_address = guest_address;
+            if (ResolveAotTransferTarget(
+                    context, guest_address, &latest_cache_address, true))
+            {
+                win32_context->Eip = latest_cache_address;
+                win32_context->EFlags &= ~0x00000100U;
+                context->aot_reentry_pending = false;
+                context->aot_legacy_fallback = false;
+                context->enable_single_step_trace = false;
+                context->aot_reentry_count.fetch_add(
+                    1, std::memory_order_relaxed);
+                return true;
+            }
+        }
+        win32_context->Eip = guest_address;
+        RecordExecutionProbe(win32_context, context);
+        win32_context->EFlags |= 0x00000100U;
+        context->aot_reentry_pending = true;
+        context->enable_single_step_trace = true;
+        context->aot_boundary_count.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    if (code != EXCEPTION_SINGLE_STEP || !context->aot_reentry_pending)
+    {
+        return false;
+    }
+    const std::uint32_t current = static_cast<std::uint32_t>(win32_context->Eip);
+    if (IsAotCacheAddress(context, current))
+    {
+        win32_context->EFlags &= ~0x00000100U;
+        context->aot_reentry_pending = false;
+        context->enable_single_step_trace = false;
+        context->aot_reentry_count.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    if (IsWin32AotGuestPageQuarantined(
+            *context->aot_placement, current))
+    {
+        win32_context->EFlags |= 0x00000100U;
+        context->aot_reentry_pending = true;
+        context->aot_legacy_fallback = false;
+        context->enable_single_step_trace = true;
+        return false;
+    }
+    std::uint32_t cache_address = current;
+    if (ResolveAotTransferTarget(context, current, &cache_address))
+    {
+        win32_context->Eip = cache_address;
+        win32_context->EFlags &= ~0x00000100U;
+        context->aot_reentry_pending = false;
+        context->aot_legacy_fallback = false;
+        context->enable_single_step_trace = false;
+        context->aot_reentry_count.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    if (IsWin32AotGuestPageQuarantined(
+            *context->aot_placement, current))
+    {
+        win32_context->EFlags |= 0x00000100U;
+        context->aot_reentry_pending = true;
+        context->aot_legacy_fallback = false;
+        context->enable_single_step_trace = true;
+        return false;
+    }
+    context->aot_reentry_pending = false;
+    context->aot_legacy_fallback = true;
+    context->enable_single_step_trace = true;
+    context->aot_legacy_fallback_count.fetch_add(
+        1, std::memory_order_relaxed);
+    context->aot_last_fallback_address.store(current,
+                                              std::memory_order_relaxed);
+    return false;
+}
+
 LONG WINAPI GuestStackVectoredExceptionHandler(
     EXCEPTION_POINTERS* exception_info)
 {
@@ -8264,6 +9485,68 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     }
 
     CONTEXT* win32_context = exception_info->ContextRecord;
+    const auto stop_for_aot_terminal_failure = [context, win32_context]() {
+        if (!context->aot_terminal_failure.load(std::memory_order_acquire))
+        {
+            return false;
+        }
+        win32_context->EFlags &= ~0x00000100U;
+        return true;
+    };
+    if (stop_for_aot_terminal_failure())
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (HandleAotGuestCodeWriteCompletion(
+            exception_info, win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (stop_for_aot_terminal_failure())
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (HandleAotGuestCodeWriteFault(
+            exception_info, win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (stop_for_aot_terminal_failure())
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (HandleAotReentry(exception_info, win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (stop_for_aot_terminal_failure())
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (HandleAotIndirectTransfer(exception_info, win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (stop_for_aot_terminal_failure())
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (HandleAotConditionalTransfer(exception_info, win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (stop_for_aot_terminal_failure())
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (HandleAotReturnTransfer(exception_info, win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (stop_for_aot_terminal_failure())
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     if (context->native_fast_path.active)
     {
         const bool returned =
@@ -8379,8 +9662,11 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
         return EXCEPTION_CONTINUE_EXECUTION;
     }
     if (exception_info->ExceptionRecord != nullptr &&
-        exception_info->ExceptionRecord->ExceptionCode ==
-            EXCEPTION_SINGLE_STEP &&
+        (exception_info->ExceptionRecord->ExceptionCode ==
+             EXCEPTION_SINGLE_STEP ||
+         (context->aot_reentry_pending &&
+          exception_info->ExceptionRecord->ExceptionCode ==
+             EXCEPTION_BREAKPOINT)) &&
         HandleSingleStepTrace(win32_context, context))
     {
         return EXCEPTION_CONTINUE_EXECUTION;
@@ -8511,10 +9797,25 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
+    if (context->aot_terminal_failure.load(std::memory_order_acquire))
+    {
+        win32_context->EFlags &= ~0x00000100U;
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     if (HandleOriginalFatalBreakpoint(exception_info,
                                       win32_context,
                                       context))
     {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
+    if (context->aot_reentry_pending &&
+        exception_info->ExceptionRecord != nullptr &&
+        exception_info->ExceptionRecord->ExceptionCode ==
+            EXCEPTION_BREAKPOINT)
+    {
+        // Indirect transfers, returns, and LOOP-family instructions execute
+        // once from the original image under TF, then re-enter the cache.
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
@@ -8529,6 +9830,45 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
         AppendConsoleOutput(context, source, byte_count);
         RecoverFromHleExit(exception_info->ContextRecord, context);
         return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
+    const std::uint32_t exception_address =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    if (context->aot_placement != nullptr &&
+        IsAotCacheAddress(context, exception_address) &&
+        FindAotGuestAddress(*context->aot_placement,
+                            exception_address,
+                            &context->aot_exception_guest_address))
+    {
+        context->aot_exception_mapping_valid = true;
+        context->aot_exception_cache_address = exception_address;
+        const std::uint32_t cache_offset = exception_address -
+            context->aot_placement->base_address;
+        const std::uint32_t cache_bytes = std::min<std::uint32_t>(
+            sizeof(context->aot_exception_cache_bytes),
+            context->aot_placement->size - cache_offset);
+        std::memcpy(
+            context->aot_exception_cache_bytes,
+            reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(exception_address)),
+            cache_bytes);
+        const std::uint64_t guest_end =
+            static_cast<std::uint64_t>(
+                context->aot_exception_guest_address) +
+            sizeof(context->aot_exception_guest_bytes);
+        const std::uint64_t runtime_end =
+            static_cast<std::uint64_t>(context->runtime_base) +
+            context->runtime_size;
+        if (context->aot_exception_guest_address >=
+                context->runtime_base &&
+            guest_end <= runtime_end)
+        {
+            std::memcpy(
+                context->aot_exception_guest_bytes,
+                reinterpret_cast<const void*>(static_cast<std::uintptr_t>(
+                    context->aot_exception_guest_address)),
+                sizeof(context->aot_exception_guest_bytes));
+        }
     }
 
     win32_context->EFlags &= ~0x00000100U;
@@ -8652,6 +9992,8 @@ bool RunWin32ExecutionThread(
     const exe::Dos16mBoundModule* linexe_module,
     const std::vector<exe::LeResidentName>* glide_exports,
     const std::filesystem::path* cd_chd_path,
+    Win32AotCodeCachePlacement* aot_placement,
+    bool enable_dynamic_translation,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
 {
@@ -8707,7 +10049,8 @@ bool RunWin32ExecutionThread(
     {
         InterlockedExchange(&context.shared_live_telemetry->host_phase, 1);
     }
-    context.entry_address = entry_address;
+    context.entry_address = aot_placement != nullptr
+        ? aot_placement->entry_address : entry_address;
     context.runtime_base = placement.placed_base;
     context.runtime_size = placement.placed_size;
     context.guest_initial_esp = guest_initial_esp;
@@ -8717,6 +10060,36 @@ bool RunWin32ExecutionThread(
     context.enable_segment_load_hle = enable_segment_load_hle;
     context.enable_dos_hle = enable_dos_hle;
     context.enable_single_step_trace = enable_single_step_trace;
+    context.aot_placement = aot_placement;
+    context.aot_dynamic_translation_enabled = enable_dynamic_translation;
+    char probe_offset_text[32] = {};
+    const DWORD probe_offset_length = GetEnvironmentVariableA(
+        "REPIU_EXECUTION_PROBE_OFFSET", probe_offset_text,
+        static_cast<DWORD>(sizeof(probe_offset_text)));
+    if (probe_offset_length > 0U &&
+        probe_offset_length < sizeof(probe_offset_text))
+    {
+        char* end = nullptr;
+        const unsigned long value = std::strtoul(
+            probe_offset_text, &end, 0);
+        if (end != probe_offset_text && *end == '\0' && value <= UINT32_MAX)
+        {
+            context.execution_probe_configured = true;
+            context.execution_probe_offset =
+                static_cast<std::uint32_t>(value);
+        }
+    }
+    if (context.execution_probe_configured && aot_placement != nullptr &&
+        !InstallWin32AotProbeSentinel(
+            aot_placement,
+            context.runtime_base + context.execution_probe_offset))
+    {
+        context.execution_probe_configured = false;
+    }
+    if (aot_placement != nullptr)
+    {
+        context.aot_cache_entry_count.store(1, std::memory_order_relaxed);
+    }
     context.glide_state.texture_memory_bytes =
         repiu::hle::kPiuBansheeVirtualTextureMemoryBytes;
     if (glide_exports != nullptr)
@@ -8884,6 +10257,12 @@ bool RunWin32ExecutionThread(
                 bss_protected;
         }
     }
+    if (context.linexe_environment_active)
+    {
+        context.aot_excluded_guest_ranges.push_back({
+            context.linexe_arena_layout.gate_code_base,
+            context.linexe_arena_layout.gate_code_size});
+    }
     if (dos_file_system != nullptr)
     {
         context.dos_file_system = *dos_file_system;
@@ -8898,6 +10277,69 @@ bool RunWin32ExecutionThread(
         return false;
     }
 
+    const auto stop_translation_worker = [&context]() {
+        if (context.aot_translation_thread != nullptr)
+        {
+            context.aot_translation_shutdown.store(
+                true, std::memory_order_release);
+            if (context.aot_translation_request_event == nullptr ||
+                SetEvent(context.aot_translation_request_event) == 0 ||
+                WaitForSingleObject(context.aot_translation_thread,
+                                    INFINITE) != WAIT_OBJECT_0)
+            {
+                // Context ownership cannot be released while the worker could
+                // still reference it. Treat an impossible join failure as a
+                // process-local terminal failure rather than creating UAF.
+                std::abort();
+            }
+            CloseHandle(context.aot_translation_thread);
+            context.aot_translation_thread = nullptr;
+        }
+        if (context.aot_translation_request_event != nullptr)
+        {
+            CloseHandle(context.aot_translation_request_event);
+            context.aot_translation_request_event = nullptr;
+        }
+        if (context.aot_translation_complete_event != nullptr)
+        {
+            CloseHandle(context.aot_translation_complete_event);
+            context.aot_translation_complete_event = nullptr;
+        }
+    };
+    if (context.aot_placement != nullptr)
+    {
+        context.aot_translation_request_event =
+            CreateEventA(nullptr, FALSE, FALSE, nullptr);
+        context.aot_translation_complete_event =
+            CreateEventA(nullptr, FALSE, FALSE, nullptr);
+        if (context.aot_translation_request_event == nullptr ||
+            context.aot_translation_complete_event == nullptr)
+        {
+            stop_translation_worker();
+            attempt->message = "failed to create AOT translation events";
+            return false;
+        }
+        context.aot_translation_thread = api.create_thread(
+            nullptr, 0, AotTranslationWorkerProc, &context, 0, nullptr);
+        if (context.aot_translation_thread == nullptr)
+        {
+            stop_translation_worker();
+            attempt->message = "failed to create AOT translation worker";
+            return false;
+        }
+        if (!InstallWin32AotGuestPageWriteWatches(
+                *context.aot_placement, nullptr,
+                &context.aot_page_write_watch))
+        {
+            RestoreWin32AotGuestPageWriteWatches(
+                &context.aot_page_write_watch);
+            stop_translation_worker();
+            attempt->message =
+                "failed to install AOT guest code write watches";
+            return false;
+        }
+    }
+
     HANDLE thread = api.create_thread(nullptr,
                                       0,
                                       GuestEntryThreadProc,
@@ -8910,6 +10352,8 @@ bool RunWin32ExecutionThread(
         std::ostringstream stream;
         stream << "CreateThread failed with error " << error;
         attempt->message = stream.str();
+        RestoreWin32AotGuestPageWriteWatches(&context.aot_page_write_watch);
+        stop_translation_worker();
         return false;
     }
 
@@ -8923,7 +10367,8 @@ bool RunWin32ExecutionThread(
     const DWORD wait_result = PollThreadUntilExit(
         thread,
         timeout_milliseconds,
-        enable_single_step_trace ? &context : nullptr,
+        (enable_single_step_trace || aot_placement != nullptr)
+            ? &context : nullptr,
         &exit_code);
 
     const auto remove_vectored_handler = [&context]() {
@@ -8944,6 +10389,8 @@ bool RunWin32ExecutionThread(
             WaitForSingleObject(thread, 5000U);
         }
         remove_vectored_handler();
+        stop_translation_worker();
+        RestoreWin32AotGuestPageWriteWatches(&context.aot_page_write_watch);
         CopyThreadObservationToAttempt(context, attempt);
         attempt->valid = true;
         attempt->message = "minimal execution attempt timed out";
@@ -8952,6 +10399,8 @@ bool RunWin32ExecutionThread(
     }
 
     remove_vectored_handler();
+    stop_translation_worker();
+    RestoreWin32AotGuestPageWriteWatches(&context.aot_page_write_watch);
     api.close_handle(thread);
 
     attempt->returned = context.returned;
@@ -9018,6 +10467,8 @@ bool AttemptWin32MinimalExecution(
         nullptr,
         nullptr,
         nullptr,
+        nullptr,
+        false,
         timeout_milliseconds,
         attempt);
 }
@@ -9056,6 +10507,8 @@ bool AttemptWin32GuestStackExecution(
         nullptr,
         nullptr,
         nullptr,
+        nullptr,
+        false,
         timeout_milliseconds,
         attempt);
 }
@@ -9098,6 +10551,8 @@ bool AttemptWin32GuestStackTrapExecution(
         linexe_module,
         glide_exports,
         cd_chd_path,
+        nullptr,
+        false,
         timeout_milliseconds,
         attempt);
 }
@@ -9137,8 +10592,41 @@ bool AttemptWin32GuestStackHleExecution(
         nullptr,
         nullptr,
         nullptr,
+        nullptr,
+        false,
         timeout_milliseconds,
         attempt);
+}
+
+bool AttemptWin32GuestStackAotExecution(
+    const Win32RelocatedImagePlacement& placement,
+    Win32AotCodeCachePlacement& aot_placement,
+    const runtime::GuestStackSwitchPlan& stack_plan,
+    const hle::DosVirtualFileSystemState& dos_file_system,
+    const exe::Dos16mBoundModule* linexe_module,
+    const std::vector<exe::LeResidentName>* glide_exports,
+    const std::filesystem::path* cd_chd_path,
+    bool enable_dynamic_translation,
+    std::uint32_t timeout_milliseconds,
+    Win32MinimalExecutionAttempt* attempt)
+{
+    if (attempt == nullptr || !stack_plan.valid || !aot_placement.placed)
+    {
+        if (attempt != nullptr)
+        {
+            *attempt = Win32MinimalExecutionAttempt{};
+            attempt->message = !stack_plan.valid
+                ? "guest stack switch plan is not valid"
+                : "AOT code cache placement is not valid";
+        }
+        return false;
+    }
+    return RunWin32ExecutionThread(
+        placement, stack_plan.entry_eip, stack_plan.initial_esp,
+        true, true, true, true, false, false, &dos_file_system,
+        linexe_module, glide_exports, cd_chd_path, &aot_placement,
+        enable_dynamic_translation,
+        timeout_milliseconds, attempt);
 }
 
 }  // namespace repiu::platform::win32

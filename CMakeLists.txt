@@ -63,6 +63,8 @@ add_library(repiu_exe
     src/hle/privileged_instruction.cpp
     src/media/chd_cd_image.cpp
     src/platform/win32/cd_audio_wave_out.cpp
+    src/platform/win32/aot_code_cache_win32.cpp
+    src/platform/win32/aot_page_coherence_win32.cpp
     src/platform/win32/execution_trampoline.cpp
     src/platform/win32/native_fast_path.cpp
     src/platform/win32/verified_region_analyzer.cpp
@@ -71,6 +73,8 @@ add_library(repiu_exe
     src/platform/win32/x87_context.cpp
     src/platform/win32/runtime_memory_policy.cpp
     src/runtime/guest_context.cpp
+    src/runtime/aot_code_cache.cpp
+    src/runtime/aot_translation_plan.cpp
     src/runtime/dos_low_memory.cpp
     src/runtime/image_address.cpp
     src/runtime/runtime_memory_arena.cpp
@@ -92,6 +96,10 @@ add_executable(repiu_exe_analyzer
 
 add_executable(repiu_chd_cd_probe
     src/tools/chd_cd_probe/main.cpp
+)
+
+add_executable(repiu_aot_probe
+    src/tools/aot_probe/main.cpp
 )
 
 add_executable(repiu_loader_win32
@@ -116,6 +124,15 @@ target_link_libraries(repiu_exe_analyzer
 target_link_libraries(repiu_chd_cd_probe
     PRIVATE
         repiu_exe
+)
+
+target_link_libraries(repiu_aot_probe
+    PRIVATE
+        repiu_exe
+)
+target_include_directories(repiu_aot_probe
+    PRIVATE
+        third_party/zydis
 )
 
 target_link_libraries(repiu_loader_win32

@@ -5,9 +5,12 @@
 #include "repiu/hle/hle_dispatcher.h"
 #include "repiu/hle/privileged_instruction.h"
 #include "repiu/platform/win32/execution_trampoline.h"
+#include "repiu/platform/win32/aot_code_cache_win32.h"
 #include "repiu/platform/win32/live_telemetry.h"
 #include "repiu/platform/win32/runtime_memory_policy.h"
 #include "repiu/runtime/guest_context.h"
+#include "repiu/runtime/aot_code_cache.h"
+#include "repiu/runtime/aot_translation_plan.h"
 #include "repiu/runtime/image_address.h"
 #include "repiu/runtime/runtime_memory.h"
 #include "repiu/runtime/runtime_memory_arena.h"
@@ -35,6 +38,20 @@ namespace
 {
 
 constexpr std::uint32_t kDefaultExecutionTimeoutMilliseconds = 1000U;
+
+bool UseAotExecutionBackend()
+{
+    const char* value = std::getenv("REPIU_EXECUTION_BACKEND");
+    return value != nullptr &&
+        (std::string_view(value) == "aot" ||
+         std::string_view(value) == "aot-dynamic");
+}
+
+bool UseDynamicAotTranslation()
+{
+    const char* value = std::getenv("REPIU_EXECUTION_BACKEND");
+    return value != nullptr && std::string_view(value) == "aot-dynamic";
+}
 
 std::uint32_t ReadExecutionTimeoutMilliseconds()
 {
@@ -89,6 +106,22 @@ std::string Hex16(std::uint16_t value)
     std::ostringstream stream;
     stream << "0x" << std::uppercase << std::hex << std::setw(4)
            << std::setfill('0') << value;
+    return stream.str();
+}
+
+std::string HexBytes(const std::uint8_t* bytes, std::size_t byte_count)
+{
+    std::ostringstream stream;
+    for (std::size_t index = 0; index < byte_count; ++index)
+    {
+        if (index != 0U)
+        {
+            stream << ' ';
+        }
+        stream << std::uppercase << std::hex << std::setw(2)
+               << std::setfill('0')
+               << static_cast<unsigned>(bytes[index]);
+    }
     return stream.str();
 }
 
@@ -673,6 +706,137 @@ void PrintExecutionAttempt(
     logger.info("Win32 native fast path last entry/return: {}/{}",
                 Hex32(attempt.native_fast_path_last_entry),
                 Hex32(attempt.native_fast_path_last_return));
+    logger.info("Win32 execution backend: {}",
+                attempt.aot_backend_active ? "aot" : "legacy");
+    logger.info("Win32 AOT entry/boundary/reentry/fallback: {}/{}/{}/{}",
+                attempt.aot_cache_entry_count,
+                attempt.aot_boundary_count,
+                attempt.aot_reentry_count,
+                attempt.aot_legacy_fallback_count);
+    logger.info("Win32 AOT last fallback address: {}",
+                Hex32(attempt.aot_last_fallback_address));
+    logger.info("Win32 AOT dynamic attempt/success/bytes: {}/{}/{}",
+                attempt.aot_dynamic_attempt_count,
+                attempt.aot_dynamic_success_count,
+                attempt.aot_dynamic_added_bytes);
+    logger.info("Win32 AOT indirect dispatch/source/target: {}/{}/{}",
+                attempt.aot_indirect_dispatch_count,
+                Hex32(attempt.aot_last_indirect_source),
+                Hex32(attempt.aot_last_indirect_target));
+    logger.info("Win32 AOT inline-cache patch attempt/success: {}/{}",
+                attempt.aot_inline_cache_patch_attempt_count,
+                attempt.aot_inline_cache_patch_success_count);
+    logger.info("Win32 AOT inline-cache sites/last cache boundary: {}/{}",
+                attempt.aot_inline_cache_site_count,
+                Hex32(attempt.aot_last_reentry_cache_address));
+    logger.info("Win32 AOT code writes/retire attempt/success: {}/{}/{}",
+                attempt.aot_code_write_count,
+                attempt.aot_page_retire_attempt_count,
+                attempt.aot_page_retire_success_count);
+    logger.info("Win32 AOT generation publishes/quarantines: {}/{}",
+                attempt.aot_generation_publish_count,
+                attempt.aot_quarantine_count);
+    logger.info("Win32 AOT generation failures/relinked/retired traps: {}/{}/{}",
+                attempt.aot_generation_failure_count,
+                attempt.aot_generation_relinked_entry_count,
+                attempt.aot_retired_entry_trap_count);
+    logger.info("Win32 AOT last code write source/destination: {}/{}",
+                Hex32(attempt.aot_last_code_write_source),
+                Hex32(attempt.aot_last_code_write_destination));
+    logger.info("Win32 AOT last retired page/published generation: {}/{}",
+                Hex32(attempt.aot_last_retired_page),
+                attempt.aot_last_published_generation);
+    logger.info("Win32 AOT exception cache/guest mapping: {}/{}/{}",
+                attempt.aot_exception_mapping_valid ? "valid" : "invalid",
+                Hex32(attempt.aot_exception_cache_address),
+                Hex32(attempt.aot_exception_guest_address));
+    if (attempt.aot_exception_mapping_valid)
+    {
+        logger.info("Win32 AOT exception cache bytes: {}",
+                    HexBytes(attempt.aot_exception_cache_bytes,
+                             sizeof(attempt.aot_exception_cache_bytes)));
+        logger.info("Win32 AOT exception guest bytes: {}",
+                    HexBytes(attempt.aot_exception_guest_bytes,
+                             sizeof(attempt.aot_exception_guest_bytes)));
+    }
+    logger.info("Win32 AOT return dispatch/source/target: {}/{}/{}",
+                attempt.aot_return_dispatch_count,
+                Hex32(attempt.aot_last_return_source),
+                Hex32(attempt.aot_last_return_target));
+    logger.info("Win32 AOT return stack: {} {} {} {}",
+                Hex32(attempt.aot_last_return_stack[0]),
+                Hex32(attempt.aot_last_return_stack[1]),
+                Hex32(attempt.aot_last_return_stack[2]),
+                Hex32(attempt.aot_last_return_stack[3]));
+    logger.info("Win32 AOT call depth/return match/expected: {}/{}/{}",
+                attempt.aot_call_depth,
+                attempt.aot_last_return_matches_call ? "true" : "false",
+                Hex32(attempt.aot_last_expected_return));
+    logger.info("Win32 AOT last call source/target: {}/{}",
+                Hex32(attempt.aot_last_call_source),
+                Hex32(attempt.aot_last_call_target));
+    logger.info("Win32 AOT expected call source/target: {}/{}",
+                Hex32(attempt.aot_last_expected_call_source),
+                Hex32(attempt.aot_last_expected_call_target));
+    logger.info("Win32 AOT return trace entries: {}",
+                attempt.aot_return_trace_count);
+    const std::uint32_t trace_begin = attempt.aot_return_trace_count >
+        repiu::platform::win32::kWin32AotReturnTraceCapacity
+        ? attempt.aot_return_trace_count -
+              repiu::platform::win32::kWin32AotReturnTraceCapacity
+        : 0U;
+    for (std::uint32_t sequence = trace_begin;
+         sequence < attempt.aot_return_trace_count; ++sequence)
+    {
+        const auto& trace = attempt.aot_return_trace[
+            sequence % repiu::platform::win32::kWin32AotReturnTraceCapacity];
+        logger.info("Win32 AOT return trace #{} source/actual/expected/ESP/match: {}/{}/{}/{}/{}",
+                    sequence + 1U, Hex32(trace.source),
+                    Hex32(trace.actual_target), Hex32(trace.expected_target),
+                    Hex32(trace.esp), trace.matches ? "true" : "false");
+    }
+    logger.info("Win32 AOT transfer trace entries: {}",
+                attempt.aot_transfer_trace_count);
+    const std::uint32_t transfer_begin = attempt.aot_transfer_trace_count >
+        repiu::platform::win32::kWin32AotTransferTraceCapacity
+        ? attempt.aot_transfer_trace_count -
+              repiu::platform::win32::kWin32AotTransferTraceCapacity
+        : 0U;
+    for (std::uint32_t sequence = transfer_begin;
+         sequence < attempt.aot_transfer_trace_count; ++sequence)
+    {
+        const auto& transfer = attempt.aot_transfer_trace[
+            sequence % repiu::platform::win32::kWin32AotTransferTraceCapacity];
+        logger.info("Win32 AOT transfer trace #{} source/target/kind: {}/{}/{}",
+                    sequence + 1U, Hex32(transfer.source),
+                    Hex32(transfer.target),
+                    transfer.is_call ? "call" : "jump");
+    }
+    logger.info("Win32 execution probe configured/hit/offset: {}/{}/{}",
+                attempt.execution_probe_configured ? "true" : "false",
+                attempt.execution_probe_hit ? "true" : "false",
+                Hex32(attempt.execution_probe_offset));
+    if (attempt.execution_probe_hit)
+    {
+        const auto& probe = attempt.execution_probe_snapshot;
+        logger.info("Win32 execution probe EIP/ESP/EFLAGS: {}/{}/{}",
+                    Hex32(probe.eip), Hex32(probe.esp),
+                    Hex32(probe.eflags));
+        logger.info("Win32 execution probe EAX/EBX/ECX/EDX: {}/{}/{}/{}",
+                    Hex32(probe.eax), Hex32(probe.ebx),
+                    Hex32(probe.ecx), Hex32(probe.edx));
+        logger.info("Win32 execution probe ESI/EDI/EBP: {}/{}/{}",
+                    Hex32(probe.esi), Hex32(probe.edi), Hex32(probe.ebp));
+        logger.info("Win32 execution probe stack: {} {} {} {} {} {} {} {}",
+                    Hex32(attempt.execution_probe_stack[0]),
+                    Hex32(attempt.execution_probe_stack[1]),
+                    Hex32(attempt.execution_probe_stack[2]),
+                    Hex32(attempt.execution_probe_stack[3]),
+                    Hex32(attempt.execution_probe_stack[4]),
+                    Hex32(attempt.execution_probe_stack[5]),
+                    Hex32(attempt.execution_probe_stack[6]),
+                    Hex32(attempt.execution_probe_stack[7]));
+    }
     logger.info("Win32 diagnostic poll iterations: {}",
                 attempt.diagnostic_poll_iteration_count);
     logger.info("Win32 diagnostic progress count: {}",
@@ -2076,6 +2240,25 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    const bool use_aot_backend = UseAotExecutionBackend();
+    const bool use_dynamic_aot = UseDynamicAotTranslation();
+    repiu::runtime::AotTranslationPlan aot_plan;
+    repiu::runtime::AotCodeCacheImage aot_image;
+    if (use_aot_backend &&
+        (!repiu::runtime::BuildAotTranslationPlan(relocated_image,
+                                                  &aot_plan) ||
+         !repiu::runtime::BuildAotCodeCacheImage(aot_plan, &aot_image)))
+    {
+        logger->error("Failed to build requested AOT execution image: {} / {}",
+                      aot_plan.message, aot_image.message);
+        repiu::platform::win32::ReleaseWin32RuntimeAddressRange(
+            relocated_arena_reservation);
+        return 1;
+    }
+    logger->info("Win32 requested execution backend: {}",
+                 use_dynamic_aot ? "aot-dynamic" :
+                 use_aot_backend ? "aot" : "legacy");
+
     repiu::runtime::GuestStackSwitchPlan stack_plan;
     std::uint32_t stack_base = relocated_image.relocated_image_base;
     std::uint32_t stack_limit =
@@ -2143,6 +2326,24 @@ int main(int argc, char** argv)
         logger->error("Failed to place relocated image");
         return 1;
     }
+    repiu::platform::win32::Win32AotCodeCachePlacement aot_placement;
+    if (use_aot_backend &&
+        (!repiu::platform::win32::PlaceWin32AotCodeCache(
+             aot_image, &aot_placement) ||
+         !aot_placement.placed))
+    {
+        logger->error("Failed to place requested AOT code cache: {}",
+                      aot_placement.message);
+        repiu::platform::win32::ReleaseWin32RelocatedImage(placement);
+        return 1;
+    }
+    if (use_aot_backend)
+    {
+        logger->info("Win32 AOT cache base/bytes/entry: {}/{}/{}",
+                     Hex32(aot_placement.base_address),
+                     aot_placement.size,
+                     Hex32(aot_placement.entry_address));
+    }
     logger->flush();
     repiu::platform::win32::Win32MinimalExecutionAttempt attempt;
     const bool use_dos_console_hle =
@@ -2158,8 +2359,19 @@ int main(int argc, char** argv)
         logger->info("Win32 guest execution timeout: {} ms",
                      execution_timeout_milliseconds);
     }
-    const bool attempted_execution =
-        use_dos_console_hle
+    const bool attempted_execution = use_aot_backend
+        ? repiu::platform::win32::AttemptWin32GuestStackAotExecution(
+              placement,
+              aot_placement,
+              stack_plan,
+              dos_file_system,
+              linexe_runtime_module ? &*linexe_runtime_module : nullptr,
+              glide_exports.empty() ? nullptr : &glide_exports,
+              cd_chd_path ? &*cd_chd_path : nullptr,
+              use_dynamic_aot,
+              execution_timeout_milliseconds,
+              &attempt)
+        : use_dos_console_hle
             ? repiu::platform::win32::AttemptWin32GuestStackHleExecution(
                   placement,
                   stack_plan,
@@ -2178,6 +2390,7 @@ int main(int argc, char** argv)
     if (!attempted_execution)
     {
         logger->error("Failed to attempt minimal original entry execution");
+        repiu::platform::win32::ReleaseWin32AotCodeCache(&aot_placement);
         repiu::platform::win32::ReleaseWin32RelocatedImage(placement);
         return 1;
     }
@@ -2185,6 +2398,7 @@ int main(int argc, char** argv)
     PrintExecutionAttempt(*logger,
                           attempt,
                           profile->executable_path.filename().string());
+    repiu::platform::win32::ReleaseWin32AotCodeCache(&aot_placement);
     if (attempt.exception_caught)
     {
         repiu::runtime::RelocatedImageByteWindow window;

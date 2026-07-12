@@ -3,6 +3,7 @@
 
 #include "repiu/platform/win32/runtime_memory_policy.h"
 #include "repiu/runtime/guest_context.h"
+#include "repiu/platform/win32/aot_code_cache_win32.h"
 #include "repiu/hle/dos_file_system.h"
 #include "repiu/exe/dos16m_bound_module.h"
 
@@ -211,6 +212,26 @@ struct Win32SegmentLoadObservation
     Win32SegmentLoadTraceEntry trace[kWin32SegmentLoadTraceCapacity];
 };
 
+struct Win32AotReturnTraceEntry
+{
+    std::uint32_t source = 0;
+    std::uint32_t actual_target = 0;
+    std::uint32_t expected_target = 0;
+    std::uint32_t esp = 0;
+    bool matches = false;
+};
+
+constexpr std::uint32_t kWin32AotReturnTraceCapacity = 16;
+
+struct Win32AotTransferTraceEntry
+{
+    std::uint32_t source = 0;
+    std::uint32_t target = 0;
+    bool is_call = false;
+};
+
+constexpr std::uint32_t kWin32AotTransferTraceCapacity = 32;
+
 struct Win32MinimalExecutionAttempt
 {
     bool valid = false;
@@ -246,6 +267,61 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t native_fast_path_cancel_count = 0;
     std::uint32_t native_fast_path_last_entry = 0;
     std::uint32_t native_fast_path_last_return = 0;
+    bool aot_backend_active = false;
+    std::uint32_t aot_cache_entry_count = 0;
+    std::uint32_t aot_boundary_count = 0;
+    std::uint32_t aot_reentry_count = 0;
+    std::uint32_t aot_legacy_fallback_count = 0;
+    std::uint32_t aot_last_fallback_address = 0;
+    std::uint32_t aot_dynamic_attempt_count = 0;
+    std::uint32_t aot_dynamic_success_count = 0;
+    std::uint32_t aot_dynamic_added_bytes = 0;
+    std::uint32_t aot_indirect_dispatch_count = 0;
+    std::uint32_t aot_inline_cache_patch_attempt_count = 0;
+    std::uint32_t aot_inline_cache_patch_success_count = 0;
+    std::uint32_t aot_inline_cache_site_count = 0;
+    std::uint32_t aot_last_reentry_cache_address = 0;
+    std::uint32_t aot_code_write_count = 0;
+    std::uint32_t aot_page_retire_attempt_count = 0;
+    std::uint32_t aot_page_retire_success_count = 0;
+    std::uint32_t aot_generation_publish_count = 0;
+    std::uint32_t aot_generation_failure_count = 0;
+    std::uint32_t aot_generation_relinked_entry_count = 0;
+    std::uint32_t aot_retired_entry_trap_count = 0;
+    std::uint32_t aot_quarantine_count = 0;
+    std::uint32_t aot_last_code_write_source = 0;
+    std::uint32_t aot_last_code_write_destination = 0;
+    std::uint32_t aot_last_retired_page = 0;
+    std::uint32_t aot_last_published_generation = 0;
+    bool aot_exception_mapping_valid = false;
+    std::uint32_t aot_exception_cache_address = 0;
+    std::uint32_t aot_exception_guest_address = 0;
+    std::uint8_t aot_exception_cache_bytes[16] = {};
+    std::uint8_t aot_exception_guest_bytes[16] = {};
+    std::uint32_t aot_last_indirect_source = 0;
+    std::uint32_t aot_last_indirect_target = 0;
+    std::uint32_t aot_return_dispatch_count = 0;
+    std::uint32_t aot_last_return_target = 0;
+    std::uint32_t aot_last_return_source = 0;
+    std::uint32_t aot_last_return_stack[4] = {};
+    bool execution_probe_configured = false;
+    bool execution_probe_hit = false;
+    std::uint32_t execution_probe_offset = 0;
+    X86ExecutionSnapshot execution_probe_snapshot;
+    std::uint32_t execution_probe_stack[8] = {};
+    std::uint32_t aot_call_depth = 0;
+    bool aot_last_return_matches_call = false;
+    std::uint32_t aot_last_expected_return = 0;
+    std::uint32_t aot_last_call_source = 0;
+    std::uint32_t aot_last_call_target = 0;
+    std::uint32_t aot_last_expected_call_source = 0;
+    std::uint32_t aot_last_expected_call_target = 0;
+    std::uint32_t aot_return_trace_count = 0;
+    Win32AotReturnTraceEntry
+        aot_return_trace[kWin32AotReturnTraceCapacity];
+    std::uint32_t aot_transfer_trace_count = 0;
+    Win32AotTransferTraceEntry
+        aot_transfer_trace[kWin32AotTransferTraceCapacity];
     std::uint32_t diagnostic_poll_iteration_count = 0;
     std::uint32_t diagnostic_progress_count = 0;
     std::uint32_t diagnostic_quiet_iteration_count = 0;
@@ -524,6 +600,18 @@ bool AttemptWin32GuestStackTrapExecution(
     const exe::Dos16mBoundModule* linexe_module,
     const std::vector<exe::LeResidentName>* glide_exports,
     const std::filesystem::path* cd_chd_path,
+    std::uint32_t timeout_milliseconds,
+    Win32MinimalExecutionAttempt* attempt);
+
+bool AttemptWin32GuestStackAotExecution(
+    const Win32RelocatedImagePlacement& placement,
+    Win32AotCodeCachePlacement& aot_placement,
+    const runtime::GuestStackSwitchPlan& stack_plan,
+    const hle::DosVirtualFileSystemState& dos_file_system,
+    const exe::Dos16mBoundModule* linexe_module,
+    const std::vector<exe::LeResidentName>* glide_exports,
+    const std::filesystem::path* cd_chd_path,
+    bool enable_dynamic_translation,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt);
 

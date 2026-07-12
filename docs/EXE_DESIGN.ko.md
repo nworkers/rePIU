@@ -235,3 +235,48 @@ MSVC 32-bit 빌드에서는 `/BASE:0x01000000`과 `/DYNAMICBASE:NO`를 적용한
 같은 실행에서 `FB` privileged trap, `INT 21h`, segment load/store, traced memory store가 timeout 결과에 누적 출력된다. 현재 관측 예시는 HLE trap count `1`, DOS interrupt count `254`, 마지막 DOS AH `0x4A`, memory store count 약 `3천` 회 수준이다.
 
 다음 작업은 이 low-memory 문자열 루프를 더 명확한 helper로 분리하고, single-step 진단 budget과 timeout 판정을 장기 실행 모델과 분리하는 것이다.
+
+# AOT self-modifying import stub
+
+아래 주소는 file offset이 아니라 현재 `pumpit1` profile에서 관찰한 relocated guest
+linear address다. LINEXE service 5 GETPROCADDR은 결과 buffer `0x035D6AA4`에
+Glide HLE gate linear address `0x045D0300`과 client CS `0x0023`을 기록한 뒤
+continuation `0x030F3418`로 복귀한다.
+
+continuation은 반환값을 확인한 뒤 `EDI=0x030FED0E`인 import stub을 다음 두 store로
+직접 수정한다.
+
+```text
+030F342C  C6 07 E9       mov byte ptr [edi], 0E9h
+030F3432  89 47 01       mov dword ptr [edi+1], eax
+030F3436  FF E0          jmp eax
+```
+
+정적 원본의 `0x030FED0E`는 resolver `0x030F33B4`를 호출하는 `E8 rel32` stub이다.
+두 store가 끝나면 첫 5바이트는 `E9 rel32`가 되어 합성 Glide gate
+`0x045D0300`으로 직접 이동한다. 따라서 PIU 원본은 load 후 실행 코드를 수정하며,
+해당 page는 `0x030FE000`이다.
+
+```mermaid
+sequenceDiagram
+    participant PIU as PIU continuation 030F3418
+    participant LIN as LINEXE service 5
+    participant STUB as Import stub 030FED0E
+    participant GLIDE as Glide gate 045D0300
+    PIU->>LIN: GETPROCADDR(_GRGLIDEINIT@0)
+    LIN-->>PIU: {linear=045D0300, CS=0023}
+    PIU->>STUB: C6 writes E9
+    PIU->>STUB: 89 writes rel32
+    PIU->>STUB: jmp 030FED0E
+    STUB->>GLIDE: E9 rel32
+```
+
+10초 AOT 진단에서 수정 전 cache entry를 계속 선택했을 때 GETPROCADDR은
+19,611회, Glide gate 진입은 0회였다. page generation 일관성 구현 후에는 두
+code write, page `0x030FE000` retirement 1회, generation publish 1회, stale entry
+relink 2회가 확인됐고 GETPROCADDR은 1회로 수렴했다. 이 수치는 원본 ABI 사실과
+AOT cache 일관성 문제를 구분하는 검증 증거다.
+
+합성 LINEXE/Glide gate는 원본 executable 코드가 아니라 HLE 소유 주소다. AOT CFG가
+gate tag `0F 0B 20 00`을 일반 명령으로 복사하면 cache에서 `UD2` illegal instruction이
+발생하므로, 해당 범위는 sentinel HLE boundary로 남겨야 한다.
