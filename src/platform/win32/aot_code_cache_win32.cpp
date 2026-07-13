@@ -4,6 +4,7 @@
 #include <cstring>
 #include <limits>
 #include <algorithm>
+#include <unordered_map>
 #include <utility>
 
 #if defined(_WIN32)
@@ -14,6 +15,48 @@
 
 namespace repiu::platform::win32
 {
+namespace
+{
+
+// Jump-table slots carry image-relative offsets; once the image bytes have a
+// final absolute base the displacement and every table entry become absolute
+// cache addresses. Targets missing from the image fall back to the slot's
+// INT3 so the dispatcher re-executes the original guest branch.
+void ResolveWin32AotJumpTables(const runtime::AotCodeCacheImage& image,
+                               std::uint8_t* image_bytes,
+                               std::uint32_t image_absolute_base)
+{
+    if (image.jump_table_sites.empty() || image_bytes == nullptr)
+    {
+        return;
+    }
+    std::unordered_map<std::uint32_t, std::uint32_t> guest_to_cache;
+    guest_to_cache.reserve(image.address_map.size());
+    for (const runtime::AotAddressMapEntry& entry : image.address_map)
+    {
+        guest_to_cache.emplace(entry.guest_address, entry.cache_offset);
+    }
+    for (const runtime::AotJumpTableSite& site : image.jump_table_sites)
+    {
+        const std::uint32_t table_address =
+            image_absolute_base + site.table_cache_offset;
+        std::memcpy(image_bytes + site.displacement_patch_offset,
+                    &table_address, sizeof(table_address));
+        for (std::size_t index = 0;
+             index < site.guest_targets.size(); ++index)
+        {
+            const auto target =
+                guest_to_cache.find(site.guest_targets[index]);
+            const std::uint32_t entry_address = image_absolute_base +
+                (target != guest_to_cache.end() ? target->second
+                                                : site.fallback_offset);
+            std::memcpy(image_bytes + site.table_cache_offset + index * 4U,
+                        &entry_address, sizeof(entry_address));
+        }
+    }
+}
+
+}  // namespace
 
 bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
                             Win32AotCodeCachePlacement* placement)
@@ -57,6 +100,8 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
         return true;
     }
     std::memcpy(memory, image.bytes.data(), image.bytes.size());
+    ResolveWin32AotJumpTables(image, static_cast<std::uint8_t*>(memory),
+                              static_cast<std::uint32_t>(base));
     DWORD old_protection = 0;
     if (VirtualProtect(memory, capacity, PAGE_EXECUTE_READ,
                        &old_protection) == 0)
@@ -223,6 +268,9 @@ bool AppendWin32DynamicAotTranslation(
     }
     std::memcpy(static_cast<std::uint8_t*>(cache) + append_offset,
                 image.bytes.data(), image.bytes.size());
+    ResolveWin32AotJumpTables(
+        image, static_cast<std::uint8_t*>(cache) + append_offset,
+        placement->base_address + append_offset);
     std::vector<std::uint32_t> relinked_cache_offsets;
     for (std::size_t image_index = 0;
          image_index < image.address_map.size(); ++image_index)

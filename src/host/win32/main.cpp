@@ -2343,6 +2343,9 @@ int main(int argc, char** argv)
                      Hex32(aot_placement.base_address),
                      aot_placement.size,
                      Hex32(aot_placement.entry_address));
+        logger->info("Win32 AOT plan jump tables/targets: {}/{}",
+                     aot_plan.jump_table_count,
+                     aot_plan.jump_table_target_count);
     }
     logger->flush();
     repiu::platform::win32::Win32MinimalExecutionAttempt attempt;

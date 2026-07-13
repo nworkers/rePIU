@@ -10,12 +10,22 @@ resident-name table에는 module 이름 `glide2x`와 ordinal 1~172가 들어 있
 |---:|---|---|
 | 32 | `_GRGLIDEINIT@0` | 인자 0바이트 |
 | 38 | `_GRSSTSELECT@4` | 인자 4바이트 |
+| 71 | `_GRDRAWPOINT@4` | 인자 4바이트 |
+| 72 | `_GRDRAWLINE@8` | 인자 8바이트 |
 | 73 | `_GRDRAWTRIANGLE@12` | 인자 12바이트 |
+| 74 | `_GRDRAWPLANARPOLYGON@12` | 인자 12바이트 |
+| 75 | `_GRDRAWPLANARPOLYGONVERTEXLIST@8` | 인자 8바이트 |
+| 76 | `_GRDRAWPOLYGON@12` | 인자 12바이트 |
+| 77 | `_GRDRAWPOLYGONVERTEXLIST@8` | 인자 8바이트 |
 | 85 | `_GRBUFFERSWAP@4` | 인자 4바이트 |
+| 89 | `_GRCLIPWINDOW@16` | 인자 16바이트 |
+| 94 | `_GRCULLMODE@4` | 인자 4바이트 |
 | 112 | `_GRLFBLOCK@24` | 인자 24바이트 |
 | 118 | `_GRSSTWINOPEN@28` | 인자 28바이트 |
 | 138 | `_GRTEXSOURCE@16` | 인자 16바이트 |
 | 144 | `_GRTEXDOWNLOADMIPMAPLEVELPARTIAL@40` | 인자 40바이트 |
+
+**확인됨 (2026-07-14).** 그리기 API 71~77, `_GRCLIPWINDOW@16`(89), `_GRCULLMODE@4`(94)는 resident-name table 재파싱으로 ordinal과 인자 byte 수를 재확정했습니다. 이 중 71~76은 HLE stub이 등록되어 있고 77 `_GRDRAWPOLYGONVERTEXLIST@8`은 아직 미등록입니다.
 
 `@N` suffix는 callee가 소비하는 인자 byte 수를 제공하므로, `GETPROCADDR`가 요청된 이름을 resident-name table과 대응시키면 executable별 고정 주소 없이 guest-callable trap ABI를 만들 수 있습니다. 실제 PIU가 요청하는 export 집합은 아직 동적 trace로 확정해야 합니다.
 
@@ -66,6 +76,8 @@ OVL의 GPL 계열 공개 source나 기존 Glide wrapper 구현은 코드로 복�
 # Glide2x.ovl and OpenGL HLE Analysis
 
 The user-provided `Glide2x.ovl` is an MZ-bound 80386 LE module with three objects, 78 pages, 3,419 internal fixups, and no imported modules. Its resident-name table exposes 172 decorated exports. Suffixes such as `_GRSSTWINOPEN@28`, `_GRDRAWTRIANGLE@12`, and `_GRBUFFERSWAP@4` provide the callee argument-byte count needed for dynamic guest trap gates.
+
+**Confirmed (2026-07-14).** A resident-name table re-parse re-established the ordinals and argument-byte counts of the drawing group 71–77 (`_GRDRAWPOINT@4`, `_GRDRAWLINE@8`, `_GRDRAWTRIANGLE@12`, `_GRDRAWPLANARPOLYGON@12`, `_GRDRAWPLANARPOLYGONVERTEXLIST@8`, `_GRDRAWPOLYGON@12`, `_GRDRAWPOLYGONVERTEXLIST@8`), plus `_GRCLIPWINDOW@16` (89) and `_GRCULLMODE@4` (94). HLE stubs cover 71–76; ordinal 77 `_GRDRAWPOLYGONVERTEXLIST@8` is not registered yet.
 
 The recommended design treats the OVL as export metadata rather than executing its 3Dfx PCI and port-I/O implementation. LINEXE returns a virtual module handle, resolves requested names/ordinals to stable synthetic far pointers, and dispatches traps through a platform-neutral Glide 2 state machine. A Win32 OpenGL backend translates draw state, textures, buffers, LFB staging, and queries. A shader-based translator is preferred over direct legacy fixed-function calls because it can model Glide combine behavior and later support core OpenGL and WebGL backends.
 

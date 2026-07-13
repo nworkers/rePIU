@@ -829,6 +829,11 @@ DWORD PollThreadUntilExit(HANDLE thread,
         {
             progress_context->diagnostic_poll_iteration_count =
                 iteration + 1;
+
+            const DWORD elapsed = GetTickCount() - start_tick;
+            const DWORD ticks = elapsed / 55U;
+            repiu::runtime::WriteDosLowMemory(
+                &progress_context->dos_low_memory, 0x046CU, ticks, 4U);
         }
         DWORD current_exit_code = 0;
         if (!api.get_exit_code_thread(thread, &current_exit_code))
@@ -8654,6 +8659,35 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         win32_context->Esp += 3U * sizeof(std::uint32_t);
         return true;
     }
+    if (glide_export->name == "_GRDRAWPOINT@4")
+    {
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRDRAWTRIANGLE@12")
+    {
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 4U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRDRAWPLANARPOLYGON@12" ||
+        glide_export->name == "_GRDRAWPOLYGON@12")
+    {
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 4U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRDRAWPLANARPOLYGONVERTEXLIST@8")
+    {
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 3U * sizeof(std::uint32_t);
+        return true;
+    }
     return false;
 }
 
@@ -10118,7 +10152,6 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
         return 2;
     }
 }
-
 #endif
 
 }  // namespace

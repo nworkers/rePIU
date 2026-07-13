@@ -8,7 +8,7 @@ namespace repiu::hle
 namespace
 {
 
-constexpr std::array<GlideSignature, 26> kObservedSignatures = {{
+constexpr std::array<GlideSignature, 31> kObservedSignatures = {{
     {"_GRGLIDEINIT@0", 0U, GlideReturnKind::kVoid},
     {"_GRSSTQUERYHARDWARE@4", 4U, GlideReturnKind::kFxBool},
     {"_GRSSTSELECT@4", 4U, GlideReturnKind::kVoid},
@@ -34,6 +34,11 @@ constexpr std::array<GlideSignature, 26> kObservedSignatures = {{
     {"_GRGLIDESETSTATE@4", 4U, GlideReturnKind::kVoid},
     {"_GRDITHERMODE@4", 4U, GlideReturnKind::kVoid},
     {"_GRDRAWLINE@8", 8U, GlideReturnKind::kVoid},
+    {"_GRDRAWPOINT@4", 4U, GlideReturnKind::kVoid},
+    {"_GRDRAWTRIANGLE@12", 12U, GlideReturnKind::kVoid},
+    {"_GRDRAWPLANARPOLYGON@12", 12U, GlideReturnKind::kVoid},
+    {"_GRDRAWPLANARPOLYGONVERTEXLIST@8", 8U, GlideReturnKind::kVoid},
+    {"_GRDRAWPOLYGON@12", 12U, GlideReturnKind::kVoid},
     {"_GRGLIDESHUTDOWN@0", 0U, GlideReturnKind::kVoid},
 }};
 

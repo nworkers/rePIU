@@ -210,6 +210,38 @@ bool EmitIndirectInlineCacheSlot(const AotInstructionRecord& instruction,
     return true;
 }
 
+bool EmitJumpTableSlot(const AotInstructionRecord& instruction,
+                       AotCodeCacheImage* image)
+{
+    const std::size_t entry_count = instruction.table_targets.size();
+    if (image == nullptr || entry_count == 0U || entry_count > 61U ||
+        instruction.table_index_register > 7U ||
+        instruction.table_index_register == 4U)
+    {
+        return false;
+    }
+    AotJumpTableSite site;
+    site.guest_source = instruction.guest_address;
+    site.cache_offset = static_cast<std::uint32_t>(image->bytes.size());
+    site.guest_targets = instruction.table_targets;
+    image->bytes.push_back(0xFFU);  // jmp dword ptr [index*4 + table]
+    image->bytes.push_back(0x24U);
+    image->bytes.push_back(static_cast<std::uint8_t>(
+        0x80U | (instruction.table_index_register << 3U) | 0x05U));
+    site.displacement_patch_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    site.fallback_offset = static_cast<std::uint32_t>(image->bytes.size());
+    image->bytes.push_back(0xCCU);  // unresolved entries dispatch here
+    site.table_cache_offset = static_cast<std::uint32_t>(image->bytes.size());
+    for (std::size_t index = 0; index < entry_count; ++index)
+    {
+        AppendImmediate32(&image->bytes, 0U);
+    }
+    image->jump_table_sites.push_back(std::move(site));
+    return true;
+}
+
 bool EmitReturnInlineCacheSlot(const AotInstructionRecord& instruction,
                                AotCodeCacheImage* image)
 {
@@ -372,6 +404,15 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                     break;
                 case AotInstructionKind::kIndirectExit:
                     if (!EmitIndirectInlineCacheSlot(instruction, image))
+                    {
+                        image->bytes.push_back(0xCCU);
+                        image->fixups.push_back({AotFixupKind::kIndirectExit,
+                                                 instruction.guest_address, 0U,
+                                                 cache_offset, false});
+                    }
+                    break;
+                case AotInstructionKind::kJumpTable:
+                    if (!EmitJumpTableSlot(instruction, image))
                     {
                         image->bytes.push_back(0xCCU);
                         image->fixups.push_back({AotFixupKind::kIndirectExit,

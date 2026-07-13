@@ -49,6 +49,19 @@ struct AotIndirectInlineCacheSite
     bool is_return = false;
 };
 
+// A translated bounded switch: `jmp [reg*4 + disp32]` reading a native
+// pointer table emitted inline. Absolute addresses are resolved after the
+// cache is placed; unresolved entries point at fallback_offset (INT3).
+struct AotJumpTableSite
+{
+    std::uint32_t guest_source = 0;
+    std::uint32_t cache_offset = 0;
+    std::uint32_t displacement_patch_offset = 0;
+    std::uint32_t fallback_offset = 0;
+    std::uint32_t table_cache_offset = 0;
+    std::vector<std::uint32_t> guest_targets;
+};
+
 struct AotCodeCacheImage
 {
     bool valid = false;
@@ -58,6 +71,7 @@ struct AotCodeCacheImage
     std::vector<AotAddressMapEntry> address_map;
     std::vector<AotCodeCacheFixup> fixups;
     std::vector<AotIndirectInlineCacheSite> indirect_inline_cache_sites;
+    std::vector<AotJumpTableSite> jump_table_sites;
     std::uint32_t resolved_fixup_count = 0;
     std::uint32_t external_fixup_count = 0;
     std::uint32_t unsupported_branch_count = 0;

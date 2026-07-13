@@ -305,6 +305,18 @@ flowchart LR
     L[loader timeout disabled] --> G[guest remains active]
     G --> P
 ```
+## Synchronous system timer tick HLE / 동기식 시스템 타이머 틱 HLE
+
+게스트는 프레임 동기화를 위해 BIOS Data Area 선형 주소 `0x46C`의 18.2Hz 시스템 타이머 틱을 폴링합니다. 별도 타이머 스레드는 write-watch guard page와 레이스를 일으키므로 사용하지 않고, 호스트 폴러 `PollThreadUntilExit` 루프가 매 반복마다 경과 시간을 55ms 단위로 환산해 `WriteDosLowMemory`로 동기 갱신합니다.
+
+The guest polls the 18.2Hz system timer tick at BDA linear address `0x46C` for frame pacing. A dedicated timer thread would race the write-watch guard pages, so the host poller loop in `PollThreadUntilExit` instead converts elapsed wall-clock time into 55ms ticks each iteration and writes them synchronously through `WriteDosLowMemory`.
+
+```mermaid
+flowchart LR
+    P["PollThreadUntilExit loop"] --> C["ticks = elapsed / 55ms"]
+    C --> W["WriteDosLowMemory 0x46C"]
+    W --> G["guest spin loop reads BDA tick"]
+```
 ## MAME CHD asset mount
 
 The `pumpit1` target separates asset-container decoding from guest execution. Pinned libchdr exposes raw CHD CD frames, the project-owned ISO9660 reader resolves the file tree, and a deterministic build cache supplies the existing filesystem-based DOS VFS. Original ROM/CHD files remain read-only and outside Git.
@@ -430,6 +442,33 @@ guest fallthrough addresses; returns bypass the dispatcher only when the guarded
 guest return value matches. Unsupported or changed values fail closed. The cache
 never uses RWX, and the current page-wide protection transition assumes one guest
 execution thread per loader process.
+
+## AOT bounded jump table 번역 / AOT bounded jump-table translation
+
+Watcom switch문 관용구(`cmp reg,imm; ja default; jmp dword ptr cs:[reg*4+disp32]`)는
+planner가 cmp/ja guard로 테이블 크기(`imm+1`, 최대 61)를 확정하고 relocated image에서
+전 엔트리가 image 내부임을 검증한 뒤 `kJumpTable`로 분류해 각 target을 CFG에
+포함시킵니다. 방문 순서에 무관하도록 walk 후 재분류 스윕이 수렴까지 반복됩니다.
+emitter는 `jmp [reg*4+native_table]` + INT3 fallback + 인라인 포인터 테이블을
+방출하고, Win32 배치·동적 추가의 RW 윈도우에서 절대 주소를 기록합니다.
+미번역 target 엔트리는 INT3 fallback을 가리켜 dispatcher로 fail-closed합니다.
+
+The planner recognizes the Watcom switch idiom, derives the table bound from the
+cmp/ja guard (up to 61 entries), validates every relocated table entry as
+in-image, classifies the branch `kJumpTable`, and enqueues each target into the
+CFG, with a post-walk reclassification sweep making the result independent of
+block visit order. The emitter produces `jmp [reg*4+native_table]` with an INT3
+fallback and an inline pointer table; Win32 placement and dynamic append resolve
+absolute addresses in their RW windows, and untranslated entries fail closed to
+the dispatcher.
+
+```mermaid
+flowchart LR
+    G["cmp reg,imm + ja"] --> J["jmp cs:[reg*4+disp32]"]
+    J -->|"검증 통과"| N["native table jmp<br/>(kJumpTable)"]
+    J -->|"검증 실패"| X["INT3 dispatcher exit"]
+    N -->|"미번역 entry"| X
+```
 
 ## AOT self-modifying page 세대
 

@@ -65,6 +65,8 @@ void PrintPlan(const repiu::runtime::AotTranslationPlan& plan)
               << "\nreturns=" << plan.return_count
               << "\nhle_boundaries=" << plan.hle_boundary_count
               << "\nindirect_exits=" << plan.indirect_exit_count
+              << "\njump_tables=" << plan.jump_table_count
+              << "\njump_table_targets=" << plan.jump_table_target_count
               << "\noutside_targets=" << plan.outside_image_target_count
               << "\ndecode_failures=" << plan.decode_failure_count
               << "\nanalysis_limits=" << plan.analysis_limit_count
@@ -85,6 +87,7 @@ void PrintCache(const repiu::runtime::AotCodeCacheImage& image)
               << "\ncache_external_fixups=" << image.external_fixup_count
               << "\ncache_unsupported_branches="
               << image.unsupported_branch_count
+              << "\ncache_jump_table_sites=" << image.jump_table_sites.size()
               << "\ncache_decode_failures=" << image.decode_failure_count
               << "\ncache_elapsed_us=" << image.elapsed_microseconds
               << "\ncache_message=" << image.message << "\n";

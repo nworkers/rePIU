@@ -3,6 +3,8 @@
 #include <Zydis.h>
 
 #include <chrono>
+#include <cstring>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -94,6 +96,182 @@ bool IsHleBoundary(const ZydisDecodedInstruction& instruction,
     }
 }
 
+// Watcom emits switch statements as `cmp reg, imm` + `ja default` followed
+// by `jmp dword ptr cs:[reg*4 + table]`. The guard records the fallthrough
+// address and bound so the table branch can be translated natively.
+struct JumpTableGuard
+{
+    std::uint8_t index_register = 0xFFU;
+    std::uint32_t entry_count = 0;
+};
+
+// The emitted slot is `jmp [reg*4+disp32]` + INT3 + N dword entries and the
+// address map stores its emitted length in one byte, so N is capped at 61.
+constexpr std::uint32_t kMaximumJumpTableEntries = 61U;
+
+bool ReadGuardRegisterId(ZydisRegister reg, std::uint8_t* register_id)
+{
+    if (register_id == nullptr ||
+        ZydisRegisterGetClass(reg) != ZYDIS_REGCLASS_GPR32)
+    {
+        return false;
+    }
+    const std::int8_t id = ZydisRegisterGetId(reg);
+    if (id < 0 || id > 7 || id == 4)
+    {
+        return false;
+    }
+    *register_id = static_cast<std::uint8_t>(id);
+    return true;
+}
+
+bool ReadJumpTableGuard(const ZydisDecoder& decoder,
+                        const AotInstructionRecord& compare,
+                        JumpTableGuard* guard)
+{
+    if (guard == nullptr || compare.kind != AotInstructionKind::kCopy ||
+        static_cast<ZydisMnemonic>(compare.mnemonic) != ZYDIS_MNEMONIC_CMP)
+    {
+        return false;
+    }
+    ZydisDecodedInstruction instruction{};
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+    if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(
+            &decoder, compare.bytes.data(), compare.bytes.size(),
+            &instruction, operands)) ||
+        instruction.operand_count_visible < 2U ||
+        operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+        operands[1].type != ZYDIS_OPERAND_TYPE_IMMEDIATE)
+    {
+        return false;
+    }
+    const std::int64_t bound = operands[1].imm.is_signed
+        ? operands[1].imm.value.s
+        : static_cast<std::int64_t>(operands[1].imm.value.u);
+    if (bound < 0 ||
+        bound + 1 > static_cast<std::int64_t>(kMaximumJumpTableEntries))
+    {
+        return false;
+    }
+    if (!ReadGuardRegisterId(operands[0].reg.value, &guard->index_register))
+    {
+        return false;
+    }
+    guard->entry_count = static_cast<std::uint32_t>(bound) + 1U;
+    return true;
+}
+
+bool MatchJumpTableBranch(const ZydisDecodedInstruction& instruction,
+                          const ZydisDecodedOperand* operands,
+                          std::uint8_t* register_id,
+                          std::uint32_t* table_address)
+{
+    if (operands == nullptr || register_id == nullptr ||
+        table_address == nullptr ||
+        instruction.mnemonic != ZYDIS_MNEMONIC_JMP ||
+        instruction.meta.branch_type == ZYDIS_BRANCH_TYPE_FAR ||
+        instruction.operand_count_visible == 0U ||
+        operands[0].type != ZYDIS_OPERAND_TYPE_MEMORY)
+    {
+        return false;
+    }
+    const auto& memory = operands[0].mem;
+    if (memory.base != ZYDIS_REGISTER_NONE || memory.scale != 4U ||
+        !memory.disp.has_displacement || memory.disp.value <= 0 ||
+        memory.disp.value > static_cast<std::int64_t>(UINT32_MAX))
+    {
+        return false;
+    }
+    if (memory.segment != ZYDIS_REGISTER_CS &&
+        memory.segment != ZYDIS_REGISTER_DS)
+    {
+        return false;
+    }
+    if (!ReadGuardRegisterId(memory.index, register_id))
+    {
+        return false;
+    }
+    *table_address = static_cast<std::uint32_t>(memory.disp.value);
+    return true;
+}
+
+bool ReadJumpTableTargets(const RelocatedRuntimeImage& image,
+                          std::uint32_t table_address,
+                          std::uint32_t entry_count,
+                          std::vector<std::uint32_t>* targets)
+{
+    if (targets == nullptr || entry_count == 0U ||
+        entry_count > kMaximumJumpTableEntries ||
+        static_cast<std::uint64_t>(table_address) + entry_count * 4ULL >
+            UINT32_MAX)
+    {
+        return false;
+    }
+    targets->clear();
+    targets->reserve(entry_count);
+    for (std::uint32_t index = 0; index < entry_count; ++index)
+    {
+        const std::uint8_t* entry_bytes =
+            FindBytes(image, table_address + index * 4U, 4U);
+        if (entry_bytes == nullptr)
+        {
+            return false;
+        }
+        std::uint32_t target = 0;
+        std::memcpy(&target, entry_bytes, sizeof(target));
+        if (FindBytes(image, target, 1U) == nullptr)
+        {
+            return false;
+        }
+        targets->push_back(target);
+    }
+    return true;
+}
+
+// A guarded table branch may be visited before its cmp/ja guard when the
+// walk reaches the fallthrough first (e.g. the plan entry is the branch).
+// The sweep re-decodes such records once the guard is known.
+bool TryReclassifyJumpTable(
+    const RelocatedRuntimeImage& image,
+    const ZydisDecoder& decoder,
+    const std::unordered_map<std::uint32_t, JumpTableGuard>& guards,
+    AotInstructionRecord* record)
+{
+    if (record == nullptr ||
+        (record->kind != AotInstructionKind::kHleBoundary &&
+         record->kind != AotInstructionKind::kIndirectExit) ||
+        record->bytes.empty())
+    {
+        return false;
+    }
+    const auto guard = guards.find(record->guest_address);
+    if (guard == guards.end())
+    {
+        return false;
+    }
+    ZydisDecodedInstruction instruction{};
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+    if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(
+            &decoder, record->bytes.data(), record->bytes.size(),
+            &instruction, operands)))
+    {
+        return false;
+    }
+    std::uint8_t branch_register = 0xFFU;
+    std::uint32_t table_address = 0;
+    if (!MatchJumpTableBranch(instruction, operands,
+                              &branch_register, &table_address) ||
+        branch_register != guard->second.index_register ||
+        !ReadJumpTableTargets(image, table_address,
+                              guard->second.entry_count,
+                              &record->table_targets))
+    {
+        return false;
+    }
+    record->table_index_register = branch_register;
+    return true;
+}
+
 bool IsExcludedGuestAddress(
     const std::vector<AotExcludedGuestRange>& ranges,
     std::uint32_t address)
@@ -155,143 +333,224 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
     std::vector<std::uint32_t> pending{plan->entry_address};
     std::unordered_set<std::uint32_t> visited_blocks;
     std::unordered_set<std::uint32_t> visited_instructions;
-    while (!pending.empty() && plan->instruction_count < kMaximumInstructions)
+    std::unordered_map<std::uint32_t, JumpTableGuard> jump_table_guards;
+    bool sweep_jump_table_guards = true;
+    while (sweep_jump_table_guards)
     {
-        const std::uint32_t block_entry = pending.back();
-        pending.pop_back();
-        if (!visited_blocks.insert(block_entry).second)
+        while (!pending.empty() && plan->instruction_count < kMaximumInstructions)
         {
-            continue;
-        }
-        if (IsExcludedGuestAddress(excluded_ranges, block_entry))
-        {
+            const std::uint32_t block_entry = pending.back();
+            pending.pop_back();
+            if (!visited_blocks.insert(block_entry).second)
+            {
+                continue;
+            }
+            if (IsExcludedGuestAddress(excluded_ranges, block_entry))
+            {
+                ++plan->block_count;
+                plan->blocks.push_back(AotBasicBlock{});
+                AotBasicBlock& block = plan->blocks.back();
+                block.guest_address = block_entry;
+                AppendExcludedBoundary(block_entry, plan, &block);
+                continue;
+            }
+            if (FindBytes(image, block_entry, 1U) == nullptr)
+            {
+                ++plan->outside_image_target_count;
+                continue;
+            }
             ++plan->block_count;
             plan->blocks.push_back(AotBasicBlock{});
             AotBasicBlock& block = plan->blocks.back();
             block.guest_address = block_entry;
-            AppendExcludedBoundary(block_entry, plan, &block);
-            continue;
-        }
-        if (FindBytes(image, block_entry, 1U) == nullptr)
-        {
-            ++plan->outside_image_target_count;
-            continue;
-        }
-        ++plan->block_count;
-        plan->blocks.push_back(AotBasicBlock{});
-        AotBasicBlock& block = plan->blocks.back();
-        block.guest_address = block_entry;
-        std::uint32_t address = block_entry;
-        for (std::uint32_t block_instruction = 0;
-             block_instruction < kMaximumBlockInstructions;
-             ++block_instruction)
-        {
-            if (IsExcludedGuestAddress(excluded_ranges, address))
+            std::uint32_t address = block_entry;
+            for (std::uint32_t block_instruction = 0;
+                 block_instruction < kMaximumBlockInstructions;
+                 ++block_instruction)
             {
-                AppendExcludedBoundary(address, plan, &block);
-                break;
-            }
-            if (!visited_instructions.insert(address).second)
-            {
-                break;
-            }
-            const std::uint8_t* bytes = FindBytes(
-                image, address, ZYDIS_MAX_INSTRUCTION_LENGTH);
-            if (bytes == nullptr)
-            {
-                ++plan->outside_image_target_count;
-                break;
-            }
-            ZydisDecodedInstruction instruction{};
-            ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
-            if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(
-                    &decoder, bytes, ZYDIS_MAX_INSTRUCTION_LENGTH,
-                    &instruction, operands)) || instruction.length == 0U)
-            {
-                ++plan->decode_failure_count;
-                break;
-            }
-            ++plan->instruction_count;
-            plan->source_code_bytes += instruction.length;
-            plan->estimated_emitted_bytes += instruction.length;
-            const std::uint32_t next = address + instruction.length;
-            AotInstructionRecord record;
-            record.guest_address = address;
-            record.length = instruction.length;
-            record.mnemonic = static_cast<std::uint16_t>(instruction.mnemonic);
-            record.bytes.assign(bytes, bytes + instruction.length);
-            if (IsHleBoundary(instruction, operands))
-            {
-                record.kind = AotInstructionKind::kHleBoundary;
-                block.instructions.push_back(std::move(record));
-                ++plan->hle_boundary_count;
-                plan->estimated_emitted_bytes += 14U;
-                pending.push_back(next);
-                break;
-            }
-            const auto category = instruction.meta.category;
-            if (category == ZYDIS_CATEGORY_RET)
-            {
-                record.kind = AotInstructionKind::kReturn;
-                block.instructions.push_back(std::move(record));
-                ++plan->return_count;
-                break;
-            }
-            if (category == ZYDIS_CATEGORY_CALL ||
-                category == ZYDIS_CATEGORY_COND_BR ||
-                category == ZYDIS_CATEGORY_UNCOND_BR)
-            {
-                std::uint32_t target = 0;
-                if (!ReadDirectTarget(
-                        instruction, operands, address, &target))
+                if (IsExcludedGuestAddress(excluded_ranges, address))
                 {
-                    record.kind = AotInstructionKind::kIndirectExit;
-                    block.instructions.push_back(std::move(record));
-                    ++plan->indirect_exit_count;
+                    AppendExcludedBoundary(address, plan, &block);
                     break;
                 }
-                record.direct_target = target;
-                record.fallthrough_target = next;
-                if (category == ZYDIS_CATEGORY_CALL)
+                if (!visited_instructions.insert(address).second)
                 {
-                    record.kind = AotInstructionKind::kDirectCall;
-                    ++plan->direct_call_count;
-                    if (instruction.length < 5U)
+                    break;
+                }
+                const std::uint8_t* bytes = FindBytes(
+                    image, address, ZYDIS_MAX_INSTRUCTION_LENGTH);
+                if (bytes == nullptr)
+                {
+                    ++plan->outside_image_target_count;
+                    break;
+                }
+                ZydisDecodedInstruction instruction{};
+                ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+                if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(
+                        &decoder, bytes, ZYDIS_MAX_INSTRUCTION_LENGTH,
+                        &instruction, operands)) || instruction.length == 0U)
+                {
+                    ++plan->decode_failure_count;
+                    break;
+                }
+                ++plan->instruction_count;
+                plan->source_code_bytes += instruction.length;
+                plan->estimated_emitted_bytes += instruction.length;
+                const std::uint32_t next = address + instruction.length;
+                AotInstructionRecord record;
+                record.guest_address = address;
+                record.length = instruction.length;
+                record.mnemonic = static_cast<std::uint16_t>(instruction.mnemonic);
+                record.bytes.assign(bytes, bytes + instruction.length);
+                const auto guard = jump_table_guards.find(address);
+                if (guard != jump_table_guards.end())
+                {
+                    std::uint8_t branch_register = 0xFFU;
+                    std::uint32_t table_address = 0;
+                    if (MatchJumpTableBranch(instruction, operands,
+                                             &branch_register, &table_address) &&
+                        branch_register == guard->second.index_register &&
+                        ReadJumpTableTargets(image, table_address,
+                                             guard->second.entry_count,
+                                             &record.table_targets))
                     {
+                        record.kind = AotInstructionKind::kJumpTable;
+                        record.table_index_register = branch_register;
+                        ++plan->jump_table_count;
+                        plan->jump_table_target_count += static_cast<std::uint32_t>(
+                            record.table_targets.size());
                         plan->estimated_emitted_bytes +=
-                            5U - instruction.length;
+                            8U + 4U * record.table_targets.size();
+                        for (const std::uint32_t target : record.table_targets)
+                        {
+                            pending.push_back(target);
+                        }
+                        block.instructions.push_back(std::move(record));
+                        break;
                     }
-                    pending.push_back(target);
-                    pending.push_back(next);
                 }
-                else if (category == ZYDIS_CATEGORY_COND_BR)
+                if (IsHleBoundary(instruction, operands))
                 {
-                    record.kind = AotInstructionKind::kConditionalBranch;
-                    ++plan->conditional_branch_count;
-                    if (instruction.length < 6U)
-                    {
-                        plan->estimated_emitted_bytes += 6U - instruction.length;
-                    }
-                    pending.push_back(target);
+                    record.kind = AotInstructionKind::kHleBoundary;
+                    block.instructions.push_back(std::move(record));
+                    ++plan->hle_boundary_count;
+                    plan->estimated_emitted_bytes += 14U;
                     pending.push_back(next);
+                    break;
                 }
-                else
+                const auto category = instruction.meta.category;
+                if (category == ZYDIS_CATEGORY_RET)
                 {
-                    record.kind = AotInstructionKind::kDirectJump;
-                    ++plan->direct_jump_count;
-                    if (instruction.length < 5U)
-                    {
-                        plan->estimated_emitted_bytes += 5U - instruction.length;
-                    }
-                    pending.push_back(target);
+                    record.kind = AotInstructionKind::kReturn;
+                    block.instructions.push_back(std::move(record));
+                    ++plan->return_count;
+                    break;
                 }
+                if (category == ZYDIS_CATEGORY_CALL ||
+                    category == ZYDIS_CATEGORY_COND_BR ||
+                    category == ZYDIS_CATEGORY_UNCOND_BR)
+                {
+                    std::uint32_t target = 0;
+                    if (!ReadDirectTarget(
+                            instruction, operands, address, &target))
+                    {
+                        record.kind = AotInstructionKind::kIndirectExit;
+                        block.instructions.push_back(std::move(record));
+                        ++plan->indirect_exit_count;
+                        break;
+                    }
+                    record.direct_target = target;
+                    record.fallthrough_target = next;
+                    if (category == ZYDIS_CATEGORY_CALL)
+                    {
+                        record.kind = AotInstructionKind::kDirectCall;
+                        ++plan->direct_call_count;
+                        if (instruction.length < 5U)
+                        {
+                            plan->estimated_emitted_bytes +=
+                                5U - instruction.length;
+                        }
+                        pending.push_back(target);
+                        pending.push_back(next);
+                    }
+                    else if (category == ZYDIS_CATEGORY_COND_BR)
+                    {
+                        record.kind = AotInstructionKind::kConditionalBranch;
+                        ++plan->conditional_branch_count;
+                        if (instruction.length < 6U)
+                        {
+                            plan->estimated_emitted_bytes += 6U - instruction.length;
+                        }
+                        if (instruction.mnemonic == ZYDIS_MNEMONIC_JNBE &&
+                            !block.instructions.empty())
+                        {
+                            JumpTableGuard table_guard;
+                            if (ReadJumpTableGuard(decoder,
+                                                   block.instructions.back(),
+                                                   &table_guard))
+                            {
+                                jump_table_guards.emplace(next, table_guard);
+                            }
+                        }
+                        pending.push_back(target);
+                        pending.push_back(next);
+                    }
+                    else
+                    {
+                        record.kind = AotInstructionKind::kDirectJump;
+                        ++plan->direct_jump_count;
+                        if (instruction.length < 5U)
+                        {
+                            plan->estimated_emitted_bytes += 5U - instruction.length;
+                        }
+                        pending.push_back(target);
+                    }
+                    block.instructions.push_back(std::move(record));
+                    break;
+                }
+                record.kind = AotInstructionKind::kCopy;
                 block.instructions.push_back(std::move(record));
-                break;
+                ++plan->copy_instruction_count;
+                address = next;
             }
-            record.kind = AotInstructionKind::kCopy;
-            block.instructions.push_back(std::move(record));
-            ++plan->copy_instruction_count;
-            address = next;
+        }
+        sweep_jump_table_guards = false;
+        if (plan->instruction_count < kMaximumInstructions)
+        {
+            for (AotBasicBlock& swept_block : plan->blocks)
+            {
+                for (AotInstructionRecord& swept_record :
+                     swept_block.instructions)
+                {
+                    if (!TryReclassifyJumpTable(image, decoder,
+                                                jump_table_guards,
+                                                &swept_record))
+                    {
+                        continue;
+                    }
+                    if (swept_record.kind == AotInstructionKind::kHleBoundary)
+                    {
+                        --plan->hle_boundary_count;
+                    }
+                    else
+                    {
+                        --plan->indirect_exit_count;
+                    }
+                    swept_record.kind = AotInstructionKind::kJumpTable;
+                    ++plan->jump_table_count;
+                    plan->jump_table_target_count +=
+                        static_cast<std::uint32_t>(
+                            swept_record.table_targets.size());
+                    plan->estimated_emitted_bytes +=
+                        8U + 4U * swept_record.table_targets.size();
+                    for (const std::uint32_t target :
+                         swept_record.table_targets)
+                    {
+                        pending.push_back(target);
+                    }
+                    sweep_jump_table_guards = true;
+                }
+            }
         }
     }
     if (!pending.empty())
