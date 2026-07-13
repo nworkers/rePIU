@@ -498,6 +498,17 @@ struct ThreadContext
     char hle_stderr_output[4096] = {};
     std::uint32_t hle_stderr_output_size = 0;
     std::string hle_message;
+
+    struct RealModeBlock
+    {
+        std::uint16_t selector = 0;
+        std::uint32_t offset = 0;
+        std::uint32_t size = 0;
+        bool active = false;
+    };
+    static constexpr std::size_t kRealModeBlockCapacity = 32;
+    std::array<RealModeBlock, kRealModeBlockCapacity> dpmi_real_mode_blocks = {};
+    std::uint32_t dpmi_low_memory_bump_offset = 0x1000U;
 };
 
 class ExceptionDispatchScope
@@ -4248,6 +4259,105 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
         RecordHandledDosInterrupt(context, 0x31, ax);
         win32_context->Eax &= 0xFFFF0000U;
         win32_context->EFlags &= ~1U;
+        win32_context->Eip += 2;
+        return true;
+    }
+
+    if (ax == 0x0100)
+    {
+        const std::uint16_t paragraphs = static_cast<std::uint16_t>(
+            win32_context->Ebx & 0xFFFFU);
+        const std::uint32_t size = static_cast<std::uint32_t>(paragraphs) * 16U;
+
+        RecordHandledDosInterrupt(context, 0x31, ax);
+
+        bool allocated = false;
+        std::uint16_t segment = 0;
+        std::uint16_t selector = 0;
+
+        if (size > 0 && context->dpmi_low_memory_bump_offset + size <= repiu::runtime::kDosLowMemorySize)
+        {
+            std::size_t slot_index = context->dpmi_real_mode_blocks.size();
+            for (std::size_t index = 0; index < context->dpmi_real_mode_blocks.size(); ++index)
+            {
+                if (!context->dpmi_real_mode_blocks[index].active)
+                {
+                    slot_index = index;
+                    break;
+                }
+            }
+
+            if (slot_index < context->dpmi_real_mode_blocks.size() &&
+                repiu::runtime::AllocateSelector(&context->dpmi_selector_allocator, &selector))
+            {
+                const std::uint32_t offset = context->dpmi_low_memory_bump_offset;
+                if (repiu::runtime::RegisterDescriptor(
+                        &context->selector_table,
+                        {selector, offset, size - 1U, 0x0092U, true}))
+                {
+                    segment = static_cast<std::uint16_t>(offset / 16U);
+
+                    ThreadContext::RealModeBlock& block = context->dpmi_real_mode_blocks[slot_index];
+                    block.selector = selector;
+                    block.offset = offset;
+                    block.size = size;
+                    block.active = true;
+
+                    context->dpmi_low_memory_bump_offset += size;
+                    context->dpmi_low_memory_bump_offset = (context->dpmi_low_memory_bump_offset + 15U) & ~15U;
+
+                    allocated = true;
+                }
+            }
+        }
+
+        if (allocated)
+        {
+            win32_context->Eax = (win32_context->Eax & 0xFFFF0000U) | segment;
+            win32_context->Edx = (win32_context->Edx & 0xFFFF0000U) | selector;
+            win32_context->EFlags &= ~1U;
+        }
+        else
+        {
+            win32_context->Eax = (win32_context->Eax & 0xFFFF0000U) | 0x8011U;
+            win32_context->EFlags |= 1U;
+        }
+        win32_context->Eip += 2;
+        return true;
+    }
+
+    if (ax == 0x0101)
+    {
+        const std::uint16_t selector = static_cast<std::uint16_t>(
+            win32_context->Edx & 0xFFFFU);
+
+        RecordHandledDosInterrupt(context, 0x31, ax);
+
+        bool freed = false;
+        for (std::size_t index = 0; index < context->dpmi_real_mode_blocks.size(); ++index)
+        {
+            ThreadContext::RealModeBlock& block = context->dpmi_real_mode_blocks[index];
+            if (block.active && block.selector == selector)
+            {
+                repiu::runtime::RegisterDescriptor(
+                    &context->selector_table,
+                    {selector, block.offset, block.size - 1U, 0x0092U, false});
+
+                block.active = false;
+                freed = true;
+                break;
+            }
+        }
+
+        if (freed)
+        {
+            win32_context->EFlags &= ~1U;
+        }
+        else
+        {
+            win32_context->Eax = (win32_context->Eax & 0xFFFF0000U) | 0x8022U;
+            win32_context->EFlags |= 1U;
+        }
         win32_context->Eip += 2;
         return true;
     }
@@ -8535,6 +8645,13 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         ++context->glide_gate_handled_count;
         win32_context->Eip = return_address;
         win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRDRAWLINE@8")
+    {
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 3U * sizeof(std::uint32_t);
         return true;
     }
     return false;
