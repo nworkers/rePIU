@@ -5053,7 +5053,30 @@ bool HandleSegmentPopInstruction(CONTEXT* win32_context,
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
-    if (instruction[0] != 0x1F)
+    // POP SS (17) stays unimplemented until observed.
+    std::uint8_t segment_register = 0;
+    std::uint32_t instruction_length = 0;
+    if (instruction[0] == 0x07)
+    {
+        segment_register = 0;  // ES
+        instruction_length = 1;
+    }
+    else if (instruction[0] == 0x1F)
+    {
+        segment_register = 3;  // DS
+        instruction_length = 1;
+    }
+    else if (instruction[0] == 0x0F && instruction[1] == 0xA1)
+    {
+        segment_register = 4;  // FS
+        instruction_length = 2;
+    }
+    else if (instruction[0] == 0x0F && instruction[1] == 0xA9)
+    {
+        segment_register = 5;  // GS
+        instruction_length = 2;
+    }
+    else
     {
         return false;
     }
@@ -5071,11 +5094,11 @@ bool HandleSegmentPopInstruction(CONTEXT* win32_context,
     std::memcpy(&selector, source_pointer, sizeof(selector));
     RecordGuestSegmentLoad(win32_context,
                            context,
-                           3,
+                           segment_register,
                            selector,
                            source);
     win32_context->Esp += 4;
-    ++win32_context->Eip;
+    win32_context->Eip += instruction_length;
     return true;
 }
 
