@@ -1,5 +1,6 @@
 #include "repiu/platform/win32/execution_trampoline.h"
 #include "native_fast_path.h"
+#include "native_phase_sampler.h"
 #include "repiu/platform/win32/live_telemetry.h"
 #include "repiu/hle/linexe_call_gate.h"
 #include "repiu/hle/glide_hle.h"
@@ -733,13 +734,13 @@ void WriteLiveTelemetrySnapshot(const ThreadContext& context,
                                 DWORD elapsed_milliseconds,
                                 DWORD poll_iteration)
 {
-    char buffer[320] = {};
+    char buffer[384] = {};
     const int length = std::snprintf(
         buffer,
         sizeof(buffer),
         "[repiu-live] elapsed_ms=%lu poll=%lu phase=%u heartbeat=%u "
         "dispatch_entry=%u dispatch_exit=%u last_eip=0x%08X "
-        "progress=%u single_step=%u fast=%u/%u/%u "
+        "progress=%u single_step=%u aot=%u/%u fast=%u/%u/%u "
         "reject=0x%08X:0x%08X/0x%02X bytes=%08X%08X\r\n",
         static_cast<unsigned long>(elapsed_milliseconds),
         static_cast<unsigned long>(poll_iteration),
@@ -752,6 +753,8 @@ void WriteLiveTelemetrySnapshot(const ThreadContext& context,
         context.exception_dispatch_last_eip.load(std::memory_order_relaxed),
         context.diagnostic_progress_count.load(std::memory_order_relaxed),
         context.single_step_trace_count.load(std::memory_order_relaxed),
+        context.aot_boundary_count.load(std::memory_order_relaxed),
+        context.aot_reentry_count.load(std::memory_order_relaxed),
         context.native_fast_path.entry_count.load(std::memory_order_relaxed),
         context.native_fast_path.return_count.load(std::memory_order_relaxed),
         context.native_fast_path.cancel_count.load(std::memory_order_relaxed),
@@ -814,6 +817,30 @@ DWORD PollThreadUntilExit(HANDLE thread,
                 std::memory_order_relaxed);
     }
 
+    // Sample the guest thread only after full exception dispatches have been
+    // silent for a full second: dispatch-active phases already report their
+    // location, and the observation target is the zero-dispatch native state.
+    // The composite `progressed` tracker is unsuitable as this gate because
+    // lightweight AOT VEH paths (inline-cache misses, reentries) increment
+    // aot_boundary/aot_reentry continuously without any dispatch.
+    constexpr DWORD kNativePhaseSampleQuietMilliseconds = 1000U;
+    constexpr DWORD kNativePhaseSampleIntervalMilliseconds = 500U;
+    const char* sampling_environment =
+        std::getenv("REPIU_NATIVE_SAMPLING");
+    const bool native_sampling_enabled =
+        sampling_environment == nullptr ||
+        std::strcmp(sampling_environment, "0") != 0;
+    Win32NativePhaseSamplerState native_sampler_state;
+    DWORD dispatch_quiet_start_tick = start_tick;
+    std::uint32_t last_dispatch_total = 0;
+    if (progress_context != nullptr)
+    {
+        last_dispatch_total =
+            progress_context->exception_dispatch_entry_count.load(
+                std::memory_order_relaxed) +
+            progress_context->exception_dispatch_exit_count.load(
+                std::memory_order_relaxed);
+    }
     DWORD quiet_iterations = 0;
     DWORD last_live_snapshot_tick = start_tick;
     if (progress_context != nullptr)
@@ -915,6 +942,46 @@ DWORD PollThreadUntilExit(HANDLE thread,
         }
 
         const DWORD current_tick = GetTickCount();
+        if (progress_context != nullptr)
+        {
+            const std::uint32_t dispatch_total =
+                progress_context->exception_dispatch_entry_count.load(
+                    std::memory_order_relaxed) +
+                progress_context->exception_dispatch_exit_count.load(
+                    std::memory_order_relaxed);
+            if (dispatch_total != last_dispatch_total)
+            {
+                last_dispatch_total = dispatch_total;
+                dispatch_quiet_start_tick = current_tick;
+            }
+        }
+        if (native_sampling_enabled && progress_context != nullptr &&
+            current_tick - dispatch_quiet_start_tick >=
+                kNativePhaseSampleQuietMilliseconds &&
+            current_tick - native_sampler_state.last_sample_tick >=
+                kNativePhaseSampleIntervalMilliseconds)
+        {
+            Win32NativePhaseSample sample;
+            if (CaptureWin32NativePhaseSample(
+                    thread, progress_context->aot_placement,
+                    progress_context->shared_live_telemetry, &sample))
+            {
+                sample.last_indirect_source =
+                    progress_context->aot_last_indirect_source.load(
+                        std::memory_order_relaxed);
+                sample.last_indirect_target =
+                    progress_context->aot_last_indirect_target.load(
+                        std::memory_order_relaxed);
+                RecordWin32NativePhaseSample(
+                    sample,
+                    &native_sampler_state,
+                    progress_context->shared_live_telemetry);
+            }
+            WriteWin32NativePhaseSampleLine(sample,
+                                            native_sampler_state,
+                                            current_tick - start_tick);
+            native_sampler_state.last_sample_tick = current_tick;
+        }
         if (progress_context != nullptr &&
             current_tick - last_live_snapshot_tick >= 1000U)
         {
@@ -8691,6 +8758,29 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
     return false;
 }
 
+// Lightweight VEH transfer paths run without an ExceptionDispatchScope, so
+// these counters must be mirrored into shared telemetry here to stay
+// externally observable during dispatch-silent phases.
+void BumpAotBoundaryCount(ThreadContext* context)
+{
+    context->aot_boundary_count.fetch_add(1U, std::memory_order_relaxed);
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedIncrement(
+            &context->shared_live_telemetry->aot_boundary_count);
+    }
+}
+
+void BumpAotReentryCount(ThreadContext* context)
+{
+    context->aot_reentry_count.fetch_add(1U, std::memory_order_relaxed);
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedIncrement(
+            &context->shared_live_telemetry->aot_reentry_count);
+    }
+}
+
 bool IsAotCacheAddress(const ThreadContext* context, std::uint32_t address)
 {
     if (context == nullptr || context->aot_placement == nullptr ||
@@ -9311,7 +9401,7 @@ bool HandleAotConditionalTransfer(EXCEPTION_POINTERS* exception_info,
     ++context->aot_transfer_trace_count;
     context->aot_last_indirect_source.store(source, std::memory_order_relaxed);
     context->aot_last_indirect_target.store(target, std::memory_order_relaxed);
-    context->aot_reentry_count.fetch_add(1, std::memory_order_relaxed);
+    BumpAotReentryCount(context);
     return true;
 }
 
@@ -9442,7 +9532,7 @@ bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
                                              std::memory_order_relaxed);
     context->aot_last_indirect_target.store(target,
                                              std::memory_order_relaxed);
-    context->aot_reentry_count.fetch_add(1, std::memory_order_relaxed);
+    BumpAotReentryCount(context);
     return true;
 }
 
@@ -9540,7 +9630,7 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
     context->enable_single_step_trace = false;
     context->aot_return_dispatch_count.fetch_add(
         1, std::memory_order_relaxed);
-    context->aot_reentry_count.fetch_add(1, std::memory_order_relaxed);
+    BumpAotReentryCount(context);
     return true;
 }
 
@@ -9581,8 +9671,7 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
                 context->aot_reentry_pending = false;
                 context->aot_legacy_fallback = false;
                 context->enable_single_step_trace = false;
-                context->aot_reentry_count.fetch_add(
-                    1, std::memory_order_relaxed);
+                BumpAotReentryCount(context);
                 return true;
             }
         }
@@ -9591,7 +9680,7 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
         win32_context->EFlags |= 0x00000100U;
         context->aot_reentry_pending = true;
         context->enable_single_step_trace = true;
-        context->aot_boundary_count.fetch_add(1, std::memory_order_relaxed);
+        BumpAotBoundaryCount(context);
         return false;
     }
     if (code != EXCEPTION_SINGLE_STEP || !context->aot_reentry_pending)
@@ -9604,7 +9693,7 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
         win32_context->EFlags &= ~0x00000100U;
         context->aot_reentry_pending = false;
         context->enable_single_step_trace = false;
-        context->aot_reentry_count.fetch_add(1, std::memory_order_relaxed);
+        BumpAotReentryCount(context);
         return true;
     }
     if (IsWin32AotGuestPageQuarantined(
@@ -9624,7 +9713,7 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
         context->aot_reentry_pending = false;
         context->aot_legacy_fallback = false;
         context->enable_single_step_trace = false;
-        context->aot_reentry_count.fetch_add(1, std::memory_order_relaxed);
+        BumpAotReentryCount(context);
         return true;
     }
     if (IsWin32AotGuestPageQuarantined(
@@ -10518,12 +10607,13 @@ bool RunWin32ExecutionThread(
         }
     }
 
+    DWORD guest_thread_id = 0;
     HANDLE thread = api.create_thread(nullptr,
                                       0,
                                       GuestEntryThreadProc,
                                       &context,
                                       0,
-                                      nullptr);
+                                      &guest_thread_id);
     if (thread == nullptr)
     {
         const DWORD error = api.get_last_error();
@@ -10539,6 +10629,22 @@ bool RunWin32ExecutionThread(
     if (context.shared_live_telemetry != nullptr)
     {
         InterlockedExchange(&context.shared_live_telemetry->host_phase, 2);
+        InterlockedExchange(
+            &context.shared_live_telemetry->guest_thread_id,
+            static_cast<long>(guest_thread_id));
+        InterlockedExchange(
+            &context.shared_live_telemetry->host_main_thread_id,
+            static_cast<long>(GetCurrentThreadId()));
+        if (context.aot_placement != nullptr &&
+            context.aot_placement->placed)
+        {
+            InterlockedExchange(
+                &context.shared_live_telemetry->aot_cache_base,
+                static_cast<long>(context.aot_placement->base_address));
+            InterlockedExchange(
+                &context.shared_live_telemetry->aot_cache_size,
+                static_cast<long>(context.aot_placement->capacity));
+        }
     }
     attempt->guest_stack_switch_attempted = use_guest_stack;
     DWORD exit_code = 0;
@@ -10576,10 +10682,24 @@ bool RunWin32ExecutionThread(
         return true;
     }
 
+    // Teardown milestones are published through host_phase so an external
+    // supervisor can locate the exact step if this path blocks.
+    const auto set_teardown_phase = [&context](long phase) {
+        if (context.shared_live_telemetry != nullptr)
+        {
+            InterlockedExchange(
+                &context.shared_live_telemetry->host_phase, phase);
+        }
+    };
+    set_teardown_phase(10);
     remove_vectored_handler();
+    set_teardown_phase(11);
     stop_translation_worker();
+    set_teardown_phase(12);
     RestoreWin32AotGuestPageWriteWatches(&context.aot_page_write_watch);
+    set_teardown_phase(13);
     api.close_handle(thread);
+    set_teardown_phase(14);
 
     attempt->returned = context.returned;
     attempt->exception_caught = context.exception_caught;

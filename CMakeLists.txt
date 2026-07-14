@@ -67,6 +67,7 @@ add_library(repiu_exe
     src/platform/win32/aot_page_coherence_win32.cpp
     src/platform/win32/execution_trampoline.cpp
     src/platform/win32/native_fast_path.cpp
+    src/platform/win32/native_phase_sampler.cpp
     src/platform/win32/verified_region_analyzer.cpp
     src/platform/win32/glide_opengl_backend.cpp
     src/platform/win32/glide_opengl_shader.cpp

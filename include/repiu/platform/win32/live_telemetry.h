@@ -7,7 +7,8 @@ namespace repiu::platform::win32
 {
 
 constexpr std::uint32_t kWin32LiveTelemetryMagic = 0x5250544CU;
-constexpr std::uint32_t kWin32LiveTelemetryVersion = 8;
+constexpr std::uint32_t kWin32LiveTelemetryVersion = 9;
+constexpr std::uint32_t kWin32NativeSampleRingCapacity = 8;
 constexpr const char* kWin32LiveTelemetryEnvironment =
     "REPIU_LIVE_TELEMETRY_MAPPING";
 constexpr const char* kWin32ExecutionTimeoutEnvironment =
@@ -49,6 +50,37 @@ struct Win32SharedLiveTelemetry
     volatile long mscdex_request_count = 0;
     volatile long mscdex_last_command = 0;
     volatile long mscdex_last_status = 0;
+    // Mirrored by the guest thread itself so they stay observable even if
+    // the host poll loop stalls.
+    volatile long aot_boundary_count = 0;
+    volatile long aot_reentry_count = 0;
+    // Published once by the loader so the supervisor can sample child
+    // threads externally when the in-process poll loop stalls.
+    volatile long guest_thread_id = 0;
+    volatile long host_main_thread_id = 0;
+    volatile long aot_cache_base = 0;
+    volatile long aot_cache_size = 0;
+    volatile long native_sample_count = 0;
+    volatile long native_sample_unmapped_count = 0;
+    // 0 = idle, 1 = suspending, 2 = suspended, 3 = context read,
+    // 4 = resumed. A stuck nonzero value locates a frozen capture step.
+    volatile long native_sample_stage = 0;
+    volatile long native_sample_eip = 0;
+    volatile long native_sample_guest_eip = 0;
+    volatile long native_sample_eax = 0;
+    volatile long native_sample_ebx = 0;
+    volatile long native_sample_ecx = 0;
+    volatile long native_sample_edx = 0;
+    volatile long native_sample_esi = 0;
+    volatile long native_sample_edi = 0;
+    volatile long native_sample_esp = 0;
+    volatile long native_sample_ebp = 0;
+    volatile long native_sample_eflags = 0;
+    volatile long native_sample_indirect_source = 0;
+    volatile long native_sample_indirect_target = 0;
+    volatile long native_sample_ring[kWin32NativeSampleRingCapacity] = {};
+    volatile long native_sample_ring_mapped_bits = 0;
+    volatile long native_sample_ring_cursor = 0;
 };
 
 static_assert(sizeof(long) == 4);

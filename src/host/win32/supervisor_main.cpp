@@ -192,7 +192,53 @@ void PrintSnapshot(
               << ReadInterlocked(&telemetry.mscdex_last_command) << "/"
               << ReadInterlocked(&telemetry.mscdex_last_status)
               << std::dec
-              << std::dec << "\n";
+              << " aot_boundary/reentry="
+              << ReadInterlocked(&telemetry.aot_boundary_count) << "/"
+              << ReadInterlocked(&telemetry.aot_reentry_count)
+              << " sample_count/unmapped="
+              << ReadInterlocked(&telemetry.native_sample_count) << "/"
+              << ReadInterlocked(&telemetry.native_sample_unmapped_count)
+              << " sample_stage="
+              << ReadInterlocked(&telemetry.native_sample_stage)
+              << " sample_eip=0x" << std::hex
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.native_sample_eip))
+              << " sample_guest=0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.native_sample_guest_eip))
+              << " sample_eax/ecx/esi/edi=0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.native_sample_eax)) << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.native_sample_ecx)) << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.native_sample_esi)) << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.native_sample_edi))
+              << " sample_esp=0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.native_sample_esp))
+              << " sample_indirect=0x"
+              << static_cast<std::uint32_t>(ReadInterlocked(
+                     &telemetry.native_sample_indirect_source))
+              << "->0x"
+              << static_cast<std::uint32_t>(ReadInterlocked(
+                     &telemetry.native_sample_indirect_target))
+              << " sample_ring=";
+    for (std::uint32_t index = 0;
+         index < repiu::platform::win32::kWin32NativeSampleRingCapacity;
+         ++index)
+    {
+        std::cout << (index == 0 ? "0x" : ",0x") << std::hex
+                  << static_cast<std::uint32_t>(ReadInterlocked(
+                         &telemetry.native_sample_ring[index]));
+    }
+    std::cout << " sample_ring_mapped=0x" << std::hex
+              << static_cast<std::uint32_t>(ReadInterlocked(
+                     &telemetry.native_sample_ring_mapped_bits))
+              << std::dec << " sample_ring_cursor="
+              << ReadInterlocked(&telemetry.native_sample_ring_cursor)
+              << "\n";
     constexpr std::uint32_t kLongRuntimeBoundary = 0x030873F4U;
     if (child_process != nullptr && guest_eip == kLongRuntimeBoundary)
     {
@@ -228,6 +274,75 @@ void PrintSnapshot(
                   << " type=0x" << memory.Type
                   << " queried=" << std::dec << queried << "\n";
     }
+    std::cout.flush();
+}
+
+// Samples a child-process thread externally. This works even when the
+// loader's in-process poll loop is stalled, because the supervisor shares
+// no locks with the child. Output happens only after the thread resumes.
+void SampleChildThreadContext(DWORD thread_id,
+                              const char* label,
+                              std::uint32_t elapsed_milliseconds,
+                              std::uint32_t cache_base,
+                              std::uint32_t cache_capacity)
+{
+    if (thread_id == 0)
+    {
+        return;
+    }
+    HANDLE thread = OpenThread(
+        THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
+        FALSE,
+        thread_id);
+    if (thread == nullptr)
+    {
+        std::cout << "[repiu-supervisor-sample] label=" << label
+                  << " tid=" << thread_id
+                  << " open_failed=" << GetLastError() << "\n";
+        return;
+    }
+    CONTEXT context = {};
+    context.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+    bool context_read = false;
+    DWORD context_error = 0;
+    if (SuspendThread(thread) != static_cast<DWORD>(-1))
+    {
+        if (GetThreadContext(thread, &context))
+        {
+            context_read = true;
+        }
+        else
+        {
+            context_error = GetLastError();
+        }
+        ResumeThread(thread);
+    }
+    else
+    {
+        context_error = GetLastError();
+    }
+    CloseHandle(thread);
+    if (!context_read)
+    {
+        std::cout << "[repiu-supervisor-sample] label=" << label
+                  << " tid=" << thread_id
+                  << " context_failed=" << context_error << "\n";
+        return;
+    }
+    const std::uint32_t eip = static_cast<std::uint32_t>(context.Eip);
+    const bool in_cache = cache_capacity != 0 && eip >= cache_base &&
+        eip < cache_base + cache_capacity;
+    std::cout << "[repiu-supervisor-sample] label=" << label
+              << " tid=" << thread_id
+              << " elapsed_ms=" << elapsed_milliseconds
+              << std::hex
+              << " eip=0x" << eip
+              << " in_cache=" << (in_cache ? "true" : "false")
+              << " eax/ebx/ecx/edx=0x" << context.Eax << "/0x"
+              << context.Ebx << "/0x" << context.Ecx << "/0x" << context.Edx
+              << " esi/edi/esp/ebp=0x" << context.Esi << "/0x"
+              << context.Edi << "/0x" << context.Esp << "/0x" << context.Ebp
+              << std::dec << "\n";
     std::cout.flush();
 }
 
@@ -333,6 +448,10 @@ int main(int argc, char** argv)
 
     const DWORD start = GetTickCount();
     DWORD last_snapshot = start - 1000U;
+    long stall_last_dispatch = -1;
+    long stall_last_samples = -1;
+    DWORD stall_start_tick = start;
+    DWORD last_external_sample_tick = 0;
     bool terminated = false;
     bool debug_process_exited = false;
     bool debug_wait_error_reported = false;
@@ -424,6 +543,39 @@ int main(int argc, char** argv)
         {
             PrintSnapshot(*telemetry, elapsed, process.hProcess);
             last_snapshot = GetTickCount();
+        }
+        // When both the dispatch stream and the in-process sampler stall
+        // while the child is alive, capture child thread contexts
+        // externally: this remains possible even if the loader's own poll
+        // loop is frozen.
+        const long stall_dispatch_now =
+            ReadInterlocked(&telemetry->dispatch_entry_count);
+        const long stall_samples_now =
+            ReadInterlocked(&telemetry->native_sample_count);
+        if (stall_dispatch_now != stall_last_dispatch ||
+            stall_samples_now != stall_last_samples)
+        {
+            stall_last_dispatch = stall_dispatch_now;
+            stall_last_samples = stall_samples_now;
+            stall_start_tick = GetTickCount();
+        }
+        else if (wait == WAIT_TIMEOUT && stall_dispatch_now > 0 &&
+                 GetTickCount() - stall_start_tick >= 3000U &&
+                 GetTickCount() - last_external_sample_tick >= 2000U)
+        {
+            const std::uint32_t cache_base = static_cast<std::uint32_t>(
+                ReadInterlocked(&telemetry->aot_cache_base));
+            const std::uint32_t cache_capacity = static_cast<std::uint32_t>(
+                ReadInterlocked(&telemetry->aot_cache_size));
+            SampleChildThreadContext(
+                static_cast<DWORD>(
+                    ReadInterlocked(&telemetry->guest_thread_id)),
+                "guest", elapsed, cache_base, cache_capacity);
+            SampleChildThreadContext(
+                static_cast<DWORD>(
+                    ReadInterlocked(&telemetry->host_main_thread_id)),
+                "host-main", elapsed, cache_base, cache_capacity);
+            last_external_sample_tick = GetTickCount();
         }
         if (wait == WAIT_OBJECT_0)
         {
