@@ -2404,10 +2404,15 @@ int main(int argc, char** argv)
     repiu::platform::win32::ReleaseWin32AotCodeCache(&aot_placement);
     if (attempt.exception_caught)
     {
+        std::uint32_t target_address = attempt.seh_exception_address;
+        if (attempt.aot_exception_mapping_valid)
+        {
+            target_address = attempt.aot_exception_guest_address;
+        }
         repiu::runtime::RelocatedImageByteWindow window;
         repiu::runtime::BuildRelocatedImageByteWindow(
             relocated_image,
-            attempt.seh_exception_address,
+            target_address,
             16,
             16,
             &window);

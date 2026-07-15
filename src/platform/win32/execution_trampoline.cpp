@@ -4704,18 +4704,22 @@ void RecordGuestSegmentLoad(CONTEXT* win32_context,
     {
         case 0:
             context->guest_es = selector;
+            win32_context->SegEs = selector;
             break;
         case 2:
             context->guest_ss = selector;
             break;
         case 3:
             context->guest_ds = selector;
+            win32_context->SegDs = selector;
             break;
         case 4:
             context->guest_fs = selector;
+            win32_context->SegFs = selector;
             break;
         case 5:
             context->guest_gs = selector;
+            win32_context->SegGs = selector;
             break;
         default:
             break;
@@ -4723,8 +4727,28 @@ void RecordGuestSegmentLoad(CONTEXT* win32_context,
 }
 
 std::uint16_t ReadGuestSegmentSelector(const ThreadContext& context,
-                                       std::uint8_t segment_register)
+                                       std::uint8_t segment_register,
+                                       const CONTEXT* win32_context)
 {
+    if (win32_context != nullptr)
+    {
+        switch (segment_register)
+        {
+            case 0:
+                return static_cast<std::uint16_t>(win32_context->SegEs);
+            case 2:
+                return static_cast<std::uint16_t>(win32_context->SegSs);
+            case 3:
+                return static_cast<std::uint16_t>(win32_context->SegDs);
+            case 4:
+                return static_cast<std::uint16_t>(win32_context->SegFs);
+            case 5:
+                return static_cast<std::uint16_t>(win32_context->SegGs);
+            default:
+                break;
+        }
+    }
+
     switch (segment_register)
     {
         case 0:
@@ -5053,28 +5077,25 @@ bool HandleSegmentPopInstruction(CONTEXT* win32_context,
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
-    // POP SS (17) stays unimplemented until observed.
     std::uint8_t segment_register = 0;
-    std::uint32_t instruction_length = 0;
-    if (instruction[0] == 0x07)
-    {
-        segment_register = 0;  // ES
-        instruction_length = 1;
-    }
-    else if (instruction[0] == 0x1F)
+    std::uint32_t instruction_size = 1;
+    if (instruction[0] == 0x1F)
     {
         segment_register = 3;  // DS
-        instruction_length = 1;
+    }
+    else if (instruction[0] == 0x07)
+    {
+        segment_register = 0;  // ES
     }
     else if (instruction[0] == 0x0F && instruction[1] == 0xA1)
     {
         segment_register = 4;  // FS
-        instruction_length = 2;
+        instruction_size = 2;
     }
     else if (instruction[0] == 0x0F && instruction[1] == 0xA9)
     {
         segment_register = 5;  // GS
-        instruction_length = 2;
+        instruction_size = 2;
     }
     else
     {
@@ -5097,8 +5118,9 @@ bool HandleSegmentPopInstruction(CONTEXT* win32_context,
                            segment_register,
                            selector,
                            source);
+
     win32_context->Esp += 4;
-    win32_context->Eip += instruction_length;
+    win32_context->Eip += instruction_size;
     return true;
 }
 
@@ -5183,7 +5205,7 @@ bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
             return false;
         }
         const std::uint16_t selector =
-            ReadGuestSegmentSelector(*context, segment_register);
+            ReadGuestSegmentSelector(*context, segment_register, win32_context);
         WriteRegister16(win32_context, destination_register, selector);
         RecordGuestSegmentStore(win32_context,
                                 context,
@@ -5206,7 +5228,7 @@ bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
         }
 
         const std::uint16_t selector =
-            ReadGuestSegmentSelector(*context, segment_register);
+            ReadGuestSegmentSelector(*context, segment_register, win32_context);
         if (mod == 0x03)
         {
             const std::uint8_t destination_register =
@@ -5281,7 +5303,7 @@ bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
     }
 
     const std::uint16_t selector =
-        ReadGuestSegmentSelector(*context, segment_register);
+        ReadGuestSegmentSelector(*context, segment_register, win32_context);
     if (!WriteGuestUInt16(context, destination_pointer, selector))
     {
         return false;
@@ -5337,7 +5359,7 @@ bool HandleSegmentOverrideByteLoadInstruction(CONTEXT* win32_context,
         const std::uint8_t segment_register =
             instruction[0] == 0x64 ? 4 : 5;
         const std::uint16_t selector =
-            ReadGuestSegmentSelector(*context, segment_register);
+            ReadGuestSegmentSelector(*context, segment_register, win32_context);
         std::uint8_t value = 0;
         if (!ReadSegmentByte(context,
                              segment_register,
@@ -5384,7 +5406,7 @@ bool HandleSegmentOverrideByteLoadInstruction(CONTEXT* win32_context,
         {
             const std::uint8_t segment_register = 0;
             const std::uint16_t selector =
-                ReadGuestSegmentSelector(*context, segment_register);
+                ReadGuestSegmentSelector(*context, segment_register, win32_context);
             const std::uint32_t offset = win32_context->Eax;
             std::uint8_t value = 0;
             if (!ReadSegmentByte(
@@ -5425,7 +5447,7 @@ bool HandleSegmentOverrideByteLoadInstruction(CONTEXT* win32_context,
     {
         const std::uint8_t segment_register = 0;
         const std::uint16_t selector =
-            ReadGuestSegmentSelector(*context, segment_register);
+            ReadGuestSegmentSelector(*context, segment_register, win32_context);
         const std::uint32_t offset = win32_context->Eax;
         std::uint8_t value = 0;
         if (!ReadSegmentByte(context,
@@ -5472,7 +5494,7 @@ bool HandleSegmentOverrideByteLoadInstruction(CONTEXT* win32_context,
         static_cast<std::uint32_t>(win32_context->Edi + displacement);
     const std::uint8_t segment_register = 0;
     const std::uint16_t selector =
-        ReadGuestSegmentSelector(*context, segment_register);
+        ReadGuestSegmentSelector(*context, segment_register, win32_context);
 
     std::uint8_t value = 0;
     if (!ReadSegmentOverrideByte(
@@ -5792,7 +5814,7 @@ bool HandleSegmentOverrideMemoryLoadInstruction(CONTEXT* win32_context,
     }
     const std::uint8_t destination_register = (modrm >> 3) & 0x07U;
     const std::uint16_t selector =
-        ReadGuestSegmentSelector(*context, segment_register);
+        ReadGuestSegmentSelector(*context, segment_register, win32_context);
     context->linexe_shared_load_selector = selector;
     context->linexe_shared_load_offset = offset;
     std::uint32_t value = 0;
@@ -5944,7 +5966,7 @@ bool HandleFsSegmentWordLoadInstruction(CONTEXT* win32_context,
     const std::uint8_t segment_register =
         instruction[1] == 0x64 ? 4 : 5;
     const std::uint16_t selector =
-        ReadGuestSegmentSelector(*context, segment_register);
+        ReadGuestSegmentSelector(*context, segment_register, win32_context);
     std::uint16_t value = 0;
     if (!ReadSegmentWord(context, selector, offset, &value))
     {
@@ -5971,7 +5993,7 @@ bool HandleSegmentMemoryLoadInstruction(CONTEXT* win32_context,
         win32_context->Eip);
     const std::uint8_t segment_register = 3;
     const std::uint16_t selector =
-        ReadGuestSegmentSelector(*context, segment_register);
+        ReadGuestSegmentSelector(*context, segment_register, win32_context);
 
     if (instruction[0] == 0x8B && instruction[1] == 0x06)
     {
@@ -6101,7 +6123,7 @@ bool HandleSegmentMemoryCompareInstruction(CONTEXT* win32_context,
 
     const std::uint8_t segment_register = 3;
     const std::uint16_t selector =
-        ReadGuestSegmentSelector(*context, segment_register);
+        ReadGuestSegmentSelector(*context, segment_register, win32_context);
     const std::uint32_t offset = win32_context->Esi;
 
     std::uint8_t value = 0;
@@ -6237,6 +6259,20 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
         const std::uint8_t source_register = (instruction[1] >> 3) & 0x07U;
         value = ReadGeneralRegister32(win32_context, source_register);
     }
+    else if (instruction[0] == 0x88)
+    {
+        source_kind = "mov-reg8";
+        if (!DecodeModRmMemoryAddress(win32_context,
+                                      instruction,
+                                      &destination,
+                                      &instruction_size))
+        {
+            return false;
+        }
+        const std::uint8_t source_register = (instruction[1] >> 3) & 0x07U;
+        value = ReadRegister8(*win32_context, source_register);
+        value_width = 1;
+    }
     else if (instruction[0] == 0x66 && instruction[1] == 0x89)
     {
         store_opcode = 0x6689;
@@ -6347,7 +6383,7 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
     const std::uint64_t base =
         ReadGeneralRegister32(win32_context, rm);
     const bool supported_boundary_store =
-        instruction[0] == 0xC7 || instruction[0] == 0x89 ||
+        instruction[0] == 0xC7 || instruction[0] == 0x89 || instruction[0] == 0x88 ||
         (instruction[0] == 0x66 && instruction[1] == 0xC7);
     const bool arena_boundary_object_store =
         supported_boundary_store && (mod == 0x01 || mod == 0x02) &&
@@ -6362,12 +6398,23 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
         destination >= base &&
         destination_end <= base + kBoundaryObjectWindow &&
         destination_end <= context->boundary_object_chain_limit;
-    if (!allocator_failure_sentinel && !allocator_metadata_store &&
-        !arena_boundary_object_store && !chained_boundary_object_store &&
-        (context->last_dos_open_success ||
-         context->last_dos_open_guest_path.empty()))
+
+    const bool is_legitimate_shadow_store =
+        allocator_failure_sentinel || allocator_metadata_store ||
+        arena_boundary_object_store || chained_boundary_object_store;
+
+    if (!is_legitimate_shadow_store)
     {
-        return false;
+        if (destination >= context->runtime_base &&
+            static_cast<std::uint64_t>(destination) < runtime_end)
+        {
+            return false;
+        }
+        if (context->last_dos_open_success ||
+            context->last_dos_open_guest_path.empty())
+        {
+            return false;
+        }
     }
 
     RecordGuestMemoryStore(win32_context,
