@@ -438,6 +438,11 @@ struct Win32MinimalExecutionAttempt
     bool cd_audio_available = false;
     std::uint32_t mscdex_track_count = 0;
     std::uint32_t mscdex_request_count = 0;
+    std::uint16_t mscdex_frame_es = 0;
+    std::uint32_t mscdex_decline_count = 0;
+    std::uint32_t mscdex_last_decline_reason = 0;
+    std::uint32_t mscdex_last_resolve_kind = 0;
+    std::uint32_t mscdex_last_header_bytes = 0;
     std::uint32_t cd_audio_current_lba = 0;
     std::uint32_t glide_window_open_count = 0;
     std::uint32_t glide_logical_width = 0;

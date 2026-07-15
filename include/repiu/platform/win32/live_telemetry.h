@@ -7,7 +7,7 @@ namespace repiu::platform::win32
 {
 
 constexpr std::uint32_t kWin32LiveTelemetryMagic = 0x5250544CU;
-constexpr std::uint32_t kWin32LiveTelemetryVersion = 9;
+constexpr std::uint32_t kWin32LiveTelemetryVersion = 10;
 constexpr std::uint32_t kWin32NativeSampleRingCapacity = 8;
 constexpr const char* kWin32LiveTelemetryEnvironment =
     "REPIU_LIVE_TELEMETRY_MAPPING";
@@ -50,6 +50,12 @@ struct Win32SharedLiveTelemetry
     volatile long mscdex_request_count = 0;
     volatile long mscdex_last_command = 0;
     volatile long mscdex_last_status = 0;
+    volatile long mscdex_frame_es = 0;
+    // 0 = none, 1 = buffer resolution failed, 2 = header length below 13.
+    volatile long mscdex_decline_reason = 0;
+    // 0 = unresolved, 1 = selector table, 2 = real-mode low memory.
+    volatile long mscdex_resolve_kind = 0;
+    volatile long mscdex_header = 0;
     // Mirrored by the guest thread itself so they stay observable even if
     // the host poll loop stalls.
     volatile long aot_boundary_count = 0;

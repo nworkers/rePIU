@@ -191,6 +191,13 @@ void PrintSnapshot(
               << std::hex
               << ReadInterlocked(&telemetry.mscdex_last_command) << "/"
               << ReadInterlocked(&telemetry.mscdex_last_status)
+              << " mscdex_es/kind/reason/header=0x"
+              << ReadInterlocked(&telemetry.mscdex_frame_es) << "/"
+              << std::dec
+              << ReadInterlocked(&telemetry.mscdex_resolve_kind) << "/"
+              << ReadInterlocked(&telemetry.mscdex_decline_reason) << "/0x"
+              << std::hex
+              << ReadInterlocked(&telemetry.mscdex_header)
               << std::dec
               << " aot_boundary/reentry="
               << ReadInterlocked(&telemetry.aot_boundary_count) << "/"

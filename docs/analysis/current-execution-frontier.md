@@ -1,5 +1,60 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-16 Task 211: MSCDEX 거절 원인 확정과 DPMI 프레임 ES 오프셋 수정 / Task 211: MSCDEX decline root-caused and the DPMI frame ES offset fixed
+
+**확인됨 (원인):** 아래 300초 관측에서 발견된 MSCDEX `AX=1510h` 거절의 원인은 DPMI `AX=0300h` real-mode register 구조의 **ES 필드를 스펙 오프셋 `0x22`가 아닌 `0x24`(DS 슬롯)에서 읽던 오독**이다. 진단 계측(`mscdex_es/kind/reason/header`)이 ES=0, real-mode 해석(linear 0), 헤더 길이 부족(reason=2)을 확정했다. FLAGS도 word(0x20) 대신 dword로 읽고 있었다.
+
+**확인됨 (수정·검증):** 오프셋 교정 후 같은 조건에서 게스트의 진짜 ES는 `0x0100`(DPMI `0100h` real-mode 블록)이었고 26바이트 패킷이 backing에 존재했으며(`header=0x0003001A`), 요청이 **command `03h`(IOCTL INPUT), status `0x0100`** 으로 처리되었다. 검증은 main의 `0x030F3438` 정지(Task 210) 때문에 `ReadGuestSegmentSelector` 물리 우선을 로컬 실험으로만 비활성화한 상태에서 수행했다(실험 패치는 커밋하지 않음). 실험 없는 최종 빌드의 회귀 확인에서 두 백엔드 모두 기존과 동일 거동을 유지했다.
+
+**확인됨 (trap 백엔드 신규 관찰):** 머지된 main의 기본 trap 백엔드는 **약 7.2초에 게스트가 `INT 21h AX=4C01h`(DOS/4G fatal 종료 경로, 직전 바이트 `B4 4C CD 21`)로 자체 종료**한다. 두 차례 구동에서 dispatch가 정확히 781,653으로 결정적이며, 로더는 hang 없이 정상 회수된다(`child_exit=0`). 이는 Task 209의 미확정 4번("trap 30초에서 bridge/gate가 0인 이유")에 대한 답이 "시간 부족"이 아니라 **조기 fatal 종료**임을 시사한다.
+
+**미확정:** (1) trap 백엔드의 7.2초 fatal 종료가 Task 209 세션의 "30초 정상 진행" 관측과 왜 다른지 — 판정 조건 또는 빌드 상태 차이 재확인 필요. (2) CD-DA play(`84h`) 도달 여부 — 초기화 창에서는 IOCTL(`03h`)만 관측되었고, 재생 확인은 실행이 곡 재생 단계까지 진행해야 가능하다.
+
+```mermaid
+flowchart LR
+    O["관측: 1510h 거절<br/>(request count 0)"] --> D["진단 계측:<br/>ES=0, reason=2"]
+    D --> C["원인: 프레임 ES를<br/>0x24(DS)에서 오독"]
+    C --> F["수정: ES=0x22,<br/>FLAGS=word"]
+    F --> V["검증: command 03h 처리<br/>status 0x0100"]
+    V -. "남은 확인" .-> P["play 84h 도달<br/>(Task 210 이후)"]
+```
+
+**Confirmed (Task 211):** The declined MSCDEX `AX=1510h` request from the 300-second baseline below was root-caused by reading the DPMI `AX=0300h` real-mode frame's **ES field at offset `0x24` (the DS slot) instead of the spec's `0x22`** (FLAGS was also read as a dword instead of the word at `0x20`). Diagnosis telemetry pinned ES=0 → real-mode resolution to linear 0 → short-header decline (reason=2). After the fix, the guest's actual ES is `0x0100` (a DPMI `0100h` real-mode block), the 26-byte packet is present (`header=0x0003001A`), and the request completes as command `03h` (IOCTL INPUT) with status `0x0100`. Verification ran under an uncommitted local experiment disabling the physical-register preference in `ReadGuestSegmentSelector` (main's aot-dynamic stalls at `0x030F3438`, Task 210); final no-experiment regression checks show both backends unchanged. **New observation:** merged main's default trap backend self-terminates at ~7.2 s via `INT 21h AX=4C01h` (deterministic 781,653 dispatches, clean loader exit) — answering Task 209's open question 4: the zero bridge/gate counters reflect an early fatal exit, not insufficient time. **Unresolved:** why this differs from Task 209's "normal 30 s progression" reading, and whether CD-DA play (`84h`) is reached once execution proceeds past initialization.
+
+## 2026-07-16 99f60de 300초 관측 기준선: 전체 타임라인과 MSCDEX 미처리 발견 / 300-second baseline of 99f60de: full timeline and an unhandled MSCDEX request
+
+**확인됨 (구동 조건):** Task 208~209 머지 직전의 `feature/208` HEAD(`99f60de`, POP ES/FS/GS 가로채기 + CONTEXT 물리 레지스터 갱신 포함, `ReadGuestSegmentSelector` 물리 우선 수정은 미포함)를 재빌드해 `repiu_supervisor_win32.exe pumpit1 300000`(aot-dynamic, cmd /c 리다이렉션)으로 관측했다. 이 관측은 아래 Task 208–209 재판정 항목의 "수정 전" 상태에 대한 **전체 수명 기준선**이다.
+
+**확인됨 (타임라인):**
+
+1. 0~5초: 부팅 HLE 집중 구간. DOS INT 21h 292건(open 6 / read 17 / seek 15 / close 6 / IOCTL 19 / chdir 3 / resize 150 등), DPMI selector 할당 3건(descriptor 16개), `intro.ani`/`stage.cfg`/`spr.res`/`piu.bin`/`piu.dat`(8.7 MB)/`piu.mtl` 정상 read, 포트 I/O 21건(`0x2A0/0x2A2/0x2AC` OUT, deferred-ignored).
+2. 약 3.2초: **aot-dynamic 상태에서 LINEXE bridge 25건, 가상 모듈 로드 1건(glide2x.ovl), get-proc 24건이 완료**되고 `grSstWinOpen`으로 640x480 OpenGL 창이 1회 생성됐다. Glide 게이트 49/49, 고유 함수 24종, 마지막 호출 ordinal 94 `_GRCULLMODE@4`(약 5.3초 이후 고정). 그리기 게이트(71~77) 미도달.
+3. 5~147초: 디스패치는 +약 1.3천 건뿐. 경량 VEH 이벤트(aot boundary/reentry) 758,061/758,097(약 5.1k/s)이 wall time을 지배했고 return 디스패치 709,279건은 전부 match=false. 이 구동에서 **cross-segment thunk 패치는 성공 사례가 있다**: AOT code write 48건 중 `0x030F3432 → 0x030FECC4`(thunk self-patch) 기록과 `0x030F3436 → 0x030FExxx` jump transfer 19건이 남아 있다. 즉 `99f60de` 상태의 aot-dynamic은 `0x030F3438` assertion에 영구히 갇히지 않았다.
+4. 약 147초: guest `0x030873F4` `mov [ebx+ebp], al`(88 04 2B)이 미매핑 `0x045D3EB0`(EBX) 쓰기로 0xC0000005 → 거절 → SEH catch → 게스트 스레드 exit code 2. Task 205~206에서 확정한 디코드 루프 종료 지점과 레지스터(ECX=`0x1908`)가 그대로 재현됐다.
+5. 147~300초: 로더 post-attempt hang(ntdll `0x774CA07C` INFINITE 대기) 재현, supervisor가 300초에 강제 종료(`child_exit=124 terminated=true`).
+
+**확인됨 (Task 208 부분 코드의 영향):** POP ES/FS/GS 가로채기(물리 레지스터 갱신 포함) 상태에서 Glide 창 생성 회귀는 재발하지 않았다. 세그먼트 load 처리 11,443건에 `+0xF5070`(GS)/`+0xF5074`(ES) 에필로그가 포함된다.
+
+**확인됨 (opcode-88 store HLE 경계):** Task 206의 traced byte-store HLE는 341건을 처리했고 같은 페이지의 `0x045D3FFF` 쓰기는 applied였으나, 종료 예외의 `0x045D3EB0` 쓰기는 거절되었다. 명령 형태가 아니라 **대상 주소의 backing/조건이 처리 여부를 갈랐다**.
+
+**미확정 (신규 발견 — MSCDEX 미처리, Task 211 대상):** DPMI `AX=0300h` real-mode 프레임에 `AX=1510h`, `EBX=0`, `ECX=3`(드라이브 일치)이 기록되었지만 `HandleMscdexRequest`의 request 카운트는 0으로 남았다. `ResolveMscdexBuffer`가 nullptr을 반환했거나 request 헤더 길이 바이트가 13 미만(`request[0] < 13`)이어서 초입에서 거절되고 게스트에는 error 0x000F(carry)가 반환된 것으로 추정된다. 이로 인해 CD 오디오(CD-DA) 재생이 시작되지 못했을 가능성이 있다. 거절 사유는 현 텔레메트리에 남지 않아 미확정이다.
+
+**미확정 (아래 Task 208–209 항목과의 관계):** 아래 재판정 항목은 `99f60de` aot-dynamic이 "30초 안에 `progress=14`/`0x030F6574`에서 크래시"라고 기록했으나, 본 300초 관측에서 `progress=14`는 5초에 도달하는 정상 상태값이고 실제 게스트 종료는 147초의 디코드 루프 스토어였다. 30초 시점에는 게스트가 생존해 있었으므로(디스패치·heartbeat 증가 지속), 두 관측의 "크래시" 판정 조건 차이(관측 창 길이, telemetry 해석)를 Task 210 검증 시 함께 재확인해야 한다. 또한 trap 백엔드 30초에서 bridge/gate가 0인 것(아래 미확정 4번)에 대해, aot-dynamic에서는 5초 안에 bridge 25/gate 49가 도달함을 데이터로 남긴다.
+
+**미확정 (기타 관찰):** 첫 chdir `\datas\bga`가 error 3으로 실패한 뒤 `C:\PIU\datas`로 성공했다. 원본 게임의 정상 탐색 순서일 수 있다.
+
+```mermaid
+flowchart TD
+    B["0~5s: 부팅 HLE<br/>INT21 292건 / DPMI / 파일 I/O / 포트 I/O"] --> W["~3.2s: LINEXE bridge 25 / get-proc 24<br/>grSstWinOpen 640x480 창 생성"]
+    W --> N["5~147s: 네이티브 + VEH churn ~5.1k/s<br/>thunk 패치 성공 기록 존재"]
+    N --> X["~147s: guest 0x030873F4<br/>0x045D3EB0 미매핑 store → exit 2"]
+    X --> H["147~300s: 로더 hang<br/>supervisor 강제 종료"]
+    N -. "미확정" .-> M["MSCDEX 1510h 요청<br/>request count 0 (거절)"]
+    M -. "다음 구현 (Task 211)" .-> F["거절 사유 진단 +<br/>real-mode 버퍼 해석 수정"]
+```
+
+**Confirmed:** A 300-second supervised aot-dynamic run of the rebuilt pre-merge `feature/208` HEAD (`99f60de`) provides a full-lifetime baseline for the "pre-fix" state referenced by the Task 208–209 re-attribution below: boot-time HLE concentrates in the first ~5 s (292 INT 21h services, 3 DPMI selector allocations, all asset files read correctly including the 8.7 MB `piu.dat`, 21 deferred-ignored port I/O writes); under aot-dynamic the LINEXE bridge (25 entries), virtual module load (glide2x.ovl), and 24 get-proc calls complete by ~3.2 s with `grSstWinOpen` creating the 640x480 window once (49/49 Glide gate calls, 24 unique functions, ending at ordinal 94 `_GRCULLMODE@4`); the 5–147 s phase is dominated by ~5.1k/s lightweight VEH events (709,279 return dispatches, all match=false) yet **cross-segment thunk patching demonstrably succeeded** (code write `0x030F3432 → 0x030FECC4`, 19 jump transfers from `0x030F3436`), so `99f60de` aot-dynamic was not permanently stuck at the `0x030F3438` assertion; the guest dies at ~147 s at the known decode-loop store (guest `0x030873F4` writing unmapped `0x045D3EB0`, ECX=`0x1908` — the Task 206 byte-store HLE applied 341 stores including `0x045D3FFF` on the same page, so target backing, not instruction form, is the discriminator); the known post-attempt loader hang follows until the supervisor kills the child at 300 s. **Unresolved (new, Task 211):** a DPMI `AX=0300h` frame carrying MSCDEX `AX=1510h`/`EBX=0`/`ECX=3` (drive matches) left the request count at 0 — `ResolveMscdexBuffer` presumably returned nullptr or the header length byte was below 13, so the guest received error 0x000F and CD-DA playback never started; current telemetry does not record the decline reason. **Unresolved (relation to Task 208–209 below):** that entry records `99f60de` aot-dynamic as "crashing within 30 s at progress=14 / `0x030F6574`", but in this 300-second run progress=14 is the normal steady value reached at 5 s and the guest actually survives until the 147 s decode-loop store — the differing "crash" criteria (observation window, telemetry reading) should be re-checked during Task 210. Also noted for open question 4 below: under aot-dynamic the bridge/gate counters reach 25/49 within 5 s. Minor: the first chdir `\datas\bga` fails with error 3 before `C:\PIU\datas` succeeds, likely the game's normal probing order.
+
 ## 2026-07-15 LINEXE 정지 재판정: DOS4GW cross-segment thunk assertion이 진짜 frontier / LINEXE stall re-attributed: the DOS4GW cross-segment thunk assertion is the real frontier (Task 208–209)
 
 **수정됨:** Task 208이 지목한 "POP ES/FS/GS 패스스루로 인한 shadow segment 불일치가 LINEXE 무한 루프의 원인"이라는 결론을 정정한다. `aebbbb6`(POP ES/FS/GS 미개입)과 `99f60de`(개입) 를 같은 조건으로 재실행하면 **완전히 동일한 aot-dynamic 실패**가 재현된다 — POP GS의 selector `0x0090`은 유효한 LDT 항목이라 하드웨어가 직접 실행하며 VEH를 아예 거치지 않으므로, 개입 여부는 이 증상과 무관하다. Task 206 work log의 "POP 개입 제거로 `0x030F3438` 폭풍 해소" 결론도 재현 실패로 성립하지 않는다.

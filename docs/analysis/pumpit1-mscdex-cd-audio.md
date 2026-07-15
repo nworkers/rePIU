@@ -1,5 +1,30 @@
 # pumpit1 MSCDEX 및 CHD CD 오디오 분석
 
+## 2026-07-16 첫 실제 요청 확인과 거절 원인 수정 (Task 211)
+
+**확인됨:** PIU가 실제로 MSCDEX를 호출하는 것이 처음으로 관측되었다. 초기화 약 5초 시점에 `INT 2Fh AX=1500h` 탐지 1건 응답 후, DPMI `AX=0300h` 프레임으로 `AX=1510h` 요청이 전달된다.
+
+**확인됨 (거절 원인):** 이 요청은 그동안 `HandleMscdexRequest` 초입에서 거절되고 있었다. Task 211 진단 계측(`mscdex_es/kind/reason/header` 텔레메트리)으로 원인을 확정했다 — DPMI real-mode register 구조에서 **ES를 스펙 오프셋 `0x22`가 아닌 `0x24`(DS 슬롯)에서 읽어** 항상 0을 얻었고, segment 0은 zero-init 저메모리 backing으로 해석되어 헤더 길이 검사(`request[0] < 13`)에서 거절되었다(reason=2). FLAGS도 word가 아닌 dword로 읽고 있었다.
+
+**확인됨 (수정 후):** 오프셋 교정 후 게스트가 전달한 진짜 ES는 `0x0100`(DPMI `AX=0100h`로 할당된 real-mode 블록, bump base `0x1000`)이었고, 패킷 26바이트가 backing에 정상 기록되어 있었다(`header=0x0003001A`: 길이 26, subunit 0, command 03h). 요청은 **command `03h`(IOCTL INPUT)로 처리되어 status `0x0100`(done)** 을 반환했다 (`mscdex request/cmd/status = 1/3/0x100`).
+
+**미확정:** play(`84h`)/stop(`85h`)/resume(`88h`)은 이번 관측 창(초기화 구간)에서는 도달하지 않았다. 실제 CD-DA 재생과 가청 출력 확인은 게임이 곡 재생 단계까지 진행해야 가능하다. 검증 구동은 main의 `0x030F3438` 정지(Task 210) 때문에 `ReadGuestSegmentSelector` 물리 우선을 로컬에서만 비활성화한 진단 실험 하에서 수행되었다 — 실험 없이 main aot-dynamic에서는 MSCDEX에 도달하지 못한다.
+
+```mermaid
+sequenceDiagram
+    participant G as PIU (guest)
+    participant D as DPMI 0300h HLE
+    participant M as HandleMscdexRequest
+    G->>D: AX=1510h frame (ES=0x100, BX=0)
+    Note over D: 이전: ES를 0x24(DS)에서 오독 → 0
+    D->>M: segment=0x100, offset=0
+    M->>M: real-mode 해석 → linear 0x1000<br/>header 0x1A/00/03
+    M-->>D: command 03h 처리, status 0x0100
+    D-->>G: carry clear, frame 갱신
+```
+
+**Confirmed (Task 211):** PIU's first real MSCDEX traffic was observed (~5 s into initialization): one answered `INT 2Fh AX=1500h` probe, then an `AX=1510h` request through a DPMI `AX=0300h` frame. The request had been declined at the top of `HandleMscdexRequest` because the frame **ES was read at offset `0x24` (the DS slot) instead of the spec's `0x22`**, always yielding 0; segment 0 resolved into zero-initialized low-memory backing and failed the header length check (reason=2). FLAGS was also read as a dword instead of a word. After correcting the offsets, the guest's actual ES is `0x0100` (a DPMI `AX=0100h` real-mode block), the 26-byte packet is present in the backing (`header=0x0003001A`), and the request completes as **command `03h` (IOCTL INPUT) with status `0x0100`**. Play/stop/resume commands (`84h/85h/88h`) were not reached in the initialization window, and verification ran under the documented local experiment that disables the physical-register preference in `ReadGuestSegmentSelector`, since main's aot-dynamic stalls at `0x030F3438` (Task 210) before reaching MSCDEX.
+
 ## 확인됨
 
 `19990930.chd`의 CHT2 metadata에는 51개 track이 있습니다. track 1은 `MODE2_RAW` data이고 track 2~51은 `AUDIO`입니다. 공용 probe가 각 track의 첫 raw sector를 libchdr로 읽었으며 `tracks=51`, `audio_tracks=50`, `lead_out=258607`을 확인했습니다.

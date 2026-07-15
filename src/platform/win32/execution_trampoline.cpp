@@ -321,6 +321,11 @@ struct ThreadContext
     bool cd_audio_available = false;
     std::uint8_t mscdex_drive = 3;
     std::uint32_t mscdex_request_count = 0;
+    std::uint16_t mscdex_frame_es = 0;
+    std::uint32_t mscdex_decline_count = 0;
+    std::uint32_t mscdex_last_decline_reason = 0;
+    std::uint32_t mscdex_last_resolve_kind = 0;
+    std::uint32_t mscdex_last_header_bytes = 0;
     repiu::hle::GlideLogicalState glide_state;
     GlideOpenGlBackend glide_backend;
     std::uint32_t linexe_scan_return_eax = 0;
@@ -1512,6 +1517,11 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->mscdex_track_count = static_cast<std::uint32_t>(
         context.cd_image.tracks().size());
     attempt->mscdex_request_count = context.mscdex_request_count;
+    attempt->mscdex_frame_es = context.mscdex_frame_es;
+    attempt->mscdex_decline_count = context.mscdex_decline_count;
+    attempt->mscdex_last_decline_reason = context.mscdex_last_decline_reason;
+    attempt->mscdex_last_resolve_kind = context.mscdex_last_resolve_kind;
+    attempt->mscdex_last_header_bytes = context.mscdex_last_header_bytes;
     attempt->cd_audio_current_lba = context.cd_audio.current_lba();
     attempt->glide_window_open_count = context.glide_window_open_count;
     attempt->glide_logical_width = context.glide_logical_width;
@@ -3915,12 +3925,21 @@ bool HandleDosInterrupt2F(CONTEXT* win32_context, ThreadContext* context)
 std::uint8_t* ResolveMscdexBuffer(ThreadContext* context,
                                   std::uint16_t segment,
                                   std::uint16_t offset,
-                                  std::uint32_t bytes)
+                                  std::uint32_t bytes,
+                                  std::uint32_t* resolve_kind = nullptr)
 {
+    if (resolve_kind != nullptr)
+    {
+        *resolve_kind = 0;
+    }
     std::uint32_t linear = 0;
     if (ResolveSegmentLinearRange(context, segment, offset, bytes, true,
                                   &linear))
     {
+        if (resolve_kind != nullptr)
+        {
+            *resolve_kind = 1;
+        }
         return reinterpret_cast<std::uint8_t*>(
             static_cast<std::uintptr_t>(linear));
     }
@@ -3930,6 +3949,10 @@ std::uint8_t* ResolveMscdexBuffer(ThreadContext* context,
         static_cast<std::uint64_t>(real_linear) + bytes <=
             context->dos_low_memory.bytes.size())
     {
+        if (resolve_kind != nullptr)
+        {
+            *resolve_kind = 2;
+        }
         return context->dos_low_memory.bytes.data() + real_linear;
     }
     return nullptr;
@@ -4053,9 +4076,39 @@ bool HandleMscdexRequest(ThreadContext* context,
                          std::uint16_t segment,
                          std::uint16_t offset)
 {
-    std::uint8_t* request = ResolveMscdexBuffer(context, segment, offset, 26U);
+    std::uint32_t resolve_kind = 0;
+    std::uint8_t* request =
+        ResolveMscdexBuffer(context, segment, offset, 26U, &resolve_kind);
+    context->mscdex_frame_es = segment;
+    context->mscdex_last_resolve_kind = resolve_kind;
+    std::uint32_t header_bytes = 0;
+    if (request != nullptr)
+    {
+        std::memcpy(&header_bytes, request, sizeof(header_bytes));
+    }
+    context->mscdex_last_header_bytes = header_bytes;
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(
+            &context->shared_live_telemetry->mscdex_frame_es,
+            static_cast<long>(segment));
+        InterlockedExchange(
+            &context->shared_live_telemetry->mscdex_resolve_kind,
+            static_cast<long>(resolve_kind));
+        InterlockedExchange(
+            &context->shared_live_telemetry->mscdex_header,
+            static_cast<long>(header_bytes));
+    }
     if (request == nullptr || request[0] < 13U)
     {
+        ++context->mscdex_decline_count;
+        context->mscdex_last_decline_reason = request == nullptr ? 1U : 2U;
+        if (context->shared_live_telemetry != nullptr)
+        {
+            InterlockedExchange(
+                &context->shared_live_telemetry->mscdex_decline_reason,
+                static_cast<long>(context->mscdex_last_decline_reason));
+        }
         return false;
     }
     ++context->mscdex_request_count;
@@ -4148,12 +4201,14 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
     }
     if (ax == 0x0300 && (win32_context->Ebx & 0xFFU) == 0x2FU)
     {
+        // DPMI 0.9 real-mode register structure: FLAGS is a 16-bit word at
+        // 0x20 and ES is the 16-bit word at 0x22 (0x24 is DS).
         constexpr std::size_t kRealModeFrameBytes = 0x34U;
         constexpr std::size_t kFrameEbxOffset = 0x10U;
         constexpr std::size_t kFrameEcxOffset = 0x18U;
         constexpr std::size_t kFrameEaxOffset = 0x1CU;
         constexpr std::size_t kFrameFlagsOffset = 0x20U;
-        constexpr std::size_t kFrameEsOffset = 0x24U;
+        constexpr std::size_t kFrameEsOffset = 0x22U;
         void* frame = reinterpret_cast<void*>(static_cast<std::uintptr_t>(
             win32_context->Edi));
         if (!context->fatal_breakpoint_continued)
@@ -4203,7 +4258,7 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
             }
             else if (frame_ax == 0x1510U)
             {
-                std::uint32_t frame_flags = 0;
+                std::uint16_t frame_flags = 0;
                 std::memcpy(&frame_flags, bytes + kFrameFlagsOffset,
                             sizeof(frame_flags));
                 const bool called = context->mscdex_available &&
@@ -4213,7 +4268,8 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
                         static_cast<std::uint16_t>(frame_ebx & 0xFFFFU));
                 if (called)
                 {
-                    frame_flags &= ~1U;
+                    frame_flags = static_cast<std::uint16_t>(
+                        frame_flags & ~1U);
                 }
                 else
                 {
