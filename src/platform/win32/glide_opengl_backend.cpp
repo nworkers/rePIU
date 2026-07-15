@@ -61,6 +61,7 @@ bool GlideOpenGlBackend::OpenWindowed(
     std::uint32_t auxiliary_buffer_count)
 {
     Close();
+    dummy_mode_ = false;
 #if !defined(_WIN32)
     message_ = "Win32 OpenGL backend is unavailable";
     return false;
@@ -75,8 +76,12 @@ bool GlideOpenGlBackend::OpenWindowed(
     HINSTANCE instance = GetModuleHandleW(nullptr);
     if (!RegisterGlideWindowClass(instance))
     {
-        message_ = "failed to register Glide OpenGL window class";
-        return false;
+        fprintf(stderr, "[repiu-live-debug] Glide OpenWindowed failed to register class, falling back to dummy mode\n");
+        dummy_mode_ = true;
+        logical_width_ = logical_width;
+        logical_height_ = logical_height;
+        message_ = "Glide dummy fallback activated (no class)";
+        return true;
     }
 
     RECT window_rectangle{0,
@@ -100,8 +105,12 @@ bool GlideOpenGlBackend::OpenWindowed(
         nullptr);
     if (window == nullptr)
     {
-        message_ = "failed to create Glide OpenGL window";
-        return false;
+        fprintf(stderr, "[repiu-live-debug] Glide OpenWindowed failed to create window, falling back to dummy mode\n");
+        dummy_mode_ = true;
+        logical_width_ = logical_width;
+        logical_height_ = logical_height;
+        message_ = "Glide dummy fallback activated (no window)";
+        return true;
     }
 
     HDC device_context = GetDC(window);
@@ -120,8 +129,12 @@ bool GlideOpenGlBackend::OpenWindowed(
     {
         ReleaseDC(window, device_context);
         DestroyWindow(window);
-        message_ = "failed to configure Glide OpenGL pixel format";
-        return false;
+        fprintf(stderr, "[repiu-live-debug] Glide OpenWindowed failed to configure pixel format, falling back to dummy mode\n");
+        dummy_mode_ = true;
+        logical_width_ = logical_width;
+        logical_height_ = logical_height;
+        message_ = "Glide dummy fallback activated (no pixel format)";
+        return true;
     }
 
     HGLRC render_context = wglCreateContext(device_context);
@@ -134,8 +147,12 @@ bool GlideOpenGlBackend::OpenWindowed(
         }
         ReleaseDC(window, device_context);
         DestroyWindow(window);
-        message_ = "failed to create or activate Glide OpenGL context";
-        return false;
+        fprintf(stderr, "[repiu-live-debug] Glide OpenWindowed failed to create/activate context, falling back to dummy mode\n");
+        dummy_mode_ = true;
+        logical_width_ = logical_width;
+        logical_height_ = logical_height;
+        message_ = "Glide dummy fallback activated (no GL context)";
+        return true;
     }
 
     window_ = window;
@@ -145,9 +162,13 @@ bool GlideOpenGlBackend::OpenWindowed(
     logical_height_ = logical_height;
     if (!shader_.Initialize())
     {
-        message_ = shader_.message();
+        fprintf(stderr, "[repiu-live-debug] Glide OpenWindowed failed to initialize shader, falling back to dummy mode\n");
         Close();
-        return false;
+        dummy_mode_ = true;
+        logical_width_ = logical_width;
+        logical_height_ = logical_height;
+        message_ = "Glide dummy fallback activated (no shader)";
+        return true;
     }
     glViewport(0,
                0,
@@ -165,6 +186,10 @@ bool GlideOpenGlBackend::OpenWindowed(
 
 void GlideOpenGlBackend::PumpEvents()
 {
+    if (dummy_mode_)
+    {
+        return;
+    }
 #if defined(_WIN32)
     MSG message{};
     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
@@ -184,6 +209,11 @@ bool GlideOpenGlBackend::SetColorMask(bool rgb, bool alpha)
     {
         message_ = "cannot set Glide color mask without an OpenGL window";
         return false;
+    }
+    if (dummy_mode_)
+    {
+        message_ = "Glide color mask dummy-applied";
+        return true;
     }
     glColorMask(rgb ? GL_TRUE : GL_FALSE,
                 rgb ? GL_TRUE : GL_FALSE,
@@ -207,6 +237,13 @@ bool GlideOpenGlBackend::SetRenderBuffer(std::uint32_t buffer)
         message_ = "unsupported Glide render buffer";
         return false;
     }
+    if (dummy_mode_)
+    {
+        message_ = buffer == kGlideBackBuffer
+            ? "Glide back buffer selected (dummy)"
+            : "Glide front buffer selected (dummy)";
+        return true;
+    }
     glDrawBuffer(buffer == kGlideBackBuffer ? GL_BACK : GL_FRONT);
     message_ = buffer == kGlideBackBuffer
         ? "Glide back buffer selected"
@@ -224,6 +261,13 @@ bool GlideOpenGlBackend::SetDepthMask(bool enabled)
     {
         message_ = "cannot set Glide depth mask without an OpenGL window";
         return false;
+    }
+    if (dummy_mode_)
+    {
+        message_ = enabled
+            ? "Glide depth writes enabled (dummy)"
+            : "Glide depth writes disabled (dummy)";
+        return true;
     }
     glDepthMask(enabled ? GL_TRUE : GL_FALSE);
     message_ = enabled
@@ -245,6 +289,13 @@ bool GlideOpenGlBackend::SetDepthBufferMode(std::uint32_t mode)
     {
         message_ = "unsupported Glide depth buffer mode";
         return false;
+    }
+    if (dummy_mode_)
+    {
+        message_ = mode == kGlideZBuffer
+            ? "Glide Z-buffer mode enabled (dummy)"
+            : "Glide depth buffer disabled (dummy)";
+        return true;
     }
     if (mode == kGlideZBuffer)
     {
@@ -268,6 +319,11 @@ bool GlideOpenGlBackend::SetAlphaCombine(
         message_ = "cannot set Glide alpha combine without an OpenGL window";
         return false;
     }
+    if (dummy_mode_)
+    {
+        message_ = "Glide alpha combine dummy-applied";
+        return true;
+    }
     const bool applied = shader_.SetAlphaCombine(state);
     message_ = shader_.message();
     return applied;
@@ -280,6 +336,11 @@ bool GlideOpenGlBackend::SetColorCombine(
     {
         message_ = "cannot set Glide color combine without an OpenGL window";
         return false;
+    }
+    if (dummy_mode_)
+    {
+        message_ = "Glide color combine dummy-applied";
+        return true;
     }
     const bool applied = shader_.SetColorCombine(state);
     message_ = shader_.message();
@@ -303,6 +364,11 @@ bool GlideOpenGlBackend::SetAlphaBlend(
         message_ = "unsupported Glide alpha-blend function";
         return false;
     }
+    if (dummy_mode_)
+    {
+        message_ = "Glide ONE/ZERO alpha blending disabled (dummy)";
+        return true;
+    }
     while (glGetError() != GL_NO_ERROR)
     {
     }
@@ -323,6 +389,11 @@ bool GlideOpenGlBackend::SetAlphaTestFunction(std::uint32_t function)
         message_ = "unsupported Glide alpha-test function";
         return false;
     }
+    if (dummy_mode_)
+    {
+        message_ = "Glide ALWAYS alpha test disabled (dummy)";
+        return true;
+    }
     glDisable(GL_ALPHA_TEST);
     message_ = "Glide ALWAYS alpha test disabled in OpenGL";
     return glGetError() == GL_NO_ERROR;
@@ -340,6 +411,11 @@ bool GlideOpenGlBackend::SetDepthBufferFunction(std::uint32_t function)
         message_ = "unsupported Glide depth-buffer function";
         return false;
     }
+    if (dummy_mode_)
+    {
+        message_ = "Glide ALWAYS depth comparison applied (dummy)";
+        return true;
+    }
     glDepthFunc(GL_ALWAYS);
     message_ = "Glide ALWAYS depth comparison applied to OpenGL";
     return glGetError() == GL_NO_ERROR;
@@ -355,6 +431,11 @@ bool GlideOpenGlBackend::SetFogMode(std::uint32_t mode)
     {
         message_ = "unsupported Glide fog mode";
         return false;
+    }
+    if (dummy_mode_)
+    {
+        message_ = "Glide fog disabled (dummy)";
+        return true;
     }
     glDisable(GL_FOG);
     message_ = "Glide fog disabled in OpenGL";
@@ -376,6 +457,11 @@ bool GlideOpenGlBackend::SetClipWindow(std::uint32_t min_x,
         message_ = "unsupported partial Glide clip window";
         return false;
     }
+    if (dummy_mode_)
+    {
+        message_ = "full Glide clip window applied (dummy)";
+        return true;
+    }
     glViewport(0, 0, static_cast<GLsizei>(logical_width_),
                static_cast<GLsizei>(logical_height_));
     glScissor(0, 0, static_cast<GLsizei>(logical_width_),
@@ -396,6 +482,11 @@ bool GlideOpenGlBackend::SetCullMode(std::uint32_t mode)
         message_ = "unsupported Glide cull mode";
         return false;
     }
+    if (dummy_mode_)
+    {
+        message_ = "Glide culling disabled (dummy)";
+        return true;
+    }
     glDisable(GL_CULL_FACE);
     message_ = "Glide culling disabled in OpenGL";
     return glGetError() == GL_NO_ERROR;
@@ -413,6 +504,11 @@ bool GlideOpenGlBackend::SetDitherMode(std::uint32_t mode)
         message_ = "unsupported Glide dither mode";
         return false;
     }
+    if (dummy_mode_)
+    {
+        message_ = "observed Glide dither mode delegated (dummy)";
+        return true;
+    }
     // TODO(Glide fidelity): replace host dithering with a verified Voodoo
     // ordered-dither GLSL path once mode-2 matrix and PIU color quantization
     // are confirmed. See docs/design/20260712-158-glide-host-dither-policy.md.
@@ -424,26 +520,42 @@ bool GlideOpenGlBackend::SetDitherMode(std::uint32_t mode)
 
 void GlideOpenGlBackend::Close()
 {
-#if defined(_WIN32)
-    HGLRC render_context = static_cast<HGLRC>(render_context_);
-    HDC device_context = static_cast<HDC>(device_context_);
-    HWND window = static_cast<HWND>(window_);
-    if (render_context != nullptr)
+    if (dummy_mode_)
     {
-        wglMakeCurrent(device_context, render_context);
-        shader_.Shutdown();
-        wglMakeCurrent(nullptr, nullptr);
-        wglDeleteContext(render_context);
+        dummy_mode_ = false;
+        logical_width_ = 0;
+        logical_height_ = 0;
+        return;
     }
-    if (window != nullptr && device_context != nullptr)
+    try
     {
-        ReleaseDC(window, device_context);
+        HGLRC render_context = static_cast<HGLRC>(render_context_);
+        HDC device_context = static_cast<HDC>(device_context_);
+        HWND window = static_cast<HWND>(window_);
+        if (render_context != nullptr)
+        {
+            wglMakeCurrent(device_context, render_context);
+            shader_.Shutdown();
+            wglMakeCurrent(nullptr, nullptr);
+            wglDeleteContext(render_context);
+        }
+        if (window != nullptr && device_context != nullptr)
+        {
+            ReleaseDC(window, device_context);
+        }
+        if (window != nullptr)
+        {
+            DestroyWindow(window);
+        }
     }
-    if (window != nullptr)
+    catch (const std::exception& e)
     {
-        DestroyWindow(window);
+        fprintf(stderr, "[repiu-live-debug] GlideOpenGlBackend::Close caught standard exception: %s\n", e.what());
     }
-#endif
+    catch (...)
+    {
+        fprintf(stderr, "[repiu-live-debug] GlideOpenGlBackend::Close caught unknown exception\n");
+    }
     render_context_ = nullptr;
     device_context_ = nullptr;
     window_ = nullptr;

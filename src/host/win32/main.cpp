@@ -2431,6 +2431,14 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    for (const auto& resident : glide_exports)
+    {
+        if (resident.ordinal == 76)
+        {
+            logger->info("[debug-ordinal-76] ordinal 76 name: {}", resident.name);
+        }
+    }
+
     PrintExecutionAttempt(*logger,
                           attempt,
                           profile->executable_path.filename().string());

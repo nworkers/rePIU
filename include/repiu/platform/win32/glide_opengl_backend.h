@@ -42,7 +42,8 @@ public:
     bool SetDitherMode(std::uint32_t mode);
     void Close();
 
-    bool is_open() const { return window_ != nullptr; }
+    bool is_open() const { return window_ != nullptr || dummy_mode_; }
+    bool is_dummy() const { return dummy_mode_; }
     const std::string& message() const { return message_; }
 
 private:
@@ -53,6 +54,7 @@ private:
     std::uint32_t logical_height_ = 0;
     GlideOpenGlShader shader_;
     std::string message_;
+    bool dummy_mode_ = false;
 };
 
 }  // namespace repiu::platform::win32

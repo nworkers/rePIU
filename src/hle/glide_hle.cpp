@@ -8,10 +8,11 @@ namespace repiu::hle
 namespace
 {
 
-constexpr std::array<GlideSignature, 31> kObservedSignatures = {{
+constexpr std::array<GlideSignature, 32> kObservedSignatures = {{
     {"_GRGLIDEINIT@0", 0U, GlideReturnKind::kVoid},
     {"_GRSSTQUERYHARDWARE@4", 4U, GlideReturnKind::kFxBool},
     {"_GRSSTSELECT@4", 4U, GlideReturnKind::kVoid},
+    {"_GRSSTWINCLOSE@0", 0U, GlideReturnKind::kVoid},
     {"_GRSSTWINOPEN@28", 28U, GlideReturnKind::kFxBool},
     {"_GRSSTSCREENWIDTH@0", 0U, GlideReturnKind::kUInt32},
     {"_GRSSTSCREENHEIGHT@0", 0U, GlideReturnKind::kUInt32},

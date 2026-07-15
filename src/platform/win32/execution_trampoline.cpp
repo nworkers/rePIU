@@ -29,6 +29,7 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <psapi.h>
 #endif
 
 namespace repiu::platform::win32
@@ -49,6 +50,10 @@ struct StackSwitchCallState
     std::uint32_t host_es = 0;
     std::uint32_t host_gs = 0;
     std::uint32_t host_ss = 0;
+    std::uint32_t guest_stack_base = 0;
+    std::uint32_t guest_stack_limit = 0;
+    std::uint32_t host_stack_base = 0;
+    std::uint32_t host_stack_limit = 0;
 };
 
 struct DosInterruptVectorShadow
@@ -117,6 +122,7 @@ struct ThreadContext
     std::uint32_t guest_initial_esp = 0;
     std::uint32_t host_esp = 0;
     std::uint32_t guest_return_esp = 0;
+    std::uint32_t guest_thread_id = 0;
     StackSwitchCallState* active_call_state = nullptr;
     bool use_guest_stack = false;
     bool enable_privileged_trap_hle = false;
@@ -608,6 +614,8 @@ std::uint32_t g_recovery_host_fs = 0;
 std::uint32_t g_recovery_host_ds = 0;
 std::uint32_t g_recovery_host_es = 0;
 std::uint32_t g_recovery_host_gs = 0;
+std::uint32_t g_recovery_host_stack_base = 0;
+std::uint32_t g_recovery_host_stack_limit = 0;
 
 using CreateThreadFn = HANDLE(WINAPI*)(
     LPSECURITY_ATTRIBUTES,
@@ -1774,6 +1782,37 @@ int CaptureException(EXCEPTION_POINTERS* exception_info,
 {
     if (exception_info != nullptr && context != nullptr)
     {
+        if (exception_info->ExceptionRecord->ExceptionCode == 0xe06d7363U)
+        {
+            fprintf(stderr, "[repiu-live-debug] Caught C++ Exception (0xe06d7363) at address 0x%p\n",
+                    exception_info->ExceptionRecord->ExceptionAddress);
+            void* stack[64];
+            USHORT frames = CaptureStackBackTrace(0, 64, stack, nullptr);
+            fprintf(stderr, "[repiu-live-debug] Host Stack trace (%d frames):\n", frames);
+            for (USHORT i = 0; i < frames; ++i)
+            {
+                fprintf(stderr, "  [%d] 0x%p\n", i, stack[i]);
+            }
+            HMODULE modules[256];
+            DWORD cbNeeded;
+            if (EnumProcessModules(GetCurrentProcess(), modules, sizeof(modules), &cbNeeded))
+            {
+                fprintf(stderr, "[repiu-live-debug] Loaded Modules:\n");
+                for (size_t i = 0; i < cbNeeded / sizeof(HMODULE); ++i)
+                {
+                    char name[MAX_PATH];
+                    if (GetModuleFileNameA(modules[i], name, sizeof(name)))
+                    {
+                        MODULEINFO info;
+                        if (GetModuleInformation(GetCurrentProcess(), modules[i], &info, sizeof(info)))
+                        {
+                            fprintf(stderr, "  base=0x%p size=0x%X path=%s\n",
+                                    info.lpBaseOfDll, info.SizeOfImage, name);
+                        }
+                    }
+                }
+            }
+        }
         context->exception_caught = true;
         context->exception_code =
             exception_info->ExceptionRecord->ExceptionCode;
@@ -1867,6 +1906,21 @@ CallGuestEntryWithStack(StackSwitchCallState* state)
         mov ecx, [ebp + 8]
         mov eax, [ecx + 0]
         mov edx, [ecx + 4]
+
+        // Save host stack base/limit
+        mov ebx, dword ptr fs:[4]
+        mov [ecx + 52], ebx
+        mov g_recovery_host_stack_base, ebx
+        mov ebx, dword ptr fs:[8]
+        mov [ecx + 56], ebx
+        mov g_recovery_host_stack_limit, ebx
+
+        // Set guest stack base/limit
+        mov ebx, [ecx + 44]
+        mov dword ptr fs:[4], ebx
+        mov ebx, [ecx + 48]
+        mov dword ptr fs:[8], ebx
+
         xor ebx, ebx
         mov bx, fs
         mov [ecx + 24], ebx
@@ -1890,10 +1944,16 @@ CallGuestEntryWithStack(StackSwitchCallState* state)
         pushfd
         or dword ptr [esp], 100h
         popfd
-no_single_step_trace:
+ no_single_step_trace:
         push ecx
         call eax
         pop ecx
+
+        // Restore host stack base/limit
+        mov ebx, [ecx + 52]
+        mov dword ptr fs:[4], ebx
+        mov ebx, [ecx + 56]
+        mov dword ptr fs:[8], ebx
 
         mov [ecx + 12], esp
         mov esp, [ecx + 8]
@@ -1913,6 +1973,11 @@ RecoverGuestStackException()
 {
     __asm
     {
+        mov eax, dword ptr cs:[g_recovery_host_stack_base]
+        mov dword ptr fs:[4], eax
+        mov eax, dword ptr cs:[g_recovery_host_stack_limit]
+        mov dword ptr fs:[8], eax
+
         mov eax, dword ptr cs:[g_recovery_host_fs]
         mov fs, ax
         mov eax, dword ptr cs:[g_recovery_host_gs]
@@ -8647,10 +8712,24 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         const bool mode_supported = window == 0U && refresh == 0U &&
             repiu::hle::DecodeGlideResolution(
                 resolution, &width, &height);
-        const bool opened = mode_supported &&
-            context->glide_backend.OpenWindowed(
-                width, height, color_buffers, auxiliary_buffers);
+        bool opened = false;
+        try
+        {
+            opened = mode_supported &&
+                context->glide_backend.OpenWindowed(
+                    width, height, color_buffers, auxiliary_buffers);
+        }
+        catch (const std::exception& e)
+        {
+            fprintf(stderr, "[repiu-live-debug] _GRSSTWINOPEN@28 caught standard exception: %s\n", e.what());
+        }
+        catch (...)
+        {
+            fprintf(stderr, "[repiu-live-debug] _GRSSTWINOPEN@28 caught unknown exception\n");
+        }
         context->glide_backend_message = context->glide_backend.message();
+        fprintf(stderr, "[repiu-live-debug] _GRSSTWINOPEN@28: mode_supported=%d opened=%d message=%s\n",
+                mode_supported ? 1 : 0, opened ? 1 : 0, context->glide_backend_message.c_str());
         if (opened)
         {
             ++context->glide_window_open_count;
@@ -8668,6 +8747,15 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         ++context->glide_gate_handled_count;
         win32_context->Eip = return_address;
         win32_context->Esp += 8U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRSSTWINCLOSE@0")
+    {
+        context->glide_backend.Close();
+        context->glide_state.window_open = false;
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += sizeof(std::uint32_t);
         return true;
     }
     if (glide_export->name == "_GRSSTSCREENWIDTH@0" ||
@@ -10006,6 +10094,11 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
+    if (GetCurrentThreadId() != context->guest_thread_id)
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
     if (context->use_guest_stack &&
         (context->active_call_state == nullptr ||
          context->active_call_state->host_esp == 0))
@@ -10426,6 +10519,7 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
     {
         return 1;
     }
+    context->guest_thread_id = GetCurrentThreadId();
 
     __try
     {
@@ -10437,6 +10531,13 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
             state.initial_esp = context->guest_initial_esp;
             state.enable_single_step_trace =
                 context->enable_single_step_trace ? 1U : 0U;
+
+            MEMORY_BASIC_INFORMATION mbi{};
+            if (VirtualQuery(reinterpret_cast<void*>(context->guest_initial_esp - 4), &mbi, sizeof(mbi)) == sizeof(mbi))
+            {
+                state.guest_stack_limit = reinterpret_cast<std::uint32_t>(mbi.AllocationBase);
+                state.guest_stack_base = context->guest_initial_esp;
+            }
             context->active_call_state = &state;
             g_active_thread_context = context;
             context->vectored_handler = AddVectoredExceptionHandler(
