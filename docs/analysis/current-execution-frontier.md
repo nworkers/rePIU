@@ -1,5 +1,21 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-16 Task 213: Resize HLE 크기 추적으로 allocator heap 상한 모델링 완료, 디코드 가속화 / Task 213: Resize HLE paragraph tracking and allocator heap ceiling modeling completed, decode accelerated
+
+**확인됨 (상한 출처 및 해결):** Watcom allocator의 heap top은 `INT 21h AH=4Ah` (DOS resize block) 성공 응답(`CF=0` 및 `BX` paragraphs)에서 결정됨을 확정하고 해결했습니다.
+- `HandleDosResizeMemoryBlock` HLE에 `SelectorTable` 기반의 base 획득 논리와 `dynamic_allocator_end` 초과 검사를 적용했습니다.
+- 초과 시 에러(`CF=1`, `AX=0x0008`)와 함께 잔여 한계 paragraph 수를 반환함으로써, allocator가 `dynamic_allocator_end`(`client_data_base`) 아래로 heap을 묶도록 유도했습니다.
+- 이로 인해 디코드 루프의 예외 폭풍(exception loop) 및 `0x045D7000` arena-end overflow, LINEXE private data 훼손 문제가 원천 제거되었습니다.
+
+**확인됨 (AOT 가속 및 새로운 Frontier):** 예외 루프 제거 결과, 과거 디버거/VEH 교대로 인해 ~150초 동안 진행되던 디코드 단계가 AOT-dynamic 실행 시 **단 1초 미만**에 완료되어 네이티브 수준으로 실행 속도가 향상되었습니다.
+- 디코드 완료 직후 Glide 초기화(`glide_ordinal=28`, `_GRSSTWINOPEN@28`) 단계에 무사히 도달하여 C++ 예외 `0xe06d7363`과 함께 정상 실패/종료되는 새로운 frontier를 확보했습니다.
+
+**다음 분석 대상 (Next Frontier):**
+1. **Glide HLE 초기화 실패 점검:** 게임이 Glide 초기화 단계(`grSstWinOpen`)에 도달한 후 host Glide HLE layer에서 발생하는 예외/실패를 분석하여 후속 렌더링 루프로 진입할 수 있는 방안 검토.
+2. **로더 post-attempt hang 해결:** `pumpit1` 경로 실행 완료 후 ntdll에서 hang이 걸리는 현상 점검.
+
+---
+
 ## 2026-07-16 Task 212: 종료 스토어 재판정 — 버퍼 시작이 아니라 arena 끝 overflow, LINEXE 영역과의 충돌 확인 / Task 212: terminal store re-attributed — an arena-end overflow, colliding with the LINEXE region
 
 **수정됨:** Task 205~206의 "쓰기 대상 `0x045D3EB0`은 미매핑 영역" 판정을 정정한다. SEH 필터에서 `ExceptionInformation`과 `VirtualQuery`를 직접 캡처한 결과(Task 212 진단 계측):

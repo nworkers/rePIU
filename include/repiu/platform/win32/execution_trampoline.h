@@ -536,6 +536,8 @@ struct Win32MinimalExecutionAttempt
     std::uint16_t last_dos_resize_paragraphs = 0;
     bool last_dos_resize_success = false;
     std::uint16_t last_dos_resize_error = 0;
+    std::uint32_t last_dos_resize_requested_end = 0;
+    std::uint32_t last_dos_resize_allocator_end = 0;
     std::uint32_t handled_segment_load_count = 0;
     std::uint32_t last_segment_load_address = 0;
     std::uint32_t last_segment_load_opcode = 0;

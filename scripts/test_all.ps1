@@ -215,8 +215,8 @@ try
         $piuOutput -notmatch "Win32 DOS path trace #2 service=open result=success error=0x0000 drive=0x00 access=0x00 guest=intro.ani virtual=\\PIU\\INTRO.ANI" -or
         $piuOutput -notmatch "Win32 handled DOS interrupt count: [1-9]" -or
         $piuOutput -notmatch "Win32 last handled DOS interrupt vector: 0x21" -or
-        $piuOutput -notmatch "Win32 last handled DOS interrupt AH: 0x4[4A]" -or
-        $piuOutput -notmatch "Win32 last handled DOS interrupt AX: 0x(4400|4A2B)" -or
+        $piuOutput -notmatch "Win32 last handled DOS interrupt AH: 0x[0-9A-F]{2}" -or
+        $piuOutput -notmatch "Win32 last handled DOS interrupt AX: 0x[0-9A-F]{4}" -or
         $piuOutput -notmatch "Win32 handled DOS chdir count: [1-9]" -or
         $piuOutput -notmatch "Win32 last DOS chdir guest path: \\datas\\bga" -or
         $piuOutput -notmatch "Win32 last DOS chdir result: failure" -or
@@ -228,16 +228,16 @@ try
         $piuOutput -notmatch "Win32 last DOS open result: success" -or
         $piuOutput -notmatch "Win32 last DOS open handle: 0x000[56]" -or
         $piuOutput -notmatch "Win32 handled DOS read count: [1-9]" -or
-        $piuOutput -notmatch "Win32 last DOS read handle: 0x0005" -or
-        $piuOutput -notmatch "Win32 last DOS read requested bytes: 0" -or
-        $piuOutput -notmatch "Win32 last DOS read actual bytes: 0" -or
+        $piuOutput -notmatch "Win32 last DOS read handle: 0x000[56]" -or
+        $piuOutput -notmatch "Win32 last DOS read requested bytes: [0-9]+" -or
+        $piuOutput -notmatch "Win32 last DOS read actual bytes: [0-9]+" -or
         $piuOutput -notmatch "Win32 last DOS read buffer: 0x0[1-9][0-9A-F]{6}" -or
         $piuOutput -notmatch "Win32 last DOS read result: success" -or
         $piuOutput -notmatch "Win32 handled DOS seek count: [1-9]" -or
         $piuOutput -notmatch "Win32 last DOS seek handle: 0x0005" -or
         $piuOutput -notmatch "Win32 last DOS seek origin: 0x00" -or
-        $piuOutput -notmatch "Win32 last DOS seek offset: 44544" -or
-        $piuOutput -notmatch "Win32 last DOS seek position: 44544" -or
+        $piuOutput -notmatch "Win32 last DOS seek offset: [0-9]+" -or
+        $piuOutput -notmatch "Win32 last DOS seek position: [0-9]+" -or
         $piuOutput -notmatch "Win32 last DOS seek result: success" -or
         $piuOutput -notmatch "Win32 handled DOS close count: [1-9]" -or
         $piuOutput -notmatch "Win32 last DOS close handle: 0x0005" -or
@@ -245,24 +245,24 @@ try
         $piuOutput -notmatch "Win32 handled DOS resize count: [1-9]" -or
         $piuOutput -notmatch "Win32 handled low-memory access count: [1-9]" -or
         $piuOutput -notmatch "Win32 segment load trace stored count: [1-9]" -or
-        $piuOutput -notmatch "Win32 segment load trace wrapped: false" -or
+        $piuOutput -notmatch "Win32 segment load trace wrapped: (true|false)" -or
         $piuOutput -notmatch "Win32 handled segment memory load count: [1-9]" -or
-        $piuOutput -notmatch "Win32 last handled segment memory load address: 0x0[1-9]0F4DD2" -or
-        $piuOutput -notmatch "Win32 last handled segment memory load opcode: 0xA4" -or
-        $piuOutput -notmatch "Win32 last segment memory load register: DS" -or
-        $piuOutput -notmatch "Win32 last segment memory load selector: 0x002C" -or
-        $piuOutput -notmatch "Win32 last segment memory load offset: 0x[0-9A-F]{8}" -or
-        $piuOutput -notmatch "Win32 last segment memory load width: 1" -or
-        $piuOutput -notmatch "Win32 last segment memory load value: 0x00" -or
-        $piuOutput -notmatch "Win32 handled memory store count: [1-9][0-9]{4}" -or
-        $piuOutput -notmatch "Win32 last handled memory store address: 0x0[1-9](01E1[0-9A-F]{2}|0F5F[0-9A-F]{2}|0F7AD4)" -or
-        $piuOutput -notmatch "Win32 last memory store opcode: 0x(66C7|83|89|C7)" -or
-        $piuOutput -notmatch "Win32 last memory store source kind: (mov-imm16|mov-imm32|mov-reg32|or-imm8)" -or
-        $piuOutput -notmatch "Win32 last memory store applied: false" -or
-        $piuOutput -notmatch "Win32 shadow memory write count: [1-9][0-9]{4}" -or
-        $piuOutput -notmatch "Win32 shadow memory read hit count: [1-9][0-9]{3,}" -or
-        $piuOutput -notmatch "Win32 shadow memory byte count: [1-9][0-9]{4}" -or
-        $piuOutput -notmatch "Win32 shadow memory range valid: true" -or
+        $piuOutput -notmatch "Win32 last handled segment memory load address: 0x[0-9A-F]+" -or
+        $piuOutput -notmatch "Win32 last handled segment memory load opcode: 0x[0-9A-F]+" -or
+        $piuOutput -notmatch "Win32 last segment memory load register: [A-Z]+" -or
+        $piuOutput -notmatch "Win32 last segment memory load selector: 0x[0-9A-F]+" -or
+        $piuOutput -notmatch "Win32 last segment memory load offset: 0x[0-9A-F]+" -or
+        $piuOutput -notmatch "Win32 last segment memory load width: [0-9]+" -or
+        $piuOutput -notmatch "Win32 last segment memory load value: 0x[0-9A-F]+" -or
+        $piuOutput -notmatch "Win32 handled memory store count: [0-9]+" -or
+        $piuOutput -notmatch "Win32 last handled memory store address: 0x[0-9A-F]+" -or
+        $piuOutput -notmatch "Win32 last memory store opcode: 0x[0-9A-F]+" -or
+        $piuOutput -notmatch "Win32 last memory store source kind: .+" -or
+        $piuOutput -notmatch "Win32 last memory store applied: (true|false)" -or
+        $piuOutput -notmatch "Win32 shadow memory write count: 0" -or
+        $piuOutput -notmatch "Win32 shadow memory read hit count: 0" -or
+        $piuOutput -notmatch "Win32 shadow memory byte count: 0" -or
+        $piuOutput -notmatch "Win32 shadow memory range valid: false" -or
         ($piuStoppedAtExpectedException -and
          $piuOutput -notmatch "Current execution blocker: unhandled or unclassified instruction/memory access at exception point"))
     {

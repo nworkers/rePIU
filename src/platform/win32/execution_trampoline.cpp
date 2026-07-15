@@ -404,6 +404,8 @@ struct ThreadContext
     std::uint16_t last_dos_resize_paragraphs = 0;
     bool last_dos_resize_success = false;
     std::uint16_t last_dos_resize_error = 0;
+    std::uint32_t last_dos_resize_requested_end = 0;
+    std::uint32_t last_dos_resize_allocator_end = 0;
     std::uint32_t handled_segment_load_count = 0;
     std::uint32_t last_segment_load_address = 0;
     std::uint32_t last_segment_load_opcode = 0;
@@ -1673,6 +1675,10 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.last_dos_resize_paragraphs;
     attempt->last_dos_resize_success = context.last_dos_resize_success;
     attempt->last_dos_resize_error = context.last_dos_resize_error;
+    attempt->last_dos_resize_requested_end =
+        context.last_dos_resize_requested_end;
+    attempt->last_dos_resize_allocator_end =
+        context.last_dos_resize_allocator_end;
     attempt->handled_segment_load_count =
         context.handled_segment_load_count;
     attempt->last_segment_load_address = context.last_segment_load_address;
@@ -3630,7 +3636,9 @@ void RecordDosResize(ThreadContext* context,
                      std::uint16_t selector,
                      std::uint16_t paragraphs,
                      bool success,
-                     std::uint16_t error)
+                     std::uint16_t error,
+                     std::uint32_t requested_end = 0,
+                     std::uint32_t allocator_end = 0)
 {
     if (context == nullptr)
     {
@@ -3642,6 +3650,8 @@ void RecordDosResize(ThreadContext* context,
     context->last_dos_resize_paragraphs = paragraphs;
     context->last_dos_resize_success = success;
     context->last_dos_resize_error = error;
+    context->last_dos_resize_requested_end = requested_end;
+    context->last_dos_resize_allocator_end = allocator_end;
 }
 
 void RecordLowMemoryAccess(CONTEXT* win32_context,
@@ -3670,48 +3680,61 @@ bool HandleDosResizeMemoryBlock(CONTEXT* win32_context,
 {
     const std::uint16_t paragraphs = static_cast<std::uint16_t>(
         win32_context->Ebx & 0xFFFFU);
-    constexpr std::uint16_t kObservedPiuResizeSelector = 0x0024;
-    constexpr std::uint16_t kObservedPiuStageCfgFailureLimitParagraphs =
-        0x4AE0;
-    constexpr std::uint16_t kObservedPiuResizeLimitParagraphs = 0xE700;
     constexpr std::uint16_t kInsufficientMemory = 0x0008;
-    if (context->guest_es == kObservedPiuResizeSelector &&
-        paragraphs > kObservedPiuResizeLimitParagraphs)
+
+    std::uint32_t selector_base = 0;
+    const auto* descriptor = repiu::runtime::FindDescriptor(context->selector_table, context->guest_es);
+    if (descriptor != nullptr)
     {
-        RecordDosResize(context,
-                        context->guest_es,
-                        paragraphs,
-                        false,
-                        kInsufficientMemory);
-        win32_context->Eax =
-            (win32_context->Eax & 0xFFFF0000U) | kInsufficientMemory;
-        win32_context->Ebx =
-            (win32_context->Ebx & 0xFFFF0000U) |
-            kObservedPiuResizeLimitParagraphs;
-        win32_context->EFlags |= 1U;
-        return true;
+        selector_base = descriptor->base;
     }
 
-    if (context->guest_es == kObservedPiuResizeSelector &&
-        !context->last_dos_open_success &&
-        context->last_dos_open_guest_path == "stage.cfg" &&
-        paragraphs > kObservedPiuStageCfgFailureLimitParagraphs)
+    const std::uint32_t requested_size = static_cast<std::uint32_t>(paragraphs) * 16U;
+    const std::uint32_t requested_end = selector_base + requested_size;
+    std::uint32_t allocator_end = requested_end;
+
+    if (context->linexe_arena_layout.valid &&
+        context->linexe_arena_layout.dynamic_allocator_end != 0)
     {
-        RecordDosResize(context,
-                        context->guest_es,
-                        paragraphs,
-                        false,
-                        kInsufficientMemory);
-        win32_context->Eax =
-            (win32_context->Eax & 0xFFFF0000U) | kInsufficientMemory;
-        win32_context->Ebx =
-            (win32_context->Ebx & 0xFFFF0000U) |
-            kObservedPiuStageCfgFailureLimitParagraphs;
-        win32_context->EFlags |= 1U;
-        return true;
+        const std::uint32_t dynamic_allocator_end =
+            context->linexe_arena_layout.dynamic_allocator_end;
+
+        if (requested_end > dynamic_allocator_end)
+        {
+            std::uint32_t max_paragraphs = 0;
+            if (dynamic_allocator_end > selector_base)
+            {
+                max_paragraphs = (dynamic_allocator_end - selector_base) / 16U;
+            }
+            const std::uint16_t returned_paragraphs =
+                static_cast<std::uint16_t>(max_paragraphs & 0xFFFFU);
+            const std::uint32_t final_allocator_end =
+                selector_base + (static_cast<std::uint32_t>(returned_paragraphs) * 16U);
+
+            RecordDosResize(context,
+                            context->guest_es,
+                            paragraphs,
+                            false,
+                            kInsufficientMemory,
+                            requested_end,
+                            final_allocator_end);
+
+            win32_context->Eax =
+                (win32_context->Eax & 0xFFFF0000U) | kInsufficientMemory;
+            win32_context->Ebx =
+                (win32_context->Ebx & 0xFFFF0000U) | returned_paragraphs;
+            win32_context->EFlags |= 1U;
+            return true;
+        }
     }
 
-    RecordDosResize(context, context->guest_es, paragraphs, true, 0);
+    RecordDosResize(context,
+                    context->guest_es,
+                    paragraphs,
+                    true,
+                    0,
+                    requested_end,
+                    allocator_end);
     win32_context->EFlags &= ~1U;
     return true;
 }

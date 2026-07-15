@@ -1642,6 +1642,10 @@ void PrintExecutionAttempt(
                     Hex16(attempt.last_dos_resize_paragraphs));
         logger.info("Win32 last DOS resize result: {}",
                     attempt.last_dos_resize_success ? "success" : "failure");
+        logger.info("Win32 last DOS resize requested end: {}",
+                    Hex32(attempt.last_dos_resize_requested_end));
+        logger.info("Win32 last DOS resize allocator end: {}",
+                    Hex32(attempt.last_dos_resize_allocator_end));
         if (!attempt.last_dos_resize_success)
         {
             logger.info("Win32 last DOS resize error: {}",
