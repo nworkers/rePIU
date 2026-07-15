@@ -254,6 +254,15 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t exception_esi = 0;
     std::uint32_t exception_edi = 0;
     X86ExecutionSnapshot exception_snapshot;
+    std::uint32_t exception_access_kind = 0xFFFFFFFFU;
+    std::uint32_t exception_fault_va = 0;
+    std::uint32_t exception_fault_region_base = 0;
+    std::uint32_t exception_fault_alloc_base = 0;
+    std::uint32_t exception_fault_state = 0;
+    std::uint32_t exception_fault_protect = 0;
+    std::uint32_t exception_fault_region_size = 0;
+    std::uint32_t exception_esi_dwords[8] = {};
+    std::uint32_t exception_esi_dword_valid_mask = 0;
     std::uint32_t handled_fatal_breakpoint_count = 0;
     std::uint32_t last_fatal_breakpoint_address = 0;
     std::uint32_t last_fatal_message_address = 0;

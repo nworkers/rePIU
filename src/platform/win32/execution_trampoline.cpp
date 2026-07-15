@@ -218,6 +218,15 @@ struct ThreadContext
     std::uint32_t exception_esi = 0;
     std::uint32_t exception_edi = 0;
     X86ExecutionSnapshot exception_snapshot;
+    std::uint32_t exception_access_kind = 0xFFFFFFFFU;
+    std::uint32_t exception_fault_va = 0;
+    std::uint32_t exception_fault_region_base = 0;
+    std::uint32_t exception_fault_alloc_base = 0;
+    std::uint32_t exception_fault_state = 0;
+    std::uint32_t exception_fault_protect = 0;
+    std::uint32_t exception_fault_region_size = 0;
+    std::uint32_t exception_esi_dwords[8] = {};
+    std::uint32_t exception_esi_dword_valid_mask = 0;
     std::uint32_t handled_fatal_breakpoint_count = 0;
     std::uint32_t last_fatal_breakpoint_address = 0;
     std::uint32_t last_fatal_message_address = 0;
@@ -1765,6 +1774,33 @@ int CaptureException(EXCEPTION_POINTERS* exception_info,
         context->exception_address = static_cast<std::uint32_t>(
             reinterpret_cast<std::uintptr_t>(
                 exception_info->ExceptionRecord->ExceptionAddress));
+        if (exception_info->ExceptionRecord->NumberParameters >= 2U)
+        {
+            context->exception_access_kind = static_cast<std::uint32_t>(
+                exception_info->ExceptionRecord->ExceptionInformation[0]);
+            context->exception_fault_va = static_cast<std::uint32_t>(
+                exception_info->ExceptionRecord->ExceptionInformation[1]);
+            MEMORY_BASIC_INFORMATION fault_page = {};
+            if (VirtualQuery(reinterpret_cast<const void*>(
+                                 static_cast<std::uintptr_t>(
+                                     context->exception_fault_va)),
+                             &fault_page, sizeof(fault_page)) ==
+                sizeof(fault_page))
+            {
+                context->exception_fault_region_base =
+                    static_cast<std::uint32_t>(
+                        reinterpret_cast<std::uintptr_t>(
+                            fault_page.BaseAddress));
+                context->exception_fault_alloc_base =
+                    static_cast<std::uint32_t>(
+                        reinterpret_cast<std::uintptr_t>(
+                            fault_page.AllocationBase));
+                context->exception_fault_state = fault_page.State;
+                context->exception_fault_protect = fault_page.Protect;
+                context->exception_fault_region_size =
+                    static_cast<std::uint32_t>(fault_page.RegionSize);
+            }
+        }
 #if defined(_M_IX86)
         CopySnapshotFromContextRecord(*exception_info->ContextRecord,
                                       &context->exception_snapshot);
@@ -1774,6 +1810,22 @@ int CaptureException(EXCEPTION_POINTERS* exception_info,
         context->exception_edx = exception_info->ContextRecord->Edx;
         context->exception_esi = exception_info->ContextRecord->Esi;
         context->exception_edi = exception_info->ContextRecord->Edi;
+        for (std::uint32_t index = 0; index < 8U; ++index)
+        {
+            const std::uintptr_t source =
+                static_cast<std::uintptr_t>(
+                    exception_info->ContextRecord->Esi) +
+                0x20U + index * 4U;
+            SIZE_T copied = 0;
+            if (ReadProcessMemory(GetCurrentProcess(),
+                                  reinterpret_cast<const void*>(source),
+                                  &context->exception_esi_dwords[index],
+                                  sizeof(std::uint32_t), &copied) != 0 &&
+                copied == sizeof(std::uint32_t))
+            {
+                context->exception_esi_dword_valid_mask |= 1U << index;
+            }
+        }
 #endif
     }
 
@@ -10899,6 +10951,20 @@ bool RunWin32ExecutionThread(
     attempt->exception_esi = context.exception_esi;
     attempt->exception_edi = context.exception_edi;
     attempt->exception_snapshot = context.exception_snapshot;
+    attempt->exception_access_kind = context.exception_access_kind;
+    attempt->exception_fault_va = context.exception_fault_va;
+    attempt->exception_fault_region_base =
+        context.exception_fault_region_base;
+    attempt->exception_fault_alloc_base = context.exception_fault_alloc_base;
+    attempt->exception_fault_state = context.exception_fault_state;
+    attempt->exception_fault_protect = context.exception_fault_protect;
+    attempt->exception_fault_region_size =
+        context.exception_fault_region_size;
+    std::memcpy(attempt->exception_esi_dwords,
+                context.exception_esi_dwords,
+                sizeof(attempt->exception_esi_dwords));
+    attempt->exception_esi_dword_valid_mask =
+        context.exception_esi_dword_valid_mask;
     CopyThreadObservationToAttempt(context, attempt);
     attempt->thread_exit_code = exit_code;
     attempt->hle_stdout_output.assign(

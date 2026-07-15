@@ -637,6 +637,29 @@ void PrintExecutionAttempt(
                      Hex32(attempt.exception_esi));
         logger.error("Win32 minimal execution exception EDI: {}",
                      Hex32(attempt.exception_edi));
+        logger.error("Win32 minimal execution exception access/fault VA: {}/{}",
+                     attempt.exception_access_kind,
+                     Hex32(attempt.exception_fault_va));
+        logger.error(
+            "Win32 exception fault page base/alloc/state/protect/size: "
+            "{}/{}/{}/{}/{}",
+            Hex32(attempt.exception_fault_region_base),
+            Hex32(attempt.exception_fault_alloc_base),
+            Hex32(attempt.exception_fault_state),
+            Hex32(attempt.exception_fault_protect),
+            Hex32(attempt.exception_fault_region_size));
+        logger.error(
+            "Win32 exception ESI structure +0x20..+0x3C (mask {}): "
+            "{} {} {} {} {} {} {} {}",
+            Hex32(attempt.exception_esi_dword_valid_mask),
+            Hex32(attempt.exception_esi_dwords[0]),
+            Hex32(attempt.exception_esi_dwords[1]),
+            Hex32(attempt.exception_esi_dwords[2]),
+            Hex32(attempt.exception_esi_dwords[3]),
+            Hex32(attempt.exception_esi_dwords[4]),
+            Hex32(attempt.exception_esi_dwords[5]),
+            Hex32(attempt.exception_esi_dwords[6]),
+            Hex32(attempt.exception_esi_dwords[7]));
         PrintX86ExecutionSnapshot(logger,
                                   "Win32 minimal execution exception",
                                   attempt.exception_snapshot);

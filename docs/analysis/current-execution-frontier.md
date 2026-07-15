@@ -1,5 +1,36 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-16 Task 212: 종료 스토어 재판정 — 버퍼 시작이 아니라 arena 끝 overflow, LINEXE 영역과의 충돌 확인 / Task 212: terminal store re-attributed — an arena-end overflow, colliding with the LINEXE region
+
+**수정됨:** Task 205~206의 "쓰기 대상 `0x045D3EB0`은 미매핑 영역" 판정을 정정한다. SEH 필터에서 `ExceptionInformation`과 `VirtualQuery`를 직접 캡처한 결과(Task 212 진단 계측):
+
+* 실제 fault는 **쓰기 접근, VA `0x045D7000` = runtime arena의 끝**이다. 해당 페이지는 `State=MEM_FREE`(AllocationBase 없음, region `0x9000`)로 arena 밖 비할당 공간이다.
+* 예외 시점 `EBP=0x3150`(인덱스): 디코드 루프는 버퍼 base `EBX=0x045D3EB0`에서 `0x3150`바이트를 **정상적으로 쓴 뒤** arena 경계를 넘는 순간 죽는다. "버퍼 시작이 미매핑"이 아니라 **arena-end overflow**다.
+
+**확인됨 (디코드 구조체 실측, `ESI=0x041B6B50`):** `[ESI+0x20..0x3C]` = `1, 8, 8, 0, 8, 0x045D3EB0, 0, 0x0001D2A0`. `+0x34`가 출력 버퍼 base, `+0x3C`(`0x1D2A0` ≈ 117 KiB)는 총 출력 크기로 추정된다. base부터 arena 끝까지 여유는 `0x3150`바이트뿐이므로, **게임 allocator는 arena 끝 너머까지 이어지는 메모리를 소유했다고 믿고 이 블록을 배정했다**.
+
+**확인됨 (LINEXE 충돌):** 버퍼 base `0x045D3EB0`은 LINEXE 합성 private data 영역(`0x045D2000`~`0x045D7000`, `BuildLinexeArenaLayout`이 arena 끝에서 아래로 배치, extraction 유효 시 RW) **내부**다. 게임의 동적 allocator 상한은 `dynamic_allocator_end = client_data_base(0x045C6000)`로 설계되어 있으나 실제로는 지켜지지 않아, fault 전까지의 쓰기(`0x045D3EB0`~`0x045D6FFF`)가 **우리 LINEXE private data를 조용히 덮어쓴다**.
+
+**확인됨 (구조적 배경):** 재배치 이미지 배치는 전체 `0x015D7000`을 `MEM_COMMIT|PAGE_READWRITE`로 커밋하므로 arena 안에서는 쓰기가 fault하지 않는다. `INT 21h AH=4Ah` resize HLE는 (selector `0x24`의 `0xE700` paragraphs 초과 한 가지를 빼면) 크기 추적 없이 무조건 성공을 보고한다 — 게임 allocator가 자신의 heap 상한을 arena 실제 크기와 무관하게 믿게 되는 구조다.
+
+**미확정 (다음 판단):**
+
+1. 게임 allocator가 heap 상한(arena 끝 너머)을 어디서 얻는지 — resize 응답인지, 우리가 합성하는 DOS/4G client/private data 안의 메모리 풀 경계 값인지 역추적 필요.
+2. 대응 방향: (a) allocator가 보는 상한을 실제 `dynamic_allocator_end`로 정확히 모델링(정확성 우선, LINEXE 충돌도 함께 해소) vs (b) arena expansion slack 확장(현 16 MiB; LINEXE 충돌과 무한 성장 문제는 남음).
+3. 과거 기록된 `0x045D3EAC`/`0x045D3FFF` "applied" boundary store들이 RW 페이지에서 왜 fault했는지(당시 write-watch 보호였는지) — 부차적 미확정.
+
+```mermaid
+flowchart TD
+    D["디코드 루프: base 0x045D3EB0<br/>총 0x1D2A0 바이트 출력 예정"] --> W["0x3150바이트 정상 기록<br/>(LINEXE private data 0x045D2000~ 훼손)"]
+    W --> X["0x045D7000 = arena 끝 도달<br/>MEM_FREE 쓰기 → 0xC0000005"]
+    A["allocator: arena 끝 너머 소유 믿음<br/>(resize 무조건 성공 / 풀 경계 모델)"] -. "원인" .-> D
+    X --> Q{"다음 판단"}
+    Q --> F1["(a) allocator 상한 정확 모델링<br/>(권장: 정확성 우선 + 충돌 해소)"]
+    Q --> F2["(b) arena slack 확장"]
+```
+
+**Corrected/Confirmed (Task 212):** the Task 205–206 reading that "`0x045D3EB0` is unmapped" is re-attributed. Capturing `ExceptionInformation` and `VirtualQuery` inside the SEH filter shows the real fault is a **write to VA `0x045D7000` — the end of the runtime arena** (`MEM_FREE`, no allocation base): with `EBP=0x3150` at the exception, the decode loop wrote `0x3150` bytes successfully from buffer base `0x045D3EB0` and died crossing the arena boundary — an **arena-end overflow**, not an unmapped buffer start. The decode structure at `ESI=0x041B6B50` reads `[+0x34]=0x045D3EB0` (buffer base) and `[+0x3C]=0x0001D2A0` (~117 KiB, presumed total output size), so the guest allocator handed out a block it believes extends past the arena end. The buffer base also lies **inside the LINEXE synthetic private-data region** (`0x045D2000`–`0x045D7000`, RW), so pre-fault writes silently corrupt it — the designed allocator ceiling (`dynamic_allocator_end = 0x045C6000`) is not being honored. Structural background: placement commits the whole `0x015D7000` as RW (writes inside the arena never fault) and the `AH=4Ah` resize HLE reports success unconditionally without size tracking. Open: where the allocator's belief about its heap top actually comes from (resize replies vs. the synthesized DOS/4G client/private-data pool bounds); direction (a) model the real ceiling (accuracy-first, also fixes the LINEXE collision) vs. (b) enlarge the expansion slack; and why the previously recorded "applied" boundary stores at `0x045D3EAC`/`0x045D3FFF` faulted on RW pages at all.
+
 ## 2026-07-16 Task 210: 0x030F3438 폭풍 해소 — 물리 우선 읽기가 합성 GS selector를 가린 것이 원인 / Task 210: the 0x030F3438 storm resolved — physical-first reads were hiding the synthetic GS selector
 
 **수정됨:** Task 209의 유력 가설(LINEXE 별도 selector 설계로 thunk `cmp dx, cx` assertion이 구조적으로 실패)은 폭풍의 원인이 아니었다. `0x030F3438`은 여러 실패 경로가 공유하는 fatal-tail이고, 실제 발화한 검사는 **DLL loader 초기화의 GS 검사**였다(trap 백엔드 fatal 메시지 실측: `"Fatal error: unable to initialize DLL loader."`, `EDX=0x031A623C`).
