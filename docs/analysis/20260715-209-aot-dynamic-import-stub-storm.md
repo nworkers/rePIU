@@ -1,6 +1,18 @@
 # LINEXE 무한 루프 재조사: aot-dynamic 백엔드의 import-stub 예외 폭풍
 # Re-investigation of the LINEXE Stall: an aot-dynamic Import-Stub Exception Storm
 
+## 2026-07-16 정정: 폭풍의 실제 원인은 selector 설계가 아니라 물리 우선 읽기의 합성 selector 가림 (Task 210)
+
+**수정됨:** 본 문서의 유력 가설("LINEXE 내부 모듈 별도 selector 설계가 `cmp dx, cx` assertion을 구조적으로 실패시킨다")은 **폭풍의 원인이 아니었다.** Task 210에서 다음이 확정되었다.
+
+1. `0x030F3438`은 여러 `jnz` 실패 경로가 공유하는 fatal-tail이며, trap 백엔드에서 이 트랩이 1회 발화했을 때의 실제 메시지는 `EDX=0x031A623C`의 **"Fatal error: unable to initialize DLL loader."** 였다 — 본 문서가 역어셈블한 thunk 패처의 메시지(`0x011A628D` 계열)가 아니라 **DLL loader 초기화 검사**의 실패다. (trap 백엔드의 "30초 정상 진행" 판독도 정정된다: 게스트는 약 7.2초에 이 fatal 후 `INT 21h AX=4C01h`로 자체 종료하고 있었다. dispatch 781,653으로 결정적.)
+2. 실패 기제: `INT 21h AX=FF00h` HLE는 DOS/4G client-data selector `0x0020`을 **shadow GS에만** 기록한다(이 selector는 소프트웨어 SelectorTable 전용이며 호스트 LDT 엔트리가 없어 물리 레지스터에 실을 수 없다). Task 208이 도입한 물리 우선 `ReadGuestSegmentSelector`가 물리 GS(호스트 진입값 `0x2B`)를 반환하면서 DLL loader 초기화의 GS 검사가 실패했고, aot-dynamic에서는 이 실패가 재시도 폭풍으로, trap에서는 1회 fatal 후 정상 종료로 나타났다.
+3. 수정: 물리 우선을 유지하되, **물리 값이 호스트 진입 시점 selector 그대로이고 shadow가 SelectorTable에 등록·present인 경우에만 shadow를 반환**하는 규칙을 추가했다(하드웨어가 실을 수 없어 HLE로만 존재하는 selector 보호). 적용 후 aot-dynamic 폭풍 소멸(progress 0 → 8,449, Glide ordinal `0x5E` 도달, MSCDEX 요청 처리), trap 백엔드 fatal 소멸(30초 완주, progress 641,013) — 두 백엔드 모두 회귀 없음.
+
+따라서 아래 "미확정"의 1·2번(resolver `dx` 출처, flat selector 통합)은 **폭풍 해소에는 불필요**해졌으며, LINEXE selector 설계가 실기 DOS4GW와 같은지는 별도 주제로만 남는다. 상세는 `docs/work-logs/20260716-210-linexe-flat-code-selector-investigation-log.md` 참조.
+
+**Corrected (2026-07-16, Task 210):** this document's leading hypothesis (per-module LINEXE selectors structurally failing the thunk `cmp dx, cx` assertion) was **not** the cause of the storm. `0x030F3438` is a fatal-tail shared by multiple failing `jnz` paths; when the trap fired once under the trap backend its actual message was `EDX=0x031A623C` **"Fatal error: unable to initialize DLL loader."** — the DLL-loader initialization check, not the thunk patcher (and the "normal 30 s trap progression" reading is likewise corrected: the guest was self-terminating at ~7.2 s via `INT 21h AX=4C01h`, deterministic 781,653 dispatches). Mechanism: `INT 21h AX=FF00h` records the DOS/4G client-data selector `0x0020` only in shadow GS (it exists solely in the software SelectorTable and cannot be loaded into the hardware register), so Task 208's physical-first `ReadGuestSegmentSelector` returned the host entry value `0x2B` and the GS check failed. Fix: keep physical-first, but return the shadow when the physical value still equals the host entry-time selector and the shadow selector is registered and present in the SelectorTable. After the fix the aot-dynamic storm is gone (progress 0 → 8,449, Glide ordinal `0x5E`, MSCDEX request handled) and the trap backend completes 30 s (progress 641,013) with no fatal — no regressions. The open items about the resolver's `dx` provenance and flat-selector unification are no longer needed to resolve the storm.
+
 ## 배경 (Background)
 
 `analysis_results.md`/`implementation_plan.md` (Task 208)는 LINEXE 모듈 스캔 루프가 진행되지 않는

@@ -199,6 +199,17 @@ void PrintSnapshot(
               << std::hex
               << ReadInterlocked(&telemetry.mscdex_header)
               << std::dec
+              << " fatal_count/msg="
+              << ReadInterlocked(&telemetry.fatal_breakpoint_count) << "/0x"
+              << std::hex
+              << ReadInterlocked(&telemetry.fatal_message_address)
+              << " seg_div=" << std::dec
+              << ReadInterlocked(&telemetry.seg_divergence_count) << ":0x"
+              << std::hex
+              << ReadInterlocked(&telemetry.seg_divergence_reg_physical)
+              << "/0x"
+              << ReadInterlocked(&telemetry.seg_divergence_shadow)
+              << std::dec
               << " aot_boundary/reentry="
               << ReadInterlocked(&telemetry.aot_boundary_count) << "/"
               << ReadInterlocked(&telemetry.aot_reentry_count)

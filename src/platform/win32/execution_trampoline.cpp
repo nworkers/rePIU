@@ -4786,40 +4786,91 @@ std::uint16_t ReadGuestSegmentSelector(const ThreadContext& context,
                                        std::uint8_t segment_register,
                                        const CONTEXT* win32_context)
 {
-    if (win32_context != nullptr)
-    {
-        switch (segment_register)
-        {
-            case 0:
-                return static_cast<std::uint16_t>(win32_context->SegEs);
-            case 2:
-                return static_cast<std::uint16_t>(win32_context->SegSs);
-            case 3:
-                return static_cast<std::uint16_t>(win32_context->SegDs);
-            case 4:
-                return static_cast<std::uint16_t>(win32_context->SegFs);
-            case 5:
-                return static_cast<std::uint16_t>(win32_context->SegGs);
-            default:
-                break;
-        }
-    }
-
+    std::uint16_t shadow = 0;
     switch (segment_register)
     {
         case 0:
-            return context.guest_es;
+            shadow = context.guest_es;
+            break;
         case 2:
-            return context.guest_ss;
+            shadow = context.guest_ss;
+            break;
         case 3:
-            return context.guest_ds;
+            shadow = context.guest_ds;
+            break;
         case 4:
-            return context.guest_fs;
+            shadow = context.guest_fs;
+            break;
         case 5:
-            return context.guest_gs;
+            shadow = context.guest_gs;
+            break;
         default:
             return 0;
     }
+    if (win32_context == nullptr)
+    {
+        return shadow;
+    }
+
+    std::uint16_t physical = shadow;
+    std::uint32_t host_entry = 0;
+    switch (segment_register)
+    {
+        case 0:
+            physical = static_cast<std::uint16_t>(win32_context->SegEs);
+            host_entry = g_recovery_host_es;
+            break;
+        case 2:
+            return static_cast<std::uint16_t>(win32_context->SegSs);
+        case 3:
+            physical = static_cast<std::uint16_t>(win32_context->SegDs);
+            host_entry = g_recovery_host_ds;
+            break;
+        case 4:
+            physical = static_cast<std::uint16_t>(win32_context->SegFs);
+            host_entry = g_recovery_host_fs;
+            break;
+        case 5:
+            physical = static_cast<std::uint16_t>(win32_context->SegGs);
+            host_entry = g_recovery_host_gs;
+            break;
+        default:
+            return shadow;
+    }
+    if (physical == shadow)
+    {
+        return physical;
+    }
+    if (context.shared_live_telemetry != nullptr)
+    {
+        InterlockedIncrement(
+            &context.shared_live_telemetry->seg_divergence_count);
+        InterlockedExchange(
+            &context.shared_live_telemetry->seg_divergence_reg_physical,
+            static_cast<long>((static_cast<std::uint32_t>(segment_register)
+                               << 16) | physical));
+        InterlockedExchange(
+            &context.shared_live_telemetry->seg_divergence_shadow,
+            static_cast<long>(shadow));
+    }
+    // A selector that only exists in the software SelectorTable (for example
+    // the DOS/4G client-data selector installed by INT 21h AX=FF00h) can
+    // never be loaded into the hardware register, so the physical value
+    // still holding the host's entry-time selector means the HLE shadow is
+    // authoritative. A physical value that moved away from the host entry
+    // selector was loaded by the guest (natively or via write-through) and
+    // wins over a possibly stale shadow.
+    if (physical == static_cast<std::uint16_t>(host_entry & 0xFFFFU) &&
+        shadow != 0)
+    {
+        const repiu::runtime::GuestDescriptor* descriptor =
+            repiu::runtime::FindDescriptor(context.selector_table, shadow);
+        if (descriptor != nullptr && descriptor->present)
+        {
+            return shadow;
+        }
+    }
+    return physical;
 }
 
 void RecordGuestSegmentStore(CONTEXT* win32_context,
@@ -7496,6 +7547,15 @@ bool HandleOriginalFatalBreakpoint(EXCEPTION_POINTERS* exception_info,
     context->last_fatal_breakpoint_address = breakpoint;
     context->last_fatal_message_address =
         static_cast<std::uint32_t>(win32_context->Edx);
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(
+            &context->shared_live_telemetry->fatal_breakpoint_count,
+            static_cast<long>(context->handled_fatal_breakpoint_count));
+        InterlockedExchange(
+            &context->shared_live_telemetry->fatal_message_address,
+            static_cast<long>(context->last_fatal_message_address));
+    }
     context->last_fatal_message.clear();
     ReadGuestAsciz(context,
                    context->last_fatal_message_address,

@@ -1,5 +1,27 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-16 Task 210: 0x030F3438 폭풍 해소 — 물리 우선 읽기가 합성 GS selector를 가린 것이 원인 / Task 210: the 0x030F3438 storm resolved — physical-first reads were hiding the synthetic GS selector
+
+**수정됨:** Task 209의 유력 가설(LINEXE 별도 selector 설계로 thunk `cmp dx, cx` assertion이 구조적으로 실패)은 폭풍의 원인이 아니었다. `0x030F3438`은 여러 실패 경로가 공유하는 fatal-tail이고, 실제 발화한 검사는 **DLL loader 초기화의 GS 검사**였다(trap 백엔드 fatal 메시지 실측: `"Fatal error: unable to initialize DLL loader."`, `EDX=0x031A623C`).
+
+**확인됨 (기제):** `INT 21h AX=FF00h` HLE는 DOS/4G client-data selector `0x0020`을 shadow GS에만 기록한다 — 이 selector는 소프트웨어 SelectorTable 전용이며 호스트 LDT 엔트리가 없어 물리 레지스터에 실을 수 없다. Task 208 머지의 물리 우선 `ReadGuestSegmentSelector`가 물리 GS(호스트 진입값 `0x2B`)를 반환하자 이 검사가 실패했고, aot-dynamic에서는 재시도 폭풍(progress=0, 초당 약 137k dispatch), trap에서는 7.2초 1회 fatal 후 `AX=4C01h` 자체 종료로 나타났다 — 두 백엔드의 증상이 같은 원인의 다른 하류 거동임이 확정됐다.
+
+**확인됨 (수정과 검증):** `ReadGuestSegmentSelector`에 다음 규칙을 추가했다: 물리 우선을 유지하되, **물리 값이 호스트 진입 시점 selector(`g_recovery_host_*`) 그대로이고 shadow selector가 SelectorTable에 등록·present이면 shadow를 반환**한다(HLE로만 존재하는 selector 보호; 하드웨어가 직접 로드한 selector는 여전히 물리가 승리). 물리/shadow 불일치 계수와 fatal 카운트/메시지 주소를 공유 텔레메트리 v11로 노출했다. 검증(30초): aot-dynamic 폭풍 소멸(progress 0→8,449, Glide ordinal `0x5E`, **MSCDEX 요청이 실험 패치 없이 main에서 처리** — `request/cmd/status=1/3/0x100`), trap fatal 소멸(30초 완주, progress 641,013, 디코드 구간 `0x030873CD` 도달). fatal_count는 두 백엔드 모두 0.
+
+**미확정:** (1) LINEXE 내부 모듈 selector 설계가 실기 DOS4GW flat 모델과 같은지는 폭풍과 무관해졌으나 별도 주제로 남는다. (2) 다음 frontier는 다시 Task 205~206의 디코드 루프 미매핑 스토어(`0x030873F4` → `0x045D3EB0`)로 돌아갈 것으로 예상되며 장기 구동으로 확인 필요.
+
+```mermaid
+flowchart TD
+    S["aot 폭풍 @0x030F3438<br/>+ trap 7.2s 4C01 종료"] --> M["실측: fatal 메시지 =<br/>DLL loader 초기화 실패"]
+    M --> C["원인: FF00h가 설정한 shadow GS=0x20을<br/>물리 우선 읽기가 가림 (물리=0x2B)"]
+    C --> F["수정: 물리=호스트 진입값 && shadow 등록됨<br/>→ shadow 반환"]
+    F --> V1["aot: 폭풍 소멸, glide 0x5E,<br/>MSCDEX 1/3/0x100"]
+    F --> V2["trap: fatal 소멸,<br/>progress 641k"]
+    V1 -. "예상 다음 frontier" .-> N["디코드 루프 0x045D3EB0<br/>미매핑 스토어 (Task 206)"]
+```
+
+**Corrected/Confirmed (Task 210):** Task 209's leading hypothesis (per-module LINEXE selectors structurally failing the thunk assertion) was not the cause. `0x030F3438` is a shared fatal-tail, and the check actually firing was the **DLL-loader initialization GS check** (measured trap-backend fatal message: `"Fatal error: unable to initialize DLL loader."`). Mechanism: `INT 21h AX=FF00h` records the DOS/4G client-data selector `0x0020` only in shadow GS — it exists solely in the software SelectorTable and cannot be loaded into the hardware register — so Task 208's physical-first `ReadGuestSegmentSelector` returned the host entry value `0x2B` and the check failed; aot-dynamic manifested this as the retry storm and the trap backend as a single fatal plus a clean `AX=4C01h` self-termination at 7.2 s. Fix: keep physical-first but return the shadow when the physical value still equals the host entry-time selector and the shadow is registered and present in the SelectorTable; expose divergence and fatal counters via telemetry v11. Verification (30 s): the aot-dynamic storm is gone (progress 0→8,449, Glide ordinal `0x5E`, **MSCDEX handled on main without any experiment patch**, `request/cmd/status=1/3/0x100`) and the trap backend completes 30 s (progress 641,013, reaching the decode region `0x030873CD`) with zero fatals. Open: whether the LINEXE selector design matches real DOS4GW remains a separate, non-blocking topic; the frontier is expected to return to the Task 205–206 decode-loop unmapped store, pending a longer run.
+
 ## 2026-07-16 Task 211: MSCDEX 거절 원인 확정과 DPMI 프레임 ES 오프셋 수정 / Task 211: MSCDEX decline root-caused and the DPMI frame ES offset fixed
 
 **확인됨 (원인):** 아래 300초 관측에서 발견된 MSCDEX `AX=1510h` 거절의 원인은 DPMI `AX=0300h` real-mode register 구조의 **ES 필드를 스펙 오프셋 `0x22`가 아닌 `0x24`(DS 슬롯)에서 읽던 오독**이다. 진단 계측(`mscdex_es/kind/reason/header`)이 ES=0, real-mode 해석(linear 0), 헤더 길이 부족(reason=2)을 확정했다. FLAGS도 word(0x20) 대신 dword로 읽고 있었다.
