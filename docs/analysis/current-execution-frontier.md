@@ -1,5 +1,26 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-15 LINEXE 정지 재판정: DOS4GW cross-segment thunk assertion이 진짜 frontier / LINEXE stall re-attributed: the DOS4GW cross-segment thunk assertion is the real frontier (Task 208–209)
+
+**수정됨:** Task 208이 지목한 "POP ES/FS/GS 패스스루로 인한 shadow segment 불일치가 LINEXE 무한 루프의 원인"이라는 결론을 정정한다. `aebbbb6`(POP ES/FS/GS 미개입)과 `99f60de`(개입) 를 같은 조건으로 재실행하면 **완전히 동일한 aot-dynamic 실패**가 재현된다 — POP GS의 selector `0x0090`은 유효한 LDT 항목이라 하드웨어가 직접 실행하며 VEH를 아예 거치지 않으므로, 개입 여부는 이 증상과 무관하다. Task 206 work log의 "POP 개입 제거로 `0x030F3438` 폭풍 해소" 결론도 재현 실패로 성립하지 않는다.
+
+**확인됨 (실제 메커니즘):** `0x030F3438`은 DOS4GW 런타임의 cross-segment call thunk 패처에 원래부터 존재하는 **의도된 assertion 트랩**이다. `cmp dx, cx`(대상 함수 세그먼트 vs 현재 CS)가 불일치하면 `int3`(fatal breakpoint 관용구, `HandleOriginalFatalBreakpoint`가 이미 1회 처리 가능)로 빠진다. 30초간 85만~128만 회의 예외는 EIP 고착이 아니라 **호출자가 같은 실패 조건으로 무한 재시도**하는 것이다. 유력 가설은 selector 설계 불일치: 우리 구현은 LINEXE_LOADER 내부 모듈에 별도 고정 selector(`0x0080/0x0088/0x0090`)를 부여하지만, 실기 DOS4GW는 이 논리 모듈들이 flat 코드 세그먼트를 공유했을 가능성이 있어 `cx == dx` 검사가 구조적으로 항상 실패할 수 있다. 상세는 `docs/analysis/20260715-209-aot-dynamic-import-stub-storm.md`.
+
+**확인됨 (부수 수정):** `MOV Sreg, r/m`(0x8E)이 shadow만 갱신하고 물리 CONTEXT 세그먼트 레지스터를 갱신하지 않던 결함을 수정했다(`RecordGuestSegmentLoad` write-through + `ReadGuestSegmentSelector` 물리 우선). 기본 trap 백엔드 30초 기준 회귀 없음(progress ~112k). 또한 LINEXE 진단 카운터 대부분이 `enable_single_step_trace`에 게이트되어 **aot-dynamic 백엔드에서는 항상 0으로 표시**된다는 사실을 확인했다 — 백엔드 교차 검증 없이는 진단을 신뢰할 수 없다.
+
+**미확정 (다음 분석 대상):** (1) `0x010F3648` 해석 서브루틴이 `dx`를 어디서 계산하는지 역추적, (2) LINEXE 별도 selector 설계가 실기 DOS4GW flat 모델과 다른지 확정 — 다르면 selector 통합이 근본 수정, (3) trap 백엔드가 같은 트랩을 만나고도 계속 진행하는 이유, (4) trap 백엔드 30초에서 `LINEXE bridge entry`/`Glide gate entries`가 0인 것이 시간 부족인지 별도 결함인지.
+
+```mermaid
+flowchart TD
+    A["aot-dynamic 정지 @0x030F3438"] --> B["DOS4GW thunk 패처<br/>cmp dx, cx assertion"]
+    B --> C{"cx != dx<br/>왜 항상 실패?"}
+    C --> H1["가설: LINEXE 별도 selector<br/>(0x0080/0x0088/0x0090)<br/>vs flat CS 공유"]
+    H1 -. "다음 구현 후보" .-> F1["selector 통합 또는<br/>resolver cross-segment 재현"]
+    C -. "역추적 필요" .-> F2["0x010F3648이 dx를<br/>계산하는 경로"]
+```
+
+**Corrected / Confirmed (Task 208–209):** The Task 208 attribution ("POP ES/FS/GS pass-through causes the LINEXE infinite loop via shadow desync") is withdrawn: re-running `aebbbb6` (no interception) and `99f60de` (interception) reproduces the identical aot-dynamic failure, because POP GS with a valid LDT selector executes natively and never enters the VEH. The real mechanism at `0x030F3438` is DOS4GW's own intentional cross-segment thunk assertion (`cmp dx, cx` → `int3` fatal-breakpoint idiom, already handled once by `HandleOriginalFatalBreakpoint`); the 30-second storm is the caller endlessly retrying the same failing check. Leading hypothesis: our per-module LINEXE selectors (`0x0080/0x0088/0x0090`) structurally fail a check that real DOS4GW's flat shared code segment would pass. Side fix landed: `MOV Sreg, r/m` now writes through to physical CONTEXT registers and `ReadGuestSegmentSelector` prefers them (no trap-backend regression, ~112k progress/30 s). Also established: most LINEXE diagnostic counters are gated on `enable_single_step_trace` and always read 0 under aot-dynamic — cross-backend verification is mandatory. Details in `docs/analysis/20260715-209-aot-dynamic-import-stub-storm.md`.
+
 ## 2026-07-15 종료 예외 재판정: 디코드 루프 store가 진짜 사인 / Terminal exception re-attributed: the decode-loop store is the real killer (Task 205)
 
 **수정됨:** 아래 Task 204 항목의 "`POP ES`가 종료 원인"이라는 결론을 정정한다. `Relocated exception byte window` 로그는 SEH 예외 주소가 아니라 **마지막으로 디스패치된 예외의 stale `last_guest_eip`** 로 focus를 계산하므로, 정상 처리된 마지막 디스패치 지점(POP ES)을 사인처럼 표시했다. 실제 SEH 종료 예외는 `Win32 AOT exception cache/guest mapping`이 가리키는 **guest `0x030873F4`** 이며, 이는 Task 202~203에서 분석한 65,536-레코드 디코드 루프 내부의 출력 스토어다. POP ES 수정 전(run7)과 후(205 run1) 모두 동일한 지점·동일한 레지스터로 종료됐다.
