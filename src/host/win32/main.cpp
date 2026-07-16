@@ -902,6 +902,36 @@ void PrintExecutionAttempt(
                     Hex32(attempt.execution_probe_stack[6]),
                     Hex32(attempt.execution_probe_stack[7]));
     }
+    if (attempt.execution_trace_configured)
+    {
+        logger.info(
+            "Win32 execution trace start/end/esp_offset/hits: "
+            "{}/{}/{}/{}",
+            Hex32(attempt.execution_trace_start_offset),
+            Hex32(attempt.execution_trace_end_offset),
+            Hex32(attempt.execution_trace_esp_offset),
+            attempt.execution_trace_hit_count);
+        if (attempt.execution_trace_sentinel2_configured)
+        {
+            logger.info(
+                "Win32 execution trace sentinel2_offset/rearm_count: {}/{}",
+                Hex32(attempt.execution_trace_sentinel2_offset),
+                attempt.execution_trace_sentinel_rearm_count);
+        }
+        const std::uint32_t stored = std::min<std::uint32_t>(
+            attempt.execution_trace_hit_count,
+            static_cast<std::uint32_t>(
+                sizeof(attempt.execution_trace) /
+                sizeof(attempt.execution_trace[0])));
+        for (std::uint32_t index = 0; index < stored; ++index)
+        {
+            const auto& entry = attempt.execution_trace[index];
+            logger.info(
+                "Win32 execution trace #{} seq={} eip/esp/value: {}/{}/{}",
+                index, entry.sequence, Hex32(entry.eip), Hex32(entry.esp),
+                Hex32(entry.value_at_esp_offset));
+        }
+    }
     logger.info("Win32 diagnostic poll iterations: {}",
                 attempt.diagnostic_poll_iteration_count);
     logger.info("Win32 diagnostic progress count: {}",

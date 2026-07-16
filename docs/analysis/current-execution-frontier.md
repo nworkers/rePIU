@@ -1,5 +1,112 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-17 Task 223 (negative result): 스택 데이터 주소 워치포인트(하드웨어·소프트웨어 모두)는 0x035D6B14에 근본적으로 안전하지 않음 — 코드 주소 이중 프로브로 방향 전환 권고 / Task 223 (negative result): both hardware and software stack-data watchpoints are fundamentally unsafe for 0x035D6B14 — recommends pivoting to a code-address dual-probe
+
+**확인됨 (저비용 사전 확인, 유효):** 게스트 스택(`0x03110000`–`0x035D6E60`)과
+LINEXE 합성 영역(현재 128MB slack으로 `arena_end`가 `0x0B5D7000`대)은 정적으로
+겹치지 않는다 — Task 222/223 초기의 후보 3(메모리 레이아웃 겹침)은 배제됐다.
+
+**확인됨 (근본 원인, negative result):** 하드웨어 DR0/DR7과 소프트웨어 페이지
+보호(PAGE_READONLY) 워치포인트를 모두 구현·실행했으나 둘 다 실패했다. 근본
+원인은 손상 슬롯 `0x035D6B14`가 실행 전반에 걸쳐 **다수의 무관한 예외 디스패치
+지점의 ESP와 반복적으로 근접**한다는 구조적 사실이다 — Windows 예외 디스패치
+자체(VEH를 호출하기 위한 CONTEXT+EXCEPTION_RECORD 부기 정보, ~1KB)가 현재 ESP
+아래쪽에 쓰는데, 이 범위가 보호된 페이지와 겹치면 VEH 호출 자체가 실패해
+프로세스가 `STATUS_SINGLE_STEP`/`STATUS_ACCESS_VIOLATION` 원시 종료코드로
+즉사한다(VEH가 전혀 호출되지 않음, 무조건 진입 로그로 확인). 안전한 시점까지
+설치를 지연하면 즉사는 해소되고 Task 222의 정확한 종료 상태(`EDI=0xDD1523B1`,
+`ESI=0x032953AC`, `"01.tga"`)를 깨끗하게 재현하지만, ESP가 단조 감소하지 않아
+(호출/반환으로 재상승) 무장을 유지한 채로는 이후 다른 예외 디스패치 시점에
+동일한 방식의 즉사가 재현된다 — **스택 데이터 주소 감시는 이 타겟에 근본적으로
+안전하지 않다.** 두 구현 모두 되돌렸다(커밋되지 않음, `feature/223-guest-stack-
+slot-corruption-watchpoint` 브랜치에 diff로만 존재).
+
+**확인됨 (같은 세션 후속: 코드 주소 이중 프로브로 부분 성공):** 위 권고를 같은
+세션에서 즉시 구현했다 — `REPIU_EXECUTION_PROBE_OFFSET`/`RecordExecutionProbe`
+단발 게이트를 제거하고 범위 링버퍼로 확장한 `RecordExecutionTrace`를
+`0x03021F41`(store)과 `0x03021F71`(load) 두 지점에 독립 int3 sentinel로 설치해
+aot-dynamic 구동한 결과: **종료 예외를 유발한 바로 그 호출**에서 load 지점
+도달 시점에 이미 `[esp+0x154]`가 `0xDD1523B1`(wild)였다 — load 명령 자체는 이미
+손상된 값을 읽었을 뿐이다. 다른(정상) 호출에서는 load 지점에서 정상 값
+(`0x0325E1F8`, 짝수)을 확인했다.  **손상은 store 완료 이후 ~ 문제의 그 호출이
+load 지점에 도달하기 전 사이에 일어난다**로 좁혀졌다.
+
+**확인됨 (다음 세션 후속: sentinel 재발화 비대칭은 구조적 한계로 결론):**
+`0x03021F41` sentinel이 왜 최초 1회만 재발화하는지 추적했다. 캐시 세대 retire
+가설(`aot_retired_entry_trap_count`가 0으로 유지)과 패치 바이트 유실 가설(매
+hit마다 무조건 재무장해도 — 재무장 자체는 3회 실행됨을 계측으로 확인 — store는
+여전히 재발화하지 않음)을 모두 배제했다. sentinel을 함수 진입점(`0x03021DF8`)으로
+옮겨도 동일한 "최초 1회만" 패턴이 재현되어, **"boundary/reentry 이벤트로 도달한
+주소는 이후 호출에서 그 캐시 사본을 다시 지나가지 않는다"**는 구조적 제약임을
+확인했다(가장 유력한 설명: 호출자 인라인 캐시가 최초 이벤트에서 직접 타겟을
+학습해 이후 우리가 패치한 사본을 우회). 순수 fall-through로만 도달하는 load
+지점만 반복 관측 가능하다. **결론: 이 sentinel 기법으로는 문제의 그 호출에서
+store 직후 상태를 관측할 수 없다** — sentinel 기반 접근은 이 지점에서 소진됐다.
+다음 후보: (1) trap 백엔드를 더 긴 예산(≥180초)으로 재시도, (2) 비동기 writer
+가설(다른 스레드/타이머/HLE trap 스택 오버랩)을 직접 조사. 상세:
+`docs/design/20260717-223-guest-stack-watchpoint-veh-coexistence.md` §8~10,
+`docs/work-logs/20260717-223-guest-stack-watchpoint-negative-result-log.md` §8.
+
+**Confirmed (same-session follow-up: partial success via a code-address dual probe):**
+The recommendation above was implemented immediately in the same session —
+`RecordExecutionTrace` (a ring-buffered extension of the existing single-shot
+`REPIU_EXECUTION_PROBE_OFFSET`/`RecordExecutionProbe`) with independent int3 sentinels
+at `0x03021F41` (store) and `0x03021F71` (load), run under aot-dynamic. Result: on the
+exact call that produced the terminal fault, `[esp+0x154]` was **already**
+`0xDD1523B1` (wild) at the moment execution reached the load point — the load
+instruction itself just read an already-corrupted value. A different (successful) call
+showed the correct value (`0x0325E1F8`, even) at the same load point. This narrows the
+corruption window to somewhere **after the store completes and before the crashing
+call reaches the load**.
+
+**Confirmed (next-session follow-up: the sentinel re-fire asymmetry is a structural
+limitation, not a bug):** ruled out cache-entry retirement (the retirement counter
+stayed at 0) and simple byte loss (unconditional re-arm on every hit — confirmed
+executing 3 times via a new counter — still didn't make the store sentinel re-fire).
+Moving the sentinel to the function entry (`0x03021DF8`) reproduced the identical
+one-shot pattern, ruling out anything specific to the store instruction: **addresses
+that `HandleAotReentry` treats as reentry/boundary targets are never revisited by later
+calls' execution paths** (most likely because the caller's inline cache learns a direct
+fast-path target after the first such event), while addresses reached by pure
+fall-through (like the load) remain repeatedly observable. **Conclusion: this technique
+cannot observe the post-store state for the specific crashing call** — sentinel-based
+narrowing is exhausted here. Next candidates: (1) retry the trap backend with a longer
+(≥180 s) budget, (2) pivot to directly investigating the async-writer hypothesis
+(another thread, timer callback, or HLE-trap stack overlap). Details in
+`docs/design/20260717-223-guest-stack-watchpoint-veh-coexistence.md` §8-10 and
+`docs/work-logs/20260717-223-guest-stack-watchpoint-negative-result-log.md` §8.
+
+**Confirmed (cheap narrowing, still valid):** the guest stack
+(`0x03110000`–`0x035D6E60`) and the LINEXE synthesized region (now `arena_end`
+around `0x0B5D7000` with the 128 MiB slack) do not statically overlap — candidate 3
+(memory-layout overlap) from Tasks 222/223 is ruled out.
+
+**Confirmed (root cause, negative result):** both a hardware DR0/DR7 watchpoint and a
+software PAGE_READONLY watchpoint were implemented and run, and both failed. The root
+cause is structural: the corrupted slot `0x035D6B14` sits repeatedly close to the ESP
+of many unrelated exception-dispatch points throughout execution. Windows' own
+exception dispatch (the ~1 KiB CONTEXT + EXCEPTION_RECORD bookkeeping written below the
+current ESP just to invoke the VEH at all) collides with the protected/watched page
+whenever that write range overlaps it, so VEH is never invoked and the process dies
+with a raw `STATUS_SINGLE_STEP`/`STATUS_ACCESS_VIOLATION` exit code — confirmed via an
+unconditional VEH-entry probe that never logged a single line. Deferring installation
+until ESP is safely below the target avoids the immediate crash and cleanly reproduces
+Task 222's exact terminal state, but since ESP is not monotonic (calls return and rise
+back above the target), keeping the watch armed reproduces the same crash at a later
+exception. **Watching a stack/data address is fundamentally unsafe for this target.**
+Both implementations were reverted (never committed; exist only as an uncommitted diff
+on `feature/223-guest-stack-slot-corruption-watchpoint`).
+
+**Open (next step):** Task 222 already pinned the corruption window to two guest
+**code** addresses (right after the store at `0x03021F41`, right before the load at
+`0x03021F71`). Watching code addresses instead of a stack address carries none of the
+ESP-proximity risk — extending the existing one-shot
+`REPIU_EXECUTION_PROBE_OFFSET`/`RecordExecutionProbe` trigger to fire repeatedly at
+both points and snapshot `[esp+0x154]` each iteration is recommended as the next work
+order. Details:
+`docs/design/20260717-223-guest-stack-watchpoint-veh-coexistence.md`,
+`docs/work-logs/20260717-223-guest-stack-watchpoint-negative-result-log.md`.
+
 ## 2026-07-16 Task 222 (진행 중): frontier 0x0302208C = 파일명 목적지 지역 포인터 [esp+0x154] 손상 (호출자 인자 아님) / Task 222 (in progress): the 0x0302208C frontier is a corrupted destination-pointer local [esp+0x154], not a caller argument
 
 **확인됨 (이전 판정 정정):** 문제 함수 entry는 guest **`0x03021DF8`**(Watcom 레지스터 호출

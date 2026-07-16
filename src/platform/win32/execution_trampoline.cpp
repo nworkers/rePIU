@@ -192,6 +192,16 @@ struct ThreadContext
     std::uint32_t execution_probe_offset = 0;
     X86ExecutionSnapshot execution_probe_snapshot;
     std::uint32_t execution_probe_stack[8] = {};
+    bool execution_trace_configured = false;
+    std::uint32_t execution_trace_start_offset = 0;
+    std::uint32_t execution_trace_end_offset = 0;
+    std::uint32_t execution_trace_esp_offset = 0;
+    std::uint32_t execution_trace_hit_count = 0;
+    bool execution_trace_sentinel2_configured = false;
+    std::uint32_t execution_trace_sentinel2_offset = 0;
+    std::uint32_t execution_trace_sentinel_rearm_count = 0;
+    Win32ExecutionTraceEntry
+        execution_trace[kWin32ExecutionTraceCapacity] = {};
     std::uint32_t aot_call_depth = 0;
     AotCallFrame aot_call_frames[kAotCallFrameCapacity] = {};
     bool aot_last_return_matches_call = false;
@@ -1310,6 +1320,19 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     std::memcpy(attempt->execution_probe_stack,
                 context.execution_probe_stack,
                 sizeof(attempt->execution_probe_stack));
+    attempt->execution_trace_configured = context.execution_trace_configured;
+    attempt->execution_trace_start_offset = context.execution_trace_start_offset;
+    attempt->execution_trace_end_offset = context.execution_trace_end_offset;
+    attempt->execution_trace_esp_offset = context.execution_trace_esp_offset;
+    attempt->execution_trace_hit_count = context.execution_trace_hit_count;
+    attempt->execution_trace_sentinel2_configured =
+        context.execution_trace_sentinel2_configured;
+    attempt->execution_trace_sentinel2_offset =
+        context.execution_trace_sentinel2_offset;
+    attempt->execution_trace_sentinel_rearm_count =
+        context.execution_trace_sentinel_rearm_count;
+    std::memcpy(attempt->execution_trace, context.execution_trace,
+                sizeof(attempt->execution_trace));
     attempt->aot_call_depth = context.aot_call_depth;
     attempt->aot_last_return_matches_call =
         context.aot_last_return_matches_call;
@@ -2305,6 +2328,44 @@ void RecordExecutionProbe(CONTEXT* win32_context, ThreadContext* context)
     }
 }
 
+// Extends the same int3-sentinel single-step probe as RecordExecutionProbe,
+// but logs every single-stepped instruction inside a guest code RANGE
+// (rather than one exact-match address, and without a single-shot gate) into
+// a wrapping ring. `value_at_esp_offset` is read relative to the live ESP at
+// each capture, not a hardcoded absolute address. See
+// docs/design/20260717-223-guest-stack-watchpoint-veh-coexistence.md §8.
+void RecordExecutionTrace(CONTEXT* win32_context, ThreadContext* context)
+{
+    if (win32_context == nullptr || context == nullptr ||
+        !context->execution_trace_configured ||
+        win32_context->Eip < context->runtime_base)
+    {
+        return;
+    }
+    const std::uint32_t offset = static_cast<std::uint32_t>(win32_context->Eip) -
+        context->runtime_base;
+    if (offset < context->execution_trace_start_offset ||
+        offset > context->execution_trace_end_offset)
+    {
+        return;
+    }
+    Win32ExecutionTraceEntry entry{};
+    entry.sequence = context->execution_trace_hit_count;
+    entry.eip = static_cast<std::uint32_t>(win32_context->Eip);
+    entry.esp = static_cast<std::uint32_t>(win32_context->Esp);
+    const void* value_address = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(entry.esp + context->execution_trace_esp_offset));
+    if (IsGuestRangeReadable(context, value_address, sizeof(entry.value_at_esp_offset)))
+    {
+        std::memcpy(&entry.value_at_esp_offset, value_address,
+                    sizeof(entry.value_at_esp_offset));
+    }
+    const std::uint32_t slot = context->execution_trace_hit_count %
+        kWin32ExecutionTraceCapacity;
+    context->execution_trace[slot] = entry;
+    ++context->execution_trace_hit_count;
+}
+
 bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr ||
@@ -2313,6 +2374,7 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
         return false;
     }
     RecordExecutionProbe(win32_context, context);
+    RecordExecutionTrace(win32_context, context);
     const std::uint32_t eip_offset =
         static_cast<std::uint32_t>(win32_context->Eip) -
         context->runtime_base;
@@ -10193,21 +10255,41 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
             return false;
         }
         context->aot_reentry_cache_address = cache_address;
+        // A tracked execution-trace sentinel byte can stop being hit again on
+        // later calls to the same guest address for reasons that go beyond
+        // formal cache-entry retirement (empirically, the retirement check
+        // below never fired for a sentinel that still stopped re-triggering —
+        // see docs/design/20260717-223-guest-stack-watchpoint-veh-coexistence.md
+        // §9). Re-installing the sentinel at whatever cache address is
+        // *currently* resolved for the guest address, on every hit, is a
+        // strictly more robust fix: it self-heals regardless of the exact
+        // underlying mechanism (retranslation, alternate cache copy, etc.).
+        const bool is_tracked_trace_address =
+            context->execution_trace_configured &&
+            (guest_address == context->runtime_base +
+                                   context->execution_trace_start_offset ||
+             (context->execution_trace_sentinel2_configured &&
+              guest_address ==
+                  context->runtime_base +
+                      context->execution_trace_sentinel2_offset));
         if (IsWin32AotCacheAddressRetired(
                 *context->aot_placement, cache_address))
         {
             BumpAotRetiredEntryTrapCount(context);
-            std::uint32_t latest_cache_address = guest_address;
-            if (ResolveAotTransferTarget(
-                    context, guest_address, &latest_cache_address, true))
+            if (!is_tracked_trace_address)
             {
-                win32_context->Eip = latest_cache_address;
-                win32_context->EFlags &= ~0x00000100U;
-                context->aot_reentry_pending = false;
-                context->aot_legacy_fallback = false;
-                context->enable_single_step_trace = false;
-                BumpAotReentryCount(context);
-                return true;
+                std::uint32_t latest_cache_address = guest_address;
+                if (ResolveAotTransferTarget(
+                        context, guest_address, &latest_cache_address, true))
+                {
+                    win32_context->Eip = latest_cache_address;
+                    win32_context->EFlags &= ~0x00000100U;
+                    context->aot_reentry_pending = false;
+                    context->aot_legacy_fallback = false;
+                    context->enable_single_step_trace = false;
+                    BumpAotReentryCount(context);
+                    return true;
+                }
             }
         }
         win32_context->Eip = guest_address;
@@ -10222,6 +10304,14 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
                 static_cast<long>(guest_address));
         }
         BumpAotBoundaryCount(context);
+        if (is_tracked_trace_address)
+        {
+            if (InstallWin32AotProbeSentinel(
+                    context->aot_placement, guest_address))
+            {
+                ++context->execution_trace_sentinel_rearm_count;
+            }
+        }
         return false;
     }
     if (code != EXCEPTION_SINGLE_STEP || !context->aot_reentry_pending)
@@ -10914,6 +11004,56 @@ bool RunWin32ExecutionThread(
             context.runtime_base + context.execution_probe_offset))
     {
         context.execution_probe_configured = false;
+    }
+    const auto read_hex_env = [](const char* name, std::uint32_t* out) {
+        char text[32] = {};
+        const DWORD length = GetEnvironmentVariableA(
+            name, text, static_cast<DWORD>(sizeof(text)));
+        if (length == 0U || length >= sizeof(text))
+        {
+            return false;
+        }
+        char* end = nullptr;
+        const unsigned long value = std::strtoul(text, &end, 0);
+        if (end == text || *end != '\0' || value > UINT32_MAX)
+        {
+            return false;
+        }
+        *out = static_cast<std::uint32_t>(value);
+        return true;
+    };
+    if (read_hex_env("REPIU_EXECUTION_TRACE_START",
+                     &context.execution_trace_start_offset) &&
+        read_hex_env("REPIU_EXECUTION_TRACE_END",
+                     &context.execution_trace_end_offset) &&
+        read_hex_env("REPIU_EXECUTION_TRACE_ESP_OFFSET",
+                     &context.execution_trace_esp_offset) &&
+        context.execution_trace_start_offset <=
+            context.execution_trace_end_offset)
+    {
+        context.execution_trace_configured = true;
+    }
+    if (context.execution_trace_configured && aot_placement != nullptr &&
+        !InstallWin32AotProbeSentinel(
+            aot_placement,
+            context.runtime_base + context.execution_trace_start_offset))
+    {
+        context.execution_trace_configured = false;
+    }
+    // A single sentinel only forces single-stepping until the AOT dispatcher
+    // (HandleAotReentry) finds a resolvable cached target for the NEXT guest
+    // address and jumps straight back into fast cached execution — typically
+    // after just one instruction, since the rest of the traced range usually
+    // already has a normal cache entry. A second, independent sentinel forces
+    // a fresh breakpoint (and a fresh capture) at that later point too.
+    if (context.execution_trace_configured && aot_placement != nullptr &&
+        read_hex_env("REPIU_EXECUTION_TRACE_SENTINEL2",
+                     &context.execution_trace_sentinel2_offset))
+    {
+        context.execution_trace_sentinel2_configured =
+            InstallWin32AotProbeSentinel(
+                aot_placement,
+                context.runtime_base + context.execution_trace_sentinel2_offset);
     }
     if (aot_placement != nullptr)
     {

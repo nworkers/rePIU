@@ -25,6 +25,19 @@ constexpr std::uint32_t kWin32AllocatorProbeTraceCapacity = 16;
 constexpr std::uint32_t kWin32AllocatorControlFlowTraceCapacity = 32;
 constexpr std::uint32_t kWin32SegmentLoadTraceCapacity = 16;
 constexpr std::uint32_t kWin32DeferredPortIoLimit = 1024;
+constexpr std::uint32_t kWin32ExecutionTraceCapacity = 64;
+
+// One capture per single-stepped instruction inside a guest code range
+// (see RecordExecutionTrace). `value_at_esp_offset` is read relative to the
+// live ESP at capture time, not a hardcoded absolute address, so it stays
+// correct across stack reuse between calls to the traced function.
+struct Win32ExecutionTraceEntry
+{
+    std::uint32_t sequence = 0;
+    std::uint32_t eip = 0;
+    std::uint32_t esp = 0;
+    std::uint32_t value_at_esp_offset = 0;
+};
 
 struct X86ExecutionSnapshot
 {
@@ -326,6 +339,15 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t execution_probe_offset = 0;
     X86ExecutionSnapshot execution_probe_snapshot;
     std::uint32_t execution_probe_stack[8] = {};
+    bool execution_trace_configured = false;
+    std::uint32_t execution_trace_start_offset = 0;
+    std::uint32_t execution_trace_end_offset = 0;
+    std::uint32_t execution_trace_esp_offset = 0;
+    std::uint32_t execution_trace_hit_count = 0;
+    bool execution_trace_sentinel2_configured = false;
+    std::uint32_t execution_trace_sentinel2_offset = 0;
+    std::uint32_t execution_trace_sentinel_rearm_count = 0;
+    Win32ExecutionTraceEntry execution_trace[kWin32ExecutionTraceCapacity];
     std::uint32_t aot_call_depth = 0;
     bool aot_last_return_matches_call = false;
     std::uint32_t aot_last_expected_return = 0;
