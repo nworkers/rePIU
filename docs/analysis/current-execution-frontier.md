@@ -1,5 +1,74 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-16 Task 222 (진행 중): frontier 0x0302208C = 파일명 목적지 지역 포인터 [esp+0x154] 손상 (호출자 인자 아님) / Task 222 (in progress): the 0x0302208C frontier is a corrupted destination-pointer local [esp+0x154], not a caller argument
+
+**확인됨 (이전 판정 정정):** 문제 함수 entry는 guest **`0x03021DF8`**(Watcom 레지스터 호출
+규약, `push ebx/ecx/esi/edi/ebp; sub esp, 0x17C` → 프레임 0x190). 종료 지점 `0x0302208C`
+(`mov [edi], al`)의 **EDI는 호출자 인자가 아니라 지역변수**다: `0x03021F41`
+`lea eax,[esi+0x0C]; mov [esp+0x154], eax`로 `[esp+0x154]=ESI+0xC`를 만들고 `0x03021F71`
+`mov edi,[esp+0x154]`로 싣는다(함께 `[esp+0x150]=ESI`, `[esp+0x148]=ESI+4`,
+`[esp+0x144]=ESI+8`). 오프셋 0x144~0x164는 전부 0x17C 프레임 **내부 지역**이다 — Task 221/222
+초기의 "`[esp+0x140]/[esp+0x13C]`는 호출자 제공 포인터, EDI는 목적지 인자" 서술은 **오판**이다.
+새 스택 창 캡처(§ 진단)로 fault 시점 `[esp+0x154]`=`0xDD1523B1`, 인접 `[esp+0x150]`=`0x0325E208`,
+`[esp+0x148]`=`0x0325E20C`, `[esp+0x144]`=`0x0325E210`을 실측했다.
+
+**확인됨 (손상 확정):** 블록 `0x03022052`는 16비트 필드 3개를 `[ESI]`/`[ESI+4]`/`[ESI+8]`
+(`0x0325E208`/`20C`/`210`, 유효 heap)에 쓴 **뒤** `0x0302208C`에서 파일명 첫 바이트를 fault한다
+— 앞 세 store가 성공했으므로 **ESI(구조체 베이스)는 유효**하다. 그런데 **EDI=`0xDD1523B1`은
+홀수**라 `ESI+0xC`(짝수)일 수 없고, 복사 루프는 EDI를 2씩 증가시키므로 짝수 시작에서 홀수가
+될 수 없다. 따라서 **파일명 목적지 지역 `[esp+0x154]`가 `ESI+0xC`가 아닌 손상된 wild 값으로
+바뀌어 있었다**. 소스도 정상이다: ESI(fault)=`0x032953AC`(전역 테이블), `[ESI+0x20]` 덤프는
+`"01.tga\0"`로 NUL 종결, AOT 캐시 바이트도 `88 07`(`mov [edi],al`)로 명령 번역 정확. **즉 미구현
+HLE 소스 구조체 문제도, 소스 문자열 미종결도 아니다.**
+
+**확인됨 (선행/진단):** (1) Task 221이 미룬 trap 백엔드 30초 회귀 — progress 118,692, fatal 0,
+28초 Glide 창 open, **회귀 없음**(기준선 118,504). 이 trap 구동에서는 `0x0302208C` fault가
+**미재현**. (2) "fault VA만 기록" 서술은 오판 — `CaptureException`은 이미 fault 시점 전체
+레지스터와 `[ESI+0x20..]`를 캡처·보고한다. 빠진 것은 스택 내용이라, fault ESP에서 96 dword를
+캡처하는 `exception_stack_*`를 추가했다(`execution_trampoline.cpp`/`main.cpp`,
+4 dword/행 — 자식 stderr 파이프 ~119자 절단 회피).
+
+**확인됨 (AOT 정적 번역 정확 — 정적 원인 배제):** `repiu_aot_probe`의 캐시 emit을 확인한 결과
+관련 명령은 모두 올바른 esp displacement로 번역된다: `0x03021F41 mov [esp+0x154],eax` →
+`89 84 24 54 01 00 00`, `0x03021F71 mov edi,[esp+0x154]` → `8b bc 24 54 01 00 00`,
+`0x03021F5C/63 [esp+0x150]` → `89/8b b4 24 50 01 00 00`. 즉 displacement 오번역이 아니다.
+
+**확인됨 (런타임 동적 번역도 정확 — 후보 (a) 배제):** fault 시점 블록 `0x03021F3E`의 **런타임 동적
+캐시 바이트**를 덤프(env `REPIU_AOT_PROBE_GUEST`)한 결과, cache `0x0D7901B1`에서
+`8D 46 0C | 89 84 24 54 01 00 00 | 8D 46 08 | 89 84 24 44 01 00 00 | 8D 46 04 | 89 84 24 48 01 00 00`
+= `lea eax,[esi+0xC]; mov [esp+0x154],eax; lea eax,[esi+8]; mov [esp+0x144],eax; lea eax,[esi+4];
+mov [esp+0x148],eax`로 **정적 plan과 바이트 단위 동일**하다. 즉 store는 정확히 `esi+0xC`(짝수, 유효)를
+`[esp+0x154]`에 쓴다. **정적·동적 AOT 번역 모두 정확하므로 이 frontier는 번역 버그가 아니다.**
+
+**미확정 (역설 → 남은 후보 (b)):** 프레임 매핑 `D = F − fault_esp = 4`로 5개 슬롯이 ESI=`0x0325E208`에
+일관되게 맞는데 **오직 `[F+0x154]` 한 슬롯만** `esi+0xC`(=`0x0325E214`, 짝수)여야 하는데 `0xDD1523B1`
+(홀수)이다. store(`0x03021F41`)가 올바른 값을 올바른 주소에 쓴 뒤, 같은 블록·같은 esp에서 연속 기록되는
+`[esp+0x150]`=ESI는 정상인데, load(`0x03021F71`)에서 `[esp+0x154]`만 홀수 wild 값이다 — 두 명령 사이엔
+call/push/pop/boundary/int3가 없다. 정적·동적 번역이 모두 정확하므로 남은 유일한 기제는 **store와 load
+사이에 게스트 스택 슬롯 `0x035D6B14`(=`[esp+0x154]`)가 게스트 명령 스트림 외부에서 비동기로
+덮어써지는 것**이다(AOT 디스패치/VEH/HLE 또는 TF 단일스텝 왕복 중의 스택 쓰기). 값 `0xDD1523B1`은 fault
+이전 HLE 트레이스/레지스터에 미등장. 다음 진단: 게스트 주소 `0x035D6B14`(실측, 결정론적)에 **하드웨어
+워치포인트**(DR0/DR7)를 걸어 쓰기 EIP를 포착 — 단, AOT의 TF/int3 기구와 공존해야 하므로 별도 설계 필요.
+추가로 trap 미재현은 120초 구동에서 resize `134/212`로 fault 코드 **미도달** 때문이다. 근인 확정 전 HLE
+추측 수정은 하지 않는다. 상세: `docs/work-logs/20260716-222-string-copy-store-frontier-log.md`.
+
+**Confirmed (Task 222, correcting the earlier read):** the faulting function is guest
+`0x03021DF8` (Watcom register convention, 0x190-byte frame). EDI at `0x0302208C` is **not** a
+caller argument — it is local `[esp+0x154]`, set to `ESI+0xC` at `0x03021F41` and loaded at
+`0x03021F71` (with `[esp+0x150]=ESI`, `[esp+0x148]=ESI+4`, `[esp+0x144]=ESI+8`); offsets
+0x144–0x164 are all in-frame locals, so the earlier "caller-supplied destination argument" note
+is wrong. The three 16-bit field stores to `[ESI]/[ESI+4]/[ESI+8]` (valid heap `0x0325E2xx`)
+**succeed** before the filename store faults, so ESI is valid; but EDI (`0xDD1523B1`) is **odd**
+and cannot be `ESI+0xC` (even), so the destination-pointer local `[esp+0x154]` was corrupted to a
+wild odd value. Source is fine (`"01.tga\0"` at ESI, correct `88 07` AOT bytes), ruling out both
+a missing-HLE source structure and an unterminated source string. The deferred trap-backend 30 s
+regression shows no regression (118,692) and does **not** reproduce this fault; the "only fault
+VA" claim was mistaken (full registers were already captured), so this task adds a guest
+stack-window capture (96 dwords). Open: catch what overwrites `[esp+0x154]` between `0x03021F41`
+and `0x03021F71` (write-watch / trap single-step of block `0x03021F3E`); confirm whether trap
+non-reproduction is path-miss vs. AOT-specific corruption; no speculative HLE fix until the
+corruption source is confirmed.
+
 ## 2026-07-16 Task 221 (완료): 0x045D3EB0의 출처 = 32비트 EBX 절단으로 무력화된 resize — 수정 후 heap 수요 실측 ~83MB, 새 frontier는 0x0302208C / Task 221 (complete): 0x045D3EB0's provenance = the resize path disabled by 32-bit EBX truncation — fixed; measured heap demand ~83 MiB; new frontier at 0x0302208C
 
 **확인됨 (원인·수정·검증):** 게스트는 `INT 21h AH=4Ah`의 EBX에 **32비트 paragraph 수**

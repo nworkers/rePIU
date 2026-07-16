@@ -22,6 +22,7 @@
 
 #include <charconv>
 #include <cstdio>
+#include <algorithm>
 #include <cstdlib>
 #include <cstdint>
 #include <filesystem>
@@ -660,6 +661,47 @@ void PrintExecutionAttempt(
             Hex32(attempt.exception_esi_dwords[5]),
             Hex32(attempt.exception_esi_dwords[6]),
             Hex32(attempt.exception_esi_dwords[7]));
+        logger.error("Win32 exception stack window base/count: {}/{}",
+                     Hex32(attempt.exception_stack_base),
+                     attempt.exception_stack_dword_count);
+        for (std::uint32_t row = 0;
+             row < attempt.exception_stack_dword_count; row += 4U)
+        {
+            std::string line;
+            const std::uint32_t row_end = std::min<std::uint32_t>(
+                row + 4U, attempt.exception_stack_dword_count);
+            for (std::uint32_t index = row; index < row_end; ++index)
+            {
+                line += ' ';
+                line += Hex32(attempt.exception_stack_dwords[index]);
+            }
+            logger.error("Win32 exception stack +{}:{}",
+                         Hex32(row * 4U), line);
+        }
+        if (attempt.aot_probe_guest_address != 0)
+        {
+            logger.error(
+                "Win32 AOT runtime cache probe guest/cache/valid: {}/{}/{}",
+                Hex32(attempt.aot_probe_guest_address),
+                Hex32(attempt.aot_probe_cache_address),
+                attempt.aot_probe_cache_valid);
+            for (std::uint32_t base = 0;
+                 base < sizeof(attempt.aot_probe_cache_bytes); base += 16U)
+            {
+                std::string probe_line;
+                char byte_hex[4];
+                const std::uint32_t end = std::min<std::uint32_t>(
+                    base + 16U, sizeof(attempt.aot_probe_cache_bytes));
+                for (std::uint32_t index = base; index < end; ++index)
+                {
+                    std::snprintf(byte_hex, sizeof(byte_hex), " %02X",
+                                  attempt.aot_probe_cache_bytes[index]);
+                    probe_line += byte_hex;
+                }
+                logger.error("Win32 AOT runtime cache probe +{}:{}",
+                             Hex32(base), probe_line);
+            }
+        }
         PrintX86ExecutionSnapshot(logger,
                                   "Win32 minimal execution exception",
                                   attempt.exception_snapshot);

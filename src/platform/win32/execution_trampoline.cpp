@@ -233,6 +233,13 @@ struct ThreadContext
     std::uint32_t exception_fault_region_size = 0;
     std::uint32_t exception_esi_dwords[8] = {};
     std::uint32_t exception_esi_dword_valid_mask = 0;
+    std::uint32_t exception_stack_base = 0;
+    std::uint32_t exception_stack_dwords[kWin32ExceptionStackDwordCapacity] = {};
+    std::uint32_t exception_stack_dword_count = 0;
+    std::uint32_t aot_probe_guest_address = 0;
+    std::uint32_t aot_probe_cache_address = 0;
+    std::uint32_t aot_probe_cache_valid = 0;
+    std::uint8_t aot_probe_cache_bytes[32] = {};
     std::uint32_t handled_fatal_breakpoint_count = 0;
     std::uint32_t last_fatal_breakpoint_address = 0;
     std::uint32_t last_fatal_message_address = 0;
@@ -1869,6 +1876,66 @@ int CaptureException(EXCEPTION_POINTERS* exception_info,
                 copied == sizeof(std::uint32_t))
             {
                 context->exception_esi_dword_valid_mask |= 1U << index;
+            }
+        }
+        // Capture a window of the guest stack starting at the fault-time ESP.
+        // Arguments passed to the faulting function sit above ESP; the caller
+        // return address lives just below the lowest argument slot. Reading
+        // this window is what lets a terminal fault's wild-pointer argument be
+        // traced back to the caller that supplied it.
+        context->exception_stack_base =
+            static_cast<std::uint32_t>(exception_info->ContextRecord->Esp);
+        context->exception_stack_dword_count = 0;
+        for (std::uint32_t index = 0;
+             index < kWin32ExceptionStackDwordCapacity; ++index)
+        {
+            const std::uintptr_t source =
+                static_cast<std::uintptr_t>(context->exception_stack_base) +
+                index * 4U;
+            SIZE_T copied = 0;
+            if (ReadProcessMemory(GetCurrentProcess(),
+                                  reinterpret_cast<const void*>(source),
+                                  &context->exception_stack_dwords[index],
+                                  sizeof(std::uint32_t), &copied) == 0 ||
+                copied != sizeof(std::uint32_t))
+            {
+                break;
+            }
+            context->exception_stack_dword_count = index + 1U;
+        }
+        // Optional: dump the runtime (dynamic) AOT cache bytes for a configured
+        // guest address (REPIU_AOT_PROBE_GUEST). This lets a terminal fault
+        // compare the on-demand translation of a block against the static plan,
+        // to tell whether a runtime dynamic-cache divergence explains a
+        // corrupted guest value.
+        if (context->aot_placement != nullptr)
+        {
+            const char* probe_text = std::getenv("REPIU_AOT_PROBE_GUEST");
+            if (probe_text != nullptr && *probe_text != '\0')
+            {
+                context->aot_probe_guest_address =
+                    static_cast<std::uint32_t>(
+                        std::strtoul(probe_text, nullptr, 0));
+                std::uint32_t cache_address = 0;
+                if (context->aot_probe_guest_address != 0 &&
+                    FindAotCacheAddress(*context->aot_placement,
+                                        context->aot_probe_guest_address,
+                                        &cache_address))
+                {
+                    context->aot_probe_cache_address = cache_address;
+                    SIZE_T copied = 0;
+                    if (ReadProcessMemory(
+                            GetCurrentProcess(),
+                            reinterpret_cast<const void*>(
+                                static_cast<std::uintptr_t>(cache_address)),
+                            context->aot_probe_cache_bytes,
+                            sizeof(context->aot_probe_cache_bytes),
+                            &copied) != 0 &&
+                        copied == sizeof(context->aot_probe_cache_bytes))
+                    {
+                        context->aot_probe_cache_valid = 1;
+                    }
+                }
             }
         }
 #endif
@@ -11222,6 +11289,18 @@ bool RunWin32ExecutionThread(
                 sizeof(attempt->exception_esi_dwords));
     attempt->exception_esi_dword_valid_mask =
         context.exception_esi_dword_valid_mask;
+    attempt->exception_stack_base = context.exception_stack_base;
+    std::memcpy(attempt->exception_stack_dwords,
+                context.exception_stack_dwords,
+                sizeof(attempt->exception_stack_dwords));
+    attempt->exception_stack_dword_count =
+        context.exception_stack_dword_count;
+    attempt->aot_probe_guest_address = context.aot_probe_guest_address;
+    attempt->aot_probe_cache_address = context.aot_probe_cache_address;
+    attempt->aot_probe_cache_valid = context.aot_probe_cache_valid;
+    std::memcpy(attempt->aot_probe_cache_bytes,
+                context.aot_probe_cache_bytes,
+                sizeof(attempt->aot_probe_cache_bytes));
     CopyThreadObservationToAttempt(context, attempt);
     attempt->thread_exit_code = exit_code;
     attempt->hle_stdout_output.assign(
