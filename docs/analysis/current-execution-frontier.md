@@ -1,5 +1,364 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-16 Task 220: 반환 인라인 캐시 4엔트리 확장으로 동결 해소 — 실행이 기존 종료 지점(0x030873F4 → 0x045D3EB0)까지 전진, 로더는 hang 없이 정상 종료 / Task 220: 4-way return inline cache resolves the freeze — execution advances to the known terminal store (0x030873F4 → 0x045D3EB0) and the loader now exits cleanly
+
+**확인됨 (수정):** Task 219가 확정한 반환 인라인 캐시 스래싱을 해소하기 위해
+`EmitReturnInlineCacheSlot`(`src/runtime/aot_code_cache.cpp`)의 반환 thunk를 **4엔트리 직렬
+체인**으로 확장했다(`AotInlineCacheEntry` 배열, entry i의 패치된 JNE는 entry i+1의 비교로,
+마지막은 miss 꼬리로 연결). `PatchWin32AotIndirectInlineCache`는 (1) 같은 대상을 이미 보유한
+엔트리 갱신 → (2) 첫 빈 엔트리 채움 → (3) 라운드로빈 교체 순의 stateless 정책으로 바꿨다.
+엔트리 수 4는 정적 분석으로 확정한 헬퍼 `0x030EE170`의 호출부 수(정확히 4곳: `0x030EE1EE`/
+`0x030EE240`/`0x030EE28D`/`0x030EE2FB`)에 맞춘 것이다. 중간 단계로 시도한 2엔트리 버전은
+entry0이 첫 대상(`0x030EE1F3`)에 선점된 채 나머지 3개 대상이 entry1을 계속 교체해 효과가
+없었다 — 교체 정책 없는 소수 엔트리 확장은 불충분함을 실측으로 확인했다.
+
+**확인됨 (검증 — 동결 해소와 전진):** `aot-dynamic pumpit1` 40초 구동에서:
+1. `0x030EE1DA` boundary 고정이 **완전히 소멸**했고 `ret_dispatch` 폭주(이전 초당 ~820~1030)가
+   전체 21초 동안 누적 1,100회로 급감했다.
+2. 이전에 `56857/56859`에서 동결되던 dispatch가 계속 전진해(58,158) **게스트가 디코드 단계를
+   통과**했다.
+3. 게스트는 `elapsed_ms≈21s`에 **기지의 종료 지점**에서 exit code 2로 종료했다: guest
+   `0x030873F4`의 `mov [ebx+ebp], al`(`88 04 2B`)이 `0x045D3EB0`에 쓰다 `0xC0000005` —
+   Task 205/212가 확정했던 디코드 출력 스토어와 동일 주소·동일 명령이다.
+4. **로더 post-attempt hang이 재현되지 않았다**: teardown phase 14 완주 후 `child_exit=0`으로
+   supervisor 강제 종료 없이 정상 회수됐다(Task 204 이래 처음).
+5. 기본 trap 백엔드 30초 회귀 없음(progress 118,504, 기존 기준선 111~112k 동등 이상).
+
+**미확정 (다음 frontier — Task 212 미확정 1번의 재부상):** Task 213은 `INT 21h AH=4Ah` resize
+HLE에 크기 추적을 넣어 allocator heap 상한을 모델링했고 당시 `0x045D3EB0` overflow가 "원천
+제거"됐다고 기록했으나, 이번 구동에서 **정확히 같은 버퍼 주소**(`0x045D3EB0`, LINEXE 합성
+private-data 영역 내부)로의 스토어가 재현됐다. 이는 Task 212가 미확정으로 남겼던 두 출처 후보
+중 "resize 응답"이 아니라 **"우리가 합성하는 DOS/4G client/private data 안의 메모리 풀 경계
+값"에서 이 포인터가 온다**는 가설을 강하게 뒷받침한다 — resize를 고쳐도 같은 주소가 나오기
+때문이다. 다음 분석은 게스트가 `0x045D3EB0`을 어디서 읽어오는지(디코드 구조체 `[ESI+0x34]`에
+이 값을 채운 코드) 역추적하는 것이다.
+
+```mermaid
+flowchart TD
+    T219["Task 219: 반환 IC 스래싱 확정"] --> F["수정: 반환 thunk 4엔트리 체인<br/>+ 갱신/채움/라운드로빈 패치 정책"]
+    F --> V1["0x030EE1DA 고정 소멸<br/>ret_dispatch 폭주 ~1030/s → 총 1,100회"]
+    F --> V2["dispatch 동결 해소 (56859 → 58158+)<br/>디코드 단계 통과"]
+    V2 --> N["21s: 기지의 종료 지점 재도달<br/>0x030873F4 store → 0x045D3EB0 (Task 205/212)"]
+    V2 --> H["로더 hang 미재현<br/>child_exit=0 정상 종료"]
+    N -. "다음 분석 (Task 212 미확정 1 재부상)" .-> P["0x045D3EB0 포인터 provenance:<br/>합성 private-data 풀 경계 값 역추적"]
+```
+
+**Confirmed (Task 220):** To resolve the return inline-cache thrashing pinned down in Task 219,
+the return thunk emitted by `EmitReturnInlineCacheSlot` was widened to a **four-entry serial
+chain** (`AotInlineCacheEntry` array; each entry's patched JNE falls to the next entry's compare,
+the last to the shared miss tail), and `PatchWin32AotIndirectInlineCache` now picks the entry to
+write statelessly: refresh a matching filled entry, else fill the first empty one, else
+round-robin replace. Four entries match the statically confirmed call-site count of helper
+`0x030EE170` (exactly four). An intermediate two-way attempt was measurably insufficient — entry0
+got pinned by the first target (`0x030EE1F3`) while the other three thrashed entry1. Verification
+(aot-dynamic, 40 s budget): the `0x030EE1DA` boundary pinning is gone, cumulative `ret_dispatch`
+drops from ~820–1030/s to 1,100 total over 21 s, the previously frozen dispatch counter resumes
+advancing (56,859 → 58,158), and the guest passes the decode stage — terminating at ~21 s at the
+**known** terminal store (guest `0x030873F4`, `mov [ebx+ebp], al` to `0x045D3EB0`, the exact
+address and instruction from Tasks 205/212). Notably the loader then exits cleanly
+(`child_exit=0`, teardown phase 14, no post-attempt hang — first time since Task 204). Trap
+backend 30 s regression: none (progress 118,504 vs the 111–112k baseline). **Next frontier:**
+the recurrence of the exact same buffer address despite Task 213's resize-ceiling fix strongly
+supports Task 212's alternative provenance hypothesis — the pointer comes from the synthesized
+DOS/4G client/private-data pool bounds, not from resize replies; tracing who fills
+`[ESI+0x34] = 0x045D3EB0` in the decode structure is the next step.
+
+## 2026-07-16 Task 219: 동결의 정체 확정 — 멈춤이 아니라 반환 인라인 캐시 스래싱으로 ~1000배 감속된 비트스트림 디코드 루프 / Task 219: the freeze identified — not a stall but a bitstream decode loop running ~1000x slow due to return inline-cache thrashing
+
+**수정됨 (Task 219 설계 시점의 가설 기각):** "RET의 반환 대상이 quarantine된 thunk 페이지라서
+Resolve가 실패한다"는 가설(Task 219 설계 문서의 예측)도 틀렸다. 라이브 계측 결과 RET
+`0x030EE1DA`의 실제 반환 대상은 **같은 페이지의 `0x030EE292`와 `0x030EE300`을 교대**하며,
+quarantine 페이지(`0x030FE000`)와 무관하다.
+
+**확인됨 (프로그램은 멈추지 않았다):** `aot_last_return_*`/`aot_return_dispatch_count`를 라이브
+미러링(`Win32SharedLiveTelemetry` v15)한 25초 재구동에서, "동결" 구간(`dispatch=56859` 고정) 동안
+`ret_dispatch`가 2584 → 4460으로 **초당 약 820씩 계속 증가**했다. 즉 반환 디스패치는 매 사이클
+성공하고 있고, 게스트는 `0x030EE2xx` 영역의 루프를 초당 약 820회 실제로 돌고 있다 — 지금까지
+"동결"로 기록된 상태는 정지가 아니라 **심각한 처리량 저하**다.
+
+| elapsed_ms | dispatch | ret_src → ret_tgt | ret_dispatch |
+|---|---|---|---|
+| 22719 | 56859 (동결) | `0x030EE1DA` → `0x030EE300` | 2584 |
+| 23734 | 56859 | `0x030EE1DA` → `0x030EE300` | 3410 |
+| 25078 | 56859 | `0x030EE1DA` → `0x030EE292` | 4460 |
+
+**확인됨 (루프의 정체 = 비트스트림 디코드):** `repiu_aot_probe` 역어셈블 결과:
+* `0x030EE170`~`0x030EE1DA`(RET)는 **비트스트림 심볼 추출 헬퍼**다 — `[0x03141064]`(테이블
+  선택자)를 읽어 `0x033A516C`/`0x033A522C`의 테이블을 인덱싱하고, 256엔트리 탐색 루프
+  (`cmp ecx,[edx+4]; jz` / `inc ebx; cmp ebx,0x100; jl`)와 16비트 창 비트 추출(`mov edx,0x10;
+  sub ecx,eax; sar ebp,cl`)을 수행한다. 전형적인 Huffman류 가변장 부호 디코드.
+* 이 헬퍼를 **서로 다른 두 호출부**가 호출한다: `0x030EE28D`의 `call`(반환 주소 `0x030EE292`)과
+  `0x030EE2FB`의 `call`(반환 주소 `0x030EE300`). 반환 지점 `0x030EE300` 이후는 비트
+  저장소(`[edi]`)에서 소비한 비트를 차감하는 에필로그다.
+
+**확인됨 (감속 기제 = 단일 엔트리 반환 인라인 캐시 스래싱):** 이 RET의 AOT 반환 thunk
+(`query_cache=0x10ee1da`, `pushfd; cmp [esp+4], imm; ...; jmp rel32(패치형); int3`)의 인라인
+캐시는 예측 반환 주소를 **1개만** 저장한다. 반환 대상이 `0x030EE292`/`0x030EE300` 두 값을
+교대하므로 매 반환이 miss → `int3` → VEH 왕복(`HandleAotReturnTransfer` + 인라인 캐시 재패치
+요청) → 다음 반환에서 다시 miss가 영원히 반복된다. 사이클당 VEH 왕복 1회로 처리량이 초당 약
+820회로 제한된다 — 네이티브라면 초당 수백만 회일 루프가 **약 1000배 이상 감속**된 것이다.
+`aot_boundary_guest_eip`가 이 RET에 고정되고 boundary/reentry가 1:1로 증가하던 Task 216~218의
+모든 관측이 이 기제로 설명된다. 이는 Task 204가 처리량 후보로 이미 기록한 "indirect
+inline-cache 다중화 또는 테이블형 번역"의 정확한 사례다.
+
+**미확정 (다음 구현 방향):** (1) 반환 thunk의 인라인 캐시를 2~4엔트리로 다중화하는 것이 기존
+메커니즘의 자연스러운 확장이며 이 루프의 VEH 왕복을 제거한다 — AOT 캐시 emitter(반환 thunk
+바이트 시퀀스)와 패치 프로토콜 변경 필요. (2) 이 디코드 루프가 유한한 자산 디코드인지(완료 후
+다음 단계 진행) 프레임마다 반복되는 오디오 디코드인지는 처리량 개선 후에야 확인 가능하다.
+(3) 호출부가 2곳뿐인지 더 있는지는 다중화 엔트리 수 결정에 참고할 것.
+
+```mermaid
+flowchart TD
+    T219["Task 219: ret_tgt 라이브 계측"] --> R["반환 대상 = 0x030EE292/0x030EE300 교대<br/>(quarantine 페이지 무관 — 설계 가설 기각)"]
+    R --> A["ret_dispatch 초당 ~820 증가<br/>= 게스트는 실제로 루프 실행 중"]
+    A --> D["역어셈블: 0x030EE170 = 비트스트림<br/>심볼 추출 헬퍼 (Huffman류 디코드)"]
+    D --> M["단일 엔트리 반환 인라인 캐시가<br/>두 반환 대상 사이에서 매번 miss"]
+    M --> S["사이클당 VEH 왕복 1회<br/>= ~1000배 감속 (멈춤 아님)"]
+    S -. "다음 구현" .-> F["반환 thunk 인라인 캐시<br/>2~4엔트리 다중화 (Task 204 후보의 실증)"]
+```
+
+**Confirmed (Task 219):** Live-mirroring `aot_last_return_source/target/expected`,
+`aot_last_return_matches_call`, and `aot_return_dispatch_count` (live-telemetry v15) over a 25 s
+rerun overturns the "stall" reading entirely: during the frozen-dispatch window, `ret_dispatch`
+climbs ~820/s (2584→4460 in 2.4 s), so return dispatches succeed every cycle and the guest is
+actively executing a loop. The design-time hypothesis (return target on the quarantined page) is
+also rejected — the RET at `0x030EE1DA` alternates between two return targets on its own page,
+`0x030EE292` and `0x030EE300`. Disassembly shows `0x030EE170`–`0x030EE1DA` is a bitstream
+symbol-extraction helper (table selector at `[0x03141064]`, 256-entry lookup tables at
+`0x033A516C`/`0x033A522C`, 16-bit window bit extraction via `sar ebp, cl` — classic Huffman-style
+variable-length decoding), called from two distinct call sites (`0x030EE28D` and `0x030EE2FB`).
+The slowdown mechanism: the AOT return thunk's inline cache stores only **one** predicted return
+address, so with two alternating targets every single return misses → `int3` → a full VEH round
+trip (`HandleAotReturnTransfer` plus an inline-cache repatch request) → the next return misses
+again, capping the loop at ~820 iterations/s — a ~1000x slowdown of a loop that would run millions
+of iterations per second natively. This explains every observation from Tasks 216–218 and is the
+concrete instance of the "indirect inline-cache multiplication" throughput candidate Task 204
+recorded. **Next:** widen the return thunk's inline cache to 2–4 entries (emitter + patch-protocol
+change); whether this decode is a finite asset decode or a per-frame audio decode can only be
+determined after the throughput fix.
+
+## 2026-07-16 Task 218: quarantine은 DOS4GW 자체의 정상 thunk 자기 패치로 확인 — 그러나 0x030EE1DA와는 무관한 별개 페이지 / Task 218: the quarantine is confirmed to be DOS4GW's own legitimate thunk self-patch — but on an unrelated page, not 0x030EE1DA's
+
+**확인됨 (quarantine 원인 = 오탐 아님):** `aot_last_retired_page`/`aot_last_code_write_source`/
+`aot_last_code_write_destination`을 라이브 미러링해 25초 재구동한 결과, 36건의 same-page
+quarantine이 모두 페이지 `0x030FE000`에서, 쓰기 소스 `0x030F3432`(목적지는 이벤트마다
+`0x030FECC4`/`0x030FED0F`/`0x030FED50`/`0x030FED14`... 등으로 다름)에서 발생했다. `0x030F3432`는
+`docs/analysis/20260715-209-aot-dynamic-import-stub-storm.md`가 이미 역어셈블한 DOS4GW
+cross-segment thunk 패처의 `mov [edi+0x01], eax`(패치할 목표 함수 오프셋을 자기 thunk에 기록하는
+명령, aot_probe 주소 `0x010F3432`)와 **정확히 일치**한다. 즉 이 quarantine은 오탐이 아니라
+**DOS4GW 런타임이 서로 다른 cross-segment 호출부마다 자신의 thunk 스텁을 최초 1회 자기 패치하는
+정상 동작**이며, 이 스텁들이 모두 같은 4KB 페이지(`0x030FE000`)에 밀집해 있어 페이지 단위
+quarantine이 반복 트리거된 것으로 확인된다.
+
+**수정됨 (Task 217의 인과관계 오판정):** 그러나 이 quarantine된 페이지(`0x030FE000`)는
+Task 216~217이 추적한 동결 지점 guest `0x030EE1DA`가 속한 페이지(`0x030EE000`)와 **다른
+페이지**다(`0x030FE000 - 0x030EE000 = 0x10000`, 64 KiB 차이). 즉 "`0x030EE1DA`의 함수가
+quarantine된 페이지 위에 있어서 캐시 진입이 막혔다"는 Task 217의 인과 설명은 **성립하지 않는다**
+— quarantine 자체는 확인됐지만 그것이 `0x030EE1DA` 동결의 직접 원인이라는 연결고리는 끊어졌다.
+
+**미확정 (다음 분석 대상):** `0x030EE1DA` 동결이 quarantine과 무관하다면, 남은 유력 후보는
+AOT 자체의 **call/return 프레임 매칭 실패**다 — 과거 `docs/analysis/aot-return-stack-divergence.md`가
+기록한 것과 같은 계열로, `ThreadContext`에는 이미 `aot_call_depth`/`aot_call_frames`/
+`aot_last_return_matches_call`/`aot_last_expected_return`/`aot_last_call_source`/
+`aot_last_call_target`/`aot_last_expected_call_source`/`aot_last_expected_call_target` 필드가
+존재하지만(`execution_trampoline.cpp:195-202`) 실시간 미러링되지 않는다. 이 필드들을 Task 216/217과
+같은 방식으로 라이브 노출하면, 이 RET로 돌아오는 호출/반환 쌍이 매번 프레임 매칭에 실패해 전용
+반환 디스패처 대신 범용 boundary 경로로 빠지는지 직접 확인할 수 있다.
+
+```mermaid
+flowchart TD
+    Q["quarantine 원인 확인:<br/>write 0x030F3432 -> 0x030FEXXX"] --> ID["DOS4GW 자체 cross-segment<br/>thunk 자기 패치로 확정 (정상 동작)"]
+    ID --> PAGE["quarantine된 페이지 = 0x030FE000<br/>(thunk 스텁 테이블)"]
+    PAGE -. "0x10000 차이, 별개 페이지" .-> STUCK["0x030EE1DA 페이지 = 0x030EE000<br/>(동결 지점, quarantine과 무관)"]
+    STUCK -. "다음 가설" .-> CF["AOT call/return 프레임<br/>매칭 실패 (aot-return-stack-divergence 계열)"]
+    CF -. "다음 계측" .-> M["aot_call_frames/aot_last_return_matches_call<br/>라이브 미러링"]
+```
+
+**Confirmed/Corrected (Task 218):** Live-mirroring `aot_last_retired_page`/
+`aot_last_code_write_source`/`aot_last_code_write_destination` over a 25 s rerun shows all 36
+same-page quarantine events land on page `0x030FE000`, triggered by writes from guest
+`0x030F3432` — an exact match for the `mov [edi+0x01], eax` instruction in DOS4GW's
+cross-segment-thunk self-patcher already disassembled in the Task 208–209 analysis. So the
+quarantine is not a false positive: it is DOS4GW's own legitimate one-time self-patch of each
+cross-segment call site's thunk stub, and those stubs are densely packed into a single 4 KiB page,
+so page-granularity quarantine keeps re-triggering as new call sites resolve for the first time.
+However, this quarantined page (`0x030FE000`) is a **different** page from the one containing the
+stuck `0x030EE1DA` (`0x030EE000`) — Task 217's causal claim that quarantine is blocking
+`0x030EE1DA`'s cache entry does not hold. **Unresolved:** the leading remaining candidate is an
+AOT call/return frame-matching failure (the same class as `docs/analysis/aot-return-stack-
+divergence.md`); `aot_call_depth`/`aot_call_frames`/`aot_last_return_matches_call`/
+`aot_last_call_source`/`aot_last_call_target`/`aot_last_expected_call_source`/
+`aot_last_expected_call_target` already exist in `ThreadContext` but are not live-mirrored —
+exposing them the same way should show directly whether the call/return pair through
+`0x030EE1DA` is repeatedly failing frame matching and falling to the generic boundary path instead
+of a dedicated return dispatcher.
+
+## 2026-07-16 Task 217: Task 216의 스래싱 가설 기각 — quarantine은 동결 이전에 이미 고정값으로 정지 / Task 217: Task 216's thrashing hypothesis rejected — quarantine counters had already frozen before the stall began
+
+**수정됨 (Task 216 가설 기각):** Task 216은 "guest `0x030EE1DA`(RET)가 속한 코드 페이지가 반복
+retire/quarantine되어 전용 반환 thunk 대신 매번 boundary 경로로 빠지는 스래싱"을 가설로
+남겼다. `aot_page_retire_attempt_count`/`aot_page_retire_success_count`/
+`aot_retired_entry_trap_count`/`aot_quarantine_count`를 실시간 미러링(`Win32SharedLiveTelemetry`
+v13)해 40초 재구동한 결과, 이 가설은 **기각된다** — 네 카운터 모두 `elapsed_ms≈16469`에
+`0/24/24/36`으로 도달한 뒤 40초 종료까지(동결 시작 `elapsed_ms≈21640` 전후 포함) **단 한 번도
+변하지 않았다.** 즉 quarantine/retire는 동결이 시작되기 약 5초 전에 이미 끝나 고정값이 되었고,
+동결 구간 동안 "반복적으로" 일어나고 있는 사건이 아니다.
+
+| elapsed_ms | dispatch | aot_boundary_guest_eip | retire_attempt/success/trap/quarantine |
+|---|---|---|---|
+| 15453 | 46832/46832 | `0x045D0478` | 0/24/24/30 |
+| 16469 (안정화) | 47326/47326 | `0x030B1A73` | 0/24/24/36 |
+| 21640 (동결 시작) | 56857/56857 | `0x030EE1DA` | 0/24/24/36 (불변) |
+| 40047 (종료) | 56857/56857 | `0x030EE1DA` | 0/24/24/36 (불변) |
+
+**확인됨 (수정된 메커니즘):** `ResolveAotTransferTarget`(`execution_trampoline.cpp:9588`)은
+대상이 quarantine된 페이지 위에 있으면 캐시 조회조차 하지 않고 **즉시 `false`를 반환**한다
+(`IsWin32AotGuestPageQuarantined(context, target)` 체크가 `IsAotCacheAddress`/
+`FindAotCacheAddress`보다 먼저 온다, `execution_trampoline.cpp:9602-9606`). 따라서 한 번
+quarantine된 페이지는 이후 **재시도 없이 구조적으로 영구히** 캐시 진입에서 배제된다 — 새 retire
+이벤트가 필요 없다. `0x030EE1DA`(RET)가 속한 페이지가 부팅~LINEXE 초기화 구간(`elapsed_ms`
+8~16초, 36건의 same-page quarantine 중 하나)에 self-modifying-code 오탐 또는 DOS4GW 자체의
+정상적인 thunk 자기 패치(`docs/analysis/20260715-209-aot-dynamic-import-stub-storm.md`가
+역어셈블한 `mov byte ptr [edi], 0xE9`류의 cross-segment thunk 자기 패치와 같은 계열, 게임
+로직상 정상 동작)로 인해 quarantine된 뒤 다시는 캐시로 복귀하지 못하고, 이 페이지의 함수가
+호출될 때마다(어디선가 반복 호출되는 루프로 보임) 항상 `HandleAotReentry`의 느린 경계 경로로만
+처리되고 있는 것으로 보인다.
+
+**미확정 (다음 분석 대상):** (1) `0x030EE1DA`가 속한 실제 페이지 번호와, 그 페이지가 몇 번째
+quarantine 이벤트(36건 중 어느 것)로 격리됐는지 — `aot_last_retired_page`를 같은 방식으로 라이브
+미러링하면 확정할 수 있다. (2) 이 함수를 반복 호출하는 호출자가 어디인지 — 이것이 확정돼야
+2026-07-14 항목이 남긴 "게임 내부 tick/플래그 폴링 무한 대기" 가설과 같은 것인지, 아니면 단순히
+quarantine으로 인한 성능 저하(호출 자체는 정상 진행 중)인지 구분할 수 있다. (3) quarantine이
+"정상"(DOS4GW 자체 thunk 자기 패치)인지 "오탐"인지에 따라 대응이 갈린다 — 정상이라면 quarantine된
+페이지에서도 RET처럼 자주 재진입되는 명령에는 반환 전용 thunk를 boundary 경로보다 우선
+재시도하도록 `HandleAotReentry`를 조정하는 것이 처리량 개선의 다음 후보다.
+
+```mermaid
+flowchart TD
+    T216["Task 216: 스래싱 가설<br/>(반복 retire/quarantine 추정)"] -. "기각" .-> C["retire/quarantine 4개 카운터<br/>모두 동결 5초 전 0/24/24/36에서 정지"]
+    C --> M["ResolveAotTransferTarget: quarantine 페이지는<br/>재시도 없이 영구 캐시 배제(9602-9606)"]
+    M --> S["0x030EE1DA 소속 페이지가 부팅~LINEXE 구간<br/>(8~16s) 36건 중 하나로 이미 quarantine됨"]
+    S --> L["quarantine 이후 이 함수 호출마다<br/>매번 느린 boundary 경로 (dispatch 미증가)"]
+    L -. "다음 확인" .-> N1["aot_last_retired_page 라이브 미러링<br/>+ 호출자 역추적"]
+    L -. "다음 확인" .-> N2["quarantine이 정상 self-modify인지<br/>오탐인지 판정"]
+```
+
+**Corrected (Task 217, rejecting Task 216's thrashing hypothesis):** Live-mirroring
+`aot_page_retire_attempt_count`/`aot_page_retire_success_count`/`aot_retired_entry_trap_count`/
+`aot_quarantine_count` (live-telemetry v13) over a 40 s rerun shows all four counters reach
+`0/24/24/36` by `elapsed_ms≈16469` and then **never change again**, including through the entire
+frozen window (`elapsed_ms≈21640`–`40047`) where `aot_boundary_guest_eip` stays pinned at
+`0x030EE1DA`. So the page is not being repeatedly retired/re-resolved during the stall — it was
+quarantined once, roughly 5 seconds before the freeze began, and has stayed quarantined ever
+since. Mechanism: `ResolveAotTransferTarget` checks `IsWin32AotGuestPageQuarantined` before even
+attempting a cache lookup and returns `false` immediately if quarantined (`execution_trampoline.
+cpp:9602-9606`), so a quarantined page is structurally excluded from the cache forever, with no
+further retire events needed. The page containing `0x030EE1DA` (the `RET`) was most likely one of
+the 36 same-page quarantine events during boot/LINEXE init (`elapsed_ms` 8–16 s) — plausibly a
+false positive, or DOS4GW's own legitimate cross-segment thunk self-patching (the `mov byte ptr
+[edi], 0xE9` idiom documented in the Task 208–209 analysis) — and every subsequent call into
+whatever function lives on that page now permanently takes the slow `HandleAotReentry` boundary
+path instead of the cached fast path. **Unresolved:** which page number this is and which of the
+36 quarantine events caused it (needs `aot_last_retired_page` live-mirrored the same way); who
+keeps calling into this function (needed to tell whether this is the 2026-07-14 "game-internal
+tick/flag polling wait" hypothesis versus merely a quarantine-induced slowdown with otherwise
+normal call progress); and whether the quarantine is a false positive or DOS4GW's expected
+self-modifying thunk behavior, which would decide whether the fix is a false-positive correction
+or reordering `HandleAotReentry` to retry the dedicated return thunk before falling back to the
+boundary path for frequently-hit quarantined-page instructions like this one.
+
+## 2026-07-16 Task 216: Task 215 재정정 — 진짜 정체는 0x030F6574 storm이 아니라 guest RET 0x030EE1DA의 AOT 캐시 미스 스래싱 / Task 216: Task 215 re-corrected — the real culprit is AOT cache-miss thrashing on guest RET 0x030EE1DA, not the 0x030F6574 storm
+
+**수정됨 (Task 215의 오판정):** 바로 아래 Task 215 항목의 "`0x030F6574` cross-segment thunk assertion storm 재발" 결론은 Task 205가 이미 한 번 지적한 것과 똑같은 함정에서 나온 오판정이었다 — `last_eip`/`last_guest_eip`는 `ExceptionDispatchScope`로 감싸인 **완전 dispatch**에서만 갱신되는데(`GuestStackVectoredExceptionHandler`의 "Lightweight VEH transfer paths run without an ExceptionDispatchScope" 주석, `execution_trampoline.cpp:9110`), Task 215는 `dispatch_entry/exit`가 동결된 구간에서도 이 필드가 여전히 `0x030F6574`를 가리킨다는 이유만으로 그 주소에서 storm이 발생 중이라고 결론지었다. 실제로는 그 시각 이후 단 한 번도 완전 dispatch가 일어나지 않았으므로 `0x030F6574`는 **19초 이전 마지막 완전 dispatch의 stale 값**일 뿐이었다.
+
+**확인됨 (새 계측과 재검증):** `HandleAotReentry`의 인라인 캐시 미스 경계(`execution_trampoline.cpp:10027` 부근)와 legacy fallback 진입 지점에 실시간 텔레메트리(`aot_boundary_guest_eip`, `aot_legacy_fallback_count`, `aot_last_fallback_address`, `Win32SharedLiveTelemetry` v12)를 추가하고 50초 재구동한 결과:
+
+| elapsed_ms | dispatch | aot_boundary/reentry | aot_boundary_guest_eip | legacy_fallback_count |
+|---|---|---|---|---|
+| 21625 (동결 시작) | 56859/56859 | 50650/50685 | `0x030EE1DA` | 0 |
+| 35016 | 56859/56859 | 58656/58692 | `0x030EE1DA` | 0 |
+| 50125 (종료) | 56859/56859 | 67732/67767 | `0x030EE1DA` | 0 |
+
+동결 시작부터 종료까지 `aot_boundary_guest_eip`가 **단 한 번도 바뀌지 않고 정확히 `0x030EE1DA` 한 주소에 고정**된 채 `aot_boundary/reentry`만 초당 약 630~1,100씩 증가했다. `legacy_fallback_count`는 0으로 유지되어 완전 legacy(1명령씩 무기한 단일 스텝) 모드로도 전이하지 않았다 — 정확히 이 하나의 `HandleAotReentry` 캐시 미스 경계만 무한 반복되고 있다.
+
+**확인됨 (역어셈블):** `repiu_aot_probe build/runtime_mounts/pumpit1/PIU/PIU.EXE 0x010EE1DA`(aot_probe 기준 주소 = 런타임 주소 `-0x02000000`)로 정적 조회한 결과, `0x030EE1DA`는 다음 에필로그의 마지막 명령인 1바이트 `RET`(`C3`)이다.
+
+```asm
+0x030EE1CC  mov [0x033A6190], ebx
+0x030EE1D2  add esp, 0x04
+0x030EE1D5  pop ebp
+0x030EE1D6  pop edi
+0x030EE1D7  pop esi
+0x030EE1D8  pop ecx
+0x030EE1D9  pop ebx
+0x030EE1DA  ret          ; <- aot_boundary_guest_eip가 고정되는 지점
+```
+
+정적 AOT 캐시 플랜에는 이 주소에 대한 반환 전용 thunk 엔트리가 이미 존재한다(`query_cache=0x10ee1da,offset=0x11c52,guest_length=1,emitted_length=27,bytes=9c81...cc` — `pushfd`/조건 비교/`jmp`/`popfd`/`lea esp,[esp+4]`/패치형 `jmp rel32`/`int3` 형태의 표준 반환 디스패치 thunk). 즉 **정적 계획상으로는 이 RET가 캐시된 빠른 반환 경로를 타야 하는데, 실제 구동에서는 `aot_return_dispatch_count`(전용 반환 디스패처)가 아니라 범용 `HandleAotReentry` 경계(`aot_boundary_count`/`aot_reentry_count`)로만 반복 진입하고 있다** — 이는 이 RET가 속한 코드 페이지의 캐시 엔트리가 실행 중 무효화(retire/quarantine)된 뒤 매번 재해석을 시도하다 다시 무효화되는 스래싱 패턴과 일치한다(`docs/work-orders/20260712-191-aot-self-modifying-page-coherence.md`, `docs/analysis/aot-self-modifying-code.md`가 다루는 self-modifying-code write-watch 재판정 메커니즘과 같은 계열).
+
+**미확정 (다음 분석 대상):** `aot_retired_entry_trap_count`/`aot_quarantine_count`/`aot_page_retire_success_count`는 현재 실행 종료 후 요약값으로만 노출되고 실시간 미러링되지 않는다 — Task 216에서 추가한 `aot_boundary_guest_eip`와 같은 방식으로 이들도 라이브 텔레메트리에 노출해, 동결 구간 동안 이 페이지가 실제로 반복 retire/re-resolve되고 있는지, 아니면 다른 이유로 정적 캐시 엔트리가 애초에 로드되지 않았는지 확정해야 한다. 확정되면 (a) 해당 페이지의 self-modifying-code 오탐 조건을 수정하거나 (b) 반환 전용 thunk가 재진입 시에도 우선 시도되도록 `HandleAotReentry` 순서를 조정하는 것이 다음 구현 후보다.
+
+```mermaid
+flowchart TD
+    T215["Task 215: last_eip=0x030F6574<br/>(stale, 완전 dispatch 없음)"] -. "정정" .-> C["0x030F6574는 19초 이전<br/>마지막 완전 dispatch의 잔재"]
+    N["Task 216: aot_boundary_guest_eip<br/>라이브 계측 추가"] --> F["50초 동결 구간 내내<br/>0x030EE1DA 한 주소에 고정"]
+    F --> D["역어셈블: 0x030EE1DA = RET<br/>(반환 전용 캐시 thunk가 정적 계획엔 존재)"]
+    D --> H["가설: 코드 페이지 retire/quarantine 스래싱<br/>(self-modifying-code 오탐 계열)"]
+    H -. "다음 계측" .-> R["aot_retired_entry_trap_count 등<br/>라이브 미러링 추가"]
+```
+
+**Corrected/Confirmed (Task 216):** The Task 215 entry below concluded a recurring `0x030F6574` cross-segment thunk assertion storm, but this repeated the exact stale-telemetry trap Task 205 already flagged once: `last_eip`/`last_guest_eip` only update inside a full `ExceptionDispatchScope` dispatch, and since no full dispatch fired after ~19 s, `0x030F6574` was simply the last dispatch's frozen leftover value, not the live stuck address. Adding real-time telemetry (`aot_boundary_guest_eip`, `aot_legacy_fallback_count`, `aot_last_fallback_address`, live-telemetry v12) at `HandleAotReentry`'s inline-cache-miss boundary and re-running for 50 s shows `aot_boundary_guest_eip` pinned at exactly `0x030EE1DA` for the entire frozen window (21.6 s–50.1 s) while `aot_boundary/reentry` climbs steadily (~630–1,100/s) and `legacy_fallback_count` stays 0. Disassembling via `repiu_aot_probe` (address `0x010EE1DA`, aot_probe's `-0x02000000` convention) shows `0x030EE1DA` is a one-byte `RET` closing a small epilogue; the static AOT cache plan already contains a dedicated return-dispatch thunk for it, yet the running process only ever hits the generic `HandleAotReentry` inline-cache-miss boundary for it, never the dedicated return dispatcher (`aot_return_dispatch_count` stays frozen too) — consistent with the containing code page's cache entry being repeatedly retired/quarantined and re-resolved (the same self-modifying-code write-watch family covered by `docs/work-orders/20260712-191-aot-self-modifying-page-coherence.md`). **Unresolved:** `aot_retired_entry_trap_count`/`aot_quarantine_count`/`aot_page_retire_success_count` are not yet live-mirrored, so whether the page is actively thrashing retire/re-resolve cycles (vs. simply never having a cache entry loaded) is still unconfirmed — the next step is to mirror those counters the same way, then either fix the false-positive self-modifying-code condition on that page or reorder `HandleAotReentry` to retry the dedicated return thunk before falling back to single-step boundary handling.
+
+## 2026-07-16 Task 215: 장기 구동 재검증 — 새 frontier는 0x030F6574 cross-segment thunk assertion storm의 재발 / Task 215: Long-run reverification — the new frontier is a recurrence of the 0x030F6574 cross-segment thunk assertion storm
+
+**확인됨 (Task 214 미확정 1번 항목에 대한 답):** 재빌드한 `main`(`8052369`)을 `REPIU_EXECUTION_BACKEND=aot-dynamic`으로 90초 supervised 구동한 결과, progress `15583` 이후 도달하는 지점은 로더 post-attempt hang도 그리기 게이트(71~77)도 아니었다. `elapsed_ms≈19s`에서 `dispatch_entry/exit`가 `56857/56857`로 완전히 동결되고 90초 강제 종료까지(약 66초간) 전혀 증가하지 않았으며, 이 구간의 `last_eip`/`last_guest_eip`는 `0x030F6574`, `exception=0x80000003`(`EXCEPTION_BREAKPOINT`)로 고정 반복됐다. `aot_boundary`/`reentry` 카운터는 계속 증가해(`81586→117688+`) 게스트 스레드가 살아서 같은 실패 조건을 무한 재시도하는 storm임을 보여준다(스레드 종료가 아님).
+
+**확인됨 (정체 규명):** `0x030F6574`는 신규 지점이 아니라 Task 208–209 분석(`docs/analysis/20260715-209-aot-dynamic-import-stub-storm.md`)이 이미 기록한 크래시 EIP로, DOS4GW cross-segment call thunk의 의도된 assertion(`cmp dx, cx` 불일치 → `int3`)과 같은 계열의 fatal-tail이다 — Task 210이 `0x030F3438` 호출부에서 고친 것은 GS selector 오독이라는 **한 가지 원인**이었을 뿐이며, `0x030F6574` 호출부는 별도의 selector/thunk 조건으로 여전히 실패한다.
+
+**확인됨 (다른 결과는 안정적):** 이번 90초 구동에서 (1) Glide 창은 더미 폴백이 아니라 실제 WGL로 정상 생성됐고(`opened=1`, 640x480), (2) `glide_ordinal`은 이전 모든 기준선(Task 203/210/213)과 동일하게 `0x5E`(`_GRCULLMODE@4`)에 고정돼 Task 214가 Glide 호출 시퀀스 자체를 전진시키지는 못했음을 재확인했으며, (3) Task 213이 고친 디코드 루프 미매핑 스토어(`0x045D3EB0`)와 Task 211의 MSCDEX 처리는 이 구간에서 전혀 재발하지 않았다. 상세 근거는 `docs/work-logs/20260716-215-glide-post-fix-longrun-reverification-log.md` 참조.
+
+**미확정 (다음 분석 대상):** `0x030F6574` 호출부가 어떤 LINEXE 모듈 간 호출인지, 그 시점의 `dx`(대상 함수 세그먼트)/`cx`(현재 CS)가 각각 무엇인지 역추적이 필요하다. Task 209가 남긴 미확정 2번("LINEXE 별도 selector 설계(`0x0080/0x0088/0x0090`)가 실기 DOS4GW flat 코드 세그먼트 공유 모델과 다른지")이 이 반복되는 storm 계열 전체의 구조적 근본 원인일 가능성이 높으며, `0x030F3438`처럼 개별 호출부를 하나씩 패치하는 대신 selector 설계를 통합하는 근본 수정이 다음 우선순위 후보다.
+
+```mermaid
+flowchart TD
+    F214["Task 214: 0xe06d7363 해결<br/>(스레드 필터 + TIB 보존 + 더미 폴백)"] --> G["9~10s: 실제 WGL Glide 창 생성 성공<br/>glide_ordinal 0x5E 고정(변화 없음)"]
+    G --> S["~19s: dispatch 56857/56857로 동결<br/>last_eip=0x030F6574, EXCEPTION_BREAKPOINT storm"]
+    S --> ID["0x030F6574 = Task 209가 이미 기록한<br/>DOS4GW cross-segment thunk assertion 지점<br/>(0x030F3438과 같은 계열, 다른 호출부)"]
+    ID --> K["90s: supervisor 강제 종료<br/>(자연 종료·로더 hang 미도달)"]
+    ID -. "다음 분석" .-> N["0x030F6574 dx/cx 역추적 +<br/>LINEXE selector 설계 통합 여부 결정"]
+```
+
+**Confirmed (answering Task 214's open item 1):** A 90-second supervised run of rebuilt `main` (`8052369`) under `REPIU_EXECUTION_BACKEND=aot-dynamic` shows that what is reached past progress `15583` is neither the loader post-attempt hang nor the drawing gate (71–77). At `elapsed_ms≈19s`, `dispatch_entry/exit` freezes at `56857/56857` and never increases again through the forced 90 s termination (~66 s), with `last_eip`/`last_guest_eip` pinned at `0x030F6574` and `exception=0x80000003` (`EXCEPTION_BREAKPOINT`) repeating; `aot_boundary`/`reentry` keep climbing (`81586→117688+`), showing the guest thread is alive and endlessly retrying the same failing check rather than having exited. `0x030F6574` is not a new site — it is the exact crash EIP already recorded by the Task 208–209 analysis as an instance of DOS4GW's intentional cross-segment call thunk assertion (`cmp dx, cx` mismatch → `int3`), the same fatal-tail family as `0x030F3438`; Task 210's fix addressed only one cause (a GS-selector misread) at the `0x030F3438` call site, and the `0x030F6574` call site still fails under a different selector/thunk condition. Everything else held stable: the Glide window opened for real via WGL (not the dummy fallback) at 9–10 s, `glide_ordinal` stayed pinned at `0x5E` (`_GRCULLMODE@4`) exactly as in every prior baseline (confirming Task 214 removed the crash but never advanced the Glide call sequence itself), and neither the Task 213 decode-loop store fix nor the Task 211 MSCDEX handling regressed. **Unresolved:** trace which LINEXE inter-module call `0x030F6574` represents and what `dx`/`cx` are at that point; Task 209's still-open item 2 (whether the per-module LINEXE selectors `0x0080/0x0088/0x0090` structurally diverge from real DOS4GW's flat shared code segment) is likely the root cause behind this whole recurring storm family, making a unified selector-design fix a higher-priority candidate than patching each call site individually as was done for `0x030F3438`.
+
+## 2026-07-16 Task 214: Glide 초기화 예외 0xe06d7363 해결 — Thread ID VEH 필터 + TIB 스택 경계 보존 + Glide 더미 백엔드 폴백 / Task 214: Glide initialization exception 0xe06d7363 resolved — thread-ID VEH filter, TIB stack-bounds preservation, and Glide dummy backend fallback
+
+**수정됨 (Task 213 frontier 해소):** 바로 아래 Task 213 항목이 새 frontier로 기록한 Glide 초기화 단계(`_GRSSTWINOPEN@28`)의 C++ 예외 `0xe06d7363`은 게스트 코드 결함이 아니라 두 가지 호스트 측 구조적 결함이 원인이었다.
+1. **프로세스 전역 VEH의 스레드 무구분:** `GuestStackVectoredExceptionHandler`가 스레드를 가리지 않고 모든 예외를 가로채, OS 백그라운드 스레드(CoreMessaging/텍스트 서비스 등)에서 발생한 무관한 C++ 예외 `0xe06d7363`까지 게스트 예외로 오인해 `RecoverToHost`가 해당 스레드의 레지스터를 조작했다.
+2. **게스트 스택 TIB 경계 불일치:** 게스트 전용 스택으로 전환된 상태에서도 TIB의 Stack Base/Limit(`FS:[4]`/`FS:[8]`)가 호스트 스택 범위를 계속 가리켜, SEH/VEH unwinder가 게스트 스택 프레임을 무효로 판정하고 예외 전파를 거부했다.
+
+**확인됨 (해결):** `ThreadContext::guest_thread_id`를 추가해 `GuestEntryThreadProc` 시작 시 `GetCurrentThreadId()`로 기록하고, `GuestStackVectoredExceptionHandler` 진입 시 `GetCurrentThreadId() != guest_thread_id`이면 즉시 통과시키도록 했다. `CallGuestEntryWithStack`은 게스트 스택 전환 시 `VirtualQuery`로 얻은 게스트 스택 범위를 TIB Stack Base/Limit에 설정하고, 정상 반환 및 `RecoverGuestStackException` 복구 시점에 호스트 원래 값으로 되돌린다. 추가로 `GlideOpenGlBackend`에 `dummy_mode_` 폴백을 도입해, `RegisterGlideWindowClass`/`CreateWindowExW`/`wglCreateContext`/`wglMakeCurrent`/셰이더 초기화 중 어느 하나라도 실패하면 `OpenWindowed`가 `opened=true`를 합성 반환하고 이후 모든 Glide 상태 setter(`SetColorMask`, `SetDepthMask`, `SetAlphaBlend` 등)가 더미 성공 경로로 동작하도록 했다(`src/platform/win32/execution_trampoline.cpp`, `src/platform/win32/glide_opengl_backend.cpp`).
+
+**확인됨 (검증):** 재빌드 후 `pumpit1` 구동에서 `0xe06d7363` 크래시가 재현되지 않았고, 게스트 EIP progress가 `9871`→`15583`까지 지속 상승하며 supervisor 타임아웃까지 안정적으로 실행되었다. 상세는 `docs/work-orders/20260716-214-glide-hle-initialization-exception-order.md`, `docs/design/20260716-214-glide-hle-initialization-exception.md`, `docs/work-logs/20260716-214-glide-hle-initialization-exception-log.md` 참조.
+
+**미확정 (다음 분석 대상):**
+1. progress `15583` 이후 실제로 어디까지 도달하는지 확인되지 않았다 — Task 213이 남긴 두 번째 항목인 로더 post-attempt hang(`pumpit1` 경로, ntdll `0x774CA07C` INFINITE 대기, Task 204에서 최초 관측)에 재도달하는지, 아니면 그리기 게이트(71~77, `_GRDRAWTRIANGLE@12` 등)까지 진행하는지 60초 이상의 장기 구동으로 확인이 필요하다.
+2. `_GRSSTWINOPEN@28` 등에 삽입된 `[repiu-live-debug]` 진단 `fprintf`는 작업 지시서상 "임시 진단 코드"로 명시됐으나 현재 코드에 상시 컴파일되어 남아 있다 — 유지할지, 디버그 빌드 전용으로 게이팅할지 결정이 필요하다.
+3. `dummy_mode_` 폴백은 GPU/드라이버가 정상인 호스트에서도 일시적 리소스 부족 등으로 오진입해 렌더링을 영구히 건너뛸 가능성이 있다 — 폴백 진입 조건과 재시도 여부를 더 세분화할지 검토가 필요하다.
+
+```mermaid
+flowchart TD
+    T213["Task 213: 새 frontier<br/>_GRSSTWINOPEN@28에서 0xe06d7363"] --> C1["원인 1: 프로세스 전역 VEH가<br/>백그라운드 스레드 예외까지 게스트로 오인"]
+    T213 --> C2["원인 2: TIB Stack Base/Limit이<br/>호스트 범위를 계속 가리켜 unwind 거부"]
+    C1 --> F1["수정: guest_thread_id 기반<br/>VEH 스레드 필터"]
+    C2 --> F2["수정: 게스트 스택 전환 시<br/>TIB 교체/복원"]
+    F1 --> D["Glide dummy_mode_ 폴백<br/>(GPU 실패 시 opened=true 합성)"]
+    F2 --> D
+    D --> V["검증: progress 9871→15583<br/>0xe06d7363 재현 없음"]
+    V -. "다음 확인" .-> N["장기 구동으로<br/>post-attempt hang vs 그리기 게이트 도달 확인"]
+```
+
+**Corrected/Confirmed (Task 214):** The `0xe06d7363` C++ exception the Task 213 entry below flagged as a new frontier at Glide initialization (`_GRSSTWINOPEN@28`) was not a guest-code defect but two host-side structural issues: (1) the process-wide VEH did not filter by thread, so an unrelated C++ exception `0xe06d7363` raised on an OS background thread (CoreMessaging/Text Services) was misidentified as a guest exception and `RecoverToHost` corrupted that thread's registers; (2) with execution switched onto the guest-private stack, the TIB's Stack Base/Limit (`FS:[4]`/`FS:[8]`) still pointed at the host stack range, so the SEH/VEH unwinder rejected guest stack frames as invalid and refused exception propagation. Fix: added `ThreadContext::guest_thread_id`, recorded at the start of `GuestEntryThreadProc`, and made `GuestStackVectoredExceptionHandler` pass through immediately when `GetCurrentThreadId() != guest_thread_id`; `CallGuestEntryWithStack` now swaps the TIB Stack Base/Limit to the `VirtualQuery`-derived guest stack range on switch and restores the host values on normal return or `RecoverGuestStackException` recovery. `GlideOpenGlBackend` also gained a `dummy_mode_` fallback so that if window-class registration, window creation, WGL context creation/activation, or shader init fails, `OpenWindowed` synthesizes `opened=true` and every subsequent Glide state setter takes the dummy-success path. Verification: a rebuilt `pumpit1` run no longer reproduces the `0xe06d7363` crash, and guest EIP progress climbed steadily from `9871` to `15583` until the supervisor timeout (see the linked work order/design/work-log docs). **Unresolved:** (1) what is actually reached past progress `15583` — whether the previously observed loader post-attempt hang (Task 204, `pumpit1` path, ntdll `0x774CA07C` INFINITE wait) recurs, or the drawing gate (71–77, e.g. `_GRDRAWTRIANGLE@12`) is reached, needs a 60 s+ run to confirm; (2) the `[repiu-live-debug]` diagnostic `fprintf` calls added at `_GRSSTWINOPEN@28` etc. were specified as temporary in the work order but remain unconditionally compiled in — decide whether to keep or gate them behind a debug build; (3) whether `dummy_mode_` could be entered spuriously on hosts with working GPU/drivers (e.g. transient resource exhaustion), permanently skipping real rendering — the fallback trigger conditions may warrant narrowing.
+
 ## 2026-07-16 Task 213: Resize HLE 크기 추적으로 allocator heap 상한 모델링 완료, 디코드 가속화 / Task 213: Resize HLE paragraph tracking and allocator heap ceiling modeling completed, decode accelerated
 
 **확인됨 (상한 출처 및 해결):** Watcom allocator의 heap top은 `INT 21h AH=4Ah` (DOS resize block) 성공 응답(`CF=0` 및 `BX` paragraphs)에서 결정됨을 확정하고 해결했습니다.

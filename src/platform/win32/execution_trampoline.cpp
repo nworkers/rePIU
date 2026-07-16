@@ -9130,6 +9130,52 @@ void BumpAotReentryCount(ThreadContext* context)
     }
 }
 
+// Live-mirrored the same way as BumpAotBoundaryCount/BumpAotReentryCount so
+// a stuck aot_boundary_guest_eip can be cross-checked against repeated
+// page retire/re-resolve activity while dispatch is silent (Task 217).
+void BumpAotPageRetireAttemptCount(ThreadContext* context)
+{
+    context->aot_page_retire_attempt_count.fetch_add(
+        1U, std::memory_order_relaxed);
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedIncrement(
+            &context->shared_live_telemetry->aot_page_retire_attempt_count);
+    }
+}
+
+void BumpAotPageRetireSuccessCount(ThreadContext* context)
+{
+    context->aot_page_retire_success_count.fetch_add(
+        1U, std::memory_order_relaxed);
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedIncrement(
+            &context->shared_live_telemetry->aot_page_retire_success_count);
+    }
+}
+
+void BumpAotRetiredEntryTrapCount(ThreadContext* context)
+{
+    context->aot_retired_entry_trap_count.fetch_add(
+        1U, std::memory_order_relaxed);
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedIncrement(
+            &context->shared_live_telemetry->aot_retired_entry_trap_count);
+    }
+}
+
+void BumpAotQuarantineCount(ThreadContext* context)
+{
+    context->aot_quarantine_count.fetch_add(1U, std::memory_order_relaxed);
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedIncrement(
+            &context->shared_live_telemetry->aot_quarantine_count);
+    }
+}
+
 bool IsAotCacheAddress(const ThreadContext* context, std::uint32_t address)
 {
     if (context == nullptr || context->aot_placement == nullptr ||
@@ -9504,8 +9550,7 @@ bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
         {
             const bool same_page = source == 0U ||
                 (source & kPageMask) == page;
-            context->aot_page_retire_attempt_count.fetch_add(
-                1, std::memory_order_relaxed);
+            BumpAotPageRetireAttemptCount(context);
             if (!RequestAotGuestPageRetirement(
                     context, page, same_page))
             {
@@ -9513,14 +9558,18 @@ bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
                     true, std::memory_order_release);
                 return false;
             }
-            context->aot_page_retire_success_count.fetch_add(
-                1, std::memory_order_relaxed);
+            BumpAotPageRetireSuccessCount(context);
             context->aot_last_retired_page.store(
                 page, std::memory_order_relaxed);
+            if (context->shared_live_telemetry != nullptr)
+            {
+                InterlockedExchange(
+                    &context->shared_live_telemetry->aot_last_retired_page,
+                    static_cast<long>(page));
+            }
             if (same_page)
             {
-                context->aot_quarantine_count.fetch_add(
-                    1, std::memory_order_relaxed);
+                BumpAotQuarantineCount(context);
             }
             observed = true;
         }
@@ -9537,6 +9586,16 @@ bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
             source, std::memory_order_relaxed);
         context->aot_last_code_write_destination.store(
             destination, std::memory_order_relaxed);
+        if (context->shared_live_telemetry != nullptr)
+        {
+            InterlockedExchange(
+                &context->shared_live_telemetry->aot_last_code_write_source,
+                static_cast<long>(source));
+            InterlockedExchange(
+                &context->shared_live_telemetry
+                     ->aot_last_code_write_destination,
+                static_cast<long>(destination));
+        }
     }
     return true;
 }
@@ -9631,8 +9690,7 @@ bool ResolveAotTransferTarget(ThreadContext* context,
                     std::memory_order_acquire) &&
                 RequestAotGuestPageRetirement(context, target, true))
             {
-                context->aot_quarantine_count.fetch_add(
-                    1, std::memory_order_relaxed);
+                BumpAotQuarantineCount(context);
             }
             else
             {
@@ -9948,6 +10006,21 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
         context->aot_last_expected_return, win32_context->Esp,
         context->aot_last_return_matches_call};
     ++context->aot_return_trace_count;
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(
+            &context->shared_live_telemetry->aot_last_return_source,
+            static_cast<long>(win32_context->Eip));
+        InterlockedExchange(
+            &context->shared_live_telemetry->aot_last_return_target,
+            static_cast<long>(target));
+        InterlockedExchange(
+            &context->shared_live_telemetry->aot_last_expected_return,
+            static_cast<long>(context->aot_last_expected_return));
+        InterlockedExchange(
+            &context->shared_live_telemetry->aot_last_return_matches_call,
+            context->aot_last_return_matches_call ? 1L : 0L);
+    }
     std::uint32_t cache_target = target;
     if (!ResolveAotTransferTarget(context, target, &cache_target))
     {
@@ -9979,6 +10052,11 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
     context->enable_single_step_trace = false;
     context->aot_return_dispatch_count.fetch_add(
         1, std::memory_order_relaxed);
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedIncrement(
+            &context->shared_live_telemetry->aot_return_dispatch_count);
+    }
     BumpAotReentryCount(context);
     return true;
 }
@@ -10009,8 +10087,7 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
         if (IsWin32AotCacheAddressRetired(
                 *context->aot_placement, cache_address))
         {
-            context->aot_retired_entry_trap_count.fetch_add(
-                1, std::memory_order_relaxed);
+            BumpAotRetiredEntryTrapCount(context);
             std::uint32_t latest_cache_address = guest_address;
             if (ResolveAotTransferTarget(
                     context, guest_address, &latest_cache_address, true))
@@ -10029,6 +10106,12 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
         win32_context->EFlags |= 0x00000100U;
         context->aot_reentry_pending = true;
         context->enable_single_step_trace = true;
+        if (context->shared_live_telemetry != nullptr)
+        {
+            InterlockedExchange(
+                &context->shared_live_telemetry->aot_boundary_guest_eip,
+                static_cast<long>(guest_address));
+        }
         BumpAotBoundaryCount(context);
         return false;
     }
@@ -10081,6 +10164,14 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
         1, std::memory_order_relaxed);
     context->aot_last_fallback_address.store(current,
                                               std::memory_order_relaxed);
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedIncrement(
+            &context->shared_live_telemetry->aot_legacy_fallback_count);
+        InterlockedExchange(
+            &context->shared_live_telemetry->aot_last_fallback_address,
+            static_cast<long>(current));
+    }
     return false;
 }
 

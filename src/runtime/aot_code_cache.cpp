@@ -257,42 +257,58 @@ bool EmitReturnInlineCacheSlot(const AotInstructionRecord& instruction,
         pop_bytes += static_cast<std::uint32_t>(instruction.bytes[1]) |
                      (static_cast<std::uint32_t>(instruction.bytes[2]) << 8U);
     }
+    constexpr std::uint32_t kReturnInlineCacheEntryCount = 4U;
     AotIndirectInlineCacheSite site;
     site.guest_source = instruction.guest_address;
     site.cache_offset = static_cast<std::uint32_t>(image->bytes.size());
     site.is_return = true;
     image->bytes.push_back(0x9CU);  // pushfd
-    image->bytes.insert(image->bytes.end(),
-                        {0x81U, 0x7CU, 0x24U, 0x04U});
-    site.target_immediate_offset =
-        static_cast<std::uint32_t>(image->bytes.size());
-    AppendImmediate32(&image->bytes, 0U);
-    site.guard_offset = static_cast<std::uint32_t>(image->bytes.size());
-    AppendRel32(&image->bytes, 0xE9U);
-    image->bytes.push_back(0x90U);
-    image->bytes.push_back(0x9DU);  // popfd
-    if (pop_bytes <= 0x7FU)
+    for (std::uint32_t index = 0; index < kReturnInlineCacheEntryCount;
+         ++index)
     {
+        AotInlineCacheEntry entry;
+        entry.compare_offset =
+            static_cast<std::uint32_t>(image->bytes.size());
         image->bytes.insert(image->bytes.end(),
-                            {0x8DU, 0x64U, 0x24U,
-                             static_cast<std::uint8_t>(pop_bytes)});
+                            {0x81U, 0x7CU, 0x24U, 0x04U});
+        entry.target_immediate_offset =
+            static_cast<std::uint32_t>(image->bytes.size());
+        AppendImmediate32(&image->bytes, 0U);
+        entry.guard_offset = static_cast<std::uint32_t>(image->bytes.size());
+        AppendRel32(&image->bytes, 0xE9U);  // initially always miss
+        image->bytes.push_back(0x90U);      // JNE uses the same six bytes
+        image->bytes.push_back(0x9DU);      // popfd
+        if (pop_bytes <= 0x7FU)
+        {
+            image->bytes.insert(image->bytes.end(),
+                                {0x8DU, 0x64U, 0x24U,
+                                 static_cast<std::uint8_t>(pop_bytes)});
+        }
+        else
+        {
+            image->bytes.insert(image->bytes.end(),
+                                {0x8DU, 0xA4U, 0x24U});
+            AppendImmediate32(&image->bytes, pop_bytes);
+        }
+        AppendRel32(&image->bytes, 0xE9U);
+        entry.jump_displacement_offset =
+            static_cast<std::uint32_t>(image->bytes.size() - 4U);
+        site.entries.push_back(entry);
     }
-    else
-    {
-        image->bytes.insert(image->bytes.end(),
-                            {0x8DU, 0xA4U, 0x24U});
-        AppendImmediate32(&image->bytes, pop_bytes);
-    }
-    AppendRel32(&image->bytes, 0xE9U);
+    site.target_immediate_offset = site.entries[0].target_immediate_offset;
+    site.guard_offset = site.entries[0].guard_offset;
     site.jump_displacement_offset =
-        static_cast<std::uint32_t>(image->bytes.size() - 4U);
+        site.entries[0].jump_displacement_offset;
     site.miss_cache_offset = static_cast<std::uint32_t>(image->bytes.size());
     image->bytes.push_back(0x9DU);
     image->bytes.push_back(0xCCU);
-    if (!PatchRel32(&image->bytes, site.guard_offset + 1U,
-                    site.miss_cache_offset))
+    for (const AotInlineCacheEntry& entry : site.entries)
     {
-        return false;
+        if (!PatchRel32(&image->bytes, entry.guard_offset + 1U,
+                        site.miss_cache_offset))
+        {
+            return false;
+        }
     }
     image->indirect_inline_cache_sites.push_back(site);
     return true;

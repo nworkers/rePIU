@@ -7,7 +7,7 @@ namespace repiu::platform::win32
 {
 
 constexpr std::uint32_t kWin32LiveTelemetryMagic = 0x5250544CU;
-constexpr std::uint32_t kWin32LiveTelemetryVersion = 11;
+constexpr std::uint32_t kWin32LiveTelemetryVersion = 15;
 constexpr std::uint32_t kWin32NativeSampleRingCapacity = 8;
 constexpr const char* kWin32LiveTelemetryEnvironment =
     "REPIU_LIVE_TELEMETRY_MAPPING";
@@ -67,6 +67,32 @@ struct Win32SharedLiveTelemetry
     // the host poll loop stalls.
     volatile long aot_boundary_count = 0;
     volatile long aot_reentry_count = 0;
+    // Guest address of the most recent HandleAotReentry inline-cache-miss
+    // boundary (updated outside ExceptionDispatchScope, unlike last_eip).
+    volatile long aot_boundary_guest_eip = 0;
+    volatile long aot_legacy_fallback_count = 0;
+    volatile long aot_last_fallback_address = 0;
+    // Live-mirrored code-page retirement/quarantine counters (Task 217) --
+    // to confirm whether a stuck aot_boundary_guest_eip reflects the same
+    // page repeatedly retiring/re-resolving rather than a one-time event.
+    volatile long aot_page_retire_attempt_count = 0;
+    volatile long aot_page_retire_success_count = 0;
+    volatile long aot_retired_entry_trap_count = 0;
+    volatile long aot_quarantine_count = 0;
+    // Provenance of the most recent quarantine (Task 218): which page was
+    // retired and the guest write that triggered it, so the storm's cause
+    // (false positive vs. DOS4GW's own thunk self-patch) can be judged live.
+    volatile long aot_last_retired_page = 0;
+    volatile long aot_last_code_write_source = 0;
+    volatile long aot_last_code_write_destination = 0;
+    // Return-transfer diagnostics (Task 219): where the most recent guest
+    // RET actually goes, so a return target stuck on a quarantined page can
+    // be observed while dispatch is silent.
+    volatile long aot_last_return_source = 0;
+    volatile long aot_last_return_target = 0;
+    volatile long aot_last_expected_return = 0;
+    volatile long aot_last_return_matches_call = 0;
+    volatile long aot_return_dispatch_count = 0;
     // Published once by the loader so the supervisor can sample child
     // threads externally when the in-process poll loop stalls.
     volatile long guest_thread_id = 0;

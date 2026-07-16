@@ -1,6 +1,7 @@
 #include "repiu/platform/win32/aot_code_cache_win32.h"
 #include "repiu/runtime/aot_translation_plan.h"
 
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <algorithm>
@@ -369,6 +370,13 @@ bool AppendWin32DynamicAotTranslation(
         site.target_immediate_offset += append_offset;
         site.guard_offset += append_offset;
         site.jump_displacement_offset += append_offset;
+        for (runtime::AotInlineCacheEntry& entry : site.entries)
+        {
+            entry.compare_offset += append_offset;
+            entry.target_immediate_offset += append_offset;
+            entry.guard_offset += append_offset;
+            entry.jump_displacement_offset += append_offset;
+        }
         placement->indirect_inline_cache_sites.push_back(site);
     }
     placement->size += static_cast<std::uint32_t>(image.bytes.size());
@@ -412,8 +420,8 @@ bool PatchWin32AotIndirectInlineCache(
     }
     const std::uint32_t miss_offset =
         cache_miss_address - placement->base_address;
-    const runtime::AotIndirectInlineCacheSite* selected = nullptr;
-    for (const auto& site : placement->indirect_inline_cache_sites)
+    runtime::AotIndirectInlineCacheSite* selected = nullptr;
+    for (auto& site : placement->indirect_inline_cache_sites)
     {
         if (miss_offset == site.miss_cache_offset ||
             miss_offset == site.miss_cache_offset + 1U)
@@ -422,16 +430,109 @@ bool PatchWin32AotIndirectInlineCache(
             break;
         }
     }
-    if (selected == nullptr ||
+    bool entry_offsets_valid = selected != nullptr;
+    if (selected != nullptr)
+    {
+        for (const runtime::AotInlineCacheEntry& entry : selected->entries)
+        {
+            entry_offsets_valid = entry_offsets_valid &&
+                entry.jump_displacement_offset + 4U <= placement->size &&
+                entry.target_immediate_offset + 4U <= placement->size &&
+                entry.guard_offset + 6U <= placement->size;
+        }
+    }
+    if (selected == nullptr || !entry_offsets_valid ||
         selected->jump_displacement_offset + 4U > placement->size ||
         selected->target_immediate_offset + 4U > placement->size ||
         selected->guard_offset + 6U > placement->size)
     {
+        static long miss_lookup_failure_count = 0;
+        const long failure_index =
+            InterlockedIncrement(&miss_lookup_failure_count);
+        if (failure_index <= 16 || (failure_index & 0xFFF) == 0)
+        {
+            fprintf(stderr,
+                    "[repiu-live-debug] icache patch lookup failed #%ld"
+                    " miss=0x%08X guest=0x%08X\n",
+                    failure_index, cache_miss_address, guest_target);
+        }
         result->message = "AOT inline-cache miss site was not found";
         return true;
     }
     void* cache = reinterpret_cast<void*>(
         static_cast<std::uintptr_t>(placement->base_address));
+    auto* bytes = static_cast<std::uint8_t*>(cache);
+    // Multi-entry sites (return thunks) pick an entry from the current
+    // cache bytes: refresh the entry already holding this target, else fill
+    // the first empty one, else round-robin replace. Entry i's JNE chains
+    // to entry i+1's compare; the last entry's JNE goes to the miss tail.
+    std::uint32_t immediate_offset = selected->target_immediate_offset;
+    std::uint32_t displacement_offset = selected->jump_displacement_offset;
+    std::uint32_t guard_offset = selected->guard_offset;
+    std::uint32_t guard_target_offset = selected->miss_cache_offset;
+    std::size_t chosen_entry = 0;
+    if (!selected->entries.empty())
+    {
+        const std::size_t entry_count = selected->entries.size();
+        std::size_t chosen = entry_count;
+        for (std::size_t index = 0; index < entry_count; ++index)
+        {
+            const runtime::AotInlineCacheEntry& entry =
+                selected->entries[index];
+            std::uint32_t immediate = 0;
+            std::memcpy(&immediate,
+                        bytes + entry.target_immediate_offset,
+                        sizeof(immediate));
+            if (bytes[entry.guard_offset] == 0x0FU &&
+                immediate == guest_target)
+            {
+                chosen = index;
+                break;
+            }
+        }
+        if (chosen == entry_count)
+        {
+            for (std::size_t index = 0; index < entry_count; ++index)
+            {
+                if (bytes[selected->entries[index].guard_offset] == 0xE9U)
+                {
+                    chosen = index;
+                    break;
+                }
+            }
+        }
+        if (chosen == entry_count)
+        {
+            chosen = selected->replace_cursor % entry_count;
+            selected->replace_cursor =
+                static_cast<std::uint32_t>((chosen + 1U) % entry_count);
+        }
+        const runtime::AotInlineCacheEntry& entry =
+            selected->entries[chosen];
+        immediate_offset = entry.target_immediate_offset;
+        displacement_offset = entry.jump_displacement_offset;
+        guard_offset = entry.guard_offset;
+        guard_target_offset = chosen + 1U < entry_count
+            ? selected->entries[chosen + 1U].compare_offset
+            : selected->miss_cache_offset;
+        chosen_entry = chosen;
+    }
+    // Temporary Task 220 diagnostics: sample the first patches and every
+    // 4096th so a patch that lands on dead bytes (stale site offsets after a
+    // generation republish) becomes visible without flooding stderr.
+    static long patch_call_count = 0;
+    const long patch_call_index = InterlockedIncrement(&patch_call_count);
+    if (patch_call_index <= 16 || (patch_call_index & 0xFFF) == 0)
+    {
+        fprintf(stderr,
+                "[repiu-live-debug] icache patch #%ld miss=0x%08X guest=0x%08X"
+                " cache=0x%08X site_guest=0x%08X entries=%u chosen=%u"
+                " guard=0x%02X\n",
+                patch_call_index, cache_miss_address, guest_target,
+                cache_target, selected->guest_source,
+                static_cast<unsigned>(selected->entries.size()),
+                static_cast<unsigned>(chosen_entry), bytes[guard_offset]);
+    }
     DWORD old_protection = 0;
     if (VirtualProtect(cache, placement->capacity, PAGE_READWRITE,
                        &old_protection) == 0)
@@ -440,13 +541,12 @@ bool PatchWin32AotIndirectInlineCache(
         result->message = "failed to make AOT inline cache writable";
         return true;
     }
-    auto* bytes = static_cast<std::uint8_t*>(cache);
-    std::memcpy(bytes + selected->target_immediate_offset,
+    std::memcpy(bytes + immediate_offset,
                 &guest_target, sizeof(guest_target));
     const std::int64_t relative =
         static_cast<std::int64_t>(cache_target) -
         (static_cast<std::int64_t>(placement->base_address) +
-         selected->jump_displacement_offset + 4U);
+         displacement_offset + 4U);
     if (relative < std::numeric_limits<std::int32_t>::min() ||
         relative > std::numeric_limits<std::int32_t>::max())
     {
@@ -457,13 +557,13 @@ bool PatchWin32AotIndirectInlineCache(
         return true;
     }
     const std::int32_t displacement = static_cast<std::int32_t>(relative);
-    std::memcpy(bytes + selected->jump_displacement_offset,
+    std::memcpy(bytes + displacement_offset,
                 &displacement, sizeof(displacement));
     const std::int32_t miss_displacement = static_cast<std::int32_t>(
-        selected->miss_cache_offset - (selected->guard_offset + 6U));
-    bytes[selected->guard_offset] = 0x0FU;
-    bytes[selected->guard_offset + 1U] = 0x85U;
-    std::memcpy(bytes + selected->guard_offset + 2U,
+        guard_target_offset - (guard_offset + 6U));
+    bytes[guard_offset] = 0x0FU;
+    bytes[guard_offset + 1U] = 0x85U;
+    std::memcpy(bytes + guard_offset + 2U,
                 &miss_displacement, sizeof(miss_displacement));
     DWORD ignored = 0;
     if (VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ,

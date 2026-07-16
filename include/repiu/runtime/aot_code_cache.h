@@ -37,6 +37,14 @@ struct AotCodeCacheFixup
     bool resolved = false;
 };
 
+struct AotInlineCacheEntry
+{
+    std::uint32_t compare_offset = 0;
+    std::uint32_t target_immediate_offset = 0;
+    std::uint32_t guard_offset = 0;
+    std::uint32_t jump_displacement_offset = 0;
+};
+
 struct AotIndirectInlineCacheSite
 {
     std::uint32_t guest_source = 0;
@@ -45,6 +53,15 @@ struct AotIndirectInlineCacheSite
     std::uint32_t target_immediate_offset = 0;
     std::uint32_t guard_offset = 0;
     std::uint32_t jump_displacement_offset = 0;
+    // Return thunks chain several compare/hit blocks so a helper returning
+    // to a handful of call sites (four in the observed decode loop) does not
+    // thrash a single predictor slot (Task 220). `entries` holds every
+    // block, entry 0 duplicating the legacy fields above; entry i's patched
+    // JNE falls to entry i+1's compare, the last one to the miss tail.
+    // Empty for indirect call/jmp sites, which keep the single-slot layout.
+    std::vector<AotInlineCacheEntry> entries;
+    // Patcher-side round-robin replacement cursor (worker thread only).
+    std::uint32_t replace_cursor = 0;
     bool is_call = false;
     bool is_return = false;
 };

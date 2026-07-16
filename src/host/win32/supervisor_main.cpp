@@ -213,6 +213,47 @@ void PrintSnapshot(
               << " aot_boundary/reentry="
               << ReadInterlocked(&telemetry.aot_boundary_count) << "/"
               << ReadInterlocked(&telemetry.aot_reentry_count)
+              << " aot_boundary_guest=0x" << std::hex
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.aot_boundary_guest_eip))
+              << " legacy_fallback_count/addr="
+              << std::dec
+              << ReadInterlocked(&telemetry.aot_legacy_fallback_count)
+              << "/0x" << std::hex
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.aot_last_fallback_address))
+              << std::dec
+              << " retire_attempt/success/trap/quarantine="
+              << ReadInterlocked(&telemetry.aot_page_retire_attempt_count)
+              << "/"
+              << ReadInterlocked(&telemetry.aot_page_retire_success_count)
+              << "/"
+              << ReadInterlocked(&telemetry.aot_retired_entry_trap_count)
+              << "/"
+              << ReadInterlocked(&telemetry.aot_quarantine_count)
+              << " retire_page=0x" << std::hex
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.aot_last_retired_page))
+              << " write_src/dst=0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.aot_last_code_write_source))
+              << "/0x"
+              << static_cast<std::uint32_t>(ReadInterlocked(
+                     &telemetry.aot_last_code_write_destination))
+              << " ret_src/tgt/expected=0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.aot_last_return_source))
+              << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.aot_last_return_target))
+              << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.aot_last_expected_return))
+              << std::dec
+              << " ret_match="
+              << ReadInterlocked(&telemetry.aot_last_return_matches_call)
+              << " ret_dispatch="
+              << ReadInterlocked(&telemetry.aot_return_dispatch_count)
               << " sample_count/unmapped="
               << ReadInterlocked(&telemetry.native_sample_count) << "/"
               << ReadInterlocked(&telemetry.native_sample_unmapped_count)
