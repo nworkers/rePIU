@@ -2205,7 +2205,12 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    constexpr std::uint32_t kRuntimeArenaExpansionSlack = 0x01000000;
+    // The guest allocator grows its program block to ~0x38AA000 bytes
+    // (~57 MiB) via INT 21h AH=4Ah with 32-bit EBX paragraph counts
+    // (Task 221); 64 MiB of slack lets those resizes succeed against
+    // genuinely committed arena memory while the allocator ceiling still
+    // guards the LINEXE pages at the arena end.
+    constexpr std::uint32_t kRuntimeArenaExpansionSlack = 0x08000000;
     repiu::runtime::RuntimeMemoryArenaPlan arena_size_plan;
     if (!repiu::runtime::BuildRuntimeMemoryArenaPlan(
             profile->runtime_reservation_hint.base_address,

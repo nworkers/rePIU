@@ -254,6 +254,19 @@ void PrintSnapshot(
               << ReadInterlocked(&telemetry.aot_last_return_matches_call)
               << " ret_dispatch="
               << ReadInterlocked(&telemetry.aot_return_dispatch_count)
+              << " resize_cnt/rej="
+              << ReadInterlocked(&telemetry.dos_resize_count) << "/"
+              << ReadInterlocked(&telemetry.dos_resize_reject_count)
+              << " resize_ebx/sel/base=0x" << std::hex
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.dos_resize_last_ebx))
+              << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.dos_resize_last_selector))
+              << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.dos_resize_last_base))
+              << std::dec
               << " sample_count/unmapped="
               << ReadInterlocked(&telemetry.native_sample_count) << "/"
               << ReadInterlocked(&telemetry.native_sample_unmapped_count)

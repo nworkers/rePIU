@@ -3697,6 +3697,10 @@ bool HandleDosIoctl(CONTEXT* win32_context, ThreadContext* context)
     return true;
 }
 
+std::uint16_t ReadGuestSegmentSelector(const ThreadContext& context,
+                                       std::uint8_t segment_register,
+                                       const CONTEXT* win32_context);
+
 void RecordDosResize(ThreadContext* context,
                      std::uint16_t selector,
                      std::uint16_t paragraphs,
@@ -3743,20 +3747,53 @@ void RecordLowMemoryAccess(CONTEXT* win32_context,
 bool HandleDosResizeMemoryBlock(CONTEXT* win32_context,
                                 ThreadContext* context)
 {
+    // DOS/4G resize requests can carry 32-bit paragraph counts in EBX;
+    // record the full register so 16-bit truncation stays observable
+    // (Task 221) while the legacy 16-bit path remains in effect below.
+    const std::uint32_t full_ebx =
+        static_cast<std::uint32_t>(win32_context->Ebx);
     const std::uint16_t paragraphs = static_cast<std::uint16_t>(
         win32_context->Ebx & 0xFFFFU);
     constexpr std::uint16_t kInsufficientMemory = 0x0008;
 
+    // The raw guest_es shadow can still hold the host entry-time selector
+    // (observed 0x2B), which resolves to no descriptor and disables the
+    // allocator ceiling; use the physical/shadow-reconciling reader.
+    const std::uint16_t resize_selector =
+        ReadGuestSegmentSelector(*context, 0U, win32_context);
     std::uint32_t selector_base = 0;
-    const auto* descriptor = repiu::runtime::FindDescriptor(context->selector_table, context->guest_es);
+    const auto* descriptor = repiu::runtime::FindDescriptor(
+        context->selector_table, resize_selector);
     if (descriptor != nullptr)
     {
         selector_base = descriptor->base;
     }
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedIncrement(
+            &context->shared_live_telemetry->dos_resize_count);
+        InterlockedExchange(
+            &context->shared_live_telemetry->dos_resize_last_ebx,
+            static_cast<long>(full_ebx));
+        InterlockedExchange(
+            &context->shared_live_telemetry->dos_resize_last_selector,
+            static_cast<long>(resize_selector));
+        InterlockedExchange(
+            &context->shared_live_telemetry->dos_resize_last_base,
+            static_cast<long>(selector_base));
+    }
 
-    const std::uint32_t requested_size = static_cast<std::uint32_t>(paragraphs) * 16U;
-    const std::uint32_t requested_end = selector_base + requested_size;
-    std::uint32_t allocator_end = requested_end;
+    // DOS/4G resize semantics: the block is the client program's linear
+    // block. When the ES descriptor does not resolve (flat model, or the
+    // shadow still holding the host selector), fall back to the relocated
+    // program base so the request is measured against the real block.
+    const std::uint32_t block_base =
+        selector_base != 0U ? selector_base : context->runtime_base;
+    const std::uint64_t requested_size =
+        static_cast<std::uint64_t>(full_ebx) * 16U;
+    const std::uint64_t requested_end = block_base + requested_size;
+    std::uint32_t allocator_end =
+        static_cast<std::uint32_t>(requested_end & 0xFFFFFFFFU);
 
     if (context->linexe_arena_layout.valid &&
         context->linexe_arena_layout.dynamic_allocator_end != 0)
@@ -3767,38 +3804,43 @@ bool HandleDosResizeMemoryBlock(CONTEXT* win32_context,
         if (requested_end > dynamic_allocator_end)
         {
             std::uint32_t max_paragraphs = 0;
-            if (dynamic_allocator_end > selector_base)
+            if (dynamic_allocator_end > block_base)
             {
-                max_paragraphs = (dynamic_allocator_end - selector_base) / 16U;
+                max_paragraphs = (dynamic_allocator_end - block_base) / 16U;
             }
-            const std::uint16_t returned_paragraphs =
-                static_cast<std::uint16_t>(max_paragraphs & 0xFFFFU);
             const std::uint32_t final_allocator_end =
-                selector_base + (static_cast<std::uint32_t>(returned_paragraphs) * 16U);
+                block_base + max_paragraphs * 16U;
 
             RecordDosResize(context,
-                            context->guest_es,
+                            resize_selector,
                             paragraphs,
                             false,
                             kInsufficientMemory,
-                            requested_end,
+                            static_cast<std::uint32_t>(
+                                requested_end & 0xFFFFFFFFU),
                             final_allocator_end);
+            if (context->shared_live_telemetry != nullptr)
+            {
+                InterlockedIncrement(
+                    &context->shared_live_telemetry->dos_resize_reject_count);
+            }
 
             win32_context->Eax =
                 (win32_context->Eax & 0xFFFF0000U) | kInsufficientMemory;
-            win32_context->Ebx =
-                (win32_context->Ebx & 0xFFFF0000U) | returned_paragraphs;
+            // DOS/4G clients read the maximum block size back as a full
+            // 32-bit paragraph count.
+            win32_context->Ebx = max_paragraphs;
             win32_context->EFlags |= 1U;
             return true;
         }
     }
 
     RecordDosResize(context,
-                    context->guest_es,
+                    resize_selector,
                     paragraphs,
                     true,
                     0,
-                    requested_end,
+                    static_cast<std::uint32_t>(requested_end & 0xFFFFFFFFU),
                     allocator_end);
     win32_context->EFlags &= ~1U;
     return true;

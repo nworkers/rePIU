@@ -7,7 +7,7 @@ namespace repiu::platform::win32
 {
 
 constexpr std::uint32_t kWin32LiveTelemetryMagic = 0x5250544CU;
-constexpr std::uint32_t kWin32LiveTelemetryVersion = 15;
+constexpr std::uint32_t kWin32LiveTelemetryVersion = 16;
 constexpr std::uint32_t kWin32NativeSampleRingCapacity = 8;
 constexpr const char* kWin32LiveTelemetryEnvironment =
     "REPIU_LIVE_TELEMETRY_MAPPING";
@@ -93,6 +93,15 @@ struct Win32SharedLiveTelemetry
     volatile long aot_last_expected_return = 0;
     volatile long aot_last_return_matches_call = 0;
     volatile long aot_return_dispatch_count = 0;
+    // INT 21h AH=4Ah resize diagnostics (Task 221): the full 32-bit EBX of
+    // the most recent request (the handler consumes only the low word) and
+    // the selector/base it actually resolved, so an inert allocator ceiling
+    // (base 0) is visible live.
+    volatile long dos_resize_count = 0;
+    volatile long dos_resize_reject_count = 0;
+    volatile long dos_resize_last_ebx = 0;
+    volatile long dos_resize_last_selector = 0;
+    volatile long dos_resize_last_base = 0;
     // Published once by the loader so the supervisor can sample child
     // threads externally when the in-process poll loop stalls.
     volatile long guest_thread_id = 0;

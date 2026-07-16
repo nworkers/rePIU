@@ -1,5 +1,54 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-16 Task 221 (완료): 0x045D3EB0의 출처 = 32비트 EBX 절단으로 무력화된 resize — 수정 후 heap 수요 실측 ~83MB, 새 frontier는 0x0302208C / Task 221 (complete): 0x045D3EB0's provenance = the resize path disabled by 32-bit EBX truncation — fixed; measured heap demand ~83 MiB; new frontier at 0x0302208C
+
+**확인됨 (원인·수정·검증):** 게스트는 `INT 21h AH=4Ah`의 EBX에 **32비트 paragraph 수**
+(실측 최대 `0x533500` ≈ 83MB)를 넘기는데 핸들러가 하위 16비트만 읽어 전부 무조건 성공
+처리했고(+ES가 호스트 `0x2B`로 남아 base 0), 이것이 heap 무한 성장과 `0x045D3EB0` overflow의
+확정 원인이다. EBX 전체 해석 + `runtime_base` 폴백 + 32비트 최대치 반환으로 수정하고
+(텔레메트리 v16), 실측 수요에 맞춰 arena slack을 128MB로 확장했다. 수정 후 기존 종료 지점
+(`0x030873F4` → `0x045D3EB0`)은 소멸했고 게스트는 212건 resize 전부 성공(거절 0, peak 83MB)
+상태로 39초까지 전진, **새 frontier `0x0302208C`**(`mov [edi], al` 바이트 복사 스토어, 인접
+바이트 창에 `INT 21h AH=3Fh` 파일 읽기)에서 종료 후 로더가 hang 없이 정상 회수됐다. 중간
+실험으로 상한만 실동작시키고 slack을 늘리지 않으면 게임이 "메모리 부족"으로 4초에 정상 자진
+종료함을 확인했다 — 게임의 최소 heap 요구가 약 70~83MB임을 뜻한다. 상세는
+`docs/work-logs/20260716-221-decode-output-pointer-provenance-log.md`.
+
+**미확정:** (1) 새 frontier `0x0302208C` 복사 스토어의 대상/조건, (2) trap 백엔드 회귀 확인
+(미수행), (3) resize 시점 ES shadow가 `0x2B`로 남는 근본 원인.
+
+**Confirmed (Task 221):** the guest passes 32-bit paragraph counts in EBX to INT 21h AH=4Ah
+(measured peak `0x533500` ≈ 83 MiB); the handler truncated them to 16 bits (and ES resolved to
+host `0x2B`, base 0), so every resize succeeded unconditionally — the confirmed cause of the
+unbounded heap and the `0x045D3EB0` overflow. Fixed by honoring full EBX with a `runtime_base`
+fallback and 32-bit max on rejection (telemetry v16), plus raising the arena slack to 128 MiB to
+match the measured demand. The old terminal store is gone; the guest now advances to ~39 s and a
+new frontier at `0x0302208C` (byte-copy store near an AH=3Fh file read), with a clean loader
+exit. An intermediate experiment (real ceiling, old slack) showed the game self-terminating
+cleanly with "insufficient memory" at 4 s, establishing its minimum heap demand. Open: the new
+frontier's analysis, the trap-backend regression, and why the ES shadow stays `0x2B` at resize
+time.
+
+## 2026-07-16 Task 221 (이전 기록): Task 213의 resize 상한은 실제로 작동한 적이 없음 — ES가 호스트 selector(0x2B)로 남아 base 해석이 0 / Task 221 (in progress): Task 213's resize ceiling never actually engaged — ES stays the host selector (0x2B), so base resolution yields 0
+
+**확인됨 (Task 213 판정 정정):** Task 220 검증 구동(게스트 정상 종료로 최종 요약 확보)의 resize
+기록 — `handled DOS resize count: 150`, `last selector: 0x002B`, `paragraphs: 0x1500`,
+`requested end: 0x00015000`, `result: success` — 은 `HandleDosResizeMemoryBlock`
+(`execution_trampoline.cpp:3743`)이 `context->guest_es`를 그대로 쓰는데 이 값이 게스트
+selector가 아니라 **호스트 진입 ES(`0x2B`)**임을 보여준다. `FindDescriptor` 실패 →
+`selector_base = 0` → `requested_end`가 항상 작아 `dynamic_allocator_end`(0x045C6000) 비교를
+전부 통과, **150건 모두 무조건 성공**. 즉 Task 213의 allocator heap 상한 모델링은 한 번도
+실제로 요청을 거절한 적이 없고, 당시의 "overflow 원천 제거" 판정은 다른 요인의 부수 효과였다.
+추가 확인: DPMI 0x0500/0x0501 미구현, INT 21h AH=48h 미구현, 합성 client/private data에 풀
+경계 없음 — **게스트가 heap top(= arena_end `0x045D7000` = base `0x03000000` + reserve
+`0x015D7000`)을 얻는 실제 경로는 여전히 미확정**이다.
+
+**미확정 (다음 단계):** (1) `HandleDosResizeMemoryBlock`의 ES를 `ReadGuestSegmentSelector`로
+해석하고 게스트 EBX 전체(32비트)를 기록해 150건 resize의 실체를 확인(현재 16비트 절단 의심),
+(2) resize가 아니면 디코드 구조체 `[ESI+0x34]`에 `0x045D3EB0`을 채우는 게스트 명령을
+write-watch로 포착. 상세는 `docs/work-orders/20260716-221-decode-output-pointer-provenance-
+order.md`.
+
 ## 2026-07-16 Task 220: 반환 인라인 캐시 4엔트리 확장으로 동결 해소 — 실행이 기존 종료 지점(0x030873F4 → 0x045D3EB0)까지 전진, 로더는 hang 없이 정상 종료 / Task 220: 4-way return inline cache resolves the freeze — execution advances to the known terminal store (0x030873F4 → 0x045D3EB0) and the loader now exits cleanly
 
 **확인됨 (수정):** Task 219가 확정한 반환 인라인 캐시 스래싱을 해소하기 위해
