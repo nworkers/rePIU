@@ -1,5 +1,57 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-17 Task 227 (조사 시작): 새 frontier = 파일 핸들 테이블 베이스 전역 [0x031A66FC]가 런타임에 0x4041로 손상 (INT 21h AH=0x40 이후) / Task 227 (investigation opened): new frontier = the file-handle-table base global [0x031A66FC] is corrupted to 0x4041 at runtime (after INT 21h AH=0x40)
+
+Task 226 수정 후 실행이 전진해 드러난 새 frontier를 특성화했다. 코드 변경 없음
+(진단 구동 + `repiu_aot_probe` 디스어셈블 + 정적 값 덤프).
+
+**확인됨 (실제 fault 위치):** 슈퍼바이저 `last_guest_eip`는 `0x030F7A0C`(INT 21h
+래퍼의 `int 0x21`)이지만, AOT 예외 매핑(`cache 0x0DB74E19 → guest 0x030FAB04`)으로
+**실제 fault 게스트 명령은 `0x030FAB04`**임을 확인했다. INT 21h **AH=0x40(파일
+쓰기)** 래퍼(`0x030F7A0C`)가 성공 시 `call 0x030FAAF4`하고, 그 함수에서 fault한다:
+```
+0x030FAAF4: push ebx
+0x030FAAFC: mov eax, [0x031A66FC]   ; 파일 핸들 테이블 베이스 로드
+0x030FAB01: shl edx, 0x02           ; edx = handle*4  (entry EAX=0x14 → 0x50)
+0x030FAB04: mov [edx+eax], ebx      ; FAULT: table[handle*4] = ebx
+```
+
+**확인됨 (fault 산술):** `0xC0000005` write to `0x00004091` = edx(`0x50`) +
+eax(`0x4041`). 즉 테이블 베이스 `[0x031A66FC] = 0x4041`(무매핑 저지연 주소).
+fault 시점 레지스터: EAX `0x4041`, EBX `0x4000`, ECX `0x14`, EDX `0x50`,
+ESI `0`, EDI `1`, EBP `0x14`, ESP `0x035D6AE0`. fault 스택 top:
+`[esp]=0x14, [esp+4]=0x030F7A1F(복귀주소), [esp+8]=0x1054, [esp+0xC]=0x031A6426`.
+
+**확인됨 (런타임 손상 — 로드타임 아님):** `[0x031A66FC]`의 **정적 초기값은
+`0x031A66AC`**(유효한 게스트 데이터 포인터, 자기 근처를 가리키는 정상 테이블 헤드
+형태)임을 relocated 이미지 덤프로 확인. 그런데 런타임 fault 시점엔 `0x4041`이다.
+**즉 이 전역 포인터가 실행 중 `0x031A66AC → 0x4041`로 손상된다** — Task 226이 고친
+로드타임 relocation 손상과는 성격이 다른 런타임 손상이다.
+
+**미확정 (다음 단계):** 무엇이 런타임에 `[0x031A66FC]`에 `0x4041`을 쓰는지 미확정.
+`0x4041`/`0x4000`/`0x50`/`0x14` 같은 저지연 값들은 DOS INT 21h HLE의 반환값이거나
+DOS 실모드 스타일 포인터일 가능성이 있다. 다음 조사: (1) `0x031A66FC`에 쓰는
+지점을 좁힘(store 워치 또는 Task 226에서 효과 본 trap 백엔드 full 단일스텝 —
+`[0x031A66FC]` 값이 언제 바뀌는지 관측), (2) INT 21h AH=0x40(및 관련 파일 open/handle
+HLE)이 반환하는 값 검토 — 테이블 베이스가 HLE 반환값에서 파생되는지 확인.
+`0x030F7A0C`의 `int 0x21`이 실제로 실행되는지(우리 런타임에서 INT이 어떻게 처리되는지)도
+확인 필요. 근인 확정 전 HLE 추측 수정은 하지 않는다.
+
+**English summary.** After the Task 226 fix, execution advanced to a new frontier. The
+supervisor's `last_guest_eip` is `0x030F7A0C` (the `int 0x21` in a DOS INT 21h wrapper),
+but the AOT exception mapping (`cache 0x0DB74E19 → guest 0x030FAB04`) shows the real
+faulting instruction is `mov [edx+eax],ebx` at guest `0x030FAB04`, inside the function
+`0x030FAAF4` that the INT 21h AH=0x40 (write-file) wrapper calls on success. It writes a
+file-handle table entry: `table[handle*4] = ebx` with base `eax = [0x031A66FC]`. The fault
+is a write to `0x00004091` = edx(`0x50`) + eax(`0x4041`), i.e. the table base
+`[0x031A66FC]` holds the unmapped low value `0x4041`. Crucially, the **static** initial
+value of `[0x031A66FC]` is the valid `0x031A66AC`, so the global pointer is **corrupted at
+runtime**, not at load time — a different class of bug from Task 226's load-time relocation
+corruption. Open: find what writes `0x4041` to `[0x031A66FC]` at runtime (candidate: values
+returned by the INT 21h file HLE, or a store to be traced via the trap-backend full
+single-step that worked for Task 226). No speculative HLE fix before the root cause is
+confirmed.
+
 ## 2026-07-17 Task 226 (해결): 근인 = LE cross-page fixup 부호 미확장 — 게스트 명령 손상으로 인한 0xDD1523B1 crash 제거, 새 frontier 0x030F7A0C / Task 226 (resolved): root cause = LE cross-page fixup applied unsigned — the corrupted guest instruction is fixed, the 0xDD1523B1 crash is gone, new frontier at 0x030F7A0C
 
 **해결됨 (근인 확정 + 수정 검증):** Tasks 221-225가 추적한 `0x035D6B14`=`0xDD1523B1`
