@@ -1,6 +1,75 @@
 # 현재 실행 frontier와 다음 분석 대상
 
-## 2026-07-17 Task 224 (조사): 0x035D6B14 손상값은 런 간 불변 상수(0xDD1523B1)이며, 모든 동시 스레드/예외 프레임 기제를 배제 — 남은 리드는 fault 시점 EDX=손상값 / Task 224 (investigation): the 0x035D6B14 corruption value is a run-invariant constant (0xDD1523B1); all concurrent-thread and exception-frame mechanisms are ruled out — the remaining lead is that EDX = the corruption value at fault
+## 2026-07-17 Task 225 (조사): 손상 블록의 제어흐름 컨텍스트 완전 매핑 — memset 호출 + `test edi,edi;jle` 게이트 직후의 asset-struct 준비 루틴, 반환은 전부 mispredict / Task 225 (investigation): fully mapped the corrupting block's control-flow context — an asset-struct prep routine right after a memset call and a `test edi,edi; jle` gate, with all returns mispredicted
+
+Task 224의 "EDX=손상값" 리드를 좇아 손상 블록 주변 제어흐름을 `repiu_aot_probe`
+디스어셈블과 AOT return/transfer 트레이스로 완전히 매핑했다. 코드 변경 없음.
+
+**확인됨 (손상 블록 직전 제어흐름):** 블록 `0x03021F3E`(store/load 포함) 바로 앞은
+```
+0x03021F31: e8 fa230d00    call 0x030F4330     ; DOS4GW 런타임 호출, 반환점 0x03021F36
+0x03021F36: 85 ff          test edi,edi
+0x03021F38: 0f8e 6a010000  jle  0x030220A8     ; EDI<=0면 점프, 아니면 블록으로 fall-through
+0x03021F3E: 8d 46 0c       lea  eax,[esi+0xC]   ; 블록 시작
+0x03021F41: 89 84 24 54010000  mov [esp+0x154],eax   ; STORE(=esi+0xC, 파일명 목적지)
+```
+즉 이 함수는 **구조체(esi)를 memset으로 초기화한 뒤 파일명 목적지 포인터
+`[esp+0x154]=esi+0xC`(구조체 field)를 세팅하고 파일명을 복사**하는 asset 준비
+루틴이다. 블록 진입은 memset 반환 후 `test edi,edi; jle`에서 **EDI>0일 때
+fall-through**로 이뤄진다(EDI<=0이면 0x030220A8로 분기). fault(0x0302208C, 복사
+루프 `mov [edi],al`)는 fall-through 경로 안이므로 블록은 정상 진입됐다.
+
+**확인됨 (memset 루틴 특성):** `0x030F4330`은 바이트 채우기(memset)다 —
+`push eax; push ecx; mov dh,dl; shl edx,8; mov dl,dh; shl edx,8; mov dl,dh;
+mov ecx,ebx; call 0x030F5F30`로 DL 바이트를 EDX에 4바이트 복제한 뒤 채우기 헬퍼를
+호출한다. `0xDD1523B1`은 바이트 복제형(0xXXXXXXXX 균일)이 아니므로 **memset 채움값이
+아니다.**
+
+**확인됨 (반환 mispredict — Tasks 219-220 연결):** 이 함수가 하는 일련의 call들의
+반환이 **전부 mispredict**된다(AOT return trace: `expected=0x030F5153` 고정, 실제
+target은 0x03021E23/E60/.../F05/F36, 모두 `match=false`). fault 직전 마지막 반환은
+`actual=0x03021F36, ESP=0x035D69BC`(ret 후 0x035D69C0 — 블록 프레임과 일치)로,
+블록 직전 `test edi,edi`에 착지한다. 이는 Task 219-220의 return 인라인 캐시 thrashing
+과 같은 현상이다.
+
+**미해결 핵심 역설(재확인):** 블록은 단일 직선(0x21F3E~0x21F9A)이고 정상 진입되며
+store는 `[esp+0x154]=esi+0xC`를 쓴다. clean(int3 없는) fault 덤프에서 esi는 블록
+내내 불변인데 `[esp+0x150]`(0x21F5C가 씀)=esi=0x0325E208, 그러면 `[esp+0x154]`도
+`esi+0xC=0x0325E214`여야 하나 `0xDD1523B1`(런 간 불변 상수)이다. int3 sentinel로
+관측하면 "문제의 호출이 store를 건너뛴 듯" 보이지만, **블록 안 int3는 AOT 인라인
+캐시의 resolve 지점을 바꿔 진입 경로를 교란**할 수 있어(단일 basic block이라 실제
+x86엔 mid-block 진입 경로가 없음) 이 관측은 **결정적이지 않다**. clean 덤프의 논리적
+함의(“store 효과가 결과에 없다”)만이 확실하다.
+
+**다음 단계:** (1) 함수 진입(`0x03021DF8`)부터 이 함수 실행 **동안에만** 활성화되는
+좁은 시간-게이팅 관측으로 `0x035D6B14`의 값 변화 시점을 잡는다(Task 223의 상시
+워치포인트는 ESP 근접으로 불가였으나, 이 함수 실행 중 ESP는 슬롯 아래로 내려가므로
+함수 진입~복귀로 게이팅하면 안전 구간이 생길 수 있음). (2) memset(`0x030F4330`)과
+반환-mispredict fallback 경로가 이 프레임 슬롯에 미치는 영향을 코드로 검토한다.
+(3) `0xDD1523B1`이 무엇을 인코딩하는지(파일명 헤더/특정 상수) 식별. 상세:
+`docs/work-logs/20260717-225-guest-block-entry-provenance-log.md`.
+
+**English summary.** Following Task 224's "EDX = corruption value" lead, fully mapped the
+corrupting block's control-flow context via `repiu_aot_probe` disassembly and the AOT
+return/transfer traces (no code change). The block `0x03021F3E` (store/load) is immediately
+preceded by `call 0x030F4330` (a DOS4GW runtime call returning to `0x03021F36`), then
+`test edi,edi; jle 0x030220A8` — so the block is entered by fall-through when EDI > 0. The
+function is an asset-struct prep routine: memset the struct (esi), set the filename
+destination pointer `[esp+0x154] = esi+0xC` (a struct field), then copy the filename to
+`[edi]`. `0x030F4330` is a byte-fill memset (replicates DL across EDX), and `0xDD1523B1` is
+not a replicated-byte fill value. All of this function's call returns are mispredicted (AOT
+return trace: expected always `0x030F5153`, actual `0x03021Exx/Fxx`, match=false) — the
+same return-inline-cache thrashing as Tasks 219-220; the last return before the fault lands
+at `0x03021F36`. The core paradox stands: the block is single straight-line, entered
+normally, and the store writes `esi+0xC`, yet the clean (int3-free) fault dump has
+`[esp+0x154]` = the run-invariant constant `0xDD1523B1` instead of `esi+0xC` while all
+neighbors are consistent with the same esi. int3 sentinels suggest a mid-block entry on the
+crashing call, but int3 in the block can perturb the AOT inline-cache resolve point (a
+single basic block has no real mid-block entry in x86), so that evidence is not conclusive.
+Next: a narrow time-gated observation of `0x035D6B14` active only during this function's
+execution (safe window may exist since ESP descends below the slot during the call), review
+of the memset and return-mispredict fallback paths, and identifying what `0xDD1523B1`
+encodes.
 
 Task 223이 남긴 "store~load 사이 비동기 손상" 가설을 좁히려 여러 각도로 조사했다. 코드
 변경은 없고 진단 구동·정적 디스어셈블·코드 검토만 수행했다.
