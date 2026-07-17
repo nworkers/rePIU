@@ -820,11 +820,19 @@ bool ApplyLeInternalRelocations(const LeHeader& header,
             {
                 const std::uint32_t object_page_index =
                     record.page_index - first_page;
-                const std::uint64_t offset =
-                    static_cast<std::uint64_t>(object_page_index) *
+                // LE fixup source offsets are SIGNED 16-bit. A negative value
+                // (e.g. 0xFFFF = -1) marks a cross-page fixup whose 32-bit
+                // target begins in the preceding page and spills into this one,
+                // so the write site is `page_base + (negative offset)`. Treating
+                // the raw 0xFFFF as unsigned lands the write 0x10000 bytes too
+                // high, corrupting an unrelated instruction one object page
+                // later (this is exactly what broke `mov edx,[esp+0x154]` at
+                // guest 0x03021FFD; see Task 226).
+                const std::int64_t offset =
+                    static_cast<std::int64_t>(object_page_index) *
                         header.page_size +
-                    record.source_offset;
-                if (offset > UINT32_MAX)
+                    static_cast<std::int16_t>(record.source_offset);
+                if (offset < 0 || offset > UINT32_MAX)
                 {
                     break;
                 }

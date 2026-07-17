@@ -68,10 +68,17 @@ const exe::LeMappedObject* FindSourceObjectForPage(
         {
             const std::uint32_t object_page_index =
                 record.page_index - first_page;
-            const std::uint64_t offset =
-                static_cast<std::uint64_t>(object_page_index) * page_size +
-                record.source_offset;
-            if (offset > std::numeric_limits<std::uint32_t>::max())
+            // LE fixup source offsets are SIGNED 16-bit. A negative value
+            // (e.g. 0xFFFF = -1) marks a cross-page fixup whose 32-bit target
+            // begins in the preceding page and spills into this one. Treating
+            // 0xFFFF as unsigned lands the write 0x10000 bytes too high and
+            // corrupts an unrelated instruction one object page later (this is
+            // what broke `mov edx,[esp+0x154]` at guest 0x03021FFD; Task 226).
+            const std::int64_t offset =
+                static_cast<std::int64_t>(object_page_index) * page_size +
+                static_cast<std::int16_t>(record.source_offset);
+            if (offset < 0 ||
+                offset > std::numeric_limits<std::uint32_t>::max())
             {
                 return nullptr;
             }

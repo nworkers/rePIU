@@ -1,5 +1,43 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-17 Task 226 (해결): 근인 = LE cross-page fixup 부호 미확장 — 게스트 명령 손상으로 인한 0xDD1523B1 crash 제거, 새 frontier 0x030F7A0C / Task 226 (resolved): root cause = LE cross-page fixup applied unsigned — the corrupted guest instruction is fixed, the 0xDD1523B1 crash is gone, new frontier at 0x030F7A0C
+
+**해결됨 (근인 확정 + 수정 검증):** Tasks 221-225가 추적한 `0x035D6B14`=`0xDD1523B1`
+손상 frontier의 근인을 확정하고 제거했다. 함수 `0x03021DF8`(asset-struct 준비)은
+루프(본체 `0x03021F63`, back-edge `0x0302204D`)에서 파일명 목적지 포인터
+`[esp+0x154]`를 매 반복 `0x1C` 전진시키는데(`mov edx,[esp+0x154]; add edx,0x1C;
+mov [esp+0x154],edx`), 로더가 처리한 이미지에서 `0x03021FFD`의 load가
+`mov edx,[esp+0x154]`(디스크 원본) → `mov edx,[esp+0x11A8A]`로 **손상**돼 있었다.
+프레임(0x190) 밖 72KB를 읽어 wild `0xDD1523B1`을 만들고 복사 시 fault했다(런 간
+불변인 것도 이 결정론적 손상 때문).
+
+**근인:** 이 명령은 페이지 경계(guest `0x21FFF/0x22000`)에 걸치고, 해당 위치의 LE
+fixup은 `source_offset=0xFFFF`(부호 있는 **-1**, cross-page 표식)인데 로더가
+**부호 없이** 처리해 `page_base+0xFFFF`(0x10000 높은 곳)에 적용, 무관한 명령을
+덮었다. **수정:** `source_offset`을 `int16_t`로 부호 확장(`ApplyLeInternalRelocations`
+@ `executable_headers.cpp`, `FindSourceObjectForPage` @ `runtime_memory.cpp` — 둘 다
+같은 버그 복제). `repiu_aot_probe`로 `0x01021FFD`가 `mov edx,[esp+0x154]`로 복원됨을,
+`pumpit1` 구동으로 crash 소멸·`dispatch_entry` 63446→95867 전진을 확인.
+
+**새 frontier:** `0x030F7A0C`, fault VA `0x00004091`(EAX `0x4041`/EBX `0x4000`,
+저지연 메모리 접근 계열) — 별개 조사 대상. 상세:
+`docs/design/20260717-226-le-cross-page-fixup-sign-extension.md`,
+`docs/work-logs/20260717-226-le-cross-page-fixup-sign-extension-log.md`,
+`docs/kb/le-format-and-relocation.md`.
+
+**English summary.** Root-caused and fixed the Tasks 221-225 frontier (`0x035D6B14` →
+`0xDD1523B1`). Function `0x03021DF8` (asset-struct prep) advances a filename destination
+pointer `[esp+0x154]` by `0x1C` each loop iteration; the loader had corrupted the load
+`mov edx,[esp+0x154]` at guest `0x03021FFD` into `mov edx,[esp+0x11A8A]`, reading 72 KiB
+outside the 0x190 frame and building the wild constant. The instruction straddles a page
+boundary and the LE fixup there has `source_offset=0xFFFF` (signed **-1**, a cross-page
+marker) which the loader applied unsigned, writing `page_base+0xFFFF` (0x10000 too high)
+over the unrelated instruction. Fixed by sign-extending `source_offset` (`int16_t`) in both
+`ApplyLeInternalRelocations` and the runtime helper `FindSourceObjectForPage`. Verified:
+`repiu_aot_probe` shows the instruction restored; the `0xDD1523B1` crash is gone and
+execution advances (dispatch 63446→95867) to a new frontier at `0x030F7A0C` (fault VA
+`0x4091`).
+
 ## 2026-07-17 Task 225 (조사): 손상 블록의 제어흐름 컨텍스트 완전 매핑 — memset 호출 + `test edi,edi;jle` 게이트 직후의 asset-struct 준비 루틴, 반환은 전부 mispredict / Task 225 (investigation): fully mapped the corrupting block's control-flow context — an asset-struct prep routine right after a memset call and a `test edi,edi; jle` gate, with all returns mispredicted
 
 Task 224의 "EDX=손상값" 리드를 좇아 손상 블록 주변 제어흐름을 `repiu_aot_probe`
