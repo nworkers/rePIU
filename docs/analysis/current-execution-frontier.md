@@ -1,6 +1,91 @@
 # 현재 실행 frontier와 다음 분석 대상
 
-## 2026-07-17 Task 223 (negative result): 스택 데이터 주소 워치포인트(하드웨어·소프트웨어 모두)는 0x035D6B14에 근본적으로 안전하지 않음 — 코드 주소 이중 프로브로 방향 전환 권고 / Task 223 (negative result): both hardware and software stack-data watchpoints are fundamentally unsafe for 0x035D6B14 — recommends pivoting to a code-address dual-probe
+## 2026-07-17 Task 224 (조사): 0x035D6B14 손상값은 런 간 불변 상수(0xDD1523B1)이며, 모든 동시 스레드/예외 프레임 기제를 배제 — 남은 리드는 fault 시점 EDX=손상값 / Task 224 (investigation): the 0x035D6B14 corruption value is a run-invariant constant (0xDD1523B1); all concurrent-thread and exception-frame mechanisms are ruled out — the remaining lead is that EDX = the corruption value at fault
+
+Task 223이 남긴 "store~load 사이 비동기 손상" 가설을 좁히려 여러 각도로 조사했다. 코드
+변경은 없고 진단 구동·정적 디스어셈블·코드 검토만 수행했다.
+
+**확인됨 (손상 슬롯 재현·단일 슬롯):** clean aot-dynamic 구동(sentinel 없음)의 fault
+시점 스택 덤프가 Task 222와 일치한다. fault_esp는 load_esp보다 4 작으므로(load~fault
+사이 push 1회, Task 222의 `D=4` 보정과 동일) load 프레임으로 환산하면 `[esp+0x154]`=
+`0xDD1523B1`(wild), 인접 `[esp+0x150]`=`0x0325E208`(=esi), `[esp+0x148]`=esi+4,
+`[esp+0x144]`=esi+8로 **인접 슬롯은 전부 esi=0x0325E208와 일관(정상)이고 오직
+`[esp+0x154]` 한 dword만 wild**다. 같은 esi로 연속 기록되는 이웃이 정상이므로 store
+(`0x03021F41`, `mov [esp+0x154],eax`, eax=esi+0xC)도 정상값 `0x0325E214`를 썼고, 그
+뒤 이 슬롯만 `0xDD1523B1`으로 바뀌었다.
+
+**확인됨 (손상값은 런 간 불변 상수):** `0xDD1523B1`은 Task 222부터 이번 세션의 모든
+독립 구동(별개 프로세스)에서 **동일**하다. 정상값은 런마다 다르다(예: 0x0325E1F8,
+0x0325E214 — 매 asset마다 다른 heap 포인터). 게스트 힙 포인터라면 런마다 달라야 하고,
+호스트 주소라면 ASLR로 달라야 한다. **런 간 불변**은 이 값이 계산된 heap/host 포인터가
+아니라 **고정 상수 또는 결정론적으로 계산되는 값**임을 뜻한다. 코드·서드파티 어디에도
+상수로 등장하지 않으며, 알려진 fill 패턴(0xDDDDDDDD 등)도 아니다.
+
+**확인됨 (fault 시점 EDX=손상값 — 다음 리드):** clean/​sentinel 구동 모두 fault 시점
+`guest_edx=0xDD1523B1`, `last single-step EDX=0xDD1523B1`이다(EDI는 이 슬롯을 load한
+결과라 당연히 같음). 즉 손상 상수는 EDX에도 실려 있다 — 이 값이 **어느 계산/레지스터에서
+비롯되는지**가 근인 추적의 다음 핵심 단서다.
+
+**확인됨 (구간은 단일 직선 블록 — store는 항상 실행):** `repiu_aot_probe`로 store를
+조회하니 블록 `0x1021F3E`가 `0x1021F3E`~`0x1021F9A`(첫 조건분기 `jb`)까지 **단일 basic
+block**(모든 명령 kind=0)이고 store(0x21F41)와 load(0x21F71)가 그 안에 함께 있다. 단일
+블록이라는 것은 그 중간으로 들어오는 정적 점프 타겟이 없다는 뜻 — **store는 load 전에
+항상 실행**되며(“조건부 skip → stale read” 가설 반증), 그 사이 메모리 쓰기는 전부
+다른 슬롯(0x144/0x148/0x150, 고정 displacement)이라 0x154를 건드릴 수 없다.
+
+**확인됨 (모든 동시 writer 배제):** 게스트 스택에 쓸 수 있는 동시 스레드/프로세스를
+전수 검토해 배제했다. (1) **AOT 번역 워커**(`AotTranslationWorkerProc`): 요청자가
+`WaitForSingleObject(INFINITE)`로 블록되므로 게스트와 동시 실행이 아니고, 작업은 AOT
+캐시/메타데이터만 쓴다. (2) **CD 오디오 워커**(`cd_audio_wave_out.cpp`): 동시 실행이나
+자기 힙 버퍼(`impl_->data[...]`)만 쓰고 `CALLBACK_NULL`이라 오디오 콜백 스레드도 없다.
+(3) **supervisor**: 별개 프로세스로 `GetThreadContext` 읽기 전용(`SetThreadContext`/
+`WriteProcessMemory` 없음), 공유 텔레메트리 매핑은 게스트 스택과 비중첩. **어느 것도
+게스트 스택에 임의 쓰기를 하지 않는다.**
+
+**확인됨 (예외 프레임은 슬롯에 도달 불가):** Windows 예외 디스패치(VEH 호출용 CONTEXT+
+EXCEPTION_RECORD)는 현재 ESP **아래쪽**(더 낮은 주소)에 쓴다. 손상 구간 내내 ESP는
+`0x035D69C0`로 고정이고 타겟 `0x035D6B14`는 그보다 **위**(0x154 높음)라, int3/single-
+step/fault 어떤 예외의 프레임도 이 슬롯에 닿지 못한다. (이는 Task 223에서 스택
+워치포인트가 실패한 근본 원인과 같은 기하학이다.)
+
+**확인됨 (관측 수단의 한계):** (a) int3 sentinel 기법은 구조적으로 **문제의 호출에서만
+발화 안 하는** 지점(store 0x21F41, 함수진입 0x21DF8, store직후 0x21F48 모두 최초 1회만)
+과 매번 발화하는 pure fall-through 지점(load 0x21F71)으로 갈린다 — 문제의 호출의
+store~load **내부**는 관측 불가. (b) trap 백엔드(전체 싱글스텝, sentinel 불필요)는
+480초에 resize 154/212까지만 도달(fault엔 ~11분+ 추정)했고, 트레이스 요약은 타임아웃 시
+출력되지 않아 **실용적으로 이 fault 재현·관측에 부적합**하다.
+
+**남은 역설과 다음 단계:** 단일 직선 블록·동시 writer 없음·예외 프레임 도달 불가인데
+`[esp+0x154]` 한 슬롯만 런 간 불변 상수 `0xDD1523B1`로 바뀐다. 남은 유력 가설은 (H1)
+정적 분석이 못 보는 **간접 제어흐름**(indirect jmp)이 블록 중간으로 진입, (H2) AOT
+동적 번역의 미확인 경로 버그(단, Task 222가 이 블록 캐시 바이트 정확성은 확인),
+(H3) `0xDD1523B1`을 만드는 계산 경로가 함수 어딘가에 있고 그 결과가 우회로로
+`[esp+0x154]`에 도달. **다음 핵심 단계는 fault 시점 EDX=`0xDD1523B1`의 출처 역추적** —
+함수 진입(`0x03021DF8`)부터 이 상수가 처음 등장하는 지점을 좁히는 표적 진단(예: 소수의
+키 지점 레지스터 캡처)을 새 work-order로 설계할 것. 상세:
+`docs/work-logs/20260717-224-guest-stack-slot-constant-value-log.md`.
+
+**English summary.** Investigated Task 223's "async corruption between store and load"
+from several angles (diagnostic runs, static disassembly, code review; no code change). A
+clean (no-sentinel) aot-dynamic run's fault dump matches Task 222 once the `D=4` fault-esp
+vs load-esp offset is applied: only `[esp+0x154]` is wild (`0xDD1523B1`); all neighbors are
+consistent with esi=`0x0325E208`, so the store wrote the correct `0x0325E214` and only this
+one dword later became wild. **The wild value `0xDD1523B1` is invariant across every
+independent run** (correct values vary per asset), so it is a fixed constant / deterministic
+computation, not a heap or ASLR pointer — and it also sits in **EDX at fault** (`guest_edx`
+and last-single-step EDX both `0xDD1523B1`), the key remaining lead. `repiu_aot_probe`
+disassembly proves the store/load live in a single straight-line basic block
+(`0x1021F3E`–`0x1021F9A`) with no static mid-block entry, so the store always executes and
+the intervening writes only touch other fixed slots — refuting the skipped-store/stale-read
+idea. All concurrent writers are ruled out (AOT worker is synchronous and cache-only, CD
+worker writes only its own heap buffers, supervisor is read-only), and Windows exception
+frames write below ESP and cannot reach the above-ESP slot. Both observation tools are
+exhausted for the crashing call (int3 sentinels only re-fire at pure fall-through points;
+the trap backend is impractically slow — 480 s reached only resize 154/212 and prints no
+trace on timeout). The remaining paradox points to tracing where the constant `0xDD1523B1`
+in EDX originates, from function entry (`0x03021DF8`) onward, via a new targeted diagnostic.
+
+
 
 **확인됨 (저비용 사전 확인, 유효):** 게스트 스택(`0x03110000`–`0x035D6E60`)과
 LINEXE 합성 영역(현재 128MB slack으로 `arena_end`가 `0x0B5D7000`대)은 정적으로
