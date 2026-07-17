@@ -243,6 +243,8 @@ struct ThreadContext
     std::uint32_t exception_fault_region_size = 0;
     std::uint32_t exception_esi_dwords[8] = {};
     std::uint32_t exception_esi_dword_valid_mask = 0;
+    std::uint8_t exception_register_strings[6][32] = {};
+    std::uint32_t exception_register_string_valid_mask = 0;
     std::uint32_t exception_stack_base = 0;
     std::uint32_t exception_stack_dwords[kWin32ExceptionStackDwordCapacity] = {};
     std::uint32_t exception_stack_dword_count = 0;
@@ -1899,6 +1901,34 @@ int CaptureException(EXCEPTION_POINTERS* exception_info,
                 copied == sizeof(std::uint32_t))
             {
                 context->exception_esi_dword_valid_mask |= 1U << index;
+            }
+        }
+        // Capture the ASCII string that each GPR points at (up to 32 bytes).
+        // Null-pointer and string frontiers (e.g. a stricmp fed a filename with
+        // no extension) are diagnosed by seeing the actual string a register
+        // holds; ESI in particular keeps the callee-saved source pointer.
+        const std::uint32_t exception_register_values[6] = {
+            exception_info->ContextRecord->Eax,
+            exception_info->ContextRecord->Ebx,
+            exception_info->ContextRecord->Ecx,
+            exception_info->ContextRecord->Edx,
+            exception_info->ContextRecord->Esi,
+            exception_info->ContextRecord->Edi,
+        };
+        for (std::uint32_t reg = 0; reg < 6U; ++reg)
+        {
+            SIZE_T copied = 0;
+            if (exception_register_values[reg] != 0 &&
+                ReadProcessMemory(
+                    GetCurrentProcess(),
+                    reinterpret_cast<const void*>(static_cast<std::uintptr_t>(
+                        exception_register_values[reg])),
+                    context->exception_register_strings[reg],
+                    sizeof(context->exception_register_strings[reg]),
+                    &copied) != 0 &&
+                copied != 0)
+            {
+                context->exception_register_string_valid_mask |= 1U << reg;
             }
         }
         // Capture a window of the guest stack starting at the fault-time ESP.
@@ -11429,6 +11459,11 @@ bool RunWin32ExecutionThread(
                 sizeof(attempt->exception_esi_dwords));
     attempt->exception_esi_dword_valid_mask =
         context.exception_esi_dword_valid_mask;
+    std::memcpy(attempt->exception_register_strings,
+                context.exception_register_strings,
+                sizeof(attempt->exception_register_strings));
+    attempt->exception_register_string_valid_mask =
+        context.exception_register_string_valid_mask;
     attempt->exception_stack_base = context.exception_stack_base;
     std::memcpy(attempt->exception_stack_dwords,
                 context.exception_stack_dwords,

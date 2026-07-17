@@ -661,6 +661,39 @@ void PrintExecutionAttempt(
             Hex32(attempt.exception_esi_dwords[5]),
             Hex32(attempt.exception_esi_dwords[6]),
             Hex32(attempt.exception_esi_dwords[7]));
+        {
+            static const char* const kRegisterNames[6] = {
+                "EAX", "EBX", "ECX", "EDX", "ESI", "EDI"};
+            for (std::uint32_t reg = 0; reg < 6U; ++reg)
+            {
+                if ((attempt.exception_register_string_valid_mask &
+                     (1U << reg)) == 0)
+                {
+                    continue;
+                }
+                const std::uint8_t* bytes =
+                    attempt.exception_register_strings[reg];
+                std::string ascii;
+                std::string hex;
+                for (std::uint32_t index = 0;
+                     index < sizeof(attempt.exception_register_strings[reg]);
+                     ++index)
+                {
+                    const std::uint8_t value = bytes[index];
+                    if (!hex.empty())
+                    {
+                        hex += ' ';
+                    }
+                    hex += Hex8(value);
+                    ascii += (value >= 0x20 && value < 0x7F)
+                                 ? static_cast<char>(value)
+                                 : '.';
+                }
+                logger.error(
+                    "Win32 exception register string {}: \"{}\" [{}]",
+                    kRegisterNames[reg], ascii, hex);
+            }
+        }
         logger.error("Win32 exception stack window base/count: {}/{}",
                      Hex32(attempt.exception_stack_base),
                      attempt.exception_stack_dword_count);

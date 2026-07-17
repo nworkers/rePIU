@@ -1,5 +1,46 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-17 Task 230 (조사 심화): frontier 0x030F4A98 근인 심화 — 파싱 대상은 확장자 없는 파일명이 아니라 완전히 빈 텍스처 descriptor(40칸 배열의 미기록 엔트리) / Task 230 (deepened): the 0x030F4A98 root cause is not an extension-less filename but a fully empty texture descriptor (an unpopulated entry of a 40-slot array)
+
+fault 시점 레지스터 문자열 캡처 진단(`exception_register_strings`)을 추가해 Task 229
+frontier를 심화했다. 코드 변경은 진단 계측만(게임 동작 무영향).
+
+**확인됨 (파싱 대상 = 빈 버퍼):** 새 진단으로 fault 시점 **ESI(0x0329B2B8)가 가리키는
+문자열이 전부 0**(빈/미초기화), `[ESI+0x20..0x3C]`도 전부 0임을 확인했다. EDX 문자열은
+`"tga.pcx.ptx.rgb..rt.T.TYPE.NUM.T"`(확장자 비교 리터럴, 예상대로). 즉 Task 229의 "확장자
+없는 파일명" 서술은 **"완전히 빈 파일명 버퍼"로 정정**된다.
+
+**확인됨 (콜스택 3단계):**
+1. `stricmp` `0x030F4A94`(`stricmp(EAX,EDX)`) — `mov al,[ebx]` EBX=0 → fault.
+2. `parse_texture` `0x03019C78`(`parse_texture(EAX=struct, EDX=filename)`, 프레임 0x11C) —
+   arg2(EDX)=filename=`0x0329B2B8`(빈 버퍼). 로컬 복사→strtok(".")→strtok(" .")→
+   확장자 stricmp. `mov esi,edx` + strtok/`0x03025294`가 esi 보존 → fault 시 ESI=filename.
+3. 호출자 loop `0x0301B015: call 0x03019C78` — **텍스처 descriptor 배열을 고정 40회
+   순회**(`esi` 0→0xA0 step 4, 엔트리 stride `0x6C`=108바이트). 각 엔트리(ECX)를
+   filename으로 전달. 크래시 엔트리 `0x0329B2B8`은 **전부 0(미기록)**.
+
+**확인됨 (GAMEVIEW.BGA엔 파일명 없음):** 마지막 open `DATAS\BGA\GAMEVIEW.BGA`엔 텍스처
+파일명 문자열이 전혀 없다(헤더 "BGA"+`0x78`, 이후 0, 그다음 float `0x3F800000`=1.0f).
+`MODEL\T05..T19.3DM` 모델 파일들은 확장자 없는 텍스처 베이스명("p_t0","b_w") 보유(read
+프리픽스로 확인).
+
+**미확정 (다음 단계):** 40칸 텍스처 descriptor 배열의 한 엔트리가 왜 채워지지 않는지.
+(1) 이 배열의 base와 이를 **채우는 상위 코드/루프**를 추적, (2) 엔트리 filename 필드가
+어느 파일/데이터에서 오는지(모델 .3DM? 별도 텍스처 리스트?), (3) 우리 파일 I/O·파싱의
+어떤 차이로 한 엔트리가 미기록으로 남는지 규명. 근인 확정 전 추측 수정 금지.
+
+**English summary.** Added a fault-time register-string capture diagnostic and used it to
+deepen the Task 229 frontier. The string at ESI (`0x0329B2B8`) is **all zeros — an empty,
+uninitialized buffer**, not an extension-less filename (EDX correctly holds the literal
+`"tga.pcx.ptx.rgb..."`), correcting Task 229's wording. The call stack is now pinned three
+levels: `stricmp(0x030F4A94)` ← `parse_texture(0x03019C78)` (arg2 = the empty filename buffer)
+← a loop at `0x0301B015` that iterates a fixed 40 times over a texture-descriptor array
+(108-byte stride), passing each entry as the filename; the crashing entry (`0x0329B2B8`) is
+entirely zero (never written). GAMEVIEW.BGA (last file opened) holds no texture filenames
+(header "BGA"+0x78, zeros, then 1.0f floats); the `MODEL\T*.3DM` files carry extension-less
+texture base names. Open: trace the upper code that fills the 40-slot array to find why one
+entry stays empty, and which file/data the filename field comes from.
+
 ## 2026-07-17 Task 229 (조사 중): frontier 0x030F4A98 특성화 — GAMEVIEW.BGA가 참조하는 텍스처 파일명에 확장자(.)가 없어 strtok가 NULL 반환→stricmp(NULL,"tga") null-deref / Task 229 (investigating): characterized the 0x030F4A98 frontier — a texture filename referenced by GAMEVIEW.BGA has no extension (.), so strtok returns NULL and stricmp(NULL,"tga") null-derefs
 
 Task 228 수정으로 드러난 새 frontier를 특성화했다. **아직 근인(파일명에 확장자가 없는

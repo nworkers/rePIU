@@ -277,6 +277,8 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t exception_fault_region_size = 0;
     std::uint32_t exception_esi_dwords[8] = {};
     std::uint32_t exception_esi_dword_valid_mask = 0;
+    std::uint8_t exception_register_strings[6][32] = {};
+    std::uint32_t exception_register_string_valid_mask = 0;
     std::uint32_t exception_stack_base = 0;
     std::uint32_t exception_stack_dwords[kWin32ExceptionStackDwordCapacity] = {};
     std::uint32_t exception_stack_dword_count = 0;
