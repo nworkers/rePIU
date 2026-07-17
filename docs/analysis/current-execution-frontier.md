@@ -1,5 +1,54 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-17 Task 228 (해결): 근인 = HLE가 DOS 파일 핸들 번호를 재사용하지 않아 핸들 20이 게스트 20칸 테이블을 오버플로우 — 수정 후 크래시 소멸, 새 frontier 0x030F4A98(널 문자열 stricmp) / Task 228 (resolved): root cause = the HLE never recycled DOS file-handle numbers, so handle 20 overflowed the guest 20-entry table; fixed, crash gone, new frontier at 0x030F4A98 (null-string stricmp)
+
+**해결됨 (근인 확정 + 수정 검증):** Task 227이 특성화한 `[0x031A66FC]` 손상 frontier의
+근인을 확정하고 제거했다.
+
+**근인:** fault 블록 `0x030FAAF4`는 파일 핸들 플래그 테이블에 `table[handle]=value|0x4000`
+을 쓴다(`mov eax,[0x031A66FC]; shl edx,2; mov [edx+eax],ebx`). 베이스 포인터
+`[0x031A66FC]`의 정적값 `0x031A66AC`는 자기 위치보다 **정확히 0x50(=4바이트 엔트리
+20개) 아래** → 테이블은 20칸(인덱스 0~19)이고 **`table[20]`의 주소가 곧 베이스 포인터
+슬롯**이다(DOS 기본 핸들 수 20과 일치하는 Watcom clib 레이아웃). 우리 HLE의
+`OpenDosFile`은 `next_file_handle++`로 핸들을 단조 증가시키고 `CloseDosFile`은 번호를
+회수하지 않아, 게임이 파일을 16번 순차 open/close(동시 1~2개뿐)하면 16번째 open이
+핸들 20을 반환한다. 게스트 clib가 `table[20]`을 쓰며 베이스 포인터를 `0x4041`(=플래그
+`0x41` | `0x4000`)로 손상시키고, 이후 접근이 `0x4041+0x50=0x4091`에서 fault한다. 실제
+DOS는 가장 낮은 free 핸들을 반환하고 close 시 회수하므로 핸들이 5~6을 벗어나지 않는다 —
+**게스트 버그가 아니라 HLE의 DOS 핸들 시맨틱 위반**이다.
+
+**수정:** `OpenDosFile`을 lowest-free 핸들 할당(`[5,20)`, 닫힌 슬롯 재사용)으로 변경하고
+사용되지 않게 된 `next_file_handle` 필드를 제거했다(`dos_file_system.{h,cpp}`).
+
+**검증:** aot-dynamic `pumpit1`에서 `0x030FAB04`/VA `0x4091` 크래시 **소멸**,
+`last DOS open handle=0x05`(재사용 정상), `dispatch_entry 47,462→105,789`,
+`resize_cnt 212`, MSCDEX/CD 진입. trap 백엔드 30초 `progress=612,186`(기준선 118,504
+대비 5배+), fatal 0, 크래시 없이 타임아웃까지 실행. 상세:
+`docs/work-logs/20260717-228-dos-file-handle-recycling-log.md`,
+`docs/design/20260717-228-dos-file-handle-recycling.md`.
+
+**새 frontier `0x030F4A98`:** `mov al,[ebx]`가 **EBX=0(널 문자열 포인터)**로
+`0xC0000005`(VA 0). 이 블록은 대소문자 무시 문자열 비교(stricmp류): `mov al,[ebx];
+mov ah,[edx]; A~Z면 +0x20; cmp al,ah`. fault 레지스터: EAX 0, EBX 0, ECX/ESI
+`0x0329B2B8`, EDX `0x03111043`(유효 소스 문자열), EDI `0x035D6BB4`, EBP `0x0329B2F8`,
+ESP `0x035D6BA8`. 어떤 lookup/파싱이 널을 반환해 이 비교로 전달되는지 역추적이 다음 단계.
+
+**English summary.** Root-caused and fixed the Task 227 frontier. The faulting block writes a
+handle-flags table `table[handle] = value|0x4000` with base `[0x031A66FC]`, whose static value
+`0x031A66AC` sits exactly `0x50` (20 four-byte entries) below the base-pointer slot itself — a
+20-entry table (DOS default handle count) with a self-pointing base immediately after. Our HLE
+allocated DOS handles via monotonic `next_file_handle++` and never recycled numbers on close, so
+the game opening/closing 16 files sequentially (≤2 open at once) got handle 20 on the 16th open,
+overflowing the table and corrupting the base to `0x4041`; the next access faulted at `0x4091`.
+Real DOS returns the lowest free handle and recycles freed numbers, so handles stay at 5–6 — an
+HLE DOS-semantics violation, not a guest bug. Fixed `OpenDosFile` to allocate the lowest free
+handle in `[5,20)` with closed-slot reuse (removed `next_file_handle`). Verified: the crash is
+gone, handles stay at `0x05`, aot-dynamic advances dispatch 47,462→105,789 (resize 212, into
+MSCDEX/CD), and the trap backend advances 5x (progress 612,186) with no fatal over 30 s. New
+frontier at `0x030F4A98`: `mov al,[ebx]` faults with EBX=0 (a null string pointer) inside a
+case-insensitive string compare; tracing which lookup/parse returns null and reaches this compare
+is the next step.
+
 ## 2026-07-17 Task 227 (조사 시작): 새 frontier = 파일 핸들 테이블 베이스 전역 [0x031A66FC]가 런타임에 0x4041로 손상 (INT 21h AH=0x40 이후) / Task 227 (investigation opened): new frontier = the file-handle-table base global [0x031A66FC] is corrupted to 0x4041 at runtime (after INT 21h AH=0x40)
 
 Task 226 수정 후 실행이 전진해 드러난 새 frontier를 특성화했다. 코드 변경 없음

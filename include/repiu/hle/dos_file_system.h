@@ -34,7 +34,6 @@ struct DosVirtualFileSystemState
     bool valid = false;
     std::filesystem::path host_root;
     std::vector<std::string> current_components;
-    std::uint16_t next_file_handle = 5;
     std::vector<DosOpenFileHandle> open_files;
     std::vector<std::pair<std::string, std::uint16_t>> attribute_overrides;
     std::string message;
