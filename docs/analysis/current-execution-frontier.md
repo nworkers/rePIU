@@ -1,5 +1,63 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-17 Task 229 (조사 중): frontier 0x030F4A98 특성화 — GAMEVIEW.BGA가 참조하는 텍스처 파일명에 확장자(.)가 없어 strtok가 NULL 반환→stricmp(NULL,"tga") null-deref / Task 229 (investigating): characterized the 0x030F4A98 frontier — a texture filename referenced by GAMEVIEW.BGA has no extension (.), so strtok returns NULL and stricmp(NULL,"tga") null-derefs
+
+Task 228 수정으로 드러난 새 frontier를 특성화했다. **아직 근인(파일명에 확장자가 없는
+이유) 미확정, 조사 중.** 코드 변경 없음(진단 구동 + `repiu_aot_probe` 디스어셈블 +
+바이너리 문자열 덤프).
+
+**확인됨 (fault·호출 경로):** guest `0x030F4A98` `mov al,[ebx]`가 **EBX=0(널)**로
+`0xC0000005`(VA 0). 이 함수(entry `0x030F4A94`)는 Watcom 레지스터 규약의 **stricmp**:
+`push ebx; push ecx; mov ebx,eax; mov al,[ebx]; mov ah,[edx]; A~Z면 +0x20; cmp al,ah`
+= `stricmp(EAX, EDX)`. fault 스택(ESP `0x035D6BA8`)의 `[ESP+8]=0x03019CDF`가 복귀
+주소 → **호출 지점은 `0x03019CDA: call 0x030F4A94`**.
+
+**확인됨 (파서 구조):** 호출자 함수는 소스 문자열(인자 EDX→ESI)을 로컬 스택 버퍼로
+복사한 뒤 파일명 확장자를 파싱한다:
+```
+0x03019CC0: mov eax,esp; call 0x030F49FF   ; strtok(buffer, edx="."[0x0311103E])  1차
+0x03019CCE: xor eax,eax; call 0x030F49FF   ; strtok(NULL, edx=" ."[0x03111040])   2차 → NULL
+0x03019CD3: mov edx,0x03111043("tga")
+0x03019CDA: call 0x030F4A94                ; stricmp(2차토큰=NULL, "tga") → FAULT
+...이어 "pcx"/"ptx"/"rgb"와도 stricmp
+```
+`0x030F49FF`는 **strtok**(NULL 인자 시 static 상태 `[0x031A634C]` 사용, 델리미터
+256비트 비트맵 `[0x0311A8E4]`). 문자열 리터럴(바이너리 덤프로 확인): `0x0311102F`
+`\datas\texture`, `0x0311103E` `.`, `0x03111040` ` .`, `0x03111043~` `tga`/`pcx`/`ptx`/
+`rgb`, 그 뒤 `rt`/`TYPE`/`NUM`.
+
+**확인됨 (컨텍스트=GAMEVIEW.BGA):** 크래시 직전 마지막 open은
+`DATAS\BGA\GAMEVIEW.BGA`(handle 0x05, read #114 프리픽스 `42 47 41 00`="BGA\0"). 게임은
+`MODEL\T05..T19.3DM`, `NONSTOP.CAM`을 읽은 뒤 `GAMEVIEW.BGA`(배경 애니메이션 기술자)를
+읽는다. 이 파서는 BGA가 참조하는 텍스처 파일명의 확장자를 tga/pcx/ptx/rgb와 비교한다.
+
+**확인됨 (근인 방향):** 2차 strtok(NULL," .")가 NULL을 반환 = 소스 파일명에 첫 토큰은
+있으나 확장자(.)가 없음(비어 있지 않은데 "."가 없는 문자열). 실제 DOS에서 이 코드가
+정상 동작했다면 그 파일명엔 항상 확장자가 있었다는 뜻 → **우리 환경에서 텍스처 파일명이
+확장자 없이 만들어진다.** fault 시점 `ESI=0x0329B2B8`(callee-saved, 파서가 `mov esi,edx`
+로 설정)가 곧 이 소스 파일명 힙 포인터다.
+
+**미확정 (다음 단계):** (1) 런타임 힙 `0x0329B2B8`의 실제 파일명 문자열을 덤프(표적
+진단 필요)해 무엇이 확장자 없이 들어오는지 확인, (2) 이 파서 함수의 호출자와 BGA 파싱
+경로를 추적해 텍스처 파일명이 어디서/어떻게 추출되는지 확인, (3) 그 추출이 우리 파일
+I/O/문자열 처리의 어떤 차이로 확장자를 잃는지 규명. 근인 확정 전 추측 수정 금지.
+
+**English summary.** Characterized the Task 228 follow-on frontier. Guest `0x030F4A98`
+`mov al,[ebx]` faults with EBX=0; the function (entry `0x030F4A94`) is a Watcom-register
+`stricmp(EAX,EDX)`, and the fault stack return address `0x03019CDF` pins the call site to
+`0x03019CDA: call 0x030F4A94`. The caller copies a source string (arg EDX→ESI) into a local
+buffer and parses a filename extension: `strtok(buffer, ".")` then `strtok(NULL, " .")`, then
+`stricmp(token, "tga"/"pcx"/"ptx"/"rgb")`. `0x030F49FF` is strtok (static state `[0x031A634C]`,
+delimiter bitmap `[0x0311A8E4]`); the literals (dumped from the binary) are `\datas\texture`,
+`.`, ` .`, `tga`, `pcx`, `ptx`, `rgb`. The last file opened before the crash is
+`DATAS\BGA\GAMEVIEW.BGA` (a background-animation descriptor, magic "BGA"), read after the
+`MODEL\T*.3DM` and `NONSTOP.CAM` files. The second strtok returned NULL, so the parsed texture
+filename has a first token but no extension `.`; since this code ran fine on DOS, our
+environment must be producing a texture filename without an extension. `ESI=0x0329B2B8` at the
+fault (callee-saved, set by `mov esi,edx`) is the source-filename heap pointer. Open: dump the
+runtime string at `0x0329B2B8`, trace the caller/BGA-parse path that extracts the texture name,
+and find why it loses the extension. No speculative fix before the root cause is confirmed.
+
 ## 2026-07-17 Task 228 (해결): 근인 = HLE가 DOS 파일 핸들 번호를 재사용하지 않아 핸들 20이 게스트 20칸 테이블을 오버플로우 — 수정 후 크래시 소멸, 새 frontier 0x030F4A98(널 문자열 stricmp) / Task 228 (resolved): root cause = the HLE never recycled DOS file-handle numbers, so handle 20 overflowed the guest 20-entry table; fixed, crash gone, new frontier at 0x030F4A98 (null-string stricmp)
 
 **해결됨 (근인 확정 + 수정 검증):** Task 227이 특성화한 `[0x031A66FC]` 손상 frontier의
