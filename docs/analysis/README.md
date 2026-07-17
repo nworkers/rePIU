@@ -27,6 +27,7 @@ flowchart LR
 * [Runtime arena, shadow memory, sentinel 분석](memory-arena-shadow-and-sentinel.md)
 * [DOS 파일 I/O와 INT3 해결 이력](dos-file-io-and-int3.md)
 * [Interrupt와 port I/O 관찰](interrupts-and-port-io.md)
+* [펌프 잇 업 (PIU) I/O 포트 사양 분석 및 유지 지침](piu-io-port-specification.md)
 * [현재 실행 frontier와 다음 분석 대상](current-execution-frontier.md)
 * [DOS4GW loader와 selector 할당 분석](dos4gw-loader-selector-allocation.md)
 * [DOS/4G DLL loader와 INT 21h AX=FF00h 역추적](dll-loader-int21-ff00.md)
@@ -70,4 +71,4 @@ Status labels are **Confirmed**, **Inferred**, and **Unresolved**. See the linke
 
 * [pumpit1 MSCDEX 및 CHD CD 오디오](pumpit1-mscdex-cd-audio.md)
 * [AOT 변환 계획 coverage](aot-translation-plan-coverage.md)
-* [AOT dynamic ���� ���� ��ǳ �м� / AOT dynamic stack exception storm](20260713-aot-dynamic-stack-exception-storm.md)
+* [AOT dynamic ���� ���� ��ǳ �м� / AOT dynamic stack exception storm](20260713-aot-dynamic-stack-exception-storm.md)

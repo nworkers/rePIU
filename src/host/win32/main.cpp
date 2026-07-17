@@ -1881,6 +1881,15 @@ void PrintExecutionAttempt(
     }
     logger.info("Win32 low-memory read emulate count: {}",
                 attempt.low_memory_read_emulate_count);
+    logger.info("Win32 low-memory read emulate debug stage: {}",
+                attempt.debug_emulate_stage);
+    if (attempt.debug_emulate_stage > 0)
+    {
+        logger.info("Win32 low-memory read emulate debug decode result: {}",
+                    Hex32(attempt.debug_emulate_decode_result));
+        logger.info("Win32 low-memory read emulate debug calculated address: {}",
+                    Hex32(attempt.debug_emulate_calculated_address));
+    }
     if (attempt.low_memory_read_emulate_count > 0)
     {
         logger.info("Win32 last low-memory read emulate address: {}",

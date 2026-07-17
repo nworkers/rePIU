@@ -24,7 +24,7 @@ constexpr std::uint32_t kWin32ExceptionStackDwordCapacity = 96;
 constexpr std::uint32_t kWin32AllocatorProbeTraceCapacity = 16;
 constexpr std::uint32_t kWin32AllocatorControlFlowTraceCapacity = 32;
 constexpr std::uint32_t kWin32SegmentLoadTraceCapacity = 16;
-constexpr std::uint32_t kWin32DeferredPortIoLimit = 1024;
+constexpr std::uint32_t kWin32DeferredPortIoLimit = 65536;
 constexpr std::uint32_t kWin32ExecutionTraceCapacity = 64;
 
 // One capture per single-stepped instruction inside a guest code range
@@ -603,6 +603,9 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t last_low_memory_read_emulate_eip = 0;
     std::uint32_t last_low_memory_read_emulate_value = 0;
     std::uint32_t last_low_memory_read_emulate_reg = 0;
+    std::uint32_t debug_emulate_stage = 0;
+    std::uint32_t debug_emulate_decode_result = 0;
+    std::uint32_t debug_emulate_calculated_address = 0;
     std::uint32_t rep_movs_copy_failure_count = 0;
     std::uint32_t last_rep_movs_copy_failure_stage = 0;
     std::uint32_t last_rep_movs_copy_error = 0;

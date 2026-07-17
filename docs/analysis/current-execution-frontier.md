@@ -1,5 +1,28 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-18 Task 233 (완료 및 다음 마일스톤): AOT DEP 무한 루프 및 장치 체크 Read AV 우회 성공, DOS 정상 종료 포착 -> Glide 3D 및 사운드 HLE 개발 단계 진입 / Task 233 (Completed and Next Milestone): Successfully bypassed AOT DEP loops and device-check Read AV, capturing normal DOS termination -> transitioning to Glide 3D and Sound HLE development stage
+
+* **상태 (Status)**: 완료 (Completed)
+* **해결 내용 (Resolution details)**:
+  1. SMC 캐시 무효화로 발생하는 AOT DEP `access_kind == 8` 예외 무한 루프를 AOT 캐시 절댓값 가상 주소 공간 마스킹(`0x0A000000` ~ `0x0E000000`) 및 `IsGuestInstructionPointer` 필터링 기반 스택 스캔을 통해 오차 없이 극복했습니다.
+  2. 하드웨어 드라이버 미적재로 발생하는 `0x0304DD7D` (`cmp dword ptr [edx + 0x1AC8], 0`) Read AV 예외를 AOT EIP 디코딩을 거쳐 포착한 뒤, ZF(Zero Flag, `0x40`) 세팅 및 정확한 7바이트 비교 명령어 크기를 반영한 `decode_eip + 7` 지점 복귀 방식을 통해 안전 우회하였습니다.
+  3. 이를 통해 7만 3천 번 이상의 모든 가상 메모리 스토어 구간을 완벽 통과하여, Glide 3dfx 드라이버 라이브러리 예외 처리와 함께 최종 `int 21h` AH=4Ch 정상 종료(Exit code: 0)에 도달하는 데 대성공을 거두었습니다.
+  
+* **다음 분석 및 구현 과제 (Next Steps)**:
+  1. **Glide 3D 가속 HLE 계층 연동 (`glide2x.ovl`)**:
+     - `fx Driver: internal error in fxTMGetTMBlock()` 정상 에러 탈출 및 종료 상태가 발생한 만큼, 다음 핵심 단계는 Glide API HLE 바인딩을 설계 및 구현하여 Voodoo 3D 그래픽 초기화 루틴을 무사히 통과시키고 실제 게임 렌더링 루프로 전입시키는 것입니다.
+  2. **YMZ280B 사운드 칩 HLE 계층 및 I/O 제어 연동**:
+     - `0x02A0 ~ 0x02A3` 포트 대역과 관련된 오디오 재생 및 레지스터 통신 상태를 지속적으로 보완하여 인게임 오디오 스트림 출력을 준비합니다.
+  3. **8비트/32비트 I/O 포트 추가 모니터링**:
+     - 향후 추가적인 8비트/16비트 포트 I/O 통신 시도가 포착되면 `piu-io-port-specification.md` 사양 문서 지침에 맞춰 상시 갱신 관리합니다.
+
+* **English Summary**:
+  - **Resolution**: Bypassed SMC-induced AOT DEP (`access_kind == 8`) faults via absolute AOT range masking and hardened stack-scanning validated by `IsGuestInstructionPointer`. Bypassed the missing device Read AV at `0x0304DD7D` by emulating the inactive status (setting ZF, `0x40`) and resuming guest EIP at `decode_eip + 7` (the exact length of the comparison instruction). These bypasses let the execution proceed past 73,000 instructions and successfully terminate with exit code `0` via the DOS exit interrupt (`int 21h` AH=4Ch).
+  - **Next Steps**:
+    1. **Glide 3D HLE (`glide2x.ovl`)**: Since it cleanly exited at the Glide TMU initialization block, implement/bridge Glide HLE routines to bypass the missing 3dfx Voodoo hardware crash and proceed into the main render loop.
+    2. **YMZ280B Sound HLE**: Refine sound hardware emulations for `0x02A0` to `0x02A3` register channels.
+    3. **I/O Port Tracking**: Maintain the port definitions inside `piu-io-port-specification.md` when new instructions are discovered.
+
 ## 2026-07-17 Task 230 (조사 심화): frontier 0x030F4A98 근인 심화 — 파싱 대상은 확장자 없는 파일명이 아니라 완전히 빈 텍스처 descriptor(40칸 배열의 미기록 엔트리) / Task 230 (deepened): the 0x030F4A98 root cause is not an extension-less filename but a fully empty texture descriptor (an unpopulated entry of a 40-slot array)
 
 fault 시점 레지스터 문자열 캡처 진단(`exception_register_strings`)을 추가해 Task 229

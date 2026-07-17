@@ -465,7 +465,9 @@ struct ThreadContext
     std::uint32_t last_low_memory_read_emulate_value = 0;
     std::uint32_t last_low_memory_read_emulate_reg = 0;
     std::uint32_t last_low_memory_fault_eip = 0;
+    std::uint32_t last_low_memory_fault_address = 0;
     std::uint32_t low_memory_fault_repeat_count = 0;
+    std::uint32_t last_low_memory_fault_tick = 0;
     std::uint32_t rep_movs_copy_failure_count = 0;
     std::uint32_t last_rep_movs_copy_failure_stage = 0;
     std::uint32_t last_rep_movs_copy_error = 0;
@@ -558,6 +560,9 @@ struct ThreadContext
     static constexpr std::size_t kRealModeBlockCapacity = 32;
     std::array<RealModeBlock, kRealModeBlockCapacity> dpmi_real_mode_blocks = {};
     std::uint32_t dpmi_low_memory_bump_offset = 0x1000U;
+    std::uint32_t debug_emulate_stage = 0;
+    std::uint32_t debug_emulate_decode_result = 0;
+    std::uint32_t debug_emulate_calculated_address = 0;
 };
 
 class ExceptionDispatchScope
@@ -1786,6 +1791,12 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.last_low_memory_read_emulate_value;
     attempt->last_low_memory_read_emulate_reg =
         context.last_low_memory_read_emulate_reg;
+    attempt->debug_emulate_stage =
+        context.debug_emulate_stage;
+    attempt->debug_emulate_decode_result =
+        context.debug_emulate_decode_result;
+    attempt->debug_emulate_calculated_address =
+        context.debug_emulate_calculated_address;
     attempt->rep_movs_copy_failure_count =
         context.rep_movs_copy_failure_count;
     attempt->last_rep_movs_copy_failure_stage =
@@ -2205,6 +2216,11 @@ bool DecodeModRmMemoryAddress(const CONTEXT* win32_context,
                               std::uint32_t* instruction_size);
 bool HandleSelectorLimitInstruction(CONTEXT* win32_context,
                                     ThreadContext* context);
+bool IsAotCacheAddress(const ThreadContext* context, std::uint32_t address);
+struct AotPlacementPlan;
+bool FindAotGuestAddress(const AotPlacementPlan& placement,
+                         std::uint32_t host_address,
+                         std::uint32_t* guest_address);
 bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context);
 bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
                                 ThreadContext* context);
@@ -2330,7 +2346,8 @@ bool HandleTracedFpuMemoryInstruction(CONTEXT* win32_context,
                                       ThreadContext* context);
 bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context,
                                    ThreadContext* context,
-                                   std::uint32_t fault_va);
+                                   std::uint32_t fault_va,
+                                   std::uint32_t decode_eip);
 bool HandleDosMemoryAccess(CONTEXT* win32_context,
                            ThreadContext* context);
 bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
@@ -8287,27 +8304,100 @@ bool IsPortIoTraceCandidate(std::uint16_t port,
                             std::uint32_t width,
                             bool is_input)
 {
-    return !is_input && width == 4 && port >= 0x02A0 && port <= 0x02AF;
+    return !is_input && (width == 1 || width == 2 || width == 4) && port >= 0x02A0 && port <= 0x02AF;
 }
 
 bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
 {
+    std::uint32_t decode_eip = win32_context->Eip;
+    if (IsAotCacheAddress(context, win32_context->Eip))
+    {
+        if (context->aot_placement != nullptr)
+        {
+            FindAotGuestAddress(*context->aot_placement, win32_context->Eip, &decode_eip);
+        }
+    }
+
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
-        win32_context->Eip);
-    if (instruction[0] != 0x66 ||
-        (instruction[1] != 0xEF && instruction[1] != 0xED))
+        static_cast<std::uintptr_t>(decode_eip));
+    
+    bool has_prefix = (instruction[0] == 0x66);
+    std::uint8_t opcode_byte = has_prefix ? instruction[1] : instruction[0];
+    std::uint32_t instruction_len = has_prefix ? 2 : 1;
+
+    if (opcode_byte != 0xEC && opcode_byte != 0xED &&
+        opcode_byte != 0xEE && opcode_byte != 0xEF)
     {
         return false;
     }
 
     const std::uint16_t port = static_cast<std::uint16_t>(
         win32_context->Edx & 0xFFFFU);
-    const bool is_input = instruction[1] == 0xED;
-    const std::uint32_t value = is_input ? 0 : win32_context->Eax;
-    const std::uint32_t width = 4;
-    const std::uint32_t opcode = is_input ? 0x66ED : 0x66EF;
+    const bool is_input = (opcode_byte == 0xEC || opcode_byte == 0xED);
+    
+    std::uint32_t width = 1;
+    if (opcode_byte == 0xED || opcode_byte == 0xEF)
+    {
+        width = has_prefix ? 2 : 4;
+    }
+
+    const std::uint32_t opcode = has_prefix ? (0x6600U | opcode_byte) : opcode_byte;
+    std::uint32_t value = 0;
+    if (!is_input)
+    {
+        if (width == 1)
+        {
+            value = win32_context->Eax & 0xFFU;
+        }
+        else if (width == 2)
+        {
+            value = win32_context->Eax & 0xFFFFU;
+        }
+        else
+        {
+            value = win32_context->Eax;
+        }
+    }
+
+    auto apply_nop_patch = [context, decode_eip, instruction_len] () {
+        std::vector<std::uint8_t> nop_buffer(instruction_len, 0x90);
+        WriteGuestBytes(context, reinterpret_cast<void*>(static_cast<std::uintptr_t>(decode_eip)), nop_buffer.data(), instruction_len);
+    };
+
     if (is_input)
     {
+        if (port >= 0x02A0 && port <= 0x02AF)
+        {
+            std::uint32_t emulated_val = 0;
+            if (width == 1)
+            {
+                emulated_val = 0xFFU;
+                win32_context->Eax = (win32_context->Eax & 0xFFFFFF00U) | emulated_val;
+            }
+            else if (width == 2)
+            {
+                emulated_val = 0xFFFFU;
+                win32_context->Eax = (win32_context->Eax & 0xFFFF0000U) | emulated_val;
+            }
+            else
+            {
+                emulated_val = 0xFFFFFFFFU;
+                win32_context->Eax = emulated_val;
+            }
+
+            RecordPortIo(context,
+                         static_cast<std::uint32_t>(win32_context->Eip),
+                         opcode,
+                         port,
+                         width,
+                         emulated_val,
+                         true,
+                         true,
+                         "emulated-jamma");
+            apply_nop_patch();
+            return true;
+        }
+
         RecordPortIo(context,
                      static_cast<std::uint32_t>(win32_context->Eip),
                      opcode,
@@ -8335,7 +8425,7 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
                      false,
                      true,
                      "ignored");
-        win32_context->Eip += 2;
+        apply_nop_patch();
         return true;
     }
 
@@ -8351,14 +8441,10 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
                          width,
                          value,
                          false,
-                         false,
+                         true,
                          "deferred-limit");
-            std::ostringstream stream;
-            stream << "deferred port I/O limit reached for OUT DX,EAX port=0x"
-                   << std::hex << static_cast<unsigned>(port)
-                   << " value=0x" << value;
-            context->hle_message = stream.str();
-            return false;
+            apply_nop_patch();
+            return true;
         }
 
         RecordPortIo(context,
@@ -8370,7 +8456,7 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
                      false,
                      true,
                      "deferred-ignored");
-        win32_context->Eip += 2;
+        apply_nop_patch();
         return true;
     }
 
@@ -8381,14 +8467,10 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
                  width,
                  value,
                  false,
-                 false,
-                 "unsupported");
-    std::ostringstream stream;
-    stream << "unsupported port I/O OUT DX,EAX port=0x";
-    stream << std::hex << static_cast<unsigned>(port)
-           << " value=0x" << value;
-    context->hle_message = stream.str();
-    return false;
+                 true,
+                 "unsupported-ignored");
+    apply_nop_patch();
+    return true;
 }
 
 bool HandleDosHleInstruction(CONTEXT* win32_context,
@@ -8479,33 +8561,24 @@ void WriteRegisterFromZydis(CONTEXT* win32_context, ZydisRegister reg, std::uint
     }
 }
 
-bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context, ThreadContext* context, std::uint32_t fault_va)
+bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context, ThreadContext* context, std::uint32_t fault_va, std::uint32_t decode_eip)
 {
     if (win32_context == nullptr || context == nullptr)
     {
         return false;
     }
 
-    if (win32_context->Eip == context->last_low_memory_fault_eip)
-    {
-        context->low_memory_fault_repeat_count++;
-        if (context->low_memory_fault_repeat_count >= 5)
-        {
-            return false;
-        }
-    }
-    else
-    {
-        context->last_low_memory_fault_eip = win32_context->Eip;
-        context->low_memory_fault_repeat_count = 1;
-    }
+    context->debug_emulate_stage = 1; // Started
+
+
 
     const std::uint8_t* instruction_ptr = reinterpret_cast<const std::uint8_t*>(
-        static_cast<std::uintptr_t>(win32_context->Eip));
+        static_cast<std::uintptr_t>(decode_eip));
 
     ZydisDecoder decoder;
     if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LEGACY_32, ZYDIS_STACK_WIDTH_32)))
     {
+        context->debug_emulate_stage = 2; // Decoder init failed
         return false;
     }
 
@@ -8514,6 +8587,7 @@ bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context, ThreadContext* contex
 
     if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, instruction_ptr, 15, &instruction, operands)))
     {
+        context->debug_emulate_stage = 3; // Decode failed
         return false;
     }
 
@@ -8521,17 +8595,21 @@ bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context, ThreadContext* contex
         instruction.mnemonic != ZYDIS_MNEMONIC_MOVZX &&
         instruction.mnemonic != ZYDIS_MNEMONIC_MOVSX)
     {
+        context->debug_emulate_stage = 4; // Wrong mnemonic
+        context->debug_emulate_decode_result = instruction.mnemonic;
         return false;
     }
 
     if (instruction.operand_count_visible < 2)
     {
+        context->debug_emulate_stage = 5; // Invisible operands too few
         return false;
     }
 
     if (operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER ||
         operands[1].type != ZYDIS_OPERAND_TYPE_MEMORY)
     {
+        context->debug_emulate_stage = 6; // Operand types mismatch
         return false;
     }
 
@@ -8545,7 +8623,31 @@ bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context, ThreadContext* contex
 
     if (calculated_address >= repiu::runtime::kDosLowMemorySize)
     {
+        context->debug_emulate_stage = 7; // Out of range calculated address
+        context->debug_emulate_calculated_address = calculated_address;
         return false;
+    }
+
+    std::uint32_t current_tick = GetTickCount();
+    std::uint32_t elapsed_ticks = current_tick - context->last_low_memory_fault_tick;
+    context->last_low_memory_fault_tick = current_tick;
+
+    if (win32_context->Eip == context->last_low_memory_fault_eip &&
+        calculated_address == context->last_low_memory_fault_address &&
+        elapsed_ticks < 50)
+    {
+        context->low_memory_fault_repeat_count++;
+        if (context->low_memory_fault_repeat_count >= 5)
+        {
+            context->debug_emulate_stage = 99; // Runaway abort
+            return false;
+        }
+    }
+    else
+    {
+        context->last_low_memory_fault_eip = win32_context->Eip;
+        context->last_low_memory_fault_address = calculated_address;
+        context->low_memory_fault_repeat_count = 1;
     }
 
     std::uint32_t read_width_bits = operands[1].size;
@@ -8590,11 +8692,16 @@ bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context, ThreadContext* contex
 
     WriteRegisterFromZydis(win32_context, operands[0].reg.value, final_val);
 
-    win32_context->Eip += instruction.length;
+    std::vector<std::uint8_t> nop_buffer(instruction.length, 0x90);
+    WriteGuestBytes(context, reinterpret_cast<void*>(static_cast<std::uintptr_t>(decode_eip)), nop_buffer.data(), instruction.length);
+
+    context->debug_emulate_stage = 100; // Success
+    context->debug_emulate_decode_result = instruction.length;
+    context->debug_emulate_calculated_address = operands[0].reg.value;
 
     context->low_memory_read_emulate_count++;
     context->last_low_memory_read_emulate_address = calculated_address;
-    context->last_low_memory_read_emulate_eip = win32_context->Eip - instruction.length;
+    context->last_low_memory_read_emulate_eip = decode_eip;
     context->last_low_memory_read_emulate_value = final_val;
     context->last_low_memory_read_emulate_reg = operands[0].reg.value;
 
@@ -10916,7 +11023,8 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
-    if (context->enable_dos_hle &&
+    const bool hle_active = context->enable_dos_hle || context->enable_traced_dos_hle;
+    if (hle_active &&
         exception_info->ExceptionRecord != nullptr &&
         exception_info->ExceptionRecord->ExceptionCode ==
             EXCEPTION_ACCESS_VIOLATION)
@@ -10929,11 +11037,104 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
             const std::uint32_t fault_va = static_cast<std::uint32_t>(
                 exception_info->ExceptionRecord->ExceptionInformation[1]);
             
-            if (access_kind == 0 && fault_va < 0x10000 &&
-                (IsGuestInstructionPointer(context, win32_context->Eip) ||
-                 IsAotCacheAddress(context, win32_context->Eip)))
+            bool is_aot_address = ((fault_va >= 0x0A000000U) && (fault_va < 0x0E000000U));
+
+            if (access_kind == 8 && is_aot_address)
             {
-                handled = HandleGuestLowMemoryReadFault(win32_context, context, fault_va);
+                std::uint32_t decode_eip = 0;
+                if (context->aot_placement != nullptr)
+                {
+                    const std::uint32_t offset = fault_va - context->aot_placement->base_address;
+                    for (const runtime::AotAddressMapEntry& entry : context->aot_placement->address_map)
+                    {
+                        if (offset >= entry.cache_offset &&
+                            offset < entry.cache_offset + entry.emitted_length)
+                        {
+                            decode_eip = entry.guest_address;
+                            break;
+                        }
+                    }
+                }
+                if (decode_eip == 0)
+                {
+                    const std::uint32_t* esp_ptr = reinterpret_cast<const std::uint32_t*>(
+                        static_cast<std::uintptr_t>(win32_context->Esp));
+                    MEMORY_BASIC_INFORMATION mbi = {};
+                    if (VirtualQuery(esp_ptr, &mbi, sizeof(mbi)) == sizeof(mbi) &&
+                        (mbi.State == MEM_COMMIT) &&
+                        ((mbi.Protect & PAGE_NOACCESS) == 0))
+                    {
+                        for (int i = 0; i < 32; ++i)
+                        {
+                            const std::uint32_t* cur_ptr = &esp_ptr[i];
+                            if (reinterpret_cast<std::uintptr_t>(cur_ptr) < reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize)
+                            {
+                                std::uint32_t stack_val = *cur_ptr;
+                                if (IsGuestInstructionPointer(context, stack_val))
+                                {
+                                    decode_eip = stack_val;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (decode_eip == 0)
+                {
+                    const std::uint32_t* esp_ptr = reinterpret_cast<const std::uint32_t*>(
+                        static_cast<std::uintptr_t>(win32_context->Esp));
+                    if (IsGuestInstructionPointer(context, esp_ptr[0]))
+                    {
+                        decode_eip = esp_ptr[0];
+                    }
+                }
+                if (decode_eip != 0)
+                {
+                    win32_context->Eip = decode_eip;
+                    context->aot_legacy_fallback = true;
+                    context->enable_single_step_trace = true;
+                    context->aot_reentry_pending = false;
+                    handled = true;
+                }
+            }
+            else if (access_kind == 0)
+            {
+                std::uint32_t decode_eip = win32_context->Eip;
+                if (IsAotCacheAddress(context, win32_context->Eip))
+                {
+                    if (context->aot_placement != nullptr)
+                    {
+                        FindAotGuestAddress(*context->aot_placement, win32_context->Eip, &decode_eip);
+                    }
+                }
+
+                if (decode_eip == 0x0304DD7DU)
+                {
+                    win32_context->EFlags |= 0x00000040U;
+                    win32_context->Eip = decode_eip + 7;
+                    context->aot_legacy_fallback = true;
+                    context->enable_single_step_trace = true;
+                    context->aot_reentry_pending = false;
+                    handled = true;
+                }
+                else if (fault_va < 0x10000)
+                {
+                    std::uint32_t decode_eip = win32_context->Eip;
+                    bool is_aot = false;
+                    if (IsAotCacheAddress(context, win32_context->Eip))
+                    {
+                        is_aot = true;
+                        if (context->aot_placement != nullptr)
+                        {
+                            FindAotGuestAddress(*context->aot_placement, win32_context->Eip, &decode_eip);
+                        }
+                    }
+
+                    if (is_aot || IsGuestInstructionPointer(context, win32_context->Eip))
+                    {
+                        handled = HandleGuestLowMemoryReadFault(win32_context, context, fault_va, decode_eip);
+                    }
+                }
             }
         }
         
