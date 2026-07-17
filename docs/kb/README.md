@@ -7,9 +7,11 @@
 ```mermaid
 flowchart TD
     DOS["DOS/4GW"] --> DPMI["DPMI services"]
+    DOS --> LOWMEM["DOS/4GW Low-Memory Model"]
     DPMI --> INT["Important interrupts"]
     CPU["x86 segmentation and width"] --> HLE["Exception-driven HLE"]
     LE["LE format and relocation"] --> HLE
+    LOWMEM --> HLE
     TERMS["Arena / sentinel / shadow"] --> HLE
     SMC["Self-modifying code"] --> CACHE["AOT code-cache coherency"]
     CACHE --> HLE
@@ -19,6 +21,7 @@ flowchart TD
 ## 문서
 
 * [DOS/4GW와 DPMI](dos4gw-and-dpmi.md)
+* [DOS/4GW 저지대 메모리 모델 및 관용](dos4gw-low-memory-model.md)
 * [x86 segmentation과 16/32비트 처리](x86-segmentation-and-bit-width.md)
 * [Arena, sentinel, shadow memory 용어](memory-terms.md)
 * [주요 DOS/DPMI interrupt](important-interrupts.md)
@@ -36,6 +39,7 @@ in `docs/analysis/`. Definitions and contracts derived from external material
 include source links.
 
 * [DOS/4GW and DPMI](dos4gw-and-dpmi.md)
+* [DOS/4GW low-memory model and tolerance](dos4gw-low-memory-model.md)
 * [x86 segmentation and 16/32-bit handling](x86-segmentation-and-bit-width.md)
 * [Arena, sentinel, and shadow-memory terminology](memory-terms.md)
 * [Important DOS/DPMI interrupts](important-interrupts.md)

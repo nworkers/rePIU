@@ -1879,6 +1879,19 @@ void PrintExecutionAttempt(
         logger.info("Win32 last low-memory access value: {}",
                     Hex32(attempt.last_low_memory_access_value));
     }
+    logger.info("Win32 low-memory read emulate count: {}",
+                attempt.low_memory_read_emulate_count);
+    if (attempt.low_memory_read_emulate_count > 0)
+    {
+        logger.info("Win32 last low-memory read emulate address: {}",
+                    Hex32(attempt.last_low_memory_read_emulate_address));
+        logger.info("Win32 last low-memory read emulate EIP: {}",
+                    Hex32(attempt.last_low_memory_read_emulate_eip));
+        logger.info("Win32 last low-memory read emulate value: {}",
+                    Hex32(attempt.last_low_memory_read_emulate_value));
+        logger.info("Win32 last low-memory read emulate reg: {}",
+                    static_cast<unsigned>(attempt.last_low_memory_read_emulate_reg));
+    }
     logger.info("Win32 handled memory store count: {}",
                 attempt.handled_memory_store_count);
     if (attempt.handled_memory_store_count > 0)

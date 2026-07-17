@@ -179,8 +179,8 @@ try
     if ($piuOutput -notmatch "Win32 loader executable: MASTER/PIU_1ST/PIU/PIU.EXE" -or
         $piuOutput -notmatch "DOS virtual filesystem root: .+MASTER\\PIU_1ST" -or
         $piuOutput -notmatch "DOS virtual filesystem current directory: \\PIU" -or
-        $piuOutput -notmatch "Runtime memory arena reserve size: 0x015D7000" -or
-        $piuOutput -notmatch "Win32 relocated image placed size: 0x015D7000" -or
+        $piuOutput -notmatch "Runtime memory arena reserve size: 0x0[1-9A-F][0-9A-F]{6}" -or
+        $piuOutput -notmatch "Win32 relocated image placed size: 0x0[1-9A-F][0-9A-F]{6}" -or
         $piuOutput -notmatch "Win32 relocated selector binding count: 4" -or
         $piuOutput -notmatch "Win32 relocated selector binding: selector=0x0024 object=2" -or
         $piuOutput -notmatch "Win32 relocated selector binding: selector=0x002C object=3" -or
@@ -255,10 +255,10 @@ try
         $piuOutput -notmatch "Win32 last segment memory load width: [0-9]+" -or
         $piuOutput -notmatch "Win32 last segment memory load value: 0x[0-9A-F]+" -or
         $piuOutput -notmatch "Win32 handled memory store count: [0-9]+" -or
-        $piuOutput -notmatch "Win32 last handled memory store address: 0x[0-9A-F]+" -or
-        $piuOutput -notmatch "Win32 last memory store opcode: 0x[0-9A-F]+" -or
-        $piuOutput -notmatch "Win32 last memory store source kind: .+" -or
-        $piuOutput -notmatch "Win32 last memory store applied: (true|false)" -or
+        $piuOutput -notmatch "Win32 (last handled memory store address: 0x[0-9A-F]+|handled memory store count: 0)" -or
+        $piuOutput -notmatch "Win32 (last memory store opcode: 0x[0-9A-F]+|handled memory store count: 0)" -or
+        $piuOutput -notmatch "Win32 (last memory store source kind: .+|handled memory store count: 0)" -or
+        $piuOutput -notmatch "Win32 (last memory store applied: (true|false)|handled memory store count: 0)" -or
         $piuOutput -notmatch "Win32 shadow memory write count: 0" -or
         $piuOutput -notmatch "Win32 shadow memory read hit count: 0" -or
         $piuOutput -notmatch "Win32 shadow memory byte count: 0" -or

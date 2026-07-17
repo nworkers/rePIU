@@ -598,6 +598,11 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t last_low_memory_access_edi = 0;
     std::uint32_t last_low_memory_access_destination = 0;
     std::uint32_t last_low_memory_access_value = 0;
+    std::uint32_t low_memory_read_emulate_count = 0;
+    std::uint32_t last_low_memory_read_emulate_address = 0;
+    std::uint32_t last_low_memory_read_emulate_eip = 0;
+    std::uint32_t last_low_memory_read_emulate_value = 0;
+    std::uint32_t last_low_memory_read_emulate_reg = 0;
     std::uint32_t rep_movs_copy_failure_count = 0;
     std::uint32_t last_rep_movs_copy_failure_stage = 0;
     std::uint32_t last_rep_movs_copy_error = 0;

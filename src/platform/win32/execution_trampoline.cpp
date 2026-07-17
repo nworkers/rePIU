@@ -459,6 +459,13 @@ struct ThreadContext
     std::uint32_t last_low_memory_access_edi = 0;
     std::uint32_t last_low_memory_access_destination = 0;
     std::uint32_t last_low_memory_access_value = 0;
+    std::uint32_t low_memory_read_emulate_count = 0;
+    std::uint32_t last_low_memory_read_emulate_address = 0;
+    std::uint32_t last_low_memory_read_emulate_eip = 0;
+    std::uint32_t last_low_memory_read_emulate_value = 0;
+    std::uint32_t last_low_memory_read_emulate_reg = 0;
+    std::uint32_t last_low_memory_fault_eip = 0;
+    std::uint32_t low_memory_fault_repeat_count = 0;
     std::uint32_t rep_movs_copy_failure_count = 0;
     std::uint32_t last_rep_movs_copy_failure_stage = 0;
     std::uint32_t last_rep_movs_copy_error = 0;
@@ -1769,6 +1776,16 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.last_low_memory_access_destination;
     attempt->last_low_memory_access_value =
         context.last_low_memory_access_value;
+    attempt->low_memory_read_emulate_count =
+        context.low_memory_read_emulate_count;
+    attempt->last_low_memory_read_emulate_address =
+        context.last_low_memory_read_emulate_address;
+    attempt->last_low_memory_read_emulate_eip =
+        context.last_low_memory_read_emulate_eip;
+    attempt->last_low_memory_read_emulate_value =
+        context.last_low_memory_read_emulate_value;
+    attempt->last_low_memory_read_emulate_reg =
+        context.last_low_memory_read_emulate_reg;
     attempt->rep_movs_copy_failure_count =
         context.rep_movs_copy_failure_count;
     attempt->last_rep_movs_copy_failure_stage =
@@ -2311,6 +2328,9 @@ bool HandleTracedMemoryTestInstruction(CONTEXT* win32_context,
                                        ThreadContext* context);
 bool HandleTracedFpuMemoryInstruction(CONTEXT* win32_context,
                                       ThreadContext* context);
+bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context,
+                                   ThreadContext* context,
+                                   std::uint32_t fault_va);
 bool HandleDosMemoryAccess(CONTEXT* win32_context,
                            ThreadContext* context);
 bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
@@ -8403,6 +8423,186 @@ bool HandleDosHleInstruction(CONTEXT* win32_context,
     return false;
 }
 
+std::uint32_t ReadRegisterValueForAddress(const CONTEXT* win32_context, ZydisRegister reg)
+{
+    if (reg == ZYDIS_REGISTER_NONE)
+    {
+        return 0;
+    }
+    switch (reg)
+    {
+        case ZYDIS_REGISTER_EAX: return win32_context->Eax;
+        case ZYDIS_REGISTER_ECX: return win32_context->Ecx;
+        case ZYDIS_REGISTER_EDX: return win32_context->Edx;
+        case ZYDIS_REGISTER_EBX: return win32_context->Ebx;
+        case ZYDIS_REGISTER_ESP: return win32_context->Esp;
+        case ZYDIS_REGISTER_EBP: return win32_context->Ebp;
+        case ZYDIS_REGISTER_ESI: return win32_context->Esi;
+        case ZYDIS_REGISTER_EDI: return win32_context->Edi;
+        default: return 0;
+    }
+}
+
+void WriteRegisterFromZydis(CONTEXT* win32_context, ZydisRegister reg, std::uint32_t value)
+{
+    switch (reg)
+    {
+        case ZYDIS_REGISTER_EAX: win32_context->Eax = value; break;
+        case ZYDIS_REGISTER_ECX: win32_context->Ecx = value; break;
+        case ZYDIS_REGISTER_EDX: win32_context->Edx = value; break;
+        case ZYDIS_REGISTER_EBX: win32_context->Ebx = value; break;
+        case ZYDIS_REGISTER_ESP: win32_context->Esp = value; break;
+        case ZYDIS_REGISTER_EBP: win32_context->Ebp = value; break;
+        case ZYDIS_REGISTER_ESI: win32_context->Esi = value; break;
+        case ZYDIS_REGISTER_EDI: win32_context->Edi = value; break;
+
+        case ZYDIS_REGISTER_AX: win32_context->Eax = (win32_context->Eax & 0xFFFF0000U) | (value & 0xFFFFU); break;
+        case ZYDIS_REGISTER_CX: win32_context->Ecx = (win32_context->Ecx & 0xFFFF0000U) | (value & 0xFFFFU); break;
+        case ZYDIS_REGISTER_DX: win32_context->Edx = (win32_context->Edx & 0xFFFF0000U) | (value & 0xFFFFU); break;
+        case ZYDIS_REGISTER_BX: win32_context->Ebx = (win32_context->Ebx & 0xFFFF0000U) | (value & 0xFFFFU); break;
+        case ZYDIS_REGISTER_SP: win32_context->Esp = (win32_context->Esp & 0xFFFF0000U) | (value & 0xFFFFU); break;
+        case ZYDIS_REGISTER_BP: win32_context->Ebp = (win32_context->Ebp & 0xFFFF0000U) | (value & 0xFFFFU); break;
+        case ZYDIS_REGISTER_SI: win32_context->Esi = (win32_context->Esi & 0xFFFF0000U) | (value & 0xFFFFU); break;
+        case ZYDIS_REGISTER_DI: win32_context->Edi = (win32_context->Edi & 0xFFFF0000U) | (value & 0xFFFFU); break;
+
+        case ZYDIS_REGISTER_AL: win32_context->Eax = (win32_context->Eax & 0xFFFFFF00U) | (value & 0xFFU); break;
+        case ZYDIS_REGISTER_CL: win32_context->Ecx = (win32_context->Ecx & 0xFFFFFF00U) | (value & 0xFFU); break;
+        case ZYDIS_REGISTER_DL: win32_context->Edx = (win32_context->Edx & 0xFFFFFF00U) | (value & 0xFFU); break;
+        case ZYDIS_REGISTER_BL: win32_context->Ebx = (win32_context->Ebx & 0xFFFFFF00U) | (value & 0xFFU); break;
+
+        case ZYDIS_REGISTER_AH: win32_context->Eax = (win32_context->Eax & 0xFFFF00FFU) | ((value & 0xFFU) << 8); break;
+        case ZYDIS_REGISTER_CH: win32_context->Ecx = (win32_context->Ecx & 0xFFFF00FFU) | ((value & 0xFFU) << 8); break;
+        case ZYDIS_REGISTER_DH: win32_context->Edx = (win32_context->Edx & 0xFFFF00FFU) | ((value & 0xFFU) << 8); break;
+        case ZYDIS_REGISTER_BH: win32_context->Ebx = (win32_context->Ebx & 0xFFFF00FFU) | ((value & 0xFFU) << 8); break;
+
+        default: break;
+    }
+}
+
+bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context, ThreadContext* context, std::uint32_t fault_va)
+{
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return false;
+    }
+
+    if (win32_context->Eip == context->last_low_memory_fault_eip)
+    {
+        context->low_memory_fault_repeat_count++;
+        if (context->low_memory_fault_repeat_count >= 5)
+        {
+            return false;
+        }
+    }
+    else
+    {
+        context->last_low_memory_fault_eip = win32_context->Eip;
+        context->low_memory_fault_repeat_count = 1;
+    }
+
+    const std::uint8_t* instruction_ptr = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(win32_context->Eip));
+
+    ZydisDecoder decoder;
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LEGACY_32, ZYDIS_STACK_WIDTH_32)))
+    {
+        return false;
+    }
+
+    ZydisDecodedInstruction instruction{};
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+
+    if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, instruction_ptr, 15, &instruction, operands)))
+    {
+        return false;
+    }
+
+    if (instruction.mnemonic != ZYDIS_MNEMONIC_MOV &&
+        instruction.mnemonic != ZYDIS_MNEMONIC_MOVZX &&
+        instruction.mnemonic != ZYDIS_MNEMONIC_MOVSX)
+    {
+        return false;
+    }
+
+    if (instruction.operand_count_visible < 2)
+    {
+        return false;
+    }
+
+    if (operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+        operands[1].type != ZYDIS_OPERAND_TYPE_MEMORY)
+    {
+        return false;
+    }
+
+    const auto& mem = operands[1].mem;
+    std::uint32_t base_val = ReadRegisterValueForAddress(win32_context, mem.base);
+    std::uint32_t index_val = ReadRegisterValueForAddress(win32_context, mem.index);
+    std::uint32_t scale = mem.scale;
+    std::uint32_t displacement = mem.disp.has_displacement ? static_cast<std::uint32_t>(mem.disp.value) : 0;
+    
+    std::uint32_t calculated_address = base_val + index_val * scale + displacement;
+
+    if (calculated_address >= repiu::runtime::kDosLowMemorySize)
+    {
+        return false;
+    }
+
+    std::uint32_t read_width_bits = operands[1].size;
+    std::uint32_t read_width_bytes = read_width_bits / 8;
+    if (read_width_bytes == 0)
+    {
+        read_width_bytes = 1;
+    }
+
+    std::uint32_t raw_val = 0;
+    if (read_width_bytes == 1)
+    {
+        std::uint8_t byte_val = 0;
+        repiu::runtime::ReadDosLowMemoryUInt8(context->dos_low_memory, calculated_address, &byte_val);
+        raw_val = byte_val;
+    }
+    else if (read_width_bytes == 2)
+    {
+        std::uint16_t word_val = 0;
+        repiu::runtime::ReadDosLowMemoryUInt16(context->dos_low_memory, calculated_address, &word_val);
+        raw_val = word_val;
+    }
+    else if (read_width_bytes == 4)
+    {
+        std::uint32_t dword_val = 0;
+        repiu::runtime::ReadDosLowMemoryUInt32(context->dos_low_memory, calculated_address, &dword_val);
+        raw_val = dword_val;
+    }
+
+    std::uint32_t final_val = raw_val;
+    if (instruction.mnemonic == ZYDIS_MNEMONIC_MOVSX)
+    {
+        if (read_width_bytes == 1)
+        {
+            final_val = static_cast<std::uint32_t>(static_cast<std::int32_t>(static_cast<std::int8_t>(raw_val)));
+        }
+        else if (read_width_bytes == 2)
+        {
+            final_val = static_cast<std::uint32_t>(static_cast<std::int32_t>(static_cast<std::int16_t>(raw_val)));
+        }
+    }
+
+    WriteRegisterFromZydis(win32_context, operands[0].reg.value, final_val);
+
+    win32_context->Eip += instruction.length;
+
+    context->low_memory_read_emulate_count++;
+    context->last_low_memory_read_emulate_address = calculated_address;
+    context->last_low_memory_read_emulate_eip = win32_context->Eip - instruction.length;
+    context->last_low_memory_read_emulate_value = final_val;
+    context->last_low_memory_read_emulate_reg = operands[0].reg.value;
+
+    RecordLowMemoryAccess(win32_context, context, instruction_ptr[0], calculated_address, final_val);
+
+    return true;
+}
+
 bool HandleDosMemoryAccess(CONTEXT* win32_context, ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -10719,10 +10919,33 @@ LONG WINAPI GuestStackVectoredExceptionHandler(
     if (context->enable_dos_hle &&
         exception_info->ExceptionRecord != nullptr &&
         exception_info->ExceptionRecord->ExceptionCode ==
-            EXCEPTION_ACCESS_VIOLATION &&
-        HandleDosMemoryAccess(win32_context, context))
+            EXCEPTION_ACCESS_VIOLATION)
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        bool handled = false;
+        if (exception_info->ExceptionRecord->NumberParameters >= 2)
+        {
+            const std::uint32_t access_kind = static_cast<std::uint32_t>(
+                exception_info->ExceptionRecord->ExceptionInformation[0]);
+            const std::uint32_t fault_va = static_cast<std::uint32_t>(
+                exception_info->ExceptionRecord->ExceptionInformation[1]);
+            
+            if (access_kind == 0 && fault_va < 0x10000 &&
+                (IsGuestInstructionPointer(context, win32_context->Eip) ||
+                 IsAotCacheAddress(context, win32_context->Eip)))
+            {
+                handled = HandleGuestLowMemoryReadFault(win32_context, context, fault_va);
+            }
+        }
+        
+        if (!handled)
+        {
+            handled = HandleDosMemoryAccess(win32_context, context);
+        }
+
+        if (handled)
+        {
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
     }
     if (context->enable_segment_load_hle &&
         HandleRepMovsInstruction(win32_context, context))
