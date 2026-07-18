@@ -118,6 +118,52 @@ const std::uint8_t* FindImageBytes(
     return nullptr;
 }
 
+// Diagnostic-only cross-reference scan over the relocated image bytes.
+// Finds (a) relative call/jmp rel32 sites whose computed target == `target`
+// (code xrefs) and (b) any 4-byte little-endian occurrence of `target`
+// (absolute disp32/imm32 refs, e.g. a global's address embedded in an
+// instruction). No effect on emulation; used to trace caller/global provenance.
+void ScanXrefs(const repiu::runtime::RelocatedRuntimeImage& image,
+               std::uint32_t target)
+{
+    for (const auto& object : image.objects)
+    {
+        const std::uint32_t base = object.relocated_base_address;
+        const std::vector<std::uint8_t>& memory = object.memory;
+        const std::size_t size = memory.size();
+        for (std::size_t index = 0; index + 5U <= size; ++index)
+        {
+            const std::uint8_t opcode = memory[index];
+            if (opcode != 0xE8U && opcode != 0xE9U)
+            {
+                continue;
+            }
+            std::int32_t relative = 0;
+            std::memcpy(&relative, &memory[index + 1U], sizeof(relative));
+            const std::uint32_t site =
+                base + static_cast<std::uint32_t>(index);
+            const std::uint32_t destination =
+                site + 5U + static_cast<std::uint32_t>(relative);
+            if (destination == target)
+            {
+                std::cout << "xref_" << (opcode == 0xE8U ? "call" : "jmp")
+                          << "=0x" << std::hex << site << std::dec << "\n";
+            }
+        }
+        for (std::size_t index = 0; index + 4U <= size; ++index)
+        {
+            std::uint32_t value = 0;
+            std::memcpy(&value, &memory[index], sizeof(value));
+            if (value == target)
+            {
+                std::cout << "xref_abs=0x" << std::hex
+                          << (base + static_cast<std::uint32_t>(index))
+                          << std::dec << "\n";
+            }
+        }
+    }
+}
+
 void PrintLinearDisassembly(const repiu::runtime::RelocatedRuntimeImage& image,
                             std::uint32_t address)
 {
@@ -386,9 +432,15 @@ bool RunCoherenceProbe()
 
 int main(int argc, char** argv)
 {
-    if (argc != 2 && argc != 3)
+    const bool xref_mode = argc == 4 &&
+        std::strcmp(argv[2], "--xref") == 0;
+    const bool dump_mode = argc == 4 &&
+        std::strcmp(argv[2], "--dump") == 0;
+    if (argc != 2 && argc != 3 && !xref_mode && !dump_mode)
     {
-        std::cerr << "usage: repiu_aot_probe <DOS4GW.EXE> [guest-address]\n";
+        std::cerr << "usage: repiu_aot_probe <DOS4GW.EXE> [guest-address]\n"
+                  << "       repiu_aot_probe <DOS4GW.EXE> --xref <address>\n"
+                  << "       repiu_aot_probe <DOS4GW.EXE> --dump <address>\n";
         return 2;
     }
     const std::filesystem::path path = argv[1];
@@ -424,6 +476,50 @@ int main(int argc, char** argv)
     {
         std::cerr << "relocated image failed: " << error.message << "\n";
         return 1;
+    }
+    if (xref_mode)
+    {
+        char* end = nullptr;
+        const unsigned long query = std::strtoul(argv[3], &end, 0);
+        if (end == argv[3] || *end != '\0' || query > UINT32_MAX)
+        {
+            std::cerr << "invalid xref address query\n";
+            return 2;
+        }
+        ScanXrefs(image, static_cast<std::uint32_t>(query));
+        return 0;
+    }
+    if (dump_mode)
+    {
+        char* end = nullptr;
+        const unsigned long address = std::strtoul(argv[3], &end, 0);
+        if (end == argv[3] || *end != '\0' || address > UINT32_MAX)
+        {
+            std::cerr << "invalid dump address query\n";
+            return 2;
+        }
+        std::size_t available = 0;
+        const std::uint8_t* data = FindImageBytes(
+            image, static_cast<std::uint32_t>(address), &available);
+        if (data == nullptr)
+        {
+            std::cout << "dump_addr=0x" << std::hex << address << std::dec
+                      << ",mapped=false\n";
+            return 0;
+        }
+        const std::size_t count = available < 32U ? available : 32U;
+        std::cout << "dump_addr=0x" << std::hex << address
+                  << ",u32=0x" << std::setw(8) << std::setfill('0');
+        std::uint32_t first = 0;
+        std::memcpy(&first, data, count >= 4U ? 4U : count);
+        std::cout << first << ",bytes=";
+        for (std::size_t index = 0; index < count; ++index)
+        {
+            std::cout << std::setw(2) << std::setfill('0')
+                      << static_cast<unsigned>(data[index]);
+        }
+        std::cout << std::dec << "\n";
+        return 0;
     }
     repiu::runtime::AotTranslationPlan plan;
     if (!repiu::runtime::BuildAotTranslationPlan(image, &plan))

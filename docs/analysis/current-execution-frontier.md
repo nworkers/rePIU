@@ -1,5 +1,31 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-18 Task 235 (해결): 근인 = grTexMin/Max HLE 스택 정리 규약 오류(Task 234 cdecl 회귀) — stdcall 복원으로 fxTMInit NULL gc 크래시(0x0304DBF8) 소멸, 20초 클린 진행 / Task 235 (resolved): root cause = wrong stack-cleanup convention in the grTexMin/Max HLE (a cdecl regression from Task 234); restoring stdcall removes the fxTMInit NULL-gc crash (0x0304DBF8) and execution runs clean for 20s
+
+* **상태 (Status)**: 해결 (Resolved)
+* **정정 (Supersedes)**: 같은 날 Task 235의 초기 설계(동적 널 레지스터 패칭 = Option C, 및 "미할당 gc/하드웨어 컨텍스트" 가설)는 **근인이 아니었다.** 근인은 스택 규약 버그였고, gc는 게임이 스스로 `malloc(0x1C88)`로 정상 할당한다.
+
+* **근인 (Root cause)**:
+  1. fault 함수 `0x0304DBD8`은 3dfx TMU 매니저 초기화 `fxTMInit(gc, tmu)`이고, `0x0304DBF8`의 `cmp byte [eax+0x1C78],0`에서 `EAX`(=gc)가 0이라 크래시했다.
+  2. **gc는 NULL이 아니다** — 게임이 `0x030592EF: mov eax,0x1C88; call malloc`으로 gc(7304바이트)를 정상 할당한다(런타임 EDI=0x0383C640가 유효 gc). fxTMInit은 gc를 `mov [esp],eax`로 보관한 뒤 `push arg; call grTexMinAddress; push arg; call grTexMaxAddress; mov eax,[esp]`로 복원한다 — **grTexMin/Max가 stdcall(피호출자가 인자 pop)이라고 전제**한다(caller측 `add esp` 없음).
+  3. Task 234가 이 두 게이트를 cdecl(`Esp += 1`, 인자 미pop)로 바꿔서, 인자 2개가 스택에 남아 `mov eax,[esp]`가 gc 대신 **leftover 0**을 읽었다 → NULL 역참조.
+  4. xref로 grTexMin/Max thunk(`0x010FEDF9`/`0x010FEDF4`)의 **유일한 호출자가 fxTMInit**임을 확인 — cdecl 호출부는 없다. Task 234의 cdecl 변경은 fxTMInit을 더 일찍 크래시시켜 이후 `fxTMGetTMBlock`에 도달 못 하게 만든 **회귀**였다(그 에러가 "사라진 것처럼" 보였을 뿐).
+
+* **수정 (Fix)**: `linexe_glide_boundary.cpp`의 `_GRTEXMINADDRESS@4`/`_GRTEXMAXADDRESS@4` 핸들러 복귀를 `Esp += 1U*4` → `Esp += 2U*4`(복귀주소 + 인자 pop = stdcall)로 복원.
+
+* **검증 (Verification)**: aot-dynamic `pumpit1`에서 `0x0304DBF8`/VA `0x1C78` 크래시 **소멸**(0건), caught exception/blocker 없이 **20초 클린 진행**(progress 0→23,310, dispatch_entry 0→541,817). frontier가 예고했던 `0x030F3436`(`jmp eax`)도 통과. (exit 139는 guest가 타임아웃까지 생존하자 실행 중 스레드를 강제 종료하는 **타임아웃-teardown segfault** — 별개의 기존 견고성 이슈.)
+
+* **다음 분석 및 구현 과제 (Next Steps)**:
+  1. **타임아웃-teardown segfault**: guest가 타임아웃까지 진행할 때 강제 종료 경로가 segfault. 클린 종료(exit 3) 경로가 AOT-busy guest를 못 다루는지 조사.
+  2. **다음 frontier 탐색**: 20초 이후/텍스처 로딩까지 더 진행시켜 `fxTMGetTMBlock` 등 다음 정지점을 특성화(있다면 올바르게 해결 — fxTMInit을 깨는 방식 금지).
+  3. **진단 도구**: `repiu_aot_probe`에 추가한 `--xref`(상대 call/jmp + 절대 disp32 참조 스캔), `--dump`(정적 바이트 덤프) 모드는 유지.
+
+* **English Summary**:
+  - **Root cause**: The faulting function `0x0304DBD8` is `fxTMInit(gc, tmu)`; it crashes at `cmp byte [eax+0x1C78],0` because `EAX` (gc) is 0. gc is NOT actually null — the game allocates it with `mov eax,0x1C88; call malloc` (7304 bytes). fxTMInit saves gc to `[esp]`, then calls grTexMinAddress/grTexMaxAddress with `push arg; call ...` and no caller-side cleanup, i.e. it assumes **stdcall (callee pops the argument)**, then reloads gc via `mov eax,[esp]`. Task 234 had changed those two gate handlers to cdecl (`Esp += 1`, leaving the argument), so two leftover dwords made `mov eax,[esp]` read 0 instead of gc. xref confirms fxTMInit is the **sole caller** of both gates — there is no cdecl call site, so Task 234's change was a regression that merely made fxTMInit crash earlier (so the later `fxTMGetTMBlock` error stopped being reached).
+  - **Fix**: Restore stdcall cleanup (`Esp += 2U*4`) in the `_GRTEXMINADDRESS@4`/`_GRTEXMAXADDRESS@4` handlers.
+  - **Verification**: The `0x0304DBF8` crash is gone; aot-dynamic `pumpit1` runs clean for 20s with sustained progress (progress 0→23,310, dispatch 0→541,817) and passes `0x030F3436` (`jmp eax`). The exit-139 segfault is a separate timeout-teardown issue exposed by the guest now surviving to the timeout.
+  - **Next**: investigate the timeout-teardown segfault, push further to characterize the next frontier (e.g. `fxTMGetTMBlock`) without regressing fxTMInit, and keep the new `repiu_aot_probe` `--xref`/`--dump` diagnostics.
+
 ## 2026-07-18 Task 235 (조사 및 설계): Glide/Mesa 초기화 이후 EAX=0 널 포인터 Access Violation (0x0304DBF8) 포착 -> 동적 널 레지스터 패칭 및 재시도 정공법 설계 완료 / Task 235 (Investigation and Design): Captured NULL pointer Access Violation (0x0304DBF8) at EAX=0 post Glide/Mesa initialization -> completed design for systematic dynamic NULL register patching & retry strategy
 
 * **상태 (Status)**: 조사 및 설계 완료 (Investigation and Design Completed)
