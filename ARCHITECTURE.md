@@ -207,6 +207,42 @@ This entry point currently owns target profile selection, original executable re
 
 `src/tools/exe_analyzer/` remains a non-executing analysis tool.
 
+## Win32 execution_trampoline 분해 / Win32 execution_trampoline decomposition
+
+`src/platform/win32/execution_trampoline.cpp`는 한때 12,117줄 단일 파일이었으나, Task 233(Phase 1)에서 동작 보존 리팩토링으로 서브시스템별 모듈로 분해했다(약 3,200줄로 축소). 트램폴린에는 VEH 디스패치 코어, 실행 드라이버(`RunWin32ExecutionThread`/`AttemptWin32*`), 여러 모듈이 공유하는 substrate만 남겼다. 모듈들은 `src/platform/win32/` 아래 서브디렉토리로 그룹화되며, 짧은 이름 include는 CMake include 경로로 해석된다.
+
+Originally a single 12,117-line file, `execution_trampoline.cpp` was decomposed in Task 233 (Phase 1) via behavior-preserving refactoring into per-subsystem modules (down to ~3,200 lines). The trampoline retains only the VEH dispatch core, the execution driver, and the substrate shared across modules. Modules are grouped into subdirectories under `src/platform/win32/`; short-name includes resolve via CMake include directories.
+
+| 디렉토리 / directory | 모듈 / module | 책임 / responsibility |
+|---|---|---|
+| `execution/` | `execution_trampoline.cpp`, `thread_context.h`, `execution_internal.h`, `win32_thread_api.h` | VEH 디스패치·실행 드라이버·공유 상태(ThreadContext)·경계 선언·kernel32 스레드 API |
+| `exception/` | `exception_rescue_win32` | VEH 엔트리, `ExceptionDispatchScope`, 복구 전역 |
+| `io/` | `port_io_emulator` | IN/OUT 포트 I/O 트랩 |
+| `dos/` | `dos_int21_services`, `dpmi_mscdex_services` | DOS INT 21h/2Fh, DPMI INT 31h, 마우스 INT 33h, MSCDEX |
+| `cpu_emul/` | `instruction_emulation`, `guest_memory_access` | 레지스터/플래그/디코드·세그먼트·traced 메모리·REP 명령 에뮬, 게스트/섀도 메모리 접근 |
+| `aot/` | `aot_runtime_dispatch` | AOT 번역 워커·전이/재진입 디스패치·코드쓰기 watch |
+| `boundary/` | `linexe_glide_boundary` | linexe far-transfer·Glide 게이트·allocator 제어흐름 |
+| `telemetry/` | `live_telemetry_snapshot` | 라이브 텔레메트리 매핑·실행 스냅샷 |
+
+```mermaid
+flowchart TD
+    ET["execution/ (트램폴린: VEH 디스패치 + 드라이버 + substrate)"]
+    ET --> EX["exception/"]
+    ET --> IO["io/"]
+    ET --> DOS["dos/"]
+    ET --> CPU["cpu_emul/"]
+    ET --> AOT["aot/"]
+    ET --> BND["boundary/"]
+    ET --> TEL["telemetry/"]
+    DOS -. "traced 인터럽트 래퍼" .-> CPU
+    CPU --> CPU
+    AOT -. "메모리/디코드 재사용" .-> CPU
+```
+
+크로스-TU 경계 함수(예: `WriteGuestBytes`, `IsAotCacheAddress`, `RecordHandledDosInterrupt`, `ResolveSegmentLinearRange`)는 익명 네임스페이스 밖으로 승격해 외부 링크로 만들고 `execution_internal.h`에 선언한다. Phase 2(중립 `GuestCpuFrame` seam)·3(서비스 의미론의 플랫폼 중립화)은 두 번째 플랫폼 백엔드가 필요해질 때 착수한다.
+
+Cross-TU boundary functions (e.g., `WriteGuestBytes`, `IsAotCacheAddress`, `RecordHandledDosInterrupt`, `ResolveSegmentLinearRange`) are promoted out of the anonymous namespace to external linkage and declared in `execution_internal.h`. Phase 2 (a neutral `GuestCpuFrame` seam) and Phase 3 (making service semantics platform-neutral) are deferred until a second platform backend is needed.
+
 ## Win32 Loader Log Level Policy
 
 Win32 loader logs use levels to separate normal progress from the current implementation blocker.

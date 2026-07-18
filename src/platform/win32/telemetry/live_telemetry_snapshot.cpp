@@ -1,0 +1,1054 @@
+#include "live_telemetry_snapshot.h"
+#include "win32_thread_api.h"
+
+#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <cstring>
+#include <sstream>
+
+#include <psapi.h>
+
+namespace repiu::platform::win32
+{
+
+SharedTelemetryMapping OpenSharedTelemetryMapping()
+{
+    SharedTelemetryMapping result;
+    char mapping_name[256] = {};
+    if (GetEnvironmentVariableA(kWin32LiveTelemetryEnvironment,
+                                mapping_name,
+                                sizeof(mapping_name)) == 0)
+    {
+        return result;
+    }
+    result.mapping = OpenFileMappingA(
+        FILE_MAP_ALL_ACCESS,
+        FALSE,
+        mapping_name);
+    if (result.mapping == nullptr)
+    {
+        return result;
+    }
+    result.telemetry = static_cast<Win32SharedLiveTelemetry*>(
+        MapViewOfFile(result.mapping, FILE_MAP_ALL_ACCESS, 0, 0, 0));
+    if (result.telemetry == nullptr ||
+        result.telemetry->magic != kWin32LiveTelemetryMagic ||
+        result.telemetry->version != kWin32LiveTelemetryVersion)
+    {
+        if (result.telemetry != nullptr)
+        {
+            UnmapViewOfFile(result.telemetry);
+            result.telemetry = nullptr;
+        }
+        CloseHandle(result.mapping);
+        result.mapping = nullptr;
+    }
+    return result;
+}
+
+void WriteLiveTelemetrySnapshot(const ThreadContext& context,
+                                DWORD elapsed_milliseconds,
+                                DWORD poll_iteration)
+{
+    char buffer[384] = {};
+    const int length = std::snprintf(
+        buffer,
+        sizeof(buffer),
+        "[repiu-live] elapsed_ms=%lu poll=%lu phase=%u heartbeat=%u "
+        "dispatch_entry=%u dispatch_exit=%u last_eip=0x%08X "
+        "progress=%u single_step=%u aot=%u/%u fast=%u/%u/%u "
+        "reject=0x%08X:0x%08X/0x%02X bytes=%08X%08X\r\n",
+        static_cast<unsigned long>(elapsed_milliseconds),
+        static_cast<unsigned long>(poll_iteration),
+        context.live_telemetry_phase.load(std::memory_order_relaxed),
+        context.live_telemetry_heartbeat.load(std::memory_order_relaxed),
+        context.exception_dispatch_entry_count.load(
+            std::memory_order_relaxed),
+        context.exception_dispatch_exit_count.load(
+            std::memory_order_relaxed),
+        context.exception_dispatch_last_eip.load(std::memory_order_relaxed),
+        context.diagnostic_progress_count.load(std::memory_order_relaxed),
+        context.single_step_trace_count.load(std::memory_order_relaxed),
+        context.aot_boundary_count.load(std::memory_order_relaxed),
+        context.aot_reentry_count.load(std::memory_order_relaxed),
+        context.native_fast_path.entry_count.load(std::memory_order_relaxed),
+        context.native_fast_path.return_count.load(std::memory_order_relaxed),
+        context.native_fast_path.cancel_count.load(std::memory_order_relaxed),
+        context.native_fast_path.last_rejected_candidate.load(
+            std::memory_order_relaxed),
+        context.native_fast_path.last_rejected_instruction.load(
+            std::memory_order_relaxed),
+        context.native_fast_path.last_rejected_opcode.load(
+            std::memory_order_relaxed),
+        context.native_fast_path.last_rejected_bytes_high.load(
+            std::memory_order_relaxed),
+        context.native_fast_path.last_rejected_bytes_low.load(
+            std::memory_order_relaxed));
+    if (length <= 0)
+    {
+        return;
+    }
+
+    HANDLE stderr_handle = GetStdHandle(STD_ERROR_HANDLE);
+    if (stderr_handle == nullptr || stderr_handle == INVALID_HANDLE_VALUE)
+    {
+        return;
+    }
+    DWORD written = 0;
+    const DWORD byte_count = static_cast<DWORD>(
+        length < static_cast<int>(sizeof(buffer)) ? length
+                                                  : sizeof(buffer) - 1U);
+    WriteFile(stderr_handle, buffer, byte_count, &written, nullptr);
+}
+
+DWORD PollThreadUntilExit(HANDLE thread,
+                          DWORD timeout_milliseconds,
+                          ThreadContext* progress_context,
+                          DWORD* exit_code)
+{
+    const Win32ThreadApi& api = GetWin32ThreadApi();
+    if (api.get_exit_code_thread == nullptr)
+    {
+        return WAIT_FAILED;
+    }
+
+    const DWORD quiet_timeout_milliseconds = 1000U;
+    const DWORD start_tick = GetTickCount();
+    DWORD quiet_start_tick = start_tick;
+    std::uint32_t last_progress_count = 0;
+    std::uint32_t last_single_step_count = 0;
+    std::uint32_t last_aot_progress_count = 0;
+    if (progress_context != nullptr)
+    {
+        last_progress_count =
+            progress_context->diagnostic_progress_count.load(
+                std::memory_order_relaxed);
+        last_single_step_count =
+            progress_context->single_step_trace_count.load(
+                std::memory_order_relaxed);
+        last_aot_progress_count =
+            progress_context->aot_boundary_count.load(
+                std::memory_order_relaxed) +
+            progress_context->aot_reentry_count.load(
+                std::memory_order_relaxed);
+    }
+
+    // Sample the guest thread only after full exception dispatches have been
+    // silent for a full second: dispatch-active phases already report their
+    // location, and the observation target is the zero-dispatch native state.
+    // The composite `progressed` tracker is unsuitable as this gate because
+    // lightweight AOT VEH paths (inline-cache misses, reentries) increment
+    // aot_boundary/aot_reentry continuously without any dispatch.
+    constexpr DWORD kNativePhaseSampleQuietMilliseconds = 1000U;
+    constexpr DWORD kNativePhaseSampleIntervalMilliseconds = 500U;
+    const char* sampling_environment =
+        std::getenv("REPIU_NATIVE_SAMPLING");
+    const bool native_sampling_enabled =
+        sampling_environment == nullptr ||
+        std::strcmp(sampling_environment, "0") != 0;
+    Win32NativePhaseSamplerState native_sampler_state;
+    DWORD dispatch_quiet_start_tick = start_tick;
+    std::uint32_t last_dispatch_total = 0;
+    if (progress_context != nullptr)
+    {
+        last_dispatch_total =
+            progress_context->exception_dispatch_entry_count.load(
+                std::memory_order_relaxed) +
+            progress_context->exception_dispatch_exit_count.load(
+                std::memory_order_relaxed);
+    }
+    DWORD quiet_iterations = 0;
+    DWORD last_live_snapshot_tick = start_tick;
+    if (progress_context != nullptr)
+    {
+        progress_context->live_telemetry_phase.store(
+            1,
+            std::memory_order_relaxed);
+        WriteLiveTelemetrySnapshot(*progress_context, 0, 0);
+    }
+    for (DWORD iteration = 0;; ++iteration)
+    {
+        if (progress_context != nullptr)
+        {
+            progress_context->diagnostic_poll_iteration_count =
+                iteration + 1;
+
+            const DWORD elapsed = GetTickCount() - start_tick;
+            const DWORD ticks = elapsed / 55U;
+            repiu::runtime::WriteDosLowMemory(
+                &progress_context->dos_low_memory, 0x046CU, ticks, 4U);
+        }
+        DWORD current_exit_code = 0;
+        if (!api.get_exit_code_thread(thread, &current_exit_code))
+        {
+            return WAIT_FAILED;
+        }
+
+        if (current_exit_code != STILL_ACTIVE)
+        {
+            if (exit_code != nullptr)
+            {
+                *exit_code = current_exit_code;
+            }
+            return WAIT_OBJECT_0;
+        }
+
+        bool progressed = false;
+        if (progress_context != nullptr)
+        {
+            const std::uint32_t progress_count =
+                progress_context->diagnostic_progress_count.load(
+                    std::memory_order_relaxed);
+            const std::uint32_t single_step_count =
+                progress_context->single_step_trace_count.load(
+                    std::memory_order_relaxed);
+            const std::uint32_t aot_progress_count =
+                progress_context->aot_boundary_count.load(
+                    std::memory_order_relaxed) +
+                progress_context->aot_reentry_count.load(
+                    std::memory_order_relaxed);
+            progressed =
+                progress_count != last_progress_count ||
+                single_step_count != last_single_step_count ||
+                aot_progress_count != last_aot_progress_count;
+            last_progress_count = progress_count;
+            last_single_step_count = single_step_count;
+            last_aot_progress_count = aot_progress_count;
+        }
+        if (progressed)
+        {
+            quiet_iterations = 0;
+            quiet_start_tick = GetTickCount();
+        }
+        else
+        {
+            ++quiet_iterations;
+        }
+        if (progress_context != nullptr)
+        {
+            progress_context->diagnostic_quiet_iteration_count =
+                quiet_iterations;
+        }
+
+        if (timeout_milliseconds != INFINITE &&
+            GetTickCount() - quiet_start_tick >=
+            quiet_timeout_milliseconds)
+        {
+            if (progress_context != nullptr)
+            {
+                WriteLiveTelemetrySnapshot(
+                    *progress_context,
+                    GetTickCount() - start_tick,
+                    iteration + 1);
+            }
+            return WAIT_TIMEOUT;
+        }
+
+        if (timeout_milliseconds != INFINITE &&
+            GetTickCount() - start_tick >= timeout_milliseconds)
+        {
+            if (progress_context != nullptr)
+            {
+                WriteLiveTelemetrySnapshot(
+                    *progress_context,
+                    GetTickCount() - start_tick,
+                    iteration + 1);
+            }
+            return WAIT_TIMEOUT;
+        }
+
+        const DWORD current_tick = GetTickCount();
+        if (progress_context != nullptr)
+        {
+            const std::uint32_t dispatch_total =
+                progress_context->exception_dispatch_entry_count.load(
+                    std::memory_order_relaxed) +
+                progress_context->exception_dispatch_exit_count.load(
+                    std::memory_order_relaxed);
+            if (dispatch_total != last_dispatch_total)
+            {
+                last_dispatch_total = dispatch_total;
+                dispatch_quiet_start_tick = current_tick;
+            }
+        }
+        if (native_sampling_enabled && progress_context != nullptr &&
+            current_tick - dispatch_quiet_start_tick >=
+                kNativePhaseSampleQuietMilliseconds &&
+            current_tick - native_sampler_state.last_sample_tick >=
+                kNativePhaseSampleIntervalMilliseconds)
+        {
+            Win32NativePhaseSample sample;
+            if (CaptureWin32NativePhaseSample(
+                    thread, progress_context->aot_placement,
+                    progress_context->shared_live_telemetry, &sample))
+            {
+                sample.last_indirect_source =
+                    progress_context->aot_last_indirect_source.load(
+                        std::memory_order_relaxed);
+                sample.last_indirect_target =
+                    progress_context->aot_last_indirect_target.load(
+                        std::memory_order_relaxed);
+                RecordWin32NativePhaseSample(
+                    sample,
+                    &native_sampler_state,
+                    progress_context->shared_live_telemetry);
+            }
+            WriteWin32NativePhaseSampleLine(sample,
+                                            native_sampler_state,
+                                            current_tick - start_tick);
+            native_sampler_state.last_sample_tick = current_tick;
+        }
+        if (progress_context != nullptr &&
+            current_tick - last_live_snapshot_tick >= 1000U)
+        {
+            WriteLiveTelemetrySnapshot(*progress_context,
+                                       current_tick - start_tick,
+                                       iteration + 1);
+            last_live_snapshot_tick = current_tick;
+        }
+        Sleep(1);
+    }
+}
+
+void CopySnapshotFromContextRecord(const CONTEXT& source,
+                                   X86ExecutionSnapshot* snapshot)
+{
+    if (snapshot == nullptr)
+    {
+        return;
+    }
+
+#if defined(_M_IX86)
+    snapshot->captured = true;
+    snapshot->eip = source.Eip;
+    snapshot->eax = source.Eax;
+    snapshot->ebx = source.Ebx;
+    snapshot->ecx = source.Ecx;
+    snapshot->edx = source.Edx;
+    snapshot->esi = source.Esi;
+    snapshot->edi = source.Edi;
+    snapshot->esp = source.Esp;
+    snapshot->ebp = source.Ebp;
+    snapshot->eflags = source.EFlags;
+    snapshot->cs = static_cast<std::uint16_t>(source.SegCs);
+    snapshot->ds = static_cast<std::uint16_t>(source.SegDs);
+    snapshot->es = static_cast<std::uint16_t>(source.SegEs);
+    snapshot->ss = static_cast<std::uint16_t>(source.SegSs);
+    snapshot->fs = static_cast<std::uint16_t>(source.SegFs);
+    snapshot->gs = static_cast<std::uint16_t>(source.SegGs);
+#else
+    (void)source;
+    snapshot->captured = false;
+#endif
+}
+
+void CaptureSuspendedThreadSnapshot(HANDLE thread,
+                                    X86ExecutionSnapshot* snapshot)
+{
+    if (thread == nullptr || snapshot == nullptr)
+    {
+        return;
+    }
+
+#if defined(_M_IX86)
+    const Win32ThreadApi& api = GetWin32ThreadApi();
+    if (api.suspend_thread == nullptr ||
+        api.get_thread_context == nullptr ||
+        api.resume_thread == nullptr)
+    {
+        return;
+    }
+
+    if (api.suspend_thread(thread) == static_cast<DWORD>(-1))
+    {
+        return;
+    }
+
+    CONTEXT thread_context = {};
+    thread_context.ContextFlags = CONTEXT_FULL | CONTEXT_SEGMENTS;
+    if (api.get_thread_context(thread, &thread_context))
+    {
+        CopySnapshotFromContextRecord(thread_context, snapshot);
+    }
+    api.resume_thread(thread);
+#else
+    (void)thread;
+    snapshot->captured = false;
+#endif
+}
+
+bool BuildSingleStepSnapshot(const ThreadContext& context,
+                             X86ExecutionSnapshot* snapshot)
+{
+    if (snapshot == nullptr)
+    {
+        return false;
+    }
+
+    const std::uint32_t count =
+        context.single_step_trace_count.load(std::memory_order_relaxed);
+    if (count == 0)
+    {
+        *snapshot = X86ExecutionSnapshot{};
+        return false;
+    }
+
+    snapshot->captured = true;
+    snapshot->eip =
+        context.single_step_eip.load(std::memory_order_relaxed);
+    snapshot->eax =
+        context.single_step_eax.load(std::memory_order_relaxed);
+    snapshot->ebx =
+        context.single_step_ebx.load(std::memory_order_relaxed);
+    snapshot->ecx =
+        context.single_step_ecx.load(std::memory_order_relaxed);
+    snapshot->edx =
+        context.single_step_edx.load(std::memory_order_relaxed);
+    snapshot->esi =
+        context.single_step_esi.load(std::memory_order_relaxed);
+    snapshot->edi =
+        context.single_step_edi.load(std::memory_order_relaxed);
+    snapshot->esp =
+        context.single_step_esp.load(std::memory_order_relaxed);
+    snapshot->ebp =
+        context.single_step_ebp.load(std::memory_order_relaxed);
+    snapshot->eflags =
+        context.single_step_eflags.load(std::memory_order_relaxed);
+    snapshot->cs = static_cast<std::uint16_t>(
+        context.single_step_cs.load(std::memory_order_relaxed));
+    snapshot->ds = static_cast<std::uint16_t>(
+        context.single_step_ds.load(std::memory_order_relaxed));
+    snapshot->es = static_cast<std::uint16_t>(
+        context.single_step_es.load(std::memory_order_relaxed));
+    snapshot->ss = static_cast<std::uint16_t>(
+        context.single_step_ss.load(std::memory_order_relaxed));
+    snapshot->fs = static_cast<std::uint16_t>(
+        context.single_step_fs.load(std::memory_order_relaxed));
+    snapshot->gs = static_cast<std::uint16_t>(
+        context.single_step_gs.load(std::memory_order_relaxed));
+    return true;
+}
+
+void CopyThreadObservationToAttempt(const ThreadContext& context,
+                                    Win32MinimalExecutionAttempt* attempt)
+{
+    if (attempt == nullptr)
+    {
+        return;
+    }
+
+    attempt->dos_termination_captured = context.dos_termination_captured;
+    attempt->dos_termination_ax = context.dos_termination_ax;
+    attempt->dos_termination_eip = context.dos_termination_eip;
+    attempt->dos_termination_esp = context.dos_termination_esp;
+    std::memcpy(attempt->dos_termination_stack,
+                context.dos_termination_stack,
+                sizeof(attempt->dos_termination_stack));
+
+    attempt->single_step_trace_count =
+        context.single_step_trace_count.load(std::memory_order_relaxed);
+    attempt->native_fast_path_entry_count =
+        context.native_fast_path.entry_count.load(std::memory_order_relaxed);
+    attempt->native_fast_path_return_count =
+        context.native_fast_path.return_count.load(std::memory_order_relaxed);
+    attempt->native_fast_path_cancel_count =
+        context.native_fast_path.cancel_count.load(std::memory_order_relaxed);
+    attempt->native_fast_path_last_entry =
+        context.native_fast_path.last_entry;
+    attempt->native_fast_path_last_return =
+        context.native_fast_path.last_return;
+    attempt->aot_backend_active = context.aot_placement != nullptr;
+    attempt->aot_cache_entry_count = context.aot_cache_entry_count.load(
+        std::memory_order_relaxed);
+    attempt->aot_boundary_count = context.aot_boundary_count.load(
+        std::memory_order_relaxed);
+    attempt->aot_reentry_count = context.aot_reentry_count.load(
+        std::memory_order_relaxed);
+    attempt->aot_legacy_fallback_count =
+        context.aot_legacy_fallback_count.load(std::memory_order_relaxed);
+    attempt->aot_last_fallback_address =
+        context.aot_last_fallback_address.load(std::memory_order_relaxed);
+    attempt->aot_dynamic_attempt_count =
+        context.aot_dynamic_attempt_count.load(std::memory_order_relaxed);
+    attempt->aot_dynamic_success_count =
+        context.aot_dynamic_success_count.load(std::memory_order_relaxed);
+    attempt->aot_dynamic_added_bytes =
+        context.aot_dynamic_added_bytes.load(std::memory_order_relaxed);
+    attempt->aot_indirect_dispatch_count =
+        context.aot_indirect_dispatch_count.load(std::memory_order_relaxed);
+    attempt->aot_inline_cache_patch_attempt_count =
+        context.aot_inline_cache_patch_attempt_count.load(
+            std::memory_order_relaxed);
+    attempt->aot_inline_cache_patch_success_count =
+        context.aot_inline_cache_patch_success_count.load(
+            std::memory_order_relaxed);
+    attempt->aot_inline_cache_site_count = context.aot_placement != nullptr
+        ? static_cast<std::uint32_t>(
+              context.aot_placement->indirect_inline_cache_sites.size())
+        : 0U;
+    attempt->aot_last_reentry_cache_address =
+        context.aot_reentry_cache_address;
+    attempt->aot_code_write_count =
+        context.aot_code_write_count.load(std::memory_order_relaxed);
+    attempt->aot_page_retire_attempt_count =
+        context.aot_page_retire_attempt_count.load(std::memory_order_relaxed);
+    attempt->aot_page_retire_success_count =
+        context.aot_page_retire_success_count.load(std::memory_order_relaxed);
+    attempt->aot_generation_publish_count =
+        context.aot_generation_publish_count.load(std::memory_order_relaxed);
+    attempt->aot_generation_failure_count =
+        context.aot_generation_failure_count.load(std::memory_order_relaxed);
+    attempt->aot_generation_relinked_entry_count =
+        context.aot_generation_relinked_entry_count.load(
+            std::memory_order_relaxed);
+    attempt->aot_retired_entry_trap_count =
+        context.aot_retired_entry_trap_count.load(std::memory_order_relaxed);
+    attempt->aot_quarantine_count =
+        context.aot_quarantine_count.load(std::memory_order_relaxed);
+    attempt->aot_last_code_write_source =
+        context.aot_last_code_write_source.load(std::memory_order_relaxed);
+    attempt->aot_last_code_write_destination =
+        context.aot_last_code_write_destination.load(
+            std::memory_order_relaxed);
+    attempt->aot_last_retired_page =
+        context.aot_last_retired_page.load(std::memory_order_relaxed);
+    attempt->aot_last_published_generation =
+        context.aot_last_published_generation.load(
+            std::memory_order_relaxed);
+    attempt->aot_exception_mapping_valid =
+        context.aot_exception_mapping_valid;
+    attempt->aot_exception_cache_address =
+        context.aot_exception_cache_address;
+    attempt->aot_exception_guest_address =
+        context.aot_exception_guest_address;
+    std::memcpy(attempt->aot_exception_cache_bytes,
+                context.aot_exception_cache_bytes,
+                sizeof(attempt->aot_exception_cache_bytes));
+    std::memcpy(attempt->aot_exception_guest_bytes,
+                context.aot_exception_guest_bytes,
+                sizeof(attempt->aot_exception_guest_bytes));
+    attempt->aot_last_indirect_source =
+        context.aot_last_indirect_source.load(std::memory_order_relaxed);
+    attempt->aot_last_indirect_target =
+        context.aot_last_indirect_target.load(std::memory_order_relaxed);
+    attempt->aot_return_dispatch_count =
+        context.aot_return_dispatch_count.load(std::memory_order_relaxed);
+    attempt->aot_last_return_target =
+        context.aot_last_return_target.load(std::memory_order_relaxed);
+    attempt->aot_last_return_source =
+        context.aot_last_return_source.load(std::memory_order_relaxed);
+    std::memcpy(attempt->aot_last_return_stack,
+                context.aot_last_return_stack,
+                sizeof(attempt->aot_last_return_stack));
+    attempt->execution_probe_configured = context.execution_probe_configured;
+    attempt->execution_probe_hit = context.execution_probe_hit;
+    attempt->execution_probe_offset = context.execution_probe_offset;
+    attempt->execution_probe_snapshot = context.execution_probe_snapshot;
+    std::memcpy(attempt->execution_probe_stack,
+                context.execution_probe_stack,
+                sizeof(attempt->execution_probe_stack));
+    attempt->execution_trace_configured = context.execution_trace_configured;
+    attempt->execution_trace_start_offset = context.execution_trace_start_offset;
+    attempt->execution_trace_end_offset = context.execution_trace_end_offset;
+    attempt->execution_trace_esp_offset = context.execution_trace_esp_offset;
+    attempt->execution_trace_hit_count = context.execution_trace_hit_count;
+    attempt->execution_trace_sentinel2_configured =
+        context.execution_trace_sentinel2_configured;
+    attempt->execution_trace_sentinel2_offset =
+        context.execution_trace_sentinel2_offset;
+    attempt->execution_trace_sentinel_rearm_count =
+        context.execution_trace_sentinel_rearm_count;
+    std::memcpy(attempt->execution_trace, context.execution_trace,
+                sizeof(attempt->execution_trace));
+    attempt->aot_call_depth = context.aot_call_depth;
+    attempt->aot_last_return_matches_call =
+        context.aot_last_return_matches_call;
+    attempt->aot_last_expected_return = context.aot_last_expected_return;
+    attempt->aot_last_call_source = context.aot_last_call_source;
+    attempt->aot_last_call_target = context.aot_last_call_target;
+    attempt->aot_last_expected_call_source =
+        context.aot_last_expected_call_source;
+    attempt->aot_last_expected_call_target =
+        context.aot_last_expected_call_target;
+    attempt->aot_return_trace_count = context.aot_return_trace_count;
+    std::memcpy(attempt->aot_return_trace, context.aot_return_trace,
+                sizeof(attempt->aot_return_trace));
+    attempt->aot_transfer_trace_count = context.aot_transfer_trace_count;
+    std::memcpy(attempt->aot_transfer_trace, context.aot_transfer_trace,
+                sizeof(attempt->aot_transfer_trace));
+    attempt->diagnostic_poll_iteration_count =
+        context.diagnostic_poll_iteration_count;
+    attempt->diagnostic_progress_count =
+        context.diagnostic_progress_count.load(std::memory_order_relaxed);
+    attempt->diagnostic_quiet_iteration_count =
+        context.diagnostic_quiet_iteration_count;
+    attempt->exception_dispatch_entry_count =
+        context.exception_dispatch_entry_count.load(
+            std::memory_order_relaxed);
+    attempt->exception_dispatch_exit_count =
+        context.exception_dispatch_exit_count.load(
+            std::memory_order_relaxed);
+    attempt->exception_dispatch_last_eip =
+        context.exception_dispatch_last_eip.load(
+            std::memory_order_relaxed);
+    attempt->selector_table_valid = context.selector_table.valid;
+    attempt->selector_descriptor_count =
+        static_cast<std::uint32_t>(
+            context.selector_table.descriptors.size());
+    attempt->linexe_environment_active = context.linexe_environment_active;
+    attempt->linexe_gs_byte_load_count = context.linexe_gs_byte_load_count;
+    attempt->linexe_first_gs_byte_offset = context.linexe_first_gs_byte_offset;
+    attempt->linexe_first_gs_byte_value = context.linexe_first_gs_byte_value;
+    const repiu::runtime::GuestDescriptor* client_descriptor =
+        repiu::runtime::FindDescriptor(context.selector_table,
+                                       kDos4gwClientDataSelector);
+    if (client_descriptor != nullptr && client_descriptor->present)
+    {
+        attempt->linexe_client_descriptor_valid = true;
+        attempt->linexe_client_descriptor_base = client_descriptor->base;
+        attempt->linexe_client_descriptor_limit = client_descriptor->limit;
+        if (client_descriptor->limit >= kDos4gwPrivateRootOffset + 3U &&
+            static_cast<std::uint64_t>(client_descriptor->base) +
+                    kDos4gwPrivateRootOffset + 4U <=
+                static_cast<std::uint64_t>(context.runtime_base) +
+                    context.runtime_size)
+        {
+            const auto* root = reinterpret_cast<const std::uint16_t*>(
+                static_cast<std::uintptr_t>(client_descriptor->base +
+                                            kDos4gwPrivateRootOffset));
+            attempt->linexe_root_offset = root[0];
+            attempt->linexe_root_selector = root[1];
+        }
+    }
+    const repiu::runtime::GuestDescriptor* data_descriptor =
+        repiu::runtime::FindDescriptor(context.selector_table,
+                                       kDos4gwLinexeDataSelector);
+    if (data_descriptor != nullptr && data_descriptor->present)
+    {
+        attempt->linexe_data_descriptor_valid = true;
+        attempt->linexe_data_descriptor_base = data_descriptor->base;
+        const auto* module = reinterpret_cast<const std::uint16_t*>(
+            static_cast<std::uintptr_t>(data_descriptor->base +
+                                        kDos4gwLinexeLoaderOffset));
+        attempt->linexe_module_name_offset = module[2];
+        attempt->linexe_module_name_selector = module[3];
+        attempt->linexe_direct_export_count = module[8];
+        attempt->linexe_direct_export_table_offset = module[9];
+        attempt->linexe_direct_export_table_selector = module[10];
+        const auto* first_export = reinterpret_cast<const std::uint16_t*>(
+            static_cast<std::uintptr_t>(data_descriptor->base + module[9]));
+        attempt->linexe_direct_first_export_name_offset = first_export[0];
+        attempt->linexe_direct_first_export_name_selector = first_export[1];
+        const char* name = reinterpret_cast<const char*>(
+            static_cast<std::uintptr_t>(data_descriptor->base + module[2]));
+        for (std::uint32_t index = 0; index < 64 && name[index] != '\0'; ++index)
+        {
+            attempt->linexe_direct_module_name.push_back(name[index]);
+        }
+    }
+    attempt->linexe_scan_entry_count = context.linexe_scan_entry_count;
+    attempt->linexe_module_candidate_count =
+        context.linexe_module_candidate_count;
+    attempt->linexe_module_match_count = context.linexe_module_match_count;
+    attempt->linexe_name_pointer_valid_count =
+        context.linexe_name_pointer_valid_count;
+    attempt->linexe_name_byte_instruction_count =
+        context.linexe_name_byte_instruction_count;
+    attempt->linexe_data_gs_load_count = context.linexe_data_gs_load_count;
+    attempt->linexe_module_selector_stack_value =
+        context.linexe_module_selector_stack_value;
+    attempt->linexe_module_offset_stack_value =
+        context.linexe_module_offset_stack_value;
+    attempt->linexe_export_offset_stack_value =
+        context.linexe_export_offset_stack_value;
+    attempt->linexe_export_selector_stack_value =
+        context.linexe_export_selector_stack_value;
+    attempt->linexe_export_jump_source_esp =
+        context.linexe_export_jump_source_esp;
+    attempt->linexe_export_jump_source_module_offset =
+        context.linexe_export_jump_source_module_offset;
+    attempt->linexe_export_jump_source_module_selector =
+        context.linexe_export_jump_source_module_selector;
+    attempt->linexe_export_jump_target_esp =
+        context.linexe_export_jump_target_esp;
+    attempt->linexe_export_jump_target_module_offset =
+        context.linexe_export_jump_target_module_offset;
+    attempt->linexe_export_jump_target_module_selector =
+        context.linexe_export_jump_target_module_selector;
+    attempt->linexe_export_name_compare_count =
+        context.linexe_export_name_compare_count;
+    attempt->linexe_export_name_compare_gs =
+        context.linexe_export_name_compare_gs;
+    attempt->linexe_export_name_compare_edi =
+        context.linexe_export_name_compare_edi;
+    attempt->linexe_export_name_compare_esi =
+        context.linexe_export_name_compare_esi;
+    attempt->linexe_export_name_actual_byte =
+        context.linexe_export_name_actual_byte;
+    attempt->linexe_export_name_expected_byte =
+        context.linexe_export_name_expected_byte;
+    attempt->linexe_export_name_stage_mask =
+        context.linexe_export_name_stage_mask;
+    attempt->linexe_export_entry_name_offset_value =
+        context.linexe_export_entry_name_offset_value;
+    attempt->linexe_export_entry_name_selector_value =
+        context.linexe_export_entry_name_selector_value;
+    attempt->linexe_export_result_store_destination =
+        context.linexe_export_result_store_destination;
+    attempt->linexe_export_result_store_value =
+        context.linexe_export_result_store_value;
+    attempt->linexe_export_result_store_count =
+        context.linexe_export_result_store_count;
+    attempt->linexe_export_value_load_selector =
+        context.linexe_export_value_load_selector;
+    attempt->linexe_export_value_load_offset =
+        context.linexe_export_value_load_offset;
+    attempt->linexe_export_value_load_value =
+        context.linexe_export_value_load_value;
+    attempt->linexe_root_selector_eax = context.linexe_root_selector_eax;
+    attempt->linexe_root_read_gs = context.linexe_root_read_gs;
+    attempt->linexe_shared_load_entry_count =
+        context.linexe_shared_load_entry_count;
+    attempt->linexe_shared_load_read_count =
+        context.linexe_shared_load_read_count;
+    attempt->linexe_shared_load_selector = context.linexe_shared_load_selector;
+    attempt->linexe_shared_load_offset = context.linexe_shared_load_offset;
+    attempt->linexe_shared_load_value = context.linexe_shared_load_value;
+    attempt->linexe_root_offset_load_value =
+        context.linexe_root_offset_load_value;
+    attempt->linexe_root_selector_load_value =
+        context.linexe_root_selector_load_value;
+    attempt->linexe_root_offset_load_success =
+        context.linexe_root_offset_load_success;
+    attempt->linexe_root_selector_load_success =
+        context.linexe_root_selector_load_success;
+    attempt->linexe_export_match_count = context.linexe_export_match_count;
+    attempt->linexe_export_entry_loop_count =
+        context.linexe_export_entry_loop_count;
+    attempt->linexe_export_compare_count = context.linexe_export_compare_count;
+    attempt->linexe_export_compare_eax = context.linexe_export_compare_eax;
+    attempt->linexe_export_compare_ecx = context.linexe_export_compare_ecx;
+    attempt->linexe_export_compare_eflags =
+        context.linexe_export_compare_eflags;
+    attempt->linexe_export_count_load_edx =
+        context.linexe_export_count_load_edx;
+    attempt->linexe_export_count_load_gs =
+        context.linexe_export_count_load_gs;
+    attempt->linexe_scan_return_count = context.linexe_scan_return_count;
+    attempt->linexe_bridge_entry_count = context.linexe_bridge_entry_count;
+    attempt->linexe_bridge_gate_valid = context.linexe_bridge_gate_valid;
+    attempt->linexe_bridge_selector = context.linexe_bridge_selector;
+    attempt->linexe_bridge_offset = context.linexe_bridge_offset;
+    attempt->linexe_bridge_service = context.linexe_bridge_service;
+    attempt->linexe_bridge_esp = context.linexe_bridge_esp;
+    attempt->linexe_bridge_ebp = context.linexe_bridge_ebp;
+    std::memcpy(attempt->linexe_bridge_stack,
+                context.linexe_bridge_stack,
+                sizeof(attempt->linexe_bridge_stack));
+    std::memcpy(attempt->linexe_bridge_argument_text,
+                context.linexe_bridge_argument_text,
+                sizeof(attempt->linexe_bridge_argument_text));
+    std::memcpy(attempt->linexe_bridge_stack_text,
+                context.linexe_bridge_stack_text,
+                sizeof(attempt->linexe_bridge_stack_text));
+    attempt->linexe_virtual_module_load_count =
+        context.linexe_virtual_module_load_count;
+    attempt->linexe_virtual_module_handle =
+        context.linexe_virtual_module_handle;
+    attempt->linexe_get_proc_count = context.linexe_get_proc_count;
+    attempt->linexe_get_proc_result_pointer =
+        context.linexe_get_proc_result_pointer;
+    std::memcpy(attempt->linexe_get_proc_name,
+                context.linexe_get_proc_name,
+                sizeof(attempt->linexe_get_proc_name));
+    attempt->glide_gate_entry_count = context.glide_gate_entry_count;
+    attempt->glide_gate_handled_count = context.glide_gate_handled_count;
+    attempt->glide_gate_esp = context.glide_gate_esp;
+    std::memcpy(attempt->glide_gate_stack,
+                context.glide_gate_stack,
+                sizeof(attempt->glide_gate_stack));
+    attempt->glide_gate_ordinal = context.glide_gate_ordinal;
+    attempt->glide_gate_argument_bytes = context.glide_gate_argument_bytes;
+    std::memcpy(attempt->glide_gate_name,
+                context.glide_gate_name,
+                sizeof(attempt->glide_gate_name));
+    for (std::size_t ordinal = 0;
+         ordinal < context.glide_call_counts.size(); ++ordinal)
+    {
+        if (context.glide_call_counts[ordinal] == 0U)
+        {
+            continue;
+        }
+        Win32MinimalExecutionAttempt::GlideCallObservation observation;
+        observation.ordinal = static_cast<std::uint16_t>(ordinal);
+        observation.count = context.glide_call_counts[ordinal];
+        observation.name = context.glide_call_names[ordinal];
+        std::copy(context.glide_first_stacks[ordinal].begin(),
+                  context.glide_first_stacks[ordinal].end(),
+                  observation.first_stack);
+        attempt->glide_calls.push_back(std::move(observation));
+    }
+    attempt->mscdex_available = context.mscdex_available;
+    attempt->cd_audio_available = context.cd_audio_available;
+    attempt->mscdex_track_count = static_cast<std::uint32_t>(
+        context.cd_image.tracks().size());
+    attempt->mscdex_request_count = context.mscdex_request_count;
+    attempt->mscdex_frame_es = context.mscdex_frame_es;
+    attempt->mscdex_decline_count = context.mscdex_decline_count;
+    attempt->mscdex_last_decline_reason = context.mscdex_last_decline_reason;
+    attempt->mscdex_last_resolve_kind = context.mscdex_last_resolve_kind;
+    attempt->mscdex_last_header_bytes = context.mscdex_last_header_bytes;
+    attempt->cd_audio_current_lba = context.cd_audio.current_lba();
+    attempt->glide_window_open_count = context.glide_window_open_count;
+    attempt->glide_logical_width = context.glide_logical_width;
+    attempt->glide_logical_height = context.glide_logical_height;
+    attempt->glide_backend_message = context.glide_backend_message;
+    attempt->glide_texture_memory_bytes =
+        context.glide_state.texture_memory_bytes;
+    repiu::hle::CalculateGlideTextureMaxAddress(
+        context.glide_state.texture_memory_bytes,
+        &attempt->glide_texture_max_address);
+    attempt->linexe_scan_return_eax = context.linexe_scan_return_eax;
+    attempt->linexe_scan_return_ebp = context.linexe_scan_return_ebp;
+    attempt->linexe_scan_caller_eax = context.linexe_scan_caller_eax;
+    std::memcpy(attempt->linexe_selector_init_results,
+                context.linexe_selector_init_results,
+                sizeof(attempt->linexe_selector_init_results));
+    attempt->dpmi_allocate_call_count = context.dpmi_allocate_call_count;
+    attempt->dpmi_last_allocate_requested_count =
+        context.dpmi_last_allocate_requested_count;
+    attempt->dpmi_last_allocated_selector =
+        context.dpmi_last_allocated_selector;
+    constexpr std::uint32_t kSelectorWordsOffset = 0x000C68C0U;
+    constexpr std::uint32_t kResolvedExportsOffset = 0x001A62C4U;
+    constexpr std::uint32_t kSavedClientGsOffset = 0x001A6354U;
+    const std::uint64_t runtime_end =
+        static_cast<std::uint64_t>(context.runtime_base) +
+        context.runtime_size;
+    if (context.linexe_environment_active &&
+        static_cast<std::uint64_t>(context.runtime_base) +
+                kResolvedExportsOffset + 8U * 8U <= runtime_end)
+    {
+        const auto* saved_gs = reinterpret_cast<const std::uint16_t*>(
+            static_cast<std::uintptr_t>(context.runtime_base +
+                                        kSavedClientGsOffset));
+        attempt->linexe_saved_client_gs = *saved_gs;
+        const auto* selector_words = reinterpret_cast<const std::uint16_t*>(
+            static_cast<std::uintptr_t>(context.runtime_base +
+                                        kSelectorWordsOffset));
+        std::memcpy(attempt->linexe_selector_words,
+                    selector_words,
+                    sizeof(attempt->linexe_selector_words));
+        for (std::uint32_t index = 0; index < 8; ++index)
+        {
+            const auto* value = reinterpret_cast<const std::uint32_t*>(
+                static_cast<std::uintptr_t>(
+                    context.runtime_base + kResolvedExportsOffset +
+                    index * 8U));
+            attempt->linexe_resolved_exports[index] = *value;
+            if (*value != 0)
+            {
+                ++attempt->linexe_resolved_export_count;
+            }
+        }
+    }
+    attempt->dos_low_memory_valid = context.dos_low_memory.valid;
+    attempt->dos_low_memory_size =
+        repiu::runtime::kDosLowMemorySize;
+    BuildSingleStepSnapshot(context, &attempt->last_single_step_snapshot);
+    attempt->dos_environment_block_size =
+        static_cast<std::uint32_t>(context.dos_environment_block.size());
+    attempt->last_dos_environment_access_valid =
+        context.last_dos_environment_access_valid;
+    attempt->last_dos_environment_access_offset =
+        context.last_dos_environment_access_offset;
+    attempt->last_dos_environment_entry_offset =
+        context.last_dos_environment_entry_offset;
+    attempt->last_dos_environment_value_length =
+        context.last_dos_environment_value_length;
+    attempt->last_dos_environment_entry_name =
+        context.last_dos_environment_entry_name;
+    attempt->handled_hle_trap_count = context.handled_hle_trap_count;
+    attempt->last_hle_trap_address = context.last_hle_trap_address;
+    attempt->last_hle_trap_opcode = context.last_hle_trap_opcode;
+    attempt->port_io = context.port_io;
+    attempt->dos_path = context.dos_path;
+    attempt->dos_file_io = context.dos_file_io;
+    attempt->allocator_probe = context.allocator_probe;
+    attempt->allocator_control_flow = context.allocator_control_flow;
+    attempt->handled_dos_interrupt_count =
+        context.handled_dos_interrupt_count;
+    attempt->last_dos_interrupt_vector = context.last_dos_interrupt_vector;
+    attempt->last_dos_interrupt_ah = context.last_dos_interrupt_ah;
+    attempt->last_dos_interrupt_ax = context.last_dos_interrupt_ax;
+    attempt->handled_dos_chdir_count = context.handled_dos_chdir_count;
+    attempt->last_dos_chdir_guest_path =
+        context.last_dos_chdir_guest_path;
+    attempt->last_dos_chdir_host_path = context.last_dos_chdir_host_path;
+    attempt->last_dos_chdir_virtual_path =
+        context.last_dos_chdir_virtual_path;
+    attempt->last_dos_chdir_success = context.last_dos_chdir_success;
+    attempt->last_dos_chdir_error = context.last_dos_chdir_error;
+    attempt->handled_dos_getcwd_count = context.handled_dos_getcwd_count;
+    attempt->last_dos_getcwd_drive = context.last_dos_getcwd_drive;
+    attempt->last_dos_getcwd_path = context.last_dos_getcwd_path;
+    attempt->last_dos_getcwd_success = context.last_dos_getcwd_success;
+    attempt->last_dos_getcwd_error = context.last_dos_getcwd_error;
+    attempt->handled_dos_getdrive_count =
+        context.handled_dos_getdrive_count;
+    attempt->last_dos_getdrive_value = context.last_dos_getdrive_value;
+    attempt->handled_dos_open_count = context.handled_dos_open_count;
+    attempt->last_dos_open_guest_path = context.last_dos_open_guest_path;
+    attempt->last_dos_open_host_path = context.last_dos_open_host_path;
+    attempt->last_dos_open_virtual_path =
+        context.last_dos_open_virtual_path;
+    attempt->last_dos_open_success = context.last_dos_open_success;
+    attempt->last_dos_open_error = context.last_dos_open_error;
+    attempt->last_dos_open_handle = context.last_dos_open_handle;
+    attempt->last_dos_open_access_mode = context.last_dos_open_access_mode;
+    attempt->handled_dos_read_count = context.handled_dos_read_count;
+    attempt->last_dos_read_handle = context.last_dos_read_handle;
+    attempt->last_dos_read_requested_bytes =
+        context.last_dos_read_requested_bytes;
+    attempt->last_dos_read_actual_bytes =
+        context.last_dos_read_actual_bytes;
+    attempt->last_dos_read_buffer = context.last_dos_read_buffer;
+    attempt->last_dos_read_success = context.last_dos_read_success;
+    attempt->last_dos_read_error = context.last_dos_read_error;
+    attempt->handled_dos_seek_count = context.handled_dos_seek_count;
+    attempt->last_dos_seek_handle = context.last_dos_seek_handle;
+    attempt->last_dos_seek_origin = context.last_dos_seek_origin;
+    attempt->last_dos_seek_offset = context.last_dos_seek_offset;
+    attempt->last_dos_seek_position = context.last_dos_seek_position;
+    attempt->last_dos_seek_success = context.last_dos_seek_success;
+    attempt->last_dos_seek_error = context.last_dos_seek_error;
+    attempt->handled_dos_close_count = context.handled_dos_close_count;
+    attempt->last_dos_close_handle = context.last_dos_close_handle;
+    attempt->last_dos_close_success = context.last_dos_close_success;
+    attempt->last_dos_close_error = context.last_dos_close_error;
+    attempt->handled_dos_ioctl_count = context.handled_dos_ioctl_count;
+    attempt->last_dos_ioctl_subfunction =
+        context.last_dos_ioctl_subfunction;
+    attempt->last_dos_ioctl_handle = context.last_dos_ioctl_handle;
+    attempt->last_dos_ioctl_success = context.last_dos_ioctl_success;
+    attempt->last_dos_ioctl_error = context.last_dos_ioctl_error;
+    attempt->last_dos_ioctl_device_info =
+        context.last_dos_ioctl_device_info;
+    attempt->handled_dos_resize_count = context.handled_dos_resize_count;
+    attempt->last_dos_resize_selector = context.last_dos_resize_selector;
+    attempt->last_dos_resize_paragraphs =
+        context.last_dos_resize_paragraphs;
+    attempt->last_dos_resize_success = context.last_dos_resize_success;
+    attempt->last_dos_resize_error = context.last_dos_resize_error;
+    attempt->last_dos_resize_requested_end =
+        context.last_dos_resize_requested_end;
+    attempt->last_dos_resize_allocator_end =
+        context.last_dos_resize_allocator_end;
+    attempt->handled_segment_load_count =
+        context.handled_segment_load_count;
+    attempt->last_segment_load_address = context.last_segment_load_address;
+    attempt->last_segment_load_opcode = context.last_segment_load_opcode;
+    attempt->last_segment_load_register =
+        context.last_segment_load_register;
+    attempt->last_segment_load_selector =
+        context.last_segment_load_selector;
+    attempt->last_segment_load_source = context.last_segment_load_source;
+    attempt->segment_load = context.segment_load;
+    attempt->handled_segment_store_count =
+        context.handled_segment_store_count;
+    attempt->last_segment_store_address = context.last_segment_store_address;
+    attempt->last_segment_store_opcode = context.last_segment_store_opcode;
+    attempt->last_segment_store_register =
+        context.last_segment_store_register;
+    attempt->last_segment_store_selector =
+        context.last_segment_store_selector;
+    attempt->last_segment_store_destination =
+        context.last_segment_store_destination;
+    attempt->handled_segment_memory_load_count =
+        context.handled_segment_memory_load_count;
+    attempt->last_segment_memory_load_address =
+        context.last_segment_memory_load_address;
+    attempt->last_segment_memory_load_opcode =
+        context.last_segment_memory_load_opcode;
+    attempt->last_segment_memory_load_register =
+        context.last_segment_memory_load_register;
+    attempt->last_segment_memory_load_selector =
+        context.last_segment_memory_load_selector;
+    attempt->last_segment_memory_load_offset =
+        context.last_segment_memory_load_offset;
+    attempt->last_segment_memory_load_width =
+        context.last_segment_memory_load_width;
+    attempt->last_segment_memory_load_value =
+        context.last_segment_memory_load_value;
+    attempt->handled_low_memory_access_count =
+        context.handled_low_memory_access_count;
+    attempt->last_low_memory_access_address =
+        context.last_low_memory_access_address;
+    attempt->last_low_memory_access_opcode =
+        context.last_low_memory_access_opcode;
+    attempt->last_low_memory_access_esi =
+        context.last_low_memory_access_esi;
+    attempt->last_low_memory_access_edi =
+        context.last_low_memory_access_edi;
+    attempt->last_low_memory_access_destination =
+        context.last_low_memory_access_destination;
+    attempt->last_low_memory_access_value =
+        context.last_low_memory_access_value;
+    attempt->low_memory_read_emulate_count =
+        context.low_memory_read_emulate_count;
+    attempt->last_low_memory_read_emulate_address =
+        context.last_low_memory_read_emulate_address;
+    attempt->last_low_memory_read_emulate_eip =
+        context.last_low_memory_read_emulate_eip;
+    attempt->last_low_memory_read_emulate_value =
+        context.last_low_memory_read_emulate_value;
+    attempt->last_low_memory_read_emulate_reg =
+        context.last_low_memory_read_emulate_reg;
+    attempt->debug_emulate_stage =
+        context.debug_emulate_stage;
+    attempt->debug_emulate_decode_result =
+        context.debug_emulate_decode_result;
+    attempt->debug_emulate_calculated_address =
+        context.debug_emulate_calculated_address;
+    attempt->rep_movs_copy_failure_count =
+        context.rep_movs_copy_failure_count;
+    attempt->last_rep_movs_copy_failure_stage =
+        context.last_rep_movs_copy_failure_stage;
+    attempt->last_rep_movs_copy_error =
+        context.last_rep_movs_copy_error;
+    attempt->last_rep_movs_copy_source =
+        context.last_rep_movs_copy_source;
+    attempt->last_rep_movs_copy_destination =
+        context.last_rep_movs_copy_destination;
+    attempt->last_rep_movs_copy_bytes =
+        context.last_rep_movs_copy_bytes;
+    attempt->handled_memory_store_count = context.handled_memory_store_count;
+    attempt->last_memory_store_address = context.last_memory_store_address;
+    attempt->last_memory_store_opcode = context.last_memory_store_opcode;
+    attempt->last_memory_store_destination =
+        context.last_memory_store_destination;
+    attempt->last_memory_store_value = context.last_memory_store_value;
+    attempt->last_memory_store_width = context.last_memory_store_width;
+    attempt->last_memory_store_source_kind =
+        context.last_memory_store_source_kind;
+    attempt->last_memory_store_applied = context.last_memory_store_applied;
+    attempt->shadow_memory_write_count = context.shadow_memory_write_count;
+    attempt->shadow_memory_read_hit_count =
+        context.shadow_memory_read_hit_count;
+    attempt->shadow_memory_byte_count =
+        static_cast<std::uint32_t>(context.shadow_memory.size());
+    attempt->shadow_memory_range_valid = context.shadow_memory_range_valid;
+    attempt->shadow_memory_min_address = context.shadow_memory_min_address;
+    attempt->shadow_memory_max_address = context.shadow_memory_max_address;
+    attempt->handled_fatal_breakpoint_count =
+        context.handled_fatal_breakpoint_count;
+    attempt->last_fatal_breakpoint_address =
+        context.last_fatal_breakpoint_address;
+    attempt->last_fatal_message_address =
+        context.last_fatal_message_address;
+    attempt->last_fatal_message = context.last_fatal_message;
+    attempt->fatal_halt_reached = context.fatal_halt_reached;
+}
+
+} // namespace repiu::platform::win32

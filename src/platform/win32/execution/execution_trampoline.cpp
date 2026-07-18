@@ -1,0 +1,3195 @@
+#include "repiu/platform/win32/execution_trampoline.h"
+#include "native_fast_path.h"
+#include "native_phase_sampler.h"
+#include "repiu/platform/win32/live_telemetry.h"
+#include "repiu/hle/linexe_call_gate.h"
+#include "repiu/hle/glide_hle.h"
+#include "repiu/platform/win32/glide_opengl_backend.h"
+#include "repiu/platform/win32/cd_audio_wave_out.h"
+#include "repiu/media/chd_cd_image.h"
+#include "repiu/runtime/dos_low_memory.h"
+#include "repiu/runtime/selector_table.h"
+
+#include <Zydis.h>
+
+#include <cstddef>
+#include <cstring>
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <sstream>
+#include <unordered_map>
+#include <vector>
+
+#if defined(_WIN32)
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <psapi.h>
+#endif
+
+#include "thread_context.h"
+#include "linexe_glide_boundary.h"
+#include "aot_runtime_dispatch.h"
+#include "instruction_emulation.h"
+#include "dpmi_mscdex_services.h"
+#include "dos_int21_services.h"
+#include "guest_memory_access.h"
+#include "win32_thread_api.h"
+#include "execution_internal.h"
+#include "port_io_emulator.h"
+#include "exception_rescue_win32.h"
+#include "live_telemetry_snapshot.h"
+
+namespace repiu::platform::win32
+{
+namespace
+{
+
+
+
+bool IsDirectX86ExecutionSupported()
+{
+#if defined(_WIN32) && (defined(_M_IX86) || defined(__i386__))
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool IsGuestStackSwitchSupported()
+{
+#if defined(_WIN32) && defined(_MSC_VER) && defined(_M_IX86)
+    return true;
+#else
+    return false;
+#endif
+}
+
+#if defined(_WIN32)
+// Guest execution is serialized to one worker per loader process. Keeping the
+// VEH context outside Win32 TLS prevents a guest-modified FS selector from
+// escaping into compiler-generated TLS access during host recovery.
+ThreadContext* g_active_thread_context = nullptr;
+std::uint32_t g_recovery_host_fs = 0;
+std::uint32_t g_recovery_host_ds = 0;
+std::uint32_t g_recovery_host_es = 0;
+std::uint32_t g_recovery_host_gs = 0;
+std::uint32_t g_recovery_host_stack_base = 0;
+std::uint32_t g_recovery_host_stack_limit = 0;
+
+
+std::vector<std::uint8_t> BuildDosEnvironmentBlock()
+{
+    std::vector<std::uint8_t> block;
+
+#if defined(_WIN32)
+    LPCH environment = GetEnvironmentStringsA();
+    if (environment != nullptr)
+    {
+        const char* cursor = environment;
+        while (*cursor != '\0')
+        {
+            const char* entry_begin = cursor;
+            while (*cursor != '\0')
+            {
+                ++cursor;
+            }
+
+            bool before_equals = true;
+            for (const char* current = entry_begin; current != cursor;
+                 ++current)
+            {
+                unsigned char byte = static_cast<unsigned char>(*current);
+                if (before_equals && byte == '=')
+                {
+                    before_equals = false;
+                }
+                else if (before_equals)
+                {
+                    byte = static_cast<unsigned char>(
+                        std::toupper(static_cast<unsigned char>(byte)));
+                }
+                block.push_back(static_cast<std::uint8_t>(byte));
+            }
+            block.push_back(0);
+            ++cursor;
+        }
+        FreeEnvironmentStringsA(environment);
+    }
+#endif
+
+    if (block.empty() || block.back() != 0)
+    {
+        block.push_back(0);
+    }
+    block.push_back(0);
+    return block;
+}
+
+int CaptureException(EXCEPTION_POINTERS* exception_info,
+                     ThreadContext* context)
+{
+    if (exception_info != nullptr && context != nullptr)
+    {
+        if (exception_info->ExceptionRecord->ExceptionCode == 0xe06d7363U)
+        {
+            fprintf(stderr, "[repiu-live-debug] Caught C++ Exception (0xe06d7363) at address 0x%p\n",
+                    exception_info->ExceptionRecord->ExceptionAddress);
+            void* stack[64];
+            USHORT frames = CaptureStackBackTrace(0, 64, stack, nullptr);
+            fprintf(stderr, "[repiu-live-debug] Host Stack trace (%d frames):\n", frames);
+            for (USHORT i = 0; i < frames; ++i)
+            {
+                fprintf(stderr, "  [%d] 0x%p\n", i, stack[i]);
+            }
+            HMODULE modules[256];
+            DWORD cbNeeded;
+            if (EnumProcessModules(GetCurrentProcess(), modules, sizeof(modules), &cbNeeded))
+            {
+                fprintf(stderr, "[repiu-live-debug] Loaded Modules:\n");
+                for (size_t i = 0; i < cbNeeded / sizeof(HMODULE); ++i)
+                {
+                    char name[MAX_PATH];
+                    if (GetModuleFileNameA(modules[i], name, sizeof(name)))
+                    {
+                        MODULEINFO info;
+                        if (GetModuleInformation(GetCurrentProcess(), modules[i], &info, sizeof(info)))
+                        {
+                            fprintf(stderr, "  base=0x%p size=0x%X path=%s\n",
+                                    info.lpBaseOfDll, info.SizeOfImage, name);
+                        }
+                    }
+                }
+            }
+        }
+        context->exception_caught = true;
+        context->exception_code =
+            exception_info->ExceptionRecord->ExceptionCode;
+        context->exception_address = static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(
+                exception_info->ExceptionRecord->ExceptionAddress));
+        if (exception_info->ExceptionRecord->NumberParameters >= 2U)
+        {
+            context->exception_access_kind = static_cast<std::uint32_t>(
+                exception_info->ExceptionRecord->ExceptionInformation[0]);
+            context->exception_fault_va = static_cast<std::uint32_t>(
+                exception_info->ExceptionRecord->ExceptionInformation[1]);
+            MEMORY_BASIC_INFORMATION fault_page = {};
+            if (VirtualQuery(reinterpret_cast<const void*>(
+                                 static_cast<std::uintptr_t>(
+                                     context->exception_fault_va)),
+                             &fault_page, sizeof(fault_page)) ==
+                sizeof(fault_page))
+            {
+                context->exception_fault_region_base =
+                    static_cast<std::uint32_t>(
+                        reinterpret_cast<std::uintptr_t>(
+                            fault_page.BaseAddress));
+                context->exception_fault_alloc_base =
+                    static_cast<std::uint32_t>(
+                        reinterpret_cast<std::uintptr_t>(
+                            fault_page.AllocationBase));
+                context->exception_fault_state = fault_page.State;
+                context->exception_fault_protect = fault_page.Protect;
+                context->exception_fault_region_size =
+                    static_cast<std::uint32_t>(fault_page.RegionSize);
+            }
+        }
+#if defined(_M_IX86)
+        CopySnapshotFromContextRecord(*exception_info->ContextRecord,
+                                      &context->exception_snapshot);
+        context->exception_eax = exception_info->ContextRecord->Eax;
+        context->exception_ebx = exception_info->ContextRecord->Ebx;
+        context->exception_ecx = exception_info->ContextRecord->Ecx;
+        context->exception_edx = exception_info->ContextRecord->Edx;
+        context->exception_esi = exception_info->ContextRecord->Esi;
+        context->exception_edi = exception_info->ContextRecord->Edi;
+        for (std::uint32_t index = 0; index < 8U; ++index)
+        {
+            const std::uintptr_t source =
+                static_cast<std::uintptr_t>(
+                    exception_info->ContextRecord->Esi) +
+                0x20U + index * 4U;
+            SIZE_T copied = 0;
+            if (ReadProcessMemory(GetCurrentProcess(),
+                                  reinterpret_cast<const void*>(source),
+                                  &context->exception_esi_dwords[index],
+                                  sizeof(std::uint32_t), &copied) != 0 &&
+                copied == sizeof(std::uint32_t))
+            {
+                context->exception_esi_dword_valid_mask |= 1U << index;
+            }
+        }
+        // Capture the ASCII string that each GPR points at (up to 32 bytes).
+        // Null-pointer and string frontiers (e.g. a stricmp fed a filename with
+        // no extension) are diagnosed by seeing the actual string a register
+        // holds; ESI in particular keeps the callee-saved source pointer.
+        const std::uint32_t exception_register_values[6] = {
+            exception_info->ContextRecord->Eax,
+            exception_info->ContextRecord->Ebx,
+            exception_info->ContextRecord->Ecx,
+            exception_info->ContextRecord->Edx,
+            exception_info->ContextRecord->Esi,
+            exception_info->ContextRecord->Edi,
+        };
+        for (std::uint32_t reg = 0; reg < 6U; ++reg)
+        {
+            SIZE_T copied = 0;
+            if (exception_register_values[reg] != 0 &&
+                ReadProcessMemory(
+                    GetCurrentProcess(),
+                    reinterpret_cast<const void*>(static_cast<std::uintptr_t>(
+                        exception_register_values[reg])),
+                    context->exception_register_strings[reg],
+                    sizeof(context->exception_register_strings[reg]),
+                    &copied) != 0 &&
+                copied != 0)
+            {
+                context->exception_register_string_valid_mask |= 1U << reg;
+            }
+        }
+        // Capture a window of the guest stack starting at the fault-time ESP.
+        // Arguments passed to the faulting function sit above ESP; the caller
+        // return address lives just below the lowest argument slot. Reading
+        // this window is what lets a terminal fault's wild-pointer argument be
+        // traced back to the caller that supplied it.
+        context->exception_stack_base =
+            static_cast<std::uint32_t>(exception_info->ContextRecord->Esp);
+        context->exception_stack_dword_count = 0;
+        for (std::uint32_t index = 0;
+             index < kWin32ExceptionStackDwordCapacity; ++index)
+        {
+            const std::uintptr_t source =
+                static_cast<std::uintptr_t>(context->exception_stack_base) +
+                index * 4U;
+            SIZE_T copied = 0;
+            if (ReadProcessMemory(GetCurrentProcess(),
+                                  reinterpret_cast<const void*>(source),
+                                  &context->exception_stack_dwords[index],
+                                  sizeof(std::uint32_t), &copied) == 0 ||
+                copied != sizeof(std::uint32_t))
+            {
+                break;
+            }
+            context->exception_stack_dword_count = index + 1U;
+        }
+        // Optional: dump the runtime (dynamic) AOT cache bytes for a configured
+        // guest address (REPIU_AOT_PROBE_GUEST). This lets a terminal fault
+        // compare the on-demand translation of a block against the static plan,
+        // to tell whether a runtime dynamic-cache divergence explains a
+        // corrupted guest value.
+        if (context->aot_placement != nullptr)
+        {
+            const char* probe_text = std::getenv("REPIU_AOT_PROBE_GUEST");
+            if (probe_text != nullptr && *probe_text != '\0')
+            {
+                context->aot_probe_guest_address =
+                    static_cast<std::uint32_t>(
+                        std::strtoul(probe_text, nullptr, 0));
+                std::uint32_t cache_address = 0;
+                if (context->aot_probe_guest_address != 0 &&
+                    FindAotCacheAddress(*context->aot_placement,
+                                        context->aot_probe_guest_address,
+                                        &cache_address))
+                {
+                    context->aot_probe_cache_address = cache_address;
+                    SIZE_T copied = 0;
+                    if (ReadProcessMemory(
+                            GetCurrentProcess(),
+                            reinterpret_cast<const void*>(
+                                static_cast<std::uintptr_t>(cache_address)),
+                            context->aot_probe_cache_bytes,
+                            sizeof(context->aot_probe_cache_bytes),
+                            &copied) != 0 &&
+                        copied == sizeof(context->aot_probe_cache_bytes))
+                    {
+                        context->aot_probe_cache_valid = 1;
+                    }
+                }
+            }
+        }
+#endif
+    }
+
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+#if defined(_MSC_VER) && defined(_M_IX86)
+static_assert(offsetof(StackSwitchCallState, entry_address) == 0);
+static_assert(offsetof(StackSwitchCallState, initial_esp) == 4);
+static_assert(offsetof(StackSwitchCallState, host_esp) == 8);
+static_assert(offsetof(StackSwitchCallState, guest_return_esp) == 12);
+static_assert(offsetof(StackSwitchCallState, result_code) == 16);
+static_assert(offsetof(StackSwitchCallState, enable_single_step_trace) == 20);
+static_assert(offsetof(StackSwitchCallState, host_fs) == 24);
+static_assert(offsetof(StackSwitchCallState, host_ds) == 28);
+static_assert(offsetof(StackSwitchCallState, host_es) == 32);
+static_assert(offsetof(StackSwitchCallState, host_gs) == 36);
+static_assert(offsetof(StackSwitchCallState, host_ss) == 40);
+
+extern "C" void RecoverHostStackException();
+
+extern "C" __declspec(naked) std::uint32_t __stdcall
+CallGuestEntryWithStack(StackSwitchCallState* state)
+{
+    __asm
+    {
+        push ebp
+        mov ebp, esp
+        push ebx
+        push esi
+        push edi
+
+        mov ecx, [ebp + 8]
+        mov eax, [ecx + 0]
+        mov edx, [ecx + 4]
+
+        // Save host stack base/limit
+        mov ebx, dword ptr fs:[4]
+        mov [ecx + 52], ebx
+        mov g_recovery_host_stack_base, ebx
+        mov ebx, dword ptr fs:[8]
+        mov [ecx + 56], ebx
+        mov g_recovery_host_stack_limit, ebx
+
+        // Set guest stack base/limit
+        mov ebx, [ecx + 44]
+        mov dword ptr fs:[4], ebx
+        mov ebx, [ecx + 48]
+        mov dword ptr fs:[8], ebx
+
+        xor ebx, ebx
+        mov bx, fs
+        mov [ecx + 24], ebx
+        mov g_recovery_host_fs, ebx
+        mov bx, ds
+        mov [ecx + 28], ebx
+        mov g_recovery_host_ds, ebx
+        mov bx, es
+        mov [ecx + 32], ebx
+        mov g_recovery_host_es, ebx
+        mov bx, gs
+        mov [ecx + 36], ebx
+        mov g_recovery_host_gs, ebx
+        mov bx, ss
+        mov [ecx + 40], ebx
+        mov [ecx + 8], esp
+
+        mov esp, edx
+        cmp dword ptr [ecx + 20], 0
+        je no_single_step_trace
+        pushfd
+        or dword ptr [esp], 100h
+        popfd
+ no_single_step_trace:
+        push ecx
+        call eax
+        pop ecx
+
+        // Restore host stack base/limit
+        mov ebx, [ecx + 52]
+        mov dword ptr fs:[4], ebx
+        mov ebx, [ecx + 56]
+        mov dword ptr fs:[8], ebx
+
+        mov [ecx + 12], esp
+        mov esp, [ecx + 8]
+        mov dword ptr [ecx + 16], 0
+        xor eax, eax
+
+        pop edi
+        pop esi
+        pop ebx
+        pop ebp
+        ret 4
+    }
+}
+
+extern "C" __declspec(naked) void __stdcall
+RecoverGuestStackException()
+{
+    __asm
+    {
+        mov eax, dword ptr cs:[g_recovery_host_stack_base]
+        mov dword ptr fs:[4], eax
+        mov eax, dword ptr cs:[g_recovery_host_stack_limit]
+        mov dword ptr fs:[8], eax
+
+        mov eax, dword ptr cs:[g_recovery_host_fs]
+        mov fs, ax
+        mov eax, dword ptr cs:[g_recovery_host_gs]
+        mov gs, ax
+        mov eax, dword ptr cs:[g_recovery_host_es]
+        mov es, ax
+        mov eax, dword ptr cs:[g_recovery_host_ds]
+        mov ds, ax
+        pop edi
+        pop esi
+        pop ebx
+        pop ebp
+        mov eax, 2
+        ret 4
+    }
+}
+
+void RecoverToHost(CONTEXT* context, ThreadContext* thread_context)
+{
+    context->Eip = reinterpret_cast<DWORD_PTR>(&RecoverGuestStackException);
+    context->EFlags &= ~0x00000100U;
+    context->EFlags &= ~0x00000400U;
+    if (thread_context->active_call_state != nullptr)
+    {
+        context->Ecx = reinterpret_cast<DWORD_PTR>(
+            thread_context->active_call_state);
+        context->SegFs = static_cast<DWORD>(
+            thread_context->active_call_state->host_fs);
+        context->SegDs = static_cast<DWORD>(
+            thread_context->active_call_state->host_ds);
+        context->SegEs = static_cast<DWORD>(
+            thread_context->active_call_state->host_es);
+        context->SegGs = static_cast<DWORD>(
+            thread_context->active_call_state->host_gs);
+        context->SegSs = static_cast<DWORD>(
+            thread_context->active_call_state->host_ss);
+    }
+    std::uint32_t host_esp = thread_context->host_esp;
+    if (host_esp == 0 && thread_context->active_call_state != nullptr)
+    {
+        host_esp = thread_context->active_call_state->host_esp;
+    }
+    thread_context->host_esp = host_esp;
+    context->Esp = host_esp;
+}
+
+
+bool HandlePrivilegedTrapInstruction(CONTEXT* win32_context,
+                                     ThreadContext* context);
+bool HandleSelectorLimitInstruction(CONTEXT* win32_context,
+                                    ThreadContext* context);
+struct AotPlacementPlan;
+bool FindAotGuestAddress(const AotPlacementPlan& placement,
+                         std::uint32_t host_address,
+                         std::uint32_t* guest_address);
+
+bool HandleSelectorLimitInstruction(CONTEXT* win32_context,
+                                    ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0x0F ||
+        (instruction[1] != 0x02 && instruction[1] != 0x03))
+    {
+        return false;
+    }
+    const std::uint8_t modrm = instruction[2];
+    const std::uint8_t mod = (modrm >> 6) & 0x03U;
+    const std::uint8_t destination_register = (modrm >> 3) & 0x07U;
+    std::uint16_t selector = 0;
+    std::uint32_t instruction_size = 3;
+    if (mod == 0x03U)
+    {
+        selector = ReadRegister16(*win32_context, modrm & 0x07U);
+    }
+    else
+    {
+        std::uint32_t source = 0;
+        std::uint32_t unprefixed_size = 0;
+        if (!DecodeModRmMemoryAddress(win32_context,
+                                      instruction + 1,
+                                      &source,
+                                      &unprefixed_size))
+        {
+            return false;
+        }
+        const void* source_pointer = reinterpret_cast<const void*>(
+            static_cast<std::uintptr_t>(source));
+        if (!IsGuestRangeReadable(context, source_pointer, sizeof(selector)))
+        {
+            return false;
+        }
+        std::memcpy(&selector, source_pointer, sizeof(selector));
+        instruction_size = 1U + unprefixed_size;
+    }
+
+    constexpr std::uint32_t kZeroFlag = 0x00000040U;
+    const repiu::runtime::GuestDescriptor* descriptor =
+        repiu::runtime::FindDescriptor(context->selector_table, selector);
+    if (descriptor != nullptr && descriptor->present)
+    {
+        const std::uint32_t value = instruction[1] == 0x03
+            ? descriptor->limit
+            : (descriptor->flags & 0xFFFFU) << 8;
+        WriteGeneralRegister32(win32_context, destination_register, value);
+        win32_context->EFlags |= kZeroFlag;
+    }
+    else
+    {
+        win32_context->EFlags &= ~kZeroFlag;
+    }
+    win32_context->Eip += instruction_size;
+    return true;
+}
+
+
+
+bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context,
+                                   ThreadContext* context,
+                                   std::uint32_t fault_va,
+                                   std::uint32_t decode_eip);
+bool HandleDosMemoryAccess(CONTEXT* win32_context,
+                           ThreadContext* context);
+
+
+
+// Extends the same int3-sentinel single-step probe as RecordExecutionProbe,
+// but logs every single-stepped instruction inside a guest code RANGE
+// (rather than one exact-match address, and without a single-shot gate) into
+// a wrapping ring. `value_at_esp_offset` is read relative to the live ESP at
+// each capture, not a hardcoded absolute address. See
+// docs/design/20260717-223-guest-stack-watchpoint-veh-coexistence.md §8.
+
+bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
+{
+    if (win32_context == nullptr || context == nullptr ||
+        !context->enable_single_step_trace)
+    {
+        return false;
+    }
+    RecordExecutionProbe(win32_context, context);
+    RecordExecutionTrace(win32_context, context);
+    const std::uint32_t eip_offset =
+        static_cast<std::uint32_t>(win32_context->Eip) -
+        context->runtime_base;
+    if (eip_offset >= 0x000F38F6U && eip_offset <= 0x000F3902U)
+    {
+        constexpr std::uint32_t stages[] = {
+            0x000F38F6U, 0x000F38FAU, 0x000F38FEU,
+            0x000F3900U, 0x000F3902U};
+        for (std::uint32_t index = 0; index < 5; ++index)
+        {
+            if (eip_offset == stages[index])
+            {
+                context->linexe_export_name_stage_mask |= 1U << index;
+            }
+        }
+    }
+    if (eip_offset == 0x000F37E8U)
+    {
+        ++context->linexe_scan_entry_count;
+    }
+    else if (eip_offset == 0x000F382DU)
+    {
+        ++context->linexe_module_candidate_count;
+        const auto* selector = reinterpret_cast<const std::uint16_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esp + 0x10U));
+        if (IsGuestRangeReadable(context, selector, sizeof(*selector)))
+        {
+            context->linexe_module_selector_stack_value = *selector;
+        }
+        const auto* offset = reinterpret_cast<const std::uint32_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esp + 0x08U));
+        if (IsGuestRangeReadable(context, offset, sizeof(*offset)))
+        {
+            context->linexe_module_offset_stack_value = *offset;
+        }
+    }
+    else if (eip_offset == 0x000F3818U)
+    {
+        context->linexe_root_selector_eax = win32_context->Eax;
+        context->linexe_root_read_gs = context->guest_gs;
+    }
+    else if (eip_offset == 0x000F3889U)
+    {
+        ++context->linexe_module_match_count;
+    }
+    else if (eip_offset == 0x000F384CU)
+    {
+        ++context->linexe_name_pointer_valid_count;
+    }
+    else if (eip_offset == 0x000F3853U)
+    {
+        ++context->linexe_name_byte_instruction_count;
+    }
+    else if (eip_offset == 0x000F393FU)
+    {
+        ++context->linexe_export_match_count;
+    }
+    else if (eip_offset == 0x000F38BEU)
+    {
+        ++context->linexe_export_entry_loop_count;
+    }
+    else if (eip_offset == 0x000F3974U)
+    {
+        ++context->linexe_export_compare_count;
+        context->linexe_export_compare_eax = win32_context->Eax;
+        context->linexe_export_compare_ecx = win32_context->Ecx;
+        context->linexe_export_compare_eflags = win32_context->EFlags;
+    }
+    else if (eip_offset == 0x000F396DU)
+    {
+        context->linexe_export_count_load_edx = win32_context->Edx;
+        context->linexe_export_count_load_gs = context->guest_gs;
+    }
+    else if (eip_offset == 0x000F3963U)
+    {
+        const auto* offset = reinterpret_cast<const std::uint32_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esp + 0x08U));
+        const auto* selector = reinterpret_cast<const std::uint16_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esp + 0x10U));
+        if (IsGuestRangeReadable(context, offset, sizeof(*offset)))
+        {
+            context->linexe_export_offset_stack_value = *offset;
+        }
+        if (IsGuestRangeReadable(context, selector, sizeof(*selector)))
+        {
+            context->linexe_export_selector_stack_value = *selector;
+        }
+    }
+    else if (eip_offset == 0x000F38B9U ||
+             eip_offset == 0x000F395FU)
+    {
+        const auto* offset = reinterpret_cast<const std::uint32_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esp + 0x08U));
+        const auto* selector = reinterpret_cast<const std::uint16_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esp + 0x10U));
+        const std::uint32_t module_offset =
+            IsGuestRangeReadable(context, offset, sizeof(*offset)) ?
+                *offset : 0;
+        const std::uint16_t module_selector =
+            IsGuestRangeReadable(context, selector, sizeof(*selector)) ?
+                *selector : 0;
+        if (eip_offset == 0x000F38B9U)
+        {
+            context->linexe_export_jump_source_esp = win32_context->Esp;
+            context->linexe_export_jump_source_module_offset = module_offset;
+            context->linexe_export_jump_source_module_selector =
+                module_selector;
+        }
+        else
+        {
+            context->linexe_export_jump_target_esp = win32_context->Esp;
+            context->linexe_export_jump_target_module_offset = module_offset;
+            context->linexe_export_jump_target_module_selector =
+                module_selector;
+        }
+    }
+    else if (eip_offset == 0x000F3900U)
+    {
+        ++context->linexe_export_name_compare_count;
+        context->linexe_export_name_compare_gs = context->guest_gs;
+        context->linexe_export_name_compare_edi = win32_context->Edi;
+        context->linexe_export_name_compare_esi = win32_context->Esi;
+        std::uint8_t actual = 0;
+        if (ReadSegmentByte(context, 5, context->guest_gs,
+                            win32_context->Edi, &actual))
+        {
+            context->linexe_export_name_actual_byte = actual;
+        }
+        const auto* expected = reinterpret_cast<const std::uint8_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esi));
+        if (IsGuestRangeReadable(context, expected, sizeof(*expected)))
+        {
+            context->linexe_export_name_expected_byte = *expected;
+        }
+    }
+    else if (eip_offset == 0x000F37A5U)
+    {
+        ++context->linexe_bridge_entry_count;
+        context->linexe_bridge_selector = static_cast<std::uint16_t>(
+            win32_context->Ebx & 0xFFFFU);
+        context->linexe_bridge_offset = win32_context->Edi;
+        context->linexe_bridge_esp = win32_context->Esp;
+        context->linexe_bridge_ebp = win32_context->Ebp;
+        repiu::hle::LinexeService service{};
+        context->linexe_bridge_gate_valid =
+            context->linexe_bridge_selector ==
+                context->linexe_gate_plan.linexe_code_selector &&
+            repiu::hle::DecodeLinexeCallGate(
+                context->linexe_gate_plan,
+                context->linexe_bridge_offset,
+                &service);
+        if (context->linexe_bridge_gate_valid)
+        {
+            context->linexe_bridge_service =
+                static_cast<std::uint32_t>(service);
+        }
+        const auto* stack = reinterpret_cast<const std::uint32_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esp));
+        if (IsGuestRangeReadable(context,
+                                 stack,
+                                 sizeof(context->linexe_bridge_stack)))
+        {
+            std::memcpy(context->linexe_bridge_stack,
+                        stack,
+                        sizeof(context->linexe_bridge_stack));
+        }
+    }
+    else if (eip_offset == 0x000F39A6U)
+    {
+        ++context->linexe_scan_return_count;
+        context->linexe_scan_return_eax = win32_context->Eax;
+        context->linexe_scan_return_ebp = win32_context->Ebp;
+    }
+    else if (eip_offset == 0x000F3F9BU)
+    {
+        context->linexe_scan_caller_eax = win32_context->Eax;
+    }
+    else if (eip_offset == 0x000F3FD2U)
+    {
+        context->linexe_selector_init_results[0] = win32_context->Eax;
+    }
+    else if (eip_offset == 0x000F3FE1U)
+    {
+        context->linexe_selector_init_results[1] = win32_context->Eax;
+    }
+    else if (eip_offset == 0x000F3FF0U)
+    {
+        context->linexe_selector_init_results[2] = win32_context->Eax;
+    }
+    const std::uint32_t eip =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    if (IsGuestInstructionPointer(context, eip))
+    {
+        context->single_step_eip.store(eip, std::memory_order_relaxed);
+        context->single_step_eax.store(win32_context->Eax,
+                                       std::memory_order_relaxed);
+        context->single_step_ebx.store(win32_context->Ebx,
+                                       std::memory_order_relaxed);
+        context->single_step_ecx.store(win32_context->Ecx,
+                                       std::memory_order_relaxed);
+        context->single_step_edx.store(win32_context->Edx,
+                                       std::memory_order_relaxed);
+        context->single_step_esi.store(win32_context->Esi,
+                                       std::memory_order_relaxed);
+        context->single_step_edi.store(win32_context->Edi,
+                                       std::memory_order_relaxed);
+        context->single_step_esp.store(win32_context->Esp,
+                                       std::memory_order_relaxed);
+        context->single_step_ebp.store(win32_context->Ebp,
+                                       std::memory_order_relaxed);
+        context->single_step_eflags.store(win32_context->EFlags,
+                                          std::memory_order_relaxed);
+        context->single_step_cs.store(win32_context->SegCs,
+                                      std::memory_order_relaxed);
+        context->single_step_ds.store(win32_context->SegDs,
+                                      std::memory_order_relaxed);
+        context->single_step_es.store(win32_context->SegEs,
+                                      std::memory_order_relaxed);
+        context->single_step_ss.store(win32_context->SegSs,
+                                      std::memory_order_relaxed);
+        context->single_step_fs.store(win32_context->SegFs,
+                                      std::memory_order_relaxed);
+        context->single_step_gs.store(win32_context->SegGs,
+                                      std::memory_order_relaxed);
+        context->single_step_trace_count.fetch_add(
+            1,
+            std::memory_order_relaxed);
+    }
+
+    if (context->enable_privileged_trap_hle &&
+        (HandleSelectorLimitInstruction(win32_context, context) ||
+         HandlePrivilegedTrapInstruction(win32_context, context)))
+    {
+        win32_context->EFlags |= 0x00000100U;
+        return true;
+    }
+    if (context->enable_privileged_trap_hle &&
+        HandlePortIoInstruction(win32_context, context))
+    {
+        win32_context->EFlags |= 0x00000100U;
+        return true;
+    }
+    if (context->enable_traced_dos_hle &&
+        (HandleTracedDosInterrupt21(win32_context, context) ||
+         HandleTracedDosInterrupt2F(win32_context, context) ||
+         HandleTracedDpmiInterrupt31(win32_context, context) ||
+         HandleTracedMouseInterrupt33(win32_context, context)))
+    {
+        win32_context->EFlags |= 0x00000100U;
+        return true;
+    }
+    if (context->enable_segment_load_hle &&
+        (HandleSegmentLoadInstruction(win32_context, context) ||
+         HandleSegmentPopInstruction(win32_context, context) ||
+         HandleRepStosdInstruction(win32_context, context) ||
+         HandleRepMovsInstruction(win32_context, context) ||
+         HandleRepCmpsbInstruction(win32_context, context) ||
+         HandleLodsbInstruction(win32_context, context) ||
+         HandleSegmentStoreInstruction(win32_context, context) ||
+         HandleSegmentOverrideMemoryLoadInstruction(win32_context, context) ||
+         HandleSegmentOverrideByteLoadInstruction(win32_context, context) ||
+         HandleFsSegmentWordLoadInstruction(win32_context, context) ||
+         HandleSegmentMemoryCompareInstruction(win32_context, context) ||
+         HandleSegmentMemoryLoadInstruction(win32_context, context) ||
+         HandleTracedMemoryLoadInstruction(win32_context, context) ||
+         HandleTracedMemoryAddInstruction(win32_context, context) ||
+         HandleTracedMemoryOrInstruction(win32_context, context) ||
+         HandleTracedMemoryCompareByteInstruction(win32_context, context) ||
+         HandleTracedMemoryStoreInstruction(win32_context, context) ||
+         HandleTracedMemoryTestInstruction(win32_context, context) ||
+         HandleTracedFpuMemoryInstruction(win32_context, context) ||
+         HandleDosMemoryAccess(win32_context, context)))
+    {
+        HandleSegmentStoreInstruction(win32_context, context);
+        HandleSegmentOverrideMemoryLoadInstruction(win32_context, context);
+        win32_context->EFlags |= 0x00000100U;
+        return true;
+    }
+
+    if (detail::TryEnterNativeFastPath(win32_context,
+                                       &context->native_fast_path,
+                                       context->runtime_base,
+                                       context->runtime_size))
+    {
+        return true;
+    }
+    win32_context->EFlags |= 0x00000100U;
+    return true;
+}
+
+
+
+
+
+
+void RecordHandledHleTrap(CONTEXT* win32_context,
+                          ThreadContext* context,
+                          std::uint8_t opcode)
+{
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return;
+    }
+
+    ++context->handled_hle_trap_count;
+    context->last_hle_trap_address =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    context->last_hle_trap_opcode = opcode;
+}
+
+
+
+bool HandleOriginalFatalBreakpoint(EXCEPTION_POINTERS* exception_info,
+                                   CONTEXT* win32_context,
+                                   ThreadContext* context)
+{
+    if (exception_info == nullptr ||
+        exception_info->ExceptionRecord == nullptr ||
+        exception_info->ExceptionRecord->ExceptionCode !=
+            EXCEPTION_BREAKPOINT ||
+        win32_context == nullptr || context == nullptr ||
+        win32_context->Eip == 0)
+    {
+        return false;
+    }
+
+    const std::uint32_t context_eip =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    std::uint32_t breakpoint = context_eip;
+    bool advance_to_continuation = false;
+    if (IsGuestRangeReadable(
+            context,
+            reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(context_eip)),
+            1U) &&
+        *reinterpret_cast<const std::uint8_t*>(
+            static_cast<std::uintptr_t>(context_eip)) == 0xCC)
+    {
+        advance_to_continuation = true;
+    }
+    else
+    {
+        breakpoint = context_eip - 1U;
+    }
+    if (!IsGuestRangeReadable(
+            context,
+            reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(breakpoint)),
+            8U))
+    {
+        return false;
+    }
+
+    const auto* instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(breakpoint));
+    if (instruction[0] != 0xCC || instruction[1] != 0x52 ||
+        instruction[2] != 0xE8 || instruction[7] != 0xF4)
+    {
+        return false;
+    }
+
+    context->handled_fatal_breakpoint_count += 1U;
+    context->last_fatal_breakpoint_address = breakpoint;
+    context->last_fatal_message_address =
+        static_cast<std::uint32_t>(win32_context->Edx);
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(
+            &context->shared_live_telemetry->fatal_breakpoint_count,
+            static_cast<long>(context->handled_fatal_breakpoint_count));
+        InterlockedExchange(
+            &context->shared_live_telemetry->fatal_message_address,
+            static_cast<long>(context->last_fatal_message_address));
+    }
+    context->last_fatal_message.clear();
+    ReadGuestAsciz(context,
+                   context->last_fatal_message_address,
+                   512U,
+                   &context->last_fatal_message);
+    context->fatal_breakpoint_continued = true;
+    if (advance_to_continuation)
+    {
+        win32_context->Eip += 1U;
+    }
+    return true;
+}
+
+
+
+bool HandlePrivilegedTrapInstruction(CONTEXT* win32_context,
+                                     ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (*instruction == 0xFA)
+    {
+        RecordHandledHleTrap(win32_context, context, *instruction);
+        win32_context->EFlags &= ~0x00000200U;
+        ++win32_context->Eip;
+        return true;
+    }
+    if (*instruction == 0xFB)
+    {
+        RecordHandledHleTrap(win32_context, context, *instruction);
+        win32_context->EFlags |= 0x00000200U;
+        ++win32_context->Eip;
+        return true;
+    }
+    if (*instruction == 0xF4 && context->fatal_breakpoint_continued)
+    {
+        RecordHandledHleTrap(win32_context, context, *instruction);
+        context->fatal_halt_reached = true;
+        RecoverFromHleExit(win32_context, context);
+        return true;
+    }
+
+    return false;
+}
+
+
+bool HandleDosHleInstruction(CONTEXT* win32_context,
+                             ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] == 0xCD && instruction[1] == 0x21)
+    {
+        return HandleDosInterrupt21(win32_context, context);
+    }
+    if (instruction[0] == 0xCD && instruction[1] == 0x2F)
+    {
+        return HandleDosInterrupt2F(win32_context, context);
+    }
+    if (instruction[0] == 0xCD && instruction[1] == 0x31)
+    {
+        return HandleDpmiInterrupt31(win32_context, context);
+    }
+    if (instruction[0] == 0xCD && instruction[1] == 0x33)
+    {
+        return HandleMouseInterrupt33(win32_context, context);
+    }
+
+    if (instruction[0] == 0xCD)
+    {
+        std::ostringstream stream;
+        stream << "unsupported DOS interrupt 0x"
+               << std::hex << static_cast<unsigned>(instruction[1]);
+        context->hle_message = stream.str();
+    }
+    return false;
+}
+
+std::uint32_t ReadRegisterValueForAddress(const CONTEXT* win32_context, ZydisRegister reg)
+{
+    if (reg == ZYDIS_REGISTER_NONE)
+    {
+        return 0;
+    }
+    switch (reg)
+    {
+        case ZYDIS_REGISTER_EAX: return win32_context->Eax;
+        case ZYDIS_REGISTER_ECX: return win32_context->Ecx;
+        case ZYDIS_REGISTER_EDX: return win32_context->Edx;
+        case ZYDIS_REGISTER_EBX: return win32_context->Ebx;
+        case ZYDIS_REGISTER_ESP: return win32_context->Esp;
+        case ZYDIS_REGISTER_EBP: return win32_context->Ebp;
+        case ZYDIS_REGISTER_ESI: return win32_context->Esi;
+        case ZYDIS_REGISTER_EDI: return win32_context->Edi;
+        default: return 0;
+    }
+}
+
+void WriteRegisterFromZydis(CONTEXT* win32_context, ZydisRegister reg, std::uint32_t value)
+{
+    switch (reg)
+    {
+        case ZYDIS_REGISTER_EAX: win32_context->Eax = value; break;
+        case ZYDIS_REGISTER_ECX: win32_context->Ecx = value; break;
+        case ZYDIS_REGISTER_EDX: win32_context->Edx = value; break;
+        case ZYDIS_REGISTER_EBX: win32_context->Ebx = value; break;
+        case ZYDIS_REGISTER_ESP: win32_context->Esp = value; break;
+        case ZYDIS_REGISTER_EBP: win32_context->Ebp = value; break;
+        case ZYDIS_REGISTER_ESI: win32_context->Esi = value; break;
+        case ZYDIS_REGISTER_EDI: win32_context->Edi = value; break;
+
+        case ZYDIS_REGISTER_AX: win32_context->Eax = (win32_context->Eax & 0xFFFF0000U) | (value & 0xFFFFU); break;
+        case ZYDIS_REGISTER_CX: win32_context->Ecx = (win32_context->Ecx & 0xFFFF0000U) | (value & 0xFFFFU); break;
+        case ZYDIS_REGISTER_DX: win32_context->Edx = (win32_context->Edx & 0xFFFF0000U) | (value & 0xFFFFU); break;
+        case ZYDIS_REGISTER_BX: win32_context->Ebx = (win32_context->Ebx & 0xFFFF0000U) | (value & 0xFFFFU); break;
+        case ZYDIS_REGISTER_SP: win32_context->Esp = (win32_context->Esp & 0xFFFF0000U) | (value & 0xFFFFU); break;
+        case ZYDIS_REGISTER_BP: win32_context->Ebp = (win32_context->Ebp & 0xFFFF0000U) | (value & 0xFFFFU); break;
+        case ZYDIS_REGISTER_SI: win32_context->Esi = (win32_context->Esi & 0xFFFF0000U) | (value & 0xFFFFU); break;
+        case ZYDIS_REGISTER_DI: win32_context->Edi = (win32_context->Edi & 0xFFFF0000U) | (value & 0xFFFFU); break;
+
+        case ZYDIS_REGISTER_AL: win32_context->Eax = (win32_context->Eax & 0xFFFFFF00U) | (value & 0xFFU); break;
+        case ZYDIS_REGISTER_CL: win32_context->Ecx = (win32_context->Ecx & 0xFFFFFF00U) | (value & 0xFFU); break;
+        case ZYDIS_REGISTER_DL: win32_context->Edx = (win32_context->Edx & 0xFFFFFF00U) | (value & 0xFFU); break;
+        case ZYDIS_REGISTER_BL: win32_context->Ebx = (win32_context->Ebx & 0xFFFFFF00U) | (value & 0xFFU); break;
+
+        case ZYDIS_REGISTER_AH: win32_context->Eax = (win32_context->Eax & 0xFFFF00FFU) | ((value & 0xFFU) << 8); break;
+        case ZYDIS_REGISTER_CH: win32_context->Ecx = (win32_context->Ecx & 0xFFFF00FFU) | ((value & 0xFFU) << 8); break;
+        case ZYDIS_REGISTER_DH: win32_context->Edx = (win32_context->Edx & 0xFFFF00FFU) | ((value & 0xFFU) << 8); break;
+        case ZYDIS_REGISTER_BH: win32_context->Ebx = (win32_context->Ebx & 0xFFFF00FFU) | ((value & 0xFFU) << 8); break;
+
+        default: break;
+    }
+}
+
+bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context, ThreadContext* context, std::uint32_t fault_va, std::uint32_t decode_eip)
+{
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return false;
+    }
+
+    context->debug_emulate_stage = 1; // Started
+
+
+
+    const std::uint8_t* instruction_ptr = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(decode_eip));
+
+    ZydisDecoder decoder;
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LEGACY_32, ZYDIS_STACK_WIDTH_32)))
+    {
+        context->debug_emulate_stage = 2; // Decoder init failed
+        return false;
+    }
+
+    ZydisDecodedInstruction instruction{};
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+
+    if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, instruction_ptr, 15, &instruction, operands)))
+    {
+        context->debug_emulate_stage = 3; // Decode failed
+        return false;
+    }
+
+    if (instruction.mnemonic != ZYDIS_MNEMONIC_MOV &&
+        instruction.mnemonic != ZYDIS_MNEMONIC_MOVZX &&
+        instruction.mnemonic != ZYDIS_MNEMONIC_MOVSX)
+    {
+        context->debug_emulate_stage = 4; // Wrong mnemonic
+        context->debug_emulate_decode_result = instruction.mnemonic;
+        return false;
+    }
+
+    if (instruction.operand_count_visible < 2)
+    {
+        context->debug_emulate_stage = 5; // Invisible operands too few
+        return false;
+    }
+
+    if (operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+        operands[1].type != ZYDIS_OPERAND_TYPE_MEMORY)
+    {
+        context->debug_emulate_stage = 6; // Operand types mismatch
+        return false;
+    }
+
+    const auto& mem = operands[1].mem;
+    std::uint32_t base_val = ReadRegisterValueForAddress(win32_context, mem.base);
+    std::uint32_t index_val = ReadRegisterValueForAddress(win32_context, mem.index);
+    std::uint32_t scale = mem.scale;
+    std::uint32_t displacement = mem.disp.has_displacement ? static_cast<std::uint32_t>(mem.disp.value) : 0;
+    
+    std::uint32_t calculated_address = base_val + index_val * scale + displacement;
+
+    if (calculated_address >= repiu::runtime::kDosLowMemorySize)
+    {
+        context->debug_emulate_stage = 7; // Out of range calculated address
+        context->debug_emulate_calculated_address = calculated_address;
+        return false;
+    }
+
+    std::uint32_t current_tick = GetTickCount();
+    std::uint32_t elapsed_ticks = current_tick - context->last_low_memory_fault_tick;
+    context->last_low_memory_fault_tick = current_tick;
+
+    if (win32_context->Eip == context->last_low_memory_fault_eip &&
+        calculated_address == context->last_low_memory_fault_address &&
+        elapsed_ticks < 50)
+    {
+        context->low_memory_fault_repeat_count++;
+        if (context->low_memory_fault_repeat_count >= 5)
+        {
+            context->debug_emulate_stage = 99; // Runaway abort
+            return false;
+        }
+    }
+    else
+    {
+        context->last_low_memory_fault_eip = win32_context->Eip;
+        context->last_low_memory_fault_address = calculated_address;
+        context->low_memory_fault_repeat_count = 1;
+    }
+
+    std::uint32_t read_width_bits = operands[1].size;
+    std::uint32_t read_width_bytes = read_width_bits / 8;
+    if (read_width_bytes == 0)
+    {
+        read_width_bytes = 1;
+    }
+
+    std::uint32_t raw_val = 0;
+    if (read_width_bytes == 1)
+    {
+        std::uint8_t byte_val = 0;
+        repiu::runtime::ReadDosLowMemoryUInt8(context->dos_low_memory, calculated_address, &byte_val);
+        raw_val = byte_val;
+    }
+    else if (read_width_bytes == 2)
+    {
+        std::uint16_t word_val = 0;
+        repiu::runtime::ReadDosLowMemoryUInt16(context->dos_low_memory, calculated_address, &word_val);
+        raw_val = word_val;
+    }
+    else if (read_width_bytes == 4)
+    {
+        std::uint32_t dword_val = 0;
+        repiu::runtime::ReadDosLowMemoryUInt32(context->dos_low_memory, calculated_address, &dword_val);
+        raw_val = dword_val;
+    }
+
+    std::uint32_t final_val = raw_val;
+    if (instruction.mnemonic == ZYDIS_MNEMONIC_MOVSX)
+    {
+        if (read_width_bytes == 1)
+        {
+            final_val = static_cast<std::uint32_t>(static_cast<std::int32_t>(static_cast<std::int8_t>(raw_val)));
+        }
+        else if (read_width_bytes == 2)
+        {
+            final_val = static_cast<std::uint32_t>(static_cast<std::int32_t>(static_cast<std::int16_t>(raw_val)));
+        }
+    }
+
+    WriteRegisterFromZydis(win32_context, operands[0].reg.value, final_val);
+
+    std::vector<std::uint8_t> nop_buffer(instruction.length, 0x90);
+    WriteGuestBytes(context, reinterpret_cast<void*>(static_cast<std::uintptr_t>(decode_eip)), nop_buffer.data(), instruction.length);
+
+    context->debug_emulate_stage = 100; // Success
+    context->debug_emulate_decode_result = instruction.length;
+    context->debug_emulate_calculated_address = operands[0].reg.value;
+
+    context->low_memory_read_emulate_count++;
+    context->last_low_memory_read_emulate_address = calculated_address;
+    context->last_low_memory_read_emulate_eip = decode_eip;
+    context->last_low_memory_read_emulate_value = final_val;
+    context->last_low_memory_read_emulate_reg = operands[0].reg.value;
+
+    RecordLowMemoryAccess(win32_context, context, instruction_ptr[0], calculated_address, final_val);
+
+    return true;
+}
+
+bool HandleDosMemoryAccess(CONTEXT* win32_context, ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] == 0x66 && instruction[1] == 0x26 &&
+        instruction[2] == 0x8B && instruction[3] == 0x0D)
+    {
+        const std::uint32_t offset =
+            static_cast<std::uint32_t>(instruction[4]) |
+            (static_cast<std::uint32_t>(instruction[5]) << 8) |
+            (static_cast<std::uint32_t>(instruction[6]) << 16) |
+            (static_cast<std::uint32_t>(instruction[7]) << 24);
+        std::uint16_t value = 0;
+        if (offset == 0x2C)
+        {
+            value = context->linexe_environment_active ? 0x002CU : 0;
+        }
+        win32_context->Ecx =
+            (win32_context->Ecx & 0xFFFF0000U) | value;
+        RecordLowMemoryAccess(win32_context,
+                              context,
+                              instruction[2],
+                              offset,
+                              value);
+        win32_context->Eip += 8;
+        return true;
+    }
+    if (instruction[0] == 0x66 && instruction[1] == 0x26 &&
+        instruction[2] == 0x8C && instruction[3] == 0x1D)
+    {
+        const std::uint32_t offset =
+            static_cast<std::uint32_t>(instruction[4]) |
+            (static_cast<std::uint32_t>(instruction[5]) << 8) |
+            (static_cast<std::uint32_t>(instruction[6]) << 16) |
+            (static_cast<std::uint32_t>(instruction[7]) << 24);
+        RecordLowMemoryAccess(win32_context,
+                              context,
+                              instruction[2],
+                              offset,
+                              0);
+        win32_context->Eip += 8;
+        return true;
+    }
+    if (instruction[0] == 0x26 && instruction[1] == 0x8A &&
+        instruction[2] == 0x4F && instruction[3] == 0xFF)
+    {
+        win32_context->Ecx &= 0xFFFFFF00U;
+        RecordLowMemoryAccess(win32_context,
+                              context,
+                              instruction[1],
+                              win32_context->Edi - 1,
+                              0);
+        win32_context->Eip += 4;
+        return true;
+    }
+    if (instruction[0] == 0x8B && instruction[1] == 0x06 &&
+        win32_context->Esi < 0x10000)
+    {
+        win32_context->Eax = 0;
+        RecordLowMemoryAccess(win32_context,
+                              context,
+                              instruction[0],
+                              win32_context->Esi,
+                              0);
+        win32_context->Eip += 2;
+        return true;
+    }
+    if (instruction[0] == 0x80 && instruction[1] == 0x3E &&
+        instruction[2] == 0x00 && win32_context->Esi < 0x10000)
+    {
+        win32_context->EFlags |= 0x40U;
+        win32_context->EFlags &= ~1U;
+        RecordLowMemoryAccess(win32_context,
+                              context,
+                              instruction[0],
+                              win32_context->Esi,
+                              0);
+        win32_context->Eip += 3;
+        return true;
+    }
+    if (instruction[0] == 0xAC && win32_context->Esi < 0x10000)
+    {
+        win32_context->Eax &= 0xFFFFFF00U;
+        RecordLowMemoryAccess(win32_context,
+                              context,
+                              instruction[0],
+                              win32_context->Esi,
+                              0);
+        ++win32_context->Esi;
+        ++win32_context->Eip;
+        return true;
+    }
+    if (instruction[0] == 0xA4 && win32_context->Esi < 0x10000)
+    {
+        char* destination = reinterpret_cast<char*>(
+            static_cast<std::uintptr_t>(win32_context->Edi));
+        if (destination != nullptr &&
+            IsGuestRangeReadable(context, destination, 1))
+        {
+            *destination = '\0';
+        }
+        RecordLowMemoryAccess(win32_context,
+                              context,
+                              instruction[0],
+                              win32_context->Edi,
+                              0);
+        ++win32_context->Esi;
+        ++win32_context->Edi;
+        ++win32_context->Eip;
+        return true;
+    }
+
+    return false;
+}
+
+extern "C" __declspec(naked) void
+RecoverHostStackException()
+{
+    __asm
+    {
+        xor eax, eax
+        ret
+    }
+}
+
+
+#endif
+
+DWORD WINAPI GuestEntryThreadProc(void* parameter)
+{
+    ThreadContext* context = static_cast<ThreadContext*>(parameter);
+    if (context == nullptr)
+    {
+        return 1;
+    }
+    context->guest_thread_id = GetCurrentThreadId();
+
+    __try
+    {
+        if (context->use_guest_stack)
+        {
+#if defined(_MSC_VER) && defined(_M_IX86)
+            StackSwitchCallState state;
+            state.entry_address = context->entry_address;
+            state.initial_esp = context->guest_initial_esp;
+            state.enable_single_step_trace =
+                context->enable_single_step_trace ? 1U : 0U;
+
+            MEMORY_BASIC_INFORMATION mbi{};
+            if (VirtualQuery(reinterpret_cast<void*>(context->guest_initial_esp - 4), &mbi, sizeof(mbi)) == sizeof(mbi))
+            {
+                state.guest_stack_limit = reinterpret_cast<std::uint32_t>(mbi.AllocationBase);
+                state.guest_stack_base = context->guest_initial_esp;
+            }
+            context->active_call_state = &state;
+            g_active_thread_context = context;
+            context->vectored_handler = AddVectoredExceptionHandler(
+                1, GuestStackVectoredExceptionHandler);
+            if (context->vectored_handler == nullptr)
+            {
+                g_active_thread_context = nullptr;
+                context->active_call_state = nullptr;
+                return 5;
+            }
+
+            CallGuestEntryWithStack(&state);
+
+            context->glide_backend.Close();
+            g_active_thread_context = nullptr;
+            context->active_call_state = nullptr;
+            context->host_esp = state.host_esp;
+            if (context->guest_return_esp == 0)
+            {
+                context->guest_return_esp = state.guest_return_esp;
+            }
+            if (context->exception_caught)
+            {
+                return 2;
+            }
+            if (context->process_exit)
+            {
+                return 0;
+            }
+#else
+            return 4;
+#endif
+        }
+        else
+        {
+#if defined(_MSC_VER) && defined(_M_IX86)
+            g_active_thread_context = context;
+            context->vectored_handler = AddVectoredExceptionHandler(
+                1, GuestStackVectoredExceptionHandler);
+            if (context->vectored_handler == nullptr)
+            {
+                g_active_thread_context = nullptr;
+                return 5;
+            }
+#endif
+            using EntryFunction = void (*)();
+            EntryFunction entry = reinterpret_cast<EntryFunction>(
+                static_cast<std::uintptr_t>(context->entry_address));
+            entry();
+#if defined(_MSC_VER) && defined(_M_IX86)
+            g_active_thread_context = nullptr;
+            if (context->process_exit)
+            {
+                return 0;
+            }
+#endif
+        }
+        context->returned = true;
+        return 0;
+    }
+    __except (CaptureException(GetExceptionInformation(), context))
+    {
+        return 2;
+    }
+}
+#endif
+
+}  // namespace
+
+// Execution probe/trace + guest-IP helpers promoted to external linkage for
+// aot_runtime_dispatch.cpp (relocated out of the anonymous namespace).
+bool IsGuestInstructionPointer(const ThreadContext* context,
+                               std::uint32_t eip)
+{
+    if (context == nullptr || context->runtime_size == 0)
+    {
+        return false;
+    }
+
+    const std::uint32_t runtime_end =
+        context->runtime_base + context->runtime_size;
+    return eip >= context->runtime_base &&
+           runtime_end >= context->runtime_base &&
+           eip < runtime_end;
+}
+
+void RecordExecutionProbe(CONTEXT* win32_context, ThreadContext* context)
+{
+    if (win32_context == nullptr || context == nullptr ||
+        !context->execution_probe_configured || context->execution_probe_hit ||
+        win32_context->Eip < context->runtime_base ||
+        static_cast<std::uint32_t>(win32_context->Eip) -
+                context->runtime_base != context->execution_probe_offset)
+    {
+        return;
+    }
+    context->execution_probe_hit = true;
+    CopySnapshotFromContextRecord(*win32_context,
+                                  &context->execution_probe_snapshot);
+    const void* stack = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(win32_context->Esp));
+    if (IsGuestRangeReadable(context, stack,
+                             sizeof(context->execution_probe_stack)))
+    {
+        std::memcpy(context->execution_probe_stack, stack,
+                    sizeof(context->execution_probe_stack));
+    }
+}
+
+void RecordExecutionTrace(CONTEXT* win32_context, ThreadContext* context)
+{
+    if (win32_context == nullptr || context == nullptr ||
+        !context->execution_trace_configured ||
+        win32_context->Eip < context->runtime_base)
+    {
+        return;
+    }
+    const std::uint32_t offset = static_cast<std::uint32_t>(win32_context->Eip) -
+        context->runtime_base;
+    if (offset < context->execution_trace_start_offset ||
+        offset > context->execution_trace_end_offset)
+    {
+        return;
+    }
+    Win32ExecutionTraceEntry entry{};
+    entry.sequence = context->execution_trace_hit_count;
+    entry.eip = static_cast<std::uint32_t>(win32_context->Eip);
+    entry.esp = static_cast<std::uint32_t>(win32_context->Esp);
+    const void* value_address = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(entry.esp + context->execution_trace_esp_offset));
+    if (IsGuestRangeReadable(context, value_address, sizeof(entry.value_at_esp_offset)))
+    {
+        std::memcpy(&entry.value_at_esp_offset, value_address,
+                    sizeof(entry.value_at_esp_offset));
+    }
+    const std::uint32_t slot = context->execution_trace_hit_count %
+        kWin32ExecutionTraceCapacity;
+    context->execution_trace[slot] = entry;
+    ++context->execution_trace_hit_count;
+}
+
+// ResolveSegmentLinearRange promoted to external linkage (relocated out of the
+// anonymous namespace) for dpmi_mscdex_services.cpp and segment handlers.
+bool ResolveSegmentLinearRange(ThreadContext* context,
+                               std::uint16_t selector,
+                               std::uint32_t offset,
+                               std::uint32_t byte_count,
+                               bool writable,
+                               std::uint32_t* linear_address)
+{
+    if (context == nullptr || linear_address == nullptr)
+    {
+        return false;
+    }
+
+    std::uint32_t translated = 0;
+    if (!repiu::runtime::TranslateSelectorOffset(
+            context->selector_table,
+            selector,
+            offset,
+            byte_count,
+            &translated))
+    {
+        translated = offset;
+    }
+    void* pointer = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(translated));
+    const bool valid = writable
+        ? IsGuestRangeWritable(context, pointer, byte_count)
+        : IsGuestRangeReadable(context, pointer, byte_count);
+    if (!valid)
+    {
+        translated = offset;
+        pointer = reinterpret_cast<void*>(
+            static_cast<std::uintptr_t>(translated));
+        const bool direct_valid = writable
+            ? IsGuestRangeWritable(context, pointer, byte_count)
+            : IsGuestRangeReadable(context, pointer, byte_count);
+        if (!direct_valid)
+        {
+            return false;
+        }
+    }
+    *linear_address = translated;
+    return true;
+}
+
+
+// Shared trap/record substrate promoted to external linkage (relocated out of
+// the anonymous namespace) for use by DOS/DPMI/MSCDEX/segment modules.
+// Declared in execution_internal.h.
+
+void RecoverFromHleExit(CONTEXT* win32_context,
+                        ThreadContext* thread_context)
+{
+    thread_context->process_exit = true;
+    thread_context->returned = true;
+    if (thread_context->use_guest_stack)
+    {
+        RecoverToHost(win32_context, thread_context);
+    }
+    else
+    {
+        win32_context->Eip =
+            reinterpret_cast<DWORD_PTR>(&RecoverHostStackException);
+    }
+}
+
+void RecordHandledDosInterrupt(ThreadContext* context,
+                               std::uint8_t vector,
+                               std::uint16_t ax)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+
+    ++context->handled_dos_interrupt_count;
+    context->last_dos_interrupt_vector = vector;
+    context->last_dos_interrupt_ah = static_cast<std::uint8_t>(ax >> 8);
+    context->last_dos_interrupt_ax = ax;
+}
+
+void RecordLowMemoryAccess(CONTEXT* win32_context,
+                           ThreadContext* context,
+                           std::uint8_t opcode,
+                           std::uint32_t destination,
+                           std::uint32_t value)
+{
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return;
+    }
+
+    ++context->handled_low_memory_access_count;
+    context->last_low_memory_access_address =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    context->last_low_memory_access_opcode = opcode;
+    context->last_low_memory_access_esi = win32_context->Esi;
+    context->last_low_memory_access_edi = win32_context->Edi;
+    context->last_low_memory_access_destination = destination;
+    context->last_low_memory_access_value = value;
+}
+
+std::uint16_t ReadGuestSegmentSelector(const ThreadContext& context,
+                                       std::uint8_t segment_register,
+                                       const CONTEXT* win32_context)
+{
+    std::uint16_t shadow = 0;
+    switch (segment_register)
+    {
+        case 0:
+            shadow = context.guest_es;
+            break;
+        case 2:
+            shadow = context.guest_ss;
+            break;
+        case 3:
+            shadow = context.guest_ds;
+            break;
+        case 4:
+            shadow = context.guest_fs;
+            break;
+        case 5:
+            shadow = context.guest_gs;
+            break;
+        default:
+            return 0;
+    }
+    if (win32_context == nullptr)
+    {
+        return shadow;
+    }
+
+    std::uint16_t physical = shadow;
+    std::uint32_t host_entry = 0;
+    switch (segment_register)
+    {
+        case 0:
+            physical = static_cast<std::uint16_t>(win32_context->SegEs);
+            host_entry = g_recovery_host_es;
+            break;
+        case 2:
+            return static_cast<std::uint16_t>(win32_context->SegSs);
+        case 3:
+            physical = static_cast<std::uint16_t>(win32_context->SegDs);
+            host_entry = g_recovery_host_ds;
+            break;
+        case 4:
+            physical = static_cast<std::uint16_t>(win32_context->SegFs);
+            host_entry = g_recovery_host_fs;
+            break;
+        case 5:
+            physical = static_cast<std::uint16_t>(win32_context->SegGs);
+            host_entry = g_recovery_host_gs;
+            break;
+        default:
+            return shadow;
+    }
+    if (physical == shadow)
+    {
+        return physical;
+    }
+    if (context.shared_live_telemetry != nullptr)
+    {
+        InterlockedIncrement(
+            &context.shared_live_telemetry->seg_divergence_count);
+        InterlockedExchange(
+            &context.shared_live_telemetry->seg_divergence_reg_physical,
+            static_cast<long>((static_cast<std::uint32_t>(segment_register)
+                               << 16) | physical));
+        InterlockedExchange(
+            &context.shared_live_telemetry->seg_divergence_shadow,
+            static_cast<long>(shadow));
+    }
+    // A selector that only exists in the software SelectorTable (for example
+    // the DOS/4G client-data selector installed by INT 21h AX=FF00h) can
+    // never be loaded into the hardware register, so the physical value
+    // still holding the host's entry-time selector means the HLE shadow is
+    // authoritative. A physical value that moved away from the host entry
+    // selector was loaded by the guest (natively or via write-through) and
+    // wins over a possibly stale shadow.
+    if (physical == static_cast<std::uint16_t>(host_entry & 0xFFFFU) &&
+        shadow != 0)
+    {
+        const repiu::runtime::GuestDescriptor* descriptor =
+            repiu::runtime::FindDescriptor(context.selector_table, shadow);
+        if (descriptor != nullptr && descriptor->present)
+        {
+            return shadow;
+        }
+    }
+    return physical;
+}
+
+// NoteSuccessfulAotGuestWrite (AOT write hook) promoted to external linkage
+// for guest_memory_access.cpp; relocated out of the anonymous namespace.
+bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
+                                 std::uint32_t destination,
+                                 std::uint32_t byte_count)
+{
+    if (context == nullptr || context->aot_placement == nullptr ||
+        context->aot_translation_thread == nullptr || byte_count == 0U)
+    {
+        return true;
+    }
+    constexpr std::uint32_t kPageMask = 0xFFFFF000U;
+    const std::uint32_t first_page = destination & kPageMask;
+    const std::uint64_t write_end =
+        static_cast<std::uint64_t>(destination) + byte_count;
+    if (write_end == 0U ||
+        write_end > static_cast<std::uint64_t>(
+                        std::numeric_limits<std::uint32_t>::max()) + 1U)
+    {
+        return false;
+    }
+    const std::uint32_t last_page = static_cast<std::uint32_t>(
+        (write_end - 1U) & kPageMask);
+    bool relevant = Win32AotGuestRangeHasActiveTranslation(
+        *context->aot_placement, destination, byte_count);
+    for (std::uint32_t page = first_page;
+         !relevant; page += 0x1000U)
+    {
+        relevant = IsWin32AotGuestPageRetired(
+                       *context->aot_placement, page) ||
+            IsWin32AotGuestPageQuarantined(
+                *context->aot_placement, page);
+        if (page == last_page || page > 0xFFFFEFFFU)
+        {
+            break;
+        }
+    }
+    if (!relevant)
+    {
+        return true;
+    }
+    const std::uint32_t source = AotGuestAddressForExecutionAddress(
+        context,
+        context->exception_dispatch_last_eip.load(
+            std::memory_order_relaxed));
+    bool observed = false;
+    bool retired_provenance = false;
+    for (std::uint32_t page = first_page;; page += 0x1000U)
+    {
+        const std::uint32_t range_begin = std::max(destination, page);
+        const std::uint64_t page_end =
+            static_cast<std::uint64_t>(page) + 0x1000U;
+        const std::uint32_t range_size = static_cast<std::uint32_t>(
+            std::min(write_end, page_end) - range_begin);
+        const bool active = Win32AotGuestRangeHasActiveTranslation(
+            *context->aot_placement, range_begin, range_size);
+        retired_provenance = retired_provenance ||
+            IsWin32AotGuestPageRetired(*context->aot_placement, page) ||
+            IsWin32AotGuestPageQuarantined(
+                *context->aot_placement, page);
+        if (active)
+        {
+            const bool same_page = source == 0U ||
+                (source & kPageMask) == page;
+            BumpAotPageRetireAttemptCount(context);
+            if (!RequestAotGuestPageRetirement(
+                    context, page, same_page))
+            {
+                context->aot_terminal_failure.store(
+                    true, std::memory_order_release);
+                return false;
+            }
+            BumpAotPageRetireSuccessCount(context);
+            context->aot_last_retired_page.store(
+                page, std::memory_order_relaxed);
+            if (context->shared_live_telemetry != nullptr)
+            {
+                InterlockedExchange(
+                    &context->shared_live_telemetry->aot_last_retired_page,
+                    static_cast<long>(page));
+            }
+            if (same_page)
+            {
+                BumpAotQuarantineCount(context);
+            }
+            observed = true;
+        }
+        if (page == last_page || page > 0xFFFFEFFFU)
+        {
+            break;
+        }
+    }
+    if (observed || retired_provenance)
+    {
+        context->aot_code_write_count.fetch_add(
+            1, std::memory_order_relaxed);
+        context->aot_last_code_write_source.store(
+            source, std::memory_order_relaxed);
+        context->aot_last_code_write_destination.store(
+            destination, std::memory_order_relaxed);
+        if (context->shared_live_telemetry != nullptr)
+        {
+            InterlockedExchange(
+                &context->shared_live_telemetry->aot_last_code_write_source,
+                static_cast<long>(source));
+            InterlockedExchange(
+                &context->shared_live_telemetry
+                     ->aot_last_code_write_destination,
+                static_cast<long>(destination));
+        }
+    }
+    return true;
+}
+
+// VEH dispatch logic relocated out of the anonymous namespace (external
+// linkage) so the thin GuestStackVectoredExceptionHandler entry in
+// exception_rescue_win32.cpp can forward to it. Declared in that header.
+LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
+{
+    ThreadContext* context = g_active_thread_context;
+    if (context == nullptr ||
+        exception_info == nullptr || exception_info->ContextRecord == nullptr)
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    if (GetCurrentThreadId() != context->guest_thread_id)
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    if (context->use_guest_stack &&
+        (context->active_call_state == nullptr ||
+         context->active_call_state->host_esp == 0))
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    CONTEXT* win32_context = exception_info->ContextRecord;
+    const auto stop_for_aot_terminal_failure = [context, win32_context]() {
+        if (!context->aot_terminal_failure.load(std::memory_order_acquire))
+        {
+            return false;
+        }
+        win32_context->EFlags &= ~0x00000100U;
+        return true;
+    };
+    if (stop_for_aot_terminal_failure())
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (HandleAotGuestCodeWriteCompletion(
+            exception_info, win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (stop_for_aot_terminal_failure())
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (HandleAotGuestCodeWriteFault(
+            exception_info, win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (stop_for_aot_terminal_failure())
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (HandleAotReentry(exception_info, win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (stop_for_aot_terminal_failure())
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (HandleAotIndirectTransfer(exception_info, win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (stop_for_aot_terminal_failure())
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (HandleAotConditionalTransfer(exception_info, win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (stop_for_aot_terminal_failure())
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (HandleAotReturnTransfer(exception_info, win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (stop_for_aot_terminal_failure())
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (context->native_fast_path.active)
+    {
+        const bool returned =
+            exception_info->ExceptionRecord != nullptr &&
+            exception_info->ExceptionRecord->ExceptionCode ==
+                EXCEPTION_SINGLE_STEP &&
+            win32_context->Eip ==
+                context->native_fast_path.return_address &&
+            (win32_context->Dr6 & 0x1U) != 0;
+        detail::LeaveNativeFastPath(win32_context,
+                                    &context->native_fast_path,
+                                    returned);
+    }
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(
+            &context->shared_live_telemetry->recovery_host_fs,
+            static_cast<long>(g_recovery_host_fs));
+        InterlockedExchange(
+            &context->shared_live_telemetry->recovery_host_ds,
+            static_cast<long>(g_recovery_host_ds));
+        InterlockedExchange(
+            &context->shared_live_telemetry->recovery_host_es,
+            static_cast<long>(g_recovery_host_es));
+        InterlockedExchange(
+            &context->shared_live_telemetry->recovery_host_gs,
+            static_cast<long>(g_recovery_host_gs));
+    }
+    constexpr DWORD kVisualCppThreadNameException = 0x406D1388U;
+    constexpr DWORD kDebugPrintExceptionAnsi = 0x40010006U;
+    constexpr DWORD kDebugPrintExceptionWide = 0x4001000AU;
+    if (exception_info->ExceptionRecord != nullptr &&
+        exception_info->ExceptionRecord->ExceptionCode ==
+            EXCEPTION_SINGLE_STEP &&
+        !IsGuestInstructionPointer(
+            context, static_cast<std::uint32_t>(win32_context->Eip)))
+    {
+        win32_context->EFlags &= ~0x00000100U;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (exception_info->ExceptionRecord != nullptr &&
+        (exception_info->ExceptionRecord->ExceptionCode ==
+             kDebugPrintExceptionAnsi ||
+         exception_info->ExceptionRecord->ExceptionCode ==
+             kDebugPrintExceptionWide) &&
+        !IsGuestInstructionPointer(
+            context, static_cast<std::uint32_t>(win32_context->Eip)))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (exception_info->ExceptionRecord != nullptr &&
+        exception_info->ExceptionRecord->ExceptionCode ==
+            kVisualCppThreadNameException &&
+        !IsGuestInstructionPointer(
+            context, static_cast<std::uint32_t>(win32_context->Eip)))
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (context->shared_live_telemetry != nullptr &&
+        exception_info->ExceptionRecord != nullptr)
+    {
+        InterlockedExchange(
+            &context->shared_live_telemetry->last_exception_code,
+            static_cast<long>(
+                exception_info->ExceptionRecord->ExceptionCode));
+        if (IsGuestInstructionPointer(
+                context,
+                static_cast<std::uint32_t>(win32_context->Eip)))
+        {
+            InterlockedExchange(
+                &context->shared_live_telemetry->last_guest_eip,
+                static_cast<long>(win32_context->Eip));
+            InterlockedExchange(
+                &context->shared_live_telemetry->last_guest_eax,
+                static_cast<long>(win32_context->Eax));
+            InterlockedExchange(
+                &context->shared_live_telemetry->last_guest_ebx,
+                static_cast<long>(win32_context->Ebx));
+            InterlockedExchange(
+                &context->shared_live_telemetry->last_guest_ecx,
+                static_cast<long>(win32_context->Ecx));
+            InterlockedExchange(
+                &context->shared_live_telemetry->last_guest_edx,
+                static_cast<long>(win32_context->Edx));
+            InterlockedExchange(
+                &context->shared_live_telemetry->last_guest_esi,
+                static_cast<long>(win32_context->Esi));
+            InterlockedExchange(
+                &context->shared_live_telemetry->last_guest_edi,
+                static_cast<long>(win32_context->Edi));
+            InterlockedExchange(
+                &context->shared_live_telemetry->last_guest_esp,
+                static_cast<long>(win32_context->Esp));
+            InterlockedExchange(
+                &context->shared_live_telemetry->guest_handler_phase,
+                1);
+        }
+    }
+    if (context->enable_single_step_trace)
+    {
+        win32_context->EFlags |= 0x00000100U;
+    }
+    ExceptionDispatchScope dispatch_scope(
+        context,
+        static_cast<std::uint32_t>(win32_context->Eip));
+    RecordAllocatorControlFlowException(exception_info, context);
+    if (HandleGlideGateBoundary(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (HandleLinexeFarTransferBoundary(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (exception_info->ExceptionRecord != nullptr &&
+        (exception_info->ExceptionRecord->ExceptionCode ==
+             EXCEPTION_SINGLE_STEP ||
+         (context->aot_reentry_pending &&
+          exception_info->ExceptionRecord->ExceptionCode ==
+             EXCEPTION_BREAKPOINT)) &&
+        HandleSingleStepTrace(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_privileged_trap_hle &&
+        HandlePrivilegedTrapInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_privileged_trap_hle &&
+        HandlePortIoInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_traced_dos_hle &&
+        (HandleTracedDosInterrupt21(win32_context, context) ||
+         HandleTracedDosInterrupt2F(win32_context, context) ||
+         HandleTracedDpmiInterrupt31(win32_context, context) ||
+         HandleTracedMouseInterrupt33(win32_context, context)))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleSegmentLoadInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleSegmentPopInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleRepStosdInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleSegmentStoreInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleSegmentOverrideMemoryLoadInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleSegmentOverrideByteLoadInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleFsSegmentWordLoadInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleSegmentMemoryCompareInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleSegmentMemoryLoadInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleTracedMemoryLoadInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleTracedMemoryAddInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleTracedMemoryOrInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleTracedMemoryCompareByteInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleTracedMemoryStoreInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleTracedMemoryTestInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleTracedFpuMemoryInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_dos_hle &&
+        HandleDosHleInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    const bool hle_active = context->enable_dos_hle || context->enable_traced_dos_hle;
+    if (hle_active &&
+        exception_info->ExceptionRecord != nullptr &&
+        exception_info->ExceptionRecord->ExceptionCode ==
+            EXCEPTION_ACCESS_VIOLATION)
+    {
+        bool handled = false;
+        if (exception_info->ExceptionRecord->NumberParameters >= 2)
+        {
+            const std::uint32_t access_kind = static_cast<std::uint32_t>(
+                exception_info->ExceptionRecord->ExceptionInformation[0]);
+            const std::uint32_t fault_va = static_cast<std::uint32_t>(
+                exception_info->ExceptionRecord->ExceptionInformation[1]);
+            
+            bool is_aot_address = ((fault_va >= 0x0A000000U) && (fault_va < 0x0E000000U));
+
+            if (access_kind == 8 && is_aot_address)
+            {
+                std::uint32_t decode_eip = 0;
+                if (context->aot_placement != nullptr)
+                {
+                    const std::uint32_t offset = fault_va - context->aot_placement->base_address;
+                    for (const runtime::AotAddressMapEntry& entry : context->aot_placement->address_map)
+                    {
+                        if (offset >= entry.cache_offset &&
+                            offset < entry.cache_offset + entry.emitted_length)
+                        {
+                            decode_eip = entry.guest_address;
+                            break;
+                        }
+                    }
+                }
+                if (decode_eip == 0)
+                {
+                    const std::uint32_t* esp_ptr = reinterpret_cast<const std::uint32_t*>(
+                        static_cast<std::uintptr_t>(win32_context->Esp));
+                    MEMORY_BASIC_INFORMATION mbi = {};
+                    if (VirtualQuery(esp_ptr, &mbi, sizeof(mbi)) == sizeof(mbi) &&
+                        (mbi.State == MEM_COMMIT) &&
+                        ((mbi.Protect & PAGE_NOACCESS) == 0))
+                    {
+                        for (int i = 0; i < 32; ++i)
+                        {
+                            const std::uint32_t* cur_ptr = &esp_ptr[i];
+                            if (reinterpret_cast<std::uintptr_t>(cur_ptr) < reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize)
+                            {
+                                std::uint32_t stack_val = *cur_ptr;
+                                if (IsGuestInstructionPointer(context, stack_val))
+                                {
+                                    decode_eip = stack_val;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (decode_eip == 0)
+                {
+                    const std::uint32_t* esp_ptr = reinterpret_cast<const std::uint32_t*>(
+                        static_cast<std::uintptr_t>(win32_context->Esp));
+                    if (IsGuestInstructionPointer(context, esp_ptr[0]))
+                    {
+                        decode_eip = esp_ptr[0];
+                    }
+                }
+                if (decode_eip != 0)
+                {
+                    win32_context->Eip = decode_eip;
+                    context->aot_legacy_fallback = true;
+                    context->enable_single_step_trace = true;
+                    context->aot_reentry_pending = false;
+                    handled = true;
+                }
+            }
+            else if (access_kind == 0)
+            {
+                std::uint32_t decode_eip = win32_context->Eip;
+                if (IsAotCacheAddress(context, win32_context->Eip))
+                {
+                    if (context->aot_placement != nullptr)
+                    {
+                        FindAotGuestAddress(*context->aot_placement, win32_context->Eip, &decode_eip);
+                    }
+                }
+
+                if (decode_eip == 0x0304DD7DU)
+                {
+                    win32_context->EFlags |= 0x00000040U;
+                    win32_context->Eip = decode_eip + 7;
+                    context->aot_legacy_fallback = true;
+                    context->enable_single_step_trace = true;
+                    context->aot_reentry_pending = false;
+                    handled = true;
+                }
+                else if (fault_va < 0x10000)
+                {
+                    std::uint32_t decode_eip = win32_context->Eip;
+                    bool is_aot = false;
+                    if (IsAotCacheAddress(context, win32_context->Eip))
+                    {
+                        is_aot = true;
+                        if (context->aot_placement != nullptr)
+                        {
+                            FindAotGuestAddress(*context->aot_placement, win32_context->Eip, &decode_eip);
+                        }
+                    }
+
+                    if (is_aot || IsGuestInstructionPointer(context, win32_context->Eip))
+                    {
+                        handled = HandleGuestLowMemoryReadFault(win32_context, context, fault_va, decode_eip);
+                    }
+                }
+            }
+        }
+        
+        if (!handled)
+        {
+            handled = HandleDosMemoryAccess(win32_context, context);
+        }
+
+        if (handled)
+        {
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+    }
+    if (context->enable_segment_load_hle &&
+        HandleRepMovsInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleRepCmpsbInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleLodsbInstruction(win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (context->aot_terminal_failure.load(std::memory_order_acquire))
+    {
+        win32_context->EFlags &= ~0x00000100U;
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (HandleOriginalFatalBreakpoint(exception_info,
+                                      win32_context,
+                                      context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
+    if (context->aot_reentry_pending &&
+        exception_info->ExceptionRecord != nullptr &&
+        exception_info->ExceptionRecord->ExceptionCode ==
+            EXCEPTION_BREAKPOINT)
+    {
+        // Indirect transfers, returns, and LOOP-family instructions execute
+        // once from the original image under TF, then re-enter the cache.
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (!context->use_guest_stack &&
+        (*instruction == 0xCC || instruction[-1] == 0xCC))
+    {
+        const std::uint32_t byte_count = exception_info->ContextRecord->Ecx;
+        const void* source = reinterpret_cast<const void*>(
+            static_cast<std::uintptr_t>(exception_info->ContextRecord->Edx));
+        AppendConsoleOutput(context, source, byte_count);
+        RecoverFromHleExit(exception_info->ContextRecord, context);
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
+    const std::uint32_t exception_address =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    if (context->aot_placement != nullptr &&
+        IsAotCacheAddress(context, exception_address) &&
+        FindAotGuestAddress(*context->aot_placement,
+                            exception_address,
+                            &context->aot_exception_guest_address))
+    {
+        context->aot_exception_mapping_valid = true;
+        context->aot_exception_cache_address = exception_address;
+        const std::uint32_t cache_offset = exception_address -
+            context->aot_placement->base_address;
+        const std::uint32_t cache_bytes = std::min<std::uint32_t>(
+            sizeof(context->aot_exception_cache_bytes),
+            context->aot_placement->size - cache_offset);
+        std::memcpy(
+            context->aot_exception_cache_bytes,
+            reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(exception_address)),
+            cache_bytes);
+        const std::uint64_t guest_end =
+            static_cast<std::uint64_t>(
+                context->aot_exception_guest_address) +
+            sizeof(context->aot_exception_guest_bytes);
+        const std::uint64_t runtime_end =
+            static_cast<std::uint64_t>(context->runtime_base) +
+            context->runtime_size;
+        if (context->aot_exception_guest_address >=
+                context->runtime_base &&
+            guest_end <= runtime_end)
+        {
+            std::memcpy(
+                context->aot_exception_guest_bytes,
+                reinterpret_cast<const void*>(static_cast<std::uintptr_t>(
+                    context->aot_exception_guest_address)),
+                sizeof(context->aot_exception_guest_bytes));
+        }
+    }
+
+    win32_context->EFlags &= ~0x00000100U;
+    CaptureException(exception_info, context);
+    context->guest_return_esp =
+        static_cast<std::uint32_t>(exception_info->ContextRecord->Esp);
+
+    if (context->use_guest_stack)
+    {
+        context->host_esp = context->active_call_state->host_esp;
+        RecoverToHost(exception_info->ContextRecord, context);
+    }
+    else
+    {
+        exception_info->ContextRecord->Eip =
+            reinterpret_cast<DWORD_PTR>(&RecoverHostStackException);
+    }
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+// Boundary definitions promoted to external linkage (out of the anonymous
+// namespace) so extracted win32 execution modules can call them across
+// translation units. Declared in execution_internal.h.
+bool WriteGuestBytes(ThreadContext* context,
+                     void* destination,
+                     const void* source,
+                     std::size_t byte_count)
+{
+    if (source == nullptr ||
+        !IsGuestRangeWritable(context, destination, byte_count))
+    {
+        return false;
+    }
+
+    DWORD previous_protect = 0;
+    if (!VirtualProtect(destination,
+                        byte_count,
+                        PAGE_EXECUTE_READWRITE,
+                        &previous_protect))
+    {
+        std::ostringstream stream;
+        stream << "VirtualProtect failed for guest byte store with error "
+               << GetLastError();
+        context->hle_message = stream.str();
+        return false;
+    }
+
+    std::memcpy(destination, source, byte_count);
+
+    DWORD ignored_protect = 0;
+    if (!VirtualProtect(destination,
+                        byte_count,
+                        previous_protect,
+                        &ignored_protect))
+    {
+        return false;
+    }
+    if (byte_count > std::numeric_limits<std::uint32_t>::max())
+    {
+        return false;
+    }
+    return NoteSuccessfulAotGuestWrite(
+        context,
+        static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(destination)),
+        static_cast<std::uint32_t>(byte_count));
+}
+
+bool IsAotCacheAddress(const ThreadContext* context, std::uint32_t address)
+{
+    if (context == nullptr || context->aot_placement == nullptr ||
+        !context->aot_placement->placed)
+    {
+        return false;
+    }
+    const std::uint64_t end =
+        static_cast<std::uint64_t>(context->aot_placement->base_address) +
+        context->aot_placement->size;
+    return address >= context->aot_placement->base_address && address < end;
+}
+
+bool RunWin32ExecutionThread(
+    const Win32RelocatedImagePlacement& placement,
+    std::uint32_t entry_address,
+    std::uint32_t guest_initial_esp,
+    bool use_guest_stack,
+    bool enable_privileged_trap_hle,
+    bool enable_traced_dos_hle,
+    bool enable_segment_load_hle,
+    bool enable_dos_hle,
+    bool enable_single_step_trace,
+    const hle::DosVirtualFileSystemState* dos_file_system,
+    const exe::Dos16mBoundModule* linexe_module,
+    const std::vector<exe::LeResidentName>* glide_exports,
+    const std::filesystem::path* cd_chd_path,
+    Win32AotCodeCachePlacement* aot_placement,
+    bool enable_dynamic_translation,
+    std::uint32_t timeout_milliseconds,
+    Win32MinimalExecutionAttempt* attempt)
+{
+    if (attempt == nullptr)
+    {
+        return false;
+    }
+
+    *attempt = Win32MinimalExecutionAttempt{};
+    attempt->entry_address = entry_address;
+    attempt->supported = IsDirectX86ExecutionSupported();
+    attempt->guest_stack_switch_supported = IsGuestStackSwitchSupported();
+    attempt->guest_stack_initial_esp = guest_initial_esp;
+
+    if (!attempt->supported)
+    {
+        attempt->valid = true;
+#if defined(_WIN32)
+        attempt->message =
+            "minimal original entry execution requires a 32-bit host";
+#else
+        attempt->message =
+            "minimal original entry execution requires Win32 host APIs";
+#endif
+        return true;
+    }
+
+    if (use_guest_stack && !attempt->guest_stack_switch_supported)
+    {
+        attempt->valid = true;
+        attempt->message =
+            "guest stack execution requires 32-bit MSVC Win32 support";
+        return true;
+    }
+
+#if !defined(_WIN32)
+    attempt->valid = true;
+    attempt->message =
+        "minimal original entry execution requires Win32 host APIs";
+    return true;
+#else
+    if (!placement.valid || !placement.placed)
+    {
+        attempt->message = "relocated image is not placed";
+        return false;
+    }
+
+    ThreadContext context;
+    SharedTelemetryMapping shared_telemetry =
+        OpenSharedTelemetryMapping();
+    context.shared_live_telemetry = shared_telemetry.telemetry;
+    if (context.shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(&context.shared_live_telemetry->host_phase, 1);
+    }
+    context.entry_address = aot_placement != nullptr
+        ? aot_placement->entry_address : entry_address;
+    context.runtime_base = placement.placed_base;
+    context.runtime_size = placement.placed_size;
+    context.guest_initial_esp = guest_initial_esp;
+    context.use_guest_stack = use_guest_stack;
+    context.enable_privileged_trap_hle = enable_privileged_trap_hle;
+    context.enable_traced_dos_hle = enable_traced_dos_hle;
+    context.enable_segment_load_hle = enable_segment_load_hle;
+    context.enable_dos_hle = enable_dos_hle;
+    context.enable_single_step_trace = enable_single_step_trace;
+    context.aot_placement = aot_placement;
+    context.aot_dynamic_translation_enabled = enable_dynamic_translation;
+    char probe_offset_text[32] = {};
+    const DWORD probe_offset_length = GetEnvironmentVariableA(
+        "REPIU_EXECUTION_PROBE_OFFSET", probe_offset_text,
+        static_cast<DWORD>(sizeof(probe_offset_text)));
+    if (probe_offset_length > 0U &&
+        probe_offset_length < sizeof(probe_offset_text))
+    {
+        char* end = nullptr;
+        const unsigned long value = std::strtoul(
+            probe_offset_text, &end, 0);
+        if (end != probe_offset_text && *end == '\0' && value <= UINT32_MAX)
+        {
+            context.execution_probe_configured = true;
+            context.execution_probe_offset =
+                static_cast<std::uint32_t>(value);
+        }
+    }
+    if (context.execution_probe_configured && aot_placement != nullptr &&
+        !InstallWin32AotProbeSentinel(
+            aot_placement,
+            context.runtime_base + context.execution_probe_offset))
+    {
+        context.execution_probe_configured = false;
+    }
+    const auto read_hex_env = [](const char* name, std::uint32_t* out) {
+        char text[32] = {};
+        const DWORD length = GetEnvironmentVariableA(
+            name, text, static_cast<DWORD>(sizeof(text)));
+        if (length == 0U || length >= sizeof(text))
+        {
+            return false;
+        }
+        char* end = nullptr;
+        const unsigned long value = std::strtoul(text, &end, 0);
+        if (end == text || *end != '\0' || value > UINT32_MAX)
+        {
+            return false;
+        }
+        *out = static_cast<std::uint32_t>(value);
+        return true;
+    };
+    if (read_hex_env("REPIU_EXECUTION_TRACE_START",
+                     &context.execution_trace_start_offset) &&
+        read_hex_env("REPIU_EXECUTION_TRACE_END",
+                     &context.execution_trace_end_offset) &&
+        read_hex_env("REPIU_EXECUTION_TRACE_ESP_OFFSET",
+                     &context.execution_trace_esp_offset) &&
+        context.execution_trace_start_offset <=
+            context.execution_trace_end_offset)
+    {
+        context.execution_trace_configured = true;
+    }
+    if (context.execution_trace_configured && aot_placement != nullptr &&
+        !InstallWin32AotProbeSentinel(
+            aot_placement,
+            context.runtime_base + context.execution_trace_start_offset))
+    {
+        context.execution_trace_configured = false;
+    }
+    // A single sentinel only forces single-stepping until the AOT dispatcher
+    // (HandleAotReentry) finds a resolvable cached target for the NEXT guest
+    // address and jumps straight back into fast cached execution — typically
+    // after just one instruction, since the rest of the traced range usually
+    // already has a normal cache entry. A second, independent sentinel forces
+    // a fresh breakpoint (and a fresh capture) at that later point too.
+    if (context.execution_trace_configured && aot_placement != nullptr &&
+        read_hex_env("REPIU_EXECUTION_TRACE_SENTINEL2",
+                     &context.execution_trace_sentinel2_offset))
+    {
+        context.execution_trace_sentinel2_configured =
+            InstallWin32AotProbeSentinel(
+                aot_placement,
+                context.runtime_base + context.execution_trace_sentinel2_offset);
+    }
+    if (aot_placement != nullptr)
+    {
+        context.aot_cache_entry_count.store(1, std::memory_order_relaxed);
+    }
+    context.glide_state.texture_memory_bytes =
+        repiu::hle::kPiuBansheeVirtualTextureMemoryBytes;
+    if (glide_exports != nullptr)
+    {
+        context.glide_exports = *glide_exports;
+    }
+    if (cd_chd_path != nullptr && context.cd_image.Open(*cd_chd_path))
+    {
+        context.mscdex_available = true;
+        context.cd_audio_available = context.cd_audio.Open(*cd_chd_path);
+    }
+    context.dos_environment_block = BuildDosEnvironmentBlock();
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    repiu::runtime::InitializeSelectorAllocator(
+        &context.dpmi_selector_allocator, 0x00A4U);
+    repiu::runtime::InitializeDosLowMemory(&context.dos_low_memory);
+    for (const repiu::runtime::RelocatedSelectorBinding& binding :
+         placement.selector_bindings)
+    {
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            repiu::runtime::GuestDescriptor{
+                binding.selector,
+                binding.relocated_base_address,
+                binding.limit,
+                0,
+                true,
+        });
+    }
+    const auto find_linexe_segment =
+        [linexe_module](std::uint16_t selector)
+            -> const exe::Dos16mBoundSegment* {
+        if (linexe_module == nullptr)
+        {
+            return nullptr;
+        }
+        for (const exe::Dos16mBoundSegment& segment :
+             linexe_module->segments)
+        {
+            if (segment.selector == selector)
+            {
+                return &segment;
+            }
+        }
+        return nullptr;
+    };
+    const exe::Dos16mBoundSegment* extracted_code =
+        find_linexe_segment(kDos4gwLinexeCodeSelector);
+    const exe::Dos16mBoundSegment* extracted_bss =
+        find_linexe_segment(0x0088U);
+    const exe::Dos16mBoundSegment* extracted_data =
+        find_linexe_segment(kDos4gwLinexeDataSelector);
+    const bool extracted_linexe_valid = linexe_module != nullptr &&
+        extracted_code != nullptr && extracted_bss != nullptr &&
+        extracted_data != nullptr;
+    if (repiu::hle::BuildLinexeCallGatePlan(&context.linexe_gate_plan) &&
+        repiu::hle::BuildLinexeArenaLayout(
+            placement.hle_reserve_base,
+            placement.arena_end_address,
+            extracted_linexe_valid
+                ? static_cast<std::uint32_t>(extracted_code->image.size())
+                : static_cast<std::uint32_t>(
+                      context.linexe_gate_plan.gate_image.size()),
+            extracted_linexe_valid
+                ? static_cast<std::uint32_t>(extracted_bss->image.size())
+                : 0U,
+            extracted_linexe_valid
+                ? static_cast<std::uint32_t>(extracted_data->image.size())
+                : static_cast<std::uint32_t>(
+                      context.linexe_gate_plan.private_data_image.size()),
+            &context.linexe_arena_layout))
+    {
+        const auto address = [](std::uint32_t value) {
+            return reinterpret_cast<void*>(static_cast<std::uintptr_t>(value));
+        };
+        const bool glide_gate_fits =
+            context.linexe_arena_layout.gate_code_size >
+                kGlideFirstGateOffset &&
+            repiu::hle::BuildGlideGatePlan(
+                context.glide_exports,
+                kGlideFirstGateOffset,
+                kGlideGateStride,
+                context.linexe_arena_layout.gate_code_size -
+                    kGlideFirstGateOffset,
+                &context.glide_gate_plan);
+        const bool images_written =
+            WriteGuestBytes(&context,
+                            address(context.linexe_arena_layout.client_data_base),
+                            context.linexe_gate_plan.client_data_image.data(),
+                            context.linexe_gate_plan.client_data_image.size()) &&
+            WriteGuestBytes(&context,
+                            address(context.linexe_arena_layout.gate_code_base),
+                            extracted_linexe_valid
+                                ? extracted_code->image.data()
+                                : context.linexe_gate_plan.gate_image.data(),
+                            extracted_linexe_valid
+                                ? extracted_code->image.size()
+                                : context.linexe_gate_plan.gate_image.size()) &&
+            glide_gate_fits &&
+            WriteGuestBytes(
+                &context,
+                address(context.linexe_arena_layout.gate_code_base +
+                        kGlideFirstGateOffset),
+                context.glide_gate_plan.image.data(),
+                context.glide_gate_plan.image.size()) &&
+            (!extracted_linexe_valid || WriteGuestBytes(
+                &context,
+                address(context.linexe_arena_layout.bss_base),
+                extracted_bss->image.data(),
+                extracted_bss->image.size())) &&
+            WriteGuestBytes(&context,
+                            address(context.linexe_arena_layout.private_data_base),
+                            extracted_linexe_valid
+                                ? extracted_data->image.data()
+                                : context.linexe_gate_plan.private_data_image.data(),
+                            extracted_linexe_valid
+                                ? extracted_data->image.size()
+                                : context.linexe_gate_plan.private_data_image.size());
+        const bool descriptors_registered = images_written &&
+            repiu::runtime::RegisterDescriptor(
+                &context.selector_table,
+                {kDos4gwClientDataSelector,
+                 context.linexe_arena_layout.client_data_base,
+                 0x0FFFU, 0, true}) &&
+            repiu::runtime::RegisterDescriptor(
+                &context.selector_table,
+                {kDos4gwLinexeDataSelector,
+                 context.linexe_arena_layout.private_data_base,
+                 extracted_linexe_valid ? extracted_data->limit : 0x0FFFU,
+                 0, true}) &&
+            repiu::runtime::RegisterDescriptor(
+                &context.selector_table,
+                {kDos4gwLinexeCodeSelector,
+                 context.linexe_arena_layout.gate_code_base,
+                 context.linexe_arena_layout.gate_code_size - 1U,
+                 0, true}) &&
+            (!extracted_linexe_valid || repiu::runtime::RegisterDescriptor(
+                &context.selector_table,
+                {0x0088U,
+                 context.linexe_arena_layout.bss_base,
+                 extracted_bss->limit,
+                 0, true}));
+        if (descriptors_registered)
+        {
+            DWORD ignored = 0;
+            const bool client_protected = VirtualProtect(
+                address(context.linexe_arena_layout.client_data_base),
+                0x1000U, PAGE_READONLY, &ignored) != 0;
+            const bool private_protected = VirtualProtect(
+                address(context.linexe_arena_layout.private_data_base),
+                context.linexe_arena_layout.private_data_size,
+                extracted_linexe_valid ? PAGE_READWRITE : PAGE_READONLY,
+                &ignored) != 0;
+            const bool gates_protected = VirtualProtect(
+                address(context.linexe_arena_layout.gate_code_base),
+                context.linexe_arena_layout.gate_code_size,
+                extracted_linexe_valid ? PAGE_READWRITE : PAGE_EXECUTE_READ,
+                &ignored) != 0;
+            const bool bss_protected = !extracted_linexe_valid ||
+                VirtualProtect(address(context.linexe_arena_layout.bss_base),
+                               context.linexe_arena_layout.bss_size,
+                               PAGE_READWRITE, &ignored) != 0;
+            context.linexe_environment_active =
+                client_protected && private_protected && gates_protected &&
+                bss_protected;
+        }
+    }
+    if (context.linexe_environment_active)
+    {
+        context.aot_excluded_guest_ranges.push_back({
+            context.linexe_arena_layout.gate_code_base,
+            context.linexe_arena_layout.gate_code_size});
+    }
+    if (dos_file_system != nullptr)
+    {
+        context.dos_file_system = *dos_file_system;
+    }
+
+    const Win32ThreadApi& api = GetWin32ThreadApi();
+    if (api.create_thread == nullptr ||
+        api.close_handle == nullptr ||
+        api.get_last_error == nullptr)
+    {
+        attempt->message = "failed to resolve required Win32 thread APIs";
+        return false;
+    }
+
+    const auto stop_translation_worker = [&context]() {
+        if (context.aot_translation_thread != nullptr)
+        {
+            context.aot_translation_shutdown.store(
+                true, std::memory_order_release);
+            if (context.aot_translation_request_event == nullptr ||
+                SetEvent(context.aot_translation_request_event) == 0 ||
+                WaitForSingleObject(context.aot_translation_thread,
+                                    INFINITE) != WAIT_OBJECT_0)
+            {
+                // Context ownership cannot be released while the worker could
+                // still reference it. Treat an impossible join failure as a
+                // process-local terminal failure rather than creating UAF.
+                std::abort();
+            }
+            CloseHandle(context.aot_translation_thread);
+            context.aot_translation_thread = nullptr;
+        }
+        if (context.aot_translation_request_event != nullptr)
+        {
+            CloseHandle(context.aot_translation_request_event);
+            context.aot_translation_request_event = nullptr;
+        }
+        if (context.aot_translation_complete_event != nullptr)
+        {
+            CloseHandle(context.aot_translation_complete_event);
+            context.aot_translation_complete_event = nullptr;
+        }
+    };
+    if (context.aot_placement != nullptr)
+    {
+        context.aot_translation_request_event =
+            CreateEventA(nullptr, FALSE, FALSE, nullptr);
+        context.aot_translation_complete_event =
+            CreateEventA(nullptr, FALSE, FALSE, nullptr);
+        if (context.aot_translation_request_event == nullptr ||
+            context.aot_translation_complete_event == nullptr)
+        {
+            stop_translation_worker();
+            attempt->message = "failed to create AOT translation events";
+            return false;
+        }
+        context.aot_translation_thread = api.create_thread(
+            nullptr, 0, AotTranslationWorkerProc, &context, 0, nullptr);
+        if (context.aot_translation_thread == nullptr)
+        {
+            stop_translation_worker();
+            attempt->message = "failed to create AOT translation worker";
+            return false;
+        }
+        if (!InstallWin32AotGuestPageWriteWatches(
+                *context.aot_placement, nullptr,
+                &context.aot_page_write_watch))
+        {
+            RestoreWin32AotGuestPageWriteWatches(
+                &context.aot_page_write_watch);
+            stop_translation_worker();
+            attempt->message =
+                "failed to install AOT guest code write watches";
+            return false;
+        }
+    }
+
+    DWORD guest_thread_id = 0;
+    HANDLE thread = api.create_thread(nullptr,
+                                      0,
+                                      GuestEntryThreadProc,
+                                      &context,
+                                      0,
+                                      &guest_thread_id);
+    if (thread == nullptr)
+    {
+        const DWORD error = api.get_last_error();
+        std::ostringstream stream;
+        stream << "CreateThread failed with error " << error;
+        attempt->message = stream.str();
+        RestoreWin32AotGuestPageWriteWatches(&context.aot_page_write_watch);
+        stop_translation_worker();
+        return false;
+    }
+
+    attempt->attempted = true;
+    if (context.shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(&context.shared_live_telemetry->host_phase, 2);
+        InterlockedExchange(
+            &context.shared_live_telemetry->guest_thread_id,
+            static_cast<long>(guest_thread_id));
+        InterlockedExchange(
+            &context.shared_live_telemetry->host_main_thread_id,
+            static_cast<long>(GetCurrentThreadId()));
+        if (context.aot_placement != nullptr &&
+            context.aot_placement->placed)
+        {
+            InterlockedExchange(
+                &context.shared_live_telemetry->aot_cache_base,
+                static_cast<long>(context.aot_placement->base_address));
+            InterlockedExchange(
+                &context.shared_live_telemetry->aot_cache_size,
+                static_cast<long>(context.aot_placement->capacity));
+        }
+    }
+    attempt->guest_stack_switch_attempted = use_guest_stack;
+    DWORD exit_code = 0;
+    const DWORD wait_result = PollThreadUntilExit(
+        thread,
+        timeout_milliseconds,
+        (enable_single_step_trace || aot_placement != nullptr)
+            ? &context : nullptr,
+        &exit_code);
+
+    const auto remove_vectored_handler = [&context]() {
+        if (context.vectored_handler != nullptr)
+        {
+            RemoveVectoredExceptionHandler(context.vectored_handler);
+            context.vectored_handler = nullptr;
+        }
+    };
+
+    if (wait_result == WAIT_TIMEOUT)
+    {
+        attempt->timed_out = true;
+        attempt->thread_exit_code = 3;
+        if (api.terminate_thread != nullptr)
+        {
+            api.terminate_thread(thread, 3);
+            WaitForSingleObject(thread, 5000U);
+        }
+        remove_vectored_handler();
+        stop_translation_worker();
+        RestoreWin32AotGuestPageWriteWatches(&context.aot_page_write_watch);
+        CopyThreadObservationToAttempt(context, attempt);
+        attempt->valid = true;
+        attempt->message = "minimal execution attempt timed out";
+        api.close_handle(thread);
+        return true;
+    }
+
+    // Teardown milestones are published through host_phase so an external
+    // supervisor can locate the exact step if this path blocks.
+    const auto set_teardown_phase = [&context](long phase) {
+        if (context.shared_live_telemetry != nullptr)
+        {
+            InterlockedExchange(
+                &context.shared_live_telemetry->host_phase, phase);
+        }
+    };
+    set_teardown_phase(10);
+    remove_vectored_handler();
+    set_teardown_phase(11);
+    stop_translation_worker();
+    set_teardown_phase(12);
+    RestoreWin32AotGuestPageWriteWatches(&context.aot_page_write_watch);
+    set_teardown_phase(13);
+    api.close_handle(thread);
+    set_teardown_phase(14);
+
+    attempt->returned = context.returned;
+    attempt->exception_caught = context.exception_caught;
+    attempt->guest_stack_return_esp = context.guest_return_esp;
+    attempt->seh_exception_code = context.exception_code;
+    attempt->seh_exception_address = context.exception_address;
+    attempt->exception_eax = context.exception_eax;
+    attempt->exception_ebx = context.exception_ebx;
+    attempt->exception_ecx = context.exception_ecx;
+    attempt->exception_edx = context.exception_edx;
+    attempt->exception_esi = context.exception_esi;
+    attempt->exception_edi = context.exception_edi;
+    attempt->exception_snapshot = context.exception_snapshot;
+    attempt->exception_access_kind = context.exception_access_kind;
+    attempt->exception_fault_va = context.exception_fault_va;
+    attempt->exception_fault_region_base =
+        context.exception_fault_region_base;
+    attempt->exception_fault_alloc_base = context.exception_fault_alloc_base;
+    attempt->exception_fault_state = context.exception_fault_state;
+    attempt->exception_fault_protect = context.exception_fault_protect;
+    attempt->exception_fault_region_size =
+        context.exception_fault_region_size;
+    std::memcpy(attempt->exception_esi_dwords,
+                context.exception_esi_dwords,
+                sizeof(attempt->exception_esi_dwords));
+    attempt->exception_esi_dword_valid_mask =
+        context.exception_esi_dword_valid_mask;
+    std::memcpy(attempt->exception_register_strings,
+                context.exception_register_strings,
+                sizeof(attempt->exception_register_strings));
+    attempt->exception_register_string_valid_mask =
+        context.exception_register_string_valid_mask;
+    attempt->exception_stack_base = context.exception_stack_base;
+    std::memcpy(attempt->exception_stack_dwords,
+                context.exception_stack_dwords,
+                sizeof(attempt->exception_stack_dwords));
+    attempt->exception_stack_dword_count =
+        context.exception_stack_dword_count;
+    attempt->aot_probe_guest_address = context.aot_probe_guest_address;
+    attempt->aot_probe_cache_address = context.aot_probe_cache_address;
+    attempt->aot_probe_cache_valid = context.aot_probe_cache_valid;
+    std::memcpy(attempt->aot_probe_cache_bytes,
+                context.aot_probe_cache_bytes,
+                sizeof(attempt->aot_probe_cache_bytes));
+    CopyThreadObservationToAttempt(context, attempt);
+    attempt->thread_exit_code = exit_code;
+    attempt->hle_stdout_output.assign(
+        context.hle_stdout_output,
+        context.hle_stdout_output + context.hle_stdout_output_size);
+    attempt->hle_stderr_output.assign(
+        context.hle_stderr_output,
+        context.hle_stderr_output + context.hle_stderr_output_size);
+    attempt->valid = true;
+
+    if (attempt->returned)
+    {
+        attempt->message = context.hle_message.empty()
+                               ? "original entry returned to host trampoline"
+                               : context.hle_message;
+    }
+    else if (attempt->exception_caught)
+    {
+        attempt->message = context.hle_message.empty()
+                               ? "original entry raised a caught exception"
+                               : context.hle_message;
+    }
+    else
+    {
+        attempt->message =
+            "minimal execution attempt ended without return or exception";
+    }
+
+    return true;
+#endif
+}
+
+bool AttemptWin32MinimalExecution(
+    const Win32RelocatedImagePlacement& placement,
+    std::uint32_t entry_address,
+    std::uint32_t timeout_milliseconds,
+    Win32MinimalExecutionAttempt* attempt)
+{
+    return RunWin32ExecutionThread(
+        placement,
+        entry_address,
+        0,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        false,
+        timeout_milliseconds,
+        attempt);
+}
+
+bool AttemptWin32GuestStackExecution(
+    const Win32RelocatedImagePlacement& placement,
+    const runtime::GuestStackSwitchPlan& stack_plan,
+    std::uint32_t timeout_milliseconds,
+    Win32MinimalExecutionAttempt* attempt)
+{
+    if (attempt == nullptr)
+    {
+        return false;
+    }
+
+    if (!stack_plan.valid)
+    {
+        *attempt = Win32MinimalExecutionAttempt{};
+        attempt->entry_address = stack_plan.entry_eip;
+        attempt->guest_stack_initial_esp = stack_plan.initial_esp;
+        attempt->message = "guest stack switch plan is not valid";
+        return false;
+    }
+
+    return RunWin32ExecutionThread(
+        placement,
+        stack_plan.entry_eip,
+        stack_plan.initial_esp,
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        false,
+        timeout_milliseconds,
+        attempt);
+}
+
+bool AttemptWin32GuestStackTrapExecution(
+    const Win32RelocatedImagePlacement& placement,
+    const runtime::GuestStackSwitchPlan& stack_plan,
+    const hle::DosVirtualFileSystemState& dos_file_system,
+    const exe::Dos16mBoundModule* linexe_module,
+    const std::vector<exe::LeResidentName>* glide_exports,
+    const std::filesystem::path* cd_chd_path,
+    std::uint32_t timeout_milliseconds,
+    Win32MinimalExecutionAttempt* attempt)
+{
+    if (attempt == nullptr)
+    {
+        return false;
+    }
+
+    if (!stack_plan.valid)
+    {
+        *attempt = Win32MinimalExecutionAttempt{};
+        attempt->entry_address = stack_plan.entry_eip;
+        attempt->guest_stack_initial_esp = stack_plan.initial_esp;
+        attempt->message = "guest stack switch plan is not valid";
+        return false;
+    }
+
+    return RunWin32ExecutionThread(
+        placement,
+        stack_plan.entry_eip,
+        stack_plan.initial_esp,
+        true,
+        true,
+        true,
+        true,
+        false,
+        true,
+        &dos_file_system,
+        linexe_module,
+        glide_exports,
+        cd_chd_path,
+        nullptr,
+        false,
+        timeout_milliseconds,
+        attempt);
+}
+
+bool AttemptWin32GuestStackHleExecution(
+    const Win32RelocatedImagePlacement& placement,
+    const runtime::GuestStackSwitchPlan& stack_plan,
+    const hle::DosVirtualFileSystemState& dos_file_system,
+    std::uint32_t timeout_milliseconds,
+    Win32MinimalExecutionAttempt* attempt)
+{
+    if (attempt == nullptr)
+    {
+        return false;
+    }
+
+    if (!stack_plan.valid)
+    {
+        *attempt = Win32MinimalExecutionAttempt{};
+        attempt->entry_address = stack_plan.entry_eip;
+        attempt->guest_stack_initial_esp = stack_plan.initial_esp;
+        attempt->message = "guest stack switch plan is not valid";
+        return false;
+    }
+
+    return RunWin32ExecutionThread(
+        placement,
+        stack_plan.entry_eip,
+        stack_plan.initial_esp,
+        true,
+        true,
+        true,
+        true,
+        true,
+        false,
+        &dos_file_system,
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        false,
+        timeout_milliseconds,
+        attempt);
+}
+
+bool AttemptWin32GuestStackAotExecution(
+    const Win32RelocatedImagePlacement& placement,
+    Win32AotCodeCachePlacement& aot_placement,
+    const runtime::GuestStackSwitchPlan& stack_plan,
+    const hle::DosVirtualFileSystemState& dos_file_system,
+    const exe::Dos16mBoundModule* linexe_module,
+    const std::vector<exe::LeResidentName>* glide_exports,
+    const std::filesystem::path* cd_chd_path,
+    bool enable_dynamic_translation,
+    std::uint32_t timeout_milliseconds,
+    Win32MinimalExecutionAttempt* attempt)
+{
+    if (attempt == nullptr || !stack_plan.valid || !aot_placement.placed)
+    {
+        if (attempt != nullptr)
+        {
+            *attempt = Win32MinimalExecutionAttempt{};
+            attempt->message = !stack_plan.valid
+                ? "guest stack switch plan is not valid"
+                : "AOT code cache placement is not valid";
+        }
+        return false;
+    }
+    return RunWin32ExecutionThread(
+        placement, stack_plan.entry_eip, stack_plan.initial_esp,
+        true, true, true, true, false, false, &dos_file_system,
+        linexe_module, glide_exports, cd_chd_path, &aot_placement,
+        enable_dynamic_translation,
+        timeout_milliseconds, attempt);
+}
+
+}  // namespace repiu::platform::win32
