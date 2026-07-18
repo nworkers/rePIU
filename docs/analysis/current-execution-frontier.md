@@ -1,5 +1,22 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-18 Task 234 (완료 및 다음 마일스톤): _GRTEXMINADDRESS / _GRTEXMAXADDRESS cdecl 호출 스택 불일치 정정 완료, fxTMGetTMBlock() 에러 우회 및 그래픽스 초기화 통과 -> 추가 Glide API 분석 / Task 234 (Completed and Next Milestone): Corrected grTexMinAddress / grTexMaxAddress cdecl return stack misalignment, bypassing fxTMGetTMBlock() texture manager error and passing graphics initialization -> preparing for further Glide API tracking
+
+* **상태 (Status)**: 완료 (Completed)
+* **해결 내용 (Resolution details)**:
+  1. 게스트 프로그램 `PIU.EXE`가 `_GRTEXMINADDRESS@4` 및 `_GRTEXMAXADDRESS@4`를 `cdecl` 방식으로 호출하여 스택을 호출자가 직접 정리하고 있었으나, 기존 HLE 계층에서는 이를 `stdcall` 방식으로 인계받아 스택을 이중 정리하여 ESP가 4바이트 초과 정렬되는 오염 오류가 존재했습니다.
+  2. `HandleGlideGateBoundary` 내부 복귀 스택 오프셋을 `win32_context->Esp += 1U * sizeof(std::uint32_t)` (4바이트)로 정정하여 이 오염을 완전히 해결했습니다.
+  3. 이를 통해 텍스처 매니저 힙 손상이 사라졌으며, `fx Driver: internal error in fxTMGetTMBlock()` 에러 출력 없이 무사히 Voodoo 그래픽 드라이버 초기화 및 메모리 할당 루프를 완주하고 메인 인게임 렌더링 루프로 전입(timed out 상태 도달, exit code 3)하는 데 성공했습니다.
+  
+* **다음 분석 및 구현 과제 (Next Steps)**:
+  1. **초기화 이후 Glide API 연동 및 오디오 HLE 확장**:
+     - 그래픽스 초기화가 정상 가동됨에 따라, 추가적으로 호출되는 텍스처 전송(`grTex*`) 및 그리기 API들에 대해 호출이 감지되는 시점마다 HLE 연동을 보완해 나갑니다.
+     - 오디오 하드웨어 연동 상태 및 HLE 추가 관찰을 진행합니다.
+
+* **English Summary**:
+  - **Resolution**: Fixed a 4-byte stack pointer overshoot caused by `grTexMinAddress` and `grTexMaxAddress` HLE handling adjusting `Esp` by 8 bytes while the guest caller (`PIU.EXE`, compiled to treat them as `cdecl`) cleaned them up. Corrected the return ESP offset in `HandleGlideGateBoundary` to `1U * sizeof(uint32_t)` (4 bytes). This eliminated `guTexAllocateMemory` heap/stack corruption, letting the guest pass Voodoo graphics initialization cleanly without the `fx Driver: internal error in fxTMGetTMBlock()` crash, advancing all the way to the render loop (reaching the timeout block, exit code 3).
+  - **Next Steps**: Monitor and implement subsequent Glide drawing/texture APIs sequentially as they appear in execution traces, alongside YMZ280B audio emulations.
+
 ## 2026-07-18 Task 233 (완료 및 다음 마일스톤): AOT DEP 무한 루프 및 장치 체크 Read AV 우회 성공, DOS 정상 종료 포착 -> Glide 3D 및 사운드 HLE 개발 단계 진입 / Task 233 (Completed and Next Milestone): Successfully bypassed AOT DEP loops and device-check Read AV, capturing normal DOS termination -> transitioning to Glide 3D and Sound HLE development stage
 
 * **상태 (Status)**: 완료 (Completed)

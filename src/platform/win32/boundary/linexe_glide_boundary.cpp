@@ -461,7 +461,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         ++context->glide_gate_handled_count;
         win32_context->Eax = 0U;
         win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        win32_context->Esp += 1U * sizeof(std::uint32_t);
         return true;
     }
     if (glide_export->name == "_GRTEXMAXADDRESS@4" &&
@@ -477,7 +477,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         ++context->glide_gate_handled_count;
         win32_context->Eax = maximum_address;
         win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        win32_context->Esp += 1U * sizeof(std::uint32_t);
         return true;
     }
     if (glide_export->name == "_GRCOLORMASK@8")
