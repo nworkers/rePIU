@@ -1,5 +1,26 @@
 # 현재 실행 frontier와 다음 분석 대상
 
+## 2026-07-18 Task 235 (조사 및 설계): Glide/Mesa 초기화 이후 EAX=0 널 포인터 Access Violation (0x0304DBF8) 포착 -> 동적 널 레지스터 패칭 및 재시도 정공법 설계 완료 / Task 235 (Investigation and Design): Captured NULL pointer Access Violation (0x0304DBF8) at EAX=0 post Glide/Mesa initialization -> completed design for systematic dynamic NULL register patching & retry strategy
+
+* **상태 (Status)**: 조사 및 설계 완료 (Investigation and Design Completed)
+* **분석 내용 (Analysis details)**:
+  1. `aot-dynamic` 백엔드 구동 시 WGL 윈도우 생성 이후 `0x0304DBF8` (`cmp byte ptr [eax + 0x1C78], 0`)에서 `EAX` 레지스터가 `0` (NULL) 인 채로 접근하여 읽기 Access Violation 예외가 일어남을 감지했습니다.
+  2. 분석 결과, 게스트 프로그램에 정적 링크된 Mesa Voodoo 그래픽 드라이버의 내부 컨텍스트 구조체 포인터(`EAX`/`EDI`)가 널(`0`)로 유지되고 있기 때문으로 확인되었습니다.
+  3. 이 지점에 대처하기 위해 단순 EIP+7 스킵 우회 방식 대신, 예외 필터에서 예외 EIP의 명령어를 Zydis로 동적 디코딩하여 NULL 베이스 레지스터를 HLE 전용으로 할당한 64KB의 `HleDummyDeviceSpace` 가상 주소로 업데이트하고 실행을 재시도(EXCEPTION_CONTINUE_EXECUTION)하는 **동적 널 포인터 레지스터 패칭 및 재시도(Option C)** 정공법을 설계하여 [20260718-235-hle-device-av-systematic-strategy.md](file:///e:/MYWORK/Projects/rePIU/docs/design/20260718-235-hle-device-av-systematic-strategy.md) 및 [20260718-235-hle-device-av-systematic-work-order.md](file:///e:/MYWORK/Projects/rePIU/docs/work-orders/20260718-235-hle-device-av-systematic-work-order.md)를 완성했습니다.
+  
+* **다음 분석 및 구현 과제 (Next Steps)**:
+  1. **동적 널 레지스터 패칭 프레임워크 구현**:
+     - `execution_trampoline.cpp` 내의 예외 핸들러에 Zydis 디코딩 및 레지스터 검사/수정 로직을 구현합니다.
+     - 64KB 읽기/쓰기가 가능한 가상 더미 디바이스 주소 공간을 커밋하여 연동합니다.
+  2. **간접 점프 `jmp eax` (0x030F3436) AV 예외 원인 규명**:
+     - 동적 복구를 통해 첫 번째 AV가 무사히 통과한 뒤 만나게 될 `0x030F3436` 지점의 간접 점프 대상 분석 및 HLE 호환성 검토를 전개합니다.
+
+* **English Summary**:
+  - **Analysis**: Captured a read Access Violation at `0x0304DBF8` (`cmp byte ptr [eax + 0x1C78], 0`) due to the base register `EAX` being `0` (NULL). This stems from the missing internal GLcontext of the static-linked Mesa Voodoo graphics driver. Rather than hardcoding simple EIP bypasses, we designed a systematic dynamic recovery strategy (Option C): decode the faulting instruction at the Exception Address using Zydis, verify if the base register is `0`, patch the register with the virtual address of a committed 64KB `HleDummyDeviceSpace`, and retry execution using `EXCEPTION_CONTINUE_EXECUTION`. Completed the design document and work order.
+  - **Next Steps**:
+    1. Implement the dynamic register patching framework in `execution_trampoline.cpp` alongside the dummy memory space.
+    2. Investigate the subsequent indirect jump `jmp eax` Access Violation at `0x030F3436` to verify destination mapping.
+
 ## 2026-07-18 Task 234 (완료 및 다음 마일스톤): _GRTEXMINADDRESS / _GRTEXMAXADDRESS cdecl 호출 스택 불일치 정정 완료, fxTMGetTMBlock() 에러 우회 및 그래픽스 초기화 통과 -> 추가 Glide API 분석 / Task 234 (Completed and Next Milestone): Corrected grTexMinAddress / grTexMaxAddress cdecl return stack misalignment, bypassing fxTMGetTMBlock() texture manager error and passing graphics initialization -> preparing for further Glide API tracking
 
 * **상태 (Status)**: 완료 (Completed)
