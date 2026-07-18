@@ -12,6 +12,32 @@
 
 namespace repiu::platform::win32
 {
+namespace
+{
+
+void RecordGlideTextureGateTrace(ThreadContext* context, const CONTEXT* win32_context, const repiu::hle::GlideExportGate& glide_export, std::uint32_t return_address, std::uint32_t return_eax, bool is_max_address)
+{
+    const std::uint32_t sequence = context->glide_texture_gate_trace_count + 1U;
+    Win32GlideTextureGateTraceEntry& entry = context->glide_texture_gate_trace[(sequence - 1U) % kWin32GlideTextureGateTraceCapacity];
+    entry.valid = true;
+    entry.sequence = sequence;
+    entry.ordinal = glide_export.ordinal;
+    entry.is_max_address = is_max_address;
+    entry.entry_eip = static_cast<std::uint32_t>(win32_context->Eip);
+    entry.entry_esp = static_cast<std::uint32_t>(win32_context->Esp);
+    entry.return_address = return_address;
+    entry.tmu = context->glide_gate_stack[1];
+    entry.entry_eax = static_cast<std::uint32_t>(win32_context->Eax);
+    entry.return_eax = return_eax;
+    entry.planned_return_esp = entry.entry_esp + 2U * sizeof(std::uint32_t);
+    context->glide_texture_gate_trace_count = sequence;
+    if (sequence > kWin32GlideTextureGateTraceCapacity)
+    {
+        context->glide_texture_gate_trace_wrapped = true;
+    }
+}
+
+} // namespace
 
 void RecordAllocatorControlFlowException(
     EXCEPTION_POINTERS* exception_info,
@@ -455,9 +481,53 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         win32_context->Esp += sizeof(std::uint32_t);
         return true;
     }
+    if (glide_export->name == "_GRTEXTEXTUREMEMREQUIRED@8")
+    {
+        repiu::hle::GlideTextureInfo info;
+        const void* info_address = reinterpret_cast<const void*>(
+            static_cast<std::uintptr_t>(context->glide_gate_stack[2]));
+        std::uint32_t required_bytes = 0;
+        if (!IsGuestRangeReadable(context, info_address, sizeof(info)) ||
+            !repiu::hle::CalculateGlideTextureMemoryRequired(
+                context->glide_gate_stack[1], info, &required_bytes))
+        {
+            return false;
+        }
+        ++context->glide_gate_handled_count;
+        win32_context->Eax = required_bytes;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 3U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRTEXDOWNLOADMIPMAPLEVEL@32")
+    {
+        // Texture upload is a rendering-boundary operation. The current OpenGL
+        // backend has no texture-image storage yet, so preserve the original
+        // stdcall ABI and let subsequent guest logic continue while recording
+        // the observed gate call through the existing telemetry.
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 9U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRTEXCOMBINE@28" ||
+        glide_export->name == "_GRTEXCLAMPMODE@12" ||
+        glide_export->name == "_GRTEXFILTERMODE@12" ||
+        glide_export->name == "_GRTEXMIPMAPMODE@12" ||
+        glide_export->name == "_GRTEXSOURCE@16")
+    {
+        // Texture sampler and source selection stay within the rendering
+        // boundary until the OpenGL texture-image backend is implemented.
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += sizeof(std::uint32_t) +
+            glide_export->argument_byte_count;
+        return true;
+    }
     if (glide_export->name == "_GRTEXMINADDRESS@4" &&
         context->glide_gate_stack[1] == 0U)
     {
+        RecordGlideTextureGateTrace(context, win32_context, *glide_export, return_address, 0U, false);
         ++context->glide_gate_handled_count;
         win32_context->Eax = 0U;
         win32_context->Eip = return_address;
@@ -478,6 +548,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         {
             return false;
         }
+        RecordGlideTextureGateTrace(context, win32_context, *glide_export, return_address, maximum_address, true);
         ++context->glide_gate_handled_count;
         win32_context->Eax = maximum_address;
         win32_context->Eip = return_address;
@@ -512,6 +583,13 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             return false;
         }
         context->glide_backend_message = context->glide_backend.message();
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRDEPTHBIASLEVEL@4")
+    {
         ++context->glide_gate_handled_count;
         win32_context->Eip = return_address;
         win32_context->Esp += 2U * sizeof(std::uint32_t);

@@ -330,6 +330,9 @@ struct ThreadContext
     std::uint16_t glide_gate_ordinal = 0;
     std::uint32_t glide_gate_argument_bytes = 0;
     char glide_gate_name[64] = {};
+    std::uint32_t glide_texture_gate_trace_count = 0;
+    bool glide_texture_gate_trace_wrapped = false;
+    Win32GlideTextureGateTraceEntry glide_texture_gate_trace[kWin32GlideTextureGateTraceCapacity] = {};
     std::array<std::uint32_t, 256> glide_call_counts = {};
     std::array<std::array<std::uint32_t, 8>, 256> glide_first_stacks = {};
     std::array<std::string, 256> glide_call_names = {};

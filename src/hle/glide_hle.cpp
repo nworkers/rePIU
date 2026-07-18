@@ -8,7 +8,7 @@ namespace repiu::hle
 namespace
 {
 
-constexpr std::array<GlideSignature, 32> kObservedSignatures = {{
+constexpr std::array<GlideSignature, 40> kObservedSignatures = {{
     {"_GRGLIDEINIT@0", 0U, GlideReturnKind::kVoid},
     {"_GRSSTQUERYHARDWARE@4", 4U, GlideReturnKind::kFxBool},
     {"_GRSSTSELECT@4", 4U, GlideReturnKind::kVoid},
@@ -18,9 +18,17 @@ constexpr std::array<GlideSignature, 32> kObservedSignatures = {{
     {"_GRSSTSCREENHEIGHT@0", 0U, GlideReturnKind::kUInt32},
     {"_GRTEXMINADDRESS@4", 4U, GlideReturnKind::kUInt32},
     {"_GRTEXMAXADDRESS@4", 4U, GlideReturnKind::kUInt32},
+    {"_GRTEXTEXTUREMEMREQUIRED@8", 8U, GlideReturnKind::kUInt32},
+    {"_GRTEXDOWNLOADMIPMAPLEVEL@32", 32U, GlideReturnKind::kVoid},
+    {"_GRTEXCOMBINE@28", 28U, GlideReturnKind::kVoid},
+    {"_GRTEXCLAMPMODE@12", 12U, GlideReturnKind::kVoid},
+    {"_GRTEXFILTERMODE@12", 12U, GlideReturnKind::kVoid},
+    {"_GRTEXMIPMAPMODE@12", 12U, GlideReturnKind::kVoid},
+    {"_GRTEXSOURCE@16", 16U, GlideReturnKind::kVoid},
     {"_GRCOLORMASK@8", 8U, GlideReturnKind::kVoid},
     {"_GRRENDERBUFFER@4", 4U, GlideReturnKind::kVoid},
     {"_GRDEPTHMASK@4", 4U, GlideReturnKind::kVoid},
+    {"_GRDEPTHBIASLEVEL@4", 4U, GlideReturnKind::kVoid},
     {"_GRDEPTHBUFFERMODE@4", 4U, GlideReturnKind::kVoid},
     {"_GRLFBWRITECOLORFORMAT@4", 4U, GlideReturnKind::kVoid},
     {"_GRALPHACOMBINE@20", 20U, GlideReturnKind::kVoid},
@@ -272,4 +280,52 @@ bool CalculateGlideTextureMaxAddress(std::uint32_t texture_memory_bytes,
     return true;
 }
 
+bool CalculateGlideTextureMemoryRequired(std::uint32_t even_odd_mask,
+                                       const GlideTextureInfo& info,
+                                       std::uint32_t* required_bytes)
+{
+    constexpr std::uint32_t kEvenMask = 1U;
+    constexpr std::uint32_t kOddMask = 2U;
+    constexpr std::uint32_t kBothMask = kEvenMask | kOddMask;
+    constexpr std::uint32_t kMaxLod = 8U;
+    constexpr std::uint32_t kAspectSquare = 3U;
+    constexpr std::uint32_t kMaxAspect = 6U;
+    constexpr std::uint32_t kMaxFormat = 12U;
+    constexpr std::uint32_t kTextureStartAlignment = 8U;
+    if (required_bytes == nullptr || (even_odd_mask & ~kBothMask) != 0U ||
+        even_odd_mask == 0U || info.small_lod > info.large_lod ||
+        info.large_lod > kMaxLod || info.aspect_ratio > kMaxAspect ||
+        info.format > kMaxFormat)
+    {
+        return false;
+    }
+
+    const std::uint32_t bytes_per_texel = info.format <= 5U ? 1U : 2U;
+    std::uint64_t total = 0;
+    for (std::uint32_t lod = info.small_lod; lod <= info.large_lod; ++lod)
+    {
+        const std::uint32_t lod_mask = (lod & 1U) == 0U ? kEvenMask : kOddMask;
+        if ((even_odd_mask & lod_mask) == 0U)
+        {
+            continue;
+        }
+        const std::int32_t width_log2 = static_cast<std::int32_t>(lod) +
+            static_cast<std::int32_t>(info.aspect_ratio) -
+            static_cast<std::int32_t>(kAspectSquare);
+        const std::int32_t height_log2 = static_cast<std::int32_t>(lod) -
+            static_cast<std::int32_t>(info.aspect_ratio) +
+            static_cast<std::int32_t>(kAspectSquare);
+        const std::uint32_t width = 1U << std::max(width_log2, 0);
+        const std::uint32_t height = 1U << std::max(height_log2, 0);
+        total += static_cast<std::uint64_t>(width) * height * bytes_per_texel;
+    }
+    const std::uint64_t aligned = (total + kTextureStartAlignment - 1U) &
+        ~(static_cast<std::uint64_t>(kTextureStartAlignment) - 1U);
+    if (aligned > UINT32_MAX)
+    {
+        return false;
+    }
+    *required_bytes = static_cast<std::uint32_t>(aligned);
+    return true;
+}
 }  // namespace repiu::hle

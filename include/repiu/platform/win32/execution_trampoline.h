@@ -24,7 +24,23 @@ constexpr std::uint32_t kWin32ExceptionStackDwordCapacity = 96;
 constexpr std::uint32_t kWin32AllocatorProbeTraceCapacity = 16;
 constexpr std::uint32_t kWin32AllocatorControlFlowTraceCapacity = 32;
 constexpr std::uint32_t kWin32SegmentLoadTraceCapacity = 16;
+constexpr std::uint32_t kWin32GlideTextureGateTraceCapacity = 16;
 constexpr std::uint32_t kWin32DeferredPortIoLimit = 65536;
+
+struct Win32GlideTextureGateTraceEntry
+{
+    bool valid = false;
+    std::uint32_t sequence = 0;
+    std::uint16_t ordinal = 0;
+    bool is_max_address = false;
+    std::uint32_t entry_eip = 0;
+    std::uint32_t entry_esp = 0;
+    std::uint32_t return_address = 0;
+    std::uint32_t tmu = 0;
+    std::uint32_t entry_eax = 0;
+    std::uint32_t return_eax = 0;
+    std::uint32_t planned_return_esp = 0;
+};
 constexpr std::uint32_t kWin32ExecutionTraceCapacity = 64;
 
 // One capture per single-stepped instruction inside a guest code range
@@ -467,6 +483,9 @@ struct Win32MinimalExecutionAttempt
     std::uint16_t glide_gate_ordinal = 0;
     std::uint32_t glide_gate_argument_bytes = 0;
     char glide_gate_name[64] = {};
+    std::uint32_t glide_texture_gate_trace_count = 0;
+    bool glide_texture_gate_trace_wrapped = false;
+    Win32GlideTextureGateTraceEntry glide_texture_gate_trace[kWin32GlideTextureGateTraceCapacity] = {};
     struct GlideCallObservation
     {
         std::uint16_t ordinal = 0;

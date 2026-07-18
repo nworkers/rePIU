@@ -1156,8 +1156,28 @@ void PrintExecutionAttempt(
                 Hex32(attempt.glide_gate_stack[5]),
                 Hex32(attempt.glide_gate_stack[6]),
                 Hex32(attempt.glide_gate_stack[7]));
-    for (const auto& call : attempt.glide_calls)
+    logger.info("Win32 Glide texture gate trace count/wrapped: {}/{}",
+                attempt.glide_texture_gate_trace_count,
+                attempt.glide_texture_gate_trace_wrapped ? "true" : "false");
+    for (const auto& entry : attempt.glide_texture_gate_trace)
     {
+        if (!entry.valid)
+        {
+            continue;
+        }
+        logger.info("Win32 Glide texture gate trace #{} kind={} ordinal={} entry-eip={} entry-esp={} return-address={} tmu={} entry-eax={} return-eax={} planned-return-esp={}",
+                    entry.sequence,
+                    entry.is_max_address ? "max" : "min",
+                    entry.ordinal,
+                    Hex32(entry.entry_eip),
+                    Hex32(entry.entry_esp),
+                    Hex32(entry.return_address),
+                    entry.tmu,
+                    Hex32(entry.entry_eax),
+                    Hex32(entry.return_eax),
+                    Hex32(entry.planned_return_esp));
+    }
+    for (const auto& call : attempt.glide_calls)    {
         logger.info("Win32 Glide call trace: ordinal={} name={} count={} first_stack={} {} {} {} {} {} {} {}",
                     call.ordinal,
                     call.name,
@@ -2565,9 +2585,9 @@ int main(int argc, char** argv)
 
     for (const auto& resident : glide_exports)
     {
-        if (resident.ordinal == 76)
+        if (resident.ordinal == 95)
         {
-            logger->info("[debug-ordinal-76] ordinal 76 name: {}", resident.name);
+            logger->info("[debug-ordinal-95] ordinal 95 name: {}", resident.name);
         }
     }
 

@@ -1,3 +1,12 @@
+## 2026-07-19 Task 236 (confirmed): fxTMGetTMBlock root cause and next Glide frontier
+
+**확인됨:** 80초 이상 `aot-dynamic` 실행에서 `fxTMGetTMBlock()`이 출력한 `0x030FEE17`은 텍스처 크기가 아니라 import-resolver thunk 주소였다. `_GRTEXMINADDRESS@4`와 `_GRTEXMAXADDRESS@4`의 8바이트 stdcall 정리는 계측으로 확인되었으며 정상이다. 실제 누락은 `_GRTEXTEXTUREMEMREQUIRED@8`였다. PIU가 전달한 `GrTexInfo={smallLod=0, largeLod=0, aspect=3, format=10}`와 mask 3은 1×1 ARGB4444 텍스처를 뜻하며, HLE는 정렬된 8바이트를 EAX로 반환한다. 이로써 기존 DOS `AX=4CFF` 종료와 `fxTMGetTMBlock()` 오류는 사라졌다.
+
+**현재 frontier:** 텍스처 upload/source/sampler/combine 경계 호출은 관찰된 stdcall ABI만 보존하는 no-op 단계이며, 이미지 저장·샘플링 충실도는 아직 구현되지 않았다. 180초 요청으로 실행했으나 약 90초에 `_GRHINTS@8` 미구현 게이트에서 멈췄다. 다음 작업은 `_GRHINTS@8`의 호출 의미와 반환/상태 요구를 확인하는 것이다.
+
+**Confirmed:** In an `aot-dynamic` run beyond 80 seconds, the `0x030FEE17` printed by `fxTMGetTMBlock()` was an import-resolver thunk, not a texture size. Instrumentation proved the eight-byte stdcall cleanup for `_GRTEXMINADDRESS@4` and `_GRTEXMAXADDRESS@4` is correct. The missing call was `_GRTEXTEXTUREMEMREQUIRED@8`. PIU supplied `GrTexInfo={smallLod=0, largeLod=0, aspect=3, format=10}` with mask 3, denoting a 1×1 ARGB4444 texture; HLE now returns its aligned eight-byte size in EAX. The prior DOS `AX=4CFF` termination and `fxTMGetTMBlock()` error no longer occur.
+
+**Current frontier:** Texture upload/source/sampler/combine calls currently preserve only their observed stdcall ABI as rendering-boundary no-ops; texture-image storage and sampling fidelity are not implemented. Although requested for 180 seconds, the run stopped at about 90 seconds on the unimplemented `_GRHINTS@8` gate. The next task is to determine its semantic and return/state requirements.
 # 현재 실행 frontier와 다음 분석 대상
 
 ## 2026-07-18 Task 235 (해결): 근인 = grTexMin/Max HLE 스택 정리 규약 오류(Task 234 cdecl 회귀) — stdcall 복원으로 fxTMInit NULL gc 크래시(0x0304DBF8) 소멸, 20초 클린 진행 / Task 235 (resolved): root cause = wrong stack-cleanup convention in the grTexMin/Max HLE (a cdecl regression from Task 234); restoring stdcall removes the fxTMInit NULL-gc crash (0x0304DBF8) and execution runs clean for 20s

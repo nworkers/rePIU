@@ -187,6 +187,8 @@ Glide2 state save/restore uses a fixed 312-byte platform-neutral image. Shared H
 
 Observed dither mode 2 is stored in `GlideLogicalState`, serialized in state-image version 2, and delegated to host `GL_DITHER`. This is a compatibility stage, not a pixel-fidelity claim. A future replaceable shader policy may implement verified Voodoo ordered dithering without changing guest ABI integration.
 
+_GRTEXTEXTUREMEMREQUIRED@8 is modeled as a platform-neutral calculation over the guest GrTexInfo fields, returning a validated, eight-byte-aligned texture size in EAX. Texture upload, source, sampler and combine calls currently preserve their observed stdcall ABI as rendering-boundary no-ops; they do not claim texture-image fidelity. This keeps the original guest logic executing while a replaceable OpenGL texture backend remains future work.
+
 ## Win32 로더 앱 배치
 
 현재 실제 Win32 로더 executable target은 `repiu_loader_win32`이다.

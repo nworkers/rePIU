@@ -25,6 +25,14 @@ struct GlideSignature
     GlideReturnKind return_kind = GlideReturnKind::kVoid;
 };
 
+struct GlideTextureInfo
+{
+    std::uint32_t small_lod = 0;
+    std::uint32_t large_lod = 0;
+    std::uint32_t aspect_ratio = 0;
+    std::uint32_t format = 0;
+    std::uint32_t data = 0;
+};
 struct GlideExportGate
 {
     std::string name;
@@ -129,6 +137,10 @@ bool DecodeGlideResolution(std::uint32_t resolution,
 
 bool CalculateGlideTextureMaxAddress(std::uint32_t texture_memory_bytes,
                                      std::uint32_t* maximum_address);
+
+bool CalculateGlideTextureMemoryRequired(std::uint32_t even_odd_mask,
+                                       const GlideTextureInfo& info,
+                                       std::uint32_t* required_bytes);
 
 }  // namespace repiu::hle
 
