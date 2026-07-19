@@ -329,8 +329,11 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
 
     for (const AotBasicBlock& block : plan.blocks)
     {
-        for (const AotInstructionRecord& instruction : block.instructions)
+        for (std::size_t instruction_index = 0;
+             instruction_index < block.instructions.size(); ++instruction_index)
         {
+            const AotInstructionRecord& instruction =
+                block.instructions[instruction_index];
             const std::uint32_t cache_offset =
                 static_cast<std::uint32_t>(image->bytes.size());
             if (!guest_to_cache.emplace(
@@ -342,6 +345,15 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
             map.guest_address = instruction.guest_address;
             map.cache_offset = cache_offset;
             map.guest_length = instruction.length;
+            const bool is_saved_register_return =
+                instruction.kind == AotInstructionKind::kReturn &&
+                instruction_index >= 6U &&
+                block.instructions[instruction_index - 6U].bytes == std::vector<std::uint8_t>{0x83U, 0xC4U, 0x04U} &&
+                block.instructions[instruction_index - 5U].bytes == std::vector<std::uint8_t>{0x5DU} &&
+                block.instructions[instruction_index - 4U].bytes == std::vector<std::uint8_t>{0x5FU} &&
+                block.instructions[instruction_index - 3U].bytes == std::vector<std::uint8_t>{0x5EU} &&
+                block.instructions[instruction_index - 2U].bytes == std::vector<std::uint8_t>{0x59U} &&
+                block.instructions[instruction_index - 1U].bytes == std::vector<std::uint8_t>{0x5BU};
             switch (instruction.kind)
             {
                 case AotInstructionKind::kCopy:
@@ -350,7 +362,7 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                                         instruction.bytes.end());
                     break;
                 case AotInstructionKind::kReturn:
-                    if (!EmitReturnInlineCacheSlot(instruction, image))
+                    if (is_saved_register_return || !EmitReturnInlineCacheSlot(instruction, image))
                     {
                         image->bytes.push_back(0xCCU);
                         image->fixups.push_back({AotFixupKind::kIndirectExit,

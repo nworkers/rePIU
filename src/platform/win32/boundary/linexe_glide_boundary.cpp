@@ -226,6 +226,12 @@ bool HandleLinexeFarTransferBoundary(CONTEXT* win32_context,
             context->glide_gate_plan,
             context->linexe_bridge_stack_text[12]);
     if (service == repiu::hle::LinexeService::kGetProcedureAddress &&
+        context->linexe_bridge_stack[11] == kVirtualGlideModuleHandle)
+    {
+        std::strncpy(context->linexe_get_proc_name,
+                     context->linexe_bridge_stack_text[12],
+                     sizeof(context->linexe_get_proc_name) - 1U);
+    }    if (service == repiu::hle::LinexeService::kGetProcedureAddress &&
         context->linexe_bridge_stack[11] == kVirtualGlideModuleHandle &&
         glide_export != nullptr)
     {
@@ -377,6 +383,15 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             glide_export->argument_byte_count)
     {
         return false;
+    }
+    if (glide_export->name == "_GRHINTS@8")
+    {
+        // Glide documents this call as optimization advice. Preserve the
+        // observed stdcall ABI while the renderer has no verified hint policy.
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 3U * sizeof(std::uint32_t);
+        return true;
     }
     if (glide_export->name == "_GRGLIDEINIT@0")
     {
@@ -669,7 +684,11 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         {
             context->glide_backend_message =
                 context->glide_backend.message();
-            return false;
+            if (context->glide_backend_message !=
+                "unsupported Glide color-combine equation")
+            {
+                return false;
+            }
         }
         context->glide_state.color_combine = state;
         context->glide_backend_message = context->glide_backend.message();

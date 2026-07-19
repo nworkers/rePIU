@@ -173,7 +173,29 @@ int CaptureException(EXCEPTION_POINTERS* exception_info,
         context->exception_address = static_cast<std::uint32_t>(
             reinterpret_cast<std::uintptr_t>(
                 exception_info->ExceptionRecord->ExceptionAddress));
-        if (exception_info->ExceptionRecord->NumberParameters >= 2U)
+        MEMORY_BASIC_INFORMATION instruction_page = {};
+        if (VirtualQuery(exception_info->ExceptionRecord->ExceptionAddress,
+                         &instruction_page, sizeof(instruction_page)) ==
+            sizeof(instruction_page))
+        {
+            std::uint8_t bytes[16] = {};
+            std::memcpy(bytes, exception_info->ExceptionRecord->ExceptionAddress,
+                        sizeof(bytes));
+            fprintf(stderr,
+                    "[repiu-live-debug] exception instruction region "
+                    "base=0x%p alloc=0x%p size=0x%zX protect=0x%X "
+                    "alloc_protect=0x%X bytes=",
+                    instruction_page.BaseAddress,
+                    instruction_page.AllocationBase,
+                    instruction_page.RegionSize,
+                    instruction_page.Protect,
+                    instruction_page.AllocationProtect);
+            for (std::uint8_t byte : bytes)
+            {
+                fprintf(stderr, "%02X", byte);
+            }
+            fprintf(stderr, "\n");
+        }        if (exception_info->ExceptionRecord->NumberParameters >= 2U)
         {
             context->exception_access_kind = static_cast<std::uint32_t>(
                 exception_info->ExceptionRecord->ExceptionInformation[0]);
@@ -954,6 +976,11 @@ bool HandleOriginalFatalBreakpoint(EXCEPTION_POINTERS* exception_info,
 bool HandlePrivilegedTrapInstruction(CONTEXT* win32_context,
                                      ThreadContext* context)
 {
+    if (win32_context == nullptr || context == nullptr ||
+        win32_context->Eip == 0U)
+    {
+        return false;
+    }
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
     if (*instruction == 0xFA)
@@ -1847,7 +1874,23 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     }
 
     CONTEXT* win32_context = exception_info->ContextRecord;
-    const auto stop_for_aot_terminal_failure = [context, win32_context]() {
+    if (win32_context->Eip == 0U)
+    {
+        win32_context->EFlags &= ~0x00000100U;
+        CaptureException(exception_info, context);
+        context->guest_return_esp =
+            static_cast<std::uint32_t>(win32_context->Esp);
+        if (context->use_guest_stack)
+        {
+            RecoverToHost(win32_context, context);
+        }
+        else
+        {
+            win32_context->Eip =
+                reinterpret_cast<DWORD_PTR>(&RecoverHostStackException);
+        }
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }    const auto stop_for_aot_terminal_failure = [context, win32_context]() {
         if (!context->aot_terminal_failure.load(std::memory_order_acquire))
         {
             return false;

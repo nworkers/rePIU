@@ -1741,3 +1741,32 @@ The verified original function at `+0xDE170` now runs natively until a hardware 
 **확인됨:** EXE 주소나 signature를 사용하지 않는 Zydis straight-line block prototype은 현재 병목을 개선하지 못했습니다. 임의 memory 허용은 의미 변화 위험을 보였고, register/SS-stack 제한은 30초 progress `116,274`로 기존 `116,424`보다 낮았습니다. prototype은 전부 되돌렸습니다. 다음 frontier는 runtime-profiled indirect target을 verified-function 정책에 포함할지, DBT/code cache 또는 code gate 방식을 선택할지 결정하는 것입니다.
 
 **Confirmed:** An executable-independent Zydis straight-line block prototype did not improve the current bottleneck. Arbitrary memory introduced semantic risk, while register/SS-stack-only blocks reached 116,274 progress in 30 seconds versus the existing 116,424. The prototype was fully reverted. The next frontier is choosing runtime-profiled indirect targets for verified functions, a DBT/code cache, or code gates.
+
+## 2026-07-19 Task 243 (confirmed): AOT return-stack frontier after Glide initialization
+
+**확인됨:** Glide `_GRHINTS@8`를 포함한 관측 API ABI를 추가한 뒤, `aot-dynamic`은 `0x0304ED35`의 저장 레지스터 epilogue (`add esp,4; pop ebp; pop edi; pop esi; pop ecx; pop ebx; ret`)에서 `EIP=0`으로 종료했다. 정상 호출자 연속 주소 `0x0304F314`는 사라지지 않고 정확히 24바이트 아래에 남았다. 이는 Glide handler가 반환 주소를 덮어쓴 결과가 아니라 AOT return fast-path 또는 재진입 경로에서 epilogue frame 복원이 보존되지 않는다는 증거다.
+
+**수정 및 검증:** 해당 저장 레지스터 epilogue 패턴은 return inline-cache 대신 기존 breakpoint return dispatcher를 사용하도록 보호했다. Win32 x86 Debug 빌드는 성공했고, 수정 전 약 79초에 발생하던 zero-EIP 종료는 180초 `aot-dynamic` 실행에서 재현되지 않았다. 같은 빌드의 legacy/trap backend는 180초 동안 예외 종료 없이 약 2,633,713 진행도와 Glide ordinal `0x5E`에 도달했다.
+
+**미해결 frontier:** dispatcher 보호를 받는 동일 epilogue가 비트셋 처리 루프에서 고빈도로 호출되어, 동적 AOT에서 return dispatcher/reentry가 약 140만 회까지 증가하고 진행도가 약 2.1만 부근에서 정체한다. 정적 cache에는 `ret 4` inline-cache fast-path가 정상 생성되므로, 현재 병목은 Glide HLE가 아니라 동적 번역, page retirement, return cache miss/reentry 수명주기의 결합이다.
+
+**다음 작업:**
+1. return fast-path와 dispatcher에서 epilogue 전후 ESP 및 cache miss-site를 동일 instruction boundary로 기록한다.
+2. page retirement 또는 dynamic append 뒤 동일 return site가 왜 다시 miss가 되는지 세대별로 추적한다.
+3. dispatcher 스택 검색 복구는 원본 ABI를 훼손하므로 사용하지 않는다.
+4. zero-EIP 보호는 유지하되, fast-path의 실제 원인을 고친 뒤에만 epilogue dispatcher 우회를 제거한다.
+
+```mermaid
+flowchart LR
+    Glide[Glide gate ABI] --> Epi[Saved-register epilogue]
+    Epi -->|fast path, unresolved| Zero[EIP 0 before fix]
+    Epi -->|dispatcher guard| Safe[No zero-EIP]
+    Safe -->|high-frequency loop| Liveness[Dynamic AOT reentry frontier]
+    Trap[legacy/trap 180s] --> Stable[Continues without this failure]
+```
+
+**Confirmed:** After adding observed Glide API ABI including `_GRHINTS@8`, `aot-dynamic` terminated at the saved-register epilogue `0x0304ED35` with `EIP=0`. The valid caller continuation `0x0304F314` remained exactly 24 bytes deeper, proving the Glide handler did not overwrite it; the AOT return fast-path or re-entry path lost frame restoration.
+
+The guarded epilogue uses the existing breakpoint return dispatcher. The Win32 x86 Debug build succeeds and the prior ~79-second zero-EIP termination does not recur in a 180-second AOT run. The legacy/trap backend reaches about 2,633,713 progress and Glide ordinal `0x5E` in 180 seconds without terminal exception.
+
+**Open frontier:** High-frequency uses of this epilogue raise dynamic-AOT return dispatcher/re-entry activity to about 1.4 million and stall progress near 21 thousand. Static `ret 4` inline-cache emission remains valid, so this is a dynamic translation/page-retirement/return-cache lifetime issue, not Glide HLE. Next, trace ESP and miss-site provenance at the same instruction boundary, then identify why a return site misses again after dynamic append or retirement. Do not scan the stack for a plausible return address.
