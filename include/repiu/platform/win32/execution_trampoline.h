@@ -25,7 +25,27 @@ constexpr std::uint32_t kWin32AllocatorProbeTraceCapacity = 16;
 constexpr std::uint32_t kWin32AllocatorControlFlowTraceCapacity = 32;
 constexpr std::uint32_t kWin32SegmentLoadTraceCapacity = 16;
 constexpr std::uint32_t kWin32GlideTextureGateTraceCapacity = 16;
+constexpr std::uint32_t kWin32GlideVertexDwordCount = 18;
+constexpr std::uint32_t kWin32GlideTriangleTraceCapacity = 16;
+constexpr std::uint32_t kWin32GlideProducerVertexDwordCount = 15;
 constexpr std::uint32_t kWin32DeferredPortIoLimit = 65536;
+
+struct Win32GlideTriangleObservation
+{
+    bool valid = false;
+    std::uint32_t pointers[3] = {};
+    bool pointer_readable[3] = {};
+    std::uint32_t dwords[3][kWin32GlideVertexDwordCount] = {};
+};
+
+struct Win32GlideTriangleTraceEntry
+{
+    bool valid = false;
+    std::uint32_t sequence = 0;
+    std::uint32_t pointers[3] = {};
+    bool pointer_readable[3] = {};
+    std::uint32_t dwords[3][kWin32GlideProducerVertexDwordCount] = {};
+};
 
 struct Win32GlideTextureGateTraceEntry
 {
@@ -497,6 +517,10 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t glide_texture_gate_trace_count = 0;
     bool glide_texture_gate_trace_wrapped = false;
     Win32GlideTextureGateTraceEntry glide_texture_gate_trace[kWin32GlideTextureGateTraceCapacity] = {};
+    Win32GlideTriangleObservation glide_first_triangle;
+    std::uint32_t glide_triangle_trace_count = 0;
+    bool glide_triangle_trace_wrapped = false;
+    Win32GlideTriangleTraceEntry glide_triangle_trace[kWin32GlideTriangleTraceCapacity] = {};
     struct GlideCallObservation
     {
         std::uint16_t ordinal = 0;

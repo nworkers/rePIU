@@ -1984,3 +1984,11 @@ climbing at the timeout.
 logged path; design a fail-closed block so unhandled gate exceptions can never
 reach the stack-scan recovery; begin actual rendering fidelity for the frame
 loop; characterize the next stop in longer runs.
+
+## 2026-07-20 Glide R2 compact triangle frontier
+
+**Confirmed.** Direct `pumpit1` loader execution with `aot-dynamic` now reaches and continuously submits compact triangles through the Win32 OpenGL backend. More than 3,258 submissions completed without a gate rejection, caught exception, or OpenGL error. The original producer layout has a 60-byte stride; dwords 0/1 are x/y floats, dword 3 and 7 were 255.0, dword 8 was 1.0, and dwords 9/10 are texture-coordinate candidates.
+
+**Current implementation.** `grDrawTriangle` decodes only x/y from the confirmed compact layout and submits opaque white triangles. It intentionally does not infer packed color or texture semantics. Per-triangle stderr dumps were removed after verification because they caused severe hot-path logging overhead; a bounded in-memory trace remains.
+
+**Next work.** Extract compact vertex decoding from the gate boundary into a dedicated draw subsystem; establish packed color fields and interpolated color; then implement texture storage/download/source and sampling (R3). Add a frame hash or screenshot path to validate rendered output rather than relying only on submission counts.

@@ -251,6 +251,31 @@ bool GlideOpenGlBackend::BufferSwap(std::uint32_t swap_interval)
 #endif
 }
 
+bool GlideOpenGlBackend::DrawTriangle(float ax, float ay, float bx, float by,
+                                      float cx, float cy)
+{
+#if !defined(_WIN32)
+    return false;
+#else
+    if (!is_open())
+    {
+        message_ = "cannot draw Glide triangle without an OpenGL window";
+        return false;
+    }
+    if (dummy_mode_)
+    {
+        return true;
+    }
+    glBegin(GL_TRIANGLES);
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+    glVertex3f(ax, ay, 0.0f);
+    glVertex3f(bx, by, 0.0f);
+    glVertex3f(cx, cy, 0.0f);
+    glEnd();
+    message_ = "Glide compact triangle drawn";
+    return true;
+#endif
+}
 bool GlideOpenGlBackend::SetColorMask(bool rgb, bool alpha)
 {
 #if !defined(_WIN32)

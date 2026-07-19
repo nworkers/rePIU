@@ -26,6 +26,7 @@ public:
     void PumpEvents();
     bool BufferClear(std::uint32_t color, std::uint32_t alpha, std::uint32_t depth);
     bool BufferSwap(std::uint32_t swap_interval);
+    bool DrawTriangle(float ax, float ay, float bx, float by, float cx, float cy);
     bool SetColorMask(bool rgb, bool alpha);
     bool SetRenderBuffer(std::uint32_t buffer);
     bool SetDepthMask(bool enabled);

@@ -999,6 +999,74 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
     }
     if (glide_export->name == "_GRDRAWTRIANGLE@12")
     {
+        Win32GlideTriangleObservation& triangle =
+            context->glide_first_triangle;
+        if (!triangle.valid)
+        {
+            triangle.valid = true;
+            for (std::size_t index = 0; index < 3U; ++index)
+            {
+                triangle.pointers[index] = context->glide_gate_stack[index + 1U];
+                const auto* vertex = reinterpret_cast<const void*>(
+                    static_cast<std::uintptr_t>(triangle.pointers[index]));
+                triangle.pointer_readable[index] = IsGuestRangeReadable(
+                    context, vertex, sizeof(triangle.dwords[index]));
+                if (triangle.pointer_readable[index])
+                {
+                    std::memcpy(triangle.dwords[index], vertex,
+                                sizeof(triangle.dwords[index]));
+                }
+            }
+            fprintf(stderr,
+                    "[repiu-live] Glide first triangle vertices: %08X/%d %08X/%d %08X/%d\\n",
+                    triangle.pointers[0], triangle.pointer_readable[0],
+                    triangle.pointers[1], triangle.pointer_readable[1],
+                    triangle.pointers[2], triangle.pointer_readable[2]);
+            for (std::size_t index = 0; index < 3U; ++index)
+            {
+                fprintf(stderr, "[repiu-live] Glide first triangle vertex %u dwords:",
+                        static_cast<unsigned>(index));
+                for (std::uint32_t dword : triangle.dwords[index])
+                {
+                    fprintf(stderr, " %08X", dword);
+                }
+                fprintf(stderr, "\n");
+            }
+        }
+        const std::uint32_t sequence = ++context->glide_triangle_trace_count;
+        Win32GlideTriangleTraceEntry& trace = context->glide_triangle_trace[
+            (sequence - 1U) % kWin32GlideTriangleTraceCapacity];
+        trace = Win32GlideTriangleTraceEntry{};
+        trace.valid = true;
+        trace.sequence = sequence;
+        for (std::size_t index = 0; index < 3U; ++index)
+        {
+            trace.pointers[index] = context->glide_gate_stack[index + 1U];
+            const auto* vertex = reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(trace.pointers[index]));
+            trace.pointer_readable[index] = IsGuestRangeReadable(
+                context, vertex, sizeof(trace.dwords[index]));
+            if (trace.pointer_readable[index])
+            {
+                std::memcpy(trace.dwords[index], vertex,
+                            sizeof(trace.dwords[index]));
+            }
+        }
+        if (sequence > kWin32GlideTriangleTraceCapacity)
+        {
+            context->glide_triangle_trace_wrapped = true;
+        }
+        float coordinates[6] = {};
+        for (std::size_t index = 0; index < 3U; ++index)
+        {
+            if (!trace.pointer_readable[index]) return reject_gate("compact-triangle-unreadable-vertex");
+            std::memcpy(&coordinates[index * 2U], trace.dwords[index], sizeof(float) * 2U);
+        }
+        if (!context->glide_backend.DrawTriangle(coordinates[0], coordinates[1], coordinates[2], coordinates[3], coordinates[4], coordinates[5]))
+        {
+            context->glide_backend_message = context->glide_backend.message();
+            return reject_gate("compact-triangle-backend-failure");
+        }
         ++context->glide_gate_handled_count;
         win32_context->Eip = return_address;
         win32_context->Esp += 4U * sizeof(std::uint32_t);

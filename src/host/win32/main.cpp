@@ -1190,6 +1190,26 @@ void PrintExecutionAttempt(
                     Hex32(entry.return_eax),
                     Hex32(entry.planned_return_esp));
     }
+    if (attempt.glide_first_triangle.valid)
+    {
+        for (std::size_t index = 0; index < 3U; ++index)
+        {
+            std::ostringstream vertex;
+            for (std::uint32_t dword : attempt.glide_first_triangle.dwords[index])
+            {
+                if (!vertex.str().empty())
+                {
+                    vertex << ' ';
+                }
+                vertex << Hex32(dword);
+            }
+            logger.info("Win32 Glide first triangle vertex {} pointer/readable/dwords: {}/{}/{}",
+                        index,
+                        Hex32(attempt.glide_first_triangle.pointers[index]),
+                        attempt.glide_first_triangle.pointer_readable[index] ? "true" : "false",
+                        vertex.str());
+        }
+    }
     for (const auto& call : attempt.glide_calls)    {
         logger.info("Win32 Glide call trace: ordinal={} name={} count={} first_stack={} {} {} {} {} {} {} {}",
                     call.ordinal,

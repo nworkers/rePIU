@@ -795,6 +795,11 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     std::memcpy(attempt->glide_texture_gate_trace,
                 context.glide_texture_gate_trace,
                 sizeof(attempt->glide_texture_gate_trace));
+    attempt->glide_first_triangle = context.glide_first_triangle;
+    attempt->glide_triangle_trace_count = context.glide_triangle_trace_count;
+    attempt->glide_triangle_trace_wrapped = context.glide_triangle_trace_wrapped;
+    std::memcpy(attempt->glide_triangle_trace, context.glide_triangle_trace,
+                sizeof(attempt->glide_triangle_trace));
     for (std::size_t ordinal = 0;
          ordinal < context.glide_call_counts.size(); ++ordinal)
     {
