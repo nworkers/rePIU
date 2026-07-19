@@ -164,6 +164,37 @@ void ScanXrefs(const repiu::runtime::RelocatedRuntimeImage& image,
     }
 }
 
+// Diagnostic-only: find a literal byte substring in the relocated image and
+// print the virtual address(es) where it occurs (e.g. a format string).
+void ScanString(const repiu::runtime::RelocatedRuntimeImage& image,
+                const char* needle)
+{
+    const std::size_t needle_length = std::strlen(needle);
+    if (needle_length == 0)
+    {
+        return;
+    }
+    for (const auto& object : image.objects)
+    {
+        const std::uint32_t base = object.relocated_base_address;
+        const std::vector<std::uint8_t>& memory = object.memory;
+        if (memory.size() < needle_length)
+        {
+            continue;
+        }
+        for (std::size_t index = 0; index + needle_length <= memory.size();
+             ++index)
+        {
+            if (std::memcmp(&memory[index], needle, needle_length) == 0)
+            {
+                std::cout << "findstr=0x" << std::hex
+                          << (base + static_cast<std::uint32_t>(index))
+                          << std::dec << "\n";
+            }
+        }
+    }
+}
+
 void PrintLinearDisassembly(const repiu::runtime::RelocatedRuntimeImage& image,
                             std::uint32_t address)
 {
@@ -436,11 +467,14 @@ int main(int argc, char** argv)
         std::strcmp(argv[2], "--xref") == 0;
     const bool dump_mode = argc == 4 &&
         std::strcmp(argv[2], "--dump") == 0;
-    if (argc != 2 && argc != 3 && !xref_mode && !dump_mode)
+    const bool findstr_mode = argc == 4 &&
+        std::strcmp(argv[2], "--findstr") == 0;
+    if (argc != 2 && argc != 3 && !xref_mode && !dump_mode && !findstr_mode)
     {
         std::cerr << "usage: repiu_aot_probe <DOS4GW.EXE> [guest-address]\n"
                   << "       repiu_aot_probe <DOS4GW.EXE> --xref <address>\n"
-                  << "       repiu_aot_probe <DOS4GW.EXE> --dump <address>\n";
+                  << "       repiu_aot_probe <DOS4GW.EXE> --dump <address>\n"
+                  << "       repiu_aot_probe <DOS4GW.EXE> --findstr <text>\n";
         return 2;
     }
     const std::filesystem::path path = argv[1];
@@ -487,6 +521,11 @@ int main(int argc, char** argv)
             return 2;
         }
         ScanXrefs(image, static_cast<std::uint32_t>(query));
+        return 0;
+    }
+    if (findstr_mode)
+    {
+        ScanString(image, argv[3]);
         return 0;
     }
     if (dump_mode)
