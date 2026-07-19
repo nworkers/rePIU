@@ -200,6 +200,57 @@ void GlideOpenGlBackend::PumpEvents()
 #endif
 }
 
+bool GlideOpenGlBackend::BufferClear(std::uint32_t color, std::uint32_t alpha, std::uint32_t depth)
+{
+#if !defined(_WIN32)
+    return false;
+#else
+    if (!is_open())
+    {
+        message_ = "cannot clear Glide buffer without an OpenGL window";
+        return false;
+    }
+    if (dummy_mode_)
+    {
+        return true;
+    }
+    const float r = static_cast<float>((color >> 16) & 0xFF) / 255.0f;
+    const float g = static_cast<float>((color >> 8) & 0xFF) / 255.0f;
+    const float b = static_cast<float>(color & 0xFF) / 255.0f;
+    const float a = static_cast<float>(alpha & 0xFF) / 255.0f;
+    const float d = static_cast<float>(depth) / 65535.0f;
+    glClearColor(r, g, b, a);
+    glClearDepth(d);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    message_ = "Glide buffer cleared";
+    return true;
+#endif
+}
+
+bool GlideOpenGlBackend::BufferSwap(std::uint32_t swap_interval)
+{
+#if !defined(_WIN32)
+    return false;
+#else
+    if (!is_open())
+    {
+        message_ = "cannot swap Glide buffer without an OpenGL window";
+        return false;
+    }
+    if (dummy_mode_)
+    {
+        return true;
+    }
+    auto hdc = static_cast<HDC>(device_context_);
+    if (hdc != nullptr)
+    {
+        SwapBuffers(hdc);
+    }
+    message_ = "Glide buffer swapped";
+    return true;
+#endif
+}
+
 bool GlideOpenGlBackend::SetColorMask(bool rgb, bool alpha)
 {
 #if !defined(_WIN32)

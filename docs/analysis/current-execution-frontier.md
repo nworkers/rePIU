@@ -1,3 +1,54 @@
+## 2026-07-19 Task 249 (확인): 600초(10분) 완주 — 검은 화면 근인 = 렌더 경로 3계층(제시/그리기/텍스처) 전면 no-op; 프레임 루프는 78초부터 빈 프레임만 순환 / Task 249 (confirmed): full 600 s (10 min) run — black-screen root cause = all three render-path layers (present/draw/texture) are no-ops; the frame loop spins empty frames from 78 s
+
+**확인됨 (600초 완주):** aot-dynamic `pumpit1` 600초 요청 구동이 크래시·fatal 없이
+완주했다(fatal_count 0, 거부 게이트 0, child_exit=124는 supervisor의 설계된 강제
+종료). dispatch_entry 5,287,600, progress 286,238. 실행 국면: (1) ~15초 부팅/로딩,
+(2) 15~77초 텍스처 기술자 파싱 루프(stricmp/strtok 대역, Task 229-230에서 특성화한
+경로), (3) **78초부터 종료까지 프레임 루프 정착** — 1 Hz 샘플에서
+`grBufferNumPending(86)` 191회, `grColorMask(91)` 133회, `grCullMode(94)` 61회,
+`grDepthMask(98)` 36회, `grBufferClear(84)` 33회, `grBufferSwap(85)` 4회 등
+clear→상태 재설정→swap→numpending 순환만 관측됐다.
+
+**확인됨 (검은 화면 근인):** 창은 실제 WGL 창이다(`_GRSSTWINOPEN@28:
+mode_supported=1 opened=1`, dummy 아님). 검은 화면은 렌더 경로 3계층이 전부
+ABI-보존 no-op이기 때문: (1) `_GRBUFFERSWAP@4`가 `SwapBuffers`를 호출하지 않아
+`OpenWindowed`의 1회 검정 clear+swap 이후 어떤 프레임도 제시되지 않고, (2)
+`_GRBUFFERCLEAR@12`·draw 계열(71~76)이 no-op이라 백버퍼에 그릴 내용이 없으며,
+(3) `_GRTEXDOWNLOADMIPMAPLEVEL@32`/`_GRTEXSOURCE@16`이 텍셀 데이터를 버린다.
+상세 인벤토리와 단계별 보완 계획(R0 게이트 안전망 → R1 제시 → R2 정점 → R3
+텍스처 → R4 LFB → R5 충실도)은
+`docs/design/20260719-249-glide-render-path-completion.md`.
+
+**확인됨 (export 격차):** `PIU.EXE`는 장식된 Glide 이름 97개를 참조하나 현재
+시그니처 카탈로그는 44개(53개 미등록: LFB 7, 크로마키 2, AA draw 5, 텍스처
+다운로드/테이블/파라미터 11, SST 상태/동기화 12 등). 미등록 이름 호출 시
+`signature-mismatch` 거부 → Task 245-248의 미처리 게이트 크래시 사슬 위험.
+
+**미확정:** (1) 600초 동안 draw(66~77)/LFB(110~117) 호출이 샘플에 전혀 없음 —
+게임이 Glide 밖 하위 시스템(입력 I/O, YMZ280B, CD 오디오, EEPROM) 대기로 콘텐츠
+단계에 못 갔는지, 관측 캡(게이트 로그 96건, 1 Hz 샘플) 때문인지 R0의 ordinal별
+라이브 카운트로 확정 필요. (2) 로더 timeout-teardown segfault(exit 139, Task 235
+잔여)가 재확인됨 — 자체 타임아웃(150초) 직접 구동에서 종료 요약(ordinal별 호출
+카운트) 출력 전에 죽어 측정을 막았다. 다음 작업의 선결 과제.
+
+**English summary.** A requested 600 s aot-dynamic `pumpit1` run completed with no
+crash, no fatal, and zero rejected gates (child_exit=124 is the supervisor's
+designed kill; dispatch 5.29 M, progress 286 K). Phases: boot/load to ~15 s, the
+Task 229-230 texture-descriptor parse loop to ~77 s, then a stable frame loop
+(clear→color-mask→swap→numPending plus per-frame state resets) until the end.
+The window is a real WGL window (`opened=1`, not dummy). The black screen is
+structural: `_GRBUFFERSWAP@4` never calls `SwapBuffers` (nothing is ever
+presented after the single black clear in `OpenWindowed`), the clear/draw family
+is no-op (nothing in the back buffer), and texture download/source discard texel
+data. `PIU.EXE` references 97 decorated Glide names versus 44 cataloged (53
+unregistered — LFB, chroma key, AA draws, texture tables, SST sync — each a
+latent unhandled-gate crash risk). Open: no draw/LFB ordinal appeared in ~560
+samples (game possibly content-blocked on non-Glide subsystems, or observation
+caps), and the loader timeout-teardown segfault (exit 139) again suppressed the
+graceful-exit per-ordinal summary. Phased completion plan (R0 gate safety net →
+R1 present → R2 vertex → R3 texture → R4 LFB → R5 fidelity):
+`docs/design/20260719-249-glide-render-path-completion.md`.
+
 ## 2026-07-19 Task 236 (confirmed): fxTMGetTMBlock root cause and next Glide frontier
 
 **확인됨:** 80초 이상 `aot-dynamic` 실행에서 `fxTMGetTMBlock()`이 출력한 `0x030FEE17`은 텍스처 크기가 아니라 import-resolver thunk 주소였다. `_GRTEXMINADDRESS@4`와 `_GRTEXMAXADDRESS@4`의 8바이트 stdcall 정리는 계측으로 확인되었으며 정상이다. 실제 누락은 `_GRTEXTEXTUREMEMREQUIRED@8`였다. PIU가 전달한 `GrTexInfo={smallLod=0, largeLod=0, aspect=3, format=10}`와 mask 3은 1×1 ARGB4444 텍스처를 뜻하며, HLE는 정렬된 8바이트를 EAX로 반환한다. 이로써 기존 DOS `AX=4CFF` 종료와 `fxTMGetTMBlock()` 오류는 사라졌다.

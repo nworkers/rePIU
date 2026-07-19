@@ -540,7 +540,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             !repiu::hle::CalculateGlideTextureMemoryRequired(
                 context->glide_gate_stack[1], info, &required_bytes))
         {
-            return false;
+            return reject_gate("set-state-unreadable-memory");
         }
         ++context->glide_gate_handled_count;
         win32_context->Eax = required_bytes;
@@ -595,7 +595,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                 context->glide_state.texture_memory_bytes,
                 &maximum_address))
         {
-            return false;
+            return reject_gate("texture-max-address-calculation-failure");
         }
         RecordGlideTextureGateTrace(context, win32_context, *glide_export, return_address, maximum_address, true);
         ++context->glide_gate_handled_count;
@@ -614,7 +614,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         {
             context->glide_backend_message =
                 context->glide_backend.message();
-            return false;
+            return reject_gate("color-mask-backend-failure");
         }
         context->glide_backend_message = context->glide_backend.message();
         ++context->glide_gate_handled_count;
@@ -629,7 +629,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         {
             context->glide_backend_message =
                 context->glide_backend.message();
-            return false;
+            return reject_gate("render-buffer-backend-failure");
         }
         context->glide_backend_message = context->glide_backend.message();
         ++context->glide_gate_handled_count;
@@ -651,7 +651,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         {
             context->glide_backend_message =
                 context->glide_backend.message();
-            return false;
+            return reject_gate("depth-mask-backend-failure");
         }
         context->glide_backend_message = context->glide_backend.message();
         ++context->glide_gate_handled_count;
@@ -666,7 +666,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         {
             context->glide_backend_message =
                 context->glide_backend.message();
-            return false;
+            return reject_gate("depth-buffer-mode-backend-failure");
         }
         context->glide_backend_message = context->glide_backend.message();
         ++context->glide_gate_handled_count;
@@ -776,7 +776,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         {
             context->glide_backend_message =
                 context->glide_backend.message();
-            return false;
+            return reject_gate("alpha-test-function-backend-failure");
         }
         context->glide_state.alpha_test_function = function;
         context->glide_backend_message = context->glide_backend.message();
@@ -792,7 +792,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         {
             context->glide_backend_message =
                 context->glide_backend.message();
-            return false;
+            return reject_gate("depth-buffer-function-backend-failure");
         }
         context->glide_state.depth_buffer_function = function;
         context->glide_backend_message = context->glide_backend.message();
@@ -808,7 +808,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         {
             context->glide_backend_message =
                 context->glide_backend.message();
-            return false;
+            return reject_gate("fog-mode-backend-failure");
         }
         context->glide_state.fog_mode = mode;
         context->glide_backend_message = context->glide_backend.message();
@@ -828,7 +828,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         {
             context->glide_backend_message =
                 context->glide_backend.message();
-            return false;
+            return reject_gate("clip-window-backend-failure");
         }
         context->glide_state.clip_min_x = min_x;
         context->glide_state.clip_min_y = min_y;
@@ -847,7 +847,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         {
             context->glide_backend_message =
                 context->glide_backend.message();
-            return false;
+            return reject_gate("cull-mode-backend-failure");
         }
         context->glide_state.cull_mode = mode;
         context->glide_backend_message = context->glide_backend.message();
@@ -864,7 +864,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         if (!repiu::hle::BuildGlideStateImage(context->glide_state, &image) ||
             !WriteGuestBytes(context, output, image.data(), image.size()))
         {
-            return false;
+            return reject_gate("get-state-serialization-failure");
         }
         ++context->glide_gate_handled_count;
         win32_context->Eip = return_address;
@@ -879,12 +879,12 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         repiu::hle::GlideLogicalState restored = context->glide_state;
         if (!IsGuestRangeReadable(context, input, image.size()))
         {
-            return false;
+            return reject_gate("set-state-unreadable-memory");
         }
         std::memcpy(image.data(), input, image.size());
         if (!repiu::hle::ParseGlideStateImage(image, &restored))
         {
-            return false;
+            return reject_gate("set-state-deserialization-failure");
         }
         context->glide_state = restored;
         ++context->glide_gate_handled_count;
@@ -899,7 +899,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         {
             context->glide_backend_message =
                 context->glide_backend.message();
-            return false;
+            return reject_gate("dither-mode-backend-failure");
         }
         context->glide_state.dither_mode = mode;
         context->glide_backend_message = context->glide_backend.message();
@@ -910,9 +910,15 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
     }
     if (glide_export->name == "_GRBUFFERCLEAR@12")
     {
-        // Frame-loop clear stays within the rendering boundary (same policy
-        // as the draw calls) until the OpenGL frame path is implemented;
-        // preserve the observed stdcall ABI so the caller frame survives.
+        const std::uint32_t color = context->glide_gate_stack[1];
+        const std::uint32_t alpha = context->glide_gate_stack[2];
+        const std::uint32_t depth = context->glide_gate_stack[3];
+        if (!context->glide_backend.BufferClear(color, alpha, depth))
+        {
+            context->glide_backend_message = context->glide_backend.message();
+            return reject_gate("buffer-clear-backend-failure");
+        }
+        context->glide_backend_message = context->glide_backend.message();
         ++context->glide_gate_handled_count;
         win32_context->Eip = return_address;
         win32_context->Esp += 4U * sizeof(std::uint32_t);
@@ -920,6 +926,13 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
     }
     if (glide_export->name == "_GRBUFFERSWAP@4")
     {
+        const std::uint32_t swap_interval = context->glide_gate_stack[1];
+        if (!context->glide_backend.BufferSwap(swap_interval))
+        {
+            context->glide_backend_message = context->glide_backend.message();
+            return reject_gate("buffer-swap-backend-failure");
+        }
+        context->glide_backend_message = context->glide_backend.message();
         ++context->glide_gate_handled_count;
         win32_context->Eip = return_address;
         win32_context->Esp += 2U * sizeof(std::uint32_t);
@@ -969,7 +982,26 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         win32_context->Esp += 3U * sizeof(std::uint32_t);
         return true;
     }
-    return reject_gate("no-handler");
+    // Default handler for unhandled but cataloged gates (Phase R0)
+    ++context->glide_gate_handled_count;
+    if (signature->return_kind != repiu::hle::GlideReturnKind::kVoid)
+    {
+        win32_context->Eax = 0U;
+    }
+    win32_context->Eip = return_address;
+    win32_context->Esp += sizeof(std::uint32_t) + signature->argument_byte_count;
+
+    static long unhandled_gate_log_count = 0;
+    const long log_index = InterlockedIncrement(&unhandled_gate_log_count);
+    if (log_index <= 32)
+    {
+        fprintf(stderr,
+                "[repiu-live-debug] glide gate unhandled (default) #%ld ordinal=%u"
+                " name=%s\n",
+                log_index, glide_export->ordinal,
+                glide_export->name.c_str());
+    }
+    return true;
 }
 
 // Lightweight VEH transfer paths run without an ExceptionDispatchScope, so

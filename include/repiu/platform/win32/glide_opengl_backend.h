@@ -24,6 +24,8 @@ public:
                       std::uint32_t color_buffer_count,
                       std::uint32_t auxiliary_buffer_count);
     void PumpEvents();
+    bool BufferClear(std::uint32_t color, std::uint32_t alpha, std::uint32_t depth);
+    bool BufferSwap(std::uint32_t swap_interval);
     bool SetColorMask(bool rgb, bool alpha);
     bool SetRenderBuffer(std::uint32_t buffer);
     bool SetDepthMask(bool enabled);

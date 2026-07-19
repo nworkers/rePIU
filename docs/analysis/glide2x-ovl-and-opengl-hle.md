@@ -73,6 +73,61 @@ OVL의 GPL 계열 공개 source나 기존 Glide wrapper 구현은 코드로 복�
 * [Khronos OpenGL fixed-function pipeline 설명](https://wikis.khronos.org/opengl/Fixed_Function_Pipeline)
 * [MAME machine record: Pump It Up 1st / Voodoo Banshee](https://arcade.vastheman.com/minimaws/machine/pumpit1)
 
+## 600초 프레임 루프 관측과 검은 화면 근인 (2026-07-19 Task 249) / 600-Second Frame-Loop Observation and Black-Screen Root Cause
+
+**확인됨.** aot-dynamic 600초 구동에서 Glide 초기화 시퀀스(게이트 전수 로그 96건:
+init→queryHardware→select→winOpen→화면 크기→TMU 주소→상태 일괄 설정→state
+round-trip→텍스처 mem/다운로드/샘플러→hints→프레임 루프 진입)가 거부 0건으로
+통과했고, 78초부터 종료까지 프레임 루프
+`grBufferClear→grColorMask→grBufferSwap→grBufferNumPending`(+ 프레임별 상태
+재설정: cullMode/depthMask/fogMode/clipWindow/texMipMapMode 등)이 안정 순환했다.
+창은 실제 WGL 창이다(`mode_supported=1 opened=1`).
+
+**확인됨 (검은 화면 = 렌더 경로 3계층 no-op).** (1) `_GRBUFFERSWAP@4` 핸들러가
+`SwapBuffers`를 호출하지 않으므로 `OpenWindowed`의 최초 1회 검정 clear+swap 이후
+어떤 프레임도 제시되지 않는다. (2) `_GRBUFFERCLEAR@12`와 draw 계열(71~76)이
+no-op이므로 백버퍼 내용이 없다. (3) 텍스처 다운로드/소스가 텍셀 데이터를 버린다.
+단계별 보완 계획은 `docs/design/20260719-249-glide-render-path-completion.md`.
+
+**미확정.** 600초 동안 draw(66~77)/LFB(110~117) ordinal이 1 Hz 샘플에 전혀 나타나지
+않았다 — 게임이 Glide 밖 하위 시스템(입력 I/O, YMZ280B, CD 오디오, EEPROM) 대기로
+콘텐츠 단계에 도달하지 못했을 가능성과 관측 캡(게이트 로그 96건, 1 Hz 샘플) 가능성이
+남아 있으며, ordinal별 라이브 카운트 텔레메트리(계획 R0)로 확정한다.
+
+**Confirmed (Task 249).** A 600 s aot-dynamic run passes the full Glide startup
+sequence with zero rejected gates and settles from 78 s into a stable frame loop
+(clear→colorMask→swap→numPending plus per-frame state resets) on a real WGL
+window. The black screen is structural: no present (`grBufferSwap` never calls
+`SwapBuffers` after the single black clear at open), no drawing (clear/draw
+family are no-ops), no textures (downloads discarded). **Open:** no draw/LFB
+ordinal appeared in ~560 samples — either the game is content-blocked on
+non-Glide subsystems or the observation caps missed rare calls; the R0
+per-ordinal live counts in design 249 settle this.
+
+## PIU.EXE가 참조하는 전체 Glide export 집합 (2026-07-19 Task 249) / Full Glide Export Set Referenced by PIU.EXE
+
+**확인됨.** `PIU.EXE` 바이너리 문자열 스캔으로 장식된 Glide 이름 **97개**를 확인했다
+(`_GR[A-Z0-9]+@N` 패턴, GETPROCADDR 요청 후보 전체 집합). `glide2x.ovl`
+resident-name table 전수 파싱으로 ordinal 0(모듈명 `glide2x`)~172를 확정했으며,
+1~7·64·78·108·109·133·141·142·145는 내부 헬퍼(`__GRTEXDOWNLOAD_DEFAULT_*`,
+`__GRTEXDOWNLOADPALETTE@16` 등), 9~28·51~55·57~63·65·146은 `_GU*` 유틸리티,
+147~172는 PCI/포트 I/O 계열(`_PIO*`, `_PCI*`)로 HLE 대상이 아니다. 현재 HLE
+시그니처 카탈로그는 44개이므로 PIU 참조 이름 기준 **53개가 미등록**이다. 미등록
+기능군: LFB 계열 7개(grLfbLock@24/Unlock@8/WriteRegion@32/ReadRegion@28 등),
+크로마키 2개, 상수색 2개, AA draw 5개, grDrawPolygonVertexList@8, 텍스처
+다운로드/테이블 5개, 텍스처 파라미터 6개, SST 상태/동기화 12개, fog/감마/기타 6개,
+유틸/진단 8개. 전체 목록과 ordinal은
+`docs/design/20260719-249-glide-render-path-completion.md` §4 참조.
+
+**Confirmed (2026-07-19 Task 249).** A string scan of `PIU.EXE` yields **97**
+decorated Glide names (the full GETPROCADDR candidate set). A full parse of the
+OVL resident-name table pins ordinals 0-172; internal helpers, `_GU*` utilities,
+and the PCI/port-I/O family (147-172) are out of HLE scope. The current
+44-signature catalog leaves **53 referenced names unregistered** (LFB, chroma
+key, constant color, AA draws, texture download/table/parameter, SST
+status/sync, fog/gamma, and diagnostics groups). See design 249 §4 for the full
+table.
+
 # Glide2x.ovl and OpenGL HLE Analysis
 
 The user-provided `Glide2x.ovl` is an MZ-bound 80386 LE module with three objects, 78 pages, 3,419 internal fixups, and no imported modules. Its resident-name table exposes 172 decorated exports. Suffixes such as `_GRSSTWINOPEN@28`, `_GRDRAWTRIANGLE@12`, and `_GRBUFFERSWAP@4` provide the callee argument-byte count needed for dynamic guest trap gates.
@@ -222,6 +277,6 @@ flowchart LR
 
 ## `grTexMaxAddress` 및 `grTexMinAddress` 인자 ABI 보정 / `grTexMaxAddress` and `grTexMinAddress` ABI Correction
 
-**확인됨:** PIU 실행 흐름 중 `_GRTEXMAXADDRESS@4` 및 `_GRTEXMINADDRESS@4` 호출 직후 접근 위반(`0xC0000005`)이 발생했습니다. 정상적인 Glide 2.x API는 두 함수 모두 `stdcall` 인자 4바이트를 사용하지만, 해당 게임 바이너리는 `cdecl` 방식으로 컴파일된 것으로 추정되며 인자를 호출자가 정리(정상적인 PUSH 이후 호출)하려고 시도합니다. HLE 계층에서 해당 호출을 `ESP += 8` (기존 인자 4 + 정리 4)로 처리하면 호출 이후 스택 프레임이 꼬여서 `_GRCLIPWINDOW@16` 등 다른 호출 시 스택 불일치(misalignment)로 인한 Return Point 붕괴 현상이 발생했습니다. HLE에서는 정상적으로 `ESP += 4`로만 처리해야 스택이 일치합니다.
+**정정됨 (2026-07-18 Task 235, 이 절의 기존 cdecl 결론은 반증됨):** Task 234가 기록했던 "게임 바이너리가 cdecl로 컴파일되어 `ESP += 4`(인자 미pop)로 처리해야 한다"는 결론은 **오류였다.** xref 추적으로 두 thunk의 유일한 호출자가 `fxTMInit`임을 확인했고, `fxTMInit`은 `push arg; call grTexMin; push arg; call grTexMax; mov eax,[esp]`처럼 caller측 정리 없이 호출한다 — 즉 **stdcall(피호출자 인자 pop, `ESP += 8`)을 전제**한다. cdecl 처리(`ESP += 4`)는 잔여 인자 2개가 `mov eax,[esp]`를 오염시켜 fxTMInit NULL gc 크래시(0x0304DBF8)를 일으키는 회귀였다. 현재 HLE는 stdcall(`Esp += 2*4`)로 복원되어 있다. 상세: `docs/analysis/current-execution-frontier.md`의 Task 235 절.
 
-**Confirmed:** An access violation (`0xC0000005`) occurred immediately after calling `_GRTEXMAXADDRESS@4` and `_GRTEXMINADDRESS@4` during PIU execution. While standard Glide 2.x APIs use 4-byte `stdcall` arguments for both functions, the game binary appears to be compiled with `cdecl` and attempts to clean up the arguments itself. Handling these calls as `ESP += 8` (4 bytes for argument + 4 bytes for cleanup) in the HLE layer corrupts the stack frame, causing misalignment and Return Point destruction in subsequent calls like `_GRCLIPWINDOW@16`. The HLE must handle them as standard `ESP += 4` to keep the stack consistent.
+**Corrected (2026-07-18 Task 235; the earlier cdecl conclusion in this section is disproved):** Task 234's claim that the game binary calls these as `cdecl` (requiring `ESP += 4`) was wrong. xref tracing shows `fxTMInit` is the sole caller of both thunks and issues `push arg; call ...` with no caller-side cleanup, i.e. it assumes **stdcall (callee pops, `ESP += 8`)**. The cdecl handling left two stale dwords that corrupted `mov eax,[esp]` and caused the fxTMInit NULL-gc crash at `0x0304DBF8`. The HLE has been restored to stdcall (`Esp += 2*4`). Details: the Task 235 entry in `docs/analysis/current-execution-frontier.md`.
