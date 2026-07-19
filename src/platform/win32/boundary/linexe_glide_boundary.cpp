@@ -347,6 +347,23 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                       context->glide_first_stacks[ordinal].begin());
         }
     }
+    // Task 246: gate traffic is tiny (tens of calls), so log every entry to
+    // pin which call leaks its stack frame (an unhandled entry resumes the
+    // caller without the stdcall cleanup, offsetting ESP for the rest of the
+    // frame — the confirmed zero-EIP mechanism at 0x0304ED35).
+    {
+        static long gate_entry_log_count = 0;
+        const long entry_index = InterlockedIncrement(&gate_entry_log_count);
+        if (entry_index <= 96)
+        {
+            fprintf(stderr,
+                    "[repiu-live-debug] glide gate entry #%ld ordinal=%u"
+                    " name=%s ret=0x%08X esp=0x%08X\n",
+                    entry_index, glide_export->ordinal,
+                    glide_export->name.c_str(), context->glide_gate_stack[0],
+                    static_cast<std::uint32_t>(win32_context->Esp));
+        }
+    }
     if (context->shared_live_telemetry != nullptr)
     {
         InterlockedExchange(
@@ -371,10 +388,27 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                 static_cast<long>(context->glide_gate_stack[index]));
         }
     }
+    const auto reject_gate = [context, win32_context,
+                              glide_export](const char* reason) {
+        static long gate_reject_log_count = 0;
+        const long reject_index =
+            InterlockedIncrement(&gate_reject_log_count);
+        if (reject_index <= 16)
+        {
+            fprintf(stderr,
+                    "[repiu-live-debug] glide gate rejected #%ld ordinal=%u"
+                    " name=%s reason=%s ret=0x%08X esp=0x%08X\n",
+                    reject_index, glide_export->ordinal,
+                    glide_export->name.c_str(), reason,
+                    context->glide_gate_stack[0],
+                    static_cast<std::uint32_t>(win32_context->Esp));
+        }
+        return false;
+    };
     const std::uint32_t return_address = context->glide_gate_stack[0];
     if (!IsGuestInstructionPointer(context, return_address))
     {
-        return false;
+        return reject_gate("return-address-not-guest");
     }
     const repiu::hle::GlideSignature* signature =
         repiu::hle::FindGlideSignature(glide_export->name);
@@ -382,7 +416,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         signature->argument_byte_count !=
             glide_export->argument_byte_count)
     {
-        return false;
+        return reject_gate("signature-mismatch");
     }
     if (glide_export->name == "_GRHINTS@8")
     {
@@ -662,7 +696,16 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         {
             context->glide_backend_message =
                 context->glide_backend.message();
-            return false;
+            // Same retain policy as color combine (design 237, Task 247):
+            // an equation the GLSL translator merely does not support yet
+            // must still preserve the stdcall ABI, or the unhandled gate
+            // leaks its 24-byte frame and the caller epilogue returns to 0
+            // (the Task 245/246 zero-EIP root cause).
+            if (context->glide_backend_message !=
+                "unsupported Glide alpha-combine equation")
+            {
+                return reject_gate("alpha-combine-backend-failure");
+            }
         }
         context->glide_state.alpha_combine = state;
         context->glide_backend_message = context->glide_backend.message();
@@ -687,7 +730,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             if (context->glide_backend_message !=
                 "unsupported Glide color-combine equation")
             {
-                return false;
+                return reject_gate("color-combine-backend-failure");
             }
         }
         context->glide_state.color_combine = state;
@@ -709,7 +752,15 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         {
             context->glide_backend_message =
                 context->glide_backend.message();
-            return false;
+            // Same retain policy as the combine gates (design 237): a blend
+            // function the backend does not express yet must still preserve
+            // the stdcall ABI, or the unhandled gate leaks its frame (the
+            // Task 246 corruption chain).
+            if (context->glide_backend_message !=
+                "unsupported Glide alpha-blend function")
+            {
+                return reject_gate("alpha-blend-backend-failure");
+            }
         }
         context->glide_state.alpha_blend = state;
         context->glide_backend_message = context->glide_backend.message();
@@ -857,6 +908,31 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         win32_context->Esp += 2U * sizeof(std::uint32_t);
         return true;
     }
+    if (glide_export->name == "_GRBUFFERCLEAR@12")
+    {
+        // Frame-loop clear stays within the rendering boundary (same policy
+        // as the draw calls) until the OpenGL frame path is implemented;
+        // preserve the observed stdcall ABI so the caller frame survives.
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 4U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRBUFFERSWAP@4")
+    {
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRBUFFERNUMPENDING@0")
+    {
+        ++context->glide_gate_handled_count;
+        win32_context->Eax = 0U;
+        win32_context->Eip = return_address;
+        win32_context->Esp += sizeof(std::uint32_t);
+        return true;
+    }
     if (glide_export->name == "_GRDRAWLINE@8")
     {
         ++context->glide_gate_handled_count;
@@ -893,7 +969,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         win32_context->Esp += 3U * sizeof(std::uint32_t);
         return true;
     }
-    return false;
+    return reject_gate("no-handler");
 }
 
 // Lightweight VEH transfer paths run without an ExceptionDispatchScope, so

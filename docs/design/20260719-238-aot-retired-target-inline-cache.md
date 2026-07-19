@@ -54,3 +54,17 @@ AOT cache-coherence layer.
 3. Run `pumpit1` with the `aot-dynamic` backend for up to 180 seconds.
 4. Record whether the prior `0x0304ED35` return-cache-hit AV disappears and capture the
    next execution frontier.
+
+## 구현 상태 / Implementation Status
+
+- 2026-07-19 (Task 245): 본 설계는 Task 238 시점에는 문서로만 존재했고 코드에 구현되지
+  않았음이 확인되었다. Task 245에서 `RetireWin32AotGuestPage`에 guard 리셋을 구현한다.
+  구현은 retire 페이지에 target immediate가 속한 설치된 guard(`0F 85`)를 초기
+  `E9 rel32 miss-tail` + `90` 형태로 복원하고, 리셋 수를
+  `Win32AotGuestPageRetireResult::guard_reset_count`로 보고한다.
+
+- 2026-07-19 (Task 245): This design existed only as a document at Task 238 time and was
+  confirmed unimplemented in code. Task 245 implements the guard reset in
+  `RetireWin32AotGuestPage`: every installed guard (`0F 85`) whose target immediate lies
+  in the retired page is restored to the initial `E9 rel32 miss-tail` + `90` form, and
+  the reset count is reported via `Win32AotGuestPageRetireResult::guard_reset_count`.

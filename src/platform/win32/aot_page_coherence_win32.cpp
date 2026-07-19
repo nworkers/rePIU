@@ -4,6 +4,7 @@
 #include <Zydis.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 
@@ -208,6 +209,67 @@ DecodedGuestWrite DecodeGuestWrite(std::uint32_t execution_address)
 }
 
 #if defined(_WIN32)
+// A learned inline-cache guard whose guest target lies on the retired page
+// must fall back to its miss tail (design 238): the retired entry start is
+// now INT3, so a surviving hit would trap on every transfer without ever
+// reaching the miss tail that drives repatching. Restores the initial
+// `E9 rel32 -> miss` + `90` form, keeping the immediate and displacement
+// for the dispatcher's normal repatch protocol. Caller holds the cache
+// writable and flushes the returned offsets afterwards.
+std::uint32_t ResetInlineCacheGuardsTargetingPage(
+    Win32AotCodeCachePlacement* placement,
+    std::uint8_t* bytes,
+    std::uint32_t guest_page,
+    std::vector<std::uint32_t>* reset_guard_offsets)
+{
+    std::uint32_t reset_count = 0;
+    for (runtime::AotIndirectInlineCacheSite& site :
+         placement->indirect_inline_cache_sites)
+    {
+        const std::size_t slot_count =
+            site.entries.empty() ? 1U : site.entries.size();
+        for (std::size_t index = 0; index < slot_count; ++index)
+        {
+            const std::uint32_t guard_offset = site.entries.empty()
+                ? site.guard_offset : site.entries[index].guard_offset;
+            const std::uint32_t immediate_offset = site.entries.empty()
+                ? site.target_immediate_offset
+                : site.entries[index].target_immediate_offset;
+            if (guard_offset + 6U > placement->size ||
+                immediate_offset + 4U > placement->size ||
+                site.miss_cache_offset >= placement->size)
+            {
+                continue;
+            }
+            if (bytes[guard_offset] != 0x0FU ||
+                bytes[guard_offset + 1U] != 0x85U)
+            {
+                continue;
+            }
+            std::uint32_t guest_target = 0;
+            std::memcpy(&guest_target, bytes + immediate_offset,
+                        sizeof(guest_target));
+            if ((guest_target & kGuestPageMask) != guest_page)
+            {
+                continue;
+            }
+            const std::int32_t miss_displacement =
+                static_cast<std::int32_t>(site.miss_cache_offset) -
+                (static_cast<std::int32_t>(guard_offset) + 5);
+            bytes[guard_offset] = 0xE9U;
+            std::memcpy(bytes + guard_offset + 1U, &miss_displacement,
+                        sizeof(miss_displacement));
+            bytes[guard_offset + 5U] = 0x90U;
+            if (reset_guard_offsets != nullptr)
+            {
+                reset_guard_offsets->push_back(guard_offset);
+            }
+            ++reset_count;
+        }
+    }
+    return reset_count;
+}
+
 auto FindWriteWatch(Win32AotPageWriteWatchSet* watch_set,
                     std::uint32_t guest_page)
 {
@@ -595,6 +657,9 @@ bool RetireWin32AotGuestPage(
     {
         bytes[placement->address_map[index].cache_offset] = 0xCCU;
     }
+    std::vector<std::uint32_t> reset_guard_offsets;
+    result->guard_reset_count = ResetInlineCacheGuardsTargetingPage(
+        placement, bytes, result->guest_page, &reset_guard_offsets);
     DWORD ignored = 0;
     if (VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ,
                        &ignored) == 0)
@@ -610,6 +675,25 @@ bool RetireWin32AotGuestPage(
             bytes + placement->address_map[index].cache_offset, 1U);
         placement->address_map_states[index].active = false;
         RecordInactiveMap(placement, index);
+    }
+    for (std::uint32_t guard_offset : reset_guard_offsets)
+    {
+        FlushInstructionCache(GetCurrentProcess(),
+                              bytes + guard_offset, 6U);
+    }
+    if (result->guard_reset_count != 0U)
+    {
+        static long guard_reset_events = 0;
+        const long event_index = InterlockedIncrement(&guard_reset_events);
+        if (event_index <= 16 || (event_index & 0xFFF) == 0)
+        {
+            fprintf(stderr,
+                    "[repiu-live-debug] retire guard reset #%ld"
+                    " page=0x%08X guards=%u entries=%u\n",
+                    event_index, result->guest_page,
+                    result->guard_reset_count,
+                    static_cast<unsigned>(selected.size()));
+        }
     }
     state_position = FindGuestPageState(placement, result->guest_page);
     state_position->retired = true;

@@ -37,6 +37,7 @@ struct Win32AotGuestPageRetireResult
     bool quarantined = false;
     std::uint32_t guest_page = 0;
     std::uint32_t retired_entry_count = 0;
+    std::uint32_t guard_reset_count = 0;
     std::uint32_t windows_error = 0;
     std::string message;
 };

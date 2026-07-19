@@ -515,6 +515,10 @@ cache-to-guest provenance를 별도로 보관합니다. 번역된 명령 범위�
 write가 확인되면 serialized worker가 그 page의 active entry 첫 바이트를 `INT3`로
 바꾸고 active guest lookup에서 제외합니다. 기존 cache 주소는 삭제하지 않으므로
 이미 연결된 direct edge나 inline cache가 도달해도 guest 주소를 복원할 수 있습니다.
+같은 writable 구간에서 retire page를 guest target으로 학습한 모든 inline-cache
+guard를 초기 `E9 → miss tail` 형태로 복원해(Task 245, 설계 238), 학습된 hit이
+retired entry의 `INT3`로 영구 trap하는 대신 다음 전송이 dispatcher의 정상 miss
+재패치 프로토콜을 타게 합니다.
 
 다른 page에서 patch한 retired page로 다음에 진입할 때 live guest byte를 snapshot해
 새 세대를 발행합니다. 길이가 5바이트 이상인 오래된 entry는 최신 entry로 가는
@@ -564,7 +568,11 @@ REP/string store가 여러 page를 넘는 일반 경우와 multi-thread publicat
 AOT placement keeps guest-page provenance, generation, and active state separate
 from the immutable address map. A write overlapping translated instruction bytes
 causes the serialized worker to replace active entry bytes with `INT3` and remove
-them from active guest lookup while preserving cache-to-guest provenance. Entry
+them from active guest lookup while preserving cache-to-guest provenance. In the
+same writable window, every learned inline-cache guard whose guest target lies on
+the retired page is restored to its initial `E9 → miss tail` form (Task 245,
+design 238), so learned hits re-enter the dispatcher's normal miss-repatch
+protocol instead of trapping forever on the retired entry's `INT3`. Entry
 into the retired page snapshots live bytes and publishes the next generation.
 Stale entries of at least five bytes are relinked with `E9 rel32`; shorter entries
 remain provenance traps. Same-page modification or publication failure

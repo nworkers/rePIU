@@ -162,6 +162,7 @@ struct ThreadContext
     std::atomic<std::uint32_t> aot_generation_relinked_entry_count{0};
     std::atomic<std::uint32_t> aot_retired_entry_trap_count{0};
     std::atomic<std::uint32_t> aot_quarantine_count{0};
+    std::atomic<std::uint32_t> aot_inline_cache_guard_reset_count{0};
     std::atomic<std::uint32_t> aot_last_code_write_source{0};
     std::atomic<std::uint32_t> aot_last_code_write_destination{0};
     std::atomic<std::uint32_t> aot_last_retired_page{0};

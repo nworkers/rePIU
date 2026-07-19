@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -79,6 +80,93 @@ void BumpAotQuarantineCount(ThreadContext* context)
     }
 }
 
+
+// Shared evidence packet for a pathological zero return address (design
+// 246): guest stack around ESP, live code bytes around code_center, the
+// tracked call frames, and the recent return trace. Fires at most four
+// times per process across both call sites.
+void DumpZeroReturnEvidence(const CONTEXT* win32_context,
+                            ThreadContext* context,
+                            const char* reason,
+                            std::uint32_t code_center)
+{
+    static long zero_return_dump_count = 0;
+    const long dump_index = InterlockedIncrement(&zero_return_dump_count);
+    if (dump_index > 4)
+    {
+        return;
+    }
+    fprintf(stderr,
+            "[repiu-live-debug] zero return target #%ld reason=%s"
+            " eip=0x%08X esp=0x%08X code_center=0x%08X call_depth=%u\n",
+            dump_index, reason,
+            static_cast<std::uint32_t>(win32_context->Eip),
+            static_cast<std::uint32_t>(win32_context->Esp),
+            code_center, context->aot_call_depth);
+    const std::uint32_t stack_base = win32_context->Esp - 0x20U;
+    for (std::uint32_t row = 0; row < 8U; ++row)
+    {
+        const std::uint32_t row_address = stack_base + row * 0x20U;
+        const auto* row_pointer = reinterpret_cast<const std::uint32_t*>(
+            static_cast<std::uintptr_t>(row_address));
+        if (!IsGuestRangeReadable(context, row_pointer, 0x20U))
+        {
+            continue;
+        }
+        fprintf(stderr,
+                "[repiu-live-debug]   stack 0x%08X: %08X %08X %08X %08X"
+                " %08X %08X %08X %08X\n",
+                row_address,
+                row_pointer[0], row_pointer[1], row_pointer[2],
+                row_pointer[3], row_pointer[4], row_pointer[5],
+                row_pointer[6], row_pointer[7]);
+    }
+    const std::uint32_t code_base = code_center - 0x40U;
+    for (std::uint32_t row = 0; row < 6U; ++row)
+    {
+        const std::uint32_t row_address = code_base + row * 0x10U;
+        const auto* row_pointer = reinterpret_cast<const std::uint8_t*>(
+            static_cast<std::uintptr_t>(row_address));
+        if (!IsGuestRangeReadable(context, row_pointer, 0x10U))
+        {
+            continue;
+        }
+        char text[3U * 16U + 1U] = {};
+        for (std::uint32_t column = 0; column < 16U; ++column)
+        {
+            std::snprintf(text + column * 3U, 4U, "%02X ",
+                          row_pointer[column]);
+        }
+        fprintf(stderr, "[repiu-live-debug]   code 0x%08X: %s\n",
+                row_address, text);
+    }
+    const std::uint32_t frame_count = std::min<std::uint32_t>(
+        context->aot_call_depth, 8U);
+    for (std::uint32_t index = 0; index < frame_count; ++index)
+    {
+        const ThreadContext::AotCallFrame& frame =
+            context->aot_call_frames[context->aot_call_depth - 1U - index];
+        fprintf(stderr,
+                "[repiu-live-debug]   frame[-%u] source=0x%08X"
+                " target=0x%08X fallthrough=0x%08X\n",
+                index, frame.source, frame.target, frame.fallthrough);
+    }
+    const std::uint32_t trace_count = std::min<std::uint32_t>(
+        context->aot_return_trace_count, 8U);
+    for (std::uint32_t index = 0; index < trace_count; ++index)
+    {
+        const std::uint32_t slot =
+            (context->aot_return_trace_count - 1U - index) %
+            kWin32AotReturnTraceCapacity;
+        const Win32AotReturnTraceEntry& entry =
+            context->aot_return_trace[slot];
+        fprintf(stderr,
+                "[repiu-live-debug]   ret[-%u] source=0x%08X actual=0x%08X"
+                " expected=0x%08X esp=0x%08X match=%d\n",
+                index, entry.source, entry.actual_target,
+                entry.expected_target, entry.esp, entry.matches ? 1 : 0);
+    }
+}
 
 DWORD WINAPI AotTranslationWorkerProc(void* parameter)
 {
@@ -353,6 +441,12 @@ bool RequestAotGuestPageRetirement(ThreadContext* context,
     {
         context->aot_terminal_failure.store(true, std::memory_order_release);
         return false;
+    }
+    if (context->aot_guest_page_retire_result.guard_reset_count != 0U)
+    {
+        context->aot_inline_cache_guard_reset_count.fetch_add(
+            context->aot_guest_page_retire_result.guard_reset_count,
+            std::memory_order_relaxed);
     }
     return context->aot_guest_page_retire_result.retired;
 }
@@ -755,6 +849,16 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
     context->aot_last_return_source.store(
         static_cast<std::uint32_t>(win32_context->Eip),
         std::memory_order_relaxed);
+    // A zero return address is always pathological. Dump a self-contained
+    // evidence packet for the first few occurrences so the deterministic
+    // 0x0304ED35 zero-slot failure (Task 245) identifies its own corruption
+    // shape, tracked call chain, and live code bytes (design 246).
+    if (target == 0U)
+    {
+        DumpZeroReturnEvidence(
+            win32_context, context, "return-dispatch",
+            static_cast<std::uint32_t>(win32_context->Eip));
+    }
     const void* return_stack = reinterpret_cast<const void*>(
         static_cast<std::uintptr_t>(win32_context->Esp));
     if (IsGuestRangeReadable(context, return_stack,

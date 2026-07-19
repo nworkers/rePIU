@@ -1877,6 +1877,10 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     if (win32_context->Eip == 0U)
     {
         win32_context->EFlags &= ~0x00000100U;
+        DumpZeroReturnEvidence(
+            win32_context, context, "zero-eip-fail-closed",
+            context->exception_dispatch_last_eip.load(
+                std::memory_order_relaxed));
         CaptureException(exception_info, context);
         context->guest_return_esp =
             static_cast<std::uint32_t>(win32_context->Esp);

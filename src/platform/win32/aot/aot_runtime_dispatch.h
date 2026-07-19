@@ -24,6 +24,14 @@ void BumpAotRetiredEntryTrapCount(ThreadContext* context);
 
 void BumpAotQuarantineCount(ThreadContext* context);
 
+// Evidence packet for a pathological zero return address / zero EIP
+// (design 246): guest stack around ESP, live code bytes around
+// code_center, tracked call frames, and the recent return trace.
+void DumpZeroReturnEvidence(const CONTEXT* win32_context,
+                            ThreadContext* context,
+                            const char* reason,
+                            std::uint32_t code_center);
+
 DWORD WINAPI AotTranslationWorkerProc(void* parameter);
 
 bool RequestAotDynamicTranslation(ThreadContext* context,

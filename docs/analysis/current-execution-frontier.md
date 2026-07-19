@@ -1770,3 +1770,143 @@ flowchart LR
 The guarded epilogue uses the existing breakpoint return dispatcher. The Win32 x86 Debug build succeeds and the prior ~79-second zero-EIP termination does not recur in a 180-second AOT run. The legacy/trap backend reaches about 2,633,713 progress and Glide ordinal `0x5E` in 180 seconds without terminal exception.
 
 **Open frontier:** High-frequency uses of this epilogue raise dynamic-AOT return dispatcher/re-entry activity to about 1.4 million and stall progress near 21 thousand. Static `ret 4` inline-cache emission remains valid, so this is a dynamic translation/page-retirement/return-cache lifetime issue, not Glide HLE. Next, trace ESP and miss-site provenance at the same instruction boundary, then identify why a return site misses again after dynamic append or retirement. Do not scan the stack for a plausible return address.
+
+## 2026-07-19 Task 245 (confirmed): retire guard 리셋 + return fast-path 복원 — zero-EIP의 실체는 호출자 반환 슬롯 0 손상 / Task 245 (confirmed): retire guard reset + return fast-path restoration — the zero-EIP is really a zeroed caller-return slot
+
+**확인됨 (Phase 1):** Task 238 설계(retire 시 해당 페이지를 guest target으로 학습한
+inline-cache guard를 초기 `E9→miss` 형태로 복원)가 미구현 상태였음을 확인하고
+`RetireWin32AotGuestPage`에 구현했다. 180초 `aot-dynamic`에서 retire 3건, guard 65개
+리셋, 이후 miss→재패치 프로토콜(`guard=0xE9` 재설치)이 정상 순환함을 확인했다.
+
+**확인됨 (Phase 2 — Task 243 가드는 착시였다):** 저장 레지스터 epilogue RET를
+dispatcher로 강제하던 Task 243 가드를 제거하자 return dispatcher 폭주가 소멸했다
+(ret_dispatch 1,454,844 → 1,009; progress 22,920@180s → 90,489@73s, 약 10배).
+실행은 fxMesa 렌더 상태 설정(grTex* 시퀀스, grColorCombine 4회)까지 최초 도달했다.
+가드는 결함을 고친 것이 아니라 진행을 정체시켜 결함 지점에 도달하지 못하게 했을
+뿐이다(Task 234/235의 "더 일찍 실패해 뒤 오류가 사라져 보임" 패턴).
+
+**확인됨 (zero-EIP 정밀 특성화):** 약 74.7초의 종료는 `0x80000004`(single-step)
+at `EIP=0` — guest `0x0304ED35`의 네이티브 RET이 `[ESP]=0`을 pop한 결과이고,
+Task 241/242의 null-EIP fail-closed 가드가 정상 작동해 caught exception(exit 2)으로
+안전 종료됐다. 로더의 라이브 바이트 창은
+`push 3; call grColorCombine_thunk(0x030FEC91); add esp,4; pop ebp/edi/esi/ecx/ebx; ret`를
+보여주며, gate ESP `0x35D6D40` + 24(`_GRCOLORCOMBINE@20` stdcall 정리) + 4 + 20(pops)
+= `0x35D6D70` = 폴트 시점 ESP로 **정확히 일치**한다. 즉 return fast-path와 Glide gate
+스택 정리는 모두 정상이고, **호출자 반환 주소 슬롯 `[0x35D6D70]`의 값 자체가 0**이다.
+이 함수 영역(`0x0304EC3C~0x0304ED35` 부근)은 정적 이미지와 라이브 바이트가 다른
+런타임 기록 코드(동적 스냅샷 필수)다.
+
+**확인됨 (trap 대조):** trap 백엔드 180초 대조 구동은 EIP=0을 재현하지 않고
+타임아웃까지 완주했다(progress 2,731,077). 다만 마지막 Glide ordinal이
+`0x5E`/`0x72`에 머물러 실패 서브시퀀스(4번째 `_GRCOLORCOMBINE@20`, 반환
+`0x0304ED2D`)에 도달했는지는 확인 불가(강제 종료로 call trace 덤프 없음) —
+**AOT 고유 여부는 미확정**이다.
+
+**미확정 (다음 단계):** 무엇이 caller 반환 슬롯을 0으로 만드는가. Task 223에서
+결정적이었던 함수 진입~복귀 게이팅 스택 슬롯 관측으로 손상 시점을 포착하고, trap
+백엔드가 실패 서브시퀀스에 실제 도달하는지(도달 시 재현 여부)를 판별한다. 근인 확정
+전 추측 수정 금지.
+
+```mermaid
+flowchart LR
+    G[Task 243 dispatcher 가드] -->|progress 22K 정체| H[결함 지점 미도달 = 착시]
+    R[Task 245 가드 제거+retire 리셋] -->|ret_dispatch 1.45M→1K| S[progress 90K, fxMesa 상태 설정 도달]
+    S --> T[0x0304ED35 RET: 반환 슬롯=0]
+    T --> U[EIP=0 single-step → fail-closed exit 2]
+```
+
+**Confirmed (Phase 1):** Design 238 (resetting inline-cache guards whose guest target
+lies on a retired page back to the initial `E9→miss` form) was unimplemented; it now
+lives in `RetireWin32AotGuestPage`. A 180-second `aot-dynamic` run shows 3 retires,
+65 guard resets, and the miss→repatch protocol cycling correctly.
+
+**Confirmed (Phase 2 — the Task 243 guard was an illusion):** Removing the dispatcher
+guard collapsed the return-dispatch storm (ret_dispatch 1,454,844 → 1,009; progress
+22,920@180 s → 90,489@73 s) and reached fxMesa render-state setup for the first time.
+The guard had only stalled execution short of the defect, mirroring the Task 234/235
+"fails earlier so the later error seems gone" pattern.
+
+**Confirmed (zero-EIP precisely characterized):** The ~74.7 s termination is a
+single-step trap at `EIP=0` after the native RET at guest `0x0304ED35` popped
+`[ESP]=0`; the null-EIP fail-closed guards worked as designed. The live byte window
+shows `push 3; call grColorCombine_thunk; add esp,4; five pops; ret`, and the ESP
+arithmetic (gate ESP + 24 stdcall cleanup + 4 + 20) exactly matches the fault ESP —
+both the return fast path and the `_GRCOLORCOMBINE@20` cleanup are correct. The
+caller-return slot itself holds zero. The region is runtime-written code whose live
+bytes differ from the static image.
+
+**Confirmed (trap control):** A 180-second trap-backend run does not reproduce the
+EIP=0 failure and survives to the timeout (progress 2,731,077), but its last Glide
+ordinal stays at `0x5E`/`0x72`, so whether it reached the failing subsequence (the
+fourth `_GRCOLORCOMBINE@20`, return `0x0304ED2D`) is unknown — AOT-specificity is
+unresolved.
+
+**Open:** What zeroes the caller-return slot. Next: a gated stack-slot observation
+(the Task 223 technique) over the function around `0x0304EC3C–0x0304ED35`, and a
+check of whether the trap backend actually reaches the failing subsequence.
+No speculative fix before the root cause is confirmed.
+
+## 2026-07-19 Tasks 246-248 (resolved): zero-EIP 근인 = 미처리 Glide 게이트의 stdcall 프레임 누수 — 수정 후 aot-dynamic 180초 완주, 메인 렌더 프레임 루프 진입 / Tasks 246-248 (resolved): the zero-EIP root cause is the stdcall frame leak of unhandled Glide gates — fixed, aot-dynamic now survives 180 s into the main render frame loop
+
+**확인됨 (근인 사슬, Task 246 증거 덤프):** zero-EIP(0x0304ED35)의 근인을 자체 완결
+증거 패킷(게스트 스택 64 dwords + 라이브 코드 창 + call frame + return trace)과
+게이트 전수 로그로 확정했다.
+
+1. `_GRALPHACOMBINE@20(3,1,0,1,0)`(ret `0x0304ECBB`)이 GLSL 번역기의
+   "unsupported Glide alpha-combine equation" 실패로 게이트 미처리(`return false`).
+2. 미처리 게이트 예외가 Task 233의 AOT DEP 스택 스캔 복구로 흘러들어, `[ESP]`의
+   반환 주소로 **ESP를 조정하지 않고** EIP만 이동 — stdcall 24바이트(ret+args) 누수.
+3. 이후 프레임 전체가 24바이트 낮게 동작: epilogue가 인자(3,1,0,1,0)를 레지스터로
+   pop(폴트 레지스터와 완전 일치)하고 RET이 0을 pop → EIP=0. 진짜 호출자 반환 주소
+   `0x0304F314`는 `[ESP+24]`에 온전히 존재(Task 243 관측의 완전한 해명).
+
+**수정 및 검증 (Tasks 247/248):** (a) alpha-combine/alpha-blend의 unsupported 거부에
+color-combine과 동일한 유지 정책 적용(상태 유지 + 정상 stdcall 반환), (b) 프레임 루프
+게이트 `_GRBUFFERCLEAR@12`/`_GRBUFFERSWAP@4`/`_GRBUFFERNUMPENDING@0` 시그니처·ABI 보존
+핸들러 추가. 연쇄 180초 구동에서 미처리 게이트가 관측 순서대로 제거되며
+(alphaCombine→bufferClear→alphaBlend) 게이트 트래픽 61→73→84→96+로 전진, **최종
+구동은 fatal 없이 180초 완주(타임아웃)하고 메인 렌더 프레임 루프**(`grBufferClear →
+grColorMask → grBufferSwap → grBufferNumPending` 반복)에 진입했다. progress
+131,803(Task 243 시점 22,920의 5.75배), 종료까지 지속 상승.
+
+**미확정 (다음 단계):**
+1. 남은 미계측 reject 지점(각 핸들러의 backend 실패 `return false`)을 전부
+   `reject_gate` 로그로 전환해 다음 미처리 게이트가 자기 식별되게 한다.
+2. **구조적 위험**: 미처리 게이트 예외가 Task 233 스택 스캔 복구로 흘러 ABI를
+   훼손하는 경로 자체를 게이트 주소에 대해 fail-closed로 차단하는 설계가 필요하다
+   (Task 243의 스택 검색 금지 원칙과 동일 계열).
+3. 렌더 루프 진입에 따라 실제 렌더링 충실도(grBufferClear/Swap, 텍스처 업로드,
+   draw 계열)와 프레임 페이싱이 다음 개발 단계다.
+4. 장기 구동(180초+)에서의 다음 정지점 특성화.
+
+```mermaid
+flowchart TD
+    A[grAlphaCombine unsupported 거부] --> B[게이트 미처리 return false]
+    B --> C[Task 233 AOT 스택 스캔 복구<br/>ESP 미조정 반환 점프]
+    C --> D[stdcall 24B 누수 → epilogue가 args pop]
+    D --> E[RET이 0 pop → EIP=0 - Task 243의 zero-EIP]
+    F[Tasks 247/248: 유지 정책 + 프레임 루프 게이트] --> G[aot-dynamic 180초 완주<br/>렌더 프레임 루프 진입<br/>progress 131,803]
+```
+
+**Confirmed (root cause chain, Task 246 evidence dump):** The zero-EIP at
+`0x0304ED35` is fully explained: an unsupported-equation failure of
+`_GRALPHACOMBINE@20` (ret `0x0304ECBB`) left the gate unhandled; the unhandled
+exception reached the Task 233 AOT stack-scan recovery, which moved EIP to the
+stack-scanned return address without adjusting ESP, leaking the 24-byte stdcall
+frame; the epilogue then popped the arguments into registers (matching the fault
+registers exactly) and the RET popped zero. The true caller return address
+`0x0304F314` sat intact at `[ESP+24]`, resolving the Task 243 observation.
+
+**Fixed and verified (Tasks 247/248):** Applied the design-237 retain policy to
+unsupported alpha-combine/alpha-blend rejections and added ABI-preserving
+frame-loop gates (grBufferClear/Swap/NumPending). Successive 180-second runs
+removed the unhandled gates in observed order (gate traffic 61→73→84→96+); the
+final run survives the full 180 seconds without a fatal and enters the main
+render frame loop (`grBufferClear → grColorMask → grBufferSwap →
+grBufferNumPending`), progress 131,803 (5.75x the Task 243 stall) and still
+climbing at the timeout.
+
+**Open:** Convert the remaining uninstrumented handler reject sites to the
+logged path; design a fail-closed block so unhandled gate exceptions can never
+reach the stack-scan recovery; begin actual rendering fidelity for the frame
+loop; characterize the next stop in longer runs.
