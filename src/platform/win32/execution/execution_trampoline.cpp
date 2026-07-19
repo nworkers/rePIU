@@ -1849,6 +1849,49 @@ bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
     return true;
 }
 
+void InjectPendingInterrupts(CONTEXT* win32_context, ThreadContext* context)
+{
+    if (!context->timer_interrupt_pending.load(std::memory_order_relaxed))
+    {
+        return;
+    }
+
+    const DpmiInterruptVectorShadow& shadow = context->dpmi_interrupt_vectors[0x08];
+    if (!shadow.valid)
+    {
+        context->timer_interrupt_pending.store(false, std::memory_order_relaxed);
+        return;
+    }
+
+    if (!IsGuestInstructionPointer(context, static_cast<std::uint32_t>(win32_context->Eip)) &&
+        !IsAotCacheAddress(context, static_cast<std::uint32_t>(win32_context->Eip)))
+    {
+        return;
+    }
+
+    context->timer_interrupt_pending.store(false, std::memory_order_relaxed);
+
+    std::uint32_t eflags = win32_context->EFlags;
+    std::uint32_t segcs = win32_context->SegCs;
+    std::uint32_t eip = win32_context->Eip;
+
+    std::uint32_t esp = win32_context->Esp;
+    esp -= 4;
+    WriteGuestBytes(context, reinterpret_cast<void*>(static_cast<std::uintptr_t>(esp)), &eflags, 4);
+    esp -= 4;
+    WriteGuestBytes(context, reinterpret_cast<void*>(static_cast<std::uintptr_t>(esp)), &segcs, 4);
+    esp -= 4;
+    WriteGuestBytes(context, reinterpret_cast<void*>(static_cast<std::uintptr_t>(esp)), &eip, 4);
+
+    win32_context->Esp = esp;
+    win32_context->SegCs = shadow.selector;
+    win32_context->Eip = shadow.offset;
+    win32_context->EFlags &= ~(0x200U | 0x100U);
+
+    fprintf(stderr, "[repiu-live] Injected INT 8, jump to %04X:%08X, return frame %08X, ticks=%u\n",
+            shadow.selector, shadow.offset, esp, context->last_timer_injection_ticks);
+}
+
 // VEH dispatch logic relocated out of the anonymous namespace (external
 // linkage) so the thin GuestStackVectoredExceptionHandler entry in
 // exception_rescue_win32.cpp can forward to it. Declared in that header.
@@ -2064,6 +2107,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     RecordAllocatorControlFlowException(exception_info, context);
     if (HandleGlideGateBoundary(win32_context, context))
     {
+        InjectPendingInterrupts(win32_context, context);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
     if (HandleLinexeFarTransferBoundary(win32_context, context))
@@ -2181,6 +2225,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     if (context->enable_dos_hle &&
         HandleDosHleInstruction(win32_context, context))
     {
+        InjectPendingInterrupts(win32_context, context);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
     const bool hle_active = context->enable_dos_hle || context->enable_traced_dos_hle;

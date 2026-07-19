@@ -53,6 +53,13 @@ struct DosInterruptVectorShadow
     bool valid = false;
 };
 
+struct DpmiInterruptVectorShadow
+{
+    std::uint16_t selector = 0;
+    std::uint32_t offset = 0;
+    bool valid = false;
+};
+
 struct ShadowWriteProvenance
 {
     std::uint32_t sequence = 0;
@@ -538,6 +545,9 @@ struct ThreadContext
     repiu::runtime::SelectorAllocator dpmi_selector_allocator;
     repiu::runtime::DosLowMemory dos_low_memory;
     std::array<DosInterruptVectorShadow, 256> dos_interrupt_vectors = {};
+    std::array<DpmiInterruptVectorShadow, 256> dpmi_interrupt_vectors = {};
+    std::atomic<bool> timer_interrupt_pending{false};
+    std::uint32_t last_timer_injection_ticks = 0;
     char hle_stdout_output[4096] = {};
     std::uint32_t hle_stdout_output_size = 0;
     char hle_stderr_output[4096] = {};

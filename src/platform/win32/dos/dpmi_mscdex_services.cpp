@@ -495,6 +495,32 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
         return true;
     }
 
+    if (ax == 0x0204)
+    {
+        const std::uint8_t vector = static_cast<std::uint8_t>(win32_context->Ebx & 0xFFU);
+        RecordHandledDosInterrupt(context, 0x31, ax);
+        const DpmiInterruptVectorShadow& shadow = context->dpmi_interrupt_vectors[vector];
+        win32_context->Ecx = (win32_context->Ecx & 0xFFFF0000U) | shadow.selector;
+        win32_context->Edx = shadow.offset;
+        win32_context->EFlags &= ~1U;
+        win32_context->Eip += 2;
+        return true;
+    }
+
+    if (ax == 0x0205)
+    {
+        const std::uint8_t vector = static_cast<std::uint8_t>(win32_context->Ebx & 0xFFU);
+        RecordHandledDosInterrupt(context, 0x31, ax);
+        DpmiInterruptVectorShadow& shadow = context->dpmi_interrupt_vectors[vector];
+        shadow.selector = static_cast<std::uint16_t>(win32_context->Ecx & 0xFFFFU);
+        shadow.offset = win32_context->Edx;
+        shadow.valid = true;
+        fprintf(stderr, "[repiu-live] DPMI INT 31h AX=0205 vector 0x%02X set to %04X:%08X\n", vector, shadow.selector, shadow.offset);
+        win32_context->EFlags &= ~1U;
+        win32_context->Eip += 2;
+        return true;
+    }
+
     std::ostringstream stream;
     stream << "unsupported DPMI INT 31h AX=0x"
            << std::hex << static_cast<unsigned>(ax);

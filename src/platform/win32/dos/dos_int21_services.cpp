@@ -957,6 +957,17 @@ void HandleDosSetInterruptVector(CONTEXT* win32_context,
     entry.offset = static_cast<std::uint16_t>(
         win32_context->Edx & 0xFFFFU);
     entry.valid = true;
+
+    // DOS extenders intercept INT 21h AH=25h from 32-bit clients
+    // to set the protected mode interrupt vector instead.
+    DpmiInterruptVectorShadow& dpmi_entry =
+        context->dpmi_interrupt_vectors[vector];
+    dpmi_entry.selector = entry.segment;
+    dpmi_entry.offset = win32_context->Edx;
+    dpmi_entry.valid = true;
+
+    fprintf(stderr, "[repiu-live] DOS INT 21h AH=25h vector 0x%02X set to %04X:%08X\n", vector, dpmi_entry.selector, dpmi_entry.offset);
+
     win32_context->EFlags &= ~1U;
 }
 

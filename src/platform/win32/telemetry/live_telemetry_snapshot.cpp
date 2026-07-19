@@ -178,6 +178,12 @@ DWORD PollThreadUntilExit(HANDLE thread,
             const DWORD ticks = elapsed / 55U;
             repiu::runtime::WriteDosLowMemory(
                 &progress_context->dos_low_memory, 0x046CU, ticks, 4U);
+            if (ticks > progress_context->last_timer_injection_ticks)
+            {
+                progress_context->last_timer_injection_ticks = ticks;
+                progress_context->timer_interrupt_pending.store(
+                    true, std::memory_order_relaxed);
+            }
         }
         DWORD current_exit_code = 0;
         if (!api.get_exit_code_thread(thread, &current_exit_code))

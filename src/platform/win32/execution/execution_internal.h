@@ -40,6 +40,7 @@ bool ResolveSegmentLinearRange(ThreadContext* context, std::uint16_t selector,
                                bool writable, std::uint32_t* linear_address);
 
 bool IsGuestInstructionPointer(const ThreadContext* context, std::uint32_t eip);
+void InjectPendingInterrupts(CONTEXT* win32_context, ThreadContext* context);
 
 void RecordExecutionProbe(CONTEXT* win32_context, ThreadContext* context);
 void RecordExecutionTrace(CONTEXT* win32_context, ThreadContext* context);
