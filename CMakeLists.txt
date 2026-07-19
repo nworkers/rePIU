@@ -75,6 +75,7 @@ add_library(repiu_exe
     src/platform/win32/boundary/linexe_glide_boundary.cpp
     src/platform/win32/telemetry/live_telemetry_snapshot.cpp
     src/platform/win32/io/port_io_emulator.cpp
+    src/platform/win32/io/eeprom_93c46.cpp
     src/platform/win32/native_fast_path.cpp
     src/platform/win32/native_phase_sampler.cpp
     src/platform/win32/verified_region_analyzer.cpp
