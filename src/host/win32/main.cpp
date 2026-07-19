@@ -1025,6 +1025,19 @@ void PrintExecutionAttempt(
                 attempt.linexe_scan_entry_count,
                 attempt.linexe_export_match_count,
                 attempt.linexe_scan_return_count);
+    logger.info("Win32 LINEXE indirect far call count/source/pointer/target: {}/{}/{}/{}:{} ({})",
+                attempt.linexe_indirect_far_call_count,
+                Hex32(attempt.linexe_indirect_far_call_source),
+                Hex32(attempt.linexe_indirect_far_call_pointer),
+                Hex32(attempt.linexe_indirect_far_call_selector),
+                Hex32(attempt.linexe_indirect_far_call_offset),
+                attempt.linexe_indirect_far_call_known_export ? "known export" : "unknown");
+    logger.info("Win32 INT 8 chain HLE count/source/pointer/target: {}/{}/{}/{}:{}",
+                attempt.timer_interrupt_chain_hle_count,
+                Hex32(attempt.timer_interrupt_chain_hle_source),
+                Hex32(attempt.timer_interrupt_chain_hle_pointer),
+                Hex32(attempt.timer_interrupt_chain_hle_selector),
+                Hex32(attempt.timer_interrupt_chain_hle_offset));
     logger.info("Win32 LINEXE export entry loop count: {}",
                 attempt.linexe_export_entry_loop_count);
     logger.info("Win32 LINEXE export compare count/EAX/ECX/EFLAGS: {}/{}/{}/{}",

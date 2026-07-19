@@ -742,6 +742,17 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->linexe_export_count_load_gs =
         context.linexe_export_count_load_gs;
     attempt->linexe_scan_return_count = context.linexe_scan_return_count;
+    attempt->linexe_indirect_far_call_count = context.linexe_indirect_far_call_count;
+    attempt->linexe_indirect_far_call_source = context.linexe_indirect_far_call_source;
+    attempt->linexe_indirect_far_call_pointer = context.linexe_indirect_far_call_pointer;
+    attempt->linexe_indirect_far_call_offset = context.linexe_indirect_far_call_offset;
+    attempt->linexe_indirect_far_call_selector = context.linexe_indirect_far_call_selector;
+    attempt->linexe_indirect_far_call_known_export = context.linexe_indirect_far_call_known_export;
+    attempt->timer_interrupt_chain_hle_count = context.timer_interrupt_chain_hle_count;
+    attempt->timer_interrupt_chain_hle_source = context.timer_interrupt_chain_hle_source;
+    attempt->timer_interrupt_chain_hle_pointer = context.timer_interrupt_chain_hle_pointer;
+    attempt->timer_interrupt_chain_hle_offset = context.timer_interrupt_chain_hle_offset;
+    attempt->timer_interrupt_chain_hle_selector = context.timer_interrupt_chain_hle_selector;
     attempt->linexe_bridge_entry_count = context.linexe_bridge_entry_count;
     attempt->linexe_bridge_gate_valid = context.linexe_bridge_gate_valid;
     attempt->linexe_bridge_selector = context.linexe_bridge_selector;

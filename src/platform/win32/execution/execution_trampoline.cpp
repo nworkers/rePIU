@@ -34,6 +34,7 @@
 
 #include "thread_context.h"
 #include "linexe_glide_boundary.h"
+#include "timer_interrupt_boundary.h"
 #include "aot_runtime_dispatch.h"
 #include "instruction_emulation.h"
 #include "dpmi_mscdex_services.h"
@@ -2108,6 +2109,10 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     if (HandleGlideGateBoundary(win32_context, context))
     {
         InjectPendingInterrupts(win32_context, context);
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (HandleTimerInterruptChainBoundary(win32_context, context))
+    {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
     if (HandleLinexeFarTransferBoundary(win32_context, context))

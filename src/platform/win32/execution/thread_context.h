@@ -316,6 +316,12 @@ struct ThreadContext
     std::uint32_t linexe_export_count_load_edx = 0;
     std::uint16_t linexe_export_count_load_gs = 0;
     std::uint32_t linexe_scan_return_count = 0;
+    std::uint32_t linexe_indirect_far_call_count = 0;
+    std::uint32_t linexe_indirect_far_call_source = 0;
+    std::uint32_t linexe_indirect_far_call_pointer = 0;
+    std::uint32_t linexe_indirect_far_call_offset = 0;
+    std::uint16_t linexe_indirect_far_call_selector = 0;
+    bool linexe_indirect_far_call_known_export = false;
     std::uint32_t linexe_bridge_entry_count = 0;
     bool linexe_bridge_gate_valid = false;
     std::uint16_t linexe_bridge_selector = 0;
@@ -548,6 +554,11 @@ struct ThreadContext
     std::array<DpmiInterruptVectorShadow, 256> dpmi_interrupt_vectors = {};
     std::atomic<bool> timer_interrupt_pending{false};
     std::uint32_t last_timer_injection_ticks = 0;
+    std::uint32_t timer_interrupt_chain_hle_count = 0;
+    std::uint32_t timer_interrupt_chain_hle_source = 0;
+    std::uint32_t timer_interrupt_chain_hle_pointer = 0;
+    std::uint32_t timer_interrupt_chain_hle_offset = 0;
+    std::uint16_t timer_interrupt_chain_hle_selector = 0;
     char hle_stdout_output[4096] = {};
     std::uint32_t hle_stdout_output_size = 0;
     char hle_stderr_output[4096] = {};

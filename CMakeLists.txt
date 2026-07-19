@@ -73,6 +73,7 @@ add_library(repiu_exe
     src/platform/win32/cpu_emul/guest_memory_access.cpp
     src/platform/win32/cpu_emul/instruction_emulation.cpp
     src/platform/win32/boundary/linexe_glide_boundary.cpp
+    src/platform/win32/boundary/timer_interrupt_boundary.cpp
     src/platform/win32/telemetry/live_telemetry_snapshot.cpp
     src/platform/win32/io/port_io_emulator.cpp
     src/platform/win32/io/eeprom_93c46.cpp

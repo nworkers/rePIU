@@ -116,6 +116,43 @@ bool HandleLinexeFarTransferBoundary(CONTEXT* win32_context,
 
     const auto* instruction = reinterpret_cast<const std::uint8_t*>(
         static_cast<std::uintptr_t>(win32_context->Eip));
+    constexpr std::size_t kFarPointerSize = 6U;
+    if (IsGuestRangeReadable(context, instruction, kFarPointerSize) &&
+        instruction[0] == 0xFFU && instruction[1] == 0x1DU)
+    {
+        const std::uint32_t pointer_address =
+            static_cast<std::uint32_t>(instruction[2]) |
+            (static_cast<std::uint32_t>(instruction[3]) << 8U) |
+            (static_cast<std::uint32_t>(instruction[4]) << 16U) |
+            (static_cast<std::uint32_t>(instruction[5]) << 24U);
+        const auto* pointer = reinterpret_cast<const std::uint8_t*>(
+            static_cast<std::uintptr_t>(pointer_address));
+        if (IsGuestRangeReadable(context, pointer, kFarPointerSize))
+        {
+            const std::uint32_t target_offset =
+                static_cast<std::uint32_t>(pointer[0]) |
+                (static_cast<std::uint32_t>(pointer[1]) << 8U) |
+                (static_cast<std::uint32_t>(pointer[2]) << 16U) |
+                (static_cast<std::uint32_t>(pointer[3]) << 24U);
+            const std::uint16_t target_selector =
+                static_cast<std::uint16_t>(pointer[4]) |
+                static_cast<std::uint16_t>(pointer[5] << 8U);
+            repiu::hle::LinexeService service{};
+            ++context->linexe_indirect_far_call_count;
+            context->linexe_indirect_far_call_source =
+                static_cast<std::uint32_t>(win32_context->Eip);
+            context->linexe_indirect_far_call_pointer = pointer_address;
+            context->linexe_indirect_far_call_offset = target_offset;
+            context->linexe_indirect_far_call_selector = target_selector;
+            context->linexe_indirect_far_call_known_export =
+                repiu::hle::DecodeLinexeOriginalExport(
+                    context->linexe_gate_plan,
+                    target_selector,
+                    static_cast<std::uint16_t>(target_offset),
+                    &service);
+        }
+        return false;
+    }
     constexpr std::uint8_t kFarTransferPrefix[] =
         {0x66U, 0xEAU, 0x04U, 0x00U};
     if (!IsGuestRangeReadable(
