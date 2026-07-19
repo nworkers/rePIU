@@ -2948,17 +2948,74 @@ bool RunWin32ExecutionThread(
     {
         attempt->timed_out = true;
         attempt->thread_exit_code = 3;
-        if (api.terminate_thread != nullptr)
+
+        bool gracefully_interrupted = false;
+        if (SuspendThread(thread) != static_cast<DWORD>(-1))
+        {
+            CONTEXT win32_context = {};
+            win32_context.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS;
+            if (GetThreadContext(thread, &win32_context))
+            {
+                attempt->timeout_snapshot.captured = true;
+                attempt->timeout_snapshot.eip = static_cast<std::uint32_t>(win32_context.Eip);
+                attempt->timeout_snapshot.eax = static_cast<std::uint32_t>(win32_context.Eax);
+                attempt->timeout_snapshot.ebx = static_cast<std::uint32_t>(win32_context.Ebx);
+                attempt->timeout_snapshot.ecx = static_cast<std::uint32_t>(win32_context.Ecx);
+                attempt->timeout_snapshot.edx = static_cast<std::uint32_t>(win32_context.Edx);
+                attempt->timeout_snapshot.esi = static_cast<std::uint32_t>(win32_context.Esi);
+                attempt->timeout_snapshot.edi = static_cast<std::uint32_t>(win32_context.Edi);
+                attempt->timeout_snapshot.esp = static_cast<std::uint32_t>(win32_context.Esp);
+                attempt->timeout_snapshot.ebp = static_cast<std::uint32_t>(win32_context.Ebp);
+                attempt->timeout_snapshot.eflags = static_cast<std::uint32_t>(win32_context.EFlags);
+                attempt->timeout_snapshot.cs = static_cast<std::uint16_t>(win32_context.SegCs);
+                attempt->timeout_snapshot.ds = static_cast<std::uint16_t>(win32_context.SegDs);
+                attempt->timeout_snapshot.es = static_cast<std::uint16_t>(win32_context.SegEs);
+                attempt->timeout_snapshot.ss = static_cast<std::uint16_t>(win32_context.SegSs);
+                attempt->timeout_snapshot.fs = static_cast<std::uint16_t>(win32_context.SegFs);
+                attempt->timeout_snapshot.gs = static_cast<std::uint16_t>(win32_context.SegGs);
+
+                const std::uint32_t suspended_eip = static_cast<std::uint32_t>(win32_context.Eip);
+                if (IsGuestInstructionPointer(&context, suspended_eip) ||
+                    IsAotCacheAddress(&context, suspended_eip))
+                {
+                    context.hle_message = "timeout reached during guest execution; hijacked thread for clean teardown";
+                    RecoverToHost(&win32_context, &context);
+                    SetThreadContext(thread, &win32_context);
+                    gracefully_interrupted = true;
+                }
+            }
+            ResumeThread(thread);
+
+            if (gracefully_interrupted)
+            {
+                DWORD thread_exit_code = 0;
+                if (WaitForSingleObject(thread, 3000U) == WAIT_OBJECT_0 &&
+                    GetExitCodeThread(thread, &thread_exit_code) &&
+                    thread_exit_code != STILL_ACTIVE)
+                {
+                    // Cleanly exited
+                }
+                else
+                {
+                    gracefully_interrupted = false;
+                }
+            }
+        }
+
+        if (!gracefully_interrupted && api.terminate_thread != nullptr)
         {
             api.terminate_thread(thread, 3);
             WaitForSingleObject(thread, 5000U);
         }
+
         remove_vectored_handler();
         stop_translation_worker();
         RestoreWin32AotGuestPageWriteWatches(&context.aot_page_write_watch);
         CopyThreadObservationToAttempt(context, attempt);
         attempt->valid = true;
-        attempt->message = "minimal execution attempt timed out";
+        attempt->message = context.hle_message.empty()
+            ? "minimal execution attempt timed out"
+            : context.hle_message;
         api.close_handle(thread);
         return true;
     }
