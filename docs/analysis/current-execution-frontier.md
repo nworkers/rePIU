@@ -1,4 +1,27 @@
+## 2026-07-19 Task 250 (완료): Glide R0(안전망) 및 R1(프레임 제시) 구현 완료 — 프레임 루프 정착 및 렌더링 부재 원인 특성화 / Task 250 (Completed): Glide R0 and R1 implementation complete — characterized the frame loop and root cause of absent rendering
+
+**상태 (Status):** R0(게이트 안전망) 및 R1(프레임 제시) 단계 완수 후 `main` 머지 (v0.0.69).
+
+**확인됨 (R0 & R1 구현):** 
+1. **R0 (안전망):** 97개 장식 이름 전체를 카탈로그화하고 기본 핸들러(stdcall 정리 + 상태 반환)를 도입하여, 게임 진행 중 미구현 게이트로 인한 크래시를 원천 차단했습니다.
+2. **R1 (프레임 제시):** `_GRBUFFERCLEAR@12`와 `_GRBUFFERSWAP@4`를 Win32 OpenGL 백엔드에 연결해 실제 WGL 버퍼 스왑이 이루어지게 했습니다.
+
+**확인됨 (빈 프레임 루프의 원인):**
+진단 프로파일링 결과, 게임은 프레임 루프에 정착하여 초당 60프레임으로 아래 5개 API만 반복 호출하고 있음이 관측되었습니다.
+- `grBufferClear`, `grColorMask`, `grDepthMask`, `grBufferSwap`, `grBufferNumPending`
+이 루프 안에서는 `grDrawTriangle` 등 실제 폴리곤을 그리는 함수가 **단 한 번도 호출되지 않습니다.**
+즉, 게임이 죽은 것이 아니라 게임의 메인 로직이 외부 장치(JAMMA I/O, EEPROM 초기화, 사운드 등)의 특정 상태를 기다리며 그리기 로직을 건너뛴 채 빈 프레임만 스왑하며 무한 대기(Spin-wait)하고 있는 것입니다.
+
+**계획 대비 진행률 (Progress vs. Plan):**
+- **[x] R0 게이트 안전망** (완료)
+- **[x] R1 프레임 제시** (완료)
+- **[ ] R2 정점 경로 / R3 텍스처 경로 / R4 LFB / R5 충실도** (대기)
+- **[ ] 게임 로직 스톨 원인 파악:** 렌더링 파이프라인(R2~R5) 구축 전에 먼저 게임 로직이 빈 프레임 대기를 풀고 그리기 명령(draw/LFB)을 하달하도록 I/O 포트나 EEPROM 응답 등 게임 내 하드웨어 대기 조건을 해소해야 합니다.
+
+**English summary.** Merged the R0 (Gate Safety Net) and R1 (Frame Presentation) implementations to `main` (v0.0.69). R0 eliminated unhandled-gate crash risks by introducing a catalog-driven default handler for all 97 exports. R1 connected the clear and swap gates to actual WGL `glClear` and `SwapBuffers`. Diagnostic profiling revealed that the game is steadily running a 60 FPS loop containing only clear, swap, and mask state updates, but **zero draw calls**. This proves the game state machine is spinning in an empty frame loop, deliberately skipping rendering while waiting for a non-Glide hardware subsystem (e.g., JAMMA I/O, EEPROM, or Sound) to become ready. Compared to the R0-R5 plan, R0 and R1 are fully complete; however, before proceeding to R2 (Vertex) and R3 (Texture), we must first satisfy the game's hardware wait condition so it actually begins emitting draw calls.
+
 ## 2026-07-19 Task 249 (확인): 600초(10분) 완주 — 검은 화면 근인 = 렌더 경로 3계층(제시/그리기/텍스처) 전면 no-op; 프레임 루프는 78초부터 빈 프레임만 순환 / Task 249 (confirmed): full 600 s (10 min) run — black-screen root cause = all three render-path layers (present/draw/texture) are no-ops; the frame loop spins empty frames from 78 s
+
 
 **확인됨 (600초 완주):** aot-dynamic `pumpit1` 600초 요청 구동이 크래시·fatal 없이
 완주했다(fatal_count 0, 거부 게이트 0, child_exit=124는 supervisor의 설계된 강제
