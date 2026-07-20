@@ -52,6 +52,8 @@ struct GlideOpenGlShader::Implementation
     GLint alpha_invert = -1;
     GLint color_function = -1;
     GLint color_invert = -1;
+    GLint texture_enable = -1;
+    GLint texture_sampler = -1;
 #endif
 };
 
@@ -156,9 +158,11 @@ bool GlideOpenGlShader::Initialize()
     constexpr char kVertexSource[] =
         "#version 110\n"
         "varying vec4 repiuIteratedColor;\n"
+        "varying vec2 repiuTexCoord;\n"
         "void main() {\n"
         "  gl_Position = ftransform();\n"
         "  repiuIteratedColor = gl_Color;\n"
+        "  repiuTexCoord = gl_MultiTexCoord0.xy;\n"
         "}\n";
     constexpr char kFragmentSource[] =
         "#version 110\n"
@@ -166,8 +170,15 @@ bool GlideOpenGlShader::Initialize()
         "uniform int repiuAlphaInvert;\n"
         "uniform int repiuColorFunction;\n"
         "uniform int repiuColorInvert;\n"
+        "uniform int repiuTextureEnable;\n"
+        "uniform sampler2D repiuTexture;\n"
         "varying vec4 repiuIteratedColor;\n"
+        "varying vec2 repiuTexCoord;\n"
         "void main() {\n"
+        "  if (repiuTextureEnable != 0) {\n"
+        "    gl_FragColor = texture2D(repiuTexture, repiuTexCoord);\n"
+        "    return;\n"
+        "  }\n"
         "  float alpha = repiuAlphaFunction == 1"
         " ? repiuIteratedColor.a : 0.0;\n"
         "  if (repiuAlphaInvert != 0) alpha = 1.0 - alpha;\n"
@@ -226,10 +237,18 @@ bool GlideOpenGlShader::Initialize()
     implementation_->color_invert =
         implementation_->get_uniform_location(implementation_->program,
                                               "repiuColorInvert");
+    implementation_->texture_enable =
+        implementation_->get_uniform_location(implementation_->program,
+                                              "repiuTextureEnable");
+    implementation_->texture_sampler =
+        implementation_->get_uniform_location(implementation_->program,
+                                              "repiuTexture");
     if (implementation_->alpha_function < 0 ||
         implementation_->alpha_invert < 0 ||
         implementation_->color_function < 0 ||
-        implementation_->color_invert < 0)
+        implementation_->color_invert < 0 ||
+        implementation_->texture_enable < 0 ||
+        implementation_->texture_sampler < 0)
     {
         message_ = "Glide GLSL alpha-combine uniforms are unavailable";
         Shutdown();
@@ -244,8 +263,27 @@ bool GlideOpenGlShader::Initialize()
     implementation_->uniform_1i(implementation_->color_invert, 0);
     implementation_->uniform_1i(implementation_->alpha_function, 1);
     implementation_->uniform_1i(implementation_->alpha_invert, 0);
+    // Texture sampling starts disabled and binds to texture unit 0 (R3).
+    implementation_->uniform_1i(implementation_->texture_enable, 0);
+    implementation_->uniform_1i(implementation_->texture_sampler, 0);
     message_ = "Glide GLSL combine program initialized";
     return true;
+#endif
+}
+
+void GlideOpenGlShader::SetTextureEnabled(bool enabled)
+{
+#if defined(_WIN32)
+    if (!implementation_ || implementation_->program == 0 ||
+        implementation_->texture_enable < 0)
+    {
+        return;
+    }
+    implementation_->use_program(implementation_->program);
+    implementation_->uniform_1i(implementation_->texture_enable,
+                                enabled ? 1 : 0);
+#else
+    (void)enabled;
 #endif
 }
 

@@ -6,9 +6,24 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 
 namespace repiu::platform::win32
 {
+
+// Decoded Glide draw vertex in platform-neutral form: screen-space position,
+// iterated color in [0,1], and TMU0 texture coordinates in texel space.
+struct GlideDrawVertex
+{
+    float x = 0.0F;
+    float y = 0.0F;
+    float r = 1.0F;
+    float g = 1.0F;
+    float b = 1.0F;
+    float a = 1.0F;
+    float s = 0.0F;
+    float t = 0.0F;
+};
 
 class GlideOpenGlBackend
 {
@@ -26,7 +41,22 @@ public:
     void PumpEvents();
     bool BufferClear(std::uint32_t color, std::uint32_t alpha, std::uint32_t depth);
     bool BufferSwap(std::uint32_t swap_interval);
-    bool DrawTriangle(float ax, float ay, float bx, float by, float cx, float cy);
+    bool DrawTriangle(const GlideDrawVertex& a,
+                      const GlideDrawVertex& b,
+                      const GlideDrawVertex& c);
+    // Decode a Glide texture download into an OpenGL texture keyed by its TMU
+    // start address (R3). format/large_lod/aspect follow the observed
+    // GrTexInfo; source is guest texel data of source_size bytes.
+    bool StoreTexture(std::uint32_t start_address,
+                      std::uint32_t format,
+                      std::uint32_t large_lod,
+                      std::uint32_t aspect_ratio,
+                      const std::uint8_t* source,
+                      std::size_t source_size);
+    // Select the current texture for subsequent draws (grTexSource).
+    bool SourceTexture(std::uint32_t start_address);
+    // Enable/disable texture-driven color output for SCALE_OTHER color combine.
+    void SetTextureCombineEnabled(bool enabled);
     bool SetColorMask(bool rgb, bool alpha);
     bool SetRenderBuffer(std::uint32_t buffer);
     bool SetDepthMask(bool enabled);
@@ -50,6 +80,13 @@ public:
     const std::string& message() const { return message_; }
 
 private:
+    struct TextureEntry
+    {
+        std::uint32_t gl_name = 0;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+    };
+
     void* window_ = nullptr;
     void* device_context_ = nullptr;
     void* render_context_ = nullptr;
@@ -58,6 +95,9 @@ private:
     GlideOpenGlShader shader_;
     std::string message_;
     bool dummy_mode_ = false;
+    std::unordered_map<std::uint32_t, TextureEntry> textures_;
+    const TextureEntry* current_texture_ = nullptr;
+    bool texture_combine_enabled_ = false;
 };
 
 }  // namespace repiu::platform::win32

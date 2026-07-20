@@ -1,4 +1,5 @@
 #include "repiu/platform/win32/glide_opengl_backend.h"
+#include "repiu/hle/glide_texture_decode.h"
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -7,6 +8,7 @@
 #include <GL/gl.h>
 #endif
 
+#include <cstddef>
 #include <cstdlib>
 #include <sstream>
 #include <vector>
@@ -267,7 +269,7 @@ bool GlideOpenGlBackend::BufferSwap(std::uint32_t swap_interval)
     static long swap_diag_count = 0;
     const long swap_index = InterlockedIncrement(&swap_diag_count);
     if (pixel_diagnostic_enabled &&
-        (swap_index <= 4 || swap_index % 200 == 0) && swap_index <= 4000 &&
+        (swap_index <= 60 || swap_index % 200 == 0) && swap_index <= 4000 &&
         logical_width_ > 0 && logical_height_ > 0)
     {
         const int width = static_cast<int>(logical_width_);
@@ -278,16 +280,27 @@ bool GlideOpenGlBackend::BufferSwap(std::uint32_t swap_interval)
         glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE,
                      pixels.data());
         std::size_t non_black = 0;
+        std::uint64_t sum_r = 0;
+        std::uint64_t sum_g = 0;
+        std::uint64_t sum_b = 0;
         for (std::size_t i = 0; i + 2U < pixels.size(); i += 3U)
         {
             if (pixels[i] > 8U || pixels[i + 1U] > 8U || pixels[i + 2U] > 8U)
             {
                 ++non_black;
+                sum_r += pixels[i];
+                sum_g += pixels[i + 1U];
+                sum_b += pixels[i + 2U];
             }
         }
+        const std::size_t denom = non_black == 0 ? 1U : non_black;
         fprintf(stderr,
-                "[repiu-live-debug] Glide swap #%ld non-black pixels=%zu/%d\n",
-                swap_index, non_black, width * height);
+                "[repiu-live-debug] Glide swap #%ld non-black pixels=%zu/%d"
+                " avg-rgb=%llu,%llu,%llu\n",
+                swap_index, non_black, width * height,
+                static_cast<unsigned long long>(sum_r / denom),
+                static_cast<unsigned long long>(sum_g / denom),
+                static_cast<unsigned long long>(sum_b / denom));
     }
     auto hdc = static_cast<HDC>(device_context_);
     if (hdc != nullptr)
@@ -299,8 +312,9 @@ bool GlideOpenGlBackend::BufferSwap(std::uint32_t swap_interval)
 #endif
 }
 
-bool GlideOpenGlBackend::DrawTriangle(float ax, float ay, float bx, float by,
-                                      float cx, float cy)
+bool GlideOpenGlBackend::DrawTriangle(const GlideDrawVertex& a,
+                                      const GlideDrawVertex& b,
+                                      const GlideDrawVertex& c)
 {
 #if !defined(_WIN32)
     return false;
@@ -314,15 +328,123 @@ bool GlideOpenGlBackend::DrawTriangle(float ax, float ay, float bx, float by,
     {
         return true;
     }
+    // R3: when the color combine selects the texture (SCALE_OTHER) and a texture
+    // is currently sourced, bind it and sample; otherwise output iterated color.
+    const bool sample_texture =
+        texture_combine_enabled_ && current_texture_ != nullptr &&
+        current_texture_->gl_name != 0U;
+    float inv_w = 1.0F;
+    float inv_h = 1.0F;
+    if (sample_texture)
+    {
+        glBindTexture(GL_TEXTURE_2D, current_texture_->gl_name);
+        inv_w = current_texture_->width != 0U
+            ? 1.0F / static_cast<float>(current_texture_->width)
+            : 1.0F;
+        inv_h = current_texture_->height != 0U
+            ? 1.0F / static_cast<float>(current_texture_->height)
+            : 1.0F;
+    }
+    shader_.SetTextureEnabled(sample_texture);
+    const GlideDrawVertex* const vertices[3] = {&a, &b, &c};
     glBegin(GL_TRIANGLES);
-    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-    glVertex3f(ax, ay, 0.0f);
-    glVertex3f(bx, by, 0.0f);
-    glVertex3f(cx, cy, 0.0f);
+    for (const GlideDrawVertex* vertex : vertices)
+    {
+        glColor4f(vertex->r, vertex->g, vertex->b, vertex->a);
+        if (sample_texture)
+        {
+            glTexCoord2f(vertex->s * inv_w, vertex->t * inv_h);
+        }
+        glVertex3f(vertex->x, vertex->y, 0.0F);
+    }
     glEnd();
     message_ = "Glide compact triangle drawn";
     return true;
 #endif
+}
+
+bool GlideOpenGlBackend::StoreTexture(std::uint32_t start_address,
+                                      std::uint32_t format,
+                                      std::uint32_t large_lod,
+                                      std::uint32_t aspect_ratio,
+                                      const std::uint8_t* source,
+                                      std::size_t source_size)
+{
+#if !defined(_WIN32)
+    return false;
+#else
+    if (!is_open() || dummy_mode_ || source == nullptr)
+    {
+        return false;
+    }
+    repiu::hle::GlideTextureDimensions dimensions;
+    if (!repiu::hle::CalculateGlideTextureDimensions(large_lod, aspect_ratio,
+                                                     &dimensions))
+    {
+        message_ = "unsupported Glide texture dimensions";
+        return false;
+    }
+    std::vector<std::uint8_t> rgba8;
+    if (!repiu::hle::DecodeGlideTextureToRgba8(format, dimensions.width,
+                                               dimensions.height, source,
+                                               source_size, nullptr, &rgba8))
+    {
+        message_ = "unsupported Glide texture format";
+        return false;
+    }
+    static const bool tex_diagnostic_enabled =
+        std::getenv("REPIU_GLIDE_TEX_DIAG") != nullptr;
+    if (tex_diagnostic_enabled)
+    {
+        static long store_diag_count = 0;
+        const long store_index = InterlockedIncrement(&store_diag_count);
+        if (store_index <= 16)
+        {
+            fprintf(stderr,
+                    "[repiu-live-debug] StoreTexture #%ld addr=0x%08X format=%u"
+                    " %ux%u texel0-rgba=%u,%u,%u,%u\n",
+                    store_index, start_address, format, dimensions.width,
+                    dimensions.height, rgba8[0], rgba8[1], rgba8[2], rgba8[3]);
+        }
+    }
+    TextureEntry& entry = textures_[start_address];
+    if (entry.gl_name == 0U)
+    {
+        GLuint name = 0;
+        glGenTextures(1, &name);
+        entry.gl_name = name;
+    }
+    entry.width = dimensions.width;
+    entry.height = dimensions.height;
+    glBindTexture(GL_TEXTURE_2D, entry.gl_name);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                 static_cast<GLsizei>(dimensions.width),
+                 static_cast<GLsizei>(dimensions.height), 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, rgba8.data());
+    message_ = "Glide texture stored";
+    return glGetError() == GL_NO_ERROR;
+#endif
+}
+
+bool GlideOpenGlBackend::SourceTexture(std::uint32_t start_address)
+{
+    const auto found = textures_.find(start_address);
+    if (found == textures_.end())
+    {
+        current_texture_ = nullptr;
+        return false;
+    }
+    current_texture_ = &found->second;
+    return true;
+}
+
+void GlideOpenGlBackend::SetTextureCombineEnabled(bool enabled)
+{
+    texture_combine_enabled_ = enabled;
 }
 bool GlideOpenGlBackend::SetColorMask(bool rgb, bool alpha)
 {
@@ -659,6 +781,14 @@ void GlideOpenGlBackend::Close()
         if (render_context != nullptr)
         {
             wglMakeCurrent(device_context, render_context);
+            for (auto& entry : textures_)
+            {
+                if (entry.second.gl_name != 0U)
+                {
+                    GLuint name = entry.second.gl_name;
+                    glDeleteTextures(1, &name);
+                }
+            }
             shader_.Shutdown();
             wglMakeCurrent(nullptr, nullptr);
             wglDeleteContext(render_context);
@@ -685,6 +815,9 @@ void GlideOpenGlBackend::Close()
     window_ = nullptr;
     logical_width_ = 0;
     logical_height_ = 0;
+    textures_.clear();
+    current_texture_ = nullptr;
+    texture_combine_enabled_ = false;
 }
 
 }  // namespace repiu::platform::win32

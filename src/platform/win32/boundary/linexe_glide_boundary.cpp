@@ -3,8 +3,11 @@
 #include "guest_memory_access.h"
 #include "instruction_emulation.h"
 
+#include "repiu/hle/glide_texture_decode.h"
+
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <sstream>
 #include <string>
@@ -384,6 +387,41 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                       context->glide_first_stacks[ordinal].begin());
         }
     }
+    // Task 255 R3 observation (env-gated, off by default): dump the real
+    // arguments of the texture/combine gates during content draws so the actual
+    // format, dimensions, and combine mode can be confirmed before implementing
+    // texture decode/upload/sampling. The gate stack mirror holds only 8 dwords,
+    // so read directly from the guest stack for the wider download call.
+    {
+        static const bool tex_diagnostic_enabled =
+            std::getenv("REPIU_GLIDE_TEX_DIAG") != nullptr;
+        if (tex_diagnostic_enabled &&
+            (glide_export->name == "_GRTEXDOWNLOADMIPMAPLEVEL@32" ||
+             glide_export->name == "_GRTEXSOURCE@16" ||
+             glide_export->name == "_GRTEXCOMBINE@28" ||
+             glide_export->name == "_GRCOLORCOMBINE@20"))
+        {
+            static long tex_diag_count = 0;
+            const long diag_index = InterlockedIncrement(&tex_diag_count);
+            if (diag_index <= 64)
+            {
+                std::uint32_t args[9] = {};
+                const auto* guest_stack =
+                    reinterpret_cast<const std::uint32_t*>(
+                        static_cast<std::uintptr_t>(win32_context->Esp));
+                if (IsGuestRangeReadable(context, guest_stack, sizeof(args)))
+                {
+                    std::memcpy(args, guest_stack, sizeof(args));
+                }
+                fprintf(stderr,
+                        "[repiu-live-debug] tex-diag #%ld %s args=%08X %08X %08X"
+                        " %08X %08X %08X %08X %08X\n",
+                        diag_index, glide_export->name.c_str(),
+                        args[1], args[2], args[3], args[4],
+                        args[5], args[6], args[7], args[8]);
+            }
+        }
+    }
     // Task 246: gate traffic is tiny (tens of calls), so log every entry to
     // pin which call leaks its stack frame (an unhandled entry resumes the
     // caller without the stdcall cleanup, offsetting ESP for the rest of the
@@ -587,23 +625,65 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
     }
     if (glide_export->name == "_GRTEXDOWNLOADMIPMAPLEVEL@32")
     {
-        // Texture upload is a rendering-boundary operation. The current OpenGL
-        // backend has no texture-image storage yet, so preserve the original
-        // stdcall ABI and let subsequent guest logic continue while recording
-        // the observed gate call through the existing telemetry.
+        // R3: decode and upload the texel image so a later grTexSource can bind
+        // it. Args (from the guest stack, the mirror holds only 8 dwords):
+        // tmu, startAddress, thisLod, largeLod, aspectRatio, format, evenOdd,
+        // data. Preserve the stdcall ABI regardless of upload success.
+        std::uint32_t args[9] = {};
+        const auto* guest_stack = reinterpret_cast<const std::uint32_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esp));
+        if (IsGuestRangeReadable(context, guest_stack, sizeof(args)))
+        {
+            std::memcpy(args, guest_stack, sizeof(args));
+            const std::uint32_t start_address = args[2];
+            const std::uint32_t large_lod = args[4];
+            const std::uint32_t aspect_ratio = args[5];
+            const std::uint32_t format = args[6];
+            const auto* data = reinterpret_cast<const std::uint8_t*>(
+                static_cast<std::uintptr_t>(args[8]));
+            repiu::hle::GlideTextureDimensions dimensions;
+            if (repiu::hle::CalculateGlideTextureDimensions(
+                    large_lod, aspect_ratio, &dimensions))
+            {
+                const std::size_t bytes_per_texel = format >= 8U ? 2U : 1U;
+                const std::size_t source_size =
+                    static_cast<std::size_t>(dimensions.width) *
+                    dimensions.height * bytes_per_texel;
+                if (source_size != 0U &&
+                    IsGuestRangeReadable(context, data, source_size))
+                {
+                    context->glide_backend.StoreTexture(
+                        start_address, format, large_lod, aspect_ratio, data,
+                        source_size);
+                    context->glide_backend_message =
+                        context->glide_backend.message();
+                }
+            }
+        }
         ++context->glide_gate_handled_count;
         win32_context->Eip = return_address;
         win32_context->Esp += 9U * sizeof(std::uint32_t);
         return true;
     }
+    if (glide_export->name == "_GRTEXSOURCE@16")
+    {
+        // R3: select the current texture (args: tmu, startAddress, evenOdd,
+        // GrTexInfo*). A missing texture simply leaves the previous binding.
+        context->glide_backend.SourceTexture(context->glide_gate_stack[2]);
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += sizeof(std::uint32_t) +
+            glide_export->argument_byte_count;
+        return true;
+    }
     if (glide_export->name == "_GRTEXCOMBINE@28" ||
         glide_export->name == "_GRTEXCLAMPMODE@12" ||
         glide_export->name == "_GRTEXFILTERMODE@12" ||
-        glide_export->name == "_GRTEXMIPMAPMODE@12" ||
-        glide_export->name == "_GRTEXSOURCE@16")
+        glide_export->name == "_GRTEXMIPMAPMODE@12")
     {
-        // Texture sampler and source selection stay within the rendering
-        // boundary until the OpenGL texture-image backend is implemented.
+        // Texture sampler parameters stay within the rendering boundary; the
+        // observed filter/clamp/mipmap modes are handled by the backend texture
+        // defaults for now.
         ++context->glide_gate_handled_count;
         win32_context->Eip = return_address;
         win32_context->Esp += sizeof(std::uint32_t) +
@@ -760,6 +840,16 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         state.other = context->glide_gate_stack[4];
         state.invert = context->glide_gate_stack[5] != 0U;
         state.valid = true;
+        // R3: function 3 (GR_COMBINE_FUNCTION_SCALE_OTHER) with other=1
+        // (GR_COMBINE_OTHER_TEXTURE) routes the fragment output to the sourced
+        // texture; function 1 (LOCAL) is the iterated vertex color. Toggle the
+        // backend texture-combine path accordingly (observed content draws use
+        // function 3, init uses function 1).
+        constexpr std::uint32_t kCombineFunctionScaleOther = 3U;
+        constexpr std::uint32_t kCombineOtherTexture = 1U;
+        context->glide_backend.SetTextureCombineEnabled(
+            state.function == kCombineFunctionScaleOther &&
+            state.other == kCombineOtherTexture);
         if (!context->glide_backend.SetColorCombine(state))
         {
             context->glide_backend_message =
@@ -1056,13 +1146,26 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         {
             context->glide_triangle_trace_wrapped = true;
         }
-        float coordinates[6] = {};
+        // Decode the confirmed 60-byte 2-TMU GrVertex fields: x/y (dwords 0/1),
+        // iterated color r/g/b/a in [0..255] (dwords 3/4/5/7), and TMU0 texture
+        // coordinates sow/tow (dwords 9/10). Color is normalized to [0,1].
+        GlideDrawVertex vertices[3] = {};
         for (std::size_t index = 0; index < 3U; ++index)
         {
             if (!trace.pointer_readable[index]) return reject_gate("compact-triangle-unreadable-vertex");
-            std::memcpy(&coordinates[index * 2U], trace.dwords[index], sizeof(float) * 2U);
+            float fields[15] = {};
+            std::memcpy(fields, trace.dwords[index], sizeof(fields));
+            GlideDrawVertex& vertex = vertices[index];
+            vertex.x = fields[0];
+            vertex.y = fields[1];
+            vertex.r = fields[3] / 255.0F;
+            vertex.g = fields[4] / 255.0F;
+            vertex.b = fields[5] / 255.0F;
+            vertex.a = fields[7] / 255.0F;
+            vertex.s = fields[9];
+            vertex.t = fields[10];
         }
-        if (!context->glide_backend.DrawTriangle(coordinates[0], coordinates[1], coordinates[2], coordinates[3], coordinates[4], coordinates[5]))
+        if (!context->glide_backend.DrawTriangle(vertices[0], vertices[1], vertices[2]))
         {
             context->glide_backend_message = context->glide_backend.message();
             return reject_gate("compact-triangle-backend-failure");

@@ -57,6 +57,7 @@ add_library(repiu_exe
     src/exe/executable_headers.cpp
     src/hle/dos_file_system.cpp
     src/hle/glide_hle.cpp
+    src/hle/glide_texture_decode.cpp
     src/hle/hle_dispatcher.cpp
     src/hle/hle_profile.cpp
     src/hle/linexe_call_gate.cpp

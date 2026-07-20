@@ -328,6 +328,30 @@ GR_ORIGIN_UPPER_LEFT에 맞춤; `grCullMode(0)`으로 컬링이 꺼져 와인딩
 triangle's three vertices matches the standard 2-TMU Glide GrVertex exactly (see
 table). The triangle is opaque red (255,0,0,255) with texture coordinates, so the
 game submits well-formed geometry — the absent rendering is not a data problem.
+
+## R2 정점 색상 / R3 텍스처 combine 확정 (2026-07-21 Task 255) / R2 Vertex Color and R3 Texture Combine Confirmed
+
+**확인됨 (combine 전환).** 콘텐츠 draw는 `grColorCombine(function=3=SCALE_OTHER,
+other=1=TEXTURE)`로 텍스처를 출력한다(init은 function=1=LOCAL=iterated 정점 색).
+`grTexCombine(0,1,0,1,0,0,0)`도 관측. 텍스처는 startAddress 0(format 10=RGB565)과
+8(format 12=ARGB4444), largeLod=0·aspect=3·evenOdd=3 → **1×1**(8바이트 간격이 확증).
+디코드 실측: addr=0 texel=(140,150,148,255) 불투명 회색, addr=8 texel=(0,0,0,0) 투명
+검정. 정점 텍스처 좌표(sow/tow, oow=1)는 1×1에서 wrap로 동일 texel을 샘플한다.
+
+**구현 (Task 255).** 정점 색(r/g/b/a)을 `glColor4f`로 반영(R2), 플랫폼 공용 텍스처
+디코드 모듈 + 백엔드 텍스처 캐시 + GLSL sampler2D로 SCALE_OTHER 텍스처를 샘플(R3).
+투명 텍스처의 반투명 합성은 알파 블렌딩(후속)이 필요하다. 상세:
+`docs/analysis/current-execution-frontier.md` Task 255,
+`docs/design/20260721-255-glide-r2-r3-vertex-color-and-texture.md`.
+
+**Confirmed (Task 255).** Content draws switch grColorCombine to function 3
+(SCALE_OTHER, other = TEXTURE) to output the texture, versus init's function 1
+(LOCAL, iterated vertex color). Textures at start addresses 0 (RGB565) and 8
+(ARGB4444) are 1×1 (the 8-byte spacing confirms it); decode yields an opaque gray
+texel at addr 0 and a transparent-black texel at addr 8. Implemented per-vertex
+color (R2) and a platform-neutral decode module + backend texture cache + GLSL
+sampler for SCALE_OTHER texture sampling (R3). Translucent compositing of
+transparent textures needs alpha blending (follow-up).
 **Confirmed (root cause = missing projection).** The x/y are 640×480 screen pixel
 coordinates, but the backend sets no `glOrtho`, so the `ftransform()` vertex
 shader with an identity projection pushes pixel coordinates outside NDC `[-1,1]`

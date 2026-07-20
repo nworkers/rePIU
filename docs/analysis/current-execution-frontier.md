@@ -1,3 +1,41 @@
+## 2026-07-21 Task 255 (완료): Glide R2 정점 색상 + R3 텍스처 경로 — 정점 색·1×1 텍스처 샘플링 구현 및 검증 / Task 255 (Completed): Glide R2 vertex color + R3 texture path — per-vertex color and 1×1 texture sampling implemented and verified
+
+**상태 (Status):** 구현·검증 완료, `feature/255-glide-r2-r3-color-texture` 브랜치.
+
+**R2 정점 색상 (확인됨).** 확정된 60바이트 2-TMU GrVertex의 색 필드(dword 3/4/5/7 =
+r/g/b/a, [0..255])를 `glColor4f`로 반영(흰색 고정 제거). 검증: 비검정 픽셀 평균 RGB가
+흰색이 아닌 **255,224,46(노랑/금색)** — iterated 정점 색 정상 반영, 회귀 없음.
+
+**R3 텍스처 경로 (확인됨).** env-gated 관측(`REPIU_GLIDE_TEX_DIAG`)으로 콘텐츠 draw가
+`grColorCombine` **function 3 = SCALE_OTHER, other=1 = TEXTURE**로 텍스처를 출력함을
+확인(init의 function 1 = LOCAL과 다름). 텍스처는 startAddress 0(RGB565)/8(ARGB4444),
+largeLod=0·aspect=3 → **1×1**(8바이트 간격이 이를 확증, Task 236과 일치). 구현: 플랫폼
+공용 디코드 모듈(`src/hle/glide_texture_decode.{h,cpp}`, 포맷→RGBA8 + LOD/aspect→크기),
+백엔드 텍스처 캐시(`grTexDownloadMipMapLevel` 저장 → `grTexSource` 바인딩 →
+`grColorCombine` func3 활성화), GLSL `sampler2D` 샘플링. 검증: 텍스처 디코드 정상
+(addr=0 texel=140,150,148,255 불투명 회색, addr=8 texel=0,0,0,0 투명 검정), 콘텐츠가
+텍스처를 샘플링(swap #3~#19 안정 17,280 px, avg-rgb 255,255,0 — R2의 255,224,46과
+다름). 거부 0·미처리 0·GL 오류 0·크래시 없음.
+
+**충실도 참고.** R3 비검정 픽셀(17,280)이 R2(24,704)보다 적은 것은 R2가 SCALE_OTHER
+자리에 정점색을 칠했던 것을 R3가 게임 의도(투명 텍스처)대로 렌더한 결과(회귀 아님,
+충실도 개선). 투명 텍스처의 반투명 합성은 알파 블렌딩(후속 R4, 블렌드 함수 관측
+필요)이 있어야 완전해진다. 설계:
+`docs/design/20260721-255-glide-r2-r3-vertex-color-and-texture.md`.
+
+**English summary.** R2: reflect the confirmed GrVertex color fields (r/g/b/a) via
+`glColor4f` (verified: non-black average RGB is 255,224,46, not white). R3:
+env-gated observation confirmed content draws use SCALE_OTHER (texture) color
+combine over 1×1 textures (RGB565 at addr 0, ARGB4444 at addr 8; the 8-byte
+spacing confirms 1×1). Implemented a platform-neutral decode module, a backend
+texture cache fed by grTexDownloadMipMapLevel and selected by grTexSource, a
+texture-combine toggle on grColorCombine function 3, and GLSL sampler2D sampling.
+Verified: correct decode (opaque gray and transparent-black texels), content
+samples the texture (stable 17,280 px, avg-rgb 255,255,0), no rejects/unhandled/
+GL errors/crash. The lower non-black count vs R2 is a fidelity improvement (R2
+wrongly painted vertex color where the texture is transparent); full translucent
+compositing needs alpha blending (follow-up R4).
+
 ## 2026-07-21 Task 254 (완료): 검은 화면 근인 = 직교 투영 부재 → glOrtho 도입으로 지오메트리 래스터화 확인(비검정 픽셀 0→18,176) / Task 254 (Completed): black-screen root cause = missing orthographic projection → glOrtho makes geometry rasterize (non-black pixels 0→18,176)
 
 **상태 (Status):** 구현·검증 완료, `feature/254-glide-screen-space-projection` 브랜치.
