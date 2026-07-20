@@ -236,6 +236,14 @@ bool GlideOpenGlShader::Initialize()
         return false;
     }
     implementation_->use_program(implementation_->program);
+    // Seed the combine functions to LOCAL (1) so a draw that precedes the game's
+    // grColorCombine/grAlphaCombine setup (or a retained unsupported equation)
+    // emits the iterated vertex color rather than a black fragment. The game's
+    // observed init combine (1,0,0,2,0) later confirms this same value.
+    implementation_->uniform_1i(implementation_->color_function, 1);
+    implementation_->uniform_1i(implementation_->color_invert, 0);
+    implementation_->uniform_1i(implementation_->alpha_function, 1);
+    implementation_->uniform_1i(implementation_->alpha_invert, 0);
     message_ = "Glide GLSL combine program initialized";
     return true;
 #endif

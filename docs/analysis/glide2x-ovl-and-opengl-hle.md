@@ -287,4 +287,52 @@ flowchart LR
 
 **Inferred.** The triangle references entries 0, 1, and 3 of a 60-byte producer layout. The 72-byte Glide 2.4 layout must not be applied to this PIU call path without reconciling that stride; the 72-byte capture includes adjacent entry data.
 
-**Unresolved.** The packing of the other fields and whether this is a PIU compact vertex format require more samples before OpenGL submission.
+## GrVertex 60바이트 레이아웃 확정 및 투영 근인 (2026-07-20/21 Task 254) / Confirmed 60-byte GrVertex Layout and Projection Root Cause
+
+**확인됨 (정점 레이아웃).** 첫 삼각형 3정점의 15 dword(60바이트) stride를 실측
+디코드한 결과, 표준 Glide GrVertex(2 TMU)와 정확히 일치한다. dword별 V0/V1/V2 실측값:
+
+| dword | 필드 | V0 | V1 | V2 |
+|---:|---|---|---|---|
+| 0 | x (screen) | 288.0 | 296.0 | 288.0 |
+| 1 | y (screen) | 329.9375 | 329.9375 | 313.9375 |
+| 2 | z (Glide 무시) | 정크 | 정크 | 정크 |
+| 3 | r [0..255] | 255.0 | 255.0 | 255.0 |
+| 4 | g [0..255] | 0.0 | 0.0 | 0.0 |
+| 5 | b [0..255] | 0.0 | 0.0 | 0.0 |
+| 6 | ooz (65535/z) | 가변 | 가변 | 가변 |
+| 7 | a [0..255] | 255.0 | 255.0 | 255.0 |
+| 8 | oow (1/w) | 1.0 | 1.0 | 1.0 |
+| 9 | tmu0.sow | 72.0 | 80.0 | 72.0 |
+| 10 | tmu0.tow | 32.0 | 32.0 | 48.0 |
+| 11..14 | tmu0.oow, tmu1.* | 가변 | 가변 | 가변 |
+
+이 삼각형은 **불투명 빨강(r=255,g=0,b=0,a=255) + 텍스처 좌표**를 가진다. 즉 게임은
+색과 텍스처를 갖춘 정상 지오메트리를 제출하고 있으며, 렌더 부재는 데이터 문제가
+아니다.
+
+**확인됨 (검은 화면 근인 = 투영 부재).** 정점 x/y는 640×480 화면 픽셀 좌표인데
+`GlideOpenGlBackend`가 직교 투영(`glOrtho`)을 설정하지 않아, `ftransform()` 기반
+정점 셰이더가 단위 투영행렬을 적용하면 픽셀 좌표가 NDC `[-1,1]` 밖으로 나가 모든
+삼각형이 클리핑된다. 240초 구동에서 삼각형은 거부 0·미처리 0으로 안정 제출되지만
+화면에 나타나지 않는 이유가 이것이다.
+
+**수정 (Task 254).** `OpenWindowed`에 y 뒤집힌 직교 투영
+`glOrtho(0, w, h, 0, -1, 1)`을 추가한다(관측된 `grSstWinOpen` origin=1 =
+GR_ORIGIN_UPPER_LEFT에 맞춤; `grCullMode(0)`으로 컬링이 꺼져 와인딩 반전 무해).
+셰이더 Initialize에서 combine function uniform을 1(LOCAL)로 기본 설정해 흑색
+프래그먼트를 예방한다. 색 반영(현재 흰색 고정)과 텍스처 샘플링은 후속 Task
+255/256에서 다룬다. 상세: `docs/design/20260721-254-glide-screen-space-projection.md`.
+
+**Confirmed (vertex layout).** Decoding the 15-dword (60-byte) stride of the first
+triangle's three vertices matches the standard 2-TMU Glide GrVertex exactly (see
+table). The triangle is opaque red (255,0,0,255) with texture coordinates, so the
+game submits well-formed geometry — the absent rendering is not a data problem.
+**Confirmed (root cause = missing projection).** The x/y are 640×480 screen pixel
+coordinates, but the backend sets no `glOrtho`, so the `ftransform()` vertex
+shader with an identity projection pushes pixel coordinates outside NDC `[-1,1]`
+and clips every triangle. **Fix (Task 254):** add a y-flipped
+`glOrtho(0, w, h, 0, -1, 1)` in `OpenWindowed` (matching the observed
+GR_ORIGIN_UPPER_LEFT; culling is disabled so reversed winding is harmless) and
+seed the combine function uniforms to LOCAL. Color and texture sampling are
+deferred to Tasks 255/256.

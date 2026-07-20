@@ -1,3 +1,45 @@
+## 2026-07-21 Task 254 (완료): 검은 화면 근인 = 직교 투영 부재 → glOrtho 도입으로 지오메트리 래스터화 확인(비검정 픽셀 0→18,176) / Task 254 (Completed): black-screen root cause = missing orthographic projection → glOrtho makes geometry rasterize (non-black pixels 0→18,176)
+
+**상태 (Status):** 구현·검증 완료, `feature/254-glide-screen-space-projection` 브랜치.
+
+**근인 (확인됨).** Task 251-253에서 `grDrawTriangle`가 삼각형을 제출하지만 창은 여전히
+검정이었다. 런타임 정점 캡처로 게임이 **640×480 화면 픽셀 좌표**(불투명 빨강 +
+텍스처 좌표를 가진 표준 2-TMU Glide GrVertex, 60바이트 stride)를 전달함을 확인했다.
+그런데 `GlideOpenGlBackend`가 직교 투영(`glOrtho`)을 설정하지 않아, `ftransform()`
+정점 셰이더가 단위 투영행렬을 적용하면 픽셀 좌표(x≈288, y≈330)가 NDC `[-1,1]` 밖으로
+나가 **모든 삼각형이 클리핑**됐다. GrVertex 15-dword 레이아웃 표는
+`docs/analysis/glide2x-ovl-and-opengl-hle.md`.
+
+**수정.** `OpenWindowed`에 y 뒤집힌 `glOrtho(0, w, h, 0, -1, 1)` + modelview identity
+설정(관측된 `grSstWinOpen` origin=1=GR_ORIGIN_UPPER_LEFT에 맞춤; `grCullMode(0)`으로
+컬링이 꺼져 와인딩 반전 무해). 셰이더 Initialize에서 combine function uniform 기본값
+1(LOCAL) 시드(draw가 combine 설정보다 앞서거나 미지원 식 유지 시 흑색 프래그먼트
+예방).
+
+**검증 (결정적).** 헤드리스 세션에서 GL 창 스크린샷은 desktop/window-station 격리로
+불가하여, `BufferSwap`에 env-gated(`REPIU_GLIDE_PIXEL_DIAG`) glReadPixels 비검정 픽셀
+카운트 진단을 추가해 래스터화를 직접 측정했다. 결과: swap #1 = **0**/307200(삼각형
+이전, 검정), swap #2 = **18,176**/307200(첫 삼각형 직후), swap #3/#4 =
+**24,704**/307200(안정). 투영 수정 전이면 100% 클리핑으로 비검정 0이어야 하므로,
+지오메트리가 이제 실제 래스터화됨을 증명한다. 회귀 없음(거부 0·미처리 0·GL 오류 0).
+
+**다음.** Task 255(R2 완성): GrVertex r/g/b/a를 `glColor4f`에 연결(현재 흰색 고정).
+Task 256(R3): 텍스처 저장/다운로드/소스 + s/t 샘플링. 설계:
+`docs/design/20260721-254-glide-screen-space-projection.md`.
+
+**English summary.** After Task 251-253 submitted triangles the window was still
+black. Runtime vertex capture confirmed the game passes 640×480 screen-pixel
+vertices (a standard 2-TMU Glide GrVertex, 60-byte stride, opaque red + texture
+coords), but the backend set no `glOrtho`, so the `ftransform()` shader with an
+identity projection clipped every pixel-coordinate triangle out of NDC. Fix: a
+y-flipped `glOrtho(0,w,h,0,-1,1)` in `OpenWindowed` (matching the observed
+GR_ORIGIN_UPPER_LEFT; culling disabled so reversed winding is harmless) plus a
+LOCAL combine-uniform default. Verified decisively via an env-gated glReadPixels
+non-black-pixel count in BufferSwap (screenshots are impossible in this headless
+window-station-isolated session): swap #1 = 0, swap #2 = 18,176, swap #3/#4 =
+24,704 of 307,200 — geometry now rasterizes where it was fully clipped before, no
+regression. Next: R2 color (Task 255), R3 texture (Task 256).
+
 ## 2026-07-19 Task 250 (완료): Glide R0(안전망) 및 R1(프레임 제시) 구현 완료 — 프레임 루프 정착 및 렌더링 부재 원인 특성화 / Task 250 (Completed): Glide R0 and R1 implementation complete — characterized the frame loop and root cause of absent rendering
 
 **상태 (Status):** R0(게이트 안전망) 및 R1(프레임 제시) 단계 완수 후 `main` 머지 (v0.0.69).

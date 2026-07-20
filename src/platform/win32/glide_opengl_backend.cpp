@@ -7,7 +7,9 @@
 #include <GL/gl.h>
 #endif
 
+#include <cstdlib>
 #include <sstream>
+#include <vector>
 
 namespace repiu::platform::win32
 {
@@ -174,6 +176,20 @@ bool GlideOpenGlBackend::OpenWindowed(
                0,
                static_cast<GLsizei>(logical_width),
                static_cast<GLsizei>(logical_height));
+    // Glide vertices arrive in screen pixel coordinates with GR_ORIGIN_UPPER_LEFT
+    // (grSstWinOpen origin=1). Map that screen space to NDC with a y-flipped
+    // orthographic projection so submitted geometry is not clipped. Culling is
+    // disabled by the game (grCullMode 0), so the reversed winding is harmless.
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0.0,
+            static_cast<double>(logical_width),
+            static_cast<double>(logical_height),
+            0.0,
+            -1.0,
+            1.0);
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
     glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     SwapBuffers(device_context);
@@ -240,6 +256,38 @@ bool GlideOpenGlBackend::BufferSwap(std::uint32_t swap_interval)
     if (dummy_mode_)
     {
         return true;
+    }
+    // Optional verification diagnostic (off by default): in a headless session
+    // the GL window is not screenshot-able, so sampling the back buffer for
+    // non-black pixels proves geometry is rasterized (the black clear is the
+    // discriminator). Enable with REPIU_GLIDE_PIXEL_DIAG; sampling is bounded so
+    // it never adds steady-state glReadPixels cost. Used to verify Task 254.
+    static const bool pixel_diagnostic_enabled =
+        std::getenv("REPIU_GLIDE_PIXEL_DIAG") != nullptr;
+    static long swap_diag_count = 0;
+    const long swap_index = InterlockedIncrement(&swap_diag_count);
+    if (pixel_diagnostic_enabled &&
+        (swap_index <= 4 || swap_index % 200 == 0) && swap_index <= 4000 &&
+        logical_width_ > 0 && logical_height_ > 0)
+    {
+        const int width = static_cast<int>(logical_width_);
+        const int height = static_cast<int>(logical_height_);
+        std::vector<unsigned char> pixels(
+            static_cast<std::size_t>(width) * height * 3U);
+        glReadBuffer(GL_BACK);
+        glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE,
+                     pixels.data());
+        std::size_t non_black = 0;
+        for (std::size_t i = 0; i + 2U < pixels.size(); i += 3U)
+        {
+            if (pixels[i] > 8U || pixels[i + 1U] > 8U || pixels[i + 2U] > 8U)
+            {
+                ++non_black;
+            }
+        }
+        fprintf(stderr,
+                "[repiu-live-debug] Glide swap #%ld non-black pixels=%zu/%d\n",
+                swap_index, non_black, width * height);
     }
     auto hdc = static_cast<HDC>(device_context_);
     if (hdc != nullptr)
