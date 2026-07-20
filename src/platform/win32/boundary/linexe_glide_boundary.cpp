@@ -399,11 +399,14 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             (glide_export->name == "_GRTEXDOWNLOADMIPMAPLEVEL@32" ||
              glide_export->name == "_GRTEXSOURCE@16" ||
              glide_export->name == "_GRTEXCOMBINE@28" ||
-             glide_export->name == "_GRCOLORCOMBINE@20"))
+             glide_export->name == "_GRCOLORCOMBINE@20" ||
+             glide_export->name == "_GRALPHABLENDFUNCTION@16" ||
+             glide_export->name == "_GRALPHATESTFUNCTION@4" ||
+             glide_export->name == "_GRALPHACOMBINE@20"))
         {
             static long tex_diag_count = 0;
             const long diag_index = InterlockedIncrement(&tex_diag_count);
-            if (diag_index <= 64)
+            if (diag_index <= 256)
             {
                 std::uint32_t args[9] = {};
                 const auto* guest_stack =

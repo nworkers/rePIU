@@ -1,3 +1,40 @@
+## 2026-07-21 Task 256 (완료): Glide R4 알파 블렌딩 — 관측된 블렌드 함수를 GL로 일반화, 투명 텍스처의 파괴적 검정 덮어쓰기 제거 / Task 256 (Completed): Glide R4 alpha blending — generalized the observed blend functions to GL, removing destructive black overwrite of transparent textures
+
+**상태 (Status):** 구현·검증 완료, `feature/256-glide-r4-alpha-blending` 브랜치.
+
+**근인 (R3 후속).** R3에서 콘텐츠의 투명 SCALE_OTHER 텍스처(addr=8, texel a=0)가
+불투명 검정으로 렌더됐다. 근인은 알파 블렌딩 미구현(`SetAlphaBlend`가 ONE,ZERO만
+수용)이었다.
+
+**관측 (확인됨).** `grAlphaBlendFunction` 2종: (4,0,4,0)=ONE,ZERO(불투명),
+**(1,5,4,0)=SRC_ALPHA, ONE_MINUS_SRC_ALPHA**(표준 투명). 콘텐츠 알파 combine은
+`grAlphaCombine(3,·,·,1,0)`=SCALE_OTHER=텍스처 알파, 알파 테스트=ALWAYS(7). 즉
+콘텐츠는 텍스처 알파 + SRC_ALPHA 블렌딩으로 배경에 합성한다.
+
+**수정.** `SetAlphaBlend`를 일반화해 Glide blend factor를 GL factor로 매핑(src/dst
+문맥 구분: 값 2/6은 src=DST_COLOR류, dst=SRC_COLOR류). ONE,ZERO는
+`glDisable(GL_BLEND)`, 그 외는 `glEnable(GL_BLEND)+glBlendFunc`. R3 셰이더가 이미
+텍스처 RGBA를 출력하므로 블렌딩만 켜면 투명 texel이 올바르게 합성된다.
+
+**검증.** aot-dynamic `pumpit1` 135초: 블렌드 거부 0(일반화된 핸들러가 (1,5,4,0)을
+정상 수용), 콘텐츠 swap #3~#10 안정 17,280/307200 · avg-rgb 255,255,0 — R3와 동일,
+회귀 없음, 크래시 없음. **해석:** 이 attract 화면은 투명 draw가 검은 배경 위에 있어
+블렌딩 유무가 픽셀 결과를 바꾸지 않는다(시각 동일). R4의 실질 이득은 투명 텍스처가
+다른 콘텐츠 위에 겹칠 때 나타난다(R3의 파괴적 검정 덮어쓰기 → R4의 올바른 알파 합성).
+정확성·견고성 개선. 설계: `docs/design/20260721-256-glide-r4-alpha-blending.md`.
+
+**English summary.** R3 left transparent SCALE_OTHER textures (addr=8, texel a=0)
+as opaque black because alpha blending was unimplemented. Observation confirmed
+two blend functions — ONE,ZERO (opaque) and SRC_ALPHA/ONE_MINUS_SRC_ALPHA
+(transparency) — with SCALE_OTHER alpha combine (texture alpha). Generalized
+`SetAlphaBlend` to map Glide blend factors to GL (context-sensitive for the 2/6
+color variants) and enable/disable GL_BLEND; the R3 shader already outputs texture
+RGBA, so blending composites transparent texels. Verified: zero blend rejects,
+stable content (17,280 px, 255,255,0, same as R3), no regression or crash. The
+visual is unchanged on this black-background attract screen (transparent over
+black is black either way); the benefit is correct compositing when transparent
+textures overlay other content rather than destructively overwriting it.
+
 ## 2026-07-21 Task 255 (완료): Glide R2 정점 색상 + R3 텍스처 경로 — 정점 색·1×1 텍스처 샘플링 구현 및 검증 / Task 255 (Completed): Glide R2 vertex color + R3 texture path — per-vertex color and 1×1 texture sampling implemented and verified
 
 **상태 (Status):** 구현·검증 완료, `feature/255-glide-r2-r3-color-texture` 브랜치.

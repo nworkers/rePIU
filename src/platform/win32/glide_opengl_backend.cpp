@@ -593,6 +593,35 @@ bool GlideOpenGlBackend::SetColorCombine(
     return applied;
 }
 
+#if defined(_WIN32)
+namespace
+{
+
+// Map a Glide GrAlphaBlendFnc_t factor to its OpenGL blend factor. Glide uses
+// the same enum value for the color-scaled variants (2, 6) but interprets them
+// relative to the operand, so the source and destination factors differ.
+bool MapGlideBlendFactor(std::uint32_t factor, bool is_source, GLenum* gl_factor)
+{
+    switch (factor)
+    {
+        case 0U: *gl_factor = GL_ZERO; return true;              // GR_BLEND_ZERO
+        case 1U: *gl_factor = GL_SRC_ALPHA; return true;         // SRC_ALPHA
+        case 2U: *gl_factor = is_source ? GL_DST_COLOR
+                                        : GL_SRC_COLOR; return true;
+        case 3U: *gl_factor = GL_DST_ALPHA; return true;         // DST_ALPHA
+        case 4U: *gl_factor = GL_ONE; return true;               // GR_BLEND_ONE
+        case 5U: *gl_factor = GL_ONE_MINUS_SRC_ALPHA; return true;
+        case 6U: *gl_factor = is_source ? GL_ONE_MINUS_DST_COLOR
+                                        : GL_ONE_MINUS_SRC_COLOR; return true;
+        case 7U: *gl_factor = GL_ONE_MINUS_DST_ALPHA; return true;
+        case 15U: *gl_factor = GL_SRC_ALPHA_SATURATE; return true;
+        default: return false;
+    }
+}
+
+}  // namespace
+#endif
+
 bool GlideOpenGlBackend::SetAlphaBlend(
     const hle::GlideAlphaBlendState& state)
 {
@@ -601,25 +630,38 @@ bool GlideOpenGlBackend::SetAlphaBlend(
 #else
     constexpr std::uint32_t kGlideBlendZero = 0U;
     constexpr std::uint32_t kGlideBlendOne = 4U;
+    GLenum gl_source = GL_ONE;
+    GLenum gl_destination = GL_ZERO;
     if (!is_open() || !state.valid ||
-        state.rgb_source != kGlideBlendOne ||
-        state.rgb_destination != kGlideBlendZero ||
-        state.alpha_source != kGlideBlendOne ||
-        state.alpha_destination != kGlideBlendZero)
+        !MapGlideBlendFactor(state.rgb_source, true, &gl_source) ||
+        !MapGlideBlendFactor(state.rgb_destination, false, &gl_destination))
     {
         message_ = "unsupported Glide alpha-blend function";
         return false;
     }
+    const bool opaque = state.rgb_source == kGlideBlendOne &&
+        state.rgb_destination == kGlideBlendZero;
     if (dummy_mode_)
     {
-        message_ = "Glide ONE/ZERO alpha blending disabled (dummy)";
+        message_ = opaque
+            ? "Glide ONE/ZERO alpha blending disabled (dummy)"
+            : "Glide alpha blending enabled (dummy)";
         return true;
     }
     while (glGetError() != GL_NO_ERROR)
     {
     }
-    glDisable(GL_BLEND);
-    message_ = "Glide ONE/ZERO alpha blending disabled in OpenGL";
+    if (opaque)
+    {
+        glDisable(GL_BLEND);
+        message_ = "Glide ONE/ZERO alpha blending disabled in OpenGL";
+    }
+    else
+    {
+        glEnable(GL_BLEND);
+        glBlendFunc(gl_source, gl_destination);
+        message_ = "Glide alpha blending enabled in OpenGL";
+    }
     return glGetError() == GL_NO_ERROR;
 #endif
 }
