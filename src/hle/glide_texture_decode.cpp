@@ -181,4 +181,25 @@ bool DecodeGlideTextureToRgba8(std::uint32_t format,
     return true;
 }
 
+bool IsGlideTextureFormatAcceptable(std::uint32_t format)
+{
+    switch (format)
+    {
+        case 0U:  // RGB_332
+        case 2U:  // ALPHA_8
+        case 3U:  // INTENSITY_8
+        case 4U:  // ALPHA_INTENSITY_44
+        case 5U:  // P_8
+        case 8U:  // ARGB_8332
+        case 10U: // RGB_565
+        case 11U: // ARGB_1555
+        case 12U: // ARGB_4444
+        case 13U: // ALPHA_INTENSITY_88
+        case 14U: // AP_88
+            return true;
+        default:
+            return false;
+    }
+}
+
 }  // namespace repiu::hle

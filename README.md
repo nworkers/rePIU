@@ -160,6 +160,19 @@ build\win32_x86_debug\Debug\repiu_exe_analyzer.exe path\to\another.exe
 
 analyzer는 target profile, LE header/object, fixup, relocation, runtime memory dry-run 정보를 출력합니다.
 
+## 진단 및 디버깅 / Diagnostics and debugging
+
+rePIU는 런타임 동작 진단 및 문제 해결을 위해 다음과 같은 환경변수를 지원합니다.
+
+* **`REPIU_DUMP_TEXTURE_BMP`**: `1`로 설정하면 Glide를 통해 로딩되는 텍스처를 디코딩하여 `build/texture_dumps/` 경로에 32비트 BGRA BMP 파일로 자동 저장합니다.
+* **`REPIU_GLIDE_TEX_DIAG`**: 활성화하면 텍스처 업로드 시점의 원본 포맷과 dimensions 정보를 stderr 로그로 출력합니다 (최대 16회).
+* **`REPIU_EXECUTION_TIMEOUT_MS`**: 게스트 프로그램의 최대 실행 시간(밀리초)을 제한합니다. `0`으로 세팅 시 제한을 해제(무제한)합니다.
+
+*rePIU supports the following environment variables for diagnosing runtime behavior and troubleshooting:*
+* *`REPIU_DUMP_TEXTURE_BMP`: Set to `1` to decode and dump loaded Glide textures as 32-bit BGRA BMP files under `build/texture_dumps/`.*
+* *`REPIU_GLIDE_TEX_DIAG`: Enable to print source format and dimension info of uploaded textures to stderr (up to 16 occurrences).*
+* *`REPIU_EXECUTION_TIMEOUT_MS`: Limits the maximum execution time of the guest program in milliseconds. Set to `0` to disable the timeout.*
+
 ## 프로젝트 구조 / Repository layout
 
 | 경로 | 내용 |

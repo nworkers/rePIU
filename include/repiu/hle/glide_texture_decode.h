@@ -34,6 +34,9 @@ bool DecodeGlideTextureToRgba8(std::uint32_t format,
                                const std::uint8_t* palette_rgba8,
                                std::vector<std::uint8_t>* rgba8_out);
 
+// Returns true if the Glide texture format is supported and decodable by our backend.
+bool IsGlideTextureFormatAcceptable(std::uint32_t format);
+
 }  // namespace repiu::hle
 
 #endif  // REPIU_HLE_GLIDE_TEXTURE_DECODE_H_

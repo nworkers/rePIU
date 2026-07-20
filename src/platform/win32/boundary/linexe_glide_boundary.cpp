@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <filesystem>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -37,6 +39,79 @@ void RecordGlideTextureGateTrace(ThreadContext* context, const CONTEXT* win32_co
     if (sequence > kWin32GlideTextureGateTraceCapacity)
     {
         context->glide_texture_gate_trace_wrapped = true;
+    }
+}
+
+void DumpTextureToBmp(std::uint32_t start_address, std::uint32_t format, std::uint32_t width, std::uint32_t height, const std::vector<std::uint8_t>& rgba)
+{
+    static std::uint32_t s_dump_counter = 0;
+    try
+    {
+        std::filesystem::path dump_dir = "build/texture_dumps";
+        std::filesystem::create_directories(dump_dir);
+
+        std::ostringstream filename_stream;
+        filename_stream << "tex_0x" << std::uppercase << std::hex << start_address
+                        << "_fmt" << std::dec << format
+                        << "_" << width << "x" << height
+                        << "_" << ++s_dump_counter << ".bmp";
+
+        std::filesystem::path filepath = dump_dir / filename_stream.str();
+        std::ofstream file(filepath, std::ios::binary);
+        if (!file)
+        {
+            return;
+        }
+
+        #pragma pack(push, 1)
+        struct BmpFileHeader
+        {
+            std::uint16_t bfType = 0x4D42;
+            std::uint32_t bfSize = 0;
+            std::uint16_t bfReserved1 = 0;
+            std::uint16_t bfReserved2 = 0;
+            std::uint32_t bfOffBits = 54;
+        };
+
+        struct BmpInfoHeader
+        {
+            std::uint32_t biSize = 40;
+            std::int32_t biWidth = 0;
+            std::int32_t biHeight = 0;
+            std::uint16_t biPlanes = 1;
+            std::uint16_t biBitCount = 32;
+            std::uint32_t biCompression = 0;
+            std::uint32_t biSizeImage = 0;
+            std::int32_t biXPelsPerMeter = 3780;
+            std::int32_t biYPelsPerMeter = 3780;
+            std::uint32_t biClrUsed = 0;
+            std::uint32_t biClrImportant = 0;
+        };
+        #pragma pack(pop)
+
+        std::vector<std::uint8_t> bgra(width * height * 4);
+        for (std::size_t i = 0; i < width * height; ++i)
+        {
+            bgra[i * 4 + 0] = rgba[i * 4 + 2]; // B
+            bgra[i * 4 + 1] = rgba[i * 4 + 1]; // G
+            bgra[i * 4 + 2] = rgba[i * 4 + 0]; // R
+            bgra[i * 4 + 3] = rgba[i * 4 + 3]; // A
+        }
+
+        BmpFileHeader file_header;
+        BmpInfoHeader info_header;
+        info_header.biWidth = static_cast<std::int32_t>(width);
+        info_header.biHeight = -static_cast<std::int32_t>(height); // top-down
+        info_header.biSizeImage = static_cast<std::uint32_t>(bgra.size());
+        file_header.bfSize = sizeof(BmpFileHeader) + sizeof(BmpInfoHeader) + info_header.biSizeImage;
+
+        file.write(reinterpret_cast<const char*>(&file_header), sizeof(file_header));
+        file.write(reinterpret_cast<const char*>(&info_header), sizeof(info_header));
+        file.write(reinterpret_cast<const char*>(bgra.data()), bgra.size());
+    }
+    catch (...)
+    {
+        // Fail-safe to avoid crashing the loader on diagnostics
     }
 }
 
@@ -660,6 +735,20 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                         source_size);
                     context->glide_backend_message =
                         context->glide_backend.message();
+
+                    // Diagnostic BMP Dump
+                    const char* env_dump = std::getenv("REPIU_DUMP_TEXTURE_BMP");
+                    if (env_dump != nullptr && std::string_view(env_dump) == "1")
+                    {
+                        std::vector<std::uint8_t> rgba8;
+                        if (repiu::hle::DecodeGlideTextureToRgba8(
+                                format, dimensions.width, dimensions.height, data,
+                                source_size, nullptr, &rgba8))
+                        {
+                            DumpTextureToBmp(start_address, format, dimensions.width,
+                                             dimensions.height, rgba8);
+                        }
+                    }
                 }
             }
         }

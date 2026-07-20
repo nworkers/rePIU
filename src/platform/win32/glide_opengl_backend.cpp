@@ -373,6 +373,11 @@ bool GlideOpenGlBackend::StoreTexture(std::uint32_t start_address,
 #if !defined(_WIN32)
     return false;
 #else
+    if (!repiu::hle::IsGlideTextureFormatAcceptable(format))
+    {
+        message_ = "unacceptable Glide texture format";
+        return false;
+    }
     if (!is_open() || dummy_mode_ || source == nullptr)
     {
         return false;
