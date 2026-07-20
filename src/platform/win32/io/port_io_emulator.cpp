@@ -21,6 +21,40 @@ namespace
     constexpr std::uint16_t kPortPiuEepromRead = 0x02AE;
 }
 
+static std::uint8_t ReadJammaPort8(std::uint16_t port)
+{
+    std::uint8_t value = 0xFF; // Active Low
+    auto is_pressed = [](int vk) -> bool {
+        return (GetAsyncKeyState(vk) & 0x8000) != 0;
+    };
+
+    switch (port)
+    {
+        case 0x02A8: // IN0: P1
+            if (is_pressed('Q')) value &= ~0x01;
+            if (is_pressed('E')) value &= ~0x02;
+            if (is_pressed('S')) value &= ~0x04;
+            if (is_pressed('Z')) value &= ~0x08;
+            if (is_pressed('C')) value &= ~0x10;
+            break;
+            
+        case 0x02A9: // SYSTEM
+            if (is_pressed(VK_F5)) value &= ~0x04; // COIN1
+            if (is_pressed(VK_F2)) value &= ~0x40; // SERVICE1
+            if (is_pressed(VK_F1)) value &= ~0x80; // TEST/CLEAR
+            break;
+            
+        case 0x02AA: // IN1: P2
+            if (is_pressed(VK_HOME)) value &= ~0x01;
+            if (is_pressed(VK_PRIOR)) value &= ~0x02; // PgUp
+            if (is_pressed(VK_NUMPAD5)) value &= ~0x04;
+            if (is_pressed(VK_END)) value &= ~0x08;
+            if (is_pressed(VK_NEXT)) value &= ~0x10; // PgDn
+            break;
+    }
+    return value;
+}
+
 static std::unique_ptr<Eeprom93c46> g_eeprom;
 
 void RecordPortIo(ThreadContext* context,
@@ -186,19 +220,21 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
         if (port >= kPortPiuJammaBase && port <= kPortPiuJammaEnd)
         {
             std::uint32_t emulated_val = 0;
+            for (std::uint32_t i = 0; i < width; ++i)
+            {
+                emulated_val |= (static_cast<std::uint32_t>(ReadJammaPort8(port + static_cast<std::uint16_t>(i))) << (i * 8));
+            }
+
             if (width == 1)
             {
-                emulated_val = 0xFFU;
                 win32_context->Eax = (win32_context->Eax & 0xFFFFFF00U) | emulated_val;
             }
             else if (width == 2)
             {
-                emulated_val = 0xFFFFU;
                 win32_context->Eax = (win32_context->Eax & 0xFFFF0000U) | emulated_val;
             }
             else
             {
-                emulated_val = 0xFFFFFFFFU;
                 win32_context->Eax = emulated_val;
             }
 
