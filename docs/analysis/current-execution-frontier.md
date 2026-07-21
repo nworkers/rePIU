@@ -1,3 +1,90 @@
+## 2026-07-22 Task 262 (할일, 착수 전): aot-dynamic이 legacy보다 14.6배 느림 — AOT 경계 이탈 원인 규명 / Task 262 (TODO, not started): aot-dynamic is 14.6x slower than legacy — find why AOT keeps exiting
+
+**상태 (Status):** 측정만 완료, 코드 변경 없음. **다음 세션이 이어받을 작업.**
+
+### 측정 (확인됨) / Measurement
+
+동일 빌드(v0.0.82), 동일 대상(`pumpit1`), 키 입력 없음, **120초 동일 시점** 비교.
+
+| 지표 | legacy (기본) | aot-dynamic |
+|---|---:|---:|
+| `progress` | **1,876,798** | 128,455 |
+| `dispatch_entry` | 12,903,800 | 2,750,863 |
+| `single_step` | 12,898,979 | 2,729,921 |
+| `aot` (boundary/reentry) | 0 / 0 | **170,324 / 170,430** |
+| 마지막 EIP | `0x03086FD4` | `0x030F5098` |
+
+**legacy가 14.6배 빠르다**(progress 기준). 재현 방법:
+
+```
+REPIU_EXECUTION_TIMEOUT_MS=120000 repiu_loader_win32.exe pumpit1          # legacy
+REPIU_EXECUTION_BACKEND=aot-dynamic REPIU_EXECUTION_TIMEOUT_MS=120000 ... # aot-dynamic
+```
+
+### 해석 (확인됨) / What the numbers say
+
+1. **두 백엔드 모두 단일스텝이 dispatch의 99.9%다**(legacy 12,898,979/12,903,800,
+   aot-dynamic 2,729,921/2,750,863). 즉 **AOT는 단일스텝을 줄이지 못한다.**
+2. **AOT는 순손실이다.** 단일스텝 처리량이 legacy 약 107k/s 대 aot-dynamic 약 23k/s로
+   **4.7배 느리다.** AOT 경로가 켜진 것만으로 단일스텝 하나하나가 비싸진다 — 페이지
+   워치(게스트 코드 쓰기 감시), 캐시 주소 판정, 무효화 검사가 매 예외마다 붙는 것으로
+   **추정**(미검증).
+3. **경계 이탈이 초당 약 1,400회**(120초에 170,324회). 번역된 블록에 들어갔다 거의
+   즉시 튕겨 나오기를 반복한다. Task 204가 기록한 *"inline-cache churn throughput
+   bottleneck"* 과 같은 현상으로 보인다.
+
+### 계측의 공백 (중요) / Instrumentation Gap
+
+**현재 카운터로는 "AOT가 실제로 얼마나 커버하는지" 알 수 없다.**
+
+* `aot=x/y`는 `aot_boundary_count/aot_reentry_count` — **경계 이탈·재진입 횟수**이지
+  AOT 블록 안에서 네이티브로 실행된 명령 수가 아니다. (이 세션에서 한 번 오독했다.)
+* `single_step`은 게스트 코드에서 발생한 단일스텝 예외 수로 정확하다.
+* 분모(AOT 블록 내 네이티브 실행량)가 없으므로 커버리지 비율을 계산할 수 없다.
+
+### 다음 단계 / Next Steps
+
+1. **이탈 사유별 카운터 추가.** `aot_runtime_dispatch.cpp`의
+   `BumpAotBoundaryCount` 호출 지점을 사유별로 분리한다. 후보: 번역 실패, 미지원 명령,
+   간접 분기(인라인 캐시 미스), 경계 밖 타깃, 게스트 코드 쓰기로 인한 무효화,
+   페이지 retire/quarantine. 초당 1,400회가 **어느 사유에 몰려 있는지**가 핵심.
+2. **AOT 체류량 계측.** 최소한 블록 진입당 실행 명령 수 또는 AOT 체류 시간 비율.
+   이것 없이는 개선 여부를 판정할 수 없다.
+3. 1·2 결과에 따라: 이탈 원인 제거(인라인 캐시 정책, 간접 분기 처리) 또는 **AOT 경로의
+   매-예외 부가비용 제거**(단일스텝이 legacy보다 4.7배 느린 부분).
+
+### 함께 볼 것 (두 백엔드 공통 비용) / Shared Cost
+
+`src/platform/win32/cpu_emul/instruction_emulation.cpp`에 핸들러 **33개**가 있고 EIP에서
+바이트를 재읽기하는 지점이 **26곳**이다. 단일스텝마다 같은 명령을 여러 번 디코드한다.
+opcode 테이블 디스패치로 1회화하면 **두 백엔드 모두** 이득이며 변경이 국소적이다.
+단일스텝마다 레지스터 10여 개를 atomic 저장하는 것도 진단이 꺼졌을 때 건너뛸 수 있다.
+다만 단일스텝 1회 비용은 **Windows 예외 왕복이 지배적**이라 체감 개선은 제한적일 것으로
+**추정**한다.
+
+### 주의 / Caveats
+
+* **legacy가 빠르다고 정확한 것은 아니다.** 두 백엔드는 도달 지점이 다르고
+  (legacy `0x03086FD4` vs aot-dynamic `0x030F5098`), 이 세션의 렌더링 검증
+  (Glide/LFB/GrLOD/origin, ANDAMIRO 로고)은 **전부 aot-dynamic으로** 했다. 백엔드
+  전환을 검토한다면 동등성 확인이 선결이다.
+* 위 "AOT 부가비용" 해석은 **추정**이며 프로파일로 확인되지 않았다.
+
+**English summary.** At the same 120 s mark on the same build and target, legacy
+reaches progress 1,876,798 while aot-dynamic reaches 128,455 — **legacy is 14.6x
+faster**. Single-stepping is 99.9% of dispatches in *both* backends, so AOT is not
+reducing it; meanwhile aot-dynamic's per-single-step throughput is 4.7x worse
+(~23k/s vs ~107k/s) and it exits translated blocks ~1,400 times per second
+(170,324 boundary exits in 120 s). AOT is currently a net loss. The blocking gap
+is instrumentation: `aot=x/y` counts boundary exits and re-entries, not
+instructions executed natively, so AOT coverage cannot be computed at all. Next
+steps are per-reason boundary counters and some measure of AOT residency, then
+attacking whichever dominates. A shared, backend-independent win is collapsing
+the 33-handler chain (26 separate instruction re-reads) into one decode plus
+table dispatch. Caveat: legacy being faster does not make it correct — every
+rendering fix verified in this session ran on aot-dynamic, and the two backends
+reach different code.
+
 ## 2026-07-22 Task 259 (완료): 화면 상하 반전 수정, 배경 미표시를 Glide 밖으로 격리 / Task 259 (Completed): fixed the vertical flip and isolated the missing background outside Glide
 
 **상태 (Status):** 구현·검증 완료, `claude/glide-origin-and-render-diagnostics`.
