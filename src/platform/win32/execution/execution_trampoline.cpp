@@ -1109,8 +1109,14 @@ bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context, ThreadContext* contex
 
 
 
+    // Decode the instruction that is actually about to execute, not the guest
+    // address it maps back to. On a fault EIP points at the faulting
+    // instruction, so this is also what we must step over afterwards; under AOT
+    // the two addresses differ and only this one describes the running code.
+    const std::uint32_t execute_eip =
+        static_cast<std::uint32_t>(win32_context->Eip);
     const std::uint8_t* instruction_ptr = reinterpret_cast<const std::uint8_t*>(
-        static_cast<std::uintptr_t>(decode_eip));
+        static_cast<std::uintptr_t>(execute_eip));
 
     ZydisDecoder decoder;
     if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LEGACY_32, ZYDIS_STACK_WIDTH_32)))
@@ -1165,16 +1171,31 @@ bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context, ThreadContext* contex
         return false;
     }
 
+    // Runaway guard. This must not fire on *legitimate* repetition: the known
+    // caller is a byte load inside a shared stricmp, and a single filename check
+    // calls it once per candidate extension ("tga", "pcx", "ptx", "rgb"), so the
+    // same EIP and address recur in a tight burst by design. While this handler
+    // rewrote the instruction as NOPs the case could not arise -- the first hit
+    // destroyed the instruction -- so the guard only became reachable once the
+    // instruction was preserved, and it then aborted the run as a false
+    // positive. Count only repeats that made no forward progress, which is what
+    // "runaway" actually means now that we step EIP over the load.
     std::uint32_t current_tick = GetTickCount();
     std::uint32_t elapsed_ticks = current_tick - context->last_low_memory_fault_tick;
     context->last_low_memory_fault_tick = current_tick;
 
-    if (win32_context->Eip == context->last_low_memory_fault_eip &&
-        calculated_address == context->last_low_memory_fault_address &&
-        elapsed_ticks < 50)
+    // Stepping EIP past the load makes forward progress structural: the guest
+    // cannot be pinned on this instruction by us, only by its own control flow.
+    // So the guard no longer needs a tight time-based trip. Keep a high absolute
+    // cap purely as a pathology backstop, and reset it whenever the site moves.
+    constexpr std::uint32_t kLowMemoryRunawayCap = 100000U;
+    (void)elapsed_ticks;
+
+    if (execute_eip == context->last_low_memory_fault_eip &&
+        calculated_address == context->last_low_memory_fault_address)
     {
         context->low_memory_fault_repeat_count++;
-        if (context->low_memory_fault_repeat_count >= 5)
+        if (context->low_memory_fault_repeat_count >= kLowMemoryRunawayCap)
         {
             context->debug_emulate_stage = 99; // Runaway abort
             return false;
@@ -1182,7 +1203,7 @@ bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context, ThreadContext* contex
     }
     else
     {
-        context->last_low_memory_fault_eip = win32_context->Eip;
+        context->last_low_memory_fault_eip = execute_eip;
         context->last_low_memory_fault_address = calculated_address;
         context->low_memory_fault_repeat_count = 1;
     }
@@ -1229,8 +1250,54 @@ bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context, ThreadContext* contex
 
     WriteRegisterFromZydis(win32_context, operands[0].reg.value, final_val);
 
-    std::vector<std::uint8_t> nop_buffer(instruction.length, 0x90);
-    WriteGuestBytes(context, reinterpret_cast<void*>(static_cast<std::uintptr_t>(decode_eip)), nop_buffer.data(), instruction.length);
+    // Diagnostic (env-gated): this path permanently rewrites the guest
+    // instruction as NOPs below. That is safe only if the instruction belongs
+    // to code that never legitimately reads a non-zero address -- and the known
+    // caller is `mov al,[ebx]` inside a *shared* stricmp, where NOPing the byte
+    // load would break every later comparison, not just the null one. Log which
+    // instruction is being destroyed and how often so the blast radius is
+    // measurable before changing the strategy.
+    // Step over the emulated load instead of rewriting it. The previous version
+    // overwrote the instruction with NOPs, which resumed execution but did so by
+    // destroying guest code permanently. The only observed site is
+    // `mov al,[ebx]` inside a *shared* stricmp, so one null-string comparison
+    // removed the byte load for every later call -- silently corrupting every
+    // filename-extension comparison in the game rather than crashing.
+    win32_context->Eip = execute_eip + instruction.length;
+
+    {
+        static const bool low_mem_trace_enabled =
+            std::getenv("REPIU_LOWMEM_TRACE") != nullptr;
+        if (low_mem_trace_enabled)
+        {
+            static long low_mem_trace_count = 0;
+            static std::uint32_t seen_eips[32] = {};
+            static long seen_count = 0;
+            const long index = InterlockedIncrement(&low_mem_trace_count);
+            bool first_for_eip = true;
+            for (long i = 0; i < seen_count; ++i)
+            {
+                if (seen_eips[i] == execute_eip)
+                {
+                    first_for_eip = false;
+                    break;
+                }
+            }
+            if (first_for_eip && seen_count < 32)
+            {
+                seen_eips[seen_count++] = execute_eip;
+            }
+            if (first_for_eip || index <= 40)
+            {
+                fprintf(stderr,
+                        "[repiu-lowmem] #%ld %s guest_eip=0x%08X exec_eip=0x%08X"
+                        " fault_va=0x%08X len=%u value=0x%X -> stepped over\n",
+                        index, first_for_eip ? "NEW-SITE" : "repeat",
+                        decode_eip, execute_eip, calculated_address,
+                        instruction.length, final_val);
+            }
+        }
+    }
 
     context->debug_emulate_stage = 100; // Success
     context->debug_emulate_decode_result = instruction.length;

@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <sstream>
 #include <string>
@@ -252,6 +254,31 @@ void RecordDosOpen(ThreadContext* context,
     }
 
     ++context->handled_dos_open_count;
+    // Asset trace (env-gated): which files the game asks for, and which it fails
+    // to get. A missing or refused asset is invisible from the render side --
+    // the game simply stops issuing the draws that would have used it.
+    {
+        static const bool asset_trace_enabled =
+            std::getenv("REPIU_DOS_ASSET_TRACE") != nullptr;
+        if (asset_trace_enabled)
+        {
+            static long asset_trace_count = 0;
+            const long index = InterlockedIncrement(&asset_trace_count);
+            const bool ok =
+                resolved.result == repiu::hle::DosPathResult::kOk;
+            // Log every failure, but cap successes so a hot reload loop cannot
+            // drown the interesting lines.
+            if (!ok || index <= 200)
+            {
+                fprintf(stderr,
+                        "[repiu-asset] %-4s open #%ld \"%s\" -> %s handle=%u"
+                        " err=%u\n",
+                        ok ? "OK" : "FAIL", index, guest_path.c_str(),
+                        resolved.host_path.string().c_str(), handle,
+                        repiu::hle::DosPathResultToErrorCode(resolved.result));
+            }
+        }
+    }
     context->last_dos_open_guest_path = guest_path;
     context->last_dos_open_host_path = resolved.host_path.string();
     context->last_dos_open_virtual_path = resolved.dos_path;
@@ -530,6 +557,18 @@ bool HandleDosReadFile(CONTEXT* win32_context, ThreadContext* context)
     const std::uint32_t buffer =
         static_cast<std::uint32_t>(win32_context->Edx);
 
+    // Resolve the handle to a name before the read so the trace says which
+    // asset is being consumed; a bare handle number is useless for deciding
+    // whether e.g. PIU.DAT was read to completion.
+    const repiu::hle::DosOpenFileHandle* read_file_before =
+        FindDosOpenFile(context, handle);
+    const std::string read_name = read_file_before != nullptr
+        ? read_file_before->dos_path
+        : std::string("<unknown>");
+    const std::uint32_t read_offset_before = read_file_before != nullptr
+        ? static_cast<std::uint32_t>(read_file_before->file_offset)
+        : 0U;
+
     std::vector<std::uint8_t> bytes;
     std::uint32_t actual_bytes = 0;
     std::uint16_t dos_error = 0;
@@ -541,6 +580,31 @@ bool HandleDosReadFile(CONTEXT* win32_context, ThreadContext* context)
                                  &dos_error))
     {
         return false;
+    }
+
+    {
+        static const bool asset_trace_enabled =
+            std::getenv("REPIU_DOS_ASSET_TRACE") != nullptr;
+        if (asset_trace_enabled)
+        {
+            static long read_trace_count = 0;
+            const long index = InterlockedIncrement(&read_trace_count);
+            // A short read is the signal worth catching: it means the guest
+            // asked for more than the HLE returned, which is how a truncated
+            // asset silently becomes missing content.
+            const bool short_read =
+                dos_error == 0 && actual_bytes < requested_bytes;
+            if (short_read || dos_error != 0 || index <= 120)
+            {
+                fprintf(stderr,
+                        "[repiu-asset] %-5s read #%ld \"%s\" h=%u off=%u"
+                        " want=%u got=%u err=%u\n",
+                        dos_error != 0 ? "ERR"
+                                       : (short_read ? "SHORT" : "read"),
+                        index, read_name.c_str(), handle, read_offset_before,
+                        requested_bytes, actual_bytes, dos_error);
+            }
+        }
     }
 
     if (dos_error != 0)
@@ -653,6 +717,28 @@ bool HandleDosSeekFile(CONTEXT* win32_context, ThreadContext* context)
                                  &dos_error))
     {
         return false;
+    }
+
+    {
+        static const bool asset_trace_enabled =
+            std::getenv("REPIU_DOS_ASSET_TRACE") != nullptr;
+        if (asset_trace_enabled)
+        {
+            static long seek_trace_count = 0;
+            const long index = InterlockedIncrement(&seek_trace_count);
+            if (dos_error != 0 || index <= 120)
+            {
+                fprintf(stderr,
+                        "[repiu-asset] %-5s seek #%ld \"%s\" h=%u origin=%u"
+                        " off=%d %u->%u err=%u\n",
+                        dos_error != 0 ? "ERR" : "seek", index,
+                        open_file_before != nullptr
+                            ? open_file_before->dos_path.c_str()
+                            : "<unknown>",
+                        handle, origin, offset, position_before, new_position,
+                        dos_error);
+            }
+        }
     }
 
     if (dos_error != 0)
