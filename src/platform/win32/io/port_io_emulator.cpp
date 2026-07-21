@@ -5,6 +5,7 @@
 #include <sstream>
 #include <iomanip>
 #include <memory>
+#include <cstdio>
 #include "eeprom_93c46.h"
 
 namespace repiu::platform::win32
@@ -19,6 +20,96 @@ namespace
     constexpr std::uint16_t kPortPiuSoundInit2 = 0x02A2;
     constexpr std::uint16_t kPortPiuEepromWrite = 0x02AC;
     constexpr std::uint16_t kPortPiuEepromRead = 0x02AE;
+
+    constexpr std::uint16_t kPortPiuIn0 = 0x02A8;
+    constexpr std::uint16_t kPortPiuSystem = 0x02A9;
+    constexpr std::uint16_t kPortPiuIn1 = 0x02AA;
+
+    struct JammaBitName
+    {
+        std::uint8_t mask;
+        const char* name;
+    };
+
+    // Active-low inputs (MAME xtom3d.cpp `pumpitup`, IP_ACTIVE_LOW): a bit
+    // reads 1 while released and drops to 0 while the panel/button is held.
+    constexpr JammaBitName kJammaBitsIn0[] = {
+        {0x01, "P1-UpLeft"}, {0x02, "P1-UpRight"}, {0x04, "P1-Center"},
+        {0x08, "P1-DownLeft"}, {0x10, "P1-DownRight"},
+    };
+    constexpr JammaBitName kJammaBitsSystem[] = {
+        {0x04, "COIN1"}, {0x40, "SERVICE1"}, {0x80, "TEST"},
+    };
+    constexpr JammaBitName kJammaBitsIn1[] = {
+        {0x01, "P2-UpLeft"}, {0x02, "P2-UpRight"}, {0x04, "P2-Center"},
+        {0x08, "P2-DownLeft"}, {0x10, "P2-DownRight"},
+    };
+}
+
+// The guest polls these ports every frame, so logging each read would flood
+// the console exactly like the INT 8 line did. Log edges only: one line per
+// press and per release, which is what actually confirms a key reached the
+// guest. Called per byte from ReadJammaPort8.
+static void LogJammaInputTransition(std::uint16_t port, std::uint8_t value)
+{
+    const JammaBitName* names = nullptr;
+    std::size_t name_count = 0;
+    switch (port)
+    {
+        case kPortPiuIn0:
+            names = kJammaBitsIn0;
+            name_count = sizeof(kJammaBitsIn0) / sizeof(kJammaBitsIn0[0]);
+            break;
+        case kPortPiuSystem:
+            names = kJammaBitsSystem;
+            name_count = sizeof(kJammaBitsSystem) / sizeof(kJammaBitsSystem[0]);
+            break;
+        case kPortPiuIn1:
+            names = kJammaBitsIn1;
+            name_count = sizeof(kJammaBitsIn1) / sizeof(kJammaBitsIn1[0]);
+            break;
+        default:
+            return;
+    }
+
+    const std::size_t index = port - kPortPiuIn0;
+
+    // Announce the first poll of each port once. Without this a silent log is
+    // ambiguous: it cannot distinguish "the key mapping is broken" from "the
+    // guest has not started polling this port yet".
+    static bool first_poll_logged[3] = {false, false, false};
+    if (!first_poll_logged[index])
+    {
+        first_poll_logged[index] = true;
+        std::fprintf(stderr,
+                     "[repiu-input] polling started port=0x%04X value=0x%02X\n",
+                     static_cast<unsigned>(port),
+                     static_cast<unsigned>(value));
+    }
+
+    static std::uint8_t previous[3] = {0xFFU, 0xFFU, 0xFFU};
+    std::uint8_t& last = previous[index];
+    const std::uint8_t changed = static_cast<std::uint8_t>(last ^ value);
+    if (changed == 0U)
+    {
+        return;
+    }
+    last = value;
+
+    for (std::size_t i = 0; i < name_count; ++i)
+    {
+        if ((changed & names[i].mask) == 0U)
+        {
+            continue;
+        }
+        const bool pressed = (value & names[i].mask) == 0U;
+        std::fprintf(stderr,
+                     "[repiu-input] %-14s %-8s port=0x%04X value=0x%02X\n",
+                     names[i].name,
+                     pressed ? "PRESSED" : "released",
+                     static_cast<unsigned>(port),
+                     static_cast<unsigned>(value));
+    }
 }
 
 static std::uint8_t ReadJammaPort8(std::uint16_t port)
@@ -30,21 +121,21 @@ static std::uint8_t ReadJammaPort8(std::uint16_t port)
 
     switch (port)
     {
-        case 0x02A8: // IN0: P1
+        case kPortPiuIn0: // IN0: P1
             if (is_pressed('Q')) value &= ~0x01;
             if (is_pressed('E')) value &= ~0x02;
             if (is_pressed('S')) value &= ~0x04;
             if (is_pressed('Z')) value &= ~0x08;
             if (is_pressed('C')) value &= ~0x10;
             break;
-            
-        case 0x02A9: // SYSTEM
+
+        case kPortPiuSystem: // SYSTEM
             if (is_pressed(VK_F5)) value &= ~0x04; // COIN1
             if (is_pressed(VK_F2)) value &= ~0x40; // SERVICE1
             if (is_pressed(VK_F1)) value &= ~0x80; // TEST/CLEAR
             break;
-            
-        case 0x02AA: // IN1: P2
+
+        case kPortPiuIn1: // IN1: P2
             if (is_pressed(VK_HOME)) value &= ~0x01;
             if (is_pressed(VK_PRIOR)) value &= ~0x02; // PgUp
             if (is_pressed(VK_NUMPAD5)) value &= ~0x04;
@@ -52,6 +143,8 @@ static std::uint8_t ReadJammaPort8(std::uint16_t port)
             if (is_pressed(VK_NEXT)) value &= ~0x10; // PgDn
             break;
     }
+
+    LogJammaInputTransition(port, value);
     return value;
 }
 
@@ -247,7 +340,12 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
                          true,
                          true,
                          "emulated-jamma");
-            apply_nop_patch();
+            // JAMMA input registers are polled every frame. NOP-patching the
+            // guest IN instruction (as the write/init paths do) would latch the
+            // first sample forever and never observe later press/release
+            // transitions, so advance EIP instead and re-trap on each poll,
+            // mirroring the dynamic EEPROM read path above.
+            win32_context->Eip += instruction_len;
             return true;
         }
 

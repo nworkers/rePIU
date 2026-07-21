@@ -1889,8 +1889,16 @@ void InjectPendingInterrupts(CONTEXT* win32_context, ThreadContext* context)
     win32_context->Eip = shadow.offset;
     win32_context->EFlags &= ~(0x200U | 0x100U);
 
-    fprintf(stderr, "[repiu-live] Injected INT 8, jump to %04X:%08X, return frame %08X, ticks=%u\n",
-            shadow.selector, shadow.offset, esp, context->last_timer_injection_ticks);
+    // The timer tick is injected continuously while the guest runs, so this
+    // line floods the console and drowns out everything else. Keep it as an
+    // opt-in diagnostic (REPIU_TIMER_INJECT_LOG=1) instead of default output.
+    static const bool timer_injection_log_enabled =
+        std::getenv("REPIU_TIMER_INJECT_LOG") != nullptr;
+    if (timer_injection_log_enabled)
+    {
+        fprintf(stderr, "[repiu-live] Injected INT 8, jump to %04X:%08X, return frame %08X, ticks=%u\n",
+                shadow.selector, shadow.offset, esp, context->last_timer_injection_ticks);
+    }
 }
 
 // VEH dispatch logic relocated out of the anonymous namespace (external
