@@ -1,3 +1,40 @@
+## 2026-07-22 Task 259 (완료): 화면 상하 반전 수정, 배경 미표시를 Glide 밖으로 격리 / Task 259 (Completed): fixed the vertical flip and isolated the missing background outside Glide
+
+**상태 (Status):** 구현·검증 완료, `claude/glide-origin-and-render-diagnostics`.
+
+**반전 근인 (확인됨).** `GrOriginLocation_t`는 `UPPER_LEFT`=0/`LOWER_LEFT`=1인데
+Task 254가 관측값 1을 UPPER_LEFT로 기록했고, 더 근본적으로 **`origin` 인자가
+백엔드에 전달되지 않고** y 뒤집힌 투영이 하드코딩돼 있었다. `OpenWindowed`가
+origin을 받아 투영을 선택하도록 정정. LFB 블릿은 lock origin과 창 투영 방향을
+XOR해 두 반전이 상쇄되지 않게 했다. 검증: UI 텍스트가 참조 화면의 하단 위치·글자
+모양과 일치.
+
+**배경 미표시 = Glide 밖 공백 (확인됨).** 전수 계측으로 렌더러 원인을 배제했다.
+삼각형 센서스 **4,000 draw 전수**가 단일 조합(`fn=3 other=1 textured=1`)에 **최대
+232×39** — 배경 지오메트리도 타일도 없다. 배경 전달 가능 경로
+(`grTexDownloadMipMap@16`, `Partial@40`, `grLfbLock/Unlock`)는 **전부 미호출**이고,
+사용 포맷은 `RGB_565`·`ARGB_4444`뿐으로 전부 지원된다. **게임이 배경 draw를
+발행하지 않는다.**
+
+**반증된 가설 2건.** (1) 미지원 텍스처 포맷 — 포맷 센서스로 반증(팔레트/NCC 포맷
+미등장). (2) 배경이 다른 combine 모드를 써서 텍스처가 꺼진다 — 삼각형 센서스로
+반증. 둘 다 원인을 렌더러에서 찾으려는 편향이었고, 표본이 아니라 **전수 집계**가
+갈랐다.
+
+**다음 과제 (미확정).** 배경은 BGA(배경 동영상)로 보이며 게임이 BGA 자산을
+준비하지 못해 렌더를 건너뛰는 것으로 추정되나 미확인. **파일 I/O 경로 추적**이
+다음 작업이며 Glide 밖 영역이다. 상세:
+`docs/work-logs/20260722-259-glide-origin-and-render-diagnostics-log.md`.
+
+**English summary.** Fixed the upside-down screen: `GR_ORIGIN_LOWER_LEFT` is 1,
+Task 254 read it as UPPER_LEFT, and the argument never reached the backend, which
+hardcoded a y-flipped projection. Separately, a census over all 4,000 draws
+(single combine mode, max triangle 232x39), zero calls to any alternative texture
+or LFB delivery path, and a format census showing only supported formats together
+prove the missing background is not a renderer gap — the game never issues
+background draws. Two renderer-blaming hypotheses were disproved en route. Next:
+trace the BGA asset path, a file-I/O question outside Glide.
+
 ## 2026-07-22 Task 258 (완료): GrLOD_t 열거값 해석 정정 — rePIU 첫 실제 콘텐츠 렌더 / Task 258 (Completed): GrLOD_t enumeration fix — the project's first real content render
 
 **상태 (Status):** 구현·검증 완료, `claude/glide-api-call-audit` 브랜치 (`9bfde75`).

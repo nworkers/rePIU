@@ -317,9 +317,17 @@ flowchart LR
 삼각형이 클리핑된다. 240초 구동에서 삼각형은 거부 0·미처리 0으로 안정 제출되지만
 화면에 나타나지 않는 이유가 이것이다.
 
-**수정 (Task 254).** `OpenWindowed`에 y 뒤집힌 직교 투영
-`glOrtho(0, w, h, 0, -1, 1)`을 추가한다(관측된 `grSstWinOpen` origin=1 =
-GR_ORIGIN_UPPER_LEFT에 맞춤; `grCullMode(0)`으로 컬링이 꺼져 와인딩 반전 무해).
+> **정정됨 (2026-07-22 Task 259).** 아래의 **"origin=1 = GR_ORIGIN_UPPER_LEFT"는
+> 반증됐다.** 표준 `GrOriginLocation_t`는 `GR_ORIGIN_UPPER_LEFT`=0,
+> `GR_ORIGIN_LOWER_LEFT`=1이므로 관측값 1은 **LOWER_LEFT**다. y 뒤집힌 투영을
+> 고정으로 적용한 결과 화면 전체가 상하 반전되어 표시됐다(사용자 육안 확인).
+> Task 254의 "투영 부재가 클리핑을 유발했다"는 근인 분석 자체는 유효하며, 잘못된
+> 것은 방향뿐이다. 상세는 이 문서 하단 Task 259 절 참조.
+
+**수정 (Task 254).** `OpenWindowed`에 ~~y 뒤집힌~~ 직교 투영을 추가한다
+(~~`glOrtho(0, w, h, 0, -1, 1)`, 관측된 `grSstWinOpen` origin=1 =
+GR_ORIGIN_UPPER_LEFT에 맞춤~~ → **Task 259에서 origin 인자를 실제로 존중하도록
+정정**; `grCullMode(0)`으로 컬링이 꺼져 와인딩 반전 무해).
 셰이더 Initialize에서 combine function uniform을 1(LOCAL)로 기본 설정해 흑색
 프래그먼트를 예방한다. 색 반영(현재 흰색 고정)과 텍스처 샘플링은 후속 Task
 255/256에서 다룬다. 상세: `docs/design/20260721-254-glide-screen-space-projection.md`.
@@ -433,3 +441,53 @@ apart. Verified with synthesized JAMMA input: 256x256 stores, per-triangle
 readback climbing 0 → 760, and a frame stable at 1,765 non-black pixels — the
 project's first real content render. Open: still-garbage vertex color fields, the
 meaning of the 0x2000 spacing, and end-to-end LFB validation.
+
+## 화면 상하 반전과 배경 미표시의 분리 (2026-07-22 Task 259) / Separating the Vertical Flip from the Missing Background
+
+**확인됨 (반전 근인 = origin 인자 무시).** 화면 전체가 상하 반전되어 표시됐다.
+근인은 두 겹이다. (1) `GrOriginLocation_t`는 `GR_ORIGIN_UPPER_LEFT`=0,
+`GR_ORIGIN_LOWER_LEFT`=1인데 Task 254가 관측값 1을 UPPER_LEFT로 기록했다.
+(2) 더 근본적으로 `origin` 인자가 백엔드로 **전달되지 않고** y 뒤집힌 투영이
+하드코딩돼 있어, 게임이 어떤 값을 넘기든 같은 투영이 걸렸다. `OpenWindowed`가
+origin을 받아 투영을 선택하도록 정정했다. LFB 블릿 쿼드는 lock origin과 창 투영
+방향이 독립적으로 v를 뒤집으므로 XOR로 합쳤다(두 반전이 조용히 상쇄되는 것을 방지).
+
+**확인됨 (배경 미표시 = Glide 밖 공백).** 참조 화면(파란 BGA 배경 + 로고)과 달리
+배경 레이어 전체가 비었다. 전수 계측으로 렌더러 원인을 배제했다.
+
+* **삼각형 센서스 4,000 draw 전수:** 단일 조합 `combine fn=3(SCALE_OTHER)
+  other=1(TEXTURE) textured=1`, **최대 크기 232×39**. 640×480 배경도, 배경을
+  구성할 타일도 존재하지 않는다.
+* **배경 전달 가능 경로 전부 미호출:** `grTexDownloadMipMap@16`(47),
+  `grTexDownloadMipMapLevelPartial@40`(144), `grLfbLock`(112)/`grLfbUnlock`(113).
+* **포맷 센서스:** 이 화면이 쓰는 포맷은 `RGB_565`(10)와 `ARGB_4444`(12)뿐이며
+  전부 지원·저장·디코드된다. 팔레트(`P_8`/`AP_88`)·NCC 포맷은 등장하지 않는다.
+
+즉 **게임이 배경 draw를 발행하지 않는다.** 렌더러는 제출된 것을 정확히 그리며,
+그 증거로 UI 텍스트가 참조 화면과 글자 모양·글로우·위치까지 일치한다.
+
+**반증된 가설 2건 (이번 작업 중).** (1) "미지원 텍스처 포맷 때문" — 포맷 센서스로
+반증. (2) "배경이 다른 combine 모드를 써서 텍스처가 꺼진다" — 삼각형 센서스로
+반증(4,000 draw 전부 동일 조합·textured=1). 두 가설 모두 원인을 렌더러 쪽에서
+찾으려는 편향이었고, 전수 집계가 이를 죽였다.
+
+**미확정 (다음 과제).** 배경은 BGA(배경 동영상)로 보이며, 게임이 BGA 자산을
+준비하지 못해 배경 렌더를 건너뛰는 것으로 **추정**되나 확인되지 않았다. 파일 I/O
+경로 추적이 다음 작업이다. 이는 Glide 밖 영역이다.
+
+**Confirmed (Task 259).** The upside-down screen had two layers: `GrOriginLocation_t`
+has `GR_ORIGIN_UPPER_LEFT` = 0 and `GR_ORIGIN_LOWER_LEFT` = 1, so Task 254's
+reading of the observed 1 as UPPER_LEFT was backwards — and more fundamentally
+the argument never reached the backend, which hardcoded a y-flipped projection.
+`OpenWindowed` now selects the projection from the origin it is given.
+
+The missing background is *not* a renderer gap. A census over 4,000 draws shows a
+single combine mode (SCALE_OTHER/TEXTURE, textured) and a maximum triangle of
+232x39 — no background-sized geometry or tiles — while every alternative delivery
+path (`grTexDownloadMipMap`, `...LevelPartial`, `grLfbLock`/`Unlock`) is never
+called and every texture format in use is supported. The game simply never issues
+background draws; the UI text matches the reference screen glyph for glyph, which
+is what proves the renderer faithful. Two hypotheses were disproved along the way
+(unsupported formats, and an unsupported combine mode disabling texturing), both
+biased toward blaming the renderer. **Open:** whether the BGA asset path is what
+blocks the background — a file-I/O investigation outside Glide.

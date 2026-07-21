@@ -35,10 +35,14 @@ public:
     GlideOpenGlBackend(const GlideOpenGlBackend&) = delete;
     GlideOpenGlBackend& operator=(const GlideOpenGlBackend&) = delete;
 
+    // `origin` is the GrOriginLocation_t passed to grSstWinOpen:
+    // GR_ORIGIN_UPPER_LEFT is 0 and GR_ORIGIN_LOWER_LEFT is 1. It selects the
+    // orthographic projection, so getting it backwards flips the screen.
     bool OpenWindowed(std::uint32_t logical_width,
                       std::uint32_t logical_height,
                       std::uint32_t color_buffer_count,
-                      std::uint32_t auxiliary_buffer_count);
+                      std::uint32_t auxiliary_buffer_count,
+                      std::uint32_t origin);
     void PumpEvents();
     bool BufferClear(std::uint32_t color, std::uint32_t alpha, std::uint32_t depth);
     bool BufferSwap(std::uint32_t swap_interval);
@@ -106,6 +110,9 @@ private:
     void* render_context_ = nullptr;
     std::uint32_t logical_width_ = 0;
     std::uint32_t logical_height_ = 0;
+    // True when grSstWinOpen asked for GR_ORIGIN_LOWER_LEFT, i.e. guest y grows
+    // upward and the projection matches OpenGL's default orientation.
+    bool origin_lower_left_ = false;
     GlideOpenGlShader shader_;
     std::string message_;
     bool dummy_mode_ = false;

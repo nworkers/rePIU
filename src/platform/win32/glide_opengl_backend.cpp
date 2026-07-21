@@ -1,5 +1,6 @@
 #include "repiu/platform/win32/glide_opengl_backend.h"
 #include "repiu/hle/glide_texture_decode.h"
+#include "repiu/hle/glide_lfb.h"
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -63,10 +64,12 @@ bool GlideOpenGlBackend::OpenWindowed(
     std::uint32_t logical_width,
     std::uint32_t logical_height,
     std::uint32_t color_buffer_count,
-    std::uint32_t auxiliary_buffer_count)
+    std::uint32_t auxiliary_buffer_count,
+    std::uint32_t origin)
 {
     Close();
     dummy_mode_ = false;
+    origin_lower_left_ = origin == repiu::hle::kGlideOriginLowerLeft;
 #if !defined(_WIN32)
     message_ = "Win32 OpenGL backend is unavailable";
     return false;
@@ -179,18 +182,32 @@ bool GlideOpenGlBackend::OpenWindowed(
                0,
                static_cast<GLsizei>(logical_width),
                static_cast<GLsizei>(logical_height));
-    // Glide vertices arrive in screen pixel coordinates with GR_ORIGIN_UPPER_LEFT
-    // (grSstWinOpen origin=1). Map that screen space to NDC with a y-flipped
-    // orthographic projection so submitted geometry is not clipped. Culling is
-    // disabled by the game (grCullMode 0), so the reversed winding is harmless.
+    // Glide vertices arrive in screen pixel coordinates. Honor the origin
+    // grSstWinOpen actually asked for: GR_ORIGIN_UPPER_LEFT (0) needs a
+    // y-flipped projection, while GR_ORIGIN_LOWER_LEFT (1) matches OpenGL's
+    // default orientation. Hardcoding the flipped form renders the whole scene
+    // upside down for a lower-left guest. Culling is disabled by the game
+    // (grCullMode 0), so the resulting winding difference is harmless.
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    glOrtho(0.0,
-            static_cast<double>(logical_width),
-            static_cast<double>(logical_height),
-            0.0,
-            -1.0,
-            1.0);
+    if (origin_lower_left_)
+    {
+        glOrtho(0.0,
+                static_cast<double>(logical_width),
+                0.0,
+                static_cast<double>(logical_height),
+                -1.0,
+                1.0);
+    }
+    else
+    {
+        glOrtho(0.0,
+                static_cast<double>(logical_width),
+                static_cast<double>(logical_height),
+                0.0,
+                -1.0,
+                1.0);
+    }
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
     glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
@@ -504,10 +521,15 @@ bool GlideOpenGlBackend::PresentLfbSurface(const std::uint8_t* rgba8,
     shader_.SetTextureEnabled(true);
 
     // The orthographic projection installed at OpenWindowed already maps screen
-    // pixels directly, so the quad spans the logical surface. Texture v is
-    // flipped for lower-left origin locks.
-    const float top_v = flip_v ? 1.0F : 0.0F;
-    const float bottom_v = flip_v ? 0.0F : 1.0F;
+    // pixels directly, so the quad spans the logical surface. Two independent
+    // orientations decide where staging row 0 lands: the lock's origin
+    // (`flip_v`) and the window projection's direction. Under a lower-left
+    // projection, vertex y=0 is the bottom of the screen rather than the top,
+    // which inverts the mapping again -- XOR them so the two never cancel out
+    // silently.
+    const bool invert_v = flip_v != origin_lower_left_;
+    const float top_v = invert_v ? 1.0F : 0.0F;
+    const float bottom_v = invert_v ? 0.0F : 1.0F;
     const float right = static_cast<float>(logical_width_);
     const float bottom = static_cast<float>(logical_height_);
     glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
@@ -1000,6 +1022,7 @@ void GlideOpenGlBackend::Close()
     window_ = nullptr;
     logical_width_ = 0;
     logical_height_ = 0;
+    origin_lower_left_ = false;
     textures_.clear();
     current_texture_ = nullptr;
     texture_combine_enabled_ = false;

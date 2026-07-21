@@ -90,25 +90,80 @@ void DumpTextureToBmp(std::uint32_t start_address, std::uint32_t format, std::ui
         };
         #pragma pack(pop)
 
-        std::vector<std::uint8_t> bgra(width * height * 4);
-        for (std::size_t i = 0; i < width * height; ++i)
+        // Write 24-bit bottom-up BI_RGB, the one BMP form every viewer handles.
+        // The previous 32-bit top-down form is legal but fragile: the fourth
+        // byte of a 32-bit BI_RGB pixel is officially reserved, so viewers
+        // disagree on whether it is alpha, and negative biHeight is uncommon
+        // enough that some refuse the file outright -- which reads as "the dump
+        // never happened" even though the bytes are correct.
+        const std::size_t row_padding = (4U - ((width * 3U) % 4U)) % 4U;
+        const std::size_t row_bytes = width * 3U + row_padding;
+        std::vector<std::uint8_t> bgr(row_bytes * height, 0U);
+        for (std::uint32_t y = 0; y < height; ++y)
         {
-            bgra[i * 4 + 0] = rgba[i * 4 + 2]; // B
-            bgra[i * 4 + 1] = rgba[i * 4 + 1]; // G
-            bgra[i * 4 + 2] = rgba[i * 4 + 0]; // R
-            bgra[i * 4 + 3] = rgba[i * 4 + 3]; // A
+            // Bottom-up: BMP row 0 is the image's last row.
+            const std::uint32_t source_row = height - 1U - y;
+            std::uint8_t* out = bgr.data() + static_cast<std::size_t>(y) *
+                row_bytes;
+            for (std::uint32_t x = 0; x < width; ++x)
+            {
+                const std::size_t i =
+                    (static_cast<std::size_t>(source_row) * width + x) * 4U;
+                out[x * 3U + 0U] = rgba[i + 2U]; // B
+                out[x * 3U + 1U] = rgba[i + 1U]; // G
+                out[x * 3U + 2U] = rgba[i + 0U]; // R
+            }
         }
 
         BmpFileHeader file_header;
         BmpInfoHeader info_header;
+        info_header.biBitCount = 24;
         info_header.biWidth = static_cast<std::int32_t>(width);
-        info_header.biHeight = -static_cast<std::int32_t>(height); // top-down
-        info_header.biSizeImage = static_cast<std::uint32_t>(bgra.size());
-        file_header.bfSize = sizeof(BmpFileHeader) + sizeof(BmpInfoHeader) + info_header.biSizeImage;
+        info_header.biHeight = static_cast<std::int32_t>(height);
+        info_header.biSizeImage = static_cast<std::uint32_t>(bgr.size());
+        file_header.bfSize = sizeof(BmpFileHeader) + sizeof(BmpInfoHeader) +
+            info_header.biSizeImage;
 
         file.write(reinterpret_cast<const char*>(&file_header), sizeof(file_header));
         file.write(reinterpret_cast<const char*>(&info_header), sizeof(info_header));
-        file.write(reinterpret_cast<const char*>(bgra.data()), bgra.size());
+        file.write(reinterpret_cast<const char*>(bgr.data()), bgr.size());
+
+        // Alpha is where a texture "not showing" usually hides, and dropping it
+        // from the colour dump would lose that. Emit it as a separate grayscale
+        // image for formats that carry one.
+        const bool has_alpha = format == 8U || format == 11U || format == 12U ||
+            format == 13U || format == 14U || format == 2U || format == 4U;
+        if (has_alpha)
+        {
+            std::filesystem::path alpha_path = dump_dir /
+                (filename_stream.str().substr(
+                     0, filename_stream.str().size() - 4U) + "_alpha.bmp");
+            std::ofstream alpha_file(alpha_path, std::ios::binary);
+            if (alpha_file)
+            {
+                std::vector<std::uint8_t> mono(row_bytes * height, 0U);
+                for (std::uint32_t y = 0; y < height; ++y)
+                {
+                    const std::uint32_t source_row = height - 1U - y;
+                    std::uint8_t* out = mono.data() +
+                        static_cast<std::size_t>(y) * row_bytes;
+                    for (std::uint32_t x = 0; x < width; ++x)
+                    {
+                        const std::uint8_t a = rgba[(static_cast<std::size_t>(
+                            source_row) * width + x) * 4U + 3U];
+                        out[x * 3U + 0U] = a;
+                        out[x * 3U + 1U] = a;
+                        out[x * 3U + 2U] = a;
+                    }
+                }
+                alpha_file.write(reinterpret_cast<const char*>(&file_header),
+                                 sizeof(file_header));
+                alpha_file.write(reinterpret_cast<const char*>(&info_header),
+                                 sizeof(info_header));
+                alpha_file.write(reinterpret_cast<const char*>(mono.data()),
+                                 mono.size());
+            }
+        }
     }
     catch (...)
     {
@@ -653,7 +708,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         {
             opened = mode_supported &&
                 context->glide_backend.OpenWindowed(
-                    width, height, color_buffers, auxiliary_buffers);
+                    width, height, color_buffers, auxiliary_buffers, origin);
         }
         catch (const std::exception& e)
         {
@@ -742,8 +797,35 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             const auto* data = reinterpret_cast<const std::uint8_t*>(
                 static_cast<std::uintptr_t>(args[8]));
             repiu::hle::GlideTextureDimensions dimensions;
-            if (repiu::hle::CalculateGlideTextureDimensions(
-                    large_lod, aspect_ratio, &dimensions))
+            const bool dimensions_ok =
+                repiu::hle::CalculateGlideTextureDimensions(
+                    large_lod, aspect_ratio, &dimensions);
+            // Format census (env-gated): count every download per format and
+            // record why one was dropped. Palette formats (P_8, AP_88) decode
+            // without their table because grTexDownloadTable is still a no-op,
+            // and the NCC formats are refused outright -- this separates "the
+            // game never uses that format" from "we silently drop it".
+            static const bool format_census_enabled =
+                std::getenv("REPIU_GLIDE_TEX_CENSUS") != nullptr;
+            if (format_census_enabled && format < 16U)
+            {
+                static long format_counts[16] = {};
+                const long seen = InterlockedIncrement(&format_counts[format]);
+                if (seen <= 3)
+                {
+                    fprintf(stderr,
+                            "[repiu-tex-census] format=%u lod=%u aspect=%u"
+                            " dims=%s%ux%u acceptable=%d addr=0x%08X seen=%ld\n",
+                            format, large_lod, aspect_ratio,
+                            dimensions_ok ? "" : "INVALID ",
+                            dimensions_ok ? dimensions.width : 0U,
+                            dimensions_ok ? dimensions.height : 0U,
+                            repiu::hle::IsGlideTextureFormatAcceptable(format)
+                                ? 1 : 0,
+                            start_address, seen);
+                }
+            }
+            if (dimensions_ok)
             {
                 const std::size_t bytes_per_texel = format >= 8U ? 2U : 1U;
                 const std::size_t source_size =
@@ -752,11 +834,24 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                 if (source_size != 0U &&
                     IsGuestRangeReadable(context, data, source_size))
                 {
-                    context->glide_backend.StoreTexture(
+                    const bool stored = context->glide_backend.StoreTexture(
                         start_address, format, large_lod, aspect_ratio, data,
                         source_size);
                     context->glide_backend_message =
                         context->glide_backend.message();
+                    if (format_census_enabled && !stored)
+                    {
+                        static long store_fail_log = 0;
+                        if (InterlockedIncrement(&store_fail_log) <= 12)
+                        {
+                            fprintf(stderr,
+                                    "[repiu-tex-census] STORE FAILED format=%u"
+                                    " %ux%u addr=0x%08X reason=%s\n",
+                                    format, dimensions.width, dimensions.height,
+                                    start_address,
+                                    context->glide_backend_message.c_str());
+                        }
+                    }
 
                     // Diagnostic BMP Dump
                     const char* env_dump = std::getenv("REPIU_DUMP_TEXTURE_BMP");
@@ -1286,9 +1381,21 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         // fragment", and "it draws but something later erases it".
         static const bool draw_diagnostic_enabled =
             std::getenv("REPIU_GLIDE_DRAW_DIAG") != nullptr;
+        // A missing full-screen background would never appear in a first-N
+        // sample if the game submits it after the UI text, so also diagnose any
+        // triangle large enough to be background geometry regardless of when it
+        // arrives.
+        const float min_x = std::min({vertices[0].x, vertices[1].x, vertices[2].x});
+        const float max_x = std::max({vertices[0].x, vertices[1].x, vertices[2].x});
+        const float min_y = std::min({vertices[0].y, vertices[1].y, vertices[2].y});
+        const float max_y = std::max({vertices[0].y, vertices[1].y, vertices[2].y});
+        const bool is_large = (max_x - min_x) >= 100.0F && (max_y - min_y) >= 100.0F;
+        static long large_diag_count = 0;
+        const bool diagnose_large =
+            is_large && InterlockedIncrement(&large_diag_count) <= 12;
         std::size_t before_non_black = 0;
         const bool diagnose_this_draw =
-            draw_diagnostic_enabled && sequence <= 12U;
+            draw_diagnostic_enabled && (sequence <= 12U || diagnose_large);
         if (diagnose_this_draw)
         {
             std::vector<std::uint8_t> before;
@@ -1340,6 +1447,67 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                     context->glide_state.color_combine.other,
                     context->glide_backend.is_texture_combine_enabled() ? 1 : 0,
                     before_non_black, after_non_black);
+        }
+        // Triangle census (env-gated): aggregate every draw by the combine mode
+        // and size bucket it used. The first-N sample cannot answer "why is the
+        // background missing" because the background may be many small tiles
+        // submitted after the UI text -- a histogram over all draws can.
+        {
+            static const bool tri_census_enabled =
+                std::getenv("REPIU_GLIDE_TRI_CENSUS") != nullptr;
+            if (tri_census_enabled)
+            {
+                struct Bucket
+                {
+                    std::uint32_t function;
+                    std::uint32_t other;
+                    bool textured;
+                    long count;
+                    float max_w;
+                    float max_h;
+                };
+                static Bucket buckets[16] = {};
+                static long bucket_count = 0;
+                static long census_draws = 0;
+                const std::uint32_t fn =
+                    context->glide_state.color_combine.function;
+                const std::uint32_t ot = context->glide_state.color_combine.other;
+                const bool textured =
+                    context->glide_backend.is_texture_combine_enabled();
+                bool found = false;
+                for (long b = 0; b < bucket_count; ++b)
+                {
+                    if (buckets[b].function == fn && buckets[b].other == ot &&
+                        buckets[b].textured == textured)
+                    {
+                        ++buckets[b].count;
+                        buckets[b].max_w = std::max(buckets[b].max_w, max_x - min_x);
+                        buckets[b].max_h = std::max(buckets[b].max_h, max_y - min_y);
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found && bucket_count < 16)
+                {
+                    buckets[bucket_count] = {fn, ot, textured, 1,
+                                             max_x - min_x, max_y - min_y};
+                    ++bucket_count;
+                }
+                if (++census_draws % 400 == 0 && census_draws <= 4000)
+                {
+                    fprintf(stderr,
+                            "[repiu-tri-census] after %ld draws:\n", census_draws);
+                    for (long b = 0; b < bucket_count; ++b)
+                    {
+                        fprintf(stderr,
+                                "    combine fn=%u other=%u textured=%d"
+                                " count=%ld max=%.0fx%.0f\n",
+                                buckets[b].function, buckets[b].other,
+                                buckets[b].textured ? 1 : 0, buckets[b].count,
+                                buckets[b].max_w, buckets[b].max_h);
+                    }
+                }
+            }
         }
         ++context->glide_gate_handled_count;
         win32_context->Eip = return_address;
