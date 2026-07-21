@@ -8,6 +8,7 @@
 #include "repiu/platform/win32/glide_opengl_backend.h"
 #include "repiu/hle/linexe_call_gate.h"
 #include "repiu/hle/glide_hle.h"
+#include "repiu/hle/glide_lfb.h"
 #include "repiu/media/chd_cd_image.h"
 #include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/selector_table.h"
@@ -373,6 +374,12 @@ struct ThreadContext
     std::uint32_t mscdex_last_header_bytes = 0;
     repiu::hle::GlideLogicalState glide_state;
     GlideOpenGlBackend glide_backend;
+    // R4 LFB staging surface handed to the guest by grLfbLock. Host-owned (see
+    // design 257 3.1): the guest writes it with native instructions under the
+    // flat DS, so it does not need to live inside the runtime arena.
+    repiu::hle::GlideLfbSurface glide_lfb_surface;
+    std::uint32_t glide_lfb_lock_count = 0;
+    std::uint32_t glide_lfb_present_count = 0;
     std::uint32_t linexe_scan_return_eax = 0;
     std::uint32_t linexe_scan_return_ebp = 0;
     std::uint32_t linexe_scan_caller_eax = 0;

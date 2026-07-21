@@ -71,6 +71,8 @@ The first implementation target is a non-executing analysis tool for `MASTER\PIU
 * `Win32ExecutionTrampoline`은 Glide 구현을 직접 소유하지 않고 guest stack/register ABI를 공용 Glide HLE와 platform backend에 연결한다.
 * `GlideSignatureCatalog`: 실제 관찰된 API의 stack byte count와 void/EAX/x87 반환 kind를 중앙에서 관리하며 asset `@N`과 교차 검증한다.
 * `GlideLogicalState`는 lazy OpenGL texture object와 독립적으로 8 MiB virtual TMU 범위(`0..0x007FFFF8`)와 LFB pixel-format 상태를 보존한다.
+* `GlideLfb` (`include/repiu/hle/glide_lfb.h`, `src/hle/glide_lfb.cpp`): LFB staging surface, `GrLfbInfo_t` 직렬화, 565↔RGBA8 변환을 담당하는 플랫폼 공용 계층이다. `grLfbLock`은 게스트가 네이티브 명령으로 직접 기록할 실제 주소를 건네므로, HLE 경계가 함수가 아니라 **메모리 표면**이 되는 유일한 Glide 경로다. staging buffer는 아레나가 아닌 호스트 소유 할당이며(게스트는 flat DS로 네이티브 실행), 모든 lock에서 현재 framebuffer로 seeding해 write lock이 기존 화면을 지우지 않게 한다.
+* Glide 텍스처 크기 규약(`GrLOD_t`는 열거값이며 `GR_LOD_256`=0)은 `docs/kb/glide-texture-lod-and-formats.md`에서 관리한다. `grTexTextureMemRequired`의 반환값은 게스트가 자기 TMU 배치를 결정하는 입력이므로 정확성이 게스트 동작에 직접 전파된다.
 * `Win32X87Context` (`include/repiu/platform/win32/x87_context.h`, `src/platform/win32/x87_context.cpp`): SEH `CONTEXT`의 x87 TOP/tag/80-bit register를 갱신하여 guest float 반환을 독립적으로 처리한다.
 
 ## Planned Structure
@@ -150,6 +152,8 @@ Planned major modules:
 * `Win32ExecutionTrampoline` does not own Glide implementation details; it connects guest stack/register ABI to shared Glide HLE and the platform backend.
 * `GlideSignatureCatalog` centrally records observed API stack-byte counts and void/EAX/x87 return kinds, cross-checked against asset `@N` metadata.
 * `GlideLogicalState` exposes an 8 MiB virtual TMU range (`0..0x007FFFF8`) independently of lazy OpenGL texture objects and retains LFB pixel-format state.
+* `GlideLfb` (`include/repiu/hle/glide_lfb.h`, `src/hle/glide_lfb.cpp`) is the platform-neutral LFB layer: staging surface, `GrLfbInfo_t` serialization, and 565↔RGBA8 conversion. `grLfbLock` hands the guest a real address it writes with native instructions, making this the one Glide path whose HLE boundary is a **memory surface** rather than a function. The staging buffer is a host-owned allocation rather than an arena carve (the guest executes natively under a flat DS) and is seeded from the current framebuffer on every lock so a write lock never erases existing content.
+* Glide texture sizing rules (`GrLOD_t` is an enumeration with `GR_LOD_256` = 0) are maintained in `docs/kb/glide-texture-lod-and-formats.md`. `grTexTextureMemRequired`'s return value is an input to the guest's own TMU layout, so its accuracy propagates directly into guest behavior.
 * `Win32X87Context` (`include/repiu/platform/win32/x87_context.h`, `src/platform/win32/x87_context.cpp`) independently updates x87 TOP, tags, and 80-bit registers in an SEH `CONTEXT` for guest float returns.
 
 ## 갱신 규칙

@@ -30,6 +30,7 @@ flowchart TD
 * [Self-modifying code와 code-cache 일관성](self-modifying-code-and-cache-coherency.md)
 * [CHD와 ISO9660](chd-and-iso9660.md)
 * [MSCDEX와 CD-DA](mscdex-and-cd-da.md)
+* [Glide 텍스처 LOD, aspect ratio, 포맷](glide-texture-lod-and-formats.md)
 
 # rePIU Technical Knowledge Base Index
 
@@ -48,3 +49,4 @@ include source links.
 * [Self-modifying code and code-cache coherency](self-modifying-code-and-cache-coherency.md)
 * [CHD and ISO9660](chd-and-iso9660.md)
 * [MSCDEX and CD-DA](mscdex-and-cd-da.md)
+* [Glide texture LOD, aspect ratio, and formats](glide-texture-lod-and-formats.md)

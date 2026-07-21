@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <sstream>
 #include <vector>
 
@@ -451,6 +452,138 @@ void GlideOpenGlBackend::SetTextureCombineEnabled(bool enabled)
 {
     texture_combine_enabled_ = enabled;
 }
+
+bool GlideOpenGlBackend::PresentLfbSurface(const std::uint8_t* rgba8,
+                                           std::uint32_t width,
+                                           std::uint32_t height,
+                                           bool flip_v)
+{
+#if !defined(_WIN32)
+    return false;
+#else
+    if (!is_open())
+    {
+        message_ = "cannot present Glide LFB surface without an OpenGL window";
+        return false;
+    }
+    if (dummy_mode_)
+    {
+        message_ = "Glide LFB surface presented (dummy)";
+        return true;
+    }
+    if (rgba8 == nullptr || width == 0U || height == 0U)
+    {
+        message_ = "invalid Glide LFB surface";
+        return false;
+    }
+
+    if (lfb_texture_ == 0U)
+    {
+        GLuint name = 0;
+        glGenTextures(1, &name);
+        lfb_texture_ = name;
+    }
+    glBindTexture(GL_TEXTURE_2D, lfb_texture_);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, static_cast<GLsizei>(width),
+                 static_cast<GLsizei>(height), 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                 rgba8);
+
+    // The blit must not inherit the geometry state (depth compare, blending,
+    // culling, combine routing) the game set for its triangles, so force the
+    // pieces that matter and restore them afterwards.
+    const GLboolean depth_was_enabled = glIsEnabled(GL_DEPTH_TEST);
+    const GLboolean blend_was_enabled = glIsEnabled(GL_BLEND);
+    const GLboolean cull_was_enabled = glIsEnabled(GL_CULL_FACE);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+    shader_.SetTextureEnabled(true);
+
+    // The orthographic projection installed at OpenWindowed already maps screen
+    // pixels directly, so the quad spans the logical surface. Texture v is
+    // flipped for lower-left origin locks.
+    const float top_v = flip_v ? 1.0F : 0.0F;
+    const float bottom_v = flip_v ? 0.0F : 1.0F;
+    const float right = static_cast<float>(logical_width_);
+    const float bottom = static_cast<float>(logical_height_);
+    glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
+    glBegin(GL_TRIANGLES);
+    glTexCoord2f(0.0F, top_v);    glVertex3f(0.0F, 0.0F, 0.0F);
+    glTexCoord2f(1.0F, top_v);    glVertex3f(right, 0.0F, 0.0F);
+    glTexCoord2f(1.0F, bottom_v); glVertex3f(right, bottom, 0.0F);
+    glTexCoord2f(0.0F, top_v);    glVertex3f(0.0F, 0.0F, 0.0F);
+    glTexCoord2f(1.0F, bottom_v); glVertex3f(right, bottom, 0.0F);
+    glTexCoord2f(0.0F, bottom_v); glVertex3f(0.0F, bottom, 0.0F);
+    glEnd();
+
+    shader_.SetTextureEnabled(texture_combine_enabled_);
+    if (depth_was_enabled == GL_TRUE)
+    {
+        glEnable(GL_DEPTH_TEST);
+    }
+    if (blend_was_enabled == GL_TRUE)
+    {
+        glEnable(GL_BLEND);
+    }
+    if (cull_was_enabled == GL_TRUE)
+    {
+        glEnable(GL_CULL_FACE);
+    }
+    // Leave the geometry texture binding as the game left it.
+    if (current_texture_ != nullptr && current_texture_->gl_name != 0U)
+    {
+        glBindTexture(GL_TEXTURE_2D, current_texture_->gl_name);
+    }
+    message_ = "Glide LFB surface presented";
+    return glGetError() == GL_NO_ERROR;
+#endif
+}
+
+bool GlideOpenGlBackend::ReadbackFramebuffer(std::uint32_t width,
+                                             std::uint32_t height,
+                                             std::vector<std::uint8_t>* rgba8)
+{
+#if !defined(_WIN32)
+    return false;
+#else
+    if (rgba8 == nullptr || width == 0U || height == 0U || !is_open())
+    {
+        message_ = "cannot read back Glide framebuffer";
+        return false;
+    }
+    rgba8->assign(static_cast<std::size_t>(width) * height * 4U, 0U);
+    if (dummy_mode_)
+    {
+        message_ = "Glide framebuffer read back (dummy)";
+        return true;
+    }
+    glReadBuffer(GL_BACK);
+    glReadPixels(0, 0, static_cast<GLsizei>(width),
+                 static_cast<GLsizei>(height), GL_RGBA, GL_UNSIGNED_BYTE,
+                 rgba8->data());
+    // glReadPixels returns row 0 as the bottom scanline, while every consumer
+    // here (the LFB staging surface, texture uploads) treats row 0 as the top.
+    // Flip once at the source so callers never have to think about it.
+    const std::size_t row_bytes = static_cast<std::size_t>(width) * 4U;
+    std::vector<std::uint8_t> scratch(row_bytes);
+    for (std::uint32_t row = 0; row < height / 2U; ++row)
+    {
+        std::uint8_t* top = rgba8->data() + static_cast<std::size_t>(row) *
+            row_bytes;
+        std::uint8_t* bottom = rgba8->data() +
+            static_cast<std::size_t>(height - 1U - row) * row_bytes;
+        std::memcpy(scratch.data(), top, row_bytes);
+        std::memcpy(top, bottom, row_bytes);
+        std::memcpy(bottom, scratch.data(), row_bytes);
+    }
+    message_ = "Glide framebuffer read back";
+    return glGetError() == GL_NO_ERROR;
+#endif
+}
 bool GlideOpenGlBackend::SetColorMask(bool rgb, bool alpha)
 {
 #if !defined(_WIN32)
@@ -836,6 +969,11 @@ void GlideOpenGlBackend::Close()
                     glDeleteTextures(1, &name);
                 }
             }
+            if (lfb_texture_ != 0U)
+            {
+                GLuint lfb_name = lfb_texture_;
+                glDeleteTextures(1, &lfb_name);
+            }
             shader_.Shutdown();
             wglMakeCurrent(nullptr, nullptr);
             wglDeleteContext(render_context);
@@ -865,6 +1003,7 @@ void GlideOpenGlBackend::Close()
     textures_.clear();
     current_texture_ = nullptr;
     texture_combine_enabled_ = false;
+    lfb_texture_ = 0;
 }
 
 }  // namespace repiu::platform::win32

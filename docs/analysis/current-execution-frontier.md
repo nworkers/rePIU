@@ -1,3 +1,92 @@
+## 2026-07-22 Task 258 (완료): GrLOD_t 열거값 해석 정정 — rePIU 첫 실제 콘텐츠 렌더 / Task 258 (Completed): GrLOD_t enumeration fix — the project's first real content render
+
+**상태 (Status):** 구현·검증 완료, `claude/glide-api-call-audit` 브랜치 (`9bfde75`).
+
+**근인 (확인됨).** 게임이 정상 좌표의 콘텐츠 지오메트리(15×31 글자 사각형 등)를
+제출해도 화면이 비던 근인은 `GrLOD_t`를 크기의 log2로 취급한 것이었다. `GrLOD_t`는
+**열거값**이며 `GR_LOD_256`이 0, `GR_LOD_1`이 8이다(긴 변 = `256 >> lod`). 관측된
+`largeLod=0·aspect=1x1`은 **256×256**인데 **1×1**로 생성됐다 — 정확히 반전.
+
+**결정적 증거.** 게임이 보낸 텍스처 좌표 `st=(193,156)`, `(226,156)`, `(244,·)`는
+1×1에 존재할 수 없다. 이 **관측 간 불일치**가 근인으로 이끌었다.
+
+**게스트 오염과 순환 논리 (확인됨).** `grTexTextureMemRequired`가 같은 계산을 쓰고
+게임은 그 값으로 **자기 TMU 주소 공간을 배치**한다. 256×256에 "8바이트"를 보고하자
+게임이 8바이트 간격으로 텍스처를 쌓았고, Task 255는 그 간격을 1×1의 확증으로
+기록했다 — **우리 출력의 함수인 관측을 외부 사실로 취급**한 순환 논리. 수정 후
+게임은 `0x2000` 간격으로 배치한다.
+
+**수정.** LOD→변 길이를 `8 - lod`로 정정, aspect ratio를 짧은 변에 적용, 유효성
+검사를 `large_lod <= small_lod`로 반전 (`glide_texture_decode.cpp`, `glide_hle.cpp`).
+
+**검증 (확인됨).** 콘텐츠 화면은 키 입력을 요구하므로(v0.0.77/78 JAMMA 입력 수정
+이후 정상 동작) `keybd_event` 합성 입력으로 구동했다 —
+`port_io_emulator.cpp`가 `GetAsyncKeyState`로 전역 물리 키 상태를 읽어 창 포커스와
+무관하게 전달된다. 결과: 텍스처 **256×256** 저장, 삼각형별 백버퍼 누적
+`0 → 122 → … → 760`, 프레임 **1,765/307,200 비검정**(avg-rgb 133,133,133) swap #200까지
+안정, 거부·미처리 게이트 0 유지. 상세:
+`docs/work-logs/20260722-258-glide-lod-enumeration-fix-log.md`,
+규약: `docs/kb/glide-texture-lod-and-formats.md`.
+
+**정정된 이전 결론 2건.** (1) Task 255의 "텍스처는 1×1(8바이트 간격이 확증)" —
+반증. (2) "v0.0.75 대비 픽셀 수 감소는 회귀" — 반증. v0.0.75가 JAMMA 입력을
+**오독(눌린 것으로)** 해 키 입력이 필요한 화면이 강제로 떠 있던 것이고, v0.0.77/78의
+입력 폴링 수정이 정상 동작을 복원한 것이다.
+
+**미확정 (다음 과제).** (1) 정점 색 필드가 여전히 유효 범위 밖 — 현재 콘텐츠는
+SCALE_OTHER라 무해하나 LOCAL combine 콘텐츠에서 확정 필요. (2) 텍스처 주소 간격
+`0x2000`(8,192)이 256×256×2=131,072와 불일치 — mipmap/evenOdd 분할 또는 부분
+다운로드 가능성, `GrTexInfo` 실측 필요. (3) LFB 경로 실데이터 미검증(Task 257).
+
+**English summary.** The black screen under valid geometry was a `GrLOD_t`
+misinterpretation: it is an enumeration (`GR_LOD_256` = 0), not a log2 size, so
+every texture was inverted. The decisive clue was a contradiction between two
+observations — textures were 1x1 while the game submitted texture coordinates up
+to 244. Because `grTexTextureMemRequired` shares the math and the guest lays out
+its TMU space from the answer, the error propagated into the game's 8-byte
+texture spacing, which Task 255 had recorded as proof of 1x1 textures. Verified
+with synthesized JAMMA input: 256x256 stores, per-triangle readback climbing
+0 → 760, and a frame stable at 1,765 non-black pixels — the project's first real
+content render. Two earlier conclusions are corrected: the "1x1 texture" finding
+and the "pixel-count regression" reading (v0.0.75 misread input as pressed).
+
+## 2026-07-21 Task 257 (완료): Glide API 호출 감사와 R4 LFB 경로 구현 / Task 257 (Completed): Glide API call audit and R4 LFB path
+
+**상태 (Status):** 구현 완료·실데이터 미검증, `claude/glide-api-call-audit` (`63a067f`).
+
+**감사 (확인됨).** ordinal별 최초호출 감사(`REPIU_GLIDE_CALL_AUDIT`)로 게이트 로그
+96건 캡과 타임아웃 요약 누락을 동시에 우회해, 카탈로그 97종 중 **39종 호출**·거부
+0건을 확정했다. `unhandled (default)`는 **정확히 3개**: `grConstantColorValue`(92),
+`grLfbLock`(112), `grLfbUnlock`(113). design 249가 유보했던 R4 착수 조건이 충족됐다.
+
+**반증됨.** "폴리곤·버텍스리스트 드로우 미구현이 렌더 공백을 만든다"는 추정 —
+드로우는 `grDrawTriangle` 하나만 호출되며 폴리곤·버텍스리스트·점·선·AA 11종은 전부
+미호출이다.
+
+**구현.** 플랫폼 공용 `src/hle/glide_lfb.{h,cpp}`(스테이징 표면, `GrLfbInfo_t`
+직렬화, 565↔RGBA8), 백엔드 `PresentLfbSurface`/`ReadbackFramebuffer`(GL 상태 격리),
+게이트 핸들러는 위임만. 미지원 조합은 `reject_gate`가 아니라 FXFALSE로 정상 반환
+(design 237 유지 정책). 상세: `docs/design/20260721-257-glide-r4-lfb-path.md`.
+
+**구현 중 발견·수정 2건.** (1) `grLfbLock`이 `size`를 호출자 값으로 에코백하던 것을
+우리가 채운 값으로 정정(PIU는 0을 넘긴다). (2) write lock이 0으로 채운 스테이징을
+건네 unlock에서 **전체 화면을 검게 덮어쓰던** 결함 — 실 하드웨어의 LFB는 살아있는
+프레임버퍼이므로 모든 lock에서 현재 백버퍼로 seeding하도록 수정, 함께
+`ReadbackFramebuffer`의 bottom-up 행 순서를 소스에서 뒤집음.
+
+**검증.** `unhandled` 3 → 0, 거부 0 유지, `GrLfbInfo_t` 왕복 확인(게스트 스택에
+`size=0x14`·`lfbPtr`·`stride=0x500`). **미검증:** 게스트가 0바이트를 써 블릿의
+실데이터 검증 불가 — 그 원인은 Task 258의 LOD 오류로 규명됐다.
+
+**English summary.** A per-ordinal audit settled the reached API set (39 of 97,
+zero rejects, exactly three unhandled) and satisfied design 249's condition for
+R4, while disproving the polygon/vertex-list draw gap. The LFB pair is
+implemented across a platform-neutral module, backend blit/readback, and
+delegating handlers, with two defects fixed during implementation: `grLfbLock`
+must fill `size` itself, and a write lock must seed from the live framebuffer or
+unlock blits black over drawn content. Gate-level verification passes; the blit
+remains unvalidated against real data.
+
 ## 2026-07-21 Task 256 (완료): Glide R4 알파 블렌딩 — 관측된 블렌드 함수를 GL로 일반화, 투명 텍스처의 파괴적 검정 덮어쓰기 제거 / Task 256 (Completed): Glide R4 alpha blending — generalized the observed blend functions to GL, removing destructive black overwrite of transparent textures
 
 **상태 (Status):** 구현·검증 완료, `feature/256-glide-r4-alpha-blending` 브랜치.

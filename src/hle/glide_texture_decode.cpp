@@ -9,6 +9,18 @@ namespace
 
 constexpr std::int32_t kAspectSquare = 3;
 
+// GrLOD_t is an enumeration, not a log2 size: GR_LOD_256 is 0 and GR_LOD_1 is
+// 8, so the LOD's larger edge is 256 >> lod (log2 edge = 8 - lod). Treating the
+// LOD value itself as the exponent inverts every texture: the observed
+// largeLod=0/aspect=1x1 download is 256x256, not 1x1.
+// Reference: 3Dfx Glide 2.4 Reference Manual, GrLOD_t / GrAspectRatio_t.
+constexpr std::int32_t kLargestLodLog2 = 8;
+
+std::int32_t LodEdgeLog2(std::uint32_t large_lod)
+{
+    return kLargestLodLog2 - static_cast<std::int32_t>(large_lod);
+}
+
 // Expand an n-bit channel value to 8 bits by bit replication.
 std::uint8_t Expand(std::uint32_t value, std::uint32_t bits)
 {
@@ -33,10 +45,14 @@ bool CalculateGlideTextureDimensions(std::uint32_t large_lod,
     {
         return false;
     }
-    const std::int32_t width_log2 = static_cast<std::int32_t>(large_lod) +
-        static_cast<std::int32_t>(aspect_ratio) - kAspectSquare;
-    const std::int32_t height_log2 = static_cast<std::int32_t>(large_lod) -
-        static_cast<std::int32_t>(aspect_ratio) + kAspectSquare;
+    // The LOD names the larger edge; the aspect ratio shrinks the other one.
+    // GR_ASPECT_8x1(0)..GR_ASPECT_1x1(3) are wide, GR_ASPECT_1x2(4).. are tall.
+    const std::int32_t edge_log2 = LodEdgeLog2(large_lod);
+    const std::int32_t aspect = static_cast<std::int32_t>(aspect_ratio);
+    const std::int32_t width_log2 =
+        edge_log2 - std::max(aspect - kAspectSquare, 0);
+    const std::int32_t height_log2 =
+        edge_log2 - std::max(kAspectSquare - aspect, 0);
     dimensions->width = 1U << std::max(width_log2, 0);
     dimensions->height = 1U << std::max(height_log2, 0);
     return true;

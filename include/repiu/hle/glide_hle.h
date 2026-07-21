@@ -97,6 +97,9 @@ struct GlideLogicalState
     std::uint32_t clip_max_y = 0;
     std::uint32_t cull_mode = 0;
     std::uint32_t dither_mode = 0;
+    // grConstantColorValue: observed during the content phase (0xFFFFFFFF).
+    // Retained so a later CONSTANT combine source can read it.
+    std::uint32_t constant_color = 0xFFFFFFFFU;
 };
 
 constexpr std::uint32_t kPiuBansheeVirtualTextureMemoryBytes =

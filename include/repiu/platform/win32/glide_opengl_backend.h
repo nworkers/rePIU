@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace repiu::platform::win32
 {
@@ -55,6 +56,18 @@ public:
                       std::size_t source_size);
     // Select the current texture for subsequent draws (grTexSource).
     bool SourceTexture(std::uint32_t start_address);
+    // R4 LFB: upload an RGBA8 image and blit it over the whole render target.
+    // Used by grLfbUnlock to present what the guest wrote through the staging
+    // surface. `flip_v` mirrors vertically for GR_ORIGIN_LOWER_LEFT locks. The
+    // blit isolates its own GL state so it does not inherit the geometry state.
+    bool PresentLfbSurface(const std::uint8_t* rgba8,
+                           std::uint32_t width,
+                           std::uint32_t height,
+                           bool flip_v);
+    // R4 LFB: read the current render target back as RGBA8 (read locks).
+    bool ReadbackFramebuffer(std::uint32_t width,
+                             std::uint32_t height,
+                             std::vector<std::uint8_t>* rgba8);
     // Enable/disable texture-driven color output for SCALE_OTHER color combine.
     void SetTextureCombineEnabled(bool enabled);
     bool SetColorMask(bool rgb, bool alpha);
@@ -77,6 +90,7 @@ public:
 
     bool is_open() const { return window_ != nullptr || dummy_mode_; }
     bool is_dummy() const { return dummy_mode_; }
+    bool is_texture_combine_enabled() const { return texture_combine_enabled_; }
     const std::string& message() const { return message_; }
 
 private:
@@ -98,6 +112,9 @@ private:
     std::unordered_map<std::uint32_t, TextureEntry> textures_;
     const TextureEntry* current_texture_ = nullptr;
     bool texture_combine_enabled_ = false;
+    // Dedicated texture reused by every LFB blit so unlock does not churn GL
+    // texture names once per frame.
+    std::uint32_t lfb_texture_ = 0;
 };
 
 }  // namespace repiu::platform::win32

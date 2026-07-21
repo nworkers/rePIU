@@ -4,6 +4,7 @@
 #include "instruction_emulation.h"
 
 #include "repiu/hle/glide_texture_decode.h"
+#include "repiu/hle/glide_lfb.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -460,6 +461,27 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             std::copy(std::begin(context->glide_gate_stack),
                       std::end(context->glide_gate_stack),
                       context->glide_first_stacks[ordinal].begin());
+            // Audit diagnostic (env-gated, off by default): emit one line the
+            // first time each ordinal is ever called. Bounded by the export
+            // count (<=97 lines), so it survives both the 96-entry gate-entry
+            // log cap and the timeout path that skips the exit summary --
+            // the only way to enumerate the reached API set on a timed run.
+            static const bool call_audit_enabled =
+                std::getenv("REPIU_GLIDE_CALL_AUDIT") != nullptr;
+            if (call_audit_enabled)
+            {
+                fprintf(stderr,
+                        "[repiu-glide-audit] first-call ordinal=%u name=%s"
+                        " args=%08X %08X %08X %08X %08X %08X %08X\n",
+                        glide_export->ordinal, glide_export->name.c_str(),
+                        context->glide_gate_stack[1],
+                        context->glide_gate_stack[2],
+                        context->glide_gate_stack[3],
+                        context->glide_gate_stack[4],
+                        context->glide_gate_stack[5],
+                        context->glide_gate_stack[6],
+                        context->glide_gate_stack[7]);
+            }
         }
     }
     // Task 255 R3 observation (env-gated, off by default): dump the real
@@ -1257,10 +1279,67 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             vertex.s = fields[9];
             vertex.t = fields[10];
         }
+        // Draw diagnostic (env-gated): the swap-driven pixel sampler only fires
+        // on selected swap indices, so it can miss the content phase entirely.
+        // Log the decoded vertices and read the back buffer straight after the
+        // draw, which separates "geometry is degenerate", "state kills the
+        // fragment", and "it draws but something later erases it".
+        static const bool draw_diagnostic_enabled =
+            std::getenv("REPIU_GLIDE_DRAW_DIAG") != nullptr;
+        std::size_t before_non_black = 0;
+        const bool diagnose_this_draw =
+            draw_diagnostic_enabled && sequence <= 12U;
+        if (diagnose_this_draw)
+        {
+            std::vector<std::uint8_t> before;
+            if (context->glide_backend.ReadbackFramebuffer(
+                    context->glide_state.width, context->glide_state.height,
+                    &before))
+            {
+                for (std::size_t i = 0; i + 3U < before.size(); i += 4U)
+                {
+                    if (before[i] > 8U || before[i + 1U] > 8U ||
+                        before[i + 2U] > 8U)
+                    {
+                        ++before_non_black;
+                    }
+                }
+            }
+        }
         if (!context->glide_backend.DrawTriangle(vertices[0], vertices[1], vertices[2]))
         {
             context->glide_backend_message = context->glide_backend.message();
             return reject_gate("compact-triangle-backend-failure");
+        }
+        if (diagnose_this_draw)
+        {
+            std::vector<std::uint8_t> after;
+            std::size_t after_non_black = 0;
+            if (context->glide_backend.ReadbackFramebuffer(
+                    context->glide_state.width, context->glide_state.height,
+                    &after))
+            {
+                for (std::size_t i = 0; i + 3U < after.size(); i += 4U)
+                {
+                    if (after[i] > 8U || after[i + 1U] > 8U ||
+                        after[i + 2U] > 8U)
+                    {
+                        ++after_non_black;
+                    }
+                }
+            }
+            fprintf(stderr,
+                    "[repiu-live-debug] tri #%u xy=(%.2f,%.2f)(%.2f,%.2f)"
+                    "(%.2f,%.2f) rgba0=(%.3f,%.3f,%.3f,%.3f) st0=(%.2f,%.2f)"
+                    " combine=%u/other=%u texEnabled=%d nonblack %zu->%zu\n",
+                    sequence, vertices[0].x, vertices[0].y, vertices[1].x,
+                    vertices[1].y, vertices[2].x, vertices[2].y,
+                    vertices[0].r, vertices[0].g, vertices[0].b,
+                    vertices[0].a, vertices[0].s, vertices[0].t,
+                    context->glide_state.color_combine.function,
+                    context->glide_state.color_combine.other,
+                    context->glide_backend.is_texture_combine_enabled() ? 1 : 0,
+                    before_non_black, after_non_black);
         }
         ++context->glide_gate_handled_count;
         win32_context->Eip = return_address;
@@ -1277,6 +1356,264 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
     }
     if (glide_export->name == "_GRDRAWPLANARPOLYGONVERTEXLIST@8")
     {
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 3U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRCONSTANTCOLORVALUE@4")
+    {
+        // R4: retain the constant color so a later CONSTANT combine source can
+        // read it. Observed value during the content phase is 0xFFFFFFFF.
+        context->glide_state.constant_color = context->glide_gate_stack[1];
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRLFBLOCK@24")
+    {
+        // grLfbLock(type, buffer, writeMode, origin, pixelPipeline, info*).
+        // The observed content-phase lock is (WRITE_ONLY, BACKBUFFER, 565,
+        // UPPER_LEFT, FXTRUE), which is exactly what this path implements.
+        const std::uint32_t type = context->glide_gate_stack[1];
+        const std::uint32_t buffer = context->glide_gate_stack[2];
+        const std::uint32_t write_mode = context->glide_gate_stack[3];
+        const std::uint32_t origin = context->glide_gate_stack[4];
+        const std::uint32_t info_pointer = context->glide_gate_stack[6];
+        auto* info = reinterpret_cast<void*>(
+            static_cast<std::uintptr_t>(info_pointer));
+
+        const auto fail_lock = [&](const char* reason) {
+            // Retain policy (design 237): an unsupported but ABI-valid lock
+            // returns FXFALSE rather than leaking the frame through a reject.
+            static long lfb_decline_log_count = 0;
+            const long index = InterlockedIncrement(&lfb_decline_log_count);
+            if (index <= 16)
+            {
+                fprintf(stderr,
+                        "[repiu-live-debug] grLfbLock declined #%ld reason=%s"
+                        " type=%u buffer=%u writeMode=%u origin=%u\n",
+                        index, reason, type, buffer, write_mode, origin);
+            }
+            ++context->glide_gate_handled_count;
+            win32_context->Eax = 0U;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 7U * sizeof(std::uint32_t);
+            return true;
+        };
+
+        if (!IsGuestRangeWritable(context, info,
+                                  repiu::hle::kGlideLfbInfoByteCount))
+        {
+            return reject_gate("lfb-lock-info-pointer-unwritable");
+        }
+        if (write_mode != repiu::hle::kGlideLfbWriteMode565 ||
+            buffer != repiu::hle::kGlideBufferBackBuffer)
+        {
+            return fail_lock("unsupported-writemode-or-buffer");
+        }
+        const std::uint32_t width = context->glide_state.width;
+        const std::uint32_t height = context->glide_state.height;
+        if (!context->glide_lfb_surface.Resize(width, height))
+        {
+            return fail_lock("surface-resize-failure");
+        }
+        if (!context->glide_lfb_surface.BeginLock(type, buffer, write_mode,
+                                                  origin))
+        {
+            return fail_lock("lock-already-outstanding");
+        }
+        // Seed the staging surface from the current render target for *every*
+        // lock, not just read locks. On real hardware the LFB is the live
+        // framebuffer, so a write lock that touches only some pixels leaves the
+        // rest untouched. Handing out a zero-filled buffer instead makes unlock
+        // blit black over everything already drawn -- observed erasing the
+        // triangles submitted immediately before the lock.
+        {
+            std::vector<std::uint8_t> rgba8;
+            const bool read_ok = context->glide_backend.ReadbackFramebuffer(
+                width, height, &rgba8);
+            bool encode_ok = false;
+            if (read_ok)
+            {
+                encode_ok = repiu::hle::EncodeRgba8ToGlideLfb565(
+                    rgba8.data(), rgba8.size(), width, height,
+                    context->glide_lfb_surface.pixels(),
+                    context->glide_lfb_surface.byte_count());
+            }
+            static long seed_log_count = 0;
+            const long seed_index = InterlockedIncrement(&seed_log_count);
+            if (seed_index <= 4)
+            {
+                std::size_t seed_non_black = 0;
+                for (std::size_t i = 0; i + 3U < rgba8.size(); i += 4U)
+                {
+                    if (rgba8[i] > 8U || rgba8[i + 1U] > 8U ||
+                        rgba8[i + 2U] > 8U)
+                    {
+                        ++seed_non_black;
+                    }
+                }
+                fprintf(stderr,
+                        "[repiu-live-debug] grLfbLock seed #%ld read=%d"
+                        " encode=%d framebuffer non-black=%zu\n",
+                        seed_index, read_ok ? 1 : 0, encode_ok ? 1 : 0,
+                        seed_non_black);
+            }
+        }
+
+        // The size field is caller-supplied; echo it back but record a mismatch
+        // so an unexpected GrLfbInfo_t layout becomes visible instead of silent.
+        std::uint32_t caller_size = 0;
+        std::memcpy(&caller_size, info, sizeof(caller_size));
+        {
+            // Dump what the caller staged in the struct before we touch it.
+            // Glide 2.4's GrLfbInfo_t starts with a caller-set `size`; PIU
+            // leaves offset 0 at zero, so this dump is what distinguishes "the
+            // game simply never sets size" from "this build's GrLfbInfo_t has
+            // no size field and every field we write is off by one dword".
+            static long lfb_size_log_count = 0;
+            const long index = InterlockedIncrement(&lfb_size_log_count);
+            if (index <= 4)
+            {
+                std::uint32_t before[8] = {};
+                const auto* raw = reinterpret_cast<const std::uint32_t*>(
+                    static_cast<std::uintptr_t>(info_pointer));
+                if (IsGuestRangeReadable(context, raw, sizeof(before)))
+                {
+                    std::memcpy(before, raw, sizeof(before));
+                }
+                fprintf(stderr,
+                        "[repiu-live-debug] grLfbLock GrLfbInfo_t caller size=%u"
+                        " (expected %u) pre-call dwords="
+                        "%08X %08X %08X %08X %08X %08X %08X %08X\n",
+                        caller_size,
+                        repiu::hle::kGlideLfbInfoExpectedSize,
+                        before[0], before[1], before[2], before[3],
+                        before[4], before[5], before[6], before[7]);
+            }
+        }
+
+        std::uint8_t image[repiu::hle::kGlideLfbInfoByteCount] = {};
+        const auto staging_pointer = static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(
+                context->glide_lfb_surface.pixels()));
+        // grLfbLock owns every output field, `size` included: it reports the
+        // GrLfbInfo_t layout it actually filled. Echoing the caller's value back
+        // (PIU leaves it 0) would tell the guest nothing was written.
+        if (!repiu::hle::BuildGlideLfbInfoImage(
+                repiu::hle::kGlideLfbInfoExpectedSize, staging_pointer,
+                context->glide_lfb_surface.stride_in_bytes(), write_mode,
+                origin, image, sizeof(image)) ||
+            !WriteGuestBytes(context, info, image, sizeof(image)))
+        {
+            context->glide_lfb_surface.EndLock();
+            return fail_lock("info-write-failure");
+        }
+
+        ++context->glide_lfb_lock_count;
+        if (context->glide_lfb_lock_count <= 4U)
+        {
+            fprintf(stderr,
+                    "[repiu-live-debug] grLfbLock granted #%u type=%u"
+                    " buffer=%u writeMode=%u origin=%u lfbPtr=0x%08X"
+                    " stride=%u %ux%u\n",
+                    context->glide_lfb_lock_count, type, buffer, write_mode,
+                    origin, staging_pointer,
+                    context->glide_lfb_surface.stride_in_bytes(), width,
+                    height);
+        }
+        ++context->glide_gate_handled_count;
+        win32_context->Eax = 1U;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 7U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRLFBUNLOCK@8")
+    {
+        // grLfbUnlock(type, buffer): a write lock's staging content becomes the
+        // back-buffer image here; the next grBufferSwap presents it.
+        const std::uint32_t type = context->glide_gate_stack[1];
+        if (context->glide_lfb_surface.locked() &&
+            type == repiu::hle::kGlideLfbWriteOnly)
+        {
+            // Did the guest actually write into the surface we handed it? A
+            // non-zero count proves the lfbPtr round-trip works end to end and
+            // separates "blit is broken" from "guest never wrote".
+            {
+                static long unlock_probe_count = 0;
+                const long probe = InterlockedIncrement(&unlock_probe_count);
+                if (probe <= 8)
+                {
+                    const std::uint8_t* pixels =
+                        context->glide_lfb_surface.pixels();
+                    const std::size_t total =
+                        context->glide_lfb_surface.byte_count();
+                    std::size_t non_zero = 0;
+                    for (std::size_t i = 0; i < total; ++i)
+                    {
+                        if (pixels[i] != 0U)
+                        {
+                            ++non_zero;
+                        }
+                    }
+                    fprintf(stderr,
+                            "[repiu-live-debug] grLfbUnlock #%ld non-zero"
+                            " staging bytes=%zu/%zu first-texels="
+                            "%02X%02X %02X%02X %02X%02X\n",
+                            probe, non_zero, total, pixels[1], pixels[0],
+                            pixels[3], pixels[2], pixels[5], pixels[4]);
+                }
+            }
+            std::vector<std::uint8_t> rgba8;
+            if (repiu::hle::DecodeGlideLfb565ToRgba8(
+                    context->glide_lfb_surface.pixels(),
+                    context->glide_lfb_surface.byte_count(),
+                    context->glide_lfb_surface.width(),
+                    context->glide_lfb_surface.height(), &rgba8))
+            {
+                const bool flip_v =
+                    context->glide_lfb_surface.lock_origin() ==
+                    repiu::hle::kGlideOriginLowerLeft;
+                if (context->glide_backend.PresentLfbSurface(
+                        rgba8.data(), context->glide_lfb_surface.width(),
+                        context->glide_lfb_surface.height(), flip_v))
+                {
+                    ++context->glide_lfb_present_count;
+                    // The swap-driven pixel diagnostic cannot help here: the
+                    // guest may never swap again. Sample the back buffer right
+                    // after the blit so the blit itself is verifiable.
+                    if (context->glide_lfb_present_count <= 4U)
+                    {
+                        std::vector<std::uint8_t> after;
+                        if (context->glide_backend.ReadbackFramebuffer(
+                                context->glide_lfb_surface.width(),
+                                context->glide_lfb_surface.height(), &after))
+                        {
+                            std::size_t non_black = 0;
+                            for (std::size_t i = 0; i + 3U < after.size();
+                                 i += 4U)
+                            {
+                                if (after[i] > 8U || after[i + 1U] > 8U ||
+                                    after[i + 2U] > 8U)
+                                {
+                                    ++non_black;
+                                }
+                            }
+                            fprintf(stderr,
+                                    "[repiu-live-debug] LFB blit #%u back-buffer"
+                                    " non-black=%zu/%zu\n",
+                                    context->glide_lfb_present_count, non_black,
+                                    after.size() / 4U);
+                        }
+                    }
+                }
+                context->glide_backend_message =
+                    context->glide_backend.message();
+            }
+        }
+        context->glide_lfb_surface.EndLock();
         ++context->glide_gate_handled_count;
         win32_context->Eip = return_address;
         win32_context->Esp += 3U * sizeof(std::uint32_t);

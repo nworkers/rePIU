@@ -132,7 +132,8 @@ bool BuildGlideStateImage(const GlideLogicalState& state,
         return true;
     };
     constexpr std::uint32_t kStateMagic = 0x53504952U;
-    constexpr std::uint32_t kStateVersion = 2U;
+    // Version 3 appends grConstantColorValue (Task 257).
+    constexpr std::uint32_t kStateVersion = 3U;
     return write_u32(kStateMagic) && write_u32(kStateVersion) &&
         write_u32(state.initialized ? 1U : 0U) &&
         write_u32(state.selected_board) &&
@@ -148,7 +149,7 @@ bool BuildGlideStateImage(const GlideLogicalState& state,
         write_u32(state.fog_mode) && write_u32(state.clip_min_x) &&
         write_u32(state.clip_min_y) && write_u32(state.clip_max_x) &&
         write_u32(state.clip_max_y) && write_u32(state.cull_mode) &&
-        write_u32(state.dither_mode);
+        write_u32(state.dither_mode) && write_u32(state.constant_color);
 }
 
 bool ParseGlideStateImage(const GlideStateImage& image,
@@ -177,7 +178,8 @@ bool ParseGlideStateImage(const GlideStateImage& image,
     std::uint32_t window_open = 0;
     GlideLogicalState restored = *state;
     constexpr std::uint32_t kStateMagic = 0x53504952U;
-    constexpr std::uint32_t kStateVersion = 2U;
+    // Version 3 appends grConstantColorValue (Task 257).
+    constexpr std::uint32_t kStateVersion = 3U;
     if (!read_u32(&magic) || !read_u32(&version) ||
         magic != kStateMagic || version != kStateVersion ||
         !read_u32(&initialized) || !read_u32(&restored.selected_board) ||
@@ -197,7 +199,8 @@ bool ParseGlideStateImage(const GlideStateImage& image,
         !read_u32(&restored.clip_max_x) ||
         !read_u32(&restored.clip_max_y) ||
         !read_u32(&restored.cull_mode) ||
-        !read_u32(&restored.dither_mode))
+        !read_u32(&restored.dither_mode) ||
+        !read_u32(&restored.constant_color))
     {
         return false;
     }
@@ -349,9 +352,12 @@ bool CalculateGlideTextureMemoryRequired(std::uint32_t even_odd_mask,
     constexpr std::uint32_t kMaxAspect = 6U;
     constexpr std::uint32_t kMaxFormat = 12U;
     constexpr std::uint32_t kTextureStartAlignment = 8U;
+    // largeLod is the biggest mipmap and therefore the numerically smaller
+    // GrLOD_t, so the valid ordering is large_lod <= small_lod (the reverse of
+    // what this check previously required).
     if (required_bytes == nullptr || (even_odd_mask & ~kBothMask) != 0U ||
-        even_odd_mask == 0U || info.small_lod > info.large_lod ||
-        info.large_lod > kMaxLod || info.aspect_ratio > kMaxAspect ||
+        even_odd_mask == 0U || info.large_lod > info.small_lod ||
+        info.small_lod > kMaxLod || info.aspect_ratio > kMaxAspect ||
         info.format > kMaxFormat)
     {
         return false;
@@ -359,19 +365,28 @@ bool CalculateGlideTextureMemoryRequired(std::uint32_t even_odd_mask,
 
     const std::uint32_t bytes_per_texel = info.format <= 5U ? 1U : 2U;
     std::uint64_t total = 0;
-    for (std::uint32_t lod = info.small_lod; lod <= info.large_lod; ++lod)
+    // GrLOD_t counts downward in size: GR_LOD_256 is 0 and GR_LOD_1 is 8, so
+    // largeLod is numerically <= smallLod and the LOD's larger edge is
+    // 256 >> lod. The previous code used the LOD value directly as a log2 size,
+    // which reported 8 bytes for a 256x256 texture -- and because the game sizes
+    // its own TMU allocations from this answer, it then packed textures 8 bytes
+    // apart. Reference: 3Dfx Glide 2.4 Reference Manual, grTexTextureMemRequired.
+    constexpr std::int32_t kLargestLodLog2 = 8;
+    for (std::uint32_t lod = info.large_lod; lod <= info.small_lod; ++lod)
     {
         const std::uint32_t lod_mask = (lod & 1U) == 0U ? kEvenMask : kOddMask;
         if ((even_odd_mask & lod_mask) == 0U)
         {
             continue;
         }
-        const std::int32_t width_log2 = static_cast<std::int32_t>(lod) +
-            static_cast<std::int32_t>(info.aspect_ratio) -
-            static_cast<std::int32_t>(kAspectSquare);
-        const std::int32_t height_log2 = static_cast<std::int32_t>(lod) -
-            static_cast<std::int32_t>(info.aspect_ratio) +
-            static_cast<std::int32_t>(kAspectSquare);
+        const std::int32_t edge_log2 =
+            kLargestLodLog2 - static_cast<std::int32_t>(lod);
+        const std::int32_t aspect =
+            static_cast<std::int32_t>(info.aspect_ratio);
+        const std::int32_t width_log2 = edge_log2 -
+            std::max(aspect - static_cast<std::int32_t>(kAspectSquare), 0);
+        const std::int32_t height_log2 = edge_log2 -
+            std::max(static_cast<std::int32_t>(kAspectSquare) - aspect, 0);
         const std::uint32_t width = 1U << std::max(width_log2, 0);
         const std::uint32_t height = 1U << std::max(height_log2, 0);
         total += static_cast<std::uint64_t>(width) * height * bytes_per_texel;

@@ -331,12 +331,20 @@ game submits well-formed geometry — the absent rendering is not a data problem
 
 ## R2 정점 색상 / R3 텍스처 combine 확정 (2026-07-21 Task 255) / R2 Vertex Color and R3 Texture Combine Confirmed
 
+> **정정됨 (2026-07-22 Task 258).** 아래 절의 **"1×1 텍스처" 결론은 반증됐다.**
+> 실제 텍스처는 **256×256**이며, 근거로 삼았던 "8바이트 간격"은 원본 게임의 성질이
+> 아니라 **우리 `grTexTextureMemRequired` 버그가 만든 결과**였다. 상세는 이 문서
+> 하단의 Task 258 절과 `docs/kb/glide-texture-lod-and-formats.md` 참조. 이 절의
+> combine 전환·포맷·texel 값 관측은 유효하다.
+
 **확인됨 (combine 전환).** 콘텐츠 draw는 `grColorCombine(function=3=SCALE_OTHER,
 other=1=TEXTURE)`로 텍스처를 출력한다(init은 function=1=LOCAL=iterated 정점 색).
 `grTexCombine(0,1,0,1,0,0,0)`도 관측. 텍스처는 startAddress 0(format 10=RGB565)과
-8(format 12=ARGB4444), largeLod=0·aspect=3·evenOdd=3 → **1×1**(8바이트 간격이 확증).
+8(format 12=ARGB4444), largeLod=0·aspect=3·evenOdd=3.
 디코드 실측: addr=0 texel=(140,150,148,255) 불투명 회색, addr=8 texel=(0,0,0,0) 투명
-검정. 정점 텍스처 좌표(sow/tow, oow=1)는 1×1에서 wrap로 동일 texel을 샘플한다.
+검정. ~~largeLod=0·aspect=3 → **1×1**(8바이트 간격이 확증). 정점 텍스처 좌표는 1×1에서
+wrap로 동일 texel을 샘플한다.~~ → **반증됨: 256×256이며 texel 값은 그 이미지의 첫
+픽셀이다(Task 258).**
 
 **구현 (Task 255).** 정점 색(r/g/b/a)을 `glColor4f`로 반영(R2), 플랫폼 공용 텍스처
 디코드 모듈 + 백엔드 텍스처 캐시 + GLSL sampler2D로 SCALE_OTHER 텍스처를 샘플(R3).
@@ -360,3 +368,68 @@ and clips every triangle. **Fix (Task 254):** add a y-flipped
 GR_ORIGIN_UPPER_LEFT; culling is disabled so reversed winding is harmless) and
 seed the combine function uniforms to LOCAL. Color and texture sampling are
 deferred to Tasks 255/256.
+## PIU가 실제로 호출하는 Glide API 확정 (2026-07-21 Task 257) / Confirmed Set of Glide APIs PIU Actually Calls
+
+**확인됨.** ordinal별 최초호출 감사(`REPIU_GLIDE_CALL_AUDIT`)로 `aot-dynamic
+pumpit1` 300초 구동에서 카탈로그 97종 중 **39종 호출**, 거부 0건을 확정했다. 이전에는
+게이트 진입 로그 96건 캡과 타임아웃 경로의 요약 누락 때문에 확정이 불가능했다.
+
+런타임이 스스로 `unhandled (default)`로 기록한 것은 **정확히 3개**다:
+`grConstantColorValue`(92), `grLfbLock`(112), `grLfbUnlock`(113). 나머지는 실동작
+29종, 상태만 보존 2종, 전용 no-op 5종(`grHints`, `grTexClampMode/FilterMode/
+MipMapMode`, `grTexCombine`)이다.
+
+**반증됨 (드로우 계열 공백 가설).** "폴리곤·버텍스리스트 드로우 미구현이 BGA/UI
+렌더 공백을 만든다"는 추정은 반증됐다. **드로우는 `grDrawTriangle`(73) 하나만
+호출**되며 `grDrawPolygon`·`PlanarPolygon`·`PolygonVertexList`·`Point`·`Line`과
+AA 계열 5종은 전부 미호출이다. 드로우 계열 확장은 실질 우선순위가 아니다.
+
+**Confirmed (Task 257).** A per-ordinal first-call audit settles the reached set:
+39 of 97 cataloged exports, zero rejected gates, and exactly three landing on the
+default handler (`grConstantColorValue`, `grLfbLock`, `grLfbUnlock`). This also
+disproves the earlier inference about missing polygon/vertex-list draws — only
+`grDrawTriangle` is ever called.
+
+## GrLOD_t 해석 오류와 첫 콘텐츠 렌더 (2026-07-22 Task 258) / GrLOD_t Misinterpretation and the First Real Content Render
+
+**확인됨 (근인).** 게임이 정상 좌표의 콘텐츠 지오메트리를 제출해도 화면이 비던 근인은
+`GrLOD_t`를 크기의 log2로 취급한 것이었다. `GrLOD_t`는 **열거값**이며 `GR_LOD_256`이
+0, `GR_LOD_1`이 8이다(긴 변 = `256 >> lod`). 관측된 `largeLod=0·aspect=1x1` 다운로드는
+**256×256**인데 **1×1**로 생성됐다 — 정확히 반전. 규약 상세는
+`docs/kb/glide-texture-lod-and-formats.md`.
+
+**결정적 증거.** 게임이 제출한 텍스처 좌표가 `st=(193,156)`, `(226,156)`, `(244,·)`로
+1×1에는 존재할 수 없는 값이었다. 이 **불일치**가 근인으로 이끌었다.
+
+**확인됨 (게스트 오염과 순환 논리).** `grTexTextureMemRequired`가 같은 계산을
+공유하고 게임은 그 반환값으로 **자기 TMU 주소 공간을 배치**한다. 256×256 텍스처에
+"8바이트"를 보고하자 게임이 텍스처를 8바이트 간격으로 쌓았고, Task 255는 그 간격을
+1×1의 확증으로 기록했다. **우리 출력의 함수인 관측을 외부 사실로 취급**한 순환
+논리였다. 수정 후 게임은 `0x2000` 간격으로 배치한다.
+
+**수정과 검증.** LOD→변 길이 변환을 `8 - lod`로 정정하고, aspect ratio를 짧은 변에
+적용하며, 유효성 검사를 `large_lod <= small_lod`로 반전했다. 콘텐츠 화면이 키 입력을
+요구하므로(v0.0.77/78의 JAMMA 입력 수정 이후 정상 동작) `keybd_event` 합성 입력으로
+구동했다: 텍스처 **256×256** 저장, 삼각형별 백버퍼 누적 `0 → 122 → … → 760`,
+프레임 **1,765/307,200 비검정**(avg-rgb 133,133,133) swap #200까지 안정, 거부·미처리
+0 유지. **이것이 rePIU의 첫 실제 콘텐츠 렌더다.**
+
+**미확정.** (1) 정점 색 필드가 여전히 유효 범위 밖이다 — 현재 콘텐츠는 SCALE_OTHER라
+정점색을 쓰지 않아 무해하나, 게임이 안 채우는 것인지 색 오프셋이 어긋난 것인지는
+LOCAL combine 콘텐츠가 나와야 확정된다. (2) 텍스처 주소 간격 `0x2000`(8,192)은
+256×256×2=131,072와 맞지 않아 mipmap/evenOdd 분할 또는 부분 다운로드 가능성이 있으며
+`GrTexInfo` 실측이 필요하다. (3) LFB 경로는 실데이터 미검증이다.
+
+**Confirmed (Task 258).** The black screen under valid geometry was a `GrLOD_t`
+misinterpretation: it is an enumeration (`GR_LOD_256` = 0), not a log2 size, so
+every texture was inverted — the observed `largeLod=0`/`1x1` download is 256x256
+but was built 1x1. The decisive clue was a contradiction: textures were 1x1 while
+the game submitted texture coordinates up to 244. Because
+`grTexTextureMemRequired` shares the math and the guest lays out its own TMU
+space from the answer, the error propagated into the game's 8-byte texture
+spacing, which Task 255 had recorded as proof of 1x1 textures — a circular
+argument built on our own output. After the fix the game spaces them 0x2000
+apart. Verified with synthesized JAMMA input: 256x256 stores, per-triangle
+readback climbing 0 → 760, and a frame stable at 1,765 non-black pixels — the
+project's first real content render. Open: still-garbage vertex color fields, the
+meaning of the 0x2000 spacing, and end-to-end LFB validation.
