@@ -33,7 +33,7 @@ Based on our analysis of the official MAME driver [src/mame/misc/xtom3d.cpp](htt
 ## 3. 핵심 HLE 에뮬레이션 전략
 ## 3. Key HLE Emulation Strategy
 1. **포트 입력(Read) 에뮬레이션**:
-   - `0x02A8 ~ 0x02AB` (입력): 실기 캐비닛 발판 센서는 기본적으로 풀업 저항 상태인 Active-Low 신호를 가집니다. 따라서 기본값으로 `0xFFU`(또는 `0xFFFFU`)를 채워 반환해야 입력 루프 폴링에서 정상 대기 상태를 유지합니다.
+   - `0x02A8 ~ 0x02AB` (입력): 실기 캐비닛 발판 센서는 기본적으로 풀업 저항 상태인 Active-Low 신호를 가집니다. 따라서 기본값으로 `0xFFU`(또는 `0xFFFFU`)를 채워 반환해야 입력 루프 폴링에서 정상 대기 상태를 유지합니다. 입력 레지스터는 게임이 매 프레임 폴링하므로 EEPROM 읽기와 마찬가지로 **NOP 패치 없이 매번 EIP를 전진시켜 재트랩**해야 합니다. NOP 패치로 원본 IN 명령을 덮어쓰면 최초 1회만 실제 키 상태가 반영되고 이후 press/release가 무시되며, EAX가 idle(`0xFF`)로 갱신되지 않아 무입력이 눌림으로 오인됩니다 (Task 327에서 수정).
    - `0x02AE` (EEPROM 읽기): 게임 엔진은 저장된 설정값을 가져오기 위해 이 포트에서 DO 비트 변화를 감지합니다. `Eeprom93c46` 클래스의 16-bit Microwire 프로토콜 상태 머신을 거쳐 출력되는 데이터 비트를 반환합니다. 이전과 달리 NOP 패치 없이 매번 EIP를 전진시켜 명령을 평가합니다.
    - `0x0040` (PIT 카운터 읽기): 레거시 PC 환경의 타이머 폴링으로 인한 지연을 차단하기 위해, 읽기 요청 시 일정한 간격의 dummy counter 또는 dynamic tick 값을 반환하도록 에뮬레이트합니다.
 2. **포트 출력(Write) 에뮬레이션**:
@@ -41,7 +41,7 @@ Based on our analysis of the official MAME driver [src/mame/misc/xtom3d.cpp](htt
    - `0x0043` (PIT 제어 쓰기): PC 스피커 톤 생성 및 타이머 주파수 조정을 위해 시스템 코드가 수행하는 PIT 제어 쓰기는 에뮬레이터 구동 안정성을 위해 `unsupported-ignored` 로그 기록을 남긴 뒤 무시 처리합니다.
 
 1. **Port Read Emulation**:
-   - `0x02A8 ~ 0x02AB` (Inputs): Real cabinet sensors use active-low signals. Returning default pulled-up values like `0xFFU` (or `0xFFFFU`) prevents hang on sensor loops.
+   - `0x02A8 ~ 0x02AB` (Inputs): Real cabinet sensors use active-low signals. Returning default pulled-up values like `0xFFU` (or `0xFFFFU`) prevents hang on sensor loops. Because the game polls these registers every frame, the input read — like the EEPROM read — must **advance EIP and re-trap each time rather than NOP-patch** the guest IN. NOP-patching latches only the first sample, ignores later press/release transitions, and leaves EAX un-refreshed so idle is misread as pressed (fixed in Task 327).
    - `0x02AE` (EEPROM Read): The engine queries this port to fetch persistent configurations. It returns the data bit outputted from the `Eeprom93c46` 16-bit Microwire protocol state machine. The instruction is evaluated dynamically without NOP patching by manually advancing EIP.
    - `0x0040` (PIT Counter Read): To prevent hang during timer calibration polling, return dummy ticks or dynamic values.
 2. **Port Write Emulation**:

@@ -247,7 +247,12 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
                          true,
                          true,
                          "emulated-jamma");
-            apply_nop_patch();
+            // JAMMA input registers are polled every frame. NOP-patching the
+            // guest IN instruction (as the write/init paths do) would latch the
+            // first sample forever and never observe later press/release
+            // transitions, so advance EIP instead and re-trap on each poll,
+            // mirroring the dynamic EEPROM read path above.
+            win32_context->Eip += instruction_len;
             return true;
         }
 
