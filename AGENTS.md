@@ -247,6 +247,9 @@ If the requirement is a simple question or confirmation request, answer it direc
 * 사용자가 major 버전 증가를 요청하면 major 버전을 1 증가시키고 minor와 patch 버전은 0으로 리셋한다.
 * 사용자가 머지를 요청하면 현재 작업 브랜치의 모든 커밋을 하나로 합쳐 `main`에 머지한다.
 * `main`에 머지할 때는 작업 브랜치 안의 커밋 제목들을 확인하고, 전체 변경 내용을 잘 표현하는 최종 커밋 제목을 만들어 사용한다.
+* `main`에 머지한 뒤에는 그 머지 커밋에 `VERSION`과 같은 값의 annotated tag를 `vmajor.minor.patch` 형식으로 붙인다. 예: `VERSION`이 `0.0.81`이면 `v0.0.81`.
+* tag 메시지에는 해당 버전의 핵심 변경을 한 줄로 남긴다.
+* tag는 로컬까지만 만들고 원격 push는 사용자가 직접 수행한다.
 * 머지가 완료되면 현재 작업 브랜치를 삭제한다.
 
 ## Git Workflow Rules
@@ -260,6 +263,9 @@ If the requirement is a simple question or confirmation request, answer it direc
 * When the user requests a major version bump, increment the major version by 1 and reset the minor and patch versions to 0.
 * When the user requests a merge, squash all commits from the current task branch into `main`.
 * When merging into `main`, inspect the commit titles in the task branch and create a final commit title that best describes the complete change.
+* After merging into `main`, tag that merge commit with an annotated tag matching `VERSION`, in the form `vmajor.minor.patch`. For example, tag `v0.0.81` when `VERSION` reads `0.0.81`.
+* Put a one-line summary of the version's key change in the tag message.
+* Create tags locally only; the user pushes them to the remote.
 * Delete the task branch after the merge is complete.
 
 ---
