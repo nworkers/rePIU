@@ -24,6 +24,51 @@ void BumpAotBoundaryCount(ThreadContext* context)
     }
 }
 
+void BumpAotBoundaryReason(ThreadContext* context, AotBoundaryReason reason)
+{
+    std::atomic<std::uint32_t>* local = nullptr;
+    volatile long* shared = nullptr;
+    Win32SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
+    switch (reason)
+    {
+        case AotBoundaryReason::kReturn:
+            local = &context->aot_boundary_return_count;
+            shared = telemetry != nullptr ? &telemetry->aot_boundary_return_count
+                                          : nullptr;
+            break;
+        case AotBoundaryReason::kIndirectBranch:
+            local = &context->aot_boundary_indirect_count;
+            shared = telemetry != nullptr
+                         ? &telemetry->aot_boundary_indirect_count
+                         : nullptr;
+            break;
+        case AotBoundaryReason::kDirectBranch:
+            local = &context->aot_boundary_direct_count;
+            shared = telemetry != nullptr ? &telemetry->aot_boundary_direct_count
+                                          : nullptr;
+            break;
+        case AotBoundaryReason::kConditionalBranch:
+            local = &context->aot_boundary_conditional_count;
+            shared = telemetry != nullptr
+                         ? &telemetry->aot_boundary_conditional_count
+                         : nullptr;
+            break;
+        case AotBoundaryReason::kOther:
+            local = &context->aot_boundary_other_count;
+            shared = telemetry != nullptr ? &telemetry->aot_boundary_other_count
+                                          : nullptr;
+            break;
+    }
+    if (local != nullptr)
+    {
+        local->fetch_add(1U, std::memory_order_relaxed);
+    }
+    if (shared != nullptr)
+    {
+        InterlockedIncrement(shared);
+    }
+}
+
 void BumpAotReentryCount(ThreadContext* context)
 {
     context->aot_reentry_count.fetch_add(1U, std::memory_order_relaxed);
@@ -31,6 +76,115 @@ void BumpAotReentryCount(ThreadContext* context)
     {
         InterlockedIncrement(
             &context->shared_live_telemetry->aot_reentry_count);
+    }
+}
+
+void RecordAotOtherBoundarySample(ThreadContext* context,
+                                  std::uint32_t guest_eip,
+                                  const std::uint8_t* bytes,
+                                  std::size_t length)
+{
+    if (length == 0)
+    {
+        return;
+    }
+    const std::uint8_t opcode = bytes[0];
+    const std::uint32_t new_count = ++context->aot_other_opcode_histogram[opcode];
+    std::uint32_t packed = 0;
+    for (std::size_t i = 0; i < 4U && i < length; ++i)
+    {
+        packed |= static_cast<std::uint32_t>(bytes[i]) << (8U * i);
+    }
+    context->aot_last_other_boundary_eip.store(guest_eip,
+                                               std::memory_order_relaxed);
+    context->aot_last_other_boundary_bytes.store(packed,
+                                                 std::memory_order_relaxed);
+    if (context->shared_live_telemetry != nullptr)
+    {
+        Win32SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
+        InterlockedExchange(&telemetry->aot_last_other_eip,
+                            static_cast<long>(guest_eip));
+        InterlockedExchange(&telemetry->aot_last_other_bytes,
+                            static_cast<long>(packed));
+        // Running max: this opcode is the histogram peak so far. Only the guest
+        // thread writes these, so a plain read of the mirror is sufficient.
+        if (static_cast<std::uint32_t>(telemetry->aot_other_top_opcode_count) <
+            new_count)
+        {
+            InterlockedExchange(&telemetry->aot_other_top_opcode,
+                                static_cast<long>(opcode));
+            InterlockedExchange(&telemetry->aot_other_top_opcode_count,
+                                static_cast<long>(new_count));
+        }
+    }
+}
+
+void AccumulateAotResidency(ThreadContext* context,
+                            std::uint32_t guest_entry_eip)
+{
+    ZydisDecoder decoder;
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LEGACY_32,
+                                       ZYDIS_STACK_WIDTH_32)))
+    {
+        return;
+    }
+    constexpr std::uint32_t kResidencyCap = 64U;
+    std::uint32_t eip = guest_entry_eip;
+    std::uint32_t count = 0;
+    while (count < kResidencyCap)
+    {
+        const auto* code = reinterpret_cast<const std::uint8_t*>(
+            static_cast<std::uintptr_t>(eip));
+        // A full x86 instruction is at most 15 bytes; require that window to be
+        // readable so the decode never faults (page-edge samples stop here).
+        if (!IsGuestRangeReadable(context, code, 15U))
+        {
+            break;
+        }
+        ZydisDecodedInstruction instruction{};
+        ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+        if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, code, 15,
+                                                 &instruction, operands)))
+        {
+            break;
+        }
+        ++count;
+        const bool is_transfer =
+            instruction.meta.branch_type != ZYDIS_BRANCH_TYPE_NONE ||
+            instruction.mnemonic == ZYDIS_MNEMONIC_RET ||
+            instruction.mnemonic == ZYDIS_MNEMONIC_IRET ||
+            instruction.mnemonic == ZYDIS_MNEMONIC_IRETD;
+        if (is_transfer)
+        {
+            break;
+        }
+        eip += instruction.length;
+    }
+    if (count == 0)
+    {
+        return;
+    }
+    context->aot_residency_instruction_total.fetch_add(
+        count, std::memory_order_relaxed);
+    context->aot_residency_sample_count.fetch_add(1U, std::memory_order_relaxed);
+    std::uint32_t prev_max =
+        context->aot_residency_max.load(std::memory_order_relaxed);
+    while (count > prev_max &&
+           !context->aot_residency_max.compare_exchange_weak(
+               prev_max, count, std::memory_order_relaxed))
+    {
+    }
+    if (context->shared_live_telemetry != nullptr)
+    {
+        Win32SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
+        InterlockedExchangeAdd(&telemetry->aot_residency_total,
+                               static_cast<long>(count));
+        InterlockedIncrement(&telemetry->aot_residency_samples);
+        if (static_cast<std::uint32_t>(telemetry->aot_residency_max) < count)
+        {
+            InterlockedExchange(&telemetry->aot_residency_max,
+                                static_cast<long>(count));
+        }
     }
 }
 
@@ -682,6 +836,7 @@ bool HandleAotConditionalTransfer(EXCEPTION_POINTERS* exception_info,
     ++context->aot_transfer_trace_count;
     context->aot_last_indirect_source.store(source, std::memory_order_relaxed);
     context->aot_last_indirect_target.store(target, std::memory_order_relaxed);
+    AccumulateAotResidency(context, target);
     BumpAotReentryCount(context);
     return true;
 }
@@ -813,6 +968,7 @@ bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
                                              std::memory_order_relaxed);
     context->aot_last_indirect_target.store(target,
                                              std::memory_order_relaxed);
+    AccumulateAotResidency(context, target);
     BumpAotReentryCount(context);
     return true;
 }
@@ -941,6 +1097,7 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
         InterlockedIncrement(
             &context->shared_live_telemetry->aot_return_dispatch_count);
     }
+    AccumulateAotResidency(context, target);
     BumpAotReentryCount(context);
     return true;
 }
@@ -1000,6 +1157,7 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
                     context->aot_reentry_pending = false;
                     context->aot_legacy_fallback = false;
                     context->enable_single_step_trace = false;
+                    AccumulateAotResidency(context, guest_address);
                     BumpAotReentryCount(context);
                     return true;
                 }
@@ -1017,6 +1175,36 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
                 static_cast<long>(guest_address));
         }
         BumpAotBoundaryCount(context);
+        // Attribute this exit to the kind of guest instruction the translated
+        // block ended on (Task 262). Read up to four bytes -- two suffice to
+        // classify the 0F/FF two-byte forms, the rest feed the `other` sample
+        // (Task 263a) -- honoring readability so a boundary at a page edge falls
+        // into kOther instead of faulting.
+        {
+            const auto* boundary_bytes = reinterpret_cast<const std::uint8_t*>(
+                static_cast<std::uintptr_t>(guest_address));
+            std::size_t readable = 0;
+            if (IsGuestRangeReadable(context, boundary_bytes, 4U))
+            {
+                readable = 4;
+            }
+            else if (IsGuestRangeReadable(context, boundary_bytes, 2U))
+            {
+                readable = 2;
+            }
+            else if (IsGuestRangeReadable(context, boundary_bytes, 1U))
+            {
+                readable = 1;
+            }
+            const AotBoundaryReason reason =
+                ClassifyAotBoundaryInstruction(boundary_bytes, readable);
+            BumpAotBoundaryReason(context, reason);
+            if (reason == AotBoundaryReason::kOther)
+            {
+                RecordAotOtherBoundarySample(context, guest_address,
+                                             boundary_bytes, readable);
+            }
+        }
         if (is_tracked_trace_address)
         {
             if (InstallWin32AotProbeSentinel(
@@ -1057,6 +1245,7 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
         context->aot_reentry_pending = false;
         context->aot_legacy_fallback = false;
         context->enable_single_step_trace = false;
+        AccumulateAotResidency(context, current);
         BumpAotReentryCount(context);
         return true;
     }

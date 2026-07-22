@@ -153,6 +153,26 @@ struct ThreadContext
     std::uint32_t aot_reentry_cache_address = 0;
     std::atomic<std::uint32_t> aot_cache_entry_count{0};
     std::atomic<std::uint32_t> aot_boundary_count{0};
+    // Per-reason breakdown of aot_boundary_count (Task 262): the boundary guest
+    // instruction that forced each single-step exit. The five sum to
+    // aot_boundary_count.
+    std::atomic<std::uint32_t> aot_boundary_return_count{0};
+    std::atomic<std::uint32_t> aot_boundary_indirect_count{0};
+    std::atomic<std::uint32_t> aot_boundary_direct_count{0};
+    std::atomic<std::uint32_t> aot_boundary_conditional_count{0};
+    std::atomic<std::uint32_t> aot_boundary_other_count{0};
+    // Task 263(a): characterize the dominant `other` boundary bucket. Lead-opcode
+    // histogram of the boundary guest instruction (guest-thread only) plus the
+    // most recent `other` boundary EIP and its first four bytes.
+    std::uint32_t aot_other_opcode_histogram[256] = {};
+    std::atomic<std::uint32_t> aot_last_other_boundary_eip{0};
+    std::atomic<std::uint32_t> aot_last_other_boundary_bytes{0};
+    // Task 263(b): AOT residency proxy. Straight-line guest instruction count from
+    // each real cache entry to its first control transfer, accumulated. Coverage
+    // estimate = total / (total + single_step_trace_count).
+    std::atomic<std::uint32_t> aot_residency_instruction_total{0};
+    std::atomic<std::uint32_t> aot_residency_sample_count{0};
+    std::atomic<std::uint32_t> aot_residency_max{0};
     std::atomic<std::uint32_t> aot_reentry_count{0};
     std::atomic<std::uint32_t> aot_legacy_fallback_count{0};
     std::atomic<std::uint32_t> aot_last_fallback_address{0};

@@ -67,6 +67,7 @@ add_library(repiu_exe
     src/platform/win32/cd_audio_wave_out.cpp
     src/platform/win32/aot_code_cache_win32.cpp
     src/platform/win32/aot_page_coherence_win32.cpp
+    src/platform/win32/aot/aot_boundary_reason.cpp
     src/platform/win32/aot/aot_runtime_dispatch.cpp
     src/platform/win32/execution/execution_trampoline.cpp
     src/platform/win32/dos/dos_int21_services.cpp

@@ -5,6 +5,7 @@
 // code-write watch/fault handling, inline-cache patching, page retirement,
 // transfer-target resolution, and conditional/indirect/return/reentry dispatch.
 
+#include "aot_boundary_reason.h"
 #include "thread_context.h"
 
 #include <cstdint>
@@ -13,6 +14,24 @@ namespace repiu::platform::win32
 {
 
 void BumpAotBoundaryCount(ThreadContext* context);
+
+// Increment the per-reason boundary counter matching `reason` (Task 262),
+// mirrored to shared telemetry the same way as BumpAotBoundaryCount.
+void BumpAotBoundaryReason(ThreadContext* context, AotBoundaryReason reason);
+
+// Task 263(a): record a sample of an `other` boundary (lead-opcode histogram,
+// last EIP + bytes, mirrored top opcode). `bytes`/`length` are the readable
+// boundary guest bytes already probed at the call site.
+void RecordAotOtherBoundarySample(ThreadContext* context,
+                                  std::uint32_t guest_eip,
+                                  const std::uint8_t* bytes,
+                                  std::size_t length);
+
+// Task 263(b): accumulate the AOT residency proxy for a real cache entry --
+// straight-line guest instruction count from `guest_entry_eip` to the first
+// control transfer (cap 64), honoring readability.
+void AccumulateAotResidency(ThreadContext* context,
+                            std::uint32_t guest_entry_eip);
 
 void BumpAotReentryCount(ThreadContext* context);
 

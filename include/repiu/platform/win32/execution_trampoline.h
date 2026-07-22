@@ -338,6 +338,22 @@ struct Win32MinimalExecutionAttempt
     bool aot_backend_active = false;
     std::uint32_t aot_cache_entry_count = 0;
     std::uint32_t aot_boundary_count = 0;
+    // Per-reason breakdown of aot_boundary_count (Task 262); the five sum to it.
+    std::uint32_t aot_boundary_return_count = 0;
+    std::uint32_t aot_boundary_indirect_count = 0;
+    std::uint32_t aot_boundary_direct_count = 0;
+    std::uint32_t aot_boundary_conditional_count = 0;
+    std::uint32_t aot_boundary_other_count = 0;
+    // Task 263(a): top-8 lead opcodes of the `other` boundary bucket (by count)
+    // and the most recent `other` boundary sample.
+    std::uint32_t aot_other_top_opcodes[8] = {};
+    std::uint32_t aot_other_top_counts[8] = {};
+    std::uint32_t aot_last_other_eip = 0;
+    std::uint32_t aot_last_other_bytes = 0;
+    // Task 263(b): AOT residency proxy.
+    std::uint32_t aot_residency_total = 0;
+    std::uint32_t aot_residency_samples = 0;
+    std::uint32_t aot_residency_max = 0;
     std::uint32_t aot_reentry_count = 0;
     std::uint32_t aot_legacy_fallback_count = 0;
     std::uint32_t aot_last_fallback_address = 0;

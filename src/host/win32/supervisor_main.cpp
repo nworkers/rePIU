@@ -213,6 +213,28 @@ void PrintSnapshot(
               << " aot_boundary/reentry="
               << ReadInterlocked(&telemetry.aot_boundary_count) << "/"
               << ReadInterlocked(&telemetry.aot_reentry_count)
+              << " boundary_reason(ret/indir/direct/cond/other)="
+              << ReadInterlocked(&telemetry.aot_boundary_return_count) << "/"
+              << ReadInterlocked(&telemetry.aot_boundary_indirect_count) << "/"
+              << ReadInterlocked(&telemetry.aot_boundary_direct_count) << "/"
+              << ReadInterlocked(&telemetry.aot_boundary_conditional_count) << "/"
+              << ReadInterlocked(&telemetry.aot_boundary_other_count)
+              << " other_top_op=0x" << std::hex
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.aot_other_top_opcode))
+              << ":" << std::dec
+              << ReadInterlocked(&telemetry.aot_other_top_opcode_count)
+              << " other_last=0x" << std::hex
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.aot_last_other_eip))
+              << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.aot_last_other_bytes))
+              << std::dec
+              << " residency(total/samples/max)="
+              << ReadInterlocked(&telemetry.aot_residency_total) << "/"
+              << ReadInterlocked(&telemetry.aot_residency_samples) << "/"
+              << ReadInterlocked(&telemetry.aot_residency_max)
               << " aot_boundary_guest=0x" << std::hex
               << static_cast<std::uint32_t>(
                      ReadInterlocked(&telemetry.aot_boundary_guest_eip))

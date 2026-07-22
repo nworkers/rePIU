@@ -14,6 +14,8 @@ flowchart TD
     LOWMEM --> HLE
     TERMS["Arena / sentinel / shadow"] --> HLE
     SMC["Self-modifying code"] --> CACHE["AOT code-cache coherency"]
+    CACHE --> DYNAREC["dynarec vs exception-driven AOT"]
+    DYNAREC --> HLE
     CACHE --> HLE
     CHD["CHD / ISO9660"] --> MSCDEX["MSCDEX / CD-DA"]
 ```
@@ -27,6 +29,7 @@ flowchart TD
 * [주요 DOS/DPMI interrupt](important-interrupts.md)
 * [LE 실행 형식과 fixup/relocation](le-format-and-relocation.md)
 * [HLE와 예외 기반 직접 실행](hle-and-exception-driven-execution.md)
+* [동적 재컴파일(dynarec)과 예외 기반 AOT 디스패치](dynamic-recompilation-and-aot-dispatch.md)
 * [Self-modifying code와 code-cache 일관성](self-modifying-code-and-cache-coherency.md)
 * [CHD와 ISO9660](chd-and-iso9660.md)
 * [MSCDEX와 CD-DA](mscdex-and-cd-da.md)
@@ -46,6 +49,7 @@ include source links.
 * [Important DOS/DPMI interrupts](important-interrupts.md)
 * [LE executable format and fixup/relocation](le-format-and-relocation.md)
 * [HLE and exception-driven direct execution](hle-and-exception-driven-execution.md)
+* [Dynamic recompilation (dynarec) vs exception-driven AOT dispatch](dynamic-recompilation-and-aot-dispatch.md)
 * [Self-modifying code and code-cache coherency](self-modifying-code-and-cache-coherency.md)
 * [CHD and ISO9660](chd-and-iso9660.md)
 * [MSCDEX and CD-DA](mscdex-and-cd-da.md)

@@ -7,7 +7,7 @@ namespace repiu::platform::win32
 {
 
 constexpr std::uint32_t kWin32LiveTelemetryMagic = 0x5250544CU;
-constexpr std::uint32_t kWin32LiveTelemetryVersion = 16;
+constexpr std::uint32_t kWin32LiveTelemetryVersion = 18;
 constexpr std::uint32_t kWin32NativeSampleRingCapacity = 8;
 constexpr const char* kWin32LiveTelemetryEnvironment =
     "REPIU_LIVE_TELEMETRY_MAPPING";
@@ -66,6 +66,26 @@ struct Win32SharedLiveTelemetry
     // Mirrored by the guest thread itself so they stay observable even if
     // the host poll loop stalls.
     volatile long aot_boundary_count = 0;
+    // Per-reason breakdown of aot_boundary_count (Task 262): which kind of
+    // boundary guest instruction forced each single-step exit, so the ~1,400/s
+    // inline-cache churn can be attributed live even if the loader's graceful
+    // exit summary is suppressed by the timeout-teardown segfault (Task 235).
+    volatile long aot_boundary_return_count = 0;
+    volatile long aot_boundary_indirect_count = 0;
+    volatile long aot_boundary_direct_count = 0;
+    volatile long aot_boundary_conditional_count = 0;
+    volatile long aot_boundary_other_count = 0;
+    // Task 263(a): dominant `other` boundary opcode (running max over the
+    // histogram) and the most recent `other` boundary EIP + first four bytes.
+    volatile long aot_other_top_opcode = 0;
+    volatile long aot_other_top_opcode_count = 0;
+    volatile long aot_last_other_eip = 0;
+    volatile long aot_last_other_bytes = 0;
+    // Task 263(b): AOT residency proxy accumulators (straight-line guest
+    // instructions per real cache entry).
+    volatile long aot_residency_total = 0;
+    volatile long aot_residency_samples = 0;
+    volatile long aot_residency_max = 0;
     volatile long aot_reentry_count = 0;
     // Guest address of the most recent HandleAotReentry inline-cache-miss
     // boundary (updated outside ExceptionDispatchScope, unlike last_eip).

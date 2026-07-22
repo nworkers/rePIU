@@ -1,6 +1,155 @@
-## 2026-07-22 Task 262 (할일, 착수 전): aot-dynamic이 legacy보다 14.6배 느림 — AOT 경계 이탈 원인 규명 / Task 262 (TODO, not started): aot-dynamic is 14.6x slower than legacy — find why AOT keeps exiting
+## 2026-07-22 Task 263 (완료): AOT 이탈의 근인 = 세그먼트 명령 — `other` 77%의 정체가 GS 프리픽스·세그먼트 레지스터/push·pop, 체류량 4.8명령/진입 / Task 263 (Completed): root cause of AOT exits = segmentation instructions — the 77% `other` bucket is GS prefix + segment reg/push/pop; residency 4.8 instr/entry
 
-**상태 (Status):** 측정만 완료, 코드 변경 없음. **다음 세션이 이어받을 작업.**
+**상태 (Status):** 구현·실측 완료, `claude/task-262-aot-dynamic-perf-aipxsa`. Task 262
+후속 (a) `other` 규명 + (b) 체류량.
+
+### (a) `other` 77%의 정체 = 세그먼트 명령 (확인됨)
+
+`other` 경계의 선두 opcode 히스토그램을 계측해, aot-dynamic 실측(loader 단독 45초,
+graceful summary)에서 top-8을 확정했다. `other` 총 46,365 중:
+
+| opcode | 명령 | 카운트 | other 대비 |
+|---|---|---:|---:|
+| `0x65` | **GS: 세그먼트 프리픽스** | 25,564 | 55.1% |
+| `0x55` | push ebp (프롤로그) | 4,088 | 8.8% |
+| `0x8E` | **mov Sreg, r/m** (세그먼트 로드) | 3,554 | 7.7% |
+| `0x1E` | **push ds** | 3,215 | 6.9% |
+| `0x8C` | **mov r/m, Sreg** (세그먼트 저장) | 2,058 | 4.4% |
+| `0x07` | **pop es** | 1,915 | 4.1% |
+| `0x06` | **push es** | 1,894 | 4.1% |
+| `0x1F` | **pop ds** | 1,576 | 3.4% |
+
+top-8이 `other`의 **94.6%**를 덮고, 그중 세그먼트 명령(0x55 제외)이 **약 86%**다.
+`other`는 전체 경계의 77%이므로 **세그먼트 명령이 전체 AOT 이탈의 약 75%**다(39,776 /
+52,778). 즉 게임이 세그먼트-집약적(DOS4GW 보호모드 + DPMI selector)이라 AOT 변환기가
+세그먼트 오버라이드 메모리 접근·세그먼트 레지스터 로드/저장·세그먼트 push/pop을
+번역하지 못하고 각 명령마다 sentinel을 심어 HLE selector-shadow 경로로 단일스텝한다.
+단일스텝은 Windows 예외 왕복이라 legacy 대비 14.6~20.6배 느림의 지배적 원인이다.
+
+잔여 `0x55`(push ebp, 8.8%)는 함수 프롤로그 경계다. 마지막 `other` 표본
+`0x030F5211`의 바이트 `51 56 57 55`(push ecx/esi/edi/ebp)가 이를 뒷받침하며, 세그먼트
+와 별개인 **번역 커버리지 공백(함수 진입)** 이라는 2차 사유다.
+
+### (b) AOT 체류량 (확인됨, 프록시)
+
+캐시 진입마다 진입 EIP부터 첫 제어 전달까지 직선 명령 수를 Zydis로 세어 누적:
+**평균 4.82명령/진입**(total 254,527 / samples 52,813), max 64(상한 포화).
+커버리지 추정 = residency / (residency + single_step) = **42.5% (상한)**.
+
+**상한인 이유.** 프록시는 첫 제어 전달까지 세지만, 실제 블록은 그 전에 세그먼트 명령
+sentinel(=mid-block)에서 먼저 이탈한다. 세그먼트 명령이 mid-block sentinel의 주범이므로
+프록시는 체류량을 **과대평가**한다 — 실제 AOT 네이티브 커버리지는 42.5%보다 낮다.
+단일스텝이 dispatch의 98.6%라는 사실과 정합한다: 대부분의 게스트 명령은 네이티브 AOT
+블록이 아니라 단일스텝으로 실행된다.
+
+### 결론과 다음 (Conclusion & next)
+
+**근인 확정.** aot-dynamic이 느린 것은 인라인 캐시 churn(간접 분기)이 아니라 **세그먼트
+명령을 번역하지 못해 대량으로 단일스텝**하기 때문이다. Task 204의 프레이밍과 Task 262의
+간접 분기 가설이 함께 반증됐다. 개선 방향(미착수): (1) AOT 변환기가 흔한 세그먼트
+오버라이드 메모리 접근(특히 GS)과 세그먼트 레지스터 이동을 selector-shadow 기반으로
+번역하도록 확장 — 이것만으로 이탈의 다수 제거 기대. (2) 함수 진입 커버리지 공백 축소.
+어느 쪽이든 "매 세그먼트 명령 = Windows 예외" 구조를 깨는 것이 핵심.
+
+**English.** Instrumented the `other` boundary bucket's lead-opcode histogram; the
+standalone graceful summary settles the top-8 (of 46,365 `other`): 0x65 GS prefix
+55%, 0x55 push ebp 9%, 0x8E mov Sreg 8%, 0x1E push ds 7%, 0x8C mov-from-Sreg 4%,
+0x07 pop es 4%, 0x06 push es 4%, 0x1F pop ds 3%. The top-8 cover 94.6% of `other`,
+and segmentation instructions (all but push ebp) are ~86% of `other` — i.e. ~75%
+of ALL AOT boundary exits are segment operations. The game is segmentation-heavy
+(DOS4GW protected mode + DPMI selectors) and the AOT translator cannot translate
+segment-override memory access, segment-register load/store, or segment push/pop,
+so it sentinels each and single-steps it through the HLE selector-shadow path;
+single-stepping is a Windows exception round-trip and is the dominant reason
+aot-dynamic is 14.6-20.6x slower. Residency proxy: avg 4.82 instr/entry, coverage
+≤42.5% (an upper bound, since segment-op sentinels are mid-block and the proxy
+counts past them). This disproves both Task 204's inline-cache-churn framing and
+Task 262's indirect-branch hypothesis. Next (not started): teach the translator
+to handle common segment ops (especially GS) via selector shadows, and close the
+function-entry coverage gap.
+
+## 2026-07-22 Task 262 (완료): aot-dynamic이 legacy보다 14.6배 느림 — 이탈 사유별 카운터 추가·실측(근인은 Task 263에서 세그먼트 명령으로 확정) / Task 262 (Completed): per-reason boundary counters added and measured (root cause pinned to segmentation instructions in Task 263)
+
+**상태 (Status):** 단계 1(이탈 사유별 카운터) 구현 + **Win32 실측 완료**
+(`claude/task-262-aot-dynamic-perf-aipxsa`). 아래 "진행 갱신" 참조. 근인은 Task 263
+에서 세그먼트 명령으로 확정.
+
+### 진행 갱신 (2026-07-22, 이 세션) / Progress update
+
+**계측.** 경계 이탈 사유별 카운터를 추가했다. `aot_boundary_count`는 코드 전체에서
+`HandleAotReentry`의 브레이크포인트 경로 **한 곳**에서만 증가하므로, 그 지점에서 이탈
+게스트 명령을 디코드해 5개 사유로 분류한다: `return`(C3/C2/CB/CA),
+`indirect`(FF /2·/3·/4·/5), `direct`(E8/E9/EB/9A/EA), `conditional`(70..7F·0F 8x·E0..E3),
+`other`(비전달·미지원 stop). 다섯의 합은 `aot_boundary_count`와 같다(불변식, 실측에서
+확인). 분류기는 host-neutral 순수 함수(`aot_boundary_reason.{h,cpp}`), 30개 opcode
+단위 검증 통과. 카운터는 스레드·공유 텔레메트리(`kWin32LiveTelemetryVersion` 17)·정상
+종료 요약·supervisor 주기 덤프에 노출. 게스트 실행 동작 불변.
+
+**정정 (Correction).** 이전 커밋의 작업 로그/설계는 "Win32 loader host는 이 환경에서
+빌드 불가"로 적었으나 **오판이었다.** 이 환경에는 VS 2026(v18) C++ 툴체인이 있어
+`scripts/build_win32_x86.ps1`로 Debug 빌드가 정상 완료됐고, supervisor로 실측까지
+수행했다.
+
+**실측 (확인됨).** Debug 빌드, `pumpit1`, 키 입력 없음, supervisor 외부 샘플링,
+**120초 동일 시점**. (주의: 이 표는 v0.0.82 Release 추정 표와 별개의 **Debug 빌드**
+값이라 절대치가 훨씬 작다. 분포와 비율이 산출물이다.)
+
+| 지표 | legacy | aot-dynamic | 비 |
+|---|---:|---:|---:|
+| `progress` | **606,613** | 29,457 | **20.6x** |
+| `single_step` | 3,058,527 | 786,814 | 3.9x |
+| `dispatch_entry` | 3,069,426 | 798,252 | 3.85x |
+| `aot_boundary` | 0 | **73,326** | — |
+
+**aot-dynamic 이탈 사유 분포 (n=73,326, 120초):**
+
+| 사유 | 카운트 | 비중 |
+|---|---:|---:|
+| `other` (비전달 명령) | **56,870** | **77.6%** |
+| `indirect` (간접 분기) | 9,305 | 12.7% |
+| `return` | 7,151 | 9.8% |
+| `direct` | 0 | 0% |
+| `conditional` | 0 | 0% |
+
+**해석 (확인/추정 구분).**
+1. **(확인) 지배 사유는 `other`(비전달 명령) 77.6%다** — 간접 분기 인라인 캐시가
+   아니다. Task 204의 "inline-cache churn" 프레이밍은 **주요 비용 설명으로는 반증됐다.**
+2. **(확인) `direct`·`conditional`은 전 구간 0.** 직접/조건 분기는 캐시 내부로
+   체이닝되어 sentinel이 되지 않는다 — dynarec 모델과 분류기가 함께 검증됨.
+3. **(확인) `indirect`는 후반부(≈77초 이후) 현상.** 32 → 9,305로 급증하며, 이는
+   Task 249가 특성화한 78초 이후 프레임 루프 국면과 겹친다. 즉 간접 분기 churn은
+   **후반 2차 현상**이지 초반부터의 주 비용이 아니다.
+4. **(추정) `other` 지배 = AOT 커버리지 단편화.** 번역된 구간이 평범한 명령에서 자주
+   끝나 게스트가 단일스텝으로 이탈했다 재진입한다. 미지원 명령 stop, 또는 SMC 기반
+   페이지 retire 재-sentinel화(`retire trap=7,045`, `quarantine=3`, 게스트 코드 쓰기
+   존재)가 원인 후보. 단계 2(AOT 체류량)와 `other` 경계의 실제 opcode/EIP 표본화로
+   확정 필요.
+
+**다음.** (a) `other` 경계의 opcode/EIP 표본을 기록해 77.6%의 정체를 규명(권장, 저비용).
+(b) 단계 2: 블록 진입당 실행 명령 수(AOT 체류량)로 커버리지 분모 확보. 설계:
+`docs/design/20260722-262-aot-boundary-exit-reason-counters.md`.
+
+**Progress update (this session).** Implemented and **measured** next-step 1.
+`aot_boundary_count` is incremented in exactly one place (the breakpoint path of
+`HandleAotReentry`); that site now decodes the boundary guest instruction into
+five reasons whose counters sum to it (invariant confirmed in the run).
+Correction: the earlier commit's log/design claimed the Win32 host "cannot build
+in this environment" — that was wrong; a VS 2026 C++ toolchain is present, the
+Debug build completed via `scripts/build_win32_x86.ps1`, and the run was measured
+under the supervisor. Measured (Debug build, pumpit1, 120 s, no input): legacy
+progress 606,613 vs aot-dynamic 29,457 (**20.6x**), single_step 3,058,527 vs
+786,814 (3.9x). The aot-dynamic boundary distribution (n=73,326) is **other 77.6%
+(56,870), indirect 12.7% (9,305), return 9.8% (7,151), direct 0, conditional 0**.
+Findings: (1) confirmed the dominant reason is `other` — a non-transfer
+instruction — not indirect-branch inline-cache, so Task 204's "inline-cache
+churn" framing is disproved as the primary cost; (2) direct/conditional are never
+sentinels (validates the chaining model); (3) indirect churn is a late-phase
+(~77 s onward, the Task 249 frame loop) secondary effect. Inferred: `other`
+dominance means fragmented AOT coverage (translated runs end at ordinary
+instructions), with unsupported-instruction stops or SMC-driven page-retire
+re-sentineling (retire trap 7,045, quarantine 3) as candidate causes. Next:
+sample the actual opcode/EIP at `other` boundaries, then next-step 2 (AOT
+residency).
 
 ### 측정 (확인됨) / Measurement
 

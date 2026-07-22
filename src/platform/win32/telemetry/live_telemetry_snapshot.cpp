@@ -469,6 +469,49 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         std::memory_order_relaxed);
     attempt->aot_boundary_count = context.aot_boundary_count.load(
         std::memory_order_relaxed);
+    attempt->aot_boundary_return_count =
+        context.aot_boundary_return_count.load(std::memory_order_relaxed);
+    attempt->aot_boundary_indirect_count =
+        context.aot_boundary_indirect_count.load(std::memory_order_relaxed);
+    attempt->aot_boundary_direct_count =
+        context.aot_boundary_direct_count.load(std::memory_order_relaxed);
+    attempt->aot_boundary_conditional_count =
+        context.aot_boundary_conditional_count.load(std::memory_order_relaxed);
+    attempt->aot_boundary_other_count =
+        context.aot_boundary_other_count.load(std::memory_order_relaxed);
+    // Task 263(a): top-8 lead opcodes of the `other` boundary bucket.
+    {
+        std::uint32_t histogram[256];
+        for (int i = 0; i < 256; ++i)
+        {
+            histogram[i] = context.aot_other_opcode_histogram[i];
+        }
+        for (int slot = 0; slot < 8; ++slot)
+        {
+            int best = 0;
+            for (int i = 1; i < 256; ++i)
+            {
+                if (histogram[i] > histogram[best])
+                {
+                    best = i;
+                }
+            }
+            attempt->aot_other_top_opcodes[slot] =
+                static_cast<std::uint32_t>(best);
+            attempt->aot_other_top_counts[slot] = histogram[best];
+            histogram[best] = 0;
+        }
+    }
+    attempt->aot_last_other_eip =
+        context.aot_last_other_boundary_eip.load(std::memory_order_relaxed);
+    attempt->aot_last_other_bytes =
+        context.aot_last_other_boundary_bytes.load(std::memory_order_relaxed);
+    attempt->aot_residency_total =
+        context.aot_residency_instruction_total.load(std::memory_order_relaxed);
+    attempt->aot_residency_samples =
+        context.aot_residency_sample_count.load(std::memory_order_relaxed);
+    attempt->aot_residency_max =
+        context.aot_residency_max.load(std::memory_order_relaxed);
     attempt->aot_reentry_count = context.aot_reentry_count.load(
         std::memory_order_relaxed);
     attempt->aot_legacy_fallback_count =

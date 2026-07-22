@@ -811,6 +811,45 @@ void PrintExecutionAttempt(
                 attempt.aot_boundary_count,
                 attempt.aot_reentry_count,
                 attempt.aot_legacy_fallback_count);
+    logger.info("Win32 AOT boundary reason ret/indir/direct/cond/other: "
+                "{}/{}/{}/{}/{}",
+                attempt.aot_boundary_return_count,
+                attempt.aot_boundary_indirect_count,
+                attempt.aot_boundary_direct_count,
+                attempt.aot_boundary_conditional_count,
+                attempt.aot_boundary_other_count);
+    logger.info("Win32 AOT other-boundary top opcodes "
+                "[{:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} "
+                "{:02X}:{} {:02X}:{}] last={}/{}",
+                attempt.aot_other_top_opcodes[0], attempt.aot_other_top_counts[0],
+                attempt.aot_other_top_opcodes[1], attempt.aot_other_top_counts[1],
+                attempt.aot_other_top_opcodes[2], attempt.aot_other_top_counts[2],
+                attempt.aot_other_top_opcodes[3], attempt.aot_other_top_counts[3],
+                attempt.aot_other_top_opcodes[4], attempt.aot_other_top_counts[4],
+                attempt.aot_other_top_opcodes[5], attempt.aot_other_top_counts[5],
+                attempt.aot_other_top_opcodes[6], attempt.aot_other_top_counts[6],
+                attempt.aot_other_top_opcodes[7], attempt.aot_other_top_counts[7],
+                Hex32(attempt.aot_last_other_eip),
+                Hex32(attempt.aot_last_other_bytes));
+    {
+        const std::uint64_t residency_denominator =
+            static_cast<std::uint64_t>(attempt.aot_residency_total) +
+            attempt.single_step_trace_count;
+        const double coverage =
+            residency_denominator != 0
+                ? 100.0 * static_cast<double>(attempt.aot_residency_total) /
+                      static_cast<double>(residency_denominator)
+                : 0.0;
+        const double average_residency =
+            attempt.aot_residency_samples != 0
+                ? static_cast<double>(attempt.aot_residency_total) /
+                      static_cast<double>(attempt.aot_residency_samples)
+                : 0.0;
+        logger.info("Win32 AOT residency total/samples/avg/max/coverage%: "
+                    "{}/{}/{:.2f}/{}/{:.2f}",
+                    attempt.aot_residency_total, attempt.aot_residency_samples,
+                    average_residency, attempt.aot_residency_max, coverage);
+    }
     logger.info("Win32 AOT last fallback address: {}",
                 Hex32(attempt.aot_last_fallback_address));
     logger.info("Win32 AOT dynamic attempt/success/bytes: {}/{}/{}",
