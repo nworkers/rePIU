@@ -119,6 +119,7 @@ void WriteLiveTelemetrySnapshot(const ThreadContext& context,
 DWORD PollThreadUntilExit(HANDLE thread,
                           DWORD timeout_milliseconds,
                           ThreadContext* progress_context,
+                          ThreadContext* host_context,
                           DWORD* exit_code)
 {
     const Win32ThreadApi& api = GetWin32ThreadApi();
@@ -183,6 +184,11 @@ DWORD PollThreadUntilExit(HANDLE thread,
     }
     for (DWORD iteration = 0;; ++iteration)
     {
+        if (host_context != nullptr)
+        {
+            host_context->glide_backend.PumpHostCommands();
+            host_context->glide_backend.PumpEvents();
+        }
         if (progress_context != nullptr)
         {
             progress_context->diagnostic_poll_iteration_count =

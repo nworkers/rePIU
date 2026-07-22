@@ -3,61 +3,158 @@
 #include "repiu/hle/glide_lfb.h"
 
 #if defined(_WIN32)
-#define NOMINMAX
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <GL/gl.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_opengl.h>
 #endif
 
+#include <atomic>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <sstream>
 #include <vector>
 
-namespace repiu::platform::win32
-{
-namespace
-{
-
-#if defined(_WIN32)
-constexpr wchar_t kWindowClassName[] = L"rePIU.GlideOpenGL";
-
-LRESULT CALLBACK GlideWindowProcedure(HWND window,
-                                      UINT message,
-                                      WPARAM wparam,
-                                      LPARAM lparam)
-{
-    if (message == WM_CLOSE)
-    {
-        ShowWindow(window, SW_HIDE);
-        return 0;
-    }
-    return DefWindowProcW(window, message, wparam, lparam);
-}
-
-bool RegisterGlideWindowClass(HINSTANCE instance)
-{
-    WNDCLASSW existing{};
-    if (GetClassInfoW(instance, kWindowClassName, &existing))
-    {
-        return true;
-    }
-    WNDCLASSW window_class{};
-    window_class.style = CS_OWNDC;
-    window_class.lpfnWndProc = GlideWindowProcedure;
-    window_class.hInstance = instance;
-    window_class.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
-    window_class.lpszClassName = kWindowClassName;
-    return RegisterClassW(&window_class) != 0;
-}
+#if !defined(REPIU_VERSION)
+#define REPIU_VERSION "unknown"
 #endif
 
-}  // namespace
+namespace repiu::platform::win32
+{
 
 GlideOpenGlBackend::~GlideOpenGlBackend()
 {
     Close();
+}
+
+void GlideOpenGlBackend::BindHostThread()
+{
+    host_thread_id_ = std::this_thread::get_id();
+}
+
+bool GlideOpenGlBackend::IsHostThread() const
+{
+    return host_thread_id_ == std::thread::id{} ||
+        host_thread_id_ == std::this_thread::get_id();
+}
+
+void GlideOpenGlBackend::InvokeOnHostThread(std::function<void()> command)
+{
+    if (IsHostThread())
+    {
+        command();
+        return;
+    }
+
+    std::exception_ptr command_exception;
+    std::unique_lock<std::mutex> lock(host_command_mutex_);
+    host_command_cv_.wait(lock, [this]() { return !host_command_pending_; });
+    host_command_ = std::move(command);
+    host_command_exception_ = nullptr;
+    host_command_complete_ = false;
+    host_command_pending_ = true;
+    host_command_cv_.notify_all();
+    host_command_cv_.wait(lock, [this]() { return host_command_complete_; });
+    command_exception = host_command_exception_;
+    lock.unlock();
+    if (command_exception != nullptr)
+    {
+        std::rethrow_exception(command_exception);
+    }
+}
+
+void GlideOpenGlBackend::PumpHostCommands()
+{
+    if (!IsHostThread())
+    {
+        return;
+    }
+
+    std::function<void()> command;
+    {
+        std::lock_guard<std::mutex> lock(host_command_mutex_);
+        if (!host_command_pending_)
+        {
+            return;
+        }
+        command = host_command_;
+    }
+
+    std::exception_ptr command_exception;
+    try
+    {
+        command();
+    }
+    catch (...)
+    {
+        command_exception = std::current_exception();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(host_command_mutex_);
+        host_command_ = {};
+        host_command_exception_ = command_exception;
+        host_command_pending_ = false;
+        host_command_complete_ = true;
+    }
+    host_command_cv_.notify_all();
+}
+
+bool GlideOpenGlBackend::ApplyWindowScale(std::uint32_t scale)
+{
+#if !defined(_WIN32)
+    (void)scale;
+    return false;
+#else
+    if (window_ == nullptr || scale < 1U || scale > 4U ||
+        logical_width_ > static_cast<std::uint32_t>(
+            std::numeric_limits<int>::max()) / scale ||
+        logical_height_ > static_cast<std::uint32_t>(
+            std::numeric_limits<int>::max()) / scale)
+    {
+        return false;
+    }
+
+    SDL_Window* window = static_cast<SDL_Window*>(window_);
+    const int width = static_cast<int>(logical_width_ * scale);
+    const int height = static_cast<int>(logical_height_ * scale);
+    if (!SDL_SetWindowSize(window, width, height))
+    {
+        message_ = std::string("SDL3 window scale failed: ") +
+            SDL_GetError();
+        return false;
+    }
+    window_scale_ = scale;
+    ApplyDrawableViewport();
+    std::ostringstream stream;
+    stream << "SDL3 window scale " << scale << "x (" << width << "x"
+           << height << ")";
+    message_ = stream.str();
+    fprintf(stderr, "[repiu-live-debug] %s\n", message_.c_str());
+    return true;
+#endif
+}
+
+void GlideOpenGlBackend::ApplyDrawableViewport()
+{
+#if defined(_WIN32)
+    if (window_ == nullptr || render_context_ == nullptr || dummy_mode_)
+    {
+        return;
+    }
+    int drawable_width = 0;
+    int drawable_height = 0;
+    if (!SDL_GetWindowSizeInPixels(static_cast<SDL_Window*>(window_),
+                                   &drawable_width, &drawable_height) ||
+        drawable_width <= 0 || drawable_height <= 0)
+    {
+        return;
+    }
+    glViewport(0, 0, static_cast<GLsizei>(drawable_width),
+               static_cast<GLsizei>(drawable_height));
+    glScissor(0, 0, static_cast<GLsizei>(drawable_width),
+              static_cast<GLsizei>(drawable_height));
+#endif
 }
 
 bool GlideOpenGlBackend::OpenWindowed(
@@ -67,6 +164,17 @@ bool GlideOpenGlBackend::OpenWindowed(
     std::uint32_t auxiliary_buffer_count,
     std::uint32_t origin)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, logical_width, logical_height,
+                            color_buffer_count, auxiliary_buffer_count, origin,
+                            &result]() {
+            result = OpenWindowed(logical_width, logical_height,
+                color_buffer_count, auxiliary_buffer_count, origin);
+        });
+        return result;
+    }
     Close();
     dummy_mode_ = false;
     origin_lower_left_ = origin == repiu::hle::kGlideOriginLowerLeft;
@@ -81,90 +189,78 @@ bool GlideOpenGlBackend::OpenWindowed(
         return false;
     }
 
-    HINSTANCE instance = GetModuleHandleW(nullptr);
-    if (!RegisterGlideWindowClass(instance))
+    if (logical_width > static_cast<std::uint32_t>(
+            std::numeric_limits<int>::max()) / window_scale_ ||
+        logical_height > static_cast<std::uint32_t>(
+            std::numeric_limits<int>::max()) / window_scale_)
     {
-        fprintf(stderr, "[repiu-live-debug] Glide OpenWindowed failed to register class, falling back to dummy mode\n");
+        message_ = "scaled Glide window dimensions are too large";
+        return false;
+    }
+    const int window_width = static_cast<int>(logical_width * window_scale_);
+    const int window_height = static_cast<int>(logical_height * window_scale_);
+
+    if (!SDL_InitSubSystem(SDL_INIT_VIDEO))
+    {
         dummy_mode_ = true;
         logical_width_ = logical_width;
         logical_height_ = logical_height;
-        message_ = "Glide dummy fallback activated (no class)";
+        message_ = std::string("Glide dummy fallback (SDL video): ") +
+            SDL_GetError();
         return true;
     }
-
-    RECT window_rectangle{0,
-                          0,
-                          static_cast<LONG>(logical_width),
-                          static_cast<LONG>(logical_height)};
-    constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
-    AdjustWindowRect(&window_rectangle, kWindowStyle, FALSE);
-    HWND window = CreateWindowExW(
-        0,
-        kWindowClassName,
-        L"rePIU - Glide 2 OpenGL",
-        kWindowStyle,
-        CW_USEDEFAULT,
-        CW_USEDEFAULT,
-        window_rectangle.right - window_rectangle.left,
-        window_rectangle.bottom - window_rectangle.top,
-        nullptr,
-        nullptr,
-        instance,
-        nullptr);
+    SDL_GL_ResetAttributes();
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE,
+                        auxiliary_buffer_count != 0U ? 24 : 0);
+    const std::string window_title =
+        "rePIU v" REPIU_VERSION " - Build " __DATE__
+        " - Glide 2 OpenGL";
+    SDL_Window* window = SDL_CreateWindow(
+        window_title.c_str(),
+        window_width,
+        window_height,
+        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
     if (window == nullptr)
     {
-        fprintf(stderr, "[repiu-live-debug] Glide OpenWindowed failed to create window, falling back to dummy mode\n");
         dummy_mode_ = true;
         logical_width_ = logical_width;
         logical_height_ = logical_height;
-        message_ = "Glide dummy fallback activated (no window)";
+        message_ = std::string("Glide dummy fallback (SDL window): ") +
+            SDL_GetError();
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
         return true;
     }
-
-    HDC device_context = GetDC(window);
-    PIXELFORMATDESCRIPTOR pixel_format{};
-    pixel_format.nSize = sizeof(pixel_format);
-    pixel_format.nVersion = 1;
-    pixel_format.dwFlags =
-        PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
-    pixel_format.iPixelType = PFD_TYPE_RGBA;
-    pixel_format.cColorBits = 32;
-    pixel_format.cDepthBits = auxiliary_buffer_count != 0U ? 24 : 0;
-    pixel_format.iLayerType = PFD_MAIN_PLANE;
-    const int format = ChoosePixelFormat(device_context, &pixel_format);
-    if (format == 0 ||
-        !SetPixelFormat(device_context, format, &pixel_format))
+    SDL_GLContext render_context = SDL_GL_CreateContext(window);
+    if (render_context == nullptr)
     {
-        ReleaseDC(window, device_context);
-        DestroyWindow(window);
-        fprintf(stderr, "[repiu-live-debug] Glide OpenWindowed failed to configure pixel format, falling back to dummy mode\n");
         dummy_mode_ = true;
         logical_width_ = logical_width;
         logical_height_ = logical_height;
-        message_ = "Glide dummy fallback activated (no pixel format)";
+        message_ = std::string("Glide dummy fallback (SDL GL context): ") +
+            SDL_GetError();
+        SDL_DestroyWindow(window);
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
         return true;
     }
-
-    HGLRC render_context = wglCreateContext(device_context);
-    if (render_context == nullptr ||
-        !wglMakeCurrent(device_context, render_context))
+    if (!SDL_GL_MakeCurrent(window, render_context))
     {
-        if (render_context != nullptr)
-        {
-            wglDeleteContext(render_context);
-        }
-        ReleaseDC(window, device_context);
-        DestroyWindow(window);
-        fprintf(stderr, "[repiu-live-debug] Glide OpenWindowed failed to create/activate context, falling back to dummy mode\n");
         dummy_mode_ = true;
         logical_width_ = logical_width;
         logical_height_ = logical_height;
-        message_ = "Glide dummy fallback activated (no GL context)";
+        message_ = std::string("Glide dummy fallback (SDL GL current): ") +
+            SDL_GetError();
+        SDL_GL_DestroyContext(render_context);
+        SDL_DestroyWindow(window);
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
         return true;
     }
 
     window_ = window;
-    device_context_ = device_context;
     render_context_ = render_context;
     logical_width_ = logical_width;
     logical_height_ = logical_height;
@@ -178,10 +274,7 @@ bool GlideOpenGlBackend::OpenWindowed(
         message_ = "Glide dummy fallback activated (no shader)";
         return true;
     }
-    glViewport(0,
-               0,
-               static_cast<GLsizei>(logical_width),
-               static_cast<GLsizei>(logical_height));
+    ApplyDrawableViewport();
     // Glide vertices arrive in screen pixel coordinates. Honor the origin
     // grSstWinOpen actually asked for: GR_ORIGIN_UPPER_LEFT (0) needs a
     // y-flipped projection, while GR_ORIGIN_LOWER_LEFT (1) matches OpenGL's
@@ -212,32 +305,81 @@ bool GlideOpenGlBackend::OpenWindowed(
     glLoadIdentity();
     glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    SwapBuffers(device_context);
-    ShowWindow(window, SW_SHOW);
-    UpdateWindow(window);
-    message_ = "640x480 logical Glide window opened with WGL";
+    SDL_GL_SwapWindow(window);
+    std::ostringstream stream;
+    stream << logical_width << "x" << logical_height
+           << " logical Glide window opened at " << window_scale_
+           << "x (" << window_width << "x" << window_height << ")";
+    message_ = stream.str();
     return true;
 #endif
 }
 
 void GlideOpenGlBackend::PumpEvents()
 {
-    if (dummy_mode_)
+    if (!IsHostThread())
+    {
+        InvokeOnHostThread([this]() { PumpEvents(); });
+        return;
+    }
+    if (dummy_mode_ || window_ == nullptr)
     {
         return;
     }
 #if defined(_WIN32)
-    MSG message{};
-    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+    SDL_Event event{};
+    while (SDL_PollEvent(&event))
     {
-        TranslateMessage(&message);
-        DispatchMessageW(&message);
+        if (event.type == SDL_EVENT_QUIT ||
+            event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+        {
+            SDL_HideWindow(static_cast<SDL_Window*>(window_));
+        }
+        else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
+                 (event.key.mod & SDL_KMOD_ALT) != 0)
+        {
+            std::uint32_t scale = 0;
+            switch (event.key.key)
+            {
+                case SDLK_1:
+                    scale = 1U;
+                    break;
+                case SDLK_2:
+                    scale = 2U;
+                    break;
+                case SDLK_3:
+                    scale = 3U;
+                    break;
+                case SDLK_4:
+                    scale = 4U;
+                    break;
+                default:
+                    break;
+            }
+            if (scale != 0U)
+            {
+                ApplyWindowScale(scale);
+            }
+        }
+        else if (event.type == SDL_EVENT_WINDOW_RESIZED ||
+                 event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+        {
+            ApplyDrawableViewport();
+        }
     }
 #endif
 }
 
 bool GlideOpenGlBackend::BufferClear(std::uint32_t color, std::uint32_t alpha, std::uint32_t depth)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, color, alpha, depth, &result]() {
+            result = BufferClear(color, alpha, depth);
+        });
+        return result;
+    }
 #if !defined(_WIN32)
     return false;
 #else
@@ -265,6 +407,14 @@ bool GlideOpenGlBackend::BufferClear(std::uint32_t color, std::uint32_t alpha, s
 
 bool GlideOpenGlBackend::BufferSwap(std::uint32_t swap_interval)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, swap_interval, &result]() {
+            result = BufferSwap(swap_interval);
+        });
+        return result;
+    }
 #if !defined(_WIN32)
     return false;
 #else
@@ -284,8 +434,8 @@ bool GlideOpenGlBackend::BufferSwap(std::uint32_t swap_interval)
     // it never adds steady-state glReadPixels cost. Used to verify Task 254.
     static const bool pixel_diagnostic_enabled =
         std::getenv("REPIU_GLIDE_PIXEL_DIAG") != nullptr;
-    static long swap_diag_count = 0;
-    const long swap_index = InterlockedIncrement(&swap_diag_count);
+    static std::atomic<long> swap_diag_count{0};
+    const long swap_index = swap_diag_count.fetch_add(1) + 1;
     if (pixel_diagnostic_enabled &&
         (swap_index <= 60 || swap_index % 200 == 0) && swap_index <= 4000 &&
         logical_width_ > 0 && logical_height_ > 0)
@@ -320,10 +470,11 @@ bool GlideOpenGlBackend::BufferSwap(std::uint32_t swap_interval)
                 static_cast<unsigned long long>(sum_g / denom),
                 static_cast<unsigned long long>(sum_b / denom));
     }
-    auto hdc = static_cast<HDC>(device_context_);
-    if (hdc != nullptr)
+    if (!SDL_GL_SwapWindow(static_cast<SDL_Window*>(window_)))
     {
-        SwapBuffers(hdc);
+        message_ = std::string("SDL3 Glide buffer swap failed: ") +
+            SDL_GetError();
+        return false;
     }
     message_ = "Glide buffer swapped";
     return true;
@@ -334,6 +485,14 @@ bool GlideOpenGlBackend::DrawTriangle(const GlideDrawVertex& a,
                                       const GlideDrawVertex& b,
                                       const GlideDrawVertex& c)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, &a, &b, &c, &result]() {
+            result = DrawTriangle(a, b, c);
+        });
+        return result;
+    }
 #if !defined(_WIN32)
     return false;
 #else
@@ -388,6 +547,16 @@ bool GlideOpenGlBackend::StoreTexture(std::uint32_t start_address,
                                       const std::uint8_t* source,
                                       std::size_t source_size)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, start_address, format, large_lod,
+                            aspect_ratio, source, source_size, &result]() {
+            result = StoreTexture(start_address, format, large_lod,
+                                  aspect_ratio, source, source_size);
+        });
+        return result;
+    }
 #if !defined(_WIN32)
     return false;
 #else
@@ -419,8 +588,8 @@ bool GlideOpenGlBackend::StoreTexture(std::uint32_t start_address,
         std::getenv("REPIU_GLIDE_TEX_DIAG") != nullptr;
     if (tex_diagnostic_enabled)
     {
-        static long store_diag_count = 0;
-        const long store_index = InterlockedIncrement(&store_diag_count);
+        static std::atomic<long> store_diag_count{0};
+        const long store_index = store_diag_count.fetch_add(1) + 1;
         if (store_index <= 16)
         {
             fprintf(stderr,
@@ -455,6 +624,14 @@ bool GlideOpenGlBackend::StoreTexture(std::uint32_t start_address,
 
 bool GlideOpenGlBackend::SourceTexture(std::uint32_t start_address)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, start_address, &result]() {
+            result = SourceTexture(start_address);
+        });
+        return result;
+    }
     const auto found = textures_.find(start_address);
     if (found == textures_.end())
     {
@@ -467,6 +644,11 @@ bool GlideOpenGlBackend::SourceTexture(std::uint32_t start_address)
 
 void GlideOpenGlBackend::SetTextureCombineEnabled(bool enabled)
 {
+    if (!IsHostThread())
+    {
+        InvokeOnHostThread([this, enabled]() { SetTextureCombineEnabled(enabled); });
+        return;
+    }
     texture_combine_enabled_ = enabled;
 }
 
@@ -475,6 +657,14 @@ bool GlideOpenGlBackend::PresentLfbSurface(const std::uint8_t* rgba8,
                                            std::uint32_t height,
                                            bool flip_v)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, rgba8, width, height, flip_v, &result]() {
+            result = PresentLfbSurface(rgba8, width, height, flip_v);
+        });
+        return result;
+    }
 #if !defined(_WIN32)
     return false;
 #else
@@ -569,6 +759,14 @@ bool GlideOpenGlBackend::ReadbackFramebuffer(std::uint32_t width,
                                              std::uint32_t height,
                                              std::vector<std::uint8_t>* rgba8)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, width, height, rgba8, &result]() {
+            result = ReadbackFramebuffer(width, height, rgba8);
+        });
+        return result;
+    }
 #if !defined(_WIN32)
     return false;
 #else
@@ -577,30 +775,47 @@ bool GlideOpenGlBackend::ReadbackFramebuffer(std::uint32_t width,
         message_ = "cannot read back Glide framebuffer";
         return false;
     }
-    rgba8->assign(static_cast<std::size_t>(width) * height * 4U, 0U);
     if (dummy_mode_)
     {
+        rgba8->assign(static_cast<std::size_t>(width) * height * 4U, 0U);
         message_ = "Glide framebuffer read back (dummy)";
         return true;
     }
-    glReadBuffer(GL_BACK);
-    glReadPixels(0, 0, static_cast<GLsizei>(width),
-                 static_cast<GLsizei>(height), GL_RGBA, GL_UNSIGNED_BYTE,
-                 rgba8->data());
-    // glReadPixels returns row 0 as the bottom scanline, while every consumer
-    // here (the LFB staging surface, texture uploads) treats row 0 as the top.
-    // Flip once at the source so callers never have to think about it.
-    const std::size_t row_bytes = static_cast<std::size_t>(width) * 4U;
-    std::vector<std::uint8_t> scratch(row_bytes);
-    for (std::uint32_t row = 0; row < height / 2U; ++row)
+    int drawable_width = static_cast<int>(width);
+    int drawable_height = static_cast<int>(height);
+    if (!SDL_GetWindowSizeInPixels(static_cast<SDL_Window*>(window_),
+                                   &drawable_width, &drawable_height) ||
+        drawable_width <= 0 || drawable_height <= 0)
     {
-        std::uint8_t* top = rgba8->data() + static_cast<std::size_t>(row) *
-            row_bytes;
-        std::uint8_t* bottom = rgba8->data() +
-            static_cast<std::size_t>(height - 1U - row) * row_bytes;
-        std::memcpy(scratch.data(), top, row_bytes);
-        std::memcpy(top, bottom, row_bytes);
-        std::memcpy(bottom, scratch.data(), row_bytes);
+        drawable_width = static_cast<int>(width);
+        drawable_height = static_cast<int>(height);
+    }
+    std::vector<std::uint8_t> drawable_rgba(
+        static_cast<std::size_t>(drawable_width) * drawable_height * 4U);
+    glReadBuffer(GL_BACK);
+    glReadPixels(0, 0, drawable_width, drawable_height, GL_RGBA,
+                 GL_UNSIGNED_BYTE, drawable_rgba.data());
+    // glReadPixels returns row 0 as the bottom scanline, while every consumer
+    // here treats row 0 as the top. Sample the complete scaled drawable and
+    // return the logical Glide dimensions with nearest-neighbor filtering.
+    rgba8->assign(static_cast<std::size_t>(width) * height * 4U, 0U);
+    for (std::uint32_t y = 0; y < height; ++y)
+    {
+        const std::size_t source_top_y = static_cast<std::size_t>(y) *
+            drawable_height / height;
+        const std::size_t source_y = static_cast<std::size_t>(
+            drawable_height - 1) - source_top_y;
+        for (std::uint32_t x = 0; x < width; ++x)
+        {
+            const std::size_t source_x = static_cast<std::size_t>(x) *
+                drawable_width / width;
+            const std::size_t source_offset =
+                (source_y * drawable_width + source_x) * 4U;
+            const std::size_t destination_offset =
+                (static_cast<std::size_t>(y) * width + x) * 4U;
+            std::memcpy(rgba8->data() + destination_offset,
+                        drawable_rgba.data() + source_offset, 4U);
+        }
     }
     message_ = "Glide framebuffer read back";
     return glGetError() == GL_NO_ERROR;
@@ -608,6 +823,14 @@ bool GlideOpenGlBackend::ReadbackFramebuffer(std::uint32_t width,
 }
 bool GlideOpenGlBackend::SetColorMask(bool rgb, bool alpha)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, rgb, alpha, &result]() {
+            result = SetColorMask(rgb, alpha);
+        });
+        return result;
+    }
 #if !defined(_WIN32)
     return false;
 #else
@@ -632,6 +855,14 @@ bool GlideOpenGlBackend::SetColorMask(bool rgb, bool alpha)
 
 bool GlideOpenGlBackend::SetRenderBuffer(std::uint32_t buffer)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, buffer, &result]() {
+            result = SetRenderBuffer(buffer);
+        });
+        return result;
+    }
 #if !defined(_WIN32)
     return false;
 #else
@@ -660,6 +891,14 @@ bool GlideOpenGlBackend::SetRenderBuffer(std::uint32_t buffer)
 
 bool GlideOpenGlBackend::SetDepthMask(bool enabled)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, enabled, &result]() {
+            result = SetDepthMask(enabled);
+        });
+        return result;
+    }
 #if !defined(_WIN32)
     return false;
 #else
@@ -685,6 +924,14 @@ bool GlideOpenGlBackend::SetDepthMask(bool enabled)
 
 bool GlideOpenGlBackend::SetDepthBufferMode(std::uint32_t mode)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, mode, &result]() {
+            result = SetDepthBufferMode(mode);
+        });
+        return result;
+    }
 #if !defined(_WIN32)
     return false;
 #else
@@ -720,6 +967,14 @@ bool GlideOpenGlBackend::SetDepthBufferMode(std::uint32_t mode)
 bool GlideOpenGlBackend::SetAlphaCombine(
     const hle::GlideAlphaCombineState& state)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, &state, &result]() {
+            result = SetAlphaCombine(state);
+        });
+        return result;
+    }
     if (!is_open())
     {
         message_ = "cannot set Glide alpha combine without an OpenGL window";
@@ -738,6 +993,14 @@ bool GlideOpenGlBackend::SetAlphaCombine(
 bool GlideOpenGlBackend::SetColorCombine(
     const hle::GlideColorCombineState& state)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, &state, &result]() {
+            result = SetColorCombine(state);
+        });
+        return result;
+    }
     if (!is_open())
     {
         message_ = "cannot set Glide color combine without an OpenGL window";
@@ -785,6 +1048,14 @@ bool MapGlideBlendFactor(std::uint32_t factor, bool is_source, GLenum* gl_factor
 bool GlideOpenGlBackend::SetAlphaBlend(
     const hle::GlideAlphaBlendState& state)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, &state, &result]() {
+            result = SetAlphaBlend(state);
+        });
+        return result;
+    }
 #if !defined(_WIN32)
     return false;
 #else
@@ -828,6 +1099,14 @@ bool GlideOpenGlBackend::SetAlphaBlend(
 
 bool GlideOpenGlBackend::SetAlphaTestFunction(std::uint32_t function)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, function, &result]() {
+            result = SetAlphaTestFunction(function);
+        });
+        return result;
+    }
 #if !defined(_WIN32)
     return false;
 #else
@@ -850,6 +1129,14 @@ bool GlideOpenGlBackend::SetAlphaTestFunction(std::uint32_t function)
 
 bool GlideOpenGlBackend::SetDepthBufferFunction(std::uint32_t function)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, function, &result]() {
+            result = SetDepthBufferFunction(function);
+        });
+        return result;
+    }
 #if !defined(_WIN32)
     return false;
 #else
@@ -872,6 +1159,14 @@ bool GlideOpenGlBackend::SetDepthBufferFunction(std::uint32_t function)
 
 bool GlideOpenGlBackend::SetFogMode(std::uint32_t mode)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, mode, &result]() {
+            result = SetFogMode(mode);
+        });
+        return result;
+    }
 #if !defined(_WIN32)
     return false;
 #else
@@ -896,6 +1191,14 @@ bool GlideOpenGlBackend::SetClipWindow(std::uint32_t min_x,
                                        std::uint32_t max_x,
                                        std::uint32_t max_y)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, min_x, min_y, max_x, max_y, &result]() {
+            result = SetClipWindow(min_x, min_y, max_x, max_y);
+        });
+        return result;
+    }
 #if !defined(_WIN32)
     return false;
 #else
@@ -910,10 +1213,7 @@ bool GlideOpenGlBackend::SetClipWindow(std::uint32_t min_x,
         message_ = "full Glide clip window applied (dummy)";
         return true;
     }
-    glViewport(0, 0, static_cast<GLsizei>(logical_width_),
-               static_cast<GLsizei>(logical_height_));
-    glScissor(0, 0, static_cast<GLsizei>(logical_width_),
-              static_cast<GLsizei>(logical_height_));
+    ApplyDrawableViewport();
     glEnable(GL_SCISSOR_TEST);
     message_ = "full Glide clip window applied to OpenGL";
     return glGetError() == GL_NO_ERROR;
@@ -922,6 +1222,14 @@ bool GlideOpenGlBackend::SetClipWindow(std::uint32_t min_x,
 
 bool GlideOpenGlBackend::SetCullMode(std::uint32_t mode)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, mode, &result]() {
+            result = SetCullMode(mode);
+        });
+        return result;
+    }
 #if !defined(_WIN32)
     return false;
 #else
@@ -943,6 +1251,14 @@ bool GlideOpenGlBackend::SetCullMode(std::uint32_t mode)
 
 bool GlideOpenGlBackend::SetDitherMode(std::uint32_t mode)
 {
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, mode, &result]() {
+            result = SetDitherMode(mode);
+        });
+        return result;
+    }
 #if !defined(_WIN32)
     return false;
 #else
@@ -968,21 +1284,27 @@ bool GlideOpenGlBackend::SetDitherMode(std::uint32_t mode)
 
 void GlideOpenGlBackend::Close()
 {
+    if (!IsHostThread())
+    {
+        InvokeOnHostThread([this]() { Close(); });
+        return;
+    }
     if (dummy_mode_)
     {
         dummy_mode_ = false;
         logical_width_ = 0;
         logical_height_ = 0;
+        window_scale_ = 2U;
         return;
     }
     try
     {
-        HGLRC render_context = static_cast<HGLRC>(render_context_);
-        HDC device_context = static_cast<HDC>(device_context_);
-        HWND window = static_cast<HWND>(window_);
+        SDL_GLContext render_context =
+            reinterpret_cast<SDL_GLContext>(render_context_);
+        SDL_Window* window = static_cast<SDL_Window*>(window_);
         if (render_context != nullptr)
         {
-            wglMakeCurrent(device_context, render_context);
+            SDL_GL_MakeCurrent(window, render_context);
             for (auto& entry : textures_)
             {
                 if (entry.second.gl_name != 0U)
@@ -997,16 +1319,13 @@ void GlideOpenGlBackend::Close()
                 glDeleteTextures(1, &lfb_name);
             }
             shader_.Shutdown();
-            wglMakeCurrent(nullptr, nullptr);
-            wglDeleteContext(render_context);
-        }
-        if (window != nullptr && device_context != nullptr)
-        {
-            ReleaseDC(window, device_context);
+            SDL_GL_MakeCurrent(window, nullptr);
+            SDL_GL_DestroyContext(render_context);
         }
         if (window != nullptr)
         {
-            DestroyWindow(window);
+            SDL_DestroyWindow(window);
+            SDL_QuitSubSystem(SDL_INIT_VIDEO);
         }
     }
     catch (const std::exception& e)
@@ -1018,10 +1337,10 @@ void GlideOpenGlBackend::Close()
         fprintf(stderr, "[repiu-live-debug] GlideOpenGlBackend::Close caught unknown exception\n");
     }
     render_context_ = nullptr;
-    device_context_ = nullptr;
     window_ = nullptr;
     logical_width_ = 0;
     logical_height_ = 0;
+    window_scale_ = 2U;
     origin_lower_left_ = false;
     textures_.clear();
     current_texture_ = nullptr;

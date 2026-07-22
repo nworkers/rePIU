@@ -2,12 +2,35 @@ cmake_minimum_required(VERSION 3.20)
 
 project(rePIU LANGUAGES C CXX)
 
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/VERSION"
+)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" REPIU_VERSION
+    LIMIT_COUNT 1)
+string(STRIP "${REPIU_VERSION}" REPIU_VERSION)
+if(NOT REPIU_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR "VERSION must use major.minor.patch format")
+endif()
+
 include(FetchContent)
 
 set(INSTALL_STATIC_LIBS OFF CACHE BOOL "" FORCE)
 set(CHDR_WANT_RAW_DATA_SECTOR ON CACHE BOOL "" FORCE)
 set(CHDR_WANT_SUBCODE OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/libchdr EXCLUDE_FROM_ALL)
+
+set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+set(SDL_STATIC ON CACHE BOOL "" FORCE)
+set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    sdl3
+    GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+    GIT_TAG release-3.4.10
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(sdl3)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -115,7 +138,12 @@ target_include_directories(repiu_exe
         src/platform/win32/telemetry
 )
 
-target_link_libraries(repiu_exe PRIVATE repiu_zydis chdr-static)
+target_compile_definitions(repiu_exe
+    PRIVATE
+        REPIU_VERSION="${REPIU_VERSION}"
+)
+
+target_link_libraries(repiu_exe PRIVATE repiu_zydis chdr-static SDL3::SDL3-static)
 
 add_executable(repiu_exe_analyzer
     src/tools/exe_analyzer/main.cpp
@@ -174,7 +202,6 @@ if(WIN32)
             opengl32
             gdi32
             user32
-            winmm
     )
 endif()
 

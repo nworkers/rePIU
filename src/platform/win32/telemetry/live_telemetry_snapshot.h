@@ -45,6 +45,7 @@ struct SharedTelemetryMapping
 DWORD PollThreadUntilExit(HANDLE thread,
                           DWORD timeout_milliseconds,
                           ThreadContext* progress_context,
+                          ThreadContext* host_context,
                           DWORD* exit_code);
 
 SharedTelemetryMapping OpenSharedTelemetryMapping();

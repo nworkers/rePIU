@@ -1774,7 +1774,6 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
 
             CallGuestEntryWithStack(&state);
 
-            context->glide_backend.Close();
             g_active_thread_context = nullptr;
             context->active_call_state = nullptr;
             context->host_esp = state.host_esp;
@@ -3340,6 +3339,7 @@ bool RunWin32ExecutionThread(
         }
     }
 
+    context.glide_backend.BindHostThread();
     DWORD guest_thread_id = 0;
     HANDLE thread = api.create_thread(nullptr,
                                       0,
@@ -3386,6 +3386,7 @@ bool RunWin32ExecutionThread(
         timeout_milliseconds,
         (enable_single_step_trace || aot_placement != nullptr)
             ? &context : nullptr,
+        &context,
         &exit_code);
 
     const auto remove_vectored_handler = [&context]() {
@@ -3460,6 +3461,7 @@ bool RunWin32ExecutionThread(
             WaitForSingleObject(thread, 5000U);
         }
 
+        context.glide_backend.Close();
         remove_vectored_handler();
         stop_translation_worker();
         RestoreWin32AotGuestPageWriteWatches(&context.aot_page_write_watch);
@@ -3474,6 +3476,7 @@ bool RunWin32ExecutionThread(
 
     // Teardown milestones are published through host_phase so an external
     // supervisor can locate the exact step if this path blocks.
+    context.glide_backend.Close();
     const auto set_teardown_phase = [&context](long phase) {
         if (context.shared_live_telemetry != nullptr)
         {

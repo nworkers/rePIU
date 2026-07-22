@@ -5,7 +5,12 @@
 #include "repiu/platform/win32/glide_opengl_shader.h"
 
 #include <cstdint>
+#include <condition_variable>
+#include <exception>
+#include <functional>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -34,6 +39,11 @@ public:
 
     GlideOpenGlBackend(const GlideOpenGlBackend&) = delete;
     GlideOpenGlBackend& operator=(const GlideOpenGlBackend&) = delete;
+
+    // SDL video and OpenGL operations are owned by the executor main thread.
+    // Guest-thread calls block until PumpHostCommands executes them there.
+    void BindHostThread();
+    void PumpHostCommands();
 
     // `origin` is the GrOriginLocation_t passed to grSstWinOpen:
     // GR_ORIGIN_UPPER_LEFT is 0 and GR_ORIGIN_LOWER_LEFT is 1. It selects the
@@ -105,11 +115,24 @@ private:
         std::uint32_t height = 0;
     };
 
+    bool IsHostThread() const;
+    void InvokeOnHostThread(std::function<void()> command);
+    bool ApplyWindowScale(std::uint32_t scale);
+    void ApplyDrawableViewport();
+
+    std::thread::id host_thread_id_;
+    std::mutex host_command_mutex_;
+    std::condition_variable host_command_cv_;
+    std::function<void()> host_command_;
+    std::exception_ptr host_command_exception_;
+    bool host_command_pending_ = false;
+    bool host_command_complete_ = false;
+
     void* window_ = nullptr;
-    void* device_context_ = nullptr;
     void* render_context_ = nullptr;
     std::uint32_t logical_width_ = 0;
     std::uint32_t logical_height_ = 0;
+    std::uint32_t window_scale_ = 2U;
     // True when grSstWinOpen asked for GR_ORIGIN_LOWER_LEFT, i.e. guest y grows
     // upward and the projection matches OpenGL's default orientation.
     bool origin_lower_left_ = false;

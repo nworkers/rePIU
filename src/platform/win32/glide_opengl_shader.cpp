@@ -1,10 +1,8 @@
 #include "repiu/platform/win32/glide_opengl_shader.h"
 
 #if defined(_WIN32)
-#define NOMINMAX
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <GL/gl.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_opengl.h>
 #endif
 
 #include <sstream>
@@ -69,7 +67,7 @@ constexpr GLenum kGlLinkStatus = 0x8B82;
 template <typename Function>
 bool ResolveOpenGlFunction(const char* name, Function* function)
 {
-    PROC address = wglGetProcAddress(name);
+    void* address = SDL_GL_GetProcAddress(name);
     const auto value = reinterpret_cast<std::uintptr_t>(address);
     if (address == nullptr || value <= 3U || value == ~std::uintptr_t{0})
     {
