@@ -1,5 +1,6 @@
 #include "repiu/platform/win32/execution_trampoline.h"
 #include "native_fast_path.h"
+#include "verified_region_analyzer.h"
 #include "native_phase_sampler.h"
 #include "repiu/platform/win32/live_telemetry.h"
 #include "repiu/hle/linexe_call_gate.h"
@@ -569,6 +570,329 @@ bool HandleDosMemoryAccess(CONTEXT* win32_context,
 
 
 
+// Shared guest-instruction HLE dispatch (Task 266). Runs the same handler chain
+// the single-step path uses to emulate one sensitive guest instruction at the
+// current EIP, advancing EIP past it, WITHOUT touching the trap flag. Callers
+// decide whether to re-arm single-step (HandleSingleStepTrace) or stay native
+// (the region executor). Mirrors the former inline chain in HandleSingleStepTrace.
+bool DispatchGuestHleHandlers(CONTEXT* win32_context, ThreadContext* context)
+{
+    if (context->enable_privileged_trap_hle &&
+        (HandleSelectorLimitInstruction(win32_context, context) ||
+         HandlePrivilegedTrapInstruction(win32_context, context) ||
+         HandlePortIoInstruction(win32_context, context)))
+    {
+        return true;
+    }
+    if (context->enable_traced_dos_hle &&
+        (HandleTracedDosInterrupt21(win32_context, context) ||
+         HandleTracedDosInterrupt2F(win32_context, context) ||
+         HandleTracedDpmiInterrupt31(win32_context, context) ||
+         HandleTracedMouseInterrupt33(win32_context, context)))
+    {
+        return true;
+    }
+    if (context->enable_segment_load_hle &&
+        (HandleSegmentLoadInstruction(win32_context, context) ||
+         HandleSegmentPopInstruction(win32_context, context) ||
+         HandleRepStosdInstruction(win32_context, context) ||
+         HandleRepMovsInstruction(win32_context, context) ||
+         HandleRepCmpsbInstruction(win32_context, context) ||
+         HandleLodsbInstruction(win32_context, context) ||
+         HandleSegmentStoreInstruction(win32_context, context) ||
+         HandleSegmentOverrideMemoryLoadInstruction(win32_context, context) ||
+         HandleSegmentOverrideByteLoadInstruction(win32_context, context) ||
+         HandleFsSegmentWordLoadInstruction(win32_context, context) ||
+         HandleSegmentMemoryCompareInstruction(win32_context, context) ||
+         HandleSegmentMemoryLoadInstruction(win32_context, context) ||
+         HandleTracedMemoryLoadInstruction(win32_context, context) ||
+         HandleTracedMemoryAddInstruction(win32_context, context) ||
+         HandleTracedMemoryOrInstruction(win32_context, context) ||
+         HandleTracedMemoryCompareByteInstruction(win32_context, context) ||
+         HandleTracedMemoryStoreInstruction(win32_context, context) ||
+         HandleTracedMemoryTestInstruction(win32_context, context) ||
+         HandleTracedFpuMemoryInstruction(win32_context, context) ||
+         HandleDosMemoryAccess(win32_context, context)))
+    {
+        HandleSegmentStoreInstruction(win32_context, context);
+        HandleSegmentOverrideMemoryLoadInstruction(win32_context, context);
+        return true;
+    }
+    return false;
+}
+
+// Route A native region execution (Task 266). Opt-in via REPIU_NATIVE_REGION.
+// See docs/design/20260723-266-native-region-execution.md.
+bool RouteANativeRegionEnabled()
+{
+    static const bool enabled = []() {
+        char value[2] = {};
+        return GetEnvironmentVariableA(
+                   "REPIU_NATIVE_REGION", value, sizeof(value)) > 0;
+    }();
+    return enabled;
+}
+
+// Tear down an active native region: restore the debug registers, re-arm
+// single-step, and clear the active flag. No guest byte is ever modified (the
+// sensitive instructions are trapped with hardware breakpoints, not INT3), so
+// there is nothing to unpatch.
+void LeaveNativeRegion(CONTEXT* win32_context, ThreadContext* context,
+                       bool returned)
+{
+    detail::NativeFastPathState* state = &context->native_fast_path;
+    if (!state->region_active)
+    {
+        return;
+    }
+    win32_context->Dr0 = state->region_saved_dr0;
+    win32_context->Dr1 = state->region_saved_dr1;
+    win32_context->Dr2 = state->region_saved_dr2;
+    win32_context->Dr3 = state->region_saved_dr3;
+    win32_context->Dr6 = state->region_saved_dr6;
+    win32_context->Dr7 = state->region_saved_dr7;
+    win32_context->EFlags |= 0x00000100U;
+    state->region_active = false;
+    if (returned)
+    {
+        state->region_return_count.fetch_add(1, std::memory_order_relaxed);
+    }
+    else
+    {
+        state->region_cancel_count.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+// A hardware breakpoint (Dr1-Dr3) at a sensitive instruction faults BEFORE the
+// instruction executes, with EIP at the instruction. HLE-emulate it via the
+// shared dispatch (which advances EIP past it) and keep running natively with
+// the breakpoints armed. Returns false if the instruction is at an unexpected
+// address or has no handler, so the caller tears the region down and lets the
+// single-step path take it (matching the single-step native fall-through).
+bool HandleNativeRegionSensitiveDr(CONTEXT* win32_context,
+                                   ThreadContext* context)
+{
+    detail::NativeFastPathState* state = &context->native_fast_path;
+    const std::uint32_t eip = static_cast<std::uint32_t>(win32_context->Eip);
+    bool ours = false;
+    for (std::uint32_t i = 0; i < state->region_sensitive_slots; ++i)
+    {
+        if (state->region_sensitive_addr[i] == eip)
+        {
+            ours = true;
+            break;
+        }
+    }
+    if (!ours)
+    {
+        return false;
+    }
+    win32_context->EFlags &= ~0x00000100U;  // stay native
+    const bool handled = DispatchGuestHleHandlers(win32_context, context);
+    const std::uint32_t after = static_cast<std::uint32_t>(win32_context->Eip);
+    if (!handled || after == eip)
+    {
+        return false;
+    }
+    state->region_sensitive_hit_count.fetch_add(1, std::memory_order_relaxed);
+    win32_context->Dr6 = 0;
+    win32_context->EFlags &= ~0x00000100U;  // remain native
+    return true;
+}
+
+// Try to enter a native region at the current EIP. Same entry condition as the
+// clean fast path (current EIP is the target of a direct `call rel32`). The
+// region may contain up to kMaxRegionSensitive HLE-sensitive instructions, which
+// are trapped with hardware execution breakpoints (Dr1-Dr3); Dr0 breakpoints the
+// caller return address. Regions with more sensitive instructions than hardware
+// slots are declined (the single-step path keeps handling them).
+bool TryEnterNativeRegion(CONTEXT* win32_context, ThreadContext* context)
+{
+    detail::NativeFastPathState* state = &context->native_fast_path;
+    const std::uint32_t runtime_base = context->runtime_base;
+    const std::uint32_t runtime_size = context->runtime_size;
+    const std::uint32_t previous_eip = state->previous_eip;
+    state->previous_eip = static_cast<std::uint32_t>(win32_context->Eip);
+    if (state->region_active || state->active)
+    {
+        return false;
+    }
+    const auto in_range = [&](std::uint32_t a, std::uint32_t n) {
+        const std::uint32_t end = a + n;
+        const std::uint32_t rt_end = runtime_base + runtime_size;
+        return end >= a && rt_end >= runtime_base && a >= runtime_base &&
+               end <= rt_end;
+    };
+    if (!in_range(static_cast<std::uint32_t>(win32_context->Esp),
+                  sizeof(std::uint32_t)) ||
+        !in_range(previous_eip, 5U))
+    {
+        return false;
+    }
+    const auto* previous = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(previous_eip));
+    std::int32_t displacement = 0;
+    std::memcpy(&displacement, previous + 1, sizeof(displacement));
+    const std::uint32_t entry = static_cast<std::uint32_t>(win32_context->Eip);
+    if (previous[0] != 0xE8U || previous_eip + 5U + displacement != entry)
+    {
+        return false;
+    }
+    const std::uint32_t return_address = *reinterpret_cast<const std::uint32_t*>(
+        static_cast<std::uintptr_t>(win32_context->Esp));
+    if (!in_range(return_address, 1U))
+    {
+        return false;
+    }
+    const auto cached_reject = state->region_analyzable_cache.find(entry);
+    if (cached_reject != state->region_analyzable_cache.end() &&
+        cached_reject->second == -1)
+    {
+        return false;
+    }
+    std::vector<std::uint32_t>* sensitive = nullptr;
+    const auto cached = state->region_sensitive_cache.find(entry);
+    if (cached != state->region_sensitive_cache.end())
+    {
+        sensitive = &cached->second;
+    }
+    else
+    {
+        constexpr std::uint32_t kMaxSensitive = 256;
+        std::vector<std::uint32_t> found;
+        if (!detail::ScanNativeRegionWithZydis(
+                entry, runtime_base, runtime_size, kMaxSensitive, &found))
+        {
+            state->region_analyzable_cache[entry] = -1;
+            state->region_reject_count.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        state->region_analyzable_cache[entry] = 1;
+        sensitive = &(state->region_sensitive_cache[entry] = std::move(found));
+    }
+    if (sensitive->size() >
+        detail::NativeFastPathState::kMaxRegionSensitive)
+    {
+        // More sensitive instructions than hardware breakpoint slots: decline so
+        // the single-step path keeps handling this region.
+        state->region_analyzable_cache[entry] = -1;
+        state->region_reject_count.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    for (std::uint32_t addr : *sensitive)
+    {
+        if (!in_range(addr, 1U))
+        {
+            state->region_analyzable_cache[entry] = -1;
+            return false;
+        }
+    }
+    state->region_sensitive_slots = static_cast<std::uint32_t>(sensitive->size());
+    for (std::uint32_t i = 0;
+         i < detail::NativeFastPathState::kMaxRegionSensitive; ++i)
+    {
+        state->region_sensitive_addr[i] =
+            i < state->region_sensitive_slots ? (*sensitive)[i] : 0U;
+    }
+    state->region_return_address = return_address;
+    state->region_saved_dr0 = static_cast<std::uint32_t>(win32_context->Dr0);
+    state->region_saved_dr1 = static_cast<std::uint32_t>(win32_context->Dr1);
+    state->region_saved_dr2 = static_cast<std::uint32_t>(win32_context->Dr2);
+    state->region_saved_dr3 = static_cast<std::uint32_t>(win32_context->Dr3);
+    state->region_saved_dr6 = static_cast<std::uint32_t>(win32_context->Dr6);
+    state->region_saved_dr7 = static_cast<std::uint32_t>(win32_context->Dr7);
+    win32_context->Dr0 = return_address;
+    std::uint32_t enable_bits = 0x1U;  // L0 for the return-address breakpoint
+    if (state->region_sensitive_slots >= 1)
+    {
+        win32_context->Dr1 = state->region_sensitive_addr[0];
+        enable_bits |= 0x1U << 2;  // L1
+    }
+    if (state->region_sensitive_slots >= 2)
+    {
+        win32_context->Dr2 = state->region_sensitive_addr[1];
+        enable_bits |= 0x1U << 4;  // L2
+    }
+    if (state->region_sensitive_slots >= 3)
+    {
+        win32_context->Dr3 = state->region_sensitive_addr[2];
+        enable_bits |= 0x1U << 6;  // L3
+    }
+    win32_context->Dr6 = 0;
+    // Clear all four slots' enable (bits 0-7) and R/W+LEN control (bits 16-31),
+    // leaving R/W=00 (execute) and LEN=00 (1 byte), then set the enables.
+    win32_context->Dr7 =
+        (static_cast<std::uint32_t>(win32_context->Dr7) & ~0xFFFF00FFU) |
+        enable_bits;
+    win32_context->EFlags &= ~0x00000100U;
+    state->region_active = true;
+    state->region_entry_count.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+// Route A sizing instrumentation. Decodes the instruction at `eip` and reports
+// whether it is HLE-sensitive under selective-breakpoint region execution: a
+// segment-override memory access, a segment-register move/push/pop, an FS/GS
+// read-write, an INT/IO/string/privileged/system instruction. Everything else
+// (ALU, plain mov/lea, register push/pop, direct branch/call/ret) can run
+// natively between traps. Mirrors detail::IsSensitive in the verified region
+// analyzer so the measured ceiling matches what the native fast path enforces.
+bool ClassifyRouteASensitive(std::uint32_t eip, bool* is_segment)
+{
+    if (is_segment != nullptr)
+    {
+        *is_segment = false;
+    }
+    static thread_local ZydisDecoder decoder;
+    static thread_local bool decoder_ready = false;
+    if (!decoder_ready)
+    {
+        if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder,
+                                           ZYDIS_MACHINE_MODE_LEGACY_32,
+                                           ZYDIS_STACK_WIDTH_32)))
+        {
+            return false;
+        }
+        decoder_ready = true;
+    }
+    ZydisDecodedInstruction instruction{};
+    const auto* bytes = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(eip));
+    if (!ZYAN_SUCCESS(ZydisDecoderDecodeInstruction(
+            &decoder, nullptr, bytes, ZYDIS_MAX_INSTRUCTION_LENGTH,
+            &instruction)))
+    {
+        return false;
+    }
+    const bool segment =
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_SEGMENT) != 0 ||
+        instruction.meta.category == ZYDIS_CATEGORY_SEGOP ||
+        instruction.meta.category == ZYDIS_CATEGORY_RDWRFSGS;
+    if (is_segment != nullptr)
+    {
+        *is_segment = segment;
+    }
+    if (segment ||
+        (instruction.attributes & ZYDIS_ATTRIB_IS_PRIVILEGED) != 0)
+    {
+        return true;
+    }
+    switch (instruction.meta.category)
+    {
+    case ZYDIS_CATEGORY_INTERRUPT:
+    case ZYDIS_CATEGORY_IO:
+    case ZYDIS_CATEGORY_IOSTRINGOP:
+    case ZYDIS_CATEGORY_STRINGOP:
+    case ZYDIS_CATEGORY_SYSCALL:
+    case ZYDIS_CATEGORY_SYSRET:
+    case ZYDIS_CATEGORY_SYSTEM:
+    case ZYDIS_CATEGORY_UINTR:
+        return true;
+    default:
+        return false;
+    }
+}
+
 // Extends the same int3-sentinel single-step probe as RecordExecutionProbe,
 // but logs every single-stepped instruction inside a guest code RANGE
 // (rather than one exact-match address, and without a single-shot gate) into
@@ -812,62 +1136,31 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
         context->single_step_trace_count.fetch_add(
             1,
             std::memory_order_relaxed);
+        bool routea_segment = false;
+        if (ClassifyRouteASensitive(eip, &routea_segment))
+        {
+            context->routea_sensitive_count.fetch_add(
+                1, std::memory_order_relaxed);
+            if (routea_segment)
+            {
+                context->routea_segment_sensitive_count.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+        }
     }
 
-    if (context->enable_privileged_trap_hle &&
-        (HandleSelectorLimitInstruction(win32_context, context) ||
-         HandlePrivilegedTrapInstruction(win32_context, context)))
+    if (DispatchGuestHleHandlers(win32_context, context))
     {
-        win32_context->EFlags |= 0x00000100U;
-        return true;
-    }
-    if (context->enable_privileged_trap_hle &&
-        HandlePortIoInstruction(win32_context, context))
-    {
-        win32_context->EFlags |= 0x00000100U;
-        return true;
-    }
-    if (context->enable_traced_dos_hle &&
-        (HandleTracedDosInterrupt21(win32_context, context) ||
-         HandleTracedDosInterrupt2F(win32_context, context) ||
-         HandleTracedDpmiInterrupt31(win32_context, context) ||
-         HandleTracedMouseInterrupt33(win32_context, context)))
-    {
-        win32_context->EFlags |= 0x00000100U;
-        return true;
-    }
-    if (context->enable_segment_load_hle &&
-        (HandleSegmentLoadInstruction(win32_context, context) ||
-         HandleSegmentPopInstruction(win32_context, context) ||
-         HandleRepStosdInstruction(win32_context, context) ||
-         HandleRepMovsInstruction(win32_context, context) ||
-         HandleRepCmpsbInstruction(win32_context, context) ||
-         HandleLodsbInstruction(win32_context, context) ||
-         HandleSegmentStoreInstruction(win32_context, context) ||
-         HandleSegmentOverrideMemoryLoadInstruction(win32_context, context) ||
-         HandleSegmentOverrideByteLoadInstruction(win32_context, context) ||
-         HandleFsSegmentWordLoadInstruction(win32_context, context) ||
-         HandleSegmentMemoryCompareInstruction(win32_context, context) ||
-         HandleSegmentMemoryLoadInstruction(win32_context, context) ||
-         HandleTracedMemoryLoadInstruction(win32_context, context) ||
-         HandleTracedMemoryAddInstruction(win32_context, context) ||
-         HandleTracedMemoryOrInstruction(win32_context, context) ||
-         HandleTracedMemoryCompareByteInstruction(win32_context, context) ||
-         HandleTracedMemoryStoreInstruction(win32_context, context) ||
-         HandleTracedMemoryTestInstruction(win32_context, context) ||
-         HandleTracedFpuMemoryInstruction(win32_context, context) ||
-         HandleDosMemoryAccess(win32_context, context)))
-    {
-        HandleSegmentStoreInstruction(win32_context, context);
-        HandleSegmentOverrideMemoryLoadInstruction(win32_context, context);
         win32_context->EFlags |= 0x00000100U;
         return true;
     }
 
-    if (detail::TryEnterNativeFastPath(win32_context,
-                                       &context->native_fast_path,
-                                       context->runtime_base,
-                                       context->runtime_size))
+    if (RouteANativeRegionEnabled()
+            ? TryEnterNativeRegion(win32_context, context)
+            : detail::TryEnterNativeFastPath(win32_context,
+                                             &context->native_fast_path,
+                                             context->runtime_base,
+                                             context->runtime_size))
     {
         return true;
     }
@@ -2013,7 +2306,41 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
                 reinterpret_cast<DWORD_PTR>(&RecoverHostStackException);
         }
         return EXCEPTION_CONTINUE_EXECUTION;
-    }    const auto stop_for_aot_terminal_failure = [context, win32_context]() {
+    }
+    // Route A native region (Task 266): while a region runs natively, only its
+    // hardware breakpoints trap -- Dr0 at the caller return address and Dr1-Dr3
+    // at the region's sensitive instructions -- all reported as #DB. Handle those
+    // here before any other consumer.
+    if (RouteANativeRegionEnabled() && context->native_fast_path.region_active)
+    {
+        const DWORD region_code = exception_info->ExceptionRecord != nullptr
+            ? exception_info->ExceptionRecord->ExceptionCode
+            : 0U;
+        const std::uint32_t region_eip =
+            static_cast<std::uint32_t>(win32_context->Eip);
+        const std::uint32_t region_dr6 =
+            static_cast<std::uint32_t>(win32_context->Dr6);
+        if (region_code == EXCEPTION_SINGLE_STEP)
+        {
+            if ((region_dr6 & 0x1U) != 0U &&
+                region_eip ==
+                    context->native_fast_path.region_return_address)
+            {
+                LeaveNativeRegion(win32_context, context, true);
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
+            if ((region_dr6 & 0x0EU) != 0U &&
+                HandleNativeRegionSensitiveDr(win32_context, context))
+            {
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
+        }
+        // Unexpected exception (unhandled sensitive instruction, guest fault, or
+        // stray debug event): restore the debug registers and fall through to
+        // normal single-step handling with EIP unchanged.
+        LeaveNativeRegion(win32_context, context, false);
+    }
+    const auto stop_for_aot_terminal_failure = [context, win32_context]() {
         if (!context->aot_terminal_failure.load(std::memory_order_acquire))
         {
             return false;

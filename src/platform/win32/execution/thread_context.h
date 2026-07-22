@@ -539,6 +539,14 @@ struct ThreadContext
     std::uint32_t last_traced_fpu_m32_value = 0;
     bool has_last_traced_fpu_m32_value = false;
     std::atomic<std::uint32_t> single_step_trace_count{0};
+    // Route A sizing (native region execution). Of every single-stepped guest
+    // instruction, how many are HLE-sensitive (segment op / INT / IO / string /
+    // privileged) and would still require a trap under selective-breakpoint
+    // region execution. Native-region speedup ceiling ~=
+    // single_step_trace_count / routea_sensitive_count. The segment sub-count
+    // isolates how much of that is segmentation specifically.
+    std::atomic<std::uint32_t> routea_sensitive_count{0};
+    std::atomic<std::uint32_t> routea_segment_sensitive_count{0};
     std::atomic<std::uint32_t> single_step_eip{0};
     std::atomic<std::uint32_t> single_step_eax{0};
     std::atomic<std::uint32_t> single_step_ebx{0};

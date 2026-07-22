@@ -1,3 +1,90 @@
+## 2026-07-23 Task 266 (분석·계측 완료, 구현 착수 전): 근본 병목은 single-step-everything — 실행 명령의 98.1%가 네이티브화 가능(민감 1.9%), 네이티브 리전 실행으로 상한 ~53배 / Task 266 (Analysis+instrumentation done, impl not started): the real wall is single-step-everything — 98.1% of executed instructions are native-capable (1.9% sensitive), native region execution ceiling ~53x
+
+**상태 (Status):** Phase 0 완료(계측·baseline·LDT 스파이크), `claude/native-region-execution`.
+사용자 요구 "10배 이상 빠르게"에 대한 근본 대응. 방향 A(네이티브 리전 실행) 승인됨.
+설계: [docs/design/20260723-266-native-region-execution.md](../design/20260723-266-native-region-execution.md).
+
+### 근본 병목 재확정 (확인됨, 코드+실측)
+
+Task 262~265는 AOT 경계 이탈 사유(세그먼트→간접분기)를 파고들었지만, 그건 aot-dynamic
+**내부**의 2차 비용이다. 더 근본 사실: **legacy·aot-dynamic 두 백엔드 모두 single-step이
+dispatch의 99%+** 이고, single-step 1회 = Windows VEH 예외 왕복(~9µs)이라 이게 진짜 벽이다.
+legacy는 실행 시작 트램폴린이 TF를 켜고(execution_trampoline.cpp:407-411) 모든 명령을 트랩.
+
+**v0.0.84 fresh baseline (Debug, 디버거 미부착, 120초):**
+
+| 지표 | legacy | aot-dynamic | 비 |
+|---|---:|---:|---:|
+| progress | **1,829,006** | 127,073 | **14.4x** |
+| single_step | 12,677,443 (99.97%) | 2,681,101 (99.3%) | — |
+| native fast(entry/ret/cancel) | 28,258/28,253/5 | 13,021/13,020/1 | — |
+
+aot-dynamic 경계 분포(재확인): other 76,713(62%)·indir 34,706(28%, Task 265의 폭증)·
+ret 12,736(10%). **legacy가 여전히 14.4x 빠름** — AOT는 순손실. 렌더링은 aot-dynamic에서
+검증돼 왔으므로 백엔드 동등성은 별개 선결 과제.
+
+### 반증됨: 실제 LDT 디스크립터 (스파이크)
+
+게스트는 DOS/16M 비-flat 셀렉터를 씀(실측 바인딩: 0x1C→base 0x03000000/0x0F,
+0x24→0x03010000/0xEF0CF(코드), 0x2C→0x03100000/0x47, 0x34→0x03110000/0x4C6E5F(데이터)).
+이를 실제 호스트 LDT 디스크립터로 설치하면 세그먼트 접근이 네이티브·정확해지지만,
+`NtSetLdtEntries` 스파이크가 **전 셀렉터에서 STATUS_NOT_IMPLEMENTED(0xC0000002)** 반환.
+**Win11 x64 WOW64는 LDT 미지원.** 세그먼트를 실제 디스크립터로 네이티브화하는 길은 불가.
+(단 평범한 non-override 접근은 이미 host-flat DS로 정확 — 게임이 그렇게 렌더하므로.)
+
+### 핵심 실측: 민감 명령은 동적 실행의 1.9%뿐 (확인됨)
+
+`HandleSingleStepTrace`에 명령 분류 계측 추가(`routea_sensitive`/`routea_segment`,
+[repiu-live] 노출). legacy 120초 실측:
+
+| | 값 | 전체 대비 |
+|---|---:|---:|
+| 총 실행 명령 | 11,581,526 | 100% |
+| HLE-민감(세그먼트/INT/IO/string/priv) | **217,529** | **1.88%** |
+| 그중 세그먼트 op | 164,499 | 1.42%(민감의 75.6%) |
+
+**98.1%는 트랩 없이 네이티브 실행 가능.** 상한 ≈ 총/민감 ≈ **53배**. native_fast_path가 이미
+원형(clean 함수 전체를 HW BP로 네이티브 실행, 28,258회/120s)이나, `IsSensitive`가 세그먼트
+op 하나라도 있으면 함수 전체를 거부해 대부분 탈락. **Route A = 함수 거부 대신 민감 명령에만
+BP를 걸고 사이를 네이티브 실행**(세그먼트는 여전히 shadow HLE). 간접분기 인라인캐시
+churn(Task 265의 현재 최대 비용)도 네이티브 jmp로 자동 소멸.
+
+### Phase 2 실증 (완료, 커버리지가 다음 병목) / Phase 2 (done; coverage is the next bottleneck)
+
+리전 실행기를 구현·실증했다(env `REPIU_NATIVE_REGION`, 기본 off). 게스트 바이트 미수정
+**하드웨어 실행 브레이크포인트**(Dr1-3=민감 ≤3, Dr0=반환) 방식. 민감 명령 트랩 시 공용 HLE
+디스패치로 emulate 후 네이티브 재개. 120초 A/B(둘 다 크래시 0):
+
+| | progress | single_step | region(진입/히트/거부) |
+|---|---:|---:|---|
+| OFF | 1,613,942 | 11,663,575 | fast 28,258 |
+| ON | **1,655,673** | 11,440,622 | 29,811/49,358/144 |
+
+**+2.6%뿐.** 메커니즘은 정확·안전하나 커버리지가 좁다: (1) `call rel32` 진입만, (2) HW-BP
+4개 한도로 민감 ≥4 핫 함수 거부→single-step, (3) 리전이 짧아(~12명령) 진입/이탈 예외 비용이
+이득 상쇄. INT3 무제한 패치는 먼저 시도했으나 코드 수정이 사전 존재 BP/경계 desync로 조기
+fatal 유발→HW-BP로 안전성 확보하고 무제한화 보류.
+
+**전 10x를 위한 남은 작업:** (a) 무제한 브레이크포인트(INT3 견고화: SMC·공유 콜리·경계
+desync 안전 처리), (b) 넓은 진입(핫 루프 진입점, 반환 경계 부재 해결), (c) 간접 분기 리전
+이탈로 리전 장문화. 상세: Phase 2 로그
+[docs/work-logs/20260723-266-native-region-execution-phase2-log.md](../work-logs/20260723-266-native-region-execution-phase2-log.md).
+
+**English summary.** Reframed the frontier: Tasks 262–265 chased AOT boundary reasons, but
+those are secondary costs *inside* aot-dynamic. The real wall is that both backends single-
+step 99%+ of instructions and each single-step is a ~9µs Windows VEH round-trip. Fresh
+v0.0.84 numbers: legacy 1.83M progress/120s vs aot-dynamic 127k (14.4x; AOT is still a net
+loss). The clean fix — real LDT descriptors for the non-flat DOS/16M selectors (0x1C/24/2C/34,
+bases 0x03000000+) — is impossible: an NtSetLdtEntries spike returns STATUS_NOT_IMPLEMENTED
+for every selector (Win11 x64 WOW64 has no LDT). Decisive measurement via new
+instrumentation: only **1.88%** of executed instructions are HLE-sensitive (217,529 of
+11,581,526; 75.6% of those are segment ops). So 98.1% can run natively → ceiling ~53x. The
+existing native_fast_path already runs whole clean functions natively (28,258/120s) but
+`IsSensitive` rejects any function with one segment op; Route A breakpoints only the
+sensitive instructions and runs natively between them, keeping segment ops as shadow HLE and
+dissolving indirect-branch inline-cache churn for free. Next: region scanner (Phase 1) then
+region executor (Phase 2).
+
 ## 2026-07-22 Task 265 (분석, 착수 전): 다음 최적화 frontier — 간접 인라인 캐시 다중 슬롯화가 최우선 / Task 265 (Analysis, not started): next optimization frontier — multi-slot indirect inline cache is the top lever
 
 **상태 (Status):** 분석만 완료(코드 변경 없음). Task 264(세그먼트 번역, v0.0.84) 이후의

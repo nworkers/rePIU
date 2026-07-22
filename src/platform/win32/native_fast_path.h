@@ -3,6 +3,9 @@
 #include <atomic>
 #include <cstdint>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 struct _CONTEXT;
 using CONTEXT = _CONTEXT;
@@ -31,6 +34,33 @@ struct NativeFastPathState
     std::atomic<std::uint32_t> last_rejected_candidate{0};
     std::atomic<std::uint32_t> last_rejected_bytes_low{0};
     std::atomic<std::uint32_t> last_rejected_bytes_high{0};
+
+    // Route A region execution (Task 266). Unlike the clean-function fast path
+    // above, a region may contain up to three HLE-sensitive instructions. They
+    // are trapped with hardware execution breakpoints (Dr1-Dr3) rather than code
+    // patches, so no guest byte is modified; Dr0 breakpoints the caller return
+    // address to bound the region. On a Dr1-Dr3 fault the sensitive instruction
+    // is HLE-emulated (it has not executed yet) and native execution resumes.
+    static constexpr std::uint32_t kMaxRegionSensitive = 3;
+    bool region_active = false;
+    std::uint32_t region_return_address = 0;
+    std::uint32_t region_sensitive_addr[kMaxRegionSensitive] = {0, 0, 0};
+    std::uint32_t region_sensitive_slots = 0;
+    std::uint32_t region_saved_dr0 = 0;
+    std::uint32_t region_saved_dr1 = 0;
+    std::uint32_t region_saved_dr2 = 0;
+    std::uint32_t region_saved_dr3 = 0;
+    std::uint32_t region_saved_dr6 = 0;
+    std::uint32_t region_saved_dr7 = 0;
+    std::unordered_map<std::uint32_t, std::int8_t> region_analyzable_cache;
+    std::unordered_map<std::uint32_t, std::vector<std::uint32_t>>
+        region_sensitive_cache;
+    std::atomic<std::uint32_t> region_entry_count{0};
+    std::atomic<std::uint32_t> region_sensitive_hit_count{0};
+    std::atomic<std::uint32_t> region_reject_count{0};
+    std::atomic<std::uint32_t> region_return_count{0};
+    std::atomic<std::uint32_t> region_cancel_count{0};
+    std::atomic<std::uint32_t> region_stray_heal_count{0};
 };
 
 bool TryEnterNativeFastPath(CONTEXT* context,

@@ -219,4 +219,107 @@ bool VerifyNativeFunctionWithZydis(
                           0);
 }
 
+bool ScanNativeRegionWithZydis(
+    std::uint32_t entry,
+    std::uint32_t runtime_base,
+    std::uint32_t runtime_size,
+    std::uint32_t max_sensitive,
+    std::vector<std::uint32_t>* sensitive)
+{
+    constexpr std::size_t kMaxInstructions = 16384;
+    if (sensitive == nullptr ||
+        !IsRuntimeRange(entry, 1U, runtime_base, runtime_size))
+    {
+        return false;
+    }
+    sensitive->clear();
+    ZydisDecoder decoder;
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(
+            &decoder, ZYDIS_MACHINE_MODE_LEGACY_32, ZYDIS_STACK_WIDTH_32)))
+    {
+        return false;
+    }
+    std::vector<std::uint32_t> pending{entry};
+    std::unordered_set<std::uint32_t> visited;
+    bool has_return = false;
+    while (!pending.empty() && visited.size() < kMaxInstructions)
+    {
+        const std::uint32_t address = pending.back();
+        pending.pop_back();
+        if (!visited.insert(address).second)
+        {
+            continue;
+        }
+        if (!IsRuntimeRange(address,
+                            ZYDIS_MAX_INSTRUCTION_LENGTH,
+                            runtime_base,
+                            runtime_size))
+        {
+            return false;
+        }
+        ZydisDecodedInstruction instruction{};
+        ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+        const auto* bytes = reinterpret_cast<const void*>(
+            static_cast<std::uintptr_t>(address));
+        if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(
+                &decoder, bytes, ZYDIS_MAX_INSTRUCTION_LENGTH, &instruction,
+                operands)) ||
+            instruction.length == 0)
+        {
+            return false;
+        }
+        if (IsSensitive(instruction))
+        {
+            // HLE-sensitive instruction: record its address (deduped by the
+            // visited set) and continue past it natively-in-region. A rep-prefixed
+            // string op counts once; the HLE handler performs the whole operation.
+            if (sensitive->size() >= max_sensitive)
+            {
+                return false;
+            }
+            sensitive->push_back(address);
+            pending.push_back(address + instruction.length);
+            continue;
+        }
+        const std::uint32_t next = address + instruction.length;
+        const auto category = instruction.meta.category;
+        if (category == ZYDIS_CATEGORY_RET)
+        {
+            has_return = true;
+            continue;
+        }
+        if (category == ZYDIS_CATEGORY_CALL ||
+            category == ZYDIS_CATEGORY_COND_BR ||
+            category == ZYDIS_CATEGORY_UNCOND_BR)
+        {
+            std::uint32_t target = 0;
+            if (!ReadDirectTarget(instruction, operands, address, &target) ||
+                !IsRuntimeRange(target, 1U, runtime_base, runtime_size))
+            {
+                // An indirect or far transfer means we cannot enumerate every
+                // reachable sensitive instruction, so the region is unprovable.
+                return false;
+            }
+            if (category == ZYDIS_CATEGORY_CALL)
+            {
+                // Flatten the callee into this region and resume after the call.
+                pending.push_back(target);
+                pending.push_back(next);
+            }
+            else if (category == ZYDIS_CATEGORY_COND_BR)
+            {
+                pending.push_back(target);
+                pending.push_back(next);
+            }
+            else
+            {
+                pending.push_back(target);
+            }
+            continue;
+        }
+        pending.push_back(next);
+    }
+    return has_return && pending.empty();
+}
+
 }  // namespace repiu::platform::win32::detail
