@@ -1,3 +1,71 @@
+## 2026-07-22 Task 265 (분석, 착수 전): 다음 최적화 frontier — 간접 인라인 캐시 다중 슬롯화가 최우선 / Task 265 (Analysis, not started): next optimization frontier — multi-slot indirect inline cache is the top lever
+
+**상태 (Status):** 분석만 완료(코드 변경 없음). Task 264(세그먼트 번역, v0.0.84) 이후의
+남은 비용을 프로파일해 다음 최적화 대상을 순위화. **다음 세션이 이어받을 작업.**
+
+### 현재 프로파일 (확인됨, Phase 3a 이후 120초)
+
+세그먼트 비용 제거 후 경계 이탈이 재편됐다: `other` 26,055 / **`indir` 20,076** /
+`ret` 7,294. `legacy_fallback=0`, boundary≈reentry(53,425≈53,461).
+
+**간접 분기 경계의 시간대별 증가(핵심):**
+
+| 시점 | indir | ret | other |
+|---|---:|---:|---:|
+| 25.5s | 32 | 4,777 | 11,262 |
+| 51s | 1,027 | 7,043 | 18,334 |
+| 76.8s | **8,210** | 7,138 | 21,242 |
+| 102.6s | 15,395 | 7,232 | 24,163 |
+| 120s | 20,076 | 7,294 | 26,055 |
+
+`indir`은 ~51초까지 거의 0이다가 **프레임 루프(~78초 이후) 진입과 함께 폭증**(~270/s,
+가속). `ret`은 평평, `other`는 완만. 즉 **긴 세션의 지배적·증가 중 비용은 간접 분기다.**
+
+### 근인 (확인됨, 코드 증거)
+
+[aot_code_cache.cpp](../../src/runtime/aot_code_cache.cpp): 반환 인라인 캐시는
+`kReturnInlineCacheEntryCount=4`(슬롯 4, round-robin `replace_cursor`)인데, **간접
+call/jmp 캐시(`EmitIndirectInlineCacheSlot`)는 슬롯 1개**(`entries` 비어 있음). 다형적
+호출지가 여러 대상을 번갈아 부르면 단일 슬롯이 매번 미스 → 경계 → 단일스텝 → 재패치.
+Task 204가 지목한 "inline-cache churn"의 정체가 **단일 슬롯 간접 캐시**로 확정.
+
+### 최적화 기회 (영향 순, 순위화)
+
+1. **간접 call/jmp 인라인 캐시 다중 슬롯화 (최우선).** 반환 캐시의 4슬롯 다중 엔트리
+   기계(`entries`/`replace_cursor`)를 간접 캐시에 적용. 프레임 루프의 지배적·가속 중
+   비용 직격. 기존 검증된 패턴 재사용이라 위험 대비 이득 최대.
+2. **함수 프롤로그 커버리지 공백 (중간).** GS 제거 후 `other` 1위가 `0x55 push ebp`
+   (4,088)·`0x53 push ebx`. 번역 가능한 함수 진입이 경계로 단일스텝 — 경계 뒤 후속 블록
+   미번역 공백. 원인 규명 후 ~4k 경계 제거 가능.
+3. **단일스텝당 진단 오버헤드 제거 (쉬움).** 매 단일스텝(~1M)마다
+   [execution_trampoline.cpp:782-810](../../src/platform/win32/execution/execution_trampoline.cpp#L782-L810)
+   에서 레지스터 16개 atomic 저장 + `eip_offset==` 비교 21개를 무조건 실행. 진단 플래그로
+   gating(legacy에도 이득).
+4. **공용 단일스텝 디코드 1회화 (양 백엔드 이득).** `instruction_emulation.cpp`의 EIP
+   반복 재읽기(51 지점)를 Zydis 1회 디코드+테이블 디스패치로.
+5. **세그먼트 레지스터 로드/스토어 (낮음·어려움).** `0x8e/0x8c/0x07/0x1f`(~7k)는
+   descriptor 해석 필요로 경계 유지(Phase 2에서 store가 shadow-emulated 확인).
+
+### 다음 단계 / Next
+
+**#1(간접 인라인 캐시 다중 슬롯화)부터** 착수 권장. 측정→구현→통제 A/B(Task 264와 동일
+절차)로 검증. 검증 지표: `boundary_reason(indir)` 감소, progress/무회귀(EIP·Glide·fatal).
+
+**English summary.** After Task 264 (segment translation, v0.0.84) removed the
+segmentation exception cost, profiling the residual shows the dominant, growing
+steady-state cost is now indirect-branch churn: `indir` boundaries are ~0 until
+51 s then explode in the frame loop (8,210 at 77 s → 20,076 at 120 s, ~270/s and
+accelerating), while `ret` is flat and `other` grows slowly. Root cause confirmed
+in code: indirect call/jmp inline caches have a single slot (`EmitIndirectInline
+CacheSlot`), unlike the 4-slot return cache, so polymorphic call sites thrash —
+exactly the "inline-cache churn" Task 204 flagged. Ranked levers: (1) multi-slot
+indirect inline cache reusing the return cache's `entries`/`replace_cursor`
+mechanism (top — hits the dominant frame-loop cost, low risk), (2) the
+function-prologue coverage gap (0x55 push ebp is the top `other` opcode after GS
+removal), (3) gating the per-single-step diagnostic register snapshot (16 atomic
+stores + a 21-entry eip check on ~1M steps), (4) collapsing the shared single-step
+re-decode, (5) segment-register load/store (hard, low priority). Start with #1.
+
 ## 2026-07-22 Task 263 (완료): AOT 이탈의 근인 = 세그먼트 명령 — `other` 77%의 정체가 GS 프리픽스·세그먼트 레지스터/push·pop, 체류량 4.8명령/진입 / Task 263 (Completed): root cause of AOT exits = segmentation instructions — the 77% `other` bucket is GS prefix + segment reg/push/pop; residency 4.8 instr/entry
 
 **상태 (Status):** 구현·실측 완료, `claude/task-262-aot-dynamic-perf-aipxsa`. Task 262
