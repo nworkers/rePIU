@@ -7,7 +7,7 @@ namespace repiu::platform::win32
 {
 
 constexpr std::uint32_t kWin32LiveTelemetryMagic = 0x5250544CU;
-constexpr std::uint32_t kWin32LiveTelemetryVersion = 18;
+constexpr std::uint32_t kWin32LiveTelemetryVersion = 20;
 constexpr std::uint32_t kWin32NativeSampleRingCapacity = 8;
 constexpr const char* kWin32LiveTelemetryEnvironment =
     "REPIU_LIVE_TELEMETRY_MAPPING";
@@ -86,6 +86,26 @@ struct Win32SharedLiveTelemetry
     volatile long aot_residency_total = 0;
     volatile long aot_residency_samples = 0;
     volatile long aot_residency_max = 0;
+    // Task 264 prerequisite probe: at a push-segment boundary, the host segment
+    // register vs the shadow selector, to settle whether the guest executes with
+    // its own selectors loaded (native push would be correct) or host-flat
+    // (native push would push the host selector). Instrumentation only.
+    volatile long aot_pushseg_count = 0;
+    volatile long aot_pushseg_last_opcode = 0;
+    volatile long aot_pushseg_last_host_sel = 0;
+    volatile long aot_pushseg_last_shadow_sel = 0;
+    volatile long aot_pushseg_match_count = 0;
+    volatile long aot_pushseg_mismatch_count = 0;
+    // Task 264 Phase 3 characterization: at a segment-override memory boundary,
+    // the overridden segment's shadow selector and its descriptor base, so we
+    // can judge whether the override is flat (base 0, translatable by stripping
+    // the prefix) or needs a runtime base add. Instrumentation only.
+    volatile long aot_segovr_count = 0;
+    volatile long aot_segovr_last_prefix = 0;
+    volatile long aot_segovr_last_selector = 0;
+    volatile long aot_segovr_last_base = 0;
+    volatile long aot_segovr_flat_count = 0;
+    volatile long aot_segovr_nonflat_count = 0;
     volatile long aot_reentry_count = 0;
     // Guest address of the most recent HandleAotReentry inline-cache-miss
     // boundary (updated outside ExceptionDispatchScope, unlike last_eip).

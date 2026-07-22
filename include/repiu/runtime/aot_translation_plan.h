@@ -20,6 +20,12 @@ enum class AotInstructionKind
     kHleBoundary,
     kIndirectExit,
     kJumpTable,
+    // A segment-override memory access (e.g. GS:[mem]) translated natively with
+    // a self-correcting guard and the segment base folded into the displacement
+    // (Task 264 Phase 3a). segment_override_register holds the overridden
+    // segment (0=ES,2=SS,3=DS,4=FS,5=GS). Falls back to a boundary at emit time
+    // for any form the re-encoder cannot verify.
+    kSegmentOverrideMem,
 };
 
 struct AotInstructionRecord
@@ -30,6 +36,7 @@ struct AotInstructionRecord
     AotInstructionKind kind = AotInstructionKind::kCopy;
     std::uint8_t length = 0;
     std::uint8_t table_index_register = 0xFFU;
+    std::uint8_t segment_override_register = 0xFFU;
     std::uint16_t mnemonic = 0;
     std::vector<std::uint8_t> bytes;
     std::vector<std::uint32_t> table_targets;

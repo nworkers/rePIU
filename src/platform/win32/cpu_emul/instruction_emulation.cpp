@@ -3,6 +3,7 @@
 #include "guest_memory_access.h"
 #include "dos_int21_services.h"
 #include "dpmi_mscdex_services.h"
+#include "aot_runtime_dispatch.h"
 
 #include <Zydis.h>
 
@@ -244,6 +245,10 @@ void RecordGuestSegmentLoad(CONTEXT* win32_context,
         default:
             break;
     }
+    // Task 264 Phase 3a: the guest just (re)configured a segment register, so
+    // re-fold selectors and bases into the natively-translated segment-override
+    // sites (self-gated on an actual change; no-op without an AOT placement).
+    ReResolveAotSegmentOverrides(context);
 }
 
 

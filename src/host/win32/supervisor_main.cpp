@@ -235,6 +235,34 @@ void PrintSnapshot(
               << ReadInterlocked(&telemetry.aot_residency_total) << "/"
               << ReadInterlocked(&telemetry.aot_residency_samples) << "/"
               << ReadInterlocked(&telemetry.aot_residency_max)
+              << " pushseg(cnt/op/host/shadow/match/mismatch)="
+              << ReadInterlocked(&telemetry.aot_pushseg_count) << "/0x"
+              << std::hex
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.aot_pushseg_last_opcode))
+              << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.aot_pushseg_last_host_sel))
+              << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.aot_pushseg_last_shadow_sel))
+              << std::dec << "/"
+              << ReadInterlocked(&telemetry.aot_pushseg_match_count) << "/"
+              << ReadInterlocked(&telemetry.aot_pushseg_mismatch_count)
+              << " segovr(cnt/pfx/sel/base/flat/nonflat)="
+              << ReadInterlocked(&telemetry.aot_segovr_count) << "/0x"
+              << std::hex
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.aot_segovr_last_prefix))
+              << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.aot_segovr_last_selector))
+              << "/0x"
+              << static_cast<std::uint32_t>(
+                     ReadInterlocked(&telemetry.aot_segovr_last_base))
+              << std::dec << "/"
+              << ReadInterlocked(&telemetry.aot_segovr_flat_count) << "/"
+              << ReadInterlocked(&telemetry.aot_segovr_nonflat_count)
               << " aot_boundary_guest=0x" << std::hex
               << static_cast<std::uint32_t>(
                      ReadInterlocked(&telemetry.aot_boundary_guest_eip))

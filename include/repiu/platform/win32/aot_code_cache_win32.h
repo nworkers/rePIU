@@ -26,6 +26,10 @@ struct Win32AotCodeCachePlacement
     std::vector<runtime::AotCodeCacheFixup> fixups;
     std::vector<runtime::AotIndirectInlineCacheSite>
         indirect_inline_cache_sites;
+    // Task 264 Phase 3a: natively-translated segment-override accesses, carried
+    // so they can be re-resolved (guard selector + folded base) once the guest
+    // configures the segment register, or on any later reload.
+    std::vector<runtime::AotSegmentOverrideSite> segment_override_sites;
     std::vector<Win32AotGuestPageState> guest_pages;
     std::vector<std::uint32_t> retired_guest_addresses;
     std::vector<std::uint32_t> inactive_map_indices;
@@ -74,6 +78,24 @@ bool FindAotCacheAddress(const Win32AotCodeCachePlacement& placement,
                          std::uint32_t* cache_address);
 bool InstallWin32AotProbeSentinel(Win32AotCodeCachePlacement* placement,
                                   std::uint32_t guest_address);
+// Task 264 Phase 3a: per-segment resolution the translation path folds into
+// natively-emitted segment-override accesses. Indexed by segment register
+// (0=ES,2=SS,3=DS,4=FS,5=GS); CS (1) is unused. shadow_address is the absolute
+// address of the guest's shadow selector (for the guard's memory compare),
+// selector is its value at translation time, and base is its descriptor base
+// (0 when the selector is flat/unresolved).
+struct Win32AotSegmentResolution
+{
+    std::uint32_t shadow_address = 0;
+    std::uint16_t selector = 0;
+    std::uint32_t base = 0;
+};
+
+struct Win32AotSegmentTable
+{
+    Win32AotSegmentResolution segments[6];
+};
+
 bool AppendWin32DynamicAotTranslation(
     std::uint32_t runtime_base,
     std::uint32_t runtime_size,
@@ -81,7 +103,17 @@ bool AppendWin32DynamicAotTranslation(
     const std::vector<runtime::AotExcludedGuestRange>& excluded_ranges,
     Win32AotPageWriteWatchSet* write_watch_set,
     Win32AotCodeCachePlacement* placement,
+    const Win32AotSegmentTable* segment_table,
     Win32AotDynamicAppendResult* result);
+
+// Task 264 Phase 3a: re-apply the guard selector and folded base to every carried
+// segment-override site, activating any that were left as boundaries (static
+// image) and refreshing any whose segment was reloaded. Flips the cache to
+// writable, patches, restores execute protection, and flushes. Returns the
+// number of sites (re)activated.
+std::uint32_t ReResolveWin32AotSegmentOverrides(
+    Win32AotCodeCachePlacement* placement,
+    const Win32AotSegmentTable* segment_table);
 bool PatchWin32AotIndirectInlineCache(
     Win32AotCodeCachePlacement* placement,
     std::uint32_t cache_miss_address,

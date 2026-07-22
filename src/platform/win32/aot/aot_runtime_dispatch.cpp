@@ -322,6 +322,81 @@ void DumpZeroReturnEvidence(const CONTEXT* win32_context,
     }
 }
 
+void BuildWin32AotSegmentTable(ThreadContext* context,
+                               Win32AotSegmentTable* table)
+{
+    if (context == nullptr || table == nullptr)
+    {
+        return;
+    }
+    *table = Win32AotSegmentTable{};
+    const std::uint16_t selectors[6] = {
+        context->guest_es, 0U, context->guest_ss,
+        context->guest_ds, context->guest_fs, context->guest_gs};
+    const std::uint32_t addresses[6] = {
+        static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(&context->guest_es)),
+        0U,
+        static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(&context->guest_ss)),
+        static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(&context->guest_ds)),
+        static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(&context->guest_fs)),
+        static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(&context->guest_gs))};
+    for (std::uint8_t seg = 0; seg < 6U; ++seg)
+    {
+        if (seg == 1U)
+        {
+            continue; // CS has no shadow
+        }
+        table->segments[seg].shadow_address = addresses[seg];
+        table->segments[seg].selector = selectors[seg];
+        std::uint32_t linear = 0;
+        table->segments[seg].base =
+            repiu::runtime::TranslateSelectorOffset(
+                context->selector_table, selectors[seg], 0U, 1U, &linear)
+                ? linear
+                : 0U;
+    }
+}
+
+void ReResolveAotSegmentOverrides(ThreadContext* context)
+{
+    if (context == nullptr || context->aot_placement == nullptr ||
+        context->aot_placement->segment_override_sites.empty())
+    {
+        return;
+    }
+    Win32AotSegmentTable table{};
+    BuildWin32AotSegmentTable(context, &table);
+    // Only pay the cache re-protect/flush when a segment selector actually
+    // changed since the last resolution.
+    bool changed = false;
+    for (std::uint8_t seg = 0; seg < 6U; ++seg)
+    {
+        if (table.segments[seg].selector !=
+            context->aot_resolved_segment_selectors[seg])
+        {
+            changed = true;
+            break;
+        }
+    }
+    if (!changed)
+    {
+        return;
+    }
+    if (ReResolveWin32AotSegmentOverrides(context->aot_placement, &table) != 0U)
+    {
+        for (std::uint8_t seg = 0; seg < 6U; ++seg)
+        {
+            context->aot_resolved_segment_selectors[seg] =
+                table.segments[seg].selector;
+        }
+    }
+}
+
 DWORD WINAPI AotTranslationWorkerProc(void* parameter)
 {
     ThreadContext* context = static_cast<ThreadContext*>(parameter);
@@ -374,11 +449,15 @@ DWORD WINAPI AotTranslationWorkerProc(void* parameter)
             const std::uint32_t target = context->aot_translation_target.load(
                 std::memory_order_acquire);
             context->aot_translation_result = Win32AotDynamicAppendResult{};
+            // Task 264 Phase 3a: resolve each shadow segment register so the
+            // translator can fold the base into segment-override accesses.
+            Win32AotSegmentTable segment_table{};
+            BuildWin32AotSegmentTable(context, &segment_table);
             AppendWin32DynamicAotTranslation(
                 context->runtime_base, context->runtime_size, target,
                 context->aot_excluded_guest_ranges,
                 &context->aot_page_write_watch, context->aot_placement,
-                &context->aot_translation_result);
+                &segment_table, &context->aot_translation_result);
             if (context->aot_translation_result.unsafe_failure)
             {
                 context->aot_terminal_failure.store(
@@ -1102,6 +1181,130 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
     return true;
 }
 
+// Task 264 prerequisite probe (instrumentation only, no guest-state change).
+// If the boundary guest instruction is a 32-bit push of a segment register,
+// record the host segment register value alongside the shadow selector so the
+// two can be compared: host==shadow means the guest executes with its own
+// selectors loaded (native push is correct); a mismatch means host-flat (native
+// push would push the host selector, so the translation must read the shadow).
+static void ProbePushSegBoundary(ThreadContext* context,
+                                 const CONTEXT* win32_context,
+                                 const std::uint8_t* bytes,
+                                 std::size_t length)
+{
+    if (context->shared_live_telemetry == nullptr || length == 0)
+    {
+        return;
+    }
+    std::uint32_t host_selector = 0;
+    std::uint32_t shadow_selector = 0;
+    std::uint8_t opcode = bytes[0];
+    switch (opcode)
+    {
+        case 0x06U: // push es
+            host_selector = win32_context->SegEs;
+            shadow_selector = context->guest_es;
+            break;
+        case 0x16U: // push ss
+            host_selector = win32_context->SegSs;
+            shadow_selector = context->guest_ss;
+            break;
+        case 0x1EU: // push ds
+            host_selector = win32_context->SegDs;
+            shadow_selector = context->guest_ds;
+            break;
+        case 0x0FU: // two-byte push fs/gs
+            if (length < 2)
+            {
+                return;
+            }
+            if (bytes[1] == 0xA0U) // push fs
+            {
+                host_selector = win32_context->SegFs;
+                shadow_selector = context->guest_fs;
+                opcode = 0xA0U;
+            }
+            else if (bytes[1] == 0xA8U) // push gs
+            {
+                host_selector = win32_context->SegGs;
+                shadow_selector = context->guest_gs;
+                opcode = 0xA8U;
+            }
+            else
+            {
+                return;
+            }
+            break;
+        default:
+            return;
+    }
+    Win32SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
+    InterlockedIncrement(&telemetry->aot_pushseg_count);
+    InterlockedExchange(&telemetry->aot_pushseg_last_opcode,
+                        static_cast<long>(opcode));
+    InterlockedExchange(&telemetry->aot_pushseg_last_host_sel,
+                        static_cast<long>(host_selector));
+    InterlockedExchange(&telemetry->aot_pushseg_last_shadow_sel,
+                        static_cast<long>(shadow_selector));
+    if ((host_selector & 0xFFFFU) == (shadow_selector & 0xFFFFU))
+    {
+        InterlockedIncrement(&telemetry->aot_pushseg_match_count);
+    }
+    else
+    {
+        InterlockedIncrement(&telemetry->aot_pushseg_mismatch_count);
+    }
+}
+
+// Task 264 Phase 3 characterization probe (instrumentation only). If the
+// boundary guest instruction carries a segment-override prefix, resolve the
+// overridden segment's shadow selector to a descriptor base so we can judge
+// whether GS/FS/DS/ES memory overrides are flat (base 0, translatable by
+// stripping the prefix) or need a runtime base add.
+static void ProbeSegmentOverrideBoundary(ThreadContext* context,
+                                         const std::uint8_t* bytes,
+                                         std::size_t length)
+{
+    if (context->shared_live_telemetry == nullptr || length == 0)
+    {
+        return;
+    }
+    std::uint16_t selector = 0;
+    const std::uint8_t prefix = bytes[0];
+    switch (prefix)
+    {
+        case 0x65U: selector = context->guest_gs; break; // GS
+        case 0x64U: selector = context->guest_fs; break; // FS
+        case 0x3EU: selector = context->guest_ds; break; // DS
+        case 0x26U: selector = context->guest_es; break; // ES
+        case 0x36U: selector = context->guest_ss; break; // SS
+        default: return; // not a segment-override prefix (CS 0x2E has no shadow)
+    }
+    std::uint32_t base = 0;
+    std::uint32_t linear = 0;
+    if (repiu::runtime::TranslateSelectorOffset(
+            context->selector_table, selector, 0U, 1U, &linear))
+    {
+        base = linear; // linear address for offset 0 == segment base
+    }
+    Win32SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
+    InterlockedIncrement(&telemetry->aot_segovr_count);
+    InterlockedExchange(&telemetry->aot_segovr_last_prefix,
+                        static_cast<long>(prefix));
+    InterlockedExchange(&telemetry->aot_segovr_last_selector,
+                        static_cast<long>(selector));
+    InterlockedExchange(&telemetry->aot_segovr_last_base,
+                        static_cast<long>(base));
+    if (base == 0U)
+    {
+        InterlockedIncrement(&telemetry->aot_segovr_flat_count);
+    }
+    else
+    {
+        InterlockedIncrement(&telemetry->aot_segovr_nonflat_count);
+    }
+}
+
 bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
                       CONTEXT* win32_context,
                       ThreadContext* context)
@@ -1204,6 +1407,13 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
                 RecordAotOtherBoundarySample(context, guest_address,
                                              boundary_bytes, readable);
             }
+            // Task 264 prerequisite probe (instrumentation only): at a
+            // push-segment boundary, compare the host segment register against
+            // the shadow selector to settle whether the guest runs with its own
+            // selectors loaded or host-flat.
+            ProbePushSegBoundary(context, win32_context, boundary_bytes,
+                                 readable);
+            ProbeSegmentOverrideBoundary(context, boundary_bytes, readable);
         }
         if (is_tracked_trace_address)
         {

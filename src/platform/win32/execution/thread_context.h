@@ -173,6 +173,11 @@ struct ThreadContext
     std::atomic<std::uint32_t> aot_residency_instruction_total{0};
     std::atomic<std::uint32_t> aot_residency_sample_count{0};
     std::atomic<std::uint32_t> aot_residency_max{0};
+    // Task 264 Phase 3a: the segment selectors last folded into segment-override
+    // sites, so re-resolution runs only when a segment register actually changes
+    // (0xFFFF forces the first resolution). Indexed by segment register.
+    std::uint16_t aot_resolved_segment_selectors[6] = {
+        0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU};
     std::atomic<std::uint32_t> aot_reentry_count{0};
     std::atomic<std::uint32_t> aot_legacy_fallback_count{0};
     std::atomic<std::uint32_t> aot_last_fallback_address{0};

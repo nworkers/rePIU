@@ -306,7 +306,7 @@ bool RunCoherenceProbe()
     const bool appended =
         repiu::platform::win32::AppendWin32DynamicAotTranslation(
             guest_address, 2U * kPageSize, guest_address, {}, &watches,
-            &placement, &generation) && generation.appended;
+            &placement, nullptr, &generation) && generation.appended;
     std::uint32_t new_cache = 0U;
     const std::uint8_t expected[] = {
         0xB8U, 0x78U, 0x56U, 0x34U, 0x13U};
@@ -407,7 +407,7 @@ bool RunCoherenceProbe()
         repiu::platform::win32::AppendWin32DynamicAotTranslation(
             guest_address, 2U * kPageSize, guest_address,
             {{excluded_target, 8U}}, &watches, &placement,
-            &excluded_generation) && excluded_generation.appended;
+            nullptr, &excluded_generation) && excluded_generation.appended;
     const bool excluded_unwatched = excluded_appended &&
         !repiu::platform::win32::IsWin32AotGuestPageWriteWatched(
             watches, excluded_target) &&

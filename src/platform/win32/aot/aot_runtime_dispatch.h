@@ -13,6 +13,8 @@
 namespace repiu::platform::win32
 {
 
+struct Win32AotSegmentTable;
+
 void BumpAotBoundaryCount(ThreadContext* context);
 
 // Increment the per-reason boundary counter matching `reason` (Task 262),
@@ -52,6 +54,16 @@ void DumpZeroReturnEvidence(const CONTEXT* win32_context,
                             std::uint32_t code_center);
 
 DWORD WINAPI AotTranslationWorkerProc(void* parameter);
+
+// Task 264 Phase 3a: build the per-segment resolution table (shadow addresses,
+// current selectors, descriptor bases) from the live guest context.
+void BuildWin32AotSegmentTable(ThreadContext* context,
+                               Win32AotSegmentTable* table);
+
+// Re-apply the guard selectors and folded bases to every segment-override site,
+// using the current segment state. Called after the guest reloads a segment
+// register so static-image sites (baked before configuration) become active.
+void ReResolveAotSegmentOverrides(ThreadContext* context);
 
 bool RequestAotDynamicTranslation(ThreadContext* context,
                                   std::uint32_t target,

@@ -79,6 +79,30 @@ struct AotJumpTableSite
     std::vector<std::uint32_t> guest_targets;
 };
 
+// A natively-translated segment-override memory access (Task 264 Phase 3a). The
+// emitted sequence is: pushfd; cmp word [shadow selector], S; je do_access;
+// popfd; int3 (fallback single-steps the original); do_access: popfd; <access
+// with the prefix stripped and the displacement widened to disp32>. The Win32
+// translation path fills selector S, the shadow address, and folds the segment
+// base into the displacement, all from the live selector table. Offsets are
+// image-relative until placement.
+struct AotSegmentOverrideSite
+{
+    std::uint32_t guest_source = 0;
+    std::uint32_t cache_offset = 0;
+    // disp32 field of the emitted access; the segment base is added here.
+    std::uint32_t displacement_offset = 0;
+    // abs32 field of the guard's `cmp word [abs], imm16` (the shadow address).
+    std::uint32_t guard_address_offset = 0;
+    // imm16 field of the guard (the translation-time selector value S).
+    std::uint32_t guard_selector_offset = 0;
+    // The displacement before the segment base is folded in, so the base can be
+    // re-applied idempotently when the segment is re-resolved (Task 264).
+    std::int32_t original_displacement = 0;
+    // 0=ES,2=SS,3=DS,4=FS,5=GS.
+    std::uint8_t segment_register = 0xFFU;
+};
+
 struct AotCodeCacheImage
 {
     bool valid = false;
@@ -89,6 +113,7 @@ struct AotCodeCacheImage
     std::vector<AotCodeCacheFixup> fixups;
     std::vector<AotIndirectInlineCacheSite> indirect_inline_cache_sites;
     std::vector<AotJumpTableSite> jump_table_sites;
+    std::vector<AotSegmentOverrideSite> segment_override_sites;
     std::uint32_t resolved_fixup_count = 0;
     std::uint32_t external_fixup_count = 0;
     std::uint32_t unsupported_branch_count = 0;

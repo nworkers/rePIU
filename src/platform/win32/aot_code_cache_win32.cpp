@@ -57,6 +57,45 @@ void ResolveWin32AotJumpTables(const runtime::AotCodeCacheImage& image,
     }
 }
 
+// Task 264 Phase 3a: fold each natively-translated segment-override access's
+// selector and base into the emitted guard and displacement, in place, while the
+// image bytes are still writable. Offsets are image-relative, matching the
+// pointer the caller passes (the image's placed location).
+void ResolveWin32AotSegmentOverrides(
+    const runtime::AotCodeCacheImage& image,
+    std::uint8_t* image_bytes,
+    const Win32AotSegmentTable* segment_table)
+{
+    if (image.segment_override_sites.empty() || image_bytes == nullptr)
+    {
+        return;
+    }
+    for (const runtime::AotSegmentOverrideSite& site :
+         image.segment_override_sites)
+    {
+        const std::uint8_t seg = site.segment_register;
+        if (segment_table == nullptr || seg >= 6U ||
+            segment_table->segments[seg].shadow_address == 0U)
+        {
+            // Cannot resolve: make the sequence a boundary at its start so the
+            // original instruction is single-stepped (current behavior, safe).
+            image_bytes[site.cache_offset] = 0xCCU;
+            continue;
+        }
+        const Win32AotSegmentResolution& resolution =
+            segment_table->segments[seg];
+        std::memcpy(image_bytes + site.guard_address_offset,
+                    &resolution.shadow_address, sizeof(std::uint32_t));
+        std::memcpy(image_bytes + site.guard_selector_offset,
+                    &resolution.selector, sizeof(std::uint16_t));
+        const std::uint32_t displacement =
+            static_cast<std::uint32_t>(site.original_displacement) +
+            resolution.base;
+        std::memcpy(image_bytes + site.displacement_offset, &displacement,
+                    sizeof(displacement));
+    }
+}
+
 }  // namespace
 
 bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
@@ -103,6 +142,10 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
     std::memcpy(memory, image.bytes.data(), image.bytes.size());
     ResolveWin32AotJumpTables(image, static_cast<std::uint8_t*>(memory),
                               static_cast<std::uint32_t>(base));
+    // The static placement has no live segment table, so any segment-override
+    // sites fall back to boundaries (single-step) instead of a faulting guard.
+    ResolveWin32AotSegmentOverrides(image, static_cast<std::uint8_t*>(memory),
+                                    nullptr);
     DWORD old_protection = 0;
     if (VirtualProtect(memory, capacity, PAGE_EXECUTE_READ,
                        &old_protection) == 0)
@@ -123,6 +166,7 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
     placement->fixups = image.fixups;
     placement->indirect_inline_cache_sites =
         image.indirect_inline_cache_sites;
+    placement->segment_override_sites = image.segment_override_sites;
     placement->placed = true;
     placement->message = "AOT code cache placed as Win32 execute-read memory";
     return true;
@@ -136,6 +180,7 @@ bool AppendWin32DynamicAotTranslation(
     const std::vector<runtime::AotExcludedGuestRange>& excluded_ranges,
     Win32AotPageWriteWatchSet* write_watch_set,
     Win32AotCodeCachePlacement* placement,
+    const Win32AotSegmentTable* segment_table,
     Win32AotDynamicAppendResult* result)
 {
     if (placement == nullptr || result == nullptr)
@@ -272,6 +317,9 @@ bool AppendWin32DynamicAotTranslation(
     ResolveWin32AotJumpTables(
         image, static_cast<std::uint8_t*>(cache) + append_offset,
         placement->base_address + append_offset);
+    ResolveWin32AotSegmentOverrides(
+        image, static_cast<std::uint8_t*>(cache) + append_offset,
+        segment_table);
     std::vector<std::uint32_t> relinked_cache_offsets;
     for (std::size_t image_index = 0;
          image_index < image.address_map.size(); ++image_index)
@@ -379,6 +427,14 @@ bool AppendWin32DynamicAotTranslation(
         }
         placement->indirect_inline_cache_sites.push_back(site);
     }
+    for (runtime::AotSegmentOverrideSite site : image.segment_override_sites)
+    {
+        site.cache_offset += append_offset;
+        site.displacement_offset += append_offset;
+        site.guard_address_offset += append_offset;
+        site.guard_selector_offset += append_offset;
+        placement->segment_override_sites.push_back(site);
+    }
     placement->size += static_cast<std::uint32_t>(image.bytes.size());
     result->cache_entry = placement->base_address + append_offset +
                           image.address_map[entry_index].cache_offset;
@@ -389,6 +445,62 @@ bool AppendWin32DynamicAotTranslation(
     result->appended = true;
     result->message = "dynamic AOT translation appended";
     return true;
+#endif
+}
+
+std::uint32_t ReResolveWin32AotSegmentOverrides(
+    Win32AotCodeCachePlacement* placement,
+    const Win32AotSegmentTable* segment_table)
+{
+#if !defined(_WIN32)
+    (void)placement;
+    (void)segment_table;
+    return 0U;
+#else
+    if (placement == nullptr || !placement->placed ||
+        segment_table == nullptr ||
+        placement->segment_override_sites.empty())
+    {
+        return 0U;
+    }
+    void* cache = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(placement->base_address));
+    DWORD old_protection = 0;
+    if (VirtualProtect(cache, placement->capacity, PAGE_READWRITE,
+                       &old_protection) == 0)
+    {
+        return 0U;
+    }
+    auto* bytes = static_cast<std::uint8_t*>(cache);
+    std::uint32_t activated = 0U;
+    for (const runtime::AotSegmentOverrideSite& site :
+         placement->segment_override_sites)
+    {
+        const std::uint8_t seg = site.segment_register;
+        if (seg >= 6U || segment_table->segments[seg].shadow_address == 0U)
+        {
+            continue;
+        }
+        const Win32AotSegmentResolution& resolution =
+            segment_table->segments[seg];
+        // Restore the pushfd the static placement may have replaced with a
+        // boundary int3, then re-apply the guard selector/address and the base.
+        bytes[site.cache_offset] = 0x9CU;
+        std::memcpy(bytes + site.guard_address_offset,
+                    &resolution.shadow_address, sizeof(std::uint32_t));
+        std::memcpy(bytes + site.guard_selector_offset,
+                    &resolution.selector, sizeof(std::uint16_t));
+        const std::uint32_t displacement =
+            static_cast<std::uint32_t>(site.original_displacement) +
+            resolution.base;
+        std::memcpy(bytes + site.displacement_offset, &displacement,
+                    sizeof(displacement));
+        ++activated;
+    }
+    DWORD ignored = 0;
+    VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ, &ignored);
+    FlushInstructionCache(GetCurrentProcess(), cache, placement->size);
+    return activated;
 #endif
 }
 

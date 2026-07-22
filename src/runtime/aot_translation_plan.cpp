@@ -58,14 +58,75 @@ bool ReadDirectTarget(const ZydisDecodedInstruction& instruction,
     return true;
 }
 
+// Task 264 Phase 3a: a segment-override memory access that the emitter may
+// translate natively (guard + base-folded displacement). Returns the overridden
+// segment index (0=ES,2=SS,3=DS,4=FS,5=GS). The emitter re-verifies the exact
+// form and falls back to a boundary for anything it cannot encode, so this stays
+// permissive; it only screens out privileged/CS-override cases up front.
+bool IsTranslatableSegmentOverrideMem(const ZydisDecodedInstruction& instruction,
+                                      const ZydisDecodedOperand* operands,
+                                      std::uint8_t* segment_register)
+{
+    if (operands == nullptr || segment_register == nullptr ||
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_SEGMENT) == 0U ||
+        (instruction.attributes & ZYDIS_ATTRIB_IS_PRIVILEGED) != 0U ||
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_MODRM) == 0U)
+    {
+        return false;
+    }
+    for (std::uint8_t index = 0;
+         index < instruction.operand_count_visible; ++index)
+    {
+        if (operands[index].type != ZYDIS_OPERAND_TYPE_MEMORY)
+        {
+            continue;
+        }
+        switch (operands[index].mem.segment)
+        {
+            case ZYDIS_REGISTER_ES: *segment_register = 0U; return true;
+            case ZYDIS_REGISTER_SS: *segment_register = 2U; return true;
+            case ZYDIS_REGISTER_DS: *segment_register = 3U; return true;
+            case ZYDIS_REGISTER_FS: *segment_register = 4U; return true;
+            case ZYDIS_REGISTER_GS: *segment_register = 5U; return true;
+            default: return false; // CS override or none
+        }
+    }
+    return false;
+}
+
 bool IsHleBoundary(const ZydisDecodedInstruction& instruction,
                    const ZydisDecodedOperand* operands)
 {
+    // A push of a segment register only reads the selector and writes it to the
+    // (flat) stack -- it needs no HLE. The single-step boundary already executes
+    // it natively, pushing the host selector, so translating it (kCopy) is
+    // behavior-identical and removes the exception round-trip (Task 264 Phase 1).
+    // The Task 264 probe confirmed the host segment register is what the
+    // single-step path pushes; matching it exactly avoids any behavior change.
+    if (instruction.mnemonic == ZYDIS_MNEMONIC_PUSH && operands != nullptr)
+    {
+        for (std::uint8_t index = 0;
+             index < instruction.operand_count_visible; ++index)
+        {
+            if (operands[index].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+                ZydisRegisterGetClass(operands[index].reg.value) ==
+                    ZYDIS_REGCLASS_SEGMENT)
+            {
+                return false;
+            }
+        }
+    }
     if ((instruction.attributes &
          (ZYDIS_ATTRIB_IS_PRIVILEGED | ZYDIS_ATTRIB_HAS_SEGMENT)) != 0U)
     {
         return true;
     }
+    // NOTE (Task 264 Phase 2, reverted): translating `mov r32,Sreg` natively
+    // (kCopy) regressed -- the guest stalled at the fatal-breakpoint idiom
+    // 0x030F3438 with no rendering. Unlike `push seg` (proven native/host-value
+    // by probe), the single-step path for a segment-register store returns the
+    // *shadow* selector, so a native store of the host selector (0x2b) diverges.
+    // Segment-register stores therefore stay HLE boundaries.
     if (operands != nullptr)
     {
         for (std::uint8_t index = 0;
@@ -428,6 +489,23 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                         block.instructions.push_back(std::move(record));
                         break;
                     }
+                }
+                std::uint8_t segment_override_register = 0xFFU;
+                if (IsTranslatableSegmentOverrideMem(
+                        instruction, operands, &segment_override_register))
+                {
+                    // Translated natively when the emitter can re-encode it;
+                    // otherwise the emitter falls back to a boundary. Ends the
+                    // block like a boundary so the emitted sequence carries its
+                    // own fallthrough jump (Task 264 Phase 3a).
+                    record.kind = AotInstructionKind::kSegmentOverrideMem;
+                    record.segment_override_register = segment_override_register;
+                    record.fallthrough_target = next;
+                    block.instructions.push_back(std::move(record));
+                    ++plan->hle_boundary_count;
+                    plan->estimated_emitted_bytes += 48U;
+                    pending.push_back(next);
+                    break;
                 }
                 if (IsHleBoundary(instruction, operands))
                 {

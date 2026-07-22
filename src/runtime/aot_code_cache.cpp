@@ -314,6 +314,167 @@ bool EmitReturnInlineCacheSlot(const AotInstructionRecord& instruction,
     return true;
 }
 
+// Task 264 Phase 3a. Translate a segment-override memory access natively:
+// pushfd; cmp word [shadow selector], S; je do_access; (fallback) popfd; int3;
+// do_access: popfd; <access with the segment prefix removed>; jmp fallthrough.
+// The guard falls back to single-stepping the original on a selector mismatch,
+// so the Win32-baked base/selector is always self-corrected. First slice: only
+// forms that already carry a 32-bit displacement (the segment base is folded
+// into it at placement, no ModRM re-encode); every other form returns false so
+// the caller emits a boundary (current behavior). Returns true if emitted.
+bool EmitSegmentOverrideSlot(const AotInstructionRecord& instruction,
+                             AotCodeCacheImage* image)
+{
+    if (image == nullptr || instruction.bytes.empty())
+    {
+        return false;
+    }
+    std::uint8_t segment_prefix = 0;
+    switch (instruction.segment_override_register)
+    {
+        case 0U: segment_prefix = 0x26U; break; // ES
+        case 2U: segment_prefix = 0x36U; break; // SS
+        case 3U: segment_prefix = 0x3EU; break; // DS
+        case 4U: segment_prefix = 0x64U; break; // FS
+        case 5U: segment_prefix = 0x65U; break; // GS
+        default: return false;
+    }
+    ZydisDecoder decoder;
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LEGACY_32,
+                                       ZYDIS_STACK_WIDTH_32)))
+    {
+        return false;
+    }
+    ZydisDecodedInstruction insn{};
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+    if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(
+            &decoder, instruction.bytes.data(), instruction.bytes.size(),
+            &insn, operands)) ||
+        insn.length != instruction.bytes.size())
+    {
+        return false;
+    }
+    // A memory ModRM (mod != 3). `disp.size` is in bits (0, 8, or 32); the disp8
+    // and no-displacement forms are widened to disp32 so the segment base can be
+    // folded into the displacement. rm==101 (disp32, no base) and SIB base==101
+    // report disp.size 32 and are kept as-is.
+    if ((insn.attributes & ZYDIS_ATTRIB_HAS_MODRM) == 0U ||
+        insn.raw.modrm.mod == 3U)
+    {
+        return false;
+    }
+    const std::uint32_t prefix_count = insn.raw.prefix_count;
+    const std::uint32_t modrm_offset = insn.raw.modrm.offset;
+    const std::uint32_t disp_bits = insn.raw.disp.size;
+    if (modrm_offset < prefix_count || modrm_offset >= insn.length ||
+        (disp_bits != 0U && disp_bits != 8U && disp_bits != 32U))
+    {
+        return false;
+    }
+    std::size_t segment_index = prefix_count;
+    for (std::size_t i = 0;
+         i < prefix_count && i < instruction.bytes.size(); ++i)
+    {
+        if (instruction.bytes[i] == segment_prefix)
+        {
+            segment_index = i;
+            break;
+        }
+    }
+    if (segment_index >= prefix_count)
+    {
+        return false; // the segment-override prefix was not located
+    }
+    const bool sib_present = insn.raw.modrm.rm == 4U;
+    const std::uint32_t modrm_sib_end =
+        modrm_offset + 1U + (sib_present ? 1U : 0U);
+    const std::uint32_t disp_bytes = disp_bits / 8U;
+    const std::uint32_t immediate_offset =
+        disp_bits != 0U ? insn.raw.disp.offset + disp_bytes : modrm_sib_end;
+    if (immediate_offset > insn.length)
+    {
+        return false;
+    }
+    std::vector<std::uint8_t> access;
+    access.reserve(instruction.bytes.size() + 4U);
+    for (std::size_t i = 0; i < prefix_count; ++i)
+    {
+        if (i != segment_index)
+        {
+            access.push_back(instruction.bytes[i]); // prefixes minus override
+        }
+    }
+    for (std::uint32_t i = prefix_count; i < modrm_offset; ++i)
+    {
+        access.push_back(instruction.bytes[i]);      // opcode bytes
+    }
+    const std::uint8_t original_modrm = instruction.bytes[modrm_offset];
+    // Keep the ModRM when it already carries a disp32; otherwise force mod=10 so
+    // a disp32 field exists (reg/rm/SIB are preserved).
+    access.push_back(disp_bits == 32U
+                         ? original_modrm
+                         : static_cast<std::uint8_t>(
+                               (original_modrm & 0x3FU) | 0x80U));
+    if (sib_present)
+    {
+        access.push_back(instruction.bytes[modrm_offset + 1U]);
+    }
+    std::int32_t displacement_value = 0;
+    if (disp_bits == 32U)
+    {
+        std::memcpy(&displacement_value,
+                    instruction.bytes.data() + insn.raw.disp.offset,
+                    sizeof(displacement_value));
+    }
+    else if (disp_bits == 8U)
+    {
+        displacement_value = static_cast<std::int32_t>(
+            static_cast<std::int8_t>(
+                instruction.bytes[insn.raw.disp.offset]));
+    }
+    const std::uint32_t displacement_offset_in_access =
+        static_cast<std::uint32_t>(access.size());
+    const auto* displacement_bytes =
+        reinterpret_cast<const std::uint8_t*>(&displacement_value);
+    access.insert(access.end(), displacement_bytes, displacement_bytes + 4U);
+    for (std::size_t i = immediate_offset; i < instruction.bytes.size(); ++i)
+    {
+        access.push_back(instruction.bytes[i]);      // immediate bytes
+    }
+
+    AotSegmentOverrideSite site;
+    site.guest_source = instruction.guest_address;
+    site.cache_offset = static_cast<std::uint32_t>(image->bytes.size());
+    site.segment_register = instruction.segment_override_register;
+    site.original_displacement = displacement_value;
+    image->bytes.push_back(0x9CU);           // pushfd
+    image->bytes.push_back(0x66U);           // cmp word [abs32], imm16
+    image->bytes.push_back(0x81U);
+    image->bytes.push_back(0x3DU);
+    site.guard_address_offset = static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);    // shadow-selector address (patched)
+    site.guard_selector_offset = static_cast<std::uint32_t>(image->bytes.size());
+    image->bytes.push_back(0x00U);           // selector S (patched)
+    image->bytes.push_back(0x00U);
+    image->bytes.push_back(0x74U);           // je do_access (+2)
+    image->bytes.push_back(0x02U);
+    image->bytes.push_back(0x9DU);           // fallback: popfd
+    image->bytes.push_back(0xCCU);           // int3 -> single-step original
+    image->bytes.push_back(0x9DU);           // do_access: popfd
+    site.displacement_offset =
+        static_cast<std::uint32_t>(image->bytes.size()) +
+        displacement_offset_in_access;
+    image->bytes.insert(image->bytes.end(), access.begin(), access.end());
+    AppendRel32(&image->bytes, 0xE9U);       // fallthrough jump
+    image->fixups.push_back({AotFixupKind::kBlockFallthrough,
+                             instruction.guest_address,
+                             instruction.fallthrough_target,
+                             static_cast<std::uint32_t>(image->bytes.size() - 4U),
+                             false});
+    image->segment_override_sites.push_back(site);
+    return true;
+}
+
 }  // namespace
 
 bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
@@ -420,6 +581,15 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                     image->fixups.push_back({AotFixupKind::kHleBoundary,
                                              instruction.guest_address, 0U,
                                              cache_offset, false});
+                    break;
+                case AotInstructionKind::kSegmentOverrideMem:
+                    if (!EmitSegmentOverrideSlot(instruction, image))
+                    {
+                        image->bytes.push_back(0xCCU);
+                        image->fixups.push_back({AotFixupKind::kHleBoundary,
+                                                 instruction.guest_address, 0U,
+                                                 cache_offset, false});
+                    }
                     break;
                 case AotInstructionKind::kIndirectExit:
                     if (!EmitIndirectInlineCacheSlot(instruction, image))
