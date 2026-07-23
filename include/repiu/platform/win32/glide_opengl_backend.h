@@ -3,7 +3,9 @@
 
 #include "repiu/hle/glide_hle.h"
 #include "repiu/platform/win32/glide_opengl_shader.h"
+#include "repiu/runtime/execution_backend.h"
 
+#include <chrono>
 #include <cstdint>
 #include <condition_variable>
 #include <exception>
@@ -44,6 +46,7 @@ public:
     // Guest-thread calls block until PumpHostCommands executes them there.
     void BindHostThread();
     void PumpHostCommands();
+    void SetExecutionBackend(runtime::ExecutionBackend backend);
 
     // `origin` is the GrOriginLocation_t passed to grSstWinOpen:
     // GR_ORIGIN_UPPER_LEFT is 0 and GR_ORIGIN_LOWER_LEFT is 1. It selects the
@@ -104,6 +107,7 @@ public:
 
     bool is_open() const { return window_ != nullptr || dummy_mode_; }
     bool is_dummy() const { return dummy_mode_; }
+    bool exit_requested() const { return exit_requested_; }
     bool is_texture_combine_enabled() const { return texture_combine_enabled_; }
     const std::string& message() const { return message_; }
 
@@ -119,6 +123,9 @@ private:
     void InvokeOnHostThread(std::function<void()> command);
     bool ApplyWindowScale(std::uint32_t scale);
     void ApplyDrawableViewport();
+    std::string BuildWindowTitle(double frames_per_second) const;
+    void ResetFrameRateMeasurement();
+    void RecordPresentedFrame();
 
     std::thread::id host_thread_id_;
     std::mutex host_command_mutex_;
@@ -133,6 +140,11 @@ private:
     std::uint32_t logical_width_ = 0;
     std::uint32_t logical_height_ = 0;
     std::uint32_t window_scale_ = 2U;
+    runtime::ExecutionBackend execution_backend_ =
+        runtime::ExecutionBackend::kLegacy;
+    std::chrono::steady_clock::time_point frame_rate_period_start_;
+    std::uint64_t frame_rate_frame_count_ = 0;
+    bool exit_requested_ = false;
     // True when grSstWinOpen asked for GR_ORIGIN_LOWER_LEFT, i.e. guest y grows
     // upward and the projection matches OpenGL's default orientation.
     bool origin_lower_left_ = false;

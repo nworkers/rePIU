@@ -3,6 +3,7 @@
 
 #include "repiu/platform/win32/runtime_memory_policy.h"
 #include "repiu/runtime/guest_context.h"
+#include "repiu/runtime/execution_backend.h"
 #include "repiu/platform/win32/aot_code_cache_win32.h"
 #include "repiu/hle/dos_file_system.h"
 #include "repiu/exe/dos16m_bound_module.h"
@@ -290,6 +291,7 @@ struct Win32MinimalExecutionAttempt
     bool returned = false;
     bool exception_caught = false;
     bool timed_out = false;
+    bool quit_requested = false;
     bool guest_stack_switch_supported = false;
     bool guest_stack_switch_attempted = false;
     std::uint32_t entry_address = 0;
@@ -335,6 +337,8 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t native_fast_path_cancel_count = 0;
     std::uint32_t native_fast_path_last_entry = 0;
     std::uint32_t native_fast_path_last_return = 0;
+    runtime::ExecutionBackend execution_backend =
+        runtime::ExecutionBackend::kLegacy;
     bool aot_backend_active = false;
     std::uint32_t aot_cache_entry_count = 0;
     std::uint32_t aot_boundary_count = 0;
@@ -360,6 +364,11 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t aot_dynamic_attempt_count = 0;
     std::uint32_t aot_dynamic_success_count = 0;
     std::uint32_t aot_dynamic_added_bytes = 0;
+    std::uint32_t aot_dbt_hle_reentry_attempt_count = 0;
+    std::uint32_t aot_dbt_hle_reentry_success_count = 0;
+    std::uint32_t aot_dbt_return_attempt_count = 0;
+    std::uint32_t aot_dbt_return_success_count = 0;
+    std::uint32_t aot_dbt_return_fallback_count = 0;
     std::uint32_t aot_indirect_dispatch_count = 0;
     std::uint32_t aot_inline_cache_patch_attempt_count = 0;
     std::uint32_t aot_inline_cache_patch_success_count = 0;
@@ -737,7 +746,7 @@ bool AttemptWin32GuestStackAotExecution(
     const exe::Dos16mBoundModule* linexe_module,
     const std::vector<exe::LeResidentName>* glide_exports,
     const std::filesystem::path* cd_chd_path,
-    bool enable_dynamic_translation,
+    runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt);
 

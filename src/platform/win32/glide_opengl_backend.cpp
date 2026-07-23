@@ -8,10 +8,13 @@
 #endif
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <iomanip>
 #include <limits>
+#include <locale>
 #include <sstream>
 #include <vector>
 
@@ -30,6 +33,12 @@ GlideOpenGlBackend::~GlideOpenGlBackend()
 void GlideOpenGlBackend::BindHostThread()
 {
     host_thread_id_ = std::this_thread::get_id();
+}
+
+void GlideOpenGlBackend::SetExecutionBackend(
+    runtime::ExecutionBackend backend)
+{
+    execution_backend_ = backend;
 }
 
 bool GlideOpenGlBackend::IsHostThread() const
@@ -157,6 +166,59 @@ void GlideOpenGlBackend::ApplyDrawableViewport()
 #endif
 }
 
+std::string GlideOpenGlBackend::BuildWindowTitle(
+    double frames_per_second) const
+{
+    std::ostringstream stream;
+    stream.imbue(std::locale::classic());
+    stream << "rePIU v" REPIU_VERSION " - Build " __DATE__
+           << " - Glide 2 OpenGL ["
+           << runtime::ExecutionBackendName(execution_backend_)
+           << "] - FPS : " << std::fixed << std::setprecision(1)
+           << frames_per_second;
+    return stream.str();
+}
+
+void GlideOpenGlBackend::ResetFrameRateMeasurement()
+{
+    frame_rate_period_start_ = {};
+    frame_rate_frame_count_ = 0;
+}
+
+void GlideOpenGlBackend::RecordPresentedFrame()
+{
+#if defined(_WIN32)
+    const auto now = std::chrono::steady_clock::now();
+    if (frame_rate_frame_count_ == 0)
+    {
+        frame_rate_period_start_ = now;
+        frame_rate_frame_count_ = 1;
+        return;
+    }
+
+    ++frame_rate_frame_count_;
+    const double elapsed_seconds =
+        std::chrono::duration<double>(now - frame_rate_period_start_).count();
+    if (elapsed_seconds < 1.0)
+    {
+        return;
+    }
+
+    const double frames_per_second =
+        static_cast<double>(frame_rate_frame_count_ - 1) / elapsed_seconds;
+    const std::string window_title = BuildWindowTitle(frames_per_second);
+    if (!SDL_SetWindowTitle(static_cast<SDL_Window*>(window_),
+                            window_title.c_str()))
+    {
+        fprintf(stderr,
+                "[repiu-live-debug] SDL3 window title update failed: %s\n",
+                SDL_GetError());
+    }
+    frame_rate_period_start_ = now;
+    frame_rate_frame_count_ = 1;
+#endif
+}
+
 bool GlideOpenGlBackend::OpenWindowed(
     std::uint32_t logical_width,
     std::uint32_t logical_height,
@@ -176,6 +238,7 @@ bool GlideOpenGlBackend::OpenWindowed(
         return result;
     }
     Close();
+    exit_requested_ = false;
     dummy_mode_ = false;
     origin_lower_left_ = origin == repiu::hle::kGlideOriginLowerLeft;
 #if !defined(_WIN32)
@@ -217,9 +280,7 @@ bool GlideOpenGlBackend::OpenWindowed(
     SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE,
                         auxiliary_buffer_count != 0U ? 24 : 0);
-    const std::string window_title =
-        "rePIU v" REPIU_VERSION " - Build " __DATE__
-        " - Glide 2 OpenGL";
+    const std::string window_title = BuildWindowTitle(0.0);
     SDL_Window* window = SDL_CreateWindow(
         window_title.c_str(),
         window_width,
@@ -306,6 +367,7 @@ bool GlideOpenGlBackend::OpenWindowed(
     glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     SDL_GL_SwapWindow(window);
+    ResetFrameRateMeasurement();
     std::ostringstream stream;
     stream << logical_width << "x" << logical_height
            << " logical Glide window opened at " << window_scale_
@@ -333,7 +395,9 @@ void GlideOpenGlBackend::PumpEvents()
         if (event.type == SDL_EVENT_QUIT ||
             event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
         {
-            SDL_HideWindow(static_cast<SDL_Window*>(window_));
+            exit_requested_ = true;
+            message_ = "SDL3 host exit requested";
+            break;
         }
         else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat &&
                  (event.key.mod & SDL_KMOD_ALT) != 0)
@@ -476,6 +540,7 @@ bool GlideOpenGlBackend::BufferSwap(std::uint32_t swap_interval)
             SDL_GetError();
         return false;
     }
+    RecordPresentedFrame();
     message_ = "Glide buffer swapped";
     return true;
 #endif
@@ -1295,6 +1360,7 @@ void GlideOpenGlBackend::Close()
         logical_width_ = 0;
         logical_height_ = 0;
         window_scale_ = 2U;
+        ResetFrameRateMeasurement();
         return;
     }
     try
@@ -1341,6 +1407,7 @@ void GlideOpenGlBackend::Close()
     logical_width_ = 0;
     logical_height_ = 0;
     window_scale_ = 2U;
+    ResetFrameRateMeasurement();
     origin_lower_left_ = false;
     textures_.clear();
     current_texture_ = nullptr;

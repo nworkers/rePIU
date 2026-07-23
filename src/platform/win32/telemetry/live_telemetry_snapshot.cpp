@@ -199,6 +199,17 @@ DWORD PollThreadUntilExit(HANDLE thread,
         {
             host_context->glide_backend.PumpHostCommands();
             host_context->glide_backend.PumpEvents();
+            if (host_context->glide_backend.exit_requested())
+            {
+                if (progress_context != nullptr)
+                {
+                    WriteLiveTelemetrySnapshot(
+                        *progress_context,
+                        GetTickCount() - start_tick,
+                        iteration + 1);
+                }
+                return kWin32HostExitRequested;
+            }
         }
         if (progress_context != nullptr)
         {
@@ -495,6 +506,7 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.native_fast_path.last_entry;
     attempt->native_fast_path_last_return =
         context.native_fast_path.last_return;
+    attempt->execution_backend = context.execution_backend;
     attempt->aot_backend_active = context.aot_placement != nullptr;
     attempt->aot_cache_entry_count = context.aot_cache_entry_count.load(
         std::memory_order_relaxed);
@@ -555,6 +567,18 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.aot_dynamic_success_count.load(std::memory_order_relaxed);
     attempt->aot_dynamic_added_bytes =
         context.aot_dynamic_added_bytes.load(std::memory_order_relaxed);
+    attempt->aot_dbt_hle_reentry_attempt_count =
+        context.aot_dbt_hle_reentry_attempt_count.load(
+            std::memory_order_relaxed);
+    attempt->aot_dbt_hle_reentry_success_count =
+        context.aot_dbt_hle_reentry_success_count.load(
+            std::memory_order_relaxed);
+    attempt->aot_dbt_return_attempt_count =
+        context.aot_dbt_return_attempt_count.load(std::memory_order_relaxed);
+    attempt->aot_dbt_return_success_count =
+        context.aot_dbt_return_success_count.load(std::memory_order_relaxed);
+    attempt->aot_dbt_return_fallback_count =
+        context.aot_dbt_return_fallback_count.load(std::memory_order_relaxed);
     attempt->aot_indirect_dispatch_count =
         context.aot_indirect_dispatch_count.load(std::memory_order_relaxed);
     attempt->aot_inline_cache_patch_attempt_count =

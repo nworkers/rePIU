@@ -174,7 +174,9 @@ Planned major modules:
 
 창 배율 또는 일반 resize가 발생하면 drawable pixel 크기로 viewport와 full-window scissor를 갱신합니다. 확대된 framebuffer의 LFB readback은 drawable 전체를 읽은 뒤 논리 해상도로 최근접 축소하여 원본 게스트의 LFB 크기와 row 순서를 보존합니다.
 
-SDL 창 제목은 루트 `VERSION`에서 CMake가 검증·주입한 `REPIU_VERSION`과 backend 컴파일 날짜 `__DATE__`를 조합합니다. `VERSION` 파일은 configure dependency이므로 변경 시 build system이 자동 재구성됩니다.
+SDL 창 제목은 루트 `VERSION`에서 CMake가 검증·주입한 `REPIU_VERSION`, backend 컴파일 날짜 `__DATE__`, 현재 `ExecutionBackend` 이름, 실측 FPS를 조합합니다. 실행 orchestration이 플랫폼 공용 backend enum을 `GlideOpenGlBackend`에 전달하며, backend는 성공한 guest buffer swap을 단조 시간 기준 약 1초 구간으로 집계합니다. 제목 생성과 갱신은 모두 SDL window를 소유한 실행기 메인 스레드에서 수행됩니다. `VERSION` 파일은 configure dependency이므로 변경 시 build system이 자동 재구성됩니다.
+
+`SDL_EVENT_QUIT`과 `SDL_EVENT_WINDOW_CLOSE_REQUESTED`는 모두 host 종료 요청으로 기록됩니다. 실행기 polling loop가 요청을 감지하면 timeout과 동일한 context-recovery 절차로 guest worker를 먼저 멈추고, main thread에서 SDL/OpenGL과 translation worker를 정리합니다. event handler는 직접 process exit이나 resource 파괴를 수행하지 않습니다.
 
 ```mermaid
 flowchart LR
@@ -191,7 +193,9 @@ flowchart LR
 
 Window-scale and ordinary resize events update the viewport and full-window scissor to the drawable pixel size. LFB readback samples the complete enlarged framebuffer and nearest-neighbor downsamples it to the logical dimensions, preserving the original guest-visible LFB size and row ordering.
 
-The SDL window title combines the CMake-validated `REPIU_VERSION` from the root `VERSION` file with the backend compilation date from `__DATE__`. `VERSION` is a configure dependency, so changing it automatically regenerates the build system.
+The SDL window title combines the CMake-validated `REPIU_VERSION` from the root `VERSION` file, the backend compilation date from `__DATE__`, the active `ExecutionBackend` name, and measured FPS. Execution orchestration passes the platform-neutral backend enum to `GlideOpenGlBackend`, which measures successful guest buffer swaps over roughly one-second monotonic-time periods. Title creation and updates both run on the executor main thread that owns the SDL window. `VERSION` is a configure dependency, so changing it automatically regenerates the build system.
+
+Both `SDL_EVENT_QUIT` and `SDL_EVENT_WINDOW_CLOSE_REQUESTED` record a host exit request. The executor polling loop detects the request, stops the guest worker through the same context-recovery procedure used by timeout teardown, and then cleans up SDL/OpenGL and the translation worker on the main thread. The event handler never exits the process or destroys resources directly.
 
 Glide gate live telemetry version 5 publishes ordinal, ESP, EBX/ECX/EDX, and eight stack dwords. This diagnostic boundary preserves caller evidence when an unimplemented gate terminates the child. Screen width/height return integer values in EAX as proven by the original caller; documented API type assumptions never override binary call-site evidence.
 
@@ -476,6 +480,112 @@ native execution, the AOT VEH resolves near indirect `FF /2` calls, `FF /4`
 jumps, and `C3/C2` returns. Calls push guest fallthrough addresses, returns map
 guest or cache targets explicitly, and segment-register operands remain HLE
 boundaries. The dispatcher never scans for a plausible return address.
+
+## AOT-DBT 실행 정책 기반 / AOT-DBT execution-policy foundation
+
+Task 276은 플랫폼 공용 `runtime::ExecutionBackend`에 `legacy`, `aot`,
+`aot-dynamic`, `aot-dbt`를 정의합니다. Win32 host, 실행 trampoline과 thread
+context가 같은 정책 값을 전달하므로 backend 문자열, 정적 cache 사용, 동적 append,
+DBT 전용 dispatch 기능을 한 곳에서 판정합니다. `aot-dbt`는 별도 실행기나 코드
+복제가 아니라 기존 AOT planner/emitter/cache/worker/SMC/HLE를 공유하는 정책입니다.
+
+첫 DBT increment는 cache sentinel의 HLE 명령이 완전히 emulate되어 EIP가 전진한 뒤,
+기존 cache entry로 즉시 복귀할 수 있으면 다음 원본 명령의 TF single-step을 생략합니다.
+Zydis preflight가 첫 control transfer 전의 등록된 HLE boundary, decode/read 실패와
+64명령 상한을 거부합니다. 방금 처리한 명령이 segment register를 쓴 경우에도 selector
+변경 뒤의 HLE 의미를 보존하기 위해 기존 TF bridge를 유지합니다. cache miss,
+quarantine과 모든 검증 실패는 `aot-dynamic`과 같은 원본 single-step fallback으로
+fail-closed합니다.
+
+```mermaid
+flowchart LR
+    H["AOT HLE boundary handled"] --> P{"aot-dbt policy"}
+    P -->|"no"| TF["existing TF bridge"]
+    P -->|"yes"| S{"segment write / span preflight"}
+    S -->|"unsafe"| TF
+    S -->|"safe"| C{"existing cache entry"}
+    C -->|"hit"| R["cache re-entry, TF off"]
+    C -->|"miss"| TF
+```
+
+Task 276의 30초 graceful 관측에서는 즉시 복귀 `5,670/2,335`
+시도/성공, fatal 0, DBT legacy fallback 0을 기록했습니다. 성공마다 TF 명령 하나를
+제거하므로 같은 실행 내부 proxy는 약 1.8% 절감입니다. 초기화 시점 차이가 있는
+단일 A/B의 원시 누적값은 wall-clock 향상으로 사용하지 않으며, 완전한 DBT의
+return/indirect/cache-miss host dispatcher는 후속 범위입니다.
+
+Task 276 defines `legacy`, `aot`, `aot-dynamic`, and `aot-dbt` in the
+platform-neutral `runtime::ExecutionBackend`. The Win32 host, trampoline, and
+thread context carry the same policy value, while `aot-dbt` shares the existing
+planner, emitter, cache, worker, SMC coherency, and HLE implementation rather than
+forking an executor.
+
+The first DBT increment skips the next TF instruction only when a fully emulated
+HLE boundary can re-enter an existing cache entry safely. Zydis preflight rejects
+a registered HLE boundary before the first control transfer, decode/read failure,
+or the 64-instruction cap. A just-emulated segment-register write also retains the
+TF bridge. Cache misses, quarantine, and all validation failures fail closed to
+the established original-code single-step path. A 30-second graceful observation
+recorded 5,670/2,335 attempts/successes, zero fatal state, and zero DBT legacy
+fallback; one skipped TF instruction per success is about 1.8% within-run proxy
+reduction. Wall-clock improvement remains unconfirmed, and exception-free
+return/indirect/cache-miss dispatch remains follow-up work.
+
+### AOT-DBT return miss host dispatch
+
+Task 277은 `aot-dbt` return inline-cache miss tail만 `INT3` 대신 Win32 x86
+host-stack thunk로 연결합니다. 플랫폼 공용 emitter는 guest source, miss 주소와
+success/fallback continuation의 image-relative metadata를 만들고, Win32 placement와
+dynamic append가 RW 구간에서 cache 절대 주소와 host thunk `rel32`를 해결합니다.
+다른 backend는 기존 `popfd; INT3` layout을 그대로 사용합니다.
+
+thunk는 `pushfd`/`pushad`로 guest 상태를 저장하고 entry trampoline이 보존한 host
+ESP와 TEB stack bounds로 전환한 뒤 기존 `HandleAotReturnTransfer`를 호출합니다.
+성공 continuation은 `ret imm16`으로 원본 `C3`/`C2` stack pop과 cache target 이동을
+동시에 재현합니다. 검증·해석 실패는 `LEA ESP`로 DBT metadata만 제거하고 같은
+return instruction의 provenance `INT3`로 돌아가므로 기존 VEH dispatcher가 처리합니다.
+
+```mermaid
+flowchart LR
+    R["return inline-cache miss"] --> H["save guest state / host stack"]
+    H --> D{"shared return resolver"}
+    D -->|"success"| C["ret imm16 -> cache target"]
+    D -->|"failure"| F["LEA metadata pop + INT3"]
+    F --> V["existing VEH return dispatcher"]
+```
+
+15초 통제 실행에서 `aot-dbt`는 return host dispatch `5,507/849/4,658`
+시도/성공/fallback, fatal 0, legacy fallback 0을 기록했습니다. 대조
+`aot-dynamic`은 새 카운터 `0/0/0`으로 기존 layout을 유지했습니다. 두 실행의
+격리 EEPROM SHA-256은 원본과 같았습니다.
+
+Task 277 connects only the `aot-dbt` return inline-cache miss tail to a Win32 x86
+host-stack thunk. The platform-neutral emitter records image-relative source,
+miss, and continuation metadata; Win32 placement and dynamic append resolve the
+absolute cache address and host-thunk `rel32` in their existing writable windows.
+Other backends retain the byte-identical `popfd; INT3` tail.
+
+The thunk saves guest registers and flags, switches to the entry trampoline's
+saved host ESP and TEB stack bounds, and invokes the established return handler.
+A successful continuation uses `ret imm16` to reproduce the original `C3`/`C2`
+pop and transfer to the cache target. Any failure removes only DBT metadata with
+`LEA ESP` and reaches the provenance `INT3`, preserving the existing VEH fallback.
+A controlled 15-second run recorded 5,507/849/4,658 attempts/successes/fallbacks,
+zero fatal state, and zero legacy fallback; `aot-dynamic` recorded 0/0/0 and kept
+its existing layout. Isolated EEPROM hashes remained unchanged.
+
+Task 280은 AOT-DBT 후속 순서를 네 단계로 고정합니다. (1) Task 276 HLE 후 기존
+cache 즉시 복귀와 (2) Task 277 RET miss host dispatch는 완료됐습니다. 다음은
+(3) RET fallback 원인의 배타적 계측·분류이며, 그 결과를 입력으로 (4) indirect
+call/jump miss host dispatch를 설계합니다. 상세 완료 조건과 공통 A/B 기준은
+`docs/design/20260724-280-aot-dbt-four-stage-roadmap.md`에서 관리합니다.
+
+Task 280 fixes the AOT-DBT follow-up order into four stages: (1) the completed
+Task 276 immediate existing-cache re-entry after HLE; (2) the completed Task 277
+RET-miss host dispatch; (3) exclusive instrumentation and classification of RET
+fallback causes; and then (4) host dispatch for indirect call/jump misses.
+Detailed completion criteria and controlled A/B rules live in
+`docs/design/20260724-280-aot-dbt-four-stage-roadmap.md`.
 
 ## AOT worker inline cache
 

@@ -780,12 +780,15 @@ bool ResolveAotTransferTarget(ThreadContext* context,
         HasWin32AotRetiredGuestAddress(*context->aot_placement, target);
     std::uint32_t dynamic_cache_entry = 0;
     std::uint32_t dynamic_added_bytes = 0;
-    if (context->aot_dynamic_translation_enabled)
+    const bool dynamic_translation =
+        runtime::ExecutionBackendUsesDynamicTranslation(
+            context->execution_backend);
+    if (dynamic_translation)
     {
         context->aot_dynamic_attempt_count.fetch_add(
             1, std::memory_order_relaxed);
     }
-    if ((!context->aot_dynamic_translation_enabled && !retired_target) ||
+    if ((!dynamic_translation && !retired_target) ||
         !RequestAotDynamicTranslation(
             context, target, &dynamic_cache_entry, &dynamic_added_bytes))
     {

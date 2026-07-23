@@ -40,18 +40,16 @@ namespace
 
 constexpr std::uint32_t kDefaultExecutionTimeoutMilliseconds = 1000U;
 
-bool UseAotExecutionBackend()
+bool ReadExecutionBackend(repiu::runtime::ExecutionBackend* backend)
 {
+    if (backend == nullptr)
+    {
+        return false;
+    }
+    *backend = repiu::runtime::ExecutionBackend::kLegacy;
     const char* value = std::getenv("REPIU_EXECUTION_BACKEND");
-    return value != nullptr &&
-        (std::string_view(value) == "aot" ||
-         std::string_view(value) == "aot-dynamic");
-}
-
-bool UseDynamicAotTranslation()
-{
-    const char* value = std::getenv("REPIU_EXECUTION_BACKEND");
-    return value != nullptr && std::string_view(value) == "aot-dynamic";
+    return value == nullptr || *value == '\0' ||
+        repiu::runtime::ParseExecutionBackend(value, backend);
 }
 
 bool ReadAotIndirectInlineCacheEntryCount(std::uint32_t* entry_count)
@@ -775,6 +773,8 @@ void PrintExecutionAttempt(
                 attempt.fatal_halt_reached ? "true" : "false");
     logger.info("Win32 minimal execution timed out: {}",
                 attempt.timed_out ? "true" : "false");
+    logger.info("Win32 SDL exit requested: {}",
+                attempt.quit_requested ? "true" : "false");
     if (attempt.timed_out)
     {
         const auto& snapshot = attempt.timeout_snapshot;
@@ -826,12 +826,20 @@ void PrintExecutionAttempt(
                 Hex32(attempt.native_fast_path_last_entry),
                 Hex32(attempt.native_fast_path_last_return));
     logger.info("Win32 execution backend: {}",
-                attempt.aot_backend_active ? "aot" : "legacy");
+                repiu::runtime::ExecutionBackendName(
+                    attempt.execution_backend));
     logger.info("Win32 AOT entry/boundary/reentry/fallback: {}/{}/{}/{}",
                 attempt.aot_cache_entry_count,
                 attempt.aot_boundary_count,
                 attempt.aot_reentry_count,
                 attempt.aot_legacy_fallback_count);
+    logger.info("Win32 AOT-DBT HLE reentry attempt/success: {}/{}",
+                attempt.aot_dbt_hle_reentry_attempt_count,
+                attempt.aot_dbt_hle_reentry_success_count);
+    logger.info("Win32 AOT-DBT return attempt/success/fallback: {}/{}/{}",
+                attempt.aot_dbt_return_attempt_count,
+                attempt.aot_dbt_return_success_count,
+                attempt.aot_dbt_return_fallback_count);
     logger.info("Win32 AOT boundary reason ret/indir/direct/cond/other: "
                 "{}/{}/{}/{}/{}",
                 attempt.aot_boundary_return_count,
@@ -2518,9 +2526,22 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    const bool use_aot_backend = UseAotExecutionBackend();
-    const bool use_dynamic_aot = UseDynamicAotTranslation();
+    repiu::runtime::ExecutionBackend execution_backend =
+        repiu::runtime::ExecutionBackend::kLegacy;
+    if (!ReadExecutionBackend(&execution_backend))
+    {
+        logger->error(
+            "REPIU_EXECUTION_BACKEND must be legacy, aot, "
+            "aot-dynamic, or aot-dbt");
+        repiu::platform::win32::ReleaseWin32RuntimeAddressRange(
+            relocated_arena_reservation);
+        return 1;
+    }
+    const bool use_aot_backend =
+        repiu::runtime::ExecutionBackendUsesAot(execution_backend);
     repiu::runtime::AotCodeCacheBuildOptions aot_build_options;
+    aot_build_options.enable_dbt_return_miss_dispatch =
+        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt;
     if (use_aot_backend && !ReadAotIndirectInlineCacheEntryCount(
             &aot_build_options.indirect_inline_cache_entry_count))
     {
@@ -2545,8 +2566,7 @@ int main(int argc, char** argv)
         return 1;
     }
     logger->info("Win32 requested execution backend: {}",
-                 use_dynamic_aot ? "aot-dynamic" :
-                 use_aot_backend ? "aot" : "legacy");
+                 repiu::runtime::ExecutionBackendName(execution_backend));
     if (use_aot_backend)
     {
         logger->info("Win32 AOT indirect inline-cache slots: {}",
@@ -2665,7 +2685,7 @@ int main(int argc, char** argv)
               linexe_runtime_module ? &*linexe_runtime_module : nullptr,
               glide_exports.empty() ? nullptr : &glide_exports,
               cd_chd_path ? &*cd_chd_path : nullptr,
-              use_dynamic_aot,
+              execution_backend,
               execution_timeout_milliseconds,
               &attempt)
         : use_dos_console_hle

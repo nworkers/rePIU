@@ -7,6 +7,7 @@
 
 #include "inline_cache_probe.h"
 #include "native_linear_span_probe.h"
+#include "execution_backend_probe.h"
 
 #include <Zydis.h>
 
@@ -673,6 +674,10 @@ int main(int argc, char** argv)
         }
     }
 #if defined(_WIN32)
+    if (!repiu::tools::RunExecutionBackendProbe())
+    {
+        return 1;
+    }
     repiu::platform::win32::Win32AotCodeCachePlacement placement;
     if (!repiu::platform::win32::PlaceWin32AotCodeCache(cache, &placement) ||
         !placement.placed)

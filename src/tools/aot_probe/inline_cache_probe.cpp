@@ -4,6 +4,7 @@
 #include "repiu/platform/win32/aot_page_coherence_win32.h"
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/aot_translation_plan.h"
+#include "../../platform/win32/aot/aot_dbt_return_dispatch.h"
 
 #include <cstdint>
 #include <cstring>
@@ -44,6 +45,17 @@ runtime::AotInstructionRecord MakeIndirectInstruction(
     instruction.kind = runtime::AotInstructionKind::kIndirectExit;
     instruction.length = 2U;
     instruction.bytes = {0xFFU, modrm};
+    return instruction;
+}
+
+runtime::AotInstructionRecord MakeReturnInstruction(
+    std::uint32_t guest_address)
+{
+    runtime::AotInstructionRecord instruction;
+    instruction.guest_address = guest_address;
+    instruction.kind = runtime::AotInstructionKind::kReturn;
+    instruction.length = 1U;
+    instruction.bytes = {0xC3U};
     return instruction;
 }
 
@@ -227,6 +239,68 @@ bool RunAotIndirectInlineCacheProbe()
                             one_entry_image.indirect_inline_cache_sites[1],
                             false, 1U);
 
+    runtime::AotTranslationPlan return_plan;
+    return_plan.valid = true;
+    return_plan.entry_address = kGuestPage + 0x40U;
+    runtime::AotBasicBlock return_block;
+    return_block.guest_address = return_plan.entry_address;
+    return_block.instructions.push_back(
+        MakeReturnInstruction(return_plan.entry_address));
+    return_plan.blocks.push_back(std::move(return_block));
+    runtime::AotCodeCacheImage legacy_return_image;
+    const bool legacy_return_layout =
+        runtime::BuildAotCodeCacheImage(
+            return_plan, &legacy_return_image) &&
+        legacy_return_image.dbt_return_dispatch_sites.empty() &&
+        legacy_return_image.indirect_inline_cache_sites.size() == 1U &&
+        legacy_return_image.bytes[
+            legacy_return_image.indirect_inline_cache_sites[0]
+                .miss_cache_offset] == 0x9DU &&
+        legacy_return_image.bytes[
+            legacy_return_image.indirect_inline_cache_sites[0]
+                .miss_cache_offset + 1U] == 0xCCU;
+
+    runtime::AotCodeCacheBuildOptions dbt_options;
+    dbt_options.enable_dbt_return_miss_dispatch = true;
+    runtime::AotCodeCacheImage dbt_return_image;
+    const bool dbt_return_layout =
+        runtime::BuildAotCodeCacheImage(
+            return_plan, dbt_options, &dbt_return_image) &&
+        dbt_return_image.dbt_return_dispatch_sites.size() == 1U &&
+        dbt_return_image.indirect_inline_cache_sites.size() == 1U &&
+        dbt_return_image.bytes[
+            dbt_return_image.dbt_return_dispatch_sites[0]
+                .miss_cache_offset] == 0x9DU &&
+        dbt_return_image.bytes[
+            dbt_return_image.dbt_return_dispatch_sites[0]
+                .fallback_cache_offset + 4U] == 0xCCU &&
+        dbt_return_image.bytes[
+            dbt_return_image.dbt_return_dispatch_sites[0]
+                .success_cache_offset] == 0xC2U;
+    platform::win32::Win32AotCodeCachePlacement dbt_placement;
+    const bool dbt_return_placement = dbt_return_layout &&
+        platform::win32::PlaceWin32AotCodeCache(
+            dbt_return_image, &dbt_placement) && dbt_placement.placed &&
+        dbt_placement.dbt_return_dispatch_sites.size() == 1U &&
+        [&dbt_placement]() {
+            const auto* bytes = reinterpret_cast<const std::uint8_t*>(
+                static_cast<std::uintptr_t>(dbt_placement.base_address));
+            const runtime::AotDbtReturnDispatchSite& site =
+                dbt_placement.dbt_return_dispatch_sites[0];
+            const std::uint32_t miss = dbt_placement.base_address +
+                site.miss_cache_offset;
+            const std::uint32_t next = dbt_placement.base_address +
+                site.thunk_displacement_offset + 4U;
+            const std::uint32_t resolved_thunk = next +
+                static_cast<std::uint32_t>(
+                    ReadInt32(bytes, site.thunk_displacement_offset));
+            return ReadUint32(bytes, site.miss_address_immediate_offset) ==
+                       miss &&
+                resolved_thunk == static_cast<std::uint32_t>(
+                    reinterpret_cast<std::uintptr_t>(
+                        platform::win32::GetAotDbtReturnMissThunkAddress()));
+        }();
+
     platform::win32::Win32AotCodeCachePlacement placement;
     const bool placed = call_layout && jump_layout &&
         platform::win32::PlaceWin32AotCodeCache(image, &placement) &&
@@ -276,7 +350,8 @@ bool RunAotIndirectInlineCacheProbe()
         }
     }
 
-    const bool all = call_layout && jump_layout && one_entry_layout && placed &&
+    const bool all = call_layout && jump_layout && one_entry_layout &&
+        legacy_return_layout && dbt_return_layout && dbt_return_placement && placed &&
         call_chain && jump_chain && replacement && retirement;
     std::cout << "inline_cache_call_layout="
               << (call_layout ? "true" : "false")
@@ -284,6 +359,12 @@ bool RunAotIndirectInlineCacheProbe()
               << (jump_layout ? "true" : "false")
               << "\ninline_cache_one_entry_layout="
               << (one_entry_layout ? "true" : "false")
+              << "\ninline_cache_legacy_return_layout="
+              << (legacy_return_layout ? "true" : "false")
+              << "\ninline_cache_dbt_return_layout="
+              << (dbt_return_layout ? "true" : "false")
+              << "\ninline_cache_dbt_return_placement="
+              << (dbt_return_placement ? "true" : "false")
               << "\ninline_cache_call_chain="
               << (call_chain ? "true" : "false")
               << "\ninline_cache_jump_chain="
@@ -295,6 +376,7 @@ bool RunAotIndirectInlineCacheProbe()
               << "\ninline_cache_all=" << (all ? "true" : "false")
               << "\n";
     platform::win32::ReleaseWin32AotCodeCache(&placement);
+    platform::win32::ReleaseWin32AotCodeCache(&dbt_placement);
     return all;
 #endif
 }

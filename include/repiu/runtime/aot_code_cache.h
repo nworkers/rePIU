@@ -16,6 +16,7 @@ struct AotCodeCacheBuildOptions
 {
     std::uint32_t indirect_inline_cache_entry_count =
         kDefaultAotIndirectInlineCacheEntryCount;
+    bool enable_dbt_return_miss_dispatch = false;
 };
 
 enum class AotFixupKind
@@ -74,6 +75,16 @@ struct AotIndirectInlineCacheSite
     bool is_return = false;
 };
 
+struct AotDbtReturnDispatchSite
+{
+    std::uint32_t guest_source = 0;
+    std::uint32_t miss_cache_offset = 0;
+    std::uint32_t miss_address_immediate_offset = 0;
+    std::uint32_t thunk_displacement_offset = 0;
+    std::uint32_t fallback_cache_offset = 0;
+    std::uint32_t success_cache_offset = 0;
+};
+
 // A translated bounded switch: `jmp [reg*4 + disp32]` reading a native
 // pointer table emitted inline. Absolute addresses are resolved after the
 // cache is placed; unresolved entries point at fallback_offset (INT3).
@@ -120,12 +131,14 @@ struct AotCodeCacheImage
     std::vector<AotAddressMapEntry> address_map;
     std::vector<AotCodeCacheFixup> fixups;
     std::vector<AotIndirectInlineCacheSite> indirect_inline_cache_sites;
+    std::vector<AotDbtReturnDispatchSite> dbt_return_dispatch_sites;
     std::vector<AotJumpTableSite> jump_table_sites;
     std::vector<AotSegmentOverrideSite> segment_override_sites;
     // Carried into platform placement so every later dynamic append uses the
     // same indirect call/jump layout as the initial image (Task 274).
     std::uint32_t indirect_inline_cache_entry_count =
         kDefaultAotIndirectInlineCacheEntryCount;
+    bool dbt_return_miss_dispatch_enabled = false;
     std::uint32_t resolved_fixup_count = 0;
     std::uint32_t external_fixup_count = 0;
     std::uint32_t unsupported_branch_count = 0;

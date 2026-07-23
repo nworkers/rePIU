@@ -14,6 +14,8 @@
 namespace repiu::platform::win32
 {
 
+constexpr DWORD kWin32HostExitRequested = WAIT_ABANDONED_0;
+
 struct SharedTelemetryMapping
 {
     HANDLE mapping = nullptr;

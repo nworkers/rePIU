@@ -28,6 +28,15 @@
 namespace repiu::platform::win32
 {
 
+struct ThreadContext;
+
+extern "C" ThreadContext* g_repiu_active_thread_context;
+extern "C" std::uint32_t g_repiu_dbt_host_esp;
+extern "C" std::uint32_t g_repiu_dbt_host_stack_base;
+extern "C" std::uint32_t g_repiu_dbt_host_stack_limit;
+extern "C" std::uint32_t g_repiu_dbt_guest_stack_base;
+extern "C" std::uint32_t g_repiu_dbt_guest_stack_limit;
+
 struct StackSwitchCallState
 {
     std::uint32_t entry_address = 0;
@@ -131,7 +140,8 @@ struct ThreadContext
     Win32AotCodeCachePlacement* aot_placement = nullptr;
     bool aot_reentry_pending = false;
     bool aot_legacy_fallback = false;
-    bool aot_dynamic_translation_enabled = false;
+    runtime::ExecutionBackend execution_backend =
+        runtime::ExecutionBackend::kLegacy;
     HANDLE aot_translation_thread = nullptr;
     HANDLE aot_translation_request_event = nullptr;
     HANDLE aot_translation_complete_event = nullptr;
@@ -139,6 +149,9 @@ struct ThreadContext
     std::atomic<std::uint32_t> aot_translation_target{0};
     std::atomic<std::uint32_t> aot_worker_operation{
         static_cast<std::uint32_t>(AotWorkerOperation::kTranslate)};
+    std::atomic<std::uint32_t> aot_dbt_return_attempt_count{0};
+    std::atomic<std::uint32_t> aot_dbt_return_success_count{0};
+    std::atomic<std::uint32_t> aot_dbt_return_fallback_count{0};
     std::atomic<std::uint32_t> aot_patch_cache_miss_address{0};
     std::atomic<std::uint32_t> aot_patch_guest_target{0};
     std::atomic<std::uint32_t> aot_patch_cache_target{0};
@@ -184,6 +197,8 @@ struct ThreadContext
     std::atomic<std::uint32_t> aot_dynamic_attempt_count{0};
     std::atomic<std::uint32_t> aot_dynamic_success_count{0};
     std::atomic<std::uint32_t> aot_dynamic_added_bytes{0};
+    std::atomic<std::uint32_t> aot_dbt_hle_reentry_attempt_count{0};
+    std::atomic<std::uint32_t> aot_dbt_hle_reentry_success_count{0};
     std::atomic<std::uint32_t> aot_indirect_dispatch_count{0};
     std::atomic<std::uint32_t> aot_inline_cache_patch_attempt_count{0};
     std::atomic<std::uint32_t> aot_inline_cache_patch_success_count{0};

@@ -91,6 +91,8 @@ add_library(repiu_exe
     src/platform/win32/aot_code_cache_win32.cpp
     src/platform/win32/aot_page_coherence_win32.cpp
     src/platform/win32/aot/aot_boundary_reason.cpp
+    src/platform/win32/aot/aot_dbt_dispatch.cpp
+    src/platform/win32/aot/aot_dbt_return_dispatch.cpp
     src/platform/win32/aot/aot_runtime_dispatch.cpp
     src/platform/win32/execution/execution_trampoline.cpp
     src/platform/win32/dos/dos_int21_services.cpp
@@ -115,6 +117,7 @@ add_library(repiu_exe
     src/runtime/aot_code_cache.cpp
     src/runtime/aot_translation_plan.cpp
     src/runtime/dos_low_memory.cpp
+    src/runtime/execution_backend.cpp
     src/runtime/image_address.cpp
     src/runtime/runtime_memory_arena.cpp
     src/runtime/runtime_memory.cpp
@@ -155,6 +158,7 @@ add_executable(repiu_chd_cd_probe
 )
 
 add_executable(repiu_aot_probe
+    src/tools/aot_probe/execution_backend_probe.cpp
     src/tools/aot_probe/inline_cache_probe.cpp
     src/tools/aot_probe/native_linear_span_probe.cpp
     src/tools/aot_probe/main.cpp

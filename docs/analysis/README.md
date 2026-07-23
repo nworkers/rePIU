@@ -50,6 +50,8 @@ flowchart LR
 * [Runtime AOT 동적 변환 / Runtime AOT dynamic translation](runtime-aot-dynamic-translation.md)
 * [AOT 실행 backend 준비 / AOT execution backend preparation](aot-execution-backend.md)
 * [AOT 코드 캐시 생성 분석 / AOT code-cache emission](aot-code-cache-emission.md)
+* [AOT-DBT HLE 후 즉시 복귀 / AOT-DBT immediate post-HLE re-entry](aot-dbt-post-hle-reentry.md)
+* [AOT-DBT return miss host dispatch](aot-dbt-return-miss-dispatch.md)
 
 * [pumpit1 CHD/ISO9660 mount 분석 / pumpit1 CHD/ISO9660 mount](pumpit1-chd-iso9660-mount.md)
 

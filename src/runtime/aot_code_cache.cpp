@@ -263,6 +263,7 @@ bool EmitJumpTableSlot(const AotInstructionRecord& instruction,
 }
 
 bool EmitReturnInlineCacheSlot(const AotInstructionRecord& instruction,
+                               bool enable_dbt_return_miss_dispatch,
                                AotCodeCacheImage* image)
 {
     if (image == nullptr || instruction.bytes.empty() ||
@@ -276,6 +277,10 @@ bool EmitReturnInlineCacheSlot(const AotInstructionRecord& instruction,
     {
         pop_bytes += static_cast<std::uint32_t>(instruction.bytes[1]) |
                      (static_cast<std::uint32_t>(instruction.bytes[2]) << 8U);
+    }
+    if (enable_dbt_return_miss_dispatch && pop_bytes > 0xFFFFU)
+    {
+        return false;
     }
     AotIndirectInlineCacheSite site;
     site.guest_source = instruction.guest_address;
@@ -320,7 +325,35 @@ bool EmitReturnInlineCacheSlot(const AotInstructionRecord& instruction,
         site.entries[0].jump_displacement_offset;
     site.miss_cache_offset = static_cast<std::uint32_t>(image->bytes.size());
     image->bytes.push_back(0x9DU);
-    image->bytes.push_back(0xCCU);
+    if (!enable_dbt_return_miss_dispatch)
+    {
+        image->bytes.push_back(0xCCU);
+    }
+    else
+    {
+        AotDbtReturnDispatchSite dispatch_site;
+        dispatch_site.guest_source = instruction.guest_address;
+        dispatch_site.miss_cache_offset = site.miss_cache_offset;
+        image->bytes.push_back(0x68U);
+        dispatch_site.miss_address_immediate_offset =
+            static_cast<std::uint32_t>(image->bytes.size());
+        AppendImmediate32(&image->bytes, 0U);
+        image->bytes.push_back(0x68U);
+        AppendImmediate32(&image->bytes, instruction.guest_address);
+        AppendRel32(&image->bytes, 0xE9U);
+        dispatch_site.thunk_displacement_offset =
+            static_cast<std::uint32_t>(image->bytes.size() - 4U);
+        dispatch_site.fallback_cache_offset =
+            static_cast<std::uint32_t>(image->bytes.size());
+        image->bytes.insert(image->bytes.end(), {0x8DU, 0x64U, 0x24U, 0x04U});
+        image->bytes.push_back(0xCCU);
+        dispatch_site.success_cache_offset =
+            static_cast<std::uint32_t>(image->bytes.size());
+        image->bytes.push_back(0xC2U);
+        image->bytes.push_back(static_cast<std::uint8_t>(pop_bytes));
+        image->bytes.push_back(static_cast<std::uint8_t>(pop_bytes >> 8U));
+        image->dbt_return_dispatch_sites.push_back(dispatch_site);
+    }
     for (const AotInlineCacheEntry& entry : site.entries)
     {
         if (!PatchRel32(&image->bytes, entry.guard_offset + 1U,
@@ -515,6 +548,8 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
     *image = AotCodeCacheImage{};
     image->indirect_inline_cache_entry_count =
         options.indirect_inline_cache_entry_count;
+    image->dbt_return_miss_dispatch_enabled =
+        options.enable_dbt_return_miss_dispatch;
     const auto started = std::chrono::steady_clock::now();
     std::unordered_map<std::uint32_t, std::uint32_t> guest_to_cache;
 
@@ -544,7 +579,9 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                                         instruction.bytes.end());
                     break;
                 case AotInstructionKind::kReturn:
-                    if (!EmitReturnInlineCacheSlot(instruction, image))
+                    if (!EmitReturnInlineCacheSlot(
+                            instruction,
+                            options.enable_dbt_return_miss_dispatch, image))
                     {
                         image->bytes.push_back(0xCCU);
                         image->fixups.push_back({AotFixupKind::kIndirectExit,

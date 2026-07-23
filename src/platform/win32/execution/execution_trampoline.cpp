@@ -37,6 +37,7 @@
 #include "thread_context.h"
 #include "linexe_glide_boundary.h"
 #include "timer_interrupt_boundary.h"
+#include "aot_dbt_dispatch.h"
 #include "aot_runtime_dispatch.h"
 #include "instruction_emulation.h"
 #include "dpmi_mscdex_services.h"
@@ -50,6 +51,12 @@
 
 namespace repiu::platform::win32
 {
+extern "C" ThreadContext* g_repiu_active_thread_context = nullptr;
+extern "C" std::uint32_t g_repiu_dbt_host_esp = 0;
+extern "C" std::uint32_t g_repiu_dbt_host_stack_base = 0;
+extern "C" std::uint32_t g_repiu_dbt_host_stack_limit = 0;
+extern "C" std::uint32_t g_repiu_dbt_guest_stack_base = 0;
+extern "C" std::uint32_t g_repiu_dbt_guest_stack_limit = 0;
 namespace
 {
 
@@ -77,7 +84,6 @@ bool IsGuestStackSwitchSupported()
 // Guest execution is serialized to one worker per loader process. Keeping the
 // VEH context outside Win32 TLS prevents a guest-modified FS selector from
 // escaping into compiler-generated TLS access during host recovery.
-ThreadContext* g_active_thread_context = nullptr;
 std::uint32_t g_recovery_host_fs = 0;
 std::uint32_t g_recovery_host_ds = 0;
 std::uint32_t g_recovery_host_es = 0;
@@ -378,15 +384,19 @@ CallGuestEntryWithStack(StackSwitchCallState* state)
         mov ebx, dword ptr fs:[4]
         mov [ecx + 52], ebx
         mov g_recovery_host_stack_base, ebx
+        mov g_repiu_dbt_host_stack_base, ebx
         mov ebx, dword ptr fs:[8]
         mov [ecx + 56], ebx
         mov g_recovery_host_stack_limit, ebx
+        mov g_repiu_dbt_host_stack_limit, ebx
 
         // Set guest stack base/limit
         mov ebx, [ecx + 44]
         mov dword ptr fs:[4], ebx
+        mov g_repiu_dbt_guest_stack_base, ebx
         mov ebx, [ecx + 48]
         mov dword ptr fs:[8], ebx
+        mov g_repiu_dbt_guest_stack_limit, ebx
 
         xor ebx, ebx
         mov bx, fs
@@ -404,6 +414,7 @@ CallGuestEntryWithStack(StackSwitchCallState* state)
         mov bx, ss
         mov [ecx + 40], ebx
         mov [ecx + 8], esp
+        mov g_repiu_dbt_host_esp, esp
 
         mov esp, edx
         cmp dword ptr [ecx + 20], 0
@@ -1150,8 +1161,16 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
         }
     }
 
+    const std::uint32_t hle_entry_eip =
+        static_cast<std::uint32_t>(win32_context->Eip);
     if (DispatchGuestHleHandlers(win32_context, context))
     {
+        if (static_cast<std::uint32_t>(win32_context->Eip) != hle_entry_eip &&
+            TryResumeAotAfterHandledHle(
+                win32_context, context, hle_entry_eip))
+        {
+            return true;
+        }
         win32_context->EFlags |= 0x00000100U;
         return true;
     }
@@ -1775,19 +1794,19 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
                 state.guest_stack_base = context->guest_initial_esp;
             }
             context->active_call_state = &state;
-            g_active_thread_context = context;
+            g_repiu_active_thread_context = context;
             context->vectored_handler = AddVectoredExceptionHandler(
                 1, GuestStackVectoredExceptionHandler);
             if (context->vectored_handler == nullptr)
             {
-                g_active_thread_context = nullptr;
+                g_repiu_active_thread_context = nullptr;
                 context->active_call_state = nullptr;
                 return 5;
             }
 
             CallGuestEntryWithStack(&state);
 
-            g_active_thread_context = nullptr;
+            g_repiu_active_thread_context = nullptr;
             context->active_call_state = nullptr;
             context->host_esp = state.host_esp;
             if (context->guest_return_esp == 0)
@@ -1809,12 +1828,12 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
         else
         {
 #if defined(_MSC_VER) && defined(_M_IX86)
-            g_active_thread_context = context;
+            g_repiu_active_thread_context = context;
             context->vectored_handler = AddVectoredExceptionHandler(
                 1, GuestStackVectoredExceptionHandler);
             if (context->vectored_handler == nullptr)
             {
-                g_active_thread_context = nullptr;
+                g_repiu_active_thread_context = nullptr;
                 return 5;
             }
 #endif
@@ -1823,7 +1842,7 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
                 static_cast<std::uintptr_t>(context->entry_address));
             entry();
 #if defined(_MSC_VER) && defined(_M_IX86)
-            g_active_thread_context = nullptr;
+            g_repiu_active_thread_context = nullptr;
             if (context->process_exit)
             {
                 return 0;
@@ -2278,7 +2297,7 @@ void InjectPendingInterrupts(CONTEXT* win32_context, ThreadContext* context)
 // exception_rescue_win32.cpp can forward to it. Declared in that header.
 LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
 {
-    ThreadContext* context = g_active_thread_context;
+    ThreadContext* context = g_repiu_active_thread_context;
     if (context == nullptr ||
         exception_info == nullptr || exception_info->ContextRecord == nullptr)
     {
@@ -2972,7 +2991,7 @@ bool RunWin32ExecutionThread(
     const std::vector<exe::LeResidentName>* glide_exports,
     const std::filesystem::path* cd_chd_path,
     Win32AotCodeCachePlacement* aot_placement,
-    bool enable_dynamic_translation,
+    runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
 {
@@ -3040,7 +3059,8 @@ bool RunWin32ExecutionThread(
     context.enable_dos_hle = enable_dos_hle;
     context.enable_single_step_trace = enable_single_step_trace;
     context.aot_placement = aot_placement;
-    context.aot_dynamic_translation_enabled = enable_dynamic_translation;
+    context.execution_backend = execution_backend;
+    context.glide_backend.SetExecutionBackend(execution_backend);
     char probe_offset_text[32] = {};
     const DWORD probe_offset_length = GetEnvironmentVariableA(
         "REPIU_EXECUTION_PROBE_OFFSET", probe_offset_text,
@@ -3427,10 +3447,15 @@ bool RunWin32ExecutionThread(
         }
     };
 
-    if (wait_result == WAIT_TIMEOUT)
+    const bool host_exit_requested =
+        wait_result == kWin32HostExitRequested;
+    if (wait_result == WAIT_TIMEOUT || host_exit_requested)
     {
-        attempt->timed_out = true;
-        attempt->thread_exit_code = 3;
+        attempt->timed_out = !host_exit_requested;
+        attempt->quit_requested = host_exit_requested;
+        const DWORD interruption_exit_code =
+            host_exit_requested ? 0U : 3U;
+        attempt->thread_exit_code = interruption_exit_code;
 
         bool gracefully_interrupted = false;
         if (SuspendThread(thread) != static_cast<DWORD>(-1))
@@ -3439,29 +3464,19 @@ bool RunWin32ExecutionThread(
             win32_context.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS;
             if (GetThreadContext(thread, &win32_context))
             {
-                attempt->timeout_snapshot.captured = true;
-                attempt->timeout_snapshot.eip = static_cast<std::uint32_t>(win32_context.Eip);
-                attempt->timeout_snapshot.eax = static_cast<std::uint32_t>(win32_context.Eax);
-                attempt->timeout_snapshot.ebx = static_cast<std::uint32_t>(win32_context.Ebx);
-                attempt->timeout_snapshot.ecx = static_cast<std::uint32_t>(win32_context.Ecx);
-                attempt->timeout_snapshot.edx = static_cast<std::uint32_t>(win32_context.Edx);
-                attempt->timeout_snapshot.esi = static_cast<std::uint32_t>(win32_context.Esi);
-                attempt->timeout_snapshot.edi = static_cast<std::uint32_t>(win32_context.Edi);
-                attempt->timeout_snapshot.esp = static_cast<std::uint32_t>(win32_context.Esp);
-                attempt->timeout_snapshot.ebp = static_cast<std::uint32_t>(win32_context.Ebp);
-                attempt->timeout_snapshot.eflags = static_cast<std::uint32_t>(win32_context.EFlags);
-                attempt->timeout_snapshot.cs = static_cast<std::uint16_t>(win32_context.SegCs);
-                attempt->timeout_snapshot.ds = static_cast<std::uint16_t>(win32_context.SegDs);
-                attempt->timeout_snapshot.es = static_cast<std::uint16_t>(win32_context.SegEs);
-                attempt->timeout_snapshot.ss = static_cast<std::uint16_t>(win32_context.SegSs);
-                attempt->timeout_snapshot.fs = static_cast<std::uint16_t>(win32_context.SegFs);
-                attempt->timeout_snapshot.gs = static_cast<std::uint16_t>(win32_context.SegGs);
+                if (!host_exit_requested)
+                {
+                    CopySnapshotFromContextRecord(
+                        win32_context, &attempt->timeout_snapshot);
+                }
 
                 const std::uint32_t suspended_eip = static_cast<std::uint32_t>(win32_context.Eip);
                 if (IsGuestInstructionPointer(&context, suspended_eip) ||
                     IsAotCacheAddress(&context, suspended_eip))
                 {
-                    context.hle_message = "timeout reached during guest execution; hijacked thread for clean teardown";
+                    context.hle_message = host_exit_requested
+                        ? "SDL exit requested; hijacked guest thread for clean teardown"
+                        : "timeout reached during guest execution; hijacked thread for clean teardown";
                     RecoverToHost(&win32_context, &context);
                     SetThreadContext(thread, &win32_context);
                     gracefully_interrupted = true;
@@ -3487,7 +3502,7 @@ bool RunWin32ExecutionThread(
 
         if (!gracefully_interrupted && api.terminate_thread != nullptr)
         {
-            api.terminate_thread(thread, 3);
+            api.terminate_thread(thread, interruption_exit_code);
             WaitForSingleObject(thread, 5000U);
         }
 
@@ -3498,7 +3513,9 @@ bool RunWin32ExecutionThread(
         CopyThreadObservationToAttempt(context, attempt);
         attempt->valid = true;
         attempt->message = context.hle_message.empty()
-            ? "minimal execution attempt timed out"
+            ? (host_exit_requested
+                ? "minimal execution stopped by SDL exit request"
+                : "minimal execution attempt timed out")
             : context.hle_message;
         api.close_handle(thread);
         return true;
@@ -3620,7 +3637,7 @@ bool AttemptWin32MinimalExecution(
         nullptr,
         nullptr,
         nullptr,
-        false,
+        runtime::ExecutionBackend::kLegacy,
         timeout_milliseconds,
         attempt);
 }
@@ -3660,7 +3677,7 @@ bool AttemptWin32GuestStackExecution(
         nullptr,
         nullptr,
         nullptr,
-        false,
+        runtime::ExecutionBackend::kLegacy,
         timeout_milliseconds,
         attempt);
 }
@@ -3704,7 +3721,7 @@ bool AttemptWin32GuestStackTrapExecution(
         glide_exports,
         cd_chd_path,
         nullptr,
-        false,
+        runtime::ExecutionBackend::kLegacy,
         timeout_milliseconds,
         attempt);
 }
@@ -3745,7 +3762,7 @@ bool AttemptWin32GuestStackHleExecution(
         nullptr,
         nullptr,
         nullptr,
-        false,
+        runtime::ExecutionBackend::kLegacy,
         timeout_milliseconds,
         attempt);
 }
@@ -3758,7 +3775,7 @@ bool AttemptWin32GuestStackAotExecution(
     const exe::Dos16mBoundModule* linexe_module,
     const std::vector<exe::LeResidentName>* glide_exports,
     const std::filesystem::path* cd_chd_path,
-    bool enable_dynamic_translation,
+    runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
 {
@@ -3777,7 +3794,7 @@ bool AttemptWin32GuestStackAotExecution(
         placement, stack_plan.entry_eip, stack_plan.initial_esp,
         true, true, true, true, false, false, &dos_file_system,
         linexe_module, glide_exports, cd_chd_path, &aot_placement,
-        enable_dynamic_translation,
+        execution_backend,
         timeout_milliseconds, attempt);
 }
 
