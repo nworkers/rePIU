@@ -159,6 +159,16 @@ churn(Task 265의 현재 최대 비용)이 원천적으로 사라진다.**
   민감 명령까지의 직선 구간)으로 확대.
 - **Phase 5:** 폴백·이탈 경로 정리, 인접 리전 체이닝.
 
+Task 275에서 Phase 4의 안전한 부분집합을 opt-in으로 구현했습니다. 일반 EIP에서 다음
+민감/제어 전이/memory-write 경계 전까지의 직선 span만 Dr0으로 실행하며, guest code
+patch와 scan cache는 사용하지 않습니다. 240초 `aot-dynamic` A/B에서 single-step은
+30.2% 감소했지만 texture/swap 개선은 아직 확인되지 않아 기본값은 꺼짐입니다.
+
+Task 275 implements a safe opt-in subset of Phase 4: a Dr0-bounded straight-line span from
+an ordinary EIP to the next sensitive, control-transfer, or memory-write boundary, without
+guest-code patching or a scan cache. A 240-second `aot-dynamic` A/B reduced single steps by
+30.2%, but texture/swap improvement remains unconfirmed, so the default stays off.
+
 ## 8. 리스크 / Risks
 
 - **브레이크포인트 방식:** HW BP는 4개 제한이라 민감 명령 밀도가 높은 리전엔 INT3 patch가

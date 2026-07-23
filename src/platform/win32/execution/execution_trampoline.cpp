@@ -1,5 +1,6 @@
 #include "repiu/platform/win32/execution_trampoline.h"
 #include "native_fast_path.h"
+#include "native_linear_span.h"
 #include "verified_region_analyzer.h"
 #include "native_phase_sampler.h"
 #include "repiu/platform/win32/live_telemetry.h"
@@ -1155,12 +1156,24 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
         return true;
     }
 
-    if (RouteANativeRegionEnabled()
-            ? TryEnterNativeRegion(win32_context, context)
-            : detail::TryEnterNativeFastPath(win32_context,
-                                             &context->native_fast_path,
-                                             context->runtime_base,
-                                             context->runtime_size))
+    bool entered_native = false;
+    if (RouteANativeRegionEnabled())
+    {
+        entered_native = TryEnterNativeRegion(win32_context, context);
+    }
+    else
+    {
+        entered_native = detail::TryEnterNativeFastPath(
+            win32_context,
+            &context->native_fast_path,
+            context->runtime_base,
+            context->runtime_size);
+    }
+    if (!entered_native && NativeLinearSpanEnabled())
+    {
+        entered_native = TryEnterNativeLinearSpan(win32_context, context);
+    }
+    if (entered_native)
     {
         return true;
     }
@@ -2305,6 +2318,23 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
                 reinterpret_cast<DWORD_PTR>(&RecoverHostStackException);
         }
         return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    // Task 275 linear spans use Dr0 only. On the expected boundary, restore
+    // debug state and deliberately continue through the normal #DB chain so the
+    // boundary instruction receives the exact existing single-step/HLE policy.
+    // Any other exception cancels the span and follows the same fail-closed path.
+    if (NativeLinearSpanEnabled() &&
+        context->native_fast_path.linear_span_active)
+    {
+        const DWORD span_code = exception_info->ExceptionRecord != nullptr
+            ? exception_info->ExceptionRecord->ExceptionCode
+            : 0U;
+        const bool reached_boundary =
+            span_code == EXCEPTION_SINGLE_STEP &&
+            (static_cast<std::uint32_t>(win32_context->Dr6) & 0x1U) != 0U &&
+            static_cast<std::uint32_t>(win32_context->Eip) ==
+                context->native_fast_path.linear_span_boundary;
+        LeaveNativeLinearSpan(win32_context, context, reached_boundary);
     }
     // Route A native region (Task 266): while a region runs natively, only its
     // hardware breakpoints trap -- Dr0 at the caller return address and Dr1-Dr3

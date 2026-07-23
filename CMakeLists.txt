@@ -104,6 +104,7 @@ add_library(repiu_exe
     src/platform/win32/io/port_io_emulator.cpp
     src/platform/win32/io/eeprom_93c46.cpp
     src/platform/win32/native_fast_path.cpp
+    src/platform/win32/native_linear_span.cpp
     src/platform/win32/native_phase_sampler.cpp
     src/platform/win32/verified_region_analyzer.cpp
     src/platform/win32/glide_opengl_backend.cpp
@@ -154,6 +155,8 @@ add_executable(repiu_chd_cd_probe
 )
 
 add_executable(repiu_aot_probe
+    src/tools/aot_probe/inline_cache_probe.cpp
+    src/tools/aot_probe/native_linear_span_probe.cpp
     src/tools/aot_probe/main.cpp
 )
 
@@ -187,6 +190,7 @@ target_link_libraries(repiu_aot_probe
 )
 target_include_directories(repiu_aot_probe
     PRIVATE
+        src/platform/win32
         third_party/zydis
 )
 

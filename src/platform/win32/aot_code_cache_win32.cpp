@@ -167,6 +167,8 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
     placement->indirect_inline_cache_sites =
         image.indirect_inline_cache_sites;
     placement->segment_override_sites = image.segment_override_sites;
+    placement->indirect_inline_cache_entry_count =
+        image.indirect_inline_cache_entry_count;
     placement->placed = true;
     placement->message = "AOT code cache placed as Win32 execute-read memory";
     return true;
@@ -221,9 +223,12 @@ bool AppendWin32DynamicAotTranslation(
     snapshot.objects.push_back(std::move(object));
     runtime::AotTranslationPlan plan;
     runtime::AotCodeCacheImage image;
+    runtime::AotCodeCacheBuildOptions build_options;
+    build_options.indirect_inline_cache_entry_count =
+        placement->indirect_inline_cache_entry_count;
     if (!runtime::BuildAotTranslationPlanFromEntry(
             snapshot, guest_entry, excluded_ranges, &plan) ||
-        !runtime::BuildAotCodeCacheImage(plan, &image))
+        !runtime::BuildAotCodeCacheImage(plan, build_options, &image))
     {
         result->message = "failed to translate dynamic guest target";
         return true;
@@ -574,10 +579,10 @@ bool PatchWin32AotIndirectInlineCache(
     void* cache = reinterpret_cast<void*>(
         static_cast<std::uintptr_t>(placement->base_address));
     auto* bytes = static_cast<std::uint8_t*>(cache);
-    // Multi-entry sites (return thunks) pick an entry from the current
-    // cache bytes: refresh the entry already holding this target, else fill
-    // the first empty one, else round-robin replace. Entry i's JNE chains
-    // to entry i+1's compare; the last entry's JNE goes to the miss tail.
+    // Multi-entry indirect/return sites pick an entry from the current cache
+    // bytes: refresh the entry already holding this target, else fill the
+    // first empty one, else round-robin replace. Entry i's JNE chains to
+    // entry i+1's compare; the last entry's JNE goes to the miss tail.
     std::uint32_t immediate_offset = selected->target_immediate_offset;
     std::uint32_t displacement_offset = selected->jump_displacement_offset;
     std::uint32_t guard_offset = selected->guard_offset;

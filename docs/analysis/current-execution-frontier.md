@@ -1,3 +1,165 @@
+## 2026-07-23 Task 275 (구현·통제 검증 완료, opt-in 유지): 직선 span으로 single-step 30.2% 감소, 게임 milestone 개선은 미확정 / Task 275 (Implemented and controlled; remains opt-in): linear spans reduce single-step by 30.2%, game-milestone gain unconfirmed
+
+**상태 (Status):** `aot-dynamic` 기본 clean-function fast path에서
+`REPIU_NATIVE_LINEAR_SPAN=1`만 바꾸는 동일 binary 30초 및 240초 A/B를 완료했습니다.
+원시 장기 결과는 `build/benchmarks/native-linear-span/20260723-134050/results.csv`입니다.
+
+### 확인된 구현
+
+일반 single-step EIP에서 다음 HLE 민감 명령, 제어 전이 또는 명시적 memory write 전까지
+직선 명령을 Zydis로 스캔합니다. 두 명령 이상이면 Dr0을 경계 주소에 설치하고 TF를 끈
+상태로 span을 실행합니다. 경계 #DB 또는 예상하지 않은 exception에서 Dr0/Dr6/Dr7과 TF를
+복원한 뒤 기존 exception/HLE chain으로 돌아갑니다. 게스트 code byte는 수정하지 않으며,
+scanner 결과도 cache하지 않습니다.
+
+synthetic probe는 control-transfer, FS-sensitive, explicit-memory-write 경계와 1명령
+short-span 거부를 모두 통과했습니다. 실제 실행의 모든 ON run에서
+`span_entry == span_boundary`, `span_cancel == 0`, fatal 0, legacy fallback 0이었습니다.
+
+### 기본 `aot-dynamic` 통제 결과
+
+| 지표 | 30초 OFF | 30초 ON | 240초 OFF | 240초 ON |
+|---|---:|---:|---:|---:|
+| single-step | 135,210 | 93,777 (-30.6%) | 1,356,719 | 947,256 (-30.2%) |
+| span native 명령 | 0 | 92,794 | 0 | 953,580 |
+| guest 명령 proxy¹ | 135,210 | 186,571 (+38.0%) | 1,356,719 | 1,900,836 (+40.1%) |
+| 기존 progress | 10,899 | 10,953 | 49,580 | 59,059 (+19.1%) |
+| window open | 14.297초 | 14.281초 | 14.406초 | 14.281초 |
+| span entry/boundary/cancel | 0/0/0 | 24,536/24,536/0 | 0/0/0 | 217,747/217,747/0 |
+| fatal / fallback | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+
+¹ `single_step + 정상 완료 span의 instruction_count`. AOT cache 안에서 실행된 명령은
+양쪽 모두 포함하지 않으므로 전체 guest instruction 수가 아니라 이 기능의 상대 coverage
+proxy입니다.
+
+내부 명령 처리량과 기존 `progress`는 개선됐지만 window open은 사실상 같고, 240초 두
+실행 모두 texture/swap에 도달하지 않아 실제 화면 진행 속도 향상은 확정할 수 없습니다.
+또한 240초는 OFF→ON 한 쌍이므로 19.1%를 일반적인 wall-clock speedup으로 사용하지
+않습니다. Task 274의 같은 EEPROM 기준에서는 texture가 약 208~225초에 나타났으나 이번
+두 실행에서는 censored되어 post-window 경로의 실행 간 변동도 다시 확인됐습니다.
+
+결론은 **하드웨어-BP 직선 span 수명주기와 single-step coverage 개선은 확인**, **사용자
+체감 게임 속도 개선은 미확정**입니다. 따라서 기본 활성화하지 않고 opt-in으로 유지합니다.
+다음 성능 판단 전에 post-window semantic 경로의 변동 원인을 고정하거나 더 직접적인
+frame/content milestone을 확보해야 합니다.
+
+**English summary.** Task 275 scans from an ordinary single-step EIP to the next
+HLE-sensitive instruction, control transfer, or explicit memory write. With at least two
+ordinary instructions, Dr0 guards the boundary while TF is clear; the boundary or any
+unexpected exception restores debug state and returns to the existing handlers. No guest
+byte is modified and scan results are not cached. Synthetic boundary probes passed. In
+the production `aot-dynamic` policy, a 240-second same-binary pair reduced single steps
+from 1,356,719 to 947,256 (-30.2%) and raised the local guest-instruction proxy by 40.1%;
+217,747 spans reached their boundary with zero cancellation, fatal, or legacy fallback.
+However, window-open time was unchanged and neither run reached texture or swap by 240
+seconds. The one-pair progress gain is not a wall-clock speedup claim. Keep the path opt-in
+until post-window semantic variance is controlled.
+
+## 2026-07-23 Task 274 (통제 A/B 완료): 4슬롯 캐시는 안전하지만 게임 진행 속도 개선은 확인되지 않음 / Task 274 (Controlled A/B complete): the four-slot cache is safe, but no game-progress speedup was confirmed
+
+**상태 (Status):** 같은 Win32 x86 Debug 바이너리에서 `REPIU_AOT_INDIRECT_CACHE_SLOTS=1|4`만
+바꾸고, 실행마다 동일한 EEPROM 사본을 사용한 240초 × 4회 교차 순서 측정을 완료했습니다.
+원시 결과는 `build/benchmarks/aot-inline-cache/20260723-110911/results.csv`에 있습니다.
+
+### 확인된 결과
+
+| 중앙값 지표 | 1슬롯 (2회) | 4슬롯 (2회) | 4슬롯 변화 |
+|---|---:|---:|---:|
+| `indir` boundary | 33,923 | 33,745 | -178 (-0.5%) |
+| 전체 boundary | 103,486.5 | 102,326.5 | -1,160 (-1.1%) |
+| window open | 11.805초 | 10.258초 | -1.547초 |
+| 첫 texture upload | 216.055초 | 223.406초 | +7.352초 (3.4% 느림) |
+| 첫 swap | 230.328초 | 237.922초¹ | 개선 없음 |
+| fatal / legacy fallback | 0 / 0 | 0 / 0 | 무회귀 |
+
+¹ 4슬롯 두 실행 중 한 실행은 240초 안에 swap에 도달하지 않아 중앙값이 아니라 관측된
+한 표본입니다. 따라서 4슬롯의 swap 성능을 수치로 우월하다고 판단할 수 없습니다.
+
+window open은 polymorphic 간접분기 부하가 누적되기 전 단계이고 실행 간 편차도 커서
+4슬롯 효과로 귀속하지 않습니다. 더 뒤의 의미 기반 milestone인 texture와 swap은 개선되지
+않았습니다. 약 180초 시점에는 두 모드의 `indir` 누적치가 거의 같은 약 33.5천 회로
+수렴했습니다. sampled patch 로그에도 `#4096`이 한 번도 나타나지 않아 실제 inline-cache
+patch 요청은 4,096회 미만인 반면 `indir` boundary는 약 34천 회였습니다. 이는 남은
+`indir`의 대부분이 단일 슬롯의 polymorphic target 교체가 아니라 지원되지 않는 전이,
+site 분산, 또는 다른 경계 수명주기에서 나온다는 강한 근거입니다.
+
+따라서 Task 273의 `indir -28.2%`는 서로 다른 빌드·시점 사이의 관측 잡음이 섞인 결과이며,
+통제 실험에서 재현되지 않았습니다. 4슬롯 구현과 coherence는 유지하되 이를 주요 성능
+레버로 취급하거나 8슬롯 이상으로 확장하지 않습니다. 다음 최적화 우선순위는 간접 캐시
+용량이 아니라 네이티브 실행 coverage와 반복 single-step/경계 탈출 원인입니다.
+
+**English summary.** A same-binary, isolated-EEPROM, alternating-order 240-second × 4
+experiment compared only the one-slot and four-slot policies. Four slots reduced the median
+indirect-boundary count by just 178 (0.5%) and total boundaries by 1.1%. Later semantic
+milestones did not improve: texture upload was 3.4% slower, and one of the two four-slot
+runs did not reach swap before the 240-second censoring point. All runs had zero fatal and
+legacy-fallback counts. Indirect counts converged near 33.5k by 180 seconds, while sampled
+patch logs never reached patch #4096, strongly indicating that most remaining indirect
+boundaries are not one-slot polymorphic replacement churn. The earlier Task 273 28.2%
+cross-build observation is therefore superseded and was not reproduced. Keep the safe
+four-slot mechanism, but prioritize native coverage and recurring single-step/boundary exits
+instead of adding more slots.
+
+## 2026-07-23 Task 273 (구현·검증 완료, Task 274 통제 A/B에서 성능 추정 미재현): 간접 call/jmp 4슬롯 캐시 / Task 273 (Implemented and verified; performance estimate not reproduced by Task 274 controlled A/B): four-slot indirect call/jump cache
+
+**상태 (Status):** `feature/273-aot-indirect-inline-cache-multislot`에서 구현·결정론적
+probe·Win32 x86 Debug 빌드·120초 실구동 검증 완료.
+
+### 구현 확인
+
+`EmitIndirectInlineCacheSlot`이 `FF /2` near indirect call과 `FF /4` near indirect jump에
+각각 4개의 compare/guard/hit entry를 방출합니다. 반환 cache와 같은 `entries` 및
+`replace_cursor`를 사용하며, Win32 worker는 기존 target 재사용 → 첫 빈 슬롯 →
+round-robin 교체 순으로 patch합니다. 동적 append의 entry offset relocation과 page retire의
+전 entry guard reset은 기존 일반화된 경로를 그대로 사용합니다.
+
+`repiu_aot_probe` synthetic 검증에서 다음을 모두 확인했습니다.
+
+- call/jump 4-entry 초기 layout 및 entry 0 호환 offset
+- 4개 서로 다른 target patch 후 `JNE → next compare → miss tail` chain
+- 다섯 번째 target의 entry 0 round-robin 교체
+- 같은 guest page를 target으로 가진 call/jump guard 8개 retire reset
+- 기존 SMC coherence probe 전체 통과
+
+### 120초 실구동 결과
+
+| 지표 | 단일 슬롯 기준(Task 265) | 4슬롯(Task 273) | 변화 |
+|---|---:|---:|---:|
+| `indir` boundary | 20,076 | **14,423** | **-5,653 (-28.2%)** |
+| `ret` boundary | 7,294 | 7,220 | -74 (-1.0%) |
+| `other` boundary | 26,055 | 23,781 | -2,274 (-8.7%) |
+| 전체 boundary | 53,425 | **45,424** | **-8,001 (-15.0%)** |
+| fatal | 0 | 0 | 무회귀 |
+
+4슬롯 구동은 약 14.5초에 `_GRSSTWINOPEN@28` gate에 진입하고 약 15.5초에 640x480
+logical Glide window를 정상 개방했습니다. 120초 안에는 texture upload/swap까지 도달하지
+않았습니다. 단일 슬롯 기준은 Task 265의 v0.0.84 계측이고 현재 SDL3 빌드와 완전히 통제된
+동일 binary A/B는 아니므로, 28.2%를 절대 wall-clock 향상률로 해석하지 않습니다. 다만
+당시에는 `ret`이 거의 동일한 동안 최적화 대상인 `indir`만 5,653회 감소해 방향성 증거로
+판단했습니다. 그러나 바로 위 Task 274의 동일 binary A/B에서 이 감소가 재현되지 않았으므로
+현재 성능 결론으로 사용하지 않습니다.
+
+최신 의미 기반 관측에서는 legacy가 240초 동안 `grSstWinOpen`에도 도달하지 못한 반면
+`aot-dynamic`은 texture download와 첫 swap까지 도달했습니다. 따라서 과거 backend 간
+`progress` 비는 게임 진행 속도 비교로 사용하지 않습니다. 이번 작업의 결론은
+`aot-dynamic` 내부의 간접분기 예외 비용을 줄였다는 것이며, 남은 `indir` 14,423회는
+4개를 넘는 polymorphic target, site 분산, cache generation/retire 등을 후속 profile로
+분리해야 한다는 것이었습니다. 이 성능 해석 역시 Task 274 결과로 대체되었습니다.
+
+**English summary.** Task 273 emits four compare/guard/hit entries for supported
+`FF /2` calls and `FF /4` jumps, reusing the return cache's refresh/fill/round-robin
+patcher and existing append/retirement coherence. The deterministic probe passed layout,
+four-target chaining, fifth-target replacement, eight-guard retirement, and the full SMC
+coherence suite. A 120-second run reduced indirect boundaries from the Task 265 reference
+20,076 to 14,423 (-28.2%) and total boundaries from 53,425 to 45,424 (-15.0%), with fatal
+count zero and the logical Glide window opening at about 15.5 seconds. This is a
+cross-build reference, not a controlled wall-clock A/B. Current semantic observations also
+show `aot-dynamic` reaching texture upload/first swap within 240 seconds while legacy does
+not reach `grSstWinOpen`; historical cross-backend `progress` ratios are therefore not game
+progress evidence. Task 274's same-binary experiment did not reproduce the indirect-boundary
+reduction, so this performance interpretation is retained only as historical evidence and is
+superseded by the controlled result above.
+
 ## 2026-07-23 Task 266 (분석·계측 완료, 구현 착수 전): 근본 병목은 single-step-everything — 실행 명령의 98.1%가 네이티브화 가능(민감 1.9%), 네이티브 리전 실행으로 상한 ~53배 / Task 266 (Analysis+instrumentation done, impl not started): the real wall is single-step-everything — 98.1% of executed instructions are native-capable (1.9% sensitive), native region execution ceiling ~53x
 
 **상태 (Status):** Phase 0 완료(계측·baseline·LDT 스파이크), `claude/native-region-execution`.

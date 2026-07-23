@@ -54,6 +54,27 @@ bool UseDynamicAotTranslation()
     return value != nullptr && std::string_view(value) == "aot-dynamic";
 }
 
+bool ReadAotIndirectInlineCacheEntryCount(std::uint32_t* entry_count)
+{
+    if (entry_count == nullptr)
+    {
+        return false;
+    }
+    const char* value = std::getenv("REPIU_AOT_INDIRECT_CACHE_SLOTS");
+    if (value == nullptr || *value == '\0' || std::string_view(value) == "4")
+    {
+        *entry_count =
+            repiu::runtime::kDefaultAotIndirectInlineCacheEntryCount;
+        return true;
+    }
+    if (std::string_view(value) == "1")
+    {
+        *entry_count = 1U;
+        return true;
+    }
+    return false;
+}
+
 std::uint32_t ReadExecutionTimeoutMilliseconds()
 {
     const char* text = std::getenv(
@@ -2499,12 +2520,23 @@ int main(int argc, char** argv)
 
     const bool use_aot_backend = UseAotExecutionBackend();
     const bool use_dynamic_aot = UseDynamicAotTranslation();
+    repiu::runtime::AotCodeCacheBuildOptions aot_build_options;
+    if (use_aot_backend && !ReadAotIndirectInlineCacheEntryCount(
+            &aot_build_options.indirect_inline_cache_entry_count))
+    {
+        logger->error(
+            "REPIU_AOT_INDIRECT_CACHE_SLOTS must be either 1 or 4");
+        repiu::platform::win32::ReleaseWin32RuntimeAddressRange(
+            relocated_arena_reservation);
+        return 1;
+    }
     repiu::runtime::AotTranslationPlan aot_plan;
     repiu::runtime::AotCodeCacheImage aot_image;
     if (use_aot_backend &&
         (!repiu::runtime::BuildAotTranslationPlan(relocated_image,
                                                   &aot_plan) ||
-         !repiu::runtime::BuildAotCodeCacheImage(aot_plan, &aot_image)))
+         !repiu::runtime::BuildAotCodeCacheImage(
+             aot_plan, aot_build_options, &aot_image)))
     {
         logger->error("Failed to build requested AOT execution image: {} / {}",
                       aot_plan.message, aot_image.message);
@@ -2515,6 +2547,11 @@ int main(int argc, char** argv)
     logger->info("Win32 requested execution backend: {}",
                  use_dynamic_aot ? "aot-dynamic" :
                  use_aot_backend ? "aot" : "legacy");
+    if (use_aot_backend)
+    {
+        logger->info("Win32 AOT indirect inline-cache slots: {}",
+                     aot_build_options.indirect_inline_cache_entry_count);
+    }
 
     repiu::runtime::GuestStackSwitchPlan stack_plan;
     std::uint32_t stack_base = relocated_image.relocated_image_base;

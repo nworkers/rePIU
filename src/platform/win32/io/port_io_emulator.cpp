@@ -6,6 +6,7 @@
 #include <iomanip>
 #include <memory>
 #include <cstdio>
+#include <cstdlib>
 #include "eeprom_93c46.h"
 
 namespace repiu::platform::win32
@@ -24,6 +25,12 @@ namespace
     constexpr std::uint16_t kPortPiuIn0 = 0x02A8;
     constexpr std::uint16_t kPortPiuSystem = 0x02A9;
     constexpr std::uint16_t kPortPiuIn1 = 0x02AA;
+
+    std::string EepromBackingPath()
+    {
+        const char* path = std::getenv("REPIU_EEPROM_PATH");
+        return path != nullptr && *path != '\0' ? path : "eeprom.dat";
+    }
 
     struct JammaBitName
     {
@@ -275,7 +282,8 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
         {
             if (!g_eeprom)
             {
-                g_eeprom = std::make_unique<Eeprom93c46>("eeprom.dat");
+                g_eeprom = std::make_unique<Eeprom93c46>(
+                    EepromBackingPath());
             }
             std::uint32_t emulated_val = 0;
             std::uint8_t do_bit = g_eeprom->ReadData();
@@ -369,7 +377,7 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
     {
         if (!g_eeprom)
         {
-            g_eeprom = std::make_unique<Eeprom93c46>("eeprom.dat");
+            g_eeprom = std::make_unique<Eeprom93c46>(EepromBackingPath());
         }
         g_eeprom->WriteControl(static_cast<std::uint8_t>(value & 0xFF));
 

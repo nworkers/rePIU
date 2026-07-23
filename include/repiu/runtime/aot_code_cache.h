@@ -10,6 +10,14 @@
 namespace repiu::runtime
 {
 
+constexpr std::uint32_t kDefaultAotIndirectInlineCacheEntryCount = 4U;
+
+struct AotCodeCacheBuildOptions
+{
+    std::uint32_t indirect_inline_cache_entry_count =
+        kDefaultAotIndirectInlineCacheEntryCount;
+};
+
 enum class AotFixupKind
 {
     kDirectCall,
@@ -53,12 +61,12 @@ struct AotIndirectInlineCacheSite
     std::uint32_t target_immediate_offset = 0;
     std::uint32_t guard_offset = 0;
     std::uint32_t jump_displacement_offset = 0;
-    // Return thunks chain several compare/hit blocks so a helper returning
-    // to a handful of call sites (four in the observed decode loop) does not
-    // thrash a single predictor slot (Task 220). `entries` holds every
-    // block, entry 0 duplicating the legacy fields above; entry i's patched
-    // JNE falls to entry i+1's compare, the last one to the miss tail.
-    // Empty for indirect call/jmp sites, which keep the single-slot layout.
+    // Polymorphic indirect call/jump and return thunks chain several
+    // compare/hit blocks so a small target set does not thrash one predictor
+    // slot (Tasks 220 and 273). `entries` holds every block, with entry 0
+    // duplicating the legacy fields above; entry i's patched JNE falls to
+    // entry i+1's compare, and the last one falls to the miss tail. Empty is
+    // retained as the metadata representation of a legacy single-slot site.
     std::vector<AotInlineCacheEntry> entries;
     // Patcher-side round-robin replacement cursor (worker thread only).
     std::uint32_t replace_cursor = 0;
@@ -114,6 +122,10 @@ struct AotCodeCacheImage
     std::vector<AotIndirectInlineCacheSite> indirect_inline_cache_sites;
     std::vector<AotJumpTableSite> jump_table_sites;
     std::vector<AotSegmentOverrideSite> segment_override_sites;
+    // Carried into platform placement so every later dynamic append uses the
+    // same indirect call/jump layout as the initial image (Task 274).
+    std::uint32_t indirect_inline_cache_entry_count =
+        kDefaultAotIndirectInlineCacheEntryCount;
     std::uint32_t resolved_fixup_count = 0;
     std::uint32_t external_fixup_count = 0;
     std::uint32_t unsupported_branch_count = 0;
@@ -123,6 +135,9 @@ struct AotCodeCacheImage
 };
 
 bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
+                            AotCodeCacheImage* image);
+bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
+                            const AotCodeCacheBuildOptions& options,
                             AotCodeCacheImage* image);
 
 }  // namespace repiu::runtime

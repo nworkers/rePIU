@@ -537,6 +537,35 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                         context->glide_gate_stack[6],
                         context->glide_gate_stack[7]);
             }
+            if (context->shared_live_telemetry != nullptr)
+            {
+                volatile long* milestone = nullptr;
+                if (glide_export->name == "_GRSSTWINOPEN@28")
+                {
+                    milestone = &context->shared_live_telemetry
+                        ->glide_window_gate_milestone;
+                }
+                else if (glide_export->name ==
+                         "_GRTEXDOWNLOADMIPMAPLEVEL@32")
+                {
+                    milestone = &context->shared_live_telemetry
+                        ->glide_texture_milestone;
+                }
+                else if (glide_export->name.rfind("_GRDRAW", 0U) == 0U)
+                {
+                    milestone = &context->shared_live_telemetry
+                        ->glide_draw_milestone;
+                }
+                else if (glide_export->name == "_GRBUFFERSWAP@4")
+                {
+                    milestone = &context->shared_live_telemetry
+                        ->glide_swap_milestone;
+                }
+                if (milestone != nullptr)
+                {
+                    InterlockedExchange(milestone, 1L);
+                }
+            }
         }
     }
     // Task 255 R3 observation (env-gated, off by default): dump the real
@@ -724,6 +753,13 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         if (opened)
         {
             ++context->glide_window_open_count;
+            if (context->shared_live_telemetry != nullptr)
+            {
+                InterlockedExchange(
+                    &context->shared_live_telemetry
+                         ->glide_window_open_milestone,
+                    1L);
+            }
             context->glide_logical_width = width;
             context->glide_logical_height = height;
             context->glide_state.window_open = true;

@@ -61,6 +61,21 @@ struct NativeFastPathState
     std::atomic<std::uint32_t> region_return_count{0};
     std::atomic<std::uint32_t> region_cancel_count{0};
     std::atomic<std::uint32_t> region_stray_heal_count{0};
+
+    // Task 275 general-entry straight-line spans. Dr0 guards the first
+    // sensitive/control/store boundary while TF is clear. The boundary remains
+    // on the existing single-step path; no guest byte is modified.
+    bool linear_span_active = false;
+    std::uint32_t linear_span_boundary = 0;
+    std::uint32_t linear_span_instruction_count = 0;
+    std::uint32_t linear_span_saved_dr0 = 0;
+    std::uint32_t linear_span_saved_dr6 = 0;
+    std::uint32_t linear_span_saved_dr7 = 0;
+    std::atomic<std::uint32_t> linear_span_entry_count{0};
+    std::atomic<std::uint32_t> linear_span_boundary_count{0};
+    std::atomic<std::uint32_t> linear_span_cancel_count{0};
+    std::atomic<std::uint32_t> linear_span_instruction_total{0};
+    std::atomic<std::uint32_t> linear_span_reject_count{0};
 };
 
 bool TryEnterNativeFastPath(CONTEXT* context,

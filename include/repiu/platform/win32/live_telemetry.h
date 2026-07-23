@@ -7,7 +7,7 @@ namespace repiu::platform::win32
 {
 
 constexpr std::uint32_t kWin32LiveTelemetryMagic = 0x5250544CU;
-constexpr std::uint32_t kWin32LiveTelemetryVersion = 20;
+constexpr std::uint32_t kWin32LiveTelemetryVersion = 21;
 constexpr std::uint32_t kWin32NativeSampleRingCapacity = 8;
 constexpr const char* kWin32LiveTelemetryEnvironment =
     "REPIU_LIVE_TELEMETRY_MAPPING";
@@ -46,6 +46,14 @@ struct Win32SharedLiveTelemetry
     volatile long glide_gate_ecx = 0;
     volatile long glide_gate_edx = 0;
     volatile long glide_gate_stack[8] = {};
+    // Task 274 same-binary A/B semantic milestones. Each value is published
+    // once, allowing the supervisor's one-second snapshots to timestamp real
+    // game progress without adding steady-state logging to draw/swap paths.
+    volatile long glide_window_gate_milestone = 0;
+    volatile long glide_window_open_milestone = 0;
+    volatile long glide_texture_milestone = 0;
+    volatile long glide_draw_milestone = 0;
+    volatile long glide_swap_milestone = 0;
     volatile long mscdex_probe_count = 0;
     volatile long mscdex_request_count = 0;
     volatile long mscdex_last_command = 0;

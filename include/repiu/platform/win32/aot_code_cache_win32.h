@@ -38,6 +38,8 @@ struct Win32AotCodeCachePlacement
     std::unordered_map<std::uint32_t, std::uint32_t>
         inactive_map_index_by_cache_offset;
     std::uint32_t next_generation = 1;
+    std::uint32_t indirect_inline_cache_entry_count =
+        runtime::kDefaultAotIndirectInlineCacheEntryCount;
     std::string message;
 };
 

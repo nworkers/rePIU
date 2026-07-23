@@ -322,6 +322,24 @@ Host recovery now saves entry-time selectors in serialized global recovery slots
 DOS file diagnostics include a bounded 64-entry read/seek ring. It preserves chronological handle, path, position, size, result, guest EIP/ESP, eight stack dwords, and bounded read-prefix evidence without changing guest-visible file behavior. The protected-mode DOS/4GW `INT 21h AH=3Fh` bridge consumes the 32-bit byte count in `ECX` and returns the 32-bit byte count in `EAX`; reducing these values to real-mode `CX/AX` breaks large Watcom reads.
 
 Win32 native execution uses a fail-closed function return fast path implemented by `native_fast_path.*` and `verified_region_analyzer.*`. Pinned Zydis v4.1.1 decodes observed direct-call targets in legacy 32-bit mode; rePIU recursively verifies runtime-bounded direct control flow and rejects privileged, interrupt, I/O, system, segment-dependent, indirect, far, or undecodable paths. An approved function runs with Trap Flag cleared until an x86 hardware execution breakpoint at its validated guest return address reenters VEH. Any intermediate exception restores debug registers and single-step state and permanently rejects that function for the current run.
+
+Task 275의 opt-in `native_linear_span.*`은 함수 진입으로 증명되지 않은 일반 single-step
+지점의 coverage를 보완합니다. Zydis가 다음 민감 명령, 제어 전이, 명시적 memory write를
+경계로 찾고 그 앞에 일반 명령이 두 개 이상이면 Dr0 실행 breakpoint를 경계에 설치한 뒤
+TF를 끕니다. 경계 #DB는 debug register와 TF를 복원하고 기존 single-step/HLE chain에
+경계 명령을 넘깁니다. memory write는 span 밖에서 실행되며 scan 결과를 cache하지 않아
+self-modifying code 뒤의 stale decode를 재사용하지 않습니다. 예상하지 않은 exception도
+같은 fail-closed 복원 경로를 사용합니다. `REPIU_NATIVE_LINEAR_SPAN=1`일 때만 활성화되며
+기본값은 꺼짐입니다.
+
+The opt-in Task 275 `native_linear_span.*` path extends coverage from ordinary single-step
+sites that cannot enter a verified function. Zydis finds the next sensitive instruction,
+control transfer, or explicit memory write; when at least two ordinary instructions precede
+it, Dr0 guards that boundary while TF is clear. The boundary #DB restores debug state and
+TF, then passes the boundary instruction to the existing single-step/HLE chain. Memory
+writes stay outside spans and results are not cached, preventing stale decoded spans after
+self-modification. Unexpected exceptions use the same fail-closed restoration. The path is
+enabled only by `REPIU_NATIVE_LINEAR_SPAN=1` and remains off by default.
 ## Reentrancy-safe guest bulk copy
 
 Win32 VEH instruction handling must not directly dereference a guest range when the access can recursively enter the handler. `REP MOVS` reads through a temporary buffer with `ReadProcessMemory` and writes through the guest-write helper, which temporarily applies writable page protection and restores it afterward.
@@ -492,6 +510,37 @@ guest fallthrough addresses; returns bypass the dispatcher only when the guarded
 guest return value matches. Unsupported or changed values fail closed. The cache
 never uses RWX, and the current page-wide protection transition assumes one guest
 execution thread per loader process.
+
+Task 273부터 간접 call/jump와 return site는 공통 `entries` 메타데이터로 최대 4개의
+target을 기억합니다. 각 활성 guard의 불일치는 다음 entry compare로 이어지고 마지막
+entry만 공통 miss tail로 이동합니다. worker는 같은 target 재사용, 첫 빈 슬롯 채움,
+round-robin 교체 순으로 entry를 선택합니다. 동적 image append는 모든 entry offset을
+재배치하고, guest page retire는 해당 page를 target으로 가진 모든 entry guard를
+miss 형태로 되돌립니다. 기존 단일 슬롯 필드는 entry 0 offset을 복제해 호환성을
+유지합니다.
+
+Since Task 273, indirect call/jump and return sites retain up to four targets through
+shared `entries` metadata. A mismatching active guard chains to the next entry compare,
+and only the final entry reaches the common miss tail. The worker refreshes an existing
+target, fills the first empty entry, then round-robin replaces. Dynamic append relocates
+every entry offset, while guest-page retirement resets every guard targeting that page.
+Legacy single-entry fields mirror entry zero for compatibility.
+
+Task 274부터 간접 call/jump cache의 entry 수는 정적 image 생성 시 결정되는 명시적
+build policy입니다. Win32 host는 `REPIU_AOT_INDIRECT_CACHE_SLOTS=1|4`를 읽고, 이 값을
+정적 배치와 이후의 모든 동적 append에 동일하게 전달합니다. 기본값은 4이며 잘못된 값은
+실행 전에 거부합니다. 이 선택은 emitter layout만 바꾸고 guest 코드, target 해석, patch
+순서와 page-retirement coherence는 바꾸지 않습니다. 통제 성능 측정은 각 실행에 격리된
+`REPIU_EEPROM_PATH` 사본을 제공하고 shared live telemetry의 window-open, texture, draw,
+swap one-shot milestone을 사용합니다.
+
+Since Task 274, the indirect call/jump entry count is an explicit build policy selected when
+the static image is emitted. The Win32 host parses `REPIU_AOT_INDIRECT_CACHE_SLOTS=1|4` and
+propagates it through static placement and every later dynamic append. Four remains the
+default, and invalid values fail before execution. The policy changes only emitter layout;
+guest code, target resolution, patch ordering, and page-retirement coherence remain shared.
+Controlled measurements isolate persistent state with `REPIU_EEPROM_PATH` and use one-shot
+window-open, texture, draw, and swap milestones from shared live telemetry.
 
 ## AOT bounded jump table 번역 / AOT bounded jump-table translation
 

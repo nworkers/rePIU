@@ -185,6 +185,14 @@ void PrintSnapshot(
               << ReadInterlocked(&telemetry.glide_gate_stack[5]) << ","
               << ReadInterlocked(&telemetry.glide_gate_stack[6]) << ","
               << ReadInterlocked(&telemetry.glide_gate_stack[7])
+              << " glide_milestone(gate/open/tex/draw/swap)="
+              << ReadInterlocked(
+                     &telemetry.glide_window_gate_milestone) << "/"
+              << ReadInterlocked(
+                     &telemetry.glide_window_open_milestone) << "/"
+              << ReadInterlocked(&telemetry.glide_texture_milestone) << "/"
+              << ReadInterlocked(&telemetry.glide_draw_milestone) << "/"
+              << ReadInterlocked(&telemetry.glide_swap_milestone)
               << " mscdex_probe/request/cmd/status="
               << ReadInterlocked(&telemetry.mscdex_probe_count) << "/"
               << ReadInterlocked(&telemetry.mscdex_request_count) << "/"

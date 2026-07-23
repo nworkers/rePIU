@@ -5,6 +5,9 @@
 #include "repiu/runtime/runtime_memory.h"
 #include "repiu/target/target_profile.h"
 
+#include "inline_cache_probe.h"
+#include "native_linear_span_probe.h"
+
 #include <Zydis.h>
 
 #include <filesystem>
@@ -691,6 +694,14 @@ int main(int argc, char** argv)
               << (round_trip ? "true" : "false") << "\n";
     repiu::platform::win32::ReleaseWin32AotCodeCache(&placement);
     if (!round_trip)
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunAotIndirectInlineCacheProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunNativeLinearSpanProbe())
     {
         return 1;
     }

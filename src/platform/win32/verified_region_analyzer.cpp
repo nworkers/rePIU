@@ -63,6 +63,26 @@ bool IsSensitive(const ZydisDecodedInstruction& instruction)
     }
 }
 
+bool HasExplicitMemoryWrite(const ZydisDecodedInstruction& instruction,
+                            const ZydisDecodedOperand* operands)
+{
+    if (operands == nullptr)
+    {
+        return false;
+    }
+    for (std::uint8_t index = 0;
+         index < instruction.operand_count_visible; ++index)
+    {
+        if (operands[index].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+            (operands[index].actions &
+             ZYDIS_OPERAND_ACTION_MASK_WRITE) != 0U)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool ReadDirectTarget(const ZydisDecodedInstruction& instruction,
                       const ZydisDecodedOperand* operands,
                       std::uint32_t address,
@@ -320,6 +340,68 @@ bool ScanNativeRegionWithZydis(
         pending.push_back(next);
     }
     return has_return && pending.empty();
+}
+
+bool ScanNativeLinearSpanWithZydis(
+    std::uint32_t entry,
+    std::uint32_t runtime_base,
+    std::uint32_t runtime_size,
+    NativeLinearSpan* span)
+{
+    constexpr std::uint32_t kMinimumInstructionCount = 2;
+    constexpr std::uint32_t kMaximumInstructionCount = 64;
+    if (span == nullptr ||
+        !IsRuntimeRange(entry, 1U, runtime_base, runtime_size))
+    {
+        return false;
+    }
+    *span = NativeLinearSpan{};
+    ZydisDecoder decoder;
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(
+            &decoder, ZYDIS_MACHINE_MODE_LEGACY_32, ZYDIS_STACK_WIDTH_32)))
+    {
+        return false;
+    }
+
+    std::uint32_t address = entry;
+    for (std::uint32_t count = 0;
+         count < kMaximumInstructionCount; ++count)
+    {
+        if (!IsRuntimeRange(address,
+                            ZYDIS_MAX_INSTRUCTION_LENGTH,
+                            runtime_base,
+                            runtime_size))
+        {
+            return false;
+        }
+        ZydisDecodedInstruction instruction{};
+        ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+        const auto* bytes = reinterpret_cast<const void*>(
+            static_cast<std::uintptr_t>(address));
+        if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(
+                &decoder, bytes, ZYDIS_MAX_INSTRUCTION_LENGTH, &instruction,
+                operands)) ||
+            instruction.length == 0)
+        {
+            return false;
+        }
+
+        const bool sensitive = IsSensitive(instruction);
+        const bool memory_write =
+            HasExplicitMemoryWrite(instruction, operands);
+        const bool control_transfer =
+            instruction.meta.branch_type != ZYDIS_BRANCH_TYPE_NONE;
+        if (sensitive || memory_write || control_transfer)
+        {
+            span->boundary_address = address;
+            span->instruction_count = count;
+            span->boundary_sensitive = sensitive;
+            span->boundary_memory_write = memory_write;
+            return count >= kMinimumInstructionCount;
+        }
+        address += instruction.length;
+    }
+    return false;
 }
 
 }  // namespace repiu::platform::win32::detail

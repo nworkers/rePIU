@@ -59,6 +59,7 @@ void WriteLiveTelemetrySnapshot(const ThreadContext& context,
         "dispatch_entry=%u dispatch_exit=%u last_eip=0x%08X "
         "progress=%u single_step=%u aot=%u/%u fast=%u/%u/%u "
         "routea=%u/%u region=%u/%u/%u/%u/%u "
+        "span=%u/%u/%u/%u/%u "
         "reject=0x%08X:0x%08X/0x%02X bytes=%08X%08X\r\n",
         static_cast<unsigned long>(elapsed_milliseconds),
         static_cast<unsigned long>(poll_iteration),
@@ -88,6 +89,16 @@ void WriteLiveTelemetrySnapshot(const ThreadContext& context,
         context.native_fast_path.region_reject_count.load(
             std::memory_order_relaxed),
         context.native_fast_path.region_stray_heal_count.load(
+            std::memory_order_relaxed),
+        context.native_fast_path.linear_span_entry_count.load(
+            std::memory_order_relaxed),
+        context.native_fast_path.linear_span_boundary_count.load(
+            std::memory_order_relaxed),
+        context.native_fast_path.linear_span_cancel_count.load(
+            std::memory_order_relaxed),
+        context.native_fast_path.linear_span_instruction_total.load(
+            std::memory_order_relaxed),
+        context.native_fast_path.linear_span_reject_count.load(
             std::memory_order_relaxed),
         context.native_fast_path.last_rejected_candidate.load(
             std::memory_order_relaxed),
