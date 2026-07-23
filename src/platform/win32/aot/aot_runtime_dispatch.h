@@ -118,7 +118,9 @@ bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
 
 bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
                              CONTEXT* win32_context,
-                             ThreadContext* context);
+                             ThreadContext* context,
+                             AotDbtReturnFallbackReason* fallback_reason =
+                                 nullptr);
 
 bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
                       CONTEXT* win32_context,

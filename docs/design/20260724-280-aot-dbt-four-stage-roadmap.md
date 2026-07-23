@@ -89,6 +89,19 @@ EEPROM hash를 함께 남깁니다. 가장 큰 안전하게 제거 가능한 fal
   publication 실패는 기존 provenance-aware `INT3`/VEH 경로로 fail-closed합니다.
 - `legacy`, `aot`, `aot-dynamic`의 image layout과 실행 의미는 변경하지 않습니다.
 
+Task 281 실측(모든 RET fallback이 `quarantined target`, hot phase `indir` 34,851회 대
+RET fallback 8,034회)에 따라 4단계의 세부 결정을 다음과 같이 확정합니다.
+
+- **operand capture는 A안을 채택합니다.** thunk가 저장한 guest `CONTEXT`로 기존
+  `HandleAotIndirectTransfer`를 재사용해 현재 target 해석 의미를 그대로 보존합니다.
+  emitter가 operand target을 직접 캡처하는 B안은 코드 캐시 ABI를 복잡하게 만들고
+  memory operand 읽기 시점이 원본 실행과 달라질 수 있으므로, A안에서 register 또는
+  ModRM memory operand 재현이 불충분하다고 실측될 때만 재검토합니다.
+- **target 안전 정책은 RET과 동일하게 유지합니다.** quarantine은 자기 수정 페이지의
+  정확성 장치이므로 indirect 경로에서도 완화하지 않고 fail-closed합니다.
+- 착수 전에 Task 281이 남긴 attempt 회계 보정(진입 시점 카운터가 아니라
+  `attempt = success + fallback` 도출)을 먼저 처리합니다.
+
 완료 조건:
 
 - synthetic probe가 call/jump의 register 및 관측된 ModRM memory operand,
@@ -176,6 +189,16 @@ operand/target capture, continuations, and patch metadata. The Win32 thunk saves
 guest state, runs the existing resolver and serialized patch worker on the host
 stack, and precisely reproduces call return-address push or jump stack
 invariance.
+
+Task 281 measurements — every RET fallback classified as a quarantined target, and
+34,851 hot-phase indirect boundaries against 8,034 RET fallbacks — fix three Stage 4
+decisions. Operand capture uses option A: reuse `HandleAotIndirectTransfer` with the
+thunk's saved guest `CONTEXT`, preserving current target-resolution semantics.
+Emitter-side operand capture (option B) complicates the code-cache ABI and shifts when
+memory operands are read, so it is revisited only if option A proves insufficient for
+register or ModRM memory operands. The target safety policy stays identical to the RET
+path, and the Task 281 attempt-accounting correction (deriving
+`attempt = success + fallback`) lands before Stage 4 begins.
 
 Every operand, resolution, SMC, quarantine, translation, or publication failure
 must fail closed to the provenance-aware `INT3`/VEH path. Existing backend

@@ -158,6 +158,7 @@ add_executable(repiu_chd_cd_probe
 )
 
 add_executable(repiu_aot_probe
+    src/tools/aot_probe/dbt_return_fallback_probe.cpp
     src/tools/aot_probe/execution_backend_probe.cpp
     src/tools/aot_probe/inline_cache_probe.cpp
     src/tools/aot_probe/native_linear_span_probe.cpp

@@ -587,6 +587,33 @@ fallback causes; and then (4) host dispatch for indirect call/jump misses.
 Detailed completion criteria and controlled A/B rules live in
 `docs/design/20260724-280-aot-dbt-four-stage-roadmap.md`.
 
+### AOT-DBT return fallback 원인 회계 / return fallback cause accounting
+
+Task 281은 3단계로 RET fallback을 배타적 원인 하나로 회계합니다. 공개 실행 결과와
+`ThreadContext`가 같은 고정 10칸 순서(site, state, opcode, stack, zero, HLE,
+quarantine, non-guest, translation, unknown)를 공유하고, `RecordAotDbtReturnFallback`
+하나만 total과 reason 하나를 함께 증가시킵니다. adapter는 site 검증 이전에 attempt를
+기록하며, `HandleAotReturnTransfer`는 기본값이 `nullptr`인 선택적 출력 인자로 원인을
+전달하므로 기존 호출자 동작은 그대로입니다. `INT3` 기반 provenance fallback은 변경
+없이 유지됩니다.
+
+격리 EEPROM `aot-dbt` 15초와 120초 hot phase 실행에서 fallback은
+`5,413/5,413`과 `8,034/8,034` 모두 `quarantined target` 한 칸이었고, 나머지 8개 원인은
+0이었습니다. quarantine은 자기 수정 페이지의 정확성 장치이므로 RET 경로에서 완화하지
+않습니다. 같은 hot phase의 indirect boundary는 34,851회로 RET fallback의 약 4.3배이며,
+이것이 4단계 대상을 indirect call/jump host dispatch로 확정한 근거입니다.
+
+Task 281 implements Stage 3: the public execution result and `ThreadContext` share
+one fixed ten-slot cause order, and a single helper increments the fallback total
+together with exactly one reason. The adapter accounts the attempt before site
+validation, and `HandleAotReturnTransfer` reports the cause through a defaulted
+optional output parameter, so existing callers and the provenance `INT3` fallback
+are unchanged. Two isolated-EEPROM runs classified every fallback as a quarantined
+return target (5,413/5,413 and 8,034/8,034) with all other causes zero. Quarantine
+protects self-modifying pages and therefore stays fail-closed on the RET path; the
+same hot phase produced 34,851 indirect boundaries, about 4.3x the RET fallbacks,
+which fixes Stage 4 on indirect call/jump host dispatch.
+
 ## AOT worker inline cache
 
 반복되는 prefix 없는 legacy-32 `FF /2`, `FF /4`, `C3`, `C2 iw` 경계는

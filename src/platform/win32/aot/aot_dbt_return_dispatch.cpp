@@ -44,6 +44,11 @@ extern "C" void __stdcall ResolveAotDbtReturnMissFrame(
     {
         return;
     }
+    if (context != nullptr)
+    {
+        context->aot_dbt_return_attempt_count.fetch_add(
+            1U, std::memory_order_relaxed);
+    }
     const std::uint32_t guest_source = frame[kGuestSourceIndex];
     const std::uint32_t miss_address = frame[kMissAddressIndex];
     const runtime::AotDbtReturnDispatchSite* site =
@@ -51,13 +56,13 @@ extern "C" void __stdcall ResolveAotDbtReturnMissFrame(
     if (site == nullptr || site->guest_source != guest_source)
     {
         frame[kGuestSourceIndex] = miss_address + kFallbackFromMissBytes;
+        RecordAotDbtReturnFallback(
+            context, AotDbtReturnFallbackReason::kInvalidSite);
         return;
     }
 
     const std::uint32_t cache_base = context->aot_placement->base_address;
     frame[kGuestSourceIndex] = cache_base + site->fallback_cache_offset;
-    context->aot_dbt_return_attempt_count.fetch_add(
-        1, std::memory_order_relaxed);
 
     CONTEXT guest_context{};
     guest_context.Edi = frame[0];
@@ -78,10 +83,12 @@ extern "C" void __stdcall ResolveAotDbtReturnMissFrame(
     EXCEPTION_POINTERS exception_info{&exception_record, &guest_context};
     context->aot_reentry_cache_address = miss_address;
     context->aot_reentry_pending = true;
-    if (!HandleAotReturnTransfer(&exception_info, &guest_context, context))
+    AotDbtReturnFallbackReason fallback_reason =
+        AotDbtReturnFallbackReason::kUnknown;
+    if (!HandleAotReturnTransfer(
+            &exception_info, &guest_context, context, &fallback_reason))
     {
-        context->aot_dbt_return_fallback_count.fetch_add(
-            1, std::memory_order_relaxed);
+        RecordAotDbtReturnFallback(context, fallback_reason);
         return;
     }
 
@@ -137,6 +144,26 @@ extern "C" __declspec(naked) void AotDbtReturnMissThunk()
 #endif
 
 }  // namespace
+
+void RecordAotDbtReturnFallback(
+    ThreadContext* context,
+    AotDbtReturnFallbackReason reason)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+    std::uint32_t index = static_cast<std::uint32_t>(reason);
+    if (index >= kAotDbtReturnFallbackReasonCount)
+    {
+        index = static_cast<std::uint32_t>(
+            AotDbtReturnFallbackReason::kUnknown);
+    }
+    context->aot_dbt_return_fallback_count.fetch_add(
+        1U, std::memory_order_relaxed);
+    context->aot_dbt_return_fallback_reason_counts[index].fetch_add(
+        1U, std::memory_order_relaxed);
+}
 
 void* GetAotDbtReturnMissThunkAddress()
 {

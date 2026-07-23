@@ -31,6 +31,24 @@ constexpr std::uint32_t kWin32GlideTriangleTraceCapacity = 16;
 constexpr std::uint32_t kWin32GlideProducerVertexDwordCount = 15;
 constexpr std::uint32_t kWin32DeferredPortIoLimit = 65536;
 
+enum class AotDbtReturnFallbackReason : std::uint32_t
+{
+    kInvalidSite = 0,
+    kInvalidState,
+    kInvalidInstruction,
+    kUnreadableStack,
+    kZeroTarget,
+    kHleTarget,
+    kQuarantinedTarget,
+    kNonGuestTarget,
+    kTranslationFailure,
+    kUnknown,
+    kCount,
+};
+
+constexpr std::uint32_t kAotDbtReturnFallbackReasonCount =
+    static_cast<std::uint32_t>(AotDbtReturnFallbackReason::kCount);
+
 struct Win32GlideTriangleObservation
 {
     bool valid = false;
@@ -369,6 +387,8 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t aot_dbt_return_attempt_count = 0;
     std::uint32_t aot_dbt_return_success_count = 0;
     std::uint32_t aot_dbt_return_fallback_count = 0;
+    std::uint32_t aot_dbt_return_fallback_reason_counts[
+        kAotDbtReturnFallbackReasonCount] = {};
     std::uint32_t aot_indirect_dispatch_count = 0;
     std::uint32_t aot_inline_cache_patch_attempt_count = 0;
     std::uint32_t aot_inline_cache_patch_success_count = 0;

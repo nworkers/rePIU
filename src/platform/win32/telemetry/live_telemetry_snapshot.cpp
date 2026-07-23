@@ -579,6 +579,13 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.aot_dbt_return_success_count.load(std::memory_order_relaxed);
     attempt->aot_dbt_return_fallback_count =
         context.aot_dbt_return_fallback_count.load(std::memory_order_relaxed);
+    for (std::uint32_t index = 0;
+         index < kAotDbtReturnFallbackReasonCount; ++index)
+    {
+        attempt->aot_dbt_return_fallback_reason_counts[index] =
+            context.aot_dbt_return_fallback_reason_counts[index].load(
+                std::memory_order_relaxed);
+    }
     attempt->aot_indirect_dispatch_count =
         context.aot_indirect_dispatch_count.load(std::memory_order_relaxed);
     attempt->aot_inline_cache_patch_attempt_count =

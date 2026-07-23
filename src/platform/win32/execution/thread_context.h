@@ -152,6 +152,8 @@ struct ThreadContext
     std::atomic<std::uint32_t> aot_dbt_return_attempt_count{0};
     std::atomic<std::uint32_t> aot_dbt_return_success_count{0};
     std::atomic<std::uint32_t> aot_dbt_return_fallback_count{0};
+    std::atomic<std::uint32_t> aot_dbt_return_fallback_reason_counts[
+        kAotDbtReturnFallbackReasonCount] = {};
     std::atomic<std::uint32_t> aot_patch_cache_miss_address{0};
     std::atomic<std::uint32_t> aot_patch_guest_target{0};
     std::atomic<std::uint32_t> aot_patch_cache_target{0};

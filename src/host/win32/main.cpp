@@ -840,6 +840,28 @@ void PrintExecutionAttempt(
                 attempt.aot_dbt_return_attempt_count,
                 attempt.aot_dbt_return_success_count,
                 attempt.aot_dbt_return_fallback_count);
+    logger.info(
+        "Win32 AOT-DBT return fallback reason "
+        "site/state/opcode/stack/zero/hle/quarantine/non-guest/translate/unknown: "
+        "{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
+        attempt.aot_dbt_return_fallback_reason_counts[0],
+        attempt.aot_dbt_return_fallback_reason_counts[1],
+        attempt.aot_dbt_return_fallback_reason_counts[2],
+        attempt.aot_dbt_return_fallback_reason_counts[3],
+        attempt.aot_dbt_return_fallback_reason_counts[4],
+        attempt.aot_dbt_return_fallback_reason_counts[5],
+        attempt.aot_dbt_return_fallback_reason_counts[6],
+        attempt.aot_dbt_return_fallback_reason_counts[7],
+        attempt.aot_dbt_return_fallback_reason_counts[8],
+        attempt.aot_dbt_return_fallback_reason_counts[9]);
+    std::uint64_t aot_dbt_return_fallback_reason_total = 0;
+    for (std::uint32_t count :
+         attempt.aot_dbt_return_fallback_reason_counts)
+    {
+        aot_dbt_return_fallback_reason_total += count;
+    }
+    logger.info("Win32 AOT-DBT return fallback reason total: {}",
+                aot_dbt_return_fallback_reason_total);
     logger.info("Win32 AOT boundary reason ret/indir/direct/cond/other: "
                 "{}/{}/{}/{}/{}",
                 attempt.aot_boundary_return_count,

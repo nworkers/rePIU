@@ -1,3 +1,107 @@
+## 2026-07-24 Task 281 (계측·실측 완료, 다음 작업 확정): RET fallback은 100% quarantined target — RET 정책은 유지하고 다음 대상은 indirect call/jump host dispatch / Task 281 (Instrumented and measured; next work fixed): RET fallbacks are 100% quarantined targets — keep the RET policy and move to indirect call/jump host dispatch
+
+**상태 (Status):** Task 280 로드맵 3단계 구현 완료. VS2022 Win32 x86 Debug 전체 빌드,
+AOT probe 전체, 신규 `dbt_return_fallback_probe` 통과. 격리 EEPROM `aot-dbt` 실구동
+2회(15초, 120초 hot phase) 완료. 원시 로그는
+`build/task281-headless-20260724-014514/attempt-01-stderr.log`와
+`build/task281-headless-hot-20260724-014853/stderr.log`입니다.
+
+### 확인된 실측 (confirmed)
+
+Task 277이 남긴 단일 fallback 총계를 배타적 10개 원인으로 분해했습니다. 두 실행 모두
+`quarantined target` 한 칸에 100% 집중했습니다.
+
+| 지표 | 15초 | 120초 hot phase |
+|---|---:|---:|
+| DBT return attempt/success/fallback | 6,298 / 884 / 5,413 | 11,828 / 3,794 / 8,034 |
+| fallback reason vector¹ | `0/0/0/0/0/0/5413/0/0/0` | `0/0/0/0/0/0/8034/0/0/0` |
+| success 비율 | 14.0% | 32.1% |
+| AOT boundary ret / indir / other | 5,413 / 33 / 15,218 | 8,034 / **34,851** / 70,957 |
+| AOT entry/boundary/reentry/fallback | 1 / 20,664 / 21,584 / 0 | 1 / 113,842 / 117,742 / 0 |
+| DBT HLE reentry attempt/success | 12,360 / 2,399 | 293,152 / 12,983 |
+| progress | 15,630 | 128,767 |
+| exception caught / fatal / legacy fallback | false / 0 / 0 | false / 0 / 0 |
+| 격리 EEPROM SHA-256 | 원본과 동일 | 원본과 동일 |
+
+¹ 순서는 site/state/opcode/stack/zero/hle/**quarantine**/non-guest/translate/unknown.
+
+결론 세 가지가 확정됐습니다.
+
+1. **RET fallback의 근인은 ABI도 번역 실패도 아니라 target 안전 정책입니다.**
+   site, state, opcode, stack, zero, HLE, non-guest, translation 8개 원인은 두 실행
+   모두 0이었습니다. 즉 Task 277 host-stack ABI와 return target 해석 자체는 관측된
+   범위에서 결함이 없습니다. 남은 fallback은 전부 return target의 guest page가
+   quarantine(SMC로 retire)된 경우입니다.
+2. **따라서 RET의 quarantine 정책은 완화하면 안 됩니다.** quarantine은 자기 수정
+   코드 페이지에 대한 정확성 장치이므로, 이를 성공 경로로 바꾸면 `docs/analysis`에
+   기록된 SMC coherence 보증을 깨뜨립니다. RET 경로에서 추가로 안전하게 회수할 수
+   있는 fallback은 사실상 없습니다.
+3. **다음 성능 대상은 계획대로 indirect call/jump host dispatcher입니다.** hot phase
+   에서 `indir` boundary는 34,851회로 RET fallback 8,034회의 약 4.3배입니다. 같은
+   host-stack ABI를 재사용할 때 기대 회수량이 가장 큰 경계입니다.
+
+```mermaid
+flowchart TD
+    E["C++ return resolver 진입 (attempt)"] --> S{"site/state/opcode/stack"}
+    S -->|"실측 0건"| X["ABI 결함 아님"]
+    S -->|"통과"| T{"target 정책"}
+    T -->|"quarantined: 5,413 / 8,034 (100%)"| Q["fail-closed INT3/VEH 유지"]
+    T -->|"hle/zero/non-guest/translate: 0건"| Z["관측되지 않음"]
+    T -->|"성공"| C["cache continuation"]
+```
+
+### 미해결 (open): attempt 회계의 in-flight 오차 1건
+
+15초 실행에서 `attempt(6,298) = success(884) + fallback(5,413) + 1`이었습니다. 120초
+실행은 `11,828 = 3,794 + 8,034`로 정확히 일치했습니다. 원인은 확인됐습니다. 현재
+adapter는 C++ resolver 진입 직후 attempt를 먼저 증가시키므로, graceful timeout이
+resolver 실행 중에 발생하면 그 1건이 success에도 fallback에도 도달하지 못한 채
+표본이 종료됩니다. 즉 계측 논리 오류가 아니라 관측 시점 경계 효과이며, 실행 의미와
+분류 결과에는 영향이 없습니다.
+
+**할 일:** 보고되는 attempt를 진입 시점 카운터가 아니라 `attempt = success +
+fallback`으로 도출하도록 보정합니다(진입 카운터는 유지하거나 별도 in-flight 지표로
+분리). 이렇게 하면 timeout 표본에서도 회계 불변식이 항상 성립합니다. 이 보정은
+Task 281 브랜치에서 완료하지 못했고, Stage 4 착수 전 선행 작업으로 남깁니다.
+
+### 다음 작업 (Task 280 로드맵 4단계) — operand capture 방식 결정
+
+`FF /2` near indirect call과 `FF /4` near indirect jump의 inline-cache miss를 같은
+host-stack thunk로 처리할 때, target operand를 어떻게 얻을지가 유일한 설계 분기입니다.
+
+| 안 | 방법 | 평가 |
+|---|---|---|
+| **A안 (권장)** | thunk가 저장한 guest `CONTEXT`로 기존 `HandleAotIndirectTransfer`를 재사용 | 현재 target 해석 의미를 그대로 보존하고 변경 범위가 작음. Task 277 ABI 검증 자산을 그대로 승계 |
+| B안 | emitter가 operand target을 직접 캡처해 thunk에 전달 | 코드 캐시 ABI가 복잡해지고, memory operand를 읽는 시점이 원본 실행 시점과 달라질 수 있음 |
+
+**A안으로 진행합니다.** B안은 A안에서 register/memory operand 재현이 불충분하다고
+실측될 때만 재검토합니다.
+
+4단계의 fail-closed 정책은 Task 281 결과를 그대로 따릅니다. quarantine, HLE,
+non-guest, translation 실패는 전부 기존 provenance `INT3`/VEH로 되돌리고, indirect
+경로에서도 직접 처리 범위를 넓히지 않습니다. 성공 판정 기준은 fatal/legacy fallback 0,
+EEPROM hash 불변, 동일 조건 A/B에서의 의미 기반 milestone 일치입니다.
+
+**English summary.** Task 281 decomposed the single Task 277 RET fallback total into ten
+exclusive causes. Both isolated-EEPROM `aot-dbt` runs put 100% of fallbacks in one slot:
+`quarantined target` (5,413/5,413 at 15 s and 8,034/8,034 in the 120 s hot phase). The
+site, state, opcode, stack, zero, HLE, non-guest, and translation causes were all zero, so
+the Task 277 host-stack ABI and return-target resolution are not the limiter. Because
+quarantine is the correctness device for self-modifying guest pages, the RET policy must
+not be relaxed — there is effectively no safely recoverable RET fallback left. In the hot
+phase, indirect boundaries (34,851) outnumbered RET fallbacks (8,034) by about 4.3x, so the
+next lever is the planned Stage 4 indirect call/jump host dispatcher. Both runs had zero
+exceptions, fatal state, and legacy fallback, and unchanged isolated EEPROM hashes.
+
+One open item: the 15-second sample recorded attempt = success + fallback + 1 because the
+adapter increments attempt on C++ resolver entry and the graceful timeout landed inside the
+resolver. The 120-second sample matched exactly. This is a sampling-boundary effect, not a
+classification error, but the reported attempt should be derived as `success + fallback`
+before Stage 4 starts. For Stage 4 operand capture, option A — reuse
+`HandleAotIndirectTransfer` with the thunk's saved guest `CONTEXT` — is chosen over emitter
+side operand capture, which would complicate the code-cache ABI and change when memory
+operands are read.
+
 ## 2026-07-23 Task 275 (구현·통제 검증 완료, opt-in 유지): 직선 span으로 single-step 30.2% 감소, 게임 milestone 개선은 미확정 / Task 275 (Implemented and controlled; remains opt-in): linear spans reduce single-step by 30.2%, game-milestone gain unconfirmed
 
 **상태 (Status):** `aot-dynamic` 기본 clean-function fast path에서

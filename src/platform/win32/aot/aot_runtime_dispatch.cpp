@@ -1057,20 +1057,34 @@ bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
 
 bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
                              CONTEXT* win32_context,
-                             ThreadContext* context)
+                             ThreadContext* context,
+                             AotDbtReturnFallbackReason* fallback_reason)
 {
+    if (fallback_reason != nullptr)
+    {
+        *fallback_reason = AotDbtReturnFallbackReason::kUnknown;
+    }
     if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
         win32_context == nullptr || context == nullptr ||
         context->aot_placement == nullptr ||
         !context->aot_reentry_pending ||
         exception_info->ExceptionRecord->ExceptionCode != EXCEPTION_BREAKPOINT)
     {
+        if (fallback_reason != nullptr)
+        {
+            *fallback_reason = AotDbtReturnFallbackReason::kInvalidState;
+        }
         return false;
     }
     const auto* instruction = reinterpret_cast<const std::uint8_t*>(
         static_cast<std::uintptr_t>(win32_context->Eip));
     if (instruction[0] != 0xC3U && instruction[0] != 0xC2U)
     {
+        if (fallback_reason != nullptr)
+        {
+            *fallback_reason =
+                AotDbtReturnFallbackReason::kInvalidInstruction;
+        }
         return false;
     }
     std::uint32_t target = 0;
@@ -1080,6 +1094,11 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
                 static_cast<std::uintptr_t>(win32_context->Esp)),
             &target))
     {
+        if (fallback_reason != nullptr)
+        {
+            *fallback_reason =
+                AotDbtReturnFallbackReason::kUnreadableStack;
+        }
         return false;
     }
     context->aot_last_return_target.store(target,
@@ -1144,8 +1163,32 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
             context->aot_last_return_matches_call ? 1L : 0L);
     }
     std::uint32_t cache_target = target;
+    AotDbtReturnFallbackReason target_failure =
+        AotDbtReturnFallbackReason::kTranslationFailure;
+    if (target == 0U)
+    {
+        target_failure = AotDbtReturnFallbackReason::kZeroTarget;
+    }
+    else if (IsAotHleBoundaryAddress(context, target))
+    {
+        target_failure = AotDbtReturnFallbackReason::kHleTarget;
+    }
+    else if (IsWin32AotGuestPageQuarantined(
+                 *context->aot_placement, target))
+    {
+        target_failure = AotDbtReturnFallbackReason::kQuarantinedTarget;
+    }
+    else if (!IsGuestInstructionPointer(context, target) &&
+             !IsAotCacheAddress(context, target))
+    {
+        target_failure = AotDbtReturnFallbackReason::kNonGuestTarget;
+    }
     if (!ResolveAotTransferTarget(context, target, &cache_target))
     {
+        if (fallback_reason != nullptr)
+        {
+            *fallback_reason = target_failure;
+        }
         return false;
     }
     if (IsAotInlineCacheMiss(context, context->aot_reentry_cache_address))
