@@ -37,6 +37,7 @@
 #include "thread_context.h"
 #include "linexe_glide_boundary.h"
 #include "timer_interrupt_boundary.h"
+#include "aot_dbt_call_step_probe.h"
 #include "aot_dbt_dispatch.h"
 #include "aot_runtime_dispatch.h"
 #include "instruction_emulation.h"
@@ -1175,12 +1176,14 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
         return true;
     }
 
+    const bool call_step_return_watch =
+        AotDbtCallStepReturnWatchActive(context);
     bool entered_native = false;
-    if (RouteANativeRegionEnabled())
+    if (!call_step_return_watch && RouteANativeRegionEnabled())
     {
         entered_native = TryEnterNativeRegion(win32_context, context);
     }
-    else
+    else if (!call_step_return_watch)
     {
         entered_native = detail::TryEnterNativeFastPath(
             win32_context,
@@ -1188,7 +1191,9 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
             context->runtime_base,
             context->runtime_size);
     }
-    if (!entered_native && NativeLinearSpanEnabled())
+    if (!call_step_return_watch &&
+        !entered_native &&
+        NativeLinearSpanEnabled(context->execution_backend))
     {
         entered_native = TryEnterNativeLinearSpan(win32_context, context);
     }
@@ -2338,11 +2343,16 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         }
         return EXCEPTION_CONTINUE_EXECUTION;
     }
+    if (HandleAotDbtCallStepProbe(
+            exception_info, win32_context, context))
+    {
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     // Task 275 linear spans use Dr0 only. On the expected boundary, restore
     // debug state and deliberately continue through the normal #DB chain so the
     // boundary instruction receives the exact existing single-step/HLE policy.
     // Any other exception cancels the span and follows the same fail-closed path.
-    if (NativeLinearSpanEnabled() &&
+    if (NativeLinearSpanEnabled(context->execution_backend) &&
         context->native_fast_path.linear_span_active)
     {
         const DWORD span_code = exception_info->ExceptionRecord != nullptr
@@ -3060,6 +3070,18 @@ bool RunWin32ExecutionThread(
     context.enable_single_step_trace = enable_single_step_trace;
     context.aot_placement = aot_placement;
     context.execution_backend = execution_backend;
+    char call_return_trace_text[8] = {};
+    const DWORD call_return_trace_length = GetEnvironmentVariableA(
+        "REPIU_AOT_DBT_CALL_TRACE", call_return_trace_text,
+        static_cast<DWORD>(sizeof(call_return_trace_text)));
+    context.aot_dbt_call_return_trace_configured =
+        call_return_trace_length == 1U &&
+        call_return_trace_text[0] == '1';
+    char call_step_probe_text[128] = {};
+    GetEnvironmentVariableA(
+        "REPIU_AOT_DBT_CALL_STEP", call_step_probe_text,
+        static_cast<DWORD>(sizeof(call_step_probe_text)));
+    ConfigureAotDbtCallStepProbe(&context, call_step_probe_text);
     context.glide_backend.SetExecutionBackend(execution_backend);
     char probe_offset_text[32] = {};
     const DWORD probe_offset_length = GetEnvironmentVariableA(

@@ -1,5 +1,6 @@
 #include "repiu/platform/win32/aot_code_cache_win32.h"
 #include "repiu/runtime/aot_translation_plan.h"
+#include "aot/aot_dbt_indirect_dispatch.h"
 #include "aot/aot_dbt_return_dispatch.h"
 
 #include <cstdio>
@@ -77,6 +78,40 @@ bool ResolveWin32AotDbtReturnDispatchSites(
     const std::uint32_t thunk = static_cast<std::uint32_t>(thunk_value);
     for (const runtime::AotDbtReturnDispatchSite& site :
          image.dbt_return_dispatch_sites)
+    {
+        const std::uint32_t miss_address =
+            image_absolute_base + site.miss_cache_offset;
+        std::memcpy(image_bytes + site.miss_address_immediate_offset,
+                    &miss_address, sizeof(miss_address));
+        const std::uint32_t next_instruction = image_absolute_base +
+            site.thunk_displacement_offset + 4U;
+        const std::int32_t displacement = static_cast<std::int32_t>(
+            thunk - next_instruction);
+        std::memcpy(image_bytes + site.thunk_displacement_offset,
+                    &displacement, sizeof(displacement));
+    }
+    return true;
+}
+
+bool ResolveWin32AotDbtIndirectDispatchSites(
+    const runtime::AotCodeCacheImage& image,
+    std::uint8_t* image_bytes,
+    std::uint32_t image_absolute_base)
+{
+    if (image.dbt_indirect_dispatch_sites.empty())
+    {
+        return true;
+    }
+    const std::uintptr_t thunk_value = reinterpret_cast<std::uintptr_t>(
+        GetAotDbtIndirectMissThunkAddress());
+    if (image_bytes == nullptr || thunk_value == 0U ||
+        thunk_value > std::numeric_limits<std::uint32_t>::max())
+    {
+        return false;
+    }
+    const std::uint32_t thunk = static_cast<std::uint32_t>(thunk_value);
+    for (const runtime::AotDbtIndirectDispatchSite& site :
+         image.dbt_indirect_dispatch_sites)
     {
         const std::uint32_t miss_address =
             image_absolute_base + site.miss_cache_offset;
@@ -189,6 +224,14 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
         placement->message = "AOT-DBT return thunk is unavailable";
         return true;
     }
+    if (!ResolveWin32AotDbtIndirectDispatchSites(
+            image, static_cast<std::uint8_t*>(memory),
+            static_cast<std::uint32_t>(base)))
+    {
+        VirtualFree(memory, 0, MEM_RELEASE);
+        placement->message = "AOT-DBT indirect thunk is unavailable";
+        return true;
+    }
     DWORD old_protection = 0;
     if (VirtualProtect(memory, capacity, PAGE_EXECUTE_READ,
                        &old_protection) == 0)
@@ -210,11 +253,15 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
     placement->indirect_inline_cache_sites =
         image.indirect_inline_cache_sites;
     placement->dbt_return_dispatch_sites = image.dbt_return_dispatch_sites;
+    placement->dbt_indirect_dispatch_sites =
+        image.dbt_indirect_dispatch_sites;
     placement->segment_override_sites = image.segment_override_sites;
     placement->indirect_inline_cache_entry_count =
         image.indirect_inline_cache_entry_count;
     placement->dbt_return_miss_dispatch_enabled =
         image.dbt_return_miss_dispatch_enabled;
+    placement->dbt_indirect_miss_dispatch_enabled =
+        image.dbt_indirect_miss_dispatch_enabled;
     placement->placed = true;
     placement->message = "AOT code cache placed as Win32 execute-read memory";
     return true;
@@ -274,6 +321,8 @@ bool AppendWin32DynamicAotTranslation(
         placement->indirect_inline_cache_entry_count;
     build_options.enable_dbt_return_miss_dispatch =
         placement->dbt_return_miss_dispatch_enabled;
+    build_options.enable_dbt_indirect_miss_dispatch =
+        placement->dbt_indirect_miss_dispatch_enabled;
     if (!runtime::BuildAotTranslationPlanFromEntry(
             snapshot, guest_entry, excluded_ranges, &plan) ||
         !runtime::BuildAotCodeCacheImage(plan, build_options, &image))
@@ -382,6 +431,17 @@ bool AppendWin32DynamicAotTranslation(
                        &ignored);
         result->unsafe_failure = true;
         result->message = "AOT-DBT return thunk is unavailable";
+        return true;
+    }
+    if (!ResolveWin32AotDbtIndirectDispatchSites(
+            image, static_cast<std::uint8_t*>(cache) + append_offset,
+            placement->base_address + append_offset))
+    {
+        DWORD ignored = 0;
+        VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ,
+                       &ignored);
+        result->unsafe_failure = true;
+        result->message = "AOT-DBT indirect thunk is unavailable";
         return true;
     }
     std::vector<std::uint32_t> relinked_cache_offsets;
@@ -500,6 +560,16 @@ bool AppendWin32DynamicAotTranslation(
         site.fallback_cache_offset += append_offset;
         site.success_cache_offset += append_offset;
         placement->dbt_return_dispatch_sites.push_back(site);
+    }
+    for (runtime::AotDbtIndirectDispatchSite site :
+         image.dbt_indirect_dispatch_sites)
+    {
+        site.miss_cache_offset += append_offset;
+        site.miss_address_immediate_offset += append_offset;
+        site.thunk_displacement_offset += append_offset;
+        site.fallback_cache_offset += append_offset;
+        site.success_cache_offset += append_offset;
+        placement->dbt_indirect_dispatch_sites.push_back(site);
     }
     for (runtime::AotSegmentOverrideSite site : image.segment_override_sites)
     {

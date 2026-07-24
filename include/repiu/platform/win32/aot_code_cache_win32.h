@@ -28,6 +28,8 @@ struct Win32AotCodeCachePlacement
         indirect_inline_cache_sites;
     std::vector<runtime::AotDbtReturnDispatchSite>
         dbt_return_dispatch_sites;
+    std::vector<runtime::AotDbtIndirectDispatchSite>
+        dbt_indirect_dispatch_sites;
     // Task 264 Phase 3a: natively-translated segment-override accesses, carried
     // so they can be re-resolved (guard selector + folded base) once the guest
     // configures the segment register, or on any later reload.
@@ -43,6 +45,7 @@ struct Win32AotCodeCachePlacement
     std::uint32_t indirect_inline_cache_entry_count =
         runtime::kDefaultAotIndirectInlineCacheEntryCount;
     bool dbt_return_miss_dispatch_enabled = false;
+    bool dbt_indirect_miss_dispatch_enabled = false;
     std::string message;
 };
 

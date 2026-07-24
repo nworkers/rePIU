@@ -31,12 +31,17 @@ constexpr std::uint32_t kWin32GlideTriangleTraceCapacity = 16;
 constexpr std::uint32_t kWin32GlideProducerVertexDwordCount = 15;
 constexpr std::uint32_t kWin32DeferredPortIoLimit = 65536;
 
-enum class AotDbtReturnFallbackReason : std::uint32_t
+// Task 281 introduced this exclusive cause model for RET miss dispatch; Task 282
+// shares it with indirect call/jump miss dispatch, which fails for the same
+// reasons. `kUnreadableSource` is the return target on the guest stack for RET
+// and the register or ModRM memory operand for indirect transfers. Counters stay
+// per path so the two dispatchers remain separately comparable.
+enum class AotDbtDispatchFallbackReason : std::uint32_t
 {
     kInvalidSite = 0,
     kInvalidState,
     kInvalidInstruction,
-    kUnreadableStack,
+    kUnreadableSource,
     kZeroTarget,
     kHleTarget,
     kQuarantinedTarget,
@@ -46,8 +51,8 @@ enum class AotDbtReturnFallbackReason : std::uint32_t
     kCount,
 };
 
-constexpr std::uint32_t kAotDbtReturnFallbackReasonCount =
-    static_cast<std::uint32_t>(AotDbtReturnFallbackReason::kCount);
+constexpr std::uint32_t kAotDbtDispatchFallbackReasonCount =
+    static_cast<std::uint32_t>(AotDbtDispatchFallbackReason::kCount);
 
 struct Win32GlideTriangleObservation
 {
@@ -301,6 +306,88 @@ struct Win32AotTransferTraceEntry
 
 constexpr std::uint32_t kWin32AotTransferTraceCapacity = 32;
 
+enum class Win32AotTransferOrigin : std::uint32_t
+{
+    kVeh = 0,
+    kHost = 1,
+};
+
+enum class Win32AotCallReturnTraceEventKind : std::uint32_t
+{
+    kCall = 0,
+    kReturn = 1,
+};
+
+struct Win32AotCallReturnTraceEntry
+{
+    std::uint32_t sequence = 0;
+    Win32AotCallReturnTraceEventKind kind =
+        Win32AotCallReturnTraceEventKind::kCall;
+    Win32AotTransferOrigin origin = Win32AotTransferOrigin::kVeh;
+    std::uint32_t call_sequence = 0;
+    std::uint32_t source = 0;
+    std::uint32_t target = 0;
+    std::uint32_t return_address = 0;
+    std::uint32_t esp = 0;
+    std::uint32_t expected_source = 0;
+    std::uint32_t expected_target = 0;
+    std::uint32_t expected_return_address = 0;
+    std::uint32_t expected_esp = 0;
+    bool correlated = false;
+    bool target_matches = false;
+    bool esp_matches = false;
+};
+
+constexpr std::uint32_t kWin32AotCallReturnTraceCapacity = 256;
+
+enum class Win32AotCallStepProbePhase : std::uint32_t
+{
+    kIdle = 0,
+    kAwaitPreC3 = 1,
+    kAwaitPostC3 = 2,
+    kAwaitReturnTarget = 3,
+};
+
+enum class Win32AotCallStepProbeEventKind : std::uint32_t
+{
+    kPreC3 = 0,
+    kPostC3 = 1,
+    kReturnTarget = 2,
+    kConflict = 3,
+    kUnexpected = 4,
+};
+
+struct Win32AotCallStepProbeEntry
+{
+    std::uint32_t sequence = 0;
+    Win32AotCallStepProbeEventKind kind =
+        Win32AotCallStepProbeEventKind::kPreC3;
+    std::uint32_t call_sequence = 0;
+    std::uint32_t guest_source = 0;
+    std::uint32_t guest_target = 0;
+    std::uint32_t guest_return = 0;
+    std::uint32_t eip = 0;
+    std::uint32_t esp = 0;
+    std::uint32_t eflags = 0;
+    std::uint32_t eax = 0;
+    std::uint32_t ebx = 0;
+    std::uint32_t ecx = 0;
+    std::uint32_t edx = 0;
+    std::uint32_t esi = 0;
+    std::uint32_t edi = 0;
+    std::uint32_t ebp = 0;
+    std::uint32_t stack_dwords[4] = {};
+    std::uint32_t stack_valid_mask = 0;
+    std::uint32_t expected_eip = 0;
+    std::uint32_t expected_esp = 0;
+    std::uint32_t dr6 = 0;
+    bool eip_matches = false;
+    bool esp_matches = false;
+};
+
+constexpr std::uint32_t kWin32AotCallStepProbeTargetCapacity = 8;
+constexpr std::uint32_t kWin32AotCallStepProbeTraceCapacity = 32;
+
 struct Win32MinimalExecutionAttempt
 {
     bool valid = false;
@@ -384,11 +471,22 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t aot_dynamic_added_bytes = 0;
     std::uint32_t aot_dbt_hle_reentry_attempt_count = 0;
     std::uint32_t aot_dbt_hle_reentry_success_count = 0;
+    // `entry` counts C++ resolver entries; `attempt` is derived as
+    // success + fallback so the accounting invariant also holds for a sample
+    // whose graceful timeout landed inside the resolver (Task 281 open item).
+    // `entry - attempt` is then the in-flight count at the observation point.
+    std::uint32_t aot_dbt_return_entry_count = 0;
     std::uint32_t aot_dbt_return_attempt_count = 0;
     std::uint32_t aot_dbt_return_success_count = 0;
     std::uint32_t aot_dbt_return_fallback_count = 0;
     std::uint32_t aot_dbt_return_fallback_reason_counts[
-        kAotDbtReturnFallbackReasonCount] = {};
+        kAotDbtDispatchFallbackReasonCount] = {};
+    std::uint32_t aot_dbt_indirect_entry_count = 0;
+    std::uint32_t aot_dbt_indirect_attempt_count = 0;
+    std::uint32_t aot_dbt_indirect_success_count = 0;
+    std::uint32_t aot_dbt_indirect_fallback_count = 0;
+    std::uint32_t aot_dbt_indirect_fallback_reason_counts[
+        kAotDbtDispatchFallbackReasonCount] = {};
     std::uint32_t aot_indirect_dispatch_count = 0;
     std::uint32_t aot_inline_cache_patch_attempt_count = 0;
     std::uint32_t aot_inline_cache_patch_success_count = 0;
@@ -444,6 +542,31 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t aot_transfer_trace_count = 0;
     Win32AotTransferTraceEntry
         aot_transfer_trace[kWin32AotTransferTraceCapacity];
+    bool aot_dbt_call_return_trace_configured = false;
+    std::uint32_t aot_dbt_call_return_trace_count = 0;
+    std::uint32_t aot_dbt_call_return_call_count = 0;
+    std::uint32_t aot_dbt_call_return_return_count = 0;
+    std::uint32_t aot_dbt_call_return_match_count = 0;
+    std::uint32_t aot_dbt_call_return_mismatch_count = 0;
+    std::uint32_t aot_dbt_call_return_overwrite_count = 0;
+    bool aot_dbt_call_return_first_divergence_valid = false;
+    Win32AotCallReturnTraceEntry aot_dbt_call_return_first_divergence;
+    Win32AotCallReturnTraceEntry
+        aot_dbt_call_return_trace[kWin32AotCallReturnTraceCapacity];
+    bool aot_dbt_call_step_probe_configured = false;
+    std::uint32_t aot_dbt_call_step_probe_target_count = 0;
+    std::uint32_t aot_dbt_call_step_probe_targets[
+        kWin32AotCallStepProbeTargetCapacity] = {};
+    std::uint32_t aot_dbt_call_step_probe_trace_count = 0;
+    std::uint32_t aot_dbt_call_step_probe_arm_count = 0;
+    std::uint32_t aot_dbt_call_step_probe_complete_count = 0;
+    std::uint32_t aot_dbt_call_step_probe_conflict_count = 0;
+    std::uint32_t aot_dbt_call_step_probe_skipped_count = 0;
+    Win32AotCallStepProbePhase aot_dbt_call_step_probe_phase =
+        Win32AotCallStepProbePhase::kIdle;
+    std::uint32_t aot_dbt_call_step_probe_active_call_sequence = 0;
+    Win32AotCallStepProbeEntry aot_dbt_call_step_probe_trace[
+        kWin32AotCallStepProbeTraceCapacity];
     std::uint32_t diagnostic_poll_iteration_count = 0;
     std::uint32_t diagnostic_progress_count = 0;
     std::uint32_t diagnostic_quiet_iteration_count = 0;

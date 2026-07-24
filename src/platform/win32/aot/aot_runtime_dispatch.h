@@ -114,13 +114,19 @@ bool HandleAotConditionalTransfer(EXCEPTION_POINTERS* exception_info,
 
 bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
                                CONTEXT* win32_context,
-                               ThreadContext* context);
+                               ThreadContext* context,
+                               AotDbtDispatchFallbackReason* fallback_reason =
+                                   nullptr,
+                               Win32AotTransferOrigin origin =
+                                   Win32AotTransferOrigin::kVeh);
 
 bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
                              CONTEXT* win32_context,
                              ThreadContext* context,
-                             AotDbtReturnFallbackReason* fallback_reason =
-                                 nullptr);
+                             AotDbtDispatchFallbackReason* fallback_reason =
+                                 nullptr,
+                             Win32AotTransferOrigin origin =
+                                 Win32AotTransferOrigin::kVeh);
 
 bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
                       CONTEXT* win32_context,

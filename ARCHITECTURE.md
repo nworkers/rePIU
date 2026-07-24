@@ -327,23 +327,31 @@ DOS file diagnostics include a bounded 64-entry read/seek ring. It preserves chr
 
 Win32 native execution uses a fail-closed function return fast path implemented by `native_fast_path.*` and `verified_region_analyzer.*`. Pinned Zydis v4.1.1 decodes observed direct-call targets in legacy 32-bit mode; rePIU recursively verifies runtime-bounded direct control flow and rejects privileged, interrupt, I/O, system, segment-dependent, indirect, far, or undecodable paths. An approved function runs with Trap Flag cleared until an x86 hardware execution breakpoint at its validated guest return address reenters VEH. Any intermediate exception restores debug registers and single-step state and permanently rejects that function for the current run.
 
-Task 275의 opt-in `native_linear_span.*`은 함수 진입으로 증명되지 않은 일반 single-step
+Task 275의 `native_linear_span.*`은 함수 진입으로 증명되지 않은 일반 single-step
 지점의 coverage를 보완합니다. Zydis가 다음 민감 명령, 제어 전이, 명시적 memory write를
 경계로 찾고 그 앞에 일반 명령이 두 개 이상이면 Dr0 실행 breakpoint를 경계에 설치한 뒤
 TF를 끕니다. 경계 #DB는 debug register와 TF를 복원하고 기존 single-step/HLE chain에
 경계 명령을 넘깁니다. memory write는 span 밖에서 실행되며 scan 결과를 cache하지 않아
 self-modifying code 뒤의 stale decode를 재사용하지 않습니다. 예상하지 않은 exception도
-같은 fail-closed 복원 경로를 사용합니다. `REPIU_NATIVE_LINEAR_SPAN=1`일 때만 활성화되며
-기본값은 꺼짐입니다.
+같은 fail-closed 복원 경로를 사용합니다.
 
-The opt-in Task 275 `native_linear_span.*` path extends coverage from ordinary single-step
+Task 287의 반복 A/B 뒤 `aot-dbt`는 환경 변수 미지정 시 이 span을 기본 활성화합니다.
+다른 backend의 기본값은 계속 OFF입니다. `REPIU_NATIVE_LINEAR_SPAN=1|on|true`는
+backend와 무관하게 ON, `0|off|false`는 OFF이며 알 수 없는 값도 fail-closed OFF입니다.
+프로그램 전체의 기본 실행 backend는 이 정책으로 바뀌지 않습니다.
+
+The Task 275 `native_linear_span.*` path extends coverage from ordinary single-step
 sites that cannot enter a verified function. Zydis finds the next sensitive instruction,
 control transfer, or explicit memory write; when at least two ordinary instructions precede
 it, Dr0 guards that boundary while TF is clear. The boundary #DB restores debug state and
 TF, then passes the boundary instruction to the existing single-step/HLE chain. Memory
 writes stay outside spans and results are not cached, preventing stale decoded spans after
-self-modification. Unexpected exceptions use the same fail-closed restoration. The path is
-enabled only by `REPIU_NATIVE_LINEAR_SPAN=1` and remains off by default.
+self-modification. Unexpected exceptions use the same fail-closed restoration.
+
+After Task 287's repeated A/B, `aot-dbt` enables spans by default when the environment is
+unset; other backends remain off by default. `REPIU_NATIVE_LINEAR_SPAN=1|on|true` enables
+the path for any backend, `0|off|false` disables it, and unknown values fail closed to
+disabled. This policy does not change the program-wide default execution backend.
 ## Reentrancy-safe guest bulk copy
 
 Win32 VEH instruction handling must not directly dereference a guest range when the access can recursively enter the handler. `REP MOVS` reads through a temporary buffer with `ReadProcessMemory` and writes through the guest-write helper, which temporarily applies writable page protection and restores it afterward.
@@ -613,6 +621,127 @@ return target (5,413/5,413 and 8,034/8,034) with all other causes zero. Quaranti
 protects self-modifying pages and therefore stays fail-closed on the RET path; the
 same hot phase produced 34,851 indirect boundaries, about 4.3x the RET fallbacks,
 which fixes Stage 4 on indirect call/jump host dispatch.
+
+### AOT-DBT indirect call/jump host dispatch (Stage 4, opt-in) / 4단계 (opt-in)
+
+Task 282는 4단계를 A안으로 구현합니다. `FF /2`/`FF /4` inline-cache miss tail을 3슬롯
+프레임(return addr / miss / guest source)으로 방출해 Task 277 host-stack thunk로
+연결하고, adapter가 저장된 guest `CONTEXT`로 기존 `HandleAotIndirectTransfer`를
+재사용합니다. call은 `C3`, jump은 `C2 04 00` continuation으로 스택 의미를 재현하며,
+실패는 `lea esp,[esp+8]; INT3`로 fail-closed합니다. fallback 원인 enum은 return과 공용
+(`AotDbtDispatchFallbackReason`, slot 3=`kUnreadableSource`)이고, 보고 attempt는 두 경로
+모두 `success + fallback`으로 도출합니다.
+
+합성 probe(`dbt_indirect_dispatch_all`)는 통과하지만, 실제 `aot-dbt`에서 활성화하면 Glide
+attract 경로에서 결정적으로 크래시합니다. 성공 전이의 최종 상태는 VEH
+`CONTINUE_EXECUTION` 경로와 증명상 동일한데도 누적 손상이 발생하며, layout·inline cache
+patch·FPU/SSE는 통제 실험으로 근인에서 배제됐습니다. 따라서 이 경로는 **기본 비활성
+(opt-in, `REPIU_AOT_DBT_INDIRECT=1`)** 이며, 기본 `aot-dbt`는 Task 281 상태를 유지합니다.
+상세는 `docs/analysis/current-execution-frontier.md` Task 282 항목을 참조합니다.
+
+Task 282 implements Stage 4 (option A): the `FF /2` / `FF /4` inline-cache miss tail
+emits a three-slot frame and routes to the Task 277 host-stack thunk, whose adapter
+reuses `HandleAotIndirectTransfer` from the saved guest `CONTEXT`; calls use a `C3`
+continuation and jumps a `C2 04 00`, and failures fail closed to `lea esp,[esp+8]; INT3`.
+The fallback-cause enum is shared with the RET path, and the reported attempt is derived
+as `success + fallback` for both paths. The synthetic probe passes, but enabling the path
+live deterministically crashes the Glide attract path even though the success transfer's
+final state is provably identical to the VEH `CONTINUE_EXECUTION` path; layout, patching,
+and FPU/SSE were ruled out. The path is therefore opt-in and disabled by default
+(`REPIU_AOT_DBT_INDIRECT=1`), and the default `aot-dbt` keeps its Task 281 behavior.
+
+### AOT-DBT CALL/RET 결정적 진단 경계 / deterministic CALL/RET diagnostic boundary
+
+Task 284는 indirect host-dispatch CALL 크래시를 추적하기 위해 Win32 전용
+`aot_dbt_call_return_trace`를 추가합니다. 이 진단은
+`REPIU_AOT_DBT_CALL_TRACE=1`에서만 켜지며, 공용 indirect/return handler에 들어온
+dispatcher-visible event를 고정 256칸 ring과 누적 카운터에 기록합니다. CALL은
+VEH/host origin, source, target, return address와 entry ESP를 보존합니다. RET 전체는
+누적하지만, ring에는 반환주소 target으로 기존 CALL sequence를 확정할 수 있는 RET만
+보존합니다. 해당 RET의 expected ESP는 `call_entry_esp - 4`이며 불일치는 별도 sticky
+first-divergence에 남습니다.
+
+```mermaid
+flowchart LR
+    C["dispatcher-visible CALL"] --> F["diagnostic call frame<br/>sequence + tuple"]
+    R["dispatcher-visible RET"] --> M{"actual target ==<br/>recorded return?"}
+    M -->|"yes"| E["retain correlated RET<br/>compare ESP"]
+    M -->|"no"| O["count only<br/>correlation ambiguous"]
+    F --> M
+    E --> S["fixed final snapshot"]
+    O --> S
+```
+
+이 계층은 resolver hot path에서 allocation, lock, 파일 I/O나 형식화 로그를 사용하지
+않고, guest byte·code-cache layout·target·stack write·레지스터 결과를 변경하지
+않습니다. guest thread 종료 뒤 `Win32MinimalExecutionAttempt`로 POD snapshot을
+복사해 최종 로그에서만 출력합니다. inline-cache hit로 C++ resolver를 건너뛴 CALL/RET은
+의도적으로 이 경계 밖입니다. 240초 A/B에서 크래시 전 30개 CALL tuple과 공통 26개
+상관 RET tuple이 control과 모두 일치했으므로, 다음 관측 계층은 emitter의
+inline-cache-hit/물리적 `C3` continuation입니다.
+
+Task 284 adds the Win32-only `aot_dbt_call_return_trace` to diagnose the indirect
+host-dispatch CALL crash. It is enabled only by `REPIU_AOT_DBT_CALL_TRACE=1` and records
+dispatcher-visible events in a fixed 256-entry ring plus aggregate counters. CALLs retain
+origin, source, target, return address, and entry ESP. Every RET is counted, but only a RET
+whose actual target identifies a recorded CALL is retained and compared against
+`call_entry_esp - 4`; the first correlated ESP mismatch is sticky.
+
+The resolver hot path performs no allocation, locking, file I/O, or formatted logging, and
+the layer changes no guest byte, cache layout, transfer target, stack write, or register
+result. State is copied as POD into `Win32MinimalExecutionAttempt` after guest-thread exit
+and printed only in the final log. C++-resolver-bypassing inline-cache hits are deliberately
+outside the boundary. The 240-second A/B found all 30 pre-crash CALL tuples and all 26
+common correlated RET tuples identical to control, so the next observation layer is the
+emitted inline-cache-hit/physical `C3` continuation path.
+
+Task 285는 선택한 host CALL에만 saved EFLAGS.TF를 켜 synthetic `C3` 직전·직후를
+관측하고, DR0/DR1으로 cache/guest return continuation을 잡는 제한 probe를 추가합니다.
+이 probe는 guest/cache byte를 패치하지 않으며 return watch 동안에만 새 native fast
+path의 debug-register 사용을 억제합니다. sequence 27/30/33은 세 phase가 모두
+일치했지만 sequence 56은 pre-C3 continuation이 `0xEB53DDDD`로 오염됐습니다.
+
+이 결과는 adapter 수명 계약을 새로 확정합니다. placement의 dispatch-site 벡터 원소를
+가리키는 포인터나 참조는 `HandleAotIndirectTransfer`/`HandleAotReturnTransfer` 호출을
+가로질러 보존할 수 없습니다. 두 handler는 동적 번역을 append하여 같은 site 벡터를
+재할당할 수 있기 때문입니다. resolver 진입 전에 필요한 site metadata를 값으로
+snapshot해야 하며, resolver 뒤에는 placement 벡터 원소 포인터를 재사용하지 않습니다.
+
+Task 285 adds a bounded probe that sets saved EFLAGS.TF only for selected host CALLs,
+captures state before and after the synthetic `C3`, and uses DR0/DR1 to catch cache/guest
+return continuations. It patches no guest or cache byte and suppresses new native-fast-path
+debug-register ownership only during the return watch. Sequences 27/30/33 matched through
+all three phases, while sequence 56 exposed a poisoned `0xEB53DDDD` pre-C3 continuation.
+
+This establishes a new adapter lifetime contract: a pointer or reference into a placement
+dispatch-site vector must never survive a call to `HandleAotIndirectTransfer` or
+`HandleAotReturnTransfer`, because either resolver may dynamically append and reallocate
+the same vector. Required site metadata must be snapshotted by value before resolver entry,
+and no placement-vector element pointer may be reused afterward.
+
+Task 286은 이 계약을 indirect와 RET host adapter에 적용했습니다. 두
+`FindDispatchSite`는 더 이상 vector 원소 포인터를 반환하지 않고 caller-owned local
+value에 site 전체를 복사합니다. fallback/success continuation을 포함해 resolver 전후의
+모든 site field 접근은 이 snapshot만 사용합니다. sequence 56의 pre/post/return 상태는
+전부 일치했고, calls-only 실제 실행은 수정 전 30~50초 Glide AV 없이 240초를
+완주했습니다.
+
+CALL host dispatch는 수명 결함 수정 뒤에도 opt-in입니다. 실측에서 33,741회 시도 중
+성공은 60회(약 0.18%)였고, 단일 240초 실행의 progress 차이만으로는 성능 이득을
+입증할 수 없습니다. 기본 활성화는 의미 있는 fallback 감소 또는 반복 성능 검증 뒤
+별도 정책 결정으로 다룹니다.
+
+Task 286 applies this contract to both indirect and RET host adapters. Each
+`FindDispatchSite` now copies the complete site into caller-owned local storage instead of
+returning a vector-element pointer. Every pre- and post-resolver field access, including
+fallback and success continuations, uses only that snapshot. Sequence 56 matched through
+pre-C3, post-C3, and return completion, and the calls-only workload ran for 240 seconds
+without the former 30-to-50-second Glide AV.
+
+CALL host dispatch remains opt-in after the lifetime fix. Only 60 of 33,741 measured
+attempts succeeded (about 0.18%), and a single 240-second progress difference does not
+establish a performance benefit. Default enablement is a separate policy decision after a
+meaningful fallback reduction or repeated performance validation.
 
 ## AOT worker inline cache
 

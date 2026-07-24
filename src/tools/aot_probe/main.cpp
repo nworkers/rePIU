@@ -9,6 +9,9 @@
 #include "native_linear_span_probe.h"
 #include "execution_backend_probe.h"
 #include "dbt_return_fallback_probe.h"
+#include "dbt_indirect_dispatch_probe.h"
+#include "dbt_call_return_trace_probe.h"
+#include "dbt_call_step_probe.h"
 
 #include <Zydis.h>
 
@@ -708,6 +711,18 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunAotDbtReturnFallbackProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunAotDbtIndirectDispatchProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunAotDbtCallReturnTraceProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunAotDbtCallStepProbe())
     {
         return 1;
     }

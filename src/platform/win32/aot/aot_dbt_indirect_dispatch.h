@@ -7,10 +7,10 @@ namespace repiu::platform::win32
 
 struct ThreadContext;
 
-void RecordAotDbtReturnFallback(
+void RecordAotDbtIndirectFallback(
     ThreadContext* context,
     AotDbtDispatchFallbackReason reason);
 
-void* GetAotDbtReturnMissThunkAddress();
+void* GetAotDbtIndirectMissThunkAddress();
 
 }  // namespace repiu::platform::win32

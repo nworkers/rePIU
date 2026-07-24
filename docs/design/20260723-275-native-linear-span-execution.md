@@ -117,3 +117,19 @@ function-region path when `REPIU_NATIVE_REGION` is enabled. The production compa
 boundary, cancellation, skipped TF instructions, and rejection. Verification covers a
 synthetic scanner probe, the full Win32 x86 Debug build, existing AOT/coherence probes, and
 a same-binary isolated-EEPROM off/on benchmark using throughput and semantic milestones.
+
+## Task 287 후속 정책 / Task 287 follow-up policy
+
+Task 275의 초기 opt-in 결론은 `aot-dynamic` 두 표본이 texture/swap 전에 검열된
+결과였습니다. Task 287은 최신 `aot-dbt`에서 supervisor와 직접 loader를 각각 3쌍
+교차 실행해 progress, single-step과 draw/swap 개선을 모두 반복 확인했습니다.
+따라서 환경 변수 미지정 시 `aot-dbt`만 span 기본 ON으로 승격했습니다. 다른 backend는
+계속 기본 OFF이며 `0|off|false`로 명시적 비활성화할 수 있습니다. scanner/executor와
+정확성 정책은 Task 275 설계 그대로입니다.
+
+Task 275's initial opt-in conclusion came from two `aot-dynamic` samples censored before
+texture and swap. Task 287 ran three alternating pairs under both the supervisor and direct
+loader on current `aot-dbt`, repeatedly confirming progress, single-step, draw, and swap
+improvements. Therefore only `aot-dbt` now defaults spans ON when the environment is unset.
+Other backends remain default OFF, and `0|off|false` explicitly disables the path. Scanner,
+executor, and correctness semantics remain exactly as designed in Task 275.

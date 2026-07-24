@@ -78,6 +78,8 @@ bool PatchRel32(std::vector<std::uint8_t>* bytes,
 
 bool EmitIndirectInlineCacheSlot(const AotInstructionRecord& instruction,
                                  std::uint32_t entry_count,
+                                 bool enable_call_dispatch,
+                                 bool enable_jump_dispatch,
                                  AotCodeCacheImage* image)
 {
     if (image == nullptr || instruction.bytes.size() < 2U ||
@@ -184,6 +186,11 @@ bool EmitIndirectInlineCacheSlot(const AotInstructionRecord& instruction,
     site.guest_source = instruction.guest_address;
     site.cache_offset = static_cast<std::uint32_t>(image->bytes.size());
     site.is_call = operation == 2U;
+    // Task 283: gate the host-dispatch tail by instruction kind so a live A/B run
+    // can bisect the Task 282 crash. When both flags are set (the default and the
+    // probe's path) this is identical to the original single-flag behavior.
+    const bool enable_dbt_indirect_miss_dispatch =
+        site.is_call ? enable_call_dispatch : enable_jump_dispatch;
     image->bytes.push_back(0x9CU);  // pushfd
     for (std::uint32_t index = 0; index < entry_count; ++index)
     {
@@ -217,7 +224,52 @@ bool EmitIndirectInlineCacheSlot(const AotInstructionRecord& instruction,
         site.entries[0].jump_displacement_offset;
     site.miss_cache_offset = static_cast<std::uint32_t>(image->bytes.size());
     image->bytes.push_back(0x9DU);  // popfd
-    image->bytes.push_back(0xCCU);  // dispatcher miss
+    if (!enable_dbt_indirect_miss_dispatch)
+    {
+        image->bytes.push_back(0xCCU);  // dispatcher miss
+    }
+    else
+    {
+        // Task 282 host-dispatch tail. The three pushed slots sit exactly where
+        // the shared resolver expects them: a call's return address lands on the
+        // slot the handler itself rewrites at `Esp - 4`, the miss address
+        // becomes the resolved cache target, and the guest source doubles as the
+        // continuation the thunk returns through.
+        AotDbtIndirectDispatchSite dispatch_site;
+        dispatch_site.guest_source = instruction.guest_address;
+        dispatch_site.miss_cache_offset = site.miss_cache_offset;
+        dispatch_site.is_call = site.is_call;
+        image->bytes.push_back(0x68U);
+        AppendImmediate32(
+            &image->bytes,
+            site.is_call ? instruction.guest_address + instruction.length : 0U);
+        image->bytes.push_back(0x68U);
+        dispatch_site.miss_address_immediate_offset =
+            static_cast<std::uint32_t>(image->bytes.size());
+        AppendImmediate32(&image->bytes, 0U);
+        image->bytes.push_back(0x68U);
+        AppendImmediate32(&image->bytes, instruction.guest_address);
+        AppendRel32(&image->bytes, 0xE9U);
+        dispatch_site.thunk_displacement_offset =
+            static_cast<std::uint32_t>(image->bytes.size() - 4U);
+        dispatch_site.fallback_cache_offset =
+            static_cast<std::uint32_t>(image->bytes.size());
+        image->bytes.insert(image->bytes.end(), {0x8DU, 0x64U, 0x24U, 0x08U});
+        image->bytes.push_back(0xCCU);
+        dispatch_site.success_cache_offset =
+            static_cast<std::uint32_t>(image->bytes.size());
+        if (site.is_call)
+        {
+            image->bytes.push_back(0xC3U);
+        }
+        else
+        {
+            image->bytes.push_back(0xC2U);
+            image->bytes.push_back(0x04U);
+            image->bytes.push_back(0x00U);
+        }
+        image->dbt_indirect_dispatch_sites.push_back(dispatch_site);
+    }
     for (const AotInlineCacheEntry& entry : site.entries)
     {
         if (!PatchRel32(&image->bytes, entry.guard_offset + 1U,
@@ -550,6 +602,8 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
         options.indirect_inline_cache_entry_count;
     image->dbt_return_miss_dispatch_enabled =
         options.enable_dbt_return_miss_dispatch;
+    image->dbt_indirect_miss_dispatch_enabled =
+        options.enable_dbt_indirect_miss_dispatch;
     const auto started = std::chrono::steady_clock::now();
     std::unordered_map<std::uint32_t, std::uint32_t> guest_to_cache;
 
@@ -662,6 +716,10 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                     if (!EmitIndirectInlineCacheSlot(
                             instruction,
                             options.indirect_inline_cache_entry_count,
+                            options.enable_dbt_indirect_miss_dispatch &&
+                                options.enable_dbt_indirect_dispatch_calls,
+                            options.enable_dbt_indirect_miss_dispatch &&
+                                options.enable_dbt_indirect_dispatch_jumps,
                             image))
                     {
                         image->bytes.push_back(0xCCU);

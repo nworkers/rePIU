@@ -1,3 +1,373 @@
+## 2026-07-24 Task 287 (기본 승격): AOT-DBT fallback native linear span이 single-step을 줄이고 draw/swap을 반복 개방 / Task 287 (Default promotion): AOT-DBT fallback native linear spans reduce single-step and repeatedly reach draw/swap
+
+**확인됨:** 같은 Win32 x86 Debug binary와 격리 EEPROM으로
+`REPIU_NATIVE_LINEAR_SPAN=0|1`만 바꾸는 240초 교차 A/B를 supervisor와 직접 loader
+각각 3쌍 실행했습니다. indirect Stage 4, native region과 CALL 진단은 모두 껐습니다.
+
+| Supervisor 중앙값 | OFF | ON | 변화 |
+|---|---:|---:|---:|
+| progress | 49,588 | 53,732 | +8.36% |
+| single-step | 1,328,320 | 919,110 | -30.81% |
+| guest instruction proxy | 1,328,320 | 1,842,982 | +38.75% |
+
+세 pair progress는 모두 ON 우세(`+8.36%`, `+1.00%`, `+24.57%`)였습니다. 세 ON의
+span은 `212051/212051/0`, `208289/208289/0`, `220430/220430/0`으로
+entry/boundary가 일치하고 cancel은 0이었습니다. supervisor에서는 6회 모두 late
+milestone 이전에 검열됐습니다.
+
+| 직접 loader 중앙값 | OFF | ON | 변화 |
+|---|---:|---:|---:|
+| progress | 95,455 | 106,772 | +11.86% |
+| single-step | 2,315,826 | 1,344,717 | -41.93% |
+| texture download | 2 | 4 | +100% |
+| draw | 0 | 42 | 실제 draw 진입 |
+| buffer swap | 0 | 11 | 실제 swap 진입 |
+
+세 pair progress도 모두 ON 우세(`+27.83%`, `+11.17%`, `+12.91%`)였고, ON의
+texture/draw/swap은 `4/42/11`, `4/42/11`, `4/40/10`으로 반복됐습니다. 6회 모두
+loader exit 0, caught exception false, graceful timeout true, fatal/legacy fallback 0,
+EEPROM SHA-256은 fixture와 같았습니다.
+
+**정책 결론:** `aot-dbt` fallback에서 span을 기본 활성화합니다. 프로그램 전체 기본
+backend와 다른 backend의 span 기본값은 바꾸지 않습니다. 환경 변수 미지정은
+`aot-dbt`에서 ON이고, `1|on|true`는 명시적 ON, `0|off|false`와 알 수 없는 값은
+fail-closed OFF입니다. 실제 정책 smoke는 unset `334/334/0`, explicit `0`
+`0/0/0/0/0`을 기록했습니다.
+
+원시 결과:
+
+- `build/benchmarks/native-linear-span/aot-dbt/20260724-194851/results.csv`
+- `build/benchmarks/native-linear-span/aot-dbt-direct/20260724-201830/results.csv`
+
+**English summary.** Task 287 ran three alternating 240-second pairs under both the
+supervisor and the graceful direct loader while changing only native linear-span policy.
+Supervisor medians showed +8.36% progress, -30.81% single-step, and +38.75% local guest
+instruction proxy; all three ON runs had exact entry/boundary equality and zero
+cancellation. Direct-loader medians showed +11.86% progress and -41.93% single-step, while
+texture/draw/swap advanced from `2/0/0` to `4/42/11`. Every pair favored ON, every run had
+zero exception/fatal/legacy fallback and matching EEPROM, and ON late milestones repeated
+as `4/42/11`, `4/42/11`, and `4/40/10`. Native spans are therefore default ON only for
+`aot-dbt`; explicit `0|off|false` disables them and unknown values fail closed. The
+program-wide backend default and other backend defaults do not change.
+
+## 2026-07-24 Task 286 (근인 수정 완료): resolver 전 site snapshot으로 dispatch-site use-after-reallocation 제거 / Task 286 (Root cause fixed): resolver-safe site snapshots remove dispatch-site use-after-reallocation
+
+**확인됨:** indirect와 RET host adapter의 `FindDispatchSite`를 vector 원소 포인터
+반환에서 caller-owned value snapshot으로 변경했습니다. resolver가 동적 번역을
+append하여 같은 vector를 재할당해도 adapter는 무효 포인터나 참조를 보존하지 않으며,
+fallback/success continuation은 local snapshot으로만 계산합니다.
+
+Task 285 sequence 56 재검증은 pre-C3/post-C3/return-target 세 phase 모두 EIP·ESP가
+기대값과 일치했고 `0xDDDDDDDD`/`0xEB5xDDDD` 오염이 사라졌습니다. calls-only
+probe-off 실행도 수정 전 30~50초 Glide AV 없이 240초 timeout까지 진행했습니다.
+
+| 조건 | 예외 | progress | indirect `entry/attempt/success/fallback` | Glide 관측 |
+|---|---|---:|---:|---|
+| calls-only | 없음 | 95,842 | `33741/33741/60/33681` | texture download 2, clear 2, swap 1 |
+| indirect off | 없음 | 94,836 | `0/0/0/0` | texture download 2, clear 1 |
+
+두 EEPROM SHA-256은 fixture와 같은
+`A1FC1D120EF12DE4FB3608551750F93E02F911F26A3DDF9054ABCE4846652570`입니다.
+따라서 Task 282의 CALL 경로 크래시 근인은 해결됐습니다.
+
+**정책 결론:** CALL host dispatch는 계속 opt-in입니다. 성공률은 60/33,741,
+약 0.18%이고 단일 실행 progress 차이 약 1.1%는 timing 변동과 분리할 수 없습니다.
+다음 활성화 판단에는 반복 성능 측정 또는 quarantine/fallback을 유의미하게 줄이는
+별도 작업이 필요합니다.
+
+**English summary.** Task 286 changes both indirect and RET host adapters from
+placement-vector element pointers to caller-owned site snapshots. No pointer or reference
+survives a resolver that may append and reallocate the same vector. Sequence 56 now matches
+through pre-C3, post-C3, and return completion with no poison value. A probe-off calls-only
+run reached the 240-second timeout without the former Glide AV: progress 95,842 and
+`33741/33741/60/33681` indirect accounting, versus control progress 94,836 and no indirect
+entries. Both EEPROM hashes match the fixture. The root-cause fix is complete, but CALL host
+dispatch remains opt-in because only 60 of 33,741 attempts succeeded (about 0.18%) and a
+single-run 1.1% progress difference is not a performance result.
+
+## 2026-07-24 Task 285 (근인 확정): sequence 56 동적 append가 dispatch-site 포인터를 무효화 — success continuation use-after-reallocation / Task 285 (Root cause confirmed): sequence 56 dynamic append invalidates the dispatch-site pointer — success-continuation use-after-reallocation
+
+**확인됨:** 선택된 host CALL만 TF 두 단계와 DR0/DR1 return breakpoint로 관측하는
+byte-neutral probe를 구현했습니다. sequence 27, 30, 33은 pre-C3/post-C3/return-target
+EIP·ESP가 모두 기대값과 일치했고 probe 뒤에도 기존 Glide AV가 재현됐습니다. 이 세
+CALL의 물리적 `C3`와 inline-cache RET 의미 및 VEH 우회 부수효과는 근인이 아닙니다.
+
+sequence 56은 pre-C3만 기록하고 `await-post-c3`에서 크래시했습니다. stack은
+resolved cache target `0x0D84213A`와 guest return `0x030D913E`로 정상이지만,
+synthetic continuation EIP가 `0xEB53DDDD`, probe가 읽은 site source가
+`0xDDDDDDDD`였습니다. 이는 기존 크래시의 garbage signature와 같습니다.
+
+근인은 adapter가 `dbt_indirect_dispatch_sites` 원소 포인터를 잡고
+`HandleAotIndirectTransfer`를 호출한 뒤 재사용하는 것입니다. sequence 56 target의
+동적 번역은 같은 placement 벡터에 `push_back`하여 포인터를 무효화하고, adapter가
+무효 포인터의 `success_cache_offset`으로 thunk continuation을 계산합니다. RET host
+adapter도 동일한 수명 결함이 있습니다. 다음 Task 286은 resolver 진입 전 site를
+by-value snapshot하고 두 adapter를 함께 수정한 뒤 sequence 56과 240초 calls-only를
+재검증합니다.
+
+**English summary.** Task 285's byte-neutral selected-CALL probe found sequences 27, 30,
+and 33 fully correct through pre-C3, post-C3, and inline-return completion; each still
+reproduces the Glide AV. Sequence 56 captured only pre-C3: its stack contained the valid
+callee cache target and guest return, but the synthetic continuation and site source had
+become `0xEB53DDDD`/`0xDDDDDDDD`. The adapter retains a pointer into
+`dbt_indirect_dispatch_sites` across a resolver that dynamically appends to the same vector,
+then reads `success_cache_offset` through the invalidated pointer. The RET adapter has the
+same lifetime bug. Task 286 will snapshot both sites by value before resolver entry and
+verify sequence 56 plus a probe-off 240-second calls-only run.
+
+## 2026-07-24 Task 284 (결정적 CALL/RET trace 완료): 공용 resolver 경계에는 발산 없음 — 다음 관측점은 inline-cache hit와 물리적 `C3` continuation / Task 284 (Deterministic CALL/RET trace complete): no divergence at the shared resolver boundary — next observe inline-cache hits and the physical `C3` continuation
+
+**상태 (Status):** allocation-free 256-event CALL/RET trace를 Win32 AOT-DBT 진단
+하위 시스템으로 구현했습니다. `REPIU_AOT_DBT_CALL_TRACE=1`에서만 활성화되며,
+공용 indirect/return handler에 VEH/host origin을 붙이고 기존 진단용 call frame에
+CALL sequence와 entry ESP를 저장합니다. resolver 안에서는 allocation·mutex·파일
+I/O·형식화 로그를 수행하지 않으며 guest byte, code-cache layout, target, stack write,
+레지스터 결과는 바꾸지 않습니다.
+
+초기 실구동에서는 dispatcher-visible RET가 1만 회를 넘어 256칸 ring의 CALL을 모두
+덮었습니다. 이를 바로잡아 모든 RET의 누적 수는 유지하되, ring에는 CALL과 반환주소
+target으로 CALL sequence를 확정할 수 있는 RET만 보존합니다. target이 다른 RET은 앞선
+inline-cache-hit 복귀와 같은 stack depth 재사용을 구분할 수 없으므로 연계하지 않습니다.
+target이 연계된 RET에서 ESP가 `call_entry_esp - 4`와 다를 때만 sticky first-divergence로
+보존합니다.
+
+### 결정적 A/B 결과 (measured, 240초·격리 EEPROM)
+
+| 조건 | 종료 | trace `stored/call/RET-observed/match/mismatch/overwrite` | 예외 |
+|---|---|---:|---|
+| indirect off + trace | 240초 timeout | `69/36/14019/33/0/0` | 없음 |
+| calls-only + trace | 약 49초 후 caught exception | `56/30/11684/26/0/0` | `0xC0000005`, EIP `0x1019E8D9`, EAX/EDX `0xEB52DDDD` |
+
+두 실행의 격리 EEPROM SHA-256은 모두
+`A1FC1D120EF12DE4FB3608551750F93E02F911F26A3DDF9054ABCE4846652570`으로
+동일했습니다. 원시 로그는
+`build/task284-call-return-trace-20260724-145052/`에 있습니다. supervisor는 guest
+timeout을 0으로 덮어 최종 attempt를 회수하지 않으므로, 재현 스크립트는 동일 loader를
+직접 실행하고 loader 자체 240초 timeout을 사용합니다.
+
+자동 비교 결과:
+
+1. calls-only에서 크래시 전에 기록된 **30개 CALL tuple**
+   `(sequence, source, target, return, entry ESP)`은 control의 첫 30개와 전부
+   일치했습니다. origin만 설계대로 control=`VEH`, experiment=`host`입니다.
+2. 두 실행에서 공통으로 target 연계된 **26개 RET tuple**도 source, actual/expected
+   target, actual/expected ESP가 전부 일치했습니다.
+3. mismatch와 sticky first-divergence는 0입니다.
+4. calls-only의 CALL sequence **27, 30, 33, 56**은 dispatcher-visible 상관 RET가
+   없습니다. 27/30/33은 inline-cache hit로 복귀했을 수 있고 마지막 56은 크래시 시점의
+   미복귀 호출일 수 있으므로 현재 관측만으로 구분하지 않습니다.
+
+**결론 (confirmed within the observation boundary):** 공용
+`HandleAotIndirectTransfer`가 만든 CALL tuple과 공용 `HandleAotReturnTransfer`가
+관측한 상관 RET의 target/ESP에는 최초 발산이 없습니다. 따라서 Task 282 크래시의
+근인은 공용 resolver가 보이는 CALL/RET 상태가 아닙니다. 아직 관측하지 못한 경계는
+emitted inline-cache-hit 복귀와 host CALL continuation의 물리적 `C3`, 또는 VEH를
+우회할 때만 빠지는 비동기 부수효과입니다. 다음 작업은 Task 223 방식의 제한된 trap
+single-step으로 sequence 27/30/33과 최종 56 주변을 직접 관측하는 것입니다. 추측 수정과
+CALL host-dispatch 기본 활성화는 계속 금지합니다.
+
+**English summary.** Task 284 adds an opt-in, fixed 256-event, allocation-free CALL/RET
+trace at the shared Win32 AOT-DBT resolver boundary. Every dispatcher-visible RET is counted,
+while the ring retains CALLs and only RETs whose return target identifies a recorded CALL;
+this prevents more than ten thousand unrelated RET misses from evicting the decisive CALL
+population. A target-correlated ESP mismatch is retained in a sticky first-divergence slot.
+No guest byte, cache layout, transfer result, or register state changes.
+
+In the isolated 240-second A/B, indirect-off timed out cleanly with
+`69/36/14019/33/0/0` stored/call/RET-observed/match/mismatch/overwrite. Calls-only reproduced
+the known crash after about 49 seconds (`0xC0000005`, Glide EIP `0x1019E8D9`,
+EAX/EDX `0xEB52DDDD`) with `56/30/11684/26/0/0`; EEPROM hashes matched. Automated comparison
+found zero differences across all 30 pre-crash CALL tuples and all 26 target-correlated RET
+tuples common to the runs. Calls-only sequences 27, 30, 33, and 56 have no
+dispatcher-visible correlated RET; earlier ones may return through inline-cache hits, while
+the final one may be in flight at the crash. Thus there is no divergence inside the shared
+resolver boundary. The next observation frontier is a bounded Task-223-style trap
+single-step around those calls, covering emitted inline-cache-hit returns and the physical
+host-CALL `C3` continuation. Speculative fixes and default CALL host dispatch remain
+prohibited.
+
+## 2026-07-24 Task 283 (call/jump 분리 이분 완료): Task 282 크래시는 **CALL 경로 전용** — jump host-dispatch는 안전, calls만 켜도 동일 크래시 재현 / Task 283 (Call/jump bisection complete): the Task 282 crash is **CALL-path only** — jump host-dispatch is safe, and calls-only reproduces the exact crash
+
+**상태 (Status):** call만/jump만 host-dispatch를 켜는 byte-neutral 분리 게이트를 구현하고
+(`dbt_indirect_dispatch_all` 포함 전체 probe 통과), 240초 격리 EEPROM A/B로 Task 282
+크래시를 **CALL 경로로 이분**했습니다. 30초 실행은 Glide 초기화 직후 wedge하여 미결정이나,
+240초 실행은 wedge를 넘어 indirect-heavy 단계(indir boundary 3만+)에 도달했습니다.
+
+### 결정적 A/B 결과 (measured, 240초 격리 EEPROM)
+
+| 조건 | 결과 | glide milestone | last_eip / guest_eip | indir boundary |
+|---|---|---|---|---:|
+| `=0` (control, indirect off) | ✅ 240초 완주 | 1/1/1/1/1 | — | 35,363 |
+| `=call` (calls만) | 💥 **크래시 @~36초** | 1/1/0/0/0 | **0x1019b7b9 (Glide DLL) / 0x30f1dd7** | 0 |
+| `=jump` (jumps만) | ✅ 240초 완주 | 1/1/1/1/1 | — | 33,935 |
+
+`=call`은 `child_exit=0`, `exception=0xc0000005`(access violation), EIP는 Glide DLL
+0x101xxxxx, guest_eip 0x30f1dd7 — **Task 282의 크래시 시그니처(Glide DLL 0x101xxxxx,
+CS-prefixed jump table 0x0N0F1DD7)와 정확히 일치**합니다. 반면 `=jump`와 `=0`는
+texture/draw/swap까지 완주(milestone 1/1/1/1/1)했습니다. 로그:
+`build/task283-indirect-split-20260724-113813/`.
+
+### 결론 (confirmed)
+
+1. **근인은 CALL 경로 host-dispatch 전용입니다.** JUMP host-dispatch 성공 경로는 240초
+   전 구간·milestone 완주로 안전이 입증됐습니다(indir 33,935회 무크래시).
+2. **JUMP만이라도 host-dispatch를 활성화**하는 것은 안전한 선택지이지만, 이 워크로드의
+   indirect boundary는 대부분 CALL이라 성능 이득은 제한적입니다.
+
+### 국소 실험: guest-stack write 억제 → **write는 근인 아님** (confirmed negative)
+
+정적 분석의 유력 용의자였던 CALL 경로 guest-stack 반환주소 write를 host-dispatch 성공
+경로에서 억제(`HandleAotIndirectTransfer`에 `suppress_call_stack_write` 추가, 물리적 slot A
++`C3` continuation이 이미 return-addr을 TOS에 배치)하고 calls-only 240초를 재실행했습니다.
+결과는 **동일 크래시**입니다: `0xc0000005`, EIP 0x1019b7b9(Glide DLL),
+guest_eip 0x30f1dd7, glide milestone 1/1/0/0/0. 즉 redundant write는 무해(정적 분석대로)하며
+**근인이 아닙니다.** 이 실험 코드는 되돌렸습니다(로그: `build/task283-suppress-callwrite/`).
+
+배제 정리(모두 CALL 전용이지만 근인 아님으로 확인):
+- guest-stack 반환주소 write (본 실험).
+- `Esp` 감소 (host-dispatch adapter가 `guest_context.Esp`를 폐기).
+- `aot_call_frames` shadow 스택 push (telemetry·진단 전용, guest 제어 흐름 미영향).
+- 반환주소 **값** (write 억제 전엔 runtime 계산값=VEH와 동일, 억제 후엔 emitter slot A값;
+  둘 다 동일 크래시이므로 값 차이도 근인 아님).
+
+남는 CALL 전용 차이는 물리적 의미 하나뿐입니다: **call은 `C3`로 esp를 4 낮춘 채 반환주소를
+TOS에 남기고 나중에 RET로 돌아오는 왕복 패턴**(jump은 `C2 04 00`으로 esp 불변). 이는
+아키텍처 상태상 VEH-call과 증명상 동일한데도 host-dispatch에서만 크래시합니다. 정적 분석과
+저비용 실험으로는 tractable한 CALL 전용 상태 차이를 모두 소진했습니다.
+
+### 관측된 부수 사실 (30초 wedge, confirmed but orthogonal)
+
+30초 실행에서는 indirect-off control조차 `_GRSSTWINOPEN`/`_GRCLIPWINDOW` 직후
+progress ~10,865에서 정체(wedge)해 크래시 단계에 미도달했습니다. 240초에서는 이 wedge를
+넘어가므로 wedge는 진행 속도/타이밍 문제이며 크래시와 독립입니다. 크래시 재현에는
+240초 실행이 필요합니다.
+
+### 다음 작업 (next)
+
+정적/저비용 실험이 소진됐으므로 다음은 **결정적 관측**입니다.
+
+1. 모든 host-dispatch CALL의 `(source,target,return_addr,esp)`와 이를 소비하는 RET
+   dispatch를 계측 로깅해, 크래시(guest_eip 0x30f1dd7 → Glide 0x1019b7b9) 직전 **첫 발산
+   지점**을 격리한다. VEH-call 대비 어긋나는 최초의 왕복을 찾는다.
+2. 또는 [[task223-watchpoint-negative-result]]의 trap 백엔드 단일스텝으로 host-dispatch
+   직후 상태를 기록·비교한다.
+3. 안전한 부분 활성화가 필요하면 JUMP-only host-dispatch를 유지 대상으로 검토한다.
+
+**English summary.** Task 283 added a byte-neutral calls-only / jumps-only gate
+(`REPIU_AOT_DBT_INDIRECT` takes `1`/`both`/`call`/`jump`; every probe including
+`dbt_indirect_dispatch_all` passes) and a 240 s isolated-EEPROM A/B **bisected the Task 282
+crash to the CALL path**. A 30 s run wedges right after `_GRSSTWINOPEN`/`_GRCLIPWINDOW`
+(progress ~10,865) and is inconclusive, but a 240 s run clears the wedge into the
+indirect-heavy phase (indir boundary 3万+). There, `=call` crashes at ~36 s with
+`0xc0000005` in the Glide DLL (EIP 0x1019b7b9, guest_eip 0x30f1dd7) — the exact Task 282
+signature — while `=jump` and `=0` both run the full 240 s to milestone 1/1/1/1/1. So the
+cause is **CALL-path host-dispatch only**; the JUMP success path is proven safe (33,935
+indirect boundaries, no crash). The initial leading suspect was the CALL path's guest-stack
+return-address write (`WriteGuestUInt32([Esp-4], …)` + `Esp -= 4`), absent from the JUMP and
+RET paths. Enabling JUMP-only host-dispatch is a safe option but yields little here since most
+indirect boundaries are calls. A localizing probe then **suppressed** the CALL-path guest-stack
+write (the physical slot scheme already lands the return address at TOS): calls-only still
+crashes identically (`0xc0000005`, EIP 0x1019b7b9, guest_eip 0x30f1dd7), so the redundant write
+is **not** the cause (that experiment was reverted). Together with the Esp decrement (discarded
+by the adapter), the telemetry-only shadow call stack, and the return-address value (identical
+crash whether it comes from the runtime write or the emitter slot), every tractable CALL-only
+state difference is ruled out. The only remaining CALL-specific difference is the physical
+round-trip semantics (`C3` leaves esp 4 lower with a return address that a later RET consumes),
+which is provably identical to the VEH path yet crashes only under host dispatch. Static and
+low-cost experiments are exhausted; next is a deterministic observation — log every
+host-dispatched call's `(source,target,return_addr,esp)` and the RET that consumes it to isolate
+the first divergence before the crash, or single-step the post-dispatch state via the trap
+backend. JUMP-only host dispatch stays a safe partial option.
+
+## 2026-07-24 Task 282 (구현·probe 검증 완료, 실구동 크래시로 opt-in 비활성 유지): indirect call/jump host dispatch — 합성 검증은 통과하나 라이브 Glide 경로에서 누적 손상 크래시 / Task 282 (Implemented and probe-verified; kept opt-in/disabled due to a live crash): indirect call/jump host dispatch passes synthetic checks but a live cumulative corruption crashes the Glide path
+
+**상태 (Status):** Task 280 로드맵 4단계를 A안으로 구현했습니다. 공용 emitter,
+Win32 placement/dynamic-append, 전용 thunk/adapter, 회계, synthetic probe까지 완성했고
+VS2022/VS2026 Win32 x86 Debug 빌드와 전체 AOT probe(신규 `dbt_indirect_dispatch_all`
+포함)가 통과합니다. 그러나 실제 `aot-dbt`에서 활성화하면 Glide attract 경로에서
+결정적으로 크래시하여, **기본 비활성(opt-in)** 으로 두고 근인 조사를 계속합니다.
+`REPIU_AOT_DBT_INDIRECT=1`로만 활성화됩니다.
+
+### 확인된 구현과 검증 (confirmed)
+
+- `FF /2`/`FF /4` inline-cache miss tail을 3슬롯 프레임(return addr / miss / guest
+  source)으로 방출하고 Task 277 host-stack thunk로 연결합니다. call은 `C3`, jump은
+  `C2 04 00` continuation으로 스택 의미를 재현하며, 실패는 `lea esp,[esp+8]; INT3`로
+  fail-closed합니다.
+- adapter는 저장된 guest `CONTEXT`로 기존 `HandleAotIndirectTransfer`를 재사용(A안)하고,
+  SMC로 guest 명령 종류가 바뀐 경우 `FF /digit` 검증으로 fail-closed합니다.
+- **Task 281 attempt 회계 보정 완료:** `ThreadContext`가 C++ 진입 수를 `entry`로 두고,
+  보고 attempt는 snapshot에서 `success + fallback`으로 도출합니다. 기본 `aot-dbt` 30초
+  실구동에서 return `entry=attempt=7141`, `success+fallback=940+6201=7141`로 불변식이
+  성립했습니다.
+- synthetic probe(`dbt_indirect_dispatch_all=true`)가 call/jump layout, 비활성 시 기존
+  `popfd; INT3` 유지, placement miss-immediate/thunk `rel32`, fallback 원인 slot과 회계
+  불변식을 검증했습니다.
+- 기본 `aot-dbt`(indirect off) 30초 실구동: exception caught false, indirect `0/0/0/0`,
+  indir boundary는 VEH로 8,891, progress 29,782, fatal 0, EEPROM 불변 — Task 281 상태를
+  그대로 유지합니다.
+
+### 라이브 크래시와 조사 결과 (confirmed regression, 근인 미확정)
+
+indirect dispatch를 켜면 `aot-dbt`가 Glide 초기화 도중 결정적으로 크래시합니다
+(access violation 0xC0000005, EIP는 Glide DLL 0x101xxxxx, EAX=EDX=0xEF6ADDDD 같은
+garbage). 15초·120초 실행 모두 동일 지점에서 멈춥니다(120초도 timeout 전 크래시).
+다음을 통제 실험으로 확인했습니다.
+
+| 실험 | 조건 | 결과 |
+|---|---|---|
+| indirect ON | 정상 dispatch | progress ~15,100에서 크래시 (caught exception) |
+| indirect OFF | `REPIU_AOT_DBT_INDIRECT=0` | 30초 완주, progress 29,798, 무크래시 |
+| force-fallback | 큰 layout 유지 + 모든 indirect를 INT3/VEH로 | 30초 완주, progress 26,355, 무크래시 |
+| no-patch | inline-cache patch 억제 + host transfer | 여전히 크래시 (progress ~15,170) |
+| FXSAVE/FXRSTOR | thunk에서 FPU/SSE 저장·복원 | 크래시 불변 (동일 지점) |
+
+이로써 **layout 변경, inline-cache patch, FPU/SSE clobber는 근인이 아님**을 배제했고,
+근인은 host-dispatch **성공 전이(success transfer) 자체**로 좁혀졌습니다. 그러나:
+
+- 성공 전이의 최종 레지스터/스택 상태는 VEH 경로(`CONTINUE_EXECUTION`)와 **증명상
+  동일**합니다(EIP=cache_target, esp=esp0-4, `[esp0-4]`=return addr, `[esp0-8]`=cache
+  target, flags·GPR 복원 동일). 실제로 첫 30회 dispatch의 `src/op/esp/call` 시퀀스가
+  ON/OFF에서 완전히 일치하며, 크래시는 30번째 dispatch 직후의 CS-prefixed jump table
+  (0x040F1DD7)에서 발생합니다.
+- 즉 손상은 정수 `src/op/esp`에 드러나지 않고 **누적**되어 뒤늦게 잘못된 jump-table
+  index로 표출됩니다. run마다 heap base가 달라(예: 0x0CD1xxxx vs 0x0393xxxx) 두 독립
+  실행의 포인터 레지스터를 교차 비교하는 방식으로는 분기점을 격리할 수 없었습니다.
+
+가장 유력한 남은 가설은 host-dispatch가 **메인 VEH dispatch 우회 시 수행되지 않는
+부수효과**(예: `HandleAotReentry`의 경계 처리, 네이티브 영역/디버그 레지스터 상태,
+worker 동기화 중 스레드 상태)입니다. 다음 조사는 단일 실행 내 결정적 관측
+(동일 binary·고정 base 강제, 또는 host-dispatch 직후 상태를 trap 백엔드로 단일스텝
+비교)이 필요합니다. [[task223-watchpoint-negative-result]]의 trap 단일스텝 기법이 여기에
+적합합니다.
+
+### 결론과 다음 작업
+
+- 기능은 구현·probe 검증까지 완료했으나 실행 정확성이 확인되지 않아 **기본 비활성**으로
+  유지합니다(Task 275 opt-in과 유사하나, 이쪽은 성능 미확정이 아니라 크래시가 이유).
+- attempt 회계 보정과 fallback 원인 계측(두 경로 공용 `AotDbtDispatchFallbackReason`)은
+  독립적으로 견고하므로 그대로 유지합니다.
+- 다음: 단일 실행 결정적 관측으로 성공 전이의 부수효과 분기점을 격리한 뒤 host-dispatch를
+  안전하게 활성화합니다.
+
+**English summary.** Task 282 implements Stage 4 (option A) end to end — platform-neutral
+emitter, Win32 placement/dynamic-append, a dedicated thunk/adapter reusing
+`HandleAotIndirectTransfer` from the saved guest `CONTEXT`, accounting, and a synthetic probe
+(`dbt_indirect_dispatch_all=true`). It also lands the Task 281 attempt-accounting fix
+(`attempt = success + fallback`; a default `aot-dbt` run showed entry=attempt=7141). With
+indirect dispatch OFF (the default), `aot-dbt` matches Task 281: graceful timeout, unchanged
+EEPROM, zero fatal. Enabling it, however, deterministically crashes the Glide attract path
+(AV 0xC0000005 in the Glide DLL, garbage `0xEF6ADDDD`). Controlled experiments ruled out the
+layout change (force-fallback is clean), inline-cache patching (no-patch still crashes), and
+FPU/SSE clobber (FXSAVE unchanged), narrowing the cause to the success transfer itself — even
+though its final register/stack state is provably identical to the VEH `CONTINUE_EXECUTION`
+path and the first 30 dispatch `src/op/esp` sequences match exactly before the crash at a
+CS-prefixed jump table. The corruption is cumulative and invisible in integer state, and
+cross-run pointer comparison is confounded by differing heap bases. The feature is therefore
+kept opt-in and disabled (`REPIU_AOT_DBT_INDIRECT=1` to enable); the next step is a
+deterministic single-run observation (fixed base or trap-backend single-step right after a
+host dispatch) to isolate the missing VEH-path side effect.
+
 ## 2026-07-24 Task 281 (계측·실측 완료, 다음 작업 확정): RET fallback은 100% quarantined target — RET 정책은 유지하고 다음 대상은 indirect call/jump host dispatch / Task 281 (Instrumented and measured; next work fixed): RET fallbacks are 100% quarantined targets — keep the RET policy and move to indirect call/jump host dispatch
 
 **상태 (Status):** Task 280 로드맵 3단계 구현 완료. VS2022 Win32 x86 Debug 전체 빌드,

@@ -10,14 +10,78 @@
 namespace repiu::platform::win32
 {
 
-bool NativeLinearSpanEnabled()
+namespace
 {
-    static const bool enabled = []() {
-        char value[2] = {};
-        return GetEnvironmentVariableA(
-                   "REPIU_NATIVE_LINEAR_SPAN", value, sizeof(value)) > 0;
-    }();
-    return enabled;
+
+enum class NativeLinearSpanSetting
+{
+    kBackendDefault,
+    kEnabled,
+    kDisabled
+};
+
+NativeLinearSpanSetting ParseNativeLinearSpanSetting(
+    std::string_view setting)
+{
+    if (setting.empty())
+    {
+        return NativeLinearSpanSetting::kBackendDefault;
+    }
+    if (setting == "1" || setting == "on" || setting == "true")
+    {
+        return NativeLinearSpanSetting::kEnabled;
+    }
+    return NativeLinearSpanSetting::kDisabled;
+}
+
+NativeLinearSpanSetting ReadNativeLinearSpanSetting()
+{
+    char value[16] = {};
+    const DWORD length = GetEnvironmentVariableA(
+        "REPIU_NATIVE_LINEAR_SPAN", value, sizeof(value));
+    if (length == 0)
+    {
+        return NativeLinearSpanSetting::kBackendDefault;
+    }
+    if (length >= sizeof(value))
+    {
+        return NativeLinearSpanSetting::kDisabled;
+    }
+    return ParseNativeLinearSpanSetting(
+        std::string_view(value, length));
+}
+
+bool ResolveNativeLinearSpanSetting(
+    runtime::ExecutionBackend execution_backend,
+    NativeLinearSpanSetting setting)
+{
+    if (setting == NativeLinearSpanSetting::kEnabled)
+    {
+        return true;
+    }
+    if (setting == NativeLinearSpanSetting::kDisabled)
+    {
+        return false;
+    }
+    return execution_backend == runtime::ExecutionBackend::kAotDbt;
+}
+
+}  // namespace
+
+bool ResolveNativeLinearSpanEnabled(
+    runtime::ExecutionBackend execution_backend,
+    std::string_view setting)
+{
+    return ResolveNativeLinearSpanSetting(
+        execution_backend, ParseNativeLinearSpanSetting(setting));
+}
+
+bool NativeLinearSpanEnabled(
+    runtime::ExecutionBackend execution_backend)
+{
+    static const NativeLinearSpanSetting setting =
+        ReadNativeLinearSpanSetting();
+    return ResolveNativeLinearSpanSetting(execution_backend, setting);
 }
 
 void LeaveNativeLinearSpan(CONTEXT* win32_context,

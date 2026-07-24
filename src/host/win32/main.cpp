@@ -836,13 +836,15 @@ void PrintExecutionAttempt(
     logger.info("Win32 AOT-DBT HLE reentry attempt/success: {}/{}",
                 attempt.aot_dbt_hle_reentry_attempt_count,
                 attempt.aot_dbt_hle_reentry_success_count);
-    logger.info("Win32 AOT-DBT return attempt/success/fallback: {}/{}/{}",
-                attempt.aot_dbt_return_attempt_count,
-                attempt.aot_dbt_return_success_count,
-                attempt.aot_dbt_return_fallback_count);
+    logger.info(
+        "Win32 AOT-DBT return entry/attempt/success/fallback: {}/{}/{}/{}",
+        attempt.aot_dbt_return_entry_count,
+        attempt.aot_dbt_return_attempt_count,
+        attempt.aot_dbt_return_success_count,
+        attempt.aot_dbt_return_fallback_count);
     logger.info(
         "Win32 AOT-DBT return fallback reason "
-        "site/state/opcode/stack/zero/hle/quarantine/non-guest/translate/unknown: "
+        "site/state/opcode/source/zero/hle/quarantine/non-guest/translate/unknown: "
         "{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
         attempt.aot_dbt_return_fallback_reason_counts[0],
         attempt.aot_dbt_return_fallback_reason_counts[1],
@@ -862,6 +864,34 @@ void PrintExecutionAttempt(
     }
     logger.info("Win32 AOT-DBT return fallback reason total: {}",
                 aot_dbt_return_fallback_reason_total);
+    logger.info(
+        "Win32 AOT-DBT indirect entry/attempt/success/fallback: {}/{}/{}/{}",
+        attempt.aot_dbt_indirect_entry_count,
+        attempt.aot_dbt_indirect_attempt_count,
+        attempt.aot_dbt_indirect_success_count,
+        attempt.aot_dbt_indirect_fallback_count);
+    logger.info(
+        "Win32 AOT-DBT indirect fallback reason "
+        "site/state/opcode/source/zero/hle/quarantine/non-guest/translate/unknown: "
+        "{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
+        attempt.aot_dbt_indirect_fallback_reason_counts[0],
+        attempt.aot_dbt_indirect_fallback_reason_counts[1],
+        attempt.aot_dbt_indirect_fallback_reason_counts[2],
+        attempt.aot_dbt_indirect_fallback_reason_counts[3],
+        attempt.aot_dbt_indirect_fallback_reason_counts[4],
+        attempt.aot_dbt_indirect_fallback_reason_counts[5],
+        attempt.aot_dbt_indirect_fallback_reason_counts[6],
+        attempt.aot_dbt_indirect_fallback_reason_counts[7],
+        attempt.aot_dbt_indirect_fallback_reason_counts[8],
+        attempt.aot_dbt_indirect_fallback_reason_counts[9]);
+    std::uint64_t aot_dbt_indirect_fallback_reason_total = 0;
+    for (std::uint32_t count :
+         attempt.aot_dbt_indirect_fallback_reason_counts)
+    {
+        aot_dbt_indirect_fallback_reason_total += count;
+    }
+    logger.info("Win32 AOT-DBT indirect fallback reason total: {}",
+                aot_dbt_indirect_fallback_reason_total);
     logger.info("Win32 AOT boundary reason ret/indir/direct/cond/other: "
                 "{}/{}/{}/{}/{}",
                 attempt.aot_boundary_return_count,
@@ -999,6 +1029,186 @@ void PrintExecutionAttempt(
                     sequence + 1U, Hex32(transfer.source),
                     Hex32(transfer.target),
                     transfer.is_call ? "call" : "jump");
+    }
+    if (attempt.aot_dbt_call_return_trace_configured)
+    {
+        logger.info(
+            "Win32 AOT-DBT CALL/RET trace "
+            "stored-events/calls/returns-observed/matches/mismatches/"
+            "overwrites: "
+            "{}/{}/{}/{}/{}/{}",
+            attempt.aot_dbt_call_return_trace_count,
+            attempt.aot_dbt_call_return_call_count,
+            attempt.aot_dbt_call_return_return_count,
+            attempt.aot_dbt_call_return_match_count,
+            attempt.aot_dbt_call_return_mismatch_count,
+            attempt.aot_dbt_call_return_overwrite_count);
+        const auto log_call_return_trace =
+            [&logger](const char* prefix,
+                      const repiu::platform::win32::
+                          Win32AotCallReturnTraceEntry& entry) {
+                const char* origin = entry.origin ==
+                        repiu::platform::win32::Win32AotTransferOrigin::kHost
+                    ? "host"
+                    : "veh";
+                if (entry.kind == repiu::platform::win32::
+                                      Win32AotCallReturnTraceEventKind::kCall)
+                {
+                    logger.info(
+                        "{} #{} CALL origin/source/target/return/ESP: "
+                        "{}/{}/{}/{}/{}",
+                        prefix, entry.sequence, origin,
+                        Hex32(entry.source), Hex32(entry.target),
+                        Hex32(entry.return_address), Hex32(entry.esp));
+                    return;
+                }
+                logger.info(
+                    "{} #{} RET origin/source/actual/ESP/call#/expected-"
+                    "source/target/return/ESP/correlated/target-match/"
+                    "esp-match: {}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
+                    prefix, entry.sequence, origin,
+                    Hex32(entry.source), Hex32(entry.target),
+                    Hex32(entry.esp), entry.call_sequence,
+                    Hex32(entry.expected_source),
+                    Hex32(entry.expected_target),
+                    Hex32(entry.expected_return_address),
+                    Hex32(entry.expected_esp),
+                    entry.correlated ? "true" : "false",
+                    entry.target_matches ? "true" : "false",
+                    entry.esp_matches ? "true" : "false");
+            };
+        if (attempt.aot_dbt_call_return_first_divergence_valid)
+        {
+            log_call_return_trace(
+                "Win32 AOT-DBT CALL/RET first divergence",
+                attempt.aot_dbt_call_return_first_divergence);
+        }
+        const std::uint32_t call_return_begin =
+            attempt.aot_dbt_call_return_trace_count >
+                    repiu::platform::win32::
+                        kWin32AotCallReturnTraceCapacity
+                ? attempt.aot_dbt_call_return_trace_count -
+                      repiu::platform::win32::
+                          kWin32AotCallReturnTraceCapacity
+                : 0U;
+        for (std::uint32_t sequence = call_return_begin;
+             sequence < attempt.aot_dbt_call_return_trace_count;
+             ++sequence)
+        {
+            const auto& entry = attempt.aot_dbt_call_return_trace[
+                sequence %
+                repiu::platform::win32::
+                    kWin32AotCallReturnTraceCapacity];
+            log_call_return_trace("Win32 AOT-DBT CALL/RET trace", entry);
+        }
+    }
+    if (attempt.aot_dbt_call_step_probe_configured)
+    {
+        const auto phase_name =
+            [](repiu::platform::win32::Win32AotCallStepProbePhase phase) {
+                switch (phase)
+                {
+                    case repiu::platform::win32::
+                        Win32AotCallStepProbePhase::kAwaitPreC3:
+                        return "await-pre-c3";
+                    case repiu::platform::win32::
+                        Win32AotCallStepProbePhase::kAwaitPostC3:
+                        return "await-post-c3";
+                    case repiu::platform::win32::
+                        Win32AotCallStepProbePhase::kAwaitReturnTarget:
+                        return "await-return-target";
+                    default:
+                        return "idle";
+                }
+            };
+        logger.info(
+            "Win32 AOT-DBT CALL step probe "
+            "targets/events/arms/completes/conflicts/skipped/phase/active: "
+            "{}/{}/{}/{}/{}/{}/{}/{}",
+            attempt.aot_dbt_call_step_probe_target_count,
+            attempt.aot_dbt_call_step_probe_trace_count,
+            attempt.aot_dbt_call_step_probe_arm_count,
+            attempt.aot_dbt_call_step_probe_complete_count,
+            attempt.aot_dbt_call_step_probe_conflict_count,
+            attempt.aot_dbt_call_step_probe_skipped_count,
+            phase_name(attempt.aot_dbt_call_step_probe_phase),
+            attempt.aot_dbt_call_step_probe_active_call_sequence);
+        std::ostringstream targets;
+        for (std::uint32_t index = 0;
+             index < attempt.aot_dbt_call_step_probe_target_count;
+             ++index)
+        {
+            if (index != 0U)
+            {
+                targets << ",";
+            }
+            targets << attempt.aot_dbt_call_step_probe_targets[index];
+        }
+        logger.info("Win32 AOT-DBT CALL step probe target sequences: {}",
+                    targets.str());
+        const std::uint32_t begin =
+            attempt.aot_dbt_call_step_probe_trace_count >
+                    repiu::platform::win32::
+                        kWin32AotCallStepProbeTraceCapacity
+                ? attempt.aot_dbt_call_step_probe_trace_count -
+                      repiu::platform::win32::
+                          kWin32AotCallStepProbeTraceCapacity
+                : 0U;
+        for (std::uint32_t sequence = begin;
+             sequence < attempt.aot_dbt_call_step_probe_trace_count;
+             ++sequence)
+        {
+            const auto& entry = attempt.aot_dbt_call_step_probe_trace[
+                sequence %
+                repiu::platform::win32::
+                    kWin32AotCallStepProbeTraceCapacity];
+            const char* kind = "unexpected";
+            switch (entry.kind)
+            {
+                case repiu::platform::win32::
+                    Win32AotCallStepProbeEventKind::kPreC3:
+                    kind = "pre-c3";
+                    break;
+                case repiu::platform::win32::
+                    Win32AotCallStepProbeEventKind::kPostC3:
+                    kind = "post-c3";
+                    break;
+                case repiu::platform::win32::
+                    Win32AotCallStepProbeEventKind::kReturnTarget:
+                    kind = "return-target";
+                    break;
+                case repiu::platform::win32::
+                    Win32AotCallStepProbeEventKind::kConflict:
+                    kind = "conflict";
+                    break;
+                default:
+                    break;
+            }
+            logger.info(
+                "Win32 AOT-DBT CALL step #{} {} call#/source/target/return/"
+                "EIP/ESP/expected-EIP/expected-ESP/eip-match/esp-match/"
+                "EFLAGS/DR6: {}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
+                entry.sequence, kind, entry.call_sequence,
+                Hex32(entry.guest_source), Hex32(entry.guest_target),
+                Hex32(entry.guest_return), Hex32(entry.eip),
+                Hex32(entry.esp), Hex32(entry.expected_eip),
+                Hex32(entry.expected_esp),
+                entry.eip_matches ? "true" : "false",
+                entry.esp_matches ? "true" : "false",
+                Hex32(entry.eflags), Hex32(entry.dr6));
+            logger.info(
+                "Win32 AOT-DBT CALL step #{} "
+                "EAX/EBX/ECX/EDX/ESI/EDI/EBP/stack-mask/stack: "
+                "{}/{}/{}/{}/{}/{}/{}/{}/{},{},{},{}",
+                entry.sequence, Hex32(entry.eax), Hex32(entry.ebx),
+                Hex32(entry.ecx), Hex32(entry.edx), Hex32(entry.esi),
+                Hex32(entry.edi), Hex32(entry.ebp),
+                Hex32(entry.stack_valid_mask),
+                Hex32(entry.stack_dwords[0]),
+                Hex32(entry.stack_dwords[1]),
+                Hex32(entry.stack_dwords[2]),
+                Hex32(entry.stack_dwords[3]));
+        }
     }
     logger.info("Win32 execution probe configured/hit/offset: {}/{}/{}",
                 attempt.execution_probe_configured ? "true" : "false",
@@ -2564,6 +2774,34 @@ int main(int argc, char** argv)
     repiu::runtime::AotCodeCacheBuildOptions aot_build_options;
     aot_build_options.enable_dbt_return_miss_dispatch =
         execution_backend == repiu::runtime::ExecutionBackend::kAotDbt;
+    // Task 282 indirect call/jump host dispatch is implemented and passes every
+    // synthetic probe, but a live `aot-dbt` run reveals a cumulative corruption
+    // that crashes the Glide attract path (see
+    // docs/analysis/current-execution-frontier.md). It is therefore opt-in and
+    // OFF by default so `aot-dbt` keeps its known-good Task 281 behavior; set
+    // REPIU_AOT_DBT_INDIRECT=1 to enable it for further investigation.
+    if (execution_backend == repiu::runtime::ExecutionBackend::kAotDbt)
+    {
+        // Task 283 call/jump split probe. Accept `1`/`both` (both kinds),
+        // `call`/`calls` (calls only), `jump`/`jumps` (jumps only), anything else
+        // or unset stays OFF. The kind gates default true, so `1`/`both` matches
+        // the Task 282 behavior exactly.
+        const char* indirect_toggle = std::getenv("REPIU_AOT_DBT_INDIRECT");
+        const std::string indirect_mode =
+            indirect_toggle != nullptr ? std::string(indirect_toggle)
+                                       : std::string();
+        const bool calls_only =
+            indirect_mode == "call" || indirect_mode == "calls";
+        const bool jumps_only =
+            indirect_mode == "jump" || indirect_mode == "jumps";
+        const bool both = indirect_mode == "1" || indirect_mode == "both";
+        aot_build_options.enable_dbt_indirect_miss_dispatch =
+            both || calls_only || jumps_only;
+        aot_build_options.enable_dbt_indirect_dispatch_calls =
+            both || calls_only;
+        aot_build_options.enable_dbt_indirect_dispatch_jumps =
+            both || jumps_only;
+    }
     if (use_aot_backend && !ReadAotIndirectInlineCacheEntryCount(
             &aot_build_options.indirect_inline_cache_entry_count))
     {

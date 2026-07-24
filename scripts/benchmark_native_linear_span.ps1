@@ -1,4 +1,7 @@
 param(
+    [ValidateSet("aot-dynamic", "aot-dbt")]
+    [string]$Backend = "aot-dynamic",
+
     [ValidateRange(1000, 3600000)]
     [int]$DurationMilliseconds = 60000,
 
@@ -16,11 +19,17 @@ if (-not (Test-Path -LiteralPath $supervisor -PathType Leaf)) {
 }
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$resultRoot = Join-Path $repoRoot `
-    "build\benchmarks\native-linear-span\$timestamp"
+$benchmarkRoot = Join-Path $repoRoot `
+    "build\benchmarks\native-linear-span\$Backend"
+$resultRoot = Join-Path $benchmarkRoot $timestamp
 New-Item -ItemType Directory -Path $resultRoot -Force | Out-Null
 
 $fixture = Join-Path $repoRoot "eeprom.dat"
+if (-not (Test-Path -LiteralPath $fixture -PathType Leaf)) {
+    throw "EEPROM fixture was not found: $fixture"
+}
+$fixtureSha256 =
+    (Get-FileHash -LiteralPath $fixture -Algorithm SHA256).Hash
 $sequence = New-Object System.Collections.Generic.List[int]
 for ($index = 0; $index -lt $Repetitions; ++$index) {
     if (($index % 2) -eq 0) {
@@ -80,6 +89,9 @@ $previousSlots = $env:REPIU_AOT_INDIRECT_CACHE_SLOTS
 $previousRegion = $env:REPIU_NATIVE_REGION
 $previousSpan = $env:REPIU_NATIVE_LINEAR_SPAN
 $previousEeprom = $env:REPIU_EEPROM_PATH
+$previousDbtIndirect = $env:REPIU_AOT_DBT_INDIRECT
+$previousCallTrace = $env:REPIU_AOT_DBT_CALL_TRACE
+$previousCallStep = $env:REPIU_AOT_DBT_CALL_STEP
 $results = New-Object System.Collections.Generic.List[object]
 
 Push-Location $repoRoot
@@ -92,24 +104,27 @@ try {
         $stdoutLog = Join-Path $resultRoot "$runName-stdout.log"
         $stderrLog = Join-Path $resultRoot "$runName-stderr.log"
         $runEeprom = Join-Path $resultRoot "$runName-eeprom.dat"
-        if (Test-Path -LiteralPath $fixture -PathType Leaf) {
-            Copy-Item -LiteralPath $fixture -Destination $runEeprom
-        }
+        Copy-Item -LiteralPath $fixture -Destination $runEeprom
 
-        $env:REPIU_EXECUTION_BACKEND = "aot-dynamic"
+        $env:REPIU_EXECUTION_BACKEND = $Backend
         $env:REPIU_EXECUTION_TIMEOUT_MS = "0"
         $env:REPIU_AOT_INDIRECT_CACHE_SLOTS = "4"
         Remove-Item Env:REPIU_NATIVE_REGION -ErrorAction SilentlyContinue
+        Remove-Item Env:REPIU_AOT_DBT_INDIRECT -ErrorAction SilentlyContinue
+        Remove-Item Env:REPIU_AOT_DBT_CALL_TRACE -ErrorAction SilentlyContinue
+        Remove-Item Env:REPIU_AOT_DBT_CALL_STEP -ErrorAction SilentlyContinue
         $env:REPIU_EEPROM_PATH = $runEeprom
         if ($spanEnabled -eq 1) {
             $env:REPIU_NATIVE_LINEAR_SPAN = "1"
         }
         else {
-            Remove-Item Env:REPIU_NATIVE_LINEAR_SPAN -ErrorAction SilentlyContinue
+            $env:REPIU_NATIVE_LINEAR_SPAN = "0"
         }
 
-        Write-Host ("native-span run {0}/{1}: span={2}, duration_ms={3}" -f `
-            $runNumber, $sequence.Count, $mode, $DurationMilliseconds)
+        Write-Host (`
+            "native-span run {0}/{1}: backend={2}, span={3}, duration_ms={4}" -f `
+            $runNumber, $sequence.Count, $Backend, $mode, `
+            $DurationMilliseconds)
         $process = Start-Process -FilePath $supervisor `
             -ArgumentList @("pumpit1", "$DurationMilliseconds") `
             -RedirectStandardOutput $stdoutLog `
@@ -164,9 +179,13 @@ try {
         $singleStep = Read-Metric $lastLive 'single_step=([0-9]+)'
         $guestInstructionProxy =
             [long]$singleStep + [long]$span[3]
+        $runEepromSha256 =
+            (Get-FileHash -LiteralPath $runEeprom -Algorithm SHA256).Hash
 
         $results.Add([pscustomobject]@{
             run = $runNumber
+            pair = [math]::Floor($runIndex / 2) + 1
+            backend = $Backend
             span_enabled = $spanEnabled
             duration_ms = $DurationMilliseconds
             supervisor_exit = $process.ExitCode
@@ -196,6 +215,10 @@ try {
             fatal_count = Read-Metric $lastSnapshot 'fatal_count/msg=([0-9]+)'
             legacy_fallback = Read-Metric $lastSnapshot `
                 'legacy_fallback_count/addr=([0-9]+)'
+            eeprom_sha256 = $runEepromSha256
+            fixture_sha256 = $fixtureSha256
+            eeprom_matches_fixture =
+                $runEepromSha256 -eq $fixtureSha256
             supervisor_log = $stdoutLog
             child_log = $stderrLog
             eeprom_copy = $runEeprom
@@ -210,11 +233,14 @@ finally {
     $env:REPIU_NATIVE_REGION = $previousRegion
     $env:REPIU_NATIVE_LINEAR_SPAN = $previousSpan
     $env:REPIU_EEPROM_PATH = $previousEeprom
+    $env:REPIU_AOT_DBT_INDIRECT = $previousDbtIndirect
+    $env:REPIU_AOT_DBT_CALL_TRACE = $previousCallTrace
+    $env:REPIU_AOT_DBT_CALL_STEP = $previousCallStep
 }
 
 $csvPath = Join-Path $resultRoot "results.csv"
 $results | Export-Csv -LiteralPath $csvPath -NoTypeInformation
-$results | Format-Table run, span_enabled, window_open_ms, texture_ms, `
-    swap_ms, guest_instruction_proxy, span_entry, boundary_total, `
-    fatal_count -AutoSize
+$results | Format-Table run, pair, backend, span_enabled, window_open_ms, `
+    texture_ms, swap_ms, guest_instruction_proxy, span_entry, `
+    boundary_total, fatal_count, eeprom_matches_fixture -AutoSize
 Write-Host "native-span results: $csvPath"

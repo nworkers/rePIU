@@ -573,17 +573,39 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->aot_dbt_hle_reentry_success_count =
         context.aot_dbt_hle_reentry_success_count.load(
             std::memory_order_relaxed);
-    attempt->aot_dbt_return_attempt_count =
-        context.aot_dbt_return_attempt_count.load(std::memory_order_relaxed);
+    attempt->aot_dbt_return_entry_count =
+        context.aot_dbt_return_entry_count.load(std::memory_order_relaxed);
     attempt->aot_dbt_return_success_count =
         context.aot_dbt_return_success_count.load(std::memory_order_relaxed);
     attempt->aot_dbt_return_fallback_count =
         context.aot_dbt_return_fallback_count.load(std::memory_order_relaxed);
+    // Derive the reported attempt as success + fallback so the accounting
+    // invariant also holds for a sample whose graceful timeout landed inside the
+    // resolver (Task 281 open item, corrected in Task 282).
+    attempt->aot_dbt_return_attempt_count =
+        attempt->aot_dbt_return_success_count +
+        attempt->aot_dbt_return_fallback_count;
     for (std::uint32_t index = 0;
-         index < kAotDbtReturnFallbackReasonCount; ++index)
+         index < kAotDbtDispatchFallbackReasonCount; ++index)
     {
         attempt->aot_dbt_return_fallback_reason_counts[index] =
             context.aot_dbt_return_fallback_reason_counts[index].load(
+                std::memory_order_relaxed);
+    }
+    attempt->aot_dbt_indirect_entry_count =
+        context.aot_dbt_indirect_entry_count.load(std::memory_order_relaxed);
+    attempt->aot_dbt_indirect_success_count =
+        context.aot_dbt_indirect_success_count.load(std::memory_order_relaxed);
+    attempt->aot_dbt_indirect_fallback_count =
+        context.aot_dbt_indirect_fallback_count.load(std::memory_order_relaxed);
+    attempt->aot_dbt_indirect_attempt_count =
+        attempt->aot_dbt_indirect_success_count +
+        attempt->aot_dbt_indirect_fallback_count;
+    for (std::uint32_t index = 0;
+         index < kAotDbtDispatchFallbackReasonCount; ++index)
+    {
+        attempt->aot_dbt_indirect_fallback_reason_counts[index] =
+            context.aot_dbt_indirect_fallback_reason_counts[index].load(
                 std::memory_order_relaxed);
     }
     attempt->aot_indirect_dispatch_count =
@@ -688,6 +710,51 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->aot_transfer_trace_count = context.aot_transfer_trace_count;
     std::memcpy(attempt->aot_transfer_trace, context.aot_transfer_trace,
                 sizeof(attempt->aot_transfer_trace));
+    attempt->aot_dbt_call_return_trace_configured =
+        context.aot_dbt_call_return_trace_configured;
+    attempt->aot_dbt_call_return_trace_count =
+        context.aot_dbt_call_return_trace_count;
+    attempt->aot_dbt_call_return_call_count =
+        context.aot_dbt_call_return_call_count;
+    attempt->aot_dbt_call_return_return_count =
+        context.aot_dbt_call_return_return_count;
+    attempt->aot_dbt_call_return_match_count =
+        context.aot_dbt_call_return_match_count;
+    attempt->aot_dbt_call_return_mismatch_count =
+        context.aot_dbt_call_return_mismatch_count;
+    attempt->aot_dbt_call_return_overwrite_count =
+        context.aot_dbt_call_return_overwrite_count;
+    attempt->aot_dbt_call_return_first_divergence_valid =
+        context.aot_dbt_call_return_first_divergence_valid;
+    attempt->aot_dbt_call_return_first_divergence =
+        context.aot_dbt_call_return_first_divergence;
+    std::memcpy(attempt->aot_dbt_call_return_trace,
+                context.aot_dbt_call_return_trace,
+                sizeof(attempt->aot_dbt_call_return_trace));
+    attempt->aot_dbt_call_step_probe_configured =
+        context.aot_dbt_call_step_probe_configured;
+    attempt->aot_dbt_call_step_probe_target_count =
+        context.aot_dbt_call_step_probe_target_count;
+    std::memcpy(attempt->aot_dbt_call_step_probe_targets,
+                context.aot_dbt_call_step_probe_targets,
+                sizeof(attempt->aot_dbt_call_step_probe_targets));
+    attempt->aot_dbt_call_step_probe_trace_count =
+        context.aot_dbt_call_step_probe_trace_count;
+    attempt->aot_dbt_call_step_probe_arm_count =
+        context.aot_dbt_call_step_probe_arm_count;
+    attempt->aot_dbt_call_step_probe_complete_count =
+        context.aot_dbt_call_step_probe_complete_count;
+    attempt->aot_dbt_call_step_probe_conflict_count =
+        context.aot_dbt_call_step_probe_conflict_count;
+    attempt->aot_dbt_call_step_probe_skipped_count =
+        context.aot_dbt_call_step_probe_skipped_count;
+    attempt->aot_dbt_call_step_probe_phase =
+        context.aot_dbt_call_step_probe_phase;
+    attempt->aot_dbt_call_step_probe_active_call_sequence =
+        context.aot_dbt_call_step_probe_active_call_sequence;
+    std::memcpy(attempt->aot_dbt_call_step_probe_trace,
+                context.aot_dbt_call_step_probe_trace,
+                sizeof(attempt->aot_dbt_call_step_probe_trace));
     attempt->diagnostic_poll_iteration_count =
         context.diagnostic_poll_iteration_count;
     attempt->diagnostic_progress_count =

@@ -121,6 +121,9 @@ struct ThreadContext
         std::uint32_t source = 0;
         std::uint32_t target = 0;
         std::uint32_t fallthrough = 0;
+        std::uint32_t trace_sequence = 0;
+        std::uint32_t entry_esp = 0;
+        Win32AotTransferOrigin origin = Win32AotTransferOrigin::kVeh;
     };
     static constexpr std::uint32_t kAotCallFrameCapacity = 1024;
     std::uint32_t entry_address = 0;
@@ -149,11 +152,19 @@ struct ThreadContext
     std::atomic<std::uint32_t> aot_translation_target{0};
     std::atomic<std::uint32_t> aot_worker_operation{
         static_cast<std::uint32_t>(AotWorkerOperation::kTranslate)};
-    std::atomic<std::uint32_t> aot_dbt_return_attempt_count{0};
+    // Raw C++ resolver entries. The reported attempt is derived as
+    // success + fallback (Task 282), so a sample that ends inside the resolver
+    // still satisfies the accounting invariant.
+    std::atomic<std::uint32_t> aot_dbt_return_entry_count{0};
     std::atomic<std::uint32_t> aot_dbt_return_success_count{0};
     std::atomic<std::uint32_t> aot_dbt_return_fallback_count{0};
     std::atomic<std::uint32_t> aot_dbt_return_fallback_reason_counts[
-        kAotDbtReturnFallbackReasonCount] = {};
+        kAotDbtDispatchFallbackReasonCount] = {};
+    std::atomic<std::uint32_t> aot_dbt_indirect_entry_count{0};
+    std::atomic<std::uint32_t> aot_dbt_indirect_success_count{0};
+    std::atomic<std::uint32_t> aot_dbt_indirect_fallback_count{0};
+    std::atomic<std::uint32_t> aot_dbt_indirect_fallback_reason_counts[
+        kAotDbtDispatchFallbackReasonCount] = {};
     std::atomic<std::uint32_t> aot_patch_cache_miss_address{0};
     std::atomic<std::uint32_t> aot_patch_guest_target{0};
     std::atomic<std::uint32_t> aot_patch_cache_target{0};
@@ -257,6 +268,45 @@ struct ThreadContext
     std::uint32_t aot_transfer_trace_count = 0;
     Win32AotTransferTraceEntry
         aot_transfer_trace[kWin32AotTransferTraceCapacity] = {};
+    bool aot_dbt_call_return_trace_configured = false;
+    std::uint32_t aot_dbt_call_return_trace_count = 0;
+    std::uint32_t aot_dbt_call_return_call_count = 0;
+    std::uint32_t aot_dbt_call_return_return_count = 0;
+    std::uint32_t aot_dbt_call_return_match_count = 0;
+    std::uint32_t aot_dbt_call_return_mismatch_count = 0;
+    std::uint32_t aot_dbt_call_return_overwrite_count = 0;
+    bool aot_dbt_call_return_first_divergence_valid = false;
+    Win32AotCallReturnTraceEntry aot_dbt_call_return_first_divergence;
+    Win32AotCallReturnTraceEntry
+        aot_dbt_call_return_trace[kWin32AotCallReturnTraceCapacity] = {};
+    bool aot_dbt_call_step_probe_configured = false;
+    std::uint32_t aot_dbt_call_step_probe_target_count = 0;
+    std::uint32_t aot_dbt_call_step_probe_targets[
+        kWin32AotCallStepProbeTargetCapacity] = {};
+    std::uint32_t aot_dbt_call_step_probe_trace_count = 0;
+    std::uint32_t aot_dbt_call_step_probe_arm_count = 0;
+    std::uint32_t aot_dbt_call_step_probe_complete_count = 0;
+    std::uint32_t aot_dbt_call_step_probe_conflict_count = 0;
+    std::uint32_t aot_dbt_call_step_probe_skipped_count = 0;
+    Win32AotCallStepProbePhase aot_dbt_call_step_probe_phase =
+        Win32AotCallStepProbePhase::kIdle;
+    std::uint32_t aot_dbt_call_step_probe_active_call_sequence = 0;
+    std::uint32_t aot_dbt_call_step_probe_guest_source = 0;
+    std::uint32_t aot_dbt_call_step_probe_guest_target = 0;
+    std::uint32_t aot_dbt_call_step_probe_guest_return = 0;
+    std::uint32_t aot_dbt_call_step_probe_entry_esp = 0;
+    std::uint32_t aot_dbt_call_step_probe_pre_eip = 0;
+    std::uint32_t aot_dbt_call_step_probe_post_eip = 0;
+    std::uint32_t aot_dbt_call_step_probe_return_cache_eip = 0;
+    std::uint32_t aot_dbt_call_step_probe_original_tf = 0;
+    std::uint32_t aot_dbt_call_step_probe_saved_dr0 = 0;
+    std::uint32_t aot_dbt_call_step_probe_saved_dr1 = 0;
+    std::uint32_t aot_dbt_call_step_probe_saved_dr2 = 0;
+    std::uint32_t aot_dbt_call_step_probe_saved_dr3 = 0;
+    std::uint32_t aot_dbt_call_step_probe_saved_dr6 = 0;
+    std::uint32_t aot_dbt_call_step_probe_saved_dr7 = 0;
+    Win32AotCallStepProbeEntry aot_dbt_call_step_probe_trace[
+        kWin32AotCallStepProbeTraceCapacity] = {};
     detail::NativeFastPathState native_fast_path;
     bool returned = false;
     bool process_exit = false;

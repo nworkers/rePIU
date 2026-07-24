@@ -9,16 +9,18 @@ translation worker, SMC 일관성 및 HLE 의미를 공유하면서 Windows
 `INT3`/VEH와 TF single-step 왕복을 점진적으로 정상 host dispatch로 교체하는
 실행 정책입니다.
 
-이 문서는 이미 완료된 두 기반 작업과 바로 이어질 두 후속 작업의 순서를 고정합니다.
-각 단계는 이전 단계의 계측과 안전 계약을 유지하며, 원본 guest 실행 의미를 바꾸지
-않습니다.
+이 문서는 네 단계의 구현 순서와 현재 결과를 고정합니다. 네 단계의 구현과 계측은
+완료했지만, 4단계 CALL 경로는 실구동 정확성 실패로 기본 비활성 상태이며 후속 근인
+관측이 필요합니다. 각 단계는 이전 단계의 계측과 안전 계약을 유지하며, 원본 guest
+실행 의미를 바꾸지 않습니다.
 
 ```mermaid
 flowchart LR
     P1["1. HLE 후 cache 즉시 복귀<br/>Task 276 · 완료"] -->
     P2["2. RET miss host dispatch<br/>Task 277 · 완료"]
-    P2 --> P3["3. RET fallback 분류<br/>다음 작업"]
-    P3 --> P4["4. indirect call/jump miss<br/>host dispatch"]
+    P2 --> P3["3. RET fallback 분류<br/>Task 281 · 완료"]
+    P3 --> P4["4. indirect call/jump miss<br/>Task 282 · 구현 완료 / CALL 비활성"]
+    P4 --> P5["CALL 근인 관측<br/>Task 283 이후"]
 ```
 
 ### 2. 단계별 계획
@@ -42,7 +44,7 @@ flowchart LR
 - 완료 근거: 15초 실행에서 시도/성공/fallback `5,507/849/4,658`,
   fatal 0, legacy fallback 0.
 
-#### 3단계 — RET fallback 원인 계측과 분류 (다음 작업)
+#### 3단계 — RET fallback 원인 계측과 분류 (완료)
 
 먼저 실행 의미를 변경하지 않는 관측 전용 증분으로 시작합니다. 현재 단일
 `fallback` 카운터를 다음 의사결정에 필요한 원인별 카운터로 분해합니다.
@@ -74,7 +76,12 @@ EEPROM hash를 함께 남깁니다. 가장 큰 안전하게 제거 가능한 fal
 - Win32 x86 Debug 빌드와 기존 AOT/inline-cache/SMC probe가 통과합니다.
 - 적어도 한 번의 안정된 hot-phase 표본으로 상위 fallback 원인을 확정합니다.
 
-#### 4단계 — indirect call/jump miss의 host-stack dispatch
+Task 281에서 위 조건을 충족했습니다. 15초 및 120초 격리 실행의 RET fallback
+`5,413/5,413`, `8,034/8,034`가 모두 `quarantined target` 하나로 분류됐고 다른 원인은
+0이었습니다. 이 결과로 안전 정책은 완화하지 않고, 더 큰 병목인 indirect call/jump
+경계를 4단계 대상으로 확정했습니다.
+
+#### 4단계 — indirect call/jump miss의 host-stack dispatch (구현 완료, CALL 비활성)
 
 3단계 결과와 Task 277의 검증된 host-stack ABI를 바탕으로 prefix 없는 legacy-32
 `FF /2` near indirect call과 `FF /4` near indirect jump의 inline-cache miss를
@@ -111,6 +118,18 @@ RET fallback 8,034회)에 따라 4단계의 세부 결정을 다음과 같이 �
   fallback은 0입니다.
 - 동일 조건 A/B에서 EEPROM hash와 의미 기반 milestone이 일치합니다.
 
+Task 282에서 emitter, Win32 thunk/adapter, placement, 회계와 synthetic probe 구현을
+완료했습니다. 그러나 call/jump 양쪽을 활성화한 실구동은 Glide 경로에서 결정적으로
+크래시했으므로 마지막 두 실구동 완료 조건은 충족하지 못했고 기능은 opt-in으로
+유지했습니다. Task 283의 240초 분리 A/B는 JUMP-only 경로를 33,935회 무크래시로
+검증하고 크래시를 CALL-only 경로로 이분했습니다. guest-stack 반환주소 write를
+억제해도 동일 크래시가 발생했으므로 해당 write는 근인이 아닙니다. Task 284~285의
+결정적 관측은 동적 append를 가로질러 placement vector 원소 포인터를 재사용한
+use-after-reallocation을 근인으로 확정했습니다. Task 286은 indirect와 RET adapter를
+by-value site snapshot으로 수정했고 calls-only 240초에서 기존 Glide AV가
+재현되지 않았습니다. 다만 33,741회 시도 중 성공은 60회뿐이므로 CALL host dispatch는
+성능 근거가 확보될 때까지 opt-in으로 유지합니다.
+
 ### 3. 공통 성능 판정
 
 제목 표시줄 FPS는 Glide buffer swap 빈도이므로 DBT 자체 처리량의 단독 지표로 사용하지
@@ -132,6 +151,12 @@ dispatcher로 전환하는 작업은 이 4단계 이후의 별도 설계 범위�
 저메모리 의미와 생성 CFG 전체의 HLE boundary를 보장하기 전에는 HLE 직후 cache miss를
 직접 번역하지 않습니다.
 
+Task 287은 이 일반 dispatcher에 앞서 기존 native linear span을 `aot-dbt` fallback에
+반복 검증했습니다. 직접 loader 3쌍 중앙값에서 progress `+11.86%`, single-step
+`-41.93%`와 texture/draw/swap `2/0/0 → 4/42/11`을 확인했으므로 `aot-dbt`에만
+span을 기본 활성화합니다. 이는 arbitrary miss를 번역하지 않고 기존 fail-closed
+single-step 구간의 안전한 직선 prefix만 네이티브 실행합니다.
+
 ## English
 
 ### 1. Purpose
@@ -141,9 +166,12 @@ emitter, code cache, translation worker, SMC coherency, and HLE semantics while
 incrementally replacing Windows `INT3`/VEH and TF single-step round trips with
 normal host dispatch.
 
-This document fixes the order of two completed foundation increments and the
-next two follow-up tasks. Every stage preserves the preceding observability and
-safety contracts without changing original guest execution semantics.
+This document fixes the order and current outcome of all four stages. Their
+implementation and instrumentation are complete, but the Stage 4 CALL path
+remains disabled by default after failing live correctness validation and needs
+follow-up root-cause observation. Every stage preserves the preceding
+observability and safety contracts without changing original guest execution
+semantics.
 
 ### 2. Ordered stages
 
@@ -165,7 +193,7 @@ returning to the established VEH path. A 15-second run recorded
 5,507/849/4,658 attempts/successes/fallbacks with zero fatal state and zero
 legacy fallback.
 
-#### Stage 3 — Instrument and classify RET fallback causes (next)
+#### Stage 3 — Instrument and classify RET fallback causes (complete)
 
 Begin with an observation-only increment. Replace the single fallback count with
 exclusive cause counters covering site/ABI validation, guest-stack or target
@@ -180,7 +208,12 @@ cause accounting, unchanged guest-visible results and EEPROM hash, the Win32 x86
 Debug build and existing probes, and at least one stable hot-phase sample that
 identifies the dominant fallback causes.
 
-#### Stage 4 — Host-stack dispatch for indirect call/jump misses
+Task 281 met those criteria. Isolated 15-second and 120-second runs classified
+all 5,413/5,413 and 8,034/8,034 RET fallbacks as `quarantined target`, with
+every other cause at zero. The safety policy therefore stays fail-closed, and
+the larger indirect call/jump boundary population became the Stage 4 target.
+
+#### Stage 4 — Host-stack dispatch for indirect call/jump misses (implemented; CALL disabled)
 
 Using Stage 3 evidence and the proven Task 277 stack ABI, route prefix-free
 legacy-32 `FF /2` near indirect call and `FF /4` near indirect jump inline-cache
@@ -207,6 +240,19 @@ the full Win32 x86 Debug build and existing probes, accounted live dispatch
 counters with zero fatal/legacy fallback, and matching semantic milestones and
 EEPROM hashes in controlled A/B runs.
 
+Task 282 completed the emitter, Win32 thunk/adapter, placement, accounting, and
+synthetic probes. Enabling both kinds live nevertheless crashes deterministically
+in the Glide path, so the final live completion criteria were not met and the
+feature remains opt-in. Task 283's 240-second split A/B proved JUMP-only dispatch
+safe across 33,935 transfers and isolated the crash to CALL-only dispatch.
+Suppressing the CALL guest-stack return-address write reproduced the same crash,
+ruling that write out. Tasks 284 and 285 then identified a use-after-reallocation:
+the adapter retained a placement-vector element pointer across a resolver that
+dynamically appended to the same vector. Task 286 changes both indirect and RET
+adapters to by-value site snapshots, and calls-only no longer reproduces the
+former Glide AV in 240 seconds. CALL host dispatch remains opt-in because only
+60 of 33,741 attempts succeeded; default enablement awaits performance evidence.
+
 ### 3. Common performance criteria
 
 Window-title FPS counts Glide buffer swaps and is not a standalone DBT throughput
@@ -222,3 +268,9 @@ Exception-free dispatch for general HLE boundaries, untranslated fallthrough,
 and arbitrary cache misses remains a separate design after these four stages.
 Immediate translation after an HLE cache miss stays prohibited until selector-
 zero low-memory semantics and whole-generated-CFG HLE-boundary guarantees exist.
+
+Before that general dispatcher, Task 287 repeatedly validated the existing native linear
+span inside `aot-dbt` fallback. Three direct-loader pairs produced median +11.86% progress,
+-41.93% single-step, and texture/draw/swap `2/0/0 → 4/42/11`, so spans are now default ON
+only for `aot-dbt`. This does not translate arbitrary misses; it natively runs only the
+safe straight-line prefix of the established fail-closed single-step path.

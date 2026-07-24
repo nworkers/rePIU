@@ -21,11 +21,11 @@ bool RunAotDbtReturnFallbackProbe()
     auto context =
         std::make_unique<platform::win32::ThreadContext>();
     for (std::uint32_t index = 0;
-         index < platform::win32::kAotDbtReturnFallbackReasonCount; ++index)
+         index < platform::win32::kAotDbtDispatchFallbackReasonCount; ++index)
     {
         platform::win32::RecordAotDbtReturnFallback(
             context.get(),
-            static_cast<platform::win32::AotDbtReturnFallbackReason>(index));
+            static_cast<platform::win32::AotDbtDispatchFallbackReason>(index));
     }
 
     const std::uint32_t total =
@@ -34,7 +34,7 @@ bool RunAotDbtReturnFallbackProbe()
     std::uint32_t reason_total = 0;
     bool slots = true;
     for (std::uint32_t index = 0;
-         index < platform::win32::kAotDbtReturnFallbackReasonCount; ++index)
+         index < platform::win32::kAotDbtDispatchFallbackReasonCount; ++index)
     {
         const std::uint32_t count =
             context->aot_dbt_return_fallback_reason_counts[index].load(
@@ -43,7 +43,7 @@ bool RunAotDbtReturnFallbackProbe()
         slots = slots && count == 1U;
     }
     const bool accounting =
-        total == platform::win32::kAotDbtReturnFallbackReasonCount &&
+        total == platform::win32::kAotDbtDispatchFallbackReasonCount &&
         total == reason_total;
     std::cout << "dbt_return_fallback_slots="
               << (slots ? "true" : "false")

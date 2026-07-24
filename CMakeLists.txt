@@ -91,7 +91,10 @@ add_library(repiu_exe
     src/platform/win32/aot_code_cache_win32.cpp
     src/platform/win32/aot_page_coherence_win32.cpp
     src/platform/win32/aot/aot_boundary_reason.cpp
+    src/platform/win32/aot/aot_dbt_call_return_trace.cpp
+    src/platform/win32/aot/aot_dbt_call_step_probe.cpp
     src/platform/win32/aot/aot_dbt_dispatch.cpp
+    src/platform/win32/aot/aot_dbt_indirect_dispatch.cpp
     src/platform/win32/aot/aot_dbt_return_dispatch.cpp
     src/platform/win32/aot/aot_runtime_dispatch.cpp
     src/platform/win32/execution/execution_trampoline.cpp
@@ -158,6 +161,9 @@ add_executable(repiu_chd_cd_probe
 )
 
 add_executable(repiu_aot_probe
+    src/tools/aot_probe/dbt_call_return_trace_probe.cpp
+    src/tools/aot_probe/dbt_call_step_probe.cpp
+    src/tools/aot_probe/dbt_indirect_dispatch_probe.cpp
     src/tools/aot_probe/dbt_return_fallback_probe.cpp
     src/tools/aot_probe/execution_backend_probe.cpp
     src/tools/aot_probe/inline_cache_probe.cpp

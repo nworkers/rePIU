@@ -9,3 +9,4 @@ samples/*/build/
 *.tmp
 *.obj
 WIP/
+eeprom.dat

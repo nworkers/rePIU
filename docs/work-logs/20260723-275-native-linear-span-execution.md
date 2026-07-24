@@ -90,3 +90,15 @@ Preliminary 120-second × 4 and the first 240-second × 2 measurements shared th
 higher instruction proxy, but were excluded from the final table because that is not the
 production default. The span path was made independent and remeasured with the default
 clean-function fast path and `REPIU_NATIVE_REGION` removed.
+
+## Task 287 후속 변경 / Task 287 follow-up
+
+위 opt-in 정책은 Task 287의 최신 `aot-dbt` 반복 A/B 결과로 일부 대체됐습니다.
+`aot-dbt`는 이제 환경 변수 미지정 시 span을 기본 활성화하며, 다른 backend는 계속
+기본 OFF입니다. 명시적 `0|off|false`는 span을 끕니다. 구현과 Task 275의 원시 결과는
+역사적 증거로 그대로 유지합니다.
+
+The opt-in policy above is partially superseded by Task 287's repeated current-`aot-dbt`
+A/B. `aot-dbt` now enables spans by default when unset, other backends remain default OFF,
+and explicit `0|off|false` disables spans. The implementation and Task 275 raw results
+remain unchanged as historical evidence.

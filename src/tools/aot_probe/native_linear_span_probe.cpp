@@ -1,5 +1,6 @@
 #include "native_linear_span_probe.h"
 
+#include "native_linear_span.h"
 #include "verified_region_analyzer.h"
 
 #include <cstdint>
@@ -86,10 +87,30 @@ bool RunNativeLinearSpanProbe()
     const bool short_rejected =
         !platform::win32::detail::ScanNativeLinearSpanWithZydis(
             base + 48U, base, kPageSize, &short_span);
+    const bool policy_ok =
+        platform::win32::ResolveNativeLinearSpanEnabled(
+            runtime::ExecutionBackend::kAotDbt, "") &&
+        !platform::win32::ResolveNativeLinearSpanEnabled(
+            runtime::ExecutionBackend::kAotDynamic, "") &&
+        platform::win32::ResolveNativeLinearSpanEnabled(
+            runtime::ExecutionBackend::kAotDynamic, "1") &&
+        platform::win32::ResolveNativeLinearSpanEnabled(
+            runtime::ExecutionBackend::kLegacy, "on") &&
+        platform::win32::ResolveNativeLinearSpanEnabled(
+            runtime::ExecutionBackend::kAot, "true") &&
+        !platform::win32::ResolveNativeLinearSpanEnabled(
+            runtime::ExecutionBackend::kAotDbt, "0") &&
+        !platform::win32::ResolveNativeLinearSpanEnabled(
+            runtime::ExecutionBackend::kAotDbt, "off") &&
+        !platform::win32::ResolveNativeLinearSpanEnabled(
+            runtime::ExecutionBackend::kAotDbt, "false") &&
+        !platform::win32::ResolveNativeLinearSpanEnabled(
+            runtime::ExecutionBackend::kAotDbt, "invalid");
     VirtualFree(memory, 0, MEM_RELEASE);
 
     const bool all =
-        control_ok && sensitive_ok && write_ok && short_rejected;
+        control_ok && sensitive_ok && write_ok && short_rejected &&
+        policy_ok;
     std::cout << "linear_span_control_boundary="
               << (control_ok ? "true" : "false")
               << "\nlinear_span_sensitive_boundary="
@@ -98,6 +119,8 @@ bool RunNativeLinearSpanProbe()
               << (write_ok ? "true" : "false")
               << "\nlinear_span_short_rejected="
               << (short_rejected ? "true" : "false")
+              << "\nlinear_span_policy="
+              << (policy_ok ? "true" : "false")
               << "\nlinear_span_all=" << (all ? "true" : "false")
               << "\n";
     return all;

@@ -1,4 +1,5 @@
 #include "aot_runtime_dispatch.h"
+#include "aot_dbt_call_return_trace.h"
 #include "execution_internal.h"
 #include "guest_memory_access.h"
 #include "instruction_emulation.h"
@@ -925,14 +926,24 @@ bool HandleAotConditionalTransfer(EXCEPTION_POINTERS* exception_info,
 
 bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
                                CONTEXT* win32_context,
-                               ThreadContext* context)
+                               ThreadContext* context,
+                               AotDbtDispatchFallbackReason* fallback_reason,
+                               Win32AotTransferOrigin origin)
 {
+    if (fallback_reason != nullptr)
+    {
+        *fallback_reason = AotDbtDispatchFallbackReason::kUnknown;
+    }
     if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
         win32_context == nullptr || context == nullptr ||
         context->aot_placement == nullptr ||
         !context->aot_reentry_pending ||
         exception_info->ExceptionRecord->ExceptionCode != EXCEPTION_BREAKPOINT)
     {
+        if (fallback_reason != nullptr)
+        {
+            *fallback_reason = AotDbtDispatchFallbackReason::kInvalidState;
+        }
         return false;
     }
     const std::uint32_t source = static_cast<std::uint32_t>(win32_context->Eip);
@@ -957,6 +968,11 @@ bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
     }
     else if (instruction[0] != 0xFFU)
     {
+        if (fallback_reason != nullptr)
+        {
+            *fallback_reason =
+                AotDbtDispatchFallbackReason::kInvalidInstruction;
+        }
         return false;
     }
     else
@@ -965,6 +981,11 @@ bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
         is_call = operation == 2U;
         if (!is_call && operation != 4U)
         {
+            if (fallback_reason != nullptr)
+            {
+                *fallback_reason =
+                    AotDbtDispatchFallbackReason::kInvalidInstruction;
+            }
             return false;
         }
         const std::uint8_t mod = instruction[1] >> 6;
@@ -986,13 +1007,42 @@ bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
                         static_cast<std::uintptr_t>(pointer_address)),
                     &target))
             {
+                if (fallback_reason != nullptr)
+                {
+                    *fallback_reason =
+                        AotDbtDispatchFallbackReason::kUnreadableSource;
+                }
                 return false;
             }
         }
     }
     std::uint32_t cache_target = target;
+    AotDbtDispatchFallbackReason target_failure =
+        AotDbtDispatchFallbackReason::kTranslationFailure;
+    if (target == 0U)
+    {
+        target_failure = AotDbtDispatchFallbackReason::kZeroTarget;
+    }
+    else if (IsAotHleBoundaryAddress(context, target))
+    {
+        target_failure = AotDbtDispatchFallbackReason::kHleTarget;
+    }
+    else if (IsWin32AotGuestPageQuarantined(
+                 *context->aot_placement, target))
+    {
+        target_failure = AotDbtDispatchFallbackReason::kQuarantinedTarget;
+    }
+    else if (!IsGuestInstructionPointer(context, target) &&
+             !IsAotCacheAddress(context, target))
+    {
+        target_failure = AotDbtDispatchFallbackReason::kNonGuestTarget;
+    }
     if (!ResolveAotTransferTarget(context, target, &cache_target))
     {
+        if (fallback_reason != nullptr)
+        {
+            *fallback_reason = target_failure;
+        }
         context->aot_last_indirect_source.store(source,
                                                  std::memory_order_relaxed);
         context->aot_last_indirect_target.store(target,
@@ -1014,6 +1064,8 @@ bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
     if (is_call)
     {
         const std::uint32_t return_address = source + instruction_size;
+        const std::uint32_t entry_esp =
+            static_cast<std::uint32_t>(win32_context->Esp);
         const std::uint32_t stack_address = win32_context->Esp - 4U;
         if (!WriteGuestUInt32(
                 context,
@@ -1021,8 +1073,16 @@ bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
                     static_cast<std::uintptr_t>(stack_address)),
                 return_address))
         {
+            if (fallback_reason != nullptr)
+            {
+                *fallback_reason =
+                    AotDbtDispatchFallbackReason::kUnreadableSource;
+            }
             return false;
         }
+        const std::uint32_t trace_sequence =
+            RecordAotDbtCallReturnCall(
+                context, origin, source, target, return_address, entry_esp);
         win32_context->Esp = stack_address;
         if (context->aot_call_depth < ThreadContext::kAotCallFrameCapacity)
         {
@@ -1031,6 +1091,9 @@ bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
             frame.source = source;
             frame.target = target;
             frame.fallthrough = return_address;
+            frame.trace_sequence = trace_sequence;
+            frame.entry_esp = entry_esp;
+            frame.origin = origin;
             context->aot_last_call_source = source;
             context->aot_last_call_target = target;
         }
@@ -1058,11 +1121,12 @@ bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
 bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
                              CONTEXT* win32_context,
                              ThreadContext* context,
-                             AotDbtReturnFallbackReason* fallback_reason)
+                             AotDbtDispatchFallbackReason* fallback_reason,
+                             Win32AotTransferOrigin origin)
 {
     if (fallback_reason != nullptr)
     {
-        *fallback_reason = AotDbtReturnFallbackReason::kUnknown;
+        *fallback_reason = AotDbtDispatchFallbackReason::kUnknown;
     }
     if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
         win32_context == nullptr || context == nullptr ||
@@ -1072,7 +1136,7 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
     {
         if (fallback_reason != nullptr)
         {
-            *fallback_reason = AotDbtReturnFallbackReason::kInvalidState;
+            *fallback_reason = AotDbtDispatchFallbackReason::kInvalidState;
         }
         return false;
     }
@@ -1083,7 +1147,7 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
         if (fallback_reason != nullptr)
         {
             *fallback_reason =
-                AotDbtReturnFallbackReason::kInvalidInstruction;
+                AotDbtDispatchFallbackReason::kInvalidInstruction;
         }
         return false;
     }
@@ -1097,7 +1161,7 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
         if (fallback_reason != nullptr)
         {
             *fallback_reason =
-                AotDbtReturnFallbackReason::kUnreadableStack;
+                AotDbtDispatchFallbackReason::kUnreadableSource;
         }
         return false;
     }
@@ -1126,10 +1190,12 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
     }
     context->aot_last_return_matches_call = false;
     context->aot_last_expected_return = 0;
+    const ThreadContext::AotCallFrame* expected_frame = nullptr;
     if (context->aot_call_depth != 0U)
     {
-        const ThreadContext::AotCallFrame& frame =
-            context->aot_call_frames[context->aot_call_depth - 1U];
+        expected_frame =
+            &context->aot_call_frames[context->aot_call_depth - 1U];
+        const ThreadContext::AotCallFrame& frame = *expected_frame;
         context->aot_last_expected_return = frame.fallthrough;
         context->aot_last_expected_call_source = frame.source;
         context->aot_last_expected_call_target = frame.target;
@@ -1140,6 +1206,14 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
             --context->aot_call_depth;
         }
     }
+    RecordAotDbtCallReturnReturn(
+        context, origin, static_cast<std::uint32_t>(win32_context->Eip),
+        target, static_cast<std::uint32_t>(win32_context->Esp),
+        expected_frame != nullptr ? expected_frame->trace_sequence : 0U,
+        expected_frame != nullptr ? expected_frame->source : 0U,
+        expected_frame != nullptr ? expected_frame->target : 0U,
+        expected_frame != nullptr ? expected_frame->fallthrough : 0U,
+        expected_frame != nullptr ? expected_frame->entry_esp : 0U);
     const std::uint32_t trace_slot =
         context->aot_return_trace_count % kWin32AotReturnTraceCapacity;
     context->aot_return_trace[trace_slot] = {
@@ -1163,25 +1237,25 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
             context->aot_last_return_matches_call ? 1L : 0L);
     }
     std::uint32_t cache_target = target;
-    AotDbtReturnFallbackReason target_failure =
-        AotDbtReturnFallbackReason::kTranslationFailure;
+    AotDbtDispatchFallbackReason target_failure =
+        AotDbtDispatchFallbackReason::kTranslationFailure;
     if (target == 0U)
     {
-        target_failure = AotDbtReturnFallbackReason::kZeroTarget;
+        target_failure = AotDbtDispatchFallbackReason::kZeroTarget;
     }
     else if (IsAotHleBoundaryAddress(context, target))
     {
-        target_failure = AotDbtReturnFallbackReason::kHleTarget;
+        target_failure = AotDbtDispatchFallbackReason::kHleTarget;
     }
     else if (IsWin32AotGuestPageQuarantined(
                  *context->aot_placement, target))
     {
-        target_failure = AotDbtReturnFallbackReason::kQuarantinedTarget;
+        target_failure = AotDbtDispatchFallbackReason::kQuarantinedTarget;
     }
     else if (!IsGuestInstructionPointer(context, target) &&
              !IsAotCacheAddress(context, target))
     {
-        target_failure = AotDbtReturnFallbackReason::kNonGuestTarget;
+        target_failure = AotDbtDispatchFallbackReason::kNonGuestTarget;
     }
     if (!ResolveAotTransferTarget(context, target, &cache_target))
     {
