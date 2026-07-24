@@ -42,8 +42,26 @@ HLE boundary를 보장하는 별도 검증이 먼저 필요합니다.
 ### 미확정
 
 - 기존 cache hit만으로 줄어드는 single-step의 실제 비율
-- selector 0을 포함한 live segment policy를 planner/emitter에 전달하는 최종 구조
-- HLE 직후 생성 CFG의 전체 boundary preflight 비용과 효용
+- 기존 cache hit만으로 줄어드는 single-step의 장기 wall-clock 효과
+
+### Task 289 Stage 1에서 확정된 selector 정책
+
+Task 264의 기존 shadow 주소/값과 segment-site patch ABI를 재사용하되 resolution에
+descriptor base/limit/flags와 명시적 native/HLE/unresolved 정책을 추가했습니다. selector
+0과 전 구간이 DOS low-memory에 속하는 descriptor는 code-cache 첫 바이트를 `INT3`로
+유지합니다. 정상 nonzero flat descriptor와 Task 264에서 검증한 GS non-flat base-add
+descriptor만 기존 self-correcting guard를 활성화합니다. 재해석 self-gate도 selector만이
+아니라 전체 descriptor fingerprint를 비교합니다.
+
+따라서 “live selector 정책을 전달하는 최종 구조”는 확정됐습니다. 남은 미확정 항목은
+이 정책을 전제로 한 whole-CFG preflight와 post-HLE cache-miss 번역의 비용·효용입니다.
+
+Task 289 Stage 2는 모든 planner HLE record가 실제 `INT3`이거나 mismatch가 `INT3`으로
+가는 완전한 selector guard인지 생성 image 전체를 검사합니다. 누락 합성 probe는
+거부됩니다. opt-in `REPIU_AOT_DBT_POST_HLE_TRANSLATE=1`은 segment-write와 quarantine
+장벽을 유지한 채 이 검사를 통과한 cache miss만 번역합니다. 그러나 10초와 60초 A/B
+모두 번역 시도/성공이 `0/0`이었습니다. 현재 안전한 post-HLE 후보는 기존 cache hit로
+이미 처리되므로 기능은 기본 OFF로 보류합니다.
 
 ### 최종 Task 276 관측
 
@@ -102,6 +120,23 @@ miss or preflight failure retains the TF bridge. Extending immediate translation
 to misses requires either live selector-zero policy in the planner or
 whole-generated-CFG HLE-boundary guarantees.
 
+Task 289 Stage 1 resolves the selector-policy prerequisite by reusing Task 264's shadow
+address/value and segment-site patch ABI while adding explicit descriptor
+base/limit/flags and native/HLE/unresolved policy. Selector zero and descriptors wholly in
+DOS low memory retain an `INT3` cache boundary. Valid nonzero flat descriptors and the
+Task-264-proven GS non-flat base-add descriptor keep the self-correcting guard. The
+re-resolution gate fingerprints the complete descriptor rather than only the selector.
+The remaining open item is the cost and value of whole-CFG preflight plus post-HLE miss
+translation under this policy.
+
+Task 289 Stage 2 validates the complete generated image: every planner HLE record must be an
+actual `INT3` or a complete selector guard whose mismatch reaches `INT3`. A synthetic missing
+guard is rejected. `REPIU_AOT_DBT_POST_HLE_TRANSLATE=1` preserves segment-write and
+quarantine barriers and translates only a cache miss that passes this preflight. Both
+10-second and 60-second A/B pairs nevertheless recorded `0/0` translation attempts/successes;
+the current safe post-HLE population is already served by cache hits. The feature remains
+default off.
+
 With both guards enabled, a 30-second supervisor run completed with zero fatal
 state and zero legacy fallback. A subsequent graceful 30-second loader run
 recorded 5,670 attempts and 2,335 successful immediate HLE re-entries. The raw
@@ -111,3 +146,19 @@ non-comparable. Each DBT success removes exactly one TF instruction, giving a
 conservative within-run proxy reduction of `2,335 / (127,940 + 2,335)`, or about
 1.8%. Progress was effectively unchanged, so wall-clock improvement is not yet
 confirmed. Both isolated EEPROM copies retained the original SHA-256.
+
+## 한국어 — Task 289 Stage 3 provenance 결론
+
+`other` guest-opcode 분류는 cache breakpoint의 생성 원인을 뜻하지 않습니다. placement
+metadata를 기준으로 60초 실측한 결과 HLE/segment/inline/jump-table/retired/probe/fixup/
+unknown은 `22,248/7,064/34,912/0/7,298/0/0/0`이었습니다. completed image에는 미해소
+direct/fallthrough fixup이 없고 unknown도 0이므로, 별도의 arbitrary miss/fallthrough
+host-dispatch 모집단은 확인되지 않았습니다. Stage 3b는 정확성 우선 원칙에 따라 보류합니다.
+
+## English — Task 289 Stage 3 provenance conclusion
+
+The guest-opcode `other` classification is not the origin of a cache breakpoint. A 60-second
+placement-metadata census recorded HLE/segment/inline/jump-table/retired/probe/fixup/unknown
+as `22,248/7,064/34,912/0/7,298/0/0/0`. A completed image has no unresolved direct/fallthrough
+fixup and unknown is zero, so no separate arbitrary-miss/fallthrough host-dispatch population
+was observed. Stage 3b remains held under the accuracy-first policy.

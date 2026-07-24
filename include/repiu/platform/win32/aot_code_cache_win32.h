@@ -2,7 +2,9 @@
 #define REPIU_PLATFORM_WIN32_AOT_CODE_CACHE_WIN32_H_
 
 #include "repiu/platform/win32/aot_page_coherence_win32.h"
+#include "repiu/platform/win32/aot_boundary_provenance.h"
 #include "repiu/runtime/aot_code_cache.h"
+#include "repiu/runtime/selector_table.h"
 
 #include <cstdint>
 #include <string>
@@ -30,6 +32,7 @@ struct Win32AotCodeCachePlacement
         dbt_return_dispatch_sites;
     std::vector<runtime::AotDbtIndirectDispatchSite>
         dbt_indirect_dispatch_sites;
+    std::vector<runtime::AotJumpTableSite> jump_table_sites;
     // Task 264 Phase 3a: natively-translated segment-override accesses, carried
     // so they can be re-resolved (guard selector + folded base) once the guest
     // configures the segment register, or on any later reload.
@@ -41,6 +44,10 @@ struct Win32AotCodeCachePlacement
         inactive_map_indices_by_guest_address;
     std::unordered_map<std::uint32_t, std::uint32_t>
         inactive_map_index_by_cache_offset;
+    // Task 289 Stage 3a: O(1) lookup for immutable emitted INT3 origins. Runtime
+    // retirement and explicit probes are checked before this structural index.
+    std::unordered_map<std::uint32_t, AotCacheBreakpointProvenance>
+        breakpoint_provenance_by_cache_offset;
     std::uint32_t next_generation = 1;
     std::uint32_t indirect_inline_cache_entry_count =
         runtime::kDefaultAotIndirectInlineCacheEntryCount;
@@ -92,17 +99,45 @@ bool InstallWin32AotProbeSentinel(Win32AotCodeCachePlacement* placement,
 // address of the guest's shadow selector (for the guard's memory compare),
 // selector is its value at translation time, and base is its descriptor base
 // (0 when the selector is flat/unresolved).
+enum class Win32AotSegmentAccessPolicy : std::uint8_t
+{
+    kUnresolved = 0,
+    kNativeFolded,
+    kHleLowMemory,
+};
+
 struct Win32AotSegmentResolution
 {
     std::uint32_t shadow_address = 0;
     std::uint16_t selector = 0;
     std::uint32_t base = 0;
+    std::uint32_t limit = 0;
+    std::uint32_t flags = 0;
+    Win32AotSegmentAccessPolicy policy =
+        Win32AotSegmentAccessPolicy::kUnresolved;
 };
 
 struct Win32AotSegmentTable
 {
     Win32AotSegmentResolution segments[6];
 };
+
+struct Win32AotSegmentPatchStats
+{
+    std::uint32_t native_site_count = 0;
+    std::uint32_t hle_site_count = 0;
+    std::uint32_t unresolved_site_count = 0;
+};
+
+// Resolve one live shadow selector into an explicit native/HLE/unresolved
+// policy. Selector zero and descriptors wholly backed by DOS low memory must
+// retain the HLE boundary; valid higher-memory descriptors may use the existing
+// guarded base-folded code path.
+void BuildWin32AotSegmentResolution(
+    const runtime::SelectorTable& selector_table,
+    std::uint32_t shadow_address,
+    std::uint16_t selector,
+    Win32AotSegmentResolution* resolution);
 
 bool AppendWin32DynamicAotTranslation(
     std::uint32_t runtime_base,
@@ -121,7 +156,8 @@ bool AppendWin32DynamicAotTranslation(
 // number of sites (re)activated.
 std::uint32_t ReResolveWin32AotSegmentOverrides(
     Win32AotCodeCachePlacement* placement,
-    const Win32AotSegmentTable* segment_table);
+    const Win32AotSegmentTable* segment_table,
+    Win32AotSegmentPatchStats* stats = nullptr);
 bool PatchWin32AotIndirectInlineCache(
     Win32AotCodeCachePlacement* placement,
     std::uint32_t cache_miss_address,

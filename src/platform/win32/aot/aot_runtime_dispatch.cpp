@@ -1,5 +1,6 @@
 #include "aot_runtime_dispatch.h"
 #include "aot_dbt_call_return_trace.h"
+#include "repiu/platform/win32/aot_boundary_provenance.h"
 #include "execution_internal.h"
 #include "guest_memory_access.h"
 #include "instruction_emulation.h"
@@ -352,15 +353,44 @@ void BuildWin32AotSegmentTable(ThreadContext* context,
         {
             continue; // CS has no shadow
         }
-        table->segments[seg].shadow_address = addresses[seg];
-        table->segments[seg].selector = selectors[seg];
-        std::uint32_t linear = 0;
-        table->segments[seg].base =
-            repiu::runtime::TranslateSelectorOffset(
-                context->selector_table, selectors[seg], 0U, 1U, &linear)
-                ? linear
-                : 0U;
+        BuildWin32AotSegmentResolution(
+            context->selector_table, addresses[seg], selectors[seg],
+            &table->segments[seg]);
     }
+}
+
+void RecordAotBreakpointProvenance(
+    ThreadContext* context,
+    AotCacheBreakpointProvenance provenance)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+    std::uint32_t index = static_cast<std::uint32_t>(provenance);
+    if (index >= kAotCacheBreakpointProvenanceCount)
+    {
+        index = static_cast<std::uint32_t>(
+            AotCacheBreakpointProvenance::kUnknown);
+    }
+    context->aot_breakpoint_provenance_counts[index].fetch_add(
+        1U, std::memory_order_relaxed);
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedIncrement(
+            &context->shared_live_telemetry
+                 ->aot_breakpoint_provenance_counts[index]);
+    }
+}
+
+bool SameAotSegmentResolution(
+    const Win32AotSegmentResolution& left,
+    const Win32AotSegmentResolution& right)
+{
+    return left.shadow_address == right.shadow_address &&
+        left.selector == right.selector && left.base == right.base &&
+        left.limit == right.limit && left.flags == right.flags &&
+        left.policy == right.policy;
 }
 
 void ReResolveAotSegmentOverrides(ThreadContext* context)
@@ -372,13 +402,13 @@ void ReResolveAotSegmentOverrides(ThreadContext* context)
     }
     Win32AotSegmentTable table{};
     BuildWin32AotSegmentTable(context, &table);
-    // Only pay the cache re-protect/flush when a segment selector actually
-    // changed since the last resolution.
-    bool changed = false;
+    // Only pay the cache re-protect/flush when the complete selector descriptor
+    // changes. Selector-only gating leaves stale folded bases after DPMI updates.
+    bool changed = !context->aot_segment_resolutions_initialized;
     for (std::uint8_t seg = 0; seg < 6U; ++seg)
     {
-        if (table.segments[seg].selector !=
-            context->aot_resolved_segment_selectors[seg])
+        if (!SameAotSegmentResolution(
+                table.segments[seg], context->aot_resolved_segments[seg]))
         {
             changed = true;
             break;
@@ -388,13 +418,21 @@ void ReResolveAotSegmentOverrides(ThreadContext* context)
     {
         return;
     }
-    if (ReResolveWin32AotSegmentOverrides(context->aot_placement, &table) != 0U)
+    Win32AotSegmentPatchStats stats{};
+    if (ReResolveWin32AotSegmentOverrides(
+            context->aot_placement, &table, &stats) != 0U)
     {
         for (std::uint8_t seg = 0; seg < 6U; ++seg)
         {
-            context->aot_resolved_segment_selectors[seg] =
-                table.segments[seg].selector;
+            context->aot_resolved_segments[seg] = table.segments[seg];
         }
+        context->aot_segment_resolutions_initialized = true;
+        context->aot_selector_guard_native_site_count.fetch_add(
+            stats.native_site_count, std::memory_order_relaxed);
+        context->aot_selector_guard_hle_site_count.fetch_add(
+            stats.hle_site_count, std::memory_order_relaxed);
+        context->aot_selector_guard_unresolved_site_count.fetch_add(
+            stats.unresolved_site_count, std::memory_order_relaxed);
     }
 }
 
@@ -1385,20 +1423,58 @@ static void ProbeSegmentOverrideBoundary(ThreadContext* context,
                                          const std::uint8_t* bytes,
                                          std::size_t length)
 {
-    if (context->shared_live_telemetry == nullptr || length == 0)
+    if (context == nullptr || length == 0)
     {
         return;
     }
     std::uint16_t selector = 0;
+    std::uint32_t shadow_address = 0;
     const std::uint8_t prefix = bytes[0];
     switch (prefix)
     {
-        case 0x65U: selector = context->guest_gs; break; // GS
-        case 0x64U: selector = context->guest_fs; break; // FS
-        case 0x3EU: selector = context->guest_ds; break; // DS
-        case 0x26U: selector = context->guest_es; break; // ES
-        case 0x36U: selector = context->guest_ss; break; // SS
+        case 0x65U:
+            selector = context->guest_gs;
+            shadow_address = static_cast<std::uint32_t>(
+                reinterpret_cast<std::uintptr_t>(&context->guest_gs));
+            break;
+        case 0x64U:
+            selector = context->guest_fs;
+            shadow_address = static_cast<std::uint32_t>(
+                reinterpret_cast<std::uintptr_t>(&context->guest_fs));
+            break;
+        case 0x3EU:
+            selector = context->guest_ds;
+            shadow_address = static_cast<std::uint32_t>(
+                reinterpret_cast<std::uintptr_t>(&context->guest_ds));
+            break;
+        case 0x26U:
+            selector = context->guest_es;
+            shadow_address = static_cast<std::uint32_t>(
+                reinterpret_cast<std::uintptr_t>(&context->guest_es));
+            break;
+        case 0x36U:
+            selector = context->guest_ss;
+            shadow_address = static_cast<std::uint32_t>(
+                reinterpret_cast<std::uintptr_t>(&context->guest_ss));
+            break;
         default: return; // not a segment-override prefix (CS 0x2E has no shadow)
+    }
+    Win32AotSegmentResolution resolution{};
+    BuildWin32AotSegmentResolution(
+        context->selector_table, shadow_address, selector, &resolution);
+    if (resolution.policy == Win32AotSegmentAccessPolicy::kNativeFolded)
+    {
+        context->aot_selector_guard_mismatch_count.fetch_add(
+            1U, std::memory_order_relaxed);
+    }
+    else
+    {
+        context->aot_selector_guard_hle_exit_count.fetch_add(
+            1U, std::memory_order_relaxed);
+    }
+    if (context->shared_live_telemetry == nullptr)
+    {
+        return;
     }
     std::uint32_t base = 0;
     std::uint32_t linear = 0;
@@ -1465,6 +1541,11 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
               guest_address ==
                   context->runtime_base +
                       context->execution_trace_sentinel2_offset));
+        RecordAotBreakpointProvenance(
+            context,
+            ClassifyAotCacheBreakpointProvenance(
+                *context->aot_placement, cache_address,
+                is_tracked_trace_address));
         if (IsWin32AotCacheAddressRetired(
                 *context->aot_placement, cache_address))
         {

@@ -335,6 +335,28 @@ TF를 끕니다. 경계 #DB는 debug register와 TF를 복원하고 기존 singl
 self-modifying code 뒤의 stale decode를 재사용하지 않습니다. 예상하지 않은 exception도
 같은 fail-closed 복원 경로를 사용합니다.
 
+Task 288 Stage 1은 이 기본 동작을 유지하면서 `REPIU_NATIVE_LINEAR_SPAN_CACHE=1`일 때만
+entry EIP별 스캔 결과를 실험적으로 캐시합니다. 캐시 가능한 항목은 같은 4 KiB 페이지
+안에서 끝나고, 그 페이지가 write-watch로 보호되며 active AOT generation을 가진 경우로
+제한됩니다. 키에 page generation을 포함하므로 새 generation 발행 뒤에는 stale 항목을
+지우고 재스캔합니다. retired, quarantined, 미추적, cross-page 항목은 항상 재스캔합니다.
+60초 supervisor/direct 예비 A/B에서 hit가 0이었으므로 이 캐시는 기본 OFF이며, 기존
+`aot-dbt` span 기본 정책에는 영향을 주지 않습니다.
+
+Task 288 Stage 2는 `REPIU_NATIVE_LINEAR_SPAN_WRITES=1`에서만 memory-write 통과를
+실험합니다. 스캐너가 지나는 모든 코드 page가 write-watch로 덮여야 하며, entry 자체의
+write, 같은 span에서 base/index register가 먼저 바뀐 write, guest runtime 밖 또는
+read-only/uncommitted target은 기존 경계로 남깁니다. target page 보호 결과는 process
+수명 동안 캐시하고 write-watch page는 동기 fault로 기존 coherence 경로에 되돌립니다.
+예상 write fault는 일반 cancel과 별도 집계합니다. 240초 direct pilot에서 draw/swap이
+약 20% 감소했으므로 이 기능도 기본 OFF입니다.
+
+Task 288 Stage 3은 `REPIU_NATIVE_LINEAR_SPAN_JUMPS=1`에서만 in-range 전방 near direct
+`jmp rel`의 target으로 스캔을 이어갑니다. HLE boundary 또는 quarantined page target,
+indirect/far jump와 역방향 jump는 기존 경계로 남습니다. 60초 A/B에서 forward chain은
+0회, backward stop은 703회였으므로 기본 OFF이며 conditional-branch Dr1 확장도 진행하지
+않습니다.
+
 Task 287의 반복 A/B 뒤 `aot-dbt`는 환경 변수 미지정 시 이 span을 기본 활성화합니다.
 다른 backend의 기본값은 계속 OFF입니다. `REPIU_NATIVE_LINEAR_SPAN=1|on|true`는
 backend와 무관하게 ON, `0|off|false`는 OFF이며 알 수 없는 값도 fail-closed OFF입니다.
@@ -347,6 +369,29 @@ it, Dr0 guards that boundary while TF is clear. The boundary #DB restores debug 
 TF, then passes the boundary instruction to the existing single-step/HLE chain. Memory
 writes stay outside spans and results are not cached, preventing stale decoded spans after
 self-modification. Unexpected exceptions use the same fail-closed restoration.
+
+Task 288 Stage 1 adds an experimental per-entry scan cache only when
+`REPIU_NATIVE_LINEAR_SPAN_CACHE=1`. A result is cacheable only when its boundary remains on
+the same 4 KiB page and that page is both write-watched and backed by an active AOT
+generation. The page generation is part of the key, so generation replacement discards a
+stale entry and rescans. Retired, quarantined, untracked, and cross-page results always
+rescan. The cache remains default off because 60-second supervisor and direct-loader pilot
+runs observed zero hits; the existing `aot-dbt` span default is unchanged.
+
+Task 288 Stage 2 experimentally crosses memory writes only under
+`REPIU_NATIVE_LINEAR_SPAN_WRITES=1`. Every traversed code page must be write-watched. A write
+at the entry, a write whose base/index register changed earlier in the span, or a target
+outside guest runtime or on a read-only/uncommitted non-watched page remains at the old
+boundary. Target-page protection results are cached for the process lifetime; a write to a
+watched page faults synchronously back into the existing coherence path. Expected write
+faults are counted separately from ordinary cancellation. This feature also remains default
+off because a 240-second direct pilot reduced draw/swap by about 20%.
+
+Task 288 Stage 3 chains an in-range forward near direct `jmp rel` only under
+`REPIU_NATIVE_LINEAR_SPAN_JUMPS=1`. Targets that are HLE boundaries or quarantined pages,
+indirect/far jumps, and backward jumps retain the old boundary. A 60-second A/B observed
+zero forward chains and 703 backward stops, so the feature remains default off and the
+conditional-branch Dr1 extension is not pursued.
 
 After Task 287's repeated A/B, `aot-dbt` enables spans by default when the environment is
 unset; other backends remain off by default. `REPIU_NATIVE_LINEAR_SPAN=1|on|true` enables
@@ -522,6 +567,20 @@ Task 276의 30초 graceful 관측에서는 즉시 복귀 `5,670/2,335`
 단일 A/B의 원시 누적값은 wall-clock 향상으로 사용하지 않으며, 완전한 DBT의
 return/indirect/cache-miss host dispatcher는 후속 범위입니다.
 
+Task 289 Stage 1은 Task 264 segment-override guard의 live resolution을
+`selector/base/limit/flags/policy`로 확장합니다. selector 0과 전체 linear range가 DOS
+low-memory 안에 있는 descriptor는 cache site를 `INT3` HLE boundary로 유지하고, 정상
+nonzero flat descriptor와 검증된 GS non-flat base-add descriptor만 guard 네이티브로
+활성화합니다. segment load, DPMI descriptor 변경, DOS/LINEXE shadow selector 변경은
+전체 fingerprint가 달라질 때 site를 재패치합니다. 60초 smoke에서 native/HLE site가
+각각 누적 193,288/120,668, 실제 HLE exit 7,554, mismatch 0이었고 fatal/legacy fallback은
+0이었습니다.
+
+Task 289 Stage 2의 `REPIU_AOT_DBT_POST_HLE_TRANSLATE=1`은 생성 CFG 전체의 HLE record가
+실제 `INT3` 또는 mismatch-to-`INT3` selector guard인지 검증한 뒤 post-HLE cache miss를
+번역합니다. segment-write와 quarantine 장벽은 유지됩니다. 60초 A/B에서 번역 시도가
+0회였으므로 기본 OFF입니다.
+
 Task 276 defines `legacy`, `aot`, `aot-dynamic`, and `aot-dbt` in the
 platform-neutral `runtime::ExecutionBackend`. The Win32 host, trampoline, and
 thread context carry the same policy value, while `aot-dbt` shares the existing
@@ -538,6 +597,19 @@ recorded 5,670/2,335 attempts/successes, zero fatal state, and zero DBT legacy
 fallback; one skipped TF instruction per success is about 1.8% within-run proxy
 reduction. Wall-clock improvement remains unconfirmed, and exception-free
 return/indirect/cache-miss dispatch remains follow-up work.
+
+Task 289 Stage 1 extends Task 264's live segment-override resolution to fingerprint
+`selector/base/limit/flags/policy`. Selector zero and descriptors whose complete linear
+range lies in DOS low memory keep an `INT3` HLE boundary; valid nonzero flat descriptors and
+the proven GS non-flat base-add descriptor retain guarded-native execution. Segment loads,
+DPMI descriptor changes, and DOS/LINEXE shadow-selector changes re-patch sites only when the
+complete fingerprint changes. A 60-second smoke recorded cumulative native/HLE site counts
+of 193,288/120,668, 7,554 actual HLE exits, zero mismatches, and zero fatal/legacy fallback.
+
+Under `REPIU_AOT_DBT_POST_HLE_TRANSLATE=1`, Task 289 Stage 2 validates that every HLE record
+in a complete generated CFG is an actual `INT3` or a selector guard whose mismatch reaches
+`INT3`, then translates a post-HLE cache miss. Segment-write and quarantine barriers remain.
+The feature stays default off because a 60-second A/B recorded zero translation attempts.
 
 ### AOT-DBT return miss host dispatch
 
@@ -925,3 +997,22 @@ events and serialized worker requests. The current safety model assumes one gues
 execution thread per loader process. Retired provenance is retained for the cache
 lifetime; reclamation, cross-page REP/string stores, and multi-thread publication
 remain follow-up work.
+
+## AOT cache breakpoint provenance
+
+guest opcode 기반 boundary reason과 cache `INT3`의 생성 원인은 별도입니다. AOT placement는
+정적 image와 동적 append 시 immutable breakpoint offset을 planner HLE, selector guard,
+inline-cache fallback, jump-table fallback, other planner fixup으로 O(1) index에 등록합니다.
+실행 시점의 retired/inactive entry와 명시적 probe sentinel은 이 index보다 우선합니다.
+미등록 주소는 unknown으로 fail-closed합니다. 이 구조는 범용 host dispatch가 HLE나 SMC
+provenance를 오인하지 않게 하는 사전 조건이며, hot breakpoint에서는 vector scan을 하지
+않습니다.
+
+## AOT cache breakpoint provenance (English)
+
+Guest-opcode boundary reasons and the structural origin of a cache `INT3` are separate.
+During static placement and dynamic append, immutable breakpoint offsets are indexed in O(1)
+as planner HLE, selector guard, inline-cache fallback, jump-table fallback, or another planner
+fixup. Runtime retired/inactive entries and explicit probe sentinels take precedence; an
+unindexed address is unknown and fails closed. This prevents a generic host dispatcher from
+mistaking HLE or SMC provenance and avoids vector scans on the hot breakpoint path.

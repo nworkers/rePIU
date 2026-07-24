@@ -6,10 +6,27 @@ param(
     [int]$DurationMilliseconds = 60000,
 
     [ValidateRange(1, 20)]
-    [int]$Repetitions = 1
+    [int]$Repetitions = 1,
+
+    [switch]$CompareCache,
+
+    [switch]$CompareWrites,
+
+    [switch]$CompareJumps,
+
+    [switch]$ComparePostHle,
+
+    [ValidateRange(0, 20)]
+    [int]$StartupRetries = 8
 )
 
 $ErrorActionPreference = "Stop"
+$comparisonCount = [int]$CompareCache.IsPresent +
+    [int]$CompareWrites.IsPresent + [int]$CompareJumps.IsPresent +
+    [int]$ComparePostHle.IsPresent
+if ($comparisonCount -gt 1) {
+    throw "CompareCache, CompareWrites, CompareJumps, and ComparePostHle are mutually exclusive"
+}
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $supervisor = Join-Path $repoRoot `
@@ -19,8 +36,23 @@ if (-not (Test-Path -LiteralPath $supervisor -PathType Leaf)) {
 }
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$benchmarkKind = if ($CompareCache) {
+    "native-linear-span-cache"
+}
+elseif ($CompareWrites) {
+    "native-linear-span-writes"
+}
+elseif ($CompareJumps) {
+    "native-linear-span-jumps"
+}
+elseif ($ComparePostHle) {
+    "aot-dbt-post-hle"
+}
+else {
+    "native-linear-span"
+}
 $benchmarkRoot = Join-Path $repoRoot `
-    "build\benchmarks\native-linear-span\$Backend"
+    "build\benchmarks\$benchmarkKind\$Backend"
 $resultRoot = Join-Path $benchmarkRoot $timestamp
 New-Item -ItemType Directory -Path $resultRoot -Force | Out-Null
 
@@ -88,6 +120,10 @@ $previousTimeout = $env:REPIU_EXECUTION_TIMEOUT_MS
 $previousSlots = $env:REPIU_AOT_INDIRECT_CACHE_SLOTS
 $previousRegion = $env:REPIU_NATIVE_REGION
 $previousSpan = $env:REPIU_NATIVE_LINEAR_SPAN
+$previousSpanCache = $env:REPIU_NATIVE_LINEAR_SPAN_CACHE
+$previousSpanWrites = $env:REPIU_NATIVE_LINEAR_SPAN_WRITES
+$previousSpanJumps = $env:REPIU_NATIVE_LINEAR_SPAN_JUMPS
+$previousPostHle = $env:REPIU_AOT_DBT_POST_HLE_TRANSLATE
 $previousEeprom = $env:REPIU_EEPROM_PATH
 $previousDbtIndirect = $env:REPIU_AOT_DBT_INDIRECT
 $previousCallTrace = $env:REPIU_AOT_DBT_CALL_TRACE
@@ -97,15 +133,36 @@ $results = New-Object System.Collections.Generic.List[object]
 Push-Location $repoRoot
 try {
     for ($runIndex = 0; $runIndex -lt $sequence.Count; ++$runIndex) {
-        $spanEnabled = $sequence[$runIndex]
+        $featureEnabled = $sequence[$runIndex]
+        $compareExtension = $CompareCache -or $CompareWrites -or
+            $CompareJumps -or $ComparePostHle
+        $spanEnabled = if ($compareExtension) { 1 } else { $featureEnabled }
+        $cacheEnabled = if ($CompareCache) { $featureEnabled } else { 0 }
+        $writesEnabled = if ($CompareWrites) { $featureEnabled } else { 0 }
+        $jumpsEnabled = if ($CompareJumps) { $featureEnabled } else { 0 }
+        $postHleEnabled = if ($ComparePostHle) { $featureEnabled } else { 0 }
         $runNumber = $runIndex + 1
-        $mode = if ($spanEnabled -eq 1) { "on" } else { "off" }
-        $runName = "run-{0:D2}-span-{1}" -f $runNumber, $mode
+        $mode = if ($featureEnabled -eq 1) { "on" } else { "off" }
+        $featureName = if ($CompareCache) {
+            "cache"
+        }
+        elseif ($CompareWrites) {
+            "writes"
+        }
+        elseif ($CompareJumps) {
+            "jumps"
+        }
+        elseif ($ComparePostHle) {
+            "post-hle"
+        }
+        else {
+            "span"
+        }
+        $runName = "run-{0:D2}-{1}-{2}" -f `
+            $runNumber, $featureName, $mode
         $stdoutLog = Join-Path $resultRoot "$runName-stdout.log"
         $stderrLog = Join-Path $resultRoot "$runName-stderr.log"
         $runEeprom = Join-Path $resultRoot "$runName-eeprom.dat"
-        Copy-Item -LiteralPath $fixture -Destination $runEeprom
-
         $env:REPIU_EXECUTION_BACKEND = $Backend
         $env:REPIU_EXECUTION_TIMEOUT_MS = "0"
         $env:REPIU_AOT_INDIRECT_CACHE_SLOTS = "4"
@@ -120,31 +177,64 @@ try {
         else {
             $env:REPIU_NATIVE_LINEAR_SPAN = "0"
         }
+        $env:REPIU_NATIVE_LINEAR_SPAN_CACHE =
+            $cacheEnabled.ToString()
+        $env:REPIU_NATIVE_LINEAR_SPAN_WRITES =
+            $writesEnabled.ToString()
+        $env:REPIU_NATIVE_LINEAR_SPAN_JUMPS =
+            $jumpsEnabled.ToString()
+        $env:REPIU_AOT_DBT_POST_HLE_TRANSLATE =
+            $postHleEnabled.ToString()
 
-        Write-Host (`
-            "native-span run {0}/{1}: backend={2}, span={3}, duration_ms={4}" -f `
-            $runNumber, $sequence.Count, $Backend, $mode, `
-            $DurationMilliseconds)
-        $process = Start-Process -FilePath $supervisor `
-            -ArgumentList @("pumpit1", "$DurationMilliseconds") `
-            -RedirectStandardOutput $stdoutLog `
-            -RedirectStandardError $stderrLog `
-            -WindowStyle Hidden -Wait -PassThru
+        $startupAttempt = 0
+        $validRun = $false
+        do {
+            ++$startupAttempt
+            Copy-Item -LiteralPath $fixture -Destination $runEeprom -Force
+            Write-Host (`
+                "native-span run {0}/{1} attempt={2}: backend={3}, span={4}, cache={5}, writes={6}, jumps={7}, post_hle={8}, duration_ms={9}" -f `
+                $runNumber, $sequence.Count, $startupAttempt, $Backend, `
+                $spanEnabled, $cacheEnabled, $writesEnabled, $jumpsEnabled, $postHleEnabled, `
+                $DurationMilliseconds)
+            $process = Start-Process -FilePath $supervisor `
+                -ArgumentList @("pumpit1", "$DurationMilliseconds") `
+                -RedirectStandardOutput $stdoutLog `
+                -RedirectStandardError $stderrLog `
+                -WindowStyle Hidden -Wait -PassThru
 
-        $snapshotLines = Get-Content -LiteralPath $stdoutLog |
-            Where-Object { $_ -match '^\[repiu-supervisor\] elapsed_ms=' }
-        $lastSnapshot = $snapshotLines | Select-Object -Last 1
-        $liveLines = Get-Content -LiteralPath $stderrLog |
-            Where-Object { $_ -match '^\[repiu-live\] elapsed_ms=' }
-        $lastLive = $liveLines | Select-Object -Last 1
-        $childExitLine = Get-Content -LiteralPath $stdoutLog |
-            Where-Object { $_ -match '\[repiu-supervisor\] child_exit=' } |
-            Select-Object -Last 1
+            $snapshotLines = Get-Content -LiteralPath $stdoutLog |
+                Where-Object { $_ -match '^\[repiu-supervisor\] elapsed_ms=' }
+            $lastSnapshot = $snapshotLines | Select-Object -Last 1
+            $liveLines = Get-Content -LiteralPath $stderrLog |
+                Where-Object { $_ -match '^\[repiu-live\] elapsed_ms=' }
+            $lastLive = $liveLines | Select-Object -Last 1
+            $childExitLine = Get-Content -LiteralPath $stdoutLog |
+                Where-Object { $_ -match '\[repiu-supervisor\] child_exit=' } |
+                Select-Object -Last 1
+            $childExit = Read-Metric $childExitLine 'child_exit=([0-9]+)'
+            $validRun = $null -ne $lastLive -and $childExit -in @("0", "124")
+            if (-not $validRun -and $startupAttempt -le $StartupRetries) {
+                Write-Warning (`
+                    "startup failed for run {0}; retrying ({1}/{2})" -f `
+                    $runNumber, $startupAttempt, $StartupRetries)
+            }
+        } while (-not $validRun -and $startupAttempt -le $StartupRetries)
+        if (-not $validRun) {
+            throw "native-span run $runNumber exhausted startup retries"
+        }
 
         $region = Read-SlashValues $lastLive `
             'region=([0-9/]+)' 5
         $span = Read-SlashValues $lastLive `
             'span=([0-9/]+)' 5
+        $spanCache = Read-SlashValues $lastLive `
+            'span_cache=([0-9/]+)' 2
+        $spanWrite = Read-SlashValues $lastLive `
+            'span_write=([0-9/]+)' 3
+        $spanJump = Read-SlashValues $lastLive `
+            'span_jump=([0-9/]+)' 2
+        $postHle = Read-SlashValues $lastLive `
+            'posthle=([0-9/]+)' 2
         $boundary = Read-SlashValues $lastSnapshot `
             'boundary_reason\(ret/indir/direct/cond/other\)=([0-9/]+)' 5
         $aot = Read-SlashValues $lastSnapshot `
@@ -187,9 +277,14 @@ try {
             pair = [math]::Floor($runIndex / 2) + 1
             backend = $Backend
             span_enabled = $spanEnabled
+            span_cache_enabled = $cacheEnabled
+            span_writes_enabled = $writesEnabled
+            span_jumps_enabled = $jumpsEnabled
+            post_hle_enabled = $postHleEnabled
             duration_ms = $DurationMilliseconds
+            startup_attempts = $startupAttempt
             supervisor_exit = $process.ExitCode
-            child_exit = Read-Metric $childExitLine 'child_exit=([0-9]+)'
+            child_exit = $childExit
             window_open_ms = $milestones.window_open
             texture_ms = $milestones.texture
             draw_ms = $milestones.draw
@@ -206,6 +301,19 @@ try {
             span_cancel = $span[2]
             span_native_instructions = $span[3]
             span_reject = $span[4]
+            span_cache_hit = $spanCache[0]
+            span_cache_miss = $spanCache[1]
+            span_write_cross = $spanWrite[0]
+            span_write_guard_uncovered = $spanWrite[1]
+            span_write_fault_cancel = $spanWrite[2]
+            span_jump_chain = $spanJump[0]
+            span_backward_jump_stop = $spanJump[1]
+            post_hle_translation_attempt = $postHle[0]
+            post_hle_translation_success = $postHle[1]
+            span_last_cancel_code = Read-Metric $lastLive `
+                'span_cancel_last=(0x[0-9A-Fa-f]+)'
+            span_last_cancel_eip = Read-Metric $lastLive `
+                'span_cancel_last=0x[0-9A-Fa-f]+/(0x[0-9A-Fa-f]+)'
             boundary_total = $aot[0]
             reentry_total = $aot[1]
             boundary_return = $boundary[0]
@@ -232,6 +340,10 @@ finally {
     $env:REPIU_AOT_INDIRECT_CACHE_SLOTS = $previousSlots
     $env:REPIU_NATIVE_REGION = $previousRegion
     $env:REPIU_NATIVE_LINEAR_SPAN = $previousSpan
+    $env:REPIU_NATIVE_LINEAR_SPAN_CACHE = $previousSpanCache
+    $env:REPIU_NATIVE_LINEAR_SPAN_WRITES = $previousSpanWrites
+    $env:REPIU_NATIVE_LINEAR_SPAN_JUMPS = $previousSpanJumps
+    $env:REPIU_AOT_DBT_POST_HLE_TRANSLATE = $previousPostHle
     $env:REPIU_EEPROM_PATH = $previousEeprom
     $env:REPIU_AOT_DBT_INDIRECT = $previousDbtIndirect
     $env:REPIU_AOT_DBT_CALL_TRACE = $previousCallTrace
@@ -240,7 +352,13 @@ finally {
 
 $csvPath = Join-Path $resultRoot "results.csv"
 $results | Export-Csv -LiteralPath $csvPath -NoTypeInformation
-$results | Format-Table run, pair, backend, span_enabled, window_open_ms, `
-    texture_ms, swap_ms, guest_instruction_proxy, span_entry, `
+$results | Format-Table run, pair, backend, span_enabled, `
+    span_cache_enabled, window_open_ms, texture_ms, swap_ms, `
+    span_writes_enabled, guest_instruction_proxy, span_entry, `
+    span_jumps_enabled, span_jump_chain, span_backward_jump_stop, `
+    post_hle_enabled, post_hle_translation_attempt, `
+    post_hle_translation_success, `
+    span_cache_hit, span_cache_miss, span_write_cross, `
+    span_write_guard_uncovered, span_write_fault_cancel, `
     boundary_total, fatal_count, eeprom_matches_fixture -AutoSize
 Write-Host "native-span results: $csvPath"

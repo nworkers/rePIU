@@ -97,6 +97,10 @@ bool Win32AotGuestRangeHasActiveTranslation(
     const Win32AotCodeCachePlacement& placement,
     std::uint32_t guest_address,
     std::uint32_t byte_count);
+bool QueryWin32AotActiveGuestPageGeneration(
+    const Win32AotCodeCachePlacement& placement,
+    std::uint32_t guest_address,
+    std::uint32_t* generation);
 bool IsWin32AotGuestPageRetired(
     const Win32AotCodeCachePlacement& placement,
     std::uint32_t guest_address);

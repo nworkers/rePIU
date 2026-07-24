@@ -1,4 +1,5 @@
 #include "dos_int21_services.h"
+#include "aot/aot_runtime_dispatch.h"
 #include "execution_internal.h"
 #include "guest_memory_access.h"
 #include "dpmi_mscdex_services.h"
@@ -1024,6 +1025,7 @@ void HandleDosGetInterruptVector(CONTEXT* win32_context,
 
     context->guest_es = segment;
     win32_context->SegEs = segment;
+    ReResolveAotSegmentOverrides(context);
     win32_context->Ebx =
         (win32_context->Ebx & 0xFFFF0000U) | offset;
     win32_context->EFlags &= ~1U;
@@ -1196,6 +1198,7 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
                     (win32_context->Eax & 0xFFFF0000U) |
                     kDos4gwIdentificationAxResult;
                 context->guest_gs = kDos4gwClientDataSelector;
+                ReResolveAotSegmentOverrides(context);
                 if (kDos4gwIdentificationCarry)
                 {
                     win32_context->EFlags |= 1U;

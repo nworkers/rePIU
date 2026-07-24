@@ -836,4 +836,75 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
     return image->valid;
 }
 
+bool ValidateAotCodeCacheHleCoverage(
+    const AotTranslationPlan& plan,
+    const AotCodeCacheImage& image,
+    std::uint32_t* failure_guest_address)
+{
+    if (failure_guest_address != nullptr)
+    {
+        *failure_guest_address = 0U;
+    }
+    if (!plan.valid || !image.valid)
+    {
+        return false;
+    }
+    const auto fail = [failure_guest_address](std::uint32_t guest) {
+        if (failure_guest_address != nullptr)
+        {
+            *failure_guest_address = guest;
+        }
+        return false;
+    };
+    std::uint32_t checked = 0U;
+    for (const AotBasicBlock& block : plan.blocks)
+    {
+        for (const AotInstructionRecord& instruction : block.instructions)
+        {
+            if (instruction.kind != AotInstructionKind::kHleBoundary &&
+                instruction.kind != AotInstructionKind::kSegmentOverrideMem)
+            {
+                continue;
+            }
+            ++checked;
+            const auto map = std::find_if(
+                image.address_map.begin(), image.address_map.end(),
+                [&instruction](const AotAddressMapEntry& entry) {
+                    return entry.guest_address == instruction.guest_address;
+                });
+            if (map == image.address_map.end() ||
+                map->cache_offset >= image.bytes.size())
+            {
+                return fail(instruction.guest_address);
+            }
+            if (image.bytes[map->cache_offset] == 0xCCU)
+            {
+                continue;
+            }
+            if (instruction.kind != AotInstructionKind::kSegmentOverrideMem)
+            {
+                return fail(instruction.guest_address);
+            }
+            const auto site = std::find_if(
+                image.segment_override_sites.begin(),
+                image.segment_override_sites.end(),
+                [&instruction](const AotSegmentOverrideSite& candidate) {
+                    return candidate.guest_source == instruction.guest_address;
+                });
+            if (site == image.segment_override_sites.end() ||
+                site->cache_offset != map->cache_offset ||
+                site->guard_selector_offset + 5U >= image.bytes.size() ||
+                image.bytes[site->cache_offset] != 0x9CU ||
+                image.bytes[site->guard_selector_offset + 2U] != 0x74U ||
+                image.bytes[site->guard_selector_offset + 3U] != 0x02U ||
+                image.bytes[site->guard_selector_offset + 4U] != 0x9DU ||
+                image.bytes[site->guard_selector_offset + 5U] != 0xCCU)
+            {
+                return fail(instruction.guest_address);
+            }
+        }
+    }
+    return checked == plan.hle_boundary_count;
+}
+
 }  // namespace repiu::runtime

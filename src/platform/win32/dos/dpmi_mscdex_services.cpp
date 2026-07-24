@@ -1,4 +1,5 @@
 #include "dpmi_mscdex_services.h"
+#include "aot/aot_runtime_dispatch.h"
 #include "execution_internal.h"
 #include "guest_memory_access.h"
 
@@ -190,6 +191,7 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
         RecordHandledDosInterrupt(context, 0x31, ax);
         if (success)
         {
+            ReResolveAotSegmentOverrides(context);
             context->dpmi_last_allocated_selector = first_selector;
             win32_context->Eax =
                 (win32_context->Eax & 0xFFFF0000U) | first_selector;
@@ -347,6 +349,7 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
             {
                 return false;
             }
+            ReResolveAotSegmentOverrides(context);
             win32_context->EFlags &= ~1U;
         }
         win32_context->Eip += 2;
@@ -382,6 +385,7 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
             {
                 return false;
             }
+            ReResolveAotSegmentOverrides(context);
             win32_context->EFlags &= ~1U;
         }
         win32_context->Eip += 2;
@@ -428,6 +432,7 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
                         &context->selector_table,
                         {selector, offset, size - 1U, 0x0092U, true}))
                 {
+                    ReResolveAotSegmentOverrides(context);
                     segment = static_cast<std::uint16_t>(offset / 16U);
 
                     ThreadContext::RealModeBlock& block = context->dpmi_real_mode_blocks[slot_index];
@@ -475,6 +480,7 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
                 repiu::runtime::RegisterDescriptor(
                     &context->selector_table,
                     {selector, block.offset, block.size - 1U, 0x0092U, false});
+                ReResolveAotSegmentOverrides(context);
 
                 block.active = false;
                 freed = true;

@@ -1,4 +1,6 @@
 #include "repiu/platform/win32/aot_code_cache_win32.h"
+
+#include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/aot_translation_plan.h"
 #include "aot/aot_dbt_indirect_dispatch.h"
 #include "aot/aot_dbt_return_dispatch.h"
@@ -20,6 +22,68 @@ namespace repiu::platform::win32
 {
 namespace
 {
+
+void IndexAotBreakpointProvenance(
+    const runtime::AotCodeCacheImage& image,
+    std::uint32_t append_offset,
+    Win32AotCodeCachePlacement* placement)
+{
+    if (placement == nullptr)
+    {
+        return;
+    }
+    auto& index = placement->breakpoint_provenance_by_cache_offset;
+    for (const runtime::AotCodeCacheFixup& fixup : image.fixups)
+    {
+        const std::uint32_t offset = append_offset + fixup.cache_patch_offset;
+        if (fixup.kind == runtime::AotFixupKind::kHleBoundary)
+        {
+            index[offset] = AotCacheBreakpointProvenance::kPlannerHle;
+        }
+        else if (fixup.kind == runtime::AotFixupKind::kIndirectExit ||
+                 (fixup.kind == runtime::AotFixupKind::kConditionalBranch &&
+                  !fixup.resolved))
+        {
+            index[offset] =
+                AotCacheBreakpointProvenance::kOtherPlannerFixup;
+        }
+    }
+    for (const runtime::AotSegmentOverrideSite& site :
+         image.segment_override_sites)
+    {
+        // Unresolved/HLE policy replaces the first byte with INT3. A resolved
+        // selector mismatch reaches the fixed fallback INT3 at +13.
+        index[append_offset + site.cache_offset] =
+            AotCacheBreakpointProvenance::kSegmentGuard;
+        index[append_offset + site.cache_offset + 13U] =
+            AotCacheBreakpointProvenance::kSegmentGuard;
+    }
+    for (const runtime::AotIndirectInlineCacheSite& site :
+         image.indirect_inline_cache_sites)
+    {
+        index[append_offset + site.miss_cache_offset] =
+            AotCacheBreakpointProvenance::kInlineCacheFallback;
+        index[append_offset + site.miss_cache_offset + 1U] =
+            AotCacheBreakpointProvenance::kInlineCacheFallback;
+    }
+    for (const runtime::AotDbtReturnDispatchSite& site :
+         image.dbt_return_dispatch_sites)
+    {
+        index[append_offset + site.fallback_cache_offset + 4U] =
+            AotCacheBreakpointProvenance::kInlineCacheFallback;
+    }
+    for (const runtime::AotDbtIndirectDispatchSite& site :
+         image.dbt_indirect_dispatch_sites)
+    {
+        index[append_offset + site.fallback_cache_offset + 4U] =
+            AotCacheBreakpointProvenance::kInlineCacheFallback;
+    }
+    for (const runtime::AotJumpTableSite& site : image.jump_table_sites)
+    {
+        index[append_offset + site.fallback_offset] =
+            AotCacheBreakpointProvenance::kJumpTableFallback;
+    }
+}
 
 // Jump-table slots carry image-relative offsets; once the image bytes have a
 // final absolute base the displacement and every table entry become absolute
@@ -145,7 +209,9 @@ void ResolveWin32AotSegmentOverrides(
     {
         const std::uint8_t seg = site.segment_register;
         if (segment_table == nullptr || seg >= 6U ||
-            segment_table->segments[seg].shadow_address == 0U)
+            segment_table->segments[seg].shadow_address == 0U ||
+            segment_table->segments[seg].policy !=
+                Win32AotSegmentAccessPolicy::kNativeFolded)
         {
             // Cannot resolve: make the sequence a boundary at its start so the
             // original instruction is single-stepped (current behavior, safe).
@@ -167,6 +233,52 @@ void ResolveWin32AotSegmentOverrides(
 }
 
 }  // namespace
+
+void BuildWin32AotSegmentResolution(
+    const runtime::SelectorTable& selector_table,
+    std::uint32_t shadow_address,
+    std::uint16_t selector,
+    Win32AotSegmentResolution* resolution)
+{
+    if (resolution == nullptr)
+    {
+        return;
+    }
+    *resolution = Win32AotSegmentResolution{};
+    resolution->shadow_address = shadow_address;
+    resolution->selector = selector;
+    if (shadow_address == 0U)
+    {
+        return;
+    }
+    if (selector == 0U)
+    {
+        resolution->policy = Win32AotSegmentAccessPolicy::kHleLowMemory;
+        return;
+    }
+    const runtime::GuestDescriptor* descriptor =
+        runtime::FindDescriptor(selector_table, selector);
+    if (descriptor == nullptr)
+    {
+        return;
+    }
+    resolution->base = descriptor->base;
+    resolution->limit = descriptor->limit;
+    resolution->flags = descriptor->flags;
+    const std::uint64_t end =
+        static_cast<std::uint64_t>(descriptor->base) + descriptor->limit;
+    if (end > UINT32_MAX)
+    {
+        return;
+    }
+    if (descriptor->base < runtime::kDosLowMemorySize &&
+        end < runtime::kDosLowMemorySize)
+    {
+        resolution->policy = Win32AotSegmentAccessPolicy::kHleLowMemory;
+        return;
+    }
+    resolution->policy = Win32AotSegmentAccessPolicy::kNativeFolded;
+}
 
 bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
                             Win32AotCodeCachePlacement* placement)
@@ -255,6 +367,7 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
     placement->dbt_return_dispatch_sites = image.dbt_return_dispatch_sites;
     placement->dbt_indirect_dispatch_sites =
         image.dbt_indirect_dispatch_sites;
+    placement->jump_table_sites = image.jump_table_sites;
     placement->segment_override_sites = image.segment_override_sites;
     placement->indirect_inline_cache_entry_count =
         image.indirect_inline_cache_entry_count;
@@ -262,6 +375,7 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
         image.dbt_return_miss_dispatch_enabled;
     placement->dbt_indirect_miss_dispatch_enabled =
         image.dbt_indirect_miss_dispatch_enabled;
+    IndexAotBreakpointProvenance(image, 0U, placement);
     placement->placed = true;
     placement->message = "AOT code cache placed as Win32 execute-read memory";
     return true;
@@ -328,6 +442,13 @@ bool AppendWin32DynamicAotTranslation(
         !runtime::BuildAotCodeCacheImage(plan, build_options, &image))
     {
         result->message = "failed to translate dynamic guest target";
+        return true;
+    }
+    std::uint32_t unsafe_hle_address = 0U;
+    if (!runtime::ValidateAotCodeCacheHleCoverage(
+            plan, image, &unsafe_hle_address))
+    {
+        result->message = "dynamic AOT CFG lacks complete HLE/selector-guard coverage";
         return true;
     }
     if (image.bytes.size() > placement->capacity - placement->size)
@@ -571,6 +692,14 @@ bool AppendWin32DynamicAotTranslation(
         site.success_cache_offset += append_offset;
         placement->dbt_indirect_dispatch_sites.push_back(site);
     }
+    for (runtime::AotJumpTableSite site : image.jump_table_sites)
+    {
+        site.cache_offset += append_offset;
+        site.displacement_patch_offset += append_offset;
+        site.fallback_offset += append_offset;
+        site.table_cache_offset += append_offset;
+        placement->jump_table_sites.push_back(std::move(site));
+    }
     for (runtime::AotSegmentOverrideSite site : image.segment_override_sites)
     {
         site.cache_offset += append_offset;
@@ -579,6 +708,7 @@ bool AppendWin32DynamicAotTranslation(
         site.guard_selector_offset += append_offset;
         placement->segment_override_sites.push_back(site);
     }
+    IndexAotBreakpointProvenance(image, append_offset, placement);
     placement->size += static_cast<std::uint32_t>(image.bytes.size());
     result->cache_entry = placement->base_address + append_offset +
                           image.address_map[entry_index].cache_offset;
@@ -594,11 +724,13 @@ bool AppendWin32DynamicAotTranslation(
 
 std::uint32_t ReResolveWin32AotSegmentOverrides(
     Win32AotCodeCachePlacement* placement,
-    const Win32AotSegmentTable* segment_table)
+    const Win32AotSegmentTable* segment_table,
+    Win32AotSegmentPatchStats* stats)
 {
 #if !defined(_WIN32)
     (void)placement;
     (void)segment_table;
+    (void)stats;
     return 0U;
 #else
     if (placement == nullptr || !placement->placed ||
@@ -616,17 +748,41 @@ std::uint32_t ReResolveWin32AotSegmentOverrides(
         return 0U;
     }
     auto* bytes = static_cast<std::uint8_t*>(cache);
-    std::uint32_t activated = 0U;
+    if (stats != nullptr)
+    {
+        *stats = Win32AotSegmentPatchStats{};
+    }
+    std::uint32_t processed = 0U;
     for (const runtime::AotSegmentOverrideSite& site :
          placement->segment_override_sites)
     {
         const std::uint8_t seg = site.segment_register;
-        if (seg >= 6U || segment_table->segments[seg].shadow_address == 0U)
+        if (seg >= 6U)
         {
             continue;
         }
         const Win32AotSegmentResolution& resolution =
             segment_table->segments[seg];
+        ++processed;
+        if (resolution.shadow_address == 0U ||
+            resolution.policy !=
+                Win32AotSegmentAccessPolicy::kNativeFolded)
+        {
+            bytes[site.cache_offset] = 0xCCU;
+            if (stats != nullptr)
+            {
+                if (resolution.policy ==
+                    Win32AotSegmentAccessPolicy::kHleLowMemory)
+                {
+                    ++stats->hle_site_count;
+                }
+                else
+                {
+                    ++stats->unresolved_site_count;
+                }
+            }
+            continue;
+        }
         // Restore the pushfd the static placement may have replaced with a
         // boundary int3, then re-apply the guard selector/address and the base.
         bytes[site.cache_offset] = 0x9CU;
@@ -639,12 +795,15 @@ std::uint32_t ReResolveWin32AotSegmentOverrides(
             resolution.base;
         std::memcpy(bytes + site.displacement_offset, &displacement,
                     sizeof(displacement));
-        ++activated;
+        if (stats != nullptr)
+        {
+            ++stats->native_site_count;
+        }
     }
     DWORD ignored = 0;
     VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ, &ignored);
     FlushInstructionCache(GetCurrentProcess(), cache, placement->size);
-    return activated;
+    return processed;
 #endif
 }
 

@@ -1,4 +1,5 @@
 #include "linexe_glide_boundary.h"
+#include "aot/aot_runtime_dispatch.h"
 #include "execution_internal.h"
 #include "guest_memory_access.h"
 #include "instruction_emulation.h"
@@ -433,6 +434,7 @@ bool HandleLinexeFarTransferBoundary(CONTEXT* win32_context,
         win32_context->Eax = 1U;
         context->guest_es = static_cast<std::uint16_t>(
             context->linexe_bridge_stack[5] & 0xFFFFU);
+        ReResolveAotSegmentOverrides(context);
         win32_context->Ebx = context->linexe_bridge_stack[6];
         win32_context->Esi = context->linexe_bridge_stack[7];
         win32_context->Edi = context->linexe_bridge_stack[8];
@@ -452,6 +454,7 @@ bool HandleLinexeFarTransferBoundary(CONTEXT* win32_context,
     win32_context->Eax = kVirtualGlideModuleHandle;
     context->guest_es = static_cast<std::uint16_t>(
         context->linexe_bridge_stack[3] & 0xFFFFU);
+    ReResolveAotSegmentOverrides(context);
     win32_context->Ebx = context->linexe_bridge_stack[4];
     win32_context->Esi = context->linexe_bridge_stack[5];
     win32_context->Edi = context->linexe_bridge_stack[6];

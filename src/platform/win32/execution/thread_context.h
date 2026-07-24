@@ -187,6 +187,8 @@ struct ThreadContext
     std::atomic<std::uint32_t> aot_boundary_direct_count{0};
     std::atomic<std::uint32_t> aot_boundary_conditional_count{0};
     std::atomic<std::uint32_t> aot_boundary_other_count{0};
+    std::atomic<std::uint32_t> aot_breakpoint_provenance_counts[
+        kAotCacheBreakpointProvenanceCount] = {};
     // Task 263(a): characterize the dominant `other` boundary bucket. Lead-opcode
     // histogram of the boundary guest instruction (guest-thread only) plus the
     // most recent `other` boundary EIP and its first four bytes.
@@ -199,11 +201,16 @@ struct ThreadContext
     std::atomic<std::uint32_t> aot_residency_instruction_total{0};
     std::atomic<std::uint32_t> aot_residency_sample_count{0};
     std::atomic<std::uint32_t> aot_residency_max{0};
-    // Task 264 Phase 3a: the segment selectors last folded into segment-override
-    // sites, so re-resolution runs only when a segment register actually changes
-    // (0xFFFF forces the first resolution). Indexed by segment register.
-    std::uint16_t aot_resolved_segment_selectors[6] = {
-        0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU};
+    // Task 289 Stage 1: complete descriptor fingerprints last folded into
+    // segment-override sites. Selector-only comparison misses same-selector
+    // DPMI base/limit changes.
+    std::array<Win32AotSegmentResolution, 6> aot_resolved_segments = {};
+    bool aot_segment_resolutions_initialized = false;
+    std::atomic<std::uint32_t> aot_selector_guard_native_site_count{0};
+    std::atomic<std::uint32_t> aot_selector_guard_hle_site_count{0};
+    std::atomic<std::uint32_t> aot_selector_guard_unresolved_site_count{0};
+    std::atomic<std::uint32_t> aot_selector_guard_hle_exit_count{0};
+    std::atomic<std::uint32_t> aot_selector_guard_mismatch_count{0};
     std::atomic<std::uint32_t> aot_reentry_count{0};
     std::atomic<std::uint32_t> aot_legacy_fallback_count{0};
     std::atomic<std::uint32_t> aot_last_fallback_address{0};
@@ -212,6 +219,8 @@ struct ThreadContext
     std::atomic<std::uint32_t> aot_dynamic_added_bytes{0};
     std::atomic<std::uint32_t> aot_dbt_hle_reentry_attempt_count{0};
     std::atomic<std::uint32_t> aot_dbt_hle_reentry_success_count{0};
+    std::atomic<std::uint32_t> aot_dbt_hle_translation_attempt_count{0};
+    std::atomic<std::uint32_t> aot_dbt_hle_translation_success_count{0};
     std::atomic<std::uint32_t> aot_indirect_dispatch_count{0};
     std::atomic<std::uint32_t> aot_inline_cache_patch_attempt_count{0};
     std::atomic<std::uint32_t> aot_inline_cache_patch_success_count{0};

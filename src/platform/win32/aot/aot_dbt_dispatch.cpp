@@ -11,6 +11,19 @@ namespace repiu::platform::win32
 namespace
 {
 
+bool PostHleTranslationEnabled()
+{
+    static const bool enabled = [] {
+        char value[16] = {};
+        const DWORD length = GetEnvironmentVariableA(
+            "REPIU_AOT_DBT_POST_HLE_TRANSLATE", value, sizeof(value));
+        return length != 0U && length < sizeof(value) &&
+            ResolveAotDbtPostHleTranslationEnabled(
+                std::string_view(value, length));
+    }();
+    return enabled;
+}
+
 bool DoesGuestInstructionWriteSegmentRegister(ThreadContext* context,
                                               std::uint32_t guest_eip)
 {
@@ -98,6 +111,11 @@ bool IsImmediateHleReentrySpanSafe(ThreadContext* context,
 
 }  // namespace
 
+bool ResolveAotDbtPostHleTranslationEnabled(std::string_view setting)
+{
+    return setting == "1" || setting == "on" || setting == "true";
+}
+
 bool TryResumeAotAfterHandledHle(CONTEXT* win32_context,
                                  ThreadContext* context,
                                  std::uint32_t handled_guest_eip)
@@ -119,22 +137,36 @@ bool TryResumeAotAfterHandledHle(CONTEXT* win32_context,
         static_cast<std::uint32_t>(win32_context->Eip);
     if (!IsGuestInstructionPointer(context, current) ||
         IsWin32AotGuestPageQuarantined(
-            *context->aot_placement, current) ||
-        !IsImmediateHleReentrySpanSafe(context, current))
+            *context->aot_placement, current))
     {
         return false;
     }
 
-    // A cache miss must keep the established one-step bridge for now. Starting
-    // a fresh arbitrary-entry CFG immediately after HLE can absorb a later
-    // selector-zero segment override into the same generated block, bypassing
-    // the exact-address HLE boundary that preserves DOS low-memory semantics.
-    // Existing entries have already passed the normal boundary path.
     std::uint32_t cache_address = 0;
-    if (!FindAotCacheAddress(
-            *context->aot_placement, current, &cache_address))
+    const bool cache_hit = FindAotCacheAddress(
+        *context->aot_placement, current, &cache_address);
+    if (cache_hit)
     {
-        return false;
+        if (!IsImmediateHleReentrySpanSafe(context, current))
+        {
+            return false;
+        }
+    }
+    else
+    {
+        if (!PostHleTranslationEnabled())
+        {
+            return false;
+        }
+        context->aot_dbt_hle_translation_attempt_count.fetch_add(
+            1U, std::memory_order_relaxed);
+        if (!ResolveAotTransferTarget(
+                context, current, &cache_address))
+        {
+            return false;
+        }
+        context->aot_dbt_hle_translation_success_count.fetch_add(
+            1U, std::memory_order_relaxed);
     }
 
     win32_context->Eip = cache_address;

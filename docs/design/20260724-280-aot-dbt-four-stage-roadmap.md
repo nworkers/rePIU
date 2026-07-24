@@ -157,6 +157,13 @@ Task 287은 이 일반 dispatcher에 앞서 기존 native linear span을 `aot-db
 span을 기본 활성화합니다. 이는 arbitrary miss를 번역하지 않고 기존 fail-closed
 single-step 구간의 안전한 직선 prefix만 네이티브 실행합니다.
 
+이후 single-step 병목(수백만 규모)을 겨냥한 두 후속 계획을 착수합니다. Task 288은
+native span을 확장(decode 캐시, non-aliasing write 통과, forward jmp 체인)해 진입당
+네이티브 명령 수를 늘리고, Task 289는 selector 인지 exception-free dispatch로 최대 경계
+범주 `other`(70,957)를 번역 전환합니다. 두 계획은 상보적입니다 —
+[docs/design/20260724-288-native-linear-span-extension.md](20260724-288-native-linear-span-extension.md),
+[docs/design/20260724-289-selector-aware-exception-free-dispatch.md](20260724-289-selector-aware-exception-free-dispatch.md).
+
 ## English
 
 ### 1. Purpose
@@ -274,3 +281,10 @@ span inside `aot-dbt` fallback. Three direct-loader pairs produced median +11.86
 -41.93% single-step, and texture/draw/swap `2/0/0 → 4/42/11`, so spans are now default ON
 only for `aot-dbt`. This does not translate arbitrary misses; it natively runs only the
 safe straight-line prefix of the established fail-closed single-step path.
+
+Two follow-up plans then target the millions-scale single-step bottleneck. Task 288 extends
+native spans (decode cache, non-aliasing write crossing, forward `jmp` chaining) to raise
+native instructions per entry, while Task 289 uses selector-aware exception-free dispatch to
+translate the largest boundary category, `other` (70,957). The plans are complementary —
+[docs/design/20260724-288-native-linear-span-extension.md](20260724-288-native-linear-span-extension.md),
+[docs/design/20260724-289-selector-aware-exception-free-dispatch.md](20260724-289-selector-aware-exception-free-dispatch.md).

@@ -6,7 +6,9 @@
 #include "repiu/target/target_profile.h"
 
 #include "inline_cache_probe.h"
+#include "boundary_provenance_probe.h"
 #include "native_linear_span_probe.h"
+#include "selector_guard_probe.h"
 #include "execution_backend_probe.h"
 #include "dbt_return_fallback_probe.h"
 #include "dbt_indirect_dispatch_probe.h"
@@ -284,11 +286,15 @@ bool RunCoherenceProbe()
     }
 
     std::uint32_t old_cache = 0U;
+    std::uint32_t initial_page_generation = 0U;
     const bool initial =
         repiu::platform::win32::FindAotCacheAddress(
             placement, guest_address, &old_cache) &&
         repiu::platform::win32::Win32AotGuestRangeHasActiveTranslation(
-            placement, guest_address, sizeof(original));
+            placement, guest_address, sizeof(original)) &&
+        repiu::platform::win32::QueryWin32AotActiveGuestPageGeneration(
+            placement, guest_address, &initial_page_generation) &&
+        initial_page_generation == 1U;
     repiu::platform::win32::Win32AotGuestPageRetireResult retirement;
     const bool retired =
         repiu::platform::win32::RetireWin32AotGuestPage(
@@ -298,6 +304,8 @@ bool RunCoherenceProbe()
     std::uint32_t lookup_after_retire = 0U;
     std::uint32_t provenance_guest = 0U;
     const bool provenance = retired &&
+        !repiu::platform::win32::QueryWin32AotActiveGuestPageGeneration(
+            placement, guest_address, &initial_page_generation) &&
         !repiu::platform::win32::FindAotCacheAddress(
             placement, guest_address, &lookup_after_retire) &&
         repiu::platform::win32::FindAotGuestAddress(
@@ -318,6 +326,7 @@ bool RunCoherenceProbe()
     std::uint32_t new_cache = 0U;
     const std::uint8_t expected[] = {
         0xB8U, 0x78U, 0x56U, 0x34U, 0x13U};
+    std::uint32_t published_page_generation = 0U;
     const bool live_snapshot = appended && generation.generation == 2U &&
         generation.cache_entry != old_cache &&
         repiu::platform::win32::FindAotCacheAddress(
@@ -331,7 +340,10 @@ bool RunCoherenceProbe()
         !repiu::platform::win32::IsWin32AotGuestPageQuarantined(
             placement, guest_address) &&
          repiu::platform::win32::Win32AotGuestRangeHasActiveTranslation(
-             placement, guest_address, sizeof(original));
+             placement, guest_address, sizeof(original)) &&
+        repiu::platform::win32::QueryWin32AotActiveGuestPageGeneration(
+            placement, guest_address, &published_page_generation) &&
+        published_page_generation == generation.generation;
 
     const std::uint32_t watched_write = guest_address + 0x30U;
     const bool write_watch_began =
@@ -370,7 +382,9 @@ bool RunCoherenceProbe()
         repiu::platform::win32::RetireWin32AotGuestPage(
             &placement, guest_address, false, &second_retirement) &&
         second_retirement.retired &&
-        second_retirement.retired_entry_count >= 1U;
+        second_retirement.retired_entry_count >= 1U &&
+        !repiu::platform::win32::QueryWin32AotActiveGuestPageGeneration(
+            placement, guest_address, &published_page_generation);
 
     const std::uint32_t excluded_target = guest_address + kPageSize;
     const std::int32_t jump_displacement = static_cast<std::int32_t>(
@@ -678,6 +692,10 @@ int main(int argc, char** argv)
         }
     }
 #if defined(_WIN32)
+    if (!repiu::tools::RunAotBoundaryProvenanceProbe())
+    {
+        return 1;
+    }
     if (!repiu::tools::RunExecutionBackendProbe())
     {
         return 1;
@@ -727,6 +745,10 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunNativeLinearSpanProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunSelectorGuardProbe())
     {
         return 1;
     }

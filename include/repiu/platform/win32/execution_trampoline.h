@@ -5,6 +5,7 @@
 #include "repiu/runtime/guest_context.h"
 #include "repiu/runtime/execution_backend.h"
 #include "repiu/platform/win32/aot_code_cache_win32.h"
+#include "repiu/platform/win32/aot_boundary_provenance.h"
 #include "repiu/hle/dos_file_system.h"
 #include "repiu/exe/dos16m_bound_module.h"
 
@@ -442,6 +443,20 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t native_fast_path_cancel_count = 0;
     std::uint32_t native_fast_path_last_entry = 0;
     std::uint32_t native_fast_path_last_return = 0;
+    std::uint32_t native_linear_span_entry_count = 0;
+    std::uint32_t native_linear_span_boundary_count = 0;
+    std::uint32_t native_linear_span_cancel_count = 0;
+    std::uint32_t native_linear_span_instruction_total = 0;
+    std::uint32_t native_linear_span_reject_count = 0;
+    std::uint32_t native_linear_span_cache_hit_count = 0;
+    std::uint32_t native_linear_span_cache_miss_count = 0;
+    std::uint32_t native_linear_span_write_cross_count = 0;
+    std::uint32_t native_linear_span_write_guard_uncovered_count = 0;
+    std::uint32_t native_linear_span_write_fault_cancel_count = 0;
+    std::uint32_t native_linear_span_last_cancel_code = 0;
+    std::uint32_t native_linear_span_last_cancel_eip = 0;
+    std::uint32_t native_linear_span_direct_jump_chain_count = 0;
+    std::uint32_t native_linear_span_backward_jump_stop_count = 0;
     runtime::ExecutionBackend execution_backend =
         runtime::ExecutionBackend::kLegacy;
     bool aot_backend_active = false;
@@ -453,6 +468,8 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t aot_boundary_direct_count = 0;
     std::uint32_t aot_boundary_conditional_count = 0;
     std::uint32_t aot_boundary_other_count = 0;
+    std::uint32_t aot_breakpoint_provenance_counts[
+        kAotCacheBreakpointProvenanceCount] = {};
     // Task 263(a): top-8 lead opcodes of the `other` boundary bucket (by count)
     // and the most recent `other` boundary sample.
     std::uint32_t aot_other_top_opcodes[8] = {};
@@ -471,6 +488,13 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t aot_dynamic_added_bytes = 0;
     std::uint32_t aot_dbt_hle_reentry_attempt_count = 0;
     std::uint32_t aot_dbt_hle_reentry_success_count = 0;
+    std::uint32_t aot_dbt_hle_translation_attempt_count = 0;
+    std::uint32_t aot_dbt_hle_translation_success_count = 0;
+    std::uint32_t aot_selector_guard_native_site_count = 0;
+    std::uint32_t aot_selector_guard_hle_site_count = 0;
+    std::uint32_t aot_selector_guard_unresolved_site_count = 0;
+    std::uint32_t aot_selector_guard_hle_exit_count = 0;
+    std::uint32_t aot_selector_guard_mismatch_count = 0;
     // `entry` counts C++ resolver entries; `attempt` is derived as
     // success + fallback so the accounting invariant also holds for a sample
     // whose graceful timeout landed inside the resolver (Task 281 open item).

@@ -2,6 +2,7 @@
 
 #include <Zydis.h>
 
+#include <array>
 #include <cstring>
 #include <unordered_set>
 #include <vector>
@@ -81,6 +82,118 @@ bool HasExplicitMemoryWrite(const ZydisDecodedInstruction& instruction,
         }
     }
     return false;
+}
+
+bool MemoryWriteUsesModifiedAddressRegister(
+    const ZydisDecodedInstruction& instruction,
+    const ZydisDecodedOperand* operands,
+    const std::array<bool, ZYDIS_REGISTER_MAX_VALUE + 1>& modified)
+{
+    for (std::uint8_t index = 0;
+         index < instruction.operand_count_visible; ++index)
+    {
+        if (operands[index].type != ZYDIS_OPERAND_TYPE_MEMORY ||
+            (operands[index].actions &
+             ZYDIS_OPERAND_ACTION_MASK_WRITE) == 0U)
+        {
+            continue;
+        }
+        const ZydisRegister base = ZydisRegisterGetLargestEnclosing(
+            ZYDIS_MACHINE_MODE_LEGACY_32, operands[index].mem.base);
+        const ZydisRegister index_register =
+            ZydisRegisterGetLargestEnclosing(
+                ZYDIS_MACHINE_MODE_LEGACY_32,
+                operands[index].mem.index);
+        if ((base != ZYDIS_REGISTER_NONE && modified[base]) ||
+            (index_register != ZYDIS_REGISTER_NONE &&
+             modified[index_register]))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsMemoryWriteTargetAllowed(
+    const ZydisDecodedInstruction& instruction,
+    const ZydisDecodedOperand* operands,
+    const NativeLinearSpanOptions& options)
+{
+    if (options.register_query == nullptr ||
+        options.write_target_query == nullptr)
+    {
+        return false;
+    }
+    for (std::uint8_t operand_index = 0;
+         operand_index < instruction.operand_count_visible;
+         ++operand_index)
+    {
+        const ZydisDecodedOperand& operand = operands[operand_index];
+        if (operand.type != ZYDIS_OPERAND_TYPE_MEMORY ||
+            (operand.actions & ZYDIS_OPERAND_ACTION_MASK_WRITE) == 0U)
+        {
+            continue;
+        }
+        std::uint32_t base = 0;
+        std::uint32_t index = 0;
+        if ((operand.mem.base != ZYDIS_REGISTER_NONE &&
+             !options.register_query(
+                 options.write_guard_context,
+                 static_cast<std::uint32_t>(
+                     ZydisRegisterGetLargestEnclosing(
+                         ZYDIS_MACHINE_MODE_LEGACY_32,
+                         operand.mem.base)),
+                 &base)) ||
+            (operand.mem.index != ZYDIS_REGISTER_NONE &&
+             !options.register_query(
+                 options.write_guard_context,
+                 static_cast<std::uint32_t>(
+                     ZydisRegisterGetLargestEnclosing(
+                         ZYDIS_MACHINE_MODE_LEGACY_32,
+                         operand.mem.index)),
+                 &index)))
+        {
+            return false;
+        }
+        const std::uint32_t displacement =
+            operand.mem.disp.has_displacement
+            ? static_cast<std::uint32_t>(operand.mem.disp.value)
+            : 0U;
+        const std::uint32_t address =
+            base + index * operand.mem.scale + displacement;
+        const std::uint32_t byte_count =
+            (static_cast<std::uint32_t>(operand.size) + 7U) / 8U;
+        if (byte_count == 0U ||
+            !options.write_target_query(
+                options.write_guard_context, address, byte_count))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+void RecordModifiedRegisters(
+    const ZydisDecodedInstruction& instruction,
+    const ZydisDecodedOperand* operands,
+    std::array<bool, ZYDIS_REGISTER_MAX_VALUE + 1>* modified)
+{
+    for (std::uint8_t index = 0;
+         index < instruction.operand_count; ++index)
+    {
+        if (operands[index].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+            (operands[index].actions &
+             ZYDIS_OPERAND_ACTION_MASK_WRITE) == 0U)
+        {
+            continue;
+        }
+        const ZydisRegister enclosing = ZydisRegisterGetLargestEnclosing(
+            ZYDIS_MACHINE_MODE_LEGACY_32, operands[index].reg.value);
+        if (enclosing != ZYDIS_REGISTER_NONE)
+        {
+            (*modified)[enclosing] = true;
+        }
+    }
 }
 
 bool ReadDirectTarget(const ZydisDecodedInstruction& instruction,
@@ -346,7 +459,8 @@ bool ScanNativeLinearSpanWithZydis(
     std::uint32_t entry,
     std::uint32_t runtime_base,
     std::uint32_t runtime_size,
-    NativeLinearSpan* span)
+    NativeLinearSpan* span,
+    const NativeLinearSpanOptions* options)
 {
     constexpr std::uint32_t kMinimumInstructionCount = 2;
     constexpr std::uint32_t kMaximumInstructionCount = 64;
@@ -364,9 +478,26 @@ bool ScanNativeLinearSpanWithZydis(
     }
 
     std::uint32_t address = entry;
+    std::uint32_t verified_write_guard_page = 0xFFFFFFFFU;
+    std::array<bool, ZYDIS_REGISTER_MAX_VALUE + 1> modified_registers{};
     for (std::uint32_t count = 0;
          count < kMaximumInstructionCount; ++count)
     {
+        const std::uint32_t address_page = address & 0xFFFFF000U;
+        if (options != nullptr && options->allow_memory_writes &&
+            address_page != verified_write_guard_page)
+        {
+            if (options->write_guard_query == nullptr ||
+                !options->write_guard_query(
+                    options->write_guard_context, address_page))
+            {
+                span->boundary_address = address;
+                span->instruction_count = count;
+                span->boundary_write_guard_uncovered = true;
+                return count >= kMinimumInstructionCount;
+            }
+            verified_write_guard_page = address_page;
+        }
         if (!IsRuntimeRange(address,
                             ZYDIS_MAX_INSTRUCTION_LENGTH,
                             runtime_base,
@@ -385,13 +516,57 @@ bool ScanNativeLinearSpanWithZydis(
         {
             return false;
         }
+        const std::uint32_t instruction_end_page =
+            (address + instruction.length - 1U) & 0xFFFFF000U;
+        if (options != nullptr && options->allow_memory_writes &&
+            instruction_end_page != verified_write_guard_page)
+        {
+            if (options->write_guard_query == nullptr ||
+                !options->write_guard_query(
+                    options->write_guard_context, instruction_end_page))
+            {
+                span->boundary_address = address;
+                span->instruction_count = count;
+                span->boundary_write_guard_uncovered = true;
+                return count >= kMinimumInstructionCount;
+            }
+            verified_write_guard_page = instruction_end_page;
+        }
 
         const bool sensitive = IsSensitive(instruction);
         const bool memory_write =
             HasExplicitMemoryWrite(instruction, operands);
+        const bool pass_memory_write = memory_write && count != 0U &&
+            options != nullptr && options->allow_memory_writes &&
+            !MemoryWriteUsesModifiedAddressRegister(
+                instruction, operands, modified_registers) &&
+            IsMemoryWriteTargetAllowed(
+                instruction, operands, *options);
         const bool control_transfer =
             instruction.meta.branch_type != ZYDIS_BRANCH_TYPE_NONE;
-        if (sensitive || memory_write || control_transfer)
+        std::uint32_t direct_jump_target = 0;
+        const bool direct_unconditional_jump =
+            instruction.mnemonic == ZYDIS_MNEMONIC_JMP &&
+            instruction.meta.category == ZYDIS_CATEGORY_UNCOND_BR &&
+            ReadDirectTarget(
+                instruction, operands, address, &direct_jump_target);
+        const bool chain_direct_jump =
+            options != nullptr &&
+            options->chain_forward_direct_jumps &&
+            direct_unconditional_jump && direct_jump_target > address &&
+            IsRuntimeRange(
+                direct_jump_target, 1U, runtime_base, runtime_size) &&
+            options->direct_jump_target_query != nullptr &&
+            options->direct_jump_target_query(
+                options->write_guard_context, direct_jump_target);
+        if (options != nullptr &&
+            options->chain_forward_direct_jumps &&
+            direct_unconditional_jump && direct_jump_target <= address)
+        {
+            span->boundary_backward_jump = true;
+        }
+        if (sensitive || (memory_write && !pass_memory_write) ||
+            (control_transfer && !chain_direct_jump))
         {
             span->boundary_address = address;
             span->instruction_count = count;
@@ -399,6 +574,18 @@ bool ScanNativeLinearSpanWithZydis(
             span->boundary_memory_write = memory_write;
             return count >= kMinimumInstructionCount;
         }
+        if (pass_memory_write)
+        {
+            ++span->crossed_memory_write_count;
+        }
+        if (chain_direct_jump)
+        {
+            ++span->chained_direct_jump_count;
+            address = direct_jump_target;
+            continue;
+        }
+        RecordModifiedRegisters(
+            instruction, operands, &modified_registers);
         address += instruction.length;
     }
     return false;

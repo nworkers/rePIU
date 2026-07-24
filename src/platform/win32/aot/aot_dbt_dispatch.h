@@ -1,8 +1,9 @@
 #pragma once
 
-#include "thread_context.h"
+#include "execution/thread_context.h"
 
 #include <cstdint>
+#include <string_view>
 
 namespace repiu::platform::win32
 {
@@ -14,5 +15,7 @@ namespace repiu::platform::win32
 bool TryResumeAotAfterHandledHle(CONTEXT* win32_context,
                                  ThreadContext* context,
                                  std::uint32_t handled_guest_eip);
+
+bool ResolveAotDbtPostHleTranslationEnabled(std::string_view setting);
 
 }  // namespace repiu::platform::win32

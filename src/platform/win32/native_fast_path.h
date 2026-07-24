@@ -1,5 +1,7 @@
 #pragma once
 
+#include "verified_region_analyzer.h"
+
 #include <atomic>
 #include <cstdint>
 #include <unordered_map>
@@ -12,6 +14,13 @@ using CONTEXT = _CONTEXT;
 
 namespace repiu::platform::win32::detail
 {
+
+struct NativeLinearSpanCacheEntry
+{
+    std::uint32_t guest_page = 0;
+    std::uint32_t generation = 0;
+    NativeLinearSpan span;
+};
 
 struct NativeFastPathState
 {
@@ -76,6 +85,19 @@ struct NativeFastPathState
     std::atomic<std::uint32_t> linear_span_cancel_count{0};
     std::atomic<std::uint32_t> linear_span_instruction_total{0};
     std::atomic<std::uint32_t> linear_span_reject_count{0};
+    std::unordered_map<std::uint32_t, NativeLinearSpanCacheEntry>
+        linear_span_scan_cache;
+    std::atomic<std::uint32_t> linear_span_cache_hit_count{0};
+    std::atomic<std::uint32_t> linear_span_cache_miss_count{0};
+    std::atomic<std::uint32_t> linear_span_write_cross_count{0};
+    std::atomic<std::uint32_t> linear_span_write_guard_uncovered_count{0};
+    std::atomic<std::uint32_t> linear_span_write_fault_cancel_count{0};
+    std::atomic<std::uint32_t> linear_span_last_cancel_code{0};
+    std::atomic<std::uint32_t> linear_span_last_cancel_eip{0};
+    std::unordered_map<std::uint32_t, bool>
+        linear_span_write_target_page_cache;
+    std::atomic<std::uint32_t> linear_span_direct_jump_chain_count{0};
+    std::atomic<std::uint32_t> linear_span_backward_jump_stop_count{0};
 };
 
 bool TryEnterNativeFastPath(CONTEXT* context,

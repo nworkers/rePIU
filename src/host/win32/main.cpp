@@ -825,6 +825,28 @@ void PrintExecutionAttempt(
     logger.info("Win32 native fast path last entry/return: {}/{}",
                 Hex32(attempt.native_fast_path_last_entry),
                 Hex32(attempt.native_fast_path_last_return));
+    logger.info(
+        "Win32 native linear span entry/boundary/cancel/instructions/reject: "
+        "{}/{}/{}/{}/{}",
+        attempt.native_linear_span_entry_count,
+        attempt.native_linear_span_boundary_count,
+        attempt.native_linear_span_cancel_count,
+        attempt.native_linear_span_instruction_total,
+        attempt.native_linear_span_reject_count);
+    logger.info("Win32 native linear span cache hit/miss: {}/{}",
+                attempt.native_linear_span_cache_hit_count,
+                attempt.native_linear_span_cache_miss_count);
+    logger.info(
+        "Win32 native linear span write cross/uncovered/fault-cancel: {}/{}/{}",
+                attempt.native_linear_span_write_cross_count,
+                attempt.native_linear_span_write_guard_uncovered_count,
+                attempt.native_linear_span_write_fault_cancel_count);
+    logger.info("Win32 native linear span last cancel code/eip: {}/{}",
+                Hex32(attempt.native_linear_span_last_cancel_code),
+                Hex32(attempt.native_linear_span_last_cancel_eip));
+    logger.info("Win32 native linear span jump chain/backward-stop: {}/{}",
+                attempt.native_linear_span_direct_jump_chain_count,
+                attempt.native_linear_span_backward_jump_stop_count);
     logger.info("Win32 execution backend: {}",
                 repiu::runtime::ExecutionBackendName(
                     attempt.execution_backend));
@@ -836,6 +858,16 @@ void PrintExecutionAttempt(
     logger.info("Win32 AOT-DBT HLE reentry attempt/success: {}/{}",
                 attempt.aot_dbt_hle_reentry_attempt_count,
                 attempt.aot_dbt_hle_reentry_success_count);
+    logger.info("Win32 AOT-DBT post-HLE translation attempt/success: {}/{}",
+                attempt.aot_dbt_hle_translation_attempt_count,
+                attempt.aot_dbt_hle_translation_success_count);
+    logger.info(
+        "Win32 AOT selector guard native/HLE/unresolved-site/HLE-exit/mismatch: {}/{}/{}/{}/{}",
+        attempt.aot_selector_guard_native_site_count,
+        attempt.aot_selector_guard_hle_site_count,
+        attempt.aot_selector_guard_unresolved_site_count,
+        attempt.aot_selector_guard_hle_exit_count,
+        attempt.aot_selector_guard_mismatch_count);
     logger.info(
         "Win32 AOT-DBT return entry/attempt/success/fallback: {}/{}/{}/{}",
         attempt.aot_dbt_return_entry_count,
@@ -899,6 +931,17 @@ void PrintExecutionAttempt(
                 attempt.aot_boundary_direct_count,
                 attempt.aot_boundary_conditional_count,
                 attempt.aot_boundary_other_count);
+    logger.info("Win32 AOT breakpoint provenance "
+                "hle/seg/inline/jtable/retired/probe/fixup/unknown: "
+                "{}/{}/{}/{}/{}/{}/{}/{}",
+                attempt.aot_breakpoint_provenance_counts[0],
+                attempt.aot_breakpoint_provenance_counts[1],
+                attempt.aot_breakpoint_provenance_counts[2],
+                attempt.aot_breakpoint_provenance_counts[3],
+                attempt.aot_breakpoint_provenance_counts[4],
+                attempt.aot_breakpoint_provenance_counts[5],
+                attempt.aot_breakpoint_provenance_counts[6],
+                attempt.aot_breakpoint_provenance_counts[7]);
     logger.info("Win32 AOT other-boundary top opcodes "
                 "[{:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} "
                 "{:02X}:{} {:02X}:{}] last={}/{}",

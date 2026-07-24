@@ -227,6 +227,23 @@ void PrintSnapshot(
               << ReadInterlocked(&telemetry.aot_boundary_direct_count) << "/"
               << ReadInterlocked(&telemetry.aot_boundary_conditional_count) << "/"
               << ReadInterlocked(&telemetry.aot_boundary_other_count)
+              << " breakpoint_provenance(hle/seg/inline/jtable/retired/probe/fixup/unknown)="
+              << ReadInterlocked(
+                     &telemetry.aot_breakpoint_provenance_counts[0]) << "/"
+              << ReadInterlocked(
+                     &telemetry.aot_breakpoint_provenance_counts[1]) << "/"
+              << ReadInterlocked(
+                     &telemetry.aot_breakpoint_provenance_counts[2]) << "/"
+              << ReadInterlocked(
+                     &telemetry.aot_breakpoint_provenance_counts[3]) << "/"
+              << ReadInterlocked(
+                     &telemetry.aot_breakpoint_provenance_counts[4]) << "/"
+              << ReadInterlocked(
+                     &telemetry.aot_breakpoint_provenance_counts[5]) << "/"
+              << ReadInterlocked(
+                     &telemetry.aot_breakpoint_provenance_counts[6]) << "/"
+              << ReadInterlocked(
+                     &telemetry.aot_breakpoint_provenance_counts[7])
               << " other_top_op=0x" << std::hex
               << static_cast<std::uint32_t>(
                      ReadInterlocked(&telemetry.aot_other_top_opcode))

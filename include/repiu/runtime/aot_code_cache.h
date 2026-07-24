@@ -182,6 +182,15 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                             const AotCodeCacheBuildOptions& options,
                             AotCodeCacheImage* image);
 
+// Verify that every planner HLE record in a complete generated CFG is either
+// an actual INT3 boundary or a structurally complete segment-selector guard
+// whose mismatch path reaches INT3. Used before publishing arbitrary-entry
+// dynamic translations.
+bool ValidateAotCodeCacheHleCoverage(
+    const AotTranslationPlan& plan,
+    const AotCodeCacheImage& image,
+    std::uint32_t* failure_guest_address = nullptr);
+
 }  // namespace repiu::runtime
 
 #endif  // REPIU_RUNTIME_AOT_CODE_CACHE_H_

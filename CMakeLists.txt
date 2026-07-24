@@ -90,6 +90,7 @@ add_library(repiu_exe
     src/platform/win32/cd_audio_wave_out.cpp
     src/platform/win32/aot_code_cache_win32.cpp
     src/platform/win32/aot_page_coherence_win32.cpp
+    src/platform/win32/aot/aot_boundary_provenance.cpp
     src/platform/win32/aot/aot_boundary_reason.cpp
     src/platform/win32/aot/aot_dbt_call_return_trace.cpp
     src/platform/win32/aot/aot_dbt_call_step_probe.cpp
@@ -161,6 +162,7 @@ add_executable(repiu_chd_cd_probe
 )
 
 add_executable(repiu_aot_probe
+    src/tools/aot_probe/boundary_provenance_probe.cpp
     src/tools/aot_probe/dbt_call_return_trace_probe.cpp
     src/tools/aot_probe/dbt_call_step_probe.cpp
     src/tools/aot_probe/dbt_indirect_dispatch_probe.cpp
@@ -168,6 +170,7 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/execution_backend_probe.cpp
     src/tools/aot_probe/inline_cache_probe.cpp
     src/tools/aot_probe/native_linear_span_probe.cpp
+    src/tools/aot_probe/selector_guard_probe.cpp
     src/tools/aot_probe/main.cpp
 )
 

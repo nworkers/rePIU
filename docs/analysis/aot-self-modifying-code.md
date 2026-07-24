@@ -106,6 +106,19 @@ sequenceDiagram
 진행했습니다. 3초 Debug 관찰의 heartbeat는 변경 전 기준 80,228 대비 74,050으로,
 inactive map이 없는 hot path의 전체-map scan을 제거한 뒤 기존 수준에 근접했습니다.
 
+## 확인됨: native span write-cross의 write-watch coverage
+
+Task 288 Stage 2의 최종 60초 실행에서 write-watch가 덮은 span code page에서 explicit
+memory write 48,633개를 통과했고, 실제 watched-page write 24회는 동기 access violation로
+span을 중단한 뒤 기존 coherence 경로에 들어갔습니다. guard 미커버 code page 진입은
+0회였습니다. 따라서 현재 단일 guest thread 경로에서 “watched code page alias는 write
+완료 전에 fault한다”는 전제는 실측과 일치합니다.
+
+다만 이 사실은 write-cross의 성능 승격 근거가 아닙니다. 240초 direct pilot의
+draw/swap이 약 20% 감소해 기능은 opt-in으로 남았습니다. 또한 write-watch 밖의
+read-only/uncommitted guest target은 별도 preflight가 없으면 일반 access violation을
+일으킬 수 있으므로, 최종 후보는 target page 보호 상태도 보수적으로 확인합니다.
+
 ## 구현 경계와 미확정
 
 * code cache는 serialized worker만 `PAGE_EXECUTE_READ`와 `PAGE_READWRITE` 사이에서
@@ -162,6 +175,19 @@ The initial generation number was 30 because 29 ordinary dynamic translations
 had already been published. A three-second Debug comparison reached 74,050
 heartbeats versus the prior 80,228 baseline after the common path stopped
 scanning inactive maps and relinking was limited to inactive indices.
+
+## Confirmed native-span write-watch coverage
+
+In the final 60-second Task 288 Stage 2 run, native spans crossed 48,633 explicit writes on
+write-watched code pages. Twenty-four real writes to watched pages faulted synchronously,
+stopped the span, and entered the existing coherence path; no span reached an uncovered code
+page. This confirms the current single-guest-thread assumption that an aliasing store to a
+watched code page faults before completion.
+
+This is not a promotion result: the 240-second direct pilot reduced draw/swap by about 20%,
+so write crossing remains opt-in. Read-only or uncommitted guest targets outside the watch
+set can still raise ordinary access violations without target preflight, so the final
+candidate also checks target-page protection conservatively.
 
 ## Implementation Boundaries and Unresolved Cases
 

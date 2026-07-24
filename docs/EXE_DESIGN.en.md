@@ -285,3 +285,14 @@ Synthetic LINEXE/Glide gates are HLE-owned addresses, not original executable
 code. If the AOT CFG copies gate tag bytes `0F 0B 20 00` as ordinary code, the
 cache executes `UD2` and raises an illegal instruction. The range must remain a
 sentinel HLE boundary.
+
+## Selector-zero and segment-override execution semantics (confirmed)
+
+The original PIU code uses selector zero with DOS-low-memory semantics; for example, it may
+load zero into ES and then access `es:[eax]`. Treating that state as an ordinary flat
+descriptor with base zero directly accesses host address zero. An AOT segment-override site
+guards the `ThreadContext::guest_*` shadow selector and must return to the original HLE
+boundary for selector zero or a descriptor whose complete range is DOS low memory. Only a
+valid nonzero descriptor and the confirmed GS base-add form use folded-native execution.
+A DPMI change to base/limit/flags under the same selector also causes the site to be
+re-resolved from the new descriptor fingerprint.

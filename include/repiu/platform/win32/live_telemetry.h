@@ -1,13 +1,15 @@
 #ifndef REPIU_PLATFORM_WIN32_LIVE_TELEMETRY_H_
 #define REPIU_PLATFORM_WIN32_LIVE_TELEMETRY_H_
 
+#include "repiu/platform/win32/aot_boundary_provenance.h"
+
 #include <cstdint>
 
 namespace repiu::platform::win32
 {
 
 constexpr std::uint32_t kWin32LiveTelemetryMagic = 0x5250544CU;
-constexpr std::uint32_t kWin32LiveTelemetryVersion = 21;
+constexpr std::uint32_t kWin32LiveTelemetryVersion = 22;
 constexpr std::uint32_t kWin32NativeSampleRingCapacity = 8;
 constexpr const char* kWin32LiveTelemetryEnvironment =
     "REPIU_LIVE_TELEMETRY_MAPPING";
@@ -83,6 +85,10 @@ struct Win32SharedLiveTelemetry
     volatile long aot_boundary_direct_count = 0;
     volatile long aot_boundary_conditional_count = 0;
     volatile long aot_boundary_other_count = 0;
+    // Task 289 Stage 3a: structural cache-INT3 origin. Unlike the guest-opcode
+    // reason counters, these distinguish HLE from retired/probe/fallback bytes.
+    volatile long aot_breakpoint_provenance_counts[
+        kAotCacheBreakpointProvenanceCount] = {};
     // Task 263(a): dominant `other` boundary opcode (running max over the
     // histogram) and the most recent `other` boundary EIP + first four bytes.
     volatile long aot_other_top_opcode = 0;

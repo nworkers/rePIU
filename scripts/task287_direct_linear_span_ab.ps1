@@ -3,10 +3,24 @@ param(
     [int]$DurationMilliseconds = 240000,
 
     [ValidateRange(1, 20)]
-    [int]$Repetitions = 3
+    [int]$Repetitions = 3,
+
+    [switch]$CompareCache,
+
+    [switch]$CompareWrites,
+
+    [switch]$CompareJumps,
+
+    [ValidateRange(0, 20)]
+    [int]$StartupRetries = 8
 )
 
 $ErrorActionPreference = "Stop"
+$comparisonCount = [int]$CompareCache.IsPresent +
+    [int]$CompareWrites.IsPresent + [int]$CompareJumps.IsPresent
+if ($comparisonCount -gt 1) {
+    throw "CompareCache, CompareWrites, and CompareJumps are mutually exclusive"
+}
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $loader = Join-Path $repoRoot `
@@ -20,8 +34,20 @@ if (-not (Test-Path -LiteralPath $fixture -PathType Leaf)) {
 }
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$benchmarkKind = if ($CompareCache) {
+    "aot-dbt-direct-cache"
+}
+elseif ($CompareWrites) {
+    "aot-dbt-direct-writes"
+}
+elseif ($CompareJumps) {
+    "aot-dbt-direct-jumps"
+}
+else {
+    "aot-dbt-direct"
+}
 $resultRoot = Join-Path $repoRoot `
-    "build\benchmarks\native-linear-span\aot-dbt-direct\$timestamp"
+    "build\benchmarks\native-linear-span\$benchmarkKind\$timestamp"
 New-Item -ItemType Directory -Path $resultRoot -Force | Out-Null
 $fixtureSha256 =
     (Get-FileHash -LiteralPath $fixture -Algorithm SHA256).Hash
@@ -98,6 +124,9 @@ $environmentNames = @(
     "REPIU_AOT_INDIRECT_CACHE_SLOTS",
     "REPIU_NATIVE_REGION",
     "REPIU_NATIVE_LINEAR_SPAN",
+    "REPIU_NATIVE_LINEAR_SPAN_CACHE",
+    "REPIU_NATIVE_LINEAR_SPAN_WRITES",
+    "REPIU_NATIVE_LINEAR_SPAN_JUMPS",
     "REPIU_EEPROM_PATH",
     "REPIU_AOT_DBT_INDIRECT",
     "REPIU_AOT_DBT_CALL_TRACE",
@@ -113,15 +142,32 @@ $results = New-Object System.Collections.Generic.List[object]
 Push-Location $repoRoot
 try {
     for ($runIndex = 0; $runIndex -lt $sequence.Count; ++$runIndex) {
-        $spanEnabled = $sequence[$runIndex]
+        $featureEnabled = $sequence[$runIndex]
+        $compareExtension = $CompareCache -or $CompareWrites -or
+            $CompareJumps
+        $spanEnabled = if ($compareExtension) { 1 } else { $featureEnabled }
+        $cacheEnabled = if ($CompareCache) { $featureEnabled } else { 0 }
+        $writesEnabled = if ($CompareWrites) { $featureEnabled } else { 0 }
+        $jumpsEnabled = if ($CompareJumps) { $featureEnabled } else { 0 }
         $runNumber = $runIndex + 1
-        $mode = if ($spanEnabled -eq 1) { "on" } else { "off" }
-        $runName = "run-{0:D2}-span-{1}" -f $runNumber, $mode
+        $mode = if ($featureEnabled -eq 1) { "on" } else { "off" }
+        $featureName = if ($CompareCache) {
+            "cache"
+        }
+        elseif ($CompareWrites) {
+            "writes"
+        }
+        elseif ($CompareJumps) {
+            "jumps"
+        }
+        else {
+            "span"
+        }
+        $runName = "run-{0:D2}-{1}-{2}" -f `
+            $runNumber, $featureName, $mode
         $stdoutLog = Join-Path $resultRoot "$runName-stdout.log"
         $stderrLog = Join-Path $resultRoot "$runName-stderr.log"
         $runEeprom = Join-Path $resultRoot "$runName-eeprom.dat"
-        Copy-Item -LiteralPath $fixture -Destination $runEeprom
-
         $env:REPIU_EXECUTION_BACKEND = "aot-dbt"
         $env:REPIU_EXECUTION_TIMEOUT_MS =
             $DurationMilliseconds.ToString()
@@ -137,15 +183,38 @@ try {
         else {
             $env:REPIU_NATIVE_LINEAR_SPAN = "0"
         }
+        $env:REPIU_NATIVE_LINEAR_SPAN_CACHE =
+            $cacheEnabled.ToString()
+        $env:REPIU_NATIVE_LINEAR_SPAN_WRITES =
+            $writesEnabled.ToString()
+        $env:REPIU_NATIVE_LINEAR_SPAN_JUMPS =
+            $jumpsEnabled.ToString()
 
-        Write-Host (`
-            "direct native-span run {0}/{1}: span={2}, duration_ms={3}" -f `
-            $runNumber, $sequence.Count, $mode, $DurationMilliseconds)
-        $process = Start-Process -FilePath $loader `
-            -ArgumentList @("pumpit1") `
-            -RedirectStandardOutput $stdoutLog `
-            -RedirectStandardError $stderrLog `
-            -WindowStyle Hidden -Wait -PassThru
+        $startupAttempt = 0
+        do {
+            ++$startupAttempt
+            Copy-Item -LiteralPath $fixture -Destination $runEeprom -Force
+            Write-Host (`
+                "direct native-span run {0}/{1} attempt={2}: span={3}, cache={4}, writes={5}, jumps={6}, duration_ms={7}" -f `
+                $runNumber, $sequence.Count, $startupAttempt, $spanEnabled, `
+                $cacheEnabled, $writesEnabled, $jumpsEnabled, `
+                $DurationMilliseconds)
+            $process = Start-Process -FilePath $loader `
+                -ArgumentList @("pumpit1") `
+                -RedirectStandardOutput $stdoutLog `
+                -RedirectStandardError $stderrLog `
+                -WindowStyle Hidden -Wait -PassThru
+            if ($process.ExitCode -ne 0 -and
+                $startupAttempt -le $StartupRetries) {
+                Write-Warning (`
+                    "startup failed for run {0}; retrying ({1}/{2})" -f `
+                    $runNumber, $startupAttempt, $StartupRetries)
+            }
+        } while ($process.ExitCode -ne 0 -and
+                 $startupAttempt -le $StartupRetries)
+        if ($process.ExitCode -ne 0) {
+            throw "direct native-span run $runNumber exhausted startup retries"
+        }
 
         $lines = @(
             Get-Content -LiteralPath $stdoutLog
@@ -164,6 +233,24 @@ try {
             (Find-LastLine $lines `
                 'AOT-DBT return entry/attempt/success/fallback:') `
             'fallback: ([0-9/]+)' 4
+        $span = Read-SlashValues `
+            (Find-LastLine $lines `
+                'Win32 native linear span entry/boundary/cancel/instructions/reject:') `
+            'reject: ([0-9/]+)' 5
+        $spanCache = Read-SlashValues `
+            (Find-LastLine $lines `
+                'Win32 native linear span cache hit/miss:') `
+            'miss: ([0-9/]+)' 2
+        $spanWrite = Read-SlashValues `
+            (Find-LastLine $lines `
+                'Win32 native linear span write cross/uncovered/fault-cancel:') `
+            'fault-cancel: ([0-9/]+)' 3
+        $spanJump = Read-SlashValues `
+            (Find-LastLine $lines `
+                'Win32 native linear span jump chain/backward-stop:') `
+            'backward-stop: ([0-9/]+)' 2
+        $spanCancelLine = Find-LastLine $lines `
+            'Win32 native linear span last cancel code/eip:'
         $drawCount = 0
         foreach ($ordinal in 71..76) {
             $drawCount += Read-GlideCallCount $lines $ordinal
@@ -175,7 +262,11 @@ try {
             run = $runNumber
             pair = [math]::Floor($runIndex / 2) + 1
             span_enabled = $spanEnabled
+            span_cache_enabled = $cacheEnabled
+            span_writes_enabled = $writesEnabled
+            span_jumps_enabled = $jumpsEnabled
             duration_ms = $DurationMilliseconds
+            startup_attempts = $startupAttempt
             loader_exit = $process.ExitCode
             exception_caught = Read-Metric `
                 (Find-LastLine $lines 'minimal execution exception caught:') `
@@ -202,6 +293,22 @@ try {
             dbt_return_attempt = $dbtReturn[1]
             dbt_return_success = $dbtReturn[2]
             dbt_return_fallback = $dbtReturn[3]
+            span_entry = $span[0]
+            span_boundary = $span[1]
+            span_cancel = $span[2]
+            span_native_instructions = $span[3]
+            span_reject = $span[4]
+            span_cache_hit = $spanCache[0]
+            span_cache_miss = $spanCache[1]
+            span_write_cross = $spanWrite[0]
+            span_write_guard_uncovered = $spanWrite[1]
+            span_write_fault_cancel = $spanWrite[2]
+            span_jump_chain = $spanJump[0]
+            span_backward_jump_stop = $spanJump[1]
+            span_last_cancel_code = Read-Metric $spanCancelLine `
+                'code/eip: (0x[0-9A-Fa-f]+)'
+            span_last_cancel_eip = Read-Metric $spanCancelLine `
+                'code/eip: 0x[0-9A-Fa-f]+/(0x[0-9A-Fa-f]+)'
             texture_download_count = Read-GlideCallCount $lines 49
             draw_count = $drawCount
             buffer_swap_count = Read-GlideCallCount $lines 85
@@ -229,7 +336,11 @@ finally {
 
 $csvPath = Join-Path $resultRoot "results.csv"
 $results | Export-Csv -LiteralPath $csvPath -NoTypeInformation
-$results | Format-Table run, pair, span_enabled, progress, single_step, `
+$results | Format-Table run, pair, span_enabled, span_cache_enabled, `
+    span_writes_enabled, progress, single_step, span_entry, `
+    span_jumps_enabled, span_jump_chain, span_backward_jump_stop, `
+    span_cache_hit, span_cache_miss, span_write_cross, `
+    span_write_guard_uncovered, span_write_fault_cancel, `
     texture_download_count, draw_count, buffer_swap_count, `
     exception_caught, fatal_count, eeprom_matches_fixture -AutoSize
 Write-Host "direct native-span results: $csvPath"

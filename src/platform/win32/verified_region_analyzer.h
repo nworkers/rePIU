@@ -19,8 +19,32 @@ struct NativeLinearSpan
 {
     std::uint32_t boundary_address = 0;
     std::uint32_t instruction_count = 0;
+    std::uint32_t crossed_memory_write_count = 0;
+    std::uint32_t chained_direct_jump_count = 0;
     bool boundary_sensitive = false;
     bool boundary_memory_write = false;
+    bool boundary_write_guard_uncovered = false;
+    bool boundary_backward_jump = false;
+};
+
+using NativeLinearSpanWriteGuardQuery = bool (*)(
+    void* context, std::uint32_t guest_page);
+using NativeLinearSpanRegisterQuery = bool (*)(
+    void* context, std::uint32_t zydis_register, std::uint32_t* value);
+using NativeLinearSpanWriteTargetQuery = bool (*)(
+    void* context, std::uint32_t address, std::uint32_t byte_count);
+using NativeLinearSpanDirectJumpTargetQuery = bool (*)(
+    void* context, std::uint32_t target);
+
+struct NativeLinearSpanOptions
+{
+    bool allow_memory_writes = false;
+    NativeLinearSpanWriteGuardQuery write_guard_query = nullptr;
+    NativeLinearSpanRegisterQuery register_query = nullptr;
+    NativeLinearSpanWriteTargetQuery write_target_query = nullptr;
+    bool chain_forward_direct_jumps = false;
+    NativeLinearSpanDirectJumpTargetQuery direct_jump_target_query = nullptr;
+    void* write_guard_context = nullptr;
 };
 
 bool VerifyNativeFunctionWithZydis(
@@ -56,6 +80,7 @@ bool ScanNativeLinearSpanWithZydis(
     std::uint32_t entry,
     std::uint32_t runtime_base,
     std::uint32_t runtime_size,
-    NativeLinearSpan* span);
+    NativeLinearSpan* span,
+    const NativeLinearSpanOptions* options = nullptr);
 
 }  // namespace repiu::platform::win32::detail

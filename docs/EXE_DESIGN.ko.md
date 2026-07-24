@@ -280,3 +280,14 @@ AOT cache 일관성 문제를 구분하는 검증 증거다.
 합성 LINEXE/Glide gate는 원본 executable 코드가 아니라 HLE 소유 주소다. AOT CFG가
 gate tag `0F 0B 20 00`을 일반 명령으로 복사하면 cache에서 `UD2` illegal instruction이
 발생하므로, 해당 범위는 sentinel HLE boundary로 남겨야 한다.
+
+## selector 0 및 segment-override 실행 의미 (확인됨)
+
+PIU 원본은 selector 0을 DOS low-memory 의미로 사용하며, 예를 들어 `mov es, ax`로 ES를
+0으로 만든 뒤 `es:[eax]`를 접근할 수 있습니다. 이 상태를 descriptor base 0의 일반
+flat 접근과 동일하게 취급하면 host 주소 0을 직접 접근하게 됩니다. AOT
+segment-override site는 `ThreadContext::guest_*` shadow selector를 guard하고, selector
+0 또는 전체 범위가 DOS low-memory인 descriptor에서는 반드시 원본 HLE 경계로
+되돌아갑니다. selector가 0이 아닌 정상 descriptor와 확인된 GS base-add 접근만 folded
+native 경로를 사용합니다. 같은 selector의 base/limit/flags가 DPMI로 변경되는 경우도
+새 descriptor fingerprint로 site를 재해석합니다.

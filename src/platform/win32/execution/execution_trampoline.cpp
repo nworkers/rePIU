@@ -8,6 +8,7 @@
 #include "repiu/hle/glide_hle.h"
 #include "repiu/platform/win32/glide_opengl_backend.h"
 #include "repiu/platform/win32/cd_audio_wave_out.h"
+#include "repiu/platform/win32/aot_page_coherence_win32.h"
 #include "repiu/media/chd_cd_image.h"
 #include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/selector_table.h"
@@ -23,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
@@ -2363,7 +2365,20 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
             (static_cast<std::uint32_t>(win32_context->Dr6) & 0x1U) != 0U &&
             static_cast<std::uint32_t>(win32_context->Eip) ==
                 context->native_fast_path.linear_span_boundary;
-        LeaveNativeLinearSpan(win32_context, context, reached_boundary);
+        const bool write_fault_cancel =
+            span_code == EXCEPTION_ACCESS_VIOLATION &&
+            exception_info->ExceptionRecord->NumberParameters >= 2U &&
+            exception_info->ExceptionRecord->ExceptionInformation[0] == 1U &&
+            exception_info->ExceptionRecord->ExceptionInformation[1] <=
+                std::numeric_limits<std::uint32_t>::max() &&
+            IsWin32AotGuestPageWriteWatched(
+                context->aot_page_write_watch,
+                static_cast<std::uint32_t>(
+                    exception_info->ExceptionRecord
+                        ->ExceptionInformation[1]));
+        LeaveNativeLinearSpan(
+            win32_context, context, reached_boundary, write_fault_cancel,
+            static_cast<std::uint32_t>(span_code));
     }
     // Route A native region (Task 266): while a region runs natively, only its
     // hardware breakpoints trap -- Dr0 at the caller return address and Dr1-Dr3

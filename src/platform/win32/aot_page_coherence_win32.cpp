@@ -536,6 +536,29 @@ bool Win32AotGuestRangeHasActiveTranslation(
     return false;
 }
 
+bool QueryWin32AotActiveGuestPageGeneration(
+    const Win32AotCodeCachePlacement& placement,
+    std::uint32_t guest_address,
+    std::uint32_t* generation)
+{
+    if (!placement.placed || generation == nullptr)
+    {
+        return false;
+    }
+    const std::uint32_t page = Win32AotGuestPage(guest_address);
+    const auto state = FindGuestPageState(placement, page);
+    if (state == placement.guest_pages.end() ||
+        state->guest_page != page ||
+        state->latest_generation == 0U ||
+        state->retired ||
+        state->quarantined)
+    {
+        return false;
+    }
+    *generation = state->latest_generation;
+    return true;
+}
+
 bool IsWin32AotGuestPageRetired(
     const Win32AotCodeCachePlacement& placement,
     std::uint32_t guest_address)

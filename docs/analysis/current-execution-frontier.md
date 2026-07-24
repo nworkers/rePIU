@@ -1,3 +1,141 @@
+## 2026-07-25 Task 289 Stage 2 (보류): whole-CFG HLE 검증은 통과하지만 post-HLE miss가 0회 / Task 289 Stage 2 (held): whole-CFG HLE validation passes but post-HLE misses are zero
+
+생성 image의 모든 HLE record가 실제 `INT3` 또는 완전한 selector guard인지 검증하고,
+통과한 post-HLE cache miss만 번역하는 opt-in을 추가했습니다. 정상/guard 누락 probe와
+전체 빌드는 통과했습니다. 60초 OFF/ON은 progress `49,446/49,343`, single-step
+`734,954/733,160`, proxy `1,443,256/1,440,067`이었고 번역 attempt/success는 양쪽 모두
+`0/0`이었습니다. cancel/fatal/legacy fallback 0, EEPROM 일치였습니다. 현재 후보가 없어
+기본 OFF로 보류합니다.
+
+**English summary.** Stage 2 adds complete generated-image HLE/selector-guard validation and
+opt-in translation of only post-HLE cache misses that pass it. Normal and missing-guard
+probes pass. The 60-second OFF/ON pair measured progress `49,446/49,343`, single-step
+`734,954/733,160`, and proxy `1,443,256/1,440,067`, with `0/0` translation
+attempts/successes in both conditions. Cancellation/fatal/legacy fallback stayed zero and
+EEPROM hashes matched. With no current miss population, the feature remains default off.
+
+## 2026-07-25 Task 289 Stage 1 (완료): selector 0 저메모리를 fail-closed하고 descriptor 전체를 추적 / Task 289 Stage 1 (complete): selector-zero low memory fails closed and complete descriptors are tracked
+
+**확인됨:** Task 264의 shadow-selector guard와 base-fold emitter를 재사용하면서 live
+resolution을 selector/base/limit/flags/native-HLE-unresolved 정책으로 확장했습니다.
+selector 0과 DOS low-memory 전용 descriptor는 cache site의 `INT3` 경계를 유지합니다.
+정상 nonzero flat descriptor와 기존에 검증된 GS non-flat base-add는 guard native를
+유지합니다. DPMI descriptor 및 DOS/LINEXE shadow 변경도 전체 fingerprint로 재해석합니다.
+
+합성 probe는 flat/native, GS non-flat/native, selector 0/HLE, low-memory/HLE,
+unresolved, guard mismatch `INT3`, native patch와 HLE 재패치를 모두 통과했습니다. 60초
+기본 `aot-dbt` smoke는 progress 48,817, native/HLE site 누적 193,288/120,668, 실제 HLE
+exit 7,554, mismatch 0, fatal/legacy fallback 0이었고 EEPROM hash가 일치했습니다.
+
+**English summary.** Task 289 Stage 1 reuses Task 264's shadow-selector guard and base-fold
+emitter while extending live resolution to explicit selector/base/limit/flags and
+native/HLE/unresolved policy. Selector zero and DOS-low-memory-only descriptors retain the
+cache `INT3`; valid nonzero flat descriptors and the proven GS non-flat base-add path remain
+guarded-native. Full descriptor fingerprints cover DPMI and DOS/LINEXE shadow changes. All
+synthetic policy/guard/patch probes pass. A 60-second default `aot-dbt` smoke reached progress
+48,817 with cumulative native/HLE sites 193,288/120,668, 7,554 HLE exits, zero mismatch,
+zero fatal/legacy fallback, and a matching EEPROM hash.
+
+## 2026-07-25 Task 288 Stage 3 (보류): forward direct-jump 체인은 안전하지만 실제 hot fallback에서 0회 / Task 288 Stage 3 (held): forward direct-jump chaining is safe but occurs zero times in the hot fallback
+
+**확인됨:** `REPIU_NATIVE_LINEAR_SPAN_JUMPS=1`에서만 in-range 전방 near direct
+`jmp rel`의 target으로 span 스캔을 계속하는 후보를 구현했습니다. HLE boundary,
+quarantined page, indirect/far target과 역방향 target은 기존 경계로 남습니다. 합성 probe는
+전방 체인, 비활성 시 기존 정지, 역방향 정지, 금지 target 정지를 모두 통과했습니다.
+
+10초 smoke와 60초 supervisor A/B 모두 ON의 forward chain이 0회였습니다. 60초 OFF/ON은
+progress `50,562/51,002`, single-step `748,334/756,241`, guest-instruction proxy
+`1,473,214/1,487,331`이었고, ON은 backward stop 703회를 기록했습니다. 두 실행 모두
+cancel/fatal/legacy fallback 0, EEPROM SHA-256 일치였으며 ON의
+`entry/boundary=171393/171393`도 정확했습니다.
+
+**판정:** 안전성은 통과했지만 현재 hot fallback에 전방 체인 기회가 없어 기본 활성화를
+보류합니다. 성능 효과를 만들 수 없는 240초 3쌍과 direct-loader 측정은 조기 종료했고,
+더 복잡한 conditional-branch Dr1 후보도 진행하지 않습니다. 구현과 계측은 향후 fallback
+분포가 달라질 때 재검증할 수 있도록 opt-in으로 유지합니다.
+
+**English summary.** Task 288 Stage 3 adds opt-in chaining for in-range forward near direct
+`jmp rel` targets, while HLE-boundary, quarantined, indirect/far, and backward targets retain
+the old boundary. All synthetic chain/disabled/backward/rejected-target probes pass. Both a
+10-second smoke and a valid 60-second supervisor pair recorded zero forward chains. The
+60-second OFF/ON pair measured progress `50,562/51,002`, single-step `748,334/756,241`, and
+instruction proxy `1,473,214/1,487,331`; ON recorded 703 backward stops, exact
+entry/boundary equality, zero cancellation/fatal/legacy fallback, and a matching EEPROM
+hash. With no optimization opportunity in the observed fallback, longer and direct-loader
+campaigns were stopped and the conditional-branch Dr1 candidate was not pursued. The
+feature remains explicit opt-in for future distributions.
+
+## 2026-07-25 Task 288 Stage 2 (보류): guarded memory-write 통과는 span을 늘리지만 draw/swap 처리량을 약 20% 낮춤 / Task 288 Stage 2 (held): guarded memory-write crossing lengthens spans but lowers draw/swap throughput by about 20%
+
+**확인됨:** native span이 지나는 모든 code page가 write-watch로 보호되고 write target이
+guest runtime의 committed+writable page 또는 watched page일 때만 explicit memory write를
+통과하는 opt-in 후보를 구현했습니다. entry write, 같은 span에서 base/index가 먼저 변경된
+write, 범위 밖/read-only/uncommitted target은 기존 경계입니다. write-watch fault는 기존
+coherence 처리 전에 span을 안전하게 중단하며 일반 cancel과 별도 집계합니다.
+
+최종 60초 supervisor A/B에서 평균 span 길이는 `4.30 → 5.09`, single-step은
+`707,914 → 678,533`(-4.15%), guest-instruction proxy는
+`1,400,871 → 1,538,315`(+9.81%)였습니다. ON은 write 48,633개를 통과했고
+`entry/boundary/write-fault/unexpected-cancel=169057/169033/24/0`으로 안전 불변식을
+만족했습니다. 그러나 progress는 `48,225 → 17,236`으로 감소했습니다.
+
+의미 기반 240초 direct pilot은 더 명확한 회귀를 보였습니다. OFF/ON은 texture가 모두
+5였지만 draw가 `1,606 → 1,278`(-20.4%), swap이 `233 → 185`(-20.6%), progress가
+`190,366 → 90,667`로 감소했습니다. single-step 감소는 3.61%에 그쳤고 ON은 write
+132,288개를 통과했습니다. exception/fatal/legacy fallback은 0이고 EEPROM hash는
+일치했습니다. late phase에서는 OFF/ON 모두 약 2,100회의 별도 single-step cancel을
+기록해 zero-cancel 게이트도 충족하지 못했습니다.
+
+**판정:** 3쌍 정식 측정은 의미 milestone의 큰 회귀로 조기 종료하고
+`REPIU_NATIVE_LINEAR_SPAN_WRITES=1` opt-in으로만 남깁니다. 다음 후보는 memory access를
+건드리지 않는 Stage 3 forward direct-jump chaining입니다.
+
+**English summary.** Stage 2 adds an opt-in guarded-write crossing path. Every traversed code
+page must be write-watched; entry writes, writes whose address registers changed in-span, and
+out-of-range/read-only/uncommitted targets stay at the old boundary. A final 60-second
+supervisor pair increased mean span length from 4.30 to 5.09 and the instruction proxy by
+9.81%, while keeping `entry/boundary/write-fault/unexpected-cancel` at
+`169057/169033/24/0`; progress nevertheless fell from 48,225 to 17,236. In the decisive
+240-second direct pilot, draw/swap fell from `1,606/233` to `1,278/185` (about 20%), progress
+fell from 190,366 to 90,667, and single-step improved by only 3.61%. Texture remained 5,
+exceptions/fatal/legacy fallback stayed zero, and EEPROM hashes matched. Both conditions had
+about 2,100 late single-step cancellations. The three-pair campaign was stopped early and
+the feature remains explicit opt-in. Stage 3 forward-jump chaining was evaluated separately
+and is recorded above.
+
+## 2026-07-24 Task 288 Stage 1 (보류): active generation span 스캔 캐시는 안전하지만 현재 fallback에서 hit 0 / Task 288 Stage 1 (held): active-generation span scan caching is safe but records zero hits on the current fallback
+
+**확인됨:** native linear-span 스캔 결과를 entry EIP와 active AOT page generation으로
+캐시하고, write-watch가 없는 페이지와 retired/quarantined/cross-page span은 재스캔하는
+fail-closed 후보를 구현했습니다. 합성 probe는 generation 1 hit 뒤 generation 2에서 stale
+entry가 miss·삭제되는 것을 확인했고, 기존 coherence 전체 probe도 통과했습니다.
+
+60초 유효 supervisor A/B에서 cache OFF/ON progress는 `51,545/51,223`, window open은
+`5,250/5,328 ms`였습니다. ON은 `hit/miss=0/622,322`였습니다. 60초 직접 loader A/B도
+progress `51,441/51,439`, `hit/miss=0/701,975`로 같았습니다. 모든 ON 실행에서
+entry/boundary가 일치하고 cancel/fatal/legacy fallback은 0, EEPROM hash는 fixture와
+일치했습니다. single-step 감소는 span 실행량 자체 감소와 함께 나타났고, cache hit가
+없으므로 decode 재사용 효과가 아닙니다.
+
+**판정:** 현재 hot fallback은 active generation보다 retired/quarantined page에 집중되어
+안전 술어를 만족하지 않습니다. 따라서 240초 3쌍은 개선 가능성이 없는 것으로 조기
+종료하고 캐시는 `REPIU_NATIVE_LINEAR_SPAN_CACHE=1` opt-in으로만 남깁니다. A/B 스크립트는
+불규칙한 저주소 예약/AOT 배치 실패를 유효 표본에서 제외하도록 bounded startup retry를
+지원합니다. 다음 성능 후보는 Stage 2의 write-guard 범위 확인과 보수적 memory-write
+통과입니다.
+
+**English summary.** Task 288 Stage 1 caches a span scan only for a write-watched page with
+an active AOT generation, includes that generation in the key, and rescans retired,
+quarantined, untracked, or cross-page spans. The synthetic generation-invalidation probe and
+all existing coherence probes pass. A valid 60-second supervisor pair measured progress
+`51,545/51,223` and cache `hit/miss=0/622,322`; the direct-loader pair measured progress
+`51,441/51,439` and `0/701,975`. Entry equaled boundary, cancellation/fatal/legacy fallback
+were zero, and EEPROM hashes matched. Because the current hot fallback is concentrated on
+retired/quarantined pages, the safe cache has no reuse opportunity. The three-pair
+240-second run was therefore stopped early, the cache remains explicit opt-in, and Stage 2
+write-guard coverage is the next candidate. Benchmark startup retries now exclude transient
+low-address reservation or AOT-placement failures from valid samples.
+
 ## 2026-07-24 Task 287 (기본 승격): AOT-DBT fallback native linear span이 single-step을 줄이고 draw/swap을 반복 개방 / Task 287 (Default promotion): AOT-DBT fallback native linear spans reduce single-step and repeatedly reach draw/swap
 
 **확인됨:** 같은 Win32 x86 Debug binary와 격리 EEPROM으로
@@ -3262,3 +3400,19 @@ loop; characterize the next stop in longer runs.
 **Current implementation.** `grDrawTriangle` decodes only x/y from the confirmed compact layout and submits opaque white triangles. It intentionally does not infer packed color or texture semantics. Per-triangle stderr dumps were removed after verification because they caused severe hot-path logging overhead; a bounded in-memory trace remains.
 
 **Next work.** Extract compact vertex decoding from the gate boundary into a dedicated draw subsystem; establish packed color fields and interpolated color; then implement texture storage/download/source and sampling (R3). Add a frame hash or screenshot path to validate rendered output rather than relying only on submission counts.
+## 2026-07-25 Task 289 Stage 3 (보류): `other`의 arbitrary miss/fallthrough 모집단은 0 / Task 289 Stage 3 (held): the arbitrary-miss/fallthrough population inside `other` is zero
+
+**확인됨:** completed cache image는 direct/conditional/block-fallthrough fixup이 내부에서
+해소되지 않으면 build에 실패합니다. cache breakpoint provenance를 O(1) placement index로
+분리한 60초 기본 `aot-dbt` 실행은 HLE/segment/inline/jump-table/retired/probe/fixup/unknown
+`22,248/7,064/34,912/0/7,298/0/0/0`을 기록했습니다. inline은 guest reason
+return+indirect `6,463+28,449`와, retired는 기존 trap 7,298과 정확히 일치합니다. unknown이
+0이므로 범용 host dispatch tail은 추가하지 않고 보류합니다. 다음 성능 레버는 남은 planner
+HLE/segment 명령을 정확하게 번역하는 범위 확장입니다.
+
+**English summary.** Completed images reject unresolved direct, conditional, and block-
+fallthrough fixups. An O(1) placement-provenance census over 60 seconds recorded
+HLE/segment/inline/jump-table/retired/probe/fixup/unknown as
+`22,248/7,064/34,912/0/7,298/0/0/0`. Inline exactly matches guest return+indirect reasons and
+retired exactly matches the existing trap counter. With unknown at zero, no generic host tail
+is added; faithful translation of remaining planner-HLE/segment instructions is the next lever.
