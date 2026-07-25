@@ -3448,3 +3448,144 @@ HLE/segment/inline/jump-table/retired/probe/fixup/unknown as
 `22,248/7,064/34,912/0/7,298/0/0/0`. Inline exactly matches guest return+indirect reasons and
 retired exactly matches the existing trap counter. With unknown at zero, no generic host tail
 is added; faithful translation of remaining planner-HLE/segment instructions is the next lever.
+
+## 2026-07-26 Task 298: IF 게이트 이후 장기 실행의 orphan RET breakpoint 계측 / Orphan RET-breakpoint instrumentation after the IF gate
+
+**확인됨 (사용자 장기 로그):** Task 297 IF 게이트가 적용된 `aot-dbt` 실행은 약
+128초, progress 103,859, Glide gate `14,855/14,855`까지 진행한 뒤
+`STATUS_BREAKPOINT(0x80000003)`로 종료했습니다. raw exception address와 최종 EIP는
+`0x03042EAD`이고 live byte는 `C3(RET)`, `[ESP]=0x0DB7073E`는 실행 중 AOT cache
+범위입니다. malformed dispatch는 0건이고 INT 8 chain HLE는 1,750회 완료됐습니다.
+
+**분류:** `0x03042EAD` 바로 다음 `0x03042EAE`가 INT 8 ISR entry이지만, 문제의 `C3`는
+ISR의 `IRETD`가 아니라 앞 함수의 정상 반환입니다. 기존 AOT return telemetry의 마지막
+source도 `0x030F7C2E`에 머물러 이 반환을 소비하지 않았습니다. 따라서 이번 로그는
+Task 296 malformed-pointer 재발이나 Task 297 IF gate 우회를 직접 뒷받침하지 않으며,
+정상 RET 경계의 breakpoint가 기존 AOT 반환 처리에 소비되지 않은 새 frontier입니다.
+`REPIU_TIMER_INJECT_LOG`가 비활성화된 로그이므로 타이머 중첩 부재 자체는 아직 완전한
+증명이 아닙니다.
+
+**미확정:** Windows가 보고한 breakpoint의 물리 `INT3` 위치, raw address와 resume EIP의
+`-1` 관계, 진입 시 `aot_reentry_pending`, cache breakpoint provenance, native span/region
+상태입니다. 현재 증거만으로 원본 `INT3`를 skip하거나 orphan RET를 자동 복구하면 안
+됩니다.
+
+**Task 298 계측:** breakpoint 진입 순간에는 raw address/EIP/ESP/EFLAGS/DR6/DR7과 AOT 및
+native execution 상태와 AOT return dispatch count/source/target을 O(1) 값으로 보존합니다.
+기존 처리기가 소비하면 폐기하고, 최종
+fail-closed 경로에 도달한 한 건에 대해서만 raw/EIP 각각의 exact와 `address-1` AOT
+mapping/provenance, 32-byte window, entry stack top 4 dword를 보강해 loader summary에
+출력합니다. Win32 x86 Debug 빌드는 성공했으며 고빈도 handled breakpoint 경로에
+address-map 검색이나 Win32 메모리 조회를 추가하지 않습니다. 다음 장기 재현 로그가 복구
+설계 여부를 결정합니다.
+
+```mermaid
+flowchart LR
+    B[Breakpoint entry raw evidence] --> H{Existing handler consumes it?}
+    H -->|yes| D[Discard evidence and continue]
+    H -->|no| F[Enrich mapping and memory evidence]
+    F --> C[Commit final evidence and fail closed]
+    C --> N[Next log identifies physical trap and state]
+```
+
+**English summary.** A post-Task-297 `aot-dbt` run progressed for roughly 128
+seconds to progress 103,859 and 14,855 Glide gates before ending with
+`STATUS_BREAKPOINT` at `0x03042EAD`. The live byte is a normal `RET`, `[ESP]` is
+an AOT cache address, malformed dispatch is zero, and INT 8 chain HLE completed
+1,750 times. The adjacent address is the INT 8 ISR entry, but this `RET` belongs
+to the preceding function and was not recorded by the AOT return handler. This
+is therefore a new unconsumed breakpoint frontier, not direct evidence of a
+malformed-pointer recurrence or IF-gate bypass. Task 298 captures fixed-size
+raw/entry/final breakpoint evidence, entry/final AOT return-dispatch state,
+exact/minus-one AOT mappings and
+provenance, byte windows, execution state, and stack words only when the event
+remains unhandled. The Win32 x86 Debug build passes; the next long-run log will
+decide whether and how recovery is safe.
+
+## 2026-07-26 Task 299: 타이머 로그가 확정한 단일 IRET frame 누수 / Timer log confirms one leaked IRET frame
+
+**확인됨:** `REPIU_TIMER_INJECT_LOG=1` 실행의 종료 예외는 host
+`HandleTracedDosInterrupt21`에서 발생한 2차 AV였습니다. 1차 실패는 guest
+`RET 0x030D8BB2`가 `0x43F00000`(`480.0f`)을 반환주소로 꺼낸 것입니다. 호출자
+`0x030F2734`의 정상 복귀점 `0x030F2739`가 `[ESP+12]`에 그대로 있고,
+`0x030D8B84` wrapper와 실제 간접 대상 `0x03062560`의 `ret 8` ABI는 정적으로
+균형이 맞습니다. 정확한 12바이트 차이와 종료 직전 선점 주입은 INT 8 IRET frame 한
+개가 회수되지 않은 형태를 특정합니다.
+
+**수정:** poll thread의 직접 guest stack/ESP/EIP/CS 변조를 없애고 TF만 arm합니다.
+다음 guest-thread VEH single-step에서 wakeup용 TF를 제거하고 공통 INT 8 injector로
+frame을 만듭니다. 이 변경은 원본 ISR/`IRETD`를 보존하면서 cross-thread 주입만 안전
+경계로 옮깁니다. 비정상 EIP를 다시 역참조한 traced HLE decoder는 별도 fail-closed
+견고화 대상입니다.
+
+**검증:** 45초 격리 `aot-dbt` 실행은 이전 29초 실패 지점을 넘어 정상 timeout했습니다.
+TF arm/VEH wakeup은 3/3으로 대응했고 직접 preemptive frame write는 0건, exception과
+malformed dispatch는 0건, non-guest return fallback은 0건이었습니다.
+
+**English summary.** The timer-enabled run first suffered a guest
+`RET 0x030D8BB2` to `0x43F00000` (`480.0f`); the later
+`HandleTracedDosInterrupt21` AV was secondary. The correct caller return
+`0x030F2739` remains at `[ESP+12]`, while static disassembly confirms the
+wrapper and indirect callee have a balanced `ret 8` contract. The exact
+12-byte delta plus the final preemptive injection identifies one unconsumed
+INT 8 IRET frame. Task 299 moves preemption to a TF/VEH rendezvous: the poller
+never writes the guest stack or EIP, and the guest thread invokes the common
+injector at the next single-step boundary. A separate fail-closed hardening
+will prevent HLE opcode probes from masking any future primary invalid-EIP
+exception.
+
+A 45-second isolated `aot-dbt` run passed the former 29-second failure point
+with 3/3 arm-to-VEH wakeups, zero direct preemptive frame writes, zero caught
+or malformed exceptions, and zero non-guest return fallbacks.
+
+## 2026-07-26 Task 300: invalid-EIP HLE probe fail-closed
+
+**확인 및 수정:** Task 299 입력 로그의 host AV는
+`HandleTracedDosInterrupt21`이 이미 비정상인 guest `EIP=0x43F00000`에서
+`instruction[0]`을 읽은 2차 실패였습니다. guest-stack VEH와 공용 HLE handler chain은
+이제 최대 x86 명령 길이 15바이트의 guest decode window가 없으면 decoder를 호출하지
+않습니다. 네 traced interrupt handler도 각자 필요한 2바이트를 검증합니다. 원래 예외
+code/context는 기존 capture/recovery 경로로 보존됩니다. Win32 x86 Debug 빌드가
+성공했습니다.
+
+**Confirmed and fixed:** The host AV was secondary: an opcode probe read the
+already-invalid guest `EIP=0x43F00000`. Guest-stack VEH dispatch and the
+shared HLE chain now require a 15-byte guest decode window, while all four
+traced interrupt handlers independently require two bytes. Failure preserves
+the original exception through the existing capture/recovery path. The Win32
+x86 Debug build passes.
+
+## 2026-07-26 Task 301: TF timer rendezvous escapes VEH
+
+**확인됨:** Task 299 이후 장시간 실행 세 번이 서로 다른 guest arm EIP에서 종료됐지만,
+Windows Application Error는 모두 `EXCEPTION_SINGLE_STEP(0x80000004)`와 동일한 fault 주소
+`0x6FAC40B1`을 기록했습니다. 각 로그는 마지막 `Armed INT 8 VEH wakeup` 뒤에 대응 wakeup이나
+loader 요약 없이 끝났습니다. AOT cache는 `0x0DB70000`이며 기존 `ESP-12` 누수는 재현되지
+않았습니다. 따라서 현재 frontier는 guest 명령이나 이전 stack 누수가 아니라 강제 TF
+rendezvous 자체가 VEH에서 빠져나가는 문제입니다.
+
+**설계 결론:** poll thread는 tick과 pending만 기록하고 guest context를 변경하지 않습니다.
+pending IRQ0는 HLE/AOT 상태가 guest EIP로 정리된 기존 single-step VEH 경계에서, 다음 native
+구간에 들어가기 전에 공용 주입기로 전달합니다.
+
+**Confirmed:** Three post-Task-299 long runs ended from different guest arm
+EIPs, but every Windows Application Error recorded the same unhandled
+`0x80000004` and `0x6FAC40B1` fault address. Each log ended after an unmatched
+timer wakeup arm. The AOT cache was at `0x0DB70000`, and the old `ESP-12` leak
+did not recur. The current frontier is therefore forced TF rendezvous escaping
+VEH, not a particular guest instruction or the prior stack leak.
+
+**Design conclusion:** The poll thread records ticks and pending state only.
+Existing single-step VEH boundaries deliver pending IRQ0 after HLE/AOT state
+is reconciled to a guest EIP and before native execution resumes.
+
+**검증됨:** 강제 arm 0건인 150초 격리 실행이 이전 125초 종료 지점을 통과해 정상 timeout으로
+끝났습니다. INT 8 주입/chain은 2,283/2,283, progress는 129,810, single-step 경계는
+1,094,406, Glide gate는 13,932/13,932였고 exception, malformed dispatch, 새 Windows
+APPCRASH는 없었습니다.
+
+**Verified:** An isolated 150-second run with zero forced arms passed the
+former 125-second crash frontier and ended by normal timeout. It recorded
+2,283/2,283 INT 8 injections/chain completions, progress 129,810, 1,094,406
+single-step boundaries, and 13,932/13,932 Glide gates, with no exception,
+malformed dispatch, or new Windows APPCRASH.

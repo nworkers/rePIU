@@ -1,5 +1,6 @@
 #include "live_telemetry_snapshot.h"
 #include "win32_thread_api.h"
+#include "execution/execution_internal.h"
 
 #include <algorithm>
 #include <array>
@@ -277,7 +278,7 @@ DWORD PollThreadUntilExit(HANDLE thread,
             {
                 progress_context->last_timer_injection_ticks = ticks;
                 progress_context->timer_interrupt_pending.store(
-                    true, std::memory_order_relaxed);
+                    true, std::memory_order_release);
             }
         }
         DWORD current_exit_code = 0;
@@ -899,6 +900,15 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
             std::memory_order_relaxed);
     attempt->exception_dispatch_last_eip =
         context.exception_dispatch_last_eip.load(
+            std::memory_order_relaxed);
+    attempt->exception_dispatch_malformed_count =
+        context.exception_dispatch_malformed_count.load(
+            std::memory_order_relaxed);
+    attempt->exception_dispatch_last_bad_context =
+        context.exception_dispatch_last_bad_context.load(
+            std::memory_order_relaxed);
+    attempt->exception_dispatch_last_bad_record =
+        context.exception_dispatch_last_bad_record.load(
             std::memory_order_relaxed);
     attempt->selector_table_valid = context.selector_table.valid;
     attempt->selector_descriptor_count =

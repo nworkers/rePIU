@@ -1706,7 +1706,8 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             return reject_gate("lfb-lock-info-pointer-unwritable");
         }
         if (write_mode != repiu::hle::kGlideLfbWriteMode565 ||
-            buffer != repiu::hle::kGlideBufferBackBuffer)
+            (buffer != repiu::hle::kGlideBufferBackBuffer &&
+             buffer != repiu::hle::kGlideBufferFrontBuffer))
         {
             return fail_lock("unsupported-writemode-or-buffer");
         }
@@ -1870,12 +1871,26 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                     context->glide_lfb_surface.width(),
                     context->glide_lfb_surface.height(), &rgba8))
             {
+                const char* lfb_dump = std::getenv("REPIU_DUMP_LFB_BMP");
+                if (lfb_dump != nullptr && lfb_dump[0] == '1')
+                {
+                    DumpTextureToBmp(
+                        0x1FB, // Dummy address for LFB
+                        0,     // format
+                        context->glide_lfb_surface.width(),
+                        context->glide_lfb_surface.height(),
+                        rgba8);
+                }
                 const bool flip_v =
                     context->glide_lfb_surface.lock_origin() ==
                     repiu::hle::kGlideOriginLowerLeft;
+                const bool present_to_front =
+                    context->glide_lfb_surface.lock_buffer() ==
+                    repiu::hle::kGlideBufferFrontBuffer;
                 if (context->glide_backend.PresentLfbSurface(
                         rgba8.data(), context->glide_lfb_surface.width(),
-                        context->glide_lfb_surface.height(), flip_v))
+                        context->glide_lfb_surface.height(), flip_v,
+                        present_to_front))
                 {
                     ++context->glide_lfb_present_count;
                     // The swap-driven pixel diagnostic cannot help here: the
@@ -1911,6 +1926,83 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             }
         }
         context->glide_lfb_surface.EndLock();
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 3U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRLFBWRITEREGION@32")
+    {
+        const std::uint32_t dst_buffer = context->glide_gate_stack[1];
+        const std::uint32_t dst_x = context->glide_gate_stack[2];
+        const std::uint32_t dst_y = context->glide_gate_stack[3];
+        const std::uint32_t src_format = context->glide_gate_stack[4];
+        const std::uint32_t src_width = context->glide_gate_stack[5];
+        const std::uint32_t src_height = context->glide_gate_stack[6];
+        const std::int32_t src_stride = static_cast<std::int32_t>(context->glide_gate_stack[7]);
+        const std::uint32_t src_data_ptr = context->glide_gate_stack[8];
+
+        if (src_format == repiu::hle::kGlideLfbSrcFmt565 && src_width > 0U && src_height > 0U)
+        {
+            const std::uint32_t width = context->glide_state.width;
+            const std::uint32_t height = context->glide_state.height;
+            if (context->glide_lfb_surface.Resize(width, height))
+            {
+                const std::size_t data_size = static_cast<std::size_t>(src_height) * (src_stride > 0 ? src_stride : -src_stride);
+                std::vector<std::uint8_t> host_src(data_size);
+                auto* guest_ptr = reinterpret_cast<const void*>(static_cast<std::uintptr_t>(src_data_ptr));
+                if (IsGuestRangeReadable(context, guest_ptr, data_size))
+                {
+                    std::memcpy(host_src.data(), guest_ptr, data_size);
+                    if (repiu::hle::WriteRegionToGlideLfb565(dst_x, dst_y, src_width, src_height, src_stride, host_src.data(), data_size, &context->glide_lfb_surface))
+                    {
+                        std::vector<std::uint8_t> rgba8;
+                        if (repiu::hle::DecodeGlideLfb565ToRgba8(
+                                context->glide_lfb_surface.pixels(),
+                                context->glide_lfb_surface.byte_count(),
+                                context->glide_lfb_surface.width(),
+                                context->glide_lfb_surface.height(), &rgba8))
+                        {
+                            const bool present_to_front = (dst_buffer == repiu::hle::kGlideBufferFrontBuffer);
+                            context->glide_backend.PresentLfbSurface(
+                                rgba8.data(), context->glide_lfb_surface.width(),
+                                context->glide_lfb_surface.height(), false, present_to_front);
+                        }
+                    }
+                }
+            }
+        }
+        else
+        {
+            static long skip_log = 0;
+            if (InterlockedIncrement(&skip_log) <= 10)
+            {
+                fprintf(stderr, "[repiu-live-debug] grLfbWriteRegion skipped: format=%u width=%u height=%u\n", src_format, src_width, src_height);
+            }
+        }
+        ++context->glide_gate_handled_count;
+        win32_context->Eax = 1U;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 9U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRLFBREADREGION@28")
+    {
+        ++context->glide_gate_handled_count;
+        win32_context->Eax = 1U;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 8U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRLFBCONSTANTALPHA@4" || glide_export->name == "_GRLFBCONSTANTDEPTH@4")
+    {
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRLFBWRITECOLORSWIZZLE@8")
+    {
         ++context->glide_gate_handled_count;
         win32_context->Eip = return_address;
         win32_context->Esp += 3U * sizeof(std::uint32_t);

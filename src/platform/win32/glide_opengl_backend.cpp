@@ -776,13 +776,14 @@ void GlideOpenGlBackend::SetTextureCombineEnabled(bool enabled)
 bool GlideOpenGlBackend::PresentLfbSurface(const std::uint8_t* rgba8,
                                            std::uint32_t width,
                                            std::uint32_t height,
-                                           bool flip_v)
+                                           bool flip_v,
+                                           bool present_to_front)
 {
     if (!IsHostThread())
     {
         bool result = false;
-        InvokeOnHostThread([this, rgba8, width, height, flip_v, &result]() {
-            result = PresentLfbSurface(rgba8, width, height, flip_v);
+        InvokeOnHostThread([this, rgba8, width, height, flip_v, present_to_front, &result]() {
+            result = PresentLfbSurface(rgba8, width, height, flip_v, present_to_front);
         });
         return result;
     }
@@ -854,18 +855,15 @@ bool GlideOpenGlBackend::PresentLfbSurface(const std::uint8_t* rgba8,
     glEnd();
 
     shader_.SetTextureEnabled(texture_combine_enabled_);
-    if (depth_was_enabled == GL_TRUE)
+    if (depth_was_enabled) glEnable(GL_DEPTH_TEST);
+    if (blend_was_enabled) glEnable(GL_BLEND);
+    if (cull_was_enabled) glEnable(GL_CULL_FACE);
+
+    if (present_to_front)
     {
-        glEnable(GL_DEPTH_TEST);
+        BufferSwap(0);
     }
-    if (blend_was_enabled == GL_TRUE)
-    {
-        glEnable(GL_BLEND);
-    }
-    if (cull_was_enabled == GL_TRUE)
-    {
-        glEnable(GL_CULL_FACE);
-    }
+
     // Leave the geometry texture binding as the game left it.
     if (current_texture_ != nullptr && current_texture_->gl_name != 0U)
     {

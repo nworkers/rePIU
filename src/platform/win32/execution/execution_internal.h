@@ -14,6 +14,8 @@
 namespace repiu::platform::win32
 {
 
+inline constexpr std::uint32_t kEFlagsInterruptEnable = 0x00000200U;
+
 bool IsAotCacheAddress(const ThreadContext* context, std::uint32_t address);
 
 bool WriteGuestBytes(ThreadContext* context,

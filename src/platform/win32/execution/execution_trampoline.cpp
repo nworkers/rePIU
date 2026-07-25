@@ -49,6 +49,7 @@
 #include "win32_thread_api.h"
 #include "execution_internal.h"
 #include "port_io_emulator.h"
+#include "breakpoint_evidence_win32.h"
 #include "exception_rescue_win32.h"
 #include "live_telemetry_snapshot.h"
 
@@ -518,6 +519,11 @@ bool FindAotGuestAddress(const AotPlacementPlan& placement,
 bool HandleSelectorLimitInstruction(CONTEXT* win32_context,
                                     ThreadContext* context)
 {
+    if (win32_context == nullptr || context == nullptr ||
+        !IsGuestRangeReadable(context, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(win32_context->Eip)), 3U))
+    {
+        return false;
+    }
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
     if (instruction[0] != 0x0F ||
@@ -592,6 +598,17 @@ bool HandleDosMemoryAccess(CONTEXT* win32_context,
 // (the region executor). Mirrors the former inline chain in HandleSingleStepTrace.
 bool DispatchGuestHleHandlers(CONTEXT* win32_context, ThreadContext* context)
 {
+    constexpr std::uint32_t kMaximumX86InstructionBytes = 15U;
+    if (win32_context == nullptr || context == nullptr ||
+        !IsGuestRangeReadable(
+            context,
+            reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(win32_context->Eip)),
+            kMaximumX86InstructionBytes))
+    {
+        return false;
+    }
+
     if (context->enable_privileged_trap_hle &&
         (HandleSelectorLimitInstruction(win32_context, context) ||
          HandlePrivilegedTrapInstruction(win32_context, context) ||
@@ -1178,6 +1195,16 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
         return true;
     }
 
+    // Task 301: deliver a coalesced timer request only after the existing VEH
+    // path has reconciled AOT/HLE state to a guest instruction boundary.
+    // PollThreadUntilExit never forces TF or changes the guest thread context.
+    const std::uint32_t interrupt_boundary_eip =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    InjectPendingInterrupts(win32_context, context);
+    if (static_cast<std::uint32_t>(win32_context->Eip) != interrupt_boundary_eip)
+    {
+        return true;
+    }
     const bool call_step_return_watch =
         AotDbtCallStepReturnWatchActive(context);
     bool entered_native = false;
@@ -1310,7 +1337,7 @@ bool HandlePrivilegedTrapInstruction(CONTEXT* win32_context,
                                      ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr ||
-        win32_context->Eip == 0U)
+        !IsGuestRangeReadable(context, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(win32_context->Eip)), 1U))
     {
         return false;
     }
@@ -1319,14 +1346,14 @@ bool HandlePrivilegedTrapInstruction(CONTEXT* win32_context,
     if (*instruction == 0xFA)
     {
         RecordHandledHleTrap(win32_context, context, *instruction);
-        win32_context->EFlags &= ~0x00000200U;
+        win32_context->EFlags &= ~kEFlagsInterruptEnable;
         ++win32_context->Eip;
         return true;
     }
     if (*instruction == 0xFB)
     {
         RecordHandledHleTrap(win32_context, context, *instruction);
-        win32_context->EFlags |= 0x00000200U;
+        win32_context->EFlags |= kEFlagsInterruptEnable;
         ++win32_context->Eip;
         return true;
     }
@@ -2268,6 +2295,11 @@ void InjectPendingInterrupts(CONTEXT* win32_context, ThreadContext* context)
         return;
     }
 
+    if ((win32_context->EFlags & kEFlagsInterruptEnable) == 0U)
+    {
+        return;
+    }
+
     context->timer_interrupt_pending.store(false, std::memory_order_relaxed);
 
     std::uint32_t eflags = win32_context->EFlags;
@@ -2285,7 +2317,7 @@ void InjectPendingInterrupts(CONTEXT* win32_context, ThreadContext* context)
     win32_context->Esp = esp;
     win32_context->SegCs = shadow.selector;
     win32_context->Eip = shadow.offset;
-    win32_context->EFlags &= ~(0x200U | 0x100U);
+    win32_context->EFlags &= ~(kEFlagsInterruptEnable | 0x100U);
 
     // The timer tick is injected continuously while the guest runs, so this
     // line floods the console and drowns out everything else. Keep it as an
@@ -2299,16 +2331,183 @@ void InjectPendingInterrupts(CONTEXT* win32_context, ThreadContext* context)
     }
 }
 
+struct AotHleTranslationScope
+{
+    CONTEXT* win32_context;
+    ThreadContext* context;
+    std::uint32_t original_aot_eip;
+    std::uint32_t guest_eip;
+    bool is_aot_exception;
+
+    AotHleTranslationScope(CONTEXT* wc, ThreadContext* ctx)
+        : win32_context(wc), context(ctx), original_aot_eip(0U), guest_eip(0U), is_aot_exception(false)
+    {
+        if (context != nullptr && context->aot_placement != nullptr &&
+            IsAotCacheAddress(context, static_cast<std::uint32_t>(win32_context->Eip)))
+        {
+            original_aot_eip = static_cast<std::uint32_t>(win32_context->Eip);
+            std::uint32_t resolved_guest_eip = 0U;
+            if (FindAotGuestAddress(*context->aot_placement, original_aot_eip, &resolved_guest_eip))
+            {
+                guest_eip = resolved_guest_eip;
+                win32_context->Eip = guest_eip;
+                is_aot_exception = true;
+            }
+        }
+    }
+
+    ~AotHleTranslationScope()
+    {
+        if (is_aot_exception)
+        {
+            if (static_cast<std::uint32_t>(win32_context->Eip) != guest_eip)
+            {
+                std::uint32_t new_cache_address = 0U;
+                if (FindAotCacheAddress(*context->aot_placement,
+                                        static_cast<std::uint32_t>(win32_context->Eip),
+                                        &new_cache_address))
+                {
+                    win32_context->Eip = new_cache_address;
+                }
+            }
+            else
+            {
+                win32_context->Eip = original_aot_eip;
+            }
+        }
+    }
+};
+
+// Task 296: syscall-free plausibility gate for the exception-dispatch hot path.
+// A real Windows EXCEPTION_POINTERS/CONTEXT/EXCEPTION_RECORD pointer is always
+// well above the 64KB NULL-reserve region and pointer-aligned; the observed
+// corruption (ContextRecord=0x23, a selector value used as a pointer) fails
+// both tests. This runs on every VEH dispatch (up to ~166K/s during
+// single-step-heavy phases), so it must stay branch-only -- the authoritative
+// VirtualQuery check below is reserved for the rare implausible case.
+static inline bool IsPlausibleHostPointer(const void* pointer)
+{
+    const std::uintptr_t value = reinterpret_cast<std::uintptr_t>(pointer);
+    return value >= 0x10000U && (value & 0x3U) == 0U;
+}
+
+// Task 296: VirtualQuery-based readability check for arbitrary host pointers.
+// Unlike IsGuestRangeReadable (which only covers the guest arena), this can
+// validate Windows-allocated structures such as CONTEXT/EXCEPTION_RECORD before
+// they are dereferenced. Only invoked when IsPlausibleHostPointer already flags
+// a pointer as suspicious, so its kernel-transition cost stays off the hot path.
+static bool IsHostPointerReadable(const void* pointer, std::size_t byte_count)
+{
+    if (pointer == nullptr || byte_count == 0)
+    {
+        return false;
+    }
+    const std::uint8_t* cursor = static_cast<const std::uint8_t*>(pointer);
+    const std::uint8_t* end = cursor + byte_count;
+    while (cursor < end)
+    {
+        MEMORY_BASIC_INFORMATION info = {};
+        if (VirtualQuery(cursor, &info, sizeof(info)) == 0)
+        {
+            return false;
+        }
+        if (info.State != MEM_COMMIT)
+        {
+            return false;
+        }
+        const DWORD protect = info.Protect;
+        if ((protect & PAGE_GUARD) != 0 || (protect & PAGE_NOACCESS) != 0)
+        {
+            return false;
+        }
+        const DWORD access = protect & 0xFFU;
+        const bool readable =
+            access == PAGE_READONLY || access == PAGE_READWRITE ||
+            access == PAGE_WRITECOPY || access == PAGE_EXECUTE_READ ||
+            access == PAGE_EXECUTE_READWRITE ||
+            access == PAGE_EXECUTE_WRITECOPY;
+        if (!readable)
+        {
+            return false;
+        }
+        const std::uint8_t* region_end =
+            static_cast<const std::uint8_t*>(info.BaseAddress) + info.RegionSize;
+        if (region_end <= cursor)
+        {
+            return false; // defensive: guarantee forward progress
+        }
+        cursor = region_end;
+    }
+    return true;
+}
+
+// Task 296: record a malformed EXCEPTION_POINTERS and emit a one-line
+// diagnostic. Safe to call even when the embedded pointers are unreadable.
+static void RecordMalformedExceptionPointers(ThreadContext* context,
+                                             EXCEPTION_POINTERS* exception_info)
+{
+    const std::uint32_t count =
+        context->exception_dispatch_malformed_count.fetch_add(
+            1U, std::memory_order_relaxed) +
+        1U;
+    std::uint32_t bad_context = 0U;
+    std::uint32_t bad_record = 0U;
+    if (IsHostPointerReadable(exception_info, sizeof(EXCEPTION_POINTERS)))
+    {
+        bad_context = static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(exception_info->ContextRecord));
+        bad_record = static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(exception_info->ExceptionRecord));
+    }
+    context->exception_dispatch_last_bad_context.store(
+        bad_context, std::memory_order_relaxed);
+    context->exception_dispatch_last_bad_record.store(
+        bad_record, std::memory_order_relaxed);
+    fprintf(stderr,
+            "[repiu-live] Malformed EXCEPTION_POINTERS at VEH: info=%p "
+            "ExceptionRecord=0x%08X ContextRecord=0x%08X (count=%u) -- failing "
+            "closed to surface primary exception\n",
+            static_cast<void*>(exception_info), bad_record, bad_context, count);
+}
+
 // VEH dispatch logic relocated out of the anonymous namespace (external
 // linkage) so the thin GuestStackVectoredExceptionHandler entry in
 // exception_rescue_win32.cpp can forward to it. Declared in that header.
 LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
 {
     ThreadContext* context = g_repiu_active_thread_context;
-    if (context == nullptr ||
-        exception_info == nullptr || exception_info->ContextRecord == nullptr)
+    if (context == nullptr || exception_info == nullptr)
     {
         return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    // Task 296: Windows can hand the VEH a malformed EXCEPTION_POINTERS (a
+    // non-null but unreadable ContextRecord/ExceptionRecord) when a fault is
+    // dispatched while the thread runs on the guest stack (TIB stack bounds
+    // still point at the host stack). Dereferencing it caused a secondary
+    // access violation inside this dispatcher (win32_context->Eip, CONTEXT
+    // offset 0xB8) that masked the original guest exception. Validate before
+    // any dereference and fail closed so the primary exception propagates to
+    // the outer handler and is recorded.
+    //
+    // The common (valid) case is settled with branch-only arithmetic so the hot
+    // exception path pays no kernel transition; only an implausible pointer
+    // falls through to the authoritative VirtualQuery check. The `&&`
+    // short-circuit keeps reads of exception_info->{Context,Exception}Record
+    // guarded by the preceding IsPlausibleHostPointer(exception_info).
+    if (!IsPlausibleHostPointer(exception_info) ||
+        !IsPlausibleHostPointer(exception_info->ContextRecord) ||
+        !IsPlausibleHostPointer(exception_info->ExceptionRecord))
+    {
+        if (!IsHostPointerReadable(exception_info, sizeof(EXCEPTION_POINTERS)) ||
+            !IsHostPointerReadable(exception_info->ContextRecord,
+                                   sizeof(CONTEXT)) ||
+            !IsHostPointerReadable(exception_info->ExceptionRecord,
+                                   sizeof(EXCEPTION_RECORD)))
+        {
+            RecordMalformedExceptionPointers(context, exception_info);
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
     }
 
     if (GetCurrentThreadId() != context->guest_thread_id)
@@ -2324,6 +2523,13 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     }
 
     CONTEXT* win32_context = exception_info->ContextRecord;
+    Win32UnhandledBreakpointEvidence breakpoint_evidence;
+    if (exception_info->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT)
+    {
+        breakpoint_evidence =
+            CaptureBreakpointEvidence(exception_info, context);
+    }
+
     if (win32_context->Eip == 0U)
     {
         win32_context->EFlags &= ~0x00000100U;
@@ -2345,6 +2551,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         }
         return EXCEPTION_CONTINUE_EXECUTION;
     }
+
     if (HandleAotDbtCallStepProbe(
             exception_info, win32_context, context))
     {
@@ -2604,6 +2811,29 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
+    AotHleTranslationScope aot_hle_translation_scope(win32_context, context);
+    constexpr std::uint32_t kMaximumX86InstructionBytes = 15U;
+    const bool guest_decode_window_readable = IsGuestRangeReadable(
+        context,
+        reinterpret_cast<const void*>(
+            static_cast<std::uintptr_t>(win32_context->Eip)),
+        kMaximumX86InstructionBytes);
+    if (context->use_guest_stack && !guest_decode_window_readable)
+    {
+        // Task 300: preserve the primary guest exception. Calling opcode
+        // probes with an invalid EIP creates a host AV that masks the original
+        // code/fault VA, as observed at HandleTracedDosInterrupt21.
+        win32_context->EFlags &= ~0x00000100U;
+        CommitUnhandledBreakpointEvidence(
+            breakpoint_evidence, win32_context, context);
+        CaptureException(exception_info, context);
+        context->guest_return_esp =
+            static_cast<std::uint32_t>(win32_context->Esp);
+        context->host_esp = context->active_call_state->host_esp;
+        RecoverToHost(win32_context, context);
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+
     if (context->enable_privileged_trap_hle &&
         HandlePrivilegedTrapInstruction(win32_context, context))
     {
@@ -2923,6 +3153,8 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     }
 
     win32_context->EFlags &= ~0x00000100U;
+    CommitUnhandledBreakpointEvidence(
+        breakpoint_evidence, win32_context, context);
     CaptureException(exception_info, context);
     context->guest_return_esp =
         static_cast<std::uint32_t>(exception_info->ContextRecord->Esp);
@@ -3625,6 +3857,8 @@ bool RunWin32ExecutionThread(
                 sizeof(attempt->exception_stack_dwords));
     attempt->exception_stack_dword_count =
         context.exception_stack_dword_count;
+    attempt->unhandled_breakpoint_evidence =
+        context.unhandled_breakpoint_evidence;
     attempt->aot_probe_guest_address = context.aot_probe_guest_address;
     attempt->aot_probe_cache_address = context.aot_probe_cache_address;
     attempt->aot_probe_cache_valid = context.aot_probe_cache_valid;

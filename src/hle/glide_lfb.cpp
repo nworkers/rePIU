@@ -154,4 +154,54 @@ bool EncodeRgba8ToGlideLfb565(const std::uint8_t* rgba8,
     return true;
 }
 
+bool WriteRegionToGlideLfb565(std::uint32_t dst_x,
+                              std::uint32_t dst_y,
+                              std::uint32_t src_width,
+                              std::uint32_t src_height,
+                              std::int32_t src_stride_bytes,
+                              const std::uint8_t* src_data,
+                              std::size_t src_data_byte_count,
+                              GlideLfbSurface* surface)
+{
+    if (src_data == nullptr || surface == nullptr)
+    {
+        return false;
+    }
+    const std::uint32_t dst_width = surface->width();
+    const std::uint32_t dst_height = surface->height();
+    if (dst_width == 0U || dst_height == 0U)
+    {
+        return false;
+    }
+    // Check bounds. If it exceeds, we can optionally clip, but for now reject or clip.
+    // Let's clip to prevent buffer overflow.
+    const std::uint32_t write_width = (dst_x + src_width > dst_width) ?
+        (dst_width > dst_x ? dst_width - dst_x : 0U) : src_width;
+    const std::uint32_t write_height = (dst_y + src_height > dst_height) ?
+        (dst_height > dst_y ? dst_height - dst_y : 0U) : src_height;
+
+    if (write_width == 0U || write_height == 0U)
+    {
+        return true; // Nothing to write
+    }
+
+    std::uint8_t* dst_pixels = surface->pixels();
+    const std::size_t dst_stride = static_cast<std::size_t>(dst_width) * kGlideLfb565BytesPerTexel;
+
+    for (std::uint32_t y = 0; y < write_height; ++y)
+    {
+        const std::size_t src_offset = static_cast<std::size_t>(y) * src_stride_bytes;
+        // Verify src_data_byte_count
+        if (src_offset + write_width * kGlideLfb565BytesPerTexel > src_data_byte_count)
+        {
+            break; // Stop if we run out of source data
+        }
+        const std::size_t dst_offset = (static_cast<std::size_t>(dst_y + y) * dst_stride) +
+                                       (static_cast<std::size_t>(dst_x) * kGlideLfb565BytesPerTexel);
+        std::memcpy(dst_pixels + dst_offset, src_data + src_offset,
+                    write_width * kGlideLfb565BytesPerTexel);
+    }
+    return true;
+}
+
 }  // namespace repiu::hle

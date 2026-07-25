@@ -23,6 +23,7 @@ constexpr std::uint32_t kWin32DosFileIoTraceCapacity = 64;
 constexpr std::uint32_t kWin32DosFileIoPrefixCapacity = 16;
 constexpr std::uint32_t kWin32DosTerminationStackCapacity = 128;
 constexpr std::uint32_t kWin32ExceptionStackDwordCapacity = 96;
+constexpr std::uint32_t kWin32BreakpointByteWindowCapacity = 32;
 constexpr std::uint32_t kWin32AllocatorProbeTraceCapacity = 16;
 constexpr std::uint32_t kWin32AllocatorControlFlowTraceCapacity = 32;
 constexpr std::uint32_t kWin32SegmentLoadTraceCapacity = 16;
@@ -54,6 +55,64 @@ enum class AotDbtDispatchFallbackReason : std::uint32_t
 
 constexpr std::uint32_t kAotDbtDispatchFallbackReasonCount =
     static_cast<std::uint32_t>(AotDbtDispatchFallbackReason::kCount);
+
+enum Win32BreakpointStateFlag : std::uint32_t
+{
+    kWin32BreakpointAotReentryPending = 1U << 0U,
+    kWin32BreakpointSingleStepTrace = 1U << 1U,
+    kWin32BreakpointNativeFastPath = 1U << 2U,
+    kWin32BreakpointNativeLinearSpan = 1U << 3U,
+    kWin32BreakpointNativeRegion = 1U << 4U,
+};
+
+struct Win32UnhandledBreakpointEvidence
+{
+    bool valid = false;
+    std::uint32_t code = 0;
+    std::uint32_t exception_address = 0;
+    std::uint32_t entry_eip = 0;
+    std::uint32_t final_eip = 0;
+    std::uint32_t entry_esp = 0;
+    std::uint32_t final_esp = 0;
+    std::uint32_t entry_eflags = 0;
+    std::uint32_t entry_dr6 = 0;
+    std::uint32_t entry_dr7 = 0;
+    std::uint32_t entry_state_flags = 0;
+    std::uint32_t final_state_flags = 0;
+    std::uint32_t entry_aot_reentry_cache_address = 0;
+    std::uint32_t entry_aot_return_dispatch_count = 0;
+    std::uint32_t final_aot_return_dispatch_count = 0;
+    std::uint32_t entry_aot_last_return_source = 0;
+    std::uint32_t entry_aot_last_return_target = 0;
+    std::uint32_t final_aot_last_return_source = 0;
+    std::uint32_t final_aot_last_return_target = 0;
+    bool exception_address_in_aot_cache = false;
+    bool entry_eip_in_aot_cache = false;
+    bool exception_exact_mapping_valid = false;
+    bool exception_previous_mapping_valid = false;
+    bool eip_exact_mapping_valid = false;
+    bool eip_previous_mapping_valid = false;
+    std::uint32_t exception_exact_guest = 0;
+    std::uint32_t exception_previous_guest = 0;
+    std::uint32_t eip_exact_guest = 0;
+    std::uint32_t eip_previous_guest = 0;
+    bool exception_exact_provenance_valid = false;
+    bool exception_previous_provenance_valid = false;
+    bool eip_exact_provenance_valid = false;
+    bool eip_previous_provenance_valid = false;
+    std::uint32_t exception_exact_provenance = 0;
+    std::uint32_t exception_previous_provenance = 0;
+    std::uint32_t eip_exact_provenance = 0;
+    std::uint32_t eip_previous_provenance = 0;
+    std::uint32_t exception_window_base = 0;
+    std::uint32_t exception_window_count = 0;
+    std::uint8_t exception_window[kWin32BreakpointByteWindowCapacity] = {};
+    std::uint32_t eip_window_base = 0;
+    std::uint32_t eip_window_count = 0;
+    std::uint8_t eip_window[kWin32BreakpointByteWindowCapacity] = {};
+    std::uint32_t stack_dwords[4] = {};
+    std::uint32_t stack_valid_mask = 0;
+};
 
 struct Win32GlideTriangleObservation
 {
@@ -426,6 +485,7 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t exception_stack_base = 0;
     std::uint32_t exception_stack_dwords[kWin32ExceptionStackDwordCapacity] = {};
     std::uint32_t exception_stack_dword_count = 0;
+    Win32UnhandledBreakpointEvidence unhandled_breakpoint_evidence;
     std::uint32_t aot_probe_guest_address = 0;
     std::uint32_t aot_probe_cache_address = 0;
     std::uint32_t aot_probe_cache_valid = 0;
@@ -599,6 +659,9 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t exception_dispatch_entry_count = 0;
     std::uint32_t exception_dispatch_exit_count = 0;
     std::uint32_t exception_dispatch_last_eip = 0;
+    std::uint32_t exception_dispatch_malformed_count = 0;
+    std::uint32_t exception_dispatch_last_bad_context = 0;
+    std::uint32_t exception_dispatch_last_bad_record = 0;
     bool selector_table_valid = false;
     std::uint32_t selector_descriptor_count = 0;
     bool linexe_environment_active = false;

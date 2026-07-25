@@ -1,6 +1,7 @@
 #include "port_io_emulator.h"
 #include "repiu/platform/win32/execution_trampoline.h"
 #include "execution_internal.h"
+#include "cpu_emul/guest_memory_access.h"
 #include <vector>
 #include <sstream>
 #include <iomanip>
@@ -206,6 +207,11 @@ bool IsPortIoTraceCandidate(std::uint16_t port,
 
 bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
 {
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return false;
+    }
+
     std::uint32_t decode_eip = win32_context->Eip;
     if (IsAotCacheAddress(context, win32_context->Eip))
     {
@@ -213,6 +219,11 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
         {
             FindAotGuestAddress(*context->aot_placement, win32_context->Eip, &decode_eip);
         }
+    }
+
+    if (!IsGuestRangeReadable(context, reinterpret_cast<const void*>(static_cast<std::uintptr_t>(decode_eip)), 2U))
+    {
+        return false;
     }
 
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(

@@ -108,6 +108,7 @@ add_library(repiu_exe
     src/platform/win32/execution/execution_trampoline.cpp
     src/platform/win32/dos/dos_int21_services.cpp
     src/platform/win32/dos/dpmi_mscdex_services.cpp
+    src/platform/win32/exception/breakpoint_evidence_win32.cpp
     src/platform/win32/exception/exception_rescue_win32.cpp
     src/platform/win32/cpu_emul/guest_memory_access.cpp
     src/platform/win32/cpu_emul/instruction_emulation.cpp

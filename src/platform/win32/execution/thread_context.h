@@ -349,6 +349,7 @@ struct ThreadContext
     std::uint32_t exception_stack_base = 0;
     std::uint32_t exception_stack_dwords[kWin32ExceptionStackDwordCapacity] = {};
     std::uint32_t exception_stack_dword_count = 0;
+    Win32UnhandledBreakpointEvidence unhandled_breakpoint_evidence;
     std::uint32_t aot_probe_guest_address = 0;
     std::uint32_t aot_probe_cache_address = 0;
     std::uint32_t aot_probe_cache_valid = 0;
@@ -650,6 +651,12 @@ struct ThreadContext
     std::atomic<std::uint32_t> exception_dispatch_entry_count{0};
     std::atomic<std::uint32_t> exception_dispatch_exit_count{0};
     std::atomic<std::uint32_t> exception_dispatch_last_eip{0};
+    // Task 296: count and last-seen bit patterns of malformed EXCEPTION_POINTERS
+    // handed to the VEH (non-null but unreadable ContextRecord/ExceptionRecord),
+    // which would otherwise crash the dispatcher and mask the primary exception.
+    std::atomic<std::uint32_t> exception_dispatch_malformed_count{0};
+    std::atomic<std::uint32_t> exception_dispatch_last_bad_context{0};
+    std::atomic<std::uint32_t> exception_dispatch_last_bad_record{0};
     std::atomic<std::uint32_t> live_telemetry_heartbeat{0};
     std::atomic<std::uint32_t> live_telemetry_phase{0};
     Win32SharedLiveTelemetry* shared_live_telemetry = nullptr;

@@ -84,7 +84,8 @@ public:
     bool PresentLfbSurface(const std::uint8_t* rgba8,
                            std::uint32_t width,
                            std::uint32_t height,
-                           bool flip_v);
+                           bool flip_v,
+                           bool present_to_front);
     // R4 LFB: read the current render target back as RGBA8 (read locks).
     bool ReadbackFramebuffer(std::uint32_t width,
                              std::uint32_t height,

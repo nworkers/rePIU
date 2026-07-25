@@ -77,6 +77,7 @@ std::uint32_t ReadExecutionTimeoutMilliseconds()
 {
     const char* text = std::getenv(
         repiu::platform::win32::kWin32ExecutionTimeoutEnvironment);
+    fprintf(stderr, "[repiu-live-debug] env REPIU_EXECUTION_TIMEOUT_MS = %s\n", text ? text : "NULL");
     if (text == nullptr || *text == '\0')
     {
         return kDefaultExecutionTimeoutMilliseconds;
@@ -730,6 +731,89 @@ void PrintExecutionAttempt(
             logger.error("Win32 exception stack +{}:{}",
                          Hex32(row * 4U), line);
         }
+        const auto& breakpoint = attempt.unhandled_breakpoint_evidence;
+        logger.error("Win32 unhandled breakpoint evidence valid: {}",
+                     breakpoint.valid ? "true" : "false");
+        if (breakpoint.valid)
+        {
+            logger.error(
+                "Win32 unhandled breakpoint code/raw/entry/final: {}/{}/{}/{}",
+                Hex32(breakpoint.code),
+                Hex32(breakpoint.exception_address),
+                Hex32(breakpoint.entry_eip),
+                Hex32(breakpoint.final_eip));
+            logger.error(
+                "Win32 unhandled breakpoint ESP entry/final EFLAGS DR6/DR7: "
+                "{}/{}/{}/{}/{}",
+                Hex32(breakpoint.entry_esp),
+                Hex32(breakpoint.final_esp),
+                Hex32(breakpoint.entry_eflags),
+                Hex32(breakpoint.entry_dr6),
+                Hex32(breakpoint.entry_dr7));
+            logger.error(
+                "Win32 unhandled breakpoint state entry/final "
+                "(reentry/trace/fast/span/region bits): {}/{}",
+                Hex32(breakpoint.entry_state_flags),
+                Hex32(breakpoint.final_state_flags));
+            logger.error(
+                "Win32 unhandled breakpoint AOT reentry cache/return count "
+                "entry/final: {}/{}/{}",
+                Hex32(breakpoint.entry_aot_reentry_cache_address),
+                breakpoint.entry_aot_return_dispatch_count,
+                breakpoint.final_aot_return_dispatch_count);
+            logger.error(
+                "Win32 unhandled breakpoint AOT return source/target "
+                "entry/final: {}/{} / {}/{}",
+                Hex32(breakpoint.entry_aot_last_return_source),
+                Hex32(breakpoint.entry_aot_last_return_target),
+                Hex32(breakpoint.final_aot_last_return_source),
+                Hex32(breakpoint.final_aot_last_return_target));
+            logger.error(
+                "Win32 unhandled breakpoint cache raw/eip: {}/{}",
+                breakpoint.exception_address_in_aot_cache ? "true" : "false",
+                breakpoint.entry_eip_in_aot_cache ? "true" : "false");
+            logger.error(
+                "Win32 unhandled breakpoint raw mapping exact/previous: "
+                "{}/{}/{} / {}/{}/{}",
+                breakpoint.exception_exact_mapping_valid ? "valid" : "invalid",
+                Hex32(breakpoint.exception_exact_guest),
+                breakpoint.exception_exact_provenance_valid
+                    ? breakpoint.exception_exact_provenance : 0xFFFFFFFFU,
+                breakpoint.exception_previous_mapping_valid ? "valid" : "invalid",
+                Hex32(breakpoint.exception_previous_guest),
+                breakpoint.exception_previous_provenance_valid
+                    ? breakpoint.exception_previous_provenance : 0xFFFFFFFFU);
+            logger.error(
+                "Win32 unhandled breakpoint EIP mapping exact/previous: "
+                "{}/{}/{} / {}/{}/{}",
+                breakpoint.eip_exact_mapping_valid ? "valid" : "invalid",
+                Hex32(breakpoint.eip_exact_guest),
+                breakpoint.eip_exact_provenance_valid
+                    ? breakpoint.eip_exact_provenance : 0xFFFFFFFFU,
+                breakpoint.eip_previous_mapping_valid ? "valid" : "invalid",
+                Hex32(breakpoint.eip_previous_guest),
+                breakpoint.eip_previous_provenance_valid
+                    ? breakpoint.eip_previous_provenance : 0xFFFFFFFFU);
+            logger.error(
+                "Win32 unhandled breakpoint raw bytes base/count: {}/{} {}",
+                Hex32(breakpoint.exception_window_base),
+                breakpoint.exception_window_count,
+                HexBytes(breakpoint.exception_window,
+                         breakpoint.exception_window_count));
+            logger.error(
+                "Win32 unhandled breakpoint EIP bytes base/count: {}/{} {}",
+                Hex32(breakpoint.eip_window_base),
+                breakpoint.eip_window_count,
+                HexBytes(breakpoint.eip_window,
+                         breakpoint.eip_window_count));
+            logger.error(
+                "Win32 unhandled breakpoint stack mask/dwords: {} {} {} {} {}",
+                Hex32(breakpoint.stack_valid_mask),
+                Hex32(breakpoint.stack_dwords[0]),
+                Hex32(breakpoint.stack_dwords[1]),
+                Hex32(breakpoint.stack_dwords[2]),
+                Hex32(breakpoint.stack_dwords[3]));
+        }
         if (attempt.aot_probe_guest_address != 0)
         {
             logger.error(
@@ -1331,6 +1415,12 @@ void PrintExecutionAttempt(
                 outstanding_dispatch_count);
     logger.info("Win32 exception dispatch last EIP: {}",
                 Hex32(attempt.exception_dispatch_last_eip));
+    logger.info("Win32 exception dispatch malformed count: {}",
+                attempt.exception_dispatch_malformed_count);
+    logger.info("Win32 exception dispatch last bad ContextRecord: {}",
+                Hex32(attempt.exception_dispatch_last_bad_context));
+    logger.info("Win32 exception dispatch last bad ExceptionRecord: {}",
+                Hex32(attempt.exception_dispatch_last_bad_record));
     logger.info("Win32 selector table valid: {}",
                 attempt.selector_table_valid ? "true" : "false");
     logger.info("Win32 selector descriptor count: {}",

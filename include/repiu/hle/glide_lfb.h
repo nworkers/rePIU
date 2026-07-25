@@ -35,6 +35,9 @@ constexpr std::uint32_t kGlideLfbWriteMode565 = 0U;
 constexpr std::uint32_t kGlideOriginUpperLeft = 0U;
 constexpr std::uint32_t kGlideOriginLowerLeft = 1U;
 
+// GrLfbSrcFmt_t
+constexpr std::uint32_t kGlideLfbSrcFmt565 = 1U;
+
 // GrLfbInfo_t is five 32-bit fields: size, lfbPtr, strideInBytes, writeMode,
 // origin. The caller fills `size` with sizeof(GrLfbInfo_t) before the call.
 constexpr std::size_t kGlideLfbInfoByteCount = 20U;
@@ -112,6 +115,17 @@ bool EncodeRgba8ToGlideLfb565(const std::uint8_t* rgba8,
                               std::uint32_t height,
                               std::uint8_t* destination,
                               std::size_t destination_byte_count);
+
+// Writes a rectangular region of 565 pixels into the staging surface.
+// The surface must have been resized to the screen dimensions beforehand.
+bool WriteRegionToGlideLfb565(std::uint32_t dst_x,
+                              std::uint32_t dst_y,
+                              std::uint32_t src_width,
+                              std::uint32_t src_height,
+                              std::int32_t src_stride_bytes,
+                              const std::uint8_t* src_data,
+                              std::size_t src_data_byte_count,
+                              GlideLfbSurface* surface);
 
 }  // namespace repiu::hle
 

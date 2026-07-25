@@ -2691,6 +2691,15 @@ bool HandleTracedFpuMemoryInstruction(CONTEXT* win32_context,
 bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
                                 ThreadContext* context)
 {
+    if (win32_context == nullptr || context == nullptr ||
+        !IsGuestRangeReadable(
+            context,
+            reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(win32_context->Eip)),
+            2U))
+    {
+        return false;
+    }
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
     if (instruction[0] != 0xCD || instruction[1] != 0x21)
@@ -2837,6 +2846,15 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
 bool HandleTracedDosInterrupt2F(CONTEXT* win32_context,
                                 ThreadContext* context)
 {
+    if (win32_context == nullptr || context == nullptr ||
+        !IsGuestRangeReadable(
+            context,
+            reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(win32_context->Eip)),
+            2U))
+    {
+        return false;
+    }
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
     if (instruction[0] != 0xCD || instruction[1] != 0x2F)
@@ -2850,6 +2868,15 @@ bool HandleTracedDosInterrupt2F(CONTEXT* win32_context,
 bool HandleTracedDpmiInterrupt31(CONTEXT* win32_context,
                                  ThreadContext* context)
 {
+    if (win32_context == nullptr || context == nullptr ||
+        !IsGuestRangeReadable(
+            context,
+            reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(win32_context->Eip)),
+            2U))
+    {
+        return false;
+    }
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
     if (instruction[0] != 0xCD || instruction[1] != 0x31)
@@ -2863,6 +2890,15 @@ bool HandleTracedDpmiInterrupt31(CONTEXT* win32_context,
 bool HandleTracedMouseInterrupt33(CONTEXT* win32_context,
                                   ThreadContext* context)
 {
+    if (win32_context == nullptr || context == nullptr ||
+        !IsGuestRangeReadable(
+            context,
+            reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(win32_context->Eip)),
+            2U))
+    {
+        return false;
+    }
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
     if (instruction[0] != 0xCD || instruction[1] != 0x33)
