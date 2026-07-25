@@ -610,15 +610,16 @@ bool GlideOpenGlBackend::StoreTexture(std::uint32_t start_address,
                                       std::uint32_t large_lod,
                                       std::uint32_t aspect_ratio,
                                       const std::uint8_t* source,
-                                      std::size_t source_size)
+                                      std::size_t source_size,
+                                      const std::uint8_t* palette_rgba8)
 {
     if (!IsHostThread())
     {
         bool result = false;
         InvokeOnHostThread([this, start_address, format, large_lod,
-                            aspect_ratio, source, source_size, &result]() {
+                            aspect_ratio, source, source_size, palette_rgba8, &result]() {
             result = StoreTexture(start_address, format, large_lod,
-                                  aspect_ratio, source, source_size);
+                                  aspect_ratio, source, source_size, palette_rgba8);
         });
         return result;
     }
@@ -644,7 +645,7 @@ bool GlideOpenGlBackend::StoreTexture(std::uint32_t start_address,
     std::vector<std::uint8_t> rgba8;
     if (!repiu::hle::DecodeGlideTextureToRgba8(format, dimensions.width,
                                                dimensions.height, source,
-                                               source_size, nullptr, &rgba8))
+                                               source_size, palette_rgba8, &rgba8))
     {
         message_ = "unsupported Glide texture format";
         return false;
@@ -674,10 +675,6 @@ bool GlideOpenGlBackend::StoreTexture(std::uint32_t start_address,
     entry.width = dimensions.width;
     entry.height = dimensions.height;
     glBindTexture(GL_TEXTURE_2D, entry.gl_name);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
                  static_cast<GLsizei>(dimensions.width),
                  static_cast<GLsizei>(dimensions.height), 0, GL_RGBA,
@@ -704,7 +701,66 @@ bool GlideOpenGlBackend::SourceTexture(std::uint32_t start_address)
         return false;
     }
     current_texture_ = &found->second;
+    glBindTexture(GL_TEXTURE_2D, current_texture_->gl_name);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                    tmu_min_filter_ == 1 ? GL_LINEAR : GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+                    tmu_mag_filter_ == 1 ? GL_LINEAR : GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
+                    tmu_s_clamp_ == 1 ? GL_CLAMP_TO_EDGE : GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
+                    tmu_t_clamp_ == 1 ? GL_CLAMP_TO_EDGE : GL_REPEAT);
     return true;
+}
+
+void GlideOpenGlBackend::SetTextureClampMode(std::uint32_t s_clamp,
+                                             std::uint32_t t_clamp)
+{
+    if (!IsHostThread())
+    {
+        InvokeOnHostThread([this, s_clamp, t_clamp]() {
+            SetTextureClampMode(s_clamp, t_clamp);
+        });
+        return;
+    }
+#if defined(_WIN32)
+    tmu_s_clamp_ = s_clamp;
+    tmu_t_clamp_ = t_clamp;
+    if (is_open() && !dummy_mode_ && current_texture_ != nullptr &&
+        current_texture_->gl_name != 0U)
+    {
+        glBindTexture(GL_TEXTURE_2D, current_texture_->gl_name);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
+                        tmu_s_clamp_ == 1 ? GL_CLAMP_TO_EDGE : GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
+                        tmu_t_clamp_ == 1 ? GL_CLAMP_TO_EDGE : GL_REPEAT);
+    }
+#endif
+}
+
+void GlideOpenGlBackend::SetTextureFilterMode(std::uint32_t min_filter,
+                                              std::uint32_t mag_filter)
+{
+    if (!IsHostThread())
+    {
+        InvokeOnHostThread([this, min_filter, mag_filter]() {
+            SetTextureFilterMode(min_filter, mag_filter);
+        });
+        return;
+    }
+#if defined(_WIN32)
+    tmu_min_filter_ = min_filter;
+    tmu_mag_filter_ = mag_filter;
+    if (is_open() && !dummy_mode_ && current_texture_ != nullptr &&
+        current_texture_->gl_name != 0U)
+    {
+        glBindTexture(GL_TEXTURE_2D, current_texture_->gl_name);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                        tmu_min_filter_ == 1 ? GL_LINEAR : GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
+                        tmu_mag_filter_ == 1 ? GL_LINEAR : GL_NEAREST);
+    }
+#endif
 }
 
 void GlideOpenGlBackend::SetTextureCombineEnabled(bool enabled)
@@ -1055,6 +1111,34 @@ bool GlideOpenGlBackend::SetAlphaCombine(
     return applied;
 }
 
+bool GlideOpenGlBackend::SetConstantColor(std::uint32_t argb)
+{
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, argb, &result]() {
+            result = SetConstantColor(argb);
+        });
+        return result;
+    }
+#if !defined(_WIN32)
+    return false;
+#else
+    if (!is_open())
+    {
+        message_ = "cannot set constant color without an OpenGL window";
+        return false;
+    }
+    if (dummy_mode_)
+    {
+        return true;
+    }
+    const bool result = shader_.SetConstantColor(argb);
+    message_ = shader_.message();
+    return result;
+#endif
+}
+
 bool GlideOpenGlBackend::SetColorCombine(
     const hle::GlideColorCombineState& state)
 {
@@ -1175,19 +1259,58 @@ bool GlideOpenGlBackend::SetAlphaTestFunction(std::uint32_t function)
 #if !defined(_WIN32)
     return false;
 #else
-    constexpr std::uint32_t kGlideCompareAlways = 7U;
-    if (!is_open() || function != kGlideCompareAlways)
+    if (!is_open() || function > 7U)
     {
         message_ = "unsupported Glide alpha-test function";
         return false;
     }
+    alpha_test_function_ = function;
     if (dummy_mode_)
     {
-        message_ = "Glide ALWAYS alpha test disabled (dummy)";
+        message_ = "Glide alpha test applied (dummy)";
         return true;
     }
-    glDisable(GL_ALPHA_TEST);
-    message_ = "Glide ALWAYS alpha test disabled in OpenGL";
+    if (function == 7U) // GR_CMP_ALWAYS
+    {
+        glDisable(GL_ALPHA_TEST);
+        message_ = "Glide ALWAYS alpha test disabled in OpenGL";
+    }
+    else
+    {
+        glEnable(GL_ALPHA_TEST);
+        glAlphaFunc(GL_NEVER + function, alpha_test_reference_);
+        message_ = "Glide alpha test enabled in OpenGL";
+    }
+    return glGetError() == GL_NO_ERROR;
+#endif
+}
+
+bool GlideOpenGlBackend::SetAlphaTestReferenceValue(std::uint32_t reference_value)
+{
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, reference_value, &result]() {
+            result = SetAlphaTestReferenceValue(reference_value);
+        });
+        return result;
+    }
+#if !defined(_WIN32)
+    return false;
+#else
+    if (!is_open())
+    {
+        return false;
+    }
+    alpha_test_reference_ = static_cast<float>(reference_value) / 255.0f;
+    if (dummy_mode_)
+    {
+        return true;
+    }
+    if (alpha_test_function_ != 7U)
+    {
+        glAlphaFunc(GL_NEVER + alpha_test_function_, alpha_test_reference_);
+    }
     return glGetError() == GL_NO_ERROR;
 #endif
 }

@@ -23,6 +23,7 @@ public:
     bool Initialize();
     bool SetAlphaCombine(const hle::GlideAlphaCombineState& state);
     bool SetColorCombine(const hle::GlideColorCombineState& state);
+    bool SetConstantColor(std::uint32_t argb);
     // R3: route the fragment output to the bound texture sample (SCALE_OTHER
     // color combine) when enabled, or the iterated vertex color otherwise.
     void SetTextureEnabled(bool enabled);

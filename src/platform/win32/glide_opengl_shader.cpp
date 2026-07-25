@@ -29,6 +29,7 @@ struct GlideOpenGlShader::Implementation
     using UseProgram = void(APIENTRY*)(GLuint);
     using GetUniformLocation = GLint(APIENTRY*)(GLuint, const char*);
     using Uniform1i = void(APIENTRY*)(GLint, GLint);
+    using Uniform4f = void(APIENTRY*)(GLint, GLfloat, GLfloat, GLfloat, GLfloat);
 
     CreateShader create_shader = nullptr;
     ShaderSource shader_source = nullptr;
@@ -45,13 +46,21 @@ struct GlideOpenGlShader::Implementation
     UseProgram use_program = nullptr;
     GetUniformLocation get_uniform_location = nullptr;
     Uniform1i uniform_1i = nullptr;
+    Uniform4f uniform_4f = nullptr;
     GLuint program = 0;
     GLint alpha_function = -1;
+    GLint alpha_factor = -1;
+    GLint alpha_local = -1;
+    GLint alpha_other = -1;
     GLint alpha_invert = -1;
     GLint color_function = -1;
+    GLint color_factor = -1;
+    GLint color_local = -1;
+    GLint color_other = -1;
     GLint color_invert = -1;
     GLint texture_enable = -1;
     GLint texture_sampler = -1;
+    GLint constant_color = -1;
 #endif
 };
 
@@ -105,7 +114,8 @@ bool ResolveFunctions(GlideOpenGlShader::Implementation* implementation)
         ResolveOpenGlFunction("glUseProgram", &implementation->use_program) &&
         ResolveOpenGlFunction("glGetUniformLocation",
                               &implementation->get_uniform_location) &&
-        ResolveOpenGlFunction("glUniform1i", &implementation->uniform_1i);
+        ResolveOpenGlFunction("glUniform1i", &implementation->uniform_1i) &&
+        ResolveOpenGlFunction("glUniform4f", &implementation->uniform_4f);
 }
 
 GLuint CompileShader(GlideOpenGlShader::Implementation* implementation,
@@ -165,23 +175,41 @@ bool GlideOpenGlShader::Initialize()
     constexpr char kFragmentSource[] =
         "#version 110\n"
         "uniform int repiuAlphaFunction;\n"
+        "uniform int repiuAlphaFactor;\n"
+        "uniform int repiuAlphaLocal;\n"
+        "uniform int repiuAlphaOther;\n"
         "uniform int repiuAlphaInvert;\n"
         "uniform int repiuColorFunction;\n"
+        "uniform int repiuColorFactor;\n"
+        "uniform int repiuColorLocal;\n"
+        "uniform int repiuColorOther;\n"
         "uniform int repiuColorInvert;\n"
         "uniform int repiuTextureEnable;\n"
         "uniform sampler2D repiuTexture;\n"
+        "uniform vec4 repiuConstantColor;\n"
         "varying vec4 repiuIteratedColor;\n"
         "varying vec2 repiuTexCoord;\n"
         "void main() {\n"
-        "  if (repiuTextureEnable != 0) {\n"
-        "    gl_FragColor = texture2D(repiuTexture, repiuTexCoord);\n"
-        "    return;\n"
-        "  }\n"
-        "  float alpha = repiuAlphaFunction == 1"
-        " ? repiuIteratedColor.a : 0.0;\n"
+        "  vec4 tex = repiuTextureEnable != 0 ? texture2D(repiuTexture, repiuTexCoord) : vec4(1.0);\n"
+        "  float a_loc = (repiuAlphaLocal == 0) ? repiuIteratedColor.a : ((repiuAlphaLocal == 1) ? repiuConstantColor.a : 0.0);\n"
+        "  float a_oth = (repiuAlphaOther == 0) ? repiuIteratedColor.a : ((repiuAlphaOther == 1) ? tex.a : ((repiuAlphaOther == 2) ? repiuConstantColor.a : 0.0));\n"
+        "  float a_fac = (repiuAlphaFactor == 0) ? 0.0 : ((repiuAlphaFactor == 1) ? a_loc : ((repiuAlphaFactor == 2) ? a_oth : ((repiuAlphaFactor == 8) ? 1.0 : 0.0)));\n"
+        "  float alpha = 1.0;\n"
+        "  if (repiuAlphaFunction == 1) alpha = a_loc;\n"
+        "  else if (repiuAlphaFunction == 2) alpha = a_oth;\n"
+        "  else if (repiuAlphaFunction == 3) alpha = a_oth * a_fac;\n"
+        "  else if (repiuAlphaFunction == 4) alpha = a_oth * a_fac + a_loc;\n"
+        "  else if (repiuAlphaFunction == 7) alpha = (a_oth - a_loc) * a_fac + a_loc;\n"
         "  if (repiuAlphaInvert != 0) alpha = 1.0 - alpha;\n"
-        "  vec3 color = repiuColorFunction == 1"
-        " ? repiuIteratedColor.rgb : vec3(0.0);\n"
+        "  vec3 c_loc = (repiuColorLocal == 0) ? repiuIteratedColor.rgb : ((repiuColorLocal == 1) ? repiuConstantColor.rgb : vec3(0.0));\n"
+        "  vec3 c_oth = (repiuColorOther == 0) ? repiuIteratedColor.rgb : ((repiuColorOther == 1) ? tex.rgb : ((repiuColorOther == 2) ? repiuConstantColor.rgb : vec3(0.0)));\n"
+        "  vec3 c_fac = (repiuColorFactor == 0) ? vec3(0.0) : ((repiuColorFactor == 1) ? c_loc : ((repiuColorFactor == 2) ? vec3(a_oth) : ((repiuColorFactor == 3) ? vec3(a_loc) : ((repiuColorFactor == 8) ? vec3(1.0) : vec3(0.0)))));\n"
+        "  vec3 color = vec3(1.0);\n"
+        "  if (repiuColorFunction == 1) color = c_loc;\n"
+        "  else if (repiuColorFunction == 2) color = c_oth;\n"
+        "  else if (repiuColorFunction == 3) color = c_oth * c_fac;\n"
+        "  else if (repiuColorFunction == 4) color = c_oth * c_fac + c_loc;\n"
+        "  else if (repiuColorFunction == 7) color = (c_oth - c_loc) * c_fac + c_loc;\n"
         "  if (repiuColorInvert != 0) color = vec3(1.0) - color;\n"
         "  gl_FragColor = vec4(color, alpha);\n"
         "}\n";
@@ -226,12 +254,30 @@ bool GlideOpenGlShader::Initialize()
     implementation_->alpha_function =
         implementation_->get_uniform_location(implementation_->program,
                                               "repiuAlphaFunction");
+    implementation_->alpha_factor =
+        implementation_->get_uniform_location(implementation_->program,
+                                              "repiuAlphaFactor");
+    implementation_->alpha_local =
+        implementation_->get_uniform_location(implementation_->program,
+                                              "repiuAlphaLocal");
+    implementation_->alpha_other =
+        implementation_->get_uniform_location(implementation_->program,
+                                              "repiuAlphaOther");
     implementation_->alpha_invert =
         implementation_->get_uniform_location(implementation_->program,
                                               "repiuAlphaInvert");
     implementation_->color_function =
         implementation_->get_uniform_location(implementation_->program,
                                               "repiuColorFunction");
+    implementation_->color_factor =
+        implementation_->get_uniform_location(implementation_->program,
+                                              "repiuColorFactor");
+    implementation_->color_local =
+        implementation_->get_uniform_location(implementation_->program,
+                                              "repiuColorLocal");
+    implementation_->color_other =
+        implementation_->get_uniform_location(implementation_->program,
+                                              "repiuColorOther");
     implementation_->color_invert =
         implementation_->get_uniform_location(implementation_->program,
                                               "repiuColorInvert");
@@ -241,12 +287,22 @@ bool GlideOpenGlShader::Initialize()
     implementation_->texture_sampler =
         implementation_->get_uniform_location(implementation_->program,
                                               "repiuTexture");
+    implementation_->constant_color =
+        implementation_->get_uniform_location(implementation_->program,
+                                              "repiuConstantColor");
     if (implementation_->alpha_function < 0 ||
+        implementation_->alpha_factor < 0 ||
+        implementation_->alpha_local < 0 ||
+        implementation_->alpha_other < 0 ||
         implementation_->alpha_invert < 0 ||
         implementation_->color_function < 0 ||
+        implementation_->color_factor < 0 ||
+        implementation_->color_local < 0 ||
+        implementation_->color_other < 0 ||
         implementation_->color_invert < 0 ||
         implementation_->texture_enable < 0 ||
-        implementation_->texture_sampler < 0)
+        implementation_->texture_sampler < 0 ||
+        implementation_->constant_color < 0)
     {
         message_ = "Glide GLSL alpha-combine uniforms are unavailable";
         Shutdown();
@@ -258,12 +314,20 @@ bool GlideOpenGlShader::Initialize()
     // emits the iterated vertex color rather than a black fragment. The game's
     // observed init combine (1,0,0,2,0) later confirms this same value.
     implementation_->uniform_1i(implementation_->color_function, 1);
+    implementation_->uniform_1i(implementation_->color_factor, 0);
+    implementation_->uniform_1i(implementation_->color_local, 0);
+    implementation_->uniform_1i(implementation_->color_other, 2);
     implementation_->uniform_1i(implementation_->color_invert, 0);
     implementation_->uniform_1i(implementation_->alpha_function, 1);
+    implementation_->uniform_1i(implementation_->alpha_factor, 0);
+    implementation_->uniform_1i(implementation_->alpha_local, 0);
+    implementation_->uniform_1i(implementation_->alpha_other, 2);
     implementation_->uniform_1i(implementation_->alpha_invert, 0);
     // Texture sampling starts disabled and binds to texture unit 0 (R3).
     implementation_->uniform_1i(implementation_->texture_enable, 0);
     implementation_->uniform_1i(implementation_->texture_sampler, 0);
+    implementation_->uniform_4f(implementation_->constant_color,
+                                1.0F, 1.0F, 1.0F, 1.0F);
     message_ = "Glide GLSL combine program initialized";
     return true;
 #endif
@@ -291,9 +355,7 @@ bool GlideOpenGlShader::SetAlphaCombine(
 #if !defined(_WIN32)
     return false;
 #else
-    if (!implementation_ || implementation_->program == 0 || !state.valid ||
-        state.function != 1U || state.factor != 0U || state.local != 0U ||
-        state.other != 2U || state.invert)
+    if (!implementation_ || implementation_->program == 0 || !state.valid)
     {
         message_ = "unsupported Glide alpha-combine equation";
         return false;
@@ -301,6 +363,12 @@ bool GlideOpenGlShader::SetAlphaCombine(
     implementation_->use_program(implementation_->program);
     implementation_->uniform_1i(implementation_->alpha_function,
                                 static_cast<GLint>(state.function));
+    implementation_->uniform_1i(implementation_->alpha_factor,
+                                static_cast<GLint>(state.factor));
+    implementation_->uniform_1i(implementation_->alpha_local,
+                                static_cast<GLint>(state.local));
+    implementation_->uniform_1i(implementation_->alpha_other,
+                                static_cast<GLint>(state.other));
     implementation_->uniform_1i(implementation_->alpha_invert,
                                 state.invert ? 1 : 0);
     if (glGetError() != GL_NO_ERROR)
@@ -319,9 +387,7 @@ bool GlideOpenGlShader::SetColorCombine(
 #if !defined(_WIN32)
     return false;
 #else
-    if (!implementation_ || implementation_->program == 0 || !state.valid ||
-        state.function != 1U || state.factor != 0U || state.local != 0U ||
-        state.other != 2U || state.invert)
+    if (!implementation_ || implementation_->program == 0 || !state.valid)
     {
         message_ = "unsupported Glide color-combine equation";
         return false;
@@ -329,6 +395,12 @@ bool GlideOpenGlShader::SetColorCombine(
     implementation_->use_program(implementation_->program);
     implementation_->uniform_1i(implementation_->color_function,
                                 static_cast<GLint>(state.function));
+    implementation_->uniform_1i(implementation_->color_factor,
+                                static_cast<GLint>(state.factor));
+    implementation_->uniform_1i(implementation_->color_local,
+                                static_cast<GLint>(state.local));
+    implementation_->uniform_1i(implementation_->color_other,
+                                static_cast<GLint>(state.other));
     implementation_->uniform_1i(implementation_->color_invert,
                                 state.invert ? 1 : 0);
     if (glGetError() != GL_NO_ERROR)
@@ -337,6 +409,26 @@ bool GlideOpenGlShader::SetColorCombine(
         return false;
     }
     message_ = "observed Glide color-combine equation applied with GLSL";
+    return true;
+#endif
+}
+
+bool GlideOpenGlShader::SetConstantColor(std::uint32_t argb)
+{
+#if !defined(_WIN32)
+    return false;
+#else
+    if (!implementation_ || implementation_->program == 0 ||
+        implementation_->constant_color < 0)
+    {
+        return false;
+    }
+    implementation_->use_program(implementation_->program);
+    const float a = static_cast<float>((argb >> 24) & 0xFF) / 255.0F;
+    const float r = static_cast<float>((argb >> 16) & 0xFF) / 255.0F;
+    const float g = static_cast<float>((argb >> 8) & 0xFF) / 255.0F;
+    const float b = static_cast<float>(argb & 0xFF) / 255.0F;
+    implementation_->uniform_4f(implementation_->constant_color, r, g, b, a);
     return true;
 #endif
 }

@@ -817,6 +817,40 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         win32_context->Esp += 3U * sizeof(std::uint32_t);
         return true;
     }
+    if (glide_export->name == "_GRTEXDOWNLOADTABLE@12")
+    {
+        // grTexDownloadTable(GrTexTable_t type, void *data)
+        // type (args[1]), data (args[2]).
+        // Note: although signature is @12, args[0] might be tmu.
+        // Let's decode palette (type == 2 / GR_TEXTABLE_PALETTE).
+        std::uint32_t args[3] = {};
+        const auto* guest_stack = reinterpret_cast<const std::uint32_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esp));
+        if (IsGuestRangeReadable(context, guest_stack, sizeof(args)))
+        {
+            std::memcpy(args, guest_stack, sizeof(args));
+            const std::uint32_t type = args[1];
+            const auto* data = reinterpret_cast<const std::uint32_t*>(
+                static_cast<std::uintptr_t>(args[2]));
+            if (type == 2U && IsGuestRangeReadable(context, data, 1024U))
+            {
+                for (std::size_t i = 0; i < 256; ++i)
+                {
+                    const std::uint32_t c = data[i];
+                    // ARGB to RGBA
+                    context->glide_state.palette_rgba8[i * 4 + 0] = (c >> 16) & 0xFF;
+                    context->glide_state.palette_rgba8[i * 4 + 1] = (c >> 8) & 0xFF;
+                    context->glide_state.palette_rgba8[i * 4 + 2] = c & 0xFF;
+                    context->glide_state.palette_rgba8[i * 4 + 3] = (c >> 24) & 0xFF;
+                }
+                context->glide_state.palette_valid = true;
+            }
+        }
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 3U * sizeof(std::uint32_t);
+        return true;
+    }
     if (glide_export->name == "_GRTEXDOWNLOADMIPMAPLEVEL@32")
     {
         // R3: decode and upload the texel image so a later grTexSource can bind
@@ -873,9 +907,13 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                 if (source_size != 0U &&
                     IsGuestRangeReadable(context, data, source_size))
                 {
+                    const std::uint8_t* palette_ptr =
+                        context->glide_state.palette_valid
+                        ? context->glide_state.palette_rgba8.data()
+                        : nullptr;
                     const bool stored = context->glide_backend.StoreTexture(
                         start_address, format, large_lod, aspect_ratio, data,
-                        source_size);
+                        source_size, palette_ptr);
                     context->glide_backend_message =
                         context->glide_backend.message();
                     if (format_census_enabled && !stored)
@@ -897,9 +935,13 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                     if (env_dump != nullptr && std::string_view(env_dump) == "1")
                     {
                         std::vector<std::uint8_t> rgba8;
+                        const std::uint8_t* palette_ptr =
+                            context->glide_state.palette_valid
+                            ? context->glide_state.palette_rgba8.data()
+                            : nullptr;
                         if (repiu::hle::DecodeGlideTextureToRgba8(
                                 format, dimensions.width, dimensions.height, data,
-                                source_size, nullptr, &rgba8))
+                                source_size, palette_ptr, &rgba8))
                         {
                             DumpTextureToBmp(start_address, format, dimensions.width,
                                              dimensions.height, rgba8);
@@ -1160,6 +1202,22 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         win32_context->Esp += 2U * sizeof(std::uint32_t);
         return true;
     }
+    if (glide_export->name == "_GRALPHATESTREFERENCEVALUE@4")
+    {
+        const std::uint32_t reference_value = context->glide_gate_stack[1];
+        if (!context->glide_backend.SetAlphaTestReferenceValue(reference_value))
+        {
+            context->glide_backend_message =
+                context->glide_backend.message();
+            return reject_gate("alpha-test-reference-value-backend-failure");
+        }
+        context->glide_state.alpha_test_reference = reference_value;
+        context->glide_backend_message = context->glide_backend.message();
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
     if (glide_export->name == "_GRDEPTHBUFFERFUNCTION@4")
     {
         const std::uint32_t function = context->glide_gate_stack[1];
@@ -1333,6 +1391,38 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         ++context->glide_gate_handled_count;
         win32_context->Eip = return_address;
         win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRCONSTANTCOLORVALUE@4")
+    {
+        context->glide_state.constant_color = context->glide_gate_stack[1];
+        if (!context->glide_backend.SetConstantColor(context->glide_state.constant_color))
+        {
+            return reject_gate("set-state-backend-failure");
+        }
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 2U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRTEXCLAMPMODE@12")
+    {
+        const std::uint32_t s_clamp = context->glide_gate_stack[2];
+        const std::uint32_t t_clamp = context->glide_gate_stack[3];
+        context->glide_backend.SetTextureClampMode(s_clamp, t_clamp);
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 4U * sizeof(std::uint32_t);
+        return true;
+    }
+    if (glide_export->name == "_GRTEXFILTERMODE@12")
+    {
+        const std::uint32_t min_filter = context->glide_gate_stack[2];
+        const std::uint32_t mag_filter = context->glide_gate_stack[3];
+        context->glide_backend.SetTextureFilterMode(min_filter, mag_filter);
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp += 4U * sizeof(std::uint32_t);
         return true;
     }
     if (glide_export->name == "_GRDRAWTRIANGLE@12")

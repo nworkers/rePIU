@@ -70,9 +70,13 @@ public:
                       std::uint32_t large_lod,
                       std::uint32_t aspect_ratio,
                       const std::uint8_t* source,
-                      std::size_t source_size);
+                      std::size_t source_size,
+                      const std::uint8_t* palette_rgba8 = nullptr);
     // Select the current texture for subsequent draws (grTexSource).
     bool SourceTexture(std::uint32_t start_address);
+    // Set TMU texture wrapping (clamp) and filtering.
+    void SetTextureClampMode(std::uint32_t s_clamp, std::uint32_t t_clamp);
+    void SetTextureFilterMode(std::uint32_t min_filter, std::uint32_t mag_filter);
     // R4 LFB: upload an RGBA8 image and blit it over the whole render target.
     // Used by grLfbUnlock to present what the guest wrote through the staging
     // surface. `flip_v` mirrors vertically for GR_ORIGIN_LOWER_LEFT locks. The
@@ -91,10 +95,12 @@ public:
     bool SetRenderBuffer(std::uint32_t buffer);
     bool SetDepthMask(bool enabled);
     bool SetDepthBufferMode(std::uint32_t mode);
+    bool SetConstantColor(std::uint32_t argb);
     bool SetAlphaCombine(const hle::GlideAlphaCombineState& state);
     bool SetColorCombine(const hle::GlideColorCombineState& state);
     bool SetAlphaBlend(const hle::GlideAlphaBlendState& state);
     bool SetAlphaTestFunction(std::uint32_t function);
+    bool SetAlphaTestReferenceValue(std::uint32_t reference_value);
     bool SetDepthBufferFunction(std::uint32_t function);
     bool SetFogMode(std::uint32_t mode);
     bool SetClipWindow(std::uint32_t min_x,
@@ -137,6 +143,12 @@ private:
 
     void* window_ = nullptr;
     void* render_context_ = nullptr;
+
+    // TMU state
+    std::uint32_t tmu_s_clamp_ = 0; // GR_TEXTURECLAMP_WRAP
+    std::uint32_t tmu_t_clamp_ = 0; // GR_TEXTURECLAMP_WRAP
+    std::uint32_t tmu_min_filter_ = 0; // GR_TEXTUREFILTER_POINT_SAMPLED
+    std::uint32_t tmu_mag_filter_ = 0; // GR_TEXTUREFILTER_POINT_SAMPLED
     std::uint32_t logical_width_ = 0;
     std::uint32_t logical_height_ = 0;
     std::uint32_t window_scale_ = 2U;
@@ -144,8 +156,11 @@ private:
         runtime::ExecutionBackend::kLegacy;
     std::chrono::steady_clock::time_point frame_rate_period_start_;
     std::uint64_t frame_rate_frame_count_ = 0;
+
+    std::uint32_t alpha_test_function_ = 7U; // GR_CMP_ALWAYS
+    float alpha_test_reference_ = 0.0f;
     bool exit_requested_ = false;
-    // True when grSstWinOpen asked for GR_ORIGIN_LOWER_LEFT, i.e. guest y grows
+    // True when grSstWinOpen asked for GR_ORIGIN_LOWER_LEFT, ie. guest y grows
     // upward and the projection matches OpenGL's default orientation.
     bool origin_lower_left_ = false;
     GlideOpenGlShader shader_;

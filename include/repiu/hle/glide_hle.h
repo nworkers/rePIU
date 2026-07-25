@@ -89,6 +89,7 @@ struct GlideLogicalState
     GlideColorCombineState color_combine;
     GlideAlphaBlendState alpha_blend;
     std::uint32_t alpha_test_function = 0;
+    std::uint32_t alpha_test_reference = 0;
     std::uint32_t depth_buffer_function = 0;
     std::uint32_t fog_mode = 0;
     std::uint32_t clip_min_x = 0;
@@ -100,6 +101,10 @@ struct GlideLogicalState
     // grConstantColorValue: observed during the content phase (0xFFFFFFFF).
     // Retained so a later CONSTANT combine source can read it.
     std::uint32_t constant_color = 0xFFFFFFFFU;
+    
+    // Palette downloaded by grTexDownloadTable.
+    std::array<std::uint8_t, 1024> palette_rgba8 = {};
+    bool palette_valid = false;
 };
 
 constexpr std::uint32_t kPiuBansheeVirtualTextureMemoryBytes =
