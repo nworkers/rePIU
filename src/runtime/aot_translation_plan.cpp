@@ -94,6 +94,40 @@ bool IsTranslatableSegmentOverrideMem(const ZydisDecodedInstruction& instruction
     return false;
 }
 
+bool ReadGuardedSegmentPopRegister(
+    const ZydisDecodedInstruction& instruction,
+    const std::uint8_t* bytes,
+    std::uint8_t* segment_register)
+{
+    if (bytes == nullptr || segment_register == nullptr)
+    {
+        return false;
+    }
+    if (instruction.length == 1U && bytes[0] == 0x07U)
+    {
+        *segment_register = 0U;
+        return true;
+    }
+    if (instruction.length == 1U && bytes[0] == 0x1FU)
+    {
+        *segment_register = 3U;
+        return true;
+    }
+    if (instruction.length == 2U && bytes[0] == 0x0FU &&
+        bytes[1] == 0xA1U)
+    {
+        *segment_register = 4U;
+        return true;
+    }
+    if (instruction.length == 2U && bytes[0] == 0x0FU &&
+        bytes[1] == 0xA9U)
+    {
+        *segment_register = 5U;
+        return true;
+    }
+    return false;
+}
+
 bool IsHleBoundary(const ZydisDecodedInstruction& instruction,
                    const ZydisDecodedOperand* operands)
 {
@@ -500,6 +534,19 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                     // own fallthrough jump (Task 264 Phase 3a).
                     record.kind = AotInstructionKind::kSegmentOverrideMem;
                     record.segment_override_register = segment_override_register;
+                    record.fallthrough_target = next;
+                    block.instructions.push_back(std::move(record));
+                    ++plan->hle_boundary_count;
+                    plan->estimated_emitted_bytes += 48U;
+                    pending.push_back(next);
+                    break;
+                }
+                std::uint8_t segment_register = 0xFFU;
+                if (ReadGuardedSegmentPopRegister(
+                        instruction, bytes, &segment_register))
+                {
+                    record.kind = AotInstructionKind::kGuardedSegmentPop;
+                    record.segment_register = segment_register;
                     record.fallthrough_target = next;
                     block.instructions.push_back(std::move(record));
                     ++plan->hle_boundary_count;

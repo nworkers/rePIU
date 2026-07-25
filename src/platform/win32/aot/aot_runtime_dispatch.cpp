@@ -396,7 +396,8 @@ bool SameAotSegmentResolution(
 void ReResolveAotSegmentOverrides(ThreadContext* context)
 {
     if (context == nullptr || context->aot_placement == nullptr ||
-        context->aot_placement->segment_override_sites.empty())
+        (context->aot_placement->segment_override_sites.empty() &&
+         context->aot_placement->guarded_segment_pop_sites.empty()))
     {
         return;
     }

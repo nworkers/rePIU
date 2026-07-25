@@ -868,6 +868,9 @@ void PrintExecutionAttempt(
         attempt.aot_selector_guard_unresolved_site_count,
         attempt.aot_selector_guard_hle_exit_count,
         attempt.aot_selector_guard_mismatch_count);
+    logger.info("Win32 AOT guarded segment-pop success/fallback: {}/{}",
+                attempt.aot_guarded_segment_pop_success_count,
+                attempt.aot_guarded_segment_pop_fallback_count);
     logger.info(
         "Win32 AOT-DBT return entry/attempt/success/fallback: {}/{}/{}/{}",
         attempt.aot_dbt_return_entry_count,
@@ -2819,6 +2822,22 @@ int main(int argc, char** argv)
     repiu::runtime::AotCodeCacheBuildOptions aot_build_options;
     aot_build_options.enable_dbt_return_miss_dispatch =
         execution_backend == repiu::runtime::ExecutionBackend::kAotDbt;
+    const char* guarded_segment_pop_toggle =
+        std::getenv("REPIU_AOT_GUARDED_SEGMENT_POP");
+    const std::string guarded_segment_pop_setting =
+        guarded_segment_pop_toggle != nullptr
+            ? std::string(guarded_segment_pop_toggle) : std::string();
+    const bool guarded_segment_pop_enabled =
+        guarded_segment_pop_setting.empty() ||
+        guarded_segment_pop_setting == "1" ||
+        guarded_segment_pop_setting == "on" ||
+        guarded_segment_pop_setting == "true";
+    // Task 291 A/B promoted the guarded no-state-change segment-pop path for
+    // aot-dbt. Explicit false and unknown values fail closed for compatibility
+    // diagnosis and regression bisects.
+    aot_build_options.enable_guarded_segment_pop =
+        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt &&
+        guarded_segment_pop_enabled;
     // Task 282 indirect call/jump host dispatch is implemented and passes every
     // synthetic probe, but a live `aot-dbt` run reveals a cumulative corruption
     // that crashes the Glide attract path (see
@@ -2876,6 +2895,8 @@ int main(int argc, char** argv)
     {
         logger->info("Win32 AOT indirect inline-cache slots: {}",
                      aot_build_options.indirect_inline_cache_entry_count);
+        logger->info("Win32 AOT guarded segment-pop enabled: {}",
+                     aot_build_options.enable_guarded_segment_pop);
     }
 
     repiu::runtime::GuestStackSwitchPlan stack_plan;

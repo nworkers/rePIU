@@ -1,3 +1,35 @@
+## 2026-07-25 Task 291 (기본 승격): guarded segment-pop이 HLE 경계를 줄이고 Glide 진행을 높임 / Task 291 (default promotion): guarded segment pops reduce HLE boundaries and improve Glide progress
+
+**확인됨:** plain `POP ES/DS/FS/GS` 가운데 physical selector, guest stack selector,
+shadow selector가 모두 같은 no-state-change 경우만 AOT cache에서 처리합니다. EAX/EFLAGS를
+보존하고 guest ESP만 4 증가시키며, 불일치 시 정확한 진입 상태로 기존 `INT3`/VEH HLE에
+fallback합니다. `POP SS`와 prefixed form은 계속 HLE입니다. 합성 분류/layout/coverage/
+누락 fallback/비활성/rejected-form probe와 기존 AOT/DBT/selector/coherence probe가 모두
+통과했습니다.
+
+동일 binary·격리 EEPROM 비교에서 20초 ON은 progress `8,399 → 8,671`(+3.24%),
+single-step `59,418 → 45,175`(-23.97%)였습니다. 순서를 뒤집은 55초 OFF/ON은 progress
+`37,606 → 39,571`(+5.23%), triangle draw `412 → 468`(+13.59%), AOT boundary
+`74,724 → 59,334`(-20.60%), single-step `252,701 → 246,644`(-2.40%)였습니다. ON의
+guarded success/fallback은 `21,011/1,593`(92.95%)였습니다. 양쪽 모두 graceful timeout,
+fatal/AOT legacy fallback 0, EEPROM SHA-256 일치였습니다.
+
+**정책:** `aot-dbt`에서 기본 ON으로 승격합니다. 환경 변수 미지정은 ON이며
+`REPIU_AOT_GUARDED_SEGMENT_POP=0|off|false`와 알 수 없는 값은 fail-closed opt-out입니다.
+다른 backend는
+비활성입니다.
+
+**English summary.** Task 291 translates only no-state-change plain segment pops whose
+physical, stack, and shadow selectors all match; mismatch restores exact entry state and
+falls back to the existing INT3/VEH HLE. All synthetic and existing AOT/DBT/selector/coherence
+probes pass. A 20-second pair improved progress by 3.24% and reduced single-step by 23.97%.
+The reversed-order 55-second OFF/ON comparison improved progress by 5.23% and triangle draws
+by 13.59%, reduced AOT boundaries by 20.60%, and measured 21,011/1,593 guarded
+success/fallback (92.95%). Both runs had graceful timeout, zero fatal/AOT legacy fallback,
+and matching EEPROM hashes. The path is default-on for `aot-dbt`, with
+`REPIU_AOT_GUARDED_SEGMENT_POP=0|off|false` and unknown values as fail-closed
+opt-outs; other backends remain off.
+
 ## 2026-07-25 Task 289 Stage 2 (보류): whole-CFG HLE 검증은 통과하지만 post-HLE miss가 0회 / Task 289 Stage 2 (held): whole-CFG HLE validation passes but post-HLE misses are zero
 
 생성 image의 모든 HLE record가 실제 `INT3` 또는 완전한 selector guard인지 검증하고,

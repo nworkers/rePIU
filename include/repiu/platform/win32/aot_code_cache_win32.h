@@ -37,6 +37,12 @@ struct Win32AotCodeCachePlacement
     // so they can be re-resolved (guard selector + folded base) once the guest
     // configures the segment register, or on any later reload.
     std::vector<runtime::AotSegmentOverrideSite> segment_override_sites;
+    std::vector<runtime::AotGuardedSegmentPopSite>
+        guarded_segment_pop_sites;
+    // Incremented directly by guarded cache slots; placement outlives execution.
+    volatile std::uint32_t guarded_segment_pop_success_count = 0;
+    volatile std::uint32_t guarded_segment_pop_fallback_count = 0;
+
     std::vector<Win32AotGuestPageState> guest_pages;
     std::vector<std::uint32_t> retired_guest_addresses;
     std::vector<std::uint32_t> inactive_map_indices;
@@ -53,6 +59,7 @@ struct Win32AotCodeCachePlacement
         runtime::kDefaultAotIndirectInlineCacheEntryCount;
     bool dbt_return_miss_dispatch_enabled = false;
     bool dbt_indirect_miss_dispatch_enabled = false;
+    bool guarded_segment_pop_enabled = false;
     std::string message;
 };
 
@@ -127,6 +134,7 @@ struct Win32AotSegmentPatchStats
     std::uint32_t native_site_count = 0;
     std::uint32_t hle_site_count = 0;
     std::uint32_t unresolved_site_count = 0;
+    std::uint32_t guarded_pop_site_count = 0;
 };
 
 // Resolve one live shadow selector into an explicit native/HLE/unresolved

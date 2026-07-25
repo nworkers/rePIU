@@ -26,6 +26,10 @@ enum class AotInstructionKind
     // segment (0=ES,2=SS,3=DS,4=FS,5=GS). Falls back to a boundary at emit time
     // for any form the re-encoder cannot verify.
     kSegmentOverrideMem,
+    // A plain POP ES/DS/FS/GS whose cache slot advances the stack only when
+    // physical, shadow, and stack selectors are already identical. Any
+    // mismatch reaches the existing HLE boundary (Task 291).
+    kGuardedSegmentPop,
 };
 
 struct AotInstructionRecord
@@ -37,6 +41,7 @@ struct AotInstructionRecord
     std::uint8_t length = 0;
     std::uint8_t table_index_register = 0xFFU;
     std::uint8_t segment_override_register = 0xFFU;
+    std::uint8_t segment_register = 0xFFU;
     std::uint16_t mnemonic = 0;
     std::vector<std::uint8_t> bytes;
     std::vector<std::uint32_t> table_targets;

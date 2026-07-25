@@ -579,6 +579,57 @@ bool EmitSegmentOverrideSlot(const AotInstructionRecord& instruction,
     return true;
 }
 
+bool EmitGuardedSegmentPopSlot(const AotInstructionRecord& instruction,
+                               AotCodeCacheImage* image)
+{
+    if (image == nullptr || instruction.bytes.empty() ||
+        (instruction.segment_register != 0U &&
+         instruction.segment_register != 3U &&
+         instruction.segment_register != 4U &&
+         instruction.segment_register != 5U))
+    {
+        return false;
+    }
+    AotGuardedSegmentPopSite site;
+    site.guest_source = instruction.guest_address;
+    site.cache_offset = static_cast<std::uint32_t>(image->bytes.size());
+    site.segment_register = instruction.segment_register;
+    image->bytes.push_back(0x9CU); // pushfd
+    image->bytes.push_back(0x50U); // push eax
+    image->bytes.push_back(0x8CU); // mov ax, Sreg
+    image->bytes.push_back(static_cast<std::uint8_t>(
+        0xC0U | (instruction.segment_register << 3U)));
+    image->bytes.insert(image->bytes.end(),
+                        {0x66U, 0x3BU, 0x44U, 0x24U, 0x08U});
+    image->bytes.insert(image->bytes.end(), {0x75U, 0x1AU});
+    image->bytes.insert(image->bytes.end(), {0x66U, 0x3BU, 0x05U});
+    site.shadow_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    image->bytes.insert(image->bytes.end(), {0x75U, 0x11U});
+    image->bytes.insert(image->bytes.end(), {0xFFU, 0x05U});
+    site.success_counter_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    image->bytes.insert(image->bytes.end(),
+                        {0x58U, 0x9DU, 0x8DU, 0x64U, 0x24U, 0x04U});
+    AppendRel32(&image->bytes, 0xE9U);
+    image->fixups.push_back({AotFixupKind::kBlockFallthrough,
+                             instruction.guest_address,
+                             instruction.fallthrough_target,
+                             static_cast<std::uint32_t>(image->bytes.size() - 4U),
+                             false});
+    image->bytes.insert(image->bytes.end(), {0xFFU, 0x05U});
+    site.fallback_counter_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    image->bytes.insert(image->bytes.end(), {0x58U, 0x9DU});
+    site.fallback_offset = static_cast<std::uint32_t>(image->bytes.size());
+    image->bytes.push_back(0xCCU);
+    image->guarded_segment_pop_sites.push_back(site);
+    return true;
+}
+
 }  // namespace
 
 bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
@@ -605,6 +656,8 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
     image->dbt_indirect_miss_dispatch_enabled =
         options.enable_dbt_indirect_miss_dispatch;
     const auto started = std::chrono::steady_clock::now();
+    image->guarded_segment_pop_enabled =
+        options.enable_guarded_segment_pop;
     std::unordered_map<std::uint32_t, std::uint32_t> guest_to_cache;
 
     for (const AotBasicBlock& block : plan.blocks)
@@ -705,6 +758,16 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                     break;
                 case AotInstructionKind::kSegmentOverrideMem:
                     if (!EmitSegmentOverrideSlot(instruction, image))
+                    {
+                        image->bytes.push_back(0xCCU);
+                        image->fixups.push_back({AotFixupKind::kHleBoundary,
+                                                 instruction.guest_address, 0U,
+                                                 cache_offset, false});
+                    }
+                    break;
+                case AotInstructionKind::kGuardedSegmentPop:
+                    if (!options.enable_guarded_segment_pop ||
+                        !EmitGuardedSegmentPopSlot(instruction, image))
                     {
                         image->bytes.push_back(0xCCU);
                         image->fixups.push_back({AotFixupKind::kHleBoundary,
@@ -862,7 +925,8 @@ bool ValidateAotCodeCacheHleCoverage(
         for (const AotInstructionRecord& instruction : block.instructions)
         {
             if (instruction.kind != AotInstructionKind::kHleBoundary &&
-                instruction.kind != AotInstructionKind::kSegmentOverrideMem)
+                instruction.kind != AotInstructionKind::kSegmentOverrideMem &&
+                instruction.kind != AotInstructionKind::kGuardedSegmentPop)
             {
                 continue;
             }
@@ -879,6 +943,73 @@ bool ValidateAotCodeCacheHleCoverage(
             }
             if (image.bytes[map->cache_offset] == 0xCCU)
             {
+                continue;
+            }
+            if (instruction.kind == AotInstructionKind::kGuardedSegmentPop)
+            {
+                const auto pop_site = std::find_if(
+                    image.guarded_segment_pop_sites.begin(),
+                    image.guarded_segment_pop_sites.end(),
+                    [&instruction](const AotGuardedSegmentPopSite& candidate) {
+                        return candidate.guest_source ==
+                            instruction.guest_address;
+                    });
+                const std::uint32_t slot = pop_site !=
+                    image.guarded_segment_pop_sites.end()
+                        ? pop_site->cache_offset : 0U;
+                const auto fallthrough_fixup = std::find_if(
+                    image.fixups.begin(), image.fixups.end(),
+                    [&instruction, slot](const AotCodeCacheFixup& fixup) {
+                        return fixup.kind == AotFixupKind::kBlockFallthrough &&
+                            fixup.guest_source == instruction.guest_address &&
+                            fixup.guest_target ==
+                                instruction.fallthrough_target &&
+                            fixup.cache_patch_offset == slot + 33U &&
+                            fixup.resolved;
+                    });
+                const std::uint8_t expected_modrm = static_cast<std::uint8_t>(
+                    0xC0U | (instruction.segment_register << 3U));
+                if (pop_site == image.guarded_segment_pop_sites.end() ||
+                    fallthrough_fixup == image.fixups.end() ||
+                    slot != map->cache_offset || map->emitted_length != 46U ||
+                    slot + 46U > image.bytes.size() ||
+                    pop_site->shadow_address_offset != slot + 14U ||
+                    pop_site->success_counter_address_offset != slot + 22U ||
+                    pop_site->fallback_counter_address_offset != slot + 39U ||
+                    pop_site->fallback_offset != slot + 45U ||
+                    image.bytes[slot] != 0x9CU ||
+                    image.bytes[slot + 1U] != 0x50U ||
+                    image.bytes[slot + 2U] != 0x8CU ||
+                    image.bytes[slot + 3U] != expected_modrm ||
+                    image.bytes[slot + 4U] != 0x66U ||
+                    image.bytes[slot + 5U] != 0x3BU ||
+                    image.bytes[slot + 6U] != 0x44U ||
+                    image.bytes[slot + 7U] != 0x24U ||
+                    image.bytes[slot + 8U] != 0x08U ||
+                    image.bytes[slot + 9U] != 0x75U ||
+                    image.bytes[slot + 10U] != 0x1AU ||
+                    image.bytes[slot + 11U] != 0x66U ||
+                    image.bytes[slot + 12U] != 0x3BU ||
+                    image.bytes[slot + 13U] != 0x05U ||
+                    image.bytes[slot + 18U] != 0x75U ||
+                    image.bytes[slot + 19U] != 0x11U ||
+                    image.bytes[slot + 20U] != 0xFFU ||
+                    image.bytes[slot + 21U] != 0x05U ||
+                    image.bytes[slot + 26U] != 0x58U ||
+                    image.bytes[slot + 27U] != 0x9DU ||
+                    image.bytes[slot + 28U] != 0x8DU ||
+                    image.bytes[slot + 29U] != 0x64U ||
+                    image.bytes[slot + 30U] != 0x24U ||
+                    image.bytes[slot + 31U] != 0x04U ||
+                    image.bytes[slot + 32U] != 0xE9U ||
+                    image.bytes[slot + 37U] != 0xFFU ||
+                    image.bytes[slot + 38U] != 0x05U ||
+                    image.bytes[slot + 43U] != 0x58U ||
+                    image.bytes[slot + 44U] != 0x9DU ||
+                    image.bytes[slot + 45U] != 0xCCU)
+                {
+                    return fail(instruction.guest_address);
+                }
                 continue;
             }
             if (instruction.kind != AotInstructionKind::kSegmentOverrideMem)

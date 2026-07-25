@@ -26,6 +26,7 @@ struct AotCodeCacheBuildOptions
     // byte-for-byte as before.
     bool enable_dbt_indirect_dispatch_calls = true;
     bool enable_dbt_indirect_dispatch_jumps = true;
+    bool enable_guarded_segment_pop = false;
 };
 
 enum class AotFixupKind
@@ -148,6 +149,20 @@ struct AotSegmentOverrideSite
     // 0=ES,2=SS,3=DS,4=FS,5=GS.
     std::uint8_t segment_register = 0xFFU;
 };
+// Task 291. A guarded segment-pop slot reads the physical segment selector and
+// compares it with both the original guest stack word and this shadow word.
+// Success consumes the stack dword without changing selector state; mismatch
+// restores the exact entry state and reaches fallback_offset (INT3).
+struct AotGuardedSegmentPopSite
+{
+    std::uint32_t guest_source = 0;
+    std::uint32_t cache_offset = 0;
+    std::uint32_t shadow_address_offset = 0;
+    std::uint32_t success_counter_address_offset = 0;
+    std::uint32_t fallback_counter_address_offset = 0;
+    std::uint32_t fallback_offset = 0;
+    std::uint8_t segment_register = 0xFFU;
+};
 
 struct AotCodeCacheImage
 {
@@ -161,12 +176,14 @@ struct AotCodeCacheImage
     std::vector<AotDbtReturnDispatchSite> dbt_return_dispatch_sites;
     std::vector<AotDbtIndirectDispatchSite> dbt_indirect_dispatch_sites;
     std::vector<AotJumpTableSite> jump_table_sites;
+    std::vector<AotGuardedSegmentPopSite> guarded_segment_pop_sites;
     std::vector<AotSegmentOverrideSite> segment_override_sites;
     // Carried into platform placement so every later dynamic append uses the
     // same indirect call/jump layout as the initial image (Task 274).
     std::uint32_t indirect_inline_cache_entry_count =
         kDefaultAotIndirectInlineCacheEntryCount;
     bool dbt_return_miss_dispatch_enabled = false;
+    bool guarded_segment_pop_enabled = false;
     bool dbt_indirect_miss_dispatch_enabled = false;
     std::uint32_t resolved_fixup_count = 0;
     std::uint32_t external_fixup_count = 0;

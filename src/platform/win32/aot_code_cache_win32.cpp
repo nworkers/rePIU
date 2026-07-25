@@ -58,6 +58,14 @@ void IndexAotBreakpointProvenance(
         index[append_offset + site.cache_offset + 13U] =
             AotCacheBreakpointProvenance::kSegmentGuard;
     }
+    for (const runtime::AotGuardedSegmentPopSite& site :
+         image.guarded_segment_pop_sites)
+    {
+        index[append_offset + site.cache_offset] =
+            AotCacheBreakpointProvenance::kPlannerHle;
+        index[append_offset + site.fallback_offset] =
+            AotCacheBreakpointProvenance::kPlannerHle;
+    }
     for (const runtime::AotIndirectInlineCacheSite& site :
          image.indirect_inline_cache_sites)
     {
@@ -232,6 +240,48 @@ void ResolveWin32AotSegmentOverrides(
     }
 }
 
+void ResolveWin32AotGuardedSegmentPops(
+    const runtime::AotCodeCacheImage& image,
+    std::uint8_t* image_bytes,
+    Win32AotCodeCachePlacement* placement,
+    const Win32AotSegmentTable* segment_table)
+{
+    if (image.guarded_segment_pop_sites.empty() || image_bytes == nullptr ||
+        placement == nullptr)
+    {
+        return;
+    }
+    const std::uintptr_t success_address = reinterpret_cast<std::uintptr_t>(
+        &placement->guarded_segment_pop_success_count);
+    const std::uintptr_t fallback_address = reinterpret_cast<std::uintptr_t>(
+        &placement->guarded_segment_pop_fallback_count);
+    for (const runtime::AotGuardedSegmentPopSite& site :
+         image.guarded_segment_pop_sites)
+    {
+        const std::uint8_t seg = site.segment_register;
+        if (segment_table == nullptr || seg >= 6U ||
+            segment_table->segments[seg].shadow_address == 0U ||
+            success_address > UINT32_MAX || fallback_address > UINT32_MAX)
+        {
+            image_bytes[site.cache_offset] = 0xCCU;
+            continue;
+        }
+        image_bytes[site.cache_offset] = 0x9CU;
+        const std::uint32_t shadow_address =
+            segment_table->segments[seg].shadow_address;
+        const std::uint32_t success =
+            static_cast<std::uint32_t>(success_address);
+        const std::uint32_t fallback =
+            static_cast<std::uint32_t>(fallback_address);
+        std::memcpy(image_bytes + site.shadow_address_offset,
+                    &shadow_address, sizeof(shadow_address));
+        std::memcpy(image_bytes + site.success_counter_address_offset,
+                    &success, sizeof(success));
+        std::memcpy(image_bytes + site.fallback_counter_address_offset,
+                    &fallback, sizeof(fallback));
+    }
+}
+
 }  // namespace
 
 void BuildWin32AotSegmentResolution(
@@ -328,6 +378,8 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
     // sites fall back to boundaries (single-step) instead of a faulting guard.
     ResolveWin32AotSegmentOverrides(image, static_cast<std::uint8_t*>(memory),
                                     nullptr);
+    ResolveWin32AotGuardedSegmentPops(
+        image, static_cast<std::uint8_t*>(memory), placement, nullptr);
     if (!ResolveWin32AotDbtReturnDispatchSites(
             image, static_cast<std::uint8_t*>(memory),
             static_cast<std::uint32_t>(base)))
@@ -369,12 +421,15 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
         image.dbt_indirect_dispatch_sites;
     placement->jump_table_sites = image.jump_table_sites;
     placement->segment_override_sites = image.segment_override_sites;
+    placement->guarded_segment_pop_sites = image.guarded_segment_pop_sites;
     placement->indirect_inline_cache_entry_count =
         image.indirect_inline_cache_entry_count;
     placement->dbt_return_miss_dispatch_enabled =
         image.dbt_return_miss_dispatch_enabled;
     placement->dbt_indirect_miss_dispatch_enabled =
         image.dbt_indirect_miss_dispatch_enabled;
+    placement->guarded_segment_pop_enabled =
+        image.guarded_segment_pop_enabled;
     IndexAotBreakpointProvenance(image, 0U, placement);
     placement->placed = true;
     placement->message = "AOT code cache placed as Win32 execute-read memory";
@@ -437,6 +492,8 @@ bool AppendWin32DynamicAotTranslation(
         placement->dbt_return_miss_dispatch_enabled;
     build_options.enable_dbt_indirect_miss_dispatch =
         placement->dbt_indirect_miss_dispatch_enabled;
+    build_options.enable_guarded_segment_pop =
+        placement->guarded_segment_pop_enabled;
     if (!runtime::BuildAotTranslationPlanFromEntry(
             snapshot, guest_entry, excluded_ranges, &plan) ||
         !runtime::BuildAotCodeCacheImage(plan, build_options, &image))
@@ -543,6 +600,9 @@ bool AppendWin32DynamicAotTranslation(
     ResolveWin32AotSegmentOverrides(
         image, static_cast<std::uint8_t*>(cache) + append_offset,
         segment_table);
+    ResolveWin32AotGuardedSegmentPops(
+        image, static_cast<std::uint8_t*>(cache) + append_offset,
+        placement, segment_table);
     if (!ResolveWin32AotDbtReturnDispatchSites(
             image, static_cast<std::uint8_t*>(cache) + append_offset,
             placement->base_address + append_offset))
@@ -708,6 +768,16 @@ bool AppendWin32DynamicAotTranslation(
         site.guard_selector_offset += append_offset;
         placement->segment_override_sites.push_back(site);
     }
+    for (runtime::AotGuardedSegmentPopSite site :
+         image.guarded_segment_pop_sites)
+    {
+        site.cache_offset += append_offset;
+        site.shadow_address_offset += append_offset;
+        site.success_counter_address_offset += append_offset;
+        site.fallback_counter_address_offset += append_offset;
+        site.fallback_offset += append_offset;
+        placement->guarded_segment_pop_sites.push_back(site);
+    }
     IndexAotBreakpointProvenance(image, append_offset, placement);
     placement->size += static_cast<std::uint32_t>(image.bytes.size());
     result->cache_entry = placement->base_address + append_offset +
@@ -735,7 +805,8 @@ std::uint32_t ReResolveWin32AotSegmentOverrides(
 #else
     if (placement == nullptr || !placement->placed ||
         segment_table == nullptr ||
-        placement->segment_override_sites.empty())
+        (placement->segment_override_sites.empty() &&
+         placement->guarded_segment_pop_sites.empty()))
     {
         return 0U;
     }
@@ -798,6 +869,40 @@ std::uint32_t ReResolveWin32AotSegmentOverrides(
         if (stats != nullptr)
         {
             ++stats->native_site_count;
+        }
+    }
+    const std::uintptr_t success_address = reinterpret_cast<std::uintptr_t>(
+        &placement->guarded_segment_pop_success_count);
+    const std::uintptr_t fallback_address = reinterpret_cast<std::uintptr_t>(
+        &placement->guarded_segment_pop_fallback_count);
+    for (const runtime::AotGuardedSegmentPopSite& site :
+         placement->guarded_segment_pop_sites)
+    {
+        ++processed;
+        const std::uint8_t seg = site.segment_register;
+        if (seg >= 6U ||
+            segment_table->segments[seg].shadow_address == 0U ||
+            success_address > UINT32_MAX || fallback_address > UINT32_MAX)
+        {
+            bytes[site.cache_offset] = 0xCCU;
+            continue;
+        }
+        bytes[site.cache_offset] = 0x9CU;
+        const std::uint32_t shadow_address =
+            segment_table->segments[seg].shadow_address;
+        const std::uint32_t success =
+            static_cast<std::uint32_t>(success_address);
+        const std::uint32_t fallback =
+            static_cast<std::uint32_t>(fallback_address);
+        std::memcpy(bytes + site.shadow_address_offset,
+                    &shadow_address, sizeof(shadow_address));
+        std::memcpy(bytes + site.success_counter_address_offset,
+                    &success, sizeof(success));
+        std::memcpy(bytes + site.fallback_counter_address_offset,
+                    &fallback, sizeof(fallback));
+        if (stats != nullptr)
+        {
+            ++stats->guarded_pop_site_count;
         }
     }
     DWORD ignored = 0;

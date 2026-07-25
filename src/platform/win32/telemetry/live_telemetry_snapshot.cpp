@@ -696,6 +696,13 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->aot_selector_guard_mismatch_count =
         context.aot_selector_guard_mismatch_count.load(
             std::memory_order_relaxed);
+    if (context.aot_placement != nullptr)
+    {
+        attempt->aot_guarded_segment_pop_success_count =
+            context.aot_placement->guarded_segment_pop_success_count;
+        attempt->aot_guarded_segment_pop_fallback_count =
+            context.aot_placement->guarded_segment_pop_fallback_count;
+    }
     attempt->aot_dbt_return_entry_count =
         context.aot_dbt_return_entry_count.load(std::memory_order_relaxed);
     attempt->aot_dbt_return_success_count =

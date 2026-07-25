@@ -3401,6 +3401,7 @@ bool RunWin32ExecutionThread(
             context.aot_translation_complete_event = nullptr;
         }
     };
+    ReResolveAotSegmentOverrides(&context);
     if (context.aot_placement != nullptr)
     {
         context.aot_translation_request_event =

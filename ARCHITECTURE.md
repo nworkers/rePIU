@@ -1030,3 +1030,49 @@ as planner HLE, selector guard, inline-cache fallback, jump-table fallback, or a
 fixup. Runtime retired/inactive entries and explicit probe sentinels take precedence; an
 unindexed address is unknown and fails closed. This prevents a generic host dispatcher from
 mistaking HLE or SMC provenance and avoids vector scans on the hot breakpoint path.
+
+## Guarded AOT segment-pop fast path
+
+Task 291은 plain `POP ES/DS/FS/GS`를 planner의 전용 `kGuardedSegmentPop` record로
+분류합니다. 플랫폼 공용 emitter는 물리 segment selector, 원래 guest stack word,
+shadow selector가 모두 같은 경우에만 EAX/EFLAGS를 보존한 채 guest ESP를 4 증가시키고
+cache fallthrough로 이동합니다. 불일치하면 register/flags/ESP를 진입 상태로 복원한 뒤
+기존 `INT3`/VEH segment-pop HLE로 fail-closed합니다. `POP SS`와 prefixed form은 기존 HLE
+경계입니다.
+
+Win32 정적 배치와 dynamic append는 shadow selector 및 success/fallback counter 주소를
+site metadata로 patch합니다. selector table을 아직 사용할 수 없거나 주소를 해결할 수
+없으면 slot 시작을 `INT3`로 유지합니다. whole-CFG 검증은 시작 opcode, guard 주소,
+fallback `INT3`를 확인하고 cache breakpoint provenance는 fallback을 planner HLE로
+계속 집계합니다.
+
+55초 OFF/ON에서 progress는 `37,606 → 39,571`(+5.23%), triangle draw는
+`412 → 468`(+13.59%), AOT boundary는 `74,724 → 59,334`(-20.60%)였습니다. ON의
+success/fallback은 `21,011/1,593`(92.95% 성공)였고 fatal/AOT legacy fallback은 0,
+EEPROM hash는 일치했습니다. 따라서 `aot-dbt`에서는 기본 ON이며
+`REPIU_AOT_GUARDED_SEGMENT_POP=0|off|false` 또는 알 수 없는 값으로 fail-closed
+비활성화합니다.
+
+```mermaid
+flowchart LR
+    P["POP ES/DS/FS/GS"] --> G{"physical = stack = shadow?"}
+    G -->|yes| C["preserve EAX/EFLAGS<br/>ESP += 4<br/>cache fallthrough"]
+    G -->|no| H["restore entry state<br/>INT3 / VEH HLE"]
+```
+
+Task 291 classifies plain `POP ES/DS/FS/GS` as dedicated `kGuardedSegmentPop` planner records.
+The platform-neutral emitter advances the guest ESP by four and reaches cache fallthrough
+only when the physical segment selector, original guest-stack word, and shadow selector are
+all equal, preserving EAX and EFLAGS. A mismatch restores registers, flags, and ESP to their
+entry state before the existing INT3/VEH segment-pop HLE. `POP SS` and prefixed forms remain
+ordinary HLE boundaries.
+
+Static Win32 placement and dynamic append patch shadow-selector and success/fallback counter
+addresses through site metadata. An unavailable selector table or unresolved address keeps
+the slot entry as INT3. Whole-CFG validation checks the entry opcode, patch locations, and
+fallback INT3, while breakpoint provenance continues to classify the fallback as planner HLE.
+The 55-second comparison improved progress by 5.23% and triangle draws by 13.59%, reduced AOT
+boundaries by 20.60%, and observed a 92.95% guarded success rate with zero fatal/AOT legacy
+fallback and matching EEPROM hashes. The path is default-on for `aot-dbt`; setting
+`REPIU_AOT_GUARDED_SEGMENT_POP=0|off|false`, or an unknown value, disables it
+fail-closed.
