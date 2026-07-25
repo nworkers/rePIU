@@ -17,10 +17,6 @@ void RecordPortIo(ThreadContext* context,
                   bool handled,
                   const std::string& result);
 
-bool IsObservedPortInitializationWrite(std::uint16_t port,
-                                       std::uint32_t width,
-                                       std::uint32_t value);
-
 bool IsPortIoTraceCandidate(std::uint16_t port,
                             std::uint32_t width,
                             bool is_input);

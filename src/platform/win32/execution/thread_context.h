@@ -5,6 +5,7 @@
 #include "repiu/platform/win32/aot_code_cache_win32.h"
 #include "repiu/platform/win32/live_telemetry.h"
 #include "repiu/platform/win32/cd_audio_wave_out.h"
+#include "repiu/platform/win32/ymz280b_audio_out.h"
 #include "repiu/platform/win32/glide_opengl_backend.h"
 #include "repiu/hle/linexe_call_gate.h"
 #include "repiu/hle/glide_hle.h"
@@ -464,6 +465,10 @@ struct ThreadContext
     repiu::hle::GlideGatePlan glide_gate_plan;
     repiu::media::ChdCdImage cd_image;
     CdAudioWaveOut cd_audio;
+    // PIU10 board sound. Independent of the CD-DA path above: background music
+    // comes from CD audio tracks while effects come from the YMZ280B sample ROM.
+    Ymz280bAudioOut ymz_audio;
+    bool ymz_audio_available = false;
     bool mscdex_available = false;
     bool cd_audio_available = false;
     std::uint8_t mscdex_drive = 3;

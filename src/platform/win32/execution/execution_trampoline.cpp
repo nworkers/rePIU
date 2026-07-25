@@ -3015,6 +3015,7 @@ bool RunWin32ExecutionThread(
     const exe::Dos16mBoundModule* linexe_module,
     const std::vector<exe::LeResidentName>* glide_exports,
     const std::filesystem::path* cd_chd_path,
+    const std::filesystem::path* sound_rom_zip_path,
     Win32AotCodeCachePlacement* aot_placement,
     runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
@@ -3186,6 +3187,14 @@ bool RunWin32ExecutionThread(
     {
         context.mscdex_available = true;
         context.cd_audio_available = context.cd_audio.Open(*cd_chd_path);
+    }
+    // Sound is optional: a missing or unreadable ROM set leaves the PIU10 sound
+    // window inert instead of failing the run, exactly like a cabinet with a dead
+    // sound board still booting.
+    if (sound_rom_zip_path != nullptr)
+    {
+        context.ymz_audio_available =
+            context.ymz_audio.Open(*sound_rom_zip_path);
     }
     context.dos_environment_block = BuildDosEnvironmentBlock();
     repiu::runtime::InitializeSelectorTable(&context.selector_table);
@@ -3674,6 +3683,7 @@ bool AttemptWin32MinimalExecution(
         nullptr,
         nullptr,
         nullptr,
+        nullptr,
         runtime::ExecutionBackend::kLegacy,
         timeout_milliseconds,
         attempt);
@@ -3714,6 +3724,7 @@ bool AttemptWin32GuestStackExecution(
         nullptr,
         nullptr,
         nullptr,
+        nullptr,
         runtime::ExecutionBackend::kLegacy,
         timeout_milliseconds,
         attempt);
@@ -3726,6 +3737,7 @@ bool AttemptWin32GuestStackTrapExecution(
     const exe::Dos16mBoundModule* linexe_module,
     const std::vector<exe::LeResidentName>* glide_exports,
     const std::filesystem::path* cd_chd_path,
+    const std::filesystem::path* sound_rom_zip_path,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
 {
@@ -3757,6 +3769,7 @@ bool AttemptWin32GuestStackTrapExecution(
         linexe_module,
         glide_exports,
         cd_chd_path,
+        sound_rom_zip_path,
         nullptr,
         runtime::ExecutionBackend::kLegacy,
         timeout_milliseconds,
@@ -3799,6 +3812,7 @@ bool AttemptWin32GuestStackHleExecution(
         nullptr,
         nullptr,
         nullptr,
+        nullptr,
         runtime::ExecutionBackend::kLegacy,
         timeout_milliseconds,
         attempt);
@@ -3812,6 +3826,7 @@ bool AttemptWin32GuestStackAotExecution(
     const exe::Dos16mBoundModule* linexe_module,
     const std::vector<exe::LeResidentName>* glide_exports,
     const std::filesystem::path* cd_chd_path,
+    const std::filesystem::path* sound_rom_zip_path,
     runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
@@ -3830,7 +3845,8 @@ bool AttemptWin32GuestStackAotExecution(
     return RunWin32ExecutionThread(
         placement, stack_plan.entry_eip, stack_plan.initial_esp,
         true, true, true, true, false, false, &dos_file_system,
-        linexe_module, glide_exports, cd_chd_path, &aot_placement,
+        linexe_module, glide_exports, cd_chd_path, sound_rom_zip_path,
+        &aot_placement,
         execution_backend,
         timeout_milliseconds, attempt);
 }

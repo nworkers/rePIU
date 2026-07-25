@@ -902,6 +902,7 @@ bool AttemptWin32GuestStackTrapExecution(
     const exe::Dos16mBoundModule* linexe_module,
     const std::vector<exe::LeResidentName>* glide_exports,
     const std::filesystem::path* cd_chd_path,
+    const std::filesystem::path* sound_rom_zip_path,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt);
 
@@ -913,6 +914,7 @@ bool AttemptWin32GuestStackAotExecution(
     const exe::Dos16mBoundModule* linexe_module,
     const std::vector<exe::LeResidentName>* glide_exports,
     const std::filesystem::path* cd_chd_path,
+    const std::filesystem::path* sound_rom_zip_path,
     runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt);

@@ -20,13 +20,47 @@ Based on our analysis of the official MAME driver [src/mame/misc/xtom3d.cpp](htt
 | 포트 주소 (Port) | 데이터 너비 (Width) | 입출력 (Direction) | 기능 및 대상 장치 (Description) | MAME 내부 매핑 함수 / HLE 처리 (MAME Driver / HLE Treatment) |
 | :--- | :--- | :--- | :--- | :--- |
 | `0x0040 ~ 0x0043` | 8-bit | Read / Write | Intel 8253/8254 PIT (Programmable Interval Timer) 제어 및 카운터 포트 | `unsupported-ignored` 로깅 후 쓰기 무시 및 더미 타이머 에뮬레이션 |
-| `0x02A0 ~ 0x02A3` | 16-bit / 8-bit | Read / Write | Yamaha YMZ280B 사운드 칩 제어 및 데이터 포트 | `ymz280b_device` read/write |
+| `0x02A0` | 8/16/32-bit | Read / Write | YMZ280B 칩 오프셋 0. 쓰기=레지스터 번호 선택, 읽기=외부 메모리 readback 래치 | `ymz280b_device` read/write offset 0 |
+| `0x02A1` | — | — | 미디코드(16비트 워드의 상위 바이트). 쓰기는 버림, 읽기는 `0xFF` | `umask16(0x00ff)`에 의해 라우팅 제외 |
+| `0x02A2` | 8/16/32-bit | Read / Write | YMZ280B 칩 오프셋 1. 쓰기=선택된 레지스터에 데이터, 읽기=상태 레지스터 | `ymz280b_device` read/write offset 1 |
+| `0x02A3` | — | — | 미디코드. 쓰기는 버림, 읽기는 `0xFF` | `umask16(0x00ff)`에 의해 라우팅 제외 |
 | `0x02A8` | 8-bit | Read | P1 (1인용) 발판 센서 입력 (Up-Left, Up-Right, Center, Down-Left, Down-Right) | `P1 Inputs` read |
 | `0x02A9` | 8-bit | Read | 시스템 입력 (코인 센서, 서비스 버튼, 테스트 버튼, 스타트 등) | `System Inputs` read |
 | `0x02AA` | 8-bit | Read | P2 (2인용) 발판 센서 입력 | `P2 Inputs` read |
 | `0x02AB` | 8-bit | Read | 캐비닛 기타 입력 (보조 코인기, 캐비닛 특수 신호 등) | `Cabinet Inputs` read |
 | `0x02AC` | 8-bit | Write | 93C46 Serial EEPROM 제어선 쓰기<br>- Bit 0: Chip Select (CS)<br>- Bit 1: Clock (CLK)<br>- Bit 2: Data Input (DI) | `m_eeprom->clk_write / cs_write / di_write` |
 | `0x02AE` | 8-bit | Read | 93C46 Serial EEPROM 데이터 읽기<br>- Bit 0: Data Output (DO) 상태 반환 (읽기 결과: `do_read() \| 0xfe`) | `m_eeprom->do_read() \| 0xfe` |
+
+### 2.1 사운드 창의 ISA 바이트 레인 디코드 (Task 290에서 확정)
+### 2.1 ISA byte-lane decode of the sound window (confirmed in Task 290)
+
+MAME io_map은 `map(0x00, 0x03).rw("ymz", read, write).umask16(0x00ff)`입니다. 16비트
+버스에서 `umask16(0x00ff)`는 **각 16비트 워드의 하위 바이트만** 라우팅한다는 뜻이므로,
+칩이 보이는 오프셋은 바이트 주소의 절반입니다. 짝수 포트만 디코드되고 홀수 포트는
+미디코드로 남습니다.
+
+이 규칙이 폭에 무관하게 성립하는 것이 중요합니다. 게스트가 `OUT DX, EAX`(width 4)로
+`0x02A0`에 쓰면 4개의 바이트 레인으로 분해되어 레지스터 번호 1회와 데이터 1회가
+연속 수행됩니다. 예전에 `unsupported`로 분류하던 `0x02A0 ← 0x00000010`,
+`0x02A0 ← 0x00000001`, `0x02A2 ← 0x00000000` 트레이스는 모두 이 형태의 정상적인
+YMZ280B 레지스터 프로그래밍이었습니다.
+
+The MAME io_map is `map(0x00, 0x03).rw("ymz", read, write).umask16(0x00ff)`. On a
+16-bit bus, `umask16(0x00ff)` routes **only the low byte of each 16-bit word**, so
+the chip-visible offset is half the byte address: even ports decode and odd ports
+stay undecoded.
+
+The rule holds regardless of access width, which is what matters. A guest
+`OUT DX, EAX` (width 4) to `0x02A0` decomposes into four byte lanes and performs one
+register-number write followed by one data write. The traces previously classified
+as `unsupported` — `0x02A0 <- 0x00000010`, `0x02A0 <- 0x00000001`, and
+`0x02A2 <- 0x00000000` — were all ordinary YMZ280B register programming of exactly
+this shape.
+
+레지스터 의미와 주소 단위는 [docs/kb/ymz280b-pcm-adpcm-decoder.md](../kb/ymz280b-pcm-adpcm-decoder.md)에
+정리했습니다.
+Register semantics and address units are documented in
+[docs/kb/ymz280b-pcm-adpcm-decoder.md](../kb/ymz280b-pcm-adpcm-decoder.md).
 
 ---
 
@@ -36,7 +70,9 @@ Based on our analysis of the official MAME driver [src/mame/misc/xtom3d.cpp](htt
    - `0x02A8 ~ 0x02AB` (입력): 실기 캐비닛 발판 센서는 기본적으로 풀업 저항 상태인 Active-Low 신호를 가집니다. 따라서 기본값으로 `0xFFU`(또는 `0xFFFFU`)를 채워 반환해야 입력 루프 폴링에서 정상 대기 상태를 유지합니다. 입력 레지스터는 게임이 매 프레임 폴링하므로 EEPROM 읽기와 마찬가지로 **NOP 패치 없이 매번 EIP를 전진시켜 재트랩**해야 합니다. NOP 패치로 원본 IN 명령을 덮어쓰면 최초 1회만 실제 키 상태가 반영되고 이후 press/release가 무시되며, EAX가 idle(`0xFF`)로 갱신되지 않아 무입력이 눌림으로 오인됩니다 (Task 327에서 수정).
    - `0x02AE` (EEPROM 읽기): 게임 엔진은 저장된 설정값을 가져오기 위해 이 포트에서 DO 비트 변화를 감지합니다. `Eeprom93c46` 클래스의 16-bit Microwire 프로토콜 상태 머신을 거쳐 출력되는 데이터 비트를 반환합니다. 이전과 달리 NOP 패치 없이 매번 EIP를 전진시켜 명령을 평가합니다.
    - `0x0040` (PIT 카운터 읽기): 레거시 PC 환경의 타이머 폴링으로 인한 지연을 차단하기 위해, 읽기 요청 시 일정한 간격의 dummy counter 또는 dynamic tick 값을 반환하도록 에뮬레이트합니다.
+   - `0x02A0`/`0x02A2` (YMZ280B 읽기): 각각 외부 메모리 readback 래치와 상태 레지스터를 반환합니다. 사운드 창은 JAMMA 입력 범위(`0x02A0`~`0x02AF`) 안에 있으므로 **입력 분기보다 먼저** 가로채야 합니다. 그렇지 않으면 입력 폴백이 항상 `0xFF`를 돌려주어 상태 레지스터가 무의미해집니다.
 2. **포트 출력(Write) 에뮬레이션**:
+   - `0x02A0`/`0x02A2` (YMZ280B 쓰기): 바이트 레인으로 분해해 레지스터 선택과 데이터 기록으로 전달합니다. **절대 NOP 패치하지 않습니다.** 사운드 레지스터는 재생마다 수십~수백 회 다시 프로그래밍되므로, 최초 1회 후 원본 `OUT`을 NOP으로 덮으면 그 시점 이후 영구 무음이 됩니다. EEPROM·JAMMA 경로와 같은 이유로 EIP만 전진시키고 매번 재트랩합니다 (Task 290).
    - `0x02AC` (EEPROM 쓰기): EEPROM에 전송하는 제어 신호(CS, CLK, DI)를 `Eeprom93c46` 상태 머신으로 전달하여 `eeprom.dat` 파일에 설정값을 지속적으로 저장/반영합니다. NOP 패치 없이 매번 트랩되어 상태를 갱신합니다.
    - `0x0043` (PIT 제어 쓰기): PC 스피커 톤 생성 및 타이머 주파수 조정을 위해 시스템 코드가 수행하는 PIT 제어 쓰기는 에뮬레이터 구동 안정성을 위해 `unsupported-ignored` 로그 기록을 남긴 뒤 무시 처리합니다.
 
@@ -44,7 +80,9 @@ Based on our analysis of the official MAME driver [src/mame/misc/xtom3d.cpp](htt
    - `0x02A8 ~ 0x02AB` (Inputs): Real cabinet sensors use active-low signals. Returning default pulled-up values like `0xFFU` (or `0xFFFFU`) prevents hang on sensor loops. Because the game polls these registers every frame, the input read — like the EEPROM read — must **advance EIP and re-trap each time rather than NOP-patch** the guest IN. NOP-patching latches only the first sample, ignores later press/release transitions, and leaves EAX un-refreshed so idle is misread as pressed (fixed in Task 327).
    - `0x02AE` (EEPROM Read): The engine queries this port to fetch persistent configurations. It returns the data bit outputted from the `Eeprom93c46` 16-bit Microwire protocol state machine. The instruction is evaluated dynamically without NOP patching by manually advancing EIP.
    - `0x0040` (PIT Counter Read): To prevent hang during timer calibration polling, return dummy ticks or dynamic values.
+   - `0x02A0`/`0x02A2` (YMZ280B reads): return the external memory readback latch and the status register respectively. The sound window sits inside the JAMMA input range (`0x02A0`–`0x02AF`), so it must be intercepted **before** the input branch; otherwise the input fallback answers `0xFF` and the status register becomes meaningless.
 2. **Port Write Emulation**:
+   - `0x02A0`/`0x02A2` (YMZ280B writes): decomposed into byte lanes and forwarded as register select and register data. **Never NOP-patched.** Sound registers are reprogrammed dozens to hundreds of times per playback, so overwriting the original `OUT` with NOPs after the first execution means permanent silence from that point on. As on the EEPROM and JAMMA paths, EIP advances and the instruction re-traps each time (Task 290).
    - `0x02AC` (EEPROM Write): Writes to EEPROM control lines (CS, CLK, DI) are routed to the `Eeprom93c46` state machine, which persists configurations into `eeprom.dat`. It is continuously trapped without NOP patching.
    - `0x0043` (PIT Control Write): Hardware-level timer rate initialization commands (e.g., `out 0x43, al`) are logged as `unsupported-ignored` and safely bypassed.
 

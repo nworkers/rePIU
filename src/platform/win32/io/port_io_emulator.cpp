@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include "eeprom_93c46.h"
+#include "piu10_sound_port.h"
 
 namespace repiu::platform::win32
 {
@@ -17,8 +18,6 @@ namespace
     constexpr std::uint16_t kPortPiuJammaBase = 0x02A0;
     constexpr std::uint16_t kPortPiuJammaEnd = 0x02AF;
 
-    constexpr std::uint16_t kPortPiuSoundInit1 = 0x02A0;
-    constexpr std::uint16_t kPortPiuSoundInit2 = 0x02A2;
     constexpr std::uint16_t kPortPiuEepromWrite = 0x02AC;
     constexpr std::uint16_t kPortPiuEepromRead = 0x02AE;
 
@@ -198,20 +197,6 @@ void RecordPortIo(ThreadContext* context,
     }
 }
 
-bool IsObservedPortInitializationWrite(std::uint16_t port,
-                                       std::uint32_t width,
-                                       std::uint32_t value)
-{
-    if (width != 4)
-    {
-        return false;
-    }
-
-    return (port == kPortPiuSoundInit1 && value == 0x00000010U) || // Adjusted from 0x02AC if 0x02AC was for EEPROM, wait. Actually it was: (port == 0x02AC && value == 0x00000010U) ||
-           (port == kPortPiuSoundInit1 && value == 0x00000001U) ||
-           (port == kPortPiuSoundInit2 && value == 0x00000000U);
-}
-
 bool IsPortIoTraceCandidate(std::uint16_t port,
                             std::uint32_t width,
                             bool is_input)
@@ -275,6 +260,64 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
         std::vector<std::uint8_t> nop_buffer(instruction_len, 0x90);
         WriteGuestBytes(context, reinterpret_cast<void*>(static_cast<std::uintptr_t>(decode_eip)), nop_buffer.data(), instruction_len);
     };
+
+    // The YMZ280B window is checked before every other PIU10 register because
+    // 0x02A0..0x02A3 sits inside the JAMMA input range below, which would
+    // otherwise swallow it and answer 0xFF.
+    if (IsPiu10SoundPort(port))
+    {
+        Ymz280bAudioOut* audio =
+            context->ymz_audio_available ? &context->ymz_audio : nullptr;
+        if (is_input)
+        {
+            const std::uint32_t emulated_val =
+                ReadPiu10SoundPort(audio, port, width);
+            if (width == 1)
+            {
+                win32_context->Eax =
+                    (win32_context->Eax & 0xFFFFFF00U) | emulated_val;
+            }
+            else if (width == 2)
+            {
+                win32_context->Eax =
+                    (win32_context->Eax & 0xFFFF0000U) | emulated_val;
+            }
+            else
+            {
+                win32_context->Eax = emulated_val;
+            }
+            RecordPortIo(context,
+                         static_cast<std::uint32_t>(win32_context->Eip),
+                         opcode,
+                         port,
+                         width,
+                         emulated_val,
+                         true,
+                         true,
+                         audio != nullptr ? "emulated-ymz-read"
+                                          : "ymz-unavailable-read");
+        }
+        else
+        {
+            WritePiu10SoundPort(audio, port, width, value);
+            RecordPortIo(context,
+                         static_cast<std::uint32_t>(win32_context->Eip),
+                         opcode,
+                         port,
+                         width,
+                         value,
+                         false,
+                         true,
+                         audio != nullptr ? "emulated-ymz-write"
+                                          : "ymz-unavailable-write");
+        }
+        // Never NOP-patch this window. Sound registers are reprogrammed
+        // continuously, so latching the first access would mean permanent
+        // silence -- the same reason the EEPROM and JAMMA paths advance EIP and
+        // re-trap instead of patching.
+        win32_context->Eip += instruction_len;
+        return true;
+    }
 
     if (is_input)
     {
@@ -391,21 +434,6 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
                      true,
                      "emulated-eeprom-write");
         win32_context->Eip += instruction_len;
-        return true;
-    }
-
-    if (IsObservedPortInitializationWrite(port, width, value))
-    {
-        RecordPortIo(context,
-                     static_cast<std::uint32_t>(win32_context->Eip),
-                     opcode,
-                     port,
-                     width,
-                     value,
-                     false,
-                     true,
-                     "ignored");
-        apply_nop_patch();
         return true;
     }
 

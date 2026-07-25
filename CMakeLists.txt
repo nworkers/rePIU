@@ -17,7 +17,13 @@ include(FetchContent)
 set(INSTALL_STATIC_LIBS OFF CACHE BOOL "" FORCE)
 set(CHDR_WANT_RAW_DATA_SECTOR ON CACHE BOOL "" FORCE)
 set(CHDR_WANT_SUBCODE OFF CACHE BOOL "" FORCE)
+# libchdr already bundles miniz. Turning on its ZIP reader lets us extract MAME
+# ROM-set members (roms/pumpit1.zip) without vendoring a second copy of miniz.
+# The file-based ZIP APIs stay off, so archives are read through memory buffers.
+set(MINIZ_ARCHIVE_APIS ON CACHE BOOL "" FORCE)
 add_subdirectory(third_party/libchdr EXCLUDE_FROM_ALL)
+set(REPIU_MINIZ_INCLUDE_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libchdr/deps/miniz-3.1.1")
 
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC ON CACHE BOOL "" FORCE)
@@ -75,6 +81,7 @@ endfunction()
 
 add_library(repiu_exe
     src/assets/pumpit1_mount.cpp
+    src/assets/rom_zip_archive.cpp
     src/exe/dos16m_bound_module.cpp
     src/exe/dos4gw_loader.cpp
     src/exe/executable_headers.cpp
@@ -109,6 +116,10 @@ add_library(repiu_exe
     src/platform/win32/telemetry/live_telemetry_snapshot.cpp
     src/platform/win32/io/port_io_emulator.cpp
     src/platform/win32/io/eeprom_93c46.cpp
+    src/platform/win32/io/piu10_sound_port.cpp
+    src/platform/win32/ymz280b_audio_out.cpp
+    src/sound/ymz280b_device.cpp
+    src/sound/ymz280b_sample_rom.cpp
     src/platform/win32/native_fast_path.cpp
     src/platform/win32/native_linear_span.cpp
     src/platform/win32/native_phase_sampler.cpp
@@ -144,6 +155,9 @@ target_include_directories(repiu_exe
         src/platform/win32/aot
         src/platform/win32/boundary
         src/platform/win32/telemetry
+        # miniz ships inside libchdr, which links it PRIVATE, so the headers do
+        # not propagate even though the symbols do.
+        ${REPIU_MINIZ_INCLUDE_DIR}
 )
 
 target_compile_definitions(repiu_exe

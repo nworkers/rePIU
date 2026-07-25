@@ -2546,6 +2546,7 @@ int main(int argc, char** argv)
     std::optional<repiu::target::TargetProfile> direct_profile;
     std::optional<repiu::target::TargetProfile> mounted_profile;
     std::optional<std::filesystem::path> cd_chd_path;
+    std::optional<std::filesystem::path> sound_rom_zip_path;
     if (profile == nullptr)
     {
         direct_profile = BuildDirectExecutableProfile(argc, argv);
@@ -2580,6 +2581,7 @@ int main(int argc, char** argv)
         mounted_profile->working_directory = mount.mount_root / "PIU";
         mounted_profile->asset_root = mount.mount_root;
         cd_chd_path = mount.chd_path;
+        sound_rom_zip_path = mount.rom_zip_path;
         profile = &mounted_profile.value();
     }
 
@@ -2988,6 +2990,7 @@ int main(int argc, char** argv)
               linexe_runtime_module ? &*linexe_runtime_module : nullptr,
               glide_exports.empty() ? nullptr : &glide_exports,
               cd_chd_path ? &*cd_chd_path : nullptr,
+              sound_rom_zip_path ? &*sound_rom_zip_path : nullptr,
               execution_backend,
               execution_timeout_milliseconds,
               &attempt)
@@ -3005,6 +3008,7 @@ int main(int argc, char** argv)
                   linexe_runtime_module ? &*linexe_runtime_module : nullptr,
                   glide_exports.empty() ? nullptr : &glide_exports,
                   cd_chd_path ? &*cd_chd_path : nullptr,
+                  sound_rom_zip_path ? &*sound_rom_zip_path : nullptr,
                   execution_timeout_milliseconds,
                   &attempt);
     if (!attempted_execution)

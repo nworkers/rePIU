@@ -18,6 +18,7 @@ flowchart TD
     DYNAREC --> HLE
     CACHE --> HLE
     CHD["CHD / ISO9660"] --> MSCDEX["MSCDEX / CD-DA"]
+    YMZ["YMZ280B PCM/ADPCM"] --> SOUND["PIU10 board sound"]
 ```
 
 ## 문서
@@ -34,6 +35,7 @@ flowchart TD
 * [CHD와 ISO9660](chd-and-iso9660.md)
 * [MSCDEX와 CD-DA](mscdex-and-cd-da.md)
 * [Glide 텍스처 LOD, aspect ratio, 포맷](glide-texture-lod-and-formats.md)
+* [YMZ280B PCM/ADPCM 디코더](ymz280b-pcm-adpcm-decoder.md)
 
 # rePIU Technical Knowledge Base Index
 
@@ -54,3 +56,4 @@ include source links.
 * [CHD and ISO9660](chd-and-iso9660.md)
 * [MSCDEX and CD-DA](mscdex-and-cd-da.md)
 * [Glide texture LOD, aspect ratio, and formats](glide-texture-lod-and-formats.md)
+* [YMZ280B PCM/ADPCM decoder](ymz280b-pcm-adpcm-decoder.md)
