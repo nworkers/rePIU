@@ -567,6 +567,11 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
 
     attempt->single_step_trace_count =
         context.single_step_trace_count.load(std::memory_order_relaxed);
+    attempt->single_step_hotspot_profile =
+        context.single_step_hotspot_profile != nullptr
+            ? SnapshotSingleStepHotspotProfile(
+                  *context.single_step_hotspot_profile)
+            : Win32SingleStepHotspotProfileSnapshot{};
     attempt->native_fast_path_entry_count =
         context.native_fast_path.entry_count.load(std::memory_order_relaxed);
     attempt->native_fast_path_return_count =
@@ -715,11 +720,39 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->aot_dbt_hle_translation_success_count =
         context.aot_dbt_hle_translation_success_count.load(
             std::memory_order_relaxed);
+    attempt->aot_dbt_hle_dispatch_entry_count =
+        context.aot_dbt_hle_dispatch_entry_count.load(
+            std::memory_order_relaxed);
+    attempt->aot_dbt_hle_dispatch_success_count =
+        context.aot_dbt_hle_dispatch_success_count.load(
+            std::memory_order_relaxed);
+    attempt->aot_dbt_hle_dispatch_fallback_count =
+        context.aot_dbt_hle_dispatch_fallback_count.load(
+            std::memory_order_relaxed);
+    attempt->aot_dbt_hle_dispatch_attempt_count =
+        attempt->aot_dbt_hle_dispatch_success_count +
+        attempt->aot_dbt_hle_dispatch_fallback_count;
+    for (std::uint32_t index = 0;
+         index < kAotDbtHleFallbackReasonCount; ++index)
+    {
+        attempt->aot_dbt_hle_dispatch_fallback_reason_counts[index] =
+            context.aot_dbt_hle_dispatch_fallback_reason_counts[index].load(
+                std::memory_order_relaxed);
+    }
     attempt->aot_selector_guard_native_site_count =
         context.aot_selector_guard_native_site_count.load(
             std::memory_order_relaxed);
     attempt->aot_selector_guard_hle_site_count =
         context.aot_selector_guard_hle_site_count.load(
+            std::memory_order_relaxed);
+    attempt->aot_dbt_hle_dispatch_last_source =
+        context.aot_dbt_hle_dispatch_last_source.load(
+            std::memory_order_relaxed);
+    attempt->aot_dbt_hle_dispatch_last_next =
+        context.aot_dbt_hle_dispatch_last_next.load(
+            std::memory_order_relaxed);
+    attempt->aot_dbt_hle_dispatch_last_bytes =
+        context.aot_dbt_hle_dispatch_last_bytes.load(
             std::memory_order_relaxed);
     attempt->aot_selector_guard_unresolved_site_count =
         context.aot_selector_guard_unresolved_site_count.load(

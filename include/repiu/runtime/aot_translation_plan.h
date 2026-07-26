@@ -30,6 +30,8 @@ enum class AotInstructionKind
     // physical, shadow, and stack selectors are already identical. Any
     // mismatch reaches the existing HLE boundary (Task 291).
     kGuardedSegmentPop,
+    // Port I/O (IN/OUT DX) handled without #DB exception traps (Task 311).
+    kPortIo,
 };
 
 struct AotInstructionRecord

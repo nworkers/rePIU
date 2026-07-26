@@ -30,6 +30,8 @@ struct Win32AotCodeCachePlacement
         indirect_inline_cache_sites;
     std::vector<runtime::AotDbtReturnDispatchSite>
         dbt_return_dispatch_sites;
+    std::vector<runtime::AotDbtHleDispatchSite>
+        dbt_hle_dispatch_sites;
     std::vector<runtime::AotDbtIndirectDispatchSite>
         dbt_indirect_dispatch_sites;
     std::vector<runtime::AotJumpTableSite> jump_table_sites;
@@ -58,6 +60,7 @@ struct Win32AotCodeCachePlacement
     std::uint32_t indirect_inline_cache_entry_count =
         runtime::kDefaultAotIndirectInlineCacheEntryCount;
     bool dbt_return_miss_dispatch_enabled = false;
+    bool dbt_hle_dispatch_enabled = false;
     bool dbt_indirect_miss_dispatch_enabled = false;
     bool guarded_segment_pop_enabled = false;
     std::string message;

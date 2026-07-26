@@ -609,6 +609,56 @@ bool DispatchGuestHleHandlers(CONTEXT* win32_context, ThreadContext* context)
         return false;
     }
 
+    const std::uint8_t* ptr = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(win32_context->Eip));
+    std::uint32_t offset = 0U;
+    if (ptr[0] == 0x66U || ptr[0] == 0x67U)
+    {
+        offset = 1U;
+    }
+    const std::uint8_t opcode = ptr[offset];
+
+    // Opcode-directed Fast Dispatcher (Task 312)
+    switch (opcode)
+    {
+        case 0xECU: case 0xEDU: case 0xEEU: case 0xEFU:
+            if (context->enable_privileged_trap_hle && HandlePortIoInstruction(win32_context, context)) return true;
+            break;
+        case 0x8EU:
+            if (context->enable_segment_load_hle && HandleSegmentLoadInstruction(win32_context, context)) return true;
+            break;
+        case 0x8CU:
+            if (context->enable_segment_load_hle && HandleSegmentStoreInstruction(win32_context, context)) return true;
+            break;
+        case 0x07U: case 0x1FU:
+            if (context->enable_segment_load_hle && HandleSegmentPopInstruction(win32_context, context)) return true;
+            break;
+        case 0xCDU:
+            if (context->enable_traced_dos_hle &&
+                (HandleTracedDosInterrupt21(win32_context, context) ||
+                 HandleTracedDosInterrupt2F(win32_context, context) ||
+                 HandleTracedDpmiInterrupt31(win32_context, context) ||
+                 HandleTracedMouseInterrupt33(win32_context, context))) return true;
+            break;
+        case 0xFAU: case 0xFBU:
+            if (context->enable_privileged_trap_hle && HandlePrivilegedTrapInstruction(win32_context, context)) return true;
+            break;
+        case 0xABU:
+            if (context->enable_segment_load_hle && HandleRepStosdInstruction(win32_context, context)) return true;
+            break;
+        case 0xA4U: case 0xA5U:
+            if (context->enable_segment_load_hle && HandleRepMovsInstruction(win32_context, context)) return true;
+            break;
+        case 0x64U: case 0x65U: case 0x26U: case 0x2EU: case 0x36U: case 0x3EU:
+            if (context->enable_segment_load_hle &&
+                (HandleSegmentOverrideMemoryLoadInstruction(win32_context, context) ||
+                 HandleSegmentOverrideByteLoadInstruction(win32_context, context) ||
+                 HandleFsSegmentWordLoadInstruction(win32_context, context))) return true;
+            break;
+        default:
+            break;
+    }
+
     if (context->enable_privileged_trap_hle &&
         (HandleSelectorLimitInstruction(win32_context, context) ||
          HandlePrivilegedTrapInstruction(win32_context, context) ||
@@ -939,6 +989,15 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
     {
         return false;
     }
+    const std::uint32_t profile_eip =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    Win32SingleStepHotspotProfile* hotspot_profile =
+        context->single_step_hotspot_profile != nullptr &&
+        IsGuestInstructionPointer(context, profile_eip)
+            ? context->single_step_hotspot_profile.get()
+            : nullptr;
+    SingleStepHotspotCycleScope hotspot_scope(
+        hotspot_profile, profile_eip);
     RecordExecutionProbe(win32_context, context);
     RecordExecutionTrace(win32_context, context);
     const std::uint32_t eip_offset =
@@ -1185,6 +1244,8 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
         static_cast<std::uint32_t>(win32_context->Eip);
     if (DispatchGuestHleHandlers(win32_context, context))
     {
+        hotspot_scope.SetOutcome(
+            SingleStepProfileOutcome::kHandledHle);
         if (static_cast<std::uint32_t>(win32_context->Eip) != hle_entry_eip &&
             TryResumeAotAfterHandledHle(
                 win32_context, context, hle_entry_eip))
@@ -1203,6 +1264,8 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
     InjectPendingInterrupts(win32_context, context);
     if (static_cast<std::uint32_t>(win32_context->Eip) != interrupt_boundary_eip)
     {
+        hotspot_scope.SetOutcome(
+            SingleStepProfileOutcome::kTimerInterrupt);
         return true;
     }
     const bool call_step_return_watch =
@@ -1228,6 +1291,8 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
     }
     if (entered_native)
     {
+        hotspot_scope.SetOutcome(
+            SingleStepProfileOutcome::kNativeExecution);
         return true;
     }
     win32_context->EFlags |= 0x00000100U;
@@ -1894,6 +1959,12 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
 #endif
 
 }  // namespace
+
+bool DispatchGuestHleInstruction(CONTEXT* win32_context,
+                                 ThreadContext* context)
+{
+    return DispatchGuestHleHandlers(win32_context, context);
+}
 
 // Execution probe/trace + guest-IP helpers promoted to external linkage for
 // aot_runtime_dispatch.cpp (relocated out of the anonymous namespace).
@@ -3298,6 +3369,11 @@ bool RunWin32ExecutionThread(
     }
 
     ThreadContext context;
+    if (SingleStepHotspotProfileEnabled())
+    {
+        context.single_step_hotspot_profile =
+            std::make_unique<Win32SingleStepHotspotProfile>();
+    }
     SharedTelemetryMapping shared_telemetry =
         OpenSharedTelemetryMapping();
     context.shared_live_telemetry = shared_telemetry.telemetry;

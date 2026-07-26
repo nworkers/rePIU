@@ -1168,3 +1168,97 @@ byte entries and resolved as quarantine. The top 16 guest addresses covered 98.2
 generation publications and one failure. A shared side-table or dispatch boundary that
 redirects short retired entries without an exception is therefore the next candidate, rather
 than extending the existing five-byte `E9 rel32` relink.
+
+## Exception-free superblock 검증 경계 / Exception-free superblock validation boundary
+
+Task 308은 기존 AOT planner/emitter가 이미 cache-local direct call/jump, conditional,
+fallthrough와 backward edge를 연결한다는 사실을 기준으로 합니다. 새 superblock은
+기본 블록 형식을 다시 만드는 기능이 아니라, 일반 planner HLE `INT3`를 정상 host-call
+dispatch slot으로 대체하는 opt-in 실행 경계입니다.
+
+`REPIU_AOT_DBT_SUPERBLOCK=1|on|true`에서 Win32 x86 thunk는 GPR/EFLAGS와
+x87/MMX/SSE를 저장하고 host stack 및 TIB stack bounds로 전환한 뒤 기존 공용 HLE
+handler chain을 호출합니다. 처리된 다음 guest EIP에 활성 cache entry가 있으면 직접
+복귀합니다. segment register write, invalid site, 미처리 HLE, target miss 또는 상태
+계약 실패는 기존 planner-HLE provenance `INT3`로 fail-closed합니다. SMC write-watch와
+generation publication은 기존 정책을 그대로 사용합니다.
+
+Task 308 is based on the confirmed fact that the existing AOT planner and emitter already
+chain cache-local direct calls/jumps, conditional branches, fallthroughs, and backward edges.
+The new superblock boundary is therefore an opt-in replacement of ordinary planner-HLE
+`INT3` exits with a normal host-call dispatch slot, not a second basic-block format.
+
+Under `REPIU_AOT_DBT_SUPERBLOCK=1|on|true`, the Win32 x86 thunk preserves GPR/EFLAGS
+and x87/MMX/SSE state, switches to the host stack and TIB stack bounds, and invokes the
+shared HLE handler chain. A handled next guest EIP resumes at an active cache entry.
+Segment-register writes, invalid sites, unhandled HLE, target misses, and state-contract
+failures fail closed through the existing planner-HLE provenance `INT3`. Existing SMC
+write-watch and generation-publication policy remains unchanged.
+
+첫 unrestricted 실행은 정상 호출 ABI의 안전 범위를 추가로 확인했습니다.
+`0x030F5D27: INT 21h AH=25h`를 직접 처리하면 INT 8 vector selector가 기존 VEH
+경로의 `002B` 대신 `0023`으로 저장되어 후속 `0x03042EBE` AV를 만들었습니다.
+따라서 first slice는 segment/ESP write 외에 모든 `INT/IRET`도 VEH 경계에 남깁니다.
+target miss는 HLE가 이미 committed된 경우 source를 재실행하지 않고 처리된 다음
+guest EIP에서 TF bridge로 들어갑니다.
+
+60초 OFF/ON 검증 결과는 다음과 같습니다.
+
+| 지표 | OFF | ON | 변화 |
+|---|---:|---:|---:|
+| progress | 44,977 | 45,716 | +1.64% |
+| single-step | 276,680 | 254,889 | -7.88% |
+| AOT boundary | 66,245 | 41,224 | -37.77% |
+| host-call HLE success/fallback | 0/0 | 25,134/19,196 | - |
+
+양쪽 모두 exception/legacy fallback 0, Glide gate 4,582/4,582, 동일한 Glide gap
+count와 EEPROM hash를 유지했습니다. 정상 호출 HLE 경계는 안전 subset에서 유효하지만
+5배 whole-run go/no-go에는 실패했습니다. 일반 HLE 예외 제거를 60배 목표의 주
+아키텍처로 확장하지 않습니다.
+
+The unrestricted run showed that direct `INT 21h AH=25h` changes the established INT 8
+selector contract and later faults. All `INT/IRET` forms therefore remain VEH-mediated
+along with segment/ESP writes; a post-commit target miss resumes the handled next EIP through
+the TF bridge. The controlled 60-second pair reduced single-step by 7.88% and AOT boundaries
+by 37.77%, but improved progress only 1.64%. Both runs preserved zero exception/legacy
+fallback, identical Glide activity and gap counts, and matching EEPROM hashes. The safe
+normal-call boundary is viable, but fails the 5x architecture gate.
+
+## Single-step hotspot latency 계측 / Single-step hotspot latency profiling
+
+Task 309는 기본 OFF인 `REPIU_SINGLE_STEP_HOTSPOT_PROFILE=1|on|true` 계측을
+추가합니다. 계측을 켠 실행만 8,192-slot open-addressing table을 heap에 할당하며,
+guest thread는 allocation과 lock 없이 `HandleSingleStepTrace` 진입 EIP별 count,
+total/max TSC tick과 HLE/timer/native/TF outcome을 누적합니다.
+
+```mermaid
+flowchart LR
+    D["#DB → HandleSingleStepTrace"] --> R["RAII TSC scope"]
+    R --> O["HLE / timer / native / TF outcome"]
+    O --> H["guest-EIP fixed histogram"]
+    H --> C["count top 32 + coverage"]
+    H --> T["TSC tick top 32 + coverage"]
+```
+
+종료 시에만 histogram을 snapshot하고 count와 TSC tick 순위를 독립 정렬합니다.
+계측 범위는 handler body이며 kernel의 #DB 진입 전과 VEH 복귀 후를 포함하지 않습니다.
+또한 thread preemption이 sample latency를 늘릴 수 있으므로 값을 순수 CPU cycle 또는
+전체 예외 전환 비용으로 해석하지 않습니다.
+
+60초 검증에서는 HLE가 event의 33.60%와 handler tick의 84.82%를 차지했습니다.
+상위 주소는 segment-register move와 port-I/O HLE에 분산됐고 cycle 상위 32 coverage는
+67.21%였습니다. 단일 loop의 exception-free generation은 80% gate를 통과하지
+못했으므로, 다음 single-step 작업은 상위 HLE의 opcode-directed dispatch/decode
+비용과 계측 범위 밖 exception transition 비용을 먼저 분리합니다.
+
+Task 309 adds an opt-in `REPIU_SINGLE_STEP_HOTSPOT_PROFILE=1|on|true` profile. Enabled runs
+allocate an 8,192-slot open-addressing table on the heap. The guest thread records per-entry
+EIP count, total/max TSC ticks, and HLE/timer/native/TF outcomes without allocation or locks.
+The final snapshot independently sorts the top 32 by count and by ticks.
+
+The scope covers the handler body, not kernel #DB entry or the path after VEH returns, and
+preemption can inflate latency. In the 60-second profile, HLE accounted for 33.60% of events
+and 84.82% of handler ticks. Segment-register and port-I/O HLE sites were distributed across
+the ranking, and the top 32 covered 67.21%, below the 80% gate for generating one
+exception-free loop. The next single-step task must first separate hot-HLE dispatch/decode
+work from the exception-transition cost outside this scope.

@@ -1,0 +1,312 @@
+#include "aot_dbt_hle_dispatch.h"
+
+#include "aot_runtime_dispatch.h"
+#include "execution_internal.h"
+#include "guest_memory_access.h"
+
+#include <Zydis.h>
+
+#include <cstddef>
+#include <cstring>
+
+namespace repiu::platform::win32
+{
+namespace
+{
+
+constexpr std::size_t kSavedEspIndex = 3U;
+constexpr std::size_t kSavedEflagsIndex = 8U;
+constexpr std::size_t kGuestSourceIndex = 9U;
+constexpr std::size_t kDispatchAddressIndex = 10U;
+constexpr std::uint32_t kGuestMetadataBytes = 8U;
+constexpr std::uint32_t kFallbackFromDispatchBytes = 15U;
+
+bool FindDispatchSite(
+    const ThreadContext* context,
+    std::uint32_t dispatch_address,
+    runtime::AotDbtHleDispatchSite* result)
+{
+    if (context == nullptr || context->aot_placement == nullptr ||
+        result == nullptr ||
+        dispatch_address < context->aot_placement->base_address)
+    {
+        return false;
+    }
+    const std::uint32_t offset =
+        dispatch_address - context->aot_placement->base_address;
+    for (const runtime::AotDbtHleDispatchSite& site :
+         context->aot_placement->dbt_hle_dispatch_sites)
+    {
+        if (site.dispatch_cache_offset == offset)
+        {
+            *result = site;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool RequiresVehMediatedHle(ThreadContext* context, std::uint32_t guest_eip)
+{
+    const auto* code = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(guest_eip));
+    if (context == nullptr || !IsGuestRangeReadable(context, code, 15U))
+    {
+        return true;
+    }
+    ZydisDecoder decoder;
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(
+            &decoder, ZYDIS_MACHINE_MODE_LEGACY_32, ZYDIS_STACK_WIDTH_32)))
+    {
+        return true;
+    }
+    ZydisDecodedInstruction instruction{};
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+    if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(
+            &decoder, code, 15U, &instruction, operands)))
+    {
+        return true;
+    }
+    switch (instruction.mnemonic)
+    {
+        case ZYDIS_MNEMONIC_INT:
+        case ZYDIS_MNEMONIC_INT1:
+        case ZYDIS_MNEMONIC_INT3:
+        case ZYDIS_MNEMONIC_INTO:
+        case ZYDIS_MNEMONIC_IRET:
+        case ZYDIS_MNEMONIC_IRETD:
+        case ZYDIS_MNEMONIC_IRETQ:
+            return true;
+        default:
+            break;
+    }
+    for (std::uint8_t index = 0; index < instruction.operand_count; ++index)
+    {
+        if ((operands[index].actions & ZYDIS_OPERAND_ACTION_MASK_WRITE) == 0 ||
+            operands[index].type != ZYDIS_OPERAND_TYPE_REGISTER)
+        {
+            continue;
+        }
+        const ZydisRegister reg = operands[index].reg.value;
+        if (ZydisRegisterGetClass(reg) == ZYDIS_REGCLASS_SEGMENT ||
+            reg == ZYDIS_REGISTER_ESP || reg == ZYDIS_REGISTER_SP)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+extern "C" void __stdcall ResolveAotDbtHleFrame(
+    ThreadContext* context, std::uint32_t* frame)
+{
+    if (frame == nullptr)
+    {
+        return;
+    }
+    if (context != nullptr)
+    {
+        context->aot_dbt_hle_dispatch_entry_count.fetch_add(
+            1U, std::memory_order_relaxed);
+    }
+
+    const std::uint32_t guest_source = frame[kGuestSourceIndex];
+    const std::uint32_t dispatch_address = frame[kDispatchAddressIndex];
+    runtime::AotDbtHleDispatchSite site;
+    if (!FindDispatchSite(context, dispatch_address, &site) ||
+        site.guest_source != guest_source)
+    {
+        frame[kGuestSourceIndex] =
+            dispatch_address + kFallbackFromDispatchBytes;
+        RecordAotDbtHleFallback(
+            context, AotDbtHleFallbackReason::kInvalidSite);
+        return;
+    }
+
+    const std::uint32_t cache_base = context->aot_placement->base_address;
+    frame[kGuestSourceIndex] = cache_base + site.fallback_cache_offset;
+    if (RequiresVehMediatedHle(context, guest_source))
+    {
+        RecordAotDbtHleFallback(
+            context, AotDbtHleFallbackReason::kVehRequired);
+        return;
+    }
+
+    CONTEXT guest_context{};
+    guest_context.ContextFlags =
+        CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS;
+    guest_context.Edi = frame[0];
+    guest_context.Esi = frame[1];
+    guest_context.Ebp = frame[2];
+    guest_context.Esp =
+        frame[kSavedEspIndex] + 4U + kGuestMetadataBytes;
+    guest_context.Ebx = frame[4];
+    guest_context.Edx = frame[5];
+    guest_context.Ecx = frame[6];
+    guest_context.Eax = frame[7];
+    guest_context.EFlags = frame[kSavedEflagsIndex];
+    guest_context.Eip = guest_source;
+    guest_context.SegEs = context->guest_es;
+    guest_context.SegSs = context->guest_ss;
+    guest_context.SegDs = context->guest_ds;
+    guest_context.SegFs = context->guest_fs;
+    guest_context.SegGs = context->guest_gs;
+    const std::uint32_t original_esp =
+        static_cast<std::uint32_t>(guest_context.Esp);
+
+    if (!DispatchGuestHleInstruction(&guest_context, context) ||
+        static_cast<std::uint32_t>(guest_context.Eip) == guest_source)
+    {
+        RecordAotDbtHleFallback(
+            context, AotDbtHleFallbackReason::kUnhandled);
+        return;
+    }
+    if (static_cast<std::uint32_t>(guest_context.Esp) != original_esp)
+    {
+        context->aot_terminal_failure.store(true, std::memory_order_release);
+        RecordAotDbtHleFallback(
+            context, AotDbtHleFallbackReason::kStateMismatch);
+        return;
+    }
+    std::uint32_t source_bytes = 0U;
+    std::memcpy(
+        &source_bytes,
+        reinterpret_cast<const void*>(
+            static_cast<std::uintptr_t>(guest_source)),
+        sizeof(source_bytes));
+    context->aot_dbt_hle_dispatch_last_source.store(
+        guest_source, std::memory_order_relaxed);
+    context->aot_dbt_hle_dispatch_last_next.store(
+        static_cast<std::uint32_t>(guest_context.Eip),
+        std::memory_order_relaxed);
+    context->aot_dbt_hle_dispatch_last_bytes.store(
+        source_bytes, std::memory_order_relaxed);
+
+    std::uint32_t cache_target = 0U;
+    const bool cache_target_resolved = ResolveAotTransferTarget(
+        context, static_cast<std::uint32_t>(guest_context.Eip),
+        &cache_target);
+
+    frame[0] = guest_context.Edi;
+    frame[1] = guest_context.Esi;
+    frame[2] = guest_context.Ebp;
+    frame[4] = guest_context.Ebx;
+    frame[5] = guest_context.Edx;
+    frame[6] = guest_context.Ecx;
+    frame[7] = guest_context.Eax;
+    frame[kGuestSourceIndex] = cache_base + site.success_cache_offset;
+    context->aot_legacy_fallback = false;
+    if (cache_target_resolved)
+    {
+        frame[kSavedEflagsIndex] =
+            guest_context.EFlags & ~0x00000100U;
+        frame[kDispatchAddressIndex] = cache_target;
+        context->aot_reentry_pending = false;
+        context->enable_single_step_trace = false;
+        context->aot_dbt_hle_dispatch_success_count.fetch_add(
+            1U, std::memory_order_relaxed);
+        AccumulateAotResidency(
+            context, static_cast<std::uint32_t>(guest_context.Eip));
+        BumpAotReentryCount(context);
+    }
+    else
+    {
+        // The HLE side effect is already committed, so re-executing the source
+        // through fallback INT3 would be incorrect. Resume the handled next
+        // guest instruction under the established one-step bridge instead.
+        frame[kSavedEflagsIndex] =
+            guest_context.EFlags | 0x00000100U;
+        frame[kDispatchAddressIndex] =
+            static_cast<std::uint32_t>(guest_context.Eip);
+        context->aot_reentry_pending = true;
+        context->enable_single_step_trace = true;
+        RecordAotDbtHleFallback(
+            context, AotDbtHleFallbackReason::kTargetMiss);
+    }
+}
+
+#if defined(_MSC_VER) && defined(_M_IX86)
+extern "C" __declspec(naked) void AotDbtHleDispatchThunk()
+{
+    __asm
+    {
+        pushfd
+        pushad
+        // Host C/C++ ABI requires forward string operations. The saved guest
+        // EFLAGS still carries DF and popfd restores it on either continuation.
+        cld
+
+        mov esi, esp
+        mov ecx, dword ptr [g_repiu_active_thread_context]
+        test ecx, ecx
+        jz fail_without_host
+        mov eax, dword ptr [g_repiu_dbt_host_esp]
+        test eax, eax
+        jz fail_without_host
+
+        mov edx, dword ptr [g_repiu_dbt_host_stack_base]
+        mov dword ptr fs:[4], edx
+        mov edx, dword ptr [g_repiu_dbt_host_stack_limit]
+        mov dword ptr fs:[8], edx
+        mov esp, eax
+        sub esp, 512
+        and esp, -16
+        fxsave [esp]
+        mov edi, esp
+        push esi
+        push ecx
+        call ResolveAotDbtHleFrame
+        fxrstor [edi]
+
+        mov eax, dword ptr [g_repiu_dbt_guest_stack_base]
+        mov dword ptr fs:[4], eax
+        mov eax, dword ptr [g_repiu_dbt_guest_stack_limit]
+        mov dword ptr fs:[8], eax
+        mov esp, esi
+        popad
+        popfd
+        ret
+
+    fail_without_host:
+        mov eax, dword ptr [esp + 40]
+        add eax, 15
+        mov dword ptr [esp + 36], eax
+        popad
+        popfd
+        ret
+    }
+}
+#endif
+
+}  // namespace
+
+void RecordAotDbtHleFallback(
+    ThreadContext* context,
+    AotDbtHleFallbackReason reason)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+    std::uint32_t index = static_cast<std::uint32_t>(reason);
+    if (index >= kAotDbtHleFallbackReasonCount)
+    {
+        index = static_cast<std::uint32_t>(
+            AotDbtHleFallbackReason::kUnknown);
+    }
+    context->aot_dbt_hle_dispatch_fallback_count.fetch_add(
+        1U, std::memory_order_relaxed);
+    context->aot_dbt_hle_dispatch_fallback_reason_counts[index].fetch_add(
+        1U, std::memory_order_relaxed);
+}
+
+void* GetAotDbtHleDispatchThunkAddress()
+{
+#if defined(_MSC_VER) && defined(_M_IX86)
+    return reinterpret_cast<void*>(&AotDbtHleDispatchThunk);
+#else
+    return nullptr;
+#endif
+}
+
+}  // namespace repiu::platform::win32

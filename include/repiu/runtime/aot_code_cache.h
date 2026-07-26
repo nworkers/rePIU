@@ -27,6 +27,9 @@ struct AotCodeCacheBuildOptions
     bool enable_dbt_indirect_dispatch_calls = true;
     bool enable_dbt_indirect_dispatch_jumps = true;
     bool enable_guarded_segment_pop = false;
+    // Task 308 architecture probe. Ordinary planner-HLE records use a normal
+    // host-dispatch slot whose fail-closed continuation retains INT3.
+    bool enable_dbt_hle_dispatch = false;
 };
 
 enum class AotFixupKind
@@ -90,6 +93,21 @@ struct AotDbtReturnDispatchSite
     std::uint32_t guest_source = 0;
     std::uint32_t miss_cache_offset = 0;
     std::uint32_t miss_address_immediate_offset = 0;
+    std::uint32_t thunk_displacement_offset = 0;
+    std::uint32_t fallback_cache_offset = 0;
+    std::uint32_t success_cache_offset = 0;
+};
+
+// Task 308. A planner HLE boundary pushes the absolute slot address and guest
+// source, then jumps to a Win32 host-stack thunk. The resolver rewrites the
+// saved return slot to either fallback_cache_offset or success_cache_offset.
+// Success pops the resolved cache target; fallback discards the metadata and
+// reaches the existing provenance-aware INT3.
+struct AotDbtHleDispatchSite
+{
+    std::uint32_t guest_source = 0;
+    std::uint32_t dispatch_cache_offset = 0;
+    std::uint32_t dispatch_address_immediate_offset = 0;
     std::uint32_t thunk_displacement_offset = 0;
     std::uint32_t fallback_cache_offset = 0;
     std::uint32_t success_cache_offset = 0;
@@ -174,6 +192,7 @@ struct AotCodeCacheImage
     std::vector<AotCodeCacheFixup> fixups;
     std::vector<AotIndirectInlineCacheSite> indirect_inline_cache_sites;
     std::vector<AotDbtReturnDispatchSite> dbt_return_dispatch_sites;
+    std::vector<AotDbtHleDispatchSite> dbt_hle_dispatch_sites;
     std::vector<AotDbtIndirectDispatchSite> dbt_indirect_dispatch_sites;
     std::vector<AotJumpTableSite> jump_table_sites;
     std::vector<AotGuardedSegmentPopSite> guarded_segment_pop_sites;
@@ -183,6 +202,7 @@ struct AotCodeCacheImage
     std::uint32_t indirect_inline_cache_entry_count =
         kDefaultAotIndirectInlineCacheEntryCount;
     bool dbt_return_miss_dispatch_enabled = false;
+    bool dbt_hle_dispatch_enabled = false;
     bool guarded_segment_pop_enabled = false;
     bool dbt_indirect_miss_dispatch_enabled = false;
     std::uint32_t resolved_fixup_count = 0;

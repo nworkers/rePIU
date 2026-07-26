@@ -7,6 +7,7 @@
 #include "repiu/platform/win32/aot_code_cache_win32.h"
 #include "repiu/platform/win32/aot_boundary_provenance.h"
 #include "repiu/platform/win32/aot_retired_trap_profile.h"
+#include "repiu/platform/win32/single_step_hotspot_profile.h"
 #include "repiu/hle/dos_file_system.h"
 #include "repiu/hle/glide_implementation_issue.h"
 #include "repiu/exe/dos16m_bound_module.h"
@@ -34,6 +35,7 @@ constexpr std::uint32_t kWin32GlideVertexDwordCount = 18;
 constexpr std::uint32_t kWin32GlideTriangleTraceCapacity = 16;
 constexpr std::uint32_t kWin32GlideProducerVertexDwordCount = 15;
 constexpr std::uint32_t kWin32DeferredPortIoLimit = 65536;
+constexpr std::uint32_t kAotDbtHleFallbackReasonCount = 6;
 
 // Task 281 introduced this exclusive cause model for RET miss dispatch; Task 282
 // shares it with indirect call/jump miss dispatch, which fails for the same
@@ -500,6 +502,8 @@ struct Win32MinimalExecutionAttempt
     X86ExecutionSnapshot timeout_snapshot;
     X86ExecutionSnapshot last_single_step_snapshot;
     std::uint32_t single_step_trace_count = 0;
+    Win32SingleStepHotspotProfileSnapshot
+        single_step_hotspot_profile;
     std::uint32_t native_fast_path_entry_count = 0;
     std::uint32_t native_fast_path_return_count = 0;
     std::uint32_t native_fast_path_cancel_count = 0;
@@ -557,6 +561,15 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t aot_dbt_hle_reentry_success_count = 0;
     std::uint32_t aot_dbt_hle_translation_attempt_count = 0;
     std::uint32_t aot_dbt_hle_translation_success_count = 0;
+    std::uint32_t aot_dbt_hle_dispatch_entry_count = 0;
+    std::uint32_t aot_dbt_hle_dispatch_attempt_count = 0;
+    std::uint32_t aot_dbt_hle_dispatch_success_count = 0;
+    std::uint32_t aot_dbt_hle_dispatch_fallback_count = 0;
+    std::uint32_t aot_dbt_hle_dispatch_fallback_reason_counts[
+        kAotDbtHleFallbackReasonCount] = {};
+    std::uint32_t aot_dbt_hle_dispatch_last_source = 0;
+    std::uint32_t aot_dbt_hle_dispatch_last_next = 0;
+    std::uint32_t aot_dbt_hle_dispatch_last_bytes = 0;
     std::uint32_t aot_selector_guard_native_site_count = 0;
     std::uint32_t aot_selector_guard_hle_site_count = 0;
     std::uint32_t aot_selector_guard_unresolved_site_count = 0;

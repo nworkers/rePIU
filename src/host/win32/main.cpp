@@ -902,6 +902,72 @@ void PrintExecutionAttempt(
     }
     logger.info("Win32 single-step trace count: {}",
                 attempt.single_step_trace_count);
+    const auto& step_profile = attempt.single_step_hotspot_profile;
+    const double step_count_coverage =
+        step_profile.total_sample_count != 0U
+            ? 100.0 * step_profile.top_count_coverage_count /
+                  step_profile.total_sample_count
+            : 0.0;
+    const double step_cycle_coverage =
+        step_profile.total_cycles != 0U
+            ? 100.0 * static_cast<double>(
+                  step_profile.top_cycle_coverage_cycles) /
+                  static_cast<double>(step_profile.total_cycles)
+            : 0.0;
+    logger.info(
+        "Win32 single-step hotspot enabled/total/distinct/overflow: "
+        "{}/{}/{}/{}",
+        step_profile.enabled,
+        step_profile.total_sample_count,
+        step_profile.distinct_guest_count,
+        step_profile.overflow_count);
+    logger.info(
+        "Win32 single-step hotspot cycles total/max: {}/{}",
+        step_profile.total_cycles,
+        step_profile.max_cycles);
+    logger.info(
+        "Win32 single-step hotspot outcome count "
+        "HLE/timer/native/TF: {}/{}/{}/{}",
+        step_profile.outcome_counts[0],
+        step_profile.outcome_counts[1],
+        step_profile.outcome_counts[2],
+        step_profile.outcome_counts[3]);
+    logger.info(
+        "Win32 single-step hotspot outcome cycles "
+        "HLE/timer/native/TF: {}/{}/{}/{}",
+        step_profile.outcome_cycles[0],
+        step_profile.outcome_cycles[1],
+        step_profile.outcome_cycles[2],
+        step_profile.outcome_cycles[3]);
+    logger.info(
+        "Win32 single-step hotspot top count/cycle coverage: "
+        "{:.2f}%/{:.2f}%",
+        step_count_coverage,
+        step_cycle_coverage);
+    for (std::uint32_t index = 0;
+         index < step_profile.count_hotspot_count; ++index)
+    {
+        const auto& hotspot = step_profile.count_hotspots[index];
+        logger.info(
+            "Win32 single-step count hotspot #{} "
+            "address/count/cycles/max/outcome: {}/{}/{}/{}/{}/{}/{}/{}",
+            index + 1U, Hex32(hotspot.guest_address),
+            hotspot.sample_count, hotspot.total_cycles, hotspot.max_cycles,
+            hotspot.outcome_counts[0], hotspot.outcome_counts[1],
+            hotspot.outcome_counts[2], hotspot.outcome_counts[3]);
+    }
+    for (std::uint32_t index = 0;
+         index < step_profile.cycle_hotspot_count; ++index)
+    {
+        const auto& hotspot = step_profile.cycle_hotspots[index];
+        logger.info(
+            "Win32 single-step cycle hotspot #{} "
+            "address/count/cycles/max/outcome: {}/{}/{}/{}/{}/{}/{}/{}",
+            index + 1U, Hex32(hotspot.guest_address),
+            hotspot.sample_count, hotspot.total_cycles, hotspot.max_cycles,
+            hotspot.outcome_counts[0], hotspot.outcome_counts[1],
+            hotspot.outcome_counts[2], hotspot.outcome_counts[3]);
+    }
     logger.info("Win32 native fast path entry/return/cancel: {}/{}/{}",
                 attempt.native_fast_path_entry_count,
                 attempt.native_fast_path_return_count,
@@ -954,12 +1020,34 @@ void PrintExecutionAttempt(
                 attempt.aot_dbt_hle_translation_attempt_count,
                 attempt.aot_dbt_hle_translation_success_count);
     logger.info(
+        "Win32 AOT-DBT HLE host dispatch entry/attempt/success/fallback: "
+        "{}/{}/{}/{}",
+        attempt.aot_dbt_hle_dispatch_entry_count,
+        attempt.aot_dbt_hle_dispatch_attempt_count,
+        attempt.aot_dbt_hle_dispatch_success_count,
+        attempt.aot_dbt_hle_dispatch_fallback_count);
+    logger.info(
+        "Win32 AOT-DBT HLE host fallback reason "
+        "site/veh-required/unhandled/target/state/unknown: "
+        "{}/{}/{}/{}/{}/{}",
+        attempt.aot_dbt_hle_dispatch_fallback_reason_counts[0],
+        attempt.aot_dbt_hle_dispatch_fallback_reason_counts[1],
+        attempt.aot_dbt_hle_dispatch_fallback_reason_counts[2],
+        attempt.aot_dbt_hle_dispatch_fallback_reason_counts[3],
+        attempt.aot_dbt_hle_dispatch_fallback_reason_counts[4],
+        attempt.aot_dbt_hle_dispatch_fallback_reason_counts[5]);
+    logger.info(
         "Win32 AOT selector guard native/HLE/unresolved-site/HLE-exit/mismatch: {}/{}/{}/{}/{}",
         attempt.aot_selector_guard_native_site_count,
         attempt.aot_selector_guard_hle_site_count,
         attempt.aot_selector_guard_unresolved_site_count,
         attempt.aot_selector_guard_hle_exit_count,
         attempt.aot_selector_guard_mismatch_count);
+    logger.info(
+        "Win32 AOT-DBT HLE host last source/next/bytes: {}/{}/{}",
+        Hex32(attempt.aot_dbt_hle_dispatch_last_source),
+        Hex32(attempt.aot_dbt_hle_dispatch_last_next),
+        Hex32(attempt.aot_dbt_hle_dispatch_last_bytes));
     logger.info("Win32 AOT guarded segment-pop success/fallback: {}/{}",
                 attempt.aot_guarded_segment_pop_success_count,
                 attempt.aot_guarded_segment_pop_fallback_count);
@@ -3016,6 +3104,16 @@ int main(int argc, char** argv)
     repiu::runtime::AotCodeCacheBuildOptions aot_build_options;
     aot_build_options.enable_dbt_return_miss_dispatch =
         execution_backend == repiu::runtime::ExecutionBackend::kAotDbt;
+    const char* superblock_toggle =
+        std::getenv("REPIU_AOT_DBT_SUPERBLOCK");
+    const std::string superblock_setting =
+        superblock_toggle != nullptr
+            ? std::string(superblock_toggle) : std::string();
+    aot_build_options.enable_dbt_hle_dispatch =
+        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt &&
+        (superblock_setting == "1" ||
+         superblock_setting == "on" ||
+         superblock_setting == "true");
     const char* guarded_segment_pop_toggle =
         std::getenv("REPIU_AOT_GUARDED_SEGMENT_POP");
     const std::string guarded_segment_pop_setting =
@@ -3091,6 +3189,8 @@ int main(int argc, char** argv)
                      aot_build_options.indirect_inline_cache_entry_count);
         logger->info("Win32 AOT guarded segment-pop enabled: {}",
                      aot_build_options.enable_guarded_segment_pop);
+        logger->info("Win32 AOT-DBT superblock HLE dispatch enabled: {}",
+                     aot_build_options.enable_dbt_hle_dispatch);
     }
 
     repiu::runtime::GuestStackSwitchPlan stack_plan;

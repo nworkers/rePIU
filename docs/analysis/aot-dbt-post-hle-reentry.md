@@ -162,3 +162,39 @@ placement-metadata census recorded HLE/segment/inline/jump-table/retired/probe/f
 as `22,248/7,064/34,912/0/7,298/0/0/0`. A completed image has no unresolved direct/fallthrough
 fixup and unknown is zero, so no separate arbitrary-miss/fallthrough host-dispatch population
 was observed. Stage 3b remains held under the accuracy-first policy.
+
+## 한국어 — Task 308 정상 호출 HLE 결론
+
+**확인됨:** cache-local target이 있는 안전 HLE는 `INT3/VEH` 없이 기존 공용 handler를
+정상 호출하고 즉시 cache로 복귀할 수 있습니다. Win32 x86 thunk는 GPR/EFLAGS,
+x87/MMX/SSE와 host stack/TIB 경계를 보존합니다. 60초 실행에서 직접 성공은
+25,134회였고 target miss/state mismatch/unknown은 모두 0이었습니다.
+
+**확인됨:** target miss는 HLE side effect가 이미 committed된 뒤이므로 원본 source
+`INT3`로 fallback할 수 없습니다. 처리된 다음 guest EIP에서 TF bridge를 재개합니다.
+
+**확인됨:** software interrupt는 이 ABI의 안전 모집단이 아닙니다. 직접
+`INT 21h AH=25h`가 INT 8 selector를 OFF의 `002B`와 다른 `0023`으로 저장했고 후속
+AV를 만들었습니다. 모든 `INT/IRET`와 segment/ESP write는 VEH 경계에 남깁니다.
+
+**결론:** 안전 subset은 single-step 7.88%, AOT boundary 37.77%를 줄였지만 progress는
+1.64%만 늘었습니다. HLE 예외 횟수는 관측 가능한 비용이지만 5배 또는 60배 격차의
+주원인은 아닙니다.
+
+## English — Task 308 normal-call HLE conclusion
+
+**Confirmed:** A safe HLE site with an active cache target can invoke the shared handler
+normally and return directly to cache without `INT3/VEH`. The Win32 x86 thunk preserves
+GPR/EFLAGS, x87/MMX/SSE state, and host stack/TIB bounds. The 60-second run recorded 25,134
+direct successes and zero target-miss, state-mismatch, or unknown failures.
+
+A target miss after a committed HLE cannot re-execute the source `INT3`; it resumes the
+handled next guest EIP through the established TF bridge.
+
+Software interrupts are not part of this safe ABI. Direct `INT 21h AH=25h` changed the INT 8
+selector from the established `002B` to `0023` and led to a later AV. All `INT/IRET` forms
+and segment/ESP writes remain VEH-mediated.
+
+The safe subset reduced single-step by 7.88% and AOT boundaries by 37.77%, but improved
+progress by only 1.64%. HLE exception count is measurable overhead, not the principal cause
+of the 5x or 60x gap.

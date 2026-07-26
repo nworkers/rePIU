@@ -352,6 +352,86 @@ bool RunSelectorGuardProbe()
         VirtualFree(memory, 0, MEM_RELEASE);
     }
 
+    runtime::AotInstructionRecord hle_record;
+    hle_record.guest_address = 0x00105000U;
+    hle_record.fallthrough_target = 0x00105001U;
+    hle_record.kind = runtime::AotInstructionKind::kHleBoundary;
+    hle_record.length = 1U;
+    hle_record.bytes = {0xFAU};
+    runtime::AotInstructionRecord hle_return;
+    hle_return.guest_address = hle_record.fallthrough_target;
+    hle_return.kind = runtime::AotInstructionKind::kReturn;
+    hle_return.length = 1U;
+    hle_return.bytes = {0xC3U};
+    runtime::AotBasicBlock hle_block;
+    hle_block.guest_address = hle_record.guest_address;
+    hle_block.instructions.push_back(hle_record);
+    runtime::AotBasicBlock hle_return_block;
+    hle_return_block.guest_address = hle_return.guest_address;
+    hle_return_block.instructions.push_back(hle_return);
+    runtime::AotTranslationPlan hle_plan;
+    hle_plan.valid = true;
+    hle_plan.entry_address = hle_record.guest_address;
+    hle_plan.block_count = 2U;
+    hle_plan.instruction_count = 2U;
+    hle_plan.source_code_bytes = 2U;
+    hle_plan.hle_boundary_count = 1U;
+    hle_plan.return_count = 1U;
+    hle_plan.blocks.push_back(hle_block);
+    hle_plan.blocks.push_back(hle_return_block);
+    runtime::AotCodeCacheBuildOptions hle_options;
+    hle_options.enable_dbt_hle_dispatch = true;
+    runtime::AotCodeCacheImage hle_image;
+    const bool hle_dispatch_ready =
+        runtime::BuildAotCodeCacheImage(
+            hle_plan, hle_options, &hle_image) &&
+        hle_image.dbt_hle_dispatch_sites.size() == 1U;
+    bool hle_dispatch_layout = false;
+    bool hle_dispatch_coverage = false;
+    bool hle_dispatch_placement = false;
+    if (hle_dispatch_ready)
+    {
+        const runtime::AotDbtHleDispatchSite& site =
+            hle_image.dbt_hle_dispatch_sites[0];
+        const std::uint32_t slot = site.dispatch_cache_offset;
+        hle_dispatch_layout =
+            slot + 21U <= hle_image.bytes.size() &&
+            hle_image.bytes[slot] == 0x68U &&
+            hle_image.bytes[slot + 5U] == 0x68U &&
+            hle_image.bytes[slot + 10U] == 0xE9U &&
+            hle_image.bytes[slot + 19U] == 0xCCU &&
+            hle_image.bytes[slot + 20U] == 0xC3U;
+        runtime::AotCodeCacheImage broken_hle = hle_image;
+        broken_hle.bytes[slot + 19U] = 0x90U;
+        std::uint32_t failure_guest = 0U;
+        hle_dispatch_coverage =
+            runtime::ValidateAotCodeCacheHleCoverage(
+                hle_plan, hle_image) &&
+            !runtime::ValidateAotCodeCacheHleCoverage(
+                hle_plan, broken_hle, &failure_guest) &&
+            failure_guest == hle_record.guest_address;
+
+        platform::win32::Win32AotCodeCachePlacement hle_placement;
+        if (platform::win32::PlaceWin32AotCodeCache(
+                hle_image, &hle_placement) &&
+            hle_placement.placed &&
+            hle_placement.dbt_hle_dispatch_sites.size() == 1U)
+        {
+            std::uint32_t patched_dispatch = 0U;
+            std::memcpy(
+                &patched_dispatch,
+                reinterpret_cast<const void*>(
+                    static_cast<std::uintptr_t>(
+                        hle_placement.base_address +
+                        site.dispatch_address_immediate_offset)),
+                sizeof(patched_dispatch));
+            hle_dispatch_placement =
+                patched_dispatch ==
+                    hle_placement.base_address + site.dispatch_cache_offset;
+        }
+        platform::win32::ReleaseWin32AotCodeCache(&hle_placement);
+    }
+
     const bool policy =
         !platform::win32::ResolveAotDbtPostHleTranslationEnabled("") &&
         platform::win32::ResolveAotDbtPostHleTranslationEnabled("1") &&
@@ -365,7 +445,9 @@ bool RunSelectorGuardProbe()
         guarded_pop_layout &&
         guarded_pop_coverage && guarded_pop_missing_fallback_rejected &&
         guarded_pop_disabled_falls_back && guarded_pop_rejected_forms &&
-        guarded_pop_supported_forms && policy;
+        guarded_pop_supported_forms && hle_dispatch_ready &&
+        hle_dispatch_layout && hle_dispatch_coverage &&
+        hle_dispatch_placement && policy;
     std::cout << "selector_guard_descriptor_policy="
               << (descriptor_policy ? "true" : "false")
               << "\nselector_guard_mismatch_fail_closed="
@@ -394,6 +476,14 @@ bool RunSelectorGuardProbe()
               << (guarded_pop_rejected_forms ? "true" : "false")
               << "\nguarded_segment_pop_supported_forms="
               << (guarded_pop_supported_forms ? "true" : "false")
+              << "\nsuperblock_hle_dispatch_ready="
+              << (hle_dispatch_ready ? "true" : "false")
+              << "\nsuperblock_hle_dispatch_layout="
+              << (hle_dispatch_layout ? "true" : "false")
+              << "\nsuperblock_hle_dispatch_coverage="
+              << (hle_dispatch_coverage ? "true" : "false")
+              << "\nsuperblock_hle_dispatch_placement="
+              << (hle_dispatch_placement ? "true" : "false")
               << "\nselector_guard_post_hle_policy="
               << (policy ? "true" : "false")
               << "\nselector_guard_all=" << (all ? "true" : "false")

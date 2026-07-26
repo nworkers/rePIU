@@ -103,11 +103,13 @@ add_library(repiu_exe
     src/platform/win32/aot/aot_dbt_call_return_trace.cpp
     src/platform/win32/aot/aot_dbt_call_step_probe.cpp
     src/platform/win32/aot/aot_dbt_dispatch.cpp
+    src/platform/win32/aot/aot_dbt_hle_dispatch.cpp
     src/platform/win32/aot/aot_dbt_indirect_dispatch.cpp
     src/platform/win32/aot/aot_dbt_return_dispatch.cpp
     src/platform/win32/aot/aot_retired_trap_profile.cpp
     src/platform/win32/aot/aot_runtime_dispatch.cpp
     src/platform/win32/execution/execution_trampoline.cpp
+    src/platform/win32/execution/single_step_hotspot_profile.cpp
     src/platform/win32/dos/dos_int21_services.cpp
     src/platform/win32/dos/dpmi_mscdex_services.cpp
     src/platform/win32/exception/breakpoint_evidence_win32.cpp
@@ -188,6 +190,7 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/inline_cache_probe.cpp
     src/tools/aot_probe/native_linear_span_probe.cpp
     src/tools/aot_probe/retired_trap_profile_probe.cpp
+    src/tools/aot_probe/single_step_hotspot_profile_probe.cpp
     src/tools/aot_probe/selector_guard_probe.cpp
     src/tools/aot_probe/main.cpp
 )

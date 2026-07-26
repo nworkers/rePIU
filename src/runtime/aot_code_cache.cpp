@@ -630,6 +630,42 @@ bool EmitGuardedSegmentPopSlot(const AotInstructionRecord& instruction,
     return true;
 }
 
+bool EmitHleDispatchSlot(const AotInstructionRecord& instruction,
+                         AotCodeCacheImage* image)
+{
+    if (image == nullptr)
+    {
+        return false;
+    }
+    AotDbtHleDispatchSite site;
+    site.guest_source = instruction.guest_address;
+    site.dispatch_cache_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    image->bytes.push_back(0x68U);
+    site.dispatch_address_immediate_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    image->bytes.push_back(0x68U);
+    AppendImmediate32(&image->bytes, instruction.guest_address);
+    AppendRel32(&image->bytes, 0xE9U);
+    site.thunk_displacement_offset =
+        static_cast<std::uint32_t>(image->bytes.size() - 4U);
+    site.fallback_cache_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    image->bytes.insert(image->bytes.end(), {0x8DU, 0x64U, 0x24U, 0x04U});
+    const std::uint32_t fallback_int3 =
+        static_cast<std::uint32_t>(image->bytes.size());
+    image->bytes.push_back(0xCCU);
+    site.success_cache_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    image->bytes.push_back(0xC3U);
+    image->fixups.push_back({AotFixupKind::kHleBoundary,
+                             instruction.guest_address, 0U,
+                             fallback_int3, false});
+    image->dbt_hle_dispatch_sites.push_back(site);
+    return true;
+}
+
 }  // namespace
 
 bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
@@ -653,6 +689,8 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
         options.indirect_inline_cache_entry_count;
     image->dbt_return_miss_dispatch_enabled =
         options.enable_dbt_return_miss_dispatch;
+    image->dbt_hle_dispatch_enabled =
+        options.enable_dbt_hle_dispatch;
     image->dbt_indirect_miss_dispatch_enabled =
         options.enable_dbt_indirect_miss_dispatch;
     const auto started = std::chrono::steady_clock::now();
@@ -751,10 +789,16 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                     break;
                 }
                 case AotInstructionKind::kHleBoundary:
-                    image->bytes.push_back(0xCCU);
-                    image->fixups.push_back({AotFixupKind::kHleBoundary,
-                                             instruction.guest_address, 0U,
-                                             cache_offset, false});
+                case AotInstructionKind::kPortIo:
+                    if (!options.enable_dbt_hle_dispatch ||
+                        !EmitHleDispatchSlot(instruction, image))
+                    {
+                        image->bytes.push_back(0xCCU);
+                        image->fixups.push_back({
+                            AotFixupKind::kHleBoundary,
+                            instruction.guest_address, 0U,
+                            cache_offset, false});
+                    }
                     break;
                 case AotInstructionKind::kSegmentOverrideMem:
                     if (!EmitSegmentOverrideSlot(instruction, image))
@@ -925,6 +969,7 @@ bool ValidateAotCodeCacheHleCoverage(
         for (const AotInstructionRecord& instruction : block.instructions)
         {
             if (instruction.kind != AotInstructionKind::kHleBoundary &&
+                instruction.kind != AotInstructionKind::kPortIo &&
                 instruction.kind != AotInstructionKind::kSegmentOverrideMem &&
                 instruction.kind != AotInstructionKind::kGuardedSegmentPop)
             {
@@ -1007,6 +1052,47 @@ bool ValidateAotCodeCacheHleCoverage(
                     image.bytes[slot + 43U] != 0x58U ||
                     image.bytes[slot + 44U] != 0x9DU ||
                     image.bytes[slot + 45U] != 0xCCU)
+                {
+                    return fail(instruction.guest_address);
+                }
+                continue;
+            }
+            if (instruction.kind == AotInstructionKind::kHleBoundary)
+            {
+                const auto site = std::find_if(
+                    image.dbt_hle_dispatch_sites.begin(),
+                    image.dbt_hle_dispatch_sites.end(),
+                    [&instruction](const AotDbtHleDispatchSite& candidate) {
+                        return candidate.guest_source ==
+                            instruction.guest_address;
+                    });
+                const auto fallback_fixup = std::find_if(
+                    image.fixups.begin(), image.fixups.end(),
+                    [&instruction, &map](const AotCodeCacheFixup& fixup) {
+                        return fixup.kind == AotFixupKind::kHleBoundary &&
+                            fixup.guest_source == instruction.guest_address &&
+                            fixup.cache_patch_offset ==
+                                map->cache_offset + 19U;
+                    });
+                const std::uint32_t slot = map->cache_offset;
+                if (site == image.dbt_hle_dispatch_sites.end() ||
+                    fallback_fixup == image.fixups.end() ||
+                    site->dispatch_cache_offset != slot ||
+                    site->dispatch_address_immediate_offset != slot + 1U ||
+                    site->thunk_displacement_offset != slot + 11U ||
+                    site->fallback_cache_offset != slot + 15U ||
+                    site->success_cache_offset != slot + 20U ||
+                    map->emitted_length != 21U ||
+                    slot + 21U > image.bytes.size() ||
+                    image.bytes[slot] != 0x68U ||
+                    image.bytes[slot + 5U] != 0x68U ||
+                    image.bytes[slot + 10U] != 0xE9U ||
+                    image.bytes[slot + 15U] != 0x8DU ||
+                    image.bytes[slot + 16U] != 0x64U ||
+                    image.bytes[slot + 17U] != 0x24U ||
+                    image.bytes[slot + 18U] != 0x04U ||
+                    image.bytes[slot + 19U] != 0xCCU ||
+                    image.bytes[slot + 20U] != 0xC3U)
                 {
                     return fail(instruction.guest_address);
                 }

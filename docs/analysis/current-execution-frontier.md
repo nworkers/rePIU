@@ -12,61 +12,51 @@ Task 287의 progress `+11.86%`는 `aot-dbt` 내부 span OFF/ON 비교이지 back
 성능 개선이 아닙니다. 과거 통제 표본에서 legacy가 `aot-dynamic`보다 14.6~20.6배
 빨랐다는 사실과 함께 보면 현재 증분 경로는 요구되는 60배 개선 규모에 맞지 않습니다.
 
-다음 작업은 retired trap 같은 1~3% 미세 최적화를 중단하고, 뜨거운 원본 x86 loop를
-TF·`INT3`·Dr0 없이 직접 체이닝하는 **exception-free superblock**으로 실행하여
-아키텍처의 성능 상한을 검증하는 것입니다. planner, emitter, code cache, SMC generation,
-HLE 의미는 재사용하되 steady-state hot loop의 Windows 예외를 99% 이상 제거해야 합니다.
+Task 308의 실제 검증은 exception-free HLE 가설을 부분 기각했습니다. 정상 host-call
+HLE 경계는 60초 동안 exception/legacy fallback 0과 EEPROM 일치를 유지했고
+planner-HLE 25,134회를 예외 없이 처리했습니다. 그러나 OFF/ON progress는
+`44,977 → 45,716`(+1.64%)뿐이었고, single-step은 `276,680 → 254,889`(-7.88%),
+AOT boundary는 `66,245 → 41,224`(-37.77%)였습니다. 또한 직접 interrupt HLE는
+INT 8 selector 계약을 바꾸므로 `INT/IRET`는 현재 VEH 경계에 남겨야 합니다.
+
+Task 309의 EIP별 계측은 single-step 횟수만으로 비용을 판단할 수 없음을 확인했습니다.
+60초 동안 272,543개 single-step을 모두 기록했으며 HLE는 event의 33.60%지만
+`HandleSingleStepTrace` 내부 TSC tick의 84.82%였습니다. cycle 상위 주소는 하나의
+계산 loop가 아니라 segment-register move와 port-I/O HLE에 분산됐고 상위 32개
+coverage도 67.21%였습니다. 따라서 한 loop를 바로 exception-free generation으로
+바꾸는 80% gate는 통과하지 못했습니다.
+
+현재 우선순위는 계속 single-step 병목입니다. 다만 다음 작업은 단순 총개수 감소가
+아니라 상위 segment/I/O EIP의 순차 handler/decode 비용과 계측 범위 밖 kernel/VEH
+전환 비용을 분리하는 것입니다. 그 결과로 count와 whole-run 비용을 함께 크게 줄일
+수 있는 경계만 구현 후보로 승격합니다.
 
 **Confirmed:** `aot-dbt` is not yet an independent continuous DBT executor; it layers selective
 normal dispatch and Dr0 spans over `aot-dynamic`. Task 276 measured effectively identical
-progress, `10,709` versus `10,685`. Task 287's `+11.86%` was an internal span OFF/ON result,
-not an absolute backend comparison. Together with historical controlled samples where legacy
-was 14.6-20.6x faster than `aot-dynamic`, incremental exception reductions cannot meet the
-required 60x scale. The next task must validate an exception-free superblock that directly
-chains a hot original-x86 loop with no TF, `INT3`, or Dr0 in steady state while reusing the
-existing planner, emitter, cache, SMC, and HLE foundations.
+progress, while historical controlled samples found legacy 14.6-20.6x faster than
+`aot-dynamic`. Task 308 then removed 25,134 planner-HLE exceptions in a stable 60-second run,
+but improved progress only 1.64%; direct interrupt HLE also changed the selector contract.
+
+Task 309 showed why count alone is insufficient. HLE represented 33.60% of 272,543
+single-step events but 84.82% of TSC ticks measured inside `HandleSingleStepTrace`. The cycle
+hotspots were distributed across segment-register and port-I/O HLE sites, and the top 32
+covered 67.21%, below the 80% gate for one exception-free loop.
+
+The active priority remains single-step overhead. The next task must separate sequential
+handler/decode work at the hot segment/I/O EIPs from kernel/VEH transition cost outside the
+current scope, then promote only a boundary that can materially reduce both event count and
+whole-run cost.
 
 ```mermaid
 flowchart LR
-    C["현재: TF / INT3 / Dr0 반복"] --> M["국소 1~12% 개선"]
-    M -. "60x 불충분" .-> P["exception-free superblock"]
-    P --> B["direct/conditional/backedge chain"]
-    B --> H["정상 host-call HLE exit"]
-    H --> B
+    C["272,543 single-step"] --> A["EIP count + handler TSC"]
+    A --> H["HLE: event 33.60% / tick 84.82%"]
+    H --> S["segment / port-I/O 세부 귀속"]
+    S --> G["count + whole-run 비용 동시 gate"]
 ```
 
 ## 최근 Task / Recent tasks
 
-### Task 297 — 타이머 IF gate와 중첩 방지 / Timer IF gate and nesting prevention
-
-**확인됨:** INT 8 주입은 guest `EFlags.IF`가 0이면 stack/context를 바꾸지 않고 pending
-한 건을 유지합니다. 25초 실행은 37회 주입, progress 13,133, Glide 84/84, exception 0,
-EEPROM 일치를 기록했고 기존의 지속적인 stack 하강은 재현되지 않았습니다.
-[상세 작업 로그](../work-logs/20260726-297-timer-injection-if-gate-nesting.md)
-
-**Confirmed:** IF-clear delivery now preserves one pending tick without mutating guest state.
-The 25-second run completed 37 injections with no exception, no monotonic stack descent, and
-an unchanged EEPROM.
-
-### Task 298 — orphan breakpoint 증거 캡처 / Orphan-breakpoint evidence capture
-
-**확인됨:** 처리되지 않은 breakpoint는 handler 진입에서 O(1) 원시 상태만 캡처하고,
-실제로 fail-closed까지 남은 한 건에만 AOT mapping, provenance, byte/stack window를
-보강합니다. 자동 skip이나 EIP/ESP 복구는 하지 않습니다.
-[상세 작업 로그](../work-logs/20260726-298-aot-orphan-breakpoint-evidence.md)
-
-**Confirmed:** Unhandled breakpoint evidence is captured without changing handler decisions;
-expensive enrichment runs only for the final unconsumed event.
-
-### Task 299 — poll-thread 타이머 frame 쓰기 제거 / Remove poll-thread timer-frame writes
-
-**확인됨:** 사용자 로그의 `ESP-12`는 회수되지 않은 INT 8 IRET frame 하나였습니다.
-poll thread의 직접 stack/EIP/CS 변경을 제거하고 guest VEH rendezvous로 옮겼습니다.
-45초 실행은 arm/wakeup 3/3, 직접 frame write 0, exception 0을 기록했습니다.
-[상세 작업 로그](../work-logs/20260726-299-timer-preemption-veh-rendezvous.md)
-
-**Confirmed:** The leaked 12-byte displacement was one IRET frame. Moving delivery to a guest
-VEH rendezvous removed direct cross-thread frame writes and passed the former failure point.
 
 ### Task 300 — invalid-EIP probe fail-closed
 
@@ -140,17 +130,52 @@ quarantine 결과였습니다. 상위 두 guest 주소가 64.06%, 상위 16개�
 **Confirmed:** Short quarantined entries dominate retired traps, but removing this population is
 only a local 1-3% candidate and is no longer the active priority.
 
+### Task 307 — current frontier 이력 분리 / Split current-frontier history
+
+**확인됨:** 3,657줄의 과거 frontier 원문을 Task 303까지의 history로 byte-identical
+보존하고 current 문서를 최근 10개 Task 중심으로 축약했습니다. 새 결론이 추가될 때
+가장 오래된 current 항목을 제거해 약 10개를 유지합니다.
+[상세 작업 로그](../work-logs/20260726-307-current-frontier-history-split.md)
+
+**Confirmed:** The complete 3,657-line frontier through Task 303 is preserved byte-for-byte
+in history. The current document keeps approximately ten recent task summaries.
+
+### Task 308 — exception-free superblock 검증 / Exception-free superblock validation
+
+**확인됨:** opt-in host-call HLE thunk는 GPR/EFLAGS, x87/MMX/SSE, host stack/TIB
+경계를 보존하며 60초 실게임을 exception 0, legacy fallback 0, EEPROM 일치로
+완료했습니다. `INT/IRET`를 VEH에 남긴 안전 slice는 25,134 HLE를 직접 처리했지만
+progress는 `+1.64%`뿐이어서 5배 go/no-go에 실패했습니다. 직접 interrupt HLE의
+selector 불일치도 확인되어 일반 HLE 예외 제거는 다음 성능 아키텍처가 아닙니다.
+[상세 작업 로그](../work-logs/20260726-308-exception-free-superblock-validation.md)
+
+**Confirmed:** The safe host-call slice completed 60 seconds with no exception or legacy
+fallback and a matching EEPROM while directly handling 25,134 HLE sites. Progress improved
+only 1.64%, failing the 5x gate, and direct interrupt HLE violated the established selector
+contract.
+
+### Task 309 — single-step hotspot cycle 귀속 / Single-step hotspot cycle attribution
+
+**확인됨:** opt-in 8,192-slot EIP histogram은 60초 실행의 single-step 272,543개를
+1,132개 주소로 전부 분류했고 overflow는 0이었습니다. HLE는 event의 33.60%지만
+handler TSC tick의 84.82%였습니다. cycle 상위권은 segment-register move와 port-I/O
+HLE였고 상위 8개 43.09%, 상위 32개 67.21%로 단일 loop 80% gate에는 미달했습니다.
+[상세 작업 로그](../work-logs/20260726-309-single-step-hotspot-cycle-attribution.md)
+
+**Confirmed:** The opt-in 8,192-slot EIP histogram classified all 272,543 steps across 1,132
+addresses with no overflow. HLE represented 33.60% of events and 84.82% of handler TSC ticks.
+Segment-register and port-I/O HLE dominated the cycle ranking, but the top 32 covered only
+67.21%, below the 80% gate for one loop.
+
 ## 다음 검증 / Next validation
 
-1. 동일 binary·EEPROM·시간 구간에서 최신 `aot-dynamic`/`aot-dbt` 절대 기준선을 다시
-   고정합니다.
-2. 반복 unpack/decode loop를 공용 planner가 만든 exception-free superblock으로 실행합니다.
-3. loop 내부 direct, conditional, fallthrough와 backward edge를 cache 안에서 체이닝합니다.
-4. steady state에서 TF, `INT3`, Dr0를 사용하지 않고 실제 SMC write만 fault로 처리합니다.
-5. hot-loop 20배 이상, 전체 60초 progress 5배 이상을 1차 go/no-go로 사용합니다.
+다음 검증은 single-step을 벗어나는 작업이 아닙니다. cycle 상위 segment/I/O EIP에서
+`DispatchGuestHleHandlers`의 후보 검사·decode·실제 emulate 단계를 따로 세어
+opcode-directed dispatch의 상한을 구합니다. 그리고 profile ON/OFF 대조와 handler
+밖 exception 전환 비용을 분리해, handler 최적화와 single-step 제거 중 어느 쪽이
+whole-run에 더 큰지를 결정합니다.
 
-Re-establish the absolute backend baseline, then run the repeated unpack/decode loop as a
-planner-generated exception-free superblock. Direct, conditional, fallthrough, and backward
-edges must remain inside the cache with no TF, `INT3`, or Dr0 in steady state; only real SMC
-writes may fault. Require at least a 20x hot-loop gain and a 5x whole-run gain as the first
-architecture go/no-go threshold.
+The next validation remains focused on single steps. Attribute candidate checks, decode, and
+actual emulation at the hot segment/I/O EIPs to size opcode-directed dispatch, and separate
+handler work from exception-transition cost before choosing handler optimization or broader
+single-step elimination.

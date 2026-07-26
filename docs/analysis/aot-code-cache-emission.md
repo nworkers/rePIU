@@ -51,3 +51,29 @@ in the Win32 placement/coherency layer through parallel active/generation state,
 page retirement, and persistent cache-to-guest provenance. HLE-owned guest ranges
 become sentinel boundaries instead of copied synthetic gate bytes. Long-term
 generation reclamation and multi-thread publication remain unresolved.
+
+## Task 308 host-call HLE slot 검증
+
+**확인됨:** opt-in emitter는 일반 planner-HLE record를 21바이트 slot으로 생성합니다.
+slot은 dispatch/source metadata를 push하고 thunk로 jump하며, 사전 실패 경로는 metadata를
+제거한 뒤 기존 `INT3`에 도달하고 성공 경로는 cache target으로 `ret`합니다. placement는
+dispatch/fallback/success offset과 guest source를 별도 metadata로 유지합니다.
+
+`repiu_aot_probe`는 thunk 존재, slot byte layout, 모든 HLE record coverage와 placement
+범위를 검증했고 기존 selector/coherence/linear-span probe와 함께 통과했습니다. 기존
+direct/conditional/fallthrough/backedge fixup은 변경되지 않습니다.
+
+**확인됨:** segment/ESP write와 `INT/IRET` 계열은 정상 호출 대상이 아닙니다. 특히 직접
+`INT 21h AH=25h`는 기존 VEH 경로와 다른 selector를 등록했습니다. 안전 slice의 60초
+실행은 직접 성공 25,134와 fallback 19,196을 기록했습니다.
+
+## Task 308 host-call HLE slot validation
+
+**Confirmed:** The opt-in emitter expands ordinary planner-HLE records into 21-byte slots with
+dispatch/source metadata, a thunk jump, a provenance-preserving `INT3` fallback, and a `ret`
+success continuation. Placement retains explicit dispatch, fallback, success, and guest-source
+metadata. Probe validation covers thunk availability, byte layout, every HLE record, and
+placement bounds without changing existing direct/conditional/fallthrough/backedge fixups.
+
+Segment/ESP writes and `INT/IRET` remain outside the safe normal-call subset. The 60-second
+run recorded 25,134 direct successes and 19,196 fallbacks.

@@ -128,6 +128,28 @@ bool ReadGuardedSegmentPopRegister(
     return false;
 }
 
+bool ReadGuardedPortIoInstruction(
+    const ZydisDecodedInstruction& instruction,
+    const ZydisDecodedOperand* operands)
+{
+    if (operands == nullptr)
+    {
+        return false;
+    }
+    if (instruction.mnemonic == ZYDIS_MNEMONIC_IN || instruction.mnemonic == ZYDIS_MNEMONIC_OUT)
+    {
+        for (std::uint8_t i = 0; i < instruction.operand_count_visible; ++i)
+        {
+            if (operands[i].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+                operands[i].reg.value == ZYDIS_REGISTER_DX)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool IsHleBoundary(const ZydisDecodedInstruction& instruction,
                    const ZydisDecodedOperand* operands)
 {
@@ -551,6 +573,16 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                     block.instructions.push_back(std::move(record));
                     ++plan->hle_boundary_count;
                     plan->estimated_emitted_bytes += 48U;
+                    pending.push_back(next);
+                    break;
+                }
+                if (ReadGuardedPortIoInstruction(instruction, operands))
+                {
+                    record.kind = AotInstructionKind::kPortIo;
+                    record.fallthrough_target = next;
+                    block.instructions.push_back(std::move(record));
+                    ++plan->hle_boundary_count;
+                    plan->estimated_emitted_bytes += 14U;
                     pending.push_back(next);
                     break;
                 }

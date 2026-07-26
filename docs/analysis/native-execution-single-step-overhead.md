@@ -129,3 +129,80 @@ The run reached its internal 60-second timeout with zero AOT legacy fallback, ze
 guest fatal count, and an EEPROM hash matching the fixture. Existing unimplemented Glide
 calls remained explicitly labeled `[repiu-fatal] ... action=continue` diagnostics without
 terminating guest execution.
+
+## Exception-free HLE 경계의 실제 상한 / Measured limit of exception-free HLE boundaries
+
+Task 308은 planner-HLE `INT3/VEH`를 정상 host-call로 바꾸어 “예외 횟수 자체가 전체
+병목”이라는 가설을 직접 검증했습니다. 안전 slice의 60초 OFF/ON 결과는 다음과 같습니다.
+
+| 지표 | OFF | ON | 변화 |
+|---|---:|---:|---:|
+| progress | 44,977 | 45,716 | +1.64% |
+| single-step | 276,680 | 254,889 | -7.88% |
+| AOT boundary | 66,245 | 41,224 | -37.77% |
+| 직접 HLE 성공 | 0 | 25,134 | +25,134 |
+
+예외 경계를 25,021회 줄이고 single-step도 21,791회 줄였지만 progress는 739만
+증가했습니다. 따라서 현재 실행에서 “일반 HLE 예외 제거”의 wall-clock 상한은 5배
+기준과 질적으로 다릅니다. 다음 계측은 count가 아니라 CPU 시간을 short retired
+hotset, native-span scanner/Dr0, VEH 내부, host HLE와 guest loop별로 나누어야 합니다.
+
+Task 308 directly tested whether exception count itself dominates whole-run time by replacing
+planner-HLE `INT3/VEH` exits with normal host calls for a safe subset.
+
+| Metric | OFF | ON | Change |
+|---|---:|---:|---:|
+| progress | 44,977 | 45,716 | +1.64% |
+| single-step | 276,680 | 254,889 | -7.88% |
+| AOT boundary | 66,245 | 41,224 | -37.77% |
+| direct HLE success | 0 | 25,134 | +25,134 |
+
+Removing 25,021 exception boundaries and 21,791 single steps yielded only 739 additional
+progress units. The next profile must attribute CPU time—not counts—to short retired hotsets,
+native-span scanning/Dr0, VEH work, host HLE, and individual guest loops.
+
+## Single-step EIP별 handler latency / Handler latency by single-step EIP
+
+Task 309는 `REPIU_SINGLE_STEP_HOTSPOT_PROFILE=1|on|true`에서
+`HandleSingleStepTrace`의 guest EIP별 count와 TSC latency tick을 기록했습니다.
+60초 `aot-dbt`, superblock OFF 실행은 single-step 272,543개를 1,132개 EIP로
+분류했으며 histogram overflow는 0이었습니다. count 상위 32 coverage는 49.11%,
+cycle 상위 32 coverage는 67.21%였습니다.
+
+| outcome | event 비율 | handler tick 비율 | 평균 tick/event |
+|---|---:|---:|---:|
+| HLE | 33.60% | 84.82% | 186,160 |
+| timer | 0.07% | 0.10% | 106,576 |
+| native 진입 | 29.15% | 10.37% | 26,239 |
+| 일반 TF 재설정 | 37.18% | 4.71% | 9,338 |
+
+cycle 상위 두 주소는 `0x030F940E: mov edx, ds` 11.10%와
+`0x030F536A: mov eax, ds` 9.32%였습니다. 그 다음 상위 집단은
+`0x0303BDAA`, `0x0303C795`, `0x0303C758`, `0x0303C779`,
+`0x0303BDC3`, `0x0303BDF0`의 `IN/OUT` HLE였습니다. 상위 8개 합계는
+43.09%로, 하나의 guest 계산 loop가 handler latency 80% 이상을 소유한다는
+가설은 기각됐습니다.
+
+**확인됨:** count hotspot과 latency hotspot은 다릅니다. 남은 handler 내부
+latency는 일반 TF 재설정보다 segment/port-I/O HLE에 집중됩니다.
+
+**미확정:** 이 TSC 범위는 kernel #DB 진입 전과 VEH 복귀 후를 포함하지 않고,
+preemption이 sample을 부풀릴 수 있습니다. 따라서 전체 single-step 비용 또는 순수
+CPU cycle로 해석할 수 없습니다. `DispatchGuestHleHandlers`의 순차 predicate/decode가
+상위 HLE latency의 원인인지도 handler 내부 단계 계측 전에는 확정하지 않습니다.
+
+Task 309 recorded guest-EIP counts and TSC latency ticks inside `HandleSingleStepTrace` when
+`REPIU_SINGLE_STEP_HOTSPOT_PROFILE=1|on|true`. A 60-second `aot-dbt`, superblock-OFF run
+classified all 272,543 steps across 1,132 EIPs with no histogram overflow. The top 32 covered
+49.11% of events and 67.21% of measured ticks.
+
+HLE represented 33.60% of events but 84.82% of handler ticks, averaging 186,160 ticks per
+event. Ordinary TF re-arm represented 37.18% of events and only 4.71% of ticks, averaging
+9,338. The leading sites were segment-register moves and port-I/O HLE, and the top eight
+covered 43.09%. This rejects the hypothesis that one guest compute loop owns at least 80% of
+handler latency.
+
+The scope does not include kernel #DB entry or work after VEH returns, and preemption can
+inflate TSC latency. It is not a pure CPU-cycle or whole-single-step measurement. Whether
+sequential predicate/decode work in `DispatchGuestHleHandlers` causes the hot HLE latency
+remains unresolved until handler-stage attribution is added.

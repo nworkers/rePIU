@@ -16,6 +16,7 @@
 #include "repiu/runtime/selector_table.h"
 #include "native_fast_path.h"
 
+#include <memory>
 #include <cstdint>
 #include <atomic>
 #include <string>
@@ -223,6 +224,14 @@ struct ThreadContext
     std::atomic<std::uint32_t> aot_dbt_hle_reentry_success_count{0};
     std::atomic<std::uint32_t> aot_dbt_hle_translation_attempt_count{0};
     std::atomic<std::uint32_t> aot_dbt_hle_translation_success_count{0};
+    std::atomic<std::uint32_t> aot_dbt_hle_dispatch_entry_count{0};
+    std::atomic<std::uint32_t> aot_dbt_hle_dispatch_success_count{0};
+    std::atomic<std::uint32_t> aot_dbt_hle_dispatch_fallback_count{0};
+    std::atomic<std::uint32_t> aot_dbt_hle_dispatch_fallback_reason_counts[
+        kAotDbtHleFallbackReasonCount] = {};
+    std::atomic<std::uint32_t> aot_dbt_hle_dispatch_last_source{0};
+    std::atomic<std::uint32_t> aot_dbt_hle_dispatch_last_next{0};
+    std::atomic<std::uint32_t> aot_dbt_hle_dispatch_last_bytes{0};
     std::atomic<std::uint32_t> aot_indirect_dispatch_count{0};
     std::atomic<std::uint32_t> aot_inline_cache_patch_attempt_count{0};
     std::atomic<std::uint32_t> aot_inline_cache_patch_success_count{0};
@@ -626,6 +635,8 @@ struct ThreadContext
     std::uint32_t last_traced_fpu_m32_value = 0;
     bool has_last_traced_fpu_m32_value = false;
     std::atomic<std::uint32_t> single_step_trace_count{0};
+    std::unique_ptr<Win32SingleStepHotspotProfile>
+        single_step_hotspot_profile;
     // Route A sizing (native region execution). Of every single-stepped guest
     // instruction, how many are HLE-sensitive (segment op / INT / IO / string /
     // privileged) and would still require a trap under selective-breakpoint
