@@ -8,7 +8,7 @@ namespace repiu::hle
 namespace
 {
 
-constexpr std::array<GlideSignature, 98> kObservedSignatures = {{
+constexpr std::array<GlideSignature, 99> kObservedSignatures = {{
     {"_GRGLIDEINIT@0", 0U, GlideReturnKind::kVoid},
     {"_GRBUFFERCLEAR@12", 12U, GlideReturnKind::kVoid},
     {"_GRBUFFERSWAP@4", 4U, GlideReturnKind::kVoid},
@@ -107,6 +107,7 @@ constexpr std::array<GlideSignature, 98> kObservedSignatures = {{
     {"_GRCHECKFORROOM@4", 4U, GlideReturnKind::kVoid},
     {"_GRRESETTRISTATS@0", 0U, GlideReturnKind::kVoid},
     {"_GRTRISTATS@8", 8U, GlideReturnKind::kVoid},
+    {"_GUFOGGENERATEEXP@8", 8U, GlideReturnKind::kVoid},
 }};
 
 }  // namespace
@@ -211,6 +212,101 @@ bool ParseGlideStateImage(const GlideStateImage& image,
     return true;
 }
 
+GlideGateId ResolveGlideGateId(const std::string& name)
+{
+    if (name == "_GRGLIDEINIT@0") return GlideGateId::kGrGlideInit;
+    if (name == "_GRBUFFERCLEAR@12") return GlideGateId::kGrBufferClear;
+    if (name == "_GRBUFFERSWAP@4") return GlideGateId::kGrBufferSwap;
+    if (name == "_GRBUFFERNUMPENDING@0") return GlideGateId::kGrBufferNumPending;
+    if (name == "_GRHINTS@8") return GlideGateId::kGrHints;
+    if (name == "_GRSSTQUERYHARDWARE@4") return GlideGateId::kGrSstQueryHardware;
+    if (name == "_GRSSTSELECT@4") return GlideGateId::kGrSstSelect;
+    if (name == "_GRSSTWINCLOSE@0") return GlideGateId::kGrSstWinClose;
+    if (name == "_GRSSTWINOPEN@28") return GlideGateId::kGrSstWinOpen;
+    if (name == "_GRSSTSCREENWIDTH@0") return GlideGateId::kGrSstScreenWidth;
+    if (name == "_GRSSTSCREENHEIGHT@0") return GlideGateId::kGrSstScreenHeight;
+    if (name == "_GRTEXMINADDRESS@4") return GlideGateId::kGrTexMinAddress;
+    if (name == "_GRTEXMAXADDRESS@4") return GlideGateId::kGrTexMaxAddress;
+    if (name == "_GUFOGGENERATEEXP@8") return GlideGateId::kGuFogGenerateExp;
+    if (name == "_GRCOLORMASK@8") return GlideGateId::kGrColorMask;
+    if (name == "_GRRENDERBUFFER@4") return GlideGateId::kGrRenderBuffer;
+    if (name == "_GRDEPTHMASK@4") return GlideGateId::kGrDepthMask;
+    if (name == "_GRDEPTHBIASLEVEL@4") return GlideGateId::kGrDepthBiasLevel;
+    if (name == "_GRDEPTHBUFFERMODE@4") return GlideGateId::kGrDepthBufferMode;
+    if (name == "_GRLFBWRITECOLORFORMAT@4") return GlideGateId::kGrLfbWriteColorFormat;
+    if (name == "_GRALPHACOMBINE@20") return GlideGateId::kGrAlphaCombine;
+    if (name == "_GRCOLORCOMBINE@20") return GlideGateId::kGrColorCombine;
+    if (name == "_GRALPHABLENDFUNCTION@16") return GlideGateId::kGrAlphaBlendFunction;
+    if (name == "_GRALPHATESTFUNCTION@4") return GlideGateId::kGrAlphaTestFunction;
+    if (name == "_GRALPHATESTREFERENCEVALUE@4") return GlideGateId::kGrAlphaTestReferenceValue;
+    if (name == "_GRDEPTHBUFFERFUNCTION@4") return GlideGateId::kGrDepthBufferFunction;
+    if (name == "_GRFOGMODE@4") return GlideGateId::kGrFogMode;
+    if (name == "_GRFOGCOLORVALUE@4") return GlideGateId::kGrFogColorValue;
+    if (name == "_GRFOGTABLE@4") return GlideGateId::kGrFogTable;
+    if (name == "_GRCLIPWINDOW@16") return GlideGateId::kGrClipWindow;
+    if (name == "_GRTEXTEXTUREMEMREQUIRED@8") return GlideGateId::kGrTexTextureMemRequired;
+    if (name == "_GRGLIDEGETSTATE@4") return GlideGateId::kGrGlideGetState;
+    if (name == "_GRGLIDESETSTATE@4") return GlideGateId::kGrGlideSetState;
+    if (name == "_GRTEXDOWNLOADMIPMAPLEVEL@32") return GlideGateId::kGrTexDownloadMipMapLevel;
+    if (name == "_GRDRAWLINE@8") return GlideGateId::kGrDrawLine;
+    if (name == "_GRDRAWPOINT@4") return GlideGateId::kGrDrawPoint;
+    if (name == "_GRDRAWTRIANGLE@12") return GlideGateId::kGrDrawTriangle;
+    if (name == "_GRDRAWPLANARPOLYGON@12") return GlideGateId::kGrDrawPlanarPolygon;
+    if (name == "_GRDRAWPLANARPOLYGONVERTEXLIST@8") return GlideGateId::kGrDrawPlanarPolygonVertexList;
+    if (name == "_GRDRAWPOLYGON@12") return GlideGateId::kGrDrawPolygon;
+    if (name == "_GRGLIDESHUTDOWN@0") return GlideGateId::kGrGlideShutdown;
+    if (name == "_GRLFBLOCK@24") return GlideGateId::kGrLfbLock;
+    if (name == "_GRLFBUNLOCK@8") return GlideGateId::kGrLfbUnlock;
+    if (name == "_GRLFBWRITEREGION@32") return GlideGateId::kGrLfbWriteRegion;
+    if (name == "_GRLFBREADREGION@28") return GlideGateId::kGrLfbReadRegion;
+    if (name == "_GRLFBCONSTANTALPHA@4") return GlideGateId::kGrLfbConstantAlpha;
+    if (name == "_GRLFBCONSTANTDEPTH@4") return GlideGateId::kGrLfbConstantDepth;
+    if (name == "_GRLFBWRITECOLORSWIZZLE@8") return GlideGateId::kGrLfbWriteColorSwizzle;
+    if (name == "_GRCHROMAKEYMODE@4") return GlideGateId::kGrChromaKeyMode;
+    if (name == "_GRCHROMAKEYVALUE@4") return GlideGateId::kGrChromaKeyValue;
+    if (name == "_GRCONSTANTCOLORVALUE@4") return GlideGateId::kGrConstantColorValue;
+    if (name == "_GRCONSTANTCOLORVALUE4@16") return GlideGateId::kGrConstantColorValue4;
+    if (name == "_GRAADRAWPOINT@4") return GlideGateId::kGrAADrawPoint;
+    if (name == "_GRAADRAWLINE@8") return GlideGateId::kGrAADrawLine;
+    if (name == "_GRAADRAWTRIANGLE@24") return GlideGateId::kGrAADrawTriangle;
+    if (name == "_GRAADRAWPOLYGON@12") return GlideGateId::kGrAADrawPolygon;
+    if (name == "_GRAADRAWPOLYGONVERTEXLIST@8") return GlideGateId::kGrAADrawPolygonVertexList;
+    if (name == "_GRDRAWPOLYGONVERTEXLIST@8") return GlideGateId::kGrDrawPolygonVertexList;
+    if (name == "_GRTEXDOWNLOADMIPMAP@16") return GlideGateId::kGrTexDownloadMipMap;
+    if (name == "_GRTEXDOWNLOADMIPMAPLEVELPARTIAL@40") return GlideGateId::kGrTexDownloadMipMapLevelPartial;
+    if (name == "_GRTEXDOWNLOADTABLE@12") return GlideGateId::kGrTexDownloadTable;
+    if (name == "_GRTEXDOWNLOADTABLEPARTIAL@20") return GlideGateId::kGrTexDownloadTablePartial;
+    if (name == "_GRTEXNCCTABLE@8") return GlideGateId::kGrTexNccTable;
+    if (name == "_GRTEXCALCMEMREQUIRED@16") return GlideGateId::kGrTexCalcMemRequired;
+    if (name == "_GRTEXCOMBINEFUNCTION@8") return GlideGateId::kGrTexCombineFunction;
+    if (name == "_GRTEXDETAILCONTROL@16") return GlideGateId::kGrTexDetailControl;
+    if (name == "_GRTEXLODBIASVALUE@8") return GlideGateId::kGrTexLodBiasValue;
+    if (name == "_GRTEXMULTIBASE@8") return GlideGateId::kGrTexMultiBase;
+    if (name == "_GRTEXMULTIBASEADDRESS@20") return GlideGateId::kGrTexMultiBaseAddress;
+    if (name == "_GRSSTIDLE@0") return GlideGateId::kGrSstIdle;
+    if (name == "_GRSSTISBUSY@0") return GlideGateId::kGrSstIsBusy;
+    if (name == "_GRSSTSTATUS@0") return GlideGateId::kGrSstStatus;
+    if (name == "_GRSSTVIDEOLINE@0") return GlideGateId::kGrSstVideoLine;
+    if (name == "_GRSSTVRETRACEON@0") return GlideGateId::kGrSstVRetraceOn;
+    if (name == "_GRSSTCONTROL@4") return GlideGateId::kGrSstControl;
+    if (name == "_GRSSTORIGIN@4") return GlideGateId::kGrSstOrigin;
+    if (name == "_GRSSTCONFIGPIPELINE@12") return GlideGateId::kGrSstConfigPipeline;
+    if (name == "_GRSSTVIDMODE@8") return GlideGateId::kGrSstVidMode;
+    if (name == "_GRSSTQUERYBOARDS@4") return GlideGateId::kGrSstQueryBoards;
+    if (name == "_GRSSTPERFSTATS@4") return GlideGateId::kGrSstPerfStats;
+    if (name == "_GRSSTRESETPERFSTATS@0") return GlideGateId::kGrSstResetPerfStats;
+    if (name == "_GRGAMMACORRECTIONVALUE@4") return GlideGateId::kGrGammaCorrectionValue;
+    if (name == "_GRALPHACONTROLSITRGBLIGHTING@4") return GlideGateId::kGrAlphaControlSitRgbLighting;
+    if (name == "_GRCULLMODE@4") return GlideGateId::kGrCullMode;
+    if (name == "_GRDITHERMODE@4") return GlideGateId::kGrDitherMode;
+    if (name == "_GRTEXCLAMPMODE@12") return GlideGateId::kGrTexClampMode;
+    if (name == "_GRTEXCOMBINE@28") return GlideGateId::kGrTexCombine;
+    if (name == "_GRTEXFILTERMODE@12") return GlideGateId::kGrTexFilterMode;
+    if (name == "_GRTEXMIPMAPMODE@12") return GlideGateId::kGrTexMipMapMode;
+    if (name == "_GRTEXSOURCE@16") return GlideGateId::kGrTexSource;
+    return GlideGateId::kUnknown;
+}
+
 bool BuildGlideGatePlan(
     const std::vector<exe::LeResidentName>& resident_names,
     std::uint32_t first_gate_offset,
@@ -241,6 +337,7 @@ bool BuildGlideGatePlan(
         maximum_ordinal = std::max(maximum_ordinal, resident.ordinal);
         plan->exports.push_back({resident.name,
                                  resident.ordinal,
+                                 ResolveGlideGateId(resident.name),
                                  resident.argument_byte_count,
                                  first_gate_offset +
                                      resident.ordinal * gate_stride});

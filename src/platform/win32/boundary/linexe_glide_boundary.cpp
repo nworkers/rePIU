@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -573,6 +574,8 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         return false;
     }
 
+    using go = repiu::hle::GlideGateId;
+
     ++context->glide_gate_entry_count;
     context->glide_backend.PumpEvents();
     context->glide_gate_ordinal = glide_export->ordinal;
@@ -626,24 +629,25 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             }
             if (context->shared_live_telemetry != nullptr)
             {
+                using go = repiu::hle::GlideGateId;
                 volatile long* milestone = nullptr;
-                if (glide_export->name == "_GRSSTWINOPEN@28")
+                const repiu::hle::GlideGateId gate_id = glide_export->gate_id;
+                if (gate_id == go::kGrSstWinOpen)
                 {
                     milestone = &context->shared_live_telemetry
                         ->glide_window_gate_milestone;
                 }
-                else if (glide_export->name ==
-                         "_GRTEXDOWNLOADMIPMAPLEVEL@32")
+                else if (gate_id == go::kGrTexDownloadMipMapLevel)
                 {
                     milestone = &context->shared_live_telemetry
                         ->glide_texture_milestone;
                 }
-                else if (glide_export->name.rfind("_GRDRAW", 0U) == 0U)
+                else if (gate_id >= go::kGrDrawLine && gate_id <= go::kGrDrawPolygon)
                 {
                     milestone = &context->shared_live_telemetry
                         ->glide_draw_milestone;
                 }
-                else if (glide_export->name == "_GRBUFFERSWAP@4")
+                else if (gate_id == go::kGrBufferSwap)
                 {
                     milestone = &context->shared_live_telemetry
                         ->glide_swap_milestone;
@@ -661,16 +665,18 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
     // texture decode/upload/sampling. The gate stack mirror holds only 8 dwords,
     // so read directly from the guest stack for the wider download call.
     {
+        using go = repiu::hle::GlideGateId;
         static const bool tex_diagnostic_enabled =
             std::getenv("REPIU_GLIDE_TEX_DIAG") != nullptr;
+        const repiu::hle::GlideGateId gate_id = glide_export->gate_id;
         if (tex_diagnostic_enabled &&
-            (glide_export->name == "_GRTEXDOWNLOADMIPMAPLEVEL@32" ||
-             glide_export->name == "_GRTEXSOURCE@16" ||
-             glide_export->name == "_GRTEXCOMBINE@28" ||
-             glide_export->name == "_GRCOLORCOMBINE@20" ||
-             glide_export->name == "_GRALPHABLENDFUNCTION@16" ||
-             glide_export->name == "_GRALPHATESTFUNCTION@4" ||
-             glide_export->name == "_GRALPHACOMBINE@20"))
+            (gate_id == go::kGrTexDownloadMipMapLevel ||
+             gate_id == go::kGrTexSource ||
+             gate_id == go::kGrTexCombine ||
+             gate_id == go::kGrColorCombine ||
+             gate_id == go::kGrAlphaBlendFunction ||
+             gate_id == go::kGrAlphaTestFunction ||
+             gate_id == go::kGrAlphaCombine))
         {
             static long tex_diag_count = 0;
             const long diag_index = InterlockedIncrement(&tex_diag_count);
@@ -850,1572 +856,1620 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                 detail,
                 "continue");
         };
-    if (glide_export->name == "_GRHINTS@8")
+    using go = repiu::hle::GlideGateId;
+    // 100% Unified GateId O(1) Switch Dispatcher (Task 321)
+    switch (glide_export->gate_id)
     {
-        // Glide documents this call as optimization advice. Preserve the
-        // observed stdcall ABI while the renderer has no verified hint policy.
-        RecordGlideImplementationIssue(
-            win32_context,
-            context,
-            *glide_export,
-            repiu::hle::GlideImplementationIssueKind::
-                kUnimplementedFunction,
-            "optimization-hint-noop",
-            "hint accepted without implementation",
-            "continue");
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 3U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRGLIDEINIT@0")
-    {
-        context->glide_state.initialized = true;
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRSSTQUERYHARDWARE@4")
-    {
-        void* configuration = reinterpret_cast<void*>(
-            static_cast<std::uintptr_t>(context->glide_gate_stack[1]));
-        if (!WriteGuestUInt32(context, configuration, 1U))
+        case go::kGrHints: // _GRHINTS@8
+            // Glide documents this call as optimization advice. Preserve the
+            // observed stdcall ABI while the renderer has no verified hint policy.
+            RecordGlideImplementationIssue(
+                win32_context,
+                context,
+                *glide_export,
+                repiu::hle::GlideImplementationIssueKind::
+                    kUnimplementedFunction,
+                "optimization-hint-noop",
+                "hint accepted without implementation",
+                "continue");
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 3U * sizeof(std::uint32_t);
+            return true;
+        case go::kGrGlideInit: // _GRGLIDEINIT@0
+            context->glide_state.initialized = true;
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += sizeof(std::uint32_t);
+            return true;
+
+        case go::kGrSstQueryHardware: // _GRSSTQUERYHARDWARE@4
         {
-            return decline_gate("query-hardware-unwritable-memory");
-        }
-        ++context->glide_gate_handled_count;
-        win32_context->Eax = 1U;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRSSTSELECT@4")
-    {
-        const std::uint32_t board = context->glide_gate_stack[1];
-        if (board == 0U)
-        {
-            context->glide_state.selected_board = 0U;
-        }
-        else
-        {
-            record_unsupported(
-                "board-selection-unsupported",
-                "only board zero is implemented");
-        }
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRSSTWINOPEN@28")
-    {
-        const std::uint32_t window = context->glide_gate_stack[1];
-        const std::uint32_t resolution = context->glide_gate_stack[2];
-        const std::uint32_t refresh = context->glide_gate_stack[3];
-        const std::uint32_t color_format = context->glide_gate_stack[4];
-        const std::uint32_t origin = context->glide_gate_stack[5];
-        const std::uint32_t color_buffers = context->glide_gate_stack[6];
-        const std::uint32_t auxiliary_buffers =
-            context->glide_gate_stack[7];
-        std::uint32_t width = 0;
-        std::uint32_t height = 0;
-        const bool mode_supported = window == 0U && refresh == 0U &&
-            repiu::hle::DecodeGlideResolution(
-                resolution, &width, &height);
-        bool opened = false;
-        try
-        {
-            opened = mode_supported &&
-                context->glide_backend.OpenWindowed(
-                    width, height, color_buffers, auxiliary_buffers, origin);
-        }
-        catch (const std::exception& e)
-        {
-            fprintf(stderr, "[repiu-live-debug] _GRSSTWINOPEN@28 caught standard exception: %s\n", e.what());
-        }
-        catch (...)
-        {
-            fprintf(stderr, "[repiu-live-debug] _GRSSTWINOPEN@28 caught unknown exception\n");
-        }
-        context->glide_backend_message = context->glide_backend.message();
-        if (!mode_supported)
-        {
-            record_unsupported(
-                "window-mode-unsupported",
-                "window, refresh, or resolution is unsupported");
-        }
-        else if (!opened)
-        {
-            record_backend_failure(
-                "window-open-backend-failure",
-                context->glide_backend_message);
-        }
-        fprintf(stderr, "[repiu-live-debug] _GRSSTWINOPEN@28: mode_supported=%d opened=%d message=%s\n",
-                mode_supported ? 1 : 0, opened ? 1 : 0, context->glide_backend_message.c_str());
-        if (opened)
-        {
-            ++context->glide_window_open_count;
-            if (context->shared_live_telemetry != nullptr)
+            void* configuration = reinterpret_cast<void*>(
+                static_cast<std::uintptr_t>(context->glide_gate_stack[1]));
+            if (!WriteGuestUInt32(context, configuration, 1U))
             {
-                InterlockedExchange(
-                    &context->shared_live_telemetry
-                         ->glide_window_open_milestone,
-                    1L);
+                return decline_gate("query-hardware-unwritable-memory");
             }
-            context->glide_logical_width = width;
-            context->glide_logical_height = height;
-            context->glide_state.window_open = true;
-            context->glide_state.width = width;
-            context->glide_state.height = height;
-            context->glide_state.color_format = color_format;
-            context->glide_state.origin = origin;
-            context->glide_state.color_buffer_count = color_buffers;
-            context->glide_state.auxiliary_buffer_count = auxiliary_buffers;
+            ++context->glide_gate_handled_count;
+            win32_context->Eax = 1U;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
         }
-        win32_context->Eax = opened ? 1U : 0U;
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 8U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRSSTWINCLOSE@0")
-    {
-        context->glide_backend.Close();
-        context->glide_state.window_open = false;
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRSSTSCREENWIDTH@0" ||
-        glide_export->name == "_GRSSTSCREENHEIGHT@0")
-    {
-        win32_context->Eax = glide_export->name == "_GRSSTSCREENWIDTH@0"
-            ? context->glide_state.width
-            : context->glide_state.height;
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRTEXTEXTUREMEMREQUIRED@8")
-    {
-        repiu::hle::GlideTextureInfo info;
-        const void* info_address = reinterpret_cast<const void*>(
-            static_cast<std::uintptr_t>(context->glide_gate_stack[2]));
-        std::uint32_t required_bytes = 0;
-        if (!IsGuestRangeReadable(context, info_address, sizeof(info)) ||
-            !repiu::hle::CalculateGlideTextureMemoryRequired(
-                context->glide_gate_stack[1], info, &required_bytes))
+
+        case go::kGrSstSelect: // _GRSSTSELECT@4
         {
-            return decline_gate("set-state-unreadable-memory");
-        }
-        ++context->glide_gate_handled_count;
-        win32_context->Eax = required_bytes;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 3U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRTEXDOWNLOADTABLE@12")
-    {
-        // grTexDownloadTable(GrTexTable_t type, void *data)
-        // type (args[1]), data (args[2]).
-        // Note: although signature is @12, args[0] might be tmu.
-        // Let's decode palette (type == 2 / GR_TEXTABLE_PALETTE).
-        std::uint32_t args[3] = {};
-        const auto* guest_stack = reinterpret_cast<const std::uint32_t*>(
-            static_cast<std::uintptr_t>(win32_context->Esp));
-        if (IsGuestRangeReadable(context, guest_stack, sizeof(args)))
-        {
-            std::memcpy(args, guest_stack, sizeof(args));
-            const std::uint32_t type = args[1];
-            const auto* data = reinterpret_cast<const std::uint32_t*>(
-                static_cast<std::uintptr_t>(args[2]));
-            if (type != 2U)
+            const std::uint32_t board = context->glide_gate_stack[1];
+            if (board == 0U)
             {
-                record_unsupported(
-                    "texture-table-type-unsupported",
-                    "only GR_TEXTABLE_PALETTE is implemented");
-            }
-            else if (!IsGuestRangeReadable(context, data, 1024U))
-            {
-                record_backend_failure(
-                    "texture-table-unreadable-memory",
-                    "palette source is not guest-readable");
+                context->glide_state.selected_board = 0U;
             }
             else
             {
-                for (std::size_t i = 0; i < 256; ++i)
-                {
-                    const std::uint32_t c = data[i];
-                    // ARGB to RGBA
-                    context->glide_state.palette_rgba8[i * 4 + 0] = (c >> 16) & 0xFF;
-                    context->glide_state.palette_rgba8[i * 4 + 1] = (c >> 8) & 0xFF;
-                    context->glide_state.palette_rgba8[i * 4 + 2] = c & 0xFF;
-                    context->glide_state.palette_rgba8[i * 4 + 3] = (c >> 24) & 0xFF;
-                }
-                context->glide_state.palette_valid = true;
+                record_unsupported(
+                    "board-selection-unsupported",
+                    "only board zero is implemented");
             }
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
         }
-        else
+
+        case go::kGrSstWinOpen: // _GRSSTWINOPEN@28
         {
-            record_backend_failure(
-                "texture-table-unreadable-stack",
-                "arguments are not guest-readable");
-        }
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 3U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRTEXDOWNLOADMIPMAPLEVEL@32")
-    {
-        // R3: decode and upload the texel image so a later grTexSource can bind
-        // it. Args (from the guest stack, the mirror holds only 8 dwords):
-        // tmu, startAddress, thisLod, largeLod, aspectRatio, format, evenOdd,
-        // data. Preserve the stdcall ABI regardless of upload success.
-        std::uint32_t args[9] = {};
-        const auto* guest_stack = reinterpret_cast<const std::uint32_t*>(
-            static_cast<std::uintptr_t>(win32_context->Esp));
-        if (IsGuestRangeReadable(context, guest_stack, sizeof(args)))
-        {
-            std::memcpy(args, guest_stack, sizeof(args));
-            const std::uint32_t start_address = args[2];
-            const std::uint32_t large_lod = args[4];
-            const std::uint32_t aspect_ratio = args[5];
-            const std::uint32_t format = args[6];
-            const auto* data = reinterpret_cast<const std::uint8_t*>(
-                static_cast<std::uintptr_t>(args[8]));
-            repiu::hle::GlideTextureDimensions dimensions;
-            const bool dimensions_ok =
-                repiu::hle::CalculateGlideTextureDimensions(
-                    large_lod, aspect_ratio, &dimensions);
-            // Format census (env-gated): count every download per format and
-            // record why one was dropped. Palette formats (P_8, AP_88) use the
-            // last downloaded palette when available, and the NCC formats are
-            // refused outright -- this separates "the
-            // game never uses that format" from "we silently drop it".
-            static const bool format_census_enabled =
-                std::getenv("REPIU_GLIDE_TEX_CENSUS") != nullptr;
-            if (format_census_enabled && format < 16U)
+            const std::uint32_t window = context->glide_gate_stack[1];
+            const std::uint32_t resolution = context->glide_gate_stack[2];
+            const std::uint32_t refresh = context->glide_gate_stack[3];
+            const std::uint32_t color_format = context->glide_gate_stack[4];
+            const std::uint32_t origin = context->glide_gate_stack[5];
+            const std::uint32_t color_buffers = context->glide_gate_stack[6];
+            const std::uint32_t auxiliary_buffers =
+                context->glide_gate_stack[7];
+            std::uint32_t width = 0;
+            std::uint32_t height = 0;
+            const bool mode_supported = window == 0U && refresh == 0U &&
+                repiu::hle::DecodeGlideResolution(
+                    resolution, &width, &height);
+            bool opened = false;
+            try
             {
-                static long format_counts[16] = {};
-                const long seen = InterlockedIncrement(&format_counts[format]);
-                if (seen <= 3)
-                {
-                    fprintf(stderr,
-                            "[repiu-tex-census] format=%u lod=%u aspect=%u"
-                            " dims=%s%ux%u acceptable=%d addr=0x%08X seen=%ld\n",
-                            format, large_lod, aspect_ratio,
-                            dimensions_ok ? "" : "INVALID ",
-                            dimensions_ok ? dimensions.width : 0U,
-                            dimensions_ok ? dimensions.height : 0U,
-                            repiu::hle::IsGlideTextureFormatAcceptable(format)
-                                ? 1 : 0,
-                            start_address, seen);
-                }
+                opened = mode_supported &&
+                    context->glide_backend.OpenWindowed(
+                        width, height, color_buffers, auxiliary_buffers, origin);
             }
-            if (dimensions_ok)
+            catch (const std::exception& e)
             {
-                const std::size_t bytes_per_texel = format >= 8U ? 2U : 1U;
-                const std::size_t source_size =
-                    static_cast<std::size_t>(dimensions.width) *
-                    dimensions.height * bytes_per_texel;
-                if (source_size == 0U)
+                fprintf(stderr, "[repiu-live-debug] _GRSSTWINOPEN@28 caught standard exception: %s\n", e.what());
+            }
+            catch (...)
+            {
+                fprintf(stderr, "[repiu-live-debug] _GRSSTWINOPEN@28 caught unknown exception\n");
+            }
+            context->glide_backend_message = context->glide_backend.message();
+            if (!mode_supported)
+            {
+                record_unsupported(
+                    "window-mode-unsupported",
+                    "window, refresh, or resolution is unsupported");
+            }
+            else if (!opened)
+            {
+                record_backend_failure(
+                    "window-open-backend-failure",
+                    context->glide_backend_message);
+            }
+            fprintf(stderr, "[repiu-live-debug] _GRSSTWINOPEN@28: mode_supported=%d opened=%d message=%s\n",
+                    mode_supported ? 1 : 0, opened ? 1 : 0, context->glide_backend_message.c_str());
+            if (opened)
+            {
+                ++context->glide_window_open_count;
+                if (context->shared_live_telemetry != nullptr)
+                {
+                    InterlockedExchange(
+                        &context->shared_live_telemetry
+                             ->glide_window_open_milestone,
+                        1L);
+                }
+                context->glide_logical_width = width;
+                context->glide_logical_height = height;
+                context->glide_state.window_open = true;
+                context->glide_state.width = width;
+                context->glide_state.height = height;
+                context->glide_state.color_format = color_format;
+                context->glide_state.origin = origin;
+                context->glide_state.color_buffer_count = color_buffers;
+                context->glide_state.auxiliary_buffer_count = auxiliary_buffers;
+            }
+            win32_context->Eax = opened ? 1U : 0U;
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 8U * sizeof(std::uint32_t);
+            return true;
+        }
+
+        case go::kGrSstWinClose: // _GRSSTWINCLOSE@0
+            context->glide_backend.Close();
+            context->glide_state.window_open = false;
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += sizeof(std::uint32_t);
+            return true;
+
+        case go::kGrSstScreenWidth: // _GRSSTSCREENWIDTH@0
+            win32_context->Eax = context->glide_state.width;
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += sizeof(std::uint32_t);
+            return true;
+
+        case go::kGrSstScreenHeight: // _GRSSTSCREENHEIGHT@0
+            win32_context->Eax = context->glide_state.height;
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += sizeof(std::uint32_t);
+            return true;
+
+        case go::kGrTexTextureMemRequired: // _GRTEXTEXTUREMEMREQUIRED@8
+        {
+            repiu::hle::GlideTextureInfo info;
+            const void* info_address = reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(context->glide_gate_stack[2]));
+            std::uint32_t required_bytes = 0;
+            if (!IsGuestRangeReadable(context, info_address, sizeof(info)) ||
+                !repiu::hle::CalculateGlideTextureMemoryRequired(
+                    context->glide_gate_stack[1], info, &required_bytes))
+            {
+                return decline_gate("set-state-unreadable-memory");
+            }
+            ++context->glide_gate_handled_count;
+            win32_context->Eax = required_bytes;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 3U * sizeof(std::uint32_t);
+            return true;
+        }
+        case go::kGrTexDownloadTable: // _GRTEXDOWNLOADTABLE@12
+        {
+            // grTexDownloadTable(GrTexTable_t type, void *data)
+            // type (args[1]), data (args[2]).
+            // Note: although signature is @12, args[0] might be tmu.
+            // Let's decode palette (type == 2 / GR_TEXTABLE_PALETTE).
+            std::uint32_t args[3] = {};
+            const auto* guest_stack = reinterpret_cast<const std::uint32_t*>(
+                static_cast<std::uintptr_t>(win32_context->Esp));
+            if (IsGuestRangeReadable(context, guest_stack, sizeof(args)))
+            {
+                std::memcpy(args, guest_stack, sizeof(args));
+                const std::uint32_t type = args[1];
+                const auto* data = reinterpret_cast<const std::uint32_t*>(
+                    static_cast<std::uintptr_t>(args[2]));
+                if (type != 2U)
                 {
                     record_unsupported(
-                        "texture-download-empty-source",
-                        "calculated source size is zero");
+                        "texture-table-type-unsupported",
+                        "only GR_TEXTABLE_PALETTE is implemented");
                 }
-                else if (!IsGuestRangeReadable(
-                             context, data, source_size))
+                else if (!IsGuestRangeReadable(context, data, 1024U))
                 {
                     record_backend_failure(
-                        "texture-download-unreadable-memory",
-                        "texture source is not guest-readable");
+                        "texture-table-unreadable-memory",
+                        "palette source is not guest-readable");
                 }
                 else
                 {
-                    const std::uint8_t* palette_ptr =
-                        context->glide_state.palette_valid
-                        ? context->glide_state.palette_rgba8.data()
-                        : nullptr;
-                    const bool stored = context->glide_backend.StoreTexture(
-                        start_address, format, large_lod, aspect_ratio, data,
-                        source_size, palette_ptr);
-                    context->glide_backend_message =
-                        context->glide_backend.message();
-                    if (!stored)
+                    // ARGB to RGBA
+                    for (std::size_t i = 0; i < 256; ++i)
                     {
-                        if (std::string_view(
-                                context->glide_backend_message)
-                                .starts_with("unsupported Glide"))
-                        {
-                            record_unsupported(
-                                "texture-download-unsupported",
-                                context->glide_backend_message);
-                        }
-                        else
-                        {
-                            record_backend_failure(
-                                "texture-download-backend-failure",
-                                context->glide_backend_message);
-                        }
+                        const std::uint32_t c = data[i];
+                        context->glide_state.palette_rgba8[i * 4 + 0] = (c >> 16) & 0xFF;
+                        context->glide_state.palette_rgba8[i * 4 + 1] = (c >> 8) & 0xFF;
+                        context->glide_state.palette_rgba8[i * 4 + 2] = c & 0xFF;
+                        context->glide_state.palette_rgba8[i * 4 + 3] = (c >> 24) & 0xFF;
                     }
-                    if (format_census_enabled && !stored)
-                    {
-                        static long store_fail_log = 0;
-                        if (InterlockedIncrement(&store_fail_log) <= 12)
-                        {
-                            fprintf(stderr,
-                                    "[repiu-tex-census] STORE FAILED format=%u"
-                                    " %ux%u addr=0x%08X reason=%s\n",
-                                    format, dimensions.width, dimensions.height,
-                                    start_address,
-                                    context->glide_backend_message.c_str());
-                        }
-                    }
+                    context->glide_state.palette_valid = true;
+                }
+            }
+            else
+            {
+                record_backend_failure(
+                    "texture-table-unreadable-stack",
+                    "arguments are not guest-readable");
+            }
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 3U * sizeof(std::uint32_t);
+            return true;
+        }
 
-                    // Diagnostic BMP Dump
-                    const char* env_dump = std::getenv("REPIU_DUMP_TEXTURE_BMP");
-                    if (env_dump != nullptr && std::string_view(env_dump) == "1")
+        case go::kGrTexDownloadMipMapLevel: // _GRTEXDOWNLOADMIPMAPLEVEL@32
+        {
+            // R3: decode and upload the texel image so a later grTexSource can bind
+            // it. Args (from the guest stack, the mirror holds only 8 dwords):
+            // tmu, startAddress, thisLod, largeLod, aspectRatio, format, evenOdd,
+            // data. Preserve the stdcall ABI regardless of upload success.
+            std::uint32_t args[9] = {};
+            const auto* guest_stack = reinterpret_cast<const std::uint32_t*>(
+                static_cast<std::uintptr_t>(win32_context->Esp));
+            if (IsGuestRangeReadable(context, guest_stack, sizeof(args)))
+            {
+                std::memcpy(args, guest_stack, sizeof(args));
+                const std::uint32_t start_address = args[2];
+                const std::uint32_t large_lod = args[4];
+                const std::uint32_t aspect_ratio = args[5];
+                const std::uint32_t format = args[6];
+                const auto* data = reinterpret_cast<const std::uint8_t*>(
+                    static_cast<std::uintptr_t>(args[8]));
+                repiu::hle::GlideTextureDimensions dimensions;
+                const bool dimensions_ok =
+                    repiu::hle::CalculateGlideTextureDimensions(
+                        large_lod, aspect_ratio, &dimensions);
+                static const bool format_census_enabled =
+                    std::getenv("REPIU_GLIDE_TEX_CENSUS") != nullptr;
+                // Format census (env-gated): count every download per format and
+                // record why one was dropped. Palette formats (P_8, AP_88) use the
+                // last downloaded palette when available, and the NCC formats are
+                // refused outright -- this separates "the
+                // game never uses that format" from "we silently drop it".
+                if (format_census_enabled && format < 16U)
+                {
+                    static long format_counts[16] = {};
+                    const long seen = InterlockedIncrement(&format_counts[format]);
+                    if (seen <= 3)
                     {
-                        std::vector<std::uint8_t> rgba8;
+                        fprintf(stderr,
+                                "[repiu-tex-census] format=%u lod=%u aspect=%u"
+                                " dims=%s%ux%u acceptable=%d addr=0x%08X seen=%ld\n",
+                                format, large_lod, aspect_ratio,
+                                dimensions_ok ? "" : "INVALID ",
+                                dimensions_ok ? dimensions.width : 0U,
+                                dimensions_ok ? dimensions.height : 0U,
+                                repiu::hle::IsGlideTextureFormatAcceptable(format)
+                                    ? 1 : 0,
+                                start_address, seen);
+                    }
+                }
+                if (dimensions_ok)
+                {
+                    const std::size_t bytes_per_texel = format >= 8U ? 2U : 1U;
+                    const std::size_t source_size =
+                        static_cast<std::size_t>(dimensions.width) *
+                        dimensions.height * bytes_per_texel;
+                    if (source_size == 0U)
+                    {
+                        record_unsupported(
+                            "texture-download-empty-source",
+                            "calculated source size is zero");
+                    }
+                    else if (!IsGuestRangeReadable(
+                                 context, data, source_size))
+                    {
+                        record_backend_failure(
+                            "texture-download-unreadable-memory",
+                            "texture source is not guest-readable");
+                    }
+                    else
+                    {
                         const std::uint8_t* palette_ptr =
                             context->glide_state.palette_valid
                             ? context->glide_state.palette_rgba8.data()
                             : nullptr;
-                        if (repiu::hle::DecodeGlideTextureToRgba8(
-                                format, dimensions.width, dimensions.height, data,
-                                source_size, palette_ptr, &rgba8))
+                        const bool stored = context->glide_backend.StoreTexture(
+                            start_address, format, large_lod, aspect_ratio, data,
+                            source_size, palette_ptr);
+                        context->glide_backend_message =
+                            context->glide_backend.message();
+                        if (!stored)
                         {
-                            DumpTextureToBmp(start_address, format, dimensions.width,
-                                             dimensions.height, rgba8);
+                            if (std::string_view(
+                                    context->glide_backend_message)
+                                    .starts_with("unsupported Glide"))
+                            {
+                                record_unsupported(
+                                    "texture-download-unsupported",
+                                    context->glide_backend_message);
+                            }
+                            else
+                            {
+                                record_backend_failure(
+                                    "texture-download-backend-failure",
+                                    context->glide_backend_message);
+                            }
+                        }
+                        if (format_census_enabled && !stored)
+                        {
+                            static long store_fail_log = 0;
+                            if (InterlockedIncrement(&store_fail_log) <= 12)
+                            {
+                                fprintf(stderr,
+                                        "[repiu-tex-census] STORE FAILED format=%u"
+                                        " %ux%u addr=0x%08X reason=%s\n",
+                                        format, dimensions.width, dimensions.height,
+                                        start_address,
+                                        context->glide_backend_message.c_str());
+                            }
+                        }
+
+                        // Diagnostic BMP Dump
+                        const char* env_dump = std::getenv("REPIU_DUMP_TEXTURE_BMP");
+                        if (env_dump != nullptr && std::string_view(env_dump) == "1")
+                        {
+                            std::vector<std::uint8_t> rgba8;
+                            const std::uint8_t* palette_ptr =
+                                context->glide_state.palette_valid
+                                ? context->glide_state.palette_rgba8.data()
+                                : nullptr;
+                            if (repiu::hle::DecodeGlideTextureToRgba8(
+                                    format, dimensions.width, dimensions.height, data,
+                                    source_size, palette_ptr, &rgba8))
+                            {
+                                DumpTextureToBmp(start_address, format, dimensions.width,
+                                                 dimensions.height, rgba8);
+                            }
                         }
                     }
+                }
+                else
+                {
+                    record_unsupported(
+                        "texture-dimensions-unsupported",
+                        "LOD or aspect ratio is unsupported");
                 }
             }
             else
             {
-                record_unsupported(
-                    "texture-dimensions-unsupported",
-                    "LOD or aspect ratio is unsupported");
-            }
-        }
-        else
-        {
-            record_backend_failure(
-                "texture-download-unreadable-stack",
-                "arguments are not guest-readable");
-        }
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 9U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRTEXSOURCE@16")
-    {
-        // R3: select the current texture (args: tmu, startAddress, evenOdd,
-        // GrTexInfo*). A missing texture simply leaves the previous binding.
-        if (!context->glide_backend.SourceTexture(
-                context->glide_gate_stack[2]))
-        {
-            context->glide_backend_message =
-                context->glide_backend.message();
-            if (std::string_view(context->glide_backend_message)
-                    .starts_with("unsupported Glide"))
-            {
-                record_unsupported(
-                    "texture-source-unsupported",
-                    context->glide_backend_message);
-            }
-            else
-            {
                 record_backend_failure(
-                    "texture-source-backend-failure",
-                    context->glide_backend_message);
+                    "texture-download-unreadable-stack",
+                    "arguments are not guest-readable");
             }
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 9U * sizeof(std::uint32_t);
+            return true;
         }
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += sizeof(std::uint32_t) +
-            glide_export->argument_byte_count;
-        return true;
-    }
-    if (glide_export->name == "_GRTEXCOMBINE@28" ||
-        glide_export->name == "_GRTEXCLAMPMODE@12" ||
-        glide_export->name == "_GRTEXFILTERMODE@12" ||
-        glide_export->name == "_GRTEXMIPMAPMODE@12")
-    {
-        // Texture sampler parameters stay within the rendering boundary; the
-        // observed filter/clamp/mipmap modes are handled by the backend texture
-        // defaults for now.
-        record_unimplemented(
-            "texture-sampler-state-noop",
-            "request accepted using backend defaults");
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += sizeof(std::uint32_t) +
-            glide_export->argument_byte_count;
-        return true;
-    }
-    if (glide_export->name == "_GRTEXMINADDRESS@4" &&
-        context->glide_gate_stack[1] == 0U)
-    {
-        RecordGlideTextureGateTrace(context, win32_context, *glide_export, return_address, 0U, false);
-        ++context->glide_gate_handled_count;
-        win32_context->Eax = 0U;
-        win32_context->Eip = return_address;
-        // stdcall: pop return address and the one dword argument. fxTMInit is
-        // the sole caller and issues `push arg; call grTexMin; push arg; call
-        // grTexMax; mov eax,[esp]` with no caller-side cleanup, so the gate
-        // must clean the argument or the reload reads a leftover (NULL gc).
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRTEXMAXADDRESS@4" &&
-        context->glide_gate_stack[1] == 0U)
-    {
-        std::uint32_t maximum_address = 0;
-        if (!repiu::hle::CalculateGlideTextureMaxAddress(
-                context->glide_state.texture_memory_bytes,
-                &maximum_address))
+
+        case go::kGrTexSource: // _GRTEXSOURCE@16
+            // R3: select the current texture (args: tmu, startAddress, evenOdd,
+            // GrTexInfo*). A missing texture simply leaves the previous binding.
+            if (!context->glide_backend.SourceTexture(
+                    context->glide_gate_stack[2]))
+            {
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                if (std::string_view(context->glide_backend_message)
+                        .starts_with("unsupported Glide"))
+                {
+                    record_unsupported(
+                        "texture-source-unsupported",
+                        context->glide_backend_message);
+                }
+                else
+                {
+                    record_backend_failure(
+                        "texture-source-backend-failure",
+                        context->glide_backend_message);
+                }
+            }
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += sizeof(std::uint32_t) +
+                glide_export->argument_byte_count;
+            return true;
+
+        case go::kGrTexMinAddress: // _GRTEXMINADDRESS@4
+            // stdcall: pop return address and the one dword argument. fxTMInit is
+            // the sole caller and issues `push arg; call grTexMin; push arg; call
+            // grTexMax; mov eax,[esp]` with no caller-side cleanup, so the gate
+            // must clean the argument or the reload reads a leftover (NULL gc).
+            if (context->glide_gate_stack[1] == 0U)
+            {
+                RecordGlideTextureGateTrace(context, win32_context, *glide_export, return_address, 0U, false);
+                ++context->glide_gate_handled_count;
+                win32_context->Eax = 0U;
+                win32_context->Eip = return_address;
+                win32_context->Esp += 2U * sizeof(std::uint32_t);
+                return true;
+            }
+            break;
+
+        case go::kGrTexMaxAddress: // _GRTEXMAXADDRESS@4
+            // stdcall: pop return address and the one dword argument (see the
+            // grTexMinAddress note above; fxTMInit relies on callee cleanup).
+            if (context->glide_gate_stack[1] == 0U)
+            {
+                std::uint32_t maximum_address = 0;
+                if (!repiu::hle::CalculateGlideTextureMaxAddress(
+                        context->glide_state.texture_memory_bytes,
+                        &maximum_address))
+                {
+                    return decline_gate("texture-max-address-calculation-failure");
+                }
+                RecordGlideTextureGateTrace(context, win32_context, *glide_export, return_address, maximum_address, true);
+                ++context->glide_gate_handled_count;
+                win32_context->Eax = maximum_address;
+                win32_context->Eip = return_address;
+                win32_context->Esp += 2U * sizeof(std::uint32_t);
+                return true;
+            }
+            break;
+
+        case go::kGrColorMask: // _GRCOLORMASK@8
         {
-            return decline_gate("texture-max-address-calculation-failure");
+            const bool rgb = context->glide_gate_stack[1] != 0U;
+            const bool alpha = context->glide_gate_stack[2] != 0U;
+            if (!context->glide_backend.SetColorMask(rgb, alpha))
+            {
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                return decline_gate("color-mask-backend-failure");
+            }
+            context->glide_backend_message = context->glide_backend.message();
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 3U * sizeof(std::uint32_t);
+            return true;
         }
-        RecordGlideTextureGateTrace(context, win32_context, *glide_export, return_address, maximum_address, true);
-        ++context->glide_gate_handled_count;
-        win32_context->Eax = maximum_address;
-        win32_context->Eip = return_address;
-        // stdcall: pop return address and the one dword argument (see the
-        // grTexMinAddress note above; fxTMInit relies on callee cleanup).
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRCOLORMASK@8")
-    {
-        const bool rgb = context->glide_gate_stack[1] != 0U;
-        const bool alpha = context->glide_gate_stack[2] != 0U;
-        if (!context->glide_backend.SetColorMask(rgb, alpha))
+
+        case go::kGrRenderBuffer: // _GRRENDERBUFFER@4
+            if (!context->glide_backend.SetRenderBuffer(
+                    context->glide_gate_stack[1]))
+            {
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                return decline_gate("render-buffer-backend-failure");
+            }
+            context->glide_backend_message = context->glide_backend.message();
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+
+        case go::kGrDepthBiasLevel: // _GRDEPTHBIASLEVEL@4
+            RecordGlideImplementationIssue(
+                win32_context,
+                context,
+                *glide_export,
+                repiu::hle::GlideImplementationIssueKind::
+                    kUnimplementedFunction,
+                "depth-bias-noop",
+                "depth bias accepted without backend state",
+                "continue");
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+
+        case go::kGrDepthMask: // _GRDEPTHMASK@4
+            if (!context->glide_backend.SetDepthMask(
+                    context->glide_gate_stack[1] != 0U))
+            {
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                return decline_gate("depth-mask-backend-failure");
+            }
+            context->glide_backend_message = context->glide_backend.message();
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+
+        case go::kGrDepthBufferMode: // _GRDEPTHBUFFERMODE@4
+            if (!context->glide_backend.SetDepthBufferMode(
+                    context->glide_gate_stack[1]))
+            {
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                return decline_gate("depth-buffer-mode-backend-failure");
+            }
+            context->glide_backend_message = context->glide_backend.message();
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+
+        case go::kGrLfbWriteColorFormat: // _GRLFBWRITECOLORFORMAT@4
+            context->glide_state.lfb_write_color_format =
+                context->glide_gate_stack[1];
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+
+        case go::kGrAlphaCombine: // _GRALPHACOMBINE@20
         {
-            context->glide_backend_message =
-                context->glide_backend.message();
-            return decline_gate("color-mask-backend-failure");
-        }
-        context->glide_backend_message = context->glide_backend.message();
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 3U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRRENDERBUFFER@4")
-    {
-        if (!context->glide_backend.SetRenderBuffer(
-                context->glide_gate_stack[1]))
-        {
-            context->glide_backend_message =
-                context->glide_backend.message();
-            return decline_gate("render-buffer-backend-failure");
-        }
-        context->glide_backend_message = context->glide_backend.message();
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRDEPTHBIASLEVEL@4")
-    {
-        RecordGlideImplementationIssue(
-            win32_context,
-            context,
-            *glide_export,
-            repiu::hle::GlideImplementationIssueKind::
-                kUnimplementedFunction,
-            "depth-bias-noop",
-            "depth bias accepted without backend state",
-            "continue");
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRDEPTHMASK@4")
-    {
-        if (!context->glide_backend.SetDepthMask(
-                context->glide_gate_stack[1] != 0U))
-        {
-            context->glide_backend_message =
-                context->glide_backend.message();
-            return decline_gate("depth-mask-backend-failure");
-        }
-        context->glide_backend_message = context->glide_backend.message();
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRDEPTHBUFFERMODE@4")
-    {
-        if (!context->glide_backend.SetDepthBufferMode(
-                context->glide_gate_stack[1]))
-        {
-            context->glide_backend_message =
-                context->glide_backend.message();
-            return decline_gate("depth-buffer-mode-backend-failure");
-        }
-        context->glide_backend_message = context->glide_backend.message();
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRLFBWRITECOLORFORMAT@4")
-    {
-        context->glide_state.lfb_write_color_format =
-            context->glide_gate_stack[1];
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRALPHACOMBINE@20")
-    {
-        repiu::hle::GlideAlphaCombineState state;
-        state.function = context->glide_gate_stack[1];
-        state.factor = context->glide_gate_stack[2];
-        state.local = context->glide_gate_stack[3];
-        state.other = context->glide_gate_stack[4];
-        state.invert = context->glide_gate_stack[5] != 0U;
-        state.valid = true;
-        if (!context->glide_backend.SetAlphaCombine(state))
-        {
-            context->glide_backend_message =
-                context->glide_backend.message();
             // Same retain policy as color combine (design 237, Task 247):
             // an equation the GLSL translator merely does not support yet
             // must still preserve the stdcall ABI, or the unhandled gate
             // leaks its 24-byte frame and the caller epilogue returns to 0
             // (the Task 245/246 zero-EIP root cause).
-            if (context->glide_backend_message !=
-                "unsupported Glide alpha-combine equation")
+            repiu::hle::GlideAlphaCombineState state;
+            state.function = context->glide_gate_stack[1];
+            state.factor = context->glide_gate_stack[2];
+            state.local = context->glide_gate_stack[3];
+            state.other = context->glide_gate_stack[4];
+            state.invert = context->glide_gate_stack[5] != 0U;
+            state.valid = true;
+            if (!context->glide_backend.SetAlphaCombine(state))
             {
-                return decline_gate("alpha-combine-backend-failure");
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                if (context->glide_backend_message !=
+                    "unsupported Glide alpha-combine equation")
+                {
+                    return decline_gate("alpha-combine-backend-failure");
+                }
+                RecordGlideImplementationIssue(
+                    win32_context,
+                    context,
+                    *glide_export,
+                    repiu::hle::GlideImplementationIssueKind::
+                        kUnsupportedArgument,
+                    "alpha-combine-unsupported",
+                    context->glide_backend_message,
+                    "continue");
             }
-            RecordGlideImplementationIssue(
-                win32_context,
-                context,
-                *glide_export,
-                repiu::hle::GlideImplementationIssueKind::
-                    kUnsupportedArgument,
-                "alpha-combine-unsupported",
-                context->glide_backend_message,
-                "continue");
+            context->glide_state.alpha_combine = state;
+            context->glide_backend_message = context->glide_backend.message();
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 6U * sizeof(std::uint32_t);
+            return true;
         }
-        context->glide_state.alpha_combine = state;
-        context->glide_backend_message = context->glide_backend.message();
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 6U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRCOLORCOMBINE@20")
-    {
-        repiu::hle::GlideColorCombineState state;
-        state.function = context->glide_gate_stack[1];
-        state.factor = context->glide_gate_stack[2];
-        state.local = context->glide_gate_stack[3];
-        state.other = context->glide_gate_stack[4];
-        state.invert = context->glide_gate_stack[5] != 0U;
-        state.valid = true;
-        // R3: function 3 (GR_COMBINE_FUNCTION_SCALE_OTHER) with other=1
-        // (GR_COMBINE_OTHER_TEXTURE) routes the fragment output to the sourced
-        // texture; function 1 (LOCAL) is the iterated vertex color. Toggle the
-        // backend texture-combine path accordingly (observed content draws use
-        // function 3, init uses function 1).
-        constexpr std::uint32_t kCombineFunctionScaleOther = 3U;
-        constexpr std::uint32_t kCombineOtherTexture = 1U;
-        context->glide_backend.SetTextureCombineEnabled(
-            state.function == kCombineFunctionScaleOther &&
-            state.other == kCombineOtherTexture);
-        if (!context->glide_backend.SetColorCombine(state))
+
+        case go::kGrColorCombine: // _GRCOLORCOMBINE@20
         {
-            context->glide_backend_message =
-                context->glide_backend.message();
-            if (context->glide_backend_message !=
-                "unsupported Glide color-combine equation")
+            repiu::hle::GlideColorCombineState state;
+            state.function = context->glide_gate_stack[1];
+            state.factor = context->glide_gate_stack[2];
+            state.local = context->glide_gate_stack[3];
+            state.other = context->glide_gate_stack[4];
+            state.invert = context->glide_gate_stack[5] != 0U;
+            state.valid = true;
+            constexpr std::uint32_t kCombineFunctionScaleOther = 3U;
+            constexpr std::uint32_t kCombineOtherTexture = 1U;
+            // R3: function 3 (GR_COMBINE_FUNCTION_SCALE_OTHER) with other=1
+            // (GR_COMBINE_OTHER_TEXTURE) routes the fragment output to the sourced
+            // texture; function 1 (LOCAL) is the iterated vertex color. Toggle the
+            // backend texture-combine path accordingly (observed content draws use
+            // function 3, init uses function 1).
+            context->glide_backend.SetTextureCombineEnabled(
+                state.function == kCombineFunctionScaleOther &&
+                state.other == kCombineOtherTexture);
+            if (!context->glide_backend.SetColorCombine(state))
             {
-                return decline_gate("color-combine-backend-failure");
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                if (context->glide_backend_message !=
+                    "unsupported Glide color-combine equation")
+                {
+                    return decline_gate("color-combine-backend-failure");
+                }
+                RecordGlideImplementationIssue(
+                    win32_context,
+                    context,
+                    *glide_export,
+                    repiu::hle::GlideImplementationIssueKind::
+                        kUnsupportedArgument,
+                    "color-combine-unsupported",
+                    context->glide_backend_message,
+                    "continue");
             }
-            RecordGlideImplementationIssue(
-                win32_context,
-                context,
-                *glide_export,
-                repiu::hle::GlideImplementationIssueKind::
-                    kUnsupportedArgument,
-                "color-combine-unsupported",
-                context->glide_backend_message,
-                "continue");
+            context->glide_state.color_combine = state;
+            context->glide_backend_message = context->glide_backend.message();
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 6U * sizeof(std::uint32_t);
+            return true;
         }
-        context->glide_state.color_combine = state;
-        context->glide_backend_message = context->glide_backend.message();
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 6U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRALPHABLENDFUNCTION@16")
-    {
-        repiu::hle::GlideAlphaBlendState state;
-        state.rgb_source = context->glide_gate_stack[1];
-        state.rgb_destination = context->glide_gate_stack[2];
-        state.alpha_source = context->glide_gate_stack[3];
-        state.alpha_destination = context->glide_gate_stack[4];
-        state.valid = true;
-        if (!context->glide_backend.SetAlphaBlend(state))
+
+        case go::kGrAlphaBlendFunction: // _GRALPHABLENDFUNCTION@16
         {
-            context->glide_backend_message =
-                context->glide_backend.message();
             // Same retain policy as the combine gates (design 237): a blend
             // function the backend does not express yet must still preserve
             // the stdcall ABI, or the unhandled gate leaks its frame (the
             // Task 246 corruption chain).
-            if (context->glide_backend_message !=
-                "unsupported Glide alpha-blend function")
+            repiu::hle::GlideAlphaBlendState state;
+            state.rgb_source = context->glide_gate_stack[1];
+            state.rgb_destination = context->glide_gate_stack[2];
+            state.alpha_source = context->glide_gate_stack[3];
+            state.alpha_destination = context->glide_gate_stack[4];
+            state.valid = true;
+            if (!context->glide_backend.SetAlphaBlend(state))
             {
-                return decline_gate("alpha-blend-backend-failure");
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                if (context->glide_backend_message !=
+                    "unsupported Glide alpha-blend function")
+                {
+                    return decline_gate("alpha-blend-backend-failure");
+                }
+                RecordGlideImplementationIssue(
+                    win32_context,
+                    context,
+                    *glide_export,
+                    repiu::hle::GlideImplementationIssueKind::
+                        kUnsupportedArgument,
+                    "alpha-blend-unsupported",
+                    context->glide_backend_message,
+                    "continue");
             }
-            RecordGlideImplementationIssue(
-                win32_context,
-                context,
-                *glide_export,
-                repiu::hle::GlideImplementationIssueKind::
-                    kUnsupportedArgument,
-                "alpha-blend-unsupported",
-                context->glide_backend_message,
-                "continue");
-        }
-        context->glide_state.alpha_blend = state;
-        context->glide_backend_message = context->glide_backend.message();
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 5U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRALPHATESTFUNCTION@4")
-    {
-        const std::uint32_t function = context->glide_gate_stack[1];
-        if (!context->glide_backend.SetAlphaTestFunction(function))
-        {
-            context->glide_backend_message =
-                context->glide_backend.message();
-            return decline_gate("alpha-test-function-backend-failure");
-        }
-        context->glide_state.alpha_test_function = function;
-        context->glide_backend_message = context->glide_backend.message();
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRALPHATESTREFERENCEVALUE@4")
-    {
-        const std::uint32_t reference_value = context->glide_gate_stack[1];
-        if (!context->glide_backend.SetAlphaTestReferenceValue(reference_value))
-        {
-            context->glide_backend_message =
-                context->glide_backend.message();
-            return decline_gate("alpha-test-reference-value-backend-failure");
-        }
-        context->glide_state.alpha_test_reference = reference_value;
-        context->glide_backend_message = context->glide_backend.message();
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRDEPTHBUFFERFUNCTION@4")
-    {
-        const std::uint32_t function = context->glide_gate_stack[1];
-        if (!context->glide_backend.SetDepthBufferFunction(function))
-        {
-            context->glide_backend_message =
-                context->glide_backend.message();
-            return decline_gate("depth-buffer-function-backend-failure");
-        }
-        context->glide_state.depth_buffer_function = function;
-        context->glide_backend_message = context->glide_backend.message();
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRFOGMODE@4")
-    {
-        const std::uint32_t mode = context->glide_gate_stack[1];
-        if (!context->glide_backend.SetFogMode(mode))
-        {
-            context->glide_backend_message =
-                context->glide_backend.message();
-            return decline_gate("fog-mode-backend-failure");
-        }
-        context->glide_state.fog_mode = mode;
-        context->glide_backend_message = context->glide_backend.message();
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRCLIPWINDOW@16")
-    {
-        const std::uint32_t min_x = context->glide_gate_stack[1];
-        const std::uint32_t min_y = context->glide_gate_stack[2];
-        const std::uint32_t max_x = context->glide_gate_stack[3];
-        const std::uint32_t max_y = context->glide_gate_stack[4];
-        if (!context->glide_backend.SetClipWindow(
-                min_x, min_y, max_x, max_y))
-        {
-            context->glide_backend_message =
-                context->glide_backend.message();
-            return decline_gate("clip-window-backend-failure");
-        }
-        context->glide_state.clip_min_x = min_x;
-        context->glide_state.clip_min_y = min_y;
-        context->glide_state.clip_max_x = max_x;
-        context->glide_state.clip_max_y = max_y;
-        context->glide_backend_message = context->glide_backend.message();
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 5U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRCULLMODE@4")
-    {
-        const std::uint32_t mode = context->glide_gate_stack[1];
-        if (!context->glide_backend.SetCullMode(mode))
-        {
-            context->glide_backend_message =
-                context->glide_backend.message();
-            return decline_gate("cull-mode-backend-failure");
-        }
-        context->glide_state.cull_mode = mode;
-        context->glide_backend_message = context->glide_backend.message();
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRGLIDEGETSTATE@4")
-    {
-        repiu::hle::GlideStateImage image;
-        void* output = reinterpret_cast<void*>(static_cast<std::uintptr_t>(
-            context->glide_gate_stack[1]));
-        if (!repiu::hle::BuildGlideStateImage(context->glide_state, &image) ||
-            !WriteGuestBytes(context, output, image.data(), image.size()))
-        {
-            return decline_gate("get-state-serialization-failure");
-        }
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRGLIDESETSTATE@4")
-    {
-        repiu::hle::GlideStateImage image;
-        const void* input = reinterpret_cast<const void*>(
-            static_cast<std::uintptr_t>(context->glide_gate_stack[1]));
-        repiu::hle::GlideLogicalState restored = context->glide_state;
-        if (!IsGuestRangeReadable(context, input, image.size()))
-        {
-            return decline_gate("set-state-unreadable-memory");
-        }
-        std::memcpy(image.data(), input, image.size());
-        if (!repiu::hle::ParseGlideStateImage(image, &restored))
-        {
-            return decline_gate("set-state-deserialization-failure");
-        }
-        context->glide_state = restored;
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRDITHERMODE@4")
-    {
-        const std::uint32_t mode = context->glide_gate_stack[1];
-        if (!context->glide_backend.SetDitherMode(mode))
-        {
-            context->glide_backend_message =
-                context->glide_backend.message();
-            return decline_gate("dither-mode-backend-failure");
-        }
-        context->glide_state.dither_mode = mode;
-        context->glide_backend_message = context->glide_backend.message();
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRBUFFERCLEAR@12")
-    {
-        const std::uint32_t color = context->glide_gate_stack[1];
-        const std::uint32_t alpha = context->glide_gate_stack[2];
-        const std::uint32_t depth = context->glide_gate_stack[3];
-        if (!context->glide_backend.BufferClear(color, alpha, depth))
-        {
+            context->glide_state.alpha_blend = state;
             context->glide_backend_message = context->glide_backend.message();
-            return decline_gate("buffer-clear-backend-failure");
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 5U * sizeof(std::uint32_t);
+            return true;
         }
-        context->glide_backend_message = context->glide_backend.message();
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 4U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRBUFFERSWAP@4")
-    {
-        const std::uint32_t swap_interval = context->glide_gate_stack[1];
-        if (!context->glide_backend.BufferSwap(swap_interval))
-        {
-            context->glide_backend_message = context->glide_backend.message();
-            return decline_gate("buffer-swap-backend-failure");
-        }
-        context->glide_backend_message = context->glide_backend.message();
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRBUFFERNUMPENDING@0")
-    {
-        ++context->glide_gate_handled_count;
-        win32_context->Eax = 0U;
-        win32_context->Eip = return_address;
-        win32_context->Esp += sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRDRAWLINE@8")
-    {
-        record_unimplemented(
-            "draw-line-noop",
-            "draw request accepted without rendering");
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 3U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRDRAWPOINT@4")
-    {
-        record_unimplemented(
-            "draw-point-noop",
-            "draw request accepted without rendering");
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRCONSTANTCOLORVALUE@4")
-    {
-        context->glide_state.constant_color = context->glide_gate_stack[1];
-        if (!context->glide_backend.SetConstantColor(context->glide_state.constant_color))
-        {
-            context->glide_backend_message =
-                context->glide_backend.message();
-            return decline_gate("set-state-backend-failure");
-        }
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRTEXCLAMPMODE@12")
-    {
-        const std::uint32_t s_clamp = context->glide_gate_stack[2];
-        const std::uint32_t t_clamp = context->glide_gate_stack[3];
-        context->glide_backend.SetTextureClampMode(s_clamp, t_clamp);
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 4U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRTEXFILTERMODE@12")
-    {
-        const std::uint32_t min_filter = context->glide_gate_stack[2];
-        const std::uint32_t mag_filter = context->glide_gate_stack[3];
-        context->glide_backend.SetTextureFilterMode(min_filter, mag_filter);
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 4U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRDRAWTRIANGLE@12")
-    {
-        Win32GlideTriangleObservation& triangle =
-            context->glide_first_triangle;
-        if (!triangle.valid)
-        {
-            triangle.valid = true;
-            for (std::size_t index = 0; index < 3U; ++index)
-            {
-                triangle.pointers[index] = context->glide_gate_stack[index + 1U];
-                const auto* vertex = reinterpret_cast<const void*>(
-                    static_cast<std::uintptr_t>(triangle.pointers[index]));
-                triangle.pointer_readable[index] = IsGuestRangeReadable(
-                    context, vertex, sizeof(triangle.dwords[index]));
-                if (triangle.pointer_readable[index])
-                {
-                    std::memcpy(triangle.dwords[index], vertex,
-                                sizeof(triangle.dwords[index]));
-                }
-            }
-            fprintf(stderr,
-                    "[repiu-live] Glide first triangle vertices: %08X/%d %08X/%d %08X/%d\\n",
-                    triangle.pointers[0], triangle.pointer_readable[0],
-                    triangle.pointers[1], triangle.pointer_readable[1],
-                    triangle.pointers[2], triangle.pointer_readable[2]);
-            for (std::size_t index = 0; index < 3U; ++index)
-            {
-                fprintf(stderr, "[repiu-live] Glide first triangle vertex %u dwords:",
-                        static_cast<unsigned>(index));
-                for (std::uint32_t dword : triangle.dwords[index])
-                {
-                    fprintf(stderr, " %08X", dword);
-                }
-                fprintf(stderr, "\n");
-            }
-        }
-        const std::uint32_t sequence = ++context->glide_triangle_trace_count;
-        Win32GlideTriangleTraceEntry& trace = context->glide_triangle_trace[
-            (sequence - 1U) % kWin32GlideTriangleTraceCapacity];
-        trace = Win32GlideTriangleTraceEntry{};
-        trace.valid = true;
-        trace.sequence = sequence;
-        for (std::size_t index = 0; index < 3U; ++index)
-        {
-            trace.pointers[index] = context->glide_gate_stack[index + 1U];
-            const auto* vertex = reinterpret_cast<const void*>(
-                static_cast<std::uintptr_t>(trace.pointers[index]));
-            trace.pointer_readable[index] = IsGuestRangeReadable(
-                context, vertex, sizeof(trace.dwords[index]));
-            if (trace.pointer_readable[index])
-            {
-                std::memcpy(trace.dwords[index], vertex,
-                            sizeof(trace.dwords[index]));
-            }
-        }
-        if (sequence > kWin32GlideTriangleTraceCapacity)
-        {
-            context->glide_triangle_trace_wrapped = true;
-        }
-        // Decode the confirmed 60-byte 2-TMU GrVertex fields: x/y (dwords 0/1),
-        // iterated color r/g/b/a in [0..255] (dwords 3/4/5/7), and TMU0 texture
-        // coordinates sow/tow (dwords 9/10). Color is normalized to [0,1].
-        GlideDrawVertex vertices[3] = {};
-        for (std::size_t index = 0; index < 3U; ++index)
-        {
-            if (!trace.pointer_readable[index])
-            {
-                return decline_gate("compact-triangle-unreadable-vertex");
-            }
-            float fields[15] = {};
-            std::memcpy(fields, trace.dwords[index], sizeof(fields));
-            GlideDrawVertex& vertex = vertices[index];
-            vertex.x = fields[0];
-            vertex.y = fields[1];
-            vertex.r = fields[3] / 255.0F;
-            vertex.g = fields[4] / 255.0F;
-            vertex.b = fields[5] / 255.0F;
-            vertex.a = fields[7] / 255.0F;
-            vertex.s = fields[9];
-            vertex.t = fields[10];
-        }
-        // Draw diagnostic (env-gated): the swap-driven pixel sampler only fires
-        // on selected swap indices, so it can miss the content phase entirely.
-        // Log the decoded vertices and read the back buffer straight after the
-        // draw, which separates "geometry is degenerate", "state kills the
-        // fragment", and "it draws but something later erases it".
-        static const bool draw_diagnostic_enabled =
-            std::getenv("REPIU_GLIDE_DRAW_DIAG") != nullptr;
-        // A missing full-screen background would never appear in a first-N
-        // sample if the game submits it after the UI text, so also diagnose any
-        // triangle large enough to be background geometry regardless of when it
-        // arrives.
-        const float min_x = std::min({vertices[0].x, vertices[1].x, vertices[2].x});
-        const float max_x = std::max({vertices[0].x, vertices[1].x, vertices[2].x});
-        const float min_y = std::min({vertices[0].y, vertices[1].y, vertices[2].y});
-        const float max_y = std::max({vertices[0].y, vertices[1].y, vertices[2].y});
-        const bool is_large = (max_x - min_x) >= 100.0F && (max_y - min_y) >= 100.0F;
-        static long large_diag_count = 0;
-        const bool diagnose_large =
-            is_large && InterlockedIncrement(&large_diag_count) <= 12;
-        std::size_t before_non_black = 0;
-        const bool diagnose_this_draw =
-            draw_diagnostic_enabled && (sequence <= 12U || diagnose_large);
-        if (diagnose_this_draw)
-        {
-            std::vector<std::uint8_t> before;
-            if (context->glide_backend.ReadbackFramebuffer(
-                    context->glide_state.width, context->glide_state.height,
-                    &before))
-            {
-                for (std::size_t i = 0; i + 3U < before.size(); i += 4U)
-                {
-                    if (before[i] > 8U || before[i + 1U] > 8U ||
-                        before[i + 2U] > 8U)
-                    {
-                        ++before_non_black;
-                    }
-                }
-            }
-        }
-        if (!context->glide_backend.DrawTriangle(vertices[0], vertices[1], vertices[2]))
-        {
-            context->glide_backend_message = context->glide_backend.message();
-            return decline_gate("compact-triangle-backend-failure");
-        }
-        if (diagnose_this_draw)
-        {
-            std::vector<std::uint8_t> after;
-            std::size_t after_non_black = 0;
-            if (context->glide_backend.ReadbackFramebuffer(
-                    context->glide_state.width, context->glide_state.height,
-                    &after))
-            {
-                for (std::size_t i = 0; i + 3U < after.size(); i += 4U)
-                {
-                    if (after[i] > 8U || after[i + 1U] > 8U ||
-                        after[i + 2U] > 8U)
-                    {
-                        ++after_non_black;
-                    }
-                }
-            }
-            fprintf(stderr,
-                    "[repiu-live-debug] tri #%u xy=(%.2f,%.2f)(%.2f,%.2f)"
-                    "(%.2f,%.2f) rgba0=(%.3f,%.3f,%.3f,%.3f) st0=(%.2f,%.2f)"
-                    " combine=%u/other=%u texEnabled=%d nonblack %zu->%zu\n",
-                    sequence, vertices[0].x, vertices[0].y, vertices[1].x,
-                    vertices[1].y, vertices[2].x, vertices[2].y,
-                    vertices[0].r, vertices[0].g, vertices[0].b,
-                    vertices[0].a, vertices[0].s, vertices[0].t,
-                    context->glide_state.color_combine.function,
-                    context->glide_state.color_combine.other,
-                    context->glide_backend.is_texture_combine_enabled() ? 1 : 0,
-                    before_non_black, after_non_black);
-        }
-        // Triangle census (env-gated): aggregate every draw by the combine mode
-        // and size bucket it used. The first-N sample cannot answer "why is the
-        // background missing" because the background may be many small tiles
-        // submitted after the UI text -- a histogram over all draws can.
-        {
-            static const bool tri_census_enabled =
-                std::getenv("REPIU_GLIDE_TRI_CENSUS") != nullptr;
-            if (tri_census_enabled)
-            {
-                struct Bucket
-                {
-                    std::uint32_t function;
-                    std::uint32_t other;
-                    bool textured;
-                    long count;
-                    float max_w;
-                    float max_h;
-                };
-                static Bucket buckets[16] = {};
-                static long bucket_count = 0;
-                static long census_draws = 0;
-                const std::uint32_t fn =
-                    context->glide_state.color_combine.function;
-                const std::uint32_t ot = context->glide_state.color_combine.other;
-                const bool textured =
-                    context->glide_backend.is_texture_combine_enabled();
-                bool found = false;
-                for (long b = 0; b < bucket_count; ++b)
-                {
-                    if (buckets[b].function == fn && buckets[b].other == ot &&
-                        buckets[b].textured == textured)
-                    {
-                        ++buckets[b].count;
-                        buckets[b].max_w = std::max(buckets[b].max_w, max_x - min_x);
-                        buckets[b].max_h = std::max(buckets[b].max_h, max_y - min_y);
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found && bucket_count < 16)
-                {
-                    buckets[bucket_count] = {fn, ot, textured, 1,
-                                             max_x - min_x, max_y - min_y};
-                    ++bucket_count;
-                }
-                if (++census_draws % 400 == 0 && census_draws <= 4000)
-                {
-                    fprintf(stderr,
-                            "[repiu-tri-census] after %ld draws:\n", census_draws);
-                    for (long b = 0; b < bucket_count; ++b)
-                    {
-                        fprintf(stderr,
-                                "    combine fn=%u other=%u textured=%d"
-                                " count=%ld max=%.0fx%.0f\n",
-                                buckets[b].function, buckets[b].other,
-                                buckets[b].textured ? 1 : 0, buckets[b].count,
-                                buckets[b].max_w, buckets[b].max_h);
-                    }
-                }
-            }
-        }
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 4U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRDRAWPLANARPOLYGON@12" ||
-        glide_export->name == "_GRDRAWPOLYGON@12")
-    {
-        record_unimplemented(
-            "draw-polygon-noop",
-            "draw request accepted without rendering");
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 4U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRDRAWPLANARPOLYGONVERTEXLIST@8")
-    {
-        record_unimplemented(
-            "draw-polygon-vertex-list-noop",
-            "draw request accepted without rendering");
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 3U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRCONSTANTCOLORVALUE@4")
-    {
-        // R4: retain the constant color so a later CONSTANT combine source can
-        // read it. Observed value during the content phase is 0xFFFFFFFF.
-        context->glide_state.constant_color = context->glide_gate_stack[1];
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRLFBLOCK@24")
-    {
-        // grLfbLock(type, buffer, writeMode, origin, pixelPipeline, info*).
-        // The observed content-phase lock is (WRITE_ONLY, BACKBUFFER, 565,
-        // UPPER_LEFT, FXTRUE), which is exactly what this path implements.
-        const std::uint32_t type = context->glide_gate_stack[1];
-        const std::uint32_t buffer = context->glide_gate_stack[2];
-        const std::uint32_t write_mode = context->glide_gate_stack[3];
-        const std::uint32_t origin = context->glide_gate_stack[4];
-        const std::uint32_t info_pointer = context->glide_gate_stack[6];
-        auto* info = reinterpret_cast<void*>(
-            static_cast<std::uintptr_t>(info_pointer));
 
-        const auto fail_lock = [&](const char* reason) {
-            // Retain policy (design 237): an unsupported but ABI-valid lock
-            // returns FXFALSE rather than leaking the frame through a reject.
-            RecordGlideImplementationIssue(
-                win32_context,
-                context,
-                *glide_export,
-                repiu::hle::GlideImplementationIssueKind::
-                    kUnsupportedArgument,
-                reason,
-                "grLfbLock returns FXFALSE",
-                "continue");
+        case go::kGrAlphaTestFunction: // _GRALPHATESTFUNCTION@4
+        {
+            const std::uint32_t function = context->glide_gate_stack[1];
+            if (!context->glide_backend.SetAlphaTestFunction(function))
+            {
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                return decline_gate("alpha-test-function-backend-failure");
+            }
+            context->glide_state.alpha_test_function = function;
+            context->glide_backend_message = context->glide_backend.message();
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+        }
+
+        case go::kGrAlphaTestReferenceValue: // _GRALPHATESTREFERENCEVALUE@4
+        {
+            const std::uint32_t reference_value = context->glide_gate_stack[1];
+            if (!context->glide_backend.SetAlphaTestReferenceValue(reference_value))
+            {
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                return decline_gate("alpha-test-reference-value-backend-failure");
+            }
+            context->glide_state.alpha_test_reference = reference_value;
+            context->glide_backend_message = context->glide_backend.message();
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+        }
+
+        case go::kGrDepthBufferFunction: // _GRDEPTHBUFFERFUNCTION@4
+        {
+            const std::uint32_t function = context->glide_gate_stack[1];
+            if (!context->glide_backend.SetDepthBufferFunction(function))
+            {
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                return decline_gate("depth-buffer-function-backend-failure");
+            }
+            context->glide_state.depth_buffer_function = function;
+            context->glide_backend_message = context->glide_backend.message();
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+        }
+
+        case go::kGrClipWindow: // _GRCLIPWINDOW@16
+        {
+            const std::uint32_t min_x = context->glide_gate_stack[1];
+            const std::uint32_t min_y = context->glide_gate_stack[2];
+            const std::uint32_t max_x = context->glide_gate_stack[3];
+            const std::uint32_t max_y = context->glide_gate_stack[4];
+            if (!context->glide_backend.SetClipWindow(
+                    min_x, min_y, max_x, max_y))
+            {
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                return decline_gate("clip-window-backend-failure");
+            }
+            context->glide_state.clip_min_x = min_x;
+            context->glide_state.clip_min_y = min_y;
+            context->glide_state.clip_max_x = max_x;
+            context->glide_state.clip_max_y = max_y;
+            context->glide_backend_message = context->glide_backend.message();
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 5U * sizeof(std::uint32_t);
+            return true;
+        }
+
+        case go::kGrCullMode: // _GRCULLMODE@4
+        {
+            const std::uint32_t mode = context->glide_gate_stack[1];
+            if (!context->glide_backend.SetCullMode(mode))
+            {
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                return decline_gate("cull-mode-backend-failure");
+            }
+            context->glide_state.cull_mode = mode;
+            context->glide_backend_message = context->glide_backend.message();
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+        }
+
+        case go::kGrGlideGetState: // _GRGLIDEGETSTATE@4
+        {
+            repiu::hle::GlideStateImage image;
+            void* output = reinterpret_cast<void*>(static_cast<std::uintptr_t>(
+                context->glide_gate_stack[1]));
+            if (!repiu::hle::BuildGlideStateImage(context->glide_state, &image) ||
+                !WriteGuestBytes(context, output, image.data(), image.size()))
+            {
+                return decline_gate("get-state-serialization-failure");
+            }
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+        }
+
+        case go::kGrGlideSetState: // _GRGLIDESETSTATE@4
+        {
+            repiu::hle::GlideStateImage image;
+            const void* input = reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(context->glide_gate_stack[1]));
+            repiu::hle::GlideLogicalState restored = context->glide_state;
+            if (!IsGuestRangeReadable(context, input, image.size()))
+            {
+                return decline_gate("set-state-unreadable-memory");
+            }
+            std::memcpy(image.data(), input, image.size());
+            if (!repiu::hle::ParseGlideStateImage(image, &restored))
+            {
+                return decline_gate("set-state-deserialization-failure");
+            }
+            context->glide_state = restored;
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+        }
+
+        case go::kGrDitherMode: // _GRDITHERMODE@4
+        {
+            const std::uint32_t mode = context->glide_gate_stack[1];
+            if (!context->glide_backend.SetDitherMode(mode))
+            {
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                return decline_gate("dither-mode-backend-failure");
+            }
+            context->glide_state.dither_mode = mode;
+            context->glide_backend_message = context->glide_backend.message();
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+        }
+
+        case go::kGrBufferClear: // _GRBUFFERCLEAR@12
+        {
+            const std::uint32_t color = context->glide_gate_stack[1];
+            const std::uint32_t alpha = context->glide_gate_stack[2];
+            const std::uint32_t depth = context->glide_gate_stack[3];
+            if (!context->glide_backend.BufferClear(color, alpha, depth))
+            {
+                context->glide_backend_message = context->glide_backend.message();
+                return decline_gate("buffer-clear-backend-failure");
+            }
+            context->glide_backend_message = context->glide_backend.message();
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 4U * sizeof(std::uint32_t);
+            return true;
+        }
+
+        case go::kGrBufferSwap: // _GRBUFFERSWAP@4
+        {
+            const std::uint32_t swap_interval = context->glide_gate_stack[1];
+            if (!context->glide_backend.BufferSwap(swap_interval))
+            {
+                context->glide_backend_message = context->glide_backend.message();
+                return decline_gate("buffer-swap-backend-failure");
+            }
+            context->glide_backend_message = context->glide_backend.message();
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+        }
+
+        case go::kGrBufferNumPending: // _GRBUFFERNUMPENDING@0
             ++context->glide_gate_handled_count;
             win32_context->Eax = 0U;
             win32_context->Eip = return_address;
-            win32_context->Esp += 7U * sizeof(std::uint32_t);
+            win32_context->Esp += sizeof(std::uint32_t);
             return true;
-        };
 
-        if (!IsGuestRangeWritable(context, info,
-                                  repiu::hle::kGlideLfbInfoByteCount))
+        case go::kGrDrawLine: // _GRDRAWLINE@8
+            record_unimplemented(
+                "draw-line-noop",
+                "draw request accepted without rendering");
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 3U * sizeof(std::uint32_t);
+            return true;
+
+        case go::kGrDrawPoint: // _GRDRAWPOINT@4
+            record_unimplemented(
+                "draw-point-noop",
+                "draw request accepted without rendering");
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+
+        case go::kGuFogGenerateExp: // _GUFOGGENERATEEXP@8
         {
-            return decline_gate("lfb-lock-info-pointer-unwritable");
-        }
-        if (write_mode != repiu::hle::kGlideLfbWriteMode565 ||
-            (buffer != repiu::hle::kGlideBufferBackBuffer &&
-             buffer != repiu::hle::kGlideBufferFrontBuffer))
-        {
-            return fail_lock("unsupported-writemode-or-buffer");
-        }
-        const std::uint32_t width = context->glide_state.width;
-        const std::uint32_t height = context->glide_state.height;
-        if (!context->glide_lfb_surface.Resize(width, height))
-        {
-            return fail_lock("surface-resize-failure");
-        }
-        if (!context->glide_lfb_surface.BeginLock(type, buffer, write_mode,
-                                                  origin))
-        {
-            return fail_lock("lock-already-outstanding");
-        }
-        // Seed the staging surface from the current render target for *every*
-        // lock, not just read locks. On real hardware the LFB is the live
-        // framebuffer, so a write lock that touches only some pixels leaves the
-        // rest untouched. Handing out a zero-filled buffer instead makes unlock
-        // blit black over everything already drawn -- observed erasing the
-        // triangles submitted immediately before the lock.
-        {
-            std::vector<std::uint8_t> rgba8;
-            const bool read_ok = context->glide_backend.ReadbackFramebuffer(
-                width, height, &rgba8);
-            bool encode_ok = false;
-            if (read_ok)
+            const std::uint32_t table_ptr = context->glide_gate_stack[1];
+            float density = 0.0f;
+            std::memcpy(&density, &context->glide_gate_stack[2], sizeof(float));
+
+            if (table_ptr != 0U && IsGuestRangeWritable(context, reinterpret_cast<void*>(static_cast<std::uintptr_t>(table_ptr)), 64U))
             {
-                encode_ok = repiu::hle::EncodeRgba8ToGlideLfb565(
-                    rgba8.data(), rgba8.size(), width, height,
-                    context->glide_lfb_surface.pixels(),
-                    context->glide_lfb_surface.byte_count());
-            }
-            static long seed_log_count = 0;
-            const long seed_index = InterlockedIncrement(&seed_log_count);
-            if (seed_index <= 4)
-            {
-                std::size_t seed_non_black = 0;
-                for (std::size_t i = 0; i + 3U < rgba8.size(); i += 4U)
+                std::uint8_t* table = reinterpret_cast<std::uint8_t*>(static_cast<std::uintptr_t>(table_ptr));
+                for (std::size_t i = 0; i < 64U; ++i)
                 {
-                    if (rgba8[i] > 8U || rgba8[i + 1U] > 8U ||
-                        rgba8[i + 2U] > 8U)
-                    {
-                        ++seed_non_black;
-                    }
-                }
-                fprintf(stderr,
-                        "[repiu-live-debug] grLfbLock seed #%ld read=%d"
-                        " encode=%d framebuffer non-black=%zu\n",
-                        seed_index, read_ok ? 1 : 0, encode_ok ? 1 : 0,
-                        seed_non_black);
-            }
-        }
-
-        // The size field is caller-supplied; echo it back but record a mismatch
-        // so an unexpected GrLfbInfo_t layout becomes visible instead of silent.
-        std::uint32_t caller_size = 0;
-        std::memcpy(&caller_size, info, sizeof(caller_size));
-        {
-            // Dump what the caller staged in the struct before we touch it.
-            // Glide 2.4's GrLfbInfo_t starts with a caller-set `size`; PIU
-            // leaves offset 0 at zero, so this dump is what distinguishes "the
-            // game simply never sets size" from "this build's GrLfbInfo_t has
-            // no size field and every field we write is off by one dword".
-            static long lfb_size_log_count = 0;
-            const long index = InterlockedIncrement(&lfb_size_log_count);
-            if (index <= 4)
-            {
-                std::uint32_t before[8] = {};
-                const auto* raw = reinterpret_cast<const std::uint32_t*>(
-                    static_cast<std::uintptr_t>(info_pointer));
-                if (IsGuestRangeReadable(context, raw, sizeof(before)))
-                {
-                    std::memcpy(before, raw, sizeof(before));
-                }
-                fprintf(stderr,
-                        "[repiu-live-debug] grLfbLock GrLfbInfo_t caller size=%u"
-                        " (expected %u) pre-call dwords="
-                        "%08X %08X %08X %08X %08X %08X %08X %08X\n",
-                        caller_size,
-                        repiu::hle::kGlideLfbInfoExpectedSize,
-                        before[0], before[1], before[2], before[3],
-                        before[4], before[5], before[6], before[7]);
-            }
-        }
-
-        std::uint8_t image[repiu::hle::kGlideLfbInfoByteCount] = {};
-        const auto staging_pointer = static_cast<std::uint32_t>(
-            reinterpret_cast<std::uintptr_t>(
-                context->glide_lfb_surface.pixels()));
-        // grLfbLock owns every output field, `size` included: it reports the
-        // GrLfbInfo_t layout it actually filled. Echoing the caller's value back
-        // (PIU leaves it 0) would tell the guest nothing was written.
-        if (!repiu::hle::BuildGlideLfbInfoImage(
-                repiu::hle::kGlideLfbInfoExpectedSize, staging_pointer,
-                context->glide_lfb_surface.stride_in_bytes(), write_mode,
-                origin, image, sizeof(image)) ||
-            !WriteGuestBytes(context, info, image, sizeof(image)))
-        {
-            context->glide_lfb_surface.EndLock();
-            return fail_lock("info-write-failure");
-        }
-
-        ++context->glide_lfb_lock_count;
-        if (context->glide_lfb_lock_count <= 4U)
-        {
-            fprintf(stderr,
-                    "[repiu-live-debug] grLfbLock granted #%u type=%u"
-                    " buffer=%u writeMode=%u origin=%u lfbPtr=0x%08X"
-                    " stride=%u %ux%u\n",
-                    context->glide_lfb_lock_count, type, buffer, write_mode,
-                    origin, staging_pointer,
-                    context->glide_lfb_surface.stride_in_bytes(), width,
-                    height);
-        }
-        ++context->glide_gate_handled_count;
-        win32_context->Eax = 1U;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 7U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRLFBUNLOCK@8")
-    {
-        // grLfbUnlock(type, buffer): a write lock's staging content becomes the
-        // back-buffer image here; the next grBufferSwap presents it.
-        const std::uint32_t type = context->glide_gate_stack[1];
-        if (context->glide_lfb_surface.locked() &&
-            type == repiu::hle::kGlideLfbWriteOnly)
-        {
-            // Did the guest actually write into the surface we handed it? A
-            // non-zero count proves the lfbPtr round-trip works end to end and
-            // separates "blit is broken" from "guest never wrote".
-            {
-                static long unlock_probe_count = 0;
-                const long probe = InterlockedIncrement(&unlock_probe_count);
-                if (probe <= 8)
-                {
-                    const std::uint8_t* pixels =
-                        context->glide_lfb_surface.pixels();
-                    const std::size_t total =
-                        context->glide_lfb_surface.byte_count();
-                    std::size_t non_zero = 0;
-                    for (std::size_t i = 0; i < total; ++i)
-                    {
-                        if (pixels[i] != 0U)
-                        {
-                            ++non_zero;
-                        }
-                    }
-                    fprintf(stderr,
-                            "[repiu-live-debug] grLfbUnlock #%ld non-zero"
-                            " staging bytes=%zu/%zu first-texels="
-                            "%02X%02X %02X%02X %02X%02X\n",
-                            probe, non_zero, total, pixels[1], pixels[0],
-                            pixels[3], pixels[2], pixels[5], pixels[4]);
+                    float factor = 1.0f - std::exp(-density * (static_cast<float>(i) * 4.0f / 255.0f));
+                    if (factor < 0.0f) factor = 0.0f;
+                    if (factor > 1.0f) factor = 1.0f;
+                    table[i] = static_cast<std::uint8_t>(factor * 255.0f);
                 }
             }
-            std::vector<std::uint8_t> rgba8;
-            if (repiu::hle::DecodeGlideLfb565ToRgba8(
-                    context->glide_lfb_surface.pixels(),
-                    context->glide_lfb_surface.byte_count(),
-                    context->glide_lfb_surface.width(),
-                    context->glide_lfb_surface.height(), &rgba8))
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 3U * sizeof(std::uint32_t);
+            return true;
+        }
+
+        case go::kGrFogMode: // _GRFOGMODE@4
+        {
+            const std::uint32_t mode = context->glide_gate_stack[1];
+            if (!context->glide_backend.SetFogMode(mode))
             {
-                const char* lfb_dump = std::getenv("REPIU_DUMP_LFB_BMP");
-                if (lfb_dump != nullptr && lfb_dump[0] == '1')
-                {
-                    DumpTextureToBmp(
-                        0x1FB, // Dummy address for LFB
-                        0,     // format
-                        context->glide_lfb_surface.width(),
-                        context->glide_lfb_surface.height(),
-                        rgba8);
-                }
-                const bool flip_v =
-                    context->glide_lfb_surface.lock_origin() ==
-                    repiu::hle::kGlideOriginLowerLeft;
-                const bool present_to_front =
-                    context->glide_lfb_surface.lock_buffer() ==
-                    repiu::hle::kGlideBufferFrontBuffer;
-                const bool presented =
-                    context->glide_backend.PresentLfbSurface(
-                        rgba8.data(), context->glide_lfb_surface.width(),
-                        context->glide_lfb_surface.height(), flip_v,
-                        present_to_front);
                 context->glide_backend_message =
                     context->glide_backend.message();
-                if (presented)
+                return decline_gate("fog-mode-backend-failure");
+            }
+            context->glide_state.fog_mode = mode;
+            context->glide_backend_message = context->glide_backend.message();
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+        }
+
+        case go::kGrFogColorValue: // _GRFOGCOLORVALUE@4
+            context->glide_state.fog_color = context->glide_gate_stack[1];
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+
+        case go::kGrFogTable: // _GRFOGTABLE@4
+            context->glide_state.fog_table_pointer = context->glide_gate_stack[1];
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+
+        case go::kGrConstantColorValue: // _GRCONSTANTCOLORVALUE@4
+            // R4: retain the constant color so a later CONSTANT combine source can
+            // read it. Observed value during the content phase is 0xFFFFFFFF.
+            context->glide_state.constant_color = context->glide_gate_stack[1];
+            if (!context->glide_backend.SetConstantColor(context->glide_state.constant_color))
+            {
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                return decline_gate("set-state-backend-failure");
+            }
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+
+        case go::kGrTexClampMode: // _GRTEXCLAMPMODE@12
+        {
+            // Texture sampler parameters stay within the rendering boundary; the
+            // observed filter/clamp/mipmap modes are handled by the backend texture
+            // defaults for now.
+            const std::uint32_t s_clamp = context->glide_gate_stack[2];
+            const std::uint32_t t_clamp = context->glide_gate_stack[3];
+            context->glide_backend.SetTextureClampMode(s_clamp, t_clamp);
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 4U * sizeof(std::uint32_t);
+            return true;
+        }
+
+        case go::kGrTexFilterMode: // _GRTEXFILTERMODE@12
+        {
+            const std::uint32_t min_filter = context->glide_gate_stack[2];
+            const std::uint32_t mag_filter = context->glide_gate_stack[3];
+            context->glide_backend.SetTextureFilterMode(min_filter, mag_filter);
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 4U * sizeof(std::uint32_t);
+            return true;
+        }
+
+        case go::kGrTexMipMapMode: // _GRTEXMIPMAPMODE@12
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 4U * sizeof(std::uint32_t);
+            return true;
+
+        case go::kGrTexCombine: // _GRTEXCOMBINE@28
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 8U * sizeof(std::uint32_t);
+            return true;
+        case go::kGrDrawTriangle: // _GRDRAWTRIANGLE@12
+        {
+            // Decode the confirmed 60-byte 2-TMU GrVertex fields: x/y (dwords 0/1),
+            // iterated color r/g/b/a in [0..255] (dwords 3/4/5/7), and TMU0 texture
+            // coordinates sow/tow (dwords 9/10). Color is normalized to [0,1].
+            Win32GlideTriangleObservation& triangle =
+                context->glide_first_triangle;
+            if (!triangle.valid)
+            {
+                triangle.valid = true;
+                for (std::size_t index = 0; index < 3U; ++index)
                 {
-                    ++context->glide_lfb_present_count;
-                    // The swap-driven pixel diagnostic cannot help here: the
-                    // guest may never swap again. Sample the back buffer right
-                    // after the blit so the blit itself is verifiable.
-                    if (context->glide_lfb_present_count <= 4U)
+                    triangle.pointers[index] = context->glide_gate_stack[index + 1U];
+                    const auto* vertex = reinterpret_cast<const void*>(
+                        static_cast<std::uintptr_t>(triangle.pointers[index]));
+                    triangle.pointer_readable[index] = IsGuestRangeReadable(
+                        context, vertex, sizeof(triangle.dwords[index]));
+                    if (triangle.pointer_readable[index])
                     {
-                        std::vector<std::uint8_t> after;
-                        if (context->glide_backend.ReadbackFramebuffer(
-                                context->glide_lfb_surface.width(),
-                                context->glide_lfb_surface.height(), &after))
+                        std::memcpy(triangle.dwords[index], vertex,
+                                    sizeof(triangle.dwords[index]));
+                    }
+                }
+                fprintf(stderr,
+                        "[repiu-live] Glide first triangle vertices: %08X/%d %08X/%d %08X/%d\n",
+                        triangle.pointers[0], triangle.pointer_readable[0],
+                        triangle.pointers[1], triangle.pointer_readable[1],
+                        triangle.pointers[2], triangle.pointer_readable[2]);
+                for (std::size_t index = 0; index < 3U; ++index)
+                {
+                    fprintf(stderr, "[repiu-live] Glide first triangle vertex %u dwords:",
+                            static_cast<unsigned>(index));
+                    for (std::uint32_t dword : triangle.dwords[index])
+                    {
+                        fprintf(stderr, " %08X", dword);
+                    }
+                    fprintf(stderr, "\n");
+                }
+            }
+            const std::uint32_t sequence = ++context->glide_triangle_trace_count;
+            Win32GlideTriangleTraceEntry& trace = context->glide_triangle_trace[
+                (sequence - 1U) % kWin32GlideTriangleTraceCapacity];
+            trace = Win32GlideTriangleTraceEntry{};
+            trace.valid = true;
+            trace.sequence = sequence;
+            for (std::size_t index = 0; index < 3U; ++index)
+            {
+                trace.pointers[index] = context->glide_gate_stack[index + 1U];
+                const auto* vertex = reinterpret_cast<const void*>(
+                    static_cast<std::uintptr_t>(trace.pointers[index]));
+                trace.pointer_readable[index] = IsGuestRangeReadable(
+                    context, vertex, sizeof(trace.dwords[index]));
+                if (trace.pointer_readable[index])
+                {
+                    std::memcpy(trace.dwords[index], vertex,
+                                sizeof(trace.dwords[index]));
+                }
+            }
+            if (sequence > kWin32GlideTriangleTraceCapacity)
+            {
+                context->glide_triangle_trace_wrapped = true;
+            }
+            GlideDrawVertex vertices[3] = {};
+            for (std::size_t index = 0; index < 3U; ++index)
+            {
+                if (!trace.pointer_readable[index])
+                {
+                    return decline_gate("compact-triangle-unreadable-vertex");
+                }
+                float fields[15] = {};
+                std::memcpy(fields, trace.dwords[index], sizeof(fields));
+                GlideDrawVertex& vertex = vertices[index];
+                vertex.x = fields[0];
+                vertex.y = fields[1];
+                vertex.r = fields[3] / 255.0F;
+                vertex.g = fields[4] / 255.0F;
+                vertex.b = fields[5] / 255.0F;
+                vertex.a = fields[7] / 255.0F;
+                vertex.s = fields[9];
+                vertex.t = fields[10];
+            }
+            static const bool draw_diagnostic_enabled =
+                std::getenv("REPIU_GLIDE_DRAW_DIAG") != nullptr;
+            const float min_x = std::min({vertices[0].x, vertices[1].x, vertices[2].x});
+            const float max_x = std::max({vertices[0].x, vertices[1].x, vertices[2].x});
+            const float min_y = std::min({vertices[0].y, vertices[1].y, vertices[2].y});
+            const float max_y = std::max({vertices[0].y, vertices[1].y, vertices[2].y});
+            const bool is_large = (max_x - min_x) >= 100.0F && (max_y - min_y) >= 100.0F;
+            static long large_diag_count = 0;
+            // Draw diagnostic (env-gated): the swap-driven pixel sampler only fires
+            // on selected swap indices, so it can miss the content phase entirely.
+            // Log the decoded vertices and read the back buffer straight after the
+            // draw, which separates "geometry is degenerate", "state kills the
+            // fragment", and "it draws but something later erases it".
+            // A missing full-screen background would never appear in a first-N
+            // sample if the game submits it after the UI text, so also diagnose any
+            // triangle large enough to be background geometry regardless of when it
+            // arrives.
+            const bool diagnose_large =
+                is_large && InterlockedIncrement(&large_diag_count) <= 12;
+            std::size_t before_non_black = 0;
+            const bool diagnose_this_draw =
+                draw_diagnostic_enabled && (sequence <= 12U || diagnose_large);
+            if (diagnose_this_draw)
+            {
+                std::vector<std::uint8_t> before;
+                if (context->glide_backend.ReadbackFramebuffer(
+                        context->glide_state.width, context->glide_state.height,
+                        &before))
+                {
+                    for (std::size_t i = 0; i + 3U < before.size(); i += 4U)
+                    {
+                        if (before[i] > 8U || before[i + 1U] > 8U ||
+                            before[i + 2U] > 8U)
                         {
-                            std::size_t non_black = 0;
-                            for (std::size_t i = 0; i + 3U < after.size();
-                                 i += 4U)
-                            {
-                                if (after[i] > 8U || after[i + 1U] > 8U ||
-                                    after[i + 2U] > 8U)
-                                {
-                                    ++non_black;
-                                }
-                            }
-                            fprintf(stderr,
-                                    "[repiu-live-debug] LFB blit #%u back-buffer"
-                                    " non-black=%zu/%zu\n",
-                                    context->glide_lfb_present_count, non_black,
-                                    after.size() / 4U);
+                            ++before_non_black;
                         }
                     }
                 }
-                else
+            }
+            if (!context->glide_backend.DrawTriangle(vertices[0], vertices[1], vertices[2]))
+            {
+                context->glide_backend_message = context->glide_backend.message();
+                return decline_gate("compact-triangle-backend-failure");
+            }
+            if (diagnose_this_draw)
+            {
+                std::vector<std::uint8_t> after;
+                std::size_t after_non_black = 0;
+                if (context->glide_backend.ReadbackFramebuffer(
+                        context->glide_state.width, context->glide_state.height,
+                        &after))
                 {
-                    record_backend_failure(
-                        "lfb-unlock-present-backend-failure",
-                        context->glide_backend_message);
+                    for (std::size_t i = 0; i + 3U < after.size(); i += 4U)
+                    {
+                        if (after[i] > 8U || after[i + 1U] > 8U ||
+                            after[i + 2U] > 8U)
+                        {
+                            ++after_non_black;
+                        }
+                    }
+                }
+                fprintf(stderr,
+                        "[repiu-live-debug] tri #%u xy=(%.2f,%.2f)(%.2f,%.2f)"
+                        "(%.2f,%.2f) rgba0=(%.3f,%.3f,%.3f,%.3f) st0=(%.2f,%.2f)"
+                        " combine=%u/other=%u texEnabled=%d nonblack %zu->%zu\n",
+                        sequence, vertices[0].x, vertices[0].y, vertices[1].x,
+                        vertices[1].y, vertices[2].x, vertices[2].y,
+                        vertices[0].r, vertices[0].g, vertices[0].b,
+                        vertices[0].a, vertices[0].s, vertices[0].t,
+                        context->glide_state.color_combine.function,
+                        context->glide_state.color_combine.other,
+                        context->glide_backend.is_texture_combine_enabled() ? 1 : 0,
+                        before_non_black, after_non_black);
+            }
+            {
+                // Triangle census (env-gated): aggregate every draw by the combine mode
+                // and size bucket it used. The first-N sample cannot answer "why is the
+                // background missing" because the background may be many small tiles
+                // submitted after the UI text -- a histogram over all draws can.
+                static const bool tri_census_enabled =
+                    std::getenv("REPIU_GLIDE_TRI_CENSUS") != nullptr;
+                if (tri_census_enabled)
+                {
+                    struct Bucket
+                    {
+                        std::uint32_t function;
+                        std::uint32_t other;
+                        bool textured;
+                        long count;
+                        float max_w;
+                        float max_h;
+                    };
+                    static Bucket buckets[16] = {};
+                    static long bucket_count = 0;
+                    static long census_draws = 0;
+                    const std::uint32_t fn =
+                        context->glide_state.color_combine.function;
+                    const std::uint32_t ot = context->glide_state.color_combine.other;
+                    const bool textured =
+                        context->glide_backend.is_texture_combine_enabled();
+                    bool found = false;
+                    for (long b = 0; b < bucket_count; ++b)
+                    {
+                        if (buckets[b].function == fn && buckets[b].other == ot &&
+                            buckets[b].textured == textured)
+                        {
+                            ++buckets[b].count;
+                            buckets[b].max_w = std::max(buckets[b].max_w, max_x - min_x);
+                            buckets[b].max_h = std::max(buckets[b].max_h, max_y - min_y);
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found && bucket_count < 16)
+                    {
+                        buckets[bucket_count] = {fn, ot, textured, 1,
+                                                 max_x - min_x, max_y - min_y};
+                        ++bucket_count;
+                    }
+                    if (++census_draws % 400 == 0 && census_draws <= 4000)
+                    {
+                        fprintf(stderr,
+                                "[repiu-tri-census] after %ld draws:\n", census_draws);
+                        for (long b = 0; b < bucket_count; ++b)
+                        {
+                            fprintf(stderr,
+                                    "    combine fn=%u other=%u textured=%d"
+                                    " count=%ld max=%.0fx%.0f\n",
+                                    buckets[b].function, buckets[b].other,
+                                    buckets[b].textured ? 1 : 0, buckets[b].count,
+                                    buckets[b].max_w, buckets[b].max_h);
+                        }
+                    }
                 }
             }
-            else
-            {
-                record_backend_failure(
-                    "lfb-unlock-decode-failure",
-                    "565 staging surface could not be decoded");
-            }
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 4U * sizeof(std::uint32_t);
+            return true;
         }
-        else
-        {
-            record_unsupported(
-                "lfb-unlock-state-unsupported",
-                "no matching write lock is outstanding");
-        }
-        context->glide_lfb_surface.EndLock();
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 3U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRLFBWRITEREGION@32")
-    {
-        const auto arguments = CaptureGlideImplementationIssueArguments(
-            win32_context, context, glide_export->argument_byte_count);
-        const std::uint32_t dst_buffer = context->glide_gate_stack[1];
-        const std::uint32_t dst_x = context->glide_gate_stack[2];
-        const std::uint32_t dst_y = context->glide_gate_stack[3];
-        const std::uint32_t src_format = context->glide_gate_stack[4];
-        const std::uint32_t src_width = context->glide_gate_stack[5];
-        const std::uint32_t src_height = context->glide_gate_stack[6];
-        const std::int32_t src_stride = static_cast<std::int32_t>(context->glide_gate_stack[7]);
-        const std::uint32_t src_data_ptr = arguments[7];
 
-        if (src_format == repiu::hle::kGlideLfbSrcFmt565 && src_width > 0U && src_height > 0U)
+        case go::kGrDrawPlanarPolygon: // _GRDRAWPLANARPOLYGON@12
+        case go::kGrDrawPolygon: // _GRDRAWPOLYGON@12
+            record_unimplemented(
+                "draw-polygon-noop",
+                "draw request accepted without rendering");
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 4U * sizeof(std::uint32_t);
+            return true;
+
+        case go::kGrDrawPlanarPolygonVertexList: // _GRDRAWPLANARPOLYGONVERTEXLIST@8
+            record_unimplemented(
+                "draw-polygon-vertex-list-noop",
+                "draw request accepted without rendering");
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 3U * sizeof(std::uint32_t);
+            return true;
+
+        case go::kGrLfbLock: // _GRLFBLOCK@24
         {
+            // grLfbLock(type, buffer, writeMode, origin, pixelPipeline, info*).
+            // The observed content-phase lock is (WRITE_ONLY, BACKBUFFER, 565,
+            // UPPER_LEFT, FXTRUE), which is exactly what this path implements.
+            const std::uint32_t type = context->glide_gate_stack[1];
+            const std::uint32_t buffer = context->glide_gate_stack[2];
+            const std::uint32_t write_mode = context->glide_gate_stack[3];
+            const std::uint32_t origin = context->glide_gate_stack[4];
+            const std::uint32_t info_pointer = context->glide_gate_stack[6];
+            auto* info = reinterpret_cast<void*>(
+                static_cast<std::uintptr_t>(info_pointer));
+
+            const auto fail_lock = [&](const char* reason) {
+                // Retain policy (design 237): an unsupported but ABI-valid lock
+                // returns FXFALSE rather than leaking the frame through a reject.
+                RecordGlideImplementationIssue(
+                    win32_context,
+                    context,
+                    *glide_export,
+                    repiu::hle::GlideImplementationIssueKind::
+                        kUnsupportedArgument,
+                    reason,
+                    "grLfbLock returns FXFALSE",
+                    "continue");
+                ++context->glide_gate_handled_count;
+                win32_context->Eax = 0U;
+                win32_context->Eip = return_address;
+                win32_context->Esp += 7U * sizeof(std::uint32_t);
+                return true;
+            };
+
+            if (!IsGuestRangeWritable(context, info,
+                                      repiu::hle::kGlideLfbInfoByteCount))
+            {
+                return decline_gate("lfb-lock-info-pointer-unwritable");
+            }
+            if (write_mode != repiu::hle::kGlideLfbWriteMode565 ||
+                (buffer != repiu::hle::kGlideBufferBackBuffer &&
+                 buffer != repiu::hle::kGlideBufferFrontBuffer))
+            {
+                return fail_lock("unsupported-writemode-or-buffer");
+            }
             const std::uint32_t width = context->glide_state.width;
             const std::uint32_t height = context->glide_state.height;
             if (!context->glide_lfb_surface.Resize(width, height))
             {
-                record_backend_failure(
-                    "lfb-write-region-resize-failure",
-                    "logical LFB dimensions are unavailable");
+                return fail_lock("surface-resize-failure");
             }
-            else
+            if (!context->glide_lfb_surface.BeginLock(type, buffer, write_mode,
+                                                      origin))
             {
-                const std::size_t data_size =
-                    static_cast<std::size_t>(src_height) *
-                    (src_stride > 0 ? src_stride : -src_stride);
-                std::vector<std::uint8_t> host_src(data_size);
-                const auto* guest_ptr = reinterpret_cast<const void*>(
-                    static_cast<std::uintptr_t>(src_data_ptr));
-                if (data_size == 0U)
+                return fail_lock("lock-already-outstanding");
+            }
+            {
+                // Seed the staging surface from the current render target for *every*
+                // lock, not just read locks. On real hardware the LFB is the live
+                // framebuffer, so a write lock that touches only some pixels leaves the
+                // rest untouched. Handing out a zero-filled buffer instead makes unlock
+                // blit black over everything already drawn -- observed erasing the
+                // triangles submitted immediately before the lock.
+                std::vector<std::uint8_t> rgba8;
+                const bool read_ok = context->glide_backend.ReadbackFramebuffer(
+                    width, height, &rgba8);
+                bool encode_ok = false;
+                if (read_ok)
                 {
-                    record_unsupported(
-                        "lfb-write-region-zero-stride",
-                        "source stride produces an empty region");
+                    encode_ok = repiu::hle::EncodeRgba8ToGlideLfb565(
+                        rgba8.data(), rgba8.size(), width, height,
+                        context->glide_lfb_surface.pixels(),
+                        context->glide_lfb_surface.byte_count());
                 }
-                else if (!IsGuestRangeReadable(
-                             context, guest_ptr, data_size))
+                static long seed_log_count = 0;
+                const long seed_index = InterlockedIncrement(&seed_log_count);
+                if (seed_index <= 4)
                 {
-                    record_backend_failure(
-                        "lfb-write-region-unreadable-memory",
-                        "source region is not guest-readable");
-                }
-                else
-                {
-                    std::memcpy(host_src.data(), guest_ptr, data_size);
-                    if (!repiu::hle::WriteRegionToGlideLfb565(
-                            dst_x, dst_y, src_width, src_height, src_stride,
-                            host_src.data(), data_size,
-                            &context->glide_lfb_surface))
+                    std::size_t seed_non_black = 0;
+                    for (std::size_t i = 0; i + 3U < rgba8.size(); i += 4U)
                     {
-                        record_unsupported(
-                            "lfb-write-region-geometry-unsupported",
-                            "source geometry or stride is unsupported");
+                        if (rgba8[i] > 8U || rgba8[i + 1U] > 8U ||
+                            rgba8[i + 2U] > 8U)
+                        {
+                            ++seed_non_black;
+                        }
+                    }
+                    fprintf(stderr,
+                            "[repiu-live-debug] grLfbLock seed #%ld read=%d"
+                            " encode=%d framebuffer non-black=%zu\n",
+                            seed_index, read_ok ? 1 : 0, encode_ok ? 1 : 0,
+                            seed_non_black);
+                }
+            }
+
+            // The size field is caller-supplied; echo it back but record a mismatch
+            // so an unexpected GrLfbInfo_t layout becomes visible instead of silent.
+            std::uint32_t caller_size = 0;
+            std::memcpy(&caller_size, info, sizeof(caller_size));
+            {
+                static long lfb_size_log_count = 0;
+                const long index = InterlockedIncrement(&lfb_size_log_count);
+                if (index <= 4)
+                {
+                    // Dump what the caller staged in the struct before we touch it.
+                    // Glide 2.4's GrLfbInfo_t starts with a caller-set `size`; PIU
+                    // leaves offset 0 at zero, so this dump is what distinguishes "the
+                    // game simply never sets size" from "this build's GrLfbInfo_t has
+                    // no size field and every field we write is off by one dword".
+                    std::uint32_t before[8] = {};
+                    const auto* raw = reinterpret_cast<const std::uint32_t*>(
+                        static_cast<std::uintptr_t>(info_pointer));
+                    if (IsGuestRangeReadable(context, raw, sizeof(before)))
+                    {
+                        std::memcpy(before, raw, sizeof(before));
+                    }
+                    fprintf(stderr,
+                            "[repiu-live-debug] grLfbLock GrLfbInfo_t caller size=%u"
+                            " (expected %u) pre-call dwords="
+                            "%08X %08X %08X %08X %08X %08X %08X %08X\n",
+                            caller_size,
+                            repiu::hle::kGlideLfbInfoExpectedSize,
+                            before[0], before[1], before[2], before[3],
+                            before[4], before[5], before[6], before[7]);
+                }
+            }
+
+            // grLfbLock owns every output field, `size` included: it reports the
+            // GrLfbInfo_t layout it actually filled. Echoing the caller's value back
+            // (PIU leaves it 0) would tell the guest nothing was written.
+            std::uint8_t image[repiu::hle::kGlideLfbInfoByteCount] = {};
+            const auto staging_pointer = static_cast<std::uint32_t>(
+                reinterpret_cast<std::uintptr_t>(
+                    context->glide_lfb_surface.pixels()));
+            if (!repiu::hle::BuildGlideLfbInfoImage(
+                    repiu::hle::kGlideLfbInfoExpectedSize, staging_pointer,
+                    context->glide_lfb_surface.stride_in_bytes(), write_mode,
+                    origin, image, sizeof(image)) ||
+                !WriteGuestBytes(context, info, image, sizeof(image)))
+            {
+                context->glide_lfb_surface.EndLock();
+                return fail_lock("info-write-failure");
+            }
+
+            ++context->glide_lfb_lock_count;
+            if (context->glide_lfb_lock_count <= 4U)
+            {
+                fprintf(stderr,
+                        "[repiu-live-debug] grLfbLock granted #%u type=%u"
+                        " buffer=%u writeMode=%u origin=%u lfbPtr=0x%08X"
+                        " stride=%u %ux%u\n",
+                        context->glide_lfb_lock_count, type, buffer, write_mode,
+                        origin, staging_pointer,
+                        context->glide_lfb_surface.stride_in_bytes(), width,
+                        height);
+            }
+            ++context->glide_gate_handled_count;
+            win32_context->Eax = 1U;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 7U * sizeof(std::uint32_t);
+            return true;
+        }
+
+        case go::kGrLfbUnlock: // _GRLFBUNLOCK@8
+        {
+            // grLfbUnlock(type, buffer): a write lock's staging content becomes the
+            // back-buffer image here; the next grBufferSwap presents it.
+            const std::uint32_t type = context->glide_gate_stack[1];
+            if (context->glide_lfb_surface.locked() &&
+                type == repiu::hle::kGlideLfbWriteOnly)
+            {
+                {
+                    // Did the guest actually write into the surface we handed it? A
+                    // non-zero count proves the lfbPtr round-trip works end to end and
+                    // separates "blit is broken" from "guest never wrote".
+                    static long unlock_probe_count = 0;
+                    const long probe = InterlockedIncrement(&unlock_probe_count);
+                    if (probe <= 8)
+                    {
+                        const std::uint8_t* pixels =
+                            context->glide_lfb_surface.pixels();
+                        const std::size_t total =
+                            context->glide_lfb_surface.byte_count();
+                        std::size_t non_zero = 0;
+                        for (std::size_t i = 0; i < total; ++i)
+                        {
+                            if (pixels[i] != 0U)
+                            {
+                                ++non_zero;
+                            }
+                        }
+                        fprintf(stderr,
+                                "[repiu-live-debug] grLfbUnlock #%ld non-zero"
+                                " staging bytes=%zu/%zu first-texels="
+                                "%02X%02X %02X%02X %02X%02X\n",
+                                probe, non_zero, total, pixels[1], pixels[0],
+                                pixels[3], pixels[2], pixels[5], pixels[4]);
+                    }
+                }
+                std::vector<std::uint8_t> rgba8;
+                if (repiu::hle::DecodeGlideLfb565ToRgba8(
+                        context->glide_lfb_surface.pixels(),
+                        context->glide_lfb_surface.byte_count(),
+                        context->glide_lfb_surface.width(),
+                        context->glide_lfb_surface.height(), &rgba8))
+                {
+                    const char* lfb_dump = std::getenv("REPIU_DUMP_LFB_BMP");
+                    if (lfb_dump != nullptr && lfb_dump[0] == '1')
+                    {
+                        DumpTextureToBmp(
+                            0x1FB,
+                            0,
+                            context->glide_lfb_surface.width(),
+                            context->glide_lfb_surface.height(),
+                            rgba8);
+                    }
+                    const bool flip_v =
+                        context->glide_lfb_surface.lock_origin() ==
+                        repiu::hle::kGlideOriginLowerLeft;
+                    const bool present_to_front =
+                        context->glide_lfb_surface.lock_buffer() ==
+                        repiu::hle::kGlideBufferFrontBuffer;
+                    const bool presented =
+                        context->glide_backend.PresentLfbSurface(
+                            rgba8.data(), context->glide_lfb_surface.width(),
+                            context->glide_lfb_surface.height(), flip_v,
+                            present_to_front);
+                    context->glide_backend_message =
+                        context->glide_backend.message();
+                    if (presented)
+                    {
+                        ++context->glide_lfb_present_count;
+                        if (context->glide_lfb_present_count <= 4U)
+                        {
+                            // The swap-driven pixel diagnostic cannot help here: the
+                            // guest may never swap again. Sample the back buffer right
+                            // after the blit so the blit itself is verifiable.
+                            std::vector<std::uint8_t> after;
+                            if (context->glide_backend.ReadbackFramebuffer(
+                                    context->glide_lfb_surface.width(),
+                                    context->glide_lfb_surface.height(), &after))
+                            {
+                                std::size_t non_black = 0;
+                                for (std::size_t i = 0; i + 3U < after.size();
+                                     i += 4U)
+                                {
+                                    if (after[i] > 8U || after[i + 1U] > 8U ||
+                                        after[i + 2U] > 8U)
+                                    {
+                                        ++non_black;
+                                    }
+                                }
+                                fprintf(stderr,
+                                        "[repiu-live-debug] LFB blit #%u back-buffer"
+                                        " non-black=%zu/%zu\n",
+                                        context->glide_lfb_present_count, non_black,
+                                        after.size() / 4U);
+                            }
+                        }
                     }
                     else
                     {
-                        std::vector<std::uint8_t> rgba8;
-                        if (!repiu::hle::DecodeGlideLfb565ToRgba8(
-                                context->glide_lfb_surface.pixels(),
-                                context->glide_lfb_surface.byte_count(),
-                                context->glide_lfb_surface.width(),
-                                context->glide_lfb_surface.height(), &rgba8))
+                        record_backend_failure(
+                            "lfb-unlock-present-backend-failure",
+                            context->glide_backend_message);
+                    }
+                }
+                else
+                {
+                    record_backend_failure(
+                        "lfb-unlock-decode-failure",
+                        "565 staging surface could not be decoded");
+                }
+            }
+            else
+            {
+                record_unsupported(
+                    "lfb-unlock-state-unsupported",
+                    "no matching write lock is outstanding");
+            }
+            context->glide_lfb_surface.EndLock();
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 3U * sizeof(std::uint32_t);
+            return true;
+        }
+
+        case go::kGrLfbWriteRegion: // _GRLFBWRITEREGION@32
+        {
+            const auto arguments = CaptureGlideImplementationIssueArguments(
+                win32_context, context, glide_export->argument_byte_count);
+            const std::uint32_t dst_buffer = context->glide_gate_stack[1];
+            const std::uint32_t dst_x = context->glide_gate_stack[2];
+            const std::uint32_t dst_y = context->glide_gate_stack[3];
+            const std::uint32_t src_format = context->glide_gate_stack[4];
+            const std::uint32_t src_width = context->glide_gate_stack[5];
+            const std::uint32_t src_height = context->glide_gate_stack[6];
+            const std::int32_t src_stride = static_cast<std::int32_t>(context->glide_gate_stack[7]);
+            const std::uint32_t src_data_ptr = arguments[7];
+
+            if (src_format == repiu::hle::kGlideLfbSrcFmt565 && src_width > 0U && src_height > 0U)
+            {
+                const std::uint32_t width = context->glide_state.width;
+                const std::uint32_t height = context->glide_state.height;
+                if (!context->glide_lfb_surface.Resize(width, height))
+                {
+                    record_backend_failure(
+                        "lfb-write-region-resize-failure",
+                        "logical LFB dimensions are unavailable");
+                }
+                else
+                {
+                    const std::size_t data_size =
+                        static_cast<std::size_t>(src_height) *
+                        (src_stride > 0 ? src_stride : -src_stride);
+                    std::vector<std::uint8_t> host_src(data_size);
+                    const auto* guest_ptr = reinterpret_cast<const void*>(
+                        static_cast<std::uintptr_t>(src_data_ptr));
+                    if (data_size == 0U)
+                    {
+                        record_unsupported(
+                            "lfb-write-region-zero-stride",
+                            "source stride produces an empty region");
+                    }
+                    else if (!IsGuestRangeReadable(
+                                 context, guest_ptr, data_size))
+                    {
+                        record_backend_failure(
+                            "lfb-write-region-unreadable-memory",
+                            "source region is not guest-readable");
+                    }
+                    else
+                    {
+                        std::memcpy(host_src.data(), guest_ptr, data_size);
+                        if (!repiu::hle::WriteRegionToGlideLfb565(
+                                dst_x, dst_y, src_width, src_height, src_stride,
+                                host_src.data(), data_size,
+                                &context->glide_lfb_surface))
                         {
-                            record_backend_failure(
-                                "lfb-write-region-decode-failure",
-                                "565 staging surface could not be decoded");
+                            record_unsupported(
+                                "lfb-write-region-geometry-unsupported",
+                                "source geometry or stride is unsupported");
                         }
                         else
                         {
-                            const bool present_to_front =
-                                dst_buffer ==
-                                repiu::hle::kGlideBufferFrontBuffer;
-                            if (!context->glide_backend.PresentLfbSurface(
-                                rgba8.data(), context->glide_lfb_surface.width(),
-                                context->glide_lfb_surface.height(), false,
-                                present_to_front))
+                            std::vector<std::uint8_t> rgba8;
+                            if (!repiu::hle::DecodeGlideLfb565ToRgba8(
+                                    context->glide_lfb_surface.pixels(),
+                                    context->glide_lfb_surface.byte_count(),
+                                    context->glide_lfb_surface.width(),
+                                    context->glide_lfb_surface.height(), &rgba8))
                             {
-                                context->glide_backend_message =
-                                    context->glide_backend.message();
                                 record_backend_failure(
-                                    "lfb-write-region-present-failure",
-                                    context->glide_backend_message);
+                                    "lfb-write-region-decode-failure",
+                                    "565 staging surface could not be decoded");
+                            }
+                            else
+                            {
+                                const bool present_to_front =
+                                    dst_buffer ==
+                                    repiu::hle::kGlideBufferFrontBuffer;
+                                if (!context->glide_backend.PresentLfbSurface(
+                                    rgba8.data(), context->glide_lfb_surface.width(),
+                                    context->glide_lfb_surface.height(), false,
+                                    present_to_front))
+                                {
+                                    context->glide_backend_message =
+                                        context->glide_backend.message();
+                                    record_backend_failure(
+                                        "lfb-write-region-present-failure",
+                                        context->glide_backend_message);
+                                }
                             }
                         }
                     }
                 }
             }
+            else
+            {
+                record_unsupported(
+                    "lfb-write-region-unsupported",
+                    "format or dimensions are unsupported");
+            }
+            ++context->glide_gate_handled_count;
+            win32_context->Eax = 1U;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 9U * sizeof(std::uint32_t);
+            return true;
         }
-        else
-        {
-            record_unsupported(
-                "lfb-write-region-unsupported",
-                "format or dimensions are unsupported");
-        }
-        ++context->glide_gate_handled_count;
-        win32_context->Eax = 1U;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 9U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRLFBREADREGION@28")
-    {
-        record_unimplemented(
-            "lfb-read-region-noop",
-            "success returned without copying pixels");
-        ++context->glide_gate_handled_count;
-        win32_context->Eax = 1U;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 8U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRLFBCONSTANTALPHA@4" || glide_export->name == "_GRLFBCONSTANTDEPTH@4")
-    {
-        record_unimplemented(
-            "lfb-constant-state-noop",
-            "state accepted without implementation");
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 2U * sizeof(std::uint32_t);
-        return true;
-    }
-    if (glide_export->name == "_GRLFBWRITECOLORSWIZZLE@8")
-    {
-        record_unimplemented(
-            "lfb-color-swizzle-noop",
-            "state accepted without implementation");
-        ++context->glide_gate_handled_count;
-        win32_context->Eip = return_address;
-        win32_context->Esp += 3U * sizeof(std::uint32_t);
-        return true;
+
+        case go::kGrLfbReadRegion: // _GRLFBREADREGION@28
+            record_unimplemented(
+                "lfb-read-region-noop",
+                "success returned without copying pixels");
+            ++context->glide_gate_handled_count;
+            win32_context->Eax = 1U;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 8U * sizeof(std::uint32_t);
+            return true;
+
+        case go::kGrLfbConstantAlpha: // _GRLFBCONSTANTALPHA@4
+        case go::kGrLfbConstantDepth: // _GRLFBCONSTANTDEPTH@4
+            record_unimplemented(
+                "lfb-constant-state-noop",
+                "state accepted without implementation");
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 2U * sizeof(std::uint32_t);
+            return true;
+
+        case go::kGrLfbWriteColorSwizzle: // _GRLFBWRITECOLORSWIZZLE@8
+            record_unimplemented(
+                "lfb-color-swizzle-noop",
+                "state accepted without implementation");
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 3U * sizeof(std::uint32_t);
+            return true;
+
+        default:
+            break;
     }
     // Default handler for unhandled but cataloged gates (Phase R0)
     record_unimplemented(

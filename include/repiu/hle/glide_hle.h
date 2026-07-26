@@ -18,6 +18,103 @@ enum class GlideReturnKind : std::uint8_t
     kUInt32,
 };
 
+enum class GlideGateId : std::uint16_t
+{
+    kUnknown = 0,
+    kGrGlideInit,
+    kGrBufferClear,
+    kGrBufferSwap,
+    kGrBufferNumPending,
+    kGrHints,
+    kGrSstQueryHardware,
+    kGrSstSelect,
+    kGrSstWinClose,
+    kGrSstWinOpen,
+    kGrSstScreenWidth,
+    kGrSstScreenHeight,
+    kGrTexMinAddress,
+    kGrTexMaxAddress,
+    kGuFogGenerateExp,
+    kGrColorMask,
+    kGrRenderBuffer,
+    kGrDepthMask,
+    kGrDepthBiasLevel,
+    kGrDepthBufferMode,
+    kGrLfbWriteColorFormat,
+    kGrAlphaCombine,
+    kGrColorCombine,
+    kGrAlphaBlendFunction,
+    kGrAlphaTestFunction,
+    kGrAlphaTestReferenceValue,
+    kGrDepthBufferFunction,
+    kGrFogMode,
+    kGrFogColorValue,
+    kGrFogTable,
+    kGrClipWindow,
+    kGrTexTextureMemRequired,
+    kGrGlideGetState,
+    kGrGlideSetState,
+    kGrTexDownloadMipMapLevel,
+    kGrDrawLine,
+    kGrDrawPoint,
+    kGrDrawTriangle,
+    kGrDrawPlanarPolygon,
+    kGrDrawPlanarPolygonVertexList,
+    kGrDrawPolygon,
+    kGrGlideShutdown,
+    kGrLfbLock,
+    kGrLfbUnlock,
+    kGrLfbWriteRegion,
+    kGrLfbReadRegion,
+    kGrLfbConstantAlpha,
+    kGrLfbConstantDepth,
+    kGrLfbWriteColorSwizzle,
+    kGrChromaKeyMode,
+    kGrChromaKeyValue,
+    kGrConstantColorValue,
+    kGrConstantColorValue4,
+    kGrAADrawPoint,
+    kGrAADrawLine,
+    kGrAADrawTriangle,
+    kGrAADrawPolygon,
+    kGrAADrawPolygonVertexList,
+    kGrDrawPolygonVertexList,
+    kGrTexDownloadMipMap,
+    kGrTexDownloadMipMapLevelPartial,
+    kGrTexDownloadTable,
+    kGrTexDownloadTablePartial,
+    kGrTexNccTable,
+    kGrTexCalcMemRequired,
+    kGrTexCombineFunction,
+    kGrTexDetailControl,
+    kGrTexLodBiasValue,
+    kGrTexMultiBase,
+    kGrTexMultiBaseAddress,
+    kGrSstIdle,
+    kGrSstIsBusy,
+    kGrSstStatus,
+    kGrSstVideoLine,
+    kGrSstVRetraceOn,
+    kGrSstControl,
+    kGrSstOrigin,
+    kGrSstConfigPipeline,
+    kGrSstVidMode,
+    kGrSstQueryBoards,
+    kGrSstPerfStats,
+    kGrSstResetPerfStats,
+    kGrGammaCorrectionValue,
+    kGrAlphaControlSitRgbLighting,
+    kGrCullMode,
+    kGrDitherMode,
+    kGrTexClampMode,
+    kGrTexCombine,
+    kGrTexFilterMode,
+    kGrTexMipMapMode,
+    kGrTexSource
+};
+
+GlideGateId ResolveGlideGateId(const std::string& name);
+
 struct GlideSignature
 {
     const char* name = nullptr;
@@ -33,10 +130,12 @@ struct GlideTextureInfo
     std::uint32_t format = 0;
     std::uint32_t data = 0;
 };
+
 struct GlideExportGate
 {
     std::string name;
     std::uint16_t ordinal = 0;
+    GlideGateId gate_id = GlideGateId::kUnknown;
     std::uint32_t argument_byte_count = 0;
     std::uint32_t gate_offset = 0;
 };
@@ -92,6 +191,8 @@ struct GlideLogicalState
     std::uint32_t alpha_test_reference = 0;
     std::uint32_t depth_buffer_function = 0;
     std::uint32_t fog_mode = 0;
+    std::uint32_t fog_color = 0;
+    std::uint32_t fog_table_pointer = 0;
     std::uint32_t clip_min_x = 0;
     std::uint32_t clip_min_y = 0;
     std::uint32_t clip_max_x = 0;
@@ -149,6 +250,67 @@ bool CalculateGlideTextureMaxAddress(std::uint32_t texture_memory_bytes,
 bool CalculateGlideTextureMemoryRequired(std::uint32_t even_odd_mask,
                                        const GlideTextureInfo& info,
                                        std::uint32_t* required_bytes);
+
+namespace glide_ordinal {
+
+constexpr std::uint16_t kGrGlideInit = 1U;
+constexpr std::uint16_t kGrBufferClear = 2U;
+constexpr std::uint16_t kGrBufferSwap = 3U;
+constexpr std::uint16_t kGrBufferNumPending = 4U;
+constexpr std::uint16_t kGrSstQueryHardware = 6U;
+constexpr std::uint16_t kGrSstSelect = 7U;
+constexpr std::uint16_t kGrSstWinClose = 8U;
+constexpr std::uint16_t kGrSstWinOpen = 9U;
+constexpr std::uint16_t kGrSstScreenWidth = 10U;
+constexpr std::uint16_t kGrSstScreenHeight = 11U;
+constexpr std::uint16_t kGrTexMinAddress = 12U;
+constexpr std::uint16_t kGrTexMaxAddress = 13U;
+constexpr std::uint16_t kGuFogGenerateExp = 16U;
+constexpr std::uint16_t kGrHints = 31U;
+constexpr std::uint16_t kGrColorMask = 32U;
+constexpr std::uint16_t kGrRenderBuffer = 33U;
+constexpr std::uint16_t kGrDepthMask = 34U;
+constexpr std::uint16_t kGrDepthBiasLevel = 35U;
+constexpr std::uint16_t kGrDepthBufferMode = 36U;
+constexpr std::uint16_t kGrLfbWriteColorFormat = 37U;
+constexpr std::uint16_t kGrAlphaCombine = 38U;
+constexpr std::uint16_t kGrColorCombine = 39U;
+constexpr std::uint16_t kGrAlphaBlendFunction = 40U;
+constexpr std::uint16_t kGrAlphaTestFunction = 41U;
+constexpr std::uint16_t kGrAlphaTestReferenceValue = 42U;
+constexpr std::uint16_t kGrDepthBufferFunction = 43U;
+constexpr std::uint16_t kGrClipWindow = 45U;
+constexpr std::uint16_t kGrTexTextureMemRequired = 46U;
+constexpr std::uint16_t kGrGlideGetState = 47U;
+constexpr std::uint16_t kGrGlideSetState = 48U;
+constexpr std::uint16_t kGrTexDownloadMipMapLevel = 49U;
+constexpr std::uint16_t kGrDrawLine = 50U;
+constexpr std::uint16_t kGrDrawPoint = 51U;
+constexpr std::uint16_t kGrDrawTriangle = 52U;
+constexpr std::uint16_t kGrDrawPlanarPolygon = 53U;
+constexpr std::uint16_t kGrDrawPlanarPolygonVertexList = 54U;
+constexpr std::uint16_t kGrDrawPolygon = 55U;
+constexpr std::uint16_t kGrConstantColorValue = 66U;
+constexpr std::uint16_t kGrLfbLock = 70U;
+constexpr std::uint16_t kGrLfbUnlock = 71U;
+constexpr std::uint16_t kGrLfbWriteRegion = 72U;
+constexpr std::uint16_t kGrLfbReadRegion = 73U;
+constexpr std::uint16_t kGrLfbConstantAlpha = 74U;
+constexpr std::uint16_t kGrLfbConstantDepth = 75U;
+constexpr std::uint16_t kGrTexDownloadTable = 76U;
+constexpr std::uint16_t kGrLfbWriteColorSwizzle = 77U;
+constexpr std::uint16_t kGrCullMode = 99U;
+constexpr std::uint16_t kGrDitherMode = 100U;
+constexpr std::uint16_t kGrFogMode = 101U;
+constexpr std::uint16_t kGrFogColorValue = 102U;
+constexpr std::uint16_t kGrFogTable = 103U;
+constexpr std::uint16_t kGrTexClampMode = 131U;
+constexpr std::uint16_t kGrTexCombine = 132U;
+constexpr std::uint16_t kGrTexFilterMode = 134U;
+constexpr std::uint16_t kGrTexMipMapMode = 136U;
+constexpr std::uint16_t kGrTexSource = 138U;
+
+}  // namespace glide_ordinal
 
 }  // namespace repiu::hle
 

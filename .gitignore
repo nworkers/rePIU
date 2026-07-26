@@ -10,3 +10,4 @@ samples/*/build/
 *.obj
 WIP/
 eeprom.dat
+repiu_log.txt
