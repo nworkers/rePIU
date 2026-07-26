@@ -491,3 +491,94 @@ is what proves the renderer faithful. Two hypotheses were disproved along the wa
 (unsupported formats, and an unsupported combine mode disabling texturing), both
 biased toward blaming the renderer. **Open:** whether the BGA asset path is what
 blocks the background — a file-I/O investigation outside Glide.
+
+## Task 302: depth comparison 3과 안전 gate decline / Depth comparison 3 and safe gate decline
+
+**확인됨.** 사용자 장시간 로그는 약 880초에 `_GRDEPTHBUFFERFUNCTION@4(3)`을
+처음 관찰했습니다. 기존 backend는 값 7만 받아 두 번 reject했고, 다음 depth-mask
+frame 아래에 `0x0304F5A5, 3`이 남았습니다. guest는 이어서 `EAX=3`으로
+`[eax+0x21F9]`, 즉 `0x000021FC`를 읽어 `0xC0000005`로 종료했습니다. 이는
+Tasks 246-248의 미처리 gate stdcall frame 누수와 같은 구조입니다.
+
+`SetDepthBufferFunction`은 이제 유효 Glide 비교 값 `0..7`을 OpenGL
+`GL_NEVER..GL_ALWAYS`로 변환합니다. 또한 guest 반환 주소와 catalog signature가
+검증된 이후의 specialized-handler 실패는 공용 safe-decline이 반환 kind에 따른
+보수적 값과 정상 stdcall 정리를 수행합니다. hard reject는 반환 주소 불량과 signature
+불일치만 남습니다.
+
+Win32 x86 Debug 빌드가 성공했습니다. 30초 smoke run은 exit 0의 정상 timeout,
+progress 542,996, Glide gate 49/49, `grDepthBufferFunction(7)` 3회 처리, reject/decline/
+OpenGL error/caught exception 0을 기록했습니다. 인자 3의 실제 장시간 재현은 약 880초
+frontier를 넘는 후속 interactive run으로 남습니다.
+
+**Confirmed.** The user run first reaches `_GRDEPTHBUFFERFUNCTION@4(3)` at about
+880 seconds. The former value-7-only backend rejected it twice, leaving
+`0x0304F5A5, 3` beneath the next depth-mask frame. Guest code then read
+`EAX(3) + 0x21F9 = 0x21FC` and terminated with `0xC0000005`, matching the
+Tasks 246-248 unhandled-gate stdcall leak class.
+
+The backend now maps valid Glide comparisons `0..7` to OpenGL
+`GL_NEVER..GL_ALWAYS`. Every specialized-handler failure after return-address
+and signature validation uses an ABI-preserving safe decline; only invalid
+return addresses and signature mismatches remain hard rejects. Win32 x86 Debug
+built successfully. A 30-second smoke run ended by normal timeout with exit 0,
+progress 542,996, 49/49 handled Glide gates, three successful value-7 depth calls,
+and zero reject, decline, OpenGL error, or caught exception. Direct value-3 live
+confirmation still requires crossing the approximately 880-second frontier.
+
+## Task 303: Glide 구현 공백 fatal 진단 / Glide implementation-gap fatal diagnostics
+
+**확인됨.** 기존 코드는 catalog default와 safe decline만 전역 first-N debug로
+출력했고, `_GRHINTS@8`, texture sampler 기본값, draw/LFB no-op 및 미지원
+combine/blend retain은 구현 공백을 별도로 표시하지 않았습니다. 안전 반환은
+`glide_gate_handled_count`에 포함되므로 기존 entries/handled 요약만으로는 이를
+찾을 수 없었습니다.
+
+플랫폼 공용 tracker가 이제 `GLIDE_UNIMPLEMENTED_FUNCTION`,
+`GLIDE_UNSUPPORTED_ARGUMENT`, `GLIDE_BACKEND_FAILURE`, `GLIDE_ABI_REJECT`를
+함수·인자 조합별로 기록합니다. 앞의 두 분류와 ABI reject는 fatal 진단이고 backend
+실패는 error입니다. ABI가 검증된 구현 공백은 `action=continue`로 stdcall을 정상
+정리하며, signature 미등록/불일치와 잘못된 반환 주소만 `action=terminate` hard
+reject로 남습니다. 이 `fatal`은 구현 완성도 진단 등급이지 알려진 ABI 호출의 process
+종료 정책이 아닙니다.
+
+**검증됨.** 합성 probe는 중복 병합, 인자별 분리, 분류별 total, 128-record overflow와
+공용 출력 문자열을 검증하고 exit 0으로 통과했습니다. Win32 x86 Debug loader/probe
+빌드가 성공했습니다. 최종 30초 `pumpit1` smoke는 exit 0 정상 timeout,
+progress 약 528,000, Glide gate 49/49였고 초기 구간에는 구현 공백 호출이 없어
+total/unique/overflow가 모두 0이었습니다.
+
+**미확정.** 현재 환경의 60초 smoke도 초기 49개 gate에 머물렀으므로 실제 콘텐츠
+호출에서 즉시 line과 종료 summary가 같은 count를 갖는지는 장시간 실행에서 재확인해야
+합니다. 다만 사용자 로그는 이후 `_GRTEXCLAMPMODE@12`,
+`_GRTEXFILTERMODE@12`, `_GRTEXMIPMAPMODE@12`, `_GRTEXCOMBINE@28`,
+`_GRHINTS@8`가 호출됨을 확인하므로 새 빌드에서는 해당 첫 조합마다
+`[repiu-fatal]`이 출력됩니다.
+
+**Confirmed.** The old code emitted only globally first-N debug lines for
+catalog defaults and safe declines. Explicit `_GRHINTS@8`, texture-sampler
+defaults, draw/LFB no-ops, and unsupported combine/blend retain paths were
+silent. Safe returns also counted as handled, so entries/handled could not
+identify implementation gaps.
+
+The platform-neutral tracker now records `GLIDE_UNIMPLEMENTED_FUNCTION`,
+`GLIDE_UNSUPPORTED_ARGUMENT`, `GLIDE_BACKEND_FAILURE`, and `GLIDE_ABI_REJECT`
+by function/argument combination. The first two and ABI rejects are fatal
+diagnostics; backend failures are errors. Verified-ABI gaps use
+`action=continue` with normal stdcall cleanup, while uncataloged/mismatched
+signatures and invalid return addresses remain `action=terminate` hard rejects.
+Here fatal is implementation-completeness severity, not a process-termination
+policy for known ABI calls.
+
+**Verified.** The synthetic probe passed deduplication, argument separation,
+per-category totals, 128-record overflow, and the shared exact log format with
+exit 0. Win32 x86 Debug loader/probe builds succeeded. The final 30-second
+`pumpit1` smoke ended by normal timeout with exit 0, progress about 528,000, and
+49/49 Glide gates; no implementation-gap call occurred in that startup window,
+so all issue totals remained zero.
+
+**Unresolved.** This environment's 60-second smoke also remained at the first
+49 gates, so agreement between immediate lines and final counts on real content
+calls still needs a longer run. The user log does confirm later calls to the
+texture sampler/combine no-ops and `_GRHINTS@8`; the rebuilt boundary will emit
+`[repiu-fatal]` on each first unique combination.

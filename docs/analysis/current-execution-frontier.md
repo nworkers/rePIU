@@ -3589,3 +3589,69 @@ former 125-second crash frontier and ended by normal timeout. It recorded
 2,283/2,283 INT 8 injections/chain completions, progress 129,810, 1,094,406
 single-step boundaries, and 13,932/13,932 Glide gates, with no exception,
 malformed dispatch, or new Windows APPCRASH.
+
+## 2026-07-26 Task 302: depth compare 3 미지원 gate의 stdcall 누수 제거 / Remove the unsupported depth-compare-3 gate leak
+
+**확인됨:** 사용자 장시간 로그는 약 880초에 처음 나타난
+`_GRDEPTHBUFFERFUNCTION@4(3)`이 값 7 전용 backend에서 두 번 reject된 직후,
+다음 frame 아래에 반환 주소 `0x0304F5A5`와 인자 `3`을 남겼습니다. 최종
+`0xC0000005`는 guest `0x03058AA4`의 `cmp byte ptr [eax+0x21F9],0`이
+`EAX=3`으로 `0x000021FC`를 읽은 결과입니다. Tasks 246-248의 미처리 Glide gate
+stdcall 누수와 같은 구조입니다.
+
+**구현:** depth compare `0..7`을 `GL_NEVER..GL_ALWAYS`로 변환합니다. guest 반환
+주소와 catalog signature가 검증된 뒤 specialized handler가 실패하면 공용 decline
+경로가 반환 kind별 보수적 값, caller EIP, `4+argument_byte_count` ESP 정리를 적용해
+정상 반환합니다. 반환 주소 불량과 signature 불일치만 hard reject로 남습니다.
+
+**검증:** Win32 x86 Debug 빌드가 성공했습니다. 30초 smoke는 exit 0 정상 timeout,
+progress 542,996, Glide gate 49/49, depth compare 7 호출 3회, reject/decline/OpenGL
+error/caught exception 0이었습니다. compare 3의 실제 경로는 약 880초 이후이므로 다음
+interactive 장시간 실행이 최종 live 확인입니다.
+
+**Confirmed and fixed.** The user run first calls
+`_GRDEPTHBUFFERFUNCTION@4(3)` at about 880 seconds. The former value-7-only
+backend rejected it twice and leaked return `0x0304F5A5` plus argument `3`.
+Guest `0x03058AA4` then read `EAX(3)+0x21F9=0x21FC` and raised `0xC0000005`,
+matching the Tasks 246-248 unhandled-gate stdcall leak class.
+
+Depth comparisons `0..7` now map to `GL_NEVER..GL_ALWAYS`. Any specialized
+handler failure after return-address and signature validation performs a
+conservative ABI-preserving decline; only invalid return addresses and signature
+mismatches remain hard rejects. Win32 x86 Debug built successfully. A 30-second
+smoke ended by normal timeout with exit 0, progress 542,996, 49/49 Glide gates,
+three successful compare-7 calls, and zero reject, decline, OpenGL error, or
+caught exception. Compare-3 live confirmation requires crossing the approximately
+880-second frontier.
+
+## 2026-07-26 Task 303: Glide 구현 공백을 fatal로 가시화 / Make Glide implementation gaps visible as fatal
+
+**확인 및 구현:** 기존 entries/handled와 제한형 debug 로그는 안전 반환된 Glide
+미구현/no-op/미지원 인자를 숨겼습니다. 공용 tracker와 동일 문자열 formatter를 추가해
+미구현 함수와 미지원 인자는 첫 고유 함수·인자 조합에서 `[repiu-fatal]`로 즉시
+출력하고 종료 요약에서 `critical/FATAL` 및 반복 count로 다시 출력합니다. 알려진
+stdcall ABI는 `action=continue`로 계속 실행하고, ABI를 신뢰할 수 없는 경우만
+`action=terminate` hard reject를 유지합니다.
+
+**검증:** 정확한 fatal line, 중복 병합, 인자 분리, total/overflow를 검사하는
+`repiu_glide_issue_probe`가 exit 0으로 통과했고 Win32 x86 Debug loader가
+빌드됐습니다. 30초 `pumpit1` smoke는 exit 0, 정상 timeout, progress 약 528,000,
+Glide 49/49였으며 해당 초기 구간에는 구현 공백 호출이 없어 issue total은 0입니다.
+실제 content-phase fatal 집계의 live 대조는 현재 60초에도 gate 49에서 머문 실행
+속도 때문에 장시간 후속 확인으로 남습니다.
+
+**Confirmed and implemented.** Existing entries/handled counts and capped
+debug lines hid safely returned Glide unimplemented/no-op/unsupported cases.
+A shared tracker and formatter now emit `[repiu-fatal]` on the first unique
+function/argument combination and repeat every unique record with its count as
+`critical/FATAL` in the final summary. Known stdcall ABIs continue with
+`action=continue`; only untrusted ABI cases retain `action=terminate` hard
+rejects.
+
+**Verified.** `repiu_glide_issue_probe` passed exact fatal-line formatting,
+deduplication, argument separation, totals, and overflow with exit 0, and the
+Win32 x86 Debug loader built. A 30-second `pumpit1` smoke ended normally by
+timeout with exit 0, progress about 528,000, and 49/49 Glide gates. That startup
+window contained no implementation gap, so issue totals were zero. Live
+immediate/final comparison on content-phase calls remains a longer-run check
+because this environment still remained at gate 49 after 60 seconds.

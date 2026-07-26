@@ -72,7 +72,7 @@ logical state (`glide_hle.{h,cpp}`), and the Win32 OpenGL backend
 크래시 사슬(Task 245-248의 zero-EIP)로 이어질 수 있는 잠재 위험이다.
 
 * `DecodeGlideResolution`: resolution 7(640×480)만 지원
-* `SetAlphaTestFunction`/`SetDepthBufferFunction`: `GR_CMP_ALWAYS(7)`만
+* `SetAlphaTestFunction`/`SetDepthBufferFunction`: Task 302에서 유효 비교 함수 `0..7` 지원
 * `SetFogMode`/`SetCullMode`: 0(disable)만
 * `SetClipWindow`: 전체 창(0,0,640,480)만
 * `SetDitherMode`: 2만
@@ -86,14 +86,15 @@ chain (the Task 245-248 zero-EIP).
 
 ### 3.3 게이트 안전망 구조 결함 / Structural Gate-Safety Defects
 
-* 핸들러 내부 backend 실패의 `return false` 다수가 `reject_gate` 텔레메트리를
-  거치지 않아 미계측 상태로 미처리 크래시 사슬에 합류한다.
-* 게이트 주소에서 발생한 미처리 예외가 AOT 스택 스캔 복구로 유입되는 경로가
-  아직 fail-closed로 차단되지 않았다(Task 248 잔여 과제).
+* Task 302에서 guest 반환 주소와 catalog signature가 검증된 이후의 handler 실패는
+  공용 `decline_gate`가 보수적 반환값과 stdcall EIP/ESP 정리를 수행한다.
+* 반환 주소 불량과 signature 불일치는 ABI를 신뢰할 수 없으므로 기존 hard reject를
+  유지한다.
 
-Several backend-failure `return false` paths bypass `reject_gate` telemetry, and
-unhandled exceptions raised at gate addresses can still enter the AOT stack-scan
-recovery (the remaining Task 248 structural item).
+Task 302 routes every post-signature specialized-handler failure through a common
+`decline_gate` that supplies a conservative return and performs normal stdcall
+EIP/ESP cleanup. Invalid return addresses and signature mismatches remain hard
+rejects because their ABI cannot be trusted.
 
 ## 4. PIU가 참조하는 전체 export 집합 / Full Export Set Referenced by PIU
 

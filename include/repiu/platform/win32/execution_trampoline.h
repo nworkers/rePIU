@@ -7,6 +7,7 @@
 #include "repiu/platform/win32/aot_code_cache_win32.h"
 #include "repiu/platform/win32/aot_boundary_provenance.h"
 #include "repiu/hle/dos_file_system.h"
+#include "repiu/hle/glide_implementation_issue.h"
 #include "repiu/exe/dos16m_bound_module.h"
 
 #include <cstdint>
@@ -771,6 +772,7 @@ struct Win32MinimalExecutionAttempt
     std::uint16_t glide_gate_ordinal = 0;
     std::uint32_t glide_gate_argument_bytes = 0;
     char glide_gate_name[64] = {};
+    repiu::hle::GlideImplementationIssueTracker glide_implementation_issues;
     std::uint32_t glide_texture_gate_trace_count = 0;
     bool glide_texture_gate_trace_wrapped = false;
     Win32GlideTextureGateTraceEntry glide_texture_gate_trace[kWin32GlideTextureGateTraceCapacity] = {};

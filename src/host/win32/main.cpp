@@ -1587,6 +1587,41 @@ void PrintExecutionAttempt(
                 attempt.glide_gate_ordinal,
                 attempt.glide_gate_name,
                 attempt.glide_gate_argument_bytes);
+    const auto& glide_issues = attempt.glide_implementation_issues;
+    logger.info(
+        "Win32 Glide implementation issues"
+        " unimplemented/unsupported/backend/abi/unique/overflow:"
+        " {}/{}/{}/{}/{}/{}",
+        glide_issues.total(
+            repiu::hle::GlideImplementationIssueKind::
+                kUnimplementedFunction),
+        glide_issues.total(
+            repiu::hle::GlideImplementationIssueKind::
+                kUnsupportedArgument),
+        glide_issues.total(
+            repiu::hle::GlideImplementationIssueKind::kBackendFailure),
+        glide_issues.total(
+            repiu::hle::GlideImplementationIssueKind::kAbiReject),
+        glide_issues.observations().size(),
+        glide_issues.overflow_count());
+    for (const auto& issue : glide_issues.observations())
+    {
+        const bool terminate =
+            issue.kind ==
+                repiu::hle::GlideImplementationIssueKind::kAbiReject ||
+            issue.reason == "signature-not-cataloged";
+        const std::string line =
+            repiu::hle::FormatGlideImplementationIssue(
+                issue, terminate ? "terminate" : "continue");
+        if (repiu::hle::IsGlideImplementationIssueFatal(issue.kind))
+        {
+            logger.critical("FATAL {}", line);
+        }
+        else
+        {
+            logger.error("{}", line);
+        }
+    }
     logger.info("Win32 Glide window opens/logical size: {}/{}x{}",
                 attempt.glide_window_open_count,
                 attempt.glide_logical_width,

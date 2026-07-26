@@ -172,6 +172,10 @@ Planned major modules:
 
 `GlideLogicalState`는 원본 Glide enum과 초기 raster state를 플랫폼 중립적으로 보존합니다. `GlideOpenGlBackend`는 메인 스레드 소유 SDL3 window/OpenGL context와 상태 변환을 담당하고, 별도 `GlideOpenGlShader`가 shader entry-point 해석, compile/link, program과 combine uniform을 소유합니다. 게스트 작업 스레드의 호출은 backend의 동기 명령 큐를 거쳐 메인 스레드에서 실행됩니다.
 
+Glide 비교 함수 `0..7`은 backend에서 OpenGL `GL_NEVER..GL_ALWAYS`로 변환합니다. `grDepthBufferMode`가 depth test 활성 여부를 소유하고 `grDepthBufferFunction`은 비교 함수만 선택합니다. guest 반환 주소와 catalog signature가 검증된 뒤 specialized gate handler가 실패하면 공용 decline 경로가 보수적 반환값과 stdcall EIP/ESP 정리를 수행합니다. 반환 주소 불량과 signature 불일치는 ABI를 신뢰할 수 없으므로 hard reject로 유지합니다.
+
+플랫폼 공용 `GlideImplementationIssueTracker`는 미구현 함수, 미지원 인자, backend 실패, ABI reject를 분류하고 함수·인자 조합별 반복 횟수를 합칩니다. 미구현과 미지원은 즉시 `[repiu-fatal]` 및 종료 시 `critical/FATAL`로 출력하지만, 검증된 stdcall ABI는 정상 정리 후 계속 실행합니다. 최대 128개 고유 record와 첫 8개 인자를 보존하며 분류별 total과 overflow는 별도로 누적합니다.
+
 창 배율 또는 일반 resize가 발생하면 drawable pixel 크기로 viewport와 full-window scissor를 갱신합니다. 확대된 framebuffer의 LFB readback은 drawable 전체를 읽은 뒤 논리 해상도로 최근접 축소하여 원본 게스트의 LFB 크기와 row 순서를 보존합니다.
 
 SDL 창 제목은 루트 `VERSION`에서 CMake가 검증·주입한 `REPIU_VERSION`, backend 컴파일 날짜 `__DATE__`, 현재 `ExecutionBackend` 이름, 실측 FPS를 조합합니다. 실행 orchestration이 플랫폼 공용 backend enum을 `GlideOpenGlBackend`에 전달하며, backend는 성공한 guest buffer swap을 단조 시간 기준 약 1초 구간으로 집계합니다. 제목 생성과 갱신은 모두 SDL window를 소유한 실행기 메인 스레드에서 수행됩니다. `VERSION` 파일은 configure dependency이므로 변경 시 build system이 자동 재구성됩니다.
@@ -190,6 +194,10 @@ flowchart LR
 ## Glide GLSL renderer boundary
 
 `GlideLogicalState` preserves original Glide enums and initial raster state without platform dependencies. `GlideOpenGlBackend` owns the main-thread SDL3 window/OpenGL context and state translation, while the separate `GlideOpenGlShader` owns shader entry-point resolution, compilation/linking, the program, and combine uniforms. A synchronous backend queue executes guest-worker calls on the main thread.
+
+The backend maps Glide comparison values `0..7` to OpenGL `GL_NEVER..GL_ALWAYS`. `grDepthBufferMode` owns depth-test enablement, while `grDepthBufferFunction` selects only the comparison. After the guest return address and catalog signature have both been validated, any specialized-handler failure uses a common decline path that supplies a conservative return and performs normal stdcall EIP/ESP cleanup. Invalid return addresses and signature mismatches remain hard rejects because their ABI is not trustworthy.
+
+The platform-neutral `GlideImplementationIssueTracker` classifies unimplemented functions, unsupported arguments, backend failures, and ABI rejects while coalescing repeat counts by function/argument combination. Unimplemented and unsupported calls print immediate `[repiu-fatal]` lines and final `critical/FATAL` records, but verified stdcall ABIs still clean up normally and continue. It retains at most 128 unique records plus the first eight arguments, with separate per-category totals and overflow accounting.
 
 Window-scale and ordinary resize events update the viewport and full-window scissor to the drawable pixel size. LFB readback samples the complete enlarged framebuffer and nearest-neighbor downsamples it to the logical dimensions, preserving the original guest-visible LFB size and row ordering.
 

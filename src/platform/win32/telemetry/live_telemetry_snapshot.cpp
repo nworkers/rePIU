@@ -1102,6 +1102,8 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     std::memcpy(attempt->glide_gate_name,
                 context.glide_gate_name,
                 sizeof(attempt->glide_gate_name));
+    attempt->glide_implementation_issues =
+        context.glide_implementation_issues;
     attempt->glide_texture_gate_trace_count = context.glide_texture_gate_trace_count;
     attempt->glide_texture_gate_trace_wrapped = context.glide_texture_gate_trace_wrapped;
     std::memcpy(attempt->glide_texture_gate_trace,

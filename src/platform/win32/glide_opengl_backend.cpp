@@ -1327,18 +1327,18 @@ bool GlideOpenGlBackend::SetDepthBufferFunction(std::uint32_t function)
     return false;
 #else
     constexpr std::uint32_t kGlideCompareAlways = 7U;
-    if (!is_open() || function != kGlideCompareAlways)
+    if (!is_open() || function > kGlideCompareAlways)
     {
         message_ = "unsupported Glide depth-buffer function";
         return false;
     }
     if (dummy_mode_)
     {
-        message_ = "Glide ALWAYS depth comparison applied (dummy)";
+        message_ = "Glide depth comparison applied (dummy)";
         return true;
     }
-    glDepthFunc(GL_ALWAYS);
-    message_ = "Glide ALWAYS depth comparison applied to OpenGL";
+    glDepthFunc(GL_NEVER + function);
+    message_ = "Glide depth comparison applied to OpenGL";
     return glGetError() == GL_NO_ERROR;
 #endif
 }

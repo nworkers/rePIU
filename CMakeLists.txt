@@ -87,6 +87,7 @@ add_library(repiu_exe
     src/exe/executable_headers.cpp
     src/hle/dos_file_system.cpp
     src/hle/glide_hle.cpp
+    src/hle/glide_implementation_issue.cpp
     src/hle/glide_lfb.cpp
     src/hle/glide_texture_decode.cpp
     src/hle/hle_dispatcher.cpp
@@ -189,6 +190,10 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/main.cpp
 )
 
+add_executable(repiu_glide_issue_probe
+    src/tools/glide_issue_probe/main.cpp
+)
+
 add_executable(repiu_loader_win32
     src/host/win32/main.cpp
 )
@@ -214,6 +219,11 @@ target_link_libraries(repiu_chd_cd_probe
 )
 
 target_link_libraries(repiu_aot_probe
+    PRIVATE
+        repiu_exe
+)
+
+target_link_libraries(repiu_glide_issue_probe
     PRIVATE
         repiu_exe
 )
