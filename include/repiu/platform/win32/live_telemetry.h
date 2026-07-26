@@ -9,7 +9,7 @@ namespace repiu::platform::win32
 {
 
 constexpr std::uint32_t kWin32LiveTelemetryMagic = 0x5250544CU;
-constexpr std::uint32_t kWin32LiveTelemetryVersion = 22;
+constexpr std::uint32_t kWin32LiveTelemetryVersion = 23;
 constexpr std::uint32_t kWin32NativeSampleRingCapacity = 8;
 constexpr const char* kWin32LiveTelemetryEnvironment =
     "REPIU_LIVE_TELEMETRY_MAPPING";
@@ -132,6 +132,8 @@ struct Win32SharedLiveTelemetry
     volatile long aot_page_retire_attempt_count = 0;
     volatile long aot_page_retire_success_count = 0;
     volatile long aot_retired_entry_trap_count = 0;
+    volatile long aot_retired_span_attempt_count = 0;
+    volatile long aot_retired_span_success_count = 0;
     volatile long aot_quarantine_count = 0;
     // Provenance of the most recent quarantine (Task 218): which page was
     // retired and the guest write that triggered it, so the storm's cause

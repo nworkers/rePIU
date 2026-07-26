@@ -105,6 +105,7 @@ add_library(repiu_exe
     src/platform/win32/aot/aot_dbt_dispatch.cpp
     src/platform/win32/aot/aot_dbt_indirect_dispatch.cpp
     src/platform/win32/aot/aot_dbt_return_dispatch.cpp
+    src/platform/win32/aot/aot_retired_trap_profile.cpp
     src/platform/win32/aot/aot_runtime_dispatch.cpp
     src/platform/win32/execution/execution_trampoline.cpp
     src/platform/win32/dos/dos_int21_services.cpp
@@ -186,6 +187,7 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/execution_backend_probe.cpp
     src/tools/aot_probe/inline_cache_probe.cpp
     src/tools/aot_probe/native_linear_span_probe.cpp
+    src/tools/aot_probe/retired_trap_profile_probe.cpp
     src/tools/aot_probe/selector_guard_probe.cpp
     src/tools/aot_probe/main.cpp
 )

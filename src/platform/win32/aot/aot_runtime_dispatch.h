@@ -104,7 +104,9 @@ bool IsAotHleBoundaryAddress(const ThreadContext* context,
 bool ResolveAotTransferTarget(ThreadContext* context,
                               std::uint32_t target,
                               std::uint32_t* cache_target,
-                              bool force_generation = false);
+                              bool force_generation = false,
+                              AotRetiredTrapResolution* retired_resolution =
+                                  nullptr);
 
 bool EvaluateAotCondition(std::uint8_t condition, std::uint32_t eflags);
 

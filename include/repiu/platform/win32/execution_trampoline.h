@@ -6,6 +6,7 @@
 #include "repiu/runtime/execution_backend.h"
 #include "repiu/platform/win32/aot_code_cache_win32.h"
 #include "repiu/platform/win32/aot_boundary_provenance.h"
+#include "repiu/platform/win32/aot_retired_trap_profile.h"
 #include "repiu/hle/dos_file_system.h"
 #include "repiu/hle/glide_implementation_issue.h"
 #include "repiu/exe/dos16m_bound_module.h"
@@ -511,6 +512,11 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t native_linear_span_reject_count = 0;
     std::uint32_t native_linear_span_cache_hit_count = 0;
     std::uint32_t native_linear_span_cache_miss_count = 0;
+    std::uint32_t native_linear_span_reject_cache_hit_count = 0;
+    std::uint32_t native_linear_span_reject_cache_miss_count = 0;
+    std::uint32_t native_linear_span_reject_cache_stale_count = 0;
+    std::uint32_t native_linear_span_reject_cache_store_count = 0;
+    std::uint32_t native_linear_span_reject_cache_capacity_skip_count = 0;
     std::uint32_t native_linear_span_write_cross_count = 0;
     std::uint32_t native_linear_span_write_guard_uncovered_count = 0;
     std::uint32_t native_linear_span_write_fault_cancel_count = 0;
@@ -586,6 +592,9 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t aot_generation_failure_count = 0;
     std::uint32_t aot_generation_relinked_entry_count = 0;
     std::uint32_t aot_retired_entry_trap_count = 0;
+    Win32AotRetiredTrapProfileSnapshot aot_retired_trap_profile;
+    std::uint32_t aot_retired_span_attempt_count = 0;
+    std::uint32_t aot_retired_span_success_count = 0;
     std::uint32_t aot_quarantine_count = 0;
     std::uint32_t aot_last_code_write_source = 0;
     std::uint32_t aot_last_code_write_destination = 0;

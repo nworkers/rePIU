@@ -29,6 +29,7 @@ flowchart LR
 * [Interrupt와 port I/O 관찰](interrupts-and-port-io.md)
 * [펌프 잇 업 (PIU) I/O 포트 사양 분석 및 유지 지침](piu-io-port-specification.md)
 * [현재 실행 frontier와 다음 분석 대상](current-execution-frontier.md)
+* [실행 frontier 과거 원문 색인](history/README.md)
 * [DOS4GW loader와 selector 할당 분석](dos4gw-loader-selector-allocation.md)
 * [DOS/4G DLL loader와 INT 21h AX=FF00h 역추적](dll-loader-int21-ff00.md)
 * [DOS4GW 결합 EXP module과 segment map](dos4gw-bound-module-map.md)

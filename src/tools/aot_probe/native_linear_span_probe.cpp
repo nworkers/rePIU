@@ -2,11 +2,13 @@
 
 #include "native_fast_path.h"
 #include "native_linear_span.h"
+#include "execution/thread_context.h"
 #include "verified_region_analyzer.h"
 
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <memory>
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -197,7 +199,9 @@ bool RunNativeLinearSpanProbe()
         write.boundary_memory_write;
     const bool short_rejected =
         !platform::win32::detail::ScanNativeLinearSpanWithZydis(
-            base + 48U, base, kPageSize, &short_span);
+            base + 48U, base, kPageSize, &short_span) &&
+        short_span.cacheable_rejection_byte_count ==
+            sizeof(short_bytes);
     std::uint32_t guarded_page = base & 0xFFFFF000U;
     platform::win32::detail::NativeLinearSpanOptions write_options;
     write_options.allow_memory_writes = true;
@@ -312,6 +316,113 @@ bool RunNativeLinearSpanProbe()
             std::memory_order_relaxed) == 1U &&
         cache_state.linear_span_cache_miss_count.load(
             std::memory_order_relaxed) == 2U;
+    platform::win32::detail::NativeFastPathState reject_cache_state;
+    const bool reject_cache_initial_miss =
+        !platform::win32::detail::LookupNativeLinearSpanRejectCache(
+            &reject_cache_state, base + 48U);
+    platform::win32::detail::StoreNativeLinearSpanRejectCache(
+        &reject_cache_state, base + 48U, short_span);
+    const bool reject_cache_same_bytes_hit =
+        platform::win32::detail::LookupNativeLinearSpanRejectCache(
+            &reject_cache_state, base + 48U);
+    DWORD reject_cache_old_protection = 0;
+    const bool reject_cache_write_enabled = VirtualProtect(
+        memory, kPageSize, PAGE_EXECUTE_READWRITE,
+        &reject_cache_old_protection) != FALSE;
+    if (reject_cache_write_enabled)
+    {
+        memory[48U] = 0x40;
+    }
+    const bool reject_cache_changed_bytes_stale =
+        reject_cache_write_enabled &&
+        !platform::win32::detail::LookupNativeLinearSpanRejectCache(
+            &reject_cache_state, base + 48U) &&
+        reject_cache_state.linear_span_reject_cache.empty();
+    if (reject_cache_write_enabled)
+    {
+        memory[48U] = short_bytes[0];
+        DWORD ignored_protection = 0;
+        VirtualProtect(memory, kPageSize, reject_cache_old_protection,
+                       &ignored_protection);
+    }
+    const bool reject_cache_behavior_ok =
+        reject_cache_initial_miss && reject_cache_same_bytes_hit &&
+        reject_cache_changed_bytes_stale &&
+        reject_cache_state.linear_span_reject_cache_hit_count.load(
+            std::memory_order_relaxed) == 1U &&
+        reject_cache_state.linear_span_reject_cache_miss_count.load(
+            std::memory_order_relaxed) == 1U &&
+        reject_cache_state.linear_span_reject_cache_stale_count.load(
+            std::memory_order_relaxed) == 1U &&
+        reject_cache_state.linear_span_reject_cache_store_count.load(
+            std::memory_order_relaxed) == 1U;
+    platform::win32::detail::NativeFastPathState capacity_state;
+    capacity_state.linear_span_reject_cache.reserve(
+        platform::win32::detail::kNativeLinearSpanRejectCacheMaxEntries);
+    for (std::uint32_t index = 0;
+         index <
+             platform::win32::detail::kNativeLinearSpanRejectCacheMaxEntries;
+         ++index)
+    {
+        capacity_state.linear_span_reject_cache.emplace(
+            index,
+            platform::win32::detail::NativeLinearSpanRejectCacheEntry{});
+    }
+    platform::win32::detail::StoreNativeLinearSpanRejectCache(
+        &capacity_state, base + 48U, short_span);
+    const bool reject_cache_capacity_ok =
+        capacity_state.linear_span_reject_cache.size() ==
+            platform::win32::detail::
+                kNativeLinearSpanRejectCacheMaxEntries &&
+        capacity_state.linear_span_reject_cache.find(base + 48U) ==
+            capacity_state.linear_span_reject_cache.end() &&
+        capacity_state.linear_span_reject_cache_capacity_skip_count.load(
+            std::memory_order_relaxed) == 1U;
+    auto retired_span_context =
+        std::make_unique<platform::win32::ThreadContext>();
+    retired_span_context->runtime_base = base;
+    retired_span_context->runtime_size = kPageSize;
+    retired_span_context->execution_backend =
+        runtime::ExecutionBackend::kAotDbt;
+    retired_span_context->aot_reentry_pending = true;
+    retired_span_context->enable_single_step_trace = true;
+    CONTEXT retired_span_registers{};
+    retired_span_registers.Eip = base;
+    retired_span_registers.EFlags = 0x00000100U;
+    const bool retired_span_entered =
+        platform::win32::TryEnterRetiredTrapNativeSpan(
+            &retired_span_registers, retired_span_context.get()) &&
+        retired_span_context->native_fast_path.linear_span_active &&
+        retired_span_context->aot_reentry_pending &&
+        retired_span_context->enable_single_step_trace &&
+        (retired_span_registers.EFlags & 0x00000100U) == 0U;
+    retired_span_registers.Eip =
+        retired_span_context->native_fast_path.linear_span_boundary;
+    platform::win32::LeaveNativeLinearSpan(
+        &retired_span_registers, retired_span_context.get(), true, false, 0U);
+    auto retired_reject_context =
+        std::make_unique<platform::win32::ThreadContext>();
+    retired_reject_context->runtime_base = base;
+    retired_reject_context->runtime_size = kPageSize;
+    retired_reject_context->execution_backend =
+        runtime::ExecutionBackend::kAotDbt;
+    CONTEXT retired_reject_registers{};
+    retired_reject_registers.Eip = base + 48U;
+    retired_reject_registers.EFlags = 0x00000100U;
+    const bool retired_span_rejected =
+        !platform::win32::TryEnterRetiredTrapNativeSpan(
+            &retired_reject_registers, retired_reject_context.get()) &&
+        !retired_reject_context->native_fast_path.linear_span_active;
+    const bool retired_span_behavior_ok =
+        retired_span_entered && retired_span_rejected &&
+        retired_span_context->aot_retired_span_attempt_count.load(
+            std::memory_order_relaxed) == 1U &&
+        retired_span_context->aot_retired_span_success_count.load(
+            std::memory_order_relaxed) == 1U &&
+        retired_reject_context->aot_retired_span_attempt_count.load(
+            std::memory_order_relaxed) == 1U &&
+        retired_reject_context->aot_retired_span_success_count.load(
+            std::memory_order_relaxed) == 0U;
     const bool policy_ok =
         platform::win32::ResolveNativeLinearSpanEnabled(
             runtime::ExecutionBackend::kAotDbt, "") &&
@@ -337,6 +448,30 @@ bool RunNativeLinearSpanProbe()
         platform::win32::ResolveNativeLinearSpanCacheEnabled("true") &&
         !platform::win32::ResolveNativeLinearSpanCacheEnabled("0") &&
         !platform::win32::ResolveNativeLinearSpanCacheEnabled("invalid") &&
+        platform::win32::ResolveNativeLinearSpanRejectCacheEnabled(
+            runtime::ExecutionBackend::kAotDbt, "") &&
+        !platform::win32::ResolveNativeLinearSpanRejectCacheEnabled(
+            runtime::ExecutionBackend::kAotDynamic, "") &&
+        platform::win32::ResolveNativeLinearSpanRejectCacheEnabled(
+            runtime::ExecutionBackend::kAotDbt, "1") &&
+        platform::win32::ResolveNativeLinearSpanRejectCacheEnabled(
+            runtime::ExecutionBackend::kAotDbt, "on") &&
+        platform::win32::ResolveNativeLinearSpanRejectCacheEnabled(
+            runtime::ExecutionBackend::kLegacy, "true") &&
+        !platform::win32::ResolveNativeLinearSpanRejectCacheEnabled(
+            runtime::ExecutionBackend::kAotDbt, "0") &&
+        !platform::win32::ResolveNativeLinearSpanRejectCacheEnabled(
+            runtime::ExecutionBackend::kAotDbt, "invalid") &&
+        !platform::win32::ResolveRetiredTrapNativeSpanEnabled(
+            runtime::ExecutionBackend::kAotDbt, "") &&
+        platform::win32::ResolveRetiredTrapNativeSpanEnabled(
+            runtime::ExecutionBackend::kAotDbt, "1") &&
+        platform::win32::ResolveRetiredTrapNativeSpanEnabled(
+            runtime::ExecutionBackend::kLegacy, "on") &&
+        !platform::win32::ResolveRetiredTrapNativeSpanEnabled(
+            runtime::ExecutionBackend::kAotDbt, "0") &&
+        !platform::win32::ResolveRetiredTrapNativeSpanEnabled(
+            runtime::ExecutionBackend::kAotDbt, "invalid") &&
         !platform::win32::ResolveNativeLinearSpanWritesEnabled("") &&
         platform::win32::ResolveNativeLinearSpanWritesEnabled("1") &&
         platform::win32::ResolveNativeLinearSpanWritesEnabled("on") &&
@@ -358,7 +493,8 @@ bool RunNativeLinearSpanProbe()
         modified_address_write_stopped && rejected_target_write_stopped &&
         forward_jump_chained && forward_jump_disabled_ok &&
         backward_jump_stopped && rejected_jump_stopped &&
-        cache_generation_ok && policy_ok;
+        cache_generation_ok && reject_cache_behavior_ok &&
+        reject_cache_capacity_ok && retired_span_behavior_ok && policy_ok;
     std::cout << "linear_span_control_boundary="
               << (control_ok ? "true" : "false")
               << "\nlinear_span_sensitive_boundary="
@@ -389,6 +525,12 @@ bool RunNativeLinearSpanProbe()
               << (rejected_jump_stopped ? "true" : "false")
               << "\nlinear_span_cache_generation="
               << (cache_generation_ok ? "true" : "false")
+              << "\nlinear_span_reject_cache_behavior="
+              << (reject_cache_behavior_ok ? "true" : "false")
+              << "\nlinear_span_reject_cache_capacity="
+              << (reject_cache_capacity_ok ? "true" : "false")
+              << "\nlinear_span_retired_reentry="
+              << (retired_span_behavior_ok ? "true" : "false")
               << "\nlinear_span_policy="
               << (policy_ok ? "true" : "false")
               << "\nlinear_span_all=" << (all ? "true" : "false")

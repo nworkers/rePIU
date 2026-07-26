@@ -8,6 +8,7 @@
 #include "inline_cache_probe.h"
 #include "boundary_provenance_probe.h"
 #include "native_linear_span_probe.h"
+#include "retired_trap_profile_probe.h"
 #include "selector_guard_probe.h"
 #include "execution_backend_probe.h"
 #include "dbt_return_fallback_probe.h"
@@ -745,6 +746,10 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunNativeLinearSpanProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunAotRetiredTrapProfileProbe())
     {
         return 1;
     }

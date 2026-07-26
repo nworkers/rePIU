@@ -306,6 +306,12 @@ void PrintSnapshot(
               << ReadInterlocked(&telemetry.aot_retired_entry_trap_count)
               << "/"
               << ReadInterlocked(&telemetry.aot_quarantine_count)
+              << " retired_span="
+              << ReadInterlocked(
+                     &telemetry.aot_retired_span_attempt_count)
+              << "/"
+              << ReadInterlocked(
+                     &telemetry.aot_retired_span_success_count)
               << " retire_page=0x" << std::hex
               << static_cast<std::uint32_t>(
                      ReadInterlocked(&telemetry.aot_last_retired_page))

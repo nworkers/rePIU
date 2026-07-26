@@ -119,6 +119,20 @@ draw/swap이 약 20% 감소해 기능은 opt-in으로 남았습니다. 또한 wr
 read-only/uncommitted guest target은 별도 preflight가 없으면 일반 access violation을
 일으킬 수 있으므로, 최종 후보는 target page 보호 상태도 보수적으로 확인합니다.
 
+## 확인됨: 짧은 retired entry가 trap의 대부분입니다
+
+Task 306의 60초 profile에서 retired trap 7,401회 중 7,293회(98.54%)는 emitted length
+1~4의 짧은 entry였고 resolver는 이를 모두 quarantined page로 판정했습니다. 기존
+재연결은 entry 자체를 `E9 rel32`로 덮을 5바이트가 필요하므로 이 hotset에는 적용할 수
+없습니다. relink 가능한 108회는 generation publish 107회와 failure 1회였습니다.
+
+guest 상위 16개가 98.24%를 차지했고 상위 두 주소만 64.06%였습니다. 특히
+`0x030F507C`는 generation 216, 196, 160, 151 등 여러 retired cache entry로 분산되어
+반복 생성·retirement가 함께 나타났습니다. 다음 coherence 성능 후보는 기존 entry를
+덮는 patch가 아니라 짧은 inactive entry 주소를 최신 generation 또는 guest fallback으로
+리디렉션하는 side table/공용 dispatch 경계입니다. 다중 guest thread와 cache reclamation이
+미확정이므로 이 경로도 serialized publication과 fail-closed quarantine 계약을 유지해야 합니다.
+
 ## 구현 경계와 미확정
 
 * code cache는 serialized worker만 `PAGE_EXECUTE_READ`와 `PAGE_READWRITE` 사이에서
@@ -188,6 +202,22 @@ This is not a promotion result: the 240-second direct pilot reduced draw/swap by
 so write crossing remains opt-in. Read-only or uncommitted guest targets outside the watch
 set can still raise ordinary access violations without target preflight, so the final
 candidate also checks target-page protection conservatively.
+
+## Confirmed short retired-entry concentration
+
+In Task 306's 60-second profile, 7,293 of 7,401 retired traps (98.54%) came from entries with
+one-to-four emitted bytes, and the resolver classified every one as a quarantined-page result.
+The current relink needs five bytes to overwrite the entry with `E9 rel32`, so it cannot serve
+this hotset. The remaining 108 relinkable events produced 107 generation publications and one
+failure.
+
+The top 16 guest addresses covered 98.24%, and the first two alone covered 64.06%.
+`0x030F507C` was spread across retired cache entries from generations 216, 196, 160, 151, and
+others, showing repeated generation/retirement activity. The next coherence performance
+candidate is therefore a side table or shared dispatch boundary that redirects short inactive
+entry addresses to the newest generation or guest fallback, rather than an in-place patch.
+Because multiple guest threads and cache reclamation remain unresolved, that path must retain
+serialized publication and fail-closed quarantine semantics.
 
 ## Implementation Boundaries and Unresolved Cases
 

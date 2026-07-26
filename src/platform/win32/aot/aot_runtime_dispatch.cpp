@@ -1,4 +1,6 @@
 #include "aot_runtime_dispatch.h"
+
+#include "native_linear_span.h"
 #include "aot_dbt_call_return_trace.h"
 #include "repiu/platform/win32/aot_boundary_provenance.h"
 #include "execution_internal.h"
@@ -794,8 +796,13 @@ bool IsAotHleBoundaryAddress(const ThreadContext* context,
 bool ResolveAotTransferTarget(ThreadContext* context,
                               std::uint32_t target,
                               std::uint32_t* cache_target,
-                              bool force_generation)
+                              bool force_generation,
+                              AotRetiredTrapResolution* retired_resolution)
 {
+    if (retired_resolution != nullptr)
+    {
+        *retired_resolution = AotRetiredTrapResolution::kFallback;
+    }
     if (context == nullptr || cache_target == nullptr ||
         context->aot_placement == nullptr)
     {
@@ -808,11 +815,19 @@ bool ResolveAotTransferTarget(ThreadContext* context,
     if (IsWin32AotGuestPageQuarantined(
             *context->aot_placement, target))
     {
+        if (retired_resolution != nullptr)
+        {
+            *retired_resolution = AotRetiredTrapResolution::kQuarantined;
+        }
         return false;
     }
     if (IsAotCacheAddress(context, target) ||
         FindAotCacheAddress(*context->aot_placement, target, cache_target))
     {
+        if (retired_resolution != nullptr)
+        {
+            *retired_resolution = AotRetiredTrapResolution::kActiveHit;
+        }
         return true;
     }
     const bool retired_target = force_generation ||
@@ -834,6 +849,11 @@ bool ResolveAotTransferTarget(ThreadContext* context,
     {
         if (retired_target)
         {
+            if (retired_resolution != nullptr)
+            {
+                *retired_resolution =
+                    AotRetiredTrapResolution::kGenerationFailure;
+            }
             context->aot_generation_failure_count.fetch_add(
                 1, std::memory_order_relaxed);
             if (!context->aot_terminal_failure.load(
@@ -856,6 +876,11 @@ bool ResolveAotTransferTarget(ThreadContext* context,
         dynamic_added_bytes, std::memory_order_relaxed);
     if (retired_target)
     {
+        if (retired_resolution != nullptr)
+        {
+            *retired_resolution =
+                AotRetiredTrapResolution::kGenerationPublished;
+        }
         context->aot_generation_publish_count.fetch_add(
             1, std::memory_order_relaxed);
         context->aot_generation_relinked_entry_count.fetch_add(
@@ -1547,15 +1572,35 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
             ClassifyAotCacheBreakpointProvenance(
                 *context->aot_placement, cache_address,
                 is_tracked_trace_address));
-        if (IsWin32AotCacheAddressRetired(
-                *context->aot_placement, cache_address))
+        const bool retired_entry = IsWin32AotCacheAddressRetired(
+            *context->aot_placement, cache_address);
+        if (retired_entry)
         {
             BumpAotRetiredEntryTrapCount(context);
+            Win32AotRetiredTrapProfile* retired_profile =
+                AotRetiredTrapProfileEnabled()
+                    ? &context->aot_retired_trap_profile
+                    : nullptr;
+            if (retired_profile != nullptr)
+            {
+                RecordAotRetiredTrap(
+                    retired_profile, *context->aot_placement,
+                    cache_address, guest_address);
+            }
             if (!is_tracked_trace_address)
             {
                 std::uint32_t latest_cache_address = guest_address;
-                if (ResolveAotTransferTarget(
-                        context, guest_address, &latest_cache_address, true))
+                AotRetiredTrapResolution resolution =
+                    AotRetiredTrapResolution::kFallback;
+                const bool resolved = ResolveAotTransferTarget(
+                    context, guest_address, &latest_cache_address, true,
+                    retired_profile != nullptr ? &resolution : nullptr);
+                if (retired_profile != nullptr)
+                {
+                    RecordAotRetiredTrapResolution(
+                        retired_profile, resolution);
+                }
+                if (resolved)
                 {
                     win32_context->Eip = latest_cache_address;
                     win32_context->EFlags &= ~0x00000100U;
@@ -1566,6 +1611,12 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
                     BumpAotReentryCount(context);
                     return true;
                 }
+            }
+            else if (retired_profile != nullptr)
+            {
+                RecordAotRetiredTrapResolution(
+                    retired_profile,
+                    AotRetiredTrapResolution::kTraceSentinel);
             }
         }
         win32_context->Eip = guest_address;
@@ -1624,6 +1675,12 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
             {
                 ++context->execution_trace_sentinel_rearm_count;
             }
+        }
+        if (retired_entry && !is_tracked_trace_address &&
+            RetiredTrapNativeSpanEnabled(context->execution_backend) &&
+            TryEnterRetiredTrapNativeSpan(win32_context, context))
+        {
+            return true;
         }
         return false;
     }

@@ -7,6 +7,8 @@ param(
 
     [switch]$CompareCache,
 
+    [switch]$CompareRejectCache,
+
     [switch]$CompareWrites,
 
     [switch]$CompareJumps,
@@ -17,9 +19,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 $comparisonCount = [int]$CompareCache.IsPresent +
+    [int]$CompareRejectCache.IsPresent +
     [int]$CompareWrites.IsPresent + [int]$CompareJumps.IsPresent
 if ($comparisonCount -gt 1) {
-    throw "CompareCache, CompareWrites, and CompareJumps are mutually exclusive"
+    throw "CompareCache, CompareRejectCache, CompareWrites, and CompareJumps are mutually exclusive"
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -36,6 +39,9 @@ if (-not (Test-Path -LiteralPath $fixture -PathType Leaf)) {
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $benchmarkKind = if ($CompareCache) {
     "aot-dbt-direct-cache"
+}
+elseif ($CompareRejectCache) {
+    "aot-dbt-direct-reject-cache"
 }
 elseif ($CompareWrites) {
     "aot-dbt-direct-writes"
@@ -125,6 +131,7 @@ $environmentNames = @(
     "REPIU_NATIVE_REGION",
     "REPIU_NATIVE_LINEAR_SPAN",
     "REPIU_NATIVE_LINEAR_SPAN_CACHE",
+    "REPIU_NATIVE_LINEAR_SPAN_REJECT_CACHE",
     "REPIU_NATIVE_LINEAR_SPAN_WRITES",
     "REPIU_NATIVE_LINEAR_SPAN_JUMPS",
     "REPIU_EEPROM_PATH",
@@ -144,15 +151,24 @@ try {
     for ($runIndex = 0; $runIndex -lt $sequence.Count; ++$runIndex) {
         $featureEnabled = $sequence[$runIndex]
         $compareExtension = $CompareCache -or $CompareWrites -or
-            $CompareJumps
+            $CompareJumps -or $CompareRejectCache
         $spanEnabled = if ($compareExtension) { 1 } else { $featureEnabled }
         $cacheEnabled = if ($CompareCache) { $featureEnabled } else { 0 }
+        $rejectCacheEnabled = if ($CompareRejectCache) {
+            $featureEnabled
+        }
+        else {
+            0
+        }
         $writesEnabled = if ($CompareWrites) { $featureEnabled } else { 0 }
         $jumpsEnabled = if ($CompareJumps) { $featureEnabled } else { 0 }
         $runNumber = $runIndex + 1
         $mode = if ($featureEnabled -eq 1) { "on" } else { "off" }
         $featureName = if ($CompareCache) {
             "cache"
+        }
+        elseif ($CompareRejectCache) {
+            "reject-cache"
         }
         elseif ($CompareWrites) {
             "writes"
@@ -185,6 +201,8 @@ try {
         }
         $env:REPIU_NATIVE_LINEAR_SPAN_CACHE =
             $cacheEnabled.ToString()
+        $env:REPIU_NATIVE_LINEAR_SPAN_REJECT_CACHE =
+            $rejectCacheEnabled.ToString()
         $env:REPIU_NATIVE_LINEAR_SPAN_WRITES =
             $writesEnabled.ToString()
         $env:REPIU_NATIVE_LINEAR_SPAN_JUMPS =
@@ -195,9 +213,10 @@ try {
             ++$startupAttempt
             Copy-Item -LiteralPath $fixture -Destination $runEeprom -Force
             Write-Host (`
-                "direct native-span run {0}/{1} attempt={2}: span={3}, cache={4}, writes={5}, jumps={6}, duration_ms={7}" -f `
+                "direct native-span run {0}/{1} attempt={2}: span={3}, cache={4}, reject_cache={5}, writes={6}, jumps={7}, duration_ms={8}" -f `
                 $runNumber, $sequence.Count, $startupAttempt, $spanEnabled, `
-                $cacheEnabled, $writesEnabled, $jumpsEnabled, `
+                $cacheEnabled, $rejectCacheEnabled, $writesEnabled, `
+                $jumpsEnabled, `
                 $DurationMilliseconds)
             $process = Start-Process -FilePath $loader `
                 -ArgumentList @("pumpit1") `
@@ -241,6 +260,10 @@ try {
             (Find-LastLine $lines `
                 'Win32 native linear span cache hit/miss:') `
             'miss: ([0-9/]+)' 2
+        $spanRejectCache = Read-SlashValues `
+            (Find-LastLine $lines `
+                'Win32 native linear span reject cache hit/miss/stale/store/capacity-skip:') `
+            'capacity-skip: ([0-9/]+)' 5
         $spanWrite = Read-SlashValues `
             (Find-LastLine $lines `
                 'Win32 native linear span write cross/uncovered/fault-cancel:') `
@@ -263,6 +286,7 @@ try {
             pair = [math]::Floor($runIndex / 2) + 1
             span_enabled = $spanEnabled
             span_cache_enabled = $cacheEnabled
+            span_reject_cache_enabled = $rejectCacheEnabled
             span_writes_enabled = $writesEnabled
             span_jumps_enabled = $jumpsEnabled
             duration_ms = $DurationMilliseconds
@@ -300,6 +324,11 @@ try {
             span_reject = $span[4]
             span_cache_hit = $spanCache[0]
             span_cache_miss = $spanCache[1]
+            span_reject_cache_hit = $spanRejectCache[0]
+            span_reject_cache_miss = $spanRejectCache[1]
+            span_reject_cache_stale = $spanRejectCache[2]
+            span_reject_cache_store = $spanRejectCache[3]
+            span_reject_cache_capacity_skip = $spanRejectCache[4]
             span_write_cross = $spanWrite[0]
             span_write_guard_uncovered = $spanWrite[1]
             span_write_fault_cancel = $spanWrite[2]
@@ -337,9 +366,11 @@ finally {
 $csvPath = Join-Path $resultRoot "results.csv"
 $results | Export-Csv -LiteralPath $csvPath -NoTypeInformation
 $results | Format-Table run, pair, span_enabled, span_cache_enabled, `
-    span_writes_enabled, progress, single_step, span_entry, `
+    span_reject_cache_enabled, span_writes_enabled, progress, `
+    single_step, span_entry, `
     span_jumps_enabled, span_jump_chain, span_backward_jump_stop, `
     span_cache_hit, span_cache_miss, span_write_cross, `
+    span_reject_cache_hit, span_reject_cache_miss, `
     span_write_guard_uncovered, span_write_fault_cancel, `
     texture_download_count, draw_count, buffer_swap_count, `
     exception_caught, fatal_count, eeprom_matches_fixture -AutoSize

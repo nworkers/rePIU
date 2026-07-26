@@ -1084,3 +1084,87 @@ boundaries by 20.60%, and observed a 92.95% guarded success rate with zero fatal
 fallback and matching EEPROM hashes. The path is default-on for `aot-dbt`; setting
 `REPIU_AOT_GUARDED_SEGMENT_POP=0|off|false`, or an unknown value, disables it
 fail-closed.
+
+## 네이티브 span 음성 캐시 / Native-span negative cache
+
+Task 304는 기본 native linear-span scan이 0~1개 일반 명령 뒤 정적 경계에서 거절한
+결과를 entry EIP별로 저장합니다. 항목은 최대 30바이트의 guest snapshot을 가지며, 현재
+바이트가 완전히 같을 때만 Zydis 재디코딩을 생략하고 기존 single-step fallback을
+선택합니다. 바이트가 다르면 stale 항목을 삭제하고 재스캔합니다. 캐시는 어떤 명령도
+추가로 native 실행하지 않으므로 SMC/AOT generation 정책보다 보수적인 fallback
+최적화입니다.
+
+write/jump 실험 mode는 register·page·target 상태에 의존하므로 캐시를 우회하고, 항목
+수는 65,536개로 제한합니다. 세 번의 60초 A/B에서 거절 hit율은 99.68~99.69%였고
+texture milestone 중앙값은 1,031ms(약 4.9%) 빨라졌습니다. fatal/legacy fallback은 0,
+EEPROM hash는 일치했습니다. 따라서 `aot-dbt` 기본 ON이며 다른 backend는 기본 OFF입니다.
+`REPIU_NATIVE_LINEAR_SPAN_REJECT_CACHE=0|off|false` 또는 알 수 없는 값은 비활성화합니다.
+
+Task 304 caches default native linear-span scans that reject at a static boundary after zero
+or one ordinary instruction. Each entry holds up to 30 guest bytes. Only an exact byte match
+skips Zydis decoding and selects the existing single-step fallback; a mismatch erases the
+stale entry and rescans. A hit never permits additional native execution, making this a
+conservative fallback optimization independent of SMC/AOT generation state.
+
+Register/page/target-dependent write and jump experiments bypass the cache, which is capped
+at 65,536 entries. Three 60-second A/B pairs observed a 99.68-99.69% rejection hit rate and a
+1,031ms median texture-milestone improvement (about 4.9%), with zero fatal/legacy fallback
+and matching EEPROM hashes. It is default-on for `aot-dbt`, default-off elsewhere, and
+disabled by `0|off|false` or unknown settings.
+
+## Retired trap 즉시 native span 후보 / Immediate native span after retired traps
+
+Task 305는 retired cache `INT3`에서 active/new generation 해결이 실패한 경우, guest EIP를
+복원한 직후 기존 native linear-span scanner를 선택적으로 호출합니다. 기능은
+`REPIU_AOT_RETIRED_SPAN_REENTRY=1|on|true`에서만 켜집니다. scan 거절은 기존 Trap-Flag
+경로를 그대로 사용하며, 성공해도 `aot_reentry_pending`과 single-step trace 정책을
+보존합니다. Dr0 경계에서 기존 AOT/HLE chain이 재개되어 RET, segment, store 및 다른 민감
+경계를 기존 handler가 처리합니다.
+
+세 번의 30초 교차 A/B에서 ON은 시도의 95.28~95.46%를 span으로 전환하고 single-step을
+중앙값 2.86% 줄였습니다. 그러나 progress 개선 중앙값은 0.35%, texture 개선 중앙값은
+17ms에 불과했습니다. 모든 유효 실행은 fatal 0과 EEPROM hash 일치를 유지했지만 반복
+처리량 개선이 작아 기본값은 OFF입니다. live/final telemetry의 `retired_span=attempt/success`
+로 실사용 기회를 확인할 수 있습니다.
+
+Task 305 optionally calls the existing native linear-span scanner immediately after a retired
+cache `INT3` cannot resolve to an active or new generation. It is enabled only by
+`REPIU_AOT_RETIRED_SPAN_REENTRY=1|on|true`. Rejection keeps the existing Trap-Flag path;
+success also preserves pending-reentry and single-step policy so the Dr0 boundary resumes the
+same AOT/HLE chain for RET, segment, store, and other sensitive instructions.
+
+Across three 30-second alternating pairs, ON converted 95.28-95.46% of attempts into spans and
+reduced single-step count by a 2.86% median. Median progress improvement was only 0.35%, while
+median texture improvement was 17ms. All valid runs kept zero fatal events and matching EEPROM
+hashes, but the throughput gain was too small for default promotion. Live/final telemetry
+reports the opportunity as `retired_span=attempt/success`.
+
+## Retired trap hotset 계측 / Retired-trap hotset profiling
+
+Task 306은 `REPIU_AOT_RETIRED_TRAP_PROFILE=1|on|true`에서 retired cache `INT3`의
+guest/cache 주소, inactive entry 세대, guest/emitted 길이와 resolver 결과를 집계합니다.
+guest/cache histogram은 각각 65,536개 주소로 제한되며 초과 횟수를 별도로 보존합니다.
+종료 snapshot은 guest/cache 상위 16개와 guest top-16 coverage, 5바이트 relink 가능 여부,
+active/generation/quarantine/failure/fallback/trace 결과별 횟수를 출력합니다. 기본값은
+OFF이며 비활성 상태에서는 histogram lookup을 수행하지 않습니다.
+
+60초 profile은 retired trap `7,401`회 중 `7,293`회(98.54%)가 emitted length 1~4인
+짧은 entry이고 동일하게 quarantine 결과였음을 확인했습니다. 상위 guest 16개는 전체의
+98.24%, `0x030F4A94`와 `0x030F507C` 두 주소는 64.06%를 차지했습니다. relink 가능한
+108회는 generation publish 107회와 failure 1회로 분리됐습니다. 따라서 기존 5바이트
+`E9 rel32` 재연결을 확대하는 것보다 짧은 retired entry를 예외 없이 우회하는 공용
+side-table/dispatch 경계가 다음 후보입니다.
+
+Task 306 profiles retired cache `INT3` events only under
+`REPIU_AOT_RETIRED_TRAP_PROFILE=1|on|true`. It records guest/cache addresses, inactive-entry
+generation and lengths, and resolver outcomes in separately capped 65,536-entry histograms.
+The final snapshot reports guest/cache top 16 lists, guest top-16 coverage, five-byte relink
+eligibility, and active/generation/quarantine/failure/fallback/trace counts. Profiling defaults
+off and performs no histogram lookup while disabled.
+
+The 60-second profile found that 7,293 of 7,401 retired traps (98.54%) came from one-to-four
+byte entries and resolved as quarantine. The top 16 guest addresses covered 98.24%; just
+`0x030F4A94` and `0x030F507C` covered 64.06%. The 108 relinkable traps split into 107
+generation publications and one failure. A shared side-table or dispatch boundary that
+redirects short retired entries without an exception is therefore the next candidate, rather
+than extending the existing five-byte `E9 rel32` relink.

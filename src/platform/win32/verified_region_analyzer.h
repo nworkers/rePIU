@@ -7,6 +7,8 @@
 namespace repiu::platform::win32::detail
 {
 
+constexpr std::uint32_t kNativeLinearSpanRejectSnapshotCapacity = 30;
+
 struct VerifiedRegionFailure
 {
     std::uint32_t instruction = 0;
@@ -19,6 +21,7 @@ struct NativeLinearSpan
 {
     std::uint32_t boundary_address = 0;
     std::uint32_t instruction_count = 0;
+    std::uint32_t cacheable_rejection_byte_count = 0;
     std::uint32_t crossed_memory_write_count = 0;
     std::uint32_t chained_direct_jump_count = 0;
     bool boundary_sensitive = false;

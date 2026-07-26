@@ -4,6 +4,7 @@
 #include "repiu/platform/win32/runtime_memory_policy.h"
 #include "repiu/platform/win32/aot_code_cache_win32.h"
 #include "repiu/platform/win32/live_telemetry.h"
+#include "repiu/platform/win32/aot_retired_trap_profile.h"
 #include "repiu/platform/win32/cd_audio_wave_out.h"
 #include "repiu/platform/win32/ymz280b_audio_out.h"
 #include "repiu/platform/win32/glide_opengl_backend.h"
@@ -232,6 +233,9 @@ struct ThreadContext
     std::atomic<std::uint32_t> aot_generation_failure_count{0};
     std::atomic<std::uint32_t> aot_generation_relinked_entry_count{0};
     std::atomic<std::uint32_t> aot_retired_entry_trap_count{0};
+    Win32AotRetiredTrapProfile aot_retired_trap_profile;
+    std::atomic<std::uint32_t> aot_retired_span_attempt_count{0};
+    std::atomic<std::uint32_t> aot_retired_span_success_count{0};
     std::atomic<std::uint32_t> aot_quarantine_count{0};
     std::atomic<std::uint32_t> aot_inline_cache_guard_reset_count{0};
     std::atomic<std::uint32_t> aot_last_code_write_source{0};

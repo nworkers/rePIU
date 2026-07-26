@@ -572,6 +572,16 @@ bool ScanNativeLinearSpanWithZydis(
             span->instruction_count = count;
             span->boundary_sensitive = sensitive;
             span->boundary_memory_write = memory_write;
+            const std::uint32_t rejection_byte_count =
+                address - entry + instruction.length;
+            if (options == nullptr &&
+                count < kMinimumInstructionCount &&
+                rejection_byte_count <=
+                    kNativeLinearSpanRejectSnapshotCapacity)
+            {
+                span->cacheable_rejection_byte_count =
+                    rejection_byte_count;
+            }
             return count >= kMinimumInstructionCount;
         }
         if (pass_memory_write)

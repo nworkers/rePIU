@@ -17,10 +17,20 @@ bool ResolveNativeLinearSpanEnabled(
     runtime::ExecutionBackend execution_backend,
     std::string_view setting);
 bool ResolveNativeLinearSpanCacheEnabled(std::string_view setting);
+bool ResolveNativeLinearSpanRejectCacheEnabled(
+    runtime::ExecutionBackend execution_backend,
+    std::string_view setting);
+bool ResolveRetiredTrapNativeSpanEnabled(
+    runtime::ExecutionBackend execution_backend,
+    std::string_view setting);
 bool ResolveNativeLinearSpanWritesEnabled(std::string_view setting);
 bool ResolveNativeLinearSpanJumpsEnabled(std::string_view setting);
 bool NativeLinearSpanEnabled(
     runtime::ExecutionBackend execution_backend);
+bool RetiredTrapNativeSpanEnabled(
+    runtime::ExecutionBackend execution_backend);
+bool TryEnterRetiredTrapNativeSpan(CONTEXT* win32_context,
+                                   ThreadContext* context);
 bool TryEnterNativeLinearSpan(CONTEXT* win32_context,
                               ThreadContext* context);
 void LeaveNativeLinearSpan(CONTEXT* win32_context,
@@ -46,6 +56,13 @@ void StoreNativeLinearSpanScanCache(
     std::uint32_t entry,
     std::uint32_t guest_page,
     std::uint32_t generation,
+    const NativeLinearSpan& span);
+bool LookupNativeLinearSpanRejectCache(
+    NativeFastPathState* state,
+    std::uint32_t entry);
+void StoreNativeLinearSpanRejectCache(
+    NativeFastPathState* state,
+    std::uint32_t entry,
     const NativeLinearSpan& span);
 
 }  // namespace detail

@@ -8,6 +8,7 @@
 #include <Zydis.h>
 
 #include <algorithm>
+#include <cstring>
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -69,6 +70,38 @@ bool ReadNativeLinearSpanCacheSetting()
     return setting == "1" || setting == "on" || setting == "true";
 }
 
+NativeLinearSpanSetting ReadNativeLinearSpanRejectCacheSetting()
+{
+    char value[16] = {};
+    const DWORD length = GetEnvironmentVariableA(
+        "REPIU_NATIVE_LINEAR_SPAN_REJECT_CACHE", value, sizeof(value));
+    if (length == 0)
+    {
+        return NativeLinearSpanSetting::kBackendDefault;
+    }
+    if (length >= sizeof(value))
+    {
+        return NativeLinearSpanSetting::kDisabled;
+    }
+    return ParseNativeLinearSpanSetting(std::string_view(value, length));
+}
+
+NativeLinearSpanSetting ReadRetiredTrapNativeSpanSetting()
+{
+    char value[16] = {};
+    const DWORD length = GetEnvironmentVariableA(
+        "REPIU_AOT_RETIRED_SPAN_REENTRY", value, sizeof(value));
+    if (length == 0)
+    {
+        return NativeLinearSpanSetting::kBackendDefault;
+    }
+    if (length >= sizeof(value))
+    {
+        return NativeLinearSpanSetting::kDisabled;
+    }
+    return ParseNativeLinearSpanSetting(std::string_view(value, length));
+}
+
 bool ReadNativeLinearSpanWritesSetting()
 {
     char value[16] = {};
@@ -114,6 +147,26 @@ bool NativeLinearSpanCacheEnabled()
 {
     static const bool enabled = ReadNativeLinearSpanCacheSetting();
     return enabled;
+}
+
+bool NativeLinearSpanRejectCacheEnabled(
+    runtime::ExecutionBackend execution_backend)
+{
+    static const NativeLinearSpanSetting setting =
+        ReadNativeLinearSpanRejectCacheSetting();
+    return ResolveNativeLinearSpanSetting(execution_backend, setting);
+}
+
+bool RetiredTrapNativeSpanPolicyEnabled(
+    runtime::ExecutionBackend execution_backend)
+{
+    static const NativeLinearSpanSetting setting =
+        ReadRetiredTrapNativeSpanSetting();
+    if (setting == NativeLinearSpanSetting::kBackendDefault)
+    {
+        return false;
+    }
+    return ResolveNativeLinearSpanSetting(execution_backend, setting);
 }
 
 bool NativeLinearSpanWritesEnabled()
@@ -285,6 +338,28 @@ bool ResolveNativeLinearSpanCacheEnabled(std::string_view setting)
     return setting == "1" || setting == "on" || setting == "true";
 }
 
+bool ResolveNativeLinearSpanRejectCacheEnabled(
+    runtime::ExecutionBackend execution_backend,
+    std::string_view setting)
+{
+    return ResolveNativeLinearSpanSetting(
+        execution_backend, ParseNativeLinearSpanSetting(setting));
+}
+
+bool ResolveRetiredTrapNativeSpanEnabled(
+    runtime::ExecutionBackend,
+    std::string_view setting)
+{
+    return ParseNativeLinearSpanSetting(setting) ==
+        NativeLinearSpanSetting::kEnabled;
+}
+
+bool RetiredTrapNativeSpanEnabled(
+    runtime::ExecutionBackend execution_backend)
+{
+    return RetiredTrapNativeSpanPolicyEnabled(execution_backend);
+}
+
 bool ResolveNativeLinearSpanWritesEnabled(std::string_view setting)
 {
     return setting == "1" || setting == "on" || setting == "true";
@@ -361,6 +436,9 @@ bool TryEnterNativeLinearSpan(CONTEXT* win32_context,
         IsWin32AotGuestPageWriteWatched(
             context->aot_page_write_watch, entry);
     const bool jumps_enabled = NativeLinearSpanJumpsEnabled();
+    const bool reject_cache_enabled =
+        NativeLinearSpanRejectCacheEnabled(context->execution_backend) &&
+        !writes_enabled && !jumps_enabled;
     NativeLinearSpanScanContext scan_context = {
         context, win32_context, state};
     detail::NativeLinearSpanOptions scan_options;
@@ -383,6 +461,13 @@ bool TryEnterNativeLinearSpan(CONTEXT* win32_context,
     const bool cacheable_page = cache_enabled &&
         QueryNativeLinearSpanGeneration(context, entry, &generation);
     bool scan_succeeded = false;
+    if (reject_cache_enabled &&
+        detail::LookupNativeLinearSpanRejectCache(state, entry))
+    {
+        state->linear_span_reject_count.fetch_add(
+            1, std::memory_order_relaxed);
+        return false;
+    }
     if (cacheable_page)
     {
         scan_succeeded = detail::LookupNativeLinearSpanScanCache(
@@ -398,6 +483,11 @@ bool TryEnterNativeLinearSpan(CONTEXT* win32_context,
         scan_succeeded = detail::ScanNativeLinearSpanWithZydis(
             entry, context->runtime_base, context->runtime_size, &span,
             (writes_enabled || jumps_enabled) ? &scan_options : nullptr);
+        if (!scan_succeeded && reject_cache_enabled)
+        {
+            detail::StoreNativeLinearSpanRejectCache(
+                state, entry, span);
+        }
         if (scan_succeeded && cacheable_page &&
             Win32AotGuestPage(span.boundary_address) ==
                 Win32AotGuestPage(entry))
@@ -445,6 +535,39 @@ bool TryEnterNativeLinearSpan(CONTEXT* win32_context,
     state->linear_span_active = true;
     state->linear_span_entry_count.fetch_add(
         1, std::memory_order_relaxed);
+    return true;
+}
+
+bool TryEnterRetiredTrapNativeSpan(CONTEXT* win32_context,
+                                   ThreadContext* context)
+{
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return false;
+    }
+    context->aot_retired_span_attempt_count.fetch_add(
+        1U, std::memory_order_relaxed);
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedIncrement(
+            &context->shared_live_telemetry
+                 ->aot_retired_span_attempt_count);
+    }
+    if (!TryEnterNativeLinearSpan(win32_context, context))
+    {
+        return false;
+    }
+    context->aot_retired_span_success_count.fetch_add(
+        1U, std::memory_order_relaxed);
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedIncrement(
+            &context->shared_live_telemetry
+                 ->aot_retired_span_success_count);
+    }
+    // Preserve the retired fallback's pending-reentry and trace policy. The
+    // span clears TF only until Dr0 reaches its boundary; that boundary must
+    // resume the exact existing AOT/HLE single-step chain.
     return true;
 }
 
@@ -496,6 +619,71 @@ void StoreNativeLinearSpanScanCache(
     }
     state->linear_span_scan_cache[entry] = {
         guest_page, generation, span};
+}
+
+bool LookupNativeLinearSpanRejectCache(
+    NativeFastPathState* state,
+    std::uint32_t entry)
+{
+    if (state == nullptr)
+    {
+        return false;
+    }
+    const auto cached = state->linear_span_reject_cache.find(entry);
+    if (cached == state->linear_span_reject_cache.end())
+    {
+        state->linear_span_reject_cache_miss_count.fetch_add(
+            1, std::memory_order_relaxed);
+        return false;
+    }
+    const std::uint32_t byte_count = cached->second.byte_count;
+    const auto* current = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(entry));
+    if (byte_count == 0U ||
+        byte_count > kNativeLinearSpanRejectSnapshotCapacity ||
+        std::memcmp(cached->second.bytes.data(), current, byte_count) != 0)
+    {
+        state->linear_span_reject_cache.erase(cached);
+        state->linear_span_reject_cache_stale_count.fetch_add(
+            1, std::memory_order_relaxed);
+        return false;
+    }
+    state->linear_span_reject_cache_hit_count.fetch_add(
+        1, std::memory_order_relaxed);
+    return true;
+}
+
+void StoreNativeLinearSpanRejectCache(
+    NativeFastPathState* state,
+    std::uint32_t entry,
+    const NativeLinearSpan& span)
+{
+    const std::uint32_t byte_count =
+        span.cacheable_rejection_byte_count;
+    if (state == nullptr || byte_count == 0U ||
+        byte_count > kNativeLinearSpanRejectSnapshotCapacity)
+    {
+        return;
+    }
+    auto cached = state->linear_span_reject_cache.find(entry);
+    if (cached == state->linear_span_reject_cache.end())
+    {
+        if (state->linear_span_reject_cache.size() >=
+            kNativeLinearSpanRejectCacheMaxEntries)
+        {
+            state->linear_span_reject_cache_capacity_skip_count.fetch_add(
+                1, std::memory_order_relaxed);
+            return;
+        }
+        cached = state->linear_span_reject_cache.emplace(
+            entry, NativeLinearSpanRejectCacheEntry{}).first;
+    }
+    cached->second.byte_count = byte_count;
+    const auto* source = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(entry));
+    std::memcpy(cached->second.bytes.data(), source, byte_count);
+    state->linear_span_reject_cache_store_count.fetch_add(
+        1, std::memory_order_relaxed);
 }
 
 }  // namespace detail

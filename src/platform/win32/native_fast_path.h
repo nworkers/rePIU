@@ -2,6 +2,7 @@
 
 #include "verified_region_analyzer.h"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <unordered_map>
@@ -15,11 +16,20 @@ using CONTEXT = _CONTEXT;
 namespace repiu::platform::win32::detail
 {
 
+constexpr std::uint32_t kNativeLinearSpanRejectCacheMaxEntries = 65536;
+
 struct NativeLinearSpanCacheEntry
 {
     std::uint32_t guest_page = 0;
     std::uint32_t generation = 0;
     NativeLinearSpan span;
+};
+
+struct NativeLinearSpanRejectCacheEntry
+{
+    std::array<std::uint8_t, kNativeLinearSpanRejectSnapshotCapacity>
+        bytes{};
+    std::uint32_t byte_count = 0;
 };
 
 struct NativeFastPathState
@@ -89,6 +99,14 @@ struct NativeFastPathState
         linear_span_scan_cache;
     std::atomic<std::uint32_t> linear_span_cache_hit_count{0};
     std::atomic<std::uint32_t> linear_span_cache_miss_count{0};
+    std::unordered_map<std::uint32_t, NativeLinearSpanRejectCacheEntry>
+        linear_span_reject_cache;
+    std::atomic<std::uint32_t> linear_span_reject_cache_hit_count{0};
+    std::atomic<std::uint32_t> linear_span_reject_cache_miss_count{0};
+    std::atomic<std::uint32_t> linear_span_reject_cache_stale_count{0};
+    std::atomic<std::uint32_t> linear_span_reject_cache_store_count{0};
+    std::atomic<std::uint32_t>
+        linear_span_reject_cache_capacity_skip_count{0};
     std::atomic<std::uint32_t> linear_span_write_cross_count{0};
     std::atomic<std::uint32_t> linear_span_write_guard_uncovered_count{0};
     std::atomic<std::uint32_t> linear_span_write_fault_cancel_count{0};

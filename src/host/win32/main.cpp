@@ -921,6 +921,14 @@ void PrintExecutionAttempt(
                 attempt.native_linear_span_cache_hit_count,
                 attempt.native_linear_span_cache_miss_count);
     logger.info(
+        "Win32 native linear span reject cache hit/miss/stale/store/capacity-skip: "
+        "{}/{}/{}/{}/{}",
+        attempt.native_linear_span_reject_cache_hit_count,
+        attempt.native_linear_span_reject_cache_miss_count,
+        attempt.native_linear_span_reject_cache_stale_count,
+        attempt.native_linear_span_reject_cache_store_count,
+        attempt.native_linear_span_reject_cache_capacity_skip_count);
+    logger.info(
         "Win32 native linear span write cross/uncovered/fault-cancel: {}/{}/{}",
                 attempt.native_linear_span_write_cross_count,
                 attempt.native_linear_span_write_guard_uncovered_count,
@@ -1088,6 +1096,67 @@ void PrintExecutionAttempt(
                 attempt.aot_generation_failure_count,
                 attempt.aot_generation_relinked_entry_count,
                 attempt.aot_retired_entry_trap_count);
+    logger.info("Win32 AOT retired span attempt/success: {}/{}",
+                attempt.aot_retired_span_attempt_count,
+                attempt.aot_retired_span_success_count);
+    const auto& retired_profile = attempt.aot_retired_trap_profile;
+    const double retired_top_coverage =
+        retired_profile.total_trap_count != 0U
+            ? 100.0 * retired_profile.top_guest_coverage_count /
+                  retired_profile.total_trap_count
+            : 0.0;
+    logger.info(
+        "Win32 AOT retired profile enabled/total/distinct guest/cache: "
+        "{}/{}/{}/{}",
+        retired_profile.enabled,
+        retired_profile.total_trap_count,
+        retired_profile.distinct_guest_count,
+        retired_profile.distinct_cache_count);
+    logger.info(
+        "Win32 AOT retired profile top16 coverage/relinkable/short/metadata miss: "
+        "{:.2f}%/{}/{}/{}",
+        retired_top_coverage,
+        retired_profile.relinkable_trap_count,
+        retired_profile.short_trap_count,
+        retired_profile.metadata_miss_count);
+    logger.info(
+        "Win32 AOT retired profile overflow guest/cache: {}/{}",
+        retired_profile.guest_histogram_overflow_count,
+        retired_profile.cache_histogram_overflow_count);
+    logger.info(
+        "Win32 AOT retired profile resolution active/generation/quarantine/"
+        "failure/fallback/trace: {}/{}/{}/{}/{}/{}",
+        retired_profile.resolution_counts[0],
+        retired_profile.resolution_counts[1],
+        retired_profile.resolution_counts[2],
+        retired_profile.resolution_counts[3],
+        retired_profile.resolution_counts[4],
+        retired_profile.resolution_counts[5]);
+    for (std::uint32_t index = 0;
+         index < retired_profile.guest_hotspot_count; ++index)
+    {
+        const auto& hotspot = retired_profile.guest_hotspots[index];
+        logger.info("Win32 AOT retired guest hotspot #{} address/count: {}/{}",
+                    index + 1U,
+                    Hex32(hotspot.guest_address),
+                    hotspot.trap_count);
+    }
+    for (std::uint32_t index = 0;
+         index < retired_profile.cache_hotspot_count; ++index)
+    {
+        const auto& hotspot = retired_profile.cache_hotspots[index];
+        logger.info(
+            "Win32 AOT retired cache hotspot #{} cache/guest/count/generation/"
+            "guest-length/emitted-length/relinkable: {}/{}/{}/{}/{}/{}/{}",
+            index + 1U,
+            Hex32(hotspot.cache_address),
+            Hex32(hotspot.guest_address),
+            hotspot.trap_count,
+            hotspot.generation,
+            static_cast<std::uint32_t>(hotspot.guest_length),
+            static_cast<std::uint32_t>(hotspot.emitted_length),
+            hotspot.metadata_valid && hotspot.emitted_length >= 5U);
+    }
     logger.info("Win32 AOT last code write source/destination: {}/{}",
                 Hex32(attempt.aot_last_code_write_source),
                 Hex32(attempt.aot_last_code_write_destination));
