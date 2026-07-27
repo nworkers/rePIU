@@ -572,6 +572,10 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
             ? SnapshotSingleStepHotspotProfile(
                   *context.single_step_hotspot_profile)
             : Win32SingleStepHotspotProfileSnapshot{};
+    attempt->execution_time_profile =
+        context.execution_time_profile != nullptr
+            ? SnapshotExecutionTimeProfile(*context.execution_time_profile)
+            : Win32ExecutionTimeProfileSnapshot{};
     attempt->native_fast_path_entry_count =
         context.native_fast_path.entry_count.load(std::memory_order_relaxed);
     attempt->native_fast_path_return_count =

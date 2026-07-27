@@ -2707,6 +2707,12 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
         return false;
     }
 
+    // Task 323: opened after the opcode match so the bucket measures serviced
+    // INT 21h calls only, not every candidate check in the handler chain.
+    const ExecutionTimeScope dos_time_scope(
+        context->execution_time_profile.get(),
+        ExecutionTimeBucket::kDosService);
+
     const std::uint16_t ax = static_cast<std::uint16_t>(
         win32_context->Eax & 0xFFFFU);
     const std::uint8_t ah = static_cast<std::uint8_t>(

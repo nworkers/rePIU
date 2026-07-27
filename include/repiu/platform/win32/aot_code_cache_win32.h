@@ -3,6 +3,7 @@
 
 #include "repiu/platform/win32/aot_page_coherence_win32.h"
 #include "repiu/platform/win32/aot_boundary_provenance.h"
+#include "repiu/platform/win32/aot_cache_address_index.h"
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/selector_table.h"
 
@@ -44,6 +45,11 @@ struct Win32AotCodeCachePlacement
     // Incremented directly by guarded cache slots; placement outlives execution.
     volatile std::uint32_t guarded_segment_pop_success_count = 0;
     volatile std::uint32_t guarded_segment_pop_fallback_count = 0;
+
+    // Task 324: O(1) guest-address lookup over address_map, replacing the
+    // linear scan Task 323 measured at 87.75% of kAotResume. Treated as a
+    // cache: FindAotCacheAddress falls back to the scan when it is stale.
+    Win32AotCacheAddressIndex cache_address_index;
 
     std::vector<Win32AotGuestPageState> guest_pages;
     std::vector<std::uint32_t> retired_guest_addresses;

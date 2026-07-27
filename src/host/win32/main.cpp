@@ -944,6 +944,63 @@ void PrintExecutionAttempt(
         "{:.2f}%/{:.2f}%",
         step_count_coverage,
         step_cycle_coverage);
+    // Task 322 stage attribution. Stages are sequential regions of
+    // HandleSingleStepTrace, so the residual is whatever the total scope
+    // measured outside them: inter-stage branching, profiling overhead, and
+    // preemption. Kernel #DB entry and post-VEH return stay outside the total
+    // and are therefore absent from the residual as well.
+    {
+        std::uint64_t staged_cycles = 0;
+        for (std::uint32_t index = 0;
+             index < repiu::platform::win32::kSingleStepProfileStageCount;
+             ++index)
+        {
+            staged_cycles += step_profile.stage_cycles[index];
+        }
+        const std::uint64_t residual_cycles =
+            step_profile.total_cycles > staged_cycles
+                ? step_profile.total_cycles - staged_cycles
+                : 0U;
+        logger.info(
+            "Win32 single-step stage count "
+            "prologue/hle/aot-resume/timer/native: {}/{}/{}/{}/{}",
+            step_profile.stage_counts[0], step_profile.stage_counts[1],
+            step_profile.stage_counts[2], step_profile.stage_counts[3],
+            step_profile.stage_counts[4]);
+        logger.info(
+            "Win32 single-step stage cycles "
+            "prologue/hle/aot-resume/timer/native/residual: "
+            "{}/{}/{}/{}/{}/{}",
+            step_profile.stage_cycles[0], step_profile.stage_cycles[1],
+            step_profile.stage_cycles[2], step_profile.stage_cycles[3],
+            step_profile.stage_cycles[4], residual_cycles);
+        // Task 323 sub-stages of kAotResume. Their residual is the branching
+        // and early-out cost between them inside TryResumeAotAfterHandledHle.
+        std::uint64_t sub_stage_cycles = 0;
+        for (std::uint32_t index =
+                 repiu::platform::win32::
+                     kSingleStepProfileFirstAotResumeSubStage;
+             index < repiu::platform::win32::kSingleStepProfileStageCount;
+             ++index)
+        {
+            sub_stage_cycles += step_profile.stage_cycles[index];
+        }
+        const std::uint64_t aot_resume_cycles = step_profile.stage_cycles[2];
+        logger.info(
+            "Win32 single-step aot-resume sub-stage count "
+            "seg-write/quarantine/cache-lookup/span-safety: {}/{}/{}/{}",
+            step_profile.stage_counts[5], step_profile.stage_counts[6],
+            step_profile.stage_counts[7], step_profile.stage_counts[8]);
+        logger.info(
+            "Win32 single-step aot-resume sub-stage cycles "
+            "seg-write/quarantine/cache-lookup/span-safety/residual: "
+            "{}/{}/{}/{}/{}",
+            step_profile.stage_cycles[5], step_profile.stage_cycles[6],
+            step_profile.stage_cycles[7], step_profile.stage_cycles[8],
+            aot_resume_cycles > sub_stage_cycles
+                ? aot_resume_cycles - sub_stage_cycles
+                : 0U);
+    }
     for (std::uint32_t index = 0;
          index < step_profile.count_hotspot_count; ++index)
     {
@@ -967,6 +1024,98 @@ void PrintExecutionAttempt(
             hotspot.sample_count, hotspot.total_cycles, hotspot.max_cycles,
             hotspot.outcome_counts[0], hotspot.outcome_counts[1],
             hotspot.outcome_counts[2], hotspot.outcome_counts[3]);
+        logger.info(
+            "Win32 single-step cycle hotspot #{} stage cycles "
+            "prologue/hle/aot-resume/timer/native: {}/{}/{}/{}/{}",
+            index + 1U,
+            hotspot.stage_cycles[0], hotspot.stage_cycles[1],
+            hotspot.stage_cycles[2], hotspot.stage_cycles[3],
+            hotspot.stage_cycles[4]);
+    }
+    // Task 323 guest-thread wall-clock attribution. Buckets may nest, so the
+    // derived figures are the interpretable ones: kVehExclusive removes service
+    // work reached from inside the VEH, and kUnaccounted is guest execution in
+    // the AOT cache plus kernel exception transition, neither of which any
+    // in-handler scope can observe.
+    {
+        using repiu::platform::win32::ExecutionTimeBucket;
+        const auto& time_profile = attempt.execution_time_profile;
+        const auto bucket = [&time_profile](ExecutionTimeBucket id) {
+            return time_profile.cycles[static_cast<std::uint32_t>(id)];
+        };
+        const auto inside = [&time_profile](ExecutionTimeBucket id) {
+            return time_profile.inside_veh_cycles[
+                static_cast<std::uint32_t>(id)];
+        };
+        const std::uint64_t total =
+            bucket(ExecutionTimeBucket::kGuestRunTotal);
+        const std::uint64_t veh = bucket(ExecutionTimeBucket::kVehTotal);
+        const std::uint64_t service_inside =
+            inside(ExecutionTimeBucket::kGlideGate) +
+            inside(ExecutionTimeBucket::kPortIoDevice) +
+            inside(ExecutionTimeBucket::kDosService);
+        const std::uint64_t service_outside =
+            (bucket(ExecutionTimeBucket::kGlideGate) -
+             inside(ExecutionTimeBucket::kGlideGate)) +
+            (bucket(ExecutionTimeBucket::kPortIoDevice) -
+             inside(ExecutionTimeBucket::kPortIoDevice)) +
+            (bucket(ExecutionTimeBucket::kDosService) -
+             inside(ExecutionTimeBucket::kDosService));
+        const std::uint64_t veh_exclusive =
+            veh > service_inside ? veh - service_inside : 0U;
+        const std::uint64_t accounted = veh + service_outside;
+        const std::uint64_t unaccounted =
+            total > accounted ? total - accounted : 0U;
+        logger.info(
+            "Win32 execution time profile enabled: {}", time_profile.enabled);
+        logger.info(
+            "Win32 execution time cycles "
+            "guest-run/veh/glide-gate/port-io/dos: {}/{}/{}/{}/{}",
+            total, veh,
+            bucket(ExecutionTimeBucket::kGlideGate),
+            bucket(ExecutionTimeBucket::kPortIoDevice),
+            bucket(ExecutionTimeBucket::kDosService));
+        logger.info(
+            "Win32 execution time count "
+            "guest-run/veh/glide-gate/port-io/dos: {}/{}/{}/{}/{}",
+            time_profile.counts[0], time_profile.counts[1],
+            time_profile.counts[2], time_profile.counts[3],
+            time_profile.counts[4]);
+        logger.info(
+            "Win32 execution time inside-veh cycles "
+            "glide-gate/port-io/dos: {}/{}/{}",
+            inside(ExecutionTimeBucket::kGlideGate),
+            inside(ExecutionTimeBucket::kPortIoDevice),
+            inside(ExecutionTimeBucket::kDosService));
+        logger.info(
+            "Win32 execution time inside-veh count "
+            "glide-gate/port-io/dos: {}/{}/{}",
+            time_profile.inside_veh_counts[2],
+            time_profile.inside_veh_counts[3],
+            time_profile.inside_veh_counts[4]);
+        logger.info(
+            "Win32 execution time derived veh-exclusive/unaccounted: {}/{}",
+            veh_exclusive, unaccounted);
+        if (total != 0U)
+        {
+            logger.info(
+                "Win32 execution time share "
+                "veh/glide-gate/port-io/dos/unaccounted: "
+                "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
+                100.0 * static_cast<double>(veh) /
+                    static_cast<double>(total),
+                100.0 * static_cast<double>(
+                    bucket(ExecutionTimeBucket::kGlideGate)) /
+                    static_cast<double>(total),
+                100.0 * static_cast<double>(
+                    bucket(ExecutionTimeBucket::kPortIoDevice)) /
+                    static_cast<double>(total),
+                100.0 * static_cast<double>(
+                    bucket(ExecutionTimeBucket::kDosService)) /
+                    static_cast<double>(total),
+                100.0 * static_cast<double>(unaccounted) /
+                    static_cast<double>(total));
+        }
     }
     logger.info("Win32 native fast path entry/return/cancel: {}/{}/{}",
                 attempt.native_fast_path_entry_count,

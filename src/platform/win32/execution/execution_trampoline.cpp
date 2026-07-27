@@ -982,22 +982,39 @@ bool ClassifyRouteASensitive(std::uint32_t eip, bool* is_segment)
 // each capture, not a hardcoded absolute address. See
 // docs/design/20260717-223-guest-stack-watchpoint-veh-coexistence.md §8.
 
-bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
+// Clears ThreadContext::active_hotspot_scope on every exit path of
+// HandleSingleStepTrace so a stale pointer can never outlive its sample.
+class ActiveHotspotScopeReset
 {
-    if (win32_context == nullptr || context == nullptr ||
-        !context->enable_single_step_trace)
+public:
+    explicit ActiveHotspotScopeReset(ThreadContext* context)
+        : context_(context)
     {
-        return false;
     }
-    const std::uint32_t profile_eip =
-        static_cast<std::uint32_t>(win32_context->Eip);
-    Win32SingleStepHotspotProfile* hotspot_profile =
-        context->single_step_hotspot_profile != nullptr &&
-        IsGuestInstructionPointer(context, profile_eip)
-            ? context->single_step_hotspot_profile.get()
-            : nullptr;
-    SingleStepHotspotCycleScope hotspot_scope(
-        hotspot_profile, profile_eip);
+
+    ~ActiveHotspotScopeReset()
+    {
+        if (context_ != nullptr)
+        {
+            context_->active_hotspot_scope = nullptr;
+        }
+    }
+
+    ActiveHotspotScopeReset(const ActiveHotspotScopeReset&) = delete;
+    ActiveHotspotScopeReset& operator=(const ActiveHotspotScopeReset&) = delete;
+
+private:
+    ThreadContext* context_ = nullptr;
+};
+
+// Diagnostic instrumentation that runs unconditionally on every single step:
+// execution probe/trace capture, the LINEXE resolution EIP ladder, the shadow
+// register mirror read by the telemetry supervisor, and Route A classification.
+// Extracted from HandleSingleStepTrace in Task 322 so its cost can be attributed
+// to SingleStepProfileStage::kPrologueTrace without re-indenting the body. The
+// body is unchanged; only the enclosing function boundary moved.
+void RecordSingleStepDiagnostics(CONTEXT* win32_context, ThreadContext* context)
+{
     RecordExecutionProbe(win32_context, context);
     RecordExecutionTrace(win32_context, context);
     const std::uint32_t eip_offset =
@@ -1239,18 +1256,59 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
             }
         }
     }
+}
+
+bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
+{
+    if (win32_context == nullptr || context == nullptr ||
+        !context->enable_single_step_trace)
+    {
+        return false;
+    }
+    const std::uint32_t profile_eip =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    Win32SingleStepHotspotProfile* hotspot_profile =
+        context->single_step_hotspot_profile != nullptr &&
+        IsGuestInstructionPointer(context, profile_eip)
+            ? context->single_step_hotspot_profile.get()
+            : nullptr;
+    SingleStepHotspotCycleScope hotspot_scope(
+        hotspot_profile, profile_eip);
+    // Task 323: publish the open sample so TryResumeAotAfterHandledHle can
+    // attribute its sub-stages into it from another translation unit.
+    context->active_hotspot_scope = &hotspot_scope;
+    const ActiveHotspotScopeReset active_scope_reset(context);
+    {
+        SingleStepHotspotStageScope stage_scope(
+            hotspot_scope, SingleStepProfileStage::kPrologueTrace);
+        RecordSingleStepDiagnostics(win32_context, context);
+    }
 
     const std::uint32_t hle_entry_eip =
         static_cast<std::uint32_t>(win32_context->Eip);
-    if (DispatchGuestHleHandlers(win32_context, context))
+    bool handled_hle = false;
+    {
+        SingleStepHotspotStageScope stage_scope(
+            hotspot_scope, SingleStepProfileStage::kHleDispatch);
+        handled_hle = DispatchGuestHleHandlers(win32_context, context);
+    }
+    if (handled_hle)
     {
         hotspot_scope.SetOutcome(
             SingleStepProfileOutcome::kHandledHle);
-        if (static_cast<std::uint32_t>(win32_context->Eip) != hle_entry_eip &&
-            TryResumeAotAfterHandledHle(
-                win32_context, context, hle_entry_eip))
+        if (static_cast<std::uint32_t>(win32_context->Eip) != hle_entry_eip)
         {
-            return true;
+            bool resumed = false;
+            {
+                SingleStepHotspotStageScope stage_scope(
+                    hotspot_scope, SingleStepProfileStage::kAotResume);
+                resumed = TryResumeAotAfterHandledHle(
+                    win32_context, context, hle_entry_eip);
+            }
+            if (resumed)
+            {
+                return true;
+            }
         }
         win32_context->EFlags |= 0x00000100U;
         return true;
@@ -1261,7 +1319,11 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
     // PollThreadUntilExit never forces TF or changes the guest thread context.
     const std::uint32_t interrupt_boundary_eip =
         static_cast<std::uint32_t>(win32_context->Eip);
-    InjectPendingInterrupts(win32_context, context);
+    {
+        SingleStepHotspotStageScope stage_scope(
+            hotspot_scope, SingleStepProfileStage::kInterruptInjection);
+        InjectPendingInterrupts(win32_context, context);
+    }
     if (static_cast<std::uint32_t>(win32_context->Eip) != interrupt_boundary_eip)
     {
         hotspot_scope.SetOutcome(
@@ -1271,23 +1333,27 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
     const bool call_step_return_watch =
         AotDbtCallStepReturnWatchActive(context);
     bool entered_native = false;
-    if (!call_step_return_watch && RouteANativeRegionEnabled())
     {
-        entered_native = TryEnterNativeRegion(win32_context, context);
-    }
-    else if (!call_step_return_watch)
-    {
-        entered_native = detail::TryEnterNativeFastPath(
-            win32_context,
-            &context->native_fast_path,
-            context->runtime_base,
-            context->runtime_size);
-    }
-    if (!call_step_return_watch &&
-        !entered_native &&
-        NativeLinearSpanEnabled(context->execution_backend))
-    {
-        entered_native = TryEnterNativeLinearSpan(win32_context, context);
+        SingleStepHotspotStageScope stage_scope(
+            hotspot_scope, SingleStepProfileStage::kNativeEntry);
+        if (!call_step_return_watch && RouteANativeRegionEnabled())
+        {
+            entered_native = TryEnterNativeRegion(win32_context, context);
+        }
+        else if (!call_step_return_watch)
+        {
+            entered_native = detail::TryEnterNativeFastPath(
+                win32_context,
+                &context->native_fast_path,
+                context->runtime_base,
+                context->runtime_size);
+        }
+        if (!call_step_return_watch &&
+            !entered_native &&
+            NativeLinearSpanEnabled(context->execution_backend))
+        {
+            entered_native = TryEnterNativeLinearSpan(win32_context, context);
+        }
     }
     if (entered_native)
     {
@@ -1866,6 +1932,34 @@ RecoverHostStackException()
 
 #endif
 
+#if defined(_MSC_VER) && defined(_M_IX86)
+// Task 323 denominator: the whole guest execution window on this thread. The
+// scope lives here rather than in GuestEntryThreadProc because that function
+// uses __try, and MSVC rejects objects requiring unwinding in the same function
+// (C2712).
+void CallGuestEntryWithStackTimed(StackSwitchCallState* state,
+                                  ThreadContext* context)
+{
+    const ExecutionTimeScope guest_run_time_scope(
+        context != nullptr ? context->execution_time_profile.get() : nullptr,
+        ExecutionTimeBucket::kGuestRunTotal);
+    CallGuestEntryWithStack(state);
+}
+
+// Same denominator for the non-stack-switching entry path. Both branches must
+// be instrumented or the guest-run total silently stays zero.
+void CallGuestEntryDirectTimed(ThreadContext* context)
+{
+    const ExecutionTimeScope guest_run_time_scope(
+        context != nullptr ? context->execution_time_profile.get() : nullptr,
+        ExecutionTimeBucket::kGuestRunTotal);
+    using EntryFunction = void (*)();
+    EntryFunction entry = reinterpret_cast<EntryFunction>(
+        static_cast<std::uintptr_t>(context->entry_address));
+    entry();
+}
+#endif
+
 DWORD WINAPI GuestEntryThreadProc(void* parameter)
 {
     ThreadContext* context = static_cast<ThreadContext*>(parameter);
@@ -1903,7 +1997,7 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
                 return 5;
             }
 
-            CallGuestEntryWithStack(&state);
+            CallGuestEntryWithStackTimed(&state, context);
 
             g_repiu_active_thread_context = nullptr;
             context->active_call_state = nullptr;
@@ -1936,10 +2030,7 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
                 return 5;
             }
 #endif
-            using EntryFunction = void (*)();
-            EntryFunction entry = reinterpret_cast<EntryFunction>(
-                static_cast<std::uintptr_t>(context->entry_address));
-            entry();
+            CallGuestEntryDirectTimed(context);
 #if defined(_MSC_VER) && defined(_M_IX86)
             g_repiu_active_thread_context = nullptr;
             if (context->process_exit)
@@ -2551,6 +2642,13 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     {
         return EXCEPTION_CONTINUE_SEARCH;
     }
+
+    // Task 323: the single choke point for every exception the guest thread
+    // takes -- single steps, INT3 boundaries, and access violations alike.
+    // Measured here rather than per handler so no exception path escapes.
+    const ExecutionTimeScope veh_time_scope(
+        context->execution_time_profile.get(),
+        ExecutionTimeBucket::kVehTotal);
 
     // Task 296: Windows can hand the VEH a malformed EXCEPTION_POINTERS (a
     // non-null but unreadable ContextRecord/ExceptionRecord) when a fault is
@@ -3373,6 +3471,11 @@ bool RunWin32ExecutionThread(
     {
         context.single_step_hotspot_profile =
             std::make_unique<Win32SingleStepHotspotProfile>();
+    }
+    if (ExecutionTimeProfileEnabled())
+    {
+        context.execution_time_profile =
+            std::make_unique<Win32ExecutionTimeProfile>();
     }
     SharedTelemetryMapping shared_telemetry =
         OpenSharedTelemetryMapping();

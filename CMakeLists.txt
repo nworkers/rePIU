@@ -97,6 +97,7 @@ add_library(repiu_exe
     src/media/chd_cd_image.cpp
     src/platform/win32/cd_audio_wave_out.cpp
     src/platform/win32/aot_code_cache_win32.cpp
+    src/platform/win32/aot_cache_address_index.cpp
     src/platform/win32/aot_page_coherence_win32.cpp
     src/platform/win32/aot/aot_boundary_provenance.cpp
     src/platform/win32/aot/aot_boundary_reason.cpp
@@ -119,6 +120,7 @@ add_library(repiu_exe
     src/platform/win32/boundary/linexe_glide_boundary.cpp
     src/platform/win32/boundary/timer_interrupt_boundary.cpp
     src/platform/win32/telemetry/live_telemetry_snapshot.cpp
+    src/platform/win32/telemetry/execution_time_profile.cpp
     src/platform/win32/io/port_io_emulator.cpp
     src/platform/win32/io/eeprom_93c46.cpp
     src/platform/win32/io/piu10_sound_port.cpp
@@ -191,6 +193,8 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/native_linear_span_probe.cpp
     src/tools/aot_probe/retired_trap_profile_probe.cpp
     src/tools/aot_probe/single_step_hotspot_profile_probe.cpp
+    src/tools/aot_probe/exception_transition_calibration_probe.cpp
+    src/tools/aot_probe/aot_cache_address_index_probe.cpp
     src/tools/aot_probe/selector_guard_probe.cpp
     src/tools/aot_probe/main.cpp
 )

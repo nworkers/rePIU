@@ -564,6 +564,13 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         return false;
     }
 
+    // Task 323: measured after the cheap rejection so the bucket counts real
+    // gate work only. This includes any wait on the SDL main-thread render
+    // queue, which is exactly what the measurement needs to expose.
+    const ExecutionTimeScope gate_time_scope(
+        context->execution_time_profile.get(),
+        ExecutionTimeBucket::kGlideGate);
+
     const std::uint32_t gate_offset =
         static_cast<std::uint32_t>(win32_context->Eip) -
         context->linexe_arena_layout.gate_code_base;

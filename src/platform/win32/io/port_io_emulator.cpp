@@ -212,6 +212,13 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
         return false;
     }
 
+    // Task 323. Reachable from the single-step HLE path (inside the VEH) and
+    // from the Task 311 AOT fast-path thunk (outside it), so the bucket records
+    // both and the profile tags which side each entry came from.
+    const ExecutionTimeScope port_io_time_scope(
+        context->execution_time_profile.get(),
+        ExecutionTimeBucket::kPortIoDevice);
+
     std::uint32_t decode_eip = win32_context->Eip;
     if (IsAotCacheAddress(context, win32_context->Eip))
     {

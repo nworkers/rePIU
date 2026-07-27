@@ -776,6 +776,10 @@ bool AppendWin32DynamicAotTranslation(
             image_tracks_guest_bytes[image_index], requested_page,
             &result->active_guest_pages);
     }
+    // Task 324 safety net: the registrations above normally link incrementally,
+    // but rebuild here if any declined so the next lookup is not left on the
+    // linear fallback.
+    EnsureAotCacheAddressIndex(placement);
     for (runtime::AotCodeCacheFixup fixup : image.fixups)
     {
         fixup.cache_patch_offset += append_offset;
@@ -1226,6 +1230,34 @@ bool FindAotCacheAddress(const Win32AotCodeCachePlacement& placement,
     {
         return false;
     }
+
+    // Task 324. The two rules below reduce to: newest ACTIVE entry when this
+    // guest address has a retired generation, oldest entry otherwise. The index
+    // reproduces exactly that; when it is stale the original scan runs
+    // unchanged, so a placement built without the update hooks (several probes
+    // construct one directly) degrades to slow rather than wrong.
+    {
+        const bool newest_active =
+            !placement.retired_guest_addresses.empty() &&
+            std::binary_search(
+                placement.retired_guest_addresses.begin(),
+                placement.retired_guest_addresses.end(), guest_address);
+        std::uint32_t map_index = 0;
+        if (placement.cache_address_index.indexed_entry_count ==
+                static_cast<std::uint32_t>(placement.address_map.size()) &&
+            !placement.address_map.empty())
+        {
+            if (LookupAotCacheAddressIndex(
+                    placement, guest_address, newest_active, &map_index))
+            {
+                *cache_address = placement.base_address +
+                    placement.address_map[map_index].cache_offset;
+                return true;
+            }
+            return false;
+        }
+    }
+
     if (placement.retired_guest_addresses.empty())
     {
         for (const runtime::AotAddressMapEntry& entry :

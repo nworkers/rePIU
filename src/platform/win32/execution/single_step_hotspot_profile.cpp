@@ -50,7 +50,26 @@ Win32SingleStepHotspotSample MakeSample(
     sample.max_cycles = entry.max_cycles;
     sample.outcome_counts = entry.outcome_counts;
     sample.outcome_cycles = entry.outcome_cycles;
+    sample.stage_counts = entry.stage_counts;
+    sample.stage_cycles = entry.stage_cycles;
     return sample;
+}
+
+template <typename CountArray, typename CycleArray>
+void AccumulateStageTally(const Win32SingleStepStageTally* stages,
+                          CountArray* counts,
+                          CycleArray* cycles)
+{
+    if (stages == nullptr)
+    {
+        return;
+    }
+    for (std::uint32_t index = 0;
+         index < kSingleStepProfileStageCount; ++index)
+    {
+        (*counts)[index] += stages->counts[index];
+        (*cycles)[index] += stages->cycles[index];
+    }
 }
 
 }  // namespace
@@ -70,7 +89,8 @@ void RecordSingleStepHotspot(
     Win32SingleStepHotspotProfile* profile,
     std::uint32_t guest_address,
     std::uint64_t cycles,
-    SingleStepProfileOutcome outcome)
+    SingleStepProfileOutcome outcome,
+    const Win32SingleStepStageTally* stages)
 {
     if (profile == nullptr)
     {
@@ -80,6 +100,8 @@ void RecordSingleStepHotspot(
     ++profile->total_sample_count;
     profile->total_cycles += cycles;
     profile->max_cycles = std::max(profile->max_cycles, cycles);
+    AccumulateStageTally(stages, &profile->stage_counts,
+                         &profile->stage_cycles);
 
     std::uint32_t outcome_index = static_cast<std::uint32_t>(outcome);
     if (outcome_index >= kSingleStepProfileOutcomeCount)
@@ -113,6 +135,8 @@ void RecordSingleStepHotspot(
         entry.max_cycles = std::max(entry.max_cycles, cycles);
         ++entry.outcome_counts[outcome_index];
         entry.outcome_cycles[outcome_index] += cycles;
+        AccumulateStageTally(stages, &entry.stage_counts,
+                             &entry.stage_cycles);
         return;
     }
     ++profile->overflow_count;
@@ -130,6 +154,8 @@ Win32SingleStepHotspotProfileSnapshot SnapshotSingleStepHotspotProfile(
     snapshot.max_cycles = profile.max_cycles;
     snapshot.outcome_counts = profile.outcome_counts;
     snapshot.outcome_cycles = profile.outcome_cycles;
+    snapshot.stage_counts = profile.stage_counts;
+    snapshot.stage_cycles = profile.stage_cycles;
 
     std::vector<Win32SingleStepHotspotSample> samples;
     samples.reserve(profile.distinct_guest_count);
@@ -206,13 +232,54 @@ SingleStepHotspotCycleScope::~SingleStepHotspotCycleScope()
     }
     const std::uint64_t end_cycles = ReadProfileCycles();
     RecordSingleStepHotspot(
-        profile_, guest_address_, end_cycles - start_cycles_, outcome_);
+        profile_, guest_address_, end_cycles - start_cycles_, outcome_,
+        &stages_);
 }
 
 void SingleStepHotspotCycleScope::SetOutcome(
     SingleStepProfileOutcome outcome)
 {
     outcome_ = outcome;
+}
+
+void SingleStepHotspotCycleScope::AddStageCycles(
+    SingleStepProfileStage stage, std::uint64_t cycles)
+{
+    const std::uint32_t index = static_cast<std::uint32_t>(stage);
+    if (index >= kSingleStepProfileStageCount)
+    {
+        return;
+    }
+    ++stages_.counts[index];
+    stages_.cycles[index] += cycles;
+}
+
+SingleStepHotspotStageScope::SingleStepHotspotStageScope(
+    SingleStepHotspotCycleScope& parent,
+    SingleStepProfileStage stage)
+    : parent_(parent.active() ? &parent : nullptr),
+      stage_(stage),
+      start_cycles_(parent.active() ? ReadProfileCycles() : 0U)
+{
+}
+
+SingleStepHotspotStageScope::SingleStepHotspotStageScope(
+    SingleStepHotspotCycleScope* parent,
+    SingleStepProfileStage stage)
+    : parent_(parent != nullptr && parent->active() ? parent : nullptr),
+      stage_(stage),
+      start_cycles_(parent_ != nullptr ? ReadProfileCycles() : 0U)
+{
+}
+
+SingleStepHotspotStageScope::~SingleStepHotspotStageScope()
+{
+    if (parent_ == nullptr)
+    {
+        return;
+    }
+    const std::uint64_t end_cycles = ReadProfileCycles();
+    parent_->AddStageCycles(stage_, end_cycles - start_cycles_);
 }
 
 }  // namespace repiu::platform::win32

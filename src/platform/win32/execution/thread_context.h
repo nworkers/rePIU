@@ -637,6 +637,15 @@ struct ThreadContext
     std::atomic<std::uint32_t> single_step_trace_count{0};
     std::unique_ptr<Win32SingleStepHotspotProfile>
         single_step_hotspot_profile;
+    // Task 323: the cycle scope owned by the current HandleSingleStepTrace
+    // invocation, so regions measured in other translation units (the
+    // TryResumeAotAfterHandledHle sub-stages) can attribute into the same
+    // sample. Set and cleared only by that handler on the guest thread; null
+    // whenever no single-step sample is open or the profile is disabled.
+    SingleStepHotspotCycleScope* active_hotspot_scope = nullptr;
+    // Task 323: guest-thread wall-clock buckets. Allocated only when
+    // REPIU_EXECUTION_TIME_PROFILE is set, so the normal path pays one branch.
+    std::unique_ptr<Win32ExecutionTimeProfile> execution_time_profile;
     // Route A sizing (native region execution). Of every single-stepped guest
     // instruction, how many are HLE-sensitive (segment op / INT / IO / string /
     // privileged) and would still require a trap under selective-breakpoint

@@ -10,6 +10,8 @@
 #include "native_linear_span_probe.h"
 #include "retired_trap_profile_probe.h"
 #include "single_step_hotspot_profile_probe.h"
+#include "exception_transition_calibration_probe.h"
+#include "aot_cache_address_index_probe.h"
 #include "selector_guard_probe.h"
 #include "execution_backend_probe.h"
 #include "dbt_return_fallback_probe.h"
@@ -755,6 +757,14 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunSingleStepHotspotProfileProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunExceptionTransitionCalibrationProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunAotCacheAddressIndexProbe())
     {
         return 1;
     }

@@ -8,6 +8,7 @@
 #include "repiu/platform/win32/aot_boundary_provenance.h"
 #include "repiu/platform/win32/aot_retired_trap_profile.h"
 #include "repiu/platform/win32/single_step_hotspot_profile.h"
+#include "repiu/platform/win32/execution_time_profile.h"
 #include "repiu/hle/dos_file_system.h"
 #include "repiu/hle/glide_implementation_issue.h"
 #include "repiu/exe/dos16m_bound_module.h"
@@ -504,6 +505,7 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t single_step_trace_count = 0;
     Win32SingleStepHotspotProfileSnapshot
         single_step_hotspot_profile;
+    Win32ExecutionTimeProfileSnapshot execution_time_profile;
     std::uint32_t native_fast_path_entry_count = 0;
     std::uint32_t native_fast_path_return_count = 0;
     std::uint32_t native_fast_path_cancel_count = 0;

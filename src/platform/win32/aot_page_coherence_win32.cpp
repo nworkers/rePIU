@@ -368,6 +368,10 @@ void InitializeWin32AotPageCoherence(
     {
         return;
     }
+    // Task 324: drop the index before re-registering. The loop below links each
+    // entry incrementally, and the trailing Ensure covers any shape the
+    // incremental path declined.
+    InvalidateAotCacheAddressIndex(placement);
     placement->address_map_states.clear();
     placement->guest_pages.clear();
     placement->retired_guest_addresses.clear();
@@ -383,6 +387,7 @@ void InitializeWin32AotPageCoherence(
             Win32AotGuestPage(placement->address_map[index].guest_address),
             nullptr);
     }
+    EnsureAotCacheAddressIndex(placement);
 }
 
 std::uint32_t AllocateWin32AotGeneration(
@@ -482,6 +487,10 @@ void RegisterWin32AotAddressMap(
     {
         RecordInactiveMap(placement, map_index);
     }
+    // Task 324: the canonical hook for "one address_map entry became known".
+    // Only the structure is indexed; the active flag is read at query time, so
+    // later activation changes need no index update.
+    AppendAotCacheAddressIndexEntry(placement, map_index);
 }
 
 bool Win32AotGuestRangeHasActiveTranslation(

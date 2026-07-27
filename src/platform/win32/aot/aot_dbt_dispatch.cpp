@@ -124,29 +124,56 @@ bool TryResumeAotAfterHandledHle(CONTEXT* win32_context,
         context->aot_placement == nullptr ||
         !context->aot_reentry_pending ||
         !runtime::ExecutionBackendUsesImmediateHleReentry(
-            context->execution_backend) ||
-        DoesGuestInstructionWriteSegmentRegister(
-            context, handled_guest_eip))
+            context->execution_backend))
     {
         return false;
+    }
+
+    // Task 323 sub-stage attribution. Each region below opens a scope against
+    // the single-step sample published in ThreadContext::active_hotspot_scope,
+    // so sum(sub-stage) <= kAotResume holds by construction. All scopes are
+    // inert when the hotspot profile is disabled.
+    {
+        SingleStepHotspotStageScope stage_scope(
+            context->active_hotspot_scope,
+            SingleStepProfileStage::kSegmentWriteProbe);
+        if (DoesGuestInstructionWriteSegmentRegister(
+                context, handled_guest_eip))
+        {
+            return false;
+        }
     }
 
     context->aot_dbt_hle_reentry_attempt_count.fetch_add(
         1, std::memory_order_relaxed);
     const std::uint32_t current =
         static_cast<std::uint32_t>(win32_context->Eip);
-    if (!IsGuestInstructionPointer(context, current) ||
-        IsWin32AotGuestPageQuarantined(
-            *context->aot_placement, current))
     {
-        return false;
+        SingleStepHotspotStageScope stage_scope(
+            context->active_hotspot_scope,
+            SingleStepProfileStage::kQuarantineCheck);
+        if (!IsGuestInstructionPointer(context, current) ||
+            IsWin32AotGuestPageQuarantined(
+                *context->aot_placement, current))
+        {
+            return false;
+        }
     }
 
     std::uint32_t cache_address = 0;
-    const bool cache_hit = FindAotCacheAddress(
-        *context->aot_placement, current, &cache_address);
+    bool cache_hit = false;
+    {
+        SingleStepHotspotStageScope stage_scope(
+            context->active_hotspot_scope,
+            SingleStepProfileStage::kCacheLookup);
+        cache_hit = FindAotCacheAddress(
+            *context->aot_placement, current, &cache_address);
+    }
     if (cache_hit)
     {
+        SingleStepHotspotStageScope stage_scope(
+            context->active_hotspot_scope,
+            SingleStepProfileStage::kSpanSafety);
         if (!IsImmediateHleReentrySpanSafe(context, current))
         {
             return false;

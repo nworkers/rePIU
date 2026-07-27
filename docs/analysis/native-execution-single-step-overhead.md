@@ -206,3 +206,200 @@ The scope does not include kernel #DB entry or work after VEH returns, and preem
 inflate TSC latency. It is not a pure CPU-cycle or whole-single-step measurement. Whether
 sequential predicate/decode work in `DispatchGuestHleHandlers` causes the hot HLE latency
 remains unresolved until handler-stage attribution is added.
+
+## Handler 단계별 귀속 / Handler stage attribution
+
+Task 322는 `HandleSingleStepTrace`를 상호 배타적인 5개 단계로 나누어 위 미확정 항목을
+해소했습니다. 60초 `aot-dbt` 실행은 표본 53,628개, distinct EIP 717개, overflow 0으로
+총 handler tick `32,730,038,317`을 기록했습니다.
+
+| 단계 | count | TSC tick | 전체 tick 비율 | 평균 tick/호출 |
+|---|---:|---:|---:|---:|
+| `kPrologueTrace` | 53,628 | 433,120,960 | 1.32% | 8,076 |
+| `kHleDispatch` | 53,628 | 7,716,478,628 | 23.58% | 143,891 |
+| **`kAotResume`** | **39,335** | **24,233,585,450** | **74.05%** | **616,079** |
+| `kInterruptInjection` | 14,284 | 12,071,488 | 0.04% | 845 |
+| `kNativeEntry` | 14,254 | 245,876,061 | 0.75% | 17,249 |
+| `residual` (파생) | — | 88,905,730 | 0.27% | — |
+
+**확인됨:** handler 내부 비용은 emulate 본체가 아니라 `TryResumeAotAfterHandledHle`가
+지배합니다. 한 호출의 평균은 `616,079 tick`이며, 이 기기의 TSC 공칭 주파수 2.5GHz
+(i5-7200U) 기준으로 약 `246us`입니다. HLE tick 안에서 `kAotResume`은 75.29%입니다.
+
+**정정 (Task 323):** 이 비용의 원인을 "동적 번역"으로 본 최초 해석은 **기각됐습니다.**
+`TryResumeAotAfterHandledHle`의 cache miss 경로는 opt-in
+`REPIU_AOT_DBT_POST_HLE_TRANSLATE`가 꺼져 있으면 `PostHleTranslationEnabled()`에서
+즉시 반환하며, 두 실행 모두 live telemetry가 `posthle=0/0`을 기록했습니다. 즉
+`ResolveAotTransferTarget`은 한 번도 호출되지 않았고, `aot-code-cache-emission.md`의
+`7,847.2us` cache 생성 비용은 이 수치와 무관합니다.
+
+**추정:** 코드 판독상 남은 후보는 `FindAotCacheAddress`의 `address_map` 선형 스캔,
+`IsAotHleBoundaryAddress`의 선형 스캔(최대 64회 반복), 그리고 두 helper가 매 호출
+수행하는 `ZydisDecoderInit` 재초기화입니다. Task 323이 이를 4구간으로 분해해
+확정합니다.
+
+**확인됨:** 상시 진단 계측(`kPrologueTrace`)은 1.32%로, 이것이 hot path 비용을
+지배한다는 가설은 기각됩니다. Task 312의 opcode-directed dispatcher 이후에도
+`kHleDispatch` 평균은 `143,891 tick`으로 크지만 `kAotResume`보다 작습니다.
+
+**미확정:** `kAotResume` 내부의 cache lookup, quarantine 판정, 동적 번역, worker
+publication 비중은 나누지 않았습니다. `kHleDispatch` 평균의 내역도 미확정입니다.
+
+**비교 제한:** 이 절대값은 Task 309와 직접 비교할 수 없습니다. Task 310~312가 segment
+read와 port I/O를 AOT fast-path로 옮기고 Task 313~321이 Glide 경로를 바꾸면서
+single-step 모집단이 `272,543`에서 `53,628`로 달라졌습니다. 남은 single-step의 평균
+비용이 오히려 커진 원인은 규명되지 않았습니다.
+
+```mermaid
+flowchart LR
+    S["single-step 53,628"] --> P["kPrologueTrace 1.32%"]
+    S --> H["kHleDispatch 23.58%"]
+    S --> A["kAotResume 74.05%"]
+    A --> T["번역 캐시 재진입이 병목<br/>roadmap 1단계 확정"]
+```
+
+Task 322 resolved the preceding open question by splitting `HandleSingleStepTrace` into five
+mutually exclusive stages. Over a 60-second `aot-dbt` run of 53,628 samples across 717
+distinct EIPs with zero overflow and `32,730,038,317` total handler ticks, `kAotResume` held
+74.05% of all ticks and 75.29% of HLE ticks at an average `616,079 ticks`, about `246us` at
+this machine's 2.5GHz nominal TSC. The bottleneck inside the handler is
+`TryResumeAotAfterHandledHle`, not the emulation body.
+
+**Corrected in Task 323:** the initial attribution of that cost to dynamic translation is
+rejected. The cache-miss path returns at the opt-in `PostHleTranslationEnabled()` gate and both
+runs recorded `posthle=0/0`, so `ResolveAotTransferTarget` was never called and the
+`7,847.2us` cache-generation cost is unrelated. The remaining candidates read from the code are
+the linear `address_map` scan in `FindAotCacheAddress`, the linear `IsAotHleBoundaryAddress`
+scan repeated up to 64 times, and per-call `ZydisDecoderInit` re-initialization in both
+helpers. Task 323 decomposes these.
+
+Always-on diagnostics accounted for 1.32%, rejecting the hypothesis that instrumentation
+dominates the hot path. `kHleDispatch` averaged `143,891 ticks` even after the Task 312
+opcode-directed dispatcher, but at 23.58% it remains smaller than `kAotResume`. The split
+inside `kAotResume` and the composition of `kHleDispatch` remain unresolved. These absolute
+values are not comparable to Task 309: Tasks 310-312 moved segment reads and port I/O onto AOT
+fast paths and Tasks 313-321 changed the Glide path, shifting the single-step population from
+272,543 to 53,628, and why the surviving steps became more expensive per event was not
+investigated.
+
+## kAotResume 내역 확정과 전체 실행 시간 귀속 / kAotResume composition and whole-run attribution
+
+Task 323은 `TryResumeAotAfterHandledHle`를 4구간으로 나누고 guest thread wall-clock을
+bucket으로 나누어 두 미지수를 동시에 해소했습니다.
+
+`kAotResume` 총 `12,987,145,872 tick` 중 내역은 다음과 같습니다.
+
+| 하위 단계 | count | TSC tick | 비율 |
+|---|---:|---:|---:|
+| `kSegmentWriteProbe` | 21,547 | 249,595,268 | 1.92% |
+| `kQuarantineCheck` | 10,876 | 156,083,004 | 1.20% |
+| **`kCacheLookup`** | 10,876 | **11,395,704,478** | **87.75%** |
+| `kSpanSafety` | 10,876 | 675,746,920 | 5.20% |
+| residual | — | 510,016,202 | 3.93% |
+
+**확인됨:** 원인은 `FindAotCacheAddress`의 `placement.address_map` 선형 탐색입니다.
+호출당 평균 `1,047,784 tick`(2.5GHz 기준 약 419us)입니다. Zydis decode
+(`kSegmentWriteProbe` 1.92%, `kSpanSafety` 5.20%)와 quarantine 판정은 부차적입니다.
+
+guest thread wall-clock 분모 `162,848,392,105 tick`(약 65.1초) 기준 귀속은 다음과
+같습니다.
+
+| bucket | TSC tick | 비율 |
+|---|---:|---:|
+| VEH handler 본문 — AOT boundary 경로 | 120,110,679,227 | **73.76%** |
+| VEH handler 본문 — single-step handler | 20,559,155,309 | 12.62% |
+| AOT cache 내 guest 실행 (추정) | 약 20.2e9 | 약 12.4% |
+| Glide gate | 2,104,393,724 | 1.29% |
+| kernel 예외 전이 (추정) | 약 1.95e9 | **1.20%** |
+| DOS service | 236,072,055 | 0.14% |
+| port I/O device | 24,285,813 | 0.01% |
+
+**확인됨:** 예외 전이 비용은 전체의 1.20%입니다. 합성 교정 probe는 이 기기에서
+`INT3` 왕복 `32,635 tick`, TF single-step 왕복 `34,015 tick`을 측정했고, 실행의 VEH
+진입은 59,175회였습니다. 따라서 TF와 `INT3`를 전부 제거해도 상한은 약 1.012배이며,
+"예외 왕복 비용이 지배적"이라는 TF/VEH 제거 로드맵의 전제는 기각됩니다.
+
+**확인됨:** 병목은 예외 메커니즘이 아니라 handler 본문 안에서 반복되는 O(n) 선형
+탐색입니다.
+
+**미확정:** VEH 내부이면서 single-step handler 밖인 73.76%의 세부 귀속은 아직
+없습니다. `ResolveAotTransferTarget`이 같은 `FindAotCacheAddress`를 호출하므로 같은
+원인일 가능성이 높지만, 해시 맵 교체 A/B로 직접 검증해야 확정됩니다.
+
+**한계:** Debug 빌드 측정입니다. MSVC Debug의 iterator debug check가 `std::vector`
+순회를 크게 늦추므로 Release에서는 선형 탐색의 비중이 줄어듭니다. O(n)이라는 점근
+성질 자체는 빌드 구성과 무관합니다.
+
+Task 323 decomposed `TryResumeAotAfterHandledHle` and attributed guest-thread wall clock,
+resolving both open unknowns. Within `kAotResume`, the linear `placement.address_map` scan in
+`FindAotCacheAddress` holds 87.75% at an average `1,047,784` ticks (about 419us) per call,
+while Zydis decoding and quarantine checks are secondary.
+
+Against a `162,848,392,105` tick denominator, 73.76% of wall clock sits in the VEH handler body
+outside the single-step handler on the AOT boundary path, 12.62% in the single-step handler,
+roughly 12.4% in guest execution inside the AOT cache, 1.29% in the Glide gate, and 1.20% in
+kernel exception transition. The calibration probe priced an `INT3` round trip at `32,635`
+ticks and a TF single step at `34,015` on this machine across 59,175 VEH entries. Removing
+every TF and `INT3` exception therefore bounds improvement at roughly 1.012x, rejecting the
+premise that exception round-trip cost dominates. The bottleneck is the repeated O(n) scan
+inside the handler body, not the exception mechanism.
+
+The 73.76% remains unattributed at sub-stage granularity; `ResolveAotTransferTarget` calls the
+same lookup, so a shared cause is likely but requires the hash-map A/B to confirm. The Debug
+build inflates `std::vector` traversal through iterator debug checks, so the scan's share will
+shrink in Release, though its O(n) behavior is build-independent.
+
+## 해시 색인 교체 결과 / Hash index replacement result
+
+Task 324는 `FindAotCacheAddress`의 `address_map` 선형 탐색을 버킷 체인 해시 색인으로
+교체했습니다. 체인을 최신 head로 연결해 "retired 세대가 있으면 최신 active, 아니면
+최초 삽입"이라는 두 규칙을 한 순회로 재현합니다. 색인은 캐시이며
+`indexed_entry_count != address_map.size()`이면 기존 선형 탐색으로 fail-safe합니다.
+
+| 지표 | 교체 전 | 교체 후 | 변화 |
+|---|---:|---:|---:|
+| `kCacheLookup` 호출당 | 1,047,784 tick | 6,866 tick | **-99.3%** |
+| `kCacheLookup` 총합 | 11,395,704,478 | 148,029,142 | -98.7% |
+| `kAotResume` 총합 | 12,987,145,872 | 2,220,773,822 | -82.9% |
+| 60초 heartbeat | 79,640 | 331,913 | **+317%** |
+| 60초 progress | 8,199 | 21,843 | **+166%** |
+
+**확인됨:** 조회 의미는 보존됩니다. 차등 probe가 교체 이전 구현을 oracle로 유지하고
+retired 목록이 빈 경우, retired/비retired 혼재, 최신 inactive + 이전 active, 전 세대
+inactive, 강제 해시 충돌, 동적 append 300회와 버킷 성장, 색인 무효 fallback, 훅을
+거치지 않은 placement의 8개 경계 조건에서 완전 일치를 확인했습니다.
+
+**기각됨:** AOT boundary 경로가 같은 선형 탐색 때문에 느리다는 Task 323의 가설.
+VEH 내부이면서 single-step handler 밖인 구간은 73.76%에서 74.34%로 **줄지 않았습니다.**
+`ResolveAotTransferTarget`이 같은 함수를 호출하는 것은 사실이지만, 그 구간 비용의
+지배 원인은 아니었습니다.
+
+**해석 주의:** 실행이 빨라지면서 guest가 이전에 도달하지 못한 texture 로딩 구간까지
+진행했고 phase 표시도 달라졌습니다. 따라서 전후의 stage 구성비는 동일 작업량 비교가
+아닙니다. 다만 progress·heartbeat·single-step이 2.7~5.2배로 함께 올랐으므로 처리량
+개선 자체는 phase 이동의 부산물이 아닙니다.
+
+**한계:** Debug 빌드 수치입니다. MSVC Debug의 iterator debug check가 선형 탐색을 크게
+부풀리므로 Release에서 상대 이득은 더 작습니다. O(n) → O(1)이라는 점근 개선만 빌드
+구성과 무관합니다.
+
+Task 324 replaced the linear `address_map` scan with a bucket-chain hash index whose chains
+link newest-first, reproducing both lookup rules -- newest active entry when the guest address
+has a retired generation, oldest entry otherwise -- in a single traversal. The index is a cache
+that falls back to the original scan when stale. Per-call cost fell from `1,047,784` to `6,866`
+ticks (-99.3%), 60-second heartbeat rose 4.17x, and progress rose 2.66x.
+
+Semantic equivalence is verified by a differential probe that keeps the pre-change
+implementation as an oracle across eight boundary conditions including forced hash collisions,
+a newest-inactive entry behind an older active one, dynamic appends with bucket growth, and an
+invalidated index.
+
+The A/B rejected Task 323's hypothesis that the AOT boundary path was slow for the same reason:
+the share inside the VEH but outside the single-step handler held at 74.34% rather than falling.
+`ResolveAotTransferTarget` does call the same function, but that is not what dominates its cost.
+
+Faster execution carried the guest into content it had not reached before, so before/after stage
+shares are not a comparison over identical work, though the simultaneous 2.7x to 5.2x rise in
+progress, heartbeat, and single-step counts shows the throughput gain is real. These are
+Debug-build figures, where iterator debug checks inflate the linear scan, so the relative gain is
+smaller in Release; only the O(n) to O(1) change is build-independent.
