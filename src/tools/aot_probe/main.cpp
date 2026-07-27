@@ -6,6 +6,7 @@
 #include "repiu/target/target_profile.h"
 
 #include "inline_cache_probe.h"
+#include "arena_view_probe.h"
 #include "boundary_provenance_probe.h"
 #include "native_linear_span_probe.h"
 #include "retired_trap_profile_probe.h"
@@ -779,6 +780,10 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunSelectorGuardProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunArenaViewProbe())
     {
         return 1;
     }

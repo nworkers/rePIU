@@ -324,6 +324,81 @@ void ResolveWin32AotGuardedSegmentPops(
     }
 }
 
+#if defined(_WIN32)
+// Task 329: referencing the live arena gives up the failure return that
+// `ReadProcessMemory` provided, so the range is checked once per process
+// instead of copied once per translation. One check is enough because nothing
+// decommits guest memory (the tree contains no `MEM_DECOMMIT`; every
+// `VirtualFree` is a teardown `MEM_RELEASE`) and guest page protection only
+// moves among readable values, never `PAGE_NOACCESS`.
+//
+// Worker-thread only, like the rest of this path, so the cache is plain state.
+bool VerifyWin32GuestArenaDirectlyReadable(std::uint32_t runtime_base,
+                                           std::uint32_t runtime_size)
+{
+    static std::uint32_t verified_base = 0;
+    static std::uint32_t verified_size = 0;
+    static bool verified_result = false;
+    if (verified_size != 0U && verified_base == runtime_base &&
+        verified_size == runtime_size)
+    {
+        return verified_result;
+    }
+
+    const auto readable = [](DWORD protect) {
+        if ((protect & PAGE_GUARD) != 0U)
+        {
+            return false;
+        }
+        switch (protect & 0xFFU)
+        {
+            case PAGE_READONLY:
+            case PAGE_READWRITE:
+            case PAGE_WRITECOPY:
+            case PAGE_EXECUTE_READ:
+            case PAGE_EXECUTE_READWRITE:
+            case PAGE_EXECUTE_WRITECOPY:
+                return true;
+            default:
+                return false;
+        }
+    };
+
+    const std::uint64_t end =
+        static_cast<std::uint64_t>(runtime_base) + runtime_size;
+    bool covered = true;
+    std::uint64_t address = runtime_base;
+    while (address < end)
+    {
+        MEMORY_BASIC_INFORMATION information{};
+        if (VirtualQuery(reinterpret_cast<const void*>(
+                             static_cast<std::uintptr_t>(address)),
+                         &information, sizeof(information)) == 0 ||
+            information.State != MEM_COMMIT ||
+            !readable(information.Protect))
+        {
+            covered = false;
+            break;
+        }
+        const std::uint64_t region_end =
+            static_cast<std::uint64_t>(
+                reinterpret_cast<std::uintptr_t>(information.BaseAddress)) +
+            information.RegionSize;
+        if (region_end <= address)
+        {
+            covered = false;
+            break;
+        }
+        address = region_end;
+    }
+
+    verified_base = runtime_base;
+    verified_size = runtime_size;
+    verified_result = covered;
+    return covered;
+}
+#endif
+
 }  // namespace
 
 void BuildWin32AotSegmentResolution(
@@ -548,33 +623,38 @@ bool AppendWin32DynamicAotTranslation(
         result->message = "dynamic AOT target is outside the guest arena";
         return true;
     }
-    // Task 328 phase 1: the whole guest arena is copied here, not just the range
-    // around guest_entry.
-    const std::uint64_t snapshot_start = phase_now();
-    runtime::RelocatedRuntimeImage snapshot;
-    snapshot.valid = true;
-    snapshot.relocated_image_base = runtime_base;
-    snapshot.relocated_entry_linear_address = guest_entry;
+    // Task 329 (was Task 328 phase 1): the arena is referenced, not copied. The
+    // visible range is still the whole arena, so the plan is byte-for-byte what
+    // the snapshot produced; what disappears is a 133.8MB zero-fill, copy, and
+    // free per translation. This is safe only because the guest thread is
+    // blocked in the synchronous rendezvous and no other thread writes the
+    // arena — see docs/design/20260727-329 sections 2 and 8, and the contract on
+    // `RelocatedRuntimeObject::external_bytes`.
+    const std::uint64_t arena_view_start = phase_now();
+    const bool arena_readable =
+        VerifyWin32GuestArenaDirectlyReadable(runtime_base, runtime_size);
+    runtime::RelocatedRuntimeImage arena_view;
+    arena_view.valid = true;
+    arena_view.relocated_image_base = runtime_base;
+    arena_view.relocated_entry_linear_address = guest_entry;
     runtime::RelocatedRuntimeObject object;
     object.relocated_base_address = runtime_base;
     object.virtual_size = runtime_size;
-    object.memory.resize(runtime_size);
-    SIZE_T bytes_read = 0;
-    const bool snapshot_failed =
-        ReadProcessMemory(GetCurrentProcess(),
-                          reinterpret_cast<const void*>(
-                              static_cast<std::uintptr_t>(runtime_base)),
-                          object.memory.data(), runtime_size,
-                          &bytes_read) == 0 || bytes_read != runtime_size;
+    object.external_bytes = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(runtime_base));
+    object.external_byte_count = runtime_size;
     append_phases.arena_snapshot_cycles =
-        AotWorkerTimingDelta(timing, snapshot_start, phase_now());
-    append_scale.snapshot_bytes = runtime_size;
-    if (snapshot_failed)
+        AotWorkerTimingDelta(timing, arena_view_start, phase_now());
+    // Nothing is copied any more, so the scale axis reports the bytes actually
+    // copied, which is zero. A nonzero value here would mean a copy returned.
+    append_scale.snapshot_bytes = 0U;
+    if (!arena_readable)
     {
-        result->message = "failed to snapshot live guest arena";
+        result->message =
+            "guest arena is not fully readable for direct translation";
         return true;
     }
-    snapshot.objects.push_back(std::move(object));
+    arena_view.objects.push_back(std::move(object));
     runtime::AotTranslationPlan plan;
     runtime::AotCodeCacheImage image;
     runtime::AotCodeCacheBuildOptions build_options;
@@ -593,7 +673,7 @@ bool AppendWin32DynamicAotTranslation(
     // succeeded, exactly as before.
     const std::uint64_t plan_start = phase_now();
     const bool plan_built = runtime::BuildAotTranslationPlanFromEntry(
-        snapshot, guest_entry, excluded_ranges, &plan);
+        arena_view, guest_entry, excluded_ranges, &plan);
     const std::uint64_t emit_start = phase_now();
     append_phases.plan_build_cycles =
         AotWorkerTimingDelta(timing, plan_start, emit_start);

@@ -137,6 +137,37 @@ Task 328이 `append` 내부를 다섯 단계로 나눴고 원인이 확정됐습
 `plan_build`의 명령당 약 32us도 Zydis decode치고는 큽니다. 비translate 워커 작업
 4,480회의 rendezvous 비용도 아직 재지 않았습니다.
 
+Task 329가 그 스냅샷을 제거했습니다. 측정 사슬은 여기서 끝나고 **구현으로 전환**했습니다.
+선행 조건이던 "guest 외 스레드의 arena 쓰기"는 감사로 **없음이 확인**되어 설계
+**옵션 1(live arena 직접 참조)** 을 그대로 채택했고, 번역 1회의 zero-fill·복사·해제
+140,341,248바이트가 **모두 사라졌습니다.**
+
+**확인됨:** 보이는 범위가 133.8MB 그대로이므로 plan은 바이트 단위로 보존됩니다.
+소유 복사본을 oracle로 둔 차등 probe가 plan 스칼라 전 필드, block/instruction
+스트림(원본 바이트 포함), emit 이미지의 `bytes`·`address_map`·`fixups` 일치를
+확인했습니다.
+
+**확인됨:** 60초 실측에서 번역 1회당 append 비용이 `710,135,523 → 67,367,429 tick`
+(**-90.5%, 10.5배**)입니다. 단계별 회당 변화는 다음과 같습니다.
+
+| 단계 | Task 328 회당 | Task 329 회당 | 변화 |
+|---|---:|---:|---:|
+| **`arena_snapshot`** | 404,524,860 | **7,970** | **-99.998%** |
+| `placement` | 184,814,412 | 26,839,702 | -85.5% |
+| `plan_build` | 81,728,912 | 26,907,556 | -67.1% |
+| `image_emit` | 35,797,624 | 12,806,455 | -64.2% |
+| `validate` | 3,089,728 | 772,181 | -75.0% |
+
+**확인됨:** Task 328의 귀속 주의가 옳았습니다. `placement`가 85.5% 줄었으므로 그
+26.03%의 대부분이 133.8MB 해제였고, 스냅샷 생애주기 전체는 append의 **약 79%**
+(예측 구간 `57~83%`의 상단)였습니다. `kAotDynamicTranslate`는 AOT transfer function
+축의 88.64% → **26.44%** 입니다. 정상 timeout, malformed 0, EEPROM `A1FC1D...52570`
+일치.
+
+**미확정:** `plan_build`·`image_emit`·`validate`가 함께 64~75% 싸진 이유는 측정하지
+않았습니다(메모리 압력 감소가 유력하나 추정). progress `9,293 → 62,566`,
+heartbeat 784,320은 단일 표본이며 실행 간 편차가 커 배수는 확정하지 않습니다.
+
 **Confirmed:** `aot-dbt` is not yet an independent continuous DBT executor; it layers selective
 normal dispatch and Dr0 spans over `aot-dynamic`. Task 276 measured effectively identical
 progress, while historical controlled samples found legacy 14.6-20.6x faster than
@@ -202,6 +233,16 @@ copies. Shrinking the translation unit would therefore be counterproductive, sin
 snapshot is fixed per translation. Unlike the rest of this chain, that cost is not a Debug
 artifact: zero-fill, `ReadProcessMemory`, and deallocation are bandwidth and syscall costs.
 
+Task 329 removed that snapshot, ending the measurement chain and moving to implementation. Its
+prerequisite — whether any thread other than the guest writes into the arena — was audited and
+answered no, so design Option 1 was adopted unchanged and the entire 140,341,248-byte zero-fill,
+copy, and free per translation is gone. Because the visible range is still the whole 133.8MB, the
+plan is preserved byte for byte, verified by a differential probe that treats the owning copy as
+the oracle across every plan scalar, the block and instruction streams including original bytes,
+and the emitted image. No performance number is claimed yet: the 60-second in-game A/B has not
+been run, and it is also what will finally separate the snapshot's deallocation from real
+placement work inside the 26.03%.
+
 ```mermaid
 flowchart LR
     T["guest thread"] --> V["kVehTotal ~81%"]
@@ -211,22 +252,11 @@ flowchart LR
     W --> S["arena snapshot 56.96%<br/>133.8MB / 번역"]
     W --> P["placement 26.03%<br/>스냅샷 해제 포함"]
     W --> B["plan build 11.51%"]
-    S --> F["필요한 범위만 읽도록 수정"]
+    S --> F["Task 329: 직접 참조로 제거<br/>(A/B 미측정)"]
 ```
 
 ## 최근 Task / Recent tasks
 
-
-### Task 301 — 타이머 pending의 자연 VEH 경계 전달 / Deliver timer pending at natural VEH boundaries
-
-**확인됨:** 강제 TF rendezvous가 서로 다른 guest EIP에서 동일한 unhandled single-step으로
-빠져나간 근인이었습니다. poll thread는 pending만 기록하고 기존 guest single-step 경계가
-전달합니다. 150초 실행은 강제 arm 0, INT 8 `2,283/2,283`, progress 129,810,
-exception/malformed 0으로 정상 timeout했습니다.
-[상세 작업 로그](../work-logs/20260726-301-timer-pending-safe-veh-boundary.md)
-
-**Confirmed:** Forced TF arming was removed. Natural guest VEH boundaries delivered all 2,283
-pending timer interrupts during a stable 150-second run.
 
 ### Task 302 — depth compare gate ABI 안전성 / Depth-compare gate ABI safety
 
@@ -402,47 +432,57 @@ wake and complete latency total 0.04%, averaging 259ms per translation.
 translate 1,039 instructions into 7,830 bytes. Shrinking the translation unit is
 counterproductive; the snapshot range is what must change.
 
+### Task 329 — arena 스냅샷 제거 / Arena snapshot elimination
+
+**확인됨:** guest 외 스레드는 arena에 쓰지 않습니다(host poll은 host 소유
+`DosLowMemory`에만, 오디오 워커는 host 버퍼에만, 번역 워커는 AOT cache에만 씁니다).
+Glide는 별도 스레드가 아니라 host main에서 guest 대행이며 `InvokeOnHostThread`가
+guest를 차단하므로 번역 rendezvous와 **상호 배타적**입니다. 따라서 설계 옵션 1을
+채택해 스냅샷을 제거했고, 번역당 140,341,248바이트 zero-fill·복사·해제가 사라졌습니다.
+
+**확인됨:** 의미는 보존됩니다. 소유 복사본을 oracle로 둔 `arena_view` probe가 plan
+스칼라 전 필드, block/instruction 스트림(원본 바이트), emit 이미지
+`bytes`/`address_map`/`fixups` 일치와 뷰의 liveness, 경계 거절 동일성을 확인했습니다.
+`ReadProcessMemory` 실패 반환을 대신해 프로세스당 1회 `VirtualQuery` 검증을 넣었습니다.
+
+**미확정:** 실게임 60초 A/B 미수행 — 성능 수치 없음.
+[상세 작업 로그](../work-logs/20260727-329-arena-snapshot-elimination.md)
+
+**Confirmed:** No thread other than the guest writes into the arena, and Glide host commands are
+mutually exclusive with the translation rendezvous, so Option 1 was adopted and the per-translation
+140,341,248-byte zero-fill, copy, and free are gone with the plan preserved byte for byte, checked
+against the owning copy as oracle. Measured over 60 seconds, per-translation append cost fell from
+`710,135,523` to `67,367,429` ticks (-90.5%), with `arena_snapshot` down 99.998% and `placement`
+down 85.5%, confirming Task 328's caveat that the deallocation dominated it and putting the
+snapshot's whole lifecycle at about 79% of an append. **Unresolved:** why `plan_build`,
+`image_emit`, and `validate` also fell 64-75% was not measured, and the progress and heartbeat
+multiples are single-sample.
+
 ## 다음 검증 / Next validation
 
-측정 단계는 여기서 끝나고 다음은 **구현**입니다. `AppendWin32DynamicAotTranslation`이
-arena 전체 대신 `guest_entry`에 필요한 범위만 보게 합니다. 같은 프로세스이므로 복사
-없이 guest 메모리를 직접 참조하는 것도 후보입니다.
+스냅샷 병목은 Task 329에서 제거됐고 측정으로 확인됐습니다. 다음 대상은 **`plan_build`**
+입니다. 이제 append의 **39.94%** 로 최대 항목이고 명령당 약 `25,433 tick`인데, 이는
+Zydis decode 하나로 설명하기에 여전히 큽니다. `image_emit`(19.01%)이 그 다음입니다.
 
-세 후보의 장단점은
-[20260727-329-arena-snapshot-elimination-options.md](../design/20260727-329-arena-snapshot-elimination-options.md)에
-정리했습니다. 요약은 다음과 같습니다.
+동시에 확인할 것은 이번에 남은 **미측정 사실 한 가지**입니다. 스냅샷을 없애자
+`plan_build`·`image_emit`·`validate`가 모두 64~75% 싸졌는데, 원인을 재지 않았습니다.
+메모리 압력 감소가 유력한 설명이며, 이것이 맞다면 `plan_build`의 남은 비용 구조도
+decode가 아닐 수 있으므로 **원인을 먼저 귀속한 뒤 최적화**해야 합니다.
 
-| 기준 | 1 직접 참조 | 2 지연 복사 | 3 고정 창 |
-|---|---|---|---|
-| 스냅샷 비용 제거 | 완전 | 거의 완전 | 부분 |
-| 해제 비용 동시 제거 | 예 | 예 | 아니오 |
-| plan 결과 보존 | **바이트 단위 동일** | 동일 | **달라질 수 있음** |
-| 시점 고정 유지 | 아니오 | 예 | 예 |
-| 공용 코드 변경 | 작음 | 큼 | 결국 필요 |
-| 정확성 리스크 | 낮음 | 낮음 | **높음** |
-
-**권고는 옵션 1**이며, 선행 조건은 "guest 외 다른 스레드가 arena에 쓰는가" 확인
-입니다. 쓰기가 있으면 옵션 2로 전환합니다. **옵션 3은 제외를 권고**합니다 — 유일한
-장점인 "공용 코드 무변경"이 성립하지 않고(감지 신호
-`outside_image_target_count`가 "창 밖"과 "arena 밖"을 구분 못 함) 정확성 리스크만
-남기 때문입니다.
-
-선택에 근거가 된 확인 사실: 번역 중 guest thread는 차단되어 arena를 수정할 수 없고
-(Task 327), write-watch 페이지는 `PAGE_EXECUTE_READ`라 항상 읽을 수 있으며, arena는
-precommit이라 133.8MB 전 범위가 읽힙니다. 반면 범위를 줄이면 `FindBytes`가 `nullptr`을
-돌려주어 해당 블록이 **조용히 boundary가 되므로** 실행 의미가 바뀝니다.
+전체 실행 축에서는 `kAotDynamicTranslate`가 26.44%로 내려왔으므로, 다음 측정은
+guest thread wall-clock 재귀속(Task 323/325의 갱신)이 필요합니다. 현재 상위 bucket
+비율은 중첩 때문에 합이 100%를 넘어(예: veh 90.89%, glide-gate 56.56%) 그대로
+해석할 수 없습니다.
 
 TF/VEH 제거 로드맵은 계속 보류합니다. 예외 전이가 1.20%인 이상 상한이 약 1.012배입니다.
 
-Measurement ends here and implementation follows. The three candidates are compared in
-[20260727-329-arena-snapshot-elimination-options.md](../design/20260727-329-arena-snapshot-elimination-options.md).
-Option 1, referencing the live arena directly, is recommended: it removes the snapshot and its
-deallocation together, and preserves the plan byte for byte because the visible range is
-unchanged. Its prerequisite is confirming that no thread other than the guest writes into the
-arena, since its safety otherwise rests on the guest being blocked by the synchronous
-rendezvous; if such writes exist, Option 2's lazy per-page copy applies instead. Option 3 is
-recommended against: narrowing the range makes `FindBytes` return `nullptr`, silently turning
-blocks into boundaries and changing execution semantics, and its only advantage of touching no
-shared code does not survive the fact that `outside_image_target_count` cannot distinguish a
-window miss from a genuine external target. The TF/VEH removal roadmap stays on hold at a
-roughly 1.012x bound.
+The snapshot bottleneck was removed in Task 329 and the removal is measured. The next target is
+`plan_build`, now the largest phase at 39.94% of an append and about `25,433` ticks per
+instruction, still large to explain by Zydis decoding alone, followed by `image_emit` at 19.01%.
+One unmeasured fact should be resolved alongside it: removing the snapshot also made
+`plan_build`, `image_emit`, and `validate` 64-75% cheaper, and if reduced memory pressure is the
+reason, the remaining `plan_build` cost may likewise not be decoding, so the cause should be
+attributed before it is optimized. Because `kAotDynamicTranslate` has fallen to 26.44%, guest
+wall-clock attribution needs redoing as well; the current top-level bucket shares overlap and sum
+past 100% (veh 90.89%, glide gate 56.56%), so they cannot be read as a decomposition. The TF/VEH
+removal roadmap stays on hold at a roughly 1.012x bound.

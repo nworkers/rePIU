@@ -26,9 +26,11 @@ const std::uint8_t* FindBytes(const RelocatedRuntimeImage& image,
         }
         const std::uint64_t offset =
             static_cast<std::uint64_t>(address) - object.relocated_base_address;
-        if (offset + bytes <= object.memory.size())
+        // Task 329: an object may own its bytes or view live guest memory. The
+        // range rule is identical either way, so the visible plan is too.
+        if (offset + bytes <= RelocatedRuntimeObjectByteCount(object))
         {
-            return object.memory.data() + offset;
+            return RelocatedRuntimeObjectBytes(object) + offset;
         }
     }
     return nullptr;

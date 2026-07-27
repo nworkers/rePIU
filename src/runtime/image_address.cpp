@@ -28,8 +28,13 @@ bool BuildRelocatedImageByteWindow(const RelocatedRuntimeImage& image,
     for (const RelocatedRuntimeObject& object : image.objects)
     {
         const std::uint32_t object_base = object.relocated_base_address;
+        // Task 329: reads go through the shared accessors so an external view
+        // is windowed like an owning object instead of looking empty.
+        const std::uint8_t* object_bytes =
+            RelocatedRuntimeObjectBytes(object);
         const std::uint32_t object_size =
-            static_cast<std::uint32_t>(object.memory.size());
+            static_cast<std::uint32_t>(
+                RelocatedRuntimeObjectByteCount(object));
         if (object_size == 0 || linear_address < object_base)
         {
             continue;
@@ -49,8 +54,8 @@ bool BuildRelocatedImageByteWindow(const RelocatedRuntimeImage& image,
         window->object_index = object.object_index;
         window->window_base = object_base + begin_offset;
         window->focus_offset = object_offset - begin_offset;
-        window->bytes.assign(object.memory.begin() + begin_offset,
-                             object.memory.begin() + end_offset);
+        window->bytes.assign(object_bytes + begin_offset,
+                             object_bytes + end_offset);
         window->valid = true;
         window->message = "relocated image byte window is ready";
         return true;

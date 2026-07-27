@@ -184,6 +184,7 @@ add_executable(repiu_chd_cd_probe
 )
 
 add_executable(repiu_aot_probe
+    src/tools/aot_probe/arena_view_probe.cpp
     src/tools/aot_probe/boundary_provenance_probe.cpp
     src/tools/aot_probe/dbt_call_return_trace_probe.cpp
     src/tools/aot_probe/dbt_call_step_probe.cpp

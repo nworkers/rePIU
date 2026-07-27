@@ -153,6 +153,51 @@ CFG가 실제로 건드린 페이지만 복사합니다.
   `block_count`/`instruction_count`/`outside_image_target_count`가 변경 전후로
   동일한지 검증합니다. 이 세 값이 달라지면 의미가 보존되지 않은 것입니다.
 
+### 8. 선행 조건 검증 결과 (Task 329 착수 시점)
+
+7절이 요구한 선행 조건 — "guest thread 외 다른 스레드가 arena에 쓰는가" — 를 코드로
+감사했습니다. **결과는 '쓰지 않는다'이며, 따라서 옵션 1을 그대로 채택합니다.**
+
+프로세스에는 guest thread 외에 네 종류의 스레드가 있습니다.
+
+| 스레드 | arena 쓰기 | 근거 |
+|---|---|---|
+| host main (poll loop) | **없음** | `PollThreadUntilExit`의 유일한 메모리 쓰기는 `WriteDosLowMemory(&context->dos_low_memory, 0x046C, ...)`이며 대상은 host 소유 `std::vector`인 `DosLowMemory::bytes`입니다. 나머지는 telemetry 구조체와 stderr입니다. |
+| CD-DA (`cd_audio_wave_out`) | **없음** | CHD 섹터를 host `std::vector`로 읽어 `SDL_PutAudioStreamData`에 넘깁니다. |
+| YMZ280B (`ymz280b_audio_out`) | **없음** | 샘플 ROM에서 host 블록 버퍼로 생성합니다. |
+| 번역 워커 | **없음** | AOT cache(별도 `VirtualAlloc(nullptr, ...)`)에만 쓰고, arena에는 `VirtualProtect`로 보호만 바꿉니다. |
+
+Glide backend는 별도 스레드가 아니라 **host main 스레드에서 guest 요청을 대행**합니다.
+`InvokeOnHostThread`는 guest가 `host_command_complete_`를 기다리는 동안에만 명령을
+실행하므로, host 스레드의 Glide 작업 구간은 guest가 gate 안에서 차단된 구간과 **정확히
+겹칩니다.** guest thread는 한 번에 한 곳에서만 차단될 수 있으므로 번역 rendezvous와
+Glide host command는 **상호 배타적**입니다. `PumpEvents`는 backend 상태만 만집니다.
+
+`native_phase_sampler`는 guest thread를 `SuspendThread`하고 context만 읽습니다.
+telemetry는 `runtime_base + 상수`에서 **읽기만** 합니다.
+
+추가로 확인한 두 가지입니다.
+
+* **decommit이 없습니다.** 저장소 전체에 `MEM_DECOMMIT`이 없고 `VirtualFree`는 모두
+  `MEM_RELEASE`(종료 경로 또는 AOT cache)입니다. 즉 실행 중 arena 페이지가 사라지지
+  않습니다.
+* **`PAGE_NOACCESS`가 없습니다.** guest 페이지 보호는 `PAGE_EXECUTE_READ`,
+  `PAGE_EXECUTE_READWRITE`, `PAGE_READWRITE` 사이에서만 바뀌므로 (F4) 그대로 항상
+  읽을 수 있습니다.
+
+**plan은 스냅샷 포인터를 보관하지 않습니다.** `AotInstructionRecord::bytes`가
+`std::vector<std::uint8_t>` 복사본이므로 `BuildAotTranslationPlanFromEntry` 반환 후에는
+arena를 가리키는 포인터가 남지 않습니다. 따라서 수명 계약은 plan build 구간으로
+한정됩니다.
+
+### 9. fail-safe 보완
+
+옵션 1의 남은 단점은 "`ReadProcessMemory`는 실패를 반환하지만 직접 참조는 AV를 낸다"
+입니다. 이를 **프로세스당 1회의 `VirtualQuery` 순회**로 보완합니다. 첫 동적 append에서
+`[runtime_base, +runtime_size)`의 모든 region이 `MEM_COMMIT`이고 읽기 가능한 보호인지
+확인하고, 실패하면 append를 거절합니다. 위의 "decommit 없음 / `PAGE_NOACCESS` 없음"이
+성립하므로 1회 확인으로 충분하며, 매 append 비용은 0입니다.
+
 ---
 
 ## English
@@ -241,3 +286,33 @@ synchronous rendezvous so any future asynchronous translation must break that as
 and verifying in the A/B that the plan's `block_count`, `instruction_count`, and
 `outside_image_target_count` are unchanged — divergence in those three means semantics were not
 preserved.
+
+### 7. Prerequisite audit result
+
+The prerequisite was audited in code and the answer is that no thread other than the guest
+writes into the arena, so Option 1 is adopted unchanged. The host main poll loop's only memory
+write is `WriteDosLowMemory` into the host-owned `DosLowMemory::bytes` vector, with everything
+else going to telemetry structures and stderr; both audio threads work exclusively in host
+buffers fed from a CHD image and a sample ROM; and the translation worker writes only the AOT
+cache, a separate `VirtualAlloc(nullptr, ...)` region, changing arena pages by `VirtualProtect`
+alone. The Glide backend is not a separate thread but work performed on the host main thread on
+the guest's behalf: `InvokeOnHostThread` runs a command only while the guest waits for
+`host_command_complete_`, so a Glide host command and a translation rendezvous are mutually
+exclusive, since the guest thread can block in only one place at a time. `PumpEvents` touches
+backend state only, the native phase sampler suspends the guest and reads its context, and
+telemetry only reads `runtime_base + constant`.
+
+Two further facts came out of the audit. Nothing decommits: the repository contains no
+`MEM_DECOMMIT`, and every `VirtualFree` is a `MEM_RELEASE` on a teardown path or on the AOT
+cache. Nothing becomes unreadable: guest page protection moves only among `PAGE_EXECUTE_READ`,
+`PAGE_EXECUTE_READWRITE`, and `PAGE_READWRITE`, which keeps (F4) true for the whole run. The
+plan also keeps no pointer into the source, because `AotInstructionRecord::bytes` is an owning
+vector, so the lifetime contract is bounded by the plan build itself.
+
+### 8. Restoring the fail-safe
+
+Option 1's remaining drawback is that `ReadProcessMemory` reports failure where a direct
+reference faults. A single `VirtualQuery` walk per process, performed on the first dynamic
+append, confirms every region in `[runtime_base, +runtime_size)` is committed and readable and
+refuses the append otherwise. Because nothing decommits and nothing becomes `PAGE_NOACCESS`,
+one verification is sufficient and the per-append cost is zero.

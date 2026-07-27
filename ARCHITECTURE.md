@@ -542,12 +542,26 @@ static cache bridge, while `aot-dynamic` can append an arbitrary-entry CFG from 
 live arena snapshot. Cache sentinels return through the existing VEH/HLE
 dispatcher, and unresolved targets fail closed to legacy single-step execution.
 
+동적 translation은 arena를 복사하지 않고 **직접 참조**합니다(Task 329).
+`RelocatedRuntimeObject`는 소유 바이트(`memory`) 또는 외부 뷰(`external_bytes`) 중
+하나를 담고 읽기 경로는 `RelocatedRuntimeObjectBytes` / `...ByteCount` 접근자를
+통과하므로, 보이는 범위가 같아 plan은 이전 스냅샷 시절과 바이트 단위로 동일합니다.
+외부 뷰의 안전성은 **동기 rendezvous로 guest가 차단되어 있다는 사실에 의존**하므로,
+번역을 비동기로 바꾸려면 먼저 복사를 복원해야 합니다.
+
 동적 translation, inline-cache patch, guest-page retirement는 guest가 VEH 경계에서
 대기하는 동안 serialized host-stack worker가 수행합니다. AOT VEH는 native 실행
 전에 near indirect `FF /2`, `FF /4`, `C3/C2`를 해석합니다. call은 guest
 fallthrough를 push하고 return은 guest/cache target을 명시적으로 map하므로 native
 return 주소와 guest return 주소를 추측으로 섞지 않습니다. segment-register
 operand는 명시적인 HLE boundary입니다.
+
+Dynamic translation references the arena directly instead of copying it (Task 329). A
+`RelocatedRuntimeObject` carries either owned bytes or an external view, and read paths go
+through the `RelocatedRuntimeObjectBytes`/`ByteCount` accessors, so the visible range is
+unchanged and plans stay byte-for-byte identical to the snapshot era. The view's safety depends
+on the guest being blocked by the synchronous rendezvous, so making translation asynchronous
+must restore a copy first.
 
 Dynamic translation, inline-cache patching, and guest-page retirement run on a
 serialized host-stack worker while the guest waits at a VEH boundary. Before

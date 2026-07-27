@@ -80,7 +80,45 @@ struct RelocatedRuntimeObject
     std::uint32_t virtual_size = 0;
     std::uint32_t flags = 0;
     std::vector<std::uint8_t> memory;
+
+    // Task 329: an optional zero-copy view of guest bytes that already live in
+    // this process. When `external_bytes` is set, readers use it instead of
+    // `memory`, so the dynamic translator can read the live 133.8MB arena
+    // without copying it. Objects that own their bytes leave both fields unset
+    // and behave exactly as before.
+    //
+    // Lifetime and immutability contract for the external view:
+    //  * The range must stay mapped and readable for as long as this object
+    //    exists. Nothing may decommit it or make it PAGE_NOACCESS.
+    //  * Nothing may write the range while a reader is running, because a view
+    //    has none of the point-in-time fixity a copy gives.
+    //
+    // The second rule holds today only because the guest thread is blocked in
+    // the synchronous translation rendezvous (Task 327) and no other thread
+    // writes the arena (Task 329 audit). WARNING: making translation
+    // asynchronous silently invalidates that guarantee, so such a change must
+    // first restore a copy (design option 2) for any object read this way.
+    const std::uint8_t* external_bytes = nullptr;
+    std::uint32_t external_byte_count = 0;
 };
+
+// Readers go through these so an owning object and an external view are read
+// the same way. Returns nullptr for an empty owning object, which callers
+// already have to handle through the size.
+inline const std::uint8_t* RelocatedRuntimeObjectBytes(
+    const RelocatedRuntimeObject& object)
+{
+    return object.external_bytes != nullptr ? object.external_bytes
+                                            : object.memory.data();
+}
+
+inline std::uint64_t RelocatedRuntimeObjectByteCount(
+    const RelocatedRuntimeObject& object)
+{
+    return object.external_bytes != nullptr
+        ? static_cast<std::uint64_t>(object.external_byte_count)
+        : static_cast<std::uint64_t>(object.memory.size());
+}
 
 struct RelocatedSelectorBinding
 {

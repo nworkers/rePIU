@@ -90,6 +90,9 @@ struct Win32AotAppendScaleSample
     std::uint32_t plan_block_count = 0;
     std::uint32_t plan_instruction_count = 0;
     std::uint32_t emitted_bytes = 0;
+    // Bytes actually copied out of the guest arena. Zero since Task 329
+    // replaced the full-arena snapshot with a direct reference, so a nonzero
+    // value here means a copy has come back.
     std::uint32_t snapshot_bytes = 0;
 };
 
