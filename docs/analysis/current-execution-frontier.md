@@ -107,8 +107,35 @@ Task 327이 워커 스레드를 계측해 그 질문에 답했습니다. **스�
 **확인됨:** rendezvous 제거나 비동기화는 답이 아닙니다. **번역 자체를 싸게 또는 작게
 만들어야 합니다.**
 
-**미확정:** `append` 내부의 plan 생성·emit·placement·page protection 비중.
-비translate 워커 작업 4,480회의 rendezvous 비용도 아직 재지 않았습니다.
+Task 328이 `append` 내부를 다섯 단계로 나눴고 원인이 확정됐습니다.
+
+| 단계 | `append` 대비 | 회당 |
+|---|---:|---:|
+| **`arena_snapshot`** | **56.96%** | 약 162ms |
+| `placement` | 26.03% | 약 74ms |
+| `plan_build` | 11.51% | 약 33ms |
+| `image_emit` | 5.04% | 약 14ms |
+| `validate` | 0.44% | — |
+
+**확인됨:** `AppendWin32DynamicAotTranslation`은 진입 즉시 **guest arena 전체
+(133.8MB)를 zero-fill 후 복사**합니다. 번역 1회는 평균 명령 1,039개를 다루고
+7,830바이트를 emit하는데, 그 위해 140,341,248바이트를 복사합니다 — emit 대비
+**17,924배**입니다. 60초 동안 스냅샷으로만 약 19.5GB를 복사했습니다.
+
+**확인됨:** **번역 단위 축소는 역효과**입니다. 단위를 줄이면 번역 횟수가 늘고
+스냅샷 133.8MB는 매번 고정이므로 총 비용이 커집니다. 고칠 대상은 단위가 아니라
+스냅샷 범위입니다.
+
+**확인됨:** 이 비용만은 **Debug 왜곡이 아닙니다.** zero-fill·`ReadProcessMemory`·해제는
+메모리 대역폭과 syscall 비용이라 최적화 수준과 무관합니다.
+
+**귀속 주의:** `placement` 26.03%에는 같은 133.8MB 버퍼의 해제가 포함됩니다(소멸 순서
+때문이며 측정 전에 문서화). 따라서 스냅샷 생애주기 전체는 **57~83%** 구간으로만
+말할 수 있습니다.
+
+**미확정:** `placement` 내부에서 스냅샷 해제와 실제 placement 작업의 비중.
+`plan_build`의 명령당 약 32us도 Zydis decode치고는 큽니다. 비translate 워커 작업
+4,480회의 rendezvous 비용도 아직 재지 않았습니다.
 
 **Confirmed:** `aot-dbt` is not yet an independent continuous DBT executor; it layers selective
 normal dispatch and Dr0 spans over `aot-dynamic`. Task 276 measured effectively identical
@@ -168,14 +195,23 @@ while wake and completion latency together account for 0.04%, even with five thr
 cores. One translation averages about 259ms and peaks near 702ms. Removing or asynchronizing
 the rendezvous is therefore not the answer; translation itself must become cheaper or smaller.
 
+Task 328 then split `append` five ways and identified the cause. `AppendWin32DynamicAotTranslation`
+zero-fills and copies the entire 133.8MB guest arena on entry, taking 56.96% of the append, while
+one translation covers only 1,039 instructions and emits 7,830 bytes — 17,924 times less than it
+copies. Shrinking the translation unit would therefore be counterproductive, since the 133.8MB
+snapshot is fixed per translation. Unlike the rest of this chain, that cost is not a Debug
+artifact: zero-fill, `ReadProcessMemory`, and deallocation are bandwidth and syscall costs.
+
 ```mermaid
 flowchart LR
     T["guest thread"] --> V["kVehTotal ~81%"]
     V --> A["kVehAotTransfer ~86%"]
-    A --> D["kAotDynamicTranslate<br/>회당 259ms<br/>= 전체의 약 62%"]
+    A --> D["kAotDynamicTranslate<br/>= 전체의 약 62%"]
     D --> W["append (워커 CPU) 101.00%"]
-    D --> L["wake + complete 지연 0.04%"]
-    W --> N["plan / emit / placement<br/>재분해 대상"]
+    W --> S["arena snapshot 56.96%<br/>133.8MB / 번역"]
+    W --> P["placement 26.03%<br/>스냅샷 해제 포함"]
+    W --> B["plan build 11.51%"]
+    S --> F["필요한 범위만 읽도록 수정"]
 ```
 
 ## 최근 Task / Recent tasks
@@ -355,24 +391,58 @@ complete 지연은 합쳐 0.04%입니다. 번역 1회 평균 259ms, 최대 702ms
 **Confirmed:** The rendezvous is worker CPU work, not scheduling: append holds 101.00% while
 wake and complete latency total 0.04%, averaging 259ms per translation.
 
+### Task 328 — 동적 append 단계 분해 / Dynamic append phase decomposition
+
+**확인됨:** arena 전체 스냅샷이 append의 56.96%이고, 번역 1회는 명령 1,039개를 다루며
+7,830바이트를 emit하는데 140,341,248바이트를 복사합니다. 번역 단위 축소는 역효과이며
+고칠 대상은 스냅샷 범위입니다. 이 항목만은 Debug 왜곡이 아닙니다.
+[상세 작업 로그](../work-logs/20260727-328-dynamic-append-phase-decomposition.md)
+
+**Confirmed:** The full-arena snapshot is 56.96% of one append, copying 140,341,248 bytes to
+translate 1,039 instructions into 7,830 bytes. Shrinking the translation unit is
+counterproductive; the snapshot range is what must change.
+
 ## 다음 검증 / Next validation
 
-다음 검증은 `AppendWin32DynamicAotTranslation` 내부 분해입니다. plan 생성(Zydis CFG
-순회), emit, placement, page protection 변경을 구간별로 나눕니다. 번역 1회가 259ms인
-이유가 넓은 CFG 순회인지, emit 자체인지, `VirtualProtect` 계열 시스템 호출인지에
-따라 해법이 다릅니다.
+측정 단계는 여기서 끝나고 다음은 **구현**입니다. `AppendWin32DynamicAotTranslation`이
+arena 전체 대신 `guest_entry`에 필요한 범위만 보게 합니다. 같은 프로세스이므로 복사
+없이 guest 메모리를 직접 참조하는 것도 후보입니다.
 
-함께 확인할 것이 두 가지 있습니다. 번역 1회가 커버하는 guest 범위(명령 수, 블록 수)를
-기록해 **번역 단위를 줄이는 것**이 유효한지 판단하고, 비translate 워커 작업 4,480회의
-rendezvous 비용을 재서 무시 가능한지 확인합니다.
+세 후보의 장단점은
+[20260727-329-arena-snapshot-elimination-options.md](../design/20260727-329-arena-snapshot-elimination-options.md)에
+정리했습니다. 요약은 다음과 같습니다.
+
+| 기준 | 1 직접 참조 | 2 지연 복사 | 3 고정 창 |
+|---|---|---|---|
+| 스냅샷 비용 제거 | 완전 | 거의 완전 | 부분 |
+| 해제 비용 동시 제거 | 예 | 예 | 아니오 |
+| plan 결과 보존 | **바이트 단위 동일** | 동일 | **달라질 수 있음** |
+| 시점 고정 유지 | 아니오 | 예 | 예 |
+| 공용 코드 변경 | 작음 | 큼 | 결국 필요 |
+| 정확성 리스크 | 낮음 | 낮음 | **높음** |
+
+**권고는 옵션 1**이며, 선행 조건은 "guest 외 다른 스레드가 arena에 쓰는가" 확인
+입니다. 쓰기가 있으면 옵션 2로 전환합니다. **옵션 3은 제외를 권고**합니다 — 유일한
+장점인 "공용 코드 무변경"이 성립하지 않고(감지 신호
+`outside_image_target_count`가 "창 밖"과 "arena 밖"을 구분 못 함) 정확성 리스크만
+남기 때문입니다.
+
+선택에 근거가 된 확인 사실: 번역 중 guest thread는 차단되어 arena를 수정할 수 없고
+(Task 327), write-watch 페이지는 `PAGE_EXECUTE_READ`라 항상 읽을 수 있으며, arena는
+precommit이라 133.8MB 전 범위가 읽힙니다. 반면 범위를 줄이면 `FindBytes`가 `nullptr`을
+돌려주어 해당 블록이 **조용히 boundary가 되므로** 실행 의미가 바뀝니다.
 
 TF/VEH 제거 로드맵은 계속 보류합니다. 예외 전이가 1.20%인 이상 상한이 약 1.012배입니다.
 
-The next validation decomposes `AppendWin32DynamicAotTranslation` into plan construction (the
-Zydis CFG walk), emission, placement, and page-protection changes, since a 259ms translation
-implies a different remedy depending on whether the cost is a wide CFG walk, emission itself,
-or `VirtualProtect`-family system calls. Two things are measured alongside: the guest range
-each translation covers, in instructions and blocks, to judge whether shrinking the translation
-unit would help; and the rendezvous cost of the 4,480 non-translate worker operations, to
-confirm they are negligible. The TF/VEH removal roadmap stays on hold at a roughly 1.012x
-bound.
+Measurement ends here and implementation follows. The three candidates are compared in
+[20260727-329-arena-snapshot-elimination-options.md](../design/20260727-329-arena-snapshot-elimination-options.md).
+Option 1, referencing the live arena directly, is recommended: it removes the snapshot and its
+deallocation together, and preserves the plan byte for byte because the visible range is
+unchanged. Its prerequisite is confirming that no thread other than the guest writes into the
+arena, since its safety otherwise rests on the guest being blocked by the synchronous
+rendezvous; if such writes exist, Option 2's lazy per-page copy applies instead. Option 3 is
+recommended against: narrowing the range makes `FindBytes` return `nullptr`, silently turning
+blocks into boundaries and changing execution semantics, and its only advantage of touching no
+shared code does not survive the fact that `outside_image_target_count` cannot distinguish a
+window miss from a genuine external target. The TF/VEH removal roadmap stays on hold at a
+roughly 1.012x bound.

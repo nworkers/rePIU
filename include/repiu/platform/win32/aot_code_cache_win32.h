@@ -4,6 +4,7 @@
 #include "repiu/platform/win32/aot_page_coherence_win32.h"
 #include "repiu/platform/win32/aot_boundary_provenance.h"
 #include "repiu/platform/win32/aot_cache_address_index.h"
+#include "repiu/platform/win32/aot_worker_timing.h"
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/selector_table.h"
 
@@ -164,7 +165,10 @@ bool AppendWin32DynamicAotTranslation(
     Win32AotPageWriteWatchSet* write_watch_set,
     Win32AotCodeCachePlacement* placement,
     const Win32AotSegmentTable* segment_table,
-    Win32AotDynamicAppendResult* result);
+    Win32AotDynamicAppendResult* result,
+    // Task 328: optional worker-thread phase attribution. Trailing and
+    // defaulted so existing call sites, including probes, are unchanged.
+    Win32AotWorkerTimingProfile* timing = nullptr);
 
 // Task 264 Phase 3a: re-apply the guard selector and folded base to every carried
 // segment-override site, activating any that were left as boundaries (static

@@ -99,8 +99,53 @@ bool RunAotWorkerTimingProbe()
         AotWorkerTimingDelta(nullptr, 10U, 5U) == 0U &&
         AotWorkerTimingDelta(nullptr, 5U, 10U) == 5U;
 
+    // Task 328: append phases and scale. A failed append still commits the
+    // phases it reached, so partial samples must accumulate rather than be
+    // dropped.
+    auto phases_profile = std::make_unique<Win32AotWorkerTimingProfile>();
+    Win32AotAppendPhaseSample full_phases;
+    full_phases.arena_snapshot_cycles = 900U;
+    full_phases.plan_build_cycles = 200U;
+    full_phases.image_emit_cycles = 100U;
+    full_phases.validate_cycles = 30U;
+    full_phases.placement_cycles = 70U;
+    Win32AotAppendScaleSample full_scale;
+    full_scale.plan_block_count = 12U;
+    full_scale.plan_instruction_count = 340U;
+    full_scale.emitted_bytes = 2048U;
+    full_scale.snapshot_bytes = 140004352U;
+    RecordAotAppendPhases(phases_profile.get(), full_phases);
+    RecordAotAppendScale(phases_profile.get(), full_scale);
+
+    Win32AotAppendPhaseSample partial_phases;
+    partial_phases.arena_snapshot_cycles = 500U;
+    Win32AotAppendScaleSample partial_scale;
+    partial_scale.snapshot_bytes = 140004352U;
+    RecordAotAppendPhases(phases_profile.get(), partial_phases);
+    RecordAotAppendScale(phases_profile.get(), partial_scale);
+
+    const Win32AotWorkerTimingSnapshot phase_snapshot =
+        SnapshotAotWorkerTiming(*phases_profile);
+    const bool append_phases_ok =
+        phase_snapshot.enabled &&
+        phase_snapshot.append_phase_count == 2U &&
+        phase_snapshot.arena_snapshot_cycles == 1400U &&
+        phase_snapshot.plan_build_cycles == 200U &&
+        phase_snapshot.image_emit_cycles == 100U &&
+        phase_snapshot.validate_cycles == 30U &&
+        phase_snapshot.placement_cycles == 70U &&
+        phase_snapshot.max_arena_snapshot_cycles == 900U &&
+        phase_snapshot.plan_block_total == 12U &&
+        phase_snapshot.plan_instruction_total == 340U &&
+        phase_snapshot.emitted_byte_total == 2048U &&
+        phase_snapshot.snapshot_byte_total == 280008704U &&
+        phase_snapshot.max_plan_instruction_count == 340U;
+
+    RecordAotAppendPhases(nullptr, full_phases);
+    RecordAotAppendScale(nullptr, full_scale);
+
     const bool all = single_rendezvous && accumulation && clamping &&
-        other_operations && disabled;
+        other_operations && append_phases_ok && disabled;
 
     std::cout
         << "aot_worker_timing_single_rendezvous="
@@ -111,6 +156,8 @@ bool RunAotWorkerTimingProbe()
         << (clamping ? "true" : "false")
         << "\naot_worker_timing_other_operations="
         << (other_operations ? "true" : "false")
+        << "\naot_worker_timing_append_phases="
+        << (append_phases_ok ? "true" : "false")
         << "\naot_worker_timing_disabled="
         << (disabled ? "true" : "false")
         << "\naot_worker_timing_all=" << (all ? "true" : "false") << "\n";

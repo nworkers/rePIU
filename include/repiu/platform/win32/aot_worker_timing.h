@@ -56,6 +56,41 @@ struct Win32AotWorkerTimingProfile
     // kPatchInlineCache and kRetireGuestPage share the same event pair. A large
     // value means rendezvous cost exists outside translation too.
     std::uint32_t other_operation_count = 0;
+
+    // Task 328: phases inside AppendWin32DynamicAotTranslation, which Task 327
+    // measured at 101.00% of the rendezvous. Worker thread only, so no atomics.
+    std::uint32_t append_phase_count = 0;
+    std::uint64_t arena_snapshot_cycles = 0;
+    std::uint64_t plan_build_cycles = 0;
+    std::uint64_t image_emit_cycles = 0;
+    std::uint64_t validate_cycles = 0;
+    std::uint64_t placement_cycles = 0;
+    std::uint64_t max_arena_snapshot_cycles = 0;
+    // Scale of one translation, so "shrink the translation unit" can be judged
+    // as an available remedy rather than assumed.
+    std::uint64_t plan_block_total = 0;
+    std::uint64_t plan_instruction_total = 0;
+    std::uint64_t emitted_byte_total = 0;
+    std::uint64_t snapshot_byte_total = 0;
+    std::uint32_t max_plan_instruction_count = 0;
+};
+
+// One append's phase timings. Phases not reached stay zero.
+struct Win32AotAppendPhaseSample
+{
+    std::uint64_t arena_snapshot_cycles = 0;
+    std::uint64_t plan_build_cycles = 0;
+    std::uint64_t image_emit_cycles = 0;
+    std::uint64_t validate_cycles = 0;
+    std::uint64_t placement_cycles = 0;
+};
+
+struct Win32AotAppendScaleSample
+{
+    std::uint32_t plan_block_count = 0;
+    std::uint32_t plan_instruction_count = 0;
+    std::uint32_t emitted_bytes = 0;
+    std::uint32_t snapshot_bytes = 0;
 };
 
 struct Win32AotWorkerTimingSnapshot
@@ -73,6 +108,18 @@ struct Win32AotWorkerTimingSnapshot
     std::uint64_t request_gap_cycles = 0;
     std::uint32_t clamped_sample_count = 0;
     std::uint32_t other_operation_count = 0;
+    std::uint32_t append_phase_count = 0;
+    std::uint64_t arena_snapshot_cycles = 0;
+    std::uint64_t plan_build_cycles = 0;
+    std::uint64_t image_emit_cycles = 0;
+    std::uint64_t validate_cycles = 0;
+    std::uint64_t placement_cycles = 0;
+    std::uint64_t max_arena_snapshot_cycles = 0;
+    std::uint64_t plan_block_total = 0;
+    std::uint64_t plan_instruction_total = 0;
+    std::uint64_t emitted_byte_total = 0;
+    std::uint64_t snapshot_byte_total = 0;
+    std::uint32_t max_plan_instruction_count = 0;
 };
 
 std::uint64_t ReadAotWorkerTimingCycles();
@@ -105,6 +152,13 @@ void RecordAotWorkerGuestResume(Win32AotWorkerTimingProfile* profile,
                                 std::uint64_t resume_cycles);
 
 void RecordAotWorkerOtherOperation(Win32AotWorkerTimingProfile* profile);
+
+// Task 328. Called once per append, on the worker thread, with whatever phases
+// were reached before an early return.
+void RecordAotAppendPhases(Win32AotWorkerTimingProfile* profile,
+                           const Win32AotAppendPhaseSample& phases);
+void RecordAotAppendScale(Win32AotWorkerTimingProfile* profile,
+                          const Win32AotAppendScaleSample& scale);
 
 Win32AotWorkerTimingSnapshot SnapshotAotWorkerTiming(
     const Win32AotWorkerTimingProfile& profile);

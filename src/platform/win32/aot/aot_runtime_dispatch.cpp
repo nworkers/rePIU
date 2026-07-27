@@ -525,7 +525,8 @@ DWORD WINAPI AotTranslationWorkerProc(void* parameter)
                 context->runtime_base, context->runtime_size, target,
                 context->aot_excluded_guest_ranges,
                 &context->aot_page_write_watch, context->aot_placement,
-                &segment_table, &context->aot_translation_result);
+                &segment_table, &context->aot_translation_result,
+                worker_timing);
             RecordAotWorkerAppend(
                 worker_timing,
                 AotWorkerTimingDelta(

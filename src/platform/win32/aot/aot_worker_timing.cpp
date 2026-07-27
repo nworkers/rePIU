@@ -123,6 +123,39 @@ void RecordAotWorkerOtherOperation(Win32AotWorkerTimingProfile* profile)
     }
 }
 
+void RecordAotAppendPhases(Win32AotWorkerTimingProfile* profile,
+                           const Win32AotAppendPhaseSample& phases)
+{
+    if (profile == nullptr)
+    {
+        return;
+    }
+    profile->enabled = true;
+    ++profile->append_phase_count;
+    profile->arena_snapshot_cycles += phases.arena_snapshot_cycles;
+    profile->plan_build_cycles += phases.plan_build_cycles;
+    profile->image_emit_cycles += phases.image_emit_cycles;
+    profile->validate_cycles += phases.validate_cycles;
+    profile->placement_cycles += phases.placement_cycles;
+    profile->max_arena_snapshot_cycles = std::max(
+        profile->max_arena_snapshot_cycles, phases.arena_snapshot_cycles);
+}
+
+void RecordAotAppendScale(Win32AotWorkerTimingProfile* profile,
+                          const Win32AotAppendScaleSample& scale)
+{
+    if (profile == nullptr)
+    {
+        return;
+    }
+    profile->plan_block_total += scale.plan_block_count;
+    profile->plan_instruction_total += scale.plan_instruction_count;
+    profile->emitted_byte_total += scale.emitted_bytes;
+    profile->snapshot_byte_total += scale.snapshot_bytes;
+    profile->max_plan_instruction_count = std::max(
+        profile->max_plan_instruction_count, scale.plan_instruction_count);
+}
+
 Win32AotWorkerTimingSnapshot SnapshotAotWorkerTiming(
     const Win32AotWorkerTimingProfile& profile)
 {
@@ -140,6 +173,18 @@ Win32AotWorkerTimingSnapshot SnapshotAotWorkerTiming(
     snapshot.request_gap_cycles = profile.request_gap_cycles;
     snapshot.clamped_sample_count = profile.clamped_sample_count;
     snapshot.other_operation_count = profile.other_operation_count;
+    snapshot.append_phase_count = profile.append_phase_count;
+    snapshot.arena_snapshot_cycles = profile.arena_snapshot_cycles;
+    snapshot.plan_build_cycles = profile.plan_build_cycles;
+    snapshot.image_emit_cycles = profile.image_emit_cycles;
+    snapshot.validate_cycles = profile.validate_cycles;
+    snapshot.placement_cycles = profile.placement_cycles;
+    snapshot.max_arena_snapshot_cycles = profile.max_arena_snapshot_cycles;
+    snapshot.plan_block_total = profile.plan_block_total;
+    snapshot.plan_instruction_total = profile.plan_instruction_total;
+    snapshot.emitted_byte_total = profile.emitted_byte_total;
+    snapshot.snapshot_byte_total = profile.snapshot_byte_total;
+    snapshot.max_plan_instruction_count = profile.max_plan_instruction_count;
     return snapshot;
 }
 

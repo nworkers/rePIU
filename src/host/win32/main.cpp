@@ -1314,6 +1314,58 @@ void PrintExecutionAttempt(
                     worker.append_cycles / worker.translate_count,
                     worker.request_gap_cycles / worker.translate_count);
             }
+            // Task 328: phases inside one append, plus what one translation
+            // covers, so "shrink the translation unit" can be judged rather
+            // than assumed.
+            const std::uint64_t phase_sum =
+                worker.arena_snapshot_cycles + worker.plan_build_cycles +
+                worker.image_emit_cycles + worker.validate_cycles +
+                worker.placement_cycles;
+            const std::uint64_t phase_residual =
+                worker.append_cycles > phase_sum
+                    ? worker.append_cycles - phase_sum
+                    : 0U;
+            logger.info(
+                "Win32 aot append phase cycles "
+                "arena-snapshot/plan-build/image-emit/validate/placement/"
+                "residual: {}/{}/{}/{}/{}/{}",
+                worker.arena_snapshot_cycles, worker.plan_build_cycles,
+                worker.image_emit_cycles, worker.validate_cycles,
+                worker.placement_cycles, phase_residual);
+            if (worker.append_cycles != 0U)
+            {
+                const auto phase_share = [&worker](std::uint64_t value) {
+                    return 100.0 * static_cast<double>(value) /
+                        static_cast<double>(worker.append_cycles);
+                };
+                logger.info(
+                    "Win32 aot append phase share "
+                    "arena-snapshot/plan-build/image-emit/validate/placement/"
+                    "residual: "
+                    "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
+                    phase_share(worker.arena_snapshot_cycles),
+                    phase_share(worker.plan_build_cycles),
+                    phase_share(worker.image_emit_cycles),
+                    phase_share(worker.validate_cycles),
+                    phase_share(worker.placement_cycles),
+                    phase_share(phase_residual));
+            }
+            if (worker.append_phase_count != 0U)
+            {
+                logger.info(
+                    "Win32 aot append scale count/mean "
+                    "blocks/instructions/emitted-bytes/snapshot-bytes: "
+                    "{}/{}/{}/{}/{}",
+                    worker.append_phase_count,
+                    worker.plan_block_total / worker.append_phase_count,
+                    worker.plan_instruction_total / worker.append_phase_count,
+                    worker.emitted_byte_total / worker.append_phase_count,
+                    worker.snapshot_byte_total / worker.append_phase_count);
+                logger.info(
+                    "Win32 aot append max snapshot-cycles/instructions: {}/{}",
+                    worker.max_arena_snapshot_cycles,
+                    worker.max_plan_instruction_count);
+            }
         }
         if (total != 0U)
         {

@@ -498,7 +498,8 @@ bool AppendWin32DynamicAotTranslation(
     Win32AotPageWriteWatchSet* write_watch_set,
     Win32AotCodeCachePlacement* placement,
     const Win32AotSegmentTable* segment_table,
-    Win32AotDynamicAppendResult* result)
+    Win32AotDynamicAppendResult* result,
+    Win32AotWorkerTimingProfile* timing)
 {
     if (placement == nullptr || result == nullptr)
     {
@@ -507,6 +508,36 @@ bool AppendWin32DynamicAotTranslation(
     *result = Win32AotDynamicAppendResult{};
     result->attempted = true;
     result->guest_entry = guest_entry;
+
+    // Task 328: phases are accumulated on every exit path, including the early
+    // returns below, so a failed append still reports what it spent. Worker
+    // thread only, so no atomics.
+    Win32AotAppendPhaseSample append_phases;
+    Win32AotAppendScaleSample append_scale;
+    // Placement runs from its start to whichever exit is taken, so it is closed
+    // by the same destructor that commits the sample.
+    std::uint64_t placement_phase_start = 0;
+    struct AppendPhaseCommit
+    {
+        Win32AotWorkerTimingProfile* timing;
+        Win32AotAppendPhaseSample* phases;
+        const Win32AotAppendScaleSample* scale;
+        const std::uint64_t* placement_start;
+        ~AppendPhaseCommit()
+        {
+            if (timing != nullptr && *placement_start != 0U)
+            {
+                phases->placement_cycles = AotWorkerTimingDelta(
+                    timing, *placement_start, ReadAotWorkerTimingCycles());
+            }
+            RecordAotAppendPhases(timing, *phases);
+            RecordAotAppendScale(timing, *scale);
+        }
+    } append_phase_commit{timing, &append_phases, &append_scale,
+                          &placement_phase_start};
+    const auto phase_now = [timing]() {
+        return timing != nullptr ? ReadAotWorkerTimingCycles() : 0U;
+    };
 #if !defined(_WIN32)
     result->message = "dynamic AOT translation requires Win32";
     return true;
@@ -517,6 +548,9 @@ bool AppendWin32DynamicAotTranslation(
         result->message = "dynamic AOT target is outside the guest arena";
         return true;
     }
+    // Task 328 phase 1: the whole guest arena is copied here, not just the range
+    // around guest_entry.
+    const std::uint64_t snapshot_start = phase_now();
     runtime::RelocatedRuntimeImage snapshot;
     snapshot.valid = true;
     snapshot.relocated_image_base = runtime_base;
@@ -526,11 +560,16 @@ bool AppendWin32DynamicAotTranslation(
     object.virtual_size = runtime_size;
     object.memory.resize(runtime_size);
     SIZE_T bytes_read = 0;
-    if (ReadProcessMemory(GetCurrentProcess(),
+    const bool snapshot_failed =
+        ReadProcessMemory(GetCurrentProcess(),
                           reinterpret_cast<const void*>(
                               static_cast<std::uintptr_t>(runtime_base)),
                           object.memory.data(), runtime_size,
-                          &bytes_read) == 0 || bytes_read != runtime_size)
+                          &bytes_read) == 0 || bytes_read != runtime_size;
+    append_phases.arena_snapshot_cycles =
+        AotWorkerTimingDelta(timing, snapshot_start, phase_now());
+    append_scale.snapshot_bytes = runtime_size;
+    if (snapshot_failed)
     {
         result->message = "failed to snapshot live guest arena";
         return true;
@@ -549,16 +588,37 @@ bool AppendWin32DynamicAotTranslation(
         placement->dbt_indirect_miss_dispatch_enabled;
     build_options.enable_guarded_segment_pop =
         placement->guarded_segment_pop_enabled;
-    if (!runtime::BuildAotTranslationPlanFromEntry(
-            snapshot, guest_entry, excluded_ranges, &plan) ||
-        !runtime::BuildAotCodeCacheImage(plan, build_options, &image))
+    // Task 328 phases 2 and 3. Split out of the shared short-circuit into
+    // sequential locals; the image build still runs only when the plan build
+    // succeeded, exactly as before.
+    const std::uint64_t plan_start = phase_now();
+    const bool plan_built = runtime::BuildAotTranslationPlanFromEntry(
+        snapshot, guest_entry, excluded_ranges, &plan);
+    const std::uint64_t emit_start = phase_now();
+    append_phases.plan_build_cycles =
+        AotWorkerTimingDelta(timing, plan_start, emit_start);
+    append_scale.plan_block_count = plan.block_count;
+    append_scale.plan_instruction_count = plan.instruction_count;
+    const bool image_built =
+        plan_built && runtime::BuildAotCodeCacheImage(plan, build_options,
+                                                      &image);
+    const std::uint64_t validate_start = phase_now();
+    append_phases.image_emit_cycles =
+        AotWorkerTimingDelta(timing, emit_start, validate_start);
+    append_scale.emitted_bytes =
+        static_cast<std::uint32_t>(image.bytes.size());
+    if (!plan_built || !image_built)
     {
         result->message = "failed to translate dynamic guest target";
         return true;
     }
     std::uint32_t unsafe_hle_address = 0U;
-    if (!runtime::ValidateAotCodeCacheHleCoverage(
-            plan, image, &unsafe_hle_address))
+    const bool hle_covered = runtime::ValidateAotCodeCacheHleCoverage(
+        plan, image, &unsafe_hle_address);
+    placement_phase_start = phase_now();
+    append_phases.validate_cycles =
+        AotWorkerTimingDelta(timing, validate_start, placement_phase_start);
+    if (!hle_covered)
     {
         result->message = "dynamic AOT CFG lacks complete HLE/selector-guard coverage";
         return true;
