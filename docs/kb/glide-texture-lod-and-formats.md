@@ -59,6 +59,48 @@ height_log2 = edge_log2 - max(3 - aspect, 0)
 
 예: `lod=GR_LOD_256(0)`, `aspect=GR_ASPECT_4x1(1)` → 256×64.
 
+## 텍스처 좌표 공간 — 텍셀 단위가 아니다
+
+**이것이 이 문서에서 가장 오해하기 쉬운 항목이다.** `GrVertex.tmuvtx[].sow/tow`의
+좌표는 텍스처의 픽셀 크기와 **무관하다.** 좌표 공간은 **긴 축이 항상 256**이고,
+짧은 축만 aspect ratio가 줄인 만큼 작아진다. LOD는 좌표 공간에 영향을 주지 않는다.
+
+```
+s_extent = 256 >> max(aspect - 3, 0)
+t_extent = 256 >> max(3 - aspect, 0)
+```
+
+| 텍스처 | LOD | aspect | 픽셀 크기 | 좌표 extent |
+|---|---:|---:|---|---|
+| 정사각 큰 맵 | `GR_LOD_256` | `1x1` | 256×256 | 256 × 256 |
+| 정사각 작은 맵 | `GR_LOD_32` | `1x1` | **32×32** | **256 × 256** |
+| 가로로 긴 맵 | `GR_LOD_256` | `4x1` | 256×64 | 256 × 64 |
+| 세로로 긴 맵 | `GR_LOD_256` | `1x4` | 64×256 | 64 × 256 |
+
+즉 32×32 맵도 `s`, `t`가 `0..256`으로 온다. 정규화를 **픽셀 크기로 하면** 긴 변이
+256인 맵에서는 우연히 값이 같아 정상 동작하고, 그보다 작은 맵에서만 `256/크기` 배
+만큼 좌표가 커져 스프라이트가 그 비율로 축소된다(Task 332에서 32×32 스프라이트가
+1/8로 그려진 실제 사례).
+
+**진단 함정:** 긴 변이 256인 맵(예: 64×256)은 extent와 픽셀 크기가 같으므로 두 규칙을
+**구분하지 못한다.** 규칙을 검증하려면 긴 변이 256보다 작은 맵의 표본이 필요하다.
+
+## GrColor_t — 형식은 grSstWinOpen이 정한다
+
+`grConstantColorValue`, `grBufferClear`, `grFogColorValue`, `grChromakeyValue`가 받는
+`GrColor_t`의 바이트 배치는 `grSstWinOpen`의 `GrColorFormat_t` 인자가 결정한다.
+
+| 값 | 형식 | 바이트 (MSB→LSB) |
+|---:|---|---|
+| 0 | `GR_COLORFORMAT_ARGB` | A R G B |
+| 1 | `GR_COLORFORMAT_ABGR` | A B G R |
+| 2 | `GR_COLORFORMAT_RGBA` | R G B A |
+| 3 | `GR_COLORFORMAT_BGRA` | B G R A |
+
+PIU는 **`ABGR`(1)** 을 선택한다. 변환 없이 ARGB로 읽으면 빨강과 파랑이 뒤바뀐다.
+회색·흰색 상수는 대칭이라 증상이 드러나지 않으므로, **무채색만 관측하고 "색은
+정상"이라고 판단하면 안 된다.** 텍스처 포맷(`GrTextureFormat_t`)과는 별개다.
+
 ## grTexTextureMemRequired — 게스트가 이 답으로 할당한다
 
 이 함수는 단순 질의가 아니다. 게임은 반환값으로 **자기 TMU 주소 공간을 배치**하므로,
@@ -118,6 +160,22 @@ than `smallLod`, making `large_lod <= small_lod` the valid invariant.
 
 `GrAspectRatio_t` shrinks the shorter edge: `width_log2 = edge_log2 -
 max(aspect - 3, 0)` and `height_log2 = edge_log2 - max(3 - aspect, 0)`.
+
+Texture coordinates are **not** in texel units and do not follow the LOD at all.
+The space is 256 along the longer axis for every texture, with the shorter axis
+scaled by the aspect ratio, so `s_extent = 256 >> max(aspect - 3, 0)` and
+`t_extent = 256 >> max(3 - aspect, 0)`. A 32x32 map is therefore addressed with
+s and t running 0..256, and normalizing by the pixel size shrinks any map whose
+longer edge is under 256 by exactly `256 / size` — the defect behind Task 332's
+eighth-size sprites. Note that a map whose longer edge is already 256, such as
+64x256, has an extent equal to its size and so cannot distinguish the two rules;
+verifying the convention requires a sample from a smaller map.
+
+`GrColor_t` byte order is chosen by the `GrColorFormat_t` argument to
+`grSstWinOpen`: 0 is ARGB, 1 ABGR, 2 RGBA, 3 BGRA. PIU selects ABGR, so reading
+those values as ARGB swaps red and blue. Grey and white constants are symmetric
+and hide the fault, so observing only achromatic values proves nothing about it.
+This is independent of `GrTextureFormat_t`.
 
 `grTexTextureMemRequired` is not a passive query — the guest lays out its own TMU
 address space from the answer, so a wrong result propagates into guest behavior

@@ -129,6 +129,43 @@ void RecordGlideTextureGateTrace(ThreadContext* context, const CONTEXT* win32_co
     }
 }
 
+// Task 332 frame dump. Enabled by REPIU_GLIDE_FRAME_DUMP, which names how many
+// swaps to skip between dumped frames; every draw of a dumped frame is logged.
+bool Win32GlideFrameDumpEnabled()
+{
+    static const bool enabled =
+        std::getenv("REPIU_GLIDE_FRAME_DUMP") != nullptr;
+    return enabled;
+}
+
+long g_frame_dump_swap_index = 0;
+long g_frame_dump_frames_done = 0;
+bool g_frame_dump_active = false;
+
+void Win32GlideAdvanceFrameDump()
+{
+    constexpr long kMaxDumpedFrames = 4;
+    const char* value = std::getenv("REPIU_GLIDE_FRAME_DUMP");
+    long interval = value != nullptr ? std::atol(value) : 0;
+    if (interval <= 0)
+    {
+        interval = 60;
+    }
+    ++g_frame_dump_swap_index;
+    if (g_frame_dump_active)
+    {
+        g_frame_dump_active = false;
+        ++g_frame_dump_frames_done;
+    }
+    if (g_frame_dump_frames_done < kMaxDumpedFrames &&
+        g_frame_dump_swap_index % interval == 0)
+    {
+        g_frame_dump_active = true;
+        fprintf(stderr, "[repiu-frame-dump] begin swap=%ld\n",
+                g_frame_dump_swap_index);
+    }
+}
+
 void DumpTextureToBmp(std::uint32_t start_address, std::uint32_t format, std::uint32_t width, std::uint32_t height, const std::vector<std::uint8_t>& rgba)
 {
     static std::uint32_t s_dump_counter = 0;
@@ -868,21 +905,67 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
     switch (glide_export->gate_id)
     {
         case go::kGrHints: // _GRHINTS@8
-            // Glide documents this call as optimization advice. Preserve the
-            // observed stdcall ABI while the renderer has no verified hint policy.
-            RecordGlideImplementationIssue(
-                win32_context,
-                context,
-                *glide_export,
-                repiu::hle::GlideImplementationIssueKind::
-                    kUnimplementedFunction,
-                "optimization-hint-noop",
-                "hint accepted without implementation",
-                "continue");
+        {
+            // grHints(GrHint_t type, FxU32 mask) declares driver optimizations,
+            // not rendering state. STWHINT says which w and s/t values are
+            // unique per TMU, FIFOCHECKHINT how often Glide polls the command
+            // FIFO, FPUPRECISION what precision Glide may use for its own math,
+            // and ALLOW_MIPMAP_DITHER whether mipmap dithering is permitted.
+            //
+            // The `GrVertex` layout is fixed by the ABI, so a renderer that
+            // reads the structure directly draws identically whatever the hint
+            // says. Recording the declaration is therefore a complete
+            // implementation for this backend rather than a stub, which is why
+            // this no longer reports an implementation gap. An unknown hint
+            // type still does, because that would be a real gap.
+            const std::uint32_t hint_type = context->glide_gate_stack[1];
+            const std::uint32_t hint_mask = context->glide_gate_stack[2];
+            constexpr std::uint32_t kHintStwHint = 0U;
+            constexpr std::uint32_t kHintFifoCheckHint = 1U;
+            constexpr std::uint32_t kHintFpuPrecision = 2U;
+            constexpr std::uint32_t kHintAllowMipmapDither = 3U;
+            // Bits above the three-TMU set are not defined by Glide 2.x.
+            constexpr std::uint32_t kStwHintMask = 0x7FU;
+            switch (hint_type)
+            {
+                case kHintStwHint:
+                    if ((hint_mask & ~kStwHintMask) != 0U)
+                    {
+                        RecordGlideImplementationIssue(
+                            win32_context, context, *glide_export,
+                            repiu::hle::GlideImplementationIssueKind::
+                                kUnsupportedArgument,
+                            "stw-hint-reserved-bits",
+                            "STW hint carries bits outside the Glide 2.x set",
+                            "continue");
+                    }
+                    context->glide_state.stw_hint = hint_mask;
+                    break;
+                case kHintFifoCheckHint:
+                    context->glide_state.fifo_check_hint = hint_mask;
+                    break;
+                case kHintFpuPrecision:
+                    context->glide_state.fpu_precision_hint = hint_mask;
+                    break;
+                case kHintAllowMipmapDither:
+                    context->glide_state.allow_mipmap_dither_hint = hint_mask;
+                    break;
+                default:
+                    RecordGlideImplementationIssue(
+                        win32_context, context, *glide_export,
+                        repiu::hle::GlideImplementationIssueKind::
+                            kUnsupportedArgument,
+                        "unknown-hint-type",
+                        "hint type is outside GR_HINTTYPE_MIN..MAX",
+                        "continue");
+                    break;
+            }
+            context->glide_state.hints_seen = true;
             ++context->glide_gate_handled_count;
             win32_context->Eip = return_address;
             win32_context->Esp += 3U * sizeof(std::uint32_t);
             return true;
+        }
         case go::kGrGlideInit: // _GRGLIDEINIT@0
             context->glide_state.initialized = true;
             ++context->glide_gate_handled_count;
@@ -1024,11 +1107,66 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             const void* info_address = reinterpret_cast<const void*>(
                 static_cast<std::uintptr_t>(context->glide_gate_stack[2]));
             std::uint32_t required_bytes = 0;
-            if (!IsGuestRangeReadable(context, info_address, sizeof(info)) ||
-                !repiu::hle::CalculateGlideTextureMemoryRequired(
-                    context->glide_gate_stack[1], info, &required_bytes))
+            if (!IsGuestRangeReadable(context, info_address, sizeof(info)))
             {
                 return decline_gate("set-state-unreadable-memory");
+            }
+            // Task 332: the guest's GrTexInfo has to be READ. Until now the
+            // pointer was only used for the readability check and a
+            // default-constructed, all-zero struct went into the calculation,
+            // so every texture answered 8192 bytes -- LOD 0 with aspect 8x1 at
+            // one byte per texel. The guest sizes its own TMU address space from
+            // this answer (see docs/kb/glide-texture-lod-and-formats.md), so it
+            // was packing 256x256 maps 0x2000 apart and overwriting them.
+            //
+            // The guest layout is five 32-bit fields, confirmed from the raw
+            // bytes at this pointer: smallLod, largeLod, aspectRatio, format,
+            // data, matching `GlideTextureInfo` exactly.
+            std::memcpy(&info, info_address, sizeof(info));
+            if (!repiu::hle::CalculateGlideTextureMemoryRequired(
+                    context->glide_gate_stack[1], info, &required_bytes))
+            {
+                return decline_gate("texture-memory-required-invalid-info");
+            }
+            // Task 332: the guest lays out its own TMU address space from this
+            // answer, so the declared GrTexInfo and the bytes returned are the
+            // other half of the size question the download arguments raise.
+            {
+                static const bool tex_census_enabled =
+                    std::getenv("REPIU_GLIDE_TEX_CENSUS") != nullptr;
+                static long mem_required_log_count = 0;
+                if (tex_census_enabled &&
+                    InterlockedIncrement(&mem_required_log_count) <= 24)
+                {
+                    // Every field decoded as zero while the pointer looks like a
+                    // real guest address, so the raw bytes decide between "the
+                    // guest really passes a zeroed struct" and "the struct is
+                    // packed differently than this 5x32-bit reading assumes".
+                    // Watcom sizes enums to the smallest type that fits, which
+                    // would make GrTexInfo four bytes of enum plus a pointer.
+                    char raw[3 * 24] = {};
+                    const auto* raw_bytes =
+                        reinterpret_cast<const std::uint8_t*>(info_address);
+                    int written = 0;
+                    if (IsGuestRangeReadable(context, info_address, 24U))
+                    {
+                        for (std::size_t i = 0; i < 24U; ++i)
+                        {
+                            written += std::snprintf(
+                                raw + written,
+                                sizeof(raw) - static_cast<std::size_t>(written),
+                                "%02X ", raw_bytes[i]);
+                        }
+                    }
+                    fprintf(stderr,
+                            "[repiu-tex-args] memrequired evenOdd=%u ptr=0x%08X"
+                            " smallLod=%u largeLod=%u aspect=%u format=%u"
+                            " data=0x%08X -> bytes=%u raw=%s\n",
+                            context->glide_gate_stack[1],
+                            context->glide_gate_stack[2], info.small_lod,
+                            info.large_lod, info.aspect_ratio, info.format,
+                            info.data, required_bytes, raw);
+                }
             }
             ++context->glide_gate_handled_count;
             win32_context->Eax = required_bytes;
@@ -1118,6 +1256,31 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                 // last downloaded palette when available, and the NCC formats are
                 // refused outright -- this separates "the
                 // game never uses that format" from "we silently drop it".
+                // Task 332: the raw arguments, because two readings of this run
+                // conflict. The font atlas decodes correctly as 256x256, yet the
+                // guest packs its textures 0x2000 apart, which is exactly one
+                // 64x64 16-bit map. Only the values the game actually passes can
+                // settle which size it means, so log every argument rather than
+                // the derived dimensions.
+                if (format_census_enabled)
+                {
+                    // Logging only the opening downloads missed the sprites
+                    // under investigation, which arrive with the select screen.
+                    // There are well under two hundred in a run.
+                    static long download_log_count = 0;
+                    if (InterlockedIncrement(&download_log_count) <= 200)
+                    {
+                        fprintf(stderr,
+                                "[repiu-tex-args] download tmu=%u addr=0x%08X"
+                                " thisLod=%u largeLod=%u aspect=%u format=%u"
+                                " evenOdd=%u data=0x%08X -> dims=%s%ux%u\n",
+                                args[1], start_address, args[3], large_lod,
+                                aspect_ratio, format, args[7], args[8],
+                                dimensions_ok ? "" : "INVALID ",
+                                dimensions_ok ? dimensions.width : 0U,
+                                dimensions_ok ? dimensions.height : 0U);
+                    }
+                }
                 if (format_census_enabled && format < 16U)
                 {
                     static long format_counts[16] = {};
@@ -1212,6 +1375,45 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                             {
                                 DumpTextureToBmp(start_address, format, dimensions.width,
                                                  dimensions.height, rgba8);
+                                // Task 332: the BMP is 24-bit, so alpha never
+                                // reaches the file. A sprite that decoded into a
+                                // nearly fully transparent image looks identical
+                                // to a correct one there, which is exactly the
+                                // case under investigation, so summarize alpha
+                                // and the mean color here instead.
+                                std::size_t transparent = 0;
+                                std::size_t opaque = 0;
+                                std::uint64_t sum_r = 0;
+                                std::uint64_t sum_g = 0;
+                                std::uint64_t sum_b = 0;
+                                for (std::size_t i = 0; i + 3U < rgba8.size();
+                                     i += 4U)
+                                {
+                                    if (rgba8[i + 3U] < 128U)
+                                    {
+                                        ++transparent;
+                                        continue;
+                                    }
+                                    ++opaque;
+                                    sum_r += rgba8[i];
+                                    sum_g += rgba8[i + 1U];
+                                    sum_b += rgba8[i + 2U];
+                                }
+                                const std::uint64_t divisor =
+                                    opaque != 0U ? opaque : 1U;
+                                fprintf(stderr,
+                                        "[repiu-tex-alpha] addr=0x%08X fmt=%u"
+                                        " %ux%u opaque=%zu transparent=%zu"
+                                        " mean-opaque-rgb=(%llu,%llu,%llu)\n",
+                                        start_address, format,
+                                        dimensions.width, dimensions.height,
+                                        opaque, transparent,
+                                        static_cast<unsigned long long>(
+                                            sum_r / divisor),
+                                        static_cast<unsigned long long>(
+                                            sum_g / divisor),
+                                        static_cast<unsigned long long>(
+                                            sum_b / divisor));
                             }
                         }
                     }
@@ -1657,7 +1859,10 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
 
         case go::kGrBufferClear: // _GRBUFFERCLEAR@12
         {
-            const std::uint32_t color = context->glide_gate_stack[1];
+            // Task 332: same GrColor_t conversion as grConstantColorValue.
+            const std::uint32_t color = repiu::hle::ConvertGlideColorToArgb(
+                context->glide_gate_stack[1],
+                context->glide_state.color_format);
             const std::uint32_t alpha = context->glide_gate_stack[2];
             const std::uint32_t depth = context->glide_gate_stack[3];
             if (!context->glide_backend.BufferClear(color, alpha, depth))
@@ -1674,6 +1879,15 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
 
         case go::kGrBufferSwap: // _GRBUFFERSWAP@4
         {
+            // Task 332: every filter tried so far (quad size, texture size)
+            // spent its sample budget on other geometry, so dump whole frames
+            // instead. One complete frame of the screen in question lists the
+            // dot draws next to everything else and needs no guess about what
+            // distinguishes them.
+            if (Win32GlideFrameDumpEnabled())
+            {
+                Win32GlideAdvanceFrameDump();
+            }
             const std::uint32_t swap_interval = context->glide_gate_stack[1];
             if (!context->glide_backend.BufferSwap(swap_interval))
             {
@@ -1769,7 +1983,16 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         case go::kGrConstantColorValue: // _GRCONSTANTCOLORVALUE@4
             // R4: retain the constant color so a later CONSTANT combine source can
             // read it. Observed value during the content phase is 0xFFFFFFFF.
-            context->glide_state.constant_color = context->glide_gate_stack[1];
+            //
+            // Task 332: a GrColor_t is laid out per the GrColorFormat_t chosen at
+            // grSstWinOpen, and PIU selects ABGR, so the value has to be
+            // converted. Most of the game's constants are greys, which are
+            // symmetric and hid this; the difficulty dots' 0xFE6565FE is red in
+            // ABGR and came out blue when read as ARGB.
+            context->glide_state.constant_color =
+                repiu::hle::ConvertGlideColorToArgb(
+                    context->glide_gate_stack[1],
+                    context->glide_state.color_format);
             if (!context->glide_backend.SetConstantColor(context->glide_state.constant_color))
             {
                 context->glide_backend_message =
@@ -1934,6 +2157,189 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                         {
                             ++before_non_black;
                         }
+                    }
+                }
+            }
+            // Task 332 draw census (env-gated): the reported symptom is that the
+            // small difficulty-level dots are missing while everything around
+            // them draws. Three causes produce that and need different fixes --
+            // the game never submits those quads, it submits them with a
+            // texture address that was never downloaded (so the draw is
+            // untextured), or it submits them textured and something later
+            // covers them. Bucketing every draw by bounding-box size and
+            // recording what each had bound separates the three. Small quads
+            // are sampled individually because they are the ones in question.
+            {
+                static const bool draw_census_enabled =
+                    std::getenv("REPIU_GLIDE_DRAW_CENSUS") != nullptr;
+                if (draw_census_enabled || Win32GlideFrameDumpEnabled())
+                {
+                    const float width = max_x - min_x;
+                    const float height = max_y - min_y;
+                    // `small` is a windows.h macro, so the flag is named
+                    // explicitly.
+                    const bool is_small_quad =
+                        width <= 48.0F && height <= 48.0F;
+                    const bool textured =
+                        context->glide_backend.has_current_texture();
+                    static long small_draws = 0;
+                    static long small_untextured = 0;
+                    static long total_draws = 0;
+                    static long small_samples = 0;
+                    ++total_draws;
+                    // A texture smaller than the 256-texel Glide coordinate
+                    // space is where the two readings of the coordinate
+                    // convention diverge, and it is what the dots and the
+                    // arrows use, so those draws are sampled whatever their
+                    // size.
+                    const bool small_texture = textured &&
+                        (context->glide_backend.current_texture_width() <
+                             256U ||
+                         context->glide_backend.current_texture_height() <
+                             256U);
+                    // The symptom itself: the dots reach the screen as a few
+                    // pixels where the original draws roughly fourteen. Nothing
+                    // else on this screen is that small, so filtering on it
+                    // samples exactly the draws in question instead of spending
+                    // the budget on text and fading panels.
+                    if (g_frame_dump_active)
+                    {
+                        fprintf(stderr,
+                                "[repiu-frame-dump] draw bbox=%.2fx%.2f"
+                                " xy=(%.2f,%.2f)(%.2f,%.2f)(%.2f,%.2f)"
+                                " st=(%.2f,%.2f)(%.2f,%.2f)(%.2f,%.2f)"
+                                " textured=%d tex=0x%08X texdim=%ux%u"
+                                " const=0x%08X combine=%u/%u/%u/%u"
+                                " blend=%u/%u\n",
+                                width, height,
+                                vertices[0].x, vertices[0].y,
+                                vertices[1].x, vertices[1].y,
+                                vertices[2].x, vertices[2].y,
+                                vertices[0].s, vertices[0].t,
+                                vertices[1].s, vertices[1].t,
+                                vertices[2].s, vertices[2].t,
+                                textured ? 1 : 0,
+                                context->glide_backend.current_texture_address(),
+                                context->glide_backend.current_texture_width(),
+                                context->glide_backend.current_texture_height(),
+                                context->glide_state.constant_color,
+                                context->glide_state.color_combine.function,
+                                context->glide_state.color_combine.factor,
+                                context->glide_state.color_combine.local,
+                                context->glide_state.color_combine.other,
+                                context->glide_state.alpha_blend.rgb_source,
+                                context->glide_state.alpha_blend.rgb_destination);
+                    }
+                    const bool is_tiny_quad = width <= 8.0F && height <= 8.0F;
+                    static long tiny_samples = 0;
+                    if (draw_census_enabled && is_tiny_quad &&
+                        InterlockedIncrement(&tiny_samples) <= 40)
+                    {
+                        fprintf(stderr,
+                                "[repiu-draw-census] tiny #%ld bbox=%.2fx%.2f"
+                                " xy=(%.2f,%.2f)(%.2f,%.2f)(%.2f,%.2f)"
+                                " st=(%.2f,%.2f)(%.2f,%.2f)(%.2f,%.2f)"
+                                " textured=%d tex=0x%08X texdim=%ux%u"
+                                " const=0x%08X combine=%u/%u/%u/%u\n",
+                                tiny_samples, width, height,
+                                vertices[0].x, vertices[0].y,
+                                vertices[1].x, vertices[1].y,
+                                vertices[2].x, vertices[2].y,
+                                vertices[0].s, vertices[0].t,
+                                vertices[1].s, vertices[1].t,
+                                vertices[2].s, vertices[2].t,
+                                textured ? 1 : 0,
+                                context->glide_backend.current_texture_address(),
+                                context->glide_backend.current_texture_width(),
+                                context->glide_backend.current_texture_height(),
+                                context->glide_state.constant_color,
+                                context->glide_state.color_combine.function,
+                                context->glide_state.color_combine.factor,
+                                context->glide_state.color_combine.local,
+                                context->glide_state.color_combine.other);
+                    }
+                    if (draw_census_enabled && (is_small_quad || small_texture))
+                    {
+                        if (is_small_quad)
+                        {
+                            ++small_draws;
+                            if (!textured)
+                            {
+                                ++small_untextured;
+                            }
+                        }
+                        // The first draws of a run are the title text, so a
+                        // first-N sample never reaches the screen elements under
+                        // investigation. Sample the opening burst and then keep
+                        // sampling periodically, which reaches later screens
+                        // regardless of when they arrive.
+                        ++small_samples;
+                        static long printed_samples = 0;
+                        static long small_texture_samples = 0;
+                        const bool sample_this =
+                            ((small_texture &&
+                              InterlockedIncrement(&small_texture_samples) <=
+                                  30) ||
+                             small_samples <= 20 ||
+                             small_samples % 500 == 0) &&
+                            printed_samples < 160;
+                        if (sample_this)
+                        {
+                            ++printed_samples;
+                            fprintf(stderr,
+                                    "[repiu-draw-census] small #%ld bbox=%.1fx%.1f"
+                                    " xy=(%.1f,%.1f)(%.1f,%.1f)(%.1f,%.1f)"
+                                    " st=(%.1f,%.1f)(%.1f,%.1f)(%.1f,%.1f)"
+                                    " textured=%d texcombine=%d tex=0x%08X"
+                                    " texdim=%ux%u rgba0=(%.2f,%.2f,%.2f,%.2f)"
+                                    " const=0x%08X combine=%u/%u/%u/%u"
+                                    " alphatest=%u/%u blend=%u/%u/%u/%u\n",
+                                    small_samples, width, height,
+                                    vertices[0].x, vertices[0].y,
+                                    vertices[1].x, vertices[1].y,
+                                    vertices[2].x, vertices[2].y,
+                                    vertices[0].s, vertices[0].t,
+                                    vertices[1].s, vertices[1].t,
+                                    vertices[2].s, vertices[2].t,
+                                    textured ? 1 : 0,
+                                    context->glide_backend
+                                        .is_texture_combine_enabled() ? 1 : 0,
+                                    context->glide_backend
+                                        .current_texture_address(),
+                                    context->glide_backend
+                                        .current_texture_width(),
+                                    context->glide_backend
+                                        .current_texture_height(),
+                                    vertices[0].r, vertices[0].g,
+                                    vertices[0].b, vertices[0].a,
+                                    context->glide_state.constant_color,
+                                    context->glide_state.color_combine.function,
+                                    context->glide_state.color_combine.factor,
+                                    context->glide_state.color_combine.local,
+                                    context->glide_state.color_combine.other,
+                                    context->glide_state.alpha_test_function,
+                                    context->glide_state.alpha_test_reference,
+                                    context->glide_state.alpha_blend.rgb_source,
+                                    context->glide_state.alpha_blend
+                                        .rgb_destination,
+                                    context->glide_state.alpha_blend
+                                        .alpha_source,
+                                    context->glide_state.alpha_blend
+                                        .alpha_destination);
+                        }
+                    }
+                    if (total_draws % 500 == 0)
+                    {
+                        fprintf(stderr,
+                                "[repiu-draw-census] after %ld draws: small=%ld"
+                                " small-untextured=%ld stored-textures=%u"
+                                " missing-sources=%u last-missing=0x%08X\n",
+                                total_draws, small_draws, small_untextured,
+                                context->glide_backend.stored_texture_count(),
+                                context->glide_backend
+                                    .missing_texture_source_count(),
+                                context->glide_backend
+                                    .last_missing_texture_address());
                     }
                 }
             }

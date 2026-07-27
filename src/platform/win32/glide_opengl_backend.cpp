@@ -580,11 +580,15 @@ bool GlideOpenGlBackend::DrawTriangle(const GlideDrawVertex& a,
     if (sample_texture)
     {
         glBindTexture(GL_TEXTURE_2D, current_texture_->gl_name);
-        inv_w = current_texture_->width != 0U
-            ? 1.0F / static_cast<float>(current_texture_->width)
+        // Task 332: normalize by the Glide coordinate extent, not the pixel
+        // size. They are equal for every map whose longer edge is 256, which is
+        // why only smaller sprites -- the difficulty dots and the arrows --
+        // were wrong.
+        inv_w = current_texture_->s_extent != 0U
+            ? 1.0F / static_cast<float>(current_texture_->s_extent)
             : 1.0F;
-        inv_h = current_texture_->height != 0U
-            ? 1.0F / static_cast<float>(current_texture_->height)
+        inv_h = current_texture_->t_extent != 0U
+            ? 1.0F / static_cast<float>(current_texture_->t_extent)
             : 1.0F;
     }
     shader_.SetTextureEnabled(sample_texture);
@@ -674,6 +678,10 @@ bool GlideOpenGlBackend::StoreTexture(std::uint32_t start_address,
     }
     entry.width = dimensions.width;
     entry.height = dimensions.height;
+    // Task 332: the coordinate extent follows the aspect ratio alone, so it
+    // equals the pixel size only when the longer edge is already 256.
+    repiu::hle::CalculateGlideTextureCoordinateExtent(
+        aspect_ratio, &entry.s_extent, &entry.t_extent);
     glBindTexture(GL_TEXTURE_2D, entry.gl_name);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
                  static_cast<GLsizei>(dimensions.width),
@@ -697,10 +705,17 @@ bool GlideOpenGlBackend::SourceTexture(std::uint32_t start_address)
     const auto found = textures_.find(start_address);
     if (found == textures_.end())
     {
+        // Task 332: record the miss. A miss leaves the draw untextured, which
+        // looks like a missing sprite rather than a wrong one, so the address
+        // is kept for the census to report.
         current_texture_ = nullptr;
+        current_texture_address_ = 0U;
+        last_missing_texture_address_ = start_address;
+        ++missing_texture_source_count_;
         return false;
     }
     current_texture_ = &found->second;
+    current_texture_address_ = start_address;
     glBindTexture(GL_TEXTURE_2D, current_texture_->gl_name);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
                     tmu_min_filter_ == 1 ? GL_LINEAR : GL_NEAREST);

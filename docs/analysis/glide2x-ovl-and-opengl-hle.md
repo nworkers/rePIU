@@ -582,3 +582,44 @@ so all issue totals remained zero.
 calls still needs a longer run. The user log does confirm later calls to the
 texture sampler/combine no-ops and `_GRHINTS@8`; the rebuilt boundary will emit
 `[repiu-fatal]` on each first unique combination.
+
+## 텍스처 좌표 공간과 GrColor_t 형식 확정 (2026-07-28 Task 332) / Confirmed Texture Coordinate Space and GrColor_t Format
+
+**확인됨:** 난이도 점이 몇 픽셀로만 보이던 근인은 **텍스처 좌표 정규화**였다.
+Glide 좌표 공간은 텍셀 단위가 아니라 LOD와 무관하게 **긴 축이 항상 256**이고 짧은
+축만 aspect ratio가 줄인다. 프레임 덤프에서 32×32 점 스프라이트(`largeLod=3`,
+`aspect=1x1`)가 `st=(0,0)~(256,256)`으로, 64×64 화살표(`largeLod=2`)가
+`st=(0,0)~(512,512)`로 제출되는 것을 직접 관측했다.
+
+픽셀 크기로 정규화하면 긴 변이 256인 맵에서는 값이 같아 정상 동작하고, 그보다 작은
+맵에서만 `256/크기` 배 초과가 되어 CLAMP로 quad의 그 비율만 덮인다. 40px quad에서
+5px만 보이던 관측과 정확히 일치한다.
+
+**확인됨:** 색상은 `grSstWinOpen`의 `cformat=1 = GR_COLORFORMAT_ABGR`이다.
+`GrColor_t`를 ARGB로 읽으면 빨강과 파랑이 뒤바뀐다. 점의 상수색 `0xFE6565FE`는
+ABGR로 빨강이며, ARGB로 읽어 파랗게 그려지던 것이 화면 관측과 일치했다.
+게임이 쓰는 상수색은 대부분 무채색이라 이 결함을 가린다.
+
+**확인됨:** `grTexTextureMemRequired`는 게스트 `GrTexInfo`를 읽지 않고 기본값(0)으로
+계산해 **모든 텍스처에 8192바이트**를 답하고 있었다. 게스트는 그 답으로 자기 TMU
+주소 공간을 배치하므로, 네 번의 계측에서 관측된 `0x2000` 균일 텍스처 간격은 원본
+게임의 성질이 아니라 **우리 출력의 되먹임**이었다. 별도 결함으로 수정했으나 점
+증상의 원인은 아니었다.
+
+**기각됨:** `grDrawPoint`/`grDrawLine`/`grDrawPolygon`의 no-op 경로(게임이 호출하지
+않음, 유일한 드로잉은 `grDrawTriangle`), 텍스처 미바인딩(`missing-sources=0`),
+텍스처 디코드 불량(32×32 스프라이트 BMP·알파 정상), `chdir datas\texture` 실패
+(원본 CHD에 없는 경로).
+
+**Confirmed:** the difficulty dots rendered as a few pixels because Glide texture coordinates
+are not texel units: the space is 256 along the longer axis whatever the LOD, with the shorter
+axis scaled by the aspect ratio. A frame dump observed the 32x32 dot sprite submitted with st
+spanning 0..256 and the 64x64 arrow with 0..512, so normalizing by pixel size overshoots by
+`256 / size` for any map under 256 and clamps away the remainder. Colors follow
+`GR_COLORFORMAT_ABGR` chosen at `grSstWinOpen`, so reading `GrColor_t` as ARGB swaps red and
+blue — visible only on the dots' `0xFE6565FE` because the game's other constants are achromatic.
+Separately, `grTexTextureMemRequired` never read the guest `GrTexInfo` and answered 8192 bytes
+for every texture, making the observed uniform `0x2000` texture spacing a function of our own
+output rather than evidence about the game. Rejected: the no-op point/line/polygon paths (never
+called), missing texture bindings (no misses), texture decode faults (the sprite decodes
+correctly), and the `datas\texture` chdir failure (absent from the original CHD).

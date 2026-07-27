@@ -10,4 +10,6 @@ samples/*/build/
 *.obj
 WIP/
 eeprom.dat
-repiu_log.txt
+# Loader diagnostic output: whole-run stderr captures and Glide census logs.
+# Megabytes per run and regenerated on demand, so they stay out of history.
+repiu_*.txt

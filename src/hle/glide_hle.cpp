@@ -424,6 +424,58 @@ bool DecodeGlideResolution(std::uint32_t resolution,
     return true;
 }
 
+std::uint32_t ConvertGlideColorToArgb(std::uint32_t value,
+                                      std::uint32_t color_format)
+{
+    // GrColorFormat_t: 0 ARGB, 1 ABGR, 2 RGBA, 3 BGRA. The alpha byte leads in
+    // the first two and trails in the last two.
+    constexpr std::uint32_t kArgb = 0U;
+    constexpr std::uint32_t kAbgr = 1U;
+    constexpr std::uint32_t kRgba = 2U;
+    constexpr std::uint32_t kBgra = 3U;
+    const std::uint32_t byte0 = (value >> 24) & 0xFFU;
+    const std::uint32_t byte1 = (value >> 16) & 0xFFU;
+    const std::uint32_t byte2 = (value >> 8) & 0xFFU;
+    const std::uint32_t byte3 = value & 0xFFU;
+    switch (color_format)
+    {
+        case kAbgr:
+            return (byte0 << 24) | (byte3 << 16) | (byte2 << 8) | byte1;
+        case kRgba:
+            return (byte3 << 24) | (byte0 << 16) | (byte1 << 8) | byte2;
+        case kBgra:
+            return (byte3 << 24) | (byte2 << 16) | (byte1 << 8) | byte0;
+        case kArgb:
+        default:
+            return value;
+    }
+}
+
+void CalculateGlideTextureCoordinateExtent(std::uint32_t aspect_ratio,
+                                           std::uint32_t* s_extent,
+                                           std::uint32_t* t_extent)
+{
+    // The coordinate space is 256 along the longer axis whatever the LOD, and
+    // GrAspectRatio_t shrinks the shorter one by the same power of two it
+    // shrinks the texture edge: GR_ASPECT_8x1(0)..GR_ASPECT_1x1(3) are wide and
+    // GR_ASPECT_1x2(4).. are tall.
+    constexpr std::uint32_t kFullExtent = 256U;
+    constexpr std::uint32_t kAspectSquare = 3U;
+    constexpr std::uint32_t kMaxAspect = 6U;
+    const std::uint32_t aspect =
+        aspect_ratio <= kMaxAspect ? aspect_ratio : kAspectSquare;
+    if (s_extent != nullptr)
+    {
+        *s_extent = kFullExtent >>
+            (aspect > kAspectSquare ? aspect - kAspectSquare : 0U);
+    }
+    if (t_extent != nullptr)
+    {
+        *t_extent = kFullExtent >>
+            (aspect < kAspectSquare ? kAspectSquare - aspect : 0U);
+    }
+}
+
 bool CalculateGlideTextureMaxAddress(std::uint32_t texture_memory_bytes,
                                      std::uint32_t* maximum_address)
 {

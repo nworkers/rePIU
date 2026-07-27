@@ -116,6 +116,34 @@ public:
     bool is_dummy() const { return dummy_mode_; }
     bool exit_requested() const { return exit_requested_; }
     bool is_texture_combine_enabled() const { return texture_combine_enabled_; }
+
+    // Task 332 draw-census accessors. Read-only; they exist so the boundary can
+    // report what a draw actually had bound without reaching into GL state.
+    bool has_current_texture() const { return current_texture_ != nullptr; }
+    std::uint32_t current_texture_address() const
+    {
+        return current_texture_ != nullptr ? current_texture_address_ : 0U;
+    }
+    std::uint32_t current_texture_width() const
+    {
+        return current_texture_ != nullptr ? current_texture_->width : 0U;
+    }
+    std::uint32_t current_texture_height() const
+    {
+        return current_texture_ != nullptr ? current_texture_->height : 0U;
+    }
+    std::uint32_t missing_texture_source_count() const
+    {
+        return missing_texture_source_count_;
+    }
+    std::uint32_t last_missing_texture_address() const
+    {
+        return last_missing_texture_address_;
+    }
+    std::uint32_t stored_texture_count() const
+    {
+        return static_cast<std::uint32_t>(textures_.size());
+    }
     const std::string& message() const { return message_; }
 
 private:
@@ -124,6 +152,11 @@ private:
         std::uint32_t gl_name = 0;
         std::uint32_t width = 0;
         std::uint32_t height = 0;
+        // Task 332: the texture-coordinate extent is not the pixel size. Glide
+        // spans 256 along the longer axis whatever the LOD, so a 32x32 map is
+        // still addressed 0..256 and normalizing by 32 shrinks it eightfold.
+        std::uint32_t s_extent = 256;
+        std::uint32_t t_extent = 256;
     };
 
     bool IsHostThread() const;
@@ -169,6 +202,13 @@ private:
     bool dummy_mode_ = false;
     std::unordered_map<std::uint32_t, TextureEntry> textures_;
     const TextureEntry* current_texture_ = nullptr;
+    // Task 332 diagnostics. A draw census has to separate "this quad was drawn
+    // with the right texture", "with no texture at all", and "the game sourced
+    // an address that was never downloaded", which the bound pointer alone
+    // cannot express.
+    std::uint32_t current_texture_address_ = 0;
+    std::uint32_t missing_texture_source_count_ = 0;
+    std::uint32_t last_missing_texture_address_ = 0;
     bool texture_combine_enabled_ = false;
     // Dedicated texture reused by every LFB blit so unlock does not churn GL
     // texture names once per frame.

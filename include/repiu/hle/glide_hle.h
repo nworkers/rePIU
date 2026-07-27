@@ -202,6 +202,24 @@ struct GlideLogicalState
     // grConstantColorValue: observed during the content phase (0xFFFFFFFF).
     // Retained so a later CONSTANT combine source can read it.
     std::uint32_t constant_color = 0xFFFFFFFFU;
+
+    // grHints state (Task 332). These are driver optimization declarations, not
+    // rendering state: the `GrVertex` layout is fixed by the Glide ABI, so a
+    // renderer that reads the structure directly needs no behavior change from
+    // any of them. They are recorded because a later change to vertex handling
+    // must be able to see what the game declared.
+    //
+    // `stw_hint` is the GR_HINT_STWHINT mask declaring which w and s/t values
+    // are unique per TMU; the default of 0 means every TMU shares TMU0's.
+    std::uint32_t stw_hint = 0;
+    std::uint32_t fifo_check_hint = 0;
+    // GR_HINT_FPUPRECISION asks Glide to run its own math in single precision.
+    // Recorded only: the host renderer does not execute the guest's floating
+    // point, and changing the x87 control word would alter guest results
+    // (accuracy over speed).
+    std::uint32_t fpu_precision_hint = 0;
+    std::uint32_t allow_mipmap_dither_hint = 0;
+    bool hints_seen = false;
     
     // Palette downloaded by grTexDownloadTable.
     std::array<std::uint8_t, 1024> palette_rgba8 = {};
@@ -250,6 +268,24 @@ bool CalculateGlideTextureMaxAddress(std::uint32_t texture_memory_bytes,
 bool CalculateGlideTextureMemoryRequired(std::uint32_t even_odd_mask,
                                        const GlideTextureInfo& info,
                                        std::uint32_t* required_bytes);
+
+// A `GrColor_t` is laid out according to the `GrColorFormat_t` chosen at
+// grSstWinOpen, so the same 32-bit value means different colors in different
+// runs. Converts one into the canonical ARGB the renderer uses. PIU selects
+// GR_COLORFORMAT_ABGR (1), under which an unconverted value swaps red and blue
+// (Task 332).
+std::uint32_t ConvertGlideColorToArgb(std::uint32_t value,
+                                      std::uint32_t color_format);
+
+// Glide texture coordinates are not in texel units: they span a fixed 256-wide
+// space for the longer axis, with the shorter axis scaled by the aspect ratio,
+// independent of how large the texture actually is. A 32x32 map is therefore
+// addressed with s and t running 0..256, so normalizing by the texture's pixel
+// size shrinks every map smaller than 256 by exactly the ratio between them
+// (Task 332). Returns the coordinate extent for each axis.
+void CalculateGlideTextureCoordinateExtent(std::uint32_t aspect_ratio,
+                                           std::uint32_t* s_extent,
+                                           std::uint32_t* t_extent);
 
 namespace glide_ordinal {
 
