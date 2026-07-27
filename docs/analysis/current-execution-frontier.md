@@ -63,9 +63,52 @@ Task 324가 그 교체를 수행했습니다. 호출당 `1,047,784 → 6,866 tic
 single-step handler 밖인 구간은 73.76% → **74.34%**로 줄지 않았습니다. 즉 그 구간의
 비용은 `FindAotCacheAddress`가 아닌 다른 원인이며, 자체 계측 없이는 알 수 없습니다.
 
-따라서 현재 우선순위는 **VEH 내부 74.34% 구간의 자체 귀속**입니다. 이 구간은 단일
-항목으로 전체 wall-clock의 4분의 3을 차지하며, 프로젝트에서 아직 한 번도 내부를
-들여다보지 않은 유일한 대형 블록입니다.
+Task 325가 그 구간을 귀속했고 정체가 확정됐습니다. **AOT transfer 해석부
+(`HandleAotGuestCodeWrite{Completion,Fault}`, `HandleAotReentry`,
+`HandleAotIndirectTransfer`, `HandleAotConditionalTransfer`,
+`HandleAotReturnTransfer`)가 VEH 내부의 87.50%, 전체 wall-clock의 71.31%** 이며
+호출당 평균은 `1,269,368 tick`(약 508us)입니다.
+
+다른 후보는 모두 기각됐습니다. live telemetry의 `InterlockedExchange` 9회 0.08%,
+single-step 이후 HLE 핸들러 체인 0.66%, prologue 검증 0.25%, boundary gate 0.11%,
+파생 residual 1.01%입니다. residual이 작다는 것은 분해 경계가 옳았다는 뜻입니다.
+
+Task 326이 그 재분해를 수행했고 답이 나왔습니다. **60초 동안 단 230회의 동적 번역이
+전체 wall-clock의 61.6%를 소비합니다.** 호출당 약 **175ms**입니다.
+
+| function 축 | count | `kVehAotTransfer` 대비 | 호출당 tick |
+|---|---:|---:|---:|
+| **`kAotDynamicTranslate`** | **230** | **88.64%** | **437,403,007** |
+| `kAotTransferResolve` | 39,033 | 89.27% | 2,595,663 |
+| `kAotResidency` | 55,507 | 1.61% | 32,865 |
+| `kAotHleBoundaryScan` | 253,526 | 0.05% | 243 |
+
+Task 325가 미검증 가설로 남긴 `AccumulateAotResidency`(1.61%)와
+`IsAotHleBoundaryAddress` 선형 탐색(0.05%)은 **모두 기각**됐습니다. transfer 해석
+자체는 싸고 **번역 대기만 비쌉니다.**
+
+**확인됨:** `RequestAotDynamicTranslation`은 워커 스레드에 `SetEvent` 후
+`WaitForSingleObject(INFINITE)`로 동기 대기합니다. 즉 측정된 175ms는 guest thread가
+**차단된 시간**이며 실제 작업은 계측 범위 밖인 워커 스레드에 있습니다.
+
+Task 327이 워커 스레드를 계측해 그 질문에 답했습니다. **스케줄링 지연이 아니라
+워커 CPU 작업입니다.**
+
+| rendezvous 구간 | `guest_total` 대비 |
+|---|---:|
+| **`append`** (`AppendWin32DynamicAotTranslation`) | **101.00%** |
+| `wake_latency` | 0.03% |
+| `complete_latency` | 0.01% |
+| `segment_table` | 0.00% |
+
+번역 1회 평균은 약 **259ms**, 최댓값은 약 **702ms** 입니다. 워커 기상 지연은 2코어에
+5개 스레드가 경합함에도 평균 약 76us, 최대 3.4ms에 그칩니다.
+
+**확인됨:** rendezvous 제거나 비동기화는 답이 아닙니다. **번역 자체를 싸게 또는 작게
+만들어야 합니다.**
+
+**미확정:** `append` 내부의 plan 생성·emit·placement·page protection 비중.
+비translate 워커 작업 4,480회의 rendezvous 비용도 아직 재지 않았습니다.
 
 **Confirmed:** `aot-dbt` is not yet an independent continuous DBT executor; it layers selective
 normal dispatch and Dr0 spans over `aot-dynamic`. Task 276 measured effectively identical
@@ -100,13 +143,39 @@ fall, moving from 73.76% to 74.34%. That region has a different, still unknown c
 attributing it is the active priority — it is a single block holding three quarters of wall
 clock whose interior has never been examined.
 
+Task 325 then attributed that block. AOT transfer resolution holds 87.50% of time inside the
+VEH and 71.31% of guest-thread wall clock, averaging `1,269,368` ticks per call. Every other
+candidate is rejected: telemetry writes 0.08%, the post-single-step HLE chain 0.66%, prologue
+validation 0.25%, boundary gates 0.11%, and a derived residual of 1.01% confirming the
+decomposition boundaries were correct. The active priority is decomposing `kVehAotTransfer`
+itself; code reading suggests `AccumulateAotResidency` (a statistics-only function that
+re-initializes a Zydis decoder and decodes up to 64 instructions per re-entry), the linear
+`IsAotHleBoundaryAddress` scan at the head of `ResolveAotTransferTarget`, and dynamic
+translation, but all three remain unverified hypotheses.
+
+Task 326 then decomposed it: 230 dynamic translations consume 61.6% of wall clock at about
+175ms each, while transfer resolution itself is cheap. The Task 325 hypotheses are both
+rejected — `AccumulateAotResidency` at 1.61% and the linear `IsAotHleBoundaryAddress` scan at
+0.05%. `RequestAotDynamicTranslation` signals a worker thread and blocks in
+`WaitForSingleObject(INFINITE)`, so the measured time is guest-thread blocked time and the work
+itself sits on a worker thread outside the instrumented scope. Whether those 175ms are worker
+CPU or scheduling latency on this two-core machine is unresolved, and the remedies differ
+completely.
+
+Task 327 then instrumented the worker thread and answered it: the time is worker CPU work, not
+scheduling. `AppendWin32DynamicAotTranslation` accounts for essentially the whole rendezvous
+while wake and completion latency together account for 0.04%, even with five threads on two
+cores. One translation averages about 259ms and peaks near 702ms. Removing or asynchronizing
+the rendezvous is therefore not the answer; translation itself must become cheaper or smaller.
+
 ```mermaid
 flowchart LR
-    T["guest thread 100%"] --> B["VEH 내부 · single-step 밖<br/>74.34% · 원인 미상"]
-    T --> S["single-step handler 7.66%"]
-    T --> G["cache guest 실행 + kernel 전이 18.02%"]
-    S --> F["FindAotCacheAddress<br/>해시 색인 완료 (Task 324)"]
-    B --> N["자체 계측 필요"]
+    T["guest thread"] --> V["kVehTotal ~81%"]
+    V --> A["kVehAotTransfer ~86%"]
+    A --> D["kAotDynamicTranslate<br/>회당 259ms<br/>= 전체의 약 62%"]
+    D --> W["append (워커 CPU) 101.00%"]
+    D --> L["wake + complete 지연 0.04%"]
+    W --> N["plan / emit / placement<br/>재분해 대상"]
 ```
 
 ## 최근 Task / Recent tasks
@@ -252,21 +321,58 @@ exception transition holds 1.20%, rejecting the premise behind TF/VEH removal. T
 2.66x with verified semantic equivalence. **Rejected:** the AOT boundary path did not share
 the cause; its share held at 74.34%.
 
+### Task 325 — VEH boundary 경로 귀속 / VEH boundary path attribution
+
+**확인됨:** `DispatchGuestException`을 5개 하위 bucket으로 나눈 결과 AOT transfer
+해석부가 VEH의 87.50%, 전체의 71.31%였고 호출당 `1,269,368 tick`이었습니다. 사전
+등록한 gate 중 첫 행만 성립하고 나머지는 모두 기각됐으며, residual 1.01%로 분해
+경계가 옳았음이 확인됐습니다.
+[상세 작업 로그](../work-logs/20260727-325-veh-boundary-path-attribution.md)
+
+**Confirmed:** AOT transfer resolution holds 87.50% of VEH time and 71.31% of wall clock at
+`1,269,368` ticks per call. Only the first pre-registered gate holds, and a 1.01% residual
+confirms the decomposition boundaries.
+
+### Task 326 — AOT transfer 해석부 재분해 / AOT transfer resolution decomposition
+
+**확인됨:** 동적 번역 230회가 전체 wall-clock의 61.6%, 호출당 약 175ms입니다.
+`AccumulateAotResidency`(1.61%)와 `IsAotHleBoundaryAddress`(0.05%) 가설은 모두
+기각됐습니다. `RequestAotDynamicTranslation`이 워커 스레드에 동기 대기하므로 측정된
+시간은 guest thread 차단 시간입니다.
+[상세 작업 로그](../work-logs/20260727-326-aot-transfer-resolution-decomposition.md)
+
+**Confirmed:** 230 dynamic translations hold 61.6% of wall clock at about 175ms each, and both
+Task 325 hypotheses are rejected. The measured time is guest-thread blocked time on a
+synchronous worker rendezvous.
+
+### Task 327 — 번역 워커 타이밍 / Translation worker timing
+
+**확인됨:** rendezvous의 101.00%가 `AppendWin32DynamicAotTranslation`이고 wake와
+complete 지연은 합쳐 0.04%입니다. 번역 1회 평균 259ms, 최대 702ms. 스케줄링은
+병목이 아니므로 rendezvous 제거는 답이 아닙니다.
+[상세 작업 로그](../work-logs/20260727-327-translation-worker-timing.md)
+
+**Confirmed:** The rendezvous is worker CPU work, not scheduling: append holds 101.00% while
+wake and complete latency total 0.04%, averaging 259ms per translation.
+
 ## 다음 검증 / Next validation
 
-다음 검증은 VEH 내부이면서 single-step handler 밖인 74.34% 구간의 자체 귀속입니다.
-`DispatchGuestException` 안에서 AOT boundary 처리, `ResolveAotTransferTarget`,
-동적 번역, native span 진입, breakpoint provenance 조회를 구간별로 나눕니다.
-Task 322~324가 확립한 방식대로 착수 전에 결과별 다음 행동을 gate로 고정하고,
-gate가 전제하는 인과를 함께 명시합니다.
+다음 검증은 `AppendWin32DynamicAotTranslation` 내부 분해입니다. plan 생성(Zydis CFG
+순회), emit, placement, page protection 변경을 구간별로 나눕니다. 번역 1회가 259ms인
+이유가 넓은 CFG 순회인지, emit 자체인지, `VirtualProtect` 계열 시스템 호출인지에
+따라 해법이 다릅니다.
 
-TF/VEH 제거 로드맵은 계속 보류합니다. 예외 전이가 1.20%인 이상 상한이 약 1.012배이며,
-Task 324는 구조 변경 없이 자료구조 하나로 2.66배를 얻을 수 있음을 보였습니다.
+함께 확인할 것이 두 가지 있습니다. 번역 1회가 커버하는 guest 범위(명령 수, 블록 수)를
+기록해 **번역 단위를 줄이는 것**이 유효한지 판단하고, 비translate 워커 작업 4,480회의
+rendezvous 비용을 재서 무시 가능한지 확인합니다.
 
-The next validation attributes the 74.34% that sits inside the VEH but outside the single-step
-handler, splitting `DispatchGuestException` into AOT boundary handling,
-`ResolveAotTransferTarget`, dynamic translation, native span entry, and breakpoint provenance
-lookup. Following the practice established across Tasks 322 to 324, the follow-up action per
-outcome is fixed as a gate before measurement, and each gate states the causal premise it
-assumes. The TF/VEH removal roadmap stays on hold: a 1.20% transition cost bounds it at roughly
-1.012x, and Task 324 showed a single data-structure change worth 2.66x without restructuring.
+TF/VEH 제거 로드맵은 계속 보류합니다. 예외 전이가 1.20%인 이상 상한이 약 1.012배입니다.
+
+The next validation decomposes `AppendWin32DynamicAotTranslation` into plan construction (the
+Zydis CFG walk), emission, placement, and page-protection changes, since a 259ms translation
+implies a different remedy depending on whether the cost is a wide CFG walk, emission itself,
+or `VirtualProtect`-family system calls. Two things are measured alongside: the guest range
+each translation covers, in instructions and blocks, to judge whether shrinking the translation
+unit would help; and the rendezvous cost of the 4,480 non-translate worker operations, to
+confirm they are negligible. The TF/VEH removal roadmap stays on hold at a roughly 1.012x
+bound.

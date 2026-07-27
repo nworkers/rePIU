@@ -35,8 +35,44 @@ enum class ExecutionTimeBucket : std::uint32_t
     kGlideGate,
     kPortIoDevice,
     kDosService,
+    // Task 325: decomposition of kVehTotal, appended after the original five so
+    // existing indices and log field order stay stable. These are parts OF
+    // kVehTotal, not additions to it, so they never enter the kVehExclusive or
+    // kUnaccounted formulas.
+    // See docs/design/20260727-325-veh-boundary-path-attribution.md.
+    kVehPrologue,
+    kVehAotTransfer,
+    kVehTelemetry,
+    kVehBoundaryGates,
+    kVehHleChain,
+    // Task 326: two decompositions of kVehAotTransfer, measured together so one
+    // run answers both which handler and what work.
+    //
+    // Handler axis -- mutually exclusive, since the six run sequentially.
+    kAotWriteCompletion,
+    kAotWriteFault,
+    kAotReentry,
+    kAotIndirect,
+    kAotConditional,
+    kAotReturn,
+    // Function axis -- shared across handlers, instrumented at the definition
+    // so every caller lands in one bucket. Deliberately NESTS inside the
+    // handler axis, so the two axes are never summed together; each is a share
+    // of kVehAotTransfer on its own.
+    // See docs/design/20260727-326-aot-transfer-resolution-decomposition.md.
+    kAotTransferResolve,
+    kAotHleBoundaryScan,
+    kAotDynamicTranslate,
+    kAotResidency,
     kCount,
 };
+
+constexpr std::uint32_t kFirstVehSubBucket =
+    static_cast<std::uint32_t>(ExecutionTimeBucket::kVehPrologue);
+constexpr std::uint32_t kFirstAotHandlerBucket =
+    static_cast<std::uint32_t>(ExecutionTimeBucket::kAotWriteCompletion);
+constexpr std::uint32_t kFirstAotFunctionBucket =
+    static_cast<std::uint32_t>(ExecutionTimeBucket::kAotTransferResolve);
 
 constexpr std::uint32_t kExecutionTimeBucketCount =
     static_cast<std::uint32_t>(ExecutionTimeBucket::kCount);

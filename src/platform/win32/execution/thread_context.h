@@ -646,6 +646,9 @@ struct ThreadContext
     // Task 323: guest-thread wall-clock buckets. Allocated only when
     // REPIU_EXECUTION_TIME_PROFILE is set, so the normal path pays one branch.
     std::unique_ptr<Win32ExecutionTimeProfile> execution_time_profile;
+    // Task 327: rendezvous timing across the guest and worker threads. Shares
+    // the REPIU_EXECUTION_TIME_PROFILE opt-in.
+    std::unique_ptr<Win32AotWorkerTimingProfile> aot_worker_timing;
     // Route A sizing (native region execution). Of every single-stepped guest
     // instruction, how many are HLE-sensitive (segment op / INT / IO / string /
     // privileged) and would still require a trap under selective-breakpoint

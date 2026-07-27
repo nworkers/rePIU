@@ -22,6 +22,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstdio>
+#include <optional>
 #include <cstdlib>
 #include <filesystem>
 #include <limits>
@@ -2649,6 +2650,13 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     const ExecutionTimeScope veh_time_scope(
         context->execution_time_profile.get(),
         ExecutionTimeBucket::kVehTotal);
+    // Task 325: validation, call-step probe, and span/region teardown. Reset
+    // explicitly once the prologue ends rather than relying on block scope,
+    // because the prologue is not a single lexical block.
+    std::optional<ExecutionTimeScope> prologue_time_scope;
+    prologue_time_scope.emplace(
+        context->execution_time_profile.get(),
+        ExecutionTimeBucket::kVehPrologue);
 
     // Task 296: Windows can hand the VEH a malformed EXCEPTION_POINTERS (a
     // non-null but unreadable ContextRecord/ExceptionRecord) when a fault is
@@ -2797,59 +2805,70 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         win32_context->EFlags &= ~0x00000100U;
         return true;
     };
-    if (stop_for_aot_terminal_failure())
+    prologue_time_scope.reset();
+    // Task 325: AOT transfer resolution. The scope closes on every path,
+    // including the early returns, because it is an ordinary block-scoped
+    // object. Handler order and the interleaved terminal-failure checks are
+    // unchanged.
     {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-    if (HandleAotGuestCodeWriteCompletion(
-            exception_info, win32_context, context))
-    {
-        return EXCEPTION_CONTINUE_EXECUTION;
-    }
-    if (stop_for_aot_terminal_failure())
-    {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-    if (HandleAotGuestCodeWriteFault(
-            exception_info, win32_context, context))
-    {
-        return EXCEPTION_CONTINUE_EXECUTION;
-    }
-    if (stop_for_aot_terminal_failure())
-    {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-    if (HandleAotReentry(exception_info, win32_context, context))
-    {
-        return EXCEPTION_CONTINUE_EXECUTION;
-    }
-    if (stop_for_aot_terminal_failure())
-    {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-    if (HandleAotIndirectTransfer(exception_info, win32_context, context))
-    {
-        return EXCEPTION_CONTINUE_EXECUTION;
-    }
-    if (stop_for_aot_terminal_failure())
-    {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-    if (HandleAotConditionalTransfer(exception_info, win32_context, context))
-    {
-        return EXCEPTION_CONTINUE_EXECUTION;
-    }
-    if (stop_for_aot_terminal_failure())
-    {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-    if (HandleAotReturnTransfer(exception_info, win32_context, context))
-    {
-        return EXCEPTION_CONTINUE_EXECUTION;
-    }
-    if (stop_for_aot_terminal_failure())
-    {
-        return EXCEPTION_CONTINUE_SEARCH;
+        const ExecutionTimeScope aot_transfer_time_scope(
+            context->execution_time_profile.get(),
+            ExecutionTimeBucket::kVehAotTransfer);
+        if (stop_for_aot_terminal_failure())
+        {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+        if (HandleAotGuestCodeWriteCompletion(
+                exception_info, win32_context, context))
+        {
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        if (stop_for_aot_terminal_failure())
+        {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+        if (HandleAotGuestCodeWriteFault(
+                exception_info, win32_context, context))
+        {
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        if (stop_for_aot_terminal_failure())
+        {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+        if (HandleAotReentry(exception_info, win32_context, context))
+        {
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        if (stop_for_aot_terminal_failure())
+        {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+        if (HandleAotIndirectTransfer(exception_info, win32_context, context))
+        {
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        if (stop_for_aot_terminal_failure())
+        {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+        if (HandleAotConditionalTransfer(
+                exception_info, win32_context, context))
+        {
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        if (stop_for_aot_terminal_failure())
+        {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+        if (HandleAotReturnTransfer(exception_info, win32_context, context))
+        {
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        if (stop_for_aot_terminal_failure())
+        {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
     }
     if (context->native_fast_path.active)
     {
@@ -2909,6 +2928,12 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     {
         return EXCEPTION_CONTINUE_SEARCH;
     }
+    // Task 325: nine InterlockedExchange writes plus allocator recording run on
+    // every exception regardless of kind, so they are measured as fixed cost.
+    std::optional<ExecutionTimeScope> telemetry_time_scope;
+    telemetry_time_scope.emplace(
+        context->execution_time_profile.get(),
+        ExecutionTimeBucket::kVehTelemetry);
     if (context->shared_live_telemetry != nullptr &&
         exception_info->ExceptionRecord != nullptr)
     {
@@ -2957,18 +2982,26 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         context,
         static_cast<std::uint32_t>(win32_context->Eip));
     RecordAllocatorControlFlowException(exception_info, context);
+    telemetry_time_scope.reset();
     if (HandleGlideGateBoundary(win32_context, context))
     {
         InjectPendingInterrupts(win32_context, context);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
-    if (HandleTimerInterruptChainBoundary(win32_context, context))
+    // Task 325: the non-Glide boundary gates. Glide keeps its own bucket from
+    // Task 323 so the render path stays separable.
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
-    }
-    if (HandleLinexeFarTransferBoundary(win32_context, context))
-    {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        const ExecutionTimeScope boundary_gate_time_scope(
+            context->execution_time_profile.get(),
+            ExecutionTimeBucket::kVehBoundaryGates);
+        if (HandleTimerInterruptChainBoundary(win32_context, context))
+        {
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        if (HandleLinexeFarTransferBoundary(win32_context, context))
+        {
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
     }
     if (exception_info->ExceptionRecord != nullptr &&
         (exception_info->ExceptionRecord->ExceptionCode ==
@@ -2980,6 +3013,13 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
+    // Task 325: everything past this point is the sequential HLE handler chain
+    // reached by exceptions the single-step path did not take -- principally
+    // INT3 AOT boundaries. Held open to the end of the function so every exit
+    // path is attributed.
+    const ExecutionTimeScope hle_chain_time_scope(
+        context->execution_time_profile.get(),
+        ExecutionTimeBucket::kVehHleChain);
     AotHleTranslationScope aot_hle_translation_scope(win32_context, context);
     constexpr std::uint32_t kMaximumX86InstructionBytes = 15U;
     const bool guest_decode_window_readable = IsGuestRangeReadable(
@@ -3476,6 +3516,8 @@ bool RunWin32ExecutionThread(
     {
         context.execution_time_profile =
             std::make_unique<Win32ExecutionTimeProfile>();
+        context.aot_worker_timing =
+            std::make_unique<Win32AotWorkerTimingProfile>();
     }
     SharedTelemetryMapping shared_telemetry =
         OpenSharedTelemetryMapping();

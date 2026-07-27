@@ -98,6 +98,7 @@ add_library(repiu_exe
     src/platform/win32/cd_audio_wave_out.cpp
     src/platform/win32/aot_code_cache_win32.cpp
     src/platform/win32/aot_cache_address_index.cpp
+    src/platform/win32/aot/aot_worker_timing.cpp
     src/platform/win32/aot_page_coherence_win32.cpp
     src/platform/win32/aot/aot_boundary_provenance.cpp
     src/platform/win32/aot/aot_boundary_reason.cpp
@@ -195,6 +196,8 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/single_step_hotspot_profile_probe.cpp
     src/tools/aot_probe/exception_transition_calibration_probe.cpp
     src/tools/aot_probe/aot_cache_address_index_probe.cpp
+    src/tools/aot_probe/execution_time_profile_probe.cpp
+    src/tools/aot_probe/aot_worker_timing_probe.cpp
     src/tools/aot_probe/selector_guard_probe.cpp
     src/tools/aot_probe/main.cpp
 )

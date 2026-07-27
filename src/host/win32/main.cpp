@@ -1096,6 +1096,225 @@ void PrintExecutionAttempt(
         logger.info(
             "Win32 execution time derived veh-exclusive/unaccounted: {}/{}",
             veh_exclusive, unaccounted);
+        // Task 325: decomposition of kVehTotal. These are parts of the VEH
+        // bucket, not additions to it, so they are reported separately and
+        // deliberately excluded from the derived figures above. The residual is
+        // VEH time outside every measured region, including the single-step
+        // handler and the Glide gate which carry their own instrumentation.
+        {
+            // Stops before the Task 326 buckets: those nest inside
+            // kVehAotTransfer, so including them would over-subtract.
+            std::uint64_t veh_sub_cycles = 0;
+            for (std::uint32_t index =
+                     repiu::platform::win32::kFirstVehSubBucket;
+                 index < repiu::platform::win32::kFirstAotHandlerBucket;
+                 ++index)
+            {
+                veh_sub_cycles += time_profile.cycles[index];
+            }
+            std::uint64_t single_step_cycles = 0;
+            for (std::uint32_t index = 0;
+                 index <
+                     repiu::platform::win32::kSingleStepProfileStageCount;
+                 ++index)
+            {
+                // Sub-stages of kAotResume would double count against their
+                // parent stage, so only the top-level five contribute.
+                if (index <
+                    repiu::platform::win32::
+                        kSingleStepProfileFirstAotResumeSubStage)
+                {
+                    single_step_cycles += step_profile.stage_cycles[index];
+                }
+            }
+            const std::uint64_t veh_measured = veh_sub_cycles +
+                inside(ExecutionTimeBucket::kGlideGate) + single_step_cycles;
+            const std::uint64_t veh_residual =
+                veh > veh_measured ? veh - veh_measured : 0U;
+            logger.info(
+                "Win32 execution time veh sub-bucket cycles "
+                "prologue/aot-transfer/telemetry/gates/hle-chain/residual: "
+                "{}/{}/{}/{}/{}/{}",
+                bucket(ExecutionTimeBucket::kVehPrologue),
+                bucket(ExecutionTimeBucket::kVehAotTransfer),
+                bucket(ExecutionTimeBucket::kVehTelemetry),
+                bucket(ExecutionTimeBucket::kVehBoundaryGates),
+                bucket(ExecutionTimeBucket::kVehHleChain),
+                veh_residual);
+            logger.info(
+                "Win32 execution time veh sub-bucket count "
+                "prologue/aot-transfer/telemetry/gates/hle-chain: "
+                "{}/{}/{}/{}/{}",
+                time_profile.counts[
+                    static_cast<std::uint32_t>(
+                        ExecutionTimeBucket::kVehPrologue)],
+                time_profile.counts[
+                    static_cast<std::uint32_t>(
+                        ExecutionTimeBucket::kVehAotTransfer)],
+                time_profile.counts[
+                    static_cast<std::uint32_t>(
+                        ExecutionTimeBucket::kVehTelemetry)],
+                time_profile.counts[
+                    static_cast<std::uint32_t>(
+                        ExecutionTimeBucket::kVehBoundaryGates)],
+                time_profile.counts[
+                    static_cast<std::uint32_t>(
+                        ExecutionTimeBucket::kVehHleChain)]);
+            if (veh != 0U)
+            {
+                logger.info(
+                    "Win32 execution time veh sub-bucket share "
+                    "prologue/aot-transfer/telemetry/gates/hle-chain/"
+                    "single-step/residual: "
+                    "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
+                    100.0 * static_cast<double>(
+                        bucket(ExecutionTimeBucket::kVehPrologue)) /
+                        static_cast<double>(veh),
+                    100.0 * static_cast<double>(
+                        bucket(ExecutionTimeBucket::kVehAotTransfer)) /
+                        static_cast<double>(veh),
+                    100.0 * static_cast<double>(
+                        bucket(ExecutionTimeBucket::kVehTelemetry)) /
+                        static_cast<double>(veh),
+                    100.0 * static_cast<double>(
+                        bucket(ExecutionTimeBucket::kVehBoundaryGates)) /
+                        static_cast<double>(veh),
+                    100.0 * static_cast<double>(
+                        bucket(ExecutionTimeBucket::kVehHleChain)) /
+                        static_cast<double>(veh),
+                    100.0 * static_cast<double>(single_step_cycles) /
+                        static_cast<double>(veh),
+                    100.0 * static_cast<double>(veh_residual) /
+                        static_cast<double>(veh));
+            }
+        }
+        // Task 326: two decompositions of kVehAotTransfer. The handler axis is
+        // mutually exclusive; the function axis nests inside it. The two are
+        // never summed together -- each is a share of kVehAotTransfer alone.
+        {
+            const std::uint64_t transfer =
+                bucket(ExecutionTimeBucket::kVehAotTransfer);
+            std::uint64_t handler_cycles = 0;
+            for (std::uint32_t index =
+                     repiu::platform::win32::kFirstAotHandlerBucket;
+                 index < repiu::platform::win32::kFirstAotFunctionBucket;
+                 ++index)
+            {
+                handler_cycles += time_profile.cycles[index];
+            }
+            const std::uint64_t handler_residual =
+                transfer > handler_cycles ? transfer - handler_cycles : 0U;
+            logger.info(
+                "Win32 aot transfer handler cycles "
+                "write-completion/write-fault/reentry/indirect/conditional/"
+                "return/residual: {}/{}/{}/{}/{}/{}/{}",
+                bucket(ExecutionTimeBucket::kAotWriteCompletion),
+                bucket(ExecutionTimeBucket::kAotWriteFault),
+                bucket(ExecutionTimeBucket::kAotReentry),
+                bucket(ExecutionTimeBucket::kAotIndirect),
+                bucket(ExecutionTimeBucket::kAotConditional),
+                bucket(ExecutionTimeBucket::kAotReturn),
+                handler_residual);
+            logger.info(
+                "Win32 aot transfer function cycles "
+                "resolve/hle-boundary-scan/dynamic-translate/residency: "
+                "{}/{}/{}/{}",
+                bucket(ExecutionTimeBucket::kAotTransferResolve),
+                bucket(ExecutionTimeBucket::kAotHleBoundaryScan),
+                bucket(ExecutionTimeBucket::kAotDynamicTranslate),
+                bucket(ExecutionTimeBucket::kAotResidency));
+            logger.info(
+                "Win32 aot transfer function count "
+                "resolve/hle-boundary-scan/dynamic-translate/residency: "
+                "{}/{}/{}/{}",
+                time_profile.counts[static_cast<std::uint32_t>(
+                    ExecutionTimeBucket::kAotTransferResolve)],
+                time_profile.counts[static_cast<std::uint32_t>(
+                    ExecutionTimeBucket::kAotHleBoundaryScan)],
+                time_profile.counts[static_cast<std::uint32_t>(
+                    ExecutionTimeBucket::kAotDynamicTranslate)],
+                time_profile.counts[static_cast<std::uint32_t>(
+                    ExecutionTimeBucket::kAotResidency)]);
+            if (transfer != 0U)
+            {
+                const auto share = [transfer](std::uint64_t value) {
+                    return 100.0 * static_cast<double>(value) /
+                        static_cast<double>(transfer);
+                };
+                logger.info(
+                    "Win32 aot transfer handler share "
+                    "write-completion/write-fault/reentry/indirect/conditional/"
+                    "return/residual: "
+                    "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
+                    share(bucket(ExecutionTimeBucket::kAotWriteCompletion)),
+                    share(bucket(ExecutionTimeBucket::kAotWriteFault)),
+                    share(bucket(ExecutionTimeBucket::kAotReentry)),
+                    share(bucket(ExecutionTimeBucket::kAotIndirect)),
+                    share(bucket(ExecutionTimeBucket::kAotConditional)),
+                    share(bucket(ExecutionTimeBucket::kAotReturn)),
+                    share(handler_residual));
+                logger.info(
+                    "Win32 aot transfer function share "
+                    "resolve/hle-boundary-scan/dynamic-translate/residency: "
+                    "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
+                    share(bucket(ExecutionTimeBucket::kAotTransferResolve)),
+                    share(bucket(ExecutionTimeBucket::kAotHleBoundaryScan)),
+                    share(bucket(ExecutionTimeBucket::kAotDynamicTranslate)),
+                    share(bucket(ExecutionTimeBucket::kAotResidency)));
+            }
+        }
+        // Task 327: split one translation rendezvous into scheduling latency
+        // and worker CPU. The residual against guest_total exposes a wrong
+        // measurement boundary rather than hiding it.
+        {
+            const auto& worker = attempt.aot_worker_timing;
+            const std::uint64_t measured =
+                worker.wake_latency_cycles + worker.segment_table_cycles +
+                worker.append_cycles + worker.complete_latency_cycles;
+            const std::uint64_t worker_residual =
+                worker.guest_total_cycles > measured
+                    ? worker.guest_total_cycles - measured
+                    : 0U;
+            logger.info(
+                "Win32 aot worker timing enabled/translate/other/clamped: "
+                "{}/{}/{}/{}",
+                worker.enabled, worker.translate_count,
+                worker.other_operation_count, worker.clamped_sample_count);
+            logger.info(
+                "Win32 aot worker timing cycles "
+                "wake/segment-table/append/complete/residual/guest-total: "
+                "{}/{}/{}/{}/{}/{}",
+                worker.wake_latency_cycles, worker.segment_table_cycles,
+                worker.append_cycles, worker.complete_latency_cycles,
+                worker_residual, worker.guest_total_cycles);
+            logger.info(
+                "Win32 aot worker timing max wake/append/guest-total: "
+                "{}/{}/{}",
+                worker.max_wake_latency_cycles, worker.max_append_cycles,
+                worker.max_guest_total_cycles);
+            if (worker.guest_total_cycles != 0U && worker.translate_count != 0U)
+            {
+                const auto share = [&worker](std::uint64_t value) {
+                    return 100.0 * static_cast<double>(value) /
+                        static_cast<double>(worker.guest_total_cycles);
+                };
+                logger.info(
+                    "Win32 aot worker timing share "
+                    "wake/segment-table/append/complete/residual: "
+                    "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
+                    share(worker.wake_latency_cycles),
+                    share(worker.segment_table_cycles),
+                    share(worker.append_cycles),
+                    share(worker.complete_latency_cycles),
+                    share(worker_residual));
+                logger.info(
+                    "Win32 aot worker timing mean per translate "
+                    "guest-total/append/request-gap: {}/{}/{}",
+                    worker.guest_total_cycles / worker.translate_count,
+                    worker.append_cycles / worker.translate_count,
+                    worker.request_gap_cycles / worker.translate_count);
+            }
+        }
         if (total != 0U)
         {
             logger.info(

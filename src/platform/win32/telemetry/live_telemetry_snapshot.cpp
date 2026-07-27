@@ -576,6 +576,10 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.execution_time_profile != nullptr
             ? SnapshotExecutionTimeProfile(*context.execution_time_profile)
             : Win32ExecutionTimeProfileSnapshot{};
+    attempt->aot_worker_timing =
+        context.aot_worker_timing != nullptr
+            ? SnapshotAotWorkerTiming(*context.aot_worker_timing)
+            : Win32AotWorkerTimingSnapshot{};
     attempt->native_fast_path_entry_count =
         context.native_fast_path.entry_count.load(std::memory_order_relaxed);
     attempt->native_fast_path_return_count =

@@ -126,6 +126,12 @@ void RecordAotOtherBoundarySample(ThreadContext* context,
 void AccumulateAotResidency(ThreadContext* context,
                             std::uint32_t guest_entry_eip)
 {
+    // Task 326 function-axis attribution. Instrumented at the definition so
+    // calls from aot_dbt_dispatch.cpp and aot_dbt_hle_dispatch.cpp are included
+    // too; that surplus over the handler axis is itself informative.
+    const ExecutionTimeScope residency_time_scope(
+        context != nullptr ? context->execution_time_profile.get() : nullptr,
+        ExecutionTimeBucket::kAotResidency);
     ZydisDecoder decoder;
     if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LEGACY_32,
                                        ZYDIS_STACK_WIDTH_32)))
@@ -454,12 +460,25 @@ DWORD WINAPI AotTranslationWorkerProc(void* parameter)
         {
             return 2;
         }
+        // Task 327: T1, taken before anything else so the wake latency it ends
+        // contains only scheduling. Shutdown accumulates nothing.
+        const std::uint64_t wake_cycles = ReadAotWorkerTimingCycles();
         if (context->aot_translation_shutdown.load(std::memory_order_acquire))
         {
             return 0;
         }
+        Win32AotWorkerTimingProfile* worker_timing =
+            context->aot_worker_timing.get();
         const auto operation = static_cast<AotWorkerOperation>(
             context->aot_worker_operation.load(std::memory_order_acquire));
+        if (operation != AotWorkerOperation::kTranslate)
+        {
+            RecordAotWorkerOtherOperation(worker_timing);
+        }
+        else
+        {
+            RecordAotWorkerWake(worker_timing, wake_cycles);
+        }
         if (operation == AotWorkerOperation::kPatchInlineCache)
         {
             context->aot_inline_cache_patch_result =
@@ -494,18 +513,34 @@ DWORD WINAPI AotTranslationWorkerProc(void* parameter)
             // Task 264 Phase 3a: resolve each shadow segment register so the
             // translator can fold the base into segment-override accesses.
             Win32AotSegmentTable segment_table{};
+            const std::uint64_t segment_table_start =
+                ReadAotWorkerTimingCycles();
             BuildWin32AotSegmentTable(context, &segment_table);
+            const std::uint64_t append_start = ReadAotWorkerTimingCycles();
+            RecordAotWorkerSegmentTable(
+                worker_timing,
+                AotWorkerTimingDelta(
+                    worker_timing, segment_table_start, append_start));
             AppendWin32DynamicAotTranslation(
                 context->runtime_base, context->runtime_size, target,
                 context->aot_excluded_guest_ranges,
                 &context->aot_page_write_watch, context->aot_placement,
                 &segment_table, &context->aot_translation_result);
+            RecordAotWorkerAppend(
+                worker_timing,
+                AotWorkerTimingDelta(
+                    worker_timing, append_start,
+                    ReadAotWorkerTimingCycles()));
             if (context->aot_translation_result.unsafe_failure)
             {
                 context->aot_terminal_failure.store(
                     true, std::memory_order_release);
             }
         }
+        // Task 327: T2 immediately before the completion signal, so the
+        // complete latency it anchors contains only scheduling.
+        RecordAotWorkerCompleteSignal(
+            worker_timing, ReadAotWorkerTimingCycles());
         SetEvent(context->aot_translation_complete_event);
     }
 }
@@ -527,12 +562,24 @@ bool RequestAotDynamicTranslation(ThreadContext* context,
         static_cast<std::uint32_t>(AotWorkerOperation::kTranslate),
         std::memory_order_release);
     context->aot_translation_target.store(target, std::memory_order_release);
+    // Task 327: T0 must be taken immediately before the signal, or the wake
+    // latency it anchors would absorb setup work instead.
+    Win32AotWorkerTimingProfile* worker_timing =
+        context->aot_worker_timing.get();
+    const std::uint64_t request_cycles =
+        worker_timing != nullptr ? ReadAotWorkerTimingCycles() : 0U;
+    RecordAotWorkerRequestSignal(worker_timing, request_cycles);
     if (SetEvent(context->aot_translation_request_event) == 0 ||
         WaitForSingleObject(context->aot_translation_complete_event,
                             INFINITE) != WAIT_OBJECT_0)
     {
         context->aot_terminal_failure.store(true, std::memory_order_release);
         return false;
+    }
+    if (worker_timing != nullptr)
+    {
+        RecordAotWorkerGuestResume(
+            worker_timing, request_cycles, ReadAotWorkerTimingCycles());
     }
     if (context->aot_translation_result.unsafe_failure)
     {
@@ -579,6 +626,11 @@ bool HandleAotGuestCodeWriteCompletion(EXCEPTION_POINTERS* exception_info,
                                        CONTEXT* win32_context,
                                        ThreadContext* context)
 {
+    // Task 326 handler-axis attribution. Function scope, so every early return
+    // is covered.
+    const ExecutionTimeScope write_completion_time_scope(
+        context != nullptr ? context->execution_time_profile.get() : nullptr,
+        ExecutionTimeBucket::kAotWriteCompletion);
     if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
         win32_context == nullptr || context == nullptr ||
         !HasPendingWin32AotGuestWrite(context->aot_page_write_watch) ||
@@ -612,6 +664,9 @@ bool HandleAotGuestCodeWriteFault(EXCEPTION_POINTERS* exception_info,
                                   CONTEXT* win32_context,
                                   ThreadContext* context)
 {
+    const ExecutionTimeScope write_fault_time_scope(
+        context != nullptr ? context->execution_time_profile.get() : nullptr,
+        ExecutionTimeBucket::kAotWriteFault);
     if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
         win32_context == nullptr || context == nullptr ||
         context->aot_placement == nullptr ||
@@ -774,6 +829,11 @@ bool IsAotInlineCacheMiss(const ThreadContext* context,
 bool IsAotHleBoundaryAddress(const ThreadContext* context,
                              std::uint32_t guest_address)
 {
+    // Task 326. The context is const because this is a query, but the profile
+    // is observation state rather than execution state.
+    const ExecutionTimeScope hle_boundary_scan_time_scope(
+        context != nullptr ? context->execution_time_profile.get() : nullptr,
+        ExecutionTimeBucket::kAotHleBoundaryScan);
     if (context == nullptr)
     {
         return false;
@@ -799,6 +859,9 @@ bool ResolveAotTransferTarget(ThreadContext* context,
                               bool force_generation,
                               AotRetiredTrapResolution* retired_resolution)
 {
+    const ExecutionTimeScope transfer_resolve_time_scope(
+        context != nullptr ? context->execution_time_profile.get() : nullptr,
+        ExecutionTimeBucket::kAotTransferResolve);
     if (retired_resolution != nullptr)
     {
         *retired_resolution = AotRetiredTrapResolution::kFallback;
@@ -843,9 +906,19 @@ bool ResolveAotTransferTarget(ThreadContext* context,
         context->aot_dynamic_attempt_count.fetch_add(
             1, std::memory_order_relaxed);
     }
-    if ((!dynamic_translation && !retired_target) ||
-        !RequestAotDynamicTranslation(
-            context, target, &dynamic_cache_entry, &dynamic_added_bytes))
+    bool dynamic_translation_failed = false;
+    {
+        const ExecutionTimeScope dynamic_translate_time_scope(
+            context->execution_time_profile.get(),
+            ExecutionTimeBucket::kAotDynamicTranslate);
+        // Short-circuit order preserved: the request only runs when the first
+        // condition is false, exactly as before.
+        dynamic_translation_failed =
+            (!dynamic_translation && !retired_target) ||
+            !RequestAotDynamicTranslation(
+                context, target, &dynamic_cache_entry, &dynamic_added_bytes);
+    }
+    if (dynamic_translation_failed)
     {
         if (retired_target)
         {
@@ -927,6 +1000,9 @@ bool HandleAotConditionalTransfer(EXCEPTION_POINTERS* exception_info,
                                   CONTEXT* win32_context,
                                   ThreadContext* context)
 {
+    const ExecutionTimeScope conditional_time_scope(
+        context != nullptr ? context->execution_time_profile.get() : nullptr,
+        ExecutionTimeBucket::kAotConditional);
     if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
         win32_context == nullptr || context == nullptr ||
         context->aot_placement == nullptr || !context->aot_reentry_pending ||
@@ -994,6 +1070,9 @@ bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
                                AotDbtDispatchFallbackReason* fallback_reason,
                                Win32AotTransferOrigin origin)
 {
+    const ExecutionTimeScope indirect_time_scope(
+        context != nullptr ? context->execution_time_profile.get() : nullptr,
+        ExecutionTimeBucket::kAotIndirect);
     if (fallback_reason != nullptr)
     {
         *fallback_reason = AotDbtDispatchFallbackReason::kUnknown;
@@ -1188,6 +1267,9 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
                              AotDbtDispatchFallbackReason* fallback_reason,
                              Win32AotTransferOrigin origin)
 {
+    const ExecutionTimeScope return_transfer_time_scope(
+        context != nullptr ? context->execution_time_profile.get() : nullptr,
+        ExecutionTimeBucket::kAotReturn);
     if (fallback_reason != nullptr)
     {
         *fallback_reason = AotDbtDispatchFallbackReason::kUnknown;
@@ -1531,6 +1613,9 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
                       CONTEXT* win32_context,
                       ThreadContext* context)
 {
+    const ExecutionTimeScope reentry_time_scope(
+        context != nullptr ? context->execution_time_profile.get() : nullptr,
+        ExecutionTimeBucket::kAotReentry);
     if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
         win32_context == nullptr || context == nullptr ||
         context->aot_placement == nullptr)
