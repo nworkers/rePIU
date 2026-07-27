@@ -156,6 +156,30 @@ void RecordAotAppendScale(Win32AotWorkerTimingProfile* profile,
         profile->max_plan_instruction_count, scale.plan_instruction_count);
 }
 
+void RecordAotPlanBuildProfile(Win32AotWorkerTimingProfile* profile,
+                               const runtime::AotPlanBuildProfile& plan)
+{
+    if (profile == nullptr || !plan.enabled)
+    {
+        return;
+    }
+    ++profile->plan_profile_count;
+    profile->plan_decoder_init_cycles += plan.decoder_init_cycles;
+    profile->plan_decode_cycles += plan.decode_cycles;
+    profile->plan_record_build_cycles += plan.record_build_cycles;
+    profile->plan_classify_cycles += plan.classify_cycles;
+    profile->plan_walk_cycles += plan.walk_cycles;
+    profile->plan_sweep_cycles += plan.sweep_cycles;
+    profile->plan_total_cycles += plan.total_cycles;
+    profile->plan_decode_count += plan.decode_count;
+    profile->plan_record_count += plan.record_count;
+    profile->plan_sweep_pass_count += plan.sweep_pass_count;
+    profile->plan_sweep_record_visit_count += plan.sweep_record_visit_count;
+    profile->clamped_sample_count += plan.clamped_sample_count;
+    profile->max_plan_sweep_pass_count = std::max(
+        profile->max_plan_sweep_pass_count, plan.sweep_pass_count);
+}
+
 Win32AotWorkerTimingSnapshot SnapshotAotWorkerTiming(
     const Win32AotWorkerTimingProfile& profile)
 {
@@ -185,6 +209,20 @@ Win32AotWorkerTimingSnapshot SnapshotAotWorkerTiming(
     snapshot.emitted_byte_total = profile.emitted_byte_total;
     snapshot.snapshot_byte_total = profile.snapshot_byte_total;
     snapshot.max_plan_instruction_count = profile.max_plan_instruction_count;
+    snapshot.plan_profile_count = profile.plan_profile_count;
+    snapshot.plan_decoder_init_cycles = profile.plan_decoder_init_cycles;
+    snapshot.plan_decode_cycles = profile.plan_decode_cycles;
+    snapshot.plan_record_build_cycles = profile.plan_record_build_cycles;
+    snapshot.plan_classify_cycles = profile.plan_classify_cycles;
+    snapshot.plan_walk_cycles = profile.plan_walk_cycles;
+    snapshot.plan_sweep_cycles = profile.plan_sweep_cycles;
+    snapshot.plan_total_cycles = profile.plan_total_cycles;
+    snapshot.plan_decode_count = profile.plan_decode_count;
+    snapshot.plan_record_count = profile.plan_record_count;
+    snapshot.plan_sweep_pass_count = profile.plan_sweep_pass_count;
+    snapshot.plan_sweep_record_visit_count =
+        profile.plan_sweep_record_visit_count;
+    snapshot.max_plan_sweep_pass_count = profile.max_plan_sweep_pass_count;
     return snapshot;
 }
 

@@ -86,6 +86,35 @@ struct AotTranslationPlan
     std::string message;
 };
 
+// Task 330: optional attribution of one plan build, in the units of
+// `runtime::ReadCycleCounter`. Observation only — a null profile leaves the
+// builder reading no timestamps and behaving exactly as before.
+//
+// The stages partition the build: `decode` covers operand-array initialization
+// and `ZydisDecoderDecodeFull`, `record_build` the instruction record and its
+// byte copy, `classify` boundary/branch classification and jump-table reads,
+// `walk` the pending/visited structures and range lookups, and `sweep` the
+// jump-table reclassification passes. `total_cycles` is measured independently,
+// so a derived residual shows whether the partition was complete.
+struct AotPlanBuildProfile
+{
+    bool enabled = false;
+    std::uint64_t decoder_init_cycles = 0;
+    std::uint64_t decode_cycles = 0;
+    std::uint64_t record_build_cycles = 0;
+    std::uint64_t classify_cycles = 0;
+    std::uint64_t walk_cycles = 0;
+    std::uint64_t sweep_cycles = 0;
+    std::uint64_t total_cycles = 0;
+    std::uint32_t decode_count = 0;
+    std::uint32_t record_count = 0;
+    // Answers how often the sweep re-walks the whole plan, which no measurement
+    // has covered before.
+    std::uint32_t sweep_pass_count = 0;
+    std::uint32_t sweep_record_visit_count = 0;
+    std::uint32_t clamped_sample_count = 0;
+};
+
 bool BuildAotTranslationPlan(const RelocatedRuntimeImage& image,
                              AotTranslationPlan* plan);
 bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
@@ -95,7 +124,8 @@ bool BuildAotTranslationPlanFromEntry(
     const RelocatedRuntimeImage& image,
     std::uint32_t entry_address,
     const std::vector<AotExcludedGuestRange>& excluded_ranges,
-    AotTranslationPlan* plan);
+    AotTranslationPlan* plan,
+    AotPlanBuildProfile* profile = nullptr);
 
 }  // namespace repiu::runtime
 

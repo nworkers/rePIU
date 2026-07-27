@@ -1,5 +1,7 @@
 #include "repiu/runtime/aot_translation_plan.h"
 
+#include "repiu/runtime/cycle_clock.h"
+
 #include <Zydis.h>
 
 #include <chrono>
@@ -409,6 +411,80 @@ bool IsExcludedGuestAddress(
     return false;
 }
 
+// Task 330: one stage of a plan build. Closing is idempotent and happens in the
+// destructor too, so the many `break` exits inside the walk cannot leak a stage.
+// A null profile makes every operation a no-op and reads no timestamp.
+enum class PlanBuildPhase
+{
+    kDecoderInit,
+    kDecode,
+    kRecordBuild,
+    kClassify,
+    kWalk,
+    kSweep,
+    kTotal,
+};
+
+std::uint64_t* PlanBuildPhaseBucket(AotPlanBuildProfile* profile,
+                                    PlanBuildPhase phase)
+{
+    if (profile == nullptr)
+    {
+        return nullptr;
+    }
+    switch (phase)
+    {
+        case PlanBuildPhase::kDecoderInit:
+            return &profile->decoder_init_cycles;
+        case PlanBuildPhase::kDecode:
+            return &profile->decode_cycles;
+        case PlanBuildPhase::kRecordBuild:
+            return &profile->record_build_cycles;
+        case PlanBuildPhase::kClassify:
+            return &profile->classify_cycles;
+        case PlanBuildPhase::kWalk:
+            return &profile->walk_cycles;
+        case PlanBuildPhase::kSweep:
+            return &profile->sweep_cycles;
+        case PlanBuildPhase::kTotal:
+            return &profile->total_cycles;
+    }
+    return nullptr;
+}
+
+class PlanBuildPhaseTimer
+{
+public:
+    PlanBuildPhaseTimer(AotPlanBuildProfile* profile, PlanBuildPhase phase)
+        : profile_(profile),
+          bucket_(PlanBuildPhaseBucket(profile, phase)),
+          start_(bucket_ != nullptr ? ReadCycleCounter() : 0U)
+    {
+    }
+    PlanBuildPhaseTimer(const PlanBuildPhaseTimer&) = delete;
+    PlanBuildPhaseTimer& operator=(const PlanBuildPhaseTimer&) = delete;
+    ~PlanBuildPhaseTimer() { Close(); }
+
+    // Returns the closing timestamp so the next stage starts from it instead of
+    // reading the counter twice at one boundary.
+    std::uint64_t Close()
+    {
+        if (bucket_ == nullptr)
+        {
+            return 0U;
+        }
+        const std::uint64_t end = ReadCycleCounter();
+        *bucket_ += CycleDelta(start_, end, &profile_->clamped_sample_count);
+        bucket_ = nullptr;
+        return end;
+    }
+
+private:
+    AotPlanBuildProfile* profile_;
+    std::uint64_t* bucket_;
+    std::uint64_t start_;
+};
+
 void AppendExcludedBoundary(std::uint32_t address,
                             AotTranslationPlan* plan,
                             AotBasicBlock* block)
@@ -431,7 +507,8 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                                       const std::vector<
                                           AotExcludedGuestRange>&
                                           excluded_ranges,
-                                      AotTranslationPlan* plan)
+                                      AotTranslationPlan* plan,
+                                      AotPlanBuildProfile* profile)
 {
     constexpr std::uint32_t kMaximumInstructions = 2'000'000U;
     constexpr std::uint32_t kMaximumBlockInstructions = 65'536U;
@@ -441,13 +518,27 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
     }
     *plan = AotTranslationPlan{};
     plan->entry_address = entry_address;
+    if (profile != nullptr)
+    {
+        *profile = AotPlanBuildProfile{};
+        profile->enabled = true;
+    }
+    // Task 330: measured independently of the stages, so the derived residual
+    // shows whether the partition covered the build.
+    PlanBuildPhaseTimer total_timer(profile, PlanBuildPhase::kTotal);
     const auto started = std::chrono::steady_clock::now();
     ZydisDecoder decoder;
-    if (!ZYAN_SUCCESS(ZydisDecoderInit(
-            &decoder, ZYDIS_MACHINE_MODE_LEGACY_32, ZYDIS_STACK_WIDTH_32)))
     {
-        plan->message = "failed to initialize Zydis legacy-32 decoder";
-        return false;
+        PlanBuildPhaseTimer decoder_init_timer(
+            profile, PlanBuildPhase::kDecoderInit);
+        if (!ZYAN_SUCCESS(ZydisDecoderInit(
+                &decoder, ZYDIS_MACHINE_MODE_LEGACY_32,
+                ZYDIS_STACK_WIDTH_32)))
+        {
+            decoder_init_timer.Close();
+            plan->message = "failed to initialize Zydis legacy-32 decoder";
+            return false;
+        }
     }
     std::vector<std::uint32_t> pending{plan->entry_address};
     std::unordered_set<std::uint32_t> visited_blocks;
@@ -458,6 +549,10 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
     {
         while (!pending.empty() && plan->instruction_count < kMaximumInstructions)
         {
+            // Task 330: block-entry bookkeeping belongs to the same walk stage
+            // as the per-instruction bookkeeping below.
+            PlanBuildPhaseTimer block_walk_timer(profile,
+                                                 PlanBuildPhase::kWalk);
             const std::uint32_t block_entry = pending.back();
             pending.pop_back();
             if (!visited_blocks.insert(block_entry).second)
@@ -470,7 +565,14 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                 plan->blocks.push_back(AotBasicBlock{});
                 AotBasicBlock& block = plan->blocks.back();
                 block.guest_address = block_entry;
+                block_walk_timer.Close();
+                PlanBuildPhaseTimer excluded_timer(
+                    profile, PlanBuildPhase::kRecordBuild);
                 AppendExcludedBoundary(block_entry, plan, &block);
+                if (profile != nullptr)
+                {
+                    ++profile->record_count;
+                }
                 continue;
             }
             if (FindBytes(image, block_entry, 1U) == nullptr)
@@ -483,13 +585,24 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
             AotBasicBlock& block = plan->blocks.back();
             block.guest_address = block_entry;
             std::uint32_t address = block_entry;
+            block_walk_timer.Close();
             for (std::uint32_t block_instruction = 0;
                  block_instruction < kMaximumBlockInstructions;
                  ++block_instruction)
             {
+                // Task 330 stage 1: pending/visited structures, the excluded
+                // range scan, and the object lookup.
+                PlanBuildPhaseTimer walk_timer(profile, PlanBuildPhase::kWalk);
                 if (IsExcludedGuestAddress(excluded_ranges, address))
                 {
+                    walk_timer.Close();
+                    PlanBuildPhaseTimer excluded_timer(
+                        profile, PlanBuildPhase::kRecordBuild);
                     AppendExcludedBoundary(address, plan, &block);
+                    if (profile != nullptr)
+                    {
+                        ++profile->record_count;
+                    }
                     break;
                 }
                 if (!visited_instructions.insert(address).second)
@@ -503,15 +616,33 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                     ++plan->outside_image_target_count;
                     break;
                 }
+                walk_timer.Close();
+                // Task 330 stage 2: operand-array initialization and the decode
+                // itself, which is what "32us is large for Zydis" assumed.
+                PlanBuildPhaseTimer decode_timer(profile,
+                                                 PlanBuildPhase::kDecode);
                 ZydisDecodedInstruction instruction{};
                 ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
-                if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(
+                const bool decoded = ZYAN_SUCCESS(ZydisDecoderDecodeFull(
                         &decoder, bytes, ZYDIS_MAX_INSTRUCTION_LENGTH,
-                        &instruction, operands)) || instruction.length == 0U)
+                        &instruction, operands)) && instruction.length != 0U;
+                decode_timer.Close();
+                if (profile != nullptr)
+                {
+                    ++profile->decode_count;
+                }
+                if (!decoded)
                 {
                     ++plan->decode_failure_count;
                     break;
                 }
+                // Task 330 stage 3: the record and its per-instruction byte
+                // copy, which is the only guaranteed heap allocation here.
+                // Attribution caveat, fixed before measuring: the record's
+                // `push_back` into the block happens inside each classification
+                // branch, so vector growth is counted in `classify`, not here.
+                PlanBuildPhaseTimer record_timer(profile,
+                                                 PlanBuildPhase::kRecordBuild);
                 ++plan->instruction_count;
                 plan->source_code_bytes += instruction.length;
                 plan->estimated_emitted_bytes += instruction.length;
@@ -521,6 +652,16 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                 record.length = instruction.length;
                 record.mnemonic = static_cast<std::uint16_t>(instruction.mnemonic);
                 record.bytes.assign(bytes, bytes + instruction.length);
+                record_timer.Close();
+                if (profile != nullptr)
+                {
+                    ++profile->record_count;
+                }
+                // Task 330 stage 4: classification runs to the end of this
+                // iteration on every path, so the timer closes in its
+                // destructor rather than at each `break`.
+                PlanBuildPhaseTimer classify_timer(profile,
+                                                   PlanBuildPhase::kClassify);
                 const auto guard = jump_table_guards.find(address);
                 if (guard != jump_table_guards.end())
                 {
@@ -676,11 +817,23 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
         sweep_jump_table_guards = false;
         if (plan->instruction_count < kMaximumInstructions)
         {
+            // Task 330 stage 5: one pass re-walks every record of every block,
+            // and a reclassification schedules another pass. The pass and visit
+            // counts here are the first measurement of how often that happens.
+            PlanBuildPhaseTimer sweep_timer(profile, PlanBuildPhase::kSweep);
+            if (profile != nullptr)
+            {
+                ++profile->sweep_pass_count;
+            }
             for (AotBasicBlock& swept_block : plan->blocks)
             {
                 for (AotInstructionRecord& swept_record :
                      swept_block.instructions)
                 {
+                    if (profile != nullptr)
+                    {
+                        ++profile->sweep_record_visit_count;
+                    }
                     if (!TryReclassifyJumpTable(image, decoder,
                                                 jump_table_guards,
                                                 &swept_record))

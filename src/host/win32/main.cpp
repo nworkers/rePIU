@@ -1366,6 +1366,66 @@ void PrintExecutionAttempt(
                     worker.max_arena_snapshot_cycles,
                     worker.max_plan_instruction_count);
             }
+            // Task 330: inside plan_build, which Task 329 left as the largest
+            // append phase at 39.94%.
+            if (worker.plan_profile_count != 0U)
+            {
+                const std::uint64_t plan_stage_sum =
+                    worker.plan_decoder_init_cycles +
+                    worker.plan_decode_cycles +
+                    worker.plan_record_build_cycles +
+                    worker.plan_classify_cycles + worker.plan_walk_cycles +
+                    worker.plan_sweep_cycles;
+                const std::uint64_t plan_stage_residual =
+                    worker.plan_total_cycles > plan_stage_sum
+                        ? worker.plan_total_cycles - plan_stage_sum
+                        : 0U;
+                logger.info(
+                    "Win32 aot plan stage cycles "
+                    "decoder-init/decode/record-build/classify/walk/sweep/"
+                    "residual: {}/{}/{}/{}/{}/{}/{}",
+                    worker.plan_decoder_init_cycles, worker.plan_decode_cycles,
+                    worker.plan_record_build_cycles,
+                    worker.plan_classify_cycles, worker.plan_walk_cycles,
+                    worker.plan_sweep_cycles, plan_stage_residual);
+                if (worker.plan_total_cycles != 0U)
+                {
+                    const auto plan_share = [&worker](std::uint64_t value) {
+                        return 100.0 * static_cast<double>(value) /
+                            static_cast<double>(worker.plan_total_cycles);
+                    };
+                    logger.info(
+                        "Win32 aot plan stage share "
+                        "decoder-init/decode/record-build/classify/walk/sweep/"
+                        "residual: "
+                        "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/"
+                        "{:.2f}%",
+                        plan_share(worker.plan_decoder_init_cycles),
+                        plan_share(worker.plan_decode_cycles),
+                        plan_share(worker.plan_record_build_cycles),
+                        plan_share(worker.plan_classify_cycles),
+                        plan_share(worker.plan_walk_cycles),
+                        plan_share(worker.plan_sweep_cycles),
+                        plan_share(plan_stage_residual));
+                }
+                logger.info(
+                    "Win32 aot plan scale builds/decodes/records/sweep-passes/"
+                    "sweep-visits/max-passes: {}/{}/{}/{}/{}/{}",
+                    worker.plan_profile_count, worker.plan_decode_count,
+                    worker.plan_record_count, worker.plan_sweep_pass_count,
+                    worker.plan_sweep_record_visit_count,
+                    worker.max_plan_sweep_pass_count);
+                if (worker.plan_decode_count != 0U)
+                {
+                    logger.info(
+                        "Win32 aot plan cycles per instruction "
+                        "total/decode/record-build: {}/{}/{}",
+                        worker.plan_total_cycles / worker.plan_decode_count,
+                        worker.plan_decode_cycles / worker.plan_decode_count,
+                        worker.plan_record_build_cycles /
+                            worker.plan_decode_count);
+                }
+            }
         }
         if (total != 0U)
         {

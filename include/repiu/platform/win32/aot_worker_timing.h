@@ -1,5 +1,7 @@
 #pragma once
 
+#include "repiu/runtime/aot_translation_plan.h"
+
 #include <cstdint>
 
 namespace repiu::platform::win32
@@ -73,6 +75,23 @@ struct Win32AotWorkerTimingProfile
     std::uint64_t emitted_byte_total = 0;
     std::uint64_t snapshot_byte_total = 0;
     std::uint32_t max_plan_instruction_count = 0;
+
+    // Task 330: the platform-neutral plan builder's own stages, accumulated
+    // here so `plan_build_cycles` above can be decomposed. The builder measures
+    // these; this layer only sums them.
+    std::uint32_t plan_profile_count = 0;
+    std::uint64_t plan_decoder_init_cycles = 0;
+    std::uint64_t plan_decode_cycles = 0;
+    std::uint64_t plan_record_build_cycles = 0;
+    std::uint64_t plan_classify_cycles = 0;
+    std::uint64_t plan_walk_cycles = 0;
+    std::uint64_t plan_sweep_cycles = 0;
+    std::uint64_t plan_total_cycles = 0;
+    std::uint64_t plan_decode_count = 0;
+    std::uint64_t plan_record_count = 0;
+    std::uint64_t plan_sweep_pass_count = 0;
+    std::uint64_t plan_sweep_record_visit_count = 0;
+    std::uint32_t max_plan_sweep_pass_count = 0;
 };
 
 // One append's phase timings. Phases not reached stay zero.
@@ -123,6 +142,19 @@ struct Win32AotWorkerTimingSnapshot
     std::uint64_t emitted_byte_total = 0;
     std::uint64_t snapshot_byte_total = 0;
     std::uint32_t max_plan_instruction_count = 0;
+    std::uint32_t plan_profile_count = 0;
+    std::uint64_t plan_decoder_init_cycles = 0;
+    std::uint64_t plan_decode_cycles = 0;
+    std::uint64_t plan_record_build_cycles = 0;
+    std::uint64_t plan_classify_cycles = 0;
+    std::uint64_t plan_walk_cycles = 0;
+    std::uint64_t plan_sweep_cycles = 0;
+    std::uint64_t plan_total_cycles = 0;
+    std::uint64_t plan_decode_count = 0;
+    std::uint64_t plan_record_count = 0;
+    std::uint64_t plan_sweep_pass_count = 0;
+    std::uint64_t plan_sweep_record_visit_count = 0;
+    std::uint32_t max_plan_sweep_pass_count = 0;
 };
 
 std::uint64_t ReadAotWorkerTimingCycles();
@@ -162,6 +194,11 @@ void RecordAotAppendPhases(Win32AotWorkerTimingProfile* profile,
                            const Win32AotAppendPhaseSample& phases);
 void RecordAotAppendScale(Win32AotWorkerTimingProfile* profile,
                           const Win32AotAppendScaleSample& scale);
+
+// Task 330. Accumulates one plan build's neutral stage profile. Ignored when
+// the plan builder was called without profiling.
+void RecordAotPlanBuildProfile(Win32AotWorkerTimingProfile* profile,
+                               const runtime::AotPlanBuildProfile& plan);
 
 Win32AotWorkerTimingSnapshot SnapshotAotWorkerTiming(
     const Win32AotWorkerTimingProfile& profile);

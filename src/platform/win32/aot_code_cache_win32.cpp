@@ -671,12 +671,19 @@ bool AppendWin32DynamicAotTranslation(
     // Task 328 phases 2 and 3. Split out of the shared short-circuit into
     // sequential locals; the image build still runs only when the plan build
     // succeeded, exactly as before.
+    // Task 330: the builder attributes its own stages when profiling is on, so
+    // `plan_build_cycles` can be decomposed without this layer knowing how the
+    // builder is structured. Accumulation happens after the phase boundary
+    // below, so it is never counted inside the phase it describes.
+    runtime::AotPlanBuildProfile plan_profile;
     const std::uint64_t plan_start = phase_now();
     const bool plan_built = runtime::BuildAotTranslationPlanFromEntry(
-        arena_view, guest_entry, excluded_ranges, &plan);
+        arena_view, guest_entry, excluded_ranges, &plan,
+        timing != nullptr ? &plan_profile : nullptr);
     const std::uint64_t emit_start = phase_now();
     append_phases.plan_build_cycles =
         AotWorkerTimingDelta(timing, plan_start, emit_start);
+    RecordAotPlanBuildProfile(timing, plan_profile);
     append_scale.plan_block_count = plan.block_count;
     append_scale.plan_instruction_count = plan.instruction_count;
     const bool image_built =

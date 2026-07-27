@@ -9,6 +9,7 @@
 #include "arena_view_probe.h"
 #include "boundary_provenance_probe.h"
 #include "native_linear_span_probe.h"
+#include "plan_build_benchmark_probe.h"
 #include "retired_trap_profile_probe.h"
 #include "single_step_hotspot_profile_probe.h"
 #include "exception_transition_calibration_probe.h"
@@ -784,6 +785,13 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunArenaViewProbe())
+    {
+        return 1;
+    }
+    // Task 330 Part B: same code and input in Debug and Release, so the ratio
+    // is the build-configuration factor.
+    if (!repiu::tools::RunPlanBuildBenchmarkProbe(
+            image, image.relocated_entry_linear_address))
     {
         return 1;
     }

@@ -258,16 +258,6 @@ flowchart LR
 ## 최근 Task / Recent tasks
 
 
-### Task 302 — depth compare gate ABI 안전성 / Depth-compare gate ABI safety
-
-**확인됨:** 약 880초 이후 `_GRDEPTHBUFFERFUNCTION@4(3)` 거부가 stdcall frame을 누수해
-후속 low-address AV를 만들었습니다. compare `0..7`을 구현하고 신뢰 가능한 signature의
-실패는 ABI-preserving decline으로 반환합니다.
-[상세 작업 로그](../work-logs/20260726-302-glide-depth-compare-gate-safety.md)
-
-**Confirmed:** Supporting compare modes 0-7 and preserving the stdcall frame on safe declines
-removed the identified gate-leak class.
-
 ### Task 303 — Glide 구현 공백 fatal 가시화 / Fatal visibility for Glide gaps
 
 **확인됨:** 미구현 함수와 미지원 인자는 첫 고유 조합에서 `[repiu-fatal]`로 즉시
@@ -458,31 +448,85 @@ snapshot's whole lifecycle at about 79% of an append. **Unresolved:** why `plan_
 `image_emit`, and `validate` also fell 64-75% was not measured, and the progress and heartbeat
 multiples are single-sample.
 
+### Task 330 — plan build 귀속과 Debug 왜곡 / Plan-build attribution and Debug distortion
+
+**확인됨:** `plan_build`는 **Debug 왜곡이 지배**합니다. 같은 코드·같은 입력에서 명령당
+`24,512 tick`(Debug) 대 `2,162 tick`(Release), 비율 **1/11.34**입니다.
+
+**확인됨: 단계 순위가 구성에 따라 뒤집힙니다.** Debug는 `classify` 40.71% +
+`walk` 24.52%가 지배하지만, Release는 `decode`가 44.02%로 최대입니다. Debug 계수가
+단계마다 **2.67배(decode)에서 28.7배(classify)까지** 다르기 때문입니다.
+
+| 단계 | Debug | Release |
+|---|---:|---:|
+| `decode` | 10.37% | **44.02%** |
+| `classify` | **40.71%** | 16.07% |
+| `walk` | 24.52% | 18.81% |
+| `record_build` | 11.44% | 8.92% |
+| `sweep` | 0.68% | 0.68% |
+| residual | 12.28% | 11.51% |
+
+**따라서 방법론 결론이 하나 추가됩니다.** Debug에서 얻은 "어느 단계가 지배하는가"류
+결론은 Release에서 뒤집힐 수 있으므로 그대로 최적화 근거로 쓸 수 없습니다. 반면
+알고리즘 복잡도(Task 323의 O(n) 선형 탐색)나 대역폭·syscall 비용(Task 329의 스냅샷)처럼
+구성과 무관한 결론은 영향받지 않습니다.
+
+**확인됨:** "명령당 비용이 Zydis decode치고 크다"는 오래된 전제는 **전제부터
+틀렸습니다.** Debug 기준 decode는 `plan_build`의 10.37%뿐입니다. jump-table sweep도
+1패스·0.68%로 문제가 아닙니다(미측정이던 F5 해소).
+
+**미확정:** 게임을 Release로 구동 가능한지 확인하지 않았습니다.
+[상세 작업 로그](../work-logs/20260728-330-plan-build-attribution.md)
+
+**Confirmed:** `plan_build` is dominated by Debug distortion at 1/11.34, and the stage ranking
+inverts between configurations — `classify` leads in Debug at 40.71% while `decode` leads in
+Release at 44.02% — because the Debug factor ranges from 2.67x to 28.7x by stage. Debug-derived
+"which stage dominates" conclusions therefore cannot be used as optimization evidence, while
+complexity and bandwidth conclusions are unaffected. The premise that the per-instruction cost was
+large for Zydis decoding is refuted: decoding is 10.37% of `plan_build` in Debug, and the sweep
+runs a single pass at 0.68%.
+
 ## 다음 검증 / Next validation
 
-스냅샷 병목은 Task 329에서 제거됐고 측정으로 확인됐습니다. 다음 대상은 **`plan_build`**
-입니다. 이제 append의 **39.94%** 로 최대 항목이고 명령당 약 `25,433 tick`인데, 이는
-Zydis decode 하나로 설명하기에 여전히 큽니다. `image_emit`(19.01%)이 그 다음입니다.
+Task 330이 방향을 바꿨습니다. **다음 작업은 `plan_build` 최적화가 아니라 성능 기준을
+Release로 옮기는 것입니다.** `plan_build`의 Debug 계수가 11.34배이고 단계 순위까지
+뒤집히는 이상, Debug 측정만으로 최적화 대상을 고르면 틀린 곳을 고릅니다.
 
-동시에 확인할 것은 이번에 남은 **미측정 사실 한 가지**입니다. 스냅샷을 없애자
-`plan_build`·`image_emit`·`validate`가 모두 64~75% 싸졌는데, 원인을 재지 않았습니다.
-메모리 압력 감소가 유력한 설명이며, 이것이 맞다면 `plan_build`의 남은 비용 구조도
-decode가 아닐 수 있으므로 **원인을 먼저 귀속한 뒤 최적화**해야 합니다.
+선결 질문이던 "게임이 Release 빌드로 구동되는가"는 **사용자 제공 `repiu_log.txt`로
+해소됐습니다.** Release 로더(`v0.0.103`, `aot-dbt`)가 약 3분 48초간 MUSIC SELECT까지
+구동했고 종료 사유는 SDL exit, fatal halt 없음이었습니다. 다만 그 실행의 FPS는 `0.3`
+이었으므로 **Release 전환 자체가 성능 해결은 아닙니다.**
 
-전체 실행 축에서는 `kAotDynamicTranslate`가 26.44%로 내려왔으므로, 다음 측정은
-guest thread wall-clock 재귀속(Task 323/325의 갱신)이 필요합니다. 현재 상위 bucket
-비율은 중첩 때문에 합이 100%를 넘어(예: veh 90.89%, glide-gate 56.56%) 그대로
-해석할 수 없습니다.
+계획은 [20260728-331-release-baseline-migration.md](../design/20260728-331-release-baseline-migration.md)에
+정리했습니다. 순서는 다음과 같습니다.
+
+1. Release 실행 계약을 고정하고(빌드 스크립트에 구성 인자), 60초 `aot-dbt`를 Debug와
+   Release로 각각 실행해 EEPROM hash 일치, malformed 0, fatal 0, Glide 공백 목록
+   동일을 확인합니다.
+2. 성공하면 Task 322~328이 Debug에서 얻은 **단계 순위형 결론들을 Release에서 재확인**
+   합니다. 특히 append 내부 분포(`plan_build` 39.94%, `image_emit` 19.01%,
+   `placement` 39.84%)는 Debug 기준이므로 그대로 신뢰할 수 없습니다.
+3. 실패하면 실패 지점을 귀속하는 것이 그 자체로 다음 작업이 됩니다.
+
+Task 329가 남긴 미측정 사실(스냅샷 제거만으로 `plan_build`·`image_emit`·`validate`가
+64~75% 싸진 이유)도 Release 기준 측정이 있어야 제대로 다룰 수 있습니다.
+
+전체 실행 축의 상위 bucket 비율은 중첩 때문에 합이 100%를 넘으므로(예: veh 90.89%,
+glide-gate 56.56%) 현재 형태로는 해석할 수 없고, Release 전환 후 재귀속이 필요합니다.
 
 TF/VEH 제거 로드맵은 계속 보류합니다. 예외 전이가 1.20%인 이상 상한이 약 1.012배입니다.
 
-The snapshot bottleneck was removed in Task 329 and the removal is measured. The next target is
-`plan_build`, now the largest phase at 39.94% of an append and about `25,433` ticks per
-instruction, still large to explain by Zydis decoding alone, followed by `image_emit` at 19.01%.
-One unmeasured fact should be resolved alongside it: removing the snapshot also made
-`plan_build`, `image_emit`, and `validate` 64-75% cheaper, and if reduced memory pressure is the
-reason, the remaining `plan_build` cost may likewise not be decoding, so the cause should be
-attributed before it is optimized. Because `kAotDynamicTranslate` has fallen to 26.44%, guest
-wall-clock attribution needs redoing as well; the current top-level bucket shares overlap and sum
-past 100% (veh 90.89%, glide gate 56.56%), so they cannot be read as a decomposition. The TF/VEH
-removal roadmap stays on hold at a roughly 1.012x bound.
+Task 330 changed the direction: the next task is not optimizing `plan_build` but moving the
+performance baseline to Release, because an 11.34x Debug factor that also inverts the stage
+ranking means Debug measurements select the wrong target. The gating question is whether the game
+runs at all in a Release build — the probe passes in both configurations, but the loader has never
+been run in Release, and changed timing can expose races or VEH-path problems. The recommended
+order is to attempt a 60-second Release `aot-dbt` run checked against Debug for a matching EEPROM
+hash with zero malformed and fatal dispatch; if it succeeds, re-confirm in Release the
+stage-ranking conclusions Tasks 322-328 drew in Debug, starting with the append distribution
+(`plan_build` 39.94%, `image_emit` 19.01%, `placement` 39.84%) which cannot be trusted as-is; and
+if it fails, attributing the failure becomes the next task in its own right. Task 329's unmeasured
+side effect — why removing the snapshot also made `plan_build`, `image_emit`, and `validate`
+64-75% cheaper — likewise needs a Release baseline to address properly. The top-level bucket
+shares still overlap past 100% (veh 90.89%, glide gate 56.56%) and need re-attribution after that
+move. The TF/VEH removal roadmap stays on hold at a roughly 1.012x bound.

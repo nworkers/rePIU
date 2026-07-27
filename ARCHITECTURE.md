@@ -503,6 +503,20 @@ flowchart LR
 
 `runtime::BuildAotTranslationPlan` recovers a reachable Zydis CFG from relocated DOS/4GW LE images and classifies copy operations, direct relocations, HLE boundaries, returns, and indirect exits. It does not alter execution yet; `repiu_aot_probe` measures coverage and planning time.
 
+plan builder는 선택적 자기 계측을 가집니다(Task 330). `AotPlanBuildProfile` 포인터를
+받으면 decode, record 생성, 분류, walk, sweep 단계를 공용 `runtime::ReadCycleCounter`로
+귀속하고, `nullptr`이면 timestamp를 전혀 읽지 않습니다. 플랫폼 계층은 이 POD를 누적만
+하므로 공용 파일에 Win32 헤더가 들어가지 않습니다. `repiu_aot_probe`의
+`plan_build_bench_*` 그룹은 같은 코드를 Debug와 Release로 측정해 **빌드 구성 왜곡을
+분리**합니다. 이 구분이 필요한 이유는 두 구성에서 단계 순위가 뒤집히기 때문입니다.
+
+The plan builder carries optional self-attribution (Task 330): given an `AotPlanBuildProfile` it
+attributes decode, record build, classify, walk, and sweep through the neutral
+`runtime::ReadCycleCounter`, and reads no timestamp when the pointer is null. The platform layer
+only accumulates that POD, so no Win32 header enters platform-neutral code. The probe's
+`plan_build_bench_*` group measures the same code in Debug and Release to separate build
+configuration distortion, which matters because the stage ranking inverts between them.
+
 ## AOT code-cache emission
 
 `runtime::BuildAotCodeCacheImage`는 instruction-level plan에서 플랫폼 공용 비실행
