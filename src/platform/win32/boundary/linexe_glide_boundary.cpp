@@ -26,6 +26,17 @@ namespace repiu::platform::win32
 namespace
 {
 
+// Task 335. Off by default: the host poll loop is the only pump caller now.
+// Resolved once because the gate is a hot path.
+bool GlideGatePumpEventsEnabled()
+{
+    static const bool enabled = []() {
+        const char* value = std::getenv("REPIU_GLIDE_GATE_PUMP");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
 std::array<std::uint32_t,
            repiu::hle::kGlideImplementationIssueArgumentCapacity>
 CaptureGlideImplementationIssueArguments(
@@ -621,7 +632,16 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
     using go = repiu::hle::GlideGateId;
 
     ++context->glide_gate_entry_count;
-    context->glide_backend.PumpEvents();
+    // Task 335: pumping here costs a full host-thread rendezvous — measured at
+    // 1.92 rendezvous per gate entry, the second one being this call — while
+    // the host poll loop already pumps every iteration, roughly every 0.68ms
+    // since Task 333 and immediately whenever a command is posted. Events are
+    // still processed only on the host thread; only the redundant caller goes.
+    // `REPIU_GLIDE_GATE_PUMP=1` restores it for A/B.
+    if (GlideGatePumpEventsEnabled())
+    {
+        context->glide_backend.PumpEvents();
+    }
     context->glide_gate_ordinal = glide_export->ordinal;
     context->glide_gate_argument_bytes = glide_export->argument_byte_count;
     std::memset(context->glide_gate_name,

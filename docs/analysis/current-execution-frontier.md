@@ -589,7 +589,8 @@ non-reproducing early `0xC0000005` inside the host image, and 1.92 rendezvous pe
 `86,203 → 109,158`입니다. VEH는 `64.07% → 34.13%`, AOT 캐시 내 guest 실행은
 `35.93% → 65.87%`입니다. malformed 0, fatal 0, Glide 공백 0.
 
-**미확정:** reentry 내부 1위가 `single-step` 64.61%로 바뀌었고 아직 한 덩어리입니다.
+**미확정:** reentry 내부 1위가 `single-step` 64.61%로 바뀌었으나, reentry 핸들러
+자체가 이제 전체의 3.5%뿐이라 우선순위는 낮습니다.
 [상세 작업 로그](../work-logs/20260728-334-aot-reentry-decomposition.md)
 
 **Confirmed:** Gate G1 holds — 96.00% of `HandleAotReentry` was the linear scan in
@@ -601,9 +602,59 @@ degrading to the original scan when unusable — cut the per-call cost to `2,075
 frames from 891 to 1,597 and progress from 86,203 to 109,158, and moved the VEH from 64.07% to
 34.13% of wall clock while AOT cache execution rose from 35.93% to 65.87%, with malformed, fatal,
 and Glide-gap counts at zero. **Unresolved:** the largest remaining interval is now `single-step` at
-64.61%, still measured as one block.
+64.61%, though the reentry handler is only 3.5% of the run, so it is low priority.
+
+### Task 335 — gate 진입 pump rendezvous 제거 / Removing the per-gate pump rendezvous
+
+**확인됨:** gate 경로의 `PumpEvents`는 gate 진입마다 host rendezvous를 하나씩 더
+만들고 있었고(진입당 1.92회), host poll loop가 이미 매 iteration pump하므로
+중복이었습니다. 제거 후 진입당 `0.92`, Glide gate 비중 중앙값 `17.00% → 13.47%`,
+프레임 중앙값 `1,891 → 1,995`(+5.5%), progress 중앙값 +2.7%입니다.
+malformed 0, fatal 0, Glide 공백 0.
+
+**확인됨(방법론):** 같은 설정에서 실행 간 프레임 편차가 **18%** 이고 각 설정의 첫
+실행이 항상 가장 느립니다. **단일 표본이었다면 이 작업의 결론은 반대로 나왔습니다.**
+이후 성능 판정은 3회 이상 중앙값을 씁니다.
+
+**미확정:** 비용은 3.53%p 줄었는데 프레임은 5.5%만 늘었습니다. 실행을 지금 무엇이
+pacing하는지가 다음 질문입니다.
+[상세 작업 로그](../work-logs/20260728-335-glide-gate-pump-rendezvous.md)
+
+**Confirmed:** The gate path's `PumpEvents` added one host rendezvous per gate entry — 1.92 per
+entry — while the host poll loop already pumps every iteration, so it was redundant. Removing it
+leaves 0.92 per entry, moves the Glide gate's median share from 17.00% to 13.47%, and raises the
+median frame count from 1,891 to 1,995 (+5.5%) and median progress by 2.7%, with malformed, fatal,
+and Glide-gap counts at zero. **Confirmed as method:** frame counts vary 18% between runs of the
+same setting and the first run of a setting is always the slowest, so a single sample would have
+inverted this task's conclusion; performance judgements from here use the median of at least three
+runs. **Unresolved:** cost fell 3.53 points while frames rose only 5.5%, so what now paces the run
+is the next question.
 
 ## 다음 검증 / Next validation
+
+Task 335가 gate 진입마다 발생하던 중복 `PumpEvents` rendezvous를 제거했습니다.
+gate 진입당 rendezvous `1.92 → 0.92`, Glide gate 비중 중앙값 `17.00% → 13.47%`,
+프레임 중앙값 `1,891 → 1,995`(+5.5%)입니다.
+
+**그리고 방법론 하나가 확인됐습니다. 단일 표본이었다면 결론이 반대였습니다.** 같은
+설정에서 실행 간 프레임 편차가 18%(1,597~1,901)이며 각 설정의 첫 실행이 항상 가장
+느립니다. 이후 성능 판정은 **표본 3회 이상의 중앙값**으로 합니다.
+
+**미확정 — 다음 Task의 질문:** 비용은 3.53%p 줄었는데 프레임은 5.5%만 늘었습니다.
+즉 **실행은 더 이상 이 경로에 의해 제한되지 않습니다.** 지금 무엇이 pacing하는지를
+재야 합니다. 후보는 guest 내부의 타이머 대기(55ms tick 주입 대기), `grBufferSwap`의
+vsync, 그리고 아직 이름 없는 VEH residual 11.19%입니다.
+
+현재 Release 축(pump 제거 후)은 다음과 같습니다.
+
+| bucket | guest wall-clock 대비 |
+|---|---:|
+| **AOT 캐시 내 guest 실행** | **68.5~70.9%** |
+| Glide gate | 13.5% |
+| VEH residual(이름 없음) | 약 11% |
+| AOT transfer | 약 5% |
+
+---
 
 Task 334가 VEH의 나머지를 귀속하고 **다시 O(n) 선형 탐색을 찾아 제거했습니다.**
 
