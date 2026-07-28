@@ -85,30 +85,103 @@ std::uint32_t MscdexMsfToLba(std::uint32_t msf)
     return absolute >= 150U ? absolute - 150U : 0U;
 }
 
-std::uint32_t MscdexLbaToMsf(std::uint32_t lba)
+std::uint32_t MscdexFramesToMsf(std::uint32_t frames)
 {
-    lba += 150U;
-    return ((lba / (60U * 75U)) << 16U) |
-        (((lba / 75U) % 60U) << 8U) | (lba % 75U);
+    return ((frames / (60U * 75U)) << 16U) |
+        (((frames / 75U) % 60U) << 8U) | (frames % 75U);
 }
 
-bool HandleMscdexIoctl(ThreadContext* context, std::uint8_t* request)
+std::uint32_t MscdexLbaToMsf(std::uint32_t lba)
 {
-    const std::uint16_t offset = static_cast<std::uint16_t>(
-        request[14] | (static_cast<std::uint16_t>(request[15]) << 8U));
-    const std::uint16_t segment = static_cast<std::uint16_t>(
-        request[16] | (static_cast<std::uint16_t>(request[17]) << 8U));
-    const std::uint16_t length = static_cast<std::uint16_t>(
-        request[18] | (static_cast<std::uint16_t>(request[19]) << 8U));
-    std::uint8_t* control = ResolveMscdexBuffer(
-        context, segment, offset, std::max<std::uint16_t>(length, 16U));
-    if (control == nullptr)
+    return MscdexFramesToMsf(lba + 150U);
+}
+
+namespace
+{
+
+// MSCDEX addressing mode byte: 00h = HSG (plain LBA), 01h = Red Book (MSF).
+constexpr std::uint8_t kAddressModeRedBook = 1U;
+
+std::uint32_t EncodeMscdexAddress(std::uint32_t lba, std::uint8_t mode)
+{
+    return mode == kAddressModeRedBook ? MscdexLbaToMsf(lba) : lba;
+}
+
+void RecordIoctlSubfunction(ThreadContext* context, std::uint8_t subfunction,
+                            bool handled, std::uint16_t declared_length)
+{
+    context->mscdex_last_ioctl_subfunction = subfunction;
+    context->mscdex_last_ioctl_handled = handled;
+    context->mscdex_last_ioctl_length = declared_length;
+    if (!handled && subfunction < 32U)
     {
-        return false;
+        context->mscdex_ioctl_reject_mask |= 1U << subfunction;
     }
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(
+            &context->shared_live_telemetry->mscdex_last_ioctl_subfunction,
+            static_cast<long>(subfunction) | (handled ? 0x100L : 0L));
+        InterlockedExchange(
+            &context->shared_live_telemetry->mscdex_ioctl_reject_mask,
+            static_cast<long>(context->mscdex_ioctl_reject_mask));
+        InterlockedExchange(
+            &context->shared_live_telemetry->mscdex_last_ioctl_length,
+            static_cast<long>(declared_length));
+        InterlockedExchange(
+            &context->shared_live_telemetry->cd_audio_reported_lba,
+            static_cast<long>(context->cd_audio.current_lba()));
+    }
+}
+
+void RecordMscdexPlayRequest(ThreadContext* context, std::uint8_t mode,
+                             std::uint32_t start, std::uint32_t length)
+{
+    context->mscdex_last_play_mode = mode;
+    context->mscdex_last_play_start = start;
+    context->mscdex_last_play_length = length;
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(
+            &context->shared_live_telemetry->mscdex_last_play_mode,
+            static_cast<long>(mode));
+        InterlockedExchange(
+            &context->shared_live_telemetry->mscdex_last_play_start,
+            static_cast<long>(start));
+        InterlockedExchange(
+            &context->shared_live_telemetry->mscdex_last_play_length,
+            static_cast<long>(length));
+    }
+}
+
+void RecordMscdexSeekRequest(ThreadContext* context, std::uint8_t mode,
+                             std::uint32_t target)
+{
+    context->mscdex_last_seek_mode = mode;
+    context->mscdex_last_seek_target = target;
+    if (context->shared_live_telemetry != nullptr)
+    {
+        InterlockedExchange(
+            &context->shared_live_telemetry->mscdex_last_seek_target,
+            static_cast<long>(target));
+    }
+}
+
+bool HandleMscdexIoctlControl(ThreadContext* context, std::uint8_t* control,
+                              std::uint16_t length)
+{
     const auto& tracks = context->cd_image.tracks();
     switch (control[0])
     {
+        case 1:  // read head location
+        {
+            if (length < 6U) return false;
+            // The caller supplies the addressing mode it wants the answer in.
+            const std::uint8_t mode = control[1];
+            WritePacketU32(control, 2, EncodeMscdexAddress(
+                context->cd_audio.current_lba(), mode));
+            return true;
+        }
         case 6:  // device status
             if (length < 5U) return false;
             WritePacketU32(control, 1, 0x00000290U);
@@ -140,22 +213,99 @@ bool HandleMscdexIoctl(ThreadContext* context, std::uint8_t* request)
             const std::uint32_t lba = context->cd_audio.current_lba();
             const repiu::media::ChdCdTrack* track =
                 context->cd_image.FindTrackByLba(lba);
-            control[1] = track != nullptr && !track->audio ? 0x40U : 0U;
+            // Byte 1 packs the control nibble (40h marks a data track) with
+            // ADR, which is 1 whenever the Q channel carries position data.
+            control[1] = static_cast<std::uint8_t>(
+                (track != nullptr && !track->audio ? 0x40U : 0x00U) | 0x01U);
             control[2] = track != nullptr ? track->number : 0U;
-            control[3] = 1U;
-            WritePacketMsf3(control, 4, MscdexLbaToMsf(
-                track != nullptr ? lba - track->start_lba : 0U));
+            // Index 0 is the pregap, index 1 the track body.
+            const bool in_pregap =
+                track != nullptr && lba < track->start_lba;
+            control[3] = in_pregap ? 0U : 1U;
+            // Offsets 4..6 are a running time inside the track, so they use
+            // the plain frame-count conversion with no lead-in offset. During
+            // a pregap a real drive counts down toward index 1.
+            std::uint32_t relative = 0;
+            if (track != nullptr)
+            {
+                relative = in_pregap ? track->start_lba - lba
+                                     : lba - track->start_lba;
+            }
+            WritePacketMsf3(control, 4, MscdexFramesToMsf(relative));
             control[7] = 0U;
+            // Offsets 8..10 are the absolute disc address.
             WritePacketMsf3(control, 8, MscdexLbaToMsf(lba));
             return true;
         }
         case 15:  // audio status
             if (length < 11U) return false;
+            // Bit 0 reports paused; offsets 3 and 7 are the start and end of
+            // the last Play command, not the current head position.
             WritePacketU16(control, 1,
-                context->cd_audio.playing() ? 0U : 1U);
-            WritePacketU32(control, 3,
-                           MscdexLbaToMsf(context->cd_audio.current_lba()));
-            WritePacketU32(control, 7, 0U);
+                context->cd_audio.paused() ? 1U : 0U);
+            WritePacketU32(control, 3, MscdexLbaToMsf(
+                context->cd_audio.last_play_start_lba()));
+            WritePacketU32(control, 7, MscdexLbaToMsf(
+                context->cd_audio.last_play_end_lba()));
+            return true;
+        default:
+            return false;
+    }
+}
+
+}  // namespace
+
+bool HandleMscdexIoctl(ThreadContext* context, std::uint8_t* request)
+{
+    const std::uint16_t offset = static_cast<std::uint16_t>(
+        request[14] | (static_cast<std::uint16_t>(request[15]) << 8U));
+    const std::uint16_t segment = static_cast<std::uint16_t>(
+        request[16] | (static_cast<std::uint16_t>(request[17]) << 8U));
+    const std::uint16_t length = static_cast<std::uint16_t>(
+        request[18] | (static_cast<std::uint16_t>(request[19]) << 8U));
+    // A real driver sizes its reply from the control block code, not from the
+    // request's transfer count -- callers routinely leave that field short or
+    // zero. PIU asks for Q-channel with a count below 11, and gating on it
+    // rejected every position poll. Gate on what we actually validated as
+    // writable instead, which is never less than 16 bytes and so covers every
+    // control block defined here.
+    const std::uint16_t capacity = std::max<std::uint16_t>(length, 16U);
+    std::uint8_t* control =
+        ResolveMscdexBuffer(context, segment, offset, capacity);
+    if (control == nullptr)
+    {
+        return false;
+    }
+    const bool handled = HandleMscdexIoctlControl(context, control, capacity);
+    RecordIoctlSubfunction(context, control[0], handled, length);
+    return handled;
+}
+
+bool HandleMscdexIoctlOutput(ThreadContext* context, std::uint8_t* request)
+{
+    const std::uint16_t offset = static_cast<std::uint16_t>(
+        request[14] | (static_cast<std::uint16_t>(request[15]) << 8U));
+    const std::uint16_t segment = static_cast<std::uint16_t>(
+        request[16] | (static_cast<std::uint16_t>(request[17]) << 8U));
+    const std::uint16_t length = static_cast<std::uint16_t>(
+        request[18] | (static_cast<std::uint16_t>(request[19]) << 8U));
+    std::uint8_t* control = ResolveMscdexBuffer(
+        context, segment, offset, std::max<std::uint16_t>(length, 16U));
+    if (control == nullptr || length < 1U)
+    {
+        return false;
+    }
+    // An image-backed drive has no tray, no door lock, and no per-channel
+    // mixer, so these are accepted as no-ops rather than failed with 8103h,
+    // which would make a caller treat the drive as broken.
+    switch (control[0])
+    {
+        case 0:  // eject
+        case 1:  // lock/unlock door
+        case 2:  // reset drive
+        case 3:  // audio channel control
+        case 4:  // write device control string
+        case 5:  // close tray
             return true;
         default:
             return false;
@@ -615,13 +765,30 @@ bool HandleMscdexRequest(ThreadContext* context,
         case 0x03:
             success = HandleMscdexIoctl(context, request);
             break;
+        case 0x0C:
+            success = HandleMscdexIoctlOutput(context, request);
+            break;
+        case 0x83:  // seek
+        {
+            const std::uint8_t mode = request[13];
+            const std::uint32_t raw = ReadPacketU32(request, 14);
+            const std::uint32_t target =
+                mode == 1U ? MscdexMsfToLba(raw) : raw;
+            RecordMscdexSeekRequest(context, mode, target);
+            success = context->cd_audio_available &&
+                context->cd_audio.Seek(target);
+            break;
+        }
         case 0x84:
         {
-            const std::uint32_t start = request[13] == 1U
-                ? MscdexMsfToLba(ReadPacketU32(request, 14))
-                : ReadPacketU32(request, 14);
+            const std::uint8_t mode = request[13];
+            const std::uint32_t raw = ReadPacketU32(request, 14);
+            const std::uint32_t start =
+                mode == 1U ? MscdexMsfToLba(raw) : raw;
+            const std::uint32_t length = ReadPacketU32(request, 18);
+            RecordMscdexPlayRequest(context, mode, start, length);
             success = context->cd_audio_available &&
-                context->cd_audio.Play(start, ReadPacketU32(request, 18));
+                context->cd_audio.Play(start, length);
             break;
         }
         case 0x85:

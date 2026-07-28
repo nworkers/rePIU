@@ -2590,6 +2590,16 @@ void PrintExecutionAttempt(
                 attempt.mscdex_decline_count,
                 attempt.mscdex_last_decline_reason,
                 Hex32(attempt.mscdex_last_header_bytes));
+    logger.info("Win32 MSCDEX IOCTL last subfunction/handled/declared length/reject mask: {}/{}/{}/{}",
+                Hex32(attempt.mscdex_last_ioctl_subfunction),
+                attempt.mscdex_last_ioctl_handled ? "true" : "false",
+                attempt.mscdex_last_ioctl_length,
+                Hex32(attempt.mscdex_ioctl_reject_mask));
+    logger.info("Win32 MSCDEX last play mode/start/length/seek target: {}/{}/{}/{}",
+                attempt.mscdex_last_play_mode,
+                attempt.mscdex_last_play_start,
+                attempt.mscdex_last_play_length,
+                attempt.mscdex_last_seek_target);
     logger.info("Win32 LINEXE scan return EAX/EBP/caller EAX: {}/{}/{}",
                 Hex32(attempt.linexe_scan_return_eax),
                 Hex32(attempt.linexe_scan_return_ebp),

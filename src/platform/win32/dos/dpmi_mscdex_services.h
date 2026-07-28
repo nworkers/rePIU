@@ -31,9 +31,17 @@ void WritePacketMsf3(std::uint8_t* packet, std::size_t offset,
 
 std::uint32_t MscdexMsfToLba(std::uint32_t msf);
 
+// Absolute disc address: MSF counts from the 2-second lead-in, so LBA 0 is
+// 00:02:00. Use this for anything the spec calls an absolute address.
 std::uint32_t MscdexLbaToMsf(std::uint32_t lba);
 
+// Elapsed-time address: a running time within a track starts at 00:00:00 and
+// must not carry the lead-in offset.
+std::uint32_t MscdexFramesToMsf(std::uint32_t frames);
+
 bool HandleMscdexIoctl(ThreadContext* context, std::uint8_t* request);
+
+bool HandleMscdexIoctlOutput(ThreadContext* context, std::uint8_t* request);
 
 bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context);
 

@@ -66,6 +66,21 @@ struct Win32SharedLiveTelemetry
     // 0 = unresolved, 1 = selector table, 2 = real-mode low memory.
     volatile long mscdex_resolve_kind = 0;
     volatile long mscdex_header = 0;
+    // Low byte is the last IOCTL control block code; bit 8 is set when it was
+    // handled. Identifies which position call the guest actually depends on.
+    volatile long mscdex_last_ioctl_subfunction = -1;
+    // One bit per rejected IOCTL control block code (codes 0..31).
+    volatile long mscdex_ioctl_reject_mask = 0;
+    // Transfer count the caller declared, which can legitimately be short.
+    volatile long mscdex_last_ioctl_length = -1;
+    // Last 84h play request as the guest phrased it: 0 = HSG, 1 = Red Book.
+    volatile long mscdex_last_play_mode = -1;
+    volatile long mscdex_last_play_start = 0;
+    volatile long mscdex_last_play_length = 0;
+    volatile long mscdex_last_seek_target = 0;
+    // Position as of the most recent IOCTL, i.e. the value the guest was
+    // actually handed rather than a free-running sample.
+    volatile long cd_audio_reported_lba = 0;
     volatile long fatal_breakpoint_count = 0;
     volatile long fatal_message_address = 0;
     // Physical/shadow selector reads that disagreed inside HLE handlers.

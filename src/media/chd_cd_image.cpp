@@ -62,7 +62,8 @@ bool ChdCdImage::Open(const std::filesystem::path& path)
     impl_->frames_per_hunk = impl_->header->hunkbytes / impl_->header->unitbytes;
     impl_->hunk.resize(impl_->header->hunkbytes);
 
-    std::uint32_t storage_lba = 0;
+    std::uint32_t physical_lba = 0;
+    std::uint32_t logical_lba = 0;
     for (std::uint32_t index = 0; index < 99U; ++index)
     {
         std::array<char, 256> metadata = {};
@@ -117,12 +118,23 @@ bool ChdCdImage::Open(const std::filesystem::path& path)
         ChdCdTrack entry;
         entry.number = static_cast<std::uint8_t>(track);
         entry.audio = std::strcmp(type.data(), "AUDIO") == 0;
-        entry.storage_lba = storage_lba;
+        entry.stored_frames = static_cast<std::uint32_t>(frames);
         entry.pregap_frames = static_cast<std::uint32_t>(pregap);
-        entry.start_lba = storage_lba + entry.pregap_frames;
-        entry.end_lba = storage_lba + static_cast<std::uint32_t>(frames);
+        entry.pregap_in_file = pgtype[0] == 'V';
+        entry.metadata = metadata.data();
+
+        entry.physical_lba = physical_lba;
+        entry.logical_lba = logical_lba;
+        // A stored pregap already occupies the head of FRAMES; an unstored one
+        // only widens the logical extent ahead of the stored data.
+        entry.data_start_lba = logical_lba +
+            (entry.pregap_in_file ? 0U : entry.pregap_frames);
+        entry.start_lba = logical_lba + entry.pregap_frames;
+        entry.end_lba = entry.data_start_lba + entry.stored_frames;
         impl_->tracks.push_back(entry);
-        storage_lba += RoundTrackFrames(static_cast<std::uint32_t>(frames));
+
+        logical_lba = entry.end_lba;
+        physical_lba += RoundTrackFrames(entry.stored_frames);
     }
     if (impl_->tracks.empty())
     {
@@ -160,8 +172,22 @@ bool ChdCdImage::ReadRawSector(std::uint32_t lba, void* output,
     {
         return false;
     }
+    const ChdCdTrack* track = FindTrackByLba(lba);
+    if (track == nullptr)
+    {
+        return false;
+    }
+    if (lba < track->data_start_lba)
+    {
+        // Inside a pregap the writer never stored: the disc would play silence.
+        std::memset(output, 0, kRawSectorBytes);
+        return true;
+    }
+    const std::uint32_t physical =
+        track->physical_lba + (lba - track->data_start_lba);
+
     std::lock_guard<std::mutex> lock(impl_->mutex);
-    const std::uint32_t hunk_index = lba / impl_->frames_per_hunk;
+    const std::uint32_t hunk_index = physical / impl_->frames_per_hunk;
     if (hunk_index != impl_->cached_hunk)
     {
         if (chd_read(impl_->file, hunk_index, impl_->hunk.data()) != CHDERR_NONE)
@@ -171,7 +197,7 @@ bool ChdCdImage::ReadRawSector(std::uint32_t lba, void* output,
         }
         impl_->cached_hunk = hunk_index;
     }
-    const std::uint32_t frame = lba % impl_->frames_per_hunk;
+    const std::uint32_t frame = physical % impl_->frames_per_hunk;
     const std::uint8_t* source = impl_->hunk.data() +
         static_cast<std::size_t>(frame) * impl_->header->unitbytes;
     std::memcpy(output, source, kRawSectorBytes);
@@ -187,9 +213,11 @@ const ChdCdTrack* ChdCdImage::FindTrack(std::uint8_t number) const
 }
 const ChdCdTrack* ChdCdImage::FindTrackByLba(std::uint32_t lba) const
 {
+    // Matches the full logical extent, so an address inside a track's pregap
+    // resolves to that track the way a real drive's Q channel reports it.
     const auto found = std::find_if(impl_->tracks.begin(), impl_->tracks.end(),
         [lba](const ChdCdTrack& track) {
-            return lba >= track.start_lba && lba < track.end_lba;
+            return lba >= track.logical_lba && lba < track.end_lba;
         });
     return found == impl_->tracks.end() ? nullptr : &*found;
 }

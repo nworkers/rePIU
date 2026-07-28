@@ -867,6 +867,14 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t mscdex_last_decline_reason = 0;
     std::uint32_t mscdex_last_resolve_kind = 0;
     std::uint32_t mscdex_last_header_bytes = 0;
+    std::uint32_t mscdex_last_ioctl_subfunction = 0xFFFFFFFFU;
+    bool mscdex_last_ioctl_handled = false;
+    std::uint32_t mscdex_last_ioctl_length = 0;
+    std::uint32_t mscdex_ioctl_reject_mask = 0;
+    std::uint8_t mscdex_last_play_mode = 0xFFU;
+    std::uint32_t mscdex_last_play_start = 0;
+    std::uint32_t mscdex_last_play_length = 0;
+    std::uint32_t mscdex_last_seek_target = 0;
     std::uint32_t cd_audio_current_lba = 0;
     std::uint32_t glide_window_open_count = 0;
     std::uint32_t glide_logical_width = 0;

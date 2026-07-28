@@ -550,6 +550,17 @@ struct ThreadContext
     std::uint32_t mscdex_last_decline_reason = 0;
     std::uint32_t mscdex_last_resolve_kind = 0;
     std::uint32_t mscdex_last_header_bytes = 0;
+    // IOCTL control block code diagnostics: which position call the guest uses
+    // and which ones we are still turning away with status 8103h.
+    std::uint32_t mscdex_last_ioctl_subfunction = 0xFFFFFFFFU;
+    bool mscdex_last_ioctl_handled = false;
+    std::uint32_t mscdex_last_ioctl_length = 0;
+    std::uint32_t mscdex_ioctl_reject_mask = 0;
+    std::uint8_t mscdex_last_play_mode = 0xFFU;
+    std::uint32_t mscdex_last_play_start = 0;
+    std::uint32_t mscdex_last_play_length = 0;
+    std::uint8_t mscdex_last_seek_mode = 0xFFU;
+    std::uint32_t mscdex_last_seek_target = 0;
     repiu::hle::GlideLogicalState glide_state;
     GlideOpenGlBackend glide_backend;
     // R4 LFB staging surface handed to the guest by grLfbLock. Host-owned (see

@@ -1340,6 +1340,15 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->mscdex_last_decline_reason = context.mscdex_last_decline_reason;
     attempt->mscdex_last_resolve_kind = context.mscdex_last_resolve_kind;
     attempt->mscdex_last_header_bytes = context.mscdex_last_header_bytes;
+    attempt->mscdex_last_ioctl_subfunction =
+        context.mscdex_last_ioctl_subfunction;
+    attempt->mscdex_last_ioctl_handled = context.mscdex_last_ioctl_handled;
+    attempt->mscdex_last_ioctl_length = context.mscdex_last_ioctl_length;
+    attempt->mscdex_ioctl_reject_mask = context.mscdex_ioctl_reject_mask;
+    attempt->mscdex_last_play_mode = context.mscdex_last_play_mode;
+    attempt->mscdex_last_play_start = context.mscdex_last_play_start;
+    attempt->mscdex_last_play_length = context.mscdex_last_play_length;
+    attempt->mscdex_last_seek_target = context.mscdex_last_seek_target;
     attempt->cd_audio_current_lba = context.cd_audio.current_lba();
     attempt->glide_window_open_count = context.glide_window_open_count;
     attempt->glide_logical_width = context.glide_logical_width;

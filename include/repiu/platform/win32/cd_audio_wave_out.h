@@ -18,13 +18,22 @@ public:
     CdAudioWaveOut& operator=(const CdAudioWaveOut&) = delete;
 
     bool Open(const std::filesystem::path& chd_path);
+    // start_lba is a logical (Red Book) LBA, matching what the TOC reports.
     bool Play(std::uint32_t start_lba, std::uint32_t frame_count);
+    // MSCDEX 85h: stops playback but remembers where it stopped so that a
+    // following Resume continues from the same frame.
     void Stop();
     bool Resume();
+    // MSCDEX 83h: park the head at a logical LBA without producing audio.
+    bool Seek(std::uint32_t lba);
     void Close();
     bool playing() const;
     bool paused() const;
+    // Position of the audio actually reaching the device, not the decode
+    // cursor: queued-but-unplayed frames are subtracted.
     std::uint32_t current_lba() const;
+    std::uint32_t last_play_start_lba() const;
+    std::uint32_t last_play_end_lba() const;
     const std::string& message() const;
 
 private:
