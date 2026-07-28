@@ -160,3 +160,95 @@ while preserving the original ISR, `IRETD`, and IF gate.
 while natural VEH boundaries delivered all 2,283 INT 8 requests through chain
 HLE. Progress reached 129,810 and Glide gates 13,932/13,932, with zero caught
 exception, malformed dispatch, or new APPCRASH.
+
+## 2026-07-29 Task 348: AOT back-edge 타이머 rendezvous
+
+**확인됨 (실패 원인):** 입력 재현 로그에서 약 37.4초 이후 heartbeat/dispatch/progress가
+고정됐고, `0x0302FA08..0x0302FA10`의 tick 대기 루프는 전역
+`0x032D9C84`가 1인 상태로 반복됐습니다. 원본 INT 8 ISR의 `0x03042F36`만 이 값을
+증가시키지만, 순수 AOT back edge 안에는 두 번째 pending 틱을 전달할 자연 VEH 경계가
+없었습니다.
+
+**확인됨 (구현):** `aot-dbt` emitter는 direct/conditional back edge 앞에 flags 보존
+request guard를 생성합니다. poll thread는 55ms 틱마다 placement 소유 request word만
+설정하고, guest thread가 등록된 `INT3`에 도달하면 request를 지운 뒤 기존 공용
+`InjectPendingInterrupts`를 호출합니다. Win32 breakpoint 컨텍스트는 이 소유 sentinel에서
+EIP를 `ExceptionAddress + 1`로 명시적으로 옮겨야 합니다. 이를 생략한 첫 검증에서는 같은
+`INT3`를 1.2초 동안 134,721회 다시 실행했고, 수정 후 5초 smoke에서는 50회로 정상화됐습니다.
+
+**검증됨:** 입력을 포함한 50초 `aot-dbt` 실행에서 heartbeat는 37초 261,280에서
+50초 278,446으로, dispatch는 130,640에서 139,223으로 계속 증가했습니다. 종료 카운터는
+safe-point trap/injected/deferred `518/452/66`, original fatal 0이었습니다. 이는 이전
+37.4초 무경계 정지를 통과하면서도 poll-thread TF/context/stack 변경을 복구하지 않았음을
+확인합니다.
+
+## 2026-07-29 Task 348: AOT back-edge timer rendezvous
+
+**Confirmed (cause):** The interactive log froze heartbeat, dispatch, and progress after about
+37.4 seconds. The tick wait at `0x0302FA08..0x0302FA10` repeated with global
+`0x032D9C84` fixed at 1. Only the original INT 8 ISR at `0x03042F36` increments it, while
+the pure AOT back edge had no natural VEH boundary for the second pending tick.
+
+**Confirmed (implementation):** The `aot-dbt` emitter places a flag-preserving request guard
+before direct and conditional back edges. The poll thread only sets a placement-owned request
+word on each 55ms tick. The guest thread reaches the registered `INT3`, clears the request,
+and invokes the existing common injector. For this owned Win32 breakpoint sentinel, VEH must
+explicitly resume at `ExceptionAddress + 1`. Omitting that step retrapped 134,721 times in
+1.2 seconds; after the correction, a five-second smoke run recorded the expected 50 traps.
+
+**Verified:** In the 50-second interactive `aot-dbt` run, heartbeat continued from 261,280 at
+37 seconds to 278,446 at 50 seconds, and dispatch from 130,640 to 139,223. Final safe-point
+trap/injected/deferred counts were `518/452/66`, with zero original fatal events. The previous
+boundary-free freeze was passed without restoring poll-thread TF, context edits, or stack writes.
+
+## 2026-07-29 Task 349: PIT 채널 0 주기 확인
+
+**확인됨 (원본 바이너리):** `PIU.EXE`는 `0x030250C0`과 `0x0302559C`에서
+`EAX=240`으로 `0x030430B0`을 호출합니다. 하위 함수는 데이터 상수
+`1,193,280.0f`를 요청값으로 나눠 reload `4,972`를 만들고, 제어 포트 `0x43`에
+`0x36`, 채널 0 포트 `0x40`에 low/high `0x6C`, `0x13`을 기록합니다. 따라서
+게임이 의도한 IRQ0는 정확히 `240Hz`입니다.
+
+**확인됨 (기존 HLE 원인):** Win32 폴러는 IRQ0와 BDA `0x46C`를 같은
+`elapsed / 55ms` 값으로 처리했고, 포트 `0x43`/`0x40`은
+`unsupported-ignored` 뒤 공유 `OUT DX,AL` helper를 NOP으로 바꿨습니다. 원본의
+240Hz 설정은 반영되지 않았고 두 tick 대기는 약 `8.33ms` 대신 명목상
+`110ms`가 됐습니다.
+
+**확인됨 (수정):** 공용 PIT HLE가 완성된 reload를 원자 snapshot으로 게시하고,
+Win32 scheduler가 단조 증가 시간에서 `1,193,280 / divisor`로 IRQ 만료를
+계산합니다. BDA tick은 기본 divisor `65,536`으로 분리했습니다. PIT 출력과
+PIC EOI는 공유 helper를 보존하기 위해 NOP patch 없이 EIP만 전진합니다.
+IF gate, pending 한 건 병합, guest-thread safe point, 원본 ISR/IRETD는 유지됩니다.
+
+**검증됨:** 공용 probe는 divisor `4,972`, `240Hz`와 약 `4.167ms` cadence를
+통과했습니다. 실제 50초 `aot-dbt` 실행은
+`[repiu-pit] channel=0 divisor=4972 frequency=240.000000Hz generation=2`를
+기록했고, 종료까지 heartbeat/dispatch/progress 증가, Glide
+open/texture/draw/swap 도달, fatal 0을 유지했습니다.
+
+## 2026-07-29 Task 349: PIT channel-0 cadence
+
+**Confirmed (original binary):** `PIU.EXE` calls `0x030430B0` with
+`EAX=240` at `0x030250C0` and `0x0302559C`. The callee divides its
+`1,193,280.0f` reference by the requested rate, producing reload `4,972`,
+then writes control `0x36` to port `0x43` and low/high `0x6C`, `0x13` to
+port `0x40`. The intended IRQ0 rate is exactly `240Hz`.
+
+**Confirmed (old HLE cause):** The Win32 poller tied IRQ0 and BDA `0x46C` to
+the same `elapsed / 55ms` counter. Ports `0x43`/`0x40` fell through
+`unsupported-ignored` and NOP-patched the shared `OUT DX,AL` helper. The
+240Hz programming was lost, stretching a nominal two-tick wait from about
+`8.33ms` to `110ms`.
+
+**Confirmed (fix):** Shared PIT HLE publishes complete reloads atomically,
+and the Win32 scheduler computes expirations from monotonic time using
+`1,193,280 / divisor`. BDA time is separately derived with divisor `65,536`.
+PIT output and PIC EOI preserve the shared helper by advancing EIP without a
+NOP patch. Existing IF gating, one-request pending coalescing, guest-thread
+safe points, and the original ISR/IRETD path remain in force.
+
+**Verified:** The shared probe passed divisor `4,972`, `240Hz`, and the
+approximately `4.167ms` cadence. A real 50-second `aot-dbt` run logged the
+exact configuration, continuously advanced heartbeat/dispatch/progress,
+reached Glide open/texture/draw/swap, and retained zero fatal events.

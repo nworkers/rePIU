@@ -11,6 +11,7 @@
 #include "repiu/hle/linexe_call_gate.h"
 #include "repiu/hle/glide_hle.h"
 #include "repiu/hle/glide_lfb.h"
+#include "repiu/hle/pit_timer.h"
 #include "repiu/media/chd_cd_image.h"
 #include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/selector_table.h"
@@ -798,6 +799,7 @@ struct ThreadContext
     repiu::runtime::DosLowMemory dos_low_memory;
     std::array<DosInterruptVectorShadow, 256> dos_interrupt_vectors = {};
     std::array<DpmiInterruptVectorShadow, 256> dpmi_interrupt_vectors = {};
+    repiu::hle::PitChannel0 pit_channel0;
     std::atomic<bool> timer_interrupt_pending{false};
     std::uint32_t last_timer_injection_ticks = 0;
     std::uint32_t timer_interrupt_chain_hle_count = 0;

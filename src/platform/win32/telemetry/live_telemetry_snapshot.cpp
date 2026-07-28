@@ -1,12 +1,15 @@
 #include "live_telemetry_snapshot.h"
 #include "win32_thread_api.h"
+#include "boundary/timer_interrupt_boundary.h"
 #include "execution/execution_internal.h"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <sstream>
 
 #include <psapi.h>
@@ -229,6 +232,9 @@ DWORD PollThreadUntilExit(HANDLE thread,
 
     const DWORD quiet_timeout_milliseconds = 1000U;
     const DWORD start_tick = GetTickCount();
+    const auto steady_start = std::chrono::steady_clock::now();
+    repiu::hle::PitIrqSchedule pit_irq_schedule;
+    std::uint64_t bios_tick_count = 0;
     DWORD quiet_start_tick = start_tick;
     std::uint32_t last_progress_count = 0;
     std::uint32_t last_single_step_count = 0;
@@ -304,15 +310,35 @@ DWORD PollThreadUntilExit(HANDLE thread,
             progress_context->diagnostic_poll_iteration_count =
                 iteration + 1;
 
-            const DWORD elapsed = GetTickCount() - start_tick;
-            const DWORD ticks = elapsed / 55U;
+            const auto steady_elapsed =
+                std::chrono::steady_clock::now() - steady_start;
+            const std::uint64_t elapsed_nanoseconds =
+                static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        steady_elapsed).count());
+            bios_tick_count = repiu::hle::PitTickCountForElapsed(
+                elapsed_nanoseconds,
+                repiu::hle::PitChannel0::kDefaultDivisor);
             repiu::runtime::WriteDosLowMemory(
-                &progress_context->dos_low_memory, 0x046CU, ticks, 4U);
-            if (ticks > progress_context->last_timer_injection_ticks)
+                &progress_context->dos_low_memory,
+                0x046CU,
+                static_cast<std::uint32_t>(bios_tick_count),
+                4U);
+
+            const std::uint64_t due_interrupts = pit_irq_schedule.Poll(
+                progress_context->pit_channel0.snapshot(),
+                elapsed_nanoseconds);
+            if (due_interrupts != 0U)
             {
-                progress_context->last_timer_injection_ticks = ticks;
+                const std::uint64_t remaining =
+                    std::numeric_limits<std::uint32_t>::max() -
+                    progress_context->last_timer_injection_ticks;
+                progress_context->last_timer_injection_ticks +=
+                    static_cast<std::uint32_t>(
+                        std::min(due_interrupts, remaining));
                 progress_context->timer_interrupt_pending.store(
                     true, std::memory_order_release);
+                ArmAotTimerSafePoint(progress_context);
             }
         }
         DWORD current_exit_code = 0;
@@ -863,6 +889,12 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
             context.aot_placement->guarded_segment_pop_success_count;
         attempt->aot_guarded_segment_pop_fallback_count =
             context.aot_placement->guarded_segment_pop_fallback_count;
+        attempt->aot_timer_safe_point_trap_count =
+            context.aot_placement->timer_safe_point_trap_count;
+        attempt->aot_timer_safe_point_injected_count =
+            context.aot_placement->timer_safe_point_injected_count;
+        attempt->aot_timer_safe_point_deferred_count =
+            context.aot_placement->timer_safe_point_deferred_count;
     }
     attempt->aot_dbt_return_entry_count =
         context.aot_dbt_return_entry_count.load(std::memory_order_relaxed);

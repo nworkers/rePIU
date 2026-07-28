@@ -1773,6 +1773,10 @@ void PrintExecutionAttempt(
     logger.info("Win32 AOT guarded segment-pop success/fallback: {}/{}",
                 attempt.aot_guarded_segment_pop_success_count,
                 attempt.aot_guarded_segment_pop_fallback_count);
+    logger.info("Win32 AOT timer safe-point trap/injected/deferred: {}/{}/{}",
+                attempt.aot_timer_safe_point_trap_count,
+                attempt.aot_timer_safe_point_injected_count,
+                attempt.aot_timer_safe_point_deferred_count);
     logger.info(
         "Win32 AOT-DBT return entry/attempt/success/fallback: {}/{}/{}/{}",
         attempt.aot_dbt_return_entry_count,
@@ -3826,6 +3830,8 @@ int main(int argc, char** argv)
     repiu::runtime::AotCodeCacheBuildOptions aot_build_options;
     aot_build_options.enable_dbt_return_miss_dispatch =
         execution_backend == repiu::runtime::ExecutionBackend::kAotDbt;
+    aot_build_options.enable_timer_safe_points =
+        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt;
     const char* superblock_toggle =
         std::getenv("REPIU_AOT_DBT_SUPERBLOCK");
     const std::string superblock_setting =
@@ -3913,6 +3919,9 @@ int main(int argc, char** argv)
                      aot_build_options.enable_guarded_segment_pop);
         logger->info("Win32 AOT-DBT superblock HLE dispatch enabled: {}",
                      aot_build_options.enable_dbt_hle_dispatch);
+        logger->info("Win32 AOT timer safe points enabled/sites: {}/{}",
+                     aot_build_options.enable_timer_safe_points,
+                     aot_image.timer_safe_point_sites.size());
     }
 
     repiu::runtime::GuestStackSwitchPlan stack_plan;

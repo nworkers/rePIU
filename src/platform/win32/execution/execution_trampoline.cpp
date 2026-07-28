@@ -2621,6 +2621,7 @@ void InjectPendingInterrupts(CONTEXT* win32_context, ThreadContext* context)
     if (!shadow.valid)
     {
         context->timer_interrupt_pending.store(false, std::memory_order_relaxed);
+        ClearAotTimerSafePointRequest(context);
         return;
     }
 
@@ -2636,6 +2637,7 @@ void InjectPendingInterrupts(CONTEXT* win32_context, ThreadContext* context)
     }
 
     context->timer_interrupt_pending.store(false, std::memory_order_relaxed);
+    ClearAotTimerSafePointRequest(context);
 
     std::uint32_t eflags = win32_context->EFlags;
     std::uint32_t segcs = win32_context->SegCs;
@@ -3006,6 +3008,15 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
             return EXCEPTION_CONTINUE_SEARCH;
         }
         if (HandleAotGuestCodeWriteFault(
+                exception_info, win32_context, context))
+        {
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        if (stop_for_aot_terminal_failure())
+        {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+        if (HandleAotTimerSafePoint(
                 exception_info, win32_context, context))
         {
             return EXCEPTION_CONTINUE_EXECUTION;

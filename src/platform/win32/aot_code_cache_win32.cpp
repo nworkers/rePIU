@@ -100,6 +100,36 @@ void IndexAotBreakpointProvenance(
     }
 }
 
+bool ResolveWin32AotTimerSafePoints(
+    const runtime::AotCodeCacheImage& image,
+    std::uint8_t* image_bytes,
+    Win32AotCodeCachePlacement* placement)
+{
+    if (image.timer_safe_point_sites.empty())
+    {
+        return true;
+    }
+    if (image_bytes == nullptr || placement == nullptr)
+    {
+        return false;
+    }
+    const std::uintptr_t request_value = reinterpret_cast<std::uintptr_t>(
+        &placement->timer_safe_point_request);
+    if (request_value > std::numeric_limits<std::uint32_t>::max())
+    {
+        return false;
+    }
+    const std::uint32_t request_address =
+        static_cast<std::uint32_t>(request_value);
+    for (const runtime::AotTimerSafePointSite& site :
+         image.timer_safe_point_sites)
+    {
+        std::memcpy(image_bytes + site.request_address_offset,
+                    &request_address, sizeof(request_address));
+    }
+    return true;
+}
+
 // Jump-table slots carry image-relative offsets; once the image bytes have a
 // final absolute base the displacement and every table entry become absolute
 // cache addresses. Targets missing from the image fall back to the slot's
@@ -489,6 +519,13 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
         return true;
     }
     std::memcpy(memory, image.bytes.data(), image.bytes.size());
+    if (!ResolveWin32AotTimerSafePoints(
+            image, static_cast<std::uint8_t*>(memory), placement))
+    {
+        VirtualFree(memory, 0, MEM_RELEASE);
+        placement->message = "AOT timer safe-point request is unavailable";
+        return true;
+    }
     ResolveWin32AotJumpTables(image, static_cast<std::uint8_t*>(memory),
                               static_cast<std::uint32_t>(base));
     // The static placement has no live segment table, so any segment-override
@@ -548,6 +585,7 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
     placement->jump_table_sites = image.jump_table_sites;
     placement->segment_override_sites = image.segment_override_sites;
     placement->guarded_segment_pop_sites = image.guarded_segment_pop_sites;
+    placement->timer_safe_point_sites = image.timer_safe_point_sites;
     placement->indirect_inline_cache_entry_count =
         image.indirect_inline_cache_entry_count;
     placement->dbt_return_miss_dispatch_enabled =
@@ -558,6 +596,13 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
         image.dbt_indirect_miss_dispatch_enabled;
     placement->guarded_segment_pop_enabled =
         image.guarded_segment_pop_enabled;
+    placement->timer_safe_points_enabled = image.timer_safe_points_enabled;
+    for (const runtime::AotTimerSafePointSite& site :
+         image.timer_safe_point_sites)
+    {
+        placement->timer_safe_point_cache_offsets.insert(
+            site.breakpoint_offset);
+    }
     IndexAotBreakpointProvenance(image, 0U, placement);
     placement->placed = true;
     placement->message = "AOT code cache placed as Win32 execute-read memory";
@@ -668,6 +713,8 @@ bool AppendWin32DynamicAotTranslation(
         placement->dbt_indirect_miss_dispatch_enabled;
     build_options.enable_guarded_segment_pop =
         placement->guarded_segment_pop_enabled;
+    build_options.enable_timer_safe_points =
+        placement->timer_safe_points_enabled;
     // Task 328 phases 2 and 3. Split out of the shared short-circuit into
     // sequential locals; the image build still runs only when the plan build
     // succeeded, exactly as before.
@@ -796,6 +843,17 @@ bool AppendWin32DynamicAotTranslation(
     }
     std::memcpy(static_cast<std::uint8_t*>(cache) + append_offset,
                 image.bytes.data(), image.bytes.size());
+    if (!ResolveWin32AotTimerSafePoints(
+            image, static_cast<std::uint8_t*>(cache) + append_offset,
+            placement))
+    {
+        DWORD ignored = 0;
+        VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ,
+                       &ignored);
+        result->unsafe_failure = true;
+        result->message = "AOT timer safe-point request is unavailable";
+        return true;
+    }
     ResolveWin32AotJumpTables(
         image, static_cast<std::uint8_t*>(cache) + append_offset,
         placement->base_address + append_offset);
@@ -1004,6 +1062,16 @@ bool AppendWin32DynamicAotTranslation(
         site.fallback_counter_address_offset += append_offset;
         site.fallback_offset += append_offset;
         placement->guarded_segment_pop_sites.push_back(site);
+    }
+    for (runtime::AotTimerSafePointSite site :
+         image.timer_safe_point_sites)
+    {
+        site.cache_offset += append_offset;
+        site.request_address_offset += append_offset;
+        site.breakpoint_offset += append_offset;
+        placement->timer_safe_point_cache_offsets.insert(
+            site.breakpoint_offset);
+        placement->timer_safe_point_sites.push_back(site);
     }
     IndexAotBreakpointProvenance(image, append_offset, placement);
     placement->size += static_cast<std::uint32_t>(image.bytes.size());

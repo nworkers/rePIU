@@ -27,6 +27,83 @@ std::uint16_t ReadLittleEndian16(const std::uint8_t* bytes)
 
 } // namespace
 
+void ArmAotTimerSafePoint(ThreadContext* context)
+{
+    if (context == nullptr || context->aot_placement == nullptr ||
+        !context->aot_placement->timer_safe_points_enabled ||
+        context->aot_placement->timer_safe_point_cache_offsets.empty())
+    {
+        return;
+    }
+    InterlockedExchange(
+        reinterpret_cast<volatile LONG*>(
+            &context->aot_placement->timer_safe_point_request),
+        1L);
+}
+
+void ClearAotTimerSafePointRequest(ThreadContext* context)
+{
+    if (context == nullptr || context->aot_placement == nullptr)
+    {
+        return;
+    }
+    InterlockedExchange(
+        reinterpret_cast<volatile LONG*>(
+            &context->aot_placement->timer_safe_point_request),
+        0L);
+}
+
+bool HandleAotTimerSafePoint(_EXCEPTION_POINTERS* exception_info,
+                             _CONTEXT* win32_context,
+                             ThreadContext* context)
+{
+    if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
+        win32_context == nullptr || context == nullptr ||
+        context->aot_placement == nullptr ||
+        exception_info->ExceptionRecord->ExceptionCode != EXCEPTION_BREAKPOINT)
+    {
+        return false;
+    }
+    Win32AotCodeCachePlacement* placement = context->aot_placement;
+    const std::uintptr_t exception_address = reinterpret_cast<std::uintptr_t>(
+        exception_info->ExceptionRecord->ExceptionAddress);
+    if (exception_address < placement->base_address ||
+        exception_address >= placement->base_address + placement->size)
+    {
+        return false;
+    }
+    const std::uint32_t cache_offset = static_cast<std::uint32_t>(
+        exception_address - placement->base_address);
+    if (placement->timer_safe_point_cache_offsets.find(cache_offset) ==
+        placement->timer_safe_point_cache_offsets.end())
+    {
+        return false;
+    }
+
+    ClearAotTimerSafePointRequest(context);
+    InterlockedIncrement(reinterpret_cast<volatile LONG*>(
+        &placement->timer_safe_point_trap_count));
+    // Win32 reports the breakpoint at the INT3 byte and leaves EIP there for
+    // this cache-origin trap. Resume at the translated branch immediately
+    // after it; if INT 8 is injected, this cache address becomes the IRETD
+    // return address instead.
+    const std::uint32_t resume_eip =
+        static_cast<std::uint32_t>(exception_address + 1U);
+    win32_context->Eip = resume_eip;
+    InjectPendingInterrupts(win32_context, context);
+    if (static_cast<std::uint32_t>(win32_context->Eip) != resume_eip)
+    {
+        InterlockedIncrement(reinterpret_cast<volatile LONG*>(
+            &placement->timer_safe_point_injected_count));
+    }
+    else
+    {
+        InterlockedIncrement(reinterpret_cast<volatile LONG*>(
+            &placement->timer_safe_point_deferred_count));
+    }
+    return true;
+}
+
 bool HandleTimerInterruptChainBoundary(_CONTEXT* win32_context,
                                        ThreadContext* context)
 {

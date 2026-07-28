@@ -622,6 +622,9 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t aot_selector_guard_mismatch_count = 0;
     std::uint32_t aot_guarded_segment_pop_success_count = 0;
     std::uint32_t aot_guarded_segment_pop_fallback_count = 0;
+    std::uint32_t aot_timer_safe_point_trap_count = 0;
+    std::uint32_t aot_timer_safe_point_injected_count = 0;
+    std::uint32_t aot_timer_safe_point_deferred_count = 0;
     // `entry` counts C++ resolver entries; `attempt` is derived as
     // success + fallback so the accounting invariant also holds for a sample
     // whose graceful timeout landed inside the resolver (Task 281 open item).

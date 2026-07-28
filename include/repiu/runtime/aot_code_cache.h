@@ -30,6 +30,10 @@ struct AotCodeCacheBuildOptions
     // Task 308 architecture probe. Ordinary planner-HLE records use a normal
     // host-dispatch slot whose fail-closed continuation retains INT3.
     bool enable_dbt_hle_dispatch = false;
+    // Task 348. Cooperative interrupt rendezvous emitted before direct
+    // backward branches so an AOT-native busy loop can reach the existing
+    // pending timer-interrupt injection path without cross-thread TF changes.
+    bool enable_timer_safe_points = false;
 };
 
 enum class AotFixupKind
@@ -182,6 +186,14 @@ struct AotGuardedSegmentPopSite
     std::uint8_t segment_register = 0xFFU;
 };
 
+struct AotTimerSafePointSite
+{
+    std::uint32_t guest_source = 0;
+    std::uint32_t cache_offset = 0;
+    std::uint32_t request_address_offset = 0;
+    std::uint32_t breakpoint_offset = 0;
+};
+
 struct AotCodeCacheImage
 {
     bool valid = false;
@@ -197,6 +209,7 @@ struct AotCodeCacheImage
     std::vector<AotJumpTableSite> jump_table_sites;
     std::vector<AotGuardedSegmentPopSite> guarded_segment_pop_sites;
     std::vector<AotSegmentOverrideSite> segment_override_sites;
+    std::vector<AotTimerSafePointSite> timer_safe_point_sites;
     // Carried into platform placement so every later dynamic append uses the
     // same indirect call/jump layout as the initial image (Task 274).
     std::uint32_t indirect_inline_cache_entry_count =
@@ -205,6 +218,7 @@ struct AotCodeCacheImage
     bool dbt_hle_dispatch_enabled = false;
     bool guarded_segment_pop_enabled = false;
     bool dbt_indirect_miss_dispatch_enabled = false;
+    bool timer_safe_points_enabled = false;
     std::uint32_t resolved_fixup_count = 0;
     std::uint32_t external_fixup_count = 0;
     std::uint32_t unsupported_branch_count = 0;

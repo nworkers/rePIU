@@ -16,6 +16,9 @@ namespace repiu::platform::win32
 
 namespace
 {
+    constexpr std::uint16_t kPortPitChannel0 = 0x0040;
+    constexpr std::uint16_t kPortPitControl = 0x0043;
+    constexpr std::uint16_t kPortPicCommand = 0x0020;
     constexpr std::uint16_t kPortPiuJammaBase = 0x02A0;
     constexpr std::uint16_t kPortPiuJammaEnd = 0x02AF;
 
@@ -432,6 +435,73 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
                << std::hex << static_cast<unsigned>(port);
         context->hle_message = stream.str();
         return false;
+    }
+
+    if (width == 1U &&
+        (port == kPortPitControl || port == kPortPitChannel0))
+    {
+        bool handled = false;
+        bool configuration_changed = false;
+        repiu::hle::PitChannel0Snapshot snapshot;
+        if (port == kPortPitControl)
+        {
+            handled = context->pit_channel0.WriteControl(
+                static_cast<std::uint8_t>(value));
+        }
+        else
+        {
+            const std::uint32_t previous_generation =
+                context->pit_channel0.snapshot().generation;
+            handled = context->pit_channel0.WriteData(
+                static_cast<std::uint8_t>(value), &snapshot);
+            configuration_changed = handled &&
+                context->pit_channel0.snapshot().generation !=
+                    previous_generation;
+        }
+
+        RecordPortIo(context,
+                     static_cast<std::uint32_t>(win32_context->Eip),
+                     opcode,
+                     port,
+                     width,
+                     value,
+                     false,
+                     handled,
+                     handled ? "emulated-pit-write"
+                             : "unsupported-pit-control");
+        if (configuration_changed)
+        {
+            std::fprintf(
+                stderr,
+                "[repiu-pit] channel=0 divisor=%u frequency=%.6fHz generation=%u\n",
+                snapshot.divisor,
+                repiu::hle::PitFrequencyHz(snapshot.divisor),
+                snapshot.generation);
+        }
+
+        // The Watcom runtime funnels all byte output through one OUT DX,AL
+        // helper. Patching that shared instruction after the first PIT write
+        // would erase the second divisor byte and every later device output.
+        win32_context->Eip += instruction_len;
+        return true;
+    }
+
+    if (width == 1U && port == kPortPicCommand && value == 0x20U)
+    {
+        RecordPortIo(context,
+                     static_cast<std::uint32_t>(win32_context->Eip),
+                     opcode,
+                     port,
+                     width,
+                     value,
+                     false,
+                     true,
+                     "emulated-pic-eoi");
+        // IRQ0 delivery is already coalesced by timer_interrupt_pending. The
+        // EOI has no additional host state, but the shared OUT helper must
+        // remain intact for subsequent PIT and PIU10 writes.
+        win32_context->Eip += instruction_len;
+        return true;
     }
 
     if (port == kPortPiuEepromWrite)

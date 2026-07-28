@@ -11,6 +11,7 @@
 #include "boundary_provenance_probe.h"
 #include "native_linear_span_probe.h"
 #include "plan_build_benchmark_probe.h"
+#include "pit_timer_probe.h"
 #include "retired_trap_profile_probe.h"
 #include "single_step_hotspot_profile_probe.h"
 #include "exception_transition_calibration_probe.h"
@@ -241,6 +242,105 @@ bool HasPageProtection(const void* address, DWORD expected_protection)
     MEMORY_BASIC_INFORMATION memory = {};
     return VirtualQuery(address, &memory, sizeof(memory)) != 0 &&
            (memory.Protect & 0xFFU) == expected_protection;
+}
+
+bool RunTimerSafePointProbe()
+{
+    constexpr std::uint32_t kGuestSize = 0x1000U;
+    auto* guest = static_cast<std::uint8_t*>(VirtualAlloc(
+        nullptr, kGuestSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    if (guest == nullptr || reinterpret_cast<std::uintptr_t>(guest) >
+        std::numeric_limits<std::uint32_t>::max())
+    {
+        if (guest != nullptr)
+        {
+            VirtualFree(guest, 0, MEM_RELEASE);
+        }
+        std::cout << "timer_safe_point_probe=false" << std::endl;
+        return false;
+    }
+    // xor eax,eax; inc eax; cmp eax,2; jl cmp; ret
+    const std::uint8_t loop[] = {
+        0x31U, 0xC0U, 0x40U, 0x83U, 0xF8U, 0x02U, 0x7CU, 0xFBU, 0xC3U};
+    std::memcpy(guest, loop, sizeof(loop));
+    const std::uint32_t guest_address = static_cast<std::uint32_t>(
+        reinterpret_cast<std::uintptr_t>(guest));
+
+    repiu::runtime::RelocatedRuntimeImage runtime;
+    runtime.valid = true;
+    runtime.relocated_image_base = guest_address;
+    runtime.relocated_entry_linear_address = guest_address;
+    repiu::runtime::RelocatedRuntimeObject object;
+    object.relocated_base_address = guest_address;
+    object.virtual_size = kGuestSize;
+    object.memory.resize(kGuestSize);
+    std::memcpy(object.memory.data(), guest, kGuestSize);
+    runtime.objects.push_back(std::move(object));
+
+    repiu::runtime::AotTranslationPlan plan;
+    repiu::runtime::AotCodeCacheImage enabled;
+    repiu::runtime::AotCodeCacheImage disabled;
+    repiu::runtime::AotCodeCacheBuildOptions options;
+    options.enable_timer_safe_points = true;
+    repiu::platform::win32::Win32AotCodeCachePlacement placement;
+    const bool plan_built = repiu::runtime::BuildAotTranslationPlanFromEntry(
+        runtime, guest_address, &plan);
+    const bool enabled_built = plan_built &&
+        repiu::runtime::BuildAotCodeCacheImage(plan, options, &enabled);
+    const bool disabled_built = enabled_built &&
+        repiu::runtime::BuildAotCodeCacheImage(plan, &disabled);
+    const bool placed = disabled_built &&
+        repiu::platform::win32::PlaceWin32AotCodeCache(
+            enabled, &placement) && placement.placed;
+    const bool built = plan_built && enabled_built && disabled_built && placed;
+    bool valid = built && enabled.timer_safe_points_enabled &&
+        enabled.timer_safe_point_sites.size() == 1U &&
+        disabled.timer_safe_point_sites.empty();
+    if (valid)
+    {
+        const repiu::runtime::AotTimerSafePointSite& site =
+            enabled.timer_safe_point_sites.front();
+        const std::uint8_t expected[] = {
+            0x9CU, 0x83U, 0x3DU, 0U, 0U, 0U, 0U, 0x00U,
+            0x75U, 0x03U, 0x9DU, 0xEBU, 0x02U, 0x9DU, 0xCCU};
+        valid = site.request_address_offset == site.cache_offset + 3U &&
+            site.breakpoint_offset == site.cache_offset + 14U &&
+            site.breakpoint_offset < enabled.bytes.size() &&
+            std::memcmp(enabled.bytes.data() + site.cache_offset,
+                        expected, 3U) == 0 &&
+            std::memcmp(enabled.bytes.data() + site.cache_offset + 7U,
+                        expected + 7U, sizeof(expected) - 7U) == 0 &&
+            placement.timer_safe_point_cache_offsets.count(
+                site.breakpoint_offset) == 1U;
+        std::uint32_t resolved_request = 0U;
+        std::memcpy(&resolved_request,
+                    reinterpret_cast<const void*>(
+                        static_cast<std::uintptr_t>(placement.base_address +
+                            site.request_address_offset)),
+                    sizeof(resolved_request));
+        valid = valid && resolved_request == static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(
+                &placement.timer_safe_point_request));
+    }
+    // A second tiny CFG verifies the unconditional direct-back-edge path.
+    const std::uint8_t direct_loop[] = {0xEBU, 0xFEU};
+    std::memset(runtime.objects[0].memory.data(), 0, kGuestSize);
+    std::memcpy(runtime.objects[0].memory.data(), direct_loop,
+                sizeof(direct_loop));
+    repiu::runtime::AotTranslationPlan direct_plan;
+    repiu::runtime::AotCodeCacheImage direct_enabled;
+    valid = valid && repiu::runtime::BuildAotTranslationPlanFromEntry(
+        runtime, guest_address, &direct_plan) &&
+        repiu::runtime::BuildAotCodeCacheImage(
+            direct_plan, options, &direct_enabled) &&
+        direct_enabled.timer_safe_point_sites.size() == 1U &&
+        direct_enabled.timer_safe_point_sites.front().guest_source ==
+            guest_address;
+    repiu::platform::win32::ReleaseWin32AotCodeCache(&placement);
+    VirtualFree(guest, 0, MEM_RELEASE);
+    std::cout << "timer_safe_point_probe="
+              << (valid ? "true" : "false") << std::endl;
+    return valid;
 }
 
 bool RunCoherenceProbe()
@@ -495,6 +595,12 @@ bool RunCoherenceProbe()
 
 int main(int argc, char** argv)
 {
+#if defined(_WIN32)
+    if (argc == 2 && std::strcmp(argv[1], "--timer-safe-point") == 0)
+    {
+        return RunTimerSafePointProbe() ? 0 : 1;
+    }
+#endif
     const bool xref_mode = argc == 4 &&
         std::strcmp(argv[2], "--xref") == 0;
     const bool dump_mode = argc == 4 &&
@@ -787,6 +893,14 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunSelectorGuardProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunPitTimerProbe())
+    {
+        return 1;
+    }
+    if (!RunTimerSafePointProbe())
     {
         return 1;
     }

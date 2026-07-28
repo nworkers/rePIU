@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace repiu::platform::win32
@@ -43,6 +44,7 @@ struct Win32AotCodeCachePlacement
     std::vector<runtime::AotSegmentOverrideSite> segment_override_sites;
     std::vector<runtime::AotGuardedSegmentPopSite>
         guarded_segment_pop_sites;
+    std::vector<runtime::AotTimerSafePointSite> timer_safe_point_sites;
     // Incremented directly by guarded cache slots; placement outlives execution.
     volatile std::uint32_t guarded_segment_pop_success_count = 0;
     volatile std::uint32_t guarded_segment_pop_fallback_count = 0;
@@ -63,6 +65,7 @@ struct Win32AotCodeCachePlacement
     // retirement and explicit probes are checked before this structural index.
     std::unordered_map<std::uint32_t, AotCacheBreakpointProvenance>
         breakpoint_provenance_by_cache_offset;
+    std::unordered_set<std::uint32_t> timer_safe_point_cache_offsets;
     std::uint32_t next_generation = 1;
     std::uint32_t indirect_inline_cache_entry_count =
         runtime::kDefaultAotIndirectInlineCacheEntryCount;
@@ -70,6 +73,12 @@ struct Win32AotCodeCachePlacement
     bool dbt_hle_dispatch_enabled = false;
     bool dbt_indirect_miss_dispatch_enabled = false;
     bool guarded_segment_pop_enabled = false;
+    bool timer_safe_points_enabled = false;
+    // Written by the telemetry poller and consumed only on the guest thread.
+    volatile std::uint32_t timer_safe_point_request = 0;
+    volatile std::uint32_t timer_safe_point_trap_count = 0;
+    volatile std::uint32_t timer_safe_point_injected_count = 0;
+    volatile std::uint32_t timer_safe_point_deferred_count = 0;
     std::string message;
 };
 

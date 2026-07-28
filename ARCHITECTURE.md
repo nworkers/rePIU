@@ -440,15 +440,28 @@ flowchart LR
 ```
 ## Synchronous system timer tick HLE / 동기식 시스템 타이머 틱 HLE
 
-게스트는 프레임 동기화를 위해 BIOS Data Area 선형 주소 `0x46C`의 18.2Hz 시스템 타이머 틱을 폴링합니다. 별도 타이머 스레드는 write-watch guard page와 레이스를 일으키므로 사용하지 않고, 호스트 폴러 `PollThreadUntilExit` 루프가 매 반복마다 경과 시간을 55ms 단위로 환산해 `WriteDosLowMemory`로 동기 갱신합니다.
+BDA 선형 주소 `0x46C`의 BIOS tick과 프로그래밍 가능한 IRQ0 주기는 분리합니다.
+플랫폼 공용 `hle::PitChannel0`은 포트 `0x43`/`0x40`의 채널 0 제어어와 reload
+바이트를 보존하고, 원자적 generation/divisor snapshot을 게시합니다.
+`PollThreadUntilExit`의 `hle::PitIrqSchedule`은 단조 증가 시계와
+`1,193,280 / divisor` 비율로 IRQ0 만료를 계산합니다. `PIU.EXE`가 기록하는
+divisor `4,972`는 정확히 `240Hz`입니다. BDA tick은 기본 divisor `65,536`으로
+별도 계산합니다.
 
-The guest polls the 18.2Hz system timer tick at BDA linear address `0x46C` for frame pacing. A dedicated timer thread would race the write-watch guard pages, so the host poller loop in `PollThreadUntilExit` instead converts elapsed wall-clock time into 55ms ticks each iteration and writes them synchronously through `WriteDosLowMemory`.
+The BIOS tick at BDA linear address `0x46C` is separate from programmable
+IRQ0 cadence. Platform-neutral `hle::PitChannel0` preserves channel-0 control
+and reload bytes written to ports `0x43`/`0x40`, publishing an atomic
+generation/divisor snapshot. `hle::PitIrqSchedule` in `PollThreadUntilExit`
+derives expirations from monotonic time and `1,193,280 / divisor`. The
+`PIU.EXE` divisor `4,972` is exactly `240Hz`; BDA time remains separately
+derived from default divisor `65,536`.
 
 ```mermaid
 flowchart LR
-    P["PollThreadUntilExit loop"] --> C["ticks = elapsed / 55ms"]
-    C --> W["WriteDosLowMemory 0x46C"]
-    W --> G["guest spin loop reads BDA tick"]
+    O["OUT 43h/40h"] --> P["PitChannel0 snapshot"]
+    P --> S["PitIrqSchedule"]
+    S --> I["coalesced pending IRQ0"]
+    D["default divisor 65536"] --> W["BDA 0x46C"]
 ```
 ## MAME CHD asset mount
 
@@ -1290,3 +1303,44 @@ and 84.82% of handler ticks. Segment-register and port-I/O HLE sites were distri
 the ranking, and the top 32 covered 67.21%, below the 80% gate for generating one
 exception-free loop. The next single-step task must first separate hot-HLE dispatch/decode
 work from the exception-transition cost outside this scope.
+
+## AOT back-edge 타이머 safe point / AOT back-edge timer safe point
+
+Task 348은 자연 VEH 경계가 없는 AOT busy-wait에서도 원본 INT 8 ISR을 계속 실행하기
+위한 협력형 rendezvous를 추가합니다. `aot-dbt` emitter는 direct/conditional back edge
+앞에 `pushfd`/request compare/`popfd` guard를 생성하고, 요청이 있을 때만 placement에
+등록된 전용 `INT3`로 진입합니다. 정상 경로와 trap 경로 모두 원래 GPR/ESP/EFLAGS를
+보존한 상태에서 기존 translated branch로 이어집니다.
+
+```mermaid
+sequenceDiagram
+    participant P as Poll thread
+    participant C as AOT cache
+    participant V as Guest-thread VEH
+    participant I as Common INT 8 injector
+    P->>P: pending=true, request=1
+    C->>V: back-edge safe-point INT3
+    V->>V: request=0, EIP=ExceptionAddress+1
+    V->>I: IF/vector 검증과 IRET frame 작성
+    I-->>C: original ISR/IRETD 뒤 branch 재개
+```
+
+request word와 site index는 `Win32AotCodeCachePlacement`가 소유하며 initial placement와
+dynamic append가 공유합니다. poll thread는 `InterlockedExchange`로 요청만 게시하고
+guest context, TF, stack을 수정하지 않습니다. safe-point handler는 일반 AOT reentry보다
+먼저 실행되며 실제 frame 작성은 기존 `InjectPendingInterrupts`만 담당합니다. 자연 경계에서
+pending이 먼저 소비된 경우 request도 함께 지워 stale trap을 막습니다. 종료 로그는
+site 수와 trap/injected/deferred를 분리해 기록합니다.
+
+Task 348 adds a cooperative rendezvous that keeps the original INT 8 ISR running even inside
+an AOT busy-wait with no natural VEH boundary. The `aot-dbt` emitter places a
+`pushfd`/request-compare/`popfd` guard before direct and conditional back edges and enters a
+placement-registered dedicated `INT3` only when requested. Both paths preserve the original
+GPRs, ESP, and EFLAGS before continuing with the translated branch.
+
+The request word and site index belong to `Win32AotCodeCachePlacement` and are shared by the
+initial placement and dynamic appends. The poll thread publishes only the request with
+`InterlockedExchange`; it never edits guest context, TF, or stack. The dedicated handler runs
+before generic AOT reentry, explicitly resumes at `ExceptionAddress + 1`, and delegates all
+frame creation to `InjectPendingInterrupts`. Natural-boundary delivery also clears the request
+to prevent a stale trap. Final diagnostics report site and trap/injected/deferred counts.

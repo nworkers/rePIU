@@ -14,6 +14,42 @@ namespace
 
 constexpr std::uint32_t kInlineCacheEntryCount = 4U;
 
+bool IsBackwardEdge(const AotInstructionRecord& instruction)
+{
+    if (instruction.kind == AotInstructionKind::kDirectJump)
+    {
+        return instruction.direct_target <= instruction.guest_address;
+    }
+    if (instruction.kind == AotInstructionKind::kConditionalBranch)
+    {
+        return instruction.direct_target <= instruction.guest_address ||
+               instruction.fallthrough_target <= instruction.guest_address;
+    }
+    return false;
+}
+
+void EmitTimerSafePoint(const AotInstructionRecord& instruction,
+                        AotCodeCacheImage* image)
+{
+    const std::uint32_t cache_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    // pushfd; cmp dword ptr [abs32],0; jne trap; popfd; jmp continue;
+    // trap: popfd; int3; continue:
+    image->bytes.push_back(0x9CU);
+    image->bytes.insert(image->bytes.end(), {0x83U, 0x3DU});
+    const std::uint32_t request_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    image->bytes.insert(image->bytes.end(), 4U, 0U);
+    image->bytes.insert(image->bytes.end(),
+                        {0x00U, 0x75U, 0x03U, 0x9DU, 0xEBU, 0x02U, 0x9DU});
+    const std::uint32_t breakpoint_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    image->bytes.push_back(0xCCU);
+    image->timer_safe_point_sites.push_back({
+        instruction.guest_address, cache_offset, request_address_offset,
+        breakpoint_offset});
+}
+
 bool ReadConditionOpcode(std::uint16_t mnemonic, std::uint8_t* opcode)
 {
     if (opcode == nullptr)
@@ -693,6 +729,7 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
         options.enable_dbt_hle_dispatch;
     image->dbt_indirect_miss_dispatch_enabled =
         options.enable_dbt_indirect_miss_dispatch;
+    image->timer_safe_points_enabled = options.enable_timer_safe_points;
     const auto started = std::chrono::steady_clock::now();
     image->guarded_segment_pop_enabled =
         options.enable_guarded_segment_pop;
@@ -751,12 +788,19 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                     }
                     else
                     {
+                        if (options.enable_timer_safe_points &&
+                            IsBackwardEdge(instruction))
+                        {
+                            EmitTimerSafePoint(instruction, image);
+                        }
+                        const std::uint32_t branch_offset =
+                            static_cast<std::uint32_t>(image->bytes.size());
                         AppendRel32(&image->bytes, 0xE9U);
                         image->fixups.push_back({
                             AotFixupKind::kDirectJump,
                             instruction.guest_address,
                             instruction.direct_target,
-                            cache_offset + 1U, false});
+                            branch_offset + 1U, false});
                     }
                     break;
                 }
@@ -773,19 +817,26 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                             instruction.direct_target, cache_offset, false});
                         break;
                     }
+                    if (options.enable_timer_safe_points &&
+                        IsBackwardEdge(instruction))
+                    {
+                        EmitTimerSafePoint(instruction, image);
+                    }
+                    const std::uint32_t branch_offset =
+                        static_cast<std::uint32_t>(image->bytes.size());
                     image->bytes.push_back(0x0FU);
                     image->bytes.push_back(opcode);
                     image->bytes.insert(image->bytes.end(), 4U, 0U);
                     image->fixups.push_back({
                         AotFixupKind::kConditionalBranch,
                         instruction.guest_address, instruction.direct_target,
-                        cache_offset + 2U, false});
+                        branch_offset + 2U, false});
                     AppendRel32(&image->bytes, 0xE9U);
                     image->fixups.push_back({
                         AotFixupKind::kDirectJump,
                         instruction.guest_address,
                         instruction.fallthrough_target,
-                        cache_offset + 7U, false});
+                        branch_offset + 7U, false});
                     break;
                 }
                 case AotInstructionKind::kHleBoundary:
@@ -859,6 +910,11 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
         }
         const AotInstructionRecord& tail = block.instructions.back();
         const std::uint32_t target = tail.guest_address + tail.length;
+        if (options.enable_timer_safe_points &&
+            target <= tail.guest_address)
+        {
+            EmitTimerSafePoint(tail, image);
+        }
         image->bytes.push_back(0xE9U);
         const std::uint32_t patch_offset =
             static_cast<std::uint32_t>(image->bytes.size());
