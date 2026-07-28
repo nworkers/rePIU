@@ -1262,6 +1262,70 @@ void PrintExecutionAttempt(
                     share(bucket(ExecutionTimeBucket::kAotDynamicTranslate)),
                     share(bucket(ExecutionTimeBucket::kAotResidency)));
             }
+            // Task 334: kAotReentry holds 97.48% of the handler axis while the
+            // function axis explains only 7.84% of it, so these six intervals
+            // partition the reentry handler itself. The residual against
+            // kAotReentry shows a wrong boundary instead of absorbing it.
+            const std::uint64_t reentry =
+                bucket(ExecutionTimeBucket::kAotReentry);
+            std::uint64_t reentry_named = 0;
+            for (std::uint32_t index =
+                     repiu::platform::win32::kFirstAotReentryBucket;
+                 index < repiu::platform::win32::kExecutionTimeBucketCount;
+                 ++index)
+            {
+                reentry_named += time_profile.cycles[index];
+            }
+            const std::uint64_t reentry_residual =
+                reentry > reentry_named ? reentry - reentry_named : 0U;
+            logger.info(
+                "Win32 aot reentry cycles guest-lookup/provenance/retired/"
+                "boundary-reason/native-span/single-step/residual: "
+                "{}/{}/{}/{}/{}/{}/{}",
+                bucket(ExecutionTimeBucket::kAotReentryGuestLookup),
+                bucket(ExecutionTimeBucket::kAotReentryProvenance),
+                bucket(ExecutionTimeBucket::kAotReentryRetired),
+                bucket(ExecutionTimeBucket::kAotReentryBoundaryReason),
+                bucket(ExecutionTimeBucket::kAotReentryNativeSpan),
+                bucket(ExecutionTimeBucket::kAotReentrySingleStep),
+                reentry_residual);
+            const auto reentry_count = [&time_profile](
+                                           ExecutionTimeBucket id) {
+                return time_profile.counts[static_cast<std::uint32_t>(id)];
+            };
+            logger.info(
+                "Win32 aot reentry count guest-lookup/provenance/retired/"
+                "boundary-reason/native-span/single-step: {}/{}/{}/{}/{}/{}",
+                reentry_count(ExecutionTimeBucket::kAotReentryGuestLookup),
+                reentry_count(ExecutionTimeBucket::kAotReentryProvenance),
+                reentry_count(ExecutionTimeBucket::kAotReentryRetired),
+                reentry_count(ExecutionTimeBucket::kAotReentryBoundaryReason),
+                reentry_count(ExecutionTimeBucket::kAotReentryNativeSpan),
+                reentry_count(ExecutionTimeBucket::kAotReentrySingleStep));
+            if (reentry != 0U)
+            {
+                const auto reentry_share = [reentry](std::uint64_t value) {
+                    return 100.0 * static_cast<double>(value) /
+                        static_cast<double>(reentry);
+                };
+                logger.info(
+                    "Win32 aot reentry share guest-lookup/provenance/retired/"
+                    "boundary-reason/native-span/single-step/residual: "
+                    "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
+                    reentry_share(
+                        bucket(ExecutionTimeBucket::kAotReentryGuestLookup)),
+                    reentry_share(
+                        bucket(ExecutionTimeBucket::kAotReentryProvenance)),
+                    reentry_share(
+                        bucket(ExecutionTimeBucket::kAotReentryRetired)),
+                    reentry_share(
+                        bucket(ExecutionTimeBucket::kAotReentryBoundaryReason)),
+                    reentry_share(
+                        bucket(ExecutionTimeBucket::kAotReentryNativeSpan)),
+                    reentry_share(
+                        bucket(ExecutionTimeBucket::kAotReentrySingleStep)),
+                    reentry_share(reentry_residual));
+            }
         }
         // Task 327: split one translation rendezvous into scheduling latency
         // and worker CPU. The residual against guest_total exposes a wrong
@@ -1425,6 +1489,53 @@ void PrintExecutionAttempt(
                         worker.plan_record_build_cycles /
                             worker.plan_decode_count);
                 }
+            }
+        }
+        // Task 333: the Glide gate holds 60.78% of Release wall clock, and this
+        // splits one rendezvous into waiting for the host thread and the host
+        // executing the command. `wake` is the host pump cadence, so a large
+        // share there means the cost is latency rather than GL work.
+        {
+            const auto& gate = attempt.glide_gate_timing;
+            logger.info(
+                "Win32 glide gate timing enabled/rendezvous/direct/clamped: "
+                "{}/{}/{}/{}",
+                gate.enabled, gate.rendezvous_count, gate.direct_count,
+                gate.clamped_sample_count);
+            logger.info(
+                "Win32 glide gate cycles queue/wake/work/complete/residual/"
+                "total: {}/{}/{}/{}/{}/{}",
+                gate.queue_cycles, gate.wake_cycles, gate.work_cycles,
+                gate.complete_cycles, gate.residual_cycles,
+                gate.total_cycles);
+            logger.info(
+                "Win32 glide gate direct cycles/max wake/work/total: "
+                "{}/{}/{}/{}",
+                gate.direct_work_cycles, gate.max_wake_cycles,
+                gate.max_work_cycles, gate.max_total_cycles);
+            if (gate.total_cycles != 0U)
+            {
+                const auto gate_share = [&gate](std::uint64_t value) {
+                    return 100.0 * static_cast<double>(value) /
+                        static_cast<double>(gate.total_cycles);
+                };
+                logger.info(
+                    "Win32 glide gate share queue/wake/work/complete/residual: "
+                    "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
+                    gate_share(gate.queue_cycles),
+                    gate_share(gate.wake_cycles),
+                    gate_share(gate.work_cycles),
+                    gate_share(gate.complete_cycles),
+                    gate_share(gate.residual_cycles));
+            }
+            if (gate.rendezvous_count != 0U)
+            {
+                logger.info(
+                    "Win32 glide gate mean per rendezvous total/wake/work: "
+                    "{}/{}/{}",
+                    gate.total_cycles / gate.rendezvous_count,
+                    gate.wake_cycles / gate.rendezvous_count,
+                    gate.work_cycles / gate.rendezvous_count);
             }
         }
         if (total != 0U)

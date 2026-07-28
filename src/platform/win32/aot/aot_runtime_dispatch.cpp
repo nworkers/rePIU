@@ -1630,8 +1630,17 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
             reinterpret_cast<std::uintptr_t>(
                 exception_info->ExceptionRecord->ExceptionAddress));
         std::uint32_t guest_address = 0;
-        if (!FindAotGuestAddress(*context->aot_placement, cache_address,
-                                 &guest_address))
+        // Task 334 interval 1. `FindAotGuestAddress` scans the whole address
+        // map, which Task 324 fixed only in the opposite direction.
+        bool located = false;
+        {
+            const ExecutionTimeScope guest_lookup_scope(
+                context->execution_time_profile.get(),
+                ExecutionTimeBucket::kAotReentryGuestLookup);
+            located = FindAotGuestAddress(*context->aot_placement,
+                                          cache_address, &guest_address);
+        }
+        if (!located)
         {
             return false;
         }
@@ -1645,23 +1654,38 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
         // *currently* resolved for the guest address, on every hit, is a
         // strictly more robust fix: it self-heals regardless of the exact
         // underlying mechanism (retranslation, alternate cache copy, etc.).
-        const bool is_tracked_trace_address =
-            context->execution_trace_configured &&
-            (guest_address == context->runtime_base +
-                                   context->execution_trace_start_offset ||
-             (context->execution_trace_sentinel2_configured &&
-              guest_address ==
-                  context->runtime_base +
-                      context->execution_trace_sentinel2_offset));
-        RecordAotBreakpointProvenance(
-            context,
-            ClassifyAotCacheBreakpointProvenance(
-                *context->aot_placement, cache_address,
-                is_tracked_trace_address));
-        const bool retired_entry = IsWin32AotCacheAddressRetired(
-            *context->aot_placement, cache_address);
+        // Task 334 interval 2: sentinel test, provenance classification, and
+        // the retired-entry test. Closed before the next interval starts so the
+        // six stay mutually exclusive.
+        bool is_tracked_trace_address = false;
+        bool retired_entry = false;
+        {
+            const ExecutionTimeScope provenance_scope(
+                context->execution_time_profile.get(),
+                ExecutionTimeBucket::kAotReentryProvenance);
+            is_tracked_trace_address =
+                context->execution_trace_configured &&
+                (guest_address == context->runtime_base +
+                                       context->execution_trace_start_offset ||
+                 (context->execution_trace_sentinel2_configured &&
+                  guest_address ==
+                      context->runtime_base +
+                          context->execution_trace_sentinel2_offset));
+            RecordAotBreakpointProvenance(
+                context,
+                ClassifyAotCacheBreakpointProvenance(
+                    *context->aot_placement, cache_address,
+                    is_tracked_trace_address));
+            retired_entry = IsWin32AotCacheAddressRetired(
+                *context->aot_placement, cache_address);
+        }
+        // Task 334 interval 3. The early return inside still closes the scope,
+        // so a resolved retired trap is attributed here rather than lost.
         if (retired_entry)
         {
+            const ExecutionTimeScope retired_scope(
+                context->execution_time_profile.get(),
+                ExecutionTimeBucket::kAotReentryRetired);
             BumpAotRetiredEntryTrapCount(context);
             Win32AotRetiredTrapProfile* retired_profile =
                 AotRetiredTrapProfileEnabled()
@@ -1723,6 +1747,10 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
         // (Task 263a) -- honoring readability so a boundary at a page edge falls
         // into kOther instead of faulting.
         {
+            // Task 334 interval 4.
+            const ExecutionTimeScope boundary_reason_scope(
+                context->execution_time_profile.get(),
+                ExecutionTimeBucket::kAotReentryBoundaryReason);
             const auto* boundary_bytes = reinterpret_cast<const std::uint8_t*>(
                 static_cast<std::uintptr_t>(guest_address));
             std::size_t readable = 0;
@@ -1763,10 +1791,16 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
             }
         }
         if (retired_entry && !is_tracked_trace_address &&
-            RetiredTrapNativeSpanEnabled(context->execution_backend) &&
-            TryEnterRetiredTrapNativeSpan(win32_context, context))
+            RetiredTrapNativeSpanEnabled(context->execution_backend))
         {
-            return true;
+            // Task 334 interval 5.
+            const ExecutionTimeScope native_span_scope(
+                context->execution_time_profile.get(),
+                ExecutionTimeBucket::kAotReentryNativeSpan);
+            if (TryEnterRetiredTrapNativeSpan(win32_context, context))
+            {
+                return true;
+            }
         }
         return false;
     }
@@ -1774,6 +1808,10 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
     {
         return false;
     }
+    // Task 334 interval 6: the single-step resumption path in full.
+    const ExecutionTimeScope single_step_scope(
+        context->execution_time_profile.get(),
+        ExecutionTimeBucket::kAotReentrySingleStep);
     const std::uint32_t current = static_cast<std::uint32_t>(win32_context->Eip);
     if (IsAotCacheAddress(context, current))
     {

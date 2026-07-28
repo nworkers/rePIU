@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <sstream>
 
@@ -12,6 +13,22 @@
 
 namespace repiu::platform::win32
 {
+namespace
+{
+
+// Task 333. The command-aware wait replaces an unconditional Sleep(1) on the
+// host poll loop, and this switch exists so the two can be compared in one
+// binary: `REPIU_GLIDE_HOST_WAIT=0` restores the sleep. Default on.
+bool GlideHostCommandWaitEnabled()
+{
+    static const bool enabled = []() {
+        const char* value = std::getenv("REPIU_GLIDE_HOST_WAIT");
+        return value == nullptr || std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+}  // namespace
 
 SharedTelemetryMapping OpenSharedTelemetryMapping()
 {
@@ -426,7 +443,19 @@ DWORD PollThreadUntilExit(HANDLE thread,
                                        iteration + 1);
             last_live_snapshot_tick = current_tick;
         }
-        Sleep(1);
+        // Task 333: the loop used to end in Sleep(1), so a Glide command
+        // published just after the pump above waited out the whole sleep before
+        // anyone looked at it — measured as the dominant part of a gate call.
+        // Waiting on the command instead keeps the same 1ms poll cadence when
+        // nothing is posted and wakes immediately when something is.
+        if (host_context != nullptr && GlideHostCommandWaitEnabled())
+        {
+            host_context->glide_backend.WaitAndPumpHostCommands(1U);
+        }
+        else
+        {
+            Sleep(1);
+        }
     }
 }
 
@@ -580,6 +609,9 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.aot_worker_timing != nullptr
             ? SnapshotAotWorkerTiming(*context.aot_worker_timing)
             : Win32AotWorkerTimingSnapshot{};
+    // Task 333: read after the guest thread has stopped, so the backend's
+    // counters are quiescent and no lock is needed here.
+    attempt->glide_gate_timing = context.glide_backend.glide_gate_timing();
     attempt->native_fast_path_entry_count =
         context.native_fast_path.entry_count.load(std::memory_order_relaxed);
     attempt->native_fast_path_return_count =

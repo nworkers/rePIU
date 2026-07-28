@@ -6,6 +6,7 @@
 #include "repiu/target/target_profile.h"
 
 #include "inline_cache_probe.h"
+#include "append_phase_benchmark_probe.h"
 #include "arena_view_probe.h"
 #include "boundary_provenance_probe.h"
 #include "native_linear_span_probe.h"
@@ -15,6 +16,7 @@
 #include "exception_transition_calibration_probe.h"
 #include "aot_cache_address_index_probe.h"
 #include "execution_time_profile_probe.h"
+#include "glide_gate_timing_probe.h"
 #include "aot_worker_timing_probe.h"
 #include "selector_guard_probe.h"
 #include "execution_backend_probe.h"
@@ -780,6 +782,10 @@ int main(int argc, char** argv)
     {
         return 1;
     }
+    if (!repiu::tools::RunGlideGateTimingProbe())
+    {
+        return 1;
+    }
     if (!repiu::tools::RunSelectorGuardProbe())
     {
         return 1;
@@ -792,6 +798,13 @@ int main(int argc, char** argv)
     // is the build-configuration factor.
     if (!repiu::tools::RunPlanBuildBenchmarkProbe(
             image, image.relocated_entry_linear_address))
+    {
+        return 1;
+    }
+    // Task 331: the same append the loader's translation worker runs, measured
+    // in whichever configuration this probe was built as, so the Debug append
+    // distribution can be re-attributed in Release without running the game.
+    if (!repiu::tools::RunAppendPhaseBenchmarkProbe(load))
     {
         return 1;
     }

@@ -1357,6 +1357,26 @@ bool FindAotGuestAddress(const Win32AotCodeCachePlacement& placement,
         return false;
     }
     const std::uint32_t offset = cache_address - placement.base_address;
+
+    // Task 334. Release measurement put this scan at 96.00% of the reentry
+    // handler and roughly 44% of all guest wall clock, at 551,864 ticks per
+    // call over a map of about 100,000 entries. The index answers in O(log n)
+    // and returns the same entry; when it is stale or the map is not sorted by
+    // cache offset the scan below runs unchanged, so this degrades to slow
+    // rather than wrong, exactly as Task 324's index does.
+    const AotGuestAddressLookup indexed =
+        LookupAotGuestAddressIndex(placement, offset);
+    if (indexed.usable)
+    {
+        if (!indexed.found)
+        {
+            return false;
+        }
+        *guest_address =
+            placement.address_map[indexed.map_index].guest_address;
+        return true;
+    }
+
     for (const runtime::AotAddressMapEntry& entry : placement.address_map)
     {
         if (offset >= entry.cache_offset &&

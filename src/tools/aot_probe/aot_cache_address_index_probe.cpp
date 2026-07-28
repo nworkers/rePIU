@@ -125,6 +125,73 @@ bool AgreesEverywhere(const Win32AotCodeCachePlacement& placement)
     return true;
 }
 
+// Task 334: the pre-index reverse scan, kept verbatim as the oracle for the
+// cache-to-guest direction. First match by map index wins, which is what the
+// binary search has to reproduce.
+bool ReferenceFindAotGuestAddress(const Win32AotCodeCachePlacement& placement,
+                                  std::uint32_t cache_address,
+                                  std::uint32_t* guest_address)
+{
+    if (!placement.placed || guest_address == nullptr ||
+        cache_address < placement.base_address)
+    {
+        return false;
+    }
+    const std::uint32_t offset = cache_address - placement.base_address;
+    for (const repiu::runtime::AotAddressMapEntry& entry :
+         placement.address_map)
+    {
+        if (offset >= entry.cache_offset &&
+            offset < entry.cache_offset + entry.emitted_length)
+        {
+            *guest_address = entry.guest_address;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Every byte of every entry plus the gaps around them, so an off-by-one at
+// either end of a range is caught rather than sampled past.
+bool ReverseAgreesEverywhere(const Win32AotCodeCachePlacement& placement)
+{
+    std::vector<std::uint32_t> queries;
+    for (const repiu::runtime::AotAddressMapEntry& entry :
+         placement.address_map)
+    {
+        for (std::uint32_t byte = 0; byte < entry.emitted_length; ++byte)
+        {
+            queries.push_back(placement.base_address + entry.cache_offset +
+                              byte);
+        }
+        queries.push_back(placement.base_address + entry.cache_offset - 1U);
+        queries.push_back(placement.base_address + entry.cache_offset +
+                          entry.emitted_length);
+    }
+    queries.push_back(placement.base_address);
+    queries.push_back(placement.base_address - 1U);
+    queries.push_back(placement.base_address + 0x7FFFFFU);
+
+    for (const std::uint32_t query : queries)
+    {
+        std::uint32_t actual = 0xDEADBEEFU;
+        std::uint32_t expected = 0xDEADBEEFU;
+        const bool actual_found = repiu::platform::win32::FindAotGuestAddress(
+            placement, query, &actual);
+        const bool expected_found =
+            ReferenceFindAotGuestAddress(placement, query, &expected);
+        if (actual_found != expected_found)
+        {
+            return false;
+        }
+        if (expected_found && actual != expected)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 Win32AotCodeCachePlacement MakeBasePlacement()
 {
     Win32AotCodeCachePlacement placement;
@@ -253,9 +320,47 @@ bool RunAotCacheAddressIndexProbe()
     unindexed.retired_guest_addresses = {0x03050000U};
     const bool unindexed_ok = AgreesEverywhere(unindexed);
 
+    // 9. Task 334, cache-to-guest. The same placements exercise the reverse
+    //    direction, plus three shapes the forward index never cares about: a
+    //    gap between ranges, an entry longer than its successor's distance, and
+    //    an out-of-order append that must turn the index off.
+    bool reverse_agrees = ReverseAgreesEverywhere(no_retired) &&
+        ReverseAgreesEverywhere(mixed) &&
+        ReverseAgreesEverywhere(appended) &&
+        ReverseAgreesEverywhere(unindexed);
+
+    Win32AotCodeCachePlacement ranged = MakeBasePlacement();
+    ranged.address_map.push_back({0x03060000U, 0x000U, 4U, 16U});
+    ranged.address_map_states.push_back({1U, true, true});
+    ranged.address_map.push_back({0x03060010U, 0x010U, 4U, 1U});
+    ranged.address_map_states.push_back({1U, true, true});
+    // Deliberate gap: 0x011..0x01F belong to nobody.
+    ranged.address_map.push_back({0x03060020U, 0x020U, 4U, 8U});
+    ranged.address_map_states.push_back({1U, true, true});
+    EnsureAotCacheAddressIndex(&ranged);
+    const bool reverse_ranges = ReverseAgreesEverywhere(ranged) &&
+        ranged.cache_address_index.cache_offset_sorted &&
+        ranged.cache_address_index.max_emitted_length == 16U;
+
+    // An out-of-order cache offset is the one shape the binary search cannot
+    // answer, so the index must report itself unusable and the scan must run.
+    Win32AotCodeCachePlacement unsorted = MakeBasePlacement();
+    unsorted.address_map.push_back({0x03070000U, 0x100U, 4U, 8U});
+    unsorted.address_map_states.push_back({1U, true, true});
+    unsorted.address_map.push_back({0x03070010U, 0x080U, 4U, 8U});
+    unsorted.address_map_states.push_back({1U, true, true});
+    EnsureAotCacheAddressIndex(&unsorted);
+    const bool reverse_unsorted =
+        !unsorted.cache_address_index.cache_offset_sorted &&
+        !repiu::platform::win32::LookupAotGuestAddressIndex(
+             unsorted, 0x100U).usable &&
+        ReverseAgreesEverywhere(unsorted);
+
+    reverse_agrees = reverse_agrees && reverse_ranges && reverse_unsorted;
+
     const bool all = empty_retired && mixed_retired && inactive_newest &&
         inactive_all && collisions && append_agrees && fallback &&
-        unindexed_ok;
+        unindexed_ok && reverse_agrees;
 
     std::cout
         << "aot_cache_address_index_empty_retired="
@@ -274,6 +379,12 @@ bool RunAotCacheAddressIndexProbe()
         << (fallback ? "true" : "false")
         << "\naot_cache_address_index_unindexed="
         << (unindexed_ok ? "true" : "false")
+        << "\naot_cache_address_index_reverse="
+        << (reverse_agrees ? "true" : "false")
+        << "\naot_cache_address_index_reverse_ranges="
+        << (reverse_ranges ? "true" : "false")
+        << "\naot_cache_address_index_reverse_unsorted="
+        << (reverse_unsorted ? "true" : "false")
         << "\naot_cache_address_index_all="
         << (all ? "true" : "false") << "\n";
     return all;

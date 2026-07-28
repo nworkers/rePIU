@@ -122,6 +122,7 @@ add_library(repiu_exe
     src/platform/win32/boundary/timer_interrupt_boundary.cpp
     src/platform/win32/telemetry/live_telemetry_snapshot.cpp
     src/platform/win32/telemetry/execution_time_profile.cpp
+    src/platform/win32/telemetry/glide_gate_timing.cpp
     src/platform/win32/io/port_io_emulator.cpp
     src/platform/win32/io/eeprom_93c46.cpp
     src/platform/win32/io/piu10_sound_port.cpp
@@ -184,6 +185,7 @@ add_executable(repiu_chd_cd_probe
 )
 
 add_executable(repiu_aot_probe
+    src/tools/aot_probe/append_phase_benchmark_probe.cpp
     src/tools/aot_probe/arena_view_probe.cpp
     src/tools/aot_probe/boundary_provenance_probe.cpp
     src/tools/aot_probe/dbt_call_return_trace_probe.cpp
@@ -199,6 +201,7 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/exception_transition_calibration_probe.cpp
     src/tools/aot_probe/aot_cache_address_index_probe.cpp
     src/tools/aot_probe/execution_time_profile_probe.cpp
+    src/tools/aot_probe/glide_gate_timing_probe.cpp
     src/tools/aot_probe/aot_worker_timing_probe.cpp
     src/tools/aot_probe/selector_guard_probe.cpp
     src/tools/aot_probe/main.cpp

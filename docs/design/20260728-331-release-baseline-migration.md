@@ -66,6 +66,49 @@ flowchart TD
     A --> T["구성 명시된 성능 기준"]
 ```
 
+### 5. append 재귀속을 게임 없이 수행하는 방법
+
+60초 실게임 A/B는 사용자만 수행할 수 있으므로, append 재귀속은 **probe로 먼저**
+수행합니다. 근거는 Task 330에서 이미 확인된 사실입니다. probe의 Debug 명령당
+`24,512 tick`은 실게임의 `25,433 tick`과 3.6% 차이였습니다. 즉 probe는 in-situ
+비용을 잘 대표합니다.
+
+측정 대상은 제품 코드가 이미 갖고 있는 `Win32AotWorkerTimingProfile`의 다섯 단계
+(`arena_snapshot`, `plan_build`, `image_emit`, `validate`, `placement`)입니다. probe는
+새 계측을 만들지 않고 그 계측을 그대로 읽으므로, 측정값은 로더가 보고하는 값과 같은
+정의입니다.
+
+Task 329 이후 append는 **guest 바이트가 자기 주소에 살아 있어야** 동작합니다(스냅샷
+대신 직접 참조). 따라서 probe는 arena를 예약하고 그 주소로 이미지를 재배치해 실제
+append를 구동합니다.
+
+**번역 크기를 통제합니다.** 이미지 entry 번역은 명령 47,692개로 실게임 평균
+1,039개보다 45배 큽니다. 그 분포를 그대로 "append의 분포"라고 부르면 명령당 비용
+단계(`plan_build`, `image_emit`)가 과대평가되고 append당 고정 비용(16MB
+`VirtualProtect` 2회 등)이 과소평가됩니다. 그래서 두 크기를 잽니다.
+
+1. **small** — `[entry, entry + window)` 밖을 전부 excluded range로 두어 walk를
+   경계에서 끊고, 실게임 평균에 가장 가까운 window를 후보 중에서 고릅니다. 이는
+   로더가 guest 기록 영역에 쓰는 것과 같은 기존 메커니즘입니다.
+2. **large** — 이미지 entry 전체.
+
+두 점으로 단계별 1차 적합을 만들면 기울기는 **명령당 비용**, 절편은 **번역량과
+무관한 append당 고정 비용**입니다. 절편이 지배하는 단계는 "번역을 작게" 만들어서는
+줄일 수 없다는 뜻이므로, 이 구분이 다음 최적화 대상을 고르는 판정 기준이 됩니다.
+
+**사전 등록 gate.** 다음 중 무엇이 성립하는지를 측정 전에 고정합니다.
+
+| gate | 조건 | 의미하는 다음 작업 |
+|---|---|---|
+| G1 | Release small에서 `placement` >= 50% | placement 내부 재분해(고정 syscall 대 항목별 비용) |
+| G2 | Release small에서 `plan_build` >= 50% | Task 330의 Release `decode` 44.02%가 다음 대상 |
+| G3 | Release small에서 `image_emit` >= 50% | emit 재분해 |
+| G4 | 어느 단계도 50% 미만 | 단계가 아니라 append 호출 횟수 자체가 대상 |
+| G5 | `placement` 고정 절편이 small `placement`의 >= 70% | 번역 단위 축소는 무효, 고정 비용 제거가 대상 |
+
+**판정 대상이 아닌 것.** probe는 실행 시간 전체 축(veh/glide-gate 중첩 문제)을 다루지
+않습니다. 그것은 실게임 60초 Release 실행이 필요하며 별도 Task로 남깁니다.
+
 ---
 
 ## English
@@ -109,3 +152,31 @@ Debug while performance moves to Release. Because `-O2` and inlining fold stack 
 VEH/AOT diagnostic logging and stack-scan heuristics may behave differently, which the equivalence
 check should watch specifically. Task 329's conclusion is not up for re-verification, having
 already been recorded as configuration-independent.
+
+### 5. Re-attributing the append without running the game
+
+Only the user can run the 60-second in-game A/B, so the append re-attribution is done first in a
+probe, which Task 330 already established as representative: its Debug cost of 24,512 ticks per
+instruction sat 3.6% from the 25,433 measured live. The probe adds no instrumentation of its own
+and reads the product's existing `Win32AotWorkerTimingProfile` phases, so the quantities are the
+ones the loader reports. Since Task 329 the append requires guest bytes living at their own
+addresses, so the probe reserves an arena, relocates the image into it, and drives real appends.
+
+Translation size is a controlled input rather than an accident. The image entry covers 47,692
+instructions against the 1,039-instruction in-game mean, and quoting that distribution as "the"
+append distribution would overstate the per-instruction phases and understate the per-append fixed
+cost such as the two 16MB `VirtualProtect` calls. Two sizes are therefore measured: a small one
+where everything outside a window is excluded, using the same mechanism the loader applies to
+guest-written ranges and choosing the window whose plan lands nearest the in-game mean, and the
+whole image entry. Two points give a per-phase linear fit whose slope is the per-instruction cost
+and whose intercept is the cost incurred regardless of how much is translated; a phase dominated
+by its intercept cannot be improved by translating less, which is what decides the next target.
+
+The pre-registered gates are: G1, Release `placement` at or above 50% of the small append, which
+selects decomposing placement into fixed syscalls versus per-entry work; G2, `plan_build` at or
+above 50%, which selects Task 330's Release `decode` at 44.02%; G3, `image_emit` at or above 50%,
+which selects decomposing emission; G4, no phase reaching 50%, which makes the append count itself
+the target rather than any phase; and G5, the `placement` intercept at or above 70% of the small
+append's placement, which rejects shrinking the translation unit and selects removing the fixed
+cost. The whole-run axis, where the top-level buckets still overlap past 100%, is out of scope
+here because it needs a live 60-second Release run.

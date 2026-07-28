@@ -64,6 +64,17 @@ enum class ExecutionTimeBucket : std::uint32_t
     kAotHleBoundaryScan,
     kAotDynamicTranslate,
     kAotResidency,
+    // Task 334: decomposition of kAotReentry, which holds 97.48% of
+    // kVehAotTransfer while the function axis above explains only 7.84% of it.
+    // Mutually exclusive and NESTED inside kAotReentry, so they are a share of
+    // that bucket alone and are never summed with either axis above.
+    // See docs/design/20260728-334-aot-reentry-decomposition.md.
+    kAotReentryGuestLookup,
+    kAotReentryProvenance,
+    kAotReentryRetired,
+    kAotReentryBoundaryReason,
+    kAotReentryNativeSpan,
+    kAotReentrySingleStep,
     kCount,
 };
 
@@ -73,6 +84,8 @@ constexpr std::uint32_t kFirstAotHandlerBucket =
     static_cast<std::uint32_t>(ExecutionTimeBucket::kAotWriteCompletion);
 constexpr std::uint32_t kFirstAotFunctionBucket =
     static_cast<std::uint32_t>(ExecutionTimeBucket::kAotTransferResolve);
+constexpr std::uint32_t kFirstAotReentryBucket =
+    static_cast<std::uint32_t>(ExecutionTimeBucket::kAotReentryGuestLookup);
 
 constexpr std::uint32_t kExecutionTimeBucketCount =
     static_cast<std::uint32_t>(ExecutionTimeBucket::kCount);

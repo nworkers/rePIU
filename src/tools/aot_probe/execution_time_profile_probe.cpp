@@ -132,7 +132,12 @@ bool RunExecutionTimeProfileProbe()
         kFirstAotFunctionBucket == 16U &&
         index_of(ExecutionTimeBucket::kAotReentry) == 12U &&
         index_of(ExecutionTimeBucket::kAotResidency) == 19U &&
-        kExecutionTimeBucketCount == 20U;
+        // Task 334 appended the reentry axis after the function axis, so the
+        // reentry residual sums [kFirstAotReentryBucket, kCount) and the two
+        // earlier ranges are unchanged.
+        kFirstAotReentryBucket == 20U &&
+        index_of(ExecutionTimeBucket::kAotReentrySingleStep) == 25U &&
+        kExecutionTimeBucketCount == 26U;
 
     // A disabled profile is a null pointer at every call site.
     const ExecutionTimeScope inert(nullptr, ExecutionTimeBucket::kVehTotal);

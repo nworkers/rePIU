@@ -43,6 +43,20 @@ struct Win32AotCacheAddressIndex
     std::vector<std::uint32_t> buckets;
     // Parallel to address_map; next (older) map index in the same bucket.
     std::vector<std::uint32_t> next_in_bucket;
+
+    // Task 334: the reverse direction, cache offset to guest address, which
+    // Task 324 left as a linear scan and which Release measurement then found
+    // holding 96.00% of the reentry handler at 551,864 ticks per call.
+    //
+    // Entries are emitted in increasing cache_offset within an image and
+    // appended at increasing offsets, so address_map is expected to be sorted
+    // by cache_offset. That is verified rather than assumed: the flag is
+    // maintained as entries are indexed and a false value falls back to the
+    // scan. `max_emitted_length` bounds how far back a longer earlier entry
+    // could still cover an offset, which keeps the "first matching entry" rule
+    // exact even if two ranges ever overlap.
+    bool cache_offset_sorted = true;
+    std::uint32_t max_emitted_length = 0;
 };
 
 // Discards and rebuilds the whole index from placement->address_map.
@@ -70,5 +84,21 @@ bool LookupAotCacheAddressIndex(const Win32AotCodeCachePlacement& placement,
                                 std::uint32_t guest_address,
                                 bool newest_active,
                                 std::uint32_t* map_index);
+
+// Task 334. Returns the same entry the linear scan would return -- the lowest
+// map index whose `[cache_offset, cache_offset + emitted_length)` contains the
+// offset -- in O(log n). Reports whether the index was usable at all, separately
+// from whether an entry matched, so the caller can fall back rather than treat a
+// stale index as "not found".
+struct AotGuestAddressLookup
+{
+    bool usable = false;
+    bool found = false;
+    std::uint32_t map_index = 0;
+};
+
+AotGuestAddressLookup LookupAotGuestAddressIndex(
+    const Win32AotCodeCachePlacement& placement,
+    std::uint32_t cache_offset);
 
 }  // namespace repiu::platform::win32

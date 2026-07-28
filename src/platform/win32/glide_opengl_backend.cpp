@@ -1,6 +1,7 @@
 #include "repiu/platform/win32/glide_opengl_backend.h"
 #include "repiu/hle/glide_texture_decode.h"
 #include "repiu/hle/glide_lfb.h"
+#include "repiu/platform/win32/execution_time_profile.h"
 
 #if defined(_WIN32)
 #include <SDL3/SDL.h>
@@ -47,14 +48,37 @@ bool GlideOpenGlBackend::IsHostThread() const
         host_thread_id_ == std::this_thread::get_id();
 }
 
+// Task 333: resolved once rather than per command, since the rendezvous is on
+// the hot path and `getenv` is not.
+bool GlideOpenGlBackend::GlideGateTimingEnabled()
+{
+    if (!glide_gate_timing_resolved_)
+    {
+        glide_gate_timing_enabled_ = ExecutionTimeProfileEnabled();
+        glide_gate_timing_resolved_ = true;
+    }
+    return glide_gate_timing_enabled_;
+}
+
 void GlideOpenGlBackend::InvokeOnHostThread(std::function<void()> command)
 {
+    const bool timing = GlideGateTimingEnabled();
     if (IsHostThread())
     {
+        const std::uint64_t start =
+            timing ? ReadGlideGateTimingCycles() : 0U;
         command();
+        if (timing)
+        {
+            RecordGlideGateDirectCommand(
+                &glide_gate_timing_,
+                GlideGateTimingDelta(&glide_gate_timing_, start,
+                                     ReadGlideGateTimingCycles()));
+        }
         return;
     }
 
+    const std::uint64_t enter = timing ? ReadGlideGateTimingCycles() : 0U;
     std::exception_ptr command_exception;
     std::unique_lock<std::mutex> lock(host_command_mutex_);
     host_command_cv_.wait(lock, [this]() { return !host_command_pending_; });
@@ -62,8 +86,20 @@ void GlideOpenGlBackend::InvokeOnHostThread(std::function<void()> command)
     host_command_exception_ = nullptr;
     host_command_complete_ = false;
     host_command_pending_ = true;
+    if (timing)
+    {
+        // Published under the lock the host takes before reading it, so the
+        // timestamp is visible to the host without an atomic.
+        RecordGlideGatePublish(&glide_gate_timing_, enter,
+                               ReadGlideGateTimingCycles());
+    }
     host_command_cv_.notify_all();
     host_command_cv_.wait(lock, [this]() { return host_command_complete_; });
+    if (timing)
+    {
+        RecordGlideGateResume(&glide_gate_timing_, enter,
+                              ReadGlideGateTimingCycles());
+    }
     command_exception = host_command_exception_;
     lock.unlock();
     if (command_exception != nullptr)
@@ -79,6 +115,7 @@ void GlideOpenGlBackend::PumpHostCommands()
         return;
     }
 
+    const bool timing = GlideGateTimingEnabled();
     std::function<void()> command;
     {
         std::lock_guard<std::mutex> lock(host_command_mutex_);
@@ -89,6 +126,7 @@ void GlideOpenGlBackend::PumpHostCommands()
         command = host_command_;
     }
 
+    const std::uint64_t start = timing ? ReadGlideGateTimingCycles() : 0U;
     std::exception_ptr command_exception;
     try
     {
@@ -101,12 +139,46 @@ void GlideOpenGlBackend::PumpHostCommands()
 
     {
         std::lock_guard<std::mutex> lock(host_command_mutex_);
+        if (timing)
+        {
+            RecordGlideGateHostCommand(&glide_gate_timing_, start,
+                                       ReadGlideGateTimingCycles());
+        }
         host_command_ = {};
         host_command_exception_ = command_exception;
         host_command_pending_ = false;
         host_command_complete_ = true;
     }
     host_command_cv_.notify_all();
+}
+
+// Task 333: the host thread used to sleep unconditionally between polls, so a
+// guest command published just after a pump waited out the whole sleep before
+// anyone looked at it. Waiting on the same condition variable keeps the poll
+// cadence (the timeout is the old sleep) while making publication wake the host
+// immediately.
+bool GlideOpenGlBackend::WaitAndPumpHostCommands(
+    std::uint32_t timeout_milliseconds)
+{
+    if (!IsHostThread())
+    {
+        return false;
+    }
+    {
+        std::unique_lock<std::mutex> lock(host_command_mutex_);
+        if (!host_command_pending_)
+        {
+            host_command_cv_.wait_for(
+                lock, std::chrono::milliseconds(timeout_milliseconds),
+                [this]() { return host_command_pending_; });
+        }
+        if (!host_command_pending_)
+        {
+            return false;
+        }
+    }
+    PumpHostCommands();
+    return true;
 }
 
 bool GlideOpenGlBackend::ApplyWindowScale(std::uint32_t scale)

@@ -2,6 +2,7 @@
 #define REPIU_PLATFORM_WIN32_GLIDE_OPENGL_BACKEND_H_
 
 #include "repiu/hle/glide_hle.h"
+#include "repiu/platform/win32/glide_gate_timing.h"
 #include "repiu/platform/win32/glide_opengl_shader.h"
 #include "repiu/runtime/execution_backend.h"
 
@@ -146,6 +147,20 @@ public:
     }
     const std::string& message() const { return message_; }
 
+    // Task 333: the host-thread rendezvous split into waiting and work. Off
+    // unless REPIU_EXECUTION_TIME_PROFILE is set, so the normal path pays one
+    // branch. Read from the exit summary after the guest thread has stopped.
+    Win32GlideGateTimingSnapshot glide_gate_timing() const
+    {
+        return SnapshotGlideGateTiming(glide_gate_timing_);
+    }
+
+    // Waits up to `timeout_milliseconds` for a guest command and executes it,
+    // returning whether one ran. Host thread only. Task 333 replaced the poll
+    // loop's unconditional sleep with this, so a posted command no longer waits
+    // out the sleep before being seen.
+    bool WaitAndPumpHostCommands(std::uint32_t timeout_milliseconds);
+
 private:
     struct TextureEntry
     {
@@ -213,6 +228,12 @@ private:
     // Dedicated texture reused by every LFB blit so unlock does not churn GL
     // texture names once per frame.
     std::uint32_t lfb_texture_ = 0;
+    // Task 333. Guarded by `host_command_mutex_` except for the guest's own
+    // enter timestamp, which is thread-local to the call.
+    Win32GlideGateTimingProfile glide_gate_timing_;
+    bool glide_gate_timing_enabled_ = false;
+    bool glide_gate_timing_resolved_ = false;
+    bool GlideGateTimingEnabled();
 };
 
 }  // namespace repiu::platform::win32

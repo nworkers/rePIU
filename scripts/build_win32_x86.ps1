@@ -1,6 +1,18 @@
+# Task 331: the configuration is a parameter so the Debug and the Release loader
+# are produced by the same procedure. Correctness work stays on Debug; every
+# performance measurement is taken on Release, because Task 330 measured an
+# 11.34x Debug factor for plan building that also inverts the stage ranking.
+param(
+    [ValidateSet("Debug", "Release", "RelWithDebInfo", "MinSizeRel")]
+    [string]$Configuration = "Debug",
+    [string[]]$Target = @()
+)
+
 $ErrorActionPreference = "Stop"
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
+# One multi-config Visual Studio tree holds every configuration, so the
+# directory name is historical: `Debug\` and `Release\` are subdirectories of it.
 $BuildDir = Join-Path $Root "build\win32_x86_debug"
 $VsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
 
@@ -100,6 +112,7 @@ try
     Write-Host "CMake: $cmake"
     Write-Host "Generator: $generator"
     Write-Host "Build directory: $BuildDir"
+    Write-Host "Configuration: $Configuration"
 
     & $cmake -S . -B $BuildDir -G $generator -A Win32
     if ($LASTEXITCODE -ne 0)
@@ -107,11 +120,20 @@ try
         throw "CMake configure failed with exit code $LASTEXITCODE"
     }
 
-    & $cmake --build $BuildDir --config Debug
+    $buildArguments = @("--build", $BuildDir, "--config", $Configuration)
+    foreach ($name in $Target)
+    {
+        $buildArguments += @("--target", $name)
+    }
+
+    & $cmake @buildArguments
     if ($LASTEXITCODE -ne 0)
     {
         throw "CMake build failed with exit code $LASTEXITCODE"
     }
+
+    Write-Host ""
+    Write-Host "Output directory: $(Join-Path $BuildDir $Configuration)"
 }
 finally
 {

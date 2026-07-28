@@ -121,6 +121,30 @@ cmd /c scripts\build_win32_x86.bat
 
 출력은 `build/win32_x86_debug/Debug/`에 생성됩니다.
 
+### 5. Release 빌드 / Release build
+
+```powershell
+cmd /c scripts\build_win32_x86_release.bat
+```
+
+출력은 `build/win32_x86_debug/Release/`에 생성됩니다. 빌드 트리는 multi-config이므로
+디렉터리 이름은 과거 명칭이며 두 구성이 같은 트리를 공유합니다.
+
+특정 타깃만 빌드하려면 다음처럼 인자를 넘깁니다.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/build_win32_x86.ps1 -Configuration Release -Target repiu_aot_probe
+```
+
+**정확성 검증은 Debug, 성능 측정은 Release로 나눕니다.** Task 330에서 plan build의
+Debug 계수가 11.34배였고 단계 순위까지 뒤집혔기 때문에, Debug에서 측정한 시간은
+최적화 근거로 쓸 수 없습니다.
+
+*Correctness work stays on Debug for its assertions; every performance number must come from the
+Release build, because Task 330 measured an 11.34x Debug factor that also inverts the stage
+ranking. Both configurations share one multi-config build tree, so the directory name is
+historical.*
+
 ## 사용 예 / Usage
 
 ### DOS/4GW sample 실행

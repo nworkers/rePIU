@@ -243,30 +243,44 @@ and the emitted image. No performance number is claimed yet: the 60-second in-ga
 been run, and it is also what will finally separate the snapshot's deallocation from real
 placement work inside the 26.03%.
 
+Task 331이 그 사슬을 Release에서 재귀속했고 **대상이 사라졌습니다.** 실게임 평균
+크기 환산으로 append 1회는 `65,371,802`(Debug) 대 `5,849,960 tick`(Release)이며,
+Release에서는 어느 단계도 50%에 이르지 못합니다(`plan_build` 43.55%,
+`placement` 27.61%, `image_emit` 24.55%). Debug 환산값이 Task 329의 실게임 측정
+`67,367,429`과 3.0% 차이여서 이 환산은 대표성이 있습니다.
+
+**모든 성능 수치에는 이제 구성을 명시합니다.** 위 표들 중 Task 322~329의 값은
+**Debug 기준**이며, 단계 순위형 결론은 Release에서 뒤집힐 수 있습니다.
+
 ```mermaid
 flowchart LR
-    T["guest thread"] --> V["kVehTotal ~81%"]
-    V --> A["kVehAotTransfer ~86%"]
-    A --> D["kAotDynamicTranslate<br/>= 전체의 약 62%"]
+    T["guest thread"] --> V["kVehTotal ~81% (Debug)"]
+    V --> A["kVehAotTransfer ~86% (Debug)"]
+    A --> D["kAotDynamicTranslate<br/>= 전체의 약 62% (Debug)"]
     D --> W["append (워커 CPU) 101.00%"]
     W --> S["arena snapshot 56.96%<br/>133.8MB / 번역"]
     W --> P["placement 26.03%<br/>스냅샷 해제 포함"]
     W --> B["plan build 11.51%"]
-    S --> F["Task 329: 직접 참조로 제거<br/>(A/B 미측정)"]
+    S --> F["Task 329: 직접 참조로 제거"]
+    F --> R["Task 331 Release 재귀속<br/>동적 번역 = 전체의 1.04%<br/>사슬 종결"]
+```
+
+Task 331의 실게임 60초 Release 측정이 현재 축입니다.
+
+```mermaid
+flowchart LR
+    G["guest thread wall-clock<br/>(Release, 60s)"] --> V["veh 81.97%"]
+    G --> X["AOT 캐시 실행 18.03%"]
+    V --> GL["Glide gate 60.78%<br/>호출당 약 1.85ms"]
+    V --> VE["veh-exclusive 20.43%"]
+    V --> IO["port I/O 0.14% / DOS 0.62%"]
+    VE --> AT["AOT transfer 15.60%"]
+    AT --> DT["동적 번역 1.04%<br/>(종결)"]
+    GL --> Q["미확정: host CPU 작업인가<br/>rendezvous 대기인가"]
 ```
 
 ## 최근 Task / Recent tasks
 
-
-### Task 303 — Glide 구현 공백 fatal 가시화 / Fatal visibility for Glide gaps
-
-**확인됨:** 미구현 함수와 미지원 인자는 첫 고유 조합에서 `[repiu-fatal]`로 즉시
-출력되고 종료 summary에서 반복 count와 함께 다시 출력됩니다. 알려진 stdcall ABI는
-`action=continue`, 신뢰 불가능한 ABI만 `action=terminate`입니다.
-[상세 작업 로그](../work-logs/20260726-303-glide-implementation-gap-fatal-reporting.md)
-
-**Confirmed:** Glide implementation gaps are explicit fatal-labeled diagnostics. Trusted ABIs
-continue execution; only untrusted ABIs terminate.
 
 ### Task 304 — native-span 음성 캐시 / Native-span negative cache
 
@@ -486,47 +500,221 @@ complexity and bandwidth conclusions are unaffected. The premise that the per-in
 large for Zydis decoding is refuted: decoding is 10.37% of `plan_build` in Debug, and the sweep
 runs a single pass at 0.68%.
 
+### Task 331 — Release 기준 append 재귀속 / Release append re-attribution
+
+**확인됨:** Release 전체 빌드가 통과하고(`scripts/build_win32_x86_release.bat`),
+probe suite가 두 구성 모두 exit 0입니다. 실게임 평균 크기(1,039 명령) 환산 append
+1회는 `65,371,802`(Debug) 대 `5,849,960 tick`(Release)로 **11.2배** 차이입니다.
+Debug 환산은 Task 329의 실게임 `67,367,429`과 3.0% 차이입니다.
+
+**확인됨: gate G4 성립 — Release append에는 지배 단계가 없습니다.**
+`plan_build` 43.55%, `placement` 27.61%, `image_emit` 24.55%, `validate` 4.30%.
+Debug 계수도 단계마다 `image_emit` 7.93배에서 `placement` 명령당 20.34배까지
+다릅니다. Task 330의 방법론 결론이 append 전체로 확장됩니다.
+
+**확인됨:** `placement`의 append당 고정 비용 약 `429,497 tick`(약 172us)은 캐시
+전체 16MB에 대한 `VirtualProtect` 2회에서 오며 구성과 무관합니다. Debug에서는 6.6%로
+보이지 않다가 Release에서 56.83%가 됩니다.
+
+**추정:** Task 326의 번역 빈도를 그대로 쓰면 Release 번역 총비용은 전체의 약 0.9%
+입니다. 즉 동적 번역 사슬은 Release에서 지배 병목이 아닐 가능성이 큽니다.
+
+**확인됨(실게임 60초 A/B):** 두 구성 모두 malformed 0, fatal 0, Glide 공백 0으로
+동등하며 Release progress는 1.27배, 프레임은 2.05배입니다. append 실측비는
+**1/10.4**로 probe 예측 1/11.2와 일치했고, 단계 분포도 예측과 맞았습니다.
+**동적 번역은 Release 전체의 1.04%이고 지배 병목은 Glide gate 60.78%**
+(호출당 약 1.85ms, 프레임당 약 78회)입니다.
+
+**미확정:** 1,039 명령 수치는 두 점 적합의 유도값. 재배치 base에 따라 정적 emit이
+실패하는 현상은 관찰만 했습니다. 실게임 A/B는 구성당 1회 표본입니다.
+(Glide gate의 정체는 Task 333에서 해소됐습니다.)
+[상세 작업 로그](../work-logs/20260728-331-release-baseline-migration.md)
+
+**Confirmed:** The Release build passes and the probe suite exits 0 in both configurations. At the
+1,039-instruction in-game mean one append costs `65,371,802` ticks in Debug against `5,849,960` in
+Release, a factor of 11.2, with the Debug figure 3.0% from Task 329's live `67,367,429`. Gate G4
+holds: no Release phase reaches 50%, at 43.55% `plan_build`, 27.61% `placement`, 24.55%
+`image_emit`, and 4.30% `validate`, and the Debug factor again varies by phase from 7.93x to
+20.34x. `placement` carries a configuration-independent fixed cost of about `429,497` ticks per
+append from protecting the whole 16MB cache twice, which Debug hides at 6.6% and Release shows at
+56.83%. **해소됨(Task 333):** Glide gate 질문은 대기로 확정됐고 원인이 제거됐습니다.
+
+**Confirmed by the 60-second in-game A/B:** both configurations are equivalent on malformed,
+fatal, and Glide-gap counts, Release reaching 1.27x the progress and 2.05x the frames; the measured
+append ratio is 1/10.4 against the probe's predicted 1/11.2 with matching phase shares; dynamic
+translation holds 1.04% of Release wall clock; and the dominant cost is the Glide gate at 60.78%,
+about 1.85ms per entry and roughly 78 entries per frame. **Unresolved:** the derived nature of the
+1,039-instruction figures, a base-dependent static emit failure observed while building the probe,
+and that the in-game A/B is a single sample per configuration. Whether the Glide gate cost was host
+CPU work or waiting was settled by Task 333.
+
+### Task 333 — Glide gate rendezvous 분해와 제거 / Glide gate rendezvous removal
+
+**확인됨: gate G1 성립 — Glide gate 비용의 95.67%가 host thread 대기이고 host 작업은
+1.83%입니다.** `queue` 0.07%, `complete` 2.43%, residual 0.00%로 네 구간이 rendezvous를
+정확히 분할합니다. 회당 `wake` 약 1.65ms는 host poll loop의 `Sleep(1)` 주기(약
+1.90ms)와 일치합니다.
+
+**확인됨:** `Sleep(1)`을 같은 condition variable에 대한 1ms 상한 대기로 교체해
+rendezvous 1회가 `4,300,882 → 192,482 tick`(1/22.3), 프레임 `277 → 876`(3.16배),
+progress `64,794 → 84,855`(1.31배)가 됐습니다. Glide gate는 wall-clock의
+`60.18% → 8.88%`, AOT 캐시 내 guest 실행은 `18.58% → 37.01%`입니다.
+malformed 0, fatal 0, Glide 공백 0은 양쪽 동일합니다.
+
+**미확정:** OFF 첫 실행에서 host 이미지 내부 `0xC0000005`(EAX=0 역참조) 조기 종료가
+1회 있었고 재현되지 않았습니다. gate 진입당 rendezvous 1.92회(`PumpEvents`)도
+남아 있습니다.
+[상세 작업 로그](../work-logs/20260728-333-glide-gate-rendezvous-timing.md)
+
+**Confirmed:** Gate G1 holds — 95.67% of the Glide gate was waiting for the host thread against
+1.83% of host work, with `queue` at 0.07%, `complete` at 2.43%, and a 0.00% residual confirming the
+partition; the mean 1.65ms wake matches the poll loop's own `Sleep(1)` cadence of about 1.90ms.
+Replacing that sleep with a bounded wait on the same condition variable cut a rendezvous from
+`4,300,882` to `192,482` ticks, raised frames from 277 to 876 and progress from 64,794 to 84,855,
+and moved the Glide gate from 60.18% to 8.88% of wall clock while AOT cache execution rose to
+37.01%, with malformed, fatal, and Glide-gap counts unchanged at zero. **Unresolved:** one
+non-reproducing early `0xC0000005` inside the host image, and 1.92 rendezvous per gate entry from
+`PumpEvents`.
+
+### Task 334 — AOT reentry 재분해와 역방향 색인 / AOT reentry decomposition and reverse index
+
+**확인됨: gate G1 성립 — `HandleAotReentry`의 96.00%가 `FindAotGuestAddress`의 선형
+탐색이었습니다.** 호출 128,700회, 회당 `551,864 tick`, Release 전체의 약 44%입니다.
+나머지는 `single-step` 2.42%, `retired` 0.99%, `provenance` 0.26%,
+`boundary-reason` 0.12%, residual 0.21%로 분해 경계가 옳았습니다.
+
+**확인됨:** Task 324는 guest→cache 방향만 색인했고 cache→guest는 남아 있었습니다.
+정렬 이진 탐색(정렬 여부는 관측, 미정렬이면 기존 선형 탐색으로 degrade)으로 교체해
+회당 `551,864 → 2,075 tick`(266배), 프레임 `891 → 1,597`, progress
+`86,203 → 109,158`입니다. VEH는 `64.07% → 34.13%`, AOT 캐시 내 guest 실행은
+`35.93% → 65.87%`입니다. malformed 0, fatal 0, Glide 공백 0.
+
+**미확정:** reentry 내부 1위가 `single-step` 64.61%로 바뀌었고 아직 한 덩어리입니다.
+[상세 작업 로그](../work-logs/20260728-334-aot-reentry-decomposition.md)
+
+**Confirmed:** Gate G1 holds — 96.00% of `HandleAotReentry` was the linear scan in
+`FindAotGuestAddress`, `551,864` ticks per call over 128,700 calls and roughly 44% of Release wall
+clock, with `single-step` at 2.42%, `retired` at 0.99%, `provenance` at 0.26%, `boundary-reason` at
+0.12%, and a 0.21% residual confirming the boundaries. Task 324 had indexed only the guest-to-cache
+direction; replacing this one with a sorted binary search — sortedness observed rather than assumed,
+degrading to the original scan when unusable — cut the per-call cost to `2,075` ticks (266x), raised
+frames from 891 to 1,597 and progress from 86,203 to 109,158, and moved the VEH from 64.07% to
+34.13% of wall clock while AOT cache execution rose from 35.93% to 65.87%, with malformed, fatal,
+and Glide-gap counts at zero. **Unresolved:** the largest remaining interval is now `single-step` at
+64.61%, still measured as one block.
+
 ## 다음 검증 / Next validation
 
-Task 330이 방향을 바꿨습니다. **다음 작업은 `plan_build` 최적화가 아니라 성능 기준을
-Release로 옮기는 것입니다.** `plan_build`의 Debug 계수가 11.34배이고 단계 순위까지
-뒤집히는 이상, Debug 측정만으로 최적화 대상을 고르면 틀린 곳을 고릅니다.
+Task 334가 VEH의 나머지를 귀속하고 **다시 O(n) 선형 탐색을 찾아 제거했습니다.**
 
-선결 질문이던 "게임이 Release 빌드로 구동되는가"는 **사용자 제공 `repiu_log.txt`로
-해소됐습니다.** Release 로더(`v0.0.103`, `aot-dbt`)가 약 3분 48초간 MUSIC SELECT까지
-구동했고 종료 사유는 SDL exit, fatal halt 없음이었습니다. 다만 그 실행의 FPS는 `0.3`
-이었으므로 **Release 전환 자체가 성능 해결은 아닙니다.**
+**확인됨:** `HandleAotReentry`의 **96.00%가 `FindAotGuestAddress`의 선형 탐색**이었고
+(호출당 `551,864 tick`, Release 전체의 약 44%), Task 324가 guest→cache 방향만
+색인했기 때문이었습니다. 정렬 이진 탐색으로 교체해 호출당 `551,864 → 2,075 tick`
+(**266배**), 프레임 `891 → 1,597`(1.79배), progress `86,203 → 109,158`(1.27배).
 
-계획은 [20260728-331-release-baseline-migration.md](../design/20260728-331-release-baseline-migration.md)에
-정리했습니다. 순서는 다음과 같습니다.
+**확인됨: 실행 축이 뒤집혔습니다.**
 
-1. Release 실행 계약을 고정하고(빌드 스크립트에 구성 인자), 60초 `aot-dbt`를 Debug와
-   Release로 각각 실행해 EEPROM hash 일치, malformed 0, fatal 0, Glide 공백 목록
-   동일을 확인합니다.
-2. 성공하면 Task 322~328이 Debug에서 얻은 **단계 순위형 결론들을 Release에서 재확인**
-   합니다. 특히 append 내부 분포(`plan_build` 39.94%, `image_emit` 19.01%,
-   `placement` 39.84%)는 Debug 기준이므로 그대로 신뢰할 수 없습니다.
-3. 실패하면 실패 지점을 귀속하는 것이 그 자체로 다음 작업이 됩니다.
+| bucket | Task 334 전 | Task 334 후 |
+|---|---:|---:|
+| VEH | 64.07% | **34.13%** |
+| **AOT 캐시 내 guest 실행** | 35.93% | **65.87%** |
+| Glide gate | 9.99% | 17.14% |
 
-Task 329가 남긴 미측정 사실(스냅샷 제거만으로 `plan_build`·`image_emit`·`validate`가
-64~75% 싸진 이유)도 Release 기준 측정이 있어야 제대로 다룰 수 있습니다.
+**이제 wall-clock의 다수가 guest 자기 코드입니다.** Task 323이 Debug에서 약 12.4%로
+추정했던 값입니다.
 
-전체 실행 축의 상위 bucket 비율은 중첩 때문에 합이 100%를 넘으므로(예: veh 90.89%,
-glide-gate 56.56%) 현재 형태로는 해석할 수 없고, Release 전환 후 재귀속이 필요합니다.
+**다음 대상은 reentry 내부의 `single-step` 64.61%입니다.** 재개 경로 전체를 하나로
+묶은 구간이라 더 나눠야 의미가 생깁니다. handler 축이 중첩 때문에 100%를 넘는
+문제(`return` 484.73%)도 같이 고쳐야 합니다.
+
+Task 331~334의 누적 결과는 Release 60초에서 프레임 **275 → 1,597(5.8배)**,
+progress **64,347 → 109,158(1.70배)** 입니다.
+
+---
+
+Task 333이 Task 331이 지목한 Glide gate를 분해하고 **원인을 제거했습니다.**
+
+**확인됨: Glide gate 비용의 95.67%는 host thread 대기였고 host 작업은 1.83%였습니다.**
+host poll loop가 매 iteration 끝에 `Sleep(1)` 했기 때문에 guest가 게시한 command가
+다음 pump까지 방치됐고, 그 대기가 rendezvous당 약 1.65ms였습니다. poll iteration
+주기(약 1.90ms)와 일치합니다.
+
+**확인됨: `Sleep(1)`을 command 대기로 바꾼 결과(Release 60초 A/B)**
+
+| 항목 | 수정 전 | 수정 후 | 비 |
+|---|---:|---:|---:|
+| rendezvous 1회 | 4,300,882 | 192,482 | **1/22.3** |
+| 프레임(`grBufferSwap`) | 277 | 876 | **3.16배** |
+| progress | 64,794 | 84,855 | 1.31배 |
+| Glide gate wall-clock 비중 | 60.18% | **8.88%** | — |
+| AOT 캐시 내 guest 실행 | 18.58% | **37.01%** | — |
+
+malformed 0, fatal 0, Glide 공백 0은 양쪽 동일합니다.
+
+**따라서 다음 대상은 다시 바뀝니다.** 현재 Release 축은 `veh 62.99%`,
+`AOT 캐시 내 guest 실행 37.01%`, `glide-gate 8.88%`입니다. VEH 내부에서 Glide를 뺀
+나머지가 무엇인지 Release 기준으로 재귀속하는 것이 다음 작업입니다.
+
+---
+
+Task 331이 성능 기준을 Release로 옮기고 60초 실게임 A/B를 수행했습니다. 아래는 그
+시점의 기록입니다.
+
+**확인됨: 동적 번역은 Release 전체 wall-clock의 1.04%입니다.** 60초에 번역 240회,
+번역 1회 append `6,811,483 tick`(Debug 실측 `71,054,606`, **1/10.4**). Tasks 322~329가
+추적해 온 사슬은 여기서 **종결**됩니다. 그 경로를 전부 없애도 상한은 약 1.01배입니다.
+
+**확인됨: Release의 지배 병목은 Glide gate입니다.**
+
+| bucket (guest thread wall-clock) | Debug | Release |
+|---|---:|---:|
+| **Glide gate (VEH 내부)** | 26.86% | **60.78%** |
+| VEH-exclusive (AOT transfer 등) | 53.23% | 20.43% |
+| AOT 캐시 내 guest 실행 | 19.42% | 18.03% |
+| DOS service | 0.18% | 0.62% |
+| port I/O | 0.31% | 0.14% |
+| (참고) 동적 번역 | 10.48% | 1.04% |
+
+**중첩 문제는 해소됐습니다.** 합이 100%를 넘던 이유는 해석 오류가 아니라 **포함
+관계**였습니다. `guest-run = veh + AOT 캐시 실행`이고
+`veh = glide-gate + port-io + dos + veh-exclusive`입니다.
+
+Glide gate는 60초에 진입 21,381회로 `98,941,888,040 tick`을 쓰며 **호출당 약 1.85ms**
+입니다. 같은 60초의 프레임은 275개뿐이므로 프레임당 약 78회입니다.
+
+**해소됨(Task 333):** 그 1.85ms는 **대기였습니다.** rendezvous의 95.67%가 host pump
+주기 대기이고 host 작업은 1.83%입니다. Release 호출당 비용이 Debug보다 크다는 관찰이
+옳은 신호였습니다.
+
+그 다음 후보는 VEH-exclusive 20.43% 안의 AOT transfer 15.60%입니다. handler 축은
+중첩 때문에 합이 100%를 넘으므로(reentry 94.44%, return 33.82%) 재분해가 필요합니다.
+
+**성능 표기 규칙:** 이후 모든 성능 수치에 구성을 명시합니다. Tasks 322~330의 값은
+**Debug 기준**이며 단계 순위형 결론은 Release에서 뒤집힐 수 있습니다.
 
 TF/VEH 제거 로드맵은 계속 보류합니다. 예외 전이가 1.20%인 이상 상한이 약 1.012배입니다.
 
-Task 330 changed the direction: the next task is not optimizing `plan_build` but moving the
-performance baseline to Release, because an 11.34x Debug factor that also inverts the stage
-ranking means Debug measurements select the wrong target. The gating question is whether the game
-runs at all in a Release build — the probe passes in both configurations, but the loader has never
-been run in Release, and changed timing can expose races or VEH-path problems. The recommended
-order is to attempt a 60-second Release `aot-dbt` run checked against Debug for a matching EEPROM
-hash with zero malformed and fatal dispatch; if it succeeds, re-confirm in Release the
-stage-ranking conclusions Tasks 322-328 drew in Debug, starting with the append distribution
-(`plan_build` 39.94%, `image_emit` 19.01%, `placement` 39.84%) which cannot be trusted as-is; and
-if it fails, attributing the failure becomes the next task in its own right. Task 329's unmeasured
-side effect — why removing the snapshot also made `plan_build`, `image_emit`, and `validate`
-64-75% cheaper — likewise needs a Release baseline to address properly. The top-level bucket
-shares still overlap past 100% (veh 90.89%, glide gate 56.56%) and need re-attribution after that
-move. The TF/VEH removal roadmap stays on hold at a roughly 1.012x bound.
+Task 331 moved the baseline to Release and ran the 60-second in-game A/B, which closes the chain
+this document has followed since Task 322 and names a new target. Dynamic translation is 1.04% of
+Release wall clock — 240 translations in 60 seconds at `6,811,483` ticks per append against Debug's
+measured `71,054,606`, a factor of 10.4 — so removing that path entirely would now bound
+improvement at about 1.01x. The dominant cost in Release is the Glide gate at 60.78% of guest wall
+clock against 26.86% in Debug, with the VEH-exclusive remainder at 20.43% against 53.23%, AOT cache
+execution at 18.03%, DOS at 0.62%, and port I/O at 0.14%. The bucket overlap that made these shares
+uninterpretable was containment rather than error: `guest-run` is the VEH plus AOT cache execution,
+and the VEH is the Glide gate plus port I/O plus DOS plus the remainder. The gate is entered 21,381
+times for `98,941,888,040` ticks, about 1.85ms each, against only 275 frames in the same 60 seconds,
+roughly 78 entries per frame.
+
+Task 333 then answered that question and removed the cause. The 1.85ms was waiting: 95.67% of a
+rendezvous was the host pump cadence against 1.83% of host work, because the host poll loop ended
+each iteration with `Sleep(1)`, leaving a published command untouched for about 1.65ms — the loop's
+own 1.90ms cadence. Replacing that sleep with a bounded wait on the same condition variable cut one
+rendezvous from `4,300,882` to `192,482` ticks (1/22.3), raised the 60-second frame count from 277
+to 876 (3.16x) and progress from 64,794 to 84,855 (1.31x), and moved the Glide gate from 60.18% to
+8.88% of wall clock while AOT cache execution rose from 18.58% to 37.01%, with malformed, fatal, and
+Glide-gap counts unchanged at zero. The axis is therefore `veh 62.99%`, AOT cache execution 37.01%,
+and the Glide gate 8.88%, and re-attributing what the VEH held outside Glide became Task 334, which
+found another linear scan and removed it. Every performance figure from here states its configuration; the Tasks 322-330 numbers are
+Debug and their stage-ranking conclusions can invert. The TF/VEH removal roadmap stays on hold at a
+roughly 1.012x bound.
