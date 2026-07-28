@@ -596,6 +596,60 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
 
     attempt->single_step_trace_count =
         context.single_step_trace_count.load(std::memory_order_relaxed);
+    // Task 337: read after the guest thread has stopped, so plain counters.
+    attempt->veh_single_step_exception_count =
+        context.veh_single_step_exception_count;
+    attempt->veh_breakpoint_exception_count =
+        context.veh_breakpoint_exception_count;
+    attempt->veh_access_violation_exception_count =
+        context.veh_access_violation_exception_count;
+    attempt->veh_other_exception_count = context.veh_other_exception_count;
+    attempt->veh_other_exception_code_overflow =
+        context.veh_other_exception_code_overflow;
+    for (std::uint32_t index = 0;
+         index < ThreadContext::kOtherExceptionCodeCapacity; ++index)
+    {
+        attempt->veh_other_exception_codes[index] =
+            context.veh_other_exception_codes[index];
+        attempt->veh_other_exception_code_counts[index] =
+            context.veh_other_exception_code_counts[index];
+    }
+    attempt->veh_single_step_run_total = context.veh_single_step_run_total;
+    attempt->veh_single_step_run_max = context.veh_single_step_run_max;
+    std::memcpy(attempt->veh_single_step_run_buckets,
+                context.veh_single_step_run_buckets,
+                sizeof(attempt->veh_single_step_run_buckets));
+    attempt->hle_reentry_reject_not_pending =
+        context.hle_reentry_reject_not_pending;
+    attempt->hle_reentry_reject_backend = context.hle_reentry_reject_backend;
+    attempt->hle_reentry_reject_segment_write =
+        context.hle_reentry_reject_segment_write;
+    attempt->hle_reentry_reject_outside_arena =
+        context.hle_reentry_reject_outside_arena;
+    attempt->hle_reentry_reject_quarantined =
+        context.hle_reentry_reject_quarantined;
+    attempt->hle_reentry_reject_cache_miss =
+        context.hle_reentry_reject_cache_miss;
+    attempt->hle_reentry_reject_span_unsafe =
+        context.hle_reentry_reject_span_unsafe;
+    attempt->hle_reentry_success = context.hle_reentry_success;
+    attempt->hle_reentry_segment_write_resumed =
+        context.hle_reentry_segment_write_resumed;
+    attempt->quarantine_trace_count = context.quarantine_trace_count;
+    attempt->quarantine_unknown_source_count =
+        context.quarantine_unknown_source_count;
+    attempt->quarantine_deferred_count = context.quarantine_deferred_count;
+    attempt->guest_page_write_history_overflow =
+        context.guest_page_write_history_overflow;
+    for (std::uint32_t index = 0;
+         index < ThreadContext::kQuarantineTraceCapacity; ++index)
+    {
+        attempt->quarantine_trace[index] = {
+            context.quarantine_trace[index].page,
+            context.quarantine_trace[index].source,
+            context.quarantine_trace[index].destination,
+            context.quarantine_trace[index].byte_count};
+    }
     attempt->single_step_hotspot_profile =
         context.single_step_hotspot_profile != nullptr
             ? SnapshotSingleStepHotspotProfile(

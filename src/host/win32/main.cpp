@@ -902,6 +902,137 @@ void PrintExecutionAttempt(
     }
     logger.info("Win32 single-step trace count: {}",
                 attempt.single_step_trace_count);
+    // Task 337: exclusive by construction -- classified in the VEH prologue
+    // before any handler can consume the exception. Kernel transition is now
+    // 27.7-30.4% of Release wall clock (Task 336) and the remedy differs by
+    // class, so which class dominates decides what to build.
+    {
+        const std::uint32_t census_total =
+            attempt.veh_single_step_exception_count +
+            attempt.veh_breakpoint_exception_count +
+            attempt.veh_access_violation_exception_count +
+            attempt.veh_other_exception_count;
+        logger.info(
+            "Win32 exception census single-step/breakpoint/access-violation/"
+            "other/total: {}/{}/{}/{}/{}",
+            attempt.veh_single_step_exception_count,
+            attempt.veh_breakpoint_exception_count,
+            attempt.veh_access_violation_exception_count,
+            attempt.veh_other_exception_count, census_total);
+        if (census_total != 0U)
+        {
+            const auto census_share = [census_total](std::uint32_t value) {
+                return 100.0 * static_cast<double>(value) /
+                    static_cast<double>(census_total);
+            };
+            logger.info(
+                "Win32 exception census share single-step/breakpoint/"
+                "access-violation/other: {:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
+                census_share(attempt.veh_single_step_exception_count),
+                census_share(attempt.veh_breakpoint_exception_count),
+                census_share(attempt.veh_access_violation_exception_count),
+                census_share(attempt.veh_other_exception_count));
+        }
+        // Task 343: which codes "other" holds.
+        for (std::uint32_t index = 0; index < 4U; ++index)
+        {
+            if (attempt.veh_other_exception_code_counts[index] == 0U)
+            {
+                continue;
+            }
+            logger.info("Win32 exception census other code/count: {}/{}",
+                        Hex32(attempt.veh_other_exception_codes[index]),
+                        attempt.veh_other_exception_code_counts[index]);
+        }
+        if (attempt.veh_other_exception_code_overflow != 0U)
+        {
+            logger.info("Win32 exception census other code overflow: {}",
+                        attempt.veh_other_exception_code_overflow);
+        }
+        logger.info(
+            "Win32 single-step run buckets 1/2/3/4/5-8/9-16/17-32/33+: "
+            "{}/{}/{}/{}/{}/{}/{}/{}",
+            attempt.veh_single_step_run_buckets[0],
+            attempt.veh_single_step_run_buckets[1],
+            attempt.veh_single_step_run_buckets[2],
+            attempt.veh_single_step_run_buckets[3],
+            attempt.veh_single_step_run_buckets[4],
+            attempt.veh_single_step_run_buckets[5],
+            attempt.veh_single_step_run_buckets[6],
+            attempt.veh_single_step_run_buckets[7]);
+        logger.info(
+            "Win32 single-step run count/max/mean: {}/{}/{}",
+            attempt.veh_single_step_run_total,
+            attempt.veh_single_step_run_max,
+            attempt.veh_single_step_run_total != 0U
+                ? attempt.veh_single_step_exception_count /
+                      attempt.veh_single_step_run_total
+                : 0U);
+    }
+    // Task 340: the post-HLE return funnel by reason. Task 339 showed the guest
+    // walks under TF because this return fails; this names which condition
+    // rejects it.
+    {
+        const std::uint32_t reentry_attempts =
+            attempt.hle_reentry_reject_not_pending +
+            attempt.hle_reentry_reject_backend +
+            attempt.hle_reentry_reject_segment_write +
+            attempt.hle_reentry_reject_outside_arena +
+            attempt.hle_reentry_reject_quarantined +
+            attempt.hle_reentry_reject_span_unsafe +
+            attempt.hle_reentry_success;
+        logger.info(
+            "Win32 hle reentry funnel not-pending/backend/segment-write/"
+            "outside-arena/quarantined/span-unsafe/success/total: "
+            "{}/{}/{}/{}/{}/{}/{}/{}",
+            attempt.hle_reentry_reject_not_pending,
+            attempt.hle_reentry_reject_backend,
+            attempt.hle_reentry_reject_segment_write,
+            attempt.hle_reentry_reject_outside_arena,
+            attempt.hle_reentry_reject_quarantined,
+            attempt.hle_reentry_reject_span_unsafe,
+            attempt.hle_reentry_success, reentry_attempts);
+        logger.info("Win32 hle reentry cache miss count: {}",
+                    attempt.hle_reentry_reject_cache_miss);
+        logger.info("Win32 hle reentry segment-write resumed: {}",
+                    attempt.hle_reentry_segment_write_resumed);
+        // Task 341: which pages quarantine, and whether the write source was
+        // known. An unknown source quarantines by default, not by evidence.
+        logger.info(
+            "Win32 quarantine events/unknown-source/deferred/overflow: "
+            "{}/{}/{}/{}",
+            attempt.quarantine_trace_count,
+            attempt.quarantine_unknown_source_count,
+            attempt.quarantine_deferred_count,
+            attempt.guest_page_write_history_overflow);
+        for (std::uint32_t index = 0;
+             index < 16U && index < attempt.quarantine_trace_count; ++index)
+        {
+            const auto& entry = attempt.quarantine_trace[index];
+            logger.info(
+                "Win32 quarantine #{} page/source/destination/bytes: "
+                "{}/{}/{}/{}",
+                index + 1U, Hex32(entry.page), Hex32(entry.source),
+                Hex32(entry.destination), entry.byte_count);
+        }
+        if (reentry_attempts != 0U)
+        {
+            const auto funnel_share = [reentry_attempts](std::uint32_t value) {
+                return 100.0 * static_cast<double>(value) /
+                    static_cast<double>(reentry_attempts);
+            };
+            logger.info(
+                "Win32 hle reentry funnel share not-pending/segment-write/"
+                "outside-arena/quarantined/span-unsafe/success: "
+                "{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%/{:.2f}%",
+                funnel_share(attempt.hle_reentry_reject_not_pending),
+                funnel_share(attempt.hle_reentry_reject_segment_write),
+                funnel_share(attempt.hle_reentry_reject_outside_arena),
+                funnel_share(attempt.hle_reentry_reject_quarantined),
+                funnel_share(attempt.hle_reentry_reject_span_unsafe),
+                funnel_share(attempt.hle_reentry_success));
+        }
+    }
     const auto& step_profile = attempt.single_step_hotspot_profile;
     const double step_count_coverage =
         step_profile.total_sample_count != 0U

@@ -505,6 +505,44 @@ struct Win32MinimalExecutionAttempt
     X86ExecutionSnapshot timeout_snapshot;
     X86ExecutionSnapshot last_single_step_snapshot;
     std::uint32_t single_step_trace_count = 0;
+    // Task 337: exclusive census of the guest thread's exceptions plus the
+    // length distribution of consecutive single-step runs.
+    std::uint32_t veh_single_step_exception_count = 0;
+    std::uint32_t veh_breakpoint_exception_count = 0;
+    std::uint32_t veh_access_violation_exception_count = 0;
+    std::uint32_t veh_other_exception_count = 0;
+    // Task 343: the distinct codes behind "other".
+    std::uint32_t veh_other_exception_codes[4] = {};
+    std::uint32_t veh_other_exception_code_counts[4] = {};
+    std::uint32_t veh_other_exception_code_overflow = 0;
+    std::uint32_t veh_single_step_run_total = 0;
+    std::uint32_t veh_single_step_run_max = 0;
+    std::uint32_t veh_single_step_run_buckets[8] = {};
+    // Task 340: why the post-HLE return to the cache fails, by reason.
+    std::uint32_t hle_reentry_reject_not_pending = 0;
+    std::uint32_t hle_reentry_reject_backend = 0;
+    std::uint32_t hle_reentry_reject_segment_write = 0;
+    std::uint32_t hle_reentry_reject_outside_arena = 0;
+    std::uint32_t hle_reentry_reject_quarantined = 0;
+    std::uint32_t hle_reentry_reject_cache_miss = 0;
+    std::uint32_t hle_reentry_reject_span_unsafe = 0;
+    std::uint32_t hle_reentry_success = 0;
+    // Task 346: returns that proceeded after a segment write.
+    std::uint32_t hle_reentry_segment_write_resumed = 0;
+    // Task 341: what quarantined each of the first few pages.
+    struct QuarantineTraceEntry
+    {
+        std::uint32_t page = 0;
+        std::uint32_t source = 0;
+        std::uint32_t destination = 0;
+        std::uint32_t byte_count = 0;
+    };
+    QuarantineTraceEntry quarantine_trace[16] = {};
+    std::uint32_t quarantine_trace_count = 0;
+    std::uint32_t quarantine_unknown_source_count = 0;
+    // Task 342: same-page writes that retired without quarantining.
+    std::uint32_t quarantine_deferred_count = 0;
+    std::uint32_t guest_page_write_history_overflow = 0;
     Win32SingleStepHotspotProfileSnapshot
         single_step_hotspot_profile;
     Win32ExecutionTimeProfileSnapshot execution_time_profile;

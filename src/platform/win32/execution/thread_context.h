@@ -224,6 +224,62 @@ struct ThreadContext
     std::atomic<std::uint32_t> aot_dbt_hle_reentry_success_count{0};
     std::atomic<std::uint32_t> aot_dbt_hle_translation_attempt_count{0};
     std::atomic<std::uint32_t> aot_dbt_hle_translation_success_count{0};
+    // Task 340: why the return to the cache after an HLE fails. Task 339 showed
+    // 88.7% of baseline attempts rejected at the combined quarantine and
+    // guest-IP check and 98.7% of SUPERBLOCK attempts rejected by the first
+    // guard, but neither check's two conditions were separated, and their
+    // causes and fixes differ. Guest thread only, so plain counters.
+    std::uint32_t hle_reentry_reject_not_pending = 0;
+    std::uint32_t hle_reentry_reject_backend = 0;
+    std::uint32_t hle_reentry_reject_segment_write = 0;
+    std::uint32_t hle_reentry_reject_outside_arena = 0;
+    std::uint32_t hle_reentry_reject_quarantined = 0;
+    std::uint32_t hle_reentry_reject_cache_miss = 0;
+    std::uint32_t hle_reentry_reject_span_unsafe = 0;
+    std::uint32_t hle_reentry_success = 0;
+    // Task 346: returns that proceeded after a segment write instead of being
+    // abandoned, each preceded by a re-fold of the cache's segment sites.
+    std::uint32_t hle_reentry_segment_write_resumed = 0;
+    // Task 341: Task 340 found four quarantined pages blocking 80.24% of
+    // post-HLE returns, so the first few quarantine events are recorded whole.
+    // `source` is the guest address that performed the write; it is zero when
+    // the execution address could not be mapped back, which the policy treats
+    // the same as "wrote its own page" and therefore quarantines.
+    static constexpr std::uint32_t kQuarantineTraceCapacity = 16U;
+    struct QuarantineTraceEntry
+    {
+        std::uint32_t page = 0;
+        std::uint32_t source = 0;
+        std::uint32_t destination = 0;
+        std::uint32_t byte_count = 0;
+    };
+    QuarantineTraceEntry quarantine_trace[kQuarantineTraceCapacity] = {};
+    std::uint32_t quarantine_trace_count = 0;
+    std::uint32_t quarantine_unknown_source_count = 0;
+    // Task 342: how many times the guest wrote each page from that same page.
+    // Quarantine is a churn defence, not a correctness one -- retiring alone
+    // already prevents the cache from executing stale bytes -- so it now waits
+    // for repetition instead of firing on a one-shot self-patch. Guest thread
+    // only; a small linear table, since the observed population is three pages.
+    static constexpr std::uint32_t kGuestPageWriteHistoryCapacity = 64U;
+    struct GuestPageWriteRecord
+    {
+        std::uint32_t page = 0;
+        std::uint32_t count = 0;
+        // Task 344: the churn signal is the SAME address being rewritten, not a
+        // page collecting several one-shot patches at different addresses.
+        // Page 0x03033000 quarantined under Task 342 because two distinct
+        // patch sites on it both counted toward one per-page total.
+        std::uint32_t last_destination = 0;
+        std::uint32_t repeat_count = 0;
+    };
+    GuestPageWriteRecord
+        guest_page_write_history[kGuestPageWriteHistoryCapacity] = {};
+    std::uint32_t guest_page_write_history_size = 0;
+    // Pages that fell out of the table; they quarantine on their next write so
+    // an overflowing workload degrades to the old policy rather than to none.
+    std::uint32_t guest_page_write_history_overflow = 0;
+    std::uint32_t quarantine_deferred_count = 0;
     std::atomic<std::uint32_t> aot_dbt_hle_dispatch_entry_count{0};
     std::atomic<std::uint32_t> aot_dbt_hle_dispatch_success_count{0};
     std::atomic<std::uint32_t> aot_dbt_hle_dispatch_fallback_count{0};
@@ -635,6 +691,36 @@ struct ThreadContext
     std::uint32_t last_traced_fpu_m32_value = 0;
     bool has_last_traced_fpu_m32_value = false;
     std::atomic<std::uint32_t> single_step_trace_count{0};
+    // Task 337: an exclusive census of what the guest thread's exceptions
+    // actually are, because the remedy for kernel transition cost -- now
+    // 27.7-30.4% of Release wall clock (Task 336) -- differs completely by
+    // class. The existing counters overlap (a single-step can be seen by both
+    // the reentry scope and HandleSingleStepTrace), so they can only sketch it.
+    //
+    // Guest thread only, so plain counters; the VEH prologue is a hot path.
+    std::uint32_t veh_single_step_exception_count = 0;
+    std::uint32_t veh_breakpoint_exception_count = 0;
+    std::uint32_t veh_access_violation_exception_count = 0;
+    std::uint32_t veh_other_exception_count = 0;
+    // Task 343: which codes those are. Task 342's policy change took this from
+    // 1 to 1,931 per minute and the census only said "other", which names
+    // nothing. Four distinct codes are enough: the population is expected to be
+    // one or two.
+    static constexpr std::uint32_t kOtherExceptionCodeCapacity = 4U;
+    std::uint32_t veh_other_exception_codes[kOtherExceptionCodeCapacity] = {};
+    std::uint32_t veh_other_exception_code_counts[
+        kOtherExceptionCodeCapacity] = {};
+    std::uint32_t veh_other_exception_code_overflow = 0;
+    // How many consecutive single-step exceptions separate two INT3 boundaries.
+    // 265,272 boundaries against 942,160 single-steps implies about 3.55, which
+    // says the guest walks several instructions under TF before it re-enters
+    // translated code; the distribution says whether that is a long tail or a
+    // uniform cost, and those need different fixes.
+    static constexpr std::uint32_t kSingleStepRunBucketCount = 8U;
+    std::uint32_t veh_single_step_run_length = 0;
+    std::uint32_t veh_single_step_run_buckets[kSingleStepRunBucketCount] = {};
+    std::uint32_t veh_single_step_run_total = 0;
+    std::uint32_t veh_single_step_run_max = 0;
     std::unique_ptr<Win32SingleStepHotspotProfile>
         single_step_hotspot_profile;
     // Task 323: the cycle scope owned by the current HandleSingleStepTrace

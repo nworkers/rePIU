@@ -47,8 +47,10 @@ Task 323이 그 미계측 구간을 처음으로 귀속했고, 결과는 지금�
 | kernel 예외 전이 (추정) | **1.20%** |
 | DOS service / port I/O | 0.15% |
 
-**확인됨:** 예외 전이 비용은 1.20%입니다. TF와 `INT3`를 **전부** 제거해도 상한은 약
-**1.012배**입니다. 즉 "TF/VEH를 걷어낸다"는 방향은 현재 병목과 맞지 않습니다.
+**확인됨(당시):** 예외 전이 비용은 1.20%입니다. TF와 `INT3`를 **전부** 제거해도 상한은
+약 **1.012배**입니다. 즉 "TF/VEH를 걷어낸다"는 방향은 당시 병목과 맞지 않았습니다.
+**→ Task 336에서 뒤집혔습니다.** 전이 1회 가격은 그대로지만 예외 횟수가 늘어(같은
+60초에 VEH 진입 1,307,096회) 지금은 전체의 **27.7~30.4%** 이며 상한은 약 1.4배입니다.
 
 **확인됨:** 실제 병목은 handler 본문 안의 **O(n) 선형 탐색**입니다.
 `kAotResume` 안에서 `FindAotCacheAddress`(`placement.address_map` 선형 스캔)가
@@ -191,7 +193,9 @@ thread wall clock, 73.76% sits in the VEH handler body on the AOT boundary path,
 the single-step handler, roughly 12.4% in real guest execution inside the AOT cache, 1.29%
 in the Glide gate, and only 1.20% in kernel exception transition. Removing every TF and
 `INT3` exception would therefore bound improvement at about 1.012x, so removing TF and VEH
-does not address the measured bottleneck.
+did not address the bottleneck of that era. Task 336 overturned this: the per-transition price is
+unchanged, but the exception count is not, and the same 60 seconds now takes 1,307,096 VEH entries,
+putting transitions at 27.7-30.4% of wall clock and the bound at about 1.4x.
 
 Task 324 replaced that lookup with a hash index, cutting per-call cost from `1,047,784` to
 `6,866` ticks and raising 60-second heartbeat from 79,640 to 331,913 (4.17x) and progress from
@@ -620,6 +624,77 @@ malformed 0, fatal 0, Glide 공백 0.
 pacing하는지가 다음 질문입니다.
 [상세 작업 로그](../work-logs/20260728-335-glide-gate-pump-rendezvous.md)
 
+### Task 336 — VEH residual 귀속과 예외 전이 가격 / VEH residual and exception price
+
+**확인됨:** VEH residual은 미계측 구간이 아니라 `HandleSingleStepTrace`의 단계
+profile이 별도 opt-in으로 꺼져 있었던 것입니다. 켜자 residual `36.56% → 3.26%`,
+`single-step`이 VEH의 33.68%. 그 안의 1위는 Release에서 `hle` 66.4%(전체의 7.02%)로,
+Task 322의 Debug 순위(`aot-resume` 74.05%)와 정반대입니다. **코드 변경 없음.**
+
+**확인됨:** 예외 전이 1회는 `INT3` 34,521 / single-step 37,885 tick이고 Debug(34,608 /
+37,519)와 1% 미만 차이입니다. 커널 비용이라 구성과 무관합니다.
+
+**확인됨(유도):** VEH 진입 1,307,096회를 곱하면 전이 총비용은 전체의 **27.7~30.4%**,
+남는 실제 guest 실행은 38.2~40.9%입니다. **TF/`INT3` 제거 상한은 1.012배가 아니라
+약 1.38~1.44배**입니다.
+
+**방법론:** Task 323의 1.20%는 오측이 아니었습니다. 가격은 그대로고 횟수가 늘었습니다.
+**고정 비용의 비중은 다른 곳을 최적화할 때마다 재계산해야 합니다.**
+
+**미확정:** 전이 가격은 probe의 최소 핸들러 기준이므로 실제는 더 클 수는 있어도 작지
+않습니다. `INT3`/single-step 혼합비는 세지 않았습니다. 1.4배는 전이만 없앨 때의
+상한이며 핸들러 본문(31.40%)까지 대체하는 설계면 더 높습니다.
+[상세 작업 로그](../work-logs/20260728-336-veh-residual-and-exception-price.md)
+
+**Confirmed:** The VEH residual was never uninstrumented — `HandleSingleStepTrace` carries a stage
+profile behind its own opt-in. Enabling it drops the residual from 36.56% to 3.26% and shows
+`single-step` at 33.68% of the VEH, led by `hle` at 66.4% (7.02% of the run), inverting Task 322's
+Debug ranking of `aot-resume` at 74.05%; no code changed. One kernel transition costs 34,521 ticks
+for `INT3` and 37,885 for single-step in Release against 34,608 and 37,519 in Debug — under 1%
+apart, as befits kernel cost. Multiplying by 1,307,096 VEH entries puts transitions at 27.7-30.4%
+of wall clock and leaves 38.2-40.9% for real guest execution, so removing every TF and `INT3` bounds
+improvement at about 1.38-1.44x rather than 1.012x. Task 323's 1.20% was not a bad measurement: the
+price was the same and the count was not, which adds the method rule that a fixed cost's share must
+be recomputed after every optimization elsewhere. **Unresolved:** the price comes from the probe's
+minimal handler so the real cost can only be higher, the `INT3`-to-single-step mix was not counted,
+and 1.4x bounds removing the transition alone.
+
+### Task 337 — 예외 census / Exception census
+
+**확인됨:** TF single-step 735,886(79.24%), `INT3` 181,947(19.59%), AV 10,881(1.17%),
+합계 928,715 = VEH 진입 횟수. 배타성 구조적 확인.
+
+**확인됨:** 연속 single-step 구간은 이봉분포입니다. 1개 구간 91,580(개수 57.1%,
+step 12.4%), **5~8개 구간 61,528(step 약 54%)**, 33개 이상 2,022(평균 약 98개,
+step 약 27%). 최대 337. 결과 축은 HLE 21.9%, native 39.9%,
+**아무 핸들러도 안 걸린 TF 38.2%** 입니다.
+[상세 작업 로그](../work-logs/20260728-337-exception-census.md)
+
+**Confirmed:** 735,886 single-steps (79.24%), 181,947 breakpoints (19.59%), and 10,881 access
+violations (1.17%) total exactly the run's VEH entry count, so the census is exclusive by
+construction. Single-step runs are bimodal: 91,580 one-step runs are 57.1% of runs but 12.4% of
+steps, while 61,528 runs of five to eight carry about 54% and 2,022 runs of 33 or more, averaging
+about 98, carry about 27%. By outcome, 21.9% of steps hit HLE, 39.9% native, and 38.2% no handler
+at all.
+
+### Task 338 — 예외 축소 opt-in A/B / Exception-reduction opt-in A/B
+
+**기각:** `REPIU_AOT_DBT_SUPERBLOCK=1`은 `INT3`를 7.4배 줄이지만 Glide gate 경계까지
+없애 렌더링이 멈춥니다(gate 진입 `67,108 → 74`, `grBufferSwap` 0). progress 3.15배는
+그리지 않아 생긴 값입니다.
+
+**무효:** `REPIU_AOT_DBT_POST_HLE_TRANSLATE=1`은 경로 미진입(`posthle=0/0`).
+
+**방법론:** 두 실행 모두 malformed 0 / fatal 0 / Glide 공백 0 / 창 열림을 통과했습니다.
+**동등성 계약에 `grBufferSwap` 횟수, gate 진입 횟수, get-proc 개수를 추가합니다.**
+[상세 작업 로그](../work-logs/20260728-338-exception-reduction-optin-ab.md)
+
+**Rejected:** `REPIU_AOT_DBT_SUPERBLOCK=1` cuts `INT3` 7.4x but takes the Glide gate boundaries
+with it, so the game stops rendering — gate entries fall from 67,108 to 74 and buffer swaps to zero
+— and its 3.15x progress is an artifact of not drawing. **Void:** `POST_HLE_TRANSLATE=1` never
+entered its path. Both runs passed every existing equivalence axis while drawing nothing, so the
+contract now also requires the buffer-swap count, the gate entry count, and the resolved proc count.
+
 **Confirmed:** The gate path's `PumpEvents` added one host rendezvous per gate entry — 1.92 per
 entry — while the host poll loop already pumps every iteration, so it was redundant. Removing it
 leaves 0.92 per entry, moves the Glide gate's median share from 17.00% to 13.47%, and raises the
@@ -631,6 +706,246 @@ runs. **Unresolved:** cost fell 3.53 points while frames rose only 5.5%, so what
 is the next question.
 
 ## 다음 검증 / Next validation
+
+Task 337이 예외를 배타적으로 셌고, Task 338이 기존 opt-in 두 개를 Release에서
+판정했습니다. **둘 다 채택 불가이며, 그 과정에서 동등성 계약의 구멍이 드러났습니다.**
+
+**확인됨(Task 337): 예외의 79.24%가 TF single-step, 19.59%가 `INT3`, 1.17%가 AV**
+입니다. census 합계가 VEH 진입 횟수와 정확히 일치해 배타성이 확인됐습니다.
+
+**확인됨: single-step은 HLE 지점마다 1회씩 나지 않습니다.** 연속 구간 길이가
+이봉분포입니다. 1개짜리 구간이 개수로는 57.1%지만 step 수로는 12.4%뿐이고,
+**5~8개 구간이 step의 약 54%**, **33개 이상 꼬리가 약 27%** 입니다. hotspot profile은
+single-step의 **38.2%가 아무 핸들러도 걸리지 않는 순수 walk**임을 보여줍니다.
+
+**따라서 "HLE를 예외 없이 만든다"는 지배 인구를 겨냥하지 않습니다.** 그것이 겨냥하는
+1-step 구간은 single-step의 12%뿐입니다.
+
+**확인됨(Task 338): `REPIU_AOT_DBT_SUPERBLOCK=1`은 현재 형태로 쓸 수 없습니다.**
+`INT3`를 7.4배 줄이지만 **그 안에 Glide gate 경계가 포함돼 게임이 렌더링을 멈춥니다**
+(gate 진입 `67,108 → 74`, `grBufferSwap` 0회). progress는 3.15배로 뛰지만 이는
+그리지 않아서 생긴 값입니다. **progress는 정당성 지표가 아닙니다.**
+
+**확인됨: `REPIU_AOT_DBT_POST_HLE_TRANSLATE=1`은 경로에 진입조차 하지 않습니다**
+(`posthle=0/0`). 판정 무효이며, 부수적으로 HLE 재개 시 대상이 이미 캐시에 있음을
+알려줍니다.
+
+**동등성 계약을 확장합니다.** 위 실행들은 malformed 0, fatal 0, Glide 공백 0,
+창 열림까지 **전부 통과하면서** 아무것도 그리지 않았습니다. 이후 모든 성능 A/B는
+`grBufferSwap` 횟수, Glide gate 진입 횟수, LINEXE get-proc 개수를 함께 확인합니다.
+
+Task 339가 그 첫 질문에 답했고 **Task 338의 인과 지목을 정정했습니다.**
+
+**기각:** "`SUPERBLOCK`이 Glide gate 경계를 삼킨다." gate 진입 급감은 증상입니다.
+
+**확인됨: 원인은 HLE 처리 후 캐시로 복귀하지 못하는 것입니다.** `SUPERBLOCK`에서
+`INT3`는 의도대로 7.4배 줄지만 그 자리를 **3.8배 늘어난 single-step**이 대신합니다
+(구간 평균 `4 → 113`, 최대 `337 → 3,941`, 예외 중 single-step 98.76%). 그래서 게임이
+60초 안에 Glide 초기화를 끝내지 못하고, `progress` 3.15배는 예외 수 증가의 부산물입니다.
+
+**확인됨: 복귀가 막히는 지점을 단계별 호출 수로 확정했습니다.**
+
+| 단계 | baseline | `SUPERBLOCK=1` |
+|---|---:|---:|
+| `TryResumeAotAfterHandledHle` 진입 | 206,345 | 1,186,516 |
+| → seg-write 프로브 | 206,345 | **15,980 (1.3%)** |
+| → quarantine/guest-IP | 190,874 | 649 |
+| → cache lookup | **21,561 (10.4%)** | 641 |
+
+* baseline: **88.7%가 quarantine/guest-IP 검사에서 거절**됩니다.
+* `SUPERBLOCK`: **98.7%가 첫 guard에서 즉시 거절**되며, 남는 조건은
+  `aot_reentry_pending` 미설정입니다. inline thunk는 `INT3` 경계를 거치지 않습니다.
+* lookup까지 도달하면 캐시 적중률 100%이므로 **post-HLE 번역 분기는 도달 불가**입니다.
+  `posthle=0/0`의 이유가 이것입니다.
+
+**즉 Task 337의 5~8개 구간과 33+ 꼬리의 정체도 이것입니다.** exception-free HLE
+기계장치가 아니라 **복귀 경로가 없습니다.**
+
+Task 340이 1번을 수행했고 **답이 좁습니다.**
+
+**확인됨: 거절의 80.24%는 페이지 quarantine이고, `IsGuestInstructionPointer` 거절은
+0건입니다.** 60초 baseline에서 복귀 시도 187,373건 중 quarantine 150,341(80.24%),
+segment-write 15,471(8.26%), 성공 21,561(11.51%), arena 밖 0, span-unsafe 0,
+cache miss 0입니다.
+
+**확인됨: quarantine된 페이지는 단 4개입니다**(`generation publishes/quarantines:
+145/4`). **4개 페이지가 post-HLE 복귀의 80%를 막고 있습니다.** quarantine은 guest가
+자기 페이지에 코드를 쓸 때(자기수정 보호) 걸립니다. Task 337의 5~8개 구간과 33+
+꼬리의 발원지가 여기입니다.
+
+**확인됨: quarantine과 segment-write만 통과하면 대상은 100% 캐시에 있습니다.**
+post-HLE 번역 분기가 도달 불가라는 결론이 재확인됩니다.
+
+Task 341이 그 페이지들을 식별했고 **원인이 확정됐습니다.**
+
+**확인됨: 게임이 자기 자신의 `out` 명령을 1~2바이트 덮어씁니다.**
+
+| 격리 페이지 | 쓰기 주체 = 대상 | 바이트 | 그 주소의 명령 |
+|---|---|---:|---|
+| `0x030F5000` | `0x030F5CC8` | 1 | `out dx, al` |
+| `0x03033000` | `0x030334C6` | 2 | `out dx, ax` |
+| `0x03034000` | `0x03034175` | 2 | `out dx, ax` |
+
+세 경우 모두 **쓰기 주체와 대상이 같은 주소**이고 바이트 수가 그 명령의 길이와
+같습니다. 하드웨어 탐지 후 `out`을 무력화하는 DOS 시절 관용구입니다. 쓰기 주체
+불명으로 인한 기본 격리는 **0건**이므로 정책의 보수적 기본값이 원인이 아닙니다.
+
+**확인됨: `0x030F5000`은 이 실행에서 가장 뜨거운 코드 페이지입니다**(live telemetry의
+EIP `0x030F508D`, `0x030F5098`). **60초에 단 3번 일어나는 1~2바이트 쓰기가 4KB 페이지를
+영구히 번역 대상에서 제외하고, 그것이 실행 시간의 큰 부분을 결정합니다.**
+
+Task 342가 정책을 고쳤고 **프레임이 2.21배가 됐습니다.**
+
+**확인됨:** quarantine을 첫 same-page 쓰기가 아니라 **4회째부터** 걸도록 바꿨습니다.
+그 이전 쓰기는 retire만 합니다. **정확성은 그대로입니다** — retire가 이미 그 페이지의
+번역을 무효화하므로 캐시가 옛 바이트를 실행할 수 없고, quarantine은 churn 방어일
+뿐입니다.
+
+| 항목 (60초 Release, 3회 중앙값) | 기존 | 신규 | 비 |
+|---|---:|---:|---:|
+| **프레임(`grBufferSwap`)** | 1,579 | **3,485** | **2.21배** |
+| Glide gate 진입 | 65,487 | 149,260 | 2.28배 |
+| TF single-step 예외 | 731,132 | 237,734 | 0.33배 |
+| quarantine 거절 | 127,978 | 35,667 | 0.28배 |
+| emulate 이벤트(구 "progress") | 107,572 | 30,591 | 0.28배 |
+
+동등성은 전부 통과합니다(malformed 0, fatal 0, Glide 공백 0, get-proc 37, 프레임과
+gate 진입 증가).
+
+**지표 정정 — `progress`는 처리량이 아닙니다.** `diagnostic_progress_count`는
+`instruction_emulation.cpp`의 HLE 처리 경로에서 증가하는 **emulate 이벤트 수**입니다.
+이번의 -72%는 퇴보가 아니라 **emulate가 필요한 명령이 그만큼 줄었다**는 뜻입니다.
+Tasks 331~341은 이 값을 처리량 대리 지표로 인용했고 그때는 프레임과 같은 방향이라
+결론이 뒤집히지는 않지만, **갈라질 때는 프레임이 옳습니다.** 이후 처리량 판정은
+**프레임 중앙값 3회**를 1차 지표로 씁니다.
+
+Task 343과 344가 남은 두 항목을 처리했습니다.
+
+**확인됨(343): "other" 예외는 전부 `0xC0000096`(`STATUS_PRIVILEGED_INSTRUCTION`)**
+이며 0.43%입니다. 결함이 아니라 의도한 변화의 결과입니다 — 격리가 풀린 페이지가
+번역되면서 `out` 같은 특권 명령이 캐시에서 직접 실행되다 트랩하고, 기존 특권 명령
+HLE가 그대로 받습니다. 예외 구성도 `single-step 79.24% / INT3 19.59%`에서
+`51.54% / 45.49%`로 이동했습니다(번역 커버리지 확대).
+
+**확인됨(344): 주소별 반복 쓰기로 판정을 바꿔 quarantine이 0이 됐습니다.**
+페이지별 합산은 한 페이지의 서로 다른 1회성 패치들을 합쳐 결국 격리했습니다
+(`0x03033000`에 `0x030334C6`과 `0x03033911`). quarantine 거절 `35,667 → 0`,
+복귀 success `29.7% → 55.5%`, single-step `237,734 → 181,879`입니다.
+
+**그러나 프레임은 판정 불가입니다.** 중앙값 `3,485 → 3,325`(-4.6%)이지만 실행 범위가
+겹칩니다. **남은 quarantine 1건은 프레임 비용을 내고 있지 않았고, 큰 이득은 Task 342가
+이미 가져갔습니다.** 이 변경으로 성능이 좋아졌다고 기록하지 않습니다.
+
+**현재 복귀 funnel(39,246 시도):** `segment-write` 15,473(39.4%),
+success 21,783(55.5%), `span-unsafe` 1,990(5.1%), quarantine 0.
+
+Task 345가 3번(`SUPERBLOCK` 재판정)을 수행했고 **기각됐습니다.**
+
+**확인됨: quarantine이 원인이라는 가설은 기각됩니다.** quarantine이 0인 지금도
+`SUPERBLOCK=1`은 **3/3 재현되는 `0xC0000005`로 즉시 죽습니다**(gate 진입 50, get-proc
+24~26, 프레임 없음). Task 338에서는 60초를 다 쓰며 멈췄는데, 이제 실패가 재현 가능하고
+한 명령으로 좁혀졌습니다.
+
+```
+0x03042EBE: call far [0x012D9C90]   ← baseline이 INT 8 chain HLE로 974회 처리하는 지점
+```
+
+**exception-free HLE가 VEH 매개가 필수인 far transfer를 native 코드로 내보냅니다.**
+`RequiresVehMediatedHle`에 far branch 조건을 추가해도 **실패는 그대로**입니다. 즉
+원인은 런타임 thunk 술어가 아니라 **emit 시점 결정**입니다. 그 guard는 방어로만
+유지하며 무엇을 고쳤다고 기록하지 않습니다.
+
+**따라서 `SUPERBLOCK`은 emitter 측 계약이 정리되기 전에는 재판정 대상이 아닙니다.**
+
+Task 346이 1번을 수행했고 **사전 등록 gate 네 개가 모두 성립했습니다.**
+
+**확인됨:** 세그먼트 레지스터를 쓰는 명령 뒤에도 **재접기 후 복귀**하도록 바꿨습니다.
+`segment-write` 거절 `15,473 → 0`, 복귀 success `55.6% → 95.1%`, 프레임 중앙값
+`3,125 → 3,456(+10.6%)` 이며 **실행 범위가 겹치지 않습니다**(3,094~3,265 대
+3,405~3,463).
+
+**확인됨(안전성): selector guard mismatch가 양쪽 모두 0입니다.** 접힌 세그먼트 site는
+현재 selector가 접을 때와 다르면 고정 `INT3`로 트랩하는데, 한 번도 트랩하지 않았습니다.
+재접기가 캐시를 계속 최신으로 유지했다는 뜻입니다.
+
+**주의:** 예외 총계는 오히려 4.3% 늘었습니다(`INT3` 199,364 → 215,894). 캐시로 더 자주
+복귀하면 경계 트랩도 더 자주 만납니다. **그럼에도 프레임이 늘었으므로 예외 수는
+그 자체로 목표가 아닙니다.**
+
+**현재 복귀 funnel(39,182 시도):** success 37,256(95.1%), `span-unsafe` 1,926(4.9%),
+그 외 0. **post-HLE 복귀 경로는 사실상 열렸습니다.**
+
+### Tasks 331~346 누적 / Cumulative
+
+| Task | 고친 것 | 효과 |
+|---|---|---|
+| 331 | Release 실행 계약, append 재귀속 | 동적 번역 = 전체의 1.04% |
+| 333 | host poll `Sleep(1)` → command 대기 | rendezvous 22.3배, 프레임 3.16배 |
+| 334 | cache→guest 선형 탐색 → 이진 탐색 | 호출당 266배, 프레임 1.79배 |
+| 335 | gate마다의 중복 `PumpEvents` 제거 | gate -3.5%p, 프레임 +5.5% |
+| 342 | quarantine을 반복 쓰기에만 | **프레임 2.21배** |
+| 344 | quarantine 판정 주소별 | quarantine 0(프레임 변화 없음) |
+| 346 | 세그먼트 쓰기 뒤 재접기 후 복귀 | 복귀 success 95.1%, 프레임 +10.6% |
+
+**Release 60초 프레임: Task 331 시점 `275` → 현재 중앙값 `3,456`(약 12.6배).**
+
+측정만 한 작업: 336(예외 전이 재가격), 337(census), 339~341(복귀 차단 추적),
+343(특권 명령 트랩), 345(`SUPERBLOCK` 재판정 — 기각).
+
+**이번 연속 작업에서 확정된 방법 규칙 네 가지**
+1. 성능 판정은 **프레임 중앙값 3회**. `progress`는 emulate 이벤트 수다(342).
+2. 동등성은 malformed/fatal/Glide 공백에 더해 **프레임·gate 진입·get-proc**까지(338).
+3. **고정 비용의 비중은 다른 곳을 최적화할 때마다 재계산**한다(336).
+4. 실행 간 편차 18% — 단일 표본으로 판정하지 않는다(335).
+
+**다음 순서:**
+1. **실행 축 재귀속** — 복귀가 열려 예외 구성이 크게 바뀌었으므로 Task 336의 커널 전이
+   비중과 Task 337의 구간 분포가 낡았습니다. **대상 선정 전에 다시 잽니다.**
+   계획: [20260728-347-release-axis-reattribution.md](../work-orders/20260728-347-release-axis-reattribution.md)
+2. `span-unsafe` 1,926(4.9%) — 남은 유일한 복귀 거절 사유.
+3. (보류) `SUPERBLOCK` — emitter가 far call을 어떤 kind로 분류하는지부터.
+
+**주의:** 이 문서의 Task 336·337 수치는 Task 342/344/346 **이전** 축입니다. 재귀속
+전까지 그대로 인용하지 마십시오.
+
+---
+
+Task 336이 남은 두 미지수를 해소했고, 그 결과 **오래 보류해 온 결론 하나가
+뒤집혔습니다.**
+
+**확인됨: VEH residual은 미계측 구간이 아니었습니다.** `HandleSingleStepTrace`의 단계
+profile이 별도 opt-in이라 꺼져 있었을 뿐이며, 켜자 residual이 `36.56% → 3.26%`(VEH
+대비)로 떨어지고 `single-step`이 VEH의 33.68%로 나타났습니다. 그 안의 1위는 Release
+에서 `hle` 66.4%(전체의 7.02%)입니다. Task 322가 Debug에서 `aot-resume` 74.05%로
+본 순위는 완전히 뒤집혔습니다.
+
+**확인됨: 커널 예외 전이 1회는 `INT3` 34,521 tick, single-step 37,885 tick이며
+구성과 무관합니다**(Debug 34,608 / 37,519, 차이 1% 미만). 2.5GHz 기준 약 13.8~15.2us.
+
+**따라서 TF/VEH 제거 상한이 바뀝니다.** 같은 60초 실행의 VEH 진입 1,307,096회를 곱하면
+전이 총비용은 전체의 **27.7~30.4%** 입니다. 상한은 `1.012배`가 아니라 **약 1.38~1.44배**
+입니다. **로드맵을 보류에서 후보로 되돌립니다.**
+
+**Task 323의 1.20%는 틀린 측정이 아니었습니다.** 전이 가격은 그때도 같았고 달라진 것은
+횟수입니다. 당시에는 전체가 느려 예외가 드물었습니다. **고정 커널 비용은 그대로인데
+주변이 빨라져 비중이 커졌습니다.**
+
+**방법론 규칙 추가:** 고정 비용(커널 전이·syscall·대역폭)의 **비중**은 다른 곳을
+최적화할 때마다 재계산합니다. 한 번 "작다"고 판정한 항목이 전체가 빨라지면 지배
+항목이 됩니다.
+
+현재 Release 축(전체 wall-clock 대비):
+
+| bucket | 비중 |
+|---|---:|
+| **커널 예외 전이(유도)** | **27.7~30.4%** |
+| AOT 캐시 내 실제 guest 실행(유도) | 38.2~40.9% |
+| Glide gate | 13.8% |
+| single-step 핸들러 | 10.6% (그중 `hle` 7.0%) |
+| AOT transfer | 5.3% |
+| 그 외(prologue/telemetry/gates/hle-chain/port-io/dos/residual) | 약 2.5% |
+
+---
 
 Task 335가 gate 진입마다 발생하던 중복 `PumpEvents` rendezvous를 제거했습니다.
 gate 진입당 rendezvous `1.92 → 0.92`, Glide gate 비중 중앙값 `17.00% → 13.47%`,
@@ -743,7 +1058,8 @@ Glide gate는 60초에 진입 21,381회로 `98,941,888,040 tick`을 쓰며 **호
 **성능 표기 규칙:** 이후 모든 성능 수치에 구성을 명시합니다. Tasks 322~330의 값은
 **Debug 기준**이며 단계 순위형 결론은 Release에서 뒤집힐 수 있습니다.
 
-TF/VEH 제거 로드맵은 계속 보류합니다. 예외 전이가 1.20%인 이상 상한이 약 1.012배입니다.
+**TF/VEH 제거 로드맵은 보류에서 후보로 돌아왔습니다(Task 336).** 전이가 전체의
+27.7~30.4%이므로 상한은 약 1.38~1.44배입니다.
 
 Task 331 moved the baseline to Release and ran the 60-second in-game A/B, which closes the chain
 this document has followed since Task 322 and names a new target. Dynamic translation is 1.04% of
@@ -767,5 +1083,5 @@ to 876 (3.16x) and progress from 64,794 to 84,855 (1.31x), and moved the Glide g
 Glide-gap counts unchanged at zero. The axis is therefore `veh 62.99%`, AOT cache execution 37.01%,
 and the Glide gate 8.88%, and re-attributing what the VEH held outside Glide became Task 334, which
 found another linear scan and removed it. Every performance figure from here states its configuration; the Tasks 322-330 numbers are
-Debug and their stage-ranking conclusions can invert. The TF/VEH removal roadmap stays on hold at a
-roughly 1.012x bound.
+Debug and their stage-ranking conclusions can invert. The TF/VEH removal roadmap returned from hold
+to candidate in Task 336, at a bound of roughly 1.38-1.44x.

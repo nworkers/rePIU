@@ -80,6 +80,15 @@ bool RequiresVehMediatedHle(ThreadContext* context, std::uint32_t guest_eip)
         default:
             break;
     }
+    // Task 345: a far transfer loads CS, which the operand scan below misses
+    // because Zydis does not report CS as a written register operand for
+    // `call far` and `jmp far`. Executing one natively took the guest through
+    // the INT 8 chain pointer at 0x03042EBE and faulted on a null target,
+    // reproducibly, in every SUPERBLOCK run.
+    if (instruction.meta.branch_type == ZYDIS_BRANCH_TYPE_FAR)
+    {
+        return true;
+    }
     for (std::uint8_t index = 0; index < instruction.operand_count; ++index)
     {
         if ((operands[index].actions & ZYDIS_OPERAND_ACTION_MASK_WRITE) == 0 ||

@@ -2060,6 +2060,154 @@ bool DispatchGuestHleInstruction(CONTEXT* win32_context,
 
 // Execution probe/trace + guest-IP helpers promoted to external linkage for
 // aot_runtime_dispatch.cpp (relocated out of the anonymous namespace).
+// Task 342. Restores the pre-Task-342 policy for A/B in one binary.
+bool QuarantineOnFirstWriteEnabled()
+{
+    static const bool enabled = []() {
+        const char* value = std::getenv("REPIU_AOT_QUARANTINE_FIRST_WRITE");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+// Task 342. Counts how often a page has been written from itself and answers
+// whether this write should quarantine. The first writes only retire, which
+// already stops the cache executing stale bytes; quarantine is the churn
+// defence and waits for evidence of repetition. A page evicted from the table
+// quarantines on sight, so overflow degrades to the old policy.
+bool ShouldQuarantineWrittenPage(ThreadContext* context,
+                                 std::uint32_t page,
+                                 std::uint32_t destination)
+{
+    // Task 344: quarantine when the same address is rewritten repeatedly, which
+    // is real churn, or when a page accumulates far more writes than a handful
+    // of one-shot patches would explain, which bounds the pathological case a
+    // per-address rule alone would miss.
+    constexpr std::uint32_t kRepeatWriteThreshold = 4U;
+    constexpr std::uint32_t kPageWriteCeiling = 32U;
+    if (context == nullptr || QuarantineOnFirstWriteEnabled())
+    {
+        return true;
+    }
+    for (std::uint32_t index = 0;
+         index < context->guest_page_write_history_size; ++index)
+    {
+        ThreadContext::GuestPageWriteRecord& record =
+            context->guest_page_write_history[index];
+        if (record.page != page)
+        {
+            continue;
+        }
+        ++record.count;
+        if (record.last_destination == destination)
+        {
+            ++record.repeat_count;
+        }
+        else
+        {
+            record.last_destination = destination;
+            record.repeat_count = 1U;
+        }
+        if (record.repeat_count >= kRepeatWriteThreshold ||
+            record.count >= kPageWriteCeiling)
+        {
+            return true;
+        }
+        ++context->quarantine_deferred_count;
+        return false;
+    }
+    if (context->guest_page_write_history_size >=
+        ThreadContext::kGuestPageWriteHistoryCapacity)
+    {
+        ++context->guest_page_write_history_overflow;
+        return true;
+    }
+    context->guest_page_write_history[
+        context->guest_page_write_history_size] = {page, 1U, destination, 1U};
+    ++context->guest_page_write_history_size;
+    ++context->quarantine_deferred_count;
+    return false;
+}
+
+// Task 337. Buckets are 1, 2, 3, 4, 5-8, 9-16, 17-32, 33+, so a uniform cost
+// and a long tail are told apart without storing every run.
+std::uint32_t SingleStepRunBucket(std::uint32_t length)
+{
+    if (length <= 4U)
+    {
+        return length - 1U;
+    }
+    if (length <= 8U)
+    {
+        return 4U;
+    }
+    if (length <= 16U)
+    {
+        return 5U;
+    }
+    if (length <= 32U)
+    {
+        return 6U;
+    }
+    return 7U;
+}
+
+void RecordVehExceptionCensus(ThreadContext* context, DWORD code)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+    if (code == EXCEPTION_SINGLE_STEP)
+    {
+        ++context->veh_single_step_exception_count;
+        ++context->veh_single_step_run_length;
+        return;
+    }
+    if (code == EXCEPTION_BREAKPOINT)
+    {
+        ++context->veh_breakpoint_exception_count;
+    }
+    else if (code == EXCEPTION_ACCESS_VIOLATION)
+    {
+        ++context->veh_access_violation_exception_count;
+    }
+    else
+    {
+        ++context->veh_other_exception_count;
+        // Task 343: name the code rather than bucketing it as "other".
+        bool recorded = false;
+        for (std::uint32_t index = 0;
+             index < ThreadContext::kOtherExceptionCodeCapacity; ++index)
+        {
+            if (context->veh_other_exception_code_counts[index] == 0U ||
+                context->veh_other_exception_codes[index] ==
+                    static_cast<std::uint32_t>(code))
+            {
+                context->veh_other_exception_codes[index] =
+                    static_cast<std::uint32_t>(code);
+                ++context->veh_other_exception_code_counts[index];
+                recorded = true;
+                break;
+            }
+        }
+        if (!recorded)
+        {
+            ++context->veh_other_exception_code_overflow;
+        }
+    }
+    if (context->veh_single_step_run_length != 0U)
+    {
+        const std::uint32_t length = context->veh_single_step_run_length;
+        context->veh_single_step_run_buckets[SingleStepRunBucket(length)] += 1U;
+        ++context->veh_single_step_run_total;
+        context->veh_single_step_run_max =
+            context->veh_single_step_run_max > length
+                ? context->veh_single_step_run_max : length;
+        context->veh_single_step_run_length = 0U;
+    }
+}
+
 bool IsGuestInstructionPointer(const ThreadContext* context,
                                std::uint32_t eip)
 {
@@ -2386,8 +2534,32 @@ bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
                 *context->aot_placement, page);
         if (active)
         {
-            const bool same_page = source == 0U ||
+            const bool writes_own_page = source == 0U ||
                 (source & kPageMask) == page;
+            // Task 342: quarantine on repetition, not on the first write. See
+            // docs/design/20260728-342-quarantine-on-repeat-write.md section 2
+            // for why this does not weaken correctness.
+            const bool same_page = writes_own_page &&
+                ShouldQuarantineWrittenPage(context, page, destination);
+            // Task 341: record what quarantines a page, since four of them
+            // block 80.24% of post-HLE returns. An unknown source is counted
+            // separately because it quarantines by default rather than by
+            // evidence of self-modification.
+            if (same_page)
+            {
+                if (source == 0U)
+                {
+                    ++context->quarantine_unknown_source_count;
+                }
+                if (context->quarantine_trace_count <
+                    ThreadContext::kQuarantineTraceCapacity)
+                {
+                    context->quarantine_trace[
+                        context->quarantine_trace_count] = {
+                        page, source, destination, byte_count};
+                }
+                ++context->quarantine_trace_count;
+            }
             BumpAotPageRetireAttemptCount(context);
             if (!RequestAotGuestPageRetirement(
                     context, page, same_page))
@@ -2700,6 +2872,12 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     }
 
     CONTEXT* win32_context = exception_info->ContextRecord;
+    // Task 337: classify every exception exactly once, before any handler can
+    // consume it, so the census is exclusive by construction. A single-step run
+    // is closed by the next non-single-step exception, which is what makes the
+    // bucket "instructions walked under TF between two boundaries".
+    RecordVehExceptionCensus(context,
+                             exception_info->ExceptionRecord->ExceptionCode);
     Win32UnhandledBreakpointEvidence breakpoint_evidence;
     if (exception_info->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT)
     {
