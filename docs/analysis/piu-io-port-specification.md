@@ -31,8 +31,57 @@ Based on our analysis of the official MAME driver [src/mame/misc/xtom3d.cpp](htt
 | `0x02AC` | 8-bit | Write | 93C46 Serial EEPROM 제어선 쓰기<br>- Bit 0: Chip Select (CS)<br>- Bit 1: Clock (CLK)<br>- Bit 2: Data Input (DI) | `m_eeprom->clk_write / cs_write / di_write` |
 | `0x02AE` | 8-bit | Read | 93C46 Serial EEPROM 데이터 읽기<br>- Bit 0: Data Output (DO) 상태 반환 (읽기 결과: `do_read() \| 0xfe`) | `m_eeprom->do_read() \| 0xfe` |
 
-### 2.1 사운드 창의 ISA 바이트 레인 디코드 (Task 290에서 확정)
-### 2.1 ISA byte-lane decode of the sound window (confirmed in Task 290)
+### 2.1 시스템 입력 비트와 호스트 키 정책 (Task 361)
+### 2.1 System input bits and host-key policy (Task 361)
+
+`0x02A9`는 active-low 시스템 입력 포트다. MAME `pumpitup` 정의로 확인된
+TEST, COIN1, CLEAR 비트와 rePIU의 SERVICE 호환 매핑은 다음과 같다.
+SERVICE `0x40`은 MAME 원본에서 기능이 확정되지 않은 비트이므로, 이 표에서는
+사용자 지정 호스트 호환 정책으로 구분한다.
+
+`0x02A9` is the active-low system input port. The TEST, COIN1, and CLEAR bits
+confirmed by MAME's `pumpitup` definition and rePIU's SERVICE compatibility
+mapping are listed below. MAME does not identify `0x40` as a confirmed service
+input, so the table explicitly classifies it as a user-selected host
+compatibility policy.
+
+| 마스크 / Mask | rePIU 기능 / Function | 호스트 키 / Host key | 상태 / Status |
+|---:|---|---|---|
+| `0x02` | TEST | F1 | MAME 정의 확인 / Confirmed by MAME |
+| `0x04` | COIN1 | F5 | MAME 정의 확인 / Confirmed by MAME |
+| `0x40` | SERVICE | F2 | rePIU 호환 정책 / rePIU compatibility policy |
+| `0x80` | CLEAR | F3 | MAME `pumpitup` 정의 확인 / Confirmed by MAME `pumpitup` |
+
+released 상태는 `0xFF`이며, 키를 누르면 해당 마스크가 0으로 내려간다. 따라서
+단독 입력의 예상값은 F1=`0xFD`, F2=`0xBF`, F3=`0x7F`, F5=`0xFB`이다.
+
+The released value is `0xFF`; pressing a key clears its mask. Expected values
+for individual presses are therefore F1=`0xFD`, F2=`0xBF`, F3=`0x7F`, and
+F5=`0xFB`.
+
+### 2.2 2P NumLock OFF 숫자패드 정책 (Task 362)
+### 2.2 P2 NumLock-off numeric-keypad policy (Task 362)
+
+2P 발판은 NumLock OFF 상태의 숫자패드 7, 9, 5, 1, 3을 사용한다. Win32는
+이 상태의 키를 각각 `VK_HOME`, `VK_PRIOR`, `VK_CLEAR`, `VK_END`, `VK_NEXT`로
+보고한다. `VK_CLEAR`는 숫자패드 5의 가상키 이름이며 시스템 입력 CLEAR와는
+관련이 없다.
+
+The P2 stage uses numeric-keypad 7, 9, 5, 1, and 3 with NumLock off. Win32
+reports these keys as `VK_HOME`, `VK_PRIOR`, `VK_CLEAR`, `VK_END`, and
+`VK_NEXT`, respectively. `VK_CLEAR` is the virtual-key name for keypad 5 in
+this mode and is unrelated to the system CLEAR input.
+
+| `0x02AA` mask | P2 위치 / Position | NumLock OFF 숫자패드 / Keypad | Win32 가상키 / Virtual key |
+|---:|---|---:|---|
+| `0x01` | Top-Left | 7 | `VK_HOME` |
+| `0x02` | Top-Right | 9 | `VK_PRIOR` |
+| `0x04` | Center | 5 | `VK_CLEAR` |
+| `0x08` | Bottom-Left | 1 | `VK_END` |
+| `0x10` | Bottom-Right | 3 | `VK_NEXT` |
+
+### 2.3 사운드 창의 ISA 바이트 레인 디코드 (Task 290에서 확정)
+### 2.3 ISA byte-lane decode of the sound window (confirmed in Task 290)
 
 MAME io_map은 `map(0x00, 0x03).rw("ymz", read, write).umask16(0x00ff)`입니다. 16비트
 버스에서 `umask16(0x00ff)`는 **각 16비트 워드의 하위 바이트만** 라우팅한다는 뜻이므로,

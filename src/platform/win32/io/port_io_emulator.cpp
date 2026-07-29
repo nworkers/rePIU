@@ -48,7 +48,8 @@ namespace
         {0x08, "P1-DownLeft"}, {0x10, "P1-DownRight"},
     };
     constexpr JammaBitName kJammaBitsSystem[] = {
-        {0x04, "COIN1"}, {0x40, "SERVICE1"}, {0x80, "TEST"},
+        {0x02, "TEST"}, {0x04, "COIN1"}, {0x40, "SERVICE"},
+        {0x80, "CLEAR"},
     };
     constexpr JammaBitName kJammaBitsIn1[] = {
         {0x01, "P2-UpLeft"}, {0x02, "P2-UpRight"}, {0x04, "P2-Center"},
@@ -141,14 +142,15 @@ static std::uint8_t ReadJammaPort8(std::uint16_t port)
 
         case kPortPiuSystem: // SYSTEM
             if (is_pressed(VK_F5)) value &= ~0x04; // COIN1
-            if (is_pressed(VK_F2)) value &= ~0x40; // SERVICE1
-            if (is_pressed(VK_F1)) value &= ~0x80; // TEST/CLEAR
+            if (is_pressed(VK_F1)) value &= ~0x02; // TEST
+            if (is_pressed(VK_F2)) value &= ~0x40; // SERVICE
+            if (is_pressed(VK_F3)) value &= ~0x80; // CLEAR
             break;
 
         case kPortPiuIn1: // IN1: P2
             if (is_pressed(VK_HOME)) value &= ~0x01;
             if (is_pressed(VK_PRIOR)) value &= ~0x02; // PgUp
-            if (is_pressed(VK_NUMPAD5)) value &= ~0x04;
+            if (is_pressed(VK_CLEAR)) value &= ~0x04; // Numpad 5, Num Lock off
             if (is_pressed(VK_END)) value &= ~0x08;
             if (is_pressed(VK_NEXT)) value &= ~0x10; // PgDn
             break;
