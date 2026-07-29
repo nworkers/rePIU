@@ -5,6 +5,36 @@
 
 ## 현재 최상위 결론 / Active top-level conclusion
 
+**최신 결론(Task 363):** 2026-07-30 Release 실게임 profile에서는 Glide 호출
+403,904회와 `grBufferSwap` 1,287회가 약 47.5초 동안 완료됐습니다. 전체 Glide gate는
+wall-clock의 24.14%이고, 주요 상태 설정 18종은 프레임당 약 235.7회 호출되어
+wall-clock의 20.59%, Glide gate의 85.33%를 차지합니다.
+
+`grDepthMask`가 단독으로 Glide의 34.40%, wall의 8.30%이며 backend 시간의 94.3%가
+host work입니다. `grDrawTriangle`은 Glide의 11.23%, wall의 2.71%이지만 backend
+시간의 94.1%가 삼각형별 동기 handoff입니다. `grAlphaBlendFunction`은 Glide의
+9.26%, wall의 2.24%입니다.
+
+반면 같은 실행에서 `grBufferSwap`은 wall의 0.24%, SDL present는 0.17%뿐이고
+`grLfbLock` 호출은 없습니다. texture download도 63회, wall 약 0.07%입니다.
+따라서 Task 354/355의 과거 LFB 우선순위는 이번 장면에 적용하지 않습니다. 현재
+순서는 **상태 반복률과 `grDepthMask` 내부 귀속 → 성공한 동일 상태의 보수적 생략 →
+필요할 때만 triangle batching → 전체 축 재귀속**입니다.
+
+**Latest conclusion (Task 363):** The 2026-07-30 Release gameplay profile
+completed 403,904 Glide calls and 1,287 swaps in about 47.5 seconds. Glide
+held 24.14% of wall time. Eighteen major state setters issued about 235.7
+calls per frame and held 20.59% of wall time, or 85.33% of the Glide gate.
+`grDepthMask` alone held 34.40% of Glide and 8.30% of wall time;
+`grDrawTriangle` held 11.23% and 2.71%, with 94.1% of its backend interval in
+per-triangle handoff; and `grAlphaBlendFunction` held 9.26% and 2.24%.
+
+The same run spent only 0.24% of wall time in `grBufferSwap`, made no
+`grLfbLock` calls, and spent about 0.07% on 63 texture downloads. The active
+order is therefore setter repetition/phase attribution, conservative
+successful-state elision, triangle batching only if still justified, and
+whole-axis re-attribution.
+
 **확인됨:** 현재 `aot-dbt`는 독립적인 연속 DBT 실행기가 아니라 `aot-dynamic` 위에서
 일부 TF/`INT3` 경로만 정상 host dispatch나 Dr0 span으로 바꾼 정책입니다. Task 276의
 동일 시간 progress는 `aot-dynamic 10,709` 대 `aot-dbt 10,685`로 사실상 같았습니다.
@@ -1162,7 +1192,42 @@ state calls are not removed before their semantic preconditions are proven.
 [작업 지시](../work-orders/20260729-355-current-performance-next-actions.md) /
 [작업 로그](../work-logs/20260729-355-current-performance-next-actions.md)
 
-### Tasks 331~355 누적 / Cumulative
+### Task 363 — Glide 호출 증가 성능 계획 / Glide call-volume performance plan
+
+2026-07-30 Release 실게임 로그로 Task 355의 다음 순서를 재판정했습니다. 약 47.5초,
+1,287프레임 동안 완료 Glide ordinal은 403,904회로 프레임당 약 313.8회입니다.
+Glide gate는 wall의 24.14%입니다.
+
+주요 상태 설정 18종은 303,399회, 프레임당 235.7회이며 wall의 20.59%와 Glide의
+85.33%를 차지합니다. 그중 host work는 wall 12.88%p, 동기 handoff는 7.02%p입니다.
+`grDepthMask`는 wall 8.30%, `grAlphaBlendFunction`은 2.24%이고,
+`grDrawTriangle`은 wall 2.71% 중 backend의 94.1%가 handoff입니다.
+
+현재 장면에서는 `grBufferSwap` wall 0.24%, SDL present 0.17%이고 LFB lock이
+없습니다. 이 때문에 Task 355의 LFB-first 순서는 대체됩니다.
+
+1. **Task 364:** setter 동일/변경 인수와 `grDepthMask`/alpha-blend 내부 GL/error
+   phase를 기본 OFF로 귀속합니다.
+2. **Task 365:** 같은 context에서 직전 host 적용이 성공한 정확한 동일 상태만
+   rendezvous 전에 생략합니다.
+3. **Task 366:** 상태 최적화 뒤 triangle handoff가 여전히 지배적일 때만 deep-copy와
+   엄격한 barrier를 갖춘 순서 보존 batching을 진행합니다.
+4. **Task 367:** 동일 바이너리 Release 3회 A/B와 전체 실행 축 재귀속으로 다음
+   frontier를 결정합니다.
+
+The latest Release scene supersedes Task 355's LFB-first order. Major state
+setters held 20.59% of wall time and 85.33% of Glide, led by `grDepthMask` at
+8.30% of wall time. Triangle submission was handoff-dominated, while buffer
+swap held only 0.24%, no LFB lock occurred, and texture downloads held about
+0.07%. Tasks 364 through 367 now attribute repeated values and setter phases,
+elide only exact successfully applied state, batch triangles only if still
+justified under strict barriers, and finally re-attribute the complete axis.
+
+[설계](../design/20260730-363-glide-call-performance-plan.md) /
+[작업 지시](../work-orders/20260730-363-glide-call-performance-plan.md) /
+[작업 로그](../work-logs/20260730-363-glide-call-performance-plan.md)
+
+### Tasks 331~363 누적 / Cumulative
 
 | Task | 고친 것 | 효과 |
 |---|---|---|
@@ -1179,6 +1244,7 @@ state calls are not removed before their semantic preconditions are proven.
 | 353 | Glide gate ordinal별 cycle/rendezvous 귀속 | `grBufferSwap` 50.21%, wall-clock 약 17.32% |
 | 354 | `grBufferSwap` host work 분해 | SDL present 99.589%, 요청/실제 interval 모두 1 |
 | 355 | 최신 matched 성능 축과 다음 작업 기록 | Task 356 LFB → 357 handoff → 358 guest residency |
+| 363 | 최신 호출 다발 장면 재귀속과 후속 계획 | 상태 setter wall 20.59%, LFB 0회, Task 364~367 |
 
 **역사적 Release 60초 프레임:** Task 331 `275` → Task 346 중앙값 `3,456`.
 Task 348/349가 타이머 전달 의미와 cadence를 바꿨으므로 현재 Task 347의 `1,124`와
@@ -1194,18 +1260,21 @@ Task 348/349가 타이머 전달 의미와 cadence를 바꿨으므로 현재 Tas
 4. 실행 간 편차 18% — 단일 표본으로 판정하지 않는다(335).
 
 **다음 순서:**
-1. **Task 356 `grLfbLock` 분해** — 최신 matching profile에서 Glide 18.37%,
-   wall 약 5.19%입니다. guest overwrite coverage까지 확인합니다.
-2. **Task 357 Glide handoff census** — 최신 handoff 지배 API 17개는 Glide 42.85%,
-   wall 약 12.10%, backend wake+complete 92.88%입니다.
-3. **Task 358 guest residency** — 최신 control의 가장 큰 축 54.32%를 편향 없는
-   cache→guest sampling으로 귀속합니다.
-4. **swap interval portability와 present tail은 조건부** — 현재 요청/실제 interval은
-   모두 1입니다. 다른 host에서 불일치하거나 cadence 결함이 재현될 때 명시적 interval
-   적용과 latency histogram을 별도 fidelity A/B로 진행합니다.
-5. `span-unsafe`는 복귀 funnel의 21.90%지만 TF run이 모두 1이고 전이 전체가 6.83%라
-   count만으로 최적화하지 않습니다.
-6. (보류) `SUPERBLOCK` — emitter가 far call을 어떤 kind로 분류하는지부터.
+1. **Task 364 setter 반복률/phase 귀속** — `grDepthMask`의 20,693회 중 동일 상태와
+   실제 변경을 분리하고 `glDepthMask`/`glGetError` 시간을 따로 잽니다. alpha blend와
+   나머지 setter도 고정 크기 인수 census로 같은 기준을 적용합니다.
+2. **Task 365 동일 성공 상태 생략** — invalid/failure/context 및 texture generation
+   무효화를 유지하면서 검증된 exact duplicate만 host rendezvous 전에 생략합니다.
+3. **Task 366 triangle batching** — Task 365 뒤에도 handoff가 지배적이고 Task 364
+   순서 자료가 충분한 batch 크기를 증명할 때만 진행합니다.
+4. **Task 367 전체 축 재귀속** — 동일 바이너리 Release control/profile 3회 중앙값과
+   visual/ABI/exception gate로 다음 병목을 결정합니다.
+5. **Task 356 LFB 분해는 장면 조건부로 보류** — LFB lock이 실제 발생하는 장면을
+   별도로 profile할 때 재개합니다.
+6. **swap portability도 조건부** — 요청/실제 interval 불일치나 cadence 결함이 다른
+   host에서 재현될 때만 명시적 적용과 latency histogram을 진행합니다.
+7. (보류) `SUPERBLOCK` — 현재 opt-in은 렌더링을 중단하므로 성능 해결책으로 켜지
+   않습니다.
 
 **주의:** Task 336·337 수치는 Task 347에서 대체됐습니다. 현재 대상 선정에 그대로
 인용하지 마십시오.
