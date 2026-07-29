@@ -2,6 +2,7 @@
 #define REPIU_HLE_GLIDE_HLE_H_
 
 #include "repiu/exe/executable_headers.h"
+#include "repiu/hle/glide_fog.h"
 
 #include <cstdint>
 #include <array>
@@ -193,6 +194,8 @@ struct GlideLogicalState
     std::uint32_t fog_mode = 0;
     std::uint32_t fog_color = 0;
     std::uint32_t fog_table_pointer = 0;
+    GlideFogTable fog_table{};
+    bool fog_table_valid = false;
     std::uint32_t clip_min_x = 0;
     std::uint32_t clip_min_y = 0;
     std::uint32_t clip_max_x = 0;

@@ -29,6 +29,12 @@ std::uint8_t Expand6(std::uint32_t value)
     return static_cast<std::uint8_t>((six << 2U) | (six >> 4U));
 }
 
+bool UsesBgrColorOrder(std::uint32_t color_format)
+{
+    return color_format == kGlideColorFormatAbgr ||
+        color_format == kGlideColorFormatBgra;
+}
+
 }  // namespace
 
 bool GlideLfbSurface::Resize(std::uint32_t width, std::uint32_t height)
@@ -95,6 +101,7 @@ bool DecodeGlideLfb565ToRgba8(const std::uint8_t* source,
                               std::size_t source_byte_count,
                               std::uint32_t width,
                               std::uint32_t height,
+                              std::uint32_t color_format,
                               std::vector<std::uint8_t>* rgba8)
 {
     if (source == nullptr || rgba8 == nullptr || width == 0U || height == 0U)
@@ -113,9 +120,12 @@ bool DecodeGlideLfb565ToRgba8(const std::uint8_t* source,
         const std::uint32_t texel =
             static_cast<std::uint32_t>(source[index * 2U]) |
             (static_cast<std::uint32_t>(source[index * 2U + 1U]) << 8U);
-        (*rgba8)[index * 4U + 0U] = Expand5(texel >> 11U);
+        const std::uint8_t high = Expand5(texel >> 11U);
+        const std::uint8_t low = Expand5(texel);
+        const bool bgr = UsesBgrColorOrder(color_format);
+        (*rgba8)[index * 4U + 0U] = bgr ? low : high;
         (*rgba8)[index * 4U + 1U] = Expand6(texel >> 5U);
-        (*rgba8)[index * 4U + 2U] = Expand5(texel);
+        (*rgba8)[index * 4U + 2U] = bgr ? high : low;
         (*rgba8)[index * 4U + 3U] = 255U;
     }
     return true;
@@ -125,6 +135,7 @@ bool EncodeRgba8ToGlideLfb565(const std::uint8_t* rgba8,
                               std::size_t rgba8_byte_count,
                               std::uint32_t width,
                               std::uint32_t height,
+                              std::uint32_t color_format,
                               std::uint8_t* destination,
                               std::size_t destination_byte_count)
 {
@@ -145,8 +156,11 @@ bool EncodeRgba8ToGlideLfb565(const std::uint8_t* rgba8,
         const std::uint32_t red = rgba8[index * 4U + 0U];
         const std::uint32_t green = rgba8[index * 4U + 1U];
         const std::uint32_t blue = rgba8[index * 4U + 2U];
-        const std::uint32_t texel = ((red >> 3U) << 11U) |
-            ((green >> 2U) << 5U) | (blue >> 3U);
+        const bool bgr = UsesBgrColorOrder(color_format);
+        const std::uint32_t high = bgr ? blue : red;
+        const std::uint32_t low = bgr ? red : blue;
+        const std::uint32_t texel = ((high >> 3U) << 11U) |
+            ((green >> 2U) << 5U) | (low >> 3U);
         destination[index * 2U] = static_cast<std::uint8_t>(texel);
         destination[index * 2U + 1U] =
             static_cast<std::uint8_t>(texel >> 8U);

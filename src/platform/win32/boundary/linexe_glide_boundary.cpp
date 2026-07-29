@@ -1142,6 +1142,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                 context->glide_state.width = width;
                 context->glide_state.height = height;
                 context->glide_state.color_format = color_format;
+                context->glide_state.lfb_write_color_format = color_format;
                 context->glide_state.origin = origin;
                 context->glide_state.color_buffer_count = color_buffers;
                 context->glide_state.auxiliary_buffer_count = auxiliary_buffers;
@@ -2041,18 +2042,52 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         }
 
         case go::kGrFogColorValue: // _GRFOGCOLORVALUE@4
-            context->glide_state.fog_color = context->glide_gate_stack[1];
+            context->glide_state.fog_color =
+                repiu::hle::ConvertGlideColorToArgb(
+                    context->glide_gate_stack[1],
+                    context->glide_state.color_format);
+            if (!context->glide_backend.SetFogColor(
+                    context->glide_state.fog_color))
+            {
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                return decline_gate("fog-color-backend-failure");
+            }
+            context->glide_backend_message = context->glide_backend.message();
             ++context->glide_gate_handled_count;
             win32_context->Eip = return_address;
             win32_context->Esp += 2U * sizeof(std::uint32_t);
             return true;
 
         case go::kGrFogTable: // _GRFOGTABLE@4
-            context->glide_state.fog_table_pointer = context->glide_gate_stack[1];
+        {
+            context->glide_state.fog_table_pointer =
+                context->glide_gate_stack[1];
+            const auto* table = reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(
+                    context->glide_state.fog_table_pointer));
+            if (!IsGuestRangeReadable(
+                    context, table,
+                    repiu::hle::kGlideFogTableEntryCount))
+            {
+                return decline_gate("fog-table-unreadable-memory");
+            }
+            std::memcpy(context->glide_state.fog_table.data(), table,
+                        context->glide_state.fog_table.size());
+            context->glide_state.fog_table_valid = true;
+            if (!context->glide_backend.SetFogTable(
+                    context->glide_state.fog_table))
+            {
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                return decline_gate("fog-table-backend-failure");
+            }
+            context->glide_backend_message = context->glide_backend.message();
             ++context->glide_gate_handled_count;
             win32_context->Eip = return_address;
             win32_context->Esp += 2U * sizeof(std::uint32_t);
             return true;
+        }
 
         case go::kGrConstantColorValue: // _GRCONSTANTCOLORVALUE@4
             // R4: retain the constant color so a later CONSTANT combine source can
@@ -2117,8 +2152,11 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         case go::kGrDrawTriangle: // _GRDRAWTRIANGLE@12
         {
             // Decode the confirmed 60-byte 2-TMU GrVertex fields: x/y (dwords 0/1),
-            // iterated color r/g/b/a in [0..255] (dwords 3/4/5/7), and TMU0 texture
-            // coordinates sow/tow (dwords 9/10). Color is normalized to [0,1].
+            // iterated color r/g/b/a in [0..255] (dwords 3/4/5/7), vertex oow
+            // (dword 8), and TMU0 sow/tow (dwords 9/10). Dwords 11..14 are
+            // variable in the captured 60-byte producer layout, so the
+            // observed non-projected texture path shares dword 8's oow for
+            // both perspective correction and table fog.
             Win32GlideTriangleObservation& triangle =
                 context->glide_first_triangle;
             if (!triangle.valid)
@@ -2194,6 +2232,11 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                 vertex.a = fields[7] / 255.0F;
                 vertex.s = fields[9];
                 vertex.t = fields[10];
+                vertex.fog_oow =
+                    std::isfinite(fields[8]) && fields[8] > 1.0e-20F
+                        ? fields[8]
+                        : 1.0F;
+                vertex.texture_oow = vertex.fog_oow;
             }
             static const bool draw_diagnostic_enabled =
                 std::getenv("REPIU_GLIDE_DRAW_DIAG") != nullptr;
@@ -2605,8 +2648,13 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                 bool encode_ok = false;
                 if (read_ok)
                 {
+                    const std::uint32_t lfb_color_format =
+                        type == repiu::hle::kGlideLfbWriteOnly
+                            ? context->glide_state.lfb_write_color_format
+                            : context->glide_state.color_format;
                     encode_ok = repiu::hle::EncodeRgba8ToGlideLfb565(
                         rgba8.data(), rgba8.size(), width, height,
+                        lfb_color_format,
                         context->glide_lfb_surface.pixels(),
                         context->glide_lfb_surface.byte_count());
                 }
@@ -2740,7 +2788,8 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                         context->glide_lfb_surface.pixels(),
                         context->glide_lfb_surface.byte_count(),
                         context->glide_lfb_surface.width(),
-                        context->glide_lfb_surface.height(), &rgba8))
+                        context->glide_lfb_surface.height(),
+                        context->glide_state.lfb_write_color_format, &rgba8))
                 {
                     const char* lfb_dump = std::getenv("REPIU_DUMP_LFB_BMP");
                     if (lfb_dump != nullptr && lfb_dump[0] == '1')
@@ -2779,6 +2828,8 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                                     context->glide_lfb_surface.height(), &after))
                             {
                                 std::size_t non_black = 0;
+                                std::size_t non_zero = 0;
+                                std::uint8_t maximum = 0U;
                                 for (std::size_t i = 0; i + 3U < after.size();
                                      i += 4U)
                                 {
@@ -2787,12 +2838,20 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                                     {
                                         ++non_black;
                                     }
+                                    if (after[i] != 0U || after[i + 1U] != 0U ||
+                                        after[i + 2U] != 0U)
+                                    {
+                                        ++non_zero;
+                                    }
+                                    maximum = (std::max)(maximum, after[i]);
+                                    maximum = (std::max)(maximum, after[i + 1U]);
+                                    maximum = (std::max)(maximum, after[i + 2U]);
                                 }
                                 fprintf(stderr,
                                         "[repiu-live-debug] LFB blit #%u back-buffer"
-                                        " non-black=%zu/%zu\n",
+                                        " visible=%zu/%zu nonzero=%zu max=%u\n",
                                         context->glide_lfb_present_count, non_black,
-                                        after.size() / 4U);
+                                        after.size() / 4U, non_zero, maximum);
                             }
                         }
                     }
@@ -2886,7 +2945,8 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                                     context->glide_lfb_surface.pixels(),
                                     context->glide_lfb_surface.byte_count(),
                                     context->glide_lfb_surface.width(),
-                                    context->glide_lfb_surface.height(), &rgba8))
+                                    context->glide_lfb_surface.height(),
+                                    repiu::hle::kGlideColorFormatArgb, &rgba8))
                             {
                                 record_backend_failure(
                                     "lfb-write-region-decode-failure",

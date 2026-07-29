@@ -8,6 +8,7 @@
 #include <SDL3/SDL_opengl.h>
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -729,7 +730,16 @@ bool GlideOpenGlBackend::DrawTriangle(const GlideDrawVertex& a,
         glColor4f(vertex->r, vertex->g, vertex->b, vertex->a);
         if (sample_texture)
         {
-            glTexCoord2f(vertex->s * inv_w, vertex->t * inv_h);
+            // Pack normalized sow/tow and the shared texture/fog oow. Because
+            // orthographic clip w is constant, the shader receives linearly
+            // interpolated numerators and reciprocal-w and performs the Glide
+            // perspective divide per fragment.
+            glTexCoord4f(vertex->s * inv_w, vertex->t * inv_h,
+                         vertex->fog_oow, vertex->texture_oow);
+        }
+        else
+        {
+            glTexCoord4f(0.0F, 0.0F, vertex->fog_oow, 1.0F);
         }
         glVertex3f(vertex->x, vertex->y, 0.0F);
     }
@@ -951,6 +961,8 @@ bool GlideOpenGlBackend::PresentLfbSurface(const std::uint8_t* rgba8,
         return false;
     }
 
+    GLint previous_texture = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previous_texture);
     if (lfb_texture_ == 0U)
     {
         GLuint name = 0;
@@ -972,10 +984,20 @@ bool GlideOpenGlBackend::PresentLfbSurface(const std::uint8_t* rgba8,
     const GLboolean depth_was_enabled = glIsEnabled(GL_DEPTH_TEST);
     const GLboolean blend_was_enabled = glIsEnabled(GL_BLEND);
     const GLboolean cull_was_enabled = glIsEnabled(GL_CULL_FACE);
+    const GLboolean alpha_test_was_enabled = glIsEnabled(GL_ALPHA_TEST);
+    const GLboolean scissor_was_enabled = glIsEnabled(GL_SCISSOR_TEST);
+    GLboolean color_mask[4]{};
+    glGetBooleanv(GL_COLOR_WRITEMASK, color_mask);
+    GLint draw_buffer = GL_BACK;
+    glGetIntegerv(GL_DRAW_BUFFER, &draw_buffer);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_BLEND);
     glDisable(GL_CULL_FACE);
-    shader_.SetTextureEnabled(true);
+    glDisable(GL_ALPHA_TEST);
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDrawBuffer(GL_BACK);
+    shader_.SetBlitMode(true);
 
     // The orthographic projection installed at OpenWindowed already maps screen
     // pixels directly, so the quad spans the logical surface. Two independent
@@ -991,29 +1013,104 @@ bool GlideOpenGlBackend::PresentLfbSurface(const std::uint8_t* rgba8,
     const float bottom = static_cast<float>(logical_height_);
     glColor4f(1.0F, 1.0F, 1.0F, 1.0F);
     glBegin(GL_TRIANGLES);
-    glTexCoord2f(0.0F, top_v);    glVertex3f(0.0F, 0.0F, 0.0F);
-    glTexCoord2f(1.0F, top_v);    glVertex3f(right, 0.0F, 0.0F);
-    glTexCoord2f(1.0F, bottom_v); glVertex3f(right, bottom, 0.0F);
-    glTexCoord2f(0.0F, top_v);    glVertex3f(0.0F, 0.0F, 0.0F);
-    glTexCoord2f(1.0F, bottom_v); glVertex3f(right, bottom, 0.0F);
-    glTexCoord2f(0.0F, bottom_v); glVertex3f(0.0F, bottom, 0.0F);
+    glTexCoord4f(0.0F, top_v, 0.0F, 1.0F);    glVertex3f(0.0F, 0.0F, 0.0F);
+    glTexCoord4f(1.0F, top_v, 0.0F, 1.0F);    glVertex3f(right, 0.0F, 0.0F);
+    glTexCoord4f(1.0F, bottom_v, 0.0F, 1.0F); glVertex3f(right, bottom, 0.0F);
+    glTexCoord4f(0.0F, top_v, 0.0F, 1.0F);    glVertex3f(0.0F, 0.0F, 0.0F);
+    glTexCoord4f(1.0F, bottom_v, 0.0F, 1.0F); glVertex3f(right, bottom, 0.0F);
+    glTexCoord4f(0.0F, bottom_v, 0.0F, 1.0F); glVertex3f(0.0F, bottom, 0.0F);
     glEnd();
 
+    static std::atomic<long> lfb_diagnostic_count{0};
+    const long diagnostic_index = lfb_diagnostic_count.fetch_add(1) + 1;
+    if (std::getenv("REPIU_GLIDE_DRAW_DIAG") != nullptr &&
+        diagnostic_index <= 4)
+    {
+        std::size_t input_non_black = 0U;
+        std::size_t input_non_zero = 0U;
+        std::uint8_t maximum_red = 0U;
+        std::uint8_t maximum_green = 0U;
+        std::uint8_t maximum_blue = 0U;
+        for (std::size_t index = 0U;
+             index + 3U < static_cast<std::size_t>(width) * height * 4U;
+             index += 4U)
+        {
+            if (rgba8[index] > 8U || rgba8[index + 1U] > 8U ||
+                rgba8[index + 2U] > 8U)
+            {
+                ++input_non_black;
+            }
+            if (rgba8[index] != 0U || rgba8[index + 1U] != 0U ||
+                rgba8[index + 2U] != 0U)
+            {
+                ++input_non_zero;
+            }
+            maximum_red = (std::max)(maximum_red, rgba8[index]);
+            maximum_green = (std::max)(maximum_green, rgba8[index + 1U]);
+            maximum_blue = (std::max)(maximum_blue, rgba8[index + 2U]);
+        }
+        GLint viewport[4]{};
+        GLint current_program = 0;
+        GLint current_texture = 0;
+        GLfloat projection[16]{};
+        glGetIntegerv(GL_VIEWPORT, viewport);
+        glGetIntegerv(GL_CURRENT_PROGRAM, &current_program);
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &current_texture);
+        glGetFloatv(GL_PROJECTION_MATRIX, projection);
+        const std::size_t sample_width = static_cast<std::size_t>(viewport[2]);
+        const std::size_t sample_height = static_cast<std::size_t>(viewport[3]);
+        std::vector<std::uint8_t> pixels(sample_width * sample_height * 3U);
+        glReadBuffer(GL_BACK);
+        glReadPixels(viewport[0], viewport[1], viewport[2], viewport[3], GL_RGB,
+                     GL_UNSIGNED_BYTE, pixels.data());
+        std::size_t output_non_black = 0U;
+        std::size_t output_non_zero = 0U;
+        std::uint8_t output_maximum = 0U;
+        for (std::size_t index = 0U; index + 2U < pixels.size(); index += 3U)
+        {
+            if (pixels[index] > 8U || pixels[index + 1U] > 8U ||
+                pixels[index + 2U] > 8U)
+            {
+                ++output_non_black;
+            }
+            if (pixels[index] != 0U || pixels[index + 1U] != 0U ||
+                pixels[index + 2U] != 0U)
+            {
+                ++output_non_zero;
+            }
+            output_maximum = (std::max)(output_maximum, pixels[index]);
+            output_maximum = (std::max)(output_maximum, pixels[index + 1U]);
+            output_maximum = (std::max)(output_maximum, pixels[index + 2U]);
+        }
+        fprintf(stderr,
+                "[repiu-live-debug] LFB draw #%ld input=%zu/%zu max=%u,%u,%u"
+                " viewport=%d,%d,%d,%d"
+                " program=%d texture=%d projection=%g,%g,%g,%g"
+                " output=%zu/%zu nonzero=%zu max=%u\n",
+                diagnostic_index, input_non_black, input_non_zero,
+                maximum_red, maximum_green, maximum_blue, viewport[0],
+                viewport[1], viewport[2], viewport[3], current_program, current_texture,
+                projection[0], projection[5], projection[12], projection[13],
+                output_non_black, sample_width * sample_height,
+                output_non_zero, output_maximum);
+    }
+
+    shader_.SetBlitMode(false);
     shader_.SetTextureEnabled(texture_combine_enabled_);
+    glDrawBuffer(static_cast<GLenum>(draw_buffer));
+    glColorMask(color_mask[0], color_mask[1], color_mask[2], color_mask[3]);
     if (depth_was_enabled) glEnable(GL_DEPTH_TEST);
     if (blend_was_enabled) glEnable(GL_BLEND);
     if (cull_was_enabled) glEnable(GL_CULL_FACE);
+    if (alpha_test_was_enabled) glEnable(GL_ALPHA_TEST);
+    if (scissor_was_enabled) glEnable(GL_SCISSOR_TEST);
 
     if (present_to_front)
     {
         BufferSwap(0);
     }
 
-    // Leave the geometry texture binding as the game left it.
-    if (current_texture_ != nullptr && current_texture_->gl_name != 0U)
-    {
-        glBindTexture(GL_TEXTURE_2D, current_texture_->gl_name);
-    }
+    glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previous_texture));
     message_ = "Glide LFB surface presented";
     return glGetError() == GL_NO_ERROR;
 #endif
@@ -1501,19 +1598,85 @@ bool GlideOpenGlBackend::SetFogMode(std::uint32_t mode)
 #if !defined(_WIN32)
     return false;
 #else
-    if (!is_open() || mode != 0U)
+    if (!is_open() || (mode != 0U && mode != 2U))
     {
         message_ = "unsupported Glide fog mode";
         return false;
     }
     if (dummy_mode_)
     {
-        message_ = "Glide fog disabled (dummy)";
+        message_ = mode == 0U
+            ? "Glide fog disabled (dummy)"
+            : "Glide table fog enabled (dummy)";
         return true;
     }
     glDisable(GL_FOG);
-    message_ = "Glide fog disabled in OpenGL";
-    return glGetError() == GL_NO_ERROR;
+    const bool applied = shader_.SetFogMode(mode);
+    message_ = applied
+        ? (mode == 0U ? "Glide fog disabled in GLSL"
+                      : "Glide table fog enabled in GLSL")
+        : "failed to apply Glide fog mode to GLSL";
+    return applied && glGetError() == GL_NO_ERROR;
+#endif
+}
+
+bool GlideOpenGlBackend::SetFogColor(std::uint32_t argb)
+{
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, argb, &result]() {
+            result = SetFogColor(argb);
+        });
+        return result;
+    }
+#if !defined(_WIN32)
+    return false;
+#else
+    if (!is_open())
+    {
+        message_ = "cannot set Glide fog color without an OpenGL window";
+        return false;
+    }
+    if (dummy_mode_)
+    {
+        message_ = "Glide fog color applied (dummy)";
+        return true;
+    }
+    const bool applied = shader_.SetFogColor(argb);
+    message_ = applied ? "Glide fog color applied to GLSL"
+                       : "failed to apply Glide fog color to GLSL";
+    return applied;
+#endif
+}
+
+bool GlideOpenGlBackend::SetFogTable(const hle::GlideFogTable& table)
+{
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, &table, &result]() {
+            result = SetFogTable(table);
+        });
+        return result;
+    }
+#if !defined(_WIN32)
+    return false;
+#else
+    if (!is_open())
+    {
+        message_ = "cannot set Glide fog table without an OpenGL window";
+        return false;
+    }
+    if (dummy_mode_)
+    {
+        message_ = "Glide fog table applied (dummy)";
+        return true;
+    }
+    const bool applied = shader_.SetFogTable(table);
+    message_ = applied ? "Glide fog table applied to GLSL"
+                       : "failed to apply Glide fog table to GLSL";
+    return applied;
 #endif
 }
 

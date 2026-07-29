@@ -38,6 +38,13 @@ constexpr std::uint32_t kGlideOriginLowerLeft = 1U;
 // GrLfbSrcFmt_t
 constexpr std::uint32_t kGlideLfbSrcFmt565 = 1U;
 
+// GrColorFormat_t. For 565 LFB locks, ARGB/RGBA select RGB565 while
+// ABGR/BGRA select BGR565 (Glide 2.4 Programming Guide, Table 11.2).
+constexpr std::uint32_t kGlideColorFormatArgb = 0U;
+constexpr std::uint32_t kGlideColorFormatAbgr = 1U;
+constexpr std::uint32_t kGlideColorFormatRgba = 2U;
+constexpr std::uint32_t kGlideColorFormatBgra = 3U;
+
 // GrLfbInfo_t is five 32-bit fields: size, lfbPtr, strideInBytes, writeMode,
 // origin. The caller fills `size` with sizeof(GrLfbInfo_t) before the call.
 constexpr std::size_t kGlideLfbInfoByteCount = 20U;
@@ -101,18 +108,21 @@ bool BuildGlideLfbInfoImage(std::uint32_t size,
                             std::uint8_t* image,
                             std::size_t image_byte_count);
 
-// GR_LFBWRITEMODE_565 -> RGBA8. Alpha is opaque: 565 carries no alpha channel.
+// GR_LFBWRITEMODE_565 -> RGBA8. `color_format` controls whether the outer
+// five-bit channels are RGB or BGR. Alpha is opaque: 565 carries no alpha.
 bool DecodeGlideLfb565ToRgba8(const std::uint8_t* source,
                               std::size_t source_byte_count,
                               std::uint32_t width,
                               std::uint32_t height,
+                              std::uint32_t color_format,
                               std::vector<std::uint8_t>* rgba8);
 
-// RGBA8 -> GR_LFBWRITEMODE_565, used to seed a read lock from the framebuffer.
+// RGBA8 -> GR_LFBWRITEMODE_565, used to seed a lock from the framebuffer.
 bool EncodeRgba8ToGlideLfb565(const std::uint8_t* rgba8,
                               std::size_t rgba8_byte_count,
                               std::uint32_t width,
                               std::uint32_t height,
+                              std::uint32_t color_format,
                               std::uint8_t* destination,
                               std::size_t destination_byte_count);
 

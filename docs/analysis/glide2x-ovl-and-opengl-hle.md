@@ -623,3 +623,97 @@ for every texture, making the observed uniform `0x2000` texture spacing a functi
 output rather than evidence about the game. Rejected: the no-op point/line/polygon paths (never
 called), missing texture bindings (no misses), texture decode faults (the sprite decodes
 correctly), and the `datas\texture` chdir failure (absent from the original CHD).
+
+## 배경 원근 좌표·table fog·LFB 재검증 (2026-07-30 Task 359) / Background Perspective, Table Fog, and LFB Revalidation
+
+**확인됨:** 최신 frame dump에는 유효한 256×256 texture를 사용하는 전체 화면 크기
+삼각형이 존재합니다. 따라서 Task 259의 “최대 232×39이고 배경 draw가 없다”는 결론은
+당시 관측 구간에만 유효하며 현재 attract 경로에는 적용할 수 없습니다. asset 부재나
+missing texture source가 현재 체크무늬 배경 결함의 주원인이라는 가설은 기각합니다.
+
+**확인됨:** PIU의 60-byte producer에서 dword 8은 공용 `oow`, dword 9/10은 TMU0
+`sow/tow`입니다. dword 11..14는 표본마다 정크를 포함해 가변하므로 유효한 TMU
+reciprocal-w로 해석하지 않습니다. 공용 `oow`를 분자와 함께 보간하고 fragment에서
+나누도록 바꾼 28초 smoke에서 전체 화면 texture quad의 12번째 triangle 뒤 back-buffer
+비검정 픽셀은 `73,939/307,200`이었습니다. 이 결과는 background geometry와 texture가
+실제 rasterize됨을 확인하지만, 사용자 원본 캡처와 픽셀 단위로 일치한다는 증명은
+아닙니다.
+
+**확인됨:** `_GRFOGMODE@4`는 초기 gate 표본에서 반복 호출되며 새 backend는 관측된
+mode 0과 mode 2를 처리합니다. Task 359 smoke에는 `fog-mode-backend` 또는 unsupported
+fog record가 없습니다. `grFogTable`과 `grFogColorValue`의 실제 attract 표본은 이번
+짧은 구동에서 별도로 관측되지 않았으므로 table/color의 guest end-to-end 경로는
+합성 fog knot/interpolation probe로 검증했습니다.
+
+**확인됨:** LFB 565 staging은 세 번째 unlock에서 `19,224/614,400` non-zero bytes,
+이후 `53,052/614,400`까지 증가합니다. 같은 RGBA 변환 결과의 BMP는 최신 표본에서
+`30,858` nonblack pixels와 `(200,0)..(442,398)` bounding box를 가지므로 CPU decode가
+검은 이미지를 만든다는 가설은 기각됩니다. 알려진 RGBA 표면을 직접 넣는
+`repiu_glide_render_probe --opengl-lfb`도 shader bypass와 back-buffer readback을
+통과합니다.
+
+**확인됨:** 기존 `non-black` 진단은 RGB 채널이 8보다 큰 픽셀만 세어 fade 초기
+LFB를 검정으로 오판했습니다. 세 번째 blit 입력은 `19,224`개 nonzero pixel과 최대
+채널값 4를 가지며, 2배 drawable 출력은 정확히 4배인 `76,896`개 nonzero pixel과
+동일 최대값 4를 가집니다. 네 번째 입력 `23,148`, 최대 8도 출력 `92,592`, 최대 8로
+보존됩니다. viewport `1280×960`, program/texture binding, projection도 유효했습니다.
+따라서 game-thread/host-thread LFB blit는 저휘도 입력을 실제 back buffer로 복사하며,
+이전 `0/307,200`은 `>8` visibility threshold의 측정 해석 오류입니다.
+
+**Confirmed:** the current frame dump contains full-screen triangles using a
+valid 256x256 texture. This supersedes Task 259's observation that no draw was
+larger than 232x39 for the currently reached attract path, rejecting missing
+assets or texture sources as the primary background fault. PIU's 60-byte
+producer uses dword 8 as shared `oow` and dwords 9/10 as TMU0 `sow/tow`;
+dwords 11--14 remain variable and unconfirmed. With shared `oow` interpolated
+and divided per fragment, the twelfth full-screen triangle leaves
+73,939/307,200 nonblack back-buffer pixels. This proves rasterization, not
+pixel-identical agreement with the reference capture.
+
+Observed fog modes 0 and 2 no longer produce a fog backend/unsupported record.
+The short smoke did not separately observe `grFogTable` or `grFogColorValue`,
+so copied table/color end-to-end coverage remains synthetic through the knot,
+interpolation, and clamp probe.
+
+The third LFB unlock contains 19,224/614,400 nonzero staging bytes and later
+unlocks reach 53,052/614,400. Its decoded BMP has 30,858 nonblack pixels in a
+nonempty bounding box, and `repiu_glide_render_probe --opengl-lfb` proves the
+dedicated shader bypass can copy a known RGBA surface to the back buffer. The
+old `non-black` diagnostic counted only channels above 8 and therefore
+misclassified the initial fade as black. The third real-game blit has 19,224
+nonzero input pixels at maximum channel 4 and produces exactly 76,896 nonzero
+pixels at maximum 4 in the 2x drawable. The fourth maps 23,148 pixels at
+maximum 8 to 92,592 at maximum 8. Real game-thread/host-thread LFB copying is
+therefore confirmed; the earlier 0/307,200 value was a threshold-interpretation
+error.
+
+## LFB ABGR/BGR565 채널 순서 확인 (2026-07-30 Task 360) / LFB ABGR/BGR565 Channel Order
+
+**확인됨:** PIU는 `grSstWinOpen`의 `cFormat`과 `grLfbWriteColorFormat`에 모두
+`1`(`GR_COLORFORMAT_ABGR`)을 전달하고, 문제가 발생한 장면은 write-only
+`grLfbLock(..., GR_LFBWRITEMODE_565, ...)`으로 기록합니다. 일반 texture가 정상이고
+이 장면만 Blue/Cyan에서 Yellow로 바뀐다는 사용자 관측은 전역 texture decode가 아니라
+LFB Red/Blue 교환으로 범위를 한정합니다.
+
+**확인됨:** Glide 2.4 Programming Guide Table 11.2에서 ABGR/BGRA의 565 LFB 배치는
+bits 15..11 Blue, bits 10..5 Green, bits 4..0 Red입니다. 기존 HLE는 이를 항상
+RGB565로 decode/encode했습니다. 같은 `0xF800`은 RGB 순서에서 Red이지만 ABGR/BGR
+순서에서는 Blue이며, Cyan은 BGR565 `0xFFE0`입니다.
+
+**검증됨:** color-format 인식 변환 probe에서 RGB/BGR pure red/blue와 Cyan
+encode/decode 왕복이 통과했습니다. 35초 실제 `aot-dbt` smoke는
+`grLfbWriteColorFormat(1)` 뒤 565 lock/unlock을 반복했고 fatal/backend failure 없이
+supervisor 제한으로 종료됐습니다. 수정 후 dump 245의 전체 픽셀 통계는 평균
+RGB `11.45/74.36/82.47`, Blue/Cyan 우세 `115,200`, Yellow 우세 `0`이며 대표색
+`(33,251,255)`입니다. 따라서 LFB 채널 교환 원인과 수정 효과가 실제 guest write
+경로에서 확인됐습니다.
+
+**Confirmed:** PIU passes `GR_COLORFORMAT_ABGR` to both `grSstWinOpen` and
+`grLfbWriteColorFormat`, and the affected scene uses a write-only 565 LFB lock.
+Glide 2.4 Table 11.2 defines that lock as BGR565 (Blue high, Red low), while
+the old HLE always used RGB565. Synthetic red/blue and cyan round trips pass
+after making conversion color-format aware. A 35-second real-game smoke
+repeated the format-1 565 lock/unlock path without fatal/backend failure. Full
+statistics for corrected dump 245 are mean RGB `11.45/74.36/82.47`, 115,200
+blue/cyan-dominant pixels, zero yellow-dominant pixels, and dominant color
+`(33,251,255)`, confirming the fix on guest-written data.

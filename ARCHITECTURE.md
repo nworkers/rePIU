@@ -67,11 +67,11 @@ The first implementation target is a non-executing analysis tool for `MASTER\PIU
 * `VirtualGlideModule`: `glide2x.ovl`의 hardware code를 실행하지 않고 LINEXE handle과 asset-validated export gate를 제공한다.
 * `GlideGateDispatcher`: `{linear address, client CS}` procedure pointer를 제공하고 ordinal별 trap에서 guest stdcall ABI를 해석한다. 현재 init/query/select까지 관찰 기반 최소 의미를 제공하며 `grSstWinOpen` presentation 정책이 다음 경계다.
 * `GlideHle` (`include/repiu/hle/glide_hle.h`, `src/hle/glide_hle.cpp`): asset-derived export registry, ordinal gate image, decorated argument size, resolution decoding과 플랫폼 공용 논리 상태를 담당한다.
-* `Win32GlideOpenGlBackend` (`include/repiu/platform/win32/glide_opengl_backend.h`, `src/platform/win32/glide_opengl_backend.cpp`): SDL3 resizable host window, OpenGL context, 초기 clear와 event pump를 담당한다. Glide 논리 해상도는 640×480으로 유지하고 host window는 기본 2배이며 `Alt+1..4`로 1–4배를 선택한다. 실행기 메인 스레드가 SDL video/GL을 소유하고 게스트 작업 스레드의 Glide 호출은 동기 명령 큐로 전달된다.
+* `Win32GlideOpenGlBackend` (`include/repiu/platform/win32/glide_opengl_backend.h`, `src/platform/win32/glide_opengl_backend.cpp`): SDL3 resizable host window, OpenGL context, texture cache, GLSL combine/perspective/fog, LFB presentation과 event pump를 담당한다. Glide 논리 해상도는 640×480으로 유지하고 host window는 기본 2배이며 `Alt+1..4`로 1–4배를 선택한다. 실행기 메인 스레드가 SDL video/GL을 소유하고 게스트 작업 스레드의 Glide 호출은 동기 명령 큐로 전달된다.
 * `Win32ExecutionTrampoline`은 Glide 구현을 직접 소유하지 않고 guest stack/register ABI를 공용 Glide HLE와 platform backend에 연결한다.
 * `GlideSignatureCatalog`: 실제 관찰된 API의 stack byte count와 void/EAX/x87 반환 kind를 중앙에서 관리하며 asset `@N`과 교차 검증한다.
 * `GlideLogicalState`는 lazy OpenGL texture object와 독립적으로 8 MiB virtual TMU 범위(`0..0x007FFFF8`)와 LFB pixel-format 상태를 보존한다.
-* `GlideLfb` (`include/repiu/hle/glide_lfb.h`, `src/hle/glide_lfb.cpp`): LFB staging surface, `GrLfbInfo_t` 직렬화, 565↔RGBA8 변환을 담당하는 플랫폼 공용 계층이다. `grLfbLock`은 게스트가 네이티브 명령으로 직접 기록할 실제 주소를 건네므로, HLE 경계가 함수가 아니라 **메모리 표면**이 되는 유일한 Glide 경로다. staging buffer는 아레나가 아닌 호스트 소유 할당이며(게스트는 flat DS로 네이티브 실행), 모든 lock에서 현재 framebuffer로 seeding해 write lock이 기존 화면을 지우지 않게 한다.
+* `GlideLfb` (`include/repiu/hle/glide_lfb.h`, `src/hle/glide_lfb.cpp`): LFB staging surface, `GrLfbInfo_t` 직렬화, color-format 인식 565↔RGBA8 변환을 담당하는 플랫폼 공용 계층이다. `grLfbLock`은 게스트가 네이티브 명령으로 직접 기록할 실제 주소를 건네므로, HLE 경계가 함수가 아니라 **메모리 표면**이 되는 유일한 Glide 경로다. staging buffer는 아레나가 아닌 호스트 소유 할당이며(게스트는 flat DS로 네이티브 실행), 모든 lock에서 현재 framebuffer로 seeding해 write lock이 기존 화면을 지우지 않게 한다. ARGB/RGBA lock은 RGB565, ABGR/BGRA lock은 BGR565로 encode/decode하며 `grSstWinOpen`의 color format을 기본값으로, `grLfbWriteColorFormat` 상태를 write lock override로 사용한다.
 * Glide 텍스처 크기 규약(`GrLOD_t`는 열거값이며 `GR_LOD_256`=0)은 `docs/kb/glide-texture-lod-and-formats.md`에서 관리한다. `grTexTextureMemRequired`의 반환값은 게스트가 자기 TMU 배치를 결정하는 입력이므로 정확성이 게스트 동작에 직접 전파된다.
 * `Win32X87Context` (`include/repiu/platform/win32/x87_context.h`, `src/platform/win32/x87_context.cpp`): SEH `CONTEXT`의 x87 TOP/tag/80-bit register를 갱신하여 guest float 반환을 독립적으로 처리한다.
 
@@ -148,11 +148,11 @@ Planned major modules:
 * `VirtualGlideModule`: exposes a LINEXE handle and asset-validated export gates without executing `glide2x.ovl` hardware code.
 * `GlideGateDispatcher`: returns `{linear address, client CS}` procedure pointers and decodes guest stdcall ABI at ordinal traps. Observation-backed init/query/select semantics are present; `grSstWinOpen` presentation policy is the next boundary.
 * `GlideHle` (`include/repiu/hle/glide_hle.h`, `src/hle/glide_hle.cpp`) owns the asset-derived export registry, ordinal gate image, decorated argument sizes, resolution decoding, and platform-neutral logical state.
-* `Win32GlideOpenGlBackend` (`include/repiu/platform/win32/glide_opengl_backend.h`, `src/platform/win32/glide_opengl_backend.cpp`) owns the SDL3 resizable host window, OpenGL context, initial clear, and event pump. Glide remains logically 640×480, while the host window defaults to 2× and `Alt+1..4` selects 1×–4×. The executor main thread owns SDL video/GL, and synchronous commands carry guest-worker Glide calls to it.
+* `Win32GlideOpenGlBackend` (`include/repiu/platform/win32/glide_opengl_backend.h`, `src/platform/win32/glide_opengl_backend.cpp`) owns the SDL3 resizable host window, OpenGL context, texture cache, GLSL combine/perspective/fog, LFB presentation, and event pump. Glide remains logically 640×480, while the host window defaults to 2× and `Alt+1..4` selects 1×–4×. The executor main thread owns SDL video/GL, and synchronous commands carry guest-worker Glide calls to it.
 * `Win32ExecutionTrampoline` does not own Glide implementation details; it connects guest stack/register ABI to shared Glide HLE and the platform backend.
 * `GlideSignatureCatalog` centrally records observed API stack-byte counts and void/EAX/x87 return kinds, cross-checked against asset `@N` metadata.
 * `GlideLogicalState` exposes an 8 MiB virtual TMU range (`0..0x007FFFF8`) independently of lazy OpenGL texture objects and retains LFB pixel-format state.
-* `GlideLfb` (`include/repiu/hle/glide_lfb.h`, `src/hle/glide_lfb.cpp`) is the platform-neutral LFB layer: staging surface, `GrLfbInfo_t` serialization, and 565↔RGBA8 conversion. `grLfbLock` hands the guest a real address it writes with native instructions, making this the one Glide path whose HLE boundary is a **memory surface** rather than a function. The staging buffer is a host-owned allocation rather than an arena carve (the guest executes natively under a flat DS) and is seeded from the current framebuffer on every lock so a write lock never erases existing content.
+* `GlideLfb` (`include/repiu/hle/glide_lfb.h`, `src/hle/glide_lfb.cpp`) is the platform-neutral LFB layer: staging surface, `GrLfbInfo_t` serialization, and color-format-aware 565↔RGBA8 conversion. `grLfbLock` hands the guest a real address it writes with native instructions, making this the one Glide path whose HLE boundary is a **memory surface** rather than a function. The staging buffer is a host-owned allocation rather than an arena carve (the guest executes natively under a flat DS) and is seeded from the current framebuffer on every lock so a write lock never erases existing content. ARGB/RGBA locks encode and decode RGB565, while ABGR/BGRA locks use BGR565; `grSstWinOpen` supplies the default and `grLfbWriteColorFormat` overrides write-lock state.
 * Glide texture sizing rules (`GrLOD_t` is an enumeration with `GR_LOD_256` = 0) are maintained in `docs/kb/glide-texture-lod-and-formats.md`. `grTexTextureMemRequired`'s return value is an input to the guest's own TMU layout, so its accuracy propagates directly into guest behavior.
 * `Win32X87Context` (`include/repiu/platform/win32/x87_context.h`, `src/platform/win32/x87_context.cpp`) independently updates x87 TOP, tags, and 80-bit registers in an SEH `CONTEXT` for guest float returns.
 
@@ -211,7 +211,48 @@ Glide2 state save/restore uses a fixed 312-byte platform-neutral image. Shared H
 
 Observed dither mode 2 is stored in `GlideLogicalState`, serialized in state-image version 2, and delegated to host `GL_DITHER`. This is a compatibility stage, not a pixel-fidelity claim. A future replaceable shader policy may implement verified Voodoo ordered dithering without changing guest ABI integration.
 
-_GRTEXTEXTUREMEMREQUIRED@8 is modeled as a platform-neutral calculation over the guest GrTexInfo fields, returning a validated, eight-byte-aligned texture size in EAX. Texture upload, source, sampler and combine calls currently preserve their observed stdcall ABI as rendering-boundary no-ops; they do not claim texture-image fidelity. This keeps the original guest logic executing while a replaceable OpenGL texture backend remains future work.
+### 원근 텍스처와 table fog 계약 (Task 359)
+
+PIU의 확인된 60-byte `GrVertex` producer에서 dword 8은 공용 `oow`, dword 9/10은
+TMU0 `sow/tow`입니다. boundary는 이 값을 `GlideDrawVertex`에 분리해 전달하고,
+backend는 `sow/tow`만 Glide coordinate extent로 정규화합니다. vertex shader가
+분자와 공용 `oow`를 선형 보간한 뒤 fragment shader가 UV를 `oow`로 나누므로,
+직교 host projection을 유지하면서 원본 Glide의 perspective correction을 보존합니다.
+dword 11..14는 PIU 표본에서 아직 유효한 per-TMU reciprocal-w로 확인되지 않았으므로
+projected-texture 증거가 생기기 전에는 사용하지 않습니다.
+
+`GlideLogicalState`는 `grFogTable`의 64바이트를 즉시 복사하며, 플랫폼 공용
+`glide_fog`가 공식 `W(i)` knot와 선형 보간을 정의합니다. Win32 shader는 관측된
+`GR_FOG_DISABLE`과 `GR_FOG_WITH_TABLE`만 지원하고, fog color와 table을 uniform으로
+소유합니다. LFB 표시는 같은 shader의 전용 blit mode로 geometry combine/fog를
+bypass하고 depth, blend, cull, alpha test, scissor, color mask, draw buffer, texture
+binding을 일시 격리합니다.
+
+### Perspective texture and table-fog contract (Task 359)
+
+In PIU's confirmed 60-byte `GrVertex` producer, dword 8 is shared `oow` and
+dwords 9/10 are TMU0 `sow/tow`. The boundary carries them separately in
+`GlideDrawVertex`, and the backend normalizes only `sow/tow` by the Glide
+coordinate extent. The vertex shader linearly interpolates the numerators and
+shared `oow`; the fragment shader divides UV by `oow`, preserving Glide
+perspective correction under the host's orthographic projection. Dwords 11--14
+remain unused until producer evidence confirms a projected-texture layout.
+
+`GlideLogicalState` immediately copies the 64 bytes passed to `grFogTable`, and
+platform-neutral `glide_fog` defines the documented `W(i)` knots and linear
+interpolation. The Win32 shader supports the observed `GR_FOG_DISABLE` and
+`GR_FOG_WITH_TABLE` modes and owns fog color/table uniforms. LFB presentation
+uses a dedicated shader blit mode that bypasses geometry combine/fog while
+temporarily isolating depth, blend, cull, alpha test, scissor, color mask, draw
+buffer, and texture binding.
+
+`_GRTEXTEXTUREMEMREQUIRED@8`는 guest `GrTexInfo`를 읽는 플랫폼 공용 계산으로 모델링하며 검증된 8-byte 정렬 texture 크기를 EAX로 반환합니다. 관측된 texture download/source/sampler/combine 호출은 OpenGL texture cache와 GLSL sampler/combine으로 연결됩니다. 미관측 포맷과 projected-texture layout은 검증 증거 없이 지원으로 확장하지 않습니다.
+
+`_GRTEXTEXTUREMEMREQUIRED@8` is modeled as a platform-neutral calculation over
+guest `GrTexInfo`, returning a validated eight-byte-aligned texture size in
+EAX. Observed texture download/source/sampler/combine calls feed the OpenGL
+texture cache and GLSL sampler/combine path. Unobserved formats and the
+projected-texture layout are not claimed without validation evidence.
 
 ## Win32 로더 앱 배치
 

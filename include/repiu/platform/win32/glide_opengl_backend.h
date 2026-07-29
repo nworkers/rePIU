@@ -23,7 +23,9 @@ namespace repiu::platform::win32
 {
 
 // Decoded Glide draw vertex in platform-neutral form: screen-space position,
-// iterated color in [0,1], and TMU0 texture coordinates in texel space.
+// iterated color in [0,1], and reciprocal-w inputs decoded from the observed
+// fixed 60-byte Glide 2 producer ABI. The current non-projected path shares
+// the same oow for texture correction and fog.
 struct GlideDrawVertex
 {
     float x = 0.0F;
@@ -34,6 +36,8 @@ struct GlideDrawVertex
     float a = 1.0F;
     float s = 0.0F;
     float t = 0.0F;
+    float fog_oow = 1.0F;
+    float texture_oow = 1.0F;
 };
 
 class GlideOpenGlBackend
@@ -107,6 +111,8 @@ public:
     bool SetAlphaTestReferenceValue(std::uint32_t reference_value);
     bool SetDepthBufferFunction(std::uint32_t function);
     bool SetFogMode(std::uint32_t mode);
+    bool SetFogColor(std::uint32_t argb);
+    bool SetFogTable(const hle::GlideFogTable& table);
     bool SetClipWindow(std::uint32_t min_x,
                        std::uint32_t min_y,
                        std::uint32_t max_x,

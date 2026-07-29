@@ -101,6 +101,22 @@ PIU는 **`ABGR`(1)** 을 선택한다. 변환 없이 ARGB로 읽으면 빨강과
 회색·흰색 상수는 대칭이라 증상이 드러나지 않으므로, **무채색만 관측하고 "색은
 정상"이라고 판단하면 안 된다.** 텍스처 포맷(`GrTextureFormat_t`)과는 별개다.
 
+## LFB 565 — 같은 565라도 cFormat에 따라 RGB/BGR이 바뀐다
+
+`GR_LFBWRITEMODE_565`는 언제나 고정된 RGB565가 아닙니다. Glide 2.4 Programming
+Guide Table 11.2에 따르면 `grSstWinOpen`의 `cFormat`이 ARGB/RGBA이면 상위 5비트가
+Red이고, ABGR/BGRA이면 상위 5비트가 Blue입니다.
+
+| color format | bits 15..11 | bits 10..5 | bits 4..0 |
+|---|---|---|---|
+| ARGB/RGBA | Red | Green | Blue |
+| ABGR/BGRA | Blue | Green | Red |
+
+따라서 PIU의 `ABGR(1)` write lock은 **BGR565**입니다. 이를 texture의
+`GR_TEXFMT_RGB_565`와 같은 방식으로 디코드하면 Blue와 Red가 교환되어 청록색이
+노란색으로 보입니다. 반면 `grLfbWriteRegion(GR_LFB_SRC_FMT_565)`의 source image는
+명시적인 RGB565이므로 lock의 물리 배치와 구분해야 합니다.
+
 ## grTexTextureMemRequired — 게스트가 이 답으로 할당한다
 
 이 함수는 단순 질의가 아니다. 게임은 반환값으로 **자기 TMU 주소 공간을 배치**하므로,
@@ -142,6 +158,35 @@ expand5(v) = (v << 3) | (v >> 2)
 expand6(v) = (v << 2) | (v >> 4)
 ```
 
+## `sow/tow/oow` 원근 보정
+
+Glide의 `sow`와 `tow`는 이미 나눗셈이 끝난 일반 UV가 아니라 각각 `s/w`, `t/w`인
+분자입니다. rasterizer는 정점 사이에서 이 두 값과 `oow = 1/w`를 보간하고 픽셀마다
+`s = sow/oow`, `t = tow/oow`를 복원합니다. 따라서 화면 공간 삼각형을 직교 투영하는
+host backend라도 `sow/tow`를 정점에서 미리 나누거나 `oow`를 버리면 perspective가
+사라집니다.
+
+공식 구조는 texture mapping 종류에 따라 공용 또는 TMU별 reciprocal-w를 기술할 수
+있지만, PIU의 현재 확인된 60-byte producer layout에서는 dword 8이 공용 `oow`, dword
+9/10이 TMU0 `sow/tow`이고 dword 11..14는 가변·미확정입니다. 관측된 non-projected
+경로는 공용 `oow`를 texture와 table fog에 함께 사용합니다. 미확정 필드는 실제
+projected-texture producer 증거가 나오기 전까지 per-TMU `oow`로 간주하지 않습니다.
+
+## Perspective correction with `sow/tow/oow`
+
+Glide `sow` and `tow` are the numerators `s/w` and `t/w`, not final UVs. The
+rasterizer interpolates them together with `oow = 1/w` and reconstructs
+`s = sow/oow` and `t = tow/oow` per pixel. A host backend using an orthographic
+screen-space projection must still retain that divide; discarding `oow` removes
+perspective correction.
+
+The official layout can describe shared or per-TMU reciprocal-w depending on
+the texture path. In PIU's currently confirmed 60-byte producer, dword 8 is
+shared `oow`, dwords 9/10 are TMU0 `sow/tow`, and dwords 11--14 are variable and
+unconfirmed. The observed non-projected path shares dword 8 between texture
+correction and table fog. Unconfirmed fields must not be labeled per-TMU `oow`
+until a projected-texture producer trace establishes that contract.
+
 ## 외부 근거 / References
 
 * [3Dfx Glide 2.4 Reference Manual](https://www.bitsavers.org/components/3dfx/Glide_Reference_Manual_2.4_199707.pdf) — `GrLOD_t`, `GrAspectRatio_t`, `GrTextureFormat_t`, `grTexTextureMemRequired`, `grTexDownloadMipMapLevel`
@@ -176,6 +221,13 @@ verifying the convention requires a sample from a smaller map.
 those values as ARGB swaps red and blue. Grey and white constants are symmetric
 and hide the fault, so observing only achromatic values proves nothing about it.
 This is independent of `GrTextureFormat_t`.
+
+LFB 565 packing is also controlled by the color format. ARGB/RGBA places Red
+in bits 15..11 and Blue in bits 4..0, while ABGR/BGRA places Blue high and Red
+low. PIU's ABGR write locks are therefore BGR565; treating them like
+`GR_TEXFMT_RGB_565` swaps blue and red and turns cyan into yellow. The explicit
+`GR_LFB_SRC_FMT_565` image accepted by `grLfbWriteRegion` remains a separate
+RGB565 source-format contract.
 
 `grTexTextureMemRequired` is not a passive query — the guest lays out its own TMU
 address space from the answer, so a wrong result propagates into guest behavior
