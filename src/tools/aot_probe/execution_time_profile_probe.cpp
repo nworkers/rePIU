@@ -197,8 +197,33 @@ bool RunExecutionTimeProfileProbe()
         handler_axis <= transfer_total &&
         function_axis <= transfer_total;
 
+    auto completed_profile = std::make_unique<Win32ExecutionTimeProfile>();
+    std::uint64_t completed_cycles = 0U;
+    {
+        const ExecutionTimeScope completed(
+            completed_profile.get(),
+            ExecutionTimeBucket::kGlideGate,
+            &completed_cycles);
+        (void)completed;
+    }
+    const Win32ExecutionTimeProfileSnapshot completed_snapshot =
+        SnapshotExecutionTimeProfile(*completed_profile);
+    std::uint64_t disabled_completed_cycles = 1U;
+    {
+        const ExecutionTimeScope completed(
+            nullptr,
+            ExecutionTimeBucket::kGlideGate,
+            &disabled_completed_cycles);
+        (void)completed;
+    }
+    const bool completed_output = completed_cycles != 0U &&
+        completed_cycles == completed_snapshot.cycles[
+            index_of(ExecutionTimeBucket::kGlideGate)] &&
+        disabled_completed_cycles == 0U;
+
     const bool all = policy && accumulation && depth_tracking &&
-        veh_decomposition && stable_indices && nested_axes && disabled;
+        veh_decomposition && stable_indices && nested_axes && disabled &&
+        completed_output;
 
     std::cout
         << "execution_time_profile_policy=" << (policy ? "true" : "false")
@@ -212,6 +237,8 @@ bool RunExecutionTimeProfileProbe()
         << (stable_indices ? "true" : "false")
         << "\nexecution_time_profile_nested_axes="
         << (nested_axes ? "true" : "false")
+        << "\nexecution_time_profile_completed_output="
+        << (completed_output ? "true" : "false")
         << "\nexecution_time_profile_disabled="
         << (disabled ? "true" : "false")
         << "\nexecution_time_profile_all=" << (all ? "true" : "false")

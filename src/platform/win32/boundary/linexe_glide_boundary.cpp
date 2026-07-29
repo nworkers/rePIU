@@ -37,6 +37,51 @@ bool GlideGatePumpEventsEnabled()
     return enabled;
 }
 
+class GlideOrdinalTimingScope
+{
+  public:
+    GlideOrdinalTimingScope(Win32GlideOrdinalTimingProfile* profile,
+                            GlideOpenGlBackend* backend,
+                            const std::uint64_t* gate_cycles)
+        : profile_(profile),
+          backend_(backend),
+          gate_cycles_(gate_cycles)
+    {
+    }
+
+    ~GlideOrdinalTimingScope()
+    {
+        if (!active_)
+        {
+            return;
+        }
+        RecordGlideOrdinalGateTime(
+            profile_, ordinal_, *gate_cycles_);
+        backend_->EndGlideOrdinalTiming();
+    }
+
+    void Begin(std::uint16_t ordinal)
+    {
+        if (profile_ == nullptr)
+        {
+            return;
+        }
+        ordinal_ = ordinal;
+        backend_->BeginGlideOrdinalTiming(profile_, ordinal_);
+        active_ = true;
+    }
+
+    GlideOrdinalTimingScope(const GlideOrdinalTimingScope&) = delete;
+    GlideOrdinalTimingScope& operator=(const GlideOrdinalTimingScope&) = delete;
+
+  private:
+    Win32GlideOrdinalTimingProfile* profile_ = nullptr;
+    std::uint16_t ordinal_ = 0;
+    GlideOpenGlBackend* backend_ = nullptr;
+    const std::uint64_t* gate_cycles_ = nullptr;
+    bool active_ = false;
+};
+
 std::array<std::uint32_t,
            repiu::hle::kGlideImplementationIssueArgumentCapacity>
 CaptureGlideImplementationIssueArguments(
@@ -615,9 +660,17 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
     // Task 323: measured after the cheap rejection so the bucket counts real
     // gate work only. This includes any wait on the SDL main-thread render
     // queue, which is exactly what the measurement needs to expose.
+    std::uint64_t ordinal_gate_cycles = 0U;
+    GlideOrdinalTimingScope ordinal_timing_scope(
+        GlideOrdinalTimingProfileEnabled()
+            ? &context->glide_ordinal_timing
+            : nullptr,
+        &context->glide_backend,
+        &ordinal_gate_cycles);
     const ExecutionTimeScope gate_time_scope(
         context->execution_time_profile.get(),
-        ExecutionTimeBucket::kGlideGate);
+        ExecutionTimeBucket::kGlideGate,
+        &ordinal_gate_cycles);
 
     const std::uint32_t gate_offset =
         static_cast<std::uint32_t>(win32_context->Eip) -
@@ -630,6 +683,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
     }
 
     using go = repiu::hle::GlideGateId;
+    ordinal_timing_scope.Begin(glide_export->ordinal);
 
     ++context->glide_gate_entry_count;
     // Task 335: pumping here costs a full host-thread rendezvous — measured at

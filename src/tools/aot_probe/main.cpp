@@ -18,7 +18,10 @@
 #include "aot_cache_address_index_probe.h"
 #include "execution_time_profile_probe.h"
 #include "glide_gate_timing_probe.h"
+#include "glide_ordinal_timing_probe.h"
+#include "glide_buffer_swap_timing_probe.h"
 #include "aot_worker_timing_probe.h"
+#include "aot_timer_source_profile_probe.h"
 #include "selector_guard_probe.h"
 #include "execution_backend_probe.h"
 #include "dbt_return_fallback_probe.h"
@@ -888,7 +891,19 @@ int main(int argc, char** argv)
     {
         return 1;
     }
+    if (!repiu::tools::RunAotTimerSourceProfileProbe())
+    {
+        return 1;
+    }
     if (!repiu::tools::RunGlideGateTimingProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunGlideOrdinalTimingProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunGlideBufferSwapTimingProbe())
     {
         return 1;
     }

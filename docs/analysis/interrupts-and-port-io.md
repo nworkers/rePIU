@@ -252,3 +252,75 @@ safe points, and the original ISR/IRETD path remain in force.
 approximately `4.167ms` cadence. A real 50-second `aot-dbt` run logged the
 exact configuration, continuously advanced heartbeat/dispatch/progress,
 reached Glide open/texture/draw/swap, and retained zero fatal events.
+
+## 2026-07-29 Task 347: 현재 성능 축의 타이머 비중
+
+**확인됨:** 현재 Release 60초 3회 모두 divisor `4,972`, `240Hz`를 기록했습니다.
+타이머 safe-point trap은 5,535~5,539회(중앙값 5,537)이며 전체 breakpoint의
+2.78~2.86%(중앙값 2.83%)입니다. 따라서 Task 348 safe point는 현재 breakpoint
+인구의 지배 원인이 아닙니다.
+
+새 same-machine 교정값과 현재 예외 census로 유도한 전체 커널 전이 비중은
+6.74~6.92%(중앙값 6.83%)입니다. TF/VEH 제거는 Task 336 시기의 27.7~30.4% 후보에서
+현재 우선순위 밖으로 내려갑니다. 이 값은 합성 전이 가격을 곱한 추정입니다.
+
+## 2026-07-29 Task 347: Timer share on the current performance axis
+
+**Confirmed:** All three current 60-second Release runs recorded divisor `4,972`
+and `240Hz`. Timer-safe-point traps ranged from 5,535 to 5,539 (median 5,537),
+only 2.78-2.86% of breakpoints (median 2.83%). Task 348 safe points therefore
+do not dominate the current breakpoint population.
+
+Applying the refreshed same-machine calibration to the current census puts all
+kernel transitions at 6.74-6.92% of wall clock (median 6.83%). TF/VEH removal
+falls from Task 336's 27.7-30.4% candidate range to a lower current priority.
+The figure remains an estimate derived from synthetic transition prices.
+
+## 2026-07-29 Task 351: timer safe-point source와 소비 tick
+
+**확인됨 (전달 계측):** `REPIU_AOT_TIMER_SOURCE_PROFILE=1`은 initial placement와
+dynamic append의 timer-safe-point breakpoint offset을 원본 guest back-edge source에
+연결합니다. scheduler가 만료 PIT tick을 별도 atomic ledger에 누적하고 공용
+`InjectPendingInterrupts`가 성공한 모든 경로에서 이를 소비합니다. natural VEH 주입은
+ledger만 정리하며, safe-point handler는 자기 호출이 실제 소비한 tick만 source에
+귀속합니다. deferred trap은 tick을 소비하지 않습니다.
+
+고정 1,024-entry profile은 source별 trap/injected/deferred, 귀속 tick, 최초/최종
+global tick을 VEH에서 할당이나 lock 없이 기록합니다. Release 60초 세 번에서
+entry는 99/94/106개, overflow는 모두 0, 전체 귀속 tick은 5,658/5,674/5,638개였습니다.
+이는 interrupt delivery context의 완전한 합이며 tick 주기 환산 중앙값 23.575초를
+그대로 pacing으로 해석하지 않습니다.
+
+**확인됨 (원본 wait):** `0x0303DE89`는 source별 1,414/1,416/1,430 tick을 소비했습니다.
+원본 loop는 `0x0304318F`를 호출해 `0x032D9C80`을 읽고 2와 비교한 뒤
+`0x0303DE81`로 돌아갑니다. INT 8 ISR의 `0x03042F3C`가 이 전역을 증가시키므로
+정적 tick 의존성이 확인됩니다. 중앙값 1,416 tick은 divisor 4,972에서 5.900초,
+wall-clock 9.83%의 pacing 상한입니다. Task 348의 `0x0302FA10`/`0x032D9C84`
+wait는 이번 정상 60초 route의 source 합집합에 나타나지 않았습니다.
+
+## 2026-07-29 Task 351: Timer-safe-point sources and consumed ticks
+
+**Confirmed (delivery accounting):** With
+`REPIU_AOT_TIMER_SOURCE_PROFILE=1`, initial placement and dynamic append map
+each timer-safe-point breakpoint offset to its exact original guest back-edge
+source. The scheduler accumulates expired PIT ticks in a separate atomic
+ledger, and every successful common `InjectPendingInterrupts` path consumes
+that ledger. Natural VEH injection clears it without attribution; the
+safe-point handler attributes only ticks consumed by its own injector call.
+Deferred traps consume none.
+
+The fixed 1,024-entry profile records per-source trap/injected/deferred counts,
+attributed ticks, and first/last global tick without allocation or locks in
+VEH. Three 60-second Release runs recorded 99/94/106 entries, zero overflow,
+and 5,658/5,674/5,638 total attributed ticks. Those totals completely describe
+delivery contexts; their median 23.575-second period conversion is not itself
+pacing time.
+
+**Confirmed (original wait):** Source `0x0303DE89` consumed
+1,414/1,416/1,430 ticks. The original loop calls `0x0304318F` to read
+`0x032D9C80`, compares the result with two, and branches back to
+`0x0303DE81`. The original INT 8 ISR increments that global at `0x03042F3C`.
+The median 1,416 ticks therefore give a conservative pacing upper bound of
+5.900 seconds, or 9.83% of wall clock at divisor 4,972. Task 348's former
+`0x0302FA10`/`0x032D9C84` wait did not occur in the source union of this normal
+60-second route.

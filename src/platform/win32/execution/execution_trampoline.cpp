@@ -2610,11 +2610,12 @@ bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
     return true;
 }
 
-void InjectPendingInterrupts(CONTEXT* win32_context, ThreadContext* context)
+std::uint32_t InjectPendingInterrupts(CONTEXT* win32_context,
+                                      ThreadContext* context)
 {
-    if (!context->timer_interrupt_pending.load(std::memory_order_relaxed))
+    if (!context->timer_interrupt_pending.load(std::memory_order_acquire))
     {
-        return;
+        return 0U;
     }
 
     const DpmiInterruptVectorShadow& shadow = context->dpmi_interrupt_vectors[0x08];
@@ -2622,22 +2623,27 @@ void InjectPendingInterrupts(CONTEXT* win32_context, ThreadContext* context)
     {
         context->timer_interrupt_pending.store(false, std::memory_order_relaxed);
         ClearAotTimerSafePointRequest(context);
-        return;
+        context->timer_interrupt_due_ticks.store(
+            0U, std::memory_order_relaxed);
+        return 0U;
     }
 
     if (!IsGuestInstructionPointer(context, static_cast<std::uint32_t>(win32_context->Eip)) &&
         !IsAotCacheAddress(context, static_cast<std::uint32_t>(win32_context->Eip)))
     {
-        return;
+        return 0U;
     }
 
     if ((win32_context->EFlags & kEFlagsInterruptEnable) == 0U)
     {
-        return;
+        return 0U;
     }
 
     context->timer_interrupt_pending.store(false, std::memory_order_relaxed);
     ClearAotTimerSafePointRequest(context);
+    const std::uint32_t consumed_ticks =
+        context->timer_interrupt_due_ticks.exchange(
+            0U, std::memory_order_acq_rel);
 
     std::uint32_t eflags = win32_context->EFlags;
     std::uint32_t segcs = win32_context->SegCs;
@@ -2664,8 +2670,11 @@ void InjectPendingInterrupts(CONTEXT* win32_context, ThreadContext* context)
     if (timer_injection_log_enabled)
     {
         fprintf(stderr, "[repiu-live] Injected INT 8, jump to %04X:%08X, return frame %08X, ticks=%u\n",
-                shadow.selector, shadow.offset, esp, context->last_timer_injection_ticks);
+                shadow.selector, shadow.offset, esp,
+                context->last_timer_injection_ticks.load(
+                    std::memory_order_relaxed));
     }
+    return consumed_ticks;
 }
 
 struct AotHleTranslationScope

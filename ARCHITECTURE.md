@@ -1344,3 +1344,207 @@ initial placement and dynamic appends. The poll thread publishes only the reques
 before generic AOT reentry, explicitly resumes at `ExceptionAddress + 1`, and delegates all
 frame creation to `InjectPendingInterrupts`. Natural-boundary delivery also clears the request
 to prevent a stale trap. Final diagnostics report site and trap/injected/deferred counts.
+
+## AOT timer source 귀속 / AOT timer-source attribution
+
+Task 351의 opt-in `REPIU_AOT_TIMER_SOURCE_PROFILE=1`은 Task 348 safe point를
+원본 guest source별 interrupt-delivery 관측점으로 사용합니다. initial AOT placement와
+dynamic append는 기존 breakpoint set 옆에 `breakpoint_offset -> guest_source` map을
+유지합니다. handler는 정확한 source를 찾은 뒤에만 고정 크기 profile을 갱신합니다.
+
+```mermaid
+sequenceDiagram
+    participant P as PIT scheduler
+    participant L as Due-tick ledger
+    participant S as AOT safe point
+    participant I as Common injector
+    participant R as Fixed source profile
+    P->>L: 만료 tick saturating-add
+    S->>I: pending INT 8 주입 시도
+    alt 주입 성공
+        I->>L: exchange(0)
+        I-->>S: 소비 tick 수
+        S->>R: source에 tick 귀속
+    else 주입 보류
+        I-->>S: 0
+        S->>R: deferred만 기록
+    end
+```
+
+기존 `last_timer_injection_ticks`는 누적 진단값이고, 새
+`timer_interrupt_due_ticks`는 아직 어느 전달 경로에도 귀속되지 않은 만료 tick입니다.
+공용 `InjectPendingInterrupts`가 모든 성공 경로에서 due ledger를 소비하고 그 수를
+반환합니다. natural VEH 경계는 반환값을 기록하지 않아 오래된 tick을 다음 safe point에
+잘못 붙이지 않습니다. 동시 scheduler add가 `exchange` 뒤에 발생하면 다음 주입을 위해
+남으므로 tick을 잃지 않습니다.
+
+profile은 VEH hot path에서 allocation과 lock을 피하기 위해 1,024-entry 고정 배열을
+사용하며 source, trap/injected/deferred count, 귀속 tick, first/last global tick을
+보존합니다. 종료 시에만 전체 entry를 tick 순으로 정렬해 attempt summary에 출력합니다.
+이 기능은 기본적으로 꺼져 있고 원본 executable, ISR, IRET frame, tick 값과 cadence를
+바꾸지 않습니다. 귀속 tick의 주기 환산은 해당 source가 정적으로 tick-wait임이 확인된
+경우에만 pacing 상한으로 사용합니다.
+
+Task 351's opt-in `REPIU_AOT_TIMER_SOURCE_PROFILE=1` reuses Task 348 safe
+points as per-original-source interrupt-delivery observations. Initial AOT
+placement and dynamic append maintain a
+`breakpoint_offset -> guest_source` map beside the existing breakpoint set.
+Only an exactly resolved source updates the fixed profile.
+
+The existing `last_timer_injection_ticks` remains a cumulative diagnostic,
+while `timer_interrupt_due_ticks` contains expirations not yet consumed by any
+delivery path. Common `InjectPendingInterrupts` consumes that ledger on every
+successful injection and returns the consumed count. Natural VEH boundaries
+discard the return value, preventing stale ticks from being attached to a
+later safe point. A scheduler add concurrent with the exchange remains for the
+next injection.
+
+The profile uses a fixed 1,024-entry array to avoid allocation and locks in the
+VEH hot path, retaining source, trap/injected/deferred counts, attributed
+ticks, and first/last global tick. Only final reporting sorts and prints all
+entries. The feature is disabled by default and changes neither the original
+executable, ISR, IRET frame, tick values, nor cadence. Period conversion is
+treated as a pacing upper bound only for a source whose original disassembly
+proves a tick-wait dependency.
+
+## Glide ordinal 시간 귀속 / Glide ordinal time attribution
+
+Task 353의 기본 OFF `REPIU_GLIDE_ORDINAL_TIME_PROFILE=1`은 decoded Glide gate
+cycle과 기존 Task 333 rendezvous interval을 ordinal 0~255 고정 배열에 귀속합니다.
+global `ExecutionTimeScope`는 optional completed-cycle output을 제공하며 ordinal
+finalizer가 그 값을 재사용하므로 TSC를 추가로 읽지 않습니다. backend도 이미 보유한
+enter/publish/host-start/host-finish/resume timestamp를 현재 bound ordinal에 직접
+누적합니다.
+
+```mermaid
+flowchart LR
+    G["decoded Glide gate"] --> S["global ExecutionTimeScope"]
+    G --> B["bound ordinal"]
+    B --> H["host command timestamps"]
+    S --> P["fixed ordinal entry"]
+    H --> P
+    P --> F["final sorted snapshot"]
+```
+
+hot path는 allocation, lock, 정렬이 없고 종료 시에만 39개 활성 entry를 cycle 순으로
+출력합니다. timeout에서 열린 command 하나는 global partial interval만 가질 수 있으므로
+완료 count는 handled gate와 대조하고 global-minus-ordinal delta는 열린 gate가 하나일
+때만 허용합니다. 최종 60초 A/B의 global Glide coverage는 평균 99.970%, observer
+impact는 -0.67%였습니다.
+
+`grBufferSwap`은 Glide gate의 50.21%, 현재 wall-clock의 약 17.32%이며 backend
+interval의 99.09%가 host work입니다. `swap_interval=1`은 현재 backend에서 사용되지
+않고 `SDL_GL_SwapWindow`가 호출됩니다. 다음 분해는 원본 swap 의미를 보존하면서 실제
+swap interval과 present blocking을 관측해야 합니다.
+
+Task 353's disabled-by-default `REPIU_GLIDE_ORDINAL_TIME_PROFILE=1` attributes
+decoded Glide gate cycles and existing Task 333 rendezvous intervals to a
+fixed direct-indexed ordinal array. The global `ExecutionTimeScope` exposes
+its completed cycle count, so the ordinal finalizer adds no timestamp reads;
+the backend likewise reuses its existing handoff timestamps. The hot path
+allocates, locks, and sorts nothing, while final reporting orders all active
+entries.
+
+One command open at timeout may leave only global partial intervals; completed
+counts are checked against handled gates and such deltas are accepted only
+with one open gate. Final mean global coverage was 99.970% with -0.67%
+observer impact. `grBufferSwap` owns 50.21% of the gate and about 17.32% of
+wall time, with 99.09% of its backend interval in host work. Its received
+`swap_interval=1` is currently unused before `SDL_GL_SwapWindow`, so the next
+decomposition must measure actual swap state and present blocking without
+changing original swap semantics.
+
+## Glide buffer swap 시간 분해 / Glide buffer-swap time decomposition
+
+Task 354의 기본 OFF `REPIU_GLIDE_SWAP_TIME_PROFILE=1`은 guest gate에서 온
+`BufferSwap`만 setup, `SDL_GL_SwapWindow`, FPS accounting, finalize로 분해합니다.
+LFB 경로가 host thread에서 직접 호출하는 internal present는 이 profile에서 제외합니다.
+첫 profile swap에서 현재 context의 `SDL_GL_GetSwapInterval`을 한 번 관측하지만
+`SDL_GL_SetSwapInterval`은 호출하지 않습니다.
+
+```mermaid
+flowchart LR
+    G["guest grBufferSwap"] --> Q["host command"]
+    Q --> S["setup + interval query"]
+    S --> P["SDL_GL_SwapWindow"]
+    P --> A["FPS accounting"]
+    A --> F["finalize/result"]
+    S --> T["fixed swap profile"]
+    P --> T
+    A --> T
+    F --> T
+```
+
+최종 3×60초 Release profile의 내부 total은 ordinal 85 host-work를 평균 99.940%
+덮었고, present가 내부 시간의 평균 99.589%였습니다. 4,030개 요청은 모두 interval
+1이었고 실제 SDL interval도 세 실행 모두 1이었습니다. 현재 호스트에서 원본 요청과
+실제 context가 일치하므로 성능을 위해 swap 동기화를 끄거나 프레임을 drop하지
+않습니다. interval을 명시적으로 적용하는 변경은 다른 환경에서 불일치가 확인된 뒤
+별도 fidelity 계약으로 검증합니다.
+
+Task 354's disabled-by-default `REPIU_GLIDE_SWAP_TIME_PROFILE=1` decomposes
+only guest-gate `BufferSwap` calls into setup, `SDL_GL_SwapWindow`, FPS
+accounting, and finalize. Internal LFB presentation is excluded. The first
+profiled swap observes `SDL_GL_GetSwapInterval` once without calling
+`SDL_GL_SetSwapInterval`.
+
+Across the final three 60-second Release runs, internal totals covered mean
+99.940% of ordinal 85 host work and present averaged 99.589% of internal
+time. All 4,030 requests used interval 1 and SDL reported interval 1 in every
+run. The current host therefore matches the original request; synchronization
+is not disabled and frames are not dropped for performance. Explicit interval
+application requires a separate fidelity contract after a host mismatch is
+observed.
+
+## Release 실행 축 측정 계약 / Release execution-axis measurement contract
+
+Task 347의 `scripts/task347_release_axis_reattribution.ps1`은 runtime 의미를 바꾸지 않는
+Release 측정 entry point입니다. 같은 seed의 격리 EEPROM 세 개, `aot-dbt`,
+`REPIU_EXECUTION_TIME_PROFILE=1`, 60초 direct-loader timeout을 사용하고 실행별
+stdout/stderr, JSON과 전체 CSV를 `build/benchmarks/release-axis/`에 남깁니다.
+
+배타 예외 census는 `exception_dispatch_entry_count`와 비교하지 않습니다. 그 계수는
+AOT write/timer/reentry/transfer early handler 뒤에서 시작하는 late-dispatch scope입니다.
+전체 VEH 대조값은 함수 진입부의 `kVehTotal` profile count이며, timeout snapshot에서
+열린 scope 한 건 때문에 census가 1 클 수 있습니다.
+
+현재 Task 348/349 이후 Release 60초 3회 중앙값은 guest 실행 추정 60.72%, Glide gate
+21.73%, VEH-exclusive 9.70%, 커널 전이 추정 6.83%입니다. 모든 single-step run이
+길이 1입니다. Task 351은 그 guest 유도값 가운데 정적으로 확인된 240Hz timer pacing
+상한을 9.83%p로 분리했고, 50.89%p를 active/unresolved 잔여로 남겼습니다.
+
+active guest 주소 귀속에는 guest thread `SuspendThread` 표본과 “요청 뒤 처음 만나는
+AOT back edge” 협력형 표본을 사용하지 않습니다. 전자는 syscall 경계와 정지 교란에,
+후자는 first-eligible topology와 호출 빈도에 편향됨이 각각 확인됐습니다. 특히 짧은
+arm-to-hit latency와 실행 간 안정된 순위는 instruction residency의 충분조건이
+아닙니다. 향후 이 축은 정확한 executed-edge/instruction-count 계측이나 외부
+PMU처럼 이 두 편향을 피하는 방법에서만 다시 엽니다.
+
+Task 347's `scripts/task347_release_axis_reattribution.ps1` is a Release
+measurement entry point that changes no runtime semantics. It uses three
+EEPROM copies from one seed, `aot-dbt`,
+`REPIU_EXECUTION_TIME_PROFILE=1`, and a 60-second direct-loader timeout,
+then writes per-run logs and JSON plus aggregate CSV under
+`build/benchmarks/release-axis/`.
+
+The exclusive exception census is not compared with
+`exception_dispatch_entry_count`, whose scope begins after AOT write, timer,
+re-entry, and transfer early handlers. The whole-VEH reference is the
+function-entry `kVehTotal` profile count; one open scope at the timeout snapshot
+can leave the census one count higher.
+
+On the current post-Task-348/349 build, three Release runs put median estimated
+guest execution at 60.72%, the Glide gate at 21.73%, VEH-exclusive work at
+9.70%, and estimated kernel transitions at 6.83%. Every single-step run has
+length one. Task 351 separated a statically confirmed 9.83-percentage-point
+upper bound for 240 Hz timer pacing from that derived guest share, leaving
+50.89 percentage points as active/unresolved guest time.
+
+Active guest address attribution must not use either cross-thread
+`SuspendThread` sampling or cooperative "first AOT back edge after request"
+sampling. The former is biased toward syscall boundaries and perturbs the
+target through suspension; the latter is biased toward first-eligible
+topology and call frequency. Short arm-to-hit latency and stable rankings are
+not sufficient evidence of instruction residency. This axis may be reopened
+only with exact executed-edge/instruction-count instrumentation or an
+external PMU-class method that avoids both biases.

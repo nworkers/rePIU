@@ -31,6 +31,27 @@ bool GlideHostCommandWaitEnabled()
     return enabled;
 }
 
+void SaturatingAtomicAdd(std::atomic<std::uint32_t>* value,
+                         std::uint64_t increment)
+{
+    std::uint32_t current = value->load(std::memory_order_relaxed);
+    while (current != std::numeric_limits<std::uint32_t>::max())
+    {
+        const std::uint64_t room =
+            std::numeric_limits<std::uint32_t>::max() - current;
+        const std::uint32_t added = static_cast<std::uint32_t>(
+            std::min(increment, room));
+        const std::uint32_t next = current + added;
+        if (value->compare_exchange_weak(
+                current, next,
+                std::memory_order_release,
+                std::memory_order_relaxed))
+        {
+            return;
+        }
+    }
+}
+
 }  // namespace
 
 SharedTelemetryMapping OpenSharedTelemetryMapping()
@@ -330,12 +351,17 @@ DWORD PollThreadUntilExit(HANDLE thread,
                 elapsed_nanoseconds);
             if (due_interrupts != 0U)
             {
-                const std::uint64_t remaining =
-                    std::numeric_limits<std::uint32_t>::max() -
-                    progress_context->last_timer_injection_ticks;
-                progress_context->last_timer_injection_ticks +=
-                    static_cast<std::uint32_t>(
-                        std::min(due_interrupts, remaining));
+                SaturatingAtomicAdd(
+                    &progress_context->last_timer_injection_ticks,
+                    due_interrupts);
+                if (progress_context->aot_placement != nullptr &&
+                    progress_context->aot_placement
+                        ->timer_source_profile.enabled)
+                {
+                    SaturatingAtomicAdd(
+                        &progress_context->timer_interrupt_due_ticks,
+                        due_interrupts);
+                }
                 progress_context->timer_interrupt_pending.store(
                     true, std::memory_order_release);
                 ArmAotTimerSafePoint(progress_context);
@@ -692,6 +718,10 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     // Task 333: read after the guest thread has stopped, so the backend's
     // counters are quiescent and no lock is needed here.
     attempt->glide_gate_timing = context.glide_backend.glide_gate_timing();
+    attempt->glide_ordinal_timing =
+        SnapshotGlideOrdinalTiming(context.glide_ordinal_timing);
+    attempt->glide_buffer_swap_timing =
+        context.glide_backend.glide_buffer_swap_timing();
     attempt->native_fast_path_entry_count =
         context.native_fast_path.entry_count.load(std::memory_order_relaxed);
     attempt->native_fast_path_return_count =
@@ -895,6 +925,8 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
             context.aot_placement->timer_safe_point_injected_count;
         attempt->aot_timer_safe_point_deferred_count =
             context.aot_placement->timer_safe_point_deferred_count;
+        attempt->aot_timer_source_profile =
+            context.aot_placement->timer_source_profile;
     }
     attempt->aot_dbt_return_entry_count =
         context.aot_dbt_return_entry_count.load(std::memory_order_relaxed);
@@ -1330,6 +1362,33 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
                   observation.first_stack);
         attempt->glide_calls.push_back(std::move(observation));
     }
+    for (std::size_t ordinal = 0;
+         ordinal < attempt->glide_ordinal_timing.entries.size(); ++ordinal)
+    {
+        const Win32GlideOrdinalTimingEntry& timing =
+            attempt->glide_ordinal_timing.entries[ordinal];
+        if (timing.count == 0U)
+        {
+            continue;
+        }
+        Win32MinimalExecutionAttempt::GlideOrdinalTimingObservation
+            observation;
+        observation.ordinal = static_cast<std::uint16_t>(ordinal);
+        observation.name = context.glide_call_names[ordinal];
+        observation.timing = timing;
+        attempt->glide_ordinal_timings.push_back(std::move(observation));
+    }
+    std::sort(
+        attempt->glide_ordinal_timings.begin(),
+        attempt->glide_ordinal_timings.end(),
+        [](const auto& left, const auto& right) {
+            if (left.timing.gate_cycles != right.timing.gate_cycles)
+            {
+                return left.timing.gate_cycles >
+                    right.timing.gate_cycles;
+            }
+            return left.ordinal < right.ordinal;
+        });
     attempt->mscdex_available = context.mscdex_available;
     attempt->cd_audio_available = context.cd_audio_available;
     attempt->mscdex_track_count = static_cast<std::uint32_t>(

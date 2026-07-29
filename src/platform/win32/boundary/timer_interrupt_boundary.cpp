@@ -79,6 +79,16 @@ bool HandleAotTimerSafePoint(_EXCEPTION_POINTERS* exception_info,
     {
         return false;
     }
+    const auto source =
+        placement
+            ->timer_safe_point_guest_source_by_breakpoint_offset.find(
+                cache_offset);
+    const std::uint32_t guest_source =
+        source !=
+                placement
+                    ->timer_safe_point_guest_source_by_breakpoint_offset.end()
+            ? source->second
+            : 0U;
 
     ClearAotTimerSafePointRequest(context);
     InterlockedIncrement(reinterpret_cast<volatile LONG*>(
@@ -90,8 +100,11 @@ bool HandleAotTimerSafePoint(_EXCEPTION_POINTERS* exception_info,
     const std::uint32_t resume_eip =
         static_cast<std::uint32_t>(exception_address + 1U);
     win32_context->Eip = resume_eip;
-    InjectPendingInterrupts(win32_context, context);
-    if (static_cast<std::uint32_t>(win32_context->Eip) != resume_eip)
+    const std::uint32_t attributed_ticks =
+        InjectPendingInterrupts(win32_context, context);
+    const bool injected =
+        static_cast<std::uint32_t>(win32_context->Eip) != resume_eip;
+    if (injected)
     {
         InterlockedIncrement(reinterpret_cast<volatile LONG*>(
             &placement->timer_safe_point_injected_count));
@@ -101,6 +114,13 @@ bool HandleAotTimerSafePoint(_EXCEPTION_POINTERS* exception_info,
         InterlockedIncrement(reinterpret_cast<volatile LONG*>(
             &placement->timer_safe_point_deferred_count));
     }
+    RecordAotTimerSourceEvent(
+        &placement->timer_source_profile,
+        guest_source,
+        context->last_timer_injection_ticks.load(
+            std::memory_order_acquire),
+        injected,
+        attributed_ticks);
     return true;
 }
 

@@ -86,6 +86,41 @@ segment-register write barrier와 직선 구간 preflight를 함께 적용한 �
 wall-clock 개선은 아직 확인되지 않았습니다. 두 EEPROM 사본은 원본 SHA-256과
 일치했습니다.
 
+### Task 347 현재 축
+
+Task 348/349 이후 현재 Release HEAD를 60초씩 세 번 다시 측정했습니다. post-HLE 복귀
+funnel 중앙값은 success 48,765 / `span-unsafe` 13,702 / 전체 62,471로,
+비율은 **78.10% / 21.90%**입니다. Task 346 직후의 95.1% success는 현재 cadence와
+실행 phase에 그대로 적용할 수 없습니다.
+
+그러나 세 실행의 single-step run은 **전부 길이 1이고 최대값도 1**입니다. 따라서
+`span-unsafe`가 복귀 시도의 21.90%라는 사실은 Task 337 시기의 5~8/33+ TF tail이
+돌아왔다는 뜻이 아닙니다. 현재 전체 커널 전이 추정도 wall-clock의 6.83%이므로,
+복귀 거절 횟수만으로 `span-unsafe`를 다음 최적화 대상으로 고르지 않습니다.
+
+`exception_dispatch_entry_count`는 이 분석 경로의 전체 VEH 진입 수가 아니라
+`HandleAotReentry` 등 early handler 뒤의 late-dispatch 수입니다. 현재 예외 census의
+약 38%가 그 scope 전에 처리됩니다. 전체 예외 대조에는 함수 진입부에서 시작하는
+execution-time `kVehTotal` count를 사용해야 합니다.
+
+### Current Task 347 axis
+
+Three 60-second measurements of the current Release HEAD after Tasks 348 and 349
+put the median post-HLE funnel at 48,765 successes and 13,702 `span-unsafe`
+rejections out of 62,471 attempts, or 78.10% / 21.90%. Task 346's immediate
+95.1% success share does not transfer unchanged to the current cadence and
+execution phase.
+
+Every single-step run in all three measurements nevertheless has length one.
+The 21.90% rejection share therefore does not restore Task 337's five-to-eight
+mode or 33+ tail. Estimated kernel transitions are only 6.83% of wall clock, so
+`span-unsafe` is not selected from rejection count alone.
+
+`exception_dispatch_entry_count` is a late-dispatch count after early handlers
+such as `HandleAotReentry`, not a whole-VEH entry count. About 38% of the current
+exception census is handled before that scope. Whole-exception validation must
+use the execution-time profile's `kVehTotal` count at function entry.
+
 ## English
 
 The first Task 276 implementation dynamically translated a cache miss immediately

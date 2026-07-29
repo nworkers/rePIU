@@ -62,7 +62,8 @@ bool GlideOpenGlBackend::GlideGateTimingEnabled()
 
 void GlideOpenGlBackend::InvokeOnHostThread(std::function<void()> command)
 {
-    const bool timing = GlideGateTimingEnabled();
+    const bool timing =
+        GlideGateTimingEnabled() || active_ordinal_timing_ != nullptr;
     if (IsHostThread())
     {
         const std::uint64_t start =
@@ -70,10 +71,13 @@ void GlideOpenGlBackend::InvokeOnHostThread(std::function<void()> command)
         command();
         if (timing)
         {
+            const std::uint64_t finish = ReadGlideGateTimingCycles();
+            const std::uint64_t cycles =
+                GlideGateTimingDelta(&glide_gate_timing_, start, finish);
             RecordGlideGateDirectCommand(
-                &glide_gate_timing_,
-                GlideGateTimingDelta(&glide_gate_timing_, start,
-                                     ReadGlideGateTimingCycles()));
+                &glide_gate_timing_, cycles);
+            RecordGlideOrdinalDirectWork(
+                active_ordinal_timing_, active_ordinal_, cycles);
         }
         return;
     }
@@ -97,8 +101,13 @@ void GlideOpenGlBackend::InvokeOnHostThread(std::function<void()> command)
     host_command_cv_.wait(lock, [this]() { return host_command_complete_; });
     if (timing)
     {
-        RecordGlideGateResume(&glide_gate_timing_, enter,
-                              ReadGlideGateTimingCycles());
+        const std::uint64_t resume = ReadGlideGateTimingCycles();
+        RecordGlideGateResume(&glide_gate_timing_, enter, resume);
+        RecordGlideOrdinalRendezvous(
+            active_ordinal_timing_, active_ordinal_, enter,
+            glide_gate_timing_.publish_cycles,
+            glide_gate_timing_.host_start_cycles,
+            glide_gate_timing_.host_finish_cycles, resume);
     }
     command_exception = host_command_exception_;
     lock.unlock();
@@ -547,11 +556,20 @@ bool GlideOpenGlBackend::BufferSwap(std::uint32_t swap_interval)
     {
         bool result = false;
         InvokeOnHostThread([this, swap_interval, &result]() {
-            result = BufferSwap(swap_interval);
+            result = BufferSwapOnHostThread(swap_interval, true);
         });
         return result;
     }
+    return BufferSwapOnHostThread(swap_interval, false);
+}
+
+bool GlideOpenGlBackend::BufferSwapOnHostThread(
+    std::uint32_t swap_interval,
+    bool guest_gate_command)
+{
 #if !defined(_WIN32)
+    (void)swap_interval;
+    (void)guest_gate_command;
     return false;
 #else
     if (!is_open())
@@ -562,6 +580,20 @@ bool GlideOpenGlBackend::BufferSwap(std::uint32_t swap_interval)
     if (dummy_mode_)
     {
         return true;
+    }
+    Win32GlideBufferSwapTimingProfile* swap_timing =
+        guest_gate_command && GlideBufferSwapTimingProfileEnabled()
+            ? &glide_buffer_swap_timing_
+            : nullptr;
+    const std::uint64_t entry_cycles =
+        swap_timing != nullptr ? ReadGlideBufferSwapTimingCycles() : 0U;
+    if (swap_timing != nullptr &&
+        swap_timing->sdl_interval_query_count == 0U)
+    {
+        int interval = 0;
+        const bool queried = SDL_GL_GetSwapInterval(&interval);
+        RecordGlideBufferSwapSdlInterval(
+            swap_timing, queried, static_cast<std::int32_t>(interval));
     }
     // Optional verification diagnostic (off by default): in a headless session
     // the GL window is not screenshot-able, so sampling the back buffer for
@@ -606,14 +638,40 @@ bool GlideOpenGlBackend::BufferSwap(std::uint32_t swap_interval)
                 static_cast<unsigned long long>(sum_g / denom),
                 static_cast<unsigned long long>(sum_b / denom));
     }
-    if (!SDL_GL_SwapWindow(static_cast<SDL_Window*>(window_)))
+    const std::uint64_t present_start_cycles =
+        swap_timing != nullptr ? ReadGlideBufferSwapTimingCycles() : 0U;
+    const bool swapped =
+        SDL_GL_SwapWindow(static_cast<SDL_Window*>(window_));
+    const std::uint64_t present_end_cycles =
+        swap_timing != nullptr ? ReadGlideBufferSwapTimingCycles() : 0U;
+    if (!swapped)
     {
         message_ = std::string("SDL3 Glide buffer swap failed: ") +
             SDL_GetError();
+        if (swap_timing != nullptr)
+        {
+            const std::uint64_t finish_cycles =
+                ReadGlideBufferSwapTimingCycles();
+            RecordGlideBufferSwapTiming(
+                swap_timing, swap_interval, false, entry_cycles,
+                present_start_cycles, present_end_cycles, present_end_cycles,
+                finish_cycles);
+        }
         return false;
     }
     RecordPresentedFrame();
+    const std::uint64_t accounting_end_cycles =
+        swap_timing != nullptr ? ReadGlideBufferSwapTimingCycles() : 0U;
     message_ = "Glide buffer swapped";
+    if (swap_timing != nullptr)
+    {
+        const std::uint64_t finish_cycles =
+            ReadGlideBufferSwapTimingCycles();
+        RecordGlideBufferSwapTiming(
+            swap_timing, swap_interval, true, entry_cycles,
+            present_start_cycles, present_end_cycles, accounting_end_cycles,
+            finish_cycles);
+    }
     return true;
 #endif
 }

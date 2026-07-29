@@ -92,10 +92,16 @@ Win32ExecutionTimeProfileSnapshot SnapshotExecutionTimeProfile(
 }
 
 ExecutionTimeScope::ExecutionTimeScope(Win32ExecutionTimeProfile* profile,
-                                       ExecutionTimeBucket bucket)
+                                       ExecutionTimeBucket bucket,
+                                       std::uint64_t* completed_cycles)
     : profile_(profile),
-      bucket_(bucket)
+      bucket_(bucket),
+      completed_cycles_(completed_cycles)
 {
+    if (completed_cycles_ != nullptr)
+    {
+        *completed_cycles_ = 0U;
+    }
     if (profile_ == nullptr)
     {
         return;
@@ -143,8 +149,12 @@ ExecutionTimeScope::~ExecutionTimeScope()
             return;
         }
     }
-    RecordExecutionTimeBucket(
-        profile_, bucket_, end_cycles - start_cycles_, inside_veh_);
+    const std::uint64_t cycles = end_cycles - start_cycles_;
+    if (completed_cycles_ != nullptr)
+    {
+        *completed_cycles_ = cycles;
+    }
+    RecordExecutionTimeBucket(profile_, bucket_, cycles, inside_veh_);
 }
 
 }  // namespace repiu::platform::win32

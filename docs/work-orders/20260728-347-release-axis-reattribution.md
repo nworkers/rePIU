@@ -33,6 +33,16 @@ Task 346으로 post-HLE 복귀 success가 55.6% → **95.1%** 가 됐습니다. 
 **Task 338에서 이미 한 번, 낡은 축 위에서 대상을 골랐다가 잘못 골랐습니다.** 같은
 실수를 반복하지 않기 위해 다음 최적화 대상을 고르기 **전에** 축을 다시 잽니다.
 
+Task 347 지시서 작성 뒤에도 실행 축을 바꾸는 두 수정이 추가됐습니다.
+
+* Task 348: AOT direct/conditional back edge에 타이머 safe-point `INT3` 추가.
+* Task 349: 고정 55ms 게시를 제거하고 원본 PIT 설정인 240Hz IRQ0 cadence 복원.
+
+따라서 재측정은 Task 346 직후가 아니라 **Task 350까지 포함한 현재 HEAD**를 기준으로
+하며, safe-point trap을 breakpoint census의 부분집합으로 별도 보고합니다.
+
+설계: [20260729-347-release-axis-reattribution.md](../design/20260729-347-release-axis-reattribution.md)
+
 ### 범위
 
 **포함**
@@ -42,14 +52,18 @@ Task 346으로 post-HLE 복귀 success가 55.6% → **95.1%** 가 됐습니다. 
    * 예외 census(종류별)와 single-step 구간 길이 분포
    * 커널 전이 총비용(전이 가격 × 현재 예외 수)
    * 복귀 funnel과 남은 거절 사유(`span-unsafe`)
+   * Task 348 타이머 safe-point trap/injected/deferred
 2. 그 값으로 **다음 최적화 후보를 순위화**한다.
 3. `docs/analysis/current-execution-frontier.md`의 낡은 수치에 구성·시점 표기를 달거나
    갱신한다.
+4. 같은 seed의 격리 EEPROM, 고정 환경변수, 로그 parser를 사용하는 재현 가능한
+   `scripts/task347_release_axis_reattribution.ps1`을 남긴다.
 
 **제외**
 
 * 새 최적화 구현. 이 작업은 **대상 선정까지**다.
 * `SUPERBLOCK`(emitter 계약 선행), `span-unsafe` 수정.
+* Task 348/349의 실행 의미 변경. 이번 작업은 현재 구현을 관찰만 한다.
 
 ### 방법 규칙 (이번 연속 작업에서 확정된 것)
 
@@ -74,8 +88,12 @@ Task 346으로 post-HLE 복귀 success가 55.6% → **95.1%** 가 됐습니다. 
 ### 검증 절차
 
 1. Release 60초 3회, 위 동등성 계약 통과.
-2. census 합계 = VEH 진입 횟수(배타성 확인).
+2. census 합계와 execution-time profile의 전체 VEH scope count 차이가 0 또는 1
+   (timeout 순간 열린 scope 한 건 허용).
+   `exception_dispatch_entry_count`는 AOT early handler 뒤의 late-dispatch 계수이므로
+   전체 VEH 진입 대조값으로 사용하지 않는다.
 3. 유도한 커널 전이 비중이 `unaccounted`를 넘지 않을 것.
+4. 세 실행 모두 timer safe-point와 PIT 240Hz가 활성인 현재 기본 경로일 것.
 
 ---
 
@@ -99,13 +117,23 @@ kernel transition" and Task 337's run-length distribution are therefore stale. T
 picked a target from a stale axis once and picked the wrong one; the axis is re-measured before the
 next target is chosen.
 
+Two later changes move the axis again: Task 348 adds timer-safe-point `INT3`
+guards at AOT back edges, and Task 349 replaces the fixed 55ms publication with
+the original PIT-programmed 240 Hz IRQ0 cadence. The measurement therefore uses
+the current HEAD through Task 350 and reports safe-point traps as a subset of
+the breakpoint census.
+
 ### Scope
 
 Re-measure over three 60-second Release runs: the top-level buckets, the exception census and
 single-step run lengths, the derived kernel transition cost at the current exception count, and the
-return funnel with its remaining `span-unsafe` rejections; then rank the next optimization
+return funnel with its remaining `span-unsafe` rejections, plus the timer-safe-point
+trap/injected/deferred counts; then rank the next optimization
 candidates and re-label or update the stale figures in the frontier. Out of scope: implementing any
-optimization, `SUPERBLOCK`, which needs the emitter contract first, and fixing `span-unsafe`.
+optimization, `SUPERBLOCK`, which needs the emitter contract first, fixing
+`span-unsafe`, or changing the Task 348/349 execution semantics. Leave a
+reproducible `scripts/task347_release_axis_reattribution.ps1` harness using a
+fixed environment, isolated EEPROM copies, and parsed run artifacts.
 
 ### Method rules fixed during this run of tasks
 
@@ -126,5 +154,9 @@ boundaries are wrong.
 
 ### Verification
 
-Three 60-second Release runs passing the equivalence contract, a census total equal to the VEH
-entry count, and a derived kernel-transition share that fits inside `unaccounted`.
+Three 60-second Release runs passing the equivalence contract, a census total
+within zero or one of the execution-time profile's whole-VEH scope count (the
+one-count allowance is an open scope at the timeout snapshot), no use of the
+late `exception_dispatch_entry_count` as the whole-VEH reference, a derived
+kernel-transition share that fits inside `unaccounted`,
+and confirmation that every run uses the current timer-safe-point and 240 Hz PIT path.

@@ -2,7 +2,9 @@
 #define REPIU_PLATFORM_WIN32_GLIDE_OPENGL_BACKEND_H_
 
 #include "repiu/hle/glide_hle.h"
+#include "repiu/platform/win32/glide_buffer_swap_timing.h"
 #include "repiu/platform/win32/glide_gate_timing.h"
+#include "repiu/platform/win32/glide_ordinal_timing.h"
 #include "repiu/platform/win32/glide_opengl_shader.h"
 #include "repiu/runtime/execution_backend.h"
 
@@ -155,6 +157,24 @@ public:
         return SnapshotGlideGateTiming(glide_gate_timing_);
     }
 
+    Win32GlideBufferSwapTimingSnapshot glide_buffer_swap_timing() const
+    {
+        return SnapshotGlideBufferSwapTiming(glide_buffer_swap_timing_);
+    }
+
+    void BeginGlideOrdinalTiming(Win32GlideOrdinalTimingProfile* profile,
+                                 std::uint16_t ordinal)
+    {
+        active_ordinal_timing_ = profile;
+        active_ordinal_ = ordinal;
+    }
+
+    void EndGlideOrdinalTiming()
+    {
+        active_ordinal_timing_ = nullptr;
+        active_ordinal_ = 0;
+    }
+
     // Waits up to `timeout_milliseconds` for a guest command and executes it,
     // returning whether one ran. Host thread only. Task 333 replaced the poll
     // loop's unconditional sleep with this, so a posted command no longer waits
@@ -176,6 +196,8 @@ private:
 
     bool IsHostThread() const;
     void InvokeOnHostThread(std::function<void()> command);
+    bool BufferSwapOnHostThread(std::uint32_t swap_interval,
+                                bool guest_gate_command);
     bool ApplyWindowScale(std::uint32_t scale);
     void ApplyDrawableViewport();
     std::string BuildWindowTitle(double frames_per_second) const;
@@ -231,6 +253,11 @@ private:
     // Task 333. Guarded by `host_command_mutex_` except for the guest's own
     // enter timestamp, which is thread-local to the call.
     Win32GlideGateTimingProfile glide_gate_timing_;
+    // Task 354: grBufferSwap host work split. Only guest-gate commands are
+    // recorded; internal LFB presentation through BufferSwap remains separate.
+    Win32GlideBufferSwapTimingProfile glide_buffer_swap_timing_;
+    Win32GlideOrdinalTimingProfile* active_ordinal_timing_ = nullptr;
+    std::uint16_t active_ordinal_ = 0;
     bool glide_gate_timing_enabled_ = false;
     bool glide_gate_timing_resolved_ = false;
     bool GlideGateTimingEnabled();

@@ -485,6 +485,9 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
         return false;
     }
     *placement = Win32AotCodeCachePlacement{};
+    InitializeAotTimerSourceProfile(
+        AotTimerSourceProfileEnabled(),
+        &placement->timer_source_profile);
     if (!image.valid || image.executable || image.bytes.empty())
     {
         placement->message = "AOT byte image is not ready for placement";
@@ -602,6 +605,9 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
     {
         placement->timer_safe_point_cache_offsets.insert(
             site.breakpoint_offset);
+        placement
+            ->timer_safe_point_guest_source_by_breakpoint_offset[
+                site.breakpoint_offset] = site.guest_source;
     }
     IndexAotBreakpointProvenance(image, 0U, placement);
     placement->placed = true;
@@ -1071,6 +1077,9 @@ bool AppendWin32DynamicAotTranslation(
         site.breakpoint_offset += append_offset;
         placement->timer_safe_point_cache_offsets.insert(
             site.breakpoint_offset);
+        placement
+            ->timer_safe_point_guest_source_by_breakpoint_offset[
+                site.breakpoint_offset] = site.guest_source;
         placement->timer_safe_point_sites.push_back(site);
     }
     IndexAotBreakpointProvenance(image, append_offset, placement);

@@ -269,7 +269,8 @@ flowchart LR
     F --> R["Task 331 Release 재귀속<br/>동적 번역 = 전체의 1.04%<br/>사슬 종결"]
 ```
 
-Task 331의 실게임 60초 Release 측정이 현재 축입니다.
+아래 Task 331 축은 **Task 348/349 이전의 역사적 기준**입니다. 현재 축은 Task 347이
+다시 측정했습니다.
 
 ```mermaid
 flowchart LR
@@ -282,6 +283,38 @@ flowchart LR
     AT --> DT["동적 번역 1.04%<br/>(종결)"]
     GL --> Q["미확정: host CPU 작업인가<br/>rendezvous 대기인가"]
 ```
+
+Task 347은 Task 348 타이머 safe point와 Task 349의 원본 240Hz PIT cadence까지 포함한
+현재 HEAD를 Release 60초 3회로 다시 측정했습니다.
+
+| bucket | 중앙값 | 3회 범위 |
+|---|---:|---:|
+| **실제 guest 실행 추정** | **60.72%** | 60.61~61.25% |
+| Glide gate | **21.73%** | 21.71~21.91% |
+| VEH-exclusive | 9.70% | 9.26~9.79% |
+| **커널 예외 전이 추정** | **6.83%** | 6.74~6.92% |
+
+```mermaid
+flowchart LR
+    G["guest thread wall-clock<br/>(Release, 현재 HEAD, 60초×3)"] --> U["unaccounted 67.53%"]
+    U --> K["커널 전이 추정 6.83%"]
+    U --> N["실제 guest 실행 추정 60.72%"]
+    G --> V["VEH 32.47%"]
+    V --> GL["Glide gate 21.73%"]
+    V --> VE["VEH-exclusive 9.70%"]
+    GL --> GW["wake 31.6% / work 38.9% / complete 29.0%<br/>(gate 내부 중앙값)"]
+```
+
+**확인됨:** G2(guest 실행 추정 >= 60%)와 G3(Glide >= 20%)가 동시에 성립하지만,
+큰 축은 guest 실행입니다. 세 실행 모두 TF run은 전부 길이 1이고 최대값도 1이므로
+Task 337의 5~8 mode와 33+ 꼬리는 사라졌습니다. 다음 작업은 AOT 캐시 안의 60.72%가
+실제 유효 연산인지, Task 349의 240Hz tick을 기다리는 guest busy-wait/pacing인지
+주소·phase별로 나누는 것입니다. 이미 원본 명령을 host CPU가 직접 실행하는 구간이므로
+측정 없이 “번역 품질” 최적화로 바로 가지 않습니다.
+
+`span-unsafe`는 현재 복귀 시도의 21.90%지만 긴 TF walk를 만들지 않고, 커널 전이
+전체도 6.83%뿐입니다. 따라서 복귀 거절 **비율만으로** 다음 대상으로 삼지 않습니다.
+Task 348 safe-point trap은 breakpoint의 2.83%이며 지배 인구가 아닙니다.
 
 ## 최근 Task / Recent tasks
 
@@ -875,7 +908,261 @@ Task 346이 1번을 수행했고 **사전 등록 gate 네 개가 모두 성립�
 **현재 복귀 funnel(39,182 시도):** success 37,256(95.1%), `span-unsafe` 1,926(4.9%),
 그 외 0. **post-HLE 복귀 경로는 사실상 열렸습니다.**
 
-### Tasks 331~346 누적 / Cumulative
+### Task 347 — 현재 Release 실행 축 재귀속 / Current Release execution-axis re-attribution
+
+**확인됨:** 현재 HEAD에서 Release direct-loader를 60초씩 세 번 실행했습니다. 프레임은
+`1,124` 중앙값(1,112~1,141), Glide gate는 21.73%, VEH-exclusive는 9.70%,
+unaccounted는 67.53%입니다. 같은 기계의 새 교정값 `INT3 27,973` /
+single-step `30,188 cycle`을 현재 예외 수에 곱하면 커널 전이는 6.83%, 나머지 실제
+guest 실행 추정은 60.72%입니다.
+
+예외 중앙값은 single-step 128,378(약 33.15%), breakpoint 195,933(약 50.60%),
+AV 22,098(약 5.7%), other 40,822(약 10.5%, `0xC0000096`)입니다. TF run은 세 실행
+모두 전부 길이 1입니다. safe-point trap 중앙값 5,537은 breakpoint의 2.83%입니다.
+
+복귀 funnel은 success 78.10%, `span-unsafe` 21.90%로 Task 346 직후의 95.1%와
+달라졌지만, 실패가 긴 TF tail로 이어지지는 않습니다. `span-unsafe` count만으로
+우선순위를 정하지 않습니다.
+
+**계측 계약 정정:** `exception_dispatch_entry_count`는 AOT early handler 뒤에서
+시작하는 late-dispatch 계수입니다. 현재 census의 약 38%가 그 전에 처리됩니다.
+배타 census는 함수 진입부의 `kVehTotal` profile count와 대조하며 timeout 순간 열린
+scope 한 건만 허용합니다. 세 실행 모두 차이는 정확히 1이었습니다.
+
+[설계](../design/20260729-347-release-axis-reattribution.md) /
+[작업 지시](../work-orders/20260728-347-release-axis-reattribution.md) /
+[작업 로그](../work-logs/20260729-347-release-axis-reattribution.md)
+
+### Task 351 — AOT timer source 귀속 / AOT timer-source attribution
+
+**확인됨:** guest thread를 정지하지 않고 기존 240Hz AOT timer safe point가 실제로
+소비한 PIT tick을 원본 back-edge source별로 기록했습니다. Release 60초 세 번의
+프레임은 `1,114` 중앙값(1,111~1,123), source entry는 실행별 94~106개, overflow는
+모두 0이었습니다. profile-on 프레임 중앙값은 Task 347의 1,124보다 0.89% 낮지만
+기존 범위 1,112~1,141 안에 있어 관찰자 교란은 작습니다.
+
+전체 safe-point 귀속 tick 중앙값은 5,658개, 주기 환산 23.575초(39.29%)입니다.
+그러나 이 값은 **인터럽트가 전달된 back edge의 합이지 pacing 시간이 아닙니다.**
+정적 tick 의존성까지 확인된 source는 하나뿐입니다.
+
+```text
+0x0303DE81  call 0x0304318F  ; ISR이 증가시키는 0x032D9C80 읽기
+0x0303DE86  cmp eax, 2
+0x0303DE89  jl  0x0303DE81
+```
+
+원본 INT 8 ISR은 `0x03042F3C`에서 이 전역을 증가시킵니다. 이 source의 귀속 tick은
+1,414/1,416/1,430개, 중앙값 1,416개로 `5.900초`, wall-clock의 **9.83%**입니다.
+tick interval 일부에 loop 진입 전 유효 작업이 있을 수 있으므로 이는 timer pacing의
+**상한**입니다. Task 347의 guest 실행 유도값 60.72% 가운데 최대 16.19%에 해당하며,
+차감 뒤 **50.89%p**는 active/unresolved guest 실행의 보수적 잔여입니다. 이 잔여를
+전부 active work라고 확정하지는 않습니다.
+
+Task 348에서 정지를 일으켰던 `0x0302FA10`/`0x032D9C84` wait는 이번 정상 60초 route의
+129개 합집합 source에 나타나지 않았습니다. 상위의 렌더·메모리·일반 계산 back edge는
+tick이 그 지점에서 전달됐을 뿐 정적 tick 의존성이 없어 pacing으로 재분류하지 않았습니다.
+따라서 현재 guest 축의 다수는 240Hz busy-wait로 설명되지 않습니다.
+
+**Confirmed:** The non-suspending profile attributed PIT expirations consumed
+by existing 240 Hz AOT timer safe points to their exact original back-edge
+sources. Three 60-second Release runs produced median 1,114 frames, 94--106
+source entries per run, and zero overflow. The 0.89% median frame reduction
+from Task 347 remained inside its run range.
+
+All safe-point delivery contexts accounted for a median 5,658 ticks, or
+23.575 seconds when converted by the PIT period, but that is not pacing time.
+Only `0x0303DE89` has a statically confirmed dependency: it calls the reader of
+ISR-incremented global `0x032D9C80`, compares the result with two, and loops
+back to the read. Its median 1,416 attributed ticks equal a conservative
+5.900-second upper bound, or 9.83% of wall time. This is at most 16.19% of
+Task 347's derived 60.72% guest share, leaving 50.89 percentage points as a
+conservative active/unresolved guest remainder rather than proven active work.
+The former `0x0302FA10` wait did not appear on this normal route, and other
+leading back edges had no static tick dependency.
+
+[설계](../design/20260729-351-aot-timer-source-attribution.md) /
+[작업 지시](../work-orders/20260729-351-aot-timer-source-attribution.md) /
+[작업 로그](../work-logs/20260729-351-aot-timer-source-attribution.md)
+
+### Task 352 — 협력형 AOT back-edge 표본화 기각 / Cooperative AOT back-edge sampling rejected
+
+**확인됨:** guest thread를 정지하지 않고 7~23ms jitter 요청 뒤 처음 만나는 AOT
+back edge를 기록하는 prototype도 active guest instruction residency를 측정하지
+못합니다. 최종 Release 60초 세 번에서 arm/hit 중앙값은 2,599/2,599, overflow는 0,
+arm-to-hit p95는 0ms였습니다. 요청 보존·지연·반복성 gate는 통과했습니다.
+
+그러나 세 실행 모두 `0x030F5F41`이 평균 20.19%로 1위였습니다. 원본 코드는 다음
+`memset` 4-byte alignment prefix입니다.
+
+```text
+0x030F5F36  test al, 3
+0x030F5F38  jz   0x030F5F43
+0x030F5F3A  mov  [eax], dl
+0x030F5F3C  inc  eax
+0x030F5F3D  ror  edx, 8
+0x030F5F40  dec  ecx
+0x030F5F41  jnz  0x030F5F36
+```
+
+정렬 전 최대 세 번만 반복되므로 active instruction residency의 20%를 차지할 수
+없습니다. 이 표본은 임의 요청 시점의 EIP가 아니라 host/guest 복귀 뒤 **처음 만나는
+eligible back edge의 topology와 호출 빈도**에 편향됩니다. timer/sample request bit
+분리 전에는 `0x0305C227`이 1위였다는 사실도 request-clear timing이 순위를 바꿀 수
+있음을 보여 줍니다.
+
+같은 최종 바이너리에서 profile을 끈 control의 프레임 중앙값은 1,159
+(1,156~1,160), profile-on은 1,221(1,154~1,413)로 +5.35%였습니다. 추가 rendezvous가
+게임 phase도 움직였습니다. 기존 S1~S4만으로는 부족하며, 상위 source의 bounded work와
+표본 비중이 시간 관점에서 양립하는지 확인하는 정적 타당성 S5가 필요합니다. 이번 결과는
+S5를 실패했으므로 방법을 기각했고 prototype 코드는 남기지 않았습니다.
+
+**Confirmed:** A non-suspending prototype that recorded the first AOT back
+edge after a 7--23 ms jittered request also failed to measure active guest
+instruction residency. Three final 60-second Release runs retained median
+2,599/2,599 arms/hits, zero overflow, and 0 ms p95 latency, but
+`0x030F5F41` ranked first in every run at a mean 20.19%. That source is only
+the back edge of a `memset` alignment prefix bounded to three iterations. The
+distribution therefore measures first-eligible-backedge topology and call
+frequency after host/guest return, not request-time execution.
+
+The same final binary with profiling disabled produced median 1,159 frames
+against 1,221 profile-on, a +5.35% phase shift. Numeric request, latency, and
+repeatability gates S1--S4 are insufficient without a static plausibility
+gate S5. The method fails S5, is rejected, and leaves no retained prototype
+code.
+
+[설계](../design/20260729-352-cooperative-aot-backedge-sampling.md) /
+[작업 지시](../work-orders/20260729-352-cooperative-aot-backedge-sampling.md) /
+[작업 로그](../work-logs/20260729-352-cooperative-aot-backedge-sampling.md)
+
+### Task 353 — Glide ordinal 시간 귀속 / Glide ordinal time attribution
+
+**확인됨:** 동일 바이너리 Release 60초 control/profile 각 세 번에서 프레임 중앙값은
+1,048/1,041(-0.67%)이었고, ordinal cycle 합은 global Glide gate의 평균 99.970%를
+덮었습니다. active entry는 매 실행 39개, overflow/clamp는 0, 완료 ordinal count는
+handled gate와 일치했습니다.
+
+세 실행 모두 1위는 ordinal 85 `_GRBUFFERSWAP@4`였습니다.
+
+| ordinal | API | Glide gate 평균 | 현재 wall-clock 중앙값 | 주된 성격 |
+|---:|---|---:|---:|---|
+| 85 | `grBufferSwap` | **50.21%** | **약 17.32%** | backend 99.09% host work |
+| 112 | `grLfbLock` | 13.00% | 약 4.51% | host readback 후보 |
+| 73 | `grDrawTriangle` | 5.34% | 약 1.85% | 현재 첫 대상 아님 |
+| 113 | `grLfbUnlock` | 3.30% | 약 1.15% | upload/present 보조 |
+
+`grBufferSwap`은 3,120회, 호출당 평균 27,623,092 cycle이었고 backend interval은
+host work 99.09%, wake 0.41%, complete 0.50%였습니다. guest가 전달한
+`swap_interval=1`을 현재 backend가 사용하지 않은 채 host thread에서
+`SDL_GL_SwapWindow`를 호출합니다. 이 시간이 vsync인지 GPU flush/present stall인지
+아직 확정하지 않았습니다.
+
+주요 state setter 16개는 합계 Glide gate의 24.91%이며 backend 시간의 95.59%가
+wake+complete입니다. 공용 handoff 최적화 가치가 있지만 값과 순서를 보존하는
+batching/coalescing 설계가 먼저 필요합니다.
+
+**방법 규칙 추가:** 동기 handoff hot path에 별도 TSC 두 번을 더한 첫 profile은
+프레임 중앙값을 1,314→1,055(-19.7%)로 움직였습니다. backend snapshot 복사를
+제거한 뒤에도 3×10초가 -11.82%였습니다. global gate scope의 기존 timestamp를
+그대로 공유하자 3×10초 187/187, 최종 -0.67%가 됐습니다. 짧은 계측이라도
+timestamp 위치가 phase를 바꿀 수 있으므로 같은 cycle을 재사용할 수 있으면 새 clock
+read를 만들지 않습니다.
+
+**Confirmed:** The same-binary three-run 60-second Release A/B produced
+1,048/1,041 median frames (-0.67%), mean 99.970% global Glide-cycle coverage,
+39 active entries per run, zero overflow/clamps, and completed counts matching
+handled gates. Ordinal 85 `grBufferSwap` ranked first in every run at 50.21%
+of the gate and about 17.32% of wall time. Across 3,120 calls it averaged
+27,623,092 cycles; 99.09% of its backend interval was host work.
+
+The backend currently ignores the received `swap_interval=1` and calls
+`SDL_GL_SwapWindow`; vsync versus another present/flush stall is unresolved.
+Sixteen state setters together hold 24.91% of the gate, with 95.59% of their
+backend time in wake plus completion. The initial extra-clock profiler shifted
+median frames by -19.7%; reusing the existing global gate timestamps reduced
+observer impact to -0.67%.
+
+[설계](../design/20260729-353-glide-ordinal-time-attribution.md) /
+[작업 지시](../work-orders/20260729-353-glide-ordinal-time-attribution.md) /
+[작업 로그](../work-logs/20260729-353-glide-ordinal-time-attribution.md)
+
+### Task 354 — Glide buffer swap 시간 분해 / Glide buffer-swap time decomposition
+
+**확인됨:** 동일 바이너리 Release 60초 control/profile 각 세 번에서 프레임 중앙값은
+1,296/1,339(+3.32%)였고 모든 Task 347 semantic invariant와 observer ±5% gate를
+통과했습니다. 4,030회 swap은 전부 성공했고 failure/clamp는 0, 내부 total은
+ordinal 85 host-work를 평균 99.940% 덮었습니다.
+
+| phase | 내부 swap 평균 share |
+|---|---:|
+| setup | 0.006% |
+| `SDL_GL_SwapWindow` | **99.589%** |
+| FPS accounting | 0.379% |
+| finalize | 0.027% |
+
+요청 interval은 4,030회 모두 1이며 실제 `SDL_GL_GetSwapInterval`도 세 실행 모두
+1이었습니다. 현재 host에서는 backend가 값을 명시적으로 설정하지 않아도 guest
+요청과 실제 context가 일치합니다. present의 current wall-clock 비중은 실행별
+9.66%/9.89%/4.91%, 중앙값 약 9.66%였습니다.
+
+max present는 실행별 평균의 118~173배로 tail이 있지만 aggregate만으로 vblank miss,
+GPU/driver stall, scheduling을 구분하지 않습니다. 원본 요청과 실제 interval이
+일치하므로 성능을 위해 동기화를 끄거나 프레임을 생략하지 않습니다. 다음 실행 가능한
+HLE 축은 `grLfbLock` readback입니다.
+
+**Confirmed:** The three-run same-binary 60-second Release A/B produced
+1,296/1,339 median control/profile frames (+3.32%) and passed all Task 347
+semantic and observer gates. All 4,030 swaps succeeded with zero
+failures/clamps, and internal totals covered mean 99.940% of ordinal 85 host
+work. `SDL_GL_SwapWindow` averaged 99.589% of internal swap time.
+
+Every guest request used interval 1 and SDL reported interval 1 in all runs.
+Present occupied 9.66%/9.89%/4.91% of current profile wall time. Its maximum
+sample was 118--173 times the per-run mean, but aggregate data cannot classify
+that tail. Since actual and requested intervals match, synchronization is not
+disabled and original frames are not dropped; `grLfbLock` readback is next.
+
+[설계](../design/20260729-354-glide-buffer-swap-time-decomposition.md) /
+[작업 지시](../work-orders/20260729-354-glide-buffer-swap-time-decomposition.md) /
+[작업 로그](../work-logs/20260729-354-glide-buffer-swap-time-decomposition.md)
+
+### Task 355 — 현재 성능 다음 작업 / Current performance next actions
+
+Task 354의 최신 동일 실행을 다시 합산했습니다. control 중앙값은 guest 실행 54.32%,
+Glide 30.63%, VEH-exclusive 7.49%, 커널 전이 6.98%입니다. matching profile에서
+`grLfbLock`은 Glide 18.37%(wall 약 5.19%), handoff 지배 API 17개는 Glide
+42.85%(wall 약 12.10%)이며 해당 집합 backend의 92.88%가 wake+complete입니다.
+
+다음 작업을 고정합니다.
+
+1. **Task 356:** `grLfbLock`의 resize/readback/scale·flip/565 encode/info write와
+   seed→unlock guest overwrite coverage를 분해합니다.
+2. **Task 357:** handoff 지배 API의 frame-local 순서와 값 변화를 관측하고
+   semantics-preserving batching 가능성만 판정합니다.
+3. **Task 358:** 외부 PMU/CPU sampling의 cache→guest 역귀속을 우선 검토하고, 불가능할
+   때만 observer gate가 있는 translated-block 표본을 설계합니다.
+
+WRITE_ONLY lock의 전체 overwrite가 증명되기 전에는 readback을 제거하지 않고, 호출
+값과 순서를 확인하기 전에는 setter를 합치지 않습니다. TF/VEH는 회귀 계측만 유지하며
+세 작업 뒤 전체 축에서 다시 지배적일 때만 성능 대상으로 복귀합니다.
+
+**Latest matched baseline:** control medians are 54.32% guest execution,
+30.63% Glide, 7.49% VEH-exclusive work, and 6.98% kernel transitions.
+The matching profile places `grLfbLock` at 18.37% of Glide (about 5.19% wall)
+and seventeen handoff-dominated APIs at 42.85% of Glide (about 12.10% wall),
+with 92.88% of that backend time in wake plus completion.
+
+Task 356 decomposes LFB lock phases and guest overwrite coverage; Task 357
+records frame-local handoff order and values before any batching decision;
+Task 358 prefers external PMU/CPU sampling with cache-to-guest mapping and
+allows an instrumented fallback only under an observer gate. Readback and
+state calls are not removed before their semantic preconditions are proven.
+
+[설계](../design/20260729-355-current-performance-next-actions.md) /
+[작업 지시](../work-orders/20260729-355-current-performance-next-actions.md) /
+[작업 로그](../work-logs/20260729-355-current-performance-next-actions.md)
+
+### Tasks 331~355 누적 / Cumulative
 
 | Task | 고친 것 | 효과 |
 |---|---|---|
@@ -885,9 +1172,17 @@ Task 346이 1번을 수행했고 **사전 등록 gate 네 개가 모두 성립�
 | 335 | gate마다의 중복 `PumpEvents` 제거 | gate -3.5%p, 프레임 +5.5% |
 | 342 | quarantine을 반복 쓰기에만 | **프레임 2.21배** |
 | 344 | quarantine 판정 주소별 | quarantine 0(프레임 변화 없음) |
-| 346 | 세그먼트 쓰기 뒤 재접기 후 복귀 | 복귀 success 95.1%, 프레임 +10.6% |
+| 346 | 세그먼트 쓰기 뒤 재접기 후 복귀 | 당시 복귀 success 95.1%, 프레임 +10.6% |
+| 347 | 현재 Release 축 3회 재귀속 | guest 실행 60.72%, Glide 21.73%, 전이 6.83% |
+| 351 | safe-point별 소비 PIT tick 귀속 | 확정 timer pacing 상한 9.83%, guest 잔여 50.89%p |
+| 352 | 협력형 first-backedge 표본화 검증 | bounded loop 20.19%로 topology 편향 확인, 기각 |
+| 353 | Glide gate ordinal별 cycle/rendezvous 귀속 | `grBufferSwap` 50.21%, wall-clock 약 17.32% |
+| 354 | `grBufferSwap` host work 분해 | SDL present 99.589%, 요청/실제 interval 모두 1 |
+| 355 | 최신 matched 성능 축과 다음 작업 기록 | Task 356 LFB → 357 handoff → 358 guest residency |
 
-**Release 60초 프레임: Task 331 시점 `275` → 현재 중앙값 `3,456`(약 12.6배).**
+**역사적 Release 60초 프레임:** Task 331 `275` → Task 346 중앙값 `3,456`.
+Task 348/349가 타이머 전달 의미와 cadence를 바꿨으므로 현재 Task 347의 `1,124`와
+처리량 배수로 직접 비교하지 않습니다.
 
 측정만 한 작업: 336(예외 전이 재가격), 337(census), 339~341(복귀 차단 추적),
 343(특권 명령 트랩), 345(`SUPERBLOCK` 재판정 — 기각).
@@ -899,14 +1194,21 @@ Task 346이 1번을 수행했고 **사전 등록 gate 네 개가 모두 성립�
 4. 실행 간 편차 18% — 단일 표본으로 판정하지 않는다(335).
 
 **다음 순서:**
-1. **실행 축 재귀속** — 복귀가 열려 예외 구성이 크게 바뀌었으므로 Task 336의 커널 전이
-   비중과 Task 337의 구간 분포가 낡았습니다. **대상 선정 전에 다시 잽니다.**
-   계획: [20260728-347-release-axis-reattribution.md](../work-orders/20260728-347-release-axis-reattribution.md)
-2. `span-unsafe` 1,926(4.9%) — 남은 유일한 복귀 거절 사유.
-3. (보류) `SUPERBLOCK` — emitter가 far call을 어떤 kind로 분류하는지부터.
+1. **Task 356 `grLfbLock` 분해** — 최신 matching profile에서 Glide 18.37%,
+   wall 약 5.19%입니다. guest overwrite coverage까지 확인합니다.
+2. **Task 357 Glide handoff census** — 최신 handoff 지배 API 17개는 Glide 42.85%,
+   wall 약 12.10%, backend wake+complete 92.88%입니다.
+3. **Task 358 guest residency** — 최신 control의 가장 큰 축 54.32%를 편향 없는
+   cache→guest sampling으로 귀속합니다.
+4. **swap interval portability와 present tail은 조건부** — 현재 요청/실제 interval은
+   모두 1입니다. 다른 host에서 불일치하거나 cadence 결함이 재현될 때 명시적 interval
+   적용과 latency histogram을 별도 fidelity A/B로 진행합니다.
+5. `span-unsafe`는 복귀 funnel의 21.90%지만 TF run이 모두 1이고 전이 전체가 6.83%라
+   count만으로 최적화하지 않습니다.
+6. (보류) `SUPERBLOCK` — emitter가 far call을 어떤 kind로 분류하는지부터.
 
-**주의:** 이 문서의 Task 336·337 수치는 Task 342/344/346 **이전** 축입니다. 재귀속
-전까지 그대로 인용하지 마십시오.
+**주의:** Task 336·337 수치는 Task 347에서 대체됐습니다. 현재 대상 선정에 그대로
+인용하지 마십시오.
 
 ---
 

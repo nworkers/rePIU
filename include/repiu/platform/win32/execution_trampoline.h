@@ -10,7 +10,9 @@
 #include "repiu/platform/win32/single_step_hotspot_profile.h"
 #include "repiu/platform/win32/execution_time_profile.h"
 #include "repiu/platform/win32/aot_worker_timing.h"
+#include "repiu/platform/win32/glide_buffer_swap_timing.h"
 #include "repiu/platform/win32/glide_gate_timing.h"
+#include "repiu/platform/win32/glide_ordinal_timing.h"
 #include "repiu/hle/dos_file_system.h"
 #include "repiu/hle/glide_implementation_issue.h"
 #include "repiu/exe/dos16m_bound_module.h"
@@ -549,6 +551,10 @@ struct Win32MinimalExecutionAttempt
     Win32AotWorkerTimingSnapshot aot_worker_timing;
     // Task 333: the Glide host-thread rendezvous split into waiting and work.
     Win32GlideGateTimingSnapshot glide_gate_timing;
+    // Task 353: decoded gate and rendezvous time attributed by Glide ordinal.
+    Win32GlideOrdinalTimingSnapshot glide_ordinal_timing;
+    // Task 354: guest grBufferSwap host work split around SDL presentation.
+    Win32GlideBufferSwapTimingSnapshot glide_buffer_swap_timing;
     std::uint32_t native_fast_path_entry_count = 0;
     std::uint32_t native_fast_path_return_count = 0;
     std::uint32_t native_fast_path_cancel_count = 0;
@@ -625,6 +631,7 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t aot_timer_safe_point_trap_count = 0;
     std::uint32_t aot_timer_safe_point_injected_count = 0;
     std::uint32_t aot_timer_safe_point_deferred_count = 0;
+    Win32AotTimerSourceProfile aot_timer_source_profile;
     // `entry` counts C++ resolver entries; `attempt` is derived as
     // success + fallback so the accounting invariant also holds for a sample
     // whose graceful timeout landed inside the resolver (Task 281 open item).
@@ -858,6 +865,13 @@ struct Win32MinimalExecutionAttempt
         std::string name;
     };
     std::vector<GlideCallObservation> glide_calls;
+    struct GlideOrdinalTimingObservation
+    {
+        std::uint16_t ordinal = 0;
+        std::string name;
+        Win32GlideOrdinalTimingEntry timing;
+    };
+    std::vector<GlideOrdinalTimingObservation> glide_ordinal_timings;
     bool mscdex_available = false;
     bool cd_audio_available = false;
     std::uint32_t mscdex_track_count = 0;

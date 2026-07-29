@@ -1669,6 +1669,53 @@ void PrintExecutionAttempt(
                     gate.work_cycles / gate.rendezvous_count);
             }
         }
+        {
+            const auto& ordinal = attempt.glide_ordinal_timing;
+            logger.info(
+                "Win32 Glide ordinal timing enabled/entries/completed/"
+                "overflow/clamped: {}/{}/{}/{}/{}",
+                ordinal.enabled, ordinal.active_entry_count,
+                ordinal.completed_gate_count, ordinal.overflow_count,
+                ordinal.clamped_sample_count);
+            logger.info(
+                "Win32 Glide ordinal cycles gate/queue/wake/work/complete/"
+                "residual/backend-total/direct-work: {}/{}/{}/{}/{}/{}/{}/{}",
+                ordinal.gate_cycles, ordinal.queue_cycles,
+                ordinal.wake_cycles, ordinal.work_cycles,
+                ordinal.complete_cycles, ordinal.residual_cycles,
+                ordinal.backend_total_cycles,
+                ordinal.direct_work_cycles);
+            logger.info(
+                "Win32 Glide ordinal backend rendezvous/direct: {}/{}",
+                ordinal.rendezvous_count, ordinal.direct_count);
+        }
+        {
+            const auto& swap = attempt.glide_buffer_swap_timing;
+            logger.info(
+                "Win32 Glide buffer swap timing enabled/calls/success/failure/"
+                "clamped: {}/{}/{}/{}/{}",
+                swap.enabled, swap.call_count, swap.success_count,
+                swap.failure_count, swap.clamped_sample_count);
+            logger.info(
+                "Win32 Glide buffer swap cycles setup/present/accounting/"
+                "finalize/total/max-present: {}/{}/{}/{}/{}/{}",
+                swap.setup_cycles, swap.present_cycles,
+                swap.accounting_cycles, swap.finalize_cycles,
+                swap.total_cycles, swap.max_present_cycles);
+            logger.info(
+                "Win32 Glide buffer swap requested interval "
+                "zero/one/other/min/max/last: {}/{}/{}/{}/{}/{}",
+                swap.requested_zero_count, swap.requested_one_count,
+                swap.requested_other_count, swap.requested_minimum,
+                swap.requested_maximum, swap.requested_last);
+            logger.info(
+                "Win32 Glide buffer swap SDL interval "
+                "queries/success/failure/value: {}/{}/{}/{}",
+                swap.sdl_interval_query_count,
+                swap.sdl_interval_query_success_count,
+                swap.sdl_interval_query_failure_count,
+                swap.observed_sdl_interval);
+        }
         if (total != 0U)
         {
             logger.info(
@@ -1777,6 +1824,37 @@ void PrintExecutionAttempt(
                 attempt.aot_timer_safe_point_trap_count,
                 attempt.aot_timer_safe_point_injected_count,
                 attempt.aot_timer_safe_point_deferred_count);
+    logger.info(
+        "Win32 AOT timer source profile enabled/entries/overflow/"
+        "attributed-ticks: {}/{}/{}/{}",
+        attempt.aot_timer_source_profile.enabled,
+        attempt.aot_timer_source_profile.entry_count,
+        attempt.aot_timer_source_profile.overflow_count,
+        attempt.aot_timer_source_profile.attributed_tick_count);
+    {
+        const auto timer_sources =
+            repiu::platform::win32::
+                BuildAotTimerSourceProfileTopEntries(
+                    attempt.aot_timer_source_profile,
+                    attempt.aot_timer_source_profile.entry_count);
+        for (std::size_t index = 0;
+             index < timer_sources.size(); ++index)
+        {
+            const auto& source = timer_sources[index];
+            logger.info(
+                "Win32 AOT timer source top {} "
+                "guest/trap/injected/deferred/attributed-ticks/"
+                "first-tick/last-tick: {}/{}/{}/{}/{}/{}/{}",
+                index + 1U,
+                Hex32(source.guest_source),
+                source.trap_count,
+                source.injected_count,
+                source.deferred_count,
+                source.attributed_tick_count,
+                source.first_global_tick,
+                source.last_global_tick);
+        }
+    }
     logger.info(
         "Win32 AOT-DBT return entry/attempt/success/fallback: {}/{}/{}/{}",
         attempt.aot_dbt_return_entry_count,
@@ -2577,6 +2655,22 @@ void PrintExecutionAttempt(
                     Hex32(call.first_stack[5]),
                     Hex32(call.first_stack[6]),
                     Hex32(call.first_stack[7]));
+    }
+    for (const auto& observation : attempt.glide_ordinal_timings)
+    {
+        const auto& timing = observation.timing;
+        logger.info(
+            "Win32 Glide ordinal timing: ordinal={} name={} count={} "
+            "gate={} max={} rendezvous={} queue={} wake={} work={} "
+            "complete={} residual={} backend_total={} direct={} "
+            "direct_work={}",
+            observation.ordinal, observation.name, timing.count,
+            timing.gate_cycles, timing.max_gate_cycles,
+            timing.rendezvous_count, timing.queue_cycles,
+            timing.wake_cycles, timing.work_cycles,
+            timing.complete_cycles, timing.residual_cycles,
+            timing.backend_total_cycles, timing.direct_count,
+            timing.direct_work_cycles);
     }
     logger.info("Win32 MSCDEX available/audio/tracks/requests/current LBA: {}/{}/{}/{}/{}",
                 attempt.mscdex_available ? "true" : "false",

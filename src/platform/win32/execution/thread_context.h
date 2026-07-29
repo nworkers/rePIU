@@ -8,6 +8,7 @@
 #include "repiu/platform/win32/cd_audio_wave_out.h"
 #include "repiu/platform/win32/ymz280b_audio_out.h"
 #include "repiu/platform/win32/glide_opengl_backend.h"
+#include "repiu/platform/win32/glide_ordinal_timing.h"
 #include "repiu/hle/linexe_call_gate.h"
 #include "repiu/hle/glide_hle.h"
 #include "repiu/hle/glide_lfb.h"
@@ -529,6 +530,8 @@ struct ThreadContext
     std::array<std::uint32_t, 256> glide_call_counts = {};
     std::array<std::array<std::uint32_t, 8>, 256> glide_first_stacks = {};
     std::array<std::string, 256> glide_call_names = {};
+    // Task 353: decoded gate and existing backend rendezvous time by ordinal.
+    Win32GlideOrdinalTimingProfile glide_ordinal_timing;
     std::uint32_t glide_window_open_count = 0;
     std::uint32_t glide_logical_width = 0;
     std::uint32_t glide_logical_height = 0;
@@ -812,7 +815,10 @@ struct ThreadContext
     std::array<DpmiInterruptVectorShadow, 256> dpmi_interrupt_vectors = {};
     repiu::hle::PitChannel0 pit_channel0;
     std::atomic<bool> timer_interrupt_pending{false};
-    std::uint32_t last_timer_injection_ticks = 0;
+    std::atomic<std::uint32_t> last_timer_injection_ticks{0};
+    // Task 351: expired PIT ticks not yet attributed to the safe-point source
+    // that successfully delivers them. Deferred traps leave this untouched.
+    std::atomic<std::uint32_t> timer_interrupt_due_ticks{0};
     std::uint32_t timer_interrupt_chain_hle_count = 0;
     std::uint32_t timer_interrupt_chain_hle_source = 0;
     std::uint32_t timer_interrupt_chain_hle_pointer = 0;

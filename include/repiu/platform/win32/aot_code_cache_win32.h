@@ -5,6 +5,7 @@
 #include "repiu/platform/win32/aot_boundary_provenance.h"
 #include "repiu/platform/win32/aot_cache_address_index.h"
 #include "repiu/platform/win32/aot_worker_timing.h"
+#include "repiu/platform/win32/aot_timer_source_profile.h"
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/selector_table.h"
 
@@ -66,6 +67,9 @@ struct Win32AotCodeCachePlacement
     std::unordered_map<std::uint32_t, AotCacheBreakpointProvenance>
         breakpoint_provenance_by_cache_offset;
     std::unordered_set<std::uint32_t> timer_safe_point_cache_offsets;
+    std::unordered_map<std::uint32_t, std::uint32_t>
+        timer_safe_point_guest_source_by_breakpoint_offset;
+    Win32AotTimerSourceProfile timer_source_profile;
     std::uint32_t next_generation = 1;
     std::uint32_t indirect_inline_cache_entry_count =
         runtime::kDefaultAotIndirectInlineCacheEntryCount;

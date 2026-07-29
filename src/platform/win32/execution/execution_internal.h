@@ -42,7 +42,10 @@ bool ResolveSegmentLinearRange(ThreadContext* context, std::uint16_t selector,
                                bool writable, std::uint32_t* linear_address);
 
 bool IsGuestInstructionPointer(const ThreadContext* context, std::uint32_t eip);
-void InjectPendingInterrupts(CONTEXT* win32_context, ThreadContext* context);
+// Returns the number of expired PIT ticks consumed by a successful injection.
+// Zero means no interrupt was injected.
+std::uint32_t InjectPendingInterrupts(CONTEXT* win32_context,
+                                      ThreadContext* context);
 
 bool DispatchGuestHleInstruction(CONTEXT* win32_context,
                                  ThreadContext* context);

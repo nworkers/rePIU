@@ -136,7 +136,8 @@ class ExecutionTimeScope
 {
 public:
     ExecutionTimeScope(Win32ExecutionTimeProfile* profile,
-                       ExecutionTimeBucket bucket);
+                       ExecutionTimeBucket bucket,
+                       std::uint64_t* completed_cycles = nullptr);
     ~ExecutionTimeScope();
 
     ExecutionTimeScope(const ExecutionTimeScope&) = delete;
@@ -146,6 +147,7 @@ private:
     Win32ExecutionTimeProfile* profile_ = nullptr;
     ExecutionTimeBucket bucket_ = ExecutionTimeBucket::kGuestRunTotal;
     std::uint64_t start_cycles_ = 0;
+    std::uint64_t* completed_cycles_ = nullptr;
     bool inside_veh_ = false;
     bool owns_veh_depth_ = false;
 };
