@@ -74,6 +74,164 @@ bool GlideOpenGlBackend::GlideSetterPhaseEnabled()
     return glide_setter_phase_enabled_;
 }
 
+// Task 369: same one-time resolution. Off by default, so the setter bodies stop
+// issuing the pipeline flush that Task 364's phase instrument measured at 99.81%
+// of `grDepthMask` cost.
+bool GlideOpenGlBackend::GlideGlErrorCheckEnabled()
+{
+    if (!glide_gl_error_check_resolved_)
+    {
+        glide_gl_error_check_enabled_ = GlideGlErrorCheckPolicyEnabled();
+        glide_gl_error_check_resolved_ = true;
+    }
+    return glide_gl_error_check_enabled_;
+}
+
+#if defined(_WIN32)
+namespace
+{
+
+// GL_KHR_debug constants. `SDL_opengl.h` here is the 1.1 header, so the tokens
+// are spelled out rather than assumed present.
+constexpr GLenum kGlDebugOutput = 0x92E0;
+constexpr GLenum kGlDebugOutputSynchronous = 0x8242;
+constexpr GLenum kGlDebugTypeError = 0x824C;
+constexpr GLenum kGlDebugSeverityNotification = 0x826B;
+constexpr GLenum kGlDontCare = 0x1100;
+
+using GlDebugProc = void(APIENTRY*)(GLenum source,
+                                    GLenum type,
+                                    GLuint id,
+                                    GLenum severity,
+                                    GLsizei length,
+                                    const char* message,
+                                    const void* user_param);
+using GlDebugMessageCallbackProc =
+    void(APIENTRY*)(GlDebugProc callback, const void* user_param);
+using GlDebugMessageControlProc = void(APIENTRY*)(GLenum source,
+                                                  GLenum type,
+                                                  GLenum severity,
+                                                  GLsizei count,
+                                                  const GLuint* ids,
+                                                  GLboolean enabled);
+
+// Same validation the shader module uses: `wglGetProcAddress` reports failure as
+// 0, 1, 2, 3, or -1 rather than only null.
+template <typename Function>
+bool ResolveOpenGlFunction(const char* name, Function* function)
+{
+    void* address = SDL_GL_GetProcAddress(name);
+    const auto value = reinterpret_cast<std::uintptr_t>(address);
+    if (address == nullptr || value <= 3U || value == ~std::uintptr_t{0})
+    {
+        return false;
+    }
+    *function = reinterpret_cast<Function>(address);
+    return true;
+}
+
+// A named function rather than a lambda so the driver's calling convention is
+// stated rather than inferred from a conversion.
+void APIENTRY GlideGlDebugTrampoline(GLenum /*source*/,
+                                     GLenum type,
+                                     GLuint id,
+                                     GLenum severity,
+                                     GLsizei length,
+                                     const char* message,
+                                     const void* user_param)
+{
+    auto* backend =
+        static_cast<GlideOpenGlBackend*>(const_cast<void*>(user_param));
+    if (backend == nullptr)
+    {
+        return;
+    }
+    // Drivers emit performance and notification chatter through the same
+    // channel; only a real error supplies the retained first message.
+    const bool is_error = type == kGlDebugTypeError &&
+        severity != kGlDebugSeverityNotification;
+    backend->RecordGlDebugMessage(static_cast<std::uint32_t>(id), is_error,
+                                  message,
+                                  length < 0 ? 0U
+                                             : static_cast<std::size_t>(length));
+}
+
+}  // namespace
+#endif
+
+bool GlideOpenGlBackend::InstallGlDebugOutput()
+{
+#if !defined(_WIN32)
+    return false;
+#else
+    GlDebugMessageCallbackProc debug_message_callback = nullptr;
+    if (!ResolveOpenGlFunction("glDebugMessageCallback",
+                               &debug_message_callback))
+    {
+        return false;
+    }
+    // Task 370: this must stay disabled. Synchronous debug output reinstates
+    // exactly the pipeline stall the per-frame glGetError was removed for.
+    glDisable(kGlDebugOutputSynchronous);
+    glEnable(kGlDebugOutput);
+
+    GlDebugMessageControlProc debug_message_control = nullptr;
+    if (ResolveOpenGlFunction("glDebugMessageControl", &debug_message_control))
+    {
+        debug_message_control(kGlDontCare, kGlDontCare, kGlDontCare, 0, nullptr,
+                              GL_TRUE);
+    }
+
+    debug_message_callback(&GlideGlDebugTrampoline, this);
+    glide_gl_error_policy_.debug_output_installed = true;
+    return true;
+#endif
+}
+
+void GlideOpenGlBackend::RunGlErrorFrameCheck()
+{
+#if defined(_WIN32)
+    if (glide_gl_error_frame_interval_ == 0U)
+    {
+        return;
+    }
+    ++glide_gl_error_frame_counter_;
+    if (glide_gl_error_frame_counter_ < glide_gl_error_frame_interval_)
+    {
+        return;
+    }
+    glide_gl_error_frame_counter_ = 0;
+    std::uint32_t drain_iterations = 0;
+    std::uint32_t first_error_code = 0;
+    for (GLenum code = glGetError(); code != GL_NO_ERROR; code = glGetError())
+    {
+        ++drain_iterations;
+        if (first_error_code == 0U)
+        {
+            first_error_code = static_cast<std::uint32_t>(code);
+        }
+        // A stuck context would otherwise spin here forever.
+        if (drain_iterations >= 32U)
+        {
+            break;
+        }
+    }
+    RecordGlideGlErrorFrameCheck(
+        &glide_gl_error_policy_, first_error_code, drain_iterations);
+#endif
+}
+
+bool GlideOpenGlBackend::CheckGlErrorIfEnabled()
+{
+#if !defined(_WIN32)
+    return true;
+#else
+    // Short-circuits before the call, not after it: the cost being removed is
+    // the driver round trip inside `glGetError`, not the comparison.
+    return !GlideGlErrorCheckEnabled() || glGetError() == GL_NO_ERROR;
+#endif
+}
+
 void GlideOpenGlBackend::InvokeOnHostThread(std::function<void()> command)
 {
     const bool timing =
@@ -420,6 +578,34 @@ bool GlideOpenGlBackend::OpenWindowed(
     render_context_ = render_context;
     logical_width_ = logical_width;
     logical_height_ = logical_height;
+    // Task 371: measurement-only override. With the variable unset no SDL call is
+    // made at all, so the default path keeps whatever SDL or the driver chose --
+    // which is what every capture so far has actually been running under, since
+    // the guest's own `grBufferSwap` interval has never been applied.
+    std::int32_t requested_interval = 0;
+    if (TryReadGlideSwapIntervalOverride(&requested_interval))
+    {
+        glide_swap_interval_policy_.override_requested = true;
+        glide_swap_interval_policy_.requested_interval = requested_interval;
+        glide_swap_interval_policy_.applied =
+            SDL_GL_SetSwapInterval(static_cast<int>(requested_interval));
+        int effective = 0;
+        glide_swap_interval_policy_.effective_valid =
+            SDL_GL_GetSwapInterval(&effective);
+        glide_swap_interval_policy_.effective_interval =
+            static_cast<std::int32_t>(effective);
+    }
+    // Task 370: prefer asynchronous reporting. When the driver provides it the
+    // frame check is removed entirely; otherwise it falls back to sampling. An
+    // explicit interval wins over both so a run can force either behaviour.
+    const bool debug_output_installed = InstallGlDebugOutput();
+    glide_gl_error_frame_interval_ =
+        debug_output_installed ? 0U : kDefaultGlideGlErrorFrameInterval;
+    std::uint32_t configured_interval = 0;
+    if (TryReadGlideGlErrorFrameInterval(&configured_interval))
+    {
+        glide_gl_error_frame_interval_ = configured_interval;
+    }
     if (!shader_.Initialize())
     {
         fprintf(stderr, "[repiu-live-debug] Glide OpenWindowed failed to initialize shader, falling back to dummy mode\n");
@@ -674,6 +860,12 @@ bool GlideOpenGlBackend::BufferSwapOnHostThread(
         return false;
     }
     RecordPresentedFrame();
+    // Task 370: this was a check on every frame in Task 369, on the assumption
+    // that the present had already synchronised. It had not -- the swap queues
+    // the flip in 44 microseconds without draining -- so the check became the
+    // frame's only synchronisation point at 3.64 ms, 10.71% of wall. It is now
+    // inert whenever the debug callback is installed, and sampled otherwise.
+    RunGlErrorFrameCheck();
     const std::uint64_t accounting_end_cycles =
         swap_timing != nullptr ? ReadGlideBufferSwapTimingCycles() : 0U;
     message_ = "Glide buffer swapped";
@@ -1223,7 +1415,7 @@ bool GlideOpenGlBackend::SetColorMask(bool rgb, bool alpha)
                 rgb ? GL_TRUE : GL_FALSE,
                 alpha ? GL_TRUE : GL_FALSE);
     message_ = "Glide color mask applied to OpenGL";
-    return glGetError() == GL_NO_ERROR;
+    return CheckGlErrorIfEnabled();
 #endif
 }
 
@@ -1259,7 +1451,7 @@ bool GlideOpenGlBackend::SetRenderBuffer(std::uint32_t buffer)
     message_ = buffer == kGlideBackBuffer
         ? "Glide back buffer selected"
         : "Glide front buffer selected";
-    return glGetError() == GL_NO_ERROR;
+    return CheckGlErrorIfEnabled();
 #endif
 }
 
@@ -1300,7 +1492,10 @@ bool GlideOpenGlBackend::SetDepthMask(bool enabled)
     glDepthMask(enabled ? GL_TRUE : GL_FALSE);
     const std::uint64_t phase_error_start =
         phase ? ReadGlideGateTimingCycles() : 0U;
-    const bool no_error = glGetError() == GL_NO_ERROR;
+    // Task 369: the phase timestamps stay in place on purpose. With the policy
+    // off this interval collapses to nothing, and that collapse is the evidence
+    // the change took effect on a live capture.
+    const bool no_error = CheckGlErrorIfEnabled();
     if (phase)
     {
         // Depth mask has no leading drain, so entry and apply-start are the
@@ -1353,7 +1548,7 @@ bool GlideOpenGlBackend::SetDepthBufferMode(std::uint32_t mode)
         glDisable(GL_DEPTH_TEST);
         message_ = "Glide depth buffer disabled";
     }
-    return glGetError() == GL_NO_ERROR;
+    return CheckGlErrorIfEnabled();
 #endif
 }
 
@@ -1509,9 +1704,15 @@ bool GlideOpenGlBackend::SetAlphaBlend(
     const std::uint64_t phase_entry =
         phase ? ReadGlideGateTimingCycles() : 0U;
     std::uint32_t drain_iterations = 0;
-    while (glGetError() != GL_NO_ERROR)
+    // Task 369: the leading drain exists only to make the trailing check
+    // meaningful, so it follows the same policy. Draining is itself a flush --
+    // the phase instrument measured this loop at 62,653 cycles per call.
+    if (GlideGlErrorCheckEnabled())
     {
-        ++drain_iterations;
+        while (glGetError() != GL_NO_ERROR)
+        {
+            ++drain_iterations;
+        }
     }
     const std::uint64_t phase_apply_start =
         phase ? ReadGlideGateTimingCycles() : 0U;
@@ -1526,7 +1727,7 @@ bool GlideOpenGlBackend::SetAlphaBlend(
     }
     const std::uint64_t phase_error_start =
         phase ? ReadGlideGateTimingCycles() : 0U;
-    const bool no_error = glGetError() == GL_NO_ERROR;
+    const bool no_error = CheckGlErrorIfEnabled();
     if (phase)
     {
         RecordGlideSetterPhaseSample(
@@ -1574,7 +1775,7 @@ bool GlideOpenGlBackend::SetAlphaTestFunction(std::uint32_t function)
         glAlphaFunc(GL_NEVER + function, alpha_test_reference_);
         message_ = "Glide alpha test enabled in OpenGL";
     }
-    return glGetError() == GL_NO_ERROR;
+    return CheckGlErrorIfEnabled();
 #endif
 }
 
@@ -1604,7 +1805,7 @@ bool GlideOpenGlBackend::SetAlphaTestReferenceValue(std::uint32_t reference_valu
     {
         glAlphaFunc(GL_NEVER + alpha_test_function_, alpha_test_reference_);
     }
-    return glGetError() == GL_NO_ERROR;
+    return CheckGlErrorIfEnabled();
 #endif
 }
 
@@ -1634,7 +1835,7 @@ bool GlideOpenGlBackend::SetDepthBufferFunction(std::uint32_t function)
     }
     glDepthFunc(GL_NEVER + function);
     message_ = "Glide depth comparison applied to OpenGL";
-    return glGetError() == GL_NO_ERROR;
+    return CheckGlErrorIfEnabled();
 #endif
 }
 
@@ -1669,7 +1870,7 @@ bool GlideOpenGlBackend::SetFogMode(std::uint32_t mode)
         ? (mode == 0U ? "Glide fog disabled in GLSL"
                       : "Glide table fog enabled in GLSL")
         : "failed to apply Glide fog mode to GLSL";
-    return applied && glGetError() == GL_NO_ERROR;
+    return applied && CheckGlErrorIfEnabled();
 #endif
 }
 
@@ -1763,7 +1964,7 @@ bool GlideOpenGlBackend::SetClipWindow(std::uint32_t min_x,
     ApplyDrawableViewport();
     glEnable(GL_SCISSOR_TEST);
     message_ = "full Glide clip window applied to OpenGL";
-    return glGetError() == GL_NO_ERROR;
+    return CheckGlErrorIfEnabled();
 #endif
 }
 
@@ -1792,7 +1993,7 @@ bool GlideOpenGlBackend::SetCullMode(std::uint32_t mode)
     }
     glDisable(GL_CULL_FACE);
     message_ = "Glide culling disabled in OpenGL";
-    return glGetError() == GL_NO_ERROR;
+    return CheckGlErrorIfEnabled();
 #endif
 }
 
@@ -1825,7 +2026,7 @@ bool GlideOpenGlBackend::SetDitherMode(std::uint32_t mode)
     // are confirmed. See docs/design/20260712-158-glide-host-dither-policy.md.
     glEnable(GL_DITHER);
     message_ = "observed Glide dither mode delegated to OpenGL";
-    return glGetError() == GL_NO_ERROR;
+    return CheckGlErrorIfEnabled();
 #endif
 }
 

@@ -30,6 +30,8 @@ FPS가 실제로 떨어지는 구간을 두 번, 가능하면 같은 곡·같은
 ```
 :: 생략 ON (현재 기본값)
 set REPIU_EXECUTION_BACKEND=aot-dbt
+set REPIU_EXECUTION_TIMEOUT_MS=0
+set REPIU_GLIDE_SWAP_INTERVAL=0
 set REPIU_EXECUTION_TIME_PROFILE=1
 set REPIU_GLIDE_ORDINAL_TIME_PROFILE=1
 set REPIU_GLIDE_SETTER_CENSUS=1
@@ -42,6 +44,10 @@ build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit1 2> elide-on.log
 set REPIU_GLIDE_SETTER_ELIDE=0
 build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit1 2> elide-off.log
 ```
+
+`REPIU_GLIDE_SWAP_INTERVAL=0`은 Task 371 이후 측정의 필수 조건입니다 — vsync 구성은
+프레임을 30 fps로 양자화해서 CPU 개선이 프레임에 나타나지 않습니다. 게임 플레이
+기본값은 vsync 그대로이고, 이 변수는 측정할 때만 씁니다.
 
 나머지 환경 변수는 두 실행에서 **완전히 같아야** 합니다. 로그는 stderr로 나오므로 위처럼
 `2>`로 받습니다.

@@ -38,6 +38,7 @@ flowchart LR
 * [DOS/4G AX=FF00h saved frame과 반환 데이터 흐름](dos4g-service-zero-frame-dataflow.md)
 * [DOS/4G client GS와 GS:0x42 private environment](dos4g-client-gs-private-environment.md)
 * [Glide2x.ovl과 OpenGL HLE 분석](glide2x-ovl-and-opengl-hle.md)
+* [Glide gate 비용 귀속 / Glide gate cost attribution](glide-gate-cost-attribution.md)
 * [RES/PTX resource loading과 size truncation 분석](res-ptx-resource-loading.md)
 
 # rePIU Binary Analysis Index

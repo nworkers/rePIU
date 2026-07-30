@@ -2668,6 +2668,47 @@ void PrintExecutionAttempt(
                 attempt.glide_gate_entry_count,
                 attempt.glide_gate_handled_count,
                 Hex32(attempt.glide_gate_esp));
+    {
+        // Task 369. Unconditional, unlike the profile blocks above: this line
+        // says whether GL errors were being reported at all, so a run that
+        // omitted it could not be told apart from a clean one.
+        const auto& gl_error = attempt.glide_gl_error_policy;
+        logger.info(
+            "Win32 Glide GL error policy per-call-check/frame-interval/"
+            "frame-checks/frame-errors/first-code/drain-iterations: "
+            "{}/{}/{}/{}/{}/{}",
+            gl_error.per_call_check_enabled ? "true" : "false",
+            gl_error.frame_interval,
+            gl_error.frame_check_count,
+            gl_error.frame_error_count,
+            Hex32(gl_error.first_error_code),
+            gl_error.drain_iteration_count);
+        logger.info(
+            "Win32 Glide GL debug output installed/messages/errors/first-id: "
+            "{}/{}/{}/{}",
+            gl_error.debug_output_installed ? "true" : "false",
+            gl_error.debug_message_count,
+            gl_error.debug_error_count,
+            Hex32(gl_error.first_debug_message_id));
+        if (gl_error.first_debug_message[0] != '\0')
+        {
+            logger.error("Win32 Glide GL debug first message: {}",
+                         gl_error.first_debug_message.data());
+        }
+        // Task 371: the effective value is read back from the driver rather than
+        // echoed, because a refused or clamped request would otherwise invalidate
+        // an A/B without saying so.
+        const auto& swap_policy = attempt.glide_swap_interval_policy;
+        logger.info(
+            "Win32 Glide swap interval override requested/value/applied/"
+            "effective: {}/{}/{}/{}",
+            swap_policy.override_requested ? "true" : "false",
+            swap_policy.requested_interval,
+            swap_policy.applied ? "true" : "false",
+            swap_policy.effective_valid
+                ? std::to_string(swap_policy.effective_interval)
+                : std::string("unknown"));
+    }
     logger.info("Win32 Glide gate ordinal/name/argument bytes: {}/{}/{}",
                 attempt.glide_gate_ordinal,
                 attempt.glide_gate_name,

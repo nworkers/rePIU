@@ -1347,3 +1347,143 @@ and the Glide gate 8.88%, and re-attributing what the VEH held outside Glide bec
 found another linear scan and removed it. Every performance figure from here states its configuration; the Tasks 322-330 numbers are
 Debug and their stage-ranking conclusions can invert. The TF/VEH removal roadmap returned from hold
 to candidate in Task 336, at a bound of roughly 1.38-1.44x.
+
+## Task 369 (2026-07-31): gameplay 장면이 Glide 축을 다시 열었다
+
+Tasks 364~368이 자동 부팅 장면에서 세 번 연속 "이 장면에서는 이득이 작다"를 낸 뒤,
+사용자가 **실제 gameplay 장면 3회**를 캡처했습니다. 결론이 바뀝니다.
+
+gameplay 장면(36.0 / 54.7 / 52.8초, 25.1~27.2 fps)에서 Glide gate는 wall의
+15.9~17.3%, VEH는 26.8~27.7%, unaccounted는 72.3~73.2%였고, rendezvous 왕복은 3회
+모두 11.8~12.2 µs로 일정했습니다. 실행 간 fps 편차는 8.4%입니다.
+
+`REPIU_GLIDE_SETTER_PHASE=1` 캡처가 `grDepthMask` 비용을 확정했습니다. 본체
+`glDepthMask`는 호출당 911 cycle인데 후속 `glGetError`가 **491,356 cycle로
+99.81%**이며, 24,774회 호출 중 에러는 **0회**, 단일 최대는 14.55 ms였습니다.
+`glGetError`는 동기화 지점이라 비용이 앞에 쌓인 명령량에 비례하며, 같은 호출이
+자동 장면에서는 4,600 cycle로 **107배** 쌉니다. Task 364가 자동 장면의 15.41%를
+근거로 "`glGetError` 전역 제거 기각"을 결론지은 것은 그래서 오류였고, 본 작업에서
+철회했습니다.
+
+Task 369는 호출당 체크를 `REPIU_GLIDE_GL_ERROR_CHECK`(기본 OFF) 뒤로 옮기고
+present 직후 프레임당 1회 검사로 대체했습니다. 동일 장면 A/B에서 depth-mask의 error
+구간이 호출당 4,600 → **71.6 cycle**로 떨어졌고, 프레임 검사 2,429회 전부
+에러 0으로 아무것도 가려지지 않았음을 확인했습니다. **다만 자동 장면에서 제거
+대상은 wall의 0.06%뿐이므로 이 장면의 프레임 변화(+9.3%)는 편차 범위이며 이득으로
+주장할 수 없습니다. gameplay 장면 재캡처가 유일한 판정 수단입니다.**
+
+다음 축은 둘입니다. 하나는 rendezvous 왕복(11.8 µs × 약 30만 회, `direct` 경로
+미사용), 다른 하나는 **계측되지 않은 커널 예외 전달 비용**입니다. VEH 버킷은 핸들러
+진입~퇴출만 재므로 커널 왕복이 `unaccounted`에 숨어 있고, 프레임당 예외 861~972개
+기준 보수적으로 잡아도 wall의 약 23%가 귀속되지 않은 채 남습니다. Task 368의 예외
+축 종결 판정은 그래서 재검토 대상입니다.
+
+Task 369 reopened the Glide axis using the first real gameplay captures. In that scene the Glide
+gate holds 15.9-17.3% of wall against VEH 26.8-27.7%, and Task 364's phase instrument settled
+`grDepthMask`: the state call itself is 911 cycles while the trailing `glGetError` is 491,356 —
+99.81% of the cost, across 24,774 calls that never reported an error, with a 14.55 ms worst case.
+Because `glGetError` is a synchronisation point its cost tracks what is queued ahead of it, so the
+same call costs 4,600 cycles in the automated scene, 107x less; Task 364's rejection of removing it
+was generalised from that cheaper scene and has been withdrawn. The per-call check now sits behind
+`REPIU_GLIDE_GL_ERROR_CHECK` (default off) with a single post-present check per frame, verified by a
+same-scene A/B that cut the error interval from 4,600 to 71.6 cycles per call with zero errors
+masked across 2,429 frame checks. The automated scene cannot judge the payoff — only 0.06% of wall
+is addressable there — so its +9.3% frame delta sits inside run variance and a gameplay re-capture
+remains the deciding measurement. The two open axes are the 11.8 µs rendezvous round trip across
+roughly 300,000 calls, and the kernel exception-delivery cost that no bucket measures: the VEH timer
+spans handler entry to exit only, leaving the kernel round trip for 861-972 exceptions per frame
+inside "unaccounted", which puts Task 368's closure of the exception axis back up for review.
+
+**Task 369 후속 측정(2026-07-31): 회수 확인, 다만 대부분 이동.** 정책 적용 후 gameplay
+재캡처(64.5초 / 1,788프레임)에서 `grDepthMask`가 wall의 6.89% → **0.76%**로 떨어져
+**6.13%p를 회수**했고, 예측치 6.24%와 일치합니다. 그러나 `grBufferSwap` work가 호출당
+212,582 → **6,220,464 cycle**로 늘어 제거된 12.16e9 중 약 10.8e9(89%)를 흡수했고,
+전체 host GL work 총량은 16.79e9 → 16.62e9로 거의 불변입니다. **드라이버 작업은
+실재하며 다음 동기화 지점으로 이동합니다.** 그럼에도 프레임당으로는 wall −9.6%
+(39.85 → 36.05 ms), host GL work −26.6%로 순감소이며, 장면 구성이 2% 이내로 일치해
+비교가 성립합니다. fps 25.09 → 27.73은 기준선 편차 8.4% 안이라 단일 실행으로
+확정하지 않습니다. `grBufferSwap`이 이제 단일 최대 ordinal(wall 4.72%)이므로 다음
+측정은 그 6.22M cycle을 present 본체와 Task 369의 프레임당 검사로 분리하는 것이며,
+기존 swap 계측의 `present_end` → `accounting_end` 구간이 이미 그것을 덮습니다.
+
+Task 369's follow-up capture confirmed the recovery and its limit: `grDepthMask` fell from 6.89% to
+0.76% of wall, recovering the predicted 6.13 points, but `grBufferSwap` work rose from 212,582 to
+6,220,464 cycles per call and absorbed about 89% of what was removed, leaving total host GL work
+nearly unchanged. Driver work relocates to the next synchronisation point rather than vanishing.
+Per frame the change is still a net reduction — wall -9.6% and host GL work -26.6% over scenes that
+match within 2% — while the 25.09 to 27.73 fps move stays inside the 8.4% baseline variance and is
+not claimed from one run. `grBufferSwap` is now the largest single ordinal at 4.72% of wall, so the
+next measurement splits its 6.22M cycles between the present itself and the per-frame check, using
+the `present_end` to `accounting_end` interval the existing swap instrument already covers.
+
+## Task 370 (2026-07-31): 프레임 대기의 정체가 바뀌었다
+
+Task 369가 present 직후에 넣은 프레임당 `glGetError`는 호출당 13,445,145 cycle
+(3.64 ms), **wall의 10.71%**로 측정됐습니다. Task 370이 이를 `glDebugMessageCallback`
+(GL_KHR_debug, 비동기 push)으로 대체해 프레임 검사를 완전히 제거했고, accounting
+구간은 호출당 19,123 cycle로 **703배 붕괴**했습니다. 디버그 출력은 실제로 설치되며
+(메시지 2건, 에러 0), `GL_DEBUG_OUTPUT_SYNCHRONOUS`는 끈 상태입니다.
+
+**그러나 예측한 10.71% 회수는 일어나지 않았습니다.** 대기가 사라진 것이 아니라
+`present`로 옮겨갔습니다 — `SDL_GL_SwapWindow`가 호출당 162,694 → **13,240,331
+cycle**이 됐고 `max-present`는 **59,737,352 cycle(16.18 ms)** 로 60 Hz 리프레시 한
+주기와 정확히 일치합니다. 즉 그 3.6 ms는 `glGetError` 오버헤드가 아니라 **디스플레이
+및 flip 큐 대기**였고, 에러 체크가 그 대기를 대신 치르고 있었을 뿐입니다. Task 370
+설계가 "present가 44 µs이므로 GPU가 밀려 있지 않다"고 읽은 것은 인과가 거꾸로였습니다.
+
+자동 장면 70초 고정 프레임 수는 369-OFF 2,429 / 369-ON 2,223 / 370 2,260으로 편차
+약 9%, 이 장면의 알려진 범위 안이라 처리량 판정은 불가입니다.
+
+**이것이 축을 다시 정의합니다.** 게스트는 `grBufferSwap`에서 매 프레임 swap interval
+1(vsync)을 요청합니다. 이 실행이 디스플레이에 제한된다면 Glide gate 시간의 상당
+부분은 비용이 아니라 **유휴 대기**이고, 그 슬랙 안에서 CPU 작업을 줄여도 프레임은
+늘지 않습니다. 판정은 swap interval 0 강제 캡처 하나로 되며, 그 결과가 Glide 축을
+닫을지 미계측 커널 예외 전달 비용으로 넘어갈지를 결정합니다.
+
+Task 370 replaced Task 369's per-frame `glGetError` with `glDebugMessageCallback`, removing the
+check entirely and collapsing the accounting interval from 13,445,145 to 19,123 cycles per call.
+The predicted 10.71% recovery did not follow: the wait moved into the present, where
+`SDL_GL_SwapWindow` rose from 162,694 to 13,240,331 cycles per call with a maximum of 16.18 ms —
+exactly one 60 Hz refresh. The 3.6 ms was display and flip-queue wait rather than `glGetError`
+overhead, and the error check had merely been paying it; the earlier inference from a 44 µs present
+read the causality backwards. Frame counts over the fixed automated scene span about 9% across the
+three configurations, inside known variance, so throughput is undecided. Since the guest requests
+swap interval 1 every frame and the maximum present is exactly one refresh period, this run may be
+display-limited, which would make much of the Glide gate idle waiting rather than cost. One capture
+with the interval forced to zero decides whether the Glide axis closes.
+
+## Task 371 (2026-07-31): 디스플레이 제한이 확인됐고, Glide 축이 닫힌다
+
+Task 370이 연 질문을 `REPIU_GLIDE_SWAP_INTERVAL` 강제로 판정했습니다. 자동 장면 70초
+고정에서 프레임이 vsync 2,124 / adaptive 2,175 / **immediate 3,444(+62.1%)** 이고,
+present 단가가 10,210,872 → **158,506 cycle**로 64배 붕괴합니다. 이 값은 Task 370
+이전 측정치 162,694와 일치해 인과를 확정합니다.
+
+**따라서 지금까지의 Glide gate 비중은 유휴 대기를 포함하고 있었습니다.** interval 0
+기준으로 Glide gate는 wall의 **12.52%**, unaccounted는 **76.93%**입니다. Glide 축은
+보이던 것보다 작고 게스트 실행이 확실히 지배합니다. **앞으로의 성능 측정은 interval
+0으로 고정**해야 유휴 대기가 섞이지 않습니다.
+
+게임 속도 착시가 아닙니다 — tick `due`가 16,273 vs 16,271로 동일하고 전달률은 91.9%
+→ **99.4%**로 개선됐습니다(coalesced 1,279 → 51). vsync를 끄면 게스트 타이머 경로가
+더 정확하게 구동됩니다. double buffer + interval 1에서 60 Hz 마감을 놓치면 30 fps로
+양자화되며, 관측된 30.3 fps가 그 값입니다. 게스트의 `grBufferSwap` interval 인자는
+적용된 적이 없었다는 사실도 함께 확인됐습니다.
+
+다음은 unaccounted 76.93% 안의 **미계측 커널 예외 전달 비용**입니다. VEH 버킷이
+핸들러 진입~퇴출만 재므로 프레임당 수백 건의 커널 왕복이 어느 버킷에도 귀속되지 않고
+있으며, Task 368의 예외 축 종결 판정을 여기서 재검토합니다.
+
+Task 371 settled the question Task 370 opened. Forcing the swap interval over a fixed 70-second
+scene gave 2,124 frames at vsync, 2,175 at adaptive, and 3,444 at immediate — plus 62.1% — while
+present work per call collapsed 64-fold from 10,210,872 to 158,506 cycles, matching the 162,694
+measured before Task 370 and confirming the causality. Every Glide gate share reported until now
+therefore included idle waiting. Measured at interval 0 the gate is 12.52% of wall and unaccounted
+is 76.93%, so the Glide axis is smaller than it looked and guest execution clearly dominates; future
+performance measurement should pin interval 0. The gain is not the game running fast: ticks due were
+identical at 16,273 against 16,271 while delivery rose from 91.9% to 99.4% and coalescing fell from
+1,279 to 51, so the guest timer path runs more faithfully without vsync. The 30.3 fps under vsync is
+double-buffered half-rate quantisation against a 60 Hz deadline. The guest's own grBufferSwap
+interval argument, it turns out, had never been applied at all. Next is the unmeasured kernel
+exception-delivery cost inside that 76.93%, which also reopens Task 368's closure of the exception
+axis.

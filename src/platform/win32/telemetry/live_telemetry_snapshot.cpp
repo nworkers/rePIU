@@ -737,6 +737,10 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.glide_backend.glide_setter_phase_timing();
     attempt->glide_setter_state_cache =
         SnapshotGlideSetterStateCache(context.glide_setter_state_cache);
+    attempt->glide_gl_error_policy =
+        context.glide_backend.glide_gl_error_policy();
+    attempt->glide_swap_interval_policy =
+        context.glide_backend.glide_swap_interval_policy();
     attempt->timer_tick_delivery =
         SnapshotTimerTickDelivery(context.timer_tick_delivery);
     attempt->native_fast_path_entry_count =

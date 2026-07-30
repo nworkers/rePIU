@@ -753,8 +753,22 @@ failure 0, unsupported 0, key overflow 0입니다. 즉 모든 setter 호출이 h
 alpha blend의 선행 drain loop는 세 실행 모두 반복 0회이므로 그 30.66%는
 `GL_NO_ERROR`를 즉시 반환하는 `glGetError` **한 번**의 비용입니다. 같은 함수 안의
 후속 `glGetError`는 2.21%뿐이므로 **동일한 호출이 위치에 따라 약 14배** 차이가 납니다.
-따라서 `glGetError`를 전역적으로 제거하는 방향은 기각되며, 비용은 host thread가
-condition variable에서 깨어난 뒤 처음 GL을 만지는 지점에 있습니다.
+비용은 host thread가 condition variable에서 깨어난 뒤 처음 GL을 만지는 지점에 있습니다.
+
+> **[Task 369에서 뒤집힘] 위 문단에 있던 "`glGetError`를 전역적으로 제거하는 방향은
+> 기각된다"는 결론은 철회합니다.** 측정 자체는 옳았으나 **자동 부팅 장면에만**
+> 해당했습니다. 사용자가 캡처한 실제 gameplay 장면에서 `grDepthMask`의 후속
+> `glGetError`는 15.41%가 아니라 **99.81%**였고, 호출당 491,356 cycle(wall의 6.24%)
+> 이었습니다. 같은 호출이 자동 장면에서는 4,600 cycle이므로 **장면 간 107배**
+> 차이입니다.
+>
+> 이는 "위치에 따라 14배"라는 관측과 모순되지 않고 오히려 같은 메커니즘의 연장입니다
+> — `glGetError`는 동기화 지점이므로 비용이 **앞에 쌓인 명령량에 비례**하며, 삼각형
+> 배치 뒤에 오는 gameplay 장면의 호출이 가장 비쌉니다. 자동 장면의 15.41%를 근거로
+> 전역 기각을 결론지은 것이 오류였습니다.
+>
+> 상세: [glide-gate-cost-attribution.md](glide-gate-cost-attribution.md),
+> [설계 369](../design/20260731-369-glide-gl-error-check-policy.md)
 
 **확인됨:** 계측한 GL 구간은 ordinal host work의 **58.53~67.26%**만 덮습니다. 나머지
 32.74~41.47%는 `is_open` 검사, `message_` 대입, lambda·dispatch 비용입니다.
@@ -784,8 +798,19 @@ depth-mask OpenGL interval against 15.41% for the trailing `glGetError`, and the
 alpha-blend leading drain holds 30.66% while iterating zero times in all three
 runs — the cost of a single `glGetError` returning `GL_NO_ERROR` — against 2.21%
 for the identical call later in the same function, roughly a fourteen-fold
-difference by position alone. Removing `glGetError` globally is therefore
-rejected as a direction.
+difference by position alone.
+
+> **[Overturned by Task 369]** The conclusion previously drawn here — that
+> removing `glGetError` globally is rejected as a direction — is withdrawn. The
+> measurement was right but described the automated boot scene only. In the user's
+> gameplay captures the trailing `glGetError` on `grDepthMask` is **99.81%**, not
+> 15.41%, at 491,356 cycles per call and 6.24% of wall time; the same call costs
+> 4,600 cycles in the automated scene, a **107-fold** difference by scene alone.
+> This does not contradict the fourteen-fold positional observation — it extends
+> the same mechanism, since `glGetError` is a synchronisation point whose cost
+> tracks what is queued ahead of it, and the gameplay calls follow a triangle
+> batch. Generalising a global rejection from the automated scene was the error.
+> See [glide-gate-cost-attribution.md](glide-gate-cost-attribution.md).
 
 **Confirmed:** The instrumented OpenGL interval covers only 58.53-67.26% of the
 ordinal's host work; the remaining 32.74-41.47% is the open check, the message

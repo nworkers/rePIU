@@ -4,9 +4,11 @@
 #include "repiu/hle/glide_hle.h"
 #include "repiu/platform/win32/glide_buffer_swap_timing.h"
 #include "repiu/platform/win32/glide_gate_timing.h"
+#include "repiu/platform/win32/glide_gl_error_policy.h"
 #include "repiu/platform/win32/glide_ordinal_timing.h"
 #include "repiu/platform/win32/glide_opengl_shader.h"
 #include "repiu/platform/win32/glide_setter_phase_timing.h"
+#include "repiu/platform/win32/glide_swap_interval_policy.h"
 #include "repiu/runtime/execution_backend.h"
 
 #include <chrono>
@@ -177,6 +179,40 @@ public:
         return SnapshotGlideSetterPhaseTiming(glide_setter_phase_timing_);
     }
 
+    // Task 369: whether the per-call setter error check ran, plus the result of
+    // the once-per-frame check that replaced it. Reported unconditionally: a
+    // silent policy that suppresses error reporting has to say so in the
+    // summary, or a later run cannot tell a clean frame from an unchecked one.
+    Win32GlideGlErrorPolicySnapshot glide_gl_error_policy() const
+    {
+        // The free accessor rather than the cached member: a run that never
+        // reached a setter has not resolved the member yet, and reporting the
+        // policy as off in that case would misdescribe the run.
+        return SnapshotGlideGlErrorPolicy(glide_gl_error_policy_,
+                                          GlideGlErrorCheckPolicyEnabled(),
+                                          glide_gl_error_frame_interval_);
+    }
+
+    // Task 371: what the swap interval override asked for and what the driver
+    // actually reported back afterwards.
+    Win32GlideSwapIntervalPolicySnapshot glide_swap_interval_policy() const
+    {
+        return glide_swap_interval_policy_;
+    }
+
+    // Task 370: called from the GL debug trampoline, which is a free function in
+    // the source file because it needs the driver's calling convention and GL
+    // types this header does not pull in. Records only -- see the recorder's
+    // allocation-free contract.
+    void RecordGlDebugMessage(std::uint32_t id,
+                              bool is_error,
+                              const char* message,
+                              std::size_t length)
+    {
+        RecordGlideGlDebugMessage(
+            &glide_gl_error_policy_, id, is_error, message, length);
+    }
+
     void BeginGlideOrdinalTiming(Win32GlideOrdinalTimingProfile* profile,
                                  std::uint16_t ordinal)
     {
@@ -274,16 +310,39 @@ private:
     // Task 364: host thread only, so it needs no lock — every writer runs
     // inside a host-thread setter body.
     Win32GlideSetterPhaseProfile glide_setter_phase_timing_;
+    // Task 369: host thread only, like the phase profile above — the frame
+    // check runs inside `BufferSwapOnHostThread`.
+    Win32GlideGlErrorPolicyProfile glide_gl_error_policy_;
+    // Task 371: written once during window creation, read at teardown.
+    Win32GlideSwapIntervalPolicySnapshot glide_swap_interval_policy_;
     Win32GlideOrdinalTimingProfile* active_ordinal_timing_ = nullptr;
     std::uint16_t active_ordinal_ = 0;
     bool glide_gate_timing_enabled_ = false;
     bool glide_gate_timing_resolved_ = false;
     bool glide_setter_phase_enabled_ = false;
     bool glide_setter_phase_resolved_ = false;
+    bool glide_gl_error_check_enabled_ = false;
+    bool glide_gl_error_check_resolved_ = false;
     bool GlideGateTimingEnabled();
     // Resolved once, like the gate timing gate above: the setters are a hot
     // path and `getenv` is not.
     bool GlideSetterPhaseEnabled();
+    // Task 370: zero once the debug callback is installed, otherwise the sampled
+    // fallback period. Task 369 ran this check every frame and that single call
+    // was 10.71% of wall.
+    std::uint32_t glide_gl_error_frame_interval_ = 0;
+    std::uint32_t glide_gl_error_frame_counter_ = 0;
+    // Installs GL_KHR_debug asynchronous reporting. Returns false when the
+    // driver does not expose it, which selects the sampled fallback.
+    bool InstallGlDebugOutput();
+    void RunGlErrorFrameCheck();
+    // Task 369. Same resolve-once shape, for the same reason.
+    bool GlideGlErrorCheckEnabled();
+    // Returns true when the setter may report success. With the policy off it
+    // never calls `glGetError`, which is the entire point: the call is a
+    // pipeline flush, so skipping the branch is not enough — the call itself
+    // has to not happen.
+    bool CheckGlErrorIfEnabled();
 };
 
 }  // namespace repiu::platform::win32

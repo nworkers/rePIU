@@ -13,7 +13,9 @@
 #include "repiu/platform/win32/glide_buffer_swap_timing.h"
 #include "repiu/platform/win32/glide_gate_timing.h"
 #include "repiu/platform/win32/glide_ordinal_timing.h"
+#include "repiu/platform/win32/glide_gl_error_policy.h"
 #include "repiu/platform/win32/glide_setter_phase_timing.h"
+#include "repiu/platform/win32/glide_swap_interval_policy.h"
 #include "repiu/platform/win32/glide_setter_state_census.h"
 #include "repiu/platform/win32/glide_setter_state_cache.h"
 #include "repiu/platform/win32/timer_tick_delivery.h"
@@ -566,6 +568,11 @@ struct Win32MinimalExecutionAttempt
     Win32GlideSetterPhaseSnapshot glide_setter_phase_timing;
     // Task 365: how much of that repetition was actually elided.
     Win32GlideSetterStateCacheSnapshot glide_setter_state_cache;
+    // Task 369: whether the per-call setter error check ran, and what the
+    // once-per-frame replacement found.
+    Win32GlideGlErrorPolicySnapshot glide_gl_error_policy;
+    // Task 371: swap interval override request and the driver's answer.
+    Win32GlideSwapIntervalPolicySnapshot glide_swap_interval_policy;
     // Task 366: timer ticks owed against timer ticks the guest received.
     Win32TimerTickDeliverySnapshot timer_tick_delivery;
     std::uint32_t native_fast_path_entry_count = 0;
