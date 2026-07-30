@@ -913,3 +913,32 @@ the gain in an LFB-free gameplay scene.
 `REPIU_GLIDE_FRAME_DUMP` is a draw-call trace, and the BMPs under
 `build/texture_dumps/` are texture dumps, so cross-run visual verification uses
 phase-offset matching of `REPIU_GLIDE_PIXEL_DIAG`'s per-swap statistics.
+
+## Gameplay의 line과 cull mode 1 관측 (2026-07-31 Task 374) / Gameplay line and cull-mode-1 observation
+
+**확인됨:** `gameplay-capture.log`에서 `grDrawLine`은 네 endpoint 조합으로 총
+11,024회 호출됩니다. 포인터 네 개는 60바이트 간격이고 각 조합은 2,756회 반복되어
+닫힌 사각 테두리를 만듭니다. 따라서 Task 332의 line 미호출 결론은 당시 자동 장면에만
+유효하며 gameplay 전체에는 일반화할 수 없습니다.
+
+**확인됨:** 같은 장면은 `grCullMode(1)`을 한 번 요청합니다. 값 1은 원 사양의
+`GR_CULL_NEGATIVE`이며 기존 backend가 mode 0만 받아 거부했습니다. 이후 23,540회 cull
+호출 중 나머지는 기존 지원/생략 경로였습니다.
+
+**구현됨:** 공용 60바이트 decoder를 line과 triangle이 함께 사용하고, line은 같은
+OpenGL state 제출 경로의 1픽셀 `GL_LINES`로 연결했습니다. cull 0/1/2는 현재 origin을
+포함해 OpenGL face로 변환합니다.
+
+**미확정:** 원본 Voodoo 출력과의 픽셀 단위 line rasterization 차이. 제공된 장면은 사용자
+입력으로 service/test 화면에 진입하므로 이번 자동 probe만으로 live 재현되지 않습니다.
+
+**Confirmed:** The gameplay capture contains 11,024 `grDrawLine` calls across
+four endpoint pairs. Four pointers at 60-byte intervals form a closed outline,
+each pair repeated 2,756 times. Task 332's no-line finding was therefore specific
+to its automated scene rather than gameplay in general.
+
+The same scene requests `grCullMode(1)` once. Mode 1 is documented
+`GR_CULL_NEGATIVE`; the old mode-zero-only backend rejected it. Shared 60-byte
+decoding now feeds both line and triangle paths, lines use one-pixel `GL_LINES`,
+and cull modes 0 through 2 translate by current origin. Pixel-level agreement
+with Voodoo line rasterization and an input-driven live replay remain unresolved.

@@ -246,6 +246,30 @@ uses a dedicated shader blit mode that bypasses geometry combine/fog while
 temporarily isolating depth, blend, cull, alpha test, scissor, color mask, draw
 buffer, and texture binding.
 
+### 선 primitive와 cull 변환 (Task 374)
+
+플랫폼 공용 `glide_vertex`가 관측된 60바이트 producer image를
+`GlideDrawVertex`로 decode합니다. Win32 boundary는 guest 범위를 검증하고 로컬 image로
+복사한 뒤 decoder를 호출합니다. `grDrawLine`과 `grDrawTriangle`은 backend의 같은
+primitive 제출 경로를 사용하므로 색, texture extent, perspective, fog 입력이 같습니다.
+line은 `GL_LINES`와 폭 1로 제출합니다.
+
+`TranslateGlideOpenGlCullMode`는 Glide mode와 window origin을 함께 받아 OpenGL
+front/back face로 변환합니다. lower-left에서 negative/positive는 back/front이고,
+upper-left에서는 반대입니다. mode 0은 face culling을 끕니다.
+
+### Line primitives and cull translation (Task 374)
+
+Platform-neutral `glide_vertex` decodes the observed 60-byte producer image into
+`GlideDrawVertex`. The Win32 boundary validates and copies guest memory before
+decoding. `grDrawLine` and `grDrawTriangle` share backend primitive submission,
+so color, texture extent, perspective, and fog inputs stay identical; lines use
+one-pixel `GL_LINES`.
+
+`TranslateGlideOpenGlCullMode` combines the Glide mode with the window origin.
+Lower-left negative/positive map to OpenGL back/front, upper-left reverses the
+mapping, and mode zero disables face culling.
+
 `_GRTEXTEXTUREMEMREQUIRED@8`는 guest `GrTexInfo`를 읽는 플랫폼 공용 계산으로 모델링하며 검증된 8-byte 정렬 texture 크기를 EAX로 반환합니다. 관측된 texture download/source/sampler/combine 호출은 OpenGL texture cache와 GLSL sampler/combine으로 연결됩니다. 미관측 포맷과 projected-texture layout은 검증 증거 없이 지원으로 확장하지 않습니다.
 
 `_GRTEXTEXTUREMEMREQUIRED@8` is modeled as a platform-neutral calculation over

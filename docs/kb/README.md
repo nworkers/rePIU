@@ -35,6 +35,7 @@ flowchart TD
 * [CHD와 ISO9660](chd-and-iso9660.md)
 * [MSCDEX와 CD-DA](mscdex-and-cd-da.md)
 * [Glide 텍스처 LOD, aspect ratio, 포맷](glide-texture-lod-and-formats.md)
+* [Glide primitive와 면 culling](glide-primitives-and-culling.md)
 * [YMZ280B PCM/ADPCM 디코더](ymz280b-pcm-adpcm-decoder.md)
 
 # rePIU Technical Knowledge Base Index
@@ -56,4 +57,5 @@ include source links.
 * [CHD and ISO9660](chd-and-iso9660.md)
 * [MSCDEX and CD-DA](mscdex-and-cd-da.md)
 * [Glide texture LOD, aspect ratio, and formats](glide-texture-lod-and-formats.md)
+* [Glide primitives and face culling](glide-primitives-and-culling.md)
 * [YMZ280B PCM/ADPCM decoder](ymz280b-pcm-adpcm-decoder.md)

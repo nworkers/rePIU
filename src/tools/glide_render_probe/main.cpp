@@ -1,9 +1,11 @@
 #include "repiu/hle/glide_fog.h"
 #include "repiu/hle/glide_lfb.h"
+#include "repiu/hle/glide_vertex.h"
 #if defined(_WIN32)
 #include "repiu/platform/win32/glide_opengl_backend.h"
 #endif
 
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <cstdint>
@@ -33,6 +35,40 @@ float TableWorldDistance(std::uint32_t index)
 
 int main(int argc, char** argv)
 {
+    float producer_fields[repiu::hle::kGlideProducerVertexDwordCount] = {};
+    producer_fields[0] = 10.0F;
+    producer_fields[1] = 20.0F;
+    producer_fields[3] = 255.0F;
+    producer_fields[4] = 127.5F;
+    producer_fields[5] = 63.75F;
+    producer_fields[7] = 31.875F;
+    producer_fields[8] = 0.5F;
+    producer_fields[9] = 128.0F;
+    producer_fields[10] = 64.0F;
+    std::array<std::uint32_t,
+               repiu::hle::kGlideProducerVertexDwordCount> producer{};
+    std::memcpy(producer.data(), producer_fields, sizeof(producer_fields));
+    repiu::hle::GlideDrawVertex vertex;
+    if (!Check(repiu::hle::DecodeGlideProducerVertex(
+                   producer.data(), producer.size(), &vertex),
+               "producer vertex decode failed") ||
+        !Check(vertex.x == 10.0F && vertex.y == 20.0F,
+               "producer position decode failed") ||
+        !Check(std::abs(vertex.r - 1.0F) < 0.0001F &&
+                   std::abs(vertex.g - 0.5F) < 0.0001F &&
+                   std::abs(vertex.b - 0.25F) < 0.0001F &&
+                   std::abs(vertex.a - 0.125F) < 0.0001F,
+               "producer color decode failed") ||
+        !Check(vertex.s == 128.0F && vertex.t == 64.0F &&
+                   vertex.fog_oow == 0.5F && vertex.texture_oow == 0.5F,
+               "producer texture and oow decode failed") ||
+        !Check(!repiu::hle::DecodeGlideProducerVertex(
+                    producer.data(), producer.size() - 1U, &vertex),
+               "short producer vertex was accepted"))
+    {
+        return 1;
+    }
+
     const std::uint8_t rgb565_red[] = {0x00U, 0xF8U};
     const std::uint8_t rgb565_blue[] = {0x1FU, 0x00U};
     std::vector<std::uint8_t> rgba8;
@@ -131,6 +167,35 @@ int main(int argc, char** argv)
     }
 
 #if defined(_WIN32)
+    using repiu::platform::win32::GlideOpenGlCullFace;
+    GlideOpenGlCullFace cull_face = GlideOpenGlCullFace::kDisabled;
+    if (!Check(repiu::platform::win32::TranslateGlideOpenGlCullMode(
+                   0U, false, &cull_face) &&
+                   cull_face == GlideOpenGlCullFace::kDisabled,
+               "cull disable translation failed") ||
+        !Check(repiu::platform::win32::TranslateGlideOpenGlCullMode(
+                   1U, true, &cull_face) &&
+                   cull_face == GlideOpenGlCullFace::kBack,
+               "lower-left negative cull translation failed") ||
+        !Check(repiu::platform::win32::TranslateGlideOpenGlCullMode(
+                   2U, true, &cull_face) &&
+                   cull_face == GlideOpenGlCullFace::kFront,
+               "lower-left positive cull translation failed") ||
+        !Check(repiu::platform::win32::TranslateGlideOpenGlCullMode(
+                   1U, false, &cull_face) &&
+                   cull_face == GlideOpenGlCullFace::kFront,
+               "upper-left negative cull translation failed") ||
+        !Check(repiu::platform::win32::TranslateGlideOpenGlCullMode(
+                   2U, false, &cull_face) &&
+                   cull_face == GlideOpenGlCullFace::kBack,
+               "upper-left positive cull translation failed") ||
+        !Check(!repiu::platform::win32::TranslateGlideOpenGlCullMode(
+                    3U, false, &cull_face),
+               "invalid cull mode was accepted"))
+    {
+        return 1;
+    }
+
     if (argc == 2 && std::strcmp(argv[1], "--opengl-lfb") == 0)
     {
         constexpr std::uint32_t kWidth = 64U;

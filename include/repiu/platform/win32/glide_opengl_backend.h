@@ -2,6 +2,7 @@
 #define REPIU_PLATFORM_WIN32_GLIDE_OPENGL_BACKEND_H_
 
 #include "repiu/hle/glide_hle.h"
+#include "repiu/hle/glide_vertex.h"
 #include "repiu/platform/win32/glide_buffer_swap_timing.h"
 #include "repiu/platform/win32/glide_gate_timing.h"
 #include "repiu/platform/win32/glide_gl_error_policy.h"
@@ -12,6 +13,7 @@
 #include "repiu/runtime/execution_backend.h"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <condition_variable>
 #include <exception>
@@ -25,23 +27,16 @@
 namespace repiu::platform::win32
 {
 
-// Decoded Glide draw vertex in platform-neutral form: screen-space position,
-// iterated color in [0,1], and reciprocal-w inputs decoded from the observed
-// fixed 60-byte Glide 2 producer ABI. The current non-projected path shares
-// the same oow for texture correction and fog.
-struct GlideDrawVertex
+enum class GlideOpenGlCullFace : std::uint8_t
 {
-    float x = 0.0F;
-    float y = 0.0F;
-    float r = 1.0F;
-    float g = 1.0F;
-    float b = 1.0F;
-    float a = 1.0F;
-    float s = 0.0F;
-    float t = 0.0F;
-    float fog_oow = 1.0F;
-    float texture_oow = 1.0F;
+    kDisabled,
+    kFront,
+    kBack,
 };
+
+bool TranslateGlideOpenGlCullMode(std::uint32_t mode,
+                                  bool origin_lower_left,
+                                  GlideOpenGlCullFace* face);
 
 class GlideOpenGlBackend
 {
@@ -69,9 +64,11 @@ public:
     void PumpEvents();
     bool BufferClear(std::uint32_t color, std::uint32_t alpha, std::uint32_t depth);
     bool BufferSwap(std::uint32_t swap_interval);
-    bool DrawTriangle(const GlideDrawVertex& a,
-                      const GlideDrawVertex& b,
-                      const GlideDrawVertex& c);
+    bool DrawLine(const hle::GlideDrawVertex& a,
+                  const hle::GlideDrawVertex& b);
+    bool DrawTriangle(const hle::GlideDrawVertex& a,
+                      const hle::GlideDrawVertex& b,
+                      const hle::GlideDrawVertex& c);
     // Decode a Glide texture download into an OpenGL texture keyed by its TMU
     // start address (R3). format/large_lod/aspect follow the observed
     // GrTexInfo; source is guest texel data of source_size bytes.
@@ -249,6 +246,10 @@ private:
     void InvokeOnHostThread(std::function<void()> command);
     bool BufferSwapOnHostThread(std::uint32_t swap_interval,
                                 bool guest_gate_command);
+    bool DrawPrimitive(const hle::GlideDrawVertex* const* vertices,
+                       std::size_t vertex_count,
+                       std::uint32_t primitive,
+                       const char* success_message);
     bool ApplyWindowScale(std::uint32_t scale);
     void ApplyDrawableViewport();
     std::string BuildWindowTitle(double frames_per_second) const;

@@ -27,6 +27,28 @@
 namespace repiu::platform::win32
 {
 
+bool TranslateGlideOpenGlCullMode(const std::uint32_t mode,
+                                  const bool origin_lower_left,
+                                  GlideOpenGlCullFace* face)
+{
+    if (face == nullptr || mode > 2U)
+    {
+        return false;
+    }
+    if (mode == 0U)
+    {
+        *face = GlideOpenGlCullFace::kDisabled;
+        return true;
+    }
+    const bool cull_front = origin_lower_left
+        ? mode == 2U
+        : mode == 1U;
+    *face = cull_front
+        ? GlideOpenGlCullFace::kFront
+        : GlideOpenGlCullFace::kBack;
+    return true;
+}
+
 GlideOpenGlBackend::~GlideOpenGlBackend()
 {
     Close();
@@ -882,9 +904,28 @@ bool GlideOpenGlBackend::BufferSwapOnHostThread(
 #endif
 }
 
-bool GlideOpenGlBackend::DrawTriangle(const GlideDrawVertex& a,
-                                      const GlideDrawVertex& b,
-                                      const GlideDrawVertex& c)
+bool GlideOpenGlBackend::DrawLine(const hle::GlideDrawVertex& a,
+                                  const hle::GlideDrawVertex& b)
+{
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, &a, &b, &result]() {
+            result = DrawLine(a, b);
+        });
+        return result;
+    }
+#if !defined(_WIN32)
+    return false;
+#else
+    const hle::GlideDrawVertex* const vertices[2] = {&a, &b};
+    return DrawPrimitive(vertices, 2U, GL_LINES, "Glide line drawn");
+#endif
+}
+
+bool GlideOpenGlBackend::DrawTriangle(const hle::GlideDrawVertex& a,
+                                      const hle::GlideDrawVertex& b,
+                                      const hle::GlideDrawVertex& c)
 {
     if (!IsHostThread())
     {
@@ -897,9 +938,28 @@ bool GlideOpenGlBackend::DrawTriangle(const GlideDrawVertex& a,
 #if !defined(_WIN32)
     return false;
 #else
+    const hle::GlideDrawVertex* const vertices[3] = {&a, &b, &c};
+    return DrawPrimitive(
+        vertices, 3U, GL_TRIANGLES, "Glide compact triangle drawn");
+#endif
+}
+
+bool GlideOpenGlBackend::DrawPrimitive(
+    const hle::GlideDrawVertex* const* vertices,
+    const std::size_t vertex_count,
+    const std::uint32_t primitive,
+    const char* success_message)
+{
+#if !defined(_WIN32)
+    (void)vertices;
+    (void)vertex_count;
+    (void)primitive;
+    (void)success_message;
+    return false;
+#else
     if (!is_open())
     {
-        message_ = "cannot draw Glide triangle without an OpenGL window";
+        message_ = "cannot draw Glide primitive without an OpenGL window";
         return false;
     }
     if (dummy_mode_)
@@ -928,10 +988,14 @@ bool GlideOpenGlBackend::DrawTriangle(const GlideDrawVertex& a,
             : 1.0F;
     }
     shader_.SetTextureEnabled(sample_texture);
-    const GlideDrawVertex* const vertices[3] = {&a, &b, &c};
-    glBegin(GL_TRIANGLES);
-    for (const GlideDrawVertex* vertex : vertices)
+    if (primitive == GL_LINES)
     {
+        glLineWidth(1.0F);
+    }
+    glBegin(static_cast<GLenum>(primitive));
+    for (std::size_t index = 0U; index < vertex_count; ++index)
+    {
+        const hle::GlideDrawVertex* vertex = vertices[index];
         glColor4f(vertex->r, vertex->g, vertex->b, vertex->a);
         if (sample_texture)
         {
@@ -949,7 +1013,7 @@ bool GlideOpenGlBackend::DrawTriangle(const GlideDrawVertex& a,
         glVertex3f(vertex->x, vertex->y, 0.0F);
     }
     glEnd();
-    message_ = "Glide compact triangle drawn";
+    message_ = success_message;
     return true;
 #endif
 }
@@ -1981,18 +2045,31 @@ bool GlideOpenGlBackend::SetCullMode(std::uint32_t mode)
 #if !defined(_WIN32)
     return false;
 #else
-    if (!is_open() || mode != 0U)
+    GlideOpenGlCullFace face = GlideOpenGlCullFace::kDisabled;
+    if (!is_open() ||
+        !TranslateGlideOpenGlCullMode(mode, origin_lower_left_, &face))
     {
         message_ = "unsupported Glide cull mode";
         return false;
     }
     if (dummy_mode_)
     {
-        message_ = "Glide culling disabled (dummy)";
+        message_ = "Glide cull mode applied (dummy)";
         return true;
     }
-    glDisable(GL_CULL_FACE);
-    message_ = "Glide culling disabled in OpenGL";
+    if (face == GlideOpenGlCullFace::kDisabled)
+    {
+        glDisable(GL_CULL_FACE);
+    }
+    else
+    {
+        glFrontFace(GL_CCW);
+        glCullFace(face == GlideOpenGlCullFace::kFront
+                       ? GL_FRONT
+                       : GL_BACK);
+        glEnable(GL_CULL_FACE);
+    }
+    message_ = "Glide cull mode applied to OpenGL";
     return CheckGlErrorIfEnabled();
 #endif
 }

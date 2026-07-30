@@ -7,6 +7,7 @@
 #include "repiu/hle/glide_texture_decode.h"
 #include "repiu/hle/glide_implementation_issue.h"
 #include "repiu/hle/glide_lfb.h"
+#include "repiu/hle/glide_vertex.h"
 
 #include <algorithm>
 #include <array>
@@ -2191,13 +2192,40 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             return true;
 
         case go::kGrDrawLine: // _GRDRAWLINE@8
-            record_unimplemented(
-                "draw-line-noop",
-                "draw request accepted without rendering");
+        {
+            hle::GlideDrawVertex vertices[2] = {};
+            for (std::size_t index = 0U; index < 2U; ++index)
+            {
+                const auto* source = reinterpret_cast<const std::uint32_t*>(
+                    static_cast<std::uintptr_t>(
+                        context->glide_gate_stack[index + 1U]));
+                if (!IsGuestRangeReadable(context, source,
+                                          hle::kGlideProducerVertexByteCount))
+                {
+                    return decline_gate("draw-line-unreadable-vertex");
+                }
+                std::uint32_t producer[
+                    hle::kGlideProducerVertexDwordCount] = {};
+                std::memcpy(producer, source, sizeof(producer));
+                if (!hle::DecodeGlideProducerVertex(
+                        producer, hle::kGlideProducerVertexDwordCount,
+                        &vertices[index]))
+                {
+                    return decline_gate("draw-line-decode-failure");
+                }
+            }
+            if (!context->glide_backend.DrawLine(vertices[0], vertices[1]))
+            {
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                return decline_gate("draw-line-backend-failure");
+            }
+            context->glide_backend_message = context->glide_backend.message();
             ++context->glide_gate_handled_count;
             win32_context->Eip = return_address;
             win32_context->Esp += 3U * sizeof(std::uint32_t);
             return true;
+        }
 
         case go::kGrDrawPoint: // _GRDRAWPOINT@4
             record_unimplemented(
@@ -2421,29 +2449,20 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             {
                 context->glide_triangle_trace_wrapped = true;
             }
-            GlideDrawVertex vertices[3] = {};
+            hle::GlideDrawVertex vertices[3] = {};
             for (std::size_t index = 0; index < 3U; ++index)
             {
                 if (!trace.pointer_readable[index])
                 {
                     return decline_gate("compact-triangle-unreadable-vertex");
                 }
-                float fields[15] = {};
-                std::memcpy(fields, trace.dwords[index], sizeof(fields));
-                GlideDrawVertex& vertex = vertices[index];
-                vertex.x = fields[0];
-                vertex.y = fields[1];
-                vertex.r = fields[3] / 255.0F;
-                vertex.g = fields[4] / 255.0F;
-                vertex.b = fields[5] / 255.0F;
-                vertex.a = fields[7] / 255.0F;
-                vertex.s = fields[9];
-                vertex.t = fields[10];
-                vertex.fog_oow =
-                    std::isfinite(fields[8]) && fields[8] > 1.0e-20F
-                        ? fields[8]
-                        : 1.0F;
-                vertex.texture_oow = vertex.fog_oow;
+                if (!hle::DecodeGlideProducerVertex(
+                        trace.dwords[index],
+                        kWin32GlideProducerVertexDwordCount,
+                        &vertices[index]))
+                {
+                    return decline_gate("compact-triangle-decode-failure");
+                }
             }
             static const bool draw_diagnostic_enabled =
                 std::getenv("REPIU_GLIDE_DRAW_DIAG") != nullptr;

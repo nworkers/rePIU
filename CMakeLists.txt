@@ -91,6 +91,7 @@ add_library(repiu_exe
     src/hle/glide_implementation_issue.cpp
     src/hle/glide_lfb.cpp
     src/hle/glide_texture_decode.cpp
+    src/hle/glide_vertex.cpp
     src/hle/hle_dispatcher.cpp
     src/hle/hle_profile.cpp
     src/hle/linexe_call_gate.cpp
