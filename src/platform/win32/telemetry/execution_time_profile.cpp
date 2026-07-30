@@ -74,6 +74,10 @@ Win32ExecutionTimeProfileSnapshot SnapshotExecutionTimeProfile(
     snapshot.counts = profile.counts;
     snapshot.inside_veh_cycles = profile.inside_veh_cycles;
     snapshot.inside_veh_counts = profile.inside_veh_counts;
+    snapshot.glide_gate_prologue_cycles = profile.glide_gate_prologue_cycles;
+    snapshot.glide_gate_prologue_count = profile.glide_gate_prologue_count;
+    snapshot.glide_gate_prologue_clamped_count =
+        profile.glide_gate_prologue_clamped_count;
     // Close the still-open guest run so a timed-out run still reports a
     // denominator. The interval is measured against the same invariant TSC even
     // though the snapshot runs on the host thread.
@@ -124,6 +128,32 @@ ExecutionTimeScope::ExecutionTimeScope(Win32ExecutionTimeProfile* profile,
         profile_->enabled = true;
         profile_->guest_run_start_cycles = start_cycles_;
         profile_->guest_run_open = true;
+    }
+    // Task 368 stage one: capture the outermost VEH entry, then, when the Glide
+    // gate scope opens inside it, bank the interval between the two. That
+    // interval is the kernel transition plus everything the handler did to
+    // reach the gate -- what exception-free dispatch would remove -- and it
+    // reuses both existing timestamps rather than reading the clock again.
+    if (bucket_ == ExecutionTimeBucket::kVehTotal)
+    {
+        if (owns_veh_depth_)
+        {
+            profile_->veh_entry_cycles = start_cycles_;
+        }
+    }
+    else if (bucket_ == ExecutionTimeBucket::kGlideGate && inside_veh_ &&
+             profile_->veh_entry_cycles != 0U)
+    {
+        if (start_cycles_ >= profile_->veh_entry_cycles)
+        {
+            profile_->glide_gate_prologue_cycles +=
+                start_cycles_ - profile_->veh_entry_cycles;
+            ++profile_->glide_gate_prologue_count;
+        }
+        else
+        {
+            ++profile_->glide_gate_prologue_clamped_count;
+        }
     }
 }
 

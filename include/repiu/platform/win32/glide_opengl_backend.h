@@ -6,6 +6,7 @@
 #include "repiu/platform/win32/glide_gate_timing.h"
 #include "repiu/platform/win32/glide_ordinal_timing.h"
 #include "repiu/platform/win32/glide_opengl_shader.h"
+#include "repiu/platform/win32/glide_setter_phase_timing.h"
 #include "repiu/runtime/execution_backend.h"
 
 #include <chrono>
@@ -168,6 +169,14 @@ public:
         return SnapshotGlideBufferSwapTiming(glide_buffer_swap_timing_);
     }
 
+    // Task 364: the OpenGL interval of the two leading state setters, split
+    // into error drain, state application, and trailing error check. Off
+    // unless REPIU_GLIDE_SETTER_PHASE is set.
+    Win32GlideSetterPhaseSnapshot glide_setter_phase_timing() const
+    {
+        return SnapshotGlideSetterPhaseTiming(glide_setter_phase_timing_);
+    }
+
     void BeginGlideOrdinalTiming(Win32GlideOrdinalTimingProfile* profile,
                                  std::uint16_t ordinal)
     {
@@ -262,11 +271,19 @@ private:
     // Task 354: grBufferSwap host work split. Only guest-gate commands are
     // recorded; internal LFB presentation through BufferSwap remains separate.
     Win32GlideBufferSwapTimingProfile glide_buffer_swap_timing_;
+    // Task 364: host thread only, so it needs no lock — every writer runs
+    // inside a host-thread setter body.
+    Win32GlideSetterPhaseProfile glide_setter_phase_timing_;
     Win32GlideOrdinalTimingProfile* active_ordinal_timing_ = nullptr;
     std::uint16_t active_ordinal_ = 0;
     bool glide_gate_timing_enabled_ = false;
     bool glide_gate_timing_resolved_ = false;
+    bool glide_setter_phase_enabled_ = false;
+    bool glide_setter_phase_resolved_ = false;
     bool GlideGateTimingEnabled();
+    // Resolved once, like the gate timing gate above: the setters are a hot
+    // path and `getenv` is not.
+    bool GlideSetterPhaseEnabled();
 };
 
 }  // namespace repiu::platform::win32

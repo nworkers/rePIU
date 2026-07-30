@@ -324,3 +324,101 @@ The median 1,416 ticks therefore give a conservative pacing upper bound of
 5.900 seconds, or 9.83% of wall clock at divisor 4,972. Task 348's former
 `0x0302FA10`/`0x032D9C84` wait did not occur in the source union of this normal
 60-second route.
+
+## 2026-07-30 Task 366: INT 8 전달 결손과 프레임 pacing 기각
+
+**확인됨: guest가 프로그램한 timer tick의 11.9%가 도달하지 않습니다.** Release 60초
+3회에서 전달률(`injected/due`)은 78.5/88.1/88.2%, 중앙값 **88.1%** 입니다. guest는
+divisor 4972 = 240Hz를 프로그램했고, schedule이 계산한 due는 216.9~219.4Hz(부팅 초반
+저주파 구간이 평균을 낮춤), 실제 주입은 193.3~199.2Hz입니다.
+
+**기전(코드 감사로 확정):** `PitIrqSchedule::Poll`은 catch-up 방식이라 밀린 tick 수를
+정확히 돌려줍니다. 그러나 `timer_interrupt_pending`이 `std::atomic<bool>`이므로
+due가 3이든 10이든 `InjectPendingInterrupts`는 `INT 8`을 **한 번만** 주입하고 flag를
+내립니다. 나머지는 영구 손실입니다. `port_io_emulator.cpp`의 주석
+"IRQ0 delivery is already coalesced by `timer_interrupt_pending`"이 이 설계가
+의도적이었음을 확인해 줍니다.
+
+실기 8259도 IRQ 라인당 pending 비트가 하나뿐이라 coalescing 자체는 하드웨어적으로
+틀리지 않습니다. 다른 것은 **원인**입니다. 실기에서는 게임이 충분히 빨라 드물었고,
+여기서는 상시 발생합니다.
+
+**항등식:** `due == injected + coalesced + dropped + remaining`이 6회 실행 모두 정확히
+성립했습니다(예: `13,162 = 11,597 + 1,466 + 99 + 0`).
+
+**기각됨: 프레임은 tick 전달에 gated되지 않습니다.** 상한 있는 backlog로 전달률을
+88.1% → 91.8%로 올리자 프레임 중앙값이 `1,400 → 1,171`(**-16.36%**)로 떨어졌습니다.
+3회 범위는 1,179~1,438 대 1,151~1,175로 겹치지 않습니다. 프레임당 tick은 8.06~8.67에서
+10.17~10.30으로 늘었는데 프레임이 줄었으므로 tick과 프레임의 관계는 인과가 아닙니다.
+
+**확인됨(회귀의 진짜 원인은 주입이 아닙니다):** 밀린 tick이 남아 있으면
+`timer_interrupt_pending`이 계속 서 있고 `ArmAotTimerSafePoint`가 사실상 상시
+활성이 됩니다.
+
+| 지표 | backlog OFF | backlog ON | 변화 |
+|---|---:|---:|---:|
+| timer safe-point trap | 5,375 | 6,454 | **+20.1%** |
+| breakpoint 중 timer trap 비중 | 2.53% | 3.34% | +0.81%p |
+| 프레임당 예외 | 308.4 | 329.4 | **+6.8%** |
+
+즉 비싼 것은 tick을 더 주는 것이 아니라 **safe point를 계속 켜 두는 것**입니다.
+
+**확인됨(T3):** backlog가 상한 64에 계속 붙고 1,029~1,076개가 폐기됐습니다. 호스트가
+240Hz를 따라잡지 못합니다.
+
+**미확정:** 손실 11.9%가 스텝-음악 어긋남을 만드는지. 게임의 스텝 타이밍이 `INT 8`
+횟수에서 오는지 Task 350이 전달하는 CD 재생 위치에서 오는지 확인해야 판단할 수
+있습니다. safe point 상시 arming의 단독 비용도 귀속되지 않았습니다.
+
+[작업 로그](../work-logs/20260730-366-timer-tick-delivery-and-frame-pacing.md)
+
+## 2026-07-30 Task 366: INT 8 delivery shortfall and the rejected pacing hypothesis
+
+**Confirmed:** 11.9% of the timer ticks the guest programmed never reach it.
+Delivery (`injected/due`) measured 78.5/88.1/88.2% across three 60-second Release
+runs, a median of 88.1%. The guest programmed divisor 4972 — 240 Hz — the schedule
+owed 216.9-219.4 Hz once the low-frequency boot period is averaged in, and
+193.3-199.2 Hz was actually injected.
+
+**Mechanism, from code audit:** `PitIrqSchedule::Poll` is a catch-up scheduler
+returning the exact owed count, but `timer_interrupt_pending` is an
+`std::atomic<bool>`, so `InjectPendingInterrupts` pushes one `INT 8` and clears the
+flag whether three or ten were owed. The remainder is lost permanently, and the
+comment in `port_io_emulator.cpp` confirms the coalescing was deliberate. A real
+8259 also has one pending bit per IRQ line, so coalescing is not itself wrong;
+what differs is the cause, since on original hardware the game was fast enough for
+it to be rare and here it is constant. The partition identity
+`due == injected + coalesced + dropped + remaining` held exactly in all six runs.
+
+**Rejected: frame rate is not gated by tick delivery.** A bounded backlog raised
+delivery from 88.1% to 91.8% and moved median frames from 1,400 to 1,171
+(-16.36%), with non-overlapping ranges, while ticks per frame rose from 8.06-8.67
+to 10.17-10.30 — so the relationship was not causal.
+
+**Confirmed:** the regression is not the extra injections. An outstanding owed tick
+keeps `timer_interrupt_pending` set, which keeps `ArmAotTimerSafePoint` effectively
+always active: timer safe-point traps rose 20.1%, their share of breakpoints from
+2.53% to 3.34%, and exceptions per frame 6.8%. Holding the safe point armed is the
+cost. The backlog also pinned at its cap of 64 with 1,029-1,076 ticks dropped, so
+the host cannot sustain 240 Hz.
+
+**Unresolved:** whether the 11.9% loss desynchronises steps from music, which
+requires knowing whether step timing derives from `INT 8` count or the CD playback
+position; and what continuous safe-point arming costs on its own.
+
+**해소됨 (사용자 관측, 2026-07-30):** 게임 타이밍의 근거는 **CD 재생 위치**입니다.
+CD 재생 위치가 없을 때 노트가 아예 움직이지 않는 것이 과거에 관측됐고, 이것이 Task 350이
+실제 재생 위치 전달을 구현한 배경입니다. 따라서 노트 진행은 `INT 8` 횟수가 아니라 CD
+위치에 종속되며, **위 tick 손실 11.9%가 스텝-음악 어긋남의 주원인일 가능성은 낮습니다.**
+손실 자체는 확정 사실로 유지하되 리듬 정확성 우선순위는 내립니다. `INT 8`이 관여하는
+다른 항목(입력 polling 주기, 애니메이션, 내부 timeout)의 영향은 미측정입니다. 이 항목의
+근거는 사용자 관측이며 Task 366에서 재측정하지 않았습니다.
+
+**Resolved (user observation, 2026-07-30):** game timing derives from the **CD
+playback position**. Notes did not move at all when the playback position was
+absent, which is what motivated Task 350's real-position delivery. Note progression
+therefore depends on CD position rather than `INT 8` count, so the 11.9% tick loss
+above is unlikely to be a principal cause of step-to-music drift; the loss stays a
+confirmed fact but rhythm accuracy drops in priority. Effects on other
+`INT 8`-driven items — input polling cadence, animation, internal timeouts — remain
+unmeasured. This rests on user observation and was not re-measured in Task 366.

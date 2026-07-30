@@ -1227,6 +1227,17 @@ void PrintExecutionAttempt(
         logger.info(
             "Win32 execution time derived veh-exclusive/unaccounted: {}/{}",
             veh_exclusive, unaccounted);
+        // Task 368 stage one: what exception-free Glide gate dispatch would
+        // remove, as opposed to the gate body it would still run.
+        logger.info(
+            "Win32 Glide gate prologue cycles/count/mean/clamped: {}/{}/{}/{}",
+            time_profile.glide_gate_prologue_cycles,
+            time_profile.glide_gate_prologue_count,
+            time_profile.glide_gate_prologue_count == 0U
+                ? 0ULL
+                : time_profile.glide_gate_prologue_cycles /
+                      time_profile.glide_gate_prologue_count,
+            time_profile.glide_gate_prologue_clamped_count);
         // Task 325: decomposition of kVehTotal. These are parts of the VEH
         // bucket, not additions to it, so they are reported separately and
         // deliberately excluded from the derived figures above. The residual is
@@ -1716,6 +1727,59 @@ void PrintExecutionAttempt(
                 swap.sdl_interval_query_failure_count,
                 swap.observed_sdl_interval);
         }
+        {
+            const auto& census = attempt.glide_setter_census;
+            logger.info(
+                "Win32 Glide setter census enabled/entries/calls/first/same/"
+                "changed/failure/unsupported: {}/{}/{}/{}/{}/{}/{}/{}",
+                census.enabled, census.active_entry_count, census.call_count,
+                census.first_count, census.same_count, census.changed_count,
+                census.failure_count, census.unsupported_count);
+            logger.info(
+                "Win32 Glide setter census key-overflow/distinct-overflow/"
+                "ordinal-overflow/invalidations/frames/texture-generation: "
+                "{}/{}/{}/{}/{}/{}",
+                census.key_overflow_count, census.distinct_overflow_count,
+                census.ordinal_overflow_count, census.invalidation_count,
+                census.frame_count, census.texture_generation);
+            const auto& phase = attempt.glide_setter_phase_timing;
+            logger.info(
+                "Win32 Glide setter phase enabled/clamped: {}/{}",
+                phase.enabled, phase.clamped_sample_count);
+            logger.info(
+                "Win32 Glide setter phase depth-mask calls/drain/apply/error/"
+                "total/max-total/max-apply/max-error/drain-iterations/errors: "
+                "{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
+                phase.depth_mask.call_count, phase.depth_mask.drain_cycles,
+                phase.depth_mask.apply_cycles, phase.depth_mask.error_cycles,
+                phase.depth_mask.total_cycles,
+                phase.depth_mask.max_total_cycles,
+                phase.depth_mask.max_apply_cycles,
+                phase.depth_mask.max_error_cycles,
+                phase.depth_mask.drain_iteration_count,
+                phase.depth_mask.error_count);
+            logger.info(
+                "Win32 Glide setter phase alpha-blend calls/drain/apply/error/"
+                "total/max-total/max-apply/max-error/drain-iterations/errors: "
+                "{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
+                phase.alpha_blend.call_count, phase.alpha_blend.drain_cycles,
+                phase.alpha_blend.apply_cycles, phase.alpha_blend.error_cycles,
+                phase.alpha_blend.total_cycles,
+                phase.alpha_blend.max_total_cycles,
+                phase.alpha_blend.max_apply_cycles,
+                phase.alpha_blend.max_error_cycles,
+                phase.alpha_blend.drain_iteration_count,
+                phase.alpha_blend.error_count);
+            const auto& elision = attempt.glide_setter_state_cache;
+            logger.info(
+                "Win32 Glide setter elision enabled/entries/elided/applied/"
+                "voided/invalidations/ordinal-overflow/texture-generation: "
+                "{}/{}/{}/{}/{}/{}/{}/{}",
+                elision.enabled, elision.active_entry_count,
+                elision.elided_count, elision.applied_count,
+                elision.voided_count, elision.invalidation_count,
+                elision.ordinal_overflow_count, elision.texture_generation);
+        }
         if (total != 0U)
         {
             logger.info(
@@ -1929,6 +1993,57 @@ void PrintExecutionAttempt(
                 attempt.aot_breakpoint_provenance_counts[5],
                 attempt.aot_breakpoint_provenance_counts[6],
                 attempt.aot_breakpoint_provenance_counts[7]);
+    logger.info(
+        "Win32 AOT boundary opcode census samples/escapes/prefixed/segment/"
+        "opsize/truncated/prefix-overflow/empty: {}/{}/{}/{}/{}/{}/{}/{}",
+        attempt.aot_opcode_census_samples,
+        attempt.aot_opcode_census_escapes,
+        attempt.aot_opcode_census_prefixed,
+        attempt.aot_opcode_census_segment_prefixed,
+        attempt.aot_opcode_census_operand_size_prefixed,
+        attempt.aot_opcode_census_truncated,
+        attempt.aot_opcode_census_prefix_overflow,
+        attempt.aot_opcode_census_empty);
+    logger.info(
+        "Win32 AOT boundary effective opcodes "
+        "[{:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} "
+        "{:02X}:{} {:02X}:{}]",
+        attempt.aot_effective_opcode_ranks[0].opcode,
+        attempt.aot_effective_opcode_ranks[0].count,
+        attempt.aot_effective_opcode_ranks[1].opcode,
+        attempt.aot_effective_opcode_ranks[1].count,
+        attempt.aot_effective_opcode_ranks[2].opcode,
+        attempt.aot_effective_opcode_ranks[2].count,
+        attempt.aot_effective_opcode_ranks[3].opcode,
+        attempt.aot_effective_opcode_ranks[3].count,
+        attempt.aot_effective_opcode_ranks[4].opcode,
+        attempt.aot_effective_opcode_ranks[4].count,
+        attempt.aot_effective_opcode_ranks[5].opcode,
+        attempt.aot_effective_opcode_ranks[5].count,
+        attempt.aot_effective_opcode_ranks[6].opcode,
+        attempt.aot_effective_opcode_ranks[6].count,
+        attempt.aot_effective_opcode_ranks[7].opcode,
+        attempt.aot_effective_opcode_ranks[7].count);
+    logger.info(
+        "Win32 AOT boundary 0F escape opcodes "
+        "[{:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} "
+        "{:02X}:{} {:02X}:{}]",
+        attempt.aot_escape_opcode_ranks[0].opcode,
+        attempt.aot_escape_opcode_ranks[0].count,
+        attempt.aot_escape_opcode_ranks[1].opcode,
+        attempt.aot_escape_opcode_ranks[1].count,
+        attempt.aot_escape_opcode_ranks[2].opcode,
+        attempt.aot_escape_opcode_ranks[2].count,
+        attempt.aot_escape_opcode_ranks[3].opcode,
+        attempt.aot_escape_opcode_ranks[3].count,
+        attempt.aot_escape_opcode_ranks[4].opcode,
+        attempt.aot_escape_opcode_ranks[4].count,
+        attempt.aot_escape_opcode_ranks[5].opcode,
+        attempt.aot_escape_opcode_ranks[5].count,
+        attempt.aot_escape_opcode_ranks[6].opcode,
+        attempt.aot_escape_opcode_ranks[6].count,
+        attempt.aot_escape_opcode_ranks[7].opcode,
+        attempt.aot_escape_opcode_ranks[7].count);
     logger.info("Win32 AOT other-boundary top opcodes "
                 "[{:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{} "
                 "{:02X}:{} {:02X}:{}] last={}/{}",
@@ -2429,6 +2544,15 @@ void PrintExecutionAttempt(
                 Hex32(attempt.linexe_indirect_far_call_selector),
                 Hex32(attempt.linexe_indirect_far_call_offset),
                 attempt.linexe_indirect_far_call_known_export ? "known export" : "unknown");
+    {
+        const auto& ticks = attempt.timer_tick_delivery;
+        logger.info(
+            "Win32 timer tick delivery backlog-enabled/due/injected/coalesced/"
+            "dropped/deferred/max-backlog/remaining: {}/{}/{}/{}/{}/{}/{}/{}",
+            ticks.backlog_enabled, ticks.due_total, ticks.injected_total,
+            ticks.coalesced_total, ticks.dropped_total, ticks.deferred_total,
+            ticks.max_backlog, ticks.backlog);
+    }
     logger.info("Win32 INT 8 chain HLE count/source/pointer/target: {}/{}/{}/{}:{}",
                 attempt.timer_interrupt_chain_hle_count,
                 Hex32(attempt.timer_interrupt_chain_hle_source),
@@ -2671,6 +2795,23 @@ void PrintExecutionAttempt(
             timing.complete_cycles, timing.residual_cycles,
             timing.backend_total_cycles, timing.direct_count,
             timing.direct_work_cycles);
+    }
+    for (const auto& observation : attempt.glide_setter_censuses)
+    {
+        const auto& census = observation.census;
+        logger.info(
+            "Win32 Glide setter census: ordinal={} name={} calls={} "
+            "first={} same={} changed={} failure={} unsupported={} "
+            "key_overflow={} distinct={} distinct_overflow={} "
+            "max_run={} max_frame_calls={} max_frame_changes={} "
+            "elided={} applied={}",
+            observation.ordinal, observation.name, census.call_count,
+            census.first_count, census.same_count, census.changed_count,
+            census.failure_count, census.unsupported_count,
+            census.key_overflow_count, census.distinct_key_count,
+            census.distinct_overflow_count, census.max_repeat_run,
+            census.max_frame_call_count, census.max_frame_change_count,
+            observation.elided_count, observation.applied_count);
     }
     logger.info("Win32 MSCDEX available/audio/tracks/requests/current LBA: {}/{}/{}/{}/{}",
                 attempt.mscdex_available ? "true" : "false",

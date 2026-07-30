@@ -5,6 +5,7 @@
 필요할 때 아래 archive를 참조합니다.
 
 - [Task 303까지의 current execution frontier 원문](current-execution-frontier-through-task303.md)
+- [Task 304~347 frontier 항목 원문](current-execution-frontier-task304-through-task347.md)
 
 This directory preserves historical frontier source text, including corrected and rejected
 hypotheses. Use the parent current-frontier document for active decisions and the archive for

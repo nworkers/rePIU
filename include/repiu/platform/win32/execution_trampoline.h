@@ -13,6 +13,11 @@
 #include "repiu/platform/win32/glide_buffer_swap_timing.h"
 #include "repiu/platform/win32/glide_gate_timing.h"
 #include "repiu/platform/win32/glide_ordinal_timing.h"
+#include "repiu/platform/win32/glide_setter_phase_timing.h"
+#include "repiu/platform/win32/glide_setter_state_census.h"
+#include "repiu/platform/win32/glide_setter_state_cache.h"
+#include "repiu/platform/win32/timer_tick_delivery.h"
+#include "repiu/platform/win32/aot_boundary_opcode_census.h"
 #include "repiu/hle/dos_file_system.h"
 #include "repiu/hle/glide_implementation_issue.h"
 #include "repiu/exe/dos16m_bound_module.h"
@@ -555,6 +560,14 @@ struct Win32MinimalExecutionAttempt
     Win32GlideOrdinalTimingSnapshot glide_ordinal_timing;
     // Task 354: guest grBufferSwap host work split around SDL presentation.
     Win32GlideBufferSwapTimingSnapshot glide_buffer_swap_timing;
+    // Task 364: repeated-versus-changing state-setter arguments, and the
+    // OpenGL interval of the two leading setters split by phase.
+    Win32GlideSetterCensusSnapshot glide_setter_census;
+    Win32GlideSetterPhaseSnapshot glide_setter_phase_timing;
+    // Task 365: how much of that repetition was actually elided.
+    Win32GlideSetterStateCacheSnapshot glide_setter_state_cache;
+    // Task 366: timer ticks owed against timer ticks the guest received.
+    Win32TimerTickDeliverySnapshot timer_tick_delivery;
     std::uint32_t native_fast_path_entry_count = 0;
     std::uint32_t native_fast_path_return_count = 0;
     std::uint32_t native_fast_path_cancel_count = 0;
@@ -598,6 +611,19 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t aot_other_top_counts[8] = {};
     std::uint32_t aot_last_other_eip = 0;
     std::uint32_t aot_last_other_bytes = 0;
+    // Task 367: the same samples resolved to real instructions. `effective` skips
+    // legacy prefixes; `escape` is the second byte behind a `0F`.
+    static constexpr std::size_t kAotOpcodeRankCount = 8U;
+    Win32AotOpcodeRank aot_effective_opcode_ranks[kAotOpcodeRankCount] = {};
+    Win32AotOpcodeRank aot_escape_opcode_ranks[kAotOpcodeRankCount] = {};
+    std::uint32_t aot_opcode_census_samples = 0;
+    std::uint32_t aot_opcode_census_escapes = 0;
+    std::uint32_t aot_opcode_census_prefixed = 0;
+    std::uint32_t aot_opcode_census_segment_prefixed = 0;
+    std::uint32_t aot_opcode_census_operand_size_prefixed = 0;
+    std::uint32_t aot_opcode_census_truncated = 0;
+    std::uint32_t aot_opcode_census_prefix_overflow = 0;
+    std::uint32_t aot_opcode_census_empty = 0;
     // Task 263(b): AOT residency proxy.
     std::uint32_t aot_residency_total = 0;
     std::uint32_t aot_residency_samples = 0;
@@ -872,6 +898,17 @@ struct Win32MinimalExecutionAttempt
         Win32GlideOrdinalTimingEntry timing;
     };
     std::vector<GlideOrdinalTimingObservation> glide_ordinal_timings;
+    struct GlideSetterCensusObservation
+    {
+        std::uint16_t ordinal = 0;
+        std::string name;
+        Win32GlideSetterCensusEntry census;
+        // Task 365: reported next to the census so the per-ordinal cross-check
+        // "observed duplicates == actually elided" is readable from one line.
+        std::uint32_t elided_count = 0;
+        std::uint32_t applied_count = 0;
+    };
+    std::vector<GlideSetterCensusObservation> glide_setter_censuses;
     bool mscdex_available = false;
     bool cd_audio_available = false;
     std::uint32_t mscdex_track_count = 0;

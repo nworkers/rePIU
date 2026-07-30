@@ -143,6 +143,9 @@ If the requirement is a simple question or confirmation request, answer it direc
 * 설계 문서는 `docs/design/` 아래에 둔다.
 * 계획 문서는 `docs/work-orders/` 아래에 둔다.
 * 작업 결과와 회고는 `docs/work-logs/` 아래에 둔다.
+* 사용자가 직접 수행하는 검증·측정·운영 절차는 `docs/guides/` 아래에 둔다. 특정 작업의
+  일회성 증거가 아니라 반복 수행 가능한 절차만 두고, 근거가 되는 작업 로그와 설계를
+  링크한다.
 * 프로젝트의 큰 방향성은 `docs/PROJECT_CHARTER.md`에 반영한다.
 * 현재 구현되는 코드의 설계와 구조는 `ARCHITECTURE.md`에 지속적으로 반영한다.
 * 원본 파일 분석으로 확인한 구조와 설계는 `docs/EXE_DESIGN.ko.md`, `docs/EXE_DESIGN.en.md`에 누적 반영한다.
@@ -158,6 +161,9 @@ If the requirement is a simple question or confirmation request, answer it direc
 * Put design documents under `docs/design/`.
 * Put work-order documents under `docs/work-orders/`.
 * Put work results and retrospectives under `docs/work-logs/`.
+* Put procedures the user runs themselves — verification, measurement, operations —
+  under `docs/guides/`. Keep only repeatable procedures there rather than one-off
+  evidence, and link the design and work log they rest on.
 * Put project-specific binary findings, confirmed behavior, hypotheses, and unresolved questions under `docs/analysis/`, organized by topic.
 * Put generally applicable technical definitions and background knowledge under `docs/kb/`, organized by topic and linked to external sources when derived from them.
 * Reflect the project's broad direction in `docs/PROJECT_CHARTER.md`.

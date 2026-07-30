@@ -82,6 +82,182 @@ class GlideOrdinalTimingScope
     bool active_ = false;
 };
 
+// Tasks 364 and 365. Hooked once here rather than in each setter case, so no
+// dispatch path is edited. It serves two consumers that must agree exactly: the
+// Task 364 census, which only observes, and the Task 365 cache, which skips the
+// host rendezvous for a confirmed repeat. Building the key once and classifying
+// the outcome once is what makes them unable to diverge — and what makes the
+// cross-check "census `same` == cache `elided`" a real proof that only observed
+// duplicates were skipped.
+//
+// The outcome is read from the handled counter and the implementation-issue
+// totals across the call, so the census still cannot change a result.
+class GlideSetterStateScope
+{
+  public:
+    GlideSetterStateScope(Win32GlideSetterCensusProfile* census,
+                          Win32GlideSetterStateCache* cache,
+                          const ThreadContext* context)
+        : census_(census),
+          cache_(cache),
+          context_(context)
+    {
+    }
+
+    ~GlideSetterStateScope()
+    {
+        if (!active_)
+        {
+            return;
+        }
+        if (elided_)
+        {
+            // An elided call is still a call, and still an exact repeat, so the
+            // observer counts it as `same` exactly as it would have without the
+            // elision. That keeps the census comparable between the two
+            // configurations, which gate E1 depends on.
+            RecordGlideSetterCensusCall(
+                census_, ordinal_, key_,
+                Win32GlideSetterCensusOutcome::kApplied);
+            return;
+        }
+        const Win32GlideSetterCensusOutcome outcome = Classify();
+        RecordGlideSetterCensusCall(census_, ordinal_, key_, outcome);
+        if (!elision_candidate_)
+        {
+            return;
+        }
+        if (outcome == Win32GlideSetterCensusOutcome::kApplied)
+        {
+            RecordGlideSetterStateApplied(cache_, ordinal_, key_);
+        }
+        else
+        {
+            // A decline or a retained-but-unexpressed argument leaves the host
+            // state unknown, so the record must go rather than be trusted.
+            RecordGlideSetterStateVoided(cache_, ordinal_);
+        }
+    }
+
+    // Called after the gate stack mirror is populated and before dispatch.
+    void Begin(const repiu::hle::GlideExportGate& glide_export)
+    {
+        if (census_ == nullptr && cache_ == nullptr)
+        {
+            return;
+        }
+        const repiu::hle::GlideGateId gate_id = glide_export.gate_id;
+        // Boundary bookkeeping runs for every gate, not only setter targets.
+        if (IsGlideSetterStateInvalidatingGate(gate_id))
+        {
+            RecordGlideSetterCensusInvalidation(census_);
+            InvalidateGlideSetterStateCache(cache_);
+        }
+        if (IsGlideSetterStateTextureGenerationGate(gate_id))
+        {
+            RecordGlideSetterCensusTextureGeneration(census_);
+            BumpGlideSetterStateCacheTextureGeneration(cache_);
+        }
+        if (gate_id == repiu::hle::GlideGateId::kGrBufferSwap)
+        {
+            RecordGlideSetterCensusFrameBoundary(census_);
+        }
+        if (!IsGlideSetterStateGate(gate_id))
+        {
+            return;
+        }
+
+        ordinal_ = glide_export.ordinal;
+        const std::uint32_t argument_words =
+            glide_export.argument_byte_count / sizeof(std::uint32_t);
+        if (argument_words > kWin32GlideSetterStateKeyWords)
+        {
+            // Truncating would collide distinct states into one key, so the call
+            // is counted and excluded instead. A nonzero total means the target
+            // list needs revisiting.
+            RecordGlideSetterCensusKeyOverflow(census_, ordinal_);
+            return;
+        }
+        // One key, built from the one generation counter that is live. The two
+        // counters advance together in lockstep above.
+        const std::uint32_t generation =
+            cache_ != nullptr ? cache_->texture_generation
+                              : (census_ != nullptr ? census_->texture_generation
+                                                    : 0U);
+        key_ = BuildGlideSetterStateKey(
+            context_->glide_gate_stack + 1U,
+            argument_words,
+            IsGlideSetterStateTextureDependentGate(gate_id) ? generation : 0U);
+        elision_candidate_ =
+            cache_ != nullptr && IsGlideSetterElisionGate(gate_id);
+        handled_before_ = context_->glide_gate_handled_count;
+        issues_before_ = TotalIssues();
+        backend_failures_before_ = context_->glide_implementation_issues.total(
+            repiu::hle::GlideImplementationIssueKind::kBackendFailure);
+        active_ = true;
+    }
+
+    // Queried only after the return address, signature, and argument size have all
+    // been validated, so a gate that would have been rejected is never elided.
+    bool ShouldElide() const
+    {
+        return active_ && elision_candidate_ &&
+            ShouldElideGlideSetterState(cache_, ordinal_, key_);
+    }
+
+    void MarkElided()
+    {
+        elided_ = true;
+        RecordGlideSetterStateElided(cache_, ordinal_);
+    }
+
+    GlideSetterStateScope(const GlideSetterStateScope&) = delete;
+    GlideSetterStateScope& operator=(const GlideSetterStateScope&) = delete;
+
+  private:
+    std::uint64_t TotalIssues() const
+    {
+        using kind = repiu::hle::GlideImplementationIssueKind;
+        const auto& issues = context_->glide_implementation_issues;
+        return issues.total(kind::kUnimplementedFunction) +
+            issues.total(kind::kUnsupportedArgument) +
+            issues.total(kind::kBackendFailure) +
+            issues.total(kind::kAbiReject);
+    }
+
+    Win32GlideSetterCensusOutcome Classify() const
+    {
+        // A gate that never reached the handled path, and any backend failure,
+        // leave the host state unknown. Anything else that recorded an issue was
+        // retained for the ABI without the argument being expressed, so it is not
+        // a successfully applied state either.
+        if (context_->glide_gate_handled_count == handled_before_ ||
+            context_->glide_implementation_issues.total(
+                repiu::hle::GlideImplementationIssueKind::kBackendFailure) !=
+                backend_failures_before_)
+        {
+            return Win32GlideSetterCensusOutcome::kFailed;
+        }
+        if (TotalIssues() != issues_before_)
+        {
+            return Win32GlideSetterCensusOutcome::kUnsupported;
+        }
+        return Win32GlideSetterCensusOutcome::kApplied;
+    }
+
+    Win32GlideSetterCensusProfile* census_ = nullptr;
+    Win32GlideSetterStateCache* cache_ = nullptr;
+    const ThreadContext* context_ = nullptr;
+    Win32GlideSetterStateKey key_;
+    std::uint16_t ordinal_ = 0;
+    std::uint32_t handled_before_ = 0;
+    std::uint64_t issues_before_ = 0;
+    std::uint64_t backend_failures_before_ = 0;
+    bool elision_candidate_ = false;
+    bool elided_ = false;
+    bool active_ = false;
+};
+
 std::array<std::uint32_t,
            repiu::hle::kGlideImplementationIssueArgumentCapacity>
 CaptureGlideImplementationIssueArguments(
@@ -667,6 +843,13 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             : nullptr,
         &context->glide_backend,
         &ordinal_gate_cycles);
+    // Tasks 364/365: declared here so its destructor observes the dispatch outcome
+    // on every return path, and begun below once the argument mirror is filled.
+    GlideSetterStateScope setter_state_scope(
+        GlideSetterCensusEnabled() ? &context->glide_setter_census : nullptr,
+        GlideSetterElisionEnabled() ? &context->glide_setter_state_cache
+                                    : nullptr,
+        context);
     const ExecutionTimeScope gate_time_scope(
         context->execution_time_profile.get(),
         ExecutionTimeBucket::kGlideGate,
@@ -715,6 +898,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                     stack,
                     sizeof(context->glide_gate_stack));
     }
+    setter_state_scope.Begin(*glide_export);
     if (glide_export->ordinal < context->glide_call_counts.size())
     {
         const std::size_t ordinal = glide_export->ordinal;
@@ -901,6 +1085,29 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             detail,
             "terminate");
         return false;
+    }
+    // Task 365: an exact repeat of a state already applied successfully on the
+    // host skips only the `InvokeOnHostThread` round trip. Everything the case
+    // body would have done that the guest can observe still happens here: the
+    // handled count, the return address, and the stdcall cleanup. The
+    // `glide_state` mirror write is skipped safely because it is idempotent --
+    // the application this key matches already wrote the identical values, and
+    // the key holds every argument dword.
+    //
+    // Placed after the return-address, signature, and argument-size checks so a
+    // gate that would have been rejected is never elided. `message_` is left
+    // alone: it is host-owned and writing it from the guest thread would race,
+    // and the message from the matching application is still accurate.
+    //
+    // Batch one is void-returning throughout, so `Eax` is untouched.
+    if (setter_state_scope.ShouldElide())
+    {
+        setter_state_scope.MarkElided();
+        ++context->glide_gate_handled_count;
+        win32_context->Eip = return_address;
+        win32_context->Esp +=
+            sizeof(std::uint32_t) + signature->argument_byte_count;
+        return true;
     }
     const auto decline_gate = [context, win32_context, glide_export, signature,
                                return_address](const char* reason) {

@@ -351,6 +351,15 @@ DWORD PollThreadUntilExit(HANDLE thread,
                 elapsed_nanoseconds);
             if (due_interrupts != 0U)
             {
+                // Task 366: recorded before arming, because whether a tick was
+                // still outstanding is exactly what separates a clean handoff
+                // from an owed tick being discarded.
+                RecordTimerTicksDue(
+                    &progress_context->timer_tick_delivery,
+                    static_cast<std::uint32_t>(due_interrupts),
+                    progress_context->timer_interrupt_pending.load(
+                        std::memory_order_acquire),
+                    TimerTickBacklogEnabled());
                 SaturatingAtomicAdd(
                     &progress_context->last_timer_injection_ticks,
                     due_interrupts);
@@ -722,6 +731,14 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         SnapshotGlideOrdinalTiming(context.glide_ordinal_timing);
     attempt->glide_buffer_swap_timing =
         context.glide_backend.glide_buffer_swap_timing();
+    attempt->glide_setter_census =
+        SnapshotGlideSetterCensus(context.glide_setter_census);
+    attempt->glide_setter_phase_timing =
+        context.glide_backend.glide_setter_phase_timing();
+    attempt->glide_setter_state_cache =
+        SnapshotGlideSetterStateCache(context.glide_setter_state_cache);
+    attempt->timer_tick_delivery =
+        SnapshotTimerTickDelivery(context.timer_tick_delivery);
     attempt->native_fast_path_entry_count =
         context.native_fast_path.entry_count.load(std::memory_order_relaxed);
     attempt->native_fast_path_return_count =
@@ -835,6 +852,31 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
             attempt->aot_other_top_counts[slot] = histogram[best];
             histogram[best] = 0;
         }
+    }
+    // Task 367: the same samples ranked by real instruction rather than by lead
+    // byte. Sorting happens here, at exit, never on the hot path.
+    {
+        const Win32AotBoundaryOpcodeCensus& census =
+            context.aot_boundary_opcode_census;
+        RankAotOpcodeHistogram(
+            census.effective_opcode_counts,
+            attempt->aot_effective_opcode_ranks,
+            Win32MinimalExecutionAttempt::kAotOpcodeRankCount);
+        RankAotOpcodeHistogram(
+            census.escape_opcode_counts,
+            attempt->aot_escape_opcode_ranks,
+            Win32MinimalExecutionAttempt::kAotOpcodeRankCount);
+        attempt->aot_opcode_census_samples = census.sample_count;
+        attempt->aot_opcode_census_escapes = census.escape_count;
+        attempt->aot_opcode_census_prefixed = census.prefixed_count;
+        attempt->aot_opcode_census_segment_prefixed =
+            census.segment_prefixed_count;
+        attempt->aot_opcode_census_operand_size_prefixed =
+            census.operand_size_prefixed_count;
+        attempt->aot_opcode_census_truncated = census.escape_truncated_count;
+        attempt->aot_opcode_census_prefix_overflow =
+            census.prefix_overflow_count;
+        attempt->aot_opcode_census_empty = census.empty_sample_count;
     }
     attempt->aot_last_other_eip =
         context.aot_last_other_boundary_eip.load(std::memory_order_relaxed);
@@ -1386,6 +1428,40 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
             {
                 return left.timing.gate_cycles >
                     right.timing.gate_cycles;
+            }
+            return left.ordinal < right.ordinal;
+        });
+    // Read from the profile rather than the snapshot: the snapshot carries only
+    // aggregates so a copy does not move the whole 256-entry array.
+    for (std::size_t ordinal = 0;
+         ordinal < context.glide_setter_census.entries.size(); ++ordinal)
+    {
+        const Win32GlideSetterCensusEntry& census =
+            context.glide_setter_census.entries[ordinal];
+        const Win32GlideSetterStateCacheEntry& cache =
+            context.glide_setter_state_cache.entries[ordinal];
+        if (census.call_count == 0U && census.key_overflow_count == 0U &&
+            cache.elided_count == 0U && cache.applied_count == 0U)
+        {
+            continue;
+        }
+        Win32MinimalExecutionAttempt::GlideSetterCensusObservation observation;
+        observation.ordinal = static_cast<std::uint16_t>(ordinal);
+        observation.name = context.glide_call_names[ordinal];
+        observation.census = census;
+        observation.elided_count = cache.elided_count;
+        observation.applied_count = cache.applied_count;
+        attempt->glide_setter_censuses.push_back(std::move(observation));
+    }
+    // Ranked by call volume: the leading setters are the ones whose repetition
+    // rate decides whether Task 365 is worth implementing.
+    std::sort(
+        attempt->glide_setter_censuses.begin(),
+        attempt->glide_setter_censuses.end(),
+        [](const auto& left, const auto& right) {
+            if (left.census.call_count != right.census.call_count)
+            {
+                return left.census.call_count > right.census.call_count;
             }
             return left.ordinal < right.ordinal;
         });

@@ -2625,22 +2625,44 @@ std::uint32_t InjectPendingInterrupts(CONTEXT* win32_context,
         ClearAotTimerSafePointRequest(context);
         context->timer_interrupt_due_ticks.store(
             0U, std::memory_order_relaxed);
+        // Task 366: delivery is abandoned with no vector to reach, so the owed
+        // ticks are accounted rather than silently vanishing from the identity.
+        RecordTimerTickBacklogCleared(&context->timer_tick_delivery);
         return 0U;
     }
 
+    // Task 366: these two are delays, not losses -- the pending state survives
+    // and the tick lands at the next safe moment. Counting them separately keeps
+    // them out of the loss figure.
     if (!IsGuestInstructionPointer(context, static_cast<std::uint32_t>(win32_context->Eip)) &&
         !IsAotCacheAddress(context, static_cast<std::uint32_t>(win32_context->Eip)))
     {
+        RecordTimerTickDeferred(&context->timer_tick_delivery);
         return 0U;
     }
 
     if ((win32_context->EFlags & kEFlagsInterruptEnable) == 0U)
     {
+        RecordTimerTickDeferred(&context->timer_tick_delivery);
         return 0U;
     }
 
-    context->timer_interrupt_pending.store(false, std::memory_order_relaxed);
-    ClearAotTimerSafePointRequest(context);
+    // Task 366: with the backlog opt-in off this returns false and the two lines
+    // below behave exactly as before -- one injection, flag cleared. With it on,
+    // a still-owed tick keeps delivery armed so the backlog drains one interrupt
+    // per safe point rather than bursting into the guest stack.
+    const bool keep_armed = RecordTimerTickInjected(
+        &context->timer_tick_delivery, TimerTickBacklogEnabled());
+    context->timer_interrupt_pending.store(keep_armed,
+                                           std::memory_order_relaxed);
+    if (keep_armed)
+    {
+        ArmAotTimerSafePoint(context);
+    }
+    else
+    {
+        ClearAotTimerSafePointRequest(context);
+    }
     const std::uint32_t consumed_ticks =
         context->timer_interrupt_due_ticks.exchange(
             0U, std::memory_order_acq_rel);

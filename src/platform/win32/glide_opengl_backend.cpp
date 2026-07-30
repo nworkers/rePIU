@@ -61,6 +61,19 @@ bool GlideOpenGlBackend::GlideGateTimingEnabled()
     return glide_gate_timing_enabled_;
 }
 
+// Task 364: same one-time resolution as above. This gate is separate from the
+// gate timing gate because it adds clock reads inside the OpenGL interval,
+// which is exactly the observer risk Task 353's method rule warns about.
+bool GlideOpenGlBackend::GlideSetterPhaseEnabled()
+{
+    if (!glide_setter_phase_resolved_)
+    {
+        glide_setter_phase_enabled_ = GlideSetterPhaseProfileEnabled();
+        glide_setter_phase_resolved_ = true;
+    }
+    return glide_setter_phase_enabled_;
+}
+
 void GlideOpenGlBackend::InvokeOnHostThread(std::function<void()> command)
 {
     const bool timing =
@@ -1275,11 +1288,30 @@ bool GlideOpenGlBackend::SetDepthMask(bool enabled)
             : "Glide depth writes disabled (dummy)";
         return true;
     }
-    glDepthMask(enabled ? GL_TRUE : GL_FALSE);
+    // Task 364: the message is assigned before the timed region so string cost
+    // is not attributed to OpenGL. It is only read after the call returns, so
+    // the reordering is semantically inert.
     message_ = enabled
         ? "Glide depth writes enabled"
         : "Glide depth writes disabled";
-    return glGetError() == GL_NO_ERROR;
+    const bool phase = GlideSetterPhaseEnabled();
+    const std::uint64_t phase_entry =
+        phase ? ReadGlideGateTimingCycles() : 0U;
+    glDepthMask(enabled ? GL_TRUE : GL_FALSE);
+    const std::uint64_t phase_error_start =
+        phase ? ReadGlideGateTimingCycles() : 0U;
+    const bool no_error = glGetError() == GL_NO_ERROR;
+    if (phase)
+    {
+        // Depth mask has no leading drain, so entry and apply-start are the
+        // same instant and the drain interval is zero by construction.
+        RecordGlideSetterPhaseSample(
+            &glide_setter_phase_timing_,
+            Win32GlideSetterPhaseKind::kDepthMask,
+            phase_entry, phase_entry, phase_error_start,
+            ReadGlideGateTimingCycles(), 0U, !no_error);
+    }
+    return no_error;
 #endif
 }
 
@@ -1468,21 +1500,42 @@ bool GlideOpenGlBackend::SetAlphaBlend(
             : "Glide alpha blending enabled (dummy)";
         return true;
     }
+    // Task 364: as in SetDepthMask, the message is assigned outside the timed
+    // region so only OpenGL work lands in the phase totals.
+    message_ = opaque
+        ? "Glide ONE/ZERO alpha blending disabled in OpenGL"
+        : "Glide alpha blending enabled in OpenGL";
+    const bool phase = GlideSetterPhaseEnabled();
+    const std::uint64_t phase_entry =
+        phase ? ReadGlideGateTimingCycles() : 0U;
+    std::uint32_t drain_iterations = 0;
     while (glGetError() != GL_NO_ERROR)
     {
+        ++drain_iterations;
     }
+    const std::uint64_t phase_apply_start =
+        phase ? ReadGlideGateTimingCycles() : 0U;
     if (opaque)
     {
         glDisable(GL_BLEND);
-        message_ = "Glide ONE/ZERO alpha blending disabled in OpenGL";
     }
     else
     {
         glEnable(GL_BLEND);
         glBlendFunc(gl_source, gl_destination);
-        message_ = "Glide alpha blending enabled in OpenGL";
     }
-    return glGetError() == GL_NO_ERROR;
+    const std::uint64_t phase_error_start =
+        phase ? ReadGlideGateTimingCycles() : 0U;
+    const bool no_error = glGetError() == GL_NO_ERROR;
+    if (phase)
+    {
+        RecordGlideSetterPhaseSample(
+            &glide_setter_phase_timing_,
+            Win32GlideSetterPhaseKind::kAlphaBlend,
+            phase_entry, phase_apply_start, phase_error_start,
+            ReadGlideGateTimingCycles(), drain_iterations, !no_error);
+    }
+    return no_error;
 #endif
 }
 

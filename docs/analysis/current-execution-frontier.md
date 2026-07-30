@@ -1,11 +1,275 @@
 # 현재 실행 frontier / Current execution frontier
 
-과거 전체 기록은 [Task 303까지의 frontier 원문](history/current-execution-frontier-through-task303.md)에
+과거 전체 기록은 [Task 303까지의 frontier 원문](history/current-execution-frontier-through-task303.md)과
+[Task 304~347 항목 원문](history/current-execution-frontier-task304-through-task347.md)에
 보존합니다. 이 문서는 최근 약 10개 Task와 현재 결정만 유지합니다.
+
+## 다음 세션 인수인계 / Session handoff
+
+**현재 대기 중인 것: 사용자가 FPS 급락 gameplay 장면을 캡처합니다.**
+절차는 [gameplay 장면 캡처 가이드](../guides/gameplay-scene-capture.md)에 있습니다.
+
+### Tasks 364~368에서 확정된 것 한 눈에
+
+| Task | 시도 | 결과 |
+|---|---|---|
+| 364 | setter 반복률·GL phase 귀속(계측만) | 동일 상태 **90.71%**, 비용은 rendezvous 직후 **첫 GL 접촉** |
+| 365 | 동일 상태 rendezvous 생략(구현, 기본 ON) | 정확성 증명, Glide **-5.13%p**, **프레임 변화 없음** |
+| 366 | timer tick 전달 개선(기각) | 기본 손실 **11.9%** 확인, 전달률 ↑에 **프레임 -16.4%** |
+| 367 | boundary opcode 실명 귀속(계측만) | 최대 인구는 **우리 Glide gate trap 55.21%**, 호출당 예외 1회 |
+| 368 | 예외 없는 gate dispatch(구현 안 함) | 상한 **1.034배** → **예외 축 종결** |
+
+### 이 다섯 작업이 함께 말하는 것
+
+**이 장면에서는 비용을 줄여도 프레임이 늘지 않습니다.** 365가 Glide 비용을 5.13%p
+줄였는데 프레임이 그대로였고, 366은 예외를 늘리자 프레임이 즉시 줄었으며, 368은 최대
+예외 인구를 지워도 1.034배임을 측정으로 확정했습니다.
+
+**남은 덩어리는 gate 본체**입니다 — 호출당 약 235,000 cycle, wall의 18.7%. 365가 그중
+rendezvous만 건드렸고, 367이 예외 층이 얇음을 보였으므로, 나머지는 gate가 실제로 하는
+일(OpenGL, LFB, ordinal dispatch)입니다.
+
+**그러나 이 장면은 문제의 장면이 아닙니다.** Task 363이 기록한 gameplay 장면은 setter가
+wall의 20.59%에 LFB 0회인데, 측정에 쓴 자동 장면은 setter 약 5.6%에 LFB 304회입니다.
+**같은 집합이 4배 차이**나므로, 캡처 없이 다음 대상을 고르면 또 틀릴 수 있습니다.
+
+### 캡처가 오면 할 일
+
+1. [캡처 가이드](../guides/gameplay-scene-capture.md) §4 결정 트리로 다음 축을 고릅니다.
+2. [생략 검증 가이드](../guides/glide-setter-elision-testing.md)로 Task 365 기본값을
+   확정합니다(현재 기본 ON, 미결).
+3. 결과에 따라 batch 2 재개 여부, LFB/triangle 분해, 또는 guest 실행 축으로 이동합니다.
+
+### 지금 켜져 있는/꺼져 있는 것
+
+| 환경 변수 | 기본값 | 의미 |
+|---|---|---|
+| `REPIU_GLIDE_SETTER_ELIDE` | **ON** | 동일 상태 생략(Task 365). `0`으로 복원 |
+| `REPIU_GLIDE_SETTER_CENSUS` | OFF | setter 반복률 census(Task 364) |
+| `REPIU_GLIDE_SETTER_PHASE` | OFF | GL phase 분해(Task 364) |
+| `REPIU_TIMER_TICK_BACKLOG` | OFF | **성능 목적으로 켜지 말 것**(Task 366: -16.4%) |
+| `REPIU_AOT_DBT_SUPERBLOCK` | OFF | 렌더링 중단. 예외 없는 dispatch가 여기 묶여 있음 |
+
+timer tick 전달 counter와 boundary opcode census는 **상시 ON**이며 동작을 바꾸지
+않습니다.
+
+---
+
+**Handoff:** the user is capturing the gameplay scene where FPS actually collapses;
+the procedure is in the [capture guide](../guides/gameplay-scene-capture.md).
+
+Tasks 364-368 established that **cost reduction does not convert into frames in the
+scene measured so far**: Task 365 cut the Glide share 5.13 points without moving
+frames, Task 366 raised exceptions and immediately lost 16.4%, and Task 368 measured
+that erasing the largest exception population buys only 1.034x, closing the exception
+axis. What remains is the gate body at roughly 235,000 cycles per call and 18.7% of
+wall — the work the gate actually does, since Task 367 showed the exception layer on
+top of it is thin.
+
+But the measured scene is not the reported one: state setters held 20.59% of wall
+with zero LFB locks in the Task 363 gameplay capture, against about 5.6% with 304 LFB
+locks in the automated runs — a fourfold difference from scene composition, which is
+why choosing the next axis without the capture risks being wrong again.
+
+When the capture arrives, use the capture guide's decision tree to pick the next
+axis, settle the Task 365 elision default with the
+[elision testing guide](../guides/glide-setter-elision-testing.md), and from there
+either resume batch two, decompose LFB/triangle, or move to the guest-execution axis.
+
+Currently on by default: `REPIU_GLIDE_SETTER_ELIDE` (Task 365 elision; `0` restores),
+plus always-on timer-tick and boundary-opcode counters that change no behaviour. Off:
+the setter census and GL phase profiles, `REPIU_TIMER_TICK_BACKLOG` (**must not be
+enabled for performance** — Task 366 measured -16.4%), and
+`REPIU_AOT_DBT_SUPERBLOCK` (breaks rendering, and exception-free dispatch is bolted
+to it).
 
 ## 현재 최상위 결론 / Active top-level conclusion
 
-**최신 결론(Task 363):** 2026-07-30 Release 실게임 profile에서는 Glide 호출
+**최신 결론(Task 367):** **최대 예외 인구는 guest 명령이 아니라 우리가 만든 Glide gate
+trap입니다.** `0F 0B`(UD2)가 boundary 표본의 **55.21%** 이고, 그 횟수는 3회 실행 모두
+**Glide gate 진입 횟수와 정확히 일치**했습니다(94,493 / 93,874 / 87,533).
+**Glide API 호출 1회당 예외 1회**입니다.
+
+기존 census가 `bytes[0]`만 기록해 최다 항목 `0F`(두 바이트 escape)와 `66`/`26`(prefix)이
+명령으로 집계되고 있었고, 상위 인구의 74%가 그렇게 가려져 있었습니다. prefix를
+건너뛰고 escape 두 번째 바이트를 기록하자 정체가 드러났습니다.
+
+| 기계 | 표본 대비 | 성격 |
+|---|---:|---|
+| **Glide gate UD2** | **55.21%** | **우리 구현 — 제거 가능성 있음** |
+| segment register move (`8C`/`8E`) | 20.11% | guest 명령 |
+| port I/O (`ED`/`EE`/`EF`) | 13.15% | guest 명령 |
+
+**이것이 Task 365를 설명합니다.** 동일 상태 생략은 **host rendezvous만** 없앴고 gate
+예외는 그대로 남았습니다. 호출당 남은 비용이 UD2 예외 + VEH dispatch이며 그것이 Glide
+호출 비용의 지배분이었습니다. **A1 성립이므로 다음 작업은 Glide gate를 예외 없이
+dispatch하는 설계입니다.**
+
+**재계산됨 — Task 336의 상한은 더 이상 유효하지 않습니다.** 당시 VEH 진입
+1,307,096회로 전이 27.7~30.4%, 상한 1.38~1.44배였으나 현재 예외는 약 370,000회로
+**3.5배 줄었습니다.** 같은 전이 가격이면 전이 총비용은 wall의 약 **6.4%**, 전이만
+없앨 때 상한은 약 **1.07배**입니다. 다만 예외 1회의 실제 비용은 VEH handler 본문을
+포함하며(Task 347: VEH 전체 32.47%), Task 366의 프레임당 예외 +6.8% → 프레임 -16.4%는
+전이 가격만으로 설명되지 않습니다.
+
+**정정됨 — 탄력성 -2.4 인용 철회.** Task 366의 프레임 손실 원인은 예외 횟수가 아니라
+safe point 상시 arming이었으므로 두 기전이 섞인 값입니다.
+[Task 368 설계 §5.1](../design/20260730-368-exception-free-glide-gate-dispatch.md)의
+비용 분해가 대신 답했습니다.
+
+**확인됨(Task 368, 구현 안 함 — 측정으로 확정):** 예외 없는 Glide gate dispatch의
+제거 상한은 **wall의 3.25%, 프레임 약 1.034배**입니다. 전이 가격을 세션 변동폭
+최상단(+46%)으로 잡아도 4.51%, 1.047배로 사전 등록 **B1(+5%)에 미달합니다.**
+
+VEH 진입부터 gate scope까지를 **새 clock read 없이**(두 scope의 기존 timestamp 차이)
+실측한 값이 호출당 **6,523 cycle**입니다. 1단계 추정(34,609)은 **10.6배 과대평가**
+였고, 예외당 평균 transfer resolution의 **0.20배**입니다. B1을 넘으려면 2배 이상이
+필요했으므로 **이 작업을 살릴 수 있었던 유일한 가정이 정반대로 기각**됐습니다.
+
+**구조적 이유:** Glide 호출 1회에서 gate 본체가 약 235,000 cycle이고 예외로 도달하는
+비용(전이 34,521 + prologue 6,523)은 그 위의 얇은 층입니다. 예외를 없애도
+rendezvous·OpenGL·ordinal dispatch는 그대로 남습니다.
+
+**따라서 예외 축은 닫힙니다.** 최대 인구(55.21%)를 제거해도 1.034배이므로 나머지 작은
+인구는 더 작으며, Task 336 상한 재계산(1.07배)과 일치합니다.
+
+**감사로 남은 사실:** 예외 없는 dispatch 기계(`EmitHleDispatchSlot`)는 이미 존재하나
+`REPIU_AOT_DBT_SUPERBLOCK`(렌더링 중단)에 묶여 **독립 평가된 적이 없고**, 켜더라도
+`IsHleBoundary`가 UD2를 boundary로 보지 않아 Glide gate엔 적용되지 않습니다.
+
+**선례 주의:** Task 308이 exception-free HLE를 시도해 progress `+1.64%`에 그쳤습니다.
+Task 324/334 이전의 훨씬 느린 축이고 지표도 `progress`였으므로 자동 기각하지 않되
+사전 등록 gate에 반영합니다.
+
+**미확정:** UD2 예외 1회의 실제 비용 분해. segment/port I/O 인구의 제거 가능성.
+safe-point 상시 arming 비용.
+
+[설계](../design/20260730-367-hle-boundary-opcode-attribution.md) /
+[작업 지시](../work-orders/20260730-367-hle-boundary-opcode-attribution.md) /
+[작업 로그](../work-logs/20260730-367-hle-boundary-opcode-attribution.md)
+
+**Latest conclusion (Task 367):** **The largest exception population is not a guest
+instruction but our own Glide gate trap.** `0F 0B` (UD2) is 55.21% of boundary
+samples and its count equalled Glide gate entries exactly in all three runs, so
+**each Glide API call costs one exception**. The existing census recorded only
+`bytes[0]`, so its largest entry was the two-byte escape and its second and fifth
+were prefixes, hiding 74% of the leading population. By mechanism the boundary is
+the Glide gate trap at 55.21%, segment register moves at 20.11%, and port I/O at
+13.15% — 88.5% together.
+
+**This explains Task 365:** elision removed the rendezvous but left the gate
+exception, and the UD2 exception plus VEH dispatch was the dominant part of a Glide
+call. A1 holds, so an exception-free Glide gate dispatch is the next task.
+
+**Recomputed:** Task 336's bound no longer applies. Exceptions fell 3.5x from
+1,307,096 to about 370,000, putting transitions near 6.4% of wall and their removal
+at about 1.07x — though the real per-exception cost includes the VEH handler body,
+which is why Task 366's 6.8% rise cost 16.4% of frames. The implied elasticity of
+-2.4 comes from a single pair with no evidence of linearity, so no number is
+promised. **Precedent:** Task 308's exception-free HLE gained only 1.64% on
+`progress`, on a far slower axis and a different metric; it informs the gates rather
+than rejecting the work.
+
+**이전 결론(Task 366):** **프레임은 timer tick 전달에 gated되지 않습니다.** 전달률을
+88.1% → 91.8%로 올리자 프레임이 `1,400 → 1,171`(**-16.36%**)로 **떨어졌습니다**(3회 범위
+1,179~1,438 대 1,151~1,175, 겹치지 않음). 프레임당 tick이 8.06~8.67에서 10.17~10.30으로
+늘었는데 프레임이 줄었으므로 tick과 프레임의 관계는 **인과가 아니었습니다.**
+
+**확인됨(새 사실):** guest가 프로그램한 timer tick의 **11.9%가 도달하지 않습니다.**
+`PitIrqSchedule::Poll`은 밀린 tick 수를 정확히 계산하지만 `timer_interrupt_pending`이
+`std::atomic<bool>`이라 due가 3이든 10이든 `INT 8`은 한 번만 전달됩니다. 항등식
+`due == injected + coalesced + dropped + remaining`은 6회 전부 정확히 성립했습니다.
+
+**확인됨(회귀의 진짜 원인):** 비싼 것은 tick을 더 주는 것이 아니라 **safe point가 상시
+armed 상태로 유지되는 것**입니다. backlog가 남아 있으면 flag가 계속 서서
+`ArmAotTimerSafePoint`가 사실상 상시 활성이 되고, timer safe-point trap이 **+20.1%**,
+프레임당 예외가 **+6.8%**(308.4 → 329.4) 늘었습니다.
+
+**따라서 다음 축은 예외 횟수입니다.** 두 번은 "비용을 줄여도 프레임이 안 늘었고"
+(Task 335·365) 이번에는 "예외를 늘리면 프레임이 줄었습니다". 프레임당 예외 308~331,
+Task 336의 TF/`INT3` 제거 상한 1.38~1.44배와 함께 보면 **예외 횟수가 현재 처리량과
+직접 연동된 것으로 확인된 유일한 축**입니다.
+
+**해소됨(사용자 관측):** 게임 타이밍의 근거는 **CD 재생 위치**입니다. CD 재생 위치가
+없을 때 노트가 아예 움직이지 않는 것이 과거에 관측됐습니다(Task 350의 배경). 따라서
+tick 손실 11.9%가 스텝-음악 어긋남의 주원인일 가능성은 낮으며 리듬 정확성 우선순위를
+내립니다. `INT 8`이 관여하는 다른 항목(입력 polling 주기, 애니메이션, 내부 timeout)의
+영향은 미측정입니다.
+
+**미확정:** safe point 상시 arming의 단독 비용. 무엇이 pacing하는지는 여전히
+미해결이며 tick 전달만 후보에서 제외됐습니다.
+
+[설계](../design/20260730-366-timer-tick-delivery-and-frame-pacing.md) /
+[작업 지시](../work-orders/20260730-366-timer-tick-delivery-and-frame-pacing.md) /
+[작업 로그](../work-logs/20260730-366-timer-tick-delivery-and-frame-pacing.md)
+
+**Previous conclusion (Task 366):** **Frame rate is not gated by timer tick
+delivery.** Raising delivery from 88.1% to 91.8% moved median frames from 1,400
+to 1,171 (-16.36%), with non-overlapping ranges, while ticks per frame rose from
+8.06-8.67 to 10.17-10.30 — so the tick-to-frame relationship was not causal.
+Newly confirmed: **11.9% of the timer ticks the guest programmed never reach it**,
+because `PitIrqSchedule::Poll` computes the exact owed count but
+`timer_interrupt_pending` is a boolean, so an owed count of three or ten still
+yields one `INT 8`. The partition identity held exactly in all six runs. The
+regression's cause is not the extra interrupts but **holding the safe point
+armed**: timer safe-point traps rose 20.1% and exceptions per frame 6.8%. After
+two results where cutting cost added no frames and one where adding exceptions
+removed them, **exception count is the only axis demonstrably coupled to
+throughput today**. Unresolved: whether the tick loss desynchronises steps from
+music, what continuous safe-point arming costs on its own, and what actually
+paces the run.
+
+**이전 결론(Task 365):** batch 1의 7종 setter에서 rendezvous **41,368회를 제거**해
+Glide gate 비중을 `20.76% → 15.63%`(-5.13%p)로 내렸으나 **프레임은 1,215 → 1,206
+(-0.74%)으로 변하지 않았습니다.** OFF 3회 범위가 1,215~1,384(13.9%)이므로 편차
+안입니다.
+
+**확인됨: 이 장면의 실행은 더 이상 Glide setter 경로에 의해 제한되지 않습니다.**
+Task 335가 비용 -3.53%p에 프레임 +5.5%를 얻은 것과 대비되며, 비용 제거가 처리량으로
+환산되지 않는 신호가 이제 **두 번** 나왔습니다.
+
+**귀속:** Glide gate는 중앙값 `33.81G → 25.46G cycle`로 8.35G(약 3.1초) 줄었고 예외
+횟수는 늘지 않았으므로(프레임당 324.7~335.2 대 327.6~330.9) 해방된 시간은 AOT 캐시 내
+guest 실행으로 갔습니다. timer safe-point trap은 프레임당 `4.80 → 5.25`(+9.4%)로
+늘었습니다. **guest가 그 시간을 busy-wait에서 소비했습니다.**
+
+**방법 규칙 추가(중요):** Task 347 축은 세션마다 예외 전이 가격을 새로 측정하며 그
+값이 **최대 46% 흔들립니다**(`INT3` 28,154 대 41,033). 따라서 **서로 다른 task347
+호출에서 나온 커널/guest 파생 축은 비교하지 않습니다.** 비교 가능한 것은 직접
+측정값(Glide cycle, 예외 횟수, 프레임)입니다. 초기 Task 365 기록의 "커널 전이
+7.26% → 10.08%"는 이 artifact였고 정정했습니다.
+
+**다음 우선순위는 "무엇이 pacing하는가"입니다(Task 366).** 같은 실행에서 `INT 8`
+전달은 198.5~208.5Hz인데 guest가 프로그램한 divisor 4972는 **240Hz**입니다. 프레임당
+tick은 6회 중 5회가 9.88~10.25로 좁고, tick rate 최고 실행(208.5Hz)이 프레임도
+최고였습니다(1,384). Task 366 triangle batching은 보류하고 pacing 귀속을 먼저 합니다.
+
+**확인됨(정확성):** 순수 관측자인 census가 센 중복과 실제 생략이 ordinal 단위·합계
+모두 **정확히 일치**했습니다(예: `grColorMask` 7,458/7,458, 3회 실행 합계
+41,368/41,368 등). 렌더 시퀀스도 phase offset +1에서 **72.9%가 통계 완전 일치**하여
+같은 프레임을 한 프레임 먼저 그린다는 것이 확인됐습니다.
+
+**확인됨(호출 구조):** 게임은 60초에 이 7종을 41,384회 호출해 상태를 **16번** 바꿉니다
+(약 2,586:1). `applied=16`은 3회 실행 모두 동일했습니다.
+
+**미확정:** 무엇이 pacing하는지. 커널 전이 추정이 2.8%p 오른 이유. LFB 없는 gameplay
+장면(Task 363 기준 setter가 Glide의 85.33%)에서의 이득.
+
+**이전 결론(Task 364):** 상태 setter 호출의 **90.71%가 직전 성공 적용과 정확히 같은
+상태**입니다(동일 바이너리 Release 60초 3회, 범위 90.65~90.72%). census 대상 20종 중
+13종이 99%를 넘고, 최다 호출 `grColorMask`는 99.95%(최대 연속 6,158회)입니다.
+`grDepthMask`는 오히려 낮은 쪽인 72.63%이고, 최저는 `grTexSource` 32.24%입니다.
+동일 상태 생략의 실측 상한은 **wall의 4.55%, Glide gate의 25.11%** 입니다.
+
+**확인됨(방향을 바꾸는 발견):** `grDepthMask`의 host work는 `glGetError`가 아니라
+**rendezvous 기상 직후의 첫 GL 접촉**입니다. `glDepthMask`가 GL 구간의 84.59%,
+후속 `glGetError`가 15.41%입니다. `grAlphaBlendFunction`은 선행 drain loop가
+**반복 0회**인데도 GL 구간의 30.66%이고 같은 함수의 후속 `glGetError`는 2.21%뿐입니다.
+즉 같은 호출이 위치에 따라 약 14배 차이가 나며, 어느 호출이 먼저 오든 그 호출이
+비용을 흡수합니다. **따라서 `glGetError` 제거는 답이 아니고, Task 365의 rendezvous
+생략이 이 first-touch 비용을 통째로 없앱니다.**
+
+**이전 기준(Task 363):** 2026-07-30 Release 실게임 profile에서는 Glide 호출
 403,904회와 `grBufferSwap` 1,287회가 약 47.5초 동안 완료됐습니다. 전체 Glide gate는
 wall-clock의 24.14%이고, 주요 상태 설정 18종은 프레임당 약 235.7회 호출되어
 wall-clock의 20.59%, Glide gate의 85.33%를 차지합니다.
@@ -15,13 +279,76 @@ host work입니다. `grDrawTriangle`은 Glide의 11.23%, wall의 2.71%이지만 
 시간의 94.1%가 삼각형별 동기 handoff입니다. `grAlphaBlendFunction`은 Glide의
 9.26%, wall의 2.24%입니다.
 
+**주의(Task 364에서 확인된 장면 의존성):** wall 기준 setter 비중은 장면에 크게
+좌우됩니다. Task 364의 부팅 포함 60초 실행은 `grLfbLock` 304회를 포함해 그 gate가
+Glide를 지배하며, 같은 setter 집합이 wall의 약 5.57%뿐입니다. Task 363의 LFB 없는
+gameplay 장면에서는 20.59%였습니다. **Glide gate 대비 값이 장면 간 비교에 쓸 수 있는
+축입니다.**
+
 반면 같은 실행에서 `grBufferSwap`은 wall의 0.24%, SDL present는 0.17%뿐이고
 `grLfbLock` 호출은 없습니다. texture download도 63회, wall 약 0.07%입니다.
-따라서 Task 354/355의 과거 LFB 우선순위는 이번 장면에 적용하지 않습니다. 현재
-순서는 **상태 반복률과 `grDepthMask` 내부 귀속 → 성공한 동일 상태의 보수적 생략 →
-필요할 때만 triangle batching → 전체 축 재귀속**입니다.
+따라서 Task 354/355의 과거 LFB 우선순위는 이번 장면에 적용하지 않습니다. 상태
+반복률과 `grDepthMask` 내부 귀속은 **Task 364에서 완료**됐으므로 현재 순서는
+**성공한 동일 상태의 보수적 생략(Task 365) → 필요할 때만 triangle batching(366) →
+전체 축 재귀속(367)** 입니다.
 
-**Latest conclusion (Task 363):** The 2026-07-30 Release gameplay profile
+**Previous conclusion (Task 365):** Eliding 41,368 host rendezvous across the
+seven batch-one setters cut the Glide gate share from 20.76% to 15.63% (-5.13
+points) while median frames stayed flat at 1,215 to 1,206 (-0.74%), inside the
+elide-off range of 1,215-1,384. **Execution in this scene is no longer limited
+by the Glide setter path.** Against Task 335, where a 3.53-point cost reduction
+produced 5.5% more frames, this is the second independent signal that cost
+removal is not converting into throughput. The Glide gate fell from a median
+33.81G to 25.46G cycles (about 3.1 seconds) without the exception count rising
+(324.7-335.2 against 327.6-330.9 per frame), so the freed time went into guest
+execution — where timer safe-point traps rose from 4.80 to 5.25 per frame. The
+guest spent it busy-waiting.
+
+**Method rule:** the Task 347 axis recalibrates the exception-transition price
+every session and that price varies by up to 46% (`INT3` 28,154 against 41,033),
+so **derived kernel and guest shares from different task347 invocations are not
+comparable** — only directly measured quantities are. The first Task 365 write-up
+reported a kernel rise from 7.26% to 10.08%; that was this artifact and has been
+corrected.
+
+Attributing what paces the run is therefore the next priority (Task 366). In the
+same runs `INT 8` was delivered at 198.5-208.5 Hz while the guest programmed
+divisor 4972, which is 240 Hz, and ticks per frame sat in a tight 9.88-10.25 band
+in five of six runs with the highest-tick-rate run also producing the most
+frames. Task 366's triangle batching is deferred behind this.
+
+Correctness was proven unusually tightly: the pure-observer census and the
+actual elision agreed exactly, per ordinal and in aggregate, across all three
+runs (`grColorMask` 7,458/7,458; run totals 41,368/41,368 and so on), and the
+rendered sequence matched at 72.9% exact statistic identity under a one-frame
+phase offset — the same frames drawn one frame sooner. The game issues 41,384
+calls to these seven setters per 60 seconds in order to change state 16 times,
+about 2,586 to 1, with `applied` reading exactly 16 in every run.
+**Unresolved:** what paces the run, why the kernel estimate rose 2.8 points, and
+the gain in an LFB-free gameplay scene where Task 363 put setters at 85.33% of
+the Glide gate.
+
+**Previous conclusion (Task 364):** 90.71% of state-setter calls exactly repeat
+the previously applied state across three 60-second same-binary Release runs
+(range 90.65-90.72%), with thirteen of twenty census setters above 99% and
+`grColorMask` at 99.95% over a longest run of 6,158. `grDepthMask` is on the
+low side at 72.63% and `grTexSource` lowest at 32.24%. The measured elision
+ceiling is 4.55% of wall time and 25.11% of the Glide gate.
+
+The depth-mask host work is not `glGetError`: `glDepthMask` holds 84.59% of the
+OpenGL interval against 15.41% for the trailing check, and the alpha-blend
+drain loop holds 30.66% while iterating zero times, against 2.21% for the
+identical call later in the same function. The dominant cost is therefore the
+first GL touch after the rendezvous wake, whichever call is first — so removing
+`glGetError` is not the answer, and Task 365's rendezvous elision removes that
+first-touch cost outright.
+
+Wall-relative setter shares are strongly scene-dependent: Task 364's
+boot-inclusive run includes 304 `grLfbLock` calls whose gate dominates Glide,
+putting the same setter set at about 5.57% of wall against 20.59% in the Task
+363 capture. The gate-relative figure is the one comparable across scenes.
+
+**Previous baseline (Task 363):** The 2026-07-30 Release gameplay profile
 completed 403,904 Glide calls and 1,287 swaps in about 47.5 seconds. Glide
 held 24.14% of wall time. Eighteen major state setters issued about 235.7
 calls per frame and held 20.59% of wall time, or 85.33% of the Glide gate.
@@ -349,620 +676,6 @@ Task 348 safe-point trap은 breakpoint의 2.83%이며 지배 인구가 아닙니
 ## 최근 Task / Recent tasks
 
 
-### Task 304 — native-span 음성 캐시 / Native-span negative cache
-
-**확인됨:** 반복 scan 거절의 99.68~99.69%를 byte-validated cache로 재사용했습니다.
-texture milestone 중앙값은 1,031ms 빨라졌지만 후반 progress 중앙값은 `+0.02%`였습니다.
-decode 비용은 존재하지만 장기 지배 병목은 예외 횟수라는 결론입니다.
-[상세 작업 로그](../work-logs/20260726-304-native-span-negative-cache.md)
-
-**Confirmed:** The cache reuses nearly all repeated scan rejections and improves early texture
-milestones, but does not materially change late throughput.
-
-### Task 305 — retired trap 직후 span / Immediate span after retired traps
-
-**확인됨:** opt-in span은 시도의 95.28~95.46%에 성공하고 single-step을 중앙값 2.86%
-줄였지만 progress 개선 중앙값은 0.35%뿐이었습니다. 경계까지 pending/trace 상태를
-보존해야 정확성이 유지되며 기능은 기본 OFF입니다.
-[상세 작업 로그](../work-logs/20260726-305-retired-trap-immediate-span.md)
-
-**Confirmed:** Immediate spans remove some post-trap stepping, but scanner/Dr0 overhead leaves
-only a 0.35% median progress gain, so the feature remains opt-in.
-
-### Task 306 — retired trap hotset / Retired-trap hotset
-
-**확인됨:** 60초 profile의 retired trap 7,401회 중 7,293회(98.54%)가 5바이트 미만이고
-quarantine 결과였습니다. 상위 두 guest 주소가 64.06%, 상위 16개가 98.24%를
-차지했습니다. stable gate는 이 trap을 줄일 수 있지만 전체 성능 예상은 1~3%로 60배
-목표와 맞지 않으므로 현재 우선순위에서 제외합니다.
-[상세 작업 로그](../work-logs/20260726-306-retired-trap-hotset-profile.md)
-
-**Confirmed:** Short quarantined entries dominate retired traps, but removing this population is
-only a local 1-3% candidate and is no longer the active priority.
-
-### Task 307 — current frontier 이력 분리 / Split current-frontier history
-
-**확인됨:** 3,657줄의 과거 frontier 원문을 Task 303까지의 history로 byte-identical
-보존하고 current 문서를 최근 10개 Task 중심으로 축약했습니다. 새 결론이 추가될 때
-가장 오래된 current 항목을 제거해 약 10개를 유지합니다.
-[상세 작업 로그](../work-logs/20260726-307-current-frontier-history-split.md)
-
-**Confirmed:** The complete 3,657-line frontier through Task 303 is preserved byte-for-byte
-in history. The current document keeps approximately ten recent task summaries.
-
-### Task 308 — exception-free superblock 검증 / Exception-free superblock validation
-
-**확인됨:** opt-in host-call HLE thunk는 GPR/EFLAGS, x87/MMX/SSE, host stack/TIB
-경계를 보존하며 60초 실게임을 exception 0, legacy fallback 0, EEPROM 일치로
-완료했습니다. `INT/IRET`를 VEH에 남긴 안전 slice는 25,134 HLE를 직접 처리했지만
-progress는 `+1.64%`뿐이어서 5배 go/no-go에 실패했습니다. 직접 interrupt HLE의
-selector 불일치도 확인되어 일반 HLE 예외 제거는 다음 성능 아키텍처가 아닙니다.
-[상세 작업 로그](../work-logs/20260726-308-exception-free-superblock-validation.md)
-
-**Confirmed:** The safe host-call slice completed 60 seconds with no exception or legacy
-fallback and a matching EEPROM while directly handling 25,134 HLE sites. Progress improved
-only 1.64%, failing the 5x gate, and direct interrupt HLE violated the established selector
-contract.
-
-### Task 309 — single-step hotspot cycle 귀속 / Single-step hotspot cycle attribution
-
-**확인됨:** opt-in 8,192-slot EIP histogram은 60초 실행의 single-step 272,543개를
-1,132개 주소로 전부 분류했고 overflow는 0이었습니다. HLE는 event의 33.60%지만
-handler TSC tick의 84.82%였습니다. cycle 상위권은 segment-register move와 port-I/O
-HLE였고 상위 8개 43.09%, 상위 32개 67.21%로 단일 loop 80% gate에는 미달했습니다.
-[상세 작업 로그](../work-logs/20260726-309-single-step-hotspot-cycle-attribution.md)
-
-**Confirmed:** The opt-in 8,192-slot EIP histogram classified all 272,543 steps across 1,132
-addresses with no overflow. HLE represented 33.60% of events and 84.82% of handler TSC ticks.
-Segment-register and port-I/O HLE dominated the cycle ranking, but the top 32 covered only
-67.21%, below the 80% gate for one loop.
-
-### Task 322 — handler 단계별 비용 귀속 / Handler stage attribution
-
-**확인됨:** `HandleSingleStepTrace`를 5개 순차 단계로 나눈 60초 계측은 표본 53,628개,
-distinct EIP 717개, overflow 0을 기록했습니다. `kAotResume` 74.05%,
-`kHleDispatch` 23.58%, `kPrologueTrace` 1.32%, `kNativeEntry` 0.75%,
-`kInterruptInjection` 0.04%, residual 0.27%입니다. 설계가 사전 고정한 gate 첫 행이
-성립해 다음 작업은 로드맵 1단계로 확정됐습니다. 진단 계측이 hot path를 지배한다는
-가설은 기각됐습니다. profile OFF/ON은 EEPROM hash 일치, fallback/malformed 0이었습니다.
-[상세 작업 로그](../work-logs/20260727-322-single-step-handler-stage-attribution.md)
-
-**Confirmed:** Five-stage attribution over 53,628 samples put 74.05% of handler ticks in
-`TryResumeAotAfterHandledHle` and only 1.32% in always-on diagnostics, satisfying the
-pre-registered gate for roadmap stage 1 and rejecting the instrumentation hypothesis.
-
-### Task 323 — 전체 실행 시간 귀속 / Whole-run execution time attribution
-
-**확인됨:** guest thread wall-clock의 86.38%가 VEH handler 본문이며 예외 전이는
-1.20%, Glide gate는 1.29%입니다. `kAotResume` 안에서는 `FindAotCacheAddress` 선형
-탐색이 87.75%로, 호출당 `1,047,784 tick`입니다. Part A gate는 성립했고 Part B gate는
-전부 기각됐습니다. Task 322의 잘못된 인과 귀속도 함께 정정했습니다.
-[상세 작업 로그](../work-logs/20260727-323-whole-run-execution-time-attribution.md)
-
-**Confirmed:** The VEH handler body holds 86.38% of guest-thread wall clock while kernel
-exception transition holds 1.20%, rejecting the premise behind TF/VEH removal. The linear
-`FindAotCacheAddress` scan holds 87.75% of `kAotResume`.
-
-### Task 324 — AOT cache 주소 해시 색인 / AOT cache address hash index
-
-**확인됨:** `FindAotCacheAddress`를 버킷 체인 해시 색인으로 교체해 호출당
-`1,047,784 → 6,866 tick`(-99.3%), heartbeat 4.17배, progress 2.66배를 얻었습니다.
-차등 probe가 교체 이전 구현을 oracle로 두고 8개 경계 조건에서 의미 동등성을
-검증했습니다. EEPROM 일치, fallback/malformed 0.
-[상세 작업 로그](../work-logs/20260727-324-aot-cache-address-hash-index.md)
-
-**기각됨:** AOT boundary 경로가 같은 원인을 공유한다는 가설. 해당 구간은 73.76%에서
-74.34%로 줄지 않았습니다.
-
-**Confirmed:** The hash index cut per-call cost 99.3% and raised heartbeat 4.17x and progress
-2.66x with verified semantic equivalence. **Rejected:** the AOT boundary path did not share
-the cause; its share held at 74.34%.
-
-### Task 325 — VEH boundary 경로 귀속 / VEH boundary path attribution
-
-**확인됨:** `DispatchGuestException`을 5개 하위 bucket으로 나눈 결과 AOT transfer
-해석부가 VEH의 87.50%, 전체의 71.31%였고 호출당 `1,269,368 tick`이었습니다. 사전
-등록한 gate 중 첫 행만 성립하고 나머지는 모두 기각됐으며, residual 1.01%로 분해
-경계가 옳았음이 확인됐습니다.
-[상세 작업 로그](../work-logs/20260727-325-veh-boundary-path-attribution.md)
-
-**Confirmed:** AOT transfer resolution holds 87.50% of VEH time and 71.31% of wall clock at
-`1,269,368` ticks per call. Only the first pre-registered gate holds, and a 1.01% residual
-confirms the decomposition boundaries.
-
-### Task 326 — AOT transfer 해석부 재분해 / AOT transfer resolution decomposition
-
-**확인됨:** 동적 번역 230회가 전체 wall-clock의 61.6%, 호출당 약 175ms입니다.
-`AccumulateAotResidency`(1.61%)와 `IsAotHleBoundaryAddress`(0.05%) 가설은 모두
-기각됐습니다. `RequestAotDynamicTranslation`이 워커 스레드에 동기 대기하므로 측정된
-시간은 guest thread 차단 시간입니다.
-[상세 작업 로그](../work-logs/20260727-326-aot-transfer-resolution-decomposition.md)
-
-**Confirmed:** 230 dynamic translations hold 61.6% of wall clock at about 175ms each, and both
-Task 325 hypotheses are rejected. The measured time is guest-thread blocked time on a
-synchronous worker rendezvous.
-
-### Task 327 — 번역 워커 타이밍 / Translation worker timing
-
-**확인됨:** rendezvous의 101.00%가 `AppendWin32DynamicAotTranslation`이고 wake와
-complete 지연은 합쳐 0.04%입니다. 번역 1회 평균 259ms, 최대 702ms. 스케줄링은
-병목이 아니므로 rendezvous 제거는 답이 아닙니다.
-[상세 작업 로그](../work-logs/20260727-327-translation-worker-timing.md)
-
-**Confirmed:** The rendezvous is worker CPU work, not scheduling: append holds 101.00% while
-wake and complete latency total 0.04%, averaging 259ms per translation.
-
-### Task 328 — 동적 append 단계 분해 / Dynamic append phase decomposition
-
-**확인됨:** arena 전체 스냅샷이 append의 56.96%이고, 번역 1회는 명령 1,039개를 다루며
-7,830바이트를 emit하는데 140,341,248바이트를 복사합니다. 번역 단위 축소는 역효과이며
-고칠 대상은 스냅샷 범위입니다. 이 항목만은 Debug 왜곡이 아닙니다.
-[상세 작업 로그](../work-logs/20260727-328-dynamic-append-phase-decomposition.md)
-
-**Confirmed:** The full-arena snapshot is 56.96% of one append, copying 140,341,248 bytes to
-translate 1,039 instructions into 7,830 bytes. Shrinking the translation unit is
-counterproductive; the snapshot range is what must change.
-
-### Task 329 — arena 스냅샷 제거 / Arena snapshot elimination
-
-**확인됨:** guest 외 스레드는 arena에 쓰지 않습니다(host poll은 host 소유
-`DosLowMemory`에만, 오디오 워커는 host 버퍼에만, 번역 워커는 AOT cache에만 씁니다).
-Glide는 별도 스레드가 아니라 host main에서 guest 대행이며 `InvokeOnHostThread`가
-guest를 차단하므로 번역 rendezvous와 **상호 배타적**입니다. 따라서 설계 옵션 1을
-채택해 스냅샷을 제거했고, 번역당 140,341,248바이트 zero-fill·복사·해제가 사라졌습니다.
-
-**확인됨:** 의미는 보존됩니다. 소유 복사본을 oracle로 둔 `arena_view` probe가 plan
-스칼라 전 필드, block/instruction 스트림(원본 바이트), emit 이미지
-`bytes`/`address_map`/`fixups` 일치와 뷰의 liveness, 경계 거절 동일성을 확인했습니다.
-`ReadProcessMemory` 실패 반환을 대신해 프로세스당 1회 `VirtualQuery` 검증을 넣었습니다.
-
-**미확정:** 실게임 60초 A/B 미수행 — 성능 수치 없음.
-[상세 작업 로그](../work-logs/20260727-329-arena-snapshot-elimination.md)
-
-**Confirmed:** No thread other than the guest writes into the arena, and Glide host commands are
-mutually exclusive with the translation rendezvous, so Option 1 was adopted and the per-translation
-140,341,248-byte zero-fill, copy, and free are gone with the plan preserved byte for byte, checked
-against the owning copy as oracle. Measured over 60 seconds, per-translation append cost fell from
-`710,135,523` to `67,367,429` ticks (-90.5%), with `arena_snapshot` down 99.998% and `placement`
-down 85.5%, confirming Task 328's caveat that the deallocation dominated it and putting the
-snapshot's whole lifecycle at about 79% of an append. **Unresolved:** why `plan_build`,
-`image_emit`, and `validate` also fell 64-75% was not measured, and the progress and heartbeat
-multiples are single-sample.
-
-### Task 330 — plan build 귀속과 Debug 왜곡 / Plan-build attribution and Debug distortion
-
-**확인됨:** `plan_build`는 **Debug 왜곡이 지배**합니다. 같은 코드·같은 입력에서 명령당
-`24,512 tick`(Debug) 대 `2,162 tick`(Release), 비율 **1/11.34**입니다.
-
-**확인됨: 단계 순위가 구성에 따라 뒤집힙니다.** Debug는 `classify` 40.71% +
-`walk` 24.52%가 지배하지만, Release는 `decode`가 44.02%로 최대입니다. Debug 계수가
-단계마다 **2.67배(decode)에서 28.7배(classify)까지** 다르기 때문입니다.
-
-| 단계 | Debug | Release |
-|---|---:|---:|
-| `decode` | 10.37% | **44.02%** |
-| `classify` | **40.71%** | 16.07% |
-| `walk` | 24.52% | 18.81% |
-| `record_build` | 11.44% | 8.92% |
-| `sweep` | 0.68% | 0.68% |
-| residual | 12.28% | 11.51% |
-
-**따라서 방법론 결론이 하나 추가됩니다.** Debug에서 얻은 "어느 단계가 지배하는가"류
-결론은 Release에서 뒤집힐 수 있으므로 그대로 최적화 근거로 쓸 수 없습니다. 반면
-알고리즘 복잡도(Task 323의 O(n) 선형 탐색)나 대역폭·syscall 비용(Task 329의 스냅샷)처럼
-구성과 무관한 결론은 영향받지 않습니다.
-
-**확인됨:** "명령당 비용이 Zydis decode치고 크다"는 오래된 전제는 **전제부터
-틀렸습니다.** Debug 기준 decode는 `plan_build`의 10.37%뿐입니다. jump-table sweep도
-1패스·0.68%로 문제가 아닙니다(미측정이던 F5 해소).
-
-**미확정:** 게임을 Release로 구동 가능한지 확인하지 않았습니다.
-[상세 작업 로그](../work-logs/20260728-330-plan-build-attribution.md)
-
-**Confirmed:** `plan_build` is dominated by Debug distortion at 1/11.34, and the stage ranking
-inverts between configurations — `classify` leads in Debug at 40.71% while `decode` leads in
-Release at 44.02% — because the Debug factor ranges from 2.67x to 28.7x by stage. Debug-derived
-"which stage dominates" conclusions therefore cannot be used as optimization evidence, while
-complexity and bandwidth conclusions are unaffected. The premise that the per-instruction cost was
-large for Zydis decoding is refuted: decoding is 10.37% of `plan_build` in Debug, and the sweep
-runs a single pass at 0.68%.
-
-### Task 331 — Release 기준 append 재귀속 / Release append re-attribution
-
-**확인됨:** Release 전체 빌드가 통과하고(`scripts/build_win32_x86_release.bat`),
-probe suite가 두 구성 모두 exit 0입니다. 실게임 평균 크기(1,039 명령) 환산 append
-1회는 `65,371,802`(Debug) 대 `5,849,960 tick`(Release)로 **11.2배** 차이입니다.
-Debug 환산은 Task 329의 실게임 `67,367,429`과 3.0% 차이입니다.
-
-**확인됨: gate G4 성립 — Release append에는 지배 단계가 없습니다.**
-`plan_build` 43.55%, `placement` 27.61%, `image_emit` 24.55%, `validate` 4.30%.
-Debug 계수도 단계마다 `image_emit` 7.93배에서 `placement` 명령당 20.34배까지
-다릅니다. Task 330의 방법론 결론이 append 전체로 확장됩니다.
-
-**확인됨:** `placement`의 append당 고정 비용 약 `429,497 tick`(약 172us)은 캐시
-전체 16MB에 대한 `VirtualProtect` 2회에서 오며 구성과 무관합니다. Debug에서는 6.6%로
-보이지 않다가 Release에서 56.83%가 됩니다.
-
-**추정:** Task 326의 번역 빈도를 그대로 쓰면 Release 번역 총비용은 전체의 약 0.9%
-입니다. 즉 동적 번역 사슬은 Release에서 지배 병목이 아닐 가능성이 큽니다.
-
-**확인됨(실게임 60초 A/B):** 두 구성 모두 malformed 0, fatal 0, Glide 공백 0으로
-동등하며 Release progress는 1.27배, 프레임은 2.05배입니다. append 실측비는
-**1/10.4**로 probe 예측 1/11.2와 일치했고, 단계 분포도 예측과 맞았습니다.
-**동적 번역은 Release 전체의 1.04%이고 지배 병목은 Glide gate 60.78%**
-(호출당 약 1.85ms, 프레임당 약 78회)입니다.
-
-**미확정:** 1,039 명령 수치는 두 점 적합의 유도값. 재배치 base에 따라 정적 emit이
-실패하는 현상은 관찰만 했습니다. 실게임 A/B는 구성당 1회 표본입니다.
-(Glide gate의 정체는 Task 333에서 해소됐습니다.)
-[상세 작업 로그](../work-logs/20260728-331-release-baseline-migration.md)
-
-**Confirmed:** The Release build passes and the probe suite exits 0 in both configurations. At the
-1,039-instruction in-game mean one append costs `65,371,802` ticks in Debug against `5,849,960` in
-Release, a factor of 11.2, with the Debug figure 3.0% from Task 329's live `67,367,429`. Gate G4
-holds: no Release phase reaches 50%, at 43.55% `plan_build`, 27.61% `placement`, 24.55%
-`image_emit`, and 4.30% `validate`, and the Debug factor again varies by phase from 7.93x to
-20.34x. `placement` carries a configuration-independent fixed cost of about `429,497` ticks per
-append from protecting the whole 16MB cache twice, which Debug hides at 6.6% and Release shows at
-56.83%. **해소됨(Task 333):** Glide gate 질문은 대기로 확정됐고 원인이 제거됐습니다.
-
-**Confirmed by the 60-second in-game A/B:** both configurations are equivalent on malformed,
-fatal, and Glide-gap counts, Release reaching 1.27x the progress and 2.05x the frames; the measured
-append ratio is 1/10.4 against the probe's predicted 1/11.2 with matching phase shares; dynamic
-translation holds 1.04% of Release wall clock; and the dominant cost is the Glide gate at 60.78%,
-about 1.85ms per entry and roughly 78 entries per frame. **Unresolved:** the derived nature of the
-1,039-instruction figures, a base-dependent static emit failure observed while building the probe,
-and that the in-game A/B is a single sample per configuration. Whether the Glide gate cost was host
-CPU work or waiting was settled by Task 333.
-
-### Task 333 — Glide gate rendezvous 분해와 제거 / Glide gate rendezvous removal
-
-**확인됨: gate G1 성립 — Glide gate 비용의 95.67%가 host thread 대기이고 host 작업은
-1.83%입니다.** `queue` 0.07%, `complete` 2.43%, residual 0.00%로 네 구간이 rendezvous를
-정확히 분할합니다. 회당 `wake` 약 1.65ms는 host poll loop의 `Sleep(1)` 주기(약
-1.90ms)와 일치합니다.
-
-**확인됨:** `Sleep(1)`을 같은 condition variable에 대한 1ms 상한 대기로 교체해
-rendezvous 1회가 `4,300,882 → 192,482 tick`(1/22.3), 프레임 `277 → 876`(3.16배),
-progress `64,794 → 84,855`(1.31배)가 됐습니다. Glide gate는 wall-clock의
-`60.18% → 8.88%`, AOT 캐시 내 guest 실행은 `18.58% → 37.01%`입니다.
-malformed 0, fatal 0, Glide 공백 0은 양쪽 동일합니다.
-
-**미확정:** OFF 첫 실행에서 host 이미지 내부 `0xC0000005`(EAX=0 역참조) 조기 종료가
-1회 있었고 재현되지 않았습니다. gate 진입당 rendezvous 1.92회(`PumpEvents`)도
-남아 있습니다.
-[상세 작업 로그](../work-logs/20260728-333-glide-gate-rendezvous-timing.md)
-
-**Confirmed:** Gate G1 holds — 95.67% of the Glide gate was waiting for the host thread against
-1.83% of host work, with `queue` at 0.07%, `complete` at 2.43%, and a 0.00% residual confirming the
-partition; the mean 1.65ms wake matches the poll loop's own `Sleep(1)` cadence of about 1.90ms.
-Replacing that sleep with a bounded wait on the same condition variable cut a rendezvous from
-`4,300,882` to `192,482` ticks, raised frames from 277 to 876 and progress from 64,794 to 84,855,
-and moved the Glide gate from 60.18% to 8.88% of wall clock while AOT cache execution rose to
-37.01%, with malformed, fatal, and Glide-gap counts unchanged at zero. **Unresolved:** one
-non-reproducing early `0xC0000005` inside the host image, and 1.92 rendezvous per gate entry from
-`PumpEvents`.
-
-### Task 334 — AOT reentry 재분해와 역방향 색인 / AOT reentry decomposition and reverse index
-
-**확인됨: gate G1 성립 — `HandleAotReentry`의 96.00%가 `FindAotGuestAddress`의 선형
-탐색이었습니다.** 호출 128,700회, 회당 `551,864 tick`, Release 전체의 약 44%입니다.
-나머지는 `single-step` 2.42%, `retired` 0.99%, `provenance` 0.26%,
-`boundary-reason` 0.12%, residual 0.21%로 분해 경계가 옳았습니다.
-
-**확인됨:** Task 324는 guest→cache 방향만 색인했고 cache→guest는 남아 있었습니다.
-정렬 이진 탐색(정렬 여부는 관측, 미정렬이면 기존 선형 탐색으로 degrade)으로 교체해
-회당 `551,864 → 2,075 tick`(266배), 프레임 `891 → 1,597`, progress
-`86,203 → 109,158`입니다. VEH는 `64.07% → 34.13%`, AOT 캐시 내 guest 실행은
-`35.93% → 65.87%`입니다. malformed 0, fatal 0, Glide 공백 0.
-
-**미확정:** reentry 내부 1위가 `single-step` 64.61%로 바뀌었으나, reentry 핸들러
-자체가 이제 전체의 3.5%뿐이라 우선순위는 낮습니다.
-[상세 작업 로그](../work-logs/20260728-334-aot-reentry-decomposition.md)
-
-**Confirmed:** Gate G1 holds — 96.00% of `HandleAotReentry` was the linear scan in
-`FindAotGuestAddress`, `551,864` ticks per call over 128,700 calls and roughly 44% of Release wall
-clock, with `single-step` at 2.42%, `retired` at 0.99%, `provenance` at 0.26%, `boundary-reason` at
-0.12%, and a 0.21% residual confirming the boundaries. Task 324 had indexed only the guest-to-cache
-direction; replacing this one with a sorted binary search — sortedness observed rather than assumed,
-degrading to the original scan when unusable — cut the per-call cost to `2,075` ticks (266x), raised
-frames from 891 to 1,597 and progress from 86,203 to 109,158, and moved the VEH from 64.07% to
-34.13% of wall clock while AOT cache execution rose from 35.93% to 65.87%, with malformed, fatal,
-and Glide-gap counts at zero. **Unresolved:** the largest remaining interval is now `single-step` at
-64.61%, though the reentry handler is only 3.5% of the run, so it is low priority.
-
-### Task 335 — gate 진입 pump rendezvous 제거 / Removing the per-gate pump rendezvous
-
-**확인됨:** gate 경로의 `PumpEvents`는 gate 진입마다 host rendezvous를 하나씩 더
-만들고 있었고(진입당 1.92회), host poll loop가 이미 매 iteration pump하므로
-중복이었습니다. 제거 후 진입당 `0.92`, Glide gate 비중 중앙값 `17.00% → 13.47%`,
-프레임 중앙값 `1,891 → 1,995`(+5.5%), progress 중앙값 +2.7%입니다.
-malformed 0, fatal 0, Glide 공백 0.
-
-**확인됨(방법론):** 같은 설정에서 실행 간 프레임 편차가 **18%** 이고 각 설정의 첫
-실행이 항상 가장 느립니다. **단일 표본이었다면 이 작업의 결론은 반대로 나왔습니다.**
-이후 성능 판정은 3회 이상 중앙값을 씁니다.
-
-**미확정:** 비용은 3.53%p 줄었는데 프레임은 5.5%만 늘었습니다. 실행을 지금 무엇이
-pacing하는지가 다음 질문입니다.
-[상세 작업 로그](../work-logs/20260728-335-glide-gate-pump-rendezvous.md)
-
-### Task 336 — VEH residual 귀속과 예외 전이 가격 / VEH residual and exception price
-
-**확인됨:** VEH residual은 미계측 구간이 아니라 `HandleSingleStepTrace`의 단계
-profile이 별도 opt-in으로 꺼져 있었던 것입니다. 켜자 residual `36.56% → 3.26%`,
-`single-step`이 VEH의 33.68%. 그 안의 1위는 Release에서 `hle` 66.4%(전체의 7.02%)로,
-Task 322의 Debug 순위(`aot-resume` 74.05%)와 정반대입니다. **코드 변경 없음.**
-
-**확인됨:** 예외 전이 1회는 `INT3` 34,521 / single-step 37,885 tick이고 Debug(34,608 /
-37,519)와 1% 미만 차이입니다. 커널 비용이라 구성과 무관합니다.
-
-**확인됨(유도):** VEH 진입 1,307,096회를 곱하면 전이 총비용은 전체의 **27.7~30.4%**,
-남는 실제 guest 실행은 38.2~40.9%입니다. **TF/`INT3` 제거 상한은 1.012배가 아니라
-약 1.38~1.44배**입니다.
-
-**방법론:** Task 323의 1.20%는 오측이 아니었습니다. 가격은 그대로고 횟수가 늘었습니다.
-**고정 비용의 비중은 다른 곳을 최적화할 때마다 재계산해야 합니다.**
-
-**미확정:** 전이 가격은 probe의 최소 핸들러 기준이므로 실제는 더 클 수는 있어도 작지
-않습니다. `INT3`/single-step 혼합비는 세지 않았습니다. 1.4배는 전이만 없앨 때의
-상한이며 핸들러 본문(31.40%)까지 대체하는 설계면 더 높습니다.
-[상세 작업 로그](../work-logs/20260728-336-veh-residual-and-exception-price.md)
-
-**Confirmed:** The VEH residual was never uninstrumented — `HandleSingleStepTrace` carries a stage
-profile behind its own opt-in. Enabling it drops the residual from 36.56% to 3.26% and shows
-`single-step` at 33.68% of the VEH, led by `hle` at 66.4% (7.02% of the run), inverting Task 322's
-Debug ranking of `aot-resume` at 74.05%; no code changed. One kernel transition costs 34,521 ticks
-for `INT3` and 37,885 for single-step in Release against 34,608 and 37,519 in Debug — under 1%
-apart, as befits kernel cost. Multiplying by 1,307,096 VEH entries puts transitions at 27.7-30.4%
-of wall clock and leaves 38.2-40.9% for real guest execution, so removing every TF and `INT3` bounds
-improvement at about 1.38-1.44x rather than 1.012x. Task 323's 1.20% was not a bad measurement: the
-price was the same and the count was not, which adds the method rule that a fixed cost's share must
-be recomputed after every optimization elsewhere. **Unresolved:** the price comes from the probe's
-minimal handler so the real cost can only be higher, the `INT3`-to-single-step mix was not counted,
-and 1.4x bounds removing the transition alone.
-
-### Task 337 — 예외 census / Exception census
-
-**확인됨:** TF single-step 735,886(79.24%), `INT3` 181,947(19.59%), AV 10,881(1.17%),
-합계 928,715 = VEH 진입 횟수. 배타성 구조적 확인.
-
-**확인됨:** 연속 single-step 구간은 이봉분포입니다. 1개 구간 91,580(개수 57.1%,
-step 12.4%), **5~8개 구간 61,528(step 약 54%)**, 33개 이상 2,022(평균 약 98개,
-step 약 27%). 최대 337. 결과 축은 HLE 21.9%, native 39.9%,
-**아무 핸들러도 안 걸린 TF 38.2%** 입니다.
-[상세 작업 로그](../work-logs/20260728-337-exception-census.md)
-
-**Confirmed:** 735,886 single-steps (79.24%), 181,947 breakpoints (19.59%), and 10,881 access
-violations (1.17%) total exactly the run's VEH entry count, so the census is exclusive by
-construction. Single-step runs are bimodal: 91,580 one-step runs are 57.1% of runs but 12.4% of
-steps, while 61,528 runs of five to eight carry about 54% and 2,022 runs of 33 or more, averaging
-about 98, carry about 27%. By outcome, 21.9% of steps hit HLE, 39.9% native, and 38.2% no handler
-at all.
-
-### Task 338 — 예외 축소 opt-in A/B / Exception-reduction opt-in A/B
-
-**기각:** `REPIU_AOT_DBT_SUPERBLOCK=1`은 `INT3`를 7.4배 줄이지만 Glide gate 경계까지
-없애 렌더링이 멈춥니다(gate 진입 `67,108 → 74`, `grBufferSwap` 0). progress 3.15배는
-그리지 않아 생긴 값입니다.
-
-**무효:** `REPIU_AOT_DBT_POST_HLE_TRANSLATE=1`은 경로 미진입(`posthle=0/0`).
-
-**방법론:** 두 실행 모두 malformed 0 / fatal 0 / Glide 공백 0 / 창 열림을 통과했습니다.
-**동등성 계약에 `grBufferSwap` 횟수, gate 진입 횟수, get-proc 개수를 추가합니다.**
-[상세 작업 로그](../work-logs/20260728-338-exception-reduction-optin-ab.md)
-
-**Rejected:** `REPIU_AOT_DBT_SUPERBLOCK=1` cuts `INT3` 7.4x but takes the Glide gate boundaries
-with it, so the game stops rendering — gate entries fall from 67,108 to 74 and buffer swaps to zero
-— and its 3.15x progress is an artifact of not drawing. **Void:** `POST_HLE_TRANSLATE=1` never
-entered its path. Both runs passed every existing equivalence axis while drawing nothing, so the
-contract now also requires the buffer-swap count, the gate entry count, and the resolved proc count.
-
-**Confirmed:** The gate path's `PumpEvents` added one host rendezvous per gate entry — 1.92 per
-entry — while the host poll loop already pumps every iteration, so it was redundant. Removing it
-leaves 0.92 per entry, moves the Glide gate's median share from 17.00% to 13.47%, and raises the
-median frame count from 1,891 to 1,995 (+5.5%) and median progress by 2.7%, with malformed, fatal,
-and Glide-gap counts at zero. **Confirmed as method:** frame counts vary 18% between runs of the
-same setting and the first run of a setting is always the slowest, so a single sample would have
-inverted this task's conclusion; performance judgements from here use the median of at least three
-runs. **Unresolved:** cost fell 3.53 points while frames rose only 5.5%, so what now paces the run
-is the next question.
-
-## 다음 검증 / Next validation
-
-Task 337이 예외를 배타적으로 셌고, Task 338이 기존 opt-in 두 개를 Release에서
-판정했습니다. **둘 다 채택 불가이며, 그 과정에서 동등성 계약의 구멍이 드러났습니다.**
-
-**확인됨(Task 337): 예외의 79.24%가 TF single-step, 19.59%가 `INT3`, 1.17%가 AV**
-입니다. census 합계가 VEH 진입 횟수와 정확히 일치해 배타성이 확인됐습니다.
-
-**확인됨: single-step은 HLE 지점마다 1회씩 나지 않습니다.** 연속 구간 길이가
-이봉분포입니다. 1개짜리 구간이 개수로는 57.1%지만 step 수로는 12.4%뿐이고,
-**5~8개 구간이 step의 약 54%**, **33개 이상 꼬리가 약 27%** 입니다. hotspot profile은
-single-step의 **38.2%가 아무 핸들러도 걸리지 않는 순수 walk**임을 보여줍니다.
-
-**따라서 "HLE를 예외 없이 만든다"는 지배 인구를 겨냥하지 않습니다.** 그것이 겨냥하는
-1-step 구간은 single-step의 12%뿐입니다.
-
-**확인됨(Task 338): `REPIU_AOT_DBT_SUPERBLOCK=1`은 현재 형태로 쓸 수 없습니다.**
-`INT3`를 7.4배 줄이지만 **그 안에 Glide gate 경계가 포함돼 게임이 렌더링을 멈춥니다**
-(gate 진입 `67,108 → 74`, `grBufferSwap` 0회). progress는 3.15배로 뛰지만 이는
-그리지 않아서 생긴 값입니다. **progress는 정당성 지표가 아닙니다.**
-
-**확인됨: `REPIU_AOT_DBT_POST_HLE_TRANSLATE=1`은 경로에 진입조차 하지 않습니다**
-(`posthle=0/0`). 판정 무효이며, 부수적으로 HLE 재개 시 대상이 이미 캐시에 있음을
-알려줍니다.
-
-**동등성 계약을 확장합니다.** 위 실행들은 malformed 0, fatal 0, Glide 공백 0,
-창 열림까지 **전부 통과하면서** 아무것도 그리지 않았습니다. 이후 모든 성능 A/B는
-`grBufferSwap` 횟수, Glide gate 진입 횟수, LINEXE get-proc 개수를 함께 확인합니다.
-
-Task 339가 그 첫 질문에 답했고 **Task 338의 인과 지목을 정정했습니다.**
-
-**기각:** "`SUPERBLOCK`이 Glide gate 경계를 삼킨다." gate 진입 급감은 증상입니다.
-
-**확인됨: 원인은 HLE 처리 후 캐시로 복귀하지 못하는 것입니다.** `SUPERBLOCK`에서
-`INT3`는 의도대로 7.4배 줄지만 그 자리를 **3.8배 늘어난 single-step**이 대신합니다
-(구간 평균 `4 → 113`, 최대 `337 → 3,941`, 예외 중 single-step 98.76%). 그래서 게임이
-60초 안에 Glide 초기화를 끝내지 못하고, `progress` 3.15배는 예외 수 증가의 부산물입니다.
-
-**확인됨: 복귀가 막히는 지점을 단계별 호출 수로 확정했습니다.**
-
-| 단계 | baseline | `SUPERBLOCK=1` |
-|---|---:|---:|
-| `TryResumeAotAfterHandledHle` 진입 | 206,345 | 1,186,516 |
-| → seg-write 프로브 | 206,345 | **15,980 (1.3%)** |
-| → quarantine/guest-IP | 190,874 | 649 |
-| → cache lookup | **21,561 (10.4%)** | 641 |
-
-* baseline: **88.7%가 quarantine/guest-IP 검사에서 거절**됩니다.
-* `SUPERBLOCK`: **98.7%가 첫 guard에서 즉시 거절**되며, 남는 조건은
-  `aot_reentry_pending` 미설정입니다. inline thunk는 `INT3` 경계를 거치지 않습니다.
-* lookup까지 도달하면 캐시 적중률 100%이므로 **post-HLE 번역 분기는 도달 불가**입니다.
-  `posthle=0/0`의 이유가 이것입니다.
-
-**즉 Task 337의 5~8개 구간과 33+ 꼬리의 정체도 이것입니다.** exception-free HLE
-기계장치가 아니라 **복귀 경로가 없습니다.**
-
-Task 340이 1번을 수행했고 **답이 좁습니다.**
-
-**확인됨: 거절의 80.24%는 페이지 quarantine이고, `IsGuestInstructionPointer` 거절은
-0건입니다.** 60초 baseline에서 복귀 시도 187,373건 중 quarantine 150,341(80.24%),
-segment-write 15,471(8.26%), 성공 21,561(11.51%), arena 밖 0, span-unsafe 0,
-cache miss 0입니다.
-
-**확인됨: quarantine된 페이지는 단 4개입니다**(`generation publishes/quarantines:
-145/4`). **4개 페이지가 post-HLE 복귀의 80%를 막고 있습니다.** quarantine은 guest가
-자기 페이지에 코드를 쓸 때(자기수정 보호) 걸립니다. Task 337의 5~8개 구간과 33+
-꼬리의 발원지가 여기입니다.
-
-**확인됨: quarantine과 segment-write만 통과하면 대상은 100% 캐시에 있습니다.**
-post-HLE 번역 분기가 도달 불가라는 결론이 재확인됩니다.
-
-Task 341이 그 페이지들을 식별했고 **원인이 확정됐습니다.**
-
-**확인됨: 게임이 자기 자신의 `out` 명령을 1~2바이트 덮어씁니다.**
-
-| 격리 페이지 | 쓰기 주체 = 대상 | 바이트 | 그 주소의 명령 |
-|---|---|---:|---|
-| `0x030F5000` | `0x030F5CC8` | 1 | `out dx, al` |
-| `0x03033000` | `0x030334C6` | 2 | `out dx, ax` |
-| `0x03034000` | `0x03034175` | 2 | `out dx, ax` |
-
-세 경우 모두 **쓰기 주체와 대상이 같은 주소**이고 바이트 수가 그 명령의 길이와
-같습니다. 하드웨어 탐지 후 `out`을 무력화하는 DOS 시절 관용구입니다. 쓰기 주체
-불명으로 인한 기본 격리는 **0건**이므로 정책의 보수적 기본값이 원인이 아닙니다.
-
-**확인됨: `0x030F5000`은 이 실행에서 가장 뜨거운 코드 페이지입니다**(live telemetry의
-EIP `0x030F508D`, `0x030F5098`). **60초에 단 3번 일어나는 1~2바이트 쓰기가 4KB 페이지를
-영구히 번역 대상에서 제외하고, 그것이 실행 시간의 큰 부분을 결정합니다.**
-
-Task 342가 정책을 고쳤고 **프레임이 2.21배가 됐습니다.**
-
-**확인됨:** quarantine을 첫 same-page 쓰기가 아니라 **4회째부터** 걸도록 바꿨습니다.
-그 이전 쓰기는 retire만 합니다. **정확성은 그대로입니다** — retire가 이미 그 페이지의
-번역을 무효화하므로 캐시가 옛 바이트를 실행할 수 없고, quarantine은 churn 방어일
-뿐입니다.
-
-| 항목 (60초 Release, 3회 중앙값) | 기존 | 신규 | 비 |
-|---|---:|---:|---:|
-| **프레임(`grBufferSwap`)** | 1,579 | **3,485** | **2.21배** |
-| Glide gate 진입 | 65,487 | 149,260 | 2.28배 |
-| TF single-step 예외 | 731,132 | 237,734 | 0.33배 |
-| quarantine 거절 | 127,978 | 35,667 | 0.28배 |
-| emulate 이벤트(구 "progress") | 107,572 | 30,591 | 0.28배 |
-
-동등성은 전부 통과합니다(malformed 0, fatal 0, Glide 공백 0, get-proc 37, 프레임과
-gate 진입 증가).
-
-**지표 정정 — `progress`는 처리량이 아닙니다.** `diagnostic_progress_count`는
-`instruction_emulation.cpp`의 HLE 처리 경로에서 증가하는 **emulate 이벤트 수**입니다.
-이번의 -72%는 퇴보가 아니라 **emulate가 필요한 명령이 그만큼 줄었다**는 뜻입니다.
-Tasks 331~341은 이 값을 처리량 대리 지표로 인용했고 그때는 프레임과 같은 방향이라
-결론이 뒤집히지는 않지만, **갈라질 때는 프레임이 옳습니다.** 이후 처리량 판정은
-**프레임 중앙값 3회**를 1차 지표로 씁니다.
-
-Task 343과 344가 남은 두 항목을 처리했습니다.
-
-**확인됨(343): "other" 예외는 전부 `0xC0000096`(`STATUS_PRIVILEGED_INSTRUCTION`)**
-이며 0.43%입니다. 결함이 아니라 의도한 변화의 결과입니다 — 격리가 풀린 페이지가
-번역되면서 `out` 같은 특권 명령이 캐시에서 직접 실행되다 트랩하고, 기존 특권 명령
-HLE가 그대로 받습니다. 예외 구성도 `single-step 79.24% / INT3 19.59%`에서
-`51.54% / 45.49%`로 이동했습니다(번역 커버리지 확대).
-
-**확인됨(344): 주소별 반복 쓰기로 판정을 바꿔 quarantine이 0이 됐습니다.**
-페이지별 합산은 한 페이지의 서로 다른 1회성 패치들을 합쳐 결국 격리했습니다
-(`0x03033000`에 `0x030334C6`과 `0x03033911`). quarantine 거절 `35,667 → 0`,
-복귀 success `29.7% → 55.5%`, single-step `237,734 → 181,879`입니다.
-
-**그러나 프레임은 판정 불가입니다.** 중앙값 `3,485 → 3,325`(-4.6%)이지만 실행 범위가
-겹칩니다. **남은 quarantine 1건은 프레임 비용을 내고 있지 않았고, 큰 이득은 Task 342가
-이미 가져갔습니다.** 이 변경으로 성능이 좋아졌다고 기록하지 않습니다.
-
-**현재 복귀 funnel(39,246 시도):** `segment-write` 15,473(39.4%),
-success 21,783(55.5%), `span-unsafe` 1,990(5.1%), quarantine 0.
-
-Task 345가 3번(`SUPERBLOCK` 재판정)을 수행했고 **기각됐습니다.**
-
-**확인됨: quarantine이 원인이라는 가설은 기각됩니다.** quarantine이 0인 지금도
-`SUPERBLOCK=1`은 **3/3 재현되는 `0xC0000005`로 즉시 죽습니다**(gate 진입 50, get-proc
-24~26, 프레임 없음). Task 338에서는 60초를 다 쓰며 멈췄는데, 이제 실패가 재현 가능하고
-한 명령으로 좁혀졌습니다.
-
-```
-0x03042EBE: call far [0x012D9C90]   ← baseline이 INT 8 chain HLE로 974회 처리하는 지점
-```
-
-**exception-free HLE가 VEH 매개가 필수인 far transfer를 native 코드로 내보냅니다.**
-`RequiresVehMediatedHle`에 far branch 조건을 추가해도 **실패는 그대로**입니다. 즉
-원인은 런타임 thunk 술어가 아니라 **emit 시점 결정**입니다. 그 guard는 방어로만
-유지하며 무엇을 고쳤다고 기록하지 않습니다.
-
-**따라서 `SUPERBLOCK`은 emitter 측 계약이 정리되기 전에는 재판정 대상이 아닙니다.**
-
-Task 346이 1번을 수행했고 **사전 등록 gate 네 개가 모두 성립했습니다.**
-
-**확인됨:** 세그먼트 레지스터를 쓰는 명령 뒤에도 **재접기 후 복귀**하도록 바꿨습니다.
-`segment-write` 거절 `15,473 → 0`, 복귀 success `55.6% → 95.1%`, 프레임 중앙값
-`3,125 → 3,456(+10.6%)` 이며 **실행 범위가 겹치지 않습니다**(3,094~3,265 대
-3,405~3,463).
-
-**확인됨(안전성): selector guard mismatch가 양쪽 모두 0입니다.** 접힌 세그먼트 site는
-현재 selector가 접을 때와 다르면 고정 `INT3`로 트랩하는데, 한 번도 트랩하지 않았습니다.
-재접기가 캐시를 계속 최신으로 유지했다는 뜻입니다.
-
-**주의:** 예외 총계는 오히려 4.3% 늘었습니다(`INT3` 199,364 → 215,894). 캐시로 더 자주
-복귀하면 경계 트랩도 더 자주 만납니다. **그럼에도 프레임이 늘었으므로 예외 수는
-그 자체로 목표가 아닙니다.**
-
-**현재 복귀 funnel(39,182 시도):** success 37,256(95.1%), `span-unsafe` 1,926(4.9%),
-그 외 0. **post-HLE 복귀 경로는 사실상 열렸습니다.**
-
-### Task 347 — 현재 Release 실행 축 재귀속 / Current Release execution-axis re-attribution
-
-**확인됨:** 현재 HEAD에서 Release direct-loader를 60초씩 세 번 실행했습니다. 프레임은
-`1,124` 중앙값(1,112~1,141), Glide gate는 21.73%, VEH-exclusive는 9.70%,
-unaccounted는 67.53%입니다. 같은 기계의 새 교정값 `INT3 27,973` /
-single-step `30,188 cycle`을 현재 예외 수에 곱하면 커널 전이는 6.83%, 나머지 실제
-guest 실행 추정은 60.72%입니다.
-
-예외 중앙값은 single-step 128,378(약 33.15%), breakpoint 195,933(약 50.60%),
-AV 22,098(약 5.7%), other 40,822(약 10.5%, `0xC0000096`)입니다. TF run은 세 실행
-모두 전부 길이 1입니다. safe-point trap 중앙값 5,537은 breakpoint의 2.83%입니다.
-
-복귀 funnel은 success 78.10%, `span-unsafe` 21.90%로 Task 346 직후의 95.1%와
-달라졌지만, 실패가 긴 TF tail로 이어지지는 않습니다. `span-unsafe` count만으로
-우선순위를 정하지 않습니다.
-
-**계측 계약 정정:** `exception_dispatch_entry_count`는 AOT early handler 뒤에서
-시작하는 late-dispatch 계수입니다. 현재 census의 약 38%가 그 전에 처리됩니다.
-배타 census는 함수 진입부의 `kVehTotal` profile count와 대조하며 timeout 순간 열린
-scope 한 건만 허용합니다. 세 실행 모두 차이는 정확히 1이었습니다.
-
-[설계](../design/20260729-347-release-axis-reattribution.md) /
-[작업 지시](../work-orders/20260728-347-release-axis-reattribution.md) /
-[작업 로그](../work-logs/20260729-347-release-axis-reattribution.md)
-
 ### Task 351 — AOT timer source 귀속 / AOT timer-source attribution
 
 **확인됨:** guest thread를 정지하지 않고 기존 240Hz AOT timer safe point가 실제로
@@ -1227,7 +940,149 @@ justified under strict barriers, and finally re-attribute the complete axis.
 [작업 지시](../work-orders/20260730-363-glide-call-performance-plan.md) /
 [작업 로그](../work-logs/20260730-363-glide-call-performance-plan.md)
 
-### Tasks 331~363 누적 / Cumulative
+### Task 364 — setter 반복률과 GL phase 귀속 / Setter repetition and GL phase attribution
+
+**확인됨:** 기본 OFF 계측 두 개(`REPIU_GLIDE_SETTER_CENSUS`,
+`REPIU_GLIDE_SETTER_PHASE`)를 추가하고 동일 바이너리 Release 60초 control/profile
+3회씩으로 측정했습니다. 프레임 중앙값 `1,074 → 1,044`(-2.79%)로 관측자 gate를
+통과했고, 사전 등록 항등식 두 개
+(`first+same+changed+failure+unsupported == calls`, `drain+apply+error == total`)가
+3회 전부 성립했습니다. failure/unsupported/key overflow/ordinal overflow/clamp는
+모두 0입니다. **코드 변경은 계측뿐이며 dispatch 결과는 바뀌지 않습니다.**
+
+**확인됨(G1 성립):** setter 호출의 90.71%가 정확한 동일 상태 반복입니다. 20종 중
+13종이 99% 초과이고 `grColorMask` 99.95%, `grFogMode` 99.96%, `grClipWindow` 99.96%,
+`grTexClampMode`/`grTexFilterMode` 99.73%입니다. `grDepthMask`는 72.63%,
+`grConstantColorValue`는 77.67%, `grTexSource`는 32.24%입니다.
+
+**기각됨(G2):** `grDepthMask`의 host work는 `glGetError`가 아닙니다. GL 구간에서
+`glDepthMask` 84.59% 대 `glGetError` 15.41%입니다. 더 결정적으로 alpha blend의 선행
+drain loop는 반복 0회인데도 30.66%이고 같은 함수의 후속 `glGetError`는 2.21%입니다.
+**같은 호출이 위치에 따라 약 14배이므로 비용은 함수가 아니라 rendezvous 직후의 첫 GL
+접촉입니다.** GL 구간은 ordinal host work의 58.53~67.26%만 덮습니다.
+
+**부분 기각(G3):** 생략 상한은 wall의 4.55%로 5% 문턱에 미달하지만 Glide gate의
+25.11%입니다. 이번 부팅 포함 장면은 `grLfbLock` 304회가 gate를 지배해 같은 setter
+집합이 wall의 약 5.57%뿐입니다(Task 363 장면은 20.59%). 따라서 미달은 장면 구성
+때문이며 Task 365는 계속 진행합니다.
+
+**미확정:** 파생 커널 전이 추정이 control 6.80%에서 profile 14.60%로, guest 실행
+추정이 60.96%에서 54.06%로 움직인 원인(프레임은 -2.79%뿐). GL 밖 host work
+32.74~41.47%의 내부 구성.
+
+[설계](../design/20260730-364-glide-setter-state-census.md) /
+[작업 지시](../work-orders/20260730-364-glide-setter-state-census.md) /
+[작업 로그](../work-logs/20260730-364-glide-setter-state-census.md)
+
+**Confirmed:** Two disabled-by-default instruments were added and measured over
+three same-binary 60-second Release control/profile runs. Median frames moved
+1,074 to 1,044 (-2.79%), inside the observer gate, and both pre-registered
+identities held in all three runs with zero failures, unsupported arguments,
+key or ordinal overflows, and clamps. Only instrumentation changed; no dispatch
+result did.
+
+**G1 holds:** 90.71% of setter calls exactly repeat the applied state, with
+thirteen of twenty above 99%. **G2 is rejected:** `glDepthMask` holds 84.59% of
+its OpenGL interval against 15.41% for the trailing `glGetError`, and the
+alpha-blend drain holds 30.66% while iterating zero times against 2.21% for the
+identical later call — so the cost is the first GL touch after the rendezvous
+wake, not any particular function, and removing `glGetError` is not the answer.
+**G3 partially fails:** the ceiling is 4.55% of wall against the 5% threshold
+but 25.11% of the Glide gate, and this boot-inclusive scene's gate is dominated
+by 304 `grLfbLock` calls, so the shortfall is scene composition rather than a
+verdict against elision.
+
+### Task 365 — 동일 성공 상태 생략 / Eliding already-applied state
+
+**확인됨(정확성):** batch 1의 7종 setter에서 rendezvous **41,368회를 제거**했습니다.
+순수 관측자인 census가 센 중복과 실제 생략이 ordinal 단위·합계 모두 **정확히**
+일치했고(`grColorMask` 7,458/7,458 등), 렌더 시퀀스는 phase offset +1에서 **72.9%가
+통계 완전 일치**해 같은 프레임을 한 프레임 먼저 그림이 확인됐습니다.
+
+**확인됨(호출 구조):** 게임은 60초에 이 7종을 41,384회 호출해 상태를 **16번** 바꿉니다
+(약 2,586:1). `applied=16`은 3회 실행 모두 동일했습니다.
+
+**미달(P3):** Glide gate 비중은 `20.76% → 15.63%`(-5.13%p)로 내려갔으나 프레임은
+`1,215 → 1,206`(-0.74%)으로 편차 안입니다. **이 장면은 setter 경로에 제한되지
+않습니다.** 기본 ON이며 `REPIU_GLIDE_SETTER_ELIDE=0`으로 복원합니다.
+
+[설계](../design/20260730-365-glide-setter-state-elision.md) /
+[작업 로그](../work-logs/20260730-365-glide-setter-state-elision.md)
+
+**Confirmed:** 41,368 rendezvous removed with the observer and the actor agreeing
+exactly, and the rendered sequence 72.9% identical at a one-frame offset. The game
+issues 41,384 calls to change state 16 times. The Glide share fell 5.13 points while
+frames did not move, so this scene is not limited by the setter path.
+
+### Task 366 — timer tick 전달 귀속 / Timer tick delivery attribution
+
+**확인됨:** guest가 프로그램한 timer tick의 **11.9%가 도달하지 않습니다.**
+`PitIrqSchedule::Poll`은 밀린 tick 수를 정확히 계산하지만 `timer_interrupt_pending`이
+`std::atomic<bool>`이라 due가 3이든 10이든 `INT 8`은 한 번만 전달됩니다. 항등식
+`due == injected + coalesced + dropped + remaining`은 6회 전부 성립했습니다.
+
+**기각(T3):** 전달률을 88.1% → 91.8%로 올리자 프레임이 `1,400 → 1,171`(-16.36%)로
+**떨어졌습니다.** 원인은 주입이 아니라 밀린 tick이 남는 동안 `ArmAotTimerSafePoint`가
+상시 활성이 되는 것이며, safe-point trap **+20.1%**, 프레임당 예외 **+6.8%** 입니다.
+backlog는 기본 OFF opt-in으로 남기되 **성능 목적으로 켜지 않습니다.**
+
+**해소됨(사용자 관측):** 게임 타이밍의 근거는 CD 재생 위치이므로 tick 손실이
+스텝-음악 어긋남의 주원인일 가능성은 낮습니다.
+
+[설계](../design/20260730-366-timer-tick-delivery-and-frame-pacing.md) /
+[작업 로그](../work-logs/20260730-366-timer-tick-delivery-and-frame-pacing.md)
+
+**Confirmed:** 11.9% of programmed ticks never reach the guest, because delivery is a
+boolean. **Rejected:** raising delivery to 91.8% cost 16.4% of frames, because an
+outstanding tick holds the safe point armed rather than because of the injections.
+
+### Task 367 — boundary opcode 실명 귀속 / Naming the boundary opcodes
+
+**확인됨:** 최대 예외 인구는 guest 명령이 아니라 **우리가 만든 Glide gate trap**
+입니다. `0F 0B`(UD2)가 boundary 표본의 **55.21%** 이고 그 횟수는 3회 실행 모두 **Glide
+gate 진입 횟수와 정확히 일치**했습니다. **Glide 호출 1회당 예외 1회**입니다.
+
+기존 census가 `bytes[0]`만 기록해 `0F`(escape)와 `66`/`26`(prefix)이 명령으로
+집계되며 상위 인구의 74%가 가려져 있었습니다. 기계별로는 Glide gate UD2 55.21%,
+segment register move 20.11%, port I/O 13.15%로 88.5%입니다.
+
+**이것이 Task 365를 설명합니다** — 생략은 rendezvous만 없앴고 gate 예외는 남았습니다.
+
+[설계](../design/20260730-367-hle-boundary-opcode-attribution.md) /
+[작업 로그](../work-logs/20260730-367-hle-boundary-opcode-attribution.md)
+
+**Confirmed:** the largest exception population is our own Glide gate trap at 55.21%
+of boundary samples, matching gate entries exactly, so each Glide call costs one
+exception. This is why Task 365's elision did not move frames.
+
+### Task 368 — 예외 없는 gate dispatch 비용 분해 / Exception-free gate dispatch, costed
+
+**기각(구현 안 함):** 제거 상한은 **wall의 3.25%, 프레임 약 1.034배**이고 전이 가격
+상단(+46%)에서도 4.51%, 1.047배로 사전 등록 B1(+5%)에 미달합니다.
+
+**새 clock read 없이**(`kVehTotal`과 `kGlideGate` scope의 기존 timestamp 차이) 실측한
+VEH 진입→gate scope 비용은 호출당 **6,523 cycle**입니다. 1단계 추정(34,609)은 **10.6배
+과대평가**였고 예외당 평균 transfer resolution의 **0.20배**입니다. B1을 넘으려면 2배
+이상이 필요했으므로 **작업을 살릴 유일한 가정이 정반대로 기각**됐습니다.
+
+**구조적 이유:** gate 본체가 호출당 약 235,000 cycle이고 예외로 도달하는 비용은 그 위의
+얇은 층입니다. **따라서 예외 축은 종결됩니다.**
+
+**감사로 남은 사실:** 예외 없는 dispatch 기계(`EmitHleDispatchSlot`)는 이미 존재하나
+`REPIU_AOT_DBT_SUPERBLOCK`(렌더링 중단)에 묶여 독립 평가된 적이 없고, 켜더라도
+`IsHleBoundary`가 UD2를 인식하지 않아 Glide gate엔 닿지 않습니다. 재개한다면 gate stub은
+opcode가 아니라 **주소 구간**으로 인식해야 합니다.
+
+[설계](../design/20260730-368-exception-free-glide-gate-dispatch.md) /
+[작업 로그](../work-logs/20260730-368-exception-free-glide-gate-dispatch.md)
+
+**Rejected without implementing:** the ceiling is 3.25% of wall, about 1.034x, and
+4.51%/1.047x even at the top of the transition price's variance. The measured VEH
+entry to gate scope cost is 6,523 cycles per call — 10.6x below the estimate and
+0.20x the average transfer resolution, where 2x was needed. The gate body dominates
+at roughly 235,000 cycles per call, so the exception axis closes.
+
+### Tasks 331~368 누적 / Cumulative
 
 | Task | 고친 것 | 효과 |
 |---|---|---|
@@ -1245,6 +1100,11 @@ justified under strict barriers, and finally re-attribute the complete axis.
 | 354 | `grBufferSwap` host work 분해 | SDL present 99.589%, 요청/실제 interval 모두 1 |
 | 355 | 최신 matched 성능 축과 다음 작업 기록 | Task 356 LFB → 357 handoff → 358 guest residency |
 | 363 | 최신 호출 다발 장면 재귀속과 후속 계획 | 상태 setter wall 20.59%, LFB 0회, Task 364~367 |
+| 364 | setter 반복률과 GL phase 귀속(계측만) | 동일 상태 90.71%, 상한 Glide 25.11%, `glGetError` 기각 |
+| 365 | batch 1 7종의 동일 상태 rendezvous 생략 | rendezvous -41,368, Glide -5.13%p, **프레임 변화 없음** |
+| 366 | timer tick 전달 귀속과 backlog 실험(기각) | 기본 손실 11.9% 확인, 전달률 ↑에 **프레임 -16.4%** |
+| 367 | boundary opcode 실명 귀속(계측만) | **UD2 = Glide gate 55.21%**, 호출당 예외 1회 |
+| 368 | 예외 없는 gate dispatch 비용 분해(구현 안 함) | 상한 **1.034배** — 예외 축 종결 |
 
 **역사적 Release 60초 프레임:** Task 331 `275` → Task 346 중앙값 `3,456`.
 Task 348/349가 타이머 전달 의미와 cadence를 바꿨으므로 현재 Task 347의 `1,124`와
@@ -1260,21 +1120,52 @@ Task 348/349가 타이머 전달 의미와 cadence를 바꿨으므로 현재 Tas
 4. 실행 간 편차 18% — 단일 표본으로 판정하지 않는다(335).
 
 **다음 순서:**
-1. **Task 364 setter 반복률/phase 귀속** — `grDepthMask`의 20,693회 중 동일 상태와
-   실제 변경을 분리하고 `glDepthMask`/`glGetError` 시간을 따로 잽니다. alpha blend와
-   나머지 setter도 고정 크기 인수 census로 같은 기준을 적용합니다.
-2. **Task 365 동일 성공 상태 생략** — invalid/failure/context 및 texture generation
-   무효화를 유지하면서 검증된 exact duplicate만 host rendezvous 전에 생략합니다.
-3. **Task 366 triangle batching** — Task 365 뒤에도 handoff가 지배적이고 Task 364
-   순서 자료가 충분한 batch 크기를 증명할 때만 진행합니다.
-4. **Task 367 전체 축 재귀속** — 동일 바이너리 Release control/profile 3회 중앙값과
-   visual/ABI/exception gate로 다음 병목을 결정합니다.
-5. **Task 356 LFB 분해는 장면 조건부로 보류** — LFB lock이 실제 발생하는 장면을
-   별도로 profile할 때 재개합니다.
-6. **swap portability도 조건부** — 요청/실제 interval 불일치나 cadence 결함이 다른
+1. ~~Task 364 setter 반복률/phase 귀속~~ — **완료.** 반복률 90.71%, 상한 Glide
+   25.11%, `glGetError` 가설 기각.
+2. ~~Task 365 동일 성공 상태 생략~~ — **batch 1 완료(P3).** 7종에서 rendezvous
+   41,368회를 제거하고 Glide 비중을 5.13%p 내렸으나 프레임은 변하지 않았습니다.
+   기본 ON이며 `REPIU_GLIDE_SETTER_ELIDE=0`으로 복원합니다. **batch 2
+   (`grDepthMask`, `grConstantColorValue`, texture 3종)는 보류** — 이 장면이 setter
+   경로에 제한되지 않으므로 같은 결과가 예상됩니다.
+3. ~~Task 366 timer tick 전달 귀속~~ — **완료(T3).** tick 전달은 pacing 원인이
+   **아닙니다.** 기본 손실 11.9%를 확인했으나 전달률을 올리자 프레임이 16.4%
+   **떨어졌습니다.** 회귀 원인은 tick 자체가 아니라 safe point 상시 arming입니다.
+4. ~~예외 축 귀속~~ — **Task 367 완료(A1 성립).** 최대 인구는 **Glide gate UD2 trap
+   55.21%** 이며 Glide 호출 1회당 예외 1회입니다. 이것이 Task 365가 프레임을 못 얻은
+   이유입니다(생략은 rendezvous만 없앴고 예외는 남음).
+5. ~~Glide gate를 예외 없이 dispatch~~ — **Task 368에서 측정으로 기각(구현 안 함).**
+   상한 1.034배, 전이 가격 상단에서도 1.047배로 B1 미달입니다. 실측 prologue
+   6,523 cycle은 추정의 1/10.6이고 예외당 평균 transfer resolution의 0.20배로,
+   **작업을 살릴 수 있었던 유일한 가정이 정반대로 기각**됐습니다.
+6. ~~예외 축~~ — **종결.** 최대 인구(55.21%)를 제거해도 1.034배이므로 segment register
+   move 20.11%와 port I/O 13.15%는 더 작습니다. Task 336 상한 재계산(1.07배)과
+   일치합니다.
+7. **gate 본체가 남은 덩어리입니다(현재 대상 후보)** — 호출당 약 235,000 cycle,
+   wall의 18.7%. Task 365가 rendezvous를 건드려 Glide 비중을 5.13%p 내렸으나 프레임은
+   안 늘었습니다. ordinal별로 다시 쪼개면 이 장면의 지배 항목이 나옵니다(LFB lock
+   유력).
+8. **사용자 gameplay 캡처가 다음 대상 선정의 최대 정보입니다** — 이 장면 기준으로
+   **세 번 연속(365·366·368) "이득이 작다"** 가 나왔는데, 정작 문제가 보고된 장면은
+   아직 한 번도 측정되지 않았습니다.
+9. **safe-point 상시 arming 비용** 은 여전히 미측정입니다(Task 366).
+10. **triangle batching은 보류** — handoff 비중이 남아 있어도 프레임으로 환산되지 않을
+   가능성이 큽니다.
+11. **전체 축 재귀속** — 동일 바이너리 Release 3회로 수행하고, **LFB 있는 장면과 없는
+   장면을 분리해 보고합니다.**
+12. **Task 356 LFB 분해는 장면 조건부로 보류** — LFB lock이 실제 발생하는 장면을
+   별도로 profile할 때 재개합니다. Task 364의 부팅 포함 실행에서 `grLfbLock` 304회가
+   Glide gate를 지배했으므로 이 조건은 이미 충족되는 장면이 있습니다.
+13. **swap portability도 조건부** — 요청/실제 interval 불일치나 cadence 결함이 다른
    host에서 재현될 때만 명시적 적용과 latency histogram을 진행합니다.
-7. (보류) `SUPERBLOCK` — 현재 opt-in은 렌더링을 중단하므로 성능 해결책으로 켜지
-   않습니다.
+14. (기각) **전역 `glGetError` 제거** — Task 364가 G2를 기각했습니다. 비용은 error
+   검사가 아니라 rendezvous 직후 첫 GL 접촉이며 Task 365가 함께 제거합니다.
+15. (기각) **timer tick backlog 전달** — Task 366이 프레임 -16.4%로 기각했습니다.
+    opt-in 코드는 후속 설계의 대조군으로만 남기며 성능 목적으로 켜지 않습니다.
+16. (보류) `SUPERBLOCK` — 현재 opt-in은 렌더링을 중단하므로 성능 해결책으로 켜지
+    않습니다.
+17. (해소됨) **tick 손실 11.9%의 리듬 영향** — 게임 타이밍은 CD 재생 위치에서
+    오므로(사용자 관측) 주원인일 가능성이 낮아 우선순위를 내립니다. `INT 8`이 관여하는
+    입력 polling·애니메이션·내부 timeout 영향은 미측정입니다.
 
 **주의:** Task 336·337 수치는 Task 347에서 대체됐습니다. 현재 대상 선정에 그대로
 인용하지 마십시오.

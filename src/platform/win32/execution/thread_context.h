@@ -9,6 +9,10 @@
 #include "repiu/platform/win32/ymz280b_audio_out.h"
 #include "repiu/platform/win32/glide_opengl_backend.h"
 #include "repiu/platform/win32/glide_ordinal_timing.h"
+#include "repiu/platform/win32/glide_setter_state_census.h"
+#include "repiu/platform/win32/glide_setter_state_cache.h"
+#include "repiu/platform/win32/timer_tick_delivery.h"
+#include "repiu/platform/win32/aot_boundary_opcode_census.h"
 #include "repiu/hle/linexe_call_gate.h"
 #include "repiu/hle/glide_hle.h"
 #include "repiu/hle/glide_lfb.h"
@@ -198,6 +202,9 @@ struct ThreadContext
     // histogram of the boundary guest instruction (guest-thread only) plus the
     // most recent `other` boundary EIP and its first four bytes.
     std::uint32_t aot_other_opcode_histogram[256] = {};
+    // Task 367: the same samples resolved past prefixes and the two-byte escape,
+    // so the dominant exception population can be named by instruction.
+    Win32AotBoundaryOpcodeCensus aot_boundary_opcode_census;
     std::atomic<std::uint32_t> aot_last_other_boundary_eip{0};
     std::atomic<std::uint32_t> aot_last_other_boundary_bytes{0};
     // Task 263(b): AOT residency proxy. Straight-line guest instruction count from
@@ -532,6 +539,12 @@ struct ThreadContext
     std::array<std::string, 256> glide_call_names = {};
     // Task 353: decoded gate and existing backend rendezvous time by ordinal.
     Win32GlideOrdinalTimingProfile glide_ordinal_timing;
+    // Task 364: exact repeated-versus-changing state-setter arguments. Guest
+    // thread only, and observation only — it never changes a dispatch result.
+    Win32GlideSetterCensusProfile glide_setter_census;
+    // Task 365: which state was last applied successfully on the host, so an exact
+    // repeat can skip the rendezvous. Shares its rules with the census above.
+    Win32GlideSetterStateCache glide_setter_state_cache;
     std::uint32_t glide_window_open_count = 0;
     std::uint32_t glide_logical_width = 0;
     std::uint32_t glide_logical_height = 0;
@@ -815,6 +828,10 @@ struct ThreadContext
     std::array<DpmiInterruptVectorShadow, 256> dpmi_interrupt_vectors = {};
     repiu::hle::PitChannel0 pit_channel0;
     std::atomic<bool> timer_interrupt_pending{false};
+    // Task 366: how many ticks the schedule owed against how many the guest
+    // actually received. Always on; the bounded backlog that preserves owed
+    // ticks is opt-in.
+    Win32TimerTickDeliveryCounters timer_tick_delivery;
     std::atomic<std::uint32_t> last_timer_injection_ticks{0};
     // Task 351: expired PIT ticks not yet attributed to the safe-point source
     // that successfully delivers them. Deferred traps leave this untouched.

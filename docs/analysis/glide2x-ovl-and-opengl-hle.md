@@ -717,3 +717,174 @@ repeated the format-1 565 lock/unlock path without fatal/backend failure. Full
 statistics for corrected dump 245 are mean RGB `11.45/74.36/82.47`, 115,200
 blue/cyan-dominant pixels, zero yellow-dominant pixels, and dominant color
 `(33,251,255)`, confirming the fix on guest-written data.
+
+## 상태 setter 반복률과 rendezvous 후 첫 GL 접촉 비용 (2026-07-30 Task 364) / Setter Repetition and Post-Rendezvous First-GL-Touch Cost
+
+**확인됨:** 동일 바이너리 Release 60초 3회에서 상태 setter 호출의 **90.71%가 직전
+성공 적용과 정확히 같은 상태**입니다(범위 90.65~90.72%). census 대상 20종 중 13종이
+99%를 넘습니다.
+
+| ordinal | API | 호출(중앙값) | 반복률 | 최대 연속 | 고유 인수 |
+|---:|---|---:|---:|---:|---:|
+| 91 | `grColorMask` | 6,161 | 99.95% | 6,158 | 1 |
+| 92 | `grConstantColorValue` | 6,146 | 77.67% | 456 | 8+ |
+| 98 | `grDepthMask` | 5,418 | 72.63% | 9 | 2 |
+| 138 | `grTexSource` | 5,099 | 32.24% | 3 | 8+ |
+| 131/134/136 | `grTexClampMode`/`FilterMode`/`MipMapMode` | 5,099 | 99.73% | 1,382 | 8+ |
+| 101 | `grFogMode` | 4,679 | 99.96% | 4,676 | 1 |
+| 89 | `grClipWindow` | 4,674 | 99.96% | 4,672 | 1 |
+| 79 | `grAlphaBlendFunction` | 4,674 | 99.94% | 4,669 | 2 |
+
+failure 0, unsupported 0, key overflow 0입니다. 즉 모든 setter 호출이 host에
+성공적으로 적용되며, 반복률은 게임이 프레임마다 같은 상태를 다시 설정한다는 사실을
+그대로 나타냅니다.
+
+**확인됨: host work의 지배 항목은 특정 GL 함수가 아니라 rendezvous 기상 직후의 첫 GL
+접촉입니다.**
+
+| setter | GL phase | 중앙값 |
+|---|---|---:|
+| `grDepthMask` | `glDepthMask` (첫 호출) | **84.59%** |
+| `grDepthMask` | 후속 `glGetError` | 15.41% |
+| `grAlphaBlendFunction` | 선행 `glGetError` (첫 호출, **반복 0회**) | **30.66%** |
+| `grAlphaBlendFunction` | `glEnable`+`glBlendFunc` | 67.13% |
+| `grAlphaBlendFunction` | 후속 `glGetError` | 2.21% |
+
+alpha blend의 선행 drain loop는 세 실행 모두 반복 0회이므로 그 30.66%는
+`GL_NO_ERROR`를 즉시 반환하는 `glGetError` **한 번**의 비용입니다. 같은 함수 안의
+후속 `glGetError`는 2.21%뿐이므로 **동일한 호출이 위치에 따라 약 14배** 차이가 납니다.
+따라서 `glGetError`를 전역적으로 제거하는 방향은 기각되며, 비용은 host thread가
+condition variable에서 깨어난 뒤 처음 GL을 만지는 지점에 있습니다.
+
+**확인됨:** 계측한 GL 구간은 ordinal host work의 **58.53~67.26%**만 덮습니다. 나머지
+32.74~41.47%는 `is_open` 검사, `message_` 대입, lambda·dispatch 비용입니다.
+
+**확인됨(장면 의존성):** 동일 상태 생략의 실측 상한은 wall의 4.55%, Glide gate의
+25.11%입니다. 부팅 포함 60초 실행은 `grLfbLock` 304회를 포함해 그 gate가 Glide를
+지배하므로 같은 setter 집합이 wall의 약 5.57%뿐입니다. Task 363의 LFB 없는 gameplay
+장면에서는 20.59%였습니다. **wall 기준 setter 판정은 장면 구성에 좌우되므로 Glide
+gate 대비 값을 장면 간 비교 축으로 씁니다.**
+
+**미확정:** GL 밖 host work 32.74~41.47%의 내부 구성. 파생 커널 전이 추정이 control
+6.80%에서 profile 14.60%로 움직인 원인(프레임 변화는 -2.79%뿐).
+
+[작업 로그](../work-logs/20260730-364-glide-setter-state-census.md)
+
+**Confirmed:** Across three same-binary 60-second Release runs, 90.71% of state
+setter calls exactly repeat the previously applied state, with thirteen of the
+twenty census setters above 99%, `grColorMask` highest at 99.95% over a longest
+run of 6,158, `grDepthMask` at 72.63%, and `grTexSource` lowest at 32.24%. There
+were no failures, unsupported arguments, or key overflows, so every setter call
+lands on the host and the repetition rate reflects the game reprogramming the
+same state each frame.
+
+**Confirmed:** The dominant host cost is the first GL touch after the rendezvous
+wake rather than any particular GL function. `glDepthMask` holds 84.59% of the
+depth-mask OpenGL interval against 15.41% for the trailing `glGetError`, and the
+alpha-blend leading drain holds 30.66% while iterating zero times in all three
+runs — the cost of a single `glGetError` returning `GL_NO_ERROR` — against 2.21%
+for the identical call later in the same function, roughly a fourteen-fold
+difference by position alone. Removing `glGetError` globally is therefore
+rejected as a direction.
+
+**Confirmed:** The instrumented OpenGL interval covers only 58.53-67.26% of the
+ordinal's host work; the remaining 32.74-41.47% is the open check, the message
+assignment, and dispatch.
+
+**Confirmed:** The exact-duplicate elision ceiling is 4.55% of wall time and
+25.11% of the Glide gate. Because the boot-inclusive run includes 304
+`grLfbLock` calls whose gate dominates Glide, the same setter set holds only
+about 5.57% of wall here against 20.59% in the Task 363 gameplay capture, so the
+gate-relative figure is the axis comparable across scenes.
+
+**Unresolved:** the composition of the non-GL host work, and why the derived
+kernel-transition estimate moved from 6.80% to 14.60% while frames moved only
+-2.79%.
+
+## 동일 상태 setter의 rendezvous 생략과 그 한계 (2026-07-30 Task 365) / Eliding Repeated Setter State and Its Limit
+
+**확인됨:** 반복률 99.9% 이상인 7종(`grColorMask`, `grAlphaBlendFunction`,
+`grClipWindow`, `grAlphaTestFunction`, `grFogMode`, `grCullMode`,
+`grDepthBufferFunction`)에서 정확한 동일 상태의 host rendezvous를 생략했습니다. 기본
+ON이며 `REPIU_GLIDE_SETTER_ELIDE=0`으로 복원합니다.
+
+**확인됨(호출 구조):** 이 장면에서 게임은 60초 동안 이 7종을 41,384회 호출해 상태를
+**16번** 바꿉니다. 비율 약 **2,586 : 1** 이며 `applied=16`은 3회 실행 모두 동일했습니다.
+
+**확인됨(정확성):** 동작을 바꾸지 않는 census가 센 중복과 실제 생략이 ordinal 단위와
+합계 모두 정확히 일치했습니다.
+
+| ordinal | API | calls | census `same` | cache `elided` |
+|---:|---|---:|---:|---:|
+| 91 | `grColorMask` | 7,461 | 7,458 | 7,458 |
+| 101 | `grFogMode` | 5,663 | 5,661 | 5,661 |
+| 82 | `grAlphaTestFunction` | 5,656 | 5,654 | 5,654 |
+| 89 | `grClipWindow` | 5,656 | 5,654 | 5,654 |
+| 94 | `grCullMode` | 5,656 | 5,654 | 5,654 |
+| 79 | `grAlphaBlendFunction` | 5,656 | 5,653 | 5,653 |
+| 96 | `grDepthBufferFunction` | 5,656 | 5,653 | 5,653 |
+
+**확인됨(렌더 동일성):** swap별 back-buffer 통계를 phase offset을 주고 대응시키면
+offset +1에서 **72.9%가 완전 일치**하고(non-black 픽셀 수와 R/G/B 평균 전부) 다른
+offset은 0.0~15.9%입니다. 같은 프레임을 같은 순서로 한 프레임 먼저 그립니다. mask나
+blend가 깨졌다면 어떤 offset에서도 일치하지 않습니다.
+
+**확인됨(생략이 안전한 세 근거):**
+1. 캐시 상태를 setter 밖에서 바꾸는 유일한 경로인 LFB blit은 `glIsEnabled`·
+   `glGetBooleanv`로 실제 GL 상태를 조회해 저장하고 복원하며, `glDepthMask`·
+   `glBlendFunc`·`glDepthFunc`·fog·dither·scissor box는 건드리지 않습니다.
+2. `glide_state` mirror 쓰기 생략은 멱등합니다. 이 mirror는 `grGlideGetState`가
+   `BuildGlideStateImage`로 guest에 돌려주므로 실제로 읽히지만, key가 인수 dword
+   전체를 담으므로 직전 적용이 이미 동일한 값을 썼습니다.
+3. 생략은 반환 주소·signature·인수 크기 검증을 모두 통과한 뒤에만 적용됩니다.
+
+**확인됨(한계):** Glide gate 비중은 `20.76% → 15.63%`(-5.13%p)로 내려갔지만 프레임
+중앙값은 `1,215 → 1,206`(-0.74%)으로 변하지 않았습니다. OFF 3회 범위가
+1,215~1,384이므로 편차 안입니다. **이 장면의 실행은 더 이상 Glide setter 경로에 의해
+제한되지 않습니다.** 해방된 시간은 guest 실행 추정 `62.17% → 63.12%`와 커널 전이 추정
+`7.26% → 10.08%`로 흘러갔습니다.
+
+**미확정:** 무엇이 pacing하는지. 커널 전이 추정이 2.8%p 오른 이유. LFB 없는 gameplay
+장면(Task 363 기준 setter가 Glide gate의 85.33%)에서의 이득.
+
+**방법 메모:** back buffer 스크린샷 기능은 현재 없습니다. `REPIU_GLIDE_FRAME_DUMP`는
+이미지가 아니라 draw-call 추적이고, `build/texture_dumps/`의 BMP는 텍스처 dump입니다.
+따라서 cross-run 시각 검증은 `REPIU_GLIDE_PIXEL_DIAG`의 swap별 통계를 phase offset으로
+대응시키는 방식을 씁니다.
+
+[작업 로그](../work-logs/20260730-365-glide-setter-state-elision.md)
+
+**Confirmed:** The seven setters repeating at 99.9% or better now skip the host
+rendezvous when the arguments exactly match a state already applied
+successfully. In this scene the game issues 41,384 such calls per 60 seconds in
+order to change state 16 times, about 2,586 to 1, with `applied` reading exactly
+16 in all three runs.
+
+**Confirmed:** The behaviour-neutral census and the actual elision agreed exactly,
+per ordinal and in aggregate, so only observed duplicates were skipped. Matching
+per-swap back-buffer statistics under a phase offset gives 72.9% exact identity
+at +1 — non-black pixel count and all three channel means — against 0.0-15.9% at
+every other offset, so the same frames are drawn in the same order one frame
+sooner. A broken mask or blend would match at no offset.
+
+**Confirmed:** Three things make the elision unobservable. The LFB blit, the only
+path that mutates cached state outside the setters, saves it by querying real GL
+state and restores it, and never touches depth mask, blend func, depth func, fog,
+dither, or the scissor box. Skipping the `glide_state` mirror write is idempotent
+— it really is read back through `BuildGlideStateImage`, but the key holds every
+argument dword so the matching application already wrote identical values. And
+the decision runs only after return-address, signature, and argument-size
+validation pass.
+
+**Confirmed limit:** the Glide gate share fell from 20.76% to 15.63% while median
+frames stayed at 1,215 to 1,206, inside the elide-off range of 1,215-1,384.
+Execution in this scene is no longer limited by the Glide setter path, and the
+freed time went into the guest-execution and kernel-transition estimates.
+
+**Unresolved:** what paces the run, why the kernel estimate rose 2.8 points, and
+the gain in an LFB-free gameplay scene.
+
+**Method note:** there is no back-buffer screenshot facility.
+`REPIU_GLIDE_FRAME_DUMP` is a draw-call trace, and the BMPs under
+`build/texture_dumps/` are texture dumps, so cross-run visual verification uses
+phase-offset matching of `REPIU_GLIDE_PIXEL_DIAG`'s per-swap statistics.

@@ -108,6 +108,17 @@ struct Win32ExecutionTimeProfile
     // snapshot can close it at report time.
     std::uint64_t guest_run_start_cycles = 0;
     bool guest_run_open = false;
+    // Task 368 stage one: the interval from VEH entry to the Glide gate scope
+    // opening. That is exactly what exception-free gate dispatch would remove --
+    // kernel transition, VEH prologue, and transfer resolution for this one
+    // population -- as opposed to the gate body, which the work would still do.
+    //
+    // Both timestamps are already taken by the two scopes, so this adds no clock
+    // read, per the Task 353 rule.
+    std::uint64_t veh_entry_cycles = 0;
+    std::uint64_t glide_gate_prologue_cycles = 0;
+    std::uint32_t glide_gate_prologue_count = 0;
+    std::uint32_t glide_gate_prologue_clamped_count = 0;
 };
 
 struct Win32ExecutionTimeProfileSnapshot
@@ -119,6 +130,10 @@ struct Win32ExecutionTimeProfileSnapshot
         inside_veh_cycles = {};
     std::array<std::uint32_t, kExecutionTimeBucketCount>
         inside_veh_counts = {};
+    // Task 368 stage one. See the profile struct for what this interval is.
+    std::uint64_t glide_gate_prologue_cycles = 0;
+    std::uint32_t glide_gate_prologue_count = 0;
+    std::uint32_t glide_gate_prologue_clamped_count = 0;
 };
 
 bool ResolveExecutionTimeProfileEnabled(std::string_view setting);

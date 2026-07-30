@@ -1,0 +1,147 @@
+#include "repiu/platform/win32/timer_tick_delivery.h"
+
+#include <algorithm>
+#include <cstdlib>
+
+namespace repiu::platform::win32
+{
+namespace
+{
+
+bool ReadTimerTickBacklogSetting()
+{
+    const char* value = std::getenv("REPIU_TIMER_TICK_BACKLOG");
+    return value != nullptr && ResolveTimerTickBacklogEnabled(value);
+}
+
+void RaiseMaximum(std::atomic<std::uint32_t>* maximum, std::uint32_t value)
+{
+    std::uint32_t observed = maximum->load(std::memory_order_relaxed);
+    while (value > observed &&
+           !maximum->compare_exchange_weak(observed, value,
+                                           std::memory_order_relaxed))
+    {
+    }
+}
+
+}  // namespace
+
+bool ResolveTimerTickBacklogEnabled(std::string_view setting)
+{
+    return setting == "1" || setting == "on" || setting == "true";
+}
+
+bool TimerTickBacklogEnabled()
+{
+    static const bool enabled = ReadTimerTickBacklogSetting();
+    return enabled;
+}
+
+void RecordTimerTicksDue(Win32TimerTickDeliveryCounters* counters,
+                         std::uint32_t due,
+                         bool already_pending,
+                         bool backlog_enabled)
+{
+    if (counters == nullptr || due == 0U)
+    {
+        return;
+    }
+    counters->due_total.fetch_add(due, std::memory_order_relaxed);
+
+    if (!backlog_enabled)
+    {
+        // Stage one accounting for the shipping behaviour: arming delivery
+        // publishes a single boolean, so one owed tick becomes the pending
+        // injection and the rest are gone. An already-pending flag means even
+        // that one is a duplicate of a tick not yet taken.
+        const std::uint32_t retained = already_pending ? 0U : 1U;
+        counters->coalesced_total.fetch_add(due - retained,
+                                            std::memory_order_relaxed);
+        counters->backlog.store(1U, std::memory_order_relaxed);
+        RaiseMaximum(&counters->max_backlog, 1U);
+        return;
+    }
+
+    // Stage two: keep the owed ticks, bounded. Beyond the cap the guest would be
+    // parked ever further in the past, so the excess is counted and dropped
+    // rather than delivered late enough to be meaningless.
+    std::uint32_t backlog = counters->backlog.load(std::memory_order_relaxed);
+    const std::uint32_t room = kWin32TimerTickBacklogCapacity > backlog
+        ? kWin32TimerTickBacklogCapacity - backlog
+        : 0U;
+    const std::uint32_t accepted = std::min(due, room);
+    if (due > accepted)
+    {
+        counters->dropped_total.fetch_add(due - accepted,
+                                          std::memory_order_relaxed);
+    }
+    backlog += accepted;
+    counters->backlog.store(backlog, std::memory_order_relaxed);
+    RaiseMaximum(&counters->max_backlog, backlog);
+}
+
+bool RecordTimerTickInjected(Win32TimerTickDeliveryCounters* counters,
+                             bool backlog_enabled)
+{
+    if (counters == nullptr)
+    {
+        return false;
+    }
+    counters->injected_total.fetch_add(1U, std::memory_order_relaxed);
+
+    std::uint32_t backlog = counters->backlog.load(std::memory_order_relaxed);
+    if (backlog != 0U)
+    {
+        --backlog;
+        counters->backlog.store(backlog, std::memory_order_relaxed);
+    }
+    // Only the backlog mode keeps delivery armed. Without it the caller's
+    // existing "clear the flag after one injection" behaviour is unchanged.
+    return backlog_enabled && backlog != 0U;
+}
+
+void RecordTimerTickDeferred(Win32TimerTickDeliveryCounters* counters)
+{
+    if (counters == nullptr)
+    {
+        return;
+    }
+    counters->deferred_total.fetch_add(1U, std::memory_order_relaxed);
+}
+
+void RecordTimerTickBacklogCleared(
+    Win32TimerTickDeliveryCounters* counters)
+{
+    if (counters == nullptr)
+    {
+        return;
+    }
+    const std::uint32_t backlog =
+        counters->backlog.exchange(0U, std::memory_order_relaxed);
+    if (backlog != 0U)
+    {
+        counters->dropped_total.fetch_add(backlog, std::memory_order_relaxed);
+    }
+}
+
+Win32TimerTickDeliverySnapshot SnapshotTimerTickDelivery(
+    const Win32TimerTickDeliveryCounters& counters)
+{
+    Win32TimerTickDeliverySnapshot snapshot;
+    snapshot.backlog_enabled = TimerTickBacklogEnabled();
+    snapshot.due_total = counters.due_total.load(std::memory_order_relaxed);
+    snapshot.injected_total =
+        counters.injected_total.load(std::memory_order_relaxed);
+    snapshot.coalesced_total =
+        counters.coalesced_total.load(std::memory_order_relaxed);
+    snapshot.dropped_total =
+        counters.dropped_total.load(std::memory_order_relaxed);
+    snapshot.deferred_total =
+        counters.deferred_total.load(std::memory_order_relaxed);
+    snapshot.max_backlog =
+        counters.max_backlog.load(std::memory_order_relaxed);
+    snapshot.backlog = counters.backlog.load(std::memory_order_relaxed);
+    return snapshot;
+}
+
+}  // namespace repiu::platform::win32

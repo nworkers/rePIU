@@ -128,6 +128,12 @@ add_library(repiu_exe
     src/platform/win32/telemetry/glide_gate_timing.cpp
     src/platform/win32/telemetry/glide_ordinal_timing.cpp
     src/platform/win32/telemetry/glide_buffer_swap_timing.cpp
+    src/platform/win32/telemetry/glide_setter_state_model.cpp
+    src/platform/win32/telemetry/glide_setter_state_census.cpp
+    src/platform/win32/telemetry/glide_setter_state_cache.cpp
+    src/platform/win32/telemetry/glide_setter_phase_timing.cpp
+    src/platform/win32/telemetry/timer_tick_delivery.cpp
+    src/platform/win32/aot/aot_boundary_opcode_census.cpp
     src/platform/win32/io/port_io_emulator.cpp
     src/platform/win32/io/eeprom_93c46.cpp
     src/platform/win32/io/piu10_sound_port.cpp
@@ -211,6 +217,11 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/glide_gate_timing_probe.cpp
     src/tools/aot_probe/glide_ordinal_timing_probe.cpp
     src/tools/aot_probe/glide_buffer_swap_timing_probe.cpp
+    src/tools/aot_probe/glide_setter_state_census_probe.cpp
+    src/tools/aot_probe/glide_setter_state_cache_probe.cpp
+    src/tools/aot_probe/glide_setter_phase_timing_probe.cpp
+    src/tools/aot_probe/timer_tick_delivery_probe.cpp
+    src/tools/aot_probe/aot_boundary_opcode_census_probe.cpp
     src/tools/aot_probe/aot_worker_timing_probe.cpp
     src/tools/aot_probe/selector_guard_probe.cpp
     src/tools/aot_probe/main.cpp

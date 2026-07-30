@@ -94,6 +94,11 @@ void RecordAotOtherBoundarySample(ThreadContext* context,
     }
     const std::uint8_t opcode = bytes[0];
     const std::uint32_t new_count = ++context->aot_other_opcode_histogram[opcode];
+    // Task 367: the same sample counted a second way. `bytes[0]` is an escape
+    // byte or a prefix for most of this population, so it cannot say which
+    // instruction produced the exception.
+    RecordAotBoundaryOpcodeSample(
+        &context->aot_boundary_opcode_census, bytes, length);
     std::uint32_t packed = 0;
     for (std::size_t i = 0; i < 4U && i < length; ++i)
     {

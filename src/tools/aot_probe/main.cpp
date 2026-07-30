@@ -20,6 +20,11 @@
 #include "glide_gate_timing_probe.h"
 #include "glide_ordinal_timing_probe.h"
 #include "glide_buffer_swap_timing_probe.h"
+#include "glide_setter_state_census_probe.h"
+#include "glide_setter_state_cache_probe.h"
+#include "glide_setter_phase_timing_probe.h"
+#include "timer_tick_delivery_probe.h"
+#include "aot_boundary_opcode_census_probe.h"
 #include "aot_worker_timing_probe.h"
 #include "aot_timer_source_profile_probe.h"
 #include "selector_guard_probe.h"
@@ -904,6 +909,26 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunGlideBufferSwapTimingProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunGlideSetterStateCensusProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunGlideSetterStateCacheProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunGlideSetterPhaseTimingProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunTimerTickDeliveryProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunAotBoundaryOpcodeCensusProbe())
     {
         return 1;
     }

@@ -1537,6 +1537,186 @@ is not disabled and frames are not dropped for performance. Explicit interval
 application requires a separate fidelity contract after a host mismatch is
 observed.
 
+## Glide setter 반복률과 GL phase 계측 / Glide setter census and GL phase instrumentation
+
+Task 364는 기본 OFF 계측 두 개를 서로 다른 스레드에 나눠 둡니다. 반복률 census는
+clock을 전혀 쓰지 않고, GL phase 분해만 새 timestamp를 만들기 때문에 환경 변수도
+분리해 관측자 영향을 따로 판정합니다.
+
+| 계측 | 환경 변수 | 소유자 | 스레드 | 추가 clock read |
+|---|---|---|---|---:|
+| setter 반복률 census | `REPIU_GLIDE_SETTER_CENSUS=1` | `ThreadContext` | guest | 0 |
+| GL phase 분해 | `REPIU_GLIDE_SETTER_PHASE=1` | `GlideOpenGlBackend` | host | 호출당 3~4 |
+
+census는 `HandleGlideGateBoundary` 한 곳에서 scope 객체로만 동작하며 setter dispatch
+case를 수정하지 않습니다. gate stack mirror에서 고정 크기 key를 만들고, 변경하지 않은
+dispatch가 끝난 뒤 `glide_gate_handled_count`와 implementation-issue 누적치 차이로
+결과를 분류합니다. 따라서 census는 구조적으로 dispatch 결과를 바꿀 수 없습니다.
+
+```mermaid
+flowchart TD
+    E["gate 진입"] --> K["고정 크기 key 캡처"]
+    K --> D["변경 없는 dispatch"]
+    D --> C{"handled 증가 & issue 증가 없음?"}
+    C -->|"아니오"| V["applied 기록 무효화"]
+    C -->|"예"| M{"applied key와 동일?"}
+    M -->|"예"| S["same++"]
+    M -->|"아니오"| G["changed++, applied 갱신"]
+```
+
+applied 기록은 "요청됨"이 아니라 **host에서 성공적으로 적용됨**을 뜻합니다. backend
+실패와 retain된 unsupported 인수는 기록을 무효화하고, `grSstWinOpen`/`grSstWinClose`/
+`grGlideInit`/`grGlideShutdown`/`grGlideSetState`/`grRenderBuffer`는 전체를
+무효화합니다. texture 상태 key는 census 내부 monotonic generation을 포함하며 texture
+download마다 증가하므로, 인수가 같아도 download를 가로질러 동일 판정이 나오지
+않습니다. 이 규칙은 Task 365의 생략 규칙과 같아야 하며, 그래서 census가 재는 값이
+실제 상한이 됩니다.
+
+GL phase 분해는 timestamp 네 개로 `drain`/`apply`/`error`를 정확히 분할하므로
+`drain + apply + error == total`이 항등식으로 성립합니다. clock은 backend가 이미 쓰는
+`ReadGlideGateTimingCycles()`를 공유하고, `message_` 대입은 timed 구간 밖으로 옮겨
+문자열 비용이 GL에 섞이지 않게 합니다.
+
+census entry는 ordinal당 수백 바이트이고 배열이 256칸이므로 snapshot은 집계만
+전달하고 per-ordinal 항목은 profile에서 직접 읽습니다. 값 복사 snapshot은 복사마다 약
+100KB를 스택에 올립니다.
+
+측정 entry point는 `scripts/task364_glide_setter_state_census.ps1`이며 Task 347 축을
+control/profile로 각 3회 실행하고 항등식·overflow·관측자 gate를 검사합니다.
+
+Task 364 splits two disabled-by-default instruments across the threads that own
+them. The repetition census adds no clock reads at all, while only the GL phase
+split creates new timestamps, so each carries its own opt-in and its own
+observer verdict. The census operates purely as a scope object at the single
+gate boundary and edits no setter dispatch case: it captures a fixed-size key
+from the gate stack mirror and classifies the outcome after the unmodified
+dispatch from the change in `glide_gate_handled_count` and the
+implementation-issue totals, so it structurally cannot alter a result.
+
+An applied record means state successfully applied on the host, not merely
+requested. Backend failures and retained unsupported arguments void it; window
+open/close, Glide init/shutdown, set-state, and render-buffer changes void every
+record; and texture-state keys carry a census-local monotonic generation that
+each texture download increments, so identical arguments do not compare equal
+across a download. These are deliberately the same rules Task 365 must obey,
+which is what makes the measured repetition rate a real ceiling.
+
+Four timestamps partition the OpenGL interval so `drain + apply + error ==
+total` holds by construction, the clock is the backend's existing
+`ReadGlideGateTimingCycles()`, and the `message_` assignment sits outside the
+timed region. Census snapshots carry aggregates only, with per-ordinal entries
+read from the profile, because a by-value copy of the 256-entry array would put
+about 100KB on the stack. The measurement entry point is
+`scripts/task364_glide_setter_state_census.ps1`, which runs the Task 347 axis
+three times each with the instruments off and on and checks the identities,
+overflow counters, and observer gate.
+
+## Timer tick 전달 회계 / Timer tick delivery accounting
+
+Task 366은 guest가 프로그램한 timer tick과 실제로 전달된 tick의 차이를 상시 counter로
+회계합니다. `PitIrqSchedule::Poll`은 밀린 tick 수를 정확히 돌려주지만
+`timer_interrupt_pending`이 `std::atomic<bool>`이라 due가 몇이든 `INT 8`은 한 번만
+전달됩니다. 실측 결손은 **11.9%** 입니다.
+
+```mermaid
+flowchart TD
+    P["host poll loop"] --> S["PitIrqSchedule::Poll → due"]
+    S --> R["RecordTimerTicksDue"]
+    R --> B["timer_interrupt_pending = true"]
+    B --> I["InjectPendingInterrupts"]
+    I --> C{"safe point 조건<br/>IF, guest EIP"}
+    C -->|"불충족"| DF["deferred (지연, 손실 아님)"]
+    C -->|"충족"| J["INT 8 주입"]
+    J --> K["RecordTimerTickInjected"]
+```
+
+counter는 `due`, `injected`, `coalesced`, `dropped`, `deferred`, `max_backlog`,
+`backlog`이며 **항등식 `due == injected + coalesced + dropped + backlog`** 가 분해
+경계의 근거입니다. `deferred`는 지연이지 손실이 아니므로 항등식 밖입니다.
+
+`REPIU_TIMER_TICK_BACKLOG=1`은 bool을 상한 64의 counter로 바꿔 밀린 tick을 safe point
+마다 하나씩 소진합니다. **기본 OFF이며 성능 목적으로 켜서는 안 됩니다** — Task 366
+측정에서 전달률은 91.8%로 올랐지만 프레임이 16.4% 떨어졌습니다. 원인은 주입 자체가
+아니라 밀린 tick이 남아 있는 동안 `ArmAotTimerSafePoint`가 상시 활성이 되어
+safe-point trap이 20% 늘기 때문입니다. 후속 설계의 대조군으로만 남깁니다.
+
+Task 366 accounts, with always-on counters, for the gap between the timer ticks the
+guest programmed and the ones it received. `PitIrqSchedule::Poll` returns the exact
+owed count, but `timer_interrupt_pending` is a boolean, so one `INT 8` is delivered
+regardless of how many were owed; the measured shortfall is 11.9%. The counters are
+owed, injected, coalesced, dropped, deferred, peak backlog, and outstanding
+backlog, and the identity `due == injected + coalesced + dropped + backlog` is what
+makes the decomposition trustworthy — deferrals sit outside it because they are
+delays rather than losses.
+
+`REPIU_TIMER_TICK_BACKLOG=1` replaces the boolean with a counter capped at 64 that
+drains one owed tick per safe point. It is **off by default and must not be enabled
+for performance**: it raised delivery to 91.8% while costing 16.4% of frames, not
+because injections are expensive but because an outstanding owed tick keeps
+`ArmAotTimerSafePoint` permanently active and raises safe-point traps 20%. It is
+retained only as the control arm for a future drain that does not hold the safe
+point armed.
+
+## 동일 Glide 상태 생략 / Eliding already-applied Glide state
+
+Task 365는 반복률 99.9% 이상인 7종 setter(`grColorMask`, `grAlphaBlendFunction`,
+`grClipWindow`, `grAlphaTestFunction`, `grFogMode`, `grCullMode`,
+`grDepthBufferFunction`)에서 **정확한 동일 상태의 host rendezvous만** 생략합니다.
+기본 ON이며 `REPIU_GLIDE_SETTER_ELIDE=0`으로 기존 경로를 복원합니다.
+
+`glide_setter_state_cache`는 "요청됨"이 아니라 **host에서 성공적으로 적용됨**을
+기록합니다. 규칙은 `glide_setter_state_model`에만 있고 census(관측자)와
+cache(행위자)가 같은 함수를 쓰므로 둘이 어긋날 수 없습니다.
+
+```mermaid
+flowchart TD
+    G["guest 호출"] --> X["AOT→HLE 예외 경계"]
+    X --> V["반환 주소·signature·인수 크기 검증"]
+    V --> M{"직전 성공 적용과 정확히 같은가?"}
+    M -->|"아니오"| D["dispatch → backend → InvokeOnHostThread"]
+    D --> S{"적용 성공?"}
+    S -->|"예"| A["applied 기록"]
+    S -->|"아니오"| Z["기록 무효화"]
+    M -->|"예"| E["rendezvous만 생략"]
+    A --> R["stdcall 정리 후 복귀"]
+    Z --> R
+    E --> R
+```
+
+유지되는 것은 예외 경계 진입, 세 가지 ABI 검증, `glide_gate_handled_count`,
+stdcall 정리(`Esp += 4 + 인수 바이트`), 반환 주소, 호출 순서입니다. batch 1은 전부
+void 반환이라 `Eax`는 건드리지 않습니다. host 소유 `backend.message_`는 생략 경로에서
+쓰지 않습니다(guest thread에서 쓰면 경합).
+
+`glide_state` mirror 쓰기를 건너뛰어도 안전한 근거는 **멱등성**입니다. 이 mirror는
+`grGlideGetState`가 `BuildGlideStateImage`로 guest에 돌려주므로 실제로 읽히지만, key가
+인수 dword 전체를 담으므로 직전 적용이 이미 동일한 값을 썼습니다.
+
+측정 entry point는 `scripts/task365_glide_setter_state_elision.ps1`이며 OFF/ON 각
+3회에 더해 짧은 시각 검증 pass를 수행합니다. 핵심 gate는 **census `same` ==
+cache `elided`** 로, 동작을 바꾸지 않는 관측자가 센 중복과 실제 생략이 일치함을
+증명합니다.
+
+Task 365 elides only the host rendezvous, and only for an exact repeat of state
+already applied successfully, across the seven setters Task 364 measured at 99.9%
+or better repetition. It is on by default with `REPIU_GLIDE_SETTER_ELIDE=0`
+restoring the original path. The cache records successful host application rather
+than a request, and its rules live solely in `glide_setter_state_model` so the
+observing census and the acting cache cannot diverge.
+
+Exception boundary entry, all three ABI validations, the handled count, the
+stdcall cleanup, the return address, and call order are unchanged, and `Eax` is
+untouched because batch one returns void throughout. The host-owned
+`backend.message_` is never written from the guest thread. Skipping the
+`glide_state` mirror write is safe by idempotence: it is genuinely read back
+through `BuildGlideStateImage`, but the key holds every argument dword, so the
+application this key matches already wrote identical values.
+
+The measurement entry point is `scripts/task365_glide_setter_state_elision.ps1`,
+which runs three samples per configuration plus a short visual pass. Its decisive
+gate is `census same == cache elided`, proving the behaviour-neutral observer's
+duplicate count equals what was actually skipped.
+
 ## Release 실행 축 측정 계약 / Release execution-axis measurement contract
 
 Task 347의 `scripts/task347_release_axis_reattribution.ps1`은 runtime 의미를 바꾸지 않는

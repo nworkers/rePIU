@@ -1,5 +1,46 @@
 # TODO
 
+## 2026-07-30 Glide setter 생략 기본값 결정 보류 (Task 365)
+
+Task 365가 batch 1의 7종 setter(`grColorMask`, `grAlphaBlendFunction`,
+`grClipWindow`, `grAlphaTestFunction`, `grFogMode`, `grCullMode`,
+`grDepthBufferFunction`)에서 동일 상태의 host rendezvous 생략을 **기본 ON**으로
+넣었습니다. `REPIU_GLIDE_SETTER_ELIDE=0`으로 복원합니다.
+
+정확성은 증명됐고(관측된 중복만 생략, 렌더 시퀀스 phase offset +1에서 72.9% 완전 일치)
+비용도 확실히 줄었으나(rendezvous 41,368회 제거, Glide gate -5.13%p), **부팅 포함
+자동 60초 장면에서는 프레임이 변하지 않았습니다**(1,215 → 1,206, 편차 내).
+
+따라서 기본값 유지 여부는 **사용자가 실제 FPS 급락 장면에서 측정한 뒤** 결정합니다.
+절차는 [검증 가이드](guides/glide-setter-elision-testing.md)에 있습니다.
+
+같은 이유로 다음 항목도 함께 보류합니다.
+
+* **batch 2 생략 확장** — `grDepthMask`(반복률 72.63%),
+  `grConstantColorValue`(77.67%), `grTexClampMode`/`FilterMode`/`MipMapMode`(99.73%).
+  현재 장면이 setter 경로에 제한되지 않으므로 같은 결과가 예상됩니다. 사용자 측정에서
+  프레임 개선이 확인되면 재개합니다.
+* **triangle 제출 batching** — 원래 Task 366 계획이었으나 "비용을 줄여도 프레임이 늘지
+  않는다"는 신호가 두 번(Task 335, 365) 나왔으므로 pacing 귀속 뒤로 미룹니다.
+* **`grTexSource` 생략** — 반복률 32.24%, 최대 연속 3회로 이득이 거의 없어 제외
+  상태를 유지합니다.
+
+## 2026-07-30 Deferred: deciding the Glide setter elision default (Task 365)
+
+Task 365 enabled exact-state host-rendezvous elision by default for seven batch-one
+setters, with `REPIU_GLIDE_SETTER_ELIDE=0` restoring the original path. Correctness
+is proven and the cost reduction is real (41,368 rendezvous removed, Glide gate down
+5.13 points), but frames did not move in the boot-inclusive automated scene.
+
+The default therefore stays undecided until measured in a real scene where FPS
+actually collapses; the procedure is in
+[the testing guide](guides/glide-setter-elision-testing.md). Batch two (`grDepthMask`,
+`grConstantColorValue`, and the texture clamp/filter/mipmap setters) and triangle
+submission batching are deferred behind that same measurement, because two
+independent results now show cost removal not converting into throughput.
+`grTexSource` stays excluded on its own merits at 32.24% repetition.
+
+
 ## 2026-07-11 Port I/O 0x02A0 계열 의미 분석 보류
 
 `piu_1st`에서 `0x02A0` 계열 Port I/O trace를 수집한 결과, 다음 패턴이 관측되었다.
