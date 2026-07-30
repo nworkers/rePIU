@@ -65,11 +65,44 @@ void RecordExecutionTimeBucket(Win32ExecutionTimeProfile* profile,
     }
 }
 
+void RecordVehExceptionGap(Win32ExecutionTimeProfile* profile,
+                           VehGapClass gap_class)
+{
+    if (profile == nullptr || profile->veh_gap_pending_cycles == 0U)
+    {
+        return;
+    }
+    const std::uint32_t index = static_cast<std::uint32_t>(gap_class);
+    if (index >= kVehGapClassCount)
+    {
+        return;
+    }
+    profile->veh_gap_cycles[index] += profile->veh_gap_pending_cycles;
+    ++profile->veh_gap_counts[index];
+    // The gap was banked as unclassified when the scope opened, because the
+    // exception code was not readable yet. Move it out now so the three classes
+    // plus the residual always sum to what was banked.
+    profile->veh_gap_unclassified_cycles =
+        profile->veh_gap_unclassified_cycles >= profile->veh_gap_pending_cycles
+            ? profile->veh_gap_unclassified_cycles -
+                profile->veh_gap_pending_cycles
+            : 0U;
+    // Consumed: a handler that runs the census twice for one exception must not
+    // attribute the same interval to two classes.
+    profile->veh_gap_pending_cycles = 0;
+}
+
 Win32ExecutionTimeProfileSnapshot SnapshotExecutionTimeProfile(
     const Win32ExecutionTimeProfile& profile)
 {
     Win32ExecutionTimeProfileSnapshot snapshot;
     snapshot.enabled = profile.enabled;
+    snapshot.veh_gap_cycles = profile.veh_gap_cycles;
+    snapshot.veh_gap_counts = profile.veh_gap_counts;
+    snapshot.veh_gap_min_cycles = profile.veh_gap_min_cycles;
+    snapshot.veh_gap_max_cycles = profile.veh_gap_max_cycles;
+    snapshot.veh_gap_unclassified_cycles = profile.veh_gap_unclassified_cycles;
+    snapshot.veh_gap_clamped_count = profile.veh_gap_clamped_count;
     snapshot.cycles = profile.cycles;
     snapshot.counts = profile.counts;
     snapshot.inside_veh_cycles = profile.inside_veh_cycles;
@@ -139,6 +172,33 @@ ExecutionTimeScope::ExecutionTimeScope(Win32ExecutionTimeProfile* profile,
         if (owns_veh_depth_)
         {
             profile_->veh_entry_cycles = start_cycles_;
+            // Task 372: the interval since the previous handler returned --
+            // kernel return, guest execution, kernel delivery. Only the outermost
+            // frame banks it, so a fault raised inside a handler does not count
+            // an interval that never contained guest execution.
+            if (profile_->veh_last_exit_cycles != 0U)
+            {
+                if (start_cycles_ >= profile_->veh_last_exit_cycles)
+                {
+                    const std::uint64_t gap =
+                        start_cycles_ - profile_->veh_last_exit_cycles;
+                    profile_->veh_gap_pending_cycles = gap;
+                    profile_->veh_gap_unclassified_cycles += gap;
+                    if (profile_->veh_gap_min_cycles == 0U ||
+                        gap < profile_->veh_gap_min_cycles)
+                    {
+                        profile_->veh_gap_min_cycles = gap;
+                    }
+                    if (gap > profile_->veh_gap_max_cycles)
+                    {
+                        profile_->veh_gap_max_cycles = gap;
+                    }
+                }
+                else
+                {
+                    ++profile_->veh_gap_clamped_count;
+                }
+            }
         }
     }
     else if (bucket_ == ExecutionTimeBucket::kGlideGate && inside_veh_ &&
@@ -178,6 +238,11 @@ ExecutionTimeScope::~ExecutionTimeScope()
         {
             return;
         }
+        // Task 372: the far end of the gap the next handler entry will measure.
+        profile_->veh_last_exit_cycles = end_cycles;
+        // An unclassified pending gap stays in the residual rather than leaking
+        // into the next exception's measurement.
+        profile_->veh_gap_pending_cycles = 0;
     }
     const std::uint64_t cycles = end_cycles - start_cycles_;
     if (completed_cycles_ != nullptr)

@@ -90,6 +90,20 @@ constexpr std::uint32_t kFirstAotReentryBucket =
 constexpr std::uint32_t kExecutionTimeBucketCount =
     static_cast<std::uint32_t>(ExecutionTimeBucket::kCount);
 
+// Task 372: how the exit-to-next-entry gap is attributed. Deliberately coarse --
+// the question is whether the kernel round trip is a large share of wall, and
+// only the single-step class answers it cleanly.
+enum class VehGapClass : std::uint32_t
+{
+    kSingleStep = 0,
+    kBreakpoint,
+    kOther,
+    kCount,
+};
+
+constexpr std::uint32_t kVehGapClassCount =
+    static_cast<std::uint32_t>(VehGapClass::kCount);
+
 struct Win32ExecutionTimeProfile
 {
     bool enabled = false;
@@ -119,6 +133,33 @@ struct Win32ExecutionTimeProfile
     std::uint64_t glide_gate_prologue_cycles = 0;
     std::uint32_t glide_gate_prologue_count = 0;
     std::uint32_t glide_gate_prologue_clamped_count = 0;
+    // Task 372: the interval this instrument has always been blind to. kVehTotal
+    // times handler entry to exit, so the kernel's own delivery path -- the trap,
+    // the walk to KiUserExceptionDispatcher, and the RtlRestoreContext return --
+    // falls outside every bucket and lands in `unaccounted` alongside real guest
+    // execution. Measuring exit-to-next-entry recovers it.
+    //
+    // The single-step class is the one that reads as a pure round trip: between
+    // two consecutive single-step exceptions the guest executes exactly one
+    // instruction, so almost nothing but the kernel fits in that gap. Breakpoint
+    // and other gaps include real guest work and are kept separate rather than
+    // averaged in.
+    //
+    // Both timestamps already exist, so like the Task 368 prologue above this
+    // adds no clock read.
+    std::uint64_t veh_last_exit_cycles = 0;
+    std::uint64_t veh_gap_pending_cycles = 0;
+    std::array<std::uint64_t, kVehGapClassCount> veh_gap_cycles = {};
+    std::array<std::uint32_t, kVehGapClassCount> veh_gap_counts = {};
+    // Across a million-plus samples nothing can make the round trip cheaper than
+    // the smallest gap observed, so this floor stays meaningful even where the
+    // mean is contaminated by guest execution.
+    std::uint64_t veh_gap_min_cycles = 0;
+    std::uint64_t veh_gap_max_cycles = 0;
+    // Banked but never classified, because the handler returned before reaching
+    // the census. Kept visible rather than dropped so the classes always sum.
+    std::uint64_t veh_gap_unclassified_cycles = 0;
+    std::uint32_t veh_gap_clamped_count = 0;
 };
 
 struct Win32ExecutionTimeProfileSnapshot
@@ -134,6 +175,14 @@ struct Win32ExecutionTimeProfileSnapshot
     std::uint64_t glide_gate_prologue_cycles = 0;
     std::uint32_t glide_gate_prologue_count = 0;
     std::uint32_t glide_gate_prologue_clamped_count = 0;
+    // Task 372. See the profile struct for why the single-step class is the one
+    // that reads as a kernel round trip.
+    std::array<std::uint64_t, kVehGapClassCount> veh_gap_cycles = {};
+    std::array<std::uint32_t, kVehGapClassCount> veh_gap_counts = {};
+    std::uint64_t veh_gap_min_cycles = 0;
+    std::uint64_t veh_gap_max_cycles = 0;
+    std::uint64_t veh_gap_unclassified_cycles = 0;
+    std::uint32_t veh_gap_clamped_count = 0;
 };
 
 bool ResolveExecutionTimeProfileEnabled(std::string_view setting);
@@ -143,6 +192,13 @@ void RecordExecutionTimeBucket(Win32ExecutionTimeProfile* profile,
                                ExecutionTimeBucket bucket,
                                std::uint64_t cycles,
                                bool inside_veh);
+
+// Task 372: moves the pending gap the VEH scope banked into the class the
+// exception turned out to be. Called from the census, which runs after the
+// exception record has been validated -- classifying inside the scope
+// constructor would have to read a record Task 296 showed can be malformed.
+void RecordVehExceptionGap(Win32ExecutionTimeProfile* profile,
+                           VehGapClass gap_class);
 
 Win32ExecutionTimeProfileSnapshot SnapshotExecutionTimeProfile(
     const Win32ExecutionTimeProfile& profile);

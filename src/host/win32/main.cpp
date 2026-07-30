@@ -1212,6 +1212,44 @@ void PrintExecutionAttempt(
             time_profile.counts[0], time_profile.counts[1],
             time_profile.counts[2], time_profile.counts[3],
             time_profile.counts[4]);
+        {
+            // Task 372: the kernel exception round trip, which every bucket above
+            // is blind to. Single step is the class that reads as a pure round
+            // trip -- one guest instruction separates two consecutive ones.
+            const auto& gaps = time_profile.veh_gap_cycles;
+            const auto& gap_counts = time_profile.veh_gap_counts;
+            const std::uint64_t gap_total =
+                gaps[0] + gaps[1] + gaps[2] +
+                time_profile.veh_gap_unclassified_cycles;
+            logger.info(
+                "Win32 VEH gap cycles single-step/breakpoint/other/"
+                "unclassified/total: {}/{}/{}/{}/{}",
+                gaps[0], gaps[1], gaps[2],
+                time_profile.veh_gap_unclassified_cycles, gap_total);
+            logger.info(
+                "Win32 VEH gap counts single-step/breakpoint/other: {}/{}/{}",
+                gap_counts[0], gap_counts[1], gap_counts[2]);
+            logger.info(
+                "Win32 VEH gap mean single-step/breakpoint/other: {}/{}/{}",
+                gap_counts[0] != 0U ? gaps[0] / gap_counts[0] : 0U,
+                gap_counts[1] != 0U ? gaps[1] / gap_counts[1] : 0U,
+                gap_counts[2] != 0U ? gaps[2] / gap_counts[2] : 0U);
+            logger.info(
+                "Win32 VEH gap min/max/clamped: {}/{}/{}",
+                time_profile.veh_gap_min_cycles,
+                time_profile.veh_gap_max_cycles,
+                time_profile.veh_gap_clamped_count);
+            if (total != 0U)
+            {
+                logger.info(
+                    "Win32 VEH gap share of wall total/single-step: "
+                    "{:.2f}%/{:.2f}%",
+                    100.0 * static_cast<double>(gap_total) /
+                        static_cast<double>(total),
+                    100.0 * static_cast<double>(gaps[0]) /
+                        static_cast<double>(total));
+            }
+        }
         logger.info(
             "Win32 execution time inside-veh cycles "
             "glide-gate/port-io/dos: {}/{}/{}",

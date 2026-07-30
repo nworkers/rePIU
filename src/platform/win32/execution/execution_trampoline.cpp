@@ -2158,6 +2158,15 @@ void RecordVehExceptionCensus(ThreadContext* context, DWORD code)
     {
         return;
     }
+    // Task 372: the exception code is validated by the time the census runs, so
+    // this is where the gap the VEH scope banked gets its class. Single step is
+    // the class that reads as a pure kernel round trip, since the guest executes
+    // exactly one instruction between two consecutive single steps.
+    RecordVehExceptionGap(
+        context->execution_time_profile.get(),
+        code == EXCEPTION_SINGLE_STEP  ? VehGapClass::kSingleStep
+            : code == EXCEPTION_BREAKPOINT ? VehGapClass::kBreakpoint
+                                           : VehGapClass::kOther);
     if (code == EXCEPTION_SINGLE_STEP)
     {
         ++context->veh_single_step_exception_count;

@@ -224,6 +224,7 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/glide_setter_phase_timing_probe.cpp
     src/tools/aot_probe/glide_gl_error_policy_probe.cpp
     src/tools/aot_probe/glide_swap_interval_policy_probe.cpp
+    src/tools/aot_probe/veh_exception_gap_probe.cpp
     src/tools/aot_probe/timer_tick_delivery_probe.cpp
     src/tools/aot_probe/aot_boundary_opcode_census_probe.cpp
     src/tools/aot_probe/aot_worker_timing_probe.cpp

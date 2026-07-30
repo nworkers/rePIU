@@ -1487,3 +1487,59 @@ double-buffered half-rate quantisation against a 60 Hz deadline. The guest's own
 interval argument, it turns out, had never been applied at all. Next is the unmeasured kernel
 exception-delivery cost inside that 76.93%, which also reopens Task 368's closure of the exception
 axis.
+
+## Task 372 (2026-07-31): 예외 기구가 wall의 40.5~48.7%, 예외 축을 다시 연다
+
+`unaccounted` 안에 숨어 있던 커널 예외 전달 비용을 실측했습니다. VEH scope가 이미
+찍는 두 타임스탬프의 **간격**(핸들러 퇴출 → 다음 진입)을 재는 방식이라 hot path에
+clock 읽기를 추가하지 않았습니다.
+
+interval 0 고정 70초(wall 259,096,642,075, 예외 2,081,859건)에서 single-step gap
+평균이 **31,769 cycle(8.6 µs)** 입니다. 연속된 두 single-step 사이에서 게스트는 명령
+1개만 실행하므로 이것이 커널 왕복 그 자체입니다. 전 예외에 적용하면 **wall의
+25.5%**(최소 gap 21,534 기준 보수적으로는 17.3%)이고, VEH 핸들러 본체 23.18%를 더하면
+**예외 기구 총계는 40.5~48.7%**입니다.
+
+교차 검증 3건이 일치합니다 — 합성 캘리브레이션(25,855 / 21,347) 대비 23% 높고(무거운
+핸들러이므로 예상 방향), 최소 gap 21,534가 합성 INT3 21,347과 0.9% 차이이며,
+single-step 평균이 두 swap interval 구성에서 0.03%만 다릅니다.
+
+**정정: Task 368의 판정은 유효합니다.** 최초 기록은 368의 종결을 철회한다고 썼으나
+오류였습니다. 368은 커널 전이를 Task 336 가격으로 호출당 34,521 cycle 계상했고 실측
+31,769와 8% 차이로, 이 측정은 368을 확인합니다. 368이 Glide gate 이득을 3.25%로 본
+것은 gate 본체 약 235,000 cycle이 예외 제거 후에도 남기 때문입니다. **모집단마다 본체
+비용이 다르다는 것이 핵심**이며, 본체가 거의 없는 single-step(42.5%)이 다음 대상입니다.
+
+**이 축 하나로 목표에 도달합니다.** Task 371 기준 프레임당 CPU 20.3 ms를 16.7 ms 아래로
+내리면 배포 구성(vsync)이 30 → 60 fps로 넘어가며, 필요한 것은 1.22배입니다. 예외를
+완전히 제거하면 상한이 1.68~1.95배입니다. 예외 구성은 breakpoint 51.9% /
+single-step 44.5%이고 breakpoint 대부분이 HLE 경계이므로, 다음 질문은 경계를 예외 없이
+통과시키는 경로의 범위입니다.
+
+**계측 주의사항도 하나 확인했습니다.** `PollThreadUntilExit`에 설정 타임아웃과 별개인
+1초 무진행 watchdog이 있어 조기 종료하고도 `timed_out=true`로 보고합니다(70초 설정이
+27.1초에 종료된 사례). A/B는 프레임 수만으로 비교하면 안 되며 wall cycle을 함께
+확인해야 합니다. 이 기준으로 Task 371을 재검증했고 wall 0.016% 차이로 결론은
+유효했습니다(프레임 2,323 → 3,802, +63.7%).
+
+Task 372 measured the kernel exception round trip that no bucket had ever covered, using the
+interval between one VEH handler's exit and the next one's entry so no clock read was added to the
+hot path. Pinned at swap interval 0 over 70 seconds with 2,081,859 exceptions, the single-step gap
+averages 31,769 cycles — 8.6 microseconds — and since the guest executes exactly one instruction
+between consecutive single steps, that is the round trip itself. Across every exception it is 25.5%
+of wall, or 17.3% against the 21,534-cycle floor, which puts total exception machinery at 40.5 to
+48.7% once the 23.18% spent in handler bodies is included. Three independent checks agree: the
+synthetic calibration sits 23% below as a lighter handler should, its INT3 figure lands within 0.9%
+of the measured floor, and the single-step mean moves 0.03% between swap configurations, marking it
+a fixed cost. Task 368's closure stands, corrected from an earlier claim here that it was withdrawn: that task
+priced the kernel transition separately at 34,521 cycles from Task 336's calibration, which this
+measurement confirms to within 8%, and found only 3.25% available because the Glide gate body of
+about 235,000 cycles survives the exception's removal. What differs by population is that body
+cost, and a single step has almost none, which makes it the next target. The axis can reach the goal alone: 1.22x flips the shipped vsync configuration from 30 to
+60 fps and removing exceptions entirely bounds improvement at 1.68 to 1.95x. Breakpoints are 51.9%
+of exceptions and single steps 44.5%, most breakpoints being HLE boundaries, so how far a boundary
+can be crossed without an exception is the next question. One methodological caution came with it:
+PollThreadUntilExit has a one-second no-progress watchdog independent of the configured timeout that
+still reports timed_out, so A/Bs must compare wall cycles rather than frame counts alone. Task 371
+was re-verified on that basis and held, its two runs differing by 0.016% of wall while frames went
+2,323 to 3,802.
