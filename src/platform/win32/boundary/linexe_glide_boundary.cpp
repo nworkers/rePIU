@@ -399,7 +399,12 @@ void Win32GlideAdvanceFrameDump()
     }
 }
 
-void DumpTextureToBmp(std::uint32_t start_address, std::uint32_t format, std::uint32_t width, std::uint32_t height, const std::vector<std::uint8_t>& rgba)
+// Task 375: this used to serve the texture download path as well, which meant a
+// second decode of every texture purely for the dump and a 24-bit file that
+// dropped alpha -- the one channel the sprite investigation needed. Textures now
+// dump through the backend's TGA writer, and this remains for the LFB surface
+// alone.
+void DumpLfbSurfaceToBmp(std::uint32_t start_address, std::uint32_t format, std::uint32_t width, std::uint32_t height, const std::vector<std::uint8_t>& rgba)
 {
     static std::uint32_t s_dump_counter = 0;
     try
@@ -1640,63 +1645,6 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                                         format, dimensions.width, dimensions.height,
                                         start_address,
                                         context->glide_backend_message.c_str());
-                            }
-                        }
-
-                        // Diagnostic BMP Dump
-                        const char* env_dump = std::getenv("REPIU_DUMP_TEXTURE_BMP");
-                        if (env_dump != nullptr && std::string_view(env_dump) == "1")
-                        {
-                            std::vector<std::uint8_t> rgba8;
-                            const std::uint8_t* palette_ptr =
-                                context->glide_state.palette_valid
-                                ? context->glide_state.palette_rgba8.data()
-                                : nullptr;
-                            if (repiu::hle::DecodeGlideTextureToRgba8(
-                                    format, dimensions.width, dimensions.height, data,
-                                    source_size, palette_ptr, &rgba8))
-                            {
-                                DumpTextureToBmp(start_address, format, dimensions.width,
-                                                 dimensions.height, rgba8);
-                                // Task 332: the BMP is 24-bit, so alpha never
-                                // reaches the file. A sprite that decoded into a
-                                // nearly fully transparent image looks identical
-                                // to a correct one there, which is exactly the
-                                // case under investigation, so summarize alpha
-                                // and the mean color here instead.
-                                std::size_t transparent = 0;
-                                std::size_t opaque = 0;
-                                std::uint64_t sum_r = 0;
-                                std::uint64_t sum_g = 0;
-                                std::uint64_t sum_b = 0;
-                                for (std::size_t i = 0; i + 3U < rgba8.size();
-                                     i += 4U)
-                                {
-                                    if (rgba8[i + 3U] < 128U)
-                                    {
-                                        ++transparent;
-                                        continue;
-                                    }
-                                    ++opaque;
-                                    sum_r += rgba8[i];
-                                    sum_g += rgba8[i + 1U];
-                                    sum_b += rgba8[i + 2U];
-                                }
-                                const std::uint64_t divisor =
-                                    opaque != 0U ? opaque : 1U;
-                                fprintf(stderr,
-                                        "[repiu-tex-alpha] addr=0x%08X fmt=%u"
-                                        " %ux%u opaque=%zu transparent=%zu"
-                                        " mean-opaque-rgb=(%llu,%llu,%llu)\n",
-                                        start_address, format,
-                                        dimensions.width, dimensions.height,
-                                        opaque, transparent,
-                                        static_cast<unsigned long long>(
-                                            sum_r / divisor),
-                                        static_cast<unsigned long long>(
-                                            sum_g / divisor),
-                                        static_cast<unsigned long long>(
-                                            sum_b / divisor));
                             }
                         }
                     }
@@ -3020,7 +2968,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                     const char* lfb_dump = std::getenv("REPIU_DUMP_LFB_BMP");
                     if (lfb_dump != nullptr && lfb_dump[0] == '1')
                     {
-                        DumpTextureToBmp(
+                        DumpLfbSurfaceToBmp(
                             0x1FB,
                             0,
                             context->glide_lfb_surface.width(),

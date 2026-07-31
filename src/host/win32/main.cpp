@@ -2804,6 +2804,48 @@ void PrintExecutionAttempt(
                 Hex32(attempt.glide_gate_stack[5]),
                 Hex32(attempt.glide_gate_stack[6]),
                 Hex32(attempt.glide_gate_stack[7]));
+    {
+        // Task 375: identical-repeat is the number that decides whether an upload
+        // cache is worth building; decode failures are textures the screen is
+        // silently missing.
+        const auto& tex = attempt.glide_texture_census;
+        logger.info(
+            "Win32 Glide texture census uploads/distinct/identical-repeats/"
+            "changed-repeats: {}/{}/{}/{}",
+            tex.upload_count, tex.distinct_address_count,
+            tex.identical_repeat_count, tex.changed_repeat_count);
+        logger.info(
+            "Win32 Glide texture census decode-failures/last-failed-format/"
+            "extent-mismatch/palettized-without-palette/bytes: {}/{}/{}/{}/{}",
+            tex.decode_failure_count, tex.last_failed_format,
+            tex.extent_mismatch_count, tex.palettized_without_palette_count,
+            tex.decoded_byte_total);
+        logger.info(
+            "Win32 Glide texture census dump written/limited: {}/{}",
+            tex.dump_written_count,
+            tex.dump_limit_reached ? "true" : "false");
+        for (std::uint32_t index = 0;
+             index < repiu::platform::win32::kGlideTextureFormatBuckets;
+             ++index)
+        {
+            if (tex.format_counts[index] != 0U)
+            {
+                logger.info("Win32 Glide texture census format {}: {}",
+                            index, tex.format_counts[index]);
+            }
+        }
+        for (std::uint32_t index = 0;
+             index < repiu::platform::win32::kGlideTextureDimensionBuckets;
+             ++index)
+        {
+            if (tex.dimension_counts[index] != 0U)
+            {
+                logger.info(
+                    "Win32 Glide texture census longer-edge {}: {}",
+                    1U << index, tex.dimension_counts[index]);
+            }
+        }
+    }
     logger.info("Win32 Glide texture gate trace count/wrapped: {}/{}",
                 attempt.glide_texture_gate_trace_count,
                 attempt.glide_texture_gate_trace_wrapped ? "true" : "false");

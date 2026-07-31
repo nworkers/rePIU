@@ -741,6 +741,8 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.glide_backend.glide_gl_error_policy();
     attempt->glide_swap_interval_policy =
         context.glide_backend.glide_swap_interval_policy();
+    attempt->glide_texture_census =
+        context.glide_backend.glide_texture_census();
     attempt->timer_tick_delivery =
         SnapshotTimerTickDelivery(context.timer_tick_delivery);
     attempt->native_fast_path_entry_count =

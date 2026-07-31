@@ -10,6 +10,7 @@
 #include "repiu/platform/win32/glide_opengl_shader.h"
 #include "repiu/platform/win32/glide_setter_phase_timing.h"
 #include "repiu/platform/win32/glide_swap_interval_policy.h"
+#include "repiu/platform/win32/glide_texture_census.h"
 #include "repiu/runtime/execution_backend.h"
 
 #include <chrono>
@@ -190,6 +191,14 @@ public:
                                           glide_gl_error_frame_interval_);
     }
 
+    // Task 375: texture upload attributes, including the uploads that failed to
+    // decode. Always collected -- one hash per upload on a path that sees a
+    // couple of uploads per second is not a hot path.
+    Win32GlideTextureCensusSnapshot glide_texture_census() const
+    {
+        return SnapshotGlideTextureCensus(glide_texture_census_);
+    }
+
     // Task 371: what the swap interval override asked for and what the driver
     // actually reported back afterwards.
     Win32GlideSwapIntervalPolicySnapshot glide_swap_interval_policy() const
@@ -316,6 +325,8 @@ private:
     Win32GlideGlErrorPolicyProfile glide_gl_error_policy_;
     // Task 371: written once during window creation, read at teardown.
     Win32GlideSwapIntervalPolicySnapshot glide_swap_interval_policy_;
+    // Task 375: host thread only, written inside StoreTexture.
+    Win32GlideTextureCensus glide_texture_census_;
     Win32GlideOrdinalTimingProfile* active_ordinal_timing_ = nullptr;
     std::uint16_t active_ordinal_ = 0;
     bool glide_gate_timing_enabled_ = false;

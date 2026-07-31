@@ -942,3 +942,49 @@ The same scene requests `grCullMode(1)` once. Mode 1 is documented
 decoding now feeds both line and triangle paths, lines use one-pixel `GL_LINES`,
 and cull modes 0 through 2 translate by current origin. Pixel-level agreement
 with Voodoo line rasterization and an input-driven live replay remain unresolved.
+
+
+## Task 375 (2026-08-01): 텍스처 축은 결백하다 — **확인됨**
+
+music select의 fps를 두고 텍스처를 의심해 census와 픽셀 덤프를 만들어 판정했습니다.
+
+music select 24.1초 / 793프레임:
+
+| 지표 | 값 |
+|---|---:|
+| uploads / distinct | 41 / 29 |
+| **동일 내용 재업로드** | **0** |
+| **디코드 실패** | **0** |
+| **팔레트 없는 팔레트 텍스처** | **0** |
+| 8비트 포맷(0/2/3/4/5/14) | **0** — 전부 16비트 |
+| extent 불일치 | 3 (8·32·64 LOD, Task 332의 정상) |
+| 업로드 빈도 | 프레임당 **0.05회**, 0.4 MB/s |
+| 포맷 분포 | RGB_565 5건 / ARGB_4444 36건 |
+
+픽셀 육안 확인도 통과했습니다 — ARGB_4444 발판은 색과 알파(43% 투명)가 정확하고,
+RGB_565 하트는 빨강/초록이 정상이며, 64×256 배너는 종횡비 5로 올바르게 세로입니다.
+
+**오진 기록:** 자동 장면의 fmt10 두 장이 청록이라 적색 채널 손실을 의심했으나
+반증됐습니다. 채널 값 분포 22/53/26이 5/6/5 비트와 일치하고, R/B 교환은 노란색이
+되며, 같은 포맷이 다른 장면에서 정상 색을 냅니다. 색보정된 BGA 아트였습니다.
+
+**8비트 경로는 구현되어 있으나 이 게임이 쓰지 않습니다.** 디코더와
+`IsGlideTextureFormatAcceptable`이 RGB_332·ALPHA_8·INTENSITY_8·ALPHA_INTENSITY_44·
+P_8·AP_88을 지원하고 `_GRTEXDOWNLOADTABLE@12`로 팔레트도 받습니다. 거부되는 것은
+NCC 압축인 포맷 1(YIQ_422)과 9(AYIQ_8422)뿐입니다.
+
+**중복 정리:** 기존 `REPIU_DUMP_TEXTURE_BMP` 경로를 제거했습니다. 24비트라 알파를
+잃었고(기존 주석이 "조사 중인 바로 그 경우"라고 인정), 덤프 전용으로 텍스처를 한 번
+더 디코드하고 있었습니다. `DumpTextureToBmp`는 LFB 전용이 되어
+`DumpLfbSurfaceToBmp`로 개명됐습니다. `REPIU_DUMP_LFB_BMP`는 같은 알파 손실을
+안은 채 남아 있어 향후 통합 후보입니다.
+
+Task 375 settled a suspicion about textures by building the inspection that did not exist. Over 24.1
+seconds of music select the census recorded 41 uploads against 29 distinct addresses with zero
+identical repeats, zero decode failures, zero palettized uploads missing a palette, and no 8-bit
+formats at all — 0.05 uploads per frame at 0.4 MB/s. Dumped pixels confirm correct colour and alpha
+in both formats present. A mid-investigation suspicion that RGB_565 was losing its red channel was
+disproved three ways, the cyan being colour-graded BGA artwork. The 8-bit paths including P_8 and
+its palette download exist and work; this game simply does not use them. The pre-existing
+`REPIU_DUMP_TEXTURE_BMP` dump was removed as a duplicate that dropped alpha and decoded every
+texture twice, leaving its writer to serve the LFB surface alone.

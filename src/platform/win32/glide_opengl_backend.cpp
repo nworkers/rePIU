@@ -1039,8 +1039,23 @@ bool GlideOpenGlBackend::StoreTexture(std::uint32_t start_address,
 #if !defined(_WIN32)
     return false;
 #else
+    // Task 375: the rejection paths are recorded too. A format or a geometry the
+    // backend refuses is exactly the "texture silently missing from the screen"
+    // case the census exists to catch, and reporting only the decode failures
+    // would leave those invisible -- the same blind spot the census replaced.
+    const auto record_rejection = [&](std::uint32_t rejected_format) {
+        Win32GlideTextureUpload rejected;
+        rejected.start_address = start_address;
+        rejected.format = rejected_format;
+        rejected.large_lod = large_lod;
+        rejected.aspect_ratio = aspect_ratio;
+        rejected.source_size = static_cast<std::uint32_t>(source_size);
+        rejected.has_palette = palette_rgba8 != nullptr;
+        RecordGlideTextureUpload(&glide_texture_census_, rejected, nullptr, 0U);
+    };
     if (!repiu::hle::IsGlideTextureFormatAcceptable(format))
     {
+        record_rejection(format);
         message_ = "unacceptable Glide texture format";
         return false;
     }
@@ -1052,16 +1067,57 @@ bool GlideOpenGlBackend::StoreTexture(std::uint32_t start_address,
     if (!repiu::hle::CalculateGlideTextureDimensions(large_lod, aspect_ratio,
                                                      &dimensions))
     {
+        record_rejection(format);
         message_ = "unsupported Glide texture dimensions";
         return false;
     }
+    Win32GlideTextureUpload census_upload;
+    census_upload.start_address = start_address;
+    census_upload.format = format;
+    census_upload.large_lod = large_lod;
+    census_upload.aspect_ratio = aspect_ratio;
+    census_upload.width = dimensions.width;
+    census_upload.height = dimensions.height;
+    census_upload.source_size = static_cast<std::uint32_t>(source_size);
+    census_upload.has_palette = palette_rgba8 != nullptr;
+    repiu::hle::CalculateGlideTextureCoordinateExtent(
+        aspect_ratio, &census_upload.s_extent, &census_upload.t_extent);
+
     std::vector<std::uint8_t> rgba8;
     if (!repiu::hle::DecodeGlideTextureToRgba8(format, dimensions.width,
                                                dimensions.height, source,
                                                source_size, palette_rgba8, &rgba8))
     {
+        RecordGlideTextureUpload(&glide_texture_census_, census_upload, nullptr,
+                                 0U);
         message_ = "unsupported Glide texture format";
         return false;
+    }
+    RecordGlideTextureUpload(&glide_texture_census_, census_upload,
+                             rgba8.data(), rgba8.size());
+    {
+        static const std::filesystem::path dump_directory =
+            GlideTextureDumpDirectory();
+        if (!dump_directory.empty())
+        {
+            if (glide_texture_census_.dump_written_count <
+                GlideTextureDumpLimit())
+            {
+                if (WriteGlideTextureDump(
+                        dump_directory,
+                        glide_texture_census_.dump_written_count,
+                        census_upload,
+                        HashGlideTexturePixels(rgba8.data(), rgba8.size()),
+                        rgba8.data(), rgba8.size()))
+                {
+                    ++glide_texture_census_.dump_written_count;
+                }
+            }
+            else
+            {
+                glide_texture_census_.dump_limit_reached = true;
+            }
+        }
     }
     static const bool tex_diagnostic_enabled =
         std::getenv("REPIU_GLIDE_TEX_DIAG") != nullptr;

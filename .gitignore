@@ -15,3 +15,6 @@ eeprom.dat
 repiu_*.txt
 *-capture.log
 smoke-*.log
+musicselect*.log
+tex*.log
+build/texture_dumps/
