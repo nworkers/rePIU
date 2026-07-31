@@ -992,6 +992,35 @@ void PrintExecutionAttempt(
             attempt.hle_reentry_reject_quarantined,
             attempt.hle_reentry_reject_span_unsafe,
             attempt.hle_reentry_success, reentry_attempts);
+        {
+            // Task 376: 70.1% of single-step exceptions land here, and until now
+            // no counter saw them because both other instruments gate on
+            // IsGuestInstructionPointer.
+            const auto& oos = attempt.out_of_arena_step_census;
+            logger.info(
+                "Win32 out-of-arena step total/aot-cache/other: {}/{}/{}",
+                oos.total_count, oos.location_counts[0], oos.location_counts[1]);
+            logger.info(
+                "Win32 out-of-arena step trace-on/reentry-pending: {}/{}",
+                oos.trace_enabled_count, oos.reentry_pending_count);
+            logger.info(
+                "Win32 single-step disposition trace-on/trace-off: {}/{}",
+                oos.trace_enabled_handled_count,
+                oos.trace_disabled_fallthrough_count);
+            logger.info(
+                "Win32 out-of-arena step first/last eip/address-overflow: "
+                "{}/{}/{}",
+                Hex32(oos.first_eip), Hex32(oos.last_eip),
+                oos.address_overflow_count);
+            for (const auto& slot : oos.addresses)
+            {
+                if (slot.count != 0U)
+                {
+                    logger.info("Win32 out-of-arena step eip {}: {}",
+                                Hex32(slot.eip), slot.count);
+                }
+            }
+        }
         logger.info("Win32 hle reentry cache miss count: {}",
                     attempt.hle_reentry_reject_cache_miss);
         logger.info("Win32 hle reentry segment-write resumed: {}",

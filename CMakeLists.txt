@@ -148,6 +148,7 @@ add_library(repiu_exe
     src/platform/win32/glide_gl_error_policy.cpp
     src/platform/win32/glide_swap_interval_policy.cpp
     src/platform/win32/glide_texture_census.cpp
+    src/platform/win32/out_of_arena_step_census.cpp
     src/platform/win32/glide_opengl_backend.cpp
     src/platform/win32/glide_opengl_shader.cpp
     src/platform/win32/x87_context.cpp
@@ -229,6 +230,7 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/veh_exception_gap_probe.cpp
     src/tools/aot_probe/dos_file_handle_cache_probe.cpp
     src/tools/aot_probe/glide_texture_census_probe.cpp
+    src/tools/aot_probe/out_of_arena_step_census_probe.cpp
     src/tools/aot_probe/timer_tick_delivery_probe.cpp
     src/tools/aot_probe/aot_boundary_opcode_census_probe.cpp
     src/tools/aot_probe/aot_worker_timing_probe.cpp

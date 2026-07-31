@@ -3,6 +3,7 @@
 #include "repiu/platform/win32/execution_trampoline.h"
 #include "repiu/platform/win32/runtime_memory_policy.h"
 #include "repiu/platform/win32/aot_code_cache_win32.h"
+#include "repiu/platform/win32/out_of_arena_step_census.h"
 #include "repiu/platform/win32/live_telemetry.h"
 #include "repiu/platform/win32/aot_retired_trap_profile.h"
 #include "repiu/platform/win32/cd_audio_wave_out.h"
@@ -150,6 +151,8 @@ struct ThreadContext
     bool enable_dos_hle = false;
     bool enable_single_step_trace = false;
     Win32AotCodeCachePlacement* aot_placement = nullptr;
+    // Task 376: single steps discarded outside the guest arena, classified.
+    Win32OutOfArenaStepCensus out_of_arena_step_census;
     bool aot_reentry_pending = false;
     bool aot_legacy_fallback = false;
     runtime::ExecutionBackend execution_backend =

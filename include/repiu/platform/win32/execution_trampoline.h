@@ -17,6 +17,7 @@
 #include "repiu/platform/win32/glide_setter_phase_timing.h"
 #include "repiu/platform/win32/glide_swap_interval_policy.h"
 #include "repiu/platform/win32/glide_texture_census.h"
+#include "repiu/platform/win32/out_of_arena_step_census.h"
 #include "repiu/platform/win32/glide_setter_state_census.h"
 #include "repiu/platform/win32/glide_setter_state_cache.h"
 #include "repiu/platform/win32/timer_tick_delivery.h"
@@ -580,6 +581,8 @@ struct Win32MinimalExecutionAttempt
     Win32GlideSwapIntervalPolicySnapshot glide_swap_interval_policy;
     // Task 375: texture upload attributes and dump accounting.
     Win32GlideTextureCensusSnapshot glide_texture_census;
+    // Task 376: single steps discarded outside the guest arena.
+    Win32OutOfArenaStepCensusSnapshot out_of_arena_step_census;
     // Task 366: timer ticks owed against timer ticks the guest received.
     Win32TimerTickDeliverySnapshot timer_tick_delivery;
     std::uint32_t native_fast_path_entry_count = 0;

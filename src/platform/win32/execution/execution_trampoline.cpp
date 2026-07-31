@@ -3136,6 +3136,28 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         !IsGuestInstructionPointer(
             context, static_cast<std::uint32_t>(win32_context->Eip)))
     {
+        // Task 376: this discard is 70.1% of all single-step exceptions and had
+        // no counter, because both existing instruments gate on
+        // IsGuestInstructionPointer and so never saw it. Behaviour is unchanged;
+        // the population is merely named. Counter increments only -- this is the
+        // exception path.
+        {
+            const std::uint32_t discarded_eip =
+                static_cast<std::uint32_t>(win32_context->Eip);
+            OutOfArenaStepLocation location = OutOfArenaStepLocation::kOther;
+            if (context->aot_placement != nullptr &&
+                context->aot_placement->placed &&
+                discarded_eip >= context->aot_placement->base_address &&
+                discarded_eip < context->aot_placement->base_address +
+                    context->aot_placement->capacity)
+            {
+                location = OutOfArenaStepLocation::kAotCodeCache;
+            }
+            RecordOutOfArenaStep(&context->out_of_arena_step_census,
+                                 discarded_eip, location,
+                                 context->enable_single_step_trace,
+                                 context->aot_reentry_pending);
+        }
         win32_context->EFlags &= ~0x00000100U;
         return EXCEPTION_CONTINUE_EXECUTION;
     }
@@ -3231,6 +3253,17 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         {
             return EXCEPTION_CONTINUE_EXECUTION;
         }
+    }
+    // Task 376: `single_step_trace_count` only advances inside
+    // HandleSingleStepTrace, which returns immediately when trace mode is off.
+    // Comparing it against the exception census therefore measured two different
+    // things, not a discarded population. This records the split.
+    if (exception_info->ExceptionRecord != nullptr &&
+        exception_info->ExceptionRecord->ExceptionCode ==
+            EXCEPTION_SINGLE_STEP)
+    {
+        RecordSingleStepTraceDisposition(&context->out_of_arena_step_census,
+                                         context->enable_single_step_trace);
     }
     if (exception_info->ExceptionRecord != nullptr &&
         (exception_info->ExceptionRecord->ExceptionCode ==

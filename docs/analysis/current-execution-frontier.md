@@ -1543,3 +1543,68 @@ PollThreadUntilExit has a one-second no-progress watchdog independent of the con
 still reports timed_out, so A/Bs must compare wall cycles rather than frame counts alone. Task 371
 was re-verified on that basis and held, its two runs differing by 0.016% of wall while frames went
 2,323 to 3,802.
+
+## Task 373 (2026-08-01): 재진입은 85% 성공한다 — 게이트 C로 종결, 그러나 계측 사각지대 발견
+
+설계는 single-step이 AOT 재진입 실패에서 온다고 전제했으나 측정이 반증했습니다.
+Task 340의 HLE 재진입 funnel이 이미 답을 갖고 있었고(작업 지시의 "새 열거 만들기 전
+재사용 확인" 조항이 작동), music select에서 **재진입은 85.42% 성공**합니다. 실패 사유는
+`span-unsafe` 하나(14.58%)이고 나머지 다섯은 0입니다. 회피 가능한 커널 왕복은
+8,984 × 30,611 = **wall의 0.31%** 로 사전 등록 게이트 C(<5%)에 해당해 **구현하지
+않았습니다.**
+
+**여기서 "계측 사각지대 70%, wall의 6.5%"라고 기록했으나 Task 376이 반증했습니다.**
+버리는 지점을 직접 계측한 결과 **0건**이며, 오류는 측정 대상이 다른 두 카운터를 뺀
+것이었습니다(`single_step_trace_count`는 예외 종류와 무관하게 증가하고 breakpoint도
+포함). 실제 소비처는 이미 계측되어 있던 `aot reentry ... single-step`으로
+**489,167건(99.98%)** 입니다. 정정은 Task 376 절 참조.
+
+Task 373 closed at gate C. The design assumed single steps came from failed AOT re-entry;
+Task 340's existing funnel showed re-entry succeeds 85.42% of the time with `span-unsafe` as the
+only failure at 14.58%, worth 0.31% of wall, so nothing was implemented. The finding that matters
+more is a blind spot: of 266,879 single-step exceptions only 79,866 are counted and 61,601 reach the
+re-entry funnel, because both instruments are gated on `IsGuestInstructionPointer`. The 187,013
+single steps taken inside the AOT code cache are neither counted nor profiled, which means every
+stage and outcome breakdown quoted so far described the 30% inside the arena. That hidden population
+costs 6.5% of wall in kernel round trips alone and implies translated code is being walked one
+instruction at a time; Task 376 investigates it.
+
+## Task 376 (2026-08-01): "숨은 모집단"은 없었다 — 진짜 표적은 kAotReentrySingleStep
+
+Task 373이 기록한 "아레나 밖 single-step 187,013건이 계측 없이 버려지고 wall의 6.5%"를
+반증했습니다. 버리는 지점에 계측을 넣어 직접 측정한 결과 **0건**입니다(같은 실행의
+single-step 예외 489,245건).
+
+**오류는 측정 대상이 다른 두 카운터를 뺀 것**입니다.
+`veh_single_step_exception_count`는 VEH가 본 모든 `EXCEPTION_SINGLE_STEP`을 세고,
+`single_step_trace_count`는 `HandleSingleStepTrace` 안에서 예외 종류와 무관하게
+증가합니다 — 그 함수는 `aot_reentry_pending`인 breakpoint도 처리하므로 single-step
+전용이 아닙니다. 애초에 뺄 수 있는 값이 아니었습니다.
+
+**실제 소비처는 이미 계측되어 있었고 새 캡처도 필요 없었습니다.**
+`aot reentry ... single-step`이 **489,167건(99.98%)** 입니다. 다만 이 스코프는
+**재진입 경로 전체이자 DBT의 핵심 동작**이므로 제거 대상이 아닙니다 — "kAotReentry의
+71.73%"는 부대 비용이 작다는 뜻에 가깝습니다. **줄일 수 있는 것은 내용이 아니라
+횟수**이며, 489,167회 × 왕복 약 30,650 cycle ≈ **wall의 9%** 입니다. 따라서 다음
+질문은 "경계를 왜 이렇게 자주 만드는가"이고, `aot boundary effective opcodes`가 이미
+그 분포를 세고 있습니다.
+
+게이트 C로 억제 구현은 하지 않았습니다. 추가한 계측은 값이 0이지만 남깁니다 — 버림
+경로가 0이라는 것이 결론이고, 회귀 시 즉시 드러납니다.
+
+**절차 교훈:** 이 세션에서 계측값의 정의를 확인하지 않고 산술한 오류가 세 번
+있었습니다(370 인과 역전, 372의 368 오독, 373 카운터 뺄셈). 카운터를 빼거나 나누기
+전에 각각이 무엇을 세는지 코드에서 확인합니다.
+
+Task 376 disproved the hidden population Task 373 reported. Instrumenting the discard site measured
+zero against 489,245 single-step exceptions. The error was subtracting two counters that measure
+different things: one counts every EXCEPTION_SINGLE_STEP, the other increments inside
+HandleSingleStepTrace regardless of exception code and also serves breakpoints. The real consumer
+was already instrumented and needed no new capture -- `aot reentry ... single-step` at 489,167 of
+489,245. That scope is the resumption path in full and the DBT's core operation rather than
+overhead, so its 71.73% share mostly says the incidental costs around it are small. What can be
+reduced is the count -- 489,167 re-entries at about 30,650 cycles of round trip each, roughly 9% of
+wall -- which means producing fewer boundaries. Gate C, so no
+suppression was implemented; the counters stay at zero as a regression signal. The procedural
+lesson, after three such errors this session, is to confirm in code what a counter counts before
+subtracting or dividing.

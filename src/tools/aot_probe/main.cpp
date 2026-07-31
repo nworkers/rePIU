@@ -27,6 +27,7 @@
 #include "veh_exception_gap_probe.h"
 #include "dos_file_handle_cache_probe.h"
 #include "glide_texture_census_probe.h"
+#include "out_of_arena_step_census_probe.h"
 #include "glide_setter_phase_timing_probe.h"
 #include "timer_tick_delivery_probe.h"
 #include "aot_boundary_opcode_census_probe.h"
@@ -946,6 +947,10 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunGlideTextureCensusProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunOutOfArenaStepCensusProbe())
     {
         return 1;
     }
