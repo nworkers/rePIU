@@ -988,3 +988,48 @@ disproved three ways, the cyan being colour-graded BGA artwork. The 8-bit paths 
 its palette download exist and work; this game simply does not use them. The pre-existing
 `REPIU_DUMP_TEXTURE_BMP` dump was removed as a duplicate that dropped alpha and decoded every
 texture twice, leaving its writer to serve the LFB surface alone.
+
+
+## GLSL 셰이더 구조와 남은 `glGetError` (2026-08-01 검토) — **확인됨 / 미해결**
+
+### 구조 — 확인됨
+
+Glide의 color/alpha combine, fog, 텍스처 샘플링을 구현한 **단일 GLSL 프로그램**
+입니다. `Initialize()`는 창 생성 시 **1회**만 호출되고 `compile_shader` /
+`link_program`은 그 안에서만 쓰입니다. **런타임 재컴파일이 없으므로 셰이더 컴파일
+스톨은 이 설계에 존재할 수 없습니다.** `glBegin`/`glEnd` 즉시 모드 위에 얹혀
+있습니다.
+
+진입점은 여덟 개이고 그중 `SetTextureEnabled`만 draw마다 호출됩니다.
+
+### 남은 `glGetError` 5개 — 미해결, wall의 8.90%
+
+Task 369가 `glide_opengl_backend.cpp`만 정책 게이트 뒤로 옮기고 셰이더 모듈은
+건드리지 않았습니다. `SetFogMode`(437) / `SetFogColor`(458) / `SetFogTable`(482) /
+`SetAlphaCombine`(508) / `SetColorCombine`(540)에 남아 있습니다.
+
+| ordinal | 셰이더 `glGetError` | work/call | wall |
+|---|---|---:|---:|
+| **`grAlphaCombine`** | **있음** | **285,694** | **6.62%** |
+| `grFogColorValue` | 있음 | 168,061 | 1.26% |
+| `grColorCombine` | 있음 | 32,823 | 0.76% |
+| `grFogTable` | 있음 | 35,261 | 0.26% |
+| **`grConstantColorValue`** | **없음** | **1,676** | 0.06% |
+
+**같은 파일·같은 uniform 업로드 기구인데 유무로 170배 차이**입니다. uniform 업로드
+자체는 싸고 비용은 전부 에러 체크입니다. `grAlphaCombine`이 369 이전 48,980 →
+285,694로 5.8배 오른 것은 `grDepthMask`가 배수를 멈추자 누적 명령이 다음
+`glGetError`인 이곳에서 배수되기 때문입니다.
+
+**부수:** `SetTextureEnabled`가 draw마다 조건 없이 `glUseProgram` + `glUniform1i`를
+부릅니다. 약 0.06 ms/frame으로 게이트 미달입니다.
+
+진행 방향은 [설계 377](../design/20260801-377-shader-gl-error-check-completion.md).
+
+Reviewed 2026-08-01. The shader is a single GLSL program covering Glide's colour and alpha combine,
+fog, and texture sampling, initialised once at window creation with no runtime recompilation, so
+compile stalls cannot occur here. Task 369 gated the backend's error checks but left five in the
+shader module, measured at 8.90% of wall on a gameplay capture with `grAlphaCombine` alone at
+285,694 cycles per call. The same file's `SetConstantColor` has no check and costs 1,676 through
+identical machinery -- a 170-fold gap showing the uniform uploads are cheap and the cost is the
+check. Direction recorded in design 377.
