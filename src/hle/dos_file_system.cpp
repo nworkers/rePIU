@@ -395,15 +395,22 @@ bool OpenDosFile(DosVirtualFileSystemState* state,
         return true;
     }
 
-    DosOpenFileHandle new_handle{
-        true,
-        allocated_handle,
-        access_mode,
-        0,
-        guest_path,
-        resolved->host_path,
-        resolved->dos_path,
-    };
+    DosOpenFileHandle new_handle{};
+    new_handle.open = true;
+    new_handle.handle = allocated_handle;
+    new_handle.access_mode = access_mode;
+    new_handle.file_offset = 0;
+    new_handle.guest_path = guest_path;
+    new_handle.host_path = resolved->host_path;
+    new_handle.dos_path = resolved->dos_path;
+    // Task 374: the one stat this handle will ever do. Reads and SEEK_END use it
+    // instead of re-stating the file every call.
+    {
+        std::error_code size_error;
+        const std::uint64_t size =
+            std::filesystem::file_size(resolved->host_path, size_error);
+        new_handle.cached_file_size = size_error ? 0U : size;
+    }
     // 닫힌 슬롯이 있으면 재사용해 open_files 벡터의 무한 증가를 막는다.
     // Reuse a closed slot if available to bound the growth of open_files.
     bool reused_slot = false;
@@ -424,6 +431,43 @@ bool OpenDosFile(DosVirtualFileSystemState* state,
     resolved->message = "DOS file opened";
     state->message = "DOS file opened";
     return true;
+}
+
+std::ifstream* DosHostFileCache::Acquire(const std::filesystem::path& path,
+                                         std::uint64_t offset,
+                                         bool* opened_now)
+{
+    if (opened_now != nullptr)
+    {
+        *opened_now = false;
+    }
+    if (stream_ == nullptr)
+    {
+        auto stream = std::make_unique<std::ifstream>(path, std::ios::binary);
+        if (!*stream)
+        {
+            return nullptr;
+        }
+        stream_ = std::move(stream);
+        if (opened_now != nullptr)
+        {
+            *opened_now = true;
+        }
+    }
+    // A stream that hit EOF on the previous read keeps its failbit set, which
+    // would silently poison every later seek on the same handle.
+    stream_->clear();
+    stream_->seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+    if (!*stream_)
+    {
+        return nullptr;
+    }
+    return stream_.get();
+}
+
+void DosHostFileCache::Reset()
+{
+    stream_.reset();
 }
 
 bool ReadDosFile(DosVirtualFileSystemState* state,
@@ -473,15 +517,9 @@ bool ReadDosFile(DosVirtualFileSystemState* state,
         return true;
     }
 
-    std::error_code error;
-    const std::uint64_t file_size =
-        std::filesystem::file_size(open_file->host_path, error);
-    if (error)
-    {
-        *dos_error = 0x0002;
-        state->message = "DOS file read failed: file size unavailable";
-        return true;
-    }
+    // Task 374: the size was stated on every read. It is captured once at open
+    // now, which is safe while this API stays read-only.
+    const std::uint64_t file_size = open_file->cached_file_size;
 
     if (open_file->file_offset >= file_size)
     {
@@ -494,26 +532,31 @@ bool ReadDosFile(DosVirtualFileSystemState* state,
         static_cast<std::uint32_t>(
             std::min<std::uint64_t>(requested_bytes, remaining));
 
-    std::ifstream stream(open_file->host_path, std::ios::binary);
-    if (!stream)
+    // Task 374: reuses the stream this handle already opened. The failure codes
+    // stay exactly as they were -- 0x0002 when the file cannot be opened, 0x0005
+    // when positioning fails -- so guest-visible behaviour is unchanged.
+    bool opened_now = false;
+    std::ifstream* stream = open_file->host_stream.Acquire(
+        open_file->host_path, open_file->file_offset, &opened_now);
+    if (opened_now)
     {
-        *dos_error = 0x0002;
-        state->message = "DOS file read failed: file could not be opened";
+        ++state->host_file_open_count;
+    }
+    if (stream == nullptr)
+    {
+        // Acquire fails either because the open failed or because the seek did.
+        // A cold cache that stayed cold is the open case.
+        *dos_error = open_file->host_stream.warm() ? 0x0005 : 0x0002;
+        state->message = open_file->host_stream.warm()
+            ? "DOS file read failed: seek failed"
+            : "DOS file read failed: file could not be opened";
         return true;
     }
 
-    stream.seekg(static_cast<std::streamoff>(open_file->file_offset),
-                 std::ios::beg);
-    if (!stream)
-    {
-        *dos_error = 0x0005;
-        state->message = "DOS file read failed: seek failed";
-        return true;
-    }
-
+    ++state->file_read_count;
     bytes->resize(clamped_request);
-    stream.read(reinterpret_cast<char*>(bytes->data()), clamped_request);
-    const std::streamsize read_count = stream.gcount();
+    stream->read(reinterpret_cast<char*>(bytes->data()), clamped_request);
+    const std::streamsize read_count = stream->gcount();
     if (read_count < 0)
     {
         *dos_error = 0x0005;
@@ -572,15 +615,8 @@ bool SeekDosFile(DosVirtualFileSystemState* state,
     }
     else if (origin == 2)
     {
-        std::error_code error;
-        base = std::filesystem::file_size(open_file->host_path, error);
-        if (error)
-        {
-            *dos_error = 0x0002;
-            state->message =
-                "DOS file seek failed: file size unavailable";
-            return true;
-        }
+        // Task 374: the size captured at open, rather than a stat per seek.
+        base = open_file->cached_file_size;
     }
     else
     {
@@ -631,6 +667,11 @@ bool CloseDosFile(DosVirtualFileSystemState* state,
         if (open_file.open && open_file.handle == handle)
         {
             open_file.open = false;
+            // Task 374: release the host stream with the handle. A closed slot is
+            // reused by the next open, and carrying a stale stream into it would
+            // read the previous file.
+            open_file.host_stream.Reset();
+            open_file.cached_file_size = 0;
             state->message = "DOS file closed";
             return true;
         }

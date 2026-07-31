@@ -273,6 +273,10 @@ struct Win32DosFileIoObservation
     std::uint32_t observed_count = 0;
     std::uint32_t trace_stored_count = 0;
     bool trace_wrapped = false;
+    // Task 374: reads against host opens. These were one-to-one before the
+    // handle cache, which is what made a 4 KB read cost milliseconds.
+    std::uint32_t read_count = 0;
+    std::uint32_t host_open_count = 0;
     Win32DosFileIoTraceEntry trace[kWin32DosFileIoTraceCapacity];
 };
 

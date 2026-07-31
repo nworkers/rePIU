@@ -1,0 +1,1020 @@
+[00:09:28.884] [    info] [loader] pumpit1 ROM ZIP: roms\pumpit1.zip
+[00:09:28.885] [    info] [loader] pumpit1 CHD: roms\pumpit1\19990930.chd
+[00:09:28.885] [    info] [loader] pumpit1 mount root: build/runtime_mounts\pumpit1
+[00:09:28.885] [    info] [loader] pumpit1 mount cache reused: true
+[00:09:28.885] [    info] [loader] pumpit1 extracted files/bytes: 0/0
+[00:09:28.885] [    info] [loader] Win32 loader target: pumpit1
+[00:09:28.885] [    info] [loader] Win32 loader executable: build/runtime_mounts\pumpit1\PIU\PIU.EXE
+[00:09:28.885] [    info] [loader] Win32 host image base policy: 0x10000000
+[00:09:28.885] [    info] [loader] Win32 loader policy: valid
+[00:09:28.885] [    info] [loader] Win32 host pointer bits: 32
+[00:09:28.885] [    info] [loader] Win32 direct x86 execution: supported
+[00:09:28.885] [    info] [loader] Win32 fixed reserve base: 0x00010000
+[00:09:28.885] [    info] [loader] Win32 fixed reserve size: 0x005D7000
+[00:09:28.885] [    info] [loader] Win32 fixed reserve end: 0x005E7000
+[00:09:28.885] [    info] [loader] Win32 loader policy message: 32-bit host process can reserve original x86 runtime range
+[00:09:28.885] [    info] [loader] Win32 host range probe: valid
+[00:09:28.885] [ warning] [loader] Win32 host range available: false
+[00:09:28.885] [    info] [loader] Win32 host probe base: 0x00010000
+[00:09:28.885] [    info] [loader] Win32 host probe size: 0x005D7000
+[00:09:28.885] [ warning] [loader] Win32 host first blocking block base: 0x00010000
+[00:09:28.885] [ warning] [loader] Win32 host first blocking block size: 0x00003000
+[00:09:28.885] [ warning] [loader] Win32 host first blocking block state: MEM_COMMIT
+[00:09:28.885] [ warning] [loader] Win32 host range probe message: target address range is not fully free
+[00:09:28.885] [    info] [loader] Win32 early reservation attempt: valid
+[00:09:28.885] [ warning] [loader] Win32 early reservation result: not reserved
+[00:09:28.885] [    info] [loader] Win32 requested reserve base: 0x00010000
+[00:09:28.885] [    info] [loader] Win32 requested reserve size: 0x005D7000
+[00:09:28.885] [ warning] [loader] Win32 reservation error: 487
+[00:09:28.885] [ warning] [loader] Win32 early reservation message: VirtualAlloc MEM_RESERVE failed with error 487
+[00:09:28.905] [    info] [loader] DOS4GW bound module count: 5
+[00:09:28.905] [    info] [loader] LINEXE runtime extraction: header=0x000155F4 next=0x00020754 entry=0x00000080:0x00000013 segments=3 relocations=236
+[00:09:28.905] [    info] [loader] LINEXE extracted segment: selector=0x00000080 limit=0x0000914F access=0x0000009A image=37200 relocations=169
+[00:09:28.905] [    info] [loader] LINEXE extracted segment: selector=0x00000088 limit=0x00000000 access=0x00000092 image=1 relocations=0
+[00:09:28.905] [    info] [loader] LINEXE extracted segment: selector=0x00000090 limit=0x00001D5F access=0x00000092 image=18592 relocations=67
+[00:09:28.911] [    info] [loader] Glide2x resident export metadata count: 173
+[00:09:28.914] [    info] [loader] Win32 relocated base candidate 0x01000000: occupied
+[00:09:28.914] [    info] [loader] Win32 relocated base candidate 0x02000000: occupied
+[00:09:28.914] [    info] [loader] Win32 relocated base candidate 0x03000000: available
+[00:09:28.914] [    info] [loader] Win32 relocated base candidate 0x03000000 reserved size: 0x085D7000
+[00:09:28.914] [    info] [loader] Win32 selected relocated image base: 0x03000000
+[00:09:28.914] [    info] [loader] Runtime memory arena plan: valid
+[00:09:28.914] [    info] [loader] Runtime memory arena base: 0x03000000
+[00:09:28.914] [    info] [loader] Runtime memory arena image reserve size: 0x005D7000
+[00:09:28.914] [    info] [loader] Runtime memory arena expansion slack size: 0x08000000
+[00:09:28.914] [    info] [loader] Runtime memory arena reserve size: 0x085D7000
+[00:09:28.914] [    info] [loader] Runtime memory arena end: 0x0B5D7000
+[00:09:28.914] [    info] [loader] Runtime memory arena message: runtime memory arena plan is ready
+[00:09:28.962] [    info] [loader] Win32 requested execution backend: aot-dbt
+[00:09:28.962] [    info] [loader] Win32 AOT indirect inline-cache slots: 4
+[00:09:28.962] [    info] [loader] Win32 AOT guarded segment-pop enabled: true
+[00:09:28.962] [    info] [loader] Win32 AOT-DBT superblock HLE dispatch enabled: false
+[00:09:28.962] [    info] [loader] Win32 AOT timer safe points enabled/sites: true/967
+[00:09:28.962] [    info] [loader] Guest stack switch plan: valid
+[00:09:28.962] [    info] [loader] Guest stack switch entry: 0x030F4BB8
+[00:09:28.962] [    info] [loader] Guest stack switch stack base: 0x03110000
+[00:09:28.962] [    info] [loader] Guest stack switch stack limit: 0x035D6E60
+[00:09:28.962] [    info] [loader] Guest stack switch initial ESP: 0x035D6E60
+[00:09:28.962] [    info] [loader] Guest stack switch message: guest stack switch plan is ready
+[00:09:28.962] [    info] [loader] HLE dispatcher table: valid
+[00:09:28.962] [    info] [loader] HLE dispatcher trap count: 3
+[00:09:28.962] [    info] [loader] HLE dispatcher message: initial HLE dispatcher table is ready
+[00:09:28.963] [    info] [loader] DOS virtual filesystem: valid
+[00:09:28.963] [    info] [loader] DOS virtual filesystem root: E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1
+[00:09:28.963] [    info] [loader] DOS virtual filesystem current directory: \PIU
+[00:09:28.963] [    info] [loader] DOS virtual filesystem message: DOS virtual filesystem is ready
+[00:09:28.964] [    info] [loader] Win32 relocated image placement: valid
+[00:09:28.964] [    info] [loader] Win32 relocated image placement result: placed
+[00:09:28.964] [    info] [loader] Win32 relocated image requested base: 0x03000000
+[00:09:28.964] [    info] [loader] Win32 relocated image requested size: 0x085D7000
+[00:09:28.964] [    info] [loader] Win32 relocated image placed base: 0x03000000
+[00:09:28.964] [    info] [loader] Win32 relocated image placed size: 0x085D7000
+[00:09:28.964] [    info] [loader] Win32 relocated image copied objects: 4
+[00:09:28.964] [    info] [loader] Win32 relocated image protected objects: 4
+[00:09:28.964] [    info] [loader] Win32 relocated selector binding count: 4
+[00:09:28.964] [    info] [loader] Win32 relocated selector binding: selector=0x001C object=1 base=0x03000000 limit=0x0000000F
+[00:09:28.964] [    info] [loader] Win32 relocated selector binding: selector=0x0024 object=2 base=0x03010000 limit=0x000EF0CF
+[00:09:28.964] [    info] [loader] Win32 relocated selector binding: selector=0x002C object=3 base=0x03100000 limit=0x00000047
+[00:09:28.964] [    info] [loader] Win32 relocated selector binding: selector=0x0034 object=4 base=0x03110000 limit=0x004C6E5F
+[00:09:28.964] [    info] [loader] Win32 relocated image placement message: relocated image placed in precommitted Win32 process memory
+[00:09:28.970] [    info] [loader] Win32 AOT cache base/bytes/entry: 0x0C0F0000/362947/0x0C0F0000
+[00:09:28.970] [    info] [loader] Win32 AOT plan jump tables/targets: 15/111
+[repiu-live-debug] env REPIU_EXECUTION_TIMEOUT_MS = 0
+[00:09:28.970] [    info] [loader] Win32 guest execution timeout: disabled
+[repiu-ymz] loaded piu10.u9 (2097152 bytes) into a 4194304 byte space, crc32 0x9c436cfa (matches MAME pumpit1)
+[repiu-ymz] YMZ280B ready through SDL3 at 88200 Hz
+[repiu-live] elapsed_ms=0 poll=0 phase=1 heartbeat=0 dispatch_entry=0 dispatch_exit=0 last_eip=0x00000000 progress=0 single_step=0 aot=0/0 fast=0/0/0 routea=0/0 region=0/0/0/0/0 span=0/0/0/0/0 span_cache=0/0 span_reject_cache=0/0/0/0/0 span_write=0/0/0 span_cancel_last=0x00000000/0x00000000 span_jump=0/0 retired_span=0/0 selguard=0/65/0/0/0 posthle=0/0 prov=0/0/0/0/0/0/0/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #1 miss=0x0C148846 guest=0x030FB6B5 cache=0x0C1489C3 site_guest=0x030F7FBF entries=4 chosen=0 guard=0xE9
+[repiu-live-debug] icache patch #2 miss=0x0C148A2E guest=0x030F7FC1 cache=0x0C148A46 site_guest=0x030FB6BF entries=4 chosen=0 guard=0xE9
+[repiu-live-debug] icache patch #3 miss=0x0C148B5E guest=0x030F5A8A cache=0x0C148C0A site_guest=0x030F7FBF entries=4 chosen=0 guard=0xE9
+[repiu-live-debug] icache patch #4 miss=0x0C148C6B guest=0x030F7FC1 cache=0x0C148A46 site_guest=0x030F5A8A entries=4 chosen=0 guard=0xE9
+[repiu-live-debug] icache patch #5 miss=0x0C148B5E guest=0x030F807B cache=0x0C148C83 site_guest=0x030F7FBF entries=4 chosen=1 guard=0xE9
+[repiu-live-debug] icache patch #6 miss=0x0C148EAC guest=0x030F806E cache=0x0C148DA1 site_guest=0x030FB8B0 entries=4 chosen=0 guard=0xE9
+[repiu-live-debug] icache patch #7 miss=0x0C148E04 guest=0x030F80AA cache=0x0C148CC9 site_guest=0x030F8070 entries=4 chosen=0 guard=0xE9
+[repiu-live-debug] icache patch #8 miss=0x0C148D4D guest=0x030F7FC1 cache=0x0C148A46 site_guest=0x030F80C4 entries=4 chosen=0 guard=0xE9
+[repiu-live-debug] icache patch #9 miss=0x0C148B5E guest=0x030FB996 cache=0x0C148EC4 site_guest=0x030F7FBF entries=4 chosen=2 guard=0xE9
+[repiu-live-debug] icache patch #10 miss=0x0C148F8B guest=0x030F7FC1 cache=0x0C148A46 site_guest=0x030FB9EA entries=4 chosen=0 guard=0xE9
+[repiu-live-debug] icache patch #11 miss=0x0C148B5E guest=0x030F7D02 cache=0x0C148FA3 site_guest=0x030F7FBF entries=4 chosen=3 guard=0xE9
+[repiu-live-debug] icache patch #12 miss=0x0C14900E guest=0x030F7FC1 cache=0x0C148A46 site_guest=0x030F7D0C entries=4 chosen=0 guard=0xE9
+[repiu-live-debug] icache patch #13 miss=0x0C148B5E guest=0x030F5108 cache=0x0C149026 site_guest=0x030F7FBF entries=4 chosen=0 guard=0x0F
+[repiu-live-debug] icache patch #14 miss=0x0C149091 guest=0x030F7FC1 cache=0x0C148A46 site_guest=0x030F5112 entries=4 chosen=0 guard=0xE9
+[repiu-live-debug] icache patch #15 miss=0x0C148B5E guest=0x030FC6F8 cache=0x0C1490A9 site_guest=0x030F7FBF entries=4 chosen=1 guard=0x0F
+[repiu-live-debug] icache patch #16 miss=0x0C14A732 guest=0x030F8770 cache=0x0C0F3CAF site_guest=0x030F8460 entries=4 chosen=0 guard=0xE9
+[repiu-live] DOS INT 21h AH=25h vector 0x09 set to 0023:03042D14
+[repiu-live] DOS INT 21h AH=25h vector 0xE9 set to 002B:00000020
+[repiu-live-debug] glide gate entry #1 ordinal=32 name=_GRGLIDEINIT@0 ret=0x03059883 esp=0x035D6ACC
+[repiu-live-debug] retire guard reset #1 page=0x030FE000 guards=1 entries=190
+[repiu-live-debug] glide gate entry #2 ordinal=37 name=_GRSSTQUERYHARDWARE@4 ret=0x0305988D esp=0x035D6AC8
+[repiu-live-debug] retire guard reset #2 page=0x030FE000 guards=1 entries=186
+[repiu-live-debug] glide gate entry #3 ordinal=38 name=_GRSSTSELECT@4 ret=0x030598A6 esp=0x035D6AC8
+[repiu-live-debug] glide gate entry #4 ordinal=38 name=_GRSSTSELECT@4 ret=0x0305928C esp=0x035D6B34
+[repiu-live-debug] retire guard reset #3 page=0x030FE000 guards=1 entries=180
+[repiu-live-debug] glide gate entry #5 ordinal=118 name=_GRSSTWINOPEN@28 ret=0x030592A7 esp=0x035D6B1C
+[repiu-live-debug] _GRSSTWINOPEN@28: mode_supported=1 opened=1 message=640x480 logical Glide window opened at 2x (1280x960)
+[repiu-live] elapsed_ms=1125 poll=330 phase=3 heartbeat=33844 dispatch_entry=16922 dispatch_exit=16922 last_eip=0x030F5070 progress=7361 single_step=7963 aot=8001/8767 fast=0/0/0 routea=236/26 region=0/0/0/0/0 span=5/5/0/15/52 span_cache=0/0 span_reject_cache=45/12/0/7/0 span_write=0/0/0 span_cancel_last=0x00000000/0x00000000 span_jump=0/0 retired_span=0/0 selguard=95526/213709/0/3/0 posthle=0/0 prov=7942/26/28/0/4/0/5/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] retire guard reset #4 page=0x030FE000 guards=1 entries=3
+[repiu-live-debug] glide gate entry #6 ordinal=39 name=_GRSSTSCREENWIDTH@0 ret=0x03059315 esp=0x035D6B38
+[repiu-live-debug] retire guard reset #5 page=0x030FE000 guards=1 entries=3
+[repiu-live-debug] glide gate entry #7 ordinal=40 name=_GRSSTSCREENHEIGHT@0 ret=0x03059320 esp=0x035D6B38
+[repiu-live-debug] retire guard reset #6 page=0x030FE000 guards=1 entries=166
+[repiu-live-debug] glide gate entry #8 ordinal=44 name=_GRTEXMINADDRESS@4 ret=0x0304DBEB esp=0x035D6B0C
+[repiu-live-debug] retire guard reset #7 page=0x030FE000 guards=1 entries=3
+[repiu-live-debug] glide gate entry #9 ordinal=45 name=_GRTEXMAXADDRESS@4 ret=0x0304DBF3 esp=0x035D6B0C
+[repiu-live-debug] retire guard reset #8 page=0x030FE000 guards=1 entries=26
+[repiu-live-debug] glide gate entry #10 ordinal=91 name=_GRCOLORMASK@8 ret=0x0305946B esp=0x035D6B30
+[repiu-live-debug] retire guard reset #9 page=0x030FE000 guards=1 entries=12
+[repiu-live-debug] glide gate entry #11 ordinal=106 name=_GRRENDERBUFFER@4 ret=0x03059491 esp=0x035D6B34
+[repiu-live-debug] retire guard reset #10 page=0x030FE000 guards=1 entries=19
+[repiu-live-debug] glide gate entry #12 ordinal=98 name=_GRDEPTHMASK@4 ret=0x0305949C esp=0x035D6B34
+[repiu-live-debug] retire guard reset #11 page=0x030FE000 guards=1 entries=3
+[repiu-live-debug] glide gate entry #13 ordinal=97 name=_GRDEPTHBUFFERMODE@4 ret=0x030594A3 esp=0x035D6B34
+[repiu-live-debug] retire guard reset #12 page=0x030FE000 guards=1 entries=4
+[repiu-live-debug] glide gate entry #14 ordinal=114 name=_GRLFBWRITECOLORFORMAT@4 ret=0x030594AA esp=0x035D6B34
+[repiu-live-debug] retire guard reset #13 page=0x030FE000 guards=1 entries=14
+[repiu-live-debug] glide gate entry #15 ordinal=80 name=_GRALPHACOMBINE@20 ret=0x0304F281 esp=0x035D6ADC
+[repiu-live-debug] retire guard reset #14 page=0x030FE000 guards=1 entries=3
+[repiu-live-debug] glide gate entry #16 ordinal=90 name=_GRCOLORCOMBINE@20 ret=0x0304F28F esp=0x035D6ADC
+[repiu-live-debug] retire guard reset #15 page=0x030FE000 guards=1 entries=3
+[repiu-live-debug] glide gate entry #17 ordinal=79 name=_GRALPHABLENDFUNCTION@16 ret=0x0304F4AD esp=0x035D6AF4
+[repiu-live-debug] retire guard reset #16 page=0x030FE000 guards=1 entries=11
+[repiu-live-debug] glide gate entry #18 ordinal=82 name=_GRALPHATESTFUNCTION@4 ret=0x0304F536 esp=0x035D6B00
+[repiu-live-debug] glide gate entry #19 ordinal=96 name=_GRDEPTHBUFFERFUNCTION@4 ret=0x0304F5B9 esp=0x035D6B00
+[repiu-live-debug] glide gate entry #20 ordinal=98 name=_GRDEPTHMASK@4 ret=0x0304F5C0 esp=0x035D6B00
+[repiu-live-debug] glide gate entry #21 ordinal=101 name=_GRFOGMODE@4 ret=0x0304F73F esp=0x035D6AE4
+[repiu-live-debug] glide gate entry #22 ordinal=89 name=_GRCLIPWINDOW@16 ret=0x0304F7AF esp=0x035D6AE8
+[repiu-live-debug] glide gate entry #23 ordinal=91 name=_GRCOLORMASK@8 ret=0x0304F80F esp=0x035D6B0C
+[repiu-live-debug] glide gate entry #24 ordinal=94 name=_GRCULLMODE@4 ret=0x0304DB70 esp=0x035D6B10
+[repiu-live-debug] glide gate entry #25 ordinal=101 name=_GRFOGMODE@4 ret=0x0304F73F esp=0x035D6AF0
+[repiu-live-debug] glide gate entry #26 ordinal=30 name=_GRGLIDEGETSTATE@4 ret=0x0305952A esp=0x035D6B34
+[repiu-live-debug] glide gate entry #27 ordinal=38 name=_GRSSTSELECT@4 ret=0x030597CA esp=0x035D6B48
+[repiu-live-debug] glide gate entry #28 ordinal=105 name=_GRGLIDESETSTATE@4 ret=0x030597D6 esp=0x035D6B48
+[repiu-live-debug] glide gate entry #29 ordinal=100 name=_GRDITHERMODE@4 ret=0x03058200 esp=0x035D6B1C
+[repiu-live-debug] glide gate entry #30 ordinal=80 name=_GRALPHACOMBINE@20 ret=0x0304F281 esp=0x035D6AD4
+[repiu-live-debug] glide gate entry #31 ordinal=90 name=_GRCOLORCOMBINE@20 ret=0x0304F28F esp=0x035D6AD4
+[repiu-live-debug] glide gate entry #32 ordinal=79 name=_GRALPHABLENDFUNCTION@16 ret=0x0304F4AD esp=0x035D6AEC
+[repiu-live-debug] glide gate entry #33 ordinal=82 name=_GRALPHATESTFUNCTION@4 ret=0x0304F536 esp=0x035D6AF8
+[repiu-live-debug] glide gate entry #34 ordinal=96 name=_GRDEPTHBUFFERFUNCTION@4 ret=0x0304F5B9 esp=0x035D6AF8
+[repiu-live-debug] glide gate entry #35 ordinal=98 name=_GRDEPTHMASK@4 ret=0x0304F5C0 esp=0x035D6AF8
+[repiu-live-debug] glide gate entry #36 ordinal=101 name=_GRFOGMODE@4 ret=0x0304F73F esp=0x035D6ADC
+[repiu-live-debug] glide gate entry #37 ordinal=89 name=_GRCLIPWINDOW@16 ret=0x0304F7AF esp=0x035D6AE0
+[repiu-live-debug] glide gate entry #38 ordinal=91 name=_GRCOLORMASK@8 ret=0x0304F80F esp=0x035D6B04
+[repiu-live-debug] glide gate entry #39 ordinal=94 name=_GRCULLMODE@4 ret=0x0304DB70 esp=0x035D6B08
+[repiu-live-debug] glide gate entry #40 ordinal=80 name=_GRALPHACOMBINE@20 ret=0x0304F281 esp=0x035D6AF0
+[repiu-live-debug] glide gate entry #41 ordinal=90 name=_GRCOLORCOMBINE@20 ret=0x0304F28F esp=0x035D6AF0
+[repiu-live-debug] glide gate entry #42 ordinal=79 name=_GRALPHABLENDFUNCTION@16 ret=0x0304F4AD esp=0x035D6B08
+[repiu-live-debug] glide gate entry #43 ordinal=82 name=_GRALPHATESTFUNCTION@4 ret=0x0304F536 esp=0x035D6B14
+[repiu-live-debug] glide gate entry #44 ordinal=96 name=_GRDEPTHBUFFERFUNCTION@4 ret=0x0304F5B9 esp=0x035D6B14
+[repiu-live-debug] glide gate entry #45 ordinal=98 name=_GRDEPTHMASK@4 ret=0x0304F5C0 esp=0x035D6B14
+[repiu-live-debug] glide gate entry #46 ordinal=101 name=_GRFOGMODE@4 ret=0x0304F73F esp=0x035D6AF8
+[repiu-live-debug] glide gate entry #47 ordinal=89 name=_GRCLIPWINDOW@16 ret=0x0304F7AF esp=0x035D6AFC
+[repiu-live-debug] glide gate entry #48 ordinal=91 name=_GRCOLORMASK@8 ret=0x0304F80F esp=0x035D6B20
+[repiu-live-debug] glide gate entry #49 ordinal=94 name=_GRCULLMODE@4 ret=0x0304DB70 esp=0x035D6B24
+[repiu-live] elapsed_ms=2125 poll=789 phase=2 heartbeat=42085 dispatch_entry=21043 dispatch_exit=21042 last_eip=0x030F87B7 progress=7371 single_step=12010 aot=12144/13490 fast=0/0/0 routea=461/76 region=0/0/0/0/0 span=25/25/0/75/107 span_cache=0/0 span_reject_cache=99/33/0/8/0 span_write=0/0/0 span_cancel_last=0x00000000/0x00000000 span_jump=0/0 retired_span=0/0 selguard=95526/218785/0/3/0 posthle=0/0 prov=12025/34/60/0/36/0/25/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live] elapsed_ms=3125 poll=1273 phase=3 heartbeat=99886 dispatch_entry=49943 dispatch_exit=49943 last_eip=0x0303C758 progress=7371 single_step=40794 aot=40936/44217 fast=0/0/0 routea=10295/8558 region=0/0/0/0/0 span=25/25/0/75/8589 span_cache=0/0 span_reject_cache=8574/40/0/15/0 span_write=0/0/0 span_cancel_last=0x00000000/0x00000000 span_jump=0/0 retired_span=0/0 selguard=95526/218785/0/8367/0 posthle=0/0 prov=32357/8486/68/0/36/0/25/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #4096 miss=0x0C134B72 guest=0x0303C4B5 cache=0x0C135EAC site_guest=0x0303A15B entries=4 chosen=2 guard=0x0F
+[repiu-pit] channel=0 divisor=4972 frequency=240.000000Hz generation=2
+[repiu-live] DOS INT 21h AH=25h vector 0x08 set to 0023:03042EAE
+[repiu-live-debug] glide gate entry #50 ordinal=100 name=_GRDITHERMODE@4 ret=0x03058200 esp=0x035D6DA8
+[repiu-input] polling started port=0x02A8 value=0xFF
+[repiu-input] polling started port=0x02A9 value=0xFF
+[repiu-input] polling started port=0x02AA value=0xFF
+[repiu-live-debug] glide gate entry #51 ordinal=46 name=_GRTEXTEXTUREMEMREQUIRED@8 ret=0x0304DF8F esp=0x035D6D28
+[repiu-live-debug] glide gate entry #52 ordinal=49 name=_GRTEXDOWNLOADMIPMAPLEVEL@32 ret=0x0304E016 esp=0x035D6D10
+[repiu-live-debug] glide gate entry #53 ordinal=131 name=_GRTEXCLAMPMODE@12 ret=0x0304EAC8 esp=0x035D6D48
+[repiu-live-debug] glide gate entry #54 ordinal=134 name=_GRTEXFILTERMODE@12 ret=0x0304EADF esp=0x035D6D48
+[repiu-live-debug] glide gate entry #55 ordinal=136 name=_GRTEXMIPMAPMODE@12 ret=0x0304EAF6 esp=0x035D6D48
+[repiu-live-debug] glide gate entry #56 ordinal=138 name=_GRTEXSOURCE@16 ret=0x0304EB13 esp=0x035D6D44
+[repiu-live-debug] glide gate entry #57 ordinal=132 name=_GRTEXCOMBINE@28 ret=0x0304EB69 esp=0x035D6D44
+[repiu-live-debug] glide gate entry #58 ordinal=31 name=_GRHINTS@8 ret=0x0304EC2F esp=0x035D6D64
+[repiu-live-debug] glide gate entry #59 ordinal=80 name=_GRALPHACOMBINE@20 ret=0x0304ECBB esp=0x035D6D58
+[repiu-live-debug] glide gate entry #60 ordinal=90 name=_GRCOLORCOMBINE@20 ret=0x0304ED2D esp=0x035D6D58
+[repiu-live-debug] glide gate entry #61 ordinal=79 name=_GRALPHABLENDFUNCTION@16 ret=0x0304F4AD esp=0x035D6D78
+[repiu-live-debug] glide gate entry #62 ordinal=82 name=_GRALPHATESTFUNCTION@4 ret=0x0304F536 esp=0x035D6D84
+[repiu-live-debug] glide gate entry #63 ordinal=96 name=_GRDEPTHBUFFERFUNCTION@4 ret=0x0304F5B9 esp=0x035D6D84
+[repiu-live-debug] glide gate entry #64 ordinal=98 name=_GRDEPTHMASK@4 ret=0x0304F5C0 esp=0x035D6D84
+[repiu-live-debug] glide gate entry #65 ordinal=101 name=_GRFOGMODE@4 ret=0x0304F73F esp=0x035D6D68
+[repiu-live-debug] glide gate entry #66 ordinal=89 name=_GRCLIPWINDOW@16 ret=0x0304F7AF esp=0x035D6D6C
+[repiu-live-debug] glide gate entry #67 ordinal=91 name=_GRCOLORMASK@8 ret=0x0304F80F esp=0x035D6D90
+[repiu-live-debug] glide gate entry #68 ordinal=94 name=_GRCULLMODE@4 ret=0x0304DB70 esp=0x035D6D94
+[repiu-live-debug] glide gate entry #69 ordinal=98 name=_GRDEPTHMASK@4 ret=0x030582DB esp=0x035D6DAC
+[repiu-live-debug] glide gate entry #70 ordinal=91 name=_GRCOLORMASK@8 ret=0x030582E4 esp=0x035D6DA8
+[repiu-live-debug] glide gate entry #71 ordinal=84 name=_GRBUFFERCLEAR@12 ret=0x0305835F esp=0x035D6DA4
+[repiu-live-debug] glide gate entry #72 ordinal=91 name=_GRCOLORMASK@8 ret=0x03058384 esp=0x035D6DA8
+[repiu-live-debug] glide gate entry #73 ordinal=101 name=_GRFOGMODE@4 ret=0x0304F73F esp=0x035D6CC0
+[repiu-live-debug] glide gate entry #74 ordinal=101 name=_GRFOGMODE@4 ret=0x0304F73F esp=0x035D6CBC
+[repiu-live-debug] glide gate entry #75 ordinal=100 name=_GRDITHERMODE@4 ret=0x03058200 esp=0x035D6DA8
+[repiu-live-debug] glide gate entry #76 ordinal=46 name=_GRTEXTEXTUREMEMREQUIRED@8 ret=0x0304DF8F esp=0x035D6D28
+[repiu-live-debug] glide gate entry #77 ordinal=49 name=_GRTEXDOWNLOADMIPMAPLEVEL@32 ret=0x0304E016 esp=0x035D6D10
+[repiu-live-debug] glide gate entry #78 ordinal=131 name=_GRTEXCLAMPMODE@12 ret=0x0304EAC8 esp=0x035D6D48
+[repiu-live-debug] glide gate entry #79 ordinal=134 name=_GRTEXFILTERMODE@12 ret=0x0304EADF esp=0x035D6D48
+[repiu-live-debug] glide gate entry #80 ordinal=136 name=_GRTEXMIPMAPMODE@12 ret=0x0304EAF6 esp=0x035D6D48
+[repiu-live-debug] glide gate entry #81 ordinal=138 name=_GRTEXSOURCE@16 ret=0x0304EB13 esp=0x035D6D44
+[repiu-live-debug] glide gate entry #82 ordinal=31 name=_GRHINTS@8 ret=0x0304EC2F esp=0x035D6D64
+[repiu-live-debug] glide gate entry #83 ordinal=80 name=_GRALPHACOMBINE@20 ret=0x0304ECBB esp=0x035D6D58
+[repiu-live-debug] glide gate entry #84 ordinal=90 name=_GRCOLORCOMBINE@20 ret=0x0304ED2D esp=0x035D6D58
+[repiu-live-debug] glide gate entry #85 ordinal=79 name=_GRALPHABLENDFUNCTION@16 ret=0x0304F49C esp=0x035D6D78
+[repiu-live-debug] glide gate entry #86 ordinal=82 name=_GRALPHATESTFUNCTION@4 ret=0x0304F536 esp=0x035D6D84
+[repiu-live-debug] glide gate entry #87 ordinal=96 name=_GRDEPTHBUFFERFUNCTION@4 ret=0x0304F5B9 esp=0x035D6D84
+[repiu-live-debug] glide gate entry #88 ordinal=98 name=_GRDEPTHMASK@4 ret=0x0304F5C0 esp=0x035D6D84
+[repiu-live-debug] glide gate entry #89 ordinal=101 name=_GRFOGMODE@4 ret=0x0304F73F esp=0x035D6D68
+[repiu-live-debug] glide gate entry #90 ordinal=89 name=_GRCLIPWINDOW@16 ret=0x0304F7AF esp=0x035D6D6C
+[repiu-live-debug] glide gate entry #91 ordinal=91 name=_GRCOLORMASK@8 ret=0x0304F80F esp=0x035D6D90
+[repiu-live-debug] glide gate entry #92 ordinal=94 name=_GRCULLMODE@4 ret=0x0304DB70 esp=0x035D6D94
+[repiu-live-debug] glide gate entry #93 ordinal=98 name=_GRDEPTHMASK@4 ret=0x030582DB esp=0x035D6DAC
+[repiu-live-debug] glide gate entry #94 ordinal=91 name=_GRCOLORMASK@8 ret=0x030582E4 esp=0x035D6DA8
+[repiu-live-debug] glide gate entry #95 ordinal=84 name=_GRBUFFERCLEAR@12 ret=0x0305835F esp=0x035D6DA4
+[repiu-live-debug] glide gate entry #96 ordinal=91 name=_GRCOLORMASK@8 ret=0x03058384 esp=0x035D6DA8
+[repiu-live] Glide first triangle vertices: 0383C640/1 0383C67C/1 0383C6F4/1
+[repiu-live] Glide first triangle vertex 0 dwords: 42A00000 43BDF800 A1A10000 50500100 08FF20FF 01010000 0101A1A1 A1A15251 3F800000 00000000 00000000 5E5EA3A2 08FF20FF 02020202 ECECB4B4 43A7F800 43BDF800 03030202
+[repiu-live] Glide first triangle vertex 1 dwords: 43A7F800 43BDF800 03030202 4C4CECEC 03039A99 08FF20FF 03030303 F3F34C4C 3F800000 43800000 00000000 2020F3F3 7A7A9392 08FF20FF 05050404 43A7F800 42F80000 08FF20FF
+[repiu-live] Glide first triangle vertex 2 dwords: 42A00000 42F80000 8D8D7271 08FF20FF 0C0C0B0B ADADA0A0 3F3F8F8E 08FF20FF 3F800000 00000000 43800000 08FF20FF 10100E0E 4E4E3333 5353D7D6 08FF20FF 13131010 03034E4E
+[repiu-live] elapsed_ms=4125 poll=5843 phase=2 heartbeat=131269 dispatch_entry=65635 dispatch_exit=65634 last_eip=0x0B5D04A8 progress=7371 single_step=46499 aot=55936/63616 fast=0/0/0 routea=15544/8565 region=0/0/0/0/0 span=182/32/150/96/8596 span_cache=0/0 span_reject_cache=8581/197/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304EACE span_jump=0/0 retired_span=0/0 selguard=95526/223161/0/8367/0 posthle=0/0 prov=47140/8490/118/0/404/0/188/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #8192 miss=0x0C0FCC18 guest=0x0301A886 cache=0x0C0FD3F6 site_guest=0x030D8B3C entries=4 chosen=2 guard=0x0F
+[repiu-live] elapsed_ms=5125 poll=14020 phase=2 heartbeat=169255 dispatch_entry=84628 dispatch_exit=84627 last_eip=0x0B5D04A8 progress=7371 single_step=47447 aot=74200/87164 fast=0/0/0 routea=16255/8565 region=0/0/0/0/0 span=419/32/387/96/8596 span_cache=0/0 span_reject_cache=8581/434/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304EACE span_jump=0/0 retired_span=0/0 selguard=95526/223161/0/8367/0 posthle=0/0 prov=65167/8490/118/0/878/0/425/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #12288 miss=0x0C0FCC18 guest=0x0301A8A0 cache=0x0C0FD415 site_guest=0x030D8B3C entries=4 chosen=2 guard=0x0F
+[repiu-input] SERVICE        PRESSED  port=0x02A9 value=0xBF
+[repiu-ymz] keyon voice=0 mode=ADPCM start=0x000000 stop=0x00A150 rate=44100Hz level=255 pan=8 loop=no
+[repiu-input] SERVICE        released port=0x02A9 value=0xFF
+[repiu-input] SERVICE        PRESSED  port=0x02A9 value=0xBF
+[repiu-ymz] keyon voice=0 mode=ADPCM start=0x000000 stop=0x00A150 rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #16384 miss=0x0C0F080A guest=0x030431B9 cache=0x0C123B09 site_guest=0x030F5691 entries=4 chosen=3 guard=0x0F
+[repiu-input] SERVICE        released port=0x02A9 value=0xFF
+[repiu-live] elapsed_ms=6125 poll=19566 phase=3 heartbeat=197482 dispatch_entry=98741 dispatch_exit=98741 last_eip=0x0B5D0448 progress=7381 single_step=49577 aot=87359/105536 fast=0/0/0 routea=17288/8869 region=0/0/0/0/0 span=601/32/569/96/8902 span_cache=0/0 span_reject_cache=8887/616/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304C96C span_jump=0/0 retired_span=0/0 selguard=95526/226753/0/8607/0 posthle=0/0 prov=77878/8734/140/0/1262/0/607/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-input] SERVICE        PRESSED  port=0x02A9 value=0xBF
+[repiu-ymz] keyon voice=0 mode=ADPCM start=0x000000 stop=0x00A150 rate=44100Hz level=255 pan=8 loop=no
+[repiu-input] SERVICE        released port=0x02A9 value=0xFF
+[repiu-live-debug] icache patch #20480 miss=0x0C33CB8F guest=0x030D0740 cache=0x0C2DA31A site_guest=0x030CF3BC entries=4 chosen=0 guard=0x0F
+[repiu-input] SERVICE        PRESSED  port=0x02A9 value=0xBF
+[repiu-ymz] keyon voice=0 mode=ADPCM start=0x000000 stop=0x00A150 rate=44100Hz level=255 pan=8 loop=no
+[repiu-input] SERVICE        released port=0x02A9 value=0xFF
+[repiu-live] elapsed_ms=7125 poll=24789 phase=2 heartbeat=223823 dispatch_entry=111912 dispatch_exit=111911 last_eip=0x0B5D04E0 progress=7381 single_step=52931 aot=99763/124507 fast=0/0/0 routea=19051/9895 region=0/0/0/0/0 span=824/32/792/96/9928 span_cache=0/0 span_reject_cache=9913/839/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304C96C span_jump=0/0 retired_span=0/0 selguard=95526/226753/0/9462/0 posthle=0/0 prov=89200/9589/144/0/1765/0/830/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-input] SERVICE        PRESSED  port=0x02A9 value=0xBF
+[repiu-ymz] keyon voice=0 mode=ADPCM start=0x147CF1 stop=0x14A344 rate=44100Hz level=255 pan=8 loop=no
+[repiu-input] SERVICE        released port=0x02A9 value=0xFF
+[repiu-live-debug] icache patch #24576 miss=0x0C0F080A guest=0x030F2160 cache=0x0C1161D5 site_guest=0x030F5691 entries=4 chosen=3 guard=0x0F
+[repiu-live] elapsed_ms=8125 poll=30872 phase=2 heartbeat=251919 dispatch_entry=125960 dispatch_exit=125959 last_eip=0x0B5D04E0 progress=7381 single_step=55119 aot=113075/143589 fast=0/0/0 routea=20297/10429 region=0/0/0/0/0 span=1050/32/1018/96/10462 span_cache=0/0 span_reject_cache=10447/1065/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304C996 span_jump=0/0 retired_span=0/0 selguard=95526/226753/0/9907/0 posthle=0/0 prov=101839/10034/146/0/2286/0/1056/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #28672 miss=0x0C0FCC18 guest=0x0301A877 cache=0x0C0FD3E2 site_guest=0x030D8B3C entries=4 chosen=1 guard=0x0F
+[repiu-live-debug] icache patch #32768 miss=0x0C33CB8F guest=0x030D0E68 cache=0x0C2D9C21 site_guest=0x030CF3BC entries=4 chosen=2 guard=0x0F
+[repiu-live] elapsed_ms=9125 poll=37769 phase=3 heartbeat=282866 dispatch_entry=141433 dispatch_exit=141433 last_eip=0x0B5D0618 progress=7381 single_step=57195 aot=127804/164373 fast=0/0/0 routea=21485/10921 region=0/0/0/0/0 span=1282/32/1250/96/10954 span_cache=0/0 span_reject_cache=10939/1297/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304F5C1 span_jump=0/0 retired_span=0/0 selguard=95526/226753/0/10317/0 posthle=0/0 prov=115926/10444/146/0/2833/0/1288/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-input] P1-Center      PRESSED  port=0x02A8 value=0xFB
+[repiu-ymz] keyon voice=1 mode=ADPCM start=0x05489A stop=0x055949 rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #36864 miss=0x0C1040F8 guest=0x03019FEE cache=0x0C10E64B site_guest=0x030F4ADA entries=4 chosen=2 guard=0x0F
+[repiu-input] P1-Center      released port=0x02A8 value=0xFF
+[repiu-live] elapsed_ms=10125 poll=42374 phase=3 heartbeat=305356 dispatch_entry=152678 dispatch_exit=152678 last_eip=0x0B5D0650 progress=7423 single_step=59470 aot=138102/180268 fast=0/0/0 routea=22528/11348 region=0/0/0/0/0 span=1442/32/1410/96/11388 span_cache=0/0 span_reject_cache=11373/1457/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304BA0B span_jump=0/0 retired_span=0/0 selguard=95526/248929/0/10662/0 posthle=0/0 prov=125700/10793/161/0/3193/0/1448/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #40960 miss=0x0C2E56FC guest=0x030F23CC cache=0x0C116112 site_guest=0x030D8BB2 entries=4 chosen=2 guard=0x0F
+[repiu-live] elapsed_ms=11125 poll=50763 phase=2 heartbeat=337979 dispatch_entry=168990 dispatch_exit=168989 last_eip=0x0B5D0618 progress=7423 single_step=61294 aot=153691/201299 fast=0/0/0 routea=23617/11720 region=0/0/0/0/0 span=1681/32/1649/96/11760 span_cache=0/0 span_reject_cache=11745/1696/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304C96C span_jump=0/0 retired_span=0/0 selguard=95526/248929/0/10972/0 posthle=0/0 prov=140740/11103/161/0/3671/0/1687/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #45056 miss=0x0C0FCC18 guest=0x0301A877 cache=0x0C0FD3E2 site_guest=0x030D8B3C entries=4 chosen=2 guard=0x0F
+[repiu-input] P1-Center      PRESSED  port=0x02A8 value=0xFB
+[repiu-ymz] keyon voice=1 mode=ADPCM start=0x05489A stop=0x055949 rate=44100Hz level=255 pan=8 loop=no
+[repiu-input] P1-Center      released port=0x02A8 value=0xFF
+[repiu-live] elapsed_ms=12125 poll=59118 phase=2 heartbeat=370603 dispatch_entry=185302 dispatch_exit=185301 last_eip=0x0B5D0520 progress=7423 single_step=63154 aot=169272/222364 fast=0/0/0 routea=24737/12098 region=0/0/0/0/0 span=1917/32/1885/96/12138 span_cache=0/0 span_reject_cache=12123/1932/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304C96C span_jump=0/0 retired_span=0/0 selguard=95526/248929/0/11287/0 posthle=0/0 prov=155769/11418/162/0/4143/0/1923/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #49152 miss=0x0C0FCC18 guest=0x0301A8EC cache=0x0C0FD475 site_guest=0x030D8B3C entries=4 chosen=3 guard=0x0F
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #53248 miss=0x0C0FCC18 guest=0x0301A8EC cache=0x0C0FD475 site_guest=0x030D8B3C entries=4 chosen=1 guard=0x0F
+[repiu-live] elapsed_ms=13125 poll=63888 phase=2 heartbeat=393181 dispatch_entry=196591 dispatch_exit=196590 last_eip=0x0B5D04E0 progress=7469 single_step=65318 aot=179566/237479 fast=0/0/0 routea=25712/12422 region=0/0/0/0/0 span=2075/32/2043/96/12470 span_cache=0/0 span_reject_cache=12455/2090/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304C96C span_jump=0/0 retired_span=0/0 selguard=95526/275347/0/11542/0 posthle=0/0 prov=165625/11677/183/0/4460/0/2081/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #57344 miss=0x0C33B970 guest=0x030250A9 cache=0x0C239D81 site_guest=0x03034F8D entries=4 chosen=0 guard=0x0F
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live] elapsed_ms=14125 poll=69973 phase=2 heartbeat=422395 dispatch_entry=211198 dispatch_exit=211197 last_eip=0x0B5D0510 progress=7469 single_step=67750 aot=193429/257581 fast=0/0/0 routea=27072/13052 region=0/0/0/0/0 span=2307/32/2275/96/13100 span_cache=0/0 span_reject_cache=13085/2322/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304C96C span_jump=0/0 retired_span=0/0 selguard=95526/275347/0/12067/0 posthle=0/0 prov=178731/12202/183/0/4924/0/2313/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #61440 miss=0x0C0F080A guest=0x030F2160 cache=0x0C1161D5 site_guest=0x030F5691 entries=4 chosen=2 guard=0x0F
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live] elapsed_ms=15125 poll=76023 phase=2 heartbeat=451567 dispatch_entry=225784 dispatch_exit=225783 last_eip=0x0B5D0618 progress=7469 single_step=70226 aot=207283/277657 fast=0/0/0 routea=28456/13694 region=0/0/0/0/0 span=2543/32/2511/96/13742 span_cache=0/0 span_reject_cache=13727/2558/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304C96C span_jump=0/0 retired_span=0/0 selguard=95526/275347/0/12602/0 posthle=0/0 prov=191814/12737/183/0/5396/0/2549/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #65536 miss=0x0C2CDF6F guest=0x030F2372 cache=0x0C11609F site_guest=0x030D7CF8 entries=4 chosen=0 guard=0x0F
+[repiu-input] P1-DownRight   PRESSED  port=0x02A8 value=0xEF
+[repiu-ymz] keyon voice=2 mode=ADPCM start=0x02B45F stop=0x02EC98 rate=44100Hz level=255 pan=8 loop=no
+[repiu-input] P1-DownRight   released port=0x02A8 value=0xFF
+[repiu-input] P1-DownRight   PRESSED  port=0x02A8 value=0xEF
+[repiu-ymz] keyon voice=2 mode=ADPCM start=0x02B45F stop=0x02EC98 rate=44100Hz level=255 pan=8 loop=no
+[repiu-ymz] keyon voice=3 mode=ADPCM start=0x02EC99 stop=0x034C03 rate=44100Hz level=255 pan=8 loop=no
+[repiu-input] P1-DownRight   released port=0x02A8 value=0xFF
+[repiu-live-debug] icache patch #69632 miss=0x0C0FCC18 guest=0x0301A8EC cache=0x0C0FD475 site_guest=0x030D8B3C entries=4 chosen=3 guard=0x0F
+[repiu-live] elapsed_ms=16125 poll=81147 phase=3 heartbeat=475290 dispatch_entry=237645 dispatch_exit=237645 last_eip=0x030F5CCB progress=7469 single_step=71863 aot=218286/293872 fast=0/0/0 routea=29456/14030 region=0/0/0/0/0 span=2730/32/2698/96/14078 span_cache=0/0 span_reject_cache=14063/2745/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304BA0B span_jump=0/0 retired_span=0/0 selguard=95526/275347/0/12882/0 posthle=0/0 prov=202335/13017/198/0/5772/0/2736/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live] elapsed_ms=17125 poll=83845 phase=3 heartbeat=488546 dispatch_entry=244273 dispatch_exit=244273 last_eip=0x030F5CCB progress=7473 single_step=73176 aot=223755/302839 fast=0/0/0 routea=29877/14051 region=0/0/0/0/0 span=2813/32/2781/96/14100 span_cache=0/0 span_reject_cache=14085/2828/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304EB14 span_jump=0/0 retired_span=0/0 selguard=95526/279173/0/12882/0 posthle=0/0 prov=207713/13025/198/0/5938/0/2819/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #73728 miss=0x0C100397 guest=0x030196AF cache=0x0C10CD02 site_guest=0x030F4A93 entries=4 chosen=1 guard=0x0F
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #77824 miss=0x0C0FCC18 guest=0x0301A877 cache=0x0C0FD3E2 site_guest=0x030D8B3C entries=4 chosen=3 guard=0x0F
+[repiu-live] elapsed_ms=18125 poll=89180 phase=2 heartbeat=514557 dispatch_entry=257279 dispatch_exit=257278 last_eip=0x0B5D04E0 progress=7505 single_step=74580 aot=235846/320997 fast=0/0/0 routea=30677/14143 region=0/0/0/0/0 span=3012/32/2980/96/14197 span_cache=0/0 span_reject_cache=14182/3027/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304EACE span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/12952/0 posthle=0/0 prov=219533/13095/200/0/6336/0/3018/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #81920 miss=0x0C0FCC18 guest=0x0301A8EC cache=0x0C0FD475 site_guest=0x030D8B3C entries=4 chosen=3 guard=0x0F
+[repiu-live] elapsed_ms=19125 poll=95393 phase=3 heartbeat=543504 dispatch_entry=271752 dispatch_exit=271752 last_eip=0x0B5D04E0 progress=7505 single_step=75788 aot=249581/341341 fast=0/0/0 routea=31515/14245 region=0/0/0/0/0 span=3246/32/3214/96/14299 span_cache=0/0 span_reject_cache=14284/3261/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304EACE span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/13037/0 posthle=0/0 prov=232949/13180/200/0/6804/0/3252/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #86016 miss=0x0C0F080A guest=0x030F2323 cache=0x0C116041 site_guest=0x030F5691 entries=4 chosen=3 guard=0x0F
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #90112 miss=0x0C0FCC18 guest=0x0301A8A0 cache=0x0C0FD415 site_guest=0x030D8B3C entries=4 chosen=1 guard=0x0F
+[repiu-live] elapsed_ms=20125 poll=101656 phase=3 heartbeat=572636 dispatch_entry=286318 dispatch_exit=286318 last_eip=0x0B5D0510 progress=7505 single_step=76994 aot=263418/361798 fast=0/0/0 routea=32356/14341 region=0/0/0/0/0 span=3483/32/3451/96/14395 span_cache=0/0 span_reject_cache=14380/3498/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304C97B span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/13117/0 posthle=0/0 prov=246469/13260/200/0/7278/0/3489/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #94208 miss=0x0C0FCC18 guest=0x0301A8EC cache=0x0C0FD475 site_guest=0x030D8B3C entries=4 chosen=0 guard=0x0F
+[repiu-live] elapsed_ms=21125 poll=107876 phase=2 heartbeat=601525 dispatch_entry=300763 dispatch_exit=300762 last_eip=0x0B5D04E0 progress=7505 single_step=78202 aot=277125/382084 fast=0/0/0 routea=33194/14443 region=0/0/0/0/0 span=3717/32/3685/96/14497 span_cache=0/0 span_reject_cache=14482/3732/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304C96C span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/13202/0 posthle=0/0 prov=259857/13345/200/0/7746/0/3723/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #98304 miss=0x0C2E56FC guest=0x030F23A7 cache=0x0C1160E3 site_guest=0x030D8BB2 entries=4 chosen=1 guard=0x0F
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #102400 miss=0x0C2CDF6F guest=0x030F2785 cache=0x0C0FC604 site_guest=0x030D7CF8 entries=4 chosen=3 guard=0x0F
+[repiu-live] elapsed_ms=22125 poll=113976 phase=2 heartbeat=629979 dispatch_entry=314990 dispatch_exit=314989 last_eip=0x0B5D0618 progress=7505 single_step=79400 aot=290617/401981 fast=0/0/0 routea=34029/14539 region=0/0/0/0/0 span=3952/32/3920/96/14593 span_cache=0/0 span_reject_cache=14578/3967/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304C996 span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/13282/0 posthle=0/0 prov=273034/13425/200/0/8216/0/3958/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #106496 miss=0x0C0F080A guest=0x030F2160 cache=0x0C1161D5 site_guest=0x030F5691 entries=4 chosen=2 guard=0x0F
+[repiu-live] elapsed_ms=23125 poll=120039 phase=2 heartbeat=658283 dispatch_entry=329142 dispatch_exit=329141 last_eip=0x0B5D0618 progress=7505 single_step=80616 aot=304037/421776 fast=0/0/0 routea=34873/14641 region=0/0/0/0/0 span=4188/32/4156/96/14695 span_cache=0/0 span_reject_cache=14680/4203/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304EACE span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/13367/0 posthle=0/0 prov=286133/13510/200/0/8688/0/4194/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #110592 miss=0x0C2CDF6F guest=0x030F23B9 cache=0x0C1160FA site_guest=0x030D7CF8 entries=4 chosen=2 guard=0x0F
+[repiu-live-debug] icache patch #114688 miss=0x0C0FCC18 guest=0x0301A8A0 cache=0x0C0FD415 site_guest=0x030D8B3C entries=4 chosen=3 guard=0x0F
+[repiu-live] elapsed_ms=24125 poll=126130 phase=2 heartbeat=686725 dispatch_entry=343363 dispatch_exit=343362 last_eip=0x0B5D0448 progress=7505 single_step=81814 aot=317523/441697 fast=0/0/0 routea=35708/14737 region=0/0/0/0/0 span=4423/32/4391/96/14791 span_cache=0/0 span_reject_cache=14776/4438/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304EB14 span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/13447/0 posthle=0/0 prov=299304/13590/200/0/9158/0/4429/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #118784 miss=0x0C0FCC18 guest=0x0301A8DE cache=0x0C0FD462 site_guest=0x030D8B3C entries=4 chosen=3 guard=0x0F
+[repiu-live] elapsed_ms=25125 poll=132121 phase=2 heartbeat=714737 dispatch_entry=357369 dispatch_exit=357368 last_eip=0x0B5D0618 progress=7505 single_step=83008 aot=330791/461380 fast=0/0/0 routea=36540/14833 region=0/0/0/0/0 span=4657/32/4625/96/14887 span_cache=0/0 span_reject_cache=14872/4672/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304C97B span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/13527/0 posthle=0/0 prov=312258/13670/200/0/9626/0/4663/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #122880 miss=0x0C33CB8F guest=0x030D0D1B cache=0x0C2D9A43 site_guest=0x030CF3BC entries=4 chosen=1 guard=0x0F
+[repiu-live-debug] icache patch #126976 miss=0x0C2CDF6F guest=0x030F2746 cache=0x0C0FC5B1 site_guest=0x030D7CF8 entries=4 chosen=1 guard=0x0F
+[repiu-live] elapsed_ms=26125 poll=138228 phase=2 heartbeat=743413 dispatch_entry=371707 dispatch_exit=371706 last_eip=0x0B5D0618 progress=7505 single_step=84224 aot=344398/481405 fast=0/0/0 routea=37384/14935 region=0/0/0/0/0 span=4893/32/4861/96/14989 span_cache=0/0 span_reject_cache=14974/4908/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304EACE span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/13612/0 posthle=0/0 prov=325543/13755/201/0/10098/0/4899/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #131072 miss=0x0C3A4500 guest=0x0302F8CF cache=0x0C3A2DB0 site_guest=0x03034F8D entries=4 chosen=1 guard=0x0F
+[repiu-live] elapsed_ms=27125 poll=144271 phase=3 heartbeat=771728 dispatch_entry=385864 dispatch_exit=385864 last_eip=0x0B5D0650 progress=7505 single_step=85378 aot=357787/501184 fast=0/0/0 routea=38186/15031 region=0/0/0/0/0 span=5117/32/5085/96/15085 span_cache=0/0 span_reject_cache=15070/5132/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304EACE span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/13692/0 posthle=0/0 prov=338628/13835/201/0/10546/0/5123/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #135168 miss=0x0C0FCC18 guest=0x0301A8EC cache=0x0C0FD475 site_guest=0x030D8B3C entries=4 chosen=2 guard=0x0F
+[repiu-live] elapsed_ms=28125 poll=150349 phase=2 heartbeat=800161 dispatch_entry=400081 dispatch_exit=400080 last_eip=0x0B5D0448 progress=7505 single_step=86564 aot=371260/521085 fast=0/0/0 routea=39012/15127 region=0/0/0/0/0 span=5349/32/5317/96/15181 span_cache=0/0 span_reject_cache=15166/5364/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304EACE span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/13772/0 posthle=0/0 prov=351789/13915/201/0/11010/0/5355/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #139264 miss=0x0C0FCC18 guest=0x0301A877 cache=0x0C0FD3E2 site_guest=0x030D8B3C entries=4 chosen=0 guard=0x0F
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #143360 miss=0x0C0FCC18 guest=0x0301A886 cache=0x0C0FD3F6 site_guest=0x030D8B3C entries=4 chosen=1 guard=0x0F
+[repiu-live] elapsed_ms=29125 poll=156400 phase=2 heartbeat=828481 dispatch_entry=414241 dispatch_exit=414240 last_eip=0x0B5D04E0 progress=7505 single_step=87776 aot=384686/540908 fast=0/0/0 routea=39853/15229 region=0/0/0/0/0 span=5584/32/5552/96/15283 span_cache=0/0 span_reject_cache=15268/5599/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304EACE span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/13857/0 posthle=0/0 prov=364894/14000/202/0/11480/0/5590/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #147456 miss=0x0C0FCC18 guest=0x0301A8DE cache=0x0C0FD462 site_guest=0x030D8B3C entries=4 chosen=3 guard=0x0F
+[repiu-live] elapsed_ms=30125 poll=162407 phase=2 heartbeat=856483 dispatch_entry=428242 dispatch_exit=428241 last_eip=0x0B5D04E0 progress=7505 single_step=88950 aot=397934/560551 fast=0/0/0 routea=40670/15325 region=0/0/0/0/0 span=5813/32/5781/96/15379 span_cache=0/0 span_reject_cache=15364/5828/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304C96C span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/13937/0 posthle=0/0 prov=377833/14080/202/0/11938/0/5819/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #151552 miss=0x0C0FCC18 guest=0x0301A886 cache=0x0C0FD3F6 site_guest=0x030D8B3C entries=4 chosen=1 guard=0x0F
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #155648 miss=0x0C2E56FC guest=0x030F2794 cache=0x0C0FC618 site_guest=0x030D8BB2 entries=4 chosen=3 guard=0x0F
+[repiu-live] elapsed_ms=31125 poll=168484 phase=2 heartbeat=884825 dispatch_entry=442413 dispatch_exit=442412 last_eip=0x0B5D0510 progress=7505 single_step=90148 aot=411370/580346 fast=0/0/0 routea=41505/15421 region=0/0/0/0/0 span=6048/32/6016/96/15475 span_cache=0/0 span_reject_cache=15460/6063/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304EAE5 span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/14017/0 posthle=0/0 prov=390954/14160/202/0/12408/0/6054/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #159744 miss=0x0C0FCC18 guest=0x0301A8DE cache=0x0C0FD462 site_guest=0x030D8B3C entries=4 chosen=2 guard=0x0F
+[repiu-live] elapsed_ms=32125 poll=174507 phase=2 heartbeat=912941 dispatch_entry=456471 dispatch_exit=456470 last_eip=0x0B5D0618 progress=7505 single_step=91346 aot=424693/600058 fast=0/0/0 routea=42340/15517 region=0/0/0/0/0 span=6283/32/6251/96/15571 span_cache=0/0 span_reject_cache=15556/6298/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304C96C span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/14097/0 posthle=0/0 prov=403962/14240/202/0/12878/0/6289/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #163840 miss=0x0C0FCC18 guest=0x0301A8EC cache=0x0C0FD475 site_guest=0x030D8B3C entries=4 chosen=0 guard=0x0F
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #167936 miss=0x0C0F080A guest=0x030F2160 cache=0x0C1161D5 site_guest=0x030F5691 entries=4 chosen=2 guard=0x0F
+[repiu-live] elapsed_ms=33125 poll=180569 phase=2 heartbeat=941267 dispatch_entry=470634 dispatch_exit=470633 last_eip=0x0B5D0618 progress=7505 single_step=92544 aot=438121/619870 fast=0/0/0 routea=43175/15613 region=0/0/0/0/0 span=6518/32/6486/96/15667 span_cache=0/0 span_reject_cache=15652/6533/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304EACE span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/14177/0 posthle=0/0 prov=417075/14320/202/0/13348/0/6524/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #172032 miss=0x0C0FCC18 guest=0x0301A8A0 cache=0x0C0FD415 site_guest=0x030D8B3C entries=4 chosen=3 guard=0x0F
+[repiu-live] elapsed_ms=34125 poll=186775 phase=2 heartbeat=970161 dispatch_entry=485081 dispatch_exit=485080 last_eip=0x0B5D0618 progress=7505 single_step=93740 aot=451821/640154 fast=0/0/0 routea=44004/15715 region=0/0/0/0/0 span=6749/32/6717/96/15769 span_cache=0/0 span_reject_cache=15754/6764/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304EACE span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/14262/0 posthle=0/0 prov=430459/14405/202/0/13810/0/6755/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #176128 miss=0x0C2E56FC guest=0x030F2739 cache=0x0C0FC59F site_guest=0x030D8BB2 entries=4 chosen=0 guard=0x0F
+[repiu-live-debug] icache patch #180224 miss=0x0C0FCC18 guest=0x0301A8EC cache=0x0C0FD475 site_guest=0x030D8B3C entries=4 chosen=1 guard=0x0F
+[repiu-live] elapsed_ms=35125 poll=192941 phase=2 heartbeat=999013 dispatch_entry=499507 dispatch_exit=499506 last_eip=0x0B5D0618 progress=7505 single_step=94948 aot=465509/660329 fast=0/0/0 routea=44842/15817 region=0/0/0/0/0 span=6983/32/6951/96/15871 span_cache=0/0 span_reject_cache=15856/6998/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304EAE5 span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/14347/0 posthle=0/0 prov=443828/14490/202/0/14278/0/6989/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #184320 miss=0x0C0FCC18 guest=0x0301A8DE cache=0x0C0FD462 site_guest=0x030D8B3C entries=4 chosen=3 guard=0x0F
+[repiu-live] elapsed_ms=36125 poll=199105 phase=2 heartbeat=1027911 dispatch_entry=513956 dispatch_exit=513955 last_eip=0x0B5D0650 progress=7505 single_step=96152 aot=479219/680551 fast=0/0/0 routea=45677/15919 region=0/0/0/0/0 span=7216/32/7184/96/15973 span_cache=0/0 span_reject_cache=15958/7231/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x03058201 span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/14432/0 posthle=0/0 prov=457218/14575/204/0/14744/0/7222/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-ymz] keyon voice=5 mode=ADPCM start=0x03F392 stop=0x04207A rate=44100Hz level=255 pan=8 loop=no
+[repiu-ymz] keyon voice=3 mode=ADPCM start=0x02EC99 stop=0x034C03 rate=44100Hz level=255 pan=8 loop=no
+[repiu-live-debug] icache patch #188416 miss=0x0C3A4500 guest=0x0302F8AF cache=0x0C3A2CBE site_guest=0x03034F8D entries=4 chosen=3 guard=0x0F
+[repiu-live] elapsed_ms=37125 poll=201598 phase=3 heartbeat=1039598 dispatch_entry=519799 dispatch_exit=519799 last_eip=0x030F5CCB progress=7505 single_step=96626 aot=483895/687842 fast=0/0/0 routea=46036/15937 region=0/0/0/0/0 span=7307/32/7275/96/15991 span_cache=0/0 span_reject_cache=15976/7322/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304EACE span_jump=0/0 retired_span=0/0 selguard=95526/298303/0/14447/0 posthle=0/0 prov=461788/14590/204/0/14926/0/7313/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live] elapsed_ms=38125 poll=202340 phase=3 heartbeat=1043942 dispatch_entry=521971 dispatch_exit=521971 last_eip=0x030F5CCB progress=7509 single_step=96857 aot=484664/689123 fast=0/0/0 routea=46093/15942 region=0/0/0/0/0 span=7320/32/7288/96/15997 span_cache=0/0 span_reject_cache=15982/7335/0/15/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304E01C span_jump=0/0 retired_span=0/0 selguard=95526/302155/0/14447/0 posthle=0/0 prov=462542/14590/206/0/14953/0/7326/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #192512 miss=0x0C2CDF6F guest=0x030F2746 cache=0x0C0FC5B1 site_guest=0x030D7CF8 entries=4 chosen=1 guard=0x0F
+[repiu-live] elapsed_ms=39125 poll=206074 phase=2 heartbeat=1060237 dispatch_entry=530119 dispatch_exit=530118 last_eip=0x0B5D0448 progress=7727 single_step=98510 aot=491743/699303 fast=0/0/0 routea=46886/16246 region=0/0/0/0/0 span=7469/34/7435/102/16320 span_cache=0/0 span_reject_cache=16302/7487/0/18/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304BA0B span_jump=0/0 retired_span=0/0 selguard=95526/421243/0/14647/0 posthle=0/0 prov=469185/14794/288/0/15292/0/7476/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live] elapsed_ms=40125 poll=211865 phase=2 heartbeat=1084465 dispatch_entry=542233 dispatch_exit=542232 last_eip=0x0B5D0448 progress=7991 single_step=100857 aot=502810/714984 fast=0/0/0 routea=48058/16741 region=0/0/0/0/0 span=7683/34/7649/102/16839 span_cache=0/0 span_reject_cache=16821/7701/0/18/0 span_write=0/0/0 span_cancel_last=0x80000004/0x0304BA0B span_jump=0/0 retired_span=0/0 selguard=95526/565783/0/14977/0 posthle=0/0 prov=479693/15124/303/0/15873/0/7690/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[repiu-live-debug] icache patch #196608 miss=0x0C3FE61F guest=0x030D03AB cache=0x0C2DA6A2 site_guest=0x030CF30A entries=4 chosen=2 guard=0x0F
+[repiu-live] elapsed_ms=40750 poll=215174 phase=2 heartbeat=1098093 dispatch_entry=549047 dispatch_exit=549046 last_eip=0x0B5D0448 progress=8135 single_step=102111 aot=509099/723841 fast=0/0/0 routea=48679/17011 region=0/0/0/0/0 span=7794/34/7760/102/17122 span_cache=0/0 span_reject_cache=17104/7812/0/18/0 span_write=0/0/0 span_cancel_last=0x80000004/0x030F9555 span_jump=0/0 retired_span=0/0 selguard=95526/644623/0/15157/0 posthle=0/0 prov=485691/15304/303/0/16249/0/7801/0 reject=0x00000000:0x00000000/0x00 bytes=0000000000000000
+[00:10:09.944] [    info] [loader] [debug-ordinal-95] ordinal 95 name: _GRDEPTHBIASLEVEL@4
+[00:10:09.966] [    info] [loader] Win32 minimal execution attempt: valid
+[00:10:09.966] [    info] [loader] Win32 minimal execution supported: true
+[00:10:09.989] [    info] [loader] Win32 minimal execution attempted: true
+[00:10:09.989] [    info] [loader] Win32 minimal execution entry: 0x030F4BB8
+[00:10:09.989] [    info] [loader] Win32 minimal execution returned: false
+[00:10:09.989] [    info] [loader] Win32 minimal execution exception caught: false
+[00:10:09.989] [    info] [loader] Win32 handled original fatal breakpoint count: 0
+[00:10:09.989] [    info] [loader] Win32 original fatal halt reached: false
+[00:10:09.989] [    info] [loader] Win32 minimal execution timed out: false
+[00:10:09.989] [    info] [loader] Win32 SDL exit requested: true
+[00:10:09.989] [    info] [loader] Win32 single-step trace count: 102111
+[00:10:09.989] [    info] [loader] Win32 exception census single-step/breakpoint/access-violation/other/total: 447254/526497/19266/21065/1014082
+[00:10:09.989] [    info] [loader] Win32 exception census share single-step/breakpoint/access-violation/other: 44.10%/51.92%/1.90%/2.08%
+[00:10:09.989] [    info] [loader] Win32 exception census other code/count: 0xC0000096/21065
+[00:10:09.989] [    info] [loader] Win32 single-step run buckets 1/2/3/4/5-8/9-16/17-32/33+: 447254/0/0/0/0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 single-step run count/max/mean: 447254/1/1
+[00:10:09.990] [    info] [loader] Win32 hle reentry funnel not-pending/backend/segment-write/outside-arena/quarantined/span-unsafe/success/total: 0/0/0/0/0/15520/61621/77141
+[00:10:09.990] [    info] [loader] Win32 hle reentry cache miss count: 0
+[00:10:09.990] [    info] [loader] Win32 hle reentry segment-write resumed: 22947
+[00:10:09.990] [    info] [loader] Win32 quarantine events/unknown-source/deferred/overflow: 0/0/18/0
+[00:10:09.990] [    info] [loader] Win32 hle reentry funnel share not-pending/segment-write/outside-arena/quarantined/span-unsafe/success: 0.00%/0.00%/0.00%/0.00%/20.12%/79.88%
+[00:10:09.990] [    info] [loader] Win32 single-step hotspot enabled/total/distinct/overflow: false/0/0/0
+[00:10:09.990] [    info] [loader] Win32 single-step hotspot cycles total/max: 0/0
+[00:10:09.990] [    info] [loader] Win32 single-step hotspot outcome count HLE/timer/native/TF: 0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 single-step hotspot outcome cycles HLE/timer/native/TF: 0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 single-step hotspot top count/cycle coverage: 0.00%/0.00%
+[00:10:09.990] [    info] [loader] Win32 single-step stage count prologue/hle/aot-resume/timer/native: 0/0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 single-step stage cycles prologue/hle/aot-resume/timer/native/residual: 0/0/0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 single-step aot-resume sub-stage count seg-write/quarantine/cache-lookup/span-safety: 0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 single-step aot-resume sub-stage cycles seg-write/quarantine/cache-lookup/span-safety/residual: 0/0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 execution time profile enabled: true
+[00:10:09.990] [    info] [loader] Win32 execution time cycles guest-run/veh/glide-gate/port-io/dos: 151096672302/31710987017/15211965359/581615842/3301178376
+[00:10:09.990] [    info] [loader] Win32 execution time count guest-run/veh/glide-gate/port-io/dos: 1/1014081/432482/68852/1211
+[00:10:09.990] [    info] [loader] Win32 VEH gap cycles single-step/breakpoint/other/unclassified/total: 13774497027/103589540998/1215787760/0/118579825785
+[00:10:09.990] [    info] [loader] Win32 VEH gap counts single-step/breakpoint/other: 447254/526497/40330
+[00:10:09.990] [    info] [loader] Win32 VEH gap mean single-step/breakpoint/other: 30797/196752/30145
+[00:10:09.990] [    info] [loader] Win32 VEH gap min/max/clamped: 21607/159637370/0
+[00:10:09.990] [    info] [loader] Win32 VEH gap share of wall total/single-step: 78.48%/9.12%
+[00:10:09.990] [    info] [loader] Win32 execution time inside-veh cycles glide-gate/port-io/dos: 15211965359/581615842/3301178376
+[00:10:09.990] [    info] [loader] Win32 execution time inside-veh count glide-gate/port-io/dos: 432482/68852/1211
+[00:10:09.990] [    info] [loader] Win32 execution time derived veh-exclusive/unaccounted: 12616227440/119385685285
+[00:10:09.990] [    info] [loader] Win32 Glide gate prologue cycles/count/mean/clamped: 1184744315/432483/2739/0
+[00:10:09.990] [    info] [loader] Win32 execution time veh sub-bucket cycles prologue/aot-transfer/telemetry/gates/hle-chain/residual: 334899210/7412614036/28691106/19359399/153993738/8549464169
+[00:10:09.990] [    info] [loader] Win32 execution time veh sub-bucket count prologue/aot-transfer/telemetry/gates/hle-chain: 1014083/1014082/549047/142403/31383
+[00:10:09.990] [    info] [loader] Win32 execution time veh sub-bucket share prologue/aot-transfer/telemetry/gates/hle-chain/single-step/residual: 1.06%/23.38%/0.09%/0.06%/0.49%/0.00%/26.96%
+[00:10:09.990] [    info] [loader] Win32 aot transfer handler cycles write-completion/write-fault/reentry/indirect/conditional/return/residual: 76556796/37777369/5757969791/1073085273/22601655/76845244504/0
+[00:10:09.990] [    info] [loader] Win32 aot transfer function cycles resolve/hle-boundary-scan/dynamic-translate/residency: 2472172854/99104471/1864807170/6190730514
+[00:10:09.990] [    info] [loader] Win32 aot transfer function count resolve/hle-boundary-scan/dynamic-translate/residency: 662220/2344146/392/723841
+[00:10:09.990] [    info] [loader] Win32 aot transfer handler share write-completion/write-fault/reentry/indirect/conditional/return/residual: 1.03%/0.51%/77.68%/14.48%/0.30%/1036.68%/0.00%
+[00:10:09.990] [    info] [loader] Win32 aot transfer function share resolve/hle-boundary-scan/dynamic-translate/residency: 33.35%/1.34%/25.16%/83.52%
+[00:10:09.990] [    info] [loader] Win32 aot reentry cycles guest-lookup/provenance/retired/boundary-reason/native-span/single-step/residual: 316089320/261695294/808543623/104194220/0/4133830467/133616867
+[00:10:09.990] [    info] [loader] Win32 aot reentry count guest-lookup/provenance/retired/boundary-reason/native-span/single-step: 525348/525348/16249/509099/0/447174
+[00:10:09.990] [    info] [loader] Win32 aot reentry share guest-lookup/provenance/retired/boundary-reason/native-span/single-step/residual: 5.49%/4.54%/14.04%/1.81%/0.00%/71.79%/2.32%
+[00:10:09.990] [    info] [loader] Win32 aot worker timing enabled/translate/other/clamped: true/392/198855/0
+[00:10:09.990] [    info] [loader] Win32 aot worker timing cycles wake/segment-table/append/complete/residual/guest-total: 9168806/365079/1843302076/10005917/1012653/1863854531
+[00:10:09.990] [    info] [loader] Win32 aot worker timing max wake/append/guest-total: 58959/72200080/72287936
+[00:10:09.990] [    info] [loader] Win32 aot worker timing share wake/segment-table/append/complete/residual: 0.49%/0.02%/98.90%/0.54%/0.05%
+[00:10:09.990] [    info] [loader] Win32 aot worker timing mean per translate guest-total/append/request-gap: 4754730/4702301/372873010
+[00:10:09.990] [    info] [loader] Win32 aot append phase cycles arena-snapshot/plan-build/image-emit/validate/placement/residual: 458617/772842602/560712549/28374227/479998481/915600
+[00:10:09.990] [    info] [loader] Win32 aot append phase share arena-snapshot/plan-build/image-emit/validate/placement/residual: 0.02%/41.93%/30.42%/1.54%/26.04%/0.05%
+[00:10:09.990] [    info] [loader] Win32 aot append scale count/mean blocks/instructions/emitted-bytes/snapshot-bytes: 392/253/969/7359/0
+[00:10:09.990] [    info] [loader] Win32 aot append max snapshot-cycles/instructions: 427461/17013
+[00:10:09.990] [    info] [loader] Win32 aot plan stage cycles decoder-init/decode/record-build/classify/walk/sweep/residual: 80882/346073761/66489738/126881711/137369885/4001324/91747718
+[00:10:09.990] [    info] [loader] Win32 aot plan stage share decoder-init/decode/record-build/classify/walk/sweep/residual: 0.01%/44.79%/8.61%/16.42%/17.78%/0.52%/11.87%
+[00:10:09.990] [    info] [loader] Win32 aot plan scale builds/decodes/records/sweep-passes/sweep-visits/max-passes: 392/379652/379860/392/379860/1
+[00:10:09.990] [    info] [loader] Win32 aot plan cycles per instruction total/decode/record-build: 2035/911/175
+[00:10:09.990] [    info] [loader] Win32 glide gate timing enabled/rendezvous/direct/clamped: true/211476/0/0
+[00:10:09.990] [    info] [loader] Win32 glide gate cycles queue/wake/work/complete/residual/total: 113782289/5390099382/4235561703/3993903345/0/13733345498
+[00:10:09.990] [    info] [loader] Win32 glide gate direct cycles/max wake/work/total: 0/8161201/1871188938/1871290651
+[00:10:09.990] [    info] [loader] Win32 glide gate share queue/wake/work/complete/residual: 0.83%/39.25%/30.84%/29.08%/0.00%
+[00:10:09.990] [    info] [loader] Win32 glide gate mean per rendezvous total/wake/work: 64940/25487/20028
+[00:10:09.990] [    info] [loader] Win32 Glide ordinal timing enabled/entries/completed/overflow/clamped: true/40/406643/0/0
+[00:10:09.990] [    info] [loader] Win32 Glide ordinal cycles gate/queue/wake/work/complete/residual/backend-total/direct-work: 15200956120/113781068/5390099382/4235561703/3993903345/0/13733345498/0
+[00:10:09.990] [    info] [loader] Win32 Glide ordinal backend rendezvous/direct: 211476/0
+[00:10:09.990] [    info] [loader] Win32 Glide buffer swap timing enabled/calls/success/failure/clamped: false/0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 Glide buffer swap cycles setup/present/accounting/finalize/total/max-present: 0/0/0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 Glide buffer swap requested interval zero/one/other/min/max/last: 0/0/0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 Glide buffer swap SDL interval queries/success/failure/value: 0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 Glide setter census enabled/entries/calls/first/same/changed/failure/unsupported: true/21/329953/32/304624/25297/0/0
+[00:10:09.990] [    info] [loader] Win32 Glide setter census key-overflow/distinct-overflow/ordinal-overflow/invalidations/frames/texture-generation: 0/120567/0/4/1935/56
+[00:10:09.990] [    info] [loader] Win32 Glide setter phase enabled/clamped: false/0
+[00:10:09.990] [    info] [loader] Win32 Glide setter phase depth-mask calls/drain/apply/error/total/max-total/max-apply/max-error/drain-iterations/errors: 0/0/0/0/0/0/0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 Glide setter phase alpha-blend calls/drain/apply/error/total/max-total/max-apply/max-error/drain-iterations/errors: 0/0/0/0/0/0/0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 Glide setter elision enabled/entries/elided/applied/voided/invalidations/ordinal-overflow/texture-generation: true/7/168657/18/0/4/0/56
+[00:10:09.990] [    info] [loader] Win32 execution time share veh/glide-gate/port-io/dos/unaccounted: 20.99%/10.07%/0.38%/2.18%/79.01%
+[00:10:09.990] [    info] [loader] Win32 native fast path entry/return/cancel: 0/0/0
+[00:10:09.990] [    info] [loader] Win32 native fast path last entry/return: 0x00000000/0x00000000
+[00:10:09.990] [    info] [loader] Win32 native linear span entry/boundary/cancel/instructions/reject: 7794/34/7760/102/17122
+[00:10:09.990] [    info] [loader] Win32 native linear span cache hit/miss: 0/0
+[00:10:09.990] [    info] [loader] Win32 native linear span reject cache hit/miss/stale/store/capacity-skip: 17104/7812/0/18/0
+[00:10:09.990] [    info] [loader] Win32 native linear span write cross/uncovered/fault-cancel: 0/0/0
+[00:10:09.990] [    info] [loader] Win32 native linear span last cancel code/eip: 0x80000004/0x030F9555
+[00:10:09.990] [    info] [loader] Win32 native linear span jump chain/backward-stop: 0/0
+[00:10:09.990] [    info] [loader] Win32 execution backend: aot-dbt
+[00:10:09.990] [    info] [loader] Win32 AOT entry/boundary/reentry/fallback: 1/509099/723841/0
+[00:10:09.990] [    info] [loader] Win32 AOT-DBT HLE reentry attempt/success: 77141/61621
+[00:10:09.990] [    info] [loader] Win32 AOT-DBT post-HLE translation attempt/success: 0/0
+[00:10:09.990] [    info] [loader] Win32 AOT-DBT HLE host dispatch entry/attempt/success/fallback: 0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 AOT-DBT HLE host fallback reason site/veh-required/unhandled/target/state/unknown: 0/0/0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 AOT selector guard native/HLE/unresolved-site/HLE-exit/mismatch: 95526/644623/0/15157/0
+[00:10:09.990] [    info] [loader] Win32 AOT-DBT HLE host last source/next/bytes: 0x00000000/0x00000000/0x00000000
+[00:10:09.990] [    info] [loader] Win32 AOT guarded segment-pop success/fallback: 58434/1595
+[00:10:09.990] [    info] [loader] Win32 AOT timer safe-point trap/injected/deferred: 1149/1108/41
+[00:10:09.990] [    info] [loader] Win32 AOT timer source profile enabled/entries/overflow/attributed-ticks: false/0/0/0
+[00:10:09.990] [    info] [loader] Win32 AOT-DBT return entry/attempt/success/fallback: 198494/198494/198494/0
+[00:10:09.990] [    info] [loader] Win32 AOT-DBT return fallback reason site/state/opcode/source/zero/hle/quarantine/non-guest/translate/unknown: 0/0/0/0/0/0/0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 AOT-DBT return fallback reason total: 0
+[00:10:09.990] [    info] [loader] Win32 AOT-DBT indirect entry/attempt/success/fallback: 0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 AOT-DBT indirect fallback reason site/state/opcode/source/zero/hle/quarantine/non-guest/translate/unknown: 0/0/0/0/0/0/0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 AOT-DBT indirect fallback reason total: 0
+[00:10:09.990] [    info] [loader] Win32 AOT boundary reason ret/indir/direct/cond/other: 0/303/0/0/508796
+[00:10:09.990] [    info] [loader] Win32 AOT breakpoint provenance hle/seg/inline/jtable/retired/probe/fixup/unknown: 485691/15304/303/0/16249/0/7801/0
+[00:10:09.990] [    info] [loader] Win32 AOT boundary opcode census samples/escapes/prefixed/segment/opsize/truncated/prefix-overflow/empty: 508796/406652/39996/17011/23133/0/0/0
+[00:10:09.990] [    info] [loader] Win32 AOT boundary effective opcodes [0F:406652 8C:22726 8E:21352 ED:16608 8A:8293 EE:7764 CF:7760 EF:5877]
+[00:10:09.990] [    info] [loader] Win32 AOT boundary 0F escape opcodes [0B:406644 02:3 03:2 A9:2 A1:1 00:0 00:0 00:0]
+[00:10:09.990] [    info] [loader] Win32 AOT other-boundary top opcodes [0F:406652 66:23132 8C:22268 8E:21350 26:15157 EE:7764 CF:7760 2E:1707] last=0x0B5D0448/0x00490B0F
+[00:10:09.990] [    info] [loader] Win32 AOT residency total/samples/avg/max/coverage%: 5072326/723841/7.01/64/98.03
+[00:10:09.990] [    info] [loader] Win32 AOT last fallback address: 0x00000000
+[00:10:09.990] [    info] [loader] Win32 AOT dynamic attempt/success/bytes: 392/392/2884913
+[00:10:09.990] [    info] [loader] Win32 AOT indirect dispatch/source/target: 303/0x0302AE08/0x03034DE0
+[00:10:09.990] [    info] [loader] Win32 AOT inline-cache patch attempt/success: 198797/198797
+[00:10:09.990] [    info] [loader] Win32 AOT inline-cache sites/last cache boundary: 10179/0x0C3F7B71
+[00:10:09.990] [    info] [loader] Win32 AOT code writes/retire attempt/success: 98/58/58
+[00:10:09.990] [    info] [loader] Win32 AOT generation publishes/quarantines: 240/0
+[00:10:09.990] [    info] [loader] Win32 AOT generation failures/relinked/retired traps: 0/12242/16249
+[00:10:09.990] [    info] [loader] Win32 AOT retired span attempt/success: 0/0
+[00:10:09.990] [    info] [loader] Win32 AOT retired profile enabled/total/distinct guest/cache: false/0/0/0
+[00:10:09.990] [    info] [loader] Win32 AOT retired profile top16 coverage/relinkable/short/metadata miss: 0.00%/0/0/0
+[00:10:09.990] [    info] [loader] Win32 AOT retired profile overflow guest/cache: 0/0
+[00:10:09.990] [    info] [loader] Win32 AOT retired profile resolution active/generation/quarantine/failure/fallback/trace: 0/0/0/0/0/0
+[00:10:09.990] [    info] [loader] Win32 AOT last code write source/destination: 0x030347DE/0x030347DE
+[00:10:09.990] [    info] [loader] Win32 AOT last retired page/published generation: 0x03034000/393
+[00:10:09.990] [    info] [loader] Win32 AOT exception cache/guest mapping: invalid/0x00000000/0x00000000
+[00:10:09.990] [    info] [loader] Win32 AOT return dispatch/source/target: 198494/0x030CF30A/0x030D05E7
+[00:10:09.990] [    info] [loader] Win32 AOT return stack: 0x030D05E7 0x3E8F9666 0x0000001F 0x00000049
+[00:10:09.990] [    info] [loader] Win32 AOT call depth/return match/expected: 30/false/0x030D913E
+[00:10:09.990] [    info] [loader] Win32 AOT last call source/target: 0x0302AE08/0x03034DE0
+[00:10:09.990] [    info] [loader] Win32 AOT expected call source/target: 0x030D913B/0x03086094
+[00:10:09.990] [    info] [loader] Win32 AOT return trace entries: 198494
+[00:10:09.990] [    info] [loader] Win32 AOT return trace #198479 source/actual/expected/ESP/match: 0x03034F8D/0x0302ACE3/0x030D913E/0x035D6DBC/false
+[00:10:09.990] [    info] [loader] Win32 AOT return trace #198480 source/actual/expected/ESP/match: 0x03034F8D/0x0302AD1B/0x030D913E/0x035D6DBC/false
+[00:10:09.990] [    info] [loader] Win32 AOT return trace #198481 source/actual/expected/ESP/match: 0x03034F8D/0x0302AD53/0x030D913E/0x035D6DBC/false
+[00:10:09.990] [    info] [loader] Win32 AOT return trace #198482 source/actual/expected/ESP/match: 0x03034F8D/0x0302AD93/0x030D913E/0x035D6DBC/false
+[00:10:09.990] [    info] [loader] Win32 AOT return trace #198483 source/actual/expected/ESP/match: 0x03034F8D/0x0302ADD3/0x030D913E/0x035D6DBC/false
+[00:10:09.990] [    info] [loader] Win32 AOT return trace #198484 source/actual/expected/ESP/match: 0x030F5691/0x0303E920/0x030D913E/0x035D6DC0/false
+[00:10:09.990] [    info] [loader] Win32 AOT return trace #198485 source/actual/expected/ESP/match: 0x030F5691/0x0303E004/0x030D913E/0x035D6D94/false
+[00:10:09.990] [    info] [loader] Win32 AOT return trace #198486 source/actual/expected/ESP/match: 0x030F5691/0x030431F3/0x030D913E/0x035D6CF0/false
+[00:10:09.990] [    info] [loader] Win32 AOT return trace #198487 source/actual/expected/ESP/match: 0x030F5691/0x030EAA4F/0x030D913E/0x035D6D90/false
+[00:10:09.990] [    info] [loader] Win32 AOT return trace #198488 source/actual/expected/ESP/match: 0x030F5691/0x030EA5FD/0x030D913E/0x035D6D68/false
+[00:10:09.990] [    info] [loader] Win32 AOT return trace #198489 source/actual/expected/ESP/match: 0x030F5691/0x030F012D/0x030D913E/0x035D6D9C/false
+[00:10:09.990] [    info] [loader] Win32 AOT return trace #198490 source/actual/expected/ESP/match: 0x030D9140/0x030F01BF/0x030D913E/0x035D6D80/false
+[00:10:09.990] [    info] [loader] Win32 AOT return trace #198491 source/actual/expected/ESP/match: 0x030CF30A/0x030D03AB/0x030D913E/0x035D6824/false
+[00:10:09.990] [    info] [loader] Win32 AOT return trace #198492 source/actual/expected/ESP/match: 0x030CF30A/0x030D025A/0x030D913E/0x035D6824/false
+[00:10:09.990] [    info] [loader] Win32 AOT return trace #198493 source/actual/expected/ESP/match: 0x030CF30A/0x030D0740/0x030D913E/0x035D6824/false
+[00:10:09.990] [    info] [loader] Win32 AOT return trace #198494 source/actual/expected/ESP/match: 0x030CF30A/0x030D05E7/0x030D913E/0x035D6824/false
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace entries: 303
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #272 source/target/kind: 0x0302AC53/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #273 source/target/kind: 0x0302AC81/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #274 source/target/kind: 0x0302ACAF/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #275 source/target/kind: 0x0302ACDD/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #276 source/target/kind: 0x0302AD15/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #277 source/target/kind: 0x0302AD4D/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #278 source/target/kind: 0x0302AD8D/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #279 source/target/kind: 0x0302ADCD/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #280 source/target/kind: 0x0302AE08/0x03034DE0/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #281 source/target/kind: 0x030D1098/0x030CF140/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #282 source/target/kind: 0x030D11CE/0x030CF140/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #283 source/target/kind: 0x030D073A/0x030CF140/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #284 source/target/kind: 0x030D03A5/0x030CF140/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #285 source/target/kind: 0x030D0254/0x030CF140/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #286 source/target/kind: 0x030D0D15/0x030CF140/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #287 source/target/kind: 0x030D098B/0x030CF140/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #288 source/target/kind: 0x030D0E62/0x030CF140/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #289 source/target/kind: 0x03024EF1/0x03034C14/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #290 source/target/kind: 0x0302504E/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #291 source/target/kind: 0x03025070/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #292 source/target/kind: 0x030250A3/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #293 source/target/kind: 0x0302ABFC/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #294 source/target/kind: 0x0302AC25/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #295 source/target/kind: 0x0302AC53/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #296 source/target/kind: 0x0302AC81/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #297 source/target/kind: 0x0302ACAF/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #298 source/target/kind: 0x0302ACDD/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #299 source/target/kind: 0x0302AD15/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #300 source/target/kind: 0x0302AD4D/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #301 source/target/kind: 0x0302AD8D/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #302 source/target/kind: 0x0302ADCD/0x03034F5C/call
+[00:10:09.990] [    info] [loader] Win32 AOT transfer trace #303 source/target/kind: 0x0302AE08/0x03034DE0/call
+[00:10:09.990] [    info] [loader] Win32 execution probe configured/hit/offset: false/false/0x00000000
+[00:10:09.990] [    info] [loader] Win32 diagnostic poll iterations: 215173
+[00:10:09.990] [    info] [loader] Win32 diagnostic progress count: 8135
+[00:10:09.990] [    info] [loader] Win32 diagnostic quiet iterations: 0
+[00:10:09.990] [    info] [loader] Win32 exception dispatch entry count: 549047
+[00:10:09.991] [    info] [loader] Win32 exception dispatch exit count: 549046
+[00:10:09.991] [    info] [loader] Win32 exception dispatch outstanding count: 1
+[00:10:09.991] [    info] [loader] Win32 exception dispatch last EIP: 0x0B5D0448
+[00:10:09.991] [    info] [loader] Win32 exception dispatch malformed count: 0
+[00:10:09.991] [    info] [loader] Win32 exception dispatch last bad ContextRecord: 0x00000000
+[00:10:09.991] [    info] [loader] Win32 exception dispatch last bad ExceptionRecord: 0x00000000
+[00:10:09.991] [    info] [loader] Win32 selector table valid: true
+[00:10:09.991] [    info] [loader] Win32 selector descriptor count: 16
+[00:10:09.991] [    info] [loader] Win32 LINEXE environment active: true
+[00:10:09.991] [    info] [loader] Win32 LINEXE saved client GS: 0x00000020
+[00:10:09.991] [    info] [loader] Win32 LINEXE client descriptor: valid base=0x0B5C6000 limit=0x00000FFF
+[00:10:09.991] [    info] [loader] Win32 LINEXE direct root: 0x00000090:0x0000059A
+[00:10:09.991] [    info] [loader] Win32 LINEXE data descriptor: valid base=0x0B5D2000
+[00:10:09.991] [    info] [loader] Win32 LINEXE module name pointer: 0x00000090:0x00000504
+[00:10:09.991] [    info] [loader] Win32 LINEXE direct module name: LINEXE_LOADER
+[00:10:09.991] [    info] [loader] Win32 LINEXE direct exports: count=15 table=0x00000090:0x00000522
+[00:10:09.991] [    info] [loader] Win32 LINEXE direct first export name: 0x00000090:0x00000449
+[00:10:09.991] [    info] [loader] Win32 LINEXE GS byte loads: 0 first_offset=0x00000000 first_value=0x00000000
+[00:10:09.991] [    info] [loader] Win32 LINEXE resolved export count: 8
+[00:10:09.991] [    info] [loader] Win32 LINEXE scan entry/match/return: 0/0/0
+[00:10:09.991] [    info] [loader] Win32 LINEXE indirect far call count/source/pointer/target: 0/0x00000000/0x00000000/0x00000000:0x00000000 (unknown)
+[00:10:09.991] [    info] [loader] Win32 timer tick delivery backlog-enabled/due/injected/coalesced/dropped/deferred/max-backlog/remaining: false/9024/8868/107/49/0/1/0
+[00:10:09.991] [    info] [loader] Win32 INT 8 chain HLE count/source/pointer/target: 8868/0x03042EBE/0x032D9C90/0x0000002B:0x00000000
+[00:10:09.991] [    info] [loader] Win32 LINEXE export entry loop count: 15
+[00:10:09.991] [    info] [loader] Win32 LINEXE export compare count/EAX/ECX/EFLAGS: 0/0x00000000/0x00000000/0x00000000
+[00:10:09.991] [    info] [loader] Win32 LINEXE export count load EDX/GS: 0x00000000/0x00000000
+[00:10:09.991] [    info] [loader] Win32 LINEXE module candidate/match: 1/1
+[00:10:09.991] [    info] [loader] Win32 LINEXE name pointer/byte instruction: 1/0
+[00:10:09.991] [    info] [loader] Win32 LINEXE GS=0090h load count: 199
+[00:10:09.991] [    info] [loader] Win32 LINEXE module selector stack value: 0x00000090
+[00:10:09.991] [    info] [loader] Win32 LINEXE module/export stack pointer: 0x00000090:0x0000059A/0x00000000:0x00000000
+[00:10:09.991] [    info] [loader] Win32 LINEXE export jump source ESP/module: 0x00000000/0x00000000:0x00000000
+[00:10:09.991] [    info] [loader] Win32 LINEXE export jump target ESP/module: 0x035D6A64/0x00000090:0x0000059A
+[00:10:09.991] [    info] [loader] Win32 LINEXE export name compare count/GS/EDI/ESI/bytes: 0/0x00000000/0x00000000/0x00000000/0x00000000/0x00000000
+[00:10:09.991] [    info] [loader] Win32 LINEXE export name stage mask: 0x00000001
+[00:10:09.991] [    info] [loader] Win32 LINEXE export entry name loaded offset/selector: 0x00000000/0x00000000
+[00:10:09.991] [    info] [loader] Win32 LINEXE export result stores count/destination/value: 0/0x00000000/0x00000000
+[00:10:09.991] [    info] [loader] Win32 LINEXE export value load selector/offset/value: 0x00000000/0x00000000/0x00000000
+[00:10:09.991] [    info] [loader] Win32 LINEXE bridge entry/gate/target/service: 41/valid/0x00000080:0x00001B5A/5
+[00:10:09.991] [    info] [loader] Win32 LINEXE bridge ESP/EBP: 0x035D6CD0/0x035D6CDC
+[00:10:09.991] [    info] [loader] Win32 LINEXE bridge stack: 0x00000001 0x000000A4 0x000000AC 0x030F37B2 0x00000023 0x0000002B
+[00:10:09.991] [    info] [loader] Win32 LINEXE bridge stack continued: 0x0383E2D0 0x0383E11C 0x030FECFA 0x035D6DB0 0x030F3418 0x00000001
+[00:10:09.991] [    info] [loader] Win32 LINEXE bridge stack tail: 0x030FE4DB 0x035D6D08 0x0000002B 0x035D6DE4 0x035D6DE4 0x0383E11C 0x035D6DB0 0x035D6D30
+[00:10:09.991] [    info] [loader] Win32 LINEXE bridge stack text #12: _GRFOGTABLE@4
+[00:10:09.991] [    info] [loader] Win32 LINEXE bridge stack text #13: +
+[00:10:09.991] [    info] [loader] Win32 LINEXE bridge argument text: xò&äm]
+[00:10:09.991] [    info] [loader] Win32 LINEXE virtual module loads/handle: 1/0x00000001
+[00:10:09.991] [    info] [loader] Win32 LINEXE get-proc count/name/result: 40/_GRFOGTABLE@4/0x0B5D0538
+[00:10:09.991] [    info] [loader] Win32 Glide gate entries/handled/ESP: 406644/406643/0x035D6AB8
+[00:10:09.991] [    info] [loader] Win32 Glide GL error policy per-call-check/frame-interval/frame-checks/frame-errors/first-code/drain-iterations: false/0/0/0/0x00000000/0
+[00:10:09.991] [    info] [loader] Win32 Glide GL debug output installed/messages/errors/first-id: true/2/0/0x00000000
+[00:10:09.991] [    info] [loader] Win32 Glide swap interval override requested/value/applied/effective: true/0/true/0
+[00:10:09.991] [    info] [loader] Win32 Glide gate ordinal/name/argument bytes: 73/_GRDRAWTRIANGLE@12/12
+[00:10:09.991] [    info] [loader] Win32 Glide implementation issues unimplemented/unsupported/backend/abi/unique/overflow: 0/0/0/0/0/0
+[00:10:09.991] [    info] [loader] Win32 Glide window opens/logical size: 1/640x480
+[00:10:09.991] [    info] [loader] Win32 Glide backend message: Glide fog table applied to GLSL
+[00:10:09.991] [    info] [loader] Win32 Glide virtual texture bytes/max address: 8388608/0x007FFFF8
+[00:10:09.991] [    info] [loader] Win32 Glide gate stack: 0x0304BA09 0x0383D798 0x0383D7D4 0x0383CD84 0x00000000 0x0384DEF0 0x035D6B08 0x0383E2D0
+[00:10:09.991] [    info] [loader] Win32 Glide texture gate trace count/wrapped: 2/false
+[00:10:09.991] [    info] [loader] Win32 Glide texture gate trace #1 kind=min ordinal=44 entry-eip=0x0B5D0360 entry-esp=0x035D6B0C return-address=0x0304DBEB tmu=0 entry-eax=0x030FEDF9 return-eax=0x00000000 planned-return-esp=0x035D6B14
+[00:10:09.991] [    info] [loader] Win32 Glide texture gate trace #2 kind=max ordinal=45 entry-eip=0x0B5D0368 entry-esp=0x035D6B0C return-address=0x0304DBF3 tmu=0 entry-eax=0x030FEDF4 return-eax=0x007FFFF8 planned-return-esp=0x035D6B14
+[00:10:09.991] [    info] [loader] Win32 Glide first triangle vertex 0 pointer/readable/dwords: 0x0383C640/true/0x42A00000 0x43BDF800 0xA1A10000 0x50500100 0x08FF20FF 0x01010000 0x0101A1A1 0xA1A15251 0x3F800000 0x00000000 0x00000000 0x5E5EA3A2 0x08FF20FF 0x02020202 0xECECB4B4 0x43A7F800 0x43BDF800 0x03030202
+[00:10:09.991] [    info] [loader] Win32 Glide first triangle vertex 1 pointer/readable/dwords: 0x0383C67C/true/0x43A7F800 0x43BDF800 0x03030202 0x4C4CECEC 0x03039A99 0x08FF20FF 0x03030303 0xF3F34C4C 0x3F800000 0x43800000 0x00000000 0x2020F3F3 0x7A7A9392 0x08FF20FF 0x05050404 0x43A7F800 0x42F80000 0x08FF20FF
+[00:10:09.991] [    info] [loader] Win32 Glide first triangle vertex 2 pointer/readable/dwords: 0x0383C6F4/true/0x42A00000 0x42F80000 0x8D8D7271 0x08FF20FF 0x0C0C0B0B 0xADADA0A0 0x3F3F8F8E 0x08FF20FF 0x3F800000 0x00000000 0x43800000 0x08FF20FF 0x10100E0E 0x4E4E3333 0x5353D7D6 0x08FF20FF 0x13131010 0x03034E4E
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=16 name=_GUFOGGENERATEEXP@8 count=1 first_stack=0x0304F6F4 0x0383E11C 0x358637BD 0x000000FF 0x00000000 0x00000000 0x00000000 0x00000005
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=30 name=_GRGLIDEGETSTATE@4 count=1 first_stack=0x0305952A 0x0383E180 0x00000000 0x00000000 0x00000007 0x00000000 0x00000000 0x00000001
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=31 name=_GRHINTS@8 count=1872 first_stack=0x0304EC2F 0x00000000 0x00000000 0x00000000 0x035D6DE8 0x00000000 0x0383E2D0 0x0383C640
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=32 name=_GRGLIDEINIT@0 count=1 first_stack=0x03059883 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=37 name=_GRSSTQUERYHARDWARE@4 count=1 first_stack=0x0305988D 0x032D9DA0 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=38 name=_GRSSTSELECT@4 count=3 first_stack=0x030598A6 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=39 name=_GRSSTSCREENWIDTH@0 count=1 first_stack=0x03059315 0x00000000 0x00000000 0x00000007 0x00000000 0x00000000 0x00000001 0x00000000
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=40 name=_GRSSTSCREENHEIGHT@0 count=1 first_stack=0x03059320 0x00000000 0x00000000 0x00000007 0x00000000 0x00000000 0x00000001 0x00000000
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=44 name=_GRTEXMINADDRESS@4 count=1 first_stack=0x0304DBEB 0x00000000 0x0383C640 0x00000000 0x0383C640 0x00000001 0x00000000 0x0383C640
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=45 name=_GRTEXMAXADDRESS@4 count=1 first_stack=0x0304DBF3 0x00000000 0x0383C640 0x00000000 0x0383C640 0x00000001 0x00000000 0x0383C640
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=46 name=_GRTEXTEXTUREMEMREQUIRED@8 count=49 first_stack=0x0304DF8F 0x00000003 0x041CEB9C 0x041CEB9C 0x0383C640 0x00002601 0x00000000 0x038B4580
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=49 name=_GRTEXDOWNLOADMIPMAPLEVEL@32 count=56 first_stack=0x0304E016 0x00000000 0x00000000 0x00000005 0x00000005 0x00000003 0x0000000A 0x00000003
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=73 name=_GRDRAWTRIANGLE@12 count=68013 first_stack=0x0304C97A 0x0383C640 0x0383C67C 0x0383C6F4 0x00000000 0x00000000 0x00000000 0x00000000
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=79 name=_GRALPHABLENDFUNCTION@16 count=23520 first_stack=0x0304F4AD 0x00000004 0x00000000 0x00000004 0x00000000 0x0383E2D0 0x00000000 0x0383C640
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=80 name=_GRALPHACOMBINE@20 count=1875 first_stack=0x0304F281 0x00000001 0x00000000 0x00000000 0x00000002 0x00000000 0x00000001 0x00000000
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=82 name=_GRALPHATESTFUNCTION@4 count=23520 first_stack=0x0304F536 0x00000007 0x0383E2D0 0x00000000 0x0383C640 0x0304F7D6 0x0383E2D0 0x00000000
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=84 name=_GRBUFFERCLEAR@12 count=1941 first_stack=0x0305835F 0x00000000 0x00000000 0x0000FFFF 0x0000FFFF 0x035D6DE8 0x00000000 0x0383E2D0
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=85 name=_GRBUFFERSWAP@4 count=1935 first_stack=0x03059844 0x00000001 0x00000000 0x03255FB8 0x00000000 0x0302D2E0 0x3F800000 0x035D6E30
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=86 name=_GRBUFFERNUMPENDING@0 count=1935 first_stack=0x0305984F 0x00000000 0x03255FB8 0x00000000 0x0302D2E0 0x3F800000 0x035D6E30 0x00000000
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=89 name=_GRCLIPWINDOW@16 count=23520 first_stack=0x0304F7AF 0x00000000 0x00000000 0x00000280 0x000001E0 0x00000000 0x0383C640 0x00000001
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=90 name=_GRCOLORCOMBINE@20 count=1875 first_stack=0x0304F28F 0x00000001 0x00000000 0x00000000 0x00000002 0x00000000 0x00000001 0x00000000
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=91 name=_GRCOLORMASK@8 count=27403 first_stack=0x0305946B 0x00000001 0x00000000 0x00000000 0x00000000 0x00000007 0x00000000 0x00000000
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=92 name=_GRCONSTANTCOLORVALUE@4 count=30416 first_stack=0x0304C96B 0x00FEFEFE 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x000004D0
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=94 name=_GRCULLMODE@4 count=23520 first_stack=0x0304DB70 0x00000000 0x0383E2D0 0x00000000 0x0383C640 0x03058CCD 0x0383E2D0 0x0383E2D0
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=96 name=_GRDEPTHBUFFERFUNCTION@4 count=23520 first_stack=0x0304F5B9 0x00000007 0x0383E2D0 0x00000000 0x0383C640 0x0304F7DD 0x0383E2D0 0x00000000
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=97 name=_GRDEPTHBUFFERMODE@4 count=1 first_stack=0x030594A3 0x00000001 0x00000000 0x00000000 0x00000007 0x00000000 0x00000000 0x00000001
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=98 name=_GRDEPTHMASK@4 count=25987 first_stack=0x0305949C 0x00000001 0x00000000 0x00000000 0x00000007 0x00000000 0x00000000 0x00000001
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=100 name=_GRDITHERMODE@4 count=2184 first_stack=0x03058200 0x00000002 0x00000000 0x030CE126 0x035D6E30 0x00000000 0x00000000 0x038A5C80
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=101 name=_GRFOGMODE@4 count=23672 first_stack=0x0304F73F 0x00000000 0x00000001 0x00000000 0x035D6B08 0x0383C640 0x0383E2D0 0x00000000
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=102 name=_GRFOGCOLORVALUE@4 count=877 first_stack=0x0304F662 0xFF000000 0x000000FF 0x00000000 0x00000000 0x00000000 0x00000005 0x0304F5C0
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=103 name=_GRFOGTABLE@4 count=877 first_stack=0x0304F730 0x0383E11C 0x000000FF 0x00000000 0x00000000 0x00000000 0x00000005 0x3F800000
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=105 name=_GRGLIDESETSTATE@4 count=1 first_stack=0x030597D6 0x0383E180 0x035D6E30 0x035D7C26 0x00000001 0x00000000 0x0383E2D0 0x030ECFB3
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=106 name=_GRRENDERBUFFER@4 count=1 first_stack=0x03059491 0x00000001 0x00000000 0x00000000 0x00000007 0x00000000 0x00000000 0x00000001
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=114 name=_GRLFBWRITECOLORFORMAT@4 count=1 first_stack=0x030594AA 0x00000001 0x00000000 0x00000000 0x00000007 0x00000000 0x00000000 0x00000001
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=118 name=_GRSSTWINOPEN@28 count=1 first_stack=0x030592A7 0x00000000 0x00000007 0x00000000 0x00000001 0x00000001 0x00000002 0x00000001
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=131 name=_GRTEXCLAMPMODE@12 count=24515 first_stack=0x0304EAC8 0x00000000 0x00000001 0x00000001 0x041CEAC8 0x0383C640 0x0383E2D0 0x038B4580
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=132 name=_GRTEXCOMBINE@28 count=1 first_stack=0x0304EB69 0x00000000 0x00000001 0x00000000 0x00000001 0x00000000 0x00000000 0x00000000
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=134 name=_GRTEXFILTERMODE@12 count=24515 first_stack=0x0304EADF 0x00000000 0x00000001 0x00000001 0x041CEAC8 0x0383C640 0x0383E2D0 0x038B4580
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=136 name=_GRTEXMIPMAPMODE@12 count=24515 first_stack=0x0304EAF6 0x00000000 0x00000000 0x00000000 0x041CEAC8 0x0383C640 0x0383E2D0 0x038B4580
+[00:10:09.991] [    info] [loader] Win32 Glide call trace: ordinal=138 name=_GRTEXSOURCE@16 count=24515 first_stack=0x0304EB13 0x00000000 0x00000000 0x00000003 0x041CEB9C 0x041CEAC8 0x0383C640 0x0383E2D0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=73 name=_GRDRAWTRIANGLE@12 count=68012 gate=3610917123 max=7525688 rendezvous=68012 queue=30075561 wake=1744055291 work=203781612 complete=1284477332 residual=0 backend_total=3262389796 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=118 name=_GRSSTWINOPEN@28 count=1 gate=1880026462 max=1880026462 rendezvous=1 queue=5328 wake=51800 work=1871188938 complete=44585 residual=0 backend_total=1871290651 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=131 name=_GRTEXCLAMPMODE@12 count=24515 gate=1491553139 max=7406697 rendezvous=24515 queue=21959685 wake=673212268 work=57544583 complete=620610023 residual=0 backend_total=1373326559 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=92 name=_GRCONSTANTCOLORVALUE@4 count=30416 gate=1431759659 max=7457039 rendezvous=30416 queue=17814205 wake=724942622 work=48617112 complete=494757901 residual=0 backend_total=1286131840 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=134 name=_GRTEXFILTERMODE@12 count=24515 gate=1273155188 max=8211099 rendezvous=24515 queue=11158941 wake=672097883 work=27932817 complete=476638774 residual=0 backend_total=1187828415 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=80 name=_GRALPHACOMBINE@20 count=1875 gate=1209974518 max=379298267 rendezvous=1875 queue=1165352 wake=44028407 work=1114658656 complete=40349145 residual=0 backend_total=1200201560 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=98 name=_GRDEPTHMASK@4 count=25987 gate=1166130263 max=7435983 rendezvous=25987 queue=12638497 wake=613496867 work=49558540 complete=400206494 residual=0 backend_total=1075900398 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=138 name=_GRTEXSOURCE@16 count=24515 gate=1104191418 max=7458682 rendezvous=24515 queue=11095634 wake=566602833 work=37974099 complete=419571239 residual=0 backend_total=1035243805 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=85 name=_GRBUFFERSWAP@4 count=1935 gate=428035016 max=7568091 rendezvous=1935 queue=1260849 wake=57658949 work=301992267 complete=50353774 residual=0 backend_total=411265839 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=102 name=_GRFOGCOLORVALUE@4 count=877 gate=320775882 max=16233898 rendezvous=877 queue=507159 wake=32352600 work=261274877 complete=19966890 residual=0 backend_total=314101526 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=90 name=_GRCOLORCOMBINE@20 count=1875 gate=216246827 max=858937 rendezvous=3750 queue=2120174 wake=71001218 work=65829963 complete=65240095 residual=0 backend_total=204191450 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=49 name=_GRTEXDOWNLOADMIPMAPLEVEL@32 count=56 gate=153435787 max=29043317 rendezvous=56 queue=54205 wake=1563541 work=149008841 complete=1413597 residual=0 backend_total=152040184 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=100 name=_GRDITHERMODE@4 count=2184 gate=139631278 max=1513318 rendezvous=2184 queue=2158839 wake=63033435 work=5289816 complete=54763015 residual=0 backend_total=125245105 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=103 name=_GRFOGTABLE@4 count=877 gate=127399357 max=3009395 rendezvous=877 queue=526288 wake=67796659 work=34977594 complete=16936097 residual=0 backend_total=120236638 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=84 name=_GRBUFFERCLEAR@12 count=1941 gate=118603699 max=7510667 rendezvous=1941 queue=1216153 wake=57614105 work=5560952 complete=48002853 residual=0 backend_total=112394063 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=32 name=_GRGLIDEINIT@0 count=1 gate=81881000 max=81881000 rendezvous=0 queue=0 wake=0 work=0 complete=0 residual=0 backend_total=0 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=79 name=_GRALPHABLENDFUNCTION@16 count=23520 gate=72120604 max=252414 rendezvous=3 queue=3404 wake=91390 work=28601 complete=82307 residual=0 backend_total=205702 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=101 name=_GRFOGMODE@4 count=23672 gate=62819803 max=270452 rendezvous=3 queue=2627 wake=77866 work=224479 complete=57166 residual=0 backend_total=362138 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=89 name=_GRCLIPWINDOW@16 count=23520 gate=57761292 max=133422 rendezvous=2 queue=2294 wake=58978 work=32893 complete=53983 residual=0 backend_total=148148 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=136 name=_GRTEXMIPMAPMODE@12 count=24515 gate=57213285 max=76997 rendezvous=0 queue=0 wake=0 work=0 complete=0 residual=0 backend_total=0 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=82 name=_GRALPHATESTFUNCTION@4 count=23520 gate=48492089 max=382136 rendezvous=2 queue=1998 wake=59403 work=4255 complete=55556 residual=0 backend_total=121212 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=91 name=_GRCOLORMASK@8 count=27403 gate=48122533 max=192622 rendezvous=3 queue=5328 wake=98562 work=49691 complete=97871 residual=0 backend_total=251452 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=94 name=_GRCULLMODE@4 count=23520 gate=46764763 max=125985 rendezvous=2 queue=2072 wake=56447 work=5217 complete=76883 residual=0 backend_total=140619 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=96 name=_GRDEPTHBUFFERFUNCTION@4 count=23520 gate=43677538 max=129685 rendezvous=3 queue=2331 wake=80881 work=12395 complete=74889 residual=0 backend_total=170496 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=86 name=_GRBUFFERNUMPENDING@0 count=1935 gate=4658374 max=5957 rendezvous=0 queue=0 wake=0 work=0 complete=0 residual=0 backend_total=0 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=31 name=_GRHINTS@8 count=1872 gate=3228213 max=47656 rendezvous=0 queue=0 wake=0 work=0 complete=0 residual=0 backend_total=0 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=16 name=_GUFOGGENERATEEXP@8 count=1 gate=1138009 max=1138009 rendezvous=0 queue=0 wake=0 work=0 complete=0 residual=0 backend_total=0 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=46 name=_GRTEXTEXTUREMEMREQUIRED@8 count=49 gate=268287 max=63973 rendezvous=0 queue=0 wake=0 work=0 complete=0 residual=0 backend_total=0 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=106 name=_GRRENDERBUFFER@4 count=1 gate=147837 max=147837 rendezvous=1 queue=1369 wake=35187 work=5069 complete=34062 residual=0 backend_total=75687 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=97 name=_GRDEPTHBUFFERMODE@4 count=1 gate=143043 max=143043 rendezvous=1 queue=2775 wake=32190 work=8436 complete=38814 residual=0 backend_total=82215 direct=0 direct_work=0
+[00:10:09.991] [    info] [loader] Win32 Glide ordinal timing: ordinal=38 name=_GRSSTSELECT@4 count=3 gate=122951 max=46472 rendezvous=0 queue=0 wake=0 work=0 complete=0 residual=0 backend_total=0 direct=0 direct_work=0
+[00:10:09.992] [    info] [loader] Win32 Glide ordinal timing: ordinal=37 name=_GRSSTQUERYHARDWARE@4 count=1 gate=76109 max=76109 rendezvous=0 queue=0 wake=0 work=0 complete=0 residual=0 backend_total=0 direct=0 direct_work=0
+[00:10:09.992] [    info] [loader] Win32 Glide ordinal timing: ordinal=30 name=_GRGLIDEGETSTATE@4 count=1 gate=75813 max=75813 rendezvous=0 queue=0 wake=0 work=0 complete=0 residual=0 backend_total=0 direct=0 direct_work=0
+[00:10:09.992] [    info] [loader] Win32 Glide ordinal timing: ordinal=44 name=_GRTEXMINADDRESS@4 count=1 gate=66341 max=66341 rendezvous=0 queue=0 wake=0 work=0 complete=0 residual=0 backend_total=0 direct=0 direct_work=0
+[00:10:09.992] [    info] [loader] Win32 Glide ordinal timing: ordinal=40 name=_GRSSTSCREENHEIGHT@0 count=1 gate=65157 max=65157 rendezvous=0 queue=0 wake=0 work=0 complete=0 residual=0 backend_total=0 direct=0 direct_work=0
+[00:10:09.992] [    info] [loader] Win32 Glide ordinal timing: ordinal=114 name=_GRLFBWRITECOLORFORMAT@4 count=1 gate=62604 max=62604 rendezvous=0 queue=0 wake=0 work=0 complete=0 residual=0 backend_total=0 direct=0 direct_work=0
+[00:10:09.992] [    info] [loader] Win32 Glide ordinal timing: ordinal=105 name=_GRGLIDESETSTATE@4 count=1 gate=62160 max=62160 rendezvous=0 queue=0 wake=0 work=0 complete=0 residual=0 backend_total=0 direct=0 direct_work=0
+[00:10:09.992] [    info] [loader] Win32 Glide ordinal timing: ordinal=45 name=_GRTEXMAXADDRESS@4 count=1 gate=57387 max=57387 rendezvous=0 queue=0 wake=0 work=0 complete=0 residual=0 backend_total=0 direct=0 direct_work=0
+[00:10:09.992] [    info] [loader] Win32 Glide ordinal timing: ordinal=132 name=_GRTEXCOMBINE@28 count=1 gate=50653 max=50653 rendezvous=0 queue=0 wake=0 work=0 complete=0 residual=0 backend_total=0 direct=0 direct_work=0
+[00:10:09.992] [    info] [loader] Win32 Glide ordinal timing: ordinal=39 name=_GRSSTSCREENWIDTH@0 count=1 gate=44659 max=44659 rendezvous=0 queue=0 wake=0 work=0 complete=0 residual=0 backend_total=0 direct=0 direct_work=0
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=92 name=_GRCONSTANTCOLORVALUE@4 calls=30416 first=1 same=23402 changed=7013 failure=0 unsupported=0 key_overflow=0 distinct=8 distinct_overflow=30314 max_run=515 max_frame_calls=57 max_frame_changes=14 elided=0 applied=0
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=91 name=_GRCOLORMASK@8 calls=27403 first=3 same=27400 changed=0 failure=0 unsupported=0 key_overflow=0 distinct=1 distinct_overflow=0 max_run=27400 max_frame_calls=51 max_frame_changes=3 elided=27400 applied=3
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=98 name=_GRDEPTHMASK@4 calls=25987 first=2 same=22108 changed=3877 failure=0 unsupported=0 key_overflow=0 distinct=2 distinct_overflow=0 max_run=48 max_frame_calls=51 max_frame_changes=6 elided=0 applied=0
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=131 name=_GRTEXCLAMPMODE@12 calls=24515 first=1 same=24323 changed=191 failure=0 unsupported=0 key_overflow=0 distinct=8 distinct_overflow=22563 max_run=14298 max_frame_calls=49 max_frame_changes=8 elided=0 applied=0
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=134 name=_GRTEXFILTERMODE@12 calls=24515 first=1 same=24465 changed=49 failure=0 unsupported=0 key_overflow=0 distinct=8 distinct_overflow=22563 max_run=14298 max_frame_calls=49 max_frame_changes=8 elided=0 applied=0
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=136 name=_GRTEXMIPMAPMODE@12 calls=24515 first=1 same=24465 changed=49 failure=0 unsupported=0 key_overflow=0 distinct=8 distinct_overflow=22563 max_run=14298 max_frame_calls=49 max_frame_changes=8 elided=0 applied=0
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=138 name=_GRTEXSOURCE@16 calls=24515 first=1 same=10405 changed=14109 failure=0 unsupported=0 key_overflow=0 distinct=8 distinct_overflow=22564 max_run=50 max_frame_calls=49 max_frame_changes=21 elided=0 applied=0
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=101 name=_GRFOGMODE@4 calls=23672 first=2 same=23669 changed=1 failure=0 unsupported=0 key_overflow=0 distinct=2 distinct_overflow=0 max_run=22792 max_frame_calls=49 max_frame_changes=2 elided=23669 applied=3
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=79 name=_GRALPHABLENDFUNCTION@16 calls=23520 first=2 same=23517 changed=1 failure=0 unsupported=0 key_overflow=0 distinct=2 distinct_overflow=0 max_run=23515 max_frame_calls=49 max_frame_changes=3 elided=23517 applied=3
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=82 name=_GRALPHATESTFUNCTION@4 calls=23520 first=2 same=23518 changed=0 failure=0 unsupported=0 key_overflow=0 distinct=1 distinct_overflow=0 max_run=23518 max_frame_calls=49 max_frame_changes=2 elided=23518 applied=2
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=89 name=_GRCLIPWINDOW@16 calls=23520 first=2 same=23518 changed=0 failure=0 unsupported=0 key_overflow=0 distinct=1 distinct_overflow=0 max_run=23518 max_frame_calls=49 max_frame_changes=2 elided=23518 applied=2
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=94 name=_GRCULLMODE@4 calls=23520 first=2 same=23518 changed=0 failure=0 unsupported=0 key_overflow=0 distinct=1 distinct_overflow=0 max_run=23518 max_frame_calls=49 max_frame_changes=2 elided=23518 applied=2
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=96 name=_GRDEPTHBUFFERFUNCTION@4 calls=23520 first=2 same=23517 changed=1 failure=0 unsupported=0 key_overflow=0 distinct=2 distinct_overflow=0 max_run=22784 max_frame_calls=49 max_frame_changes=2 elided=23517 applied=3
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=100 name=_GRDITHERMODE@4 calls=2184 first=1 same=2183 changed=0 failure=0 unsupported=0 key_overflow=0 distinct=1 distinct_overflow=0 max_run=2183 max_frame_calls=7 max_frame_changes=1 elided=0 applied=0
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=80 name=_GRALPHACOMBINE@20 calls=1875 first=2 same=1870 changed=3 failure=0 unsupported=0 key_overflow=0 distinct=3 distinct_overflow=0 max_run=1727 max_frame_calls=5 max_frame_changes=4 elided=0 applied=0
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=90 name=_GRCOLORCOMBINE@20 calls=1875 first=2 same=1870 changed=3 failure=0 unsupported=0 key_overflow=0 distinct=3 distinct_overflow=0 max_run=1727 max_frame_calls=5 max_frame_changes=4 elided=0 applied=0
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=102 name=_GRFOGCOLORVALUE@4 calls=877 first=1 same=876 changed=0 failure=0 unsupported=0 key_overflow=0 distinct=1 distinct_overflow=0 max_run=876 max_frame_calls=13 max_frame_changes=1 elided=0 applied=0
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=97 name=_GRDEPTHBUFFERMODE@4 calls=1 first=1 same=0 changed=0 failure=0 unsupported=0 key_overflow=0 distinct=1 distinct_overflow=0 max_run=0 max_frame_calls=1 max_frame_changes=1 elided=0 applied=0
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=106 name=_GRRENDERBUFFER@4 calls=1 first=1 same=0 changed=0 failure=0 unsupported=0 key_overflow=0 distinct=1 distinct_overflow=0 max_run=0 max_frame_calls=1 max_frame_changes=1 elided=0 applied=0
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=114 name=_GRLFBWRITECOLORFORMAT@4 calls=1 first=1 same=0 changed=0 failure=0 unsupported=0 key_overflow=0 distinct=1 distinct_overflow=0 max_run=0 max_frame_calls=1 max_frame_changes=1 elided=0 applied=0
+[00:10:09.992] [    info] [loader] Win32 Glide setter census: ordinal=132 name=_GRTEXCOMBINE@28 calls=1 first=1 same=0 changed=0 failure=0 unsupported=0 key_overflow=0 distinct=1 distinct_overflow=0 max_run=0 max_frame_calls=1 max_frame_changes=1 elided=0 applied=0
+[00:10:09.992] [    info] [loader] Win32 MSCDEX available/audio/tracks/requests/current LBA: true/true/51/101/125602
+[00:10:09.992] [    info] [loader] Win32 MSCDEX request ES/resolve kind/declines/reason/header: 0x00000100/2/0/0/0x0303001A
+[00:10:09.992] [    info] [loader] Win32 MSCDEX IOCTL last subfunction/handled/declared length/reject mask: 0x0000000C/true/6/0x00000000
+[00:10:09.992] [    info] [loader] Win32 MSCDEX last play mode/start/length/seek target: 0/125423/12578/0
+[00:10:09.992] [    info] [loader] Win32 LINEXE scan return EAX/EBP/caller EAX: 0x00000000/0x00000000/0x00000000
+[00:10:09.992] [    info] [loader] Win32 LINEXE selector init results: 0x00000000 0x00000000 0x00000000
+[00:10:09.992] [    info] [loader] Win32 DPMI selector allocations count/request/result: 3/1/0x000000B4
+[00:10:09.992] [    info] [loader] Win32 LINEXE root selector EAX/GS: 0x00000000/0x00000000
+[00:10:09.992] [    info] [loader] Win32 LINEXE shared segment loads entry/read: 13813/1
+[00:10:09.992] [    info] [loader] Win32 LINEXE shared segment last selector/offset/value: 0x0000002B/0x035D6C2C/0x00000000
+[00:10:09.992] [    info] [loader] Win32 LINEXE root word loads offset/selector: 0x00000000(0)/0x00000000(0)
+[00:10:09.992] [    info] [loader] Win32 LINEXE export slot #0: 0x00801B28
+[00:10:09.992] [    info] [loader] Win32 LINEXE export slot #1: 0x00801B43
+[00:10:09.992] [    info] [loader] Win32 LINEXE export slot #2: 0x008026B9
+[00:10:09.992] [    info] [loader] Win32 LINEXE export slot #3: 0x0080271F
+[00:10:09.992] [    info] [loader] Win32 LINEXE export slot #4: 0x00801BAB
+[00:10:09.992] [    info] [loader] Win32 LINEXE export slot #5: 0x00801B5A
+[00:10:09.992] [    info] [loader] Win32 LINEXE export slot #6: 0x00801543
+[00:10:09.992] [    info] [loader] Win32 LINEXE export slot #7: 0x00801609
+[00:10:09.992] [    info] [loader] Win32 LINEXE selector words: 0x00008957 0x0000FFC8 0x0000A091 0x00000006
+[00:10:09.992] [    info] [loader] Win32 DOS low memory valid: true
+[00:10:09.992] [    info] [loader] Win32 DOS low memory bytes: 65536
+[00:10:09.992] [    info] [loader] Win32 last single-step context captured: true
+[00:10:09.992] [    info] [loader] Win32 last single-step EIP: 0x030F56E9
+[00:10:09.992] [    info] [loader] Win32 last single-step EAX: 0x0327002B
+[00:10:09.992] [    info] [loader] Win32 last single-step EBX: 0x0000000B
+[00:10:09.992] [    info] [loader] Win32 last single-step ECX: 0x0000000B
+[00:10:09.992] [    info] [loader] Win32 last single-step EDX: 0x00001200
+[00:10:09.992] [    info] [loader] Win32 last single-step ESI: 0x00001200
+[00:10:09.992] [    info] [loader] Win32 last single-step EDI: 0x0327224C
+[00:10:09.992] [    info] [loader] Win32 last single-step ESP: 0x035D6D8C
+[00:10:09.992] [    info] [loader] Win32 last single-step EBP: 0x0326F278
+[00:10:09.992] [    info] [loader] Win32 last single-step EFLAGS: 0x00000302
+[00:10:09.992] [    info] [loader] Win32 last single-step CS: 0x0023
+[00:10:09.992] [    info] [loader] Win32 last single-step DS: 0x002B
+[00:10:09.992] [    info] [loader] Win32 last single-step ES: 0x002B
+[00:10:09.992] [    info] [loader] Win32 last single-step SS: 0x002B
+[00:10:09.992] [    info] [loader] Win32 last single-step FS: 0x0053
+[00:10:09.992] [    info] [loader] Win32 last single-step GS: 0x002B
+[00:10:09.992] [    info] [loader] Win32 DOS environment block bytes: 3614
+[00:10:09.992] [    info] [loader] Win32 DOS environment access observed: true
+[00:10:09.992] [    info] [loader] Win32 last DOS environment read offset: 0x00000E1C
+[00:10:09.992] [    info] [loader] Win32 last DOS environment entry offset: 0x00000E0D
+[00:10:09.992] [    info] [loader] Win32 last DOS environment entry: VSCODE_STABLE=<redacted>
+[00:10:09.992] [    info] [loader] Win32 last DOS environment value bytes: 1
+[00:10:09.992] [    info] [loader] Win32 guest stack switch supported: true
+[00:10:09.992] [    info] [loader] Win32 guest stack switch attempted: true
+[00:10:09.992] [    info] [loader] Win32 guest stack initial ESP: 0x035D6E60
+[00:10:09.992] [    info] [loader] Win32 handled HLE trap count: 17737
+[00:10:09.992] [    info] [loader] Win32 last handled HLE trap address: 0x030F5CCB
+[00:10:09.992] [    info] [loader] Win32 last handled HLE trap opcode: 0xFB
+[00:10:09.992] [    info] [loader] Win32 port I/O observation count: 33577
+[00:10:09.992] [    info] [loader] Win32 last port I/O address: 0x030F5CC8
+[00:10:09.992] [    info] [loader] Win32 last port I/O opcode: 0x00EE
+[00:10:09.992] [    info] [loader] Win32 last port I/O direction: out
+[00:10:09.992] [    info] [loader] Win32 last port I/O port: 0x0020
+[00:10:09.992] [    info] [loader] Win32 last port I/O width: 1
+[00:10:09.992] [    info] [loader] Win32 last port I/O value: 0x00000020
+[00:10:09.992] [    info] [loader] Win32 last port I/O handled: true
+[00:10:09.992] [    info] [loader] Win32 last port I/O result: emulated-pic-eoi
+[00:10:09.992] [    info] [loader] Win32 port I/O trace stored count: 16
+[00:10:09.992] [    info] [loader] Win32 port I/O trace limit reached: false
+[00:10:09.992] [    info] [loader] Win32 port I/O trace #1 address=0x0303505F opcode=0x66EF direction=out port=0x02AC width=2 value=0x00000010 handled=true
+[00:10:09.992] [    info] [loader] Win32 port I/O trace #2 address=0x030F5726 opcode=0x66EF direction=out port=0x02A0 width=2 value=0x00000001 handled=true
+[00:10:09.992] [    info] [loader] Win32 port I/O trace #3 address=0x030F5726 opcode=0x66EF direction=out port=0x02A2 width=2 value=0x00000000 handled=true
+[00:10:09.992] [    info] [loader] Win32 port I/O trace #4 address=0x030F5726 opcode=0x66EF direction=out port=0x02A0 width=2 value=0x00000005 handled=true
+[00:10:09.992] [    info] [loader] Win32 port I/O trace #5 address=0x030F5726 opcode=0x66EF direction=out port=0x02A2 width=2 value=0x00000000 handled=true
+[00:10:09.992] [    info] [loader] Win32 port I/O trace #6 address=0x030F5726 opcode=0x66EF direction=out port=0x02A0 width=2 value=0x00000009 handled=true
+[00:10:09.992] [    info] [loader] Win32 port I/O trace #7 address=0x030F5726 opcode=0x66EF direction=out port=0x02A2 width=2 value=0x00000000 handled=true
+[00:10:09.992] [    info] [loader] Win32 port I/O trace #8 address=0x030F5726 opcode=0x66EF direction=out port=0x02A0 width=2 value=0x0000000D handled=true
+[00:10:09.992] [    info] [loader] Win32 port I/O trace #9 address=0x030F5726 opcode=0x66EF direction=out port=0x02A2 width=2 value=0x00000000 handled=true
+[00:10:09.992] [    info] [loader] Win32 port I/O trace #10 address=0x030F5726 opcode=0x66EF direction=out port=0x02A0 width=2 value=0x00000011 handled=true
+[00:10:09.992] [    info] [loader] Win32 port I/O trace #11 address=0x030F5726 opcode=0x66EF direction=out port=0x02A2 width=2 value=0x00000000 handled=true
+[00:10:09.992] [    info] [loader] Win32 port I/O trace #12 address=0x030F5726 opcode=0x66EF direction=out port=0x02A0 width=2 value=0x00000015 handled=true
+[00:10:09.992] [    info] [loader] Win32 port I/O trace #13 address=0x030F5726 opcode=0x66EF direction=out port=0x02A2 width=2 value=0x00000000 handled=true
+[00:10:09.992] [    info] [loader] Win32 port I/O trace #14 address=0x030F5726 opcode=0x66EF direction=out port=0x02A0 width=2 value=0x00000019 handled=true
+[00:10:09.992] [    info] [loader] Win32 port I/O trace #15 address=0x030F5726 opcode=0x66EF direction=out port=0x02A2 width=2 value=0x00000000 handled=true
+[00:10:09.992] [    info] [loader] Win32 port I/O trace #16 address=0x030F5726 opcode=0x66EF direction=out port=0x02A0 width=2 value=0x0000001D handled=true
+[00:10:09.992] [    info] [loader] Win32 DOS path trace stored count: 16
+[00:10:09.992] [    info] [loader] Win32 DOS path trace limit reached: true
+[00:10:09.992] [    info] [loader] Win32 DOS path trace #607 service=chdir result=failure error=0x0003 drive=0x00 access=0x00 guest=C:\PIU\datas\texture virtual=\PIU\DATAS\TEXTURE host=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\TEXTURE
+[00:10:09.992] [    info] [loader] Win32 DOS path trace #608 service=chdir result=success error=0x0000 drive=0x00 access=0x00 guest=C:\PIU virtual=\PIU host=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU
+[00:10:09.992] [    info] [loader] Win32 DOS path trace #609 service=chdir result=failure error=0x0003 drive=0x00 access=0x00 guest=C:\PIU\datas\texture virtual=\PIU\DATAS\TEXTURE host=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\TEXTURE
+[00:10:09.992] [    info] [loader] Win32 DOS path trace #610 service=chdir result=success error=0x0000 drive=0x00 access=0x00 guest=C:\PIU virtual=\PIU host=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU
+[00:10:09.992] [    info] [loader] Win32 DOS path trace #611 service=chdir result=failure error=0x0003 drive=0x00 access=0x00 guest=C:\PIU\datas\texture virtual=\PIU\DATAS\TEXTURE host=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\TEXTURE
+[00:10:09.992] [    info] [loader] Win32 DOS path trace #612 service=chdir result=success error=0x0000 drive=0x00 access=0x00 guest=C:\PIU virtual=\PIU host=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU
+[00:10:09.992] [    info] [loader] Win32 DOS path trace #613 service=chdir result=failure error=0x0003 drive=0x00 access=0x00 guest=C:\PIU\datas\texture virtual=\PIU\DATAS\TEXTURE host=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\TEXTURE
+[00:10:09.992] [    info] [loader] Win32 DOS path trace #614 service=chdir result=success error=0x0000 drive=0x00 access=0x00 guest=C:\PIU virtual=\PIU host=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU
+[00:10:09.992] [    info] [loader] Win32 DOS path trace #615 service=chdir result=failure error=0x0003 drive=0x00 access=0x00 guest=C:\PIU\datas\texture virtual=\PIU\DATAS\TEXTURE host=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\TEXTURE
+[00:10:09.992] [    info] [loader] Win32 DOS path trace #616 service=chdir result=success error=0x0000 drive=0x00 access=0x00 guest=C:\PIU virtual=\PIU host=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU
+[00:10:09.992] [    info] [loader] Win32 DOS path trace #617 service=chdir result=success error=0x0000 drive=0x00 access=0x00 guest=C:\PIU virtual=\PIU host=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU
+[00:10:09.992] [    info] [loader] Win32 DOS path trace #618 service=chdir result=failure error=0x0003 drive=0x00 access=0x00 guest=C:\PIU\datas\texture virtual=\PIU\DATAS\TEXTURE host=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\TEXTURE
+[00:10:09.992] [    info] [loader] Win32 DOS path trace #619 service=chdir result=success error=0x0000 drive=0x00 access=0x00 guest=C:\PIU virtual=\PIU host=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU
+[00:10:09.992] [    info] [loader] Win32 DOS path trace #620 service=chdir result=success error=0x0000 drive=0x00 access=0x00 guest=C:\PIU\datas\step virtual=\PIU\DATAS\STEP host=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\STEP
+[00:10:09.992] [    info] [loader] Win32 DOS path trace #621 service=open result=success error=0x0000 drive=0x00 access=0x00 guest=mix1_1.stf virtual=\PIU\DATAS\STEP\MIX1_1.STF host=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\STEP\MIX1_1.STF
+[00:10:09.992] [    info] [loader] Win32 DOS path trace #622 service=chdir result=success error=0x0000 drive=0x00 access=0x00 guest=C:\PIU virtual=\PIU host=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O trace observed/stored: 152/64
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O trace wrapped: true
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #89 op=seek handle=0x0005 before=0x000010F4 after=0x000010F4 origin=0x01 offset=0 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T14.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #90 op=seek handle=0x0005 before=0x000010F4 after=0x000010F4 origin=0x00 offset=4340 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T14.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #91 op=read handle=0x0005 before=0x00000000 after=0x00001000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6AF8 stack=[0x031A6426 0x030F5A60 0x00000000 0x00000000 0x00000004 0x00000004 0x030F5438 0x00000001] prefix=[2D 00 00 00 3B 00 00 00 47 00 00 00 03 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T15.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #92 op=read handle=0x0005 before=0x00001000 after=0x00001218 origin=0x00 offset=0 requested=4096 actual=536 error=0x0000 eip=0x030F87B7 esp=0x035D6AF8 stack=[0x031A6426 0x030F5A60 0x0424B408 0x00000010 0x00000014 0x00000010 0x030F5438 0x00000001] prefix=[3A 00 00 00 37 00 00 00 46 00 00 00 46 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T15.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #93 op=seek handle=0x0005 before=0x00001218 after=0x00001218 origin=0x01 offset=0 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T15.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #94 op=seek handle=0x0005 before=0x00001218 after=0x00001218 origin=0x00 offset=4632 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T15.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #95 op=read handle=0x0005 before=0x00000000 after=0x00001000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6AF8 stack=[0x031A6426 0x030F5A60 0x00000000 0x00000000 0x00000004 0x00000004 0x030F5438 0x00000001] prefix=[27 00 00 00 38 00 00 00 46 00 00 00 02 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T16.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #96 op=read handle=0x0005 before=0x00001000 after=0x00001090 origin=0x00 offset=0 requested=4096 actual=144 error=0x0000 eip=0x030F87B7 esp=0x035D6AF8 stack=[0x031A6426 0x030F5A60 0x0424C5F4 0x0000000C 0x00000048 0x0000000C 0x030F5438 0x00000001] prefix=[00 00 00 00 00 00 00 00 62 5F 77 00 00 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T16.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #97 op=seek handle=0x0005 before=0x00001090 after=0x00001090 origin=0x01 offset=0 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T16.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #98 op=seek handle=0x0005 before=0x00001090 after=0x00001090 origin=0x00 offset=4240 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T16.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #99 op=read handle=0x0005 before=0x00000000 after=0x00001000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6AF8 stack=[0x031A6426 0x030F5A60 0x00000000 0x00000000 0x00000004 0x00000004 0x030F5438 0x00000001] prefix=[23 00 00 00 32 00 00 00 45 00 00 00 02 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T17.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #100 op=read handle=0x0005 before=0x00001000 after=0x0000100C origin=0x00 offset=0 requested=4096 actual=12 error=0x0000 eip=0x030F87B7 esp=0x035D6AF8 stack=[0x031A6426 0x030F5A60 0x0424D6E4 0x0000003C 0x00000004 0x0000003C 0x030F5438 0x00000001] prefix=[00 00 00 00 1E 00 00 00 14 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T17.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #101 op=seek handle=0x0005 before=0x0000100C after=0x0000100C origin=0x01 offset=0 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T17.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #102 op=seek handle=0x0005 before=0x0000100C after=0x0000100C origin=0x00 offset=4108 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T17.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #103 op=read handle=0x0005 before=0x00000000 after=0x00000B5C origin=0x00 offset=0 requested=4096 actual=2908 error=0x0000 eip=0x030F87B7 esp=0x035D6AF8 stack=[0x031A6426 0x030F5A60 0x00000000 0x00000000 0x00000004 0x00000004 0x030F5438 0x00000001] prefix=[1E 00 00 00 27 00 00 00 2D 00 00 00 02 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T18.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #104 op=seek handle=0x0005 before=0x00000B5C after=0x00000B5C origin=0x01 offset=0 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T18.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #105 op=seek handle=0x0005 before=0x00000B5C after=0x00000B5C origin=0x00 offset=2908 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T18.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #106 op=read handle=0x0005 before=0x00000000 after=0x000006EC origin=0x00 offset=0 requested=4096 actual=1772 error=0x0000 eip=0x030F87B7 esp=0x035D6AF8 stack=[0x031A6426 0x030F5A60 0x00000000 0x00000000 0x00000004 0x00000004 0x030F5438 0x00000001] prefix=[0F 00 00 00 15 00 00 00 1E 00 00 00 01 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T19.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #107 op=seek handle=0x0005 before=0x000006EC after=0x000006EC origin=0x01 offset=0 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T19.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #108 op=seek handle=0x0005 before=0x000006EC after=0x000006EC origin=0x00 offset=1772 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\T19.3DM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #109 op=read handle=0x0005 before=0x00000000 after=0x00001000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6AF8 stack=[0x031A6426 0x030F5A60 0x00000000 0x00000000 0x00000002 0x00000002 0x030F5438 0x00000001] prefix=[F3 01 C5 C0 04 C4 D1 11 07 42 8C 5B 80 C1 96 CA] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\NONSTOP.CAM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #110 op=read handle=0x0005 before=0x00001000 after=0x00002000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6AF8 stack=[0x031A6426 0x030F5A60 0x03270356 0x0000000E 0x0000000A 0x0000000E 0x030F5438 0x00000001] prefix=[A3 C3 FB 7A B5 42 B2 2E A2 C0 1B 2E 70 C3 67 75] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\NONSTOP.CAM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #111 op=read handle=0x0005 before=0x00002000 after=0x00002ECA origin=0x00 offset=0 requested=4096 actual=3786 error=0x0000 eip=0x030F87B7 esp=0x035D6AF8 stack=[0x031A6426 0x030F5A60 0x03271356 0x00000006 0x00000012 0x00000006 0x030F5438 0x00000001] prefix=[0A C2 B3 3B 98 42 91 96 E0 43 47 72 3D C0 2C 34] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\NONSTOP.CAM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #112 op=seek handle=0x0005 before=0x00002ECA after=0x00002ECA origin=0x01 offset=0 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\NONSTOP.CAM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #113 op=seek handle=0x0005 before=0x00002ECA after=0x00002ECA origin=0x00 offset=11978 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\MODEL\NONSTOP.CAM
+[00:10:09.992] [    info] [loader] Win32 DOS file I/O #114 op=read handle=0x0005 before=0x00000000 after=0x00001000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6CAC stack=[0x031A6426 0x030F5A60 0x00000000 0x00000000 0x00000004 0x00000004 0x030F5438 0x00000004] prefix=[42 47 41 00 78 00 00 00 00 00 00 00 00 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\GAMEVIEW.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #115 op=read handle=0x0005 before=0x00001000 after=0x00001710 origin=0x00 offset=0 requested=4096 actual=1808 error=0x0000 eip=0x030F87B7 esp=0x035D6CAC stack=[0x031A6426 0x030F5A60 0x03769C40 0x00000070 0x000000C4 0x00000070 0x030F5438 0x0000002C] prefix=[00 00 00 00 00 00 80 3F 00 00 80 3F 00 00 80 3F] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\GAMEVIEW.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #116 op=seek handle=0x0005 before=0x00001710 after=0x00001710 origin=0x01 offset=0 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\GAMEVIEW.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #117 op=seek handle=0x0005 before=0x00001710 after=0x00001710 origin=0x00 offset=5904 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\GAMEVIEW.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #118 op=read handle=0x0005 before=0x00000000 after=0x00001000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6DA8 stack=[0x031A6426 0x030F5A60 0x00000000 0x00000000 0x00000004 0x00000004 0x030F5438 0x00000004] prefix=[42 47 41 00 3C 00 00 00 00 00 00 00 00 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\ANDAMIRO.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #119 op=read handle=0x0005 before=0x00001000 after=0x00001030 origin=0x00 offset=0 requested=4096 actual=48 error=0x0000 eip=0x030F87B7 esp=0x035D6DA8 stack=[0x031A6426 0x030F5A60 0x03257070 0x00000014 0x0000002C 0x00000014 0x030F5438 0x00000040] prefix=[00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\ANDAMIRO.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #120 op=seek handle=0x0005 before=0x00001030 after=0x00001030 origin=0x01 offset=0 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\ANDAMIRO.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #121 op=seek handle=0x0005 before=0x00001030 after=0x00001030 origin=0x00 offset=4144 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\ANDAMIRO.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #122 op=read handle=0x0005 before=0x00000000 after=0x00001000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6DA4 stack=[0x031A6426 0x030F5A60 0x00000000 0x00000000 0x00000004 0x00000004 0x030F5438 0x00000004] prefix=[42 47 41 00 78 00 00 00 00 00 00 00 00 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\START.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #123 op=read handle=0x0005 before=0x00001000 after=0x00001164 origin=0x00 offset=0 requested=4096 actual=356 error=0x0000 eip=0x030F87B7 esp=0x035D6DA4 stack=[0x031A6426 0x030F5A60 0x03256E74 0x00000034 0x0000000C 0x00000034 0x030F5438 0x00000040] prefix=[00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\START.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #124 op=seek handle=0x0005 before=0x00001164 after=0x00001164 origin=0x01 offset=0 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\START.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #125 op=seek handle=0x0005 before=0x00001164 after=0x00001164 origin=0x00 offset=4452 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\START.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #126 op=read handle=0x0005 before=0x00000000 after=0x00001000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6DA4 stack=[0x031A6426 0x030F5A60 0x00000000 0x00000000 0x00000004 0x00000004 0x030F5438 0x00000004] prefix=[42 47 41 00 3C 00 00 00 04 00 00 00 03 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\HELP.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #127 op=read handle=0x0005 before=0x00001000 after=0x00002000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6DA4 stack=[0x031A6426 0x030F5A60 0x03256600 0x00000030 0x00000010 0x00000030 0x030F5438 0x00000040] prefix=[00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\HELP.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #128 op=read handle=0x0005 before=0x00002000 after=0x00002688 origin=0x00 offset=0 requested=4096 actual=1672 error=0x0000 eip=0x030F87B7 esp=0x035D6DA4 stack=[0x031A6426 0x030F5A60 0x037B4454 0x000000F8 0x00000094 0x000000F8 0x030F5438 0x0000002C] prefix=[00 00 80 3F 00 00 80 3F 00 00 80 3F 00 00 80 3F] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\HELP.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #129 op=seek handle=0x0005 before=0x00002688 after=0x00002688 origin=0x01 offset=0 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\HELP.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #130 op=seek handle=0x0005 before=0x00002688 after=0x00002688 origin=0x00 offset=9864 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\HELP.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #131 op=read handle=0x0005 before=0x00000000 after=0x00001000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6DA4 stack=[0x031A6426 0x030F5A60 0x00000000 0x00000000 0x00000004 0x00000004 0x030F5438 0x00000004] prefix=[42 47 41 00 78 00 00 00 00 00 00 00 00 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\MODE.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #132 op=read handle=0x0005 before=0x00001000 after=0x00002000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6DA4 stack=[0x031A6426 0x030F5A60 0x032568FC 0x00000038 0x00000008 0x00000038 0x030F5438 0x00000040] prefix=[00 00 00 00 00 00 00 00 05 00 00 00 78 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\MODE.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #133 op=read handle=0x0005 before=0x00002000 after=0x00003000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6DA4 stack=[0x031A6426 0x030F5A60 0x037B4740 0x00000360 0x00000748 0x00000360 0x030F5438 0x0000002C] prefix=[00 00 80 3F 00 00 80 3F 00 00 80 3F 00 00 80 3F] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\MODE.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #134 op=read handle=0x0005 before=0x00003000 after=0x00004000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6DA4 stack=[0x031A6426 0x030F5A60 0x037B56FC 0x00000874 0x00000234 0x00000874 0x030F5438 0x0000002C] prefix=[00 00 66 43 00 00 00 43 00 00 00 43 00 00 80 3F] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\MODE.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #135 op=read handle=0x0005 before=0x00004000 after=0x00005000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6DA4 stack=[0x031A6426 0x030F5A60 0x037B6674 0x0000029C 0x0000080C 0x0000029C 0x030F5438 0x0000002C] prefix=[00 00 66 43 00 00 00 43 00 00 00 43 0A D7 83 3F] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\MODE.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #136 op=read handle=0x0005 before=0x00005000 after=0x000053BC origin=0x00 offset=0 requested=4096 actual=956 error=0x0000 eip=0x030F87B7 esp=0x035D6DA4 stack=[0x031A6426 0x030F5A60 0x037B7410 0x00000328 0x00000200 0x00000328 0x030F5438 0x0000002C] prefix=[00 00 00 00 00 00 80 3F 00 00 00 00 00 00 80 3F] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\MODE.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #137 op=seek handle=0x0005 before=0x000053BC after=0x000053BC origin=0x01 offset=0 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\MODE.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #138 op=seek handle=0x0005 before=0x000053BC after=0x000053BC origin=0x00 offset=21436 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\MODE.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #139 op=read handle=0x0005 before=0x00000000 after=0x00001000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6D4C stack=[0x031A6426 0x030F5A60 0x00000000 0x00000000 0x00000004 0x00000004 0x030F5438 0x00000004] prefix=[42 47 41 00 78 00 00 00 00 00 00 00 00 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\CDSEL.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #140 op=read handle=0x0005 before=0x00001000 after=0x00002000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6D4C stack=[0x031A6426 0x030F5A60 0x0329C8F8 0x0000001C 0x00000024 0x0000001C 0x030F5438 0x00000040] prefix=[00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\CDSEL.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #141 op=read handle=0x0005 before=0x00002000 after=0x00002370 origin=0x00 offset=0 requested=4096 actual=880 error=0x0000 eip=0x030F87B7 esp=0x035D6D4C stack=[0x031A6426 0x030F5A60 0x0329CEC8 0x00000004 0x0000003C 0x00000004 0x030F5438 0x00000040] prefix=[00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\CDSEL.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #142 op=seek handle=0x0005 before=0x00002370 after=0x00002370 origin=0x01 offset=0 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\CDSEL.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #143 op=seek handle=0x0005 before=0x00002370 after=0x00002370 origin=0x00 offset=9072 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\CDSEL.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #144 op=read handle=0x0005 before=0x00000000 after=0x00001000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6D4C stack=[0x031A6426 0x030F5A60 0x00000000 0x00000000 0x00000004 0x00000004 0x030F5438 0x00000004] prefix=[42 47 41 00 3C 00 00 00 00 00 00 00 00 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\MUSIC.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #145 op=read handle=0x0005 before=0x00001000 after=0x00002000 origin=0x00 offset=0 requested=4096 actual=4096 error=0x0000 eip=0x030F87B7 esp=0x035D6D4C stack=[0x031A6426 0x030F5A60 0x03256728 0x00000014 0x0000002C 0x00000014 0x030F5438 0x00000040] prefix=[00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\MUSIC.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #146 op=read handle=0x0005 before=0x00002000 after=0x0000218C origin=0x00 offset=0 requested=4096 actual=396 error=0x0000 eip=0x030F87B7 esp=0x035D6D4C stack=[0x031A6426 0x030F5A60 0x037B4410 0x000000B4 0x00000028 0x000000B4 0x030F5438 0x0000002C] prefix=[00 00 20 41 00 00 40 C0 00 00 00 00 00 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\MUSIC.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #147 op=seek handle=0x0005 before=0x0000218C after=0x0000218C origin=0x01 offset=0 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\MUSIC.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #148 op=seek handle=0x0005 before=0x0000218C after=0x0000218C origin=0x00 offset=8588 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\BGA\MUSIC.BGA
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #149 op=read handle=0x0005 before=0x00000000 after=0x00003918 origin=0x00 offset=0 requested=28672 actual=14616 error=0x0000 eip=0x030F87B7 esp=0x035D6D90 stack=[0x00007100 0x030F53F3 0x00000001 0x0328DA5E 0x00000000 0x00007118 0x0326F278 0x031A6426] prefix=[4D 69 78 31 00 00 00 00 00 00 00 00 00 00 00 00] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\STEP\MIX1_1.STF
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #150 op=read handle=0x0005 before=0x00003918 after=0x00003918 origin=0x00 offset=0 requested=14336 actual=0 error=0x0000 eip=0x030F87B7 esp=0x035D6D90 stack=[0x00003800 0x030F53F3 0x00000001 0x03291376 0x00003918 0x00003800 0x0326F278 0x031A6426] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\STEP\MIX1_1.STF
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #151 op=seek handle=0x0005 before=0x00003918 after=0x00003918 origin=0x01 offset=0 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\STEP\MIX1_1.STF
+[00:10:09.993] [    info] [loader] Win32 DOS file I/O #152 op=seek handle=0x0005 before=0x00003918 after=0x00003918 origin=0x00 offset=14616 requested=0 actual=0 error=0x0000 eip=0x00000000 esp=0x00000000 stack=[0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000 0x00000000] prefix=[] path=E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\STEP\MIX1_1.STF
+[00:10:09.993] [    info] [loader] Win32 allocator probe observation count: 0
+[00:10:09.993] [    info] [loader] Win32 allocator probe trace stored count: 0
+[00:10:09.993] [    info] [loader] Win32 allocator probe trace wrapped: false
+[00:10:09.993] [    info] [loader] Win32 allocator control-flow observation count: 0
+[00:10:09.993] [    info] [loader] Win32 allocator control-flow trace stored count: 0
+[00:10:09.993] [    info] [loader] Win32 allocator control-flow trace wrapped: false
+[00:10:09.993] [    info] [loader] Win32 allocator null link transition valid: false
+[00:10:09.993] [    info] [loader] Win32 allocator poison link transition valid: false
+[00:10:09.993] [    info] [loader] Win32 allocator root-null link transition valid: false
+[00:10:09.993] [    info] [loader] Win32 handled DOS interrupt count: 1414
+[00:10:09.993] [    info] [loader] Win32 last handled DOS interrupt vector: 0x31
+[00:10:09.993] [    info] [loader] Win32 last handled DOS interrupt AH: 0x03
+[00:10:09.993] [    info] [loader] Win32 last handled DOS interrupt AX: 0x0300
+[00:10:09.993] [    info] [loader] Win32 handled DOS chdir count: 584
+[00:10:09.993] [    info] [loader] Win32 last DOS chdir guest path: C:\PIU
+[00:10:09.993] [    info] [loader] Win32 last DOS chdir virtual path: \PIU
+[00:10:09.993] [    info] [loader] Win32 last DOS chdir host path: E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU
+[00:10:09.993] [    info] [loader] Win32 last DOS chdir result: success
+[00:10:09.993] [    info] [loader] Win32 handled DOS getcwd count: 1
+[00:10:09.993] [    info] [loader] Win32 last DOS getcwd drive: 0x00
+[00:10:09.993] [    info] [loader] Win32 last DOS getcwd path: PIU
+[00:10:09.993] [    info] [loader] Win32 last DOS getcwd result: success
+[00:10:09.993] [    info] [loader] Win32 handled DOS get drive count: 1
+[00:10:09.993] [    info] [loader] Win32 last DOS get drive value: 0x02
+[00:10:09.993] [    info] [loader] Win32 handled DOS open count: 35
+[00:10:09.993] [    info] [loader] Win32 last DOS open guest path: mix1_1.stf
+[00:10:09.993] [    info] [loader] Win32 last DOS open virtual path: \PIU\DATAS\STEP\MIX1_1.STF
+[00:10:09.993] [    info] [loader] Win32 last DOS open host path: E:\MYWORK\Projects\rePIU\build\runtime_mounts\pumpit1\PIU\DATAS\STEP\MIX1_1.STF
+[00:10:09.993] [    info] [loader] Win32 last DOS open access mode: 0x00
+[00:10:09.993] [    info] [loader] Win32 last DOS open result: success
+[00:10:09.993] [    info] [loader] Win32 last DOS open handle: 0x0005
+[00:10:09.993] [    info] [loader] Win32 handled DOS read count: 79
+[00:10:09.993] [    info] [loader] Win32 last DOS read handle: 0x0005
+[00:10:09.993] [    info] [loader] Win32 last DOS read requested bytes: 14336
+[00:10:09.993] [    info] [loader] Win32 last DOS read actual bytes: 0
+[00:10:09.993] [    info] [loader] Win32 last DOS read buffer: 0x03291376
+[00:10:09.993] [    info] [loader] Win32 last DOS read result: success
+[00:10:09.993] [    info] [loader] Win32 handled DOS seek count: 73
+[00:10:09.993] [    info] [loader] Win32 last DOS seek handle: 0x0005
+[00:10:09.993] [    info] [loader] Win32 last DOS seek origin: 0x00
+[00:10:09.993] [    info] [loader] Win32 last DOS seek offset: 14616
+[00:10:09.993] [    info] [loader] Win32 last DOS seek position: 14616
+[00:10:09.993] [    info] [loader] Win32 last DOS seek result: success
+[00:10:09.993] [    info] [loader] Win32 handled DOS close count: 35
+[00:10:09.993] [    info] [loader] Win32 last DOS close handle: 0x0005
+[00:10:09.993] [    info] [loader] Win32 last DOS close result: success
+[00:10:09.993] [    info] [loader] Win32 handled DOS IOCTL count: 106
+[00:10:09.993] [    info] [loader] Win32 last DOS IOCTL subfunction: 0x00
+[00:10:09.993] [    info] [loader] Win32 last DOS IOCTL handle: 0x0005
+[00:10:09.993] [    info] [loader] Win32 last DOS IOCTL result: success
+[00:10:09.993] [    info] [loader] Win32 last DOS IOCTL device info: 0x0000
+[00:10:09.993] [    info] [loader] Win32 handled DOS resize count: 288
+[00:10:09.993] [    info] [loader] Win32 last DOS resize selector: 0x002B
+[00:10:09.993] [    info] [loader] Win32 last DOS resize paragraphs: 0xC500
+[00:10:09.993] [    info] [loader] Win32 last DOS resize result: success
+[00:10:09.993] [    info] [loader] Win32 last DOS resize requested end: 0x094C5000
+[00:10:09.993] [    info] [loader] Win32 last DOS resize allocator end: 0x094C5000
+[00:10:09.993] [    info] [loader] Win32 handled segment load count: 24532
+[00:10:09.993] [    info] [loader] Win32 last handled segment load address: 0x030F56E9
+[00:10:09.993] [    info] [loader] Win32 last handled segment load opcode: 0x8E
+[00:10:09.993] [    info] [loader] Win32 last handled segment register: ES
+[00:10:09.993] [    info] [loader] Win32 last handled segment selector: 0x002B
+[00:10:09.993] [    info] [loader] Win32 segment load trace stored count: 16
+[00:10:09.993] [    info] [loader] Win32 segment load trace wrapped: true
+[00:10:09.993] [    info] [loader] Win32 segment load trace #24517 offset=0x000F56E9 register=ES selector=0x002B source=0x00000000
+[00:10:09.993] [    info] [loader] Win32 segment load trace #24518 offset=0x000F6E8A register=ES selector=0x002B source=0x00000000
+[00:10:09.993] [    info] [loader] Win32 segment load trace #24519 offset=0x000F6CD7 register=ES selector=0x002B source=0x00000000
+[00:10:09.993] [    info] [loader] Win32 segment load trace #24520 offset=0x000F6CD7 register=ES selector=0x002B source=0x00000000
+[00:10:09.993] [    info] [loader] Win32 segment load trace #24521 offset=0x000F694D register=ES selector=0x002B source=0x00000000
+[00:10:09.993] [    info] [loader] Win32 segment load trace #24522 offset=0x000F6E8A register=ES selector=0x002B source=0x00000000
+[00:10:09.993] [    info] [loader] Win32 segment load trace #24523 offset=0x000F6CD7 register=ES selector=0x002B source=0x00000000
+[00:10:09.993] [    info] [loader] Win32 segment load trace #24524 offset=0x000F6CD7 register=ES selector=0x002B source=0x00000000
+[00:10:09.993] [    info] [loader] Win32 segment load trace #24525 offset=0x000F694D register=ES selector=0x002B source=0x00000000
+[00:10:09.993] [    info] [loader] Win32 segment load trace #24526 offset=0x000F56E9 register=ES selector=0x002B source=0x00000000
+[00:10:09.993] [    info] [loader] Win32 segment load trace #24527 offset=0x000F56E9 register=ES selector=0x002B source=0x00000000
+[00:10:09.993] [    info] [loader] Win32 segment load trace #24528 offset=0x000F9563 register=ES selector=0x002B source=0x032D6CC0
+[00:10:09.993] [    info] [loader] Win32 segment load trace #24529 offset=0x000F957A register=DS selector=0x0000 source=0x00000000
+[00:10:09.993] [    info] [loader] Win32 segment load trace #24530 offset=0x000F9531 register=DS selector=0x002B source=0x035D6D6C
+[00:10:09.993] [    info] [loader] Win32 segment load trace #24531 offset=0x000F56E9 register=ES selector=0x002B source=0x00000000
+[00:10:09.993] [    info] [loader] Win32 segment load trace #24532 offset=0x000F56E9 register=ES selector=0x002B source=0x00000000
+[00:10:09.993] [    info] [loader] Win32 handled segment store count: 22542
+[00:10:09.993] [    info] [loader] Win32 last handled segment store address: 0x030F56E7
+[00:10:09.993] [    info] [loader] Win32 last handled segment store opcode: 0x8C
+[00:10:09.993] [    info] [loader] Win32 last stored segment register: DS
+[00:10:09.993] [    info] [loader] Win32 last stored segment selector: 0x002B
+[00:10:09.994] [    info] [loader] Win32 last segment store destination: 0x00000000
+[00:10:09.994] [    info] [loader] Win32 handled segment memory load count: 7363
+[00:10:09.994] [    info] [loader] Win32 last handled segment memory load address: 0x030FC777
+[00:10:09.994] [    info] [loader] Win32 last handled segment memory load opcode: 0x80
+[00:10:09.994] [    info] [loader] Win32 last segment memory load register: ES
+[00:10:09.994] [    info] [loader] Win32 last segment memory load selector: 0x0053
+[00:10:09.994] [    info] [loader] Win32 last segment memory load offset: 0x00000000
+[00:10:09.994] [    info] [loader] Win32 last segment memory load width: 1
+[00:10:09.994] [    info] [loader] Win32 last segment memory load value: 0x00
+[00:10:09.994] [    info] [loader] Win32 handled low-memory access count: 7958
+[00:10:09.994] [    info] [loader] Win32 last low-memory access address: 0x030F4A9A
+[00:10:09.994] [    info] [loader] Win32 last low-memory access opcode: 0x8A
+[00:10:09.994] [    info] [loader] Win32 last low-memory access ESI: 0x0325705C
+[00:10:09.994] [    info] [loader] Win32 last low-memory access EDI: 0x035D6C54
+[00:10:09.994] [    info] [loader] Win32 last low-memory access destination: 0x00000000
+[00:10:09.994] [    info] [loader] Win32 last low-memory access value: 0x00000000
+[00:10:09.994] [    info] [loader] Win32 low-memory read emulate count: 596
+[00:10:09.994] [    info] [loader] Win32 low-memory read emulate debug stage: 4
+[00:10:09.994] [    info] [loader] Win32 low-memory read emulate debug decode result: 0x000001D1
+[00:10:09.994] [    info] [loader] Win32 low-memory read emulate debug calculated address: 0x00000001
+[00:10:09.994] [    info] [loader] Win32 last low-memory read emulate address: 0x00000000
+[00:10:09.994] [    info] [loader] Win32 last low-memory read emulate EIP: 0x030F4A98
+[00:10:09.994] [    info] [loader] Win32 last low-memory read emulate value: 0x00000000
+[00:10:09.994] [    info] [loader] Win32 last low-memory read emulate reg: 1
+[00:10:09.994] [    info] [loader] Win32 handled memory store count: 2
+[00:10:09.994] [    info] [loader] Win32 last handled memory store address: 0x030F3FC8
+[00:10:09.994] [    info] [loader] Win32 last memory store opcode: 0x6689
+[00:10:09.994] [    info] [loader] Win32 last memory store width: 2
+[00:10:09.994] [    info] [loader] Win32 last memory store source kind: mov-reg16
+[00:10:09.994] [    info] [loader] Win32 last memory store destination: 0x03100002
+[00:10:09.994] [    info] [loader] Win32 last memory store value: 0x00000023
+[00:10:09.994] [    info] [loader] Win32 last memory store applied: true
+[00:10:09.994] [    info] [loader] Win32 shadow memory write count: 0
+[00:10:09.994] [    info] [loader] Win32 REP MOVS safe-copy failure count: 0
+[00:10:09.994] [    info] [loader] Win32 shadow memory read hit count: 0
+[00:10:09.994] [    info] [loader] Win32 shadow memory byte count: 0
+[00:10:09.994] [    info] [loader] Win32 shadow memory range valid: false
+[00:10:09.994] [    info] [loader] Win32 minimal execution thread exit code: 0
+[00:10:09.994] [    info] [loader] Win32 DOS termination captured: false
+[00:10:09.994] [    info] [loader] Win32 minimal execution message: minimal execution stopped by SDL exit request
+[00:10:09.999] [   error] [loader] Relocated exception byte window: valid
+[00:10:09.999] [   error] [loader] Relocated exception byte window message: relocated image byte window is ready
+[00:10:09.999] [   error] [loader] Relocated exception byte object: 2
+[00:10:09.999] [   error] [loader] Relocated exception byte base: 0x030F56D9
+[00:10:09.999] [   error] [loader] Relocated exception byte focus offset: 0x00000010
+[00:10:09.999] [   error] [loader] Relocated exception bytes: 5D 5F 5E C3 51 56 57 89 D9 89 D6 89 C7 06 8C D8 [8E] C0 57 89 C8 C1 E9 02 F2 A5 8A C8 80 E1 03 F2 A4

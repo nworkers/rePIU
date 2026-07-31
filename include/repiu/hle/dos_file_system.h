@@ -3,6 +3,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,6 +20,44 @@ enum class DosPathResult
     kAccessDenied,
 };
 
+// Task 374: a host stream kept open for as long as the DOS handle lives. Before
+// this, every read reopened the file -- a stat, an ifstream construction, a seek,
+// the read, and a close -- which measured at 7.0 ms per 4 KB read and 83.5 ms at
+// worst, because a Windows CreateFile traverses the filter driver stack including
+// real-time scanning. Real DOS keeps the handle open across reads.
+//
+// The stream is a cache, not state. Copying starts cold rather than sharing,
+// because two handles sharing one stream would share a file position; and the
+// state is copy-assigned into the guest thread context, so copyability is
+// mandatory rather than optional.
+class DosHostFileCache
+{
+public:
+    DosHostFileCache() = default;
+    ~DosHostFileCache() = default;
+    DosHostFileCache(const DosHostFileCache&) noexcept {}
+    DosHostFileCache& operator=(const DosHostFileCache&) noexcept
+    {
+        Reset();
+        return *this;
+    }
+    DosHostFileCache(DosHostFileCache&&) noexcept = default;
+    DosHostFileCache& operator=(DosHostFileCache&&) noexcept = default;
+
+    // Returns a stream positioned at `offset`, opening the file only when the
+    // cache is cold. Null when the file cannot be opened, which the caller maps
+    // to the same DOS error it reported before.
+    std::ifstream* Acquire(const std::filesystem::path& path,
+                           std::uint64_t offset,
+                           bool* opened_now);
+
+    void Reset();
+    bool warm() const { return stream_ != nullptr; }
+
+private:
+    std::unique_ptr<std::ifstream> stream_;
+};
+
 struct DosOpenFileHandle
 {
     bool open = false;
@@ -27,6 +67,10 @@ struct DosOpenFileHandle
     std::string guest_path;
     std::filesystem::path host_path;
     std::string dos_path;
+    // Task 374: read once at open. Safe to cache because this API has no write
+    // path -- add invalidation here if one is ever introduced.
+    std::uint64_t cached_file_size = 0;
+    DosHostFileCache host_stream;
 };
 
 struct DosVirtualFileSystemState
@@ -37,6 +81,11 @@ struct DosVirtualFileSystemState
     std::vector<DosOpenFileHandle> open_files;
     std::vector<std::pair<std::string, std::uint16_t>> attribute_overrides;
     std::string message;
+    // Task 374: the pair that makes the fix verifiable. These were equal before
+    // the change -- one host open per read -- and afterwards opens should fall to
+    // roughly one per file.
+    std::uint32_t file_read_count = 0;
+    std::uint32_t host_file_open_count = 0;
 };
 
 struct DosResolvedPath

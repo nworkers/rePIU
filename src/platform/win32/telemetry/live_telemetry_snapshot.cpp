@@ -1564,6 +1564,9 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->port_io = context.port_io;
     attempt->dos_path = context.dos_path;
     attempt->dos_file_io = context.dos_file_io;
+    attempt->dos_file_io.read_count = context.dos_file_system.file_read_count;
+    attempt->dos_file_io.host_open_count =
+        context.dos_file_system.host_file_open_count;
     attempt->allocator_probe = context.allocator_probe;
     attempt->allocator_control_flow = context.allocator_control_flow;
     attempt->handled_dos_interrupt_count =

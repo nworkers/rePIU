@@ -3115,6 +3115,15 @@ void PrintExecutionAttempt(
                 attempt.dos_file_io.trace_stored_count);
     logger.info("Win32 DOS file I/O trace wrapped: {}",
                 attempt.dos_file_io.trace_wrapped ? "true" : "false");
+    // Task 374: one host open per read is the defect this reports. A healthy run
+    // opens roughly once per file and reads many times against it.
+    logger.info("Win32 DOS file reads/host opens/reads per open: {}/{}/{:.2f}",
+                attempt.dos_file_io.read_count,
+                attempt.dos_file_io.host_open_count,
+                attempt.dos_file_io.host_open_count != 0U
+                    ? static_cast<double>(attempt.dos_file_io.read_count) /
+                        static_cast<double>(attempt.dos_file_io.host_open_count)
+                    : 0.0);
     if (attempt.dos_file_io.trace_stored_count != 0)
     {
         const std::uint32_t first_sequence =
