@@ -184,3 +184,9 @@ alongside frame counts because the one-second watchdog reports `timed_out` on an
 early exit; judge on gameplay rather than the automated scene, where these setters
 are far rarer; and confirm in code what a counter counts before subtracting or
 dividing, which is the lesson Task 376 recorded.
+
+## 최종 인계 / Final handoff
+
+Task 377 이후 이어진 Music Select 성능 조사의 최종 채택·기각 결과와 추가 확인 항목은 [20260802-393-performance-investigation-handoff.md](20260802-393-performance-investigation-handoff.md)에 정리했습니다.
+
+The final adopted/rejected results and remaining checks from the Music Select investigation that followed Task 377 are consolidated in [20260802-393-performance-investigation-handoff.md](20260802-393-performance-investigation-handoff.md).

@@ -454,16 +454,20 @@ bool EmitReturnInlineCacheSlot(const AotInstructionRecord& instruction,
     return true;
 }
 
+bool EmitHleDispatchSlot(const AotInstructionRecord& instruction,
+                         AotCodeCacheImage* image);
+
 // Task 264 Phase 3a. Translate a segment-override memory access natively:
 // pushfd; cmp word [shadow selector], S; je do_access; (fallback) popfd; int3;
 // do_access: popfd; <access with the segment prefix removed>; jmp fallthrough.
-// The guard falls back to single-stepping the original on a selector mismatch,
-// so the Win32-baked base/selector is always self-corrected. First slice: only
-// forms that already carry a 32-bit displacement (the segment base is folded
+// The guard falls back to the companion HLE slot (or INT3 when disabled) on
+// a selector mismatch, so the Win32-baked base/selector is self-corrected.
+// First slice: only forms that already carry a 32-bit displacement (the segment base is folded
 // into it at placement, no ModRM re-encode); every other form returns false so
 // the caller emits a boundary (current behavior). Returns true if emitted.
 bool EmitSegmentOverrideSlot(const AotInstructionRecord& instruction,
-                             AotCodeCacheImage* image)
+                             AotCodeCacheImage* image,
+                             bool enable_hybrid_dispatch)
 {
     if (image == nullptr || instruction.bytes.empty())
     {
@@ -596,10 +600,20 @@ bool EmitSegmentOverrideSlot(const AotInstructionRecord& instruction,
     site.guard_selector_offset = static_cast<std::uint32_t>(image->bytes.size());
     image->bytes.push_back(0x00U);           // selector S (patched)
     image->bytes.push_back(0x00U);
-    image->bytes.push_back(0x74U);           // je do_access (+2)
-    image->bytes.push_back(0x02U);
+    image->bytes.push_back(0x74U);           // je do_access
+    image->bytes.push_back(enable_hybrid_dispatch ? 0x06U : 0x02U);
     image->bytes.push_back(0x9DU);           // fallback: popfd
-    image->bytes.push_back(0xCCU);           // int3 -> single-step original
+    std::uint32_t dispatch_jump_patch = 0U;
+    if (enable_hybrid_dispatch)
+    {
+        image->bytes.push_back(0xE9U);       // jmp companion HLE slot
+        dispatch_jump_patch = static_cast<std::uint32_t>(image->bytes.size());
+        AppendImmediate32(&image->bytes, 0U);
+    }
+    else
+    {
+        image->bytes.push_back(0xCCU);       // int3 -> single-step original
+    }
     image->bytes.push_back(0x9DU);           // do_access: popfd
     site.displacement_offset =
         static_cast<std::uint32_t>(image->bytes.size()) +
@@ -611,6 +625,19 @@ bool EmitSegmentOverrideSlot(const AotInstructionRecord& instruction,
                              instruction.fallthrough_target,
                              static_cast<std::uint32_t>(image->bytes.size() - 4U),
                              false});
+    if (enable_hybrid_dispatch)
+    {
+        site.dispatch_cache_offset =
+            static_cast<std::uint32_t>(image->bytes.size());
+        if (!EmitHleDispatchSlot(instruction, image))
+        {
+            return false;
+        }
+        const std::int32_t relative = static_cast<std::int32_t>(
+            site.dispatch_cache_offset - (dispatch_jump_patch + 4U));
+        std::memcpy(image->bytes.data() + dispatch_jump_patch,
+                    &relative, sizeof(relative));
+    }
     image->segment_override_sites.push_back(site);
     return true;
 }
@@ -663,6 +690,112 @@ bool EmitGuardedSegmentPopSlot(const AotInstructionRecord& instruction,
     site.fallback_offset = static_cast<std::uint32_t>(image->bytes.size());
     image->bytes.push_back(0xCCU);
     image->guarded_segment_pop_sites.push_back(site);
+    return true;
+}
+
+bool EmitGuardedSegmentLoadSlot(const AotInstructionRecord& instruction,
+                                AotCodeCacheImage* image)
+{
+    if (image == nullptr || instruction.gpr_register > 7U ||
+        instruction.gpr_register == 4U ||
+        (instruction.segment_register != 0U &&
+         instruction.segment_register != 3U &&
+         instruction.segment_register != 4U &&
+         instruction.segment_register != 5U))
+    {
+        return false;
+    }
+    AotGuardedSegmentLoadSite site;
+    site.guest_source = instruction.guest_address;
+    site.cache_offset = static_cast<std::uint32_t>(image->bytes.size());
+    site.segment_register = instruction.segment_register;
+    site.gpr_register = instruction.gpr_register;
+    image->bytes.push_back(0x9CU);  // pushfd
+    image->bytes.push_back(0x50U);  // push eax
+    image->bytes.push_back(0x66U);  // mov ax,Sreg
+    image->bytes.push_back(0x8CU);
+    image->bytes.push_back(static_cast<std::uint8_t>(
+        0xC0U | (instruction.segment_register << 3U)));
+    image->bytes.insert(image->bytes.end(), {0x66U, 0x3BU});
+    if (instruction.gpr_register == 0U)
+    {
+        image->bytes.insert(image->bytes.end(), {0x04U, 0x24U});
+    }
+    else
+    {
+        image->bytes.push_back(static_cast<std::uint8_t>(
+            0xC0U | instruction.gpr_register));
+        image->bytes.push_back(0x90U);
+    }
+    image->bytes.insert(image->bytes.end(), {0x75U, 0x16U});
+    image->bytes.insert(image->bytes.end(), {0x66U, 0x3BU, 0x05U});
+    site.shadow_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    image->bytes.insert(image->bytes.end(), {0x75U, 0x0DU, 0xFFU, 0x05U});
+    site.success_counter_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    image->bytes.insert(image->bytes.end(), {0x58U, 0x9DU});
+    AppendRel32(&image->bytes, 0xE9U);
+    image->fixups.push_back({AotFixupKind::kBlockFallthrough,
+                             instruction.guest_address,
+                             instruction.fallthrough_target,
+                             static_cast<std::uint32_t>(image->bytes.size() - 4U),
+                             false});
+    image->bytes.insert(image->bytes.end(), {0xFFU, 0x05U});
+    site.fallback_counter_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    image->bytes.insert(image->bytes.end(), {0x58U, 0x9DU});
+    site.fallback_offset = static_cast<std::uint32_t>(image->bytes.size());
+    image->bytes.push_back(0xCCU);
+    image->guarded_segment_load_sites.push_back(site);
+    return true;
+}
+
+bool EmitGuardedSegmentReadSlot(const AotInstructionRecord& instruction,
+                                AotCodeCacheImage* image)
+{
+    if (image == nullptr || instruction.gpr_register > 7U ||
+        (instruction.segment_register != 0U &&
+         instruction.segment_register != 2U &&
+         instruction.segment_register != 3U &&
+         instruction.segment_register != 4U &&
+         instruction.segment_register != 5U))
+    {
+        return false;
+    }
+    AotGuardedSegmentReadSite site;
+    site.guest_source = instruction.guest_address;
+    site.cache_offset = static_cast<std::uint32_t>(image->bytes.size());
+    site.segment_register = instruction.segment_register;
+    site.gpr_register = instruction.gpr_register;
+
+    image->bytes.insert(image->bytes.end(), {0x9CU, 0x50U});
+    image->bytes.insert(image->bytes.end(), {0x66U, 0x8CU});
+    image->bytes.push_back(static_cast<std::uint8_t>(
+        0xC0U | (instruction.segment_register << 3U)));
+    image->bytes.insert(image->bytes.end(), {0x66U, 0x3BU, 0x05U});
+    site.shadow_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    image->bytes.insert(image->bytes.end(), {0x75U, 0x0EU, 0x58U, 0x9DU});
+    image->bytes.insert(image->bytes.end(), {0x66U, 0x8BU});
+    image->bytes.push_back(static_cast<std::uint8_t>(
+        0x05U | (instruction.gpr_register << 3U)));
+    site.load_shadow_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    AppendRel32(&image->bytes, 0xE9U);
+    image->fixups.push_back({AotFixupKind::kBlockFallthrough,
+                             instruction.guest_address,
+                             instruction.fallthrough_target,
+                             static_cast<std::uint32_t>(image->bytes.size() - 4U),
+                             false});
+    site.fallback_offset = static_cast<std::uint32_t>(image->bytes.size());
+    image->bytes.insert(image->bytes.end(), {0x58U, 0x9DU, 0xCCU});
+    image->guarded_segment_read_sites.push_back(site);
     return true;
 }
 
@@ -727,12 +860,20 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
         options.enable_dbt_return_miss_dispatch;
     image->dbt_hle_dispatch_enabled =
         options.enable_dbt_hle_dispatch;
+    image->dbt_port_io_dispatch_enabled =
+        options.enable_dbt_port_io_dispatch;
+    image->dbt_segment_override_dispatch_enabled =
+        options.enable_dbt_segment_override_dispatch;
     image->dbt_indirect_miss_dispatch_enabled =
         options.enable_dbt_indirect_miss_dispatch;
     image->timer_safe_points_enabled = options.enable_timer_safe_points;
     const auto started = std::chrono::steady_clock::now();
     image->guarded_segment_pop_enabled =
         options.enable_guarded_segment_pop;
+    image->guarded_segment_read_enabled =
+        options.enable_guarded_segment_read;
+    image->guarded_segment_load_enabled =
+        options.enable_guarded_segment_load;
     std::unordered_map<std::uint32_t, std::uint32_t> guest_to_cache;
 
     for (const AotBasicBlock& block : plan.blocks)
@@ -840,7 +981,6 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                     break;
                 }
                 case AotInstructionKind::kHleBoundary:
-                case AotInstructionKind::kPortIo:
                     if (!options.enable_dbt_hle_dispatch ||
                         !EmitHleDispatchSlot(instruction, image))
                     {
@@ -851,8 +991,22 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                             cache_offset, false});
                     }
                     break;
+                case AotInstructionKind::kPortIo:
+                    if ((!options.enable_dbt_hle_dispatch &&
+                         !options.enable_dbt_port_io_dispatch) ||
+                        !EmitHleDispatchSlot(instruction, image))
+                    {
+                        image->bytes.push_back(0xCCU);
+                        image->fixups.push_back({
+                            AotFixupKind::kHleBoundary,
+                            instruction.guest_address, 0U,
+                            cache_offset, false});
+                    }
+                    break;
                 case AotInstructionKind::kSegmentOverrideMem:
-                    if (!EmitSegmentOverrideSlot(instruction, image))
+                    if (!EmitSegmentOverrideSlot(
+                            instruction, image,
+                            options.enable_dbt_segment_override_dispatch))
                     {
                         image->bytes.push_back(0xCCU);
                         image->fixups.push_back({AotFixupKind::kHleBoundary,
@@ -863,6 +1017,26 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                 case AotInstructionKind::kGuardedSegmentPop:
                     if (!options.enable_guarded_segment_pop ||
                         !EmitGuardedSegmentPopSlot(instruction, image))
+                    {
+                        image->bytes.push_back(0xCCU);
+                        image->fixups.push_back({AotFixupKind::kHleBoundary,
+                                                 instruction.guest_address, 0U,
+                                                 cache_offset, false});
+                    }
+                    break;
+                case AotInstructionKind::kGuardedSegmentLoad:
+                    if (!options.enable_guarded_segment_load ||
+                        !EmitGuardedSegmentLoadSlot(instruction, image))
+                    {
+                        image->bytes.push_back(0xCCU);
+                        image->fixups.push_back({AotFixupKind::kHleBoundary,
+                                                 instruction.guest_address, 0U,
+                                                 cache_offset, false});
+                    }
+                    break;
+                case AotInstructionKind::kGuardedSegmentRead:
+                    if (!options.enable_guarded_segment_read ||
+                        !EmitGuardedSegmentReadSlot(instruction, image))
                     {
                         image->bytes.push_back(0xCCU);
                         image->fixups.push_back({AotFixupKind::kHleBoundary,
@@ -1027,7 +1201,9 @@ bool ValidateAotCodeCacheHleCoverage(
             if (instruction.kind != AotInstructionKind::kHleBoundary &&
                 instruction.kind != AotInstructionKind::kPortIo &&
                 instruction.kind != AotInstructionKind::kSegmentOverrideMem &&
-                instruction.kind != AotInstructionKind::kGuardedSegmentPop)
+                instruction.kind != AotInstructionKind::kGuardedSegmentPop &&
+                instruction.kind != AotInstructionKind::kGuardedSegmentRead &&
+                instruction.kind != AotInstructionKind::kGuardedSegmentLoad)
             {
                 continue;
             }
@@ -1113,7 +1289,136 @@ bool ValidateAotCodeCacheHleCoverage(
                 }
                 continue;
             }
-            if (instruction.kind == AotInstructionKind::kHleBoundary)
+            if (instruction.kind == AotInstructionKind::kGuardedSegmentLoad)
+            {
+                const auto site = std::find_if(
+                    image.guarded_segment_load_sites.begin(),
+                    image.guarded_segment_load_sites.end(),
+                    [&instruction](const AotGuardedSegmentLoadSite& candidate) {
+                        return candidate.guest_source ==
+                            instruction.guest_address;
+                    });
+                const std::uint32_t slot = site !=
+                    image.guarded_segment_load_sites.end()
+                        ? site->cache_offset : 0U;
+                const auto fallthrough_fixup = std::find_if(
+                    image.fixups.begin(), image.fixups.end(),
+                    [&instruction, slot](const AotCodeCacheFixup& fixup) {
+                        return fixup.kind == AotFixupKind::kBlockFallthrough &&
+                            fixup.guest_source == instruction.guest_address &&
+                            fixup.guest_target ==
+                                instruction.fallthrough_target &&
+                            fixup.cache_patch_offset == slot + 29U &&
+                            fixup.resolved;
+                    });
+                const std::uint8_t expected_physical_modrm =
+                    static_cast<std::uint8_t>(
+                        0xC0U | (instruction.segment_register << 3U));
+                const std::uint8_t expected_source_modrm =
+                    instruction.gpr_register == 0U
+                        ? 0x04U
+                        : static_cast<std::uint8_t>(
+                            0xC0U | instruction.gpr_register);
+                const std::uint8_t expected_source_tail =
+                    instruction.gpr_register == 0U ? 0x24U : 0x90U;
+                if (site == image.guarded_segment_load_sites.end() ||
+                    fallthrough_fixup == image.fixups.end() ||
+                    slot != map->cache_offset || map->emitted_length != 42U ||
+                    slot + 42U > image.bytes.size() ||
+                    site->shadow_address_offset != slot + 14U ||
+                    site->success_counter_address_offset != slot + 22U ||
+                    site->fallback_counter_address_offset != slot + 35U ||
+                    site->fallback_offset != slot + 41U ||
+                    image.bytes[slot] != 0x9CU ||
+                    image.bytes[slot + 1U] != 0x50U ||
+                    image.bytes[slot + 2U] != 0x66U ||
+                    image.bytes[slot + 3U] != 0x8CU ||
+                    image.bytes[slot + 4U] != expected_physical_modrm ||
+                    image.bytes[slot + 5U] != 0x66U ||
+                    image.bytes[slot + 6U] != 0x3BU ||
+                    image.bytes[slot + 7U] != expected_source_modrm ||
+                    image.bytes[slot + 8U] != expected_source_tail ||
+                    image.bytes[slot + 9U] != 0x75U ||
+                    image.bytes[slot + 10U] != 0x16U ||
+                    image.bytes[slot + 11U] != 0x66U ||
+                    image.bytes[slot + 12U] != 0x3BU ||
+                    image.bytes[slot + 13U] != 0x05U ||
+                    image.bytes[slot + 18U] != 0x75U ||
+                    image.bytes[slot + 19U] != 0x0DU ||
+                    image.bytes[slot + 20U] != 0xFFU ||
+                    image.bytes[slot + 21U] != 0x05U ||
+                    image.bytes[slot + 26U] != 0x58U ||
+                    image.bytes[slot + 27U] != 0x9DU ||
+                    image.bytes[slot + 28U] != 0xE9U ||
+                    image.bytes[slot + 33U] != 0xFFU ||
+                    image.bytes[slot + 34U] != 0x05U ||
+                    image.bytes[slot + 39U] != 0x58U ||
+                    image.bytes[slot + 40U] != 0x9DU ||
+                    image.bytes[slot + 41U] != 0xCCU)
+                {
+                    return fail(instruction.guest_address);
+                }
+                continue;
+            }
+            if (instruction.kind == AotInstructionKind::kGuardedSegmentRead)
+            {
+                const auto site = std::find_if(
+                    image.guarded_segment_read_sites.begin(),
+                    image.guarded_segment_read_sites.end(),
+                    [&instruction](const AotGuardedSegmentReadSite& candidate) {
+                        return candidate.guest_source == instruction.guest_address;
+                    });
+                const std::uint32_t slot = site !=
+                    image.guarded_segment_read_sites.end()
+                        ? site->cache_offset : 0U;
+                const auto fallthrough_fixup = std::find_if(
+                    image.fixups.begin(), image.fixups.end(),
+                    [&instruction, slot](const AotCodeCacheFixup& fixup) {
+                        return fixup.kind == AotFixupKind::kBlockFallthrough &&
+                            fixup.guest_source == instruction.guest_address &&
+                            fixup.guest_target == instruction.fallthrough_target &&
+                            fixup.cache_patch_offset == slot + 24U &&
+                            fixup.resolved;
+                    });
+                const std::uint8_t expected_physical_modrm =
+                    static_cast<std::uint8_t>(
+                        0xC0U | (instruction.segment_register << 3U));
+                const std::uint8_t expected_load_modrm =
+                    static_cast<std::uint8_t>(
+                        0x05U | (instruction.gpr_register << 3U));
+                if (site == image.guarded_segment_read_sites.end() ||
+                    fallthrough_fixup == image.fixups.end() ||
+                    slot != map->cache_offset || map->emitted_length != 31U ||
+                    slot + 31U > image.bytes.size() ||
+                    site->shadow_address_offset != slot + 8U ||
+                    site->load_shadow_address_offset != slot + 19U ||
+                    site->fallback_offset != slot + 28U ||
+                    image.bytes[slot] != 0x9CU ||
+                    image.bytes[slot + 1U] != 0x50U ||
+                    image.bytes[slot + 2U] != 0x66U ||
+                    image.bytes[slot + 3U] != 0x8CU ||
+                    image.bytes[slot + 4U] != expected_physical_modrm ||
+                    image.bytes[slot + 5U] != 0x66U ||
+                    image.bytes[slot + 6U] != 0x3BU ||
+                    image.bytes[slot + 7U] != 0x05U ||
+                    image.bytes[slot + 12U] != 0x75U ||
+                    image.bytes[slot + 13U] != 0x0EU ||
+                    image.bytes[slot + 14U] != 0x58U ||
+                    image.bytes[slot + 15U] != 0x9DU ||
+                    image.bytes[slot + 16U] != 0x66U ||
+                    image.bytes[slot + 17U] != 0x8BU ||
+                    image.bytes[slot + 18U] != expected_load_modrm ||
+                    image.bytes[slot + 23U] != 0xE9U ||
+                    image.bytes[slot + 28U] != 0x58U ||
+                    image.bytes[slot + 29U] != 0x9DU ||
+                    image.bytes[slot + 30U] != 0xCCU)
+                {
+                    return fail(instruction.guest_address);
+                }
+                continue;
+            }
+            if (instruction.kind == AotInstructionKind::kHleBoundary ||
+                instruction.kind == AotInstructionKind::kPortIo)
             {
                 const auto site = std::find_if(
                     image.dbt_hle_dispatch_sites.begin(),
@@ -1169,9 +1474,64 @@ bool ValidateAotCodeCacheHleCoverage(
                 site->guard_selector_offset + 5U >= image.bytes.size() ||
                 image.bytes[site->cache_offset] != 0x9CU ||
                 image.bytes[site->guard_selector_offset + 2U] != 0x74U ||
-                image.bytes[site->guard_selector_offset + 3U] != 0x02U ||
-                image.bytes[site->guard_selector_offset + 4U] != 0x9DU ||
-                image.bytes[site->guard_selector_offset + 5U] != 0xCCU)
+                image.bytes[site->guard_selector_offset + 4U] != 0x9DU)
+            {
+                return fail(instruction.guest_address);
+            }
+            if (!image.dbt_segment_override_dispatch_enabled)
+            {
+                if (site->dispatch_cache_offset != 0U ||
+                    image.bytes[site->guard_selector_offset + 3U] != 0x02U ||
+                    image.bytes[site->guard_selector_offset + 5U] != 0xCCU)
+                {
+                    return fail(instruction.guest_address);
+                }
+                continue;
+            }
+            const auto dispatch = std::find_if(
+                image.dbt_hle_dispatch_sites.begin(),
+                image.dbt_hle_dispatch_sites.end(),
+                [&instruction, &site](const AotDbtHleDispatchSite& candidate) {
+                    return candidate.guest_source == instruction.guest_address &&
+                        candidate.dispatch_cache_offset ==
+                            site->dispatch_cache_offset;
+                });
+            const auto fallback_fixup = std::find_if(
+                image.fixups.begin(), image.fixups.end(),
+                [&instruction, &dispatch, &image](
+                    const AotCodeCacheFixup& fixup) {
+                    return dispatch != image.dbt_hle_dispatch_sites.end() &&
+                        fixup.kind == AotFixupKind::kHleBoundary &&
+                        fixup.guest_source == instruction.guest_address &&
+                        fixup.cache_patch_offset ==
+                            dispatch->fallback_cache_offset + 4U;
+                });
+            std::int32_t dispatch_relative = 0;
+            std::memcpy(&dispatch_relative,
+                        image.bytes.data() + site->guard_selector_offset + 6U,
+                        sizeof(dispatch_relative));
+            const std::uint32_t dispatch_target = static_cast<std::uint32_t>(
+                site->guard_selector_offset + 10U + dispatch_relative);
+            if (dispatch == image.dbt_hle_dispatch_sites.end() ||
+                fallback_fixup == image.fixups.end() ||
+                site->dispatch_cache_offset == 0U ||
+                dispatch_target != site->dispatch_cache_offset ||
+                image.bytes[site->guard_selector_offset + 3U] != 0x06U ||
+                image.bytes[site->guard_selector_offset + 5U] != 0xE9U ||
+                dispatch->dispatch_address_immediate_offset !=
+                    site->dispatch_cache_offset + 1U ||
+                dispatch->thunk_displacement_offset !=
+                    site->dispatch_cache_offset + 11U ||
+                dispatch->fallback_cache_offset !=
+                    site->dispatch_cache_offset + 15U ||
+                dispatch->success_cache_offset !=
+                    site->dispatch_cache_offset + 20U ||
+                site->dispatch_cache_offset + 21U > image.bytes.size() ||
+                image.bytes[site->dispatch_cache_offset] != 0x68U ||
+                image.bytes[site->dispatch_cache_offset + 5U] != 0x68U ||
+                image.bytes[site->dispatch_cache_offset + 10U] != 0xE9U ||
+                image.bytes[site->dispatch_cache_offset + 19U] != 0xCCU ||
+                image.bytes[site->dispatch_cache_offset + 20U] != 0xC3U)
             {
                 return fail(instruction.guest_address);
             }

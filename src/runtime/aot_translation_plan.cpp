@@ -132,6 +132,76 @@ bool ReadGuardedSegmentPopRegister(
     return false;
 }
 
+bool ReadGuardedSegmentLoadRegisters(
+    const ZydisDecodedInstruction& instruction,
+    const ZydisDecodedOperand* operands,
+    std::uint8_t* segment_register,
+    std::uint8_t* gpr_register)
+{
+    if (operands == nullptr || segment_register == nullptr ||
+        gpr_register == nullptr || instruction.mnemonic != ZYDIS_MNEMONIC_MOV ||
+        instruction.operand_count_visible != 2U ||
+        operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+        operands[1].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+        ZydisRegisterGetClass(operands[0].reg.value) !=
+            ZYDIS_REGCLASS_SEGMENT ||
+        ZydisRegisterGetClass(operands[1].reg.value) !=
+            ZYDIS_REGCLASS_GPR16)
+    {
+        return false;
+    }
+    switch (operands[0].reg.value)
+    {
+        case ZYDIS_REGISTER_ES: *segment_register = 0U; break;
+        case ZYDIS_REGISTER_DS: *segment_register = 3U; break;
+        case ZYDIS_REGISTER_FS: *segment_register = 4U; break;
+        case ZYDIS_REGISTER_GS: *segment_register = 5U; break;
+        default: return false;
+    }
+    const std::int8_t gpr = ZydisRegisterGetId(operands[1].reg.value);
+    if (gpr < 0 || gpr > 7 || gpr == 4)
+    {
+        return false;
+    }
+    *gpr_register = static_cast<std::uint8_t>(gpr);
+    return true;
+}
+
+bool ReadGuardedSegmentReadRegisters(
+    const ZydisDecodedInstruction& instruction,
+    const ZydisDecodedOperand* operands,
+    std::uint8_t* segment_register,
+    std::uint8_t* gpr_register)
+{
+    if (operands == nullptr || segment_register == nullptr ||
+        gpr_register == nullptr || instruction.mnemonic != ZYDIS_MNEMONIC_MOV ||
+        instruction.operand_count_visible != 2U ||
+        operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+        operands[1].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+        ZydisRegisterGetClass(operands[0].reg.value) !=
+            ZYDIS_REGCLASS_GPR32 ||
+        ZydisRegisterGetClass(operands[1].reg.value) !=
+            ZYDIS_REGCLASS_SEGMENT)
+    {
+        return false;
+    }
+    const std::int8_t gpr = ZydisRegisterGetId(operands[0].reg.value);
+    if (gpr < 0 || gpr > 7)
+    {
+        return false;
+    }
+    switch (operands[1].reg.value)
+    {
+        case ZYDIS_REGISTER_ES: *segment_register = 0U; break;
+        case ZYDIS_REGISTER_SS: *segment_register = 2U; break;
+        case ZYDIS_REGISTER_DS: *segment_register = 3U; break;
+        case ZYDIS_REGISTER_FS: *segment_register = 4U; break;
+        case ZYDIS_REGISTER_GS: *segment_register = 5U; break;
+        default: return false;
+    }
+    *gpr_register = static_cast<std::uint8_t>(gpr);
+    return true;
+}
 bool ReadGuardedPortIoInstruction(
     const ZydisDecodedInstruction& instruction,
     const ZydisDecodedOperand* operands)
@@ -707,6 +777,35 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                     break;
                 }
                 std::uint8_t segment_register = 0xFFU;
+                std::uint8_t gpr_register = 0xFFU;
+                if (ReadGuardedSegmentLoadRegisters(
+                        instruction, operands, &segment_register,
+                        &gpr_register))
+                {
+                    record.kind = AotInstructionKind::kGuardedSegmentLoad;
+                    record.segment_register = segment_register;
+                    record.gpr_register = gpr_register;
+                    record.fallthrough_target = next;
+                    block.instructions.push_back(std::move(record));
+                    ++plan->hle_boundary_count;
+                    plan->estimated_emitted_bytes += 42U;
+                    pending.push_back(next);
+                    break;
+                }
+                if (ReadGuardedSegmentReadRegisters(
+                        instruction, operands, &segment_register,
+                        &gpr_register))
+                {
+                    record.kind = AotInstructionKind::kGuardedSegmentRead;
+                    record.segment_register = segment_register;
+                    record.gpr_register = gpr_register;
+                    record.fallthrough_target = next;
+                    block.instructions.push_back(std::move(record));
+                    ++plan->hle_boundary_count;
+                    plan->estimated_emitted_bytes += 31U;
+                    pending.push_back(next);
+                    break;
+                }
                 if (ReadGuardedSegmentPopRegister(
                         instruction, bytes, &segment_register))
                 {

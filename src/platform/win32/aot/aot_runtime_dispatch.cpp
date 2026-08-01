@@ -1,4 +1,5 @@
 #include "aot_runtime_dispatch.h"
+#include "aot_dbt_glide_gate_dispatch.h"
 
 #include "native_linear_span.h"
 #include "aot_dbt_call_return_trace.h"
@@ -877,6 +878,11 @@ bool ResolveAotTransferTarget(ThreadContext* context,
     {
         return false;
     }
+    if (ResolveWin32GlideGateDirectTarget(
+            context, target, cache_target))
+    {
+        return true;
+    }
     if (IsAotHleBoundaryAddress(context, target))
     {
         return false;
@@ -1650,6 +1656,15 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
             return false;
         }
         context->aot_reentry_cache_address = cache_address;
+        if (ActivateWin32GlideGateDirectTarget(
+                context, cache_address, guest_address))
+        {
+            win32_context->Eip = guest_address;
+            win32_context->EFlags &= ~0x00000100U;
+            context->aot_reentry_pending = false;
+            context->enable_single_step_trace = false;
+            return true;
+        }
         // A tracked execution-trace sentinel byte can stop being hit again on
         // later calls to the same guest address for reasons that go beyond
         // formal cache-entry retirement (empirically, the retirement check

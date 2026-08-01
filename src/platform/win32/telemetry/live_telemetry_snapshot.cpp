@@ -766,6 +766,42 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->native_linear_span_cancel_count =
         context.native_fast_path.linear_span_cancel_count.load(
             std::memory_order_relaxed);
+    attempt->native_linear_span_cancel_tf_count =
+        context.native_fast_path.linear_span_cancel_tf_count.load(
+            std::memory_order_relaxed);
+    attempt->native_linear_span_cancel_dr0_count =
+        context.native_fast_path.linear_span_cancel_dr0_count.load(
+            std::memory_order_relaxed);
+    attempt->native_linear_span_cancel_dr1_count =
+        context.native_fast_path.linear_span_cancel_dr1_count.load(
+            std::memory_order_relaxed);
+    attempt->native_linear_span_cancel_dr2_count =
+        context.native_fast_path.linear_span_cancel_dr2_count.load(
+            std::memory_order_relaxed);
+    attempt->native_linear_span_cancel_dr3_count =
+        context.native_fast_path.linear_span_cancel_dr3_count.load(
+            std::memory_order_relaxed);
+    attempt->native_linear_span_cancel_other_db_count =
+        context.native_fast_path.linear_span_cancel_other_db_count.load(
+            std::memory_order_relaxed);
+    attempt->native_linear_span_cancel_tf_first_eip =
+        context.native_fast_path.linear_span_cancel_tf_first_eip.load(
+            std::memory_order_relaxed);
+    attempt->native_linear_span_cancel_dr0_first_eip =
+        context.native_fast_path.linear_span_cancel_dr0_first_eip.load(
+            std::memory_order_relaxed);
+    attempt->native_linear_span_cancel_dr1_first_eip =
+        context.native_fast_path.linear_span_cancel_dr1_first_eip.load(
+            std::memory_order_relaxed);
+    attempt->native_linear_span_cancel_dr2_first_eip =
+        context.native_fast_path.linear_span_cancel_dr2_first_eip.load(
+            std::memory_order_relaxed);
+    attempt->native_linear_span_cancel_dr3_first_eip =
+        context.native_fast_path.linear_span_cancel_dr3_first_eip.load(
+            std::memory_order_relaxed);
+    attempt->native_linear_span_cancel_other_db_first_eip =
+        context.native_fast_path.linear_span_cancel_other_db_first_eip.load(
+            std::memory_order_relaxed);
     attempt->native_linear_span_instruction_total =
         context.native_fast_path.linear_span_instruction_total.load(
             std::memory_order_relaxed);
@@ -969,6 +1005,10 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
             context.aot_placement->guarded_segment_pop_success_count;
         attempt->aot_guarded_segment_pop_fallback_count =
             context.aot_placement->guarded_segment_pop_fallback_count;
+        attempt->aot_guarded_segment_load_success_count =
+            context.aot_placement->guarded_segment_load_success_count;
+        attempt->aot_guarded_segment_load_fallback_count =
+            context.aot_placement->guarded_segment_load_fallback_count;
         attempt->aot_timer_safe_point_trap_count =
             context.aot_placement->timer_safe_point_trap_count;
         attempt->aot_timer_safe_point_injected_count =
@@ -1578,6 +1618,7 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->last_dos_interrupt_vector = context.last_dos_interrupt_vector;
     attempt->last_dos_interrupt_ah = context.last_dos_interrupt_ah;
     attempt->last_dos_interrupt_ax = context.last_dos_interrupt_ax;
+    std::memcpy(attempt->handled_dos_interrupt_ah_counts, context.handled_dos_interrupt_ah_counts, sizeof(attempt->handled_dos_interrupt_ah_counts));
     attempt->handled_dos_chdir_count = context.handled_dos_chdir_count;
     attempt->last_dos_chdir_guest_path =
         context.last_dos_chdir_guest_path;
@@ -1650,6 +1691,7 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->last_segment_load_selector =
         context.last_segment_load_selector;
     attempt->last_segment_load_source = context.last_segment_load_source;
+    std::memcpy(attempt->handled_segment_load_register_counts, context.handled_segment_load_register_counts, sizeof(attempt->handled_segment_load_register_counts));
     attempt->segment_load = context.segment_load;
     attempt->handled_segment_store_count =
         context.handled_segment_store_count;
@@ -1661,6 +1703,7 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.last_segment_store_selector;
     attempt->last_segment_store_destination =
         context.last_segment_store_destination;
+    std::memcpy(attempt->handled_segment_store_register_counts, context.handled_segment_store_register_counts, sizeof(attempt->handled_segment_store_register_counts));
     attempt->handled_segment_memory_load_count =
         context.handled_segment_memory_load_count;
     attempt->last_segment_memory_load_address =

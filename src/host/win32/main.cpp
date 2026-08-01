@@ -6,6 +6,8 @@
 #include "repiu/hle/privileged_instruction.h"
 #include "repiu/platform/win32/execution_trampoline.h"
 #include "repiu/platform/win32/aot_code_cache_win32.h"
+#include "../../platform/win32/aot/aot_dbt_glide_gate_dispatch.h"
+#include "repiu/platform/win32/aot_boundary_opcode_census.h"
 #include "repiu/platform/win32/live_telemetry.h"
 #include "repiu/platform/win32/runtime_memory_policy.h"
 #include "repiu/runtime/guest_context.h"
@@ -1902,6 +1904,20 @@ void PrintExecutionAttempt(
     logger.info("Win32 native linear span last cancel code/eip: {}/{}",
                 Hex32(attempt.native_linear_span_last_cancel_code),
                 Hex32(attempt.native_linear_span_last_cancel_eip));
+    logger.info("Win32 native linear span #DB cancel tf/dr0/dr1/dr2/dr3/other: {}/{}/{}/{}/{}/{}",
+                attempt.native_linear_span_cancel_tf_count,
+                attempt.native_linear_span_cancel_dr0_count,
+                attempt.native_linear_span_cancel_dr1_count,
+                attempt.native_linear_span_cancel_dr2_count,
+                attempt.native_linear_span_cancel_dr3_count,
+                attempt.native_linear_span_cancel_other_db_count);
+    logger.info("Win32 native linear span #DB first eip tf/dr0/dr1/dr2/dr3/other: {}/{}/{}/{}/{}/{}",
+                Hex32(attempt.native_linear_span_cancel_tf_first_eip),
+                Hex32(attempt.native_linear_span_cancel_dr0_first_eip),
+                Hex32(attempt.native_linear_span_cancel_dr1_first_eip),
+                Hex32(attempt.native_linear_span_cancel_dr2_first_eip),
+                Hex32(attempt.native_linear_span_cancel_dr3_first_eip),
+                Hex32(attempt.native_linear_span_cancel_other_db_first_eip));
     logger.info("Win32 native linear span jump chain/backward-stop: {}/{}",
                 attempt.native_linear_span_direct_jump_chain_count,
                 attempt.native_linear_span_backward_jump_stop_count);
@@ -1951,6 +1967,9 @@ void PrintExecutionAttempt(
     logger.info("Win32 AOT guarded segment-pop success/fallback: {}/{}",
                 attempt.aot_guarded_segment_pop_success_count,
                 attempt.aot_guarded_segment_pop_fallback_count);
+    logger.info("Win32 AOT guarded segment-load success/fallback: {}/{}",
+                attempt.aot_guarded_segment_load_success_count,
+                attempt.aot_guarded_segment_load_fallback_count);
     logger.info("Win32 AOT timer safe-point trap/injected/deferred: {}/{}/{}",
                 attempt.aot_timer_safe_point_trap_count,
                 attempt.aot_timer_safe_point_injected_count,
@@ -3093,6 +3112,9 @@ void PrintExecutionAttempt(
     }
     logger.info("Win32 port I/O observation count: {}",
                 attempt.port_io.observed_count);
+    logger.info("Win32 port I/O input/output/handled/unhandled: {}/{}/{}/{}",
+                attempt.port_io.input_count, attempt.port_io.output_count,
+                attempt.port_io.handled_count, attempt.port_io.unhandled_count);
     if (attempt.port_io.observed_count > 0)
     {
         logger.info("Win32 last port I/O address: {}",
@@ -3393,6 +3415,14 @@ void PrintExecutionAttempt(
         attempt.allocator_control_flow.root_transition);
     logger.info("Win32 handled DOS interrupt count: {}",
                 attempt.handled_dos_interrupt_count);
+    repiu::platform::win32::Win32AotOpcodeRank dos_ah_ranks[4] = {};
+    repiu::platform::win32::RankAotOpcodeHistogram(
+        attempt.handled_dos_interrupt_ah_counts, dos_ah_ranks, 4U);
+    logger.info("Win32 DOS AH hotspots [{:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{}]",
+                dos_ah_ranks[0].opcode, dos_ah_ranks[0].count,
+                dos_ah_ranks[1].opcode, dos_ah_ranks[1].count,
+                dos_ah_ranks[2].opcode, dos_ah_ranks[2].count,
+                dos_ah_ranks[3].opcode, dos_ah_ranks[3].count);
     if (attempt.handled_dos_interrupt_count > 0)
     {
         logger.info("Win32 last handled DOS interrupt vector: {}",
@@ -4231,6 +4261,11 @@ int main(int argc, char** argv)
     }
     const bool use_aot_backend =
         repiu::runtime::ExecutionBackendUsesAot(execution_backend);
+    const bool direct_glide_dispatch_enabled =
+        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt &&
+        repiu::platform::win32::
+            ResolveWin32GlideGateDirectDispatchEnabled(
+                std::getenv("REPIU_AOT_DBT_GLIDE_GATE_DISPATCH"));
     repiu::runtime::AotCodeCacheBuildOptions aot_build_options;
     aot_build_options.enable_dbt_return_miss_dispatch =
         execution_backend == repiu::runtime::ExecutionBackend::kAotDbt;
@@ -4246,6 +4281,32 @@ int main(int argc, char** argv)
         (superblock_setting == "1" ||
          superblock_setting == "on" ||
          superblock_setting == "true");
+    const char* port_io_dispatch_toggle =
+        std::getenv("REPIU_AOT_DBT_PORT_IO_DISPATCH");
+    const std::string port_io_dispatch_setting =
+        port_io_dispatch_toggle != nullptr
+            ? std::string(port_io_dispatch_toggle) : std::string();
+    const bool port_io_dispatch_enabled =
+        port_io_dispatch_setting.empty() ||
+        port_io_dispatch_setting == "1" ||
+        port_io_dispatch_setting == "on" ||
+        port_io_dispatch_setting == "true";
+    // Task 386 promoted the isolated Port-I/O dispatch after a Music Select
+    // capture confirmed lower per-frame exception and HLE costs. Explicit
+    // false and unknown values remain fail-closed opt-outs for diagnosis.
+    aot_build_options.enable_dbt_port_io_dispatch =
+        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt &&
+        port_io_dispatch_enabled;
+    const char* segment_override_dispatch_toggle =
+        std::getenv("REPIU_AOT_DBT_SEGMENT_OVERRIDE_DISPATCH");
+    const std::string segment_override_dispatch_setting =
+        segment_override_dispatch_toggle != nullptr
+            ? std::string(segment_override_dispatch_toggle) : std::string();
+    aot_build_options.enable_dbt_segment_override_dispatch =
+        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt &&
+        (segment_override_dispatch_setting == "1" ||
+         segment_override_dispatch_setting == "on" ||
+         segment_override_dispatch_setting == "true");
     const char* guarded_segment_pop_toggle =
         std::getenv("REPIU_AOT_GUARDED_SEGMENT_POP");
     const std::string guarded_segment_pop_setting =
@@ -4262,6 +4323,37 @@ int main(int argc, char** argv)
     aot_build_options.enable_guarded_segment_pop =
         execution_backend == repiu::runtime::ExecutionBackend::kAotDbt &&
         guarded_segment_pop_enabled;
+    const char* guarded_segment_load_toggle =
+        std::getenv("REPIU_AOT_GUARDED_SEGMENT_LOAD");
+    const std::string guarded_segment_load_setting =
+        guarded_segment_load_toggle != nullptr
+            ? std::string(guarded_segment_load_toggle) : std::string();
+    const bool guarded_segment_load_enabled =
+        guarded_segment_load_setting.empty() ||
+        guarded_segment_load_setting == "1" ||
+        guarded_segment_load_setting == "on" ||
+        guarded_segment_load_setting == "true";
+    // Task 390 promotes Task 389's source/physical/shadow-equality guarded load
+    // for aot-dbt. Explicit false and unknown values remain fail-closed
+    // opt-outs for compatibility diagnosis and regression bisects.
+    aot_build_options.enable_guarded_segment_load =
+        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt &&
+        guarded_segment_load_enabled;
+    const char* guarded_segment_read_toggle =
+        std::getenv("REPIU_AOT_GUARDED_SEGMENT_READ");
+    const std::string guarded_segment_read_setting =
+        guarded_segment_read_toggle != nullptr
+            ? std::string(guarded_segment_read_toggle) : std::string();
+    const bool guarded_segment_read_enabled =
+        guarded_segment_read_setting.empty() ||
+        guarded_segment_read_setting == "1" ||
+        guarded_segment_read_setting == "on" ||
+        guarded_segment_read_setting == "true";
+    // Task 384 promotes Task 383's physical/shadow-equality guarded read for
+    // aot-dbt. Explicit false and unknown values remain fail-closed opt-outs.
+    aot_build_options.enable_guarded_segment_read =
+        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt &&
+        guarded_segment_read_enabled;
     // Task 282 indirect call/jump host dispatch is implemented and passes every
     // synthetic probe, but a live `aot-dbt` run reveals a cumulative corruption
     // that crashes the Glide attract path (see
@@ -4321,8 +4413,20 @@ int main(int argc, char** argv)
                      aot_build_options.indirect_inline_cache_entry_count);
         logger->info("Win32 AOT guarded segment-pop enabled: {}",
                      aot_build_options.enable_guarded_segment_pop);
+        logger->info("Win32 AOT guarded segment-load enabled/sites: {}/{}",
+                     aot_build_options.enable_guarded_segment_load,
+                     aot_image.guarded_segment_load_sites.size());
+        logger->info("Win32 AOT guarded segment-read enabled/sites: {}/{}",
+                     aot_build_options.enable_guarded_segment_read,
+                     aot_image.guarded_segment_read_sites.size());
         logger->info("Win32 AOT-DBT superblock HLE dispatch enabled: {}",
                      aot_build_options.enable_dbt_hle_dispatch);
+        logger->info("Win32 AOT-DBT Port-I/O dispatch enabled: {}",
+                     aot_build_options.enable_dbt_port_io_dispatch);
+        logger->info("Win32 AOT-DBT segment-override dispatch enabled: {}",
+                     aot_build_options.enable_dbt_segment_override_dispatch);
+        logger->info("Win32 AOT-DBT Glide gate direct dispatch enabled: {}",
+                     direct_glide_dispatch_enabled);
         logger->info("Win32 AOT timer safe points enabled/sites: {}/{}",
                      aot_build_options.enable_timer_safe_points,
                      aot_image.timer_safe_point_sites.size());
@@ -4480,6 +4584,20 @@ int main(int argc, char** argv)
     PrintExecutionAttempt(*logger,
                           attempt,
                           profile->executable_path.filename().string());
+    const auto glide_dispatch_stats = repiu::platform::win32::
+        ReadWin32GlideGateDirectDispatchStats();
+    logger->info(
+        "Win32 Glide direct dispatch patched/verified/resolved-target/"
+        "relinked-cache/entry/success/target-miss/terminal: "
+        "{}/{}/{}/{}/{}/{}/{}/{}",
+        glide_dispatch_stats.patched_gate_count,
+        glide_dispatch_stats.verified_gate_count,
+        glide_dispatch_stats.resolved_target_count,
+        glide_dispatch_stats.relinked_cache_target_count,
+        glide_dispatch_stats.entry_count,
+        glide_dispatch_stats.success_count,
+        glide_dispatch_stats.target_miss_count,
+        glide_dispatch_stats.terminal_failure_count);
     repiu::platform::win32::ReleaseWin32AotCodeCache(&aot_placement);
     if (attempt.exception_caught)
     {

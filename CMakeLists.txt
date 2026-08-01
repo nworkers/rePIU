@@ -110,6 +110,7 @@ add_library(repiu_exe
     src/platform/win32/aot/aot_dbt_call_step_probe.cpp
     src/platform/win32/aot/aot_dbt_dispatch.cpp
     src/platform/win32/aot/aot_dbt_hle_dispatch.cpp
+    src/platform/win32/aot/aot_dbt_glide_gate_dispatch.cpp
     src/platform/win32/aot/aot_dbt_indirect_dispatch.cpp
     src/platform/win32/aot/aot_dbt_return_dispatch.cpp
     src/platform/win32/aot/aot_retired_trap_profile.cpp

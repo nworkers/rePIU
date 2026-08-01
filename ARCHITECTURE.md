@@ -1793,3 +1793,36 @@ topology and call frequency. Short arm-to-hit latency and stable rankings are
 not sufficient evidence of instruction residency. This axis may be reopened
 only with exact executed-edge/instruction-count instrumentation or an
 external PMU-class method that avoids both biases.
+
+## AOT-DBT Glide gate direct dispatch / AOT-DBT Glide 게이트 직접 디스패치
+
+Win32 `aot-dbt`는 `REPIU_AOT_DBT_GLIDE_GATE_DISPATCH`가 미설정이거나 `1|on|true`이면 자산 유래 Glide gate metadata와 합성 stub 원본을 검증한 뒤 `CALL host-stack thunk + RET argument_bytes` stub을 설치합니다. 첫 cache boundary는 같은 gate를 가리키는 direct fixup과 indirect inline-cache target을 executable LINEXE gate로 재연결하며, 이후 transfer resolution도 검증된 gate를 직접 반환합니다. 일반 excluded range, opt-out, 검증 실패는 기존 `INT3`/VEH 경로를 보존합니다.
+
+On Win32 `aot-dbt`, an unset `REPIU_AOT_DBT_GLIDE_GATE_DISPATCH` or `1|on|true` validates asset-derived Glide metadata and the original synthetic stub, then installs a `CALL host-stack thunk + RET argument_bytes` stub. The first cache boundary relinks matching direct fixups and indirect inline-cache targets to the executable LINEXE gate, and later transfer resolution returns validated gates directly. General excluded ranges, opt-out, and validation failures preserve the existing `INT3`/VEH path.
+
+### Glide gate 직접 dispatch 기본 정책 / Glide-gate direct-dispatch default policy
+
+`0|off|false`, 빈 문자열, 알 수 없는 값은 fail-closed opt-out입니다. 자산 유래 gate/ABI 검증 실패와 `aot-dbt` 이외 backend는 기존 UD2/INT3/VEH 경로를 유지합니다.
+
+`0|off|false`, an empty string, and unknown values are fail-closed opt-outs. Asset-derived gate/ABI validation failures and backends other than `aot-dbt` retain the existing UD2/INT3/VEH path.
+
+## Guarded segment-load fast path / Guarded segment-load fast path
+
+Win32 `aot-dbt`에서 `REPIU_AOT_GUARDED_SEGMENT_LOAD`가 없거나 `1|on|true`이면 register-source `MOV Sreg, r16` 중 ES/DS/FS/GS를 전용 cache slot으로 처리합니다. source selector가 실제 CPU selector와 HLE shadow에 모두 같은 경우만 selector 상태를 바꾸지 않고 fallthrough합니다. SS, ESP source, memory source, selector 불일치, patch 실패는 원래 EFLAGS/GPR을 복구한 뒤 기존 INT3/VEH HLE를 사용합니다. `0|off|false`와 알 수 없는 값은 fail-closed opt-out입니다.
+
+On Win32 `aot-dbt`, an unset `REPIU_AOT_GUARDED_SEGMENT_LOAD` or `1|on|true` handles register-source `MOV Sreg, r16` for ES/DS/FS/GS in a dedicated cache slot. It leaves selector state unchanged and falls through only when the source selector equals both the physical CPU selector and HLE shadow. SS, ESP sources, memory sources, selector mismatches, and patch failures restore original EFLAGS/GPRs and retain the existing INT3/VEH HLE path. `0|off|false` and unknown values are fail-closed opt-outs.
+
+## Hybrid segment-override dispatch / Hybrid segment-override dispatch
+
+Win32 `aot-dbt`에서 `REPIU_AOT_DBT_SEGMENT_OVERRIDE_DISPATCH=1|on|true`이면 Zydis가 분류한 `kSegmentOverrideMem`에 기존 selector-guard native slot과 fail-closed HLE companion slot을 함께 생성합니다. live segment resolution이 `NativeFolded`이면 native entry를 복원하고, `HleLowMemory`이면 companion slot으로 `JMP rel32`를 패치하며, unresolved이면 기존 `INT3`를 유지합니다. native guard의 selector mismatch도 companion으로 이동하고 지원하지 않거나 안전하지 않은 명령은 기존 INT3/VEH bridge로 복구합니다.
+
+이 정책은 PIU 주소나 게임 상태를 사용하지 않고 명령 형식과 live segment policy만 사용합니다. Task 391의 모든 segment override를 dispatcher로 보내는 broad 정책은 장시간 측정에서 회귀하여 폐기했습니다. 미설정 기본값은 장시간 hybrid 검증 전까지 OFF이며, 비활성화하면 기존 selector-guard native folding과 low-memory INT3/VEH HLE 경로가 유지됩니다.
+
+On Win32 `aot-dbt`, `REPIU_AOT_DBT_SEGMENT_OVERRIDE_DISPATCH=1|on|true` emits both the existing selector-guard native slot and a fail-closed HLE companion for Zydis-classified `kSegmentOverrideMem`. Live segment resolution restores the native entry for `NativeFolded`, patches a `JMP rel32` to the companion for `HleLowMemory`, and retains `INT3` for unresolved state. A native-guard selector mismatch also enters the companion; unsupported or unsafe instructions recover through the existing INT3/VEH bridge.
+
+The policy uses instruction form and live segment policy rather than PIU addresses or game state. Task 391's broad policy of routing every segment override through the dispatcher was rejected after a long-run regression. The unset default remains OFF pending long hybrid validation; disabled mode preserves selector-guard native folding and the low-memory INT3/VEH HLE path.
+### 장시간 정책 판정 / Long-run policy decision
+
+`pumpit1` 장시간 검증에서 hybrid는 기준보다 frame 처리량이 21.13% 낮고 frame당 전체 예외, guest-run, VEH, Glide gate 비용이 모두 증가했습니다. 따라서 broad와 hybrid segment-override dispatch는 모두 기본 승격 대상에서 제외합니다. opt-in은 기본 OFF 진단 경로로만 유지하며 일반 실행은 기존 selector-guard/INT3/VEH 경로를 사용합니다.
+
+In long `pumpit1` validation, hybrid routing delivered 21.13% fewer frames and increased per-frame total exceptions, guest-run, VEH, and Glide-gate cost. Both broad and hybrid segment-override dispatch are therefore excluded from default promotion. The opt-in remains only as a default-OFF diagnostic path; normal execution uses the existing selector-guard/INT3/VEH path.

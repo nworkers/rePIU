@@ -42,6 +42,7 @@
 #include "timer_interrupt_boundary.h"
 #include "aot_dbt_call_step_probe.h"
 #include "aot_dbt_dispatch.h"
+#include "aot_dbt_glide_gate_dispatch.h"
 #include "aot_runtime_dispatch.h"
 #include "instruction_emulation.h"
 #include "dpmi_mscdex_services.h"
@@ -1351,6 +1352,7 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
         }
         if (!call_step_return_watch &&
             !entered_native &&
+            !context->enable_single_step_trace &&
             NativeLinearSpanEnabled(context->execution_backend))
         {
             entered_native = TryEnterNativeLinearSpan(win32_context, context);
@@ -2367,6 +2369,7 @@ void RecordHandledDosInterrupt(ThreadContext* context,
     context->last_dos_interrupt_vector = vector;
     context->last_dos_interrupt_ah = static_cast<std::uint8_t>(ax >> 8);
     context->last_dos_interrupt_ax = ax;
+    ++context->handled_dos_interrupt_ah_counts[ax >> 8];
 }
 
 void RecordLowMemoryAccess(CONTEXT* win32_context,
@@ -3975,7 +3978,7 @@ bool RunWin32ExecutionThread(
         const auto address = [](std::uint32_t value) {
             return reinterpret_cast<void*>(static_cast<std::uintptr_t>(value));
         };
-        const bool glide_gate_fits =
+        bool glide_gate_fits =
             context.linexe_arena_layout.gate_code_size >
                 kGlideFirstGateOffset &&
             repiu::hle::BuildGlideGatePlan(
@@ -3985,6 +3988,18 @@ bool RunWin32ExecutionThread(
                 context.linexe_arena_layout.gate_code_size -
                     kGlideFirstGateOffset,
                 &context.glide_gate_plan);
+        const bool direct_glide_dispatch =
+            context.execution_backend ==
+                repiu::runtime::ExecutionBackend::kAotDbt &&
+            ResolveWin32GlideGateDirectDispatchEnabled(
+                std::getenv("REPIU_AOT_DBT_GLIDE_GATE_DISPATCH"));
+        context.aot_dbt_glide_direct_dispatch = direct_glide_dispatch;
+        if (glide_gate_fits && direct_glide_dispatch)
+        {
+            glide_gate_fits = PatchWin32GlideGatePlanForDirectDispatch(
+                context.linexe_arena_layout.gate_code_base,
+                &context.glide_gate_plan);
+        }
         const bool images_written =
             WriteGuestBytes(&context,
                             address(context.linexe_arena_layout.client_data_base),
@@ -4018,7 +4033,13 @@ bool RunWin32ExecutionThread(
                             extracted_linexe_valid
                                 ? extracted_data->image.size()
                                 : context.linexe_gate_plan.private_data_image.size());
-        const bool descriptors_registered = images_written &&
+        const bool direct_glide_image_verified =
+            !direct_glide_dispatch ||
+            (images_written && VerifyWin32GlideGateDirectDispatchImage(
+                context.linexe_arena_layout.gate_code_base,
+                context.glide_gate_plan));
+        const bool descriptors_registered =
+            direct_glide_image_verified && images_written &&
             repiu::runtime::RegisterDescriptor(
                 &context.selector_table,
                 {kDos4gwClientDataSelector,
@@ -4056,15 +4077,24 @@ bool RunWin32ExecutionThread(
             const bool gates_protected = VirtualProtect(
                 address(context.linexe_arena_layout.gate_code_base),
                 context.linexe_arena_layout.gate_code_size,
-                extracted_linexe_valid ? PAGE_READWRITE : PAGE_EXECUTE_READ,
+                direct_glide_dispatch
+                    ? PAGE_EXECUTE_READ
+                    : (extracted_linexe_valid
+                           ? PAGE_READWRITE
+                           : PAGE_EXECUTE_READ),
                 &ignored) != 0;
             const bool bss_protected = !extracted_linexe_valid ||
                 VirtualProtect(address(context.linexe_arena_layout.bss_base),
                                context.linexe_arena_layout.bss_size,
                                PAGE_READWRITE, &ignored) != 0;
+            const bool gates_flushed = !direct_glide_dispatch ||
+                (gates_protected && FlushInstructionCache(
+                    GetCurrentProcess(),
+                    address(context.linexe_arena_layout.gate_code_base),
+                    context.linexe_arena_layout.gate_code_size) != 0);
             context.linexe_environment_active =
                 client_protected && private_protected && gates_protected &&
-                bss_protected;
+                bss_protected && gates_flushed;
         }
     }
     if (context.linexe_environment_active)

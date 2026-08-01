@@ -181,6 +181,7 @@ void RecordGuestSegmentLoad(CONTEXT* win32_context,
     context->last_segment_load_register = segment_register;
     context->last_segment_load_selector = selector;
     context->last_segment_load_source = source;
+    if (segment_register < 6U) { ++context->handled_segment_load_register_counts[segment_register]; }
     Win32SegmentLoadObservation& observation = context->segment_load;
     const std::uint32_t sequence = observation.observed_count + 1;
     const std::uint32_t slot =
@@ -270,6 +271,7 @@ void RecordGuestSegmentStore(CONTEXT* win32_context,
     context->last_segment_store_register = segment_register;
     context->last_segment_store_selector = selector;
     context->last_segment_store_destination = destination;
+    if (segment_register < 6U) { ++context->handled_segment_store_register_counts[segment_register]; }
 }
 
 void RecordGuestSegmentMemoryLoad(CONTEXT* win32_context,

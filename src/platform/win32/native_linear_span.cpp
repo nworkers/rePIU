@@ -389,6 +389,10 @@ void LeaveNativeLinearSpan(CONTEXT* win32_context,
     {
         return;
     }
+    const std::uint32_t debug_status =
+        static_cast<std::uint32_t>(win32_context->Dr6);
+    const std::uint32_t entry_eip =
+        static_cast<std::uint32_t>(win32_context->Eip);
     win32_context->Dr0 = state->linear_span_saved_dr0;
     win32_context->Dr6 = state->linear_span_saved_dr6;
     win32_context->Dr7 = state->linear_span_saved_dr7;
@@ -414,8 +418,44 @@ void LeaveNativeLinearSpan(CONTEXT* win32_context,
         state->linear_span_last_cancel_code.store(
             exception_code, std::memory_order_relaxed);
         state->linear_span_last_cancel_eip.store(
-            static_cast<std::uint32_t>(win32_context->Eip),
+            entry_eip,
             std::memory_order_relaxed);
+        if (exception_code == EXCEPTION_SINGLE_STEP)
+        {
+            std::atomic<std::uint32_t>* count =
+                &state->linear_span_cancel_other_db_count;
+            std::atomic<std::uint32_t>* first_eip =
+                &state->linear_span_cancel_other_db_first_eip;
+            if ((debug_status & 0x1U) != 0U)
+            {
+                count = &state->linear_span_cancel_dr0_count;
+                first_eip = &state->linear_span_cancel_dr0_first_eip;
+            }
+            else if ((debug_status & 0x2U) != 0U)
+            {
+                count = &state->linear_span_cancel_dr1_count;
+                first_eip = &state->linear_span_cancel_dr1_first_eip;
+            }
+            else if ((debug_status & 0x4U) != 0U)
+            {
+                count = &state->linear_span_cancel_dr2_count;
+                first_eip = &state->linear_span_cancel_dr2_first_eip;
+            }
+            else if ((debug_status & 0x8U) != 0U)
+            {
+                count = &state->linear_span_cancel_dr3_count;
+                first_eip = &state->linear_span_cancel_dr3_first_eip;
+            }
+            else if ((debug_status & 0x4000U) != 0U)
+            {
+                count = &state->linear_span_cancel_tf_count;
+                first_eip = &state->linear_span_cancel_tf_first_eip;
+            }
+            count->fetch_add(1, std::memory_order_relaxed);
+            std::uint32_t expected = 0U;
+            first_eip->compare_exchange_strong(
+                expected, entry_eip, std::memory_order_relaxed);
+        }
     }
 }
 

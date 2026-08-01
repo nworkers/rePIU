@@ -186,6 +186,9 @@ void RecordPortIo(ThreadContext* context,
     context->port_io.last_is_input = is_input;
     context->port_io.last_handled = handled;
     context->port_io.last_result = result;
+    ++context->port_io.opcode_counts[opcode & 0xFFU];
+    if (is_input) { ++context->port_io.input_count; } else { ++context->port_io.output_count; }
+    if (handled) { ++context->port_io.handled_count; } else { ++context->port_io.unhandled_count; }
     if (context->port_io.trace_stored_count < kWin32PortIoTraceCapacity)
     {
         Win32PortIoTraceEntry& entry =

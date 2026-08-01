@@ -26,6 +26,12 @@ enum class AotInstructionKind
     // segment (0=ES,2=SS,3=DS,4=FS,5=GS). Falls back to a boundary at emit time
     // for any form the re-encoder cannot verify.
     kSegmentOverrideMem,
+    // MOV r32,Sreg reads a guest selector natively only while physical and
+    // shadow selectors agree; divergence falls back to HLE (Task 383).
+    kGuardedSegmentRead,
+    // MOV Sreg,r16 is skipped only while source, physical, and shadow
+    // selectors already agree; mismatch falls back to HLE (Task 389).
+    kGuardedSegmentLoad,
     // A plain POP ES/DS/FS/GS whose cache slot advances the stack only when
     // physical, shadow, and stack selectors are already identical. Any
     // mismatch reaches the existing HLE boundary (Task 291).
@@ -44,6 +50,7 @@ struct AotInstructionRecord
     std::uint8_t table_index_register = 0xFFU;
     std::uint8_t segment_override_register = 0xFFU;
     std::uint8_t segment_register = 0xFFU;
+    std::uint8_t gpr_register = 0xFFU;
     std::uint16_t mnemonic = 0;
     std::vector<std::uint8_t> bytes;
     std::vector<std::uint32_t> table_targets;

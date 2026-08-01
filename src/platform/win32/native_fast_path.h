@@ -93,6 +93,18 @@ struct NativeFastPathState
     std::atomic<std::uint32_t> linear_span_entry_count{0};
     std::atomic<std::uint32_t> linear_span_boundary_count{0};
     std::atomic<std::uint32_t> linear_span_cancel_count{0};
+    std::atomic<std::uint32_t> linear_span_cancel_tf_count{0};
+    std::atomic<std::uint32_t> linear_span_cancel_dr0_count{0};
+    std::atomic<std::uint32_t> linear_span_cancel_dr1_count{0};
+    std::atomic<std::uint32_t> linear_span_cancel_dr2_count{0};
+    std::atomic<std::uint32_t> linear_span_cancel_dr3_count{0};
+    std::atomic<std::uint32_t> linear_span_cancel_other_db_count{0};
+    std::atomic<std::uint32_t> linear_span_cancel_tf_first_eip{0};
+    std::atomic<std::uint32_t> linear_span_cancel_dr0_first_eip{0};
+    std::atomic<std::uint32_t> linear_span_cancel_dr1_first_eip{0};
+    std::atomic<std::uint32_t> linear_span_cancel_dr2_first_eip{0};
+    std::atomic<std::uint32_t> linear_span_cancel_dr3_first_eip{0};
+    std::atomic<std::uint32_t> linear_span_cancel_other_db_first_eip{0};
     std::atomic<std::uint32_t> linear_span_instruction_total{0};
     std::atomic<std::uint32_t> linear_span_reject_count{0};
     std::unordered_map<std::uint32_t, NativeLinearSpanCacheEntry>

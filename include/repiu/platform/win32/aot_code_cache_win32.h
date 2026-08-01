@@ -45,10 +45,16 @@ struct Win32AotCodeCachePlacement
     std::vector<runtime::AotSegmentOverrideSite> segment_override_sites;
     std::vector<runtime::AotGuardedSegmentPopSite>
         guarded_segment_pop_sites;
+    std::vector<runtime::AotGuardedSegmentReadSite>
+        guarded_segment_read_sites;
+    std::vector<runtime::AotGuardedSegmentLoadSite>
+        guarded_segment_load_sites;
     std::vector<runtime::AotTimerSafePointSite> timer_safe_point_sites;
     // Incremented directly by guarded cache slots; placement outlives execution.
     volatile std::uint32_t guarded_segment_pop_success_count = 0;
     volatile std::uint32_t guarded_segment_pop_fallback_count = 0;
+    volatile std::uint32_t guarded_segment_load_success_count = 0;
+    volatile std::uint32_t guarded_segment_load_fallback_count = 0;
 
     // Task 324: O(1) guest-address lookup over address_map, replacing the
     // linear scan Task 323 measured at 87.75% of kAotResume. Treated as a
@@ -75,8 +81,12 @@ struct Win32AotCodeCachePlacement
         runtime::kDefaultAotIndirectInlineCacheEntryCount;
     bool dbt_return_miss_dispatch_enabled = false;
     bool dbt_hle_dispatch_enabled = false;
+    bool dbt_port_io_dispatch_enabled = false;
+    bool dbt_segment_override_dispatch_enabled = false;
     bool dbt_indirect_miss_dispatch_enabled = false;
     bool guarded_segment_pop_enabled = false;
+    bool guarded_segment_read_enabled = false;
+    bool guarded_segment_load_enabled = false;
     bool timer_safe_points_enabled = false;
     // Written by the telemetry poller and consumed only on the guest thread.
     volatile std::uint32_t timer_safe_point_request = 0;
@@ -158,6 +168,8 @@ struct Win32AotSegmentPatchStats
     std::uint32_t hle_site_count = 0;
     std::uint32_t unresolved_site_count = 0;
     std::uint32_t guarded_pop_site_count = 0;
+    std::uint32_t guarded_read_site_count = 0;
+    std::uint32_t guarded_load_site_count = 0;
 };
 
 // Resolve one live shadow selector into an explicit native/HLE/unresolved

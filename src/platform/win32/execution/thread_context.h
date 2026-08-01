@@ -157,6 +157,7 @@ struct ThreadContext
     bool aot_legacy_fallback = false;
     runtime::ExecutionBackend execution_backend =
         runtime::ExecutionBackend::kLegacy;
+    bool aot_dbt_glide_direct_dispatch = false;
     HANDLE aot_translation_thread = nullptr;
     HANDLE aot_translation_request_event = nullptr;
     HANDLE aot_translation_complete_event = nullptr;
@@ -604,6 +605,7 @@ struct ThreadContext
     std::uint32_t last_dos_interrupt_vector = 0;
     std::uint32_t last_dos_interrupt_ah = 0;
     std::uint32_t last_dos_interrupt_ax = 0;
+    std::uint32_t handled_dos_interrupt_ah_counts[256] = {};
     repiu::hle::DosVirtualFileSystemState dos_file_system;
     std::uint32_t handled_dos_chdir_count = 0;
     std::string last_dos_chdir_guest_path;
@@ -663,6 +665,7 @@ struct ThreadContext
     std::uint32_t last_segment_load_register = 0;
     std::uint32_t last_segment_load_selector = 0;
     std::uint32_t last_segment_load_source = 0;
+    std::uint32_t handled_segment_load_register_counts[6] = {};
     Win32SegmentLoadObservation segment_load;
     std::uint32_t handled_segment_store_count = 0;
     std::uint32_t last_segment_store_address = 0;
@@ -670,6 +673,7 @@ struct ThreadContext
     std::uint32_t last_segment_store_register = 0;
     std::uint32_t last_segment_store_selector = 0;
     std::uint32_t last_segment_store_destination = 0;
+    std::uint32_t handled_segment_store_register_counts[6] = {};
     std::uint32_t handled_segment_memory_load_count = 0;
     std::uint32_t last_segment_memory_load_address = 0;
     std::uint32_t last_segment_memory_load_opcode = 0;

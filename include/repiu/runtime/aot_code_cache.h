@@ -27,9 +27,15 @@ struct AotCodeCacheBuildOptions
     bool enable_dbt_indirect_dispatch_calls = true;
     bool enable_dbt_indirect_dispatch_jumps = true;
     bool enable_guarded_segment_pop = false;
+    bool enable_guarded_segment_read = false;
+    bool enable_guarded_segment_load = false;
     // Task 308 architecture probe. Ordinary planner-HLE records use a normal
     // host-dispatch slot whose fail-closed continuation retains INT3.
     bool enable_dbt_hle_dispatch = false;
+    // Task 385. Reuse the fail-closed host dispatch slot for kPortIo only.
+    bool enable_dbt_port_io_dispatch = false;
+    // Task 391. Reuse it for kSegmentOverrideMem only when explicitly enabled.
+    bool enable_dbt_segment_override_dispatch = false;
     // Task 348. Cooperative interrupt rendezvous emitted before direct
     // backward branches so an AOT-native busy loop can reach the existing
     // pending timer-interrupt injection path without cross-thread TF changes.
@@ -165,6 +171,8 @@ struct AotSegmentOverrideSite
     std::uint32_t guard_address_offset = 0;
     // imm16 field of the guard (the translation-time selector value S).
     std::uint32_t guard_selector_offset = 0;
+    // Companion HLE slot for Task 392 hybrid routing; zero when disabled.
+    std::uint32_t dispatch_cache_offset = 0;
     // The displacement before the segment base is folded in, so the base can be
     // re-applied idempotently when the segment is re-resolved (Task 264).
     std::int32_t original_displacement = 0;
@@ -184,6 +192,33 @@ struct AotGuardedSegmentPopSite
     std::uint32_t fallback_counter_address_offset = 0;
     std::uint32_t fallback_offset = 0;
     std::uint8_t segment_register = 0xFFU;
+};
+
+// A guarded register-source MOV Sreg,r16 slot. Success is a semantic no-op
+// when source, physical, and shadow selectors already match.
+struct AotGuardedSegmentLoadSite
+{
+    std::uint32_t guest_source = 0;
+    std::uint32_t cache_offset = 0;
+    std::uint32_t shadow_address_offset = 0;
+    std::uint32_t success_counter_address_offset = 0;
+    std::uint32_t fallback_counter_address_offset = 0;
+    std::uint32_t fallback_offset = 0;
+    std::uint8_t segment_register = 0xFFU;
+    std::uint8_t gpr_register = 0xFFU;
+};
+
+// A guarded MOV r32,Sreg slot. It compares the physical selector with the
+// shadow before writing the destination and restores entry state at fallback.
+struct AotGuardedSegmentReadSite
+{
+    std::uint32_t guest_source = 0;
+    std::uint32_t cache_offset = 0;
+    std::uint32_t shadow_address_offset = 0;
+    std::uint32_t load_shadow_address_offset = 0;
+    std::uint32_t fallback_offset = 0;
+    std::uint8_t segment_register = 0xFFU;
+    std::uint8_t gpr_register = 0xFFU;
 };
 
 struct AotTimerSafePointSite
@@ -208,6 +243,8 @@ struct AotCodeCacheImage
     std::vector<AotDbtIndirectDispatchSite> dbt_indirect_dispatch_sites;
     std::vector<AotJumpTableSite> jump_table_sites;
     std::vector<AotGuardedSegmentPopSite> guarded_segment_pop_sites;
+    std::vector<AotGuardedSegmentReadSite> guarded_segment_read_sites;
+    std::vector<AotGuardedSegmentLoadSite> guarded_segment_load_sites;
     std::vector<AotSegmentOverrideSite> segment_override_sites;
     std::vector<AotTimerSafePointSite> timer_safe_point_sites;
     // Carried into platform placement so every later dynamic append uses the
@@ -216,7 +253,11 @@ struct AotCodeCacheImage
         kDefaultAotIndirectInlineCacheEntryCount;
     bool dbt_return_miss_dispatch_enabled = false;
     bool dbt_hle_dispatch_enabled = false;
+    bool dbt_port_io_dispatch_enabled = false;
+    bool dbt_segment_override_dispatch_enabled = false;
     bool guarded_segment_pop_enabled = false;
+    bool guarded_segment_read_enabled = false;
+    bool guarded_segment_load_enabled = false;
     bool dbt_indirect_miss_dispatch_enabled = false;
     bool timer_safe_points_enabled = false;
     std::uint32_t resolved_fixup_count = 0;

@@ -1608,3 +1608,331 @@ wall -- which means producing fewer boundaries. Gate C, so no
 suppression was implemented; the counters stay at zero as a regression signal. The procedural
 lesson, after three such errors this session, is to confirm in code what a counter counts before
 subtracting or dividing.
+
+## Task 377 gameplay capture (2026-08-01)
+
+?? FPS ?? gameplay ???? interval 0?? 32.766?? ??? ??? 1,246 frame(? 38.0 FPS)?????. Glide gate? wall 11.75%, VEH? 21.82%, unaccounted? 78.18%????. ?? ???? Glide ??? ?? ? ??? ??? ?????, 20% ?? ???? ? ??? guest/exception ??? ??? ??????.
+Task 377? shader `glGetError` ??? ???? ??????. per-call check? frame check? ?? 0?, GL debug callback? ??? 2?? ?? 0??????. `_GRALPHACOMBINE@20`? work? ??? ? 522,828 cycle??? ? ?? `glGetError`? ???? ???? ? ?? ?? GL/driver ?????. ?? ??? AOT ???? ?? ??? ?? guest-execution ?? ?????.
+
+## English
+
+At interval zero, the real FPS-collapse gameplay scene ran for 32.766 seconds and produced 1,246 frames (about 38.0 FPS). The Glide gate was 11.75% of wall, VEH was 21.82%, and unaccounted was 78.18%. Glide can be larger than in the automated scene, but it remains below the 20% reopening threshold and guest/exception execution still dominates.
+Task 377's shader `glGetError` completion was cleanly observed: both per-call and frame checks were zero, and the GL debug callback reported two messages and zero errors. `_GRALPHACOMBINE@20` still spent about 522,754 work cycles per call, but it no longer executes `glGetError`, so that is remaining GL/driver work. The next task should design the guest-execution axis that reduces AOT re-entries and exception boundaries.
+
+## Task 378–379: native linear span trace ownership
+
+확인됨: 2026-08-01 music-select interval-zero 캡처에서 일반 native linear span은 `entry/boundary/cancel = 6051/30/6021`이고, 취소 원인은 `tf/dr0/dr1/dr2/dr3/other = 6021/0/0/0/0/0`입니다. 호출 지점은 `HandleSingleStepTrace`이며 이 함수는 `enable_single_step_trace`가 참일 때만 실행됩니다. 따라서 일반 span은 기존 AOT-DBT single-step 재진입이 소유한 TF와 양립하지 않습니다.
+
+Task 379는 trace가 소유한 경우 일반 span 진입을 건너뛰며, retired-trap span과 TF 재설정·fallback 흐름은 유지합니다. 후속 캡처에서 일반 span entry/cancel은 `0/0/0`으로 확인되었습니다. AOT 재진입은 667,659회로 계속 동작했습니다. 33.609초·1,194 buffer swap(약 35.5 FPS)은 이전 캡처와 실행량이 달라 성능 개선 근거가 아니므로, 이 축은 성공 불가능한 span 비용 제거로 종료합니다.
+
+### English
+
+Confirmed: the 2026-08-01 music-select interval-zero capture recorded ordinary native linear span `entry/boundary/cancel = 6051/30/6021`, with cancellation causes `tf/dr0/dr1/dr2/dr3/other = 6021/0/0/0/0/0`. Its call site is `HandleSingleStepTrace`, which runs only when `enable_single_step_trace` is true. Ordinary spans are therefore incompatible with TF owned by the existing AOT-DBT single-step re-entry.
+
+Task 379 skips ordinary span entry when trace owns the path while retaining retired-trap spans and TF re-arm/fallback flow. A follow-up capture confirmed ordinary span entry/boundary/cancel at `0/0/0`; AOT re-entry continued 667,659 times. Its 1,194 buffer swaps in 33.609 seconds (about 35.5 FPS) have a different workload from the prior capture, so they are not evidence of a performance improvement. This axis ends after removing spans that cannot succeed.
+## Task 380: single-step hotspot ownership
+
+확인됨: 2026-08-01 hotspot 캡처에서 trace-owned single-step 85,713건 중 HLE 결과는 66,152건·3,641,953,045 cycle(약 98.43%)이며 plain TF 재설정은 19,549건·57,878,284 cycle(약 1.56%)입니다. HLE 직접 AOT 복귀는 82.06% 성공하므로, 단순히 TF 재설정을 없애거나 span-safety만 풀어서는 주 병목을 해결하지 못합니다. 상위 HLE dispatch EIP는 `0x030F3BAD`, `0x030F3BBD`, `0x030F5637`이고, 상위 AOT-resume EIP는 `0x030F536A`, `0x030F536C`, `0x0303391A`입니다.
+
+### English
+
+Confirmed: in the 2026-08-01 hotspot capture, of 85,713 trace-owned single steps, HLE outcomes account for 66,152 calls and 3,641,953,045 cycles (about 98.43%), while plain TF re-arm is 19,549 calls and 57,878,284 cycles (about 1.56%). Direct HLE-to-AOT re-entry succeeds 82.06%, so removing TF re-arm or relaxing span safety alone cannot solve the main bottleneck. Leading HLE-dispatch EIPs are `0x030F3BAD`, `0x030F3BBD`, and `0x030F5637`; leading AOT-resume EIPs are `0x030F536A`, `0x030F536C`, and `0x0303391A`.
+## Task 381: Music Select HLE hotspot attribution
+
+확인됨: 원본 `PIU.EXE`와 대조하면 상위 비용 EIP는 하나의 Glide 호출이 아니라 `mov ds, edx` (`0x030F3BAD`), `pop ds` (`0x030F3BBD`), `mov eax, ds` 및 뒤따르는 segment load 경로 (`0x030F536A`), `int 21h` (`0x030F5637`), operand-size prefix가 붙은 `in ax, dx` (`0x0303391A`)의 혼합입니다. 현재 AOT에는 guarded segment-pop과 Port I/O 분류만 있고 guarded segment-read 분류·방출기는 없습니다. 따라서 segment read는 여전히 일반 HLE boundary입니다.
+
+Task 310의 설계·작업 로그는 `kGuardedSegmentRead` 구현을 주장하지만, 그 문서를 추가한 `62c89f8`의 직전 소스와 현재 소스 모두 해당 enum, decoder, emitter를 갖지 않습니다. 제거된 구현이 아니라 코드와 맞지 않는 과거 문서 기록입니다. Port I/O도 DBT dispatch slot을 통해 HLE 처리되므로 #DB VEH 진입만 피할 뿐 HLE 비용은 남습니다. 다음에는 명령군별 호출 횟수, INT 21h service 번호, selector 일치율을 분리 계측해 안전한 fast-path 우선순위를 정합니다.
+
+### English
+
+Confirmed: matching the original `PIU.EXE` shows that the costly EIPs are not one Glide call, but a mix of `mov ds, edx` (`0x030F3BAD`), `pop ds` (`0x030F3BBD`), `mov eax, ds` and its following segment-load path (`0x030F536A`), `int 21h` (`0x030F5637`), and operand-size-prefixed `in ax, dx` (`0x0303391A`). Current AOT has only guarded segment-pop and Port-I/O classifications, not a guarded segment-read classifier or emitter, so segment reads remain ordinary HLE boundaries.
+
+Task 310's design and work log claim a `kGuardedSegmentRead` implementation, but both current source and the source immediately before `62c89f8`, which added those documents, lack its enum, decoder, and emitter. This is a historical document record inconsistent with code, not a removed implementation. Port I/O also remains HLE work through a DBT dispatch slot; it merely avoids the #DB VEH entry. The next measurement must separate call count per instruction family, INT 21h service number, and selector-match rate to prioritize safe fast paths.
+## Task 383: physical/shadow 일치 guard를 둔 segment-read fast path
+
+**확인됨:** `mov r32, Sreg` HLE는 shadow selector의 단순 load가 아닙니다. `ReadGuestSegmentSelector`는 실제 CPU segment selector와 shadow가 다르면 host-entry selector와 software descriptor를 확인해 authoritative value를 결정합니다. shadow를 무조건 읽는 첫 두 구현은 대상 GPR zero-extension 여부와 무관하게 `0x03042EBE`에서 같은 실행 회귀를 만들었습니다.
+
+최종 구현은 실제 selector와 shadow가 같은 경우에만 native로 완료합니다. EFLAGS와 EAX를 보존해 실제 selector를 읽고 비교하며, 불일치하면 진입 상태를 복구한 뒤 기존 INT3 HLE boundary로 fail closed 합니다. 성공 시에는 기존 HLE와 동일하게 대상 GPR의 상위 16비트를 보존합니다. 기능은 `REPIU_AOT_GUARDED_SEGMENT_READ=1` opt-in이며 기본값은 off입니다.
+
+동일 EEPROM 복사본의 5초 스모크에서 off/on 모두 정상 timeout했습니다. on은 54개 site를 활성화했고 segment store HLE를 15,260회에서 1,818회로, 전체 예외를 81,108회에서 68,386회로 줄였습니다. 이는 구현 안전성과 제거 가능성을 지지하지만, 실제 Music Select 장면의 FPS/시간 개선은 아직 미확정입니다. 다음 판단점은 같은 장면 capture에서 wall, frame, HLE outcome, segment-store site 비용을 비교하는 것입니다. 사용자 지시에 따라 DOS `AH=3Bh` chdir은 그 뒤 순서로 유지합니다.
+
+### English
+
+**Confirmed:** `mov r32, Sreg` HLE is not a simple shadow-selector load. When the physical CPU segment selector diverges from the shadow, `ReadGuestSegmentSelector` uses the host-entry selector and software descriptor to decide the authoritative value. The first two unconditional-shadow implementations produced the same regression at `0x03042EBE`, regardless of whether the destination GPR was zero-extended.
+
+The final path completes natively only when the physical selector equals the shadow. It preserves EFLAGS and EAX while reading and comparing the physical selector; on mismatch it restores entry state and fails closed to the existing INT3 HLE boundary. On success it preserves the destination GPR's upper 16 bits exactly like existing HLE. The feature is opt-in through `REPIU_AOT_GUARDED_SEGMENT_READ=1` and remains off by default.
+
+Both sides of a five-second smoke using identical EEPROM copies reached a normal timeout. The enabled run activated 54 sites and reduced segment-store HLE calls from 15,260 to 1,818 and total exceptions from 81,108 to 68,386. This supports implementation safety and removal potential, but actual Music Select FPS/time improvement remains unconfirmed. The next decision point is a same-scene capture comparing wall time, frames, HLE outcomes, and segment-store site cost. Per user direction, DOS `AH=3Bh` chdir remains after that step.
+## Task 384: guarded segment-read 기본 ON 승격
+
+**확인됨:** 기준/활성 Music Select capture는 `0x030F536C=5,471`, DOS `AH=3Bh=580`으로 고정 경로가 일치했습니다. 활성 경로는 `0x030F536A` segment-read boundary를 제거했고 frame당 CPU cycle 30.14%, 전체 예외 29.70%, HLE outcome 51.52%, segment-store HLE 94.26%를 줄였습니다. 전체 평균은 21.64에서 31.00 FPS로 증가했지만 capture 길이 차이가 있으므로 FPS 변화율은 보조 증거입니다.
+
+이 결과로 `REPIU_AOT_GUARDED_SEGMENT_READ` 미지정 기본값을 `aot-dbt`에서 ON으로 승격했습니다. `0|off|false` 및 알 수 없는 값은 fail-closed opt-out이고 다른 backend는 비활성화됩니다. 기본/opt-out 1초 실행과 전체 probe가 통과했습니다.
+
+남은 frame 반복 HLE cycle hotspot `0x030334E5`, `0x030334F2`, `0x0303391A`, `0x03033927`, `0x03033D66`, `0x03033D73`, `0x0303419D`, `0x030341AA`는 원본 대조 결과 모두 `in ax, dx` 쌍입니다. 새 capture의 Port I/O는 28,713회이며 전부 handled입니다. device body는 wall의 0.45%이지만 예외와 HLE/AOT-resume 비용을 포함하지 않으므로 다음 반복 비용 후보는 Port-I/O 전용 무예외 dispatch입니다. `0x030F3BAD/3BBD`, `0x030F536C`, DOS chdir은 두 capture에서 횟수가 고정된 초기화 비용이므로 계속 후순위입니다.
+
+### English
+
+**Confirmed:** baseline and enabled Music Select captures followed the same fixed path (`0x030F536C=5,471`, DOS `AH=3Bh=580`). The enabled path removed the `0x030F536A` segment-read boundary and reduced per-frame CPU cycles by 30.14%, total exceptions by 29.70%, HLE outcomes by 51.52%, and segment-store HLE by 94.26%. Raw average throughput rose from 21.64 to 31.00 FPS, but the FPS ratio is supporting evidence because capture durations differ.
+
+The unset `REPIU_AOT_GUARDED_SEGMENT_READ` default is therefore ON for `aot-dbt`. `0|off|false` and unknown values are fail-closed opt-outs; other backends remain disabled. Default/opt-out one-second runs and the full probe passed.
+
+The remaining frame-repeating HLE cycle hotspots at `0x030334E5`, `0x030334F2`, `0x0303391A`, `0x03033927`, `0x03033D66`, `0x03033D73`, `0x0303419D`, and `0x030341AA` all disassemble to pairs of `in ax, dx`. The new capture recorded 28,713 Port-I/O operations, all handled. Device-body time is only 0.45% of wall but excludes exception and HLE/AOT-resume cost, making exception-free Port-I/O-specific dispatch the next repeated-cost candidate. `0x030F3BAD/3BBD`, `0x030F536C`, and DOS chdir have fixed counts across captures and remain lower-priority initialization costs.
+## Task 385: Port-I/O 전용 무예외 dispatch opt-in
+
+**구현 및 짧은 검증 완료:** 전체 HLE superblock은 계속 OFF로 유지하면서 `kPortIo`에만 기존 fail-closed host-stack dispatch slot을 허용하는 `REPIU_AOT_DBT_PORT_IO_DISPATCH=1` opt-in을 추가했습니다. synthetic probe는 Port-I/O만 slot을 받고 일반 HLE는 INT3에 남는 것을 확인합니다.
+
+동일 EEPROM 5초 비교는 양쪽 모두 166 buffer swap, Port I/O 6,837/6,861회로 같은 작업량을 보였습니다. 활성 실행의 host dispatch는 entry/attempt/success/fallback `6,784/6,784/6,778/6`이며 여섯 건은 기존 INT3 fallback으로 안전하게 복구됐습니다. 전체 예외는 68,386에서 61,300(-10.36%), breakpoint는 40,333에서 33,711(-16.42%), hotspot HLE outcome은 24,815에서 18,057(-27.23%)로 감소했습니다. 짧은 실행의 안전성과 예외 제거는 확인됐지만 Music Select 전체 장면 성능은 미확정이므로 기본값은 OFF입니다. 다음 판단점은 opt-in Music Select capture입니다.
+
+### English
+
+**Implemented and short-smoke verified:** added `REPIU_AOT_DBT_PORT_IO_DISPATCH=1`, allowing the existing fail-closed host-stack dispatch slot only for `kPortIo` while keeping general HLE superblock dispatch off. A synthetic probe confirms Port-I/O receives the slot and ordinary HLE remains INT3.
+
+A five-second identical-EEPROM comparison produced 166 buffer swaps on both sides and 6,837/6,861 Port-I/O operations, showing matched work. Enabled host dispatch entry/attempt/success/fallback was `6,784/6,784/6,778/6`; six cases recovered through the existing INT3 fallback. Total exceptions fell from 68,386 to 61,300 (-10.36%), breakpoints from 40,333 to 33,711 (-16.42%), and hotspot HLE outcomes from 24,815 to 18,057 (-27.23%). Safety and exception removal are confirmed for the short run, but full-scene Music Select performance remains unresolved, so default stays OFF. The next decision point is an opt-in Music Select capture.
+## Task 386: Port-I/O 전용 dispatch 기본 ON 승격
+
+**확인됨:** Port-I/O opt-in Music Select 캡처는 이전 guarded segment-read 캡처와 고정 초기화 표식(`0x030F536C=5,471`, DOS `AH=3Bh=580`, segment-store HLE `1,881`)이 일치했습니다. frame 정규화 결과 CPU cycle 11.75%, 전체 예외 12.95%, hotspot HLE outcome 58.61%, hotspot HLE cycle 55.49%가 감소했습니다. 평균 buffer-swap 처리율은 31.004에서 35.131 FPS로 증가했지만 캡처 길이 차이 때문에 보조 근거입니다. host dispatch `29,952/29,952/29,936/16` 중 16건은 기존 INT3 fallback으로 복구되었습니다.
+
+따라서 `aot-dbt`의 미설정 `REPIU_AOT_DBT_PORT_IO_DISPATCH`를 기본 ON으로 승격했습니다. `0|off|false` 및 알 수 없는 값은 fail-closed opt-out이고 다른 backend는 비활성입니다. Release probe/loader 빌드, 전체 probe, 기본/opt-out 1초 스모크가 통과했습니다.
+
+이 제거 뒤 남은 반복 HLE 비용의 상위 EIP는 `0x030F3BAD`, `0x030F3BBD`, `0x030F536C`, `0x030F5637` 등입니다. 앞의 세 주소와 DOS chdir은 비교 캡처에서 고정 횟수이므로 사용자 지시에 따라 후순위로 유지합니다. 새 캡처의 최대 wall 비중은 VEH 밖의 guest 실행이며, 다음 성능 작업은 고정 초기화 비용이 아니라 frame에 비례하는 남은 breakpoint/TF boundary를 다시 분류해야 합니다.
+
+### English
+
+**Confirmed:** the Port-I/O opt-in Music Select capture matched the prior guarded-segment-read capture's fixed initialization markers (`0x030F536C=5,471`, DOS `AH=3Bh=580`, segment-store HLE `1,881`). Frame-normalized CPU cycles fell 11.75%, total exceptions 12.95%, hotspot HLE outcomes 58.61%, and hotspot HLE cycles 55.49%. Average buffer-swap throughput rose from 31.004 to 35.131 FPS, but differing capture lengths make this supporting evidence. Of host dispatch `29,952/29,952/29,936/16`, 16 cases recovered through the existing INT3 fallback.
+
+The unset `REPIU_AOT_DBT_PORT_IO_DISPATCH` default is therefore ON for `aot-dbt`. `0|off|false` and unknown values are fail-closed opt-outs, and other backends remain disabled. Release probe/loader builds, the full probe, and default/opt-out one-second smokes passed.
+
+After this removal, leading repeated HLE EIPs include `0x030F3BAD`, `0x030F3BBD`, `0x030F536C`, and `0x030F5637`. The first three addresses and DOS chdir have fixed counts across the comparison captures, so they remain lower priority per user direction. The largest wall share in the new capture is guest execution outside VEH; the next performance task must reclassify remaining breakpoint/TF boundaries that scale with frames instead of optimizing fixed initialization costs.
+## Task 387: Music Select Glide gate 예외 경로 제거 (2026-08-01)
+
+### 확인됨
+
+- Task 386 캡처의 AOT boundary 476,388건 중 합성 Glide gate가 420,803건(88.33%)이었습니다.
+- gate image를 `CALL rel32 + RET imm16`으로 바꾸는 것만으로는 부족했습니다. AOT cache boundary mapping의 `INT3`가 먼저 실행되어 gate EIP를 VEH에 전달했습니다.
+- opt-in은 자산 유래 address/ordinal/argument ABI와 원본 `UD2 + ordinal + RET`를 검증하고, gate page를 `PAGE_EXECUTE_READ`로 전환·flush합니다.
+- 첫 검증 boundary에서 해당 cache boundary를 가리키는 direct fixup과 indirect inline-cache target을 executable gate로 재연결하고, 이후 transfer resolution은 검증된 gate를 직접 반환합니다.
+- `RET imm16` immediate는 argument bytes만 사용합니다. handler context의 ESP delta인 `4 + argument bytes`를 쓰면 호출마다 ESP가 4바이트 과다 증가합니다.
+- Release 5초 opt-in은 direct entry/success/target-miss/terminal `65,241/65,240/0/0`이었습니다. 마지막 한 건은 timeout snapshot 시점에 진행 중인 호출입니다.
+- 동일 5초 opt-out 대비 총 예외는 `140,313 -> 51,601`(-63.22%), breakpoint는 `73,340 -> 27,792`(-62.10%), single-step은 `53,792 -> 8,771`(-83.70%), AOT other boundary는 `71,776 -> 26,754`(-62.72%)였습니다. 두 실행 모두 최종 예외 없이 timeout 종료했습니다.
+
+### 추정
+
+- 같은 벽시계 구간의 Glide 처리량 `44,388 -> 65,241`(+46.98%)은 직접 경로의 성능 이득을 지지하지만, 짧은 시작 구간의 장면 진행 차이가 있으므로 Music Select 수동 캡처로 재확인해야 합니다.
+
+### 미확정
+
+- 실제 Music Select 장시간 캡처의 frame-normalized cycles/exception 감소율과 화면·입력 회귀 여부.
+- 이 시점에는 검증 전이어서 기본값이 OFF였으며, Task 388에서 검증 완료 후 미설정 기본값을 ON으로 승격했습니다.
+
+## Task 387: removing the Music Select Glide-gate exception path (2026-08-01)
+
+### Confirmed
+
+- Synthetic Glide gates accounted for 420,803 of 476,388 AOT boundaries (88.33%) in the Task 386 capture.
+- Rewriting only the gate image was insufficient because the AOT cache boundary mapping executed its `INT3` first and presented the gate EIP to VEH.
+- The opt-in validates asset-derived address, ordinal, argument ABI, and original `UD2 + ordinal + RET`, then makes the gate page `PAGE_EXECUTE_READ` and flushes it.
+- At the first validated boundary, matching direct fixups and indirect inline-cache targets are relinked from the cache boundary to the executable gate; later transfer resolution returns validated gates directly.
+- The `RET imm16` immediate is argument bytes only. Using the handler-context delta `4 + argument bytes` over-advances ESP by four bytes per call.
+- A five-second Release opt-in run recorded direct entry/success/target-miss/terminal `65,241/65,240/0/0`; the final call was in flight at the timeout snapshot.
+- Against an identical five-second opt-out, total exceptions fell `140,313 -> 51,601` (-63.22%), breakpoints `73,340 -> 27,792` (-62.10%), single steps `53,792 -> 8,771` (-83.70%), and AOT other boundaries `71,776 -> 26,754` (-62.72%). Both runs ended at timeout without a final exception.
+
+### Inferred
+
+- Glide throughput in the same wall-clock interval rose `44,388 -> 65,241` (+46.98%), supporting a performance benefit, but short startup-scene progress can differ and requires a manual Music Select capture.
+
+### Unresolved
+
+- Frame-normalized cycles/exception reduction and visual/input regression status in a longer Music Select capture.
+- **Resolved by Task 388:** validation completed and the unset default was promoted to ON; `0|off|false` and unknown values remain fail-closed opt-outs.
+
+## Task 388: Glide gate 직접 dispatch 기본 ON 승격 (2026-08-01)
+
+### 확인됨
+
+- 수동 Music Select 캡처는 49.187초, `_GRBUFFERSWAP@4=3,957`, backend `Glide buffer swapped`까지 진행했습니다.
+- direct patched/verified/resolved/relinked/entry/success/miss/terminal은 `172/172/129/492/734,293/734,292/0/0`입니다. 한 호출은 종료 스냅샷 시점에 처리 중이었고 final exception은 없습니다.
+- 실행 구간이 다른 직전 캡처와 절대 합계를 비교하지 않고 시간 정규화하면 총 예외율은 약 `17,633/s -> 3,776/s`(-78.6%)입니다. Task 387의 동일 5초 A/B(-63.22%)와 방향이 일치합니다.
+- 미설정 기본값을 ON으로 승격했습니다. `0|off|false`, 빈 문자열, 알 수 없는 값은 fail-closed opt-out입니다.
+- Release 전체 빌드, 두 PIU 구성의 전체 probe, 기본/opt-out 1초 smoke가 통과했습니다. 기본 smoke direct `9/9/0/0`, opt-out direct 계수 0이며 양쪽 모두 final exception이 없습니다.
+
+### 미확정
+
+- 장시간 캡처의 장면 구성이 달라 이번 로그만으로 절대 FPS 개선율을 확정하지 않습니다. 예외 경로 제거와 안정성은 확정되었습니다.
+- `chdir` 및 고정 초기화 hotspot은 사용자 지시에 따라 후순위입니다.
+
+## Task 388: promoting Glide-gate direct dispatch to default ON (2026-08-01)
+
+### Confirmed
+
+- The manual Music Select capture ran for 49.187 seconds, reached `_GRBUFFERSWAP@4=3,957`, and reported backend state `Glide buffer swapped`.
+- Direct patched/verified/resolved/relinked/entry/success/miss/terminal was `172/172/129/492/734,293/734,292/0/0`. One call was in flight at shutdown and there was no final exception.
+- Runtime normalization, rather than absolute totals across unequal captures, gives an exception-rate reduction of approximately `17,633/s -> 3,776/s` (-78.6%), consistent with Task 387's matched five-second A/B (-63.22%).
+- The unset default is now ON. `0|off|false`, an empty string, and unknown values are fail-closed opt-outs.
+- The full Release build, full probes for both PIU variants, and default/opt-out one-second smokes passed. Default direct was `9/9/0/0`, opt-out direct counters were zero, and neither run had a final exception.
+
+### Unresolved
+
+- Because scene composition differs across long captures, this log alone does not establish an absolute FPS improvement. Exception-path removal and stability are confirmed.
+- `chdir` and fixed initialization hotspots remain lower priority per user direction.
+
+## Task 389: guarded segment-load fast path (2026-08-01)
+
+### 확인됨
+
+- Task 388 Music Select 캡처의 AOT other boundary 64,938건 중 effective `8E`가 29,699건이며 3,957 frame 기준 약 7.5건/frame입니다.
+- 반복 주소 `0x030F6CD7`, `0x030F6E8A`, `0x030F694D`는 register-source `MOV ES, r16`이고 최신 trace selector 16건은 모두 `0x002B`입니다.
+- ES/DS/FS/GS register-source 형식에 source=physical=shadow 충분조건만 허용하는 opt-in guarded slot을 구현했습니다. SS, ESP 및 memory source는 기존 HLE입니다.
+- 3초 A/B에서 guarded success/fallback은 `12,045/1,597`이었고, frame 정규화 총 예외는 `95.87 -> 71.37`(-25.56%), breakpoint는 `54.22 -> 30.00`(-44.66%), `8E` 경계는 `27.54 -> 3.60`(-86.94%)으로 감소했습니다.
+- Release build, 두 PIU 구성의 전체 probe, opt-out/opt-in smoke가 통과했으며 final exception과 Glide direct miss/terminal은 없습니다.
+
+### 미확정
+
+- 실제 Music Select 장시간 캡처의 성공/복구 비율과 화면·입력 회귀 여부.
+- **Task 390에서 해결:** 장시간 수동 캡처 검증 후 미지정 기본값을 ON으로 승격했습니다.
+- 뒤따르는 segment-override HLE 경계와 `chdir`는 이번 범위 밖이며, `chdir`는 후순위입니다.
+
+## Task 389: guarded segment-load fast path (2026-08-01)
+
+### Confirmed
+
+- Effective `8E` accounts for 29,699 of 64,938 AOT other boundaries in the Task 388 Music Select capture, about 7.5 per frame across 3,957 frames.
+- Repeated sites `0x030F6CD7`, `0x030F6E8A`, and `0x030F694D` are register-source `MOV ES, r16`; all 16 latest trace selectors are `0x002B`.
+- Implemented an opt-in guarded slot for ES/DS/FS/GS register-source forms under the source=physical=shadow sufficient condition. SS, ESP, and memory sources retain HLE.
+- In the three-second A/B, guarded success/fallback was `12,045/1,597`; per-frame total exceptions fell `95.87 -> 71.37` (-25.56%), breakpoints `54.22 -> 30.00` (-44.66%), and `8E` boundaries `27.54 -> 3.60` (-86.94%).
+- The Release build, full probes for both PIU variants, and opt-out/opt-in smokes passed without a final exception or Glide direct miss/terminal.
+
+### Unresolved
+
+- Long-running success/fallback ratio and visual/input behavior in a real Music Select capture.
+- **Resolved by Task 390:** after the long manual capture, the unset default was promoted to ON.
+- Subsequent segment-override HLE boundaries and `chdir` are outside this slice; `chdir` remains lower priority.
+
+## Task 390: guarded segment-load 기본 ON 승격 (2026-08-01)
+
+### 확인됨
+
+- Task 388 기준과 Task 389 활성 Music Select 캡처의 `_GRBUFFERSWAP@4`는 `3,957/3,914`로 1.1% 이내이며 둘 다 SDL 종료 요청, Glide direct miss/terminal 0입니다.
+- frame 정규화 전체 예외는 `46.9366 -> 35.2752`(-24.85%), breakpoint는 `19.6581 -> 10.8623`(-44.74%), AOT boundary는 `16.4109 -> 8.0738`(-50.80%), effective `8E`는 `7.5054 -> 0.4854`(-93.53%)입니다.
+- guarded success/fallback은 `24,102/1,617`로 성공 93.71%, 안전 복귀 6.29%이며 terminal failure가 없습니다.
+- `aot-dbt`에서 미지정 기본값을 ON으로 승격합니다. `0|off|false`와 알 수 없는 값은 fail-closed opt-out이고 다른 backend는 비활성화됩니다.
+
+### 미확정
+
+- 구현은 PIU 주소가 아닌 명령 형식과 selector equality guard에 기반하지만, 다른 guest의 실전 mismatch 비율은 아직 측정하지 않았습니다.
+- 남은 상위 경계는 effective `8A`, `88`, `89`, `8C`와 안전 복귀 `8E`이며 `chdir`는 사용자 지시에 따라 후순위입니다.
+
+## Task 390: promoting guarded segment-load to default ON (2026-08-01)
+
+### Confirmed
+
+- `_GRBUFFERSWAP@4` counts in the Task 388 baseline and Task 389 enabled Music Select captures were `3,957/3,914`, within 1.1%; both ended by SDL exit request with zero Glide direct misses or terminal failures.
+- Per frame, total exceptions fell `46.9366 -> 35.2752` (-24.85%), breakpoints `19.6581 -> 10.8623` (-44.74%), AOT boundaries `16.4109 -> 8.0738` (-50.80%), and effective `8E` boundaries `7.5054 -> 0.4854` (-93.53%).
+- Guarded success/fallback was `24,102/1,617`, or 93.71% success and 6.29% safe fallback, with no terminal failure.
+- The unset `aot-dbt` default is promoted to ON. `0|off|false` and unknown values are fail-closed opt-outs; other backends remain disabled.
+
+### Unresolved
+
+- The implementation uses instruction forms and selector equality rather than PIU addresses, but live mismatch ratios for other guests have not yet been measured.
+- Remaining top boundaries are effective `8A`, `88`, `89`, `8C`, and safely-falling-back `8E`; `chdir` remains lower priority per user direction.
+## Task 391: segment-override 전용 DBT dispatch (2026-08-01)
+
+### 확인됨
+
+- Task 390 캡처의 segment provenance breakpoint/HLE exit은 `21,915/21,772`이고 mismatch/unresolved는 0입니다. effective `8A/88/89`는 `16,231/3,859/3,654`이며 대표 명령은 일반적인 ES override memory read/write입니다.
+- opt-in은 `kSegmentOverrideMem`만 기존 fail-closed HLE host dispatch slot으로 방출하며 기본값은 OFF입니다.
+- 동일 3초 off/on은 `588/656` frame(+11.56%)입니다. frame당 전체 예외는 `62.318 -> 41.963`(-32.66%), access violation은 `19.493 -> 3.323`(-82.95%), VEH cycles는 `4.766M -> 4.088M`(-14.22%), guest-run cycles는 `18.969M -> 16.989M`(-10.44%)입니다.
+- 활성 HLE dispatch `39,896`건 중 `31,404`건 성공, `8,492`건 fallback입니다. 기준 성공을 제외하면 약 25,607개 segment override가 직접 처리됐습니다. fallback은 VEH-required 1/unhandled 8,491이고 invalid-site/target/state/unknown은 0입니다.
+- Release build와 두 PIU 구성 전체 probe가 통과했고 final exception 및 Glide direct miss/terminal은 없습니다.
+
+### 미확정
+
+- 장시간 Music Select에서 같은 처리량/예외 개선과 화면·입력 동작이 유지되는지 확인해야 합니다.
+- 8,491 unhandled가 반복되는 명령군을 분리해 native/HLE hybrid로 보존할지, 현재 전용 dispatcher를 기본 승격할지는 장시간 캡처 후 결정합니다.
+- `chdir`는 사용자 지시에 따라 후순위입니다.
+
+## Task 391: segment-override-specific DBT dispatch (2026-08-01)
+
+### Confirmed
+
+- The Task 390 capture had `21,915/21,772` segment-provenance breakpoints/HLE exits with zero mismatches or unresolved sites. Effective `8A/88/89` counts were `16,231/3,859/3,654`; representative instructions are ordinary ES-override memory reads and writes.
+- The opt-in emits only `kSegmentOverrideMem` through the existing fail-closed HLE host-dispatch slot; default remains OFF.
+- Matched three-second off/on runs produced `588/656` frames (+11.56%). Per frame, total exceptions fell `62.318 -> 41.963` (-32.66%), access violations `19.493 -> 3.323` (-82.95%), VEH cycles `4.766M -> 4.088M` (-14.22%), and guest-run cycles `18.969M -> 16.989M` (-10.44%).
+- Of 39,896 enabled HLE dispatches, 31,404 succeeded and 8,492 fell back. Subtracting baseline successes leaves about 25,607 directly handled segment overrides. Fallback was one VEH-required and 8,491 unhandled, with zero invalid-site, target, state, or unknown failures.
+- Release builds and full probes for both PIU layouts passed without a final exception or Glide direct miss/terminal.
+
+### Unresolved
+
+- A long Music Select capture must confirm the same throughput/exception benefit and visual/input behavior.
+- Whether to preserve the 8,491 repeated unhandled forms through a native/HLE hybrid or promote the current specific dispatcher depends on that capture.
+- `chdir` remains lower priority per user direction.
+## Task 392: hybrid segment-override dispatch (2026-08-01)
+
+### 확인됨
+
+- Task 391 장시간 broad-dispatch 로그는 Task 390 기준 대비 frame당 전체 예외 +59.82%, guest-run cycles +62.04%, VEH cycles +76.38%였고 `_GRBUFFERSWAP@4`는 `3,914 -> 2,116`으로 감소했습니다. fallback `21,060`건 중 `21,059`건이 unhandled여서 broad 정책은 기각했습니다.
+- hybrid emitter는 기존 selector-guard native slot과 HLE companion slot을 함께 생성합니다. live `NativeFolded`는 native entry, `HleLowMemory`는 companion `JMP`, unresolved는 `INT3`로 패치합니다.
+- Debug/Release 전체 빌드와 두 PIU 구성 probe가 통과했습니다. `segment_override_hybrid_patch`, `selector_guard_all`, `coherence_all`은 모두 true입니다.
+- Release 3초 ON은 OFF보다 전체 예외 23.63%, access violation 81.24%, VEH cycles 37.77%가 감소했고 guest-run cycles는 0.40% 감소했습니다. Glide direct entry는 `1,984 -> 13,380`이며 miss/terminal과 final exception은 0입니다.
+- 이 경로는 PIU 주소를 사용하지 않고 Zydis 명령 분류와 live segment policy에만 의존합니다.
+
+### 미확정
+
+- ON의 unhandled fallback 8,488건이 초기화 고정 비용인지 Music Select frame 비례 비용인지 장시간 수동 캡처로 확인해야 합니다.
+- 장시간 검증 전까지 `REPIU_AOT_DBT_SEGMENT_OVERRIDE_DISPATCH` 기본값은 OFF입니다.
+- `chdir`는 사용자 지시에 따라 계속 후순위입니다.
+
+## English
+
+### Confirmed
+
+- The Task 391 broad-dispatch long run regressed per-frame total exceptions by 59.82%, guest-run cycles by 62.04%, and VEH cycles by 76.38% versus Task 390, while `_GRBUFFERSWAP@4` fell `3,914 -> 2,116`. Of 21,060 fallbacks, 21,059 were unhandled, so broad routing is rejected.
+- The hybrid emitter retains the selector-guard native slot and adds an HLE companion. Live `NativeFolded`, `HleLowMemory`, and unresolved states patch to native entry, companion `JMP`, and `INT3`, respectively.
+- Full Debug/Release builds and probes for both PIU layouts passed. `segment_override_hybrid_patch`, `selector_guard_all`, and `coherence_all` are all true.
+- In the three-second Release run, ON reduced total exceptions 23.63%, access violations 81.24%, and VEH cycles 37.77%, while guest-run cycles fell 0.40%. Glide direct entries increased `1,984 -> 13,380`, with zero misses, terminal failures, or final exception.
+- The path contains no PIU addresses and depends only on Zydis instruction classification and live segment policy.
+
+### Unresolved
+
+- A long manual Music Select capture must determine whether 8,488 unhandled fallbacks are fixed initialization cost or scale with frames.
+- `REPIU_AOT_DBT_SEGMENT_OVERRIDE_DISPATCH` remains default OFF until that validation.
+- `chdir` remains lower priority per user direction.
+## Task 392 장시간 결론 (2026-08-02)
+
+### 확인됨
+
+- 같은 길이의 `pumpit1` 실행에서 hybrid는 Task 390 기준보다 frame 처리량이 21.13% 낮았습니다.
+- frame당 전체 예외 +18.47%, guest-run cycles +25.49%, VEH cycles +47.50%, Glide gate cycles +49.60%로 회귀했습니다. access violation -21.13%만으로는 전체 비용 증가를 상쇄하지 못합니다.
+- unhandled fallback은 21,420건입니다. broad와 hybrid 모두 장시간 Music Select 최적화로는 기각하며 기본값은 OFF입니다.
+- 무음 로그는 `piu_1st` 실행으로 CHD/MSCDEX가 없는 구성(`available/audio=false/false`)이었습니다. 올바른 `pumpit1` hybrid 로그는 MSCDEX audio true와 41개 재생 요청을 기록했으므로 hybrid에 의한 오디오 회귀는 확인되지 않았습니다.
+
+### 다음 경계
+
+- segment-override 전체 dispatch는 더 진행하지 않습니다. 이후에는 unhandled 명령군을 다시 묶어 보내지 않고, 검증 가능한 개별 명령 형식만 후보로 삼아야 합니다.
+- `chdir`는 계속 후순위입니다.
+
+## Task 392 long-run conclusion (2026-08-02)
+
+### Confirmed
+
+- In equal-duration `pumpit1` runs, hybrid throughput was 21.13% below the Task 390 baseline.
+- Per-frame total exceptions regressed 18.47%, guest-run cycles 25.49%, VEH cycles 47.50%, and Glide-gate cycles 49.60%. The 21.13% access-violation reduction did not offset the total cost.
+- There were 21,420 unhandled fallbacks. Both broad and hybrid routing are rejected as long-run Music Select optimizations, and default remains OFF.
+- The silent log ran `piu_1st` without CHD/MSCDEX (`available/audio=false/false`). The correct `pumpit1` hybrid log recorded MSCDEX audio true and 41 playback requests, so no hybrid-caused audio regression is confirmed.
+
+### Next boundary
+
+- Do not pursue whole-family segment-override dispatch further. Any later candidate must isolate individually verifiable instruction forms rather than regrouping the unhandled family.
+- `chdir` remains lower priority.
+
+## 2026-08-02 main 병합 인계
+
+최종 종합 설계는 [20260802-393-performance-investigation-handoff.md](../design/20260802-393-performance-investigation-handoff.md)에 있습니다. 기본 ON으로 채택한 경로는 trace-owned native span, guarded segment read/load, Port-I/O 전용 dispatch, Glide gate direct dispatch입니다. shader `glGetError`는 기존 정책을 따릅니다. segment-override broad/hybrid dispatch는 장시간 회귀로 기본 OFF이며 진단 전용입니다.
+
+다음 조사는 전체 segment-override가 아니라 effective `8A/88/89/8C`와 fallback `8E`의 개별 명령 형식에서 시작합니다. 다른 guest의 selector 일치율, 동일 작업량의 guest-run/VEH/Glide 재귀속, `pumpit1`가 포함된 재현 명령을 확인해야 합니다. `chdir`와 고정 초기화 비용은 후순위입니다.
+
+## 2026-08-02 main-merge handoff
+
+The consolidated design is [20260802-393-performance-investigation-handoff.md](../design/20260802-393-performance-investigation-handoff.md). Adopted default-ON paths are trace-owned native spans, guarded segment read/load, Port-I/O-specific dispatch, and Glide-gate direct dispatch. Shader `glGetError` follows the existing policy. Broad and hybrid segment-override dispatch remain default OFF and diagnostic-only after long-run regressions.
+
+The next investigation starts from individual effective `8A/88/89/8C` and fallback `8E` forms, not whole-family segment-override dispatch. It must check selector match rates on other guests, re-attribute guest-run/VEH/Glide under matched work, and include `pumpit1` in reproduction commands. `chdir` and fixed initialization costs remain lower priority.

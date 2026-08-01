@@ -1,5 +1,7 @@
 #include "repiu/platform/win32/glide_opengl_shader.h"
 
+#include "repiu/platform/win32/glide_gl_error_policy.h"
+
 #if defined(_WIN32)
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
@@ -434,7 +436,7 @@ bool GlideOpenGlShader::SetFogMode(std::uint32_t mode)
     implementation_->use_program(implementation_->program);
     implementation_->uniform_1i(implementation_->fog_mode,
                                 static_cast<GLint>(mode));
-    return glGetError() == GL_NO_ERROR;
+    return !GlideGlErrorCheckPolicyEnabled() || glGetError() == GL_NO_ERROR;
 #endif
 }
 
@@ -455,7 +457,7 @@ bool GlideOpenGlShader::SetFogColor(std::uint32_t argb)
     const float b = static_cast<float>(argb & 0xFF) / 255.0F;
     implementation_->use_program(implementation_->program);
     implementation_->uniform_4f(implementation_->fog_color, r, g, b, a);
-    return glGetError() == GL_NO_ERROR;
+    return !GlideGlErrorCheckPolicyEnabled() || glGetError() == GL_NO_ERROR;
 #endif
 }
 
@@ -479,7 +481,7 @@ bool GlideOpenGlShader::SetFogTable(const hle::GlideFogTable& table)
     implementation_->uniform_1fv(
         implementation_->fog_table,
         static_cast<GLsizei>(hle::kGlideFogTableEntryCount), normalized);
-    return glGetError() == GL_NO_ERROR;
+    return !GlideGlErrorCheckPolicyEnabled() || glGetError() == GL_NO_ERROR;
 #endif
 }
 
@@ -505,7 +507,7 @@ bool GlideOpenGlShader::SetAlphaCombine(
                                 static_cast<GLint>(state.other));
     implementation_->uniform_1i(implementation_->alpha_invert,
                                 state.invert ? 1 : 0);
-    if (glGetError() != GL_NO_ERROR)
+    if (GlideGlErrorCheckPolicyEnabled() && glGetError() != GL_NO_ERROR)
     {
         message_ = "failed to apply Glide alpha-combine uniforms";
         return false;
@@ -537,7 +539,7 @@ bool GlideOpenGlShader::SetColorCombine(
                                 static_cast<GLint>(state.other));
     implementation_->uniform_1i(implementation_->color_invert,
                                 state.invert ? 1 : 0);
-    if (glGetError() != GL_NO_ERROR)
+    if (GlideGlErrorCheckPolicyEnabled() && glGetError() != GL_NO_ERROR)
     {
         message_ = "failed to apply Glide color-combine uniforms";
         return false;

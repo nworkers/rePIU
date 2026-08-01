@@ -224,6 +224,11 @@ struct Win32PortIoObservation
     std::string last_result;
     std::uint32_t trace_stored_count = 0;
     bool trace_limit_reached = false;
+    std::uint32_t opcode_counts[256] = {};
+    std::uint32_t input_count = 0;
+    std::uint32_t output_count = 0;
+    std::uint32_t handled_count = 0;
+    std::uint32_t unhandled_count = 0;
     Win32PortIoTraceEntry trace[kWin32PortIoTraceCapacity];
 };
 
@@ -246,6 +251,11 @@ struct Win32DosPathObservation
     std::uint32_t observed_count = 0;
     std::uint32_t trace_stored_count = 0;
     bool trace_limit_reached = false;
+    std::uint32_t opcode_counts[256] = {};
+    std::uint32_t input_count = 0;
+    std::uint32_t output_count = 0;
+    std::uint32_t handled_count = 0;
+    std::uint32_t unhandled_count = 0;
     Win32DosPathTraceEntry trace[kWin32DosPathTraceCapacity];
 };
 
@@ -598,6 +608,18 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t native_linear_span_cache_hit_count = 0;
     std::uint32_t native_linear_span_cache_miss_count = 0;
     std::uint32_t native_linear_span_reject_cache_hit_count = 0;
+    std::uint32_t native_linear_span_cancel_tf_count = 0;
+    std::uint32_t native_linear_span_cancel_dr0_count = 0;
+    std::uint32_t native_linear_span_cancel_dr1_count = 0;
+    std::uint32_t native_linear_span_cancel_dr2_count = 0;
+    std::uint32_t native_linear_span_cancel_dr3_count = 0;
+    std::uint32_t native_linear_span_cancel_other_db_count = 0;
+    std::uint32_t native_linear_span_cancel_tf_first_eip = 0;
+    std::uint32_t native_linear_span_cancel_dr0_first_eip = 0;
+    std::uint32_t native_linear_span_cancel_dr1_first_eip = 0;
+    std::uint32_t native_linear_span_cancel_dr2_first_eip = 0;
+    std::uint32_t native_linear_span_cancel_dr3_first_eip = 0;
+    std::uint32_t native_linear_span_cancel_other_db_first_eip = 0;
     std::uint32_t native_linear_span_reject_cache_miss_count = 0;
     std::uint32_t native_linear_span_reject_cache_stale_count = 0;
     std::uint32_t native_linear_span_reject_cache_store_count = 0;
@@ -671,6 +693,8 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t aot_selector_guard_mismatch_count = 0;
     std::uint32_t aot_guarded_segment_pop_success_count = 0;
     std::uint32_t aot_guarded_segment_pop_fallback_count = 0;
+    std::uint32_t aot_guarded_segment_load_success_count = 0;
+    std::uint32_t aot_guarded_segment_load_fallback_count = 0;
     std::uint32_t aot_timer_safe_point_trap_count = 0;
     std::uint32_t aot_timer_safe_point_injected_count = 0;
     std::uint32_t aot_timer_safe_point_deferred_count = 0;
@@ -977,6 +1001,7 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t last_dos_interrupt_vector = 0;
     std::uint32_t last_dos_interrupt_ah = 0;
     std::uint32_t last_dos_interrupt_ax = 0;
+    std::uint32_t handled_dos_interrupt_ah_counts[256] = {};
     std::uint32_t handled_dos_chdir_count = 0;
     std::string last_dos_chdir_guest_path;
     std::string last_dos_chdir_host_path;
@@ -1035,6 +1060,7 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t last_segment_load_register = 0;
     std::uint32_t last_segment_load_selector = 0;
     std::uint32_t last_segment_load_source = 0;
+    std::uint32_t handled_segment_load_register_counts[6] = {};
     Win32SegmentLoadObservation segment_load;
     std::uint32_t handled_segment_store_count = 0;
     std::uint32_t last_segment_store_address = 0;
@@ -1042,6 +1068,7 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t last_segment_store_register = 0;
     std::uint32_t last_segment_store_selector = 0;
     std::uint32_t last_segment_store_destination = 0;
+    std::uint32_t handled_segment_store_register_counts[6] = {};
     std::uint32_t handled_segment_memory_load_count = 0;
     std::uint32_t last_segment_memory_load_address = 0;
     std::uint32_t last_segment_memory_load_opcode = 0;

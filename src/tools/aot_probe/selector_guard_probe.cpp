@@ -5,6 +5,7 @@
 #include "repiu/runtime/aot_translation_plan.h"
 #include "repiu/runtime/selector_table.h"
 #include "aot/aot_dbt_dispatch.h"
+#include "aot/aot_dbt_glide_gate_dispatch.h"
 
 #include <cstdint>
 #include <cstring>
@@ -214,6 +215,214 @@ bool RunSelectorGuardProbe()
                 disabled_pop_image.address_map[0].cache_offset] == 0xCCU;
     }
 
+    runtime::RelocatedRuntimeImage read_runtime;
+    read_runtime.valid = true;
+    read_runtime.relocated_image_base = 0x00102500U;
+    read_runtime.relocated_entry_linear_address = 0x00102500U;
+    runtime::RelocatedRuntimeObject read_object;
+    read_object.relocated_base_address = 0x00102500U;
+    read_object.memory = {0x8CU, 0xD8U, 0xC3U};
+    read_object.memory.resize(32U, 0x90U);
+    read_object.virtual_size =
+        static_cast<std::uint32_t>(read_object.memory.size());
+    read_runtime.objects.push_back(std::move(read_object));
+    runtime::AotTranslationPlan read_plan;
+    runtime::AotCodeCacheImage read_image;
+    runtime::AotCodeCacheBuildOptions read_options;
+    read_options.enable_guarded_segment_read = true;
+    const bool guarded_read_ready =
+        runtime::BuildAotTranslationPlanFromEntry(
+            read_runtime, read_runtime.relocated_entry_linear_address,
+            &read_plan) &&
+        !read_plan.blocks.empty() &&
+        !read_plan.blocks[0].instructions.empty() &&
+        read_plan.blocks[0].instructions[0].kind ==
+            runtime::AotInstructionKind::kGuardedSegmentRead &&
+        read_plan.blocks[0].instructions[0].segment_register == 3U &&
+        read_plan.blocks[0].instructions[0].gpr_register == 0U &&
+        runtime::BuildAotCodeCacheImage(
+            read_plan, read_options, &read_image) &&
+        read_image.guarded_segment_read_sites.size() == 1U &&
+        runtime::ValidateAotCodeCacheHleCoverage(read_plan, read_image);
+    bool guarded_read_layout = false;
+    bool guarded_read_patch = false;
+    bool guarded_read_disabled_falls_back = false;
+    if (guarded_read_ready)
+    {
+        const runtime::AotGuardedSegmentReadSite& site =
+            read_image.guarded_segment_read_sites[0];
+        guarded_read_layout =
+            site.cache_offset + 31U <= read_image.bytes.size() &&
+            site.shadow_address_offset == site.cache_offset + 8U &&
+            site.load_shadow_address_offset == site.cache_offset + 19U &&
+            site.fallback_offset == site.cache_offset + 28U &&
+            read_image.bytes[site.cache_offset] == 0x9CU &&
+            read_image.bytes[site.cache_offset + 1U] == 0x50U &&
+            read_image.bytes[site.cache_offset + 2U] == 0x66U &&
+            read_image.bytes[site.cache_offset + 3U] == 0x8CU &&
+            read_image.bytes[site.cache_offset + 4U] == 0xD8U &&
+            read_image.bytes[site.cache_offset + 5U] == 0x66U &&
+            read_image.bytes[site.cache_offset + 6U] == 0x3BU &&
+            read_image.bytes[site.cache_offset + 7U] == 0x05U &&
+            read_image.bytes[site.cache_offset + 12U] == 0x75U &&
+            read_image.bytes[site.cache_offset + 13U] == 0x0EU &&
+            read_image.bytes[site.cache_offset + 16U] == 0x66U &&
+            read_image.bytes[site.cache_offset + 17U] == 0x8BU &&
+            read_image.bytes[site.cache_offset + 18U] == 0x05U &&
+            read_image.bytes[site.cache_offset + 23U] == 0xE9U &&
+            read_image.bytes[site.fallback_offset] == 0x58U &&
+            read_image.bytes[site.fallback_offset + 1U] == 0x9DU &&
+            read_image.bytes[site.fallback_offset + 2U] == 0xCCU;
+        runtime::AotCodeCacheImage disabled_read_image;
+        guarded_read_disabled_falls_back =
+            runtime::BuildAotCodeCacheImage(
+                read_plan, &disabled_read_image) &&
+            disabled_read_image.guarded_segment_read_sites.empty() &&
+            !disabled_read_image.address_map.empty() &&
+            disabled_read_image.bytes[
+                disabled_read_image.address_map[0].cache_offset] == 0xCCU;
+        platform::win32::Win32AotCodeCachePlacement read_placement;
+        if (platform::win32::PlaceWin32AotCodeCache(
+                read_image, &read_placement) && read_placement.placed)
+        {
+            std::uint16_t shadow_selector = 0x0088U;
+            const std::uintptr_t shadow_pointer =
+                reinterpret_cast<std::uintptr_t>(&shadow_selector);
+            platform::win32::Win32AotSegmentTable segment_table;
+            segment_table.segments[3].shadow_address =
+                static_cast<std::uint32_t>(shadow_pointer);
+            platform::win32::Win32AotSegmentPatchStats stats;
+            const std::uint32_t processed =
+                platform::win32::ReResolveWin32AotSegmentOverrides(
+                    &read_placement, &segment_table, &stats);
+            const auto* cache = reinterpret_cast<const std::uint8_t*>(
+                static_cast<std::uintptr_t>(read_placement.base_address));
+            std::uint32_t patched_shadow = 0U;
+            std::uint32_t patched_load_shadow = 0U;
+            std::memcpy(&patched_shadow,
+                        cache + site.shadow_address_offset,
+                        sizeof(patched_shadow));
+            std::memcpy(&patched_load_shadow,
+                        cache + site.load_shadow_address_offset,
+                        sizeof(patched_load_shadow));
+            guarded_read_patch = shadow_pointer <= UINT32_MAX &&
+                processed == 1U && stats.guarded_read_site_count == 1U &&
+                cache[site.cache_offset] == 0x9CU &&
+                patched_shadow == static_cast<std::uint32_t>(shadow_pointer) &&
+                patched_load_shadow ==
+                    static_cast<std::uint32_t>(shadow_pointer);
+        }
+        platform::win32::ReleaseWin32AotCodeCache(&read_placement);
+    }
+    runtime::RelocatedRuntimeImage load_runtime;
+    load_runtime.valid = true;
+    load_runtime.relocated_image_base = 0x00102800U;
+    load_runtime.relocated_entry_linear_address = 0x00102800U;
+    runtime::RelocatedRuntimeObject load_object;
+    load_object.relocated_base_address = 0x00102800U;
+    load_object.memory = {0x8EU, 0xC1U, 0xC3U};
+    load_object.memory.resize(32U, 0x90U);
+    load_object.virtual_size =
+        static_cast<std::uint32_t>(load_object.memory.size());
+    load_runtime.objects.push_back(std::move(load_object));
+    runtime::AotTranslationPlan load_plan;
+    runtime::AotCodeCacheImage load_image;
+    runtime::AotCodeCacheBuildOptions load_options;
+    load_options.enable_guarded_segment_load = true;
+    const bool guarded_load_ready =
+        runtime::BuildAotTranslationPlanFromEntry(
+            load_runtime, load_runtime.relocated_entry_linear_address,
+            &load_plan) &&
+        !load_plan.blocks.empty() &&
+        !load_plan.blocks[0].instructions.empty() &&
+        load_plan.blocks[0].instructions[0].kind ==
+            runtime::AotInstructionKind::kGuardedSegmentLoad &&
+        load_plan.blocks[0].instructions[0].segment_register == 0U &&
+        load_plan.blocks[0].instructions[0].gpr_register == 1U &&
+        runtime::BuildAotCodeCacheImage(
+            load_plan, load_options, &load_image) &&
+        load_image.guarded_segment_load_sites.size() == 1U &&
+        runtime::ValidateAotCodeCacheHleCoverage(load_plan, load_image);
+    bool guarded_load_layout = false;
+    bool guarded_load_coverage = false;
+    bool guarded_load_missing_fallback_rejected = false;
+    bool guarded_load_patch = false;
+    bool guarded_load_disabled_falls_back = false;
+    if (guarded_load_ready)
+    {
+        const runtime::AotGuardedSegmentLoadSite& site =
+            load_image.guarded_segment_load_sites[0];
+        guarded_load_layout =
+            site.cache_offset + 42U <= load_image.bytes.size() &&
+            site.shadow_address_offset == site.cache_offset + 14U &&
+            site.success_counter_address_offset == site.cache_offset + 22U &&
+            site.fallback_counter_address_offset == site.cache_offset + 35U &&
+            site.fallback_offset == site.cache_offset + 41U &&
+            load_image.bytes[site.cache_offset] == 0x9CU &&
+            load_image.bytes[site.cache_offset + 1U] == 0x50U &&
+            load_image.bytes[site.cache_offset + 2U] == 0x66U &&
+            load_image.bytes[site.cache_offset + 3U] == 0x8CU &&
+            load_image.bytes[site.cache_offset + 4U] == 0xC0U &&
+            load_image.bytes[site.cache_offset + 5U] == 0x66U &&
+            load_image.bytes[site.cache_offset + 6U] == 0x3BU &&
+            load_image.bytes[site.cache_offset + 7U] == 0xC1U &&
+            load_image.bytes[site.cache_offset + 8U] == 0x90U &&
+            load_image.bytes[site.cache_offset + 9U] == 0x75U &&
+            load_image.bytes[site.cache_offset + 10U] == 0x16U &&
+            load_image.bytes[site.cache_offset + 18U] == 0x75U &&
+            load_image.bytes[site.cache_offset + 19U] == 0x0DU &&
+            load_image.bytes[site.cache_offset + 28U] == 0xE9U &&
+            load_image.bytes[site.fallback_offset] == 0xCCU;
+        runtime::AotCodeCacheImage broken_load_guard = load_image;
+        broken_load_guard.bytes[site.cache_offset + 9U] = 0x90U;
+        std::uint32_t broken_load_guest = 0U;
+        guarded_load_coverage =
+            runtime::ValidateAotCodeCacheHleCoverage(load_plan, load_image) &&
+            !runtime::ValidateAotCodeCacheHleCoverage(
+                load_plan, broken_load_guard, &broken_load_guest) &&
+            broken_load_guest == load_runtime.relocated_entry_linear_address;
+        runtime::AotCodeCacheImage missing_load_fallback = load_image;
+        missing_load_fallback.bytes[site.fallback_offset] = 0x90U;
+        std::uint32_t missing_load_guest = 0U;
+        guarded_load_missing_fallback_rejected =
+            !runtime::ValidateAotCodeCacheHleCoverage(
+                load_plan, missing_load_fallback, &missing_load_guest) &&
+            missing_load_guest == load_runtime.relocated_entry_linear_address;
+        runtime::AotCodeCacheImage disabled_load_image;
+        guarded_load_disabled_falls_back =
+            runtime::BuildAotCodeCacheImage(
+                load_plan, &disabled_load_image) &&
+            disabled_load_image.guarded_segment_load_sites.empty() &&
+            !disabled_load_image.address_map.empty() &&
+            disabled_load_image.bytes[
+                disabled_load_image.address_map[0].cache_offset] == 0xCCU;
+        platform::win32::Win32AotCodeCachePlacement load_placement;
+        if (platform::win32::PlaceWin32AotCodeCache(
+                load_image, &load_placement) && load_placement.placed)
+        {
+            std::uint16_t shadow_selector = 0x002BU;
+            const std::uintptr_t shadow_pointer =
+                reinterpret_cast<std::uintptr_t>(&shadow_selector);
+            platform::win32::Win32AotSegmentTable segment_table;
+            segment_table.segments[0].shadow_address =
+                static_cast<std::uint32_t>(shadow_pointer);
+            platform::win32::Win32AotSegmentPatchStats stats;
+            const std::uint32_t processed =
+                platform::win32::ReResolveWin32AotSegmentOverrides(
+                    &load_placement, &segment_table, &stats);
+            const auto* cache = reinterpret_cast<const std::uint8_t*>(
+                static_cast<std::uintptr_t>(load_placement.base_address));
+            std::uint32_t patched_shadow = 0U;
+            std::memcpy(&patched_shadow,
+                        cache + site.shadow_address_offset,
+                        sizeof(patched_shadow));
+            guarded_load_patch = shadow_pointer <= UINT32_MAX &&
+                processed == 1U && stats.guarded_load_site_count == 1U &&
+                cache[site.cache_offset] == 0x9CU &&
+                patched_shadow == static_cast<std::uint32_t>(shadow_pointer);
+        }
+        platform::win32::ReleaseWin32AotCodeCache(&load_placement);
+    }
     const auto remains_hle = [](std::vector<std::uint8_t> bytes) {
         bytes.resize(bytes.size() + 15U, 0x90U);
         runtime::RelocatedRuntimeImage runtime_image;
@@ -234,6 +443,10 @@ bool RunSelectorGuardProbe()
             candidate.blocks[0].instructions[0].kind ==
                 runtime::AotInstructionKind::kHleBoundary;
     };
+    const bool guarded_load_rejected_forms =
+        remains_hle({0x8EU, 0xD1U, 0xC3U}) &&
+        remains_hle({0x8EU, 0xC4U, 0xC3U}) &&
+        remains_hle({0x8EU, 0x00U, 0xC3U});
     const bool guarded_pop_rejected_forms =
         remains_hle({0x17U, 0xC3U}) &&
         remains_hle({0x66U, 0x07U, 0xC3U});
@@ -432,6 +645,184 @@ bool RunSelectorGuardProbe()
         platform::win32::ReleaseWin32AotCodeCache(&hle_placement);
     }
 
+    runtime::AotTranslationPlan port_plan = hle_plan;
+    port_plan.blocks[0].instructions[0].kind =
+        runtime::AotInstructionKind::kPortIo;
+    runtime::AotCodeCacheBuildOptions port_options;
+    port_options.enable_dbt_port_io_dispatch = true;
+    runtime::AotCodeCacheImage port_image;
+    runtime::AotCodeCacheImage ordinary_hle_under_port_option;
+    const bool port_io_dispatch_specific =
+        runtime::BuildAotCodeCacheImage(
+            port_plan, port_options, &port_image) &&
+        port_image.dbt_hle_dispatch_sites.size() == 1U &&
+        port_image.dbt_port_io_dispatch_enabled &&
+        runtime::ValidateAotCodeCacheHleCoverage(port_plan, port_image) &&
+        runtime::BuildAotCodeCacheImage(
+            hle_plan, port_options, &ordinary_hle_under_port_option) &&
+        ordinary_hle_under_port_option.dbt_hle_dispatch_sites.empty() &&
+        !ordinary_hle_under_port_option.address_map.empty() &&
+        ordinary_hle_under_port_option.bytes[
+            ordinary_hle_under_port_option.address_map[0].cache_offset] ==
+                0xCCU;
+    runtime::AotTranslationPlan segment_dispatch_plan = hle_plan;
+    auto& segment_dispatch_record =
+        segment_dispatch_plan.blocks[0].instructions[0];
+    segment_dispatch_record.kind =
+        runtime::AotInstructionKind::kSegmentOverrideMem;
+    segment_dispatch_record.length = 3U;
+    segment_dispatch_record.bytes = {0x26U, 0x8AU, 0x13U};
+    segment_dispatch_record.segment_override_register = 0U;
+    segment_dispatch_record.fallthrough_target =
+        segment_dispatch_record.guest_address + 3U;
+    auto& segment_dispatch_return =
+        segment_dispatch_plan.blocks[1].instructions[0];
+    segment_dispatch_return.guest_address =
+        segment_dispatch_record.fallthrough_target;
+    segment_dispatch_plan.blocks[1].guest_address =
+        segment_dispatch_return.guest_address;
+    runtime::AotCodeCacheBuildOptions segment_dispatch_options;
+    segment_dispatch_options.enable_dbt_segment_override_dispatch = true;
+    runtime::AotCodeCacheImage segment_dispatch_image;
+    runtime::AotCodeCacheImage segment_dispatch_disabled_image;
+    bool segment_override_dispatch_specific =
+        runtime::BuildAotCodeCacheImage(
+            segment_dispatch_plan, segment_dispatch_options,
+            &segment_dispatch_image) &&
+        segment_dispatch_image.dbt_segment_override_dispatch_enabled &&
+        segment_dispatch_image.dbt_hle_dispatch_sites.size() == 1U &&
+        segment_dispatch_image.segment_override_sites.size() == 1U &&
+        runtime::ValidateAotCodeCacheHleCoverage(
+            segment_dispatch_plan, segment_dispatch_image) &&
+        runtime::BuildAotCodeCacheImage(
+            segment_dispatch_plan, runtime::AotCodeCacheBuildOptions{},
+            &segment_dispatch_disabled_image) &&
+        !segment_dispatch_disabled_image.
+            dbt_segment_override_dispatch_enabled &&
+        segment_dispatch_disabled_image.dbt_hle_dispatch_sites.empty() &&
+        segment_dispatch_disabled_image.segment_override_sites.size() == 1U &&
+        runtime::ValidateAotCodeCacheHleCoverage(
+            segment_dispatch_plan, segment_dispatch_disabled_image);
+    if (segment_override_dispatch_specific)
+    {
+        runtime::AotCodeCacheImage broken_segment_dispatch =
+            segment_dispatch_image;
+        const auto& segment_dispatch_site =
+            broken_segment_dispatch.dbt_hle_dispatch_sites[0];
+        broken_segment_dispatch.bytes[
+            segment_dispatch_site.fallback_cache_offset + 4U] = 0x90U;
+        std::uint32_t failure_guest = 0U;
+        segment_override_dispatch_specific =
+            !runtime::ValidateAotCodeCacheHleCoverage(
+                segment_dispatch_plan, broken_segment_dispatch,
+                &failure_guest) &&
+            failure_guest == segment_dispatch_record.guest_address;
+    }
+    bool segment_override_hybrid_patch = false;
+    if (segment_override_dispatch_specific)
+    {
+        platform::win32::Win32AotCodeCachePlacement hybrid_placement;
+        if (platform::win32::PlaceWin32AotCodeCache(
+                segment_dispatch_image, &hybrid_placement) &&
+            hybrid_placement.placed &&
+            hybrid_placement.segment_override_sites.size() == 1U &&
+            hybrid_placement.dbt_hle_dispatch_sites.size() == 1U)
+        {
+            const auto hybrid_site =
+                hybrid_placement.segment_override_sites[0];
+            auto* hybrid_bytes = reinterpret_cast<std::uint8_t*>(
+                static_cast<std::uintptr_t>(hybrid_placement.base_address));
+            platform::win32::Win32AotSegmentTable hybrid_table{};
+            hybrid_table.segments[0] = nonflat;
+            platform::win32::Win32AotSegmentPatchStats hybrid_native_stats;
+            const std::uint32_t hybrid_native_processed =
+                platform::win32::ReResolveWin32AotSegmentOverrides(
+                    &hybrid_placement, &hybrid_table,
+                    &hybrid_native_stats);
+            const bool native_routed = hybrid_native_processed == 1U &&
+                hybrid_native_stats.native_site_count == 1U &&
+                hybrid_bytes[hybrid_site.cache_offset] == 0x9CU;
+
+            hybrid_table.segments[0] = selector_zero;
+            platform::win32::Win32AotSegmentPatchStats hybrid_hle_stats;
+            const std::uint32_t hybrid_hle_processed =
+                platform::win32::ReResolveWin32AotSegmentOverrides(
+                    &hybrid_placement, &hybrid_table, &hybrid_hle_stats);
+            std::int32_t hybrid_relative = 0;
+            std::memcpy(&hybrid_relative,
+                        hybrid_bytes + hybrid_site.cache_offset + 1U,
+                        sizeof(hybrid_relative));
+            const std::uint32_t hybrid_target = static_cast<std::uint32_t>(
+                hybrid_site.cache_offset + 5U + hybrid_relative);
+            const bool hle_routed = hybrid_hle_processed == 1U &&
+                hybrid_hle_stats.hle_site_count == 1U &&
+                hybrid_bytes[hybrid_site.cache_offset] == 0xE9U &&
+                hybrid_target == hybrid_site.dispatch_cache_offset;
+
+            hybrid_table.segments[0] = unresolved;
+            platform::win32::Win32AotSegmentPatchStats hybrid_unresolved_stats;
+            const std::uint32_t hybrid_unresolved_processed =
+                platform::win32::ReResolveWin32AotSegmentOverrides(
+                    &hybrid_placement, &hybrid_table,
+                    &hybrid_unresolved_stats);
+            const bool unresolved_routed =
+                hybrid_unresolved_processed == 1U &&
+                hybrid_unresolved_stats.unresolved_site_count == 1U &&
+                hybrid_bytes[hybrid_site.cache_offset] == 0xCCU;
+            segment_override_hybrid_patch =
+                native_routed && hle_routed && unresolved_routed;
+        }
+        platform::win32::ReleaseWin32AotCodeCache(&hybrid_placement);
+    }
+    hle::GlideGatePlan glide_direct_plan;
+    glide_direct_plan.valid = true;
+    glide_direct_plan.first_gate_offset = 0x100U;
+    glide_direct_plan.gate_stride = 8U;
+    glide_direct_plan.exports.push_back(
+        {"_TEST@12", 2U, hle::GlideGateId::kUnknown, 12U, 0x110U});
+    glide_direct_plan.image.assign(24U, 0x90U);
+    glide_direct_plan.image[16U] = 0x0FU;
+    glide_direct_plan.image[17U] = 0x0BU;
+    glide_direct_plan.image[18U] = 0x02U;
+    glide_direct_plan.image[19U] = 0x00U;
+    glide_direct_plan.image[20U] = 0xC3U;
+    hle::GlideGatePlan invalid_glide_direct_plan = glide_direct_plan;
+    invalid_glide_direct_plan.image[18U] = 0x03U;
+    const auto invalid_before = invalid_glide_direct_plan.image;
+    constexpr std::uint32_t kSyntheticGateBase = 0x03000000U;
+    const bool glide_direct_patched =
+        platform::win32::PatchWin32GlideGatePlanForDirectDispatch(
+            kSyntheticGateBase, &glide_direct_plan);
+    std::int32_t glide_call_displacement = 0;
+    if (glide_direct_patched)
+    {
+        std::memcpy(&glide_call_displacement,
+                    glide_direct_plan.image.data() + 17U,
+                    sizeof(glide_call_displacement));
+    }
+    const std::uint32_t glide_call_target = static_cast<std::uint32_t>(
+        kSyntheticGateBase + 0x110U + 5U + glide_call_displacement);
+    const bool glide_direct_dispatch_layout = glide_direct_patched &&
+        glide_direct_plan.image[16U] == 0xE8U &&
+        glide_call_target == static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(platform::win32::
+                GetWin32GlideGateDirectDispatchThunkAddress())) &&
+        glide_direct_plan.image[21U] == 0xC2U &&
+        glide_direct_plan.image[22U] == 0x0CU &&
+        glide_direct_plan.image[23U] == 0x00U &&
+        !platform::win32::PatchWin32GlideGatePlanForDirectDispatch(
+            kSyntheticGateBase, &invalid_glide_direct_plan) &&
+        invalid_glide_direct_plan.image == invalid_before;
+    const bool glide_direct_dispatch_policy =
+        platform::win32::ResolveWin32GlideGateDirectDispatchEnabled(nullptr) &&
+        platform::win32::ResolveWin32GlideGateDirectDispatchEnabled("1") &&
+        platform::win32::ResolveWin32GlideGateDirectDispatchEnabled("on") &&
+        platform::win32::ResolveWin32GlideGateDirectDispatchEnabled("true") &&
+        !platform::win32::ResolveWin32GlideGateDirectDispatchEnabled("") &&
+        !platform::win32::ResolveWin32GlideGateDirectDispatchEnabled("0") &&
+        !platform::win32::ResolveWin32GlideGateDirectDispatchEnabled("off") &&
+        !platform::win32::ResolveWin32GlideGateDirectDispatchEnabled("false") &&
+        !platform::win32::ResolveWin32GlideGateDirectDispatchEnabled("invalid");
     const bool policy =
         !platform::win32::ResolveAotDbtPostHleTranslationEnabled("") &&
         platform::win32::ResolveAotDbtPostHleTranslationEnabled("1") &&
@@ -444,10 +835,18 @@ bool RunSelectorGuardProbe()
         hle_patch && guarded_pop_patch && guarded_pop_ready &&
         guarded_pop_layout &&
         guarded_pop_coverage && guarded_pop_missing_fallback_rejected &&
-        guarded_pop_disabled_falls_back && guarded_pop_rejected_forms &&
+        guarded_pop_disabled_falls_back && guarded_load_ready &&
+        guarded_load_layout && guarded_load_coverage &&
+        guarded_load_missing_fallback_rejected && guarded_load_patch &&
+        guarded_load_disabled_falls_back && guarded_load_rejected_forms &&
+        guarded_read_ready &&
+        guarded_read_layout && guarded_read_patch &&
+        guarded_read_disabled_falls_back && guarded_pop_rejected_forms &&
         guarded_pop_supported_forms && hle_dispatch_ready &&
         hle_dispatch_layout && hle_dispatch_coverage &&
-        hle_dispatch_placement && policy;
+        hle_dispatch_placement && port_io_dispatch_specific &&
+        segment_override_dispatch_specific &&
+        segment_override_hybrid_patch && glide_direct_dispatch_layout && glide_direct_dispatch_policy && policy;
     std::cout << "selector_guard_descriptor_policy="
               << (descriptor_policy ? "true" : "false")
               << "\nselector_guard_mismatch_fail_closed="
@@ -472,10 +871,42 @@ bool RunSelectorGuardProbe()
               << (guarded_pop_missing_fallback_rejected ? "true" : "false")
               << "\nguarded_segment_pop_disabled_falls_back="
               << (guarded_pop_disabled_falls_back ? "true" : "false")
+              << "\nguarded_segment_load_ready="
+              << (guarded_load_ready ? "true" : "false")
+              << "\nguarded_segment_load_layout="
+              << (guarded_load_layout ? "true" : "false")
+              << "\nguarded_segment_load_coverage="
+              << (guarded_load_coverage ? "true" : "false")
+              << "\nguarded_segment_load_missing_fallback_rejected="
+              << (guarded_load_missing_fallback_rejected ? "true" : "false")
+              << "\nguarded_segment_load_patch="
+              << (guarded_load_patch ? "true" : "false")
+              << "\nguarded_segment_load_disabled_falls_back="
+              << (guarded_load_disabled_falls_back ? "true" : "false")
+              << "\nguarded_segment_load_rejected_forms="
+              << (guarded_load_rejected_forms ? "true" : "false")
+              << "\nguarded_segment_read_ready="
+              << (guarded_read_ready ? "true" : "false")
+              << "\nguarded_segment_read_layout="
+              << (guarded_read_layout ? "true" : "false")
+              << "\nguarded_segment_read_patch="
+              << (guarded_read_patch ? "true" : "false")
+              << "\nguarded_segment_read_disabled_falls_back="
+              << (guarded_read_disabled_falls_back ? "true" : "false")
               << "\nguarded_segment_pop_rejected_forms="
               << (guarded_pop_rejected_forms ? "true" : "false")
               << "\nguarded_segment_pop_supported_forms="
               << (guarded_pop_supported_forms ? "true" : "false")
+              << "\nglide_direct_dispatch_layout="
+              << (glide_direct_dispatch_layout ? "true" : "false")
+              << "\nglide_direct_dispatch_policy="
+              << (glide_direct_dispatch_policy ? "true" : "false")
+              << "\nport_io_dispatch_specific="
+              << (port_io_dispatch_specific ? "true" : "false")
+              << "\nsegment_override_dispatch_specific="
+              << (segment_override_dispatch_specific ? "true" : "false")
+              << "\nsegment_override_hybrid_patch="
+              << (segment_override_hybrid_patch ? "true" : "false")
               << "\nsuperblock_hle_dispatch_ready="
               << (hle_dispatch_ready ? "true" : "false")
               << "\nsuperblock_hle_dispatch_layout="
