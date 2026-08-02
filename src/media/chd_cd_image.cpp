@@ -6,7 +6,9 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <iomanip>
 #include <mutex>
+#include <sstream>
 
 namespace repiu::media
 {
@@ -30,6 +32,7 @@ struct ChdCdImage::Impl
     std::uint32_t cached_hunk = UINT32_MAX;
     std::vector<ChdCdTrack> tracks;
     std::uint32_t lead_out_lba = 0;
+    std::string identity;
     std::string message;
     std::mutex mutex;
 };
@@ -61,6 +64,16 @@ bool ChdCdImage::Open(const std::filesystem::path& path)
     }
     impl_->frames_per_hunk = impl_->header->hunkbytes / impl_->header->unitbytes;
     impl_->hunk.resize(impl_->header->hunkbytes);
+
+    std::ostringstream identity;
+    identity << impl_->header->logicalbytes << ':'
+             << impl_->header->hunkbytes << ':';
+    for (const std::uint8_t byte : impl_->header->sha1)
+    {
+        identity << std::hex << std::setw(2) << std::setfill('0')
+                 << static_cast<unsigned>(byte);
+    }
+    impl_->identity = identity.str();
 
     std::uint32_t physical_lba = 0;
     std::uint32_t logical_lba = 0;
@@ -160,6 +173,7 @@ void ChdCdImage::Close()
         impl_->hunk.clear();
         impl_->tracks.clear();
         impl_->lead_out_lba = 0;
+        impl_->identity.clear();
         impl_->cached_hunk = UINT32_MAX;
     }
 }
@@ -222,6 +236,7 @@ const ChdCdTrack* ChdCdImage::FindTrackByLba(std::uint32_t lba) const
     return found == impl_->tracks.end() ? nullptr : &*found;
 }
 std::uint32_t ChdCdImage::lead_out_lba() const { return impl_->lead_out_lba; }
+const std::string& ChdCdImage::identity() const { return impl_->identity; }
 const std::string& ChdCdImage::message() const { return impl_->message; }
 
 }  // namespace repiu::media

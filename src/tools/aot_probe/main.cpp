@@ -37,6 +37,7 @@
 #include "execution_backend_probe.h"
 #include "dbt_return_fallback_probe.h"
 #include "dbt_indirect_dispatch_probe.h"
+#include "direct_edge_dispatch_probe.h"
 #include "dbt_call_return_trace_probe.h"
 #include "dbt_call_step_probe.h"
 
@@ -641,6 +642,7 @@ int main(int argc, char** argv)
         path.parent_path(),
         repiu::target::ExecutableFormatHint::kDos4gwLe,
         "dos4gw_console_sample",
+        "",
         {true, 0x00010000U, 0x04000000U}};
     repiu::exe::ParseError error;
     repiu::exe::Dos4gwLoadResult load;
@@ -863,6 +865,10 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunAotDbtIndirectDispatchProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunAotDbtDirectEdgeDispatchProbe())
     {
         return 1;
     }

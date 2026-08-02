@@ -18,7 +18,7 @@ set(INSTALL_STATIC_LIBS OFF CACHE BOOL "" FORCE)
 set(CHDR_WANT_RAW_DATA_SECTOR ON CACHE BOOL "" FORCE)
 set(CHDR_WANT_SUBCODE OFF CACHE BOOL "" FORCE)
 # libchdr already bundles miniz. Turning on its ZIP reader lets us extract MAME
-# ROM-set members (roms/pumpit1.zip) without vendoring a second copy of miniz.
+# PIU10 ROM-set members without vendoring a second copy of miniz.
 # The file-based ZIP APIs stay off, so archives are read through memory buffers.
 set(MINIZ_ARCHIVE_APIS ON CACHE BOOL "" FORCE)
 add_subdirectory(third_party/libchdr EXCLUDE_FROM_ALL)
@@ -80,7 +80,7 @@ function(repiu_configure_win32_loader_host target_name)
 endfunction()
 
 add_library(repiu_exe
-    src/assets/pumpit1_mount.cpp
+    src/assets/piu_chd_mount.cpp
     src/assets/rom_zip_archive.cpp
     src/exe/dos16m_bound_module.cpp
     src/exe/dos4gw_loader.cpp
@@ -109,6 +109,7 @@ add_library(repiu_exe
     src/platform/win32/aot/aot_dbt_call_return_trace.cpp
     src/platform/win32/aot/aot_dbt_call_step_probe.cpp
     src/platform/win32/aot/aot_dbt_dispatch.cpp
+    src/platform/win32/aot/aot_dbt_direct_edge_dispatch.cpp
     src/platform/win32/aot/aot_dbt_hle_dispatch.cpp
     src/platform/win32/aot/aot_dbt_glide_gate_dispatch.cpp
     src/platform/win32/aot/aot_dbt_indirect_dispatch.cpp
@@ -209,6 +210,7 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/dbt_call_return_trace_probe.cpp
     src/tools/aot_probe/dbt_call_step_probe.cpp
     src/tools/aot_probe/dbt_indirect_dispatch_probe.cpp
+    src/tools/aot_probe/direct_edge_dispatch_probe.cpp
     src/tools/aot_probe/dbt_return_fallback_probe.cpp
     src/tools/aot_probe/execution_backend_probe.cpp
     src/tools/aot_probe/inline_cache_probe.cpp

@@ -76,3 +76,5 @@ Status labels are **Confirmed**, **Inferred**, and **Unresolved**. See the linke
 * [pumpit1 MSCDEX 및 CHD CD 오디오](pumpit1-mscdex-cd-audio.md)
 * [AOT 변환 계획 coverage](aot-translation-plan-coverage.md)
 * [AOT dynamic ���� ���� ��ǳ �м� / AOT dynamic stack exception storm](20260713-aot-dynamic-stack-exception-storm.md)
+
+* [pumpit2 CHD/ISO9660 mount 분석 / pumpit2 CHD/ISO9660 mount](pumpit2-chd-iso9660-mount.md)

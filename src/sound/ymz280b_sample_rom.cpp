@@ -9,12 +9,12 @@
 namespace repiu::sound
 {
 
-Ymz280bSampleRom LoadPumpIt1SampleRom(const std::filesystem::path& rom_zip_path)
+Ymz280bSampleRom LoadPiu10SampleRom(const std::filesystem::path& rom_zip_path)
 {
     Ymz280bSampleRom result;
 
     const assets::RomZipEntry entry =
-        assets::ExtractRomZipEntry(rom_zip_path, kPumpIt1SampleRomEntry);
+        assets::ExtractRomZipEntry(rom_zip_path, kPiu10SampleRomEntry);
     if (!entry.valid)
     {
         result.message = entry.message;
@@ -23,7 +23,7 @@ Ymz280bSampleRom LoadPumpIt1SampleRom(const std::filesystem::path& rom_zip_path)
     if (entry.data.size() > kYmz280bSampleRomBytes)
     {
         std::ostringstream stream;
-        stream << "sample ROM '" << kPumpIt1SampleRomEntry << "' is "
+        stream << "sample ROM '" << kPiu10SampleRomEntry << "' is "
                << entry.data.size() << " bytes, larger than the "
                << kYmz280bSampleRomBytes << " byte address space";
         result.message = stream.str();
@@ -36,16 +36,16 @@ Ymz280bSampleRom LoadPumpIt1SampleRom(const std::filesystem::path& rom_zip_path)
     result.data.assign(kYmz280bSampleRomBytes, 0xFFU);
     std::copy(entry.data.begin(), entry.data.end(), result.data.begin());
     result.crc32 = entry.crc32;
-    result.crc32_matches_reference = entry.crc32 == kPumpIt1SampleRomCrc32;
+    result.crc32_matches_reference = entry.crc32 == kPiu10SampleRomCrc32;
     result.valid = true;
 
     std::ostringstream stream;
-    stream << "loaded " << kPumpIt1SampleRomEntry << " (" << entry.data.size()
+    stream << "loaded " << kPiu10SampleRomEntry << " (" << entry.data.size()
            << " bytes) into a " << kYmz280bSampleRomBytes
            << " byte space, crc32 0x" << std::hex << std::setw(8)
            << std::setfill('0') << entry.crc32 << std::dec
-           << (result.crc32_matches_reference ? " (matches MAME pumpit1)"
-                                              : " (DOES NOT match MAME pumpit1)");
+           << (result.crc32_matches_reference ? " (matches PIU10 reference)"
+                                              : " (DOES NOT match PIU10 reference)");
     result.message = stream.str();
     return result;
 }

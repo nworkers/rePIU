@@ -30,6 +30,7 @@ struct TargetProfile
     std::filesystem::path asset_root;
     ExecutableFormatHint format_hint = ExecutableFormatHint::kDos4gwLe;
     std::string_view hle_profile_id;
+    std::string_view rom_set_id;
     TargetRuntimeReservationHint runtime_reservation_hint;
 };
 

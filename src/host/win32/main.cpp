@@ -1,5 +1,5 @@
 #include "repiu/exe/dos4gw_loader.h"
-#include "repiu/assets/pumpit1_mount.h"
+#include "repiu/assets/piu_chd_mount.h"
 #include "repiu/exe/dos16m_bound_module.h"
 #include "repiu/hle/dos_file_system.h"
 #include "repiu/hle/hle_dispatcher.h"
@@ -3972,6 +3972,7 @@ std::optional<repiu::target::TargetProfile> BuildDirectExecutableProfile(
         working_directory,
         repiu::target::ExecutableFormatHint::kDos4gwLe,
         "dos4gw_console_sample",
+        "",
         repiu::target::TargetRuntimeReservationHint{
             true,
             0x00010000,
@@ -4003,24 +4004,35 @@ int main(int argc, char** argv)
         profile = &direct_profile.value();
     }
 
-    if (profile->id == "pumpit1")
+    if (!profile->rom_set_id.empty())
     {
-        repiu::assets::PumpIt1MountResult mount;
-        if (!repiu::assets::PreparePumpIt1Mount(
-                "roms", "build/runtime_mounts", &mount) ||
+        repiu::assets::PiuChdMountResult mount;
+        if (!repiu::assets::PreparePiuChdMount(
+                profile->rom_set_id, "roms", "build/runtime_mounts", &mount) ||
             !mount.valid || !mount.mounted)
         {
-            logger->error("pumpit1 CHD mount failed: {}", mount.message);
+            logger->error("{} CHD mount failed: {}", profile->rom_set_id,
+                          mount.message);
             return 1;
         }
-        logger->info("pumpit1 ROM ZIP: {}", mount.rom_zip_path.string());
-        logger->info("pumpit1 CHD: {}", mount.chd_path.string());
-        logger->info("pumpit1 mount root: {}", mount.mount_root.string());
-        logger->info("pumpit1 mount cache reused: {}",
+        logger->info("{} ROM ZIP: {}", profile->rom_set_id,
+                     mount.rom_zip_path.string());
+        logger->info("{} CHD: {}", profile->rom_set_id,
+                     mount.chd_path.string());
+        logger->info("{} CHD data track LBA: {}", profile->rom_set_id,
+                     mount.data_track_lba);
+        logger->info("{} ISO extent LBA bias: {}", profile->rom_set_id,
+                     mount.iso_extent_lba_bias);
+        logger->info("{} mount root: {}", profile->rom_set_id,
+                     mount.mount_root.string());
+        logger->info("{} mount cache reused: {}", profile->rom_set_id,
                      mount.cache_reused ? "true" : "false");
-        logger->info("pumpit1 extracted files/bytes: {}/{}",
+        logger->info("{} extracted files/bytes: {}/{}", profile->rom_set_id,
                      mount.extracted_file_count,
                      mount.extracted_byte_count);
+        logger->info("{} skipped external-extent files: {}",
+                     profile->rom_set_id,
+                     mount.skipped_external_extent_file_count);
         mounted_profile = *profile;
         mounted_profile->executable_path = mount.executable_path;
         mounted_profile->working_directory = mount.mount_root / "PIU";
@@ -4029,7 +4041,6 @@ int main(int argc, char** argv)
         sound_rom_zip_path = mount.rom_zip_path;
         profile = &mounted_profile.value();
     }
-
     logger->info("Win32 loader target: {}", profile->id);
     logger->info("Win32 loader executable: {}",
                  profile->executable_path.string());
@@ -4269,6 +4280,8 @@ int main(int argc, char** argv)
     repiu::runtime::AotCodeCacheBuildOptions aot_build_options;
     aot_build_options.enable_dbt_return_miss_dispatch =
         execution_backend == repiu::runtime::ExecutionBackend::kAotDbt;
+    aot_build_options.enable_dbt_direct_edge_dispatch =
+        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt;
     aot_build_options.enable_timer_safe_points =
         execution_backend == repiu::runtime::ExecutionBackend::kAotDbt;
     const char* superblock_toggle =
@@ -4419,6 +4432,9 @@ int main(int argc, char** argv)
         logger->info("Win32 AOT guarded segment-read enabled/sites: {}/{}",
                      aot_build_options.enable_guarded_segment_read,
                      aot_image.guarded_segment_read_sites.size());
+        logger->info(
+            "Win32 AOT-DBT unresolved direct-edge dispatch sites: {}",
+            aot_image.dbt_direct_edge_dispatch_sites.size());
         logger->info("Win32 AOT-DBT superblock HLE dispatch enabled: {}",
                      aot_build_options.enable_dbt_hle_dispatch);
         logger->info("Win32 AOT-DBT Port-I/O dispatch enabled: {}",

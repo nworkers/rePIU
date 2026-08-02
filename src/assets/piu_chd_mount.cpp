@@ -1,14 +1,12 @@
-#include "repiu/assets/pumpit1_mount.h"
+#include "repiu/assets/piu_chd_mount.h"
 
-#include <libchdr/chd.h>
+#include "repiu/media/chd_cd_image.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <cstring>
 #include <fstream>
-#include <iomanip>
-#include <sstream>
 #include <vector>
 
 namespace repiu::assets
@@ -26,7 +24,7 @@ std::uint32_t ReadLe32(const std::uint8_t* bytes)
            (static_cast<std::uint32_t>(bytes[3]) << 24U);
 }
 
-bool ZipContainsRequiredPumpIt1Entries(const std::filesystem::path& path)
+bool ZipContainsRequiredPiu10Entries(const std::filesystem::path& path)
 {
     std::ifstream stream(path, std::ios::binary);
     if (!stream)
@@ -60,97 +58,146 @@ bool ZipContainsRequiredPumpIt1Entries(const std::filesystem::path& path)
     });
 }
 
-class ChdCdReader
+class IsoTrackReader
 {
 public:
-    ~ChdCdReader()
-    {
-        if (file_ != nullptr)
-        {
-            chd_close(file_);
-        }
-    }
-
     bool Open(const std::filesystem::path& path, std::string* message)
     {
-        const std::string narrow = path.string();
-        const chd_error error = chd_open(
-            narrow.c_str(), CHD_OPEN_READ, nullptr, &file_);
-        if (error != CHDERR_NONE)
+        if (!image_.Open(path))
         {
             if (message != nullptr)
             {
-                *message = std::string("chd_open failed: ") +
-                           chd_error_string(error);
+                *message = image_.message();
             }
             return false;
         }
-        header_ = chd_get_header(file_);
-        if (header_ == nullptr || header_->version != 5 ||
-            header_->unitbytes < 2352 || header_->hunkbytes == 0 ||
-            header_->hunkbytes % header_->unitbytes != 0)
+        std::uint32_t data_track_count = 0;
+        for (const media::ChdCdTrack& track : image_.tracks())
+        {
+            if (!track.audio)
+            {
+                ++data_track_count;
+                data_track_lba_ = track.data_start_lba;
+                data_track_end_lba_ = track.end_lba;
+            }
+        }
+        if (data_track_count != 1U)
         {
             if (message != nullptr)
             {
-                *message = "CHD is not a supported v5 raw CD image";
+                *message = data_track_count == 0U
+                    ? "CHD contains no data track"
+                    : "CHD contains multiple data tracks";
             }
             return false;
         }
-        hunk_.resize(header_->hunkbytes);
-        frames_per_hunk_ = header_->hunkbytes / header_->unitbytes;
         return true;
     }
 
-    bool ReadIsoSector(std::uint32_t lba,
+    bool ReadTrackSector(std::uint32_t relative_lba,
+                         std::array<std::uint8_t, kIsoSectorBytes>* sector)
+    {
+        return ReadDiscSector(data_track_lba_ + relative_lba, sector);
+    }
+
+    bool ReadIsoSector(std::uint32_t extent_lba,
                        std::array<std::uint8_t, kIsoSectorBytes>* sector)
     {
-        if (header_ == nullptr || sector == nullptr)
+        const std::int64_t disc_lba =
+            static_cast<std::int64_t>(extent_lba) + extent_lba_bias_;
+        if (disc_lba < 0 || disc_lba > UINT32_MAX)
         {
             return false;
         }
-        const std::uint32_t hunk_index = lba / frames_per_hunk_;
-        if (cached_hunk_ != hunk_index)
+        return ReadDiscSector(static_cast<std::uint32_t>(disc_lba), sector);
+    }
+
+    bool ContainsExtent(std::uint32_t extent_lba,
+                        std::uint32_t byte_count) const
+    {
+        if (byte_count == 0U)
         {
-            if (chd_read(file_, hunk_index, hunk_.data()) != CHDERR_NONE)
+            return true;
+        }
+        const std::int64_t first =
+            static_cast<std::int64_t>(extent_lba) + extent_lba_bias_;
+        const std::int64_t sectors =
+            (static_cast<std::int64_t>(byte_count) +
+             kIsoSectorBytes - 1) / kIsoSectorBytes;
+        return first >= data_track_lba_ &&
+            first + sectors <= data_track_end_lba_;
+    }
+
+    bool ResolveExtentAddressing(std::uint32_t root_extent,
+                                 std::uint32_t root_bytes)
+    {
+        std::array<std::uint8_t, kIsoSectorBytes> sector = {};
+        for (std::uint32_t lba = data_track_lba_;
+             lba < data_track_end_lba_; ++lba)
+        {
+            if (!ReadDiscSector(lba, &sector))
             {
                 return false;
             }
-            cached_hunk_ = hunk_index;
+            const std::uint8_t record_length = sector[0];
+            if (record_length < 34U || sector[32] != 1U ||
+                sector[33] != 0U || (sector[25] & 0x02U) == 0U ||
+                ReadLe32(sector.data() + 2) != root_extent ||
+                ReadLe32(sector.data() + 10) != root_bytes)
+            {
+                continue;
+            }
+            extent_lba_bias_ = static_cast<std::int64_t>(lba) -
+                static_cast<std::int64_t>(root_extent);
+            return true;
         }
-        const std::uint32_t frame_index = lba % frames_per_hunk_;
-        const std::uint8_t* frame = hunk_.data() +
-            static_cast<std::size_t>(frame_index) * header_->unitbytes;
-        const std::uint32_t user_offset = frame[15] == 2 ? 24U : 16U;
-        if (user_offset + sector->size() > header_->unitbytes)
-        {
-            return false;
-        }
-        std::memcpy(sector->data(), frame + user_offset, sector->size());
-        return true;
+        return false;
     }
 
-    std::string Identity() const
+    const std::string& Identity() const
     {
-        if (header_ == nullptr)
-        {
-            return {};
-        }
-        std::ostringstream stream;
-        stream << header_->logicalbytes << ':' << header_->hunkbytes << ':';
-        for (std::uint8_t byte : header_->sha1)
-        {
-            stream << std::hex << std::setw(2) << std::setfill('0')
-                   << static_cast<unsigned>(byte);
-        }
-        return stream.str();
+        return image_.identity();
+    }
+
+    std::uint32_t data_track_lba() const
+    {
+        return data_track_lba_;
+    }
+
+    std::int64_t extent_lba_bias() const
+    {
+        return extent_lba_bias_;
     }
 
 private:
-    chd_file* file_ = nullptr;
-    const chd_header* header_ = nullptr;
-    std::vector<std::uint8_t> hunk_;
-    std::uint32_t frames_per_hunk_ = 0;
-    std::uint32_t cached_hunk_ = UINT32_MAX;
+    bool ReadDiscSector(
+        std::uint32_t disc_lba,
+        std::array<std::uint8_t, kIsoSectorBytes>* sector)
+    {
+        if (sector == nullptr)
+        {
+            return false;
+        }
+        std::array<std::uint8_t, 2352> raw = {};
+        if (!image_.ReadRawSector(disc_lba, raw.data(),
+                                  static_cast<std::uint32_t>(raw.size())))
+        {
+            return false;
+        }
+        const std::uint32_t user_offset = raw[15] == 2 ? 24U : 16U;
+        if (user_offset + sector->size() > raw.size())
+        {
+            return false;
+        }
+        std::memcpy(sector->data(), raw.data() + user_offset,
+                    sector->size());
+        return true;
+    }
+
+    media::ChdCdImage image_;
+    std::uint32_t data_track_lba_ = 0;
+    std::uint32_t data_track_end_lba_ = 0;
+    std::int64_t extent_lba_bias_ = 0;
 };
 
 struct IsoRecord
@@ -183,7 +230,7 @@ std::string NormalizeIsoName(const std::uint8_t* bytes, std::size_t length)
     return name;
 }
 
-bool ReadExtent(ChdCdReader* reader,
+bool ReadExtent(IsoTrackReader* reader,
                 std::uint32_t extent,
                 std::uint32_t byte_count,
                 std::vector<std::uint8_t>* bytes)
@@ -209,7 +256,7 @@ bool ReadExtent(ChdCdReader* reader,
     return true;
 }
 
-bool ParseDirectory(ChdCdReader* reader,
+bool ParseDirectory(IsoTrackReader* reader,
                     std::uint32_t extent,
                     std::uint32_t byte_count,
                     std::vector<IsoRecord>* records)
@@ -251,10 +298,10 @@ bool ParseDirectory(ChdCdReader* reader,
     return true;
 }
 
-bool ExtractTree(ChdCdReader* reader,
+bool ExtractTree(IsoTrackReader* reader,
                  const IsoRecord& directory,
                  const std::filesystem::path& output,
-                 PumpIt1MountResult* result,
+                 PiuChdMountResult* result,
                  std::uint32_t depth)
 {
     if (depth > 32 || !std::filesystem::create_directories(output) &&
@@ -265,6 +312,9 @@ bool ExtractTree(ChdCdReader* reader,
     std::vector<IsoRecord> records;
     if (!ParseDirectory(reader, directory.extent, directory.bytes, &records))
     {
+        result->message = "failed to parse ISO9660 directory extent " +
+            std::to_string(directory.extent) + " (" +
+            std::to_string(directory.bytes) + " bytes)";
         return false;
     }
     for (const IsoRecord& record : records)
@@ -282,9 +332,17 @@ bool ExtractTree(ChdCdReader* reader,
             }
             continue;
         }
+        if (!reader->ContainsExtent(record.extent, record.bytes))
+        {
+            ++result->skipped_external_extent_file_count;
+            continue;
+        }
         std::vector<std::uint8_t> bytes;
         if (!ReadExtent(reader, record.extent, record.bytes, &bytes))
         {
+            result->message = "failed to read ISO9660 file " +
+                record.name + " at extent " +
+                std::to_string(record.extent);
             return false;
         }
         std::ofstream stream(target, std::ios::binary | std::ios::trunc);
@@ -306,20 +364,34 @@ bool ExtractTree(ChdCdReader* reader,
 
 }  // namespace
 
-bool PreparePumpIt1Mount(const std::filesystem::path& roms_root,
-                         const std::filesystem::path& cache_root,
-                         PumpIt1MountResult* result)
+bool PreparePiuChdMount(std::string_view rom_set_id,
+                        const std::filesystem::path& roms_root,
+                        const std::filesystem::path& cache_root,
+                        PiuChdMountResult* result)
 {
     if (result == nullptr)
     {
         return false;
     }
-    *result = PumpIt1MountResult{};
-    result->rom_zip_path = roms_root / "pumpit1.zip";
-    const std::filesystem::path chd_directory = roms_root / "pumpit1";
-    if (!ZipContainsRequiredPumpIt1Entries(result->rom_zip_path))
+    *result = PiuChdMountResult{};
+    if (rom_set_id.empty() ||
+        !std::all_of(rom_set_id.begin(), rom_set_id.end(), [](char value) {
+            return std::isalnum(static_cast<unsigned char>(value)) != 0 ||
+                value == '_' || value == '-';
+        }))
     {
-        result->message = "pumpit1.zip is missing required MAME ROM entries";
+        result->message = "invalid PIU ROM-set id";
+        return true;
+    }
+
+    result->rom_set_id = std::string(rom_set_id);
+    result->rom_zip_path = roms_root / (result->rom_set_id + ".zip");
+    const std::filesystem::path chd_directory =
+        roms_root / result->rom_set_id;
+    if (!ZipContainsRequiredPiu10Entries(result->rom_zip_path))
+    {
+        result->message = result->rom_set_id +
+            ".zip is missing required PIU10 ROM entries";
         return true;
     }
     std::error_code directory_error;
@@ -327,7 +399,8 @@ bool PreparePumpIt1Mount(const std::filesystem::path& roms_root,
         chd_directory, directory_error);
     if (directory_error)
     {
-        result->message = "pumpit1 CHD directory not found";
+        result->message = result->rom_set_id +
+            " CHD directory not found";
         return true;
     }
     for (const auto& entry : directory)
@@ -336,7 +409,8 @@ bool PreparePumpIt1Mount(const std::filesystem::path& roms_root,
         {
             if (!result->chd_path.empty())
             {
-                result->message = "multiple pumpit1 CHD files found";
+                result->message = "multiple " + result->rom_set_id +
+                    " CHD files found";
                 return true;
             }
             result->chd_path = entry.path();
@@ -344,29 +418,31 @@ bool PreparePumpIt1Mount(const std::filesystem::path& roms_root,
     }
     if (result->chd_path.empty())
     {
-        result->message = "pumpit1 CHD file not found";
+        result->message = result->rom_set_id + " CHD file not found";
         return true;
     }
 
-    ChdCdReader reader;
+    IsoTrackReader reader;
     if (!reader.Open(result->chd_path, &result->message))
     {
         return true;
     }
-    result->mount_root = cache_root / "pumpit1";
+    result->data_track_lba = reader.data_track_lba();
+    result->mount_root = cache_root / result->rom_set_id;
     result->executable_path = result->mount_root / "PIU" / "PIU.EXE";
     const std::filesystem::path marker = result->mount_root / ".chd-identity";
     const std::string identity = reader.Identity();
     std::ifstream marker_input(marker);
     std::string cached_identity;
     std::getline(marker_input, cached_identity);
+    marker_input >> result->iso_extent_lba_bias;
     if (cached_identity == identity &&
         std::filesystem::is_regular_file(result->executable_path))
     {
         result->valid = true;
         result->mounted = true;
         result->cache_reused = true;
-        result->message = "pumpit1 CHD mount cache reused";
+        result->message = result->rom_set_id + " CHD mount cache reused";
         return true;
     }
 
@@ -374,10 +450,11 @@ bool PreparePumpIt1Mount(const std::filesystem::path& roms_root,
     std::filesystem::remove_all(result->mount_root, remove_error);
     std::filesystem::create_directories(result->mount_root);
     std::array<std::uint8_t, kIsoSectorBytes> pvd = {};
-    if (!reader.ReadIsoSector(16, &pvd) || pvd[0] != 1 ||
+    if (!reader.ReadTrackSector(16, &pvd) || pvd[0] != 1 ||
         std::memcmp(pvd.data() + 1, "CD001", 5) != 0)
     {
-        result->message = "CHD does not contain an ISO9660 primary volume";
+        result->message =
+            "CHD data track does not contain an ISO9660 primary volume";
         return true;
     }
     const std::uint8_t* root = pvd.data() + 156;
@@ -388,13 +465,26 @@ bool PreparePumpIt1Mount(const std::filesystem::path& roms_root,
     }
     const IsoRecord root_record{
         ReadLe32(root + 2), ReadLe32(root + 10), true, {}};
+    if (!reader.ResolveExtentAddressing(root_record.extent,
+                                        root_record.bytes))
+    {
+        result->message =
+            "failed to resolve ISO9660 extent addressing";
+        return true;
+    }
+    result->iso_extent_lba_bias = reader.extent_lba_bias();
     if (!ExtractTree(&reader, root_record, result->mount_root, result, 0))
     {
-        result->message = "failed to materialize ISO9660 mount view";
+        if (result->message.empty())
+        {
+            result->message =
+                "failed to materialize ISO9660 mount view";
+        }
         return true;
     }
     std::ofstream marker_output(marker, std::ios::trunc);
-    marker_output << identity << '\n';
+    marker_output << identity << '\n'
+                  << result->iso_extent_lba_bias << '\n';
     if (!marker_output ||
         !std::filesystem::is_regular_file(result->executable_path))
     {
@@ -403,8 +493,8 @@ bool PreparePumpIt1Mount(const std::filesystem::path& roms_root,
     }
     result->valid = true;
     result->mounted = true;
-    result->message = "pumpit1 CHD mounted as ISO9660 read-only cache";
+    result->message = result->rom_set_id +
+        " CHD mounted as ISO9660 read-only cache";
     return true;
 }
-
 }  // namespace repiu::assets

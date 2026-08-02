@@ -835,6 +835,55 @@ bool EmitHleDispatchSlot(const AotInstructionRecord& instruction,
     return true;
 }
 
+bool IsDirectEdgeFixup(AotFixupKind kind)
+{
+    return kind == AotFixupKind::kBlockFallthrough ||
+        kind == AotFixupKind::kDirectCall ||
+        kind == AotFixupKind::kDirectJump ||
+        kind == AotFixupKind::kConditionalBranch;
+}
+
+bool EmitUnresolvedDirectEdgeDispatch(AotCodeCacheFixup* fixup,
+                                      AotCodeCacheImage* image)
+{
+    if (fixup == nullptr || image == nullptr ||
+        !IsDirectEdgeFixup(fixup->kind) ||
+        fixup->cache_patch_offset + 4U > image->bytes.size())
+    {
+        return false;
+    }
+    const std::size_t original_size = image->bytes.size();
+    AotDbtDirectEdgeDispatchSite site;
+    site.guest_source = fixup->guest_source;
+    site.guest_target = fixup->guest_target;
+    site.dispatch_cache_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    image->bytes.push_back(0x68U);
+    site.dispatch_address_immediate_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    image->bytes.push_back(0x68U);
+    AppendImmediate32(&image->bytes, fixup->guest_target);
+    AppendRel32(&image->bytes, 0xE9U);
+    site.thunk_displacement_offset =
+        static_cast<std::uint32_t>(image->bytes.size() - 4U);
+    image->bytes.insert(image->bytes.end(), {0x8DU, 0x64U, 0x24U, 0x04U});
+    site.fallback_cache_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    image->bytes.push_back(0xCCU);
+    site.success_cache_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    image->bytes.push_back(0xC3U);
+    if (!PatchRel32(&image->bytes, fixup->cache_patch_offset,
+                    site.dispatch_cache_offset))
+    {
+        image->bytes.resize(original_size);
+        return false;
+    }
+    fixup->resolved = true;
+    image->dbt_direct_edge_dispatch_sites.push_back(site);
+    return true;
+}
 }  // namespace
 
 bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
@@ -866,6 +915,8 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
         options.enable_dbt_segment_override_dispatch;
     image->dbt_indirect_miss_dispatch_enabled =
         options.enable_dbt_indirect_miss_dispatch;
+    image->dbt_direct_edge_dispatch_enabled =
+        options.enable_dbt_direct_edge_dispatch;
     image->timer_safe_points_enabled = options.enable_timer_safe_points;
     const auto started = std::chrono::steady_clock::now();
     image->guarded_segment_pop_enabled =
@@ -1113,11 +1164,15 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
             !PatchRel32(&image->bytes, fixup.cache_patch_offset,
                         target->second))
         {
-            if (fixup.kind == AotFixupKind::kBlockFallthrough ||
-                fixup.kind == AotFixupKind::kDirectCall ||
-                fixup.kind == AotFixupKind::kDirectJump ||
-                fixup.kind == AotFixupKind::kConditionalBranch)
+            if (IsDirectEdgeFixup(fixup.kind))
             {
+                if (options.enable_dbt_direct_edge_dispatch &&
+                    EmitUnresolvedDirectEdgeDispatch(&fixup, image))
+                {
+                    ++image->resolved_fixup_count;
+                    ++image->external_fixup_count;
+                    continue;
+                }
                 image->message =
                     "direct control-flow target is outside the cache";
                 return false;

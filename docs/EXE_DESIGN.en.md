@@ -296,3 +296,13 @@ boundary for selector zero or a descriptor whose complete range is DOS low memor
 valid nonzero descriptor and the confirmed GS base-add form use folded-native execution.
 A DPMI change to base/limit/flags under the same selector also causes the site to be
 re-resolved from the new descriptor fingerprint.
+
+## pumpit2 executable confirmation
+
+The `PIU.EXE` extracted from the pumpit2 CHD through the shared multisession ISO
+mount is 1,729,538 bytes with SHA-256
+`8DDDD0B8785281D976ADFABCB415A9FF83B159319C36422F9A057A5B01BBDED5`.
+It contains four LE objects, has original entry `0x001016B0` and stack top
+`0x0059CC90`, and currently reports zero relocation-analysis failures. Asset and
+track evidence is maintained in
+[`pumpit2-chd-iso9660-mount.md`](analysis/pumpit2-chd-iso9660-mount.md).

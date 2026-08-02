@@ -38,6 +38,8 @@ struct Win32AotCodeCachePlacement
         dbt_hle_dispatch_sites;
     std::vector<runtime::AotDbtIndirectDispatchSite>
         dbt_indirect_dispatch_sites;
+    std::vector<runtime::AotDbtDirectEdgeDispatchSite>
+        dbt_direct_edge_dispatch_sites;
     std::vector<runtime::AotJumpTableSite> jump_table_sites;
     // Task 264 Phase 3a: natively-translated segment-override accesses, carried
     // so they can be re-resolved (guard selector + folded base) once the guest
@@ -84,6 +86,7 @@ struct Win32AotCodeCachePlacement
     bool dbt_port_io_dispatch_enabled = false;
     bool dbt_segment_override_dispatch_enabled = false;
     bool dbt_indirect_miss_dispatch_enabled = false;
+    bool dbt_direct_edge_dispatch_enabled = false;
     bool guarded_segment_pop_enabled = false;
     bool guarded_segment_read_enabled = false;
     bool guarded_segment_load_enabled = false;

@@ -1,4 +1,4 @@
-#include "repiu/assets/pumpit1_mount.h"
+#include "repiu/assets/piu_chd_mount.h"
 #include "repiu/exe/dos4gw_loader.h"
 #include "repiu/exe/executable_headers.h"
 #include "repiu/hle/hle_profile.h"
@@ -681,15 +681,16 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    if (target_profile->id == "pumpit1" && explicit_path.empty())
+    if (!target_profile->rom_set_id.empty() && explicit_path.empty())
     {
-        repiu::assets::PumpIt1MountResult mount;
-        if (!repiu::assets::PreparePumpIt1Mount(
-                "roms", "build/runtime_mounts", &mount) ||
+        repiu::assets::PiuChdMountResult mount;
+        if (!repiu::assets::PreparePiuChdMount(
+                target_profile->rom_set_id, "roms", "build/runtime_mounts",
+                &mount) ||
             !mount.valid || !mount.mounted)
         {
-            std::cerr << "pumpit1 CHD mount failed: " << mount.message
-                      << "\n";
+            std::cerr << target_profile->rom_set_id
+                      << " CHD mount failed: " << mount.message << "\n";
             return 1;
         }
         mounted_profile = *target_profile;
@@ -698,7 +699,6 @@ int main(int argc, char** argv)
         mounted_profile->asset_root = mount.mount_root;
         target_profile = &mounted_profile.value();
     }
-
     const std::filesystem::path path =
         explicit_path.empty() ? target_profile->executable_path
                               : explicit_path;

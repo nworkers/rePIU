@@ -101,7 +101,7 @@ Directories added now:
 Planned major modules:
 
 * `TargetRegistry`: game target and version selection. The current step provides `piu_1st` through static C++ registration.
-* `TargetProfile`: executable path, working directory, asset root, format hint, HLE profile id, version metadata, and target-specific early runtime reservation hints
+* `TargetProfile`: executable path, working directory, asset root, format hint, HLE profile id, optional ROM-set id, version metadata, and target-specific early runtime reservation hints
 * `HleProfileRegistry`: HLE profile selection referenced by targets. The current step provides `piu_common` through static C++ registration.
 * `HleProfile`: DOS/DPMI/hardware HLE service scope required by a target
 * `ExecutableReader`: shared file input layer for original executables and related files
@@ -530,7 +530,9 @@ flowchart LR
 ```
 ## MAME CHD asset mount
 
-The `pumpit1` target separates asset-container decoding from guest execution. Pinned libchdr exposes raw CHD CD frames, the project-owned ISO9660 reader resolves the file tree, and a deterministic build cache supplies the existing filesystem-based DOS VFS. Original ROM/CHD files remain read-only and outside Git.
+PIU ROM-set target은 asset container 해석과 guest 실행을 분리합니다. `TargetProfile::rom_set_id`가 게임 ID 분기 없이 공용 ZIP/CHD mount를 선택합니다. 공용 ISO9660 reader는 루트 자기 참조 레코드에서 signed extent-LBA bias를 찾아 single-session과 multisession data track을 같은 경로로 처리합니다. data track 밖의 audio extent는 file cache에서 제외하고 MSCDEX/CD-DA가 담당합니다. 원본 ROM/CHD는 읽기 전용이며 Git 밖에 유지합니다.
+
+PIU ROM-set targets separate asset-container decoding from guest execution. `TargetProfile::rom_set_id` selects the shared ZIP/CHD mount without title-ID branching. Pinned libchdr exposes raw CHD CD frames, and the project-owned ISO9660 reader discovers a signed extent-LBA bias from the root self-record so single-session and multisession data tracks share one path. External audio extents are skipped by the file cache and remain available through MSCDEX/CD-DA. A deterministic build cache supplies the existing filesystem-based DOS VFS; original ROM/CHD files remain read-only and outside Git.
 
 ```mermaid
 flowchart LR
@@ -552,21 +554,21 @@ flowchart LR
     C --> A
 ```
 
-The pumpit1 CHD is both the ISO9660 mount source and a virtual MSCDEX disc. `media::ChdCdImage` owns track metadata and raw sectors, the execution trampoline adapts original `AX=1500h/1510h` requests, and the SDL3 audio stream inside the compatibility-named `CdAudioWaveOut` owns only CD-DA PCM output. Glide observation accumulates counts and first arguments per ordinal.
+A PIU target CHD is both the ISO9660 mount source and a virtual MSCDEX disc. `media::ChdCdImage` owns track metadata and raw sectors, the execution trampoline adapts original `AX=1500h/1510h` requests, and the SDL3 audio stream inside the compatibility-named `CdAudioWaveOut` owns only CD-DA PCM output. Glide observation accumulates counts and first arguments per ordinal.
 # PIU10 YMZ280B board sound
 
-CD-DA가 배경 음악을 담당하는 것과 별개로, 코인·메뉴 효과음은 PIU10 ISA 보드의 Yamaha YMZ280B가 `roms/pumpit1.zip`의 `piu10.u9` 샘플 ROM에서 재생합니다. 책임은 네 계층으로 분리되어 있습니다. `assets::ExtractRomZipEntry`가 ZIP 엔트리를 CRC 검증과 함께 추출하고, `sound::LoadPumpIt1SampleRom`이 4 MiB `0xFF` 주소 공간에 배치하며, 플랫폼 공용 `sound::Ymz280bDevice`가 레지스터 파일·8보이스·ADPCM 디코드·믹싱을 88200 Hz 스테레오로 수행하고, Win32 backend `Ymz280bAudioOut`이 워커 스레드와 뮤텍스로 SDL3 stream에 밀어 넣습니다. 게스트 ABI 연결은 `piu10_sound_port`가 담당하며 ISA 16비트 버스의 바이트 레인 규칙에 따라 `0x02A0`을 칩 오프셋 0, `0x02A2`를 오프셋 1로 디코드합니다. 사운드 창은 JAMMA 입력 범위 안에 있으므로 `HandlePortIoInstruction`에서 입력 분기보다 먼저 처리하며, 레지스터 쓰기는 NOP 패치 없이 EIP만 전진시켜 매번 재트랩합니다.
+CD-DA가 배경 음악을 담당하는 것과 별개로, 코인·메뉴 효과음은 PIU10 ISA 보드의 Yamaha YMZ280B가 `roms/pumpit1.zip`의 `piu10.u9` 샘플 ROM에서 재생합니다. 책임은 네 계층으로 분리되어 있습니다. `assets::ExtractRomZipEntry`가 ZIP 엔트리를 CRC 검증과 함께 추출하고, `sound::LoadPiu10SampleRom`이 4 MiB `0xFF` 주소 공간에 배치하며, 플랫폼 공용 `sound::Ymz280bDevice`가 레지스터 파일·8보이스·ADPCM 디코드·믹싱을 88200 Hz 스테레오로 수행하고, Win32 backend `Ymz280bAudioOut`이 워커 스레드와 뮤텍스로 SDL3 stream에 밀어 넣습니다. 게스트 ABI 연결은 `piu10_sound_port`가 담당하며 ISA 16비트 버스의 바이트 레인 규칙에 따라 `0x02A0`을 칩 오프셋 0, `0x02A2`를 오프셋 1로 디코드합니다. 사운드 창은 JAMMA 입력 범위 안에 있으므로 `HandlePortIoInstruction`에서 입력 분기보다 먼저 처리하며, 레지스터 쓰기는 NOP 패치 없이 EIP만 전진시켜 매번 재트랩합니다.
 
 ```mermaid
 flowchart LR
     G["Guest OUT 0x02A0/0x02A2"] --> P["piu10_sound_port<br/>byte-lane decode"]
     P --> B["Ymz280bAudioOut<br/>mutex + worker"]
     B --> D["sound::Ymz280bDevice<br/>8 voices, 88200 Hz"]
-    R["pumpit1.zip / piu10.u9"] --> S["Ymz280bSampleRom<br/>4 MiB, 0xFF fill"] --> D
+    R["ROM-set ZIP / piu10.u9"] --> S["Ymz280bSampleRom<br/>4 MiB, 0xFF fill"] --> D
     B --> SDL["SDL_AudioStream"]
 ```
 
-Separately from CD-DA background music, coin and menu effects are played by the Yamaha YMZ280B on the PIU10 ISA board from the `piu10.u9` sample ROM inside `roms/pumpit1.zip`. Responsibilities are split across four layers: `assets::ExtractRomZipEntry` extracts the ZIP entry with CRC verification, `sound::LoadPumpIt1SampleRom` places it in a 4 MiB `0xFF`-filled address space, the platform-neutral `sound::Ymz280bDevice` owns the register file, eight voices, ADPCM decode, and mixing at 88200 Hz stereo, and the Win32 backend `Ymz280bAudioOut` pushes generated PCM into an SDL3 stream from a worker thread under a mutex. `piu10_sound_port` provides the guest ABI glue, decoding `0x02A0` as chip offset 0 and `0x02A2` as offset 1 per the ISA 16-bit byte-lane rule. Because the sound window lies inside the JAMMA input range, `HandlePortIoInstruction` handles it before the input branch, and register writes advance EIP and re-trap rather than being NOP-patched.
+Separately from CD-DA background music, coin and menu effects are played by the Yamaha YMZ280B on the PIU10 ISA board from the `piu10.u9` sample ROM inside the target ROM-set ZIP. Responsibilities are split across four layers: `assets::ExtractRomZipEntry` extracts the ZIP entry with CRC verification, `sound::LoadPiu10SampleRom` places it in a 4 MiB `0xFF`-filled address space, the platform-neutral `sound::Ymz280bDevice` owns the register file, eight voices, ADPCM decode, and mixing at 88200 Hz stereo, and the Win32 backend `Ymz280bAudioOut` pushes generated PCM into an SDL3 stream from a worker thread under a mutex. `piu10_sound_port` provides the guest ABI glue, decoding `0x02A0` as chip offset 0 and `0x02A2` as offset 1 per the ISA 16-bit byte-lane rule. Because the sound window lies inside the JAMMA input range, `HandlePortIoInstruction` handles it before the input branch, and register writes advance EIP and re-trap rather than being NOP-patched.
 # AOT translation planning prototype
 
 `runtime::BuildAotTranslationPlan`은 relocated DOS/4GW LE image의 entry/direct edge에서 reachable CFG를 Zydis로 복원하고 copy, direct relocation, HLE boundary, return, indirect exit를 분류합니다. 이 단계는 실행 경로를 바꾸지 않으며 `repiu_aot_probe`가 coverage와 planning time을 측정합니다.
@@ -850,6 +852,39 @@ final state is provably identical to the VEH `CONTINUE_EXECUTION` path; layout, 
 and FPU/SSE were ruled out. The path is therefore opt-in and disabled by default
 (`REPIU_AOT_DBT_INDIRECT=1`), and the default `aot-dbt` keeps its Task 281 behavior.
 
+### AOT-DBT 미해결 direct edge dispatch / unresolved direct-edge dispatch
+
+Task 395는 완성된 정적 image에 target이 없는 direct call, direct jump, conditional branch,
+block fall-through만 `aot-dbt` 전용 tail stub로 연결합니다. 이미 address map에 있는 target은
+기존 `rel32` 직결을 유지하며, 다른 AOT backend는 image 생성을 fail-closed합니다. 따라서
+정적 CFG의 보수적 과잉 탐색이 전체 AOT-DBT image를 폐기하지 않으면서도 일반 AOT의
+완결성 계약은 바뀌지 않습니다.
+
+stub은 dispatch 절대 주소와 guest target을 push하고 Win32 x86 host-stack thunk로
+진입합니다. resolver는 site metadata를 검증한 뒤 공용 `ResolveAotTransferTarget`만
+호출합니다. 성공 시 cache target으로 `ret`하며, 실패 시 metadata 한 칸을 제거하고 전용
+INT3에 도달합니다. re-entry는 address map에 가짜 code entry를 만들지 않고 site의 fallback
+offset으로 원래 guest target을 복원합니다. static placement와 dynamic append는 동일한
+image-relative metadata를 patch·이동합니다.
+
+```mermaid
+flowchart LR
+    E["unresolved direct edge"] --> S["AOT-DBT tail stub"]
+    S --> H["host-stack thunk"]
+    H --> R{"ResolveAotTransferTarget"}
+    R -->|success| C["cache target"]
+    R -->|failure| I["site INT3"]
+    I --> V["existing VEH/TF guest path"]
+```
+
+Task 395 connects only direct calls, direct jumps, conditional branches, and block
+fall-throughs whose targets are absent from a completed static image to an AOT-DBT tail
+stub. Mapped targets remain direct `rel32` edges, while other AOT backends keep rejecting
+incomplete images. The Win32 x86 thunk validates site metadata and calls the shared
+`ResolveAotTransferTarget`; success returns to a cache target and failure reaches a
+site-owned INT3. Re-entry recovers the original guest target from site metadata rather
+than publishing a fake address-map entry. Static placement and dynamic append patch and
+relocate the same image-relative metadata.
 ### AOT-DBT CALL/RET 결정적 진단 경계 / deterministic CALL/RET diagnostic boundary
 
 Task 284는 indirect host-dispatch CALL 크래시를 추적하기 위해 Win32 전용

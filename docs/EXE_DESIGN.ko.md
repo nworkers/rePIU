@@ -291,3 +291,12 @@ segment-override site는 `ThreadContext::guest_*` shadow selector를 guard하고
 되돌아갑니다. selector가 0이 아닌 정상 descriptor와 확인된 GS base-add 접근만 folded
 native 경로를 사용합니다. 같은 selector의 base/limit/flags가 DPMI로 변경되는 경우도
 새 descriptor fingerprint로 site를 재해석합니다.
+
+## pumpit2 실행 파일 확인
+
+`pumpit2` CHD에서 공용 멀티세션 ISO mount로 추출한 `PIU.EXE`는 1,729,538
+바이트이고 SHA-256은
+`8DDDD0B8785281D976ADFABCB415A9FF83B159319C36422F9A057A5B01BBDED5`이다.
+LE object는 4개, 원본 entry는 `0x001016B0`, stack top은 `0x0059CC90`이며 현재
+loader의 relocation 분석은 실패 0건이다. 세부 asset/track 근거는
+[`pumpit2-chd-iso9660-mount.md`](analysis/pumpit2-chd-iso9660-mount.md)에 둔다.

@@ -17,6 +17,7 @@ const std::vector<TargetProfile>& BuiltInTargetProfiles()
             std::filesystem::path("samples/dos4gw_hello"),
             ExecutableFormatHint::kDos4gwLe,
             "dos4gw_console_sample",
+            "",
             TargetRuntimeReservationHint{
                 true,
                 0x00010000,
@@ -31,6 +32,7 @@ const std::vector<TargetProfile>& BuiltInTargetProfiles()
             std::filesystem::path("MASTER/PIU_1ST"),
             ExecutableFormatHint::kDos4gwLe,
             "piu_common",
+            "",
             TargetRuntimeReservationHint{
                 true,
                 0x00010000,
@@ -46,6 +48,23 @@ const std::vector<TargetProfile>& BuiltInTargetProfiles()
             std::filesystem::path("build/runtime_mounts/pumpit1"),
             ExecutableFormatHint::kDos4gwLe,
             "piu_common",
+            "pumpit1",
+            TargetRuntimeReservationHint{
+                true,
+                0x00010000,
+                0x005D7000,
+            },
+        },
+        TargetProfile{
+            "pumpit2",
+            "Pump It Up 2nd Dance Floor (MAME CHD)",
+            std::filesystem::path(
+                "build/runtime_mounts/pumpit2/PIU/PIU.EXE"),
+            std::filesystem::path("build/runtime_mounts/pumpit2/PIU"),
+            std::filesystem::path("build/runtime_mounts/pumpit2"),
+            ExecutableFormatHint::kDos4gwLe,
+            "piu_common",
+            "pumpit2",
             TargetRuntimeReservationHint{
                 true,
                 0x00010000,

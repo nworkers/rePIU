@@ -18,6 +18,9 @@ struct AotCodeCacheBuildOptions
         kDefaultAotIndirectInlineCacheEntryCount;
     bool enable_dbt_return_miss_dispatch = false;
     bool enable_dbt_indirect_miss_dispatch = false;
+    // Route a static direct edge whose target was not emitted through a
+    // fail-closed AOT-DBT runtime-dispatch stub.
+    bool enable_dbt_direct_edge_dispatch = false;
     // Task 283 call/jump split probe. When the master
     // `enable_dbt_indirect_miss_dispatch` is set, these gate the host-dispatch
     // tail per instruction kind so a live run can bisect the Task 282 crash by
@@ -123,6 +126,19 @@ struct AotDbtHleDispatchSite
     std::uint32_t success_cache_offset = 0;
 };
 
+// An unresolved static direct edge uses a tail stub with the same two-slot
+// host-stack ABI as HLE dispatch. The resolver either publishes a real cache
+// target or reaches fallback_cache_offset, whose INT3 resumes guest_target.
+struct AotDbtDirectEdgeDispatchSite
+{
+    std::uint32_t guest_source = 0;
+    std::uint32_t guest_target = 0;
+    std::uint32_t dispatch_cache_offset = 0;
+    std::uint32_t dispatch_address_immediate_offset = 0;
+    std::uint32_t thunk_displacement_offset = 0;
+    std::uint32_t fallback_cache_offset = 0;
+    std::uint32_t success_cache_offset = 0;
+};
 // Task 282. The `FF /2` / `FF /4` inline-cache miss tail of an `aot-dbt` image
 // pushes a fixed three-slot frame (call return address, miss address, guest
 // source) and jumps to the Win32 host-stack thunk. A jump pushes an unused first
@@ -241,6 +257,8 @@ struct AotCodeCacheImage
     std::vector<AotDbtReturnDispatchSite> dbt_return_dispatch_sites;
     std::vector<AotDbtHleDispatchSite> dbt_hle_dispatch_sites;
     std::vector<AotDbtIndirectDispatchSite> dbt_indirect_dispatch_sites;
+    std::vector<AotDbtDirectEdgeDispatchSite>
+        dbt_direct_edge_dispatch_sites;
     std::vector<AotJumpTableSite> jump_table_sites;
     std::vector<AotGuardedSegmentPopSite> guarded_segment_pop_sites;
     std::vector<AotGuardedSegmentReadSite> guarded_segment_read_sites;
@@ -259,6 +277,7 @@ struct AotCodeCacheImage
     bool guarded_segment_read_enabled = false;
     bool guarded_segment_load_enabled = false;
     bool dbt_indirect_miss_dispatch_enabled = false;
+    bool dbt_direct_edge_dispatch_enabled = false;
     bool timer_safe_points_enabled = false;
     std::uint32_t resolved_fixup_count = 0;
     std::uint32_t external_fixup_count = 0;

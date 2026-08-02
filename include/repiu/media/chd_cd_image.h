@@ -57,6 +57,7 @@ public:
     const ChdCdTrack* FindTrack(std::uint8_t number) const;
     const ChdCdTrack* FindTrackByLba(std::uint32_t lba) const;
     std::uint32_t lead_out_lba() const;
+    const std::string& identity() const;
     const std::string& message() const;
 
 private:

@@ -1,5 +1,6 @@
 #include "aot_runtime_dispatch.h"
 #include "aot_dbt_glide_gate_dispatch.h"
+#include "aot_dbt_direct_edge_dispatch.h"
 
 #include "native_linear_span.h"
 #include "aot_dbt_call_return_trace.h"
@@ -1648,8 +1649,10 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
             const ExecutionTimeScope guest_lookup_scope(
                 context->execution_time_profile.get(),
                 ExecutionTimeBucket::kAotReentryGuestLookup);
-            located = FindAotGuestAddress(*context->aot_placement,
-                                          cache_address, &guest_address);
+            located = FindAotDbtDirectEdgeFallbackTarget(
+                context, cache_address, &guest_address) ||
+                FindAotGuestAddress(*context->aot_placement,
+                                    cache_address, &guest_address);
         }
         if (!located)
         {

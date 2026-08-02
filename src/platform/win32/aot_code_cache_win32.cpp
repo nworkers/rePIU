@@ -3,6 +3,7 @@
 #include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/aot_translation_plan.h"
 #include "aot/aot_dbt_hle_dispatch.h"
+#include "aot/aot_dbt_direct_edge_dispatch.h"
 #include "aot/aot_dbt_indirect_dispatch.h"
 #include "aot/aot_dbt_return_dispatch.h"
 
@@ -100,6 +101,12 @@ void IndexAotBreakpointProvenance(
     {
         index[append_offset + site.fallback_cache_offset + 4U] =
             AotCacheBreakpointProvenance::kInlineCacheFallback;
+    }
+    for (const runtime::AotDbtDirectEdgeDispatchSite& site :
+         image.dbt_direct_edge_dispatch_sites)
+    {
+        index[append_offset + site.fallback_cache_offset] =
+            AotCacheBreakpointProvenance::kOtherPlannerFixup;
     }
     for (const runtime::AotJumpTableSite& site : image.jump_table_sites)
     {
@@ -210,6 +217,40 @@ bool ResolveWin32AotDbtReturnDispatchSites(
     return true;
 }
 
+bool ResolveWin32AotDbtDirectEdgeDispatchSites(
+    const runtime::AotCodeCacheImage& image,
+    std::uint8_t* image_bytes,
+    std::uint32_t image_absolute_base)
+{
+    if (image.dbt_direct_edge_dispatch_sites.empty())
+    {
+        return true;
+    }
+    const std::uintptr_t thunk_value = reinterpret_cast<std::uintptr_t>(
+        GetAotDbtDirectEdgeDispatchThunkAddress());
+    if (image_bytes == nullptr || thunk_value == 0U ||
+        thunk_value > std::numeric_limits<std::uint32_t>::max())
+    {
+        return false;
+    }
+    const std::uint32_t thunk = static_cast<std::uint32_t>(thunk_value);
+    for (const runtime::AotDbtDirectEdgeDispatchSite& site :
+         image.dbt_direct_edge_dispatch_sites)
+    {
+        const std::uint32_t dispatch_address =
+            image_absolute_base + site.dispatch_cache_offset;
+        std::memcpy(
+            image_bytes + site.dispatch_address_immediate_offset,
+            &dispatch_address, sizeof(dispatch_address));
+        const std::uint32_t next_instruction = image_absolute_base +
+            site.thunk_displacement_offset + 4U;
+        const std::int32_t displacement = static_cast<std::int32_t>(
+            thunk - next_instruction);
+        std::memcpy(image_bytes + site.thunk_displacement_offset,
+                    &displacement, sizeof(displacement));
+    }
+    return true;
+}
 bool ResolveWin32AotDbtHleDispatchSites(
     const runtime::AotCodeCacheImage& image,
     std::uint8_t* image_bytes,
@@ -649,6 +690,15 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
         placement->message = "AOT-DBT return thunk is unavailable";
         return true;
     }
+    if (!ResolveWin32AotDbtDirectEdgeDispatchSites(
+            image, static_cast<std::uint8_t*>(memory),
+            static_cast<std::uint32_t>(base)))
+    {
+        VirtualFree(memory, 0, MEM_RELEASE);
+        placement->message =
+            "AOT-DBT direct-edge thunk is unavailable";
+        return true;
+    }
     if (!ResolveWin32AotDbtHleDispatchSites(
             image, static_cast<std::uint8_t*>(memory),
             static_cast<std::uint32_t>(base)))
@@ -689,6 +739,8 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
     placement->dbt_hle_dispatch_sites = image.dbt_hle_dispatch_sites;
     placement->dbt_indirect_dispatch_sites =
         image.dbt_indirect_dispatch_sites;
+    placement->dbt_direct_edge_dispatch_sites =
+        image.dbt_direct_edge_dispatch_sites;
     placement->jump_table_sites = image.jump_table_sites;
     placement->segment_override_sites = image.segment_override_sites;
     placement->guarded_segment_pop_sites = image.guarded_segment_pop_sites;
@@ -707,6 +759,8 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
         image.dbt_segment_override_dispatch_enabled;
     placement->dbt_indirect_miss_dispatch_enabled =
         image.dbt_indirect_miss_dispatch_enabled;
+    placement->dbt_direct_edge_dispatch_enabled =
+        image.dbt_direct_edge_dispatch_enabled;
     placement->guarded_segment_pop_enabled =
         image.guarded_segment_pop_enabled;
     placement->guarded_segment_read_enabled =
@@ -835,6 +889,8 @@ bool AppendWin32DynamicAotTranslation(
         placement->dbt_segment_override_dispatch_enabled;
     build_options.enable_dbt_indirect_miss_dispatch =
         placement->dbt_indirect_miss_dispatch_enabled;
+    build_options.enable_dbt_direct_edge_dispatch =
+        placement->dbt_direct_edge_dispatch_enabled;
     build_options.enable_guarded_segment_pop =
         placement->guarded_segment_pop_enabled;
     build_options.enable_guarded_segment_read =
@@ -1008,6 +1064,18 @@ bool AppendWin32DynamicAotTranslation(
         result->message = "AOT-DBT return thunk is unavailable";
         return true;
     }
+    if (!ResolveWin32AotDbtDirectEdgeDispatchSites(
+            image, static_cast<std::uint8_t*>(cache) + append_offset,
+            placement->base_address + append_offset))
+    {
+        DWORD ignored = 0;
+        VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ,
+                       &ignored);
+        result->unsafe_failure = true;
+        result->message =
+            "AOT-DBT direct-edge thunk is unavailable";
+        return true;
+    }
     if (!ResolveWin32AotDbtHleDispatchSites(
             image, static_cast<std::uint8_t*>(cache) + append_offset,
             placement->base_address + append_offset))
@@ -1170,6 +1238,16 @@ bool AppendWin32DynamicAotTranslation(
         site.fallback_cache_offset += append_offset;
         site.success_cache_offset += append_offset;
         placement->dbt_indirect_dispatch_sites.push_back(site);
+    }
+    for (runtime::AotDbtDirectEdgeDispatchSite site :
+         image.dbt_direct_edge_dispatch_sites)
+    {
+        site.dispatch_cache_offset += append_offset;
+        site.dispatch_address_immediate_offset += append_offset;
+        site.thunk_displacement_offset += append_offset;
+        site.fallback_cache_offset += append_offset;
+        site.success_cache_offset += append_offset;
+        placement->dbt_direct_edge_dispatch_sites.push_back(site);
     }
     for (runtime::AotJumpTableSite site : image.jump_table_sites)
     {

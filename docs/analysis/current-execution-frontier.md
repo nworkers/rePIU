@@ -1936,3 +1936,56 @@ After this removal, leading repeated HLE EIPs include `0x030F3BAD`, `0x030F3BBD`
 The consolidated design is [20260802-393-performance-investigation-handoff.md](../design/20260802-393-performance-investigation-handoff.md). Adopted default-ON paths are trace-owned native spans, guarded segment read/load, Port-I/O-specific dispatch, and Glide-gate direct dispatch. Shader `glGetError` follows the existing policy. Broad and hybrid segment-override dispatch remain default OFF and diagnostic-only after long-run regressions.
 
 The next investigation starts from individual effective `8A/88/89/8C` and fallback `8E` forms, not whole-family segment-override dispatch. It must check selector match rates on other guests, re-attribute guest-run/VEH/Glide under matched work, and include `pumpit1` in reproduction commands. `chdir` and fixed initialization costs remain lower priority.
+## Task 394 보조 frontier: pumpit2 profile
+
+`pumpit2`의 공용 ZIP/CHD profile, 멀티세션 ISO mount, 기본 `legacy` 실행 smoke는
+완료됐습니다. 다음 pumpit2 전용 실행 frontier는 AOT code cache 밖 direct target
+한 건의 의미를 확인하는 것입니다. 이는 기존 pumpit1 Music Select 성능 frontier와
+분리하며, 이번 작업에서는 title-specific 예외를 추가하지 않았습니다. 상세 근거는
+[`pumpit2-chd-iso9660-mount.md`](pumpit2-chd-iso9660-mount.md)에 있습니다.
+
+## Task 394 supplemental frontier: pumpit2 profile
+
+The shared pumpit2 ZIP/CHD profile, multisession ISO mount, and default legacy
+execution smoke are complete. Its next execution frontier is the meaning of one
+direct target outside the AOT code cache. This remains separate from the existing
+pumpit1 Music Select performance frontier, and no title-specific exception was
+introduced. See
+[`pumpit2-chd-iso9660-mount.md`](pumpit2-chd-iso9660-mount.md) for evidence.
+## Task 395 보조 frontier: pumpit2 AOT-DBT direct-edge dispatch
+
+pumpit2의 AOT 이미지 거부 원인은 title-specific 명령이 아니라 return address를 소비하는
+thunk 뒤를 보수적으로 fall-through로 탐색한 정적 CFG였습니다. `0x010FB9D6` 이후의
+데이터를 코드로 걷다가 `0x010FB9E5 -> 0x010FB9E6` 미해결 `kBlockFallthrough` 한 건이
+남았습니다.
+
+`aot-dbt`는 이제 cache 밖 direct call/jump/conditional/fall-through edge를 전용
+host-stack dispatcher로 보냅니다. runtime target 검증 또는 동적 번역이 성공하면 cache로
+복귀하고, 실패하면 site metadata로 guest target을 복원하는 INT3 경계로 fail-closed합니다.
+특정 실행 파일 이름, 해시 또는 주소를 조건으로 삼지 않습니다. 일반 `aot`와
+`aot-dynamic`의 정적 거부 정책도 유지합니다.
+
+Release 검증에서 전체 AOT probe가 통과했습니다. pumpit2 3초 `aot-dbt` smoke는 site 1개로
+이미지를 생성해 timeout까지 실행했고 pumpit1은 site 0개로 기존 직결 경로를 유지했습니다.
+따라서 pumpit2 AOT 이미지 생성 frontier는 닫혔습니다. 남은 pumpit2 범위는 실제 플레이,
+CD-DA 전환, 입력과 렌더링의 장시간 검증이며, pumpit1 Music Select 성능 frontier와는
+계속 분리합니다.
+
+## Task 395 supplemental frontier: pumpit2 AOT-DBT direct-edge dispatch
+
+The pumpit2 rejection came from conservative static-CFG fall-through after a
+return-address-consuming thunk, not from a title-specific instruction. Walking the data
+after `0x010FB9D6` left one unresolved `kBlockFallthrough` fixup at
+`0x010FB9E5 -> 0x010FB9E6`.
+
+AOT-DBT now routes direct call, jump, conditional, and fall-through edges whose targets
+are outside the emitted cache through a dedicated host-stack dispatcher. Successful
+runtime validation or dynamic translation resumes at a cache target; failure reaches an
+INT3 boundary whose guest target is recovered from site metadata. No executable name,
+hash, or address is recognized. Plain AOT and AOT-dynamic retain their static fail-closed
+policy.
+
+The full Release AOT probe passed. A three-second pumpit2 AOT-DBT smoke emitted one site
+and ran until timeout, while pumpit1 emitted zero sites and retained its direct path. The
+pumpit2 image-build frontier is therefore closed. Long-run gameplay, CD-DA transitions,
+input, and rendering remain separate from the pumpit1 Music Select performance frontier.

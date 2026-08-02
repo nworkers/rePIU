@@ -179,7 +179,7 @@ bool Ymz280bAudioOut::Open(const std::filesystem::path& rom_zip_path)
     Close();
 
     const sound::Ymz280bSampleRom rom =
-        sound::LoadPumpIt1SampleRom(rom_zip_path);
+        sound::LoadPiu10SampleRom(rom_zip_path);
     if (!rom.valid)
     {
         impl_->message = "YMZ280B sample ROM unavailable: " + rom.message;
