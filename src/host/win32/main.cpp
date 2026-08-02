@@ -3117,6 +3117,18 @@ void PrintExecutionAttempt(
     }
     logger.info("Win32 port I/O observation count: {}",
                 attempt.port_io.observed_count);
+    logger.info(
+        "Win32 JAMMA scan cycles/scans/key-queries/cycles-per-scan/"
+        "cycles-per-query: {}/{}/{}/{}/{}",
+        attempt.port_io.jamma_scan_cycles,
+        attempt.port_io.jamma_scan_count,
+        attempt.port_io.key_query_count,
+        attempt.port_io.jamma_scan_count != 0U
+            ? attempt.port_io.jamma_scan_cycles / attempt.port_io.jamma_scan_count
+            : 0U,
+        attempt.port_io.key_query_count != 0U
+            ? attempt.port_io.jamma_scan_cycles / attempt.port_io.key_query_count
+            : 0U);
     logger.info("Win32 port I/O input/output/handled/unhandled: {}/{}/{}/{}",
                 attempt.port_io.input_count, attempt.port_io.output_count,
                 attempt.port_io.handled_count, attempt.port_io.unhandled_count);

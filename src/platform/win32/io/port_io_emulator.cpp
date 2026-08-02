@@ -8,6 +8,8 @@
 #include <memory>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <intrin.h>
 #include "eeprom_93c46.h"
 #include "piu10_sound_port.h"
 
@@ -123,10 +125,26 @@ static void LogJammaInputTransition(std::uint16_t port, std::uint8_t value)
     }
 }
 
-static std::uint8_t ReadJammaPort8(std::uint16_t port)
+// Task 403: counts GetAsyncKeyState calls so the port I/O cost can be split
+// between the host key scan and everything else in the handler.
+static std::uint32_t g_jamma_key_query_count = 0;
+
+std::uint32_t TakeJammaKeyQueryCount()
+{
+    const std::uint32_t value = g_jamma_key_query_count;
+    g_jamma_key_query_count = 0;
+    return value;
+}
+
+static std::uint8_t ScanJammaPort8(std::uint16_t port)
 {
     std::uint8_t value = 0xFF; // Active Low
     auto is_pressed = [](int vk) -> bool {
+        ++g_jamma_key_query_count;
+        // Only the 0x8000 current-state bit is used. The 0x0001
+        // "pressed since last call" bit is state a call consumes, so reading it
+        // would make the snapshot below change meaning; it is deliberately not
+        // consulted.
         return (GetAsyncKeyState(vk) & 0x8000) != 0;
     };
 
@@ -158,6 +176,104 @@ static std::uint8_t ReadJammaPort8(std::uint16_t port)
 
     LogJammaInputTransition(port, value);
     return value;
+}
+
+// Task 403: the guest reads port 0x02A8 200 times in a row purely as a settle
+// delay and discards every value, so scanning the host keyboard on each read
+// made GetAsyncKeyState 99.21% of the port I/O handler body and 30.65% of wall
+// clock. It polls about 208 times a second, so a snapshot refreshed on a bound
+// far finer than that loses no transition the guest could observe. This does
+// not touch the Task 327 rule: the guest IN still traps, EIP still advances,
+// and nothing is NOP-patched -- only the rescan inside the trap is bounded.
+//
+// Guest-thread only, like g_eeprom below: HandlePortIoInstruction runs on the
+// VEH path and the Task 311 AOT fast-path thunk, both on the guest thread.
+namespace
+{
+
+constexpr std::uint32_t kJammaSnapshotPortCount =
+    kPortPiuJammaEnd - kPortPiuJammaBase + 1U;
+constexpr std::uint64_t kDefaultJammaSnapshotMicroseconds = 500U;
+
+std::uint64_t ReadJammaSnapshotIntervalMicroseconds()
+{
+    const char* value = std::getenv("REPIU_JAMMA_SNAPSHOT");
+    if (value != nullptr &&
+        (std::strcmp(value, "0") == 0 || std::strcmp(value, "off") == 0 ||
+         std::strcmp(value, "false") == 0))
+    {
+        return 0U;
+    }
+    const char* interval = std::getenv("REPIU_JAMMA_SNAPSHOT_US");
+    if (interval == nullptr || interval[0] == 0)
+    {
+        return kDefaultJammaSnapshotMicroseconds;
+    }
+    const long parsed = std::strtol(interval, nullptr, 10);
+    return parsed <= 0 ? 0U : static_cast<std::uint64_t>(parsed);
+}
+
+std::uint64_t JammaSnapshotIntervalMicroseconds()
+{
+    static const std::uint64_t interval =
+        ReadJammaSnapshotIntervalMicroseconds();
+    return interval;
+}
+
+std::int64_t PerformanceFrequency()
+{
+    static const std::int64_t frequency = [] {
+        LARGE_INTEGER value = {};
+        QueryPerformanceFrequency(&value);
+        return value.QuadPart != 0 ? value.QuadPart : 1;
+    }();
+    return frequency;
+}
+
+struct JammaSnapshot
+{
+    bool valid = false;
+    std::int64_t refreshed_at = 0;
+    std::uint8_t values[kJammaSnapshotPortCount] = {};
+};
+
+JammaSnapshot g_jamma_snapshot;
+
+void RefreshJammaSnapshot(std::int64_t now)
+{
+    for (std::uint32_t index = 0; index < kJammaSnapshotPortCount; ++index)
+    {
+        g_jamma_snapshot.values[index] = ScanJammaPort8(
+            static_cast<std::uint16_t>(kPortPiuJammaBase + index));
+    }
+    g_jamma_snapshot.refreshed_at = now;
+    g_jamma_snapshot.valid = true;
+}
+
+}  // namespace
+
+static std::uint8_t ReadJammaPort8(std::uint16_t port)
+{
+    const std::uint64_t interval = JammaSnapshotIntervalMicroseconds();
+    if (interval == 0U || port < kPortPiuJammaBase || port > kPortPiuJammaEnd)
+    {
+        return ScanJammaPort8(port);
+    }
+
+    LARGE_INTEGER counter = {};
+    QueryPerformanceCounter(&counter);
+    const std::int64_t now = counter.QuadPart;
+    const std::int64_t elapsed_ticks = now - g_jamma_snapshot.refreshed_at;
+    const std::int64_t stale_ticks = static_cast<std::int64_t>(
+        (PerformanceFrequency() * static_cast<std::int64_t>(interval)) /
+        1000000);
+    if (!g_jamma_snapshot.valid || elapsed_ticks < 0 ||
+        elapsed_ticks >= stale_ticks)
+    {
+        RefreshJammaSnapshot(now);
+    }
+
+    return g_jamma_snapshot.values[port - kPortPiuJammaBase];
 }
 
 static std::unique_ptr<Eeprom93c46> g_eeprom;
@@ -390,10 +506,14 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
         if (port >= kPortPiuJammaBase && port <= kPortPiuJammaEnd)
         {
             std::uint32_t emulated_val = 0;
+            const std::uint64_t scan_start = __rdtsc();
             for (std::uint32_t i = 0; i < width; ++i)
             {
                 emulated_val |= (static_cast<std::uint32_t>(ReadJammaPort8(port + static_cast<std::uint16_t>(i))) << (i * 8));
             }
+            context->port_io.jamma_scan_cycles += __rdtsc() - scan_start;
+            ++context->port_io.jamma_scan_count;
+            context->port_io.key_query_count += TakeJammaKeyQueryCount();
 
             if (width == 1)
             {

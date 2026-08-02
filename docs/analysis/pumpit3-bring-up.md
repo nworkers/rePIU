@@ -82,21 +82,21 @@ single-step census      total/distinct/overflow = 287,599/122/0
 
 ## 미확정: 다음 대상
 
-### 1. `INT 21h AH=2Ch` 지연 루틴이 census의 95%
+### 1. [해소됨] `INT 21h AH=2Ch` 비용 가설은 Task 402에서 기각됐습니다
 
-| 주소 | 표본 | 정체 |
-|---|---:|---|
-| `0x030D395B` | 116,805 | 지연 루프 |
-| `0x030D394B` | 97,912 | 초 변화 대기 |
-| `0x030D3997` | 58,403 | 지연 본체 |
+여기 처음 적었던 "census 표본의 95%이므로 25 FPS의 주된 비용일 가능성이 높다"는
+**범주 오류**였습니다. census `total_cycles`는 single-step 핸들러 scope만 재며 그 자체가
+wall clock의 2.04%입니다.
 
-게임의 시간 지연 루틴이 초당 약 6,000회 `AH=2Ch`를 호출하고 매 호출이 예외 왕복입니다.
-원본 DOS에서는 훨씬 싼 호출이므로 현재 약 25 FPS의 주된 비용일 가능성이 높지만,
-**측정으로 확정하지 않았습니다.** 확정하려면 이 세 주소의 cycle 비중을 wall clock 대비로
-환산해야 합니다.
+Task 402가 wall clock 대비로 측정한 결과 `AH=2Ch`는 **약 3.2~3.8%** 이고 완전 제거
+상한은 **1.04배**입니다. 게다가 이 지연 루틴은 자기 보정형이라 호출당 비용이 약분되므로,
+싸게 만들어도 지연 시간은 같습니다. **축 종결.**
 
-관련 미확정 사항이 하나 더 있습니다. 이 루틴은 1초 동안 `AH=2Ch` 호출 횟수를 세어
-`0x0041CD2C`에 저장하는 보정 루프입니다. 보정 시점과 지연 시점의 실행 backend가
+실제 비용 중심은 포트 `0x02A8` 폴링(wall의 약 46~56%)이며 근인은 `ReadJammaPort8`이
+포트 읽기마다 `GetAsyncKeyState`를 최대 10회 호출하는 것입니다. 상세는
+[Task 402 작업 로그](../work-logs/20260802-402-int21-2c-cost-measurement.md).
+
+보정 상수 자체에 대한 미확정 사항은 남습니다. 보정 시점과 지연 시점의 실행 backend가
 다르면(interpret ↔ AOT/DBT) 계수가 어긋나 실제 지연 길이가 틀어질 수 있습니다.
 
 ### 2. teardown 지연
@@ -177,12 +177,16 @@ overflow.
 
 ## Unresolved: what to do next
 
-1. **The `INT 21h AH=2Ch` delay routine is 95% of the census.** Three addresses
-   (`0x030D395B`, `0x030D394B`, `0x030D3997`) dominate; the game calls `AH=2Ch` roughly
-   6,000 times per second and every call is an exception round trip. Likely the dominant
-   cost behind the current ~25 FPS, but not confirmed by measurement. Separately, the same
-   routine calibrates a delay constant by counting calls for one second, so the constant can
-   drift if calibration and delay run on different execution backends.
+1. **[Resolved] The `INT 21h AH=2Ch` cost hypothesis was rejected in Task 402.** Reading
+   "95% of census samples" as a cost claim here was a category error: the census measures
+   only the single-step handler scope, itself 2.04% of wall clock. Measured against wall
+   clock, `AH=2Ch` is about 3.2-3.8%, capping any gain at 1.04x, and the routine is
+   self-calibrating so cost per call cancels anyway. The real cost centre is the port
+   `0x02A8` poll at 46-56% of wall, caused by `ReadJammaPort8` calling `GetAsyncKeyState`
+   up to ten times per port read. See the
+   [Task 402 work log](../work-logs/20260802-402-int21-2c-cost-measurement.md). What remains
+   open is the calibration constant itself, which can drift if calibration and delay run on
+   different execution backends.
 2. **Teardown stall.** An interrupted run made no progress past `glide_backend.Close()` for
    over five minutes. Task 401 only moved the census dump ahead of it so observations
    survive; the stall itself is untouched.

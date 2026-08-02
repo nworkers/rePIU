@@ -229,6 +229,14 @@ struct Win32PortIoObservation
     std::uint32_t output_count = 0;
     std::uint32_t handled_count = 0;
     std::uint32_t unhandled_count = 0;
+    // Task 403: decomposition of the JAMMA input read. Task 402 measured
+    // 16,000-29,000 cycles per port I/O call but left "how much of that is
+    // GetAsyncKeyState" unresolved, which is the premise any fix depends on.
+    // `jamma_scan_cycles` covers only the ReadJammaPort8 loop; `key_query_count`
+    // counts individual GetAsyncKeyState calls.
+    std::uint64_t jamma_scan_cycles = 0;
+    std::uint32_t jamma_scan_count = 0;
+    std::uint32_t key_query_count = 0;
     Win32PortIoTraceEntry trace[kWin32PortIoTraceCapacity];
 };
 

@@ -18,14 +18,19 @@ Tasks 396~401에서 `pumpit3`를 프로필 추가부터 렌더 루프까지 올�
 
 **다음 할 일 (우선순위 순):**
 
-1. **pumpit1/pumpit2 회귀 확인 (선결).** Tasks 398/399/401은 세 타이틀 공유 경로를
-   바꿨는데 pumpit3에서만 검증했습니다. 나머지 작업 전에 이것부터 확인합니다.
+1. **[완료] pumpit1/pumpit2 회귀 확인.** Task 402 후속 측정에서 두 타이틀 모두 45초를
+   크래시 없이 완주하고 각각 2,222 / 1,985 프레임을 그렸습니다. 회귀 없음.
 2. **화면 내용 검증.** 프레임은 나오지만 그려지는 내용이 맞는지 미확인입니다.
    texture upload가 27건(distinct 24)으로 적어 자산 로딩 진행도 확인이 필요합니다.
-3. **`INT 21h AH=2Ch` 비용 측정.** single-step census 표본의 약 95%가 게임 지연 루틴
-   세 주소입니다. 초당 약 6,000회 예외 왕복이 현재 25 FPS의 주범인지 wall clock 대비로
-   환산해 확정합니다. 절차는
-   [실행 정지 EIP census 가이드](../guides/execution-stall-eip-census.md).
+3. **포트 `0x02A8` 폴링 비용 (Task 402가 새로 지목).** wall의 약 46~56%입니다.
+   **pumpit3 고유 문제입니다** — 포트 접근이 초당 41,023회로 pumpit1(558회)의 73.6배이며,
+   호출당 비용은 세 타이틀이 비슷합니다(약 16,000~29,000 cycle). pumpit1/pumpit2의 지배
+   비용은 여전히 Glide gate(57.20% / 35.77%)입니다.
+   `ReadJammaPort8`이 포트 읽기마다 `GetAsyncKeyState`를 최대 10회 호출해 초당 약
+   410,000회 커널 왕복이 발생합니다. 게스트는 이 200회 읽기를 값이 아니라 지연 목적으로
+   실행하며, `AH=2Ch` 지연과 달리 자기 보정되지 않으므로 호출당 비용을 줄이면 wall time이
+   실제로 줍니다. ~~`INT 21h AH=2Ch` 비용 측정~~은 Task 402에서 **기각**됐습니다(약
+   3.2~3.8%, 상한 1.04배).
 4. **teardown 지연.** interrupted 실행이 `glide_backend.Close()` 이후 5분 넘게 멈추는
    것을 관측했습니다. Task 401은 census dump를 앞으로 옮겨 자료 손실만 막았습니다.
 
@@ -41,11 +46,16 @@ timeout exit. Nothing about the profile or the mount was wrong — every blocker
 gap (`INT 21h AH=2Ch`, `AH=2Ah`, the 16-bit `AH=35h` truncation, INT 8 chain recognition,
 and `INT 16h`), and no game code was modified.
 
-**Next, in order:** (1) check pumpit1/pumpit2 for regressions, since Tasks 398/399/401
-changed shared paths but were verified only on pumpit3; (2) verify what is actually drawn,
-including how far asset loading got given only 27 texture uploads; (3) measure whether the
-`INT 21h AH=2Ch` delay routine — about 95% of census samples — is the dominant cost behind
-~25 FPS; (4) investigate the teardown stall past `glide_backend.Close()`.
+**Next, in order:** (1) *done* — pumpit1 and pumpit2 both completed 45 seconds without
+crashing and rendered 2,222 and 1,985 frames, so Tasks 398/399/401 caused no regression on
+the shared paths; (2) verify what is actually drawn,
+including how far asset loading got given only 27 texture uploads; (3) attack the port `0x02A8` poll,
+which Task 402 measured at 46-56% of wall clock because `ReadJammaPort8` calls
+`GetAsyncKeyState` up to ten times per port read — a pumpit3-specific problem, since it
+touches the ports 41,023 times per second against pumpit1's 558 (73.6x) while per-call cost
+is comparable across titles, and pumpit1/pumpit2 remain Glide-gate dominated (the `INT 21h AH=2Ch` hypothesis was
+**rejected** there at 3.2-3.8%, a 1.04x ceiling); (4) investigate the teardown stall past
+`glide_backend.Close()`.
 
 The earlier axis — capturing the gameplay scene where FPS collapses (Tasks 364-368) —
 remains open; see the [capture guide](../guides/gameplay-scene-capture.md).
@@ -90,6 +100,8 @@ wall의 20.59%에 LFB 0회인데, 측정에 쓴 자동 장면은 setter 약 5.6%
 | `REPIU_GLIDE_SETTER_PHASE` | OFF | GL phase 분해(Task 364) |
 | `REPIU_TIMER_TICK_BACKLOG` | OFF | **성능 목적으로 켜지 말 것**(Task 366: -16.4%) |
 | `REPIU_AOT_DBT_SUPERBLOCK` | OFF | 렌더링 중단. 예외 없는 dispatch가 여기 묶여 있음 |
+| `REPIU_JAMMA_SNAPSHOT` | **ON** | 입력 스냅샷(Task 403). `0`으로 매 읽기 조회 복원 |
+| `REPIU_JAMMA_SNAPSHOT_US` | 500 | 스냅샷 갱신 주기(µs). 게스트 폴링 4.8ms의 1/10 |
 
 timer tick 전달 counter와 boundary opcode census는 **상시 ON**이며 동작을 바꾸지
 않습니다.
@@ -2284,3 +2296,43 @@ teardown stall itself is unresolved and is its own task.**
 `0x030D3997`) are about 95% of all samples and are all the `INT 21h AH=2Ch` delay routine.
 Roughly 6,000 exception round trips per second is likely the dominant cost behind the
 current ~25 FPS, but that has not been confirmed by measurement.
+
+## Task 403: JAMMA 입력 스냅샷 — 비용은 제거, 프레임은 미확정
+
+`GetAsyncKeyState`가 port I/O 비용의 99.21%임을 계측으로 확정하고, 갱신 주기를 500µs로
+제한한 입력 스냅샷을 도입했습니다. pumpit3 45초 각 6회(EEPROM 격리) A/B에서 key query는
+**14.2배** 줄고 port-io wall 비중은 22.40% → 2.75%가 됐습니다. pumpit1/pumpit2 회귀는
+없습니다(2,251 / 2,204 프레임).
+
+**프레임 개선은 확정하지 못했습니다.** 렌더 도달 실행만의 중앙값은 867 → 1,340이지만
+표본이 작고 결과가 0/약1,300으로 양극화되어 있으며, 특히 867이 여러 실행에서 정확히
+반복되어 장면 경계로 보입니다.
+
+**새 frontier: 렌더링 도달이 비결정적입니다.** 두 arm 모두 6회 중 2~3회가 45초 안에
+렌더링에 도달하지 못했습니다(스냅샷과 무관). 크래시 없이 정상 timeout하고 `progress`도
+증가하는데 `_GRBUFFERSWAP@4`에 도달하지 못합니다. **이것을 먼저 해소해야 프레임 기반
+성능 판정을 신뢰할 수 있습니다.**
+
+**측정 절차:** `eeprom.dat`는 추적되지 않는 영속 상태이므로 성능 비교는 반드시 고정
+fixture를 복사해 `REPIU_EEPROM_PATH`로 격리해야 합니다. 격리하지 않은 첫 A/B는
+무효였습니다.
+
+## Task 403: JAMMA input snapshot — cost removed, frames unresolved
+
+Measurement confirmed `GetAsyncKeyState` as 99.21% of the port I/O cost, and an input snapshot
+bounded to a 500 µs refresh was introduced. Across six 45-second pumpit3 runs per arm with the
+EEPROM isolated, key queries fell **14.2x** and the port-io wall share went from 22.40% to
+2.75%, with no regression on pumpit1 or pumpit2 (2,251 / 2,204 frames).
+
+**A frame improvement is not established.** The median among rendering runs moves 867 to 1,340,
+but the sample is small, outcomes polarise at 0 or ~1,300, and 867 recurs exactly across runs,
+which looks like a scene boundary.
+
+**New frontier: reaching rendering is nondeterministic.** In both arms, two to three of six runs
+never reached rendering in 45 seconds — independent of the snapshot. They time out cleanly with
+`progress` advancing but never call `_GRBUFFERSWAP@4`. **This must be resolved before any
+frame-based performance judgement can be trusted.**
+
+**Measurement procedure:** `eeprom.dat` is untracked persistent state, so performance comparisons
+must copy a fixed fixture per run and isolate it with `REPIU_EEPROM_PATH`. The first A/B without
+that isolation was invalid.

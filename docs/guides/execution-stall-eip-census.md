@@ -69,6 +69,13 @@ pumpit3 object 2의 delta는 `0x02FF4E00`입니다(guest = file + delta).
 - 어떤 주소가 census에 **있으면** 그 코드는 확실히 실행됐습니다.
 - 어떤 주소가 census에 **없다고** 실행되지 않았다고 단정할 수는 없습니다.
 
+**census의 `total_cycles`를 비용 근거로 쓰지 마십시오.** 이 값은 single-step 핸들러
+scope만 재며, 실제 실행에서 wall clock의 몇 퍼센트에 불과합니다(Task 402 측정에서
+2.04%). "census의 95%"는 "비용의 95%"가 아닙니다. 비용 판정에는
+`REPIU_EXECUTION_TIME_PROFILE`의 `Win32 execution time cycles ... guest-run` 대비 버킷
+비중을 쓰십시오. Task 401이 이 구분을 놓쳐 잘못된 대상을 지목했고 Task 402가
+정정했습니다.
+
 로그의 `single_step`과 `heartbeat` 비율로 census가 전체 경계의 몇 퍼센트를 덮는지
 먼저 확인하고 해석하십시오.
 
@@ -138,6 +145,13 @@ without trapping is under-represented. Therefore:
 
 - If an address **appears**, that code definitely ran.
 - If an address **does not appear**, you cannot conclude it did not run.
+
+**Never use the census `total_cycles` as a cost claim.** It measures only the single-step
+handler scope, which is a small fraction of wall clock (2.04% in the Task 402 measurement).
+"95% of the census" is not "95% of the cost". For cost, use
+`REPIU_EXECUTION_TIME_PROFILE` and compare buckets against
+`Win32 execution time cycles ... guest-run`. Task 401 missed this distinction and named the
+wrong target; Task 402 corrected it.
 
 Check the `single_step` versus `heartbeat` ratio in the log first to know what fraction of
 boundaries the census covers.
