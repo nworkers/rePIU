@@ -78,3 +78,4 @@ Status labels are **Confirmed**, **Inferred**, and **Unresolved**. See the linke
 * [AOT dynamic ���� ���� ��ǳ �м� / AOT dynamic stack exception storm](20260713-aot-dynamic-stack-exception-storm.md)
 
 * [pumpit2 CHD/ISO9660 mount 분석 / pumpit2 CHD/ISO9660 mount](pumpit2-chd-iso9660-mount.md)
+* [pumpit3 bring-up: 프로필 추가에서 렌더 루프까지 / pumpit3 bring-up](pumpit3-bring-up.md)

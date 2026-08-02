@@ -46,6 +46,7 @@
 #include "aot_runtime_dispatch.h"
 #include "instruction_emulation.h"
 #include "dpmi_mscdex_services.h"
+#include "bios_keyboard_services.h"
 #include "dos_int21_services.h"
 #include "guest_memory_access.h"
 #include "win32_thread_api.h"
@@ -640,7 +641,8 @@ bool DispatchGuestHleHandlers(CONTEXT* win32_context, ThreadContext* context)
                 (HandleTracedDosInterrupt21(win32_context, context) ||
                  HandleTracedDosInterrupt2F(win32_context, context) ||
                  HandleTracedDpmiInterrupt31(win32_context, context) ||
-                 HandleTracedMouseInterrupt33(win32_context, context))) return true;
+                 HandleTracedMouseInterrupt33(win32_context, context) ||
+                 HandleTracedBiosInterrupt16(win32_context, context))) return true;
             break;
         case 0xFAU: case 0xFBU:
             if (context->enable_privileged_trap_hle && HandlePrivilegedTrapInstruction(win32_context, context)) return true;
@@ -672,7 +674,8 @@ bool DispatchGuestHleHandlers(CONTEXT* win32_context, ThreadContext* context)
         (HandleTracedDosInterrupt21(win32_context, context) ||
          HandleTracedDosInterrupt2F(win32_context, context) ||
          HandleTracedDpmiInterrupt31(win32_context, context) ||
-         HandleTracedMouseInterrupt33(win32_context, context)))
+         HandleTracedMouseInterrupt33(win32_context, context) ||
+         HandleTracedBiosInterrupt16(win32_context, context)))
     {
         return true;
     }
@@ -1523,6 +1526,10 @@ bool HandleDosHleInstruction(CONTEXT* win32_context,
     if (instruction[0] == 0xCD && instruction[1] == 0x33)
     {
         return HandleMouseInterrupt33(win32_context, context);
+    }
+    if (instruction[0] == 0xCD && instruction[1] == 0x16)
+    {
+        return HandleBiosInterrupt16(win32_context, context);
     }
 
     if (instruction[0] == 0xCD)
@@ -3322,7 +3329,8 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         (HandleTracedDosInterrupt21(win32_context, context) ||
          HandleTracedDosInterrupt2F(win32_context, context) ||
          HandleTracedDpmiInterrupt31(win32_context, context) ||
-         HandleTracedMouseInterrupt33(win32_context, context)))
+         HandleTracedMouseInterrupt33(win32_context, context) ||
+         HandleTracedBiosInterrupt16(win32_context, context)))
     {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
@@ -3412,6 +3420,10 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         InjectPendingInterrupts(win32_context, context);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
+    // Task 401: nothing below handles a software interrupt, so an INT that
+    // reaches here is unsupported. Name it, since the DOS HLE fallback above --
+    // the only place that used to do so -- is off in the aot-dbt backend.
+    RecordUnsupportedTracedSoftwareInterrupt(win32_context, context);
     const bool hle_active = context->enable_dos_hle || context->enable_traced_dos_hle;
     if (hle_active &&
         exception_info->ExceptionRecord != nullptr &&
@@ -4296,6 +4308,16 @@ bool RunWin32ExecutionThread(
         {
             api.terminate_thread(thread, interruption_exit_code);
             WaitForSingleObject(thread, 5000U);
+        }
+
+        // Task 401: the guest thread has stopped, so the census is final here.
+        // Write it before Glide close, handler removal, and worker shutdown --
+        // a 45-second interrupted pumpit3 run was observed hanging in that
+        // sequence, which would otherwise discard the whole census.
+        if (context.single_step_hotspot_profile != nullptr)
+        {
+            WriteSingleStepHotspotDumpIfEnabled(
+                context.single_step_hotspot_profile.get(), nullptr, nullptr);
         }
 
         context.glide_backend.Close();

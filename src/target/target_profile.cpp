@@ -71,6 +71,22 @@ const std::vector<TargetProfile>& BuiltInTargetProfiles()
                 0x005D7000,
             },
         },
+        TargetProfile{
+            "pumpit3",
+            "Pump It Up The O.B.G: The 3rd Dance Floor (MAME CHD)",
+            std::filesystem::path(
+                "build/runtime_mounts/pumpit3/PIU/PIU.EXE"),
+            std::filesystem::path("build/runtime_mounts/pumpit3/PIU"),
+            std::filesystem::path("build/runtime_mounts/pumpit3"),
+            ExecutableFormatHint::kDos4gwLe,
+            "piu_common",
+            "pumpit3",
+            TargetRuntimeReservationHint{
+                true,
+                0x00010000,
+                0x005D7000,
+            },
+        },
     };
     return profiles;
 }

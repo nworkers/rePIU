@@ -1088,6 +1088,11 @@ void PrintExecutionAttempt(
         step_profile.total_cycles,
         step_profile.max_cycles);
     logger.info(
+        "Win32 single-step hotspot dump written/entries/path: {}/{}/{}",
+        step_profile.dump_written,
+        step_profile.dump_entry_count,
+        step_profile.dump_path);
+    logger.info(
         "Win32 single-step hotspot outcome count "
         "HLE/timer/native/TF: {}/{}/{}/{}",
         step_profile.outcome_counts[0],

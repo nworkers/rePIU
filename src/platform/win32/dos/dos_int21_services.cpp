@@ -243,6 +243,50 @@ void HandleDosGetCurrentDrive(CONTEXT* win32_context, ThreadContext* context)
     win32_context->EFlags &= ~1U;
 }
 
+// INT 21h AH=2Ah (Get System Date). Task 397: the guest's Watcom time()
+// calls date, time, then date again to detect a midnight rollover, so this
+// shares the host clock with HandleDosGetSystemTime.
+void HandleDosGetSystemDate(CONTEXT* win32_context, ThreadContext* context)
+{
+    (void)context;
+
+    SYSTEMTIME local_time = {};
+    GetLocalTime(&local_time);
+
+    const std::uint16_t month_day = static_cast<std::uint16_t>(
+        ((local_time.wMonth & 0xFFU) << 8) | (local_time.wDay & 0xFFU));
+
+    win32_context->Ecx =
+        (win32_context->Ecx & 0xFFFF0000U) | (local_time.wYear & 0xFFFFU);
+    win32_context->Edx = (win32_context->Edx & 0xFFFF0000U) | month_day;
+    win32_context->Eax = (win32_context->Eax & 0xFFFFFF00U) |
+        (local_time.wDayOfWeek & 0xFFU);
+    win32_context->EFlags &= ~1U;
+}
+
+// INT 21h AH=2Ch (Get System Time). Task 397: pumpit3 game code calibrates a
+// delay loop by counting how many of these it can issue while DH (seconds)
+// stays constant, so the reported clock must actually advance in real time.
+void HandleDosGetSystemTime(CONTEXT* win32_context, ThreadContext* context)
+{
+    (void)context;
+
+    SYSTEMTIME local_time = {};
+    GetLocalTime(&local_time);
+
+    const std::uint16_t hour_minute = static_cast<std::uint16_t>(
+        ((local_time.wHour & 0xFFU) << 8) | (local_time.wMinute & 0xFFU));
+    const std::uint16_t second_hundredth = static_cast<std::uint16_t>(
+        ((local_time.wSecond & 0xFFU) << 8) |
+        ((local_time.wMilliseconds / 10U) & 0xFFU));
+
+    // Real DOS writes only the 16-bit registers; the guest's Watcom
+    // _dos_gettime consumes the low halves alone (shl ecx,16 / mov cx,dx).
+    win32_context->Ecx = (win32_context->Ecx & 0xFFFF0000U) | hour_minute;
+    win32_context->Edx = (win32_context->Edx & 0xFFFF0000U) | second_hundredth;
+    win32_context->EFlags &= ~1U;
+}
+
 void RecordDosOpen(ThreadContext* context,
                    const std::string& guest_path,
                    const repiu::hle::DosResolvedPath& resolved,
@@ -1018,16 +1062,29 @@ void HandleDosGetInterruptVector(CONTEXT* win32_context,
 {
     const std::uint8_t vector = static_cast<std::uint8_t>(
         win32_context->Eax & 0xFFU);
+    // A DOS extender serves AH=35h from a 32-bit client out of the protected
+    // mode vector, the same table AH=25h writes and DPMI AX=0204 reads, so
+    // prefer that shadow and keep the real-mode one as the fallback.
+    const DpmiInterruptVectorShadow& dpmi_entry =
+        context->dpmi_interrupt_vectors[vector];
     const DosInterruptVectorShadow& entry =
         context->dos_interrupt_vectors[vector];
-    const std::uint16_t segment = entry.valid ? entry.segment : 0;
-    const std::uint16_t offset = entry.valid ? entry.offset : 0;
+    const std::uint16_t segment = dpmi_entry.valid
+        ? dpmi_entry.selector
+        : (entry.valid ? entry.segment : 0);
+    // Task 399: EBX carries the whole 32-bit offset, matching AH=25h storing
+    // all of EDX and AX=0204 returning all of EDX. Writing only the low half
+    // left the caller's stale high half in place, and pumpit3's Watcom
+    // get-vector wrapper (`mov eax, ebx`) saved that as the previous INT 8
+    // handler -- entering with EBX=0x0301F7BC it recorded 0x03010000.
+    const std::uint32_t offset = dpmi_entry.valid
+        ? dpmi_entry.offset
+        : (entry.valid ? entry.offset : 0U);
 
     context->guest_es = segment;
     win32_context->SegEs = segment;
     ReResolveAotSegmentOverrides(context);
-    win32_context->Ebx =
-        (win32_context->Ebx & 0xFFFF0000U) | offset;
+    win32_context->Ebx = offset;
     win32_context->EFlags &= ~1U;
 }
 
@@ -1106,6 +1163,14 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
         case 0x25:
             RecordHandledDosInterrupt(context, 0x21, ax);
             HandleDosSetInterruptVector(win32_context, context);
+            break;
+        case 0x2A:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            HandleDosGetSystemDate(win32_context, context);
+            break;
+        case 0x2C:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            HandleDosGetSystemTime(win32_context, context);
             break;
         case 0x35:
             RecordHandledDosInterrupt(context, 0x21, ax);

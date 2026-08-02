@@ -2,6 +2,8 @@
 
 #include <array>
 #include <cstdint>
+#include <filesystem>
+#include <string>
 #include <string_view>
 
 namespace repiu::platform::win32
@@ -87,6 +89,12 @@ struct Win32SingleStepHotspotProfile
         stage_cycles = {};
     std::array<Win32SingleStepHotspotEntry,
                kWin32SingleStepHotspotCapacity> entries = {};
+    // Task 401: teardown can hang after the guest thread stops, so the dump is
+    // written as early as teardown allows and reported again later. These keep
+    // the second call from rewriting the file and let it report the same
+    // numbers.
+    bool dump_written = false;
+    std::uint32_t dump_entry_count = 0;
 };
 
 struct Win32SingleStepHotspotSample
@@ -129,6 +137,13 @@ struct Win32SingleStepHotspotProfileSnapshot
                kWin32SingleStepHotspotReportCapacity> count_hotspots = {};
     std::array<Win32SingleStepHotspotSample,
                kWin32SingleStepHotspotReportCapacity> cycle_hotspots = {};
+    // Task 400: the top-32 lists answer "where is time spent", not "what else
+    // ran at all". A stall diagnosis needs the second question, and a routine
+    // executing two orders of magnitude less often than the hot loop cannot
+    // reach a 32-entry list. The full-table dump carries every occupied entry.
+    bool dump_written = false;
+    std::uint32_t dump_entry_count = 0;
+    std::string dump_path;
 };
 
 // Per-sample stage totals collected by one SingleStepHotspotCycleScope before
@@ -151,6 +166,27 @@ void RecordSingleStepHotspot(
 
 Win32SingleStepHotspotProfileSnapshot SnapshotSingleStepHotspotProfile(
     const Win32SingleStepHotspotProfile& profile);
+
+// `REPIU_SINGLE_STEP_HOTSPOT_DUMP`: unset or empty disables the dump, "1"
+// selects build/single_step_hotspot.txt, anything else is used as the path.
+std::filesystem::path ResolveSingleStepHotspotDumpPath(
+    std::string_view setting);
+
+std::filesystem::path SingleStepHotspotDumpPath();
+
+// Writes every occupied table entry, ordered by sample count, so a stalled run
+// can be read as a complete execution census rather than a top-N ranking.
+bool WriteSingleStepHotspotDump(
+    const std::filesystem::path& path,
+    Win32SingleStepHotspotProfile* profile,
+    std::uint32_t* written_entry_count);
+
+// Resolves the configured path and writes once. Safe to call from several
+// teardown points; only the first call touches the file.
+bool WriteSingleStepHotspotDumpIfEnabled(
+    Win32SingleStepHotspotProfile* profile,
+    std::uint32_t* written_entry_count,
+    std::string* resolved_path);
 
 class SingleStepHotspotCycleScope
 {

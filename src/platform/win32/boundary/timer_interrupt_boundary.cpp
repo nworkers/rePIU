@@ -153,8 +153,13 @@ bool HandleTimerInterruptChainBoundary(_CONTEXT* win32_context,
 
     const std::uint32_t target_offset = ReadLittleEndian32(pointer);
     const std::uint16_t target_selector = ReadLittleEndian16(pointer + 4);
-    if (target_offset != 0U || target_selector == 0U ||
-        target_selector != static_cast<std::uint16_t>(win32_context->SegDs))
+    // The saved "previous handler" only chains to real code when its selector is
+    // the guest code selector. What the guest actually saved for a vector it
+    // never installed is whatever AH=35h reported, and that shape differs per
+    // title: pumpit1 stored DS:00000000, while pumpit3's wrapper widens EBX to
+    // 32 bits and stores 0000:<stale high half>. Neither designates executable
+    // code, so match on the selector alone rather than on a per-title offset.
+    if (target_selector == static_cast<std::uint16_t>(win32_context->SegCs))
     {
         return false;
     }

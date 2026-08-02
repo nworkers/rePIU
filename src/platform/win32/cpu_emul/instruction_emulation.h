@@ -210,6 +210,14 @@ bool HandleTracedDosInterrupt2F(CONTEXT* win32_context,
 bool HandleTracedDpmiInterrupt31(CONTEXT* win32_context,
                                  ThreadContext* context);
 
+bool HandleTracedBiosInterrupt16(CONTEXT* win32_context,
+                                 ThreadContext* context);
+
+// Names an unrecognised software interrupt in hle_message so a backend running
+// without the DOS HLE fallback still reports which vector stopped it.
+void RecordUnsupportedTracedSoftwareInterrupt(CONTEXT* win32_context,
+                                              ThreadContext* context);
+
 bool HandleTracedMouseInterrupt33(CONTEXT* win32_context,
                                   ThreadContext* context);
 

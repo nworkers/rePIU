@@ -6,8 +6,49 @@
 
 ## 다음 세션 인수인계 / Session handoff
 
-**현재 대기 중인 것: 사용자가 FPS 급락 gameplay 장면을 캡처합니다.**
-절차는 [gameplay 장면 캡처 가이드](../guides/gameplay-scene-capture.md)에 있습니다.
+### 2026-08-02 현재: pumpit3가 렌더 루프에 진입했습니다
+
+Tasks 396~401에서 `pumpit3`를 프로필 추가부터 렌더 루프까지 올렸습니다. 전체 경위와
+근거는 [pumpit3 bring-up](pumpit3-bring-up.md)에 정리했습니다. 45초 실행 기준
+`_GRBUFFERSWAP@4` 1,140회(약 25 FPS), 창 `1/640x480`, MSCDEX 65트랙, 정상 timeout 종료.
+
+막고 있던 것은 프로필이나 mount가 아니라 **전부 HLE 공백**이었습니다: `INT 21h AH=2Ch`,
+`AH=2Ah`, `AH=35h`의 16비트 절단, INT 8 체인 인식 조건, `INT 16h`. 게임 코드는 수정하지
+않았습니다.
+
+**다음 할 일 (우선순위 순):**
+
+1. **pumpit1/pumpit2 회귀 확인 (선결).** Tasks 398/399/401은 세 타이틀 공유 경로를
+   바꿨는데 pumpit3에서만 검증했습니다. 나머지 작업 전에 이것부터 확인합니다.
+2. **화면 내용 검증.** 프레임은 나오지만 그려지는 내용이 맞는지 미확인입니다.
+   texture upload가 27건(distinct 24)으로 적어 자산 로딩 진행도 확인이 필요합니다.
+3. **`INT 21h AH=2Ch` 비용 측정.** single-step census 표본의 약 95%가 게임 지연 루틴
+   세 주소입니다. 초당 약 6,000회 예외 왕복이 현재 25 FPS의 주범인지 wall clock 대비로
+   환산해 확정합니다. 절차는
+   [실행 정지 EIP census 가이드](../guides/execution-stall-eip-census.md).
+4. **teardown 지연.** interrupted 실행이 `glide_backend.Close()` 이후 5분 넘게 멈추는
+   것을 관측했습니다. Task 401은 census dump를 앞으로 옮겨 자료 손실만 막았습니다.
+
+**보류 중이던 기존 축:** FPS 급락 gameplay 장면 캡처(Tasks 364~368 후속)는 그대로
+남아 있습니다. 절차는 [gameplay 장면 캡처 가이드](../guides/gameplay-scene-capture.md).
+
+### As of 2026-08-02: pumpit3 reaches its render loop
+
+Tasks 396-401 took `pumpit3` from a new profile to a running render loop; the full account
+is in [pumpit3 bring-up](pumpit3-bring-up.md). A 45-second run produces 1,140
+`_GRBUFFERSWAP@4` calls (~25 FPS), one 640x480 window, MSCDEX with 65 tracks, and a clean
+timeout exit. Nothing about the profile or the mount was wrong — every blocker was an HLE
+gap (`INT 21h AH=2Ch`, `AH=2Ah`, the 16-bit `AH=35h` truncation, INT 8 chain recognition,
+and `INT 16h`), and no game code was modified.
+
+**Next, in order:** (1) check pumpit1/pumpit2 for regressions, since Tasks 398/399/401
+changed shared paths but were verified only on pumpit3; (2) verify what is actually drawn,
+including how far asset loading got given only 27 texture uploads; (3) measure whether the
+`INT 21h AH=2Ch` delay routine — about 95% of census samples — is the dominant cost behind
+~25 FPS; (4) investigate the teardown stall past `glide_backend.Close()`.
+
+The earlier axis — capturing the gameplay scene where FPS collapses (Tasks 364-368) —
+remains open; see the [capture guide](../guides/gameplay-scene-capture.md).
 
 ### Tasks 364~368에서 확정된 것 한 눈에
 
@@ -1989,3 +2030,257 @@ The full Release AOT probe passed. A three-second pumpit2 AOT-DBT smoke emitted 
 and ran until timeout, while pumpit1 emitted zero sites and retained its direct path. The
 pumpit2 image-build frontier is therefore closed. Long-run gameplay, CD-DA transitions,
 input, and rendering remain separate from the pumpit1 Music Select performance frontier.
+## Task 397 보조 frontier: pumpit3 INT 21h AH=2Ch
+
+pumpit3의 첫 실행 중단은 프로필이나 mount 문제가 아니라 **미구현 DOS 서비스**였습니다.
+Glide direct dispatch `172/172` 이후 `0x030D3941`에서 `unhandled HLE trap candidate`로
+멈췄고, 로그의 32바이트 window는 `PIU/PIU.EXE` offset `0xDEB31`과 바이트 단위로 일치해
+faulting 명령이 `int 21h`(AH=2Ch, Get System Time)임을 확정했습니다.
+
+`0xDEB3B`의 게스트 루틴은 `AH=2Ch`로 초가 바뀔 때까지 대기한 뒤 1초 동안 호출 횟수를 세어
+`0x0041CD2C`에 저장하는 delay-loop 보정 루틴입니다. pumpit1/pumpit2에는 같은 패턴이
+호출되지 않는 Watcom 라이브러리 영역에만 있었으므로 지금까지 드러나지 않았습니다.
+
+`HandleDosGetSystemTime`을 추가하고 예외 trap 경로와 traced 경로 양쪽 dispatch에
+`case 0x2C`를 넣었습니다. 실행 backend에 따라 dispatch 표가 갈리므로 한쪽만 고치면 같은
+중단이 재현됩니다. 상세는
+[`interrupts-and-port-io.md`](interrupts-and-port-io.md) Task 397 항목에 있습니다.
+
+**미확정:** 보정 계수가 `INT 21h` 왕복 비용에 의존하므로, 보정과 지연의 실행 backend가
+다르면 지연 길이가 어긋날 수 있습니다. 이 지점 이후의 pumpit3 frontier도 아직
+관측되지 않았습니다.
+
+## Task 397 supplemental frontier: pumpit3 INT 21h AH=2Ch
+
+The first pumpit3 execution stop was a **missing DOS service**, not a profile or mount
+problem. After Glide direct dispatch reached `172/172`, execution halted at
+`0x030D3941` with `unhandled HLE trap candidate`. The 32-byte window in the log matches
+`PIU/PIU.EXE` offset `0xDEB31` byte for byte, identifying the faulting instruction as
+`int 21h` with AH=2Ch (Get System Time).
+
+The guest routine at `0xDEB3B` waits for the seconds field to change, then counts AH=2Ch
+calls for one second and stores the result at `0x0041CD2C` — a delay-loop calibration.
+pumpit1 and pumpit2 carry the same pattern only inside an uncalled Watcom library region,
+which is why it never surfaced before.
+
+`HandleDosGetSystemTime` was added, with `case 0x2C` placed in both the exception-trap and
+traced dispatch tables; the tables diverge by execution backend, so fixing one alone
+reproduces the same stop. Details are in the Task 397 section of
+[`interrupts-and-port-io.md`](interrupts-and-port-io.md).
+
+**Unresolved:** the calibration constant depends on `INT 21h` round-trip cost, so delay
+lengths can drift when calibration and delay run on different backends. The pumpit3
+frontier beyond this point is also still unobserved.
+
+## Task 397 2차: AH=2Ah, 그리고 미구현 서비스가 스스로 이름을 말하게
+
+AH=2Ch 구현 후 실행은 `2C:160022`를 처리하고 `0x030D3941`을 통과했으나, 같은 Watcom
+루틴 안의 `AH=2Ah`(Get Date)에서 `0x030D2CA8`에 다시 멈췄습니다. `0xDDE9D`는
+`2Ah` → `2Ch` → `2Ah`를 호출하는 `__getdt`이고 유일한 호출자는 `time()`(`0xDB20A`)이므로
+두 함수는 짝입니다. 1차에서 "AH=2Ah는 호출되지 않는다"고 적은 것은 pumpit1/pumpit2 기준
+추론이었고 pumpit3에는 성립하지 않았습니다.
+
+두 번 모두 로그가 함수 번호를 말하지 않아 바이트 window를 원본과 대조해야 했습니다.
+`aot-dbt`는 `enable_dos_hle`가 꺼져 있어 메시지를 남기는 `HandleDosInterrupt21`의
+`default`에 도달하지 않고 traced 경로의 조용한 `default`로 끝나기 때문입니다. traced
+`default`에도 `unsupported DOS INT 21h AH=0xNN`을 기록하도록 했으므로, 다음 미구현
+서비스는 로그 한 줄로 식별됩니다.
+
+**미확정:** AH=2Ah 이후 pumpit3 frontier는 아직 관측되지 않았습니다.
+
+## Task 397 round two: AH=2Ah, and making missing services name themselves
+
+With AH=2Ch in place the run serviced `2C:160022` and passed `0x030D3941`, then stopped at
+`0x030D2CA8` on `AH=2Ah` (Get Date) inside the same Watcom routine. `0xDDE9D` is `__getdt`,
+calling `2Ah`, `2Ch`, `2Ah`, and its only caller is `time()` at `0xDB20A`, so the two are a
+pair. The first-round claim that AH=2Ah was never called was an inference from
+pumpit1/pumpit2 that does not hold for pumpit3.
+
+Neither log named the function, forcing byte-window comparison against the original
+executable: `aot-dbt` runs with `enable_dos_hle` off, so it never reaches the
+message-recording `default` in `HandleDosInterrupt21` and ends at the silent traced
+`default`. That branch now records `unsupported DOS INT 21h AH=0xNN`, so the next missing
+service is identifiable from one log line.
+
+**Unresolved:** the pumpit3 frontier beyond AH=2Ah has not been observed yet.
+
+## Task 398: pumpit3 frontier — INT 8 체인 far call
+
+Task 397 이후 pumpit3는 파일 I/O(열기 5, 읽기 12, `STAGE.CFG`), 메모리 resize 59회,
+Glide 게이트 51회, `640x480` 창 생성까지 도달했습니다. 새 정지 지점은 `0x0301F827`,
+게임 INT 8 ISR 안에서 이전 핸들러로 체인하는 `pushf` + `call far`였습니다.
+
+`HandleTimerInterruptChainBoundary`는 이미 이 관용구를 처리하지만 인식 조건이
+pumpit1이 저장한 `002B:00000000` 형태에 맞춰져 있었고, pumpit3는 `0000:03010000`을
+저장합니다. 조건을 `target_selector != CS`(= 실행 가능한 코드가 아님)로 교체했습니다.
+
+이 과정에서 `HandleDosGetInterruptVector`가 `EBX` 하위 16비트만 기록해 상위 절반 쓰레기
+값을 게스트에 돌려주는 **별개 결함**을 확인했습니다. `AH=25h`가 32비트 전체를 저장하는
+것과 비대칭이며, 세 타이틀 공유 경로이므로 별도 Task로 남겼습니다.
+
+**미확정:** 이 지점 이후 pumpit3 frontier는 아직 관측되지 않았습니다.
+
+## Task 398: pumpit3 frontier — the INT 8 chain far call
+
+After Task 397, pumpit3 reached file I/O (5 opens, 12 reads, `STAGE.CFG`), 59 memory
+resizes, 51 Glide gate entries, and a `640x480` window. The new stop was `0x0301F827`, the
+`pushf` + `call far` that chains to the previous handler inside the game's INT 8 ISR.
+
+`HandleTimerInterruptChainBoundary` already handles the idiom, but its condition was shaped
+around pumpit1's saved `002B:00000000`, while pumpit3 saves `0000:03010000`. The condition
+is now `target_selector != CS` — that is, the pointer does not designate executable code.
+
+Along the way this confirmed a **separate defect**: `HandleDosGetInterruptVector` writes only
+the low 16 bits of `EBX` and hands the guest a stale high half, asymmetric with `AH=25h`
+storing the full 32 bits. It is a three-title shared path and was left to its own task.
+
+**Unresolved:** the pumpit3 frontier beyond this point has not been observed.
+
+## Task 399: pumpit3 frontier — 크래시 소멸, 진행 정지로 이동
+
+**확인됨 (Task 398 검증):** `Win32 INT 8 chain HLE count/source/pointer/target`이
+`5/0x0301F827/0x0343ED08/0x0000002B:0x03010000`을 기록했습니다. 체인 인식이 동작했고
+`0x0301F827` 크래시는 소멸했습니다. 실행은 66초까지 종료 없이 계속됐으며 사용자가
+직접 종료했습니다(`minimal execution stopped by SDL exit request`).
+
+**확인됨 (Task 399 수정):** 위 target offset `0x03010000`은 `AH=35h`의 16비트 절단이
+만든 값이었습니다. 32비트로 수정했습니다. 상세는
+[`interrupts-and-port-io.md`](interrupts-and-port-io.md) Task 399 항목 참조.
+
+**확인됨 (새 frontier = 진행 정지):** 크래시는 없지만 게임이 진행하지 않습니다.
+
+- 약 5초부터 66초까지 `last_eip`는 항상 `0x0301DB1F`~`0x0301DB2A` 범위였고
+  `progress`는 `7591`에 고정됐습니다.
+- 해당 구간은 입력 폴링 루틴 `0x0301DB10`입니다:
+  `mov ecx,0x2A8` 뒤 `inc ebx / sub eax,eax / in ax,dx / cmp ebx,0xC8 / jl`로 포트
+  `0x02A8`을 200회 읽는 I/O 지연 루프이며, 읽은 값은 매번 버려집니다. 이어서
+  `[0x030F9028]` 카운터를 4로 나눈 나머지로 `0x0301DB4D`, `0x0301DF8E`, `0x0301E3D3`,
+  `0x0301E816` 중 하나로 분기합니다. 각 상태는 `0x0343EC6C/0x0343EC6E`의 하위 2비트를
+  갱신해 포트 `0x02A4`/`0x02A6`에 strobe를 씁니다 — 발판 센서 뱅크 멀티플렉싱입니다.
+- `0x0301DB10`의 유일한 호출자는 `0x03010BCF`이며, 그 함수는 `0x093A30/34/38` 카운터
+  3개를 증가시킨 뒤 폴링을 호출하는 주기적 서비스 루틴입니다.
+- Glide 게이트는 `#51 _GRTEXDOWNLOADMIPMAPLEVEL@32`에서 멈췄고 `_GRBUFFERSWAP`은 한
+  번도 호출되지 않았습니다. 즉 렌더 루프에 진입하지 못했습니다.
+
+**미확정:** 게임이 무엇을 기다리는지. `last_eip` 단일 샘플만으로는 폴링 루틴이 주기
+서비스로 정상 호출되는 것인지, 바깥 루프가 조건을 기다리며 갇힌 것인지 구분되지
+않습니다. 다음 관측은 이 구간의 EIP 히스토그램 또는 `0x03010BCF` 호출자 체인 캡처가
+필요합니다.
+
+## Task 399: pumpit3 frontier — the crash is gone; the frontier is now a stall
+
+**Confirmed (Task 398 verification):**
+`Win32 INT 8 chain HLE count/source/pointer/target` recorded
+`5/0x0301F827/0x0343ED08/0x0000002B:0x03010000`. Chain recognition worked and the
+`0x0301F827` crash is gone. The run continued for 66 seconds without terminating and was
+stopped by the user (`minimal execution stopped by SDL exit request`).
+
+**Confirmed (Task 399 fix):** the `0x03010000` in that target came from the 16-bit
+truncation in `AH=35h`, now fixed to 32 bits. See the Task 399 section of
+[`interrupts-and-port-io.md`](interrupts-and-port-io.md).
+
+**Confirmed (new frontier = stall):** there is no crash, but the game does not advance.
+
+- From about 5 s to 66 s, `last_eip` was always within `0x0301DB1F`-`0x0301DB2A` and
+  `progress` stayed at `7591`.
+- That range is the input polling routine at `0x0301DB10`: after `mov ecx,0x2A8` it runs
+  `inc ebx / sub eax,eax / in ax,dx / cmp ebx,0xC8 / jl`, reading port `0x02A8` 200 times as
+  an I/O delay and discarding every value, then dispatches on `[0x030F9028] mod 4` to
+  `0x0301DB4D`, `0x0301DF8E`, `0x0301E3D3`, or `0x0301E816`. Each state updates the low two
+  bits of `0x0343EC6C`/`0x0343EC6E` and strobes ports `0x02A4`/`0x02A6` — sensor-bank
+  multiplexing.
+- The only caller of `0x0301DB10` is `0x03010BCF`, a periodic service routine that
+  increments three counters at `0x093A30/34/38` and then polls.
+- Glide gates stopped at `#51 _GRTEXDOWNLOADMIPMAPLEVEL@32` and `_GRBUFFERSWAP` was never
+  called, so the render loop was never entered.
+
+**Unresolved:** what the game is waiting for. A single `last_eip` sample cannot separate
+"the polling routine is being serviced normally" from "an outer loop is stuck waiting on a
+condition". The next observation needs an EIP histogram over this window or a caller-chain
+capture at `0x03010BCF`.
+
+## Task 400: 정지 판정을 위한 EIP census 계측
+
+Task 399가 남긴 pumpit3 진행 정지를 판정하기 위해 single-step hotspot profile의 전체
+표를 파일로 남기는 계측을 추가했습니다. `REPIU_SINGLE_STEP_HOTSPOT_PROFILE`은 이미
+있었지만 로그 출력이 count/cycle 상위 32개뿐이라, 240Hz로 도는 바깥 루프가 초당 수만
+표본을 만드는 폴링 루틴에 가려 목록에 들어갈 수 없었습니다. 표 용량은 8,192개이므로
+데이터는 이미 있었고 출력만 잘려 있었습니다.
+
+`REPIU_SINGLE_STEP_HOTSPOT_DUMP`로 켜면 점유된 모든 항목을 표본 수 내림차순으로
+기록합니다. 절차와 판정 기준은
+[실행 정지 EIP census 가이드](../guides/execution-stall-eip-census.md)에 있습니다.
+
+**한계:** 표본은 single-step 경계에서만 남으므로 AOT cache 내부 실행은 과소 대표됩니다.
+census에 있는 주소는 확실히 실행됐지만, 없는 주소가 실행되지 않았다고 단정할 수는
+없습니다.
+
+**다음:** 가이드 절차로 얻은 dump로 폴링 루틴 밖 실행 여부를 판정합니다.
+
+## Task 400: EIP census instrumentation for the stall
+
+To judge the pumpit3 stall left by Task 399, the full single-step hotspot table can now be
+written to a file. `REPIU_SINGLE_STEP_HOTSPOT_PROFILE` already existed, but the log printed
+only the top 32 by count and by cycles, and an outer loop running at 240 Hz cannot reach
+those lists behind a polling routine producing tens of thousands of samples per second. The
+table holds 8,192 entries, so the data was already there — only the reporting was truncated.
+
+`REPIU_SINGLE_STEP_HOTSPOT_DUMP` writes every occupied entry ordered by sample count. The
+procedure and decision criteria are in the
+[execution-stall EIP census guide](../guides/execution-stall-eip-census.md).
+
+**Limit:** samples come only from single-step boundaries, so AOT-cache execution is
+under-represented. An address present definitely ran; an absent address cannot be declared
+unreached.
+
+**Next:** use the dump from that procedure to judge whether execution leaves the polling
+routine.
+
+## Task 401: pumpit3가 렌더 루프에 진입 [정지 해소]
+
+**확인됨 (Task 399가 정지를 해소):** 프로파일러를 끈 대조 실행이 켠 실행과 같은 지점에
+도달하므로, 사용자 13:37 실행의 폴링 정지를 푼 것은 계측 오버헤드가 아니라 Task 399의
+`AH=35h` 32비트 수정입니다. 두 실행 모두 chain target이 `0x0000002B:0x00000000`입니다.
+
+**확인됨 (새 정지 = INT 16h):** `0x03011537`에서 `AH=12h` → `AH=11h` → `AH=10h` 순의
+키보드 조회 루틴이 미구현 `INT 16h`를 호출했습니다. 구현 후 소멸했습니다.
+
+**확인됨 (렌더 루프 진입):** 45초 직접 실행에서 `_GRBUFFERSWAP@4`가 **1,140회** 호출돼
+약 25 FPS로 프레임을 그렸습니다. 이전까지 이 ordinal은 한 번도 호출되지 않았습니다.
+창 `1/640x480`, texture uploads/distinct `27/24`, INT 8 chain 696회,
+MSCDEX 65트랙 사용 가능, 종료 사유 `minimal execution attempt timed out`.
+
+**확인됨 (teardown 지연):** 45초 interrupted 실행에서 `glide_backend.Close()` 이후
+teardown이 5분 넘게 진행되지 않는 것을 관측했습니다. Task 400 dump가 그 뒤에 있어
+census를 통째로 잃었으므로, dump를 게스트 스레드 정지 직후로 옮겼습니다. **teardown
+지연 자체는 미해결이며 별도 과제입니다.**
+
+**미확정 (다음 후보):** census 상위 3개(`0x030D395B`, `0x030D394B`, `0x030D3997`)가 전체
+표본의 약 95%이며 모두 `INT 21h AH=2Ch` 지연 루틴입니다. 초당 약 6,000회 예외 왕복이
+현재 약 25 FPS의 주된 비용일 가능성이 높지만 측정으로 확정하지 않았습니다.
+
+## Task 401: pumpit3 enters its render loop [stall cleared]
+
+**Confirmed (Task 399 cleared the stall):** a control run with profiling disabled reached
+the same point as the profiled run, so what unblocked the 13:37 polling stall was the Task
+399 `AH=35h` 32-bit fix, not instrumentation overhead. Both runs show the chain target as
+`0x0000002B:0x00000000`.
+
+**Confirmed (new stop = INT 16h):** at `0x03011537`, a keyboard query routine calling
+`AH=12h`, `AH=11h`, then `AH=10h` reached the unimplemented `INT 16h`. Implementing it
+removed the stop.
+
+**Confirmed (render loop reached):** in a direct 45-second run, `_GRBUFFERSWAP@4` was called
+**1,140 times**, roughly 25 FPS. That ordinal had never been called before. Window
+`1/640x480`, texture uploads/distinct `27/24`, 696 INT 8 chains, MSCDEX available with 65
+tracks, ending with `minimal execution attempt timed out`.
+
+**Confirmed (teardown stall):** a 45-second interrupted run made no progress past
+`glide_backend.Close()` for over five minutes. The Task 400 dump sat behind it and the whole
+census was lost, so the dump now runs immediately after the guest thread stops. **The
+teardown stall itself is unresolved and is its own task.**
+
+**Unresolved (next candidate):** the top three census entries (`0x030D395B`, `0x030D394B`,
+`0x030D3997`) are about 95% of all samples and are all the `INT 21h AH=2Ch` delay routine.
+Roughly 6,000 exception round trips per second is likely the dominant cost behind the
+current ~25 FPS, but that has not been confirmed by measurement.

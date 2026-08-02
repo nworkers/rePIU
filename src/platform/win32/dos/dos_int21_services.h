@@ -38,6 +38,10 @@ bool HandleDosGetCurrentDirectory(CONTEXT* win32_context,
 
 void HandleDosGetCurrentDrive(CONTEXT* win32_context, ThreadContext* context);
 
+void HandleDosGetSystemDate(CONTEXT* win32_context, ThreadContext* context);
+
+void HandleDosGetSystemTime(CONTEXT* win32_context, ThreadContext* context);
+
 void RecordDosOpen(ThreadContext* context,
                    const std::string& guest_path,
                    const repiu::hle::DosResolvedPath& resolved,

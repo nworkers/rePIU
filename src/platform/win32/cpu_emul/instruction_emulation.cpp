@@ -1,6 +1,7 @@
 #include "instruction_emulation.h"
 #include "execution_internal.h"
 #include "guest_memory_access.h"
+#include "bios_keyboard_services.h"
 #include "dos_int21_services.h"
 #include "dpmi_mscdex_services.h"
 #include "aot_runtime_dispatch.h"
@@ -2742,6 +2743,16 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
             HandleDosSetInterruptVector(win32_context, context);
             win32_context->Eip += 2;
             return true;
+        case 0x2A:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            HandleDosGetSystemDate(win32_context, context);
+            win32_context->Eip += 2;
+            return true;
+        case 0x2C:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            HandleDosGetSystemTime(win32_context, context);
+            win32_context->Eip += 2;
+            return true;
         case 0x35:
             RecordHandledDosInterrupt(context, 0x21, ax);
             HandleDosGetInterruptVector(win32_context, context);
@@ -2847,8 +2858,72 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
             win32_context->Eip += 2;
             return true;
         default:
+        {
+            // Task 397: name the function on the traced path too. Backends that
+            // run with enable_dos_hle off never reach HandleDosInterrupt21's
+            // default branch, so an unimplemented service used to surface only
+            // as a generic "unhandled HLE trap candidate" and had to be
+            // identified by matching the logged byte window against the
+            // original executable.
+            std::ostringstream stream;
+            stream << "unsupported DOS INT 21h AH=0x"
+                   << std::hex << static_cast<unsigned>(ah);
+            context->hle_message = stream.str();
             return false;
+        }
     }
+}
+
+bool HandleTracedBiosInterrupt16(CONTEXT* win32_context,
+                                 ThreadContext* context)
+{
+    if (win32_context == nullptr || context == nullptr ||
+        !IsGuestRangeReadable(
+            context,
+            reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(win32_context->Eip)),
+            2U))
+    {
+        return false;
+    }
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0xCD || instruction[1] != 0x16)
+    {
+        return false;
+    }
+
+    return HandleBiosInterrupt16(win32_context, context);
+}
+
+void RecordUnsupportedTracedSoftwareInterrupt(CONTEXT* win32_context,
+                                              ThreadContext* context)
+{
+    // Task 401: backends running with enable_dos_hle off never reach
+    // HandleDosHleInstruction, which is where an unrecognised INT vector used
+    // to be named. Both pumpit3 stops so far -- INT 21h AH=2Ah and INT 16h --
+    // had to be identified by matching the logged byte window against the
+    // original executable because of that.
+    if (win32_context == nullptr || context == nullptr ||
+        !IsGuestRangeReadable(
+            context,
+            reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(win32_context->Eip)),
+            2U))
+    {
+        return;
+    }
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    if (instruction[0] != 0xCD || !context->hle_message.empty())
+    {
+        return;
+    }
+
+    std::ostringstream stream;
+    stream << "unsupported software interrupt 0x"
+           << std::hex << static_cast<unsigned>(instruction[1]);
+    context->hle_message = stream.str();
 }
 
 bool HandleTracedDosInterrupt2F(CONTEXT* win32_context,

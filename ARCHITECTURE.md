@@ -48,7 +48,7 @@ The first implementation target is a non-executing analysis tool for `MASTER\PIU
 
 예정된 주요 모듈:
 
-* `TargetRegistry`: 게임 타깃과 버전 선택. 현재 단계에서는 정적 C++ 등록 구조로 `piu_1st`를 제공한다.
+* `TargetRegistry`: 게임 타깃과 버전 선택. 현재 단계에서는 정적 C++ 등록 구조로 `piu_1st`, `pumpit1`, `pumpit2`, `pumpit3`을 제공한다.
 * `TargetProfile`: 실행 파일 경로, 작업 디렉터리, 자산 루트, 포맷 힌트, HLE 프로파일 id, 버전별 메타데이터
 * `HleProfileRegistry`: target이 참조하는 HLE 프로파일 선택. 현재 단계에서는 정적 C++ 등록 구조로 `piu_common`을 제공한다.
 * `HleProfile`: target이 요구하는 DOS/DPMI/하드웨어 HLE 서비스 범위

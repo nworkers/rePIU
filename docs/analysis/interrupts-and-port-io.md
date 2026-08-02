@@ -18,7 +18,7 @@ flowchart TD
 
 ## 확인된 software interrupt
 
-* `INT 21h`: DOS version, path, file, IOCTL, resize, vector service
+* `INT 21h`: DOS version, path, file, IOCTL, resize, vector, system time service
 * `INT 2Fh AX=1686h`: protected-mode/DPMI 환경 확인 경로
 * `INT 31h AX=0400h`: DPMI version/capability 확인 경로
 * `INT 33h AX=0000h`: mouse driver reset/presence 확인
@@ -422,3 +422,212 @@ above is unlikely to be a principal cause of step-to-music drift; the loss stays
 confirmed fact but rhythm accuracy drops in priority. Effects on other
 `INT 8`-driven items — input polling cadence, animation, internal timeouts — remain
 unmeasured. This rests on user observation and was not re-measured in Task 366.
+
+## 2026-08-02 Task 397: INT 21h AH=2Ch가 pumpit3를 멈춘 지점
+
+**확인됨 (정지 지점):** `pumpit3` 실행은 Glide direct dispatch `172/172` 이후
+`0x030D3941`에서 `unhandled HLE trap candidate`로 멈췄습니다. 로그의 32바이트 window는
+`build/runtime_mounts/pumpit3/PIU/PIU.EXE` offset `0xDEB31`과 바이트 단위로 일치하며,
+faulting 명령은 `int 21h`(AH=2Ch, Get System Time)입니다.
+
+**확인됨 (게스트 루틴):** `0xDEB3B`의 루틴은 `AH=2Ch`를 반복 호출해 `DH`(초)가 바뀔
+때까지 대기한 뒤, **다음 1초 동안 호출 횟수를 세어 `0x0041CD2C`에 저장**합니다. 이어지는
+`0xDEB86` 함수가 이 계수를 나누어 초 단위 delay를 구현합니다. 따라서 이 서비스는 값이
+실제 시간에 따라 증가해야 하며, 고정 시각을 돌려주면 무한 루프가 됩니다.
+
+**확인됨 (타겟별 차이):** `B4 2C CD 21` 패턴은 pumpit1 `0x10BD83`, pumpit2 `0x107A95`에
+각각 1곳뿐이며 둘 다 Watcom `_dos_gettime` 라이브러리 영역으로 호출되지 않습니다.
+pumpit3는 같은 라이브러리 지점 `0xDDED9` 외에 **게임 코드 4곳**(`0xDEB41` `0xDEB4B`
+`0xDEB5B` `0xDEB97`)에서 직접 호출합니다. 이것이 pumpit1/pumpit2에서 드러나지 않은 이유입니다.
+
+**확인됨 (수정):** `HandleDosGetSystemTime`이 호스트 local time을 읽어
+`CH:CL` = 시:분, `DH:DL` = 초:1/100초를 반환하고 carry를 clear합니다. `ECX`/`EDX` 상위
+16비트와 `EAX`는 보존합니다. INT 21h dispatch가 예외 trap 경로
+(`HandleDosInterrupt21`)와 traced 경로(`HandleTracedDosInterrupt21`) 두 곳에 있으므로
+양쪽 모두에 `case 0x2C`를 추가했습니다.
+
+**미확정:** 보정 계수는 한 번의 `INT 21h` 왕복 비용에 의존하므로 원본 DOS와 값이
+다릅니다. 보정 시점과 지연 시점의 실행 backend가 다르면(interpret ↔ AOT/DBT) 실제 지연
+길이가 어긋날 수 있으며, 이는 실행 관측으로만 판정할 수 있습니다.
+
+## 2026-08-02 Task 397: Where INT 21h AH=2Ch stopped pumpit3
+
+**Confirmed (stop point):** `pumpit3` halted at `0x030D3941` with
+`unhandled HLE trap candidate` after Glide direct dispatch reached `172/172`. The
+32-byte window in the log matches offset `0xDEB31` of
+`build/runtime_mounts/pumpit3/PIU/PIU.EXE` byte for byte; the faulting instruction
+is `int 21h` with AH=2Ch (Get System Time).
+
+**Confirmed (guest routine):** The routine at `0xDEB3B` calls AH=2Ch repeatedly
+until `DH` (seconds) changes, then **counts calls for the following second and
+stores the count at `0x0041CD2C`**. The function at `0xDEB86` divides that count to
+implement a delay. The service must therefore report a clock that advances in real
+time; a frozen value would loop forever.
+
+**Confirmed (per-target difference):** The `B4 2C CD 21` pattern appears once in
+pumpit1 (`0x10BD83`) and once in pumpit2 (`0x107A95`), both inside the uncalled
+Watcom `_dos_gettime` library region. pumpit3 has that same library site
+(`0xDDED9`) plus **four game-code sites** (`0xDEB41` `0xDEB4B` `0xDEB5B` `0xDEB97`),
+which is why pumpit1 and pumpit2 never exposed the gap.
+
+**Confirmed (fix):** `HandleDosGetSystemTime` reads host local time and returns
+`CH:CL` = hour:minute, `DH:DL` = second:hundredths with carry cleared, preserving
+the upper halves of `ECX`/`EDX` and all of `EAX`. INT 21h dispatch exists on both
+the exception trap path (`HandleDosInterrupt21`) and the traced path
+(`HandleTracedDosInterrupt21`), so `case 0x2C` was added to both.
+
+**Unresolved:** The calibration constant depends on the cost of one `INT 21h` round
+trip here and therefore differs from original DOS. If the execution backend differs
+between calibration and delay (interpret vs AOT/DBT), actual delay lengths can
+drift; only runtime observation can settle that.
+
+## 2026-08-02 Task 397 2차: AH=2Ah와 진단 공백
+
+**확인됨 (AH=2Ch 통과):** AH=2Ch 구현 후 실행 로그는
+`Win32 DOS AH hotspots [2C:160022 00:1 04:1 30:1]`을 기록했습니다. 게스트 보정 루프가
+160,022회 왕복하며 완주했고, 1차 정지 지점 `0x030D3941`은 해소됐습니다.
+
+**확인됨 (다음 정지 지점):** 같은 실행이 `0x030D2CA8`에서 `AH=2Ah`(Get Date)로 멈췄습니다.
+정적 호출 관계상 `0xDDE9D`는 `2Ah` → `2Ch` → `2Ah`를 순서대로 호출하는 Watcom `__getdt`이고,
+유일한 호출자 `0xDB20A`는 `0xDDF60`으로 이어지는 `time()`입니다. **두 함수는 한 루틴이
+쓰는 짝**입니다.
+
+**정정:** 1차 기록의 "AH=2Ah는 호출되지 않는 라이브러리 영역에만 있다"는 pumpit1/pumpit2
+기준 추론이었고 pumpit3에는 성립하지 않았습니다. 도달 여부는 호출 그래프로 판정해야 합니다.
+
+**확인됨 (진단 공백):** 두 번 모두 로그에 함수 번호가 없었습니다. `HandleDosInterrupt21`의
+`default`는 `hle_message`에 `unsupported DOS INT 21h AH=0xNN`을 남기지만, `aot-dbt`는
+`enable_dos_hle`가 꺼져 있어 그 분기에 도달하지 않고 `HandleTracedDosInterrupt21`의 조용한
+`default: return false;`로 끝납니다. traced `default`에도 같은 메시지를 기록하도록 했습니다.
+
+## 2026-08-02 Task 397 round two: AH=2Ah and the diagnostic gap
+
+**Confirmed (AH=2Ch cleared):** With AH=2Ch implemented, the run logged
+`Win32 DOS AH hotspots [2C:160022 00:1 04:1 30:1]`. The guest calibration loop completed
+160,022 round trips, clearing the first stop at `0x030D3941`.
+
+**Confirmed (next stop):** The same run stopped at `0x030D2CA8` on `AH=2Ah` (Get Date).
+Statically, `0xDDE9D` is the Watcom `__getdt` that calls `2Ah`, `2Ch`, then `2Ah`, and its
+only caller `0xDB20A` is `time()`, continuing into `0xDDF60`. **The two functions are a
+pair used by one routine.**
+
+**Correction:** the first-round claim that AH=2Ah lived only in an uncalled library region
+was an inference from pumpit1/pumpit2 that does not hold for pumpit3. Reachability must
+come from the call graph.
+
+**Confirmed (diagnostic gap):** Neither log named the function.
+`HandleDosInterrupt21`'s `default` records `unsupported DOS INT 21h AH=0xNN` in
+`hle_message`, but `aot-dbt` runs with `enable_dos_hle` off and never reaches it, ending at
+the silent `default: return false;` in `HandleTracedDosInterrupt21`. The traced `default`
+now records the same message.
+
+## 2026-08-02 Task 398: INT 8 체인의 비실행 이전 핸들러, 그리고 AH=35h 절단
+
+**확인됨 (정지 지점):** Task 397 이후 pumpit3는 Glide 창 생성(`640x480`)과 게이트 51회
+진입까지 도달한 뒤 `0x0301F827`에서 `0xC0000005`로 종료했습니다. 이 주소는 게임의 INT 8
+ISR(`AH=25h vector 0x08 set to 0023:0301F7BC`) 안에 있으며, 명령은 이전 핸들러로 체인하는
+`pushf` + `call far [0x0343ED08]`입니다. 함수는 `out 0x20,al` / `sti` / `popad` / `iretd`로
+끝납니다.
+
+**확인됨 (기존 인식 조건 불일치):** `HandleTimerInterruptChainBoundary`는 이 관용구를 이미
+처리하지만 `target_offset == 0 && target_selector != 0 && target_selector == DS`를
+요구했습니다. pumpit3가 저장한 값은 `0000:03010000`이라 두 조건에서 어긋났습니다.
+
+**확인됨 (AH=35h 32비트 절단 — 별개 결함):** 게스트 get-vector wrapper `0x030D0963`은
+`int 21h`(AH=35h) 후 `mov eax, ebx`로 **EBX 전체 32비트**를 이전 offset으로 씁니다. 그런데
+`HandleDosGetInterruptVector`는
+
+```cpp
+win32_context->Ebx = (win32_context->Ebx & 0xFFFF0000U) | offset;
+```
+
+로 하위 16비트만 기록하므로, 호출 시점 `EBX = 0x0301F7BC`의 상위 절반이 남아
+`EBX = 0x03010000`이 반환됩니다. 같은 파일의 `HandleDosSetInterruptVector`는
+`dpmi_entry.offset = win32_context->Edx`로 32비트 전체를 저장하므로 **get/set이
+비대칭**입니다. 로그의 `0x03010000`이 직접 증거입니다. 이 수정은 pumpit1/pumpit2와 공유
+경로를 바꾸므로 세 타이틀 회귀 검증을 포함한 별도 Task로 남깁니다.
+
+**확인됨 (수정):** 인식 조건을 `target_selector != CS`로 교체했습니다. 게스트 코드
+selector는 `CS`(`0x0023`)뿐이므로 `0`, `DS`(`0x002B`), `FS`(`0x0053`) 어느 것도 far call
+대상이 될 수 없습니다. 한 규칙으로 pumpit1의 `002B:00000000`과 pumpit3의
+`0000:03010000`을 모두 덮으며 타이틀별 offset에 의존하지 않습니다. selector가 `CS`인 진짜
+체인은 계속 fail-closed입니다.
+
+**미확정:** 이 far call 인식은 여전히 "`dpmi_interrupt_vectors[8]`이 유효하고 명령이
+`pushf`+`call far [abs32]`"라는 조건만 쓰며, 문제의 사이트가 실제로 INT 8 ISR 내부인지는
+검사하지 않습니다. 다른 벡터의 체인 관용구가 같은 형태로 등장하면 구분되지 않습니다.
+
+## 2026-08-02 Task 398: a non-executable previous INT 8 handler, and AH=35h truncation
+
+**Confirmed (stop point):** After Task 397, pumpit3 reached Glide window creation
+(`640x480`) and 51 gate entries, then terminated at `0x0301F827` with `0xC0000005`. That
+address is inside the game's INT 8 ISR (`AH=25h vector 0x08 set to 0023:0301F7BC`), and the
+instruction is `pushf` + `call far [0x0343ED08]`, the chain-to-previous-handler idiom. The
+function ends with `out 0x20,al`, `sti`, `popad`, `iretd`.
+
+**Confirmed (existing condition did not match):** `HandleTimerInterruptChainBoundary`
+already handles the idiom but required
+`target_offset == 0 && target_selector != 0 && target_selector == DS`. pumpit3 saved
+`0000:03010000`, failing both.
+
+**Confirmed (AH=35h 32-bit truncation — separate defect):** The guest get-vector wrapper at
+`0x030D0963` runs `int 21h` (AH=35h) then `mov eax, ebx`, taking the **full 32-bit EBX** as
+the previous offset. `HandleDosGetInterruptVector` writes only the low 16 bits, so the high
+half of the entry value `EBX = 0x0301F7BC` survives and `EBX = 0x03010000` is returned. The
+neighbouring `HandleDosSetInterruptVector` stores the full 32 bits
+(`dpmi_entry.offset = win32_context->Edx`), so **get and set are asymmetric**. The
+`0x03010000` in the log is direct evidence. Fixing it touches a path shared with pumpit1 and
+pumpit2, so it is left to its own task with three-title regression verification.
+
+**Confirmed (fix):** The condition is now `target_selector != CS`. `CS` (`0x0023`) is the
+only guest code selector, so `0`, `DS` (`0x002B`), and `FS` (`0x0053`) can none of them be
+far-call targets. One rule covers pumpit1's `002B:00000000` and pumpit3's `0000:03010000`
+without depending on per-title offsets, and a genuine chain through `CS` stays fail-closed.
+
+**Unresolved:** recognition still rests only on `dpmi_interrupt_vectors[8]` being valid and
+the instruction being `pushf` + `call far [abs32]`; it does not verify that the site is
+inside the INT 8 ISR. A chain idiom for another vector with the same shape would not be
+distinguished.
+
+## 2026-08-02 Task 399: AH=35h 32비트 offset [Task 398 미해결 항목 해소]
+
+**확인됨 (결함):** Task 398이 별도 Task로 남긴 `HandleDosGetInterruptVector`의 절단을
+수정했습니다. 수정 전에는
+
+```cpp
+win32_context->Ebx = (win32_context->Ebx & 0xFFFF0000U) | offset;
+```
+
+로 `EBX` 하위 16비트만 기록했고 `offset`은 `std::uint16_t`였습니다. 게스트 wrapper
+`0x030D0963`은 `mov eax, ebx`로 32비트 전체를 쓰므로, 진입 시 `EBX = 0x0301F7BC`의 상위
+절반이 남아 `0x03010000`이 반환됐습니다. 실행 로그의
+`INT 8 chain HLE ... target: 0x0000002B:0x03010000`이 그 값을 직접 보여줍니다.
+
+**확인됨 (비대칭):** `AH=25h`는 `dpmi_entry.offset = win32_context->Edx`로, `AX=0205`는
+`shadow.offset = win32_context->Edx`로, `AX=0204`는 `win32_context->Edx = shadow.offset`으로
+모두 32비트를 다룹니다. `AH=35h`만 16비트였습니다.
+
+**확인됨 (수정):** `AH=35h`가 `dpmi_interrupt_vectors`를 우선 조회하고(없으면 real-mode
+shadow로 fallback) `EBX`에 32비트 offset 전체를 기록합니다. 미설치 벡터는 `0`입니다.
+`AX=0205`로만 설정된 벡터도 이제 `AH=35h`에서 일관되게 보입니다.
+
+Task 398의 `target_selector != CS` 규칙은 이 수정 이후에도 성립합니다. 저장 값은
+`002B:00000000`이 되고 selector는 여전히 `CS`가 아닙니다.
+
+## 2026-08-02 Task 399: 32-bit AH=35h offset [resolves the Task 398 open item]
+
+**Confirmed (defect):** The truncation Task 398 deferred has been fixed. The handler
+previously wrote only the low 16 bits of `EBX` from a `std::uint16_t` offset. The guest
+wrapper at `0x030D0963` consumes all 32 bits via `mov eax, ebx`, so the high half of the
+entry value `EBX = 0x0301F7BC` survived and `0x03010000` was returned — visible directly in
+the run log as `INT 8 chain HLE ... target: 0x0000002B:0x03010000`.
+
+**Confirmed (asymmetry):** `AH=25h`, `AX=0205`, and `AX=0204` all handle the offset in full
+32 bits through `EDX`. Only `AH=35h` was 16-bit.
+
+**Confirmed (fix):** `AH=35h` now reads `dpmi_interrupt_vectors` first, falling back to the
+real-mode shadow, and writes the full 32-bit offset to `EBX`; an uninstalled vector yields
+`0`. Vectors installed only through `AX=0205` are now visible to `AH=35h` as well.
+
+Task 398's `target_selector != CS` rule still holds: the saved pointer becomes
+`002B:00000000`, whose selector is still not `CS`.

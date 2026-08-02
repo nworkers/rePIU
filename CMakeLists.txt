@@ -116,6 +116,7 @@ add_library(repiu_exe
     src/platform/win32/aot/aot_dbt_return_dispatch.cpp
     src/platform/win32/aot/aot_retired_trap_profile.cpp
     src/platform/win32/aot/aot_runtime_dispatch.cpp
+    src/platform/win32/bios/bios_keyboard_services.cpp
     src/platform/win32/execution/execution_trampoline.cpp
     src/platform/win32/execution/single_step_hotspot_profile.cpp
     src/platform/win32/dos/dos_int21_services.cpp
@@ -178,6 +179,7 @@ target_include_directories(repiu_exe
         src/platform/win32/exception
         src/platform/win32/io
         src/platform/win32/dos
+        src/platform/win32/bios
         src/platform/win32/cpu_emul
         src/platform/win32/aot
         src/platform/win32/boundary

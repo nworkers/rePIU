@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <fstream>
+#include <iomanip>
+#include <system_error>
 #include <vector>
 
 #if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
@@ -213,6 +216,133 @@ Win32SingleStepHotspotProfileSnapshot SnapshotSingleStepHotspotProfile(
         snapshot.top_cycle_coverage_cycles += samples[index].total_cycles;
     }
     return snapshot;
+}
+
+std::filesystem::path ResolveSingleStepHotspotDumpPath(
+    std::string_view setting)
+{
+    if (setting.empty() || setting == "0" || setting == "off" ||
+        setting == "false")
+    {
+        return {};
+    }
+    if (setting == "1" || setting == "on" || setting == "true")
+    {
+        return std::filesystem::path("build") / "single_step_hotspot.txt";
+    }
+    return std::filesystem::path(std::string(setting));
+}
+
+std::filesystem::path SingleStepHotspotDumpPath()
+{
+    static const std::filesystem::path path = [] {
+        const char* value = std::getenv("REPIU_SINGLE_STEP_HOTSPOT_DUMP");
+        return ResolveSingleStepHotspotDumpPath(
+            value == nullptr ? std::string_view{} : std::string_view(value));
+    }();
+    return path;
+}
+
+bool WriteSingleStepHotspotDump(
+    const std::filesystem::path& path,
+    Win32SingleStepHotspotProfile* profile,
+    std::uint32_t* written_entry_count)
+{
+    if (written_entry_count != nullptr)
+    {
+        *written_entry_count = 0;
+    }
+    if (path.empty() || profile == nullptr)
+    {
+        return false;
+    }
+    if (profile->dump_written)
+    {
+        if (written_entry_count != nullptr)
+        {
+            *written_entry_count = profile->dump_entry_count;
+        }
+        return true;
+    }
+    const Win32SingleStepHotspotProfile& profile_ref = *profile;
+
+    std::vector<Win32SingleStepHotspotSample> samples;
+    samples.reserve(profile_ref.distinct_guest_count);
+    for (const Win32SingleStepHotspotEntry& entry : profile_ref.entries)
+    {
+        if (entry.occupied)
+        {
+            samples.push_back(MakeSample(entry));
+        }
+    }
+    std::sort(
+        samples.begin(), samples.end(),
+        [](const auto& left, const auto& right) {
+            if (left.sample_count != right.sample_count)
+            {
+                return left.sample_count > right.sample_count;
+            }
+            return left.guest_address < right.guest_address;
+        });
+
+    const std::filesystem::path parent = path.parent_path();
+    if (!parent.empty())
+    {
+        std::error_code error;
+        std::filesystem::create_directories(parent, error);
+    }
+
+    std::ofstream file(path, std::ios::trunc);
+    if (!file)
+    {
+        return false;
+    }
+
+    file << "# rePIU single-step hotspot dump\n"
+         << "# total_samples=" << profile_ref.total_sample_count
+         << " distinct=" << profile_ref.distinct_guest_count
+         << " overflow=" << profile_ref.overflow_count
+         << " total_cycles=" << profile_ref.total_cycles << "\n"
+         << "# guest_address sample_count total_cycles max_cycles"
+            " hle timer native tf\n";
+    for (const Win32SingleStepHotspotSample& sample : samples)
+    {
+        file << "0x" << std::uppercase << std::hex << std::setw(8)
+             << std::setfill('0') << sample.guest_address << std::nouppercase
+             << std::dec << std::setfill(' ') << ' ' << sample.sample_count
+             << ' ' << sample.total_cycles << ' ' << sample.max_cycles;
+        for (std::uint32_t index = 0;
+             index < kSingleStepProfileOutcomeCount; ++index)
+        {
+            file << ' ' << sample.outcome_counts[index];
+        }
+        file << '\n';
+    }
+    if (!file)
+    {
+        return false;
+    }
+
+    profile->dump_written = true;
+    profile->dump_entry_count = static_cast<std::uint32_t>(samples.size());
+    if (written_entry_count != nullptr)
+    {
+        *written_entry_count = profile->dump_entry_count;
+    }
+    return true;
+}
+
+bool WriteSingleStepHotspotDumpIfEnabled(
+    Win32SingleStepHotspotProfile* profile,
+    std::uint32_t* written_entry_count,
+    std::string* resolved_path)
+{
+    const std::filesystem::path path = SingleStepHotspotDumpPath();
+    if (resolved_path != nullptr)
+    {
+        *resolved_path = path.string();
+    }
+    return WriteSingleStepHotspotDump(path, profile, written_entry_count);
 }
 
 SingleStepHotspotCycleScope::SingleStepHotspotCycleScope(

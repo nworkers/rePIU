@@ -716,6 +716,17 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
             ? SnapshotSingleStepHotspotProfile(
                   *context.single_step_hotspot_profile)
             : Win32SingleStepHotspotProfileSnapshot{};
+    // Task 400: this runs exactly once per attempt, on both the interrupted and
+    // the normal teardown path, so the full-table dump belongs here rather than
+    // inside the snapshot function.
+    if (context.single_step_hotspot_profile != nullptr)
+    {
+        attempt->single_step_hotspot_profile.dump_written =
+            WriteSingleStepHotspotDumpIfEnabled(
+                context.single_step_hotspot_profile.get(),
+                &attempt->single_step_hotspot_profile.dump_entry_count,
+                &attempt->single_step_hotspot_profile.dump_path);
+    }
     attempt->execution_time_profile =
         context.execution_time_profile != nullptr
             ? SnapshotExecutionTimeProfile(*context.execution_time_profile)
