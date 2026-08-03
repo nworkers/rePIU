@@ -861,6 +861,36 @@ bool IsAotHleBoundaryAddress(const ThreadContext* context,
     return false;
 }
 
+// Task 404: one failed re-translation quarantines a guest page for the rest of
+// the run, and on pumpit3 the page it takes carries the 200-iteration I/O delay
+// loop. `AppendWin32DynamicAotTranslation` names the cause in `message` and six
+// different causes are possible, so the string is what decides where the fix
+// belongs. Guest thread only, called from the VEH path.
+static void RecordAotGenerationFailure(ThreadContext* context,
+                                       std::uint32_t target,
+                                       bool quarantined)
+{
+    if (context->generation_failure_trace_count >=
+        ThreadContext::kGenerationFailureTraceCapacity)
+    {
+        ++context->generation_failure_trace_overflow;
+        return;
+    }
+    auto& entry =
+        context->generation_failure_trace[
+            context->generation_failure_trace_count++];
+    entry.target = target;
+    entry.page = Win32AotGuestPage(target);
+    entry.quarantined = quarantined;
+    entry.terminal =
+        context->aot_terminal_failure.load(std::memory_order_acquire);
+    const std::string& message = context->aot_translation_result.message;
+    const std::size_t copied = std::min<std::size_t>(
+        message.size(), ThreadContext::kGenerationFailureMessageCapacity - 1U);
+    std::memcpy(entry.message, message.c_str(), copied);
+    entry.message[copied] = '\0';
+}
+
 bool ResolveAotTransferTarget(ThreadContext* context,
                               std::uint32_t target,
                               std::uint32_t* cache_target,
@@ -942,17 +972,23 @@ bool ResolveAotTransferTarget(ThreadContext* context,
             }
             context->aot_generation_failure_count.fetch_add(
                 1, std::memory_order_relaxed);
+            bool quarantined = false;
             if (!context->aot_terminal_failure.load(
                     std::memory_order_acquire) &&
                 RequestAotGuestPageRetirement(context, target, true))
             {
                 BumpAotQuarantineCount(context);
+                quarantined = true;
             }
             else
             {
                 context->aot_terminal_failure.store(
                     true, std::memory_order_release);
             }
+            // Task 404: the reason lives in the append result and was being
+            // discarded. Recorded after the outcome so one entry says both what
+            // failed and what the policy did about it.
+            RecordAotGenerationFailure(context, target, quarantined);
         }
         return false;
     }

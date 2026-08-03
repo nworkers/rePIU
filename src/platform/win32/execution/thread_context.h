@@ -293,6 +293,79 @@ struct ThreadContext
     // an overflowing workload degrades to the old policy rather than to none.
     std::uint32_t guest_page_write_history_overflow = 0;
     std::uint32_t quarantine_deferred_count = 0;
+    // Task 404: a re-translation that fails once quarantines its page forever,
+    // and the page pumpit3 loses this way carries the 200-iteration I/O delay
+    // loop -- 35-40% of wall clock in single steps. The append result already
+    // carries the reason in `message`, but nothing recorded it, and the six
+    // possible reasons are fixed in six different places. Guest thread only:
+    // the branch that fills this runs on the VEH path.
+    static constexpr std::uint32_t kGenerationFailureTraceCapacity = 8U;
+    static constexpr std::uint32_t kGenerationFailureMessageCapacity = 96U;
+    struct GenerationFailureTraceEntry
+    {
+        std::uint32_t target = 0;
+        std::uint32_t page = 0;
+        bool quarantined = false;
+        bool terminal = false;
+        char message[kGenerationFailureMessageCapacity] = {};
+    };
+    GenerationFailureTraceEntry
+        generation_failure_trace[kGenerationFailureTraceCapacity] = {};
+    std::uint32_t generation_failure_trace_count = 0;
+    std::uint32_t generation_failure_trace_overflow = 0;
+    // Task 405: 98.6% of port I/O takes a privileged-instruction fault instead
+    // of the exception-free dispatch slot, and the planner cannot explain that
+    // -- `EmitHleDispatchSlot` always succeeds for `kPortIo`. `cache_count`
+    // separates the two remaining explanations: a raw `in` emitted into the
+    // cache, or code executing natively in the arena because it was never
+    // translated. Guest thread only, like the JAMMA snapshot: both callers of
+    // `HandlePortIoInstruction` (the VEH path and the Task 311 thunk) run there.
+    static constexpr std::uint32_t kPortIoAddressCensusCapacity = 32U;
+    struct PortIoAddressCensusEntry
+    {
+        std::uint32_t guest_address = 0;
+        std::uint32_t count = 0;
+        std::uint32_t cache_count = 0;
+        // Task 406: separates "no translation exists for this address" from
+        // "one exists and execution stays in the arena anyway". Filled only
+        // under `REPIU_PORT_IO_CENSUS_MAPPING`, because the lookup costs about
+        // 6,866 ticks and this site runs roughly 23,000 times a second.
+        std::uint32_t mapped_count = 0;
+        std::uint32_t reentry_pending_count = 0;
+    };
+    PortIoAddressCensusEntry
+        port_io_address_census[kPortIoAddressCensusCapacity] = {};
+    std::uint32_t port_io_address_census_size = 0;
+    std::uint32_t port_io_address_census_overflow = 0;
+    // Task 407: the delay loop free-runs in the arena with no trap flag, and
+    // that state is self-sustaining, so the question is how it is first
+    // entered. In steady state the exception before an arena port I/O fault is
+    // always another `0xC0000096`; on entry it is something else, which is the
+    // whole filter. Updated at the VEH choke point, read in the port I/O
+    // handler -- guest thread only, like the census above.
+    std::uint32_t last_veh_code = 0;
+    std::uint32_t last_veh_eip = 0;
+    bool last_veh_in_cache = false;
+    std::uint32_t prev_veh_code = 0;
+    std::uint32_t prev_veh_eip = 0;
+    bool prev_veh_in_cache = false;
+    static constexpr std::uint32_t kArenaPortIoEntryTraceCapacity = 16U;
+    struct ArenaPortIoEntryTraceEntry
+    {
+        std::uint32_t guest_address = 0;
+        std::uint32_t previous_code = 0;
+        std::uint32_t previous_eip = 0;
+        bool previous_in_cache = false;
+        bool trap_flag = false;
+        bool reentry_pending = false;
+        bool legacy_fallback = false;
+        bool single_step_trace = false;
+    };
+    // A ring holding the newest entries; the count is the running total, so
+    // `count % capacity` is both the write slot and the oldest live slot.
+    ArenaPortIoEntryTraceEntry
+        arena_port_io_entry_trace[kArenaPortIoEntryTraceCapacity] = {};
+    std::uint32_t arena_port_io_entry_trace_count = 0;
     std::atomic<std::uint32_t> aot_dbt_hle_dispatch_entry_count{0};
     std::atomic<std::uint32_t> aot_dbt_hle_dispatch_success_count{0};
     std::atomic<std::uint32_t> aot_dbt_hle_dispatch_fallback_count{0};

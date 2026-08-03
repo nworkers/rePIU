@@ -329,6 +329,67 @@ bool IsPortIoTraceCandidate(std::uint16_t port,
     return !is_input && (width == 1 || width == 2 || width == 4) && port >= kPortPiuJammaBase && port <= kPortPiuJammaEnd;
 }
 
+// Task 405: which guest addresses issue port I/O, and whether each execution
+// came from the AOT cache or from the arena. A linear table is enough because
+// the population is a handful of addresses; overflow is counted so the total
+// can still be reconciled against the profiled port I/O count.
+// Task 406: the mapping lookup is opt-in because `FindAotCacheAddress` costs
+// about 6,866 ticks and this site runs roughly 23,000 times a second, which
+// would add about 5.8% of a core and distort the very measurement it serves.
+static bool PortIoCensusMappingEnabled()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("REPIU_PORT_IO_CENSUS_MAPPING");
+        return value != nullptr &&
+            (std::strcmp(value, "1") == 0 || std::strcmp(value, "on") == 0 ||
+             std::strcmp(value, "true") == 0);
+    }();
+    return enabled;
+}
+
+static void RecordPortIoAddress(ThreadContext* context,
+                                std::uint32_t guest_address,
+                                bool from_aot_cache,
+                                bool mapped,
+                                bool reentry_pending)
+{
+    for (std::uint32_t index = 0;
+         index < context->port_io_address_census_size; ++index)
+    {
+        auto& entry = context->port_io_address_census[index];
+        if (entry.guest_address == guest_address)
+        {
+            ++entry.count;
+            if (from_aot_cache)
+            {
+                ++entry.cache_count;
+            }
+            if (mapped)
+            {
+                ++entry.mapped_count;
+            }
+            if (reentry_pending)
+            {
+                ++entry.reentry_pending_count;
+            }
+            return;
+        }
+    }
+    if (context->port_io_address_census_size >=
+        ThreadContext::kPortIoAddressCensusCapacity)
+    {
+        ++context->port_io_address_census_overflow;
+        return;
+    }
+    auto& entry =
+        context->port_io_address_census[context->port_io_address_census_size++];
+    entry.guest_address = guest_address;
+    entry.count = 1U;
+    entry.cache_count = from_aot_cache ? 1U : 0U;
+    entry.mapped_count = mapped ? 1U : 0U;
+    entry.reentry_pending_count = reentry_pending ? 1U : 0U;
+}
+
 bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr)
@@ -344,7 +405,11 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
         ExecutionTimeBucket::kPortIoDevice);
 
     std::uint32_t decode_eip = win32_context->Eip;
-    if (IsAotCacheAddress(context, win32_context->Eip))
+    // Task 405: this decision already separates "executing inside the AOT cache"
+    // from "executing natively in the arena", which is exactly what the census
+    // below needs, so it is kept rather than recomputed.
+    const bool from_aot_cache = IsAotCacheAddress(context, win32_context->Eip);
+    if (from_aot_cache)
     {
         if (context->aot_placement != nullptr)
         {
@@ -368,6 +433,40 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
         opcode_byte != 0xEE && opcode_byte != 0xEF)
     {
         return false;
+    }
+
+    // Task 405: recorded after the early returns so the census counts only port
+    // I/O actually handled, which is what makes it comparable with the profiled
+    // `kPortIoDevice` count.
+    bool mapped = false;
+    if (PortIoCensusMappingEnabled() && context->aot_placement != nullptr)
+    {
+        std::uint32_t cache_address = 0;
+        mapped = FindAotCacheAddress(
+            *context->aot_placement, decode_eip, &cache_address);
+    }
+    RecordPortIoAddress(context, decode_eip, from_aot_cache, mapped,
+                        context->aot_reentry_pending);
+    // Task 407: only the transition into arena free-running, not the steady
+    // state it sustains. `0xC0000096` before an arena port I/O fault means the
+    // previous exception was this same loop.
+    // A ring, not a prefix: the first attempt kept the first sixteen and they
+    // were all consumed during boot, so the loop that costs half of wall clock
+    // never appeared. Keeping the most recent sixteen shows the steady state.
+    if (!from_aot_cache && context->prev_veh_code != 0xC0000096U)
+    {
+        auto& entry = context->arena_port_io_entry_trace[
+            context->arena_port_io_entry_trace_count %
+                ThreadContext::kArenaPortIoEntryTraceCapacity];
+        entry.guest_address = decode_eip;
+        entry.previous_code = context->prev_veh_code;
+        entry.previous_eip = context->prev_veh_eip;
+        entry.previous_in_cache = context->prev_veh_in_cache;
+        entry.trap_flag = (win32_context->EFlags & 0x00000100U) != 0U;
+        entry.reentry_pending = context->aot_reentry_pending;
+        entry.legacy_fallback = context->aot_legacy_fallback;
+        entry.single_step_trace = context->enable_single_step_trace;
+        ++context->arena_port_io_entry_trace_count;
     }
 
     const std::uint16_t port = static_cast<std::uint16_t>(

@@ -711,6 +711,66 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
             context.quarantine_trace[index].destination,
             context.quarantine_trace[index].byte_count};
     }
+    static_assert(
+        sizeof(attempt->generation_failure_trace) /
+            sizeof(attempt->generation_failure_trace[0]) ==
+            ThreadContext::kGenerationFailureTraceCapacity,
+        "generation failure trace capacities must match");
+    static_assert(
+        sizeof(attempt->generation_failure_trace[0].message) ==
+            ThreadContext::kGenerationFailureMessageCapacity,
+        "generation failure message capacities must match");
+    attempt->generation_failure_trace_count =
+        context.generation_failure_trace_count;
+    attempt->generation_failure_trace_overflow =
+        context.generation_failure_trace_overflow;
+    for (std::uint32_t index = 0;
+         index < ThreadContext::kGenerationFailureTraceCapacity; ++index)
+    {
+        const auto& source = context.generation_failure_trace[index];
+        auto& destination = attempt->generation_failure_trace[index];
+        destination.target = source.target;
+        destination.page = source.page;
+        destination.quarantined = source.quarantined;
+        destination.terminal = source.terminal;
+        std::memcpy(destination.message, source.message,
+                    sizeof(destination.message));
+    }
+    static_assert(
+        sizeof(attempt->port_io_address_census) /
+            sizeof(attempt->port_io_address_census[0]) ==
+            ThreadContext::kPortIoAddressCensusCapacity,
+        "port I/O address census capacities must match");
+    attempt->port_io_address_census_size =
+        context.port_io_address_census_size;
+    attempt->port_io_address_census_overflow =
+        context.port_io_address_census_overflow;
+    for (std::uint32_t index = 0;
+         index < ThreadContext::kPortIoAddressCensusCapacity; ++index)
+    {
+        attempt->port_io_address_census[index] = {
+            context.port_io_address_census[index].guest_address,
+            context.port_io_address_census[index].count,
+            context.port_io_address_census[index].cache_count,
+            context.port_io_address_census[index].mapped_count,
+            context.port_io_address_census[index].reentry_pending_count};
+    }
+    static_assert(
+        sizeof(attempt->arena_port_io_entry_trace) /
+            sizeof(attempt->arena_port_io_entry_trace[0]) ==
+            ThreadContext::kArenaPortIoEntryTraceCapacity,
+        "arena port I/O entry trace capacities must match");
+    attempt->arena_port_io_entry_trace_count =
+        context.arena_port_io_entry_trace_count;
+    for (std::uint32_t index = 0;
+         index < ThreadContext::kArenaPortIoEntryTraceCapacity; ++index)
+    {
+        const auto& source = context.arena_port_io_entry_trace[index];
+        attempt->arena_port_io_entry_trace[index] = {
+            source.guest_address, source.previous_code, source.previous_eip,
+            source.previous_in_cache, source.trap_flag, source.reentry_pending,
+            source.legacy_fallback, source.single_step_trace};
+    }
     attempt->single_step_hotspot_profile =
         context.single_step_hotspot_profile != nullptr
             ? SnapshotSingleStepHotspotProfile(

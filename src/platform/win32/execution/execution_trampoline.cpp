@@ -2930,6 +2930,17 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     // bucket "instructions walked under TF between two boundaries".
     RecordVehExceptionCensus(context,
                              exception_info->ExceptionRecord->ExceptionCode);
+    // Task 407: one slot of history, so a handler can ask what preceded it.
+    // Six assignments and one range check on the choke point.
+    context->prev_veh_code = context->last_veh_code;
+    context->prev_veh_eip = context->last_veh_eip;
+    context->prev_veh_in_cache = context->last_veh_in_cache;
+    context->last_veh_code =
+        static_cast<std::uint32_t>(
+            exception_info->ExceptionRecord->ExceptionCode);
+    context->last_veh_eip = static_cast<std::uint32_t>(win32_context->Eip);
+    context->last_veh_in_cache =
+        IsAotCacheAddress(context, context->last_veh_eip);
     Win32UnhandledBreakpointEvidence breakpoint_evidence;
     if (exception_info->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT)
     {

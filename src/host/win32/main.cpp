@@ -1046,6 +1046,88 @@ void PrintExecutionAttempt(
                 index + 1U, Hex32(entry.page), Hex32(entry.source),
                 Hex32(entry.destination), entry.byte_count);
         }
+        // Task 405: 98.6% of port I/O faults instead of taking the dispatch
+        // slot. `cache` counts executions from inside the AOT cache and `arena`
+        // the rest, which separates "the cache emitted a raw in" from "this code
+        // was never translated". The total is printed so it can be reconciled
+        // against the profiled port I/O count.
+        {
+            std::vector<std::uint32_t> order;
+            std::uint64_t census_total = 0;
+            for (std::uint32_t index = 0;
+                 index < attempt.port_io_address_census_size; ++index)
+            {
+                order.push_back(index);
+                census_total += attempt.port_io_address_census[index].count;
+            }
+            std::sort(order.begin(), order.end(),
+                      [&attempt](std::uint32_t left, std::uint32_t right) {
+                          return attempt.port_io_address_census[left].count >
+                              attempt.port_io_address_census[right].count;
+                      });
+            logger.info(
+                "Win32 port I/O address census entries/overflow/total: {}/{}/{}",
+                attempt.port_io_address_census_size,
+                attempt.port_io_address_census_overflow, census_total);
+            for (std::uint32_t rank = 0;
+                 rank < 16U && rank < order.size(); ++rank)
+            {
+                const auto& entry =
+                    attempt.port_io_address_census[order[rank]];
+                logger.info(
+                    "Win32 port I/O address #{} "
+                    "guest/count/cache/arena/mapped/reentry: {}/{}/{}/{}/{}/{}",
+                    rank + 1U, Hex32(entry.guest_address), entry.count,
+                    entry.cache_count, entry.count - entry.cache_count,
+                    entry.mapped_count, entry.reentry_pending_count);
+            }
+        }
+        // Task 407: how free-running arena execution is entered. Steady-state
+        // faults are filtered out at the recording site, so each line here is a
+        // transition.
+        // The trace is a ring holding the newest sixteen transitions, so the
+        // count is the total and the entries are printed oldest to newest.
+        const std::uint32_t arena_entry_total =
+            attempt.arena_port_io_entry_trace_count;
+        const std::uint32_t arena_entry_shown =
+            arena_entry_total < 16U ? arena_entry_total : 16U;
+        const std::uint32_t arena_entry_first =
+            arena_entry_total < 16U ? 0U : arena_entry_total % 16U;
+        logger.info(
+            "Win32 arena port I/O entry trace total/shown: {}/{}",
+            arena_entry_total, arena_entry_shown);
+        for (std::uint32_t offset = 0; offset < arena_entry_shown; ++offset)
+        {
+            const std::uint32_t index = (arena_entry_first + offset) % 16U;
+            const auto& entry = attempt.arena_port_io_entry_trace[index];
+            logger.info(
+                "Win32 arena port I/O entry #{} guest/prev-code/prev-eip/"
+                "prev-in-cache/tf/reentry/legacy/step: {}/{}/{}/{}/{}/{}/{}/{}",
+                index + 1U, Hex32(entry.guest_address),
+                Hex32(entry.previous_code), Hex32(entry.previous_eip),
+                entry.previous_in_cache, entry.trap_flag,
+                entry.reentry_pending, entry.legacy_fallback,
+                entry.single_step_trace);
+        }
+        // Task 404: the other way a page quarantines -- a re-translation that
+        // failed. The message is the reason, and it decides where the fix
+        // belongs, so it is printed verbatim rather than classified here.
+        logger.info(
+            "Win32 AOT generation failure events/overflow: {}/{}",
+            attempt.generation_failure_trace_count,
+            attempt.generation_failure_trace_overflow);
+        for (std::uint32_t index = 0;
+             index < 8U && index < attempt.generation_failure_trace_count;
+             ++index)
+        {
+            const auto& entry = attempt.generation_failure_trace[index];
+            logger.info(
+                "Win32 AOT generation failure #{} "
+                "target/page/quarantined/terminal/message: {}/{}/{}/{}/{}",
+                index + 1U, Hex32(entry.target), Hex32(entry.page),
+                entry.quarantined, entry.terminal,
+                static_cast<const char*>(entry.message));
+        }
         if (reentry_attempts != 0U)
         {
             const auto funnel_share = [reentry_attempts](std::uint32_t value) {

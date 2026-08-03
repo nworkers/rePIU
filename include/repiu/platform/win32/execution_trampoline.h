@@ -576,6 +576,48 @@ struct Win32MinimalExecutionAttempt
     // Task 342: same-page writes that retired without quarantining.
     std::uint32_t quarantine_deferred_count = 0;
     std::uint32_t guest_page_write_history_overflow = 0;
+    // Task 404: why the re-translation that would have published the next
+    // generation failed, and whether that failure quarantined the page.
+    struct GenerationFailureTraceEntry
+    {
+        std::uint32_t target = 0;
+        std::uint32_t page = 0;
+        bool quarantined = false;
+        bool terminal = false;
+        char message[96] = {};
+    };
+    GenerationFailureTraceEntry generation_failure_trace[8] = {};
+    std::uint32_t generation_failure_trace_count = 0;
+    std::uint32_t generation_failure_trace_overflow = 0;
+    // Task 405: which guest addresses issue port I/O, and how many of those
+    // executions came from the AOT cache rather than the arena.
+    struct PortIoAddressCensusEntry
+    {
+        std::uint32_t guest_address = 0;
+        std::uint32_t count = 0;
+        std::uint32_t cache_count = 0;
+        // Task 406: opt-in under `REPIU_PORT_IO_CENSUS_MAPPING`; zero when off.
+        std::uint32_t mapped_count = 0;
+        std::uint32_t reentry_pending_count = 0;
+    };
+    PortIoAddressCensusEntry port_io_address_census[32] = {};
+    std::uint32_t port_io_address_census_size = 0;
+    std::uint32_t port_io_address_census_overflow = 0;
+    // Task 407: how free-running arena execution is entered, recorded once per
+    // transition rather than once per steady-state fault.
+    struct ArenaPortIoEntryTraceEntry
+    {
+        std::uint32_t guest_address = 0;
+        std::uint32_t previous_code = 0;
+        std::uint32_t previous_eip = 0;
+        bool previous_in_cache = false;
+        bool trap_flag = false;
+        bool reentry_pending = false;
+        bool legacy_fallback = false;
+        bool single_step_trace = false;
+    };
+    ArenaPortIoEntryTraceEntry arena_port_io_entry_trace[16] = {};
+    std::uint32_t arena_port_io_entry_trace_count = 0;
     Win32SingleStepHotspotProfileSnapshot
         single_step_hotspot_profile;
     Win32ExecutionTimeProfileSnapshot execution_time_profile;

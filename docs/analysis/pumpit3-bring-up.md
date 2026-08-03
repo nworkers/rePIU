@@ -80,6 +80,196 @@ DOS AH hotspots         [2C:273122 11:1139 12:1139 4A:110]
 single-step census      total/distinct/overflow = 287,599/122/0
 ```
 
+## 확인됨(Task 404): 실행이 두 갈래로 갈리며, 갈림길은 페이지 격리입니다
+
+2026-08-03에 HEAD `cc21627` Release로 pumpit3 10회, pumpit1 4회를 45초씩 EEPROM 격리로
+실행했습니다. **pumpit3만 실행마다 두 갈래로 갈립니다.**
+
+| 대상 | 프레임 | wall(Gcyc) | VEH | Glide | port-io | JAMMA scan | single-step | SS 커널 왕복 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| pumpit1 (4회) | 700~749 | 122 | 13~15% | 24~25% | 1.1% | ~0.9% | 9,200 | 0.5~0.8% |
+| **pumpit3 격리 발생 (6회)** | 0 | 122~130 | 25~27% | 1% | 6.7~8.6% | 6.3~8.2% | **510,000~578,000** | **35~40%** |
+| pumpit3 격리 없음 (4회) | 0~1 | 62~70 | 24~25% | 2% | 1.7~2.8% | 1.2~2.2% | **265** | 0.04% |
+
+**single-step이 약 2,000배 차이나며, 그 차이는 `AOT generation publishes/quarantines`가
+`.../1`인지 `.../0`인지와 정확히 함께 움직입니다.** pumpit1은 4회 모두 격리 0입니다.
+
+### 격리된 페이지 위에 200회 지연 루프가 있습니다
+
+격리 실행에서 single-step의 93%가 네 주소에 몰립니다. `0x0301DB1F`~`0x0301DB2A`
+(파일 offset `0x28D1F`)이며, Task 402가 지목한 200회 I/O 지연 루프 그 자체입니다.
+
+```
+0x0301DB1F  43              inc  ebx
+0x0301DB20  29 c0           sub  eax,eax
+0x0301DB22  66 ed           in   ax,dx      ; port 0x02A8
+0x0301DB24  81 fb c8 00 ..  cmp  ebx,200
+0x0301DB2A  7c f3           jl   0x0301DB1F
+```
+
+hotspot census 표본은 122,636 / 121,725 / 120,859 / 120,860이고, `IN`을 뺀 셋은 outcome이
+전부 `TF`입니다. **명령 하나마다 예외 하나**입니다.
+
+인과 사슬은 다음과 같으며, 거부된 재진입 수 **120,859가 `0x0301DB22`의 port-I/O HLE
+횟수와 정확히 일치**하는 것이 연결 근거입니다.
+
+```mermaid
+flowchart TD
+    W["게스트 write로 페이지 retire"] --> T["재번역 121회 중 1회 실패"]
+    T --> Q["RequestAotGuestPageRetirement(quarantine=true)"]
+    Q --> P["guest page 영구 격리"]
+    P --> R["TryResumeAotAfterHandledHle가 재진입 전부 거부"]
+    R --> S["페이지 전체가 TF single-step"]
+    S --> C["반복당 약 158µs<br/>200회 루프 1회에 약 32ms"]
+```
+
+로그 근거: `AOT generation failures/relinked/retired traps: 1/3752/4065`,
+`AOT generation publishes/quarantines: 74/1`,
+`AOT dynamic attempt/success: 121/120`,
+`hle reentry funnel ... quarantined/success: 120859/53339`.
+
+비용은 반복당 예외 4회 × 82,635 cycle(single-step gap 실측)에 핸들러 본체 약 97,500
+cycle을 더해 약 **158µs/반복**입니다. 실기 ISA 버스 기준 0.2ms 대비 약 150배입니다.
+
+### 디스플레이 제한이 아닙니다
+
+`REPIU_GLIDE_SWAP_INTERVAL=0`으로 vsync를 꺼도 pumpit1은 700→722/749(+4%),
+pumpit3는 0→0입니다. Task 371의 디스플레이 제한 결론은 이 장면에 적용되지 않습니다.
+
+### 함께 나온 것
+
+* **JAMMA 스냅샷이 기대만큼 싸지 않습니다.** `GetAsyncKeyState` 호출당 **17,596 cycle**로
+  측정되어 Task 403이 기록한 3,044의 5.8배입니다. 그래서 스냅샷 이후에도 JAMMA scan이
+  격리 실행에서 wall의 6.3~8.2%입니다.
+* **세그먼트 레지스터 HLE가 이벤트당 약 2.4~2.7M cycle입니다.** `0x030CF17D`
+  (`8e da` = `mov ds,dx`)와 `0x030CF18D`(`07` = `pop es`)가 890회씩에 4.63G cycle이고,
+  인근 `0x030CF0xx` 묶음까지 합치면 격리 없는 실행에서도 **wall의 약 12%**입니다.
+* **부팅 크래시 1회.** arena base가 `0x0F5…`로 잡힌 실행에서 `INT 21h AH=4Ah` resize가
+  error `0x0008`로 실패하고(`requested end 0x0F5D9000` vs `allocator end 0x0F5C6000`)
+  게스트가 예외로 죽었습니다.
+
+### 확인됨(Task 404 후속): 격리가 없어도 port I/O 예외가 지배합니다
+
+계측을 넣고 5회를 더 돌렸을 때 격리는 재현되지 않았고(0/5), 대신 렌더까지 간 3회에서
+**격리와 무관한 더 큰 비용**이 드러났습니다.
+
+| 항목 | run-02 | run-04 | run-05 |
+|---|---:|---:|---:|
+| wall (Gcyc) | 122.27 | 122.22 | 121.98 |
+| 프레임 | 87 | 150 | 102 |
+| port I/O 호출 | 857,750 | 1,074,586 | 990,793 |
+| `0xC0000096` fault | 840,701 | 1,059,807 | 975,034 |
+| 전체 예외 대비 | 90.4% | **92.9%** | 92.5% |
+| 예외 없는 dispatch 적용률 | 1.8% | **1.4%** | 1.5% |
+| VEH gap `other` | 41.9% | **49.3%** | 47.3% |
+| port I/O 본체 | 5.5% | 6.0% | 6.0% |
+
+**게스트 `IN` 한 번마다 CPU fault 한 번입니다.** `Port-I/O dispatch enabled: true`인데도
+예외 없는 경로는 port I/O 호출의 1.4~1.8%에만 적용됩니다.
+
+gap은 순수 오버헤드가 아닙니다(VEH 밖 시간이므로 트랩 사이 게스트 명령 실행 포함).
+gap 평균 56,338~60,248 cycle을 Task 347의 전이 가격 28,154~41,033과 비교하면 왕복이
+그 중 절반~3분의 2이며, **왕복만으로도 wall의 약 30%**입니다.
+
+이것이 Task 402의 "port I/O + 커널 왕복 46~56%" 중 Task 403이 손대지 않은 절반입니다.
+Task 403은 본체(JAMMA scan)만 제거했고, 큰 쪽인 왕복은 그대로 남아 있었습니다.
+
+### 확인됨(Task 405): 지연 루프는 AOT 캐시가 아니라 arena에서 실행됩니다
+
+주소별 census 결과 **모든 실행, 모든 항목에서 `cache_count`가 0**입니다. port I/O가
+AOT 캐시 안에서 실행된 경우는 pumpit3 4회·pumpit1 1회를 통틀어 한 번도 없습니다.
+
+| run | 프레임 | census 합계 | #1 주소 | #1 횟수 | 비중 |
+|---|---:|---:|---|---:|---:|
+| 1 | 1 | 91,746 | `0x0301DB22` | 78,795 | 85.9% |
+| **2** | **125** | **1,040,393** | **`0x0301DB22`** | **1,011,000** | **97.2%** |
+| 3 | 1 | 101,177 | `0x0301DB22` | 88,054 | 87.0% |
+| 4 (격리) | 0 | 214,702 | `0x0301DB22` | 202,997 | 94.5% |
+
+**dispatch 적용률 1.4%의 원인은 planner도 emitter도 아닙니다.** slot 기구는 정상이며
+(outside-veh port I/O 15,560 = dispatch thunk 진입 15,560), 단지 **그 코드가 캐시에서
+실행되지 않을 뿐**입니다. HLE reentry funnel이 44,589건인데 port I/O 예외가 1,034,948건인
+것도 같은 사실입니다 — 대부분은 캐시 복귀를 시도조차 하지 않고 arena에서 재개합니다.
+
+**Task 404가 격리 실행에서만 확인했던 지연 루프가 격리 없는 경로에서도 원인임이
+확정**됐습니다.
+
+**계측 주의:** profiled `kPortIoDevice` count와 cycles는 port I/O를 과대 계상합니다.
+`ExecutionTimeScope`가 함수 진입 시 생성되어 opcode 검사에서 빠져나가는 호출까지 세기
+때문이며, 차이는 single-step 횟수를 따라갑니다(비격리 약 10,000, 격리 654,587).
+**실제 횟수는 census 쪽입니다.**
+
+### 확인됨(Task 404 후속): 세대 실패 사유
+
+```
+0x0301DFFE / page 0x0301D000 / quarantined=true / terminal=false
+"dynamic AOT entry was not active in the new image"
+```
+
+격리된 페이지가 `0x0301D000`(지연 루프가 있는 그 페이지)임이 실측으로 확인됐고, 사유는
+용량·번역기·coverage가 아니라 **배치 계열**입니다. 재번역이 이미지를 만들었으나 요청한
+진입 주소의 address-map 항목이 없었습니다. 진입 주소 `0x0301DFFE`는 정상 명령 경계입니다
+(파일 `0x291FE`의 `8a 2d 68 ec 34 00`).
+
+### 확인됨(Task 406): 번역은 있는데 캐시로 돌아가지 않습니다
+
+`REPIU_PORT_IO_CENSUS_MAPPING=1`로 매핑 존재 여부와 재진입 예약을 함께 셌습니다.
+
+| run | 프레임 | `0x0301DB22` count | cache | arena | **mapped** | **reentry** |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 141,603 | 0 | 141,603 | 130,803 (92.4%) | **0** |
+| **2** | **111** | **992,156** | **0** | **992,156** | **992,156 (100%)** | **0** |
+| 3 | 1 | 222,367 | 0 | 222,367 | 213,567 (96.0%) | **0** |
+
+**번역 부재 가설은 기각입니다.** run-2에서는 992,156회 전부 AOT 캐시 매핑이 존재했고,
+전부 arena에서 실행됐으며, 재진입이 한 번도 예약되지 않았습니다. 2위 이하 주소도
+`mapped`가 `count`의 95~100%, `reentry` 0으로 같습니다.
+
+`aot_reentry_pending`은 실행이 **캐시 경계로 빠져나왔을 때** 세워집니다. 이 루프는
+arena에서 돌고 있어 경계를 통해 나온 적이 없으므로 예약도 없습니다. Task 405에서
+reentry funnel 44,589건이 port I/O 예외 1,034,948건보다 훨씬 적었던 이유입니다.
+
+### 확인됨(Task 407): 두 모드는 재진입 관점에서 정반대입니다
+
+| | 격리 실행 | 정상 실행 |
+|---|---|---|
+| census `reentry` | `0x0301DB22`의 **93~98%** | **0%** |
+| 진입 시 `prev_code` | `0x80000004` single-step | `0xC0000005` access violation |
+| 진입 시 `prev_eip` | `0x0301DB20` (arena) | `0x0301F827` (arena) |
+| TF / reentry | **켜짐** | 꺼짐 |
+
+**격리 실행에서는 런타임이 복귀를 시도합니다** — TF를 켜고 재진입을 예약한 채 매 명령을
+single-step하는데 페이지가 격리돼 매번 거부됩니다. Task 404의 사슬을 반대편에서 확인한
+것입니다. **정상 실행에서는 시도조차 하지 않습니다.**
+
+### 확인됨(Task 407): arena 진입 신호가 둘
+
+* **(a) 부팅기 — 캐시 INT3 이후.** 첫 16건이 3회 실행에서 완전히 동일했습니다.
+  직전 예외가 캐시 주소(`0x0C2xxxxx`)의 `0x80000003`인데 다음 port I/O는 arena이고
+  TF가 꺼져 있습니다. 경계 경로(`aot_runtime_dispatch.cpp:1791`)는 TF를 켜므로
+  **이 INT3는 그 경로가 처리한 것이 아닙니다.**
+* **(b) 정상 상태 — arena access violation 이후.** 마지막 16건이 전부 `0x0301F851`
+  (PIC EOI)이고 직전이 `0x0301F827`의 AV입니다. 인터럽트 핸들러 영역도 arena 자유
+  실행 중입니다.
+
+공통점은 **둘 다 TF 꺼짐 + 재진입 예약 없음**으로 끝난다는 것입니다. 진입 전이는
+실행당 11,597~239,423회로 상시 동작입니다.
+
+### 미확정
+
+* **정상 모드에서 지연 루프가 진입하는 순간.** 전역 ring으로는 특정 주소를 겨냥할 수
+  없어 잡지 못했습니다. **주소별 진입 표본**이 필요합니다.
+* **(a) 신호의 INT3 정체** — 캐시 INT3인데 경계 경로가 아닌 것.
+* **(b) 신호의 AV 처리가 왜 arena에 남기는지.**
+* **캐시 중간 진입의 정확성.** 캐시 코드는 selector guard, segment fold, timer safe
+  point를 전제로 방출됩니다.
+* **재번역이 요청 진입 주소를 address map에 남기지 못하는 조건.**
+* **격리가 미도달의 유일한 원인은 아닙니다.** 격리가 없던 4회도 45초 안에 렌더 루프에
+  도달하지 못했습니다.
+* **세션 간 절대 비교는 성립하지 않습니다.** 같은 날 pumpit1도 700~749 프레임으로,
+  08-02 기록(2,222/2,251)과 크게 다릅니다. 위 표는 **같은 세션 안의 대비**로만
+  읽어야 합니다.
+
 ## 미확정: 다음 대상
 
 ### 1. [해소됨] `INT 21h AH=2Ch` 비용 가설은 Task 402에서 기각됐습니다
@@ -174,6 +364,175 @@ distinct), 696 INT 8 chains, MSCDEX available with 65 tracks, DOS AH hotspots
 `[2C:273122 11:1139 12:1139 4A:110]`, ending with `minimal execution attempt timed out`.
 The single-step census recorded 287,599 samples over 122 distinct addresses with no
 overflow.
+
+## Confirmed (Task 404): runs are bimodal, and page quarantine is the fork
+
+On 2026-08-03, ten 45-second pumpit3 runs and four pumpit1 runs on HEAD `cc21627` Release,
+one machine, one session, EEPROM isolated per run:
+
+| Target | Frames | Wall (Gcyc) | VEH | Glide | port-io | JAMMA scan | single-step | SS kernel round trip |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| pumpit1 (4) | 700-749 | 122 | 13-15% | 24-25% | 1.1% | ~0.9% | 9,200 | 0.5-0.8% |
+| **pumpit3, quarantine fired (6)** | 0 | 122-130 | 25-27% | 1% | 6.7-8.6% | 6.3-8.2% | **510,000-578,000** | **35-40%** |
+| pumpit3, no quarantine (4) | 0-1 | 62-70 | 24-25% | 2% | 1.7-2.8% | 1.2-2.2% | **265** | 0.04% |
+
+Single-step counts differ about 2,000-fold, and the split tracks
+`AOT generation publishes/quarantines` reading `.../1` against `.../0` exactly. pumpit1
+quarantined nothing in any run.
+
+### The quarantined page carries the 200-iteration delay loop
+
+In the quarantined runs 93% of single steps land on `0x0301DB1F`-`0x0301DB2A` (file offset
+`0x28D1F`) — the 200-iteration I/O delay loop from Task 402, four instructions long, with
+census samples of 122,636 / 121,725 / 120,859 / 120,860 and a pure trace-flag outcome on
+every instruction except the `IN`. One exception per instruction.
+
+The chain is: a guest write retires the page, the re-translation that should publish the
+next generation fails once out of 121 dynamic attempts, the failure path calls
+`RequestAotGuestPageRetirement(..., quarantine=true)`, and from then on
+`TryResumeAotAfterHandledHle` refuses every re-entry so the page runs under single step.
+The link is exact: **120,859 rejected re-entries equals the port-I/O HLE count at
+`0x0301DB22`**. Supporting counters are
+`AOT generation failures/relinked/retired traps: 1/3752/4065`,
+`AOT generation publishes/quarantines: 74/1`, and
+`AOT dynamic attempt/success: 121/120`.
+
+Cost: four exceptions per iteration at a measured 82,635-cycle single-step gap plus about
+97,500 cycles of handler body, roughly **158 µs per iteration** and **32 ms** per
+200-iteration delay call, against 0.2 ms of ISA bus time on real hardware.
+
+### Not display-limited
+
+With `REPIU_GLIDE_SWAP_INTERVAL=0`, pumpit1 goes 700 to 722/749 (+4%) and pumpit3 stays at
+zero. Task 371's display-limit verdict does not apply to this scene.
+
+### Also found
+
+`GetAsyncKeyState` measures **17,596 cycles** per call here, 5.8x the 3,044 Task 403
+recorded, which is why the JAMMA scan still holds 6.3-8.2% of wall in the quarantined runs
+despite the snapshot. Segment-register HLE costs about 2.4-2.7M cycles per event —
+`0x030CF17D` (`mov ds,dx`) and `0x030CF18D` (`pop es`) alone are 4.63G cycles over 890
+events each, and with the neighbouring `0x030CF0xx` cluster about **12% of wall even in a
+run with no quarantine**. One run also died at boot when the arena landed at a higher base
+and `INT 21h AH=4Ah` resize failed with error `0x0008` (`requested end 0x0F5D9000` against
+`allocator end 0x0F5C6000`).
+
+### Confirmed (Task 404 follow-up): port I/O exceptions dominate even without quarantine
+
+Five further runs with the instrumentation in place reproduced no quarantine (0 of 5), and
+the three that reached rendering exposed a larger cost unrelated to it:
+
+| Metric | run-02 | run-04 | run-05 |
+|---|---:|---:|---:|
+| Wall (Gcyc) | 122.27 | 122.22 | 121.98 |
+| Frames | 87 | 150 | 102 |
+| Port I/O calls | 857,750 | 1,074,586 | 990,793 |
+| `0xC0000096` faults | 840,701 | 1,059,807 | 975,034 |
+| Share of all exceptions | 90.4% | **92.9%** | 92.5% |
+| Exception-free dispatch coverage | 1.8% | **1.4%** | 1.5% |
+| VEH gap `other` | 41.9% | **49.3%** | 47.3% |
+| Port I/O handler body | 5.5% | 6.0% | 6.0% |
+
+Each guest `IN` costs one CPU fault, and although `Port-I/O dispatch enabled: true`, the
+exception-free path covers only 1.4-1.8% of port I/O calls. The gap is not pure overhead —
+it is time outside the VEH, so it includes the guest instructions between traps — but
+comparing its 56,338-60,248-cycle mean with Task 347's 28,154-41,033-cycle transition price
+puts the round trip at roughly half to two thirds of it, about **30% of wall on its own**.
+
+This is the half of Task 402's "port I/O plus kernel round trip at 46-56%" that Task 403
+never touched: Task 403 removed the body (the JAMMA scan) and left the larger round trip.
+
+### Confirmed (Task 405): the delay loop runs in the arena, not the AOT cache
+
+The per-address census records `cache_count` as **zero in every entry of every run**: across
+four pumpit3 runs and one pumpit1 run, port I/O never executed from inside the AOT cache.
+
+| Run | Frames | Census total | Top address | Count | Share |
+|---|---:|---:|---|---:|---:|
+| 1 | 1 | 91,746 | `0x0301DB22` | 78,795 | 85.9% |
+| **2** | **125** | **1,040,393** | **`0x0301DB22`** | **1,011,000** | **97.2%** |
+| 3 | 1 | 101,177 | `0x0301DB22` | 88,054 | 87.0% |
+| 4 (quarantined) | 0 | 214,702 | `0x0301DB22` | 202,997 | 94.5% |
+
+**The 1.4% dispatch coverage is not a planner or emitter defect.** The slot mechanism works —
+15,560 outside-VEH port I/O calls equal 15,560 dispatch-thunk entries — the code simply does
+not execute from the cache. The re-entry funnel says the same thing: 44,589 attempts against
+1,034,948 port I/O exceptions, so most never try to return to the cache at all.
+
+This also **confirms on the non-quarantine path** the delay loop that Task 404 had established
+only under quarantine.
+
+**Measurement caveat:** the profiled `kPortIoDevice` count and cycles over-count port I/O,
+because `ExecutionTimeScope` is constructed on entry and so counts calls that bail at the
+opcode check. The gap tracks single-stepping (about 10,000 without quarantine, 654,587 with).
+**The census is the accurate count.**
+
+### Confirmed (Task 404 follow-up): the generation-failure reason
+
+`0x0301DFFE`, page `0x0301D000`, quarantined, not terminal, **"dynamic AOT entry was not
+active in the new image"**. The quarantined page is measured to be the one holding the delay
+loop, and the cause is in the placement family rather than capacity, translation, or
+coverage: the re-translation built an image with no address-map entry for the requested entry
+address. That address is a legitimate instruction boundary (`8a 2d 68 ec 34 00` at file
+offset `0x291FE`).
+
+### Confirmed (Task 406): the translation exists, execution just never returns to it
+
+Counting mapping existence and re-entry scheduling together under
+`REPIU_PORT_IO_CENSUS_MAPPING=1`:
+
+| Run | Frames | `0x0301DB22` count | cache | arena | **mapped** | **reentry** |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 141,603 | 0 | 141,603 | 130,803 (92.4%) | **0** |
+| **2** | **111** | **992,156** | **0** | **992,156** | **992,156 (100%)** | **0** |
+| 3 | 1 | 222,367 | 0 | 222,367 | 213,567 (96.0%) | **0** |
+
+**The missing-translation hypothesis is rejected.** In run 2 all 992,156 executions had a
+valid AOT cache mapping, all executed in the arena, and re-entry was never once scheduled.
+Every other address matches, with `mapped` at 95-100% of `count` and `reentry` at zero.
+
+`aot_reentry_pending` is set when execution leaves the cache **through a boundary**. This loop
+runs in the arena and never left through one, so nothing is ever scheduled — which is why Task
+405's re-entry funnel saw only 44,589 attempts against 1,034,948 port I/O exceptions.
+
+### Confirmed (Task 407): the two modes are opposites with respect to re-entry
+
+| | Quarantined run | Healthy run |
+|---|---|---|
+| Census `reentry` | **93-98%** at `0x0301DB22` | **0%** |
+| `prev_code` at entry | `0x80000004` single step | `0xC0000005` access violation |
+| `prev_eip` at entry | `0x0301DB20` (arena) | `0x0301F827` (arena) |
+| Trap flag / re-entry | **set** | clear |
+
+**In the quarantined runs the runtime is trying to return** — trap flag on, re-entry scheduled,
+every instruction single-stepped, and the quarantined page refusing each time, which confirms
+Task 404's chain from the other side. **In the healthy runs it never tries.**
+
+### Confirmed (Task 407): two arena-entry signatures
+
+**(a) Boot phase, after a cache INT3.** The first sixteen entries were identical across three
+runs: the previous exception is an `0x80000003` at a cache address (`0x0C2xxxxx`) yet the next
+port I/O is in the arena with the trap flag clear. The boundary path at
+`aot_runtime_dispatch.cpp:1791` always sets the trap flag, so **these breakpoints were not
+handled by it**. **(b) Steady state, after an arena access violation.** The last sixteen are
+all `0x0301F851` (PIC EOI) preceded by an access violation at `0x0301F827`, so the
+interrupt-handler region free-runs in the arena too.
+
+Both end with **no trap flag and no scheduled re-entry**, and entry transitions number
+11,597-239,423 per run, so this is routine rather than exceptional.
+
+### Unresolved
+
+The healthy-mode entry moment for the delay loop specifically — a global ring cannot target one
+address, so a **per-address entry sample** is needed; the identity of signature (a)'s
+breakpoint; why signature (b)'s access-violation handling leaves execution in the arena;
+whether entering cache code mid-stream is correct given that it is emitted assuming selector
+guards, folded segment bases, and timer safe points; and the condition under which a
+re-translation omits its own requested entry from the address map. Quarantine is also
+not the only reason pumpit3 fails to reach its render loop: the four runs without it did
+not reach it either. And cross-session absolute comparison does not hold, because pumpit1
+measured 700-749 frames on the same day against 2,222/2,251 on 08-02 — the table above is
+valid only as a within-session contrast.
 
 ## Unresolved: what to do next
 

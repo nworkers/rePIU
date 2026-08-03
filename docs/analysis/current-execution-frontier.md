@@ -6,6 +6,149 @@
 
 ## 다음 세션 인수인계 / Session handoff
 
+### 2026-08-03 현재: pumpit3의 지배 비용은 port I/O 예외입니다 (Task 404)
+
+같은 빌드·같은 세션에서 pumpit3 15회, pumpit1 5회를 45초씩 측정했습니다. 상세는
+[pumpit3 bring-up](pumpit3-bring-up.md), 근거는
+[Task 404 작업 로그](../work-logs/20260803-404-aot-generation-failure-attribution.md).
+
+**확인됨 1 — 게스트 `IN` 한 번마다 CPU fault 한 번이고, 그 명령은 하나입니다.**
+`0xC0000096`이 전체 예외의 **90.4~92.9%**이고 VEH gap이 wall의 **41.9~49.7%**입니다.
+Task 405의 주소 census가 원인을 한 점으로 좁혔습니다: **`0x0301DB22`(200회 지연 루프의
+`in ax,dx`) 하나가 port I/O의 85.9~97.2%** 입니다.
+
+**확인됨 1a — 그 코드는 AOT 캐시가 아니라 arena에서 실행됩니다.** census의
+`cache_count`가 **모든 실행·모든 항목에서 0**입니다. 예외 없는 dispatch가 1.4%에만
+적용되는 이유는 planner/emitter 결함이 아니라 **캐시 코드가 실행되지 않기 때문**입니다
+(slot 기구는 정상: outside-veh 15,560 = thunk 진입 15,560).
+
+**확인됨 1b (Task 406) — 번역은 있는데 돌아가지 않습니다.** `REPIU_PORT_IO_CENSUS_MAPPING=1`
+실행에서 `0x0301DB22`의 `mapped`가 92.4~100%(111 프레임 실행은 **992,156회 전부**)이고
+`reentry`는 **모든 실행에서 0**입니다. 번역 부재 가설은 기각입니다. `aot_reentry_pending`은
+실행이 캐시 경계로 빠져나올 때만 세워지는데 이 루프는 arena에서 돌고 있어 경계를 통해
+나온 적이 없습니다. **→ 다음 축은 "왜 애초에 arena로 나갔는가"이며, 최초 이탈 원인을
+두고 복귀만 붙이면 같은 이탈이 반복됩니다.**
+
+**계측 주의(Task 405):** profiled `kPortIoDevice` count/cycles는 port I/O를 과대
+계상합니다. `ExecutionTimeScope`가 함수 진입 시 생성되어 opcode 검사에서 빠져나가는
+호출까지 세기 때문입니다. **실제 횟수는 census 쪽**입니다.
+
+**확인됨 2 — 일부 실행은 페이지 격리로 4배 더 나빠집니다.** 재번역 1회 실패가
+`RequestAotGuestPageRetirement(quarantine=true)`로 페이지를 영구 격리하고, 그 페이지에
+200회 I/O 지연 루프(`0x0301DB1F`~`0x0301DB2A`)가 있어 명령마다 TF single-step이 됩니다.
+single-step이 265 → 510,000~578,000으로 뛰고 커널 왕복만 wall의 35~40%입니다. 거부된
+재진입 120,859가 `0x0301DB22`의 port-I/O HLE 횟수와 정확히 일치합니다. 오전 10회 중
+6회 재현, 오후 5회 중 0회 재현으로 **실행별 비결정성**입니다.
+
+**확인됨 3 — 디스플레이 제한이 아닙니다.** `REPIU_GLIDE_SWAP_INTERVAL=0`에서 pumpit1은
+700→722/749(+4%), pumpit3는 0→0입니다.
+
+**함께 나온 것:** `GetAsyncKeyState`가 호출당 9,802~17,596 cycle로 Task 403 기록(3,044)의
+3~6배이고, JAMMA scan이 여전히 wall의 4.9~5.3%입니다. 세그먼트 레지스터 HLE는 이벤트당
+약 2.4~2.7M cycle로 격리 없는 실행에서도 약 12%입니다. arena base가 높게 잡힌 실행 1회는
+`INT 21h AH=4Ah` resize 실패(error `0x0008`)로 부팅 크래시했습니다.
+
+**주의:** 같은 날 pumpit1이 700~838 프레임인데 08-02 기록은 2,222/2,251입니다.
+**세션 간 절대 비교는 성립하지 않으며**, 위 수치는 같은 세션 안의 대비로만 유효합니다.
+
+**확인됨 4 — 세대 실패 사유(Task 404 목표, Task 405 실행 중 포착):**
+
+```
+0x0301DFFE / page 0x0301D000 / quarantined=true / terminal=false
+"dynamic AOT entry was not active in the new image"
+```
+
+격리된 페이지가 지연 루프가 있는 `0x0301D000`임이 실측 확인됐고, 사유는 용량·번역기·
+coverage가 아니라 **배치 계열**입니다. 재번역이 이미지를 만들었으나 요청 진입 주소의
+address-map 항목이 없었습니다.
+
+**확인됨 5 (Task 407) — 두 모드는 재진입 관점에서 정반대이고, arena 진입 신호는 둘입니다.**
+격리 실행은 TF를 켜고 재진입을 예약한 채 single-step하다 격리에 막히고(census `reentry`가
+`0x0301DB22`의 93~98%), 정상 실행은 **시도조차 하지 않습니다**(`reentry` 0%). 진입 신호는
+**(a) 캐시 주소의 INT3 이후**(부팅기, 3회 실행 첫 16건 완전 동일)와 **(b) arena access
+violation 이후**(정상 상태, `0x0301F827` → `0x0301F851` PIC EOI) 두 가지이며, 둘 다
+**TF 꺼짐 + 예약 없음**으로 끝납니다. (a)의 INT3는 캐시 주소인데 경계 경로가 항상 TF를
+켜므로 **그 경로가 처리한 것이 아닙니다.** 진입 전이는 실행당 11,597~239,423회입니다.
+
+**미확정:** 정상 모드에서 지연 루프가 진입하는 순간(전역 ring으로는 특정 주소를 겨냥할 수
+없어 미포착 — **주소별 진입 표본**이 필요). (a) 신호 INT3의 정체. (b) 신호 AV 처리가 왜
+arena에 남기는지. 캐시 중간 진입의 정확성. 재번역이 요청 진입 주소를 address map에
+남기지 못하는 조건. 격리 발생을 가르는 조건. pumpit3가 45초 안에 렌더 루프에 도달하지
+못하는 것은 격리 없는 실행에서도 마찬가지이므로 별개 원인이 남아 있습니다.
+
+### As of 2026-08-03: pumpit3's dominant cost is the port I/O exception (Task 404)
+
+Fifteen 45-second pumpit3 runs and five pumpit1 runs on one build and one session. Detail is
+in [pumpit3 bring-up](pumpit3-bring-up.md); evidence in the
+[Task 404 work log](../work-logs/20260803-404-aot-generation-failure-attribution.md).
+
+**Confirmed 1 — each guest `IN` costs one CPU fault, and it is a single instruction.**
+`0xC0000096` faults are **90.4-92.9%** of all exceptions and their VEH gap is **41.9-49.7%**
+of wall. Task 405's address census narrowed the cause to one point: **`0x0301DB22`, the
+`in ax,dx` of the 200-iteration delay loop, is 85.9-97.2% of all port I/O**.
+
+**Confirmed 1a — that code executes in the arena, not the AOT cache.** The census records
+`cache_count` as **zero in every entry of every run**. Exception-free dispatch covers only
+1.4% not because of a planner or emitter defect but because **no cache code is executing
+there** — the slot mechanism itself works, with 15,560 outside-VEH calls matching 15,560
+thunk entries.
+
+**Confirmed 1b (Task 406) — the translation exists and is never returned to.** Under
+`REPIU_PORT_IO_CENSUS_MAPPING=1`, `mapped` for `0x0301DB22` is 92.4-100% — **all 992,156
+executions** in the 111-frame run — while `reentry` is **zero in every run**. The
+missing-translation hypothesis is rejected. `aot_reentry_pending` is only set when execution
+leaves the cache through a boundary, and this loop runs in the arena, so it never did.
+**The next axis is why execution went to the arena in the first place; adding a return path
+without that answer would only replay the same departure.**
+
+**Measurement caveat (Task 405):** the profiled `kPortIoDevice` count and cycles over-count
+port I/O, because `ExecutionTimeScope` is constructed on entry and counts calls that bail at
+the opcode check. **The census is the accurate count.**
+
+**Confirmed 2 — some runs are four times worse through page quarantine.** A single failed
+re-translation quarantines a page permanently, and that page carries the 200-iteration I/O
+delay loop at `0x0301DB1F`-`0x0301DB2A`, so every instruction becomes a trace-flag single
+step: 265 single steps become 510,000-578,000 and the kernel round trip alone reaches 35-40%
+of wall. The link is exact — 120,859 rejected re-entries equal the port-I/O HLE count at
+`0x0301DB22`. It fired in six of ten morning runs and none of five afternoon runs, so it is
+run-to-run nondeterminism.
+
+**Confirmed 3 — not display-limited.** With `REPIU_GLIDE_SWAP_INTERVAL=0`, pumpit1 goes 700
+to 722/749 (+4%) and pumpit3 stays at zero.
+
+**Also found:** `GetAsyncKeyState` measures 9,802-17,596 cycles per call, three to six times
+Task 403's 3,044, leaving the JAMMA scan at 4.9-5.3% of wall; segment-register HLE costs
+about 2.4-2.7M cycles per event and roughly 12% of wall even without quarantine; and one run
+crashed at boot when the arena landed high and `INT 21h AH=4Ah` resize failed with `0x0008`.
+
+**Caution:** pumpit1 measured 700-838 frames the same day against 2,222/2,251 on 08-02, so
+**cross-session absolute comparison does not hold** — the figures above are within-session
+contrasts only.
+
+**Confirmed 4 — the generation-failure reason** (Task 404's goal, captured during Task 405's
+runs): `0x0301DFFE`, page `0x0301D000`, quarantined, not terminal, **"dynamic AOT entry was
+not active in the new image"**. The quarantined page is measured to be the one holding the
+delay loop, and the cause is in the placement family rather than capacity, translation, or
+coverage — the re-translation built an image with no address-map entry for its own requested
+entry address.
+
+**Confirmed 5 (Task 407) — the two modes are opposites on re-entry, and there are two
+arena-entry signatures.** Quarantined runs single-step with the trap flag on and re-entry
+scheduled until the quarantine refuses them (census `reentry` is 93-98% at `0x0301DB22`);
+healthy runs **never try** (`reentry` 0%). Entry happens either **(a) after an INT3 at a cache
+address** (boot phase, the first sixteen entries identical across three runs) or **(b) after an
+arena access violation** (steady state, `0x0301F827` into the `0x0301F851` PIC EOI), and both
+end with **no trap flag and nothing scheduled**. Signature (a)'s breakpoint sits at a cache
+address, yet the boundary path always sets the trap flag, so **it was not handled by that
+path**. Entry transitions number 11,597-239,423 per run.
+
+**Unresolved:** the healthy-mode entry moment for the delay loop, which a global ring cannot
+target — a **per-address entry sample** is needed; the identity of signature (a)'s breakpoint;
+why signature (b) leaves execution in the arena; whether mid-stream cache entry is correct; the
+condition under which a re-translation omits its requested entry from the address map; what
+decides whether quarantine fires; and why pumpit3 fails to reach its render loop within 45
+seconds even without quarantine, which must have a separate cause.
+
 ### 2026-08-02 현재: pumpit3가 렌더 루프에 진입했습니다
 
 Tasks 396~401에서 `pumpit3`를 프로필 추가부터 렌더 루프까지 올렸습니다. 전체 경위와
@@ -102,6 +245,7 @@ wall의 20.59%에 LFB 0회인데, 측정에 쓴 자동 장면은 setter 약 5.6%
 | `REPIU_AOT_DBT_SUPERBLOCK` | OFF | 렌더링 중단. 예외 없는 dispatch가 여기 묶여 있음 |
 | `REPIU_JAMMA_SNAPSHOT` | **ON** | 입력 스냅샷(Task 403). `0`으로 매 읽기 조회 복원 |
 | `REPIU_JAMMA_SNAPSHOT_US` | 500 | 스냅샷 갱신 주기(µs). 게스트 폴링 4.8ms의 1/10 |
+| `REPIU_PORT_IO_CENSUS_MAPPING` | OFF | port I/O census의 `mapped`/`reentry`(Task 406). 켜면 호출당 `FindAotCacheAddress`가 붙어 약 5.8% 느려지므로 **그 실행의 wall·프레임은 인용 금지** |
 
 timer tick 전달 counter와 boundary opcode census는 **상시 ON**이며 동작을 바꾸지
 않습니다.
