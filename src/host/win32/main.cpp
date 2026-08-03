@@ -1080,6 +1080,27 @@ void PrintExecutionAttempt(
                     rank + 1U, Hex32(entry.guest_address), entry.count,
                     entry.cache_count, entry.count - entry.cache_count,
                     entry.mapped_count, entry.reentry_pending_count);
+                // Task 408: the first arena-entry transition for this address.
+                // `flags` is prev-in-cache/tf/reentry/legacy/step, bit 0 first.
+                if (entry.entry_transition_count != 0U)
+                {
+                    logger.info(
+                        "Win32 port I/O address #{} entry "
+                        "count/prev-code/prev-eip/flags: {}/{}/{}/{}",
+                        rank + 1U, entry.entry_transition_count,
+                        Hex32(entry.entry_previous_code),
+                        Hex32(entry.entry_previous_eip),
+                        Hex32(entry.entry_flags));
+                    // Task 409: the class of every transition, since the first
+                    // sample described at most a tenth of them.
+                    logger.info(
+                        "Win32 port I/O address #{} entry prev "
+                        "step/bp/av/other: {}/{}/{}/{}",
+                        rank + 1U, entry.entry_prev_single_step,
+                        entry.entry_prev_breakpoint,
+                        entry.entry_prev_access_violation,
+                        entry.entry_prev_other);
+                }
             }
         }
         // Task 407: how free-running arena execution is entered. Steady-state

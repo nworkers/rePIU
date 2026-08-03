@@ -1,9 +1,12 @@
 # pumpit3 bring-up: 프로필 추가에서 렌더 루프까지 / pumpit3 Bring-Up: From Profile to Render Loop
 
 이 문서는 `pumpit3`(Pump It Up The O.B.G: The 3rd Dance Floor) 타겟이 실행되지 않던
-상태에서 렌더 루프에 진입하기까지 확인된 사실을 누적합니다. Task별 시간순 증거는
-`docs/work-logs/`에, 인터럽트 규약 세부는
-[interrupts-and-port-io.md](interrupts-and-port-io.md)에 있습니다.
+상태에서 렌더 루프에 진입하기까지, 그리고 그 성능을 귀속하기까지 확인된 사실을
+누적합니다. Task별 시간순 증거는 `docs/work-logs/`에, 인터럽트 규약 세부는
+[interrupts-and-port-io.md](interrupts-and-port-io.md)에, port I/O 축의 반복 측정
+절차는 [port I/O / arena 귀속 가이드](../guides/port-io-arena-attribution.md)에
+있습니다. 다음 할 일 목록은
+[current-execution-frontier.md](current-execution-frontier.md) 앞부분입니다.
 
 ## 요약
 
@@ -255,10 +258,77 @@ single-step하는데 페이지가 격리돼 매번 거부됩니다. Task 404의 
 공통점은 **둘 다 TF 꺼짐 + 재진입 예약 없음**으로 끝난다는 것입니다. 진입 전이는
 실행당 11,597~239,423회로 상시 동작입니다.
 
+### 부분 확인(Task 408, Task 409에서 정정): 첫 진입은 INT 8 타이머 핸들러였습니다
+
+**주의 — 아래는 진입 "첫 1건"의 사실이며 모집단을 대표하지 않습니다.** single-step
+예외가 실행당 260~283회뿐인데 `0x0301DB22`의 진입은 2,018~3,124회이므로, 진입의 **최대
+약 10%만** 직전이 single-step일 수 있습니다. 나머지는 breakpoint나 access violation이며,
+분포는 Task 409의 4분류 히스토그램으로 확정합니다.
+
+주소별 진입 표본으로 격리 없는 4회 실행 전부 같은 첫 표본을 얻었습니다.
+
+| run | 프레임 | `0x0301DB22` count | 진입 | prev-code | prev-eip | flags |
+|---|---:|---:|---:|---|---|---|
+| 1 | 188 | 1,061,800 | 3,124 | `0x80000004` | `0x0301F7CE` | `0x00` |
+| 2 | 1 | 90,415 | 2,018 | `0x80000004` | `0x0301F7CE` | `0x00` |
+| 3 | 1 | 136,081 | 2,430 | `0x80000004` | `0x0301F7CE` | `0x00` |
+| 4 | 1 | 46,987 | 2,403 | `0x80000004` | `0x0301F7CE` | `0x00` |
+
+`0x0301F7CE`는 파일 offset `0x2A9CE`이고 **`CLI` 바로 다음 명령**입니다.
+
+```
+0x0301F7CB  fa                    cli
+0x0301F7CC  31 d2                 xor  edx,edx
+0x0301F7CE  83 ba 98 ec 34 00 00  cmp  dword [edx+0x34EC98],0
+```
+
+`CLI`는 privileged라 HLE가 처리하고 EIP를 전진시키며, 다음 명령에서 single-step 예외가
+납니다. 그 예외 처리가 **TF를 끄고 arena에 재개**하고, 이후 게스트는 타이머 핸들러
+전체를 arena에서 자유 실행합니다. Task 407 신호 (b)의 `0x0301F827`도 같은 루틴 안
+89바이트 뒤이므로 **두 신호는 같은 INT 8 핸들러의 서로 다른 지점**입니다.
+
+**주소마다 기전이 다릅니다.** `0x030D0A1A`는 진입 횟수가 count와 같아(10,404/10,404)
+매 실행이 캐시 INT3 직후이고, `0x0301DB22`는 340:1입니다. 전역 버퍼로는 원리적으로
+구분할 수 없었습니다.
+
+**정정:** 설계는 진입:count 비를 약 1:200으로 예상했으나 실측은 1:19.6~1:340입니다.
+진입 횟수는 지연 호출 수가 아니라 **arena 체류 횟수**이며, 한 체류에서 여러 번의
+지연 호출이 일어납니다.
+
+### 확인됨(Task 409): 진입 기전은 주소마다 다릅니다 — 이제 분포로 확인
+
+주소별 직전 예외 4분류 히스토그램(격리 없는 3회 실행)입니다.
+
+| 주소 | count | 진입 | step | bp | av | 지배 |
+|---|---:|---:|---:|---:|---:|---|
+| `0x030D0A1A` | 10,404 | **10,404** | 0~4 | **10,249~10,319** | 85~155 | breakpoint |
+| `0x0301F851` | 4,732 | 359 | 0 | 1 | **358** | access violation |
+| `0x030D0A0F` | 1,152 | **1,152** | 0 | **1,152** | 0 | breakpoint |
+| `0x0301DB22` | 42,906~946,114 | **1** | **1** | 0 | 0 | (아래 참조) |
+
+`0x030D0A1A`와 `0x030D0A0F`는 진입 횟수가 count와 같아 **매 실행이 캐시 INT3 직후**이며
+캐시와 arena를 매번 왕복합니다.
+
+### 미확정(Task 409): `0x0301DB22`의 진입 기전은 확정되지 않았습니다
+
+같은 판정식인데 진입 횟수가 **Task 408에서 2,018~3,124회, Task 409에서 1회**로 세
+자릿수 차이입니다. 빌드 차이는 카운터 추가뿐이므로 **실행 간 차이**이며, Task 408
+실행들의 분류 분포는 측정되지 않았습니다. 이 편차를 설명하기 전에는 진입 기전을
+하나로 말할 수 없습니다.
+
+Task 409 3회에 한해서는 첫 표본이 곧 모집단이며(진입 1회), 직전은 `0x0301F7CE`의
+single-step입니다.
+
 ### 미확정
 
-* **정상 모드에서 지연 루프가 진입하는 순간.** 전역 ring으로는 특정 주소를 겨냥할 수
-  없어 잡지 못했습니다. **주소별 진입 표본**이 필요합니다.
+* **진입 횟수의 실행 간 3자릿수 편차.**
+* **`0x0301F7CE`의 single-step을 처리하며 TF를 끄고 arena에 남기는 곳.** 코드 읽기로
+  `HandleTimerInterruptChainBoundary`(패턴 불일치·EFlags 미변경),
+  `execution_trampoline.cpp`의 TF 해제 10곳(정상 진행 경로 아님),
+  `aot_runtime_dispatch.cpp:1866~1913`의 세 분기(각각 캐시 이동·격리 유지·TF 유지)를
+  배제했습니다.
+  `aot_runtime_dispatch.cpp:1866~1913`의 세 분기 중 관측 상태와 맞는 것이 없습니다.
+* **`CLI` 다음에 왜 single-step이 나는지** — privileged HLE가 TF를 켜 두는지 여부.
 * **(a) 신호의 INT3 정체** — 캐시 INT3인데 경계 경로가 아닌 것.
 * **(b) 신호의 AV 처리가 왜 arena에 남기는지.**
 * **캐시 중간 진입의 정확성.** 캐시 코드는 selector guard, segment fold, timer safe
@@ -521,11 +591,73 @@ interrupt-handler region free-runs in the arena too.
 Both end with **no trap flag and no scheduled re-entry**, and entry transitions number
 11,597-239,423 per run, so this is routine rather than exceptional.
 
+### Partly confirmed (Task 408, corrected by Task 409): the first entry was the INT 8 handler
+
+**Caution — what follows is a fact about the *first* entry and does not describe the
+population.** Single-step exceptions totalled only 260-283 per run while `0x0301DB22` had
+2,018-3,124 entries, so **at most about a tenth** of them can have had a single-step
+predecessor; the rest followed a breakpoint or an access violation. Task 409's four-way
+histogram settles the distribution.
+
+The per-address entry sample gave the same first value in all four quarantine-free runs:
+previous exception `0x80000004` (single step) at `0x0301F7CE` with flags `0x00` — outside the
+cache, trap flag clear, nothing scheduled. Entry counts were 3,124 / 2,018 / 2,430 / 2,403
+against read counts of 1,061,800 / 90,415 / 136,081 / 46,987.
+
+`0x0301F7CE` is file offset `0x2A9CE`, **the instruction immediately after a `CLI`**:
+
+```
+0x0301F7CB  fa                    cli
+0x0301F7CC  31 d2                 xor  edx,edx
+0x0301F7CE  83 ba 98 ec 34 00 00  cmp  dword [edx+0x34EC98],0
+```
+
+`CLI` is privileged, so HLE emulates it and advances EIP; a single step then fires on the next
+instruction and **that handler clears the trap flag and resumes in the arena**, after which the
+guest free-runs the whole timer handler. Task 407's signature (b) address `0x0301F827` is 89
+bytes further into the same routine, so **both signatures are points in the same INT 8
+handler**.
+
+**Mechanisms differ per address:** `0x030D0A1A` has as many entries as executions
+(10,404 of 10,404), every one after a cache INT3, while `0x0301DB22` is 340 to 1 — a
+distinction a global buffer could not have made.
+
+**Correction:** the design expected an entry-to-count ratio near 1:200 and measured 1:19.6 to
+1:340. Entries count **arena residencies**, not delay-loop calls, since one residency covers
+several calls.
+
+### Confirmed (Task 409): entry mechanisms differ per address, now by distribution
+
+The four-way predecessor histogram across three quarantine-free runs:
+
+| Address | count | Entries | step | bp | av | Dominant |
+|---|---:|---:|---:|---:|---:|---|
+| `0x030D0A1A` | 10,404 | **10,404** | 0-4 | **10,249-10,319** | 85-155 | breakpoint |
+| `0x0301F851` | 4,732 | 359 | 0 | 1 | **358** | access violation |
+| `0x030D0A0F` | 1,152 | **1,152** | 0 | **1,152** | 0 | breakpoint |
+| `0x0301DB22` | 42,906-946,114 | **1** | **1** | 0 | 0 | see below |
+
+`0x030D0A1A` and `0x030D0A0F` have as many entries as executions, so **every execution follows
+a cache INT3** and they cross between cache and arena each time.
+
+### Unresolved (Task 409): the entry mechanism for `0x0301DB22` is not settled
+
+The same test gave **2,018-3,124 entries in Task 408 and 1 in Task 409** — three orders of
+magnitude apart. The only build difference was added counters, so this is run-to-run variation,
+and Task 408's entries were never classified. Until that variation is explained the mechanism
+cannot be stated as one thing. For Task 409's three runs the first sample is the whole
+population, with the single step at `0x0301F7CE` as predecessor.
+
 ### Unresolved
 
-The healthy-mode entry moment for the delay loop specifically — a global ring cannot target one
-address, so a **per-address entry sample** is needed; the identity of signature (a)'s
-breakpoint; why signature (b)'s access-violation handling leaves execution in the arena;
+The three-orders-of-magnitude variation in entry counts; which handler consumes the single step
+at `0x0301F7CE`, clears the trap flag, and leaves execution in the arena — reading has ruled
+out `HandleTimerInterruptChainBoundary` (pattern mismatch, never touches EFlags), the ten
+trap-flag-clearing sites in `execution_trampoline.cpp` (none on a normally progressing path),
+and the three branches at `aot_runtime_dispatch.cpp:1866-1913` (cache move, quarantine hold,
+trap flag left set); why a single step follows the `CLI` at all; the identity of
+signature (a)'s breakpoint; why signature (b)'s access-violation handling leaves execution in
+the arena;
 whether entering cache code mid-stream is correct given that it is emitted assuming selector
 guards, folded segment bases, and timer safe points; and the condition under which a
 re-translation omits its own requested entry from the address map. Quarantine is also

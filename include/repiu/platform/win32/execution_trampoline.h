@@ -599,6 +599,18 @@ struct Win32MinimalExecutionAttempt
         // Task 406: opt-in under `REPIU_PORT_IO_CENSUS_MAPPING`; zero when off.
         std::uint32_t mapped_count = 0;
         std::uint32_t reentry_pending_count = 0;
+        // Task 408: this address's first arena-entry transition, plus how many
+        // it had. Flags: bit 0 prev-in-cache, 1 trap flag, 2 re-entry pending,
+        // 3 legacy fallback, 4 single-step trace.
+        std::uint32_t entry_transition_count = 0;
+        std::uint32_t entry_previous_code = 0;
+        std::uint32_t entry_previous_eip = 0;
+        std::uint8_t entry_flags = 0;
+        // Task 409: predecessor class of every transition, not just the first.
+        std::uint32_t entry_prev_single_step = 0;
+        std::uint32_t entry_prev_breakpoint = 0;
+        std::uint32_t entry_prev_access_violation = 0;
+        std::uint32_t entry_prev_other = 0;
     };
     PortIoAddressCensusEntry port_io_address_census[32] = {};
     std::uint32_t port_io_address_census_size = 0;

@@ -1861,3 +1861,50 @@ The policy uses instruction form and live segment policy rather than PIU address
 `pumpit1` 장시간 검증에서 hybrid는 기준보다 frame 처리량이 21.13% 낮고 frame당 전체 예외, guest-run, VEH, Glide gate 비용이 모두 증가했습니다. 따라서 broad와 hybrid segment-override dispatch는 모두 기본 승격 대상에서 제외합니다. opt-in은 기본 OFF 진단 경로로만 유지하며 일반 실행은 기존 selector-guard/INT3/VEH 경로를 사용합니다.
 
 In long `pumpit1` validation, hybrid routing delivered 21.13% fewer frames and increased per-frame total exceptions, guest-run, VEH, and Glide-gate cost. Both broad and hybrid segment-override dispatch are therefore excluded from default promotion. The opt-in remains only as a default-OFF diagnostic path; normal execution uses the existing selector-guard/INT3/VEH path.
+
+## Port I/O 주소 census와 arena 진입 추적 / Port I/O address census and arena entry tracing
+
+Tasks 405~409은 port I/O 예외의 위치와 원인을 귀속하기 위한 계측 묶음을 추가합니다.
+`HandlePortIoInstruction` 한 곳에서만 기록하며 동작을 바꾸지 않습니다.
+
+```mermaid
+flowchart TD
+    V["VEH 관문<br/>RecordVehExceptionCensus"] --> H["last_veh → prev_veh 한 칸 이동"]
+    H --> P["HandlePortIoInstruction"]
+    P --> A["주소별 census<br/>count / cache / mapped / reentry"]
+    P --> E{"arena fault이고<br/>직전이 0xC0000096이 아님"}
+    E -->|"예"| S["진입 표본 1건 + 4분류 히스토그램"]
+    E -->|"예"| R["전역 ring 최신 16건"]
+```
+
+| 항목 | 기본값 | 내용 |
+|---|---|---|
+| 주소별 count/cache | 상시 ON | 32칸 선형 표. `cache`는 AOT 캐시 안에서 실행됐는지 |
+| `mapped`/`reentry` | `REPIU_PORT_IO_CENSUS_MAPPING` (OFF) | `FindAotCacheAddress` 조회가 붙어 약 5.8% 느려집니다. **켠 실행의 wall·프레임은 인용 금지** |
+| 진입 표본 1건 + 히스토그램 | 상시 ON | 주소별 첫 전이와 직전 예외 4분류 |
+| 전역 진입 ring | 상시 ON | 최신 16건. 주소별 표본과 판정식을 공유합니다 |
+
+**주소별과 전역을 함께 두는 이유:** 전역 버퍼는 가장 시끄러운 주소가 차지하므로 특정
+주소를 겨냥할 수 없고(Task 407), 주소별 표본은 "마지막에 무슨 일이 있었나"를 답하지
+못합니다. 서로 대체하지 않습니다.
+
+**계측 주의:** profiled `kPortIoDevice` count와 cycles는 port I/O를 과대 계상합니다.
+`ExecutionTimeScope`가 함수 진입 시 생성되어 opcode 검사에서 빠져나가는 호출까지 세기
+때문이며, 차이는 single-step 횟수를 따라갑니다. **실제 횟수는 census 쪽입니다.**
+
+Tasks 405-409 add one instrumentation cluster that attributes where port I/O exceptions occur
+and why, recorded at a single site in `HandlePortIoInstruction` with no behaviour change. The
+per-address census, its first entry sample, the four-way predecessor histogram, and the global
+entry ring are always on; only the `mapped`/`reentry` fields are opt-in under
+`REPIU_PORT_IO_CENSUS_MAPPING`, because their `FindAotCacheAddress` lookup costs about 5.8% and
+would distort the measurement it serves — **wall time and frame counts from enabled runs are
+not quotable**.
+
+Per-address and global buffers coexist deliberately: a global buffer is taken by the noisiest
+address and cannot target a specific one (Task 407), while a per-address sample cannot say what
+happened most recently. They share one transition test so they can never disagree about what an
+entry is.
+
+**Measurement caveat:** the profiled `kPortIoDevice` count and cycles over-count port I/O,
+because `ExecutionTimeScope` is constructed on entry and so counts calls that bail at the
+opcode check; the gap tracks the single-step count. **The census is the accurate count.**

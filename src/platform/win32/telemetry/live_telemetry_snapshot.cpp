@@ -753,7 +753,15 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
             context.port_io_address_census[index].count,
             context.port_io_address_census[index].cache_count,
             context.port_io_address_census[index].mapped_count,
-            context.port_io_address_census[index].reentry_pending_count};
+            context.port_io_address_census[index].reentry_pending_count,
+            context.port_io_address_census[index].entry_transition_count,
+            context.port_io_address_census[index].entry_previous_code,
+            context.port_io_address_census[index].entry_previous_eip,
+            context.port_io_address_census[index].entry_flags,
+            context.port_io_address_census[index].entry_prev_single_step,
+            context.port_io_address_census[index].entry_prev_breakpoint,
+            context.port_io_address_census[index].entry_prev_access_violation,
+            context.port_io_address_census[index].entry_prev_other};
     }
     static_assert(
         sizeof(attempt->arena_port_io_entry_trace) /

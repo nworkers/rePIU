@@ -332,6 +332,24 @@ struct ThreadContext
         // 6,866 ticks and this site runs roughly 23,000 times a second.
         std::uint32_t mapped_count = 0;
         std::uint32_t reentry_pending_count = 0;
+        // Task 408: Task 407's global ring could not target one address --
+        // whatever it retained, the noisiest address took every slot. A slot
+        // per address cannot be displaced. Only the first transition is kept;
+        // later ones raise the count. Flags: bit 0 prev-in-cache, 1 trap flag,
+        // 2 re-entry pending, 3 legacy fallback, 4 single-step trace.
+        std::uint32_t entry_transition_count = 0;
+        std::uint32_t entry_previous_code = 0;
+        std::uint32_t entry_previous_eip = 0;
+        std::uint8_t entry_flags = 0;
+        // Task 409: the first sample alone cannot speak for the population.
+        // `0x0301DB22` had 2,018-3,124 entries in runs whose whole single-step
+        // census was 260-283, so at most a tenth of them could match the first
+        // sample's predecessor. A four-way histogram settles which class
+        // dominates without keeping every sample.
+        std::uint32_t entry_prev_single_step = 0;
+        std::uint32_t entry_prev_breakpoint = 0;
+        std::uint32_t entry_prev_access_violation = 0;
+        std::uint32_t entry_prev_other = 0;
     };
     PortIoAddressCensusEntry
         port_io_address_census[kPortIoAddressCensusCapacity] = {};

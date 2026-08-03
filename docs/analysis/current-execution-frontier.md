@@ -4,9 +4,65 @@
 [Task 304~347 항목 원문](history/current-execution-frontier-task304-through-task347.md)에
 보존합니다. 이 문서는 최근 약 10개 Task와 현재 결정만 유지합니다.
 
+## 다음 할 일 / Next work, in order
+
+2026-08-03 Tasks 404~409 기준입니다. 근거는 아래 인수인계 절과
+[pumpit3 bring-up](pumpit3-bring-up.md), 측정 절차는
+[port I/O / arena 귀속 가이드](../guides/port-io-arena-attribution.md)에 있습니다.
+
+| # | 할 일 | 왜 지금인가 | 걸린 비용 |
+|---|---|---|---:|
+| 1 | **진입 횟수 3자릿수 편차 설명** — `0x0301DB22` 진입이 Task 408에서 2,018~3,124회, Task 409에서 1회. 히스토그램은 이미 있으므로 두 모드가 다시 나오면 분포를 직접 비교 | 이걸 모르면 아래 2번의 표본이 대표성을 갖는지 알 수 없음 | (선행 조건) |
+| 2 | **`0x0301F7CE` single-step을 소비하는 지점** — TF를 끄고 arena에 남기는 곳. 코드 읽기로 배제한 목록은 [Task 409 로그 §6](../work-logs/20260803-409-arena-entry-predecessor-histogram.md) | 사슬의 **시작점** | wall 약 42~50% |
+| 3 | **arena→캐시 복귀 설계** — 2번이 확정된 뒤. selector guard·segment fold·timer safe point 전제 때문에 중간 진입 정확성 검토가 선행 | 2번의 해결책 | 위와 같음 |
+| 4 | **재번역이 요청 진입 주소를 address map에 남기지 못하는 조건** — 사유는 `dynamic AOT entry was not active in the new image`로 확보됨(Task 404) | 격리 실행의 근인 | 격리 시 wall 35~40% |
+| 5 | **격리 발생을 가르는 조건** — 10회 중 6회, 5회 중 0회로 비결정적 | 4번과 짝 | 위와 같음 |
+| 6 | **세그먼트 레지스터 HLE 이벤트당 약 2.4~2.7M cycle** — 표본 3,000회 미만인데 격리 없는 실행에서도 약 12% | 독립 축 | wall 약 12% |
+| 7 | **`GetAsyncKeyState` 단가 3~6배** — Task 403의 3,044 대 실측 9,802~17,596 | JAMMA scan이 여전히 4.9~5.3% | wall 약 5% |
+| 8 | **pumpit3가 45초에 렌더 루프에 도달하지 못함** — 격리 없는 실행에서도 동일하므로 별개 원인 | 프레임 기반 판정이 불가능한 상태 | (판정 불능 해소) |
+| 9 | **부팅 크래시** — arena base가 높게 잡히면 `INT 21h AH=4Ah` resize가 `0x0008`로 실패 | 재현율 낮으나 실행 자체가 죽음 | (안정성) |
+| 10 | **teardown 지연** — Task 401 이후 손대지 않음 | 측정 회전율 | (편의) |
+
+**측정 규칙(이번 세션에서 배운 것):**
+
+* 격리 실행과 정상 실행은 **재진입 거동이 정반대**이므로 섞어서 평균 내지 않습니다.
+  `AOT generation publishes/quarantines`를 먼저 읽습니다.
+* **세션 간 절대 비교는 성립하지 않습니다.** 같은 날 pumpit1이 700~980 프레임인데
+  08-02 기록은 2,222/2,251입니다. 같은 세션 안의 대비만 씁니다.
+* 진입 분류 수는 해당 예외 총수를 넘을 수 없습니다. **이 검산을 빼면 Task 408처럼
+  결론이 과해집니다.**
+* `REPIU_PORT_IO_CENSUS_MAPPING`을 켠 실행의 wall·프레임은 인용하지 않습니다.
+
+## Next work, in order
+
+Based on Tasks 404-409 on 2026-08-03. Evidence is in the handoff below and
+[pumpit3 bring-up](pumpit3-bring-up.md); the procedure is in the
+[port I/O / arena attribution guide](../guides/port-io-arena-attribution.md).
+
+| # | Item | Why now | Cost at stake |
+|---|---|---|---:|
+| 1 | **Explain the three-order variation in entry counts** — `0x0301DB22` recorded 2,018-3,124 entries in Task 408 and 1 in Task 409. The histogram is already in place, so reproducing both modes allows a direct comparison | Without it, item 2's sample cannot be known to be representative | (prerequisite) |
+| 2 | **Which site consumes the `0x0301F7CE` single step**, clearing the trap flag and leaving execution in the arena. Ruled-out list in [Task 409 log §6](../work-logs/20260803-409-arena-entry-predecessor-histogram.md) | Head of the chain | ~42-50% of wall |
+| 3 | **Design the arena-to-cache return**, after item 2. Mid-stream entry correctness must be checked first, since cache code assumes selector guards, folded segment bases, and timer safe points | The remedy for item 2 | same |
+| 4 | **Why a re-translation omits its requested entry from the address map** — the reason string `dynamic AOT entry was not active in the new image` is already captured (Task 404) | Root of the quarantined mode | 35-40% of wall when it fires |
+| 5 | **What decides whether quarantine fires** — six of ten runs, then zero of five | Pairs with item 4 | same |
+| 6 | **Segment-register HLE at 2.4-2.7M cycles per event** — under 3,000 events yet about 12% of wall even without quarantine | Independent axis | ~12% of wall |
+| 7 | **`GetAsyncKeyState` three to six times Task 403's price** (3,044 against 9,802-17,596) | JAMMA scan still 4.9-5.3% | ~5% of wall |
+| 8 | **pumpit3 not reaching its render loop in 45 s**, quarantine or not | Frame-based judgement is impossible until then | (unblocks judgement) |
+| 9 | **Boot crash** when the arena lands high and `INT 21h AH=4Ah` resize fails with `0x0008` | Low reproduction rate but kills the run | (stability) |
+| 10 | **Teardown stall**, untouched since Task 401 | Measurement turnaround | (convenience) |
+
+**Measurement rules learned this session:** quarantined and healthy runs behave oppositely on
+re-entry, so never average them — read `AOT generation publishes/quarantines` first;
+cross-session absolute comparison does not hold, since pumpit1 measured 700-980 frames the same
+day against 2,222/2,251 on 08-02, so use within-session contrasts only; an entry class count
+cannot exceed that exception's total, and **skipping that check is how Task 408 overstated its
+conclusion**; and runs with `REPIU_PORT_IO_CENSUS_MAPPING` enabled are not quotable for wall
+time or frames.
+
 ## 다음 세션 인수인계 / Session handoff
 
-### 2026-08-03 현재: pumpit3의 지배 비용은 port I/O 예외입니다 (Task 404)
+### 2026-08-03 현재: pumpit3의 지배 비용은 port I/O 예외입니다 (Tasks 404~409)
 
 같은 빌드·같은 세션에서 pumpit3 15회, pumpit1 5회를 45초씩 측정했습니다. 상세는
 [pumpit3 bring-up](pumpit3-bring-up.md), 근거는
@@ -70,11 +126,24 @@ violation 이후**(정상 상태, `0x0301F827` → `0x0301F851` PIC EOI) 두 가
 **TF 꺼짐 + 예약 없음**으로 끝납니다. (a)의 INT3는 캐시 주소인데 경계 경로가 항상 TF를
 켜므로 **그 경로가 처리한 것이 아닙니다.** 진입 전이는 실행당 11,597~239,423회입니다.
 
-**미확정:** 정상 모드에서 지연 루프가 진입하는 순간(전역 ring으로는 특정 주소를 겨냥할 수
-없어 미포착 — **주소별 진입 표본**이 필요). (a) 신호 INT3의 정체. (b) 신호 AV 처리가 왜
-arena에 남기는지. 캐시 중간 진입의 정확성. 재번역이 요청 진입 주소를 address map에
-남기지 못하는 조건. 격리 발생을 가르는 조건. pumpit3가 45초 안에 렌더 루프에 도달하지
-못하는 것은 격리 없는 실행에서도 마찬가지이므로 별개 원인이 남아 있습니다.
+**확인됨 6 (Task 408) — 지연 루프는 INT 8 타이머 핸들러 안에서 arena에 들어갑니다.**
+주소별 진입 표본이 격리 없는 4회 실행에서 **완전히 동일**했습니다: 직전 예외
+`0x80000004`(single-step) @ `0x0301F7CE`, flags `0x00`(캐시 밖·TF 꺼짐·예약 없음).
+`0x0301F7CE`는 **`CLI` 바로 다음 명령**(파일 `0x2A9CE`)이므로, privileged HLE가 `CLI`를
+처리한 뒤 나는 single-step을 **누군가 TF를 끄고 arena에 재개**시키고, 그때부터 핸들러
+전체가 arena 자유 실행이 됩니다. Task 407 신호 (b)의 `0x0301F827`도 같은 루틴 89바이트
+뒤이므로 **두 신호는 같은 핸들러의 서로 다른 지점**입니다. 주소마다 기전이 달라
+(`0x030D0A1A`는 진입:count가 1:1, `0x0301DB22`는 1:340) 전역 버퍼로는 판정 불가였습니다.
+
+**정정(Task 408):** 진입:count 비를 1:200으로 예상했으나 1:19.6~1:340입니다. 진입 횟수는
+지연 호출 수가 아니라 **arena 체류 횟수**입니다.
+
+**미확정:** `0x0301F7CE`의 single-step을 처리하며 TF를 끄고 arena에 남기는 곳(최우선 —
+`aot_runtime_dispatch.cpp:1866~1913`의 세 분기 중 관측 상태와 맞는 것이 없음). `CLI` 다음에
+single-step이 나는 이유. (a) 신호 INT3의 정체. (b) 신호 AV 처리가 왜 arena에 남기는지.
+캐시 중간 진입의 정확성. 재번역이 요청 진입 주소를 address map에 남기지 못하는 조건.
+격리 발생을 가르는 조건. pumpit3가 45초 안에 렌더 루프에 도달하지 못하는 것은 격리 없는
+실행에서도 마찬가지이므로 별개 원인이 남아 있습니다.
 
 ### As of 2026-08-03: pumpit3's dominant cost is the port I/O exception (Task 404)
 
@@ -142,12 +211,28 @@ end with **no trap flag and nothing scheduled**. Signature (a)'s breakpoint sits
 address, yet the boundary path always sets the trap flag, so **it was not handled by that
 path**. Entry transitions number 11,597-239,423 per run.
 
-**Unresolved:** the healthy-mode entry moment for the delay loop, which a global ring cannot
-target — a **per-address entry sample** is needed; the identity of signature (a)'s breakpoint;
-why signature (b) leaves execution in the arena; whether mid-stream cache entry is correct; the
-condition under which a re-translation omits its requested entry from the address map; what
-decides whether quarantine fires; and why pumpit3 fails to reach its render loop within 45
-seconds even without quarantine, which must have a separate cause.
+**Confirmed 6 (Task 408) — the delay loop enters the arena inside the INT 8 timer handler.**
+The per-address entry sample was **identical in all four quarantine-free runs**: previous
+exception `0x80000004` (single step) at `0x0301F7CE`, flags `0x00` (outside the cache, trap
+flag clear, nothing scheduled). `0x0301F7CE` is **the instruction right after a `CLI`** (file
+offset `0x2A9CE`), so after the privileged HLE emulates the `CLI`, something takes the
+following single step, **clears the trap flag, and resumes in the arena**, and from there the
+whole handler free-runs. Task 407's signature (b) address `0x0301F827` is 89 bytes further into
+the same routine, so **both signatures are points in one handler**. Mechanisms differ per
+address — `0x030D0A1A` is one entry per execution, `0x0301DB22` one per 340 — which is why a
+global buffer could not decide it.
+
+**Correction (Task 408):** the expected entry-to-count ratio of 1:200 measured 1:19.6 to 1:340.
+Entries count **arena residencies**, not delay-loop calls.
+
+**Unresolved:** which handler consumes the single step at `0x0301F7CE`, clears the trap flag,
+and leaves execution in the arena (top priority — none of the three branches at
+`aot_runtime_dispatch.cpp:1866-1913` matches the observed state); why a single step follows the
+`CLI` at all; the identity of signature (a)'s breakpoint; why signature (b) leaves execution in
+the arena; whether mid-stream cache entry is correct; the condition under which a
+re-translation omits its requested entry from the address map; what decides whether quarantine
+fires; and why pumpit3 fails to reach its render loop within 45 seconds even without
+quarantine, which must have a separate cause.
 
 ### 2026-08-02 현재: pumpit3가 렌더 루프에 진입했습니다
 

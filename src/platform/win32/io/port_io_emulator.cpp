@@ -347,11 +347,49 @@ static bool PortIoCensusMappingEnabled()
     return enabled;
 }
 
+// Task 408: the entry sample the census entry keeps for its address.
+struct PortIoEntrySample
+{
+    bool is_entry = false;
+    std::uint32_t previous_code = 0;
+    std::uint32_t previous_eip = 0;
+    std::uint8_t flags = 0;
+};
+
+static void ApplyPortIoEntrySample(
+    ThreadContext::PortIoAddressCensusEntry* entry,
+    const PortIoEntrySample& sample)
+{
+    if (!sample.is_entry)
+    {
+        return;
+    }
+    // The first transition is kept whole; later ones only raise the count,
+    // which is what makes a busy address unable to overwrite its own evidence.
+    if (entry->entry_transition_count == 0U)
+    {
+        entry->entry_previous_code = sample.previous_code;
+        entry->entry_previous_eip = sample.previous_eip;
+        entry->entry_flags = sample.flags;
+    }
+    ++entry->entry_transition_count;
+    // Task 409: and the class of every transition, because the first sample
+    // turned out to describe at most a tenth of them.
+    switch (sample.previous_code)
+    {
+        case 0x80000004U: ++entry->entry_prev_single_step; break;
+        case 0x80000003U: ++entry->entry_prev_breakpoint; break;
+        case 0xC0000005U: ++entry->entry_prev_access_violation; break;
+        default: ++entry->entry_prev_other; break;
+    }
+}
+
 static void RecordPortIoAddress(ThreadContext* context,
                                 std::uint32_t guest_address,
                                 bool from_aot_cache,
                                 bool mapped,
-                                bool reentry_pending)
+                                bool reentry_pending,
+                                const PortIoEntrySample& entry_sample)
 {
     for (std::uint32_t index = 0;
          index < context->port_io_address_census_size; ++index)
@@ -372,6 +410,7 @@ static void RecordPortIoAddress(ThreadContext* context,
             {
                 ++entry.reentry_pending_count;
             }
+            ApplyPortIoEntrySample(&entry, entry_sample);
             return;
         }
     }
@@ -388,6 +427,7 @@ static void RecordPortIoAddress(ThreadContext* context,
     entry.cache_count = from_aot_cache ? 1U : 0U;
     entry.mapped_count = mapped ? 1U : 0U;
     entry.reentry_pending_count = reentry_pending ? 1U : 0U;
+    ApplyPortIoEntrySample(&entry, entry_sample);
 }
 
 bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
@@ -445,15 +485,30 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
         mapped = FindAotCacheAddress(
             *context->aot_placement, decode_eip, &cache_address);
     }
+    // Task 407/408: one transition test feeds both the global ring and the
+    // per-address sample, so the two can never disagree about what an entry is.
+    // `0xC0000096` before an arena port I/O fault means the previous exception
+    // was this same loop, which is the steady state rather than an entry.
+    PortIoEntrySample entry_sample;
+    entry_sample.is_entry =
+        !from_aot_cache && context->prev_veh_code != 0xC0000096U;
+    if (entry_sample.is_entry)
+    {
+        entry_sample.previous_code = context->prev_veh_code;
+        entry_sample.previous_eip = context->prev_veh_eip;
+        entry_sample.flags = static_cast<std::uint8_t>(
+            (context->prev_veh_in_cache ? 0x01U : 0U) |
+            (((win32_context->EFlags & 0x00000100U) != 0U) ? 0x02U : 0U) |
+            (context->aot_reentry_pending ? 0x04U : 0U) |
+            (context->aot_legacy_fallback ? 0x08U : 0U) |
+            (context->enable_single_step_trace ? 0x10U : 0U));
+    }
     RecordPortIoAddress(context, decode_eip, from_aot_cache, mapped,
-                        context->aot_reentry_pending);
-    // Task 407: only the transition into arena free-running, not the steady
-    // state it sustains. `0xC0000096` before an arena port I/O fault means the
-    // previous exception was this same loop.
+                        context->aot_reentry_pending, entry_sample);
     // A ring, not a prefix: the first attempt kept the first sixteen and they
     // were all consumed during boot, so the loop that costs half of wall clock
     // never appeared. Keeping the most recent sixteen shows the steady state.
-    if (!from_aot_cache && context->prev_veh_code != 0xC0000096U)
+    if (entry_sample.is_entry)
     {
         auto& entry = context->arena_port_io_entry_trace[
             context->arena_port_io_entry_trace_count %
