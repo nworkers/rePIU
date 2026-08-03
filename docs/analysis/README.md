@@ -79,3 +79,4 @@ Status labels are **Confirmed**, **Inferred**, and **Unresolved**. See the linke
 
 * [pumpit2 CHD/ISO9660 mount 분석 / pumpit2 CHD/ISO9660 mount](pumpit2-chd-iso9660-mount.md)
 * [pumpit3 bring-up: 프로필 추가에서 렌더 루프까지 / pumpit3 bring-up](pumpit3-bring-up.md)
+* [pumpit3 기동 중 멈춤 / pumpit3 startup stall](pumpit3-startup-stall.md)
