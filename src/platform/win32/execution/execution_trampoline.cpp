@@ -1312,9 +1312,12 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
             }
             if (resumed)
             {
+                NoteVehExitSite(context,
+                                VehExitSite::kSingleStepTraceHleResumed);
                 return true;
             }
         }
+        NoteVehExitSite(context, VehExitSite::kSingleStepTraceHleStepped);
         win32_context->EFlags |= 0x00000100U;
         return true;
     }
@@ -1333,6 +1336,7 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
     {
         hotspot_scope.SetOutcome(
             SingleStepProfileOutcome::kTimerInterrupt);
+        NoteVehExitSite(context, VehExitSite::kSingleStepTraceTimerInjected);
         return true;
     }
     const bool call_step_return_watch =
@@ -1365,8 +1369,10 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
     {
         hotspot_scope.SetOutcome(
             SingleStepProfileOutcome::kNativeExecution);
+        NoteVehExitSite(context, VehExitSite::kSingleStepTraceNativeEntry);
         return true;
     }
+    NoteVehExitSite(context, VehExitSite::kSingleStepTraceStepped);
     win32_context->EFlags |= 0x00000100U;
     return true;
 }
@@ -2718,6 +2724,62 @@ std::uint32_t InjectPendingInterrupts(CONTEXT* win32_context,
     return consumed_ticks;
 }
 
+void NoteVehExitSite(ThreadContext* context, VehExitSite site)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+    context->last_veh_exit_site = static_cast<std::uint8_t>(site);
+}
+
+// Task 410. Constructed at the VEH choke point, before AotHleTranslationScope,
+// so it is destroyed after that scope has finished rewriting EIP -- the address
+// recorded here is therefore the one the guest actually resumes at. See
+// docs/design/20260803-410-veh-exit-site-attribution.md.
+struct VehExitRecorder
+{
+    CONTEXT* win32_context;
+    ThreadContext* context;
+    bool arena_single_step;
+
+    VehExitRecorder(CONTEXT* wc, ThreadContext* ctx, bool arena_step)
+        : win32_context(wc), context(ctx), arena_single_step(arena_step)
+    {
+    }
+
+    VehExitRecorder(const VehExitRecorder&) = delete;
+    VehExitRecorder& operator=(const VehExitRecorder&) = delete;
+
+    ~VehExitRecorder()
+    {
+        const std::uint32_t exit_eip =
+            static_cast<std::uint32_t>(win32_context->Eip);
+        context->last_veh_exit_eip = exit_eip;
+        // Same bit order as the port I/O entry sample, so the two can be read
+        // against each other without a conversion table.
+        context->last_veh_exit_flags = static_cast<std::uint8_t>(
+            (IsAotCacheAddress(context, exit_eip) ? 0x01U : 0U) |
+            (((win32_context->EFlags & 0x00000100U) != 0U) ? 0x02U : 0U) |
+            (context->aot_reentry_pending ? 0x04U : 0U) |
+            (context->aot_legacy_fallback ? 0x08U : 0U) |
+            (context->enable_single_step_trace ? 0x10U : 0U));
+        if (!arena_single_step)
+        {
+            return;
+        }
+        // Task 409's lesson: count the population, not just the first sample.
+        // The total is kept separately so `sum(counts) == total` can be checked
+        // rather than assumed.
+        ++context->veh_arena_single_step_count;
+        const std::uint32_t site = context->last_veh_exit_site;
+        if (site < kVehExitSiteCount)
+        {
+            ++context->veh_arena_single_step_exit_site_counts[site];
+        }
+    }
+};
+
 struct AotHleTranslationScope
 {
     CONTEXT* win32_context;
@@ -2941,6 +3003,21 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     context->last_veh_eip = static_cast<std::uint32_t>(win32_context->Eip);
     context->last_veh_in_cache =
         IsAotCacheAddress(context, context->last_veh_eip);
+    // Task 410: the same rotation for who consumed the exception. The site is
+    // reset to `kUnknown` here, so a path that resumes without tagging itself
+    // reports the omission instead of inheriting the previous answer.
+    context->prev_veh_exit_site = context->last_veh_exit_site;
+    context->prev_veh_exit_eip = context->last_veh_exit_eip;
+    context->prev_veh_exit_flags = context->last_veh_exit_flags;
+    context->last_veh_exit_site =
+        static_cast<std::uint8_t>(VehExitSite::kUnknown);
+    // The population is single steps taken at an arena EIP, which is exactly
+    // the class the `0x0301F7CE` question is about. Fixed here rather than in
+    // the destructor because handlers rewrite EIP on the way out.
+    const VehExitRecorder veh_exit_recorder(
+        win32_context, context,
+        exception_info->ExceptionRecord->ExceptionCode == EXCEPTION_SINGLE_STEP &&
+            IsGuestInstructionPointer(context, context->last_veh_eip));
     Win32UnhandledBreakpointEvidence breakpoint_evidence;
     if (exception_info->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT)
     {
@@ -2950,6 +3027,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
 
     if (win32_context->Eip == 0U)
     {
+        NoteVehExitSite(context, VehExitSite::kZeroEip);
         win32_context->EFlags &= ~0x00000100U;
         DumpZeroReturnEvidence(
             win32_context, context, "zero-eip-fail-closed",
@@ -2973,6 +3051,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     if (HandleAotDbtCallStepProbe(
             exception_info, win32_context, context))
     {
+        NoteVehExitSite(context, VehExitSite::kCallStepProbe);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
     // Task 275 linear spans use Dr0 only. On the expected boundary, restore
@@ -3025,11 +3104,13 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
                     context->native_fast_path.region_return_address)
             {
                 LeaveNativeRegion(win32_context, context, true);
+                NoteVehExitSite(context, VehExitSite::kNativeRegionReturn);
                 return EXCEPTION_CONTINUE_EXECUTION;
             }
             if ((region_dr6 & 0x0EU) != 0U &&
                 HandleNativeRegionSensitiveDr(win32_context, context))
             {
+                NoteVehExitSite(context, VehExitSite::kNativeRegionSensitive);
                 return EXCEPTION_CONTINUE_EXECUTION;
             }
         }
@@ -3044,6 +3125,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
             return false;
         }
         win32_context->EFlags &= ~0x00000100U;
+        NoteVehExitSite(context, VehExitSite::kTerminalFailureSearch);
         return true;
     };
     prologue_time_scope.reset();
@@ -3062,6 +3144,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         if (HandleAotGuestCodeWriteCompletion(
                 exception_info, win32_context, context))
         {
+            NoteVehExitSite(context, VehExitSite::kAotWriteCompletion);
             return EXCEPTION_CONTINUE_EXECUTION;
         }
         if (stop_for_aot_terminal_failure())
@@ -3071,6 +3154,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         if (HandleAotGuestCodeWriteFault(
                 exception_info, win32_context, context))
         {
+            NoteVehExitSite(context, VehExitSite::kAotWriteFault);
             return EXCEPTION_CONTINUE_EXECUTION;
         }
         if (stop_for_aot_terminal_failure())
@@ -3080,6 +3164,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         if (HandleAotTimerSafePoint(
                 exception_info, win32_context, context))
         {
+            NoteVehExitSite(context, VehExitSite::kAotTimerSafePoint);
             return EXCEPTION_CONTINUE_EXECUTION;
         }
         if (stop_for_aot_terminal_failure())
@@ -3096,6 +3181,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         }
         if (HandleAotIndirectTransfer(exception_info, win32_context, context))
         {
+            NoteVehExitSite(context, VehExitSite::kAotIndirectTransfer);
             return EXCEPTION_CONTINUE_EXECUTION;
         }
         if (stop_for_aot_terminal_failure())
@@ -3105,6 +3191,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         if (HandleAotConditionalTransfer(
                 exception_info, win32_context, context))
         {
+            NoteVehExitSite(context, VehExitSite::kAotConditionalTransfer);
             return EXCEPTION_CONTINUE_EXECUTION;
         }
         if (stop_for_aot_terminal_failure())
@@ -3113,6 +3200,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         }
         if (HandleAotReturnTransfer(exception_info, win32_context, context))
         {
+            NoteVehExitSite(context, VehExitSite::kAotReturnTransfer);
             return EXCEPTION_CONTINUE_EXECUTION;
         }
         if (stop_for_aot_terminal_failure())
@@ -3179,6 +3267,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
                                  context->enable_single_step_trace,
                                  context->aot_reentry_pending);
         }
+        NoteVehExitSite(context, VehExitSite::kOutOfArenaStepDiscard);
         win32_context->EFlags &= ~0x00000100U;
         return EXCEPTION_CONTINUE_EXECUTION;
     }
@@ -3190,6 +3279,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         !IsGuestInstructionPointer(
             context, static_cast<std::uint32_t>(win32_context->Eip)))
     {
+        NoteVehExitSite(context, VehExitSite::kDebugPrintDiscard);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
     if (exception_info->ExceptionRecord != nullptr &&
@@ -3198,6 +3288,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         !IsGuestInstructionPointer(
             context, static_cast<std::uint32_t>(win32_context->Eip)))
     {
+        NoteVehExitSite(context, VehExitSite::kContinueSearch);
         return EXCEPTION_CONTINUE_SEARCH;
     }
     // Task 325: nine InterlockedExchange writes plus allocator recording run on
@@ -3258,6 +3349,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     if (HandleGlideGateBoundary(win32_context, context))
     {
         InjectPendingInterrupts(win32_context, context);
+        NoteVehExitSite(context, VehExitSite::kGlideGateBoundary);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
     // Task 325: the non-Glide boundary gates. Glide keeps its own bucket from
@@ -3268,10 +3360,12 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
             ExecutionTimeBucket::kVehBoundaryGates);
         if (HandleTimerInterruptChainBoundary(win32_context, context))
         {
+            NoteVehExitSite(context, VehExitSite::kTimerChainBoundary);
             return EXCEPTION_CONTINUE_EXECUTION;
         }
         if (HandleLinexeFarTransferBoundary(win32_context, context))
         {
+            NoteVehExitSite(context, VehExitSite::kLinexeFarTransferBoundary);
             return EXCEPTION_CONTINUE_EXECUTION;
         }
     }
@@ -3312,6 +3406,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         kMaximumX86InstructionBytes);
     if (context->use_guest_stack && !guest_decode_window_readable)
     {
+        NoteVehExitSite(context, VehExitSite::kUnreadableDecodeWindow);
         // Task 300: preserve the primary guest exception. Calling opcode
         // probes with an invalid EIP creates a host AV that masks the original
         // code/fault VA, as observed at HandleTracedDosInterrupt21.
@@ -3329,11 +3424,13 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     if (context->enable_privileged_trap_hle &&
         HandlePrivilegedTrapInstruction(win32_context, context))
     {
+        NoteVehExitSite(context, VehExitSite::kHleChainPrivileged);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
     if (context->enable_privileged_trap_hle &&
         HandlePortIoInstruction(win32_context, context))
     {
+        NoteVehExitSite(context, VehExitSite::kHleChainPortIo);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
     if (context->enable_traced_dos_hle &&
@@ -3343,8 +3440,14 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
          HandleTracedMouseInterrupt33(win32_context, context) ||
          HandleTracedBiosInterrupt16(win32_context, context)))
     {
+        NoteVehExitSite(context, VehExitSite::kHleChainTracedDos);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
+    // Task 410: the segment family is eighteen handlers with one answer, so it
+    // is tagged once here rather than eighteen times. Every exit below this
+    // point sets its own site, and the last call before the return wins, so a
+    // fall-through past the family cannot be misread as one of its handlers.
+    NoteVehExitSite(context, VehExitSite::kHleChainSegment);
     if (context->enable_segment_load_hle &&
         HandleSegmentLoadInstruction(win32_context, context))
     {
@@ -3429,6 +3532,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         HandleDosHleInstruction(win32_context, context))
     {
         InjectPendingInterrupts(win32_context, context);
+        NoteVehExitSite(context, VehExitSite::kHleChainDosHle);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
     // Task 401: nothing below handles a software interrupt, so an INT that
@@ -3557,9 +3661,11 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
 
         if (handled)
         {
+            NoteVehExitSite(context, VehExitSite::kHleChainAccessViolation);
             return EXCEPTION_CONTINUE_EXECUTION;
         }
     }
+    NoteVehExitSite(context, VehExitSite::kHleChainStringOp);
     if (context->enable_segment_load_hle &&
         HandleRepMovsInstruction(win32_context, context))
     {
@@ -3577,6 +3683,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     }
     if (context->aot_terminal_failure.load(std::memory_order_acquire))
     {
+        NoteVehExitSite(context, VehExitSite::kTerminalFailureSearch);
         win32_context->EFlags &= ~0x00000100U;
         return EXCEPTION_CONTINUE_SEARCH;
     }
@@ -3584,6 +3691,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
                                       win32_context,
                                       context))
     {
+        NoteVehExitSite(context, VehExitSite::kFatalBreakpoint);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
@@ -3594,6 +3702,8 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     {
         // Indirect transfers, returns, and LOOP-family instructions execute
         // once from the original image under TF, then re-enter the cache.
+        NoteVehExitSite(context,
+                        VehExitSite::kReentryBreakpointPassThrough);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
@@ -3607,6 +3717,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
             static_cast<std::uintptr_t>(exception_info->ContextRecord->Edx));
         AppendConsoleOutput(context, source, byte_count);
         RecoverFromHleExit(exception_info->ContextRecord, context);
+        NoteVehExitSite(context, VehExitSite::kConsoleOutputExit);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 
@@ -3649,6 +3760,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         }
     }
 
+    NoteVehExitSite(context, VehExitSite::kUnhandledRecover);
     win32_context->EFlags &= ~0x00000100U;
     CommitUnhandledBreakpointEvidence(
         breakpoint_evidence, win32_context, context);

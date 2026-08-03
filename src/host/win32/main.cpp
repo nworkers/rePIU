@@ -9,6 +9,7 @@
 #include "../../platform/win32/aot/aot_dbt_glide_gate_dispatch.h"
 #include "repiu/platform/win32/aot_boundary_opcode_census.h"
 #include "repiu/platform/win32/live_telemetry.h"
+#include "repiu/platform/win32/veh_exit_site.h"
 #include "repiu/platform/win32/runtime_memory_policy.h"
 #include "repiu/runtime/guest_context.h"
 #include "repiu/runtime/aot_code_cache.h"
@@ -1100,6 +1101,16 @@ void PrintExecutionAttempt(
                         entry.entry_prev_breakpoint,
                         entry.entry_prev_access_violation,
                         entry.entry_prev_other);
+                    // Task 410: and who resumed the guest after it. `exit-eip`
+                    // equal to `prev-eip` means the consumer did not advance
+                    // EIP; a cache address means it went back to the cache.
+                    logger.info(
+                        "Win32 port I/O address #{} entry prev "
+                        "exit-site/exit-eip: {}/{}",
+                        rank + 1U,
+                        repiu::platform::win32::VehExitSiteName(
+                            entry.entry_previous_exit_site),
+                        Hex32(entry.entry_previous_exit_eip));
                 }
             }
         }
@@ -1129,6 +1140,35 @@ void PrintExecutionAttempt(
                 entry.previous_in_cache, entry.trap_flag,
                 entry.reentry_pending, entry.legacy_fallback,
                 entry.single_step_trace);
+        }
+        // Task 410: the population behind the per-address first sample -- every
+        // single step taken at an arena EIP, by the VEH exit that consumed it.
+        // The total is printed beside the sum so `sum == total` is checkable
+        // rather than assumed; Task 409 was undone by trusting a first sample.
+        {
+            std::uint32_t exit_site_sum = 0;
+            for (std::uint32_t site = 0;
+                 site < repiu::platform::win32::kVehExitSiteCount; ++site)
+            {
+                exit_site_sum +=
+                    attempt.veh_arena_single_step_exit_site_counts[site];
+            }
+            logger.info(
+                "Win32 arena single-step exit total/sum: {}/{}",
+                attempt.veh_arena_single_step_count, exit_site_sum);
+            for (std::uint32_t site = 0;
+                 site < repiu::platform::win32::kVehExitSiteCount; ++site)
+            {
+                const std::uint32_t count =
+                    attempt.veh_arena_single_step_exit_site_counts[site];
+                if (count == 0U)
+                {
+                    continue;
+                }
+                logger.info(
+                    "Win32 arena single-step exit {}: {}",
+                    repiu::platform::win32::VehExitSiteName(site), count);
+            }
         }
         // Task 404: the other way a page quarantines -- a re-translation that
         // failed. The message is the reason, and it decides where the fix

@@ -43,6 +43,21 @@ Win32 arena port I/O entry trace total/shown: ...
 Win32 arena port I/O entry #N guest/prev-code/prev-eip/prev-in-cache/tf/reentry/legacy/step: ...
 ```
 
+Task 410부터 **누가 그 직전 예외를 처리했는지**도 나옵니다.
+
+```
+Win32 port I/O address #N entry prev exit-site/exit-eip: <site>/<eip>
+Win32 arena single-step exit total/sum: <총수>/<합>
+Win32 arena single-step exit <site>: <count>
+```
+
+`exit-eip`가 캐시 범위(`0x0A000000`~`0x0E000000`)면 그 소비자는 **캐시로 복귀**시킨
+것이고, 진입 주소와 같으면 EIP를 전진시키지 않은 폐기 계열입니다.
+**`총수 != 합`이면 이 계측으로 판정하지 않습니다.**
+
+**PowerShell 리다이렉션(`> run.txt`)은 줄을 콘솔 폭(120자)에서 자릅니다.** 위 줄들은
+그보다 길어 값이 잘리므로 `cmd /c "... > run.txt 2>&1"`로 받으십시오.
+
 `flags` 비트는 0 prev-in-cache, 1 TF, 2 reentry, 3 legacy, 4 single-step trace입니다.
 예외 코드는 `0x80000003` breakpoint, `0x80000004` single-step, `0xC0000005` access
 violation, `0xC0000096` privileged instruction입니다.
@@ -72,9 +87,15 @@ violation, `0xC0000096` privileged instruction입니다.
 * census 용량은 32항목입니다. pumpit1은 이를 넘겨 `overflow`가 발생하므로 pumpit1
   분석에는 용량을 늘려야 합니다. pumpit3는 29~30항목으로 충분합니다.
 * 진입 표본은 주소당 첫 1건만 보관합니다. 구체 상태는 그 1건에 대해서만 성립하며,
-  모집단은 히스토그램으로 읽어야 합니다.
-* 실행 간 편차가 큽니다. `0x0301DB22`의 진입 횟수는 1회부터 3,124회까지 관측됐으므로
-  **단일 실행으로 판정하지 않습니다.**
+  모집단은 히스토그램으로 읽어야 합니다. `exit-site`도 첫 1건이므로 모집단은
+  `arena single-step exit` 히스토그램으로 읽습니다.
+* 실행 간 편차가 큽니다. `0x0301DB22`의 진입 횟수는 1회부터 1,219,930회까지
+  관측됐으므로 **단일 실행으로 판정하지 않습니다.** Task 410에서 그 편차의 축은
+  **격리 유무**로 확인됐으니(격리 시 arena single-step 180~410배) 먼저 5절의
+  `publishes/quarantines`로 모드를 나누십시오.
+* arena base가 항상 `0x03000000`은 아닙니다. Task 410의 8회 중 1회는 `0x07000000`으로
+  잡혀 부팅 단계에서 죽었고, 그 실행의 게스트 주소는 **+0x04000000** 오프셋입니다.
+  census 주소를 다른 실행과 비교하기 전에 `Runtime memory arena base`를 확인하십시오.
 
 ---
 

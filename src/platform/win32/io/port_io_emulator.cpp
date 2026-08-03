@@ -354,6 +354,9 @@ struct PortIoEntrySample
     std::uint32_t previous_code = 0;
     std::uint32_t previous_eip = 0;
     std::uint8_t flags = 0;
+    // Task 410: who resumed the guest after that previous exception, and where.
+    std::uint8_t previous_exit_site = 0;
+    std::uint32_t previous_exit_eip = 0;
 };
 
 static void ApplyPortIoEntrySample(
@@ -371,6 +374,8 @@ static void ApplyPortIoEntrySample(
         entry->entry_previous_code = sample.previous_code;
         entry->entry_previous_eip = sample.previous_eip;
         entry->entry_flags = sample.flags;
+        entry->entry_previous_exit_site = sample.previous_exit_site;
+        entry->entry_previous_exit_eip = sample.previous_exit_eip;
     }
     ++entry->entry_transition_count;
     // Task 409: and the class of every transition, because the first sample
@@ -502,6 +507,12 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
             (context->aot_reentry_pending ? 0x04U : 0U) |
             (context->aot_legacy_fallback ? 0x08U : 0U) |
             (context->enable_single_step_trace ? 0x10U : 0U));
+        // Task 410: the class of the previous exception said what it was. This
+        // says which VEH exit resumed the guest afterwards, and at which EIP --
+        // the difference between "the consumer left EIP alone" and "the
+        // consumer returned to the cache".
+        entry_sample.previous_exit_site = context->prev_veh_exit_site;
+        entry_sample.previous_exit_eip = context->prev_veh_exit_eip;
     }
     RecordPortIoAddress(context, decode_eip, from_aot_cache, mapped,
                         context->aot_reentry_pending, entry_sample);

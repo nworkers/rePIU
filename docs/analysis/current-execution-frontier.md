@@ -12,14 +12,16 @@
 
 | # | 할 일 | 왜 지금인가 | 걸린 비용 |
 |---|---|---|---:|
-| 1 | **진입 횟수 3자릿수 편차 설명** — `0x0301DB22` 진입이 Task 408에서 2,018~3,124회, Task 409에서 1회. 히스토그램은 이미 있으므로 두 모드가 다시 나오면 분포를 직접 비교 | 이걸 모르면 아래 2번의 표본이 대표성을 갖는지 알 수 없음 | (선행 조건) |
-| 2 | **`0x0301F7CE` single-step을 소비하는 지점** — TF를 끄고 arena에 남기는 곳. 코드 읽기로 배제한 목록은 [Task 409 로그 §6](../work-logs/20260803-409-arena-entry-predecessor-histogram.md) | 사슬의 **시작점** | wall 약 42~50% |
-| 3 | **arena→캐시 복귀 설계** — 2번이 확정된 뒤. selector guard·segment fold·timer safe point 전제 때문에 중간 진입 정확성 검토가 선행 | 2번의 해결책 | 위와 같음 |
+| 1 | **[완료, Task 410] 진입 횟수 편차** — 격리 유무로 갈립니다. 격리 없음 arena single-step 12,133~13,094 / 프레임 1,362~1,402, 격리 2,286,195~4,974,756(**180~410배**) / 프레임 867 또는 렌더 루프 미도달 | — | — |
+| 2 | **[완료, Task 410] 소비 지점 = `HandleAotReentry` resolve 성공 분기**(`aot_runtime_dispatch.cpp:1893~1902`). 격리 없는 3회에서 arena single-step의 **100%**. **전제는 반증됐습니다 — 이 지점은 arena가 아니라 캐시(`0x0C403877`)로 복귀시킵니다** | — | — |
+| 0 | **pumpit3 실행 중 멈춤(사용자 보고, 2026-08-04)** — 간헐적이지만 멈추면 **늘 같은 위치**. Task 410 8회에서도 격리 실행 2회가 렌더 루프에 도달조차 못 했으므로 같은 증상일 가능성 | 사용자가 겪는 실제 증상이고, 다른 모든 측정의 신뢰도를 깎음 | (사용 가능성) |
+| 2' | **port I/O census에 호출 측(VEH / thunk) 태그** — 후보 셋(HLE slot·Glide gate의 target-miss, 미해결 direct edge)은 **같은 로그로 전부 배제**됐습니다(target-miss 0/0, direct edge는 성공·실패 모두 캐시 복귀). 남은 가설은 **진입이 이탈이 아닐 수 있다**는 것 — thunk 경로는 게스트 EIP를 넘겨 `from_aot_cache`를 false로 만듭니다 | 새 **시작점**. 하루치 조사 방향이 아티팩트인지 여기서 갈림 | wall 약 42~50% |
+| 3 | ~~arena→캐시 복귀 설계~~ **복귀는 이미 있고 정상 동작합니다**(resolve 100% 성공). 필요한 것은 복귀가 아니라 **이탈을 막는 것** — 2'가 선행 | 2'의 해결책 | 위와 같음 |
 | 4 | **재번역이 요청 진입 주소를 address map에 남기지 못하는 조건** — 사유는 `dynamic AOT entry was not active in the new image`로 확보됨(Task 404) | 격리 실행의 근인 | 격리 시 wall 35~40% |
 | 5 | **격리 발생을 가르는 조건** — 10회 중 6회, 5회 중 0회로 비결정적 | 4번과 짝 | 위와 같음 |
 | 6 | **세그먼트 레지스터 HLE 이벤트당 약 2.4~2.7M cycle** — 표본 3,000회 미만인데 격리 없는 실행에서도 약 12% | 독립 축 | wall 약 12% |
 | 7 | **`GetAsyncKeyState` 단가 3~6배** — Task 403의 3,044 대 실측 9,802~17,596 | JAMMA scan이 여전히 4.9~5.3% | wall 약 5% |
-| 8 | **pumpit3가 45초에 렌더 루프에 도달하지 못함** — 격리 없는 실행에서도 동일하므로 별개 원인 | 프레임 기반 판정이 불가능한 상태 | (판정 불능 해소) |
+| 8 | ~~pumpit3가 45초에 렌더 루프에 도달하지 못함~~ **[정정, Task 410]** 격리 없는 3회는 `_GRBUFFERSWAP@4` **1,362~1,402회**로 렌더 루프에 도달·유지했습니다. 미도달은 **격리 실행**입니다(867회 또는 0회) | 프레임 기반 판정이 가능해짐 | — |
 | 9 | **부팅 크래시** — arena base가 높게 잡히면 `INT 21h AH=4Ah` resize가 `0x0008`로 실패 | 재현율 낮으나 실행 자체가 죽음 | (안정성) |
 | 10 | **teardown 지연** — Task 401 이후 손대지 않음 | 측정 회전율 | (편의) |
 
@@ -41,14 +43,16 @@ Based on Tasks 404-409 on 2026-08-03. Evidence is in the handoff below and
 
 | # | Item | Why now | Cost at stake |
 |---|---|---|---:|
-| 1 | **Explain the three-order variation in entry counts** — `0x0301DB22` recorded 2,018-3,124 entries in Task 408 and 1 in Task 409. The histogram is already in place, so reproducing both modes allows a direct comparison | Without it, item 2's sample cannot be known to be representative | (prerequisite) |
-| 2 | **Which site consumes the `0x0301F7CE` single step**, clearing the trap flag and leaving execution in the arena. Ruled-out list in [Task 409 log §6](../work-logs/20260803-409-arena-entry-predecessor-histogram.md) | Head of the chain | ~42-50% of wall |
-| 3 | **Design the arena-to-cache return**, after item 2. Mid-stream entry correctness must be checked first, since cache code assumes selector guards, folded segment bases, and timer safe points | The remedy for item 2 | same |
+| 1 | **[done, Task 410] The entry-count variation is quarantine** — 12,133-13,094 arena single steps and 1,362-1,402 frames without it, 2,286,195-4,974,756 (**180-410x**) and 867 frames or no render loop with it | — | — |
+| 2 | **[done, Task 410] The consumer is `HandleAotReentry`'s resolve-success branch** (`aot_runtime_dispatch.cpp:1893-1902`), **100%** of arena single steps in three quarantine-free runs. **The premise is refuted — it returns to the cache (`0x0C403877`), not the arena** | — | — |
+| 0 | **pumpit3 stalls mid-run** (user-reported, 2026-08-04) — intermittent, but **always at the same place** when it happens. Two of Task 410's eight runs never reached the render loop at all, possibly the same symptom | It is what the user actually hits, and it undermines confidence in every measurement | (usability) |
+| 2' | **Tag the port I/O census with its caller side** (VEH or thunk) — all three candidates for an exception-free departure are **excluded by the same logs** (both target-miss counters zero; the direct-edge dispatcher resumes at a cache address on success *and* failure). The surviving hypothesis is that **the entry is not a departure**: the thunk path passes a guest EIP, which forces `from_aot_cache` false | New head of the chain; decides whether a day of analysis rests on an artifact | ~42-50% of wall |
+| 3 | ~~Design the arena-to-cache return~~ — **the return already exists and works** (100% resolve success). What is needed is not a return but stopping the departure; blocked on 2' | The remedy for 2' | same |
 | 4 | **Why a re-translation omits its requested entry from the address map** — the reason string `dynamic AOT entry was not active in the new image` is already captured (Task 404) | Root of the quarantined mode | 35-40% of wall when it fires |
 | 5 | **What decides whether quarantine fires** — six of ten runs, then zero of five | Pairs with item 4 | same |
 | 6 | **Segment-register HLE at 2.4-2.7M cycles per event** — under 3,000 events yet about 12% of wall even without quarantine | Independent axis | ~12% of wall |
 | 7 | **`GetAsyncKeyState` three to six times Task 403's price** (3,044 against 9,802-17,596) | JAMMA scan still 4.9-5.3% | ~5% of wall |
-| 8 | **pumpit3 not reaching its render loop in 45 s**, quarantine or not | Frame-based judgement is impossible until then | (unblocks judgement) |
+| 8 | ~~pumpit3 not reaching its render loop in 45 s~~ **[corrected, Task 410]** the three quarantine-free runs reached and held it at **1,362-1,402** `_GRBUFFERSWAP@4`; the runs that did not reach it were the quarantined ones (867 or zero) | Frame-based judgement now possible | — |
 | 9 | **Boot crash** when the arena lands high and `INT 21h AH=4Ah` resize fails with `0x0008` | Low reproduction rate but kills the run | (stability) |
 | 10 | **Teardown stall**, untouched since Task 401 | Measurement turnaround | (convenience) |
 
@@ -61,6 +65,159 @@ conclusion**; and runs with `REPIU_PORT_IO_CENSUS_MAPPING` enabled are not quota
 time or frames.
 
 ## 다음 세션 인수인계 / Session handoff
+
+### Task 410 결과 — 소비 지점은 확정됐고, **전제가 반증됐습니다**
+
+pumpit3 45초 **8회**(같은 빌드·같은 세션, census mapping 끔). 상세는
+[Task 410 로그 §5](../work-logs/20260803-410-veh-exit-site-attribution.md).
+**검산 `합 == 총수`가 8회 전부 성립**했습니다.
+
+**확인됨 — `0x0301F7CE` single-step의 소비 지점은 `HandleAotReentry`의
+`ResolveAotTransferTarget` 성공 분기**(`aot_runtime_dispatch.cpp:1893~1902`)입니다.
+격리 없는 3회에서 arena EIP single-step의 **100%**(12,133/12,133 · 12,901/12,901 ·
+13,094/13,094)가 이 지점입니다. **모집단 전체가 한 지점**이므로 첫 표본이 곧
+모집단이며, Task 409가 요구한 검증을 통과합니다.
+
+**반증됨 — 그 지점은 arena에 남기지 않습니다.** `exit-eip`가 **`0x0C403877`, AOT
+캐시 주소**입니다(캐시 범위 `0x0A000000`~`0x0E000000`, 8회 전부 동일). 해당 분기는
+`Eip = cache_address` · TF 해제 · reentry·legacy·trace 해제를 한 문단에서 합니다.
+관측된 `flags = 0x00`은 바로 그 직후 상태입니다. **따라서 Task 408 §2의 "그 예외
+처리가 TF를 끄고 arena에 그대로 재개하며"는 틀렸고, 여기서 정정합니다.**
+`0x0C403877`은 게스트 `0x0301F7CE`의 캐시 번역본입니다.
+
+**새 시작점 — 이탈은 예외 없이 일어납니다.** 복귀 지점은 캐시인데 **바로 다음
+예외**는 `0x0301DB22`를 arena에서 실행하다 난 port I/O fault입니다(`cache` = 0, 8회
+전부). 그 사이 VEH 예외가 **하나도 없습니다.** 진입:count = 1:480이므로 한 번 나가면
+오래 머뭅니다. 후보는 AOT-DBT HLE slot target-miss bridge, Glide gate의 같은 bridge,
+**캐시에 남은 미해결 direct edge**(pumpit3는 probe가 `direct control-flow target is
+outside the cache`를 내는 타이틀 — Task 395)이며 **셋 다 미측정**입니다.
+
+**확인됨 — 진입 횟수 편차의 정체는 격리입니다(항목 1 해소).** 격리 없음은 arena
+single-step 12,133~13,094·프레임 1,362~1,402, 격리는 2,286,195~4,974,756(**180~410배**)·
+프레임 867 또는 렌더 루프 미도달입니다. 종료 지점 분포도 정반대입니다 — 격리 실행은
+`step-trace-stepped` 75.1% + `step-trace-hle-stepped` 24.5%로, 이 둘은 TF를 **켠 채**
+arena에 남깁니다. `aot-reentry-resolved`의 **절대수는 두 모드가 비슷**하므로
+(12,133 대 9,953) 격리는 정상 경로를 없애지 않고 그 위에 스텝 실행을 얹습니다.
+
+**부수 확인 — 항목 9 재현.** 8회 중 1회가 arena base `0x07000000`으로 잡혀
+(`VirtualAlloc MEM_RESERVE failed with error 487` 후 fallback) 부팅 단계에서
+죽었습니다. 그 실행의 게스트 주소는 정상 실행과 정확히 **+0x04000000** 관계입니다.
+
+**후보 셋 배제 — 같은 로그로, 추가 실행 없이.**
+
+| 후보 | 근거(격리 없는 3회) | 판정 |
+|---|---|---|
+| AOT-DBT HLE slot target-miss bridge | `fallback reason .../target/...` = **0/0/0** | 배제 |
+| Glide gate target-miss bridge | `Glide direct dispatch ... target-miss` = **0/0/0** | 배제 |
+| 미해결 direct edge(사이트 10개) | `ResolveAotDbtDirectEdgeFrame`이 성공·실패 **양쪽 다 캐시 주소**로 재개 | 배제 |
+
+**남은 가설(미측정) — 진입이 이탈이 아닐 수 있습니다.** `HandlePortIoInstruction`은
+VEH 밖 AOT fast-path thunk에서도 호출되며(`port_io_emulator.cpp:440~442`) 그때 EIP가
+**게스트 주소**라 `from_aot_cache`가 false가 됩니다. 즉 캐시 실행이 "arena"로 기록될 수
+있습니다. run 4의 예외 없는 HLE slot dispatch 16,599회 대 진입 3,600회로 수치가
+호환됩니다. **다만 port I/O 총수 1,772,285 대 예외 census `other` 1,772,980이므로
+대부분이 진짜 VEH fault인 것은 확실하며, 가설이 겨냥하는 것은 진입 3,600건의
+분류입니다.**
+
+**Candidates excluded from the same logs, with no extra runs:** both target-miss
+counters read zero in all three quarantine-free runs, and the unresolved direct-edge
+dispatcher is refuted by its own code, resuming at a cache address on success *and* on
+failure. The surviving hypothesis, **unmeasured**, is that the entry is not a departure
+at all — `HandlePortIoInstruction` is reachable from the AOT fast-path thunk with a
+guest EIP, which forces `from_aot_cache` false, and run 4's 16,599 exception-free slot
+dispatches are compatible with 3,600 entries. The bulk of port I/O is certainly a real
+VEH fault (1,772,285 handled against an exception census `other` of 1,772,980); the
+hypothesis concerns only how those 3,600 entries are classified.
+
+### Task 410 results — the consumer is settled and the premise is refuted
+
+Eight 45-second pumpit3 runs on one build and one session, census mapping off; detail in
+[Task 410 log §5](../work-logs/20260803-410-veh-exit-site-attribution.md). **The
+`sum == total` check held in all eight.**
+
+**Confirmed — the site is `HandleAotReentry`'s `ResolveAotTransferTarget` success
+branch** (`aot_runtime_dispatch.cpp:1893-1902`), covering **100%** of arena-EIP single
+steps in the three quarantine-free runs (12,133 of 12,133, 12,901 of 12,901, 13,094 of
+13,094). The population is one site, so the first sample is the population here — the
+check Task 409 demanded.
+
+**Refuted — that site does not leave execution in the arena.** Its exit EIP is
+`0x0C403877`, an **AOT cache address**, identically in all eight runs; the branch sets
+`Eip` to the cache address and clears the trap flag, re-entry, legacy, and trace
+together, and the observed `flags = 0x00` is that post-resolve state. **Task 408 §2's
+"that handler clears the trap flag and resumes in the arena" is wrong and is corrected
+here.** `0x0C403877` is the cache translation of guest `0x0301F7CE`.
+
+**New head of the chain — the departure raises no exception.** Execution returns to the
+cache, yet the very next exception is a port I/O fault running `0x0301DB22` in the arena
+(`cache` zero in all eight runs) with no VEH exception in between, and the 1:480 entry-
+to-read ratio says it stays out once gone. Candidates are the AOT-DBT HLE slot
+target-miss bridge, the Glide gate's equivalent, and an unresolved direct edge left in
+the cache — pumpit3 being the title whose probe reports `direct control-flow target is
+outside the cache` (Task 395) — **none of them measured.**
+
+**Confirmed — the entry-count variation is quarantine (item 1 closed).** Without it,
+12,133-13,094 arena single steps and 1,362-1,402 frames; with it, 2,286,195-4,974,756
+(180-410x) and 867 frames or no render loop. The distributions invert: quarantined runs
+are 75.1% `step-trace-stepped` and 24.5% `step-trace-hle-stepped`, both of which re-arm
+the trap flag and do leave execution stepping in the arena. The absolute count of
+`aot-reentry-resolved` is comparable across modes (12,133 against 9,953), so quarantine
+layers stepping on top of the healthy path rather than replacing it.
+
+**Also — item 9 reproduced** once in eight runs, with the arena at `0x07000000` after
+`VirtualAlloc MEM_RESERVE failed with error 487`; that run's guest addresses sit exactly
+`+0x04000000` from the usual ones.
+
+### Task 410 방법 기록 — 코드 읽기만으로는 닫히지 않았습니다 (모순 확인 후 계측 투입)
+
+`0x0301F7CE`의 single-step 소비 지점을 코드로 특정하려 했으나 **서로 모순되는 네 진술**이
+나왔습니다. 전문은 [Task 410 로그 §1](../work-logs/20260803-410-veh-exit-site-attribution.md),
+근거 지점은 [설계 §2](../design/20260803-410-veh-exit-site-attribution.md).
+
+* **(a)** `HandlePrivilegedTrapInstruction`은 `CLI`에서 TF를 건드리지 않습니다
+  (`execution_trampoline.cpp:1483~1489`). 트랩 위치가 `0x0301F7CE`이므로 TF는
+  `CLI` 예외를 재개할 때 **이미 켜져 있었습니다**(직전 `0x0301F7CC`는 `xor edx,edx`).
+* **(b)** 그 시점에 TF를 켤 수 있는 곳은 **전부 `enable_single_step_trace`도 켭니다.**
+  유일한 예외인 guest code write fault는 직전 명령이 store여야 하는데 `31 d2`는
+  아닙니다.
+* **(c)** 그런데 관측 flags는 `0x00`이고 **bit 4가 trace**입니다
+  (`port_io_emulator.cpp:499~504`). Task 408 4회·Task 409 3회 전부 동일합니다.
+* **(d)** `enable_single_step_trace = false`를 쓰는 9곳이 **전부 같은 문단에서 EIP를
+  캐시 주소로 옮깁니다.** trace를 끄면서 arena에 남기는 경로가 없습니다.
+* **(e)** `0x0301F7CE`의 `83 ba ...`는 ModRM `0xBA` → **`/7` = `cmp r/m32, imm8`**이고
+  `0x83` 처리기는 `/0`(add)와 `/1`(or)뿐입니다. trace가 꺼진 채라면 사슬을 통과해
+  `execution_trampoline.cpp:3652`의 `RecoverToHost`로 **실행이 죽어야** 합니다.
+
+**따라서 셋 중 하나입니다:** 코드 읽기가 놓친 종료 경로가 있다 / flags가 가정한
+시점의 상태가 아니다 / 기록된 직전 예외가 슬롯이 말하는 것과 다르다. 세 갈래는
+**"누가 그 예외를 처리했는가"를 기록하면 한 번에 갈립니다.**
+
+Task 410이 그 계측을 넣었습니다 — VEH 종료 지점 38종 명명(`VehExitSite`),
+`AotHleTranslationScope`보다 먼저 생성되는 `VehExitRecorder`(그래서 **최종 재개
+EIP**를 봄), `prev_veh_exit_*` 전이 슬롯, **arena EIP single-step 종료 지점
+히스토그램**(`합 == 총수` 검산 포함), 주소별 진입 표본의 `exit-site`/`exit-eip`.
+**동작 불변이며 lookup을 추가하지 않으므로 이 빌드의 wall·프레임은 인용 가능합니다.**
+
+**측정은 남아 있습니다.** 읽을 줄과 판정 기준은 Task 410 로그 §3·§5에 있습니다.
+
+### Task 410 — item 2 does not close by reading (contradiction found, instrument added)
+
+Locating the consumer of the `0x0301F7CE` single step in code produced **four mutually
+inconsistent statements**: the `CLI` HLE never touches the trap flag, so it was already
+set on resume; every site that could have set it there also sets
+`enable_single_step_trace`; the recorded flags are `0x00`, whose bit 4 is that same
+flag; all nine sites that clear it move `Eip` to a cache address in the same paragraph;
+and the instruction at `0x0301F7CE` is `cmp r/m32, imm8` (`/7`), which no handler
+covers, so with trace off the run should have died at the terminal recover path.
+
+So either reading missed an exit, the flags do not describe the assumed moment, or the
+recorded predecessor is not what the slot says — and **recording who consumed each
+exception separates all three at once.** Task 410 added exactly that: 38 named VEH exit
+sites, a recorder constructed before `AotHleTranslationScope` so it sees the final
+resume EIP, `prev_veh_exit_*` transition slots, a histogram over every arena-EIP single
+step with a `sum == total` check, and the exit site and EIP on each per-address entry
+sample. Behaviour is unchanged and no lookup is added, so this build's wall time and
+frames stay quotable. **The measurement itself is still outstanding.**
 
 ### 2026-08-03 현재: pumpit3의 지배 비용은 port I/O 예외입니다 (Tasks 404~409)
 

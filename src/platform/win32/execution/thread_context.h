@@ -21,6 +21,7 @@
 #include "repiu/media/chd_cd_image.h"
 #include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/selector_table.h"
+#include "repiu/platform/win32/veh_exit_site.h"
 #include "native_fast_path.h"
 
 #include <memory>
@@ -350,6 +351,13 @@ struct ThreadContext
         std::uint32_t entry_prev_breakpoint = 0;
         std::uint32_t entry_prev_access_violation = 0;
         std::uint32_t entry_prev_other = 0;
+        // Task 410: the class of the previous exception says what it was, not
+        // who finished it. These two say which VEH exit resumed the guest and
+        // at which EIP, so "the consumer did not advance EIP" and "the consumer
+        // returned to the cache" are different readings of the same entry.
+        // First sample only, like the three fields above.
+        std::uint8_t entry_previous_exit_site = 0;
+        std::uint32_t entry_previous_exit_eip = 0;
     };
     PortIoAddressCensusEntry
         port_io_address_census[kPortIoAddressCensusCapacity] = {};
@@ -367,6 +375,26 @@ struct ThreadContext
     std::uint32_t prev_veh_code = 0;
     std::uint32_t prev_veh_eip = 0;
     bool prev_veh_in_cache = false;
+    // Task 410: the same one-slot history, for who consumed the exception
+    // rather than what it was. Written by VehExitRecorder's destructor, which
+    // is constructed before AotHleTranslationScope and therefore destroyed
+    // after it -- so the EIP recorded here is the one the guest resumes at,
+    // not the one before that scope rewrote it. `exit_flags` uses the same bit
+    // order as the port I/O entry sample: 0 in-cache, 1 trap flag, 2 re-entry
+    // pending, 3 legacy fallback, 4 single-step trace.
+    std::uint8_t last_veh_exit_site = 0;
+    std::uint32_t last_veh_exit_eip = 0;
+    std::uint8_t last_veh_exit_flags = 0;
+    std::uint8_t prev_veh_exit_site = 0;
+    std::uint32_t prev_veh_exit_eip = 0;
+    std::uint8_t prev_veh_exit_flags = 0;
+    // The population behind the per-address first sample. Task 409 showed a
+    // first sample can describe a tenth of its population, so the exit site of
+    // *every* single step taken at an arena EIP is counted here and the total
+    // is kept beside it: `sum(counts) == total` or the instrument is not
+    // trusted. Guest thread only, like the census above.
+    std::uint32_t veh_arena_single_step_count = 0;
+    std::uint32_t veh_arena_single_step_exit_site_counts[kVehExitSiteCount] = {};
     static constexpr std::uint32_t kArenaPortIoEntryTraceCapacity = 16U;
     struct ArenaPortIoEntryTraceEntry
     {

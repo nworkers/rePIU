@@ -283,9 +283,19 @@ single-step하는데 페이지가 격리돼 매번 거부됩니다. Task 404의 
 ```
 
 `CLI`는 privileged라 HLE가 처리하고 EIP를 전진시키며, 다음 명령에서 single-step 예외가
-납니다. 그 예외 처리가 **TF를 끄고 arena에 재개**하고, 이후 게스트는 타이머 핸들러
-전체를 arena에서 자유 실행합니다. Task 407 신호 (b)의 `0x0301F827`도 같은 루틴 안
-89바이트 뒤이므로 **두 신호는 같은 INT 8 핸들러의 서로 다른 지점**입니다.
+납니다. Task 407 신호 (b)의 `0x0301F827`도 같은 루틴 안 89바이트 뒤이므로 **두 신호는
+같은 INT 8 핸들러의 서로 다른 지점**입니다.
+
+> **정정(Task 410, 측정으로 반증):** 원문은 이어서 "그 예외 처리가 **TF를 끄고 arena에
+> 재개**하고, 이후 게스트는 타이머 핸들러 전체를 arena에서 자유 실행합니다"라고
+> 적었습니다. **틀렸습니다.** 그 예외를 소비하는 것은 `HandleAotReentry`의
+> `ResolveAotTransferTarget` 성공 분기(`aot_runtime_dispatch.cpp:1893~1902`)이고, 이
+> 분기는 **arena가 아니라 캐시 `0x0C403877`(= `0x0301F7CE`의 캐시 번역본)로
+> 복귀시킵니다.** 격리 없는 3회에서 arena EIP single-step의 **100%**가 이 지점이며
+> (12,133/12,133 · 12,901/12,901 · 13,094/13,094), 8회 전부 같은 `exit-eip`입니다.
+> 관측된 `flags = 0x00`은 그 복귀 직후 상태였습니다.
+> **arena로의 이탈은 그 뒤에 예외 없이 일어납니다** —
+> [Task 410 로그 §5](../work-logs/20260803-410-veh-exit-site-attribution.md).
 
 **주소마다 기전이 다릅니다.** `0x030D0A1A`는 진입 횟수가 count와 같아(10,404/10,404)
 매 실행이 캐시 INT3 직후이고, `0x0301DB22`는 340:1입니다. 전역 버퍼로는 원리적으로
@@ -319,23 +329,66 @@ single-step하는데 페이지가 격리돼 매번 거부됩니다. Task 404의 
 Task 409 3회에 한해서는 첫 표본이 곧 모집단이며(진입 1회), 직전은 `0x0301F7CE`의
 single-step입니다.
 
+### 확인됨(Task 410): 진입 기전과 편차의 축이 모두 확정됐습니다
+
+pumpit3 45초 8회(같은 빌드·같은 세션, census mapping 끔). 검산 `합 == 총수`가 8회 전부
+성립했습니다. 전문은
+[Task 410 로그 §5](../work-logs/20260803-410-veh-exit-site-attribution.md).
+
+**소비 지점** — `HandleAotReentry`의 `ResolveAotTransferTarget` 성공 분기
+(`aot_runtime_dispatch.cpp:1893~1902`)이며, 격리 없는 3회에서 arena EIP single-step의
+**100%**입니다. 모집단 전체가 한 지점이므로 이 모드에서는 첫 표본이 곧 모집단입니다.
+
+**전제 반증** — 그 분기는 arena가 아니라 **캐시 `0x0C403877`로 복귀**시킵니다
+(8회 전부 동일). `flags = 0x00`은 그 복귀 직후 상태입니다. 위 Task 408 절의 정정 인용을
+보십시오.
+
+**새 시작점** — 복귀는 캐시인데 바로 다음 예외가 이미 arena 실행이고, 그 사이 VEH
+예외가 **하나도 없습니다.** 즉 **이탈은 예외 없는 경로**입니다. 진입:count = 1:480.
+후보는 AOT-DBT HLE slot / Glide gate의 target-miss bridge와 **캐시에 남은 미해결
+direct edge**(pumpit3는 probe가 `direct control-flow target is outside the cache`를
+내는 타이틀 — Task 395)이며 **셋 다 미측정**입니다.
+
+**편차의 축은 격리입니다.**
+
+| 모드 | arena single-step | 프레임 | 지배 종료 지점 |
+|---|---:|---:|---|
+| 격리 없음 (3회) | 12,133 ~ 13,094 | 1,362 ~ 1,402 | `aot-reentry-resolved` 100% |
+| 격리 (4회) | 2,286,195 ~ 4,974,756 | 867 또는 미도달 | `step-trace-stepped` 75.1% + `step-trace-hle-stepped` 24.5% |
+
+**180~410배**이고 분포는 정반대입니다. 격리 실행의 지배 경로 둘은 TF를 **켠 채** arena에
+남기며, 이것이 Task 404가 본 격리 시 single-step 폭증의 정체입니다.
+`aot-reentry-resolved`의 **절대수는 두 모드가 비슷하므로**(12,133 대 9,953) 격리는 정상
+경로를 없애지 않고 그 위에 스텝 실행을 얹습니다.
+
+**부수 확인** — 8회 중 1회가 arena base `0x07000000`으로 잡혀 부팅 크래시했고
+(`VirtualAlloc MEM_RESERVE failed with error 487` 후 fallback), 그 실행의 게스트
+주소는 정상 실행과 정확히 **+0x04000000** 관계입니다.
+
 ### 미확정
 
-* **진입 횟수의 실행 간 3자릿수 편차.**
-* **`0x0301F7CE`의 single-step을 처리하며 TF를 끄고 arena에 남기는 곳.** 코드 읽기로
-  `HandleTimerInterruptChainBoundary`(패턴 불일치·EFlags 미변경),
-  `execution_trampoline.cpp`의 TF 해제 10곳(정상 진행 경로 아님),
-  `aot_runtime_dispatch.cpp:1866~1913`의 세 분기(각각 캐시 이동·격리 유지·TF 유지)를
-  배제했습니다.
-  `aot_runtime_dispatch.cpp:1866~1913`의 세 분기 중 관측 상태와 맞는 것이 없습니다.
-* **`CLI` 다음에 왜 single-step이 나는지** — privileged HLE가 TF를 켜 두는지 여부.
+* ~~진입 횟수의 실행 간 3자릿수 편차~~ — **Task 410에서 격리 유무로 확인됨.**
+* ~~`0x0301F7CE`의 single-step을 처리하며 TF를 끄고 arena에 남기는 곳~~ —
+  **Task 410에서 확정·반증됨.** 소비 지점은 `HandleAotReentry`의 resolve 성공
+  분기이며, **arena가 아니라 캐시로 복귀시킵니다.**
+* **캐시 `0x0C403877`에서 arena로 나가는 예외 없는 경로가 무엇인가** — 새 시작점.
+  후보 셋(AOT-DBT HLE slot / Glide gate의 target-miss bridge, 미해결 direct edge) 모두
+  미측정입니다.
+* **`CLI` 다음에 왜 single-step이 나는지** — TF를 켠 주체. 위 예외 없는 이탈과 같은
+  기전일 가능성이 있으나 확인하지 않았습니다.
 * **(a) 신호의 INT3 정체** — 캐시 INT3인데 경계 경로가 아닌 것.
 * **(b) 신호의 AV 처리가 왜 arena에 남기는지.**
 * **캐시 중간 진입의 정확성.** 캐시 코드는 selector guard, segment fold, timer safe
-  point를 전제로 방출됩니다.
+  point를 전제로 방출됩니다. 다만 Task 410에서 resolve 복귀가 **100% 성공**하고 정상
+  실행이 1,362~1,402 프레임을 그리므로, 이 전제가 실제로 깨지고 있다는 증거는
+  아직 없습니다.
 * **재번역이 요청 진입 주소를 address map에 남기지 못하는 조건.**
-* **격리가 미도달의 유일한 원인은 아닙니다.** 격리가 없던 4회도 45초 안에 렌더 루프에
-  도달하지 못했습니다.
+* ~~격리가 미도달의 유일한 원인은 아닙니다. 격리가 없던 4회도 45초 안에 렌더 루프에
+  도달하지 못했습니다.~~ **정정(Task 410):** 격리 없는 3회는 `_GRBUFFERSWAP@4`
+  1,362~1,402회로 **렌더 루프에 도달·유지했고**, 미도달은 격리 실행 쪽이었습니다
+  (867회 또는 0회 — 6·7번 실행은 Glide 초기화 호출만 있고 swap이 없습니다).
+  다만 세션 간 절대 비교는 여전히 성립하지 않으므로, 이 값은 **같은 세션 안의 대비**로만
+  읽습니다.
 * **세션 간 절대 비교는 성립하지 않습니다.** 같은 날 pumpit1도 700~749 프레임으로,
   08-02 기록(2,222/2,251)과 크게 다릅니다. 위 표는 **같은 세션 안의 대비**로만
   읽어야 합니다.

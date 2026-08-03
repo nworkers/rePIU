@@ -1771,6 +1771,8 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
                 }
                 if (resolved)
                 {
+                    NoteVehExitSite(
+                        context, VehExitSite::kAotReentryRetiredResolved);
                     win32_context->Eip = latest_cache_address;
                     win32_context->EFlags &= ~0x00000100U;
                     context->aot_reentry_pending = false;
@@ -1788,6 +1790,11 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
                     AotRetiredTrapResolution::kTraceSentinel);
             }
         }
+        // Task 410: this branch returns false, so a later site normally
+        // overwrites the tag. It is set anyway, because "the boundary set the
+        // state and nothing else claimed the exception" is exactly the reading
+        // that has to be distinguishable.
+        NoteVehExitSite(context, VehExitSite::kAotReentryBoundary);
         win32_context->Eip = guest_address;
         RecordExecutionProbe(win32_context, context);
         win32_context->EFlags |= 0x00000100U;
@@ -1874,6 +1881,7 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
     const std::uint32_t current = static_cast<std::uint32_t>(win32_context->Eip);
     if (IsAotCacheAddress(context, current))
     {
+        NoteVehExitSite(context, VehExitSite::kAotReentryCacheAddress);
         win32_context->EFlags &= ~0x00000100U;
         context->aot_reentry_pending = false;
         context->enable_single_step_trace = false;
@@ -1883,6 +1891,7 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
     if (IsWin32AotGuestPageQuarantined(
             *context->aot_placement, current))
     {
+        NoteVehExitSite(context, VehExitSite::kAotReentryQuarantined);
         win32_context->EFlags |= 0x00000100U;
         context->aot_reentry_pending = true;
         context->aot_legacy_fallback = false;
@@ -1892,6 +1901,7 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
     std::uint32_t cache_address = current;
     if (ResolveAotTransferTarget(context, current, &cache_address))
     {
+        NoteVehExitSite(context, VehExitSite::kAotReentryResolved);
         win32_context->Eip = cache_address;
         win32_context->EFlags &= ~0x00000100U;
         context->aot_reentry_pending = false;
@@ -1904,12 +1914,14 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
     if (IsWin32AotGuestPageQuarantined(
             *context->aot_placement, current))
     {
+        NoteVehExitSite(context, VehExitSite::kAotReentryQuarantined);
         win32_context->EFlags |= 0x00000100U;
         context->aot_reentry_pending = true;
         context->aot_legacy_fallback = false;
         context->enable_single_step_trace = true;
         return false;
     }
+    NoteVehExitSite(context, VehExitSite::kAotReentryLegacyFallback);
     context->aot_reentry_pending = false;
     context->aot_legacy_fallback = true;
     context->enable_single_step_trace = true;

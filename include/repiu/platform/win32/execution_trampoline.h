@@ -611,6 +611,10 @@ struct Win32MinimalExecutionAttempt
         std::uint32_t entry_prev_breakpoint = 0;
         std::uint32_t entry_prev_access_violation = 0;
         std::uint32_t entry_prev_other = 0;
+        // Task 410: which VEH exit resumed the guest after that predecessor,
+        // and at which EIP.
+        std::uint8_t entry_previous_exit_site = 0;
+        std::uint32_t entry_previous_exit_eip = 0;
     };
     PortIoAddressCensusEntry port_io_address_census[32] = {};
     std::uint32_t port_io_address_census_size = 0;
@@ -630,6 +634,16 @@ struct Win32MinimalExecutionAttempt
     };
     ArenaPortIoEntryTraceEntry arena_port_io_entry_trace[16] = {};
     std::uint32_t arena_port_io_entry_trace_count = 0;
+    // Task 410: every single step taken at an arena EIP, by the VEH exit that
+    // consumed it, with the population total beside it so the sum is checkable.
+    // Sized from the enumeration in
+    // src/platform/win32/execution/veh_exit_site.h, which the platform layer
+    // static-asserts against when it fills this in.
+    static constexpr std::uint32_t kVehExitSiteSnapshotCapacity = 64U;
+    std::uint32_t veh_arena_single_step_count = 0;
+    std::uint32_t
+        veh_arena_single_step_exit_site_counts[kVehExitSiteSnapshotCapacity] =
+            {};
     Win32SingleStepHotspotProfileSnapshot
         single_step_hotspot_profile;
     Win32ExecutionTimeProfileSnapshot execution_time_profile;

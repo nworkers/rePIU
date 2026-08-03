@@ -761,7 +761,9 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
             context.port_io_address_census[index].entry_prev_single_step,
             context.port_io_address_census[index].entry_prev_breakpoint,
             context.port_io_address_census[index].entry_prev_access_violation,
-            context.port_io_address_census[index].entry_prev_other};
+            context.port_io_address_census[index].entry_prev_other,
+            context.port_io_address_census[index].entry_previous_exit_site,
+            context.port_io_address_census[index].entry_previous_exit_eip};
     }
     static_assert(
         sizeof(attempt->arena_port_io_entry_trace) /
@@ -778,6 +780,20 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
             source.guest_address, source.previous_code, source.previous_eip,
             source.previous_in_cache, source.trap_flag, source.reentry_pending,
             source.legacy_fallback, source.single_step_trace};
+    }
+    // Task 410: the exit-site histogram. The snapshot array is sized generously
+    // and asserted against the enumeration, so adding a site cannot silently
+    // truncate the report.
+    static_assert(
+        kVehExitSiteCount <=
+            Win32MinimalExecutionAttempt::kVehExitSiteSnapshotCapacity,
+        "VEH exit site snapshot capacity must cover the enumeration");
+    attempt->veh_arena_single_step_count =
+        context.veh_arena_single_step_count;
+    for (std::uint32_t site = 0; site < kVehExitSiteCount; ++site)
+    {
+        attempt->veh_arena_single_step_exit_site_counts[site] =
+            context.veh_arena_single_step_exit_site_counts[site];
     }
     attempt->single_step_hotspot_profile =
         context.single_step_hotspot_profile != nullptr

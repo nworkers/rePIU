@@ -16,6 +16,13 @@ namespace repiu::platform::win32
 
 inline constexpr std::uint32_t kEFlagsInterruptEnable = 0x00000200U;
 
+// Task 410: tag the VEH exit that is about to resume the guest. Called from the
+// handlers that consume an exception, including the ones extracted into other
+// translation units. The last call before the handler returns wins, so a path
+// that first marks its state and is then finished by a later site reports the
+// site that actually resumed execution.
+void NoteVehExitSite(ThreadContext* context, VehExitSite site);
+
 bool IsAotCacheAddress(const ThreadContext* context, std::uint32_t address);
 
 bool WriteGuestBytes(ThreadContext* context,
