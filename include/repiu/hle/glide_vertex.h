@@ -11,6 +11,12 @@ constexpr std::size_t kGlideProducerVertexDwordCount = 15U;
 constexpr std::size_t kGlideProducerVertexByteCount =
     kGlideProducerVertexDwordCount * sizeof(std::uint32_t);
 
+// Task 420. `grDrawPolygon` takes its vertex count from the guest, so the
+// boundary bounds it before decoding into a fixed array rather than trusting
+// it. Raise this if a title is ever observed passing more.
+// See docs/design/20260805-420-glide-remaining-draw-entry-points.md.
+constexpr std::size_t kMaxGlidePolygonVertices = 64U;
+
 struct GlideDrawVertex
 {
     float x = 0.0F;

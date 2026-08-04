@@ -308,10 +308,57 @@ wall의 9.06%이며, 예외 제거가 값나가는 곳은 여기입니다.
 wall cycle을 함께 확인해야 합니다.** Task 371의 A/B를 이 기준으로 재검증했고 wall
 0.016% 차이로 결론은 유효했습니다(프레임 +63.7%, 최초 +62.1% 재현).
 
+### 15-1. pumpit3 정상 실행에서 gate가 지배 항목이다 — **확인됨 (Task 418)**
+
+[Task 418 재기준선](../work-logs/20260804-418-cost-profile-rebaseline.md)이 pumpit3
+정상 실행 7회(60초, 격리 0·세대 실패 0)에서 잰 값입니다. 이 문서의 기존 절이 pumpit1
+gameplay 장면 기준인 것과 달리, 아래는 **pumpit3**입니다.
+
+| 지표 | 값 |
+|---|---:|
+| glide-gate cycles / guest-run | **54~55%** (120.7~122.8G / 222.1G) |
+| gate 호출 횟수(60초) | **2,459,898~2,518,493** |
+| breakpoint 예외 비중 | **68.4~69.4%**, 그 중 HLE 경계 provenance **약 83%** |
+| **host 표본에서 `InvokeOnHostThread`** | **74.8~76.3%** (2위 이하 전부 ≤1.6%) |
+| 게스트 스레드 CPU share | **50.4~54.0%** |
+
+**그 지점은 `glide_opengl_backend.cpp:295`의 조건변수 대기**
+(`host_command_cv_.wait(lock, [] { return host_command_complete_; })`)입니다. CPU
+share가 절반인 것과 같은 사실이며, 게스트 스레드는 Glide 호출마다 host thread 완료를
+기다립니다.
+
+### 15-2. 그 76%는 왕복 지연이었고, 스핀으로 걷어냈습니다 — **확인됨 (Task 419)**
+
+집계 분해는 **Task 418 로그에 이미 있었습니다**(`REPIU_EXECUTION_TIME_PROFILE=1`이 함께
+켬. 15-1이 "꺼져 있다"고 본 줄은 **ordinal별** 계측입니다).
+
+| 구간 | pumpit3 spin off | pumpit3 spin 20 µs | pumpit1 off → on |
+|---|---:|---:|---:|
+| wake | 34.4~34.9% | **3.6~9.4%** | 4.16% → 0.88% |
+| work | 33.3~34.2% | **86.0~94.1%** | 92.33% → 98.78% |
+| complete | 30.8~31.4% | **1.8~3.6%** | 3.42% → 0.27% |
+| **wake+complete** | **65.4~66.3%** | **5.3~12.9%** | 7.6% → 1.15% |
+| 프레임(60초) | 2,229~2,442 | **3,036~3,084** | 3,119 → 3,154 |
+
+**대기였습니다.** 호출당 왕복 고정비(약 70,000 cycle)가 호출당 작업(34,745 cycle)보다
+컸고, 짧은 스핀 후 조건변수로 폴백하자 **프레임 중앙값이 +27.7%**(2,399 → 3,063)
+올랐습니다. 스핀 hit율은 게스트측 99.5%+, 호스트측 약 94%입니다.
+
+**gate가 짧아진 것이 아닙니다.** rendezvous가 1.03~1.06M → 1.267M(+20%)이고 프레임당
+호출 수는 430~434 → 412~415로 사실상 같습니다. **대기가 작업으로 바뀐 것**입니다.
+
+**pumpit1은 거의 변하지 않습니다**(+1.1%). 그 타이틀은 원래 work가 92%라 걷어낼 대기가
+없습니다 — 15-1이 "이건 pumpit3 고유"라고 한 것이 그대로 확인됩니다.
+
+전문: [Task 419 작업 로그](../work-logs/20260805-419-glide-rendezvous-spin-wait.md).
+기본값은 `REPIU_GLIDE_RENDEZVOUS_SPIN_US=20`이며 `0`이 예전 동작입니다.
+
 ### 15. 열린 질문
 
 * 커널 예외 전달 비용의 실제 크기 (10절)
-* rendezvous 왕복 11.8 µs × 30만 회를 제거할 수 있는가 (`direct` 경로 미사용)
+* rendezvous 왕복 11.8 µs × 30만 회를 제거할 수 있는가 (`direct` 경로 미사용).
+  **pumpit3에서는 이 질문이 1순위가 됐습니다** — 15-1절 참조(호출 2.46M회,
+  host 표본 76%)
 * fog / combine setter의 GLSL uniform 경로 31~36k cycle의 정체
 * exception-free dispatch가 실제로 어디까지 예외를 없앨 수 있는가. 상한은 1.68~1.95배
   이고 vsync 30 → 60 fps에는 1.22배면 충분합니다(14절).
@@ -397,3 +444,31 @@ per frame, even a conservative 10 µs round trip would place roughly 23% of wall
 in that gap. For the same reason the 2,768–2,949 cycle gate prologue is a lower
 bound on what exception-free dispatch would remove, which puts Task 368's
 closure of the exception axis back up for review.
+
+**pumpit3's healthy run is gate-dominated, and the gate is a wait (confirmed, Task 418).**
+Across seven healthy 60-second pumpit3 runs with zero quarantines,
+[the re-baseline](../work-logs/20260804-418-cost-profile-rebaseline.md) measured Glide gate
+cycles at **54-55% of guest-run** over **2.46-2.52 M gate calls**, breakpoint exceptions at
+**68.4-69.4%** with **about 83%** of them raised at the HLE boundary, and — decisively — a
+single host call site holding **74.8-76.3%** of guest-thread samples with nothing else above
+1.6%: the condition-variable wait in `InvokeOnHostThread` at `glide_opengl_backend.cpp:295`.
+The guest thread's CPU share of **50.4-54.0%** states the same fact from the other side. Note
+these are pumpit3 figures, where the earlier sections measure pumpit1 gameplay. **What is not
+yet separated** is whether that 76% is time spent waiting while the host works or the cost of
+the round trip itself; the instrumentation that splits it (`RecordGlideGatePublish`,
+`RecordGlideGateResume`, `RecordGlideOrdinalRendezvous`) already exists and simply read
+`rendezvous/direct: 0/0` in these runs. The two answers demand opposite remedies, which is why
+that switch is the next measurement.
+
+**That 76% was round-trip latency, and a spin removed it (confirmed, Task 419).** The aggregate
+decomposition turned out to be in Task 418's logs already — `REPIU_EXECUTION_TIME_PROFILE=1`
+enables it, and the line read as "off" above belongs to the per-ordinal profile. With the spin
+off, pumpit3 splits 34.4-34.9% wake, 33.3-34.2% work and 30.8-31.4% complete; with a 20 µs
+spin-then-wait it becomes 3.6-9.4% / 86.0-94.1% / 1.8-3.6%, taking `wake + complete` from
+**65.4-66.3% to 5.3-12.9%** and frames from 2,229-2,442 to **3,036-3,084**, a median gain of
+**+27.7%**. Spin hit rates are over 99.5% on the guest side and about 94% on the host side.
+**The gate did not shrink**: rendezvous counts rose from 1.03-1.06 M to 1.267 M (+20%) while
+calls per frame stayed at 412-434, so waiting turned into working. **pumpit1 gains 1.1%**,
+since 92% of its gate time was already work — the title-specific split holds. The default is
+`REPIU_GLIDE_RENDEZVOUS_SPIN_US=20`, with `0` restoring the old behaviour; detail in the
+[Task 419 work log](../work-logs/20260805-419-glide-rendezvous-spin-wait.md).

@@ -1,10 +1,17 @@
 # Port I/O / arena 실행 귀속 측정 가이드 / Measuring the Port I/O and Arena-Execution Axis
 
-pumpit3 wall clock의 약 절반이 port I/O 예외이며, 그 원인 추적에 쓰는 계측 묶음의
-반복 절차입니다. 근거는 [pumpit3 bring-up](../analysis/pumpit3-bring-up.md)과
+port I/O 예외를 게스트 주소와 실행 위치(캐시/arena)로 귀속하는 계측 묶음의 반복
+절차입니다. 근거는 [pumpit3 bring-up](../analysis/pumpit3-bring-up.md)과
 Tasks [405](../work-logs/20260803-405-port-io-address-census.md) ~
 [409](../work-logs/20260803-409-arena-entry-predecessor-histogram.md) 작업 로그,
 구조는 `ARCHITECTURE.md`의 "Port I/O 주소 census와 arena 진입 추적"에 있습니다.
+
+**전제 정정 (2026-08-04, Task 418이 실측).** 이 가이드가 만들어질 당시 port I/O는
+pumpit3 wall의 약 절반이었으나, [Task 414](../work-logs/20260804-414-port-io-delay-loop-batching.md)가
+tick당 포트 읽기를 **200회에서 2회로** 줄인 뒤
+[Task 418](../work-logs/20260804-418-cost-profile-rebaseline.md)이 다시 재면 **wall의
+0.5%**(예외의 19.4%, 총 74,438회)입니다. **port I/O는 더 이상 지배 항목이 아닙니다.**
+절차 자체는 유효하며, 지금은 "이 축이 다시 커졌는가"를 확인하는 용도입니다.
 
 ## 1. 언제 쓰는가
 
@@ -101,10 +108,18 @@ violation, `0xC0000096` privileged instruction입니다.
 
 # Measuring the Port I/O and Arena-Execution Axis
 
-About half of pumpit3's wall clock is port I/O exceptions; this is the repeatable procedure for
-the instrumentation cluster used to attribute them. Evidence is in
+The repeatable procedure for the instrumentation cluster that attributes port I/O exceptions to
+guest addresses and to cache or arena execution. Evidence is in
 [pumpit3 bring-up](../analysis/pumpit3-bring-up.md) and the Tasks 405-409 work logs; the
 structure is in `ARCHITECTURE.md` under "Port I/O address census and arena entry tracing".
+
+**Premise corrected (2026-08-04, measured by Task 418):** port I/O was about half of pumpit3's
+wall clock when this guide was written, but after
+[Task 414](../work-logs/20260804-414-port-io-delay-loop-batching.md) cut port reads per tick
+from 200 to two, [Task 418](../work-logs/20260804-418-cost-profile-rebaseline.md) measured it
+at **0.5% of wall** — 19.4% of exceptions across 74,438 operations. **Port I/O is no longer a
+dominant item.** The procedure still holds; its use now is checking whether the axis has grown
+back.
 
 ## When to use it
 

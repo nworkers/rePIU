@@ -936,6 +936,8 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     // Task 333: read after the guest thread has stopped, so the backend's
     // counters are quiescent and no lock is needed here.
     attempt->glide_gate_timing = context.glide_backend.glide_gate_timing();
+    attempt->glide_rendezvous_spin =
+        context.glide_backend.rendezvous_spin_counts();
     attempt->glide_ordinal_timing =
         SnapshotGlideOrdinalTiming(context.glide_ordinal_timing);
     attempt->glide_buffer_swap_timing =

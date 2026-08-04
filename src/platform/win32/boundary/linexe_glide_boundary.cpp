@@ -950,7 +950,13 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                     milestone = &context->shared_live_telemetry
                         ->glide_texture_milestone;
                 }
-                else if (gate_id >= go::kGrDrawLine && gate_id <= go::kGrDrawPolygon)
+                // Task 420: the antialiased entry points draw too now, and they
+                // sit outside this contiguous block, so they are named here
+                // rather than left out of the draw milestone.
+                else if ((gate_id >= go::kGrDrawLine &&
+                          gate_id <= go::kGrDrawPolygon) ||
+                         (gate_id >= go::kGrAADrawPoint &&
+                          gate_id <= go::kGrDrawPolygonVertexList))
                 {
                     milestone = &context->shared_live_telemetry
                         ->glide_draw_milestone;
@@ -1146,6 +1152,15 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             sizeof(std::uint32_t) + signature->argument_byte_count;
         return true;
     };
+    // Task 420: the A/B switch for the newly implemented draw entry points.
+    // When disabled, each of those cases records the issue it used to record
+    // and returns without drawing, keeping the stack adjustment identical, so
+    // one binary can answer whether drawing them is what changed a run.
+    // `REPIU_GLIDE_DRAW_ENTRY_POINTS=0` restores the old behaviour.
+    static const bool draw_entry_points_enabled = [] {
+        const char* value = std::getenv("REPIU_GLIDE_DRAW_ENTRY_POINTS");
+        return value == nullptr || std::strcmp(value, "0") != 0;
+    }();
     const auto record_unimplemented =
         [context, win32_context, glide_export](
             const std::string_view reason,
@@ -2139,8 +2154,25 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             win32_context->Esp += sizeof(std::uint32_t);
             return true;
 
+        // Task 420: the AA variants carry the same geometry and differ only by
+        // antialiasing flags this backend does not implement, so they render the
+        // same vertices rather than nothing. `_GRAADRAWLINE@8` takes the same two
+        // pointers as `_GRDRAWLINE@8`, so the stack adjustment is shared too.
+        case go::kGrAADrawLine: // _GRAADRAWLINE@8
         case go::kGrDrawLine: // _GRDRAWLINE@8
         {
+            // `kGrDrawLine` has always drawn, so only the antialiased variant
+            // reverts under the switch.
+            if (!draw_entry_points_enabled &&
+                glide_export->gate_id == go::kGrAADrawLine)
+            {
+                record_unimplemented("catalog-default-handler",
+                                     "ABI-preserving default return");
+                ++context->glide_gate_handled_count;
+                win32_context->Eip = return_address;
+                win32_context->Esp += 3U * sizeof(std::uint32_t);
+                return true;
+            }
             hle::GlideDrawVertex vertices[2] = {};
             for (std::size_t index = 0U; index < 2U; ++index)
             {
@@ -2175,14 +2207,100 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             return true;
         }
 
+        // Task 420: three vertex pointers followed by three antialiasing flags
+        // this backend does not implement, so the flags are ignored and the
+        // geometry is drawn. Seven stack slots, unlike `_GRDRAWTRIANGLE@12`.
+        case go::kGrAADrawTriangle: // _GRAADRAWTRIANGLE@24
+        {
+            if (!draw_entry_points_enabled)
+            {
+                record_unimplemented("catalog-default-handler",
+                                     "ABI-preserving default return");
+                ++context->glide_gate_handled_count;
+                win32_context->Eip = return_address;
+                win32_context->Esp += 7U * sizeof(std::uint32_t);
+                return true;
+            }
+            hle::GlideDrawVertex vertices[3] = {};
+            for (std::size_t index = 0U; index < 3U; ++index)
+            {
+                const auto* source = reinterpret_cast<const std::uint32_t*>(
+                    static_cast<std::uintptr_t>(
+                        context->glide_gate_stack[index + 1U]));
+                if (!IsGuestRangeReadable(context, source,
+                                          hle::kGlideProducerVertexByteCount))
+                {
+                    return decline_gate("aa-draw-triangle-unreadable-vertex");
+                }
+                std::uint32_t producer[
+                    hle::kGlideProducerVertexDwordCount] = {};
+                std::memcpy(producer, source, sizeof(producer));
+                if (!hle::DecodeGlideProducerVertex(
+                        producer, hle::kGlideProducerVertexDwordCount,
+                        &vertices[index]))
+                {
+                    return decline_gate("aa-draw-triangle-decode-failure");
+                }
+            }
+            if (!context->glide_backend.DrawTriangle(vertices[0], vertices[1],
+                                                     vertices[2]))
+            {
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                return decline_gate("aa-draw-triangle-backend-failure");
+            }
+            context->glide_backend_message = context->glide_backend.message();
+            ++context->glide_gate_handled_count;
+            win32_context->Eip = return_address;
+            win32_context->Esp += 7U * sizeof(std::uint32_t);
+            return true;
+        }
+
+        // Task 420: this used to accept the request and discard it, so anything
+        // a title drew as a point was missing from the screen with nothing to
+        // show for it. pumpit2 calls it (Task 420 design section 1).
+        case go::kGrAADrawPoint: // _GRAADRAWPOINT@4
         case go::kGrDrawPoint: // _GRDRAWPOINT@4
-            record_unimplemented(
-                "draw-point-noop",
-                "draw request accepted without rendering");
+        {
+            if (!draw_entry_points_enabled)
+            {
+                record_unimplemented(
+                    glide_export->gate_id == go::kGrDrawPoint
+                        ? "draw-point-noop"
+                        : "catalog-default-handler",
+                    "draw request accepted without rendering");
+                ++context->glide_gate_handled_count;
+                win32_context->Eip = return_address;
+                win32_context->Esp += 2U * sizeof(std::uint32_t);
+                return true;
+            }
+            const auto* source = reinterpret_cast<const std::uint32_t*>(
+                static_cast<std::uintptr_t>(context->glide_gate_stack[1]));
+            if (!IsGuestRangeReadable(context, source,
+                                      hle::kGlideProducerVertexByteCount))
+            {
+                return decline_gate("draw-point-unreadable-vertex");
+            }
+            std::uint32_t producer[hle::kGlideProducerVertexDwordCount] = {};
+            std::memcpy(producer, source, sizeof(producer));
+            hle::GlideDrawVertex vertex = {};
+            if (!hle::DecodeGlideProducerVertex(
+                    producer, hle::kGlideProducerVertexDwordCount, &vertex))
+            {
+                return decline_gate("draw-point-decode-failure");
+            }
+            if (!context->glide_backend.DrawPoint(vertex))
+            {
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                return decline_gate("draw-point-backend-failure");
+            }
+            context->glide_backend_message = context->glide_backend.message();
             ++context->glide_gate_handled_count;
             win32_context->Eip = return_address;
             win32_context->Esp += 2U * sizeof(std::uint32_t);
             return true;
+        }
 
         case go::kGuFogGenerateExp: // _GUFOGGENERATEEXP@8
         {
@@ -2736,24 +2854,100 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             return true;
         }
 
+        // Task 420: both polygon forms render as a triangle fan. Glide requires
+        // the vertices to describe a convex polygon, so the fan is exact rather
+        // than an approximation. The indexed form gathers through `ilist`; the
+        // vertex-list form walks a contiguous array at the producer stride.
         case go::kGrDrawPlanarPolygon: // _GRDRAWPLANARPOLYGON@12
         case go::kGrDrawPolygon: // _GRDRAWPOLYGON@12
-            record_unimplemented(
-                "draw-polygon-noop",
-                "draw request accepted without rendering");
-            ++context->glide_gate_handled_count;
-            win32_context->Eip = return_address;
-            win32_context->Esp += 4U * sizeof(std::uint32_t);
-            return true;
-
+        case go::kGrAADrawPolygon: // _GRAADRAWPOLYGON@12
         case go::kGrDrawPlanarPolygonVertexList: // _GRDRAWPLANARPOLYGONVERTEXLIST@8
-            record_unimplemented(
-                "draw-polygon-vertex-list-noop",
-                "draw request accepted without rendering");
+        case go::kGrDrawPolygonVertexList: // _GRDRAWPOLYGONVERTEXLIST@8
+        case go::kGrAADrawPolygonVertexList: // _GRAADRAWPOLYGONVERTEXLIST@8
+        {
+            const bool indexed =
+                glide_export->gate_id == go::kGrDrawPlanarPolygon ||
+                glide_export->gate_id == go::kGrDrawPolygon ||
+                glide_export->gate_id == go::kGrAADrawPolygon;
+            if (!draw_entry_points_enabled)
+            {
+                record_unimplemented(
+                    indexed ? "draw-polygon-noop"
+                            : "draw-polygon-vertex-list-noop",
+                    "draw request accepted without rendering");
+                ++context->glide_gate_handled_count;
+                win32_context->Eip = return_address;
+                win32_context->Esp +=
+                    (indexed ? 4U : 3U) * sizeof(std::uint32_t);
+                return true;
+            }
+            const std::uint32_t vertex_count = context->glide_gate_stack[1];
+            const std::uint32_t index_list =
+                indexed ? context->glide_gate_stack[2] : 0U;
+            const std::uint32_t vertex_list =
+                context->glide_gate_stack[indexed ? 3U : 2U];
+            // The stack adjustment must not depend on whether the draw
+            // succeeded, so it is computed once here and applied on every exit.
+            const std::uint32_t stack_slots = indexed ? 4U : 3U;
+
+            if (vertex_count < 3U ||
+                vertex_count > hle::kMaxGlidePolygonVertices)
+            {
+                return decline_gate("draw-polygon-vertex-count");
+            }
+            const auto* indices = reinterpret_cast<const std::int32_t*>(
+                static_cast<std::uintptr_t>(index_list));
+            if (indexed &&
+                !IsGuestRangeReadable(context, indices,
+                                      vertex_count * sizeof(std::int32_t)))
+            {
+                return decline_gate("draw-polygon-unreadable-index-list");
+            }
+
+            hle::GlideDrawVertex vertices[hle::kMaxGlidePolygonVertices] = {};
+            for (std::uint32_t index = 0U; index < vertex_count; ++index)
+            {
+                std::int32_t slot = static_cast<std::int32_t>(index);
+                if (indexed)
+                {
+                    std::memcpy(&slot, &indices[index], sizeof(slot));
+                    if (slot < 0)
+                    {
+                        return decline_gate("draw-polygon-negative-index");
+                    }
+                }
+                const auto* source = reinterpret_cast<const std::uint32_t*>(
+                    static_cast<std::uintptr_t>(vertex_list) +
+                    static_cast<std::uintptr_t>(
+                        static_cast<std::uint32_t>(slot)) *
+                        hle::kGlideProducerVertexByteCount);
+                if (!IsGuestRangeReadable(context, source,
+                                          hle::kGlideProducerVertexByteCount))
+                {
+                    return decline_gate("draw-polygon-unreadable-vertex");
+                }
+                std::uint32_t producer[
+                    hle::kGlideProducerVertexDwordCount] = {};
+                std::memcpy(producer, source, sizeof(producer));
+                if (!hle::DecodeGlideProducerVertex(
+                        producer, hle::kGlideProducerVertexDwordCount,
+                        &vertices[index]))
+                {
+                    return decline_gate("draw-polygon-decode-failure");
+                }
+            }
+            if (!context->glide_backend.DrawPolygon(vertices, vertex_count))
+            {
+                context->glide_backend_message =
+                    context->glide_backend.message();
+                return decline_gate("draw-polygon-backend-failure");
+            }
+            context->glide_backend_message = context->glide_backend.message();
             ++context->glide_gate_handled_count;
             win32_context->Eip = return_address;
-            win32_context->Esp += 3U * sizeof(std::uint32_t);
+            win32_context->Esp += stack_slots * sizeof(std::uint32_t);
             return true;
+        }
 
         case go::kGrLfbLock: // _GRLFBLOCK@24
         {

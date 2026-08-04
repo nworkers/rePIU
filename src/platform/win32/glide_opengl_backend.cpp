@@ -8,6 +8,11 @@
 #include <SDL3/SDL_opengl.h>
 #endif
 
+#if defined(_MSC_VER)
+// Task 419: `_mm_pause` for the rendezvous spin.
+#include <intrin.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -81,6 +86,98 @@ bool GlideOpenGlBackend::GlideGateTimingEnabled()
         glide_gate_timing_resolved_ = true;
     }
     return glide_gate_timing_enabled_;
+}
+
+// Task 419: the rendezvous spin budget, resolved once like the gate above
+// because this sits on the hot path. Zero restores the pure condition-variable
+// wait, which is the A/B control.
+// See docs/design/20260805-419-glide-rendezvous-spin-wait.md.
+namespace
+{
+constexpr std::uint32_t kDefaultRendezvousSpinMicroseconds = 20U;
+// A budget above this would trade more CPU than a round trip could ever cost.
+constexpr unsigned long kMaxRendezvousSpinMicroseconds = 1000UL;
+// Clock reads are not free either, so the deadline is only checked every this
+// many pauses. At ~30 cycles per pause this keeps the check under a percent of
+// the spin while still ending within a microsecond of the budget.
+constexpr int kRendezvousSpinPausesPerClockCheck = 64;
+}  // namespace
+
+std::uint32_t GlideOpenGlBackend::RendezvousSpinMicroseconds()
+{
+    if (!rendezvous_spin_resolved_)
+    {
+        rendezvous_spin_microseconds_ = kDefaultRendezvousSpinMicroseconds;
+        if (const char* value =
+                std::getenv("REPIU_GLIDE_RENDEZVOUS_SPIN_US"))
+        {
+            char* end = nullptr;
+            const unsigned long parsed = std::strtoul(value, &end, 10);
+            if (end != value && parsed <= kMaxRendezvousSpinMicroseconds)
+            {
+                rendezvous_spin_microseconds_ =
+                    static_cast<std::uint32_t>(parsed);
+            }
+        }
+        rendezvous_spin_resolved_ = true;
+    }
+    return rendezvous_spin_microseconds_;
+}
+
+// Task 419: Task 418 measured 65.9% of pumpit3's gate time as thread wake-up
+// latency rather than GL work, at about 70,000 cycles of round trip against
+// 34,745 cycles of work per call. Spinning briefly before blocking pays that
+// latency with cycles instead of two context switches.
+//
+// The returned bool is a **hint**. The caller must still take the mutex and
+// re-test the real predicate: the flags this reads are published under the lock
+// but read outside it, so acting on one directly would reintroduce exactly the
+// lost-wakeup race the condition variable exists to prevent.
+bool GlideOpenGlBackend::SpinForRendezvousHint(const std::atomic<bool>& hint,
+                                               bool expected, bool guest_side)
+{
+    const std::uint32_t budget = RendezvousSpinMicroseconds();
+    if (budget == 0U)
+    {
+        return false;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::microseconds(budget);
+    for (;;)
+    {
+        for (int pause = 0; pause < kRendezvousSpinPausesPerClockCheck;
+             ++pause)
+        {
+            if (hint.load(std::memory_order_acquire) == expected)
+            {
+                if (guest_side)
+                {
+                    ++rendezvous_spin_guest_hit_;
+                }
+                else
+                {
+                    ++rendezvous_spin_host_hit_;
+                }
+                return true;
+            }
+            _mm_pause();
+        }
+        if (std::chrono::steady_clock::now() >= deadline)
+        {
+            break;
+        }
+    }
+
+    if (guest_side)
+    {
+        ++rendezvous_spin_guest_miss_;
+    }
+    else
+    {
+        ++rendezvous_spin_host_miss_;
+    }
+    return false;
 }
 
 // Task 364: same one-time resolution as above. This gate is separate from the
@@ -278,12 +375,17 @@ void GlideOpenGlBackend::InvokeOnHostThread(std::function<void()> command)
 
     const std::uint64_t enter = timing ? ReadGlideGateTimingCycles() : 0U;
     std::exception_ptr command_exception;
+    // Task 419: spin for the previous command to drain before taking the lock.
+    // Only contended when the guest outruns the host, so usually a single read.
+    SpinForRendezvousHint(host_command_pending_hint_, false, true);
     std::unique_lock<std::mutex> lock(host_command_mutex_);
     host_command_cv_.wait(lock, [this]() { return !host_command_pending_; });
     host_command_ = std::move(command);
     host_command_exception_ = nullptr;
     host_command_complete_ = false;
     host_command_pending_ = true;
+    host_command_complete_hint_.store(false, std::memory_order_release);
+    host_command_pending_hint_.store(true, std::memory_order_release);
     if (timing)
     {
         // Published under the lock the host takes before reading it, so the
@@ -292,6 +394,17 @@ void GlideOpenGlBackend::InvokeOnHostThread(std::function<void()> command)
                                ReadGlideGateTimingCycles());
     }
     host_command_cv_.notify_all();
+    // Task 419: this is the `complete` interval, 30.5% of gate time in Task
+    // 418's measurement — the cost of the OS waking this thread back up. Spin
+    // through it with the lock released, then re-take it and let the original
+    // predicate decide, so a missed hint costs nothing but the spin.
+    if (rendezvous_spin_microseconds_ != 0U ||
+        RendezvousSpinMicroseconds() != 0U)
+    {
+        lock.unlock();
+        SpinForRendezvousHint(host_command_complete_hint_, true, true);
+        lock.lock();
+    }
     host_command_cv_.wait(lock, [this]() { return host_command_complete_; });
     if (timing)
     {
@@ -351,6 +464,10 @@ void GlideOpenGlBackend::PumpHostCommands()
         host_command_exception_ = command_exception;
         host_command_pending_ = false;
         host_command_complete_ = true;
+        // Task 419: published under the same lock as the flags they mirror, so
+        // a guest spinning outside the lock sees them in the same order.
+        host_command_pending_hint_.store(false, std::memory_order_release);
+        host_command_complete_hint_.store(true, std::memory_order_release);
     }
     host_command_cv_.notify_all();
 }
@@ -367,6 +484,10 @@ bool GlideOpenGlBackend::WaitAndPumpHostCommands(
     {
         return false;
     }
+    // Task 419: the `wake` interval, 35.2% of gate time — the OS waking this
+    // thread after the guest publishes. Spin outside the lock first; the wait
+    // below still decides, so a missed hint only costs the spin.
+    SpinForRendezvousHint(host_command_pending_hint_, true, false);
     {
         std::unique_lock<std::mutex> lock(host_command_mutex_);
         if (!host_command_pending_)
@@ -901,6 +1022,57 @@ bool GlideOpenGlBackend::BufferSwapOnHostThread(
             finish_cycles);
     }
     return true;
+#endif
+}
+
+// Task 420: `grDrawPoint` was accepted and discarded until now, so anything a
+// title drew this way was missing from the screen with no error to show for it.
+bool GlideOpenGlBackend::DrawPoint(const hle::GlideDrawVertex& a)
+{
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, &a, &result]() { result = DrawPoint(a); });
+        return result;
+    }
+#if !defined(_WIN32)
+    return false;
+#else
+    const hle::GlideDrawVertex* const vertices[1] = {&a};
+    return DrawPrimitive(vertices, 1U, GL_POINTS, "Glide point drawn");
+#endif
+}
+
+// Task 420: Glide requires `grDrawPolygon`'s vertices to describe a convex
+// polygon, which makes a triangle fan an exact rendering rather than an
+// approximation. The caller has already bounded `count`.
+bool GlideOpenGlBackend::DrawPolygon(const hle::GlideDrawVertex* vertices,
+                                     const std::size_t count)
+{
+    if (vertices == nullptr || count < 3U ||
+        count > hle::kMaxGlidePolygonVertices)
+    {
+        message_ = "Glide polygon vertex count is out of range";
+        return false;
+    }
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, vertices, count, &result]() {
+            result = DrawPolygon(vertices, count);
+        });
+        return result;
+    }
+#if !defined(_WIN32)
+    return false;
+#else
+    const hle::GlideDrawVertex* pointers[hle::kMaxGlidePolygonVertices] = {};
+    for (std::size_t index = 0U; index < count; ++index)
+    {
+        pointers[index] = &vertices[index];
+    }
+    return DrawPrimitive(pointers, count, GL_TRIANGLE_FAN,
+                         "Glide polygon drawn");
 #endif
 }
 

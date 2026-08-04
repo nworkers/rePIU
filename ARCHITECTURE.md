@@ -1085,9 +1085,27 @@ retired entry의 `INT3`로 영구 trap하는 대신 다음 전송이 dispatcher�
 다른 page에서 patch한 retired page로 다음에 진입할 때 live guest byte를 snapshot해
 새 세대를 발행합니다. 길이가 5바이트 이상인 오래된 entry는 최신 entry로 가는
 `E9 rel32`로 재연결하고, 짧은 entry는 provenance trap으로 남깁니다. 같은 page의
-self-modification이나 번역·발행 실패는 해당 page만 legacy quarantine합니다.
-정상 경로는 inactive map이 없으면 추가 탐색을 하지 않으며, 재연결도 inactive
-index만 순회합니다.
+self-modification은 해당 page만 legacy quarantine하고, 번역·발행 실패는 아래
+세대 실패 정책을 따릅니다. 정상 경로는 inactive map이 없으면 추가 탐색을 하지
+않으며, 재연결도 inactive index만 순회합니다.
+
+**세대 실패의 범위 (Task 415).** 재번역 실패는 예전에 그 entry의 guest page 전체를
+영구 quarantine했고, 그러면 같은 page의 다른 routine이 전부 single-step으로
+떨어졌습니다. 실패한 것은 entry 하나이므로 지금은 **실패한 guest 주소만** 억제
+집합(용량 256)에 넣고 다시 시도하지 않습니다. 재시도 storm을 막는다는 quarantine의
+성질은 유지하면서 나머지 page는 계속 cache에서 돕니다.
+`REPIU_AOT_QUARANTINE_ON_GENERATION_FAILURE=1`이거나 억제 집합이 가득 차면 예전
+page 단위 격리로 돌아갑니다. 정책은 `aot_generation_failure_policy.h`가 노출하는
+counter(실패 주소 수, 건너뛴 시도, page 격리 횟수, 걸친 활성화 횟수)로 보고합니다.
+
+**page 경계를 걸친 요청 항목 (Task 417).** 그 세대 실패의 근인이 여기였습니다.
+`CanActivateWin32AotAddressMapEntry`는 entry가 걸친 page가 retired면 활성화를
+거부하는데 **요청 page만 예외**였으므로, 이웃 page가 retired된 뒤에는 경계를 걸친
+요청 entry가 다시는 활성화되지 못하고 실행이 arena로 떨어졌습니다. append 루프는
+이제 **요청 항목 하나에 한해**, quarantined page를 걸치지 않는 한 활성으로 둡니다.
+지금 막 현재 guest byte로 번역한 image이고 `RegisterAddressMapPages`가 걸친 **모든**
+page에 등록하므로 이후 어느 page에 써도 같은 entry가 retire됩니다. 나머지 entry는
+규칙 그대로이며 `REPIU_AOT_STRICT_SPANNING_ENTRY=1`이면 예전 거부 규칙입니다.
 
 `aot_page_coherence_win32`는 translated instruction이 있는 guest page를
 `PAGE_EXECUTE_READ`로 감시합니다. native guest/cache store의 write fault에서는
@@ -1103,9 +1121,37 @@ stateDiagram-v2
     Active --> Retired: overlapping guest write
     Retired --> Translating: next page entry
     Translating --> Active: publish generation N+1
-    Translating --> Quarantined: translation/publication failure
+    Translating --> Suppressed: 세대 실패 → 실패 주소만 (Task 415)
+    Suppressed --> Quarantined: 억제 집합 포화 또는<br/>QUARANTINE_ON_GENERATION_FAILURE=1
     Active --> Quarantined: same-page self modification
+    note right of Suppressed
+        걸친 요청 항목은 이제 활성화되므로
+        이 전이 자체가 드물어집니다 (Task 417)
+    end note
 ```
+
+## Glide host-thread rendezvous의 스핀 대기
+
+Glide 명령은 GL 컨텍스트를 소유한 host thread에서 실행되므로, 게스트 스레드는
+`InvokeOnHostThread`에서 명령을 publish하고 완료를 기다립니다. Task 418이 pumpit3에서
+그 대기가 **gate 시간의 65.9%**(wake 35.2% + complete 30.5%)임을 측정했습니다. 호출당
+왕복 고정비가 약 70,000 cycle인데 호출당 GL 작업은 34,745 cycle이라, **작은 호출이
+왕복에 묻히는** 구조였습니다. 호출이 훨씬 크고 드문 pumpit1은 같은 지점이 7.6%입니다.
+
+Task 419가 대기 세 곳(publish 전 pending 대기, 완료 대기, host의 pending 대기)을
+**짧은 스핀 후 조건변수 폴백**으로 바꿨습니다. 스핀은 `_mm_pause`로 돌며 두 플래그의
+`std::atomic<bool>` 미러를 읽고, 예산은 `REPIU_GLIDE_RENDEZVOUS_SPIN_US`(기본 20 µs,
+`0`이면 예전 동작)입니다.
+
+**원자 미러는 힌트일 뿐입니다.** 스핀이 조건을 관측해도 반드시 뮤텍스를 잡고 기존
+조건변수 술어로 재확인하며, 술어 자체는 바뀌지 않습니다. 이 규칙이 lost wakeup을
+막습니다. 미러는 원래 플래그와 **같은 임계구역에서** 갱신되므로 락 밖에서 읽어도
+순서가 뒤집히지 않습니다.
+
+측정(60초 A/B, pumpit3): `wake+complete` 65.4~66.3% → **5.3~12.9%**, 프레임
+2,399 → **3,063 중앙값(+27.7%)**. rendezvous 처리량이 +20%이고 프레임당 호출 수는
+그대로이므로, gate가 짧아진 것이 아니라 **대기가 작업으로 바뀐 것**입니다.
+스핀 hit율은 게스트측 99.5% 이상, host측 약 94%입니다.
 
 플랫폼 공용 번역 계획은 HLE가 소유한 guest 범위를 제외 범위로 받을 수 있습니다.
 LINEXE/Glide 합성 gate는 복사된 `UD2`로 실행하지 않고 cache sentinel에서 원본
@@ -1137,8 +1183,55 @@ design 238), so learned hits re-enter the dispatcher's normal miss-repatch
 protocol instead of trapping forever on the retired entry's `INT3`. Entry
 into the retired page snapshots live bytes and publishes the next generation.
 Stale entries of at least five bytes are relinked with `E9 rel32`; shorter entries
-remain provenance traps. Same-page modification or publication failure
-quarantines only that page. The common path performs no inactive-entry scan.
+remain provenance traps. Same-page modification quarantines only that page, while
+translation or publication failure follows the generation-failure policy below.
+The common path performs no inactive-entry scan.
+
+**Generation-failure scope (Task 415).** A failed re-translation used to quarantine
+the entry's whole guest page permanently, dropping every other routine on that page
+to single-stepping. One entry is what failed, so the penalty is now the **failing
+guest address alone**, held in a 256-entry suppression set and never retried — which
+keeps the retry-storm property quarantine provided while the rest of the page keeps
+running from the cache. `REPIU_AOT_QUARANTINE_ON_GENERATION_FAILURE=1`, or a full
+suppression set, restores the old page-wide quarantine. `aot_generation_failure_policy.h`
+exposes the counters: failed addresses, skipped attempts, page quarantines, and
+spanning activations.
+
+**A requested entry straddling a page boundary (Task 417)** was the root of those
+failures. `CanActivateWin32AotAddressMapEntry` refuses an entry that spans a retired
+page and exempted **only the requested page**, so once a neighbour retired, a
+boundary-straddling requested entry could never activate again and execution fell
+back to the arena. The append loop now keeps **the requested entry alone** active
+unless it spans a *quarantined* page: the image was just translated from current
+guest bytes, and `RegisterAddressMapPages` records the entry under **every** page it
+spans, so a later write to either page still retires it. Every other entry keeps the
+old rule, and `REPIU_AOT_STRICT_SPANNING_ENTRY=1` restores the refusal.
+
+### Spin-then-wait for the Glide host-thread rendezvous
+
+Glide commands run on the host thread that owns the GL context, so the guest thread
+publishes through `InvokeOnHostThread` and waits for completion. Task 418 measured that
+wait at **65.9% of gate time** in pumpit3 (35.2% wake plus 30.5% complete): the fixed
+round trip costs about 70,000 cycles against 34,745 cycles of GL work per call, so
+**small calls drown in the round trip**. pumpit1, whose calls are far larger and rarer,
+spends 7.6% there.
+
+Task 419 replaced the three waits — the pending wait before publishing, the completion
+wait, and the host's own pending wait — with a **short spin that falls back to the
+condition variable**. The spin pauses with `_mm_pause` while reading `std::atomic<bool>`
+mirrors of the two flags, on a budget from `REPIU_GLIDE_RENDEZVOUS_SPIN_US` (default
+20 µs, `0` restoring the old behaviour).
+
+**The mirrors are hints only.** A spin that observes its condition still takes the mutex
+and re-tests the original condition-variable predicate, which is left unchanged; that is
+what prevents lost wakeups. The mirrors are published inside the same critical section as
+the flags they mirror, so reading them outside the lock cannot reorder against it.
+
+Measured over a 60-second A/B on pumpit3, `wake + complete` falls from 65.4-66.3% to
+**5.3-12.9%** and frames rise from 2,399 to a **median 3,063 (+27.7%)**. Rendezvous
+throughput rises 20% while calls per frame stay constant, so the gate did not shrink —
+**waiting turned into working**. Spin hit rates are above 99.5% on the guest side and
+about 94% on the host side.
 
 The dedicated `aot_page_coherence_win32` subsystem write-watches guest pages that
 contain translated instructions as `PAGE_EXECUTE_READ`. On a native guest/cache

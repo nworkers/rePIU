@@ -76,6 +76,21 @@ struct Win32GlideGateTimingSnapshot
     std::uint64_t residual_cycles = 0;
 };
 
+// Task 419. The gate timing above measures how long the rendezvous waited;
+// this counts how often a spin caught that wait before the condition variable
+// had to, split by which side spun. `budget_microseconds` is the resolved
+// `REPIU_GLIDE_RENDEZVOUS_SPIN_US`, where zero means the spin is disabled and
+// every count is expected to read zero.
+// See docs/design/20260805-419-glide-rendezvous-spin-wait.md.
+struct Win32GlideRendezvousSpinSnapshot
+{
+    std::uint64_t guest_hit = 0;
+    std::uint64_t guest_miss = 0;
+    std::uint64_t host_hit = 0;
+    std::uint64_t host_miss = 0;
+    std::uint32_t budget_microseconds = 0;
+};
+
 std::uint64_t ReadGlideGateTimingCycles();
 
 // Difference that clamps a backwards TSC read to zero and counts it.

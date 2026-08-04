@@ -654,6 +654,9 @@ struct Win32MinimalExecutionAttempt
     Win32AotWorkerTimingSnapshot aot_worker_timing;
     // Task 333: the Glide host-thread rendezvous split into waiting and work.
     Win32GlideGateTimingSnapshot glide_gate_timing;
+    // Task 419: how often a spin resolved that rendezvous before the condition
+    // variable had to, with the budget that produced the counts.
+    Win32GlideRendezvousSpinSnapshot glide_rendezvous_spin;
     // Task 353: decoded gate and rendezvous time attributed by Glide ordinal.
     Win32GlideOrdinalTimingSnapshot glide_ordinal_timing;
     // Task 354: guest grBufferSwap host work split around SDL presentation.

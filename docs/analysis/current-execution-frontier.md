@@ -6,31 +6,92 @@
 
 ## 다음 할 일 / Next work, in order
 
-2026-08-03 Tasks 404~409 기준입니다. 근거는 아래 인수인계 절과
-[pumpit3 bring-up](pumpit3-bring-up.md), 측정 절차는
-[port I/O / arena 귀속 가이드](../guides/port-io-arena-attribution.md)에 있습니다.
+2026-08-04 Tasks 411~417 기준입니다. 근거는 아래 인수인계 절과
+[pumpit3 bring-up](pumpit3-bring-up.md), [pumpit3 기동 중 멈춤](pumpit3-startup-stall.md),
+측정 절차는 [port I/O / arena 귀속 가이드](../guides/port-io-arena-attribution.md)에
+있습니다.
+
+**멈춤 축은 닫혔습니다.** 원인은 서로 독립인 둘이었고 — 포화(Task 414)와 번역 실패로
+인한 arena 낙하(Task 417) — 60초 실행이 세션 시작 시점 **11회 중 0회 정상**에서
+**8회 중 8회 정상**(1,018~1,416 프레임)이 됐습니다. pumpit1 회귀 없음(2,848).
+
+| 닫힌 항목 | 결론 | 근거 |
+|---|---|---|
+| 1 · 2 (진입 횟수 편차 · 소비 지점) | 편차의 축은 격리이고 소비 지점은 `HandleAotReentry`의 resolve 성공 분기. **arena에 남긴다는 전제는 반증**(캐시 `0x0C403877`로 복귀) | Task 410 |
+| 0 (실행 중 멈춤) | 240 Hz tick마다 결과를 버리는 포트 읽기 200회를 fault 200회로 처리하고 있었음 → 2회로 축소 | Task 414 |
+| 0′ · 0″ · 0‴(a) (남은 멈춤) | 근인은 요청 항목이 retired 이웃 페이지로 4바이트 걸쳐 활성화가 거부된 것. 요청 항목만 완화하자 **세대 실패 0** | Tasks 415~417 |
+| 4 · 5 (세대 실패 사유 · 격리 조건) | 사유는 위와 같은 걸친 항목의 활성화 실패였고, 415가 벌칙을 페이지→주소로 좁혀 **격리가 기본 경로에서 사라짐** | Tasks 415~417 |
+| 8 (렌더 루프 미도달) | 격리 실행에 한정된 현상 | Task 410 |
+| 0a (호스트 시간 62%) | 우리 VEH 경로 작업의 합이고 스레드는 CPU 82.42%로 바쁨 | Task 412 |
 
 | # | 할 일 | 왜 지금인가 | 걸린 비용 |
 |---|---|---|---:|
-| 1 | **[완료, Task 410] 진입 횟수 편차** — 격리 유무로 갈립니다. 격리 없음 arena single-step 12,133~13,094 / 프레임 1,362~1,402, 격리 2,286,195~4,974,756(**180~410배**) / 프레임 867 또는 렌더 루프 미도달 | — | — |
-| 2 | **[완료, Task 410] 소비 지점 = `HandleAotReentry` resolve 성공 분기**(`aot_runtime_dispatch.cpp:1893~1902`). 격리 없는 3회에서 arena single-step의 **100%**. **전제는 반증됐습니다 — 이 지점은 arena가 아니라 캐시(`0x0C403877`)로 복귀시킵니다** | — | — |
-| 0 | **[해소, Task 414] pumpit3 실행 중 멈춤** — 원인은 **포화**였습니다. 240 Hz tick마다 **결과를 버리는 포트 읽기 200회**를 우리는 fault 200회로 처리하고 있었습니다. 루프 카운터를 전진시켜 **2회**로 줄이자 batching 끔 **14회 중 0회 정상** → 켬 **7회 중 6회 정상**(803~1,425 프레임). pumpit1 회귀 없음 | — | — |
-| 0' | **[정정, Task 415] 남은 멈춤은 격리가 아닙니다.** 세대 실패 벌칙을 페이지→주소로 좁혀 격리를 0으로 만들었는데도 멈춤이 남았고, 멈춘 실행은 **격리 0 · single-step 2,494,657**입니다 | — | — |
-| 0** | **[해소, Task 417] 마지막 멈춤도 사라졌습니다.** 요청 항목이 retired 이웃 페이지로 걸치면 활성화를 거부하던 규칙을 **요청 항목에 한해** 완화하자(quarantined는 여전히 거부) **세대 실패가 0**이 되고, strict 5회 중 2회 멈춤 대 **relaxed 8회 중 0회**. pumpit1 회귀 없음(2,848) | — | — |
-| 0'' | **[근거, Task 416] 그 멈춤의 정체 = 번역 실패 항목이 실행을 arena에 떨구고 복귀 길이 없음.** 전수 census로 **`0x0301E000` 51.6% + `0x0301D000` 34.7% = 두 인접 페이지에 86%**가 몰려 있음(이전의 "전역 trace 모드"는 표본 15개 기반 오판, 반증됨). 정상/멈춤 모두 같은 번역 실패를 겪고, **갈림은 게스트가 그 주소를 밟느냐**(skips 0 대 1). 밟으면 재진입이 `not-pending`으로 **550,688회** 거부 | 오늘 15회 중 2회 | (사용 가능성) |
-| 0''' | **수정 후보 두 갈래** — (a) 페이지 경계를 걸친 **요청 항목의 활성 규칙 완화**(근인 제거, 단 걸친 항목이 첫 페이지에만 등록되는 기존 성질이 위험), (b) **arena→캐시 재진입**을 pending 없이도 허용(일반 안전망, 캐시 중간 진입 정확성이 미확정) | 0''의 해결책 | 측정 필요 |
-| 0a | **[완료, Task 412] 그 62%의 정체 = 우리 VEH 경로 작업의 합.** 스레드는 막힌 것이 아니라 **CPU 82.42%로 바쁩니다.** 호출 지점(심볼): 세그먼트 override 재해석 약 **15.1%**, `WriteGuestBytes` 13.6%, `FindAotCacheAddress` 12.7%, JAMMA 스냅샷 약 10.4%, inline-cache patch 요청 6.9% | — | — |
-| 0b | **세그먼트 override 재해석** — host 표본 최대 인구(약 15.1%)이고 호출 빈도가 **미측정**입니다. inline-cache patch와 같은 **전체 캐시 보호**를 씁니다 | 0a가 지목한 1순위 | 측정 필요 |
-| 0c | **return inline cache thrash** — `0x030D09D7`(Watcom 스택 검사 helper의 `ret 4`)의 정적 호출처가 **259곳**인데 IC는 **4-entry** round-robin. Task 413이 miss **가격**을 낮췄으나 **횟수**는 그대로 | 예외 횟수 축의 구체적 대상 | 측정 필요 |
-| 2' | **port I/O census에 호출 측(VEH / thunk) 태그** — 후보 셋(HLE slot·Glide gate의 target-miss, 미해결 direct edge)은 **같은 로그로 전부 배제**됐습니다(target-miss 0/0, direct edge는 성공·실패 모두 캐시 복귀). 남은 가설은 **진입이 이탈이 아닐 수 있다**는 것 — thunk 경로는 게스트 EIP를 넘겨 `from_aot_cache`를 false로 만듭니다 | 새 **시작점**. 하루치 조사 방향이 아티팩트인지 여기서 갈림 | wall 약 42~50% |
-| 3 | ~~arena→캐시 복귀 설계~~ **복귀는 이미 있고 정상 동작합니다**(resolve 100% 성공). 필요한 것은 복귀가 아니라 **이탈을 막는 것** — 2'가 선행 | 2'의 해결책 | 위와 같음 |
-| 4 | **재번역이 요청 진입 주소를 address map에 남기지 못하는 조건** — 사유는 `dynamic AOT entry was not active in the new image`로 확보됨(Task 404) | 격리 실행의 근인 | 격리 시 wall 35~40% |
-| 5 | **격리 발생을 가르는 조건** — 10회 중 6회, 5회 중 0회로 비결정적 | 4번과 짝 | 위와 같음 |
-| 6 | **세그먼트 레지스터 HLE 이벤트당 약 2.4~2.7M cycle** — 표본 3,000회 미만인데 격리 없는 실행에서도 약 12% | 독립 축 | wall 약 12% |
-| 7 | **`GetAsyncKeyState` 단가 3~6배** — Task 403의 3,044 대 실측 9,802~17,596 | JAMMA scan이 여전히 4.9~5.3% | wall 약 5% |
-| 8 | ~~pumpit3가 45초에 렌더 루프에 도달하지 못함~~ **[정정, Task 410]** 격리 없는 3회는 `_GRBUFFERSWAP@4` **1,362~1,402회**로 렌더 루프에 도달·유지했습니다. 미도달은 **격리 실행**입니다(867회 또는 0회) | 프레임 기반 판정이 가능해짐 | — |
-| 9 | **부팅 크래시** — arena base가 높게 잡히면 `INT 21h AH=4Ah` resize가 `0x0008`로 실패 | 재현율 낮으나 실행 자체가 죽음 | (안정성) |
-| 10 | **teardown 지연** — Task 401 이후 손대지 않음 | 측정 회전율 | (편의) |
+| 1 | **비용 프로파일 재기준선** — 아래 항목의 비율은 **전부 Task 414 이전** 측정입니다. tick당 포트 읽기가 200 → 2로 줄었으므로 "port I/O가 예외의 90.4~92.9%, wall의 41.9~49.7%"라는 전제가 그대로일 수 없습니다 | 나머지 전부의 선행 조건입니다. 세션 간 절대 비교가 성립하지 않으므로 **같은 세션 안에서** 새로 잡아야 합니다 | 아래 값 전부의 유효성 |
+| 2 | **pumpit3 화면 내용 검증** — 프레임은 1,018~1,416인데 **무엇이 그려지는지 미확인**이고 texture upload가 27건(distinct 24)으로 적습니다 | 이제 안정적으로 완주하므로 처음으로 가능해졌습니다 | (정확성) |
+| 3 | **(구 2′) port I/O census에 호출 측(VEH / thunk) 태그** — 후보 셋(HLE slot·Glide gate의 target-miss, 미해결 direct edge)은 이미 전부 배제됐고, 남은 가설은 **진입이 이탈이 아닐 수 있다**는 것입니다. thunk 경로는 게스트 EIP를 넘겨 `from_aot_cache`를 false로 만듭니다 | 1번 이후에도 port I/O가 큰 몫이면 여기가 사슬의 머리 | 재측정 필요(구 42~50%) |
+| 4 | **(구 0b) 세그먼트 override 재해석** — host 표본 약 15.1%인데 **호출 빈도가 미측정**입니다. inline-cache patch와 같은 **전체 캐시 보호**를 씁니다 | Task 412가 지목한 1순위 | 재측정 필요 |
+| 5 | **(구 0c) return inline cache thrash** — `0x030D09D7`(Watcom 스택 검사 helper의 `ret 4`)의 정적 호출처 **259곳** 대 IC **4-entry** round-robin. Task 413이 miss **가격**을 낮췄으나 **횟수**는 그대로 | 예외 **횟수** 축의 구체적 대상 | 재측정 필요 |
+| 6 | **세그먼트 레지스터 HLE 이벤트당 약 2.4~2.7M cycle** — 표본 3,000회 미만인데 비중이 큽니다 | 독립 축 | 재측정 필요(구 12%) |
+| 7 | **`GetAsyncKeyState` 단가 3~6배** — Task 403의 3,044 대 실측 9,802~17,596 | JAMMA scan 축 | 재측정 필요(구 5%) |
+| 8 | **부팅 크래시** — arena base가 높게 잡히면 `INT 21h AH=4Ah` resize가 `0x0008`로 실패 | 재현율은 낮으나(8회 중 1회) 실행 자체가 죽습니다 | (안정성) |
+| 9 | **teardown 지연** — Task 401 이후 손대지 않음 | 측정 회전율 | (편의) |
+
+### [완료, Task 418] 재기준선 결과 — 축이 바뀌었습니다
+
+위 표는 **재기준선 이전**의 것이고, 아래가 실측으로 대체된 현재 순위입니다.
+근거는 [Task 418 작업 로그](../work-logs/20260804-418-cost-profile-rebaseline.md).
+
+| # | 할 일 | 왜 지금인가 | 걸린 비용 |
+|---|---|---|---:|
+| — | **[완료, Task 419] Glide gate rendezvous** — 분해는 Task 418 로그에 **이미 있었고**(`rendezvous/direct: 0/0`은 ordinal별 줄이었음), gate 시간의 **65.5%가 왕복 지연**이었습니다. 스핀 대기로 **5.3~12.9%**까지 내려가 **프레임 2,399 → 3,063(+27.7%)**, pumpit1 회귀 없음 | — | — |
+| 1 | **다음 Glide 축을 고를 것** — 이제 gate 시간의 **86~94%가 진짜 GL 작업**입니다. 후보는 (a) command batching(반환값 없는 호출 모으기), (b) `grBufferSwap`에 몰린 드라이버 작업(Task 370), (c) 남은 왕복 5.3~12.9% | Task 419가 대기를 없앴으므로 이제 남은 것은 **작업 자체**입니다 | gate가 guest-run의 **약 50%** |
+| 1' | **[신규, Task 420] attract 데모 진입 후 정지** — 실행이 13~33초에 `PollThreadUntilExit`의 **1초 무진행 감시**로 끝납니다. **덜 간 것이 아니라 더 간 것**입니다: 완주하던 Task 419 실행은 DOS trace **10개**(`bga\16.dat`)인데 멈추는 실행은 **16~19개**로 `title\t301~t305.ptx` → `step\mix4_1.NOT` → `bga\30.dat`까지 갑니다 | 60초 표본을 못 얻으므로 **프레임 기반 판정이 전부 막힙니다** | (측정 자체) |
+| 2 | **pumpit3 화면 내용 검증** — 60초에 2,477~2,515 프레임인데 **무엇이 그려지는지는 여전히 미확인** | 안정적으로 완주하므로 가능 | (정확성) |
+| 3 | **부팅 크래시** — arena base가 높게 잡히면 `INT 21h AH=4Ah`에서 죽고, 재배치 베이스를 아예 못 잡는 변종도 있습니다 | **9회 중 2회**로 재현율이 낮지 않습니다 | (안정성) |
+| 4 | **teardown 지연** — 이번 9회는 전부 60~61초에 정리됐으므로 우선순위가 낮아졌습니다 | 측정 회전율 | (편의) |
+| 5 | **return inline cache thrash(구 0c) — 실재하나 비용이 미격리** | return 194,225회에 IC patch **194,341회**(= return + inline breakpoint 116)로 **return 한 번마다 한 번 재패치**합니다. IC는 여전히 4-entry | 아래 정정 참조 |
+| — | ~~port I/O 축(구 3)~~ | **닫힘** — wall의 **0.5%**, 예외의 19.4% | — |
+| — | ~~세그먼트 override(구 4)~~ · ~~세그먼트 HLE(구 6)~~ · ~~`GetAsyncKeyState`(구 7)~~ | **근거 소진** — 전부 멈춘 실행의 순위였고, 정상 실행 host 표본에서 **어느 것도 1%를 넘지 않습니다** | — |
+
+**정정 — 항목 5(구 0c)를 "근거 소진"으로 적었던 것은 축이 어긋난 판정이었습니다.**
+host 표본은 시간 축인데 0c의 주장은 **횟수** 축이었습니다. 같은 로그로 다시 재면:
+
+| 관측 | 값 | 뜻 |
+|---|---:|---|
+| return entry/attempt/success/fallback | 194,225 / 194,225 / 194,225 / **0** | 전부 해결되며 fallback은 없음 |
+| inline-cache patch attempt/success | **194,341** | return(194,225) + inline breakpoint(116)과 **정확히 일치** → **return마다 재패치** |
+| breakpoint provenance `inline` | **116** | 이 19.4만 회는 **예외로 들어오지 않습니다**(miss tail 직접 호출) |
+| transfer handler `return` cycles / guest-run | 20.90G / 222.1G = **9.4%** | 단, 자체 share가 **482.54%** → **버킷 중첩**, 배타 비용 아님 |
+| host 표본의 해당 경로 합 | **약 2~3%** | `ResolveAotTransferTarget` 1.14~1.33% + `RequestAotInlineCachePatch` 0.89% + `FindAotCacheAddress` 0.73% |
+
+**따라서 thrash는 확인됐고(횟수), 비용만 미격리입니다.** 예외 축이 아니므로 "예외
+횟수를 줄인다"는 원래 동기는 성립하지 않습니다. 배타 비용을 재려면 중첩되지 않는
+계측이 필요하며, 상한은 9.4%, 하한은 host 표본의 2~3%입니다.
+
+**실측치(정상 실행 7회, 격리 0 · 세대 실패 0):**
+
+| 층 | 지표 | 값 | 이전 |
+|---|---|---:|---:|
+| 예외 | breakpoint | **68.4~69.4%** | — |
+| 예외 | port I/O(`0xC0000096`) | **19.3~20.0%** | 90.4~92.9% |
+| 예외 | breakpoint provenance = HLE 경계 | **약 83%** | — |
+| 시간 | VEH gap / wall | **95.7~96.0%** (그 중 breakpoint 97.9%) | — |
+| 시간 | glide-gate / guest-run | **54~55%** | — |
+| 시간 | port I/O / guest-run | **0.5%** | wall 41.9~49.7% |
+| 게스트 | port I/O 총 횟수 | **74,438** | 1,772,285 |
+| 호스트 | `InvokeOnHostThread` | **74.8~76.3%** | (멈춤 표엔 없음) |
+| 호스트 | 2위 이하 전부 | **≤ 1.6%** | 세그먼트 15.1% 등 |
+
+**항목 1′의 배제 목록(Task 420이 A/B로 확인):** Glide draw 진입점 구현(같은 바이너리
+A/B에서 on·off가 구분되지 않음), Task 419 스핀(`spin=0`도 20~27초에 정지), EEPROM
+상태(fixture가 Task 418·419 사본과 **바이트 동일**), 잔류 프로세스(0개). **미확정**은
+왜 지금 attract 데모에 도달하는가이며, 후보는 게스트 시간 진행 속도·입력·환경입니다.
+
+**측정 조건 주의 — 창 상태가 결과를 바꿉니다.** 창을 최소화하면 pumpit1이 12,119 /
+11,888 프레임으로 기준선(2,735~2,865)의 **4.2배**가 됩니다. pumpit3는 거의 변하지
+않으므로(2,252~2,974 대 2,477~2,515) **pumpit1은 표시 제한, pumpit3는 아님**이
+재확인됩니다. 프레임을 인용하는 측정은 **창을 정상으로 띄우고** pumpit1을 대조로 함께
+돌리십시오.
 
 **측정 규칙(이번 세션에서 배운 것):**
 
@@ -41,34 +102,96 @@
 * 진입 분류 수는 해당 예외 총수를 넘을 수 없습니다. **이 검산을 빼면 Task 408처럼
   결론이 과해집니다.**
 * `REPIU_PORT_IO_CENSUS_MAPPING`을 켠 실행의 wall·프레임은 인용하지 않습니다.
+* **Task 414 이전 비율을 현재 빌드에 인용하지 않습니다.** 지연 루프 batching이 tick당
+  포트 읽기를 200 → 2로 줄였으므로 port I/O가 지배적이던 분포 자체가 바뀌었습니다.
+  아래 인수인계 절의 수치는 **그 시점의 기록으로** 읽으십시오.
+* 표본이 적은 지표로 방향을 정하지 않습니다. Task 416에서 `last_eip` 15개를 "전역
+  trace 모드"로 읽은 것을 전수 census가 반증했습니다.
 
 ## Next work, in order
 
-Based on Tasks 404-409 on 2026-08-03. Evidence is in the handoff below and
-[pumpit3 bring-up](pumpit3-bring-up.md); the procedure is in the
+Based on Tasks 411-417 on 2026-08-04. Evidence is in the handoff below,
+[pumpit3 bring-up](pumpit3-bring-up.md), and
+[the pumpit3 startup stall](pumpit3-startup-stall.md); the procedure is in the
 [port I/O / arena attribution guide](../guides/port-io-arena-attribution.md).
+
+**The stall axis is closed.** There were two independent causes — saturation (Task 414) and
+the arena fall-through from a failed translation (Task 417) — and 60-second runs went from
+**zero healthy in eleven** at the start of that session to **eight of eight**
+(1,018-1,416 frames), with no pumpit1 regression (2,848).
+
+| Closed | Conclusion | Evidence |
+|---|---|---|
+| 1 · 2 (entry-count variation, consumer) | The variation is quarantine and the consumer is `HandleAotReentry`'s resolve-success branch, but **the premise is refuted** — it returns to the cache at `0x0C403877` | Task 410 |
+| 0 (mid-run stall) | Every 240 Hz tick performed 200 port reads the guest discards, and we raised 200 faults; now two | Task 414 |
+| 0′ · 0″ · 0‴(a) (remaining stall) | The root was a requested entry straddling four bytes into a retired neighbour and being refused activation; relaxing it for the requested entry alone takes generation failures to **zero** | Tasks 415-417 |
+| 4 · 5 (failure reason, quarantine trigger) | The reason was that same straddling activation failure, and Task 415's page-to-address narrowing removes quarantine from the default path | Tasks 415-417 |
+| 8 (render loop not reached) | Confined to quarantined runs | Task 410 |
+| 0a (62% of host time) | The sum of our own VEH-path work, with the thread busy at 82.42% CPU | Task 412 |
 
 | # | Item | Why now | Cost at stake |
 |---|---|---|---:|
-| 1 | **[done, Task 410] The entry-count variation is quarantine** — 12,133-13,094 arena single steps and 1,362-1,402 frames without it, 2,286,195-4,974,756 (**180-410x**) and 867 frames or no render loop with it | — | — |
-| 2 | **[done, Task 410] The consumer is `HandleAotReentry`'s resolve-success branch** (`aot_runtime_dispatch.cpp:1893-1902`), **100%** of arena single steps in three quarantine-free runs. **The premise is refuted — it returns to the cache (`0x0C403877`), not the arena** | — | — |
-| 0 | **[resolved, Task 414] pumpit3 stalls mid-run** — the cause was **saturation**: every 240 Hz tick performed **200 port reads whose results the guest discards**, and we raised 200 faults for them. Advancing the loop counter cuts that to **two**, taking the session from **zero of fourteen** healthy runs to **six of seven** (803-1,425 frames), with no pumpit1 regression | — | — |
-| 0' | **[corrected, Task 415] the remaining stall is not quarantine.** Narrowing the generation-failure penalty from a page to an address took quarantines to zero and the stall survived, in a run with **zero quarantines and 2,494,657 single steps** | — | — |
-| 0** | **[resolved, Task 417] the last stall is gone too.** Relaxing the activation rule **for the requested entry only** when it straddles into a retired neighbour (a quarantined span still refuses) takes generation failures to **zero**: two stalls in five strict runs against **none in eight relaxed**, with no pumpit1 regression (2,848 frames) | — | — |
-| 0'' | **[evidence, Task 416] what that stall was: a failed translation dropping execution into the arena with no way back.** The full census puts **86% on two adjacent pages** — `0x0301E000` at 51.6% and `0x0301D000` at 34.7% — refuting the earlier "global trace mode" read, which rested on fifteen samples. Healthy and stalled runs share the same translation failure; **the difference is whether the guest executes that address** (skips 0 against 1), after which re-entry is refused **550,688** times as not pending | Two of fifteen runs today | (usability) |
-| 0''' | **Two candidate fixes** — (a) relax the activation rule for a **requested entry that straddles a page boundary**, removing the trigger, though spanning entries register only under their first page; (b) allow **arena-to-cache re-entry** without a pending flag as a general safety net, where mid-stream cache entry correctness is unproven | The remedy for 0'' | to be measured |
-| 0a | **[done, Task 412] That 62% is the sum of our own VEH-path work**, and the thread is **busy at 82.42% CPU**, not blocked. By call site: segment-override re-resolution about **15.1%**, `WriteGuestBytes` 13.6%, `FindAotCacheAddress` 12.7%, the JAMMA snapshot about 10.4%, the inline-cache patch request 6.9% | — | — |
-| 0b | **Segment-override re-resolution** — the largest host population (about 15.1%) with an **unmeasured** call frequency, using the same **whole-cache protection** as the inline-cache patch | First target named by 0a | to be measured |
-| 0c | **Return inline-cache thrash** — `0x030D09D7`, the `ret 4` of the Watcom stack-check helper, has **259 static call sites** against a **four-entry** round-robin cache. Task 413 cut the **price** of a miss but not the **count** | Concrete target on the exception-count axis | to be measured |
-| 2' | **Tag the port I/O census with its caller side** (VEH or thunk) — all three candidates for an exception-free departure are **excluded by the same logs** (both target-miss counters zero; the direct-edge dispatcher resumes at a cache address on success *and* failure). The surviving hypothesis is that **the entry is not a departure**: the thunk path passes a guest EIP, which forces `from_aot_cache` false | New head of the chain; decides whether a day of analysis rests on an artifact | ~42-50% of wall |
-| 3 | ~~Design the arena-to-cache return~~ — **the return already exists and works** (100% resolve success). What is needed is not a return but stopping the departure; blocked on 2' | The remedy for 2' | same |
-| 4 | **Why a re-translation omits its requested entry from the address map** — the reason string `dynamic AOT entry was not active in the new image` is already captured (Task 404) | Root of the quarantined mode | 35-40% of wall when it fires |
-| 5 | **What decides whether quarantine fires** — six of ten runs, then zero of five | Pairs with item 4 | same |
-| 6 | **Segment-register HLE at 2.4-2.7M cycles per event** — under 3,000 events yet about 12% of wall even without quarantine | Independent axis | ~12% of wall |
-| 7 | **`GetAsyncKeyState` three to six times Task 403's price** (3,044 against 9,802-17,596) | JAMMA scan still 4.9-5.3% | ~5% of wall |
-| 8 | ~~pumpit3 not reaching its render loop in 45 s~~ **[corrected, Task 410]** the three quarantine-free runs reached and held it at **1,362-1,402** `_GRBUFFERSWAP@4`; the runs that did not reach it were the quarantined ones (867 or zero) | Frame-based judgement now possible | — |
-| 9 | **Boot crash** when the arena lands high and `INT 21h AH=4Ah` resize fails with `0x0008` | Low reproduction rate but kills the run | (stability) |
-| 10 | **Teardown stall**, untouched since Task 401 | Measurement turnaround | (convenience) |
+| 1 | **Re-baseline the cost profile** — every share below was measured **before Task 414**, which cut port reads per tick from 200 to two, so "port I/O is 90.4-92.9% of exceptions and 41.9-49.7% of wall" cannot still hold | Prerequisite for all the rest, and since cross-session absolute comparison does not hold it must be retaken **within one session** | The validity of every figure below |
+| 2 | **Verify what pumpit3 actually draws** — frames run 1,018-1,416 but the **content is unverified**, on only 27 texture uploads (24 distinct) | Newly possible now that runs complete reliably | (accuracy) |
+| 3 | **(was 2′) Tag the port I/O census with its caller side** (VEH or thunk) — all three candidates for an exception-free departure are already excluded, and the surviving hypothesis is that **the entry is not a departure**: the thunk path passes a guest EIP, forcing `from_aot_cache` false | Head of the chain if port I/O is still a large share after item 1 | to be re-measured (was 42-50%) |
+| 4 | **(was 0b) Segment-override re-resolution** — about 15.1% of host samples with an **unmeasured** call frequency, using the same **whole-cache protection** as the inline-cache patch | First target named by Task 412 | to be re-measured |
+| 5 | **(was 0c) Return inline-cache thrash** — `0x030D09D7`, the `ret 4` of the Watcom stack-check helper, has **259 static call sites** against a **four-entry** round-robin cache; Task 413 cut the **price** of a miss but not the **count** | Concrete target on the exception-**count** axis | to be re-measured |
+| 6 | **Segment-register HLE at 2.4-2.7M cycles per event**, on under 3,000 events | Independent axis | to be re-measured (was 12%) |
+| 7 | **`GetAsyncKeyState` three to six times Task 403's price** (3,044 against 9,802-17,596) | JAMMA scan axis | to be re-measured (was 5%) |
+| 8 | **Boot crash** when the arena lands high and `INT 21h AH=4Ah` resize fails with `0x0008` | Low reproduction rate (one run in eight) but it kills the run | (stability) |
+| 9 | **Teardown stall**, untouched since Task 401 | Measurement turnaround | (convenience) |
+
+### [done, Task 418] The re-baseline moved the axis
+
+The table above is the state **before** re-baselining; what follows replaces it with measured
+figures, from the [Task 418 work log](../work-logs/20260804-418-cost-profile-rebaseline.md).
+
+| # | Item | Why now | Cost at stake |
+|---|---|---|---:|
+| — | **[done, Task 419] The Glide gate rendezvous** — the decomposition was **already in Task 418's logs** (`rendezvous/direct: 0/0` belongs to the per-ordinal profile), and **65.5% of gate time was round-trip latency**. A spin-then-wait takes it to **5.3-12.9%** and frames from 2,399 to **3,063 (+27.7%)**, with no pumpit1 regression | — | — |
+| 1 | **Pick the next Glide axis** — **86-94% of gate time is now real GL work**. Candidates: command batching for calls with no return value, the driver work Task 370 moved into `grBufferSwap`, and the 5.3-12.9% of round trip that remains | Task 419 removed the waiting, so what is left is the work itself | the gate is about **50%** of guest-run |
+| 2 | **Verify what pumpit3 draws** — 2,477-2,515 frames in 60 s and the content is still unverified | Runs complete reliably | (accuracy) |
+| 3 | **Boot crash** — a high arena base dies at `INT 21h AH=4Ah`, and a second variant fails to reserve a relocated image base at all | **Two runs in nine**, so the rate is not low | (stability) |
+| 4 | **Teardown stall** — all nine runs here finished in 60-61 s, which lowers its priority | Measurement turnaround | (convenience) |
+| 5 | **Return inline-cache thrash (was 0c) — real, but its cost is not isolated** | 194,225 return dispatches against **194,341** inline-cache patches (returns plus the 116 inline breakpoints), so **every return re-patches**, and the cache is still four entries | See the correction below |
+| — | ~~The port I/O axis (was 3)~~ | **Closed** — **0.5%** of wall, 19.4% of exceptions | — |
+| — | ~~Segment override (was 4)~~ · ~~segment HLE (was 6)~~ · ~~`GetAsyncKeyState` (was 7)~~ | **Evidence spent** — all were rankings from stalled runs, and **none exceeds one percent** of host samples in a healthy run | — |
+
+**Correction — calling item 5 "evidence spent" applied the wrong axis.** Host samples measure
+time while 0c's claim was about **counts**. Re-read from the same logs: return dispatch is
+194,225 entries, attempts and successes with **zero** fallbacks; inline-cache patches number
+**194,341**, matching returns plus the 116 inline breakpoints exactly, so **each return
+re-patches the cache**; the `inline` breakpoint provenance of **116** shows those 194 thousand
+events **do not arrive as exceptions** at all, entering through the miss tail directly; and the
+transfer handler's `return` bucket is 20.90 G of 222.1 G cycles (**9.4%**) but reports its own
+share as **482.54%**, which proves the bucket nests and makes that figure a contaminated upper
+bound rather than exclusive cost, against roughly **2-3%** visible in host samples
+(`ResolveAotTransferTarget` 1.14-1.33%, `RequestAotInlineCachePatch` 0.89%,
+`FindAotCacheAddress` 0.73%). **The thrash is confirmed by count and unmeasured in cost**, and
+since it is not on the exception axis, the original "reduce exception count" motive does not
+apply; isolating it needs instrumentation that does not nest, between a 2-3% floor and a 9.4%
+ceiling.
+
+Measured over seven healthy runs with zero quarantines and zero generation failures:
+breakpoint exceptions **68.4-69.4%** against port I/O's **19.3-20.0%** (was 90.4-92.9%), with
+**about 83%** of breakpoints raised at the HLE boundary; the VEH gap is **95.7-96.0%** of wall
+and **97.9%** of it is breakpoint; Glide gate cycles are **54-55%** of guest-run against port
+I/O's **0.5%** (was 41.9-49.7% of wall); port I/O operations total **74,438** against
+1,772,285; and one host call site holds **74.8-76.3%** with nothing else above **1.6%**.
+
+**Measurement caveat — window state changes the result.** Minimized, pumpit1 produces 12,119
+and 11,888 frames against a 2,735-2,865 baseline (**4.2x**), while pumpit3 barely moves
+(2,252-2,974 against 2,477-2,515), which re-confirms that **pumpit1 is display-limited and
+pumpit3 is not**. Quote frames only from runs with a **normal window**, and always run pumpit1
+alongside as the control.
+
+**Items 4 and 5 rest on stalled runs.** Task 412's host-time decomposition came from a
+quarantined run — `publishes/quarantines` 69/1, 523,362 single-step exceptions, **0-1
+frames** — and all six of Task 413's A/B runs stalled. That ranking is therefore the cost
+structure **of the stall**, not of a run drawing twenty frames a second, so item 1 must
+retake the same decomposition on a healthy run before the order of 4 and 5 is settled. The
+259 static call sites against a four-entry cache is a structural fact and still holds; what
+may move is its **share of cost**.
 
 **Measurement rules learned this session:** quarantined and healthy runs behave oppositely on
 re-entry, so never average them — read `AOT generation publishes/quarantines` first;
@@ -76,9 +199,106 @@ cross-session absolute comparison does not hold, since pumpit1 measured 700-980 
 day against 2,222/2,251 on 08-02, so use within-session contrasts only; an entry class count
 cannot exceed that exception's total, and **skipping that check is how Task 408 overstated its
 conclusion**; and runs with `REPIU_PORT_IO_CENSUS_MAPPING` enabled are not quotable for wall
-time or frames.
+time or frames. **Shares measured before Task 414 do not apply to the current build** — the
+delay-loop batching changed the distribution that made port I/O dominant, so read the figures
+in the handoff sections below as the record of their moment. And never set direction from a
+thin sample: Task 416's full census refuted a "global trace mode" read taken from fifteen
+`last_eip` samples.
 
 ## 다음 세션 인수인계 / Session handoff
+
+### 2026-08-04~05 세션 (Tasks 418~420) — 축이 두 번 바뀌었습니다
+
+**한 줄:** port I/O 축이 사라지고 Glide gate가 지배 항목이 됐으며, 그 안의 **왕복
+지연을 없애 pumpit3 프레임이 +27.7%** 올랐습니다. 마지막에 **attract 데모 진입 후
+정지**라는 새 문제가 드러나 프레임 기반 측정이 현재 막혀 있습니다.
+
+```mermaid
+flowchart TD
+    A["Task 418 재기준선<br/>정상 실행 7회"] --> B["port I/O: wall 42~50% → 0.5%<br/>축 소멸"]
+    A --> C["Glide gate = guest-run의 54~55%<br/>host 표본 76% = InvokeOnHostThread"]
+    C --> D["Task 419: 그 76%는 왕복 지연<br/>(wake 35% + complete 31%)"]
+    D --> E["스핀 대기 → wake+complete 5~13%<br/>프레임 2,399 → 3,063 (+27.7%)"]
+    F["Task 420: 미구현 draw 진입점 7종"] --> G["unimplemented 1 → 0"]
+    G --> H["회귀 검증 중 정지 발견<br/>A/B로 이번 변경 아님을 확인"]
+    style B fill:#1e8449,color:#fff
+    style E fill:#1e8449,color:#fff
+    style H fill:#b7950b,color:#fff
+```
+
+| Task | 한 일 | 결과 |
+|---|---|---|
+| 418 | 비용 프로파일 재기준선(정상 실행 7회, 그룹 A/B 분리) | port I/O **0.5%**, breakpoint 68~69%, gate 54~55%, host 표본 **76% = rendezvous 대기** |
+| 419 | rendezvous 세 대기에 스핀 후 조건변수 폴백 | **프레임 +27.7%**(2,399 → 3,063), `wake+complete` 65.5% → 5.3~12.9% |
+| 420 | 남은 Glide draw 진입점 7종 구현 | `unimplemented` **1 → 0**, probe 통과 |
+
+**이번 세션이 정정한 것 세 가지 — 전부 "축이 어긋난 판정"이었습니다.**
+
+1. **Tasks 412·413의 host 순위는 멈춘 실행의 것**이었습니다(프레임 0~1). 정상 실행에서
+   그 상위 4개는 **어느 것도 1%를 넘지 않습니다.**
+2. **항목 5(return IC thrash)를 "근거 소진"으로 적은 것은 틀렸습니다.** host 표본은
+   시간 축인데 그 주장은 횟수 축이었습니다. 다시 재니 **return마다 IC를 재패치**하는
+   것은 사실이고(194,225 대 194,341), 다만 **예외 축이 아니며**(inline provenance 116)
+   비용은 2~3%(하한)~9.4%(상한) 사이 미확정입니다.
+3. **Task 420의 정지는 "덜 간 것"이 아니라 "더 간 것"이었습니다.** DOS trace 10개 대
+   16~19개입니다.
+
+**측정 방법에서 배운 것:**
+
+* **창을 최소화하면 pumpit1이 기준선의 4.2배**(12,119 대 2,865)가 됩니다. 프레임을
+  인용하는 실행은 **창을 정상으로** 띄우고 pumpit1을 대조로 함께 돌립니다.
+* **A/B 스위치가 세 번 모두 판정을 대신했습니다**(415·417·419·420). 특히 420에서는
+  "로그가 지목한 API를 구현했더니 멈췄다"는 그럴듯한 서사를 한 번의 측정이 뒤집었습니다.
+* **기존 로그를 다시 읽는 것이 새 측정보다 먼저입니다.** Task 419가 켜려던 계측은
+  이미 Task 418 로그 안에 있었습니다.
+
+**다음 세션이 할 일 (앞의 우선순위 표와 같음):**
+
+1. **항목 1′ — attract 데모 진입 후 정지.** 이것이 **선행 과제**입니다. 60초 표본을
+   못 얻으면 프레임 기반 판정이 전부 막힙니다. 배제 목록은 위 표에 있고, 남은 후보는
+   게스트 시간 진행 속도·입력·환경입니다. 시작점은 정지 직전 1초 구간에서 어느 진행
+   counter가 멈추는지(`diagnostic_progress` / `single_step_trace` / `aot_boundary`)를
+   가르는 것입니다.
+2. **항목 1 — 다음 Glide 축.** gate 시간의 86~94%가 이제 진짜 GL 작업입니다. 후보는
+   command batching, `grBufferSwap`에 몰린 드라이버 작업(Task 370), 남은 왕복 5~13%.
+3. **항목 2 — pumpit3 화면 내용 검증.** 1′ 해소 후 가능합니다.
+4. **Task 420 회귀 확인 재실행.** 정지 때문에 미완입니다.
+
+### 2026-08-04 to 05 session (Tasks 418-420) — the axis moved twice
+
+**In one line:** the port I/O axis disappeared and the Glide gate became the dominant item,
+and removing the round-trip latency inside it raised pumpit3 frames by **+27.7%**. A new
+problem surfaced at the end — **a stall after the game enters its attract demo** — which
+currently blocks frame-based measurement.
+
+Task 418 re-baselined the cost profile over seven healthy runs and found port I/O at **0.5%**
+of guest-run against a former 42-50% of wall, breakpoint exceptions at 68-69%, the Glide gate
+at 54-55%, and **76% of host samples waiting in `InvokeOnHostThread`**. Task 419 showed that
+76% to be round-trip latency (35% wake plus 31% complete) and replaced the three waits with a
+spin that falls back to the condition variable, taking `wake + complete` to 5.3-12.9% and
+frames from 2,399 to **3,063**. Task 420 implemented the seven Glide draw entry points that
+had been accepting and discarding requests, taking the `unimplemented` counter to zero.
+
+**Three corrections this session, all of them axis mismatches.** Tasks 412 and 413's host
+ranking belonged to **stalled** runs at zero or one frame, and none of its top four exceeds
+one percent in a healthy run. Calling item 5 "evidence spent" applied a **time-axis**
+measurement to a **count-axis** claim: the return inline cache really is re-patched once per
+return (194,225 against 194,341), but it raises no exceptions, and its cost stays unmeasured
+between a 2-3% floor and a 9.4% ceiling. And Task 420's stall is the game getting **further**,
+not less far — sixteen to nineteen DOS path traces against ten.
+
+**Method lessons.** A minimized window inflates pumpit1 to **4.2x** its baseline, so quote
+frames only from a normal window with pumpit1 as the control. The A/B switch decided every
+verdict again, and in Task 420 it overturned a plausible story in one measurement. And
+re-reading existing logs comes before new measurement: the instrumentation Task 419 planned to
+enable was already inside Task 418's logs.
+
+**Next session, in order:** item 1' — the attract-demo stall — comes **first**, because
+without a 60-second sample every frame-based judgement is blocked; the exclusions are listed
+above and the starting point is which progress counter freezes in the final second. Then item
+1, the next Glide axis, now that 86-94% of gate time is real GL work; then item 2, verifying
+what pumpit3 draws; and finally re-running Task 420's regression check, which the stall left
+unfinished.
 
 ### Task 410 결과 — 소비 지점은 확정됐고, **전제가 반증됐습니다**
 
@@ -509,6 +729,8 @@ wall의 20.59%에 LFB 0회인데, 측정에 쓴 자동 장면은 setter 약 5.6%
 | `REPIU_PORT_IO_DELAY_LOOP` | **ON** | 결과를 버리는 포트 지연 루프를 2회로 줄입니다(Task 414). `0`이면 예전 동작. **pumpit3 멈춤 해소의 본체** |
 | `REPIU_AOT_QUARANTINE_ON_GENERATION_FAILURE` | OFF | 켜면 세대 실패가 예전처럼 **페이지 전체를 영구 격리**합니다(Task 415 A/B용). 기본값은 실패한 **주소만** 억제 |
 | `REPIU_AOT_STRICT_SPANNING_ENTRY` | OFF | 켜면 요청 항목이 retired 이웃 페이지에 걸칠 때 예전처럼 **활성화를 거부**합니다(Task 417 A/B용). **켜면 pumpit3 멈춤이 돌아옵니다** |
+| `REPIU_GLIDE_DRAW_ENTRY_POINTS` | **ON** | point·AA·polygon draw 진입점 7종을 실제로 그립니다(Task 420). `0`이면 예전처럼 요청만 받고 그리지 않습니다(A/B용) |
+| `REPIU_GLIDE_RENDEZVOUS_SPIN_US` | **20** | Glide 왕복 대기를 조건변수 전에 이만큼(µs) 스핀합니다(Task 419). `0`이면 예전 동작이며 **pumpit3 프레임이 약 24% 떨어집니다**(3,063 → 2,399). 코어가 부족한 환경에서는 `0`이 나을 수 있습니다 |
 
 timer tick 전달 counter와 boundary opcode census는 **상시 ON**이며 동작을 바꾸지
 않습니다.

@@ -2035,6 +2035,18 @@ void PrintExecutionAttempt(
                     gate.wake_cycles / gate.rendezvous_count,
                     gate.work_cycles / gate.rendezvous_count);
             }
+            // Task 419: how much of that wake and complete latency the spin
+            // caught before the condition variable had to. A miss-dominated
+            // ratio means the budget is short or the delay is not the
+            // scheduler's.
+            logger.info(
+                "Win32 glide gate spin budget-us/guest-hit/guest-miss/"
+                "host-hit/host-miss: {}/{}/{}/{}/{}",
+                attempt.glide_rendezvous_spin.budget_microseconds,
+                attempt.glide_rendezvous_spin.guest_hit,
+                attempt.glide_rendezvous_spin.guest_miss,
+                attempt.glide_rendezvous_spin.host_hit,
+                attempt.glide_rendezvous_spin.host_miss);
         }
         {
             const auto& ordinal = attempt.glide_ordinal_timing;

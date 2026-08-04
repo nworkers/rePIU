@@ -13,6 +13,7 @@
 #include "repiu/platform/win32/glide_texture_census.h"
 #include "repiu/runtime/execution_backend.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -65,6 +66,11 @@ public:
     void PumpEvents();
     bool BufferClear(std::uint32_t color, std::uint32_t alpha, std::uint32_t depth);
     bool BufferSwap(std::uint32_t swap_interval);
+    // Task 420: the remaining Glide draw entry points. A point is one vertex
+    // with `GL_POINTS`; a polygon is a convex fan, which is what Glide's
+    // `grDrawPolygon` contract guarantees.
+    bool DrawPoint(const hle::GlideDrawVertex& a);
+    bool DrawPolygon(const hle::GlideDrawVertex* vertices, std::size_t count);
     bool DrawLine(const hle::GlideDrawVertex& a,
                   const hle::GlideDrawVertex& b);
     bool DrawTriangle(const hle::GlideDrawVertex& a,
@@ -167,6 +173,16 @@ public:
     Win32GlideBufferSwapTimingSnapshot glide_buffer_swap_timing() const
     {
         return SnapshotGlideBufferSwapTiming(glide_buffer_swap_timing_);
+    }
+
+    // Task 419: how often a spin resolved the rendezvous before the condition
+    // variable had to. Read from the exit summary like the timing above.
+    Win32GlideRendezvousSpinSnapshot rendezvous_spin_counts() const
+    {
+        return Win32GlideRendezvousSpinSnapshot{
+            rendezvous_spin_guest_hit_, rendezvous_spin_guest_miss_,
+            rendezvous_spin_host_hit_, rendezvous_spin_host_miss_,
+            rendezvous_spin_microseconds_};
     }
 
     // Task 364: the OpenGL interval of the two leading state setters, split
@@ -272,6 +288,29 @@ private:
     std::exception_ptr host_command_exception_;
     bool host_command_pending_ = false;
     bool host_command_complete_ = false;
+
+    // Task 419. Lock-free mirrors of the two flags above, published at the same
+    // points under the same mutex, so a spinning thread can read them without
+    // taking the lock. They are **hints only**: every spin that observes one
+    // still acquires the mutex and re-tests the original predicate, which is
+    // what keeps the condition-variable protocol free of lost wakeups.
+    // See docs/design/20260805-419-glide-rendezvous-spin-wait.md.
+    std::atomic<bool> host_command_pending_hint_{false};
+    std::atomic<bool> host_command_complete_hint_{false};
+
+    // Spin budget in microseconds, resolved once. Zero restores the pure
+    // condition-variable wait.
+    std::uint32_t RendezvousSpinMicroseconds();
+    // Spins until `hint` reads `expected` or the budget runs out. Returns true
+    // when the hint was observed, which is a hint, never a decision.
+    bool SpinForRendezvousHint(const std::atomic<bool>& hint, bool expected,
+                               bool guest_side);
+    std::uint32_t rendezvous_spin_microseconds_ = 0;
+    bool rendezvous_spin_resolved_ = false;
+    std::uint64_t rendezvous_spin_guest_hit_ = 0;
+    std::uint64_t rendezvous_spin_guest_miss_ = 0;
+    std::uint64_t rendezvous_spin_host_hit_ = 0;
+    std::uint64_t rendezvous_spin_host_miss_ = 0;
 
     void* window_ = nullptr;
     void* render_context_ = nullptr;
