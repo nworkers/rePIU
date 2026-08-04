@@ -7,6 +7,7 @@
 #include "repiu/platform/win32/live_telemetry.h"
 #include "repiu/platform/win32/aot_retired_trap_profile.h"
 #include "repiu/platform/win32/cd_audio_wave_out.h"
+#include "repiu/platform/win32/mscdex_command_trace.h"
 #include "repiu/platform/win32/ymz280b_audio_out.h"
 #include "repiu/platform/win32/glide_opengl_backend.h"
 #include "repiu/platform/win32/glide_ordinal_timing.h"
@@ -881,6 +882,12 @@ struct ThreadContext
     // thread and read only after that thread has stopped, so it needs no
     // synchronisation of its own. Allocated only when the census is enabled.
     std::unique_ptr<Win32GuestPositionCensus> guest_position_census;
+    // Task 421: sampled by the poll thread so a starved audio worker cannot
+    // hide its own starvation.
+    std::unique_ptr<Win32CdAudioPositionCensus> cd_audio_position_census;
+    // Task 422: the sequence of CD commands the guest issues, since the
+    // existing telemetry keeps only the last one and cannot show a storm.
+    std::unique_ptr<Win32MscdexCommandTrace> mscdex_command_trace;
     // Task 323: the cycle scope owned by the current HandleSingleStepTrace
     // invocation, so regions measured in other translation units (the
     // TryResumeAotAfterHandledHle sub-stages) can attribute into the same

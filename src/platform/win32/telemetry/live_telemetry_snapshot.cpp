@@ -293,6 +293,13 @@ DWORD PollThreadUntilExit(HANDLE thread,
     const DWORD position_census_interval = static_cast<DWORD>(
         GuestPositionCensusIntervalMilliseconds());
     DWORD last_position_census_tick = start_tick;
+    // Task 421: the music position on its own cadence, sampled here rather than
+    // in the audio worker so that a worker which is not running still produces
+    // a reading — its absence is the measurement.
+    const DWORD cd_audio_census_interval = static_cast<DWORD>(
+        CdAudioPositionCensusIntervalMilliseconds());
+    DWORD last_cd_audio_census_tick = start_tick;
+    std::uint32_t last_cd_audio_worker_iterations = 0;
     // Task 412: the loader's own image range, so a host sample can name the
     // call site that led into the kernel. Resolved once; the sampling path only
     // compares against it.
@@ -565,6 +572,29 @@ DWORD PollThreadUntilExit(HANDLE thread,
             }
             last_position_census_tick = current_tick;
         }
+        // Task 421: the music position, on its own interval. `host_context` is
+        // what owns the audio backend, while the census lives on the guest
+        // context, so both have to be present.
+        if (progress_context != nullptr && host_context != nullptr &&
+            progress_context->cd_audio_position_census != nullptr &&
+            current_tick - last_cd_audio_census_tick >=
+                cd_audio_census_interval)
+        {
+            Win32CdAudioPositionEntry entry;
+            entry.wall_milliseconds =
+                static_cast<std::uint32_t>(current_tick - start_tick);
+            host_context->cd_audio.FillPositionSample(&entry);
+            // Report iterations *since the previous sample*: a zero here is the
+            // worker not having run across the whole interval.
+            const std::uint32_t iterations = entry.worker_iterations;
+            entry.worker_iterations =
+                iterations - last_cd_audio_worker_iterations;
+            last_cd_audio_worker_iterations = iterations;
+            RecordCdAudioPosition(
+                progress_context->cd_audio_position_census.get(), entry);
+            last_cd_audio_census_tick = current_tick;
+        }
+
         if (native_sampling_enabled && progress_context != nullptr &&
             current_tick - dispatch_quiet_start_tick >=
                 kNativePhaseSampleQuietMilliseconds &&
@@ -924,6 +954,24 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         // Task 412: module and symbol lookup runs here, after the guest thread
         // has stopped, so nothing on the sampling path pays for it.
         ResolveGuestPositionCensusSymbols(&attempt->guest_position_census);
+    }
+    // Task 421: written here for the same reason -- ahead of a Glide close that
+    // may stall, so the series survives a teardown that does not finish.
+    if (context.cd_audio_position_census != nullptr)
+    {
+        WriteCdAudioPositionCensusDump(
+            *context.cd_audio_position_census,
+            &attempt->cd_audio_position_dump_entry_count,
+            &attempt->cd_audio_position_regression_count);
+    }
+    // Task 422: same placement, same reason.
+    if (context.mscdex_command_trace != nullptr)
+    {
+        WriteMscdexCommandTraceDump(
+            *context.mscdex_command_trace,
+            &attempt->mscdex_command_trace_entry_count);
+        attempt->mscdex_command_trace_total =
+            context.mscdex_command_trace->total_commands;
     }
     attempt->execution_time_profile =
         context.execution_time_profile != nullptr

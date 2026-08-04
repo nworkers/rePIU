@@ -3287,6 +3287,16 @@ void PrintExecutionAttempt(
                 attempt.mscdex_track_count,
                 attempt.mscdex_request_count,
                 attempt.cd_audio_current_lba);
+    // Task 421: a regression is a music position that moved backwards while
+    // playing, which the game reads as the song jumping.
+    logger.info(
+        "Win32 CD audio position census entries/regressions: {}/{}",
+        attempt.cd_audio_position_dump_entry_count,
+        attempt.cd_audio_position_regression_count);
+    logger.info(
+        "Win32 MSCDEX command trace entries/commands: {}/{}",
+        attempt.mscdex_command_trace_entry_count,
+        attempt.mscdex_command_trace_total);
     logger.info("Win32 MSCDEX request ES/resolve kind/declines/reason/header: {}/{}/{}/{}/{}",
                 Hex32(attempt.mscdex_frame_es),
                 attempt.mscdex_last_resolve_kind,

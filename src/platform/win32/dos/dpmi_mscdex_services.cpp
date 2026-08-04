@@ -803,6 +803,37 @@ bool HandleMscdexRequest(ThreadContext* context,
     }
     WritePacketU16(request, 3,
                    success ? 0x0100U : 0x8103U);
+    // Task 422: recorded after the switch so the entry carries the answer, not
+    // just the question. Seek and play arguments are taken from the same fields
+    // the handlers above read, already converted to a logical LBA.
+    if (context->mscdex_command_trace != nullptr)
+    {
+        Win32MscdexCommandEntry entry;
+        entry.wall_milliseconds =
+            static_cast<std::uint32_t>(GetTickCount()) -
+            context->mscdex_command_trace->base_tick;
+        entry.command = request[2];
+        entry.success = success;
+        entry.current_lba = context->cd_audio_available
+            ? context->cd_audio.current_lba() : 0U;
+        if (request[2] == 0x03U || request[2] == 0x0CU)
+        {
+            entry.ioctl_subfunction = static_cast<std::uint8_t>(
+                context->mscdex_last_ioctl_subfunction & 0xFFU);
+        }
+        else if (request[2] == 0x83U || request[2] == 0x84U)
+        {
+            entry.address_mode = request[13];
+            const std::uint32_t raw = ReadPacketU32(request, 14);
+            entry.argument_lba =
+                entry.address_mode == 1U ? MscdexMsfToLba(raw) : raw;
+            if (request[2] == 0x84U)
+            {
+                entry.argument_length = ReadPacketU32(request, 18);
+            }
+        }
+        RecordMscdexCommand(context->mscdex_command_trace.get(), entry);
+    }
     if (context->shared_live_telemetry != nullptr)
     {
         InterlockedExchange(

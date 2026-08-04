@@ -33,6 +33,10 @@ struct CdAudioWaveOut::Impl
     // thread only: the guest asks for it from inside a VEH handler, which must
     // not take SDL's stream lock.
     std::atomic<std::uint32_t> audible_lba{0};
+    // Task 421 counters. Free-running, never reset, so a sampler outside this
+    // thread can difference two readings.
+    std::atomic<std::uint32_t> worker_iterations{0};
+    std::atomic<std::uint32_t> underruns{0};
     // Reported position while stopped, paused, or finished.
     std::atomic<std::uint32_t> frozen_lba{0};
     std::atomic<std::uint32_t> start_lba{0};
@@ -92,11 +96,20 @@ bool CdAudioWaveOut::Open(const std::filesystem::path& chd_path)
         std::vector<std::uint8_t> data(kSectorBytes * kSectorsPerBuffer);
         while (!impl_->shutdown.load())
         {
+            impl_->worker_iterations.fetch_add(1, std::memory_order_relaxed);
             const bool active =
                 impl_->playing.load() && !impl_->paused.load();
             if (active)
             {
                 impl_->audible_lba = impl_->ComputeAudiblePosition();
+                // An empty stream while frames remain means the device ran dry:
+                // the music itself gapped, which the position alone would not
+                // show.
+                if (SDL_GetAudioStreamQueued(impl_->stream) <= 0 &&
+                    impl_->queued_lba.load() < impl_->end_lba.load())
+                {
+                    impl_->underruns.fetch_add(1, std::memory_order_relaxed);
+                }
             }
             if (!active)
             {
@@ -209,6 +222,16 @@ void CdAudioWaveOut::Stop()
     // the decode cursor would skip whatever was queued but never heard, so the
     // audible position is what gets remembered.
     const bool was_playing = impl_->playing.load();
+    // Task 423. MSCDEX 85h on a drive that is already stopped is a no-op, but
+    // this used to recompute `paused` from `was_playing` every time, so the
+    // second Stop cleared the pause the first had just established. Task 422
+    // recorded the guest issuing about sixty Stops a second with the flag
+    // flickering 1, 0, 0, ... Returning here keeps both the flag and the
+    // remembered position, which is what 88h resumes from.
+    if (!was_playing && impl_->paused.load())
+    {
+        return;
+    }
     const std::uint32_t position = was_playing ? impl_->audible_lba.load()
                                                : impl_->frozen_lba.load();
     impl_->playing = false;
@@ -284,6 +307,32 @@ std::uint32_t CdAudioWaveOut::current_lba() const
     return impl_->playing.load() ? impl_->audible_lba.load()
                                  : impl_->frozen_lba.load();
 }
+// Task 421: read together so the poll thread can attribute a wrong position
+// rather than guess. `worker_iterations` is the direct evidence for a starved
+// worker: the position only refreshes at the top of that loop, so if the count
+// does not move between two samples, neither could the position.
+void CdAudioWaveOut::FillPositionSample(
+    Win32CdAudioPositionEntry* entry) const
+{
+    if (entry == nullptr)
+    {
+        return;
+    }
+    entry->current_lba = current_lba();
+    entry->queued_lba = impl_->queued_lba.load();
+    const int pending = impl_->stream != nullptr
+        ? SDL_GetAudioStreamQueued(impl_->stream) : 0;
+    entry->stream_bytes = pending > 0
+        ? static_cast<std::uint32_t>(pending) : 0U;
+    entry->start_lba = impl_->start_lba.load();
+    entry->end_lba = impl_->end_lba.load();
+    entry->worker_iterations = impl_->worker_iterations.load();
+    entry->underruns = impl_->underruns.load();
+    entry->generation = impl_->generation.load();
+    entry->playing = impl_->playing.load();
+    entry->paused = impl_->paused.load();
+}
+
 std::uint32_t CdAudioWaveOut::last_play_start_lba() const
 {
     return impl_->start_lba.load();

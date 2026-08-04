@@ -3928,6 +3928,25 @@ bool RunWin32ExecutionThread(
         context.guest_position_census->interval_milliseconds =
             GuestPositionCensusIntervalMilliseconds();
     }
+    // Task 421: same arrangement for the music position.
+    if (CdAudioPositionCensusEnabled())
+    {
+        context.cd_audio_position_census =
+            std::make_unique<Win32CdAudioPositionCensus>();
+        context.cd_audio_position_census->enabled = true;
+        context.cd_audio_position_census->interval_milliseconds =
+            CdAudioPositionCensusIntervalMilliseconds();
+    }
+    // Task 422: recorded on the guest thread as each command is served, so no
+    // separate sampler is involved.
+    if (MscdexCommandTraceEnabled())
+    {
+        context.mscdex_command_trace =
+            std::make_unique<Win32MscdexCommandTrace>();
+        context.mscdex_command_trace->enabled = true;
+        context.mscdex_command_trace->base_tick =
+            static_cast<std::uint32_t>(GetTickCount());
+    }
     SharedTelemetryMapping shared_telemetry =
         OpenSharedTelemetryMapping();
     context.shared_live_telemetry = shared_telemetry.telemetry;

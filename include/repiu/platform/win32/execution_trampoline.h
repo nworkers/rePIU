@@ -1051,6 +1051,13 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t mscdex_last_play_length = 0;
     std::uint32_t mscdex_last_seek_target = 0;
     std::uint32_t cd_audio_current_lba = 0;
+    // Task 421: how much of the music-position series was written, and how
+    // often that position moved backwards while playing.
+    std::uint32_t cd_audio_position_dump_entry_count = 0;
+    std::uint32_t cd_audio_position_regression_count = 0;
+    // Task 422: how many CD commands were traced, and how many were issued.
+    std::uint32_t mscdex_command_trace_entry_count = 0;
+    std::uint32_t mscdex_command_trace_total = 0;
     std::uint32_t glide_window_open_count = 0;
     std::uint32_t glide_logical_width = 0;
     std::uint32_t glide_logical_height = 0;
