@@ -289,6 +289,28 @@ DWORD PollThreadUntilExit(HANDLE thread,
         sampling_environment == nullptr ||
         std::strcmp(sampling_environment, "0") != 0;
     Win32NativePhaseSamplerState native_sampler_state;
+    // Task 411: independent of the native sampler's cadence and of its gate.
+    const DWORD position_census_interval = static_cast<DWORD>(
+        GuestPositionCensusIntervalMilliseconds());
+    DWORD last_position_census_tick = start_tick;
+    // Task 412: the loader's own image range, so a host sample can name the
+    // call site that led into the kernel. Resolved once; the sampling path only
+    // compares against it.
+    std::uint32_t loader_module_base = 0;
+    std::uint32_t loader_module_size = 0;
+    {
+        const HMODULE loader_module = GetModuleHandleW(nullptr);
+        MODULEINFO module_info = {};
+        if (loader_module != nullptr &&
+            GetModuleInformation(GetCurrentProcess(), loader_module,
+                                 &module_info, sizeof(module_info)))
+        {
+            loader_module_base = static_cast<std::uint32_t>(
+                reinterpret_cast<std::uintptr_t>(module_info.lpBaseOfDll));
+            loader_module_size =
+                static_cast<std::uint32_t>(module_info.SizeOfImage);
+        }
+    }
     DWORD dispatch_quiet_start_tick = start_tick;
     std::uint32_t last_dispatch_total = 0;
     if (progress_context != nullptr)
@@ -468,6 +490,80 @@ DWORD PollThreadUntilExit(HANDLE thread,
                 last_dispatch_total = dispatch_total;
                 dispatch_quiet_start_tick = current_tick;
             }
+        }
+        // Task 411: the same capture, but on a plain wall-clock interval with
+        // no dispatch-quiet gate. A stalled run faults continuously, so the
+        // gate below never opens there, and the guest's position during the
+        // stall is exactly what needs sampling.
+        if (progress_context != nullptr &&
+            progress_context->guest_position_census != nullptr &&
+            current_tick - last_position_census_tick >=
+                position_census_interval)
+        {
+            std::uint32_t cache_base = 0;
+            std::uint32_t cache_size = 0;
+            if (progress_context->aot_placement != nullptr &&
+                progress_context->aot_placement->placed)
+            {
+                cache_base = progress_context->aot_placement->base_address;
+                cache_size = static_cast<std::uint32_t>(
+                    progress_context->aot_placement->size);
+            }
+            Win32NativePhaseSample census_sample;
+            // Null telemetry: the stage marker belongs to the native sampler,
+            // and overwriting it would confuse a reader of that instrument.
+            if (CaptureWin32NativePhaseSample(
+                    thread, progress_context->aot_placement, nullptr,
+                    &census_sample, loader_module_base, loader_module_size))
+            {
+                const Win32GuestPositionClassification classification =
+                    ClassifyGuestPosition(
+                        census_sample.eip,
+                        census_sample.mapped,
+                        census_sample.guest_eip,
+                        progress_context->runtime_base,
+                        progress_context->runtime_size,
+                        cache_base,
+                        cache_size);
+                RecordGuestPosition(
+                    progress_context->guest_position_census.get(),
+                    classification);
+                // Task 412: the call-site axis exists only for host samples, so
+                // exactly one outcome is recorded per host sample and the
+                // reconciliation in the report stays meaningful.
+                if (classification.origin == GuestPositionOrigin::kHost)
+                {
+                    RecordGuestPositionHostSite(
+                        progress_context->guest_position_census.get(),
+                        census_sample.host_call_site,
+                        census_sample.host_scan_failed);
+                }
+            }
+            else
+            {
+                RecordGuestPositionCaptureFailure(
+                    progress_context->guest_position_census.get());
+            }
+            // Task 412: the busy-or-blocked split. One call per sample, on the
+            // poll thread, and the last reading is the one reported.
+            FILETIME creation_time = {};
+            FILETIME exit_time = {};
+            FILETIME kernel_time = {};
+            FILETIME user_time = {};
+            if (GetThreadTimes(thread, &creation_time, &exit_time,
+                               &kernel_time, &user_time))
+            {
+                const auto to_100ns = [](const FILETIME& value) {
+                    return (static_cast<std::uint64_t>(value.dwHighDateTime)
+                            << 32) |
+                        static_cast<std::uint64_t>(value.dwLowDateTime);
+                };
+                RecordGuestPositionThreadTime(
+                    progress_context->guest_position_census.get(),
+                    to_100ns(kernel_time), to_100ns(user_time),
+                    static_cast<std::uint32_t>(current_tick - start_tick));
+            }
+            last_position_census_tick = current_tick;
         }
         if (native_sampling_enabled && progress_context != nullptr &&
             current_tick - dispatch_quiet_start_tick >=
@@ -810,6 +906,24 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
                 context.single_step_hotspot_profile.get(),
                 &attempt->single_step_hotspot_profile.dump_entry_count,
                 &attempt->single_step_hotspot_profile.dump_path);
+    }
+    // Task 411: same placement and the same reason as the hotspot dump above --
+    // this runs once per attempt on both teardown paths, and writing the file
+    // here keeps it ahead of a stalled Glide close.
+    attempt->guest_position_census =
+        context.guest_position_census != nullptr
+            ? SnapshotGuestPositionCensus(*context.guest_position_census)
+            : Win32GuestPositionCensusSnapshot{};
+    if (context.guest_position_census != nullptr)
+    {
+        attempt->guest_position_census.dump_written =
+            WriteGuestPositionCensusDumpIfEnabled(
+                context.guest_position_census.get(),
+                &attempt->guest_position_census.dump_entry_count,
+                &attempt->guest_position_census.dump_path);
+        // Task 412: module and symbol lookup runs here, after the guest thread
+        // has stopped, so nothing on the sampling path pays for it.
+        ResolveGuestPositionCensusSymbols(&attempt->guest_position_census);
     }
     attempt->execution_time_profile =
         context.execution_time_profile != nullptr

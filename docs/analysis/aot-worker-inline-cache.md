@@ -34,6 +34,62 @@ fail-closed합니다.
 있으므로 emitter가 displacement를 4바이트 보정합니다. 안전하게 다시 쓸 수
 없는 prefix, 16-bit operand/address 및 far transfer는 기존 sentinel로 남습니다.
 
+## 확인됨 (Task 413) — patch 1회의 실제 가격은 보호 구간입니다
+
+patch가 쓰는 바이트는 **14개**(선택된 entry의 target immediate 4, jump displacement 4,
+guard 6)인데, 그동안 그 14바이트를 위해 **캐시 전체(16 MB = 4,096 페이지)의 보호
+속성을 두 번** 바꿨습니다(`RW` → 쓰기 → `RX`).
+
+| 항목 | 값 |
+|---|---|
+| 캐시 용량 | `kDynamicCacheCapacity` = 16 MB |
+| `VirtualProtect` 쌍의 실측 비용 | **4,225 µs / 약 11.5 M cycle** (같은 호스트, 32비트, 2,000회 평균) |
+| pumpit3 멈춤 실행의 patch 수 | **12,288회 이상** |
+| 그 실행의 breakpoint gap | guest-run의 **62%**, 1건당 2.28 M cycle |
+
+**왜 그렇게 자주 patch되는가 — 다형 return 지점입니다.** pumpit3에서 가장 자주 miss
+하는 site `0x030D09D7`은 Watcom 스택 검사 helper(`0x030D09CA`)의 `ret 4`이고, 그
+helper의 **정적 호출처가 259곳**입니다. inline cache는 **4-entry**이고 가득 차면
+round-robin으로 교체하므로, 이 site는 사실상 **매번 miss**합니다.
+
+**따라서 두 축이 분리됩니다.** (1) miss 1회의 가격 — 보호 구간을 쓰는 페이지로 좁히면
+내려갑니다(Task 413). (2) miss 횟수 — 4-entry로 259 호출처를 담을 수 없으므로 그대로
+남습니다. 후자는 별도 설계가 필요합니다(해시 기반 return dispatch, site별 entry 수).
+
+**측정 결과(Task 413) — 좁히는 것만으로는 멈춤이 낫지 않습니다.** wide/narrow 3회씩
+A/B에서 프레임은 양쪽 다 0~1이었고, 같은 시간의 breakpoint 예외만 약 15% 늘었습니다.
+**"patch 12,288회 × 11.5 M cycle"은 실행 전체 예산을 넘는 값이었으므로 가설이
+과했습니다.** Task 412의 host 표본 귀속은 그 자리를 여러 경로의 합으로 채웁니다 —
+세그먼트 override 재해석 약 15%, `WriteGuestBytes` 약 14%, `FindAotCacheAddress` 약
+13%, JAMMA 스냅샷 약 10%, inline-cache patch 요청 약 7%. 변경은 정확성·안전성 이유로
+유지합니다.
+
+**Measured (Task 413) — narrowing alone does not cure the stall.** Three wide against three
+narrow runs left frames at zero or one in both conditions, with only about 15% more
+breakpoint exceptions in the same wall time. The estimate "12,288 patches times 11.5 M
+cycles" exceeded the entire guest-run budget, so the hypothesis was overreaching; Task 412's
+host-sample attribution fills the slot with a sum of paths instead — segment-override
+re-resolution about 15%, `WriteGuestBytes` about 14%, `FindAotCacheAddress` about 13%, the
+JAMMA snapshot about 10%, and the inline-cache patch request about 7%. The change is kept
+for accuracy and for the smaller writable window.
+
+## Confirmed (Task 413) — the price of one patch is its protection window
+
+A patch writes **fourteen bytes** — the chosen entry's four-byte target immediate, its
+four-byte jump displacement, and its six-byte guard — and until Task 413 it flipped the
+protection of the **whole 16 MB cache twice** to do so. That pair measures **4,225 µs
+(about 11.5 M cycles)** on this host in a 32-bit process, and a stalled pumpit3 run performs
+**over 12,288 patches**, against a breakpoint gap of 62% of guest-run at 2.28 M cycles each
+(Task 411).
+
+The reason patches are so frequent is a **polymorphic return site**: pumpit3's most-missed
+site `0x030D09D7` is the `ret 4` of the Watcom stack-check helper at `0x030D09CA`, which has
+**259 static call sites**, while the inline cache holds **four** entries and replaces
+round-robin — so it misses essentially every time. That separates two axes: the **price** of
+a miss, which the Task 413 page window lowers, and the **count** of misses, which it does
+not touch and which needs its own design (hash-based return dispatch, or per-site entry
+counts).
+
 ## 메모리 보호와 동시성
 
 code cache는 평상시 `PAGE_EXECUTE_READ`입니다. serialized host worker만 guest

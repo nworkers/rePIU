@@ -8,6 +8,7 @@
 #include "repiu/platform/win32/aot_boundary_provenance.h"
 #include "repiu/platform/win32/aot_retired_trap_profile.h"
 #include "repiu/platform/win32/single_step_hotspot_profile.h"
+#include "repiu/platform/win32/guest_position_census.h"
 #include "repiu/platform/win32/execution_time_profile.h"
 #include "repiu/platform/win32/aot_worker_timing.h"
 #include "repiu/platform/win32/glide_buffer_swap_timing.h"
@@ -646,6 +647,9 @@ struct Win32MinimalExecutionAttempt
             {};
     Win32SingleStepHotspotProfileSnapshot
         single_step_hotspot_profile;
+    // Task 411: where the guest thread actually was, sampled on wall-clock
+    // intervals rather than at exception boundaries.
+    Win32GuestPositionCensusSnapshot guest_position_census;
     Win32ExecutionTimeProfileSnapshot execution_time_profile;
     Win32AotWorkerTimingSnapshot aot_worker_timing;
     // Task 333: the Glide host-thread rendezvous split into waiting and work.

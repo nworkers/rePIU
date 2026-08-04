@@ -7,6 +7,8 @@
 #include "repiu/platform/win32/execution_trampoline.h"
 #include "repiu/platform/win32/aot_code_cache_win32.h"
 #include "../../platform/win32/aot/aot_dbt_glide_gate_dispatch.h"
+#include "../../platform/win32/io/port_io_delay_loop.h"
+#include "../../platform/win32/aot/aot_generation_failure_policy.h"
 #include "repiu/platform/win32/aot_boundary_opcode_census.h"
 #include "repiu/platform/win32/live_telemetry.h"
 #include "repiu/platform/win32/veh_exit_site.h"
@@ -1341,6 +1343,143 @@ void PrintExecutionAttempt(
             hotspot.stage_cycles[0], hotspot.stage_cycles[1],
             hotspot.stage_cycles[2], hotspot.stage_cycles[3],
             hotspot.stage_cycles[4]);
+    }
+    // Task 415: whether the generation-failure penalty stayed at address scope
+    // or fell back to quarantining a whole page.
+    logger.info(
+        "Win32 AOT generation failure addresses/skips/quarantine-fallbacks/"
+        "spanning-activations: {}/{}/{}/{}",
+        repiu::platform::win32::AotGenerationFailureAddressCount(),
+        repiu::platform::win32::AotGenerationFailureSkipCount(),
+        repiu::platform::win32::AotGenerationFailureQuarantineCount(),
+        repiu::platform::win32::AotSpanningEntryActivationCount());
+    // Task 414: how many port I/O faults the delay-loop batch removed, and why
+    // the attempts that did not batch were refused.
+    {
+        const auto& delay_loop =
+            repiu::platform::win32::GetPortIoDelayLoopStats();
+        logger.info(
+            "Win32 port I/O delay loop enabled/attempts/batches/skipped/max: "
+            "{}/{}/{}/{}/{}",
+            delay_loop.enabled, delay_loop.attempt_count,
+            delay_loop.batch_count, delay_loop.skipped_iteration_count,
+            delay_loop.max_skipped_iterations);
+        logger.info(
+            "Win32 port I/O delay loop outcome "
+            "batched/shape/register/not-dead/nothing/unreadable: "
+            "{}/{}/{}/{}/{}/{}",
+            delay_loop.outcome_counts[0], delay_loop.outcome_counts[1],
+            delay_loop.outcome_counts[2], delay_loop.outcome_counts[3],
+            delay_loop.outcome_counts[4], delay_loop.outcome_counts[5]);
+        logger.info(
+            "Win32 port I/O delay loop last body/limit: {}/{}",
+            Hex32(delay_loop.last_loop_address), delay_loop.last_limit);
+    }
+    // Task 411: where the guest thread was, sampled on a wall-clock interval.
+    // Unlike the hotspot census above, this one sees code that runs in the AOT
+    // cache without faulting, which is where a stalled run's wait loop can hide.
+    {
+        const auto& position = attempt.guest_position_census;
+        std::uint32_t origin_total = 0;
+        for (std::uint32_t index = 0;
+             index < repiu::platform::win32::kGuestPositionOriginCount;
+             ++index)
+        {
+            origin_total += position.origin_counts[index];
+        }
+        logger.info(
+            "Win32 guest position census "
+            "enabled/total/distinct/overflow/capture-failures/interval-ms: "
+            "{}/{}/{}/{}/{}/{}",
+            position.enabled, position.total_sample_count,
+            position.distinct_address_count, position.overflow_count,
+            position.capture_failure_count, position.interval_milliseconds);
+        // The sum check is printed rather than assumed, for the reason Task 410
+        // recorded: a classification that cannot be reconciled with its total
+        // must not be read as a distribution.
+        logger.info(
+            "Win32 guest position origin "
+            "arena/cache-mapped/cache-unmapped/host/sum-matches-total: "
+            "{}/{}/{}/{}/{}",
+            position.origin_counts[0], position.origin_counts[1],
+            position.origin_counts[2], position.origin_counts[3],
+            origin_total == position.total_sample_count);
+        logger.info(
+            "Win32 guest position census dump written/entries/path: {}/{}/{}",
+            position.dump_written, position.dump_entry_count,
+            position.dump_path);
+        // Task 412: the one measurement that separates "busy in kernel
+        // exception dispatch" from "blocked". CPU share near 100% retires the
+        // blocked hypothesis; near zero retires the busy one.
+        const double cpu_milliseconds =
+            static_cast<double>(position.thread_kernel_time_100ns +
+                                position.thread_user_time_100ns) /
+            10000.0;
+        const double cpu_share =
+            position.thread_time_elapsed_milliseconds != 0U
+                ? 100.0 * cpu_milliseconds /
+                      position.thread_time_elapsed_milliseconds
+                : 0.0;
+        logger.info(
+            "Win32 guest position thread time "
+            "valid/kernel-ms/user-ms/wall-ms/cpu-share: "
+            "{}/{:.0f}/{:.0f}/{}/{:.2f}%",
+            position.thread_time_valid,
+            static_cast<double>(position.thread_kernel_time_100ns) / 10000.0,
+            static_cast<double>(position.thread_user_time_100ns) / 10000.0,
+            position.thread_time_elapsed_milliseconds,
+            cpu_share);
+        // Reconciliation before distribution, as with the origin sum above.
+        const std::uint32_t scan_total = position.host_scan_sited_count +
+            position.host_scan_no_site_count +
+            position.host_scan_failed_count;
+        logger.info(
+            "Win32 guest position host scan "
+            "samples/sited/no-site/failed/distinct/overflow/parts-match: "
+            "{}/{}/{}/{}/{}/{}/{}",
+            position.host_scan_sample_count, position.host_scan_sited_count,
+            position.host_scan_no_site_count, position.host_scan_failed_count,
+            position.host_site_distinct_count,
+            position.host_site_overflow_count,
+            scan_total == position.host_scan_sample_count);
+        for (std::uint32_t index = 0; index < position.top_count; ++index)
+        {
+            const auto& sample = position.top[index];
+            const double share =
+                position.total_sample_count != 0U
+                    ? 100.0 * sample.sample_count /
+                          position.total_sample_count
+                    : 0.0;
+            logger.info(
+                "Win32 guest position top #{} "
+                "address/count/share/arena/cache/cache-unmapped/host/module: "
+                "{}/{}/{:.2f}%/{}/{}/{}/{}/{}+{}",
+                index + 1U, Hex32(sample.address), sample.sample_count, share,
+                sample.origin_counts[0], sample.origin_counts[1],
+                sample.origin_counts[2], sample.origin_counts[3],
+                position.top_module_names[index].empty()
+                    ? std::string("-")
+                    : position.top_module_names[index],
+                Hex32(position.top_module_offsets[index]));
+        }
+        for (std::uint32_t index = 0; index < position.host_site_top_count;
+             ++index)
+        {
+            const auto& site = position.host_site_top[index];
+            const double share =
+                position.host_scan_sited_count != 0U
+                    ? 100.0 * site.sample_count /
+                          position.host_scan_sited_count
+                    : 0.0;
+            logger.info(
+                "Win32 guest position host site #{} "
+                "address/count/share-of-sited/module/offset/symbol: "
+                "{}/{}/{:.2f}%/{}/{}/{}",
+                index + 1U, Hex32(site.address), site.sample_count, share,
+                site.module_name.empty() ? std::string("-") : site.module_name,
+                Hex32(site.module_offset),
+                site.symbol.empty() ? std::string("-") : site.symbol);
+        }
     }
     // Task 323 guest-thread wall-clock attribution. Buckets may nest, so the
     // derived figures are the interpretable ones: kVehExclusive removes service

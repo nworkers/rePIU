@@ -297,6 +297,41 @@ valid nonzero descriptor and the confirmed GS base-add form use folded-native ex
 A DPMI change to base/limit/flags under the same selector also causes the site to be
 re-resolved from the new descriptor fingerprint.
 
+## pumpit3 timer ISR and its slot callback table (confirmed, Task 411)
+
+`pumpit3`'s INT 8 handler walks a **slot table**. Addresses are as executed (arena base
+`0x03000000`); subtract `0x02000000` for `repiu_aot_probe`.
+
+The handler enters at `0x0301F7B4` with `pushad` and `push ds,es,fs,gs` followed by `cli`,
+walks five slots of stride `0x18` between `0x0301F7CE` and `0x0301F818`, calls each due slot
+through `call dword [eax+0x0143ECA4]` at `0x0301F7EE`, chains the previous handler with
+`call far [0x0143ED08]` at `0x0301F827`, and ends with the PIC EOI `out dx,al` at
+`0x0301F851` before `sti`, the register restore, and `iret`. `RegisterTimerSlot`
+(`0x0301F718`) takes the slot index in EAX and the callback in EDX, storing the callback at
+`[slot+0xA4]` and the rate `0xB6` at `[slot+0x94]`; `0x0301F85C` initialises the table. A
+slot holds an in-use flag at `+0x90`, its rate at `+0x94`, a lock at `+0x98`, an increment
+at `+0x9C`, an accumulator at `+0xA0`, and the callback at `+0xA4`; the ISR calls the
+callback when the accumulator passes `0x10000` and subtracts that amount, making it a
+fixed-point divider.
+
+Slot 0's callback is `0x03010BA4`, registered during boot as
+`RegisterTimerSlot(0, 0x03010BA4)` right after `ParseStageCfg("stage.cfg")` — the callback
+rides in EDX, which both intervening calls preserve. The registration is followed by
+`push 0` / `push 0x406E0000`, the double `240.0`, into `0x0301F6B4`, so **slot 0 is
+programmed at 240 Hz**; the 13,173 callback entries measured over 60 seconds (about 220 Hz)
+differ from that by the same margin as the 11.9% tick loss Task 366 measured. It bumps the counters at
+`0x03183A30`, `0x03183A34`, and `0x03183A38` and then calls the **delay routine
+`0x0301DB10`** from `0x03010BCF`.
+
+That routine is the **200-iteration port poll** (`mov ecx,0x02A8`, `in ax,dx`,
+`cmp ebx,0xC8`, `jl`), after which it takes the counter at `0x030F9028` modulo four and
+branches through the four-entry table at `0x0301DB00`
+(`0x0301DB4D`/`0x0301DF8E`/`0x0301D3E3`/`0x0301E816`), each arm writing the multiplexed
+output ports `0x02A4`, `0x02A6`, and `0x02A8`.
+
+**This is what `0x0301DB22` — 85.9-97.2% of port I/O cost in Tasks 405-410 — actually is,
+and it runs once per timer tick.**
+
 ## pumpit2 executable confirmation
 
 The `PIU.EXE` extracted from the pumpit2 CHD through the shared multisession ISO

@@ -12,6 +12,7 @@
 #include <intrin.h>
 #include "eeprom_93c46.h"
 #include "piu10_sound_port.h"
+#include "port_io_delay_loop.h"
 
 namespace repiu::platform::win32
 {
@@ -708,6 +709,37 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
             // transitions, so advance EIP instead and re-trap on each poll,
             // mirroring the dynamic EEPROM read path above.
             win32_context->Eip += instruction_len;
+            // Task 414: when this read is one iteration of a pure delay loop,
+            // advance its counter so the guest runs only its final iteration.
+            // Attempted only here, on the side-effect-free input path, and only
+            // when the whole window the matcher decodes is readable.
+            if (PortIoDelayLoopEnabled())
+            {
+                const std::uint32_t window_start =
+                    decode_eip > kMaxLoopBodyBytes
+                        ? decode_eip - kMaxLoopBodyBytes : decode_eip;
+                const bool window_readable = IsGuestRangeReadable(
+                    context,
+                    reinterpret_cast<const void*>(
+                        static_cast<std::uintptr_t>(window_start)),
+                    (decode_eip - window_start) + kMaxLoopTailBytes);
+                std::uint32_t registers[8] = {
+                    win32_context->Eax, win32_context->Ecx,
+                    win32_context->Edx, win32_context->Ebx,
+                    win32_context->Esp, win32_context->Ebp,
+                    win32_context->Esi, win32_context->Edi};
+                if (TryBatchPortIoDelayLoop(decode_eip, instruction_len, width,
+                                            registers, window_readable))
+                {
+                    // Only the matched counter can have changed, and it is
+                    // never EAX, EDX, or ESP.
+                    win32_context->Ecx = registers[1];
+                    win32_context->Ebx = registers[3];
+                    win32_context->Ebp = registers[5];
+                    win32_context->Esi = registers[6];
+                    win32_context->Edi = registers[7];
+                }
+            }
             return true;
         }
 

@@ -11,11 +11,60 @@
 
 namespace repiu::platform::win32
 {
+namespace
+{
+
+#if defined(_M_IX86)
+// Task 412. Scans the suspended thread's stack for the first value inside
+// [module_base, module_base + module_size) and returns it, or zero when none is
+// found. `*failed` is set when the read faults, which can happen because the
+// stack pointer of a suspended guest thread is not guaranteed to be readable
+// for the whole window. SEH forbids C++ objects with unwind semantics in the
+// same frame, so this function deliberately contains none.
+std::uint32_t ScanStackForModuleReturn(std::uint32_t esp,
+                                       std::uint32_t module_base,
+                                       std::uint32_t module_size,
+                                       bool* failed)
+{
+    constexpr std::uint32_t kScanDwords = 64U;
+    *failed = false;
+    if (esp == 0U || module_size == 0U)
+    {
+        return 0U;
+    }
+    const std::uint32_t module_end = module_base + module_size;
+    std::uint32_t found = 0U;
+    __try
+    {
+        const std::uint32_t* stack = reinterpret_cast<const std::uint32_t*>(
+            static_cast<std::uintptr_t>(esp));
+        for (std::uint32_t index = 0; index < kScanDwords; ++index)
+        {
+            const std::uint32_t value = stack[index];
+            if (value >= module_base && value < module_end)
+            {
+                found = value;
+                break;
+            }
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        *failed = true;
+        return 0U;
+    }
+    return found;
+}
+#endif
+
+}  // namespace
 
 bool CaptureWin32NativePhaseSample(void* thread,
                                    const Win32AotCodeCachePlacement* placement,
                                    Win32SharedLiveTelemetry* telemetry,
-                                   Win32NativePhaseSample* sample)
+                                   Win32NativePhaseSample* sample,
+                                   std::uint32_t module_base,
+                                   std::uint32_t module_size)
 {
     if (thread == nullptr || sample == nullptr)
     {
@@ -74,6 +123,14 @@ bool CaptureWin32NativePhaseSample(void* thread,
                 }
             }
         }
+        if (module_size != 0U)
+        {
+            bool scan_failed = false;
+            sample->host_scan_attempted = true;
+            sample->host_call_site = ScanStackForModuleReturn(
+                sample->esp, module_base, module_size, &scan_failed);
+            sample->host_scan_failed = scan_failed;
+        }
     }
     else
     {
@@ -85,6 +142,8 @@ bool CaptureWin32NativePhaseSample(void* thread,
     return sample->captured;
 #else
     (void)placement;
+    (void)module_base;
+    (void)module_size;
     sample->failure_stage = 3;
     mark_stage(0);
     return false;

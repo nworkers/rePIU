@@ -14,7 +14,14 @@
 |---|---|---|---:|
 | 1 | **[완료, Task 410] 진입 횟수 편차** — 격리 유무로 갈립니다. 격리 없음 arena single-step 12,133~13,094 / 프레임 1,362~1,402, 격리 2,286,195~4,974,756(**180~410배**) / 프레임 867 또는 렌더 루프 미도달 | — | — |
 | 2 | **[완료, Task 410] 소비 지점 = `HandleAotReentry` resolve 성공 분기**(`aot_runtime_dispatch.cpp:1893~1902`). 격리 없는 3회에서 arena single-step의 **100%**. **전제는 반증됐습니다 — 이 지점은 arena가 아니라 캐시(`0x0C403877`)로 복귀시킵니다** | — | — |
-| 0 | **pumpit3 실행 중 멈춤(사용자 보고, 2026-08-04)** — 17회 중 5회 재현, 서명 완전 동일(`stage.cfg`에서 정지, 프레임 0, publishes 79). **진짜 정지이고, 격리도 속도도 원인이 아님**이 확인됐습니다. 남은 것은 지연 루틴을 13,173회 부르는 **캐시 측 호출자**. 전문: [pumpit3 기동 중 멈춤](pumpit3-startup-stall.md) | 사용자가 겪는 실제 증상 | (사용 가능성) |
+| 0 | **[해소, Task 414] pumpit3 실행 중 멈춤** — 원인은 **포화**였습니다. 240 Hz tick마다 **결과를 버리는 포트 읽기 200회**를 우리는 fault 200회로 처리하고 있었습니다. 루프 카운터를 전진시켜 **2회**로 줄이자 batching 끔 **14회 중 0회 정상** → 켬 **7회 중 6회 정상**(803~1,425 프레임). pumpit1 회귀 없음 | — | — |
+| 0' | **[정정, Task 415] 남은 멈춤은 격리가 아닙니다.** 세대 실패 벌칙을 페이지→주소로 좁혀 격리를 0으로 만들었는데도 멈춤이 남았고, 멈춘 실행은 **격리 0 · single-step 2,494,657**입니다 | — | — |
+| 0** | **[해소, Task 417] 마지막 멈춤도 사라졌습니다.** 요청 항목이 retired 이웃 페이지로 걸치면 활성화를 거부하던 규칙을 **요청 항목에 한해** 완화하자(quarantined는 여전히 거부) **세대 실패가 0**이 되고, strict 5회 중 2회 멈춤 대 **relaxed 8회 중 0회**. pumpit1 회귀 없음(2,848) | — | — |
+| 0'' | **[근거, Task 416] 그 멈춤의 정체 = 번역 실패 항목이 실행을 arena에 떨구고 복귀 길이 없음.** 전수 census로 **`0x0301E000` 51.6% + `0x0301D000` 34.7% = 두 인접 페이지에 86%**가 몰려 있음(이전의 "전역 trace 모드"는 표본 15개 기반 오판, 반증됨). 정상/멈춤 모두 같은 번역 실패를 겪고, **갈림은 게스트가 그 주소를 밟느냐**(skips 0 대 1). 밟으면 재진입이 `not-pending`으로 **550,688회** 거부 | 오늘 15회 중 2회 | (사용 가능성) |
+| 0''' | **수정 후보 두 갈래** — (a) 페이지 경계를 걸친 **요청 항목의 활성 규칙 완화**(근인 제거, 단 걸친 항목이 첫 페이지에만 등록되는 기존 성질이 위험), (b) **arena→캐시 재진입**을 pending 없이도 허용(일반 안전망, 캐시 중간 진입 정확성이 미확정) | 0''의 해결책 | 측정 필요 |
+| 0a | **[완료, Task 412] 그 62%의 정체 = 우리 VEH 경로 작업의 합.** 스레드는 막힌 것이 아니라 **CPU 82.42%로 바쁩니다.** 호출 지점(심볼): 세그먼트 override 재해석 약 **15.1%**, `WriteGuestBytes` 13.6%, `FindAotCacheAddress` 12.7%, JAMMA 스냅샷 약 10.4%, inline-cache patch 요청 6.9% | — | — |
+| 0b | **세그먼트 override 재해석** — host 표본 최대 인구(약 15.1%)이고 호출 빈도가 **미측정**입니다. inline-cache patch와 같은 **전체 캐시 보호**를 씁니다 | 0a가 지목한 1순위 | 측정 필요 |
+| 0c | **return inline cache thrash** — `0x030D09D7`(Watcom 스택 검사 helper의 `ret 4`)의 정적 호출처가 **259곳**인데 IC는 **4-entry** round-robin. Task 413이 miss **가격**을 낮췄으나 **횟수**는 그대로 | 예외 횟수 축의 구체적 대상 | 측정 필요 |
 | 2' | **port I/O census에 호출 측(VEH / thunk) 태그** — 후보 셋(HLE slot·Glide gate의 target-miss, 미해결 direct edge)은 **같은 로그로 전부 배제**됐습니다(target-miss 0/0, direct edge는 성공·실패 모두 캐시 복귀). 남은 가설은 **진입이 이탈이 아닐 수 있다**는 것 — thunk 경로는 게스트 EIP를 넘겨 `from_aot_cache`를 false로 만듭니다 | 새 **시작점**. 하루치 조사 방향이 아티팩트인지 여기서 갈림 | wall 약 42~50% |
 | 3 | ~~arena→캐시 복귀 설계~~ **복귀는 이미 있고 정상 동작합니다**(resolve 100% 성공). 필요한 것은 복귀가 아니라 **이탈을 막는 것** — 2'가 선행 | 2'의 해결책 | 위와 같음 |
 | 4 | **재번역이 요청 진입 주소를 address map에 남기지 못하는 조건** — 사유는 `dynamic AOT entry was not active in the new image`로 확보됨(Task 404) | 격리 실행의 근인 | 격리 시 wall 35~40% |
@@ -45,7 +52,14 @@ Based on Tasks 404-409 on 2026-08-03. Evidence is in the handoff below and
 |---|---|---|---:|
 | 1 | **[done, Task 410] The entry-count variation is quarantine** — 12,133-13,094 arena single steps and 1,362-1,402 frames without it, 2,286,195-4,974,756 (**180-410x**) and 867 frames or no render loop with it | — | — |
 | 2 | **[done, Task 410] The consumer is `HandleAotReentry`'s resolve-success branch** (`aot_runtime_dispatch.cpp:1893-1902`), **100%** of arena single steps in three quarantine-free runs. **The premise is refuted — it returns to the cache (`0x0C403877`), not the arena** | — | — |
-| 0 | **pumpit3 stalls mid-run** (user-reported, 2026-08-04) — reproduced five times in seventeen runs with an identical signature (stopped at `stage.cfg`, zero frames, exactly 79 publishes). Confirmed a **true stop**, and **neither quarantine nor slowness causes it**. What remains is the **cache-side caller** that invokes the delay routine 13,173 times. Full account: [pumpit3 startup stall](pumpit3-startup-stall.md) | It is what the user actually hits | (usability) |
+| 0 | **[resolved, Task 414] pumpit3 stalls mid-run** — the cause was **saturation**: every 240 Hz tick performed **200 port reads whose results the guest discards**, and we raised 200 faults for them. Advancing the loop counter cuts that to **two**, taking the session from **zero of fourteen** healthy runs to **six of seven** (803-1,425 frames), with no pumpit1 regression | — | — |
+| 0' | **[corrected, Task 415] the remaining stall is not quarantine.** Narrowing the generation-failure penalty from a page to an address took quarantines to zero and the stall survived, in a run with **zero quarantines and 2,494,657 single steps** | — | — |
+| 0** | **[resolved, Task 417] the last stall is gone too.** Relaxing the activation rule **for the requested entry only** when it straddles into a retired neighbour (a quarantined span still refuses) takes generation failures to **zero**: two stalls in five strict runs against **none in eight relaxed**, with no pumpit1 regression (2,848 frames) | — | — |
+| 0'' | **[evidence, Task 416] what that stall was: a failed translation dropping execution into the arena with no way back.** The full census puts **86% on two adjacent pages** — `0x0301E000` at 51.6% and `0x0301D000` at 34.7% — refuting the earlier "global trace mode" read, which rested on fifteen samples. Healthy and stalled runs share the same translation failure; **the difference is whether the guest executes that address** (skips 0 against 1), after which re-entry is refused **550,688** times as not pending | Two of fifteen runs today | (usability) |
+| 0''' | **Two candidate fixes** — (a) relax the activation rule for a **requested entry that straddles a page boundary**, removing the trigger, though spanning entries register only under their first page; (b) allow **arena-to-cache re-entry** without a pending flag as a general safety net, where mid-stream cache entry correctness is unproven | The remedy for 0'' | to be measured |
+| 0a | **[done, Task 412] That 62% is the sum of our own VEH-path work**, and the thread is **busy at 82.42% CPU**, not blocked. By call site: segment-override re-resolution about **15.1%**, `WriteGuestBytes` 13.6%, `FindAotCacheAddress` 12.7%, the JAMMA snapshot about 10.4%, the inline-cache patch request 6.9% | — | — |
+| 0b | **Segment-override re-resolution** — the largest host population (about 15.1%) with an **unmeasured** call frequency, using the same **whole-cache protection** as the inline-cache patch | First target named by 0a | to be measured |
+| 0c | **Return inline-cache thrash** — `0x030D09D7`, the `ret 4` of the Watcom stack-check helper, has **259 static call sites** against a **four-entry** round-robin cache. Task 413 cut the **price** of a miss but not the **count** | Concrete target on the exception-count axis | to be measured |
 | 2' | **Tag the port I/O census with its caller side** (VEH or thunk) — all three candidates for an exception-free departure are **excluded by the same logs** (both target-miss counters zero; the direct-edge dispatcher resumes at a cache address on success *and* failure). The surviving hypothesis is that **the entry is not a departure**: the thunk path passes a guest EIP, which forces `from_aot_cache` false | New head of the chain; decides whether a day of analysis rests on an artifact | ~42-50% of wall |
 | 3 | ~~Design the arena-to-cache return~~ — **the return already exists and works** (100% resolve success). What is needed is not a return but stopping the departure; blocked on 2' | The remedy for 2' | same |
 | 4 | **Why a re-translation omits its requested entry from the address map** — the reason string `dynamic AOT entry was not active in the new image` is already captured (Task 404) | Root of the quarantined mode | 35-40% of wall when it fires |
@@ -488,6 +502,13 @@ wall의 20.59%에 LFB 0회인데, 측정에 쓴 자동 장면은 setter 약 5.6%
 | `REPIU_JAMMA_SNAPSHOT` | **ON** | 입력 스냅샷(Task 403). `0`으로 매 읽기 조회 복원 |
 | `REPIU_JAMMA_SNAPSHOT_US` | 500 | 스냅샷 갱신 주기(µs). 게스트 폴링 4.8ms의 1/10 |
 | `REPIU_PORT_IO_CENSUS_MAPPING` | OFF | port I/O census의 `mapped`/`reentry`(Task 406). 켜면 호출당 `FindAotCacheAddress`가 붙어 약 5.8% 느려지므로 **그 실행의 wall·프레임은 인용 금지** |
+| `REPIU_GUEST_POSITION_CENSUS` | OFF | 시간 기준 게스트 위치 census(Task 411). 예외와 무관하게 표본하므로 캐시 실행도 보입니다. **켠 실행의 wall·프레임은 인용 금지** |
+| `REPIU_GUEST_POSITION_CENSUS_MS` | 10 | 위 census의 표본 간격(ms, 1~1000). tick 주기와 서로소로 두십시오 |
+| `REPIU_GUEST_POSITION_CENSUS_DUMP` | 없음 | `1`이면 `build/guest_position_census.txt`, 그 외 값은 경로 |
+| `REPIU_AOT_PATCH_WIDE_PROTECT` | OFF | 켜면 inline-cache patch가 예전처럼 **캐시 전체**의 보호를 바꿉니다(Task 413 A/B용). 기본값은 쓰는 페이지만 |
+| `REPIU_PORT_IO_DELAY_LOOP` | **ON** | 결과를 버리는 포트 지연 루프를 2회로 줄입니다(Task 414). `0`이면 예전 동작. **pumpit3 멈춤 해소의 본체** |
+| `REPIU_AOT_QUARANTINE_ON_GENERATION_FAILURE` | OFF | 켜면 세대 실패가 예전처럼 **페이지 전체를 영구 격리**합니다(Task 415 A/B용). 기본값은 실패한 **주소만** 억제 |
+| `REPIU_AOT_STRICT_SPANNING_ENTRY` | OFF | 켜면 요청 항목이 retired 이웃 페이지에 걸칠 때 예전처럼 **활성화를 거부**합니다(Task 417 A/B용). **켜면 pumpit3 멈춤이 돌아옵니다** |
 
 timer tick 전달 counter와 boundary opcode census는 **상시 ON**이며 동작을 바꾸지
 않습니다.

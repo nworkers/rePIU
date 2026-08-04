@@ -2,12 +2,14 @@
 
 #include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/aot_translation_plan.h"
+#include "aot/aot_generation_failure_policy.h"
 #include "aot/aot_dbt_hle_dispatch.h"
 #include "aot/aot_dbt_direct_edge_dispatch.h"
 #include "aot/aot_dbt_indirect_dispatch.h"
 #include "aot/aot_dbt_return_dispatch.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <algorithm>
@@ -568,6 +570,126 @@ bool VerifyWin32GuestArenaDirectlyReadable(std::uint32_t runtime_base,
     verified_result = covered;
     return covered;
 }
+
+// Task 413. An inline-cache patch writes fourteen bytes, but the patch path
+// flipped the protection of the whole 16 MB cache twice to do it. Measured on
+// this host, that pair costs about 4.2 ms (11.5 M cycles), and a stalled
+// pumpit3 run makes over 12,288 patches -- the dominant cost in the run. The
+// window below covers only the pages actually written. `REPIU_AOT_PATCH_WIDE_PROTECT=1`
+// restores the whole-cache behaviour so the two can be compared in one binary.
+// See docs/design/20260804-413-aot-patch-protection-window.md.
+struct AotCachePatchWindow
+{
+    void* base = nullptr;
+    std::size_t size = 0;
+};
+
+bool AotPatchWideProtectEnabled()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("REPIU_AOT_PATCH_WIDE_PROTECT");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+std::size_t AotPatchPageSize()
+{
+    static const std::size_t page_size = [] {
+        SYSTEM_INFO info = {};
+        GetSystemInfo(&info);
+        return info.dwPageSize != 0U
+            ? static_cast<std::size_t>(info.dwPageSize)
+            : static_cast<std::size_t>(4096);
+    }();
+    return page_size;
+}
+
+// Task 417. `CanActivateWin32AotAddressMapEntry` refuses an entry that spans a
+// retired page unless that page is the requested one. pumpit3's entry at
+// `0x0301DFFE` straddles the boundary into `0x0301E000`, so once the neighbour
+// is retired the entry can never be re-translated, execution falls back to the
+// arena, and the guest is stepped 2.36 M times without a way back (Task 416).
+// The image being appended here is freshly translated from current guest bytes,
+// and `RegisterAddressMapPages` records the entry under *every* page it spans,
+// so a later write to either page still retires it. The only state that must
+// still block activation is a quarantined page.
+// `REPIU_AOT_STRICT_SPANNING_ENTRY=1` restores the old rule.
+// See docs/design/20260804-417-spanning-entry-activation.md.
+bool AotStrictSpanningEntryEnabled()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("REPIU_AOT_STRICT_SPANNING_ENTRY");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+bool EntrySpansQuarantinedPage(const Win32AotCodeCachePlacement& placement,
+                               const runtime::AotAddressMapEntry& entry)
+{
+    if (entry.guest_length == 0U)
+    {
+        return true;
+    }
+    const std::uint64_t last =
+        static_cast<std::uint64_t>(entry.guest_address) +
+        entry.guest_length - 1U;
+    if (last > std::numeric_limits<std::uint32_t>::max())
+    {
+        return true;
+    }
+    const std::uint32_t first_page = Win32AotGuestPage(entry.guest_address);
+    const std::uint32_t last_page =
+        Win32AotGuestPage(static_cast<std::uint32_t>(last));
+    for (std::uint32_t page = first_page;; page += 0x1000U)
+    {
+        if (IsWin32AotGuestPageQuarantined(placement, page))
+        {
+            return true;
+        }
+        if (page == last_page || page > 0xFFFFEFFFU)
+        {
+            break;
+        }
+    }
+    return false;
+}
+
+// Page-aligned cover of [first_offset, last_offset_exclusive), clamped to the
+// cache. Falls back to the whole cache when the range is unusable, so a
+// mis-computed window can only be as wide as the old behaviour, never narrower
+// than what is written.
+AotCachePatchWindow ComputeAotCachePatchWindow(
+    const Win32AotCodeCachePlacement& placement,
+    std::uint32_t first_offset,
+    std::uint32_t last_offset_exclusive)
+{
+    auto* cache = reinterpret_cast<std::uint8_t*>(
+        static_cast<std::uintptr_t>(placement.base_address));
+    const AotCachePatchWindow whole{cache,
+                                    static_cast<std::size_t>(
+                                        placement.capacity)};
+    if (AotPatchWideProtectEnabled() ||
+        last_offset_exclusive <= first_offset ||
+        last_offset_exclusive > placement.capacity)
+    {
+        return whole;
+    }
+    const std::size_t page_size = AotPatchPageSize();
+    const std::size_t start = (first_offset / page_size) * page_size;
+    std::size_t end =
+        ((last_offset_exclusive + page_size - 1U) / page_size) * page_size;
+    if (end > placement.capacity)
+    {
+        end = placement.capacity;
+    }
+    if (end <= start)
+    {
+        return whole;
+    }
+    return AotCachePatchWindow{cache + start, end - start};
+}
 #endif
 
 }  // namespace
@@ -958,8 +1080,19 @@ bool AppendWin32DynamicAotTranslation(
         runtime::AotAddressMapEntry& entry = image.address_map[index];
         image_tracks_guest_bytes[index] =
             Win32AotAddressMapTracksGuestBytes(entry, excluded_ranges);
-        if (!CanActivateWin32AotAddressMapEntry(
-                *placement, entry, requested_page))
+        bool can_activate = CanActivateWin32AotAddressMapEntry(
+            *placement, entry, requested_page);
+        // Task 417: the entry this request exists to produce is allowed to span
+        // a retired page, because this image was just built from that page's
+        // current bytes. Everything else keeps the original rule.
+        if (!can_activate && entry.guest_address == guest_entry &&
+            !AotStrictSpanningEntryEnabled() &&
+            !EntrySpansQuarantinedPage(*placement, entry))
+        {
+            can_activate = true;
+            ++AotSpanningEntryActivationCount();
+        }
+        if (!can_activate)
         {
             image_active[index] = false;
             image.bytes[entry.cache_offset] = 0xCCU;
@@ -1668,8 +1801,20 @@ bool PatchWin32AotIndirectInlineCache(
                 static_cast<unsigned>(selected->entries.size()),
                 static_cast<unsigned>(chosen_entry), bytes[guard_offset]);
     }
+    // Task 413: the three writes below span the chosen entry's immediate, its
+    // jump displacement, and its six-byte guard, so the window is the pages
+    // those cover rather than all 16 MB.
+    const std::uint32_t patch_first_offset =
+        std::min({immediate_offset, displacement_offset, guard_offset});
+    const std::uint32_t patch_last_offset = std::max(
+        {immediate_offset + static_cast<std::uint32_t>(sizeof(guest_target)),
+         displacement_offset + 4U,
+         guard_offset + 6U});
+    const AotCachePatchWindow patch_window =
+        ComputeAotCachePatchWindow(*placement, patch_first_offset,
+                                   patch_last_offset);
     DWORD old_protection = 0;
-    if (VirtualProtect(cache, placement->capacity, PAGE_READWRITE,
+    if (VirtualProtect(patch_window.base, patch_window.size, PAGE_READWRITE,
                        &old_protection) == 0)
     {
         result->windows_error = GetLastError();
@@ -1686,8 +1831,8 @@ bool PatchWin32AotIndirectInlineCache(
         relative > std::numeric_limits<std::int32_t>::max())
     {
         DWORD ignored = 0;
-        VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ,
-                       &ignored);
+        VirtualProtect(patch_window.base, patch_window.size,
+                       PAGE_EXECUTE_READ, &ignored);
         result->message = "AOT inline-cache target is outside rel32 range";
         return true;
     }
@@ -1701,8 +1846,8 @@ bool PatchWin32AotIndirectInlineCache(
     std::memcpy(bytes + guard_offset + 2U,
                 &miss_displacement, sizeof(miss_displacement));
     DWORD ignored = 0;
-    if (VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ,
-                       &ignored) == 0)
+    if (VirtualProtect(patch_window.base, patch_window.size,
+                       PAGE_EXECUTE_READ, &ignored) == 0)
     {
         result->windows_error = GetLastError();
         result->message = "failed to restore AOT inline-cache RX protection";

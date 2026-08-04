@@ -1,4 +1,5 @@
 #include "aot_runtime_dispatch.h"
+#include "aot_generation_failure_policy.h"
 #include "aot_dbt_glide_gate_dispatch.h"
 #include "aot_dbt_direct_edge_dispatch.h"
 
@@ -14,6 +15,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -755,6 +757,69 @@ bool RequestAotInlineCachePatch(ThreadContext* context,
     return context->aot_inline_cache_patch_result.patched;
 }
 
+// Task 415. A failed re-translation used to quarantine the entry's whole page
+// permanently, which drops every other routine on that page to single-stepping:
+// pumpit3's one failure per run (`0x0301DFFE`, page `0x0301D000`) left 74% of
+// re-entries rejected and 473,674 single steps. What failed is one entry, and it
+// failed because its instruction straddles a page boundary into a retired
+// neighbour. Remembering the address is enough to stop the retry storm that
+// quarantine existed to prevent. Guest-thread only, so no locking, and kept in
+// this translation unit so no widely included header changes.
+// See docs/design/20260804-415-generation-failure-address-scope.md.
+namespace
+{
+
+constexpr std::size_t kAotGenerationFailureAddressCapacity = 256U;
+
+std::vector<std::uint32_t>& AotGenerationFailureAddresses()
+{
+    static std::vector<std::uint32_t> addresses;
+    return addresses;
+}
+
+bool AotQuarantineOnGenerationFailureEnabled()
+{
+    static const bool enabled = [] {
+        const char* value =
+            std::getenv("REPIU_AOT_QUARANTINE_ON_GENERATION_FAILURE");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+bool HasAotGenerationFailureAddress(std::uint32_t address)
+{
+    const std::vector<std::uint32_t>& addresses =
+        AotGenerationFailureAddresses();
+    return std::find(addresses.begin(), addresses.end(), address) !=
+        addresses.end();
+}
+
+}  // namespace
+
+std::uint32_t AotGenerationFailureAddressCount()
+{
+    return static_cast<std::uint32_t>(AotGenerationFailureAddresses().size());
+}
+
+std::uint32_t& AotGenerationFailureSkipCount()
+{
+    static std::uint32_t count = 0;
+    return count;
+}
+
+std::uint32_t& AotGenerationFailureQuarantineCount()
+{
+    static std::uint32_t count = 0;
+    return count;
+}
+
+std::uint32_t& AotSpanningEntryActivationCount()
+{
+    static std::uint32_t count = 0;
+    return count;
+}
+
 bool RequestAotGuestPageRetirement(ThreadContext* context,
                                    std::uint32_t guest_page,
                                    bool quarantine)
@@ -939,6 +1004,18 @@ bool ResolveAotTransferTarget(ThreadContext* context,
     const bool retired_target = force_generation ||
         IsWin32AotGuestPageRetired(*context->aot_placement, target) ||
         HasWin32AotRetiredGuestAddress(*context->aot_placement, target);
+    // Task 415: an address whose generation already failed is never attempted
+    // again. This is the property quarantine was providing -- no retry storm --
+    // without taking the rest of the page down with it.
+    if (retired_target && HasAotGenerationFailureAddress(target))
+    {
+        ++AotGenerationFailureSkipCount();
+        if (retired_resolution != nullptr)
+        {
+            *retired_resolution = AotRetiredTrapResolution::kGenerationFailure;
+        }
+        return false;
+    }
     std::uint32_t dynamic_cache_entry = 0;
     std::uint32_t dynamic_added_bytes = 0;
     const bool dynamic_translation =
@@ -973,10 +1050,28 @@ bool ResolveAotTransferTarget(ThreadContext* context,
             context->aot_generation_failure_count.fetch_add(
                 1, std::memory_order_relaxed);
             bool quarantined = false;
-            if (!context->aot_terminal_failure.load(
-                    std::memory_order_acquire) &&
-                RequestAotGuestPageRetirement(context, target, true))
+            // Task 415: remember the address instead of quarantining its page.
+            // The page keeps serving every other entry from the cache, and the
+            // skip above makes sure this address is never retried. The old
+            // behaviour returns when the switch is set, or when failures spread
+            // wider than this policy was designed for.
+            std::vector<std::uint32_t>& failures =
+                AotGenerationFailureAddresses();
+            const bool fall_back_to_quarantine =
+                AotQuarantineOnGenerationFailureEnabled() ||
+                failures.size() >= kAotGenerationFailureAddressCapacity;
+            if (!fall_back_to_quarantine)
             {
+                if (!HasAotGenerationFailureAddress(target))
+                {
+                    failures.push_back(target);
+                }
+            }
+            else if (!context->aot_terminal_failure.load(
+                         std::memory_order_acquire) &&
+                     RequestAotGuestPageRetirement(context, target, true))
+            {
+                ++AotGenerationFailureQuarantineCount();
                 BumpAotQuarantineCount(context);
                 quarantined = true;
             }

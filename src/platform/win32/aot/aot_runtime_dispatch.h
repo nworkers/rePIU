@@ -91,6 +91,10 @@ bool RequestAotGuestPageRetirement(ThreadContext* context,
                                    std::uint32_t guest_page,
                                    bool quarantine);
 
+// Task 415's generation-failure policy counters live in
+// aot/aot_generation_failure_policy.h, which carries no ThreadContext
+// dependency so the host can read them.
+
 std::uint32_t AotGuestAddressForExecutionAddress(
     const ThreadContext* context,
     std::uint32_t execution_address);

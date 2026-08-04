@@ -877,6 +877,10 @@ struct ThreadContext
     std::uint32_t veh_single_step_run_max = 0;
     std::unique_ptr<Win32SingleStepHotspotProfile>
         single_step_hotspot_profile;
+    // Task 411: filled by the poll thread around its SuspendThread of the guest
+    // thread and read only after that thread has stopped, so it needs no
+    // synchronisation of its own. Allocated only when the census is enabled.
+    std::unique_ptr<Win32GuestPositionCensus> guest_position_census;
     // Task 323: the cycle scope owned by the current HandleSingleStepTrace
     // invocation, so regions measured in other translation units (the
     // TryResumeAotAfterHandledHle sub-stages) can attribute into the same

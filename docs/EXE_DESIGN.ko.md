@@ -292,6 +292,42 @@ segment-override site는 `ThreadContext::guest_*` shadow selector를 guard하고
 native 경로를 사용합니다. 같은 selector의 base/limit/flags가 DPMI로 변경되는 경우도
 새 descriptor fingerprint로 site를 재해석합니다.
 
+## pumpit3 타이머 ISR과 슬롯 콜백 표 (확인됨, Task 411)
+
+`pumpit3`의 INT 8 핸들러는 **슬롯 표를 순회하는 구조**입니다. 주소는 실행 기준
+(arena base `0x03000000`)이며 `repiu_aot_probe` 인자는 `-0x02000000`입니다.
+
+| 주소 | 역할 |
+|---|---|
+| `0x0301F7B4` | ISR 진입. `pushad`/`push ds,es,fs,gs` → `cli` |
+| `0x0301F7CE`~`0x0301F818` | 슬롯 순회. stride `0x18`, 종료 조건 `edx == 0x78`(슬롯 5개) |
+| `0x0301F7EE` | `call dword [eax+0x0143ECA4]` — **슬롯 콜백 호출** |
+| `0x0301F827` | `call far [0x0143ED08]` — 이전 INT 8 핸들러 체인 |
+| `0x0301F851` | `out dx,al`(`al=0x20`) PIC EOI → `sti` → 복원 → `iret` |
+| `0x0301F718` | `RegisterTimerSlot(eax=슬롯 index, edx=콜백)`. `[slot+0xA4]=콜백`, `[slot+0x94]=0xB6` |
+| `0x0301F85C` | 슬롯 표 초기화 |
+
+슬롯 하나의 필드는 `[+0x90]` 사용 여부, `[+0x94]` rate, `[+0x98]` 잠금, `[+0x9C]`
+증분, `[+0xA0]` 누산기, `[+0xA4]` 콜백이며, 누산기가 `0x10000`을 넘으면 콜백을 부르고
+`0x10000`을 뺍니다. 즉 **고정소수점 분주기**입니다.
+
+슬롯 0의 콜백은 `0x03010BA4`이고 부팅 초기에
+`ParseStageCfg("stage.cfg")` 직후 `RegisterTimerSlot(0, 0x03010BA4)`로 등록됩니다
+(콜백은 EDX에 실려 두 호출을 건너 보존됩니다). 등록 직후 `push 0x00000000` /
+`push 0x406E0000`(double `240.0`) 뒤 `0x0301F6B4`을 부르므로 **슬롯 0의 프로그램된
+주기는 240 Hz**입니다. 60초 실행에서 콜백 진입이 13,173회(약 220 Hz)로 관측된 것은
+Task 366이 측정한 tick 손실 11.9%와 같은 크기입니다. 이 콜백은 카운터
+`0x03183A30`/`0x03183A34`/`0x03183A38`을 증가시킨 뒤 `0x03010BCF`에서
+**지연 루틴 `0x0301DB10`**을 부릅니다.
+
+지연 루틴은 `mov ecx,0x02A8` → `in ax,dx` → `cmp ebx,0xC8` → `jl`의 **200회 포트
+폴링**이고, 이어서 `[0x030F9028]` 카운터를 mod 4로 나눠 `0x0301DB00`의 4항 점프
+테이블(`0x0301DB4D`/`0x0301DF8E`/`0x0301D3E3`/`0x0301E816`)로 분기합니다. 각 분기는
+포트 `0x02A4`/`0x02A6`/`0x02A8`에 쓰는 멀티플렉스 출력입니다.
+
+**이것이 Tasks 405~410이 port I/O 비용의 85.9~97.2%로 지목한 `0x0301DB22`의 정체이며,
+그 코드는 타이머 tick마다 실행됩니다.**
+
 ## pumpit2 실행 파일 확인
 
 `pumpit2` CHD에서 공용 멀티세션 ISO mount로 추출한 `PIU.EXE`는 1,729,538

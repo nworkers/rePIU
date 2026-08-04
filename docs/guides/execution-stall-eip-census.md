@@ -61,6 +61,60 @@ dump 파일 형식은 표본 수 내림차순 한 줄에 한 주소입니다.
 `Relocated exception byte base`와 byte window로 확인한 object delta를 씁니다.
 pumpit3 object 2의 delta는 `0x02FF4E00`입니다(guest = file + delta).
 
+## 4b. 캐시 실행까지 보려면 — 게스트 위치 census (Task 411)
+
+위 census는 single-step 경계에서만 표본하므로 **예외 없이 AOT 캐시에서 도는 대기
+루프를 보지 못합니다.** 그 경우 시간 기준 census를 씁니다.
+
+```
+set REPIU_EXECUTION_BACKEND=aot-dbt
+set REPIU_EXECUTION_TIMEOUT_MS=60000
+set REPIU_GUEST_POSITION_CENSUS=1
+set REPIU_GUEST_POSITION_CENSUS_MS=10
+set REPIU_GUEST_POSITION_CENSUS_DUMP=build\guest_position_census.txt
+cmd /c "build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit3 > run.txt 2>&1"
+```
+
+반복 실행과 멈춤/정상 판정은 `scripts/task411_guest_position_census.ps1`이 자동으로
+합니다(EEPROM 실행별 격리 포함).
+
+읽는 줄:
+
+```
+Win32 guest position census enabled/total/distinct/overflow/capture-failures/interval-ms:
+Win32 guest position origin arena/cache-mapped/cache-unmapped/host/sum-matches-total:
+Win32 guest position top #N address/count/share/arena/cache/cache-unmapped/host:
+```
+
+**두 검산을 먼저 봅니다.** `sum-matches-total`이 `true`가 아니거나 `overflow`가 0이
+아니면 분포로 읽지 않습니다.
+
+| 관측 | 해석 |
+|---|---|
+| 상위 주소가 한 함수 범위에 모임 | 그 함수가 대기 루프. `repiu_aot_probe --dump`(주소 `-0x02000000`)로 탈출 조건 확인 |
+| 상위가 지연 루프(`0x0301DB1F`~`0x0301DB2A`)뿐 | 타이머 ISR만 본 것. 간격을 tick 주기와 서로소로 바꿔 재측정 |
+| `host` 비중이 지배적 | 게스트가 아니라 호스트에서 대기 중 |
+
+host 표본이 많으면 **Task 412가 더한 세 줄**을 이어서 읽습니다.
+
+```
+Win32 guest position thread time valid/kernel-ms/user-ms/wall-ms/cpu-share:
+Win32 guest position host scan samples/sited/no-site/failed/distinct/overflow/parts-match:
+Win32 guest position host site #N address/count/share-of-sited/module/offset/symbol:
+```
+
+| 관측 | 해석 |
+|---|---|
+| `cpu-share` ≥ 90% | **바쁨.** host 시간은 커널 예외 dispatch. 축은 예외 가격·횟수 |
+| `cpu-share` ≤ 50% | **막힘.** 축은 대기 지점이며 `host site`가 그 지점을 가리킴 |
+| `parts-match`가 false | 스캔 계상이 깨진 것. **분포로 읽지 않습니다** |
+| `no-site` 비중이 큼 | 그 표본들의 `ESP`가 로더 스택이 아님(게스트 스택 위 예외). 그 자체가 자료 |
+| `host site`가 흩어짐 | 얕은 훑기의 한계. 정식 스택 워크나 사이트별 scope 계측으로 넘어감 |
+
+**이 census를 켠 실행의 wall·프레임은 인용하지 않습니다**(suspend/resume 비용이 붙음).
+`REPIU_NATIVE_SAMPLING`의 `[repiu-sample]` 줄과 혼동하지 마십시오 — 그쪽은 예외
+dispatch가 1초간 조용해야 발화하므로 멈춘 실행에서는 나오지 않습니다.
+
 ## 5. 한계 (해석 시 반드시 고려)
 
 이 census는 **single-step 경계에서만** 표본을 남깁니다. AOT cache 안에서 트랩 없이
@@ -137,6 +191,35 @@ The dump lists one address per line, ordered by sample count descending.
 To convert a guest address to a file offset, use the object delta confirmed from the log's
 `Relocated exception byte base` and byte window. For pumpit3 object 2 the delta is
 `0x02FF4E00` (guest = file + delta).
+
+## 4b. To see cache execution too — the guest position census (Task 411)
+
+The census above samples only at single-step boundaries, so **a wait loop running in the
+AOT cache without faulting is invisible to it**. For that case use the time-based census:
+set `REPIU_GUEST_POSITION_CENSUS=1`, optionally `REPIU_GUEST_POSITION_CENSUS_MS` (default
+10) and `REPIU_GUEST_POSITION_CENSUS_DUMP`, and run through `cmd /c` as above.
+`scripts/task411_guest_position_census.ps1` repeats the runs, isolates the EEPROM per run,
+and classifies each run stalled or healthy.
+
+Read the three log lines `Win32 guest position census …`, `Win32 guest position origin …`,
+and `Win32 guest position top #N …`. **Check the two gates first**: if
+`sum-matches-total` is not `true`, or `overflow` is not zero, the table is not read as a
+distribution. Top addresses clustered in one function name the wait loop, and
+`repiu_aot_probe --dump` at `address - 0x02000000` settles its exit condition; a top made
+only of the delay loop `0x0301DB1F`-`0x0301DB2A` means the sampler is seeing the timer ISR
+and the interval must be changed to something coprime with the tick; a dominant `host`
+share means the wait is on our side. When the host share is large, read Task 412's three
+extra lines next — thread time, host scan, and host sites. A `cpu-share` at or above 90%
+means **busy** in kernel exception dispatch and moves the axis to exception price and
+count; at or below 50% it means **blocked**, and the host sites name where. A false
+`parts-match` means the scan accounting broke and the distribution is not read at all; a
+large `no-site` share means those samples' `ESP` was not the loader stack (an exception
+taken on the guest stack), which is itself evidence; and scattered host sites mean the
+shallow scan has reached its limit, so the next step is a real stack walk or per-site
+scopes rather than a conclusion. **Runs with this census enabled are not quotable for
+wall time or frames.** Do not confuse it with `REPIU_NATIVE_SAMPLING`'s `[repiu-sample]`
+lines, which require a full second with no exception dispatch and therefore never appear in
+a stalled run.
 
 ## 5. Limits (always apply when interpreting)
 

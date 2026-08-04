@@ -1404,6 +1404,121 @@ the ranking, and the top 32 covered 67.21%, below the 80% gate for generating on
 exception-free loop. The next single-step task must first separate hot-HLE dispatch/decode
 work from the exception-transition cost outside this scope.
 
+## 포트 I/O 지연 루프 batching / Port I/O delay-loop batching
+
+Task 414는 **결과를 쓰지 않는 포트 폴링 루프**를 인식해 반복을 건너뜁니다. pumpit3의
+타이머 ISR은 tick(240 Hz)마다 `inc r; sub eax,eax; in ax,dx; cmp r,imm; jl` 루프를 200회
+돌고, 루프 종료 직후 `mov eax,[...]`가 EAX를 덮어씁니다. 즉 읽은 값은 **한 번도 쓰이지
+않는** 순수 지연이며, 우리에겐 반복마다 CPU fault 1회입니다.
+
+```mermaid
+flowchart LR
+    F["in ax,dx → fault"] --> E["기존 포트 emulate"]
+    E --> M{"루프 모양 일치?"}
+    M -->|아니오| R["예전 경로 그대로"]
+    M -->|예| C["카운터 := limit - step"]
+    C --> G["게스트가 마지막 반복 1회를 직접 실행"]
+    G --> X["cmp/jcc가 자연스럽게 종료"]
+```
+
+* **레지스터 하나만 씁니다.** EIP·EFLAGS·EAX·EDX를 만들지 않으므로 종료 상태가 원래
+  실행과 같고, 플래그 합성의 등가성을 증명할 필요가 없습니다.
+* 일치 조건: `IN` 뒤가 `cmp r32, imm` + **뒤로 가는 signed 조건 분기**, 본문은
+  `inc`/`dec`/자기 0화(`sub r,r`·`xor r,r`)뿐, 본문이 `IN` 앞에서 EAX를 0으로 만들 것
+  (**건너뛰는 읽기가 죽은 값이라는 증명**), 카운터가 EAX·EDX가 아닐 것, 남은 반복 2회
+  이상, 디코드 범위가 읽기 가능할 것. 하나라도 어긋나면 **아무 상태도 바꾸지 않습니다.**
+* **부수 효과 없는 입력 경로에서만** 시도합니다(JAMMA 입력). EEPROM·YMZ280B 창은 앞선
+  분기에서 처리되므로 대상이 아닙니다.
+* `REPIU_PORT_IO_DELAY_LOOP=0`이면 예전 동작이며, 통계(시도·batch·건너뛴 반복·불일치
+  사유)를 로그로 냅니다.
+
+Task 414 recognises a **port polling loop whose result is never used** and skips its
+iterations. pumpit3's timer ISR runs `inc r; sub eax,eax; in ax,dx; cmp r,imm; jl` 200 times
+per 240 Hz tick and overwrites EAX immediately after the loop, so the reads are a pure delay
+that cost us one CPU fault each. On a match the handler writes **one register** — the
+counter — so the guest executes its own final iteration and the exit state is identical
+without synthesising flags. The match requires `cmp r32, imm` plus a backward signed branch
+after the `IN`, a body of only `inc`, `dec`, or self-zeroing `sub`/`xor`, that body zeroing
+EAX before the `IN` (**the proof that skipped reads are dead**), a counter that is neither
+EAX nor EDX, at least two iterations remaining, and readable bytes; any mismatch changes
+nothing. It is attempted **only on the side-effect-free JAMMA input path**, since the EEPROM
+and YMZ280B windows are handled by earlier branches. `REPIU_PORT_IO_DELAY_LOOP=0` restores
+the old behaviour, and the attempt, batch, skipped-iteration, and refusal-reason counts are
+logged.
+
+## 게스트 위치 census / Guest position census
+
+Task 411은 기본 OFF인 `REPIU_GUEST_POSITION_CENSUS=1|on|true` 계측을 추가합니다.
+위 single-step 핫스팟 계측과 목적이 다릅니다 — **표본 시점이 예외에 묶여 있지
+않습니다.** poll thread가 `REPIU_GUEST_POSITION_CENSUS_MS`(기본 10, 1~1000으로 clamp)
+간격마다 게스트 스레드를 정지시켜 EIP를 읽고, 4,096-slot open-addressing table에
+누적합니다.
+
+```mermaid
+flowchart LR
+    P["poll thread<br/>간격 만료"] --> S["SuspendThread<br/>GetThreadContext"]
+    S --> M{"EIP 위치"}
+    M -->|"cache 범위"| G["FindAotGuestAddress<br/>→ guest 주소"]
+    M -->|"arena 범위"| A["guest 주소 그대로"]
+    M -->|"그 외"| H["host 주소"]
+    G --> T["주소별 histogram + origin"]
+    A --> T
+    H --> T
+    T --> D["종료 시 상위 16 로그 + 전체 덤프"]
+```
+
+* 캡처는 기존 `CaptureWin32NativePhaseSample`을 재사용하며, suspend와 resume 사이에서
+  할당·락·I/O를 하지 않습니다. 역매핑은 EIP가 캐시 범위일 때만 수행합니다 — 번역
+  worker는 게스트 스레드가 자신을 기다릴 때만 placement를 바꾸므로 그때 address map은
+  안정입니다.
+* `origin`(arena / cache-mapped / cache-unmapped / host)별 합계를 따로 세어
+  **`합 == total` 검산**을 로그에 함께 출력합니다. 검산이 깨지면 분포로 읽지 않습니다.
+* 캐시 표본은 게스트 주소로 접혀 arena 표본과 같은 축에서 합산되므로, 같은 게스트
+  코드가 두 실행 방식으로 나뉘어도 한 줄로 보입니다.
+* 기존 `REPIU_NATIVE_SAMPLING` 표본기는 **예외 dispatch가 1초간 조용해야** 발화하므로
+  멈춘 실행에서는 한 번도 동작하지 않습니다. 이 census는 그 게이트를 쓰지 않습니다.
+* census를 켠 실행은 suspend/resume 비용이 붙으므로 **wall·프레임을 인용하지
+  않습니다.**
+
+Task 412는 여기에 **host 시간 귀속**을 더합니다.
+
+* **스레드 CPU 시간** — 표본마다 `GetThreadTimes`를 읽어 kernel/user 시간과 wall을
+  함께 보고합니다. host 표본이 많을 때 **"커널에서 바쁨"과 "어딘가에서 막힘"을 가르는
+  단일 판정**입니다.
+* **host 호출 지점** — 표본이 host이면 정지 상태에서 `ESP`부터 최대 64 dword를 훑어
+  **로더 모듈 범위 안의 첫 값**을 별도 표(1,024 slot)에 누적합니다. 프레임 체인을
+  신뢰하지 않는 후보 탐색이므로 **정식 스택 워크가 아니며**, 상위 몇 개를 분포로
+  읽습니다. 읽기는 C++ 객체 없는 함수에서 SEH로 감싸고, 결과는
+  `sited`/`no-site`/`failed` 셋 중 정확히 하나로 계상되어 **합이 host 표본 수와 같아야
+  합니다.**
+* **모듈·심볼** — 종료 후 `GetModuleHandleExA`로 모듈을, `dbghelp`로 함수명을
+  해석합니다. Release는 `/Zi` + `/DEBUG`로 PDB를 만들되 **최적화 플래그는 그대로**라
+  코드 생성은 바뀌지 않습니다. 심볼이 없으면 `모듈+offset`으로 물러섭니다.
+
+Task 412 adds **host-time attribution** on top: `GetThreadTimes` per sample, reported
+against wall clock, is the single split between "busy in the kernel" and "blocked
+somewhere"; host samples also get a shallow scan of up to 64 dwords from `ESP` for the
+first value inside the loader's image, accumulated in a separate 1,024-entry table — a
+candidate search rather than a stack walk, read as a distribution, wrapped in SEH inside a
+function with no C++ objects, and counted as exactly one of `sited`, `no-site`, or `failed`
+so the three must sum to the host sample count. Modules are resolved with
+`GetModuleHandleExA` and symbols with `dbghelp` after the run; Release now carries `/Zi`
+and `/DEBUG` for the PDB while **keeping every optimisation flag**, so code generation is
+unchanged and a missing symbol degrades to `module+offset`.
+
+Task 411 adds an opt-in `REPIU_GUEST_POSITION_CENSUS` census whose sampling instant is
+**not tied to an exception**, unlike the single-step hotspot profile above. The poll thread
+suspends the guest thread every `REPIU_GUEST_POSITION_CENSUS_MS` milliseconds (default 10,
+clamped to 1-1000), reads EIP, and accumulates it in a 4,096-slot open-addressing table.
+Capture reuses `CaptureWin32NativePhaseSample` and allocates, locks, and performs no I/O
+between suspend and resume; the reverse map runs only for cache-range addresses, where the
+translation worker cannot be mutating the placement. Per-origin totals (arena, cache-mapped,
+cache-unmapped, host) are counted separately so the log can print the **`sum == total`**
+check, and cache samples fold onto their guest address so one guest location reads as one
+row regardless of where it executed. The existing `REPIU_NATIVE_SAMPLING` sampler requires
+a full second with no exception dispatch and therefore never fires in a stalled run; this
+census uses no such gate. Runs with it enabled are not quotable for wall time or frames.
+
 ## AOT back-edge 타이머 safe point / AOT back-edge timer safe point
 
 Task 348은 자연 VEH 경계가 없는 AOT busy-wait에서도 원본 INT 8 ISR을 계속 실행하기

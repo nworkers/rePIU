@@ -9,6 +9,68 @@
 관련 축은 [현재 실행 frontier](current-execution-frontier.md)와
 [pumpit3 bring-up](pumpit3-bring-up.md)에 있습니다.
 
+## 해소됨 (Task 414 + Task 417, 2026-08-04) — 원인은 **둘**이었습니다
+
+| 시점 | 정상 실행(60초) | 프레임 |
+|---|---|---|
+| 세션 시작 | **11회 중 0회** | 0~1 |
+| Task 414(지연 루프 batching) | 15회 중 13회 | 1,378~1,497 |
+| **Task 417**(걸친 요청 항목 활성화) | **8회 중 8회** | 1,018~1,416 |
+
+두 원인은 독립입니다. **(1) 포화** — tick마다 결과를 버리는 포트 읽기 200회가 fault
+200회였습니다(아래 §Task 414). **(2) arena 낙하** — 요청 항목 `0x0301DFFE`가 retired
+이웃 페이지로 4바이트 걸쳐 재번역이 거부되면서 실행이 arena로 떨어지고 복귀 예약이
+서지 않아 두 페이지를 2.36M회 single-step했습니다. 요청 항목만 활성화 규칙을 완화하자
+**세대 실패 자체가 사라졌습니다**(`generation failure addresses` 0).
+A/B: strict 5회 중 2회 멈춤 대 relaxed **8회 중 0회**, pumpit1 회귀 없음(2,848).
+전문: [Task 417 로그](../work-logs/20260804-417-spanning-entry-activation.md).
+
+## Task 414 상세 — 지연 루프 batching
+
+게스트는 tick(240 Hz)마다 **결과를 버리는 포트 읽기를 200번** 하고, 우리는 그 200번마다
+CPU fault를 냈습니다. `IN`을 emulate한 뒤 루프 카운터를 마지막 반복 직전으로 전진시켜
+**200회를 2회로** 줄이자 pumpit3가 다시 그립니다.
+
+| 조건 | 정상 실행 | 프레임(60초) |
+|---|---|---|
+| batching 끔(`REPIU_PORT_IO_DELAY_LOOP=0`) | **14회 중 0회** | 0~1 |
+| batching 켬(기본값) | **7회 중 6회** | 803 · 1,378 · 1,381 · 1,385 · 1,396 · 1,425 |
+
+pumpit1 회귀 없음(2,865 대 2,735, batch 0회 — 그 타이틀엔 패턴이 없음).
+전문은 [Task 414 작업 로그](../work-logs/20260804-414-port-io-delay-loop-batching.md).
+
+**남은 멈춤 (Task 416 전수 census로 확정):** 오늘 남은 재현율은 약 **15회 중 2회**이고,
+기전은 **번역 실패 항목이 실행을 arena에 떨어뜨린 뒤 캐시로 돌아갈 길이 없는 것**입니다.
+
+```mermaid
+flowchart TD
+    R["페이지 0x0301E000 retired"] --> F["요청 항목 0x0301DFFE 재번역 실패<br/>(명령이 페이지 경계를 넘음)"]
+    F --> S["Task 415: 그 주소만 억제 → arena fallback"]
+    S --> A["게스트가 arena에서 single-step 시작"]
+    A --> N["재진입은 aot_reentry_pending이 없어 거부<br/>not-pending 550,688 대 success 90,106"]
+    N --> L["0x0301D000·0x0301E000 두 페이지를 계속 stepping<br/>2.36M 표본의 86%"]
+    style N fill:#c0392b,color:#fff
+```
+
+| 지표 | 정상(run-01) | 멈춤(run-03) |
+|---|---:|---:|
+| 세대 실패 | 1회(같은 주소) | 1회(같은 주소) |
+| 그 주소 **실행 여부**(skips) | **0** | **1** |
+| 재진입 `not-pending` | **0** | **550,688** |
+| 재진입 success | 150,629 | 90,106 |
+| single-step | 23,881 | **2,358,334** |
+| publishes | 206 | 72 |
+
+**두 실행 모두 같은 번역 실패를 겪습니다. 갈림은 게스트가 그 주소를 실제로 밟느냐
+하나입니다.** 밟으면 arena로 떨어지고, 그 뒤로는 복귀 예약이 서지 않아 나오지
+못합니다.
+
+**정정:** 이전 판(Task 415 로그)에서 `last_eip` 표본 15개를 근거로 "여러 함수에
+흩어져 있다 = 전역 trace 모드"라고 적었으나, **전수 census가 반증**했습니다. 실제로는
+`0x0301E000` 51.6%(710 주소) + `0x0301D000` 34.7%(283 주소)로 **두 인접 페이지에
+86%가 몰려 있습니다.** 나머지는 그 코드를 부르는 ISR 경로(`0x0301F000` 4.6%,
+`0x03010000` 5.4%)입니다.
+
 ## 요약
 
 같은 빌드(v0.0.128)로 45초 7회, 240초 4회, 60초 6회 = **총 17회**를 측정해 **5회를
@@ -107,6 +169,95 @@ hs5도 같은 분포입니다(1.74M 대역). 격리된 페이지만 single-step�
 | `0x030D1D8A` | 11,484 | 0 | |
 | `0x030D4975`, `0x030D235A`, `0x030D1B6E` | 각 3,828 | 0 | |
 
+## 확인됨 7 (Task 411) — 지연 루틴을 부르는 것은 **타이머 ISR**입니다 (정적, 실행 0회)
+
+확인됨 5의 13,173은 **대기 횟수가 아니라 타이머 tick 수**입니다. `repiu_aot_probe`의
+`--xref`/`--dump`만으로 실행 없이 확정했습니다(주소는 실행 기준, 프로브 인자는
+`-0x02000000`).
+
+```mermaid
+flowchart TD
+    T["INT 8 주입"] --> I["게스트 ISR 0x0301F7B4"]
+    I --> S["슬롯 5개 순회 0x0301F7CE~0x0301F818"]
+    S -->|"call [slot+0x0143ECA4]"| C["슬롯 0 콜백 0x03010BA4"]
+    C -->|"call at 0x03010BCF — 유일 호출처"| D["지연 루틴 0x0301DB10<br/>in ax,dx × 200 (port 0x02A8)"]
+    S --> E["0x0301F851 PIC EOI · iret"]
+    style D fill:#c0392b,color:#fff
+```
+
+| 확인 | 근거 |
+|---|---|
+| 지연 루틴의 호출처는 **하나** | `--xref 0x0101DB10` → `xref_call=0x1010bcf` 1건, `xref_abs` **0건**(간접 호출 불가) |
+| 그 루틴은 200회 포트 폴링 | `mov ecx,0x2A8` → `in ax,dx` → `cmp ebx,0xC8` → `jl`. Task 405의 `0x0301DB22`가 그 `in` |
+| 호출자는 타이머 슬롯 0 콜백 | `0x03010BA4`의 주소는 이미지에서 두 곳에서만 만들어지고, 둘 다 `mov edx` 후 `RegisterTimerSlot`(`0x0301F718`)까지 EDX가 보존되어 `[slot+0x0143ECA4]`에 저장됨. ISR이 `call dword [eax+0x0143ECA4]`(`0x0301F7EE`)로 호출 |
+| `stage.cfg` 파서는 유한 | `0x03019910` = `fopen(name,"rt")` → `fgets` → `strtok(" \n\r\t")` → `SONG`/`TRACK`/`OFFSET` 비교 → EOF에서 `fclose` 후 1 반환 |
+
+hs4는 60초 실행이므로 13,173은 약 **220 Hz**이고, 슬롯 rate(`[slot+0x94]=0xB6`)와 ISR
+누산기(`+= [slot+0x9C]`, `>= 0x10000`에서 발화) 구조와 맞습니다.
+
+**따라서 멈춘 동안에도 타이머 인터럽트와 그 핸들러는 정상 동작합니다.** 지연 루프의
+1.7M 표본은 대기 루프가 아니라 **ISR이 만드는 배경 잡음**이며, 이전 "다음 대상 1"
+(복귀 주소 기록)의 전제는 **반증**됐습니다. 남은 질문은 그대로입니다 — **멈춘 동안
+주 실행 흐름은 어디에 있는가.**
+
+## 확인됨 8 (Task 411) — 멈춘 동안 게스트는 **거의 실행되지 않습니다**
+
+시간 기준 [게스트 위치 census](../guides/execution-stall-eip-census.md#4b)로 측정했습니다
+(2026-08-04, 11회 실행 전부 멈춤 · 검산 `sum == total` true, `overflow` 0).
+
+| 축 | 값(120초 실행) |
+|---|---|
+| origin | arena 137 / cache-mapped 292 / cache-unmapped 0 / **host 2,475(85.2%)** |
+| 최다 단일 주소 | `0x77BE33AC` 1,626(**전체의 56.0%**) — WOW64 32비트 `ntdll` 대역 |
+| 게스트 쪽 최다 | `0x0301DB24`/`0x0301DB22` = **ISR 지연 루프**(arena) |
+
+**60초와 240초를 비교하면 진행이 없다는 것이 직접 보입니다.** 지연 루프 표본만 4배가
+되고 나머지는 그대로이며 path trace는 6개로 같습니다.
+
+| 주소 | 성격 | 60초 | 240초 |
+|---|---|---:|---:|
+| `0x0301DB24` / `0x0301DB22` | ISR 지연 루프 | 102 / 72 | **402 / 289** |
+| `0x03021F3A` | 비트스트림 리더(cache) | 32 | **32** |
+| `0x0302203C` / `0x030220CE` | 〃 | 18 / 16 | 22 / 9 |
+
+**항등식 — 포트 I/O는 전부 ISR이 만듭니다.** port I/O 예외 ÷ INT 8 주입이
+459,999 ÷ 2,275 = **202.2**(240초), 88,214 ÷ 451 = **195.6**(120초)로 지연 루프의 200회와
+같습니다. 주입 1회당 루프 1회입니다.
+
+**tick을 소화하지 못합니다.** 120초에서 due 2,787 / injected 451 / coalesced 1,681 /
+dropped 654입니다.
+
+**cycle은 예외 처리로 소진됩니다.** guest-run 126.4 G 중 VEH gap 94.6 G(74.9%) + VEH
+본체 31.5 G(24.9%)로 합이 사실상 100%이고, gap의 최대 인구는 port I/O가 아니라
+**breakpoint 78.3 G(62.0%)**, 1건당 평균 **2,280,636 cycle**입니다.
+
+**추정(미확정):** 멈춤은 대기 루프가 아니라 **포화**입니다. `stage.cfg` 직후가 늘
+정지 지점인 것은 **240 Hz 슬롯이 바로 거기서 등록**되기 때문이며, 그 순간부터 tick마다
+200회 포트 fault가 발생합니다. 다만 "ISR 1회가 tick 주기 4.16 ms를 넘는다"는 아직
+계산이고, 최대 인구인 breakpoint gap의 정체가 없으므로 **포화의 주된 항목은
+미확정**입니다.
+
+## 확인됨 9 (Task 412) — 스레드는 **막힌 것이 아니라 바쁩니다**
+
+[host 시간 귀속](../guides/execution-stall-eip-census.md) 계측으로 60초 실행을
+측정했습니다(검산 `sited + no-site + failed == host` 성립, overflow·capture-failure 0).
+
+* **CPU 82.42%** (kernel 25,641 ms + user 23,797 ms / wall 59,984 ms). **대기 가설
+  폐기.**
+* host 표본의 호출 지점 상위(심볼): `WriteGuestBytes+0x6D` 13.6%,
+  `FindAotCacheAddress+0x95` 12.7%, `ReResolveWin32AotSegmentOverrides`(세 항목 합)
+  약 **15.1%**, `RequestAotInlineCachePatch+0x75` 6.9%, `RefreshJammaSnapshot`(다섯 항목
+  합) 약 **10.4%**. `no-site` 31.7%는 `ESP`가 로더 스택이 아닌 표본입니다.
+* **즉 62%의 정체는 한 지점이 아니라 우리 VEH 경로 작업의 합**입니다.
+
+**멈춤에는 두 모드가 있습니다.** 격리 모드(single-step 예외 523,362, tick 주입 86%)와
+비격리 모드(single-step 300, tick 주입 23%)가 **둘 다 6개 파일에서 멈춥니다.** 지배
+비용이 모드마다 다르므로(격리는 single-step gap 44%, 비격리는 breakpoint gap 62%),
+**멈춤은 어느 한 비용에 단독 귀속되지 않습니다.**
+
+**반증됨 (Task 413) — inline-cache patch 가격은 원인이 아닙니다.** 16 MB 전체 보호를
+쓰는 페이지로 좁혀도 프레임은 양쪽 다 0~1이었습니다(healthy 0/3 대 0/3).
+
 ## 방법론 주의 — 핫스팟 덤프의 "없음"은 "실행 안 됨"이 아닙니다
 
 `Win32SingleStepHotspotProfile`은 **`HandleSingleStepTrace`가 실행될 때만** 기록합니다.
@@ -141,16 +292,17 @@ hs5도 같은 분포입니다(1.74M 대역). 격리된 페이지만 single-step�
 
 ## 다음 대상 (권장 순서)
 
-1. **격리 페이지 진입 시 복귀 주소 기록.** 지연 루틴(`0x0301DB10`) 진입 시점의 스택
-   최상단을 census에 남기면 **호출자를 직접 이름 붙일 수 있습니다.** 비용은 진입당
-   게스트 읽기 한 번이고, 이미 있는 arena 진입 census 옆에 붙일 수 있습니다.
-   히스토그램으로는 더 갈 수 없다는 것이 위 방법론 절의 결론입니다.
-2. 그 호출자가 나오면 `repiu_aot_probe --dump`로 루프 본체를 디스어셈블해 **탈출
-   조건**을 확정합니다(주소 변환은 아래 절).
-3. 조건이 나오면 그때 설계 문서를 쓰고 수정에 들어갑니다.
+~~격리 페이지 진입 시 복귀 주소 기록~~ — **확인됨 7에서 정적으로 해결됐고 전제가
+반증됐습니다.** 호출자는 타이머 ISR이므로 대기 루프가 아닙니다.
 
-**대안(해상도 낮음):** supervisor로 게스트 EIP를 주기 표본해 멈춤 전후를 비교합니다.
-도구는 이미 있으나 어느 호출자인지까지는 좁히지 못할 가능성이 큽니다.
+1. **시간 기준 게스트 위치 census(Task 411).** 기존 계측은 전부 표본 시점이 예외에
+   묶여 있어(핫스팟 census는 single-step 구간만, native phase sampler는 예외 dispatch가
+   1초간 조용해야 발화) **예외 없이 캐시에서 도는 대기 루프**를 보지 못합니다. 게스트
+   스레드를 주기적으로 정지시켜 EIP를 누적하면 그 사각지대가 사라집니다.
+   설계: [20260804-411](../design/20260804-411-stall-guest-position-census.md).
+2. 상위 주소가 한 함수에 모이면 `repiu_aot_probe --dump`로 **탈출 조건**을 확정합니다
+   (주소 변환은 아래 절).
+3. 조건이 나오면 그때 수정 설계를 씁니다.
 
 ## 주소 변환 — 프로브와 실행이 베이스가 다릅니다
 
@@ -166,11 +318,16 @@ probe_address = live_address - 0x02000000
 
 ## 미확정
 
-* **지연 루틴을 13,173회 부르는 호출자와 그 탈출 조건.** 캐시에서 실행되므로 현재
-  계측으로는 보이지 않습니다. 위 "다음 대상" 1번이 이것을 겨냥합니다.
-* **무엇이 멈춤과 통과를 가르는가.** 격리 대상·사유가 같고 예외 분류도 정상이므로
-  현재까지의 축으로는 갈리지 않습니다. `publishes`가 항상 정확히 79라는 점은 갈림이
-  **결정적 지점 하나**에서 일어남을 시사하나, 그 지점은 아직 이름이 없습니다.
+* **breakpoint 예외 뒤 평균 2.28 M cycle이 어디서 쓰이는가**(확인됨 8). census는 그
+  시간에 스레드가 `ntdll`에 있다고 말하므로 게스트 캐시 실행이 아닙니다. 후보는 AOT
+  패치 경로의 syscall(`VirtualProtect`/`FlushInstructionCache`)이며 미측정입니다.
+  다음 계측은 **host 표본에 모듈+offset과 얕은 스택**을 붙이는 것입니다.
+* **예외 1건 가격의 세션 간 차이.** Task 336의 전이 34,000 cycle 대비 이번 세션은
+  예외당 gap+본체 약 950,000 cycle입니다. 이것이 재현율 29%(08-03) → 100%(08-04)를
+  설명하는지 미확인입니다.
+* ~~지연 루틴을 13,173회 부르는 호출자~~ — 확인됨 7에서 해결(타이머 슬롯 0 콜백).
+* **무엇이 멈춤과 통과를 가르는가.** 격리 대상·사유가 같고 예외 분류도 정상입니다.
+  2026-08-04 세션에서는 `publishes`가 84~101로 흩어져 79 고정도 아니었습니다.
 * `STAGE.CFG` 파싱 직후의 MSCDEX IOCTL `0x0A`(Audio Disk Info) 응답이 게스트 기대와
   맞는지. 멈춘 실행은 이 요청을 **1회**만 보내고 정상은 4~12회 보냅니다. 다만 이것이
   원인인지 결과인지는 **미확인**입니다.
@@ -182,6 +339,33 @@ probe_address = live_address - 0x02000000
 User report (2026-08-04): **pumpit3 stalls during a run — it sometimes gets through, but
 when it stalls it is always at the same place.** The screen is black and **it never
 progresses no matter how long it is left.**
+
+## Resolved (Task 414, 2026-08-04) — it was **saturation**, and batching the delay loop ends it
+
+The guest performs **200 port reads whose results it discards** on every 240 Hz tick, and we
+raised one CPU fault for each. Advancing the loop counter after the emulated `IN` so the
+guest runs only its final iteration turns those 200 faults into two, and pumpit3 renders
+again: **zero of fourteen** healthy runs with batching off against **six of seven** with it
+on (803, 1,378, 1,381, 1,385, 1,396, 1,425 frames in 60 s). pumpit1 shows no regression
+(2,865 against 2,735 frames, with zero batches — the pattern does not exist there). Full
+account in the [Task 414 work log](../work-logs/20260804-414-port-io-delay-loop-batching.md).
+
+**What remains (settled by Task 416's full census):** about two runs in fifteen, and the
+mechanism is that **a failed translation drops execution into the arena with no way back to
+the cache**. Page `0x0301E000` is retired, the requested entry `0x0301DFFE` fails to
+re-translate because its instruction straddles into that page, Task 415 suppresses that one
+address, and execution falls back to the arena — where re-entry is refused 550,688 times for
+having nothing pending against 90,106 successes, leaving the guest stepping 2.36 M times.
+
+The healthy and stalled runs **both** hit the same translation failure; the only difference
+is whether the guest actually executes that address (skips 0 against 1), and single steps
+follow at 23,881 against 2,358,334 with publishes at 206 against 72.
+
+**Correction:** the previous entry (Task 415's log) read fifteen one-per-second `last_eip`
+samples as "scattered across many functions, so trace mode is stuck globally". The full
+census **refutes that**: `0x0301E000` holds 51.6% of samples across 710 addresses and
+`0x0301D000` another 34.7% across 283, so **86% sits on two adjacent pages**, with the rest
+on the ISR path that calls into them. Confirmed 1-9 below stay as the evidence base.
 
 ## Summary
 
@@ -230,6 +414,79 @@ Every "other" exception in the stalled runs is `0xC0000096` (privileged instruct
 with **no** divide error and no unclassified code, so this is an infinite wait inside
 normal instruction flow rather than a fault-driven detour.
 
+## Confirmed 7 (Task 411) — the delay routine's caller is the **timer ISR** (static, no runs)
+
+Confirmed 5's 13,173 is a **tick count, not a wait count**, settled with
+`repiu_aot_probe --xref` and `--dump` alone. `--xref 0x0101DB10` returns exactly one
+`xref_call=0x1010bcf` and **no** absolute references, so nothing reaches the routine
+indirectly either; the routine itself is `mov ecx,0x2A8` / `in ax,dx` / `cmp ebx,0xC8` /
+`jl`, the 200-iteration poll whose `in` is Task 405's `0x0301DB22`. Its caller
+`0x03010BA4` has its address materialised in only two places, both `mov edx, 0x03010BA4`
+before `ParseStageCfg("stage.cfg")`; that parser and the slot initialiser both **preserve
+EDX**, so the value reaches `RegisterTimerSlot` (`0x0301F718`), which stores it at
+`[slot*0x18 + 0x0143ECA4]` — the pointer the ISR calls at `0x0301F7EE`. The `stage.cfg`
+parser at `0x03019910` is an ordinary finite line parser (`fopen(name,"rt")`, `fgets`,
+`strtok` on `" \n\r\t"`, `SONG`/`TRACK`/`OFFSET`, `fclose`, return 1).
+
+Over the 60-second hs4 run 13,173 calls is about **220 Hz**, matching the slot rate at
+`[slot+0x94] = 0xB6` and the ISR accumulator that fires at `0x10000`. **So the timer
+interrupt and its handler keep working during the stall**: the 1.7 M delay-loop samples are
+background noise the ISR generates, not a wait loop, and the previous "record the return
+address" plan is **refuted at its premise**. The open question is unchanged — where is the
+main flow during the stall?
+
+## Confirmed 8 (Task 411) — during the stall the guest barely executes at all
+
+Measured with the time-based [guest position census](../guides/execution-stall-eip-census.md)
+on 2026-08-04, where **all eleven runs stalled** and every census passed its gates
+(`sum == total` true, `overflow` zero).
+
+In the 120-second run the origin split is arena 137, cache-mapped 292, cache-unmapped 0,
+and **host 2,475 (85.2%)**, with a single address — `0x77BE33AC`, **56.0% of all samples** —
+in the WOW64 32-bit `ntdll` range rather than our code. On the guest side the top entries
+are the ISR delay loop.
+
+Comparing 60 against 240 seconds shows the absence of progress directly: the delay loop
+goes 102/72 → **402/289** while the bitstream reader at `0x03021F3A` stays at **32** and its
+neighbours barely move, with DOS path traces stuck at six either way.
+
+Two identities pin the source. Port I/O divided by INT 8 injections is 459,999 ÷ 2,275 =
+**202.2** at 240 seconds and 88,214 ÷ 451 = **195.6** at 120 — one pass of the
+200-iteration loop per injection, so **every port fault is the ISR's**. And the guest cannot
+consume its own ticks: due 2,787 against 451 injected and 1,681 coalesced at 120 seconds.
+
+Its cycles go to exception handling: of 126.4 G guest-run cycles the VEH gap is 94.6 G
+(74.9%) and the handler bodies 31.5 G (24.9%), essentially 100% together, and the largest
+gap class is not port I/O but **breakpoint at 78.3 G (62.0%)**, averaging **2,280,636
+cycles** each.
+
+**Inferred, not confirmed:** the stall is **saturation** rather than a wait. The stop is
+always just after `stage.cfg` because **that is where the 240 Hz slot is registered**, and
+from there every tick costs 200 port faults. But "one ISR pass exceeds the 4.16 ms tick
+period" remains arithmetic, and the largest population — the breakpoint gap — has no
+attribution yet, so **what dominates the saturation is unresolved**.
+
+## Confirmed 9 (Task 412) — the thread is **busy, not blocked**
+
+A 60-second run measured with host-time attribution (its gate held:
+`sited + no-site + failed` equals the host samples, zero overflow, zero capture failures)
+puts the guest thread at **82.42% CPU** — kernel 25,641 ms plus user 23,797 ms against
+59,984 ms of wall — which **retires the blocked hypothesis**. The symbolised call sites
+behind those host samples are `WriteGuestBytes+0x6D` at 13.6%,
+`FindAotCacheAddress+0x95` at 12.7%, `ReResolveWin32AotSegmentOverrides` at about **15.1%**
+across three entries, `RequestAotInlineCachePatch+0x75` at 6.9%, and `RefreshJammaSnapshot`
+at about **10.4%** across five, with 31.7% `no-site` where `ESP` was not the loader stack.
+**So the 62% is not one place but the sum of our own VEH-path work.**
+
+**The stall has two modes** — quarantined (523,362 single-step exceptions, 86% of ticks
+injected) and unquarantined (300 single steps, 23% injected) — and **both stop at six
+files**, so with the dominant cost differing by mode (single-step gap 44% against breakpoint
+gap 62%), **the stall attributes to neither cost alone.**
+
+**Refuted (Task 413):** the inline-cache patch price is not the cause. Narrowing the
+whole-16 MB protection to the written pages left frames at zero or one in both conditions
+(0/3 healthy either way).
+
 ## Method caveat — "absent from the dump" is not "not executed"
 
 The hotspot profile records **only while `HandleSingleStepTrace` runs**, so it samples
@@ -252,12 +509,17 @@ activity is IOCTL Input subfunction `0x0A` (Audio Disk Info), handled, declared 
 
 ## Next, in order
 
-Record the **return address on entry to the quarantined page**, which names the caller
-directly for one guest read per entry and fits beside the existing arena-entry census;
-histograms cannot go further, for the reason in the method caveat. With the caller in
-hand, disassemble the loop body through `repiu_aot_probe --dump` to settle the exit
-condition, then write the design. A supervisor-based periodic EIP sample is the
-lower-resolution alternative and probably will not identify the caller.
+~~Record the return address on entry to the quarantined page~~ — **settled statically in
+Confirmed 7, and its premise refuted**: the caller is the timer ISR, not a wait loop.
+
+What remains is a **time-based guest position census** (Task 411): every current
+instrument samples only at an exception — the hotspot census while single-stepping, the
+native phase sampler only after a full second with no exception dispatch — so a wait loop
+running in the AOT cache without faulting is invisible to all of them. Suspending the
+guest thread on an interval and accumulating EIP removes that blind spot; see the
+[design](../design/20260804-411-stall-guest-position-census.md). When the top addresses
+cluster in one function, `repiu_aot_probe --dump` settles the exit condition, and only then
+is a fix designed.
 
 ## Address conversion — the probe and the run use different bases
 
@@ -268,10 +530,16 @@ lands at `0x07000000` (the boot-crash mode) the offset is `0x06000000` instead.
 
 ## Unresolved
 
-The caller that invokes the delay routine 13,173 times and its exit condition — the
-target of the next step above; what actually separates a stalled run from a healthy one,
-given that the quarantine target, reason, and exception classes are identical (the
-constant 79 publishes suggests a single decisive point that has no name yet); and
+Where the mean 2.28 M cycles after each breakpoint exception go (Confirmed 8) — the census
+puts the thread in `ntdll` there, so it is not guest cache execution, and syscalls on the
+AOT patch path such as `VirtualProtect` or `FlushInstructionCache` are the untested
+candidates; the next instrument is **module plus offset and a shallow stack on host
+samples**. Why one exception costs about 950,000 cycles here against Task 336's
+34,000-cycle transition, and whether that explains 29% reproduction on 08-03 against 100%
+on 08-04. ~~The caller of the delay routine~~ — answered in Confirmed 7. What separates a
+stalled run from a healthy one, given identical quarantine targets, reasons, and exception
+classes; note that the 08-04 session's publishes scattered over 84-101 rather than holding
+at 79. And
 whether the MSCDEX IOCTL `0x0A` (Audio Disk Info) answer issued just after `STAGE.CFG`
 matches what the guest expects — stalled runs send that request **once** against four to
 twelve in healthy runs, but whether that is cause or consequence is **unverified**.

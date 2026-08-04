@@ -53,6 +53,17 @@ if(NOT spdlog_FOUND)
     FetchContent_MakeAvailable(spdlog)
 endif()
 
+# Task 412: Release keeps every optimisation flag and gains debug information
+# only, so code generation is unchanged while host-side samples in the guest
+# position census can be resolved to function names. Declared before any target
+# so it applies to all of them.
+if(MSVC)
+    add_compile_options($<$<CONFIG:Release>:/Zi>)
+    add_link_options($<$<CONFIG:Release>:/DEBUG>
+                     $<$<CONFIG:Release>:/OPT:REF>
+                     $<$<CONFIG:Release>:/OPT:ICF>)
+endif()
+
 add_library(repiu_zydis STATIC
     third_party/zydis/Zydis.c
 )
@@ -129,6 +140,7 @@ add_library(repiu_exe
     src/platform/win32/boundary/timer_interrupt_boundary.cpp
     src/platform/win32/telemetry/live_telemetry_snapshot.cpp
     src/platform/win32/telemetry/execution_time_profile.cpp
+    src/platform/win32/telemetry/guest_position_census.cpp
     src/platform/win32/telemetry/glide_gate_timing.cpp
     src/platform/win32/telemetry/glide_ordinal_timing.cpp
     src/platform/win32/telemetry/glide_buffer_swap_timing.cpp
@@ -139,6 +151,7 @@ add_library(repiu_exe
     src/platform/win32/telemetry/timer_tick_delivery.cpp
     src/platform/win32/aot/aot_boundary_opcode_census.cpp
     src/platform/win32/io/port_io_emulator.cpp
+    src/platform/win32/io/port_io_delay_loop.cpp
     src/platform/win32/io/eeprom_93c46.cpp
     src/platform/win32/io/piu10_sound_port.cpp
     src/platform/win32/ymz280b_audio_out.cpp
@@ -307,6 +320,10 @@ if(WIN32)
             opengl32
             gdi32
             user32
+            # Task 412: symbolises the guest position census's host call sites
+            # at teardown. Without a PDB it resolves nothing and the report
+            # falls back to module+offset, so it is safe in every build.
+            dbghelp
     )
 endif()
 

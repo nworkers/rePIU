@@ -3919,6 +3919,15 @@ bool RunWin32ExecutionThread(
         context.aot_worker_timing =
             std::make_unique<Win32AotWorkerTimingProfile>();
     }
+    // Task 411: sampled by the poll thread, not this one, so the allocation is
+    // the only thing the guest thread's setup owes it.
+    if (GuestPositionCensusEnabled())
+    {
+        context.guest_position_census =
+            std::make_unique<Win32GuestPositionCensus>();
+        context.guest_position_census->interval_milliseconds =
+            GuestPositionCensusIntervalMilliseconds();
+    }
     SharedTelemetryMapping shared_telemetry =
         OpenSharedTelemetryMapping();
     context.shared_live_telemetry = shared_telemetry.telemetry;
