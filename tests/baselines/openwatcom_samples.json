@@ -1,20 +1,20 @@
 ﻿{
-    "GeneratedAt":  "2026-07-18 12:08:30",
-    "Version":  "0.0.59",
-    "GitCommit":  "6a1ff500af465008f6b817ac2adc75db4c76ebe2",
-    "GitBranch":  "work/refactor-execution-trampoline",
-    "ManifestGeneratedAt":  "2026-07-18 12:02:08",
+    "GeneratedAt":  "2026-08-05 19:17:17",
+    "Version":  "0.0.133",
+    "GitCommit":  "78366f8478c9ab0cf2034b348c864dfd8b294fd9",
+    "GitBranch":  "task428-openwatcom-baseline-refresh",
+    "ManifestGeneratedAt":  "2026-08-05 17:27:07",
     "Suites":  [
                    "clibexam",
                    "cplbexam"
                ],
     "Summary":  {
-                    "GeneratedAt":  "2026-07-18 12:08:30",
-                    "Version":  "0.0.59",
-                    "GitCommit":  "6a1ff500af465008f6b817ac2adc75db4c76ebe2",
-                    "GitBranch":  "work/refactor-execution-trampoline",
+                    "GeneratedAt":  "2026-08-05 19:17:17",
+                    "Version":  "0.0.133",
+                    "GitCommit":  "78366f8478c9ab0cf2034b348c864dfd8b294fd9",
+                    "GitBranch":  "task428-openwatcom-baseline-refresh",
                     "ManifestPath":  "build\\openwatcom_samples\\manifest.json",
-                    "ManifestGeneratedAt":  "2026-07-18 12:02:08",
+                    "ManifestGeneratedAt":  "2026-08-05 17:27:07",
                     "Suites":  [
                                    "clibexam",
                                    "cplbexam"
@@ -23,11 +23,11 @@
                     "BuildPassed":  793,
                     "BuildSkipped":  26,
                     "RunEligible":  793,
-                    "RunPassed":  529,
-                    "OverallPassed":  529,
+                    "RunPassed":  535,
+                    "OverallPassed":  535,
                     "BuildPassRate":  96.8,
-                    "RunPassRate":  66.7,
-                    "OverallPassRate":  64.6
+                    "RunPassRate":  67.5,
+                    "OverallPassRate":  65.3
                 },
     "Samples":  [
                     {
@@ -617,9 +617,9 @@
                     {
                         "Suite":  "clibexam",
                         "Relative":  "b_keybrd.c",
-                        "Status":  "run_fail",
+                        "Status":  "pass",
                         "BuildStatus":  "pass",
-                        "RunStatus":  "fail",
+                        "RunStatus":  "pass",
                         "BuildSkipReason":  ""
                     },
                     {
@@ -769,9 +769,9 @@
                     {
                         "Suite":  "clibexam",
                         "Relative":  "chainint.c",
-                        "Status":  "run_fail",
+                        "Status":  "pass",
                         "BuildStatus":  "pass",
-                        "RunStatus":  "fail",
+                        "RunStatus":  "pass",
                         "BuildSkipReason":  ""
                     },
                     {
@@ -1545,9 +1545,9 @@
                     {
                         "Suite":  "clibexam",
                         "Relative":  "getdate.c",
-                        "Status":  "run_fail",
+                        "Status":  "pass",
                         "BuildStatus":  "pass",
-                        "RunStatus":  "fail",
+                        "RunStatus":  "pass",
                         "BuildSkipReason":  ""
                     },
                     {
@@ -1649,17 +1649,17 @@
                     {
                         "Suite":  "clibexam",
                         "Relative":  "gettime.c",
-                        "Status":  "run_fail",
+                        "Status":  "pass",
                         "BuildStatus":  "pass",
-                        "RunStatus":  "fail",
+                        "RunStatus":  "pass",
                         "BuildSkipReason":  ""
                     },
                     {
                         "Suite":  "clibexam",
                         "Relative":  "getvect.c",
-                        "Status":  "run_fail",
+                        "Status":  "pass",
                         "BuildStatus":  "pass",
-                        "RunStatus":  "fail",
+                        "RunStatus":  "pass",
                         "BuildSkipReason":  ""
                     },
                     {
@@ -4201,9 +4201,9 @@
                     {
                         "Suite":  "clibexam",
                         "Relative":  "setvect.c",
-                        "Status":  "run_fail",
+                        "Status":  "pass",
                         "BuildStatus":  "pass",
-                        "RunStatus":  "fail",
+                        "RunStatus":  "pass",
                         "BuildSkipReason":  ""
                     },
                     {
