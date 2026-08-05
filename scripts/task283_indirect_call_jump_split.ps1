@@ -33,7 +33,7 @@ try {
             Copy-Item -LiteralPath $fixture -Destination $runEeprom
         }
 
-        $env:REPIU_EXECUTION_BACKEND = "aot-dbt"
+        $env:REPIU_EXECUTION_BACKEND = "dynamic"
         $env:REPIU_EXECUTION_TIMEOUT_MS = "0"
         $env:REPIU_EEPROM_PATH = $runEeprom
         $env:REPIU_AOT_DBT_INDIRECT = $mode

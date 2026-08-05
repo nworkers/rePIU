@@ -18,7 +18,7 @@
 
 ```
 set REPIU_CD_AUDIO_POSITION_CENSUS=1
-set REPIU_EXECUTION_BACKEND=aot-dbt
+set REPIU_EXECUTION_BACKEND=dynamic
 set REPIU_EEPROM_PATH=<실행별 사본>
 build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit2 2> run.txt
 ```

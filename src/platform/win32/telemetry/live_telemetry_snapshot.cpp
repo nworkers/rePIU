@@ -808,7 +808,6 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
                 sizeof(attempt->veh_single_step_run_buckets));
     attempt->hle_reentry_reject_not_pending =
         context.hle_reentry_reject_not_pending;
-    attempt->hle_reentry_reject_backend = context.hle_reentry_reject_backend;
     attempt->hle_reentry_reject_segment_write =
         context.hle_reentry_reject_segment_write;
     attempt->hle_reentry_reject_outside_arena =

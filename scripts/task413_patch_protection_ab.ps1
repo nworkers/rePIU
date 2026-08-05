@@ -79,7 +79,7 @@ foreach ($condition in $order)
     }
     $logPath = Join-Path $runDirectory "combined.log"
 
-    $env:REPIU_EXECUTION_BACKEND = "aot-dbt"
+    $env:REPIU_EXECUTION_BACKEND = "dynamic"
     $env:REPIU_EXECUTION_TIMEOUT_MS = ($DurationSeconds * 1000).ToString()
     $env:REPIU_EEPROM_PATH = $eeprom
     Remove-Item Env:\REPIU_GUEST_POSITION_CENSUS -ErrorAction SilentlyContinue

@@ -4,6 +4,41 @@
 [Task 304~347 항목 원문](history/current-execution-frontier-task304-through-task347.md)에
 보존합니다. 이 문서는 최근 약 10개 Task와 현재 결정만 유지합니다.
 
+## Task 425 이름 대응 / Task 425 name mapping
+
+실행 backend는 이제 `legacy`와 `dynamic` 둘뿐입니다. **아래 과거 기록은 당시 이름을
+그대로 둡니다** — 절차를 실행할 때 `aot-dbt`를 `dynamic`으로 읽으십시오. `aot`와
+`aot-dynamic`은 제거됐고 대응하는 현재 backend가 없습니다. 두 backend는 제거 시점에
+이미 pumpit3에서 이미지 생성에 실패하고 있었습니다
+([Task 424 작업 로그](../work-logs/20260805-424-dbt-build-option-toggles.md) §5).
+
+The execution backends are now only `legacy` and `dynamic`. **The records below keep
+their original names** — read `aot-dbt` as `dynamic` when running a procedure. `aot`
+and `aot-dynamic` were removed and have no present-day equivalent; both already failed
+to build the pumpit3 image at the time of removal.
+
+## Task 424~425 확인됨 / Confirmed in Tasks 424-425
+
+* **direct-edge dispatch는 이미지에 따라 필수입니다.** pumpit3 `PIU.EXE`에는 cache
+  밖을 가리키는 direct edge가 10개 있어, `REPIU_AOT_DBT_DIRECT_EDGE_DISPATCH=0`은
+  실행 전에 exit 1로 종료합니다. 그런 edge가 0개인 pumpit1은 꺼도 정상입니다.
+* **return-miss dispatch와 timer safe points는 개별로 끌 수 있습니다.**
+  `REPIU_AOT_DBT_RETURN_MISS_DISPATCH=0`과 `REPIU_AOT_DBT_TIMER_SAFE_POINTS=0` 모두
+  pumpit3에서 실행이 계속됩니다. 도입 이래 처음 확인된 A/B 축입니다.
+* **주소 비교 전에 arena base를 확인하십시오.** 측정 중 한 실행만 base가
+  `0x07000000`이어서 direct-edge site 수가 10 대신 8로 보고됐습니다. 같은 base로
+  재실행하면 일치합니다. Task 418 지시 §4가 경고한 함정입니다.
+
+* **Direct-edge dispatch is mandatory for some images:** pumpit3's `PIU.EXE` has ten
+  direct edges outside the cache, so `REPIU_AOT_DBT_DIRECT_EDGE_DISPATCH=0` exits 1
+  before execution, while pumpit1 runs fine with it off.
+* **Return-miss dispatch and timer safe points can each be disabled** with execution
+  continuing on pumpit3 — the first A/B axis available for them since they were
+  introduced.
+* **Check the arena base before comparing addresses:** one run landed at
+  `0x07000000` and reported eight direct-edge sites instead of ten; rerun at the same
+  base it matched. This is the pitfall Task 418's work order warns about.
+
 ## 다음 할 일 / Next work, in order
 
 2026-08-04 Tasks 411~417 기준입니다. 근거는 아래 인수인계 절과

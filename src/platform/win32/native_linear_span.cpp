@@ -140,7 +140,9 @@ bool ResolveNativeLinearSpanSetting(
     {
         return false;
     }
-    return execution_backend == runtime::ExecutionBackend::kAotDbt;
+    // 미지정 기본값은 dynamic backend에서만 ON입니다. legacy는 명시 지정이
+    // 있어야 켜집니다.
+    return runtime::ExecutionBackendUsesDynamicTranslation(execution_backend);
 }
 
 bool NativeLinearSpanCacheEnabled()

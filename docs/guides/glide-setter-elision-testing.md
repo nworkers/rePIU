@@ -29,7 +29,7 @@ FPS가 실제로 떨어지는 구간을 두 번, 가능하면 같은 곡·같은
 
 ```
 :: 생략 ON (현재 기본값)
-set REPIU_EXECUTION_BACKEND=aot-dbt
+set REPIU_EXECUTION_BACKEND=dynamic
 set REPIU_EXECUTION_TIMEOUT_MS=0
 set REPIU_GLIDE_SWAP_INTERVAL=0
 set REPIU_EXECUTION_TIME_PROFILE=1
@@ -145,7 +145,7 @@ and only you can capture that scene.
 
 **Procedure.** Play the same section twice with identical settings, once with
 `REPIU_GLIDE_SETTER_ELIDE=1` and once with `=0`, keeping
-`REPIU_EXECUTION_BACKEND=aot-dbt`, `REPIU_EXECUTION_TIME_PROFILE=1`,
+`REPIU_EXECUTION_BACKEND=dynamic`, `REPIU_EXECUTION_TIME_PROFILE=1`,
 `REPIU_GLIDE_ORDINAL_TIME_PROFILE=1`, and `REPIU_GLIDE_SETTER_CENSUS=1` the same
 in both, capturing stderr to a file. Run each configuration at least three times
 and use medians: run-to-run frame variance reaches 18% and the first run of a

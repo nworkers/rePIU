@@ -16,6 +16,7 @@
 #include "repiu/runtime/guest_context.h"
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/aot_translation_plan.h"
+#include "repiu/runtime/env_toggle.h"
 #include "repiu/runtime/image_address.h"
 #include "repiu/runtime/runtime_memory.h"
 #include "repiu/runtime/runtime_memory_arena.h"
@@ -978,20 +979,21 @@ void PrintExecutionAttempt(
     // walks under TF because this return fails; this names which condition
     // rejects it.
     {
+        // Task 426: the `backend` bucket is gone. It could never count a
+        // rejection once the backend set shrank to legacy and dynamic, so the
+        // line carries seven fields rather than eight.
         const std::uint32_t reentry_attempts =
             attempt.hle_reentry_reject_not_pending +
-            attempt.hle_reentry_reject_backend +
             attempt.hle_reentry_reject_segment_write +
             attempt.hle_reentry_reject_outside_arena +
             attempt.hle_reentry_reject_quarantined +
             attempt.hle_reentry_reject_span_unsafe +
             attempt.hle_reentry_success;
         logger.info(
-            "Win32 hle reentry funnel not-pending/backend/segment-write/"
+            "Win32 hle reentry funnel not-pending/segment-write/"
             "outside-arena/quarantined/span-unsafe/success/total: "
-            "{}/{}/{}/{}/{}/{}/{}/{}",
+            "{}/{}/{}/{}/{}/{}/{}",
             attempt.hle_reentry_reject_not_pending,
-            attempt.hle_reentry_reject_backend,
             attempt.hle_reentry_reject_segment_write,
             attempt.hle_reentry_reject_outside_arena,
             attempt.hle_reentry_reject_quarantined,
@@ -4585,116 +4587,82 @@ int main(int argc, char** argv)
     if (!ReadExecutionBackend(&execution_backend))
     {
         logger->error(
-            "REPIU_EXECUTION_BACKEND must be legacy, aot, "
-            "aot-dynamic, or aot-dbt");
+            "REPIU_EXECUTION_BACKEND must be legacy or dynamic");
         repiu::platform::win32::ReleaseWin32RuntimeAddressRange(
             relocated_arena_reservation);
         return 1;
     }
-    const bool use_aot_backend =
-        repiu::runtime::ExecutionBackendUsesAot(execution_backend);
+    const bool use_dynamic_backend =
+        repiu::runtime::ExecutionBackendUsesDynamicTranslation(
+            execution_backend);
     const bool direct_glide_dispatch_enabled =
-        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt &&
+        use_dynamic_backend &&
         repiu::platform::win32::
             ResolveWin32GlideGateDirectDispatchEnabled(
                 std::getenv("REPIU_AOT_DBT_GLIDE_GATE_DISPATCH"));
     repiu::runtime::AotCodeCacheBuildOptions aot_build_options;
+    // Task 424: these three were decided by the backend value alone from the
+    // day they were introduced, leaving no way to A/B them on pumpit3 -- the
+    // since-removed `aot-dynamic` could not even build that image (see the
+    // Task 424 work log). Each therefore gets its own toggle. Unset means ON;
+    // explicit false and unknown values are fail-closed opt-outs, matching the
+    // promoted-default convention established by Tasks 384, 386, and 390.
+    // Turning direct-edge dispatch off fails image construction on images that
+    // have direct edges outside the cache, which is why that failure is loud.
     aot_build_options.enable_dbt_return_miss_dispatch =
-        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt;
+        use_dynamic_backend &&
+        repiu::runtime::ResolvePromotedToggle(
+            std::getenv("REPIU_AOT_DBT_RETURN_MISS_DISPATCH"));
     aot_build_options.enable_dbt_direct_edge_dispatch =
-        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt;
+        use_dynamic_backend &&
+        repiu::runtime::ResolvePromotedToggle(
+            std::getenv("REPIU_AOT_DBT_DIRECT_EDGE_DISPATCH"));
     aot_build_options.enable_timer_safe_points =
-        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt;
-    const char* superblock_toggle =
-        std::getenv("REPIU_AOT_DBT_SUPERBLOCK");
-    const std::string superblock_setting =
-        superblock_toggle != nullptr
-            ? std::string(superblock_toggle) : std::string();
+        use_dynamic_backend &&
+        repiu::runtime::ResolvePromotedToggle(
+            std::getenv("REPIU_AOT_DBT_TIMER_SAFE_POINTS"));
     aot_build_options.enable_dbt_hle_dispatch =
-        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt &&
-        (superblock_setting == "1" ||
-         superblock_setting == "on" ||
-         superblock_setting == "true");
-    const char* port_io_dispatch_toggle =
-        std::getenv("REPIU_AOT_DBT_PORT_IO_DISPATCH");
-    const std::string port_io_dispatch_setting =
-        port_io_dispatch_toggle != nullptr
-            ? std::string(port_io_dispatch_toggle) : std::string();
-    const bool port_io_dispatch_enabled =
-        port_io_dispatch_setting.empty() ||
-        port_io_dispatch_setting == "1" ||
-        port_io_dispatch_setting == "on" ||
-        port_io_dispatch_setting == "true";
+        use_dynamic_backend &&
+        repiu::runtime::ResolveOptInToggle(
+            std::getenv("REPIU_AOT_DBT_SUPERBLOCK"));
     // Task 386 promoted the isolated Port-I/O dispatch after a Music Select
     // capture confirmed lower per-frame exception and HLE costs. Explicit
     // false and unknown values remain fail-closed opt-outs for diagnosis.
     aot_build_options.enable_dbt_port_io_dispatch =
-        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt &&
-        port_io_dispatch_enabled;
-    const char* segment_override_dispatch_toggle =
-        std::getenv("REPIU_AOT_DBT_SEGMENT_OVERRIDE_DISPATCH");
-    const std::string segment_override_dispatch_setting =
-        segment_override_dispatch_toggle != nullptr
-            ? std::string(segment_override_dispatch_toggle) : std::string();
+        use_dynamic_backend &&
+        repiu::runtime::ResolvePromotedToggle(
+            std::getenv("REPIU_AOT_DBT_PORT_IO_DISPATCH"));
     aot_build_options.enable_dbt_segment_override_dispatch =
-        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt &&
-        (segment_override_dispatch_setting == "1" ||
-         segment_override_dispatch_setting == "on" ||
-         segment_override_dispatch_setting == "true");
-    const char* guarded_segment_pop_toggle =
-        std::getenv("REPIU_AOT_GUARDED_SEGMENT_POP");
-    const std::string guarded_segment_pop_setting =
-        guarded_segment_pop_toggle != nullptr
-            ? std::string(guarded_segment_pop_toggle) : std::string();
-    const bool guarded_segment_pop_enabled =
-        guarded_segment_pop_setting.empty() ||
-        guarded_segment_pop_setting == "1" ||
-        guarded_segment_pop_setting == "on" ||
-        guarded_segment_pop_setting == "true";
+        use_dynamic_backend &&
+        repiu::runtime::ResolveOptInToggle(
+            std::getenv("REPIU_AOT_DBT_SEGMENT_OVERRIDE_DISPATCH"));
     // Task 291 A/B promoted the guarded no-state-change segment-pop path for
     // aot-dbt. Explicit false and unknown values fail closed for compatibility
     // diagnosis and regression bisects.
     aot_build_options.enable_guarded_segment_pop =
-        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt &&
-        guarded_segment_pop_enabled;
-    const char* guarded_segment_load_toggle =
-        std::getenv("REPIU_AOT_GUARDED_SEGMENT_LOAD");
-    const std::string guarded_segment_load_setting =
-        guarded_segment_load_toggle != nullptr
-            ? std::string(guarded_segment_load_toggle) : std::string();
-    const bool guarded_segment_load_enabled =
-        guarded_segment_load_setting.empty() ||
-        guarded_segment_load_setting == "1" ||
-        guarded_segment_load_setting == "on" ||
-        guarded_segment_load_setting == "true";
+        use_dynamic_backend &&
+        repiu::runtime::ResolvePromotedToggle(
+            std::getenv("REPIU_AOT_GUARDED_SEGMENT_POP"));
     // Task 390 promotes Task 389's source/physical/shadow-equality guarded load
     // for aot-dbt. Explicit false and unknown values remain fail-closed
     // opt-outs for compatibility diagnosis and regression bisects.
     aot_build_options.enable_guarded_segment_load =
-        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt &&
-        guarded_segment_load_enabled;
-    const char* guarded_segment_read_toggle =
-        std::getenv("REPIU_AOT_GUARDED_SEGMENT_READ");
-    const std::string guarded_segment_read_setting =
-        guarded_segment_read_toggle != nullptr
-            ? std::string(guarded_segment_read_toggle) : std::string();
-    const bool guarded_segment_read_enabled =
-        guarded_segment_read_setting.empty() ||
-        guarded_segment_read_setting == "1" ||
-        guarded_segment_read_setting == "on" ||
-        guarded_segment_read_setting == "true";
+        use_dynamic_backend &&
+        repiu::runtime::ResolvePromotedToggle(
+            std::getenv("REPIU_AOT_GUARDED_SEGMENT_LOAD"));
     // Task 384 promotes Task 383's physical/shadow-equality guarded read for
     // aot-dbt. Explicit false and unknown values remain fail-closed opt-outs.
     aot_build_options.enable_guarded_segment_read =
-        execution_backend == repiu::runtime::ExecutionBackend::kAotDbt &&
-        guarded_segment_read_enabled;
+        use_dynamic_backend &&
+        repiu::runtime::ResolvePromotedToggle(
+            std::getenv("REPIU_AOT_GUARDED_SEGMENT_READ"));
     // Task 282 indirect call/jump host dispatch is implemented and passes every
     // synthetic probe, but a live `aot-dbt` run reveals a cumulative corruption
     // that crashes the Glide attract path (see
     // docs/analysis/current-execution-frontier.md). It is therefore opt-in and
     // OFF by default so `aot-dbt` keeps its known-good Task 281 behavior; set
     // REPIU_AOT_DBT_INDIRECT=1 to enable it for further investigation.
-    if (execution_backend == repiu::runtime::ExecutionBackend::kAotDbt)
+    if (use_dynamic_backend)
     {
         // Task 283 call/jump split probe. Accept `1`/`both` (both kinds),
         // `call`/`calls` (calls only), `jump`/`jumps` (jumps only), anything else
@@ -4716,7 +4684,7 @@ int main(int argc, char** argv)
         aot_build_options.enable_dbt_indirect_dispatch_jumps =
             both || jumps_only;
     }
-    if (use_aot_backend && !ReadAotIndirectInlineCacheEntryCount(
+    if (use_dynamic_backend && !ReadAotIndirectInlineCacheEntryCount(
             &aot_build_options.indirect_inline_cache_entry_count))
     {
         logger->error(
@@ -4727,7 +4695,7 @@ int main(int argc, char** argv)
     }
     repiu::runtime::AotTranslationPlan aot_plan;
     repiu::runtime::AotCodeCacheImage aot_image;
-    if (use_aot_backend &&
+    if (use_dynamic_backend &&
         (!repiu::runtime::BuildAotTranslationPlan(relocated_image,
                                                   &aot_plan) ||
          !repiu::runtime::BuildAotCodeCacheImage(
@@ -4741,7 +4709,7 @@ int main(int argc, char** argv)
     }
     logger->info("Win32 requested execution backend: {}",
                  repiu::runtime::ExecutionBackendName(execution_backend));
-    if (use_aot_backend)
+    if (use_dynamic_backend)
     {
         logger->info("Win32 AOT indirect inline-cache slots: {}",
                      aot_build_options.indirect_inline_cache_entry_count);
@@ -4753,8 +4721,14 @@ int main(int argc, char** argv)
         logger->info("Win32 AOT guarded segment-read enabled/sites: {}/{}",
                      aot_build_options.enable_guarded_segment_read,
                      aot_image.guarded_segment_read_sites.size());
+        // Task 424: return-miss dispatch had no log line of its own, so its
+        // toggle could not be verified from the log alone. Direct-edge already
+        // reported its site count and now reports the toggle beside it.
+        logger->info("Win32 AOT-DBT return-miss dispatch enabled: {}",
+                     aot_build_options.enable_dbt_return_miss_dispatch);
         logger->info(
-            "Win32 AOT-DBT unresolved direct-edge dispatch sites: {}",
+            "Win32 AOT-DBT unresolved direct-edge dispatch enabled/sites: {}/{}",
+            aot_build_options.enable_dbt_direct_edge_dispatch,
             aot_image.dbt_direct_edge_dispatch_sites.size());
         logger->info("Win32 AOT-DBT superblock HLE dispatch enabled: {}",
                      aot_build_options.enable_dbt_hle_dispatch);
@@ -4837,7 +4811,7 @@ int main(int argc, char** argv)
         return 1;
     }
     repiu::platform::win32::Win32AotCodeCachePlacement aot_placement;
-    if (use_aot_backend &&
+    if (use_dynamic_backend &&
         (!repiu::platform::win32::PlaceWin32AotCodeCache(
              aot_image, &aot_placement) ||
          !aot_placement.placed))
@@ -4847,7 +4821,7 @@ int main(int argc, char** argv)
         repiu::platform::win32::ReleaseWin32RelocatedImage(placement);
         return 1;
     }
-    if (use_aot_backend)
+    if (use_dynamic_backend)
     {
         logger->info("Win32 AOT cache base/bytes/entry: {}/{}/{}",
                      Hex32(aot_placement.base_address),
@@ -4872,7 +4846,7 @@ int main(int argc, char** argv)
         logger->info("Win32 guest execution timeout: {} ms",
                      execution_timeout_milliseconds);
     }
-    const bool attempted_execution = use_aot_backend
+    const bool attempted_execution = use_dynamic_backend
         ? repiu::platform::win32::AttemptWin32GuestStackAotExecution(
               placement,
               aot_placement,

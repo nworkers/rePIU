@@ -14,7 +14,7 @@
 ## 2. 실행
 
 ```
-set REPIU_EXECUTION_BACKEND=aot-dbt
+set REPIU_EXECUTION_BACKEND=dynamic
 set REPIU_EXECUTION_TIMEOUT_MS=45000
 set REPIU_SINGLE_STEP_HOTSPOT_PROFILE=1
 set REPIU_SINGLE_STEP_HOTSPOT_DUMP=1
@@ -67,7 +67,7 @@ pumpit3 object 2의 delta는 `0x02FF4E00`입니다(guest = file + delta).
 루프를 보지 못합니다.** 그 경우 시간 기준 census를 씁니다.
 
 ```
-set REPIU_EXECUTION_BACKEND=aot-dbt
+set REPIU_EXECUTION_BACKEND=dynamic
 set REPIU_EXECUTION_TIMEOUT_MS=60000
 set REPIU_GUEST_POSITION_CENSUS=1
 set REPIU_GUEST_POSITION_CENSUS_MS=10
@@ -152,7 +152,7 @@ orders of magnitude less often. This census closes that gap.
 ## 2. Run
 
 ```
-set REPIU_EXECUTION_BACKEND=aot-dbt
+set REPIU_EXECUTION_BACKEND=dynamic
 set REPIU_EXECUTION_TIMEOUT_MS=45000
 set REPIU_SINGLE_STEP_HOTSPOT_PROFILE=1
 set REPIU_SINGLE_STEP_HOTSPOT_DUMP=1

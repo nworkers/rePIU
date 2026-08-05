@@ -74,7 +74,7 @@ try {
             Copy-Item -LiteralPath $fixture -Destination $runEeprom
         }
 
-        $env:REPIU_EXECUTION_BACKEND = "aot-dynamic"
+        $env:REPIU_EXECUTION_BACKEND = "dynamic"
         $env:REPIU_EXECUTION_TIMEOUT_MS = "0"
         $env:REPIU_AOT_INDIRECT_CACHE_SLOTS = "$slots"
         $env:REPIU_EEPROM_PATH = $runEeprom

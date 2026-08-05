@@ -4152,8 +4152,8 @@ bool RunWin32ExecutionThread(
                     kGlideFirstGateOffset,
                 &context.glide_gate_plan);
         const bool direct_glide_dispatch =
-            context.execution_backend ==
-                repiu::runtime::ExecutionBackend::kAotDbt &&
+            repiu::runtime::ExecutionBackendUsesDynamicTranslation(
+                context.execution_backend) &&
             ResolveWin32GlideGateDirectDispatchEnabled(
                 std::getenv("REPIU_AOT_DBT_GLIDE_GATE_DISPATCH"));
         context.aot_dbt_glide_direct_dispatch = direct_glide_dispatch;
@@ -4581,74 +4581,6 @@ bool RunWin32ExecutionThread(
 
     return true;
 #endif
-}
-
-bool AttemptWin32MinimalExecution(
-    const Win32RelocatedImagePlacement& placement,
-    std::uint32_t entry_address,
-    std::uint32_t timeout_milliseconds,
-    Win32MinimalExecutionAttempt* attempt)
-{
-    return RunWin32ExecutionThread(
-        placement,
-        entry_address,
-        0,
-        false,
-        false,
-        false,
-        false,
-        false,
-        false,
-        nullptr,
-        nullptr,
-        nullptr,
-        nullptr,
-        nullptr,
-        nullptr,
-        runtime::ExecutionBackend::kLegacy,
-        timeout_milliseconds,
-        attempt);
-}
-
-bool AttemptWin32GuestStackExecution(
-    const Win32RelocatedImagePlacement& placement,
-    const runtime::GuestStackSwitchPlan& stack_plan,
-    std::uint32_t timeout_milliseconds,
-    Win32MinimalExecutionAttempt* attempt)
-{
-    if (attempt == nullptr)
-    {
-        return false;
-    }
-
-    if (!stack_plan.valid)
-    {
-        *attempt = Win32MinimalExecutionAttempt{};
-        attempt->entry_address = stack_plan.entry_eip;
-        attempt->guest_stack_initial_esp = stack_plan.initial_esp;
-        attempt->message = "guest stack switch plan is not valid";
-        return false;
-    }
-
-    return RunWin32ExecutionThread(
-        placement,
-        stack_plan.entry_eip,
-        stack_plan.initial_esp,
-        true,
-        false,
-        false,
-        false,
-        false,
-        false,
-        nullptr,
-        nullptr,
-        nullptr,
-        nullptr,
-        nullptr,
-        nullptr,
-        runtime::ExecutionBackend::kLegacy,
-        timeout_milliseconds,
-        attempt);
 }
 
 bool AttemptWin32GuestStackTrapExecution(

@@ -1,6 +1,9 @@
 param(
-    [ValidateSet("aot-dynamic", "aot-dbt")]
-    [string]$Backend = "aot-dynamic",
+    # Task 425: backend는 legacy / dynamic 둘뿐이고, 이 벤치마크는 AOT cache가
+    # 필요하므로 dynamic만 유효합니다. span A/B 축은 backend가 아니라 아래에서
+    # 명시적으로 설정하는 REPIU_NATIVE_LINEAR_SPAN입니다.
+    [ValidateSet("dynamic")]
+    [string]$Backend = "dynamic",
 
     [ValidateRange(1000, 3600000)]
     [int]$DurationMilliseconds = 60000,
@@ -58,7 +61,7 @@ elseif ($CompareJumps) {
     "native-linear-span-jumps"
 }
 elseif ($ComparePostHle) {
-    "aot-dbt-post-hle"
+    "dynamic-post-hle"
 }
 else {
     "native-linear-span"

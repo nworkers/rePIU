@@ -1018,23 +1018,21 @@ bool ResolveAotTransferTarget(ThreadContext* context,
     }
     std::uint32_t dynamic_cache_entry = 0;
     std::uint32_t dynamic_added_bytes = 0;
-    const bool dynamic_translation =
-        runtime::ExecutionBackendUsesDynamicTranslation(
-            context->execution_backend);
-    if (dynamic_translation)
-    {
-        context->aot_dynamic_attempt_count.fetch_add(
-            1, std::memory_order_relaxed);
-    }
+    // Tasks 425 and 426: this dispatcher is reached only with a placed AOT
+    // cache, and the trampoline's four non-AOT entry points hard-code a null
+    // placement and `kLegacy` at the call site, so the backend here is always
+    // `dynamic`. The guard that used to wrap this increment, and the
+    // `(!dynamic_translation && !retired_target)` disjunct that used to lead
+    // the request below, both existed for the static-only `aot` backend and
+    // were always taken. Neither the count nor the call frequency changes.
+    context->aot_dynamic_attempt_count.fetch_add(
+        1, std::memory_order_relaxed);
     bool dynamic_translation_failed = false;
     {
         const ExecutionTimeScope dynamic_translate_time_scope(
             context->execution_time_profile.get(),
             ExecutionTimeBucket::kAotDynamicTranslate);
-        // Short-circuit order preserved: the request only runs when the first
-        // condition is false, exactly as before.
         dynamic_translation_failed =
-            (!dynamic_translation && !retired_target) ||
             !RequestAotDynamicTranslation(
                 context, target, &dynamic_cache_entry, &dynamic_added_bytes);
     }

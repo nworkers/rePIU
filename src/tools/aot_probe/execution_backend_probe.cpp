@@ -15,14 +15,10 @@ bool RunExecutionBackendProbe()
     {
         const char* name;
         ExecutionBackend backend;
-        bool aot;
         bool dynamic;
-        bool immediate_hle_reentry;
     } cases[] = {
-        {"legacy", ExecutionBackend::kLegacy, false, false, false},
-        {"aot", ExecutionBackend::kAot, true, false, false},
-        {"aot-dynamic", ExecutionBackend::kAotDynamic, true, true, false},
-        {"aot-dbt", ExecutionBackend::kAotDbt, true, true, true},
+        {"legacy", ExecutionBackend::kLegacy, false},
+        {"dynamic", ExecutionBackend::kDynamic, true},
     };
 
     bool all = true;
@@ -33,17 +29,24 @@ bool RunExecutionBackendProbe()
             runtime::ParseExecutionBackend(test.name, &parsed) &&
             parsed == test.backend &&
             runtime::ExecutionBackendName(parsed) == test.name &&
-            runtime::ExecutionBackendUsesAot(parsed) == test.aot &&
             runtime::ExecutionBackendUsesDynamicTranslation(parsed) ==
-                test.dynamic &&
-            runtime::ExecutionBackendUsesImmediateHleReentry(parsed) ==
-                test.immediate_hle_reentry;
+                test.dynamic;
     }
 
-    ExecutionBackend unchanged = ExecutionBackend::kAotDbt;
+    ExecutionBackend unchanged = ExecutionBackend::kDynamic;
+    // Task 425: 옛 이름은 별칭이 아니라 거부입니다. 옛 절차가 조용히 다른
+    // backend로 실행되지 않는다는 성질을 여기서 고정합니다. 거부된 값은
+    // 출력 인자를 건드리지 않아야 합니다.
+    const bool legacy_names_rejected =
+        !runtime::ParseExecutionBackend("aot", &unchanged) &&
+        !runtime::ParseExecutionBackend("aot-dynamic", &unchanged) &&
+        !runtime::ParseExecutionBackend("aot-dbt", &unchanged) &&
+        unchanged == ExecutionBackend::kDynamic;
+    all = all && legacy_names_rejected;
+
     const bool invalid_rejected =
         !runtime::ParseExecutionBackend("unknown", &unchanged) &&
-        unchanged == ExecutionBackend::kAotDbt &&
+        unchanged == ExecutionBackend::kDynamic &&
         !runtime::ParseExecutionBackend("legacy", nullptr);
     all = all && invalid_rejected;
 

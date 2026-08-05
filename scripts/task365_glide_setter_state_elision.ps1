@@ -336,7 +336,7 @@ function Invoke-VisualPass
     try
     {
         [Environment]::SetEnvironmentVariable(
-            "REPIU_EXECUTION_BACKEND", "aot-dbt", "Process")
+            "REPIU_EXECUTION_BACKEND", "dynamic", "Process")
         [Environment]::SetEnvironmentVariable(
             "REPIU_EXECUTION_TIMEOUT_MS",
             ([string]($VisualDurationSeconds * 1000)), "Process")

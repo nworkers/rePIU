@@ -25,7 +25,7 @@
 무효가 됩니다).
 
 ```
-set REPIU_EXECUTION_BACKEND=aot-dbt
+set REPIU_EXECUTION_BACKEND=dynamic
 set REPIU_EXECUTION_TIMEOUT_MS=60000
 set REPIU_EEPROM_PATH=<실행별 사본>
 build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit3 > run.txt 2>&1
@@ -124,7 +124,7 @@ off is a new cause**, to be narrowed with the sections below.
 To reproduce, enable one of the switches above; the original **29%** rate (five of seventeen)
 belongs to the build where both causes were live, so run several either way. Keep
 the EEPROM **isolated per run** — sharing it leaks persistent state and invalidates the
-result. Use the `aot-dbt` backend with a 60-second timeout. **Do not redirect through
+result. Use the `dynamic` backend with a 60-second timeout. **Do not redirect through
 PowerShell**: it truncates lines at the 120-column console width and cuts census values
 in half; use `cmd /c "... > run.txt 2>&1"`. Forty-five seconds is enough to classify, and
 running longer gains nothing — a stalled run still has not advanced at 240 seconds.

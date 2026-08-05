@@ -554,7 +554,6 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t veh_single_step_run_buckets[8] = {};
     // Task 340: why the post-HLE return to the cache fails, by reason.
     std::uint32_t hle_reentry_reject_not_pending = 0;
-    std::uint32_t hle_reentry_reject_backend = 0;
     std::uint32_t hle_reentry_reject_segment_write = 0;
     std::uint32_t hle_reentry_reject_outside_arena = 0;
     std::uint32_t hle_reentry_reject_quarantined = 0;
@@ -1212,18 +1211,6 @@ struct Win32MinimalExecutionAttempt
     std::string hle_stderr_output;
     std::string message;
 };
-
-bool AttemptWin32MinimalExecution(
-    const Win32RelocatedImagePlacement& placement,
-    std::uint32_t entry_address,
-    std::uint32_t timeout_milliseconds,
-    Win32MinimalExecutionAttempt* attempt);
-
-bool AttemptWin32GuestStackExecution(
-    const Win32RelocatedImagePlacement& placement,
-    const runtime::GuestStackSwitchPlan& stack_plan,
-    std::uint32_t timeout_milliseconds,
-    Win32MinimalExecutionAttempt* attempt);
 
 bool AttemptWin32GuestStackTrapExecution(
     const Win32RelocatedImagePlacement& placement,

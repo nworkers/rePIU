@@ -38,19 +38,19 @@ if (-not (Test-Path -LiteralPath $fixture -PathType Leaf)) {
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $benchmarkKind = if ($CompareCache) {
-    "aot-dbt-direct-cache"
+    "dynamic-direct-cache"
 }
 elseif ($CompareRejectCache) {
-    "aot-dbt-direct-reject-cache"
+    "dynamic-direct-reject-cache"
 }
 elseif ($CompareWrites) {
-    "aot-dbt-direct-writes"
+    "dynamic-direct-writes"
 }
 elseif ($CompareJumps) {
-    "aot-dbt-direct-jumps"
+    "dynamic-direct-jumps"
 }
 else {
-    "aot-dbt-direct"
+    "dynamic-direct"
 }
 $resultRoot = Join-Path $repoRoot `
     "build\benchmarks\native-linear-span\$benchmarkKind\$timestamp"
@@ -184,7 +184,7 @@ try {
         $stdoutLog = Join-Path $resultRoot "$runName-stdout.log"
         $stderrLog = Join-Path $resultRoot "$runName-stderr.log"
         $runEeprom = Join-Path $resultRoot "$runName-eeprom.dat"
-        $env:REPIU_EXECUTION_BACKEND = "aot-dbt"
+        $env:REPIU_EXECUTION_BACKEND = "dynamic"
         $env:REPIU_EXECUTION_TIMEOUT_MS =
             $DurationMilliseconds.ToString()
         $env:REPIU_AOT_INDIRECT_CACHE_SLOTS = "4"
@@ -246,11 +246,11 @@ try {
             (Find-LastLine $lines 'AOT boundary reason ret/indir') `
             'other: ([0-9/]+)' 5
         $dbtHle = Read-SlashValues `
-            (Find-LastLine $lines 'AOT-DBT HLE reentry attempt/success:') `
+            (Find-LastLine $lines 'dynamic HLE reentry attempt/success:') `
             'success: ([0-9/]+)' 2
         $dbtReturn = Read-SlashValues `
             (Find-LastLine $lines `
-                'AOT-DBT return entry/attempt/success/fallback:') `
+                'dynamic return entry/attempt/success/fallback:') `
             'fallback: ([0-9/]+)' 4
         $span = Read-SlashValues `
             (Find-LastLine $lines `

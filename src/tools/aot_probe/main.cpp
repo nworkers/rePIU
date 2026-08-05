@@ -34,6 +34,7 @@
 #include "aot_worker_timing_probe.h"
 #include "aot_timer_source_profile_probe.h"
 #include "selector_guard_probe.h"
+#include "env_toggle_probe.h"
 #include "execution_backend_probe.h"
 #include "dbt_return_fallback_probe.h"
 #include "dbt_indirect_dispatch_probe.h"
@@ -825,6 +826,10 @@ int main(int argc, char** argv)
     }
 #if defined(_WIN32)
     if (!repiu::tools::RunAotBoundaryProvenanceProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunEnvToggleProbe())
     {
         return 1;
     }

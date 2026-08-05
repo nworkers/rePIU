@@ -185,9 +185,10 @@ bool ResolveWin32GlideGateDirectTarget(
     std::uint32_t target,
     std::uint32_t* direct_target)
 {
+    // Task 426: the backend check here was redundant. The trampoline sets
+    // `aot_dbt_glide_direct_dispatch` only when the backend uses dynamic
+    // translation, so the flag already subsumes it.
     if (context == nullptr || direct_target == nullptr ||
-        context->execution_backend !=
-            repiu::runtime::ExecutionBackend::kAotDbt ||
         !context->aot_dbt_glide_direct_dispatch ||
         !context->linexe_environment_active ||
         target < context->linexe_arena_layout.gate_code_base)

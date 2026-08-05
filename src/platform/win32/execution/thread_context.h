@@ -245,7 +245,6 @@ struct ThreadContext
     // guard, but neither check's two conditions were separated, and their
     // causes and fixes differ. Guest thread only, so plain counters.
     std::uint32_t hle_reentry_reject_not_pending = 0;
-    std::uint32_t hle_reentry_reject_backend = 0;
     std::uint32_t hle_reentry_reject_segment_write = 0;
     std::uint32_t hle_reentry_reject_outside_arena = 0;
     std::uint32_t hle_reentry_reject_quarantined = 0;

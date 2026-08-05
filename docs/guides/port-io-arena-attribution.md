@@ -25,7 +25,7 @@ Release 빌드를 쓰고 EEPROM을 **매 실행 격리**합니다. 격리하지 
 실행 간에 새어 결과가 무효가 됩니다(Task 403에서 실제로 겪음).
 
 ```
-set REPIU_EXECUTION_BACKEND=aot-dbt
+set REPIU_EXECUTION_BACKEND=dynamic
 set REPIU_EXECUTION_TIMEOUT_MS=45000
 set REPIU_EXECUTION_TIME_PROFILE=1
 set REPIU_EEPROM_PATH=<실행별 사본>
@@ -131,7 +131,7 @@ arena mode.
 
 Use the Release build and **isolate the EEPROM per run** — without that, persistent state leaks
 between runs and invalidates the result, as happened in Task 403. Set
-`REPIU_EXECUTION_BACKEND=aot-dbt`, `REPIU_EXECUTION_TIMEOUT_MS=45000`,
+`REPIU_EXECUTION_BACKEND=dynamic`, `REPIU_EXECUTION_TIMEOUT_MS=45000`,
 `REPIU_EXECUTION_TIME_PROFILE=1`, and a per-run `REPIU_EEPROM_PATH`. Add
 `REPIU_PORT_IO_CENSUS_MAPPING=1` to see whether a translation exists, but **do not quote that
 run's wall time or frame count** — the per-call `FindAotCacheAddress` costs about 5.8%.

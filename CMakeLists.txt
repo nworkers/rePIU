@@ -175,6 +175,7 @@ add_library(repiu_exe
     src/runtime/aot_code_cache.cpp
     src/runtime/aot_translation_plan.cpp
     src/runtime/dos_low_memory.cpp
+    src/runtime/env_toggle.cpp
     src/runtime/execution_backend.cpp
     src/runtime/image_address.cpp
     src/runtime/runtime_memory_arena.cpp
@@ -229,6 +230,7 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/dbt_indirect_dispatch_probe.cpp
     src/tools/aot_probe/direct_edge_dispatch_probe.cpp
     src/tools/aot_probe/dbt_return_fallback_probe.cpp
+    src/tools/aot_probe/env_toggle_probe.cpp
     src/tools/aot_probe/execution_backend_probe.cpp
     src/tools/aot_probe/inline_cache_probe.cpp
     src/tools/aot_probe/native_linear_span_probe.cpp

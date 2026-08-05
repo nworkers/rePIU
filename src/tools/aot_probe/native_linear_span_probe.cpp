@@ -383,7 +383,7 @@ bool RunNativeLinearSpanProbe()
     retired_span_context->runtime_base = base;
     retired_span_context->runtime_size = kPageSize;
     retired_span_context->execution_backend =
-        runtime::ExecutionBackend::kAotDbt;
+        runtime::ExecutionBackend::kDynamic;
     retired_span_context->aot_reentry_pending = true;
     retired_span_context->enable_single_step_trace = true;
     CONTEXT retired_span_registers{};
@@ -405,7 +405,7 @@ bool RunNativeLinearSpanProbe()
     retired_reject_context->runtime_base = base;
     retired_reject_context->runtime_size = kPageSize;
     retired_reject_context->execution_backend =
-        runtime::ExecutionBackend::kAotDbt;
+        runtime::ExecutionBackend::kDynamic;
     CONTEXT retired_reject_registers{};
     retired_reject_registers.Eip = base + 48U;
     retired_reject_registers.EFlags = 0x00000100U;
@@ -425,23 +425,26 @@ bool RunNativeLinearSpanProbe()
             std::memory_order_relaxed) == 0U;
     const bool policy_ok =
         platform::win32::ResolveNativeLinearSpanEnabled(
-            runtime::ExecutionBackend::kAotDbt, "") &&
+            runtime::ExecutionBackend::kDynamic, "") &&
+        // Task 425: 반례 backend는 legacy입니다. "dynamic이 아닌 backend는
+        // 미지정에서 OFF, 명시 지정이면 ON"이라는 성질은 그대로이고, 긍정 철자
+        // 세 가지를 모두 legacy에서 확인합니다.
         !platform::win32::ResolveNativeLinearSpanEnabled(
-            runtime::ExecutionBackend::kAotDynamic, "") &&
+            runtime::ExecutionBackend::kLegacy, "") &&
         platform::win32::ResolveNativeLinearSpanEnabled(
-            runtime::ExecutionBackend::kAotDynamic, "1") &&
+            runtime::ExecutionBackend::kLegacy, "1") &&
         platform::win32::ResolveNativeLinearSpanEnabled(
             runtime::ExecutionBackend::kLegacy, "on") &&
         platform::win32::ResolveNativeLinearSpanEnabled(
-            runtime::ExecutionBackend::kAot, "true") &&
+            runtime::ExecutionBackend::kLegacy, "true") &&
         !platform::win32::ResolveNativeLinearSpanEnabled(
-            runtime::ExecutionBackend::kAotDbt, "0") &&
+            runtime::ExecutionBackend::kDynamic, "0") &&
         !platform::win32::ResolveNativeLinearSpanEnabled(
-            runtime::ExecutionBackend::kAotDbt, "off") &&
+            runtime::ExecutionBackend::kDynamic, "off") &&
         !platform::win32::ResolveNativeLinearSpanEnabled(
-            runtime::ExecutionBackend::kAotDbt, "false") &&
+            runtime::ExecutionBackend::kDynamic, "false") &&
         !platform::win32::ResolveNativeLinearSpanEnabled(
-            runtime::ExecutionBackend::kAotDbt, "invalid") &&
+            runtime::ExecutionBackend::kDynamic, "invalid") &&
         !platform::win32::ResolveNativeLinearSpanCacheEnabled("") &&
         platform::win32::ResolveNativeLinearSpanCacheEnabled("1") &&
         platform::win32::ResolveNativeLinearSpanCacheEnabled("on") &&
@@ -449,29 +452,29 @@ bool RunNativeLinearSpanProbe()
         !platform::win32::ResolveNativeLinearSpanCacheEnabled("0") &&
         !platform::win32::ResolveNativeLinearSpanCacheEnabled("invalid") &&
         platform::win32::ResolveNativeLinearSpanRejectCacheEnabled(
-            runtime::ExecutionBackend::kAotDbt, "") &&
+            runtime::ExecutionBackend::kDynamic, "") &&
         !platform::win32::ResolveNativeLinearSpanRejectCacheEnabled(
-            runtime::ExecutionBackend::kAotDynamic, "") &&
+            runtime::ExecutionBackend::kLegacy, "") &&
         platform::win32::ResolveNativeLinearSpanRejectCacheEnabled(
-            runtime::ExecutionBackend::kAotDbt, "1") &&
+            runtime::ExecutionBackend::kDynamic, "1") &&
         platform::win32::ResolveNativeLinearSpanRejectCacheEnabled(
-            runtime::ExecutionBackend::kAotDbt, "on") &&
+            runtime::ExecutionBackend::kDynamic, "on") &&
         platform::win32::ResolveNativeLinearSpanRejectCacheEnabled(
             runtime::ExecutionBackend::kLegacy, "true") &&
         !platform::win32::ResolveNativeLinearSpanRejectCacheEnabled(
-            runtime::ExecutionBackend::kAotDbt, "0") &&
+            runtime::ExecutionBackend::kDynamic, "0") &&
         !platform::win32::ResolveNativeLinearSpanRejectCacheEnabled(
-            runtime::ExecutionBackend::kAotDbt, "invalid") &&
+            runtime::ExecutionBackend::kDynamic, "invalid") &&
         !platform::win32::ResolveRetiredTrapNativeSpanEnabled(
-            runtime::ExecutionBackend::kAotDbt, "") &&
+            runtime::ExecutionBackend::kDynamic, "") &&
         platform::win32::ResolveRetiredTrapNativeSpanEnabled(
-            runtime::ExecutionBackend::kAotDbt, "1") &&
+            runtime::ExecutionBackend::kDynamic, "1") &&
         platform::win32::ResolveRetiredTrapNativeSpanEnabled(
             runtime::ExecutionBackend::kLegacy, "on") &&
         !platform::win32::ResolveRetiredTrapNativeSpanEnabled(
-            runtime::ExecutionBackend::kAotDbt, "0") &&
+            runtime::ExecutionBackend::kDynamic, "0") &&
         !platform::win32::ResolveRetiredTrapNativeSpanEnabled(
-            runtime::ExecutionBackend::kAotDbt, "invalid") &&
+            runtime::ExecutionBackend::kDynamic, "invalid") &&
         !platform::win32::ResolveNativeLinearSpanWritesEnabled("") &&
         platform::win32::ResolveNativeLinearSpanWritesEnabled("1") &&
         platform::win32::ResolveNativeLinearSpanWritesEnabled("on") &&

@@ -35,7 +35,7 @@ $prevCallStep = $env:REPIU_AOT_DBT_CALL_STEP
 
 Push-Location $repoRoot
 try {
-    $env:REPIU_EXECUTION_BACKEND = "aot-dbt"
+    $env:REPIU_EXECUTION_BACKEND = "dynamic"
     $env:REPIU_EXECUTION_TIMEOUT_MS =
         $DurationMilliseconds.ToString()
     $env:REPIU_EEPROM_PATH = $runEeprom
@@ -54,7 +54,7 @@ try {
     )
     $stepSummary = $combinedLog |
         Where-Object {
-            $_ -match 'AOT-DBT CALL step probe targets/events'
+            $_ -match 'dynamic CALL step probe targets/events'
         } |
         Select-Object -Last 1
     $exceptionState = $combinedLog |

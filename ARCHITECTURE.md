@@ -414,7 +414,7 @@ entry EIP별 스캔 결과를 실험적으로 캐시합니다. 캐시 가능한 
 제한됩니다. 키에 page generation을 포함하므로 새 generation 발행 뒤에는 stale 항목을
 지우고 재스캔합니다. retired, quarantined, 미추적, cross-page 항목은 항상 재스캔합니다.
 60초 supervisor/direct 예비 A/B에서 hit가 0이었으므로 이 캐시는 기본 OFF이며, 기존
-`aot-dbt` span 기본 정책에는 영향을 주지 않습니다.
+`dynamic` span 기본 정책에는 영향을 주지 않습니다.
 
 Task 288 Stage 2는 `REPIU_NATIVE_LINEAR_SPAN_WRITES=1`에서만 memory-write 통과를
 실험합니다. 스캐너가 지나는 모든 코드 page가 write-watch로 덮여야 하며, entry 자체의
@@ -430,7 +430,7 @@ indirect/far jump와 역방향 jump는 기존 경계로 남습니다. 60초 A/B�
 0회, backward stop은 703회였으므로 기본 OFF이며 conditional-branch Dr1 확장도 진행하지
 않습니다.
 
-Task 287의 반복 A/B 뒤 `aot-dbt`는 환경 변수 미지정 시 이 span을 기본 활성화합니다.
+Task 287의 반복 A/B 뒤 `dynamic`는 환경 변수 미지정 시 이 span을 기본 활성화합니다.
 다른 backend의 기본값은 계속 OFF입니다. `REPIU_NATIVE_LINEAR_SPAN=1|on|true`는
 backend와 무관하게 ON, `0|off|false`는 OFF이며 알 수 없는 값도 fail-closed OFF입니다.
 프로그램 전체의 기본 실행 backend는 이 정책으로 바뀌지 않습니다.
@@ -449,7 +449,7 @@ the same 4 KiB page and that page is both write-watched and backed by an active 
 generation. The page generation is part of the key, so generation replacement discards a
 stale entry and rescans. Retired, quarantined, untracked, and cross-page results always
 rescan. The cache remains default off because 60-second supervisor and direct-loader pilot
-runs observed zero hits; the existing `aot-dbt` span default is unchanged.
+runs observed zero hits; the existing `dynamic` span default is unchanged.
 
 Task 288 Stage 2 experimentally crosses memory writes only under
 `REPIU_NATIVE_LINEAR_SPAN_WRITES=1`. Every traversed code page must be write-watched. A write
@@ -466,7 +466,7 @@ indirect/far jumps, and backward jumps retain the old boundary. A 60-second A/B 
 zero forward chains and 703 backward stops, so the feature remains default off and the
 conditional-branch Dr1 extension is not pursued.
 
-After Task 287's repeated A/B, `aot-dbt` enables spans by default when the environment is
+After Task 287's repeated A/B, `dynamic` enables spans by default when the environment is
 unset; other backends remain off by default. `REPIU_NATIVE_LINEAR_SPAN=1|on|true` enables
 the path for any backend, `0|off|false` disables it, and unknown values fail closed to
 disabled. This policy does not change the program-wide default execution backend.
@@ -624,17 +624,55 @@ links preserve guest linear control flow independently of cache layout.
 
 `platform::win32::PlaceWin32AotCodeCache`는 별도 Win32 cache allocation과
 RW copy 후 RX 전환, instruction-cache flush, 양방향 guest/cache lookup을
-담당합니다. `legacy`가 기본 backend이고 `REPIU_EXECUTION_BACKEND=aot`은 정적
-cache bridge를, `aot-dynamic`은 live arena snapshot에서 arbitrary-entry CFG를
-추가하는 실험 경로를 활성화합니다. cache sentinel은 기존 VEH/HLE dispatcher로
-복귀하며, 해결할 수 없는 target은 legacy single-step으로 fail-closed합니다.
+담당합니다. `legacy`가 기본 backend이고 `REPIU_EXECUTION_BACKEND=dynamic`은 정적
+cache bridge와 live arena에서 arbitrary-entry CFG를 덧붙이는 동적 번역을 함께
+활성화합니다. cache sentinel은 기존 VEH/HLE dispatcher로 복귀하며, 해결할 수 없는
+target은 legacy single-step으로 fail-closed합니다.
 
 The Win32 placement layer owns executable cache allocation, RW copy followed by
 RX protection, instruction-cache flushing, and bidirectional guest/cache lookup.
-`legacy` remains the default backend. `REPIU_EXECUTION_BACKEND=aot` enables the
-static cache bridge, while `aot-dynamic` can append an arbitrary-entry CFG from a
-live arena snapshot. Cache sentinels return through the existing VEH/HLE
-dispatcher, and unresolved targets fail closed to legacy single-step execution.
+`legacy` remains the default backend, and `REPIU_EXECUTION_BACKEND=dynamic`
+enables both the static cache bridge and the dynamic translation that appends an
+arbitrary-entry CFG from the live arena. Cache sentinels return through the
+existing VEH/HLE dispatcher, and unresolved targets fail closed to legacy
+single-step execution.
+
+## 실행 backend 명명 규칙 / Execution backend naming layers
+
+세 이름이 자주 함께 나오지만 서로 다른 층을 가리킵니다. `dynamic` backend를
+`REPIU_AOT_*` 노브로 조율하는 구조가 처음에는 어긋나 보이므로 여기서 정리합니다.
+
+| 층위 | 이름 | 가리키는 것 |
+|---|---|---|
+| 실행 정책 | `legacy` / `dynamic` | 사용자가 `REPIU_EXECUTION_BACKEND`로 고르는 노브 |
+| 하위 시스템 | `AOT` | 실행 전에 code cache를 계획·생성·배치하는 단계 |
+| 번역 계층 | `DBT` | 그 cache 위에서 런타임에 동작하는 번역·dispatch |
+
+`AOT`는 여전히 정확한 이름입니다. `dynamic` backend에서도 게스트 실행 **전에**
+`BuildAotTranslationPlan` → `BuildAotCodeCacheImage` → `PlaceWin32AotCodeCache`가
+수행되어 `Win32 AOT cache base/bytes/entry`를 남깁니다. backend 이름이 `dynamic`인
+것은 실행 중에도 번역이 계속된다는 뜻이지, 정적 단계가 없다는 뜻이 아닙니다.
+
+Task 425는 backend를 `legacy`와 `dynamic` 둘로 줄였습니다. 옛 이름 `aot`,
+`aot-dynamic`, `aot-dbt`는 별칭이 아니라 거부이며, 지정하면 실행 전에 exit 1로
+종료합니다.
+
+The three names appear together often but denote different layers, and a `dynamic`
+backend tuned through `REPIU_AOT_*` knobs reads as a contradiction until they are
+separated: `legacy`/`dynamic` name the **execution policy** the user selects,
+`AOT` names the **subsystem** that plans, builds, and places the code cache before
+execution, and `DBT` names the **translation layer** operating on that cache at
+runtime.
+
+`AOT` remains accurate. Even under `dynamic`, `BuildAotTranslationPlan`,
+`BuildAotCodeCacheImage`, and `PlaceWin32AotCodeCache` all complete **before** the
+guest starts and log `Win32 AOT cache base/bytes/entry`. The backend being called
+`dynamic` means translation continues during execution, not that the static stage
+is absent.
+
+Task 425 reduced the backends to `legacy` and `dynamic`. The old names `aot`,
+`aot-dynamic`, and `aot-dbt` are rejected rather than aliased, exiting 1 before
+execution.
 
 동적 translation은 arena를 복사하지 않고 **직접 참조**합니다(Task 329).
 `RelocatedRuntimeObject`는 소유 바이트(`memory`) 또는 외부 뷰(`external_bytes`) 중
@@ -666,23 +704,25 @@ boundaries. The dispatcher never scans for a plausible return address.
 
 ## AOT-DBT 실행 정책 기반 / AOT-DBT execution-policy foundation
 
-Task 276은 플랫폼 공용 `runtime::ExecutionBackend`에 `legacy`, `aot`,
-`aot-dynamic`, `aot-dbt`를 정의합니다. Win32 host, 실행 trampoline과 thread
-context가 같은 정책 값을 전달하므로 backend 문자열, 정적 cache 사용, 동적 append,
-DBT 전용 dispatch 기능을 한 곳에서 판정합니다. `aot-dbt`는 별도 실행기나 코드
+Task 276은 플랫폼 공용 `runtime::ExecutionBackend`에 실행 정책을 정의하고,
+Task 425가 이를 `legacy`와 `dynamic` 둘로 정리했습니다. Win32 host, 실행 trampoline과
+thread context가 같은 정책 값을 전달하므로 backend 문자열, 정적 cache 사용, 동적
+append, DBT 전용 dispatch 기능을 한 곳에서 판정합니다. `dynamic`은 별도 실행기나 코드
 복제가 아니라 기존 AOT planner/emitter/cache/worker/SMC/HLE를 공유하는 정책입니다.
+
+backend가 둘뿐이므로 정적 cache 생성·동적 번역·HLE 직후 즉시 재진입은 모두 같은
+조건이며, `ExecutionBackendUsesDynamicTranslation` 하나로 판정합니다.
 
 첫 DBT increment는 cache sentinel의 HLE 명령이 완전히 emulate되어 EIP가 전진한 뒤,
 기존 cache entry로 즉시 복귀할 수 있으면 다음 원본 명령의 TF single-step을 생략합니다.
 Zydis preflight가 첫 control transfer 전의 등록된 HLE boundary, decode/read 실패와
 64명령 상한을 거부합니다. 방금 처리한 명령이 segment register를 쓴 경우에도 selector
 변경 뒤의 HLE 의미를 보존하기 위해 기존 TF bridge를 유지합니다. cache miss,
-quarantine과 모든 검증 실패는 `aot-dynamic`과 같은 원본 single-step fallback으로
-fail-closed합니다.
+quarantine과 모든 검증 실패는 원본 single-step fallback으로 fail-closed합니다.
 
 ```mermaid
 flowchart LR
-    H["AOT HLE boundary handled"] --> P{"aot-dbt policy"}
+    H["AOT HLE boundary handled"] --> P{"dynamic policy"}
     P -->|"no"| TF["existing TF bridge"]
     P -->|"yes"| S{"segment write / span preflight"}
     S -->|"unsafe"| TF
@@ -711,11 +751,14 @@ Task 289 Stage 2의 `REPIU_AOT_DBT_POST_HLE_TRANSLATE=1`은 생성 CFG 전체의
 번역합니다. segment-write와 quarantine 장벽은 유지됩니다. 60초 A/B에서 번역 시도가
 0회였으므로 기본 OFF입니다.
 
-Task 276 defines `legacy`, `aot`, `aot-dynamic`, and `aot-dbt` in the
-platform-neutral `runtime::ExecutionBackend`. The Win32 host, trampoline, and
-thread context carry the same policy value, while `aot-dbt` shares the existing
-planner, emitter, cache, worker, SMC coherency, and HLE implementation rather than
-forking an executor.
+Task 276 defines the execution policy in the platform-neutral
+`runtime::ExecutionBackend`, which Task 425 reduced to `legacy` and `dynamic`. The
+Win32 host, trampoline, and thread context carry the same policy value, while
+`dynamic` shares the existing planner, emitter, cache, worker, SMC coherency, and
+HLE implementation rather than forking an executor. With only two backends,
+building the static cache, translating dynamically, and re-entering immediately
+after an HLE boundary are one condition, decided by
+`ExecutionBackendUsesDynamicTranslation`.
 
 The first DBT increment skips the next TF instruction only when a fully emulated
 HLE boundary can re-enter an existing cache entry safely. Zydis preflight rejects
@@ -743,7 +786,7 @@ The feature stays default off because a 60-second A/B recorded zero translation 
 
 ### AOT-DBT return miss host dispatch
 
-Task 277은 `aot-dbt` return inline-cache miss tail만 `INT3` 대신 Win32 x86
+Task 277은 `dynamic` return inline-cache miss tail만 `INT3` 대신 Win32 x86
 host-stack thunk로 연결합니다. 플랫폼 공용 emitter는 guest source, miss 주소와
 success/fallback continuation의 image-relative metadata를 만들고, Win32 placement와
 dynamic append가 RW 구간에서 cache 절대 주소와 host thunk `rel32`를 해결합니다.
@@ -764,12 +807,12 @@ flowchart LR
     F --> V["existing VEH return dispatcher"]
 ```
 
-15초 통제 실행에서 `aot-dbt`는 return host dispatch `5,507/849/4,658`
-시도/성공/fallback, fatal 0, legacy fallback 0을 기록했습니다. 대조
-`aot-dynamic`은 새 카운터 `0/0/0`으로 기존 layout을 유지했습니다. 두 실행의
-격리 EEPROM SHA-256은 원본과 같았습니다.
+15초 통제 실행에서 `dynamic`는 return host dispatch `5,507/849/4,658`
+시도/성공/fallback, fatal 0, legacy fallback 0을 기록했습니다. 대조군은 당시 존재하던
+`aot-dynamic` backend(Task 425에서 제거)로, 새 카운터 `0/0/0`과 기존 layout을
+유지했습니다. 두 실행의 격리 EEPROM SHA-256은 원본과 같았습니다.
 
-Task 277 connects only the `aot-dbt` return inline-cache miss tail to a Win32 x86
+Task 277 connects only the `dynamic` return inline-cache miss tail to a Win32 x86
 host-stack thunk. The platform-neutral emitter records image-relative source,
 miss, and continuation metadata; Win32 placement and dynamic append resolve the
 absolute cache address and host-thunk `rel32` in their existing writable windows.
@@ -781,8 +824,9 @@ A successful continuation uses `ret imm16` to reproduce the original `C3`/`C2`
 pop and transfer to the cache target. Any failure removes only DBT metadata with
 `LEA ESP` and reaches the provenance `INT3`, preserving the existing VEH fallback.
 A controlled 15-second run recorded 5,507/849/4,658 attempts/successes/fallbacks,
-zero fatal state, and zero legacy fallback; `aot-dynamic` recorded 0/0/0 and kept
-its existing layout. Isolated EEPROM hashes remained unchanged.
+zero fatal state, and zero legacy fallback; the contrast arm was the then-existing
+`aot-dynamic` backend, removed in Task 425, which recorded 0/0/0 and kept its
+existing layout. Isolated EEPROM hashes remained unchanged.
 
 Task 280은 AOT-DBT 후속 순서를 네 단계로 고정합니다. (1) Task 276 HLE 후 기존
 cache 즉시 복귀와 (2) Task 277 RET miss host dispatch는 완료됐습니다. 다음은
@@ -807,7 +851,7 @@ quarantine, non-guest, translation, unknown)를 공유하고, `RecordAotDbtRetur
 전달하므로 기존 호출자 동작은 그대로입니다. `INT3` 기반 provenance fallback은 변경
 없이 유지됩니다.
 
-격리 EEPROM `aot-dbt` 15초와 120초 hot phase 실행에서 fallback은
+격리 EEPROM `dynamic` 15초와 120초 hot phase 실행에서 fallback은
 `5,413/5,413`과 `8,034/8,034` 모두 `quarantined target` 한 칸이었고, 나머지 8개 원인은
 0이었습니다. quarantine은 자기 수정 페이지의 정확성 장치이므로 RET 경로에서 완화하지
 않습니다. 같은 hot phase의 indirect boundary는 34,851회로 RET fallback의 약 4.3배이며,
@@ -834,11 +878,11 @@ Task 282는 4단계를 A안으로 구현합니다. `FF /2`/`FF /4` inline-cache 
 (`AotDbtDispatchFallbackReason`, slot 3=`kUnreadableSource`)이고, 보고 attempt는 두 경로
 모두 `success + fallback`으로 도출합니다.
 
-합성 probe(`dbt_indirect_dispatch_all`)는 통과하지만, 실제 `aot-dbt`에서 활성화하면 Glide
+합성 probe(`dbt_indirect_dispatch_all`)는 통과하지만, 실제 `dynamic`에서 활성화하면 Glide
 attract 경로에서 결정적으로 크래시합니다. 성공 전이의 최종 상태는 VEH
 `CONTINUE_EXECUTION` 경로와 증명상 동일한데도 누적 손상이 발생하며, layout·inline cache
 patch·FPU/SSE는 통제 실험으로 근인에서 배제됐습니다. 따라서 이 경로는 **기본 비활성
-(opt-in, `REPIU_AOT_DBT_INDIRECT=1`)** 이며, 기본 `aot-dbt`는 Task 281 상태를 유지합니다.
+(opt-in, `REPIU_AOT_DBT_INDIRECT=1`)** 이며, 기본 `dynamic`는 Task 281 상태를 유지합니다.
 상세는 `docs/analysis/current-execution-frontier.md` Task 282 항목을 참조합니다.
 
 Task 282 implements Stage 4 (option A): the `FF /2` / `FF /4` inline-cache miss tail
@@ -850,12 +894,12 @@ as `success + fallback` for both paths. The synthetic probe passes, but enabling
 live deterministically crashes the Glide attract path even though the success transfer's
 final state is provably identical to the VEH `CONTINUE_EXECUTION` path; layout, patching,
 and FPU/SSE were ruled out. The path is therefore opt-in and disabled by default
-(`REPIU_AOT_DBT_INDIRECT=1`), and the default `aot-dbt` keeps its Task 281 behavior.
+(`REPIU_AOT_DBT_INDIRECT=1`), and the default `dynamic` keeps its Task 281 behavior.
 
 ### AOT-DBT 미해결 direct edge dispatch / unresolved direct-edge dispatch
 
 Task 395는 완성된 정적 image에 target이 없는 direct call, direct jump, conditional branch,
-block fall-through만 `aot-dbt` 전용 tail stub로 연결합니다. 이미 address map에 있는 target은
+block fall-through만 `dynamic` 전용 tail stub로 연결합니다. 이미 address map에 있는 target은
 기존 `rel32` 직결을 유지하며, 다른 AOT backend는 image 생성을 fail-closed합니다. 따라서
 정적 CFG의 보수적 과잉 탐색이 전체 AOT-DBT image를 폐기하지 않으면서도 일반 AOT의
 완결성 계약은 바뀌지 않습니다.
@@ -1042,6 +1086,50 @@ default, and invalid values fail before execution. The policy changes only emitt
 guest code, target resolution, patch ordering, and page-retirement coherence remain shared.
 Controlled measurements isolate persistent state with `REPIU_EEPROM_PATH` and use one-shot
 window-open, texture, draw, and swap milestones from shared live telemetry.
+
+## AOT build option toggle 관례 / AOT build-option toggle convention
+
+Task 424는 환경 변수 하나로 기능을 켜고 끄는 관례를 플랫폼 공용
+`runtime::env_toggle`로 모읍니다. 두 함수 모두 참 값은 `1`, `on`, `true` 세 가지뿐이고
+대소문자 변환을 하지 않으며, 알 수 없는 값은 fail-closed OFF입니다. 오타가 조용히 ON으로
+통과하면 A/B 결과를 잘못 읽게 되므로 이 성질이 중요합니다.
+
+| 함수 | 미지정·빈 값 | 용도 |
+|---|---|---|
+| `ResolvePromotedToggle` | ON | A/B로 승격이 끝난 기능. 명시적 `0|off|false`만 진단용 opt-out |
+| `ResolveOptInToggle` | OFF | 아직 기본값이 아닌 기능 |
+
+Task 424는 backend 값만으로 결정되던 세 build option에 각각 toggle을 부여합니다.
+셋 다 `ResolvePromotedToggle` 계열입니다.
+
+| 환경 변수 | build option |
+|---|---|
+| `REPIU_AOT_DBT_RETURN_MISS_DISPATCH` | `enable_dbt_return_miss_dispatch` |
+| `REPIU_AOT_DBT_DIRECT_EDGE_DISPATCH` | `enable_dbt_direct_edge_dispatch` |
+| `REPIU_AOT_DBT_TIMER_SAFE_POINTS` | `enable_timer_safe_points` |
+
+**확인됨 (Task 424):** direct-edge dispatch는 이미지에 따라 필수입니다. pumpit3의
+`PIU.EXE`에는 cache 밖을 가리키는 direct edge가 10개 있어, 이 기능을 끄면 emitter가
+그 edge를 표현하지 못해 `direct control-flow target is outside the cache`로 이미지
+생성이 실패합니다. 그런 edge가 0개인 pumpit1은 꺼도 정상 빌드됩니다. 이 실패는
+실행 전에 exit 1로 드러나므로 조용한 오동작이 아닙니다.
+
+Task 424 collects the single-variable gating convention into the platform-neutral
+`runtime::env_toggle`. Both functions accept only `1`, `on`, and `true` as true, neither folds
+case, and any unrecognized value is a fail-closed OFF — a typo must never pass silently as ON,
+or an A/B result is read wrong. `ResolvePromotedToggle` reads unset and empty as ON for
+features already promoted by measurement, leaving explicit `0|off|false` as the diagnostic
+opt-out; `ResolveOptInToggle` reads them as OFF for features that are not yet defaults.
+
+The three options that were previously decided by the backend value alone now each carry a
+promoted-style toggle: `REPIU_AOT_DBT_RETURN_MISS_DISPATCH`,
+`REPIU_AOT_DBT_DIRECT_EDGE_DISPATCH`, and `REPIU_AOT_DBT_TIMER_SAFE_POINTS`.
+
+**Confirmed (Task 424):** direct-edge dispatch is mandatory for some images. pumpit3's
+`PIU.EXE` contains ten direct edges whose targets fall outside the cache, so disabling the
+feature leaves the emitter unable to represent them and image construction fails with
+`direct control-flow target is outside the cache`. pumpit1, which has none, builds either way.
+The failure surfaces as exit 1 before execution rather than as silent misbehaviour.
 
 ## AOT bounded jump table 번역 / AOT bounded jump-table translation
 
@@ -1291,7 +1379,7 @@ fallback `INT3`를 확인하고 cache breakpoint provenance는 fallback을 plann
 55초 OFF/ON에서 progress는 `37,606 → 39,571`(+5.23%), triangle draw는
 `412 → 468`(+13.59%), AOT boundary는 `74,724 → 59,334`(-20.60%)였습니다. ON의
 success/fallback은 `21,011/1,593`(92.95% 성공)였고 fatal/AOT legacy fallback은 0,
-EEPROM hash는 일치했습니다. 따라서 `aot-dbt`에서는 기본 ON이며
+EEPROM hash는 일치했습니다. 따라서 `dynamic`에서는 기본 ON이며
 `REPIU_AOT_GUARDED_SEGMENT_POP=0|off|false` 또는 알 수 없는 값으로 fail-closed
 비활성화합니다.
 
@@ -1315,7 +1403,7 @@ the slot entry as INT3. Whole-CFG validation checks the entry opcode, patch loca
 fallback INT3, while breakpoint provenance continues to classify the fallback as planner HLE.
 The 55-second comparison improved progress by 5.23% and triangle draws by 13.59%, reduced AOT
 boundaries by 20.60%, and observed a 92.95% guarded success rate with zero fatal/AOT legacy
-fallback and matching EEPROM hashes. The path is default-on for `aot-dbt`; setting
+fallback and matching EEPROM hashes. The path is default-on for `dynamic`; setting
 `REPIU_AOT_GUARDED_SEGMENT_POP=0|off|false`, or an unknown value, disables it
 fail-closed.
 
@@ -1331,7 +1419,7 @@ Task 304는 기본 native linear-span scan이 0~1개 일반 명령 뒤 정적 �
 write/jump 실험 mode는 register·page·target 상태에 의존하므로 캐시를 우회하고, 항목
 수는 65,536개로 제한합니다. 세 번의 60초 A/B에서 거절 hit율은 99.68~99.69%였고
 texture milestone 중앙값은 1,031ms(약 4.9%) 빨라졌습니다. fatal/legacy fallback은 0,
-EEPROM hash는 일치했습니다. 따라서 `aot-dbt` 기본 ON이며 다른 backend는 기본 OFF입니다.
+EEPROM hash는 일치했습니다. 따라서 `dynamic` 기본 ON이며 다른 backend는 기본 OFF입니다.
 `REPIU_NATIVE_LINEAR_SPAN_REJECT_CACHE=0|off|false` 또는 알 수 없는 값은 비활성화합니다.
 
 Task 304 caches default native linear-span scans that reject at a static boundary after zero
@@ -1343,7 +1431,7 @@ conservative fallback optimization independent of SMC/AOT generation state.
 Register/page/target-dependent write and jump experiments bypass the cache, which is capped
 at 65,536 entries. Three 60-second A/B pairs observed a 99.68-99.69% rejection hit rate and a
 1,031ms median texture-milestone improvement (about 4.9%), with zero fatal/legacy fallback
-and matching EEPROM hashes. It is default-on for `aot-dbt`, default-off elsewhere, and
+and matching EEPROM hashes. It is default-on for `dynamic`, default-off elsewhere, and
 disabled by `0|off|false` or unknown settings.
 
 ## Retired trap 즉시 native span 후보 / Immediate native span after retired traps
@@ -1615,7 +1703,7 @@ census uses no such gate. Runs with it enabled are not quotable for wall time or
 ## AOT back-edge 타이머 safe point / AOT back-edge timer safe point
 
 Task 348은 자연 VEH 경계가 없는 AOT busy-wait에서도 원본 INT 8 ISR을 계속 실행하기
-위한 협력형 rendezvous를 추가합니다. `aot-dbt` emitter는 direct/conditional back edge
+위한 협력형 rendezvous를 추가합니다. `dynamic` emitter는 direct/conditional back edge
 앞에 `pushfd`/request compare/`popfd` guard를 생성하고, 요청이 있을 때만 placement에
 등록된 전용 `INT3`로 진입합니다. 정상 경로와 trap 경로 모두 원래 GPR/ESP/EFLAGS를
 보존한 상태에서 기존 translated branch로 이어집니다.
@@ -1641,7 +1729,7 @@ pending이 먼저 소비된 경우 request도 함께 지워 stale trap을 막습
 site 수와 trap/injected/deferred를 분리해 기록합니다.
 
 Task 348 adds a cooperative rendezvous that keeps the original INT 8 ISR running even inside
-an AOT busy-wait with no natural VEH boundary. The `aot-dbt` emitter places a
+an AOT busy-wait with no natural VEH boundary. The `dynamic` emitter places a
 `pushfd`/request-compare/`popfd` guard before direct and conditional back edges and enters a
 placement-registered dedicated `INT3` only when requested. Both paths preserve the original
 GPRs, ESP, and EFLAGS before continuing with the translated branch.
@@ -1987,7 +2075,7 @@ duplicate count equals what was actually skipped.
 ## Release 실행 축 측정 계약 / Release execution-axis measurement contract
 
 Task 347의 `scripts/task347_release_axis_reattribution.ps1`은 runtime 의미를 바꾸지 않는
-Release 측정 entry point입니다. 같은 seed의 격리 EEPROM 세 개, `aot-dbt`,
+Release 측정 entry point입니다. 같은 seed의 격리 EEPROM 세 개, `dynamic`,
 `REPIU_EXECUTION_TIME_PROFILE=1`, 60초 direct-loader timeout을 사용하고 실행별
 stdout/stderr, JSON과 전체 CSV를 `build/benchmarks/release-axis/`에 남깁니다.
 
@@ -2010,7 +2098,7 @@ PMU처럼 이 두 편향을 피하는 방법에서만 다시 엽니다.
 
 Task 347's `scripts/task347_release_axis_reattribution.ps1` is a Release
 measurement entry point that changes no runtime semantics. It uses three
-EEPROM copies from one seed, `aot-dbt`,
+EEPROM copies from one seed, `dynamic`,
 `REPIU_EXECUTION_TIME_PROFILE=1`, and a 60-second direct-loader timeout,
 then writes per-run logs and JSON plus aggregate CSV under
 `build/benchmarks/release-axis/`.
@@ -2039,29 +2127,29 @@ external PMU-class method that avoids both biases.
 
 ## AOT-DBT Glide gate direct dispatch / AOT-DBT Glide 게이트 직접 디스패치
 
-Win32 `aot-dbt`는 `REPIU_AOT_DBT_GLIDE_GATE_DISPATCH`가 미설정이거나 `1|on|true`이면 자산 유래 Glide gate metadata와 합성 stub 원본을 검증한 뒤 `CALL host-stack thunk + RET argument_bytes` stub을 설치합니다. 첫 cache boundary는 같은 gate를 가리키는 direct fixup과 indirect inline-cache target을 executable LINEXE gate로 재연결하며, 이후 transfer resolution도 검증된 gate를 직접 반환합니다. 일반 excluded range, opt-out, 검증 실패는 기존 `INT3`/VEH 경로를 보존합니다.
+Win32 `dynamic`는 `REPIU_AOT_DBT_GLIDE_GATE_DISPATCH`가 미설정이거나 `1|on|true`이면 자산 유래 Glide gate metadata와 합성 stub 원본을 검증한 뒤 `CALL host-stack thunk + RET argument_bytes` stub을 설치합니다. 첫 cache boundary는 같은 gate를 가리키는 direct fixup과 indirect inline-cache target을 executable LINEXE gate로 재연결하며, 이후 transfer resolution도 검증된 gate를 직접 반환합니다. 일반 excluded range, opt-out, 검증 실패는 기존 `INT3`/VEH 경로를 보존합니다.
 
-On Win32 `aot-dbt`, an unset `REPIU_AOT_DBT_GLIDE_GATE_DISPATCH` or `1|on|true` validates asset-derived Glide metadata and the original synthetic stub, then installs a `CALL host-stack thunk + RET argument_bytes` stub. The first cache boundary relinks matching direct fixups and indirect inline-cache targets to the executable LINEXE gate, and later transfer resolution returns validated gates directly. General excluded ranges, opt-out, and validation failures preserve the existing `INT3`/VEH path.
+On Win32 `dynamic`, an unset `REPIU_AOT_DBT_GLIDE_GATE_DISPATCH` or `1|on|true` validates asset-derived Glide metadata and the original synthetic stub, then installs a `CALL host-stack thunk + RET argument_bytes` stub. The first cache boundary relinks matching direct fixups and indirect inline-cache targets to the executable LINEXE gate, and later transfer resolution returns validated gates directly. General excluded ranges, opt-out, and validation failures preserve the existing `INT3`/VEH path.
 
 ### Glide gate 직접 dispatch 기본 정책 / Glide-gate direct-dispatch default policy
 
-`0|off|false`, 빈 문자열, 알 수 없는 값은 fail-closed opt-out입니다. 자산 유래 gate/ABI 검증 실패와 `aot-dbt` 이외 backend는 기존 UD2/INT3/VEH 경로를 유지합니다.
+`0|off|false`, 빈 문자열, 알 수 없는 값은 fail-closed opt-out입니다. 자산 유래 gate/ABI 검증 실패와 `dynamic` 이외 backend는 기존 UD2/INT3/VEH 경로를 유지합니다.
 
-`0|off|false`, an empty string, and unknown values are fail-closed opt-outs. Asset-derived gate/ABI validation failures and backends other than `aot-dbt` retain the existing UD2/INT3/VEH path.
+`0|off|false`, an empty string, and unknown values are fail-closed opt-outs. Asset-derived gate/ABI validation failures and backends other than `dynamic` retain the existing UD2/INT3/VEH path.
 
 ## Guarded segment-load fast path / Guarded segment-load fast path
 
-Win32 `aot-dbt`에서 `REPIU_AOT_GUARDED_SEGMENT_LOAD`가 없거나 `1|on|true`이면 register-source `MOV Sreg, r16` 중 ES/DS/FS/GS를 전용 cache slot으로 처리합니다. source selector가 실제 CPU selector와 HLE shadow에 모두 같은 경우만 selector 상태를 바꾸지 않고 fallthrough합니다. SS, ESP source, memory source, selector 불일치, patch 실패는 원래 EFLAGS/GPR을 복구한 뒤 기존 INT3/VEH HLE를 사용합니다. `0|off|false`와 알 수 없는 값은 fail-closed opt-out입니다.
+Win32 `dynamic`에서 `REPIU_AOT_GUARDED_SEGMENT_LOAD`가 없거나 `1|on|true`이면 register-source `MOV Sreg, r16` 중 ES/DS/FS/GS를 전용 cache slot으로 처리합니다. source selector가 실제 CPU selector와 HLE shadow에 모두 같은 경우만 selector 상태를 바꾸지 않고 fallthrough합니다. SS, ESP source, memory source, selector 불일치, patch 실패는 원래 EFLAGS/GPR을 복구한 뒤 기존 INT3/VEH HLE를 사용합니다. `0|off|false`와 알 수 없는 값은 fail-closed opt-out입니다.
 
-On Win32 `aot-dbt`, an unset `REPIU_AOT_GUARDED_SEGMENT_LOAD` or `1|on|true` handles register-source `MOV Sreg, r16` for ES/DS/FS/GS in a dedicated cache slot. It leaves selector state unchanged and falls through only when the source selector equals both the physical CPU selector and HLE shadow. SS, ESP sources, memory sources, selector mismatches, and patch failures restore original EFLAGS/GPRs and retain the existing INT3/VEH HLE path. `0|off|false` and unknown values are fail-closed opt-outs.
+On Win32 `dynamic`, an unset `REPIU_AOT_GUARDED_SEGMENT_LOAD` or `1|on|true` handles register-source `MOV Sreg, r16` for ES/DS/FS/GS in a dedicated cache slot. It leaves selector state unchanged and falls through only when the source selector equals both the physical CPU selector and HLE shadow. SS, ESP sources, memory sources, selector mismatches, and patch failures restore original EFLAGS/GPRs and retain the existing INT3/VEH HLE path. `0|off|false` and unknown values are fail-closed opt-outs.
 
 ## Hybrid segment-override dispatch / Hybrid segment-override dispatch
 
-Win32 `aot-dbt`에서 `REPIU_AOT_DBT_SEGMENT_OVERRIDE_DISPATCH=1|on|true`이면 Zydis가 분류한 `kSegmentOverrideMem`에 기존 selector-guard native slot과 fail-closed HLE companion slot을 함께 생성합니다. live segment resolution이 `NativeFolded`이면 native entry를 복원하고, `HleLowMemory`이면 companion slot으로 `JMP rel32`를 패치하며, unresolved이면 기존 `INT3`를 유지합니다. native guard의 selector mismatch도 companion으로 이동하고 지원하지 않거나 안전하지 않은 명령은 기존 INT3/VEH bridge로 복구합니다.
+Win32 `dynamic`에서 `REPIU_AOT_DBT_SEGMENT_OVERRIDE_DISPATCH=1|on|true`이면 Zydis가 분류한 `kSegmentOverrideMem`에 기존 selector-guard native slot과 fail-closed HLE companion slot을 함께 생성합니다. live segment resolution이 `NativeFolded`이면 native entry를 복원하고, `HleLowMemory`이면 companion slot으로 `JMP rel32`를 패치하며, unresolved이면 기존 `INT3`를 유지합니다. native guard의 selector mismatch도 companion으로 이동하고 지원하지 않거나 안전하지 않은 명령은 기존 INT3/VEH bridge로 복구합니다.
 
 이 정책은 PIU 주소나 게임 상태를 사용하지 않고 명령 형식과 live segment policy만 사용합니다. Task 391의 모든 segment override를 dispatcher로 보내는 broad 정책은 장시간 측정에서 회귀하여 폐기했습니다. 미설정 기본값은 장시간 hybrid 검증 전까지 OFF이며, 비활성화하면 기존 selector-guard native folding과 low-memory INT3/VEH HLE 경로가 유지됩니다.
 
-On Win32 `aot-dbt`, `REPIU_AOT_DBT_SEGMENT_OVERRIDE_DISPATCH=1|on|true` emits both the existing selector-guard native slot and a fail-closed HLE companion for Zydis-classified `kSegmentOverrideMem`. Live segment resolution restores the native entry for `NativeFolded`, patches a `JMP rel32` to the companion for `HleLowMemory`, and retains `INT3` for unresolved state. A native-guard selector mismatch also enters the companion; unsupported or unsafe instructions recover through the existing INT3/VEH bridge.
+On Win32 `dynamic`, `REPIU_AOT_DBT_SEGMENT_OVERRIDE_DISPATCH=1|on|true` emits both the existing selector-guard native slot and a fail-closed HLE companion for Zydis-classified `kSegmentOverrideMem`. Live segment resolution restores the native entry for `NativeFolded`, patches a `JMP rel32` to the companion for `HleLowMemory`, and retains `INT3` for unresolved state. A native-guard selector mismatch also enters the companion; unsupported or unsafe instructions recover through the existing INT3/VEH bridge.
 
 The policy uses instruction form and live segment policy rather than PIU addresses or game state. Task 391's broad policy of routing every segment override through the dispatcher was rejected after a long-run regression. The unset default remains OFF pending long hybrid validation; disabled mode preserves selector-guard native folding and the low-memory INT3/VEH HLE path.
 ### 장시간 정책 판정 / Long-run policy decision

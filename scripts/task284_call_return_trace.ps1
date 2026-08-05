@@ -34,7 +34,7 @@ try {
             Copy-Item -LiteralPath $fixture -Destination $runEeprom
         }
 
-        $env:REPIU_EXECUTION_BACKEND = "aot-dbt"
+        $env:REPIU_EXECUTION_BACKEND = "dynamic"
         $env:REPIU_EXECUTION_TIMEOUT_MS =
             $DurationMilliseconds.ToString()
         $env:REPIU_EEPROM_PATH = $runEeprom
@@ -56,12 +56,12 @@ try {
         )
         $traceSummary = $combinedLog |
             Where-Object {
-                $_ -match 'AOT-DBT CALL/RET trace stored-events/calls/returns'
+                $_ -match 'dynamic CALL/RET trace stored-events/calls/returns'
             } |
             Select-Object -Last 1
         $firstDivergence = $combinedLog |
             Where-Object {
-                $_ -match 'AOT-DBT CALL/RET first divergence'
+                $_ -match 'dynamic CALL/RET first divergence'
             } |
             Select-Object -First 1
         $exceptionState = $combinedLog |

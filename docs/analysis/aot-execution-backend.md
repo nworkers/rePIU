@@ -1,5 +1,31 @@
 # AOT 실행 backend 준비 분석
 
+## Task 425 이름 대응 / Task 425 name mapping
+
+Task 425는 실행 backend를 `legacy`와 `dynamic` 둘로 줄였습니다. **아래의 과거 측정
+기록은 당시 이름 그대로 보존합니다.** 앞으로 절차를 실행할 때는 다음으로 읽습니다.
+
+| 옛 이름 | 현재 |
+|---|---|
+| `aot-dbt` | `dynamic` |
+| `aot-dynamic` | 제거됨 — 대응하는 현재 backend 없음 |
+| `aot` | 제거됨 — 대응하는 현재 backend 없음 |
+
+**확인됨 (Task 424):** 제거 시점에 `aot`와 `aot-dynamic`은 pumpit3에서 이미
+동작하지 않았습니다. 두 backend는 `enable_dbt_direct_edge_dispatch`가 거짓이므로
+`direct control-flow target is outside the cache`로 이미지 생성에 실패했습니다.
+그런 edge가 없는 pumpit1에서는 정상이었습니다. 근거는
+[Task 424 작업 로그](../work-logs/20260805-424-dbt-build-option-toggles.md) §5입니다.
+
+Task 425 reduced the execution backends to `legacy` and `dynamic`. **The historical
+measurements below keep the names they were recorded under**; read `aot-dbt` as
+`dynamic` when running a procedure today, and note that `aot` and `aot-dynamic` have
+no present-day equivalent. **Confirmed (Task 424):** by the time they were removed,
+both already failed to build the pumpit3 image with
+`direct control-flow target is outside the cache`, because neither enabled
+`enable_dbt_direct_edge_dispatch`; they still worked on pumpit1, which has no such
+edges. See [the Task 424 work log](../work-logs/20260805-424-dbt-build-option-toggles.md) §5.
+
 ## 확인됨
 
 Win32 x86 Debug에서 PIU의 118,615바이트 cache image를 `PAGE_READWRITE`로 할당·복사한 뒤 `PAGE_EXECUTE_READ`로 전환하고 instruction cache를 flush할 수 있습니다. cache entry에서 guest entry로 역매핑하고 다시 같은 cache entry로 정방향 매핑하는 round-trip도 성공했습니다.

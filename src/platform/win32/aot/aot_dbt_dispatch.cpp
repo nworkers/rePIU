@@ -147,12 +147,10 @@ bool TryResumeAotAfterHandledHle(CONTEXT* win32_context,
     }
     // Task 340: the first guard rejected 98.7% of SUPERBLOCK attempts, and its
     // conditions are split here so the reason is named rather than inferred.
-    if (!runtime::ExecutionBackendUsesImmediateHleReentry(
-            context->execution_backend))
-    {
-        ++context->hle_reentry_reject_backend;
-        return false;
-    }
+    // Task 426: the backend guard that used to lead this chain is gone. The null
+    // placement check above already implies the dynamic backend, because the
+    // trampoline's four non-AOT entry points hard-code a null placement and
+    // `kLegacy` at the call site, so it could never reject anything.
     if (!context->aot_reentry_pending)
     {
         ++context->hle_reentry_reject_not_pending;

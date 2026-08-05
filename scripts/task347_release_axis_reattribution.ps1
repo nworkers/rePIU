@@ -166,7 +166,7 @@ $runResults = @()
 try
 {
     [Environment]::SetEnvironmentVariable(
-        "REPIU_EXECUTION_BACKEND", "aot-dbt", "Process")
+        "REPIU_EXECUTION_BACKEND", "dynamic", "Process")
     [Environment]::SetEnvironmentVariable(
         "REPIU_EXECUTION_TIMEOUT_MS",
         ([string]($DurationSeconds * 1000)),
@@ -262,7 +262,7 @@ try
             "single-step run summary"
         $funnelMatch = Get-LastMetricMatch `
             $text `
-            "Win32 hle reentry funnel not-pending/backend/segment-write/outside-arena/quarantined/span-unsafe/success/total: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
+            "Win32 hle reentry funnel not-pending/segment-write/outside-arena/quarantined/span-unsafe/success/total: (\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)/(\d+)" `
             "HLE reentry funnel"
         $timerMatch = Get-LastMetricMatch `
             $text `
@@ -370,9 +370,11 @@ try
         }
         $guestExecutionCycles =
             [double]$unaccounted - $kernelTransitionCycles
-        $spanUnsafe = Get-UInt64Group $funnelMatch 6
-        $reentrySuccess = Get-UInt64Group $funnelMatch 7
-        $reentryTotal = Get-UInt64Group $funnelMatch 8
+        # Task 426 dropped the always-zero `backend` bucket, so every group after
+        # not-pending shifted down by one.
+        $spanUnsafe = Get-UInt64Group $funnelMatch 5
+        $reentrySuccess = Get-UInt64Group $funnelMatch 6
+        $reentryTotal = Get-UInt64Group $funnelMatch 7
 
         $result = [pscustomobject][ordered]@{
             run = $run

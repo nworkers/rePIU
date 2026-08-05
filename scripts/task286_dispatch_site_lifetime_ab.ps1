@@ -40,7 +40,7 @@ foreach ($name in $names) {
 
 Push-Location $repoRoot
 try {
-    $env:REPIU_EXECUTION_BACKEND = "aot-dbt"
+    $env:REPIU_EXECUTION_BACKEND = "dynamic"
     $env:REPIU_EXECUTION_TIMEOUT_MS =
         $DurationMilliseconds.ToString()
     $env:REPIU_EEPROM_PATH = $runEeprom
@@ -67,7 +67,7 @@ try {
         Where-Object { $_ -match 'diagnostic progress count' } |
         Select-Object -Last 1
     $indirect = $combinedLog |
-        Where-Object { $_ -match 'AOT-DBT indirect entry/attempt' } |
+        Where-Object { $_ -match 'dynamic indirect entry/attempt' } |
         Select-Object -Last 1
     $window = $combinedLog |
         Where-Object { $_ -match 'Glide window opens/logical size' } |

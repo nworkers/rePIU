@@ -22,7 +22,7 @@ FPS가 실제로 떨어지는 구간을 플레이합니다. **곡 선택 화면�
 구간**이어야 합니다.
 
 ```
-set REPIU_EXECUTION_BACKEND=aot-dbt
+set REPIU_EXECUTION_BACKEND=dynamic
 set REPIU_EXECUTION_TIMEOUT_MS=0
 set REPIU_GLIDE_SWAP_INTERVAL=0
 set REPIU_EXECUTION_TIME_PROFILE=1
@@ -110,7 +110,7 @@ difference from scene composition alone, and it is why Task 364's elision ceilin
 reads 25.11% against the Glide gate but only 4.55% against wall time.
 
 Play a section where the drop is real — notes falling, not a menu — with
-`REPIU_EXECUTION_BACKEND=aot-dbt`, `REPIU_EXECUTION_TIME_PROFILE=1`,
+`REPIU_EXECUTION_BACKEND=dynamic`, `REPIU_EXECUTION_TIME_PROFILE=1`,
 `REPIU_GLIDE_ORDINAL_TIME_PROFILE=1`, and `REPIU_GLIDE_SETTER_CENSUS=1`, capturing
 stderr. The run must end normally or by timeout for the exit summary to be written,
 so do not kill it; runs of about twenty seconds have been observed exiting 255

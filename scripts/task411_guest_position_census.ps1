@@ -84,7 +84,7 @@ for ($run = 1; $run -le $Runs; ++$run)
     $logPath = Join-Path $runDirectory "combined.log"
     $dumpPath = Join-Path $runDirectory "guest_position_census.txt"
 
-    $env:REPIU_EXECUTION_BACKEND = "aot-dbt"
+    $env:REPIU_EXECUTION_BACKEND = "dynamic"
     $env:REPIU_EXECUTION_TIMEOUT_MS = ($DurationSeconds * 1000).ToString()
     $env:REPIU_EEPROM_PATH = $eeprom
     if ($Census -eq "on")
