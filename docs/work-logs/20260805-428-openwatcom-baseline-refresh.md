@@ -58,12 +58,39 @@ baseline 갱신과 별개로, 같은 스위트를 두 backend로 돌려 얻은 �
 
 | 항목 | legacy | dynamic |
 |---|---:|---:|
-| RunPassed | 535 | **574** |
+| RunPassed | 535 | 574 |
 | RunPassRate | 67.5% | 72.4% |
 | 0.0.59 대비 회귀 | 0 | 0 |
-| legacy 대비 손실 | — | **0** |
+| legacy 대비 손실 | — | 0 |
 
-`dynamic`은 39개를 더 통과하고 잃는 샘플이 없습니다.
+> **정정 (Task 429):** 이 절은 원래 "`dynamic`이 39개를 더 통과하고 잃는 샘플이
+> 없다"를 정확성 우위로 서술했습니다. **틀렸습니다.** 당시 하네스의 통과 기준이
+> `exit 0`과 예외 미발생뿐이어서 **timeout을 통과로 셌습니다.** 39개 중 8개를
+> 표본 검사한 결과 절반이 완주하지 못한 위양성이었습니다.
+>
+> | 샘플 | `returned` | 로더 메시지 |
+> |---|---|---|
+> | `_searche.c`, `abrt_hnd.c`, `asctim_s.c`, `asctime.c` | true | original entry returned to host trampoline |
+> | `b_equip.c`, `b_memsiz.c`, `b_print.c`, `b_serial.c` | **false** | **minimal execution attempt timed out** |
+>
+> `b_*` 계열은 `INT 11h`(BIOS 장비 목록)를 씁니다. 이 인터럽트는 **양쪽 backend
+> 모두 미구현**입니다. 차이는 legacy가 이를 잡아 `unsupported DOS interrupt 0x11`로
+> 이름 붙여 실패로 보고하고, `dynamic`에서는 예외로 표면화되지 않아 게스트가 멈춘 채
+> timeout을 소진한다는 점뿐입니다. 즉 **legacy가 호환성이 낮은 것이 아니라 더
+> 정직했습니다.**
+>
+> 실제로 완주가 갈리는 나머지 절반의 원인은 HLE 표면 크기입니다. 샘플은
+> `dos4gw_console_sample` 프로파일이라 legacy에서 `AttemptWin32GuestStackHleExecution`을
+> 타고, 그 경로의 `HandleDosHleInstruction`은 `INT 21h`·`2Fh`·`31h`·`33h`·`16h`
+> 다섯 개만 처리합니다. `dynamic`은 AOT 경로로 전체 HLE dispatcher table을 씁니다.
+> 실행 방식(single-step 대 번역)의 충실도 차이가 아닙니다.
+>
+> 하네스 판정 기준은 [Task 429](20260805-429-sample-pass-criterion.md)에서
+> 완주 요구로 강화했습니다. **baseline 535는 옛 기준으로 측정된 값이므로**, 강화된
+> 기준의 첫 실행이 보고하는 회귀는 코드 회귀가 아니라 측정 정정일 수 있습니다.
+>
+> **baseline을 legacy 기준으로 잡은 결정은 이 발견으로 오히려 더 옳았음이
+> 확인됩니다** — `dynamic` 기준이었다면 위양성이 기준선에 박혔을 것입니다.
 
 **다만 이 워크로드에서 `dynamic`은 더 느립니다.** 양쪽 다 통과하는 샘플 10개의
 프로세스 wall-clock 중앙값 차이가 **+281 ms**였습니다.
@@ -124,9 +151,33 @@ would have recorded results for old code as the baseline.
 
 ## 4. Recorded alongside — per-backend passes and cost
 
-Running the same suite under both backends: `dynamic` passes 574 against legacy's 535, a 72.4%
-run-pass rate against 67.5%, with zero regressions against the old baseline and **zero samples
-lost** relative to legacy.
+Running the same suite under both backends: `dynamic` records 574 against legacy's 535, a 72.4%
+run-pass rate against 67.5%, with zero regressions against the old baseline and zero samples
+lost relative to legacy.
+
+> **Correction (Task 429):** this section originally read those 39 extra passes as a
+> correctness advantage. **That was wrong.** The harness criterion at the time was exit code
+> plus "no exception caught", which **also counts a timeout as a pass**. Of eight of the 39
+> sampled, four never completed: `_searche.c`, `abrt_hnd.c`, `asctim_s.c`, and `asctime.c`
+> report `returned: true`, but `b_equip.c`, `b_memsiz.c`, `b_print.c`, and `b_serial.c` report
+> `returned: false` with `minimal execution attempt timed out`.
+>
+> The `b_*` samples use `INT 11h` (BIOS equipment list), which **neither backend implements**.
+> The difference is only that legacy catches it and names it — `unsupported DOS interrupt 0x11`
+> — and fails, while under `dynamic` it never surfaces as a caught exception and the guest
+> stalls until the timeout. **Legacy is not less compatible; it is more honest.**
+>
+> The half that genuinely differ come from HLE surface size, not execution fidelity. Samples use
+> the `dos4gw_console_sample` profile, so legacy takes
+> `AttemptWin32GuestStackHleExecution`, whose `HandleDosHleInstruction` covers only `INT 21h`,
+> `2Fh`, `31h`, `33h`, and `16h`, while `dynamic` takes the AOT path with the full HLE dispatcher
+> table.
+>
+> [Task 429](20260805-429-sample-pass-criterion.md) tightened the criterion to require
+> completion. **The 535 baseline was measured under the old rule**, so regressions reported by
+> the first run under the new rule may be measurement corrections rather than code regressions.
+> Choosing a legacy baseline is further vindicated: a `dynamic` baseline would have frozen the
+> false passes into the gate.
 
 **On this workload `dynamic` is nevertheless slower.** Across ten samples that pass under both,
 the median per-process wall-clock difference is **+281 ms** (for example `_freect.c` at 110 ms

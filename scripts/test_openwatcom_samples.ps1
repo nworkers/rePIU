@@ -11,6 +11,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# Task 429: bump this whenever the run-pass criterion changes, so a comparison
+# against a baseline recorded under a different rule is flagged rather than read
+# as a code regression.
+$script:RunCriterionId = "exit0+no-exception+returned+no-timeout"
+
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $Loader = Join-Path $Root "build\win32_x86_debug\Debug\repiu_loader_win32.exe"
 $ResolvedManifestPath = Join-Path $Root $ManifestPath
@@ -142,6 +147,10 @@ function Get-Summary
 
     [pscustomobject]@{
         GeneratedAt = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        # Task 429: records which pass criterion produced these numbers. A
+        # baseline without this field predates the completion requirement, so its
+        # counts are not comparable -- see the -CompareBaseline warning.
+        RunCriterion = $script:RunCriterionId
         Version = Get-ProjectVersion
         GitCommit = Invoke-GitValue @("rev-parse", "HEAD")
         GitBranch = Invoke-GitValue @("branch", "--show-current")
@@ -433,9 +442,17 @@ try
                 -FilePath $Loader `
                 -Arguments @($sample.Executable) `
                 -WorkingDirectory $sample.BuildDirectory
+            # Task 429: the old criterion was exit code plus "no exception", which
+            # a timeout also satisfies -- the guest stalls, nothing is caught, and
+            # the loader exits 0. Four of eight sampled dynamic-only "passes" were
+            # timeouts scored as passes. Completion is now required explicitly:
+            # a genuine pass reports "returned: true", a timeout "returned: false"
+            # with "minimal execution attempt timed out".
             $runPassed =
                 $run.ExitCode -eq 0 -and
-                $run.Output -match "Win32 minimal execution exception caught: false"
+                $run.Output -match "Win32 minimal execution exception caught: false" -and
+                $run.Output -match "Win32 minimal execution returned: true" -and
+                $run.Output -notmatch "minimal execution attempt timed out"
             $runStatus = if ($runPassed) { "pass" } else { "fail" }
             $detail = $run.Output.Trim()
         }
@@ -472,6 +489,27 @@ try
         }
 
         $baseline = Get-Content $ResolvedBaselinePath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+        # Task 429: a baseline recorded under a different pass criterion is not
+        # comparable. Say so loudly, because the first run after tightening the
+        # criterion will report samples that were only ever passing as timeouts,
+        # and those are measurement corrections rather than code regressions.
+        $baselineCriterion = $null
+        if ($baseline.PSObject.Properties["RunCriterion"])
+        {
+            $baselineCriterion = [string]$baseline.RunCriterion
+        }
+        if ($baselineCriterion -ne $script:RunCriterionId)
+        {
+            $shown = if ([string]::IsNullOrEmpty($baselineCriterion))
+                     { "(none - predates Task 429)" } else { $baselineCriterion }
+            Write-Warning ("Baseline pass criterion differs from the current one." +
+                " baseline=$shown current=$($script:RunCriterionId)." +
+                " Reported regressions may be measurement corrections, not code" +
+                " regressions. Re-record the baseline with -UpdateBaseline once" +
+                " the difference has been reviewed.")
+        }
+
         $comparison = Compare-Baseline -Baseline $baseline -CurrentSamples $baselineSamples
         Write-JsonFile -Value $comparison -Path ([string]$ResolvedRegressionPath)
     }
