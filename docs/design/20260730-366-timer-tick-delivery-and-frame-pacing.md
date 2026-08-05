@@ -1,5 +1,15 @@
 # 20260730-366 Timer tick 전달과 프레임 pacing 귀속 설계 / Timer tick delivery and frame pacing
 
+> **[Task 432 범위 표기]** 이 설계가 만든 bounded backlog는 **Task 432에서 기본값이
+> 됐습니다.** 당시 "opt-in으로 유지" 결정의 근거였던 프레임 −16.4%는 그 시점 빌드의
+> 기록이며 현재는 재현되지 않습니다(상세: [432 설계 §3](20260806-432-timer-tick-backlog-default.md)).
+> 이 설계가 스위치를 **남겨 둔 것**이 Tasks 430~432의 진단을 가능하게 했습니다.
+>
+> **[Task 432 scope note]** The bounded backlog this design introduced **became the default in
+> Task 432**. The −16.4% frame cost behind the original "keep it opt-in" decision belongs to
+> that build and no longer reproduces. That this design **left the switch in place** is what
+> made the Tasks 430-432 diagnosis possible.
+
 ## 한국어
 
 ### 1. 왜 이 작업인가

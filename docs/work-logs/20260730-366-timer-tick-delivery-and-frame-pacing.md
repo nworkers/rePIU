@@ -5,6 +5,23 @@
 * 근거: [Task 365 작업 로그](20260730-365-glide-setter-state-elision.md)
 * 측정 산출물: `build/benchmarks/timer-tick-delivery/20260730-154554/` (로컬, Git 제외)
 
+> **[Task 432 범위 표기] 아래 대가 판정은 2026-07-30 빌드의 기록이며 현재 빌드에는
+> 적용되지 않습니다.** 여기서 잰 프레임 −16.4%의 기전은 "backlog가 상한 64에 고착되어
+> safe point가 상시 armed"였는데(판정 T3), Tasks 414·415·417·419가 실행 속도를 올린 뒤로
+> **backlog가 게이트 사이에 비워집니다**(`max_backlog` 12 대 상한 64, trap = 틱당 정확히
+> 1회). 현재 빌드 실측은 전달률 50.6% → **99.98%**, 프레임 −1.2%(편차 내)이며 사용자가
+> 노트·BGA 점프 해소를 확인했습니다. **backlog는 Task 432에서 기본값이 됐습니다.**
+> 근거: [432 설계](../design/20260806-432-timer-tick-backlog-default.md) ·
+> [431 게이트 귀속](20260806-431-tick-injection-opportunity.md)
+>
+> **[Task 432 scope note] The cost verdict below is the record of the 2026-07-30 build and does
+> not apply to the current one.** Its −16.4% came from the backlog pinning at the cap of 64 and
+> holding the safe point armed continuously (reading T3); since Tasks 414, 415, 417 and 419
+> raised execution speed, **the backlog now empties between gate calls** (`max_backlog` 12
+> against 64, traps at exactly one per owed tick). Measured on the current build, delivery goes
+> 50.6% → **99.98%** at −1.2% frames (within variation), and the user confirmed the note and BGA
+> jumping is gone. **The backlog became the default in Task 432.**
+
 ## 한국어
 
 ### 결론 요약

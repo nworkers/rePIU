@@ -2939,6 +2939,15 @@ void PrintExecutionAttempt(
             ticks.backlog_enabled, ticks.due_total, ticks.injected_total,
             ticks.coalesced_total, ticks.dropped_total, ticks.deferred_total,
             ticks.max_backlog, ticks.backlog);
+        // Task 431: how much of the loss landed while the guest was blocked in
+        // the Glide gate, where no safe point is reachable and the tick could
+        // not have been delivered at all.
+        logger.info(
+            "Win32 timer tick in-gate due/coalesced/coalesced-share: {}/{}/{}%",
+            ticks.due_in_gate_total, ticks.coalesced_in_gate_total,
+            ticks.coalesced_total != 0U
+                ? ticks.coalesced_in_gate_total * 100U / ticks.coalesced_total
+                : 0U);
     }
     logger.info("Win32 INT 8 chain HLE count/source/pointer/target: {}/{}/{}/{}:{}",
                 attempt.timer_interrupt_chain_hle_count,

@@ -133,6 +133,17 @@ public:
     bool exit_requested() const { return exit_requested_; }
     bool is_texture_combine_enabled() const { return texture_combine_enabled_; }
 
+    // Task 431: true while the guest thread is inside the host rendezvous and
+    // therefore running no guest code at all. The AOT timer safe points are
+    // INT3 bytes in the code cache, so none of them is reachable in this
+    // window and any tick that comes due is coalesced away. Read from the poll
+    // thread to attribute those losses.
+    // See docs/design/20260806-431-tick-injection-opportunity.md.
+    bool guest_in_glide_gate() const
+    {
+        return guest_in_glide_gate_.load(std::memory_order_relaxed);
+    }
+
     // Task 332 draw-census accessors. Read-only; they exist so the boundary can
     // report what a draw actually had bound without reaching into GL state.
     bool has_current_texture() const { return current_texture_ != nullptr; }
@@ -297,6 +308,12 @@ private:
     // See docs/design/20260805-419-glide-rendezvous-spin-wait.md.
     std::atomic<bool> host_command_pending_hint_{false};
     std::atomic<bool> host_command_complete_hint_{false};
+
+    // Task 431. Set only on the guest-thread path of InvokeOnHostThread. A
+    // ratio is what the measurement needs, not an exact boundary, so relaxed
+    // ordering is enough: one misattributed tick out of thousands cannot move
+    // the verdict.
+    std::atomic<bool> guest_in_glide_gate_{false};
 
     // Spin budget in microseconds, resolved once. Zero restores the pure
     // condition-variable wait.

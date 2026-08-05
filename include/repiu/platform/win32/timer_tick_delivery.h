@@ -20,15 +20,25 @@ namespace repiu::platform::win32
 // paths that run a few hundred times per second. The bounded backlog that
 // preserves owed ticks is opt-in.
 //
-// MEASURED (Task 366, three 60-second Release runs each): default delivery is
+// MEASURED (Task 366, three 60-second Release runs each): default delivery was
 // 88.1% of owed ticks, and enabling the backlog raised delivery to 91.8% while
-// *lowering* frames 16.4% (1,400 to 1,171, non-overlapping ranges). Frame rate is
-// therefore not gated by tick delivery. The regression is not the extra
-// interrupts themselves: keeping a tick owed keeps `timer_interrupt_pending` set,
-// which keeps the AOT timer safe point armed continuously, and safe-point traps
-// rose 20% with exceptions per frame up 6.8%. The backlog is kept opt-in as the
-// reproducible control arm for any future drain that does not hold the safe point
-// armed -- do not enable it expecting a speedup.
+// *lowering* frames 16.4%. The regression was not the extra interrupts: keeping a
+// tick owed keeps `timer_interrupt_pending` set, which kept the AOT timer safe
+// point armed continuously, and safe-point traps rose 20%.
+//
+// SUPERSEDED (Task 432). That cost mechanism no longer occurs, because the
+// backlog now empties between Glide gate calls instead of pinning at the cap:
+// `max_backlog` reads 12 against 64, and safe-point traps run at *exactly one per
+// owed tick* rather than continuously. Tasks 414, 415, 417 and 419 raised
+// execution speed in between, so Task 366's T3 reading -- that the host cannot
+// keep up with 240Hz -- does not hold here. Measured on the current build, the
+// backlog takes delivery from 50.6% to 99.98% over a 64-second gameplay window
+// and holds the guest clock to real time (`tick_lag_ms` growth +11,365ms to
+// -11ms), and the user confirmed it removes the note and BGA jumping.
+// The backlog is therefore ON by default and `REPIU_TIMER_TICK_BACKLOG=0` is
+// kept as the regression control -- it was Task 366 leaving this switch in place
+// that made the diagnosis possible.
+// See docs/design/20260806-432-timer-tick-backlog-default.md.
 
 // Chosen so a backlog cannot park the guest arbitrarily far in the past: at 240Hz
 // this is about a quarter second of owed time. Hitting it is itself a finding --
@@ -49,6 +59,12 @@ struct Win32TimerTickDeliveryCounters
     // Injection attempts deferred by the existing safe-point conditions (IF=0 or
     // a non-guest instruction pointer). These are delays, not losses.
     std::atomic<std::uint32_t> deferred_total{0};
+    // Task 431: of the owed and coalesced ticks above, those that arrived while
+    // the guest thread was blocked in the Glide gate. That window runs no guest
+    // code, so no safe point is reachable and the tick cannot be delivered at
+    // all -- these two say how much of the loss that accounts for.
+    std::atomic<std::uint32_t> due_in_gate_total{0};
+    std::atomic<std::uint32_t> coalesced_in_gate_total{0};
     std::atomic<std::uint32_t> max_backlog{0};
     // Owed but still undelivered when the run ended; part of the partition
     // identity rather than a loss.
@@ -63,13 +79,16 @@ struct Win32TimerTickDeliverySnapshot
     std::uint32_t coalesced_total = 0;
     std::uint32_t dropped_total = 0;
     std::uint32_t deferred_total = 0;
+    std::uint32_t due_in_gate_total = 0;
+    std::uint32_t coalesced_in_gate_total = 0;
     std::uint32_t max_backlog = 0;
     std::uint32_t backlog = 0;
 };
 
-// Off by default: stage one only measures. `REPIU_TIMER_TICK_BACKLOG=1` turns on
-// the bounded backlog that preserves owed ticks across safe points.
-bool ResolveTimerTickBacklogEnabled(std::string_view setting);
+// On by default (Task 432). `REPIU_TIMER_TICK_BACKLOG=0` restores the single
+// boolean that keeps one owed tick and discards the rest. A null pointer means
+// the variable is unset, which is the default-on case.
+bool ResolveTimerTickBacklogEnabled(const char* setting);
 bool TimerTickBacklogEnabled();
 
 // Called from the host poll loop when the schedule reports `due` owed ticks and
@@ -77,10 +96,14 @@ bool TimerTickBacklogEnabled();
 // still outstanding, which is what makes the difference between coalescing and a
 // clean handoff. Returns nothing: the caller still arms delivery exactly as
 // before.
+// `in_gate` (Task 431) says the guest thread was blocked in the Glide gate at
+// this moment, which is what makes a coalesced tick undeliverable rather than
+// merely late.
 void RecordTimerTicksDue(Win32TimerTickDeliveryCounters* counters,
                          std::uint32_t due,
                          bool already_pending,
-                         bool backlog_enabled);
+                         bool backlog_enabled,
+                         bool in_gate);
 
 // Called when an `INT 8` frame was actually pushed. Returns true when a further
 // tick is still owed and delivery should stay armed, which is how the backlog

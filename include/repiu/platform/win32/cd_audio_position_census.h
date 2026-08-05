@@ -38,6 +38,25 @@ struct Win32CdAudioPositionEntry
     // Times the worker found the stream empty while playback had more to give.
     std::uint32_t underruns = 0;
     std::uint32_t generation = 0;
+    // Task 430: timer ticks owed and actually injected since the previous
+    // sample. The music runs on real time and the guest's own clock runs on
+    // injected ticks, so their difference across this interval is the rate at
+    // which the two drift apart. Deltas rather than totals, for the same reason
+    // `worker_iterations` is: a run-long total cannot say *when* the loss
+    // happened, which is the whole question.
+    std::uint32_t timer_ticks_due = 0;
+    std::uint32_t timer_ticks_injected = 0;
+    // Task 431: the opportunity side of the same interval. `safe_point_traps`
+    // is where 99% of injections actually happen, so it measures how often the
+    // guest reached one; `ticks_coalesced_in_gate` is how many of the losses
+    // fell in the Glide gate, where no safe point exists to reach.
+    std::uint32_t safe_point_traps = 0;
+    // Both halves of the ratio, because `due - injected` is *not* the interval's
+    // coalesced count: an injection here can consume a tick armed in the
+    // previous interval, so that subtraction understates the denominator and
+    // the in-gate share can read above 100%.
+    std::uint32_t ticks_coalesced = 0;
+    std::uint32_t ticks_coalesced_in_gate = 0;
     bool playing = false;
     bool paused = false;
 };

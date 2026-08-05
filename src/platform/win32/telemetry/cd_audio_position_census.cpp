@@ -128,8 +128,11 @@ bool WriteCdAudioPositionCensusDump(
         << " regressions=" << census.regression_count << "\n"
         << "# wall_ms current_lba queued_lba stream_bytes start_lba end_lba "
            "worker_iterations underruns generation playing paused "
-           "delta_lba\n";
+           "delta_lba ticks_due ticks_injected tick_lag_ms safe_point_traps "
+           "ticks_coalesced ticks_coalesced_in_gate\n";
     std::uint32_t previous_lba = 0;
+    std::uint64_t cumulative_due = 0;
+    std::uint64_t cumulative_injected = 0;
     for (std::uint32_t index = 0; index < census.entry_count; ++index)
     {
         const Win32CdAudioPositionEntry& entry = census.entries[index];
@@ -141,12 +144,31 @@ bool WriteCdAudioPositionCensusDump(
             : static_cast<std::int64_t>(entry.current_lba) -
                 static_cast<std::int64_t>(previous_lba);
         previous_lba = entry.current_lba;
+
+        // Task 430: how far the guest's tick-driven clock has fallen behind
+        // real time by this sample. The tick period is recovered from the data
+        // -- elapsed wall over ticks owed -- rather than assumed to be 240Hz,
+        // because the guest is free to reprogram the divisor and a hard-coded
+        // rate would silently produce a wrong answer if it ever did.
+        cumulative_due += entry.timer_ticks_due;
+        cumulative_injected += entry.timer_ticks_injected;
+        const std::uint64_t deficit = cumulative_due > cumulative_injected
+            ? cumulative_due - cumulative_injected
+            : 0U;
+        const std::uint64_t lag_milliseconds = cumulative_due != 0U
+            ? deficit * entry.wall_milliseconds / cumulative_due
+            : 0U;
+
         out << entry.wall_milliseconds << ' ' << entry.current_lba << ' '
             << entry.queued_lba << ' ' << entry.stream_bytes << ' '
             << entry.start_lba << ' ' << entry.end_lba << ' '
             << entry.worker_iterations << ' ' << entry.underruns << ' '
             << entry.generation << ' ' << (entry.playing ? 1 : 0) << ' '
-            << (entry.paused ? 1 : 0) << ' ' << delta << '\n';
+            << (entry.paused ? 1 : 0) << ' ' << delta << ' '
+            << entry.timer_ticks_due << ' ' << entry.timer_ticks_injected
+            << ' ' << lag_milliseconds << ' ' << entry.safe_point_traps << ' '
+            << entry.ticks_coalesced << ' ' << entry.ticks_coalesced_in_gate
+            << '\n';
     }
     out.flush();
     if (!out.good())

@@ -10,8 +10,8 @@ namespace
 
 bool ReadTimerTickBacklogSetting()
 {
-    const char* value = std::getenv("REPIU_TIMER_TICK_BACKLOG");
-    return value != nullptr && ResolveTimerTickBacklogEnabled(value);
+    return ResolveTimerTickBacklogEnabled(
+        std::getenv("REPIU_TIMER_TICK_BACKLOG"));
 }
 
 void RaiseMaximum(std::atomic<std::uint32_t>* maximum, std::uint32_t value)
@@ -26,9 +26,17 @@ void RaiseMaximum(std::atomic<std::uint32_t>* maximum, std::uint32_t value)
 
 }  // namespace
 
-bool ResolveTimerTickBacklogEnabled(std::string_view setting)
+bool ResolveTimerTickBacklogEnabled(const char* setting)
 {
-    return setting == "1" || setting == "on" || setting == "true";
+    // Task 432: on by default. Only an explicit off disables it, so an unset or
+    // unrecognised value keeps the accurate behaviour rather than silently
+    // reverting to the boolean that loses ticks.
+    if (setting == nullptr)
+    {
+        return true;
+    }
+    const std::string_view value(setting);
+    return !(value == "0" || value == "off" || value == "false");
 }
 
 bool TimerTickBacklogEnabled()
@@ -40,13 +48,18 @@ bool TimerTickBacklogEnabled()
 void RecordTimerTicksDue(Win32TimerTickDeliveryCounters* counters,
                          std::uint32_t due,
                          bool already_pending,
-                         bool backlog_enabled)
+                         bool backlog_enabled,
+                         bool in_gate)
 {
     if (counters == nullptr || due == 0U)
     {
         return;
     }
     counters->due_total.fetch_add(due, std::memory_order_relaxed);
+    if (in_gate)
+    {
+        counters->due_in_gate_total.fetch_add(due, std::memory_order_relaxed);
+    }
 
     if (!backlog_enabled)
     {
@@ -57,6 +70,11 @@ void RecordTimerTicksDue(Win32TimerTickDeliveryCounters* counters,
         const std::uint32_t retained = already_pending ? 0U : 1U;
         counters->coalesced_total.fetch_add(due - retained,
                                             std::memory_order_relaxed);
+        if (in_gate)
+        {
+            counters->coalesced_in_gate_total.fetch_add(
+                due - retained, std::memory_order_relaxed);
+        }
         counters->backlog.store(1U, std::memory_order_relaxed);
         RaiseMaximum(&counters->max_backlog, 1U);
         return;
@@ -138,6 +156,10 @@ Win32TimerTickDeliverySnapshot SnapshotTimerTickDelivery(
         counters.dropped_total.load(std::memory_order_relaxed);
     snapshot.deferred_total =
         counters.deferred_total.load(std::memory_order_relaxed);
+    snapshot.due_in_gate_total =
+        counters.due_in_gate_total.load(std::memory_order_relaxed);
+    snapshot.coalesced_in_gate_total =
+        counters.coalesced_in_gate_total.load(std::memory_order_relaxed);
     snapshot.max_backlog =
         counters.max_backlog.load(std::memory_order_relaxed);
     snapshot.backlog = counters.backlog.load(std::memory_order_relaxed);

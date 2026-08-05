@@ -375,6 +375,19 @@ void GlideOpenGlBackend::InvokeOnHostThread(std::function<void()> command)
 
     const std::uint64_t enter = timing ? ReadGlideGateTimingCycles() : 0U;
     std::exception_ptr command_exception;
+    // Task 431: from here until this function returns, the guest thread runs no
+    // guest code, so none of the AOT timer safe points can be reached and any
+    // tick coming due is coalesced away. Published for the poll thread to
+    // attribute those losses. Scoped because the tail rethrows.
+    struct GateOccupancyScope
+    {
+        std::atomic<bool>* flag;
+        explicit GateOccupancyScope(std::atomic<bool>* f) : flag(f)
+        {
+            flag->store(true, std::memory_order_relaxed);
+        }
+        ~GateOccupancyScope() { flag->store(false, std::memory_order_relaxed); }
+    } gate_occupancy_scope(&guest_in_glide_gate_);
     // Task 419: spin for the previous command to drain before taking the lock.
     // Only contended when the guest outruns the host, so usually a single read.
     SpinForRendezvousHint(host_command_pending_hint_, false, true);

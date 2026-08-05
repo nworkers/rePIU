@@ -300,6 +300,14 @@ DWORD PollThreadUntilExit(HANDLE thread,
         CdAudioPositionCensusIntervalMilliseconds());
     DWORD last_cd_audio_census_tick = start_tick;
     std::uint32_t last_cd_audio_worker_iterations = 0;
+    // Task 430: the same differencing for timer tick delivery, so each sample
+    // carries the loss over its own interval instead of a run-long average that
+    // cannot say whether the loss was in gameplay or in the attract demo.
+    std::uint32_t last_cd_audio_ticks_due = 0;
+    std::uint32_t last_cd_audio_ticks_injected = 0;
+    std::uint32_t last_cd_audio_ticks_coalesced = 0;
+    std::uint32_t last_cd_audio_ticks_in_gate = 0;
+    std::uint32_t last_cd_audio_safe_point_traps = 0;
     // Task 412: the loader's own image range, so a host sample can name the
     // call site that led into the kernel. Resolved once; the sampling path only
     // compares against it.
@@ -383,12 +391,18 @@ DWORD PollThreadUntilExit(HANDLE thread,
                 // Task 366: recorded before arming, because whether a tick was
                 // still outstanding is exactly what separates a clean handoff
                 // from an owed tick being discarded.
+                // Task 431: whether the guest thread is inside the Glide gate
+                // right now decides whether a coalesced tick was merely late or
+                // could not have been delivered at all -- that window runs no
+                // guest code, so no safe point is reachable.
                 RecordTimerTicksDue(
                     &progress_context->timer_tick_delivery,
                     static_cast<std::uint32_t>(due_interrupts),
                     progress_context->timer_interrupt_pending.load(
                         std::memory_order_acquire),
-                    TimerTickBacklogEnabled());
+                    TimerTickBacklogEnabled(),
+                    host_context != nullptr &&
+                        host_context->glide_backend.guest_in_glide_gate());
                 SaturatingAtomicAdd(
                     &progress_context->last_timer_injection_ticks,
                     due_interrupts);
@@ -590,6 +604,36 @@ DWORD PollThreadUntilExit(HANDLE thread,
             entry.worker_iterations =
                 iterations - last_cd_audio_worker_iterations;
             last_cd_audio_worker_iterations = iterations;
+            // Task 430: the guest's clock advances once per injected tick while
+            // the music advances on real time, so this pair is what separates a
+            // drifting guest clock from a healthy one — on the same time axis
+            // as the position beside it.
+            const Win32TimerTickDeliverySnapshot ticks =
+                SnapshotTimerTickDelivery(
+                    progress_context->timer_tick_delivery);
+            entry.timer_ticks_due =
+                ticks.due_total - last_cd_audio_ticks_due;
+            entry.timer_ticks_injected =
+                ticks.injected_total - last_cd_audio_ticks_injected;
+            last_cd_audio_ticks_due = ticks.due_total;
+            last_cd_audio_ticks_injected = ticks.injected_total;
+            // Task 431: the opportunity side, differenced the same way. The
+            // trap count is where the injections come from, so the two read
+            // together say whether the ticks were refused or never offered.
+            entry.ticks_coalesced =
+                ticks.coalesced_total - last_cd_audio_ticks_coalesced;
+            last_cd_audio_ticks_coalesced = ticks.coalesced_total;
+            entry.ticks_coalesced_in_gate =
+                ticks.coalesced_in_gate_total - last_cd_audio_ticks_in_gate;
+            last_cd_audio_ticks_in_gate = ticks.coalesced_in_gate_total;
+            const std::uint32_t safe_point_traps =
+                progress_context->aot_placement != nullptr
+                    ? progress_context->aot_placement
+                          ->timer_safe_point_trap_count
+                    : 0U;
+            entry.safe_point_traps =
+                safe_point_traps - last_cd_audio_safe_point_traps;
+            last_cd_audio_safe_point_traps = safe_point_traps;
             RecordCdAudioPosition(
                 progress_context->cd_audio_position_census.get(), entry);
             last_cd_audio_census_tick = current_tick;
