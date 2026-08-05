@@ -2,6 +2,7 @@
 #include "repiu/assets/piu_chd_mount.h"
 #include "repiu/exe/dos16m_bound_module.h"
 #include "repiu/hle/dos_file_system.h"
+#include "repiu/hle/glide_vertex_depth_census.h"
 #include "repiu/hle/hle_dispatcher.h"
 #include "repiu/hle/privileged_instruction.h"
 #include "repiu/platform/win32/execution_trampoline.h"
@@ -3182,6 +3183,35 @@ void PrintExecutionAttempt(
             "Win32 Glide texture census dump written/limited: {}/{}",
             tex.dump_written_count,
             tex.dump_limit_reached ? "true" : "false");
+        // Task 433: which vertex field actually carries depth. Reported only
+        // when the census ran, so a normal run's summary is unchanged.
+        if (const auto* depth = repiu::hle::ActiveGlideVertexDepthCensus();
+            depth != nullptr && depth->enabled)
+        {
+            logger.info(
+                "Win32 Glide vertex depth census samples/z-meaningful/"
+                "ooz-meaningful/oow-meaningful: {}/{}/{}/{}",
+                depth->sample_count, depth->z.meaningful_count,
+                depth->ooz.meaningful_count, depth->oow.meaningful_count);
+            logger.info(
+                "Win32 Glide vertex depth census z/ooz/oow meaningful ranges: "
+                "[{}, {}] / [{}, {}] / [{}, {}]",
+                depth->z.meaningful_minimum, depth->z.maximum,
+                depth->ooz.meaningful_minimum, depth->ooz.maximum,
+                depth->oow.meaningful_minimum, depth->oow.maximum);
+            logger.info(
+                "Win32 Glide vertex depth census z/ooz/oow nonzero (incl "
+                "denormals): {}/{}/{}",
+                depth->z.nonzero_count, depth->ooz.nonzero_count,
+                depth->oow.nonzero_count);
+            for (std::size_t index = 0; index < depth->raw_count; ++index)
+            {
+                logger.info(
+                    "Win32 Glide vertex depth sample #{} z/ooz/oow: {}/{}/{}",
+                    index, depth->raw_z[index], depth->raw_ooz[index],
+                    depth->raw_oow[index]);
+            }
+        }
         for (std::uint32_t index = 0;
              index < repiu::platform::win32::kGlideTextureFormatBuckets;
              ++index)

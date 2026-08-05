@@ -14,6 +14,7 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -31,6 +32,32 @@
 
 namespace repiu::platform::win32
 {
+
+// Task 433. Maps the Glide depth value onto the eye-space z this projection
+// wants. Two facts make it this simple. Glide's depth buffer is 16 bits holding
+// 0..65535, so saturating there is the hardware's own behaviour rather than a
+// clamp invented here. And `grDepthBufferFunction` already maps straight onto
+// `glDepthFunc`, because GR_CMP_* (0..7) and GL_NEVER..GL_ALWAYS share an order
+// -- so any **monotonically increasing** map carries the comparison result
+// across unchanged. That is why nothing below needs to decide which end is
+// "near": the depth buffer stores numbers and compares them, and identical
+// ordering gives identical results.
+//
+// Under `glOrtho(0, w, 0, h, -1, 1)` the window depth is `(1 - z_eye) / 2`, so a
+// desired depth `d` is emitted as `1 - 2d`. The projection is deliberately left
+// alone: `d = 0.5` is `z_eye = 0`, which is exactly what every path carrying no
+// depth already emits.
+// See docs/design/20260806-433-glide-vertex-depth.md.
+float GlideOozToOrthoEyeZ(const float ooz)
+{
+    constexpr float kGlideDepthMaximum = 65535.0F;
+    if (!std::isfinite(ooz) || ooz <= 0.0F)
+    {
+        return 1.0F;
+    }
+    const float clamped = ooz > kGlideDepthMaximum ? kGlideDepthMaximum : ooz;
+    return 1.0F - 2.0F * (clamped / kGlideDepthMaximum);
+}
 
 bool TranslateGlideOpenGlCullMode(const std::uint32_t mode,
                                   const bool origin_lower_left,
@@ -734,6 +761,17 @@ bool GlideOpenGlBackend::OpenWindowed(
     render_context_ = render_context;
     logical_width_ = logical_width;
     logical_height_ = logical_height;
+    // Task 433: the depth buffer is only requested when the guest asked for an
+    // auxiliary buffer, so report what was asked for *and* what the driver
+    // actually granted. A granted size of zero makes every depth call a no-op
+    // no matter what the vertices carry.
+    int granted_depth_bits = -1;
+    SDL_GL_GetAttribute(SDL_GL_DEPTH_SIZE, &granted_depth_bits);
+    fprintf(stderr,
+            "[repiu-live-debug] Glide depth buffer color-buffers/aux-buffers/"
+            "requested-bits/granted-bits: %u/%u/%d/%d\n",
+            color_buffer_count, auxiliary_buffer_count,
+            auxiliary_buffer_count != 0U ? 24 : 0, granted_depth_bits);
     // Task 371: measurement-only override. With the variable unset no SDL call is
     // made at all, so the default path keeps whatever SDL or the driver chose --
     // which is what every capture so far has actually been running under, since
@@ -1195,7 +1233,7 @@ bool GlideOpenGlBackend::DrawPrimitive(
         {
             glTexCoord4f(0.0F, 0.0F, vertex->fog_oow, 1.0F);
         }
-        glVertex3f(vertex->x, vertex->y, 0.0F);
+        glVertex3f(vertex->x, vertex->y, GlideOozToOrthoEyeZ(vertex->ooz));
     }
     glEnd();
     message_ = success_message;

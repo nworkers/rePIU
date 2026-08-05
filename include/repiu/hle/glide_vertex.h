@@ -29,6 +29,12 @@ struct GlideDrawVertex
     float t = 0.0F;
     float fog_oow = 1.0F;
     float texture_oow = 1.0F;
+    // Task 433: `ooz` (65535/Z), the depth the guest actually populates -- 95.4%
+    // of gameplay vertices carry it across 0.75..65426, against a 16-bit Glide
+    // depth range of 0..65535. Carried raw rather than normalised, because the
+    // mapping into a depth buffer is a backend concern.
+    // See docs/design/20260806-433-glide-vertex-depth.md.
+    float ooz = 0.0F;
 };
 
 bool DecodeGlideProducerVertex(const std::uint32_t* producer_dwords,
