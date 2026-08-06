@@ -21,6 +21,7 @@
 #include "glide_ordinal_timing_probe.h"
 #include "glide_buffer_swap_timing_probe.h"
 #include "glide_setter_state_census_probe.h"
+#include "glide_draw_batch_probe.h"
 #include "glide_setter_state_cache_probe.h"
 #include "glide_gl_error_policy_probe.h"
 #include "glide_swap_interval_policy_probe.h"
@@ -935,6 +936,10 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunGlideSetterStateCensusProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunGlideDrawBatchProbe())
     {
         return 1;
     }

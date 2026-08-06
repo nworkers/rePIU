@@ -127,6 +127,138 @@ Select-String -Path elide-on.log -Pattern "INT 8 chain HLE count" |
     ForEach-Object { $_.Line }
 ```
 
+## 5단계 — batch 2(텍스처 상태) A/B — Task 437 · **완료, 기본값 승격됨**
+
+> **결과(2026-08-07).** 텍스처 setter 셋은 **99.76% 중복**이었고(385,197건 중 적용
+> 933건), `voided` 0, 시각 차이 없음이었습니다. Task 439에서 **기본값 켜짐**으로
+> 승격했습니다. 아래 절차는 되돌려 재현할 때(`=0`) 그대로 씁니다.
+
+batch 1(7종)은 **호출의 99.999%가 이미 생략**되고 있습니다(371초 gameplay 실측:
+`elided 2,048,762 / applied 22`). 남은 최대 무리는 bind마다 불리는 텍스처 상태
+블록이고, Task 437이 그중 셋을 **opt-in**으로 생략 대상에 넣었습니다.
+
+| gate | 371초 실측 호출 | 프레임당 | 이번 A/B |
+|---|---:|---:|---|
+| `grTexClampMode` | 395,764 | 19.6 | 대상 — rendezvous 있음 |
+| `grTexFilterMode` | 395,764 | 19.6 | 대상 — rendezvous 있음 |
+| `grTexMipMapMode` | 395,764 | 19.6 | 대상이지만 **ABI 전용이라 절감 없음** |
+| `grTexSource` | 395,764 | 19.6 | **제외**(`GrTexInfo*` 포인터 인자) |
+
+절감 대상은 **791,528 rendezvous, 프레임당 39.2회**입니다.
+
+```
+:: A — 지금 기본값 (batch 1만)
+set REPIU_GLIDE_SETTER_ELIDE=1
+set REPIU_GLIDE_SETTER_ELIDE_TEXTURE=0
+build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit1 2> tex-off.log
+```
+
+```
+:: B — batch 2 포함
+set REPIU_GLIDE_SETTER_ELIDE_TEXTURE=1
+build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit1 2> tex-on.log
+```
+
+나머지 변수는 1단계와 같게 두고(`REPIU_GLIDE_SWAP_INTERVAL=0`,
+`REPIU_EXECUTION_TIME_PROFILE=1`, `REPIU_GLIDE_ORDINAL_TIME_PROFILE=1`,
+`REPIU_GLIDE_SETTER_CENSUS=1`), **각 구성 3회 이상** 같은 구간을 플레이하십시오.
+
+읽을 줄은 1단계와 같고, 생략 요약에 **`texture-state`** 항목이 추가됐습니다.
+
+```
+Win32 Glide setter elision enabled/texture-state/entries/elided/applied/...
+```
+
+**판정 순서는 정확성 → 시각 → 성능으로 같습니다.**
+
+* 정확성: B의 `elided` 증가분이 텍스처 3종의 `same` 합계와 일치해야 합니다. `voided`는
+  0이어야 합니다.
+* 시각: 텍스처 경계(반복/클램프)와 확대 시 뭉개짐(선형/최근접)을 특히 보십시오 —
+  clamp/filter가 잘못 생략되면 **테두리 늘어짐**이나 **필터 변화**로 나타납니다.
+* 성능: 프레임 중앙값 차이가 5%를 넘으면 승격 근거가 됩니다. 5% 이내면 rendezvous
+  단가가 이미 충분히 낮다는 뜻이므로, 다음 축은 생략이 아니라 **command batching**입니다.
+
+`Win32 Glide ordinal timing: ordinal=` 줄에서 두 텍스처 setter의 work/call도 함께
+남겨 주시면 batching의 단가 근거가 됩니다.
+
+## 6단계 — draw batching A/B — Task 438 · **완료, 기본값 승격됨**
+
+> **결과(2026-08-07).** 배치 평균 **16.02**(최대 332), flush 167,133건 전부
+> non-draw-gate, **glide-gate 비중 10.35% → 8.40%**, 크로싱당 −23.7%,
+> `failures`·`voided`·구현 공백 0, 시각 차이 없음. Task 439에서 **기본값 켜짐**으로
+> 승격했습니다. 아래 절차는 `=0` 대조군으로 재현할 때 씁니다.
+
+**이 축이 지금 가장 큽니다.** 실부하 구간에서 `grDrawTriangle`은 프레임당 652~686회이고
+크로싱의 **69.9%** 이며, 삼각형마다 host 왕복이 한 번씩 듭니다. Task 438은 삼각형을
+모았다가 **draw가 아닌 게이트를 만나면 한 번에** 넘깁니다.
+
+**5단계 A/B에서 vsync 때문에 프레임 판정을 못 했으므로, 이번에는 세 변수를 반드시
+켭니다.**
+
+```
+:: 공통 (양쪽 동일)
+set REPIU_EXECUTION_BACKEND=dynamic
+set REPIU_EXECUTION_TIMEOUT_MS=0
+set REPIU_GLIDE_SWAP_INTERVAL=0
+set REPIU_EXECUTION_TIME_PROFILE=1
+set REPIU_GLIDE_ORDINAL_TIME_PROFILE=1
+set REPIU_GLIDE_SETTER_ELIDE_TEXTURE=1
+
+:: A — batching 없음
+set REPIU_GLIDE_DRAW_BATCH=0
+build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit1 2> batch-off.log
+
+:: B — batching
+set REPIU_GLIDE_DRAW_BATCH=1
+build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit1 2> batch-on.log
+```
+
+> `REPIU_GLIDE_SWAP_INTERVAL=0`이 빠지면 60 Hz 양자화 때문에 CPU 개선이 프레임에
+> 나타나지 않습니다. **5단계 A/B가 그래서 판정 불가로 끝났습니다.**
+
+**같은 구간을 각 3회 이상**, 가능하면 같은 곡·난이도·길이로 플레이하십시오.
+
+읽을 줄은 다음 두 개가 추가됩니다.
+
+```
+Win32 Glide draw batch enabled/queued/drawn/flushes/failures/max-batch/pending/mean-batch
+Win32 Glide draw batch flush reason non-draw-gate/primitive-change/capacity
+```
+
+> **바이너리를 먼저 확인하십시오.** 두 실행 모두 `Win32 Glide draw batch ...` 줄이
+> 있어야 합니다. 없으면 배치 코드가 없는 빌드입니다 — `scripts\build_win32_x86.ps1
+> -Configuration Release`로 다시 빌드하십시오. **1차 A/B가 이것 때문에 무효였습니다.**
+
+**판정 순서.**
+
+**0. `mean-batch`를 먼저 보십시오. 이 값이 이 축의 운명입니다.**
+`=1` 로그의 `mean-batch`가 **2 근처면 이 축은 닫힙니다** — 왕복이 절반만 줄고 그 이득이
+큐 비용과 상쇄되는 것을 attract 구간에서 이미 확인했습니다(총 게이트 비용 변화 없음).
+gameplay 로그로 계산한 상한은 **5.44**이며, 실제 값이 4를 넘어야 의미가 있습니다.
+
+**1. 정확성:** `failures` **0**, `primitives-queued == primitives-drawn + pending`,
+`_GRDRAWTRIANGLE@12 count`가 두 구성에서 비슷할 것(같은 구간이라면).
+
+**2. 시각:** 겹침 순서와 반투명 — 순서가 깨지면 **뒤에 있어야 할 것이 앞에** 오거나
+블렌딩 결과가 달라집니다.
+
+**3. 성능 — 프레임이 아니라 cycle로 보십시오.** 기대 효과는 **guest-run의 2~3%**
+(draw ordinal이 guest-run의 6.55%, 그중 왕복이 51%)인데, 같은 구성으로 돌린 두 실행이
+**13% 차이**난 적이 있어 프레임으로는 이 크기를 분해할 수 없습니다. 대신:
+
+```
+Win32 execution time cycles guest-run/veh/glide-gate/port-io/dos:
+Win32 Glide ordinal timing: ordinal=73 ...
+```
+
+* **`glide-gate` cycle을 `guest-run` cycle로 나눈 비중**이 내려가야 합니다(11.0% → 8%대 기대).
+  이것이 유일하게 구간 길이에 둔감한 지표입니다.
+* ordinal 73의 `rendezvous`가 draw 수보다 **훨씬 작아야** 합니다.
+* `work`는 거의 그대로여야 합니다 — 같은 GL 작업을 하는 것이므로.
+
+**두 구성 다 3회 이상** 돌리고 중앙값을 쓰십시오. 승격은 gate 비중이 내려가고 시각
+회귀가 없을 때이며, 그때 Task 437도 함께 승격합니다.
+
 ---
 
 ## English
@@ -173,3 +305,75 @@ deciding number is frames.
 **Also useful:** capture the `INT 8 chain HLE count` line. Whether a real gameplay
 scene delivers timer ticks at the same rate as the boot scene is an open question
 that Task 366 is working on, and your log would feed straight into it.
+
+## Step five — the batch-two (texture-state) A/B, Task 437
+
+Batch one's seven gates are **already elided 99.999% of the time** — 2,048,762 elided against 22
+applied over a measured 371-second gameplay run. The largest remaining group is the texture-state
+block the game issues once per bind: `grTexClampMode`, `grTexFilterMode` and `grTexMipMapMode` at
+395,764 calls each, 19.6 per frame. Task 437 adds those three as an **opt-in**, keeping
+`grTexSource` out because its `GrTexInfo*` argument means an identical key does not prove
+identical state. Two of the three cost a host rendezvous, so the prize is **791,528 rendezvous,
+39.2 per frame**; `grTexMipMapMode` is an ABI-only no-op and saves nothing.
+
+Run the same section at least three times per configuration with everything from step one
+unchanged, switching only `REPIU_GLIDE_SETTER_ELIDE_TEXTURE` between `0` and `1`. The elision
+summary now carries a **`texture-state`** field, so each log states which configuration produced
+it.
+
+Judge in the same order. **Correctness:** the increase in `elided` must match the `same` total of
+the three texture gates, and `voided` must stay zero. **Visually:** watch texture edges (repeat
+versus clamp) and magnified sprites (linear versus nearest) — a wrongly elided clamp or filter
+shows up as smeared borders or a changed filter, not as a missing object. **Performance:** a
+median frame difference beyond 5% is the case for promoting the default; within 5% the rendezvous
+unit cost is already low enough that the next axis is **command batching** rather than more
+elision. Capturing the `Win32 Glide ordinal timing: ordinal=` lines for the two texture setters
+gives that batching decision its unit cost.
+
+## Step six — the draw batching A/B, Task 438
+
+> **Settled on 2026-08-07 and promoted to the default in Task 439:** batches averaged **16.02**
+> primitives (peak 332), all 167,133 flushes came from the non-draw-gate rule, the Glide gate
+> fell from **10.35% to 8.40% of guest-run** with 23.7% off the per-crossing cost, and
+> failures, voided setters, implementation gaps and visual differences were all zero. The
+> procedure below is how to reproduce it against the `=0` control.
+
+**This is now the largest axis.** Under real load `grDrawTriangle` runs 652-686 times per frame,
+**69.9% of all gate crossings**, and each triangle costs its own host round trip. Task 438 queues
+them and hands the queue over **once, whenever a non-draw gate arrives**.
+
+Because step five's A/B could not judge frames with vsync on, **three variables are mandatory
+here**: `REPIU_GLIDE_SWAP_INTERVAL=0`, `REPIU_EXECUTION_TIME_PROFILE=1` and
+`REPIU_GLIDE_ORDINAL_TIME_PROFILE=1`, identical in both runs, with
+`REPIU_GLIDE_SETTER_ELIDE_TEXTURE=1` in both so the only difference is
+`REPIU_GLIDE_DRAW_BATCH`. Play the same section at least three times per configuration.
+
+Two new lines appear:
+
+```
+Win32 Glide draw batch enabled/queued/drawn/flushes/failures/max-batch/pending/mean-batch
+Win32 Glide draw batch flush reason non-draw-gate/primitive-change/capacity
+```
+
+**Check the binary first:** both logs must contain a `Win32 Glide draw batch ...` line. Its
+absence means the build has no batching code — rebuild with
+`scriptsuild_win32_x86.ps1 -Configuration Release`. **The first A/B was void for exactly this
+reason.**
+
+**Read `mean-batch` before anything else, because it decides the axis.** Near two and the axis is
+closed: only half the round trips disappear and the queueing cost offsets them, which the attract
+section already demonstrated with no change in total gate cycles. The gameplay logs bound it at
+**5.44**, and it needs to come back above four to matter.
+
+Then correctness — `failures` zero, `primitives-queued` equal to `primitives-drawn` plus
+`pending`, comparable `_GRDRAWTRIANGLE@12 count` — and then the picture, watching overlap order
+and translucency, since a broken order puts what belongs behind in front.
+
+**Judge performance in cycles, not frames.** The expected effect is **2-3% of guest-run** (the
+draw ordinal is 6.55% of it and the round trip is 51% of that), while two runs of the *same*
+configuration have differed by **13%**, so frames cannot resolve it. Use the ratio of
+`glide-gate` to `guest-run` cycles from the `execution time cycles` line — the one figure that is
+insensitive to how long the section ran — expecting 11.0% to fall into the eights; ordinal 73's
+`rendezvous` far below the draw count; and `work` essentially unchanged, since it is the same GL
+work either way. Three runs per configuration, medians, and Task 437 is promoted alongside if the
+gate share falls with no visual regression.

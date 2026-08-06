@@ -1033,3 +1033,145 @@ shader module, measured at 8.90% of wall on a gameplay capture with `grAlphaComb
 285,694 cycles per call. The same file's `SetConstantColor` has no check and costs 1,676 through
 identical machinery -- a 170-fold gap showing the uniform uploads are cheap and the cost is the
 check. Direction recorded in design 377.
+
+
+## 371초 gameplay 전수 호출 census와 깊이 확인 (2026-08-07 Tasks 433·437) — **확인됨**
+
+사용자 실행 로그 하나(v0.0.136, pumpit1, 01:39–01:45, **371.3초 / 20,212프레임 =
+54.4 fps**)에서 확정된 것들입니다.
+
+**깊이는 정상입니다.** Task 433의 `ooz` 연결 이후 gameplay 3D 모델이 정상으로 보인다고
+사용자가 확인했습니다. 같은 실행에서 Glide 구현 공백은
+`unimplemented/unsupported/backend/abi/unique/overflow = 0/0/0/0/0/0`이고, 게이트
+5,586,761건이 전건 처리(미처리 0)됐습니다.
+
+**게이트 호출 구성 — 4분의 3이 setter입니다.**
+
+| 구분 | 호출 | 비중 | 프레임당 |
+|---|---:|---:|---:|
+| 게이트 크로싱 전체 | 5,586,761 | 100% | 276.4 |
+| `grDrawTriangle` | 1,388,559 | 24.9% | 68.7 |
+| setter 계열 | 약 4,150,000 | 74.3% | 205.3 |
+
+| ordinal | 호출 | 프레임당 | 비고 |
+|---|---:|---:|---|
+| `grTexSource`·`grTexClampMode`·`grTexFilterMode`·`grTexMipMapMode` | **각 395,764** | 각 19.6 | 네 값이 **정확히 동일** — bind당 4-call 블록, bind당 삼각형 3.5개 |
+| `grColorMask` | 327,042 | 16.2 | batch 1 |
+| `grDepthMask` | 326,884 | 16.2 | 미생략 |
+| `grFogMode` | 288,167 | 14.3 | batch 1 |
+| `grDepthBufferFunction`·`grCullMode`·`grClipWindow`·`grAlphaTestFunction`·`grAlphaBlendFunction` | 각 286,715 | 각 14.2 | batch 1 |
+| `grConstantColorValue` | 72,710 | 3.6 | 미생략 |
+| `grDitherMode`·`grColorCombine`·`grAlphaCombine`·`grHints` | 약 26,440 | 1.3 | — |
+| `grBufferSwap`·`grBufferNumPending`·`grBufferClear` | 20,212 / 20,212 / 20,163 | 1.0 | 프레임 경계 |
+| `grTexDownloadMipMapLevel` | 176 | 0.009 | 텍스처 다운로드 |
+
+**Task 365 생략은 사실상 완전 적중입니다.** batch 1 7종에서
+`elided 2,048,762 / applied 22` — **99.999%** 가 같은 값의 반복입니다. 무효화는 4회뿐.
+
+**게이트 예외는 0입니다.** direct dispatch가 `entry/success = 5,586,761/5,586,761`,
+target-miss 0, terminal 0. 크로싱당 남은 비용은 host rendezvous입니다.
+
+**텍스처 census.** 업로드 176 / distinct **62** / 동일 재업로드 3 / 내용 변경 재업로드
+111, 디코드 실패 0, 포맷 10이 63건·포맷 12가 113건, 긴 변 256이 166건. **"PTX 465개 중
+4개만 도달"이라는 옛 요약은 낡았습니다** — 이 실행만으로 distinct 62입니다.
+
+**timer tick.** due 88,682 / injected 88,652 / **coalesced 0** / dropped 30 /
+max-backlog 13 — Task 432가 gameplay 장시간 실행에서도 유지됩니다.
+
+Confirmed on 2026-08-07 from a single user run of v0.0.136 (pumpit1, 371.3 seconds, 20,212
+frames, 54.4 fps). **Depth is correct**: after Task 433 connected `ooz`, the user confirms the
+gameplay 3D models look right, and the same run reports zero Glide implementation gaps with all
+5,586,761 gate crossings handled. **Three quarters of those crossings are state setters** —
+1,388,559 draws (24.9%) against roughly 4.15M setters (74.3%), or 68.7 draws and 205 setters per
+frame. The texture-state block stands out: `grTexSource`, `grTexClampMode`, `grTexFilterMode` and
+`grTexMipMapMode` are called **exactly 395,764 times each**, one four-call block per bind with 3.5
+triangles per bind. **Task 365's elision is essentially a total hit** — 2,048,762 elided against
+22 applied across its seven gates, 99.999%, with four invalidations. **The per-call gate exception
+is gone**: direct dispatch reports 5,586,761 of 5,586,761 with no target miss, so the remaining
+per-crossing cost is the host rendezvous. The texture census records 176 uploads over 62 distinct
+addresses with zero decode failures, which **retires the stale summary that only four of 465 PTX
+assets ever reached Glide**. Timer ticks hold at 88,652 injected of 88,682 due with zero
+coalesced, so Task 432 survives a long gameplay run.
+
+
+## 실부하 gameplay의 크로싱 구성 — draw가 69.9%다 (2026-08-07 Task 437 A/B) — **확인됨**
+
+Task 437 A/B 4회(각 27.8~81.5초, pumpit1)에서 **371초 실행의 구성이 대표값이 아님**이
+드러났습니다. 그 실행은 메뉴가 섞여 draw가 프레임당 68.7이었지만, 실부하 구간은
+**652~686**로 10배입니다.
+
+| 프레임당(실측, elision batch 2 ON) | 회 | 비고 |
+|---|---:|---|
+| 게이트 크로싱 | 959.4 | — |
+| **`grDrawTriangle`** | **670.8 (69.9%)** | `DrawTriangle`은 **삼각형당 rendezvous 1회** (`glide_opengl_backend.cpp:1152-1159`) |
+| 생략된 setter | 221.3 | rendezvous 없음 |
+| 미적용 setter | 65.5 | `grTexSource` 32.1 · `grDepthMask` 18.6 · 그 밖 |
+| 적용된 setter | 1.8 | — |
+
+**Task 365/437 생략은 정확성이 확정됐습니다.** 네 실행 모두 `voided=0`, 구현 공백 0,
+그리고 **대상 호출 = elided + applied가 오차 0으로 닫힙니다.** batch 2가 덮은 텍스처
+setter 385,197건 중 실제 적용은 **933건(0.24%)** 뿐이고, 사용자 육안으로도 차이가
+없었습니다.
+
+**프레임 효과는 미판정입니다.** 이 A/B는 vsync가 켜진 상태였고(`swap interval override
+requested=false`) time profile·census도 꺼져 있어, 가이드가 요구한 측정 조건을
+충족하지 못했습니다. fps 차 −1.9%는 편차와 구분되지 않습니다.
+
+Confirmed on 2026-08-07 from the Task 437 A/B. The 371-second run's composition was **not
+representative**: a real load section carries **652-686 draws per frame against that run's 68.7**,
+putting `grDrawTriangle` at **69.9% of gate crossings**, and `DrawTriangle` costs **one host
+rendezvous per triangle**. Per frame that is 670.8 draw rendezvous against 65.5 for uncovered
+setters and 1.8 applied, with 221.3 elided costing nothing. The elision's **correctness is
+settled** — zero `voided`, zero implementation gaps, covered calls equal elided plus applied with
+no remainder in all four runs, only 933 of 385,197 newly covered texture-setter calls actually
+applied, and no visual difference reported. Its **frame effect remains unmeasured**, because
+vsync was on and neither the time profile nor the census was enabled.
+
+
+## draw batching A/B — 게이트 비중 10.35% → 8.40% (2026-08-07 Tasks 438·439) — **확인됨**
+
+사용자 짝 실행(Release, `swap interval effective 0`, time profile ON, pumpit1 gameplay).
+
+| 지표 | batch `=0` | batch `=1` |
+|---|---:|---:|
+| 실행 시간 / 프레임 | 80.6초 / 5,973 | 75.1초 / 7,276 |
+| draw | 2,831,099 (474.0/frame) | 2,677,699 (368.0/frame) |
+| **mean-batch (프리미티브/flush)** | — | **16.02** (최대 **332**) |
+| flush | — | 167,133 — **전부 non-draw-gate**(용량·primitive 전환 0) |
+| **glide-gate ÷ guest-run** | **10.35%** | **8.40%** |
+| 게이트 크로싱당 | 7,334 cycle | **5,598** (−23.7%) |
+| draw 1회당 총 게이트 | 10,883 cycle | **8,694** (−20.1%) |
+| ordinal 73 호출당 / `rendezvous` | 6,969 / 2,831,099 | **2,239 / 0** |
+| `failures`·`voided`·구현 공백 | 0 | 0 |
+
+**왕복 1회의 단가(확인됨).** 배치 없는 실행에서 `_GRDRAWTRIANGLE@12`는 호출당
+**6,969~7,373 cycle**이고 그중 queue 518~566 · wake 1,673~1,957 · **work(실제 GL)
+912~948** · complete 1,246~1,295입니다. **GL 작업은 13% 안팎이고 왕복이 절반**입니다.
+
+**비용의 일부는 사라지고 일부는 옮겨갑니다.** draw ordinal에서 빠진 4,730 cycle/draw 중
+약 2,541은 flush를 유발한 ordinal로 이동하고(`grBufferSwap`의 `rendezvous`가 7,276
+호출에 14,386) **약 2,189가 실제로 사라집니다** — 총 5.86e9 cycle = guest-run의 2.1%.
+
+**배치 길이 예측은 빗나갔고, 실측이 훨씬 좋습니다.** "draw ÷ flush 지점 = 5.44"는 모든
+flush 지점에 그릴 것이 있다고 가정한 값입니다. 실제로는 draw가 최대 332개까지 연속으로
+뭉치고 flush 지점 대부분이 빈 큐를 만나 **평균 16.02**가 나왔습니다.
+
+**attract 구간은 이 축을 판정할 수 없습니다.** 프레임당 draw가 7개이고 게임이 사각형
+단위로 그려 배치가 **항상 2**이며, 그 구간 A/B에서는 총 게이트 비용이 줄지 않았습니다.
+
+**프레임은 판정 지표가 아닙니다.** 같은 구성으로 돌린 두 실행이 **13%** 차이 난 적이
+있고(81.1 대 91.8 fps), 기대 효과는 2~3%입니다. 구간 길이에 둔감한
+`glide-gate ÷ guest-run` 비중을 씁니다.
+
+Confirmed on 2026-08-07 from the user's paired gameplay A/B on Release with vsync disabled and the
+time profile on. Batches averaged **16.02 primitives** with a peak of 332, every one of the 167,133
+flushes coming from the non-draw-gate rule, and the **Glide gate fell from 10.35% to 8.40% of
+guest-run** — 23.7% per crossing, 20.1% per draw — with zero failures, zero voided setters, zero
+implementation gaps and no visual difference. Without batching a draw gate costs **6,969-7,373
+cycles**, of which the actual GL work is only **912-948** and the round trip is about half; of the
+4,730 cycles per draw that leave the draw ordinal, roughly 2,541 reappear at the flush sites and
+**2,189 genuinely disappear**, 2.1% of guest-run. The predicted batch length of 5.44 assumed every
+flush point had work pending; draws actually cluster far longer, up to 332 consecutively. The
+attract phase cannot judge this axis at all — seven draws per frame in quads pin the batch at two,
+and total gate cost did not move there. Frames are not the metric: two runs of one configuration
+have differed by 13% while the effect is 2-3%, so the scene-insensitive gate share is what decides.

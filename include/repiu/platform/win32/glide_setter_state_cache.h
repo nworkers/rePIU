@@ -44,6 +44,9 @@ struct Win32GlideSetterStateCache
 struct Win32GlideSetterStateCacheSnapshot
 {
     bool enabled = false;
+    // Task 437: which batch the counters below were produced under, so an A/B log
+    // says for itself which configuration it is.
+    bool texture_state = false;
     std::uint32_t active_entry_count = 0;
     std::uint32_t texture_generation = 0;
     std::uint32_t elided_count = 0;
@@ -57,6 +60,25 @@ struct Win32GlideSetterStateCacheSnapshot
 // (or `off`/`false`) restores the unconditional rendezvous for an A/B.
 bool ResolveGlideSetterElisionEnabled(std::string_view setting);
 bool GlideSetterElisionEnabled();
+
+// Task 437, batch two: the texture-state setters batch one deferred. They are the
+// largest remaining group -- `grTexClampMode`, `grTexFilterMode` and
+// `grTexMipMapMode` are called exactly as often as `grTexSource`, once per bind --
+// and eliding a same-valued call is equivalent to executing it because
+// `SetTextureSource` re-applies all four sampler parameters from the TMU state on
+// every bind, so a skipped repeat can never leave a texture object stale.
+//
+// Task 439: on by default after the paired A/B measured the three gates as
+// 99.76% redundant with no visual difference. `REPIU_GLIDE_SETTER_ELIDE=0`
+// still wins: it disables the cache entirely, and this switch only widens
+// what the cache covers.
+//
+// `grTexSource` is deliberately not here. Its fourth argument is a `GrTexInfo*`,
+// and the struct behind an unchanged pointer can change without a download, which
+// the texture generation does not catch, so an identical key would not prove
+// identical state.
+bool GlideSetterTextureStateElisionEnabled();
+bool IsGlideSetterTextureStateElisionGate(repiu::hle::GlideGateId gate_id);
 
 // Batch one: the setters Task 364 measured at 99.9% or better repetition with one
 // or two distinct argument values, all of which return void. Must be a subset of

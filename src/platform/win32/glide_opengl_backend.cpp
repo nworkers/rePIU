@@ -1167,6 +1167,77 @@ bool GlideOpenGlBackend::DrawTriangle(const hle::GlideDrawVertex& a,
 #endif
 }
 
+bool GlideOpenGlBackend::PrepareDrawState(const std::uint32_t primitive,
+                                          bool* sample_texture,
+                                          float* inverse_width,
+                                          float* inverse_height)
+{
+#if !defined(_WIN32)
+    (void)primitive;
+    (void)sample_texture;
+    (void)inverse_width;
+    (void)inverse_height;
+    return false;
+#else
+    // R3: when the color combine selects the texture (SCALE_OTHER) and a texture
+    // is currently sourced, bind it and sample; otherwise output iterated color.
+    *sample_texture =
+        texture_combine_enabled_ && current_texture_ != nullptr &&
+        current_texture_->gl_name != 0U;
+    *inverse_width = 1.0F;
+    *inverse_height = 1.0F;
+    if (*sample_texture)
+    {
+        glBindTexture(GL_TEXTURE_2D, current_texture_->gl_name);
+        // Task 332: normalize by the Glide coordinate extent, not the pixel
+        // size. They are equal for every map whose longer edge is 256, which is
+        // why only smaller sprites -- the difficulty dots and the arrows --
+        // were wrong.
+        *inverse_width = current_texture_->s_extent != 0U
+            ? 1.0F / static_cast<float>(current_texture_->s_extent)
+            : 1.0F;
+        *inverse_height = current_texture_->t_extent != 0U
+            ? 1.0F / static_cast<float>(current_texture_->t_extent)
+            : 1.0F;
+    }
+    shader_.SetTextureEnabled(*sample_texture);
+    if (primitive == GL_LINES)
+    {
+        glLineWidth(1.0F);
+    }
+    return true;
+#endif
+}
+
+void GlideOpenGlBackend::EmitDrawVertex(const hle::GlideDrawVertex& vertex,
+                                        const bool sample_texture,
+                                        const float inverse_width,
+                                        const float inverse_height)
+{
+#if !defined(_WIN32)
+    (void)vertex;
+    (void)sample_texture;
+    (void)inverse_width;
+    (void)inverse_height;
+#else
+    glColor4f(vertex.r, vertex.g, vertex.b, vertex.a);
+    if (sample_texture)
+    {
+        // Pack normalized sow/tow and the shared texture/fog oow. Because
+        // orthographic clip w is constant, the shader receives linearly
+        // interpolated numerators and reciprocal-w and performs the Glide
+        // perspective divide per fragment.
+        glTexCoord4f(vertex.s * inverse_width, vertex.t * inverse_height,
+                     vertex.fog_oow, vertex.texture_oow);
+    }
+    else
+    {
+        glTexCoord4f(0.0F, 0.0F, vertex.fog_oow, 1.0F);
+    }
+    glVertex3f(vertex.x, vertex.y, GlideOozToOrthoEyeZ(vertex.ooz));
+#endif
+}
+
 bool GlideOpenGlBackend::DrawPrimitive(
     const hle::GlideDrawVertex* const* vertices,
     const std::size_t vertex_count,
@@ -1189,54 +1260,71 @@ bool GlideOpenGlBackend::DrawPrimitive(
     {
         return true;
     }
-    // R3: when the color combine selects the texture (SCALE_OTHER) and a texture
-    // is currently sourced, bind it and sample; otherwise output iterated color.
-    const bool sample_texture =
-        texture_combine_enabled_ && current_texture_ != nullptr &&
-        current_texture_->gl_name != 0U;
+    bool sample_texture = false;
     float inv_w = 1.0F;
     float inv_h = 1.0F;
-    if (sample_texture)
-    {
-        glBindTexture(GL_TEXTURE_2D, current_texture_->gl_name);
-        // Task 332: normalize by the Glide coordinate extent, not the pixel
-        // size. They are equal for every map whose longer edge is 256, which is
-        // why only smaller sprites -- the difficulty dots and the arrows --
-        // were wrong.
-        inv_w = current_texture_->s_extent != 0U
-            ? 1.0F / static_cast<float>(current_texture_->s_extent)
-            : 1.0F;
-        inv_h = current_texture_->t_extent != 0U
-            ? 1.0F / static_cast<float>(current_texture_->t_extent)
-            : 1.0F;
-    }
-    shader_.SetTextureEnabled(sample_texture);
-    if (primitive == GL_LINES)
-    {
-        glLineWidth(1.0F);
-    }
+    PrepareDrawState(primitive, &sample_texture, &inv_w, &inv_h);
     glBegin(static_cast<GLenum>(primitive));
     for (std::size_t index = 0U; index < vertex_count; ++index)
     {
-        const hle::GlideDrawVertex* vertex = vertices[index];
-        glColor4f(vertex->r, vertex->g, vertex->b, vertex->a);
-        if (sample_texture)
-        {
-            // Pack normalized sow/tow and the shared texture/fog oow. Because
-            // orthographic clip w is constant, the shader receives linearly
-            // interpolated numerators and reciprocal-w and performs the Glide
-            // perspective divide per fragment.
-            glTexCoord4f(vertex->s * inv_w, vertex->t * inv_h,
-                         vertex->fog_oow, vertex->texture_oow);
-        }
-        else
-        {
-            glTexCoord4f(0.0F, 0.0F, vertex->fog_oow, 1.0F);
-        }
-        glVertex3f(vertex->x, vertex->y, GlideOozToOrthoEyeZ(vertex->ooz));
+        EmitDrawVertex(*vertices[index], sample_texture, inv_w, inv_h);
     }
     glEnd();
     message_ = success_message;
+    return true;
+#endif
+}
+
+bool GlideOpenGlBackend::DrawPrimitiveBatch(
+    const hle::GlideDrawVertex* vertices,
+    const std::size_t vertex_count,
+    const Win32GlideBatchPrimitive primitive)
+{
+    if (vertices == nullptr || vertex_count == 0U ||
+        primitive == Win32GlideBatchPrimitive::kNone)
+    {
+        // An empty flush is not a failure: the boundary flushes unconditionally
+        // before every non-draw gate, and most of those find nothing pending.
+        return true;
+    }
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, vertices, vertex_count, primitive, &result]() {
+            result = DrawPrimitiveBatch(vertices, vertex_count, primitive);
+        });
+        return result;
+    }
+#if !defined(_WIN32)
+    return false;
+#else
+    if (!is_open())
+    {
+        message_ = "cannot draw Glide primitive without an OpenGL window";
+        return false;
+    }
+    if (dummy_mode_)
+    {
+        return true;
+    }
+    const std::uint32_t gl_primitive =
+        primitive == Win32GlideBatchPrimitive::kPoints  ? GL_POINTS
+        : primitive == Win32GlideBatchPrimitive::kLines ? GL_LINES
+                                                        : GL_TRIANGLES;
+    bool sample_texture = false;
+    float inv_w = 1.0F;
+    float inv_h = 1.0F;
+    PrepareDrawState(gl_primitive, &sample_texture, &inv_w, &inv_h);
+    // The whole batch shares one state application and one `glBegin`/`glEnd`,
+    // which is exactly what makes it cheaper than the same primitives drawn
+    // separately. The vertices themselves are emitted identically.
+    glBegin(static_cast<GLenum>(gl_primitive));
+    for (std::size_t index = 0U; index < vertex_count; ++index)
+    {
+        EmitDrawVertex(vertices[index], sample_texture, inv_w, inv_h);
+    }
+    glEnd();
+    message_ = "Glide primitive batch drawn";
     return true;
 #endif
 }

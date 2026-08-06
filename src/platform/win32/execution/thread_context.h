@@ -12,6 +12,7 @@
 #include "repiu/platform/win32/glide_opengl_backend.h"
 #include "repiu/platform/win32/glide_ordinal_timing.h"
 #include "repiu/platform/win32/glide_setter_state_census.h"
+#include "repiu/platform/win32/glide_draw_batch.h"
 #include "repiu/platform/win32/glide_setter_state_cache.h"
 #include "repiu/platform/win32/timer_tick_delivery.h"
 #include "repiu/platform/win32/aot_boundary_opcode_census.h"
@@ -668,6 +669,10 @@ struct ThreadContext
     // Task 365: which state was last applied successfully on the host, so an exact
     // repeat can skip the rendezvous. Shares its rules with the census above.
     Win32GlideSetterStateCache glide_setter_state_cache;
+    // Task 438: primitives waiting for the next ordering boundary. Owned by
+    // the guest thread; the host only ever sees it inside a flush, which is
+    // itself a rendezvous, so no locking is needed.
+    Win32GlideDrawBatch glide_draw_batch;
     std::uint32_t glide_window_open_count = 0;
     std::uint32_t glide_logical_width = 0;
     std::uint32_t glide_logical_height = 0;

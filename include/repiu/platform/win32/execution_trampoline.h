@@ -20,6 +20,7 @@
 #include "repiu/platform/win32/glide_texture_census.h"
 #include "repiu/platform/win32/out_of_arena_step_census.h"
 #include "repiu/platform/win32/glide_setter_state_census.h"
+#include "repiu/platform/win32/glide_draw_batch.h"
 #include "repiu/platform/win32/glide_setter_state_cache.h"
 #include "repiu/platform/win32/timer_tick_delivery.h"
 #include "repiu/platform/win32/aot_boundary_opcode_census.h"
@@ -666,6 +667,7 @@ struct Win32MinimalExecutionAttempt
     Win32GlideSetterPhaseSnapshot glide_setter_phase_timing;
     // Task 365: how much of that repetition was actually elided.
     Win32GlideSetterStateCacheSnapshot glide_setter_state_cache;
+    Win32GlideDrawBatchSnapshot glide_draw_batch;
     // Task 369: whether the per-call setter error check ran, and what the
     // once-per-frame replacement found.
     Win32GlideGlErrorPolicySnapshot glide_gl_error_policy;

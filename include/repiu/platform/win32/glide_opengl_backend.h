@@ -4,6 +4,7 @@
 #include "repiu/hle/glide_hle.h"
 #include "repiu/hle/glide_vertex.h"
 #include "repiu/platform/win32/glide_buffer_swap_timing.h"
+#include "repiu/platform/win32/glide_draw_batch.h"
 #include "repiu/platform/win32/glide_gate_timing.h"
 #include "repiu/platform/win32/glide_gl_error_policy.h"
 #include "repiu/platform/win32/glide_ordinal_timing.h"
@@ -76,6 +77,15 @@ public:
     bool DrawTriangle(const hle::GlideDrawVertex& a,
                       const hle::GlideDrawVertex& b,
                       const hle::GlideDrawVertex& c);
+    // Task 438: one rendezvous for many primitives of the same kind. Valid only
+    // for independent primitives -- `GL_TRIANGLES`, `GL_LINES`, `GL_POINTS` --
+    // because those concatenate inside a single `glBegin`/`glEnd` while a
+    // `GL_TRIANGLE_FAN` does not. The caller guarantees that no render state
+    // changed between the queued primitives, which is what makes drawing them
+    // together identical to drawing them one at a time.
+    bool DrawPrimitiveBatch(const hle::GlideDrawVertex* vertices,
+                            std::size_t vertex_count,
+                            Win32GlideBatchPrimitive primitive);
     // Decode a Glide texture download into an OpenGL texture keyed by its TMU
     // start address (R3). format/large_lod/aspect follow the observed
     // GrTexInfo; source is guest texel data of source_size bytes.
@@ -286,6 +296,16 @@ private:
                        std::size_t vertex_count,
                        std::uint32_t primitive,
                        const char* success_message);
+    // The state and per-vertex halves of a draw, split so the single-primitive
+    // and batched paths cannot drift apart in what they emit.
+    bool PrepareDrawState(std::uint32_t primitive,
+                          bool* sample_texture,
+                          float* inverse_width,
+                          float* inverse_height);
+    void EmitDrawVertex(const hle::GlideDrawVertex& vertex,
+                        bool sample_texture,
+                        float inverse_width,
+                        float inverse_height);
     bool ApplyWindowScale(std::uint32_t scale);
     void ApplyDrawableViewport();
     std::string BuildWindowTitle(double frames_per_second) const;

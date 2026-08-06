@@ -90,6 +90,33 @@ bool RunGlideSetterStateCacheProbe()
         !IsGlideSetterElisionGate(go::kGrDrawTriangle) &&
         !IsGlideSetterElisionGate(go::kGrBufferSwap);
 
+    // Task 437 batch two. The list is a pure classification; whether it is
+    // consulted is the opt-in switch, whose unset-is-off convention is pinned by
+    // the env toggle probe. What must hold here is the membership itself.
+    using platform::win32::IsGlideSetterStateGate;
+    using platform::win32::IsGlideSetterTextureStateElisionGate;
+    const bool texture_membership =
+        IsGlideSetterTextureStateElisionGate(go::kGrTexClampMode) &&
+        IsGlideSetterTextureStateElisionGate(go::kGrTexFilterMode) &&
+        IsGlideSetterTextureStateElisionGate(go::kGrTexMipMapMode) &&
+        // `grTexSource` carries a `GrTexInfo*`, so an identical key does not
+        // prove identical state. It must stay out of both batches.
+        !IsGlideSetterTextureStateElisionGate(go::kGrTexSource) &&
+        !IsGlideSetterElisionGate(go::kGrTexSource) &&
+        // Batch one is unchanged: the two lists are disjoint, so turning the
+        // switch on can only widen what is elided, never redefine it.
+        !IsGlideSetterElisionGate(go::kGrTexClampMode) &&
+        !IsGlideSetterElisionGate(go::kGrTexFilterMode) &&
+        !IsGlideSetterElisionGate(go::kGrTexMipMapMode) &&
+        !IsGlideSetterTextureStateElisionGate(go::kGrColorMask) &&
+        // Same rule as batch one: nothing may be elided that the shared model
+        // does not treat as a state setter.
+        IsGlideSetterStateGate(go::kGrTexClampMode) &&
+        IsGlideSetterStateGate(go::kGrTexFilterMode) &&
+        IsGlideSetterStateGate(go::kGrTexMipMapMode) &&
+        !IsGlideSetterTextureStateElisionGate(go::kGrDrawTriangle) &&
+        !IsGlideSetterTextureStateElisionGate(go::kGrTexDownloadMipMapLevel);
+
     constexpr std::uint16_t kColorMask = 91U;
     const CachePtr cache = MakeCache();
     // Nothing applied yet, so nothing may be elided.
@@ -176,13 +203,15 @@ bool RunGlideSetterStateCacheProbe()
         !ShouldElideGlideSetterState(nullptr, kColorMask, OneWordKey(1U)) &&
         !SnapshotGlideSetterStateCache(*MakeCache()).enabled;
 
-    const bool all = policy && membership && cold && warm && differs &&
-        per_ordinal && voided && invalidation && texture_generation &&
-        counters && overflow && inert;
+    const bool all = policy && membership && texture_membership && cold &&
+        warm && differs && per_ordinal && voided && invalidation &&
+        texture_generation && counters && overflow && inert;
     std::cout << "glide_setter_state_cache_policy="
               << (policy ? "true" : "false")
               << "\nglide_setter_state_cache_membership="
               << (membership ? "true" : "false")
+              << "\nglide_setter_state_cache_texture_membership="
+              << (texture_membership ? "true" : "false")
               << "\nglide_setter_state_cache_cold="
               << (cold ? "true" : "false")
               << "\nglide_setter_state_cache_warm="

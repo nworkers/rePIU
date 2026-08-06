@@ -2127,13 +2127,41 @@ void PrintExecutionAttempt(
                 phase.alpha_blend.error_count);
             const auto& elision = attempt.glide_setter_state_cache;
             logger.info(
-                "Win32 Glide setter elision enabled/entries/elided/applied/"
-                "voided/invalidations/ordinal-overflow/texture-generation: "
-                "{}/{}/{}/{}/{}/{}/{}/{}",
-                elision.enabled, elision.active_entry_count,
+                "Win32 Glide setter elision enabled/texture-state/entries/"
+                "elided/applied/voided/invalidations/ordinal-overflow/"
+                "texture-generation: {}/{}/{}/{}/{}/{}/{}/{}/{}",
+                elision.enabled, elision.texture_state,
+                elision.active_entry_count,
                 elision.elided_count, elision.applied_count,
                 elision.voided_count, elision.invalidation_count,
                 elision.ordinal_overflow_count, elision.texture_generation);
+            // Task 438: the reduction factor is meant to be readable straight
+            // from this line -- vertices queued against flushes performed.
+            const auto& batch = attempt.glide_draw_batch;
+            using reason = repiu::platform::win32::
+                Win32GlideDrawBatchFlushReason;
+            const auto reason_count = [&batch](reason value) {
+                return batch.flush_reasons[static_cast<std::size_t>(value)];
+            };
+            logger.info(
+                "Win32 Glide draw batch enabled/primitives-queued/"
+                "primitives-drawn/vertices-drawn/flushes/failures/max-batch/"
+                "pending/mean-batch: {}/{}/{}/{}/{}/{}/{}/{}/{:.2f}",
+                batch.enabled, batch.queued_primitive_count,
+                batch.drawn_primitive_count, batch.drawn_vertex_count,
+                batch.flush_count, batch.failure_count,
+                batch.max_batch_primitive_count,
+                batch.pending_primitive_count,
+                batch.flush_count == 0U
+                    ? 0.0
+                    : static_cast<double>(batch.drawn_primitive_count) /
+                        static_cast<double>(batch.flush_count));
+            logger.info(
+                "Win32 Glide draw batch flush reason "
+                "non-draw-gate/primitive-change/capacity: {}/{}/{}",
+                reason_count(reason::kNonDrawGate),
+                reason_count(reason::kPrimitiveChange),
+                reason_count(reason::kCapacity));
         }
         if (total != 0U)
         {

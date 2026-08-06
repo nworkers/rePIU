@@ -79,8 +79,13 @@ z_eye  = 1 - 2d                             // glOrtho(0,w,0,h,-1,1)에서 windo
 
 빌드 통과, 스모크에서 `unimplemented/unsupported` **0/0**, GL 오류 0, 1,293프레임.
 
-**미완 — 육안 확인이 완료 판정입니다.** 3D 모델은 gameplay에 나오므로 제 스모크로는
-확인할 수 없습니다. 스모크가 보증하는 것은 "깨지지 않고 돈다"까지입니다.
+**[2026-08-07 확인 완료] 사용자가 gameplay에서 3D 모델이 정상으로 보인다고
+확인했습니다.** 같은 확인 실행(v0.0.136, pumpit1, 371.3초, 20,212프레임)은 Glide 구현
+공백 0/0/0/0/0/0과 게이트 5,586,761건 전건 처리도 함께 기록했습니다. Task 433은
+완료입니다.
+
+원래 조건: 3D 모델은 gameplay에 나오므로 제 스모크로는 확인할 수 없었고, 스모크가
+보증하는 것은 "깨지지 않고 돈다"까지였습니다.
 
 ## 8. 회고
 
@@ -100,8 +105,10 @@ z_eye  = 1 - 2d                             // glOrtho(0,w,0,h,-1,1)에서 windo
 
 The 3D model corruption comes from **vertex depth being severed at every stage of the
 pipeline**. The game populates `ooz` properly — **95.4%** of gameplay vertices, ranging
-0.75-65,426 — but the decoder never read it and every vertex left as `z = 0`. **Awaiting the
-user's visual confirmation.**
+0.75-65,426 — but the decoder never read it and every vertex left as `z = 0`. **Confirmed by the
+user on 2026-08-07: the 3D models look correct in gameplay.** That confirming run — v0.0.136,
+pumpit1, 371.3 seconds, 20,212 frames — also recorded zero Glide implementation gaps and all
+5,586,761 gate crossings handled. Task 433 is closed.
 
 ## 2. Why that produces this screen
 

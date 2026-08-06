@@ -189,8 +189,14 @@ class GlideSetterStateScope
             context_->glide_gate_stack + 1U,
             argument_words,
             IsGlideSetterStateTextureDependentGate(gate_id) ? generation : 0U);
+        // Task 437: batch two widens the list, never the rules. The key, the
+        // texture generation and the invalidation set are the same ones the
+        // census measured the ceiling with.
         elision_candidate_ =
-            cache_ != nullptr && IsGlideSetterElisionGate(gate_id);
+            cache_ != nullptr &&
+            (IsGlideSetterElisionGate(gate_id) ||
+             (GlideSetterTextureStateElisionEnabled() &&
+              IsGlideSetterTextureStateElisionGate(gate_id)));
         handled_before_ = context_->glide_gate_handled_count;
         issues_before_ = TotalIssues();
         backend_failures_before_ = context_->glide_implementation_issues.total(
@@ -258,6 +264,55 @@ class GlideSetterStateScope
     bool elided_ = false;
     bool active_ = false;
 };
+
+// Task 438: hands the pending primitives to the backend in one rendezvous.
+// Flushing an empty batch is a no-op success, which matters because the caller
+// flushes unconditionally before every non-draw gate.
+bool FlushGlideDrawBatchToBackend(ThreadContext* context,
+                                  Win32GlideDrawBatchFlushReason reason)
+{
+    return FlushGlideDrawBatch(
+        &context->glide_draw_batch, reason,
+        [context](const repiu::hle::GlideDrawVertex* vertices,
+                  std::size_t vertex_count,
+                  Win32GlideBatchPrimitive primitive) {
+            return context->glide_backend.DrawPrimitiveBatch(
+                vertices, vertex_count, primitive);
+        });
+}
+
+// Appends one primitive, flushing first when the batch cannot take it. Returns
+// false only when the primitive was not queued at all, in which case the caller
+// draws it directly and ordering is still preserved -- the batch is empty by
+// then either way.
+bool QueueGlideDrawForBatch(ThreadContext* context,
+                            Win32GlideDrawBatch* batch,
+                            const repiu::hle::GlideDrawVertex* vertices,
+                            std::size_t vertex_count,
+                            Win32GlideBatchPrimitive primitive)
+{
+    if (batch == nullptr)
+    {
+        return false;
+    }
+    bool flush_required = false;
+    if (QueueGlideDrawPrimitive(batch, vertices, vertex_count, primitive,
+                                &flush_required))
+    {
+        return true;
+    }
+    if (!flush_required)
+    {
+        return false;
+    }
+    const Win32GlideDrawBatchFlushReason reason =
+        batch->primitive != primitive
+            ? Win32GlideDrawBatchFlushReason::kPrimitiveChange
+            : Win32GlideDrawBatchFlushReason::kCapacity;
+    FlushGlideDrawBatchToBackend(context, reason);
+    return QueueGlideDrawPrimitive(batch, vertices, vertex_count, primitive,
+                                   &flush_required);
+}
 
 std::array<std::uint32_t,
            repiu::hle::kGlideImplementationIssueArgumentCapacity>
@@ -849,6 +904,10 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             : nullptr,
         &context->glide_backend,
         &ordinal_gate_cycles);
+    // Task 438: null when batching is off, which keeps the draw cases on exactly
+    // the path they took before -- one rendezvous per primitive.
+    Win32GlideDrawBatch* const draw_batch =
+        GlideDrawBatchEnabled() ? &context->glide_draw_batch : nullptr;
     // Tasks 364/365: declared here so its destructor observes the dispatch outcome
     // on every return path, and begun below once the argument mirror is filled.
     GlideSetterStateScope setter_state_scope(
@@ -1203,6 +1262,20 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                 "continue");
         };
     using go = repiu::hle::GlideGateId;
+    // Task 438: the whole ordering contract, in one rule. Anything that is not a
+    // queueable draw flushes first, so state changes, queries, swap, clear, LFB
+    // and downloads all see every triangle that preceded them without any of
+    // them having to be enumerated -- an omission in such a list would be an
+    // ordering bug that only shows up as a wrong picture.
+    //
+    // Placed after the elision short-circuit above on purpose: an elided setter
+    // returns before this point, changes nothing, and therefore must not force
+    // a flush. That is what leaves batches long enough to be worth having.
+    if (draw_batch != nullptr && !IsGlideDrawBatchGate(glide_export->gate_id))
+    {
+        FlushGlideDrawBatchToBackend(
+            context, Win32GlideDrawBatchFlushReason::kNonDrawGate);
+    }
     // 100% Unified GateId O(1) Switch Dispatcher (Task 321)
     switch (glide_export->gate_id)
     {
@@ -2194,7 +2267,9 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                     return decline_gate("draw-line-decode-failure");
                 }
             }
-            if (!context->glide_backend.DrawLine(vertices[0], vertices[1]))
+            if (!QueueGlideDrawForBatch(context, draw_batch, vertices, 2U,
+                                        Win32GlideBatchPrimitive::kLines) &&
+                !context->glide_backend.DrawLine(vertices[0], vertices[1]))
             {
                 context->glide_backend_message =
                     context->glide_backend.message();
@@ -2242,7 +2317,9 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                     return decline_gate("aa-draw-triangle-decode-failure");
                 }
             }
-            if (!context->glide_backend.DrawTriangle(vertices[0], vertices[1],
+            if (!QueueGlideDrawForBatch(context, draw_batch, vertices, 3U,
+                                        Win32GlideBatchPrimitive::kTriangles) &&
+                !context->glide_backend.DrawTriangle(vertices[0], vertices[1],
                                                      vertices[2]))
             {
                 context->glide_backend_message =
@@ -2289,7 +2366,9 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             {
                 return decline_gate("draw-point-decode-failure");
             }
-            if (!context->glide_backend.DrawPoint(vertex))
+            if (!QueueGlideDrawForBatch(context, draw_batch, &vertex, 1U,
+                                        Win32GlideBatchPrimitive::kPoints) &&
+                !context->glide_backend.DrawPoint(vertex))
             {
                 context->glide_backend_message =
                     context->glide_backend.message();
@@ -2752,7 +2831,9 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                     }
                 }
             }
-            if (!context->glide_backend.DrawTriangle(vertices[0], vertices[1], vertices[2]))
+            if (!QueueGlideDrawForBatch(context, draw_batch, vertices, 3U,
+                                        Win32GlideBatchPrimitive::kTriangles) &&
+                !context->glide_backend.DrawTriangle(vertices[0], vertices[1], vertices[2]))
             {
                 context->glide_backend_message = context->glide_backend.message();
                 return decline_gate("compact-triangle-backend-failure");

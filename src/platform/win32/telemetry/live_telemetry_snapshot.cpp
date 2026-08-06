@@ -1039,6 +1039,8 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.glide_backend.glide_setter_phase_timing();
     attempt->glide_setter_state_cache =
         SnapshotGlideSetterStateCache(context.glide_setter_state_cache);
+    attempt->glide_draw_batch =
+        SnapshotGlideDrawBatch(context.glide_draw_batch);
     attempt->glide_gl_error_policy =
         context.glide_backend.glide_gl_error_policy();
     attempt->glide_swap_interval_policy =

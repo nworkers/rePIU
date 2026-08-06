@@ -1,5 +1,7 @@
 #include "repiu/platform/win32/glide_setter_state_cache.h"
 
+#include "repiu/runtime/env_toggle.h"
+
 #include <cstdlib>
 
 namespace repiu::platform::win32
@@ -45,6 +47,37 @@ bool GlideSetterElisionEnabled()
 {
     static const bool enabled = ReadGlideSetterElisionSetting();
     return enabled;
+}
+
+bool GlideSetterTextureStateElisionEnabled()
+{
+    // Task 439 promoted this. A four-run A/B showed the three texture setters
+    // are 99.76% redundant -- 385,197 newly covered calls produced 933
+    // applications -- with zero voided entries and no visual difference. It also
+    // enables Task 438's batching: an elided setter never reaches the gate
+    // handler and so never forces a flush, which is what let batches reach 16
+    // primitives. An explicit `0|off|false` opts out; the
+    // `REPIU_GLIDE_SETTER_ELIDE=0` kill switch still wins over both, because the
+    // boundary only consults this list when the cache exists.
+    static const bool enabled = repiu::runtime::ResolvePromotedToggle(
+        std::getenv("REPIU_GLIDE_SETTER_ELIDE_TEXTURE"));
+    return enabled;
+}
+
+bool IsGlideSetterTextureStateElisionGate(repiu::hle::GlideGateId gate_id)
+{
+    switch (gate_id)
+    {
+        case go::kGrTexClampMode:
+        case go::kGrTexFilterMode:
+        // Already an ABI-only no-op, so this one saves no rendezvous. It is
+        // listed for a uniform account of the per-bind block rather than for a
+        // saving, and the work log says so.
+        case go::kGrTexMipMapMode:
+            return true;
+        default:
+            return false;
+    }
 }
 
 bool IsGlideSetterElisionGate(repiu::hle::GlideGateId gate_id)
@@ -161,6 +194,10 @@ Win32GlideSetterStateCacheSnapshot SnapshotGlideSetterStateCache(
 {
     Win32GlideSetterStateCacheSnapshot snapshot;
     snapshot.enabled = cache.enabled;
+    // Read from the policy rather than the cache: the counters below were
+    // produced under whichever batch this process is running, and a log that
+    // does not say which one cannot be compared against its A/B partner.
+    snapshot.texture_state = GlideSetterTextureStateElisionEnabled();
     snapshot.texture_generation = cache.texture_generation;
     snapshot.elided_count = cache.elided_count;
     snapshot.applied_count = cache.applied_count;
