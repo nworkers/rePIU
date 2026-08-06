@@ -1,3 +1,7 @@
+# Task 434: the sample history keeps JSON only. The readable report is a
+# release-workflow artifact now, and each snapshot committed here added tens of
+# megabytes to the repository permanently.
+tests/history/openwatcom_samples/*.html
 build/
 MASTER/
 roms/

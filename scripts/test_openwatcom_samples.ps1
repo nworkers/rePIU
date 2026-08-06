@@ -1,4 +1,14 @@
 param(
+    # Task 434: the loader under test is a parameter so CI can exercise the same
+    # Release binary it ships. Debug stays the default, because that is the
+    # configuration every existing baseline and local procedure was recorded on.
+    [ValidateSet("Debug", "Release", "RelWithDebInfo", "MinSizeRel")]
+    [string]$Configuration = "Debug",
+    # Task 434: wall-clock bound per sample. The loader's own budget governs
+    # guest execution only, so a sample blocked outside it -- reading standard
+    # input, for instance -- never returns. A killed sample counts as a failure.
+    [ValidateRange(1, 600)]
+    [int]$SampleTimeoutSeconds = 10,
     [string]$ManifestPath = "build\openwatcom_samples\manifest.json",
     [string]$ReportPath = "build\openwatcom_sample_report\index.html",
     [string]$SummaryPath = "build\openwatcom_sample_report\summary.json",
@@ -14,10 +24,13 @@ $ErrorActionPreference = "Stop"
 # Task 429: bump this whenever the run-pass criterion changes, so a comparison
 # against a baseline recorded under a different rule is flagged rather than read
 # as a code regression.
-$script:RunCriterionId = "exit0+no-exception+returned+no-timeout"
+$script:RunCriterionId = "exit0+no-exception+returned+no-timeout+no-harness-timeout"
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
-$Loader = Join-Path $Root "build\win32_x86_debug\Debug\repiu_loader_win32.exe"
+# The tree is multi-config, so the directory name is historical: every
+# configuration is a subdirectory of it.
+$LoaderRelative = "build\win32_x86_debug\$Configuration\repiu_loader_win32.exe"
+$Loader = Join-Path $Root $LoaderRelative
 $ResolvedManifestPath = Join-Path $Root $ManifestPath
 $ResolvedReportPath = Join-Path $Root $ReportPath
 $ResolvedSummaryPath = Join-Path $Root $SummaryPath
@@ -40,36 +53,99 @@ function ConvertTo-HtmlText
 
 function Invoke-Capture
 {
+    # Task 434: bounded, and with stdin closed.
+    #
+    # `& $FilePath` inherits the console and waits forever. A sample that reads
+    # standard input -- cplbexam\iostream\istream\get.cpp is one -- then parks
+    # the whole suite: one such sample was observed blocked for 39 minutes on
+    # 1.0 second of CPU. Under CI that consumes the job's entire time limit and
+    # produces nothing.
+    #
+    # Redirecting from an empty file gives a reading sample EOF instead of a
+    # blocking console, and the wall-clock bound catches every other way a
+    # sample can fail to return.
     param(
         [string]$FilePath,
         [string[]]$Arguments = @(),
-        [string]$WorkingDirectory = $Root
+        [string]$WorkingDirectory = $Root,
+        [int]$TimeoutSeconds = 0
     )
 
-    Push-Location $WorkingDirectory
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    $stdinPath = [System.IO.Path]::GetTempFileName()
+    $timedOut = $false
+
     try
     {
-        $oldErrorActionPreference = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        try
-        {
-            $output = & $FilePath @Arguments 2>&1 |
-                ForEach-Object { $_.ToString() }
-            $exitCode = $LASTEXITCODE
+        $startArguments = @{
+            FilePath = $FilePath
+            WorkingDirectory = $WorkingDirectory
+            RedirectStandardOutput = $stdoutPath
+            RedirectStandardError = $stderrPath
+            RedirectStandardInput = $stdinPath
+            NoNewWindow = $true
+            PassThru = $true
         }
-        finally
+        if ($Arguments.Count -gt 0)
         {
-            $ErrorActionPreference = $oldErrorActionPreference
+            $startArguments.ArgumentList = $Arguments
         }
+
+        $process = Start-Process @startArguments
+
+        # Touching Handle caches it, which is what makes ExitCode readable after
+        # the process ends. Without this, Start-Process -PassThru leaves
+        # ExitCode null and every sample scores as a failure.
+        [void]$process.Handle
+
+        if ($TimeoutSeconds -gt 0)
+        {
+            if (!$process.WaitForExit($TimeoutSeconds * 1000))
+            {
+                $timedOut = $true
+                try
+                {
+                    $process.Kill()
+                }
+                catch
+                {
+                    # It can exit between the wait expiring and the kill.
+                }
+                # Give the pipes a moment to flush into the redirect files.
+                [void]$process.WaitForExit(5000)
+            }
+        }
+        else
+        {
+            $process.WaitForExit()
+        }
+
+        $exitCode = $process.ExitCode
     }
     finally
     {
-        Pop-Location
+        $stdout = if (Test-Path $stdoutPath) { Get-Content $stdoutPath -Raw } else { "" }
+        $stderr = if (Test-Path $stderrPath) { Get-Content $stderrPath -Raw } else { "" }
+        foreach ($temporary in @($stdoutPath, $stderrPath, $stdinPath))
+        {
+            Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $output = "$stdout$stderr"
+    if ($timedOut)
+    {
+        # The marker the run criterion looks for. Deliberately distinct from the
+        # loader's own "minimal execution attempt timed out", which is a guest
+        # execution budget rather than the sample failing to return at all.
+        $output += "`nharness: sample timed out after $TimeoutSeconds seconds and was terminated`n"
     }
 
     [pscustomobject]@{
         ExitCode = $exitCode
-        Output = ($output | Out-String)
+        Output = $output
+        TimedOut = $timedOut
     }
 }
 
@@ -151,6 +227,10 @@ function Get-Summary
         # baseline without this field predates the completion requirement, so its
         # counts are not comparable -- see the -CompareBaseline warning.
         RunCriterion = $script:RunCriterionId
+        # Task 434: Debug and Release do not share a timing profile, and the
+        # criterion counts a timeout as a failure, so a baseline recorded on one
+        # configuration is not comparable with a run on the other.
+        Configuration = $Configuration
         Version = Get-ProjectVersion
         GitCommit = Invoke-GitValue @("rev-parse", "HEAD")
         GitBranch = Invoke-GitValue @("branch", "--show-current")
@@ -403,7 +483,7 @@ try
     }
     if (!(Test-Path $Loader))
     {
-        throw "Loader executable was not found at build\win32_x86_debug\Debug\repiu_loader_win32.exe. Run scripts\build_openwatcom_samples.ps1 first."
+        throw "Loader executable was not found at $LoaderRelative. Run scripts\build_openwatcom_samples.ps1 -Configuration $Configuration first."
     }
 
     $manifest = Get-Content $ResolvedManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -441,19 +521,30 @@ try
             $run = Invoke-Capture `
                 -FilePath $Loader `
                 -Arguments @($sample.Executable) `
-                -WorkingDirectory $sample.BuildDirectory
+                -WorkingDirectory $sample.BuildDirectory `
+                -TimeoutSeconds $SampleTimeoutSeconds
             # Task 429: the old criterion was exit code plus "no exception", which
             # a timeout also satisfies -- the guest stalls, nothing is caught, and
             # the loader exits 0. Four of eight sampled dynamic-only "passes" were
             # timeouts scored as passes. Completion is now required explicitly:
             # a genuine pass reports "returned: true", a timeout "returned: false"
             # with "minimal execution attempt timed out".
+            #
+            # Task 434: a sample the harness had to kill is a failure too. It is
+            # kept as its own term rather than folded into the exit-code test,
+            # because a killed process's exit code is not meaningful.
             $runPassed =
+                -not $run.TimedOut -and
                 $run.ExitCode -eq 0 -and
                 $run.Output -match "Win32 minimal execution exception caught: false" -and
                 $run.Output -match "Win32 minimal execution returned: true" -and
                 $run.Output -notmatch "minimal execution attempt timed out"
-            $runStatus = if ($runPassed) { "pass" } else { "fail" }
+            $runStatus = if ($runPassed)
+                         { "pass" }
+                         elseif ($run.TimedOut)
+                         { "fail (harness timeout)" }
+                         else
+                         { "fail" }
             $detail = $run.Output.Trim()
         }
 
@@ -499,6 +590,14 @@ try
         {
             $baselineCriterion = [string]$baseline.RunCriterion
         }
+        elseif ($baseline.PSObject.Properties["Summary"] -and
+                $baseline.Summary.PSObject.Properties["RunCriterion"])
+        {
+            # Task 434: Task 429 recorded the criterion inside Summary but never
+            # at the top level, so a baseline re-recorded under the new rule
+            # still looked like it predated it. Read either position.
+            $baselineCriterion = [string]$baseline.Summary.RunCriterion
+        }
         if ($baselineCriterion -ne $script:RunCriterionId)
         {
             $shown = if ([string]::IsNullOrEmpty($baselineCriterion))
@@ -508,6 +607,30 @@ try
                 " Reported regressions may be measurement corrections, not code" +
                 " regressions. Re-record the baseline with -UpdateBaseline once" +
                 " the difference has been reviewed.")
+        }
+
+        # Task 434: the same argument applies to the build configuration. A
+        # Debug-recorded baseline compared against a Release run mixes two
+        # timing profiles, and the criterion counts a timeout as a failure.
+        $baselineConfiguration = $null
+        if ($baseline.PSObject.Properties["Configuration"])
+        {
+            $baselineConfiguration = [string]$baseline.Configuration
+        }
+        elseif ($baseline.PSObject.Properties["Summary"] -and
+                $baseline.Summary.PSObject.Properties["Configuration"])
+        {
+            $baselineConfiguration = [string]$baseline.Summary.Configuration
+        }
+        if ($baselineConfiguration -ne $Configuration)
+        {
+            $shownConfiguration = if ([string]::IsNullOrEmpty($baselineConfiguration))
+                                  { "(none - predates Task 434, recorded on Debug)" }
+                                  else { $baselineConfiguration }
+            Write-Warning ("Baseline build configuration differs from this run." +
+                " baseline=$shownConfiguration current=$Configuration." +
+                " Debug and Release do not share a timing profile, so reported" +
+                " regressions may be timeouts rather than code regressions.")
         }
 
         $comparison = Compare-Baseline -Baseline $baseline -CurrentSamples $baselineSamples
@@ -520,6 +643,10 @@ try
     {
         $baselineRecord = [pscustomobject]@{
             GeneratedAt = $summary.GeneratedAt
+            # Task 434: both guards are read from the top level by
+            # -CompareBaseline, so record them there and not only inside Summary.
+            RunCriterion = $summary.RunCriterion
+            Configuration = $summary.Configuration
             Version = $summary.Version
             GitCommit = $summary.GitCommit
             GitBranch = $summary.GitBranch
@@ -531,15 +658,21 @@ try
 
         Write-JsonFile -Value $baselineRecord -Path ([string]$ResolvedBaselinePath)
 
+        # Task 434: the history keeps JSON only.
+        #
+        # Task 049 also snapshotted the HTML report here, when this file was the
+        # only place a past run could be read from. Those snapshots grew with the
+        # detail they carry -- 5.6 MB at 0.0.5 against 28 MB at 0.0.135, 127 MB
+        # across the directory -- and every one of them is in the repository
+        # permanently. The release workflow now uploads the same report as a
+        # build artifact, so the readable copy has another home while the JSON
+        # keeps the structured data this file compares against.
         $historyBaseName = "{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), $summary.Version
         $resolvedHistoryFile = Join-Path $ResolvedHistoryPath "$historyBaseName.json"
-        $resolvedHistoryReportFile = Join-Path $ResolvedHistoryPath "$historyBaseName.html"
         Write-JsonFile -Value $baselineRecord -Path ([string]$resolvedHistoryFile)
-        Copy-Item -LiteralPath $ResolvedReportPath -Destination $resolvedHistoryReportFile -Force
 
         Write-Host "OpenWatcom sample baseline: $ResolvedBaselinePath"
         Write-Host "OpenWatcom sample history: $resolvedHistoryFile"
-        Write-Host "OpenWatcom sample history report: $resolvedHistoryReportFile"
     }
 
     Write-Host ""

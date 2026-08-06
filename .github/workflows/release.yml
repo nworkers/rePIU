@@ -1,0 +1,165 @@
+name: Release
+
+# Task 434: verifies a tag and publishes its artifacts.
+#
+# Everything here runs against Release, including the OpenWatcom sample suite,
+# so the binary that is tested is the binary that ships. Note that the sample
+# baseline in tests/baselines was recorded on Debug under the pre-Task-429
+# criterion; the harness warns about both differences, and the first run is
+# expected to report regressions that are measurement corrections. Its report
+# artifact is what the re-recording decision is made from.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Win32 Release build, sample suite, artifacts
+    runs-on: windows-2022
+    timeout-minutes: 240
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Version gate
+        id: version
+        shell: powershell
+        # AGENTS.md requires VERSION and the tag to agree. That rule is kept by
+        # hand, so a machine checks it before anything expensive runs.
+        run: |
+          $version = (Get-Content VERSION -Raw -Encoding UTF8).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$')
+          {
+              throw "VERSION must use major.minor.patch format, found '$version'."
+          }
+
+          if ('${{ github.ref_type }}' -eq 'tag')
+          {
+              $tag = '${{ github.ref_name }}'
+              $tagVersion = $tag -replace '^v', ''
+              if ($tagVersion -ne $version)
+              {
+                  Write-Host "::error::VERSION file and tag disagree."
+                  Write-Host "  VERSION file : $version"
+                  Write-Host "  tag          : $tag (reads as $tagVersion)"
+                  exit 1
+              }
+              Write-Host "Tag $tag matches VERSION $version."
+          }
+          else
+          {
+              # workflow_dispatch has no tag to compare against.
+              Write-Host "Manual run; using VERSION $version without a tag comparison."
+          }
+
+          # Written through .NET rather than Out-File: PowerShell 5.1 puts a BOM
+          # at the head of a file it appends to while empty, and a BOM in
+          # GITHUB_OUTPUT breaks the first key.
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=$version`r`n")
+
+      - name: Restore FetchContent dependency cache
+        uses: actions/cache@v4
+        with:
+          path: build/win32_x86_debug/_deps
+          key: deps-windows-2022-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            deps-windows-2022-
+
+      - name: Restore OpenWatcom download cache
+        uses: actions/cache@v4
+        with:
+          # The pinned SHA256 lives in the install script, so its hash is the
+          # right key: a new pin invalidates the cached archive.
+          path: tools/downloads
+          key: openwatcom-${{ hashFiles('scripts/install_openwatcom.ps1') }}
+
+      - name: Build (Release)
+        shell: powershell
+        run: .\scripts\build_win32_x86.ps1 -Configuration Release
+
+      - name: Probe - Glide implementation issue tracker
+        shell: powershell
+        run: .\build\win32_x86_debug\Release\repiu_glide_issue_probe.exe
+
+      - name: Probe - AOT timer safe point
+        shell: powershell
+        run: .\build\win32_x86_debug\Release\repiu_aot_probe.exe --timer-safe-point
+
+      - name: Install OpenWatcom
+        shell: powershell
+        run: .\scripts\install_openwatcom.ps1
+
+      - name: Build OpenWatcom samples
+        shell: powershell
+        # -SkipHostBuild because the Release loader is already built above.
+        # -SkipSetup is deliberately not passed: with a warm cache the installer
+        # returns immediately, and with a cold one this path self-heals.
+        run: .\scripts\build_openwatcom_samples.ps1 -Configuration Release -SkipHostBuild
+
+      - name: Test OpenWatcom samples against the baseline
+        shell: powershell
+        run: .\scripts\test_openwatcom_samples.ps1 -Configuration Release -CompareBaseline
+
+      - name: Package
+        # always(): a run that failed on regressions is exactly when the sample
+        # report is wanted, so package and upload it either way.
+        if: always() && steps.version.outputs.version != ''
+        shell: powershell
+        run: |
+          .\scripts\package_release.ps1 `
+              -Configuration Release `
+              -Version ${{ steps.version.outputs.version }} `
+              -AllowMissingSampleReport
+
+      - name: Upload artifacts
+        if: always() && steps.version.outputs.version != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: rePIU-v${{ steps.version.outputs.version }}
+          path: build/package/*.zip
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Attach to the GitHub release
+        # Only a green tag run publishes. A manual run leaves its artifacts on
+        # the workflow run and creates no release.
+        if: success() && github.ref_type == 'tag'
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $files = @(Get-ChildItem build\package\*.zip | ForEach-Object { $_.FullName })
+          if ($files.Count -eq 0)
+          {
+              throw "No archives were produced for $tag."
+          }
+
+          # A release must carry its test evidence, not only the binaries.
+          if (@($files | Where-Object { $_ -like '*openwatcom-samples-*' }).Count -eq 0)
+          {
+              throw "Refusing to publish $tag without the OpenWatcom sample report."
+          }
+
+          # Native stderr redirection is a PowerShell 5.1 trap under
+          # ErrorActionPreference=Stop, so branch on the exit code instead.
+          $ErrorActionPreference = 'Continue'
+          gh release view $tag | Out-Null
+          $releaseExists = ($LASTEXITCODE -eq 0)
+          $ErrorActionPreference = 'Stop'
+
+          if ($releaseExists)
+          {
+              Write-Host "Release $tag exists; uploading with --clobber."
+              gh release upload $tag @files --clobber
+          }
+          else
+          {
+              Write-Host "Creating release $tag."
+              gh release create $tag @files --title $tag --generate-notes
+          }

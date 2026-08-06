@@ -1,5 +1,16 @@
 # OpenWatcom 히스토리 HTML 리포트 설계
 
+> **[Task 434에서 철회] HTML 스냅샷은 더 이상 만들지 않습니다.**
+> 이 설계가 세워졌을 때는 과거 실행을 사람이 읽을 방법이 이 파일뿐이었습니다. 그 뒤
+> 스냅샷이 담는 detail이 늘면서 파일이 **0.0.5의 5.6 MB에서 0.0.135의 28 MB까지**
+> 커졌고, 디렉터리 전체가 **127 MB**가 됐습니다. git 히스토리는 지울 수 없으므로 갱신
+> 한 번마다 저장소가 영구히 무거워집니다.
+> 릴리스 워크플로가 같은 리포트를 **빌드 아티팩트로 업로드**하므로 사람이 읽을 사본은
+> 따로 있고, 비교의 근거가 되는 구조화 데이터는 JSON이 그대로 유지합니다.
+> 아래 본문은 당시 기록으로 보존합니다. 근거:
+> [Task 434 설계 §6.1](20260806-434-github-actions-release-ci.md) ·
+> [작업 로그](../work-logs/20260806-434-github-actions-release-ci.md)
+
 ## 배경
 
 OpenWatcom 샘플 baseline 갱신은 `tests/baselines/openwatcom_samples.json`을 갱신하고, 같은 결과를 `tests/history/openwatcom_samples/` 아래의 날짜별 JSON으로 남긴다.
@@ -26,6 +37,16 @@ JSON과 HTML은 같은 basename을 공유하므로, 특정 milestone의 구조�
 * 새 history JSON과 같은 basename의 HTML이 생성되는지 확인한다.
 
 # OpenWatcom History HTML Report Design
+
+> **[Withdrawn in Task 434] The HTML snapshot is no longer written.**
+> When this design was written, that file was the only way to read a past run. The snapshots
+> then grew with the detail they carry — **5.6 MB at 0.0.5 against 28 MB at 0.0.135, 127 MB
+> across the directory** — and git history cannot be pruned, so every update made the
+> repository permanently heavier. The release workflow now uploads the same report as a **build
+> artifact**, so the readable copy has another home while the JSON keeps the structured data
+> comparisons rest on. The text below is preserved as the record of its moment. See
+> [Task 434 design §6.1](20260806-434-github-actions-release-ci.md) and its
+> [work log](../work-logs/20260806-434-github-actions-release-ci.md).
 
 ## Background
 
