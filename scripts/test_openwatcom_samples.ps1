@@ -1,4 +1,9 @@
 param(
+    # Task 434: the loader under test is a parameter so CI can exercise the same
+    # Release binary it ships. Debug stays the default, because that is the
+    # configuration every existing baseline and local procedure was recorded on.
+    [ValidateSet("Debug", "Release", "RelWithDebInfo", "MinSizeRel")]
+    [string]$Configuration = "Debug",
     [string]$ManifestPath = "build\openwatcom_samples\manifest.json",
     [string]$ReportPath = "build\openwatcom_sample_report\index.html",
     [string]$SummaryPath = "build\openwatcom_sample_report\summary.json",
@@ -17,7 +22,10 @@ $ErrorActionPreference = "Stop"
 $script:RunCriterionId = "exit0+no-exception+returned+no-timeout"
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
-$Loader = Join-Path $Root "build\win32_x86_debug\Debug\repiu_loader_win32.exe"
+# The tree is multi-config, so the directory name is historical: every
+# configuration is a subdirectory of it.
+$LoaderRelative = "build\win32_x86_debug\$Configuration\repiu_loader_win32.exe"
+$Loader = Join-Path $Root $LoaderRelative
 $ResolvedManifestPath = Join-Path $Root $ManifestPath
 $ResolvedReportPath = Join-Path $Root $ReportPath
 $ResolvedSummaryPath = Join-Path $Root $SummaryPath
@@ -151,6 +159,10 @@ function Get-Summary
         # baseline without this field predates the completion requirement, so its
         # counts are not comparable -- see the -CompareBaseline warning.
         RunCriterion = $script:RunCriterionId
+        # Task 434: Debug and Release do not share a timing profile, and the
+        # criterion counts a timeout as a failure, so a baseline recorded on one
+        # configuration is not comparable with a run on the other.
+        Configuration = $Configuration
         Version = Get-ProjectVersion
         GitCommit = Invoke-GitValue @("rev-parse", "HEAD")
         GitBranch = Invoke-GitValue @("branch", "--show-current")
@@ -403,7 +415,7 @@ try
     }
     if (!(Test-Path $Loader))
     {
-        throw "Loader executable was not found at build\win32_x86_debug\Debug\repiu_loader_win32.exe. Run scripts\build_openwatcom_samples.ps1 first."
+        throw "Loader executable was not found at $LoaderRelative. Run scripts\build_openwatcom_samples.ps1 -Configuration $Configuration first."
     }
 
     $manifest = Get-Content $ResolvedManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -499,6 +511,14 @@ try
         {
             $baselineCriterion = [string]$baseline.RunCriterion
         }
+        elseif ($baseline.PSObject.Properties["Summary"] -and
+                $baseline.Summary.PSObject.Properties["RunCriterion"])
+        {
+            # Task 434: Task 429 recorded the criterion inside Summary but never
+            # at the top level, so a baseline re-recorded under the new rule
+            # still looked like it predated it. Read either position.
+            $baselineCriterion = [string]$baseline.Summary.RunCriterion
+        }
         if ($baselineCriterion -ne $script:RunCriterionId)
         {
             $shown = if ([string]::IsNullOrEmpty($baselineCriterion))
@@ -508,6 +528,30 @@ try
                 " Reported regressions may be measurement corrections, not code" +
                 " regressions. Re-record the baseline with -UpdateBaseline once" +
                 " the difference has been reviewed.")
+        }
+
+        # Task 434: the same argument applies to the build configuration. A
+        # Debug-recorded baseline compared against a Release run mixes two
+        # timing profiles, and the criterion counts a timeout as a failure.
+        $baselineConfiguration = $null
+        if ($baseline.PSObject.Properties["Configuration"])
+        {
+            $baselineConfiguration = [string]$baseline.Configuration
+        }
+        elseif ($baseline.PSObject.Properties["Summary"] -and
+                $baseline.Summary.PSObject.Properties["Configuration"])
+        {
+            $baselineConfiguration = [string]$baseline.Summary.Configuration
+        }
+        if ($baselineConfiguration -ne $Configuration)
+        {
+            $shownConfiguration = if ([string]::IsNullOrEmpty($baselineConfiguration))
+                                  { "(none - predates Task 434, recorded on Debug)" }
+                                  else { $baselineConfiguration }
+            Write-Warning ("Baseline build configuration differs from this run." +
+                " baseline=$shownConfiguration current=$Configuration." +
+                " Debug and Release do not share a timing profile, so reported" +
+                " regressions may be timeouts rather than code regressions.")
         }
 
         $comparison = Compare-Baseline -Baseline $baseline -CurrentSamples $baselineSamples
@@ -520,6 +564,10 @@ try
     {
         $baselineRecord = [pscustomobject]@{
             GeneratedAt = $summary.GeneratedAt
+            # Task 434: both guards are read from the top level by
+            # -CompareBaseline, so record them there and not only inside Summary.
+            RunCriterion = $summary.RunCriterion
+            Configuration = $summary.Configuration
             Version = $summary.Version
             GitCommit = $summary.GitCommit
             GitBranch = $summary.GitBranch

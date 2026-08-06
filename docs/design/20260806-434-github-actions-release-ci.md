@@ -35,13 +35,34 @@
 
 ## 4. 검증 범위
 
+**정정(구현 전 로컬 실측).** 최초 설계는 `repiu_aot_probe` 전체를 저작물 없이 돌릴 수
+있다고 적었으나 **틀렸습니다.** 이 probe는 `argv[1]`로 DOS4GW 실행 파일을 받고, 인자가
+없으면 usage를 출력하며 exit 2입니다
+([`aot_probe/main.cpp:612`](../../src/tools/aot_probe/main.cpp)). 실측 결과:
+
+| 입력 | exit | 비고 |
+|---|---:|---|
+| `--timer-safe-point` (인자 없음) | **0** | `timer_safe_point_probe=true` |
+| `samples/dos4gw_hello/build/hello.exe` | **1** | `cache_message=direct control-flow target is outside the cache` |
+| OpenWatcom 샘플 실행 파일 3종 | **1** | 위와 동일하게 캐시 방출 단계에서 중단 |
+
+전체 단정 묶음(arena view, coherence, plan build benchmark, timer tick delivery 단정
+10개)은 `PIU.EXE`를 전제로 하며, 캐시 방출이 성립하는 이미지가 필요합니다. **CI에서는
+`--timer-safe-point` 모드만 유효합니다.**
+
+`repiu_glide_issue_probe`는 인자 없이 exit 0 · `glide_issue_probe=pass`로 확인됐습니다.
+
 | 층 | 수단 | 저작물 필요 | 워크플로 |
 |---|---|---|---|
 | 빌드 | Debug + Release × Win32 | 없음 | 양쪽 |
-| 단정 | `repiu_aot_probe`, `repiu_glide_issue_probe` | 없음 | 양쪽 |
+| 단정(제한) | `repiu_aot_probe --timer-safe-point`, `repiu_glide_issue_probe` | 없음 | 양쪽 |
 | 기능 회귀 | OpenWatcom 819샘플 + `-CompareBaseline` | 없음 | 태그만 |
+| **단정(전체)** | `repiu_aot_probe <PIU.EXE>` | **필요** | **불가 — 로컬 전용** |
 | 실행 검증 | pumpit1 스모크 | **필요** | **불가 — 로컬 전용** |
 | 성능 | 프레임·cycle 측정 | 필요 | **불가 — 로컬 전용** |
+
+**따라서 CI의 회귀 감시 가치는 사실상 전적으로 819샘플 스위트에 있습니다.** probe 두
+개는 링크·초기화가 깨지지 않았음을 보는 얕은 확인입니다.
 
 ## 5. 구조 — 워크플로 두 개
 
@@ -66,11 +87,34 @@ flowchart TD
 깨지면 되돌리기가 번거롭습니다. `ci.yml`이 Debug 빌드와 probe까지만 빠르게 돌려 그 앞에서
 잡습니다.
 
-**Debug와 Release를 둘 다 빌드해야 합니다.**
-[`scripts/test_openwatcom_samples.ps1:20`](../../scripts/test_openwatcom_samples.ps1)의
-`$Loader`는 `build\win32_x86_debug\Debug\repiu_loader_win32.exe`로 **하드코딩**되어 있어
-샘플 하네스는 Debug 로더를 씁니다. 반면 배포 아티팩트는 Release여야 합니다. 다행히
-Visual Studio 생성기는 멀티컨피그이므로 **configure는 1회, build만 2회**입니다.
+### 5.1 샘플 스위트도 Release로 돌립니다 (사용자 지시로 변경)
+
+최초 설계는 Debug와 Release를 **둘 다** 빌드하려 했습니다.
+[`scripts/test_openwatcom_samples.ps1`](../../scripts/test_openwatcom_samples.ps1)의
+`$Loader`가 Debug 경로로 **하드코딩**되어 있었기 때문입니다.
+
+사용자 지시에 따라 하네스에 `-Configuration` 파라미터를 추가해 **Release 하나만
+빌드합니다.** 이쪽이 더 낫습니다 — **실제로 배포하는 바이너리를 검증**하게 되고, 빌드가
+한 번으로 줄어 CI 시간이 절반 가까이 내려갑니다.
+
+| | 변경 전 | 변경 후 |
+|---|---|---|
+| release.yml 빌드 | Debug + Release | **Release만** |
+| 샘플이 쓰는 로더 | Debug | **Release (배포물과 동일)** |
+| 기본값(로컬) | — | Debug 유지 — 기존 절차와 기준선을 바꾸지 않음 |
+
+**대가: 기존 기준선과 비교 가능성이 끊깁니다.** 통과 판정은 timeout을 실패로 세는데
+([Task 429](../work-logs/20260805-429-sample-pass-criterion.md)), Debug는 plan build에서
+Release 대비 11.34배 느립니다(Task 330). 즉 **구성이 다르면 timeout 경계에 걸린 샘플의
+판정이 달라질 수 있습니다.**
+
+그래서 Task 429가 `RunCriterion`에 쓴 것과 **같은 가드 패턴**을 구성에도 적용합니다.
+summary와 baseline에 `Configuration`을 기록하고, `-CompareBaseline`이 다르면 경고합니다.
+
+**함께 고친 결함:** Task 429는 baseline에 `RunCriterion`을 기록하려 했으나 실제로는
+`Summary` 안에만 들어가고 최상위에는 없었습니다. 비교 코드는 최상위만 읽으므로 **새
+기준으로 재기록해도 "기준을 모르는 baseline"으로 계속 경고**했습니다. 두 위치를 모두
+읽도록 고치고, 기록도 두 위치에 남깁니다.
 
 ## 6. 아티팩트
 
@@ -145,7 +189,8 @@ CI에도 적용합니다.
 | 항목 | 상태 | 대응 |
 |---|---|---|
 | CI 총 실행 시간 | **미측정.** 로컬 40분 기준으로 30~60분 + 샘플 15~25분 추정 | 첫 실행 결과를 작업 로그에 기록하고, 6시간 job 한도에 여유가 없으면 job 분할 |
-| `repiu_aot_probe`의 헤드리스 동작 | **미확인.** Glide 관련 probe를 포함하나 정책·상태 단정으로 보임 | 첫 실행에서 확인. 실패하면 해당 그룹만 제외하고 사유를 로그에 남김 |
+| ~~`repiu_aot_probe`의 헤드리스 동작~~ | **해소(§4).** 헤드리스는 문제가 아니었고, 이미지 인자가 문제였습니다 | `--timer-safe-point`만 CI에 넣음 |
+| 캐시가 비었을 때의 OpenWatcom 다운로드 시간 | 미측정 | 첫 실행에서 기록 |
 | OpenWatcom `Current-build` 태그 | 릴리스가 갱신되면 SHA256이 어긋나 설치가 실패 | 스크립트가 명시적으로 실패하므로 조용한 오염은 없음. 발생 시 해시 갱신 |
 | private 저장소 과금 | Windows 러너는 분당 2배 | `ci.yml`은 Debug 단일 구성으로 제한, 샘플 스위트는 태그에서만 |
 
@@ -195,13 +240,28 @@ regression over 819 samples**, not merely a build check.
 
 ## 4. Verification scope
 
+**Correction, from local measurement before implementation.** The first draft claimed the whole
+of `repiu_aot_probe` runs without copyrighted assets, and that was **wrong**: it takes a DOS4GW
+executable as `argv[1]` and exits 2 with usage when given none
+([`aot_probe/main.cpp:612`](../../src/tools/aot_probe/main.cpp)). Measured: `--timer-safe-point`
+exits **0** with `timer_safe_point_probe=true`; `samples/dos4gw_hello/build/hello.exe` exits
+**1** at `cache_message=direct control-flow target is outside the cache`; and three OpenWatcom
+sample executables fail the same way. The full assertion set — arena view, coherence, plan build
+benchmark, and the ten timer-tick assertions — presumes `PIU.EXE`, so **only
+`--timer-safe-point` is usable in CI.** `repiu_glide_issue_probe` needs no argument and was
+confirmed at exit 0 with `glide_issue_probe=pass`.
+
 | Layer | Means | Assets needed | Workflow |
 |---|---|---|---|
 | Build | Debug + Release × Win32 | none | both |
-| Assertions | `repiu_aot_probe`, `repiu_glide_issue_probe` | none | both |
+| Assertions (limited) | `repiu_aot_probe --timer-safe-point`, `repiu_glide_issue_probe` | none | both |
 | Functional regression | 819 OpenWatcom samples with `-CompareBaseline` | none | tag only |
+| **Assertions (full)** | `repiu_aot_probe <PIU.EXE>` | **yes** | **impossible — local only** |
 | Execution | pumpit1 smoke | **yes** | **impossible — local only** |
 | Performance | frame and cycle measurement | yes | **impossible — local only** |
+
+**CI's regression value therefore rests almost entirely on the 819-sample suite**; the two
+probes are a shallow check that linking and initialisation are intact.
 
 ## 5. Structure — two workflows
 
@@ -213,11 +273,30 @@ upload.
 **Not putting everything on the tag** matters because a tag is applied after the merge, so a
 build breaking there is awkward to undo. `ci.yml` catches it earlier.
 
-**Both configurations must be built.** `$Loader` in
-[`scripts/test_openwatcom_samples.ps1:20`](../../scripts/test_openwatcom_samples.ps1) is
-**hard-coded** to `build\win32_x86_debug\Debug\repiu_loader_win32.exe`, so the sample harness
-needs the Debug loader while the shipped artifact must be Release. The Visual Studio generator
-is multi-config, so this costs **one configure and two builds**.
+### 5.1 The sample suite runs on Release too (changed on user instruction)
+
+The first draft built **both** configurations, because `$Loader` in
+[`scripts/test_openwatcom_samples.ps1`](../../scripts/test_openwatcom_samples.ps1) was
+**hard-coded** to the Debug path. On the user's instruction a `-Configuration` parameter was
+added to the harness so **only Release is built**. This is the better arrangement: it verifies
+**the binary that actually ships**, and it removes an entire build from the run.
+
+The default stays `Debug` locally, so existing procedures and the recorded baseline keep their
+meaning.
+
+**The cost is comparability with the existing baseline.** The pass criterion counts a timeout as
+a failure ([Task 429](../work-logs/20260805-429-sample-pass-criterion.md)), and Debug is 11.34x
+slower than Release at plan building (Task 330), so **samples near the timeout boundary can be
+judged differently between configurations.**
+
+The **same guard pattern** Task 429 used for `RunCriterion` is therefore applied to the
+configuration: `Configuration` is recorded in the summary and the baseline, and
+`-CompareBaseline` warns when they differ.
+
+**A related defect was fixed on the way.** Task 429 intended to record `RunCriterion` in the
+baseline, but it only ever landed inside `Summary` while the comparison reads the top level — so
+a baseline re-recorded under the new rule still warned that it predated the rule. Both positions
+are now read, and both are written.
 
 ## 6. Artifacts
 
@@ -273,10 +352,9 @@ appears as step 0 of the work order.
 ## 11. Open items and risks
 
 Total CI time is **unmeasured** — an estimate of 30-60 minutes plus 15-25 for the samples, to be
-recorded from the first run and split across jobs if the six-hour limit gets close. Whether
-`repiu_aot_probe` runs headless is **unconfirmed**; it includes Glide-related probes that appear
-to be policy and state assertions, and if any fails, that group alone is excluded with the
-reason recorded. The OpenWatcom `Current-build` release can be refreshed, in which case the
+recorded from the first run and split across jobs if the six-hour limit gets close. The earlier
+open item about `repiu_aot_probe` running headless is **closed by §4**: headlessness was never
+the problem, the image argument was. The OpenWatcom `Current-build` release can be refreshed, in which case the
 pinned SHA256 stops matching and installation fails loudly, so there is no silent corruption —
 only a hash to update. And on a private repository Windows runners bill at double rate, which
 is why `ci.yml` stays a single Debug configuration and the sample suite runs on tags only.

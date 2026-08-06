@@ -2204,3 +2204,59 @@ entry is.
 **Measurement caveat:** the profiled `kPortIoDevice` count and cycles over-count port I/O,
 because `ExecutionTimeScope` is constructed on entry and so counts calls that bail at the
 opcode check; the gap tracks the single-step count. **The census is the accurate count.**
+
+## 지속적 통합과 릴리스 아티팩트 / Continuous integration and release artifacts
+
+CI는 GitHub Actions 호스티드 러너에서만 돌고, 워크플로는 둘입니다
+([Task 434](docs/design/20260806-434-github-actions-release-ci.md)).
+
+| 워크플로 | 트리거 | 하는 일 |
+|---|---|---|
+| `.github/workflows/ci.yml` | `main` push, pull request | Win32 **Debug** 빌드 + probe 2종 |
+| `.github/workflows/release.yml` | `v*` 태그, 수동 실행 | 버전 게이트 → Win32 **Release** 빌드 → probe 2종 → OpenWatcom 819샘플 → 아티팩트 2종 → Release 첨부 |
+
+**검증 범위의 경계가 이 설계의 핵심입니다.** `roms/`와 `MASTER/`는 저작물이라 CI에
+없으므로 **pumpit1·pumpit3 실행 검증과 모든 성능 수치는 로컬 전용**입니다. CI가 볼 수
+있는 것은 빌드, probe 두 개, 그리고 OpenWatcom 샘플 회귀입니다.
+
+* `repiu_aot_probe`는 CI에서 **`--timer-safe-point` 모드로만** 부릅니다. 전체 단정
+  묶음은 `argv[1]`로 DOS4GW 이미지를 받고 `PIU.EXE`를 전제로 하며, CI가 만들 수 있는
+  어떤 이미지로도 캐시 방출 단계를 통과하지 못합니다.
+* 샘플 스위트는 **Release 로더로** 돌립니다. 배포하는 바이너리를 그대로 검증하기
+  위해서입니다. `test_openwatcom_samples.ps1 -Configuration`의 기본값은 Debug이며,
+  로컬 절차와 기존 기준선의 의미는 그대로입니다.
+* 통과 판정은 timeout을 실패로 세므로 **구성이 다르면 비교가 성립하지 않습니다.**
+  summary와 baseline에 `RunCriterion`과 `Configuration`을 함께 기록하고,
+  `-CompareBaseline`이 어느 한쪽이라도 다르면 경고합니다.
+* 러너 이미지는 `windows-2022`로 **고정**합니다. `build_win32_x86.ps1`이 설치된 Visual
+  Studio major 버전으로 생성기를 고르므로, 이미지가 떠다니면 릴리스 산출물의 툴체인이
+  조용히 바뀝니다.
+
+아티팩트는 `scripts/package_release.ps1`이 만들고 두 개입니다 —
+`rePIU-v<version>-win32.zip`(정적 링크된 실행 파일과 고지 문서)과
+`openwatcom-samples-v<version>.zip`(샘플 리포트). **회귀로 job이 실패해도 리포트는
+업로드**하며, 반대로 **리포트 없이는 릴리스를 발행하지 않습니다.**
+
+CI runs only on GitHub-hosted runners, through two workflows
+([Task 434](docs/design/20260806-434-github-actions-release-ci.md)): `ci.yml` builds Win32
+**Debug** and runs two probes on pushes to `main` and on pull requests, while `release.yml`
+runs on `v*` tags with a version gate, a Win32 **Release** build, the same probes, the 819
+OpenWatcom samples, and two artifacts attached to the release.
+
+**The verification boundary is the point of the design.** `roms/` and `MASTER/` are
+copyrighted and absent from CI, so **pumpit1 and pumpit3 execution checks and every
+performance figure stay local**; CI sees the build, the two probes, and sample regression.
+`repiu_aot_probe` is invoked **only as `--timer-safe-point`**, because its full assertion set
+takes a DOS4GW image as `argv[1]`, presumes `PIU.EXE`, and clears the cache-emission stage on
+no image CI can build. The sample suite runs **against the Release loader** so the shipped
+binary is the tested one, while `-Configuration` defaults to Debug locally so existing
+procedures and the recorded baseline keep their meaning. Because the pass criterion counts a
+timeout as a failure, a run is not comparable across configurations, so `RunCriterion` and
+`Configuration` are both recorded in the summary and the baseline and `-CompareBaseline` warns
+on either mismatch. The runner image is **pinned** to `windows-2022`, since
+`build_win32_x86.ps1` selects its generator from the installed Visual Studio major version.
+
+`scripts/package_release.ps1` produces both artifacts — `rePIU-v<version>-win32.zip` with the
+statically linked executables and the notices, and `openwatcom-samples-v<version>.zip` with the
+sample report. **The report uploads even when regressions fail the job**, and conversely **no
+release is published without it.**

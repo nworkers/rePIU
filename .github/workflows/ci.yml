@@ -1,0 +1,54 @@
+name: CI
+
+# Task 434: the fast gate. It exists so a broken build is found on the branch
+# rather than at tagging time, when the merge is already done. The OpenWatcom
+# sample suite is deliberately not here -- 819 samples on every push costs more
+# time and billing than the signal is worth. It runs in release.yml.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Win32 Debug build and probes
+    # Pinned rather than windows-latest: build_win32_x86.ps1 picks its generator
+    # from the installed Visual Studio major version, so a floating image would
+    # silently change the toolchain.
+    runs-on: windows-2022
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Restore FetchContent dependency cache
+        uses: actions/cache@v4
+        with:
+          # SDL3 and spdlog are cloned by FetchContent on every configure.
+          path: build/win32_x86_debug/_deps
+          key: deps-windows-2022-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            deps-windows-2022-
+
+      - name: Build (Debug)
+        shell: powershell
+        run: .\scripts\build_win32_x86.ps1 -Configuration Debug
+
+      - name: Probe - Glide implementation issue tracker
+        shell: powershell
+        run: .\build\win32_x86_debug\Debug\repiu_glide_issue_probe.exe
+
+      - name: Probe - AOT timer safe point
+        shell: powershell
+        # Only this mode runs without a game asset. The full assertion set takes
+        # a DOS4GW image as argv[1] and does not pass on any image CI can build
+        # -- see design 20260806-434 section 4.
+        run: .\build\win32_x86_debug\Debug\repiu_aot_probe.exe --timer-safe-point

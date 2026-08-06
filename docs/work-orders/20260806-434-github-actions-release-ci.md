@@ -32,10 +32,16 @@ flowchart LR
     S4 --> S5["단계 5<br/>문서 갱신"]
 ```
 
-**범위 안:** `.github/workflows/` 두 파일, 패키징 스크립트 1개, 문서 갱신.
+**범위 안:** `.github/workflows/` 두 파일, 패키징 스크립트 1개, 샘플 하네스에
+`-Configuration` 추가(설계 §5.1, 사용자 지시), 문서 갱신.
 
-**범위 밖:** 기존 빌드·테스트 스크립트의 동작 변경, sccache 도입, baseline 값 변경,
-`REPIU_*` 환경 변수 기본값 변경.
+**범위 밖:** sccache 도입, baseline 값 변경, `REPIU_*` 환경 변수 기본값 변경.
+
+**기존 스크립트 변경의 한계:** `-Configuration`은 **기본값 Debug**로 추가하므로 인자
+없이 부르던 기존 절차의 동작은 바뀌지 않습니다. 유일한 실동작 변경은
+`build_openwatcom_samples.ps1`이 호스트 빌드를 `build_win32_x86.bat` 대신
+`build_win32_x86.ps1`로 직접 부르는 것이며, `.bat`이 그 ps1을 인자 없이 부르던 것과
+기본값 기준으로 동일합니다.
 
 ## 2. 단계별 작업
 
@@ -45,8 +51,12 @@ flowchart LR
 |---|---|
 | 트리거 | `push: branches [main]`, `pull_request` |
 | 러너 | `windows-2022` (설계 §9) |
-| 스텝 | checkout → `_deps` 캐시 복원 → `scripts\build_win32_x86.ps1 -Configuration Debug` → `repiu_aot_probe` → `repiu_glide_issue_probe` |
+| 스텝 | checkout → `_deps` 캐시 복원 → `scripts\build_win32_x86.ps1 -Configuration Debug` → `repiu_glide_issue_probe` → `repiu_aot_probe --timer-safe-point` |
 | 실패 조건 | 빌드 실패, probe exit ≠ 0 |
+
+**`repiu_aot_probe`는 반드시 `--timer-safe-point`로만 호출합니다**(설계 §4 정정).
+인자 없이 부르면 usage와 함께 exit 2이고, CI에서 만들 수 있는 어떤 DOS4GW 이미지로도
+전체 단정은 통과하지 않습니다.
 
 샘플 스위트는 **넣지 않습니다.** 매 push마다 819개를 돌리면 시간과 과금이 감당되지
 않습니다(설계 §11).
@@ -66,22 +76,21 @@ flowchart LR
    `workflow_dispatch`로 실행된 경우에는 태그가 없으므로 게이트를 건너뛰고 `VERSION`
    값을 그대로 사용합니다.
 2. 캐시 복원 2종 (설계 §8).
-3. `scripts\build_win32_x86.ps1 -Configuration Debug`
-4. `scripts\build_win32_x86.ps1 -Configuration Release`
-5. `repiu_aot_probe`, `repiu_glide_issue_probe` (Release 산출물로 실행)
+3. `scripts\build_win32_x86.ps1 -Configuration Release`
+4. `repiu_glide_issue_probe`, `repiu_aot_probe --timer-safe-point` (Release 산출물로 실행)
 
-**3과 4는 같은 트리를 씁니다.** 멀티컨피그이므로 configure는 첫 호출에서 한 번만
-일어나고, 두 번째는 `--config`만 다릅니다.
+**Debug 빌드는 하지 않습니다**(설계 §5.1). 샘플 하네스가 `-Configuration Release`를
+받으므로 배포물과 같은 바이너리를 그대로 검증합니다.
 
 ### 단계 3 — 샘플 스위트 연결
 
 ```powershell
 scripts\install_openwatcom.ps1
-scripts\build_openwatcom_samples.ps1 -SkipHostBuild
-scripts\test_openwatcom_samples.ps1 -CompareBaseline
+scripts\build_openwatcom_samples.ps1 -Configuration Release -SkipHostBuild
+scripts\test_openwatcom_samples.ps1 -Configuration Release -CompareBaseline
 ```
 
-* `-SkipHostBuild`를 쓰는 이유: 단계 2에서 이미 Debug 로더를 만들었으므로
+* `-SkipHostBuild`를 쓰는 이유: 단계 2에서 이미 Release 로더를 만들었으므로
   `build_win32_x86.bat`를 다시 부를 필요가 없습니다.
 * `-SkipSetup`은 **쓰지 않습니다.** `setup_test_environment.ps1`이 OpenWatcom 설치를
   포함하는데, 캐시가 살아 있으면 `install_openwatcom.ps1`이 "already installed"로
@@ -128,8 +137,9 @@ scripts\test_openwatcom_samples.ps1 -CompareBaseline
 | 1 | 워크플로 문법 | `act` 또는 push 후 Actions 로그 | 파싱 오류 없음 |
 | 2 | 버전 게이트 (불일치) | `workflow_dispatch` 없이, `VERSION`과 다른 태그로 시험 | exit 1, 두 값이 로그에 출력 |
 | 3 | 버전 게이트 (일치) | 실제 태그 | 통과 |
-| 4 | Debug/Release 산출물 | 로그의 빌드 경로 | 두 구성 모두 `repiu_loader_win32.exe` 생성 |
-| 5 | probe | exit code | `repiu_aot_probe` exit 0, `repiu_glide_issue_probe` pass |
+| 4 | Release 산출물 | 로그의 빌드 경로 | `build\win32_x86_debug\Release\`에 7개 실행 파일 |
+| 4a | 샘플이 Release 로더를 씀 | `summary.json`의 `Configuration` | `Release` |
+| 5 | probe | exit code | `repiu_glide_issue_probe` exit 0 + `glide_issue_probe=pass`, `repiu_aot_probe --timer-safe-point` exit 0 + `timer_safe_point_probe=true` |
 | 6 | 샘플 스위트 | summary.json | `Total` 819, `RunCriterion` 일치, 회귀 0 |
 | 7 | 아티팩트 | Release 페이지 | zip 2개 첨부, 이름의 버전이 태그와 일치 |
 | 8 | 실패 시 리포트 | 회귀를 의도적으로 만든 실행 | job 실패 + 리포트 아티팩트 존재 |

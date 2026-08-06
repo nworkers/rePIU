@@ -1,5 +1,10 @@
 param(
     [string[]]$Suites = @("clibexam", "cplbexam"),
+    # Task 434: which loader configuration to build, so the harness can test the
+    # same Release binary that ships. Only the host build is affected -- the
+    # samples themselves are compiled by wcl386 and are configuration-neutral.
+    [ValidateSet("Debug", "Release", "RelWithDebInfo", "MinSizeRel")]
+    [string]$Configuration = "Debug",
     [string]$ManifestPath = "build\openwatcom_samples\manifest.json",
     [switch]$SkipSetup,
     [switch]$SkipHostBuild
@@ -213,10 +218,15 @@ try
 
     if (!$SkipHostBuild)
     {
+        # Task 434: call the script directly rather than through the .bat, which
+        # has no way to pass a configuration through.
         Invoke-Step `
-            -Name "Build Win32 x86 host" `
-            -FilePath "cmd" `
-            -Arguments @("/c", "scripts\build_win32_x86.bat")
+            -Name "Build Win32 x86 host ($Configuration)" `
+            -FilePath "powershell" `
+            -Arguments @(
+                "-ExecutionPolicy", "Bypass",
+                "-File", (Join-Path $PSScriptRoot "build_win32_x86.ps1"),
+                "-Configuration", $Configuration)
     }
 
     if (!(Test-Path $Compiler))
