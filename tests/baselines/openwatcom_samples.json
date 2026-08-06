@@ -1,18 +1,22 @@
 ﻿{
-    "GeneratedAt":  "2026-08-05 19:17:17",
-    "Version":  "0.0.133",
-    "GitCommit":  "78366f8478c9ab0cf2034b348c864dfd8b294fd9",
-    "GitBranch":  "task428-openwatcom-baseline-refresh",
+    "GeneratedAt":  "2026-08-06 15:04:05",
+    "RunCriterion":  "exit0+no-exception+returned+no-timeout+no-harness-timeout",
+    "Configuration":  "Release",
+    "Version":  "0.0.135",
+    "GitCommit":  "31bc85211b01836ade199554259b871bcef6c99a",
+    "GitBranch":  "feature/434-github-actions-release-ci",
     "ManifestGeneratedAt":  "2026-08-05 17:27:07",
     "Suites":  [
                    "clibexam",
                    "cplbexam"
                ],
     "Summary":  {
-                    "GeneratedAt":  "2026-08-05 19:17:17",
-                    "Version":  "0.0.133",
-                    "GitCommit":  "78366f8478c9ab0cf2034b348c864dfd8b294fd9",
-                    "GitBranch":  "task428-openwatcom-baseline-refresh",
+                    "GeneratedAt":  "2026-08-06 15:04:05",
+                    "RunCriterion":  "exit0+no-exception+returned+no-timeout+no-harness-timeout",
+                    "Configuration":  "Release",
+                    "Version":  "0.0.135",
+                    "GitCommit":  "31bc85211b01836ade199554259b871bcef6c99a",
+                    "GitBranch":  "feature/434-github-actions-release-ci",
                     "ManifestPath":  "build\\openwatcom_samples\\manifest.json",
                     "ManifestGeneratedAt":  "2026-08-05 17:27:07",
                     "Suites":  [
@@ -23,11 +27,11 @@
                     "BuildPassed":  793,
                     "BuildSkipped":  26,
                     "RunEligible":  793,
-                    "RunPassed":  535,
-                    "OverallPassed":  535,
+                    "RunPassed":  528,
+                    "OverallPassed":  528,
                     "BuildPassRate":  96.8,
-                    "RunPassRate":  67.5,
-                    "OverallPassRate":  65.3
+                    "RunPassRate":  66.6,
+                    "OverallPassRate":  64.5
                 },
     "Samples":  [
                     {
@@ -769,9 +773,9 @@
                     {
                         "Suite":  "clibexam",
                         "Relative":  "chainint.c",
-                        "Status":  "pass",
+                        "Status":  "run_fail",
                         "BuildStatus":  "pass",
-                        "RunStatus":  "pass",
+                        "RunStatus":  "fail",
                         "BuildSkipReason":  ""
                     },
                     {
@@ -1657,9 +1661,9 @@
                     {
                         "Suite":  "clibexam",
                         "Relative":  "getvect.c",
-                        "Status":  "pass",
+                        "Status":  "run_fail",
                         "BuildStatus":  "pass",
-                        "RunStatus":  "pass",
+                        "RunStatus":  "fail",
                         "BuildSkipReason":  ""
                     },
                     {
@@ -4201,9 +4205,9 @@
                     {
                         "Suite":  "clibexam",
                         "Relative":  "setvect.c",
-                        "Status":  "pass",
+                        "Status":  "run_fail",
                         "BuildStatus":  "pass",
-                        "RunStatus":  "pass",
+                        "RunStatus":  "fail",
                         "BuildSkipReason":  ""
                     },
                     {
@@ -5977,17 +5981,17 @@
                     {
                         "Suite":  "cplbexam",
                         "Relative":  "iostream\\istream\\get.cpp",
-                        "Status":  "pass",
+                        "Status":  "run_fail",
                         "BuildStatus":  "pass",
-                        "RunStatus":  "pass",
+                        "RunStatus":  "fail",
                         "BuildSkipReason":  ""
                     },
                     {
                         "Suite":  "cplbexam",
                         "Relative":  "iostream\\istream\\getchar.cpp",
-                        "Status":  "pass",
+                        "Status":  "run_fail",
                         "BuildStatus":  "pass",
-                        "RunStatus":  "pass",
+                        "RunStatus":  "fail",
                         "BuildSkipReason":  ""
                     },
                     {
@@ -6041,9 +6045,9 @@
                     {
                         "Suite":  "cplbexam",
                         "Relative":  "iostream\\istream\\peek.cpp",
-                        "Status":  "pass",
+                        "Status":  "run_fail",
                         "BuildStatus":  "pass",
-                        "RunStatus":  "pass",
+                        "RunStatus":  "fail",
                         "BuildSkipReason":  ""
                     },
                     {
@@ -6065,9 +6069,9 @@
                     {
                         "Suite":  "cplbexam",
                         "Relative":  "iostream\\istream\\rshchar.cpp",
-                        "Status":  "pass",
+                        "Status":  "run_fail",
                         "BuildStatus":  "pass",
-                        "RunStatus":  "pass",
+                        "RunStatus":  "fail",
                         "BuildSkipReason":  ""
                     },
                     {
