@@ -103,10 +103,15 @@ flowchart TD
 | 샘플이 쓰는 로더 | Debug | **Release (배포물과 동일)** |
 | 기본값(로컬) | — | Debug 유지 — 기존 절차와 기준선을 바꾸지 않음 |
 
-**대가: 기존 기준선과 비교 가능성이 끊깁니다.** 통과 판정은 timeout을 실패로 세는데
-([Task 429](../work-logs/20260805-429-sample-pass-criterion.md)), Debug는 plan build에서
-Release 대비 11.34배 느립니다(Task 330). 즉 **구성이 다르면 timeout 경계에 걸린 샘플의
-판정이 달라질 수 있습니다.**
+**대가로 우려한 것: 기존 기준선과 비교 가능성이 끊깁니다.** 통과 판정은 timeout을
+실패로 세는데([Task 429](../work-logs/20260805-429-sample-pass-criterion.md)), Debug는
+plan build에서 Release 대비 11.34배 느립니다(Task 330). 즉 **구성이 다르면 timeout
+경계에 걸린 샘플의 판정이 달라질 수 있습니다.**
+
+> **[실측 결과] 이 우려는 이 스위트에서 관측되지 않았습니다.** 같은 새 기준으로 819샘플을
+> 두 번 돌린 결과 **Debug 528 / Release 528**로 같고 회귀 목록도 동일합니다
+> ([작업 로그 §7](../work-logs/20260806-434-github-actions-release-ci.md)). 가드는 근거가
+> 사라진 것이 아니라 **미래의 변화를 잡기 위해 유지**합니다.
 
 그래서 Task 429가 `RunCriterion`에 쓴 것과 **같은 가드 패턴**을 구성에도 적용합니다.
 summary와 baseline에 `Configuration`을 기록하고, `-CompareBaseline`이 다르면 경고합니다.

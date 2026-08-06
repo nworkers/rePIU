@@ -136,11 +136,50 @@ stdin을 상속**했고, 이 샘플은 `istream::get`으로 표준 입력을 읽
 읽기인지 다른 것인지는 **확정하지 못했습니다.** 두 겹으로 막았고 상한이 있으므로 CI
 관점에서는 닫혔지만, 근본 원인은 별도 조사 대상입니다.
 
-## 7. Release 구성 실측 (진행 중)
+## 7. 실측 — **Release 전환의 대가는 0입니다**
 
-`-Configuration Release`로 819샘플을 로컬 실행해 Debug 기준선과의 차이를 재고 있습니다.
-이 결과가 **첫 CI 실행에서 볼 회귀 목록과 같은 성질**이므로, 사용자가 baseline 재기록을
-판단할 근거가 됩니다. 완료 후 이 절을 수치로 채웁니다.
+819샘플을 두 번 돌렸습니다. 같은 새 기준(`...+no-harness-timeout`), 같은 10초 상한,
+구성만 다릅니다.
+
+| | 기준선(Debug·옛 기준) | Debug·새 기준 | **Release·새 기준** |
+|---|---:|---:|---:|
+| Total | 819 | 819 | 819 |
+| BuildPassed / Skipped | 793 / 26 | 793 / 26 | 793 / 26 |
+| **RunPassed** | **535** | **528** | **528** |
+| 기준선 대비 회귀 | — | 7 | 7 |
+| 신규 통과 | — | 0 | 0 |
+| **harness timeout** | — | **0** | **0** |
+
+**Debug와 Release가 528로 같고, 회귀 7건의 목록도 완전히 동일합니다.** 따라서
+**7건은 구성 때문이 아닙니다.** 설계 §5.1이 우려한 "구성이 다르면 timeout 경계의
+샘플 판정이 달라진다"는 이 스위트에서는 **관측되지 않았습니다.**
+
+### 7.1 회귀 7건은 측정 정정입니다
+
+| 샘플 | 성격 |
+|---|---|
+| `chainint.c`, `getvect.c`, `setvect.c` | 인터럽트 벡터 계열. **Task 428이 신규 통과로 기록한 6건 중 3건** |
+| `iostream\{get, getchar, peek, rshchar}.cpp` | 전부 **표준 입력을 읽는** 샘플 |
+
+둘을 직접 실행해 확인한 실패 사유는 **로더 자신의 1,000 ms 게스트 예산**입니다.
+
+```text
+[loader] Win32 minimal execution timed out: true
+[loader] Win32 minimal execution message: minimal execution attempt timed out          (chainint.c)
+[loader] Win32 minimal execution message: timeout reached during guest execution ...    (get.cpp)
+```
+
+**하네스 상한이 아닙니다** — 양쪽 실행 모두 0건입니다. 그리고 이것들은 **옛 기준에서는
+통과로 집계되던 것**입니다(exit 0 + 예외 없음). Task 429가 잡으려던 위양성입니다.
+
+**Task 429가 남긴 질문에 답이 나왔습니다.** 429 §4는 "legacy 통과 535개 중 몇 개가
+timeout이었는지는 미확인이며 다음 실행에서 드러난다"고 적었습니다. **최소 3개이며,
+그 3개는 Task 428이 신규 통과로 기록한 6건 안에 있습니다.**
+
+### 7.2 남은 판단
+
+기준선을 **528로 재기록**하면 첫 CI 실행이 깨끗해집니다. 근거는 위 표이고, 재기록은
+사람이 판단할 사항이므로 **수행하지 않았습니다**(§8).
 
 ## 8. 사용자 결정으로 남긴 것
 
@@ -251,12 +290,34 @@ after the `ExitCode` fix it consumed the full ten seconds. Whether the block is 
 input read or something else is **not settled**. Both defences are in place and the bound holds,
 so the CI risk is closed, but the root cause is a separate investigation.
 
-## 7. Release-configuration measurement (in progress)
+## 7. Measured — **moving to Release costs nothing**
 
-The 819 samples are being run locally under `-Configuration Release` to measure the difference
-against the Debug-recorded baseline. That result has the same character as the regression list
-the first CI run will produce, so it is the evidence the user's re-recording decision rests on.
-This section is filled in with figures once it completes.
+The 819 samples were run twice under the same new criterion and the same ten-second bound,
+differing only in configuration. The Debug-recorded baseline passed **535** under the old
+criterion; **Debug under the new criterion passes 528, and Release passes 528** — the same
+number, with **the identical set of seven regressions**, no new passes, and **zero harness
+timeouts** in both. The seven are therefore **not configuration-dependent**, and design §5.1's
+concern that samples near the timeout boundary would be judged differently across
+configurations **was not observed in this suite**.
+
+### 7.1 The seven are measurement corrections
+
+Three are interrupt-vector samples — `chainint.c`, `getvect.c`, `setvect.c`, which are **three
+of the six new passes Task 428 recorded** — and four are `iostream` samples that all **read
+standard input**. Running two of them directly shows the failure is **the loader's own 1,000 ms
+guest budget**, reported as `minimal execution attempt timed out` and `timeout reached during
+guest execution`. It is **not** the harness bound, which fired zero times in both runs. Under
+the old criterion all of these counted as passes on exit code and absence of an exception —
+precisely the false positives Task 429 was written to catch.
+
+**This answers the question Task 429 left open.** Its §4 recorded that how many of legacy's 535
+passes were timeouts was unknown and would surface on the next run: **at least three, and those
+three sit inside the six new passes Task 428 recorded.**
+
+### 7.2 Remaining judgement
+
+Re-recording the baseline at **528** would make the first CI run clean. The evidence is the
+table above; the act is a human judgement and **was not performed** (§8).
 
 ## 8. Left to the user
 
