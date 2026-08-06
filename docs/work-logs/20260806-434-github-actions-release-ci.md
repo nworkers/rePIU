@@ -181,12 +181,43 @@ timeout이었는지는 미확인이며 다음 실행에서 드러난다"고 적�
 기준선을 **528로 재기록**하면 첫 CI 실행이 깨끗해집니다. 근거는 위 표이고, 재기록은
 사람이 판단할 사항이므로 **수행하지 않았습니다**(§8).
 
+## 7.3 history HTML 스냅샷을 중단했습니다 (사용자 동의)
+
+baseline을 재기록하고 커밋한 직후, 추가된 HTML이 **28 MB**임을 확인했습니다.
+
+| 버전 | history HTML |
+|---|---:|
+| 0.0.5 | 5.6 MB |
+| 0.0.34 | 14.5 MB |
+| 0.0.59 | 17.2 MB |
+| 0.0.133 | 28.3 MB |
+| 0.0.135 (이번) | 28.0 MB |
+| **디렉터리 전체** | **127.6 MB** (`.git` 36.7 MB) |
+
+[Task 049](../design/20260710-049-openwatcom-history-html-report.md)가 이 스냅샷을 만든
+이유는 **당시 과거 실행을 사람이 읽을 방법이 그것뿐**이었기 때문입니다. 그 전제가
+이번에 바뀌었습니다 — 릴리스 워크플로가 같은 리포트를 아티팩트로 올립니다.
+
+| 조치 | 내용 |
+|---|---|
+| 스크립트 | `-UpdateBaseline`이 JSON만 씀. HTML `Copy-Item` 제거 |
+| `.gitignore` | `tests/history/openwatcom_samples/*.html` — 수동 복사 경로까지 차단 |
+| Task 049 설계 | 머리말에 **철회**와 그 근거를 명시. 본문은 당시 기록으로 보존 |
+
+**검증:** `git check-ignore --no-index`로 HTML은 규칙에 걸리고(`exit 0`) JSON은 걸리지
+않음(`exit 1`)을 확인했습니다.
+
+**이미 커밋된 8개는 건드리지 않았습니다.** git 히스토리에 남아 clone 크기는 줄지 않으므로,
+작업 트리에서 제거할지는 별도 판단입니다(§8).
+
 ## 8. 사용자 결정으로 남긴 것
 
 * **baseline 재기록 시점.** 사용자가 경로 (나)를 택했습니다 — 먼저 재기록하지 않고,
   첫 태그 실행이 실패하면 그 리포트로 위양성을 확인한 뒤 재기록합니다. 가이드 §4에
   절차를 적었습니다.
-* **첫 태그 push.** AGENTS.md대로 원격 push는 사용자가 직접 수행합니다.
+* **첫 태그 push.** AGENTS.md대로 태그 원격 push는 사용자가 직접 수행합니다.
+* **이미 커밋된 history HTML 8개(127 MB)의 제거 여부.** 지워도 git 히스토리에 남아
+  clone 크기는 줄지 않고, 작업 트리만 가벼워집니다. 이번 범위에서는 손대지 않았습니다.
 
 ## 9. 회고
 
@@ -319,11 +350,31 @@ three sit inside the six new passes Task 428 recorded.**
 Re-recording the baseline at **528** would make the first CI run clean. The evidence is the
 table above; the act is a human judgement and **was not performed** (§8).
 
+## 7.3 The history HTML snapshot was stopped (with the user's agreement)
+
+Committing the re-recorded baseline surfaced that its HTML snapshot weighs **28 MB**: 5.6 MB at
+0.0.5, 14.5 at 0.0.34, 17.2 at 0.0.59, 28.3 at 0.0.133, and **127.6 MB across the directory**
+against a 36.7 MB `.git`. [Task 049](../design/20260710-049-openwatcom-history-html-report.md)
+created these because that file was then the only human-readable record of a past run — a
+premise this task changed, since the release workflow uploads the same report as an artifact.
+
+`-UpdateBaseline` now writes JSON only, `.gitignore` carries
+`tests/history/openwatcom_samples/*.html` to block a manual copy too, and Task 049's design
+head records the withdrawal and why while keeping its text as the record of its moment.
+Verified with `git check-ignore --no-index`: the HTML matches the rule and the JSON does not.
+
+**The eight already-committed files were left alone** — they stay in git history regardless, so
+removing them from the working tree is a separate decision (§8).
+
 ## 8. Left to the user
 
-The **baseline re-recording point**: path (나) was chosen — do not re-record first, let the
-first tag run fail, and use its report to review the false positives before re-recording, per
-guide §4. And the **first tag push**, since AGENTS.md keeps remote pushes with the user.
+The **first tag push**, since AGENTS.md keeps tag pushes with the user. And **whether to drop
+the eight already-committed history HTML files** (127 MB): deleting them leaves clone size
+unchanged, since git history retains them, and only lightens the working tree. Untouched here.
+
+The **baseline re-recording** was originally left open under path (나) — let the first tag run
+fail and read its report — but the same evidence arrived locally first (§7), so on the user's
+instruction the baseline was re-recorded at 528 ahead of CI.
 
 ## 9. Retrospective
 

@@ -658,15 +658,21 @@ try
 
         Write-JsonFile -Value $baselineRecord -Path ([string]$ResolvedBaselinePath)
 
+        # Task 434: the history keeps JSON only.
+        #
+        # Task 049 also snapshotted the HTML report here, when this file was the
+        # only place a past run could be read from. Those snapshots grew with the
+        # detail they carry -- 5.6 MB at 0.0.5 against 28 MB at 0.0.135, 127 MB
+        # across the directory -- and every one of them is in the repository
+        # permanently. The release workflow now uploads the same report as a
+        # build artifact, so the readable copy has another home while the JSON
+        # keeps the structured data this file compares against.
         $historyBaseName = "{0}-{1}" -f (Get-Date -Format "yyyyMMdd-HHmmss"), $summary.Version
         $resolvedHistoryFile = Join-Path $ResolvedHistoryPath "$historyBaseName.json"
-        $resolvedHistoryReportFile = Join-Path $ResolvedHistoryPath "$historyBaseName.html"
         Write-JsonFile -Value $baselineRecord -Path ([string]$resolvedHistoryFile)
-        Copy-Item -LiteralPath $ResolvedReportPath -Destination $resolvedHistoryReportFile -Force
 
         Write-Host "OpenWatcom sample baseline: $ResolvedBaselinePath"
         Write-Host "OpenWatcom sample history: $resolvedHistoryFile"
-        Write-Host "OpenWatcom sample history report: $resolvedHistoryReportFile"
     }
 
     Write-Host ""

@@ -119,6 +119,12 @@ scripts\test_openwatcom_samples.ps1 -Configuration Release -UpdateBaseline
 갱신 후 baseline에 `RunCriterion`과 `Configuration`이 최상위에 기록됐는지 확인하고
 커밋하십시오. 다음 실행에서 두 경고가 사라지면 기준선이 제자리에 놓인 것입니다.
 
+**커밋 대상은 JSON 두 개뿐입니다** — `tests/baselines/openwatcom_samples.json`과
+`tests/history/openwatcom_samples/<timestamp>-<version>.json`. HTML은 더 이상 history에
+쓰지 않습니다(설계 §6.1). 사람이 읽을 리포트는 이번 실행의
+`build/openwatcom_sample_report/index.html`과 릴리스 워크플로가 올린
+`openwatcom-samples-v<version>.zip`에 있습니다.
+
 ## 5. 러너 이미지
 
 `windows-2022`로 고정돼 있습니다. `build_win32_x86.ps1`이 설치된 Visual Studio major
@@ -213,6 +219,12 @@ scripts\test_openwatcom_samples.ps1 -Configuration Release -UpdateBaseline
 
 Afterwards confirm that `RunCriterion` and `Configuration` appear at the top level of the
 baseline and commit it. When the next run raises neither warning, the bar is back in place.
+
+**Only two JSON files are committed** — `tests/baselines/openwatcom_samples.json` and
+`tests/history/openwatcom_samples/<timestamp>-<version>.json`. The history no longer takes an
+HTML snapshot (design §6.1); the readable report lives at
+`build/openwatcom_sample_report/index.html` for the current run and in the workflow's
+`openwatcom-samples-v<version>.zip`.
 
 ## 5. Runner image
 

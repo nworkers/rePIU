@@ -175,6 +175,32 @@ SDL3를 정적 링크(`SDL_SHARED OFF` / `SDL_STATIC ON`)하므로 DLL 동봉이
 내리는 판단이며([Task 428](../work-logs/20260805-428-openwatcom-baseline-refresh.md) §3),
 CI가 자동으로 기준선을 옮기면 회귀 감시 자체가 무력화됩니다.
 
+## 6.1 샘플 history는 JSON만 남깁니다
+
+[Task 049](20260710-049-openwatcom-history-html-report.md)는 baseline을 갱신할 때마다
+HTML 리포트 스냅샷을 `tests/history/`에 함께 커밋했습니다. 당시에는 과거 실행을 사람이
+읽을 방법이 그것뿐이었습니다.
+
+**그 스냅샷이 감당하기 어렵게 커졌습니다.**
+
+| 버전 | history HTML |
+|---|---:|
+| 0.0.5 | 5.6 MB |
+| 0.0.34 | 14.5 MB |
+| 0.0.59 | 17.2 MB |
+| 0.0.133 | 28.3 MB |
+| **디렉터리 전체** | **127.6 MB** |
+
+git 히스토리는 지울 수 없으므로 **갱신 한 번마다 저장소가 영구히 무거워집니다.** 이제
+릴리스 워크플로가 같은 리포트를 아티팩트로 올리므로 **읽을 경로가 따로 생겼고**,
+비교의 근거인 구조화 데이터는 JSON이 그대로 유지합니다.
+
+* `-UpdateBaseline`은 JSON만 씁니다. HTML 복사를 제거했습니다.
+* `.gitignore`에 `tests/history/openwatcom_samples/*.html`을 추가했습니다 — 수동으로
+  복사해 넣는 경로까지 막습니다.
+* 이미 커밋된 8개 파일은 **건드리지 않았습니다.** git 히스토리에 남아 clone 크기는
+  줄지 않으므로, 작업 트리에서 지울지는 별도 판단입니다.
+
 ## 7. 버전 게이트
 
 AGENTS.md는 `VERSION`과 태그를 같은 값으로 유지하도록 규정합니다(`0.0.135` ↔ `v0.0.135`).
@@ -380,6 +406,20 @@ regressions, and that is exactly when the report is wanted, so the upload step c
 **CI never updates the baseline.** `-UpdateBaseline` is a human judgement made after confirming
 zero regressions ([Task 428](../work-logs/20260805-428-openwatcom-baseline-refresh.md) §3);
 letting CI move the bar automatically would defeat regression surveillance entirely.
+
+## 6.1 The sample history keeps JSON only
+
+[Task 049](20260710-049-openwatcom-history-html-report.md) committed an HTML report snapshot
+into `tests/history/` on every baseline update, because at the time that file was the only way
+to read a past run. **Those snapshots outgrew their purpose**: 5.6 MB at 0.0.5, 14.5 MB at
+0.0.34, 17.2 MB at 0.0.59, 28.3 MB at 0.0.133, and **127.6 MB across the directory**. Git
+history cannot be pruned, so each update made the repository permanently heavier.
+
+The release workflow now uploads the same report as an artifact, so **the readable copy has
+another home**, while the JSON keeps the structured data comparisons rest on. `-UpdateBaseline`
+writes JSON only, `.gitignore` carries `tests/history/openwatcom_samples/*.html` to block a
+manual copy as well, and the eight already-committed files are **left alone** — they remain in
+git history regardless, so whether to drop them from the working tree is a separate decision.
 
 ## 7. Version gate
 
