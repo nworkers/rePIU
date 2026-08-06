@@ -88,6 +88,54 @@ Task 429는 baseline에 `RunCriterion`을 기록하려 했으나 실제로는 `S
 **5번과 6번을 미검증으로 남깁니다.** 특히 총 실행 시간, 캐시 적중, `windows-2022`에서의
 생성기 해석은 첫 실행에서만 확인됩니다.
 
+## 6.1 하네스에 시간 상한이 없었습니다 (사용자 지적 → 수정)
+
+Release 스위트를 로컬로 돌리던 중 진행이 멈췄고, 사용자가 hang을 의심했습니다.
+**맞았습니다.**
+
+```text
+[744/819] test cplbexam iostream\istream\get.cpp
+Id 3908  StartTime 13:51:58  CPU 1.015625  RunMin 39.4
+Threads 1  MainWindowHandle 0  ThreadState Wait
+```
+
+**39.4분 동안 CPU 1.0초** — 스핀이 아니라 블록입니다. 원인 축은 하네스에 있었습니다.
+`Invoke-Capture`가 `& $FilePath @Arguments`로 로더를 부르며 **시간 상한이 없고 콘솔
+stdin을 상속**했고, 이 샘플은 `istream::get`으로 표준 입력을 읽습니다.
+
+**로더의 1,000 ms timeout으로는 못 막습니다** — 그것은 게스트 실행 예산이고, 호스트
+쪽에서 블록되면 그 경로에 도달하지 못합니다. CI였다면 job 한도 240분을 통째로 쓰고
+아티팩트도 리포트도 없이 실패했을 것입니다.
+
+사용자 지시대로 **샘플당 최대 10초, timeout은 실패**로 구현했습니다.
+
+| 축 | 조치 |
+|---|---|
+| 시간 상한 | `-SampleTimeoutSeconds` 기본 10. 초과 시 kill |
+| 판정 | `RunPassed`에 `-not $run.TimedOut` 항 추가. 상태는 `fail (harness timeout)` |
+| 입력 | stdin을 빈 임시 파일로 redirect |
+| 기준 ID | `...+no-harness-timeout`으로 상향(Task 429 규칙) |
+
+**구현 중 결함 두 개를 실측으로 잡았습니다.**
+
+1. **`Start-Process -PassThru`는 `Handle`을 먼저 읽지 않으면 `ExitCode`가 `$null`입니다.**
+   첫 시험에서 정상 샘플 `_atouni.c`까지 fail이 나와 발견했습니다. 고치지 않았다면
+   **819개 전부 실패**했을 것입니다.
+2. **로더 출력은 전부 stderr입니다**(stdout 0바이트, stderr 37,434바이트). 두 스트림을
+   모두 파일로 받아 합칩니다.
+
+**검증(2샘플 표적 실행):**
+
+| 샘플 | 결과 |
+|---|---|
+| `_atouni.c` | **pass** — 정상 샘플의 판정이 바뀌지 않음 |
+| `cplbexam\iostream\istream\get.cpp` | **fail (harness timeout)** — 10초에 kill |
+
+**미확정 하나:** `get.cpp`는 stdin redirect만 적용한 중간 시험에서는 10초를 쓰지 않고
+빨리 끝났는데, ExitCode 수정 후 실행에서는 10초를 소진했습니다. 블록 지점이 stdin
+읽기인지 다른 것인지는 **확정하지 못했습니다.** 두 겹으로 막았고 상한이 있으므로 CI
+관점에서는 닫혔지만, 근본 원인은 별도 조사 대상입니다.
+
 ## 7. Release 구성 실측 (진행 중)
 
 `-Configuration Release`로 819샘플을 로컬 실행해 Debug 기준선과의 차이를 재고 있습니다.
@@ -173,6 +221,35 @@ behave as tabulated in §3. **Two items are unverified**: the workflow YAML has 
 (no python or node available — only a tab-free, structurally eyeballed check was possible), and
 nothing has executed on GitHub, so total wall time, cache hits and generator resolution on
 `windows-2022` remain unknown until the first run.
+
+## 6.1 The harness had no time bound (user's catch, fixed)
+
+The local Release run stopped progressing and the user suspected a hang. **They were right**:
+`cplbexam\iostream\istream\get.cpp` had the loader blocked for **39.4 minutes on 1.0 second of
+CPU** — one thread, in `Wait`, no window. `Invoke-Capture` called the loader as
+`& $FilePath @Arguments`, with **no time bound and the console's stdin inherited**, and that
+sample reads standard input through `istream::get`. The loader's own 1,000 ms budget cannot
+catch it, being a guest-execution budget. In CI this would have burned the whole 240-minute job
+limit and produced neither artifact nor report.
+
+Implemented as instructed — **10 seconds per sample, a timeout counts as a failure**: the
+process is killed, `-not $run.TimedOut` joins `RunPassed` as its own term, the status reads
+`fail (harness timeout)`, stdin is redirected from an empty file, and `RunCriterionId` was
+bumped to `...+no-harness-timeout` per Task 429's rule.
+
+**Two defects were caught by measurement while implementing this.** `Start-Process -PassThru`
+leaves `ExitCode` at `$null` unless `Handle` is read first — found because the healthy sample
+`_atouni.c` also came back as a failure, and left unfixed it would have failed **all 819**. And
+the loader writes everything to stderr (stdout 0 bytes against stderr 37,434), so both streams
+are captured and concatenated.
+
+**Verified on a two-sample run:** `_atouni.c` **passes**, so healthy verdicts are unchanged, and
+`get.cpp` reports **`fail (harness timeout)`** after being killed at ten seconds.
+
+**One item is unresolved.** With only the stdin redirect in place, `get.cpp` finished quickly;
+after the `ExitCode` fix it consumed the full ten seconds. Whether the block is the standard
+input read or something else is **not settled**. Both defences are in place and the bound holds,
+so the CI risk is closed, but the root cause is a separate investigation.
 
 ## 7. Release-configuration measurement (in progress)
 

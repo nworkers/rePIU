@@ -72,6 +72,24 @@ scripts\package_release.ps1 -Configuration Release
 
 즉 **CI 통과가 게임이 도는 것을 뜻하지 않습니다.** 실행 검증은 여전히 로컬 수작업입니다.
 
+## 3.1 샘플별 시간 상한
+
+각 샘플은 **기본 10초** 안에 끝나야 하며, 넘기면 하네스가 프로세스를 kill하고 **실패로
+집계**합니다. 리포트에는 `fail (harness timeout)`으로 표시됩니다.
+
+```powershell
+scripts\test_openwatcom_samples.ps1 -Configuration Release -SampleTimeoutSeconds 10
+```
+
+**로더의 timeout과 다릅니다.** 로더의 1,000 ms는 *게스트 실행* 예산이고, 이쪽은
+*프로세스가 돌아오지 않는 것*에 대한 상한입니다. 표준 입력을 읽는 샘플
+(`cplbexam\iostream\istream\get.cpp` 등)은 예전에 무한 대기했고, 실제로 한 실행이
+**39.4분 동안 CPU 1.0초**로 멈춰 있었습니다. 지금은 stdin을 빈 파일로 redirect하고
+시간 상한을 걸어 두 겹으로 막습니다.
+
+상한을 바꾸면 **판정이 바뀝니다.** 경계에 걸친 샘플의 결과가 달라지므로, 값을 바꿔
+기록한 baseline은 다른 값으로 돌린 실행과 비교하지 마십시오.
+
 ## 4. baseline 재기록 — 언제, 어떻게
 
 `-CompareBaseline`은 회귀가 있으면 job을 실패시킵니다. 실패했을 때 **먼저 두 경고를
@@ -155,6 +173,24 @@ needs a DOS4GW image as `argv[1]` and fails cache emission on every image CI can
 pumpit1 and pumpit3 execution, since `roms/` and `MASTER/` are copyrighted and absent; nor any
 frame or performance figure, since shared-runner timings are not quotable. **A green CI run
 does not mean the game runs** — execution verification remains a local, manual step.
+
+## 3.1 The per-sample time bound
+
+Every sample must finish within **10 seconds by default**; past that the harness kills the
+process and **scores it as a failure**, shown as `fail (harness timeout)` in the report.
+
+```powershell
+scripts\test_openwatcom_samples.ps1 -Configuration Release -SampleTimeoutSeconds 10
+```
+
+**This is not the loader's timeout.** The loader's 1,000 ms is a *guest execution* budget;
+this one bounds *a process that never returns*. Samples that read standard input — such as
+`cplbexam\iostream\istream\get.cpp` — used to wait forever, and one run was measured stuck for
+**39.4 minutes on 1.0 second of CPU**. Standard input is now redirected from an empty file and
+the time bound backs it up.
+
+Changing the bound **changes verdicts** for samples near it, so never compare a baseline
+recorded at one value against a run at another.
 
 ## 4. Re-recording the baseline
 

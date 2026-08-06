@@ -33,7 +33,8 @@ flowchart LR
 ```
 
 **범위 안:** `.github/workflows/` 두 파일, 패키징 스크립트 1개, 샘플 하네스에
-`-Configuration` 추가(설계 §5.1, 사용자 지시), 문서 갱신.
+`-Configuration` 추가(설계 §5.1, 사용자 지시)와 **샘플별 timeout 추가**(설계 §5.2,
+사용자 지시 — 최대 10초, timeout은 실패), 문서 갱신.
 
 **범위 밖:** sccache 도입, baseline 값 변경, `REPIU_*` 환경 변수 기본값 변경.
 
@@ -141,6 +142,8 @@ scripts\test_openwatcom_samples.ps1 -Configuration Release -CompareBaseline
 | 4a | 샘플이 Release 로더를 씀 | `summary.json`의 `Configuration` | `Release` |
 | 5 | probe | exit code | `repiu_glide_issue_probe` exit 0 + `glide_issue_probe=pass`, `repiu_aot_probe --timer-safe-point` exit 0 + `timer_safe_point_probe=true` |
 | 6 | 샘플 스위트 | summary.json | `Total` 819, `RunCriterion` 일치, 회귀 0 |
+| 6a | 샘플 timeout 발동 | 상한을 낮춰 시험 | `fail (harness timeout)`으로 집계되고 통과가 아님 |
+| 6b | 정상 샘플 회귀 없음 | 같은 실행 | timeout 도입이 정상 샘플 판정을 바꾸지 않음 |
 | 7 | 아티팩트 | Release 페이지 | zip 2개 첨부, 이름의 버전이 태그와 일치 |
 | 8 | 실패 시 리포트 | 회귀를 의도적으로 만든 실행 | job 실패 + 리포트 아티팩트 존재 |
 | 9 | 캐시 | 2회차 실행 시간 | `_deps` clone과 OpenWatcom 다운로드가 생략됨 |

@@ -2225,6 +2225,10 @@ CI는 GitHub Actions 호스티드 러너에서만 돌고, 워크플로는 둘입
 * 샘플 스위트는 **Release 로더로** 돌립니다. 배포하는 바이너리를 그대로 검증하기
   위해서입니다. `test_openwatcom_samples.ps1 -Configuration`의 기본값은 Debug이며,
   로컬 절차와 기존 기준선의 의미는 그대로입니다.
+* 샘플마다 **기본 10초**의 하네스 시간 상한이 있고, 넘기면 프로세스를 kill하고
+  **실패로 집계**합니다. 로더의 1,000 ms는 게스트 실행 예산이라 호스트 쪽 블록을 막지
+  못합니다 — 표준 입력을 읽는 샘플에서 실제로 39.4분·CPU 1.0초의 정지가 관측됐습니다.
+  stdin은 빈 파일로 redirect합니다.
 * 통과 판정은 timeout을 실패로 세므로 **구성이 다르면 비교가 성립하지 않습니다.**
   summary와 baseline에 `RunCriterion`과 `Configuration`을 함께 기록하고,
   `-CompareBaseline`이 어느 한쪽이라도 다르면 경고합니다.
@@ -2248,7 +2252,11 @@ copyrighted and absent from CI, so **pumpit1 and pumpit3 execution checks and ev
 performance figure stay local**; CI sees the build, the two probes, and sample regression.
 `repiu_aot_probe` is invoked **only as `--timer-safe-point`**, because its full assertion set
 takes a DOS4GW image as `argv[1]`, presumes `PIU.EXE`, and clears the cache-emission stage on
-no image CI can build. The sample suite runs **against the Release loader** so the shipped
+no image CI can build. Each sample carries a **10-second harness time bound**, past which the
+process is killed and **scored as a failure**: the loader's own 1,000 ms budget governs guest
+execution and cannot catch a host-side block, one of which was measured at 39.4 minutes on 1.0
+second of CPU in a sample reading standard input, which is now redirected from an empty file.
+The sample suite runs **against the Release loader** so the shipped
 binary is the tested one, while `-Configuration` defaults to Debug locally so existing
 procedures and the recorded baseline keep their meaning. Because the pass criterion counts a
 timeout as a failure, a run is not comparable across configurations, so `RunCriterion` and

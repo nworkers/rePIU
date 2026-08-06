@@ -116,6 +116,43 @@ summary와 baseline에 `Configuration`을 기록하고, `-CompareBaseline`이 �
 기준으로 재기록해도 "기준을 모르는 baseline"으로 계속 경고**했습니다. 두 위치를 모두
 읽도록 고치고, 기록도 두 위치에 남깁니다.
 
+## 5.2 샘플별 timeout — 하네스에 시간 상한이 없었습니다
+
+**구현 중 실측으로 발견한 결함입니다.** 하네스의 `Invoke-Capture`는
+`& $FilePath @Arguments`로 로더를 부르며 **시간 상한이 없고 콘솔 stdin을 상속**했습니다.
+
+`cplbexam\iostream\istream\get.cpp`는 `istream::get`으로 표준 입력을 읽습니다. 이
+샘플에서 로더가 **39.4분 동안 CPU 1.0초**로 블록된 것을 관측했습니다(단일 스레드,
+`Wait` 상태, 창 없음). 스핀이 아니라 대기입니다.
+
+**로더 자신의 timeout으로는 못 막습니다.** 로더의 1,000 ms 예산은 *게스트 실행*에
+대한 것이고, 호스트 쪽에서 블록되면 그 경로에 도달하지 못합니다.
+
+**CI에서는 job 시간 한도(240분)를 통째로 소진하고 아무 결과도 남기지 않습니다.**
+아티팩트도 리포트도 없이 실패합니다.
+
+수정은 둘입니다.
+
+| 축 | 조치 |
+|---|---|
+| 시간 상한 | `-SampleTimeoutSeconds`(**기본 10초**). 초과 시 프로세스를 kill하고 **실패로 집계** |
+| 입력 | stdin을 빈 임시 파일로 redirect — 읽는 샘플이 블록 대신 EOF를 받음 |
+
+**timeout 종료는 통과가 아닙니다.** `RunPassed`의 항으로 `-not $run.TimedOut`을 추가하고,
+상태 문자열을 `fail (harness timeout)`으로 구분합니다. 죽인 프로세스의 exit code는
+의미가 없으므로 exit code 항과 **분리해서** 판정합니다.
+
+판정 기준이 바뀌었으므로 Task 429의 규칙대로 `RunCriterionId`를 올렸습니다.
+
+```text
+exit0+no-exception+returned+no-timeout  →  exit0+no-exception+returned+no-timeout+no-harness-timeout
+```
+
+**부수 발견:** `Start-Process -PassThru`는 `Handle`을 먼저 읽어 두지 않으면 종료 후
+`ExitCode`가 `$null`입니다. 그대로 두면 **모든 샘플이 실패**합니다. 실측에서 잡아
+`[void]$process.Handle`로 고쳤습니다. 그리고 로더 출력은 **전부 stderr**로 나오므로
+두 스트림을 모두 파일로 받아 합칩니다.
+
 ## 6. 아티팩트
 
 | 이름 | 내용 | 목적 |
@@ -297,6 +334,32 @@ configuration: `Configuration` is recorded in the summary and the baseline, and
 baseline, but it only ever landed inside `Summary` while the comparison reads the top level — so
 a baseline re-recorded under the new rule still warned that it predated the rule. Both positions
 are now read, and both are written.
+
+## 5.2 A per-sample timeout — the harness had no time bound
+
+**Found by measurement during implementation.** `Invoke-Capture` called the loader as
+`& $FilePath @Arguments`, with **no time bound and the console's stdin inherited**.
+
+`cplbexam\iostream\istream\get.cpp` reads standard input through `istream::get`. On that
+sample the loader was observed blocked for **39.4 minutes on 1.0 second of CPU** — single
+threaded, in `Wait`, with no window. That is a block, not a spin.
+
+**The loader's own timeout cannot catch it**: its 1,000 ms budget governs *guest* execution,
+and a host-side block never reaches that path. Under CI this consumes the entire 240-minute job
+limit and produces nothing — no artifact and no report.
+
+Two fixes: `-SampleTimeoutSeconds`, **defaulting to 10**, which kills the process and **scores
+the sample as a failure**; and stdin redirected from an empty temporary file, so a reading
+sample gets EOF instead of a blocking console.
+
+**A timeout is not a pass.** `-not $run.TimedOut` is its own term in `RunPassed`, kept separate
+from the exit-code test because a killed process's exit code is meaningless, and the status
+string reads `fail (harness timeout)`. Since the criterion changed, `RunCriterionId` was bumped
+per Task 429's rule to `exit0+no-exception+returned+no-timeout+no-harness-timeout`.
+
+**Incidental findings:** `Start-Process -PassThru` leaves `ExitCode` at `$null` unless `Handle`
+is read first, which would have failed **every** sample; and the loader writes all of its output
+to **stderr**, so both streams are captured to files and concatenated.
 
 ## 6. Artifacts
 

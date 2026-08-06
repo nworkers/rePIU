@@ -4,6 +4,11 @@ param(
     # configuration every existing baseline and local procedure was recorded on.
     [ValidateSet("Debug", "Release", "RelWithDebInfo", "MinSizeRel")]
     [string]$Configuration = "Debug",
+    # Task 434: wall-clock bound per sample. The loader's own budget governs
+    # guest execution only, so a sample blocked outside it -- reading standard
+    # input, for instance -- never returns. A killed sample counts as a failure.
+    [ValidateRange(1, 600)]
+    [int]$SampleTimeoutSeconds = 10,
     [string]$ManifestPath = "build\openwatcom_samples\manifest.json",
     [string]$ReportPath = "build\openwatcom_sample_report\index.html",
     [string]$SummaryPath = "build\openwatcom_sample_report\summary.json",
@@ -19,7 +24,7 @@ $ErrorActionPreference = "Stop"
 # Task 429: bump this whenever the run-pass criterion changes, so a comparison
 # against a baseline recorded under a different rule is flagged rather than read
 # as a code regression.
-$script:RunCriterionId = "exit0+no-exception+returned+no-timeout"
+$script:RunCriterionId = "exit0+no-exception+returned+no-timeout+no-harness-timeout"
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 # The tree is multi-config, so the directory name is historical: every
@@ -48,36 +53,99 @@ function ConvertTo-HtmlText
 
 function Invoke-Capture
 {
+    # Task 434: bounded, and with stdin closed.
+    #
+    # `& $FilePath` inherits the console and waits forever. A sample that reads
+    # standard input -- cplbexam\iostream\istream\get.cpp is one -- then parks
+    # the whole suite: one such sample was observed blocked for 39 minutes on
+    # 1.0 second of CPU. Under CI that consumes the job's entire time limit and
+    # produces nothing.
+    #
+    # Redirecting from an empty file gives a reading sample EOF instead of a
+    # blocking console, and the wall-clock bound catches every other way a
+    # sample can fail to return.
     param(
         [string]$FilePath,
         [string[]]$Arguments = @(),
-        [string]$WorkingDirectory = $Root
+        [string]$WorkingDirectory = $Root,
+        [int]$TimeoutSeconds = 0
     )
 
-    Push-Location $WorkingDirectory
+    $stdoutPath = [System.IO.Path]::GetTempFileName()
+    $stderrPath = [System.IO.Path]::GetTempFileName()
+    $stdinPath = [System.IO.Path]::GetTempFileName()
+    $timedOut = $false
+
     try
     {
-        $oldErrorActionPreference = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        try
-        {
-            $output = & $FilePath @Arguments 2>&1 |
-                ForEach-Object { $_.ToString() }
-            $exitCode = $LASTEXITCODE
+        $startArguments = @{
+            FilePath = $FilePath
+            WorkingDirectory = $WorkingDirectory
+            RedirectStandardOutput = $stdoutPath
+            RedirectStandardError = $stderrPath
+            RedirectStandardInput = $stdinPath
+            NoNewWindow = $true
+            PassThru = $true
         }
-        finally
+        if ($Arguments.Count -gt 0)
         {
-            $ErrorActionPreference = $oldErrorActionPreference
+            $startArguments.ArgumentList = $Arguments
         }
+
+        $process = Start-Process @startArguments
+
+        # Touching Handle caches it, which is what makes ExitCode readable after
+        # the process ends. Without this, Start-Process -PassThru leaves
+        # ExitCode null and every sample scores as a failure.
+        [void]$process.Handle
+
+        if ($TimeoutSeconds -gt 0)
+        {
+            if (!$process.WaitForExit($TimeoutSeconds * 1000))
+            {
+                $timedOut = $true
+                try
+                {
+                    $process.Kill()
+                }
+                catch
+                {
+                    # It can exit between the wait expiring and the kill.
+                }
+                # Give the pipes a moment to flush into the redirect files.
+                [void]$process.WaitForExit(5000)
+            }
+        }
+        else
+        {
+            $process.WaitForExit()
+        }
+
+        $exitCode = $process.ExitCode
     }
     finally
     {
-        Pop-Location
+        $stdout = if (Test-Path $stdoutPath) { Get-Content $stdoutPath -Raw } else { "" }
+        $stderr = if (Test-Path $stderrPath) { Get-Content $stderrPath -Raw } else { "" }
+        foreach ($temporary in @($stdoutPath, $stderrPath, $stdinPath))
+        {
+            Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $output = "$stdout$stderr"
+    if ($timedOut)
+    {
+        # The marker the run criterion looks for. Deliberately distinct from the
+        # loader's own "minimal execution attempt timed out", which is a guest
+        # execution budget rather than the sample failing to return at all.
+        $output += "`nharness: sample timed out after $TimeoutSeconds seconds and was terminated`n"
     }
 
     [pscustomobject]@{
         ExitCode = $exitCode
-        Output = ($output | Out-String)
+        Output = $output
+        TimedOut = $timedOut
     }
 }
 
@@ -453,19 +521,30 @@ try
             $run = Invoke-Capture `
                 -FilePath $Loader `
                 -Arguments @($sample.Executable) `
-                -WorkingDirectory $sample.BuildDirectory
+                -WorkingDirectory $sample.BuildDirectory `
+                -TimeoutSeconds $SampleTimeoutSeconds
             # Task 429: the old criterion was exit code plus "no exception", which
             # a timeout also satisfies -- the guest stalls, nothing is caught, and
             # the loader exits 0. Four of eight sampled dynamic-only "passes" were
             # timeouts scored as passes. Completion is now required explicitly:
             # a genuine pass reports "returned: true", a timeout "returned: false"
             # with "minimal execution attempt timed out".
+            #
+            # Task 434: a sample the harness had to kill is a failure too. It is
+            # kept as its own term rather than folded into the exit-code test,
+            # because a killed process's exit code is not meaningful.
             $runPassed =
+                -not $run.TimedOut -and
                 $run.ExitCode -eq 0 -and
                 $run.Output -match "Win32 minimal execution exception caught: false" -and
                 $run.Output -match "Win32 minimal execution returned: true" -and
                 $run.Output -notmatch "minimal execution attempt timed out"
-            $runStatus = if ($runPassed) { "pass" } else { "fail" }
+            $runStatus = if ($runPassed)
+                         { "pass" }
+                         elseif ($run.TimedOut)
+                         { "fail (harness timeout)" }
+                         else
+                         { "fail" }
             $detail = $run.Output.Trim()
         }
 
