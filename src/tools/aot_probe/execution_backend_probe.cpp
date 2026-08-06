@@ -34,9 +34,9 @@ bool RunExecutionBackendProbe()
     }
 
     ExecutionBackend unchanged = ExecutionBackend::kDynamic;
-    // Task 425: 옛 이름은 별칭이 아니라 거부입니다. 옛 절차가 조용히 다른
-    // backend로 실행되지 않는다는 성질을 여기서 고정합니다. 거부된 값은
-    // 출력 인자를 건드리지 않아야 합니다.
+    // Task 425: the old names are rejected rather than aliased. This pins the
+    // property that a stale procedure cannot silently run a different backend,
+    // and a rejected value must leave the output argument untouched.
     const bool legacy_names_rejected =
         !runtime::ParseExecutionBackend("aot", &unchanged) &&
         !runtime::ParseExecutionBackend("aot-dynamic", &unchanged) &&
@@ -49,6 +49,28 @@ bool RunExecutionBackendProbe()
         unchanged == ExecutionBackend::kDynamic &&
         !runtime::ParseExecutionBackend("legacy", nullptr);
     all = all && invalid_rejected;
+
+    // Task 435: unset and empty resolving to `dynamic` is the product default.
+    // Without this assertion the default could quietly revert inside the host.
+    // An unknown value is rejected, returning false so the caller can stop.
+    ExecutionBackend resolved = ExecutionBackend::kLegacy;
+    const bool default_is_dynamic =
+        runtime::ResolveExecutionBackend(nullptr, &resolved) &&
+        resolved == runtime::kDefaultExecutionBackend &&
+        resolved == ExecutionBackend::kDynamic;
+    resolved = ExecutionBackend::kLegacy;
+    const bool empty_is_dynamic =
+        runtime::ResolveExecutionBackend("", &resolved) &&
+        resolved == ExecutionBackend::kDynamic;
+    resolved = ExecutionBackend::kDynamic;
+    const bool explicit_legacy_kept =
+        runtime::ResolveExecutionBackend("legacy", &resolved) &&
+        resolved == ExecutionBackend::kLegacy;
+    const bool unknown_resolve_rejected =
+        !runtime::ResolveExecutionBackend("aot-dbt", &resolved) &&
+        !runtime::ResolveExecutionBackend("", nullptr);
+    all = all && default_is_dynamic && empty_is_dynamic &&
+        explicit_legacy_kept && unknown_resolve_rejected;
 
     std::cout << "execution_backend_policy="
               << (all ? "true" : "false") << "\n";

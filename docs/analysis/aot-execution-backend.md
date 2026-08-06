@@ -11,6 +11,12 @@ Task 425는 실행 backend를 `legacy`와 `dynamic` 둘로 줄였습니다. **�
 | `aot-dynamic` | 제거됨 — 대응하는 현재 backend 없음 |
 | `aot` | 제거됨 — 대응하는 현재 backend 없음 |
 
+**Task 435부터 미설정 기본값은 `dynamic`입니다.** 아래 기록에서 "기본 backend" 또는
+"미설정"으로 적힌 실행은 그 시점의 기본값인 `legacy`를 뜻합니다.
+
+**Since Task 435 the unset default is `dynamic`.** Where the records below say
+"default backend" or "unset", they mean `legacy`, which was the default then.
+
 **확인됨 (Task 424):** 제거 시점에 `aot`와 `aot-dynamic`은 pumpit3에서 이미
 동작하지 않았습니다. 두 backend는 `enable_dbt_direct_edge_dispatch`가 거짓이므로
 `direct control-flow target is outside the cache`로 이미지 생성에 실패했습니다.

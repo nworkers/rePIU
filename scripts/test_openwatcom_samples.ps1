@@ -9,6 +9,18 @@ param(
     # input, for instance -- never returns. A killed sample counts as a failure.
     [ValidateRange(1, 600)]
     [int]$SampleTimeoutSeconds = 10,
+    # Task 435: the loader's execution policy is pinned here rather than
+    # inherited. The product default is now the `dynamic` backend with no time
+    # limit, but this suite's baseline was recorded on `legacy`, and its pass
+    # criterion counts a timeout as a failure -- with no guest budget a stalled
+    # sample would end on the harness kill above (ten seconds) instead of the
+    # loader's own budget, changing both the verdict basis and the suite's
+    # running time. Re-recording the baseline on other values is a deliberate
+    # act, not a side effect of a default changing underneath it.
+    [ValidateSet("legacy", "dynamic")]
+    [string]$Backend = "legacy",
+    [ValidateRange(0, 600000)]
+    [int]$GuestTimeoutMilliseconds = 1000,
     [string]$ManifestPath = "build\openwatcom_samples\manifest.json",
     [string]$ReportPath = "build\openwatcom_sample_report\index.html",
     [string]$SummaryPath = "build\openwatcom_sample_report\summary.json",
@@ -469,9 +481,17 @@ $($rows -join "`n")
     Set-Content -Path $Path -Value $html -Encoding UTF8
 }
 
+$PreviousBackend = $env:REPIU_EXECUTION_BACKEND
+$PreviousGuestTimeout = $env:REPIU_EXECUTION_TIMEOUT_MS
+
 Push-Location $Root
 try
 {
+    $env:REPIU_EXECUTION_BACKEND = $Backend
+    $env:REPIU_EXECUTION_TIMEOUT_MS = $GuestTimeoutMilliseconds.ToString()
+    Write-Host ("Loader execution policy: backend=$Backend" +
+        " timeout=$GuestTimeoutMilliseconds ms")
+
     if ($CompareBaseline -and $UpdateBaseline)
     {
         throw "-CompareBaseline and -UpdateBaseline cannot be used together."
@@ -689,5 +709,7 @@ try
 }
 finally
 {
+    $env:REPIU_EXECUTION_BACKEND = $PreviousBackend
+    $env:REPIU_EXECUTION_TIMEOUT_MS = $PreviousGuestTimeout
     Pop-Location
 }

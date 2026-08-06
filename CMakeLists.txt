@@ -178,6 +178,7 @@ add_library(repiu_exe
     src/runtime/dos_low_memory.cpp
     src/runtime/env_toggle.cpp
     src/runtime/execution_backend.cpp
+    src/runtime/execution_timeout.cpp
     src/runtime/image_address.cpp
     src/runtime/runtime_memory_arena.cpp
     src/runtime/runtime_memory.cpp
@@ -233,6 +234,7 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/dbt_return_fallback_probe.cpp
     src/tools/aot_probe/env_toggle_probe.cpp
     src/tools/aot_probe/execution_backend_probe.cpp
+    src/tools/aot_probe/execution_timeout_probe.cpp
     src/tools/aot_probe/inline_cache_probe.cpp
     src/tools/aot_probe/native_linear_span_probe.cpp
     src/tools/aot_probe/plan_build_benchmark_probe.cpp

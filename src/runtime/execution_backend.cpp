@@ -25,6 +25,20 @@ bool ParseExecutionBackend(std::string_view value,
     return true;
 }
 
+bool ResolveExecutionBackend(const char* value, ExecutionBackend* backend)
+{
+    if (backend == nullptr)
+    {
+        return false;
+    }
+    *backend = kDefaultExecutionBackend;
+    if (value == nullptr || *value == '\0')
+    {
+        return true;
+    }
+    return ParseExecutionBackend(value, backend);
+}
+
 std::string_view ExecutionBackendName(ExecutionBackend backend)
 {
     switch (backend)

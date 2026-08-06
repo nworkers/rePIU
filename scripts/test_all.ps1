@@ -1,5 +1,18 @@
 param(
-    [switch]$SkipSetup
+    [switch]$SkipSetup,
+    # Task 435: pinned, not inherited from the loader's defaults.
+    #
+    # The loader now defaults to the `dynamic` backend with no time limit, which
+    # is what a player wants and what every measurement procedure already asked
+    # for explicitly. This suite is neither: its piu_1st assertions were recorded
+    # on `legacy`, and one accepted outcome is the guest running out of the
+    # 1,000 ms budget ("minimal execution attempt timed out"). Without a budget
+    # that run never returns and Invoke-CaptureStep kills it at 30 seconds, so
+    # the pinning is what keeps the regression bar meaning what it meant.
+    [ValidateSet("legacy", "dynamic")]
+    [string]$Backend = "legacy",
+    [ValidateRange(0, 600000)]
+    [int]$GuestTimeoutMilliseconds = 1000
 )
 
 $ErrorActionPreference = "Stop"
@@ -122,9 +135,17 @@ function Invoke-CaptureStep
     return ($output | Out-String)
 }
 
+$PreviousBackend = $env:REPIU_EXECUTION_BACKEND
+$PreviousGuestTimeout = $env:REPIU_EXECUTION_TIMEOUT_MS
+
 Push-Location $Root
 try
 {
+    $env:REPIU_EXECUTION_BACKEND = $Backend
+    $env:REPIU_EXECUTION_TIMEOUT_MS = $GuestTimeoutMilliseconds.ToString()
+    Write-Host ("Loader execution policy: backend=$Backend" +
+        " timeout=$GuestTimeoutMilliseconds ms")
+
     if (!$SkipSetup)
     {
         & (Join-Path $PSScriptRoot "setup_test_environment.ps1")
@@ -274,5 +295,7 @@ try
 }
 finally
 {
+    $env:REPIU_EXECUTION_BACKEND = $PreviousBackend
+    $env:REPIU_EXECUTION_TIMEOUT_MS = $PreviousGuestTimeout
     Pop-Location
 }

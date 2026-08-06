@@ -9,8 +9,9 @@ namespace repiu::tools
 
 bool RunEnvToggleProbe()
 {
-    // Task 424 작업 지시 §1의 진리표 전체입니다. 두 함수가 다르게 답하는 행은
-    // 미지정과 빈 값 두 개뿐이고, 나머지는 모두 같아야 합니다.
+    // The complete truth table from §1 of the Task 424 work order. The only two
+    // rows where the functions answer differently are unset and empty; every
+    // other row must agree.
     const struct
     {
         const char* value;
@@ -25,8 +26,9 @@ bool RunEnvToggleProbe()
         {"0", false, false},
         {"off", false, false},
         {"false", false, false},
-        // 알 수 없는 값은 두 계열 모두 fail-closed OFF입니다. 대소문자만 다른
-        // 철자도 여기에 포함되므로, 관대해지는 회귀가 생기면 걸립니다.
+        // An unknown value is a fail-closed OFF in both conventions. Spellings
+        // that differ only in case belong here too, so a regression toward
+        // permissiveness is caught.
         {"yes", false, false},
         {"no", false, false},
         {"2", false, false},

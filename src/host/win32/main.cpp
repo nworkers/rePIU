@@ -18,6 +18,8 @@
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/aot_translation_plan.h"
 #include "repiu/runtime/env_toggle.h"
+#include "repiu/runtime/execution_backend.h"
+#include "repiu/runtime/execution_timeout.h"
 #include "repiu/runtime/image_address.h"
 #include "repiu/runtime/runtime_memory.h"
 #include "repiu/runtime/runtime_memory_arena.h"
@@ -27,7 +29,6 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
-#include <charconv>
 #include <cstdio>
 #include <algorithm>
 #include <cstdlib>
@@ -45,18 +46,10 @@
 namespace
 {
 
-constexpr std::uint32_t kDefaultExecutionTimeoutMilliseconds = 1000U;
-
 bool ReadExecutionBackend(repiu::runtime::ExecutionBackend* backend)
 {
-    if (backend == nullptr)
-    {
-        return false;
-    }
-    *backend = repiu::runtime::ExecutionBackend::kLegacy;
-    const char* value = std::getenv("REPIU_EXECUTION_BACKEND");
-    return value == nullptr || *value == '\0' ||
-        repiu::runtime::ParseExecutionBackend(value, backend);
+    return repiu::runtime::ResolveExecutionBackend(
+        std::getenv("REPIU_EXECUTION_BACKEND"), backend);
 }
 
 bool ReadAotIndirectInlineCacheEntryCount(std::uint32_t* entry_count)
@@ -80,28 +73,19 @@ bool ReadAotIndirectInlineCacheEntryCount(std::uint32_t* entry_count)
     return false;
 }
 
+// Task 435: resolving the budget is runtime policy; all that happens here is
+// translating "no limit" into the value the Win32 wait API knows.
 std::uint32_t ReadExecutionTimeoutMilliseconds()
 {
     const char* text = std::getenv(
         repiu::platform::win32::kWin32ExecutionTimeoutEnvironment);
     fprintf(stderr, "[repiu-live-debug] env REPIU_EXECUTION_TIMEOUT_MS = %s\n", text ? text : "NULL");
-    if (text == nullptr || *text == '\0')
-    {
-        return kDefaultExecutionTimeoutMilliseconds;
-    }
-
-    std::uint32_t value = 0;
-    const char* end = text;
-    while (*end != '\0')
-    {
-        ++end;
-    }
-    const auto result = std::from_chars(text, end, value);
-    if (result.ec != std::errc{} || result.ptr != end)
-    {
-        return kDefaultExecutionTimeoutMilliseconds;
-    }
-    return value == 0 ? INFINITE : value;
+    const std::uint32_t milliseconds =
+        repiu::runtime::ResolveExecutionTimeoutMilliseconds(text);
+    return milliseconds ==
+            repiu::runtime::kUnlimitedExecutionTimeoutMilliseconds
+        ? INFINITE
+        : milliseconds;
 }
 
 std::shared_ptr<spdlog::logger> CreateLoaderLogger()
@@ -4622,7 +4606,7 @@ int main(int argc, char** argv)
     }
 
     repiu::runtime::ExecutionBackend execution_backend =
-        repiu::runtime::ExecutionBackend::kLegacy;
+        repiu::runtime::kDefaultExecutionBackend;
     if (!ReadExecutionBackend(&execution_backend))
     {
         logger->error(

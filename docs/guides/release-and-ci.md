@@ -82,7 +82,11 @@ scripts\test_openwatcom_samples.ps1 -Configuration Release -SampleTimeoutSeconds
 ```
 
 **로더의 timeout과 다릅니다.** 로더의 1,000 ms는 *게스트 실행* 예산이고, 이쪽은
-*프로세스가 돌아오지 않는 것*에 대한 상한입니다. 표준 입력을 읽는 샘플
+*프로세스가 돌아오지 않는 것*에 대한 상한입니다. Task 435부터 로더의 **제품 기본값은
+`dynamic` backend에 무제한**이지만, 이 하네스는 baseline이 기록된 값(`-Backend legacy`,
+`-GuestTimeoutMilliseconds 1000`)을 **스스로 고정**합니다. 기본값을 따라가면 코드 변경
+없이 `tests/baselines`의 의미가 바뀌기 때문입니다. 두 값을 바꾸는 것은 상한을 바꾸는
+것과 같은 무게이므로 baseline 재기록이 함께 필요합니다. 표준 입력을 읽는 샘플
 (`cplbexam\iostream\istream\get.cpp` 등)은 예전에 무한 대기했고, 실제로 한 실행이
 **39.4분 동안 CPU 1.0초**로 멈춰 있었습니다. 지금은 stdin을 빈 파일로 redirect하고
 시간 상한을 걸어 두 겹으로 막습니다.
@@ -194,6 +198,12 @@ this one bounds *a process that never returns*. Samples that read standard input
 `cplbexam\iostream\istream\get.cpp` — used to wait forever, and one run was measured stuck for
 **39.4 minutes on 1.0 second of CPU**. Standard input is now redirected from an empty file and
 the time bound backs it up.
+
+Since Task 435 the loader's **product defaults are the `dynamic` backend with no time limit**,
+but this harness **pins** the values its baseline was recorded under — `-Backend legacy` and
+`-GuestTimeoutMilliseconds 1000` — because following the default would change what
+`tests/baselines` means with no code change behind it. Changing either carries the same weight
+as changing the bound above, and requires re-recording the baseline.
 
 Changing the bound **changes verdicts** for samples near it, so never compare a baseline
 recorded at one value against a run at another.

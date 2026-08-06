@@ -56,17 +56,50 @@
 * Use `.cpp` for C++ source files.
 * Use `.h` for C++ header files.
 
+## 주석 언어
+
+* **소스 코드의 주석은 영어로만 작성한다.** 한국어 주석은 남기지 않는다.
+* 한국어와 영어를 함께 적은 이중 언어 주석도 두지 않는다. 같은 내용을 두 벌
+  유지하면 한쪽만 갱신되어 서로 어긋난다.
+* 이 규칙은 **문서 규칙과 다르다.** `docs/` 아래 Markdown 문서는 한국어를 먼저 쓰고
+  영어 번역을 덧붙이지만(`AGENTS.md`), 소스 주석은 영어 한 벌만 둔다.
+* 커밋 메시지, 코드 식별자, 로그 문자열도 영어를 사용한다.
+* 적용 대상은 C++ 소스·헤더와 빌드·측정 스크립트(`scripts/`, `CMakeLists.txt`,
+  워크플로 파일)를 포함한 저장소의 모든 코드다. `third_party/` 아래 외부 코드는
+  원본 그대로 둔다.
+* 기존 파일을 수정할 때 한국어 주석을 발견하면 같은 작업에서 영어로 바꾼다.
+  이중 언어 주석이면 한국어 쪽을 지우고, 한국어만 있으면 영어로 옮긴다.
+
+## Comment Language
+
+* **Write source-code comments in English only.** Do not leave Korean comments.
+* Do not keep bilingual comments either: maintaining the same explanation twice
+  lets one copy be updated while the other drifts out of date.
+* This rule **differs from the documentation rule**. Markdown under `docs/` leads
+  with Korean and adds an English translation (`AGENTS.md`), while source
+  comments carry one English copy only.
+* Commit messages, code identifiers, and log strings are English as well.
+* The scope is all code in the repository, including C++ sources and headers and
+  the build and measurement scripts (`scripts/`, `CMakeLists.txt`, workflow
+  files). External code under `third_party/` stays as upstream wrote it.
+* When editing an existing file that still has Korean comments, convert them in
+  the same task: drop the Korean half of a bilingual comment, and translate a
+  Korean-only comment into English.
+
 ## 적용 범위
 
 * `include/` 아래의 C++ 헤더
 * `src/` 아래의 C++ 소스
 * 이후 추가되는 모든 C++ 파일
+* 주석 언어 규칙은 `scripts/`와 빌드 파일을 포함한 저장소의 모든 코드에 적용된다
 
 ## Scope
 
 * C++ headers under `include/`
 * C++ source files under `src/`
 * All future C++ files
+* The comment-language rule applies to all repository code, including `scripts/`
+  and build files
 
 ## 예시
 

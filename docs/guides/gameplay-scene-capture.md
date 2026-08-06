@@ -43,8 +43,9 @@ build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit1 2> gameplay-capture
 >
 > **게임 플레이 기본값은 vsync 그대로입니다.** 이 변수는 측정할 때만 씁니다.
 
-`REPIU_EXECUTION_TIMEOUT_MS`는 **0(무제한)으로 설정하십시오.** 미설정 시 기본값이
-1000 ms라 1초 만에 끝납니다. **종료 요약이 남으려면 정상 종료해야** 하므로 강제
+`REPIU_EXECUTION_TIMEOUT_MS`는 **0(무제한)이어야 합니다.** Task 435부터 미설정
+기본값도 0이지만, 캡처 절차는 다른 값이 남아 있는 셸에서도 같은 조건이 되도록
+그대로 명시합니다. **종료 요약이 남으려면 정상 종료해야** 하므로 강제
 종료하지 말고 창을 닫으십시오(X 또는 Alt+F4). 창 닫기는 `SDL_EVENT_QUIT` 경로로
 timeout과 같은 teardown을 타므로 요약이 동일하게 남습니다.
 
@@ -110,9 +111,11 @@ difference from scene composition alone, and it is why Task 364's elision ceilin
 reads 25.11% against the Glide gate but only 4.55% against wall time.
 
 Play a section where the drop is real — notes falling, not a menu — with
-`REPIU_EXECUTION_BACKEND=dynamic`, `REPIU_EXECUTION_TIME_PROFILE=1`,
-`REPIU_GLIDE_ORDINAL_TIME_PROFILE=1`, and `REPIU_GLIDE_SETTER_CENSUS=1`, capturing
-stderr. The run must end normally or by timeout for the exit summary to be written,
+`REPIU_EXECUTION_BACKEND=dynamic`, `REPIU_EXECUTION_TIMEOUT_MS=0`,
+`REPIU_EXECUTION_TIME_PROFILE=1`, `REPIU_GLIDE_ORDINAL_TIME_PROFILE=1`, and
+`REPIU_GLIDE_SETTER_CENSUS=1`, capturing stderr. Both of the first two are also the
+defaults since Task 435, but the procedure still states them so a shell carrying
+other values produces the same run. The run must end normally or by timeout for the exit summary to be written,
 so do not kill it; runs of about twenty seconds have been observed exiting 255
 without a summary, so prefer sixty seconds or more. Run-to-run frame variance
 reaches 18%, so three captures of the same section are much better than one.

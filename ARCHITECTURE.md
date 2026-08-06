@@ -114,7 +114,7 @@ Planned major modules:
 * The Win32 traced memory-store path keeps narrowly bounded shadow memory for observed allocator failure metadata outside the committed arena. A `C7 /0` dword sentinel store of `0xFFFFFFFF` is accepted only within 1 MiB after the arena end; unrelated out-of-arena stores remain fatal so missing mappings are not hidden.
 * An `89 /r` store may extend that allocator shadow only when the first header value exactly equals the distance to the existing sentinel, or when a later field falls inside or immediately after the resulting shadow range. This preserves allocator metadata relationships without turning shadow memory into a general substitute for missing guest mappings.
 * Objects whose base register is inside the final 64 bytes of the arena may preserve `C7 /0`, `89 /r`, and `D9 /2-/3` fields that cross no more than 64 bytes beyond arena end. The base must remain inside real guest memory; objects whose base is already outside the arena are not covered by this boundary-tail policy.
-* A contiguous object array may continue that boundary tail when each next base exactly matches the recorded frontier. Its span is derived from the observed `ESI` count times `EDX` stride, accepted only between 64 bytes and 1 MiB, and otherwise falls back to 4 KiB. The independent one-second execution timeout remains the final observation bound.
+* A contiguous object array may continue that boundary tail when each next base exactly matches the recorded frontier. Its span is derived from the observed `ESI` count times `EDX` stride, accepted only between 64 bytes and 1 MiB, and otherwise falls back to 4 KiB. An explicit `REPIU_EXECUTION_TIMEOUT_MS` budget remains the final observation bound; since Task 435 the default is unlimited, so a run that needs one states it.
 * An unprefixed `8B /r` low-memory read inside the first 4 KiB uses zero-backed DOS memory after real-arena and shadow-memory misses when a guest `DS` selector is active. It does not add the relocated image base to a guest low-memory offset.
 * A faulting `03 /r` with a complete dword source in shadow memory performs the 32-bit ADD on the ModRM-selected register and restores `CF/PF/AF/ZF/SF/OF`; mapped-memory ADD remains on the direct CPU path.
 * A faulting `83 /1` no-SIB dword destination in shadow memory performs OR as a read-modify-write, records the resulting store, clears `CF/OF`, updates `PF/ZF/SF`, and preserves undefined `AF`.
@@ -354,9 +354,9 @@ The external DOS4GW `LINEXE.EXP` loader dynamically allocates one DPMI descripto
 
 ## Live execution telemetry / 실시간 실행 telemetry
 
-Single-step PIU 실행은 guest/host 공유 atomic heartbeat를 사용한다. host poll은 시작 시점과 1초 간격으로 stderr snapshot을 출력할 수 있다. quiet timeout은 poll iteration 수가 아니라 1초의 wall-clock 정체로 판단한다. timeout observation은 guest thread를 종료하고 join한 뒤 복사하여 guest가 수정 중인 비원자 container와의 data race를 방지한다.
+Single-step PIU 실행은 guest/host 공유 atomic heartbeat를 사용한다. host poll은 시작 시점과 1초 간격으로 stderr snapshot을 출력할 수 있다. quiet timeout은 poll iteration 수가 아니라 1초의 wall-clock 정체로 판단한다. quiet timeout과 wall-clock 예산은 같은 스위치를 공유한다 — 예산이 무제한(`REPIU_EXECUTION_TIMEOUT_MS=0`, Task 435부터 기본값)이면 두 판정 모두 꺼지고 게스트는 창을 닫을 때까지 계속 실행된다. timeout observation은 guest thread를 종료하고 join한 뒤 복사하여 guest가 수정 중인 비원자 container와의 data race를 방지한다.
 
-Single-step PIU execution uses atomic heartbeat state shared by the guest and host. The host poll can emit stderr snapshots at startup and once per second. Quiet timeout is based on one second of wall-clock inactivity rather than poll iteration count. Timeout observations are copied only after terminating and joining the guest, preventing races with non-atomic containers still being modified by the guest.
+Single-step PIU execution uses atomic heartbeat state shared by the guest and host. The host poll can emit stderr snapshots at startup and once per second. Quiet timeout is based on one second of wall-clock inactivity rather than poll iteration count. The quiet timeout and the wall-clock budget share one switch: an unlimited budget (`REPIU_EXECUTION_TIMEOUT_MS=0`, the default since Task 435) disables both, and the guest keeps running until the window is closed. Timeout observations are copied only after terminating and joining the guest, preventing races with non-atomic containers still being modified by the guest.
 
 Child 내부 telemetry를 회수할 수 없는 경우 `repiu_supervisor_win32`가 named shared memory를 생성하고 mapping 이름을 환경 변수로 전달한다. loader의 host/guest는 고정 버전 POD에 interlocked write하고 supervisor는 child 출력과 독립적으로 snapshot을 읽고 deadline에 child를 terminate/join한다.
 
@@ -624,18 +624,20 @@ links preserve guest linear control flow independently of cache layout.
 
 `platform::win32::PlaceWin32AotCodeCache`는 별도 Win32 cache allocation과
 RW copy 후 RX 전환, instruction-cache flush, 양방향 guest/cache lookup을
-담당합니다. `legacy`가 기본 backend이고 `REPIU_EXECUTION_BACKEND=dynamic`은 정적
-cache bridge와 live arena에서 arbitrary-entry CFG를 덧붙이는 동적 번역을 함께
-활성화합니다. cache sentinel은 기존 VEH/HLE dispatcher로 복귀하며, 해결할 수 없는
+담당합니다. Task 435부터 `dynamic`이 기본 backend이며, 정적 cache bridge와 live
+arena에서 arbitrary-entry CFG를 덧붙이는 동적 번역을 함께 활성화합니다.
+`REPIU_EXECUTION_BACKEND=legacy`는 회귀 대조군으로 남아 single-step 경로를
+선택합니다. cache sentinel은 기존 VEH/HLE dispatcher로 복귀하며, 해결할 수 없는
 target은 legacy single-step으로 fail-closed합니다.
 
 The Win32 placement layer owns executable cache allocation, RW copy followed by
 RX protection, instruction-cache flushing, and bidirectional guest/cache lookup.
-`legacy` remains the default backend, and `REPIU_EXECUTION_BACKEND=dynamic`
-enables both the static cache bridge and the dynamic translation that appends an
-arbitrary-entry CFG from the live arena. Cache sentinels return through the
-existing VEH/HLE dispatcher, and unresolved targets fail closed to legacy
-single-step execution.
+Since Task 435 `dynamic` is the default backend, enabling both the static cache
+bridge and the dynamic translation that appends an arbitrary-entry CFG from the
+live arena; `REPIU_EXECUTION_BACKEND=legacy` remains as the regression control
+and selects the single-step path. Cache sentinels return through the existing
+VEH/HLE dispatcher, and unresolved targets fail closed to legacy single-step
+execution.
 
 ## 실행 backend 명명 규칙 / Execution backend naming layers
 

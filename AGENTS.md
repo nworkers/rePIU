@@ -85,7 +85,7 @@ Read and update the relevant documents before making architectural changes.
 1. 사용자 요구사항을 받으면 바로 구현하지 말고 먼저 설계를 작성하거나 기존 설계를 갱신한다.
 2. 설계가 정리되면 구현 계획서를 작성하거나 갱신한 뒤 구현을 시작한다.
 3. 코드 변경이 있는 모든 작업은 작업 지시 문서와 작업 로그 문서를 남긴다.
-4. 문서는 기본적으로 한국어를 먼저 쓰고 바로 아래에 영어 번역을 추가한다.
+4. 문서는 기본적으로 한국어를 먼저 쓰고 바로 아래에 영어 번역을 추가한다. 이 규칙은 `docs/` 아래 문서와 `README.md`, `ARCHITECTURE.md` 같은 저장소 문서에만 적용되며, 소스 코드 주석에는 적용하지 않는다.
 5. 기존 코드, 자산, 문서의 의도를 확인한 뒤 수정하며, 큰 구조 변경은 근거를 문서에 남긴다.
 6. 멀티플랫폼 공용 구조를 우선 설계하고, 플랫폼별 세부 사항은 분리한다.
 
@@ -94,7 +94,7 @@ Read and update the relevant documents before making architectural changes.
 1. When a user requirement is received, do not implement immediately. First write a design or update the existing design.
 2. After the design is clear, write or update the implementation work order before starting implementation.
 3. Every task that changes code must leave a work-order document and a work-log document.
-4. Documents should be written in Korean first, followed immediately by an English translation.
+4. Documents should be written in Korean first, followed immediately by an English translation. This applies to documents under `docs/` and repository documents such as `README.md` and `ARCHITECTURE.md`; it does not apply to source-code comments.
 5. Confirm the intent of existing code, assets, and documents before modifying them. Document the rationale for large structural changes.
 6. Design shared multiplatform structures first, and keep platform-specific details separated.
 
@@ -205,6 +205,7 @@ If the requirement is a simple question or confirmation request, answer it direc
 * 코드 수정이 있는 작업은 영향 범위에 맞는 빌드 검증을 수행하고, 불가능하면 이유를 작업 로그에 남긴다.
 * 자산, 런타임 경로, 플랫폼 분기 정책은 코드와 문서에서 함께 관리한다.
 * 코딩 스타일 세부 규칙은 `docs/CODING_STYLE.md`에서 관리한다.
+* 소스 코드 주석은 영어로만 작성한다. 한국어 주석과 한국어·영어 이중 언어 주석을 남기지 않으며, 기존 파일을 수정하다 발견하면 같은 작업에서 영어로 정리한다. 세부 규칙은 `docs/CODING_STYLE.md`의 주석 언어 항목을 따른다.
 * 큰 기능은 하나의 거대 파일에 누적하지 않는다. 플랫폼 공용 상태/정책, 플랫폼 backend, guest ABI 연결처럼 책임이 다른 부분을 별도 header/source로 분리한다.
 * 기존 파일에 기능을 추가할 때 독립적으로 이름 붙일 수 있는 하위 시스템이면 전용 파일로 추출하고, 통합 지점에는 orchestration과 adapter 코드만 남긴다.
 * 프로젝트 기본 라이선스는 `BSD 3-Clause License`를 기준으로 한다.
@@ -218,6 +219,7 @@ If the requirement is a simple question or confirmation request, answer it direc
 * For tasks that modify code, run build verification appropriate to the impact. If verification is impossible, record the reason in the work log.
 * Manage assets, runtime paths, and platform branching policy in both code and documentation.
 * Maintain detailed coding style rules in `docs/CODING_STYLE.md`.
+* Write source-code comments in English only. Leave no Korean or bilingual comments, and convert any found while editing an existing file in the same task. The detailed rule is the comment-language section of `docs/CODING_STYLE.md`.
 * Do not accumulate major features in one monolithic file. Separate platform-neutral state/policy, platform backends, and guest ABI integration into dedicated headers and sources.
 * When adding to an existing file, extract any independently named subsystem and leave only orchestration or adapter code at the integration point.
 * Use the `BSD 3-Clause License` as the default project license baseline.

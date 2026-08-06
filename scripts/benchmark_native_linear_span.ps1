@@ -1,7 +1,7 @@
 param(
-    # Task 425: backend는 legacy / dynamic 둘뿐이고, 이 벤치마크는 AOT cache가
-    # 필요하므로 dynamic만 유효합니다. span A/B 축은 backend가 아니라 아래에서
-    # 명시적으로 설정하는 REPIU_NATIVE_LINEAR_SPAN입니다.
+    # Task 425: the backends are legacy and dynamic, and this benchmark needs
+    # the AOT cache, so only dynamic is valid here. The span A/B axis is not the
+    # backend but REPIU_NATIVE_LINEAR_SPAN, set explicitly below.
     [ValidateSet("dynamic")]
     [string]$Backend = "dynamic",
 

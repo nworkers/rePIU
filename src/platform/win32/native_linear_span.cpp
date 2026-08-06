@@ -140,8 +140,8 @@ bool ResolveNativeLinearSpanSetting(
     {
         return false;
     }
-    // 미지정 기본값은 dynamic backend에서만 ON입니다. legacy는 명시 지정이
-    // 있어야 켜집니다.
+    // Unset defaults to ON only on the dynamic backend; legacy requires an
+    // explicit setting to turn it on.
     return runtime::ExecutionBackendUsesDynamicTranslation(execution_backend);
 }
 

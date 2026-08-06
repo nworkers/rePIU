@@ -11,10 +11,6 @@ namespace repiu::hle
 namespace
 {
 
-// DOS 표준 핸들 0~4(stdin/stdout/stderr/stdaux/stdprn)를 예약하므로 사용자 파일
-// 핸들은 5부터 시작한다. 상한 20은 DOS 기본 Job File Table 크기이자, 게스트 clib이
-// 인덱싱하는 핸들 플래그 테이블(20칸)의 크기와 일치한다 — 핸들 20 이상은 그 테이블을
-// 오버플로우한다(Task 228).
 // DOS reserves standard handles 0-4 (stdin/stdout/stderr/stdaux/stdprn), so user file
 // handles start at 5. The limit 20 is the DOS default Job File Table size and matches the
 // guest clib's 20-entry handle-flags table that is indexed by the handle; handles >= 20
@@ -22,7 +18,6 @@ namespace
 constexpr std::uint16_t kFirstDosUserHandle = 5;
 constexpr std::uint16_t kDosOpenHandleLimit = 20;
 
-// 실제 DOS처럼 현재 열려 있지 않은 가장 낮은 핸들 번호를 반환한다. 모두 사용 중이면 0.
 // Returns the lowest handle number not currently open, mirroring real DOS. 0 if exhausted.
 std::uint16_t AllocateLowestFreeDosHandle(const DosVirtualFileSystemState& state)
 {
@@ -383,8 +378,6 @@ bool OpenDosFile(DosVirtualFileSystemState* state,
         return true;
     }
 
-    // 실제 DOS는 가장 낮은 free 핸들을 반환하고 close 시 번호를 회수한다. 단조 증가로
-    // 번호를 소진하면 게스트 clib의 20칸 핸들 테이블을 오버플로우한다(Task 228).
     // Real DOS returns the lowest free handle and recycles numbers on close; monotonic
     // growth would overflow the guest clib's 20-entry handle table (Task 228).
     const std::uint16_t allocated_handle = AllocateLowestFreeDosHandle(*state);
@@ -411,7 +404,6 @@ bool OpenDosFile(DosVirtualFileSystemState* state,
             std::filesystem::file_size(resolved->host_path, size_error);
         new_handle.cached_file_size = size_error ? 0U : size;
     }
-    // 닫힌 슬롯이 있으면 재사용해 open_files 벡터의 무한 증가를 막는다.
     // Reuse a closed slot if available to bound the growth of open_files.
     bool reused_slot = false;
     for (DosOpenFileHandle& slot : state->open_files)

@@ -426,9 +426,9 @@ bool RunNativeLinearSpanProbe()
     const bool policy_ok =
         platform::win32::ResolveNativeLinearSpanEnabled(
             runtime::ExecutionBackend::kDynamic, "") &&
-        // Task 425: 반례 backend는 legacy입니다. "dynamic이 아닌 backend는
-        // 미지정에서 OFF, 명시 지정이면 ON"이라는 성질은 그대로이고, 긍정 철자
-        // 세 가지를 모두 legacy에서 확인합니다.
+        // Task 425: legacy is the counterexample backend. The property that a
+        // non-dynamic backend is OFF when unset and ON when set explicitly is
+        // unchanged, and all three affirmative spellings are checked on legacy.
         !platform::win32::ResolveNativeLinearSpanEnabled(
             runtime::ExecutionBackend::kLegacy, "") &&
         platform::win32::ResolveNativeLinearSpanEnabled(
