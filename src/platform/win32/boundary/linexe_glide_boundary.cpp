@@ -271,11 +271,21 @@ class GlideSetterStateScope
 bool FlushGlideDrawBatchToBackend(ThreadContext* context,
                                   Win32GlideDrawBatchFlushReason reason)
 {
+    // Task 440: with the asynchronous present on, the flush is posted rather
+    // than waited on. It has to be: left synchronous it would block the guest at
+    // the next frame's first `grTexSource`, and the swap's wait would simply
+    // move there instead of being returned to the guest.
+    const bool asynchronous = GlideAsyncPresentEnabled();
     return FlushGlideDrawBatch(
         &context->glide_draw_batch, reason,
-        [context](const repiu::hle::GlideDrawVertex* vertices,
-                  std::size_t vertex_count,
-                  Win32GlideBatchPrimitive primitive) {
+        [context, asynchronous](const repiu::hle::GlideDrawVertex* vertices,
+                                std::size_t vertex_count,
+                                Win32GlideBatchPrimitive primitive) {
+            if (asynchronous)
+            {
+                return context->glide_backend.PostDrawPrimitiveBatch(
+                    vertices, vertex_count, primitive);
+            }
             return context->glide_backend.DrawPrimitiveBatch(
                 vertices, vertex_count, primitive);
         });
@@ -2184,7 +2194,13 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                 context->glide_state.color_format);
             const std::uint32_t alpha = context->glide_gate_stack[2];
             const std::uint32_t depth = context->glide_gate_stack[3];
-            if (!context->glide_backend.BufferClear(color, alpha, depth))
+            if (GlideAsyncPresentEnabled())
+            {
+                // Posted so the wait the swap no longer takes does not simply
+                // reappear here, one gate later.
+                context->glide_backend.PostBufferClear(color, alpha, depth);
+            }
+            else if (!context->glide_backend.BufferClear(color, alpha, depth))
             {
                 context->glide_backend_message = context->glide_backend.message();
                 return decline_gate("buffer-clear-backend-failure");
@@ -2208,7 +2224,15 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                 Win32GlideAdvanceFrameDump();
             }
             const std::uint32_t swap_interval = context->glide_gate_stack[1];
-            if (!context->glide_backend.BufferSwap(swap_interval))
+            if (GlideAsyncPresentEnabled())
+            {
+                // The whole point of the task: the guest returns here instead of
+                // waiting out the vblank, which with vsync on is 10.8 ms and
+                // 32.8% of guest-run. A failure afterwards is counted rather
+                // than declining a gate that has already returned.
+                context->glide_backend.PostBufferSwap(swap_interval);
+            }
+            else if (!context->glide_backend.BufferSwap(swap_interval))
             {
                 context->glide_backend_message = context->glide_backend.message();
                 return decline_gate("buffer-swap-backend-failure");
@@ -2221,8 +2245,13 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         }
 
         case go::kGrBufferNumPending: // _GRBUFFERNUMPENDING@0
+            // Task 440: the game calls this exactly once per swap -- it is
+            // Glide's throttle, and answering a constant zero is what made it
+            // inert. With the present posted, the real outstanding count is what
+            // lets the game pace itself the way the hardware let it.
             ++context->glide_gate_handled_count;
-            win32_context->Eax = 0U;
+            win32_context->Eax =
+                context->glide_backend.glide_pending_swap_count();
             win32_context->Eip = return_address;
             win32_context->Esp += sizeof(std::uint32_t);
             return true;

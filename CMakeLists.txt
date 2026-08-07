@@ -135,6 +135,7 @@ add_library(repiu_exe
     src/platform/win32/dos/dpmi_mscdex_services.cpp
     src/platform/win32/exception/breakpoint_evidence_win32.cpp
     src/platform/win32/exception/exception_rescue_win32.cpp
+    src/platform/win32/exception/host_crash_report.cpp
     src/platform/win32/cpu_emul/guest_memory_access.cpp
     src/platform/win32/cpu_emul/instruction_emulation.cpp
     src/platform/win32/boundary/linexe_glide_boundary.cpp
@@ -149,6 +150,7 @@ add_library(repiu_exe
     src/platform/win32/telemetry/glide_buffer_swap_timing.cpp
     src/platform/win32/telemetry/glide_setter_state_model.cpp
     src/platform/win32/telemetry/glide_setter_state_census.cpp
+    src/platform/win32/telemetry/glide_async_present.cpp
     src/platform/win32/telemetry/glide_draw_batch.cpp
     src/platform/win32/telemetry/glide_setter_state_cache.cpp
     src/platform/win32/telemetry/glide_setter_phase_timing.cpp
@@ -249,6 +251,7 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/glide_ordinal_timing_probe.cpp
     src/tools/aot_probe/glide_buffer_swap_timing_probe.cpp
     src/tools/aot_probe/glide_setter_state_census_probe.cpp
+    src/tools/aot_probe/glide_async_present_probe.cpp
     src/tools/aot_probe/glide_draw_batch_probe.cpp
     src/tools/aot_probe/glide_setter_state_cache_probe.cpp
     src/tools/aot_probe/glide_setter_phase_timing_probe.cpp

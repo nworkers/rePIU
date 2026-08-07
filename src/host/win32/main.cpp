@@ -10,6 +10,7 @@
 #include "../../platform/win32/aot/aot_dbt_glide_gate_dispatch.h"
 #include "../../platform/win32/io/port_io_delay_loop.h"
 #include "../../platform/win32/aot/aot_generation_failure_policy.h"
+#include "../../platform/win32/exception/host_crash_report.h"
 #include "repiu/platform/win32/aot_boundary_opcode_census.h"
 #include "repiu/platform/win32/live_telemetry.h"
 #include "repiu/platform/win32/veh_exit_site.h"
@@ -2162,6 +2163,22 @@ void PrintExecutionAttempt(
                 reason_count(reason::kNonDrawGate),
                 reason_count(reason::kPrimitiveChange),
                 reason_count(reason::kCapacity));
+            // Task 440: `failures` and `refused` are the fields to read first --
+            // a posted command cannot decline its gate, so this is the only
+            // place work lost on that path becomes visible.
+            const auto& async_present = attempt.glide_async_present;
+            logger.info(
+                "Win32 Glide async present enabled/posted/swaps/executed/"
+                "failures/back-pressure/refused/pending/max-depth: "
+                "{}/{}/{}/{}/{}/{}/{}/{}/{}",
+                async_present.enabled, async_present.posted_count,
+                async_present.posted_swap_count,
+                async_present.executed_count, async_present.failure_count,
+                async_present.back_pressure_count,
+                async_present.refused_count,
+                async_present.pending_swap_count,
+                async_present.max_queue_depth);
+
         }
         if (total != 0U)
         {
@@ -4359,6 +4376,9 @@ std::optional<repiu::target::TargetProfile> BuildDirectExecutableProfile(
 
 int main(int argc, char** argv)
 {
+    // Task 441: first thing, so a host crash anywhere after this point names
+    // itself instead of vanishing into an exit code.
+    repiu::platform::win32::InstallWin32HostCrashReporter();
     std::shared_ptr<spdlog::logger> logger = CreateLoaderLogger();
 
     const repiu::target::TargetProfile* profile =

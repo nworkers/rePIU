@@ -17,6 +17,7 @@
 #include <cmath>
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -32,6 +33,29 @@
 
 namespace repiu::platform::win32
 {
+
+// Task 440: the asynchronous channel's storage, kept off `ThreadContext`'s stack
+// footprint. Guarded by the backend's `host_command_mutex_`, so it shares one
+// lock with the synchronous slot and "drain, then run the sync command" stays a
+// single ordered decision.
+struct Win32GlideAsyncPresentState
+{
+    std::deque<std::function<void()>> commands;
+    // Atomics, not plain counters under the channel lock. The timeout path
+    // terminates the guest thread outright, and a thread killed while holding
+    // that lock leaves it owned forever -- a snapshot that took it would then
+    // hang or fault at teardown, which is exactly what was observed. Diagnostics
+    // must never depend on a lock the run may have lost.
+    std::atomic<bool> enabled{false};
+    std::atomic<std::uint64_t> posted_count{0};
+    std::atomic<std::uint64_t> posted_swap_count{0};
+    std::atomic<std::uint64_t> executed_count{0};
+    std::atomic<std::uint64_t> failure_count{0};
+    std::atomic<std::uint64_t> back_pressure_count{0};
+    std::atomic<std::uint64_t> refused_count{0};
+    std::atomic<std::uint32_t> max_queue_depth{0};
+};
+
 
 // Task 433. Maps the Glide depth value onto the eye-space z this projection
 // wants. Two facts make it this simple. Glide's depth buffer is 16 bits holding
@@ -79,6 +103,74 @@ bool TranslateGlideOpenGlCullMode(const std::uint32_t mode,
         ? GlideOpenGlCullFace::kFront
         : GlideOpenGlCullFace::kBack;
     return true;
+}
+
+Win32GlideAsyncPresentState& GlideOpenGlBackend::async_present()
+{
+    if (async_present_state_ == nullptr)
+    {
+        async_present_state_ =
+            std::make_unique<Win32GlideAsyncPresentState>();
+    }
+    return *async_present_state_;
+}
+
+const Win32GlideAsyncPresentState& GlideOpenGlBackend::async_present() const
+{
+    // Allocated on first use by the non-const path; a reader that arrives first
+    // sees an empty state, which is what "nothing has been posted" means.
+    static const Win32GlideAsyncPresentState empty;
+    return async_present_state_ != nullptr ? *async_present_state_ : empty;
+}
+
+GlideOpenGlBackend::GlideOpenGlBackend() = default;
+
+// Runs the posted commands and nothing else. Deliberately separate from
+// `PumpHostCommands`: the synchronous slot stays marked pending while its
+// command runs, so a command that pumped would re-enter itself forever. `Close`
+// is exactly such a command when the guest initiates it.
+void GlideOpenGlBackend::DrainAsyncCommands()
+{
+    if (!IsHostThread())
+    {
+        return;
+    }
+    // Nothing was ever posted: take no lock, allocate nothing, and leave the
+    // pump exactly the path it was before this task. The queue depth is an
+    // atomic precisely so this test costs nothing.
+    if (queued_command_count_.load(std::memory_order_acquire) == 0U)
+    {
+        return;
+    }
+    for (;;)
+    {
+        std::function<void()> async_command;
+        {
+            std::lock_guard<std::mutex> lock(host_command_mutex_);
+            if (async_present().commands.empty())
+            {
+                break;
+            }
+            async_command = std::move(async_present().commands.front());
+            async_present().commands.pop_front();
+            queued_command_count_.fetch_sub(1U, std::memory_order_relaxed);
+        }
+        try
+        {
+            async_command();
+        }
+        catch (...)
+        {
+            std::lock_guard<std::mutex> lock(host_command_mutex_);
+            ++async_present().failure_count;
+        }
+        {
+            std::lock_guard<std::mutex> lock(host_command_mutex_);
+            ++async_present().executed_count;
+        }
+        // Room freed, and a swap possibly retired: wake anyone the bound stopped.
+        host_command_cv_.notify_all();
+    }
 }
 
 GlideOpenGlBackend::~GlideOpenGlBackend()
@@ -446,6 +538,9 @@ void GlideOpenGlBackend::InvokeOnHostThread(std::function<void()> command)
         lock.lock();
     }
     host_command_cv_.wait(lock, [this]() { return host_command_complete_; });
+    // The pump drains the queue before it touches the synchronous slot, so a
+    // completed synchronous command also proves every command posted before it
+    // has run. Nothing further is needed to order the two paths.
     if (timing)
     {
         const std::uint64_t resume = ReadGlideGateTimingCycles();
@@ -464,6 +559,153 @@ void GlideOpenGlBackend::InvokeOnHostThread(std::function<void()> command)
     }
 }
 
+// Task 440: the asynchronous half of the host channel. Shares the mutex and the
+// condition variable with the synchronous slot on purpose -- "drain the queue,
+// then run the sync command" has to be one ordered decision, and two locks would
+// make it two racing ones.
+bool GlideOpenGlBackend::PostToHostThread(std::function<void()> command,
+                                          const bool swap_command)
+{
+    if (IsHostThread())
+    {
+        // Already where the command must run, so posting would only defer it
+        // behind work this same thread is responsible for pumping.
+        command();
+        std::lock_guard<std::mutex> lock(host_command_mutex_);
+        ++async_present().executed_count;
+        return true;
+    }
+    std::unique_lock<std::mutex> lock(host_command_mutex_);
+    async_present().enabled.store(true, std::memory_order_relaxed);
+    const auto has_room = [this, swap_command]() {
+        return async_present().commands.size() < kWin32GlideAsyncCommandCapacity &&
+            (!swap_command ||
+             pending_swap_count_.load(std::memory_order_relaxed) <
+                 kWin32GlideMaxOutstandingSwaps);
+    };
+    if (!has_room())
+    {
+        // The bound reached: this is the back pressure that keeps the guest from
+        // running more than a frame ahead, and it is exactly what
+        // `grBufferNumPending` reports to the game.
+        ++async_present().back_pressure_count;
+        host_command_cv_.wait(lock, [this, &has_room]() {
+            return has_room() ||
+                host_stopped_pumping_.load(std::memory_order_acquire);
+        });
+    }
+    if (host_stopped_pumping_.load(std::memory_order_acquire))
+    {
+        // Dropping is the only alternative to deadlocking against a host that
+        // will never pump again. Counted so the loss is visible.
+        ++async_present().refused_count;
+        return false;
+    }
+    async_present().commands.push_back(std::move(command));
+    queued_command_count_.fetch_add(1U, std::memory_order_relaxed);
+    ++async_present().posted_count;
+    if (swap_command)
+    {
+        ++async_present().posted_swap_count;
+        pending_swap_count_.fetch_add(1U, std::memory_order_relaxed);
+    }
+    const std::uint32_t depth =
+        static_cast<std::uint32_t>(async_present().commands.size());
+    if (depth > async_present().max_queue_depth.load(std::memory_order_relaxed))
+    {
+        async_present().max_queue_depth.store(depth,
+                                              std::memory_order_relaxed);
+    }
+    host_command_pending_hint_.store(true, std::memory_order_release);
+    lock.unlock();
+    host_command_cv_.notify_all();
+    return true;
+}
+
+bool GlideOpenGlBackend::PostBufferSwap(const std::uint32_t swap_interval)
+{
+    return PostToHostThread(
+        [this, swap_interval]() {
+            const bool swapped = BufferSwapOnHostThread(swap_interval, true);
+            std::lock_guard<std::mutex> lock(host_command_mutex_);
+            if (pending_swap_count_.load(std::memory_order_relaxed) != 0U)
+            {
+                pending_swap_count_.fetch_sub(1U, std::memory_order_relaxed);
+            }
+            if (!swapped)
+            {
+                ++async_present().failure_count;
+            }
+        },
+        true);
+}
+
+bool GlideOpenGlBackend::PostBufferClear(const std::uint32_t color,
+                                         const std::uint32_t alpha,
+                                         const std::uint32_t depth)
+{
+    return PostToHostThread(
+        [this, color, alpha, depth]() {
+            if (!BufferClear(color, alpha, depth))
+            {
+                std::lock_guard<std::mutex> lock(host_command_mutex_);
+                ++async_present().failure_count;
+            }
+        },
+        false);
+}
+
+bool GlideOpenGlBackend::PostDrawPrimitiveBatch(
+    const hle::GlideDrawVertex* vertices,
+    const std::size_t vertex_count,
+    const Win32GlideBatchPrimitive primitive)
+{
+    if (vertices == nullptr || vertex_count == 0U)
+    {
+        return true;
+    }
+    // The command owns its vertices: the guest refills its batch the moment this
+    // returns, so borrowing the storage would draw whatever it holds later.
+    std::vector<hle::GlideDrawVertex> owned(vertices, vertices + vertex_count);
+    return PostToHostThread(
+        [this, owned = std::move(owned), primitive]() {
+            if (!DrawPrimitiveBatch(owned.data(), owned.size(), primitive))
+            {
+                std::lock_guard<std::mutex> lock(host_command_mutex_);
+                ++async_present().failure_count;
+            }
+        },
+        false);
+}
+
+std::uint32_t GlideOpenGlBackend::glide_pending_swap_count() const
+{
+    // A plain atomic load: the guest calls this once per frame on its own
+    // stack, so it must not reach the lazily-created state behind it.
+    return pending_swap_count_.load(std::memory_order_relaxed);
+}
+
+Win32GlideAsyncPresentSnapshot GlideOpenGlBackend::glide_async_present() const
+{
+    Win32GlideAsyncPresentSnapshot snapshot;
+    const auto& state = async_present();
+    const auto load64 = [](const std::atomic<std::uint64_t>& value) {
+        return value.load(std::memory_order_relaxed);
+    };
+    snapshot.enabled = state.enabled.load(std::memory_order_relaxed);
+    snapshot.posted_count = load64(state.posted_count);
+    snapshot.posted_swap_count = load64(state.posted_swap_count);
+    snapshot.executed_count = load64(state.executed_count);
+    snapshot.failure_count = load64(state.failure_count);
+    snapshot.back_pressure_count = load64(state.back_pressure_count);
+    snapshot.refused_count = load64(state.refused_count);
+    snapshot.pending_swap_count =
+        pending_swap_count_.load(std::memory_order_relaxed);
+    snapshot.max_queue_depth =
+        state.max_queue_depth.load(std::memory_order_relaxed);
+    return snapshot;
+}
+
 void GlideOpenGlBackend::PumpHostCommands()
 {
     if (!IsHostThread())
@@ -472,6 +714,10 @@ void GlideOpenGlBackend::PumpHostCommands()
     }
 
     const bool timing = GlideGateTimingEnabled();
+    // Task 440: the queue is drained first and completely. That single ordering
+    // rule is what lets a posted command and a waited-on one share a channel:
+    // both run here, on this thread, in the order they were submitted.
+    DrainAsyncCommands();
     std::function<void()> command;
     {
         std::lock_guard<std::mutex> lock(host_command_mutex_);
@@ -530,13 +776,20 @@ bool GlideOpenGlBackend::WaitAndPumpHostCommands(
     SpinForRendezvousHint(host_command_pending_hint_, true, false);
     {
         std::unique_lock<std::mutex> lock(host_command_mutex_);
-        if (!host_command_pending_)
+        // Task 440: posted work wakes the host exactly like a published
+        // synchronous command, so both are in the predicate. Read through the
+        // atomic depth so an unused channel never allocates its state here.
+        const auto has_work = [this]() {
+            return host_command_pending_ ||
+                queued_command_count_.load(std::memory_order_acquire) != 0U;
+        };
+        if (!has_work())
         {
             host_command_cv_.wait_for(
                 lock, std::chrono::milliseconds(timeout_milliseconds),
-                [this]() { return host_command_pending_; });
+                has_work);
         }
-        if (!host_command_pending_)
+        if (!has_work())
         {
             return false;
         }
@@ -674,6 +927,11 @@ bool GlideOpenGlBackend::OpenWindowed(
         return result;
     }
     Close();
+    // Task 440: `Close` above marks the asynchronous channel shut so teardown
+    // cannot deadlock. Opening a window means the host is pumping again, so the
+    // channel reopens here -- without this, every later post is refused and the
+    // frames it carried are silently dropped.
+    host_stopped_pumping_.store(false, std::memory_order_release);
     exit_requested_ = false;
     dummy_mode_ = false;
     origin_lower_left_ = origin == repiu::hle::kGlideOriginLowerLeft;
@@ -2481,6 +2739,23 @@ void GlideOpenGlBackend::Close()
         InvokeOnHostThread([this]() { Close(); });
         return;
     }
+    // Task 440: declare the channel closed so a later post refuses instead of
+    // waiting on a host that will never pump again.
+    //
+    // **No lock is taken here, and the queue is deliberately not drained.** The
+    // timeout path reaches this after terminating the guest thread, and that
+    // thread takes `host_command_mutex_` on every Glide gate -- taking a mutex
+    // it still owns is what crashed teardown while this code did. What stays
+    // queued is at most a fraction of a frame that was never presented.
+    host_stopped_pumping_.store(true, std::memory_order_release);
+    pending_swap_count_.store(0U, std::memory_order_relaxed);
+    // **No `notify_all` here.** The timeout path terminates the guest thread,
+    // and that thread waits on `host_command_cv_` inside every synchronous gate.
+    // A thread killed while waiting leaves its wait block linked into the
+    // variable, and waking that list faults in `RtlWakeAllConditionVariable` --
+    // measured, with a stack, as the teardown crash that cost Task 440 five
+    // rounds of guessing. Nothing needs the wake: the only thread that could be
+    // blocked on back pressure is the guest, and it is already gone.
     if (dummy_mode_)
     {
         dummy_mode_ = false;

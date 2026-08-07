@@ -4,6 +4,7 @@
 #include "repiu/hle/glide_hle.h"
 #include "repiu/hle/glide_vertex.h"
 #include "repiu/platform/win32/glide_buffer_swap_timing.h"
+#include "repiu/platform/win32/glide_async_present.h"
 #include "repiu/platform/win32/glide_draw_batch.h"
 #include "repiu/platform/win32/glide_gate_timing.h"
 #include "repiu/platform/win32/glide_gl_error_policy.h"
@@ -15,6 +16,7 @@
 #include "repiu/runtime/execution_backend.h"
 
 #include <atomic>
+#include <memory>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -44,7 +46,10 @@ bool TranslateGlideOpenGlCullMode(std::uint32_t mode,
 class GlideOpenGlBackend
 {
 public:
-    GlideOpenGlBackend() = default;
+    // Both defined in the source file: the asynchronous state is an incomplete
+    // type here, and a `unique_ptr` to it needs the complete type wherever the
+    // constructor or destructor is instantiated.
+    GlideOpenGlBackend();
     ~GlideOpenGlBackend();
 
     GlideOpenGlBackend(const GlideOpenGlBackend&) = delete;
@@ -67,6 +72,27 @@ public:
     void PumpEvents();
     bool BufferClear(std::uint32_t color, std::uint32_t alpha, std::uint32_t depth);
     bool BufferSwap(std::uint32_t swap_interval);
+    // Task 440: the same three operations posted to the host instead of waited
+    // on. With vsync enabled the present blocks for 10.8 ms -- 32.8% of
+    // guest-run -- while Glide's own protocol says a swap is asynchronous and
+    // the game polls `grBufferNumPending` to throttle. These return true when
+    // the command was accepted for execution, not when it has executed; a
+    // backend failure afterwards is counted rather than reported here.
+    bool PostBufferSwap(std::uint32_t swap_interval);
+    bool PostBufferClear(std::uint32_t color, std::uint32_t alpha,
+                         std::uint32_t depth);
+    bool PostDrawPrimitiveBatch(const hle::GlideDrawVertex* vertices,
+                                std::size_t vertex_count,
+                                Win32GlideBatchPrimitive primitive);
+    // Outstanding swaps, which is what `grBufferNumPending` must answer. Zero
+    // whenever the asynchronous path is off, matching today's behaviour.
+    // Appends to the asynchronous FIFO and returns without waiting.
+    // `swap_command` marks the one command kind the outstanding bound applies
+    // to. Public because the ordering it provides is a property worth asserting
+    // directly rather than only through the gates that use it.
+    bool PostToHostThread(std::function<void()> command, bool swap_command);
+    std::uint32_t glide_pending_swap_count() const;
+    Win32GlideAsyncPresentSnapshot glide_async_present() const;
     // Task 420: the remaining Glide draw entry points. A point is one vertex
     // with `GL_POINTS`; a polygon is a convex fan, which is what Glide's
     // `grDrawPolygon` contract guarantees.
@@ -313,7 +339,9 @@ private:
     void RecordPresentedFrame();
 
     std::thread::id host_thread_id_;
-    std::mutex host_command_mutex_;
+    // Mutable so the async snapshot accessors can stay const: they only read
+    // counters this lock protects.
+    mutable std::mutex host_command_mutex_;
     std::condition_variable host_command_cv_;
     std::function<void()> host_command_;
     std::exception_ptr host_command_exception_;
@@ -334,6 +362,33 @@ private:
     // ordering is enough: one misattributed tick out of thousands cannot move
     // the verdict.
     std::atomic<bool> guest_in_glide_gate_{false};
+
+    // Task 440: the asynchronous FIFO. Guarded by `host_command_mutex_` so it
+    // shares one lock and one condition variable with the synchronous slot,
+    // which is what makes "drain the queue, then run the sync command" a single
+    // ordered decision rather than two racing ones.
+    // One pointer, not the queue and counters themselves: `ThreadContext` holds
+    // this backend and is a stack local, and the inline members overflowed that
+    // stack at window creation.
+    std::unique_ptr<Win32GlideAsyncPresentState> async_present_state_;
+    // Read by the guest thread every frame through `grBufferNumPending`, which
+    // runs on the guest's own small stack. Kept as a direct atomic so that read
+    // touches no lazily-created state, no function-local static and no
+    // allocation -- all of which are CRT work this stack must not carry.
+    std::atomic<std::uint32_t> pending_swap_count_{0};
+    // Runs posted commands only, never the synchronous slot, so a command may
+    // call it without re-entering itself.
+    void DrainAsyncCommands();
+    Win32GlideAsyncPresentState& async_present();
+    const Win32GlideAsyncPresentState& async_present() const;
+    // Atomic, and deliberately never guarded by `host_command_mutex_`. The
+    // timeout path terminates the guest thread, which takes that mutex on every
+    // Glide gate; acquiring a mutex a killed thread still owns faults. Teardown
+    // therefore touches this flag and nothing else.
+    std::atomic<bool> host_stopped_pumping_{false};
+    // Current queue depth as an atomic, so the snapshot never needs the lock
+    // either.
+    std::atomic<std::uint32_t> queued_command_count_{0};
 
     // Spin budget in microseconds, resolved once. Zero restores the pure
     // condition-variable wait.
