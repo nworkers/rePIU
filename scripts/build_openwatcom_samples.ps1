@@ -209,7 +209,10 @@ try
 {
     if (!$SkipSetup)
     {
-        & (Join-Path $PSScriptRoot "setup_test_environment.ps1")
+        # Task 448: -SkipGameAssets because this suite compiles its own DOS
+        # programs and never loads PIU.EXE. Without it a clean checkout, which
+        # has no MASTER\ tree, fails here before a single sample is built.
+        & (Join-Path $PSScriptRoot "setup_test_environment.ps1") -SkipGameAssets
         if ($LASTEXITCODE -ne 0)
         {
             throw "setup_test_environment.ps1 failed with exit code $LASTEXITCODE"

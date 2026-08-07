@@ -153,13 +153,39 @@ jobs:
           $releaseExists = ($LASTEXITCODE -eq 0)
           $ErrorActionPreference = 'Stop'
 
+          # Task 448: hand-written notes when the tag has them. `--generate-notes`
+          # lists commit subjects, which says what changed but not what it means
+          # to someone downloading the archive.
+          $notesFile = Join-Path 'docs\release-notes' "$tag.md"
+          $hasNotes = Test-Path $notesFile
+          if ($hasNotes)
+          {
+              Write-Host "Using release notes from $notesFile."
+          }
+          else
+          {
+              Write-Host "No $notesFile; falling back to generated notes."
+          }
+
           if ($releaseExists)
           {
               Write-Host "Release $tag exists; uploading with --clobber."
               gh release upload $tag @files --clobber
+              if ($hasNotes)
+              {
+                  gh release edit $tag --notes-file $notesFile
+              }
           }
           else
           {
               Write-Host "Creating release $tag."
-              gh release create $tag @files --title $tag --generate-notes
+              $notesArguments = if ($hasNotes)
+              {
+                  @('--notes-file', $notesFile)
+              }
+              else
+              {
+                  @('--generate-notes')
+              }
+              gh release create $tag @files --title $tag @notesArguments
           }

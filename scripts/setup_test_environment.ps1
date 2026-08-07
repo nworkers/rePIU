@@ -1,5 +1,13 @@
 param(
-    [switch]$SkipOpenWatcomInstall
+    [switch]$SkipOpenWatcomInstall,
+    # Task 448: the original asset tree under MASTER\ is proprietary and never in
+    # the repository, so a clean checkout -- CI's, or a contributor's -- cannot
+    # satisfy the check below. The OpenWatcom sample suite compiles its own DOS
+    # programs and runs them through the loader; it never touches PIU.EXE. This
+    # switch lets that caller reuse the rest of this script (toolchain checks and
+    # the self-healing OpenWatcom install) without demanding assets it does not
+    # use. `piu_1st` callers must leave it off.
+    [switch]$SkipGameAssets
 )
 
 $ErrorActionPreference = "Stop"
@@ -126,9 +134,16 @@ try
 
     if (!(Test-Path $PiuExecutable))
     {
-        throw "Original executable was not found at MASTER\PIU_1ST\PIU\PIU.EXE. Copy the original asset tree before running piu_1st tests."
+        if (!$SkipGameAssets)
+        {
+            throw "Original executable was not found at MASTER\PIU_1ST\PIU\PIU.EXE. Copy the original asset tree before running piu_1st tests."
+        }
+        Write-CheckWarn "Original PIU executable is absent; skipping the game asset check. piu_1st tests will not run."
     }
-    Write-CheckOk "Original PIU executable: MASTER\PIU_1ST\PIU\PIU.EXE"
+    else
+    {
+        Write-CheckOk "Original PIU executable: MASTER\PIU_1ST\PIU\PIU.EXE"
+    }
 
     if (!(Test-Path $OpenWatcomCompiler))
     {
