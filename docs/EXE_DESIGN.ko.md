@@ -219,13 +219,13 @@ MSVC 32-bit 빌드에서는 `/BASE:0x01000000`과 `/DYNAMICBASE:NO`를 적용한
 이 정책은 실제 메모리 예약을 수행하지 않는다. host executable 자체가 낮은 주소 범위를 차지하는 위험을 줄이고, 이후 `VirtualAlloc` 기반 예약 단계의 전제 조건을 정리하기 위한 것이다.
 # Win32 로더 앱 진입점
 
-현재 실제 로더 executable target은 `repiu_loader_win32`이다.
+현재 실제 로더 executable target은 `repiu`이다.
 
 진입점은 `src/host/win32/main.cpp`에 둔다. 이 경로는 분석 도구가 아니라 원본 DOS/4GW executable을 실제로 로드하고 실행을 시도하는 host 애플리케이션 영역이다.
 
 기존 `src/tools/win32_execution_host/main.cpp` 위치와 `repiu_win32_execution_host` 이름은 초기 실행 관찰 단계의 임시 구조였으므로 더 이상 현재 구조 기준으로 사용하지 않는다.
 
-`repiu_loader_win32`는 현재 `PIU.EXE` 읽기, DOS/4GW load result 생성, relocated runtime image plan 생성, relocated image buffer 생성, Win32 process memory placement, minimal execution trampoline 호출을 순서대로 수행한다.
+`repiu`는 현재 `PIU.EXE` 읽기, DOS/4GW load result 생성, relocated runtime image plan 생성, relocated image buffer 생성, Win32 process memory placement, minimal execution trampoline 호출을 순서대로 수행한다.
 # piu_1st Single-Step Trace 관측
 
 `piu_1st` trap 실행 경로에는 timeout 순간의 강제 thread context capture 대신, guest thread 내부의 vectored exception handler가 `EXCEPTION_SINGLE_STEP`를 처리하며 마지막 guest `EIP`를 기록하는 진단 경로를 추가했다.

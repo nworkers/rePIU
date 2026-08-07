@@ -151,7 +151,7 @@ historical.*
 
 ```powershell
 cmd /c scripts\build_dos4gw_hello.bat
-build\win32_x86_debug\Debug\repiu_loader_win32.exe dos4gw_hello
+build\win32_x86_debug\Debug\repiu.exe dos4gw_hello
 ```
 
 정상 출력에는 다음 문자열이 포함됩니다.
@@ -163,7 +163,7 @@ Hello, world!
 ### PIU 1st 실행 관찰
 
 ```powershell
-build\win32_x86_debug\Debug\repiu_loader_win32.exe piu_1st
+build\win32_x86_debug\Debug\repiu.exe piu_1st
 ```
 
 MAME CHD profile은 supervisor로 실행합니다.

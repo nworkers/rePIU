@@ -18,7 +18,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
-$Loader = Join-Path $Root "build\win32_x86_debug\Debug\repiu_loader_win32.exe"
+$Loader = Join-Path $Root "build\win32_x86_debug\Debug\repiu.exe"
 
 function Invoke-Step
 {
@@ -167,7 +167,7 @@ try
 
     if (!(Test-Path $Loader))
     {
-        throw "Loader executable was not found at build\win32_x86_debug\Debug\repiu_loader_win32.exe"
+        throw "Loader executable was not found at build\win32_x86_debug\Debug\repiu.exe"
     }
 
     $helloOutput = Invoke-CaptureStep `

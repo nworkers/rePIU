@@ -27,7 +27,7 @@ if ($comparisonCount -gt 1) {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $loader = Join-Path $repoRoot `
-    "build\win32_x86_debug\Debug\repiu_loader_win32.exe"
+    "build\win32_x86_debug\Debug\repiu.exe"
 $fixture = Join-Path $repoRoot "eeprom.dat"
 if (-not (Test-Path -LiteralPath $loader -PathType Leaf)) {
     throw "Win32 loader was not found: $loader"

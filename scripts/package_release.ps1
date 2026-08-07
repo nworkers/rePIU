@@ -68,7 +68,7 @@ Write-Host "Packaging rePIU v$Version from $Configuration"
 # The binaries. SDL3 is linked statically (SDL_SHARED OFF / SDL_STATIC ON), so
 # no runtime DLL travels with these.
 $binaries = @(
-    "repiu_loader_win32.exe",
+    "repiu.exe",
     "repiu_supervisor_win32.exe",
     "repiu_exe_analyzer.exe",
     "repiu_chd_cd_probe.exe",

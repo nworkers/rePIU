@@ -18,7 +18,7 @@ set REPIU_EXECUTION_BACKEND=dynamic
 set REPIU_EXECUTION_TIMEOUT_MS=45000
 set REPIU_SINGLE_STEP_HOTSPOT_PROFILE=1
 set REPIU_SINGLE_STEP_HOTSPOT_DUMP=1
-build\Release\repiu_loader_win32.exe pumpit3 > repiu_log.txt 2>&1
+build\Release\repiu.exe pumpit3 > repiu_log.txt 2>&1
 ```
 
 `REPIU_EXECUTION_TIMEOUT_MS`를 45000처럼 지정하면 그 시간 뒤 스스로 종료하므로 창을
@@ -72,7 +72,7 @@ set REPIU_EXECUTION_TIMEOUT_MS=60000
 set REPIU_GUEST_POSITION_CENSUS=1
 set REPIU_GUEST_POSITION_CENSUS_MS=10
 set REPIU_GUEST_POSITION_CENSUS_DUMP=build\guest_position_census.txt
-cmd /c "build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit3 > run.txt 2>&1"
+cmd /c "build\win32_x86_debug\Release\repiu.exe pumpit3 > run.txt 2>&1"
 ```
 
 반복 실행과 멈춤/정상 판정은 `scripts/task411_guest_position_census.ps1`이 자동으로
@@ -156,7 +156,7 @@ set REPIU_EXECUTION_BACKEND=dynamic
 set REPIU_EXECUTION_TIMEOUT_MS=45000
 set REPIU_SINGLE_STEP_HOTSPOT_PROFILE=1
 set REPIU_SINGLE_STEP_HOTSPOT_DUMP=1
-build\Release\repiu_loader_win32.exe pumpit3 > repiu_log.txt 2>&1
+build\Release\repiu.exe pumpit3 > repiu_log.txt 2>&1
 ```
 
 Setting `REPIU_EXECUTION_TIMEOUT_MS` (45000, say) makes the run end by itself, so closing

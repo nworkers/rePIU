@@ -276,7 +276,7 @@ add_executable(repiu_glide_render_probe
     src/tools/glide_render_probe/main.cpp
 )
 
-add_executable(repiu_loader_win32
+add_executable(repiu
     src/host/win32/main.cpp
 )
 
@@ -320,7 +320,7 @@ target_include_directories(repiu_aot_probe
         third_party/zydis
 )
 
-target_link_libraries(repiu_loader_win32
+target_link_libraries(repiu
     PRIVATE
         repiu_exe
         spdlog::spdlog_header_only
@@ -340,4 +340,4 @@ if(WIN32)
 endif()
 
 repiu_configure_win32_loader_host(repiu_exe_analyzer)
-repiu_configure_win32_loader_host(repiu_loader_win32)
+repiu_configure_win32_loader_host(repiu)

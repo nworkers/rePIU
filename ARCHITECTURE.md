@@ -136,7 +136,7 @@ Planned major modules:
 * `Win32AddressRangeProbe`: checks the required Win32 runtime address range with `VirtualQuery` before any allocation. It reports whether the fixed DOS/4GW image range is free and records the first blocking memory block when it is occupied. This is a dry-run only and does not reserve executable memory.
 * `Win32AddressRangeReservation`: attempts to reserve the fixed original runtime address range with `VirtualAlloc(MEM_RESERVE)` and reports success or the Windows error code without executing original code.
 * `Win32HostImageBasePolicy`: configures 32-bit Win32 executable targets so the host image base stays outside both the original DOS/4GW fixed image range and the relocated image range. The current baseline applies `/BASE:0x10000000` and `/DYNAMICBASE:NO` to Win32 x86 host targets.
-* `Win32LoaderApp`: dedicated Win32 loader executable target named `repiu_loader_win32`. It owns the current loader orchestration path: target selection, executable read, DOS/4GW load, relocated image planning, relocated buffer creation, Win32 process-memory placement, and minimal execution trampoline invocation. In addition to built-in target ids, it can accept a direct DOS/4GW executable path and run it through a temporary `direct_executable` target using the `dos4gw_console_sample` HLE profile. This keeps local sample testing from adding one target profile per executable.
+* `Win32LoaderApp`: dedicated Win32 loader executable target named `repiu`. It owns the current loader orchestration path: target selection, executable read, DOS/4GW load, relocated image planning, relocated buffer creation, Win32 process-memory placement, and minimal execution trampoline invocation. In addition to built-in target ids, it can accept a direct DOS/4GW executable path and run it through a temporary `direct_executable` target using the `dos4gw_console_sample` HLE profile. This keeps local sample testing from adding one target profile per executable.
 * `DosVirtualFileSystem`: shared HLE state for DOS path resolution and file handles. It treats the target profile working directory as the virtual DOS drive root, keeps a virtual current directory without changing the host process current directory, and currently handles `INT 21h AH=0x3B` chdir plus `INT 21h AH=0x3D` open path resolution/handle allocation.
 * `Win32SegmentMemoryLoadHle`: observation-driven segment override memory access HLE in the Win32 execution trampoline. The current scope handles the traced `26 8A 4F FF` byte load as `ES:[EDI - 1]`, returns the DOS command tail length byte for `ES:0x80`, and records the handled segment memory load in the execution attempt.
 * `Win32 x86 Build`: prepares direct original 32-bit x86 entry execution by generating and verifying the multi-config `build\win32_x86_debug` tree through `scripts/build_win32_x86.bat`. A `-Configuration` parameter selects the configuration and `scripts/build_win32_x86_release.bat` is the Release entry point; correctness verification stays on Debug while every performance number comes from Release, because Task 330 measured an 11.34x Debug factor that inverts the stage ranking.
@@ -280,7 +280,7 @@ projected-texture layout are not claimed without validation evidence.
 
 ## Win32 로더 앱 배치
 
-현재 실제 Win32 로더 executable target은 `repiu_loader_win32`이다.
+현재 실제 Win32 로더 executable target은 `repiu`이다.
 
 진입점은 `src/host/win32/main.cpp`에 두며, `src/tools/` 아래의 분석 도구와 구분한다.
 
@@ -290,7 +290,7 @@ projected-texture layout are not claimed without validation evidence.
 
 ## Win32 Loader App Layout
 
-The current practical Win32 loader executable target is `repiu_loader_win32`.
+The current practical Win32 loader executable target is `repiu`.
 
 Its entry point lives in `src/host/win32/main.cpp`, separate from analysis tools under `src/tools/`.
 

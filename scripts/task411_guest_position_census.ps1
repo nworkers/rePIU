@@ -43,7 +43,7 @@ if ([string]::IsNullOrWhiteSpace($EepromSeed))
     $EepromSeed = Join-Path $repositoryRoot "eeprom.dat"
 }
 
-$loader = Join-Path $ReleaseDirectory "repiu_loader_win32.exe"
+$loader = Join-Path $ReleaseDirectory "repiu.exe"
 if (-not (Test-Path -LiteralPath $loader))
 {
     throw "Loader is missing: $loader"

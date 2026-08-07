@@ -150,7 +150,7 @@ CMake now provides a `repiu_configure_win32_loader_host` policy function so a Wi
 
 The current `PIU.EXE` runtime memory dry-run places the HLE reserve base at `0x005E7000`, so the Win32 x86 host image base is set higher at `0x01000000`.
 
-For MSVC 32-bit builds, the policy applies `/BASE:0x10000000` and `/DYNAMICBASE:NO`. The policy is applied to `repiu_exe_analyzer` and the dedicated `repiu_loader_win32` target.
+For MSVC 32-bit builds, the policy applies `/BASE:0x10000000` and `/DYNAMICBASE:NO`. The policy is applied to `repiu_exe_analyzer` and the dedicated `repiu` target.
 
 This policy does not reserve memory. It reduces the risk that the host executable itself occupies the low address range and prepares the assumptions needed for a later `VirtualAlloc` reservation step.
 
@@ -160,7 +160,7 @@ This policy does not reserve memory. It reduces the risk that the host executabl
 
 The current `piu_1st` profile records `base=0x00010000` and `size=0x005D7000` from the previous runtime memory dry-run result.
 
-`repiu_loader_win32` uses this hint to build a Win32 fixed-range policy and attempts to reserve the target range with `VirtualAlloc(MEM_RESERVE)` before reading the executable or copying the LE image.
+`repiu` uses this hint to build a Win32 fixed-range policy and attempts to reserve the target range with `VirtualAlloc(MEM_RESERVE)` before reading the executable or copying the LE image.
 
 This step only observes whether the reservation succeeds. Original image copy, page commit/protection, HLE dispatch, and original entry calls are left for later steps.
 
@@ -231,13 +231,13 @@ The result is recorded as return, SEH exception, or timeout. Timeout handling is
 This step does not provide HLE dispatch, INT/DPMI traps, or normal game execution.
 # Win32 Loader App Entry Point
 
-The current practical loader executable target is `repiu_loader_win32`.
+The current practical loader executable target is `repiu`.
 
 The entry point lives in `src/host/win32/main.cpp`. This path is the host application area that actually loads the original DOS/4GW executable and attempts execution, not an analysis tool location.
 
 The previous `src/tools/win32_execution_host/main.cpp` path and `repiu_win32_execution_host` name were temporary structures from the early execution-observation stage and are no longer the current structural baseline.
 
-`repiu_loader_win32` currently reads `PIU.EXE`, creates the DOS/4GW load result, builds the relocated runtime image plan, builds the relocated image buffer, places it in Win32 process memory, and invokes the minimal execution trampoline in sequence.
+`repiu` currently reads `PIU.EXE`, creates the DOS/4GW load result, builds the relocated runtime image plan, builds the relocated image buffer, places it in Win32 process memory, and invokes the minimal execution trampoline in sequence.
 
 # AOT Self-modifying Import Stub
 

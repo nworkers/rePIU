@@ -41,6 +41,8 @@ to build the pumpit3 image at the time of removal.
 
 ## 다음 할 일 / Next work, in order
 
+**현재 순위는 아래 [2026-08-07 세션(Tasks 435~445)](#2026-08-07-세션-tasks-435445--glide-비용을-깎다가-진짜-병목은-다른-곳에서-나왔습니다) 인수인계 항목에 있습니다.** 이 절은 2026-08-04 Tasks 411~417 기준으로 남겨 둔 기록입니다.
+
 2026-08-04 Tasks 411~417 기준입니다. 근거는 아래 인수인계 절과
 [pumpit3 bring-up](pumpit3-bring-up.md), [pumpit3 기동 중 멈춤](pumpit3-startup-stall.md),
 측정 절차는 [port I/O / arena 귀속 가이드](../guides/port-io-arena-attribution.md)에
@@ -342,6 +344,191 @@ thin sample: Task 416's full census refuted a "global trace mode" read taken fro
 `last_eip` samples.
 
 ## 다음 세션 인수인계 / Session handoff
+
+### 2026-08-07 세션 (Tasks 435~445) — Glide 비용을 깎다가 진짜 병목은 다른 곳에서 나왔습니다
+
+**한 줄:** Glide setter 생략과 draw batching으로 게이트 비용을 계속 깎았지만 프레임은
+움직이지 않았고, **pumpit2 position census가 지목한 inline cache 패치의 스레드 왕복**을
+없애자 **fps 69.3 → 107.2(+54.7%)** 로 한 번에 올랐습니다.
+
+```mermaid
+flowchart TD
+    A["435 dynamic·무제한 기본값<br/>436 소스 주석 영어 규칙"] --> B["437·439 텍스처 setter 생략<br/>99.76% 중복, 기본 ON"]
+    B --> C["438 draw batching<br/>평균 배치 2.0 → 16 → 32.4"]
+    C --> D["440 grBufferSwap 비동기화"]
+    D --> E["vsync ON 32.8% → OFF 2.9%<br/>축이 아니었음, opt-in으로 남김"]
+    D --> F["441 크래시 리포터<br/>teardown AV를 첫 실행에 특정"]
+    C --> G["442 batch3 · 443/444 batch4<br/>생략률 89.6%"]
+    G --> H["프레임은 여전히 안 움직임"]
+    H --> I["pumpit2 census:<br/>RequestAotInlineCachePatch 30.4%"]
+    I --> J["445 게스트 스레드가 직접 패치<br/>fps +54.7%, 기본 ON"]
+    style E fill:#b7950b,color:#fff
+    style J fill:#1e8449,color:#fff
+```
+
+| Task | 한 일 | 결과 |
+|---|---|---|
+| 435 | backend 기본 `dynamic`, timeout 기본 `0`(무제한) | — |
+| 436 | **소스 주석은 영어만** 규칙 신설, 기존 한국어 주석 정리 | `docs/CODING_STYLE.md`·`AGENTS.md` |
+| 437·439 | 텍스처 setter 3종 생략 → 기본 ON | 385,197회 중 **99.76% 중복**, 적용 933회 |
+| 438 | draw batching(비-draw 게이트 앞에서 flush) | 평균 배치 2.0 → 16 → **현재 32.4** |
+| 440 | `grBufferSwap` 비동기 present | **축 아님으로 종결**, opt-in 유지 |
+| 441 | 호스트 크래시 리포터(`StackWalk64`+`SymFromAddr`) | teardown AV를 **첫 크래시 실행에서 특정** |
+| 442 | batch 3 — `grTexSource`·`grConstantColorValue`·`grDepthMask` | 437의 `grTexSource` 제외는 **오판이었음** |
+| 443·444 | batch 4 — `grFogColorValue`·`grDitherMode` → 기본 ON | `grDitherMode` **호출당 −95%** |
+| 445 | **inline cache 패치를 게스트 스레드로** → 기본 ON | **fps +54.7%**, 워커 왕복 1,728,404 → 55 |
+
+#### 이번 세션이 정정한 것 넷 — 전부 "잘못된 축을 골랐다"입니다
+
+1. **Task 440의 `grBufferSwap` 축은 측정 오류였습니다.** vsync ON에서 32.8%로 보였던
+   것이 **OFF에서는 2.9%** 입니다. 프로젝트 자신의 규칙(성능 판정은 vsync OFF)을 제가
+   어긴 것이고, 구현은 정확성 근거로만 opt-in으로 남겼습니다.
+2. **Task 437의 `grTexSource` 제외는 틀렸습니다.** 규격상 `GrTexInfo*`가 인자라 제외했는데
+   **우리 게이트는 그 포인터를 읽지 않습니다** — `startAddress`만 씁니다. 내용을 바꾸는
+   것은 다운로드뿐이고 다운로드는 `texture_generation`을 올리므로 기존 기구로 안전합니다.
+3. **"비용을 깎으면 프레임이 오른다"가 아니라 "비용은 옮겨간다"입니다.** 438에서 flush
+   귀속이, 440에서 대기가 `grBufferSwap`에서 `grDepthMask`로 이동했습니다.
+4. **크래시는 추측이 아니라 덤프로 잡습니다.** Task 440의 teardown 크래시는 추측-패치-빌드
+   5회가 전부 실패했고(한 번은 교란된 실험이었습니다), 사용자가 "크래시 덤프 부터"라고
+   지시하자 리포터가 **첫 크래시 실행에서** 근인을 이름으로 찍었습니다 — `Close()`의
+   `notify_all`이 `TerminateThread`로 죽은 게스트가 기다리던 조건변수를 건드린 것.
+
+#### 지금의 pumpit2 지형 (v0.0.140 기본값, vsync OFF)
+
+| 지표 | 값 |
+|---|---:|
+| fps | **107.2** |
+| `glide-gate ÷ guest-run` | 9.58% |
+| **census `InvokeOnHostThread`** | **48.0%** (sited 표본 기준) |
+| census `PatchWin32AotIndirectInlineCache` | 21.8% |
+| setter 생략률 | 89.6% (1,858,241 생략 / 214,828 적용) |
+| 평균 draw 배치 | 32.1 primitive |
+| 프레임당 | draw 547, 패치 346, 게이트 806 |
+
+#### 다음 축 — 우선순위
+
+1. **`InvokeOnHostThread` 48%.** 단연 1위입니다. 게이트마다 도는 게스트↔호스트 스레드
+   랑데부이고, batch/elision이 **횟수**를 줄여왔지만 남은 절반이 여기 있습니다. 근본
+   해법은 445와 같은 종류의 수술 — **랑데부 없이 게스트 스레드가 직접 GL 호출**. 다만
+   GL 컨텍스트 소유권 이전(`wglMakeCurrent`)이 걸려 445보다 훨씬 큽니다. 선결 질문:
+   컨텍스트를 게스트 스레드에 영구 귀속시킬 수 있는가(창 생성/파괴는 호스트 스레드가
+   해야 함), 아니면 호출 단위로 옮길 것인가(그러면 이득이 사라짐).
+2. **패치 빈도 자체(frontier 항목 5).** 445가 남긴 21.8%는 `VirtualProtect` 두 번과
+   `FlushInstructionCache`로 **실작업**이라 그 축으로는 못 줄입니다. 프레임당 346회
+   패치는 inline cache thrash 신호이고, 슬롯 정책(현재 4-entry round robin)을 손대면
+   **횟수**가 줄어듭니다. 1번과 곱해지는 축입니다.
+3. **시간 프로파일의 사각지대 — 먼저 닫는 게 좋습니다.** cycle 프로파일은
+   `glide-gate`를 guest-run의 **9.58%** 라 하는데, position census는 게스트 스레드
+   표본의 **92.5%가 호스트 코드**이고 그중 48%가 `InvokeOnHostThread`라고 합니다.
+   4~5배 어긋납니다. 둘 중 하나는 틀렸고, **어느 쪽이 틀렸는지 모르는 채로 1번을
+   시작하면 이득을 판정할 수 없습니다.** 후보: (a) `glide-gate` 카운터가 게이트
+   프롤로그만 재고 랑데부 대기를 포함하지 않는다, (b) 샘플러가 대기 중인 스레드를
+   과대표집한다. `REPIU_GLIDE_ORDINAL_TIME_PROFILE`의 `wake`/`complete` 항목과
+   대조하면 갈립니다.
+4. **`grFogTable`(0.531%).** 유일하게 남은 미생략 setter이고, 인자가 포인터라 **표
+   내용 해싱**이 필요합니다. 작고 독립적입니다.
+5. **LFB 쌍 10.8%** — attract 전용(`grLfbLock` 8.54% + `grLfbUnlock` 2.25%). 값을
+   돌려주므로 생략 불가, 별도 축입니다. gameplay에는 나타나지 않습니다.
+6. **port I/O delay loop batching이 한 번도 발동하지 않습니다** — `attempts 32,466 /
+   batches 0`, 전부 `shape`로 거부됩니다. 죽은 코드이거나 인식기가 틀렸습니다.
+
+#### 방법 규칙 (이번 세션에서 확정/재확인)
+
+* **성능 판정은 vsync OFF** (`REPIU_GLIDE_SWAP_INTERVAL=0`). vsync ON은 게임의 조건이라
+  끌 수 없지만, 측정할 때는 껐다가 잽니다.
+* **`REPIU_EXECUTION_TIMEOUT_MS`를 성능 캡처에 걸지 마십시오.** 1초 무진행 감시견이
+  무장되고, 그 "진행" 판정에 Glide 게이트 직접 디스패치가 빠져 있어 **건강한 실행을
+  6.27초에 죽입니다.** [TODO](../TODO.md) 2026-08-07 항목, 별도 태스크 예정.
+* **프레임은 원칙적으로 못 씁니다**(장면 편차 13~18%). 단 **프레임당 작업량이 일치하면
+  쓸 수 있습니다** — 445가 그 경우였습니다(패치 346 대 357, primitive 547 대 560,
+  배치 32.1 대 32.4, 전부 3% 이내). 그때는 fps·cycle당 swap·cycle당 primitive 세
+  지표가 서로 검증합니다.
+* **A/B 전에 어느 바이너리인지 확인하십시오.** Task 438에서 사용자 로그가 오래된
+  Release였고 저는 Debug만 빌드해 A/B가 무효였습니다.
+
+---
+
+### 2026-08-07 session (Tasks 435-445) — cutting Glide cost, while the real bottleneck was elsewhere
+
+**In one line:** setter elision and draw batching kept cutting gate cost without moving
+frames; removing the **inline-cache patch thread round trip** that the pumpit2 position
+census pointed at raised throughput from **69.3 to 107.2 frames per second, +54.7%**, in
+a single change.
+
+Task 435 made `dynamic` the default backend and `0`, unlimited, the default timeout. Task
+436 established that **source comments are English only** while documentation stays
+bilingual. Tasks 437 and 439 elided the three texture-state setters, measured 99.76%
+redundant over 385,197 calls, and promoted them; Task 438 added draw batching, whose mean
+batch has since grown from 2.0 to 32.4 primitives. Task 442 corrected Task 437's exclusion
+of `grTexSource` — the gate reads only `startAddress`, never the `GrTexInfo*`, so a
+download bumping `texture_generation` is the only thing that can change what it names —
+and Tasks 443 and 444 finished with `grFogColorValue` and `grDitherMode`, the latter 95%
+cheaper per call. The elision rate now stands at 89.6%.
+
+Task 440 is the cautionary one: `grBufferSwap` looked like 32.8% of guest-run and is
+**2.9% with vsync off**, which is the project's own measurement rule. The axis was closed
+and the implementation kept opt-in on accuracy grounds alone. Task 441 came out of the
+same work — five rounds of guess-patch-rebuild failed to find a teardown crash, one of
+them a confounded experiment, and a crash reporter named the cause on the first crashing
+run: `Close()` calling `notify_all` on a condition variable whose waiter had just been
+killed by `TerminateThread`.
+
+Task 445 then removed the worker round trip for inline-cache patches. Fourteen bytes were
+costing a kernel event round trip about 350 times per frame, and the handshake that
+existed to serialize it *was* the mutual exclusion, so it survived the move to the guest
+thread.
+
+#### The current shape on pumpit2, at v0.0.140 defaults with vsync off
+
+107.2 frames per second; `glide-gate` at 9.58% of guest-run; the position census showing
+`InvokeOnHostThread` at **48.0%** of sited samples and `PatchWin32AotIndirectInlineCache`
+at 21.8%; 89.6% of setters elided; a mean draw batch of 32.1 primitives; and per frame,
+547 draws, 346 patches, 806 gates.
+
+#### Next axes, in order
+
+**One: `InvokeOnHostThread` at 48%.** The guest-to-host rendezvous per gate is now the
+clear leader. Batching and elision have been cutting its *count*; half the remaining time
+is still in it. The root fix is the same species of surgery as Task 445 — let the guest
+thread call GL directly — but it drags in GL context ownership, so the prior question is
+whether the context can live permanently on the guest thread, given that window creation
+and destruction must stay on the host thread. Moving it per call would erase the gain.
+
+**Two: the patch rate itself** (frontier item five). The 21.8% Task 445 left is two
+`VirtualProtect` calls and a `FlushInstructionCache` — real work, not a round trip, so
+this axis cannot shrink it. What can shrink is the *count*: 346 patches per frame is
+inline-cache thrash, and the four-entry round-robin slot policy is where it comes from.
+This multiplies with axis one.
+
+**Three: close the time-profile blind spot first.** The cycle profile puts `glide-gate` at
+9.58% of guest-run while the census puts 92.5% of guest-thread samples in host code, 48%
+of them in `InvokeOnHostThread`. That is a four- to fivefold disagreement, one of the two
+is wrong, and **starting axis one without knowing which makes the result unjudgeable.**
+The candidates are that the `glide-gate` counter measures the gate prologue without the
+rendezvous wait, or that the sampler over-represents a waiting thread; comparing against
+`REPIU_GLIDE_ORDINAL_TIME_PROFILE`'s `wake` and `complete` figures separates them.
+
+**Four: `grFogTable` at 0.531%**, the last un-elided setter, which needs the table
+contents hashed because the argument is a pointer. Small and self-contained.
+
+**Five: the LFB pair at 10.8%** (`grLfbLock` 8.54%, `grLfbUnlock` 2.25%), attract-only and
+absent from gameplay. It returns data, so it cannot be elided; it is its own axis.
+
+**Six: port I/O delay-loop batching never fires** — 32,466 attempts, zero batches, every
+one rejected on `shape`. Either the code is dead or the recognizer is wrong.
+
+#### Method rules confirmed this session
+
+Measure with vsync off; the game requires vsync on, but judgement happens with it off.
+Never set `REPIU_EXECUTION_TIMEOUT_MS` for a performance capture — it arms a one-second
+stall watchdog whose progress test omits the Glide gate direct dispatch path and which
+killed a healthy run at 6.27 seconds; see [TODO](../TODO.md) under 2026-08-07. Frames are
+normally unusable at 13-18% run variance, **but they are usable when per-frame work
+matches**, as in Task 445, where patches, primitives and batch length all agreed within
+3% and three independent throughput measures then cross-validated each other. And check
+which binary an A/B actually ran: Task 438's first comparison was void because the user's
+logs came from a stale Release build while only Debug had been rebuilt.
+
 
 ### 2026-08-04~05 세션 (Tasks 418~420) — 축이 두 번 바뀌었습니다
 

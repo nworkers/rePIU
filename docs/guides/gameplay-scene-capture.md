@@ -28,7 +28,7 @@ set REPIU_GLIDE_SWAP_INTERVAL=0
 set REPIU_EXECUTION_TIME_PROFILE=1
 set REPIU_GLIDE_ORDINAL_TIME_PROFILE=1
 set REPIU_GLIDE_SETTER_CENSUS=1
-build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit1 2> gameplay-capture.log
+build\win32_x86_debug\Release\repiu.exe pumpit1 2> gameplay-capture.log
 ```
 
 > **`REPIU_GLIDE_SWAP_INTERVAL=0`은 측정의 필수 조건입니다(Task 371).** 기본 구성은

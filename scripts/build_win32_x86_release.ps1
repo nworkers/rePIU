@@ -6,7 +6,7 @@
 # whose per-stage factors range from 2.67x to 28.7x and therefore invert the
 # stage ranking.
 #
-# The loader lands in build\win32_x86_debug\Release\repiu_loader_win32.exe --
+# The loader lands in build\win32_x86_debug\Release\repiu.exe --
 # the tree is multi-config, so the directory name is historical.
 param(
     [string[]]$Target = @()

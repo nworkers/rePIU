@@ -41,7 +41,7 @@ $script:RunCriterionId = "exit0+no-exception+returned+no-timeout+no-harness-time
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 # The tree is multi-config, so the directory name is historical: every
 # configuration is a subdirectory of it.
-$LoaderRelative = "build\win32_x86_debug\$Configuration\repiu_loader_win32.exe"
+$LoaderRelative = "build\win32_x86_debug\$Configuration\repiu.exe"
 $Loader = Join-Path $Root $LoaderRelative
 $ResolvedManifestPath = Join-Path $Root $ManifestPath
 $ResolvedReportPath = Join-Path $Root $ReportPath

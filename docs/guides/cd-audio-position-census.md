@@ -20,7 +20,7 @@
 set REPIU_CD_AUDIO_POSITION_CENSUS=1
 set REPIU_EXECUTION_BACKEND=dynamic
 set REPIU_EEPROM_PATH=<실행별 사본>
-build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit2 2> run.txt
+build\win32_x86_debug\Release\repiu.exe pumpit2 2> run.txt
 ```
 
 * **`REPIU_EXECUTION_TIMEOUT_MS=0`을 쓰십시오(Tasks 421~423).** 그 값은 `INFINITE`로

@@ -36,13 +36,13 @@ set REPIU_EXECUTION_TIME_PROFILE=1
 set REPIU_GLIDE_ORDINAL_TIME_PROFILE=1
 set REPIU_GLIDE_SETTER_CENSUS=1
 set REPIU_GLIDE_SETTER_ELIDE=1
-build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit1 2> elide-on.log
+build\win32_x86_debug\Release\repiu.exe pumpit1 2> elide-on.log
 ```
 
 ```
 :: 생략 OFF (기존 동작)
 set REPIU_GLIDE_SETTER_ELIDE=0
-build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit1 2> elide-off.log
+build\win32_x86_debug\Release\repiu.exe pumpit1 2> elide-off.log
 ```
 
 `REPIU_GLIDE_SWAP_INTERVAL=0`은 Task 371 이후 측정의 필수 조건입니다 — vsync 구성은
@@ -150,13 +150,13 @@ batch 1(7종)은 **호출의 99.999%가 이미 생략**되고 있습니다(371�
 :: A — 지금 기본값 (batch 1만)
 set REPIU_GLIDE_SETTER_ELIDE=1
 set REPIU_GLIDE_SETTER_ELIDE_TEXTURE=0
-build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit1 2> tex-off.log
+build\win32_x86_debug\Release\repiu.exe pumpit1 2> tex-off.log
 ```
 
 ```
 :: B — batch 2 포함
 set REPIU_GLIDE_SETTER_ELIDE_TEXTURE=1
-build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit1 2> tex-on.log
+build\win32_x86_debug\Release\repiu.exe pumpit1 2> tex-on.log
 ```
 
 나머지 변수는 1단계와 같게 두고(`REPIU_GLIDE_SWAP_INTERVAL=0`,
@@ -206,11 +206,11 @@ set REPIU_GLIDE_SETTER_ELIDE_TEXTURE=1
 
 :: A — batching 없음
 set REPIU_GLIDE_DRAW_BATCH=0
-build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit1 2> batch-off.log
+build\win32_x86_debug\Release\repiu.exe pumpit1 2> batch-off.log
 
 :: B — batching
 set REPIU_GLIDE_DRAW_BATCH=1
-build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit1 2> batch-on.log
+build\win32_x86_debug\Release\repiu.exe pumpit1 2> batch-on.log
 ```
 
 > `REPIU_GLIDE_SWAP_INTERVAL=0`이 빠지면 60 Hz 양자화 때문에 CPU 개선이 프레임에

@@ -37,7 +37,7 @@ if ([string]::IsNullOrWhiteSpace($OutputRoot))
     $OutputRoot = Join-Path $repositoryRoot "build\benchmarks\release-axis"
 }
 
-$loaderPath = Join-Path $ReleaseDirectory "repiu_loader_win32.exe"
+$loaderPath = Join-Path $ReleaseDirectory "repiu.exe"
 $probePath = Join-Path $ReleaseDirectory "repiu_aot_probe.exe"
 foreach ($requiredPath in @($loaderPath, $probePath, $EepromSeed, $ProbeInput))
 {

@@ -517,7 +517,7 @@ int main(int argc, char** argv)
     }
     const std::filesystem::path loader_path =
         std::filesystem::path(module_path).parent_path() /
-        "repiu_loader_win32.exe";
+        "repiu.exe";
 
     const std::string mapping_name =
         "Local\\repiu-live-" + std::to_string(GetCurrentProcessId()) +

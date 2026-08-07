@@ -353,7 +353,7 @@ function Invoke-VisualPass
             [Environment]::SetEnvironmentVariable($name, $null, "Process")
         }
         $process = Start-Process `
-            -FilePath (Join-Path $ReleaseDirectory "repiu_loader_win32.exe") `
+            -FilePath (Join-Path $ReleaseDirectory "repiu.exe") `
             -ArgumentList @($Target) `
             -WorkingDirectory $repositoryRoot `
             -RedirectStandardOutput (Join-Path $Directory "stdout.log") `

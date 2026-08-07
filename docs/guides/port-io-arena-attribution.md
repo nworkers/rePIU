@@ -29,7 +29,7 @@ set REPIU_EXECUTION_BACKEND=dynamic
 set REPIU_EXECUTION_TIMEOUT_MS=45000
 set REPIU_EXECUTION_TIME_PROFILE=1
 set REPIU_EEPROM_PATH=<실행별 사본>
-build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit3 > run.txt 2>&1
+build\win32_x86_debug\Release\repiu.exe pumpit3 > run.txt 2>&1
 ```
 
 매핑 존재 여부까지 보려면 다음을 추가합니다. **이 실행의 wall·프레임은 인용하지

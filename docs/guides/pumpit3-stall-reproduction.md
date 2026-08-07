@@ -28,7 +28,7 @@
 set REPIU_EXECUTION_BACKEND=dynamic
 set REPIU_EXECUTION_TIMEOUT_MS=60000
 set REPIU_EEPROM_PATH=<실행별 사본>
-build\win32_x86_debug\Release\repiu_loader_win32.exe pumpit3 > run.txt 2>&1
+build\win32_x86_debug\Release\repiu.exe pumpit3 > run.txt 2>&1
 ```
 
 **PowerShell 리다이렉션을 쓰지 마십시오.** 콘솔 폭 120자에서 줄이 잘려 census 값이
