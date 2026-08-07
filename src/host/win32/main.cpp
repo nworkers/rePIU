@@ -2514,6 +2514,12 @@ void PrintExecutionAttempt(
                 attempt.aot_code_write_count,
                 attempt.aot_page_retire_attempt_count,
                 attempt.aot_page_retire_success_count);
+    // Task 445: the A/B reads from here -- a worker count of zero means the
+    // event round trip is gone.
+    logger.info(
+        "Win32 AOT inline cache patch direct/worker: {}/{}",
+        attempt.aot_inline_cache_direct_patch_count,
+        attempt.aot_inline_cache_worker_patch_count);
     logger.info("Win32 AOT generation publishes/quarantines: {}/{}",
                 attempt.aot_generation_publish_count,
                 attempt.aot_quarantine_count);

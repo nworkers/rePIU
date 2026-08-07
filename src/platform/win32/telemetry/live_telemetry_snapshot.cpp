@@ -1161,6 +1161,10 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->aot_backend_active = context.aot_placement != nullptr;
     attempt->aot_cache_entry_count = context.aot_cache_entry_count.load(
         std::memory_order_relaxed);
+    attempt->aot_inline_cache_direct_patch_count =
+        context.aot_inline_cache_direct_patch_count;
+    attempt->aot_inline_cache_worker_patch_count =
+        context.aot_inline_cache_worker_patch_count;
     attempt->aot_boundary_count = context.aot_boundary_count.load(
         std::memory_order_relaxed);
     attempt->aot_boundary_return_count =

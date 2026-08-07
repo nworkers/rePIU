@@ -26,6 +26,9 @@ batch-*.log
 elide-*.log
 b3-*.log
 b4-*.log
+p2-*.log
+p2-*.txt
+ic-*.log
 tex-*.log
 build/texture_dumps/
 # Run artifacts: loader stderr captures and scratch EEPROM images.

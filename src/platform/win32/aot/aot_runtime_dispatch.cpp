@@ -1,4 +1,5 @@
 #include "aot_runtime_dispatch.h"
+#include "repiu/runtime/env_toggle.h"
 #include "aot_generation_failure_policy.h"
 #include "aot_dbt_glide_gate_dispatch.h"
 #include "aot_dbt_direct_edge_dispatch.h"
@@ -726,6 +727,46 @@ bool HandleAotGuestCodeWriteFault(EXCEPTION_POINTERS* exception_info,
     return true;
 }
 
+bool AotInlineCachePatchOnGuestThreadEnabled()
+{
+    // On by default. A pumpit2 A/B with vsync off measured 69.3 against 107.2
+    // frames per second, and swaps per guest cycle and primitives per cycle
+    // agreed at +54.8% and +51.1%. The runs did the same work per frame -- 356.9
+    // against 346.0 patches, 560.4 against 547.3 primitives -- so only the unit
+    // price moved, and the worker's other-operation count fell from 1,728,404 to
+    // 55. An explicit `0|off|false` restores the worker round trip as a control.
+    static const bool enabled = repiu::runtime::ResolvePromotedToggle(
+        std::getenv("REPIU_AOT_INLINE_CACHE_PATCH_INLINE"));
+    return enabled;
+}
+
+// Task 445: the patch on the guest thread, with no worker round trip.
+//
+// A pumpit2 position census put **34.1% of the guest thread's samples** inside
+// this function's wait, against 1,721,010 patches and only 390 translations --
+// 385 patches per frame, each a kernel event round trip for fourteen bytes.
+//
+// Task 190 gave two reasons for the worker, and neither requires it. Its "the
+// guest waits, so it never executes a half-patched slot" holds automatically
+// when the guest is the one patching: it is not executing the cache then. Its
+// W^X rule matters only if two threads can touch the cache at once, and none
+// can -- every worker request signals and then blocks the guest on
+// `WaitForSingleObject(INFINITE)`, so the worker only ever runs while the guest
+// is parked. The handshake *is* the mutual exclusion, and it survives moving the
+// patch here: still exactly one thread mutating at a time.
+bool PatchAotInlineCacheOnGuestThread(ThreadContext* context,
+                                      std::uint32_t cache_miss_address,
+                                      std::uint32_t guest_target,
+                                      std::uint32_t cache_target)
+{
+    context->aot_inline_cache_patch_result = Win32AotInlineCachePatchResult{};
+    PatchWin32AotIndirectInlineCache(
+        context->aot_placement, cache_miss_address, guest_target, cache_target,
+        &context->aot_inline_cache_patch_result);
+    ++context->aot_inline_cache_direct_patch_count;
+    return context->aot_inline_cache_patch_result.patched;
+}
+
 bool RequestAotInlineCachePatch(ThreadContext* context,
                                 std::uint32_t cache_miss_address,
                                 std::uint32_t guest_target,
@@ -737,6 +778,12 @@ bool RequestAotInlineCachePatch(ThreadContext* context,
     {
         return false;
     }
+    if (AotInlineCachePatchOnGuestThreadEnabled())
+    {
+        return PatchAotInlineCacheOnGuestThread(
+            context, cache_miss_address, guest_target, cache_target);
+    }
+    ++context->aot_inline_cache_worker_patch_count;
     ResetEvent(context->aot_translation_complete_event);
     context->aot_patch_cache_miss_address.store(
         cache_miss_address, std::memory_order_release);

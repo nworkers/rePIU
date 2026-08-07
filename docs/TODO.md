@@ -1,5 +1,56 @@
 # TODO
 
+## 2026-08-07 무진행 감시견이 건강한 Glide 실행을 죽입니다 (Task 445에서 발견, 별도 태스크 예정)
+
+`PollThreadUntilExit`에는 1초짜리 무진행 감시견이 있고
+(`src/platform/win32/telemetry/live_telemetry_snapshot.cpp:474-485`),
+`timeout_milliseconds != INFINITE`일 때만 무장합니다. Task 435가 기본 timeout을
+`0`(무제한)으로 바꾼 뒤로 평소 실행에서는 아예 무장되지 않아 드러나지 않았습니다.
+
+**증상.** `REPIU_EXECUTION_TIMEOUT_MS=40000`으로 pumpit2를 돌리면 40초가 아니라
+**6.27초**에 `timed_out=true`로 끝납니다. 게임은 그 순간까지 정상이었습니다 — buffer
+swap 811회, 삼각형 48,882개, batch 평균 6.09.
+
+**근인.** 감시견이 보는 "진행"은 `diagnostic_progress_count`,
+`single_step_trace_count`, `aot_boundary_count + aot_reentry_count` 세 가지뿐인데,
+**Glide 게이트 직접 디스패치 경로(`AOT-DBT Glide gate direct dispatch`)가 저 셋 중
+어느 것도 올리지 않습니다.** 끊기기 직전 구간(6000ms 기준 6266ms)에서 heartbeat는
++768, `dispatch_entry`는 +384였는데 세 카운터는 전부 그대로였습니다. 게스트가 살아서
+게이트를 때리는 중인데 감시견 눈에는 정지로 보인 것입니다.
+
+**영향 범위.** 상한을 거는 자동화(CI, 회귀 스크립트, A/B 캡처)는 전부 이 지뢰를 밟습니다.
+기본값 무제한으로 사람이 창을 닫아 끝내는 수동 실행만 안전합니다.
+
+**고칠 방향(둘 중 하나).**
+
+* `progressed` 판정에 Glide 게이트/디스패치 카운터를 포함시킵니다. 감시견의 "진행"
+  정의를 실제 실행 경로 집합과 일치시키는 쪽입니다.
+* 벽시계 상한과 무진행 감시견을 서로 다른 설정으로 분리합니다. 지금은 전자를 켜면
+  후자가 딸려 오는데, 둘은 다른 질문에 답하는 장치입니다.
+
+## 2026-08-07 The stall watchdog kills healthy Glide runs (found during Task 445, deferred)
+
+`PollThreadUntilExit` carries a one-second no-progress watchdog at
+`src/platform/win32/telemetry/live_telemetry_snapshot.cpp:474-485`, armed only when
+`timeout_milliseconds != INFINITE`. Since Task 435 made the default timeout `0`, meaning
+unlimited, it never arms in ordinary runs, which is why it went unnoticed.
+
+Running pumpit2 with `REPIU_EXECUTION_TIMEOUT_MS=40000` ends at **6.27 seconds**, not
+forty, with `timed_out=true`, while the game was rendering normally to that point: 811
+buffer swaps, 48,882 triangles, a mean batch of 6.09. The watchdog's notion of progress
+is only `diagnostic_progress_count`, `single_step_trace_count` and
+`aot_boundary_count + aot_reentry_count`, and **the Glide gate direct dispatch path
+raises none of them**. Over the final interval heartbeat rose by 768 and
+`dispatch_entry` by 384 while all three stayed frozen: the guest was alive and calling
+gates, and the watchdog read that as a stall.
+
+Anything that sets a bound -- CI, regression scripts, A/B captures -- hits this. Only
+manual runs left unlimited and closed by hand are safe. The fix is either to include the
+Glide gate and dispatch counters in the `progressed` test, so the watchdog's definition
+of progress matches the set of paths execution actually takes, or to separate the
+wall-clock limit from the stall watchdog into independent settings, since turning on the
+former currently drags in the latter and the two answer different questions.
+
 ## 2026-07-30 Glide setter 생략 기본값 결정 보류 (Task 365)
 
 Task 365가 batch 1의 7종 setter(`grColorMask`, `grAlphaBlendFunction`,

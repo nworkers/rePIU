@@ -193,6 +193,7 @@ rePIU는 런타임 동작 진단 및 문제 해결을 위해 다음과 같은 �
 * **`REPIU_EXECUTION_BACKEND`**: 실행 backend를 `legacy` 또는 `dynamic`으로 고릅니다. 기본값은 `dynamic`이며, `legacy`는 회귀 대조군으로 남아 있습니다. 그 밖의 값(옛 이름 `aot`, `aot-dbt` 포함)은 오류로 종료합니다.
 * **`REPIU_EXECUTION_TIMEOUT_MS`**: 게스트 프로그램의 최대 실행 시간(밀리초)을 제한합니다. `0`으로 세팅 시 제한을 해제(무제한)합니다. **기본값은 `0`(무제한)** 이므로, 상한이 필요한 자동화는 값을 명시하십시오.
 * **`REPIU_AOT_INDIRECT_CACHE_SLOTS`**: AOT 간접 call/jump inline cache를 `1` 또는 `4`슬롯으로 선택합니다. 기본값은 `4`이며, 통제 A/B 진단용 옵션입니다.
+* **`REPIU_AOT_INLINE_CACHE_PATCH_INLINE`**: inline cache 패치를 워커 스레드에 맡기지 않고 게스트 스레드가 직접 수행합니다. pumpit2 A/B에서 fps 69.3 → 107.2(+54.7%), cycle당 swap +54.8%로 확인돼 **기본값은 켜짐**이며, `0`으로 끄면 워커 왕복 대조군이 됩니다. 로더 요약의 `AOT inline cache patch direct/worker`로 어느 경로가 쓰였는지 확인합니다.
 * **`REPIU_GLIDE_SETTER_ELIDE`**: 값이 같은 Glide 상태 setter의 host rendezvous를 생략합니다. 기본값은 켜짐이며, `0`으로 끄면 A/B 대조군이 됩니다.
 * **`REPIU_GLIDE_SETTER_ELIDE_TEXTURE`**: 위 생략을 텍스처 상태 setter(`grTexClampMode`·`grTexFilterMode`·`grTexMipMapMode`)까지 넓힙니다. A/B에서 이 셋이 99.76% 중복으로 확인돼 **기본값은 켜짐**이며, `0`으로 끄면 대조군이 됩니다.
 * **`REPIU_GLIDE_SETTER_ELIDE_BATCH3`**: 생략을 `grTexSource`·`grConstantColorValue`·`grDepthMask`까지 넓힙니다. gameplay 6회 A/B에서 `grTexSource` 호출당 −20.9%, `grDepthMask` −86% 왕복이 확인돼 **기본값은 켜짐**입니다.
@@ -209,6 +210,7 @@ rePIU는 런타임 동작 진단 및 문제 해결을 위해 다음과 같은 �
 * *`REPIU_EXECUTION_BACKEND`: Selects the execution backend, `legacy` or `dynamic`. The default is `dynamic`; `legacy` remains available as the regression control. Any other value, including the retired `aot` and `aot-dbt` names, exits with an error.*
 * *`REPIU_EXECUTION_TIMEOUT_MS`: Limits the maximum execution time of the guest program in milliseconds. Set to `0` to disable the timeout. **The default is `0`, meaning no limit**, so automation that needs a bound must state one.*
 * *`REPIU_AOT_INDIRECT_CACHE_SLOTS`: Selects `1` or `4` entries for AOT indirect call/jump inline caches. The default is `4`; this is primarily for controlled A/B diagnostics.*
+* *`REPIU_AOT_INLINE_CACHE_PATCH_INLINE`: Patches an indirect inline cache on the guest thread instead of asking the worker thread to do it. **On by default** after a pumpit2 A/B measured 69.3 against 107.2 frames per second, +54.7%, with swaps per guest cycle agreeing at +54.8%; `0` restores the worker round trip as a control. The loader summary's `AOT inline cache patch direct/worker` line says which path ran.*
 * *`REPIU_GLIDE_SETTER_ELIDE`: Skips the host rendezvous for a Glide state setter called with the value already applied. On by default; `0` restores the unconditional rendezvous as an A/B control.*
 * *`REPIU_GLIDE_SETTER_ELIDE_TEXTURE`: Extends that elision to the texture-state setters (`grTexClampMode`, `grTexFilterMode`, `grTexMipMapMode`). **On by default** after an A/B measured those three as 99.76% redundant; `0` restores them as a control.*
 * *`REPIU_GLIDE_SETTER_ELIDE_BATCH3`: Extends the elision to `grTexSource`, `grConstantColorValue` and `grDepthMask`. **On by default** after six gameplay runs measured 20.9% off `grTexSource` per call and 86% of `grDepthMask`'s round trips removed.*

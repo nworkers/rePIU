@@ -161,6 +161,10 @@ struct ThreadContext
     runtime::ExecutionBackend execution_backend =
         runtime::ExecutionBackend::kLegacy;
     bool aot_dbt_glide_direct_dispatch = false;
+    // Task 445: which path serviced each inline-cache patch, so an A/B can be
+    // read from the summary alone.
+    std::uint64_t aot_inline_cache_direct_patch_count = 0;
+    std::uint64_t aot_inline_cache_worker_patch_count = 0;
     HANDLE aot_translation_thread = nullptr;
     HANDLE aot_translation_request_event = nullptr;
     HANDLE aot_translation_complete_event = nullptr;
