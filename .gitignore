@@ -29,6 +29,8 @@ b4-*.log
 p2-*.log
 p2-*.txt
 ic-*.log
+# Local scratch: `git log` dumps taken while reviewing history.
+gitlog.txt
 tex-*.log
 build/texture_dumps/
 # Run artifacts: loader stderr captures and scratch EEPROM images.
