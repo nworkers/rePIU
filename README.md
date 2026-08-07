@@ -195,6 +195,8 @@ rePIU는 런타임 동작 진단 및 문제 해결을 위해 다음과 같은 �
 * **`REPIU_AOT_INDIRECT_CACHE_SLOTS`**: AOT 간접 call/jump inline cache를 `1` 또는 `4`슬롯으로 선택합니다. 기본값은 `4`이며, 통제 A/B 진단용 옵션입니다.
 * **`REPIU_GLIDE_SETTER_ELIDE`**: 값이 같은 Glide 상태 setter의 host rendezvous를 생략합니다. 기본값은 켜짐이며, `0`으로 끄면 A/B 대조군이 됩니다.
 * **`REPIU_GLIDE_SETTER_ELIDE_TEXTURE`**: 위 생략을 텍스처 상태 setter(`grTexClampMode`·`grTexFilterMode`·`grTexMipMapMode`)까지 넓힙니다. A/B에서 이 셋이 99.76% 중복으로 확인돼 **기본값은 켜짐**이며, `0`으로 끄면 대조군이 됩니다.
+* **`REPIU_GLIDE_SETTER_ELIDE_BATCH3`**: 생략을 `grTexSource`·`grConstantColorValue`·`grDepthMask`까지 넓힙니다. gameplay 6회 A/B에서 `grTexSource` 호출당 −20.9%, `grDepthMask` −86% 왕복이 확인돼 **기본값은 켜짐**입니다.
+* **`REPIU_GLIDE_SETTER_ELIDE_BATCH4`**: `grFogColorValue`·`grDitherMode`까지 넓힙니다. 둘 다 서로 다른 값이 **1개**뿐인데 프레임당 13.3회·4.5회 불립니다. A/B에서 `grDitherMode` 호출당 −95%가 확인돼 **기본값은 켜짐**입니다.
 * **`REPIU_GLIDE_DRAW_BATCH`**: 삼각형·선·점을 모아 순서 경계에서 한 번에 넘깁니다. gameplay A/B에서 배치 평균 16.02개, Glide gate 비중 10.35% → 8.40%로 확인돼 **기본값은 켜짐**이며, `0`으로 끄면 삼각형당 왕복 경로로 돌아갑니다.
 * **`REPIU_EEPROM_PATH`**: 기본 `eeprom.dat` 대신 사용할 EEPROM 파일 경로를 지정합니다. 반복 측정에서 실행별 상태를 격리할 때 사용합니다.
 * **`REPIU_NATIVE_LINEAR_SPAN`**: 설정하면 일반 single-step 지점 사이의 검증된 직선 명령을 하드웨어 breakpoint 경계까지 네이티브로 실행합니다. 현재 성능 실험용이며 기본값은 꺼짐입니다.
@@ -209,6 +211,8 @@ rePIU는 런타임 동작 진단 및 문제 해결을 위해 다음과 같은 �
 * *`REPIU_AOT_INDIRECT_CACHE_SLOTS`: Selects `1` or `4` entries for AOT indirect call/jump inline caches. The default is `4`; this is primarily for controlled A/B diagnostics.*
 * *`REPIU_GLIDE_SETTER_ELIDE`: Skips the host rendezvous for a Glide state setter called with the value already applied. On by default; `0` restores the unconditional rendezvous as an A/B control.*
 * *`REPIU_GLIDE_SETTER_ELIDE_TEXTURE`: Extends that elision to the texture-state setters (`grTexClampMode`, `grTexFilterMode`, `grTexMipMapMode`). **On by default** after an A/B measured those three as 99.76% redundant; `0` restores them as a control.*
+* *`REPIU_GLIDE_SETTER_ELIDE_BATCH3`: Extends the elision to `grTexSource`, `grConstantColorValue` and `grDepthMask`. **On by default** after six gameplay runs measured 20.9% off `grTexSource` per call and 86% of `grDepthMask`'s round trips removed.*
+* *`REPIU_GLIDE_SETTER_ELIDE_BATCH4`: Extends it to `grFogColorValue` and `grDitherMode`, each measured with a **single distinct value** yet called 13.3 and 4.5 times per frame. **On by default** after an A/B measured 95% off `grDitherMode` per call.*
 * *`REPIU_GLIDE_DRAW_BATCH`: Queues triangles, lines and points and hands them over once per ordering boundary. **On by default** after a gameplay A/B measured batches averaging 16.02 primitives and the Glide gate falling from 10.35% to 8.40% of guest-run; `0` restores the per-triangle round trip.*
 * *`REPIU_EEPROM_PATH`: Overrides the default `eeprom.dat` path so repeated runs can use isolated persistent state.*
 * *`REPIU_NATIVE_LINEAR_SPAN`: Runs verified straight-line instructions between ordinary single-step sites up to a hardware-breakpoint boundary. This remains an opt-in performance experiment and is off by default.*

@@ -47,6 +47,8 @@ struct Win32GlideSetterStateCacheSnapshot
     // Task 437: which batch the counters below were produced under, so an A/B log
     // says for itself which configuration it is.
     bool texture_state = false;
+    bool batch_three = false;
+    bool batch_four = false;
     std::uint32_t active_entry_count = 0;
     std::uint32_t texture_generation = 0;
     std::uint32_t elided_count = 0;
@@ -73,12 +75,47 @@ bool GlideSetterElisionEnabled();
 // still wins: it disables the cache entirely, and this switch only widens
 // what the cache covers.
 //
-// `grTexSource` is deliberately not here. Its fourth argument is a `GrTexInfo*`,
-// and the struct behind an unchanged pointer can change without a download, which
-// the texture generation does not catch, so an identical key would not prove
-// identical state.
+// `grTexSource` is not in *this* list -- it moved to batch three below, once
+// Task 442 established that the argument this backend actually reads is only
+// `startAddress`.
 bool GlideSetterTextureStateElisionEnabled();
 bool IsGlideSetterTextureStateElisionGate(repiu::hle::GlideGateId gate_id);
+
+// Task 442, batch three. `grTexSource` is here despite Task 437 excluding it,
+// and the reason that exclusion was wrong matters enough to keep in the code:
+// **this backend never reads the `GrTexInfo*`**. The gate takes `startAddress`
+// alone, and the only thing that can change what lives at that address is a
+// download, which bumps the texture generation the key already carries. Task
+// 437 reasoned from the Glide specification rather than from this
+// implementation.
+//
+// `grConstantColorValue` and `grDepthMask` are single-argument setters whose
+// argument is the whole state, measured repeating 94.5% and 56.7% of the time.
+//
+// Task 443 promoted this: six gameplay runs showed the census `same` total
+// equal to the cache's `elided` count exactly, zero voided entries, zero
+// implementation gaps and no visual difference, with `grTexSource` costing 20.9%
+// less per call. An explicit `0|off|false` opts out.
+bool GlideSetterBatchThreeElisionEnabled();
+bool IsGlideSetterBatchThreeElisionGate(repiu::hle::GlideGateId gate_id);
+
+// Task 443, batch four: two setters the game re-issues with a value it never
+// changes. Measured over 13,553 gameplay frames, `grFogColorValue` ran 179,717
+// times with **one** distinct value and 179,716 repeats, and `grDitherMode`
+// 61,041 times with one distinct value and 61,040 repeats -- 13.3 and 4.5 host
+// round trips per frame, 1.401% and 0.745% of guest-run, for state that never
+// moves.
+//
+// `grFogTable` is not here: its argument is a pointer to a 64-entry table, so an
+// identical pointer does not prove identical contents. That one needs the
+// contents in the key, which is a separate piece of work.
+//
+// Task 444: on by default. The A/B exercised `grDitherMode` only -- the sections
+// played never called fog -- but a setter with **one** distinct value across
+// 179,717 calls cannot render differently when a repeat is skipped, which is the
+// strongest ceiling of any batch so far.
+bool GlideSetterBatchFourElisionEnabled();
+bool IsGlideSetterBatchFourElisionGate(repiu::hle::GlideGateId gate_id);
 
 // Batch one: the setters Task 364 measured at 99.9% or better repetition with one
 // or two distinct argument values, all of which return void. Must be a subset of

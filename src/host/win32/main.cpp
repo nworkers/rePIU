@@ -2128,11 +2128,12 @@ void PrintExecutionAttempt(
                 phase.alpha_blend.error_count);
             const auto& elision = attempt.glide_setter_state_cache;
             logger.info(
-                "Win32 Glide setter elision enabled/texture-state/entries/"
-                "elided/applied/voided/invalidations/ordinal-overflow/"
-                "texture-generation: {}/{}/{}/{}/{}/{}/{}/{}/{}",
-                elision.enabled, elision.texture_state,
-                elision.active_entry_count,
+                "Win32 Glide setter elision enabled/texture-state/batch-three/"
+                "batch-four/entries/elided/applied/voided/invalidations/"
+                "ordinal-overflow/texture-generation: "
+                "{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
+                elision.enabled, elision.texture_state, elision.batch_three,
+                elision.batch_four, elision.active_entry_count,
                 elision.elided_count, elision.applied_count,
                 elision.voided_count, elision.invalidation_count,
                 elision.ordinal_overflow_count, elision.texture_generation);

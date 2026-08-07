@@ -21,9 +21,12 @@ repiu_*.txt
 smoke-*.log
 musicselect*.log
 tex*.log
-# A/B captures named by the elision testing guide's steps five and six.
+# A/B captures named by the elision testing guide's steps five to seven.
 batch-*.log
 elide-*.log
+b3-*.log
+b4-*.log
+tex-*.log
 build/texture_dumps/
 # Run artifacts: loader stderr captures and scratch EEPROM images.
 run.txt

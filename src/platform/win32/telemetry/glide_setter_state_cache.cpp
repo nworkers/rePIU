@@ -64,6 +64,52 @@ bool GlideSetterTextureStateElisionEnabled()
     return enabled;
 }
 
+bool GlideSetterBatchThreeElisionEnabled()
+{
+    static const bool enabled = repiu::runtime::ResolvePromotedToggle(
+        std::getenv("REPIU_GLIDE_SETTER_ELIDE_BATCH3"));
+    return enabled;
+}
+
+bool GlideSetterBatchFourElisionEnabled()
+{
+    // Task 444 promoted this. Six gameplay runs kept the census `same` total
+    // equal to the cache's `elided` count exactly, with zero voided entries,
+    // zero implementation gaps and no visual difference, and `grDitherMode`
+    // costing 95% less per call on non-overlapping distributions. `grFogTable`
+    // is still excluded, for the pointer reason in the header.
+    static const bool enabled = repiu::runtime::ResolvePromotedToggle(
+        std::getenv("REPIU_GLIDE_SETTER_ELIDE_BATCH4"));
+    return enabled;
+}
+
+bool IsGlideSetterBatchFourElisionGate(repiu::hle::GlideGateId gate_id)
+{
+    switch (gate_id)
+    {
+        // One distinct value each, for the life of the process; see the header.
+        case go::kGrFogColorValue:
+        case go::kGrDitherMode:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool IsGlideSetterBatchThreeElisionGate(repiu::hle::GlideGateId gate_id)
+{
+    switch (gate_id)
+    {
+        // Safe because only `startAddress` reaches the backend; see the header.
+        case go::kGrTexSource:
+        case go::kGrConstantColorValue:
+        case go::kGrDepthMask:
+            return true;
+        default:
+            return false;
+    }
+}
+
 bool IsGlideSetterTextureStateElisionGate(repiu::hle::GlideGateId gate_id)
 {
     switch (gate_id)
@@ -198,6 +244,8 @@ Win32GlideSetterStateCacheSnapshot SnapshotGlideSetterStateCache(
     // produced under whichever batch this process is running, and a log that
     // does not say which one cannot be compared against its A/B partner.
     snapshot.texture_state = GlideSetterTextureStateElisionEnabled();
+    snapshot.batch_three = GlideSetterBatchThreeElisionEnabled();
+    snapshot.batch_four = GlideSetterBatchFourElisionEnabled();
     snapshot.texture_generation = cache.texture_generation;
     snapshot.elided_count = cache.elided_count;
     snapshot.applied_count = cache.applied_count;

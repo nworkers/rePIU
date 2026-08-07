@@ -196,7 +196,11 @@ class GlideSetterStateScope
             cache_ != nullptr &&
             (IsGlideSetterElisionGate(gate_id) ||
              (GlideSetterTextureStateElisionEnabled() &&
-              IsGlideSetterTextureStateElisionGate(gate_id)));
+              IsGlideSetterTextureStateElisionGate(gate_id)) ||
+             (GlideSetterBatchThreeElisionEnabled() &&
+              IsGlideSetterBatchThreeElisionGate(gate_id)) ||
+             (GlideSetterBatchFourElisionEnabled() &&
+              IsGlideSetterBatchFourElisionGate(gate_id)));
         handled_before_ = context_->glide_gate_handled_count;
         issues_before_ = TotalIssues();
         backend_failures_before_ = context_->glide_implementation_issues.total(

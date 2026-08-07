@@ -117,6 +117,47 @@ bool RunGlideSetterStateCacheProbe()
         !IsGlideSetterTextureStateElisionGate(go::kGrDrawTriangle) &&
         !IsGlideSetterTextureStateElisionGate(go::kGrTexDownloadMipMapLevel);
 
+    // Task 442 batch three. `grTexSource` is elidable here and nowhere else, and
+    // the three lists stay disjoint so a switch can only widen what is covered,
+    // never redefine it.
+    using platform::win32::IsGlideSetterBatchThreeElisionGate;
+    const bool batch_three_membership =
+        IsGlideSetterBatchThreeElisionGate(go::kGrTexSource) &&
+        IsGlideSetterBatchThreeElisionGate(go::kGrConstantColorValue) &&
+        IsGlideSetterBatchThreeElisionGate(go::kGrDepthMask) &&
+        IsGlideSetterStateGate(go::kGrTexSource) &&
+        IsGlideSetterStateGate(go::kGrConstantColorValue) &&
+        IsGlideSetterStateGate(go::kGrDepthMask) &&
+        !IsGlideSetterElisionGate(go::kGrTexSource) &&
+        !IsGlideSetterElisionGate(go::kGrConstantColorValue) &&
+        !IsGlideSetterElisionGate(go::kGrDepthMask) &&
+        !IsGlideSetterTextureStateElisionGate(go::kGrTexSource) &&
+        !IsGlideSetterBatchThreeElisionGate(go::kGrTexClampMode) &&
+        !IsGlideSetterBatchThreeElisionGate(go::kGrColorMask) &&
+        // Still never a draw, and never a value-returning gate.
+        !IsGlideSetterBatchThreeElisionGate(go::kGrDrawTriangle) &&
+        !IsGlideSetterBatchThreeElisionGate(go::kGrLfbLock) &&
+        !IsGlideSetterBatchThreeElisionGate(go::kGrBufferSwap);
+
+    // Task 443 batch four: two setters measured with a single distinct value for
+    // the life of the process. `grFogTable` is excluded because its argument is
+    // a pointer to a table, so an identical pointer proves nothing about the
+    // contents -- the same hazard `grTexSource` was wrongly accused of.
+    using platform::win32::IsGlideSetterBatchFourElisionGate;
+    const bool batch_four_membership =
+        IsGlideSetterBatchFourElisionGate(go::kGrFogColorValue) &&
+        IsGlideSetterBatchFourElisionGate(go::kGrDitherMode) &&
+        IsGlideSetterStateGate(go::kGrFogColorValue) &&
+        IsGlideSetterStateGate(go::kGrDitherMode) &&
+        !IsGlideSetterBatchFourElisionGate(go::kGrFogTable) &&
+        !IsGlideSetterElisionGate(go::kGrFogColorValue) &&
+        !IsGlideSetterElisionGate(go::kGrDitherMode) &&
+        !IsGlideSetterBatchThreeElisionGate(go::kGrFogColorValue) &&
+        !IsGlideSetterTextureStateElisionGate(go::kGrDitherMode) &&
+        !IsGlideSetterBatchFourElisionGate(go::kGrTexSource) &&
+        !IsGlideSetterBatchFourElisionGate(go::kGrDrawTriangle) &&
+        !IsGlideSetterBatchFourElisionGate(go::kGrLfbLock);
+
     constexpr std::uint16_t kColorMask = 91U;
     const CachePtr cache = MakeCache();
     // Nothing applied yet, so nothing may be elided.
@@ -203,15 +244,20 @@ bool RunGlideSetterStateCacheProbe()
         !ShouldElideGlideSetterState(nullptr, kColorMask, OneWordKey(1U)) &&
         !SnapshotGlideSetterStateCache(*MakeCache()).enabled;
 
-    const bool all = policy && membership && texture_membership && cold &&
-        warm && differs && per_ordinal && voided && invalidation &&
-        texture_generation && counters && overflow && inert;
+    const bool all = policy && membership && texture_membership &&
+        batch_three_membership && batch_four_membership && cold && warm &&
+        differs && per_ordinal && voided && invalidation && texture_generation &&
+        counters && overflow && inert;
     std::cout << "glide_setter_state_cache_policy="
               << (policy ? "true" : "false")
               << "\nglide_setter_state_cache_membership="
               << (membership ? "true" : "false")
               << "\nglide_setter_state_cache_texture_membership="
               << (texture_membership ? "true" : "false")
+              << "\nglide_setter_state_cache_batch_three_membership="
+              << (batch_three_membership ? "true" : "false")
+              << "\nglide_setter_state_cache_batch_four_membership="
+              << (batch_four_membership ? "true" : "false")
               << "\nglide_setter_state_cache_cold="
               << (cold ? "true" : "false")
               << "\nglide_setter_state_cache_warm="
