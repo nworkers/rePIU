@@ -108,6 +108,7 @@ add_library(repiu_exe
     src/hle/hle_profile.cpp
     src/hle/linexe_call_gate.cpp
     src/hle/pit_timer.cpp
+    src/hle/piu10_isa_board.cpp
     src/hle/privileged_instruction.cpp
     src/media/chd_cd_image.cpp
     src/platform/win32/cd_audio_wave_out.cpp
@@ -242,6 +243,7 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/native_linear_span_probe.cpp
     src/tools/aot_probe/plan_build_benchmark_probe.cpp
     src/tools/aot_probe/pit_timer_probe.cpp
+    src/tools/aot_probe/piu10_isa_board_probe.cpp
     src/tools/aot_probe/retired_trap_profile_probe.cpp
     src/tools/aot_probe/single_step_hotspot_profile_probe.cpp
     src/tools/aot_probe/exception_transition_calibration_probe.cpp

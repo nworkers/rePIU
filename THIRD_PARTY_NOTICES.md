@@ -26,3 +26,45 @@ rePIU vendors libchdr tag `v0.3.0` (commit `93d8c239ff0d4e8d7722985992649fce12d2
 - Bundled zstd decompressor is dual-licensed; rePIU selects its BSD license option as stated in [`zstddeclib.c`](third_party/libchdr/deps/zstd-1.5.7/zstddeclib.c). No GPL option is used.
 
 libchdr decodes storage assets only. It does not provide CPU, machine, game-logic, or full-system emulation.
+
+## MAME PIU10 and CAT702 algorithms
+
+### 한국어
+
+rePIU의 플랫폼 공용 PIU10 ISA register와 CAT702 PIU 직렬 상태 모델은 MAME의
+`xtom3d_piu10.cpp`(copyright windyfairy)와 `cat702.cpp`(copyright smf)를 참고하여
+이식했습니다. 두 파일은 BSD 3-Clause License입니다. MAME emulator나 CPU/machine
+framework는 통합하지 않았습니다.
+
+- Project: https://github.com/mamedev/mame
+- PIU10 source: https://github.com/mamedev/mame/blob/master/src/mame/misc/xtom3d_piu10.cpp
+- CAT702 source: https://github.com/mamedev/mame/blob/master/src/devices/machine/cat702.cpp
+
+### English
+
+rePIU's platform-neutral PIU10 ISA registers and CAT702 PIU serial state model are adapted from
+MAME's `xtom3d_piu10.cpp` (copyright windyfairy) and `cat702.cpp` (copyright smf), both under the
+BSD 3-Clause License. No MAME emulator, CPU, or machine framework is integrated.
+
+Copyright (c) MAME contributors identified above. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted
+provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of
+   conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice, this list of
+   conditions and the following disclaimer in the documentation and/or other materials provided
+   with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors may be used to
+   endorse or promote products derived from this software without specific prior written
+   permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
+IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR
+CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

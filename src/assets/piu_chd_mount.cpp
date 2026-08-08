@@ -79,17 +79,36 @@ public:
                 ++data_track_count;
                 data_track_lba_ = track.data_start_lba;
                 data_track_end_lba_ = track.end_lba;
+                data_track_type_ = track.type;
             }
         }
-        if (data_track_count != 1U)
+        if (data_track_count == 0U)
         {
             if (message != nullptr)
             {
-                *message = data_track_count == 0U
-                    ? "CHD contains no data track"
-                    : "CHD contains multiple data tracks";
+                *message = "CHD contains no data track";
             }
             return false;
+        }
+        switch (data_track_type_)
+        {
+            case media::ChdCdTrackType::kMode1:
+            case media::ChdCdTrackType::kMode2Form1:
+                user_data_offset_ = 0U;
+                break;
+            case media::ChdCdTrackType::kMode1Raw:
+                user_data_offset_ = 16U;
+                break;
+            case media::ChdCdTrackType::kMode2Raw:
+                user_data_offset_ = 24U;
+                break;
+            default:
+                if (message != nullptr)
+                {
+                    *message =
+                        "CHD data track format is unsupported for ISO9660";
+                }
+                return false;
         }
         return true;
     }
@@ -184,12 +203,11 @@ private:
         {
             return false;
         }
-        const std::uint32_t user_offset = raw[15] == 2 ? 24U : 16U;
-        if (user_offset + sector->size() > raw.size())
+        if (user_data_offset_ + sector->size() > raw.size())
         {
             return false;
         }
-        std::memcpy(sector->data(), raw.data() + user_offset,
+        std::memcpy(sector->data(), raw.data() + user_data_offset_,
                     sector->size());
         return true;
     }
@@ -197,6 +215,9 @@ private:
     media::ChdCdImage image_;
     std::uint32_t data_track_lba_ = 0;
     std::uint32_t data_track_end_lba_ = 0;
+    media::ChdCdTrackType data_track_type_ =
+        media::ChdCdTrackType::kUnknown;
+    std::uint32_t user_data_offset_ = 0;
     std::int64_t extent_lba_bias_ = 0;
 };
 

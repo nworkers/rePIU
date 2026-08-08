@@ -24,6 +24,8 @@ namespace
     constexpr std::uint16_t kPortPicCommand = 0x0020;
     constexpr std::uint16_t kPortPiuJammaBase = 0x02A0;
     constexpr std::uint16_t kPortPiuJammaEnd = 0x02AF;
+    constexpr std::uint16_t kPortPiu10IsaBase = 0x02D0;
+    constexpr std::uint16_t kPortPiu10IsaEnd = 0x02DF;
 
     constexpr std::uint16_t kPortPiuEepromWrite = 0x02AC;
     constexpr std::uint16_t kPortPiuEepromRead = 0x02AE;
@@ -568,6 +570,63 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
         std::vector<std::uint8_t> nop_buffer(instruction_len, 0x90);
         WriteGuestBytes(context, reinterpret_cast<void*>(static_cast<std::uintptr_t>(decode_eip)), nop_buffer.data(), instruction_len);
     };
+
+    // PIU10 is a separate ISA16 flash/MP3/security board. Preserve every
+    // guest access because its address, destination, and CAT702 serial state
+    // are assembled across multiple OUT instructions.
+    if (context->piu10_isa_board_enabled &&
+        port >= kPortPiu10IsaBase && port <= kPortPiu10IsaEnd)
+    {
+        if (width != 2U || !context->piu10_isa_board.available())
+        {
+            RecordPortIo(context,
+                         static_cast<std::uint32_t>(win32_context->Eip),
+                         opcode, port, width, value, is_input, false,
+                         width != 2U ? "unsupported-piu10-width"
+                                     : "piu10-unavailable");
+            std::ostringstream stream;
+            stream << "PIU10 ISA port I/O unavailable port=0x"
+                   << std::hex << static_cast<unsigned>(port)
+                   << " width=" << std::dec << width;
+            context->hle_message = stream.str();
+            return false;
+        }
+
+        bool handled = false;
+        if (is_input)
+        {
+            std::uint16_t read_value = 0;
+            handled = context->piu10_isa_board.Read16(port, &read_value);
+            value = read_value;
+            if (handled)
+            {
+                win32_context->Eax =
+                    (win32_context->Eax & 0xFFFF0000U) | read_value;
+            }
+        }
+        else
+        {
+            handled = context->piu10_isa_board.Write16(
+                port, static_cast<std::uint16_t>(value));
+        }
+
+        RecordPortIo(context,
+                     static_cast<std::uint32_t>(win32_context->Eip),
+                     opcode, port, width, value, is_input, handled,
+                     handled ? (is_input ? "emulated-piu10-read"
+                                         : "emulated-piu10-write")
+                             : "unsupported-piu10-register");
+        if (!handled)
+        {
+            std::ostringstream stream;
+            stream << "unsupported PIU10 ISA register port=0x"
+                   << std::hex << static_cast<unsigned>(port);
+            context->hle_message = stream.str();
+            return false;
+        }
+        win32_context->Eip += instruction_len;
+        return true;
+    }
 
     // The YMZ280B window is checked before every other PIU10 register because
     // 0x02A0..0x02A3 sits inside the JAMMA input range below, which would

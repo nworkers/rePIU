@@ -87,6 +87,75 @@ const std::vector<TargetProfile>& BuiltInTargetProfiles()
                 0x005D7000,
             },
         },
+        TargetProfile{
+            "pumpito",
+            "Pump It Up The O.B.G.: The Season Evolution Dance Floor "
+            "(MAME CHD)",
+            std::filesystem::path(
+                "build/runtime_mounts/pumpito/PIU/PIU.EXE"),
+            std::filesystem::path("build/runtime_mounts/pumpito/PIU"),
+            std::filesystem::path("build/runtime_mounts/pumpito"),
+            ExecutableFormatHint::kDos4gwLe,
+            "piu_common",
+            "pumpito",
+            TargetRuntimeReservationHint{
+                true,
+                0x00010000,
+                0x005D7000,
+            },
+            true,
+        },
+        TargetProfile{
+            "pumpitc",
+            "Pump It Up: The Collection (MAME CHD)",
+            std::filesystem::path(
+                "build/runtime_mounts/pumpitc/PIU/PIU.EXE"),
+            std::filesystem::path("build/runtime_mounts/pumpitc/PIU"),
+            std::filesystem::path("build/runtime_mounts/pumpitc"),
+            ExecutableFormatHint::kDos4gwLe,
+            "piu_common",
+            "pumpitc",
+            TargetRuntimeReservationHint{
+                true,
+                0x00010000,
+                0x005D7000,
+            },
+            true,
+        },
+        TargetProfile{
+            "pumpitpc",
+            "Pump It Up: The Perfect Collection (MAME CHD)",
+            std::filesystem::path(
+                "build/runtime_mounts/pumpitpc/PIU/PIU.EXE"),
+            std::filesystem::path("build/runtime_mounts/pumpitpc/PIU"),
+            std::filesystem::path("build/runtime_mounts/pumpitpc"),
+            ExecutableFormatHint::kDos4gwLe,
+            "piu_common",
+            "pumpitpc",
+            TargetRuntimeReservationHint{
+                true,
+                0x00010000,
+                0x005D7000,
+            },
+            true,
+        },
+        TargetProfile{
+            "pumpite",
+            "Pump It Up Extra (MAME CHD)",
+            std::filesystem::path(
+                "build/runtime_mounts/pumpite/PIU/PIU.EXE"),
+            std::filesystem::path("build/runtime_mounts/pumpite/PIU"),
+            std::filesystem::path("build/runtime_mounts/pumpite"),
+            ExecutableFormatHint::kDos4gwLe,
+            "piu_common",
+            "pumpite",
+            TargetRuntimeReservationHint{
+                true,
+                0x00010000,
+                0x005D7000,
+            },
+            true,
+        },
     };
     return profiles;
 }

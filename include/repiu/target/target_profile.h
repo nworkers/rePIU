@@ -32,6 +32,7 @@ struct TargetProfile
     std::string_view hle_profile_id;
     std::string_view rom_set_id;
     TargetRuntimeReservationHint runtime_reservation_hint;
+    bool enable_piu10_isa_board = false;
 };
 
 const std::vector<TargetProfile>& GetBuiltInTargetProfiles();

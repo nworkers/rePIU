@@ -10,12 +10,26 @@
 namespace repiu::media
 {
 
+enum class ChdCdTrackType
+{
+    kUnknown,
+    kMode1,
+    kMode1Raw,
+    kMode2,
+    kMode2Form1,
+    kMode2Form2,
+    kMode2FormMix,
+    kMode2Raw,
+    kAudio,
+};
+
 // A CHD stores each track padded to a 4-frame boundary, so the frame index
 // inside the file is not the LBA the disc would report. Every address a guest
 // sees is a logical (Red Book) LBA; only ReadRawSector translates to physical.
 struct ChdCdTrack
 {
     std::uint8_t number = 0;
+    ChdCdTrackType type = ChdCdTrackType::kUnknown;
     bool audio = false;
 
     // Physical: first frame of this track's extent inside the CHD.

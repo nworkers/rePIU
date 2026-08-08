@@ -20,6 +20,7 @@
 #include "repiu/hle/glide_hle.h"
 #include "repiu/hle/glide_lfb.h"
 #include "repiu/hle/pit_timer.h"
+#include "repiu/hle/piu10_isa_board.h"
 #include "repiu/media/chd_cd_image.h"
 #include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/selector_table.h"
@@ -689,6 +690,10 @@ struct ThreadContext
     // comes from CD audio tracks while effects come from the YMZ280B sample ROM.
     Ymz280bAudioOut ymz_audio;
     bool ymz_audio_available = false;
+    // Separate ISA16 PIU10 flash/MP3/security board at 0x02D0..0x02DF.
+    // This is not the JAMMA/YMZ280B board at 0x02A0..0x02AF.
+    repiu::hle::Piu10IsaBoard piu10_isa_board;
+    bool piu10_isa_board_enabled = false;
     bool mscdex_available = false;
     bool cd_audio_available = false;
     std::uint8_t mscdex_drive = 3;

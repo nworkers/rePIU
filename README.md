@@ -93,14 +93,14 @@ MAME 형식 asset으로 실행하려면 다음처럼 배치합니다. `roms/` �
 
 ```text
 roms/
-├── pumpit1.zip
-└── pumpit1/
-    └── 19990930.chd
+├── <rom-set>.zip
+└── <rom-set>/
+    └── <disc>.chd
 ```
 
-`pumpit1` profile은 ZIP의 ROM entry를 확인하고 CHD v5 Mode2 CD의 ISO9660 tree를 `build/runtime_mounts/pumpit1/`에 materialize합니다. 이후 실행에서는 CHD identity가 같으면 cache를 재사용합니다.
+지원하는 MAME CHD profile은 `pumpit1`, `pumpit2`, `pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`입니다. 각 profile은 같은 이름의 ZIP에서 PIU10 ROM entry를 확인하고 CHD CD의 ISO9660 tree를 `build/runtime_mounts/<rom-set>/`에 materialize합니다. 이후 실행에서는 CHD identity가 같으면 cache를 재사용합니다.
 
-*The `pumpit1` profile validates the MAME ROM set, mounts the CHD's ISO9660 tree under the ignored build cache, and starts `PIU/PIU.EXE`.*
+*The supported MAME CHD profiles are `pumpit1`, `pumpit2`, `pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, and `pumpite`. Each validates the matching PIU10 ROM set, mounts the CHD's ISO9660 tree under `build/runtime_mounts/<rom-set>/`, and starts `PIU/PIU.EXE`; an unchanged CHD identity reuses the cache.*
 
 ### 3. 환경 준비와 전체 검증 / Set up and test
 

@@ -445,3 +445,70 @@ frame-based performance judgements cannot be trusted.
 **Measurement caveat.** `eeprom.dat` is untracked persistent state. The first A/B run without
 isolating it was invalid; a usable signal appeared only after copying a fixed fixture per run
 and pointing `REPIU_EEPROM_PATH` at it, the method `scripts/benchmark_*.ps1` already use.
+
+## 6. 별도 PIU10 flash/MP3/CAT702 보드 (Task 451)
+
+### 한국어
+
+**확인됨: 장치 구분.** MAME의
+[`xtom3d_piu10.cpp`](https://github.com/mamedev/mame/blob/master/src/mame/misc/xtom3d_piu10.cpp)는
+`0x02D0..0x02DF`를 별도 ISA16 PIU10 장치로 설치합니다. 이는
+[`xtom3d.cpp`](https://github.com/mamedev/mame/blob/master/src/mame/misc/xtom3d.cpp)의
+`0x02A0..0x02AF` JAMMA/YMZ280B I/O·sound 보드와 동일 장치가 아닙니다.
+
+| port | 방향 | 확인된 기능 |
+|---:|---|---|
+| `0x02D0` | write16 | address bits 0..7 |
+| `0x02D2` | write16 | address bits 8..15 |
+| `0x02D4` | write16 | address bits 16..19, destination bits 0..3 |
+| `0x02D6` | write16 | destination bits 4..11 |
+| `0x02DA` | read/write16 | destination별 flash data, CAT702/DAC serial, MP3 data/status |
+| `0x02DC` | write16 | bit 3 flash unlock/읽기 주소 자동 증가 |
+
+목적지 `0x008`의 `0x02DA` read bit는 CAT702 data-out=5, MPEG frame-sync=2,
+send-ready=1, decoder-demand=0입니다. 목적지 `0x010`의 write bit는 CAT702
+data-in=5, clock=4, select=3이며 DAC I2C SDA/SCL=1/0입니다. CAT702의 PIU 변형은
+select가 low로 바뀔 때 `0xFC` 상태에 초기 transform을 적용하고, 선택 중 clock rising
+edge마다 입력 bit에 따른 linear transform과 다음 출력 bit를 계산합니다. 근거 구현은
+MAME [`cat702.cpp`](https://github.com/mamedev/mame/blob/master/src/devices/machine/cat702.cpp)입니다.
+
+**확인됨: pumpito 실패와 수정 후 실행.** 수정 전 10초 미만 실행은 guest
+`0x0402106D`의 `IN AX,DX`, DX=`0x02DA`에서 끝났고 port I/O는 input/output/handled/unhandled
+`5/28/28/5`였습니다. Task 451 후 3초 실행은 예외 없이 timeout까지 진행했고
+`1/31/32/0`이었습니다. 마지막 접근은 `0x0402108A`의 `OUT` `0x02DA <- 0xFFFF`이며
+`emulated-piu10-write`로 처리됐습니다. 10초 실행에서는 `BGA\\00.DAT` open/read까지
+진행했습니다.
+
+**미확정:** 실제 MP3 decode/audio 출력, 화면 렌더링, 입력, 전체 gameplay는 이번
+검증 범위가 아닙니다. 현재 MP3 status는 reset-ready 신호만 모델링합니다.
+
+**확인됨: target 범위(Task 452).** rePIU는 이 별도 장치를 `pumpito`, `pumpitc`,
+`pumpitpc`, `pumpite`에서만 활성화합니다. `pumpit1`, `pumpit2`, `pumpit3`에서는
+비활성화되며, 이 target들의 YMZ280B sample ROM 경로는 해당 capability와 독립적입니다.
+
+### English
+
+**Confirmed: separate devices.** MAME installs `0x02D0..0x02DF` as a separate ISA16 PIU10
+device in `xtom3d_piu10.cpp`. It is not the JAMMA/YMZ280B I/O and sound board at
+`0x02A0..0x02AF` in `xtom3d.cpp`.
+
+The port table above assembles a 20-bit address and 12-bit destination through `0x02D0..0x02D6`;
+`0x02DA` carries destination-specific flash data, CAT702/DAC serial lines, or MP3 data/status;
+bit 3 of `0x02DC` controls flash unlock and read-address increment. At destination `0x008`, read
+bits 5/2/1/0 are CAT702 data-out, MPEG frame-sync, send-ready, and decoder-demand. At destination
+`0x010`, write bits 5/4/3 drive CAT702 data-in/clock/select, while bits 1/0 drive DAC I2C SDA/SCL.
+The CAT702 PIU variant initializes its transformed `0xFC` state on select-low and advances its
+linear transform/output bit on each selected rising clock edge.
+
+**Confirmed: pumpito failure and post-fix execution.** Before the fix, execution stopped at guest
+`0x0402106D`, `IN AX,DX`, DX=`0x02DA`, with port I/O input/output/handled/unhandled
+`5/28/28/5`. After Task 451, a three-second run reached its time limit without an exception and
+reported `1/31/32/0`. Its last access was `OUT 0x02DA <- 0xFFFF` at `0x0402108A`, handled as
+`emulated-piu10-write`. A ten-second run progressed through opening and reading `BGA\\00.DAT`.
+
+**Unresolved:** actual MP3 decoding/audio output, rendering, input, and complete gameplay are not
+verified by this task. The current MP3 status model reports reset-ready signals only.
+
+**Confirmed target scope (Task 452):** rePIU enables this separate device only for `pumpito`,
+`pumpitc`, `pumpitpc`, and `pumpite`. It remains disabled for `pumpit1`, `pumpit2`, and
+`pumpit3`; their YMZ280B sample-ROM path is independent of this capability.

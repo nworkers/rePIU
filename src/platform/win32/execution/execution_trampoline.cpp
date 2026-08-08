@@ -6,6 +6,7 @@
 #include "repiu/platform/win32/live_telemetry.h"
 #include "repiu/hle/linexe_call_gate.h"
 #include "repiu/hle/glide_hle.h"
+#include "repiu/assets/rom_zip_archive.h"
 #include "repiu/platform/win32/glide_opengl_backend.h"
 #include "repiu/platform/win32/cd_audio_wave_out.h"
 #include "repiu/platform/win32/aot_page_coherence_win32.h"
@@ -3857,6 +3858,7 @@ bool RunWin32ExecutionThread(
     const std::vector<exe::LeResidentName>* glide_exports,
     const std::filesystem::path* cd_chd_path,
     const std::filesystem::path* sound_rom_zip_path,
+    bool enable_piu10_isa_board,
     Win32AotCodeCachePlacement* aot_placement,
     runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
@@ -3965,6 +3967,7 @@ bool RunWin32ExecutionThread(
     context.enable_segment_load_hle = enable_segment_load_hle;
     context.enable_dos_hle = enable_dos_hle;
     context.enable_single_step_trace = enable_single_step_trace;
+    context.piu10_isa_board_enabled = enable_piu10_isa_board;
     context.aot_placement = aot_placement;
     context.execution_backend = execution_backend;
     char call_return_trace_text[8] = {};
@@ -4076,6 +4079,39 @@ bool RunWin32ExecutionThread(
     {
         context.ymz_audio_available =
             context.ymz_audio.Open(*sound_rom_zip_path);
+    }
+
+    if (enable_piu10_isa_board && sound_rom_zip_path != nullptr)
+    {
+        repiu::assets::RomZipEntry flash =
+            repiu::assets::ExtractRomZipEntry(
+                *sound_rom_zip_path, "piu10.u8");
+        const std::string cat702_name =
+            sound_rom_zip_path->stem().string() + ".cat702";
+        repiu::assets::RomZipEntry cat702 =
+            repiu::assets::ExtractRomZipEntry(
+                *sound_rom_zip_path, cat702_name);
+        if (flash.valid && cat702.valid &&
+            cat702.data.size() == repiu::hle::Piu10IsaBoard::kCat702TransformBytes)
+        {
+            std::array<std::uint8_t,
+                       repiu::hle::Piu10IsaBoard::kCat702TransformBytes>
+                transform = {};
+            std::copy(cat702.data.begin(), cat702.data.end(),
+                      transform.begin());
+            std::string piu10_message;
+            context.piu10_isa_board.Initialize(
+                std::move(flash.data), transform, &piu10_message);
+            std::fprintf(stderr, "[repiu-piu10] %s; %s; %s\n",
+                         piu10_message.c_str(), flash.message.c_str(),
+                         cat702.message.c_str());
+        }
+        else
+        {
+            std::fprintf(stderr,
+                         "[repiu-piu10] unavailable; flash=%s; cat702=%s\n",
+                         flash.message.c_str(), cat702.message.c_str());
+        }
     }
     context.dos_environment_block = BuildDosEnvironmentBlock();
     repiu::runtime::InitializeSelectorTable(&context.selector_table);
@@ -4591,6 +4627,7 @@ bool AttemptWin32GuestStackTrapExecution(
     const std::vector<exe::LeResidentName>* glide_exports,
     const std::filesystem::path* cd_chd_path,
     const std::filesystem::path* sound_rom_zip_path,
+    bool enable_piu10_isa_board,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
 {
@@ -4623,6 +4660,7 @@ bool AttemptWin32GuestStackTrapExecution(
         glide_exports,
         cd_chd_path,
         sound_rom_zip_path,
+        enable_piu10_isa_board,
         nullptr,
         runtime::ExecutionBackend::kLegacy,
         timeout_milliseconds,
@@ -4665,6 +4703,7 @@ bool AttemptWin32GuestStackHleExecution(
         nullptr,
         nullptr,
         nullptr,
+        false,
         nullptr,
         runtime::ExecutionBackend::kLegacy,
         timeout_milliseconds,
@@ -4680,6 +4719,7 @@ bool AttemptWin32GuestStackAotExecution(
     const std::vector<exe::LeResidentName>* glide_exports,
     const std::filesystem::path* cd_chd_path,
     const std::filesystem::path* sound_rom_zip_path,
+    bool enable_piu10_isa_board,
     runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
@@ -4699,6 +4739,7 @@ bool AttemptWin32GuestStackAotExecution(
         placement, stack_plan.entry_eip, stack_plan.initial_esp,
         true, true, true, true, false, false, &dos_file_system,
         linexe_module, glide_exports, cd_chd_path, sound_rom_zip_path,
+        enable_piu10_isa_board,
         &aot_placement,
         execution_backend,
         timeout_milliseconds, attempt);

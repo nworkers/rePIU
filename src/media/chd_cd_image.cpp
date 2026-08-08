@@ -21,6 +21,37 @@ std::uint32_t RoundTrackFrames(std::uint32_t frames)
 {
     return (frames + kTrackPadding - 1U) & ~(kTrackPadding - 1U);
 }
+
+ChdCdTrackType ParseTrackType(const char* type)
+{
+    if (type == nullptr)
+    {
+        return ChdCdTrackType::kUnknown;
+    }
+    struct TrackTypeName
+    {
+        const char* name;
+        ChdCdTrackType type;
+    };
+    constexpr std::array<TrackTypeName, 8> kTrackTypes = {{
+        {"MODE1", ChdCdTrackType::kMode1},
+        {"MODE1_RAW", ChdCdTrackType::kMode1Raw},
+        {"MODE2", ChdCdTrackType::kMode2},
+        {"MODE2_FORM1", ChdCdTrackType::kMode2Form1},
+        {"MODE2_FORM2", ChdCdTrackType::kMode2Form2},
+        {"MODE2_FORM_MIX", ChdCdTrackType::kMode2FormMix},
+        {"MODE2_RAW", ChdCdTrackType::kMode2Raw},
+        {"AUDIO", ChdCdTrackType::kAudio},
+    }};
+    for (const TrackTypeName& entry : kTrackTypes)
+    {
+        if (std::strcmp(type, entry.name) == 0)
+        {
+            return entry.type;
+        }
+    }
+    return ChdCdTrackType::kUnknown;
+}
 }
 
 struct ChdCdImage::Impl
@@ -130,7 +161,8 @@ bool ChdCdImage::Open(const std::filesystem::path& path)
         }
         ChdCdTrack entry;
         entry.number = static_cast<std::uint8_t>(track);
-        entry.audio = std::strcmp(type.data(), "AUDIO") == 0;
+        entry.type = ParseTrackType(type.data());
+        entry.audio = entry.type == ChdCdTrackType::kAudio;
         entry.stored_frames = static_cast<std::uint32_t>(frames);
         entry.pregap_frames = static_cast<std::uint32_t>(pregap);
         entry.pregap_in_file = pgtype[0] == 'V';

@@ -12,6 +12,7 @@
 #include "native_linear_span_probe.h"
 #include "plan_build_benchmark_probe.h"
 #include "pit_timer_probe.h"
+#include "piu10_isa_board_probe.h"
 #include "retired_trap_profile_probe.h"
 #include "single_step_hotspot_profile_probe.h"
 #include "exception_transition_calibration_probe.h"
@@ -993,6 +994,10 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunPitTimerProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunPiu10IsaBoardProbe())
     {
         return 1;
     }

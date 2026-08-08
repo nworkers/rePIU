@@ -62,6 +62,23 @@ CHD CD metadata(`CHT2`)는
 내 프레임 번호는 디스크 논리 LBA와 다릅니다. 게스트에게 보고하는 TOC는 논리
 주소여야 하고, 읽기 시점에만 물리 프레임으로 변환해야 합니다.
 
+## CHD data track의 cooked/raw sector layout
+
+CHT2/CHTR의 `TYPE`은 ISO9660의 2,048-byte user data가 CHD frame 안에서 시작하는 위치를
+결정합니다. sector 내용의 특정 바이트를 추측하는 대신 metadata를 기준으로 해석해야 합니다.
+
+| track type | user-data offset | 설명 |
+|---|---:|---|
+| `MODE1` | 0 | 2,048-byte cooked Mode 1 data |
+| `MODE1_RAW` | 16 | sync/header가 포함된 raw Mode 1 sector |
+| `MODE2_FORM1` | 0 | 2,048-byte cooked Mode 2 Form 1 data |
+| `MODE2_RAW` | 24 | sync/header/subheader가 포함된 raw Mode 2 sector |
+
+CHD hunk의 unit 크기가 2,448 bytes여도 모든 track이 raw sector라는 뜻은 아닙니다. libchdr가
+반환하는 CD frame buffer에서 cooked track은 user data를 offset 0에 두고 나머지를 채울 수
+있습니다. 지원하지 않는 `MODE2_FORM2`나 mixed form을 ISO9660으로 임의 해석하지 말고
+명시적으로 거부해야 합니다.
+
 출처:
 
 * [RBIL INT 2Fh AX=1510h](https://fd.lod.bz/rbil/interrup/io_disk/2f1510.html)
@@ -72,3 +89,13 @@ CHD CD metadata(`CHT2`)는
 # MSCDEX and CD-DA
 
 MSCDEX is the DOS resident CD-ROM extension. `INT 2Fh AX=1500h` queries installed drives and `AX=1510h` forwards an `ES:BX` request. Carry clear means the driver was called; packet status reports command success. CD-DA stores 588 stereo 16-bit sample frames in each 2352-byte, 1/75-second sector at 44.1 kHz. CHD metadata preserves track types, frame counts, and pregaps.
+
+## Cooked and raw CHD data-track layouts
+
+The CHT2/CHTR `TYPE` determines where the 2,048-byte ISO9660 user data begins in a CHD frame.
+Use that metadata instead of guessing from a byte in the sector: cooked `MODE1` and
+`MODE2_FORM1` start at offset 0, `MODE1_RAW` starts at 16, and `MODE2_RAW` starts at 24.
+
+A 2,448-byte CHD unit does not mean every track contains a raw sector. libchdr can return a CD
+frame buffer with cooked user data at offset 0 and padding after it. ISO readers should reject
+unsupported `MODE2_FORM2` and mixed-form layouts explicitly rather than infer an ISO9660 view.

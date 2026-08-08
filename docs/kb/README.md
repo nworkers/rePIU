@@ -19,6 +19,7 @@ flowchart TD
     CACHE --> HLE
     CHD["CHD / ISO9660"] --> MSCDEX["MSCDEX / CD-DA"]
     YMZ["YMZ280B PCM/ADPCM"] --> SOUND["PIU10 board sound"]
+    CAT["CAT702 serial security"] --> PIU10["PIU10 flash/MP3 board"]
 ```
 
 ## 문서
@@ -37,6 +38,7 @@ flowchart TD
 * [Glide 텍스처 LOD, aspect ratio, 포맷](glide-texture-lod-and-formats.md)
 * [Glide primitive와 면 culling](glide-primitives-and-culling.md)
 * [YMZ280B PCM/ADPCM 디코더](ymz280b-pcm-adpcm-decoder.md)
+* [CAT702 PIU 직렬 보안 장치](cat702-piu-security-device.md)
 
 # rePIU Technical Knowledge Base Index
 
@@ -59,3 +61,4 @@ include source links.
 * [Glide texture LOD, aspect ratio, and formats](glide-texture-lod-and-formats.md)
 * [Glide primitives and face culling](glide-primitives-and-culling.md)
 * [YMZ280B PCM/ADPCM decoder](ymz280b-pcm-adpcm-decoder.md)
+* [CAT702 PIU serial security device](cat702-piu-security-device.md)

@@ -48,8 +48,8 @@ The first implementation target is a non-executing analysis tool for `MASTER\PIU
 
 예정된 주요 모듈:
 
-* `TargetRegistry`: 게임 타깃과 버전 선택. 현재 단계에서는 정적 C++ 등록 구조로 `piu_1st`, `pumpit1`, `pumpit2`, `pumpit3`을 제공한다.
-* `TargetProfile`: 실행 파일 경로, 작업 디렉터리, 자산 루트, 포맷 힌트, HLE 프로파일 id, 버전별 메타데이터
+* `TargetRegistry`: 게임 타깃과 버전 선택. 현재 단계에서는 정적 C++ 등록 구조로 `piu_1st`, `pumpit1`, `pumpit2`, `pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`를 제공한다. 뒤의 네 MAME CHD 프로파일은 요청된 순서대로 등록되며 공용 PIU CHD mount와 `piu_common` HLE 경로를 재사용한다. PIU10 flash/CAT702 ISA 보드 capability는 뒤의 네 프로파일에서만 활성화된다.
+* `TargetProfile`: 실행 파일 경로, 작업 디렉터리, 자산 루트, 포맷 힌트, HLE 프로파일 id, 버전별 메타데이터와 하드웨어 capability
 * `HleProfileRegistry`: target이 참조하는 HLE 프로파일 선택. 현재 단계에서는 정적 C++ 등록 구조로 `piu_common`을 제공한다.
 * `HleProfile`: target이 요구하는 DOS/DPMI/하드웨어 HLE 서비스 범위
 * `ExecutableReader`: 원본 실행 파일과 관련 파일을 읽는 공용 파일 입력 계층
@@ -100,7 +100,7 @@ Directories added now:
 
 Planned major modules:
 
-* `TargetRegistry`: game target and version selection. The current step provides `piu_1st` through static C++ registration.
+* `TargetRegistry`: game target and version selection. Static C++ registration currently provides `piu_1st`, `pumpit1`, `pumpit2`, `pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, and `pumpite`. The last four MAME CHD profiles retain the requested registration order, reuse the shared PIU CHD mount and `piu_common` HLE path, and are the only profiles that enable the PIU10 flash/CAT702 ISA-board capability.
 * `TargetProfile`: executable path, working directory, asset root, format hint, HLE profile id, optional ROM-set id, version metadata, and target-specific early runtime reservation hints
 * `HleProfileRegistry`: HLE profile selection referenced by targets. The current step provides `piu_common` through static C++ registration.
 * `HleProfile`: DOS/DPMI/hardware HLE service scope required by a target
@@ -530,9 +530,9 @@ flowchart LR
 ```
 ## MAME CHD asset mount
 
-PIU ROM-set target은 asset container 해석과 guest 실행을 분리합니다. `TargetProfile::rom_set_id`가 게임 ID 분기 없이 공용 ZIP/CHD mount를 선택합니다. 공용 ISO9660 reader는 루트 자기 참조 레코드에서 signed extent-LBA bias를 찾아 single-session과 multisession data track을 같은 경로로 처리합니다. data track 밖의 audio extent는 file cache에서 제외하고 MSCDEX/CD-DA가 담당합니다. 원본 ROM/CHD는 읽기 전용이며 Git 밖에 유지합니다.
+PIU ROM-set target은 asset container 해석과 guest 실행을 분리합니다. `TargetProfile::rom_set_id`가 게임 ID 분기 없이 공용 ZIP/CHD mount를 선택합니다. 공용 ISO9660 reader는 data track이 여러 개인 멀티세션 CHD에서 마지막 data track을 선택하고, CHT2/CHTR track type에 따라 cooked `MODE1`/`MODE2_FORM1` offset 0, `MODE1_RAW` offset 16, `MODE2_RAW` offset 24를 적용합니다. 루트 자기 참조 레코드에서 signed extent-LBA bias를 찾아 single-session과 multisession data track을 같은 경로로 처리하며, 선택한 track의 PVD와 extent 범위 및 미지원 sector 형식은 fail-closed로 검증합니다. 추출된 `PIU/PIU.EXE`를 실행 파일로 사용합니다. data track 밖의 audio extent는 file cache에서 제외하고 MSCDEX/CD-DA가 담당합니다. 원본 ROM/CHD는 읽기 전용이며 Git 밖에 유지합니다.
 
-PIU ROM-set targets separate asset-container decoding from guest execution. `TargetProfile::rom_set_id` selects the shared ZIP/CHD mount without title-ID branching. Pinned libchdr exposes raw CHD CD frames, and the project-owned ISO9660 reader discovers a signed extent-LBA bias from the root self-record so single-session and multisession data tracks share one path. External audio extents are skipped by the file cache and remain available through MSCDEX/CD-DA. A deterministic build cache supplies the existing filesystem-based DOS VFS; original ROM/CHD files remain read-only and outside Git.
+PIU ROM-set targets separate asset-container decoding from guest execution. `TargetProfile::rom_set_id` selects the shared ZIP/CHD mount without title-ID branching. Pinned libchdr exposes CHD CD frames. For a multisession CHD with multiple data tracks, the project-owned ISO9660 reader selects the last data track. It maps CHT2/CHTR track types to user-data offsets: 0 for cooked `MODE1`/`MODE2_FORM1`, 16 for `MODE1_RAW`, and 24 for `MODE2_RAW`. It then discovers a signed extent-LBA bias from the root self-record so single-session and multisession data tracks share one path. The selected track's PVD, extent bounds, and unsupported sector layouts remain fail-closed. The extracted `PIU/PIU.EXE` remains the executable path. External audio extents are skipped by the file cache and remain available through MSCDEX/CD-DA. A deterministic build cache supplies the existing filesystem-based DOS VFS; original ROM/CHD files remain read-only and outside Git.
 
 ```mermaid
 flowchart LR
@@ -569,6 +569,21 @@ flowchart LR
 ```
 
 Separately from CD-DA background music, coin and menu effects are played by the Yamaha YMZ280B on the PIU10 ISA board from the `piu10.u9` sample ROM inside the target ROM-set ZIP. Responsibilities are split across four layers: `assets::ExtractRomZipEntry` extracts the ZIP entry with CRC verification, `sound::LoadPiu10SampleRom` places it in a 4 MiB `0xFF`-filled address space, the platform-neutral `sound::Ymz280bDevice` owns the register file, eight voices, ADPCM decode, and mixing at 88200 Hz stereo, and the Win32 backend `Ymz280bAudioOut` pushes generated PCM into an SDL3 stream from a worker thread under a mutex. `piu10_sound_port` provides the guest ABI glue, decoding `0x02A0` as chip offset 0 and `0x02A2` as offset 1 per the ISA 16-bit byte-lane rule. Because the sound window lies inside the JAMMA input range, `HandlePortIoInstruction` handles it before the input branch, and register writes advance EIP and re-trap rather than being NOP-patched.
+
+# PIU10 flash, MP3, CAT702 ISA board
+
+`0x02D0..0x02DF`의 PIU10 ISA 보드는 `0x02A0..0x02AF`의 JAMMA/YMZ280B 보드와 별도 장치입니다. 플랫폼 공용 `hle::Piu10IsaBoard`가 20-bit flash 주소, 12-bit 목적지, `piu10.u8` read-only word access, MP3 decoder ready 상태, CAT702 PIU 직렬 상태를 소유합니다. 실행 준비 계층은 target profile의 `enable_piu10_isa_board`가 활성화된 경우에만 현재 ROM-set ZIP에서 CRC 검증된 `piu10.u8`과 `<target>.cat702`를 추출하여 장치에 주입합니다. 이 capability는 `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`에만 켜지고 `pumpit1`, `pumpit2`, `pumpit3`에는 꺼져 있습니다. Win32 port adapter도 같은 capability가 활성화된 경우에만 16-bit IN/OUT을 장치에 전달합니다. 별도 `piu10.u9` YMZ280B 초기화는 이 capability와 독립적입니다.
+
+```mermaid
+flowchart LR
+    R["ROM-set ZIP"] -->|"piu10.u8 + target.cat702"| D["hle::Piu10IsaBoard"]
+    G["Guest 16-bit IN/OUT<br/>0x02D0..0x02DF"] --> W["Win32 port adapter"] --> D
+    D --> F["read-only flash"]
+    D --> M["MP3 ready status"]
+    D --> C["CAT702 serial transform"]
+```
+
+The PIU10 ISA board at `0x02D0..0x02DF` is separate from the JAMMA/YMZ280B board at `0x02A0..0x02AF`. Platform-neutral `hle::Piu10IsaBoard` owns the 20-bit flash address, 12-bit destination, read-only `piu10.u8` word access, MP3 decoder-ready status, and CAT702 PIU serial state. Execution setup extracts CRC-verified `piu10.u8` and `<target>.cat702` entries only when the target profile enables `enable_piu10_isa_board`. This capability is enabled for `pumpito`, `pumpitc`, `pumpitpc`, and `pumpite`, and disabled for `pumpit1`, `pumpit2`, and `pumpit3`. The Win32 port adapter forwards 16-bit IN/OUT only under the same capability. Independent `piu10.u9` YMZ280B setup remains outside this gate.
 # AOT translation planning prototype
 
 `runtime::BuildAotTranslationPlan`은 relocated DOS/4GW LE image의 entry/direct edge에서 reachable CFG를 Zydis로 복원하고 copy, direct relocation, HLE boundary, return, indirect exit를 분류합니다. 이 단계는 실행 경로를 바꾸지 않으며 `repiu_aot_probe`가 coverage와 planning time을 측정합니다.
