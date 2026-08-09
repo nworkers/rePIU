@@ -111,7 +111,6 @@ const std::vector<TargetProfile>& BuiltInTargetProfiles()
             },
             true,
             true,
-            50U,
         },
         TargetProfile{
             "pumpitc",

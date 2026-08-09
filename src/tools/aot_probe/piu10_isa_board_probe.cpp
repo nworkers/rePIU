@@ -58,7 +58,7 @@ bool RunPiu10IsaBoardProbe()
         target::FindTargetProfileById("pumpito");
     bool mp3_latency_profile_valid =
         pumpito_profile != nullptr &&
-        pumpito_profile->piu10_mp3_latency_ms == 50U;
+        pumpito_profile->piu10_mp3_latency_ms == 0U;
     for (const char* id : {
              "pumpit1", "pumpit2", "pumpit3", "pumpitc", "pumpitpc",
              "pumpite"})

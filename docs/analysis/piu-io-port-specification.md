@@ -901,6 +901,11 @@ concurrent rendering and input. Final validation remains in the user's environme
 
 **미확정:** 50 ms의 최종 체감 sync, 저음량 전이 뒤 곡 연속성과 실제 출력 음량은 사용자의 화면·음향 환경에서 확인해야 합니다. pause는 요구 범위에서 제외되었습니다.
 
+**2026-08-10 교정:** 후속 실기 검증에 따라 `pumpito` profile의 50 ms 기본 지연을 제거했습니다.
+모든 PIU10 profile은 이제 0 ms가 기본이며, 지연이 필요할 때만
+`REPIU_PIU10_MP3_LATENCY_MS=0..500`으로 명시합니다. 50 ms를 8,820 byte 무음으로 변환하는
+기능은 환경변수 override 검증을 위해 유지합니다.
+
 ### English
 
 **Confirmed:** Data bits 1/0 at PIU10 destination `0x010` are DAC3350A SDA/SCL. A live `pumpito` audit recorded repeated `AVOL=0x0101` before MP3 startup and `0x2C2C` during playback.
@@ -912,6 +917,11 @@ The official MAME reference maps AVOL zero to mute, values 1–7 to -75 through 
 **Design value:** Based on the user's observation, `pumpito` defaults to 50 ms startup latency. This is 8,820 silence bytes for 44.1 kHz stereo S16 and can be adjusted with `REPIU_PIU10_MP3_LATENCY_MS=0..500`.
 
 **Unresolved:** Final subjective 50 ms alignment, song continuity through a low-volume transition, and actual output level require validation with the user's real display/audio path. Pause is outside scope.
+
+**2026-08-10 correction:** Following later live validation, the 50 ms default was removed from the
+`pumpito` profile. Every PIU10 profile now defaults to 0 ms; a delay is applied only when explicitly
+requested with `REPIU_PIU10_MP3_LATENCY_MS=0..500`. Conversion of 50 ms to 8,820 silence bytes
+remains as coverage for the environment override.
 
 ## 15. DAC 저음량 시점의 audio backlog 계측 (Task 463)
 
