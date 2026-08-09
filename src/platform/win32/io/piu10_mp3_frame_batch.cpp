@@ -4,6 +4,7 @@
 #include "execution/thread_context.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -13,30 +14,38 @@ namespace repiu::platform::win32
 namespace
 {
 
-constexpr std::uint32_t kPumpitoMp3OutOffset = 0x000212FDU;
-constexpr std::uint32_t kSourceCursorOffset = 0x00343420U;
-constexpr std::uint32_t kAvailableEndOffset = 0x00343424U;
-constexpr std::uint32_t kFrameByteTargetOffset = 0x00343418U;
-constexpr std::uint32_t kFrameByteCountOffset = 0x0034341CU;
-constexpr std::uint32_t kSourceBufferOffset = 0x00343438U;
 constexpr std::uint32_t kMaximumMpegFrameBytes = 2048U;
-constexpr std::uint32_t kTransferControlCursor = 0x0000076CU;
-constexpr std::uint32_t kTransferControlCount = 100U;
-constexpr std::size_t kCodePrefixBytes = 20U;
+constexpr std::uint32_t kMaximumLoopBackBytes = 512U;
+constexpr std::size_t kCodePrefixBytes = 35U;
 constexpr std::size_t kCodeSuffixBytes = 21U;
+
+struct FeederLayout
+{
+    std::uint32_t source_cursor_address = 0U;
+    std::uint32_t available_end_address = 0U;
+    std::uint32_t frame_target_address = 0U;
+    std::uint32_t frame_count_address = 0U;
+    std::uint32_t source_buffer_address = 0U;
+    std::uint32_t service_cursor_threshold = 0U;
+    std::uint32_t service_counter_limit = 0U;
+};
+
+struct AbsoluteStore
+{
+    std::uint32_t address = 0U;
+    std::uint8_t source_register = 0U;
+    std::size_t position = 0U;
+};
 
 enum class BatchRejection : std::uint32_t
 {
     kDisabled = 1U << 0U,
-    kGuestSource = 1U << 1U,
-    kCodeRange = 1U << 2U,
-    kSignature = 1U << 3U,
-    kRelocation = 1U << 4U,
-    kStateRange = 1U << 5U,
-    kFrameState = 1U << 6U,
-    kSourceAddress = 1U << 7U,
-    kSourceRange = 1U << 8U,
-    kCommit = 1U << 9U,
+    kShape = 1U << 1U,
+    kStateRange = 1U << 2U,
+    kFrameState = 1U << 3U,
+    kSourceAddress = 1U << 4U,
+    kSourceRange = 1U << 5U,
+    kCommit = 1U << 6U,
 };
 
 void ReportRejection(ThreadContext* context, BatchRejection rejection,
@@ -70,36 +79,300 @@ std::uint32_t ReadU32(const std::uint8_t* bytes)
     return value;
 }
 
-bool AddAddress(std::uint32_t base, std::uint32_t offset,
-                std::uint32_t* result)
+bool IsSafeTemporaryRegister(std::uint8_t register_id)
 {
-    if (result == nullptr ||
-        offset > std::numeric_limits<std::uint32_t>::max() - base)
+    constexpr std::uint8_t kEax = 0U;
+    constexpr std::uint8_t kEcx = 1U;
+    constexpr std::uint8_t kEsp = 4U;
+    constexpr std::uint8_t kEsi = 6U;
+    return register_id != kEax && register_id != kEcx &&
+        register_id != kEsp && register_id != kEsi;
+}
+
+bool DecodeFeederPrefix(const std::uint8_t* begin,
+                        const std::uint8_t* end,
+                        FeederLayout* candidate)
+{
+    if (begin == nullptr || end == nullptr || candidate == nullptr ||
+        end - begin != static_cast<std::ptrdiff_t>(kCodePrefixBytes) ||
+        begin[0] != 0xA1U)
     {
         return false;
     }
-    *result = base + offset;
+
+    candidate->source_cursor_address = ReadU32(begin + 1U);
+    std::array<AbsoluteStore, 2> stores = {};
+    std::size_t store_count = 0U;
+    std::size_t position = 5U;
+    std::size_t cursor_increment_position = SIZE_MAX;
+    std::size_t cursor_store_position = SIZE_MAX;
+    std::size_t frame_load_position = SIZE_MAX;
+    std::size_t frame_increment_position = SIZE_MAX;
+    std::size_t frame_store_position = SIZE_MAX;
+    std::size_t byte_load_position = SIZE_MAX;
+    std::size_t port_restore_position = SIZE_MAX;
+    std::uint8_t cursor_register = 0U;
+    std::uint8_t frame_register = 0U;
+    std::uint8_t increment_register = 0U;
+
+    while (position < kCodePrefixBytes)
+    {
+        const std::size_t remaining = kCodePrefixBytes - position;
+        const std::uint8_t* instruction = begin + position;
+        if (remaining >= 3U && instruction[0] == 0x8DU &&
+            (instruction[1] & 0xC7U) == 0x40U &&
+            instruction[2] == 0x01U &&
+            cursor_increment_position == SIZE_MAX)
+        {
+            cursor_register = (instruction[1] >> 3U) & 0x07U;
+            cursor_increment_position = position;
+            position += 3U;
+            continue;
+        }
+        if (remaining >= 6U && instruction[0] == 0x8BU &&
+            (instruction[1] & 0xC7U) == 0x05U &&
+            frame_load_position == SIZE_MAX)
+        {
+            frame_register = (instruction[1] >> 3U) & 0x07U;
+            candidate->frame_count_address = ReadU32(instruction + 2U);
+            frame_load_position = position;
+            position += 6U;
+            continue;
+        }
+        if (instruction[0] >= 0x40U && instruction[0] <= 0x47U &&
+            frame_increment_position == SIZE_MAX)
+        {
+            increment_register = instruction[0] - 0x40U;
+            frame_increment_position = position;
+            ++position;
+            continue;
+        }
+        if (remaining >= 6U && instruction[0] == 0x89U &&
+            (instruction[1] & 0xC7U) == 0x05U &&
+            store_count < stores.size())
+        {
+            stores[store_count].source_register =
+                (instruction[1] >> 3U) & 0x07U;
+            stores[store_count].address = ReadU32(instruction + 2U);
+            stores[store_count].position = position;
+            ++store_count;
+            position += 6U;
+            continue;
+        }
+        if (remaining >= 6U && instruction[0] == 0x8AU &&
+            instruction[1] == 0x80U && byte_load_position == SIZE_MAX)
+        {
+            candidate->source_buffer_address = ReadU32(instruction + 2U);
+            byte_load_position = position;
+            position += 6U;
+            continue;
+        }
+        if (remaining >= 2U && instruction[0] == 0x89U &&
+            instruction[1] == 0xF2U && port_restore_position == SIZE_MAX)
+        {
+            port_restore_position = position;
+            position += 2U;
+            continue;
+        }
+        return false;
+    }
+
+    if (store_count != stores.size() ||
+        cursor_increment_position == SIZE_MAX ||
+        frame_load_position == SIZE_MAX ||
+        frame_increment_position == SIZE_MAX ||
+        byte_load_position == SIZE_MAX || port_restore_position == SIZE_MAX ||
+        !IsSafeTemporaryRegister(cursor_register) ||
+        !IsSafeTemporaryRegister(frame_register) ||
+        increment_register != frame_register)
+    {
+        return false;
+    }
+
+    for (const AbsoluteStore& store : stores)
+    {
+        if (store.address == candidate->source_cursor_address &&
+            store.source_register == cursor_register &&
+            cursor_store_position == SIZE_MAX)
+        {
+            cursor_store_position = store.position;
+        }
+        else if (store.address == candidate->frame_count_address &&
+                 store.source_register == frame_register &&
+                 frame_store_position == SIZE_MAX)
+        {
+            frame_store_position = store.position;
+        }
+        else
+        {
+            return false;
+        }
+    }
+
+    return candidate->source_cursor_address !=
+            candidate->frame_count_address &&
+        cursor_store_position != SIZE_MAX && frame_store_position != SIZE_MAX &&
+        cursor_increment_position < cursor_store_position &&
+        cursor_increment_position < byte_load_position &&
+        frame_load_position < frame_increment_position &&
+        frame_increment_position < frame_store_position &&
+        byte_load_position < port_restore_position &&
+        cursor_store_position < port_restore_position &&
+        (cursor_register != frame_register ||
+         cursor_store_position < frame_load_position) &&
+        (frame_register != 2U ||
+         frame_store_position < port_restore_position);
+}
+
+bool DecodeFeederSuffix(const std::uint8_t* out,
+                        FeederLayout* candidate,
+                        std::int32_t* loop_displacement)
+{
+    if (out == nullptr || candidate == nullptr ||
+        loop_displacement == nullptr || out[0] != 0xEEU ||
+        out[1] != 0xA1U || out[6] != 0x8BU ||
+        (out[7] & 0xC7U) != 0x05U || out[12] != 0x41U ||
+        out[13] != 0x39U || (out[14] & 0xC7U) != 0xC0U ||
+        out[15] != 0x0FU || out[16] != 0x85U)
+    {
+        return false;
+    }
+
+    const std::uint8_t target_register = (out[7] >> 3U) & 0x07U;
+    const std::uint8_t compare_register = (out[14] >> 3U) & 0x07U;
+    if (!IsSafeTemporaryRegister(target_register) ||
+        compare_register != target_register)
+    {
+        return false;
+    }
+    if (ReadU32(out + 2U) != candidate->frame_count_address)
+    {
+        return false;
+    }
+
+    candidate->frame_target_address = ReadU32(out + 8U);
+    std::memcpy(loop_displacement, out + 17U,
+                sizeof(*loop_displacement));
     return true;
 }
 
 void LimitPlanToTransferControlBoundary(
     Piu10Mp3FrameBatchPlan* plan, std::uint32_t guest_ecx)
 {
-    if (plan == nullptr || plan->source_cursor == nullptr)
+    if (plan == nullptr || plan->source_cursor == nullptr ||
+        plan->service_counter_limit == 0U)
     {
         return;
     }
     const std::uint32_t cursor = *plan->source_cursor;
     const std::uint32_t cursor_distance =
-        cursor < kTransferControlCursor
-        ? kTransferControlCursor - cursor : 0U;
+        cursor < plan->service_cursor_threshold
+        ? plan->service_cursor_threshold - cursor : 0U;
     const std::uint32_t count_distance =
-        guest_ecx < kTransferControlCount - 1U
-        ? kTransferControlCount - 1U - guest_ecx : 0U;
+        guest_ecx < plan->service_counter_limit - 1U
+        ? plan->service_counter_limit - 1U - guest_ecx : 0U;
     const std::size_t boundary_distance =
         std::max(cursor_distance, count_distance);
     plan->bytes = plan->bytes.first(
         std::min(plan->bytes.size(), boundary_distance));
+}
+
+bool AddSignedAddress(std::uint32_t base, std::int64_t displacement,
+                      std::uint32_t* result)
+{
+    const std::int64_t value = static_cast<std::int64_t>(base) + displacement;
+    if (result == nullptr || value < 0 || value > UINT32_MAX)
+    {
+        return false;
+    }
+    *result = static_cast<std::uint32_t>(value);
+    return true;
+}
+
+bool DecodeFeederLayout(ThreadContext* context, std::uint32_t guest_source,
+                        FeederLayout* layout)
+{
+    if (context == nullptr || layout == nullptr ||
+        guest_source < kCodePrefixBytes)
+    {
+        return false;
+    }
+    const auto* out = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(guest_source));
+    const auto* code = out - kCodePrefixBytes;
+    if (!IsGuestRangeReadable(
+            context, code,
+            static_cast<std::uint32_t>(
+                kCodePrefixBytes + kCodeSuffixBytes)))
+    {
+        return false;
+    }
+
+    FeederLayout candidate;
+    std::int32_t loop_displacement = 0;
+    if (!DecodeFeederPrefix(code, out, &candidate) ||
+        !DecodeFeederSuffix(out, &candidate, &loop_displacement))
+    {
+        return false;
+    }
+
+    std::uint32_t loop_address = 0U;
+    if (!AddSignedAddress(
+            guest_source,
+            static_cast<std::int64_t>(kCodeSuffixBytes) + loop_displacement,
+            &loop_address) ||
+        loop_address >= guest_source ||
+        guest_source - loop_address > kMaximumLoopBackBytes)
+    {
+        return false;
+    }
+    const auto* loop = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(loop_address));
+    if (!IsGuestRangeReadable(context, loop, 27U) ||
+        loop[0] != 0x8BU || loop[1] != 0x15U ||
+        loop[6] != 0xA1U || loop[11] != 0x39U || loop[12] != 0xD0U ||
+        loop[13] != 0x7CU ||
+        ReadU32(loop + 7) != candidate.source_cursor_address)
+    {
+        return false;
+    }
+    candidate.available_end_address = ReadU32(loop + 2);
+
+    std::uint32_t service_address = 0U;
+    if (!AddSignedAddress(
+            loop_address + 15U, static_cast<std::int8_t>(loop[14]),
+            &service_address))
+    {
+        return false;
+    }
+    const auto* service = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(service_address));
+    if (service_address <= loop_address || service_address >= guest_source ||
+        !IsGuestRangeReadable(context, service, 12U) ||
+        service[0] != 0x83U || service[1] != 0xF9U ||
+        service[3] != 0x7CU || service[5] != 0x3DU ||
+        service[10] != 0x7CU || service[2] == 0U ||
+        (service[2] & 0x80U) != 0U)
+    {
+        return false;
+    }
+    std::uint32_t first_target = 0U;
+    std::uint32_t second_target = 0U;
+    if (!AddSignedAddress(
+            service_address + 5U, static_cast<std::int8_t>(service[4]),
+            &first_target) ||
+        !AddSignedAddress(
+            service_address + 12U, static_cast<std::int8_t>(service[11]),
+            &second_target) ||
+        first_target != second_target || first_target <= service_address ||
+        first_target >= guest_source - kCodePrefixBytes)
+    {
+        return false;
+    }
+    candidate.service_counter_limit = service[2];
+    candidate.service_cursor_threshold = ReadU32(service + 6);
+    *layout = candidate;
+    return true;
 }
 
 bool AuditPiu10Mp3FrameTail(
@@ -121,19 +394,15 @@ bool AuditPiu10Mp3FrameTail(
 
     if (context->piu10_mp3_frame_batch_audit_active)
     {
-        std::uint32_t cursor_address = 0U;
-        std::uint32_t count_address = 0U;
-        if (!AddAddress(context->piu10_mp3_data_object_base,
-                        kSourceCursorOffset, &cursor_address) ||
-            !AddAddress(context->piu10_mp3_data_object_base,
-                        kFrameByteCountOffset, &count_address))
+        FeederLayout layout;
+        if (!DecodeFeederLayout(context, guest_source, &layout))
         {
             return true;
         }
         const auto* cursor = reinterpret_cast<const std::uint32_t*>(
-            static_cast<std::uintptr_t>(cursor_address));
+            static_cast<std::uintptr_t>(layout.source_cursor_address));
         const auto* count = reinterpret_cast<const std::uint32_t*>(
-            static_cast<std::uintptr_t>(count_address));
+            static_cast<std::uintptr_t>(layout.frame_count_address));
         const std::uint32_t index =
             context->piu10_mp3_frame_batch_audit_index;
         const std::uint32_t expected_cursor =
@@ -232,99 +501,33 @@ bool BuildPiu10Mp3FrameBatchPlan(
     }
     *plan = Piu10Mp3FrameBatchPlan{};
 
-    std::uint32_t expected_source = 0U;
-    if (!AddAddress(context->runtime_base, kPumpitoMp3OutOffset,
-                    &expected_source) ||
-        guest_source != expected_source || guest_source < kCodePrefixBytes)
+    FeederLayout layout;
+    if (!DecodeFeederLayout(context, guest_source, &layout))
     {
-        ReportRejection(context, BatchRejection::kGuestSource,
-                        "guest-source", guest_source, expected_source,
-                        context->runtime_base, kPumpitoMp3OutOffset);
-        return false;
-    }
-
-    const auto* code = reinterpret_cast<const std::uint8_t*>(
-        static_cast<std::uintptr_t>(guest_source - kCodePrefixBytes));
-    if (!IsGuestRangeReadable(
-            context, code,
-            static_cast<std::uint32_t>(kCodePrefixBytes + kCodeSuffixBytes)))
-    {
-        ReportRejection(context, BatchRejection::kCodeRange, "code-range",
-                        guest_source,
-                        static_cast<std::uint32_t>(
-                            reinterpret_cast<std::uintptr_t>(code)),
-                        context->runtime_base, context->runtime_size);
-        return false;
-    }
-    const std::uint8_t* out = code + kCodePrefixBytes;
-    const bool signature_valid =
-        out[-20] == 0x89U && out[-19] == 0x15U &&
-        out[-14] == 0x8AU && out[-13] == 0x80U &&
-        out[-8] == 0x89U && out[-7] == 0xF2U &&
-        out[-6] == 0x89U && out[-5] == 0x2DU && out[0] == 0xEEU &&
-        out[1] == 0xA1U && out[6] == 0x8BU && out[7] == 0x15U &&
-        out[12] == 0x41U && out[13] == 0x39U && out[14] == 0xD0U &&
-        out[15] == 0x0FU && out[16] == 0x85U &&
-        out[17] == 0xDAU && out[18] == 0xFEU &&
-        out[19] == 0xFFU && out[20] == 0xFFU;
-    if (!signature_valid)
-    {
-        ReportRejection(context, BatchRejection::kSignature, "signature",
-                        guest_source, ReadU32(out - 20), ReadU32(out - 4),
-                        ReadU32(out), ReadU32(out + 12));
-        return false;
-    }
-
-    std::uint32_t source_cursor_address = 0U;
-    std::uint32_t available_end_address = 0U;
-    std::uint32_t frame_target_address = 0U;
-    std::uint32_t frame_count_address = 0U;
-    std::uint32_t source_buffer_address = 0U;
-    if (!AddAddress(context->piu10_mp3_data_object_base,
-                    kSourceCursorOffset,
-                    &source_cursor_address) ||
-        !AddAddress(context->piu10_mp3_data_object_base,
-                    kAvailableEndOffset,
-                    &available_end_address) ||
-        !AddAddress(context->piu10_mp3_data_object_base,
-                    kFrameByteTargetOffset,
-                    &frame_target_address) ||
-        !AddAddress(context->piu10_mp3_data_object_base,
-                    kFrameByteCountOffset,
-                    &frame_count_address) ||
-        !AddAddress(context->piu10_mp3_data_object_base,
-                    kSourceBufferOffset,
-                    &source_buffer_address) ||
-        ReadU32(out - 18) != source_cursor_address ||
-        ReadU32(out - 12) != source_buffer_address ||
-        ReadU32(out - 4) != frame_count_address ||
-        ReadU32(out + 2) != frame_count_address ||
-        ReadU32(out + 8) != frame_target_address)
-    {
-        ReportRejection(context, BatchRejection::kRelocation, "relocation",
-                        guest_source, ReadU32(out - 18),
-                        source_cursor_address, ReadU32(out - 12),
-                        source_buffer_address);
+        ReportRejection(context, BatchRejection::kShape, "shape",
+                        guest_source, context->runtime_base,
+                        context->runtime_size);
         return false;
     }
 
     auto* source_cursor = reinterpret_cast<std::uint32_t*>(
-        static_cast<std::uintptr_t>(source_cursor_address));
+        static_cast<std::uintptr_t>(layout.source_cursor_address));
     auto* frame_count = reinterpret_cast<std::uint32_t*>(
-        static_cast<std::uintptr_t>(frame_count_address));
+        static_cast<std::uintptr_t>(layout.frame_count_address));
     const auto* available_end = reinterpret_cast<const std::uint32_t*>(
-        static_cast<std::uintptr_t>(available_end_address));
+        static_cast<std::uintptr_t>(layout.available_end_address));
     const auto* frame_target = reinterpret_cast<const std::uint32_t*>(
-        static_cast<std::uintptr_t>(frame_target_address));
+        static_cast<std::uintptr_t>(layout.frame_target_address));
     if (!IsGuestRangeWritable(context, source_cursor, sizeof(*source_cursor)) ||
         !IsGuestRangeWritable(context, frame_count, sizeof(*frame_count)) ||
         !IsGuestRangeReadable(context, available_end, sizeof(*available_end)) ||
         !IsGuestRangeReadable(context, frame_target, sizeof(*frame_target)))
     {
         ReportRejection(context, BatchRejection::kStateRange, "state-range",
-                        guest_source, source_cursor_address,
-                        available_end_address, frame_target_address,
-                        frame_count_address);
+                        guest_source, layout.source_cursor_address,
+                        layout.available_end_address,
+                        layout.frame_target_address,
+                        layout.frame_count_address);
         return false;
     }
 
@@ -347,17 +550,17 @@ bool BuildPiu10Mp3FrameBatchPlan(
         static_cast<std::size_t>(target - count)});
     if (batch_bytes == 0U ||
         cursor > std::numeric_limits<std::uint32_t>::max() -
-            source_buffer_address)
+            layout.source_buffer_address)
     {
         ReportRejection(context, BatchRejection::kSourceAddress,
                         "source-address", guest_source, cursor,
-                        source_buffer_address,
+                        layout.source_buffer_address,
                         static_cast<std::uint32_t>(batch_bytes),
                         static_cast<std::uint32_t>(maximum_bytes));
         return false;
     }
     const auto* source = reinterpret_cast<const std::uint8_t*>(
-        static_cast<std::uintptr_t>(source_buffer_address + cursor));
+        static_cast<std::uintptr_t>(layout.source_buffer_address + cursor));
     if (!IsGuestRangeReadable(
             context, source, static_cast<std::uint32_t>(batch_bytes)))
     {
@@ -373,6 +576,8 @@ bool BuildPiu10Mp3FrameBatchPlan(
     plan->bytes = std::span<const std::uint8_t>(source, batch_bytes);
     plan->source_cursor = source_cursor;
     plan->frame_byte_count = frame_count;
+    plan->service_cursor_threshold = layout.service_cursor_threshold;
+    plan->service_counter_limit = layout.service_counter_limit;
     return true;
 }
 

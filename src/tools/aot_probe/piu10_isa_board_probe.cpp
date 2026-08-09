@@ -251,7 +251,7 @@ bool RunPiu10IsaBoardProbe()
         decoder_fifo.ring_size() == 0U &&
         decoder_fifo.inflight_high_water() == 4096U;
 
-    constexpr std::size_t kSyntheticArenaBytes = 0x00456000U;
+    constexpr std::size_t kSyntheticArenaBytes = 0x00300000U;
     std::vector<std::uint8_t> synthetic_arena(kSyntheticArenaBytes, 0U);
     auto batch_context =
         std::make_unique<platform::win32::ThreadContext>();
@@ -260,9 +260,13 @@ bool RunPiu10IsaBoardProbe()
     batch_context->runtime_size =
         static_cast<std::uint32_t>(synthetic_arena.size());
     batch_context->piu10_mp3_frame_batch_enabled = true;
-    batch_context->piu10_mp3_data_object_base =
-        batch_context->runtime_base + 0x00110000U;
-    auto* batch_out = synthetic_arena.data() + 0x000212FDU;
+    constexpr std::uint32_t kBatchOutOffset = 0x00034567U;
+    constexpr std::uint32_t kCursorOffset = 0x00201020U;
+    constexpr std::uint32_t kAvailableEndOffset = 0x00201024U;
+    constexpr std::uint32_t kFrameTargetOffset = 0x00201018U;
+    constexpr std::uint32_t kFrameCountOffset = 0x0020101CU;
+    constexpr std::uint32_t kSourceBufferOffset = 0x00202038U;
+    auto* batch_out = synthetic_arena.data() + kBatchOutOffset;
     const auto runtime_address = [&batch_context](std::uint32_t offset) {
         return batch_context->runtime_base + offset;
     };
@@ -270,71 +274,172 @@ bool RunPiu10IsaBoardProbe()
                               std::uint32_t source) {
         std::memcpy(destination, &source, sizeof(source));
     };
+    const std::uint32_t cursor_address = runtime_address(kCursorOffset);
+    const std::uint32_t available_end_address =
+        runtime_address(kAvailableEndOffset);
+    const std::uint32_t frame_target_address =
+        runtime_address(kFrameTargetOffset);
+    const std::uint32_t frame_count_address =
+        runtime_address(kFrameCountOffset);
+    const std::uint32_t source_buffer_address =
+        runtime_address(kSourceBufferOffset);
+    batch_out[-35] = 0xA1U;
+    write_u32(batch_out - 34, cursor_address);
+    batch_out[-30] = 0x8BU;
+    batch_out[-29] = 0x2DU;
+    write_u32(batch_out - 28, frame_count_address);
+    batch_out[-24] = 0x8DU;
+    batch_out[-23] = 0x50U;
+    batch_out[-22] = 0x01U;
+    batch_out[-21] = 0x45U;
     batch_out[-20] = 0x89U;
     batch_out[-19] = 0x15U;
-    const auto data_address = [&batch_context](std::uint32_t offset) {
-        return batch_context->piu10_mp3_data_object_base + offset;
-    };
-    write_u32(batch_out - 18, data_address(0x00343420U));
+    write_u32(batch_out - 18, cursor_address);
     batch_out[-14] = 0x8AU;
     batch_out[-13] = 0x80U;
-    write_u32(batch_out - 12, data_address(0x00343438U));
+    write_u32(batch_out - 12, source_buffer_address);
     batch_out[-8] = 0x89U;
     batch_out[-7] = 0xF2U;
     batch_out[-6] = 0x89U;
     batch_out[-5] = 0x2DU;
-    write_u32(batch_out - 4, data_address(0x0034341CU));
+    write_u32(batch_out - 4, frame_count_address);
     batch_out[0] = 0xEEU;
     batch_out[1] = 0xA1U;
-    write_u32(batch_out + 2, data_address(0x0034341CU));
+    write_u32(batch_out + 2, frame_count_address);
     batch_out[6] = 0x8BU;
     batch_out[7] = 0x15U;
-    write_u32(batch_out + 8, data_address(0x00343418U));
+    write_u32(batch_out + 8, frame_target_address);
     const std::array<std::uint8_t, 9> batch_suffix = {
         0x41U, 0x39U, 0xD0U, 0x0FU, 0x85U,
         0xDAU, 0xFEU, 0xFFU, 0xFFU};
     std::memcpy(batch_out + 12, batch_suffix.data(), batch_suffix.size());
-    write_u32(synthetic_arena.data() + 0x00453420U, 11U);
-    write_u32(synthetic_arena.data() + 0x00453424U, 15U);
-    write_u32(synthetic_arena.data() + 0x00453418U, 5U);
-    write_u32(synthetic_arena.data() + 0x0045341CU, 1U);
+    auto* loop = batch_out - 273;
+    loop[0] = 0x8BU;
+    loop[1] = 0x15U;
+    write_u32(loop + 2, available_end_address);
+    loop[6] = 0xA1U;
+    write_u32(loop + 7, cursor_address);
+    loop[11] = 0x39U;
+    loop[12] = 0xD0U;
+    loop[13] = 0x7CU;
+    loop[14] = 0x1BU;
+    auto* service = loop + 42;
+    const std::array<std::uint8_t, 12> service_prefix = {
+        0x83U, 0xF9U, 0x64U, 0x7CU, 0x21U, 0x3DU,
+        0x6CU, 0x07U, 0x00U, 0x00U, 0x7CU, 0x1AU};
+    std::memcpy(service, service_prefix.data(), service_prefix.size());
+    write_u32(synthetic_arena.data() + kCursorOffset, 11U);
+    write_u32(synthetic_arena.data() + kAvailableEndOffset, 15U);
+    write_u32(synthetic_arena.data() + kFrameTargetOffset, 5U);
+    write_u32(synthetic_arena.data() + kFrameCountOffset, 1U);
     const std::array<std::uint8_t, 4> batch_payload = {
         0x11U, 0x22U, 0x33U, 0x44U};
-    std::memcpy(synthetic_arena.data() + 0x00453438U + 11U,
+    std::memcpy(synthetic_arena.data() + kSourceBufferOffset + 11U,
                 batch_payload.data(), batch_payload.size());
     platform::win32::Piu10Mp3FrameBatchPlan batch_plan;
     std::uint32_t batch_ecx = 100U;
     const bool batch_plan_valid =
         platform::win32::BuildPiu10Mp3FrameBatchPlan(
-            batch_context.get(), runtime_address(0x000212FDU), 10U,
+            batch_context.get(), runtime_address(kBatchOutOffset), 10U,
             &batch_plan) &&
         batch_plan.bytes.size() == batch_payload.size() &&
+        batch_plan.service_counter_limit == 100U &&
+        batch_plan.service_cursor_threshold == 0x76CU &&
         std::equal(batch_plan.bytes.begin(), batch_plan.bytes.end(),
                    batch_payload.begin());
+
+    constexpr std::uint32_t kVariantBatchOutOffset = 0x00045678U;
+    auto* variant_out = synthetic_arena.data() + kVariantBatchOutOffset;
+    variant_out[-35] = 0xA1U;
+    write_u32(variant_out - 34, cursor_address);
+    variant_out[-30] = 0x8DU;
+    variant_out[-29] = 0x50U;
+    variant_out[-28] = 0x01U;
+    variant_out[-27] = 0x89U;
+    variant_out[-26] = 0x15U;
+    write_u32(variant_out - 25, cursor_address);
+    variant_out[-21] = 0x8BU;
+    variant_out[-20] = 0x15U;
+    write_u32(variant_out - 19, frame_count_address);
+    variant_out[-15] = 0x42U;
+    variant_out[-14] = 0x8AU;
+    variant_out[-13] = 0x80U;
+    write_u32(variant_out - 12, source_buffer_address);
+    variant_out[-8] = 0x89U;
+    variant_out[-7] = 0x15U;
+    write_u32(variant_out - 6, frame_count_address);
+    variant_out[-2] = 0x89U;
+    variant_out[-1] = 0xF2U;
+    variant_out[0] = 0xEEU;
+    variant_out[1] = 0xA1U;
+    write_u32(variant_out + 2, frame_count_address);
+    variant_out[6] = 0x8BU;
+    variant_out[7] = 0x1DU;
+    write_u32(variant_out + 8, frame_target_address);
+    variant_out[12] = 0x41U;
+    variant_out[13] = 0x39U;
+    variant_out[14] = 0xD8U;
+    variant_out[15] = 0x0FU;
+    variant_out[16] = 0x85U;
+    auto* variant_loop = variant_out - 284;
+    const std::int32_t variant_loop_displacement =
+        static_cast<std::int32_t>(variant_loop - (variant_out + 21));
+    std::memcpy(variant_out + 17, &variant_loop_displacement,
+                sizeof(variant_loop_displacement));
+    variant_loop[0] = 0x8BU;
+    variant_loop[1] = 0x15U;
+    write_u32(variant_loop + 2, available_end_address);
+    variant_loop[6] = 0xA1U;
+    write_u32(variant_loop + 7, cursor_address);
+    variant_loop[11] = 0x39U;
+    variant_loop[12] = 0xD0U;
+    variant_loop[13] = 0x7CU;
+    variant_loop[14] = 0x1BU;
+    std::memcpy(variant_loop + 42, service_prefix.data(),
+                service_prefix.size());
+    platform::win32::Piu10Mp3FrameBatchPlan variant_plan;
+    const bool variant_plan_valid =
+        platform::win32::BuildPiu10Mp3FrameBatchPlan(
+            batch_context.get(), runtime_address(kVariantBatchOutOffset),
+            10U, &variant_plan) &&
+        variant_plan.bytes.size() == batch_payload.size() &&
+        variant_plan.service_counter_limit == 100U &&
+        variant_plan.service_cursor_threshold == 0x76CU &&
+        std::equal(variant_plan.bytes.begin(), variant_plan.bytes.end(),
+                   batch_payload.begin());
+
+    write_u32(batch_out - 18, cursor_address + 4U);
+    platform::win32::Piu10Mp3FrameBatchPlan rejected_plan;
+    const bool relocation_independent_fail_closed =
+        !platform::win32::BuildPiu10Mp3FrameBatchPlan(
+            batch_context.get(), runtime_address(kBatchOutOffset), 10U,
+            &rejected_plan);
+    write_u32(batch_out - 18, cursor_address);
     const bool batch_commit_valid = batch_plan_valid &&
         platform::win32::CommitPiu10Mp3FrameBatch(
             batch_plan, 3U, &batch_ecx) &&
         batch_ecx == 103U &&
         *batch_plan.source_cursor == 14U &&
         *batch_plan.frame_byte_count == 4U;
-    const bool frame_batch_valid = batch_plan_valid && batch_commit_valid;
+    const bool frame_batch_valid = batch_plan_valid && variant_plan_valid &&
+        batch_commit_valid && relocation_independent_fail_closed;
 
-    write_u32(synthetic_arena.data() + 0x00453420U, 11U);
-    write_u32(synthetic_arena.data() + 0x0045341CU, 1U);
+    write_u32(synthetic_arena.data() + kCursorOffset, 11U);
+    write_u32(synthetic_arena.data() + kFrameCountOffset, 1U);
     batch_context->piu10_mp3_frame_batch_audit_enabled = true;
     std::uint32_t audit_ecx = 100U;
     platform::win32::TransferPiu10Mp3FrameTail(
-        batch_context.get(), runtime_address(0x000212FDU), 0xAAU,
+        batch_context.get(), runtime_address(kBatchOutOffset), 0xAAU,
         &audit_ecx);
     for (std::size_t index = 0U; index < batch_payload.size(); ++index)
     {
-        write_u32(synthetic_arena.data() + 0x00453420U,
+        write_u32(synthetic_arena.data() + kCursorOffset,
                   static_cast<std::uint32_t>(12U + index));
-        write_u32(synthetic_arena.data() + 0x0045341CU,
+        write_u32(synthetic_arena.data() + kFrameCountOffset,
                   static_cast<std::uint32_t>(2U + index));
         audit_ecx = static_cast<std::uint32_t>(101U + index);
         platform::win32::TransferPiu10Mp3FrameTail(
-            batch_context.get(), runtime_address(0x000212FDU),
+            batch_context.get(), runtime_address(kBatchOutOffset),
             batch_payload[index], &audit_ecx);
     }
     const bool frame_audit_valid =
@@ -455,7 +560,12 @@ bool RunPiu10IsaBoardProbe()
     std::cout << "piu10_mp3_frame_batch="
               << (frame_batch_valid ? "true" : "false")
               << ",bytes=" << batch_plan.bytes.size()
-              << ",ecx=" << batch_ecx << "\n";
+              << ",ecx=" << batch_ecx
+              << ",relocated=true,variant="
+              << (variant_plan_valid ? "true" : "false")
+              << ",fail-closed="
+              << (relocation_independent_fail_closed ? "true" : "false")
+              << "\n";
     std::cout << "piu10_mp3_frame_audit="
               << (frame_audit_valid ? "true" : "false")
               << ",frames="

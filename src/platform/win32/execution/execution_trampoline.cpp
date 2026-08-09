@@ -3962,16 +3962,6 @@ bool RunWin32ExecutionThread(
         ? aot_placement->entry_address : entry_address;
     context.runtime_base = placement.placed_base;
     context.runtime_size = placement.placed_size;
-    for (const repiu::runtime::RelocatedSelectorBinding& binding :
-         placement.selector_bindings)
-    {
-        if (binding.target_object == 4U)
-        {
-            context.piu10_mp3_data_object_base =
-                binding.relocated_base_address;
-            break;
-        }
-    }
     context.guest_initial_esp = guest_initial_esp;
     context.use_guest_stack = use_guest_stack;
     context.enable_privileged_trap_hle = enable_privileged_trap_hle;
@@ -4124,8 +4114,7 @@ bool RunWin32ExecutionThread(
         std::fprintf(stderr,
                      "[repiu-piu10-mp3] startup latency=%u ms\n",
                      piu10_mp3_latency_ms);
-        context.piu10_mp3_frame_batch_enabled =
-            sound_rom_zip_path->stem().string() == "pumpito";
+        context.piu10_mp3_frame_batch_enabled = true;
         char mp3_batch_audit_value[2] = {};
         context.piu10_mp3_frame_batch_audit_enabled =
             context.piu10_mp3_frame_batch_enabled &&
@@ -4140,7 +4129,6 @@ bool RunWin32ExecutionThread(
         }
         char mp3_stream_audit_value[2] = {};
         const bool mp3_stream_audit_enabled =
-            context.piu10_mp3_frame_batch_enabled &&
             GetEnvironmentVariableA(
                 "REPIU_PIU10_MP3_STREAM_AUDIT", mp3_stream_audit_value,
                 static_cast<DWORD>(std::size(mp3_stream_audit_value))) == 1U &&

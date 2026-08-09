@@ -1015,3 +1015,92 @@ reports `demand_low=true,pop_keeps_low=true,demand_high=true,inflight_high=4096`
 mid-song interruption no longer occurred. Decoder-inflight backpressure is therefore confirmed as
 an effective mitigation for that symptom. The actual `compressed-inflight` value at the former
 interruption point and precise note synchronization have not yet been measured.
+
+## 17. PIU10 MP3 batch의 바이너리 독립화 (Task 465)
+
+### 한국어
+
+**확인됨:** 기존 frame-tail batch는 `pumpito` ROM-set 이름, image offset `0x212FD`, LE object
+4와 `0x3434xx` data offset을 직접 사용했습니다. MP3 decoder, FIFO와 단일-byte fast path는
+PIU10 capability 공용이었지만 처리량을 결정하는 batch만 특정 바이너리 배치에 묶여
+있었습니다.
+
+**교정됨:** target 이름과 모든 고정 code/object/data offset을 제거했습니다. matcher는 현재
+`OUT DX,AL`의 bounded 주변 코드에서 검증된 feeder shape를 확인하고, instruction operand와
+backward/forward branch target에서 cursor, available end, source buffer, frame count/target과
+주기적 service 경계를 추출합니다. 추출한 주소의 alias와 runtime 범위까지 일치해야 하며,
+실패하면 guest 상태를 바꾸지 않고 scalar byte path를 유지합니다. batch와 stream audit는
+모든 PIU10-capable target에서 사용할 수 있습니다.
+
+**검증됨:** 기존 상수와 다른 synthetic code/data 위치에서 4-byte plan과 3-byte partial commit
+후 `ECX=103`을 확인했습니다. cursor operand 하나를 다른 주소로 바꾸면 matcher가
+fail-closed했습니다. probe 결과는
+`piu10_mp3_frame_batch=true,bytes=4,ecx=103,relocated=true,fail-closed=true`입니다. Win32 x86
+Debug `repiu`와 `repiu_aot_probe` 빌드도 성공했습니다.
+
+**추가 확인:** 사용자 `pumpitc` 실행은 `verified frame-tail batch active`를 기록했고 최종
+5,530,320 byte 중 5,452,054 byte(약 98.6%)를 batch 처리했습니다. 반면 수정 전 `pumpite`
+실행은 `OUT DX,AL`의 relocated EIP `0x0402D167`(object 2 `+0x1D167`)에서 shape를 거부하고
+83,376 byte를 모두 scalar로 처리했습니다. 정적 명령열은 같은 cursor/count/frame-target
+계약과 같은 backward loop `+0x1D04B`, service 조건 `ECX < 100` 및 cursor `< 0x76C`를
+사용하지만, frame count register가 `EBP`에서 `EDX`로, frame target register가 `EDX`에서
+`EBX`로 바뀌고 독립 갱신 명령의 순서도 달랐습니다.
+
+**추가 교정 및 검증:** prefix/suffix matcher는 제한된 x86 명령을 decode하여 cursor와
+frame-count의 load/increment/store alias, register def-use와 `ESI -> EDX` port restore 전
+clobber 순서를 검증합니다. 임시 register 번호와 독립 명령 순서는 고정하지 않습니다. 기존
+schedule과 `pumpite` schedule을 서로 다른 synthetic 위치에 배치한 probe가 모두 같은 4-byte
+plan을 만들었고, 기존 alias 손상 arm도 계속 fail-closed했습니다. 결과는
+`piu10_mp3_frame_batch=true,bytes=4,ecx=103,relocated=true,variant=true,fail-closed=true`입니다.
+Win32 x86 Debug `repiu_aot_probe`와 `repiu` 빌드가 성공했습니다. 수정 후 실제 `pumpite`
+batch 활성화는 아래 사용자 실기 로그에서 확인했습니다.
+
+**사용자 실기 검증:** 수정 후 `pumpite` 로그는 `verified frame-tail batch active`를 기록했고,
+첫 checkpoint에서 66,478 byte 중 65,596 byte(약 98.7%)를 batch 처리했습니다. 이전 실행의
+`batched=0`과 달리 313초 이상 guest 실행과 입력 처리가 계속됐으며, 사용자는 상태가
+좋아졌다고 확인했습니다. 이 캡처에는 정상 종료 통계가 없으므로 전체 실행의 최종 batch
+비율은 측정하지 않았습니다.
+
+### English
+
+**Confirmed:** The former frame-tail batch directly depended on the `pumpito` ROM-set name, image
+offset `0x212FD`, LE object 4, and `0x3434xx` data offsets. The decoder, FIFO, and scalar-byte fast
+path were PIU10-capability features, but the throughput-critical batch remained tied to one binary
+layout.
+
+**Corrected:** The target name and every fixed code, object, and data offset are removed. The
+matcher validates a bounded feeder shape around the current `OUT DX,AL`, then derives the cursor,
+available end, source buffer, frame count/target, and periodic-service boundary from instruction
+operands and backward/forward branch targets. Operand aliases and runtime ranges must also agree;
+otherwise no guest state changes and the scalar byte path remains active. Batch and stream audits
+are available to every PIU10-capable target.
+
+**Verified:** A synthetic loop at code and data locations unrelated to the former constants
+produced a four-byte plan and `ECX=103` after a three-byte partial commit. Redirecting one cursor
+operand made the matcher fail closed. The probe reports
+`piu10_mp3_frame_batch=true,bytes=4,ecx=103,relocated=true,fail-closed=true`. Win32 x86 Debug builds
+of `repiu` and `repiu_aot_probe` also succeeded.
+
+**Additional confirmation:** A user `pumpitc` run logged `verified frame-tail batch active` and
+batched 5,452,054 of 5,530,320 bytes, about 98.6%. Before this correction, a `pumpite` run rejected
+the shape at relocated `OUT DX,AL` EIP `0x0402D167` (object 2 `+0x1D167`) and processed all 83,376
+bytes through the scalar path. Static instructions use the same cursor/count/frame-target contract,
+the same backward loop at `+0x1D04B`, and the same service conditions `ECX < 100` and cursor
+`< 0x76C`; however, the frame-count register changes from `EBP` to `EDX`, the target register from
+`EDX` to `EBX`, and independent updates are reordered.
+
+**Additional correction and verification:** The prefix/suffix matcher now decodes a restricted x86
+instruction set and validates cursor and frame-count load/increment/store aliases, register def-use,
+and clobber ordering before the `ESI -> EDX` port restore. Temporary-register numbers and ordering
+of independent instructions are not fixed. Synthetic loops for both the original and `pumpite`
+schedules produce the same four-byte plan, while the existing corrupted-alias arm still fails
+closed. The probe reports
+`piu10_mp3_frame_batch=true,bytes=4,ecx=103,relocated=true,variant=true,fail-closed=true`.
+Win32 x86 Debug builds of `repiu_aot_probe` and `repiu` succeeded. The following live user log
+confirms post-fix `pumpite` activation.
+
+**Live user validation:** After the correction, the `pumpite` log records
+`verified frame-tail batch active` and batches 65,596 of 66,478 bytes at the first checkpoint,
+about 98.7%. Unlike the former `batched=0` run, guest execution and input processing continue for
+more than 313 seconds, and the user confirms that behavior improved. The capture has no orderly
+shutdown statistics, so the final batch ratio over the full run was not measured.

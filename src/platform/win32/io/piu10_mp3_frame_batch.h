@@ -14,6 +14,8 @@ struct Piu10Mp3FrameBatchPlan
     std::span<const std::uint8_t> bytes;
     std::uint32_t* source_cursor = nullptr;
     std::uint32_t* frame_byte_count = nullptr;
+    std::uint32_t service_cursor_threshold = 0U;
+    std::uint32_t service_counter_limit = 0U;
 };
 
 bool BuildPiu10Mp3FrameBatchPlan(

@@ -701,7 +701,6 @@ struct ThreadContext
     std::atomic<std::uint64_t> piu10_mp3_fast_path_write_count{0};
     std::atomic<std::uint64_t> piu10_mp3_frame_batch_byte_count{0};
     bool piu10_mp3_frame_batch_enabled = false;
-    std::uint32_t piu10_mp3_data_object_base = 0U;
     std::uint32_t piu10_mp3_frame_batch_rejection_mask = 0U;
     bool piu10_mp3_frame_batch_audit_enabled = false;
     bool piu10_mp3_frame_batch_audit_active = false;
