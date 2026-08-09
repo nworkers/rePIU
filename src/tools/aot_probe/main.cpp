@@ -620,6 +620,10 @@ int main(int argc, char** argv)
     {
         return RunTimerSafePointProbe() ? 0 : 1;
     }
+    if (argc == 2 && std::strcmp(argv[1], "--piu10") == 0)
+    {
+        return repiu::tools::RunPiu10IsaBoardProbe() ? 0 : 1;
+    }
 #endif
     const bool xref_mode = argc == 4 &&
         std::strcmp(argv[2], "--xref") == 0;

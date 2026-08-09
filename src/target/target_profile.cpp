@@ -54,6 +54,8 @@ const std::vector<TargetProfile>& BuiltInTargetProfiles()
                 0x00010000,
                 0x005D7000,
             },
+            false,
+            true,
         },
         TargetProfile{
             "pumpit2",
@@ -70,6 +72,8 @@ const std::vector<TargetProfile>& BuiltInTargetProfiles()
                 0x00010000,
                 0x005D7000,
             },
+            false,
+            true,
         },
         TargetProfile{
             "pumpit3",
@@ -86,6 +90,8 @@ const std::vector<TargetProfile>& BuiltInTargetProfiles()
                 0x00010000,
                 0x005D7000,
             },
+            false,
+            true,
         },
         TargetProfile{
             "pumpito",
@@ -104,6 +110,8 @@ const std::vector<TargetProfile>& BuiltInTargetProfiles()
                 0x005D7000,
             },
             true,
+            true,
+            50U,
         },
         TargetProfile{
             "pumpitc",
@@ -120,6 +128,7 @@ const std::vector<TargetProfile>& BuiltInTargetProfiles()
                 0x00010000,
                 0x005D7000,
             },
+            true,
             true,
         },
         TargetProfile{
@@ -138,6 +147,7 @@ const std::vector<TargetProfile>& BuiltInTargetProfiles()
                 0x005D7000,
             },
             true,
+            true,
         },
         TargetProfile{
             "pumpite",
@@ -154,6 +164,7 @@ const std::vector<TargetProfile>& BuiltInTargetProfiles()
                 0x00010000,
                 0x005D7000,
             },
+            true,
             true,
         },
     };

@@ -3,8 +3,11 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
+
+#include "repiu/sound/dac3350a_control.h"
 
 namespace repiu::hle
 {
@@ -20,9 +23,15 @@ public:
                                      kCat702TransformBytes>& cat702_transform,
                     std::string* message = nullptr);
     void Reset();
+    void SetMp3DataSink(std::function<void(std::uint8_t)> sink);
+    void SetMp3StatusSource(std::function<std::uint8_t()> source);
+    void SetDacControlSink(
+        std::function<void(const sound::Dac3350aControlEvent&)> sink);
 
     bool available() const { return available_; }
+    bool Read8(std::uint16_t port, std::uint8_t* value);
     bool Read16(std::uint16_t port, std::uint16_t* value);
+    bool Write8(std::uint16_t port, std::uint8_t value);
     bool Write16(std::uint16_t port, std::uint16_t value);
 
     std::uint32_t address() const { return address_; }
@@ -58,12 +67,17 @@ private:
 
     std::vector<std::uint8_t> flash_;
     Cat702Piu cat702_;
+    sound::Dac3350aControl dac3350a_;
     std::uint32_t address_ = 0;
     std::uint16_t destination_ = 0;
     bool flash_auto_increment_ = false;
     std::uint8_t mp3_frame_sync_ = 1;
     std::uint8_t mp3_demand_ = 1;
     bool available_ = false;
+    std::function<void(std::uint8_t)> mp3_data_sink_;
+    std::function<std::uint8_t()> mp3_status_source_;
+    std::function<void(const sound::Dac3350aControlEvent&)>
+        dac_control_sink_;
 };
 
 }  // namespace repiu::hle

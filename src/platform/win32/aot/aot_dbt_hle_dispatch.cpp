@@ -3,10 +3,12 @@
 #include "aot_runtime_dispatch.h"
 #include "execution_internal.h"
 #include "guest_memory_access.h"
+#include "piu10_mp3_frame_batch.h"
 
 #include <Zydis.h>
 
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 
 namespace repiu::platform::win32
@@ -106,6 +108,81 @@ bool RequiresVehMediatedHle(ThreadContext* context, std::uint32_t guest_eip)
     return false;
 }
 
+bool TryPiu10Mp3ByteFastPath(
+    ThreadContext* context, std::uint32_t* frame,
+    const runtime::AotDbtHleDispatchSite& site)
+{
+    const std::uint32_t guest_source = frame[kGuestSourceIndex];
+    const auto* instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(guest_source));
+    if (context == nullptr || !context->piu10_isa_board_enabled ||
+        !context->piu10_isa_board.available() ||
+        context->piu10_isa_board.destination() != 0x008U ||
+        !context->piu10_mp3_audio.available() ||
+        !IsGuestRangeReadable(context, instruction, 1U) ||
+        instruction[0] != 0xEEU ||
+        (frame[5] & 0xFFFFU) != 0x02DAU)
+    {
+        return false;
+    }
+
+    const std::uint8_t mp3_byte =
+        static_cast<std::uint8_t>(frame[7] & 0xFFU);
+    const bool mp3_byte_accepted =
+        context->piu10_mp3_audio.WriteByte(mp3_byte);
+    if (mp3_byte_accepted)
+    {
+        const std::uint64_t previous =
+            context->piu10_mp3_fast_path_write_count.fetch_add(
+                1U, std::memory_order_relaxed);
+        if (previous == 0U)
+        {
+            std::fprintf(stderr,
+                         "[repiu-piu10-mp3] AOT byte fast path active\n");
+        }
+    }
+    if (mp3_byte_accepted || context->piu10_mp3_frame_batch_audit_enabled)
+    {
+        TransferPiu10Mp3FrameTail(
+            context, guest_source, mp3_byte, &frame[6]);
+    }
+
+    const std::uint32_t next_guest = guest_source + 1U;
+    context->aot_dbt_hle_dispatch_last_source.store(
+        guest_source, std::memory_order_relaxed);
+    context->aot_dbt_hle_dispatch_last_next.store(
+        next_guest, std::memory_order_relaxed);
+    context->aot_dbt_hle_dispatch_last_bytes.store(
+        0x000000EEU, std::memory_order_relaxed);
+
+    const std::uint32_t cache_base = context->aot_placement->base_address;
+    frame[kGuestSourceIndex] = cache_base + site.success_cache_offset;
+    context->aot_legacy_fallback = false;
+
+    std::uint32_t cache_target = 0U;
+    if (ResolveAotTransferTarget(context, next_guest, &cache_target))
+    {
+        frame[kSavedEflagsIndex] &= ~0x00000100U;
+        frame[kDispatchAddressIndex] = cache_target;
+        context->aot_reentry_pending = false;
+        context->enable_single_step_trace = false;
+        context->aot_dbt_hle_dispatch_success_count.fetch_add(
+            1U, std::memory_order_relaxed);
+        AccumulateAotResidency(context, next_guest);
+        BumpAotReentryCount(context);
+    }
+    else
+    {
+        frame[kSavedEflagsIndex] |= 0x00000100U;
+        frame[kDispatchAddressIndex] = next_guest;
+        context->aot_reentry_pending = true;
+        context->enable_single_step_trace = true;
+        RecordAotDbtHleFallback(
+            context, AotDbtHleFallbackReason::kTargetMiss);
+    }
+    return true;
+}
+
 extern "C" void __stdcall ResolveAotDbtHleFrame(
     ThreadContext* context, std::uint32_t* frame)
 {
@@ -129,6 +206,11 @@ extern "C" void __stdcall ResolveAotDbtHleFrame(
             dispatch_address + kFallbackFromDispatchBytes;
         RecordAotDbtHleFallback(
             context, AotDbtHleFallbackReason::kInvalidSite);
+        return;
+    }
+
+    if (TryPiu10Mp3ByteFastPath(context, frame, site))
+    {
         return;
     }
 

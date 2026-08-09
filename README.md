@@ -102,6 +102,10 @@ roms/
 
 *The supported MAME CHD profiles are `pumpit1`, `pumpit2`, `pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, and `pumpite`. Each validates the matching PIU10 ROM set, mounts the CHD's ISO9660 tree under `build/runtime_mounts/<rom-set>/`, and starts `PIU/PIU.EXE`; an unchanged CHD identity reuses the cache.*
 
+`pumpito`의 MP3 출력은 노트와의 cabinet 지연을 맞추기 위해 기본 50 ms 지연을 사용합니다. 실행 전에 `REPIU_PIU10_MP3_LATENCY_MS`를 0~500의 정수로 지정하면 밀리초 단위로 덮어쓸 수 있으며, `0`은 보정을 끕니다. `REPIU_PIU10_DAC_AUDIT=1`은 DAC3350A 제어 transaction과 그 순간의 PCM queue, audio device buffer, compressed ring, decoder pending 상태를 기록합니다. 반복 측정과 해석 절차는 [PIU10 DAC audio backlog 감사 가이드](docs/guides/piu10-dac-audio-backlog-audit.md)를 따릅니다.
+
+*The `pumpito` MP3 output uses 50 ms of latency by default to approximate the cabinet path relative to notes. Set `REPIU_PIU10_MP3_LATENCY_MS` to an integer from 0 through 500 before launch to override it in milliseconds; `0` disables compensation. `REPIU_PIU10_DAC_AUDIT=1` records DAC3350A control transactions together with the PCM queue, audio-device buffer, compressed ring, and decoder-pending state at that instant. Follow the [PIU10 DAC audio backlog audit guide](docs/guides/piu10-dac-audio-backlog-audit.md) for repeatable capture and interpretation.*
+
 ### 3. 환경 준비와 전체 검증 / Set up and test
 
 PowerShell에서 저장소 루트를 기준으로 실행합니다.

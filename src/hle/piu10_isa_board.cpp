@@ -163,7 +163,44 @@ void Piu10IsaBoard::Reset()
     mp3_frame_sync_ = 1;
     mp3_demand_ = 1;
     cat702_.Reset();
+    dac3350a_.Reset();
 }
+
+void Piu10IsaBoard::SetMp3DataSink(
+    std::function<void(std::uint8_t)> sink)
+{
+    mp3_data_sink_ = std::move(sink);
+}
+
+void Piu10IsaBoard::SetMp3StatusSource(
+    std::function<std::uint8_t()> source)
+{
+    mp3_status_source_ = std::move(source);
+}
+
+void Piu10IsaBoard::SetDacControlSink(
+    std::function<void(const sound::Dac3350aControlEvent&)> sink)
+{
+    dac_control_sink_ = std::move(sink);
+}
+
+namespace
+{
+
+void WriteDacControl(
+    sound::Dac3350aControl* control,
+    const std::function<void(const sound::Dac3350aControlEvent&)>& sink,
+    std::uint8_t value)
+{
+    const std::optional<sound::Dac3350aControlEvent> event =
+        control->WriteLines(Bit(value, 1) != 0, Bit(value, 0) != 0);
+    if (event && sink)
+    {
+        sink(*event);
+    }
+}
+
+}  // namespace
 
 std::uint16_t Piu10IsaBoard::ReadFlashWord(std::uint32_t address) const
 {
@@ -186,9 +223,13 @@ bool Piu10IsaBoard::Read16(std::uint16_t port, std::uint16_t* value)
 
     if (destination_ == 0x008U)
     {
+        const std::uint8_t mp3_status = mp3_status_source_
+            ? static_cast<std::uint8_t>(mp3_status_source_() & 0x05U)
+            : static_cast<std::uint8_t>(
+                  (mp3_frame_sync_ << 2U) | mp3_demand_);
         *value = static_cast<std::uint16_t>(
             (cat702_.data_out() << 5U) |
-            (mp3_frame_sync_ << 2U) | (1U << 1U) | mp3_demand_);
+            mp3_status | (1U << 1U));
         return true;
     }
     if (destination_ == 0U)
@@ -202,6 +243,41 @@ bool Piu10IsaBoard::Read16(std::uint16_t port, std::uint16_t* value)
     }
 
     *value = 0;
+    return true;
+}
+
+bool Piu10IsaBoard::Read8(std::uint16_t port, std::uint8_t* value)
+{
+    if (value == nullptr)
+    {
+        return false;
+    }
+    std::uint16_t word = 0;
+    if (!Read16(port, &word))
+    {
+        return false;
+    }
+    *value = static_cast<std::uint8_t>(word & 0xFFU);
+    return true;
+}
+
+bool Piu10IsaBoard::Write8(std::uint16_t port, std::uint8_t value)
+{
+    if (!available_ || port != 0x02DAU)
+    {
+        return false;
+    }
+    if (destination_ == 0x008U && mp3_data_sink_)
+    {
+        mp3_data_sink_(value);
+    }
+    else if (destination_ == 0x010U)
+    {
+        cat702_.WriteData(Bit(value, 5));
+        cat702_.WriteClock(Bit(value, 4));
+        cat702_.WriteSelect(Bit(value, 3));
+        WriteDacControl(&dac3350a_, dac_control_sink_, value);
+    }
     return true;
 }
 
@@ -232,11 +308,18 @@ bool Piu10IsaBoard::Write16(std::uint16_t port, std::uint16_t value)
                 (destination_ & 0x000FU) | ((value & 0x00FFU) << 4U));
             return true;
         case 0x02DAU:
-            if (destination_ == 0x010U)
+            if (destination_ == 0x008U && mp3_data_sink_)
+            {
+                mp3_data_sink_(static_cast<std::uint8_t>(value & 0xFFU));
+            }
+            else if (destination_ == 0x010U)
             {
                 cat702_.WriteData(Bit(value, 5));
                 cat702_.WriteClock(Bit(value, 4));
                 cat702_.WriteSelect(Bit(value, 3));
+                WriteDacControl(
+                    &dac3350a_, dac_control_sink_,
+                    static_cast<std::uint8_t>(value & 0xFFU));
             }
             return true;
         case 0x02DCU:

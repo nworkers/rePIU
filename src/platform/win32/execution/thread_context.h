@@ -9,6 +9,7 @@
 #include "repiu/platform/win32/cd_audio_wave_out.h"
 #include "repiu/platform/win32/mscdex_command_trace.h"
 #include "repiu/platform/win32/ymz280b_audio_out.h"
+#include "repiu/platform/win32/piu10_mp3_audio_out.h"
 #include "repiu/platform/win32/glide_opengl_backend.h"
 #include "repiu/platform/win32/glide_ordinal_timing.h"
 #include "repiu/platform/win32/glide_setter_state_census.h"
@@ -30,6 +31,7 @@
 #include <memory>
 #include <cstdint>
 #include <atomic>
+#include <array>
 #include <string>
 #include <vector>
 #include <array>
@@ -690,10 +692,27 @@ struct ThreadContext
     // comes from CD audio tracks while effects come from the YMZ280B sample ROM.
     Ymz280bAudioOut ymz_audio;
     bool ymz_audio_available = false;
+    bool piu_jamma_board_enabled = false;
     // Separate ISA16 PIU10 flash/MP3/security board at 0x02D0..0x02DF.
     // This is not the JAMMA/YMZ280B board at 0x02A0..0x02AF.
+    Piu10Mp3AudioOut piu10_mp3_audio;
     repiu::hle::Piu10IsaBoard piu10_isa_board;
     bool piu10_isa_board_enabled = false;
+    std::atomic<std::uint64_t> piu10_mp3_fast_path_write_count{0};
+    std::atomic<std::uint64_t> piu10_mp3_frame_batch_byte_count{0};
+    bool piu10_mp3_frame_batch_enabled = false;
+    std::uint32_t piu10_mp3_data_object_base = 0U;
+    std::uint32_t piu10_mp3_frame_batch_rejection_mask = 0U;
+    bool piu10_mp3_frame_batch_audit_enabled = false;
+    bool piu10_mp3_frame_batch_audit_active = false;
+    std::array<std::uint8_t, 2048> piu10_mp3_frame_batch_audit_bytes = {};
+    std::uint32_t piu10_mp3_frame_batch_audit_size = 0U;
+    std::uint32_t piu10_mp3_frame_batch_audit_index = 0U;
+    std::uint32_t piu10_mp3_frame_batch_audit_cursor = 0U;
+    std::uint32_t piu10_mp3_frame_batch_audit_count = 0U;
+    std::uint32_t piu10_mp3_frame_batch_audit_ecx = 0U;
+    std::uint64_t piu10_mp3_frame_batch_audit_passed_frames = 0U;
+    std::uint64_t piu10_mp3_frame_batch_audit_mismatches = 0U;
     bool mscdex_available = false;
     bool cd_audio_available = false;
     std::uint8_t mscdex_drive = 3;

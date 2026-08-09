@@ -3858,7 +3858,9 @@ bool RunWin32ExecutionThread(
     const std::vector<exe::LeResidentName>* glide_exports,
     const std::filesystem::path* cd_chd_path,
     const std::filesystem::path* sound_rom_zip_path,
+    bool enable_piu_jamma_board,
     bool enable_piu10_isa_board,
+    std::uint32_t piu10_mp3_latency_ms,
     Win32AotCodeCachePlacement* aot_placement,
     runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
@@ -3960,6 +3962,16 @@ bool RunWin32ExecutionThread(
         ? aot_placement->entry_address : entry_address;
     context.runtime_base = placement.placed_base;
     context.runtime_size = placement.placed_size;
+    for (const repiu::runtime::RelocatedSelectorBinding& binding :
+         placement.selector_bindings)
+    {
+        if (binding.target_object == 4U)
+        {
+            context.piu10_mp3_data_object_base =
+                binding.relocated_base_address;
+            break;
+        }
+    }
     context.guest_initial_esp = guest_initial_esp;
     context.use_guest_stack = use_guest_stack;
     context.enable_privileged_trap_hle = enable_privileged_trap_hle;
@@ -3967,6 +3979,7 @@ bool RunWin32ExecutionThread(
     context.enable_segment_load_hle = enable_segment_load_hle;
     context.enable_dos_hle = enable_dos_hle;
     context.enable_single_step_trace = enable_single_step_trace;
+    context.piu_jamma_board_enabled = enable_piu_jamma_board;
     context.piu10_isa_board_enabled = enable_piu10_isa_board;
     context.aot_placement = aot_placement;
     context.execution_backend = execution_backend;
@@ -4075,7 +4088,7 @@ bool RunWin32ExecutionThread(
     // Sound is optional: a missing or unreadable ROM set leaves the PIU10 sound
     // window inert instead of failing the run, exactly like a cabinet with a dead
     // sound board still booting.
-    if (sound_rom_zip_path != nullptr)
+    if (enable_piu_jamma_board && sound_rom_zip_path != nullptr)
     {
         context.ymz_audio_available =
             context.ymz_audio.Open(*sound_rom_zip_path);
@@ -4083,6 +4096,62 @@ bool RunWin32ExecutionThread(
 
     if (enable_piu10_isa_board && sound_rom_zip_path != nullptr)
     {
+        constexpr std::uint32_t kMaximumMp3LatencyMs = 500U;
+        char mp3_latency_text[16] = {};
+        const DWORD mp3_latency_length = GetEnvironmentVariableA(
+            "REPIU_PIU10_MP3_LATENCY_MS", mp3_latency_text,
+            static_cast<DWORD>(std::size(mp3_latency_text)));
+        if (mp3_latency_length != 0U &&
+            mp3_latency_length < std::size(mp3_latency_text))
+        {
+            char* end = nullptr;
+            const unsigned long parsed = std::strtoul(
+                mp3_latency_text, &end, 10);
+            if (end != mp3_latency_text && *end == '\0' &&
+                parsed <= kMaximumMp3LatencyMs)
+            {
+                piu10_mp3_latency_ms = static_cast<std::uint32_t>(parsed);
+            }
+            else
+            {
+                std::fprintf(
+                    stderr,
+                    "[repiu-piu10-mp3] invalid latency '%s'; using %u ms\n",
+                    mp3_latency_text, piu10_mp3_latency_ms);
+            }
+        }
+        context.piu10_mp3_audio.SetStartupLatencyMs(piu10_mp3_latency_ms);
+        std::fprintf(stderr,
+                     "[repiu-piu10-mp3] startup latency=%u ms\n",
+                     piu10_mp3_latency_ms);
+        context.piu10_mp3_frame_batch_enabled =
+            sound_rom_zip_path->stem().string() == "pumpito";
+        char mp3_batch_audit_value[2] = {};
+        context.piu10_mp3_frame_batch_audit_enabled =
+            context.piu10_mp3_frame_batch_enabled &&
+            GetEnvironmentVariableA(
+                "REPIU_PIU10_MP3_BATCH_AUDIT", mp3_batch_audit_value,
+                static_cast<DWORD>(std::size(mp3_batch_audit_value))) == 1U &&
+            mp3_batch_audit_value[0] == '1';
+        if (context.piu10_mp3_frame_batch_audit_enabled)
+        {
+            std::fprintf(stderr,
+                         "[repiu-piu10-mp3] frame-tail audit enabled\n");
+        }
+        char mp3_stream_audit_value[2] = {};
+        const bool mp3_stream_audit_enabled =
+            context.piu10_mp3_frame_batch_enabled &&
+            GetEnvironmentVariableA(
+                "REPIU_PIU10_MP3_STREAM_AUDIT", mp3_stream_audit_value,
+                static_cast<DWORD>(std::size(mp3_stream_audit_value))) == 1U &&
+            mp3_stream_audit_value[0] == '1';
+        context.piu10_mp3_audio.SetStreamAuditEnabled(
+            mp3_stream_audit_enabled);
+        if (mp3_stream_audit_enabled)
+        {
+            std::fprintf(stderr,
+                         "[repiu-piu10-mp3-audit] stream audit enabled\n");
+        }
         repiu::assets::RomZipEntry flash =
             repiu::assets::ExtractRomZipEntry(
                 *sound_rom_zip_path, "piu10.u8");
@@ -4102,6 +4171,79 @@ bool RunWin32ExecutionThread(
             std::string piu10_message;
             context.piu10_isa_board.Initialize(
                 std::move(flash.data), transform, &piu10_message);
+            char dac_audit_value[2] = {};
+            const bool dac_audit_enabled =
+                GetEnvironmentVariableA(
+                    "REPIU_PIU10_DAC_AUDIT", dac_audit_value,
+                    static_cast<DWORD>(std::size(dac_audit_value))) == 1U &&
+                dac_audit_value[0] == '1';
+            context.piu10_isa_board.SetDacControlSink(
+                [&context, dac_audit_enabled](
+                    const repiu::sound::Dac3350aControlEvent& event) {
+                    Piu10Mp3AudioSnapshot snapshot;
+                    if (dac_audit_enabled)
+                    {
+                        snapshot = context.piu10_mp3_audio.Snapshot();
+                    }
+                    float applied_gain = 0.0F;
+                    bool gain_applied = false;
+                    if (event.analog_volume)
+                    {
+                        applied_gain =
+                            (event.left_gain + event.right_gain) * 0.5F;
+                        gain_applied =
+                            context.piu10_mp3_audio.SetGain(applied_gain);
+                    }
+                    if (dac_audit_enabled)
+                    {
+                        std::fprintf(
+                            stderr,
+                            "[repiu-piu10-dac] subaddress=0x%02X "
+                            "data=0x%04X bytes=%zu analog-volume=%s "
+                            "left=%u right=%u left-gain=%.6f "
+                            "right-gain=%.6f applied-gain=%.6f "
+                            "gain-applied=%s muted=%s "
+                            "audio-ready=%s pcm-queued-bytes=%d "
+                            "pcm-queued-ms=%.3f pcm-format=%d/%d/S16 "
+                            "device-buffer-frames=%d device-buffer-ms=%.3f "
+                            "device-rate=%d compressed-ring=%zu "
+                            "decoder-pending=%zu compressed-inflight=%zu "
+                            "received=%llu decoded=%llu "
+                            "frame-sync=%u\n",
+                            event.subaddress, event.data, event.data_bytes,
+                            event.analog_volume ? "true" : "false",
+                            event.left_volume, event.right_volume,
+                            event.left_gain, event.right_gain, applied_gain,
+                            gain_applied ? "true" : "false",
+                            event.stereo_muted ? "true" : "false",
+                            snapshot.available ? "true" : "false",
+                            snapshot.pcm_queued_bytes,
+                            snapshot.pcm_queued_ms,
+                            snapshot.pcm_sample_rate,
+                            snapshot.pcm_channels,
+                            snapshot.device_buffer_frames,
+                            snapshot.device_buffer_ms,
+                            snapshot.device_sample_rate,
+                            snapshot.compressed_ring_bytes,
+                            snapshot.decoder_pending_bytes,
+                            snapshot.compressed_inflight_bytes,
+                            static_cast<unsigned long long>(
+                                snapshot.received_bytes),
+                            static_cast<unsigned long long>(
+                                snapshot.decoded_frames),
+                            snapshot.frame_sync);
+                    }
+                });
+            context.piu10_mp3_audio.Open();
+            context.piu10_isa_board.SetMp3DataSink(
+                [&context](std::uint8_t value) {
+                    context.piu10_mp3_audio.WriteByte(value);
+                });
+            context.piu10_isa_board.SetMp3StatusSource([&context]() {
+                return static_cast<std::uint8_t>(
+                    (context.piu10_mp3_audio.frame_sync() << 2U) |
+                    (context.piu10_mp3_audio.demand() ? 1U : 0U));
+            });
             std::fprintf(stderr, "[repiu-piu10] %s; %s; %s\n",
                          piu10_message.c_str(), flash.message.c_str(),
                          cat702.message.c_str());
@@ -4627,7 +4769,9 @@ bool AttemptWin32GuestStackTrapExecution(
     const std::vector<exe::LeResidentName>* glide_exports,
     const std::filesystem::path* cd_chd_path,
     const std::filesystem::path* sound_rom_zip_path,
+    bool enable_piu_jamma_board,
     bool enable_piu10_isa_board,
+    std::uint32_t piu10_mp3_latency_ms,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
 {
@@ -4660,7 +4804,9 @@ bool AttemptWin32GuestStackTrapExecution(
         glide_exports,
         cd_chd_path,
         sound_rom_zip_path,
+        enable_piu_jamma_board,
         enable_piu10_isa_board,
+        piu10_mp3_latency_ms,
         nullptr,
         runtime::ExecutionBackend::kLegacy,
         timeout_milliseconds,
@@ -4704,6 +4850,8 @@ bool AttemptWin32GuestStackHleExecution(
         nullptr,
         nullptr,
         false,
+        false,
+        0U,
         nullptr,
         runtime::ExecutionBackend::kLegacy,
         timeout_milliseconds,
@@ -4719,7 +4867,9 @@ bool AttemptWin32GuestStackAotExecution(
     const std::vector<exe::LeResidentName>* glide_exports,
     const std::filesystem::path* cd_chd_path,
     const std::filesystem::path* sound_rom_zip_path,
+    bool enable_piu_jamma_board,
     bool enable_piu10_isa_board,
+    std::uint32_t piu10_mp3_latency_ms,
     runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
@@ -4739,7 +4889,9 @@ bool AttemptWin32GuestStackAotExecution(
         placement, stack_plan.entry_eip, stack_plan.initial_esp,
         true, true, true, true, false, false, &dos_file_system,
         linexe_module, glide_exports, cd_chd_path, sound_rom_zip_path,
+        enable_piu_jamma_board,
         enable_piu10_isa_board,
+        piu10_mp3_latency_ms,
         &aot_placement,
         execution_backend,
         timeout_milliseconds, attempt);

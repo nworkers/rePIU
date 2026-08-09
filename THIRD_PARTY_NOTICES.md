@@ -68,3 +68,23 @@ DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVI
 DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
 IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
 OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+## minimp3
+
+### 한국어
+
+rePIU는 PIU10 MAS3507D MP3 stream의 frame decode를 위해 upstream `minimp3` commit
+`ea99364f61c14656440e8d77e9c233ccf3124633`을 FetchContent로 고정합니다. `minimp3`는
+CC0 1.0 Universal로 제공됩니다. rePIU는 MAME의 MAS3507D 또는 MP3 wrapper 코드를
+포함하지 않습니다.
+
+- minimp3: https://github.com/lieff/minimp3
+- 고정 commit: https://github.com/lieff/minimp3/commit/ea99364f61c14656440e8d77e9c233ccf3124633
+- CC0 1.0: https://github.com/lieff/minimp3/blob/ea99364f61c14656440e8d77e9c233ccf3124633/LICENSE
+
+### English
+
+rePIU pins upstream `minimp3` commit
+`ea99364f61c14656440e8d77e9c233ccf3124633` through FetchContent for frame decoding of the
+PIU10 MAS3507D MP3 stream. `minimp3` is offered under CC0 1.0 Universal. rePIU does not
+incorporate MAME's MAS3507D or MP3 wrapper code.

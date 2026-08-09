@@ -38,6 +38,13 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(sdl3)
 
+FetchContent_Declare(
+    minimp3
+    GIT_REPOSITORY https://github.com/lieff/minimp3.git
+    GIT_TAG ea99364f61c14656440e8d77e9c233ccf3124633
+)
+FetchContent_MakeAvailable(minimp3)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -158,12 +165,19 @@ add_library(repiu_exe
     src/platform/win32/telemetry/timer_tick_delivery.cpp
     src/platform/win32/aot/aot_boundary_opcode_census.cpp
     src/platform/win32/io/port_io_emulator.cpp
+    src/platform/win32/io/piu10_mp3_frame_batch.cpp
     src/platform/win32/io/port_io_delay_loop.cpp
     src/platform/win32/io/eeprom_93c46.cpp
     src/platform/win32/io/piu10_sound_port.cpp
     src/platform/win32/ymz280b_audio_out.cpp
+    src/platform/win32/piu10_mp3_audio_out.cpp
     src/sound/ymz280b_device.cpp
     src/sound/ymz280b_sample_rom.cpp
+    src/sound/dac3350a_control.cpp
+    src/sound/decoder_input_fifo.cpp
+    src/sound/mpeg_audio_frame.cpp
+    src/sound/spsc_byte_ring.cpp
+    src/sound/stream_chunk_audit.cpp
     src/platform/win32/native_fast_path.cpp
     src/platform/win32/native_linear_span.cpp
     src/platform/win32/native_phase_sampler.cpp
@@ -209,6 +223,7 @@ target_include_directories(repiu_exe
         # miniz ships inside libchdr, which links it PRIVATE, so the headers do
         # not propagate even though the symbols do.
         ${REPIU_MINIZ_INCLUDE_DIR}
+        ${minimp3_SOURCE_DIR}
 )
 
 target_compile_definitions(repiu_exe
@@ -216,7 +231,8 @@ target_compile_definitions(repiu_exe
         REPIU_VERSION="${REPIU_VERSION}"
 )
 
-target_link_libraries(repiu_exe PRIVATE repiu_zydis chdr-static SDL3::SDL3-static)
+target_link_libraries(repiu_exe PRIVATE repiu_zydis chdr-static
+    SDL3::SDL3-static)
 
 add_executable(repiu_exe_analyzer
     src/tools/exe_analyzer/main.cpp

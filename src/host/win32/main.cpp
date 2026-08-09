@@ -4445,6 +4445,8 @@ int main(int argc, char** argv)
     logger->info("Win32 loader target: {}", profile->id);
     logger->info("Win32 loader executable: {}",
                  profile->executable_path.string());
+    logger->info("PIU JAMMA board enabled: {}",
+                 profile->enable_piu_jamma_board ? "true" : "false");
     logger->info("PIU10 ISA board enabled: {}",
                  profile->enable_piu10_isa_board ? "true" : "false");
 #if defined(REPIU_WIN32_HOST_IMAGE_BASE)
@@ -4936,7 +4938,9 @@ int main(int argc, char** argv)
               glide_exports.empty() ? nullptr : &glide_exports,
               cd_chd_path ? &*cd_chd_path : nullptr,
               sound_rom_zip_path ? &*sound_rom_zip_path : nullptr,
+              profile->enable_piu_jamma_board,
               profile->enable_piu10_isa_board,
+              profile->piu10_mp3_latency_ms,
               execution_backend,
               execution_timeout_milliseconds,
               &attempt)
@@ -4955,7 +4959,9 @@ int main(int argc, char** argv)
                   glide_exports.empty() ? nullptr : &glide_exports,
                   cd_chd_path ? &*cd_chd_path : nullptr,
                   sound_rom_zip_path ? &*sound_rom_zip_path : nullptr,
+                  profile->enable_piu_jamma_board,
                   profile->enable_piu10_isa_board,
+                  profile->piu10_mp3_latency_ms,
                   execution_timeout_milliseconds,
                   &attempt);
     if (!attempted_execution)

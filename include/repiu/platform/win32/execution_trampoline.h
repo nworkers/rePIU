@@ -1227,7 +1227,9 @@ bool AttemptWin32GuestStackTrapExecution(
     const std::vector<exe::LeResidentName>* glide_exports,
     const std::filesystem::path* cd_chd_path,
     const std::filesystem::path* sound_rom_zip_path,
+    bool enable_piu_jamma_board,
     bool enable_piu10_isa_board,
+    std::uint32_t piu10_mp3_latency_ms,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt);
 
@@ -1240,7 +1242,9 @@ bool AttemptWin32GuestStackAotExecution(
     const std::vector<exe::LeResidentName>* glide_exports,
     const std::filesystem::path* cd_chd_path,
     const std::filesystem::path* sound_rom_zip_path,
+    bool enable_piu_jamma_board,
     bool enable_piu10_isa_board,
+    std::uint32_t piu10_mp3_latency_ms,
     runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt);

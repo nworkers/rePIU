@@ -12,6 +12,7 @@
 #include <intrin.h>
 #include "eeprom_93c46.h"
 #include "piu10_sound_port.h"
+#include "piu10_mp3_frame_batch.h"
 #include "port_io_delay_loop.h"
 
 namespace repiu::platform::win32
@@ -438,11 +439,61 @@ static void RecordPortIoAddress(ThreadContext* context,
     ApplyPortIoEntrySample(&entry, entry_sample);
 }
 
+static bool TryPiu10Mp3BytePortFastPath(
+    CONTEXT* win32_context, ThreadContext* context)
+{
+    if (!context->piu10_isa_board_enabled ||
+        !context->piu10_isa_board.available() ||
+        context->piu10_isa_board.destination() != 0x008U ||
+        !context->piu10_mp3_audio.available() ||
+        (win32_context->Edx & 0xFFFFU) != 0x02DAU)
+    {
+        return false;
+    }
+    const auto* instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(win32_context->Eip));
+    if (!IsGuestRangeReadable(context, instruction, 1U) ||
+        instruction[0] != 0xEEU)
+    {
+        return false;
+    }
+
+    const std::uint8_t mp3_byte =
+        static_cast<std::uint8_t>(win32_context->Eax & 0xFFU);
+    const bool mp3_byte_accepted =
+        context->piu10_mp3_audio.WriteByte(mp3_byte);
+    if (mp3_byte_accepted)
+    {
+        const std::uint64_t previous =
+            context->piu10_mp3_fast_path_write_count.fetch_add(
+                1U, std::memory_order_relaxed);
+        if (previous == 0U)
+        {
+            std::fprintf(stderr,
+                         "[repiu-piu10-mp3] arena byte fast path active\n");
+        }
+    }
+    if (mp3_byte_accepted || context->piu10_mp3_frame_batch_audit_enabled)
+    {
+        std::uint32_t guest_ecx = win32_context->Ecx;
+        TransferPiu10Mp3FrameTail(
+            context, win32_context->Eip, mp3_byte, &guest_ecx);
+        win32_context->Ecx = guest_ecx;
+    }
+    ++win32_context->Eip;
+    return true;
+}
+
 bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr)
     {
         return false;
+    }
+
+    if (TryPiu10Mp3BytePortFastPath(win32_context, context))
+    {
+        return true;
     }
 
     // Task 323. Reachable from the single-step HLE path (inside the VEH) and
@@ -577,13 +628,15 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
     if (context->piu10_isa_board_enabled &&
         port >= kPortPiu10IsaBase && port <= kPortPiu10IsaEnd)
     {
-        if (width != 2U || !context->piu10_isa_board.available())
+        if ((width != 1U && width != 2U) ||
+            !context->piu10_isa_board.available())
         {
             RecordPortIo(context,
                          static_cast<std::uint32_t>(win32_context->Eip),
                          opcode, port, width, value, is_input, false,
-                         width != 2U ? "unsupported-piu10-width"
-                                     : "piu10-unavailable");
+                         (width != 1U && width != 2U)
+                             ? "unsupported-piu10-width"
+                             : "piu10-unavailable");
             std::ostringstream stream;
             stream << "PIU10 ISA port I/O unavailable port=0x"
                    << std::hex << static_cast<unsigned>(port)
@@ -595,19 +648,36 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
         bool handled = false;
         if (is_input)
         {
-            std::uint16_t read_value = 0;
-            handled = context->piu10_isa_board.Read16(port, &read_value);
-            value = read_value;
-            if (handled)
+            if (width == 1U)
             {
-                win32_context->Eax =
-                    (win32_context->Eax & 0xFFFF0000U) | read_value;
+                std::uint8_t read_value = 0;
+                handled = context->piu10_isa_board.Read8(port, &read_value);
+                value = read_value;
+                if (handled)
+                {
+                    win32_context->Eax =
+                        (win32_context->Eax & 0xFFFFFF00U) | read_value;
+                }
+            }
+            else
+            {
+                std::uint16_t read_value = 0;
+                handled = context->piu10_isa_board.Read16(port, &read_value);
+                value = read_value;
+                if (handled)
+                {
+                    win32_context->Eax =
+                        (win32_context->Eax & 0xFFFF0000U) | read_value;
+                }
             }
         }
         else
         {
-            handled = context->piu10_isa_board.Write16(
-                port, static_cast<std::uint16_t>(value));
+            handled = width == 1U
+                ? context->piu10_isa_board.Write8(
+                      port, static_cast<std::uint8_t>(value))
+                : context->piu10_isa_board.Write16(
+                      port, static_cast<std::uint16_t>(value));
         }
 
         RecordPortIo(context,
@@ -631,7 +701,7 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
     // The YMZ280B window is checked before every other PIU10 register because
     // 0x02A0..0x02A3 sits inside the JAMMA input range below, which would
     // otherwise swallow it and answer 0xFF.
-    if (IsPiu10SoundPort(port))
+    if (context->piu_jamma_board_enabled && IsPiu10SoundPort(port))
     {
         Ymz280bAudioOut* audio =
             context->ymz_audio_available ? &context->ymz_audio : nullptr;
@@ -688,7 +758,7 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
 
     if (is_input)
     {
-        if (port == kPortPiuEepromRead)
+        if (context->piu_jamma_board_enabled && port == kPortPiuEepromRead)
         {
             if (!g_eeprom)
             {
@@ -728,7 +798,8 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
             return true;
         }
 
-        if (port >= kPortPiuJammaBase && port <= kPortPiuJammaEnd)
+        if (context->piu_jamma_board_enabled &&
+            port >= kPortPiuJammaBase && port <= kPortPiuJammaEnd)
         {
             std::uint32_t emulated_val = 0;
             const std::uint64_t scan_start = __rdtsc();
@@ -885,7 +956,7 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
         return true;
     }
 
-    if (port == kPortPiuEepromWrite)
+    if (context->piu_jamma_board_enabled && port == kPortPiuEepromWrite)
     {
         if (!g_eeprom)
         {
@@ -906,7 +977,8 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
         return true;
     }
 
-    if (IsPortIoTraceCandidate(port, width, false))
+    if (context->piu_jamma_board_enabled &&
+        IsPortIoTraceCandidate(port, width, false))
     {
         if (context->port_io.observed_count >= kWin32DeferredPortIoLimit)
         {

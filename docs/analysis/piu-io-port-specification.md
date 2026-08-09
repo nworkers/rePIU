@@ -486,6 +486,12 @@ MAME [`cat702.cpp`](https://github.com/mamedev/mame/blob/master/src/devices/mach
 `pumpitpc`, `pumpite`에서만 활성화합니다. `pumpit1`, `pumpit2`, `pumpit3`에서는
 비활성화되며, 이 target들의 YMZ280B sample ROM 경로는 해당 capability와 독립적입니다.
 
+**확인됨: JAMMA target 범위(Task 453).** `0x02A0..0x02AF` JAMMA/YMZ280B/EEPROM
+보드는 `enable_piu_jamma_board` capability로 제어합니다. 현재 `pumpit1`, `pumpit2`,
+`pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`에서만 활성화되며
+`dos4gw_hello`, `piu_1st`, direct executable에서는 비활성화됩니다. 이는 별도
+`0x02D0..0x02DF` PIU10 flash/CAT702 capability의 범위를 변경하지 않습니다.
+
 ### English
 
 **Confirmed: separate devices.** MAME installs `0x02D0..0x02DF` as a separate ISA16 PIU10
@@ -512,3 +518,500 @@ verified by this task. The current MP3 status model reports reset-ready signals 
 **Confirmed target scope (Task 452):** rePIU enables this separate device only for `pumpito`,
 `pumpitc`, `pumpitpc`, and `pumpite`. It remains disabled for `pumpit1`, `pumpit2`, and
 `pumpit3`; their YMZ280B sample-ROM path is independent of this capability.
+
+**Confirmed JAMMA target scope (Task 453):** the `0x02A0..0x02AF` JAMMA/YMZ280B/EEPROM
+board is controlled by `enable_piu_jamma_board`. It is enabled only for `pumpit1`, `pumpit2`,
+`pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, and `pumpite`, and disabled for
+`dos4gw_hello`, `piu_1st`, and direct executables. This does not change the scope of the
+separate `0x02D0..0x02DF` PIU10 flash/CAT702 capability.
+
+## 7. PIU10 MAS3507D MP3 전송과 HLE (Task 454)
+
+### 한국어
+
+**확인됨:** MAME
+[`xtom3d_piu10.cpp`](https://github.com/mamedev/mame/blob/master/src/mame/misc/xtom3d_piu10.cpp)는 목적지 `0x008`의 `0x02DA` write를
+MAS3507D `sid_w`에 연결합니다. pumpito의 종료 지점 `OUT DX,AL`, DX=`0x02DA`는 따라서
+지원되지 않는 폭이 아니라 8-bit PIO-DMA MP3 data write입니다. Micronas의 MAS3507D F10
+[supplement](https://floe.butterbrot.org/matrix/hacking/limp/docs/mas3507d_3pds.pdf)도 이 revision에 8-bit PIO-DMA 입력과 demand handshake가 있음을 설명합니다.
+
+**확인됨:** mount된 `AUDIO/01.AUD`부터 `04.AUD`의 첫 32 byte는 ID3 또는 MPEG frame
+sync로 시작하지 않습니다. host의 `.AUD` 경로를 직접 decoder에 넘길 수 없으며, 원본 게임이
+읽고 변환한 뒤 PIU10 port로 내보내는 byte stream이 HLE 입력 경계입니다.
+
+**확인됨:** Task 454 적용 후 제한 실행은 port I/O
+input/output/handled/unhandled=`112955/264794/377749/0`으로 종료되어 기존
+`unsupported-piu10-width`가 재현되지 않았습니다. SDL3_mixer `dr_mp3`는 guest가 전달한
+50,585-byte 구간을 decode하고 playback을 시작했습니다. 그 전에 관찰된 두 개의 2-byte
+전송은 MPEG frame header보다 짧으므로 decode 대상에서 제외합니다.
+
+**Task 455에서 대체됨:** ready/demand-high 모델은 유지하지만 30 ms idle framing은 더 이상
+사용하지 않습니다. 아래의 증분 frame decoder가 이 Task 454 정책을 대체합니다.
+
+### English
+
+**Confirmed:** MAME's
+[`xtom3d_piu10.cpp`](https://github.com/mamedev/mame/blob/master/src/mame/misc/xtom3d_piu10.cpp) connects a destination-`0x008` write at `0x02DA`
+to MAS3507D `sid_w`. The pumpito termination at `OUT DX,AL`, DX=`0x02DA`, is therefore an
+eight-bit PIO-DMA MP3 data write, not an unsupported access width. Micronas's MAS3507D F10
+[supplement](https://floe.butterbrot.org/matrix/hacking/limp/docs/mas3507d_3pds.pdf) also documents the revision's eight-bit PIO-DMA input and demand handshake.
+
+**Confirmed:** The first 32 bytes of mounted `AUDIO/01.AUD` through `04.AUD` do not start
+with ID3 or an MPEG frame sync. The host `.AUD` path cannot be handed directly to a decoder;
+the HLE input boundary is the byte stream that the original game reads, transforms, and emits
+through the PIU10 port.
+
+**Confirmed:** After Task 454, a timeout-bounded pumpito run reported port I/O
+input/output/handled/unhandled=`112955/264794/377749/0`; the old
+`unsupported-piu10-width` did not recur. SDL3_mixer `dr_mp3` decoded a 50,585-byte guest
+segment and started playback. Two earlier two-byte transfers are shorter than an MPEG frame
+header and are filtered before decoding.
+
+**Superseded by Task 455:** The ready/demand-high model remains, but 30 ms idle framing is no
+longer used. The incremental frame decoder below replaces this Task 454 policy.
+
+## 8. 증분 MP3 시작 시점 (Task 455)
+
+### 한국어
+
+**확인됨:** SDL3_mixer 3.2.0 `MIX_SetTrackIOStream`은 전체 data를 seek할 수 있어야 하며,
+`decoder_drmp3.c` 초기화는 frame count와 seek table을 얻기 위해 전체 입력을 scan합니다.
+따라서 끝나지 않은 성장형 IO stream을 직접 연결해도 조기 재생이 되지 않습니다.
+
+**확인됨:** Task 455는 Task 454의 30 ms idle/전체 구간 predecode를 대체합니다. 공용 MPEG
+header parser가 version, layer, bitrate, sample rate, padding으로 frame 길이를 검증하고,
+Win32 backend는 완성된 4 frame batch만 SDL3_mixer decoder에 전달합니다. PCM은 하나의
+지속적인 SDL audio stream/MIX track에 누적됩니다.
+
+**확인됨:** 동일한 pumpito 제한 실행에서 증분 playback은 2,055 guest byte 수신 시점에
+4개 MPEG frame으로 시작했습니다. 이전 방식의 관찰값 50,585 byte보다 48,530 byte 앞이며,
+port I/O input/output/handled/unhandled는 `112897/235038/347935/0`입니다.
+
+**미확정:** 실제 cabinet의 MAS3507D demand와 frame-sync timing은 아직 고정 high입니다.
+guest 공급이 PCM 소비보다 늦으면 backend가 track을 유지하기 위해 silence를 삽입합니다.
+장시간 청취에서 underrun 빈도와 곡 전환의 연속성을 확인해야 합니다.
+
+### English
+
+**Confirmed:** SDL3_mixer 3.2.0 `MIX_SetTrackIOStream` requires seeking over the complete data,
+and `decoder_drmp3.c` initialization scans the whole input for frame counts and a seek table.
+Connecting an unfinished growing IO stream therefore does not provide early playback.
+
+**Confirmed:** Task 455 replaces Task 454's 30 ms idle/whole-segment predecode. A shared MPEG
+header parser validates frame length from version, layer, bitrate, sample rate, and padding.
+The Win32 backend sends only complete four-frame batches to the SDL3_mixer decoder and appends
+their PCM to one persistent SDL audio stream and MIX track.
+
+**Confirmed:** In the same timeout-bounded pumpito scenario, incremental playback began from
+four MPEG frames after 2,055 guest bytes. This is 48,530 bytes earlier than the previous
+50,585-byte observation. Port I/O input/output/handled/unhandled was
+`112897/235038/347935/0`.
+
+**Unresolved:** Actual-cabinet MAS3507D demand and frame-sync timing remain fixed high. If guest
+supply falls behind PCM consumption, the backend inserts silence to keep the track alive.
+Long listening still needs to establish underrun frequency and continuity across song changes.
+
+## 9. Task 455 사용자 검증과 교체 방향 (Task 456)
+
+### 한국어
+
+**확인됨:** 사용자의 실제 플레이 검증에서 Task 455 증분 SDL3_mixer 방식은 음악이 심하게
+끊기고 MP3 재생 중 게임 진행이 멈추어 사용할 수 없는 것으로 판정되었습니다. 따라서
+2,055 byte 조기 시작 자체는 성공했지만, 재생 연속성과 guest 실행 동시성은 충족하지
+못했습니다.
+
+**추정:** 주요 원인은 작은 frame batch마다 SDL3_mixer decoder를 새로 만드는 비용과,
+destination `0x008`의 MP3 byte마다 일반 HLE adapter, 계측, 동기화 경로를 통과하는 비용이
+guest의 전송 loop를 장시간 점유하는 데 있습니다. underrun 때 silence를 삽입하는 정책도
+끊김을 숨기지 못하고 증상을 연장합니다.
+
+**구현됨:** upstream `minimp3`의 하나의 persistent `mp3dec_t`가 4 MiB SPSC 압축 byte
+ring에서 완성 frame을 읽고 PCM을 SDL3 audio stream으로 직접 전달합니다. demand는 ring
+여유 공간, frame-sync는 성공한 decode마다의 토글입니다. destination `0x008`의 정확한
+`OUT DX,AL`은 AOT resolver와 arena port handler의 전용 조기 경로를 사용하며 다른 PIU10
+port의 기존 HLE 계약은 유지합니다. MAME 구현은 계약과 처리 순서의 참고 자료로만 사용했고
+코드는 포함하지 않았습니다. 상세 설계는
+[Task 456 MAS3507D streaming HLE](../design/20260809-456-mas3507d-streaming-hle.md)에 있습니다.
+
+**확인됨:** 제한 pumpito 실행에서 첫 playback은 1,257 guest byte에서 시작했고, 이후 다른
+음악과 BGA 자산 로딩까지 진행했습니다. port I/O unhandled는 0이고 실행 예외는 없었습니다.
+후속 초기 편차 실행에서는 504-byte 준비 전송만 관찰되어 arena fast path의 본 전송 실측과
+장시간 청감 연속성은 아직 사용자 검증이 필요합니다.
+
+### English
+
+**Confirmed:** The user's real-play validation rejected Task 455 because audio stuttered severely
+and the game stopped progressing during MP3 playback. Starting after 2,055 bytes succeeded, but
+continuous playback and concurrent guest execution did not.
+
+**Inferred:** The primary costs are constructing a new SDL3_mixer decoder for every small frame
+batch and routing every destination `0x008` MP3 byte through the generic HLE adapter,
+instrumentation, and synchronization path. Inserting silence on underrun prolongs rather than
+solves the audible failure.
+
+**Implemented:** One persistent upstream `minimp3` `mp3dec_t` consumes complete frames from a
+4 MiB compressed-byte SPSC ring and sends PCM directly to an SDL3 audio stream. Ring capacity
+drives demand, and each successful decode toggles frame-sync. Exact destination-`0x008`
+`OUT DX,AL` uses an early path in both the AOT resolver and arena port handler while other PIU10
+ports retain their existing contract. MAME was used only to reference the contract and processing
+order; no MAME code was incorporated. See
+[Task 456 MAS3507D streaming HLE](../design/20260809-456-mas3507d-streaming-hle.md).
+
+**Confirmed:** A bounded pumpito run began playback after 1,257 guest bytes and continued to load
+later music and BGA assets. Port-I/O unhandled remained zero and no execution exception occurred.
+A later startup-variation run observed only the 504-byte preparation transfer, so main-transfer
+arena-fast-path measurements and long listening continuity still require user validation.
+
+## 10. MAS3507D FIFO와 pumpito frame 공급 loop (Task 457)
+
+### 한국어
+
+**확인됨:** 사용자 실행의 최종 통계는
+`received/dropped/decoded/pcm/starved/ring-high=2282730/0/5465/6295680/210/108`이었습니다.
+약 251초 동안 2,282,730 byte를 받았지만 4 MiB ring의 최고 수위는 108 byte에 불과했습니다.
+따라서 guest가 곡 전체를 ring에 먼저 채워서 게임 진행이 막힌 것이 아니라, byte마다 발생하는
+privileged `OUT` 예외가 약 9 KiB/s로 MP3 소비 속도보다 느려 decoder starvation과 guest thread
+점유를 동시에 만들었습니다.
+
+**확인됨:** 원본 `pumpito` image offset `0x212FD`의 `OUT DX,AL` loop는 출력 전에 source
+cursor와 현재 frame byte count를 증가시키고, 출력 뒤 `ECX`와 count를 증가시켜 현재 MPEG
+frame 길이와 비교합니다. 관련 원본 주소는 source cursor `0x00343420`, available end
+`0x00343424`, frame length `0x00343418`, frame count `0x0034341C`, source buffer
+`0x00343438`입니다.
+
+**구현됨:** 압축 ring은 4 KiB 물리 용량과 `0xE00` byte 논리 `DEMAND` 한계를 사용합니다.
+정확한 `pumpito` loop signature, relocation, 메모리 범위와 frame 상태가 모두 맞을 때만 현재
+frame tail을 한 번의 SPSC span write로 옮기고 source cursor, frame count, `ECX`를 건너뛴
+원본 byte loop와 같게 갱신합니다. 불일치 또는 공간 부족 시 기존 byte 경로로 복귀하며,
+다른 target에는 이 signature를 활성화하지 않습니다. MAME의 `0xE00` 값은 하드웨어 계약
+참고에만 사용했고 코드는 포함하지 않았습니다.
+
+**확인됨:** 자동 probe는 `0xE00`에서 demand 해제, 512-byte 소비 후 재설정, high-water
+3584와 4-byte frame-tail 계획 및 3-byte 부분 commit 후 `ECX=103`을 검증했습니다. Win32 x86
+Debug의 `repiu`와 `repiu_aot_probe` build도 성공했습니다.
+
+**미확정:** 60초와 90초 제한 실행은 startup 편차로 MP3 본 전송 구간에 도달하지 못했으므로
+실제 block-HLE 활성화, 장시간 청감, 음악 중 렌더링·입력·장면 전환 동시 진행은 사용자 환경에서
+확인해야 합니다.
+
+### English
+
+**Confirmed:** The user's final runtime statistics were
+`received/dropped/decoded/pcm/starved/ring-high=2282730/0/5465/6295680/210/108`.
+The run received 2,282,730 bytes over approximately 251 seconds, yet the 4 MiB ring reached only
+108 bytes. The guest was not blocked while preloading an entire song. Instead, one privileged
+`OUT` exception per byte delivered only about 9 KiB/s, slower than MP3 consumption, causing both
+decoder starvation and guest-thread occupancy.
+
+**Confirmed:** The original `pumpito` loop around image offset `0x212FD` increments its source
+cursor and current-frame byte count before `OUT DX,AL`, then increments `ECX` and compares the
+count with the current MPEG frame length. Its original addresses are `0x00343420` for the source
+cursor, `0x00343424` for available end, `0x00343418` for frame length, `0x0034341C` for frame
+count, and `0x00343438` for the source buffer.
+
+**Implemented:** The compressed ring now has a 4 KiB physical capacity and a logical `0xE00`-byte
+`DEMAND` limit. Only an exact match of the `pumpito` loop signature, relocation, memory ranges,
+and frame state permits one SPSC span write for the current frame tail. The HLE updates the source
+cursor, frame count, and `ECX` exactly like the skipped byte loop. A mismatch or insufficient
+space falls back to the byte path, and the signature is not enabled for other targets. MAME's
+`0xE00` value was used only as hardware-contract reference; no MAME code was incorporated.
+
+**Confirmed:** The automated probe verifies demand deassertion at `0xE00`, reassertion after a
+512-byte consume, a 3584-byte high-water mark, a four-byte frame-tail plan, and `ECX=103` after a
+three-byte partial commit. Win32 x86 Debug builds of `repiu` and `repiu_aot_probe` also pass.
+
+**Unresolved:** Bounded 60-second and 90-second runs did not reach the main MP3 transfer because
+of startup variation. Actual block-HLE activation, long listening, and concurrent rendering,
+input, and scene transitions during music still require validation in the user's environment.
+
+## 11. pumpito frame batch relocation 교정 (Task 458)
+
+### 한국어
+
+**확인됨:** 사용자 실행은 `arena byte fast path active`와 반복적인 `0x030212FD` EIP를
+보였지만 최종 통계가 `batched=0`, `ring-high=58`이었습니다. 단계별 최초 거부 진단을 추가한
+재현 실행은 `relocation` 실패와 실제/예상 주소
+`0x04453420/0x04333420`, `0x04453438/0x04333438`을 기록했습니다.
+
+**원인 확정:** `0x00343420` 등의 LE fixup target은 전체 image 상대 주소가 아니라 object 4
+상대 offset입니다. Task 457 구현과 synthetic probe는 이를 image offset으로 해석하여 object 4
+base 차이 `0x00120000`만큼 낮은 주소를 예상했습니다. 실행 EIP와 opcode signature는 정확했지만
+relocated immediate 검증이 항상 실패했습니다.
+
+**교정됨:** 실행 준비 시 selector binding의 target object 4 relocated base를 보존하고, frame
+상태와 source buffer 주소는 이 base에 fixup target offset을 더해 계산합니다. probe도 실제
+object 배치와 같은 `runtime base + 0x00110000` object base 및 target offset을 사용합니다.
+span enqueue는 `0xE00` 논리 FIFO까지만 허용하여 512-byte 물리 headroom을 보존합니다.
+
+**확인됨:** 45초 제한 실행은 `verified frame-tail batch active`를 출력했고 최종 통계는
+`received/dropped/decoded/pcm/starved/batched/ring-high=123943/0/297/342144/6/123372/3638`
+이었습니다. 이전 사용자 실행의 `batched=0`, starvation 45회와 달리 대부분의 압축 byte가
+일괄 처리되었고 dropped byte가 없었습니다.
+
+**미확정:** 숨김 제한 실행은 화면과 음악의 실제 동시 진행을 청감·시각 검증하지 않습니다.
+사용자 환경에서 장시간 음악, 렌더링, 입력과 장면 전환을 함께 확인해야 합니다.
+
+### English
+
+**Confirmed:** The user's run showed `arena byte fast path active` and repeated EIP
+`0x030212FD`, but ended with `batched=0` and `ring-high=58`. A reproduction with first-occurrence
+diagnostics reported a `relocation` failure with actual/expected pairs
+`0x04453420/0x04333420` and `0x04453438/0x04333438`.
+
+**Root cause confirmed:** LE fixup targets such as `0x00343420` are offsets relative to object 4,
+not addresses relative to the whole image. Task 457 and its synthetic probe treated them as image
+offsets and expected addresses lower by the `0x00120000` object-base difference. EIP and the opcode
+signature were correct, but relocated-immediate validation therefore failed every time.
+
+**Corrected:** Execution setup now retains the relocated base for selector binding target object 4,
+and frame-state and source-buffer addresses add their fixup target offsets to that base. The probe
+uses the real layout with an object base at `runtime base + 0x00110000` and object-relative target
+offsets. Span enqueue also stops at the logical `0xE00` FIFO level to preserve 512 bytes of physical
+race headroom.
+
+**Confirmed:** A bounded 45-second run printed `verified frame-tail batch active` and ended with
+`received/dropped/decoded/pcm/starved/batched/ring-high=123943/0/297/342144/6/123372/3638`.
+Unlike the user's previous `batched=0` run with 45 starvation events, most compressed bytes used
+the batch path and no bytes were dropped.
+
+**Unresolved:** A hidden bounded run cannot audibly or visually verify concurrent music and
+rendering. Long music playback, rendering, input, and scene transitions still require validation
+in the user's environment.
+
+## 12. pumpito MP3 batch 제어 경계 (Task 459)
+
+### 한국어
+
+**확인됨:** 손상된 사용자 실행은 321,140 byte를 받았지만 MPEG frame을 138개만 decode하여
+약 2,327 byte/frame을 보였습니다. `REPIU_PIU10_MP3_BATCH_AUDIT=1` 감사 실행에서 일괄
+enqueue와 guest commit을 끄고 원본 byte loop의 실제 출력을 예측 tail과 비교했습니다.
+byte, source cursor와 frame byte count는 일치했지만 source cursor `0x76C` 이후 첫 불일치는
+예상/실제 `ECX=1900/0`이었고, 이후 약 100 byte마다 `100/0`이 반복되었습니다.
+
+**원인 확정:** 원본 loop는 cursor가 `0x76C` 이상이고 `ECX`가 100 이상이면 보조 처리를
+호출하고 현재 전송 함수를 반환합니다. 다음 호출에서 `ECX`는 0으로 재설정됩니다. 기존
+frame-tail batch는 frame 끝까지 cursor와 `ECX`를 commit하여 이 관측 가능한 제어 경계를
+건너뛰었고, 그 결과 압축 stream의 대부분이 parser에서 폐기되었습니다.
+
+**교정 및 검증:** batch 길이는 cursor와 `ECX` 조건이 처음 함께 성립하는 지점까지만
+허용됩니다. 교정 후 실제 감사 실행은 1,700개 계획 구간을 연속 통과했고 mismatch가
+없었습니다. 일반 실행은 `verified frame-tail batch active`, 1,671 byte 뒤 playback 시작,
+그리고 64 KiB 체크포인트에서 `received/decoded/batched=66410/127/65567`을 기록했습니다.
+진행 중 FIFO·decoder 대기분을 포함한 값이지만 손상 실행의 2,327 byte/frame에서 크게
+회복되었으며, 감사가 압축 byte 순서를 직접 입증합니다.
+
+**미확정:** 숨김 실행으로 실제 첫 음악의 음질과 화면·입력 동시 진행은 판단할 수 없습니다.
+최종 청감 및 gameplay 검증은 사용자 환경에서 필요합니다.
+
+### English
+
+**Confirmed:** The damaged user run received 321,140 bytes but decoded only 138 MPEG frames,
+about 2,327 bytes per frame. With `REPIU_PIU10_MP3_BATCH_AUDIT=1`, the live audit disabled batch
+enqueue and guest commit and compared the original byte loop against the predicted tail. Bytes,
+source cursor, and frame byte count matched, but after source cursor `0x76C` the first mismatch was
+predicted/actual `ECX=1900/0`; subsequent `100/0` differences recurred roughly every 100 bytes.
+
+**Root cause confirmed:** Once cursor is at least `0x76C` and `ECX` is at least 100, the original
+loop invokes auxiliary processing and returns from the transfer function. The next call resets
+`ECX` to zero. The old full-frame batch committed cursor and `ECX` through the frame end, skipping
+this observable control boundary and causing the parser to discard most compressed input.
+
+**Corrected and verified:** Batch length is now limited through the first point where the cursor
+and `ECX` conditions become true. The corrected live audit passed 1,700 consecutive planned
+segments without a mismatch. A normal run reported `verified frame-tail batch active`, playback
+after 1,671 bytes, and `received/decoded/batched=66410/127/65567` at the 64 KiB checkpoint. The
+in-progress snapshot includes FIFO and decoder backlog, but it is a large recovery from the damaged
+2,327-byte/frame run, while the audit directly proves compressed-byte ordering.
+
+**Unresolved:** A hidden run cannot judge first-track sound quality or concurrent rendering and
+input. Final listening and gameplay validation remain for the user's environment.
+
+## 13. pumpito MP3 decoder 입력 분할 의존성 (Task 460)
+
+### 한국어
+
+**확인됨:** 최신 사용자 실행은 `01.AUD` 전체 255,625 byte를 drop 없이 받았지만 MPEG
+frame을 8개만 decode했고, 첫 64 KiB 체크포인트에서는 4개만 decode했습니다. 정상 SDL
+종료 요청이 기록되었으므로 프로세스 crash가 아니라 음악 손상 뒤 사용자가 종료한
+실행입니다.
+
+`REPIU_PIU10_MP3_STREAM_AUDIT=1`로 producer와 consumer가 실제 처리한 byte를 각각
+고정 4 KiB FNV-1a 구간으로 기록했습니다. 일반 batch 실행에서 완성된 62개 구간의 hash가
+모두 일치하여 SPSC ring의 누락·중복·순서 변경을 배제했습니다. 더 결정적으로, 동일한
+62개 producer hash를 가진 두 실행이 첫 64 KiB에서 각각 4 frame과 127 frame을 decode하여
+입력 내용이 아닌 worker pop 시점이 결과를 바꾸고 있음을 확인했습니다.
+
+**원인 확정:** 공용 MPEG parser는 현재 frame 길이를 이미 알고 있지만 worker는 해당
+frame 뒤에 FIFO에서 꺼낸 모든 byte를 `minimp3`에 전달했습니다. buffer 끝에 다음 header의
+일부만 포함되면 minimp3가 현재 sync를 승인하지 않고 `frame_bytes=0`을 반환할 수 있습니다.
+worker는 이를 손상으로 오인하여 한 byte를 버리고 decoder를 reset했고, 동일 stream도 pop
+분할에 따라 대량의 frame을 잃었습니다.
+
+**교정 및 검증:** 연속 header로 검증된 정확히 한 non-free-format MPEG frame만 minimp3에
+전달합니다. 또한 MAME의 MAS3507D 계약을 참고하여 decode 직후가 아니라 SDL queue 소비가
+각 PCM frame 시작 offset에 도달할 때 PIU10 frame-sync 상태를 전이합니다. 독립적인 실제
+실행 두 번은 첫 64 KiB에서 각각 `66408/127/65566`, `66409/127/65567`의
+received/decoded/batched 값을 기록했습니다. 두 실행 모두 producer/consumer 62개 구간이
+전부 일치했고 두 번째 실행의 불일치는 0개였습니다. 공용 probe도 호출 분할과 무관한
+구간 hash를 확인합니다.
+
+**미확정:** 자동화된 숨김 실행은 실제 첫 음악의 음질이나 화면·입력의 동시 진행을
+청감·시각적으로 판단하지 못합니다. 사용자 환경에서 최종 검증이 필요합니다.
+
+### English
+
+**Confirmed:** The latest user run received all 255,625 bytes of `01.AUD` without drops but
+decoded only eight MPEG frames, including only four by the first 64 KiB checkpoint. A normal SDL
+exit request was logged, so this was a user exit after broken music rather than a process crash.
+
+With `REPIU_PIU10_MP3_STREAM_AUDIT=1`, producer and consumer independently recorded bytes they
+actually processed as fixed 4 KiB FNV-1a chunks. All 62 complete hashes matched in a normal batch
+run, excluding omission, duplication, or reordering in the SPSC ring. More decisively, two runs
+with identical hashes for all 62 producer chunks decoded four versus 127 frames at the first
+64 KiB. Worker pop timing, not input content, was changing the result.
+
+**Root cause confirmed:** The shared MPEG parser already knew the current frame length, but the
+worker passed minimp3 that frame plus every later byte available from the FIFO. When the buffer
+ended with only part of the next header, minimp3 could reject current sync and return
+`frame_bytes=0`. The worker misclassified this as corruption, discarded one byte, reset the
+decoder, and consequently lost many frames depending on FIFO-pop segmentation.
+
+**Corrected and verified:** minimp3 now receives exactly one non-free-format MPEG frame already
+validated through consecutive headers. Following the MAS3507D contract observed in MAME, PIU10
+frame-sync also changes when SDL queue consumption reaches each PCM frame start rather than
+immediately after decode. Two independent live runs recorded `66408/127/65566` and
+`66409/127/65567` for received/decoded/batched at the first 64 KiB. All 62 producer/consumer chunks
+matched in both runs, with zero mismatches in the second. The shared probe also verifies that chunk
+hashes are independent of call segmentation.
+
+**Unresolved:** Automated hidden runs cannot judge first-track sound quality or visually confirm
+concurrent rendering and input. Final validation remains in the user's environment.
+
+## 14. pumpito DAC3350A 곡 경계와 MP3 지연 (Task 461)
+
+### 한국어
+
+**확인됨:** PIU10 목적지 `0x010`의 data bit 1/0은 각각 DAC3350A SDA/SCL입니다. 실제 `pumpito` 감사 실행에서는 MP3 시작 전에 `AVOL=0x0101`이 여러 번 기록되고 재생 구간에서 `0x2C2C`가 기록됩니다.
+
+**Task 462에서 정정됨:** `0x2C2C → 0x0101`은 곡 종료 경계가 아닙니다. gameplay 로그에서 한 곡 도중 이 전이가 세 번 발생했고, 연결했던 stop generation 1과 2는 각각 약 25초와 30초에 decoder와 FIFO를 지워 음악을 끊었습니다. 두 번째 stop은 같은 압축 입력에서 재동기화한 지 약 1초 뒤였습니다. 최종 통계는 1,703,110 byte 수신, drop 0이므로 입력 손실이 아니라 잘못된 stop 정책이 직접 원인입니다.
+
+공식 MAME 참고 구현에 따르면 AVOL 0은 mute이고, 1~7은 -75~-57 dB의 3 dB 계단, 8 이상은 -54 dB부터 1.5 dB 계단이며 +18 dB에서 제한됩니다. 따라서 `0x01`은 -75 dB, `0x2C`(44)는 0 dB입니다. 현재 HLE는 이 값을 linear gain으로 바꾸어 SDL stream 출력에만 적용하고 decoder, 압축 FIFO와 queued PCM을 폐기하지 않습니다.
+
+**설계값:** 사용자 관측에 따라 `pumpito` 시작 지연 기본값은 50 ms입니다. 44.1 kHz stereo S16에서는 8,820 byte의 무음이며 `REPIU_PIU10_MP3_LATENCY_MS=0..500`으로 조절할 수 있습니다.
+
+**미확정:** 50 ms의 최종 체감 sync, 저음량 전이 뒤 곡 연속성과 실제 출력 음량은 사용자의 화면·음향 환경에서 확인해야 합니다. pause는 요구 범위에서 제외되었습니다.
+
+### English
+
+**Confirmed:** Data bits 1/0 at PIU10 destination `0x010` are DAC3350A SDA/SCL. A live `pumpito` audit recorded repeated `AVOL=0x0101` before MP3 startup and `0x2C2C` during playback.
+
+**Corrected by Task 462:** `0x2C2C → 0x0101` is not a song-end boundary. A gameplay log showed the transition three times within a song. The attached stop generations 1 and 2 cleared the decoder and FIFO at roughly 25 and 30 seconds; the second occurred about one second after reacquiring the same compressed input. Final statistics recorded 1,703,110 input bytes and zero drops, making the incorrect stop policy—not input loss—the direct cause.
+
+The official MAME reference maps AVOL zero to mute, values 1–7 to -75 through -57 dB in 3 dB steps, and values from 8 upward in 1.5 dB steps starting at -54 dB and clamped at +18 dB. Thus `0x01` is -75 dB and `0x2C` (44) is 0 dB. The current HLE converts this to linear gain and changes only SDL stream output, without discarding decoder state, compressed FIFO, or queued PCM.
+
+**Design value:** Based on the user's observation, `pumpito` defaults to 50 ms startup latency. This is 8,820 silence bytes for 44.1 kHz stereo S16 and can be adjusted with `REPIU_PIU10_MP3_LATENCY_MS=0..500`.
+
+**Unresolved:** Final subjective 50 ms alignment, song continuity through a low-volume transition, and actual output level require validation with the user's real display/audio path. Pause is outside scope.
+
+## 15. DAC 저음량 시점의 audio backlog 계측 (Task 463)
+
+### 한국어
+
+**확인됨:** Task 462까지의 DAC 감사는 `AVOL=0x0101`이 출력 gain을 `0.000177`로 내린
+사실만 보여 주며, 그 순간 HLE에 남은 재생 데이터는 기록하지 않았습니다. 따라서 guest가
+자신의 곡 시각에 맞춰 DAC를 내렸지만 HLE 출력이 뒤처졌다는 가설은 기존 로그만으로
+확정할 수 없습니다.
+
+**구현됨:** `Piu10Mp3AudioOut::Snapshot()`은 DAC transaction 시점의 SDL 입력 PCM queue,
+현재 S16 형식 기준 대기 밀리초, audio device callback buffer, compressed SPSC ring,
+worker 내부 decoder pending byte, receive/decode 계수와 frame-sync를 반환합니다.
+`REPIU_PIU10_DAC_AUDIT=1`은 이를 DAC transaction과 같은 줄에 기록합니다. SDL 공식 계약상
+`SDL_GetAudioStreamQueued()`는 stream에 넣은 미소비 입력 byte 수이며 모든 thread에서
+호출할 수 있습니다. device buffer frame 수 역시 별도로 조회합니다.
+
+**해석 제한:** device buffer는 현재 남은 정확한 양이 아니라 SDL이 hardware에 공급하는
+한 chunk의 크기입니다. 또한 서로 다른 입력 형식의 PCM이 동시에 queue에 있으면 SDL은
+통합 byte 수만 반환하므로 `pcm-queued-ms`는 현재 형식 기준 근사치입니다. raw byte,
+sample rate와 channel 수를 함께 보존합니다.
+
+**Task 464에서 확인됨:** 실제 음악 중단의 `0x0101`은 PCM 261.995 ms와 compressed
+backlog 291,066 byte를 남겼습니다. 이는 약 18.2초의 압축 재생분이므로 guest DAC 시각이
+HLE 출력보다 크게 앞섰다는 가설이 확정되었습니다.
+
+참고: [SDL_GetAudioStreamQueued](https://wiki.libsdl.org/SDL3/SDL_GetAudioStreamQueued),
+[SDL_GetAudioDeviceFormat](https://wiki.libsdl.org/SDL3/SDL_GetAudioDeviceFormat).
+
+### English
+
+**Confirmed:** Through Task 462, DAC audit showed only that `AVOL=0x0101` reduced output gain to
+`0.000177`; it did not record playable HLE backlog at that instant. The existing log therefore
+cannot prove the hypothesis that the guest lowered the DAC on its own song timeline while HLE
+output lagged behind.
+
+**Implemented:** `Piu10Mp3AudioOut::Snapshot()` returns the SDL input PCM queue and duration in the
+current S16 format, audio-device callback buffer, compressed SPSC ring, decoder-pending worker
+bytes, receive/decode counters, and frame-sync at a DAC transaction. `REPIU_PIU10_DAC_AUDIT=1`
+appends these values to the same transaction record. Under SDL's official contract,
+`SDL_GetAudioStreamQueued()` returns unconsumed input bytes put into the stream and is safe from
+any thread. Device-buffer frames are queried separately.
+
+**Interpretation limit:** Device-buffer size is one SDL hardware-feed chunk, not exact current
+occupancy. If differently formatted input PCM coexists in the queue, SDL returns one aggregate
+byte count, making `pcm-queued-ms` an approximation in the current format. Raw bytes, sample rate,
+and channel count remain in the record.
+
+**Confirmed by Task 464:** The interrupting `0x0101` left 261.995 ms of PCM and 291,066 bytes of
+compressed backlog. This represents about 18.2 seconds of compressed playback, confirming that
+the guest DAC timeline substantially led HLE output.
+
+References: [SDL_GetAudioStreamQueued](https://wiki.libsdl.org/SDL3/SDL_GetAudioStreamQueued),
+[SDL_GetAudioDeviceFormat](https://wiki.libsdl.org/SDL3/SDL_GetAudioDeviceFormat).
+
+## 16. decoder inflight 기반 MAS3507D backpressure (Task 464)
+
+### 한국어
+
+**원인 확정:** 중단 시점은 `compressed-ring=3311`, `decoder-pending=287755`로 총
+291,066 byte를 남겼습니다. 약 128 kbps에서 약 18.2초입니다. 앞선 전이는 약 72 KiB가
+173 frame, 약 4.52초 동안 drain되어 같은 환산을 검증합니다. 고정 512-byte ring pop 뒤
+PCM queue가 허용한 약 417-byte frame 하나만 소비되면서 약 95 byte/frame이 staging에
+누적되었고, ring 크기만 본 DEMAND가 이를 guest에 노출하지 않았습니다.
+
+**구현됨:** platform-neutral `sound::DecoderInputFifo`는 guest 수락 시 inflight를 예약하고
+ring에서 staging으로 이동할 때 유지하며, parser cursor가 실제 전진한 byte만 차감합니다.
+batch와 DEMAND는 `0xE00` 논리 inflight를 사용합니다. byte path는 stale status race를 위해
+4,096 byte까지 허용합니다. invalid prefix와 rejected frame은 소비되고 incomplete input은
+소비되지 않습니다.
+
+**검증됨:** synthetic probe는 `0xE00` fill에서 DEMAND low, 512-byte pop 뒤에도 low 유지,
+417-byte consume 뒤 high 복귀, batch refill 제한과 4 KiB byte headroom을 확인했습니다.
+결과는 `demand_low=true,pop_keeps_low=true,demand_high=true,inflight_high=4096`입니다.
+
+**사용자 검증:** 2026-08-10 사용자 gameplay 재실행에서 기존의 곡 중도 끊김 증상이
+사라졌습니다. 따라서 decoder inflight 기반 backpressure가 해당 증상에 유효한 대책임은
+확인되었습니다. 중단 예상 지점의 실제 `compressed-inflight` 수치와 노트 sync의 정밀
+측정은 아직 수행하지 않았습니다.
+
+### English
+
+**Root cause confirmed:** The interruption left `compressed-ring=3311` and
+`decoder-pending=287755`, totaling 291,066 bytes or about 18.2 seconds at roughly 128 kbps. An
+earlier transition drained about 72 KiB over 173 frames, about 4.52 seconds, independently
+validating the conversion. A fixed 512-byte ring pop followed by consumption of the one roughly
+417-byte frame allowed by the PCM queue accumulated about 95 bytes per frame in staging, while
+ring-only DEMAND hid that backlog from the guest.
+
+**Implemented:** Platform-neutral `sound::DecoderInputFifo` reserves inflight bytes at guest
+acceptance, keeps them while moving from ring to staging, and subtracts only actual parser-cursor
+progress. Batch input and DEMAND use the logical `0xE00` inflight level. The byte path permits up
+to 4,096 bytes for stale-status race headroom. Invalid prefixes and rejected frames are consumed;
+incomplete input is not.
+
+**Verified:** The synthetic probe checks low DEMAND at `0xE00`, persistence after a 512-byte pop,
+high DEMAND only after a 417-byte consume, batch-refill limiting, and 4 KiB byte headroom. It
+reports `demand_low=true,pop_keeps_low=true,demand_high=true,inflight_high=4096`.
+
+**User validation:** On 2026-08-10, the user reran the gameplay path and reported that the previous
+mid-song interruption no longer occurred. Decoder-inflight backpressure is therefore confirmed as
+an effective mitigation for that symptom. The actual `compressed-inflight` value at the former
+interruption point and precise note synchronization have not yet been measured.
