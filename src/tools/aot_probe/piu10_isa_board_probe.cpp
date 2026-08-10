@@ -511,6 +511,81 @@ bool RunPiu10IsaBoardProbe()
             ((value >> 5U) & 1U) == expected;
     }
 
+    const std::array<std::uint8_t, 8> pumpitpc_transform = {
+        0xF0U, 0x1CU, 0xFEU, 0x03U, 0x81U, 0x40U, 0x38U, 0xF8U};
+    const std::array<std::uint8_t, 10> pumpitpc_challenge = {
+        0xD0U, 0xAAU, 0xC9U, 0xF8U, 0x96U,
+        0x4CU, 0xD0U, 0xDEU, 0xB6U, 0x0BU};
+    const std::array<std::uint8_t, 10> pumpitpc_response = {
+        0x7DU, 0x77U, 0xFEU, 0xEAU, 0x8BU,
+        0x7AU, 0x55U, 0x7DU, 0x5FU, 0x1EU};
+    hle::Piu10IsaBoard vector_board;
+    std::vector<std::uint8_t> vector_flash(
+        hle::Piu10IsaBoard::kFlashBytes, 0xFFU);
+    std::string vector_message;
+    bool cat_vector_valid = vector_board.Initialize(
+        std::move(vector_flash), pumpitpc_transform, &vector_message) &&
+        vector_board.Write16(0x02D4U, 0x0100U) &&
+        vector_board.Write16(0x02D6U, 0x0001U) &&
+        vector_board.Write16(0x02DAU, 0x0030U);
+    std::array<std::uint8_t, 11> raw_response = {};
+    std::array<std::uint8_t, 10> actual_response = {};
+    for (std::size_t byte = 0; byte < pumpitpc_challenge.size(); ++byte)
+    {
+        for (unsigned bit = 0; bit < 8U; ++bit)
+        {
+            const std::uint16_t data =
+                ((pumpitpc_challenge[byte] >> bit) & 1U) != 0U
+                    ? 0U : 0x0020U;
+            cat_vector_valid = cat_vector_valid &&
+                vector_board.Write16(0x02D4U, 0x0100U) &&
+                vector_board.Write16(0x02D6U, 0x0001U) &&
+                vector_board.Write16(0x02DAU, data) &&
+                vector_board.Write16(0x02DAU,
+                                     static_cast<std::uint16_t>(data | 0x10U)) &&
+                vector_board.Write16(0x02D4U, 0x0080U) &&
+                vector_board.Write16(0x02D6U, 0x0000U) &&
+                vector_board.Read16(0x02DAU, &value);
+            raw_response[byte] = static_cast<std::uint8_t>(
+                (raw_response[byte] << 1U) | ((value >> 5U) & 1U));
+        }
+    }
+    for (unsigned bit = 0; bit < 2U; ++bit)
+    {
+        cat_vector_valid = cat_vector_valid &&
+            vector_board.Write16(0x02D4U, 0x0100U) &&
+            vector_board.Write16(0x02D6U, 0x0001U) &&
+            vector_board.Write16(0x02DAU, 0x0000U) &&
+            vector_board.Write16(0x02DAU, 0x0010U) &&
+            vector_board.Write16(0x02D4U, 0x0080U) &&
+            vector_board.Write16(0x02D6U, 0x0000U) &&
+            vector_board.Read16(0x02DAU, &value);
+        raw_response[pumpitpc_challenge.size()] =
+            static_cast<std::uint8_t>(
+                (raw_response[pumpitpc_challenge.size()] << 1U) |
+                ((value >> 5U) & 1U));
+    }
+    raw_response[pumpitpc_challenge.size()] = static_cast<std::uint8_t>(
+        raw_response[pumpitpc_challenge.size()] << 6U);
+    const auto reverse_bits = [](std::uint8_t input) {
+        std::uint8_t output = 0U;
+        for (unsigned bit = 0; bit < 8U; ++bit)
+        {
+            output = static_cast<std::uint8_t>(
+                (output << 1U) | ((input >> bit) & 1U));
+        }
+        return output;
+    };
+    for (std::size_t byte = 0; byte < actual_response.size(); ++byte)
+    {
+        const std::uint8_t aligned = static_cast<std::uint8_t>(
+            (raw_response[byte] << 2U) |
+            ((raw_response[byte + 1U] >> 6U) & 0x03U));
+        actual_response[byte] = reverse_bits(aligned);
+    }
+    cat_vector_valid = cat_vector_valid &&
+        actual_response == pumpitpc_response;
+
     const bool valid = target_profiles_valid && jamma_target_profiles_valid &&
         mp3_latency_profile_valid && mp3_latency_bytes_valid &&
         mp3_snapshot_valid &&
@@ -518,7 +593,7 @@ bool RunPiu10IsaBoardProbe()
         mpeg_parser_valid && status_valid && status_source_valid && flash_valid &&
         mp3_stream_valid && ring_valid && frame_batch_valid &&
         frame_audit_valid && stream_chunk_audit_valid &&
-        cat_sequence_valid;
+        cat_sequence_valid && cat_vector_valid;
     std::cout << "piu10_target_profiles="
               << (target_profiles_valid ? "true" : "false") << "\n";
     std::cout << "jamma_target_profiles="
@@ -550,6 +625,13 @@ bool RunPiu10IsaBoardProbe()
     std::cout << "piu10_isa_board_probe=" << (valid ? "true" : "false")
               << ",destination=0x" << std::hex << board.destination()
               << ",value=0x" << value << std::dec << "\n";
+    std::cout << "piu10_cat702_vector="
+              << (cat_vector_valid ? "true" : "false") << ",response=";
+    for (const std::uint8_t byte : actual_response)
+    {
+        std::cout << std::hex << static_cast<unsigned>(byte) << ":";
+    }
+    std::cout << std::dec << "\n";
     std::cout << "piu10_mp3_ring=" << (ring_valid ? "true" : "false")
               << ",demand_low=" << (demand_deasserted ? "true" : "false")
               << ",pop_keeps_low="

@@ -1641,6 +1641,22 @@ the ranking, and the top 32 covered 67.21%, below the 80% gate for generating on
 exception-free loop. The next single-step task must first separate hot-HLE dispatch/decode
 work from the exception-transition cost outside this scope.
 
+## 동적 DX 포트 출력 래퍼 보존 / Dynamic DX-port output wrapper preservation
+
+Watcom 런타임은 하나의 `OUT DX,AL/AX/EAX` 명령을 포함한 공용 함수를 여러 장치 출력에
+재사용합니다. 따라서 포트 I/O HLE가 무시하거나 관찰만 하는 출력도 게스트 명령을 NOP로
+영구 패치하지 않습니다. 에뮬레이터는 현재 EIP만 명령 길이만큼 전진해 그 트랜잭션을
+버리고, 래퍼의 바이트는 보존하여 다음 호출의 DX 값이 다른 장치로 전달되게 합니다.
+이 정책은 target, 실행 주소, 포트 번호와 무관하며 에뮬레이션 대상 출력에도 동일하게
+EIP 전진 방식을 사용합니다.
+
+The Watcom runtime reuses shared functions containing one `OUT DX,AL/AX/EAX` instruction for
+multiple devices. Port I/O HLE therefore never permanently NOP-patches guest code for an output
+that is ignored or only observed. The emulator advances only the current EIP by the instruction
+length, discarding that transaction while preserving the wrapper bytes so a later DX value can
+reach a different device. This policy is independent of target, executable address, and port
+number; emulated output paths use the same EIP-advance behavior.
+
 ## 포트 I/O 지연 루프 batching / Port I/O delay-loop batching
 
 Task 414는 **결과를 쓰지 않는 포트 폴링 루프**를 인식해 반복을 건너뜁니다. pumpit3의

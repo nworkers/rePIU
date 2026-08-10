@@ -617,11 +617,6 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
         }
     }
 
-    auto apply_nop_patch = [context, decode_eip, instruction_len] () {
-        std::vector<std::uint8_t> nop_buffer(instruction_len, 0x90);
-        WriteGuestBytes(context, reinterpret_cast<void*>(static_cast<std::uintptr_t>(decode_eip)), nop_buffer.data(), instruction_len);
-    };
-
     // PIU10 is a separate ISA16 flash/MP3/security board. Preserve every
     // guest access because its address, destination, and CAT702 serial state
     // are assembled across multiple OUT instructions.
@@ -992,7 +987,10 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
                          false,
                          true,
                          "deferred-limit");
-            apply_nop_patch();
+            // This opcode addresses DX, so a shared output wrapper can target
+            // a different device on its next call. Ignore only this access;
+            // patching the instruction would suppress every later write.
+            win32_context->Eip += instruction_len;
             return true;
         }
 
@@ -1005,7 +1003,7 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
                      false,
                      true,
                      "deferred-ignored");
-        apply_nop_patch();
+        win32_context->Eip += instruction_len;
         return true;
     }
 
@@ -1018,7 +1016,7 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
                  false,
                  true,
                  "unsupported-ignored");
-    apply_nop_patch();
+    win32_context->Eip += instruction_len;
     return true;
 }
 

@@ -60,6 +60,7 @@ flowchart LR
 * [REP MOVS와 장시간 실행 경계 / REP MOVS and long-runtime boundary](rep-movs-and-long-runtime-boundary.md)
 
 * [PIU LINEXE call-gate ABI](piu-linexe-call-gate-abi.md)
+* [CAT702 PIU lock check / CAT702 PIU 보안 검사](cat702-piu-lock-check.md)
 * [LINEXE arena runtime frontier](linexe-arena-runtime-frontier.md)
 * [RES/PTX resource loading analysis](res-ptx-resource-loading.md)
 
