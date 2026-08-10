@@ -6,6 +6,7 @@
 #include "repiu/target/target_profile.h"
 
 #include "inline_cache_probe.h"
+#include "jump_table_guard_probe.h"
 #include "append_phase_benchmark_probe.h"
 #include "arena_view_probe.h"
 #include "boundary_provenance_probe.h"
@@ -624,6 +625,10 @@ int main(int argc, char** argv)
     {
         return repiu::tools::RunPiu10IsaBoardProbe() ? 0 : 1;
     }
+    if (argc == 2 && std::strcmp(argv[1], "--jump-table-guard") == 0)
+    {
+        return repiu::tools::RunJumpTableGuardProbe() ? 0 : 1;
+    }
 #endif
     const bool xref_mode = argc == 4 &&
         std::strcmp(argv[2], "--xref") == 0;
@@ -631,12 +636,16 @@ int main(int argc, char** argv)
         std::strcmp(argv[2], "--dump") == 0;
     const bool findstr_mode = argc == 4 &&
         std::strcmp(argv[2], "--findstr") == 0;
-    if (argc != 2 && argc != 3 && !xref_mode && !dump_mode && !findstr_mode)
+    const bool entry_mode = argc == 4 &&
+        std::strcmp(argv[2], "--entry") == 0;
+    if (argc != 2 && argc != 3 && !xref_mode && !dump_mode &&
+        !findstr_mode && !entry_mode)
     {
         std::cerr << "usage: repiu_aot_probe <DOS4GW.EXE> [guest-address]\n"
                   << "       repiu_aot_probe <DOS4GW.EXE> --xref <address>\n"
                   << "       repiu_aot_probe <DOS4GW.EXE> --dump <address>\n"
-                  << "       repiu_aot_probe <DOS4GW.EXE> --findstr <text>\n";
+                  << "       repiu_aot_probe <DOS4GW.EXE> --findstr <text>\n"
+                  << "       repiu_aot_probe <DOS4GW.EXE> --entry <address>\n";
         return 2;
     }
     const std::filesystem::path path = argv[1];
@@ -724,7 +733,20 @@ int main(int argc, char** argv)
         return 0;
     }
     repiu::runtime::AotTranslationPlan plan;
-    if (!repiu::runtime::BuildAotTranslationPlan(image, &plan))
+    std::uint32_t plan_entry = image.relocated_entry_linear_address;
+    if (entry_mode)
+    {
+        char* end = nullptr;
+        const unsigned long entry = std::strtoul(argv[3], &end, 0);
+        if (end == argv[3] || *end != '\0' || entry > UINT32_MAX)
+        {
+            std::cerr << "invalid plan entry address\n";
+            return 2;
+        }
+        plan_entry = static_cast<std::uint32_t>(entry);
+    }
+    if (!repiu::runtime::BuildAotTranslationPlanFromEntry(
+            image, plan_entry, &plan))
     {
         PrintPlan(plan);
         return 1;

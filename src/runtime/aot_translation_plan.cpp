@@ -294,6 +294,7 @@ struct JumpTableGuard
 {
     std::uint8_t index_register = 0xFFU;
     std::uint32_t entry_count = 0;
+    bool requires_low_byte_normalization = false;
 };
 
 // The emitted slot is `jmp [reg*4+disp32]` + INT3 + N dword entries and the
@@ -314,6 +315,23 @@ bool ReadGuardRegisterId(ZydisRegister reg, std::uint8_t* register_id)
     }
     *register_id = static_cast<std::uint8_t>(id);
     return true;
+}
+
+bool ReadLowByteParentRegisterId(ZydisRegister reg,
+                                 std::uint8_t* register_id)
+{
+    if (register_id == nullptr)
+    {
+        return false;
+    }
+    switch (reg)
+    {
+        case ZYDIS_REGISTER_AL: *register_id = 0U; return true;
+        case ZYDIS_REGISTER_CL: *register_id = 1U; return true;
+        case ZYDIS_REGISTER_DL: *register_id = 2U; return true;
+        case ZYDIS_REGISTER_BL: *register_id = 3U; return true;
+        default: return false;
+    }
 }
 
 bool ReadJumpTableGuard(const ZydisDecoder& decoder,
@@ -344,12 +362,65 @@ bool ReadJumpTableGuard(const ZydisDecoder& decoder,
     {
         return false;
     }
-    if (!ReadGuardRegisterId(operands[0].reg.value, &guard->index_register))
+    if (ReadGuardRegisterId(
+            operands[0].reg.value, &guard->index_register))
+    {
+        guard->requires_low_byte_normalization = false;
+    }
+    else if (ReadLowByteParentRegisterId(
+                 operands[0].reg.value, &guard->index_register))
+    {
+        guard->requires_low_byte_normalization = true;
+    }
+    else
     {
         return false;
     }
     guard->entry_count = static_cast<std::uint32_t>(bound) + 1U;
     return true;
+}
+
+bool MatchLowByteJumpTableNormalization(
+    const ZydisDecodedInstruction& instruction,
+    const ZydisDecodedOperand* operands,
+    std::uint8_t expected_register)
+{
+    if (operands == nullptr || instruction.mnemonic != ZYDIS_MNEMONIC_AND ||
+        instruction.operand_count_visible != 2U ||
+        operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+        operands[1].type != ZYDIS_OPERAND_TYPE_IMMEDIATE)
+    {
+        return false;
+    }
+    std::uint8_t destination_register = 0xFFU;
+    if (!ReadGuardRegisterId(
+            operands[0].reg.value, &destination_register) ||
+        destination_register != expected_register)
+    {
+        return false;
+    }
+    const std::int64_t mask = operands[1].imm.is_signed
+        ? operands[1].imm.value.s
+        : static_cast<std::int64_t>(operands[1].imm.value.u);
+    return mask == 0xFF;
+}
+
+bool PropagateLowByteJumpTableGuard(
+    const ZydisDecodedInstruction& instruction,
+    const ZydisDecodedOperand* operands,
+    std::uint32_t next,
+    const JumpTableGuard& guard,
+    std::unordered_map<std::uint32_t, JumpTableGuard>* guards)
+{
+    if (guards == nullptr || !guard.requires_low_byte_normalization ||
+        !MatchLowByteJumpTableNormalization(
+            instruction, operands, guard.index_register))
+    {
+        return false;
+    }
+    JumpTableGuard normalized = guard;
+    normalized.requires_low_byte_normalization = false;
+    return guards->emplace(next, normalized).second;
 }
 
 bool MatchJumpTableBranch(const ZydisDecodedInstruction& instruction,
@@ -436,7 +507,8 @@ bool TryReclassifyJumpTable(
         return false;
     }
     const auto guard = guards.find(record->guest_address);
-    if (guard == guards.end())
+    if (guard == guards.end() ||
+        guard->second.requires_low_byte_normalization)
     {
         return false;
     }
@@ -461,6 +533,36 @@ bool TryReclassifyJumpTable(
     }
     record->table_index_register = branch_register;
     return true;
+}
+
+bool TryPropagateLowByteJumpTableGuard(
+    const ZydisDecoder& decoder,
+    const std::unordered_map<std::uint32_t, JumpTableGuard>& guards,
+    const AotInstructionRecord& record,
+    std::unordered_map<std::uint32_t, JumpTableGuard>* updated_guards)
+{
+    if (record.kind != AotInstructionKind::kCopy || record.bytes.empty() ||
+        updated_guards == nullptr)
+    {
+        return false;
+    }
+    const auto guard = guards.find(record.guest_address);
+    if (guard == guards.end() ||
+        !guard->second.requires_low_byte_normalization)
+    {
+        return false;
+    }
+    ZydisDecodedInstruction instruction{};
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+    if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(
+            &decoder, record.bytes.data(), record.bytes.size(),
+            &instruction, operands)))
+    {
+        return false;
+    }
+    return PropagateLowByteJumpTableGuard(
+        instruction, operands, record.guest_address + record.length,
+        guard->second, updated_guards);
 }
 
 bool IsExcludedGuestAddress(
@@ -735,13 +837,21 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                 const auto guard = jump_table_guards.find(address);
                 if (guard != jump_table_guards.end())
                 {
+                    const JumpTableGuard active_guard = guard->second;
+                    if (active_guard.requires_low_byte_normalization)
+                    {
+                        PropagateLowByteJumpTableGuard(
+                            instruction, operands, next, active_guard,
+                            &jump_table_guards);
+                    }
                     std::uint8_t branch_register = 0xFFU;
                     std::uint32_t table_address = 0;
-                    if (MatchJumpTableBranch(instruction, operands,
+                    if (!active_guard.requires_low_byte_normalization &&
+                        MatchJumpTableBranch(instruction, operands,
                                              &branch_register, &table_address) &&
-                        branch_register == guard->second.index_register &&
+                        branch_register == active_guard.index_register &&
                         ReadJumpTableTargets(image, table_address,
-                                             guard->second.entry_count,
+                                             active_guard.entry_count,
                                              &record.table_targets))
                     {
                         record.kind = AotInstructionKind::kJumpTable;
@@ -932,6 +1042,12 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                     if (profile != nullptr)
                     {
                         ++profile->sweep_record_visit_count;
+                    }
+                    if (TryPropagateLowByteJumpTableGuard(
+                            decoder, jump_table_guards, swept_record,
+                            &jump_table_guards))
+                    {
+                        sweep_jump_table_guards = true;
                     }
                     if (!TryReclassifyJumpTable(image, decoder,
                                                 jump_table_guards,

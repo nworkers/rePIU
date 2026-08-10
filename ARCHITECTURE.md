@@ -1182,6 +1182,10 @@ Watcom switch문 관용구(`cmp reg,imm; ja default; jmp dword ptr cs:[reg*4+dis
 planner가 cmp/ja guard로 테이블 크기(`imm+1`, 최대 61)를 확정하고 relocated image에서
 전 엔트리가 image 내부임을 검증한 뒤 `kJumpTable`로 분류해 각 target을 CFG에
 포함시킵니다. 방문 순서에 무관하도록 walk 후 재분류 스윕이 수렴까지 반복됩니다.
+하위 byte 상태를 쓰는 compiler/library 변형은 `cmp low-r8,imm; jnbe default; and
+parent-r32,0xff; jmp cs:[parent-r32*4+table]`의 def-use 관계를 추가로 검증합니다.
+정확한 low-byte/parent register 관계와 `0xff` mask가 모두 일치할 때만 guard를 다음
+명령으로 전달하며 high-byte register, 다른 mask/register 또는 정규화 생략은 거부합니다.
 emitter는 `jmp [reg*4+native_table]` + INT3 fallback + 인라인 포인터 테이블을
 방출하고, Win32 배치·동적 추가의 RW 윈도우에서 절대 주소를 기록합니다.
 미번역 target 엔트리는 INT3 fallback을 가리켜 dispatcher로 fail-closed합니다.
@@ -1190,7 +1194,12 @@ The planner recognizes the Watcom switch idiom, derives the table bound from the
 cmp/ja guard (up to 61 entries), validates every relocated table entry as
 in-image, classifies the branch `kJumpTable`, and enqueues each target into the
 CFG, with a post-walk reclassification sweep making the result independent of
-block visit order. The emitter produces `jmp [reg*4+native_table]` with an INT3
+block visit order. Compiler/library variants using byte states may use `cmp
+low-r8,imm; jnbe default; and parent-r32,0xff; jmp
+cs:[parent-r32*4+table]`; the planner propagates the guard only when the exact
+low-byte/parent relationship and `0xff` mask are verified. High-byte registers,
+different masks/registers, and omitted normalization fail closed. The emitter
+produces `jmp [reg*4+native_table]` with an INT3
 fallback and an inline pointer table; Win32 placement and dynamic append resolve
 absolute addresses in their RW windows, and untranslated entries fail closed to
 the dispatcher.
@@ -1198,6 +1207,8 @@ the dispatcher.
 ```mermaid
 flowchart LR
     G["cmp reg,imm + ja"] --> J["jmp cs:[reg*4+disp32]"]
+    B["cmp low8,imm + ja"] --> Z["and parent32,0xff"]
+    Z --> J
     J -->|"검증 통과"| N["native table jmp<br/>(kJumpTable)"]
     J -->|"검증 실패"| X["INT3 dispatcher exit"]
     N -->|"미번역 entry"| X

@@ -256,6 +256,7 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/execution_backend_probe.cpp
     src/tools/aot_probe/execution_timeout_probe.cpp
     src/tools/aot_probe/inline_cache_probe.cpp
+    src/tools/aot_probe/jump_table_guard_probe.cpp
     src/tools/aot_probe/native_linear_span_probe.cpp
     src/tools/aot_probe/plan_build_benchmark_probe.cpp
     src/tools/aot_probe/pit_timer_probe.cpp
