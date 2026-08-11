@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,10 +18,11 @@ class Piu10IsaBoard
 public:
     static constexpr std::size_t kFlashBytes = 2U * 1024U * 1024U;
     static constexpr std::size_t kCat702TransformBytes = 8U;
+    using Cat702Transform =
+        std::array<std::uint8_t, kCat702TransformBytes>;
 
     bool Initialize(std::vector<std::uint8_t> flash,
-                    const std::array<std::uint8_t,
-                                     kCat702TransformBytes>& cat702_transform,
+                    const std::optional<Cat702Transform>& cat702_transform,
                     std::string* message = nullptr);
     void Reset();
     void SetMp3DataSink(std::function<void(std::uint8_t)> sink);
@@ -29,6 +31,7 @@ public:
         std::function<void(const sound::Dac3350aControlEvent&)> sink);
 
     bool available() const { return available_; }
+    bool cat702_enabled() const { return cat702_enabled_; }
     bool Read8(std::uint16_t port, std::uint8_t* value);
     bool Read16(std::uint16_t port, std::uint16_t* value);
     bool Write8(std::uint16_t port, std::uint8_t value);
@@ -41,8 +44,7 @@ private:
     class Cat702Piu
     {
     public:
-        void Configure(const std::array<std::uint8_t,
-                                        kCat702TransformBytes>& transform);
+        void Configure(const Cat702Transform& transform);
         void Reset();
         void WriteData(int state);
         void WriteSelect(int state);
@@ -54,7 +56,7 @@ private:
         void ApplyBitSbox(int select);
         void ApplySbox(const std::array<std::uint8_t, 8>& sbox);
 
-        std::array<std::uint8_t, kCat702TransformBytes> transform_ = {};
+        Cat702Transform transform_ = {};
         int select_ = 1;
         int clock_ = 1;
         int data_in_ = 1;
@@ -74,6 +76,7 @@ private:
     std::uint8_t mp3_frame_sync_ = 1;
     std::uint8_t mp3_demand_ = 1;
     bool available_ = false;
+    bool cat702_enabled_ = false;
     std::function<void(std::uint8_t)> mp3_data_sink_;
     std::function<std::uint8_t()> mp3_status_source_;
     std::function<void(const sound::Dac3350aControlEvent&)>

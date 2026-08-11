@@ -144,7 +144,9 @@ bool TryPiu10Mp3ByteFastPath(
     if (mp3_byte_accepted || context->piu10_mp3_frame_batch_audit_enabled)
     {
         TransferPiu10Mp3FrameTail(
-            context, guest_source, mp3_byte, &frame[6]);
+            context, guest_source,
+            frame[kSavedEspIndex] + 4U + kGuestMetadataBytes,
+            mp3_byte, &frame[6]);
     }
 
     const std::uint32_t next_guest = guest_source + 1U;

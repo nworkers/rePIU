@@ -341,3 +341,17 @@ It contains four LE objects, has original entry `0x001016B0` and stack top
 `0x0059CC90`, and currently reports zero relocation-analysis failures. Asset and
 track evidence is maintained in
 [`pumpit2-chd-iso9660-mount.md`](analysis/pumpit2-chd-iso9660-mount.md).
+
+## pumpitpc PIU10 MP3 feeder call structure (confirmed, Task 471)
+
+Addresses use the executed arena base `0x03000000`. Feeder loop `0x03019380` compares the source
+cursor with available end, then checks the `ECX < 100` and cursor `< 0x76C` service conditions at
+`0x030193A3`. The data path at `0x03019442`-`0x03019461` increments the cursor, frame count, and
+`ECX`, loads port `0x02DA` into EAX, and calls the byte-output wrapper. After return,
+`0x03019466`-`0x03019471` compares frame count/target and branches back to the loop.
+
+The wrapper at `0x030EC74E`-`0x030EC757` is `push ebx; mov ebx,eax; mov al,dl; mov edx,ebx;
+out dx,al; pop ebx; ret`; the privileged instruction is at `0x030EC755`. At the `OUT`, the guest
+stack therefore contains saved EBX at `[ESP]` and feeder return address `0x03019466` at `[ESP+4]`.
+This is an original-executable hardware-call ABI fact. The HLE matcher validates the call/return
+and state-update relationships rather than these particular addresses.

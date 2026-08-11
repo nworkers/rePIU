@@ -477,7 +477,8 @@ static bool TryPiu10Mp3BytePortFastPath(
     {
         std::uint32_t guest_ecx = win32_context->Ecx;
         TransferPiu10Mp3FrameTail(
-            context, win32_context->Eip, mp3_byte, &guest_ecx);
+            context, win32_context->Eip, win32_context->Esp,
+            mp3_byte, &guest_ecx);
         win32_context->Ecx = guest_ecx;
     }
     ++win32_context->Eip;
@@ -853,11 +854,13 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
                     win32_context->Edx, win32_context->Ebx,
                     win32_context->Esp, win32_context->Ebp,
                     win32_context->Esi, win32_context->Edi};
-                if (TryBatchPortIoDelayLoop(decode_eip, instruction_len, width,
-                                            registers, window_readable))
+                if (TryBatchPortIoDelayLoop(context, decode_eip,
+                                            instruction_len, width, registers,
+                                            window_readable))
                 {
-                    // Only the matched counter can have changed, and it is
-                    // never EAX, EDX, or ESP.
+                    // The direct form changes only its matched register. The
+                    // wrapped form updates saved EDX on the guest stack and
+                    // leaves this register array unchanged.
                     win32_context->Ecx = registers[1];
                     win32_context->Ebx = registers[3];
                     win32_context->Ebp = registers[5];

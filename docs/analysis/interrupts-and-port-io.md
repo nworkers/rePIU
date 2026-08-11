@@ -631,3 +631,37 @@ real-mode shadow, and writes the full 32-bit offset to `EBX`; an uninstalled vec
 
 Task 398's `target_selector != CS` rule still holds: the saved pointer becomes
 `002B:00000000`, whose selector is still not `CS`.
+
+## 2026-08-12 Task 470: pumpitpc 호출 래퍼형 포트 지연 루프
+
+**확인됨:** `pumpitpc`의 공용 입력 래퍼는 `push edx; mov edx,eax; sub eax,eax;
+in ax,dx; pop edx; ret`입니다. hot 호출자는 `mov eax,0x2A8; call wrapper; inc edx;
+cmp edx,200; jl`이며, 다음 반복의 `mov eax,0x2A8`이 앞선 입력 결과를 폐기합니다.
+
+**구현됨:** 주소 독립 matcher가 래퍼, guest stack 반환 주소, direct call target, 호출자
+루프와 결과 폐기를 모두 검증합니다. 일치하면 래퍼가 stack에 저장한 EDX만 198로
+전진시키며 원본 guest가 마지막 반복과 flags 계산을 수행합니다. EEPROM, YMZ280B,
+PIU10/CAT702 경로에는 적용하지 않습니다.
+
+**A/B 확인:** 동일 Release 바이너리가 같은 `INT 21h AH=08h` 미구현 지점에 도달할 때,
+OFF 대비 ON은 JAMMA scan `233,280 -> 3,527`, 전체 port I/O `244,970 -> 14,110`,
+`0xC0000096` 예외 `236,962 -> 7,936`을 기록했습니다. ON은 783개 loop에서 155,034회
+반복을 생략했고 최대 생략은 198이었습니다. 도달 시간은 약 8.29초에서 6.86초로
+줄었습니다. 두 arm의 동일한 `AH=08h` 종료는 이 batching과 별도인 기존 HLE 공백입니다.
+
+## 2026-08-12 Task 470: call-wrapped pumpitpc port-delay loop
+
+**Confirmed:** The shared `pumpitpc` input wrapper is `push edx; mov edx,eax; sub eax,eax;
+in ax,dx; pop edx; ret`. Its hot caller is `mov eax,0x2A8; call wrapper; inc edx;
+cmp edx,200; jl`; the next iteration's `mov eax,0x2A8` discards the previous input result.
+
+**Implemented:** An address-independent matcher proves the wrapper, guest-stack return address,
+direct call target, caller loop, and result discard. On a match it advances only the EDX value
+saved by the wrapper to 198, leaving the final iteration and flag calculation to original guest
+code. EEPROM, YMZ280B, and PIU10/CAT702 paths are excluded.
+
+**A/B confirmed:** At the same unimplemented `INT 21h AH=08h` endpoint in the same Release binary,
+ON versus OFF reduced JAMMA scans from 233,280 to 3,527, total port I/O from 244,970 to 14,110,
+and `0xC0000096` exceptions from 236,962 to 7,936. ON skipped 155,034 iterations in 783 loops,
+with a maximum batch of 198. Time to the common endpoint fell from about 8.29 to 6.86 seconds.
+The common `AH=08h` endpoint is a separate pre-existing HLE gap, not a batching regression.

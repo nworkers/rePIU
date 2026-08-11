@@ -486,6 +486,12 @@ MAME [`cat702.cpp`](https://github.com/mamedev/mame/blob/master/src/devices/mach
 `pumpitpc`, `pumpite`에서만 활성화합니다. `pumpit1`, `pumpit2`, `pumpit3`에서는
 비활성화되며, 이 target들의 YMZ280B sample ROM 경로는 해당 capability와 독립적입니다.
 
+**확인됨: CAT702 독립 capability(Task 469).** `enable_cat702`은 PIU10 보드 전체와
+별도로 target profile에서 선택합니다. false이면 `<target>.cat702`를 추출하지 않고
+data-out bit 5를 0으로 반환하며 data/clock/select 쓰기를 무시합니다. 같은 포트의
+flash, MP3와 DAC 경로는 유지됩니다. 현재 내장 profile은 기존 동작을 보존하도록
+`pumpito`, `pumpitc`, `pumpitpc`, `pumpite`에서 true입니다.
+
 **확인됨: JAMMA target 범위(Task 453).** `0x02A0..0x02AF` JAMMA/YMZ280B/EEPROM
 보드는 `enable_piu_jamma_board` capability로 제어합니다. 현재 `pumpit1`, `pumpit2`,
 `pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`에서만 활성화되며
@@ -518,6 +524,12 @@ verified by this task. The current MP3 status model reports reset-ready signals 
 **Confirmed target scope (Task 452):** rePIU enables this separate device only for `pumpito`,
 `pumpitc`, `pumpitpc`, and `pumpite`. It remains disabled for `pumpit1`, `pumpit2`, and
 `pumpit3`; their YMZ280B sample-ROM path is independent of this capability.
+
+**Confirmed independent CAT702 capability (Task 469):** target profiles select `enable_cat702`
+independently from the complete PIU10 board. When false, setup does not extract
+`<target>.cat702`, data-out bit 5 reads zero, and data/clock/select writes are ignored. Flash,
+MP3, and DAC paths on the same port remain active. The built-in profiles preserve previous
+behavior by setting it true for `pumpito`, `pumpitc`, `pumpitpc`, and `pumpite`.
 
 **Confirmed JAMMA target scope (Task 453):** the `0x02A0..0x02AF` JAMMA/YMZ280B/EEPROM
 board is controlled by `enable_piu_jamma_board`. It is enabled only for `pumpit1`, `pumpit2`,
@@ -1114,3 +1126,96 @@ confirms post-fix `pumpite` activation.
 about 98.7%. Unlike the former `batched=0` run, guest execution and input processing continue for
 more than 313 seconds, and the user confirms that behavior improved. The capture has no orderly
 shutdown statistics, so the final batch ratio over the full run was not measured.
+
+## 18. 호출 래퍼형 PIU10 MP3 feeder (Task 471)
+
+### 한국어
+
+**확인됨:** `pumpitpc`는 runtime `0x030EC755`의 `OUT DX,AL`을 직접 feeder 안에 두지 않고,
+`push ebx; mov ebx,eax; mov al,dl; mov edx,ebx; out dx,al; pop ebx; ret` 래퍼를
+`0x03019461`에서 호출합니다. feeder는 호출 전에 source cursor와 frame count 및 `ECX`를
+증가시키고, 반환 후 count/target을 비교해 `0x03019380`으로 되돌아갑니다. 기존 direct
+matcher는 이 구조를 거부하여 이전 로그의 542,517 byte가 모두 scalar였고 privileged
+instruction exception이 393만 회에 달했습니다.
+
+**교정됨:** 고정 주소나 target 이름 없이 래퍼 명령열, guest stack의 반환 주소, 상대 call
+대상, 호출 전 상태 alias, 반환 후 backward edge와 service 조건을 함께 검증하는 matcher를
+추가했습니다. synthetic probe는 relocated direct 두 변형과 wrapped 변형을 모두 승인하고,
+손상된 alias와 wrapped 반환 주소를 거부합니다. 결과는
+`piu10_mp3_frame_batch=true,bytes=4,ecx=103,relocated=true,variant=true,wrapped=true,fail-closed=true`
+입니다.
+
+**감사 교정:** 최초 wrapped 감사에서 byte/cursor/count는 일치했지만, FIFO inflight가
+`0xE00`에 도달해 scalar status polling이 반환한 지점을 예측 구간이 넘으면서 `ECX`만
+불일치했습니다. enqueue하지 않는 감사 계획도 현재 inflight의 `DEMAND` 여유에서 끊도록
+교정한 뒤 실제 Release 실행에서 3,700개 연속 segment가 mismatch 없이 통과했습니다.
+
+**실행 검증:** Win32 x86 Debug와 Release 빌드 및 전체 AOT probe가 성공했습니다. 25초
+Release 실행은 `verified frame-tail batch active`, playback 시작 2,902 byte와
+`received/dropped/decoded/pcm/starved/batched/ring-high/inflight/inflight-high=`
+`140795/0/329/379008/0/136595/2368/2212/3584`를 기록했습니다. 수신 byte의 약 97.0%가
+batch 처리됐고 drop과 starvation은 없었습니다.
+
+### English
+
+**Confirmed:** `pumpitpc` does not place the `OUT DX,AL` at runtime `0x030EC755` directly in the
+feeder. A call at `0x03019461` enters a `push ebx; mov ebx,eax; mov al,dl; mov edx,ebx; out dx,al;
+pop ebx; ret` wrapper. Before the call, the feeder advances the source cursor, frame count, and
+`ECX`; after return, it compares count/target and branches back to `0x03019380`. The former direct
+matcher rejected this shape, leaving all 542,517 bytes in the earlier log on the scalar path and
+raising 3.93 million privileged-instruction exceptions.
+
+**Corrected:** A matcher now validates the wrapper instructions, guest-stack return address,
+relative call target, pre-call state aliases, post-return backward edge, and service conditions,
+without a fixed address or target name. The synthetic probe accepts two relocated direct variants
+and the wrapped variant while rejecting a corrupted alias and wrapped return address. It reports
+`piu10_mp3_frame_batch=true,bytes=4,ecx=103,relocated=true,variant=true,wrapped=true,fail-closed=true`.
+
+**Audit correction:** The first wrapped audit matched byte/cursor/count but predicted past the
+point where scalar status polling returned when FIFO inflight reached `0xE00`, leaving only `ECX`
+mismatched. Limiting the non-enqueuing audit plan to current `DEMAND` headroom produced 3,700
+consecutive matching segments in a live Release run.
+
+**Runtime verification:** Win32 x86 Debug and Release builds and the complete AOT probe succeeded.
+A 25-second Release run logged `verified frame-tail batch active`, playback after 2,902 bytes, and
+`received/dropped/decoded/pcm/starved/batched/ring-high/inflight/inflight-high=`
+`140795/0/329/379008/0/136595/2368/2212/3584`. About 97.0% of received bytes were batched, with no
+drops or starvation.
+
+## 19. PIU10 후속 타이틀 프로파일 (Task 472)
+
+### 한국어
+
+**외부 사양으로 확인됨:** MAME 공식
+[`xtom3d.cpp`](https://github.com/mamedev/mame/blob/master/src/mame/misc/xtom3d.cpp)는
+`pumpitpr`, `pumpitpx`, `pumpit8`, `pumpitp2`, `pumpipx2`, `pumpitp3`, `pumpipx3`을 모두
+`PUMPITUP_BIOS` 아래에 두며, 각 세트에 8-byte CAT702 region과 CD image를 정의합니다.
+따라서 이들은 기존 `pumpite`와 같은 PIU10/CAT702/JAMMA capability 계약으로 등록했습니다.
+
+**로컬 자산 확인:** 일곱 short name의 ZIP은 모두 존재하며 공용 mount 준비 단계의
+`piu10.u8`, `piu10.u9`, `<short-name>.cat702` 검증을 통과했습니다. 현재 대응 CHD 디렉터리는
+없으므로 analyzer는 각 id에 대해 `<id> CHD directory not found`로 종료했습니다. 이는 profile
+lookup과 ROM-set 선택이 성공했음을 확인하지만, ISO mount, 실행 파일 구조와 gameplay는 아직
+확인하지 못한 상태입니다.
+
+**구현 검증:** profile probe는 PIU10 11개 profile 각각의 단일 등록, 공식 경로,
+`rom_set_id`, `piu_common`, JAMMA/PIU10/CAT702 true와 latency 0 ms를 확인합니다. Debug와
+Release 빌드 및 두 구성의 probe가 통과했습니다.
+
+### English
+
+**Confirmed from the external specification:** MAME's official
+[`xtom3d.cpp`](https://github.com/mamedev/mame/blob/master/src/mame/misc/xtom3d.cpp) places
+`pumpitpr`, `pumpitpx`, `pumpit8`, `pumpitp2`, `pumpipx2`, `pumpitp3`, and `pumpipx3` under
+`PUMPITUP_BIOS`, with an eight-byte CAT702 region and CD image for every set. They are therefore
+registered with the same PIU10/CAT702/JAMMA capability contract as the existing `pumpite`.
+
+**Local asset confirmation:** ZIPs for all seven short names exist and pass the shared mount
+preparation checks for `piu10.u8`, `piu10.u9`, and `<short-name>.cat702`. Their CHD directories are
+currently absent, so the analyzer exits with `<id> CHD directory not found` for each one. This
+confirms profile lookup and ROM-set selection, but ISO mounting, executable structure, and gameplay
+remain unverified.
+
+**Implementation verification:** The profile probe validates the single registration, canonical
+paths, `rom_set_id`, `piu_common`, enabled JAMMA/PIU10/CAT702 capabilities, and zero latency for
+each of the eleven PIU10 profiles. Debug and Release builds and probes pass.

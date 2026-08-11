@@ -18,6 +18,9 @@ constexpr std::uint32_t kMaximumMpegFrameBytes = 2048U;
 constexpr std::uint32_t kMaximumLoopBackBytes = 512U;
 constexpr std::size_t kCodePrefixBytes = 35U;
 constexpr std::size_t kCodeSuffixBytes = 21U;
+constexpr std::size_t kWrappedPrefixBytes = 31U;
+constexpr std::size_t kWrappedSuffixBytes = 17U;
+constexpr std::size_t kOutputWrapperBytes = 10U;
 
 struct FeederLayout
 {
@@ -277,6 +280,22 @@ void LimitPlanToTransferControlBoundary(
         std::min(plan->bytes.size(), boundary_distance));
 }
 
+void LimitPlanToDemandBoundary(ThreadContext* context,
+                               Piu10Mp3FrameBatchPlan* plan)
+{
+    if (context == nullptr || plan == nullptr)
+    {
+        return;
+    }
+    const std::size_t inflight =
+        context->piu10_mp3_audio.stats().inflight_bytes;
+    const std::size_t headroom =
+        inflight < Piu10Mp3AudioOut::kCompressedFifoBytes
+        ? Piu10Mp3AudioOut::kCompressedFifoBytes - inflight : 0U;
+    plan->bytes = plan->bytes.first(
+        std::min(plan->bytes.size(), headroom));
+}
+
 bool AddSignedAddress(std::uint32_t base, std::int64_t displacement,
                       std::uint32_t* result)
 {
@@ -289,8 +308,9 @@ bool AddSignedAddress(std::uint32_t base, std::int64_t displacement,
     return true;
 }
 
-bool DecodeFeederLayout(ThreadContext* context, std::uint32_t guest_source,
-                        FeederLayout* layout)
+bool DecodeDirectFeederLayout(ThreadContext* context,
+                              std::uint32_t guest_source,
+                              FeederLayout* layout)
 {
     if (context == nullptr || layout == nullptr ||
         guest_source < kCodePrefixBytes)
@@ -375,9 +395,164 @@ bool DecodeFeederLayout(ThreadContext* context, std::uint32_t guest_source,
     return true;
 }
 
+bool DecodeWrappedFeederLayout(ThreadContext* context,
+                               std::uint32_t guest_source,
+                               std::uint32_t guest_stack_pointer,
+                               FeederLayout* layout)
+{
+    if (context == nullptr || layout == nullptr || guest_source < 7U ||
+        guest_stack_pointer == 0U)
+    {
+        return false;
+    }
+
+    const std::uint32_t wrapper_address = guest_source - 7U;
+    const auto* wrapper = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(wrapper_address));
+    constexpr std::array<std::uint8_t, kOutputWrapperBytes> kOutputWrapper = {
+        0x53U, 0x89U, 0xC3U, 0x88U, 0xD0U,
+        0x89U, 0xDAU, 0xEEU, 0x5BU, 0xC3U};
+    if (!IsGuestRangeReadable(context, wrapper, kOutputWrapperBytes) ||
+        !std::equal(kOutputWrapper.begin(), kOutputWrapper.end(), wrapper))
+    {
+        return false;
+    }
+
+    const auto* stack = reinterpret_cast<const std::uint32_t*>(
+        static_cast<std::uintptr_t>(guest_stack_pointer));
+    if (!IsGuestRangeReadable(context, stack, 2U * sizeof(*stack)))
+    {
+        return false;
+    }
+    const std::uint32_t return_address = stack[1];
+    if (return_address < 5U + kWrappedPrefixBytes)
+    {
+        return false;
+    }
+    const std::uint32_t call_address = return_address - 5U;
+    const auto* call = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(call_address));
+    const auto* prefix = call - kWrappedPrefixBytes;
+    const auto* suffix = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(return_address));
+    if (!IsGuestRangeReadable(
+            context, prefix,
+            static_cast<std::uint32_t>(
+                kWrappedPrefixBytes + 5U + kWrappedSuffixBytes)) ||
+        call[0] != 0xE8U)
+    {
+        return false;
+    }
+    std::int32_t call_displacement = 0;
+    std::memcpy(&call_displacement, call + 1U, sizeof(call_displacement));
+    std::uint32_t call_target = 0U;
+    if (!AddSignedAddress(return_address, call_displacement, &call_target) ||
+        call_target != wrapper_address)
+    {
+        return false;
+    }
+
+    FeederLayout candidate;
+    if (prefix[0] != 0xA1U || prefix[5] != 0x31U ||
+        prefix[6] != 0xD2U || prefix[7] != 0x8AU ||
+        prefix[8] != 0x90U || prefix[13] != 0x40U ||
+        prefix[14] != 0xA3U || prefix[19] != 0xFFU ||
+        prefix[20] != 0x05U || prefix[25] != 0x41U ||
+        prefix[26] != 0xB8U || ReadU32(prefix + 27U) != 0x02DAU)
+    {
+        return false;
+    }
+    candidate.source_cursor_address = ReadU32(prefix + 1U);
+    candidate.source_buffer_address = ReadU32(prefix + 9U);
+    if (ReadU32(prefix + 15U) != candidate.source_cursor_address)
+    {
+        return false;
+    }
+    candidate.frame_count_address = ReadU32(prefix + 21U);
+    if (candidate.source_cursor_address == candidate.frame_count_address ||
+        suffix[0] != 0xA1U ||
+        ReadU32(suffix + 1U) != candidate.frame_count_address ||
+        suffix[5] != 0x3BU || suffix[6] != 0x05U ||
+        suffix[11] != 0x0FU || suffix[12] != 0x85U)
+    {
+        return false;
+    }
+    candidate.frame_target_address = ReadU32(suffix + 7U);
+    std::int32_t loop_displacement = 0;
+    std::memcpy(&loop_displacement, suffix + 13U,
+                sizeof(loop_displacement));
+    std::uint32_t branch_end_address = 0U;
+    std::uint32_t loop_address = 0U;
+    if (!AddSignedAddress(
+            return_address, kWrappedSuffixBytes, &branch_end_address) ||
+        !AddSignedAddress(
+            branch_end_address, loop_displacement, &loop_address) ||
+        loop_address >= call_address ||
+        call_address - loop_address > kMaximumLoopBackBytes)
+    {
+        return false;
+    }
+
+    const auto* loop = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(loop_address));
+    if (!IsGuestRangeReadable(context, loop, 13U) ||
+        loop[0] != 0xA1U ||
+        ReadU32(loop + 1U) != candidate.source_cursor_address ||
+        loop[5] != 0x3BU || loop[6] != 0x05U || loop[11] != 0x7CU)
+    {
+        return false;
+    }
+    candidate.available_end_address = ReadU32(loop + 7U);
+    std::uint32_t service_address = 0U;
+    if (!AddSignedAddress(
+            loop_address + 13U, static_cast<std::int8_t>(loop[12]),
+            &service_address))
+    {
+        return false;
+    }
+    const auto* service = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(service_address));
+    if (service_address <= loop_address || service_address >= call_address ||
+        !IsGuestRangeReadable(context, service, 12U) ||
+        service[0] != 0x83U || service[1] != 0xF9U ||
+        service[3] != 0x7CU || service[5] != 0x3DU ||
+        service[10] != 0x7CU || service[2] == 0U ||
+        (service[2] & 0x80U) != 0U)
+    {
+        return false;
+    }
+    std::uint32_t first_target = 0U;
+    std::uint32_t second_target = 0U;
+    if (!AddSignedAddress(
+            service_address + 5U, static_cast<std::int8_t>(service[4]),
+            &first_target) ||
+        !AddSignedAddress(
+            service_address + 12U, static_cast<std::int8_t>(service[11]),
+            &second_target) ||
+        first_target != second_target || first_target <= service_address ||
+        first_target >= call_address - kWrappedPrefixBytes)
+    {
+        return false;
+    }
+    candidate.service_counter_limit = service[2];
+    candidate.service_cursor_threshold = ReadU32(service + 6U);
+    *layout = candidate;
+    return true;
+}
+
+bool DecodeFeederLayout(ThreadContext* context, std::uint32_t guest_source,
+                        std::uint32_t guest_stack_pointer,
+                        FeederLayout* layout)
+{
+    return DecodeDirectFeederLayout(context, guest_source, layout) ||
+        DecodeWrappedFeederLayout(
+            context, guest_source, guest_stack_pointer, layout);
+}
+
 bool AuditPiu10Mp3FrameTail(
     ThreadContext* context, std::uint32_t guest_source,
-    std::uint8_t current_byte, std::uint32_t* guest_ecx)
+    std::uint32_t guest_stack_pointer, std::uint8_t current_byte,
+    std::uint32_t* guest_ecx)
 {
     if (context == nullptr || !context->piu10_mp3_frame_batch_audit_enabled)
     {
@@ -395,7 +570,8 @@ bool AuditPiu10Mp3FrameTail(
     if (context->piu10_mp3_frame_batch_audit_active)
     {
         FeederLayout layout;
-        if (!DecodeFeederLayout(context, guest_source, &layout))
+        if (!DecodeFeederLayout(
+                context, guest_source, guest_stack_pointer, &layout))
         {
             return true;
         }
@@ -459,10 +635,11 @@ bool AuditPiu10Mp3FrameTail(
     {
         Piu10Mp3FrameBatchPlan plan;
         if (BuildPiu10Mp3FrameBatchPlan(
-                context, guest_source,
+                context, guest_source, guest_stack_pointer,
                 context->piu10_mp3_frame_batch_audit_bytes.size(), &plan))
         {
             LimitPlanToTransferControlBoundary(&plan, *guest_ecx);
+            LimitPlanToDemandBoundary(context, &plan);
             if (plan.bytes.empty())
             {
                 return true;
@@ -487,7 +664,8 @@ bool AuditPiu10Mp3FrameTail(
 
 bool BuildPiu10Mp3FrameBatchPlan(
     ThreadContext* context, std::uint32_t guest_source,
-    std::size_t maximum_bytes, Piu10Mp3FrameBatchPlan* plan)
+    std::uint32_t guest_stack_pointer, std::size_t maximum_bytes,
+    Piu10Mp3FrameBatchPlan* plan)
 {
     if (context == nullptr || plan == nullptr || maximum_bytes == 0U)
     {
@@ -502,7 +680,8 @@ bool BuildPiu10Mp3FrameBatchPlan(
     *plan = Piu10Mp3FrameBatchPlan{};
 
     FeederLayout layout;
-    if (!DecodeFeederLayout(context, guest_source, &layout))
+    if (!DecodeFeederLayout(
+            context, guest_source, guest_stack_pointer, &layout))
     {
         ReportRejection(context, BatchRejection::kShape, "shape",
                         guest_source, context->runtime_base,
@@ -606,17 +785,20 @@ bool CommitPiu10Mp3FrameBatch(
 
 std::size_t TransferPiu10Mp3FrameTail(
     ThreadContext* context, std::uint32_t guest_source,
-    std::uint8_t current_byte, std::uint32_t* guest_ecx)
+    std::uint32_t guest_stack_pointer, std::uint8_t current_byte,
+    std::uint32_t* guest_ecx)
 {
     if (AuditPiu10Mp3FrameTail(
-            context, guest_source, current_byte, guest_ecx))
+            context, guest_source, guest_stack_pointer, current_byte,
+            guest_ecx))
     {
         return 0U;
     }
     Piu10Mp3FrameBatchPlan plan;
     if (guest_ecx == nullptr ||
         !BuildPiu10Mp3FrameBatchPlan(
-            context, guest_source, kMaximumMpegFrameBytes, &plan))
+            context, guest_source, guest_stack_pointer,
+            kMaximumMpegFrameBytes, &plan))
     {
         return 0U;
     }

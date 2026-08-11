@@ -336,3 +336,17 @@ Task 366이 측정한 tick 손실 11.9%와 같은 크기입니다. 이 콜백은
 LE object는 4개, 원본 entry는 `0x001016B0`, stack top은 `0x0059CC90`이며 현재
 loader의 relocation 분석은 실패 0건이다. 세부 asset/track 근거는
 [`pumpit2-chd-iso9660-mount.md`](analysis/pumpit2-chd-iso9660-mount.md)에 둔다.
+
+## pumpitpc PIU10 MP3 feeder 호출 구조 (확인됨, Task 471)
+
+주소는 arena base `0x03000000`의 실행 기준이다. feeder loop `0x03019380`은 source cursor와
+available end를 비교하고, `0x030193A3`에서 `ECX < 100`, cursor `< 0x76C` service 조건을
+검사한다. data path `0x03019442`~`0x03019461`은 cursor, frame count와 `ECX`를 각각 1씩
+증가시킨 뒤 포트 `0x02DA`를 EAX에 넣고 byte-output wrapper를 호출한다. 반환 후
+`0x03019466`~`0x03019471`은 frame count/target을 비교해 loop로 되돌아간다.
+
+wrapper `0x030EC74E`~`0x030EC757`은 `push ebx; mov ebx,eax; mov al,dl; mov edx,ebx;
+out dx,al; pop ebx; ret`이며, 실제 privileged instruction 주소는 `0x030EC755`이다. 따라서
+`OUT` 시점의 guest stack에는 `[ESP]`에 저장된 EBX, `[ESP+4]`에 feeder 반환 주소
+`0x03019466`이 있다. 이 구조는 원본 실행 파일의 hardware-call ABI 사실이며 HLE matcher는
+주소 자체가 아니라 이 call/return 및 상태 갱신 관계를 검증한다.

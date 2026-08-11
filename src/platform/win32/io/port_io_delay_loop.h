@@ -6,6 +6,8 @@
 namespace repiu::platform::win32
 {
 
+struct ThreadContext;
+
 // Task 414. The pumpit3 timer ISR spends every tick in a 200-iteration loop
 // whose only body is `inc r; sub eax,eax; in ax,dx`, and whose result is
 // overwritten the instruction after the loop ends -- a pure delay built from
@@ -47,6 +49,12 @@ struct Win32PortIoDelayLoopStats
     // The loop most recently batched, for reading against the port I/O census.
     std::uint32_t last_loop_address = 0;
     std::uint32_t last_limit = 0;
+    // Task 470: call-wrapper candidates are counted separately so live runs
+    // prove that the generic wrapper path, rather than a direct-loop match,
+    // removed the faults.
+    std::uint32_t wrapped_candidate_count = 0;
+    std::uint32_t wrapped_batch_count = 0;
+    std::uint32_t last_wrapped_return_address = 0;
 };
 
 // How far before the IN a loop body may start. The caller validates guest
@@ -69,9 +77,11 @@ const Win32PortIoDelayLoopStats& GetPortIoDelayLoopStats();
 // Attempts the batch after `IN` has already been emulated at `in_address`
 // (guest address) with `in_length` bytes. `registers` points at the guest's
 // general-purpose registers in x86 encoding order (EAX, ECX, EDX, EBX, ESP,
-// EBP, ESI, EDI), of which only the matched counter is ever written. Returns
-// true when the counter was advanced.
-bool TryBatchPortIoDelayLoop(std::uint32_t in_address,
+// EBP, ESI, EDI). The direct form writes only its matched register; the
+// wrapped form writes only the EDX value saved by the wrapper on the guest
+// stack. Returns true when either counter was advanced.
+bool TryBatchPortIoDelayLoop(ThreadContext* context,
+                             std::uint32_t in_address,
                              std::uint32_t in_length,
                              std::uint32_t destination_width,
                              std::uint32_t* registers,

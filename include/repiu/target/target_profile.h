@@ -33,6 +33,7 @@ struct TargetProfile
     std::string_view rom_set_id;
     TargetRuntimeReservationHint runtime_reservation_hint;
     bool enable_piu10_isa_board = false;
+    bool enable_cat702 = false;
     bool enable_piu_jamma_board = false;
     std::uint32_t piu10_mp3_latency_ms = 0U;
 };

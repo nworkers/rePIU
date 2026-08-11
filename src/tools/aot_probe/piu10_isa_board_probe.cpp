@@ -15,6 +15,8 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <iterator>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -23,8 +25,39 @@ namespace repiu::tools
 
 bool RunPiu10IsaBoardProbe()
 {
+    constexpr std::array<const char*, 11> kPiu10ProfileIds = {
+        "pumpito", "pumpitc", "pumpitpc", "pumpite", "pumpitpr",
+        "pumpitpx", "pumpit8", "pumpitp2", "pumpipx2", "pumpitp3",
+        "pumpipx3"};
+    constexpr std::array<const char*, 14> kJammaProfileIds = {
+        "pumpit1", "pumpit2", "pumpit3", "pumpito", "pumpitc",
+        "pumpitpc", "pumpite", "pumpitpr", "pumpitpx", "pumpit8",
+        "pumpitp2", "pumpipx2", "pumpitp3", "pumpipx3"};
+    constexpr std::array<const char*, 8> kRequestedProfileOrder = {
+        "pumpite", "pumpitpr", "pumpitpx", "pumpit8", "pumpitp2",
+        "pumpipx2", "pumpitp3", "pumpipx3"};
     bool target_profiles_valid = true;
     bool jamma_target_profiles_valid = true;
+    const std::vector<target::TargetProfile>& built_in_profiles =
+        target::GetBuiltInTargetProfiles();
+    const auto requested_begin = std::find_if(
+        built_in_profiles.begin(), built_in_profiles.end(),
+        [](const target::TargetProfile& profile) {
+            return profile.id == "pumpite";
+        });
+    const std::size_t remaining_profiles = requested_begin !=
+            built_in_profiles.end()
+        ? static_cast<std::size_t>(
+            std::distance(requested_begin, built_in_profiles.end())) : 0U;
+    target_profiles_valid =
+        remaining_profiles >= kRequestedProfileOrder.size();
+    for (std::size_t index = 0U;
+         target_profiles_valid && index < kRequestedProfileOrder.size();
+         ++index)
+    {
+        target_profiles_valid =
+            requested_begin[index].id == kRequestedProfileOrder[index];
+    }
     for (const char* id : {"dos4gw_hello", "piu_1st"})
     {
         const target::TargetProfile* profile =
@@ -32,8 +65,7 @@ bool RunPiu10IsaBoardProbe()
         jamma_target_profiles_valid = jamma_target_profiles_valid &&
             profile != nullptr && !profile->enable_piu_jamma_board;
     }
-    for (const char* id : {"pumpit1", "pumpit2", "pumpit3", "pumpito",
-                           "pumpitc", "pumpitpc", "pumpite"})
+    for (const char* id : kJammaProfileIds)
     {
         const target::TargetProfile* profile =
             target::FindTargetProfileById(id);
@@ -45,29 +77,41 @@ bool RunPiu10IsaBoardProbe()
         const target::TargetProfile* profile =
             target::FindTargetProfileById(id);
         target_profiles_valid = target_profiles_valid && profile != nullptr &&
-            !profile->enable_piu10_isa_board;
+            !profile->enable_piu10_isa_board && !profile->enable_cat702;
     }
-    for (const char* id : {"pumpito", "pumpitc", "pumpitpc", "pumpite"})
+    for (const char* id : kPiu10ProfileIds)
     {
         const target::TargetProfile* profile =
             target::FindTargetProfileById(id);
-        target_profiles_valid = target_profiles_valid && profile != nullptr &&
-            profile->enable_piu10_isa_board;
+        const std::string base = "build/runtime_mounts/" + std::string(id);
+        const std::size_t registration_count = std::count_if(
+            built_in_profiles.begin(), built_in_profiles.end(),
+            [id](const target::TargetProfile& candidate) {
+                return candidate.id == id;
+            });
+        target_profiles_valid = target_profiles_valid &&
+            registration_count == 1U && profile != nullptr &&
+            profile->rom_set_id == id &&
+            profile->hle_profile_id == "piu_common" &&
+            profile->executable_path ==
+                std::filesystem::path(base + "/PIU/PIU.EXE") &&
+            profile->working_directory ==
+                std::filesystem::path(base + "/PIU") &&
+            profile->asset_root == std::filesystem::path(base) &&
+            profile->enable_piu10_isa_board && profile->enable_cat702 &&
+            profile->enable_piu_jamma_board &&
+            profile->piu10_mp3_latency_ms == 0U;
     }
-    const target::TargetProfile* pumpito_profile =
-        target::FindTargetProfileById("pumpito");
-    bool mp3_latency_profile_valid =
-        pumpito_profile != nullptr &&
-        pumpito_profile->piu10_mp3_latency_ms == 0U;
-    for (const char* id : {
-             "pumpit1", "pumpit2", "pumpit3", "pumpitc", "pumpitpc",
-             "pumpite"})
+    bool mp3_latency_profile_valid = true;
+    for (const char* id : kJammaProfileIds)
     {
         const target::TargetProfile* profile =
             target::FindTargetProfileById(id);
         mp3_latency_profile_valid = mp3_latency_profile_valid &&
             profile != nullptr && profile->piu10_mp3_latency_ms == 0U;
     }
+    const target::TargetProfile* pumpito_profile =
+        target::FindTargetProfileById("pumpito");
 
     std::vector<std::uint8_t> flash(hle::Piu10IsaBoard::kFlashBytes, 0xFFU);
     flash[0x2468U] = 0x34U;
@@ -340,7 +384,7 @@ bool RunPiu10IsaBoardProbe()
     std::uint32_t batch_ecx = 100U;
     const bool batch_plan_valid =
         platform::win32::BuildPiu10Mp3FrameBatchPlan(
-            batch_context.get(), runtime_address(kBatchOutOffset), 10U,
+            batch_context.get(), runtime_address(kBatchOutOffset), 0U, 10U,
             &batch_plan) &&
         batch_plan.bytes.size() == batch_payload.size() &&
         batch_plan.service_counter_limit == 100U &&
@@ -401,18 +445,110 @@ bool RunPiu10IsaBoardProbe()
     const bool variant_plan_valid =
         platform::win32::BuildPiu10Mp3FrameBatchPlan(
             batch_context.get(), runtime_address(kVariantBatchOutOffset),
-            10U, &variant_plan) &&
+            0U, 10U, &variant_plan) &&
         variant_plan.bytes.size() == batch_payload.size() &&
         variant_plan.service_counter_limit == 100U &&
         variant_plan.service_cursor_threshold == 0x76CU &&
         std::equal(variant_plan.bytes.begin(), variant_plan.bytes.end(),
                    batch_payload.begin());
 
+    constexpr std::uint32_t kWrappedOutOffset = 0x00057007U;
+    constexpr std::uint32_t kWrappedCallOffset = 0x00055FFBU;
+    constexpr std::uint32_t kWrappedReturnOffset =
+        kWrappedCallOffset + 5U;
+    constexpr std::uint32_t kWrappedLoopOffset = 0x00055F00U;
+    constexpr std::uint32_t kWrappedStackOffset = 0x00202100U;
+    auto* wrapped_out = synthetic_arena.data() + kWrappedOutOffset;
+    auto* wrapped_call = synthetic_arena.data() + kWrappedCallOffset;
+    auto* wrapped_prefix = wrapped_call - 31U;
+    auto* wrapped_suffix = wrapped_call + 5U;
+    const std::array<std::uint8_t, 10> output_wrapper = {
+        0x53U, 0x89U, 0xC3U, 0x88U, 0xD0U,
+        0x89U, 0xDAU, 0xEEU, 0x5BU, 0xC3U};
+    std::memcpy(wrapped_out - 7U, output_wrapper.data(),
+                output_wrapper.size());
+    wrapped_prefix[0] = 0xA1U;
+    write_u32(wrapped_prefix + 1U, cursor_address);
+    wrapped_prefix[5] = 0x31U;
+    wrapped_prefix[6] = 0xD2U;
+    wrapped_prefix[7] = 0x8AU;
+    wrapped_prefix[8] = 0x90U;
+    write_u32(wrapped_prefix + 9U, source_buffer_address);
+    wrapped_prefix[13] = 0x40U;
+    wrapped_prefix[14] = 0xA3U;
+    write_u32(wrapped_prefix + 15U, cursor_address);
+    wrapped_prefix[19] = 0xFFU;
+    wrapped_prefix[20] = 0x05U;
+    write_u32(wrapped_prefix + 21U, frame_count_address);
+    wrapped_prefix[25] = 0x41U;
+    wrapped_prefix[26] = 0xB8U;
+    write_u32(wrapped_prefix + 27U, 0x02DAU);
+    wrapped_call[0] = 0xE8U;
+    const std::int32_t wrapped_call_displacement =
+        static_cast<std::int32_t>(
+            static_cast<std::int64_t>(
+                runtime_address(kWrappedOutOffset - 7U)) -
+            static_cast<std::int64_t>(
+                runtime_address(kWrappedReturnOffset)));
+    std::memcpy(wrapped_call + 1U, &wrapped_call_displacement,
+                sizeof(wrapped_call_displacement));
+    wrapped_suffix[0] = 0xA1U;
+    write_u32(wrapped_suffix + 1U, frame_count_address);
+    wrapped_suffix[5] = 0x3BU;
+    wrapped_suffix[6] = 0x05U;
+    write_u32(wrapped_suffix + 7U, frame_target_address);
+    wrapped_suffix[11] = 0x0FU;
+    wrapped_suffix[12] = 0x85U;
+    const std::int32_t wrapped_loop_displacement =
+        static_cast<std::int32_t>(
+            static_cast<std::int64_t>(runtime_address(kWrappedLoopOffset)) -
+            static_cast<std::int64_t>(
+                runtime_address(kWrappedReturnOffset + 17U)));
+    std::memcpy(wrapped_suffix + 13U, &wrapped_loop_displacement,
+                sizeof(wrapped_loop_displacement));
+    auto* wrapped_loop = synthetic_arena.data() + kWrappedLoopOffset;
+    wrapped_loop[0] = 0xA1U;
+    write_u32(wrapped_loop + 1U, cursor_address);
+    wrapped_loop[5] = 0x3BU;
+    wrapped_loop[6] = 0x05U;
+    write_u32(wrapped_loop + 7U, available_end_address);
+    wrapped_loop[11] = 0x7CU;
+    wrapped_loop[12] = 0x13U;
+    auto* wrapped_service = wrapped_loop + 32U;
+    const std::array<std::uint8_t, 12> wrapped_service_code = {
+        0x83U, 0xF9U, 0x64U, 0x7CU, 0x2BU, 0x3DU,
+        0x6CU, 0x07U, 0x00U, 0x00U, 0x7CU, 0x24U};
+    std::memcpy(wrapped_service, wrapped_service_code.data(),
+                wrapped_service_code.size());
+    write_u32(synthetic_arena.data() + kWrappedStackOffset, 0x12345678U);
+    write_u32(synthetic_arena.data() + kWrappedStackOffset + 4U,
+              runtime_address(kWrappedReturnOffset));
+    platform::win32::Piu10Mp3FrameBatchPlan wrapped_plan;
+    const bool wrapped_plan_valid =
+        platform::win32::BuildPiu10Mp3FrameBatchPlan(
+            batch_context.get(), runtime_address(kWrappedOutOffset),
+            runtime_address(kWrappedStackOffset), 10U, &wrapped_plan) &&
+        wrapped_plan.bytes.size() == batch_payload.size() &&
+        wrapped_plan.service_counter_limit == 100U &&
+        wrapped_plan.service_cursor_threshold == 0x76CU &&
+        std::equal(wrapped_plan.bytes.begin(), wrapped_plan.bytes.end(),
+                   batch_payload.begin());
+    write_u32(synthetic_arena.data() + kWrappedStackOffset + 4U,
+              runtime_address(kWrappedReturnOffset + 1U));
+    platform::win32::Piu10Mp3FrameBatchPlan wrapped_rejected_plan;
+    const bool wrapped_fail_closed =
+        !platform::win32::BuildPiu10Mp3FrameBatchPlan(
+            batch_context.get(), runtime_address(kWrappedOutOffset),
+            runtime_address(kWrappedStackOffset), 10U,
+            &wrapped_rejected_plan);
+    write_u32(synthetic_arena.data() + kWrappedStackOffset + 4U,
+              runtime_address(kWrappedReturnOffset));
+
     write_u32(batch_out - 18, cursor_address + 4U);
     platform::win32::Piu10Mp3FrameBatchPlan rejected_plan;
     const bool relocation_independent_fail_closed =
         !platform::win32::BuildPiu10Mp3FrameBatchPlan(
-            batch_context.get(), runtime_address(kBatchOutOffset), 10U,
+            batch_context.get(), runtime_address(kBatchOutOffset), 0U, 10U,
             &rejected_plan);
     write_u32(batch_out - 18, cursor_address);
     const bool batch_commit_valid = batch_plan_valid &&
@@ -422,14 +558,15 @@ bool RunPiu10IsaBoardProbe()
         *batch_plan.source_cursor == 14U &&
         *batch_plan.frame_byte_count == 4U;
     const bool frame_batch_valid = batch_plan_valid && variant_plan_valid &&
-        batch_commit_valid && relocation_independent_fail_closed;
+        wrapped_plan_valid && wrapped_fail_closed && batch_commit_valid &&
+        relocation_independent_fail_closed;
 
     write_u32(synthetic_arena.data() + kCursorOffset, 11U);
     write_u32(synthetic_arena.data() + kFrameCountOffset, 1U);
     batch_context->piu10_mp3_frame_batch_audit_enabled = true;
     std::uint32_t audit_ecx = 100U;
     platform::win32::TransferPiu10Mp3FrameTail(
-        batch_context.get(), runtime_address(kBatchOutOffset), 0xAAU,
+        batch_context.get(), runtime_address(kBatchOutOffset), 0U, 0xAAU,
         &audit_ecx);
     for (std::size_t index = 0U; index < batch_payload.size(); ++index)
     {
@@ -440,7 +577,7 @@ bool RunPiu10IsaBoardProbe()
         audit_ecx = static_cast<std::uint32_t>(101U + index);
         platform::win32::TransferPiu10Mp3FrameTail(
             batch_context.get(), runtime_address(kBatchOutOffset),
-            batch_payload[index], &audit_ecx);
+            0U, batch_payload[index], &audit_ecx);
     }
     const bool frame_audit_valid =
         batch_context->piu10_mp3_frame_batch_audit_passed_frames == 1U &&
@@ -586,6 +723,34 @@ bool RunPiu10IsaBoardProbe()
     cat_vector_valid = cat_vector_valid &&
         actual_response == pumpitpc_response;
 
+    hle::Piu10IsaBoard disabled_cat_board;
+    std::vector<std::uint8_t> disabled_cat_flash(
+        hle::Piu10IsaBoard::kFlashBytes, 0xFFU);
+    disabled_cat_flash[0] = 0x34U;
+    disabled_cat_flash[1] = 0x12U;
+    std::vector<std::uint8_t> disabled_cat_mp3_bytes;
+    bool disabled_cat_valid = disabled_cat_board.Initialize(
+        std::move(disabled_cat_flash), std::nullopt, &vector_message) &&
+        disabled_cat_board.available() &&
+        !disabled_cat_board.cat702_enabled();
+    disabled_cat_board.SetMp3DataSink(
+        [&disabled_cat_mp3_bytes](std::uint8_t byte) {
+            disabled_cat_mp3_bytes.push_back(byte);
+        });
+    disabled_cat_valid = disabled_cat_valid &&
+        disabled_cat_board.Write16(0x02D4U, 0x0000U) &&
+        disabled_cat_board.Write16(0x02D6U, 0x0000U) &&
+        disabled_cat_board.Read16(0x02DAU, &value) && value == 0x1234U &&
+        disabled_cat_board.Write16(0x02D4U, 0x0100U) &&
+        disabled_cat_board.Write16(0x02D6U, 0x0001U) &&
+        disabled_cat_board.Write16(0x02DAU, 0x0030U) &&
+        disabled_cat_board.Write16(0x02D4U, 0x0080U) &&
+        disabled_cat_board.Write16(0x02D6U, 0x0000U) &&
+        disabled_cat_board.Read16(0x02DAU, &value) &&
+        (value & 0x0020U) == 0U &&
+        disabled_cat_board.Write8(0x02DAU, 0xA5U) &&
+        disabled_cat_mp3_bytes == std::vector<std::uint8_t>({0xA5U});
+
     const bool valid = target_profiles_valid && jamma_target_profiles_valid &&
         mp3_latency_profile_valid && mp3_latency_bytes_valid &&
         mp3_snapshot_valid &&
@@ -593,7 +758,7 @@ bool RunPiu10IsaBoardProbe()
         mpeg_parser_valid && status_valid && status_source_valid && flash_valid &&
         mp3_stream_valid && ring_valid && frame_batch_valid &&
         frame_audit_valid && stream_chunk_audit_valid &&
-        cat_sequence_valid && cat_vector_valid;
+        cat_sequence_valid && cat_vector_valid && disabled_cat_valid;
     std::cout << "piu10_target_profiles="
               << (target_profiles_valid ? "true" : "false") << "\n";
     std::cout << "jamma_target_profiles="
@@ -632,6 +797,10 @@ bool RunPiu10IsaBoardProbe()
         std::cout << std::hex << static_cast<unsigned>(byte) << ":";
     }
     std::cout << std::dec << "\n";
+    std::cout << "piu10_cat702_disabled="
+              << (disabled_cat_valid ? "true" : "false")
+              << ",data-out=" << ((value >> 5U) & 1U)
+              << ",mp3-bytes=" << disabled_cat_mp3_bytes.size() << "\n";
     std::cout << "piu10_mp3_ring=" << (ring_valid ? "true" : "false")
               << ",demand_low=" << (demand_deasserted ? "true" : "false")
               << ",pop_keeps_low="
@@ -645,8 +814,11 @@ bool RunPiu10IsaBoardProbe()
               << ",ecx=" << batch_ecx
               << ",relocated=true,variant="
               << (variant_plan_valid ? "true" : "false")
+              << ",wrapped="
+              << (wrapped_plan_valid ? "true" : "false")
               << ",fail-closed="
-              << (relocation_independent_fail_closed ? "true" : "false")
+              << ((relocation_independent_fail_closed && wrapped_fail_closed)
+                      ? "true" : "false")
               << "\n";
     std::cout << "piu10_mp3_frame_audit="
               << (frame_audit_valid ? "true" : "false")

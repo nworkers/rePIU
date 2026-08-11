@@ -21,7 +21,7 @@ int Bit(std::uint32_t value, unsigned index)
 }  // namespace
 
 void Piu10IsaBoard::Cat702Piu::Configure(
-    const std::array<std::uint8_t, kCat702TransformBytes>& transform)
+    const Cat702Transform& transform)
 {
     transform_ = transform;
     Reset();
@@ -130,10 +130,11 @@ void Piu10IsaBoard::Cat702Piu::WriteClock(int state)
 
 bool Piu10IsaBoard::Initialize(
     std::vector<std::uint8_t> flash,
-    const std::array<std::uint8_t, kCat702TransformBytes>& cat702_transform,
+    const std::optional<Cat702Transform>& cat702_transform,
     std::string* message)
 {
     available_ = false;
+    cat702_enabled_ = false;
     flash_.clear();
     if (flash.size() != kFlashBytes)
     {
@@ -145,12 +146,22 @@ bool Piu10IsaBoard::Initialize(
     }
 
     flash_ = std::move(flash);
-    cat702_.Configure(cat702_transform);
+    if (cat702_transform.has_value())
+    {
+        cat702_.Configure(*cat702_transform);
+        cat702_enabled_ = true;
+    }
+    else
+    {
+        cat702_.Reset();
+    }
     available_ = true;
     Reset();
     if (message != nullptr)
     {
-        *message = "PIU10 ISA board initialized";
+        *message = cat702_enabled_
+            ? "PIU10 ISA board initialized; CAT702 enabled"
+            : "PIU10 ISA board initialized; CAT702 disabled";
     }
     return true;
 }
@@ -162,7 +173,10 @@ void Piu10IsaBoard::Reset()
     flash_auto_increment_ = false;
     mp3_frame_sync_ = 1;
     mp3_demand_ = 1;
-    cat702_.Reset();
+    if (cat702_enabled_)
+    {
+        cat702_.Reset();
+    }
     dac3350a_.Reset();
 }
 
@@ -228,7 +242,7 @@ bool Piu10IsaBoard::Read16(std::uint16_t port, std::uint16_t* value)
             : static_cast<std::uint8_t>(
                   (mp3_frame_sync_ << 2U) | mp3_demand_);
         *value = static_cast<std::uint16_t>(
-            (cat702_.data_out() << 5U) |
+            ((cat702_enabled_ ? cat702_.data_out() : 0U) << 5U) |
             mp3_status | (1U << 1U));
         return true;
     }
@@ -273,9 +287,12 @@ bool Piu10IsaBoard::Write8(std::uint16_t port, std::uint8_t value)
     }
     else if (destination_ == 0x010U)
     {
-        cat702_.WriteData(Bit(value, 5));
-        cat702_.WriteClock(Bit(value, 4));
-        cat702_.WriteSelect(Bit(value, 3));
+        if (cat702_enabled_)
+        {
+            cat702_.WriteData(Bit(value, 5));
+            cat702_.WriteClock(Bit(value, 4));
+            cat702_.WriteSelect(Bit(value, 3));
+        }
         WriteDacControl(&dac3350a_, dac_control_sink_, value);
     }
     return true;
@@ -314,9 +331,12 @@ bool Piu10IsaBoard::Write16(std::uint16_t port, std::uint16_t value)
             }
             else if (destination_ == 0x010U)
             {
-                cat702_.WriteData(Bit(value, 5));
-                cat702_.WriteClock(Bit(value, 4));
-                cat702_.WriteSelect(Bit(value, 3));
+                if (cat702_enabled_)
+                {
+                    cat702_.WriteData(Bit(value, 5));
+                    cat702_.WriteClock(Bit(value, 4));
+                    cat702_.WriteSelect(Bit(value, 3));
+                }
                 WriteDacControl(
                     &dac3350a_, dac_control_sink_,
                     static_cast<std::uint8_t>(value & 0xFFU));

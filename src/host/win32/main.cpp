@@ -1362,6 +1362,12 @@ void PrintExecutionAttempt(
         logger.info(
             "Win32 port I/O delay loop last body/limit: {}/{}",
             Hex32(delay_loop.last_loop_address), delay_loop.last_limit);
+        logger.info(
+            "Win32 port I/O delay loop wrapped candidates/batches/last-return: "
+            "{}/{}/{}",
+            delay_loop.wrapped_candidate_count,
+            delay_loop.wrapped_batch_count,
+            Hex32(delay_loop.last_wrapped_return_address));
     }
     // Task 411: where the guest thread was, sampled on a wall-clock interval.
     // Unlike the hotspot census above, this one sees code that runs in the AOT
@@ -4449,6 +4455,8 @@ int main(int argc, char** argv)
                  profile->enable_piu_jamma_board ? "true" : "false");
     logger->info("PIU10 ISA board enabled: {}",
                  profile->enable_piu10_isa_board ? "true" : "false");
+    logger->info("CAT702 enabled: {}",
+                 profile->enable_cat702 ? "true" : "false");
 #if defined(REPIU_WIN32_HOST_IMAGE_BASE)
     logger->info("Win32 host image base policy: {}",
                  Hex32(REPIU_WIN32_HOST_IMAGE_BASE));
@@ -4940,6 +4948,7 @@ int main(int argc, char** argv)
               sound_rom_zip_path ? &*sound_rom_zip_path : nullptr,
               profile->enable_piu_jamma_board,
               profile->enable_piu10_isa_board,
+              profile->enable_cat702,
               profile->piu10_mp3_latency_ms,
               execution_backend,
               execution_timeout_milliseconds,
@@ -4961,6 +4970,7 @@ int main(int argc, char** argv)
                   sound_rom_zip_path ? &*sound_rom_zip_path : nullptr,
                   profile->enable_piu_jamma_board,
                   profile->enable_piu10_isa_board,
+                  profile->enable_cat702,
                   profile->piu10_mp3_latency_ms,
                   execution_timeout_milliseconds,
                   &attempt);

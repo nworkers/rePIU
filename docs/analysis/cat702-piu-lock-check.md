@@ -19,6 +19,12 @@
   `0x2DA` 출력은 실행될 수 없었습니다.
 - Lock Error 화면 뒤의 DOS `INT 21h AH=08` 미지원 종료는 보안 검사 실패에 따른
   키 대기의 2차 증상입니다.
+- `TargetProfile::enable_cat702`이 false이면 PIU10 보드는 flash, MP3와 DAC를 유지하면서
+  CAT702 data-out bit를 0으로 반환합니다. 실제 `pumpitpc` 응답에는 1 bit가 포함되므로
+  이 상태에서는 원본 challenge/response 비교를 통과할 수 없습니다.
+- `pumpitpc`의 profile 값만 일시적으로 false로 만든 실행은 `CAT702 enabled: false`를
+  기록하고 약 19.6초 뒤 Lock Error 키 대기 경로의 `INT 21h AH=08`에서 종료됐습니다.
+  true로 복원한 최종 실행은 같은 지점을 지나 34초 이상 계속 진행했습니다.
 
 ### 결론
 
@@ -49,6 +55,13 @@
   could no longer execute.
 - Unsupported DOS `INT 21h AH=08` termination after the Lock Error screen is secondary key-wait
   behavior following the failed security check.
+- When `TargetProfile::enable_cat702` is false, the PIU10 board retains flash, MP3, and DAC while
+  returning zero on the CAT702 data-out bit. The real `pumpitpc` response contains set bits, so
+  the original challenge/response comparison cannot pass in this state.
+- A run with only the `pumpitpc` profile value temporarily set false logged
+  `CAT702 enabled: false` and terminated about 19.6 seconds later at `INT 21h AH=08`, the Lock
+  Error key-wait path. The final run restored to true continued beyond the same point for more
+  than 34 seconds.
 
 ### Conclusion
 

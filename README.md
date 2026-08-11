@@ -98,13 +98,13 @@ roms/
     └── <disc>.chd
 ```
 
-지원하는 MAME CHD profile은 `pumpit1`, `pumpit2`, `pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`입니다. 각 profile은 같은 이름의 ZIP에서 PIU10 ROM entry를 확인하고 CHD CD의 ISO9660 tree를 `build/runtime_mounts/<rom-set>/`에 materialize합니다. 이후 실행에서는 CHD identity가 같으면 cache를 재사용합니다.
+지원하는 MAME CHD profile은 `pumpit1`, `pumpit2`, `pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`, `pumpitpr`, `pumpitpx`, `pumpit8`, `pumpitp2`, `pumpipx2`, `pumpitp3`, `pumpipx3`입니다. 각 profile은 같은 이름의 ZIP에서 필요한 ROM entry를 확인하고 CHD CD의 ISO9660 tree를 `build/runtime_mounts/<rom-set>/`에 materialize합니다. 이후 실행에서는 CHD identity가 같으면 cache를 재사용합니다.
 
-*The supported MAME CHD profiles are `pumpit1`, `pumpit2`, `pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, and `pumpite`. Each validates the matching PIU10 ROM set, mounts the CHD's ISO9660 tree under `build/runtime_mounts/<rom-set>/`, and starts `PIU/PIU.EXE`; an unchanged CHD identity reuses the cache.*
+*The supported MAME CHD profiles are `pumpit1`, `pumpit2`, `pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`, `pumpitpr`, `pumpitpx`, `pumpit8`, `pumpitp2`, `pumpipx2`, `pumpitp3`, and `pumpipx3`. Each validates the required entries in its matching ROM set, mounts the CHD's ISO9660 tree under `build/runtime_mounts/<rom-set>/`, and starts `PIU/PIU.EXE`; an unchanged CHD identity reuses the cache.*
 
-`pumpito`의 MP3 출력은 노트와의 cabinet 지연을 맞추기 위해 기본 50 ms 지연을 사용합니다. 실행 전에 `REPIU_PIU10_MP3_LATENCY_MS`를 0~500의 정수로 지정하면 밀리초 단위로 덮어쓸 수 있으며, `0`은 보정을 끕니다. `REPIU_PIU10_DAC_AUDIT=1`은 DAC3350A 제어 transaction과 그 순간의 PCM queue, audio device buffer, compressed ring, decoder pending 상태를 기록합니다. 반복 측정과 해석 절차는 [PIU10 DAC audio backlog 감사 가이드](docs/guides/piu10-dac-audio-backlog-audit.md)를 따릅니다.
+PIU10 profile의 MP3 시작 지연 기본값은 0 ms입니다. 실행 전에 `REPIU_PIU10_MP3_LATENCY_MS`를 0~500의 정수로 지정하면 밀리초 단위로 덮어쓸 수 있습니다. `REPIU_PIU10_DAC_AUDIT=1`은 DAC3350A 제어 transaction과 그 순간의 PCM queue, audio device buffer, compressed ring, decoder pending 상태를 기록합니다. 반복 측정과 해석 절차는 [PIU10 DAC audio backlog 감사 가이드](docs/guides/piu10-dac-audio-backlog-audit.md)를 따릅니다.
 
-*The `pumpito` MP3 output uses 50 ms of latency by default to approximate the cabinet path relative to notes. Set `REPIU_PIU10_MP3_LATENCY_MS` to an integer from 0 through 500 before launch to override it in milliseconds; `0` disables compensation. `REPIU_PIU10_DAC_AUDIT=1` records DAC3350A control transactions together with the PCM queue, audio-device buffer, compressed ring, and decoder-pending state at that instant. Follow the [PIU10 DAC audio backlog audit guide](docs/guides/piu10-dac-audio-backlog-audit.md) for repeatable capture and interpretation.*
+*PIU10 profiles default to zero milliseconds of MP3 startup latency. Set `REPIU_PIU10_MP3_LATENCY_MS` to an integer from 0 through 500 before launch to override it in milliseconds. `REPIU_PIU10_DAC_AUDIT=1` records DAC3350A control transactions together with the PCM queue, audio-device buffer, compressed ring, and decoder-pending state at that instant. Follow the [PIU10 DAC audio backlog audit guide](docs/guides/piu10-dac-audio-backlog-audit.md) for repeatable capture and interpretation.*
 
 ### 3. 환경 준비와 전체 검증 / Set up and test
 

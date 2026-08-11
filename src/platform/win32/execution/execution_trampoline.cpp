@@ -3860,6 +3860,7 @@ bool RunWin32ExecutionThread(
     const std::filesystem::path* sound_rom_zip_path,
     bool enable_piu_jamma_board,
     bool enable_piu10_isa_board,
+    bool enable_cat702,
     std::uint32_t piu10_mp3_latency_ms,
     Win32AotCodeCachePlacement* aot_placement,
     runtime::ExecutionBackend execution_backend,
@@ -4143,22 +4144,38 @@ bool RunWin32ExecutionThread(
         repiu::assets::RomZipEntry flash =
             repiu::assets::ExtractRomZipEntry(
                 *sound_rom_zip_path, "piu10.u8");
-        const std::string cat702_name =
-            sound_rom_zip_path->stem().string() + ".cat702";
-        repiu::assets::RomZipEntry cat702 =
-            repiu::assets::ExtractRomZipEntry(
-                *sound_rom_zip_path, cat702_name);
-        if (flash.valid && cat702.valid &&
-            cat702.data.size() == repiu::hle::Piu10IsaBoard::kCat702TransformBytes)
+        std::optional<repiu::hle::Piu10IsaBoard::Cat702Transform>
+            cat702_transform;
+        bool cat702_ready = !enable_cat702;
+        std::string cat702_message = "disabled by target profile";
+        if (enable_cat702)
         {
-            std::array<std::uint8_t,
-                       repiu::hle::Piu10IsaBoard::kCat702TransformBytes>
-                transform = {};
-            std::copy(cat702.data.begin(), cat702.data.end(),
-                      transform.begin());
+            const std::string cat702_name =
+                sound_rom_zip_path->stem().string() + ".cat702";
+            repiu::assets::RomZipEntry cat702 =
+                repiu::assets::ExtractRomZipEntry(
+                    *sound_rom_zip_path, cat702_name);
+            cat702_message = cat702.message;
+            cat702_ready = cat702.valid &&
+                cat702.data.size() ==
+                    repiu::hle::Piu10IsaBoard::kCat702TransformBytes;
+            if (cat702_ready)
+            {
+                cat702_transform.emplace();
+                std::copy(cat702.data.begin(), cat702.data.end(),
+                          cat702_transform->begin());
+            }
+            else if (cat702.valid)
+            {
+                cat702_message =
+                    "CAT702 transform must contain exactly 8 bytes";
+            }
+        }
+        if (flash.valid && cat702_ready)
+        {
             std::string piu10_message;
             context.piu10_isa_board.Initialize(
-                std::move(flash.data), transform, &piu10_message);
+                std::move(flash.data), cat702_transform, &piu10_message);
             char dac_audit_value[2] = {};
             const bool dac_audit_enabled =
                 GetEnvironmentVariableA(
@@ -4234,13 +4251,13 @@ bool RunWin32ExecutionThread(
             });
             std::fprintf(stderr, "[repiu-piu10] %s; %s; %s\n",
                          piu10_message.c_str(), flash.message.c_str(),
-                         cat702.message.c_str());
+                         cat702_message.c_str());
         }
         else
         {
             std::fprintf(stderr,
                          "[repiu-piu10] unavailable; flash=%s; cat702=%s\n",
-                         flash.message.c_str(), cat702.message.c_str());
+                         flash.message.c_str(), cat702_message.c_str());
         }
     }
     context.dos_environment_block = BuildDosEnvironmentBlock();
@@ -4759,6 +4776,7 @@ bool AttemptWin32GuestStackTrapExecution(
     const std::filesystem::path* sound_rom_zip_path,
     bool enable_piu_jamma_board,
     bool enable_piu10_isa_board,
+    bool enable_cat702,
     std::uint32_t piu10_mp3_latency_ms,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
@@ -4794,6 +4812,7 @@ bool AttemptWin32GuestStackTrapExecution(
         sound_rom_zip_path,
         enable_piu_jamma_board,
         enable_piu10_isa_board,
+        enable_cat702,
         piu10_mp3_latency_ms,
         nullptr,
         runtime::ExecutionBackend::kLegacy,
@@ -4839,6 +4858,7 @@ bool AttemptWin32GuestStackHleExecution(
         nullptr,
         false,
         false,
+        false,
         0U,
         nullptr,
         runtime::ExecutionBackend::kLegacy,
@@ -4857,6 +4877,7 @@ bool AttemptWin32GuestStackAotExecution(
     const std::filesystem::path* sound_rom_zip_path,
     bool enable_piu_jamma_board,
     bool enable_piu10_isa_board,
+    bool enable_cat702,
     std::uint32_t piu10_mp3_latency_ms,
     runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
@@ -4879,6 +4900,7 @@ bool AttemptWin32GuestStackAotExecution(
         linexe_module, glide_exports, cd_chd_path, sound_rom_zip_path,
         enable_piu_jamma_board,
         enable_piu10_isa_board,
+        enable_cat702,
         piu10_mp3_latency_ms,
         &aot_placement,
         execution_backend,

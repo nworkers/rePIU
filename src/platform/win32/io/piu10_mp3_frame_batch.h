@@ -20,7 +20,8 @@ struct Piu10Mp3FrameBatchPlan
 
 bool BuildPiu10Mp3FrameBatchPlan(
     ThreadContext* context, std::uint32_t guest_source,
-    std::size_t maximum_bytes, Piu10Mp3FrameBatchPlan* plan);
+    std::uint32_t guest_stack_pointer, std::size_t maximum_bytes,
+    Piu10Mp3FrameBatchPlan* plan);
 
 bool CommitPiu10Mp3FrameBatch(
     const Piu10Mp3FrameBatchPlan& plan, std::size_t accepted_bytes,
@@ -28,6 +29,7 @@ bool CommitPiu10Mp3FrameBatch(
 
 std::size_t TransferPiu10Mp3FrameTail(
     ThreadContext* context, std::uint32_t guest_source,
-    std::uint8_t current_byte, std::uint32_t* guest_ecx);
+    std::uint32_t guest_stack_pointer, std::uint8_t current_byte,
+    std::uint32_t* guest_ecx);
 
 }  // namespace repiu::platform::win32

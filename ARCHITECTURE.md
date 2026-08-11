@@ -48,7 +48,7 @@ The first implementation target is a non-executing analysis tool for `MASTER\PIU
 
 예정된 주요 모듈:
 
-* `TargetRegistry`: 게임 타깃과 버전 선택. 현재 단계에서는 정적 C++ 등록 구조로 `piu_1st`, `pumpit1`, `pumpit2`, `pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`를 제공한다. 모든 `pumpit*` MAME CHD 프로파일은 공용 PIU CHD mount와 `piu_common` HLE 경로를 재사용하고 JAMMA/YMZ280B/EEPROM 보드 capability를 활성화한다. PIU10 flash/CAT702 ISA 보드 capability는 뒤의 네 프로파일에서만 활성화된다.
+* `TargetRegistry`: 게임 타깃과 버전 선택. 현재 단계에서는 정적 C++ 등록 구조로 `piu_1st`와 `pumpit1`, `pumpit2`, `pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`, `pumpitpr`, `pumpitpx`, `pumpit8`, `pumpitp2`, `pumpipx2`, `pumpitp3`, `pumpipx3`를 제공한다. 모든 PIU MAME CHD 프로파일은 공용 PIU CHD mount와 `piu_common` HLE 경로를 재사용하고 JAMMA/YMZ280B/EEPROM 보드 capability를 활성화한다. PIU10 ISA 보드와 CAT702은 독립 capability이며, 기본 내장값은 `pumpito`부터 나열된 11개 PIU10 프로파일에서 둘 다 활성화된다.
 * `TargetProfile`: 실행 파일 경로, 작업 디렉터리, 자산 루트, 포맷 힌트, HLE 프로파일 id, 버전별 메타데이터와 하드웨어 capability
 * `HleProfileRegistry`: target이 참조하는 HLE 프로파일 선택. 현재 단계에서는 정적 C++ 등록 구조로 `piu_common`을 제공한다.
 * `HleProfile`: target이 요구하는 DOS/DPMI/하드웨어 HLE 서비스 범위
@@ -100,7 +100,7 @@ Directories added now:
 
 Planned major modules:
 
-* `TargetRegistry`: game target and version selection. Static C++ registration currently provides `piu_1st`, `pumpit1`, `pumpit2`, `pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, and `pumpite`. Every `pumpit*` MAME CHD profile reuses the shared PIU CHD mount and `piu_common` HLE path and enables the JAMMA/YMZ280B/EEPROM board capability. Only the last four profiles enable the separate PIU10 flash/CAT702 ISA-board capability.
+* `TargetRegistry`: game target and version selection. Static C++ registration currently provides `piu_1st` plus `pumpit1`, `pumpit2`, `pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`, `pumpitpr`, `pumpitpx`, `pumpit8`, `pumpitp2`, `pumpipx2`, `pumpitp3`, and `pumpipx3`. Every PIU MAME CHD profile reuses the shared PIU CHD mount and `piu_common` HLE path and enables the JAMMA/YMZ280B/EEPROM board capability. The PIU10 ISA board and CAT702 are independent capabilities; both default to enabled on the eleven PIU10 profiles listed from `pumpito` onward.
 * `TargetProfile`: executable path, working directory, asset root, format hint, HLE profile id, optional ROM-set id, version metadata, and target-specific early runtime reservation hints
 * `HleProfileRegistry`: HLE profile selection referenced by targets. The current step provides `piu_common` through static C++ registration.
 * `HleProfile`: DOS/DPMI/hardware HLE service scope required by a target
@@ -579,7 +579,11 @@ target에서 source cursor, available end, buffer, frame count/target과 주기�
 추출합니다. 서로 독립인 cursor/count 갱신의 순서와 임시 register allocation은 고정하지
 않으므로 `pumpito` 계열과 `pumpite`에서 확인된 동등한 compiler schedule을 같은 계약으로
 처리합니다. batch는 추출한 경계 직전까지만 guest 상태를 commit하며, dependency, clobber,
-shape나 runtime state가 맞지 않으면 원본 scalar loop를 그대로 실행합니다.
+shape나 runtime state가 맞지 않으면 원본 scalar loop를 그대로 실행합니다. Task 471부터는
+`OUT DX,AL`이 register 보존 래퍼 안에 있는 경우에도 guest stack 반환 주소, 상대 `call`
+대상, 호출 전 feeder 갱신과 반환 후 loop edge를 모두 검증하여 같은 계약으로 정규화합니다.
+감사 계획은 service 경계뿐 아니라 현재 compressed inflight의 `0xE00` `DEMAND` 경계에서도
+끊어 실제 scalar status polling과 같은 반환 지점을 보존합니다.
 
 Since Task 465, PIU10 frame-tail batching uses no target name, fixed EIP, LE object number, or data
 offset. It narrowly decodes bounded feeder-loop instructions around the current `OUT DX,AL`,
@@ -589,12 +593,18 @@ instruction operands and branch targets. Independent cursor/count update orderin
 register allocation are not fixed, so the equivalent compiler schedules observed in the
 `pumpito` family and `pumpite` share one contract. It commits guest state only up to the derived
 boundary; any dependency, clobber, shape, or runtime-state mismatch preserves the scalar loop.
+Since Task 471, an `OUT DX,AL` inside a register-preserving wrapper is normalized to the same
+contract only after validating the guest-stack return address, relative `call` target, feeder
+updates before the call, and loop edge after the return. Audit plans stop at both the service
+boundary and the `0xE00` compressed-inflight `DEMAND` boundary so scalar status polling returns at
+the same point.
 
-`0x02D0..0x02DF`의 PIU10 ISA 보드는 `0x02A0..0x02AF`의 JAMMA/YMZ280B 보드와 별도 장치입니다. 플랫폼 공용 `hle::Piu10IsaBoard`가 20-bit flash 주소, 12-bit 목적지, `piu10.u8` read-only word access, MP3 status-source 계약과 CAT702 PIU 직렬 상태를 소유합니다. 실행 준비 계층은 target profile의 `enable_piu10_isa_board`가 활성화된 경우에만 현재 ROM-set ZIP에서 CRC 검증된 `piu10.u8`과 `<target>.cat702`를 추출하여 장치에 주입합니다. 이 capability는 `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`에만 켜지고 `pumpit1`, `pumpit2`, `pumpit3`에는 꺼져 있습니다. 목적지 `0x008`의 압축 byte는 `sound::DecoderInputFifo`의 4 KiB 물리 SPSC ring으로 들어갑니다. FIFO의 atomic inflight는 guest 수락부터 parser/minimp3의 실제 소비까지 ring과 worker staging을 합친 모든 byte를 추적하며, `DEMAND`는 이 값이 MAS3507D 계약을 참고한 `0xE00` byte 논리 수위보다 낮을 때만 활성화됩니다. ring에서 staging으로 이동할 때는 inflight가 줄지 않고 parser cursor가 전진할 때만 줄어듭니다. Win32 `Piu10Mp3AudioOut` worker는 첫 세 개의 호환 MPEG header로 sync를 확정한 뒤 하나의 persistent upstream `minimp3` decoder로 frame을 연속 decode하고, S16 PCM을 SDL3 audio device stream에 직접 공급합니다. 공용 MPEG parser가 연속 header로 검증한 정확히 한 frame 길이만 minimp3에 넘겨 FIFO pop 끝의 불완전한 다음 header가 현재 frame sync를 무효화하지 않게 합니다. decode된 각 PCM frame의 시작 offset은 SDL queue 소비량과 비교하며, MAS3507D frame-sync 상태는 worker의 선행 decode 시점이 아니라 실제 재생이 해당 offset에 도달할 때 전이합니다. 검증된 feeder-loop shape에서는 현재 `OUT DX,AL` 뒤의 frame tail을 한 번에 ring으로 옮기고, 명령 operand에서 추출한 source cursor, frame count와 guest counter를 원본 byte loop와 동일하게 갱신합니다. batch enqueue는 inflight의 `0xE00` 논리 수위를 넘지 않고 byte path는 4 KiB까지 허용하여 512-byte stale-status race headroom을 유지합니다. 검증에 실패하거나 FIFO 여유가 부족하면 기존 byte 경로로 닫히므로 원본 frame 경계와 제어 흐름은 유지됩니다. `REPIU_PIU10_MP3_STREAM_AUDIT=1`은 모든 PIU10 capability 진단 실행에서 producer/consumer stream을 독립적인 4 KiB hash로 비교하며 기본값은 꺼져 있습니다. 다른 PIU10 접근은 일반 adapter와 계측을 유지합니다. MAME 구현은 계약 참고 자료일 뿐 코드는 포함하지 않습니다. 별도 `piu10.u9` YMZ280B 초기화는 이 capability와 독립적입니다.
+`0x02D0..0x02DF`의 PIU10 ISA 보드는 `0x02A0..0x02AF`의 JAMMA/YMZ280B 보드와 별도 장치입니다. 플랫폼 공용 `hle::Piu10IsaBoard`가 20-bit flash 주소, 12-bit 목적지, `piu10.u8` read-only word access, MP3 status-source 계약과 optional CAT702 PIU 직렬 상태를 소유합니다. 실행 준비 계층은 target profile의 `enable_piu10_isa_board`가 활성화되면 `piu10.u8`을 추출하고, 별도 `enable_cat702`도 true일 때만 `<target>.cat702`를 요구하고 주입합니다. CAT702이 false여도 PIU10 flash, MP3와 DAC는 동작하며 CAT702 data-out bit는 0, data/clock/select 쓰기는 무시됩니다. 기본 내장 profile에서는 두 capability가 `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`, `pumpitpr`, `pumpitpx`, `pumpit8`, `pumpitp2`, `pumpipx2`, `pumpitp3`, `pumpipx3`에 켜지고 `pumpit1`, `pumpit2`, `pumpit3`에는 꺼져 있습니다. 목적지 `0x008`의 압축 byte는 `sound::DecoderInputFifo`의 4 KiB 물리 SPSC ring으로 들어갑니다. FIFO의 atomic inflight는 guest 수락부터 parser/minimp3의 실제 소비까지 ring과 worker staging을 합친 모든 byte를 추적하며, `DEMAND`는 이 값이 MAS3507D 계약을 참고한 `0xE00` byte 논리 수위보다 낮을 때만 활성화됩니다. ring에서 staging으로 이동할 때는 inflight가 줄지 않고 parser cursor가 전진할 때만 줄어듭니다. Win32 `Piu10Mp3AudioOut` worker는 첫 세 개의 호환 MPEG header로 sync를 확정한 뒤 하나의 persistent upstream `minimp3` decoder로 frame을 연속 decode하고, S16 PCM을 SDL3 audio device stream에 직접 공급합니다. 공용 MPEG parser가 연속 header로 검증한 정확히 한 frame 길이만 minimp3에 넘겨 FIFO pop 끝의 불완전한 다음 header가 현재 frame sync를 무효화하지 않게 합니다. decode된 각 PCM frame의 시작 offset은 SDL queue 소비량과 비교하며, MAS3507D frame-sync 상태는 worker의 선행 decode 시점이 아니라 실제 재생이 해당 offset에 도달할 때 전이합니다. 검증된 feeder-loop shape에서는 현재 `OUT DX,AL` 뒤의 frame tail을 한 번에 ring으로 옮기고, 명령 operand에서 추출한 source cursor, frame count와 guest counter를 원본 byte loop와 동일하게 갱신합니다. batch enqueue는 inflight의 `0xE00` 논리 수위를 넘지 않고 byte path는 4 KiB까지 허용하여 512-byte stale-status race headroom을 유지합니다. 검증에 실패하거나 FIFO 여유가 부족하면 기존 byte 경로로 닫히므로 원본 frame 경계와 제어 흐름은 유지됩니다. `REPIU_PIU10_MP3_STREAM_AUDIT=1`은 모든 PIU10 capability 진단 실행에서 producer/consumer stream을 독립적인 4 KiB hash로 비교하며 기본값은 꺼져 있습니다. 다른 PIU10 접근은 일반 adapter와 계측을 유지합니다. MAME 구현은 계약 참고 자료일 뿐 코드는 포함하지 않습니다. 별도 `piu10.u9` YMZ280B 초기화는 이 capability와 독립적입니다.
 
 ```mermaid
 flowchart LR
-    Z["ROM-set ZIP"] -->|"piu10.u8 + target.cat702"| D["hle::Piu10IsaBoard"]
+    Z["ROM-set ZIP"] -->|"piu10.u8"| D["hle::Piu10IsaBoard"]
+    Z -->|"target.cat702 when enabled"| C
     G["Guest IN/OUT<br/>0x02D0..0x02DF"] --> W["PIU10 adapter / MP3 fast path"] --> D
     D --> F["read-only flash"]
     D --> M["MP3 ready status"]
@@ -603,7 +613,7 @@ flowchart LR
     Q -->|"inflight < 0xE00"| M
 ```
 
-The PIU10 ISA board at `0x02D0..0x02DF` is separate from the JAMMA/YMZ280B board at `0x02A0..0x02AF`. Platform-neutral `hle::Piu10IsaBoard` owns the 20-bit flash address, 12-bit destination, read-only `piu10.u8` word access, MP3 status-source contract, and CAT702 PIU serial state. Execution setup extracts CRC-verified `piu10.u8` and `<target>.cat702` only for `pumpito`, `pumpitc`, `pumpitpc`, and `pumpite`; `pumpit1`, `pumpit2`, and `pumpit3` remain outside the capability. Destination-`0x008` compressed bytes enter the 4 KiB physical SPSC ring in `sound::DecoderInputFifo`. Its atomic inflight count tracks every byte across the ring and worker staging from guest acceptance through actual parser/minimp3 consumption; `DEMAND` is asserted only while this value is below the MAS3507D-derived logical `0xE00` level. Moving bytes into staging does not reduce inflight, while parser-cursor advancement does. The Win32 `Piu10Mp3AudioOut` worker confirms sync from three compatible MPEG headers, continuously decodes frames with one persistent upstream `minimp3` instance, and sends S16 PCM directly to an SDL3 audio-device stream. It passes minimp3 exactly one frame length already validated through consecutive headers by the shared MPEG parser, so an incomplete next header at a FIFO-pop boundary cannot invalidate the current frame. Each decoded PCM frame's start offset is compared with SDL queue consumption, and MAS3507D frame-sync changes when playback reaches that offset rather than when the worker decodes ahead. For a verified feeder-loop shape, the HLE transfers the current frame tail in one ring operation and updates the source cursor, frame count, and guest counter derived from the instruction operands. Batch enqueue stops at the inflight logical `0xE00` level, while the byte path may use 4 KiB to retain 512 bytes of stale-status race headroom. It fails closed to the byte path on a shape, range, state, or FIFO-space mismatch, preserving original frame-boundary and control-flow logic. `REPIU_PIU10_MP3_STREAM_AUDIT=1` independently hashes producer and consumer streams in 4 KiB chunks for every PIU10-capable target and is off by default. Other PIU10 accesses retain the generic adapter and instrumentation. MAME is a contract reference only and no MAME code is included. Independent `piu10.u9` YMZ280B initialization remains outside this gate.
+The PIU10 ISA board at `0x02D0..0x02DF` is separate from the JAMMA/YMZ280B board at `0x02A0..0x02AF`. Platform-neutral `hle::Piu10IsaBoard` owns the 20-bit flash address, 12-bit destination, read-only `piu10.u8` word access, MP3 status-source contract, and optional CAT702 PIU serial state. Setup extracts `piu10.u8` when `enable_piu10_isa_board` is true and requires `<target>.cat702` only when the independent `enable_cat702` capability is also true. With CAT702 disabled, flash, MP3, and DAC remain active, CAT702 data-out reads zero, and data/clock/select writes are ignored. Both capabilities default to enabled for `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`, `pumpitpr`, `pumpitpx`, `pumpit8`, `pumpitp2`, `pumpipx2`, `pumpitp3`, and `pumpipx3`, and disabled for `pumpit1`, `pumpit2`, and `pumpit3`. Destination-`0x008` compressed bytes enter the 4 KiB physical SPSC ring in `sound::DecoderInputFifo`. Its atomic inflight count tracks every byte across the ring and worker staging from guest acceptance through actual parser/minimp3 consumption; `DEMAND` is asserted only while this value is below the MAS3507D-derived logical `0xE00` level. Moving bytes into staging does not reduce inflight, while parser-cursor advancement does. The Win32 `Piu10Mp3AudioOut` worker confirms sync from three compatible MPEG headers, continuously decodes frames with one persistent upstream `minimp3` instance, and sends S16 PCM directly to an SDL3 audio-device stream. It passes minimp3 exactly one frame length already validated through consecutive headers by the shared MPEG parser, so an incomplete next header at a FIFO-pop boundary cannot invalidate the current frame. Each decoded PCM frame's start offset is compared with SDL queue consumption, and MAS3507D frame-sync changes when playback reaches that offset rather than when the worker decodes ahead. For a verified feeder-loop shape, the HLE transfers the current frame tail in one ring operation and updates the source cursor, frame count, and guest counter derived from the instruction operands. Batch enqueue stops at the inflight logical `0xE00` level, while the byte path may use 4 KiB to retain 512 bytes of stale-status race headroom. It fails closed to the byte path on a shape, range, state, or FIFO-space mismatch, preserving original frame-boundary and control-flow logic. `REPIU_PIU10_MP3_STREAM_AUDIT=1` independently hashes producer and consumer streams in 4 KiB chunks for every PIU10-capable target and is off by default. Other PIU10 accesses retain the generic adapter and instrumentation. MAME is a contract reference only and no MAME code is included. Independent `piu10.u9` YMZ280B initialization remains outside this gate.
 
 모든 PIU10 target profile의 MP3 시작 지연 기본값은 0 ms입니다. `REPIU_PIU10_MP3_LATENCY_MS`는 실행별로 0~500 ms 범위의 지연을 명시할 때만 적용됩니다. 플랫폼 공용 `sound::Dac3350aControl`은 목적지 `0x010`의 SDA/SCL에서 DAC3350A I²C AVOL transaction을 복원하고, MAME의 DAC3350A 계약과 같은 dB 계단을 linear gain으로 변환합니다. AVOL 0은 mute, 1은 -75 dB, `0x2C`는 0 dB입니다. Win32 backend는 좌우 gain의 평균을 thread-safe `SDL_SetAudioStreamGain`에 전달합니다. 이는 이미 queue에 들어간 PCM의 출력 gain에도 적용되지만 SDL queue, 압축 FIFO, MPEG/minimp3 상태와 frame-sync는 변경하지 않습니다. 실제 `pumpito`에서는 좌우 값이 같아 평균으로 인한 차이가 없습니다. pause 상태는 모델링하지 않습니다.
 
@@ -1698,6 +1708,23 @@ nothing. It is attempted **only on the side-effect-free JAMMA input path**, sinc
 and YMZ280B windows are handled by earlier branches. `REPIU_PORT_IO_DELAY_LOOP=0` restores
 the old behaviour, and the attempt, batch, skipped-iteration, and refusal-reason counts are
 logged.
+
+Task 470은 같은 정책을 **호출 래퍼형 입력 루프**로 확장합니다. 제한된 래퍼가 EDX를
+stack에 저장하고 EAX의 포트 번호를 EDX로 옮긴 뒤 EAX를 0으로 만들고 `IN`, EDX 복원,
+`RET`을 수행하는지 검증합니다. guest 반환 주소 앞의 `call rel32`가 그 래퍼를 가리키고,
+호출자가 `inc edx; cmp edx,imm; jl`로 반복하며 루프 머리의 `mov eax,imm`가 이전 입력
+결과를 폐기하는 경우에만 stack의 저장된 EDX를 `limit-2`로 전진시킵니다. 원본 `POP`,
+마지막 입력, `INC/CMP/JL`은 guest가 실행하므로 EIP와 flags를 합성하지 않습니다. 이
+matcher도 target 이름이나 고정 주소를 사용하지 않으며 모든 불확실성에서 기존 경로로
+닫힙니다.
+
+Task 470 extends the same policy to **call-wrapped input loops**. It proves a restricted wrapper
+that saves EDX on the stack, moves the EAX port argument to EDX, clears EAX, executes `IN`, restores
+EDX, and returns. Only when the `call rel32` before the guest return address targets that wrapper,
+the caller repeats through `inc edx; cmp edx,imm; jl`, and `mov eax,imm` at the loop head discards
+the prior input result does it advance the saved stack value to `limit-2`. The guest still executes
+the original `POP`, final input, and `INC/CMP/JL`, so no EIP or flags are synthesized. This matcher
+also uses neither target names nor fixed addresses and fails closed to the existing path.
 
 ## 게스트 위치 census / Guest position census
 
