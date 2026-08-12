@@ -137,6 +137,7 @@ add_library(repiu_exe
     src/platform/win32/aot/aot_retired_trap_profile.cpp
     src/platform/win32/aot/aot_runtime_dispatch.cpp
     src/platform/win32/bios/bios_keyboard_services.cpp
+    src/platform/win32/execution/execution_probe_memory_dump.cpp
     src/platform/win32/execution/execution_trampoline.cpp
     src/platform/win32/execution/single_step_hotspot_profile.cpp
     src/platform/win32/dos/dos_int21_services.cpp
@@ -146,6 +147,7 @@ add_library(repiu_exe
     src/platform/win32/exception/host_crash_report.cpp
     src/platform/win32/cpu_emul/guest_memory_access.cpp
     src/platform/win32/cpu_emul/instruction_emulation.cpp
+    src/platform/win32/cpu_emul/low_memory_string_access.cpp
     src/platform/win32/boundary/linexe_glide_boundary.cpp
     src/platform/win32/boundary/timer_interrupt_boundary.cpp
     src/platform/win32/telemetry/live_telemetry_snapshot.cpp

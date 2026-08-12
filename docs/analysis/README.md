@@ -25,6 +25,7 @@ flowchart LR
 * [실행 파일 로딩과 relocation](executable-loading-and-relocation.md)
 * [Win32 실행 trampoline과 예외 기반 HLE](execution-trampoline-and-hle.md)
 * [Runtime arena, shadow memory, sentinel 분석](memory-arena-shadow-and-sentinel.md)
+* [pumpit8 BGA iCCP 종료 분석](pumpit8-bga-iccp-crash.md)
 * [DOS 파일 I/O와 INT3 해결 이력](dos-file-io-and-int3.md)
 * [Interrupt와 port I/O 관찰](interrupts-and-port-io.md)
 * [펌프 잇 업 (PIU) I/O 포트 사양 분석 및 유지 지침](piu-io-port-specification.md)

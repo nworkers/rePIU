@@ -1440,10 +1440,29 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->execution_probe_configured = context.execution_probe_configured;
     attempt->execution_probe_hit = context.execution_probe_hit;
     attempt->execution_probe_offset = context.execution_probe_offset;
+    attempt->execution_probe_memory_offset =
+        context.execution_probe_memory_offset;
     attempt->execution_probe_snapshot = context.execution_probe_snapshot;
     std::memcpy(attempt->execution_probe_stack,
                 context.execution_probe_stack,
                 sizeof(attempt->execution_probe_stack));
+    std::memcpy(attempt->execution_probe_memory,
+                context.execution_probe_memory,
+                sizeof(attempt->execution_probe_memory));
+    attempt->execution_probe_dump_configured =
+        context.execution_probe_dump_request.configured;
+    attempt->execution_probe_dump_captured =
+        context.execution_probe_dump_result.captured;
+    attempt->execution_probe_dump_written =
+        context.execution_probe_dump_result.written;
+    attempt->execution_probe_dump_base_address =
+        context.execution_probe_dump_result.base_address;
+    attempt->execution_probe_dump_source_address =
+        context.execution_probe_dump_result.source_address;
+    attempt->execution_probe_dump_byte_count =
+        context.execution_probe_dump_result.byte_count;
+    attempt->execution_probe_dump_path =
+        context.execution_probe_dump_request.path;
     attempt->execution_trace_configured = context.execution_trace_configured;
     attempt->execution_trace_start_offset = context.execution_trace_start_offset;
     attempt->execution_trace_end_offset = context.execution_trace_end_offset;
@@ -2054,6 +2073,18 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.last_low_memory_read_emulate_value;
     attempt->last_low_memory_read_emulate_reg =
         context.last_low_memory_read_emulate_reg;
+    attempt->low_memory_string_service_count =
+        context.low_memory_string_service_count;
+    attempt->low_memory_string_iteration_count =
+        context.low_memory_string_iteration_count;
+    attempt->last_low_memory_string_eip =
+        context.last_low_memory_string_eip;
+    attempt->last_low_memory_string_address =
+        context.last_low_memory_string_address;
+    attempt->last_low_memory_string_mnemonic =
+        context.last_low_memory_string_mnemonic;
+    attempt->last_low_memory_string_iterations =
+        context.last_low_memory_string_iterations;
     attempt->debug_emulate_stage =
         context.debug_emulate_stage;
     attempt->debug_emulate_decode_result =

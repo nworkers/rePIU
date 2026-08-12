@@ -50,6 +50,7 @@
 #include "bios_keyboard_services.h"
 #include "dos_int21_services.h"
 #include "guest_memory_access.h"
+#include "low_memory_string_access.h"
 #include "win32_thread_api.h"
 #include "execution_internal.h"
 #include "port_io_emulator.h"
@@ -1614,7 +1615,14 @@ bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context, ThreadContext* contex
 
     context->debug_emulate_stage = 1; // Started
 
-
+    // Task 475: string instructions reading low memory are serviced by their
+    // own module first. The MOV/MOVZX/MOVSX path below cannot express them --
+    // they carry repetition state in ECX/ESI/EDI and must not always step EIP.
+    if (ServiceGuestLowMemoryStringInstruction(win32_context, context))
+    {
+        context->debug_emulate_stage = 101; // Serviced as a string operation
+        return true;
+    }
 
     // Decode the instruction that is actually about to execute, not the guest
     // address it maps back to. On a fault EIP points at the faulting
@@ -2248,6 +2256,78 @@ bool IsGuestInstructionPointer(const ThreadContext* context,
            eip < runtime_end;
 }
 
+// Copies the configured range into the buffer reserved before execution began.
+// This runs inside the exception handler, so it allocates nothing and reads
+// only ranges the guest-range check accepts in full.
+void RecordExecutionProbeDump(CONTEXT* win32_context, ThreadContext* context)
+{
+    const auto& request = context->execution_probe_dump_request;
+    auto& result = context->execution_probe_dump_result;
+    if (!request.configured || result.captured ||
+        result.bytes.size() < request.byte_count)
+    {
+        return;
+    }
+    std::uint32_t base = request.absolute_base;
+    switch (request.base)
+    {
+        case Win32ExecutionProbeDumpBase::kEax:
+            base = win32_context->Eax;
+            break;
+        case Win32ExecutionProbeDumpBase::kEbx:
+            base = win32_context->Ebx;
+            break;
+        case Win32ExecutionProbeDumpBase::kEcx:
+            base = win32_context->Ecx;
+            break;
+        case Win32ExecutionProbeDumpBase::kEdx:
+            base = win32_context->Edx;
+            break;
+        case Win32ExecutionProbeDumpBase::kEsi:
+            base = win32_context->Esi;
+            break;
+        case Win32ExecutionProbeDumpBase::kEdi:
+            base = win32_context->Edi;
+            break;
+        case Win32ExecutionProbeDumpBase::kEbp:
+            base = win32_context->Ebp;
+            break;
+        case Win32ExecutionProbeDumpBase::kEsp:
+            base = win32_context->Esp;
+            break;
+        case Win32ExecutionProbeDumpBase::kAbsolute:
+        case Win32ExecutionProbeDumpBase::kCount:
+            break;
+    }
+    if (base > UINT32_MAX - request.offset)
+    {
+        return;
+    }
+    result.base_address = base + request.offset;
+    std::uint32_t source_address = result.base_address;
+    if (request.indirect)
+    {
+        const void* pointer_site = reinterpret_cast<const void*>(
+            static_cast<std::uintptr_t>(result.base_address));
+        if (!IsGuestRangeReadable(context, pointer_site,
+                                  sizeof(std::uint32_t)))
+        {
+            return;
+        }
+        std::memcpy(&source_address, pointer_site, sizeof(source_address));
+    }
+    result.source_address = source_address;
+    const void* source = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(source_address));
+    if (!IsGuestRangeReadable(context, source, request.byte_count))
+    {
+        return;
+    }
+    std::memcpy(result.bytes.data(), source, request.byte_count);
+    result.byte_count = request.byte_count;
+    result.captured = true;
+}
+
 void RecordExecutionProbe(CONTEXT* win32_context, ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr ||
@@ -2269,6 +2349,37 @@ void RecordExecutionProbe(CONTEXT* win32_context, ThreadContext* context)
         std::memcpy(context->execution_probe_stack, stack,
                     sizeof(context->execution_probe_stack));
     }
+    const std::uint32_t register_values[
+        kWin32ExecutionProbeRegisterCount] = {
+            win32_context->Eax,
+            win32_context->Ebx,
+            win32_context->Ecx,
+            win32_context->Edx,
+            win32_context->Esi,
+            win32_context->Edi,
+            win32_context->Ebp,
+        };
+    for (std::uint32_t index = 0;
+         index < kWin32ExecutionProbeRegisterCount; ++index)
+    {
+        auto& window = context->execution_probe_memory[index];
+        if (register_values[index] >
+            UINT32_MAX - context->execution_probe_memory_offset)
+        {
+            continue;
+        }
+        window.address = register_values[index] +
+                         context->execution_probe_memory_offset;
+        const void* source = reinterpret_cast<const void*>(
+            static_cast<std::uintptr_t>(window.address));
+        if (IsGuestRangeReadable(
+                context, source, kWin32ExecutionProbeMemoryByteCount))
+        {
+            std::memcpy(window.bytes, source, sizeof(window.bytes));
+            window.valid = true;
+        }
+    }
+    RecordExecutionProbeDump(win32_context, context);
 }
 
 void RecordExecutionTrace(CONTEXT* win32_context, ThreadContext* context)
@@ -4028,6 +4139,17 @@ bool RunWin32ExecutionThread(
         *out = static_cast<std::uint32_t>(value);
         return true;
     };
+    read_hex_env("REPIU_EXECUTION_PROBE_MEMORY_OFFSET",
+                 &context.execution_probe_memory_offset);
+    // The capture buffer is reserved here, before the guest thread starts, so
+    // the first-hit recorder never allocates inside the exception handler.
+    context.execution_probe_dump_request =
+        ReadWin32ExecutionProbeDumpRequest();
+    if (context.execution_probe_dump_request.configured)
+    {
+        context.execution_probe_dump_result.bytes.assign(
+            context.execution_probe_dump_request.byte_count, 0U);
+    }
     if (read_hex_env("REPIU_EXECUTION_TRACE_START",
                      &context.execution_trace_start_offset) &&
         read_hex_env("REPIU_EXECUTION_TRACE_END",
@@ -4658,6 +4780,8 @@ bool RunWin32ExecutionThread(
         remove_vectored_handler();
         stop_translation_worker();
         RestoreWin32AotGuestPageWriteWatches(&context.aot_page_write_watch);
+        WriteWin32ExecutionProbeDump(context.execution_probe_dump_request,
+                                     &context.execution_probe_dump_result);
         CopyThreadObservationToAttempt(context, attempt);
         attempt->valid = true;
         attempt->message = context.hle_message.empty()
@@ -4734,6 +4858,8 @@ bool RunWin32ExecutionThread(
     std::memcpy(attempt->aot_probe_cache_bytes,
                 context.aot_probe_cache_bytes,
                 sizeof(attempt->aot_probe_cache_bytes));
+    WriteWin32ExecutionProbeDump(context.execution_probe_dump_request,
+                                 &context.execution_probe_dump_result);
     CopyThreadObservationToAttempt(context, attempt);
     attempt->thread_exit_code = exit_code;
     attempt->hle_stdout_output.assign(

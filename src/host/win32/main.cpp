@@ -2850,6 +2850,21 @@ void PrintExecutionAttempt(
                 attempt.execution_probe_configured ? "true" : "false",
                 attempt.execution_probe_hit ? "true" : "false",
                 Hex32(attempt.execution_probe_offset));
+    logger.info("Win32 execution probe memory offset: {}",
+                Hex32(attempt.execution_probe_memory_offset));
+    if (attempt.execution_probe_dump_configured)
+    {
+        logger.info(
+            "Win32 execution probe dump captured/written/base/source/bytes: "
+            "{}/{}/{}/{}/{}",
+            attempt.execution_probe_dump_captured ? "true" : "false",
+            attempt.execution_probe_dump_written ? "true" : "false",
+            Hex32(attempt.execution_probe_dump_base_address),
+            Hex32(attempt.execution_probe_dump_source_address),
+            Hex32(attempt.execution_probe_dump_byte_count));
+        logger.info("Win32 execution probe dump path: {}",
+                    attempt.execution_probe_dump_path);
+    }
     if (attempt.execution_probe_hit)
     {
         const auto& probe = attempt.execution_probe_snapshot;
@@ -2870,6 +2885,28 @@ void PrintExecutionAttempt(
                     Hex32(attempt.execution_probe_stack[5]),
                     Hex32(attempt.execution_probe_stack[6]),
                     Hex32(attempt.execution_probe_stack[7]));
+        constexpr const char* kRegisterNames[
+            repiu::platform::win32::kWin32ExecutionProbeRegisterCount] = {
+                "EAX", "EBX", "ECX", "EDX", "ESI", "EDI", "EBP"};
+        for (std::uint32_t index = 0;
+             index < repiu::platform::win32::
+                         kWin32ExecutionProbeRegisterCount;
+             ++index)
+        {
+            const auto& window = attempt.execution_probe_memory[index];
+            if (!window.valid)
+            {
+                logger.info(
+                    "Win32 execution probe memory {} address/valid: {}/false",
+                    kRegisterNames[index], Hex32(window.address));
+                continue;
+            }
+            logger.info(
+                "Win32 execution probe memory {} address/valid/bytes: "
+                "{}/true/{}",
+                kRegisterNames[index], Hex32(window.address),
+                HexBytes(window.bytes, sizeof(window.bytes)));
+        }
     }
     if (attempt.execution_trace_configured)
     {
@@ -4145,6 +4182,19 @@ void PrintExecutionAttempt(
                     Hex32(attempt.last_low_memory_read_emulate_value));
         logger.info("Win32 last low-memory read emulate reg: {}",
                     static_cast<unsigned>(attempt.last_low_memory_read_emulate_reg));
+    }
+    logger.info("Win32 low-memory string service/iteration count: {}/{}",
+                attempt.low_memory_string_service_count,
+                attempt.low_memory_string_iteration_count);
+    if (attempt.low_memory_string_service_count > 0)
+    {
+        logger.info(
+            "Win32 last low-memory string EIP/address/mnemonic/iterations: "
+            "{}/{}/{}/{}",
+            Hex32(attempt.last_low_memory_string_eip),
+            Hex32(attempt.last_low_memory_string_address),
+            attempt.last_low_memory_string_mnemonic,
+            attempt.last_low_memory_string_iterations);
     }
     logger.info("Win32 handled memory store count: {}",
                 attempt.handled_memory_store_count);

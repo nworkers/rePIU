@@ -27,6 +27,13 @@ void WriteRegister8(CONTEXT* win32_context,
                     std::uint8_t register_index,
                     std::uint8_t value);
 
+// CMP flag semantics at an 8-, 16-, or 32-bit operand width. Any other width
+// leaves the flags untouched.
+void SetCompareFlags(CONTEXT* win32_context,
+                     std::uint32_t lhs,
+                     std::uint32_t rhs,
+                     std::uint32_t width_bytes);
+
 void SetCompareFlags8(CONTEXT* win32_context,
                       std::uint8_t lhs,
                       std::uint8_t rhs);

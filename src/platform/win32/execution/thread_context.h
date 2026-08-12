@@ -1,6 +1,7 @@
 #pragma once
 
 #include "repiu/platform/win32/execution_trampoline.h"
+#include "repiu/platform/win32/execution_probe_memory_dump.h"
 #include "repiu/platform/win32/runtime_memory_policy.h"
 #include "repiu/platform/win32/aot_code_cache_win32.h"
 #include "repiu/platform/win32/out_of_arena_step_census.h"
@@ -461,8 +462,13 @@ struct ThreadContext
     bool execution_probe_configured = false;
     bool execution_probe_hit = false;
     std::uint32_t execution_probe_offset = 0;
+    std::uint32_t execution_probe_memory_offset = 0;
     X86ExecutionSnapshot execution_probe_snapshot;
     std::uint32_t execution_probe_stack[8] = {};
+    Win32ExecutionProbeMemoryWindow execution_probe_memory[
+        kWin32ExecutionProbeRegisterCount] = {};
+    Win32ExecutionProbeDumpRequest execution_probe_dump_request;
+    Win32ExecutionProbeDumpResult execution_probe_dump_result;
     bool execution_trace_configured = false;
     std::uint32_t execution_trace_start_offset = 0;
     std::uint32_t execution_trace_end_offset = 0;
@@ -849,6 +855,15 @@ struct ThreadContext
     std::uint32_t last_low_memory_fault_address = 0;
     std::uint32_t low_memory_fault_repeat_count = 0;
     std::uint32_t last_low_memory_fault_tick = 0;
+    // Task 475: SCAS/LODS/CMPS reads of low memory, which the MOV-only path
+    // above rejected. `iteration_count` exceeds `service_count` because one
+    // fault services a whole run of a REP-prefixed instruction.
+    std::uint32_t low_memory_string_service_count = 0;
+    std::uint32_t low_memory_string_iteration_count = 0;
+    std::uint32_t last_low_memory_string_eip = 0;
+    std::uint32_t last_low_memory_string_address = 0;
+    std::uint32_t last_low_memory_string_mnemonic = 0;
+    std::uint32_t last_low_memory_string_iterations = 0;
     std::uint32_t rep_movs_copy_failure_count = 0;
     std::uint32_t last_rep_movs_copy_failure_stage = 0;
     std::uint32_t last_rep_movs_copy_error = 0;

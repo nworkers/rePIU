@@ -53,6 +53,8 @@ constexpr std::uint32_t kWin32GlideTriangleTraceCapacity = 16;
 constexpr std::uint32_t kWin32GlideProducerVertexDwordCount = 15;
 constexpr std::uint32_t kWin32DeferredPortIoLimit = 65536;
 constexpr std::uint32_t kAotDbtHleFallbackReasonCount = 6;
+constexpr std::uint32_t kWin32ExecutionProbeRegisterCount = 7;
+constexpr std::uint32_t kWin32ExecutionProbeMemoryByteCount = 32;
 
 // Task 281 introduced this exclusive cause model for RET miss dispatch; Task 282
 // shares it with indirect call/jump miss dispatch, which fails for the same
@@ -199,6 +201,13 @@ struct X86ExecutionSnapshot
     std::uint16_t ss = 0;
     std::uint16_t fs = 0;
     std::uint16_t gs = 0;
+};
+
+struct Win32ExecutionProbeMemoryWindow
+{
+    bool valid = false;
+    std::uint32_t address = 0;
+    std::uint8_t bytes[kWin32ExecutionProbeMemoryByteCount] = {};
 };
 
 struct Win32PortIoTraceEntry
@@ -838,8 +847,20 @@ struct Win32MinimalExecutionAttempt
     bool execution_probe_configured = false;
     bool execution_probe_hit = false;
     std::uint32_t execution_probe_offset = 0;
+    std::uint32_t execution_probe_memory_offset = 0;
     X86ExecutionSnapshot execution_probe_snapshot;
     std::uint32_t execution_probe_stack[8] = {};
+    Win32ExecutionProbeMemoryWindow execution_probe_memory[
+        kWin32ExecutionProbeRegisterCount] = {};
+    // Status only: the dumped bytes go to the file, never through the snapshot,
+    // which is copied on every telemetry poll.
+    bool execution_probe_dump_configured = false;
+    bool execution_probe_dump_captured = false;
+    bool execution_probe_dump_written = false;
+    std::uint32_t execution_probe_dump_base_address = 0;
+    std::uint32_t execution_probe_dump_source_address = 0;
+    std::uint32_t execution_probe_dump_byte_count = 0;
+    std::string execution_probe_dump_path;
     bool execution_trace_configured = false;
     std::uint32_t execution_trace_start_offset = 0;
     std::uint32_t execution_trace_end_offset = 0;
@@ -1185,6 +1206,14 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t last_low_memory_read_emulate_eip = 0;
     std::uint32_t last_low_memory_read_emulate_value = 0;
     std::uint32_t last_low_memory_read_emulate_reg = 0;
+    // Task 475: SCAS/LODS/CMPS servicing, counted separately from the
+    // MOV-family path because one fault covers a whole REP run.
+    std::uint32_t low_memory_string_service_count = 0;
+    std::uint32_t low_memory_string_iteration_count = 0;
+    std::uint32_t last_low_memory_string_eip = 0;
+    std::uint32_t last_low_memory_string_address = 0;
+    std::uint32_t last_low_memory_string_mnemonic = 0;
+    std::uint32_t last_low_memory_string_iterations = 0;
     std::uint32_t debug_emulate_stage = 0;
     std::uint32_t debug_emulate_decode_result = 0;
     std::uint32_t debug_emulate_calculated_address = 0;

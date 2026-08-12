@@ -120,19 +120,33 @@ void WriteRegister8(CONTEXT* win32_context,
         (static_cast<std::uint32_t>(value) << shift);
 }
 
-void SetCompareFlags8(CONTEXT* win32_context,
-                      std::uint8_t lhs,
-                      std::uint8_t rhs)
+void SetCompareFlags(CONTEXT* win32_context,
+                     std::uint32_t lhs,
+                     std::uint32_t rhs,
+                     std::uint32_t width_bytes)
 {
     constexpr std::uint32_t kArithmeticFlags =
         0x000008D5U;
-    const std::uint8_t result = static_cast<std::uint8_t>(lhs - rhs);
+    if (width_bytes != 1U && width_bytes != 2U && width_bytes != 4U)
+    {
+        return;
+    }
+    // Mask to the operand width so the sign bit, the zero test, and the
+    // unsigned borrow are all evaluated at that width rather than at 32 bits.
+    const std::uint32_t mask = (width_bytes == 4U)
+                                   ? 0xFFFFFFFFU
+                                   : ((1U << (width_bytes * 8U)) - 1U);
+    const std::uint32_t sign = 1U << (width_bytes * 8U - 1U);
+    lhs &= mask;
+    rhs &= mask;
+    const std::uint32_t result = (lhs - rhs) & mask;
     std::uint32_t flags = win32_context->EFlags & ~kArithmeticFlags;
     if (lhs < rhs)
     {
         flags |= 0x00000001U;
     }
-    std::uint8_t parity = result;
+    // Parity is defined over the low byte only, at every operand width.
+    std::uint8_t parity = static_cast<std::uint8_t>(result);
     parity ^= static_cast<std::uint8_t>(parity >> 4U);
     parity ^= static_cast<std::uint8_t>(parity >> 2U);
     parity ^= static_cast<std::uint8_t>(parity >> 1U);
@@ -148,15 +162,22 @@ void SetCompareFlags8(CONTEXT* win32_context,
     {
         flags |= 0x00000040U;
     }
-    if ((result & 0x80U) != 0)
+    if ((result & sign) != 0)
     {
         flags |= 0x00000080U;
     }
-    if (((lhs ^ rhs) & (lhs ^ result) & 0x80U) != 0)
+    if (((lhs ^ rhs) & (lhs ^ result) & sign) != 0)
     {
         flags |= 0x00000800U;
     }
     win32_context->EFlags = flags;
+}
+
+void SetCompareFlags8(CONTEXT* win32_context,
+                      std::uint8_t lhs,
+                      std::uint8_t rhs)
+{
+    SetCompareFlags(win32_context, lhs, rhs, 1U);
 }
 
 void RecordGuestSegmentLoad(CONTEXT* win32_context,
