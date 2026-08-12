@@ -1175,3 +1175,72 @@ flush point had work pending; draws actually cluster far longer, up to 332 conse
 attract phase cannot judge this axis at all — seven draws per frame in quads pin the batch at two,
 and total gate cost did not move there. Frames are not the metric: two runs of one configuration
 have differed by 13% while the effect is 2-3%, so the scene-insensitive gate share is what decides.
+
+## pumpit8 LFB region 전면 화면 전송 (2026-08-13 Task 476) — **확인됨**
+
+`pumpit8`은 `grLfbReadRegion`(ordinal 98)과 `grLfbWriteRegion`(ordinal 99)을 **각각
+1440회** 호출합니다(Glide call trace 기준). `1440 = 3 x 480`이므로 **480행 전면 화면
+전송을 3회** 수행한 것입니다. 한 호출은 `width = 640`, `height = 1`, `stride = 0`,
+buffer = BACK이고 `y`는 `0x1DF`(479)에서 1씩 내려갑니다. read의 목적지와 write의
+원본은 서로 다른 guest 버퍼입니다(`0x051C1B28` 대 `0x051C40F8`).
+
+> **정정.** 이 관측을 처음 정리할 때 "하단 128행"이라고 적었으나 오류였습니다. 128은
+> `kGlideImplementationIssueRecordCapacity`(구현 공백 기록 테이블 용량)이며, 서로 다른
+> 인자 조합이 128개에서 잘린 것을 행 수로 오해한 것입니다. **issue 기록 건수를 호출
+> 횟수로 읽으면 안 됩니다.** 실제 호출 횟수는 Glide call trace의 `count`에 있습니다.
+
+`grLfbWriteRegion`의 `src_format`은 **`5` = `GR_LFB_SRC_FMT_8888`** 입니다. read는
+포맷 인자가 없으므로 프레임 버퍼 native 565를 돌려주어야 합니다. 즉 게스트는 565를
+읽어 8888로 가공한 뒤 되쓰는 full-screen 합성 경로입니다.
+
+### 관련 상태값 (같은 로그에서 확인)
+
+| 호출 | 인자 | 값 |
+|---|---|---|
+| `grSstWinOpen` | `cFormat` | **1 = ABGR** |
+| `grSstWinOpen` | `origin` | **1 = GR_ORIGIN_LOWER_LEFT** |
+| `grLfbWriteColorFormat` | `format` | **1 = ABGR** (1회 호출) |
+
+### region 좌표는 origin 상대가 아니다 — **확인됨**
+
+`grLfbLock`은 `GrOriginLocation_t`를 명시적으로 받지만 region 전송 두 개는 받지
+않습니다. 이는 region이 프레임 버퍼를 **native 배치(행 0 = 화면 위)** 로 주소지정하기
+때문입니다. 실증: `origin = LOWER_LEFT`인 이 창에서 lock과 같은 방식으로 행을
+뒤집었더니 전면 화면이 **상하 반전**되어 표시되었습니다. 뒤집지 않는 것이 맞습니다.
+
+### 8888 source word는 grLfbWriteColorFormat 순서를 따른다 — **확인됨**
+
+`GR_LFB_SRC_FMT_*`를 "항상 명시적 RGB 순서"로 해석해 8888의 메모리 배치를
+`B,G,R,A`(ARGB word)로 읽었더니 화면의 **red와 blue가 교환**되었습니다. PIU는
+`grLfbWriteColorFormat(ABGR)`을 선언하므로 source word는 `A<<24|B<<16|G<<8|R`, 즉
+메모리 배치가 `R,G,B,A`입니다. GrColor_t가 cFormat을 따르는 것과 같은 규칙이며,
+`grLfbWriteColorFormat`이 존재하는 이유이기도 합니다. 목적지 프레임 버퍼도 ABGR이므로
+두 형식이 같을 때는 무변환 통과가 되어야 합니다.
+
+이는 design 360이 세운 "`GR_LFB_SRC_FMT_565` source는 명시적 RGB565"라는 추정을
+**반증**합니다. 그 추정은 당시 검증할 수 없었습니다 — `grLfbWriteRegion`은 Task 476
+전까지 한 번도 성공한 적이 없기 때문입니다. lock write mode가 cFormat을 따른다는 design
+360의 결론 자체는 그대로 유효합니다.
+
+Confirmed on 2026-08-13 from the user's `pumpit8` run log and screenshot. Both region gates fire
+**1440 times each** — `3 x 480`, three full-screen 480-row passes — with `640x1` rows, `stride = 0`,
+on the back buffer, `y` walking down from 479, reading into one guest buffer and writing back from
+another. **Correction:** an earlier note called this "the bottom 128 rows"; 128 is
+`kGlideImplementationIssueRecordCapacity`, and distinct argument sets were truncated there. Issue
+record counts are not call counts — the Glide call trace `count` is.
+
+The same log pins `grSstWinOpen` to `cFormat = 1` (ABGR) and `origin = 1` (`GR_ORIGIN_LOWER_LEFT`),
+with one `grLfbWriteColorFormat(1)` call. Two consequences were confirmed by rendering:
+
+Region coordinates are **not** origin-relative. `grLfbLock` takes an explicit
+`GrOriginLocation_t` and the region entry points take none, because they address the frame buffer in
+its native layout where row 0 is the top. Mirroring the row index the way a lock would rendered this
+full-screen pass upside down under the lower-left window.
+
+The 8888 source word follows `grLfbWriteColorFormat`, not a fixed RGB order. Reading its memory as
+`B,G,R,A` (an ARGB word) swapped red and blue on screen; PIU declares ABGR, so the word is
+`A<<24|B<<16|G<<8|R` and its bytes are `R,G,B,A`. This is the same rule `GrColor_t` follows and the
+reason `grLfbWriteColorFormat` exists. It **refutes** design 360's inference that a
+`GR_LFB_SRC_FMT_565` source is explicitly RGB-ordered — an inference that could not be tested at the
+time, because `grLfbWriteRegion` never once succeeded before Task 476. Design 360's conclusion about
+lock write modes following the cFormat still stands.

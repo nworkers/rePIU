@@ -7,6 +7,7 @@
 #include "repiu/hle/glide_texture_decode.h"
 #include "repiu/hle/glide_implementation_issue.h"
 #include "repiu/hle/glide_lfb.h"
+#include "repiu/hle/glide_lfb_region.h"
 #include "repiu/hle/glide_vertex.h"
 
 #include <algorithm>
@@ -293,6 +294,154 @@ bool FlushGlideDrawBatchToBackend(ThreadContext* context,
             return context->glide_backend.DrawPrimitiveBatch(
                 vertices, vertex_count, primitive);
         });
+}
+
+// Task 476: grLfbReadRegion / grLfbWriteRegion are the only gates that use the
+// staging surface as a live shadow of the frame buffer. `Ensure` fills it from
+// the frame buffer once per burst, `Flush` presents accumulated region writes,
+// and `Invalidate` forces the next burst to re-read. Doing this per row instead
+// would mean 128 full-screen round trips per frame for the observed PIU pass.
+bool IsGlideLfbRegionGate(repiu::hle::GlideGateId gate_id)
+{
+    return gate_id == repiu::hle::GlideGateId::kGrLfbReadRegion ||
+        gate_id == repiu::hle::GlideGateId::kGrLfbWriteRegion;
+}
+
+// Bytes the guest side of a region transfer spans, or 0 when the arguments
+// cannot describe a transfer this layer performs. The bound keeps a nonsense
+// width or height from turning into an allocation.
+std::size_t ResolveGlideLfbRegionSpan(std::uint32_t width,
+                                      std::uint32_t height,
+                                      std::uint32_t src_format,
+                                      std::int32_t stride)
+{
+    constexpr std::uint64_t kMaximumRegionBytes = 64ULL * 1024ULL * 1024ULL;
+    const std::uint32_t bytes_per_pixel =
+        repiu::hle::GlideLfbSrcFormatBytesPerPixel(src_format);
+    if (width == 0U || height == 0U || bytes_per_pixel == 0U || stride < 0)
+    {
+        return 0U;
+    }
+    const std::uint64_t row_pitch =
+        static_cast<std::uint64_t>(repiu::hle::ResolveGlideLfbRegionStride(
+            width, bytes_per_pixel, stride));
+    const std::uint64_t span = (static_cast<std::uint64_t>(height) - 1ULL) *
+            row_pitch +
+        static_cast<std::uint64_t>(width) * bytes_per_pixel;
+    if (span == 0ULL || span > kMaximumRegionBytes)
+    {
+        return 0U;
+    }
+    return static_cast<std::size_t>(span);
+}
+
+// Names the first reason a region transfer cannot be serviced, or null when the
+// arguments are ones both region gates accept.
+const char* ClassifyGlideLfbRegionArguments(const ThreadContext* context,
+                                            std::uint32_t buffer,
+                                            std::uint32_t width,
+                                            std::uint32_t height,
+                                            std::int32_t stride,
+                                            std::uint32_t src_format)
+{
+    // The staging surface is the shadow and the lock buffer both. Servicing a
+    // region transfer while the guest holds the lock pointer would rewrite
+    // memory it is in the middle of using.
+    if (context->glide_lfb_surface.locked())
+    {
+        return "a frame buffer lock is outstanding";
+    }
+    if (buffer != repiu::hle::kGlideBufferBackBuffer &&
+        buffer != repiu::hle::kGlideBufferFrontBuffer)
+    {
+        return "only the front and back color buffers are implemented";
+    }
+    if (width == 0U || height == 0U)
+    {
+        return "region has no pixels";
+    }
+    if (stride < 0)
+    {
+        return "bottom-up images with a negative stride are not implemented";
+    }
+    if (!repiu::hle::GlideLfbSrcFormatSupported(src_format))
+    {
+        return "source pixel format is not implemented";
+    }
+    return nullptr;
+}
+
+bool FlushGlideLfbRegionShadow(ThreadContext* context);
+
+bool EnsureGlideLfbRegionShadow(ThreadContext* context, std::uint32_t buffer)
+{
+    const std::uint32_t width = context->glide_state.width;
+    const std::uint32_t height = context->glide_state.height;
+    if (!context->glide_lfb_surface.Resize(width, height))
+    {
+        return false;
+    }
+    if (context->glide_lfb_region_shadow_valid &&
+        context->glide_lfb_region_shadow_buffer != buffer)
+    {
+        FlushGlideLfbRegionShadow(context);
+        context->glide_lfb_region_shadow_valid = false;
+    }
+    context->glide_lfb_region_shadow_buffer = buffer;
+    if (context->glide_lfb_region_shadow_valid)
+    {
+        return true;
+    }
+    std::vector<std::uint8_t> rgba8;
+    if (!context->glide_backend.ReadbackFramebuffer(width, height, &rgba8) ||
+        !repiu::hle::EncodeRgba8ToGlideLfb565(
+            rgba8.data(), rgba8.size(), width, height,
+            context->glide_state.color_format,
+            context->glide_lfb_surface.pixels(),
+            context->glide_lfb_surface.byte_count()))
+    {
+        context->glide_backend_message = context->glide_backend.message();
+        return false;
+    }
+    context->glide_lfb_region_shadow_valid = true;
+    ++context->glide_lfb_region_seed_count;
+    return true;
+}
+
+bool FlushGlideLfbRegionShadow(ThreadContext* context)
+{
+    if (!context->glide_lfb_region_shadow_dirty)
+    {
+        return true;
+    }
+    context->glide_lfb_region_shadow_dirty = false;
+    std::vector<std::uint8_t> rgba8;
+    if (!repiu::hle::DecodeGlideLfb565ToRgba8(
+            context->glide_lfb_surface.pixels(),
+            context->glide_lfb_surface.byte_count(),
+            context->glide_lfb_surface.width(),
+            context->glide_lfb_surface.height(),
+            context->glide_state.color_format, &rgba8))
+    {
+        return false;
+    }
+    // `flip_v` is false because the shadow is top-down and stays that way:
+    // ReadbackFramebuffer returns top-down rows and region coordinates are
+    // native frame buffer rows, not origin-relative ones. PresentLfbSurface
+    // XORs this against the window projection, so false is what lands row 0 at
+    // the top of the screen under either origin.
+    const bool present_to_front = context->glide_lfb_region_shadow_buffer ==
+        repiu::hle::kGlideBufferFrontBuffer;
+    if (!context->glide_backend.PresentLfbSurface(
+            rgba8.data(), context->glide_lfb_surface.width(),
+            context->glide_lfb_surface.height(), false, present_to_front))
+    {
+        context->glide_backend_message = context->glide_backend.message();
+        return false;
+    }
+    ++context->glide_lfb_region_flush_count;
+    ++context->glide_lfb_present_count;
+    return true;
 }
 
 // Appends one primitive, flushing first when the batch cannot take it. Returns
@@ -1285,6 +1434,20 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
     // Placed after the elision short-circuit above on purpose: an elided setter
     // returns before this point, changes nothing, and therefore must not force
     // a flush. That is what leaves batches long enough to be worth having.
+    //
+    // Task 476: the LFB region shadow follows the same rule for the same
+    // reason. It goes first so pixels reach the frame buffer before anything
+    // else touches it, and it invalidates unconditionally because any other
+    // gate -- a draw, a clear, a swap -- may change what the shadow claims to
+    // mirror. Region gates are non-draw gates, so the batch is always empty
+    // while the shadow is dirty and the two flushes cannot reorder each other.
+    if (!IsGlideLfbRegionGate(glide_export->gate_id) &&
+        (context->glide_lfb_region_shadow_valid ||
+         context->glide_lfb_region_shadow_dirty))
+    {
+        FlushGlideLfbRegionShadow(context);
+        context->glide_lfb_region_shadow_valid = false;
+    }
     if (draw_batch != nullptr && !IsGlideDrawBatchGate(glide_export->gate_id))
     {
         FlushGlideDrawBatchToBackend(
@@ -3377,91 +3540,65 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             const std::int32_t src_stride = static_cast<std::int32_t>(context->glide_gate_stack[7]);
             const std::uint32_t src_data_ptr = arguments[7];
 
-            if (src_format == repiu::hle::kGlideLfbSrcFmt565 && src_width > 0U && src_height > 0U)
+            // The region write lands in the frame buffer shadow, not on the
+            // screen: presenting a whole surface per row would both destroy the
+            // untouched pixels and cost one full-screen upload per scanline.
+            // The shadow reaches the backend at the next non-region gate.
+            const std::size_t data_size = ResolveGlideLfbRegionSpan(
+                src_width, src_height, src_format, src_stride);
+            const auto* guest_ptr = reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(src_data_ptr));
+            const char* decline = ClassifyGlideLfbRegionArguments(
+                context, dst_buffer, src_width, src_height, src_stride,
+                src_format);
+            if (decline != nullptr)
             {
-                const std::uint32_t width = context->glide_state.width;
-                const std::uint32_t height = context->glide_state.height;
-                if (!context->glide_lfb_surface.Resize(width, height))
-                {
-                    record_backend_failure(
-                        "lfb-write-region-resize-failure",
-                        "logical LFB dimensions are unavailable");
-                }
-                else
-                {
-                    const std::size_t data_size =
-                        static_cast<std::size_t>(src_height) *
-                        (src_stride > 0 ? src_stride : -src_stride);
-                    std::vector<std::uint8_t> host_src(data_size);
-                    const auto* guest_ptr = reinterpret_cast<const void*>(
-                        static_cast<std::uintptr_t>(src_data_ptr));
-                    if (data_size == 0U)
-                    {
-                        record_unsupported(
-                            "lfb-write-region-zero-stride",
-                            "source stride produces an empty region");
-                    }
-                    else if (!IsGuestRangeReadable(
-                                 context, guest_ptr, data_size))
-                    {
-                        record_backend_failure(
-                            "lfb-write-region-unreadable-memory",
-                            "source region is not guest-readable");
-                    }
-                    else
-                    {
-                        std::memcpy(host_src.data(), guest_ptr, data_size);
-                        if (!repiu::hle::WriteRegionToGlideLfb565(
-                                dst_x, dst_y, src_width, src_height, src_stride,
-                                host_src.data(), data_size,
-                                &context->glide_lfb_surface))
-                        {
-                            record_unsupported(
-                                "lfb-write-region-geometry-unsupported",
-                                "source geometry or stride is unsupported");
-                        }
-                        else
-                        {
-                            std::vector<std::uint8_t> rgba8;
-                            if (!repiu::hle::DecodeGlideLfb565ToRgba8(
-                                    context->glide_lfb_surface.pixels(),
-                                    context->glide_lfb_surface.byte_count(),
-                                    context->glide_lfb_surface.width(),
-                                    context->glide_lfb_surface.height(),
-                                    repiu::hle::kGlideColorFormatArgb, &rgba8))
-                            {
-                                record_backend_failure(
-                                    "lfb-write-region-decode-failure",
-                                    "565 staging surface could not be decoded");
-                            }
-                            else
-                            {
-                                const bool present_to_front =
-                                    dst_buffer ==
-                                    repiu::hle::kGlideBufferFrontBuffer;
-                                if (!context->glide_backend.PresentLfbSurface(
-                                    rgba8.data(), context->glide_lfb_surface.width(),
-                                    context->glide_lfb_surface.height(), false,
-                                    present_to_front))
-                                {
-                                    context->glide_backend_message =
-                                        context->glide_backend.message();
-                                    record_backend_failure(
-                                        "lfb-write-region-present-failure",
-                                        context->glide_backend_message);
-                                }
-                            }
-                        }
-                    }
-                }
+                record_unsupported("lfb-write-region-unsupported", decline);
             }
-            else
+            else if (data_size == 0U)
             {
                 record_unsupported(
                     "lfb-write-region-unsupported",
-                    "format or dimensions are unsupported");
+                    "source geometry does not describe any pixels");
+            }
+            else if (!IsGuestRangeReadable(
+                         context, guest_ptr,
+                         static_cast<std::uint32_t>(data_size)))
+            {
+                record_backend_failure(
+                    "lfb-write-region-unreadable-memory",
+                    "source region is not guest-readable");
+            }
+            else if (!EnsureGlideLfbRegionShadow(context, dst_buffer))
+            {
+                record_backend_failure(
+                    "lfb-write-region-shadow-failure",
+                    "frame buffer shadow could not be prepared");
+            }
+            else
+            {
+                std::vector<std::uint8_t> host_src(data_size);
+                std::memcpy(host_src.data(), guest_ptr, data_size);
+                if (!repiu::hle::WriteGlideLfbRegion(
+                        dst_x, dst_y, src_width, src_height, src_format,
+                        src_stride, host_src.data(), host_src.size(),
+                        context->glide_state.lfb_write_color_format,
+                        context->glide_state.color_format,
+                        &context->glide_lfb_surface))
+                {
+                    record_unsupported(
+                        "lfb-write-region-geometry-unsupported",
+                        "region lies outside the frame buffer");
+                }
+                else
+                {
+                    context->glide_lfb_region_shadow_dirty = true;
+                    ++context->glide_lfb_region_write_count;
+                }
             }
             ++context->glide_gate_handled_count;
+            // FXTRUE even when declined, preserving the work-order 002 finding
+            // that a false return from the LFB family stalls the guest.
             win32_context->Eax = 1U;
             win32_context->Eip = return_address;
             win32_context->Esp += 9U * sizeof(std::uint32_t);
@@ -3469,14 +3606,108 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         }
 
         case go::kGrLfbReadRegion: // _GRLFBREADREGION@28
-            record_unimplemented(
-                "lfb-read-region-noop",
-                "success returned without copying pixels");
+        {
+            // grLfbReadRegion(buffer, x, y, width, height, dstStride, dstData)
+            // hands back frame buffer pixels in the buffer's native 565 form.
+            const auto arguments = CaptureGlideImplementationIssueArguments(
+                win32_context, context, glide_export->argument_byte_count);
+            const std::uint32_t src_buffer = context->glide_gate_stack[1];
+            const std::uint32_t src_x = context->glide_gate_stack[2];
+            const std::uint32_t src_y = context->glide_gate_stack[3];
+            const std::uint32_t src_width = context->glide_gate_stack[4];
+            const std::uint32_t src_height = context->glide_gate_stack[5];
+            const std::int32_t dst_stride =
+                static_cast<std::int32_t>(context->glide_gate_stack[6]);
+            const std::uint32_t dst_data_ptr = arguments[6];
+
+            const std::size_t data_size = ResolveGlideLfbRegionSpan(
+                src_width, src_height, repiu::hle::kGlideLfbSrcFmt565,
+                dst_stride);
+            auto* guest_ptr = reinterpret_cast<void*>(
+                static_cast<std::uintptr_t>(dst_data_ptr));
+            const char* decline = ClassifyGlideLfbRegionArguments(
+                context, src_buffer, src_width, src_height, dst_stride,
+                repiu::hle::kGlideLfbSrcFmt565);
+            if (decline != nullptr)
+            {
+                record_unsupported("lfb-read-region-unsupported", decline);
+            }
+            else if (data_size == 0U)
+            {
+                record_unsupported(
+                    "lfb-read-region-unsupported",
+                    "destination geometry does not describe any pixels");
+            }
+            else if (!IsGuestRangeWritable(
+                         context, guest_ptr,
+                         static_cast<std::uint32_t>(data_size)))
+            {
+                record_backend_failure(
+                    "lfb-read-region-unwritable-memory",
+                    "destination region is not guest-writable");
+            }
+            else if (!EnsureGlideLfbRegionShadow(context, src_buffer))
+            {
+                record_backend_failure(
+                    "lfb-read-region-shadow-failure",
+                    "frame buffer shadow could not be prepared");
+            }
+            else
+            {
+                std::vector<std::uint8_t> host_dst(data_size);
+                std::uint32_t copied_width = 0;
+                std::uint32_t copied_height = 0;
+                const std::size_t row_pitch = static_cast<std::size_t>(
+                    repiu::hle::ResolveGlideLfbRegionStride(
+                        src_width, repiu::hle::kGlideLfb565BytesPerTexel,
+                        dst_stride));
+                if (!repiu::hle::ReadGlideLfbRegion(
+                        src_x, src_y, src_width, src_height, dst_stride,
+                        context->glide_lfb_surface, host_dst.data(),
+                        host_dst.size(), &copied_width, &copied_height))
+                {
+                    record_unsupported(
+                        "lfb-read-region-geometry-unsupported",
+                        "region lies outside the frame buffer");
+                }
+                else
+                {
+                    // Copy row by row so a destination stride wider than the
+                    // rectangle keeps whatever the guest put in the padding.
+                    const std::size_t row_bytes =
+                        static_cast<std::size_t>(copied_width) *
+                        repiu::hle::kGlideLfb565BytesPerTexel;
+                    bool written = true;
+                    for (std::uint32_t row = 0; row < copied_height && written;
+                         ++row)
+                    {
+                        const std::size_t offset =
+                            static_cast<std::size_t>(row) * row_pitch;
+                        written = WriteGuestBytes(
+                            context,
+                            reinterpret_cast<void*>(
+                                static_cast<std::uintptr_t>(dst_data_ptr) +
+                                offset),
+                            host_dst.data() + offset, row_bytes);
+                    }
+                    if (!written)
+                    {
+                        record_backend_failure(
+                            "lfb-read-region-write-failure",
+                            "destination region could not be written");
+                    }
+                    else
+                    {
+                        ++context->glide_lfb_region_read_count;
+                    }
+                }
+            }
             ++context->glide_gate_handled_count;
             win32_context->Eax = 1U;
             win32_context->Eip = return_address;
             win32_context->Esp += 8U * sizeof(std::uint32_t);
             return true;
+        }
 
         case go::kGrLfbConstantAlpha: // _GRLFBCONSTANTALPHA@4
         case go::kGrLfbConstantDepth: // _GRLFBCONSTANTDEPTH@4

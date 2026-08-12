@@ -345,6 +345,47 @@ void RecordDosOpen(ThreadContext* context,
                        access_mode);
 }
 
+void RecordDosCreate(ThreadContext* context,
+                     const std::string& guest_path,
+                     const repiu::hle::DosResolvedPath& resolved,
+                     std::uint16_t handle,
+                     std::uint16_t attributes)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+
+    ++context->handled_dos_create_count;
+    const bool ok = resolved.result == repiu::hle::DosPathResult::kOk;
+    // A guest that creates a file is usually about to say something about its
+    // own state, so this is logged unconditionally rather than env-gated.
+    fprintf(stderr,
+            "[repiu-dos] %-4s create #%u \"%s\" -> %s handle=%u attr=0x%04X"
+            " err=%u\n",
+            ok ? "OK" : "FAIL", context->handled_dos_create_count,
+            guest_path.c_str(), resolved.host_path.string().c_str(), handle,
+            attributes,
+            repiu::hle::DosPathResultToErrorCode(resolved.result));
+    context->last_dos_create_guest_path = guest_path;
+    context->last_dos_create_host_path = resolved.host_path.string();
+    context->last_dos_create_virtual_path = resolved.dos_path;
+    context->last_dos_create_success = ok;
+    context->last_dos_create_error =
+        repiu::hle::DosPathResultToErrorCode(resolved.result);
+    context->last_dos_create_handle = handle;
+    context->last_dos_create_attributes = attributes;
+    RecordDosPathTrace(context,
+                       "create",
+                       guest_path,
+                       resolved.dos_path,
+                       resolved.host_path.string(),
+                       ok,
+                       repiu::hle::DosPathResultToErrorCode(resolved.result),
+                       0,
+                       static_cast<std::uint8_t>(attributes));
+}
+
 bool HandleDosOpenFile(CONTEXT* win32_context, ThreadContext* context)
 {
     std::string guest_path;
@@ -381,6 +422,53 @@ bool HandleDosOpenFile(CONTEXT* win32_context, ThreadContext* context)
     {
         win32_context->Eax =
             (win32_context->Eax & 0xFFFF0000U) | handle;
+        win32_context->EFlags &= ~1U;
+    }
+    else
+    {
+        win32_context->Eax =
+            (win32_context->Eax & 0xFFFF0000U) |
+            repiu::hle::DosPathResultToErrorCode(resolved.result);
+        win32_context->EFlags |= 1U;
+    }
+    return true;
+}
+
+// INT 21h AH=3Ch: CX = attributes, DS:EDX = ASCIZ path. Returns the handle in AX
+// with CF clear, or a DOS error code in AX with CF set.
+bool HandleDosCreateFile(CONTEXT* win32_context, ThreadContext* context)
+{
+    std::string guest_path;
+    repiu::hle::DosResolvedPath resolved;
+    const std::uint16_t attributes =
+        static_cast<std::uint16_t>(win32_context->Ecx & 0xFFFFU);
+    if (!ReadGuestAsciz(context,
+                        static_cast<std::uint32_t>(win32_context->Edx),
+                        260,
+                        &guest_path))
+    {
+        resolved.result = repiu::hle::DosPathResult::kPathNotFound;
+        resolved.message = "DOS create path is outside runtime memory";
+        RecordDosCreate(context, guest_path, resolved, 0, attributes);
+        win32_context->Eax = (win32_context->Eax & 0xFFFF0000U) | 0x0003U;
+        win32_context->EFlags |= 1U;
+        return true;
+    }
+
+    std::uint16_t handle = 0;
+    if (!repiu::hle::CreateDosFile(&context->dos_file_system,
+                                   guest_path,
+                                   attributes,
+                                   &resolved,
+                                   &handle))
+    {
+        return false;
+    }
+
+    RecordDosCreate(context, guest_path, resolved, handle, attributes);
+    if (resolved.result == repiu::hle::DosPathResult::kOk)
+    {
+        win32_context->Eax = (win32_context->Eax & 0xFFFF0000U) | handle;
         win32_context->EFlags &= ~1U;
     }
     else
@@ -591,6 +679,145 @@ void RecordDosRead(const CONTEXT* win32_context,
             std::memcpy(entry.prefix, bytes->data(), entry.prefix_size);
         }
     }
+}
+
+void RecordDosWrite(const CONTEXT* win32_context,
+                    ThreadContext* context,
+                    std::uint16_t handle,
+                    std::uint32_t requested_bytes,
+                    std::uint32_t actual_bytes,
+                    std::uint32_t buffer,
+                    bool success,
+                    std::uint16_t error,
+                    const std::vector<std::uint8_t>* bytes)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+
+    ++context->handled_dos_write_count;
+    context->last_dos_write_handle = handle;
+    context->last_dos_write_requested_bytes = requested_bytes;
+    context->last_dos_write_actual_bytes = actual_bytes;
+    context->last_dos_write_buffer = buffer;
+    context->last_dos_write_success = success;
+    context->last_dos_write_error = error;
+    Win32DosFileIoTraceEntry& entry =
+        AllocateDosFileIoTrace(context, "write", handle);
+    if (win32_context != nullptr)
+    {
+        entry.guest_eip = win32_context->Eip;
+        entry.guest_esp = win32_context->Esp;
+        const auto* guest_stack = reinterpret_cast<const std::uint32_t*>(
+            static_cast<std::uintptr_t>(win32_context->Esp));
+        if (IsGuestRangeReadable(context,
+                                 guest_stack,
+                                 sizeof(entry.guest_stack)))
+        {
+            std::memcpy(entry.guest_stack,
+                        guest_stack,
+                        sizeof(entry.guest_stack));
+        }
+    }
+    entry.requested_bytes = requested_bytes;
+    entry.actual_bytes = actual_bytes;
+    entry.dos_error = error;
+    const repiu::hle::DosOpenFileHandle* open_file =
+        FindDosOpenFile(context, handle);
+    if (open_file != nullptr)
+    {
+        entry.position_after = static_cast<std::uint32_t>(
+            open_file->file_offset);
+        entry.position_before = entry.position_after - actual_bytes;
+    }
+    if (bytes != nullptr)
+    {
+        entry.prefix_size = static_cast<std::uint32_t>(std::min<std::size_t>(
+            bytes->size(), kWin32DosFileIoPrefixCapacity));
+        if (entry.prefix_size != 0)
+        {
+            std::memcpy(entry.prefix, bytes->data(), entry.prefix_size);
+        }
+    }
+    // The trace prefix holds 16 bytes, which is too short for a sentence. Echo
+    // the text as well: a guest writing to a file it created is usually
+    // reporting on itself, and that report is the most direct evidence we get
+    // about what the guest believes went wrong.
+    if (success && bytes != nullptr && !bytes->empty())
+    {
+        static long echoed_writes = 0;
+        constexpr long kMaxEchoedWrites = 64;
+        constexpr std::size_t kMaxEchoedBytes = 240;
+        if (InterlockedIncrement(&echoed_writes) <= kMaxEchoedWrites)
+        {
+            std::string text;
+            const std::size_t limit =
+                (std::min)(bytes->size(), kMaxEchoedBytes);
+            for (std::size_t index = 0; index < limit; ++index)
+            {
+                const std::uint8_t value = (*bytes)[index];
+                text += (value >= 0x20U && value < 0x7FU)
+                    ? static_cast<char>(value)
+                    : '.';
+            }
+            fprintf(stderr, "[repiu-dos] write handle=%u bytes=%u \"%s\"%s\n",
+                    handle, actual_bytes, text.c_str(),
+                    bytes->size() > limit ? " ..." : "");
+        }
+    }
+}
+
+// INT 21h AH=40h against a writable VFS handle. The console fallback for every
+// other handle stays at the call site.
+bool HandleDosWriteFile(CONTEXT* win32_context, ThreadContext* context)
+{
+    const std::uint16_t handle =
+        static_cast<std::uint16_t>(win32_context->Ebx & 0xFFFFU);
+    const std::uint32_t byte_count = win32_context->Ecx;
+    const auto* source = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(win32_context->Edx));
+
+    std::vector<std::uint8_t> bytes;
+    std::uint32_t actual_bytes = 0;
+    std::uint16_t dos_error = 0;
+    if (byte_count != 0U)
+    {
+        if (!IsGuestRangeReadable(context, source, byte_count))
+        {
+            RecordDosWrite(win32_context, context, handle, byte_count, 0,
+                           static_cast<std::uint32_t>(win32_context->Edx),
+                           false, 0x0005, nullptr);
+            win32_context->Eax =
+                (win32_context->Eax & 0xFFFF0000U) | 0x0005U;
+            win32_context->EFlags |= 1U;
+            return true;
+        }
+        bytes.assign(source, source + byte_count);
+    }
+
+    if (!repiu::hle::WriteDosFile(&context->dos_file_system, handle,
+                                  bytes.data(), byte_count, &actual_bytes,
+                                  &dos_error))
+    {
+        return false;
+    }
+
+    RecordDosWrite(win32_context, context, handle, byte_count, actual_bytes,
+                   static_cast<std::uint32_t>(win32_context->Edx),
+                   dos_error == 0, dos_error, &bytes);
+    if (dos_error != 0)
+    {
+        win32_context->Eax = (win32_context->Eax & 0xFFFF0000U) | dos_error;
+        win32_context->EFlags |= 1U;
+    }
+    else
+    {
+        win32_context->Eax = (win32_context->Eax & 0xFFFF0000U) |
+            static_cast<std::uint16_t>(actual_bytes);
+        win32_context->EFlags &= ~1U;
+    }
+    return true;
 }
 
 bool HandleDosReadFile(CONTEXT* win32_context, ThreadContext* context)
@@ -1183,6 +1410,13 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
                 return false;
             }
             break;
+        case 0x3C:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            if (!HandleDosCreateFile(win32_context, context))
+            {
+                return false;
+            }
+            break;
         case 0x3D:
             RecordHandledDosInterrupt(context, 0x21, ax);
             if (!HandleDosOpenFile(win32_context, context))
@@ -1206,6 +1440,21 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
             break;
         case 0x40:
         {
+            // A writable VFS handle goes to its file. Everything else -- the
+            // standard handles 0-4 above all, which the VFS never allocates --
+            // keeps the console path it has always had.
+            const std::uint16_t write_handle =
+                static_cast<std::uint16_t>(win32_context->Ebx & 0xFFFFU);
+            if (repiu::hle::IsDosFileHandleWritable(context->dos_file_system,
+                                                    write_handle))
+            {
+                RecordHandledDosInterrupt(context, 0x21, ax);
+                if (!HandleDosWriteFile(win32_context, context))
+                {
+                    return false;
+                }
+                break;
+            }
             const void* text = reinterpret_cast<const void*>(
                 static_cast<std::uintptr_t>(win32_context->Edx));
             const std::uint32_t byte_count = win32_context->Ecx;

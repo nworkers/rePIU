@@ -3964,6 +3964,48 @@ void PrintExecutionAttempt(
                         Hex16(attempt.last_dos_read_error));
         }
     }
+    logger.info("Win32 handled DOS create count: {}",
+                attempt.handled_dos_create_count);
+    if (attempt.handled_dos_create_count > 0)
+    {
+        logger.info("Win32 last DOS create guest path: {}",
+                    attempt.last_dos_create_guest_path);
+        logger.info("Win32 last DOS create host path: {}",
+                    attempt.last_dos_create_host_path);
+        logger.info("Win32 last DOS create virtual path: {}",
+                    attempt.last_dos_create_virtual_path);
+        logger.info("Win32 last DOS create handle: {}",
+                    Hex16(attempt.last_dos_create_handle));
+        logger.info("Win32 last DOS create attributes: {}",
+                    Hex16(attempt.last_dos_create_attributes));
+        logger.info("Win32 last DOS create result: {}",
+                    attempt.last_dos_create_success ? "success" : "failure");
+        if (!attempt.last_dos_create_success)
+        {
+            logger.info("Win32 last DOS create error: {}",
+                        Hex16(attempt.last_dos_create_error));
+        }
+    }
+    logger.info("Win32 handled DOS write count: {}",
+                attempt.handled_dos_write_count);
+    if (attempt.handled_dos_write_count > 0)
+    {
+        logger.info("Win32 last DOS write handle: {}",
+                    Hex16(attempt.last_dos_write_handle));
+        logger.info("Win32 last DOS write requested bytes: {}",
+                    attempt.last_dos_write_requested_bytes);
+        logger.info("Win32 last DOS write actual bytes: {}",
+                    attempt.last_dos_write_actual_bytes);
+        logger.info("Win32 last DOS write buffer: {}",
+                    Hex32(attempt.last_dos_write_buffer));
+        logger.info("Win32 last DOS write result: {}",
+                    attempt.last_dos_write_success ? "success" : "failure");
+        if (!attempt.last_dos_write_success)
+        {
+            logger.info("Win32 last DOS write error: {}",
+                        Hex16(attempt.last_dos_write_error));
+        }
+    }
     logger.info("Win32 handled DOS seek count: {}",
                 attempt.handled_dos_seek_count);
     if (attempt.handled_dos_seek_count > 0)

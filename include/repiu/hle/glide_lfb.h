@@ -35,15 +35,48 @@ constexpr std::uint32_t kGlideLfbWriteMode565 = 0U;
 constexpr std::uint32_t kGlideOriginUpperLeft = 0U;
 constexpr std::uint32_t kGlideOriginLowerLeft = 1U;
 
-// GrLfbSrcFmt_t
-constexpr std::uint32_t kGlideLfbSrcFmt565 = 1U;
-
 // GrColorFormat_t. For 565 LFB locks, ARGB/RGBA select RGB565 while
 // ABGR/BGRA select BGR565 (Glide 2.4 Programming Guide, Table 11.2).
+// GrLfbSrcFmt_t, the separate source-image format of the region transfers,
+// lives in glide_lfb_region.h.
 constexpr std::uint32_t kGlideColorFormatArgb = 0U;
 constexpr std::uint32_t kGlideColorFormatAbgr = 1U;
 constexpr std::uint32_t kGlideColorFormatRgba = 2U;
 constexpr std::uint32_t kGlideColorFormatBgra = 3U;
+
+// True when the color format puts blue in the high five bits of a 565 texel.
+inline bool GlideColorFormatUsesBgrOrder(std::uint32_t color_format)
+{
+    return color_format == kGlideColorFormatAbgr ||
+        color_format == kGlideColorFormatBgra;
+}
+
+// 5- and 6-bit channels are expanded by replicating the high bits into the low
+// ones so that the maximum encoded value maps exactly to 255.
+inline std::uint8_t ExpandGlideChannel5(std::uint32_t value)
+{
+    const std::uint32_t five = value & 0x1FU;
+    return static_cast<std::uint8_t>((five << 3U) | (five >> 2U));
+}
+
+inline std::uint8_t ExpandGlideChannel6(std::uint32_t value)
+{
+    const std::uint32_t six = value & 0x3FU;
+    return static_cast<std::uint8_t>((six << 2U) | (six >> 4U));
+}
+
+// Packs 8-bit channels into one 565 texel in `color_format` order.
+inline std::uint16_t PackGlideTexel565(std::uint32_t red,
+                                       std::uint32_t green,
+                                       std::uint32_t blue,
+                                       std::uint32_t color_format)
+{
+    const bool bgr = GlideColorFormatUsesBgrOrder(color_format);
+    const std::uint32_t high = bgr ? blue : red;
+    const std::uint32_t low = bgr ? red : blue;
+    return static_cast<std::uint16_t>(((high >> 3U) << 11U) |
+                                      ((green >> 2U) << 5U) | (low >> 3U));
+}
 
 // GrLfbInfo_t is five 32-bit fields: size, lfbPtr, strideInBytes, writeMode,
 // origin. The caller fills `size` with sizeof(GrLfbInfo_t) before the call.
@@ -125,17 +158,6 @@ bool EncodeRgba8ToGlideLfb565(const std::uint8_t* rgba8,
                               std::uint32_t color_format,
                               std::uint8_t* destination,
                               std::size_t destination_byte_count);
-
-// Writes a rectangular region of 565 pixels into the staging surface.
-// The surface must have been resized to the screen dimensions beforehand.
-bool WriteRegionToGlideLfb565(std::uint32_t dst_x,
-                              std::uint32_t dst_y,
-                              std::uint32_t src_width,
-                              std::uint32_t src_height,
-                              std::int32_t src_stride_bytes,
-                              const std::uint8_t* src_data,
-                              std::size_t src_data_byte_count,
-                              GlideLfbSurface* surface);
 
 }  // namespace repiu::hle
 

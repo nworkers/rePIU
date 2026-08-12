@@ -78,3 +78,53 @@ cycle(7.0 ms), 최악 308M cycle(83.5 ms)** 이며 `hle` 단계가 99.9%였습�
 
 **주의:** 자동 장면은 DOS가 0.14~0.19%뿐이라 효과 판정에 쓸 수 없습니다. 판정은
 music select(DOS 1.92%)에서만 가능합니다.
+
+## Task 477 (2026-08-13): `INT 21h AH=3Ch` 미구현으로 종료 — **해결됨**
+
+`pumpit8`이 약 25초 구동 뒤 `unsupported DOS INT 21h AH=0x3c`로 종료했습니다.
+`0x040F8417`의 바이트가 호출 형태를 그대로 보여줍니다.
+
+```asm
+B9 01 00 00 00        mov  ecx, 1        ; CX = 속성 (read-only)
+81 E1 FF 00 00 00     and  ecx, 0FFh
+89 F2                 mov  edx, esi      ; DS:EDX = "ERRLOG.txt"
+B4 3C                 mov  ah, 3Ch
+CD 21                 int  21h
+```
+
+**확인됨:** DOS 가상 파일 시스템은 그때까지 **읽기 전용**이었습니다. 열기·읽기·탐색·
+닫기만 있고 생성과 쓰기가 없었으며, `AH=40h`는 handle을 보지 않고 전량 콘솔로 보낸 뒤
+성공을 보고했습니다. 즉 게스트가 파일에 쓴 내용은 어디에도 남지 않았습니다.
+
+**확인됨:** 게임이 만들려는 것은 자기 오류 로그(`ERRLOG.txt`)입니다. 따라서 이 서비스를
+구현하는 것은 단순한 공백 메우기가 아니라 **게임 자신의 오류 보고를 읽을 수 있게 되는
+경로**입니다. Task 477은 쓰기 바이트를 `dos_file_io` trace와 `[repiu-dos] write` 로그
+줄로 남기므로, 게임이 무엇을 오류로 판단하는지 다음 구동 로그에서 직접 확인할 수
+있습니다.
+
+**주의 — read-only 속성.** 게임은 `CX = 1`(read-only)로 생성한 뒤 그 handle로 계속
+씁니다. DOS에서는 정상이지만 호스트 파일에 `FILE_ATTRIBUTE_READONLY`를 걸면 바로 다음
+쓰기가 막힙니다. 속성은 `attribute_overrides`에 기록하고 호스트 파일에는 적용하지
+않습니다.
+
+**성질:** 생성 파일은 mount root 아래 게스트 경로에 만들어집니다. mount cache가
+무효화되면 `remove_all(mount_root)` 후 재추출되므로 게스트가 만든 파일은 지워집니다.
+로그성 파일에는 맞는 성질이며, 영속성이 필요한 게스트 쓰기가 관측되면 그때 overlay를
+설계합니다.
+
+**미확정:** 게임이 `ERRLOG.txt`를 항상 만드는지, 아니면 오류를 감지했을 때만 만드는지는
+아직 모릅니다. 다음 구동에서 기록되는 내용으로 판별됩니다.
+
+Confirmed on 2026-08-13. `pumpit8` stopped after about 25 seconds with
+`unsupported DOS INT 21h AH=0x3c`; the bytes at `0x040F8417` decode to a DOS create-file call with
+`CX = 1` and `DS:EDX` pointing at `"ERRLOG.txt"`. The DOS virtual file system had been read-only —
+open, read, seek, close, with `AH=40h` ignoring the handle, sending everything to the console, and
+reporting success, so nothing a guest wrote was ever kept. What the game wants to create is its own
+error log, which makes implementing the service the path to reading the game's own report rather
+than merely filling a gap; Task 477 traces written bytes and echoes them as `[repiu-dos] write`
+lines so the next run log carries that report. The read-only attribute needs care: the guest creates
+with it and then writes through the handle, which DOS allows but a host `FILE_ATTRIBUTE_READONLY`
+would block, so the attribute is recorded in `attribute_overrides` instead. Created files live under
+the mount root and disappear when the mount cache is invalidated and re-extracted — correct for a log
+file, and the first durable guest write we observe is when an overlay becomes worth designing.
+Unresolved: whether the game creates `ERRLOG.txt` unconditionally or only on detecting an error.

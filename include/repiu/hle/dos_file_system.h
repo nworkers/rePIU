@@ -58,6 +58,39 @@ private:
     std::unique_ptr<std::ifstream> stream_;
 };
 
+// Task 477: the write-side counterpart of DosHostFileCache, kept for the same
+// reason -- reopening the host file per write costs what Task 374 measured for
+// reads. Copy semantics match: a copy starts cold rather than sharing a stream,
+// because two handles sharing one would share a file position.
+class DosHostWriteCache
+{
+public:
+    DosHostWriteCache() = default;
+    ~DosHostWriteCache() = default;
+    DosHostWriteCache(const DosHostWriteCache&) noexcept {}
+    DosHostWriteCache& operator=(const DosHostWriteCache&) noexcept
+    {
+        Reset();
+        return *this;
+    }
+    DosHostWriteCache(DosHostWriteCache&&) noexcept = default;
+    DosHostWriteCache& operator=(DosHostWriteCache&&) noexcept = default;
+
+    // Returns a stream positioned at `offset`, opening the file only when the
+    // cache is cold. `truncate` empties the file, which is what creation means.
+    // Null when the file cannot be opened.
+    std::ofstream* Acquire(const std::filesystem::path& path,
+                           std::uint64_t offset,
+                           bool truncate,
+                           bool* opened_now);
+
+    void Reset();
+    bool warm() const { return stream_ != nullptr; }
+
+private:
+    std::unique_ptr<std::ofstream> stream_;
+};
+
 struct DosOpenFileHandle
 {
     bool open = false;
@@ -67,10 +100,14 @@ struct DosOpenFileHandle
     std::string guest_path;
     std::filesystem::path host_path;
     std::string dos_path;
-    // Task 374: read once at open. Safe to cache because this API has no write
-    // path -- add invalidation here if one is ever introduced.
+    // Task 374: read once at open. Task 477 added the write path this note
+    // anticipated, so WriteDosFile updates the value instead of leaving it stale.
     std::uint64_t cached_file_size = 0;
+    // Task 477: only handles created by AH=3Ch, or opened with a write access
+    // mode, accept writes. AH=40h routes on this.
+    bool writable = false;
     DosHostFileCache host_stream;
+    DosHostWriteCache host_write_stream;
 };
 
 struct DosVirtualFileSystemState
@@ -86,6 +123,9 @@ struct DosVirtualFileSystemState
     // roughly one per file.
     std::uint32_t file_read_count = 0;
     std::uint32_t host_file_open_count = 0;
+    std::uint32_t file_create_count = 0;
+    std::uint32_t file_write_count = 0;
+    std::uint64_t file_written_bytes = 0;
 };
 
 struct DosResolvedPath
@@ -117,6 +157,31 @@ bool OpenDosFile(DosVirtualFileSystemState* state,
                  std::uint8_t access_mode,
                  DosResolvedPath* resolved,
                  std::uint16_t* handle);
+
+// INT 21h AH=3Ch. Unlike OpenDosFile the file need not exist -- only its parent
+// directory must -- and an existing file is truncated to zero. `attributes` is
+// recorded in the state's attribute overrides rather than applied to the host
+// file: DOS keeps writing through the handle it just returned, while a host
+// read-only attribute would block the next write.
+bool CreateDosFile(DosVirtualFileSystemState* state,
+                   const std::string& guest_path,
+                   std::uint16_t attributes,
+                   DosResolvedPath* resolved,
+                   std::uint16_t* handle);
+
+// INT 21h AH=40h against a writable handle. Advances the file offset and keeps
+// `cached_file_size` in step.
+bool WriteDosFile(DosVirtualFileSystemState* state,
+                  std::uint16_t handle,
+                  const std::uint8_t* bytes,
+                  std::uint32_t byte_count,
+                  std::uint32_t* actual_bytes,
+                  std::uint16_t* dos_error);
+
+// True when the handle is open and accepts writes, which is what AH=40h routes
+// on. Standard handles 0-4 are never VFS handles, so they keep the console path.
+bool IsDosFileHandleWritable(const DosVirtualFileSystemState& state,
+                             std::uint16_t handle);
 
 bool ReadDosFile(DosVirtualFileSystemState* state,
                  std::uint16_t handle,

@@ -396,6 +396,10 @@ bool OpenDosFile(DosVirtualFileSystemState* state,
     new_handle.guest_path = guest_path;
     new_handle.host_path = resolved->host_path;
     new_handle.dos_path = resolved->dos_path;
+    // Task 477: DOS access mode 1 is write-only and 2 read/write. Marking the
+    // handle here is what lets a guest reopen a file it created and append.
+    new_handle.writable = (access_mode & 0x07U) == 0x01U ||
+        (access_mode & 0x07U) == 0x02U;
     // Task 374: the one stat this handle will ever do. Reads and SEEK_END use it
     // instead of re-stating the file every call.
     {
@@ -422,6 +426,230 @@ bool OpenDosFile(DosVirtualFileSystemState* state,
     *handle = allocated_handle;
     resolved->message = "DOS file opened";
     state->message = "DOS file opened";
+    return true;
+}
+
+bool CreateDosFile(DosVirtualFileSystemState* state,
+                   const std::string& guest_path,
+                   std::uint16_t attributes,
+                   DosResolvedPath* resolved,
+                   std::uint16_t* handle)
+{
+    if (state == nullptr || resolved == nullptr || handle == nullptr)
+    {
+        return false;
+    }
+
+    *handle = 0;
+    std::vector<std::string> components;
+    if (!ResolveGuestPath(*state, guest_path, resolved, &components))
+    {
+        return false;
+    }
+
+    if (resolved->result != DosPathResult::kOk)
+    {
+        return true;
+    }
+
+    if (components.empty())
+    {
+        resolved->result = DosPathResult::kAccessDenied;
+        resolved->message = "DOS create path names no file";
+        return true;
+    }
+
+    // Only the parent must exist. Creating intermediate directories would
+    // silently invent a layout the original image never had.
+    std::error_code error;
+    const std::filesystem::path parent = resolved->host_path.parent_path();
+    if (!std::filesystem::is_directory(parent, error) || error)
+    {
+        resolved->result = DosPathResult::kPathNotFound;
+        resolved->message = "DOS create parent directory was not found";
+        return true;
+    }
+    if (std::filesystem::is_directory(resolved->host_path, error) && !error)
+    {
+        resolved->result = DosPathResult::kAccessDenied;
+        resolved->message = "DOS create path names a directory";
+        return true;
+    }
+
+    const std::uint16_t allocated_handle = AllocateLowestFreeDosHandle(*state);
+    if (allocated_handle == 0)
+    {
+        resolved->result = DosPathResult::kAccessDenied;
+        resolved->message = "DOS file handle table is exhausted";
+        return true;
+    }
+
+    DosOpenFileHandle new_handle{};
+    new_handle.open = true;
+    new_handle.handle = allocated_handle;
+    // Read/write: DOS hands back a handle the caller may also read through.
+    new_handle.access_mode = 0x02U;
+    new_handle.file_offset = 0;
+    new_handle.guest_path = guest_path;
+    new_handle.host_path = resolved->host_path;
+    new_handle.dos_path = resolved->dos_path;
+    new_handle.cached_file_size = 0;
+    new_handle.writable = true;
+
+    // Truncate now rather than at the first write, because creation is what
+    // empties the file even if the guest never writes anything.
+    bool opened_now = false;
+    if (new_handle.host_write_stream.Acquire(new_handle.host_path, 0, true,
+                                             &opened_now) == nullptr)
+    {
+        resolved->result = DosPathResult::kAccessDenied;
+        resolved->message = "DOS create failed to open the host file";
+        return true;
+    }
+    if (opened_now)
+    {
+        ++state->host_file_open_count;
+    }
+
+    // The attribute is guest-visible state, not a host file property. Stamping
+    // FILE_ATTRIBUTE_READONLY here would block the writes this handle exists for.
+    // The archive bit is what DOS sets on a freshly written file.
+    constexpr std::uint16_t kMutableAttributes = 0x0027U;
+    const std::uint16_t recorded_attributes =
+        static_cast<std::uint16_t>((attributes & kMutableAttributes) | 0x0020U);
+    bool attribute_recorded = false;
+    for (auto& override_entry : state->attribute_overrides)
+    {
+        if (override_entry.first == resolved->dos_path)
+        {
+            override_entry.second = recorded_attributes;
+            attribute_recorded = true;
+            break;
+        }
+    }
+    if (!attribute_recorded)
+    {
+        state->attribute_overrides.emplace_back(resolved->dos_path,
+                                                recorded_attributes);
+    }
+
+    bool reused_slot = false;
+    for (DosOpenFileHandle& slot : state->open_files)
+    {
+        if (!slot.open)
+        {
+            slot = std::move(new_handle);
+            reused_slot = true;
+            break;
+        }
+    }
+    if (!reused_slot)
+    {
+        state->open_files.push_back(std::move(new_handle));
+    }
+    ++state->file_create_count;
+    *handle = allocated_handle;
+    resolved->message = "DOS file created";
+    state->message = "DOS file created";
+    return true;
+}
+
+bool IsDosFileHandleWritable(const DosVirtualFileSystemState& state,
+                             std::uint16_t handle)
+{
+    for (const DosOpenFileHandle& candidate : state.open_files)
+    {
+        if (candidate.open && candidate.handle == handle)
+        {
+            return candidate.writable;
+        }
+    }
+    return false;
+}
+
+bool WriteDosFile(DosVirtualFileSystemState* state,
+                  std::uint16_t handle,
+                  const std::uint8_t* bytes,
+                  std::uint32_t byte_count,
+                  std::uint32_t* actual_bytes,
+                  std::uint16_t* dos_error)
+{
+    if (state == nullptr || actual_bytes == nullptr || dos_error == nullptr ||
+        (bytes == nullptr && byte_count != 0U))
+    {
+        return false;
+    }
+
+    *actual_bytes = 0;
+    *dos_error = 0;
+
+    DosOpenFileHandle* open_file = nullptr;
+    for (DosOpenFileHandle& candidate : state->open_files)
+    {
+        if (candidate.open && candidate.handle == handle)
+        {
+            open_file = &candidate;
+            break;
+        }
+    }
+
+    if (open_file == nullptr)
+    {
+        *dos_error = 0x0006;
+        state->message = "DOS file write failed: invalid handle";
+        return true;
+    }
+    if (!open_file->writable)
+    {
+        *dos_error = 0x0005;
+        state->message = "DOS file write failed: handle is read-only";
+        return true;
+    }
+    // DOS truncates the file at the current offset for a zero-length write. The
+    // guests observed here never do it, so decline rather than implement a
+    // destructive path from no evidence.
+    if (byte_count == 0U)
+    {
+        state->message = "DOS file write completed with no bytes";
+        return true;
+    }
+
+    bool opened_now = false;
+    std::ofstream* stream = open_file->host_write_stream.Acquire(
+        open_file->host_path, open_file->file_offset, false, &opened_now);
+    if (opened_now)
+    {
+        ++state->host_file_open_count;
+    }
+    if (stream == nullptr)
+    {
+        *dos_error = open_file->host_write_stream.warm() ? 0x0005 : 0x0002;
+        state->message = open_file->host_write_stream.warm()
+            ? "DOS file write failed: seek failed"
+            : "DOS file write failed: file could not be opened";
+        return true;
+    }
+
+    stream->write(reinterpret_cast<const char*>(bytes),
+                  static_cast<std::streamsize>(byte_count));
+    stream->flush();
+    if (!*stream)
+    {
+        *dos_error = 0x0005;
+        state->message = "DOS file write failed";
+        return true;
+    }
+
+    open_file->file_offset += byte_count;
+    // Task 374 cached the size at open on the grounds that nothing wrote. This
+    // is that invalidation point: a read on the same handle must see the growth.
+    open_file->cached_file_size =
+        (std::max)(open_file->cached_file_size, open_file->file_offset);
+    open_file->host_stream.Reset();
+    ++state->file_write_count;
+    state->file_written_bytes += byte_count;
+    *actual_bytes = byte_count;
+    state->message = "DOS file write completed";
     return true;
 }
 
@@ -458,6 +686,51 @@ std::ifstream* DosHostFileCache::Acquire(const std::filesystem::path& path,
 }
 
 void DosHostFileCache::Reset()
+{
+    stream_.reset();
+}
+
+std::ofstream* DosHostWriteCache::Acquire(const std::filesystem::path& path,
+                                          std::uint64_t offset,
+                                          bool truncate,
+                                          bool* opened_now)
+{
+    if (opened_now != nullptr)
+    {
+        *opened_now = false;
+    }
+    if (truncate)
+    {
+        // Creation empties the file, so the cached stream (if any) is reopened
+        // with trunc rather than seeked.
+        stream_.reset();
+    }
+    if (stream_ == nullptr)
+    {
+        const std::ios::openmode mode = truncate
+            ? (std::ios::binary | std::ios::out | std::ios::trunc)
+            : (std::ios::binary | std::ios::out | std::ios::in);
+        auto stream = std::make_unique<std::ofstream>(path, mode);
+        if (!*stream)
+        {
+            return nullptr;
+        }
+        stream_ = std::move(stream);
+        if (opened_now != nullptr)
+        {
+            *opened_now = true;
+        }
+    }
+    stream_->clear();
+    stream_->seekp(static_cast<std::streamoff>(offset), std::ios::beg);
+    if (!*stream_)
+    {
+        return nullptr;
+    }
+    return stream_.get();
+}
+
+void DosHostWriteCache::Reset()
 {
     stream_.reset();
 }

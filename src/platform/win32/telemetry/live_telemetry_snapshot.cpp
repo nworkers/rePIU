@@ -1982,6 +1982,24 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->last_dos_read_buffer = context.last_dos_read_buffer;
     attempt->last_dos_read_success = context.last_dos_read_success;
     attempt->last_dos_read_error = context.last_dos_read_error;
+    attempt->handled_dos_create_count = context.handled_dos_create_count;
+    attempt->last_dos_create_guest_path = context.last_dos_create_guest_path;
+    attempt->last_dos_create_host_path = context.last_dos_create_host_path;
+    attempt->last_dos_create_virtual_path =
+        context.last_dos_create_virtual_path;
+    attempt->last_dos_create_success = context.last_dos_create_success;
+    attempt->last_dos_create_error = context.last_dos_create_error;
+    attempt->last_dos_create_handle = context.last_dos_create_handle;
+    attempt->last_dos_create_attributes = context.last_dos_create_attributes;
+    attempt->handled_dos_write_count = context.handled_dos_write_count;
+    attempt->last_dos_write_handle = context.last_dos_write_handle;
+    attempt->last_dos_write_requested_bytes =
+        context.last_dos_write_requested_bytes;
+    attempt->last_dos_write_actual_bytes =
+        context.last_dos_write_actual_bytes;
+    attempt->last_dos_write_buffer = context.last_dos_write_buffer;
+    attempt->last_dos_write_success = context.last_dos_write_success;
+    attempt->last_dos_write_error = context.last_dos_write_error;
     attempt->handled_dos_seek_count = context.handled_dos_seek_count;
     attempt->last_dos_seek_handle = context.last_dos_seek_handle;
     attempt->last_dos_seek_origin = context.last_dos_seek_origin;

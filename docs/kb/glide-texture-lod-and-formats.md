@@ -114,8 +114,51 @@ Red이고, ABGR/BGRA이면 상위 5비트가 Blue입니다.
 
 따라서 PIU의 `ABGR(1)` write lock은 **BGR565**입니다. 이를 texture의
 `GR_TEXFMT_RGB_565`와 같은 방식으로 디코드하면 Blue와 Red가 교환되어 청록색이
-노란색으로 보입니다. 반면 `grLfbWriteRegion(GR_LFB_SRC_FMT_565)`의 source image는
-명시적인 RGB565이므로 lock의 물리 배치와 구분해야 합니다.
+노란색으로 보입니다.
+
+`grLfbWriteRegion`의 source image도 같은 규칙을 따릅니다. 아래 `GrLfbSrcFmt_t` 항목을
+보십시오.
+
+## GrLfbSrcFmt_t — GrLfbWriteMode_t와 값이 다르다
+
+`grLfbWriteRegion`의 `src_format`은 `GrLfbSrcFmt_t`이고, lock의
+`GrLfbWriteMode_t`와는 **다른 열거형**입니다. 두 열거형의 앞부분 값이 우연히
+겹치므로 같은 것으로 취급하기 쉽지만, 픽셀당 바이트 수와 깊이 계열의 존재가 다릅니다.
+
+| `GR_LFB_SRC_FMT_*` | 값 | 픽셀당 바이트 | 배치 |
+|---|---|---|---|
+| `565` | `0x00` | 2 | RGB565 |
+| `555` | `0x01` | 2 | RGB555, 최상위 비트 무시 |
+| `1555` | `0x02` | 2 | ARGB1555 |
+| `888` | `0x04` | 4 | 32비트 정렬 `0RGB` |
+| `8888` | `0x05` | 4 | ARGB8888 |
+| `565_DEPTH` | `0x0C` | 4 | 색 16비트 + 깊이 16비트 |
+| `555_DEPTH` | `0x0D` | 4 | 같음 |
+| `1555_DEPTH` | `0x0E` | 4 | 같음 |
+| `ZA16` | `0x0F` | 2 | 깊이 전용 |
+| `RLE16` | `0x80` | 가변 | 런렝스 압축 |
+
+**`565`는 0이지 1이 아닙니다.** 1로 잘못 정의하면 실제로는 555를 뜻하게 되어 진짜
+565와 8888 요청이 모두 거부됩니다(Task 476에서 실제로 발생).
+
+**`GrLfbSrcFmt_t`는 픽셀의 크기와 비트 폭만 정하고 채널 순서는 정하지 않습니다.**
+채널 순서는 `grLfbWriteColorFormat`이 정하며, 호출하지 않았다면 `grSstWinOpen`의
+`cFormat`이 기본값입니다. 즉 `GrColor_t`와 같은 규칙입니다. 따라서 `ABGR`을 선언한
+게스트가 보내는 8888 word는 `A<<24|B<<16|G<<8|R`이고 메모리 배치는 `R,G,B,A`입니다.
+이를 `ARGB`로 읽으면(`B,G,R,A`) 화면에서 Red와 Blue가 교환됩니다 — Task 476에서 실제로
+관측된 증상입니다.
+
+`GR_LFB_SRC_FMT_565`를 "명시적 RGB565"로 읽는 해석은 **반증되었습니다**. 변환은
+"source 색 형식으로 풀고 목적지 색 형식으로 싼다"이며, 두 형식이 같으면 무변환
+통과입니다.
+
+`grLfbReadRegion`에는 포맷 인자가 없습니다. 프레임 버퍼의 native 형식, 즉 색 버퍼면
+버퍼 cFormat 순서의 565를 그대로 돌려줍니다.
+
+**region 전송의 `y`는 origin 상대가 아닙니다.** `grLfbLock`은 `GrOriginLocation_t`를
+명시적으로 받지만 `grLfbWriteRegion`/`grLfbReadRegion`은 받지 않습니다. 인자가 없는
+이유는 프레임 버퍼를 native 배치(행 0 = 화면 위)로 주소지정하기 때문입니다.
+`GR_ORIGIN_LOWER_LEFT` 창에서 lock처럼 행을 뒤집으면 화면이 상하 반전됩니다.
 
 ## grTexTextureMemRequired — 게스트가 이 답으로 할당한다
 
@@ -225,9 +268,31 @@ This is independent of `GrTextureFormat_t`.
 LFB 565 packing is also controlled by the color format. ARGB/RGBA places Red
 in bits 15..11 and Blue in bits 4..0, while ABGR/BGRA places Blue high and Red
 low. PIU's ABGR write locks are therefore BGR565; treating them like
-`GR_TEXFMT_RGB_565` swaps blue and red and turns cyan into yellow. The explicit
-`GR_LFB_SRC_FMT_565` image accepted by `grLfbWriteRegion` remains a separate
-RGB565 source-format contract.
+`GR_TEXFMT_RGB_565` swaps blue and red and turns cyan into yellow.
+
+`GrLfbSrcFmt_t` is a different enumeration from `GrLfbWriteMode_t` even where
+their low values coincide: `565` is `0x00`, `555` `0x01`, `1555` `0x02`, `888`
+`0x04` (four bytes, 32-bit aligned `0RGB`), `8888` `0x05`, the depth-carrying
+formats `0x0C`-`0x0E`, `ZA16` `0x0F`, and `RLE16` `0x80`. Defining `565` as `1`
+actually names 555 and rejects both genuine 565 and 8888, which is what Task 476
+found in this repository.
+
+`GrLfbSrcFmt_t` fixes only the pixel's size and bit widths — **the channel order
+comes from `grLfbWriteColorFormat`**, defaulting to the window `cFormat`, the
+same rule `GrColor_t` follows. A guest that declared ABGR sends 8888 words as
+`A<<24|B<<16|G<<8|R`, whose bytes are `R,G,B,A`; reading them as ARGB
+(`B,G,R,A`) swaps red and blue on screen, as Task 476 observed. Reading
+`GR_LFB_SRC_FMT_565` as an explicitly RGB-ordered image is **refuted**:
+conversion unpacks in the source format and packs in the destination format,
+passing through unchanged when the two agree. `grLfbReadRegion` takes no format
+argument at all: it returns the frame buffer's native form, meaning 565 in the
+buffer's cFormat order for a color buffer.
+
+Region `y` is not origin-relative. `grLfbLock` takes an explicit
+`GrOriginLocation_t` while `grLfbWriteRegion` and `grLfbReadRegion` take none,
+because they address the frame buffer in its native layout with row 0 at the
+top. Mirroring rows the way a lock would renders a `GR_ORIGIN_LOWER_LEFT`
+window's LFB output upside down.
 
 `grTexTextureMemRequired` is not a passive query — the guest lays out its own TMU
 address space from the answer, so a wrong result propagates into guest behavior

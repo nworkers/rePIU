@@ -746,6 +746,20 @@ struct ThreadContext
     repiu::hle::GlideLfbSurface glide_lfb_surface;
     std::uint32_t glide_lfb_lock_count = 0;
     std::uint32_t glide_lfb_present_count = 0;
+    // Task 476: grLfbReadRegion and grLfbWriteRegion share the staging surface
+    // as a shadow of the frame buffer. `valid` says it mirrors the frame buffer,
+    // `dirty` that region writes are still waiting to be presented. Every gate
+    // that is not a region gate flushes and then invalidates, so a burst of
+    // region calls costs one readback and one present instead of one per row.
+    bool glide_lfb_region_shadow_valid = false;
+    bool glide_lfb_region_shadow_dirty = false;
+    // Which GrBuffer_t the shadow stands for. A region call naming a different
+    // buffer flushes and re-seeds rather than mixing two buffers in one image.
+    std::uint32_t glide_lfb_region_shadow_buffer = 0;
+    std::uint32_t glide_lfb_region_seed_count = 0;
+    std::uint32_t glide_lfb_region_flush_count = 0;
+    std::uint32_t glide_lfb_region_read_count = 0;
+    std::uint32_t glide_lfb_region_write_count = 0;
     std::uint32_t linexe_scan_return_eax = 0;
     std::uint32_t linexe_scan_return_ebp = 0;
     std::uint32_t linexe_scan_caller_eax = 0;
@@ -792,6 +806,23 @@ struct ThreadContext
     std::uint32_t last_dos_read_buffer = 0;
     bool last_dos_read_success = false;
     std::uint16_t last_dos_read_error = 0;
+    // Task 477: INT 21h AH=3Ch / AH=40h. The guest creating a file is normally
+    // it reporting on itself, so what it writes is worth keeping visible.
+    std::uint32_t handled_dos_create_count = 0;
+    std::string last_dos_create_guest_path;
+    std::string last_dos_create_host_path;
+    std::string last_dos_create_virtual_path;
+    bool last_dos_create_success = false;
+    std::uint16_t last_dos_create_error = 0;
+    std::uint16_t last_dos_create_handle = 0;
+    std::uint16_t last_dos_create_attributes = 0;
+    std::uint32_t handled_dos_write_count = 0;
+    std::uint16_t last_dos_write_handle = 0;
+    std::uint32_t last_dos_write_requested_bytes = 0;
+    std::uint32_t last_dos_write_actual_bytes = 0;
+    std::uint32_t last_dos_write_buffer = 0;
+    bool last_dos_write_success = false;
+    std::uint16_t last_dos_write_error = 0;
     std::uint32_t handled_dos_seek_count = 0;
     std::uint16_t last_dos_seek_handle = 0;
     std::uint8_t last_dos_seek_origin = 0;
