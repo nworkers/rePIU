@@ -1144,6 +1144,23 @@ guest code, target resolution, patch ordering, and page-retirement coherence rem
 Controlled measurements isolate persistent state with `REPIU_EEPROM_PATH` and use one-shot
 window-open, texture, draw, and swap milestones from shared live telemetry.
 
+Task 481부터 DBT host-stack return miss는 placement가 소유하는 site별 다양성 상태를
+갱신합니다. 16회 이상 miss와 8개 이상의 서로 다른 guest return target이 확인된 site는
+megamorphic으로 고정 분류하고, 그 호출부터 PIC 재패치만 생략합니다. 기존 entry와 guard는
+그대로 두므로 이미 학습된 target hit는 계속 native edge를 사용하고, 나머지 target은 같은
+resolver의 target resolution·stack pop·success continuation을 거칩니다. 상태가 site 배열과
+동기화되지 않으면 기존 patch를 수행하므로 정책은 정확성 전제조건이 아닙니다. indirect
+call/jump와 VEH return은 이 정책의 범위 밖입니다.
+
+Since Task 481, each DBT host-stack return miss updates per-site diversity state
+owned by the placement. A site with at least sixteen misses and eight distinct
+guest return targets is permanently classified as megamorphic, and only PIC
+repatching is skipped from that call onward. Existing entries and guards remain,
+so learned hits still take their native edges while other targets use the same
+resolver target resolution, stack pop, and success continuation. Unsynchronized
+state fails open to patching, making the policy an optimization rather than a
+correctness prerequisite. Indirect call/jump and VEH returns are out of scope.
+
 ## AOT build option toggle 관례 / AOT build-option toggle convention
 
 Task 424는 환경 변수 하나로 기능을 켜고 끄는 관례를 플랫폼 공용
@@ -1319,13 +1336,30 @@ guest 주소로 나온 뒤 기존 HLE dispatcher가 처리합니다.
   write-watch 보호 전환
 * `aot_code_cache_win32`: placement, dynamic append, generation publication,
   stale-entry relink 조율
+* `aot_inline_cache_site_index`: inline-cache miss site exact 조회 cache
+* `aot_return_dispatch_site_index`: return miss thunk의 dispatch site exact 조회 cache
+* `aot_return_patch_policy`: DBT return site별 target 다양성과 megamorphic patch 우회
 * `execution_trampoline`: exception을 guest-write event와 serialized worker 요청으로
   연결하는 adapter
+
+두 site index는 `Win32AotCodeCachePlacement`가 소유합니다. initial placement와 dynamic
+append가 같은 site 배열을 갱신하며, 배열 개수가 index의 `indexed_site_count`와 다르면
+lookup은 답을 거절하고 기존 선형 탐색으로 내려갑니다. 따라서 index는 성능 cache이지
+정확성 전제조건이 아닙니다.
 
 현재 안전성은 loader process당 guest 실행 thread 하나를 전제로 합니다. retired
 provenance와 generation은 cache 수명 동안 유지되며 reclamation은 아직 없습니다.
 REP/string store가 여러 page를 넘는 일반 경우와 multi-thread publication은 후속
 검증 범위입니다.
+
+The Win32 AOT file responsibilities also include `aot_inline_cache_site_index`,
+which indexes inline-cache miss sites, and `aot_return_dispatch_site_index`,
+which indexes the return miss thunk's dispatch sites. The
+`aot_return_patch_policy` tracks DBT return-site target diversity and bypasses
+repatching after megamorphic classification. Both indexes and the policy belong to
+`Win32AotCodeCachePlacement`. A site-count mismatch makes lookup decline and the
+caller retain the original linear scan, so these indexes are performance caches
+rather than correctness prerequisites.
 
 ### AOT self-modifying page generations
 

@@ -1375,6 +1375,36 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         ? static_cast<std::uint32_t>(
               context.aot_placement->indirect_inline_cache_sites.size())
         : 0U;
+    if (context.aot_placement != nullptr)
+    {
+        const Win32AotInlineCacheSiteIndex& site_index =
+            context.aot_placement->inline_cache_site_index;
+        attempt->aot_inline_cache_site_index_lookup_count =
+            site_index.lookup_count;
+        attempt->aot_inline_cache_site_index_scan_count =
+            site_index.fallback_scan_count;
+        attempt->aot_inline_cache_site_index_rebuild_count =
+            site_index.rebuild_count;
+        const Win32AotReturnDispatchSiteIndex& return_index =
+            context.aot_placement->return_dispatch_site_index;
+        attempt->aot_return_dispatch_site_count =
+            static_cast<std::uint32_t>(
+                context.aot_placement->dbt_return_dispatch_sites.size());
+        attempt->aot_return_dispatch_site_index_lookup_count =
+            return_index.lookup_count;
+        attempt->aot_return_dispatch_site_index_scan_count =
+            return_index.fallback_scan_count;
+        attempt->aot_return_dispatch_site_index_rebuild_count =
+            return_index.rebuild_count;
+        const Win32AotReturnPatchPolicy& return_patch_policy =
+            context.aot_placement->return_patch_policy;
+        attempt->aot_return_patch_policy_observation_count =
+            return_patch_policy.observation_count;
+        attempt->aot_return_patch_policy_megamorphic_site_count =
+            return_patch_policy.megamorphic_site_count;
+        attempt->aot_return_patch_policy_bypass_count =
+            return_patch_policy.bypass_count;
+    }
     attempt->aot_last_reentry_cache_address =
         context.aot_reentry_cache_address;
     attempt->aot_code_write_count =

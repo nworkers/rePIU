@@ -4,6 +4,9 @@
 #include "repiu/platform/win32/aot_page_coherence_win32.h"
 #include "repiu/platform/win32/aot_boundary_provenance.h"
 #include "repiu/platform/win32/aot_cache_address_index.h"
+#include "repiu/platform/win32/aot_inline_cache_site_index.h"
+#include "repiu/platform/win32/aot_return_dispatch_site_index.h"
+#include "repiu/platform/win32/aot_return_patch_policy.h"
 #include "repiu/platform/win32/aot_worker_timing.h"
 #include "repiu/platform/win32/aot_timer_source_profile.h"
 #include "repiu/runtime/aot_code_cache.h"
@@ -62,6 +65,20 @@ struct Win32AotCodeCachePlacement
     // linear scan Task 323 measured at 87.75% of kAotResume. Treated as a
     // cache: FindAotCacheAddress falls back to the scan when it is stale.
     Win32AotCacheAddressIndex cache_address_index;
+
+    // Task 479: O(1) miss-offset lookup over indirect_inline_cache_sites,
+    // replacing the linear scan Task 478 measured inside a patch path costing
+    // about 75,100 cycles per call. Treated as a cache in the same way:
+    // PatchWin32AotIndirectInlineCache falls back to the scan when it is stale.
+    Win32AotInlineCacheSiteIndex inline_cache_site_index;
+
+    // Task 480: exact miss-offset lookup for the return miss thunk. The index
+    // remains a cache; a stale count falls back to the original scan.
+    Win32AotReturnDispatchSiteIndex return_dispatch_site_index;
+
+    // Task 481: per-return-site miss diversity. Sites proven too diverse for
+    // the four-entry PIC stop rewriting it while retaining the resolver path.
+    Win32AotReturnPatchPolicy return_patch_policy;
 
     std::vector<Win32AotGuestPageState> guest_pages;
     std::vector<std::uint32_t> retired_guest_addresses;

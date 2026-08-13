@@ -817,6 +817,18 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t aot_inline_cache_patch_attempt_count = 0;
     std::uint32_t aot_inline_cache_patch_success_count = 0;
     std::uint32_t aot_inline_cache_site_count = 0;
+    // Task 479: a non-zero scan count means the site index did not answer and
+    // the patch fell back to the linear scan it replaced.
+    std::uint32_t aot_inline_cache_site_index_lookup_count = 0;
+    std::uint32_t aot_inline_cache_site_index_scan_count = 0;
+    std::uint32_t aot_inline_cache_site_index_rebuild_count = 0;
+    std::uint32_t aot_return_dispatch_site_count = 0;
+    std::uint32_t aot_return_dispatch_site_index_lookup_count = 0;
+    std::uint32_t aot_return_dispatch_site_index_scan_count = 0;
+    std::uint32_t aot_return_dispatch_site_index_rebuild_count = 0;
+    std::uint32_t aot_return_patch_policy_observation_count = 0;
+    std::uint32_t aot_return_patch_policy_megamorphic_site_count = 0;
+    std::uint32_t aot_return_patch_policy_bypass_count = 0;
     std::uint32_t aot_last_reentry_cache_address = 0;
     std::uint32_t aot_code_write_count = 0;
     std::uint32_t aot_page_retire_attempt_count = 0;

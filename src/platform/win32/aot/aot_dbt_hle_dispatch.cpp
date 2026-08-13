@@ -1,6 +1,7 @@
 #include "aot_dbt_hle_dispatch.h"
 
 #include "aot_runtime_dispatch.h"
+#include "aot_residency_sample.h"
 #include "execution_internal.h"
 #include "guest_memory_access.h"
 #include "piu10_mp3_frame_batch.h"

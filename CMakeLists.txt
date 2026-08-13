@@ -122,6 +122,9 @@ add_library(repiu_exe
     src/platform/win32/cd_audio_wave_out.cpp
     src/platform/win32/aot_code_cache_win32.cpp
     src/platform/win32/aot_cache_address_index.cpp
+    src/platform/win32/aot_inline_cache_site_index.cpp
+    src/platform/win32/aot_return_dispatch_site_index.cpp
+    src/platform/win32/aot_return_patch_policy.cpp
     src/platform/win32/aot/aot_worker_timing.cpp
     src/platform/win32/aot/aot_timer_source_profile.cpp
     src/platform/win32/aot_page_coherence_win32.cpp
@@ -166,6 +169,7 @@ add_library(repiu_exe
     src/platform/win32/telemetry/glide_setter_state_cache.cpp
     src/platform/win32/telemetry/glide_setter_phase_timing.cpp
     src/platform/win32/telemetry/timer_tick_delivery.cpp
+    src/platform/win32/telemetry/aot_residency_sample.cpp
     src/platform/win32/aot/aot_boundary_opcode_census.cpp
     src/platform/win32/io/port_io_emulator.cpp
     src/platform/win32/io/piu10_mp3_frame_batch.cpp
@@ -268,6 +272,9 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/single_step_hotspot_profile_probe.cpp
     src/tools/aot_probe/exception_transition_calibration_probe.cpp
     src/tools/aot_probe/aot_cache_address_index_probe.cpp
+    src/tools/aot_probe/aot_inline_cache_site_index_probe.cpp
+    src/tools/aot_probe/aot_return_dispatch_site_index_probe.cpp
+    src/tools/aot_probe/aot_return_patch_policy_probe.cpp
     src/tools/aot_probe/execution_time_profile_probe.cpp
     src/tools/aot_probe/glide_gate_timing_probe.cpp
     src/tools/aot_probe/glide_ordinal_timing_probe.cpp

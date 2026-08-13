@@ -858,6 +858,7 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
     placement->indirect_inline_cache_sites =
         image.indirect_inline_cache_sites;
     placement->dbt_return_dispatch_sites = image.dbt_return_dispatch_sites;
+    SyncAotReturnPatchPolicy(placement);
     placement->dbt_hle_dispatch_sites = image.dbt_hle_dispatch_sites;
     placement->dbt_indirect_dispatch_sites =
         image.dbt_indirect_dispatch_sites;
@@ -1352,6 +1353,7 @@ bool AppendWin32DynamicAotTranslation(
         site.success_cache_offset += append_offset;
         placement->dbt_return_dispatch_sites.push_back(site);
     }
+    SyncAotReturnPatchPolicy(placement);
     for (runtime::AotDbtHleDispatchSite site :
          image.dbt_hle_dispatch_sites)
     {
@@ -1688,14 +1690,39 @@ bool PatchWin32AotIndirectInlineCache(
     }
     const std::uint32_t miss_offset =
         cache_miss_address - placement->base_address;
+    // Task 479. The scan below cost about 75,100 cycles per patch on pumpit8:
+    // 8,019 sites of about 44 bytes, half of them streamed before the first
+    // match. The index answers the same question in two cache-line touches and
+    // stays a cache rather than a precondition -- a stale index, a site that
+    // does not really carry this key, and a "not found" answer all fall through
+    // to the scan, so the selected site is identical and only the speed differs.
+    EnsureAotInlineCacheSiteIndex(placement);
     runtime::AotIndirectInlineCacheSite* selected = nullptr;
-    for (auto& site : placement->indirect_inline_cache_sites)
+    const AotInlineCacheSiteLookup indexed =
+        LookupAotInlineCacheSiteIndex(*placement, miss_offset);
+    if (indexed.usable && indexed.found &&
+        indexed.site_index < placement->indirect_inline_cache_sites.size())
     {
+        runtime::AotIndirectInlineCacheSite& site =
+            placement->indirect_inline_cache_sites[indexed.site_index];
         if (miss_offset == site.miss_cache_offset ||
             miss_offset == site.miss_cache_offset + 1U)
         {
             selected = &site;
-            break;
+            ++placement->inline_cache_site_index.lookup_count;
+        }
+    }
+    if (selected == nullptr)
+    {
+        ++placement->inline_cache_site_index.fallback_scan_count;
+        for (auto& site : placement->indirect_inline_cache_sites)
+        {
+            if (miss_offset == site.miss_cache_offset ||
+                miss_offset == site.miss_cache_offset + 1U)
+            {
+                selected = &site;
+                break;
+            }
         }
     }
     bool entry_offsets_valid = selected != nullptr;

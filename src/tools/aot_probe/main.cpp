@@ -18,6 +18,9 @@
 #include "single_step_hotspot_profile_probe.h"
 #include "exception_transition_calibration_probe.h"
 #include "aot_cache_address_index_probe.h"
+#include "aot_inline_cache_site_index_probe.h"
+#include "aot_return_dispatch_site_index_probe.h"
+#include "aot_return_patch_policy_probe.h"
 #include "execution_time_profile_probe.h"
 #include "glide_gate_timing_probe.h"
 #include "glide_ordinal_timing_probe.h"
@@ -938,6 +941,18 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunAotCacheAddressIndexProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunAotInlineCacheSiteIndexProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunAotReturnDispatchSiteIndexProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunAotReturnPatchPolicyProbe())
     {
         return 1;
     }

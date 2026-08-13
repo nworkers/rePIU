@@ -5,6 +5,7 @@
 #include "aot_dbt_direct_edge_dispatch.h"
 
 #include "native_linear_span.h"
+#include "aot_residency_sample.h"
 #include "aot_dbt_call_return_trace.h"
 #include "repiu/platform/win32/aot_boundary_provenance.h"
 #include "execution_internal.h"
@@ -129,81 +130,6 @@ void RecordAotOtherBoundarySample(ThreadContext* context,
                                 static_cast<long>(opcode));
             InterlockedExchange(&telemetry->aot_other_top_opcode_count,
                                 static_cast<long>(new_count));
-        }
-    }
-}
-
-void AccumulateAotResidency(ThreadContext* context,
-                            std::uint32_t guest_entry_eip)
-{
-    // Task 326 function-axis attribution. Instrumented at the definition so
-    // calls from aot_dbt_dispatch.cpp and aot_dbt_hle_dispatch.cpp are included
-    // too; that surplus over the handler axis is itself informative.
-    const ExecutionTimeScope residency_time_scope(
-        context != nullptr ? context->execution_time_profile.get() : nullptr,
-        ExecutionTimeBucket::kAotResidency);
-    ZydisDecoder decoder;
-    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LEGACY_32,
-                                       ZYDIS_STACK_WIDTH_32)))
-    {
-        return;
-    }
-    constexpr std::uint32_t kResidencyCap = 64U;
-    std::uint32_t eip = guest_entry_eip;
-    std::uint32_t count = 0;
-    while (count < kResidencyCap)
-    {
-        const auto* code = reinterpret_cast<const std::uint8_t*>(
-            static_cast<std::uintptr_t>(eip));
-        // A full x86 instruction is at most 15 bytes; require that window to be
-        // readable so the decode never faults (page-edge samples stop here).
-        if (!IsGuestRangeReadable(context, code, 15U))
-        {
-            break;
-        }
-        ZydisDecodedInstruction instruction{};
-        ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
-        if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, code, 15,
-                                                 &instruction, operands)))
-        {
-            break;
-        }
-        ++count;
-        const bool is_transfer =
-            instruction.meta.branch_type != ZYDIS_BRANCH_TYPE_NONE ||
-            instruction.mnemonic == ZYDIS_MNEMONIC_RET ||
-            instruction.mnemonic == ZYDIS_MNEMONIC_IRET ||
-            instruction.mnemonic == ZYDIS_MNEMONIC_IRETD;
-        if (is_transfer)
-        {
-            break;
-        }
-        eip += instruction.length;
-    }
-    if (count == 0)
-    {
-        return;
-    }
-    context->aot_residency_instruction_total.fetch_add(
-        count, std::memory_order_relaxed);
-    context->aot_residency_sample_count.fetch_add(1U, std::memory_order_relaxed);
-    std::uint32_t prev_max =
-        context->aot_residency_max.load(std::memory_order_relaxed);
-    while (count > prev_max &&
-           !context->aot_residency_max.compare_exchange_weak(
-               prev_max, count, std::memory_order_relaxed))
-    {
-    }
-    if (context->shared_live_telemetry != nullptr)
-    {
-        Win32SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
-        InterlockedExchangeAdd(&telemetry->aot_residency_total,
-                               static_cast<long>(count));
-        InterlockedIncrement(&telemetry->aot_residency_samples);
-        if (static_cast<std::uint32_t>(telemetry->aot_residency_max) < count)
-        {
-            InterlockedExchange(&telemetry->aot_residency_max,
-                                static_cast<long>(count));
         }
     }
 }
@@ -932,10 +858,40 @@ bool IsAotInlineCacheMiss(const ThreadContext* context,
     {
         return false;
     }
-    const std::uint32_t offset =
-        cache_address - context->aot_placement->base_address;
-    for (const auto& site :
-         context->aot_placement->indirect_inline_cache_sites)
+    Win32AotCodeCachePlacement* placement = context->aot_placement;
+    const std::uint32_t offset = cache_address - placement->base_address;
+    // Task 479. This test runs immediately before every patch attempt and on
+    // every return dispatch that turns out not to be one, and a "no" answer
+    // streamed all 8,019 sites -- the worst case of the same scan the patch path
+    // carried. Unlike the patch path, a "not found" from the index is trusted
+    // here rather than confirmed by the scan: "no" is the common answer, so
+    // confirming it would reinstate exactly the cost being removed. Anything the
+    // index cannot answer still falls through to the scan below.
+    EnsureAotInlineCacheSiteIndex(placement);
+    const AotInlineCacheSiteLookup indexed =
+        LookupAotInlineCacheSiteIndex(*placement, offset);
+    if (indexed.usable)
+    {
+        if (!indexed.found)
+        {
+            ++placement->inline_cache_site_index.lookup_count;
+            return false;
+        }
+        if (indexed.site_index <
+            placement->indirect_inline_cache_sites.size())
+        {
+            const runtime::AotIndirectInlineCacheSite& site =
+                placement->indirect_inline_cache_sites[indexed.site_index];
+            if (offset == site.miss_cache_offset ||
+                offset == site.miss_cache_offset + 1U)
+            {
+                ++placement->inline_cache_site_index.lookup_count;
+                return true;
+            }
+        }
+    }
+    ++placement->inline_cache_site_index.fallback_scan_count;
+    for (const auto& site : placement->indirect_inline_cache_sites)
     {
         if (offset == site.miss_cache_offset ||
             offset == site.miss_cache_offset + 1U)
@@ -1454,7 +1410,8 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
                              CONTEXT* win32_context,
                              ThreadContext* context,
                              AotDbtDispatchFallbackReason* fallback_reason,
-                             Win32AotTransferOrigin origin)
+                             Win32AotTransferOrigin origin,
+                             std::uint32_t return_patch_site_index)
 {
     const ExecutionTimeScope return_transfer_time_scope(
         context != nullptr ? context->execution_time_profile.get() : nullptr,
@@ -1602,14 +1559,22 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
     }
     if (IsAotInlineCacheMiss(context, context->aot_reentry_cache_address))
     {
-        context->aot_inline_cache_patch_attempt_count.fetch_add(
-            1, std::memory_order_relaxed);
-        if (RequestAotInlineCachePatch(
-                context, context->aot_reentry_cache_address,
-                target, cache_target))
+        const AotReturnPatchAction patch_action =
+            return_patch_site_index == 0xFFFFFFFFU
+            ? AotReturnPatchAction::kPatch
+            : ObserveAotReturnPatchMiss(
+                  context->aot_placement, return_patch_site_index, target);
+        if (patch_action == AotReturnPatchAction::kPatch)
         {
-            context->aot_inline_cache_patch_success_count.fetch_add(
+            context->aot_inline_cache_patch_attempt_count.fetch_add(
                 1, std::memory_order_relaxed);
+            if (RequestAotInlineCachePatch(
+                    context, context->aot_reentry_cache_address,
+                    target, cache_target))
+            {
+                context->aot_inline_cache_patch_success_count.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
         }
     }
     std::uint32_t pop_bytes = 4U;

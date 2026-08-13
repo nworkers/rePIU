@@ -8,6 +8,7 @@
 #include "repiu/platform/win32/execution_trampoline.h"
 #include "repiu/platform/win32/aot_code_cache_win32.h"
 #include "../../platform/win32/aot/aot_dbt_glide_gate_dispatch.h"
+#include "../../platform/win32/telemetry/aot_residency_sample.h"
 #include "../../platform/win32/io/port_io_delay_loop.h"
 #include "../../platform/win32/aot/aot_generation_failure_policy.h"
 #include "../../platform/win32/exception/host_crash_report.h"
@@ -2495,8 +2496,13 @@ void PrintExecutionAttempt(
                 ? static_cast<double>(attempt.aot_residency_total) /
                       static_cast<double>(attempt.aot_residency_samples)
                 : 0.0;
-        logger.info("Win32 AOT residency total/samples/avg/max/coverage%: "
-                    "{}/{}/{:.2f}/{}/{:.2f}",
+        // Task 478 gated the sampler off by default, so a zero here means "not
+        // measured" rather than "no straight-line instructions". The state is
+        // reported alongside the values so a later session cannot read the zero
+        // as a result.
+        logger.info("Win32 AOT residency enabled/total/samples/avg/max/"
+                    "coverage%: {}/{}/{}/{:.2f}/{}/{:.2f}",
+                    repiu::platform::win32::AotResidencySampleEnabled(),
                     attempt.aot_residency_total, attempt.aot_residency_samples,
                     average_residency, attempt.aot_residency_max, coverage);
     }
@@ -2516,6 +2522,28 @@ void PrintExecutionAttempt(
     logger.info("Win32 AOT inline-cache sites/last cache boundary: {}/{}",
                 attempt.aot_inline_cache_site_count,
                 Hex32(attempt.aot_last_reentry_cache_address));
+    // Task 479: `scans` counts patches the site index did not answer, which is
+    // how a silently invalidated index shows up as something other than speed.
+    logger.info(
+        "Win32 AOT inline-cache site index sites/indexed/scans/rebuilds: "
+        "{}/{}/{}/{}",
+        attempt.aot_inline_cache_site_count,
+        attempt.aot_inline_cache_site_index_lookup_count,
+        attempt.aot_inline_cache_site_index_scan_count,
+        attempt.aot_inline_cache_site_index_rebuild_count);
+    logger.info(
+        "Win32 AOT return dispatch site index sites/lookups/scans/rebuilds: "
+        "{}/{}/{}/{}",
+        attempt.aot_return_dispatch_site_count,
+        attempt.aot_return_dispatch_site_index_lookup_count,
+        attempt.aot_return_dispatch_site_index_scan_count,
+        attempt.aot_return_dispatch_site_index_rebuild_count);
+    logger.info(
+        "Win32 AOT return patch policy observations/megamorphic/bypasses: "
+        "{}/{}/{}",
+        attempt.aot_return_patch_policy_observation_count,
+        attempt.aot_return_patch_policy_megamorphic_site_count,
+        attempt.aot_return_patch_policy_bypass_count);
     logger.info("Win32 AOT code writes/retire attempt/success: {}/{}/{}",
                 attempt.aot_code_write_count,
                 attempt.aot_page_retire_attempt_count,

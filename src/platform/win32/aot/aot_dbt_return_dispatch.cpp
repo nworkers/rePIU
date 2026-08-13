@@ -2,6 +2,8 @@
 
 #include "aot_runtime_dispatch.h"
 
+#include "repiu/platform/win32/aot_return_dispatch_site_index.h"
+
 #include <cstddef>
 
 namespace repiu::platform::win32
@@ -19,22 +21,51 @@ constexpr std::uint32_t kFallbackFromMissBytes = 16U;
 bool FindDispatchSite(
     const ThreadContext* context,
     std::uint32_t miss_address,
-    runtime::AotDbtReturnDispatchSite* result)
+    runtime::AotDbtReturnDispatchSite* result,
+    std::uint32_t* result_index)
 {
     if (context == nullptr || context->aot_placement == nullptr ||
-        result == nullptr ||
+        result == nullptr || result_index == nullptr ||
         miss_address < context->aot_placement->base_address)
     {
         return false;
     }
+    Win32AotCodeCachePlacement* placement = context->aot_placement;
     const std::uint32_t offset =
         miss_address - context->aot_placement->base_address;
-    for (const runtime::AotDbtReturnDispatchSite& site :
-         context->aot_placement->dbt_return_dispatch_sites)
+    EnsureAotReturnDispatchSiteIndex(placement);
+    const AotReturnDispatchSiteLookup indexed =
+        LookupAotReturnDispatchSiteIndex(*placement, offset);
+    if (indexed.usable)
     {
+        if (!indexed.found)
+        {
+            ++placement->return_dispatch_site_index.lookup_count;
+            return false;
+        }
+        if (indexed.site_index < placement->dbt_return_dispatch_sites.size())
+        {
+            const runtime::AotDbtReturnDispatchSite& site =
+                placement->dbt_return_dispatch_sites[indexed.site_index];
+            if (site.miss_cache_offset == offset)
+            {
+                *result = site;
+                *result_index = indexed.site_index;
+                ++placement->return_dispatch_site_index.lookup_count;
+                return true;
+            }
+        }
+    }
+    ++placement->return_dispatch_site_index.fallback_scan_count;
+    for (std::size_t index = 0;
+         index < placement->dbt_return_dispatch_sites.size(); ++index)
+    {
+        const runtime::AotDbtReturnDispatchSite& site =
+            placement->dbt_return_dispatch_sites[index];
         if (site.miss_cache_offset == offset)
         {
             *result = site;
+            *result_index = static_cast<std::uint32_t>(index);
             return true;
         }
     }
@@ -56,7 +87,8 @@ extern "C" void __stdcall ResolveAotDbtReturnMissFrame(
     const std::uint32_t guest_source = frame[kGuestSourceIndex];
     const std::uint32_t miss_address = frame[kMissAddressIndex];
     runtime::AotDbtReturnDispatchSite site;
-    if (!FindDispatchSite(context, miss_address, &site) ||
+    std::uint32_t site_index = 0;
+    if (!FindDispatchSite(context, miss_address, &site, &site_index) ||
         site.guest_source != guest_source)
     {
         frame[kGuestSourceIndex] = miss_address + kFallbackFromMissBytes;
@@ -91,7 +123,7 @@ extern "C" void __stdcall ResolveAotDbtReturnMissFrame(
         AotDbtDispatchFallbackReason::kUnknown;
     if (!HandleAotReturnTransfer(
             &exception_info, &guest_context, context, &fallback_reason,
-            Win32AotTransferOrigin::kHost))
+            Win32AotTransferOrigin::kHost, site_index))
     {
         RecordAotDbtReturnFallback(context, fallback_reason);
         return;

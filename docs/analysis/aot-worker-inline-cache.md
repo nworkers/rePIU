@@ -141,6 +141,35 @@ instruction byte write는 기존 entry를 retire하고, 다음 page 진입에서
 * 여러 guest thread가 같은 cache를 실행할 때의 publication 정책
 * retired inline-cache provenance와 generation cache의 장기 reclamation
 
+## Task 480: return miss adapter의 별도 site 탐색
+
+Task 479 이후 pumpit8에서 return handler는 여전히 `guest-run`의 44.96~45.33%였고,
+약 210만 return miss 모두 성공했습니다. `ResolveAotDbtReturnMissFrame` 진입부의
+`FindDispatchSite`가 `dbt_return_dispatch_sites`를 선형 탐색한다는 사실을 확인했습니다.
+이는 Task 479가 인덱스화한 `indirect_inline_cache_sites`와 다른 배열이며, 초기 pumpit8
+plan에는 return site가 1,036개 있습니다.
+
+Task 480은 `miss_cache_offset` exact hash index를 추가했습니다. 중복 키는 기존 scan과
+같이 가장 낮은 index를 선택하고, append 또는 invalidate로 site count가 어긋나면 기존
+scan으로 내려갑니다. 이 변경은 return target, patch 정책, generated code를 바꾸지
+않습니다. 남은 1순위는 사용자 A/B로 효과를 측정한 뒤 megamorphic return의 매회
+재패치를 줄이는 것입니다.
+
+## Task 481: megamorphic return patch 우회
+
+Task 480 사용자 로그 세 실행은 index lookup이 return entry와 정확히 일치하고
+`scans=0`, fallback 0임을 확인했습니다. return당 handler cycle은 Task 479 평균
+20,358에서 19,652로 3.46% 감소했고 두 실행 범위도 겹치지 않았습니다. 다만
+primitive/swap이 22.38% 달라 FPS 증가는 Task 480에 귀속하지 않습니다.
+
+Task 481은 DBT host-stack return miss만 site별로 관찰합니다. 최소 16회 miss와 현재
+4-entry PIC 용량의 두 배인 8개 고유 guest target이 모두 확인되면 site를 megamorphic으로
+고정하고 PIC patch만 생략합니다. 이미 학습된 entry는 보존되며 target resolution,
+return stack 처리, cache continuation과 fallback은 기존 경로입니다. 정책 상태가 site
+배열과 어긋나면 기존 patch를 수행합니다. 합성 probe는 단일/4-way site 비분류,
+8-way 임계 판정, 지속 우회, site 독립성과 append 상태 보존을 확인했습니다. 실제
+patch/return 비율과 return당 cycle 효과는 사용자 3회 로그가 남은 검증입니다.
+
 # AOT Worker-backed Inline Cache Analysis
 
 ## Confirmed
@@ -170,3 +199,35 @@ forwarded with `E9 rel32`, so already learned inline-cache targets converge on t
 new generation; shorter entries remain `INT3` provenance traps. Polymorphic-site
 cost, multi-thread publication, and long-term retired-cache reclamation remain
 unresolved.
+
+## Task 480: separate return-miss adapter site scan
+
+After Task 479, pumpit8's return handler still occupied 44.96-45.33% of
+`guest-run`, with about 2.1 million successful return misses per run.
+`FindDispatchSite` at the start of `ResolveAotDbtReturnMissFrame` linearly scanned
+`dbt_return_dispatch_sites`, a separate array from the one Task 479 indexed. The
+initial pumpit8 plan contains 1,036 return sites.
+
+Task 480 adds an exact `miss_cache_offset` hash index. Duplicate keys preserve
+the scan's lowest-index answer, while append or invalidation count mismatches
+fall back to the original scan. Return targets, patch policy, and generated code
+remain unchanged. Three user runs then matched every return entry with an index
+lookup, with zero scans and fallback. Mean handler cycles per return fell 3.46%,
+from 20,358 to 19,652, with non-overlapping run ranges. The FPS change is not
+attributed because primitives per swap differed by 22.38%.
+
+## Task 481: megamorphic return patch bypass
+
+Task 481 observes only DBT host-stack return misses by site. After at least
+sixteen misses and eight distinct guest targets—twice the four-entry PIC
+capacity—the site is permanently classified as megamorphic and only PIC
+patching is skipped. Learned entries remain, while target resolution, return
+stack handling, cache continuation, and fallback stay on the existing path.
+State not synchronized with the site array fails open to patching. Synthetic
+probes confirmed non-classification for one- and four-way sites, eight-way
+threshold classification, persistent bypass, site isolation, and append-state
+preservation. Three user runs classified 38-39 sites, bypassed 97.61% of return
+patches, reduced patch/return from 100.01% to 2.39%, and reduced mean handler
+cycles per return from 19,652 to 1,275 (-93.51%), with zero fallback and zero
+index scans. Scene equivalence failed (returns/swap +55.29%, primitives/swap
+-31.85%), so FPS and whole-run cycles are not attributed.

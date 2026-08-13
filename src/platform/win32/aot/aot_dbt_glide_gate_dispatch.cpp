@@ -1,6 +1,7 @@
 #include "aot_dbt_glide_gate_dispatch.h"
 
 #include "aot_runtime_dispatch.h"
+#include "aot_residency_sample.h"
 #include "repiu/platform/win32/aot_code_cache_win32.h"
 #include "../boundary/linexe_glide_boundary.h"
 #include "../execution/execution_internal.h"

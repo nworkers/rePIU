@@ -29,11 +29,7 @@ void RecordAotOtherBoundarySample(ThreadContext* context,
                                   const std::uint8_t* bytes,
                                   std::size_t length);
 
-// Task 263(b): accumulate the AOT residency proxy for a real cache entry --
-// straight-line guest instruction count from `guest_entry_eip` to the first
-// control transfer (cap 64), honoring readability.
-void AccumulateAotResidency(ThreadContext* context,
-                            std::uint32_t guest_entry_eip);
+// AccumulateAotResidency moved to telemetry/aot_residency_sample.h (Task 478).
 
 void BumpAotReentryCount(ThreadContext* context);
 
@@ -137,7 +133,9 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
                              AotDbtDispatchFallbackReason* fallback_reason =
                                  nullptr,
                              Win32AotTransferOrigin origin =
-                                 Win32AotTransferOrigin::kVeh);
+                                 Win32AotTransferOrigin::kVeh,
+                             std::uint32_t return_patch_site_index =
+                                 0xFFFFFFFFU);
 
 bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
                       CONTEXT* win32_context,

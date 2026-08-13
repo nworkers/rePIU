@@ -41,7 +41,7 @@ to build the pumpit3 image at the time of removal.
 
 ## 다음 할 일 / Next work, in order
 
-**현재 순위는 아래 [2026-08-07 세션(Tasks 435~445)](#2026-08-07-세션-tasks-435445--glide-비용을-깎다가-진짜-병목은-다른-곳에서-나왔습니다) 인수인계 항목에 있습니다.** 이 절은 2026-08-04 Tasks 411~417 기준으로 남겨 둔 기록입니다.
+**현재 순위는 아래 [2026-08-13 세션(Task 478~)](#2026-08-13-세션-task-478--pumpit8-사각지대의-정체는-vehr-밖에서-도는-return-핸들러였습니다) 인수인계 항목에 있습니다.** 그 앞 [2026-08-07 세션(Tasks 435~445)](#2026-08-07-세션-tasks-435445--glide-비용을-깎다가-진짜-병목은-다른-곳에서-나왔습니다)과 이 절은 각각 그 시점의 기록으로 남겨 둡니다.
 
 2026-08-04 Tasks 411~417 기준입니다. 근거는 아래 인수인계 절과
 [pumpit3 bring-up](pumpit3-bring-up.md), [pumpit3 기동 중 멈춤](pumpit3-startup-stall.md),
@@ -344,6 +344,321 @@ thin sample: Task 416's full census refuted a "global trace mode" read taken fro
 `last_eip` samples.
 
 ## 다음 세션 인수인계 / Session handoff
+
+### 2026-08-13 세션 (Task 478~) — pumpit8, 사각지대의 정체는 VEH 밖에서 도는 return 핸들러였습니다
+
+**한 줄:** `pumpit8`이 약 8.1 fps로 도는 장면을 cycle 프로파일로 잡자 `unaccounted`
+75.96% 중 **46.75%가 `kAotReturn` 하나**로 드러났고, 2026-08-07 세션이 1순위로 올려둔
+`InvokeOnHostThread` 축은 이 타이틀에서 **10.35%**에 불과했습니다.
+
+#### 측정 (2026-08-13, vsync OFF, `REPIU_EXECUTION_TIME_PROFILE=1`)
+
+wall 117초, `guest-run` 314,692,501,094 cycle, buffer swap **691회 = 약 8.1 fps**,
+`grDrawTriangle` 36,490회(프레임당 52.8), IC 패치 **1,203,695회(프레임당 1,742)**.
+
+| 항목 | cycles | `guest-run` 대비 |
+|---|---:|---:|
+| **`kAotReturn` (return 핸들러 전체)** | 147,128,180,784 | **46.75%** |
+| ├ `kAotResidency` (중첩, 순수 계측) | 43,004,277,414 | 13.67% |
+| ├ `kAotTransferResolve` (중첩) | 13,729,791,237 | 4.36% |
+| └ 나머지 — 대부분 IC 패치 | 약 90.4e9 | 약 28.7% |
+| VEH 핸들러 | 36,983,302,820 | 11.75% |
+| glide-gate | 32,583,170,022 | 10.35% |
+| port-io | 18,276,672,007 | 5.81% |
+| `kAotDynamicTranslate` | 8,931,653,191 | 2.84% |
+| `kAotReentry` | 7,416,917,164 | 2.36% |
+| `kAotIndirect` | 2,846,454,136 | 0.90% |
+
+#### 확인됨 1 — frontier 항목 3(시간 프로파일 사각지대)의 답
+
+핸들러 버킷 합(157.8e9)이 VEH `aot-transfer` 창(16.3e9)의 **9배**입니다. 즉 return
+핸들러는 대부분 VEH **밖**(direct DBT dispatch 스텁)에서 돌고, VEH 창만 재던 계측에는
+잡히지 않은 채 `unaccounted`에 앉아 있었습니다. **사각지대는 측정 오류가 아니라
+핸들러가 예외 경로 밖으로 옮겨간 결과입니다.** cycle 프로파일과 position census가
+4~5배 어긋나던 이유가 이것으로 설명됩니다.
+
+#### 확인됨 2 — IC 패치 단가의 지배 요인은 syscall이 아니라 선형 탐색
+
+패치 회당 약 **75,100 cycle(약 20 µs)**입니다. `PatchWin32AotIndirectInlineCache`의
+site 조회가 선형 탐색이고([aot_code_cache_win32.cpp:1692](../../src/platform/win32/aot_code_cache_win32.cpp#L1692)),
+`AotIndirectInlineCacheSite`는 `std::vector` 멤버를 포함해 약 48바이트, site가
+**8,019개**이므로 배열이 **385 KB**입니다. 매 패치가 평균 절반인 약 192 KB를
+스트리밍하며 캐시 라인 약 3,000회를 건드립니다. `VirtualProtect` 2회 +
+`FlushInstructionCache`는 이에 비하면 부차적입니다.
+
+Task 334가 `FindAotGuestAddress`의 **동일한 선형 탐색**을 "reentry 핸들러의 96%,
+guest wall clock의 약 44%"로 기록하고 `LookupAotGuestAddressIndex`로 O(log n)화했는데,
+**패치 경로에는 같은 인덱스가 적용되지 않은 채 남아 있습니다.**
+
+#### 확인됨 3 — thrash는 두 site에 집중되어 있습니다
+
+4096회마다 표본되는 패치 로그 198건 중 **170건(86%)**이 두 곳입니다.
+
+| site (guest) | 표본 비중 |
+|---|---:|
+| `0x040F57ED` | 91 (46%) |
+| `0x0402AB2A` | 79 (40%) |
+
+miss target이 `0x040106FB`~`0x0401082D`, `0x0402A62D`~`0x0402B214` 대역에 넓게
+흩어진 megamorphic return입니다. 슬롯 상한은
+[aot_code_cache.cpp:15](../../src/runtime/aot_code_cache.cpp#L15)의
+`kInlineCacheEntryCount = 4U`로 emitter에 박혀 있어 **환경 변수로는 못 늘립니다**
+(`REPIU_AOT_INDIRECT_CACHE_SLOTS`는 1 또는 4만 받습니다). frontier 항목 5가
+pumpit3에서 지목한 return IC thrash가 pumpit8에서 재현된 것입니다.
+
+#### 확인됨 4 — Glide 축은 이 타이틀에서 1순위가 아닙니다
+
+게이트는 10.35%이고, `InvokeOnHostThread` 수술(2026-08-07 세션 1순위)은 착수 대상이
+아닙니다. 다만 rendezvous 단가가 **회당 637,636 cycle(약 173 µs)**로 pumpit2 기준선
+11.8~12.2 µs의 **14배**이고, 호스트 spin이 70% miss입니다(host-hit/miss
+20,431/47,356). 이는 Glide 코드가 느려진 것이 아니라 **게스트 스레드가 CPU를
+포화시켜 호스트 스레드가 스케줄되지 못하는 증상**으로 읽힙니다. **CPU 축을 정리한
+뒤 재측정해야 실제 크기를 알 수 있습니다.**
+
+#### 다음 축 — 우선순위
+
+| # | 할 일 | 근거 | 예상 | 위험 |
+|---|---|---|---:|---|
+| **1** | **[완료, Task 478] residency 계측 게이트화** | 13.67%, 순수 계측, 게이트 없음 | 제거 확인, fps는 미측정 | 없음 |
+| **2** | **[구현 완료, Task 479] IC 패치 site 조회 인덱스화** — Task 334 해법의 재적용 | 회당 약 75,100 cycle의 대부분 | −20~25% | 낮음 |
+| 3 | IC 슬롯/return 정책 재설계 — 패치 **횟수** 축 | 프레임당 1,742~3,065회, 두 site가 86% | 별도 측정 | 중간 |
+| 4 | Glide rendezvous 재측정 | 1~3 이후 173 µs가 얼마나 남는지 | — | — |
+| 5 | port-io 4.0~5.8% | 이벤트 120만~130만회 | — | — |
+
+1번과 2번은 게스트 동작을 전혀 바꾸지 않는 호스트 측 자료구조·계측 문제입니다. 3번은
+hit 경로의 비교 체인 길이라는 대가가 있어 단순 증설(4→8/16)과 **return 전용 해시
+테이블** 중 선택을 설계로 먼저 정리해야 합니다.
+
+#### Task 478 결과 — 제거는 확인, fps는 미측정
+
+**확인됨.** 기본 실행이 `Win32 AOT residency enabled: false`를 찍고 `kAotResidency`가
+**43,004,277,414 cycle / 3,076,235회 → 0 / 0**이 됐습니다. 비교가 아니라 구조적
+사실이므로 장면과 무관합니다.
+
+**미확정.** 같은 세션의 A/B 한 쌍은 **장면이 달라 fps 판정에 쓸 수 없습니다.**
+
+| 지표 | 이전 | 이후 | 판정 |
+|---|---:|---:|---|
+| 패치/프레임 | 1,742 | 3,065 | **+76%, 3% 조건 위반** |
+| 평균 draw 배치 | 15.98 | 7.69 | **−52%** |
+| cycle당 swap | — | — | **+43.6%** |
+| cycle당 primitive | — | — | **−41.8%** |
+
+교차 지표 둘이 **반대 방향**입니다. 겉보기 fps 8.10 → 11.64는 근거로 쓰지 마십시오.
+
+**다음 세션 지시:** Task 479가 같은 return 경로를 건드리므로, **479 구현 후 같은
+구간을 3회 재현해 478+479를 한 번에 판정**하십시오. 지금 478만 따로 재측정하는 것은
+실행 횟수 낭비입니다. 판정 조건은 프레임당 패치 수·primitive 수가 3% 이내로 일치하고
+cycle당 swap과 cycle당 primitive가 같은 방향일 때입니다.
+
+`REPIU_AOT_RESIDENCY_SAMPLE=1` 되켜기 확인은 아직 남아 있습니다.
+
+#### Task 479 결과 — 478과 합산 효과 확인
+
+**확인됨 1 — 같은 선형 탐색이 두 곳이었습니다.** 항목 2는 패치 경로만 지목했지만,
+`IsAotInlineCacheMiss`([`aot_runtime_dispatch.cpp:853`](../../src/platform/win32/aot/aot_runtime_dispatch.cpp#L853))가
+**키도 배열도 같은 탐색**이고 indirect dispatch(`:1310`)·return dispatch(`:1529`)
+양쪽에서 패치 시도 직전에 호출됩니다. 더 나쁜 쪽입니다 — 패치로 이어지지 않는
+dispatch마다 **8,019개 전부**를 도는 최악의 경우가 실행됩니다. 따라서 패치 1회에
+이 탐색이 **최소 2회** 들어가 있었습니다. 두 지점 모두 인덱스로 바꿨습니다.
+
+**확인됨 2 — 구현과 등가성.** `miss_cache_offset` 해시 인덱스를
+`platform/win32/aot_inline_cache_site_index.{h,cpp}`에 신설했고, Task 324/334와 같은
+"인덱스는 캐시" 규약을 지킵니다(개수 불일치 → 사용 불가 보고 → 기존 탐색). 새 probe
+11항목이 변경 전 조회를 oracle로 두고 대조합니다 — 인접 miss offset(양쪽 순서),
+중복 키, 해시 충돌, offset 0의 부호 없는 wrap, append 300회, 무효화, 빈 배열.
+`aot_probe`는 pumpit8 `PIU.EXE`로 **exit 0**이고 기존 `inline_cache_*` 11항목도 그대로
+통과합니다.
+
+**확인됨 3 — 478+479 합산 성능.** 동일 구간 3회에서 patch/swap은 기준 대비 평균
+**+0.02%**, primitive/swap은 **+2.07%**로 판정 조건 3% 이내였고, cycle/swap
+**−22.69%**, cycle/primitive **−24.26%**, swap/wall-second **+29.14%**였습니다.
+세 실행 모두 `scans=0`, residency 0, patch 성공률 100%, dynamic translation
+`266/266`, return fallback 0이었습니다. 478 단독 대조군은 없어 479 단독 효과는
+분리하지 않습니다.
+
+**남은 함정:** 항목 3(패치 **횟수** 축)은 그대로입니다. 단가를 낮춰도 프레임당
+1,742~3,065회라는 빈도는 변하지 않습니다.
+
+#### Task 480 — return dispatch site의 별도 선형 탐색
+
+479 이후에도 `kAotReturn`은 세 실행에서 `guest-run`의 **44.96~45.33%**이고 호출당
+20,270~20,415 cycle입니다. 조사 결과 return miss thunk의 `FindDispatchSite`가
+Task 479의 배열이 아닌 `dbt_return_dispatch_sites`를 매번 선형 탐색했습니다. 초기
+pumpit8 plan의 return은 1,036개이고 실행당 return miss는 약 210만 회입니다.
+
+Task 480은 이 exact `miss_cache_offset` 조회를 hash index로 바꾸되 stale 상태에서는
+기존 scan으로 내려가게 했습니다. 사용자 세 실행에서 lookup은 모든 return entry와
+일치했고 `scans=0`, fallback 0이었습니다. return당 handler cycle은 평균 20,358에서
+19,652로 **3.46% 감소**했으며 실행 범위도 겹치지 않았습니다. primitive/swap이
+22.38% 달라 FPS 변화는 이 변경에 귀속하지 않습니다.
+
+#### Task 481 — megamorphic return patch 우회
+
+DBT host-stack return site가 16회 이상 miss하면서 8개 이상의 서로 다른 guest target을
+보이면 4-entry PIC로 수렴할 수 없는 것으로 판정합니다. 이후 기존 PIC entry는 보존하고
+재패치만 생략하며, target resolution과 성공/fallback continuation은 그대로입니다.
+합성 probe와 Win32 x86 Debug 빌드는 통과했습니다. 다음 측정은 같은 장면 3회에서
+38~39개 site를 분류하고 평균 97.61%를 우회했습니다. patch/return은 100.01%에서
+2.39%로, return당 cycle은 19,652에서 1,275로 **93.51% 감소**했으며 fallback과
+index scan은 0입니다. 장면은 return/swap +55.29%, primitive/swap -31.85%로 동등하지
+않아 FPS와 전체 cycle/swap은 귀속하지 않습니다. 다음 과제는 Task 482의 Glide ordinal과
+return 잔여 sub-stage 귀속입니다.
+
+#### 방법 규칙 (이번 세션에서 확인)
+
+* **`unaccounted`를 "게스트 실행"으로 읽지 마십시오.** 이번 측정에서 그 대부분은
+  우리 핸들러였습니다. 핸들러 버킷 합과 VEH 창의 비를 먼저 보십시오 — 1보다 크게
+  넘으면 그 핸들러는 예외 경로 밖에서도 돌고 있다는 뜻입니다.
+* **타이틀마다 축이 다릅니다.** pumpit2의 1순위(Glide 랑데부 48%)를 pumpit8에
+  그대로 적용하면 10.35%짜리를 붙잡게 됩니다.
+
+---
+
+### 2026-08-13 session (Task 478-) — on pumpit8, the blind spot was a return handler running outside VEH
+
+**In one line:** profiling a `pumpit8` scene running at about 8.1 fps showed that
+**46.75% of the 75.96% `unaccounted` bucket is `kAotReturn` alone**, while the
+`InvokeOnHostThread` axis the 2026-08-07 session ranked first is only **10.35%**
+on this title.
+
+**Measurement** (2026-08-13, vsync off, `REPIU_EXECUTION_TIME_PROFILE=1`): 117 s
+wall, `guest-run` 314,692,501,094 cycles, 691 buffer swaps ≈ 8.1 fps, 36,490
+`grDrawTriangle` (52.8 per frame), **1,203,695 inline-cache patches (1,742 per
+frame)**.
+
+| Item | cycles | Share of `guest-run` |
+|---|---:|---:|
+| **`kAotReturn`** | 147,128,180,784 | **46.75%** |
+| ├ `kAotResidency` (nested, pure instrumentation) | 43,004,277,414 | 13.67% |
+| ├ `kAotTransferResolve` (nested) | 13,729,791,237 | 4.36% |
+| └ remainder, mostly the patch | ≈90.4e9 | ≈28.7% |
+| VEH handler | 36,983,302,820 | 11.75% |
+| glide-gate | 32,583,170,022 | 10.35% |
+| port-io | 18,276,672,007 | 5.81% |
+
+**Confirmed 1 — this answers frontier item 3.** The handler buckets sum to 157.8e9
+against a VEH `aot-transfer` window of 16.3e9, a factor of nine. The return
+handler mostly runs *outside* VEH, on the direct DBT dispatch stub, so
+instrumentation that measured only the VEH window left it sitting in
+`unaccounted`. The blind spot was not a measurement error but a handler that had
+moved off the exception path, which is why the cycle profile and the position
+census disagreed by four to five times.
+
+**Confirmed 2 — the patch's dominant cost is the linear scan, not the syscalls.**
+About **75,100 cycles (≈20 µs) per patch**. The site lookup in
+`PatchWin32AotIndirectInlineCache` is a linear scan
+([aot_code_cache_win32.cpp:1692](../../src/platform/win32/aot_code_cache_win32.cpp#L1692))
+over **8,019** sites of about 48 bytes each — a 385 KB array, of which each patch
+streams roughly half, touching about 3,000 cache lines. The two `VirtualProtect`
+calls and `FlushInstructionCache` are secondary to that. Task 334 recorded the
+**same linear scan** in `FindAotGuestAddress` at "96% of the reentry handler and
+roughly 44% of all guest wall clock" and indexed it; **the patch path never
+received that index.**
+
+**Confirmed 3 — the thrash is concentrated in two sites.** Of 198 sampled patches
+(one per 4096), **170 (86%)** come from `0x040F57ED` (91) and `0x0402AB2A` (79),
+megamorphic returns whose miss targets spread across `0x040106FB`-`0x0401082D`
+and `0x0402A62D`-`0x0402B214`. The slot ceiling is baked into the emitter as
+`kInlineCacheEntryCount = 4U`
+([aot_code_cache.cpp:15](../../src/runtime/aot_code_cache.cpp#L15)) and **cannot
+be raised by environment variable** — `REPIU_AOT_INDIRECT_CACHE_SLOTS` accepts
+only 1 or 4. This is frontier item 5's pumpit3 return-IC thrash, reproduced on
+pumpit8.
+
+**Confirmed 4 — the Glide axis is not first on this title.** The gate is 10.35%,
+so the `InvokeOnHostThread` surgery is not the thing to start. Its rendezvous
+unit price is nonetheless **637,636 cycles (≈173 µs) per call**, fourteen times
+the pumpit2 baseline of 11.8-12.2 µs, with the host spin missing 70% of the time
+(host hit/miss 20,431/47,356). That reads as the guest thread saturating the CPU
+so the host thread is not scheduled — a *symptom* of the CPU axis. Re-measure it
+after the CPU work rather than before.
+
+**Next axes, in order:** (1) **[done, Task 478]** gate the residency sampler,
+13.67%; (2) **[implemented, Task 479]** index the patch site lookup, reapplying
+Task 334's fix, ~20-25%;
+(3) redesign the inline-cache slot/return policy to cut the patch *count*;
+(4) re-measure the Glide rendezvous; (5) port I/O at 4.0-5.8%. Items 1 and 2
+change no guest behavior. Item 3 trades against hit-path compare-chain length, so
+the choice between widening the slots and a **return-specific hash table**
+belongs in a design first.
+
+**Task 478 outcome — removal confirmed, fps unmeasured.** A default run reports
+`Win32 AOT residency enabled: false` and `kAotResidency` fell from
+**43,004,277,414 cycles over 3,076,235 calls to 0 / 0** — a structural fact, so
+scene-independent. But the session's A/B pair **cannot judge fps, because the
+scenes differ**: patches per frame 1,742 → 3,065 (+76%, violating the 3% rule),
+mean draw batch 15.98 → 7.69 (−52%), and the two cross-checks point in opposite
+directions (swaps per cycle +43.6% against primitives per cycle −41.8%). Do not
+cite the apparent 8.10 → 11.64 fps.
+
+**Instruction for the next session:** Task 479 touches the same return path, so
+**implement 479 first, then reproduce one section three times and judge 478 and
+479 together.** Re-measuring 478 alone now wastes runs. The judgment holds only
+when per-frame patches and primitives agree within 3% and swaps per cycle and
+primitives per cycle move in the same direction. Re-enabling with
+`REPIU_AOT_RESIDENCY_SAMPLE=1` still needs checking.
+
+**Task 479 outcome — combined Task 478+479 effect confirmed.**
+
+*Confirmed 1 — the same linear scan existed in two places.* Item 2 named only the
+patch, but `IsAotInlineCacheMiss`
+([`aot_runtime_dispatch.cpp:853`](../../src/platform/win32/aot/aot_runtime_dispatch.cpp#L853))
+is the **same scan over the same array with the same key**, called just before
+every patch attempt from both indirect dispatch (`:1310`) and return dispatch
+(`:1529`) — and it is the worse of the two, because every dispatch that does *not*
+patch walks all 8,019 sites. One patch therefore carried **at least two** of these
+scans. Both are now indexed.
+
+*Confirmed 2 — implementation and equivalence.* A `miss_cache_offset` hash index
+lives in `platform/win32/aot_inline_cache_site_index.{h,cpp}` under the same
+"index is a cache" contract as Tasks 324 and 334: a count mismatch makes the
+lookup report itself unusable and the original scan runs. A new eleven-item probe
+compares it against the pre-change lookup as an oracle — adjacent miss offsets in
+both array orders, duplicate keys, a forced hash collision, the unsigned wrap at
+offset zero, 300 appends, invalidation, and an empty array. `aot_probe` exits 0 on
+the pumpit8 `PIU.EXE` with the existing `inline_cache_*` items still passing.
+
+*Confirmed 3 — combined Task 478+479 performance.* Three matching runs kept
+patches per swap within **+0.02%** and primitives per swap within **+2.07%** of
+the baseline. Cycles per swap fell **22.69%**, cycles per primitive **24.26%**,
+and swaps per wall-second rose **29.14%**. All runs had zero index scans and
+residency, 100% patch success, dynamic translation `266/266`, and zero return
+fallback. There is no 478-only control, so 479's isolated contribution remains
+unknown.
+
+*Still open:* item 3, the patch **count** axis. Lowering the unit price does not
+change the 1,742-3,065 patches per frame.
+
+**Task 480 — a separate return-dispatch-site scan.** After Task 479,
+`kAotReturn` still occupies **44.96-45.33%** of `guest-run`, at 20,270-20,415
+cycles per call. `FindDispatchSite` in the return miss thunk scans the separate
+`dbt_return_dispatch_sites` array; the initial pumpit8 plan has 1,036 returns and
+the run makes about 2.1 million misses. Task 480 replaces this exact-offset scan
+with a fail-soft hash index. Three user runs matched every return with an index
+lookup and recorded zero scans and fallback. Mean cycles per return fell 3.46%,
+from 20,358 to 19,652, with non-overlapping run ranges. The FPS difference is not
+attributed because primitives per swap differed by 22.38%.
+
+**Task 481 — megamorphic return patch bypass.** A DBT host-stack return site is
+classified when it records at least sixteen misses and eight distinct guest
+targets, evidence that the four-entry PIC cannot converge. Existing entries are
+retained and only subsequent repatching is skipped; target resolution and both
+continuations remain unchanged. Synthetic probes and the Win32 x86 Debug build
+pass. Three user runs classified 38-39 sites and bypassed 97.61% on average;
+patch/return fell from 100.01% to 2.39% and cycles per return from 19,652 to
+1,275 (-93.51%), with zero fallback and index scans. Scene equivalence failed
+(returns/swap +55.29%, primitives/swap -31.85%), so FPS and whole-run cycles are
+not attributed. Task 482 next attributes Glide ordinals and the remaining return
+sub-stages.
+
+**Method rules confirmed here:** never read `unaccounted` as "guest execution" —
+here most of it was our own handler; compare the handler-bucket sum against the
+VEH window first, and a ratio well above one means that handler also runs off the
+exception path. And **axes differ per title**: applying pumpit2's first place
+(Glide rendezvous, 48%) to pumpit8 would have meant attacking a 10.35% item.
+
+---
 
 ### 2026-08-07 세션 (Tasks 435~445) — Glide 비용을 깎다가 진짜 병목은 다른 곳에서 나왔습니다
 
