@@ -122,6 +122,9 @@ public:
                       const std::uint8_t* source,
                       std::size_t source_size,
                       const std::uint8_t* palette_rgba8 = nullptr);
+    // Glide stores palette indices separately from the palette. Re-decode all
+    // retained P_8/AP_88 sources when grTexDownloadTable changes the palette.
+    bool RefreshPalettizedTextures(const std::uint8_t* palette_rgba8);
     // Select the current texture for subsequent draws (grTexSource).
     bool SourceTexture(std::uint32_t start_address);
     // Set TMU texture wrapping (clamp) and filtering.
@@ -312,6 +315,8 @@ private:
         // still addressed 0..256 and normalizing by 32 shrinks it eightfold.
         std::uint32_t s_extent = 256;
         std::uint32_t t_extent = 256;
+        std::uint32_t format = 0U;
+        std::vector<std::uint8_t> source;
     };
 
     bool IsHostThread() const;

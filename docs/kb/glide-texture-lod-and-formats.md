@@ -191,6 +191,45 @@ Red이고, ABGR/BGRA이면 상위 5비트가 Blue입니다.
 값 0~5는 1바이트, 8 이상은 2바이트다. 팔레트 포맷(`P_8`, `AP_88`)은
 `grTexDownloadTable`로 내려온 팔레트가 있어야 색을 복원할 수 있다.
 
+### 표준 palette의 상위 바이트는 alpha가 아니다
+
+표준 `GuTexPalette` entry는 32비트 `0xAARRGGBB` 모양으로 저장되지만 실제 palette는
+8-bit RGB이며 상위 8비트는 무시됩니다. 따라서 P_8을 RGBA로 확장할 때 alpha는 항상
+255여야 합니다. AP_88은 palette에서 RGB만 가져오고 texel의 상위 8비트에서 alpha를
+가져옵니다. 상위 palette 바이트를 alpha로 사용하면 예약/미정 값이 혼합에 들어가 색과
+투명도가 손상됩니다.
+
+근거: [3Dfx Glide 2.4 Reference Manual](https://bitsavers.org/components/3dfx/Glide_Reference_Manual_2.4_199707.pdf),
+[3Dfx Glide 3.0 Programming Guide](https://www.bitsavers.org/components/3dfx/Glide_Programming_Guide_3.0_199806.pdf).
+
+### The standard palette high byte is not alpha
+
+A standard `GuTexPalette` entry has a 32-bit `0xAARRGGBB`-shaped storage word,
+but the palette contains 8-bit RGB and ignores the high byte. P_8 must therefore
+expand with alpha 255. AP_88 takes RGB from the palette and alpha from the
+texel's high byte. Treating the ignored palette byte as alpha feeds reserved or
+undefined values into blending and corrupts colour and transparency.
+
+Sources: [3Dfx Glide 2.4 Reference Manual](https://bitsavers.org/components/3dfx/Glide_Reference_Manual_2.4_199707.pdf),
+[3Dfx Glide 3.0 Programming Guide](https://www.bitsavers.org/components/3dfx/Glide_Programming_Guide_3.0_199806.pdf).
+
+### texture와 palette의 수명은 분리된다
+
+`grTexDownloadMipMapLevel`은 P_8/AP_88 texel의 palette index를 texture memory에
+저장하고, `grTexDownloadTable`은 별도의 TMU palette를 바꿉니다. 따라서 texture를 먼저
+다운로드하고 palette를 나중에 바꾸는 순서도 유효하며, palette 변경은 기존 indexed
+texture에 적용돼야 합니다. HLE가 texture download 시점에 RGBA로 미리 확장한다면 원본
+index texel을 보존하고 palette 변경 때 다시 확장해야 동일한 의미를 유지할 수 있습니다.
+
+### Texture and palette lifetimes are separate
+
+`grTexDownloadMipMapLevel` stores P_8/AP_88 palette indices in texture memory,
+while `grTexDownloadTable` changes a separate TMU palette. Downloading texture
+first and changing the palette later is therefore valid, and the new palette
+must affect existing indexed textures. An HLE that expands to RGBA at texture
+download time must retain the original indices and expand them again after a
+palette change.
+
 ## 채널 확장 주의
 
 5·6비트 채널을 8비트로 늘릴 때 단순 시프트(`v << 3`)를 쓰면 최댓값이 255가 아니라

@@ -34,6 +34,29 @@ std::uint8_t Expand(std::uint32_t value, std::uint32_t bits)
 
 }  // namespace
 
+bool DecodeGlidePaletteToRgba8(const std::uint32_t* source,
+                               const std::size_t entry_count,
+                               std::uint8_t* rgba8_out,
+                               const std::size_t output_size)
+{
+    constexpr std::size_t kPaletteEntryCount = 256U;
+    constexpr std::size_t kOutputBytes = kPaletteEntryCount * 4U;
+    if (source == nullptr || entry_count < kPaletteEntryCount ||
+        rgba8_out == nullptr || output_size < kOutputBytes)
+    {
+        return false;
+    }
+    for (std::size_t index = 0U; index < kPaletteEntryCount; ++index)
+    {
+        const std::uint32_t color = source[index];
+        rgba8_out[index * 4U] = static_cast<std::uint8_t>(color >> 16U);
+        rgba8_out[index * 4U + 1U] = static_cast<std::uint8_t>(color >> 8U);
+        rgba8_out[index * 4U + 2U] = static_cast<std::uint8_t>(color);
+        rgba8_out[index * 4U + 3U] = 255U;
+    }
+    return true;
+}
+
 bool CalculateGlideTextureDimensions(std::uint32_t large_lod,
                                      std::uint32_t aspect_ratio,
                                      GlideTextureDimensions* dimensions)
@@ -216,6 +239,11 @@ bool IsGlideTextureFormatAcceptable(std::uint32_t format)
         default:
             return false;
     }
+}
+
+bool IsGlidePalettizedTextureFormat(const std::uint32_t format)
+{
+    return format == 5U || format == 14U;
 }
 
 }  // namespace repiu::hle

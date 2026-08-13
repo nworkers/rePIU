@@ -1712,6 +1712,15 @@ bool GlideOpenGlBackend::StoreTexture(std::uint32_t start_address,
     }
     entry.width = dimensions.width;
     entry.height = dimensions.height;
+    entry.format = format;
+    if (repiu::hle::IsGlidePalettizedTextureFormat(format))
+    {
+        entry.source.assign(source, source + source_size);
+    }
+    else
+    {
+        entry.source.clear();
+    }
     // Task 332: the coordinate extent follows the aspect ratio alone, so it
     // equals the pixel size only when the longer edge is already 256.
     repiu::hle::CalculateGlideTextureCoordinateExtent(
@@ -1723,6 +1732,63 @@ bool GlideOpenGlBackend::StoreTexture(std::uint32_t start_address,
                  GL_UNSIGNED_BYTE, rgba8.data());
     message_ = "Glide texture stored";
     return glGetError() == GL_NO_ERROR;
+#endif
+}
+
+bool GlideOpenGlBackend::RefreshPalettizedTextures(
+    const std::uint8_t* palette_rgba8)
+{
+    if (!IsHostThread())
+    {
+        bool result = false;
+        InvokeOnHostThread([this, palette_rgba8, &result]() {
+            result = RefreshPalettizedTextures(palette_rgba8);
+        });
+        return result;
+    }
+#if !defined(_WIN32)
+    return false;
+#else
+    if (palette_rgba8 == nullptr)
+    {
+        return false;
+    }
+    if (!is_open() || dummy_mode_)
+    {
+        return true;
+    }
+
+    bool success = true;
+    for (auto& [address, entry] : textures_)
+    {
+        (void)address;
+        if (!repiu::hle::IsGlidePalettizedTextureFormat(entry.format) ||
+            entry.source.empty())
+        {
+            continue;
+        }
+        std::vector<std::uint8_t> rgba8;
+        if (!repiu::hle::DecodeGlideTextureToRgba8(
+                entry.format, entry.width, entry.height, entry.source.data(),
+                entry.source.size(), palette_rgba8, &rgba8))
+        {
+            success = false;
+            continue;
+        }
+        glBindTexture(GL_TEXTURE_2D, entry.gl_name);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+                     static_cast<GLsizei>(entry.width),
+                     static_cast<GLsizei>(entry.height), 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, rgba8.data());
+        success = glGetError() == GL_NO_ERROR && success;
+    }
+    if (current_texture_ != nullptr)
+    {
+        glBindTexture(GL_TEXTURE_2D, current_texture_->gl_name);
+    }
+    message_ = success ? "Glide palette textures refreshed"
+                       : "Glide palette texture refresh failed";
+    return success;
 #endif
 }
 

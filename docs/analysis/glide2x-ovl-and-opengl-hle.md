@@ -1244,3 +1244,61 @@ reason `grLfbWriteColorFormat` exists. It **refutes** design 360's inference tha
 `GR_LFB_SRC_FMT_565` source is explicitly RGB-ordered — an inference that could not be tested at the
 time, because `grLfbWriteRegion` never once succeeded before Task 476. Design 360's conclusion about
 lock write modes following the cFormat still stands.
+
+## `grTexDownloadTable` guest stack ABI 정정 (2026-08-14 Task 483) — **구현·probe 확인**
+
+`pumpipx3` 로그의 `_GRTEXDOWNLOADTABLE@12` 호출은 인수
+`0, 2, 0x04ACA200`을 전달했습니다. 이는 `TMU=0`,
+`GR_TEXTABLE_PALETTE=2`, data pointer인 정상 팔레트 업로드입니다. 기존 boundary는
+반환 주소가 포함된 `ESP` frame에서 3 dword만 읽고 `args[1]`을 type,
+`args[2]`를 data로 사용했기 때문에 TMU 0을 미지원 table type으로 오인했습니다.
+복귀도 반환 주소와 3개 인수의 16바이트가 아니라 12바이트만 정리했습니다.
+
+Task 483은 frame을 `return/TMU/type/data` 네 dword로 고정하고 type/data를 각각
+index 2/3에서 읽으며 cleanup을 16바이트로 정정했습니다. 원 로그 frame을 그대로 사용한
+Debug/Release probe는 `TMU=0`, `type=2`, data와 16바이트 cleanup을 확인했습니다.
+15초 무입력 실행은 Glide issue `0/0/0/0/0/0`으로 끝났지만 해당 API call-audit에는
+도달하지 않았으므로, 같은 사용자 장면에서의 최종 재확인은 남아 있습니다.
+
+사용자 재실행에서 palette texture가 나타났지만 색과 투명도가 손상된 화면이 확인됐습니다.
+추가 조사로 표준 palette의 상위 8비트는 alpha가 아니라 무시되는 값임을 3Dfx 공식 문서에서
+확인했습니다. 기존 구현은 이 값을 P_8 alpha로 복사하고 있었습니다. Task 483은 palette
+RGB를 그대로 보존하면서 alpha를 255로 정규화합니다. AP_88은 기존처럼 texel 상위
+8비트 alpha를 사용합니다. 이 결론은
+[Glide texture LOD/format KB](../kb/glide-texture-lod-and-formats.md)에 누적했습니다.
+
+---
+
+## `grTexDownloadTable` Guest Stack ABI Correction (2026-08-14 Task 483) — **implemented and probed**
+
+The logged `_GRTEXDOWNLOADTABLE@12` arguments `0, 2, 0x04ACA200` are a valid
+palette upload: TMU 0, `GR_TEXTABLE_PALETTE` type 2, and a data pointer. The old
+boundary read only three dwords from an `ESP` frame that includes the return
+address, treated indices 1 and 2 as type and data, and advanced the stack by 12
+instead of 16 bytes.
+
+Task 483 fixes the frame to four `return/TMU/type/data` dwords, reads type/data
+from indices 2/3, and advances by 16 bytes. Debug and Release probes reproduce
+the exact logged frame and confirm TMU, type, data, and cleanup. A 15-second
+unattended run ended with all Glide issue totals zero but did not reach this API
+in call-audit, so the same user scene remains the final runtime confirmation.
+
+The user's rerun reached palettized textures but showed corrupted colour and
+transparency. 3Dfx documentation confirms that the standard palette high byte
+is ignored rather than alpha; the old implementation copied it into P_8 alpha.
+Task 483 now preserves palette RGB and normalizes alpha to 255, while AP_88
+continues to take alpha from the texel's high byte. The cumulative rule is in
+the [Glide texture LOD/format KB](../kb/glide-texture-lod-and-formats.md).
+
+alpha 정규화 빌드에서도 화면이 동일하다는 사용자 확인으로 원인은 수명 순서로
+좁혀졌습니다. 원 로그는 `grTexDownloadMipMapLevel` 뒤에 `grTexDownloadTable`을
+호출합니다. 기존 backend는 첫 호출에서 index를 RGBA로 굳힌 뒤 원본 texel을 버려
+나중 palette를 기존 texture에 적용할 수 없었습니다. Task 483은 P_8/AP_88 원본만
+보존하고 palette download 때 해당 texture를 재디코드·재업로드합니다.
+
+The user confirmed that alpha normalization alone left the screen unchanged,
+narrowing the cause to lifetime ordering. The original log calls
+`grTexDownloadMipMapLevel` before `grTexDownloadTable`. The backend had expanded
+indices to RGBA and discarded the source, so a later palette could not affect
+the existing texture. Task 483 now retains P_8/AP_88 sources and refreshes those
+textures whenever a palette is downloaded.

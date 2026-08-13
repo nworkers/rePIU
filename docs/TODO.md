@@ -1,5 +1,43 @@
 # TODO
 
+## 2026-08-14 Glide palette refresh 성능 최적화 (Task 483 후속)
+
+Task 483은 palette가 texture보다 나중에 내려와도 기존 P_8/AP_88 texture의 색상이 바뀌는
+Glide 의미를 복구했습니다. 사용자 실기 확인에서 색상은 정상화됐지만 성능이 크게 떨어졌습니다.
+
+현재 backend는 palette download마다 보존된 모든 indexed texture를 CPU에서 RGBA로 다시
+디코드하고 `glTexImage2D`로 전부 재업로드합니다. palette가 자주 내려오거나 texture가 많으면
+CPU 변환, 임시 RGBA 할당, GPU 전송이 반복됩니다. 이는 아직 계측으로 비중을 확정하지 않은
+원인 후보이며, 정확성 수정은 되돌리지 않습니다.
+
+후속 작업은 다음 순서로 진행합니다.
+
+1. palette download 횟수와 실제 256-entry 내용 변경 횟수를 분리해 계측합니다.
+2. refresh당 texture 수, source/RGBA 바이트, CPU decode 시간과 GPU upload 시간을 기록합니다.
+3. 동일 palette upload 생략을 가장 낮은 위험의 기준안으로 검증합니다.
+4. 사용되는 texture만 지연 갱신하는 dirty-generation 방식과 palette/index를 GPU에 보존하는
+   shader 방식의 정확성·성능·멀티플랫폼 비용을 비교합니다.
+5. palette 변경이 이미 업로드된 indexed texture에 반영되는 Glide 계약과 P_8/AP_88 alpha
+   의미를 회귀 probe 및 실제 장면으로 유지합니다.
+
+## 2026-08-14 Glide palette refresh performance optimization (Task 483 follow-up)
+
+Task 483 restored Glide semantics where a palette downloaded after a texture changes
+the colours of existing P_8/AP_88 textures. The user's runtime check confirmed correct
+colours and a severe performance loss.
+
+The backend currently CPU-decodes every retained indexed texture to RGBA and re-uploads
+all of them with `glTexImage2D` after every palette download. Frequent palette downloads
+or many textures therefore repeat CPU conversion, temporary RGBA allocation, and GPU
+transfer. This is a candidate cause whose share is not yet measured; the correctness fix
+must not be reverted.
+
+The follow-up should measure palette downloads versus actual table changes, refreshed
+texture count and bytes, CPU decode time, and GPU upload time; validate suppression of
+identical palette uploads as the lowest-risk baseline; compare dirty-generation lazy
+refresh with a shader path that preserves indices and the palette on the GPU; and retain
+the palette lifetime contract plus P_8/AP_88 alpha semantics in probes and the real scene.
+
 ## 2026-08-07 무진행 감시견이 건강한 Glide 실행을 죽입니다 (Task 445에서 발견, 별도 태스크 예정)
 
 `PollThreadUntilExit`에는 1초짜리 무진행 감시견이 있고

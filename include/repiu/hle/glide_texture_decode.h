@@ -18,6 +18,13 @@ struct GlideTextureDimensions
     std::uint32_t height = 0;
 };
 
+// Converts the standard 256-entry Glide palette from 0xAARRGGBB words to
+// RGBA8. The high byte is ignored by Glide and output alpha is always opaque.
+bool DecodeGlidePaletteToRgba8(const std::uint32_t* source,
+                               std::size_t entry_count,
+                               std::uint8_t* rgba8_out,
+                               std::size_t output_size);
+
 bool CalculateGlideTextureDimensions(std::uint32_t large_lod,
                                      std::uint32_t aspect_ratio,
                                      GlideTextureDimensions* dimensions);
@@ -36,6 +43,8 @@ bool DecodeGlideTextureToRgba8(std::uint32_t format,
 
 // Returns true if the Glide texture format is supported and decodable by our backend.
 bool IsGlideTextureFormatAcceptable(std::uint32_t format);
+
+bool IsGlidePalettizedTextureFormat(std::uint32_t format);
 
 }  // namespace repiu::hle
 

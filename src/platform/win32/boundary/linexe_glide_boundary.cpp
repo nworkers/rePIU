@@ -25,6 +25,24 @@
 
 namespace repiu::platform::win32
 {
+
+bool DecodeGlideTexDownloadTableCall(const std::uint32_t* guest_stack,
+                                     const std::size_t word_count,
+                                     GlideTexDownloadTableCall* call)
+{
+    constexpr std::size_t kFrameWordCount = 4U;
+    if (guest_stack == nullptr || word_count < kFrameWordCount || call == nullptr)
+    {
+        return false;
+    }
+    call->tmu = guest_stack[1];
+    call->type = guest_stack[2];
+    call->data = guest_stack[3];
+    call->stack_advance =
+        static_cast<std::uint32_t>(kFrameWordCount * sizeof(std::uint32_t));
+    return true;
+}
+
 namespace
 {
 
@@ -1729,20 +1747,21 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
         }
         case go::kGrTexDownloadTable: // _GRTEXDOWNLOADTABLE@12
         {
-            // grTexDownloadTable(GrTexTable_t type, void *data)
-            // type (args[1]), data (args[2]).
-            // Note: although signature is @12, args[0] might be tmu.
-            // Let's decode palette (type == 2 / GR_TEXTABLE_PALETTE).
-            std::uint32_t args[3] = {};
+            // grTexDownloadTable(GrChipID_t tmu, GrTexTable_t type, void* data).
+            // The frame includes the return address before its three arguments.
+            std::uint32_t frame[4] = {};
             const auto* guest_stack = reinterpret_cast<const std::uint32_t*>(
                 static_cast<std::uintptr_t>(win32_context->Esp));
-            if (IsGuestRangeReadable(context, guest_stack, sizeof(args)))
+            GlideTexDownloadTableCall call;
+            call.stack_advance = sizeof(frame);
+            if (IsGuestRangeReadable(context, guest_stack, sizeof(frame)))
             {
-                std::memcpy(args, guest_stack, sizeof(args));
-                const std::uint32_t type = args[1];
+                std::memcpy(frame, guest_stack, sizeof(frame));
+                DecodeGlideTexDownloadTableCall(
+                    frame, sizeof(frame) / sizeof(frame[0]), &call);
                 const auto* data = reinterpret_cast<const std::uint32_t*>(
-                    static_cast<std::uintptr_t>(args[2]));
-                if (type != 2U)
+                    static_cast<std::uintptr_t>(call.data));
+                if (call.type != 2U)
                 {
                     record_unsupported(
                         "texture-table-type-unsupported",
@@ -1756,16 +1775,22 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                 }
                 else
                 {
-                    // ARGB to RGBA
-                    for (std::size_t i = 0; i < 256; ++i)
+                    // Standard Glide palettes carry 8-bit RGB in the low 24
+                    // bits. The high byte is ignored; AP_88 supplies alpha in
+                    // the texel itself and P_8 remains opaque.
+                    context->glide_state.palette_valid =
+                        repiu::hle::DecodeGlidePaletteToRgba8(
+                            data, 256U,
+                            context->glide_state.palette_rgba8.data(),
+                            context->glide_state.palette_rgba8.size());
+                    if (context->glide_state.palette_valid &&
+                        !context->glide_backend.RefreshPalettizedTextures(
+                            context->glide_state.palette_rgba8.data()))
                     {
-                        const std::uint32_t c = data[i];
-                        context->glide_state.palette_rgba8[i * 4 + 0] = (c >> 16) & 0xFF;
-                        context->glide_state.palette_rgba8[i * 4 + 1] = (c >> 8) & 0xFF;
-                        context->glide_state.palette_rgba8[i * 4 + 2] = c & 0xFF;
-                        context->glide_state.palette_rgba8[i * 4 + 3] = (c >> 24) & 0xFF;
+                        record_backend_failure(
+                            "texture-palette-refresh-failed",
+                            "stored palettized textures could not be refreshed");
                     }
-                    context->glide_state.palette_valid = true;
                 }
             }
             else
@@ -1776,7 +1801,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             }
             ++context->glide_gate_handled_count;
             win32_context->Eip = return_address;
-            win32_context->Esp += 3U * sizeof(std::uint32_t);
+            win32_context->Esp += call.stack_advance;
             return true;
         }
 

@@ -283,6 +283,7 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/glide_async_present_probe.cpp
     src/tools/aot_probe/glide_draw_batch_probe.cpp
     src/tools/aot_probe/glide_lfb_region_probe.cpp
+    src/tools/aot_probe/glide_texture_table_stack_probe.cpp
     src/tools/aot_probe/dos_file_create_probe.cpp
     src/tools/aot_probe/glide_setter_state_cache_probe.cpp
     src/tools/aot_probe/glide_setter_phase_timing_probe.cpp
