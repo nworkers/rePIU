@@ -25,88 +25,133 @@ namespace repiu::tools
 
 bool RunPiu10IsaBoardProbe()
 {
-    constexpr std::array<const char*, 11> kPiu10ProfileIds = {
-        "pumpito", "pumpitc", "pumpitpc", "pumpite", "pumpitpr",
-        "pumpitpx", "pumpit8", "pumpitp2", "pumpipx2", "pumpitp3",
-        "pumpipx3"};
-    constexpr std::array<const char*, 14> kJammaProfileIds = {
-        "pumpit1", "pumpit2", "pumpit3", "pumpito", "pumpitc",
-        "pumpitpc", "pumpite", "pumpitpr", "pumpitpx", "pumpit8",
-        "pumpitp2", "pumpipx2", "pumpitp3", "pumpipx3"};
-    constexpr std::array<const char*, 8> kRequestedProfileOrder = {
-        "pumpite", "pumpitpr", "pumpitpx", "pumpit8", "pumpitp2",
-        "pumpipx2", "pumpitp3", "pumpipx3"};
+    struct ExpectedTargetProfile
+    {
+        const char* id;
+        const char* parent_rom_set_id;
+        const char* display_name;
+        bool enable_piu10;
+    };
+    constexpr std::array<ExpectedTargetProfile, 22> kExpectedProfiles = {{
+        {"pumpit1",
+         "pumpitup",
+         "Pump It Up: The 1st Dance Floor (ver 0.53.1999.9.31)", false},
+        {"pumpit2",
+         "pumpitup",
+         "Pump It Up: The 2nd Dance Floor (Feb 28 2000)", false},
+        {"pumpit2a",
+         "pumpit2",
+         "Pump It Up: The 2nd Dance Floor (Dec 27 1999)", false},
+        {"pumpit3",
+         "pumpitup",
+         "Pump It Up The O.B.G: The 3rd Dance Floor "
+         "(v3.04 - Jun 02 2000)", false},
+        {"pumpit3a",
+         "pumpit3",
+         "Pump It Up The O.B.G: The 3rd Dance Floor "
+         "(v3.03 - May 07 2000)", false},
+        {"pumpito",
+         "pumpitup",
+         "Pump It Up The O.B.G: The Season Evolution Dance Floor "
+         "(R4/v3.25 - Aug 27 2000)", true},
+        {"pumpitc",
+         "pumpitup",
+         "Pump It Up: The Collection (R5/v3.43 - Nov 14 2000)", true},
+        {"pumpitpc",
+         "pumpitup",
+         "Pump It Up: The Perfect Collection "
+         "(R5/v3.52 - Dec 18 2000)", true},
+        {"pumpitpr",
+         "pumpitup",
+         "Pump It Up The Premiere: The International Dance Floor "
+         "(R6/v4.01 - Feb 22 2001)", true},
+        {"pumpitpru",
+         "pumpitpr",
+         "Pump It Up The Premiere: The International Dance Floor "
+         "(R6/v4.01 - Feb 22 2001 USA)", true},
+        {"pumpite", "pumpitup", "Pump It Up Extra (Mar 21 2001)", true},
+        {"pumpitea", "pumpite", "Pump It Up Extra (Mar 08 2001)", true},
+        {"pumpitpx",
+         "pumpitup",
+         "Pump It Up The PREX: The International Dance Floor "
+         "(2001 - REV2 / 101)", true},
+        {"pumpit8",
+         "pumpitup",
+         "Pump It Up The Rebirth: The 8th Dance Floor (Rebirth/2002)",
+         true},
+        {"pumpitp2",
+         "pumpitup",
+         "Pump It Up The Premiere 2: The International 2nd Dance Floor "
+         "(Premiere 2/2002)", true},
+        {"pumpipx2", "pumpitup",
+         "Pump It Up The PREX 2 (Premiere 2/2003)", true},
+        {"pumpipx2p", "pumpipx2",
+         "Pump It Up EXTRA + Plus (Premiere 2/2003)", true},
+        {"pumpitp3",
+         "pumpitup",
+         "Pump It Up The Premiere 3: The International 3rd Dance Floor "
+         "(Premiere 3/2003 - 28th Mar 2003)", true},
+        {"pumpitp3a",
+         "pumpitp3",
+         "Pump It Up The Premiere 3: The International 3rd Dance Floor "
+         "(Premiere 3/2003 - 17th Mar 2003)", true},
+        {"pumpipx3",
+         "pumpitup",
+         "Pump It Up The PREX 3: The International 4th Dance Floor "
+         "(2003 - X3.2MK3)", true},
+        {"pumpipx3a",
+         "pumpipx3",
+         "Pump It Up The PREX 3: The International 4th Dance Floor "
+         "(2003 - INT X3.1MK3)", true},
+        {"pumpipx3b",
+         "pumpipx3",
+         "Pump It Up The PREX 3: The International 4th Dance Floor "
+         "(2003 - Korea X3.1MK3)", true},
+    }};
     bool target_profiles_valid = true;
     bool jamma_target_profiles_valid = true;
+    bool mp3_latency_profile_valid = true;
     const std::vector<target::TargetProfile>& built_in_profiles =
         target::GetBuiltInTargetProfiles();
-    const auto requested_begin = std::find_if(
-        built_in_profiles.begin(), built_in_profiles.end(),
-        [](const target::TargetProfile& profile) {
-            return profile.id == "pumpite";
-        });
-    const std::size_t remaining_profiles = requested_begin !=
-            built_in_profiles.end()
-        ? static_cast<std::size_t>(
-            std::distance(requested_begin, built_in_profiles.end())) : 0U;
+    const target::TargetProfile* sample_profile =
+        target::FindTargetProfileById("dos4gw_hello");
     target_profiles_valid =
-        remaining_profiles >= kRequestedProfileOrder.size();
-    for (std::size_t index = 0U;
-         target_profiles_valid && index < kRequestedProfileOrder.size();
-         ++index)
+        built_in_profiles.size() == kExpectedProfiles.size() + 1U &&
+        !built_in_profiles.empty() &&
+        built_in_profiles.front().id == "dos4gw_hello" &&
+        target::FindTargetProfileById("piu_1st") == nullptr;
+    jamma_target_profiles_valid = sample_profile != nullptr &&
+        !sample_profile->enable_piu_jamma_board;
+
+    for (std::size_t index = 0U; index < kExpectedProfiles.size(); ++index)
     {
-        target_profiles_valid =
-            requested_begin[index].id == kRequestedProfileOrder[index];
-    }
-    for (const char* id : {"dos4gw_hello", "piu_1st"})
-    {
+        const ExpectedTargetProfile& expected = kExpectedProfiles[index];
         const target::TargetProfile* profile =
-            target::FindTargetProfileById(id);
-        jamma_target_profiles_valid = jamma_target_profiles_valid &&
-            profile != nullptr && !profile->enable_piu_jamma_board;
-    }
-    for (const char* id : kJammaProfileIds)
-    {
-        const target::TargetProfile* profile =
-            target::FindTargetProfileById(id);
-        jamma_target_profiles_valid = jamma_target_profiles_valid &&
-            profile != nullptr && profile->enable_piu_jamma_board;
-    }
-    for (const char* id : {"pumpit1", "pumpit2", "pumpit3"})
-    {
-        const target::TargetProfile* profile =
-            target::FindTargetProfileById(id);
-        target_profiles_valid = target_profiles_valid && profile != nullptr &&
-            !profile->enable_piu10_isa_board && !profile->enable_cat702;
-    }
-    for (const char* id : kPiu10ProfileIds)
-    {
-        const target::TargetProfile* profile =
-            target::FindTargetProfileById(id);
-        const std::string base = "build/runtime_mounts/" + std::string(id);
+            target::FindTargetProfileById(expected.id);
+        const std::string base =
+            "build/runtime_mounts/" + std::string(expected.id);
         const std::size_t registration_count = std::count_if(
             built_in_profiles.begin(), built_in_profiles.end(),
-            [id](const target::TargetProfile& candidate) {
-                return candidate.id == id;
+            [&expected](const target::TargetProfile& candidate) {
+                return candidate.id == expected.id;
             });
         target_profiles_valid = target_profiles_valid &&
+            built_in_profiles[index + 1U].id == expected.id &&
+            built_in_profiles[index + 1U].display_name ==
+                expected.display_name &&
             registration_count == 1U && profile != nullptr &&
-            profile->rom_set_id == id &&
+            profile->rom_set_id == expected.id &&
+            profile->parent_rom_set_id == expected.parent_rom_set_id &&
             profile->hle_profile_id == "piu_common" &&
             profile->executable_path ==
                 std::filesystem::path(base + "/PIU/PIU.EXE") &&
             profile->working_directory ==
                 std::filesystem::path(base + "/PIU") &&
             profile->asset_root == std::filesystem::path(base) &&
-            profile->enable_piu10_isa_board && profile->enable_cat702 &&
-            profile->enable_piu_jamma_board &&
-            profile->piu10_mp3_latency_ms == 0U;
-    }
-    bool mp3_latency_profile_valid = true;
-    for (const char* id : kJammaProfileIds)
-    {
-        const target::TargetProfile* profile =
-            target::FindTargetProfileById(id);
+            profile->enable_piu10_isa_board == expected.enable_piu10 &&
+            profile->enable_cat702 == expected.enable_piu10;
+        jamma_target_profiles_valid = jamma_target_profiles_valid &&
+            profile != nullptr && profile->enable_piu_jamma_board;
         mp3_latency_profile_valid = mp3_latency_profile_valid &&
             profile != nullptr && profile->piu10_mp3_latency_ms == 0U;
     }

@@ -1,12 +1,12 @@
 param(
     [switch]$SkipOpenWatcomInstall,
-    # Task 448: the original asset tree under MASTER\ is proprietary and never in
-    # the repository, so a clean checkout -- CI's, or a contributor's -- cannot
-    # satisfy the check below. The OpenWatcom sample suite compiles its own DOS
+    # Original MAME-format game assets are proprietary and never in the repository,
+    # so a clean checkout -- CI's, or a contributor's -- cannot satisfy the check
+    # below. The OpenWatcom sample suite compiles its own DOS
     # programs and runs them through the loader; it never touches PIU.EXE. This
     # switch lets that caller reuse the rest of this script (toolchain checks and
     # the self-healing OpenWatcom install) without demanding assets it does not
-    # use. `piu_1st` callers must leave it off.
+    # use. `pumpit1` callers must leave it off.
     [switch]$SkipGameAssets
 )
 
@@ -15,7 +15,8 @@ $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $VsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
 $OpenWatcomCompiler = Join-Path $Root "tools\openwatcom\binnt\wcl386.exe"
-$PiuExecutable = Join-Path $Root "MASTER\PIU_1ST\PIU\PIU.EXE"
+$Pumpit1RomZip = Join-Path $Root "roms\pumpit1.zip"
+$Pumpit1ChdDirectory = Join-Path $Root "roms\pumpit1"
 
 function Write-CheckOk
 {
@@ -132,17 +133,22 @@ try
     }
     Write-CheckOk "Visual Studio C++ tools: $vsRoot"
 
-    if (!(Test-Path $PiuExecutable))
+    $pumpit1Chd = Get-ChildItem `
+        -Path $Pumpit1ChdDirectory `
+        -Filter "*.chd" `
+        -File `
+        -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (!(Test-Path $Pumpit1RomZip) -or $null -eq $pumpit1Chd)
     {
         if (!$SkipGameAssets)
         {
-            throw "Original executable was not found at MASTER\PIU_1ST\PIU\PIU.EXE. Copy the original asset tree before running piu_1st tests."
+            throw "pumpit1 assets were not found. Provide roms\pumpit1.zip and a CHD under roms\pumpit1 before running game tests."
         }
-        Write-CheckWarn "Original PIU executable is absent; skipping the game asset check. piu_1st tests will not run."
+        Write-CheckWarn "pumpit1 assets are absent; skipping the game asset check. pumpit1 tests will not run."
     }
     else
     {
-        Write-CheckOk "Original PIU executable: MASTER\PIU_1ST\PIU\PIU.EXE"
+        Write-CheckOk "pumpit1 assets: roms\pumpit1.zip and $($pumpit1Chd.Name)"
     }
 
     if (!(Test-Path $OpenWatcomCompiler))

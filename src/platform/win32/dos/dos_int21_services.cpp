@@ -3,6 +3,7 @@
 #include "execution_internal.h"
 #include "guest_memory_access.h"
 #include "dpmi_mscdex_services.h"
+#include "repiu/hle/dos_date.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -248,20 +249,64 @@ void HandleDosGetCurrentDrive(CONTEXT* win32_context, ThreadContext* context)
 // shares the host clock with HandleDosGetSystemTime.
 void HandleDosGetSystemDate(CONTEXT* win32_context, ThreadContext* context)
 {
-    (void)context;
-
     SYSTEMTIME local_time = {};
     GetLocalTime(&local_time);
 
+    repiu::hle::DosDate date = {
+        local_time.wYear,
+        static_cast<std::uint8_t>(local_time.wMonth),
+        static_cast<std::uint8_t>(local_time.wDay)};
+    if (context != nullptr && context->dos_date_offset_valid)
+    {
+        repiu::hle::DosDate adjusted_date;
+        if (repiu::hle::AddDosDateDays(
+                date, context->dos_date_offset_days, &adjusted_date))
+        {
+            date = adjusted_date;
+        }
+    }
+    std::uint8_t day_of_week =
+        static_cast<std::uint8_t>(local_time.wDayOfWeek);
+    repiu::hle::CalculateDosDateDayOfWeek(date, &day_of_week);
+
     const std::uint16_t month_day = static_cast<std::uint16_t>(
-        ((local_time.wMonth & 0xFFU) << 8) | (local_time.wDay & 0xFFU));
+        (static_cast<std::uint16_t>(date.month) << 8) | date.day);
 
     win32_context->Ecx =
-        (win32_context->Ecx & 0xFFFF0000U) | (local_time.wYear & 0xFFFFU);
+        (win32_context->Ecx & 0xFFFF0000U) | date.year;
     win32_context->Edx = (win32_context->Edx & 0xFFFF0000U) | month_day;
     win32_context->Eax = (win32_context->Eax & 0xFFFFFF00U) |
-        (local_time.wDayOfWeek & 0xFFU);
+        day_of_week;
     win32_context->EFlags &= ~1U;
+}
+
+// INT 21h AH=2Bh (Set System Date). Keep the change inside the virtual DOS
+// environment instead of mutating the host operating system clock.
+void HandleDosSetSystemDate(CONTEXT* win32_context, ThreadContext* context)
+{
+    const repiu::hle::DosDate requested_date = {
+        static_cast<std::uint16_t>(win32_context->Ecx & 0xFFFFU),
+        static_cast<std::uint8_t>((win32_context->Edx >> 8) & 0xFFU),
+        static_cast<std::uint8_t>(win32_context->Edx & 0xFFU)};
+
+    SYSTEMTIME local_time = {};
+    GetLocalTime(&local_time);
+    const repiu::hle::DosDate host_date = {
+        local_time.wYear,
+        static_cast<std::uint8_t>(local_time.wMonth),
+        static_cast<std::uint8_t>(local_time.wDay)};
+
+    std::int32_t offset_days = 0;
+    const bool valid = context != nullptr &&
+        repiu::hle::CalculateDosDateDayOffset(
+            host_date, requested_date, &offset_days);
+    if (valid)
+    {
+        context->dos_date_offset_days = offset_days;
+        context->dos_date_offset_valid = true;
+    }
+    win32_context->Eax = (win32_context->Eax & 0xFFFFFF00U) |
+        (valid ? 0x00U : 0xFFU);
 }
 
 // INT 21h AH=2Ch (Get System Time). Task 397: pumpit3 game code calibrates a
@@ -1394,6 +1439,10 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
         case 0x2A:
             RecordHandledDosInterrupt(context, 0x21, ax);
             HandleDosGetSystemDate(win32_context, context);
+            break;
+        case 0x2B:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            HandleDosSetSystemDate(win32_context, context);
             break;
         case 0x2C:
             RecordHandledDosInterrupt(context, 0x21, ax);

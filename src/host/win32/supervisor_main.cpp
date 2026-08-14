@@ -503,7 +503,7 @@ void SampleChildThreadContext(DWORD thread_id,
 
 int main(int argc, char** argv)
 {
-    const std::string target = argc >= 2 ? argv[1] : "piu_1st";
+    const std::string target = argc >= 2 ? argv[1] : "pumpit1";
     const std::uint32_t timeout_milliseconds =
         argc >= 3 ? static_cast<std::uint32_t>(std::stoul(argv[2]))
                   : 10000U;

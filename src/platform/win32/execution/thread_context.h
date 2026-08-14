@@ -777,6 +777,8 @@ struct ThreadContext
     std::uint32_t last_dos_interrupt_ah = 0;
     std::uint32_t last_dos_interrupt_ax = 0;
     std::uint32_t handled_dos_interrupt_ah_counts[256] = {};
+    bool dos_date_offset_valid = false;
+    std::int32_t dos_date_offset_days = 0;
     repiu::hle::DosVirtualFileSystemState dos_file_system;
     std::uint32_t handled_dos_chdir_count = 0;
     std::string last_dos_chdir_guest_path;

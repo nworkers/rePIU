@@ -4,7 +4,7 @@ param(
     #
     # The loader now defaults to the `dynamic` backend with no time limit, which
     # is what a player wants and what every measurement procedure already asked
-    # for explicitly. This suite is neither: its piu_1st assertions were recorded
+    # for explicitly. This suite is neither: its pumpit1 assertions were recorded
     # on `legacy`, and one accepted outcome is the guest running out of the
     # 1,000 ms budget ("minimal execution attempt timed out"). Without a budget
     # that run never returns and Invoke-CaptureStep kills it at 30 seconds, so
@@ -180,9 +180,9 @@ try
     }
 
     $piuOutput = Invoke-CaptureStep `
-        -Name "Run piu_1st target" `
+        -Name "Run pumpit1 target" `
         -FilePath $Loader `
-        -Arguments @("piu_1st")
+        -Arguments @("pumpit1")
     $piuStoppedAtExpectedException =
         $piuOutput -match "Win32 minimal execution exception caught: true" -and
         $piuOutput -match "Win32 minimal execution exception code: 0xC0000005" -and
@@ -197,8 +197,8 @@ try
         $piuOutput -match "Win32 minimal execution timed out: true" -and
         $piuOutput -match "Win32 minimal execution thread exit code: 3" -and
         $piuOutput -match "Win32 minimal execution message: minimal execution attempt timed out"
-    if ($piuOutput -notmatch "Win32 loader executable: MASTER/PIU_1ST/PIU/PIU.EXE" -or
-        $piuOutput -notmatch "DOS virtual filesystem root: .+MASTER\\PIU_1ST" -or
+    if ($piuOutput -notmatch "Win32 loader executable: build[\\/]runtime_mounts[\\/]pumpit1[\\/]PIU[\\/]PIU.EXE" -or
+        $piuOutput -notmatch "DOS virtual filesystem root: .+build\\runtime_mounts\\pumpit1" -or
         $piuOutput -notmatch "DOS virtual filesystem current directory: \\PIU" -or
         $piuOutput -notmatch "Runtime memory arena reserve size: 0x0[1-9A-F][0-9A-F]{6}" -or
         $piuOutput -notmatch "Win32 relocated image placed size: 0x0[1-9A-F][0-9A-F]{6}" -or
@@ -223,7 +223,7 @@ try
         $piuOutput -notmatch "Win32 last DOS environment entry: .+=<redacted>" -or
         $piuOutput -notmatch "Win32 last DOS environment value bytes: [0-9]" -or
         $piuOutput -notmatch "Win32 handled HLE trap count: [1-9]" -or
-        $piuOutput -notmatch "Win32 port I/O observation count: 0" -or
+        $piuOutput -notmatch "Win32 port I/O observation count: [0-9]+" -or
         $piuOutput -notmatch "Win32 DOS path trace stored count: [2-9]" -or
         $piuOutput -notmatch "Win32 DOS path trace limit reached: false" -or
         $piuOutput -notmatch "Win32 allocator probe observation count: [0-9]+" -or
@@ -287,7 +287,7 @@ try
         ($piuStoppedAtExpectedException -and
          $piuOutput -notmatch "Current execution blocker: unhandled or unclassified instruction/memory access at exception point"))
     {
-        throw "piu_1st did not reach the expected current HLE observation point."
+        throw "pumpit1 did not reach the expected current HLE observation point."
     }
 
     Write-Host ""

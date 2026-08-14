@@ -32,6 +32,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace repiu::platform::win32
@@ -1286,6 +1287,7 @@ bool AttemptWin32GuestStackTrapExecution(
     bool enable_piu_jamma_board,
     bool enable_piu10_isa_board,
     bool enable_cat702,
+    std::string_view parent_rom_set_id,
     std::uint32_t piu10_mp3_latency_ms,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt);
@@ -1302,6 +1304,7 @@ bool AttemptWin32GuestStackAotExecution(
     bool enable_piu_jamma_board,
     bool enable_piu10_isa_board,
     bool enable_cat702,
+    std::string_view parent_rom_set_id,
     std::uint32_t piu10_mp3_latency_ms,
     runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,

@@ -14,15 +14,13 @@ When code structure changes or a new subsystem is added, this document must be u
 
 ## 현재 상태
 
-현재 저장소는 문서와 원본 자산 중심이며, 첫 C++ 구현으로 비실행 실행 파일 분석 도구를 추가한다.
-
-첫 구현 대상은 `MASTER\PIU_1ST\PIU.EXE`를 실행하지 않고 분석하는 도구이다.
+현재 저장소는 원본 DOS/4G 실행 파일을 네이티브 x86으로 실행하고 주변 DOS·DPMI·하드웨어
+경계를 HLE로 제공하는 Win32 runtime과 분석 도구를 구현합니다.
 
 ## Current State
 
-The repository currently contains documentation and original assets, and the first C++ implementation adds a non-executing executable analysis tool.
-
-The first implementation target is a non-executing analysis tool for `MASTER\PIU_1ST\PIU.EXE`.
+The repository implements a Win32 runtime and analysis tools that execute original
+DOS/4G binaries as native x86 while providing DOS, DPMI, and hardware boundaries through HLE.
 
 ## 예정 구조
 
@@ -48,7 +46,12 @@ The first implementation target is a non-executing analysis tool for `MASTER\PIU
 
 예정된 주요 모듈:
 
-* `TargetRegistry`: 게임 타깃과 버전 선택. 현재 단계에서는 정적 C++ 등록 구조로 `piu_1st`와 `pumpit1`, `pumpit2`, `pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`, `pumpitpr`, `pumpitpx`, `pumpit8`, `pumpitp2`, `pumpipx2`, `pumpitp3`, `pumpipx3`를 제공한다. 모든 PIU MAME CHD 프로파일은 공용 PIU CHD mount와 `piu_common` HLE 경로를 재사용하고 JAMMA/YMZ280B/EEPROM 보드 capability를 활성화한다. PIU10 ISA 보드와 CAT702은 독립 capability이며, 기본 내장값은 `pumpito`부터 나열된 11개 PIU10 프로파일에서 둘 다 활성화된다.
+* `TargetRegistry`: 게임 타깃과 버전 선택. 정적 C++ 등록 구조는 `dos4gw_hello`와 MAME
+  `xtom3d.cpp` 순서의 PIU profile 22개(`pumpit1`~`pumpipx3b`)를 제공합니다.
+  `piu_1st`는 제거됐으며 실행기·supervisor·analyzer의 기본 게임 target은 `pumpit1`입니다.
+  모든 PIU MAME CHD profile은 공용 PIU CHD mount와 `piu_common` HLE 경로를 재사용하고
+  JAMMA/YMZ280B/EEPROM board capability를 활성화합니다. PIU10 ISA board와 CAT702은
+  독립 capability이며 `pumpito` 이후 세대 profile에서 둘 다 활성화됩니다.
 * `TargetProfile`: 실행 파일 경로, 작업 디렉터리, 자산 루트, 포맷 힌트, HLE 프로파일 id, 버전별 메타데이터와 하드웨어 capability
 * `HleProfileRegistry`: target이 참조하는 HLE 프로파일 선택. 현재 단계에서는 정적 C++ 등록 구조로 `piu_common`을 제공한다.
 * `HleProfile`: target이 요구하는 DOS/DPMI/하드웨어 HLE 서비스 범위
@@ -101,7 +104,12 @@ Directories added now:
 
 Planned major modules:
 
-* `TargetRegistry`: game target and version selection. Static C++ registration currently provides `piu_1st` plus `pumpit1`, `pumpit2`, `pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`, `pumpitpr`, `pumpitpx`, `pumpit8`, `pumpitp2`, `pumpipx2`, `pumpitp3`, and `pumpipx3`. Every PIU MAME CHD profile reuses the shared PIU CHD mount and `piu_common` HLE path and enables the JAMMA/YMZ280B/EEPROM board capability. The PIU10 ISA board and CAT702 are independent capabilities; both default to enabled on the eleven PIU10 profiles listed from `pumpito` onward.
+* `TargetRegistry`: game target and version selection. Static C++ registration provides
+  `dos4gw_hello` and 22 PIU profiles (`pumpit1` through `pumpipx3b`) in MAME
+  `xtom3d.cpp` order. `piu_1st` has been removed, and the runner, supervisor, and analyzer
+  default to `pumpit1`. Every MAME CHD profile reuses the shared PIU CHD mount and
+  `piu_common` HLE path and enables the JAMMA/YMZ280B/EEPROM board capability. PIU10 ISA and
+  CAT702 remain independent capabilities enabled on the generation beginning with `pumpito`.
 * `TargetProfile`: executable path, working directory, asset root, format hint, HLE profile id, optional ROM-set id, version metadata, and target-specific early runtime reservation hints
 * `HleProfileRegistry`: HLE profile selection referenced by targets. The current step provides `piu_common` through static C++ registration.
 * `HleProfile`: DOS/DPMI/hardware HLE service scope required by a target
@@ -125,7 +133,7 @@ Planned major modules:
 * `RelocatedRuntimeImage`: materialized C++ buffer form of the relocatable plan. It copies each mapped LE object into owned buffers and writes supported 32-bit internal relocation values for the relocated base. This still does not allocate executable OS memory or call original code.
 * `Win32RelocatedImagePlacement`: Win32 process-memory placement for relocated image buffers. It reserves and commits the relocated image range, copies object buffers, applies minimal object protection from LE flags, and releases the range without transferring control to original code.
 * `Win32MinimalExecutionTrampoline`: first observation-only execution path. It calls the relocated entry from a separate thread, catches SEH exceptions, and reports return/exception/timeout. It does not yet switch to the guest stack or dispatch HLE traps.
-* `Win32ExecutionSnapshot`: grouped x86 guest register observation state used by the Win32 execution path. Timeout handling now exposes a `timeout_snapshot` output slot and reports whether it was captured. Forced `SuspendThread`/`GetThreadContext` capture is not enabled for the current `piu_1st` timeout state because it hangs the loader; follow-up work should use a safer sampling watcher or HLE-routed trace to fill this structure.
+* `Win32ExecutionSnapshot`: grouped x86 guest register observation state used by the Win32 execution path. Timeout handling exposes a `timeout_snapshot` output slot and reports whether it was captured. Forced `SuspendThread`/`GetThreadContext` capture remains disabled because it can hang the loader; a safer sampling watcher or HLE-routed trace should fill this structure.
 * `Win32ExceptionDispatchLiveness`: the vectored exception route atomically counts valid handler entries and RAII-guarded exits and records the last entry EIP. It does not suspend the guest or alter dispatch. An outstanding count of one at quiet timeout proves that polling expired while one handler invocation had not returned; equal counts prove no dispatch remained active.
 * `Win32AllocatorProbeObservation`: a diagnostic-only 16-entry ring for exact relocated offset `0xF7A71`. It records EAX, ESI/decoded source, DS, pending allocation state before/after, and the handling result. Sequence numbers preserve chronological output after overwrite without allowing trace memory to grow.
 * `Win32AllocatorControlFlowObservation`: a diagnostic-only 32-entry ring for exception entries in relocated allocator range `[0xF7A71, 0xF7AD5)`. It records exception code, four opcode bytes, core allocator registers, flags, and pending state without modifying dispatch. The range exposes free-list traversal and metadata update paths while keeping storage bounded.
@@ -571,6 +579,25 @@ flowchart LR
 ```
 
 Separately from CD-DA background music, coin and menu effects are played by the Yamaha YMZ280B on the PIU10 ISA board from the `piu10.u9` sample ROM inside the target ROM-set ZIP. Responsibilities are split across four layers: `assets::ExtractRomZipEntry` extracts the ZIP entry with CRC verification, `sound::LoadPiu10SampleRom` places it in a 4 MiB `0xFF`-filled address space, the platform-neutral `sound::Ymz280bDevice` owns the register file, eight voices, ADPCM decode, and mixing at 88200 Hz stereo, and the Win32 backend `Ymz280bAudioOut` pushes generated PCM into an SDL3 stream from a worker thread under a mutex. `piu10_sound_port` provides the guest ABI glue, decoding `0x02A0` as chip offset 0 and `0x02A2` as offset 1 per the ISA 16-bit byte-lane rule. Because the sound window lies inside the JAMMA input range, `HandlePortIoInstruction` handles it before the input branch, and register writes advance EIP and re-trap rather than being NOP-patched. Sample-ROM setup and JAMMA input, EEPROM, and YMZ routing in `0x02A0..0x02AF` are enabled only when `TargetProfile::enable_piu_jamma_board` is true; currently that means every `pumpit*` profile and no other profile.
+
+## 부모 ROM 세트 자산 fallback
+
+`TargetProfile::parent_rom_set_id`는 MAME ROM 세트의 직접 parent를 명시합니다.
+CAT702 자산은 현재 ZIP의 `<current>.cat702`, 같은 ZIP의 `<parent>.cat702`, 형제
+경로의 `<parent>.zip` 안 `<parent>.cat702` 순서로 조회하여 non-merged와 split ROM
+구성을 모두 지원합니다. fallback은 ZIP 항목이 없을 때만 허용하며 읽기, 추출 또는
+CRC 오류는 숨기지 않습니다. clone의 ZIP/CHD mount와 원본 실행 파일은 계속 clone의
+`rom_set_id`를 사용합니다.
+
+## Parent ROM-Set Asset Fallback
+
+`TargetProfile::parent_rom_set_id` records the direct MAME ROM-set parent. CAT702
+assets resolve in this order: `<current>.cat702` in the current ZIP,
+`<parent>.cat702` in that ZIP, then `<parent>.cat702` in the sibling
+`<parent>.zip`. This supports non-merged and split ROM layouts. Fallback is
+allowed only for a missing member; read, extraction, and CRC errors remain
+visible. A clone continues using its own `rom_set_id` for ZIP/CHD mounting and
+original executable selection.
 
 # PIU10 flash, MP3, CAT702 ISA board
 

@@ -1219,3 +1219,49 @@ remain unverified.
 **Implementation verification:** The profile probe validates the single registration, canonical
 paths, `rom_set_id`, `piu_common`, enabled JAMMA/PIU10/CAT702 capabilities, and zero latency for
 each of the eleven PIU10 profiles. Debug and Release builds and probes pass.
+
+## 20. MAME PIU target profile 전체 카탈로그 (Task 485)
+
+### 한국어
+
+**외부 사양으로 확인됨:** MAME 공식
+[`xtom3d.cpp`](https://github.com/mamedev/mame/blob/master/src/mame/misc/xtom3d.cpp)의
+`GAME` 선언은 `pumpit1`부터 `pumpipx3b`까지 22개 PIU 세트를 일정한 순서로 나열합니다.
+기존 registry에는 14개만 있어 `pumpit2a`, `pumpit3a`, `pumpitpru`, `pumpitea`,
+`pumpipx2p`, `pumpitp3a`, `pumpipx3a`, `pumpipx3b`가 누락돼 있었습니다.
+
+**구현됨:** 22개 profile을 MAME 순서로 등록하고 display name을 상세 버전·연도·날짜가
+포함된 이름으로 교체했습니다. 브랜드 대소문자는 모두 `Pump It Up`으로 통일했습니다.
+반복되는 경로, reservation과 capability aggregate는 공용 factory가 생성합니다. 신규 clone은
+동일 세대 parent와 같은 JAMMA/PIU10/CAT702 capability를 사용합니다.
+
+**정리됨:** 수동 `MASTER/PIU_1ST` 경로를 사용하던 `piu_1st` profile을 제거했습니다.
+실행기, supervisor와 analyzer의 무인자 기본 target은 `pumpit1`이며 setup/test asset 검사도
+`roms/pumpit1.zip`과 `roms/pumpit1/*.chd`를 기준으로 합니다.
+
+**검증됨:** Debug/Release 네 실행 파일 빌드와 두 구성의 전체 coherence probe가
+통과했습니다. registry probe는 `piu10_target_profiles=true`,
+`jamma_target_profiles=true`를 반환했고, 무인자 Debug analyzer는 `Target: pumpit1`과
+상세 display name을 출력했습니다.
+
+### English
+
+**Confirmed from the external specification:** The `GAME` declarations in MAME's official
+[`xtom3d.cpp`](https://github.com/mamedev/mame/blob/master/src/mame/misc/xtom3d.cpp) list
+22 PIU sets in a stable order from `pumpit1` through `pumpipx3b`. The previous 14-entry
+registry omitted `pumpit2a`, `pumpit3a`, `pumpitpru`, `pumpitea`, `pumpipx2p`,
+`pumpitp3a`, `pumpipx3a`, and `pumpipx3b`.
+
+**Implemented:** All 22 profiles now follow MAME order and use detailed display names with
+version, year, or date information. Brand capitalization is normalized to `Pump It Up`.
+A shared factory builds repeated paths, reservations, and capability aggregates. Each new
+clone uses the JAMMA/PIU10/CAT702 capabilities of its parent generation.
+
+**Cleaned up:** The manual `piu_1st` profile for `MASTER/PIU_1ST` was removed. The runner,
+supervisor, and analyzer now default to `pumpit1`, and setup/test asset checks use
+`roms/pumpit1.zip` plus `roms/pumpit1/*.chd`.
+
+**Verified:** All four executables built in Debug and Release, and the full coherence probe
+passed in both configurations. The registry probe reported `piu10_target_profiles=true` and
+`jamma_target_profiles=true`; the no-argument Debug analyzer selected `Target: pumpit1` and
+printed its detailed display name.

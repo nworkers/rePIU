@@ -11,9 +11,9 @@ rePIU는 DOSBox나 전체 PC 에뮬레이터를 포함하지 않고, 원본 DOS/
 *rePIU is an experimental runtime for executing the original 32-bit x86 code of DOS/4G-based PIU binaries without embedding DOSBox or a full PC emulator. Original game logic remains authoritative; only DOS, DPMI, memory, file-system, and hardware boundaries are replaced with High Level Emulation (HLE). See [VERSION](VERSION) for the current version.*
 
 > [!WARNING]
-> 현재는 연구·개발 단계이며 완성된 게임 런처가 아닙니다. 기본 실행 호스트는 32비트 Windows이고, `piu_1st`는 아직 완전한 게임 실행에 도달하지 않았습니다.
+> 현재는 연구·개발 단계이며 완성된 게임 런처가 아닙니다. 기본 실행 호스트는 32비트 Windows이고, 타이틀별 호환성은 계속 개발 중입니다.
 >
-> *This is research-stage software, not a finished game launcher. The current execution host is 32-bit Windows, and `piu_1st` does not yet reach complete gameplay.*
+> *This is research-stage software, not a finished game launcher. The current execution host is 32-bit Windows, and per-title compatibility remains under development.*
 
 ## 주요 특징 / Why rePIU
 
@@ -41,14 +41,21 @@ flowchart LR
     IO --> CPU
 ```
 
-현재 내장 타깃은 다음 두 가지입니다.
+DOS 날짜는 실행 context 안에서 가상화됩니다. `INT 21h/AH=2Bh`로 날짜를 설정하면
+이후 `AH=2Ah` 조회에 반영되지만 Windows host의 시스템 날짜는 변경하지 않습니다.
+
+*The DOS date is virtualized per execution context. A date set through
+`INT 21h/AH=2Bh` is returned by later `AH=2Ah` queries without changing the
+Windows host system date.*
+
+현재 내장 타깃은 검증 sample과 22개 MAME PIU profile입니다.
 
 | 타깃 | 용도 | 상태 |
 | --- | --- | --- |
 | `dos4gw_hello` | OpenWatcom으로 빌드하는 최소 DOS/4GW 검증 프로그램 | 실행 및 출력 검증 |
-| `piu_1st` | 사용자가 제공한 PIU 1st 원본 자산 | HLE 호환성 개발 중 |
+| `pumpit1`~`pumpipx3b` | 사용자가 제공한 MAME 형식 PIU ROM/CHD 자산 | 타이틀별 HLE 호환성 개발 중 |
 
-*The built-in targets are `dos4gw_hello`, a minimal OpenWatcom validation program, and `piu_1st`, the actively developed compatibility target using user-supplied original assets.*
+*The built-in targets are the minimal OpenWatcom `dos4gw_hello` validation program and 22 MAME-format PIU profiles from `pumpit1` through `pumpipx3b`.*
 
 ## 요구 사항 / Prerequisites
 
@@ -57,7 +64,7 @@ flowchart LR
 * CMake 3.20 이상
 * Git for Windows와 Windows PowerShell
 * 최초 의존성 준비를 위한 인터넷 연결
-* `piu_1st` 실행 시 합법적으로 보유한 원본 PIU 1st 파일
+* 게임 실행 시 합법적으로 보유한 해당 MAME ROM ZIP과 CHD
 
 빌드는 반드시 `Win32`/x86로 생성됩니다. CMake는 설치된 `spdlog`를 먼저 찾고, 없으면 configure 과정에서 `spdlog` 1.14.1을 가져옵니다. 테스트 setup은 OpenWatcom을 `tools/openwatcom/`에 로컬 설치할 수 있습니다.
 
@@ -74,21 +81,6 @@ cd rePIU
 
 ### 2. 원본 자산 배치 / Supply original assets
 
-`piu_1st`를 사용하려면 직접 소유한 원본 자산 트리를 다음 위치에 배치합니다.
-
-```text
-MASTER/
-└── PIU_1ST/
-    └── PIU/
-        └── PIU.EXE
-```
-
-`MASTER/`는 Git에서 제외됩니다. rePIU는 원본 게임 실행 파일이나 자산을 배포하지 않습니다. `dos4gw_hello` 자체만 빌드하려면 PIU 자산이 필요 없지만, 통합 setup/test 스크립트는 현재 `PIU.EXE` 존재 여부를 검사합니다.
-
-*Original game files are not distributed and `MASTER/` is ignored by Git. The standalone hello sample does not need PIU assets, but the integrated setup and test scripts currently verify that `PIU.EXE` exists.*
-
-### MAME CHD asset
-
 MAME 형식 asset으로 실행하려면 다음처럼 배치합니다. `roms/` 전체는 Git에서 제외됩니다.
 
 ```text
@@ -98,9 +90,22 @@ roms/
     └── <disc>.chd
 ```
 
-지원하는 MAME CHD profile은 `pumpit1`, `pumpit2`, `pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`, `pumpitpr`, `pumpitpx`, `pumpit8`, `pumpitp2`, `pumpipx2`, `pumpitp3`, `pumpipx3`입니다. 각 profile은 같은 이름의 ZIP에서 필요한 ROM entry를 확인하고 CHD CD의 ISO9660 tree를 `build/runtime_mounts/<rom-set>/`에 materialize합니다. 이후 실행에서는 CHD identity가 같으면 cache를 재사용합니다.
+지원하는 MAME CHD profile은 `pumpit1`, `pumpit2`, `pumpit2a`, `pumpit3`, `pumpit3a`,
+`pumpito`, `pumpitc`, `pumpitpc`, `pumpitpr`, `pumpitpru`, `pumpite`, `pumpitea`,
+`pumpitpx`, `pumpit8`, `pumpitp2`, `pumpipx2`, `pumpipx2p`, `pumpitp3`, `pumpitp3a`,
+`pumpipx3`, `pumpipx3a`, `pumpipx3b`입니다. 각 profile은 자신의 ZIP/CHD와
+`build/runtime_mounts/<rom-set>/` mount를 유지합니다. CAT702 항목이 현재 세트 이름으로
+없으면 profile에 명시된 부모 이름을 같은 ZIP에서 확인하고, 이어서 형제 경로의 부모
+ZIP을 확인합니다. 항목 없음만 fallback하며 읽기·추출·CRC 오류는 실패로 유지합니다.
+CHD identity가 같으면 materialized ISO9660 cache를 재사용합니다.
 
-*The supported MAME CHD profiles are `pumpit1`, `pumpit2`, `pumpit3`, `pumpito`, `pumpitc`, `pumpitpc`, `pumpite`, `pumpitpr`, `pumpitpx`, `pumpit8`, `pumpitp2`, `pumpipx2`, `pumpitp3`, and `pumpipx3`. Each validates the required entries in its matching ROM set, mounts the CHD's ISO9660 tree under `build/runtime_mounts/<rom-set>/`, and starts `PIU/PIU.EXE`; an unchanged CHD identity reuses the cache.*
+*The 22 supported MAME CHD profiles follow the catalog order from `pumpit1` through
+`pumpipx3b`, including clone/date variants. Each validates the required entries in its matching
+ROM set, mounts the CHD's ISO9660 tree under `build/runtime_mounts/<rom-set>/`, and starts
+`PIU/PIU.EXE`. Each clone retains its own ZIP/CHD and mount. If its current-named CAT702
+member is absent, setup checks the parent-named member in the same ZIP and then the sibling
+parent ZIP. Only a missing member permits fallback; read, extraction, and CRC failures remain
+fatal. An unchanged CHD identity reuses the cache.*
 
 PIU10 profile의 MP3 시작 지연 기본값은 0 ms입니다. 실행 전에 `REPIU_PIU10_MP3_LATENCY_MS`를 0~500의 정수로 지정하면 밀리초 단위로 덮어쓸 수 있습니다. `REPIU_PIU10_DAC_AUDIT=1`은 DAC3350A 제어 transaction과 그 순간의 PCM queue, audio device buffer, compressed ring, decoder pending 상태를 기록합니다. 반복 측정과 해석 절차는 [PIU10 DAC audio backlog 감사 가이드](docs/guides/piu10-dac-audio-backlog-audit.md)를 따릅니다.
 
@@ -115,7 +120,9 @@ powershell -ExecutionPolicy Bypass -File scripts/setup_test_environment.ps1
 powershell -ExecutionPolicy Bypass -File scripts/test_all.ps1 -SkipSetup
 ```
 
-첫 명령은 Git, CMake, Visual Studio x86 도구와 원본 자산을 확인하고 필요하면 OpenWatcom을 설치합니다. 두 번째 명령은 Win32 host와 sample을 빌드하고 두 내장 타깃의 현재 관찰 지점을 검증합니다.
+첫 명령은 Git, CMake, Visual Studio x86 도구와 `pumpit1` 자산을 확인하고 필요하면
+OpenWatcom을 설치합니다. 두 번째 명령은 Win32 host와 sample을 빌드하고 target registry
+probe를 검증합니다.
 
 ### 4. 빌드만 수행 / Build only
 
@@ -164,11 +171,17 @@ build\win32_x86_debug\Debug\repiu.exe dos4gw_hello
 Hello, world!
 ```
 
-### PIU 1st 실행 관찰
+### Pump It Up 실행 관찰
 
 ```powershell
-build\win32_x86_debug\Debug\repiu.exe piu_1st
+build\win32_x86_debug\Debug\repiu.exe pumpit1
 ```
+
+인자 없이 실행해도 기본 타깃 `pumpit1`을 선택합니다. 이전 임시 프로필 `piu_1st`는
+내장 registry에서 제거됐습니다.
+
+*Launching without an argument also selects the default `pumpit1` target. The former
+temporary `piu_1st` profile is no longer part of the built-in registry.*
 
 MAME CHD profile은 supervisor로 실행합니다.
 
@@ -181,8 +194,8 @@ build\win32_x86_debug\Debug\repiu_supervisor_win32.exe pumpit1 600000
 ### 실행 파일 분석
 
 ```powershell
-build\win32_x86_debug\Debug\repiu_exe_analyzer.exe piu_1st
-build\win32_x86_debug\Debug\repiu_exe_analyzer.exe piu_1st path\to\PIU.EXE
+build\win32_x86_debug\Debug\repiu_exe_analyzer.exe pumpit1
+build\win32_x86_debug\Debug\repiu_exe_analyzer.exe pumpit1 path\to\PIU.EXE
 build\win32_x86_debug\Debug\repiu_exe_analyzer.exe path\to\another.exe
 ```
 

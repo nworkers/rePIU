@@ -74,3 +74,33 @@ the shared wrapper intact.
 
 There is no unresolved difference between the current CAT702 model and the observed check vector.
 Compatibility with additional CAT702 command forms in other executables remains separate work.
+
+---
+
+## Clone ROM 세트 자산 상속 (Task 486)
+
+### 확인됨
+
+`pumpitpru.zip`에는 `pumpitpru.cat702`가 없고 부모 이름인 `pumpitpr.cat702`
+8바이트 항목(CRC32 `1f039c12`)이 있습니다. 기존 코드는 ZIP stem으로 현재 세트
+이름만 생성하여 PIU10 보드를 unavailable 상태로 만들었습니다.
+
+`TargetProfile::parent_rom_set_id=pumpitpr`를 전달하고, 현재 세트 항목이 없을 때
+같은 ZIP의 부모 이름으로 fallback한 실행에서는 PIU10/CAT702 초기화가 성공했습니다.
+5초 제한 실행에서 PIU10 port I/O 33회가 모두 처리됐고 Glide 초기화까지
+진행했습니다. 이 fallback은 항목 없음에만 적용하며 CRC 또는 archive 오류에는
+적용하지 않습니다.
+
+## Clone ROM-Set Asset Inheritance (Task 486)
+
+### Confirmed
+
+`pumpitpru.zip` has no `pumpitpru.cat702`; it contains the eight-byte
+parent-named `pumpitpr.cat702` member with CRC32 `1f039c12`. The old
+ZIP-stem-only lookup therefore left the PIU10 board unavailable.
+
+With `TargetProfile::parent_rom_set_id=pumpitpr`, setup falls back to the parent
+name in the current ZIP only after the current member is absent. PIU10/CAT702
+initialization succeeded in a five-second run, all 33 observed PIU10 port-I/O
+operations were handled, and execution reached Glide initialization. CRC and
+archive failures do not permit this fallback.

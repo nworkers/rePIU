@@ -3972,6 +3972,7 @@ bool RunWin32ExecutionThread(
     bool enable_piu_jamma_board,
     bool enable_piu10_isa_board,
     bool enable_cat702,
+    std::string_view parent_rom_set_id,
     std::uint32_t piu10_mp3_latency_ms,
     Win32AotCodeCachePlacement* aot_placement,
     runtime::ExecutionBackend execution_backend,
@@ -4274,9 +4275,14 @@ bool RunWin32ExecutionThread(
         {
             const std::string cat702_name =
                 sound_rom_zip_path->stem().string() + ".cat702";
+            const std::string parent_cat702_name =
+                parent_rom_set_id.empty()
+                    ? std::string{}
+                    : std::string(parent_rom_set_id) + ".cat702";
             repiu::assets::RomZipEntry cat702 =
-                repiu::assets::ExtractRomZipEntry(
-                    *sound_rom_zip_path, cat702_name);
+                repiu::assets::ExtractRomZipEntryWithParentFallback(
+                    *sound_rom_zip_path, cat702_name,
+                    parent_rom_set_id, parent_cat702_name);
             cat702_message = cat702.message;
             cat702_ready = cat702.valid &&
                 cat702.data.size() ==
@@ -4903,6 +4909,7 @@ bool AttemptWin32GuestStackTrapExecution(
     bool enable_piu_jamma_board,
     bool enable_piu10_isa_board,
     bool enable_cat702,
+    std::string_view parent_rom_set_id,
     std::uint32_t piu10_mp3_latency_ms,
     std::uint32_t timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
@@ -4939,6 +4946,7 @@ bool AttemptWin32GuestStackTrapExecution(
         enable_piu_jamma_board,
         enable_piu10_isa_board,
         enable_cat702,
+        parent_rom_set_id,
         piu10_mp3_latency_ms,
         nullptr,
         runtime::ExecutionBackend::kLegacy,
@@ -4985,6 +4993,7 @@ bool AttemptWin32GuestStackHleExecution(
         false,
         false,
         false,
+        {},
         0U,
         nullptr,
         runtime::ExecutionBackend::kLegacy,
@@ -5004,6 +5013,7 @@ bool AttemptWin32GuestStackAotExecution(
     bool enable_piu_jamma_board,
     bool enable_piu10_isa_board,
     bool enable_cat702,
+    std::string_view parent_rom_set_id,
     std::uint32_t piu10_mp3_latency_ms,
     runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
@@ -5027,6 +5037,7 @@ bool AttemptWin32GuestStackAotExecution(
         enable_piu_jamma_board,
         enable_piu10_isa_board,
         enable_cat702,
+        parent_rom_set_id,
         piu10_mp3_latency_ms,
         &aot_placement,
         execution_backend,

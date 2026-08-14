@@ -104,6 +104,7 @@ add_library(repiu_exe
     src/exe/dos4gw_loader.cpp
     src/exe/executable_headers.cpp
     src/hle/dos_file_system.cpp
+    src/hle/dos_date.cpp
     src/hle/glide_fog.cpp
     src/hle/glide_hle.cpp
     src/hle/glide_implementation_issue.cpp
@@ -285,6 +286,7 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/glide_lfb_region_probe.cpp
     src/tools/aot_probe/glide_texture_table_stack_probe.cpp
     src/tools/aot_probe/dos_file_create_probe.cpp
+    src/tools/aot_probe/dos_date_probe.cpp
     src/tools/aot_probe/glide_setter_state_cache_probe.cpp
     src/tools/aot_probe/glide_setter_phase_timing_probe.cpp
     src/tools/aot_probe/glide_gl_error_policy_probe.cpp
@@ -349,6 +351,7 @@ target_link_libraries(repiu_glide_render_probe
 target_include_directories(repiu_aot_probe
     PRIVATE
         src/platform/win32
+        src/platform/win32/execution
         third_party/zydis
 )
 

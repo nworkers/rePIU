@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace repiu::assets
@@ -15,6 +16,7 @@ namespace repiu::assets
 struct RomZipEntry
 {
     bool valid = false;
+    bool missing = false;
     std::string name;
     std::uint32_t crc32 = 0;
     std::vector<std::uint8_t> data;
@@ -29,6 +31,15 @@ struct RomZipEntry
 // describes the outcome. The caller decides whether a failure is fatal.
 RomZipEntry ExtractRomZipEntry(const std::filesystem::path& zip_path,
                                const std::string& entry_name);
+
+// Resolves a ROM member from the current set first, then from the parent name
+// in the current archive and finally from the sibling parent archive. Fallback
+// is allowed only when the preceding member is absent.
+RomZipEntry ExtractRomZipEntryWithParentFallback(
+    const std::filesystem::path& zip_path,
+    const std::string& entry_name,
+    std::string_view parent_rom_set_id,
+    const std::string& parent_entry_name);
 
 }  // namespace repiu::assets
 

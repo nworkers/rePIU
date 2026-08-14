@@ -2769,6 +2769,11 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
             HandleDosGetSystemDate(win32_context, context);
             win32_context->Eip += 2;
             return true;
+        case 0x2B:
+            RecordHandledDosInterrupt(context, 0x21, ax);
+            HandleDosSetSystemDate(win32_context, context);
+            win32_context->Eip += 2;
+            return true;
         case 0x2C:
             RecordHandledDosInterrupt(context, 0x21, ax);
             HandleDosGetSystemTime(win32_context, context);

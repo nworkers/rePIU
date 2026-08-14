@@ -665,3 +665,45 @@ ON versus OFF reduced JAMMA scans from 233,280 to 3,527, total port I/O from 244
 and `0xC0000096` exceptions from 236,962 to 7,936. ON skipped 155,034 iterations in 783 loops,
 with a maximum batch of 198. Time to the common endpoint fell from about 8.29 to 6.86 seconds.
 The common `AH=08h` endpoint is a separate pre-existing HLE gap, not a batching regression.
+
+## 2026-08-15 Task 484: pumpitpr DOS 날짜 설정
+
+**확인됨:** `repiu_log.txt`의 `pumpitpr` 실행은 `0x040ECB3D`의 `INT 21h`에서
+`unsupported DOS INT 21h AH=0x2b`로 종료됐습니다. 직전 guest 명령은 날짜 구조체에서
+`CX=2026`, `DH=8`, `DL=15`를 구성했으며, EDI가 가리키는 주변 문자열에는
+`SAVE AND EXIT.DATE SETTING`이 있습니다. 이는 일반적인 Function 2Bh 날짜 설정 요청입니다.
+
+**구현됨:** 공용 Gregorian 날짜 모듈이 DOS 범위 1980~2099의 유효성, 일수 차이,
+날짜 이동과 요일을 계산합니다. Function 2Bh는 유효한 요청을 host local date 대비
+일수 offset으로 실행 context에 저장하고 `AL=00h`를 반환합니다. 잘못된 요청은 상태를
+유지하고 `AL=FFh`를 반환합니다. Function 2Ah는 이 offset을 적용합니다. 호스트 system
+date는 변경하지 않습니다. 일반 DOS HLE와 traced/AOT 경로는 같은 handler를 사용합니다.
+
+**검증됨:** Debug/Release `repiu`와 `repiu_aot_probe` 빌드가 성공했고, 두 구성의
+`pumpipx3` 전체 coherence probe에서 `dos_date_probe=pass`, `coherence_all=true`,
+종료 코드 0을 확인했습니다.
+
+**미확정:** 실제 `pumpitpr` 재실행에서 이 blocker 이후의 실행 frontier는 아직 확인하지
+않았습니다.
+
+## 2026-08-15 Task 484: pumpitpr DOS Set Date
+
+**Confirmed:** The `pumpitpr` run in `repiu_log.txt` stopped at `INT 21h` at
+`0x040ECB3D` with `unsupported DOS INT 21h AH=0x2b`. The preceding guest code
+formed `CX=2026`, `DH=8`, and `DL=15` from a date structure; nearby data reached
+through EDI includes `SAVE AND EXIT.DATE SETTING`. This is a normal Function 2Bh
+set-date request.
+
+**Implemented:** A shared Gregorian date module validates the DOS range 1980
+through 2099 and computes day differences, date shifts, and weekdays. Function
+2Bh stores a valid request as a per-execution day offset from host local date and
+returns `AL=00h`. An invalid request preserves state and returns `AL=FFh`.
+Function 2Ah applies the offset. The host system date is never changed, and the
+ordinary DOS HLE and traced/AOT paths share one handler.
+
+**Verified:** Debug and Release `repiu` and `repiu_aot_probe` builds passed. The
+full `pumpipx3` coherence probe reported `dos_date_probe=pass`,
+`coherence_all=true`, and exit code zero in both configurations.
+
+**Unresolved:** The execution frontier after this blocker still requires a real
+`pumpitpr` rerun.

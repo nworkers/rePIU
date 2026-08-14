@@ -4457,7 +4457,7 @@ bool SelectAndReserveRelocatedImageBase(
 const repiu::target::TargetProfile* SelectTargetProfile(int argc,
                                                         char** argv)
 {
-    std::string_view target_id = "piu_1st";
+    std::string_view target_id = "pumpit1";
     if (argc >= 2)
     {
         target_id = argv[1];
@@ -4496,6 +4496,7 @@ std::optional<repiu::target::TargetProfile> BuildDirectExecutableProfile(
         working_directory,
         repiu::target::ExecutableFormatHint::kDos4gwLe,
         "dos4gw_console_sample",
+        "",
         "",
         repiu::target::TargetRuntimeReservationHint{
             true,
@@ -4577,6 +4578,10 @@ int main(int argc, char** argv)
                  profile->enable_piu10_isa_board ? "true" : "false");
     logger->info("CAT702 enabled: {}",
                  profile->enable_cat702 ? "true" : "false");
+    logger->info("Parent ROM set: {}",
+                 profile->parent_rom_set_id.empty()
+                     ? "none"
+                     : profile->parent_rom_set_id);
 #if defined(REPIU_WIN32_HOST_IMAGE_BASE)
     logger->info("Win32 host image base policy: {}",
                  Hex32(REPIU_WIN32_HOST_IMAGE_BASE));
@@ -5069,6 +5074,7 @@ int main(int argc, char** argv)
               profile->enable_piu_jamma_board,
               profile->enable_piu10_isa_board,
               profile->enable_cat702,
+              profile->parent_rom_set_id,
               profile->piu10_mp3_latency_ms,
               execution_backend,
               execution_timeout_milliseconds,
@@ -5091,6 +5097,7 @@ int main(int argc, char** argv)
                   profile->enable_piu_jamma_board,
                   profile->enable_piu10_isa_board,
                   profile->enable_cat702,
+                  profile->parent_rom_set_id,
                   profile->piu10_mp3_latency_ms,
                   execution_timeout_milliseconds,
                   &attempt);

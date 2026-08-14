@@ -76,6 +76,7 @@ RomZipEntry ExtractRomZipEntry(const std::filesystem::path& zip_path,
     if (index < 0)
     {
         mz_zip_reader_end(&zip);
+        result.missing = true;
         result.message =
             "ROM archive has no entry '" + entry_name + "': " + zip_path.string();
         return result;
@@ -118,6 +119,41 @@ RomZipEntry ExtractRomZipEntry(const std::filesystem::path& zip_path,
            << " bytes, crc32 " << Hex32(result.crc32) << ")";
     result.message = stream.str();
     result.valid = true;
+    return result;
+}
+
+RomZipEntry ExtractRomZipEntryWithParentFallback(
+    const std::filesystem::path& zip_path,
+    const std::string& entry_name,
+    std::string_view parent_rom_set_id,
+    const std::string& parent_entry_name)
+{
+    RomZipEntry result = ExtractRomZipEntry(zip_path, entry_name);
+    if (result.valid || !result.missing || parent_rom_set_id.empty() ||
+        parent_entry_name.empty())
+    {
+        return result;
+    }
+
+    result = ExtractRomZipEntry(zip_path, parent_entry_name);
+    if (result.valid)
+    {
+        result.message = "parent fallback in current archive: " + result.message;
+        return result;
+    }
+    if (!result.missing)
+    {
+        return result;
+    }
+
+    const std::filesystem::path parent_zip_path =
+        zip_path.parent_path() /
+        (std::string(parent_rom_set_id) + zip_path.extension().string());
+    result = ExtractRomZipEntry(parent_zip_path, parent_entry_name);
+    if (result.valid)
+    {
+        result.message = "parent archive fallback: " + result.message;
+    }
     return result;
 }
 

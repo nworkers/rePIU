@@ -642,7 +642,7 @@ const repiu::target::TargetProfile* SelectTargetProfile(
     std::filesystem::path* explicit_path)
 {
     const repiu::target::TargetProfile* default_profile =
-        repiu::target::FindTargetProfileById("piu_1st");
+        repiu::target::FindTargetProfileById("pumpit1");
     if (argc < 2)
     {
         return default_profile;

@@ -108,6 +108,24 @@ Important families are DOS services on `INT 21h`, multiplex/protected-mode detec
 
 `INT 21h AH=2Ch` (Get System Time) returns `CH` = hour (0-23), `CL` = minute (0-59), `DH` = second (0-59), and `DL` = hundredths (0-99). The result is in `CX`/`DX` rather than `AX`, and real DOS writes only the 16-bit registers. Guest calibration loops busy-wait on the seconds field actually advancing, so a frozen clock value must never be returned. See the [RBIL INT 21h AH=2Ch entry](https://fd.lod.bz/rbil/interrup/dos_kernel/212c.html).
 
+## 2026-08-15: INT 21h AH=2Bh 날짜 설정
+
+`AH=2Bh`는 `CX` 전체를 연도(1980~2099), `DH`를 월, `DL`을 일로 받아 DOS system
+date를 설정합니다. 유효한 날짜에는 `AL=00h`, 유효하지 않은 날짜에는 `AL=FFh`를
+반환합니다. HLE에서는 호스트 시계를 변경하지 말고 실행 context의 가상 날짜 상태를
+갱신한 뒤 `AH=2Ah` 조회에 일관되게 반영해야 합니다. 계약은 Microsoft
+[MS-DOS 2.0 Programmer's Reference, Function 2Bh](https://www.bitsavers.org/pdf/microsoft/msdos_2.0/8411-200-00_MS-DOS_2.0_Programmers_Reference_1983.pdf)
+1-92쪽을 따릅니다.
+
+## 2026-08-15: INT 21h AH=2Bh Set Date
+
+`AH=2Bh` takes the full year in `CX` (1980 through 2099), month in `DH`, and day
+in `DL`. It returns `AL=00h` for a valid date and `AL=FFh` for an invalid date.
+An HLE should keep this as virtual per-execution state rather than changing the
+host clock, and expose the result consistently through `AH=2Ah`. See page 1-92 of
+the Microsoft
+[MS-DOS 2.0 Programmer's Reference, Function 2Bh](https://www.bitsavers.org/pdf/microsoft/msdos_2.0/8411-200-00_MS-DOS_2.0_Programmers_Reference_1983.pdf).
+
 For a 32-bit DPMI client, `INT 21h AH=35h` (Get Interrupt Vector) is served from the protected-mode vector and returns `ES:EBX` where **EBX is the full 32-bit offset** — the same table `AH=25h` writes with all of `EDX` and `INT 31h AX=0204` returns with all of `EDX`. Writing only the low 16 bits leaves the caller's stale high half in place, so the guest saves a garbage address (Task 399).
 
 `INT 16h` is the BIOS keyboard service. `AH=00h`/`10h` wait for a keystroke, `AH=01h`/`11h` check for one, and `AH=02h`/`12h` read the shift flags; the `1xh` forms are the extended variants. The result flag travels in ZF (`EFLAGS` bit `0x40`), where **ZF set means the buffer is empty**. Guests commonly preserve the function number (`mov dh, ah`) and branch on ZF to fall back for BIOSes without the extended calls, so ZF must be set accurately. See the [RBIL INT 16h index](https://fd.lod.bz/rbil/zint/index_16.html).

@@ -40,6 +40,8 @@ void HandleDosGetCurrentDrive(CONTEXT* win32_context, ThreadContext* context);
 
 void HandleDosGetSystemDate(CONTEXT* win32_context, ThreadContext* context);
 
+void HandleDosSetSystemDate(CONTEXT* win32_context, ThreadContext* context);
+
 void HandleDosGetSystemTime(CONTEXT* win32_context, ThreadContext* context);
 
 void RecordDosOpen(ThreadContext* context,
