@@ -2430,3 +2430,35 @@ on either mismatch. The runner image is **pinned** to `windows-2022`, since
 statically linked executables and the notices, and `openwatcom-samples-v<version>.zip` with the
 sample report. **The report uploads even when regressions fail the job**, and conversely **no
 release is published without it.**
+## Dynamic DOS 서비스 전달 / Dynamic DOS service routing
+
+Win32 `dynamic` backend는 `enable_dos_hle=false`, `enable_traced_dos_hle=true`로 실행되므로
+software interrupt가 먼저 `HandleTracedDosInterrupt21()`을 통과합니다. 이 함수는 안전하게
+추적할 수 있는 서비스를 선별하지만, 서비스 의미를 다시 구현하지 않습니다. 공용 DOS
+처리기가 소유하는 서비스는 그곳으로 위임해야 하며, `AH=3Ch` 파일 생성도
+`HandleDosInterrupt21()`로 전달됩니다. 공용 처리기는 계수, VFS 상태 변경, DOS flags와
+register 반환, EIP 진행을 한 번만 수행합니다.
+
+On Win32, the `dynamic` backend runs with `enable_dos_hle=false` and
+`enable_traced_dos_hle=true`, so software interrupts pass through
+`HandleTracedDosInterrupt21()` first. That function selects services safe for
+traced execution but does not reimplement their semantics. Services owned by
+the common DOS handler must delegate to it; `AH=3Ch` file creation routes to
+`HandleDosInterrupt21()`. The common handler remains the single owner of
+accounting, VFS mutation, DOS flag/register results, and EIP advancement.
+## Viewport 비례 Glide point raster / Viewport-scaled Glide point raster
+
+Glide guest 좌표는 원본 논리 surface(관측된 PIU는 640×480)에 유지되고 OpenGL viewport가
+실제 drawable로 확대합니다. 정점 위치와 달리 `GL_POINTS` raster 크기는 viewport로
+확대되지 않으므로 backend는 drawable/logical 가로·세로 비율 중 작은 값을 point 크기로
+사용합니다. 최소 1 physical pixel과 `GL_ALIASED_POINT_SIZE_RANGE`를 지키며,
+`ApplyDrawableViewport()`가 resize 때 값을 갱신하고 직접·batch draw의 공용
+`PrepareDrawState(GL_POINTS)`가 적용합니다.
+
+Glide guest coordinates remain on the original logical surface (640×480 for
+the observed PIU targets), while the OpenGL viewport expands them to the actual
+drawable. Unlike vertex positions, the `GL_POINTS` raster size does not scale
+with the viewport. The backend therefore uses the smaller drawable/logical axis
+ratio as point size, floors it at one physical pixel, and clamps it to
+`GL_ALIASED_POINT_SIZE_RANGE`. `ApplyDrawableViewport()` refreshes the value on
+resize and the common direct/batched `PrepareDrawState(GL_POINTS)` applies it.

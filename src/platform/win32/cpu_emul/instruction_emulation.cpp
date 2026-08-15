@@ -2744,6 +2744,7 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
     switch (ah)
     {
         case 0x09:
+        case 0x3C:
             return HandleDosInterrupt21(win32_context, context);
         case 0x19:
             RecordHandledDosInterrupt(context, 0x21, ax);

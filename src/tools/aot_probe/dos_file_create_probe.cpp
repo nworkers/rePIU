@@ -1,12 +1,16 @@
 #include "dos_file_create_probe.h"
 
+#include "cpu_emul/instruction_emulation.h"
+#include "execution/thread_context.h"
 #include "repiu/hle/dos_file_system.h"
 
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -198,11 +202,52 @@ bool RunDosFileCreateProbe()
         CloseDosFile(&state, open_handle, &dos_error);
     }
 
+    // The dynamic backend reaches the traced INT 21h dispatcher before the
+    // common DOS dispatcher. Exercise that integration boundary so a service
+    // implemented in the common handler cannot be omitted from the traced
+    // allow-list again.
+    auto dispatch_context =
+        std::make_unique<repiu::platform::win32::ThreadContext>();
+    std::array<std::uint8_t, 32> guest_memory = {};
+    guest_memory[0] = 0xCDU;
+    guest_memory[1] = 0x21U;
+    constexpr char kDispatchPath[] = "DISPATCH.TXT";
+    std::memcpy(guest_memory.data() + 2, kDispatchPath,
+                sizeof(kDispatchPath));
+    dispatch_context->runtime_base = static_cast<std::uint32_t>(
+        reinterpret_cast<std::uintptr_t>(guest_memory.data()));
+    dispatch_context->runtime_size =
+        static_cast<std::uint32_t>(guest_memory.size());
+    const bool dispatch_initialized = initialized &&
+        InitializeDosVirtualFileSystem(root, &dispatch_context->dos_file_system);
+    CONTEXT win32_context = {};
+    win32_context.Eax = 0x00003C00U;
+    win32_context.Ecx = 0U;
+    win32_context.Edx = dispatch_context->runtime_base + 2U;
+    win32_context.Eip = dispatch_context->runtime_base;
+    win32_context.EFlags = 1U;
+    bool traced_dispatch = dispatch_initialized &&
+        repiu::platform::win32::HandleTracedDosInterrupt21(
+            &win32_context, dispatch_context.get()) &&
+        win32_context.Eip == dispatch_context->runtime_base + 2U &&
+        (win32_context.EFlags & 1U) == 0U &&
+        (win32_context.Eax & 0xFFFFU) == 5U &&
+        dispatch_context->dos_file_system.file_create_count == 1U &&
+        std::filesystem::exists(root / "DISPATCH.TXT");
+    if (traced_dispatch)
+    {
+        traced_dispatch = CloseDosFile(
+            &dispatch_context->dos_file_system, 5U, &dos_error) &&
+            dos_error == 0U;
+    }
+
     std::error_code cleanup_error;
     std::filesystem::remove_all(root, cleanup_error);
+    const bool cleaned = !cleanup_error && !std::filesystem::exists(root);
 
     const bool all = initialized && created && wrote && round_trip &&
-        truncation && missing_parent && read_only_attribute && exhaustion;
+        truncation && missing_parent && read_only_attribute && exhaustion &&
+        traced_dispatch && cleaned;
 
     std::cout << "dos_file_create_initialized="
               << (initialized ? "true" : "false")
@@ -218,6 +263,10 @@ bool RunDosFileCreateProbe()
               << (read_only_attribute ? "true" : "false")
               << "\ndos_file_create_exhaustion="
               << (exhaustion ? "true" : "false")
+              << "\ndos_file_create_traced_dispatch="
+              << (traced_dispatch ? "true" : "false")
+              << "\ndos_file_create_cleanup="
+              << (cleaned ? "true" : "false")
               << "\ndos_file_create_all=" << (all ? "true" : "false") << "\n";
     return all;
 }

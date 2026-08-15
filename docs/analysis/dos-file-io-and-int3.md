@@ -128,3 +128,44 @@ would block, so the attribute is recorded in `attribute_overrides` instead. Crea
 the mount root and disappear when the mount cache is invalidated and re-extracted — correct for a log
 file, and the first durable guest write we observe is when an overlay becomes worth designing.
 Unresolved: whether the game creates `ERRLOG.txt` unconditionally or only on detecting an error.
+
+## Task 487 (2026-08-16): dynamic 경로의 `AH=3Ch` 전달 누락 — **해결됨**
+
+**확인됨:** 새 `pumpit8` 로그는 약 121초 뒤 `ERRLOG.txt`를 write access로 열어 DOS 오류
+2(file not found)를 받은 다음 `AH=3Ch`를 호출했습니다. 공용 `HandleDosInterrupt21()`에는
+Task 477의 구현이 있었지만, `dynamic` backend가 먼저 호출하는
+`HandleTracedDosInterrupt21()`의 switch에 `0x3C`가 없어 unsupported로 종료됐습니다.
+따라서 파일 생성 구현이나 자산 문제가 아니라 backend 통합 누락이었습니다.
+
+**해결:** 추적용 dispatcher가 `AH=3Ch`를 공용 handler로 위임합니다. 실제 `CD 21`
+바이트와 guest path를 사용한 probe에서 EIP 진행, CF clear, handle 5, 생성 계수와 host
+파일을 함께 확인했습니다. 2026-08-16 Release 전체 `repiu_aot_probe`가 종료 코드 0,
+`dos_file_create_traced_dispatch=true`로 통과했습니다.
+
+**미확정:** 이번 수정은 게임이 쓰려던 오류 내용 자체를 설명하지 않습니다. 다음 live
+실행에서 생성된 `ERRLOG.txt`와 `[repiu-dos] write`를 확인해야 선행 게임 오류 유무를
+판단할 수 있습니다.
+
+추가로 이 probe는 `CloseDosFile()`이 read cache만 해제하고 write stream cache를 남기는
+Task 477 결함을 드러냈습니다. close가 두 cache를 모두 해제하도록 고쳤으며 scratch
+root cleanup 성공도 회귀 조건으로 확인합니다.
+
+## Task 487 (2026-08-16): missing `AH=3Ch` routing on dynamic — **resolved**
+
+Confirmed: the new `pumpit8` log ran for about 121 seconds, failed to open
+`ERRLOG.txt` for write with DOS error 2, then called `AH=3Ch`. Task 477's common
+handler already implemented the service, but the `HandleTracedDosInterrupt21()`
+switch used first by `dynamic` omitted `0x3C`, so execution stopped before it
+reached that implementation. This was a backend integration gap, not a missing
+filesystem implementation or asset.
+
+Resolved by delegating traced `AH=3Ch` to the common handler. A probe using real
+`CD 21` bytes and a guest path verifies EIP advancement, clear CF, handle 5,
+the create count, and the host file. It also exposed a Task 477 close-path bug:
+`CloseDosFile()` released the read cache but retained the host write stream.
+Close now releases both, and the probe requires scratch-root cleanup. The full
+Release `repiu_aot_probe` passed with exit code 0,
+`dos_file_create_traced_dispatch=true`, and `dos_file_create_cleanup=true` on
+2026-08-16.
+The content the game intended to write remains unresolved until a subsequent
+live run produces `ERRLOG.txt` or `[repiu-dos] write` evidence.

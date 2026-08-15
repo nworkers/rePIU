@@ -43,6 +43,11 @@ bool TranslateGlideOpenGlCullMode(std::uint32_t mode,
                                   bool origin_lower_left,
                                   GlideOpenGlCullFace* face);
 
+float CalculateGlidePointSize(std::uint32_t logical_width,
+                              std::uint32_t logical_height,
+                              std::uint32_t drawable_width,
+                              std::uint32_t drawable_height);
+
 class GlideOpenGlBackend
 {
 public:
@@ -420,6 +425,7 @@ private:
     std::uint32_t logical_width_ = 0;
     std::uint32_t logical_height_ = 0;
     std::uint32_t window_scale_ = 2U;
+    float point_size_ = 1.0F;
     runtime::ExecutionBackend execution_backend_ =
         runtime::ExecutionBackend::kLegacy;
     std::chrono::steady_clock::time_point frame_rate_period_start_;

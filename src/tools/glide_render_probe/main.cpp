@@ -168,6 +168,28 @@ int main(int argc, char** argv)
 
 #if defined(_WIN32)
     using repiu::platform::win32::GlideOpenGlCullFace;
+    const auto point_size = [](const std::uint32_t drawable_width,
+                               const std::uint32_t drawable_height) {
+        return repiu::platform::win32::CalculateGlidePointSize(
+            640U, 480U, drawable_width, drawable_height);
+    };
+    if (!Check(point_size(640U, 480U) == 1.0F,
+               "1x point scale is incorrect") ||
+        !Check(point_size(1280U, 960U) == 2.0F,
+               "2x point scale is incorrect") ||
+        !Check(point_size(1920U, 1440U) == 3.0F,
+               "3x point scale is incorrect") ||
+        !Check(point_size(1280U, 720U) == 1.5F,
+               "non-uniform point scale did not preserve square points") ||
+        !Check(point_size(320U, 240U) == 1.0F,
+               "downscaled point size fell below one pixel") ||
+        !Check(repiu::platform::win32::CalculateGlidePointSize(
+                   0U, 480U, 1280U, 960U) == 1.0F,
+               "invalid logical size did not use one pixel"))
+    {
+        return 1;
+    }
+
     GlideOpenGlCullFace cull_face = GlideOpenGlCullFace::kDisabled;
     if (!Check(repiu::platform::win32::TranslateGlideOpenGlCullMode(
                    0U, false, &cull_face) &&

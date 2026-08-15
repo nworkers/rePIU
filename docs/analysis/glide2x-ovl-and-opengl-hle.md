@@ -1302,3 +1302,36 @@ narrowing the cause to lifetime ordering. The original log calls
 indices to RGBA and discarded the source, so a later palette could not affect
 the existing texture. Task 483 now retains P_8/AP_88 sources and refreshes those
 textures whenever a palette is downloaded.
+## Task 488 (2026-08-16): viewport 확대와 `GL_POINTS` 크기 불일치 — **해결됨**
+
+**확인됨:** `pumpit8` 서비스 화면 구동은 `_GRDRAWPOINT@4`를 16,668,750회 호출했습니다.
+현재 backend는 640×480 논리 좌표를 기본 1280×960 drawable viewport로 투영하지만
+`glPointSize()`를 설정하지 않았습니다. OpenGL point raster는 viewport 변환으로 확대되지
+않으므로 위치 간격은 2배인데 각 dot는 1 physical pixel로 남아 글자가 점선처럼
+보였습니다.
+
+**해결:** drawable/logical 두 축 비율 중 작은 값을 사용해 정사각형 point 크기를 만들고,
+1 pixel 아래로 내려가지 않게 한 뒤 OpenGL 지원 범위로 제한합니다. resize와 Alt+1~4
+scale 변경은 `ApplyDrawableViewport()`에서 값을 갱신하고 직접·batch point는 공용 draw
+state에서 적용합니다. Release `glide_render_probe`는 1×/2×/3×, 비균등 1.5×, 축소와
+무효 크기 계산을 포함해 통과했습니다.
+
+**미검증:** 실제 서비스 화면의 육안 비교는 사용자 실행으로 남아 있습니다. 이번 작업은
+line width나 전체 640×480 offscreen nearest-neighbor presentation을 변경하지 않습니다.
+
+## Task 488 (2026-08-16): viewport scaling did not scale `GL_POINTS` — **resolved**
+
+Confirmed: the `pumpit8` service-screen run made 16,668,750
+`_GRDRAWPOINT@4` calls. The backend projected 640×480 logical coordinates into
+the default 1280×960 drawable but never set `glPointSize()`. OpenGL point raster
+size is not enlarged by viewport transformation, so positions spread by 2×
+while every dot remained one physical pixel, producing dotted-looking text.
+
+Resolved by using the smaller drawable/logical axis ratio as square point size,
+flooring it at one pixel, and clamping it to the OpenGL-supported range. Resize
+and Alt+1–4 scaling refresh the value in `ApplyDrawableViewport()`, and direct
+and batched points apply it through common draw state. The Release
+`glide_render_probe` passed with 1×/2×/3×, non-uniform 1.5×, downscaled, and
+invalid-dimension cases. Visual comparison of the actual service screen remains
+for a user run; line width and fixed-surface nearest-neighbor presentation are
+unchanged.

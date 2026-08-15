@@ -932,10 +932,11 @@ bool CloseDosFile(DosVirtualFileSystemState* state,
         if (open_file.open && open_file.handle == handle)
         {
             open_file.open = false;
-            // Task 374: release the host stream with the handle. A closed slot is
-            // reused by the next open, and carrying a stale stream into it would
-            // read the previous file.
+            // Release both host streams with the handle. A closed slot is reused
+            // by the next open, and either stale stream would retain the previous
+            // file and keep its host handle alive.
             open_file.host_stream.Reset();
+            open_file.host_write_stream.Reset();
             open_file.cached_file_size = 0;
             state->message = "DOS file closed";
             return true;

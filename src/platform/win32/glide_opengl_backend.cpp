@@ -83,6 +83,23 @@ float GlideOozToOrthoEyeZ(const float ooz)
     return 1.0F - 2.0F * (clamped / kGlideDepthMaximum);
 }
 
+float CalculateGlidePointSize(const std::uint32_t logical_width,
+                              const std::uint32_t logical_height,
+                              const std::uint32_t drawable_width,
+                              const std::uint32_t drawable_height)
+{
+    if (logical_width == 0U || logical_height == 0U ||
+        drawable_width == 0U || drawable_height == 0U)
+    {
+        return 1.0F;
+    }
+    const float horizontal_scale = static_cast<float>(drawable_width) /
+        static_cast<float>(logical_width);
+    const float vertical_scale = static_cast<float>(drawable_height) /
+        static_cast<float>(logical_height);
+    return std::max(1.0F, std::min(horizontal_scale, vertical_scale));
+}
+
 bool TranslateGlideOpenGlCullMode(const std::uint32_t mode,
                                   const bool origin_lower_left,
                                   GlideOpenGlCullFace* face)
@@ -852,6 +869,17 @@ void GlideOpenGlBackend::ApplyDrawableViewport()
                static_cast<GLsizei>(drawable_height));
     glScissor(0, 0, static_cast<GLsizei>(drawable_width),
               static_cast<GLsizei>(drawable_height));
+    GLfloat point_size_range[2] = {1.0F, 1.0F};
+    glGetFloatv(GL_ALIASED_POINT_SIZE_RANGE, point_size_range);
+    const float supported_minimum = std::max(1.0F, point_size_range[0]);
+    const float supported_maximum =
+        std::max(supported_minimum, point_size_range[1]);
+    const float requested_size = CalculateGlidePointSize(
+        logical_width_, logical_height_,
+        static_cast<std::uint32_t>(drawable_width),
+        static_cast<std::uint32_t>(drawable_height));
+    point_size_ = std::clamp(requested_size, supported_minimum,
+                             supported_maximum);
 #endif
 }
 
@@ -1459,7 +1487,11 @@ bool GlideOpenGlBackend::PrepareDrawState(const std::uint32_t primitive,
             : 1.0F;
     }
     shader_.SetTextureEnabled(*sample_texture);
-    if (primitive == GL_LINES)
+    if (primitive == GL_POINTS)
+    {
+        glPointSize(point_size_);
+    }
+    else if (primitive == GL_LINES)
     {
         glLineWidth(1.0F);
     }
@@ -2828,6 +2860,7 @@ void GlideOpenGlBackend::Close()
         logical_width_ = 0;
         logical_height_ = 0;
         window_scale_ = 2U;
+        point_size_ = 1.0F;
         ResetFrameRateMeasurement();
         return;
     }
@@ -2875,6 +2908,7 @@ void GlideOpenGlBackend::Close()
     logical_width_ = 0;
     logical_height_ = 0;
     window_scale_ = 2U;
+    point_size_ = 1.0F;
     ResetFrameRateMeasurement();
     origin_lower_left_ = false;
     textures_.clear();
