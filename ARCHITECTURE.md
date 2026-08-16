@@ -288,6 +288,24 @@ EAX. Observed texture download/source/sampler/combine calls feed the OpenGL
 texture cache and GLSL sampler/combine path. Unobserved formats and the
 projected-texture layout are not claimed without validation evidence.
 
+P_8/AP_88 texture의 원본 index texel과 palette 수명은 분리합니다. Win32 backend는
+palette byte가 실제로 바뀔 때만 generation을 증가시키며, 모든 보존 texture를 즉시
+재업로드하지 않습니다. textured draw의 공용 준비 단계는 현재 texture의 적용
+generation을 확인하고 오래된 경우에만 보존 source를 RGBA로 디코드하여 기존 OpenGL
+allocation에 `glTexSubImage2D`로 갱신합니다. 따라서 palette 변경은 다음 sampling 전에
+반영되지만 화면에 쓰이지 않는 texture는 비용을 만들지 않습니다. texture census는 palette
+download의 동일/변경 분류와 지연 갱신 수·실패·바이트·decode/upload host 시간을 보고합니다.
+
+Original index texels and palette lifetimes remain separate for P_8/AP_88.
+The Win32 backend advances a generation only when palette bytes actually change
+and no longer re-uploads every retained texture immediately. Shared textured-draw
+preparation checks the current texture's applied generation and, only when stale,
+decodes its retained source to RGBA and updates the existing OpenGL allocation with
+`glTexSubImage2D`. A palette change is therefore visible before the next sample,
+while unused textures incur no work. The texture census reports identical versus
+changed palette downloads and lazy-refresh counts, failures, bytes, and host-side
+decode/upload time.
+
 ## Win32 로더 앱 배치
 
 현재 실제 Win32 로더 executable target은 `repiu`이다.

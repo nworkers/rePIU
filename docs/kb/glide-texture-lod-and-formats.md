@@ -230,6 +230,19 @@ must affect existing indexed textures. An HLE that expands to RGBA at texture
 download time must retain the original indices and expand them again after a
 palette change.
 
+CPU에서 미리 확장하는 backend는 palette 변경 시 모든 보존 texture를 즉시 확장할
+필요는 없습니다. 각 texture가 적용한 palette generation을 기록하고 실제 sampling 전에
+오래된 texture만 갱신하면 observable Glide 의미는 같습니다. 같은 palette byte를 다시
+내려보낸 경우 generation을 유지할 수 있습니다. GPU allocation 크기가 같다면
+`glTexSubImage2D`처럼 내용을 갱신하는 연산을 사용해 재할당도 피할 수 있습니다.
+
+A CPU-expanding backend need not eagerly expand every retained texture when the
+palette changes. Recording the applied palette generation per texture and refreshing
+only a stale texture before sampling preserves the same observable Glide semantics.
+Re-downloading byte-identical palette data can retain the generation. When the GPU
+allocation dimensions are unchanged, a content update such as `glTexSubImage2D` also
+avoids reallocating storage.
+
 ## 채널 확장 주의
 
 5·6비트 채널을 8비트로 늘릴 때 단순 시프트(`v << 3`)를 쓰면 최댓값이 255가 아니라

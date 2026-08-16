@@ -109,6 +109,49 @@ void RecordGlideTextureUpload(Win32GlideTextureCensus* census,
     existing->second = hash;
 }
 
+void RecordGlidePaletteDownload(Win32GlideTextureCensus* census,
+                                const bool identical)
+{
+    if (census == nullptr)
+    {
+        return;
+    }
+    census->enabled = true;
+    ++census->palette_download_count;
+    if (identical)
+    {
+        ++census->palette_identical_count;
+    }
+    else
+    {
+        ++census->palette_changed_count;
+    }
+}
+
+void RecordGlidePaletteRefresh(Win32GlideTextureCensus* census,
+                               const bool success,
+                               const std::size_t source_bytes,
+                               const std::size_t rgba_bytes,
+                               const std::uint64_t decode_nanoseconds,
+                               const std::uint64_t upload_nanoseconds)
+{
+    if (census == nullptr)
+    {
+        return;
+    }
+    census->enabled = true;
+    census->palette_refresh_decode_nanoseconds += decode_nanoseconds;
+    census->palette_refresh_upload_nanoseconds += upload_nanoseconds;
+    if (!success)
+    {
+        ++census->palette_refresh_failure_count;
+        return;
+    }
+    ++census->palette_refresh_count;
+    census->palette_refresh_source_bytes += source_bytes;
+    census->palette_refresh_rgba_bytes += rgba_bytes;
+}
+
 Win32GlideTextureCensusSnapshot SnapshotGlideTextureCensus(
     const Win32GlideTextureCensus& census)
 {
@@ -124,6 +167,19 @@ Win32GlideTextureCensusSnapshot SnapshotGlideTextureCensus(
     snapshot.palettized_without_palette_count =
         census.palettized_without_palette_count;
     snapshot.decoded_byte_total = census.decoded_byte_total;
+    snapshot.palette_download_count = census.palette_download_count;
+    snapshot.palette_identical_count = census.palette_identical_count;
+    snapshot.palette_changed_count = census.palette_changed_count;
+    snapshot.palette_refresh_count = census.palette_refresh_count;
+    snapshot.palette_refresh_failure_count =
+        census.palette_refresh_failure_count;
+    snapshot.palette_refresh_source_bytes =
+        census.palette_refresh_source_bytes;
+    snapshot.palette_refresh_rgba_bytes = census.palette_refresh_rgba_bytes;
+    snapshot.palette_refresh_decode_nanoseconds =
+        census.palette_refresh_decode_nanoseconds;
+    snapshot.palette_refresh_upload_nanoseconds =
+        census.palette_refresh_upload_nanoseconds;
     snapshot.format_counts = census.format_counts;
     snapshot.dimension_counts = census.dimension_counts;
     snapshot.dump_written_count = census.dump_written_count;

@@ -1302,6 +1302,49 @@ narrowing the cause to lifetime ordering. The original log calls
 indices to RGBA and discarded the source, so a later palette could not affect
 the existing texture. Task 483 now retains P_8/AP_88 sources and refreshes those
 textures whenever a palette is downloaded.
+
+## P_8/AP_88 palette refresh 성능 경로 (2026-08-17 Task 489) — **구현·probe 확인**
+
+**확인됨:** Task 483의 eager refresh는 palette download마다 보존된 모든 indexed
+texture를 재디코드하고 `glTexImage2D`로 다시 할당했습니다. 사용자가 `pumpitp3` 타이틀
+화면에서 큰 성능 저하를 관측했으므로, 이번 작업은 정확성 계약을 유지하면서 그 전량 작업을
+제거했습니다.
+
+backend는 마지막 palette와 generation을 보존합니다. byte-identical download는
+generation을 올리지 않으며, 실제 변경도 texture upload를 즉시 수행하지 않습니다.
+P_8/AP_88 entry는 적용 generation을 기록하고, 공용 draw 준비 경로는 현재 texture가
+오래된 경우에만 보존 index texel을 RGBA로 디코드해 `glTexSubImage2D`로 갱신합니다.
+따라서 palette 변경 뒤 첫 sample 전에 색이 갱신되면서도 사용하지 않는 texture에는 CPU
+decode, 임시 RGBA, GPU 전송 비용이 발생하지 않습니다.
+
+**계측 가능:** 종료 texture census는 palette download/changed/identical,
+lazy refresh/failure, source/RGBA byte, CPU decode와 OpenGL upload 호출 wall time을
+출력합니다. Debug/Release 전체 AOT probe에서 snapshot 집계와 기존 P_8/AP_88 alpha
+계약이 통과했습니다. 실제 타이틀 FPS 개선 폭과 출력 색상은 사용자 장면 재실행으로
+확정해야 합니다.
+
+---
+
+## P_8/AP_88 palette-refresh performance path (2026-08-17 Task 489) — **implemented and probed**
+
+**Confirmed:** Task 483's eager refresh decoded every retained indexed texture and
+reallocated it with `glTexImage2D` on every palette download. After the user observed
+a severe slowdown on the `pumpitp3` title screen, this task removed that whole-cache
+work without reverting the lifetime fix.
+
+The backend retains the last palette and a generation. A byte-identical download does
+not advance it, and a real change no longer uploads textures immediately. Each P_8/AP_88
+entry records its applied generation. Shared draw preparation decodes retained indices
+and calls `glTexSubImage2D` only when the current sampled texture is stale. The first
+sample after a change therefore sees the new colours, while unused textures incur no
+CPU decode, temporary RGBA, or GPU-transfer work.
+
+The ending texture census now reports palette downloads/changes/identicals, lazy
+refreshes/failures, source/RGBA bytes, and CPU-decode/OpenGL-upload call wall time.
+Complete Debug/Release AOT probes passed the snapshot aggregation and existing P_8/AP_88
+alpha contract. The real title-screen FPS improvement and appearance remain for the
+user-scene rerun to confirm.
+
 ## Task 488 (2026-08-16): viewport 확대와 `GL_POINTS` 크기 불일치 — **해결됨**
 
 **확인됨:** `pumpit8` 서비스 화면 구동은 `_GRDRAWPOINT@4`를 16,668,750회 호출했습니다.

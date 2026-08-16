@@ -41,6 +41,18 @@ struct Win32GlideTextureCensus
     // rather than failing, so it would otherwise be invisible.
     std::uint32_t palettized_without_palette_count = 0;
     std::uint64_t decoded_byte_total = 0;
+    // Task 489: palette traffic and the deferred work it actually causes.
+    // The timing fields measure host CPU wall time around decode and the GL
+    // upload call; they deliberately do not force asynchronous GPU completion.
+    std::uint64_t palette_download_count = 0;
+    std::uint64_t palette_identical_count = 0;
+    std::uint64_t palette_changed_count = 0;
+    std::uint64_t palette_refresh_count = 0;
+    std::uint64_t palette_refresh_failure_count = 0;
+    std::uint64_t palette_refresh_source_bytes = 0;
+    std::uint64_t palette_refresh_rgba_bytes = 0;
+    std::uint64_t palette_refresh_decode_nanoseconds = 0;
+    std::uint64_t palette_refresh_upload_nanoseconds = 0;
     std::array<std::uint32_t, kGlideTextureFormatBuckets> format_counts = {};
     std::array<std::uint32_t, kGlideTextureDimensionBuckets>
         dimension_counts = {};
@@ -63,6 +75,15 @@ struct Win32GlideTextureCensusSnapshot
     std::uint32_t extent_mismatch_count = 0;
     std::uint32_t palettized_without_palette_count = 0;
     std::uint64_t decoded_byte_total = 0;
+    std::uint64_t palette_download_count = 0;
+    std::uint64_t palette_identical_count = 0;
+    std::uint64_t palette_changed_count = 0;
+    std::uint64_t palette_refresh_count = 0;
+    std::uint64_t palette_refresh_failure_count = 0;
+    std::uint64_t palette_refresh_source_bytes = 0;
+    std::uint64_t palette_refresh_rgba_bytes = 0;
+    std::uint64_t palette_refresh_decode_nanoseconds = 0;
+    std::uint64_t palette_refresh_upload_nanoseconds = 0;
     std::array<std::uint32_t, kGlideTextureFormatBuckets> format_counts = {};
     std::array<std::uint32_t, kGlideTextureDimensionBuckets>
         dimension_counts = {};
@@ -95,6 +116,15 @@ void RecordGlideTextureUpload(Win32GlideTextureCensus* census,
                               const Win32GlideTextureUpload& upload,
                               const std::uint8_t* rgba8,
                               std::size_t byte_count);
+
+void RecordGlidePaletteDownload(Win32GlideTextureCensus* census,
+                                bool identical);
+void RecordGlidePaletteRefresh(Win32GlideTextureCensus* census,
+                               bool success,
+                               std::size_t source_bytes,
+                               std::size_t rgba_bytes,
+                               std::uint64_t decode_nanoseconds,
+                               std::uint64_t upload_nanoseconds);
 
 Win32GlideTextureCensusSnapshot SnapshotGlideTextureCensus(
     const Win32GlideTextureCensus& census);

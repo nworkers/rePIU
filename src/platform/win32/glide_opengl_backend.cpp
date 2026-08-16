@@ -1474,6 +1474,10 @@ bool GlideOpenGlBackend::PrepareDrawState(const std::uint32_t primitive,
     *inverse_height = 1.0F;
     if (*sample_texture)
     {
+        if (!RefreshCurrentPalettizedTexture())
+        {
+            return false;
+        }
         glBindTexture(GL_TEXTURE_2D, current_texture_->gl_name);
         // Task 332: normalize by the Glide coordinate extent, not the pixel
         // size. They are equal for every map whose longer edge is 256, which is
@@ -1553,7 +1557,10 @@ bool GlideOpenGlBackend::DrawPrimitive(
     bool sample_texture = false;
     float inv_w = 1.0F;
     float inv_h = 1.0F;
-    PrepareDrawState(primitive, &sample_texture, &inv_w, &inv_h);
+    if (!PrepareDrawState(primitive, &sample_texture, &inv_w, &inv_h))
+    {
+        return false;
+    }
     glBegin(static_cast<GLenum>(primitive));
     for (std::size_t index = 0U; index < vertex_count; ++index)
     {
@@ -1604,7 +1611,10 @@ bool GlideOpenGlBackend::DrawPrimitiveBatch(
     bool sample_texture = false;
     float inv_w = 1.0F;
     float inv_h = 1.0F;
-    PrepareDrawState(gl_primitive, &sample_texture, &inv_w, &inv_h);
+    if (!PrepareDrawState(gl_primitive, &sample_texture, &inv_w, &inv_h))
+    {
+        return false;
+    }
     // The whole batch shares one state application and one `glBegin`/`glEnd`,
     // which is exactly what makes it cheaper than the same primitives drawn
     // separately. The vertices themselves are emitted identically.
@@ -1748,10 +1758,17 @@ bool GlideOpenGlBackend::StoreTexture(std::uint32_t start_address,
     if (repiu::hle::IsGlidePalettizedTextureFormat(format))
     {
         entry.source.assign(source, source + source_size);
+        entry.palette_generation =
+            palette_valid_ && palette_rgba8 != nullptr &&
+                std::memcmp(palette_rgba8_.data(), palette_rgba8,
+                            palette_rgba8_.size()) == 0
+            ? palette_generation_
+            : 0U;
     }
     else
     {
         entry.source.clear();
+        entry.palette_generation = 0U;
     }
     // Task 332: the coordinate extent follows the aspect ratio alone, so it
     // equals the pixel size only when the longer edge is already 256.
@@ -1785,42 +1802,86 @@ bool GlideOpenGlBackend::RefreshPalettizedTextures(
     {
         return false;
     }
-    if (!is_open() || dummy_mode_)
+    const bool identical = palette_valid_ &&
+        std::memcmp(palette_rgba8_.data(), palette_rgba8,
+                    palette_rgba8_.size()) == 0;
+    RecordGlidePaletteDownload(&glide_texture_census_, identical);
+    if (identical)
+    {
+        message_ = "identical Glide palette retained";
+        return true;
+    }
+    std::memcpy(palette_rgba8_.data(), palette_rgba8, palette_rgba8_.size());
+    palette_valid_ = true;
+    ++palette_generation_;
+    if (palette_generation_ == 0U)
+    {
+        palette_generation_ = 1U;
+        for (auto& [address, entry] : textures_)
+        {
+            (void)address;
+            entry.palette_generation = 0U;
+        }
+    }
+    message_ = "Glide palette generation advanced";
+    return true;
+#endif
+}
+
+bool GlideOpenGlBackend::RefreshCurrentPalettizedTexture()
+{
+#if !defined(_WIN32)
+    return false;
+#else
+    if (current_texture_ == nullptr ||
+        !repiu::hle::IsGlidePalettizedTextureFormat(current_texture_->format) ||
+        current_texture_->source.empty() || !palette_valid_ ||
+        current_texture_->palette_generation == palette_generation_)
     {
         return true;
     }
 
-    bool success = true;
-    for (auto& [address, entry] : textures_)
+    const auto decode_start = std::chrono::steady_clock::now();
+    std::vector<std::uint8_t> rgba8;
+    const bool decoded = repiu::hle::DecodeGlideTextureToRgba8(
+        current_texture_->format, current_texture_->width,
+        current_texture_->height, current_texture_->source.data(),
+        current_texture_->source.size(), palette_rgba8_.data(), &rgba8);
+    const auto decode_end = std::chrono::steady_clock::now();
+    const std::uint64_t decode_nanoseconds =
+        static_cast<std::uint64_t>(std::chrono::duration_cast<
+            std::chrono::nanoseconds>(decode_end - decode_start).count());
+    if (!decoded)
     {
-        (void)address;
-        if (!repiu::hle::IsGlidePalettizedTextureFormat(entry.format) ||
-            entry.source.empty())
-        {
-            continue;
-        }
-        std::vector<std::uint8_t> rgba8;
-        if (!repiu::hle::DecodeGlideTextureToRgba8(
-                entry.format, entry.width, entry.height, entry.source.data(),
-                entry.source.size(), palette_rgba8, &rgba8))
-        {
-            success = false;
-            continue;
-        }
-        glBindTexture(GL_TEXTURE_2D, entry.gl_name);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
-                     static_cast<GLsizei>(entry.width),
-                     static_cast<GLsizei>(entry.height), 0, GL_RGBA,
-                     GL_UNSIGNED_BYTE, rgba8.data());
-        success = glGetError() == GL_NO_ERROR && success;
+        RecordGlidePaletteRefresh(
+            &glide_texture_census_, false, current_texture_->source.size(), 0U,
+            decode_nanoseconds, 0U);
+        message_ = "Glide palette texture decode failed";
+        return false;
     }
-    if (current_texture_ != nullptr)
+
+    const auto upload_start = std::chrono::steady_clock::now();
+    glBindTexture(GL_TEXTURE_2D, current_texture_->gl_name);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
+                    static_cast<GLsizei>(current_texture_->width),
+                    static_cast<GLsizei>(current_texture_->height), GL_RGBA,
+                    GL_UNSIGNED_BYTE, rgba8.data());
+    const bool uploaded = glGetError() == GL_NO_ERROR;
+    const auto upload_end = std::chrono::steady_clock::now();
+    const std::uint64_t upload_nanoseconds =
+        static_cast<std::uint64_t>(std::chrono::duration_cast<
+            std::chrono::nanoseconds>(upload_end - upload_start).count());
+    RecordGlidePaletteRefresh(
+        &glide_texture_census_, uploaded, current_texture_->source.size(),
+        rgba8.size(), decode_nanoseconds, upload_nanoseconds);
+    if (!uploaded)
     {
-        glBindTexture(GL_TEXTURE_2D, current_texture_->gl_name);
+        message_ = "Glide palette texture upload failed";
+        return false;
     }
-    message_ = success ? "Glide palette textures refreshed"
-                       : "Glide palette texture refresh failed";
-    return success;
+    current_texture_->palette_generation = palette_generation_;
+    message_ = "Glide palette texture lazily refreshed";
+    return true;
 #endif
 }
 
@@ -2861,6 +2922,9 @@ void GlideOpenGlBackend::Close()
         logical_height_ = 0;
         window_scale_ = 2U;
         point_size_ = 1.0F;
+        palette_rgba8_.fill(0U);
+        palette_valid_ = false;
+        palette_generation_ = 0U;
         ResetFrameRateMeasurement();
         return;
     }
@@ -2913,6 +2977,9 @@ void GlideOpenGlBackend::Close()
     origin_lower_left_ = false;
     textures_.clear();
     current_texture_ = nullptr;
+    palette_rgba8_.fill(0U);
+    palette_valid_ = false;
+    palette_generation_ = 0U;
     texture_combine_enabled_ = false;
     lfb_texture_ = 0;
 }

@@ -3290,6 +3290,22 @@ void PrintExecutionAttempt(
             "Win32 Glide texture census dump written/limited: {}/{}",
             tex.dump_written_count,
             tex.dump_limit_reached ? "true" : "false");
+        logger.info(
+            "Win32 Glide palette downloads/changed/identical: {}/{}/{}",
+            tex.palette_download_count, tex.palette_changed_count,
+            tex.palette_identical_count);
+        logger.info(
+            "Win32 Glide palette lazy refreshes/failures/source-bytes/"
+            "rgba-bytes: {}/{}/{}/{}",
+            tex.palette_refresh_count, tex.palette_refresh_failure_count,
+            tex.palette_refresh_source_bytes,
+            tex.palette_refresh_rgba_bytes);
+        logger.info(
+            "Win32 Glide palette lazy refresh decode/upload ms: {:.3f}/{:.3f}",
+            static_cast<double>(tex.palette_refresh_decode_nanoseconds) /
+                1000000.0,
+            static_cast<double>(tex.palette_refresh_upload_nanoseconds) /
+                1000000.0);
         // Task 433: which vertex field actually carries depth. Reported only
         // when the census ran, so a normal run's summary is unchanged.
         if (const auto* depth = repiu::hle::ActiveGlideVertexDepthCensus();

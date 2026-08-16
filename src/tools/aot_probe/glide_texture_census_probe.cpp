@@ -11,6 +11,8 @@ namespace repiu::tools
 bool RunGlideTextureCensusProbe()
 {
     using platform::win32::HashGlideTexturePixels;
+    using platform::win32::RecordGlidePaletteDownload;
+    using platform::win32::RecordGlidePaletteRefresh;
     using platform::win32::RecordGlideTextureUpload;
     using platform::win32::ResolveGlideTextureDumpDirectory;
     using platform::win32::SnapshotGlideTextureCensus;
@@ -93,6 +95,25 @@ bool RunGlideTextureCensusProbe()
         SnapshotGlideTextureCensus(palette_census)
             .palettized_without_palette_count == 1U;
 
+    RecordGlidePaletteDownload(&palette_census, false);
+    RecordGlidePaletteDownload(&palette_census, true);
+    RecordGlidePaletteDownload(&palette_census, false);
+    RecordGlidePaletteRefresh(&palette_census, true, 4096U, 16384U,
+                              1200U, 3400U);
+    RecordGlidePaletteRefresh(&palette_census, false, 2048U, 8192U,
+                              500U, 700U);
+    const auto palette_snapshot = SnapshotGlideTextureCensus(palette_census);
+    const bool palette_refresh_profiled =
+        palette_snapshot.palette_download_count == 3U &&
+        palette_snapshot.palette_identical_count == 1U &&
+        palette_snapshot.palette_changed_count == 2U &&
+        palette_snapshot.palette_refresh_count == 1U &&
+        palette_snapshot.palette_refresh_failure_count == 1U &&
+        palette_snapshot.palette_refresh_source_bytes == 4096U &&
+        palette_snapshot.palette_refresh_rgba_bytes == 16384U &&
+        palette_snapshot.palette_refresh_decode_nanoseconds == 1700U &&
+        palette_snapshot.palette_refresh_upload_nanoseconds == 4100U;
+
     const bool hashing =
         HashGlideTexturePixels(pixels_a.data(), pixels_a.size()) !=
             HashGlideTexturePixels(pixels_b.data(), pixels_b.size()) &&
@@ -112,7 +133,8 @@ bool RunGlideTextureCensusProbe()
         !SnapshotGlideTextureCensus(untouched).enabled;
 
     const bool all = classified && failure_recorded && extent_counted &&
-        byte_total && histograms && palette_counted && hashing &&
+        byte_total && histograms && palette_counted &&
+        palette_refresh_profiled && hashing &&
         dump_setting && inert;
     std::cout << "glide_texture_census_classified="
               << (classified ? "true" : "false")
@@ -126,6 +148,8 @@ bool RunGlideTextureCensusProbe()
               << (histograms ? "true" : "false")
               << "\nglide_texture_census_palette_counted="
               << (palette_counted ? "true" : "false")
+              << "\nglide_texture_census_palette_refresh_profiled="
+              << (palette_refresh_profiled ? "true" : "false")
               << "\nglide_texture_census_hashing="
               << (hashing ? "true" : "false")
               << "\nglide_texture_census_dump_setting="

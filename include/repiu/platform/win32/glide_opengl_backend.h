@@ -127,8 +127,8 @@ public:
                       const std::uint8_t* source,
                       std::size_t source_size,
                       const std::uint8_t* palette_rgba8 = nullptr);
-    // Glide stores palette indices separately from the palette. Re-decode all
-    // retained P_8/AP_88 sources when grTexDownloadTable changes the palette.
+    // Glide stores palette indices separately from the palette. Register a new
+    // palette generation; stale P_8/AP_88 sources are refreshed on first use.
     bool RefreshPalettizedTextures(const std::uint8_t* palette_rgba8);
     // Select the current texture for subsequent draws (grTexSource).
     bool SourceTexture(std::uint32_t start_address);
@@ -322,6 +322,7 @@ private:
         std::uint32_t t_extent = 256;
         std::uint32_t format = 0U;
         std::vector<std::uint8_t> source;
+        std::uint64_t palette_generation = 0U;
     };
 
     bool IsHostThread() const;
@@ -338,6 +339,7 @@ private:
                           bool* sample_texture,
                           float* inverse_width,
                           float* inverse_height);
+    bool RefreshCurrentPalettizedTexture();
     void EmitDrawVertex(const hle::GlideDrawVertex& vertex,
                         bool sample_texture,
                         float inverse_width,
@@ -441,7 +443,7 @@ private:
     std::string message_;
     bool dummy_mode_ = false;
     std::unordered_map<std::uint32_t, TextureEntry> textures_;
-    const TextureEntry* current_texture_ = nullptr;
+    TextureEntry* current_texture_ = nullptr;
     // Task 332 diagnostics. A draw census has to separate "this quad was drawn
     // with the right texture", "with no texture at all", and "the game sourced
     // an address that was never downloaded", which the bound pointer alone
@@ -450,6 +452,9 @@ private:
     std::uint32_t missing_texture_source_count_ = 0;
     std::uint32_t last_missing_texture_address_ = 0;
     bool texture_combine_enabled_ = false;
+    std::array<std::uint8_t, 1024> palette_rgba8_ = {};
+    bool palette_valid_ = false;
+    std::uint64_t palette_generation_ = 0U;
     // Dedicated texture reused by every LFB blit so unlock does not churn GL
     // texture names once per frame.
     std::uint32_t lfb_texture_ = 0;
