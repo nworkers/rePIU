@@ -111,8 +111,13 @@ void PitChannel0::PublishDivisor(
 
 std::uint64_t PitIrqSchedule::Poll(
     const PitChannel0Snapshot& snapshot,
-    std::uint64_t elapsed_nanoseconds)
+    std::uint64_t elapsed_nanoseconds,
+    PitIrqDueRange* due_range)
 {
+    if (due_range != nullptr)
+    {
+        *due_range = {};
+    }
     if (!initialized_ || snapshot.generation != generation_)
     {
         initialized_ = true;
@@ -136,6 +141,13 @@ std::uint64_t PitIrqSchedule::Poll(
     }
 
     const std::uint64_t due = tick_count - emitted_tick_count_;
+    if (due_range != nullptr)
+    {
+        due_range->epoch_nanoseconds = epoch_nanoseconds_;
+        due_range->first_tick_ordinal = emitted_tick_count_ + 1U;
+        due_range->tick_count = due;
+        due_range->divisor = snapshot.divisor;
+    }
     emitted_tick_count_ = tick_count;
     return due;
 }
@@ -158,6 +170,31 @@ std::uint64_t PitTickCountForElapsed(
         remaining_nanoseconds * PitChannel0::kInputClockHz /
             kNanosecondsPerSecond;
     return input_clocks / divisor;
+}
+
+std::uint64_t PitElapsedNanosecondsForTick(
+    std::uint64_t tick_ordinal,
+    std::uint32_t divisor)
+{
+    if (divisor == 0U)
+    {
+        divisor = PitChannel0::kDefaultDivisor;
+    }
+    if (tick_ordinal == 0U)
+    {
+        return 0U;
+    }
+
+    const std::uint64_t input_clocks = tick_ordinal * divisor;
+    const std::uint64_t whole_seconds =
+        input_clocks / PitChannel0::kInputClockHz;
+    const std::uint64_t remaining_clocks =
+        input_clocks % PitChannel0::kInputClockHz;
+    const std::uint64_t numerator =
+        remaining_clocks * kNanosecondsPerSecond;
+    return whole_seconds * kNanosecondsPerSecond +
+        (numerator + PitChannel0::kInputClockHz - 1U) /
+            PitChannel0::kInputClockHz;
 }
 
 double PitFrequencyHz(std::uint32_t divisor)

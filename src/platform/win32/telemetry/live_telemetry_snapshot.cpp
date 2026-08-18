@@ -2,6 +2,7 @@
 #include "win32_thread_api.h"
 #include "boundary/timer_interrupt_boundary.h"
 #include "execution/execution_internal.h"
+#include "repiu/runtime/execution_timeout.h"
 
 #include <algorithm>
 #include <array>
@@ -241,9 +242,11 @@ void WriteLiveTelemetrySnapshot(const ThreadContext& context,
 
 DWORD PollThreadUntilExit(HANDLE thread,
                           DWORD timeout_milliseconds,
+                          DWORD stall_timeout_milliseconds,
                           ThreadContext* progress_context,
                           ThreadContext* host_context,
-                          DWORD* exit_code)
+                          DWORD* exit_code,
+                          bool* stall_timed_out)
 {
     const Win32ThreadApi& api = GetWin32ThreadApi();
     if (api.get_exit_code_thread == nullptr)
@@ -251,27 +254,40 @@ DWORD PollThreadUntilExit(HANDLE thread,
         return WAIT_FAILED;
     }
 
-    const DWORD quiet_timeout_milliseconds = 1000U;
+    if (stall_timed_out != nullptr)
+    {
+        *stall_timed_out = false;
+    }
     const DWORD start_tick = GetTickCount();
-    const auto steady_start = std::chrono::steady_clock::now();
+    const auto read_event_clock = [host_context]() -> std::uint64_t {
+        if (host_context != nullptr)
+        {
+            return host_context->glide_backend.EventClockNanoseconds();
+        }
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+    };
+    const std::uint64_t event_clock_start = read_event_clock();
     repiu::hle::PitIrqSchedule pit_irq_schedule;
     std::uint64_t bios_tick_count = 0;
     DWORD quiet_start_tick = start_tick;
-    std::uint32_t last_progress_count = 0;
-    std::uint32_t last_single_step_count = 0;
-    std::uint32_t last_aot_progress_count = 0;
+    runtime::ExecutionProgressSnapshot last_progress_snapshot;
     if (progress_context != nullptr)
     {
-        last_progress_count =
+        last_progress_snapshot.diagnostic =
             progress_context->diagnostic_progress_count.load(
                 std::memory_order_relaxed);
-        last_single_step_count =
+        last_progress_snapshot.single_step =
             progress_context->single_step_trace_count.load(
                 std::memory_order_relaxed);
-        last_aot_progress_count =
+        last_progress_snapshot.aot =
             progress_context->aot_boundary_count.load(
                 std::memory_order_relaxed) +
             progress_context->aot_reentry_count.load(
+                std::memory_order_relaxed);
+        last_progress_snapshot.glide_direct =
+            progress_context->aot_dbt_glide_dispatch_entry_count.load(
                 std::memory_order_relaxed);
     }
 
@@ -368,12 +384,10 @@ DWORD PollThreadUntilExit(HANDLE thread,
             progress_context->diagnostic_poll_iteration_count =
                 iteration + 1;
 
-            const auto steady_elapsed =
-                std::chrono::steady_clock::now() - steady_start;
+            const std::uint64_t current_event_clock = read_event_clock();
             const std::uint64_t elapsed_nanoseconds =
-                static_cast<std::uint64_t>(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        steady_elapsed).count());
+                current_event_clock >= event_clock_start
+                    ? current_event_clock - event_clock_start : 0U;
             bios_tick_count = repiu::hle::PitTickCountForElapsed(
                 elapsed_nanoseconds,
                 repiu::hle::PitChannel0::kDefaultDivisor);
@@ -383,9 +397,10 @@ DWORD PollThreadUntilExit(HANDLE thread,
                 static_cast<std::uint32_t>(bios_tick_count),
                 4U);
 
+            repiu::hle::PitIrqDueRange due_range;
             const std::uint64_t due_interrupts = pit_irq_schedule.Poll(
                 progress_context->pit_channel0.snapshot(),
-                elapsed_nanoseconds);
+                elapsed_nanoseconds, &due_range);
             if (due_interrupts != 0U)
             {
                 // Task 366: recorded before arming, because whether a tick was
@@ -395,14 +410,29 @@ DWORD PollThreadUntilExit(HANDLE thread,
                 // right now decides whether a coalesced tick was merely late or
                 // could not have been delivered at all -- that window runs no
                 // guest code, so no safe point is reachable.
-                RecordTimerTicksDue(
-                    &progress_context->timer_tick_delivery,
-                    static_cast<std::uint32_t>(due_interrupts),
-                    progress_context->timer_interrupt_pending.load(
-                        std::memory_order_acquire),
-                    TimerTickBacklogEnabled(),
-                    host_context != nullptr &&
-                        host_context->glide_backend.guest_in_glide_gate());
+                {
+                    Win32TimerTickDeliveryGuard timer_guard(
+                        &progress_context->timer_tick_delivery_lock);
+                    const std::uint32_t accepted = RecordTimerTicksDue(
+                        &progress_context->timer_tick_delivery,
+                        static_cast<std::uint32_t>(due_interrupts),
+                        progress_context->timer_interrupt_pending.load(
+                            std::memory_order_acquire),
+                        TimerTickBacklogEnabled(),
+                        host_context != nullptr &&
+                            host_context->glide_backend.guest_in_glide_gate());
+                    for (std::uint32_t index = 0; index < accepted; ++index)
+                    {
+                        const std::uint64_t ordinal =
+                            due_range.first_tick_ordinal + index;
+                        progress_context->jamma_input_timeline.EnqueueTimerTick(
+                            event_clock_start + due_range.epoch_nanoseconds +
+                            repiu::hle::PitElapsedNanosecondsForTick(
+                                ordinal, due_range.divisor));
+                    }
+                    progress_context->timer_interrupt_pending.store(
+                        true, std::memory_order_release);
+                }
                 SaturatingAtomicAdd(
                     &progress_context->last_timer_injection_ticks,
                     due_interrupts);
@@ -414,8 +444,6 @@ DWORD PollThreadUntilExit(HANDLE thread,
                         &progress_context->timer_interrupt_due_ticks,
                         due_interrupts);
                 }
-                progress_context->timer_interrupt_pending.store(
-                    true, std::memory_order_release);
                 ArmAotTimerSafePoint(progress_context);
             }
         }
@@ -437,24 +465,24 @@ DWORD PollThreadUntilExit(HANDLE thread,
         bool progressed = false;
         if (progress_context != nullptr)
         {
-            const std::uint32_t progress_count =
+            runtime::ExecutionProgressSnapshot current_progress_snapshot;
+            current_progress_snapshot.diagnostic =
                 progress_context->diagnostic_progress_count.load(
                     std::memory_order_relaxed);
-            const std::uint32_t single_step_count =
+            current_progress_snapshot.single_step =
                 progress_context->single_step_trace_count.load(
                     std::memory_order_relaxed);
-            const std::uint32_t aot_progress_count =
+            current_progress_snapshot.aot =
                 progress_context->aot_boundary_count.load(
                     std::memory_order_relaxed) +
                 progress_context->aot_reentry_count.load(
                     std::memory_order_relaxed);
-            progressed =
-                progress_count != last_progress_count ||
-                single_step_count != last_single_step_count ||
-                aot_progress_count != last_aot_progress_count;
-            last_progress_count = progress_count;
-            last_single_step_count = single_step_count;
-            last_aot_progress_count = aot_progress_count;
+            current_progress_snapshot.glide_direct =
+                progress_context->aot_dbt_glide_dispatch_entry_count.load(
+                    std::memory_order_relaxed);
+            progressed = runtime::HasExecutionProgress(
+                last_progress_snapshot, current_progress_snapshot);
+            last_progress_snapshot = current_progress_snapshot;
         }
         if (progressed)
         {
@@ -471,9 +499,10 @@ DWORD PollThreadUntilExit(HANDLE thread,
                 quiet_iterations;
         }
 
-        if (timeout_milliseconds != INFINITE &&
+        if (stall_timeout_milliseconds != INFINITE &&
+            progress_context != nullptr &&
             GetTickCount() - quiet_start_tick >=
-            quiet_timeout_milliseconds)
+            stall_timeout_milliseconds)
         {
             if (progress_context != nullptr)
             {
@@ -481,6 +510,10 @@ DWORD PollThreadUntilExit(HANDLE thread,
                     *progress_context,
                     GetTickCount() - start_tick,
                     iteration + 1);
+            }
+            if (stall_timed_out != nullptr)
+            {
+                *stall_timed_out = true;
             }
             return WAIT_TIMEOUT;
         }
@@ -1965,6 +1998,33 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->last_hle_trap_address = context.last_hle_trap_address;
     attempt->last_hle_trap_opcode = context.last_hle_trap_opcode;
     attempt->port_io = context.port_io;
+    const Win32JammaInputTimelineSnapshot jamma_timeline =
+        context.jamma_input_timeline.Snapshot();
+    attempt->port_io.jamma_timeline_edge_count = jamma_timeline.edge_count;
+    attempt->port_io.jamma_timeline_history_pruned_count =
+        jamma_timeline.history_pruned_count;
+    attempt->port_io.jamma_timeline_history_overflow_count =
+        jamma_timeline.history_overflow_count;
+    attempt->port_io.jamma_timeline_history_coverage_miss_count =
+        jamma_timeline.history_coverage_miss_count;
+    attempt->port_io.jamma_timeline_history_peak_size =
+        jamma_timeline.history_peak_size;
+    attempt->port_io.jamma_timeline_due_enqueued_count =
+        jamma_timeline.due_enqueued_count;
+    attempt->port_io.jamma_timeline_due_overflow_count =
+        jamma_timeline.due_overflow_count;
+    attempt->port_io.jamma_timeline_replay_begin_count =
+        jamma_timeline.replay_begin_count;
+    attempt->port_io.jamma_timeline_replay_read_count =
+        jamma_timeline.replay_read_count;
+    attempt->port_io.jamma_timeline_missing_due_count =
+        jamma_timeline.replay_missing_due_count;
+    attempt->port_io.jamma_timeline_frame_retire_count =
+        jamma_timeline.replay_frame_retire_count;
+    attempt->port_io.jamma_timeline_frame_overflow_count =
+        jamma_timeline.replay_frame_overflow_count;
+    attempt->port_io.jamma_timeline_active_frame_depth =
+        jamma_timeline.replay_frame_depth;
     attempt->dos_path = context.dos_path;
     attempt->dos_file_io = context.dos_file_io;
     attempt->dos_file_io.read_count = context.dos_file_system.file_read_count;

@@ -48,6 +48,7 @@
 #include "env_toggle_probe.h"
 #include "execution_backend_probe.h"
 #include "execution_timeout_probe.h"
+#include "jamma_input_timeline_probe.h"
 #include "dbt_return_fallback_probe.h"
 #include "dbt_indirect_dispatch_probe.h"
 #include "direct_edge_dispatch_probe.h"
@@ -632,6 +633,13 @@ int main(int argc, char** argv)
     {
         return repiu::tools::RunPiu10IsaBoardProbe() ? 0 : 1;
     }
+    if (argc == 2 &&
+        std::strcmp(argv[1], "--jamma-input-timeline") == 0)
+    {
+        return repiu::tools::RunPitTimerProbe() &&
+            repiu::tools::RunTimerTickDeliveryProbe() &&
+            repiu::tools::RunJammaInputTimelineProbe() ? 0 : 1;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--jump-table-guard") == 0)
     {
         return repiu::tools::RunJumpTableGuardProbe() ? 0 : 1;
@@ -1056,6 +1064,10 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunPitTimerProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunJammaInputTimelineProbe())
     {
         return 1;
     }

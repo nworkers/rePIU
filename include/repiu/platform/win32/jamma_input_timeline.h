@@ -1,0 +1,129 @@
+#ifndef REPIU_PLATFORM_WIN32_JAMMA_INPUT_TIMELINE_H_
+#define REPIU_PLATFORM_WIN32_JAMMA_INPUT_TIMELINE_H_
+
+#include <cstdint>
+#include <atomic>
+
+namespace repiu::platform::win32
+{
+
+enum class JammaInputKey : std::uint8_t
+{
+    kP1Up,
+    kP1Down,
+    kP1Left,
+    kP1Right,
+    kP1Center,
+    kCoin1,
+    kTest,
+    kService,
+    kClear,
+    kP2Up,
+    kP2Down,
+    kP2Left,
+    kP2Right,
+    kP2Center,
+    kCount,
+};
+
+constexpr std::uint16_t JammaInputKeyMask(JammaInputKey key)
+{
+    return static_cast<std::uint16_t>(
+        1U << static_cast<std::uint8_t>(key));
+}
+
+struct Win32JammaInputTimelineSnapshot
+{
+    std::uint64_t edge_count = 0;
+    std::uint64_t history_pruned_count = 0;
+    std::uint64_t history_overflow_count = 0;
+    std::uint64_t history_coverage_miss_count = 0;
+    std::uint64_t due_enqueued_count = 0;
+    std::uint64_t due_overflow_count = 0;
+    std::uint64_t replay_begin_count = 0;
+    std::uint64_t replay_read_count = 0;
+    std::uint64_t replay_missing_due_count = 0;
+    std::uint64_t replay_frame_retire_count = 0;
+    std::uint64_t replay_frame_overflow_count = 0;
+    std::uint32_t history_size = 0;
+    std::uint32_t history_peak_size = 0;
+    std::uint32_t due_size = 0;
+    std::uint32_t replay_frame_depth = 0;
+};
+
+class Win32JammaInputTimeline
+{
+public:
+    static constexpr std::uint32_t kHistoryCapacity = 256U;
+    static constexpr std::uint32_t kDueCapacity = 64U;
+
+    void Reset(std::uint64_t timestamp_nanoseconds,
+               std::uint16_t pressed_mask);
+    void RecordKeyEdge(std::uint64_t timestamp_nanoseconds,
+                       JammaInputKey key,
+                       bool pressed);
+    void RecordAllReleased(std::uint64_t timestamp_nanoseconds);
+
+    bool EnqueueTimerTick(std::uint64_t due_timestamp_nanoseconds);
+    void ClearTimerTicks();
+    bool BeginTimerInterrupt(std::uint32_t pre_interrupt_esp,
+                             std::uint32_t interrupt_frame_esp);
+    bool TryReplayPressedMask(std::uint32_t current_esp,
+                              std::uint16_t* pressed_mask);
+
+    Win32JammaInputTimelineSnapshot Snapshot() const;
+
+private:
+    struct HistoryEntry
+    {
+        std::uint64_t timestamp_nanoseconds = 0;
+        std::uint16_t pressed_mask = 0;
+    };
+
+    struct ReplayFrame
+    {
+        std::uint64_t timestamp_nanoseconds = 0;
+        std::uint32_t interrupt_frame_esp = 0;
+    };
+
+    std::uint16_t StateAtLocked(std::uint64_t timestamp_nanoseconds);
+    void RecordStateLocked(std::uint64_t timestamp_nanoseconds,
+                           std::uint16_t pressed_mask);
+    void RetireReplayFramesLocked(std::uint32_t current_esp);
+    void PruneHistoryLocked();
+
+    std::atomic_flag lock_ = ATOMIC_FLAG_INIT;
+    HistoryEntry history_[kHistoryCapacity] = {};
+    std::uint32_t history_size_ = 0;
+    std::uint64_t history_floor_timestamp_ = 0;
+    std::uint16_t history_floor_pressed_mask_ = 0;
+    std::uint16_t latest_pressed_mask_ = 0;
+    std::uint32_t history_peak_size_ = 0;
+
+    std::uint64_t due_timestamps_[kDueCapacity] = {};
+    std::uint32_t due_head_ = 0;
+    std::uint32_t due_size_ = 0;
+    std::uint64_t last_due_timestamp_ = 0;
+    bool has_due_timestamp_ = false;
+
+    ReplayFrame replay_frames_[kDueCapacity] = {};
+    std::uint32_t replay_frame_depth_ = 0;
+
+    std::uint64_t edge_count_ = 0;
+    std::uint64_t history_pruned_count_ = 0;
+    std::uint64_t history_overflow_count_ = 0;
+    std::uint64_t history_coverage_miss_count_ = 0;
+    std::uint64_t due_enqueued_count_ = 0;
+    std::uint64_t due_overflow_count_ = 0;
+    std::uint64_t replay_begin_count_ = 0;
+    std::uint64_t replay_read_count_ = 0;
+    std::uint64_t replay_missing_due_count_ = 0;
+    std::uint64_t replay_frame_retire_count_ = 0;
+    std::uint64_t replay_frame_overflow_count_ = 0;
+};
+
+std::uint16_t CaptureCurrentJammaPressedMask();
+
+}  // namespace repiu::platform::win32
+
+#endif  // REPIU_PLATFORM_WIN32_JAMMA_INPUT_TIMELINE_H_

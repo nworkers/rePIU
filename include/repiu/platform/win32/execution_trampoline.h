@@ -250,6 +250,19 @@ struct Win32PortIoObservation
     std::uint64_t jamma_scan_cycles = 0;
     std::uint32_t jamma_scan_count = 0;
     std::uint32_t key_query_count = 0;
+    std::uint64_t jamma_timeline_edge_count = 0;
+    std::uint64_t jamma_timeline_history_pruned_count = 0;
+    std::uint64_t jamma_timeline_history_overflow_count = 0;
+    std::uint64_t jamma_timeline_history_coverage_miss_count = 0;
+    std::uint32_t jamma_timeline_history_peak_size = 0;
+    std::uint64_t jamma_timeline_due_enqueued_count = 0;
+    std::uint64_t jamma_timeline_due_overflow_count = 0;
+    std::uint64_t jamma_timeline_replay_begin_count = 0;
+    std::uint64_t jamma_timeline_replay_read_count = 0;
+    std::uint64_t jamma_timeline_missing_due_count = 0;
+    std::uint64_t jamma_timeline_frame_retire_count = 0;
+    std::uint64_t jamma_timeline_frame_overflow_count = 0;
+    std::uint32_t jamma_timeline_active_frame_depth = 0;
     Win32PortIoTraceEntry trace[kWin32PortIoTraceCapacity];
 };
 
@@ -509,6 +522,7 @@ struct Win32MinimalExecutionAttempt
     bool returned = false;
     bool exception_caught = false;
     bool timed_out = false;
+    bool stall_timed_out = false;
     bool quit_requested = false;
     bool guest_stack_switch_supported = false;
     bool guest_stack_switch_attempted = false;
@@ -1290,6 +1304,7 @@ bool AttemptWin32GuestStackTrapExecution(
     std::string_view parent_rom_set_id,
     std::uint32_t piu10_mp3_latency_ms,
     std::uint32_t timeout_milliseconds,
+    std::uint32_t stall_timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt);
 
 bool AttemptWin32GuestStackAotExecution(
@@ -1308,6 +1323,7 @@ bool AttemptWin32GuestStackAotExecution(
     std::uint32_t piu10_mp3_latency_ms,
     runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
+    std::uint32_t stall_timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt);
 
 bool AttemptWin32GuestStackHleExecution(
@@ -1315,6 +1331,7 @@ bool AttemptWin32GuestStackHleExecution(
     const runtime::GuestStackSwitchPlan& stack_plan,
     const hle::DosVirtualFileSystemState& dos_file_system,
     std::uint32_t timeout_milliseconds,
+    std::uint32_t stall_timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt);
 
 }  // namespace repiu::platform::win32

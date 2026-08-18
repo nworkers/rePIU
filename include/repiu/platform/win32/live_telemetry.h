@@ -15,6 +15,8 @@ constexpr const char* kWin32LiveTelemetryEnvironment =
     "REPIU_LIVE_TELEMETRY_MAPPING";
 constexpr const char* kWin32ExecutionTimeoutEnvironment =
     "REPIU_EXECUTION_TIMEOUT_MS";
+constexpr const char* kWin32StallTimeoutEnvironment =
+    "REPIU_STALL_TIMEOUT_MS";
 
 struct Win32SharedLiveTelemetry
 {

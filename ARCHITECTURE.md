@@ -382,9 +382,9 @@ The external DOS4GW `LINEXE.EXP` loader dynamically allocates one DPMI descripto
 
 ## Live execution telemetry / 실시간 실행 telemetry
 
-Single-step PIU 실행은 guest/host 공유 atomic heartbeat를 사용한다. host poll은 시작 시점과 1초 간격으로 stderr snapshot을 출력할 수 있다. quiet timeout은 poll iteration 수가 아니라 1초의 wall-clock 정체로 판단한다. quiet timeout과 wall-clock 예산은 같은 스위치를 공유한다 — 예산이 무제한(`REPIU_EXECUTION_TIMEOUT_MS=0`, Task 435부터 기본값)이면 두 판정 모두 꺼지고 게스트는 창을 닫을 때까지 계속 실행된다. timeout observation은 guest thread를 종료하고 join한 뒤 복사하여 guest가 수정 중인 비원자 container와의 data race를 방지한다.
+Single-step PIU 실행은 guest/host 공유 atomic heartbeat를 사용한다. host poll은 시작 시점과 1초 간격으로 stderr snapshot을 출력할 수 있다. Task 490부터 wall-clock 예산과 무진행 감시는 독립적이다. `REPIU_EXECUTION_TIMEOUT_MS`는 전체 실행시간만 제한하고, `REPIU_STALL_TIMEOUT_MS`는 diagnostic, single-step, AOT boundary/reentry와 Glide direct-dispatch 진입이 모두 변하지 않은 시간을 제한한다. 두 설정 모두 `0`이 기본값이며 비활성이다. 실행 결과는 wall timeout과 stall timeout을 구분하고, timeout observation은 guest thread를 종료하고 join한 뒤 복사하여 guest가 수정 중인 비원자 container와의 data race를 방지한다.
 
-Single-step PIU execution uses atomic heartbeat state shared by the guest and host. The host poll can emit stderr snapshots at startup and once per second. Quiet timeout is based on one second of wall-clock inactivity rather than poll iteration count. The quiet timeout and the wall-clock budget share one switch: an unlimited budget (`REPIU_EXECUTION_TIMEOUT_MS=0`, the default since Task 435) disables both, and the guest keeps running until the window is closed. Timeout observations are copied only after terminating and joining the guest, preventing races with non-atomic containers still being modified by the guest.
+Single-step PIU execution uses atomic heartbeat state shared by the guest and host. The host poll can emit stderr snapshots at startup and once per second. Since Task 490, the wall-clock budget and no-progress watchdog are independent. `REPIU_EXECUTION_TIMEOUT_MS` limits total execution time, while `REPIU_STALL_TIMEOUT_MS` limits the interval during which diagnostic, single-step, AOT boundary/reentry, and Glide direct-dispatch entry all remain unchanged. Both settings default to `0`, disabled. The result distinguishes wall and stall timeouts, and timeout observations are copied only after terminating and joining the guest, preventing races with non-atomic containers still being modified by the guest.
 
 Child 내부 telemetry를 회수할 수 없는 경우 `repiu_supervisor_win32`가 named shared memory를 생성하고 mapping 이름을 환경 변수로 전달한다. loader의 host/guest는 고정 버전 POD에 interlocked write하고 supervisor는 child 출력과 독립적으로 snapshot을 읽고 deadline에 child를 terminate/join한다.
 
@@ -523,7 +523,7 @@ flowchart TD
 ```
 ## Supervisor-owned execution deadline
 
-Supervised Win32 execution disables the loader's wall-clock and quiet timeouts with `REPIU_EXECUTION_TIMEOUT_MS=0`. The supervisor owns the deadline and terminates the complete child process, preventing `TerminateThread` from racing active VEH or host-call state.
+Supervised Win32 execution disables the loader's wall-clock timeout with `REPIU_EXECUTION_TIMEOUT_MS=0` and leaves the independently disabled stall timeout at `REPIU_STALL_TIMEOUT_MS=0`. The supervisor owns the deadline and terminates the complete child process, preventing `TerminateThread` from racing active VEH or host-call state.
 
 ```mermaid
 flowchart LR
@@ -1806,6 +1806,96 @@ the caller repeats through `inc edx; cmp edx,imm; jl`, and `mov eax,imm` at the 
 the prior input result does it advance the saved stack value to `limit-2`. The guest still executes
 the original `POP`, final input, and `INC/CMP/JL`, so no EIP or flags are synthesized. This matcher
 also uses neither target names nor fixed addresses and fails closed to the existing path.
+
+## 타임스탬프 기반 JAMMA 입력 재생 / Timestamped JAMMA input replay
+
+Task 492부터 Win32 JAMMA 입력은 live level과 timer replay를 구분합니다. SDL event pump는
+매핑된 key down/up의 원래 nanosecond timestamp와 edge 뒤 전체 pressed mask를 고정 용량
+timeline에 기록합니다. PIT scheduler는 due count뿐 아니라 epoch, 첫 tick ordinal,
+divisor를 제공하며, delivery accounting이 실제 수락한 최대 64개 tick의 absolute due
+timestamp만 별도 큐에 넣습니다.
+
+```mermaid
+flowchart LR
+    E["SDL key edge + timestamp"] --> H["pressed-mask history"]
+    P["PIT due ordinal"] --> Q["accepted due-time queue"]
+    Q --> I["INT 8 injection"]
+    H --> R["state at tick due time"]
+    I --> R
+    R --> G["original ISR JAMMA IN"]
+```
+
+INT 8 주입은 가장 오래된 due timestamp와 interrupt-frame ESP를 활성화합니다. IF=0이고
+현재 ESP가 그 frame 이하인 동안의 JAMMA 읽기만 과거 state를 사용하며 IRETD가 IF 또는
+ESP를 복원하면 live 경로로 돌아갑니다. replay는 500 us wall-clock snapshot을 우회하므로
+빠르게 소진되는 overdue tick들이 같은 현재 state로 합쳐지지 않습니다. ISR 밖에서는
+기존 `GetAsyncKeyState`와 Task 403 cache가 그대로 유지됩니다. 입력/tick 큐는 allocation
+없는 고정 배열과 짧은 spin guard를 사용하고, timer accounting과 due queue의 수락·소비는
+같은 delivery guard 아래에서 처리합니다. timeout 강제 종료 뒤 진단 snapshot은 guard를
+취하지 않아 종료된 guest가 소유하던 lock을 기다리지 않습니다.
+
+Since Task 492, Win32 JAMMA input distinguishes live level sampling from timer replay. The SDL
+event pump records each mapped key down/up with its original nanosecond timestamp and the complete
+post-edge pressed mask in a fixed timeline. The PIT scheduler exposes the epoch, first due ordinal,
+and divisor as well as the count, while only timestamps for ticks actually retained by delivery
+accounting enter the 64-entry due queue.
+
+INT 8 injection activates the oldest due timestamp and interrupt-frame ESP. Only JAMMA reads with
+IF clear and ESP at or below that frame reconstruct historical state; restoration of IF or ESP by
+IRETD returns to the live path. Replay bypasses the 500 us wall-clock snapshot so rapidly drained
+overdue ticks do not collapse onto one current state. Outside the ISR, the existing
+`GetAsyncKeyState` and Task 403 cache remain unchanged. Fixed arrays and short spin guards avoid
+allocation, and delivery accounting plus due-queue acceptance/consumption share one guard. A
+post-timeout diagnostic snapshot takes no guard, so it cannot wait on one formerly held by a
+terminated guest.
+
+### Task 493 IRQ0 프레임 수명 보정 / Task 493 IRQ0 frame-lifetime correction
+
+Task 492의 최초 조건은 IF가 꺼진 경우만 ISR 내부로 보았지만, 실제 handler는 JAMMA 읽기
+전에 IF를 다시 켭니다. Task 493부터 replay 범위는 IF가 아니라 host가 주입한 interrupt
+frame의 stack 수명으로 결정합니다. 고정 64-entry frame stack은 `(due timestamp, frame
+ESP)`를 저장하고, 새 주입 전과 JAMMA read 시 `current ESP > frame ESP`인 완료 frame을
+제거합니다. nested IRQ0에서는 가장 안쪽 due state를 사용하고, 그 frame이 IRETD로
+복귀하면 바깥 due state가 다시 보입니다. 활성 frame이 없을 때만 기존 live level/cache
+경로를 사용합니다.
+
+Task 492 initially treated only IF-clear execution as ISR scope, but the observed handler enables
+IF before its JAMMA reads. Since Task 493, replay scope follows the stack lifetime of host-injected
+interrupt frames instead. A fixed 64-entry stack stores `(due timestamp, frame ESP)` and retires
+completed frames for which `current ESP > frame ESP` before each injection and JAMMA read. Nested
+IRQ0 uses the innermost due state and reveals the outer due state again after nested IRETD. Only an
+empty frame stack falls back to the existing live-level/cache path.
+
+### Task 494 2P 숫자패드 별칭 / Task 494 2P numpad aliases
+
+2P 입력의 각 물리 위치는 SDL navigation key와 numeric keypad key를 같은
+`JammaInputKey`로 정규화합니다. `Home/KP7`, `PageUp/KP9`, `Clear/KP5`, `End/KP1`,
+`PageDown/KP3` 쌍은 SDL edge history, Win32 초기 snapshot, replay 밖 live scan에 모두
+동일하게 적용됩니다. 따라서 NumLock 상태는 JAMMA port bit와 due-time replay 결과를
+바꾸지 않습니다.
+
+Each physical 2P position normalizes its SDL navigation and numeric-keypad aliases into one
+`JammaInputKey`. The pairs `Home/KP7`, `PageUp/KP9`, `Clear/KP5`, `End/KP1`, and `PageDown/KP3`
+apply equally to SDL edge history, initial Win32 snapshot capture, and the live scan outside replay.
+NumLock state therefore does not change the JAMMA port bit or due-time replay result.
+
+### Task 495 JAMMA history 안전 정리 / Task 495 safe JAMMA history pruning
+
+입력 history는 pending timer due와 active IRQ0 replay frame 중 가장 오래된 timestamp를
+안전 cutoff로 사용합니다. cutoff 이하의 마지막 state 하나를 floor에 남기고 나머지 edge를
+정리하므로, 완료된 입력이 고정 capacity를 영구히 점유하지 않습니다. 둘 다 비어 있으면
+단조 증가하는 마지막 PIT due timestamp를 cutoff로 사용합니다. 안전 정리 뒤에도 capacity가
+가득 찬 경우만 `history-overflow`이고, floor보다 오래된 state를 요청한 경우는 별도의
+`history-coverage-miss`입니다. `history-pruned`와 `history-peak`가 정상 정리량과 실제 보존
+범위를 보여 줍니다.
+
+Input history uses the oldest timestamp among pending timer due entries and active IRQ0 replay
+frames as its safe cutoff. It keeps the last state at or before that cutoff as the floor and retires
+earlier edges, preventing completed input from permanently occupying fixed capacity. When neither
+source exists, the monotonically increasing last PIT due timestamp becomes the cutoff. Only a full
+buffer remaining after safe pruning counts as `history-overflow`; a request older than the floor is
+reported separately as `history-coverage-miss`. `history-pruned` and `history-peak` expose normal
+retirement volume and the actual retained range.
 
 ## 게스트 위치 census / Guest position census
 

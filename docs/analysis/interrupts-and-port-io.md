@@ -707,3 +707,171 @@ full `pumpipx3` coherence probe reported `dos_date_probe=pass`,
 
 **Unresolved:** The execution frontier after this blocker still requires a real
 `pumpitpr` rerun.
+## 2026-08-19 Task 492: INT 8 due 시각의 JAMMA 입력 재생
+
+**확인됨 (원인):** 기존 입력은 JAMMA `IN` 시점의 `GetAsyncKeyState(... ) & 0x8000`
+level만 읽고 edge timestamp를 보존하지 않았습니다. backlog가 Glide gate 뒤에서 빠르게
+소진되면 여러 과거 ISR이 전달 순간의 같은 state를 읽으며, gate 안에서 끝난
+press/release는 모두 누락될 수 있었습니다. Task 403의 500 us cache도 서로 다른 overdue
+ISR을 같은 wall snapshot으로 합칠 수 있었습니다.
+
+**확인됨 (구현):** SDL key event timestamp와 pressed-mask history, PIT tick별 due timestamp
+queue를 추가했습니다. delivery accounting이 수락한 tick만 queue에 들어가며 INT 8 주입이
+한 개씩 소비합니다. 원본 ISR에서 IF=0이고 interrupt frame 아래 stack을 사용하는 JAMMA
+읽기는 due 시각 state를 복원하고 Task 403 cache를 우회합니다. ISR 밖 입력은 기존 live
+level/cache 계약을 유지합니다.
+
+**확인됨 (정적 검증):** Debug 빌드와 `--jamma-input-timeline` 묶음, `pumpit1/PIU.EXE`
+전체 AOT probe가 통과했습니다. 합성 history의 due tick 세 개는 각각 idle, pressed,
+released를 반환했고 PIT 4972 divisor는 계속 240 Hz이며 기존 delivery accounting probe도
+전부 유지됐습니다.
+
+**확인됨(사용자 실행):** 후속 120초 실행은 1,006개 edge와 다섯 2P 위치의 균형 잡힌
+press/release를 기록했습니다. 최종 timeline은 `replay-reads=275350`, `due-overflow=0`,
+`missing-due=0`이어서 실제 OS/SDL 입력이 due-time replay에 소비됨을 확인했습니다.
+
+## 2026-08-19 Task 492: replaying JAMMA input at the INT 8 due time
+
+**Confirmed cause:** input previously read only the `GetAsyncKeyState(...) & 0x8000` level at the
+JAMMA `IN`, preserving no edge timestamp. Rapid backlog drain after a Glide gate made several past
+ISRs read one delivery-time state; a press/release pair wholly inside the gate could disappear.
+Task 403's 500 us cache could also fold distinct overdue ISRs onto one wall snapshot.
+
+**Confirmed implementation:** an SDL-key timestamped pressed-mask history and per-PIT-tick due-time
+queue now retain only ticks accepted by delivery accounting and consume one per INT 8 injection.
+A JAMMA read by the original ISR with IF clear and its stack below the interrupt frame reconstructs
+state at the due time and bypasses Task 403 caching. Reads outside the ISR keep the existing live
+level/cache contract.
+
+**Confirmed static verification:** the Debug build, `--jamma-input-timeline` bundle, and complete
+`pumpit1/PIU.EXE` AOT probe passed. Three synthetic due ticks reconstructed idle, pressed, and
+released respectively; divisor 4972 remains 240 Hz and every existing delivery-accounting probe
+still passes.
+
+**Confirmed by user run:** a subsequent 120-second run recorded 1,006 edges and balanced
+press/release counts for all five 2P positions. Its final timeline reported
+`replay-reads=275350`, `due-overflow=0`, and `missing-due=0`, confirming that real OS/SDL input was
+consumed by due-time replay.
+## 2026-08-19 Task 493: IRQ0 frame 수명 기반 JAMMA replay
+
+**확인됨(실행 결함):** Task 492 적용 후 136초 실제 플레이 로그는 `replays=31498`이지만
+`replay-reads=0`이었습니다. history/due 유실은 없었으나 IF gate 때문에 due-time state가
+실제 JAMMA read에 한 번도 사용되지 않았습니다. tick과 비슷한 빈도의 port-I/O 주소가
+계속 실행된 점을 함께 보면 handler가 JAMMA read 전에 IF를 다시 켜는 경로가 원인입니다.
+
+**확인됨(수정):** IF 판정을 제거하고 host가 주입한 `(due timestamp, interrupt-frame ESP)`를
+최대 64-depth stack으로 추적합니다. 주입 전 ESP와 port read ESP가 top frame보다 위이면
+완료 frame을 제거합니다. nested IRQ0는 안쪽 state를 사용하고 nested IRETD 뒤에는 바깥
+state로 돌아갑니다.
+
+**확인됨(검증):** 전용 probe는 nested 진입/복귀를 `reads=4`, `retired=3`,
+`frame_overflow=0`으로 통과했습니다. Debug `repiu`, `repiu_aot_probe` 빌드와 pumpit1 전체
+AOT probe도 통과했습니다. pumpito 10초 smoke 실행은 `replays=264`, `replay-reads=2374`,
+`frames-retired=258`, `frame-overflow=0`, `active-depth=6`을 기록했습니다. 제한 종료 시점의
+depth 6은 주입 264에서 완료 258을 뺀 값과 일치합니다.
+
+**확인됨(사용자 실행):** 최종 실행은 SDL exit request로 종료됐고 `replays=27814`,
+`replay-reads=275350`, `frames-retired=27812`, `frame-overflow=0`, `active-depth=2`였습니다.
+종료 순간의 depth 2는 주입과 완료 frame 차이와 정확히 일치합니다.
+
+## 2026-08-19 Task 493: JAMMA replay by IRQ0 frame lifetime
+
+**Confirmed runtime defect:** after Task 492, a 136-second live-play log reported
+`replays=31498` but `replay-reads=0`. History and due queues lost nothing, yet the IF gate prevented
+every actual JAMMA read from consuming due-time state. Port-I/O addresses continued at tick-like
+frequency, identifying the handler's IF re-enable before JAMMA reads as the cause.
+
+**Confirmed correction:** IF no longer controls eligibility. The host tracks injected
+`(due timestamp, interrupt-frame ESP)` pairs in a fixed stack with depth 64. Pre-injection ESP and
+port-read ESP retire top frames that have been left. Nested IRQ0 uses the inner state and returns to
+the outer state after nested IRETD.
+
+**Confirmed verification:** the dedicated nested-entry/return probe passed with `reads=4`,
+`retired=3`, and `frame_overflow=0`. Debug `repiu` and `repiu_aot_probe` builds and the complete
+pumpit1 AOT probe passed. A 10-second pumpito smoke run reported `replays=264`,
+`replay-reads=2374`, `frames-retired=258`, `frame-overflow=0`, and `active-depth=6`; the forced-stop
+depth exactly equals 264 injections minus 258 retired frames.
+
+**Confirmed by user run:** the final run ended by SDL exit request and reported `replays=27814`,
+`replay-reads=275350`, `frames-retired=27812`, `frame-overflow=0`, and `active-depth=2`. The two
+active frames exactly match the difference between injected and retired frames at shutdown.
+## 2026-08-19 Task 494: 2P 숫자패드 keycode 별칭
+
+**확인됨:** Task 493 사용자 로그는 전체 timeline 유실 계수가 0이고
+`replay-reads=203260`이었지만, `P2-Center` transition만 기록하고 `P2-UpLeft/UpRight`는 한
+건도 기록하지 않았습니다. SDL3 header에서 `SDLK_KP_7/KP_9`은 `SDLK_HOME/PAGEUP`과
+서로 다른 keycode입니다. 기존 mapping은 navigation 계열만 포함해 NumLock numeric
+keycode를 event history에 넣지 못했습니다.
+
+**수정됨:** `Home/KP7`, `PageUp/KP9`, `Clear/KP5`, `End/KP1`, `PageDown/KP3`을 같은
+JAMMA 위치로 정규화했습니다. SDL event mapping, `CaptureCurrentJammaPressedMask`, replay
+밖 `GetAsyncKeyState` fallback에 같은 쌍을 적용했습니다. SDL mapping은 constexpr 변환과
+10개 static assertion으로 고정했습니다.
+
+**확인됨(사용자 실행):** 후속 로그에서 UpLeft, UpRight, Center, DownLeft, DownRight가 각각
+`77/77`, `97/97`, `124/124`, `107/107`, `91/91` press/release를 기록했습니다. 다섯 위치
+모두 guest transition에 도달했고 종료 시 눌린 상태가 남지 않았습니다.
+
+## 2026-08-19 Task 494: 2P numeric-keypad keycode aliases
+
+**Confirmed:** the Task 493 user log had zero timeline-loss counters and
+`replay-reads=203260`, yet recorded only `P2-Center` and no `P2-UpLeft/UpRight` transition. The SDL3
+header defines `SDLK_KP_7/KP_9` separately from `SDLK_HOME/PAGEUP`. The old navigation-only mapping
+could not enter NumLock numeric keycodes into event history.
+
+**Corrected:** `Home/KP7`, `PageUp/KP9`, `Clear/KP5`, `End/KP1`, and `PageDown/KP3` now normalize
+to the same JAMMA positions in SDL event mapping, `CaptureCurrentJammaPressedMask`, and the
+`GetAsyncKeyState` live fallback. A constexpr SDL conversion and ten static assertions pin the
+mapping.
+
+**Confirmed by user run:** the subsequent log recorded press/release counts of `77/77`, `97/97`,
+`124/124`, `107/107`, and `91/91` for UpLeft, UpRight, Center, DownLeft, and DownRight. Every
+position reached guest transitions and none remained pressed at shutdown.
+
+## 2026-08-19 Task 495: JAMMA history 안전 정리
+
+**확인됨:** Task 494 사용자 로그에서 2P UpLeft/UpRight/Center/DownLeft/DownRight는 각각
+`77/77`, `81/81`, `120/120`, `107/107`, `93/93` press/release로 균형을 이뤘습니다.
+`replay-reads=281698`, `missing-due=0`이었지만 총 968 edge 중 712개가 고정 256-entry history
+용량을 넘어 `history-overflow`로 기록됐습니다. 이는 전체 세션 edge를 보존하고 완료된
+범위를 회수하지 않은 수명 관리 결함입니다.
+
+**수정됨:** pending due와 active replay frame의 최소 timestamp를 안전 cutoff로 계산하고,
+그 시각 이하의 마지막 state를 floor로 승격해 이전 history를 compact합니다. 둘 다 없으면
+단조 증가하는 마지막 due timestamp를 사용합니다. 안전 정리 뒤 capacity 초과만 overflow로,
+floor보다 오래된 조회는 coverage miss로 별도 집계합니다.
+
+**검증됨:** 300개 edge를 순차 enqueue/inject/read/retire한 전용 probe가 `pruned=300`,
+`history-peak=1`, `history-overflow=0`, `coverage-miss=0`으로 통과했습니다. Debug 두 target과
+전체 pumpit1 probe가 통과했습니다. 10초 pumpito smoke는 `history-overflow=0`,
+`history-coverage-miss=0`, `due-overflow=0`, `missing-due=0`, `frame-overflow=0`을 기록했습니다.
+
+**확인됨(최종 사용자 실행):** 약 120초 동안 `edges=1006`, `history-pruned=1006`,
+`history-peak=4`였고 `history-overflow=0`, `history-coverage-miss=0`, `due-overflow=0`,
+`missing-due=0`, `frame-overflow=0`이었습니다. 실행 예외, wall timeout, stall timeout도 모두
+false였고 SDL exit request로 종료됐습니다. 이 결과로 Task 492~495 입력 검증을 닫습니다.
+
+## 2026-08-19 Task 495: safe JAMMA history pruning
+
+**Confirmed:** the Task 494 user log recorded balanced press/release counts for 2P UpLeft,
+UpRight, Center, DownLeft, and DownRight: `77/77`, `81/81`, `120/120`, `107/107`, and `93/93`.
+It also reported `replay-reads=281698` and `missing-due=0`, but 712 of 968 total edges exceeded the
+fixed 256-entry history capacity. This was a lifetime-management defect: completed history was
+never reclaimed.
+
+**Corrected:** the minimum timestamp among pending due entries and active replay frames defines a
+safe cutoff. The final state at or before it becomes the floor and earlier history is compacted.
+When both sources are empty, the monotonically increasing last due timestamp is used. Overflow now
+means capacity remained exhausted after safe pruning, while an older-than-floor query is counted
+separately as a coverage miss.
+
+**Verified:** a dedicated probe sequentially enqueued, injected, read, and retired 300 edges and
+passed with `pruned=300`, `history-peak=1`, `history-overflow=0`, and `coverage-miss=0`. Both Debug
+targets and the complete pumpit1 probe passed. A 10-second pumpito smoke reported zero
+`history-overflow`, `history-coverage-miss`, `due-overflow`, `missing-due`, and `frame-overflow`.
+
+**Confirmed by final user run:** over approximately 120 seconds it reported `edges=1006`,
+`history-pruned=1006`, `history-peak=4`, and zero `history-overflow`,
+`history-coverage-miss`, `due-overflow`, `missing-due`, and `frame-overflow`. Execution exception,
+wall timeout, and stall timeout were all false, and shutdown came from an SDL exit request. This
+closes the input validation for Tasks 492 through 495.

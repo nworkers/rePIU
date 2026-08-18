@@ -2755,6 +2755,13 @@ std::uint32_t InjectPendingInterrupts(CONTEXT* win32_context,
         return 0U;
     }
 
+    Win32TimerTickDeliveryGuard timer_guard(
+        &context->timer_tick_delivery_lock);
+    if (!context->timer_interrupt_pending.load(std::memory_order_acquire))
+    {
+        return 0U;
+    }
+
     const DpmiInterruptVectorShadow& shadow = context->dpmi_interrupt_vectors[0x08];
     if (!shadow.valid)
     {
@@ -2765,6 +2772,7 @@ std::uint32_t InjectPendingInterrupts(CONTEXT* win32_context,
         // Task 366: delivery is abandoned with no vector to reach, so the owed
         // ticks are accounted rather than silently vanishing from the identity.
         RecordTimerTickBacklogCleared(&context->timer_tick_delivery);
+        context->jamma_input_timeline.ClearTimerTicks();
         return 0U;
     }
 
@@ -2790,8 +2798,12 @@ std::uint32_t InjectPendingInterrupts(CONTEXT* win32_context,
     // per safe point rather than bursting into the guest stack.
     const bool keep_armed = RecordTimerTickInjected(
         &context->timer_tick_delivery, TimerTickBacklogEnabled());
+    const std::uint32_t interrupt_frame_esp = win32_context->Esp - 12U;
+    context->jamma_input_timeline.BeginTimerInterrupt(
+        win32_context->Esp, interrupt_frame_esp);
     context->timer_interrupt_pending.store(keep_armed,
                                            std::memory_order_relaxed);
+    timer_guard.Release();
     if (keep_armed)
     {
         ArmAotTimerSafePoint(context);
@@ -3977,6 +3989,7 @@ bool RunWin32ExecutionThread(
     Win32AotCodeCachePlacement* aot_placement,
     runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
+    std::uint32_t stall_timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
 {
     if (attempt == nullptr)
@@ -4655,6 +4668,7 @@ bool RunWin32ExecutionThread(
         }
     }
 
+    context.glide_backend.SetJammaInputTimeline(&context.jamma_input_timeline);
     context.glide_backend.BindHostThread();
     DWORD guest_thread_id = 0;
     HANDLE thread = api.create_thread(nullptr,
@@ -4700,10 +4714,13 @@ bool RunWin32ExecutionThread(
     const DWORD wait_result = PollThreadUntilExit(
         thread,
         timeout_milliseconds,
-        (enable_single_step_trace || aot_placement != nullptr)
+        stall_timeout_milliseconds,
+        (enable_single_step_trace || aot_placement != nullptr ||
+         stall_timeout_milliseconds != INFINITE)
             ? &context : nullptr,
         &context,
-        &exit_code);
+        &exit_code,
+        &attempt->stall_timed_out);
 
     const auto remove_vectored_handler = [&context]() {
         if (context.vectored_handler != nullptr)
@@ -4912,6 +4929,7 @@ bool AttemptWin32GuestStackTrapExecution(
     std::string_view parent_rom_set_id,
     std::uint32_t piu10_mp3_latency_ms,
     std::uint32_t timeout_milliseconds,
+    std::uint32_t stall_timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
 {
     if (attempt == nullptr)
@@ -4951,6 +4969,7 @@ bool AttemptWin32GuestStackTrapExecution(
         nullptr,
         runtime::ExecutionBackend::kLegacy,
         timeout_milliseconds,
+        stall_timeout_milliseconds,
         attempt);
 }
 
@@ -4959,6 +4978,7 @@ bool AttemptWin32GuestStackHleExecution(
     const runtime::GuestStackSwitchPlan& stack_plan,
     const hle::DosVirtualFileSystemState& dos_file_system,
     std::uint32_t timeout_milliseconds,
+    std::uint32_t stall_timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
 {
     if (attempt == nullptr)
@@ -4998,6 +5018,7 @@ bool AttemptWin32GuestStackHleExecution(
         nullptr,
         runtime::ExecutionBackend::kLegacy,
         timeout_milliseconds,
+        stall_timeout_milliseconds,
         attempt);
 }
 
@@ -5017,6 +5038,7 @@ bool AttemptWin32GuestStackAotExecution(
     std::uint32_t piu10_mp3_latency_ms,
     runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
+    std::uint32_t stall_timeout_milliseconds,
     Win32MinimalExecutionAttempt* attempt)
 {
     if (attempt == nullptr || !stack_plan.valid || !aot_placement.placed)
@@ -5041,7 +5063,9 @@ bool AttemptWin32GuestStackAotExecution(
         piu10_mp3_latency_ms,
         &aot_placement,
         execution_backend,
-        timeout_milliseconds, attempt);
+        timeout_milliseconds,
+        stall_timeout_milliseconds,
+        attempt);
 }
 
 }  // namespace repiu::platform::win32

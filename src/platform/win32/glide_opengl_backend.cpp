@@ -2,6 +2,7 @@
 #include "repiu/hle/glide_texture_decode.h"
 #include "repiu/hle/glide_lfb.h"
 #include "repiu/platform/win32/execution_time_profile.h"
+#include "repiu/platform/win32/jamma_input_timeline.h"
 
 #if defined(_WIN32)
 #include <SDL3/SDL.h>
@@ -33,6 +34,65 @@
 
 namespace repiu::platform::win32
 {
+namespace
+{
+
+#if defined(_WIN32)
+constexpr JammaInputKey TranslateJammaInputKeyValue(SDL_Keycode keycode)
+{
+    switch (keycode)
+    {
+        case SDLK_Q: return JammaInputKey::kP1Up;
+        case SDLK_E: return JammaInputKey::kP1Down;
+        case SDLK_S: return JammaInputKey::kP1Center;
+        case SDLK_Z: return JammaInputKey::kP1Left;
+        case SDLK_C: return JammaInputKey::kP1Right;
+        case SDLK_F5: return JammaInputKey::kCoin1;
+        case SDLK_F1: return JammaInputKey::kTest;
+        case SDLK_F2: return JammaInputKey::kService;
+        case SDLK_F3: return JammaInputKey::kClear;
+        case SDLK_KP_7:
+        case SDLK_HOME: return JammaInputKey::kP2Up;
+        case SDLK_KP_9:
+        case SDLK_PAGEUP: return JammaInputKey::kP2Down;
+        case SDLK_KP_5:
+        case SDLK_CLEAR: return JammaInputKey::kP2Center;
+        case SDLK_KP_1:
+        case SDLK_END: return JammaInputKey::kP2Left;
+        case SDLK_KP_3:
+        case SDLK_PAGEDOWN: return JammaInputKey::kP2Right;
+        default: return JammaInputKey::kCount;
+    }
+}
+
+static_assert(TranslateJammaInputKeyValue(SDLK_KP_7) == JammaInputKey::kP2Up);
+static_assert(TranslateJammaInputKeyValue(SDLK_HOME) == JammaInputKey::kP2Up);
+static_assert(TranslateJammaInputKeyValue(SDLK_KP_9) == JammaInputKey::kP2Down);
+static_assert(TranslateJammaInputKeyValue(SDLK_PAGEUP) == JammaInputKey::kP2Down);
+static_assert(TranslateJammaInputKeyValue(SDLK_KP_5) == JammaInputKey::kP2Center);
+static_assert(TranslateJammaInputKeyValue(SDLK_CLEAR) == JammaInputKey::kP2Center);
+static_assert(TranslateJammaInputKeyValue(SDLK_KP_1) == JammaInputKey::kP2Left);
+static_assert(TranslateJammaInputKeyValue(SDLK_END) == JammaInputKey::kP2Left);
+static_assert(TranslateJammaInputKeyValue(SDLK_KP_3) == JammaInputKey::kP2Right);
+static_assert(TranslateJammaInputKeyValue(SDLK_PAGEDOWN) == JammaInputKey::kP2Right);
+
+bool TranslateJammaInputKey(SDL_Keycode keycode, JammaInputKey* key)
+{
+    if (key == nullptr)
+    {
+        return false;
+    }
+    const JammaInputKey translated = TranslateJammaInputKeyValue(keycode);
+    if (translated == JammaInputKey::kCount)
+    {
+        return false;
+    }
+    *key = translated;
+    return true;
+}
+#endif
+
+}  // namespace
 
 // Task 440: the asynchronous channel's storage, kept off `ThreadContext`'s stack
 // footprint. Guarded by the backend's `host_command_mutex_`, so it shares one
@@ -198,6 +258,28 @@ GlideOpenGlBackend::~GlideOpenGlBackend()
 void GlideOpenGlBackend::BindHostThread()
 {
     host_thread_id_ = std::this_thread::get_id();
+    if (jamma_input_timeline_ != nullptr)
+    {
+        jamma_input_timeline_->Reset(
+            EventClockNanoseconds(), CaptureCurrentJammaPressedMask());
+    }
+}
+
+void GlideOpenGlBackend::SetJammaInputTimeline(
+    Win32JammaInputTimeline* timeline)
+{
+    jamma_input_timeline_ = timeline;
+}
+
+std::uint64_t GlideOpenGlBackend::EventClockNanoseconds() const
+{
+#if defined(_WIN32)
+    return SDL_GetTicksNS();
+#else
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+#endif
 }
 
 void GlideOpenGlBackend::SetExecutionBackend(
@@ -1153,6 +1235,23 @@ void GlideOpenGlBackend::PumpEvents()
     SDL_Event event{};
     while (SDL_PollEvent(&event))
     {
+        if ((event.type == SDL_EVENT_KEY_DOWN ||
+             event.type == SDL_EVENT_KEY_UP) &&
+            !event.key.repeat && jamma_input_timeline_ != nullptr)
+        {
+            JammaInputKey key;
+            if (TranslateJammaInputKey(event.key.key, &key))
+            {
+                jamma_input_timeline_->RecordKeyEdge(
+                    event.key.timestamp, key,
+                    event.type == SDL_EVENT_KEY_DOWN);
+            }
+        }
+        else if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST &&
+                 jamma_input_timeline_ != nullptr)
+        {
+            jamma_input_timeline_->RecordAllReleased(event.common.timestamp);
+        }
         if (event.type == SDL_EVENT_QUIT ||
             event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
         {

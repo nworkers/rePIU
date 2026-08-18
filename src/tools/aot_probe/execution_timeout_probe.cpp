@@ -10,8 +10,12 @@ namespace repiu::tools
 bool RunExecutionTimeoutProbe()
 {
     using runtime::kDefaultExecutionTimeoutMilliseconds;
+    using runtime::kDefaultStallTimeoutMilliseconds;
     using runtime::kUnlimitedExecutionTimeoutMilliseconds;
+    using runtime::ExecutionProgressSnapshot;
+    using runtime::HasExecutionProgress;
     using runtime::ResolveExecutionTimeoutMilliseconds;
+    using runtime::ResolveStallTimeoutMilliseconds;
 
     // Task 435: the default budget is unlimited. A procedure that needs a bound
     // states its own, and this assertion pins that contract.
@@ -48,8 +52,27 @@ bool RunExecutionTimeoutProbe()
         ResolveExecutionTimeoutMilliseconds("99999999999") ==
             kDefaultExecutionTimeoutMilliseconds;
 
+    const bool stall_policy =
+        kDefaultStallTimeoutMilliseconds == 0U &&
+        ResolveStallTimeoutMilliseconds(nullptr) == 0U &&
+        ResolveStallTimeoutMilliseconds("") == 0U &&
+        ResolveStallTimeoutMilliseconds("0") == 0U &&
+        ResolveStallTimeoutMilliseconds("1000") == 1000U &&
+        ResolveStallTimeoutMilliseconds("1000ms") == 0U;
+
+    const ExecutionProgressSnapshot baseline{1U, 2U, 3U, 4U};
+    const bool progress_policy =
+        !HasExecutionProgress(baseline, baseline) &&
+        HasExecutionProgress(baseline, {2U, 2U, 3U, 4U}) &&
+        HasExecutionProgress(baseline, {1U, 3U, 3U, 4U}) &&
+        HasExecutionProgress(baseline, {1U, 2U, 4U, 4U}) &&
+        HasExecutionProgress(baseline, {1U, 2U, 3U, 5U}) &&
+        HasExecutionProgress({0xFFFFFFFFU, 2U, 3U, 4U},
+                             {0U, 2U, 3U, 4U});
+
     const bool all = default_is_unlimited && explicit_zero_is_unlimited &&
-        explicit_budget_kept && malformed_falls_back;
+        explicit_budget_kept && malformed_falls_back && stall_policy &&
+        progress_policy;
 
     std::cout << "execution_timeout_policy=" << (all ? "true" : "false")
               << "\n";

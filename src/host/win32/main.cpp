@@ -90,6 +90,15 @@ std::uint32_t ReadExecutionTimeoutMilliseconds()
         : milliseconds;
 }
 
+std::uint32_t ReadStallTimeoutMilliseconds()
+{
+    const char* text = std::getenv(
+        repiu::platform::win32::kWin32StallTimeoutEnvironment);
+    const std::uint32_t milliseconds =
+        repiu::runtime::ResolveStallTimeoutMilliseconds(text);
+    return milliseconds == 0U ? INFINITE : milliseconds;
+}
+
 std::shared_ptr<spdlog::logger> CreateLoaderLogger()
 {
     std::shared_ptr<spdlog::logger> logger =
@@ -850,6 +859,8 @@ void PrintExecutionAttempt(
                 attempt.fatal_halt_reached ? "true" : "false");
     logger.info("Win32 minimal execution timed out: {}",
                 attempt.timed_out ? "true" : "false");
+    logger.info("Win32 minimal execution stall timed out: {}",
+                attempt.stall_timed_out ? "true" : "false");
     logger.info("Win32 SDL exit requested: {}",
                 attempt.quit_requested ? "true" : "false");
     if (attempt.timed_out)
@@ -3597,6 +3608,24 @@ void PrintExecutionAttempt(
         attempt.port_io.key_query_count != 0U
             ? attempt.port_io.jamma_scan_cycles / attempt.port_io.key_query_count
             : 0U);
+    logger.info(
+        "Win32 JAMMA timeline edges/history-pruned/history-peak/"
+        "history-overflow/history-coverage-miss/due/due-overflow/"
+        "replays/replay-reads/missing-due/frames-retired/frame-overflow/"
+        "active-depth: {}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}",
+        attempt.port_io.jamma_timeline_edge_count,
+        attempt.port_io.jamma_timeline_history_pruned_count,
+        attempt.port_io.jamma_timeline_history_peak_size,
+        attempt.port_io.jamma_timeline_history_overflow_count,
+        attempt.port_io.jamma_timeline_history_coverage_miss_count,
+        attempt.port_io.jamma_timeline_due_enqueued_count,
+        attempt.port_io.jamma_timeline_due_overflow_count,
+        attempt.port_io.jamma_timeline_replay_begin_count,
+        attempt.port_io.jamma_timeline_replay_read_count,
+        attempt.port_io.jamma_timeline_missing_due_count,
+        attempt.port_io.jamma_timeline_frame_retire_count,
+        attempt.port_io.jamma_timeline_frame_overflow_count,
+        attempt.port_io.jamma_timeline_active_frame_depth);
     logger.info("Win32 port I/O input/output/handled/unhandled: {}/{}/{}/{}",
                 attempt.port_io.input_count, attempt.port_io.output_count,
                 attempt.port_io.handled_count, attempt.port_io.unhandled_count);
@@ -5068,6 +5097,8 @@ int main(int argc, char** argv)
         profile->hle_profile_id == "dos4gw_console_sample";
     const std::uint32_t execution_timeout_milliseconds =
         ReadExecutionTimeoutMilliseconds();
+    const std::uint32_t stall_timeout_milliseconds =
+        ReadStallTimeoutMilliseconds();
     if (execution_timeout_milliseconds == INFINITE)
     {
         logger->info("Win32 guest execution timeout: disabled");
@@ -5076,6 +5107,15 @@ int main(int argc, char** argv)
     {
         logger->info("Win32 guest execution timeout: {} ms",
                      execution_timeout_milliseconds);
+    }
+    if (stall_timeout_milliseconds == INFINITE)
+    {
+        logger->info("Win32 guest stall timeout: disabled");
+    }
+    else
+    {
+        logger->info("Win32 guest stall timeout: {} ms",
+                     stall_timeout_milliseconds);
     }
     const bool attempted_execution = use_dynamic_backend
         ? repiu::platform::win32::AttemptWin32GuestStackAotExecution(
@@ -5094,6 +5134,7 @@ int main(int argc, char** argv)
               profile->piu10_mp3_latency_ms,
               execution_backend,
               execution_timeout_milliseconds,
+              stall_timeout_milliseconds,
               &attempt)
         : use_dos_console_hle
             ? repiu::platform::win32::AttemptWin32GuestStackHleExecution(
@@ -5101,6 +5142,7 @@ int main(int argc, char** argv)
                   stack_plan,
                   dos_file_system,
                   execution_timeout_milliseconds,
+                  stall_timeout_milliseconds,
                   &attempt)
             : repiu::platform::win32::AttemptWin32GuestStackTrapExecution(
                   placement,
@@ -5116,6 +5158,7 @@ int main(int argc, char** argv)
                   profile->parent_rom_set_id,
                   profile->piu10_mp3_latency_ms,
                   execution_timeout_milliseconds,
+                  stall_timeout_milliseconds,
                   &attempt);
     if (!attempted_execution)
     {

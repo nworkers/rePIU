@@ -48,14 +48,17 @@ bool RunTimerTickDeliveryProbe()
     // The opt-out path, kept as the regression control: three owed ticks become
     // one injection and two losses, because delivery is a single boolean.
     Win32TimerTickDeliveryCounters legacy;
-    RecordTimerTicksDue(&legacy, 3U, false, false, false);
+    const std::uint32_t legacy_retained_first =
+        RecordTimerTicksDue(&legacy, 3U, false, false, false);
     const bool legacy_armed_once =
         !RecordTimerTickInjected(&legacy, false);
-    RecordTimerTicksDue(&legacy, 2U, false, false, false);
+    const std::uint32_t legacy_retained_second =
+        RecordTimerTicksDue(&legacy, 2U, false, false, false);
     const bool legacy_armed_twice =
         !RecordTimerTickInjected(&legacy, false);
     const auto legacy_snapshot = SnapshotTimerTickDelivery(legacy);
     const bool coalescing =
+        legacy_retained_first == 1U && legacy_retained_second == 1U &&
         legacy_armed_once && legacy_armed_twice &&
         legacy_snapshot.due_total == 5U &&
         legacy_snapshot.injected_total == 2U &&
@@ -67,11 +70,15 @@ bool RunTimerTickDeliveryProbe()
     // ticks, since even the one it would have kept is a duplicate of the tick
     // not yet taken.
     Win32TimerTickDeliveryCounters outstanding;
-    RecordTimerTicksDue(&outstanding, 1U, false, false, false);
-    RecordTimerTicksDue(&outstanding, 4U, true, false, false);
+    const std::uint32_t outstanding_retained_first =
+        RecordTimerTicksDue(&outstanding, 1U, false, false, false);
+    const std::uint32_t outstanding_retained_second =
+        RecordTimerTicksDue(&outstanding, 4U, true, false, false);
     const auto outstanding_snapshot =
         SnapshotTimerTickDelivery(outstanding);
     const bool already_pending =
+        outstanding_retained_first == 1U &&
+        outstanding_retained_second == 0U &&
         outstanding_snapshot.due_total == 5U &&
         outstanding_snapshot.coalesced_total == 4U &&
         outstanding_snapshot.backlog == 1U &&
@@ -79,13 +86,14 @@ bool RunTimerTickDeliveryProbe()
 
     // Backlog mode keeps owed ticks and drains one per safe point.
     Win32TimerTickDeliveryCounters backlog;
-    RecordTimerTicksDue(&backlog, 3U, false, true, false);
+    const std::uint32_t backlog_retained =
+        RecordTimerTicksDue(&backlog, 3U, false, true, false);
     const bool drain_first = RecordTimerTickInjected(&backlog, true);
     const bool drain_second = RecordTimerTickInjected(&backlog, true);
     const bool drain_last = RecordTimerTickInjected(&backlog, true);
     const auto backlog_snapshot = SnapshotTimerTickDelivery(backlog);
     const bool draining =
-        drain_first && drain_second && !drain_last &&
+        backlog_retained == 3U && drain_first && drain_second && !drain_last &&
         backlog_snapshot.due_total == 3U &&
         backlog_snapshot.injected_total == 3U &&
         backlog_snapshot.coalesced_total == 0U &&
@@ -96,11 +104,14 @@ bool RunTimerTickDeliveryProbe()
     // The cap bounds how far into the past the guest can be parked, and the
     // excess is counted rather than delivered late.
     Win32TimerTickDeliveryCounters capped;
-    RecordTimerTicksDue(&capped, kWin32TimerTickBacklogCapacity + 10U, false,
-                        true, false);
-    RecordTimerTicksDue(&capped, 5U, false, true, false);
+    const std::uint32_t capped_retained_first = RecordTimerTicksDue(
+        &capped, kWin32TimerTickBacklogCapacity + 10U, false, true, false);
+    const std::uint32_t capped_retained_second =
+        RecordTimerTicksDue(&capped, 5U, false, true, false);
     const auto capped_snapshot = SnapshotTimerTickDelivery(capped);
     const bool capping =
+        capped_retained_first == kWin32TimerTickBacklogCapacity &&
+        capped_retained_second == 0U &&
         capped_snapshot.backlog == kWin32TimerTickBacklogCapacity &&
         capped_snapshot.dropped_total == 15U &&
         capped_snapshot.max_backlog == kWin32TimerTickBacklogCapacity &&

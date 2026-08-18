@@ -41,6 +41,8 @@ extern "C" void __stdcall ResolveAotDbtGlideGateFrame(
         g_terminal_failure_count.fetch_add(1U, std::memory_order_relaxed);
         return;
     }
+    context->aot_dbt_glide_dispatch_entry_count.fetch_add(
+        1U, std::memory_order_relaxed);
     g_entry_count.fetch_add(1U, std::memory_order_relaxed);
 
     const std::uint32_t continuation = frame[kGateContinuationIndex];

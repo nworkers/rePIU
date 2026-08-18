@@ -32,6 +32,8 @@
 namespace repiu::platform::win32
 {
 
+class Win32JammaInputTimeline;
+
 enum class GlideOpenGlCullFace : std::uint8_t
 {
     kDisabled,
@@ -65,6 +67,8 @@ public:
     void BindHostThread();
     void PumpHostCommands();
     void SetExecutionBackend(runtime::ExecutionBackend backend);
+    void SetJammaInputTimeline(Win32JammaInputTimeline* timeline);
+    std::uint64_t EventClockNanoseconds() const;
 
     // `origin` is the GrOriginLocation_t passed to grSstWinOpen:
     // GR_ORIGIN_UPPER_LEFT is 0 and GR_ORIGIN_LOWER_LEFT is 1. It selects the
@@ -351,6 +355,7 @@ private:
     void RecordPresentedFrame();
 
     std::thread::id host_thread_id_;
+    Win32JammaInputTimeline* jamma_input_timeline_ = nullptr;
     // Mutable so the async snapshot accessors can stay const: they only read
     // counters this lock protects.
     mutable std::mutex host_command_mutex_;

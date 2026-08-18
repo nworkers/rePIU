@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <thread>
 
 namespace repiu::platform::win32
 {
@@ -26,6 +27,33 @@ void RaiseMaximum(std::atomic<std::uint32_t>* maximum, std::uint32_t value)
 
 }  // namespace
 
+Win32TimerTickDeliveryGuard::Win32TimerTickDeliveryGuard(
+    std::atomic_flag* lock) : lock_(lock)
+{
+    if (lock_ == nullptr)
+    {
+        return;
+    }
+    while (lock_->test_and_set(std::memory_order_acquire))
+    {
+        std::this_thread::yield();
+    }
+}
+
+Win32TimerTickDeliveryGuard::~Win32TimerTickDeliveryGuard()
+{
+    Release();
+}
+
+void Win32TimerTickDeliveryGuard::Release()
+{
+    if (lock_ != nullptr)
+    {
+        lock_->clear(std::memory_order_release);
+        lock_ = nullptr;
+    }
+}
+
 bool ResolveTimerTickBacklogEnabled(const char* setting)
 {
     // Task 432: on by default. Only an explicit off disables it, so an unset or
@@ -45,15 +73,16 @@ bool TimerTickBacklogEnabled()
     return enabled;
 }
 
-void RecordTimerTicksDue(Win32TimerTickDeliveryCounters* counters,
-                         std::uint32_t due,
-                         bool already_pending,
-                         bool backlog_enabled,
-                         bool in_gate)
+std::uint32_t RecordTimerTicksDue(
+    Win32TimerTickDeliveryCounters* counters,
+    std::uint32_t due,
+    bool already_pending,
+    bool backlog_enabled,
+    bool in_gate)
 {
     if (counters == nullptr || due == 0U)
     {
-        return;
+        return 0U;
     }
     counters->due_total.fetch_add(due, std::memory_order_relaxed);
     if (in_gate)
@@ -77,7 +106,7 @@ void RecordTimerTicksDue(Win32TimerTickDeliveryCounters* counters,
         }
         counters->backlog.store(1U, std::memory_order_relaxed);
         RaiseMaximum(&counters->max_backlog, 1U);
-        return;
+        return retained;
     }
 
     // Stage two: keep the owed ticks, bounded. Beyond the cap the guest would be
@@ -96,6 +125,7 @@ void RecordTimerTicksDue(Win32TimerTickDeliveryCounters* counters,
     backlog += accepted;
     counters->backlog.store(backlog, std::memory_order_relaxed);
     RaiseMaximum(&counters->max_backlog, backlog);
+    return accepted;
 }
 
 bool RecordTimerTickInjected(Win32TimerTickDeliveryCounters* counters,

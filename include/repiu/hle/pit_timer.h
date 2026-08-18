@@ -13,6 +13,14 @@ struct PitChannel0Snapshot
     std::uint32_t divisor = 65536;
 };
 
+struct PitIrqDueRange
+{
+    std::uint64_t epoch_nanoseconds = 0;
+    std::uint64_t first_tick_ordinal = 0;
+    std::uint64_t tick_count = 0;
+    std::uint32_t divisor = 65536;
+};
+
 class PitChannel0
 {
 public:
@@ -40,7 +48,8 @@ class PitIrqSchedule
 {
 public:
     std::uint64_t Poll(const PitChannel0Snapshot& snapshot,
-                       std::uint64_t elapsed_nanoseconds);
+                       std::uint64_t elapsed_nanoseconds,
+                       PitIrqDueRange* due_range = nullptr);
 
 private:
     std::uint32_t generation_ = 0;
@@ -51,6 +60,9 @@ private:
 
 std::uint64_t PitTickCountForElapsed(std::uint64_t elapsed_nanoseconds,
                                      std::uint32_t divisor);
+
+std::uint64_t PitElapsedNanosecondsForTick(std::uint64_t tick_ordinal,
+                                           std::uint32_t divisor);
 
 double PitFrequencyHz(std::uint32_t divisor);
 

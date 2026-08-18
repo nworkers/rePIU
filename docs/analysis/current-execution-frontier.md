@@ -17,6 +17,103 @@ their original names** — read `aot-dbt` as `dynamic` when running a procedure.
 and `aot-dynamic` were removed and have no present-day equivalent; both already failed
 to build the pumpit3 image at the time of removal.
 
+## Task 495 JAMMA history 안전 정리 / Safe JAMMA history pruning
+
+**완료:** Task 494 사용자 로그는 2P 다섯 위치의
+press/release를 모두 확인했지만, 총 968 edge 중 고정 history 용량을 넘은 712개가
+`history-overflow`로 기록됐습니다. 이제 pending due와 active replay frame이 요구하는 가장
+오래된 시각까지만 보존하고, 그 이전 state를 floor로 compact합니다. 300-edge 순차 probe는
+`pruned=300`, `history-peak=1`, `history-overflow=0`, `coverage-miss=0`으로 통과했고 10초
+pumpito smoke도 모든 loss counter가 0이었습니다. 최종 120초 사용자 실행은
+`edges/pruned/peak=1006/1006/4`, `replay-reads=275350`과 모든 timeline loss counter 0을
+기록했습니다.
+
+**Complete.** The Task
+494 user log confirmed balanced press/release transitions for all five 2P positions, but 712 of 968
+total edges exceeded the fixed history capacity and were reported as `history-overflow`. History
+now retains only the oldest timestamp required by pending due ticks or active replay frames and
+compacts earlier state into a floor. A 300-edge sequential probe passed with `pruned=300`,
+`history-peak=1`, `history-overflow=0`, and `coverage-miss=0`; a 10-second pumpito smoke also kept
+every loss counter at zero. The final 120-second user run reported `edges/pruned/peak=1006/1006/4`,
+`replay-reads=275350`, and zero for every timeline loss counter.
+
+## Task 494 2P 숫자패드 별칭 / 2P numpad aliases
+
+**완료:** Task 493 로그에서 2P Center만 보이고
+`7/9` transition이 전혀 없었던 원인은 SDL `KP_7/KP_9` 및 Win32 `VK_NUMPAD7/9` 별칭
+누락이었습니다. `7/9/5/1/3`의 navigation/numeric 쌍을 SDL history, 초기 snapshot, live
+fallback에 모두 반영했고 compile-time mapping assertion과 Debug 빌드가 통과했습니다.
+최종 사용자 실행에서 다섯 위치가 모두 균형 잡힌 press/release를 기록했습니다.
+
+**Complete.** The Task 493
+log showed only 2P Center because SDL `KP_7/KP_9` and Win32 `VK_NUMPAD7/9` aliases were absent.
+Navigation/numeric pairs for `7/9/5/1/3` now apply to SDL history, initial snapshot capture, and
+the live fallback. Compile-time mapping assertions and Debug builds pass, and the final user run
+recorded balanced press/release counts for all five positions.
+
+## Task 493 IRQ0 프레임 수명 기반 입력 재생 / IRQ0 frame-lifetime input replay
+
+**완료:** Task 492 실제 로그의
+`replay-reads=0`은 원본 IRQ0 handler가 JAMMA read 전에 IF를 다시 켜 기존 gate를 통과하지
+못한 결과였습니다. Task 493은 IF 추정을 제거하고 host가 주입한 interrupt frame을
+중첩 가능한 고정 stack으로 추적합니다. 10초 smoke 실행에서 `replay-reads=2374`,
+`frame-overflow=0`을 확인했습니다. 최종 사용자 실행은 `replay-reads=275350`,
+`missing-due=0`, `frame-overflow=0`으로 실제 IRQ0 replay 소비를 확인했습니다.
+
+**Complete.** The
+Task 492 live result of `replay-reads=0` came from the original IRQ0 handler enabling IF before its
+JAMMA reads. Task 493 removes that inference and tracks host-injected interrupt frames in a fixed,
+nestable stack. A 10-second smoke run reported `replay-reads=2374` and `frame-overflow=0`; the final
+user run reported `replay-reads=275350`, `missing-due=0`, and `frame-overflow=0`.
+
+## Task 492 타이머 시각 입력 재생 / Timer-time input replay
+
+**완료.** JAMMA 입력은 이제 SDL press/release의
+nanosecond timestamp를 보존하고, backlog에서 살아남은 PIT tick마다 원래 due timestamp를
+별도로 유지합니다. 원본 INT 8 ISR의 포트 읽기는 해당 due 시각의 pressed mask를 복원하며
+500 us live snapshot을 우회합니다. 따라서 Glide gate 중에 끝난 edge가 현재 state 하나로
+사라지거나 여러 overdue tick에 잘못 복제되는 구조를 제거했습니다.
+
+Debug `repiu`/`repiu_aot_probe`, 전용 probe와 `pumpit1/PIU.EXE` 전체 probe가 통과했습니다.
+최종 사용자 실행에서 1,006개 edge와 다섯 2P 위치의 균형 잡힌 press/release,
+`due-overflow=0`, `missing-due=0`을 확인했습니다.
+
+**Complete.** JAMMA input now preserves
+nanosecond SDL press/release timestamps and the original due timestamp of every PIT tick retained
+by the backlog. Port reads in the original INT 8 ISR reconstruct the pressed mask at that due time
+and bypass the 500 us live snapshot. This removes the structure that could erase an edge completed
+inside a Glide gate or duplicate one current state across several overdue ticks.
+
+Debug `repiu`/`repiu_aot_probe`, the dedicated bundle, and the complete `pumpit1/PIU.EXE` probe all
+pass. The final user run confirmed 1,006 edges, balanced press/release for all five 2P positions,
+`due-overflow=0`, and `missing-due=0`.
+
+## Task 490 실행 제한과 정지 감시 분리 / Execution and stall timeout separation
+
+**확인됨.** `REPIU_EXECUTION_TIMEOUT_MS`는 이제 wall-clock 예산만 설정하며,
+`REPIU_STALL_TIMEOUT_MS`가 별도의 무진행 감시 예산을 설정합니다. 둘 다 `0`이 기본값이고
+비활성입니다. 진행 판정에는 실행별 Glide direct-dispatch 진입도 포함되므로 성공 뒤 AOT
+reentry뿐 아니라 fallback으로 이어지는 실제 게이트 활동도 생존 신호가 됩니다.
+
+pumpit2 parent CHD 디렉터리가 현재 없어 동일 CHD identity의 pumpit2a로 검증했습니다.
+wall 40초/stall 비활성 실행은 40.26초에 wall timeout으로 끝났고, wall 10초/stall 1초
+실행도 10.24초까지 진행한 뒤 `stall_timed_out=false`였습니다. 1ms stall 진단 실행은
+`stall_timed_out=true`로 분리됐습니다. 따라서 예산을 쓰는 성능 캡처도 더는 암묵적 1초
+watchdog을 활성화하지 않습니다.
+
+**Confirmed.** `REPIU_EXECUTION_TIMEOUT_MS` now controls only the wall-clock budget,
+while `REPIU_STALL_TIMEOUT_MS` independently controls the no-progress budget. Both
+default to `0`, disabled. Per-run Glide direct-dispatch entry is part of progress, so
+real gate activity remains visible even if it later takes a fallback instead of a
+successful AOT reentry.
+
+The pumpit2 parent CHD directory was unavailable, so verification used pumpit2a with
+the same CHD identity. Wall 40 seconds with stall disabled ended at 40.26 seconds as a
+wall timeout; wall 10 seconds with a one-second stall budget reached 10.24 seconds with
+`stall_timed_out=false`; and a diagnostic one-millisecond stall run reported
+`stall_timed_out=true`. Bounded performance captures therefore no longer arm an
+implicit one-second watchdog.
+
 ## Task 424~425 확인됨 / Confirmed in Tasks 424-425
 
 * **direct-edge dispatch는 이미지에 따라 필수입니다.** pumpit3 `PIU.EXE`에는 cache
@@ -83,7 +180,7 @@ to build the pumpit3 image at the time of removal.
 | — | **[완료, Task 419] Glide gate rendezvous** — 분해는 Task 418 로그에 **이미 있었고**(`rendezvous/direct: 0/0`은 ordinal별 줄이었음), gate 시간의 **65.5%가 왕복 지연**이었습니다. 스핀 대기로 **5.3~12.9%**까지 내려가 **프레임 2,399 → 3,063(+27.7%)**, pumpit1 회귀 없음 | — | — |
 | 1 | **[해소, Tasks 438·439] draw batching으로 게이트 비중 10.35% → 8.40%** — 배치 평균 **16.02**(최대 332), 크로싱당 −23.7%, `failures`·`voided`·구현 공백 0, 시각 회귀 없음. 기본값으로 승격했고 `REPIU_GLIDE_DRAW_BATCH=0`이 대조군입니다. **다음 Glide 축은 `grTexSource`입니다** — vsync OFF 기준 게이트의 33.5%, guest-run의 2.81%이고 호출당 51,865 cycle 중 wake가 70.6%(왕복이지 GL 작업이 아님), 프레임당 20.6회. `grBufferSwap`은 **닫힘**: vsync OFF에서 2.9%뿐이고, Task 440이 vsync ON의 32.8%를 없애 봤지만 프레임은 785→782로 불변이었습니다(대기가 `grDepthMask`로 이동). **성능 판정은 vsync OFF로 합니다 — vsync ON은 게임의 조건이지 측정 조건이 아닙니다** | ~~다음 Glide 축은 draw batching입니다~~ — 실부하 gameplay에서 게이트 크로싱의 **69.9%가 `grDrawTriangle`**이고(프레임당 670.8), `DrawTriangle`은 **삼각형당 host rendezvous 1회**입니다. setter 축은 Task 365/437이 이미 걷어냈고(생략 221.3/프레임, 적용 1.8), 437이 없앤 96회는 draw의 7분의 1입니다. 후보 (b) `grBufferSwap` 드라이버 작업과 (c) 남은 왕복은 그 다음 | 삼각형을 모아 한 번에 넘기면 rendezvous가 프레임당 670 → 약 100(비-draw 게이트 수)으로 떨어집니다 | gate가 guest-run의 **약 50%** |
 | 1' | **[해소, Tasks 421~423] "정지"는 게임이 아니라 우리 감시였습니다** — 게스트는 `0x0302C588`에서 **타이머 틱 100회(약 1.4초)를 정상 대기** 중이고(카운터 `0x0328FA18`은 INT 8 ISR이 증가), 그동안 예외·single-step·AOT 경계가 없어 `PollThreadUntilExit`의 **1초 무진행 감시**가 실행을 죽입니다. `REPIU_EXECUTION_TIMEOUT_MS=0`(→INFINITE, 감시 끔)에서 같은 빌드가 **174초·8,023프레임으로 gameplay 도달**(감시 켬: 9.5초·363프레임) | — | — |
-| 1'' | **[완화, Task 435] 무진행 감시가 기본 실행에서는 꺼졌습니다** — 우회였던 `REPIU_EXECUTION_TIMEOUT_MS=0`이 **기본값**이 되어(`INFINITE`은 wall-clock 예산과 1초 무진행 판정을 함께 끕니다) 정상 실행을 죽이던 경로가 기본 경로에서 사라졌습니다. **감시 자체는 고쳐지지 않았습니다**: 예산을 명시한 실행(회귀 harness 포함)에서는 그대로 오판하므로, 진행 판정에 HLE 활동을 포함시키는 수정은 남습니다 | 예산을 쓰는 측정의 전제 | (측정 자체) |
+| 1'' | **[해소, Task 490] wall 예산과 무진행 감시 분리** — `REPIU_EXECUTION_TIMEOUT_MS`는 wall-clock만 제한하고 별도 `REPIU_STALL_TIMEOUT_MS`가 명시적으로 감시를 켭니다. Glide direct-dispatch 진입도 진행에 포함되며 종료 사유도 구분됩니다 | — | — |
 | 1''' | **[확정, Task 430] 타이머 틱 손실이 노트·BGA 점프의 원인입니다** — 증상이 보인 실행에서 본곡 구간 전달률 **51%**, 게스트 시계가 28.3초 동안 **13.9초** 뒤처짐(음악은 74.97 LBA/s로 정확). 남은 것은 수정이며 축은 **주입 기회 빈도**(아래) | — | — |
 | 1'''a | **[확정, Task 431] 손실의 93.9%가 Glide 게이트 블록 중에 발생합니다** — `InvokeOnHostThread`가 게스트 스레드를 세우는 동안 게스트 코드가 실행되지 않아 안전점(캐시 내 INT3 967개)이 **도달 불가**입니다. 검산 둘 성립: `safe_point_traps/injected = 0.99`, 본곡 trap **121회/초**(240 아님) | — | — |
 | 1'''b | **[해소, Task 432] backlog를 기본값으로** — 새 기구가 필요 없었습니다. Task 366의 bounded backlog가 그 `bool`을 개수로 바꿉니다. gameplay 64.5초 실측 전달률 **50.6% → 99.98%**, `coalesced` 2,710 → **0**, `tick_lag_ms` **+11,365 ms → −11 ms**. **사용자가 점프 증상 해소를 확인**했습니다 | — | — |
@@ -751,9 +848,8 @@ flowchart TD
 
 * **성능 판정은 vsync OFF** (`REPIU_GLIDE_SWAP_INTERVAL=0`). vsync ON은 게임의 조건이라
   끌 수 없지만, 측정할 때는 껐다가 잽니다.
-* **`REPIU_EXECUTION_TIMEOUT_MS`를 성능 캡처에 걸지 마십시오.** 1초 무진행 감시견이
-  무장되고, 그 "진행" 판정에 Glide 게이트 직접 디스패치가 빠져 있어 **건강한 실행을
-  6.27초에 죽입니다.** [TODO](../TODO.md) 2026-08-07 항목, 별도 태스크 예정.
+* Task 490부터 성능 캡처의 wall 상한은 `REPIU_EXECUTION_TIMEOUT_MS`로 설정해도 됩니다.
+  무진행 진단이 필요할 때만 `REPIU_STALL_TIMEOUT_MS`를 별도로 지정합니다.
 * **프레임은 원칙적으로 못 씁니다**(장면 편차 13~18%). 단 **프레임당 작업량이 일치하면
   쓸 수 있습니다** — 445가 그 경우였습니다(패치 346 대 357, primitive 547 대 560,
   배치 32.1 대 32.4, 전부 3% 이내). 그때는 fps·cycle당 swap·cycle당 primitive 세
@@ -835,9 +931,8 @@ one rejected on `shape`. Either the code is dead or the recognizer is wrong.
 #### Method rules confirmed this session
 
 Measure with vsync off; the game requires vsync on, but judgement happens with it off.
-Never set `REPIU_EXECUTION_TIMEOUT_MS` for a performance capture — it arms a one-second
-stall watchdog whose progress test omits the Glide gate direct dispatch path and which
-killed a healthy run at 6.27 seconds; see [TODO](../TODO.md) under 2026-08-07. Frames are
+Since Task 490, a performance capture may use `REPIU_EXECUTION_TIMEOUT_MS` as its wall
+bound; set `REPIU_STALL_TIMEOUT_MS` separately only when no-progress diagnosis is wanted. Frames are
 normally unusable at 13-18% run variance, **but they are usable when per-frame work
 matches**, as in Task 445, where patches, primitives and batch length all agreed within
 3% and three independent throughput measures then cross-validated each other. And check

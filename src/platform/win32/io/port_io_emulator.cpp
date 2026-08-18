@@ -140,10 +140,17 @@ std::uint32_t TakeJammaKeyQueryCount()
     return value;
 }
 
-static std::uint8_t ScanJammaPort8(std::uint16_t port)
+static std::uint8_t ScanJammaPort8(
+    std::uint16_t port,
+    const std::uint16_t* replay_pressed_mask = nullptr)
 {
     std::uint8_t value = 0xFF; // Active Low
-    auto is_pressed = [](int vk) -> bool {
+    auto is_pressed = [replay_pressed_mask](
+        int vk, JammaInputKey key) -> bool {
+        if (replay_pressed_mask != nullptr)
+        {
+            return (*replay_pressed_mask & JammaInputKeyMask(key)) != 0U;
+        }
         ++g_jamma_key_query_count;
         // Only the 0x8000 current-state bit is used. The 0x0001
         // "pressed since last call" bit is state a call consumes, so reading it
@@ -155,26 +162,31 @@ static std::uint8_t ScanJammaPort8(std::uint16_t port)
     switch (port)
     {
         case kPortPiuIn0: // IN0: P1
-            if (is_pressed('Q')) value &= ~0x01;
-            if (is_pressed('E')) value &= ~0x02;
-            if (is_pressed('S')) value &= ~0x04;
-            if (is_pressed('Z')) value &= ~0x08;
-            if (is_pressed('C')) value &= ~0x10;
+            if (is_pressed('Q', JammaInputKey::kP1Up)) value &= ~0x01;
+            if (is_pressed('E', JammaInputKey::kP1Down)) value &= ~0x02;
+            if (is_pressed('S', JammaInputKey::kP1Center)) value &= ~0x04;
+            if (is_pressed('Z', JammaInputKey::kP1Left)) value &= ~0x08;
+            if (is_pressed('C', JammaInputKey::kP1Right)) value &= ~0x10;
             break;
 
         case kPortPiuSystem: // SYSTEM
-            if (is_pressed(VK_F5)) value &= ~0x04; // COIN1
-            if (is_pressed(VK_F1)) value &= ~0x02; // TEST
-            if (is_pressed(VK_F2)) value &= ~0x40; // SERVICE
-            if (is_pressed(VK_F3)) value &= ~0x80; // CLEAR
+            if (is_pressed(VK_F5, JammaInputKey::kCoin1)) value &= ~0x04;
+            if (is_pressed(VK_F1, JammaInputKey::kTest)) value &= ~0x02;
+            if (is_pressed(VK_F2, JammaInputKey::kService)) value &= ~0x40;
+            if (is_pressed(VK_F3, JammaInputKey::kClear)) value &= ~0x80;
             break;
 
         case kPortPiuIn1: // IN1: P2
-            if (is_pressed(VK_HOME)) value &= ~0x01;
-            if (is_pressed(VK_PRIOR)) value &= ~0x02; // PgUp
-            if (is_pressed(VK_CLEAR)) value &= ~0x04; // Numpad 5, Num Lock off
-            if (is_pressed(VK_END)) value &= ~0x08;
-            if (is_pressed(VK_NEXT)) value &= ~0x10; // PgDn
+            if (is_pressed(VK_HOME, JammaInputKey::kP2Up) ||
+                is_pressed(VK_NUMPAD7, JammaInputKey::kP2Up)) value &= ~0x01;
+            if (is_pressed(VK_PRIOR, JammaInputKey::kP2Down) ||
+                is_pressed(VK_NUMPAD9, JammaInputKey::kP2Down)) value &= ~0x02;
+            if (is_pressed(VK_CLEAR, JammaInputKey::kP2Center) ||
+                is_pressed(VK_NUMPAD5, JammaInputKey::kP2Center)) value &= ~0x04;
+            if (is_pressed(VK_END, JammaInputKey::kP2Left) ||
+                is_pressed(VK_NUMPAD1, JammaInputKey::kP2Left)) value &= ~0x08;
+            if (is_pressed(VK_NEXT, JammaInputKey::kP2Right) ||
+                is_pressed(VK_NUMPAD3, JammaInputKey::kP2Right)) value &= ~0x10;
             break;
     }
 
@@ -256,8 +268,18 @@ void RefreshJammaSnapshot(std::int64_t now)
 
 }  // namespace
 
-static std::uint8_t ReadJammaPort8(std::uint16_t port)
+static std::uint8_t ReadJammaPort8(
+    ThreadContext* context,
+    std::uint32_t current_esp,
+    std::uint16_t port)
 {
+    std::uint16_t replay_pressed_mask = 0U;
+    if (context != nullptr &&
+        context->jamma_input_timeline.TryReplayPressedMask(
+            current_esp, &replay_pressed_mask))
+    {
+        return ScanJammaPort8(port, &replay_pressed_mask);
+    }
     const std::uint64_t interval = JammaSnapshotIntervalMicroseconds();
     if (interval == 0U || port < kPortPiuJammaBase || port > kPortPiuJammaEnd)
     {
@@ -801,7 +823,9 @@ bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context)
             const std::uint64_t scan_start = __rdtsc();
             for (std::uint32_t i = 0; i < width; ++i)
             {
-                emulated_val |= (static_cast<std::uint32_t>(ReadJammaPort8(port + static_cast<std::uint16_t>(i))) << (i * 8));
+                emulated_val |= (static_cast<std::uint32_t>(ReadJammaPort8(
+                    context, win32_context->Esp,
+                    port + static_cast<std::uint16_t>(i))) << (i * 8));
             }
             context->port_io.jamma_scan_cycles += __rdtsc() - scan_start;
             ++context->port_io.jamma_scan_count;

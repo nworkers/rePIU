@@ -173,6 +173,7 @@ add_library(repiu_exe
     src/platform/win32/telemetry/aot_residency_sample.cpp
     src/platform/win32/aot/aot_boundary_opcode_census.cpp
     src/platform/win32/io/port_io_emulator.cpp
+    src/platform/win32/io/jamma_input_timeline.cpp
     src/platform/win32/io/piu10_mp3_frame_batch.cpp
     src/platform/win32/io/port_io_delay_loop.cpp
     src/platform/win32/io/eeprom_93c46.cpp
@@ -296,6 +297,7 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/glide_texture_census_probe.cpp
     src/tools/aot_probe/out_of_arena_step_census_probe.cpp
     src/tools/aot_probe/timer_tick_delivery_probe.cpp
+    src/tools/aot_probe/jamma_input_timeline_probe.cpp
     src/tools/aot_probe/aot_boundary_opcode_census_probe.cpp
     src/tools/aot_probe/aot_worker_timing_probe.cpp
     src/tools/aot_probe/selector_guard_probe.cpp

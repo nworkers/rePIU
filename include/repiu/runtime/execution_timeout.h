@@ -19,11 +19,29 @@ inline constexpr std::uint32_t kUnlimitedExecutionTimeoutMilliseconds = 0U;
 inline constexpr std::uint32_t kDefaultExecutionTimeoutMilliseconds =
     kUnlimitedExecutionTimeoutMilliseconds;
 
+// Stall detection is diagnostic policy, not an implied side effect of a finite
+// execution budget. It is disabled until a caller explicitly supplies a
+// positive quiet-time budget.
+inline constexpr std::uint32_t kDefaultStallTimeoutMilliseconds = 0U;
+
+struct ExecutionProgressSnapshot
+{
+    std::uint32_t diagnostic = 0;
+    std::uint32_t single_step = 0;
+    std::uint32_t aot = 0;
+    std::uint32_t glide_direct = 0;
+};
+
 // Resolves one environment value into a millisecond budget. Unset, empty and
 // unparsable values all yield the default. Unlike the backend, a malformed
 // value does not stop the run: the startup log states the budget actually in
 // effect, and failing a measurement script on a typo is the worse outcome.
 std::uint32_t ResolveExecutionTimeoutMilliseconds(const char* value);
+
+std::uint32_t ResolveStallTimeoutMilliseconds(const char* value);
+
+bool HasExecutionProgress(const ExecutionProgressSnapshot& previous,
+                          const ExecutionProgressSnapshot& current);
 
 }  // namespace repiu::runtime
 

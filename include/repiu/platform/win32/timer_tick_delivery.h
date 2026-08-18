@@ -46,6 +46,22 @@ namespace repiu::platform::win32
 // delivery.
 constexpr std::uint32_t kWin32TimerTickBacklogCapacity = 64U;
 
+class Win32TimerTickDeliveryGuard
+{
+public:
+    explicit Win32TimerTickDeliveryGuard(std::atomic_flag* lock);
+    ~Win32TimerTickDeliveryGuard();
+
+    Win32TimerTickDeliveryGuard(const Win32TimerTickDeliveryGuard&) = delete;
+    Win32TimerTickDeliveryGuard& operator=(
+        const Win32TimerTickDeliveryGuard&) = delete;
+
+    void Release();
+
+private:
+    std::atomic_flag* lock_ = nullptr;
+};
+
 struct Win32TimerTickDeliveryCounters
 {
     // Ticks the schedule said were owed. This is the programmed time base.
@@ -94,16 +110,16 @@ bool TimerTickBacklogEnabled();
 // Called from the host poll loop when the schedule reports `due` owed ticks and
 // delivery is being armed. `already_pending` says whether an undelivered tick was
 // still outstanding, which is what makes the difference between coalescing and a
-// clean handoff. Returns nothing: the caller still arms delivery exactly as
-// before.
+// clean handoff. Returns the number retained by the selected policy, which lets
+// the timestamp queue mirror the accounting decision exactly.
 // `in_gate` (Task 431) says the guest thread was blocked in the Glide gate at
 // this moment, which is what makes a coalesced tick undeliverable rather than
 // merely late.
-void RecordTimerTicksDue(Win32TimerTickDeliveryCounters* counters,
-                         std::uint32_t due,
-                         bool already_pending,
-                         bool backlog_enabled,
-                         bool in_gate);
+std::uint32_t RecordTimerTicksDue(Win32TimerTickDeliveryCounters* counters,
+                                  std::uint32_t due,
+                                  bool already_pending,
+                                  bool backlog_enabled,
+                                  bool in_gate);
 
 // Called when an `INT 8` frame was actually pushed. Returns true when a further
 // tick is still owed and delivery should stay armed, which is how the backlog

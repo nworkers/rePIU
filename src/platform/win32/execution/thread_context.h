@@ -17,6 +17,7 @@
 #include "repiu/platform/win32/glide_draw_batch.h"
 #include "repiu/platform/win32/glide_setter_state_cache.h"
 #include "repiu/platform/win32/timer_tick_delivery.h"
+#include "repiu/platform/win32/jamma_input_timeline.h"
 #include "repiu/platform/win32/aot_boundary_opcode_census.h"
 #include "repiu/hle/linexe_call_gate.h"
 #include "repiu/hle/glide_hle.h"
@@ -429,6 +430,9 @@ struct ThreadContext
     std::atomic<std::uint32_t> aot_dbt_hle_dispatch_last_source{0};
     std::atomic<std::uint32_t> aot_dbt_hle_dispatch_last_next{0};
     std::atomic<std::uint32_t> aot_dbt_hle_dispatch_last_bytes{0};
+    // Per-run liveness signal for every valid Glide direct-dispatch entry,
+    // including entries that later take the one-step fallback.
+    std::atomic<std::uint32_t> aot_dbt_glide_dispatch_entry_count{0};
     std::atomic<std::uint32_t> aot_indirect_dispatch_count{0};
     std::atomic<std::uint32_t> aot_inline_cache_patch_attempt_count{0};
     std::atomic<std::uint32_t> aot_inline_cache_patch_success_count{0};
@@ -699,6 +703,7 @@ struct ThreadContext
     Ymz280bAudioOut ymz_audio;
     bool ymz_audio_available = false;
     bool piu_jamma_board_enabled = false;
+    Win32JammaInputTimeline jamma_input_timeline;
     // Separate ISA16 PIU10 flash/MP3/security board at 0x02D0..0x02DF.
     // This is not the JAMMA/YMZ280B board at 0x02A0..0x02AF.
     Piu10Mp3AudioOut piu10_mp3_audio;
@@ -1044,6 +1049,7 @@ struct ThreadContext
     std::array<DpmiInterruptVectorShadow, 256> dpmi_interrupt_vectors = {};
     repiu::hle::PitChannel0 pit_channel0;
     std::atomic<bool> timer_interrupt_pending{false};
+    std::atomic_flag timer_tick_delivery_lock = ATOMIC_FLAG_INIT;
     // Task 366: how many ticks the schedule owed against how many the guest
     // actually received. Always on; the bounded backlog that preserves owed
     // ticks is opt-in.
