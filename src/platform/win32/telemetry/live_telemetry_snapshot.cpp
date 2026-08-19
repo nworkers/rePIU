@@ -270,6 +270,7 @@ DWORD PollThreadUntilExit(HANDLE thread,
     };
     const std::uint64_t event_clock_start = read_event_clock();
     repiu::hle::PitIrqSchedule pit_irq_schedule;
+    std::uint64_t next_timer_wait_nanoseconds = 0U;
     std::uint64_t bios_tick_count = 0;
     DWORD quiet_start_tick = start_tick;
     runtime::ExecutionProgressSnapshot last_progress_snapshot;
@@ -401,6 +402,10 @@ DWORD PollThreadUntilExit(HANDLE thread,
             const std::uint64_t due_interrupts = pit_irq_schedule.Poll(
                 progress_context->pit_channel0.snapshot(),
                 elapsed_nanoseconds, &due_range);
+            next_timer_wait_nanoseconds =
+                pit_irq_schedule.NanosecondsUntilNextTick(
+                    progress_context->pit_channel0.snapshot(),
+                    elapsed_nanoseconds);
             if (due_interrupts != 0U)
             {
                 // Task 366: recorded before arming, because whether a tick was
@@ -712,13 +717,26 @@ DWORD PollThreadUntilExit(HANDLE thread,
         // anyone looked at it — measured as the dominant part of a gate call.
         // Waiting on the command instead keeps the same 1ms poll cadence when
         // nothing is posted and wakes immediately when something is.
+        // The normal 1ms wait is cheap when the next PIT edge is distant, but
+        // it adds avoidable phase jitter near a 240Hz edge. Use a nonblocking
+        // command pump in the final millisecond so the next loop observes the
+        // edge at high resolution. A pending tick gets the same treatment so
+        // its safe-point delivery is not delayed by the coarse wait.
+        constexpr std::uint64_t kTimerDeadlineSpinWindowNanoseconds =
+            1000000ULL;
+        const bool timer_deadline_near = progress_context != nullptr &&
+            (progress_context->timer_interrupt_pending.load(
+                 std::memory_order_acquire) ||
+             next_timer_wait_nanoseconds <=
+                 kTimerDeadlineSpinWindowNanoseconds);
         if (host_context != nullptr && GlideHostCommandWaitEnabled())
         {
-            host_context->glide_backend.WaitAndPumpHostCommands(1U);
+            host_context->glide_backend.WaitAndPumpHostCommands(
+                timer_deadline_near ? 0U : 1U);
         }
         else
         {
-            Sleep(1);
+            Sleep(timer_deadline_near ? 0U : 1U);
         }
     }
 }

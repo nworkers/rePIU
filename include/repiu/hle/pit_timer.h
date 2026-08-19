@@ -51,6 +51,13 @@ public:
                        std::uint64_t elapsed_nanoseconds,
                        PitIrqDueRange* due_range = nullptr);
 
+    // Returns the remaining host time until the next PIT edge after Poll().
+    // Zero means the edge is due now, which lets a host adapter switch from a
+    // coarse wait to a deadline-directed poll.
+    std::uint64_t NanosecondsUntilNextTick(
+        const PitChannel0Snapshot& snapshot,
+        std::uint64_t elapsed_nanoseconds) const;
+
 private:
     std::uint32_t generation_ = 0;
     std::uint64_t epoch_nanoseconds_ = 0;

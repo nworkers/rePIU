@@ -1,5 +1,7 @@
 #include "repiu/hle/pit_timer.h"
 
+#include <limits>
+
 namespace repiu::hle
 {
 namespace
@@ -150,6 +152,28 @@ std::uint64_t PitIrqSchedule::Poll(
     }
     emitted_tick_count_ = tick_count;
     return due;
+}
+
+std::uint64_t PitIrqSchedule::NanosecondsUntilNextTick(
+    const PitChannel0Snapshot& snapshot,
+    std::uint64_t elapsed_nanoseconds) const
+{
+    if (!initialized_ || snapshot.generation != generation_)
+    {
+        return 0U;
+    }
+
+    const std::uint64_t next_tick_offset = PitElapsedNanosecondsForTick(
+        emitted_tick_count_ + 1U, snapshot.divisor);
+    const std::uint64_t next_tick_elapsed = epoch_nanoseconds_ >
+            std::numeric_limits<std::uint64_t>::max() - next_tick_offset
+        ? std::numeric_limits<std::uint64_t>::max()
+        : epoch_nanoseconds_ + next_tick_offset;
+    if (elapsed_nanoseconds >= next_tick_elapsed)
+    {
+        return 0U;
+    }
+    return next_tick_elapsed - elapsed_nanoseconds;
 }
 
 std::uint64_t PitTickCountForElapsed(

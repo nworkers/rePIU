@@ -40,6 +40,11 @@ bool RunPitTimerProbe()
         schedule.Poll(programmed, epoch + 4167000ULL) == 1U &&
         schedule.Poll(programmed, epoch + 8334000ULL) == 1U &&
         schedule.Poll(programmed, epoch + 25000000ULL, &due_range) == 4U;
+    const bool deadline_valid =
+        schedule.NanosecondsUntilNextTick(
+            programmed, epoch + 25000000ULL) ==
+            hle::PitElapsedNanosecondsForTick(7U, programmed.divisor) -
+                25000000ULL;
     const std::uint64_t first_due = hle::PitElapsedNanosecondsForTick(
         due_range.first_tick_ordinal, due_range.divisor);
     const std::uint64_t last_due = hle::PitElapsedNanosecondsForTick(
@@ -54,7 +59,7 @@ bool RunPitTimerProbe()
         programmed.generation == initial.generation + 1U &&
         programmed.divisor == 4972U &&
         std::abs(frequency_hz - 240.0) < 0.000001 &&
-        cadence_valid && due_range_valid &&
+        cadence_valid && deadline_valid && due_range_valid &&
         !channel.WriteControl(0x76U);
     std::cout << "pit_timer_probe=" << (valid ? "true" : "false")
               << ",divisor=" << programmed.divisor
