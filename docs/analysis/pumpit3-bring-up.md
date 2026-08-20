@@ -739,3 +739,18 @@ valid only as a within-session contrast.
    loading got.
 4. **pumpit1/pumpit2 regression.** Tasks 398, 399, and 401 change paths shared by all three
    titles and were verified only on pumpit3.
+## Task 496 키보드 입력 갱신 / Task 496 keyboard input update
+
+Task 401에서 확인한 렌더 루프의 `INT 16h AH=12h/11h/10h` 폴링 경로는 그대로 유지됩니다.
+당시에는 렌더 진입을 위해 빈 키보드만 보고했지만, Task 496에서 SDL 창 입력을 BIOS
+keystroke FIFO와 shift flags에 연결했습니다. 따라서 원본 게임의 같은 폴링 코드가 실제
+키를 확인하고 소비하며 원본 실행 파일은 수정하지 않습니다. 구현과 probe는 확인됐지만
+로컬에는 pumpit3 CHD가 없어 실제 창 입력 검증은 미확정입니다.
+
+The render loop's `INT 16h AH=12h/11h/10h` polling path confirmed in Task 401 remains unchanged.
+Task 401 reported only an empty keyboard to reach rendering; Task 496 connects SDL window input to
+a BIOS keystroke FIFO and shift flags. The same original polling code can therefore detect and
+consume real keys without modifying the executable. Implementation and probes are confirmed, but
+live window-input verification remains unresolved because the local pumpit3 CHD is unavailable.
+
+---

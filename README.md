@@ -191,6 +191,28 @@ build\win32_x86_debug\Debug\repiu_supervisor_win32.exe pumpit1 600000
 
 현재 이 명령은 완전한 게임 세션이 아니라 loader/HLE 진척과 진단 로그를 관찰하기 위한 개발 경로입니다.
 
+### 키 설정 / Key configuration
+
+롬셋마다 `cfg/<롬셋 ID>.ini`에서 발판과 캐비닛 버튼의 키를 바꿀 수 있습니다. 파일이 없으면
+첫 실행 때 기본값이 주석 처리된 상태로 생성되므로, 바꾸고 싶은 줄의 `;`만 지우면 됩니다.
+
+*Each ROM set can remap its stage panels and cabinet buttons through
+`cfg/<rom-set-id>.ini`. The file is created on first run with every entry commented out,
+so changing a binding means deleting the leading `;` on that line.*
+
+```ini
+[Input]
+P1_UP_LEFT = Q
+TEST       = Ctrl+F1
+```
+
+전체 키 이름 목록, 조합키 문법, 여러 롬셋에 한 번에 적용하는 방법은
+[docs/guides/romset-config-files.md](docs/guides/romset-config-files.md)를 참고하세요.
+
+*See [docs/guides/romset-config-files.md](docs/guides/romset-config-files.md) for the full
+key name list, the combination syntax, and how to apply a setting to several ROM sets at
+once.*
+
 ### 실행 파일 분석
 
 ```powershell

@@ -100,11 +100,19 @@ endfunction()
 add_library(repiu_exe
     src/assets/piu_chd_mount.cpp
     src/assets/rom_zip_archive.cpp
+    src/config/ini_document.cpp
+    src/config/romset_config.cpp
+    src/config/romset_config_template.cpp
+    src/input/host_key_binding.cpp
+    src/input/host_key_names.cpp
+    src/input/jamma_input_bindings.cpp
+    src/input/jamma_input_key.cpp
     src/exe/dos16m_bound_module.cpp
     src/exe/dos4gw_loader.cpp
     src/exe/executable_headers.cpp
     src/hle/dos_file_system.cpp
     src/hle/dos_date.cpp
+    src/hle/bios_keyboard.cpp
     src/hle/glide_fog.cpp
     src/hle/glide_hle.cpp
     src/hle/glide_implementation_issue.cpp
@@ -142,6 +150,9 @@ add_library(repiu_exe
     src/platform/win32/aot/aot_retired_trap_profile.cpp
     src/platform/win32/aot/aot_runtime_dispatch.cpp
     src/platform/win32/bios/bios_keyboard_services.cpp
+    src/platform/win32/input/sdl_bios_keyboard_adapter.cpp
+    src/platform/win32/input/active_jamma_bindings.cpp
+    src/platform/win32/input/win32_host_key_translation.cpp
     src/platform/win32/execution/execution_probe_memory_dump.cpp
     src/platform/win32/execution/execution_trampoline.cpp
     src/platform/win32/execution/single_step_hotspot_profile.cpp
@@ -210,6 +221,7 @@ add_library(repiu_exe
     src/runtime/runtime_memory_arena.cpp
     src/runtime/runtime_memory.cpp
     src/runtime/selector_table.cpp
+    src/storage/nvram_path.cpp
     src/target/target_profile.cpp
 )
 
@@ -223,6 +235,7 @@ target_include_directories(repiu_exe
         src/platform/win32/execution
         src/platform/win32/exception
         src/platform/win32/io
+        src/platform/win32/input
         src/platform/win32/dos
         src/platform/win32/bios
         src/platform/win32/cpu_emul
@@ -240,8 +253,12 @@ target_compile_definitions(repiu_exe
         REPIU_VERSION="${REPIU_VERSION}"
 )
 
-target_link_libraries(repiu_exe PRIVATE repiu_zydis chdr-static
-    SDL3::SDL3-static)
+target_link_libraries(repiu_exe PRIVATE repiu_zydis chdr-static)
+
+# PUBLIC, not PRIVATE: SDL_Keycode and SDL_Keymod appear in the public input
+# binding headers, so SDL3's include directories are part of this library's
+# interface and every consumer needs them.
+target_link_libraries(repiu_exe PUBLIC SDL3::SDL3-static)
 
 add_executable(repiu_exe_analyzer
     src/tools/exe_analyzer/main.cpp
@@ -252,6 +269,7 @@ add_executable(repiu_chd_cd_probe
 )
 
 add_executable(repiu_aot_probe
+    src/tools/aot_probe/bios_keyboard_input_probe.cpp
     src/tools/aot_probe/aot_timer_source_profile_probe.cpp
     src/tools/aot_probe/append_phase_benchmark_probe.cpp
     src/tools/aot_probe/arena_view_probe.cpp
@@ -298,6 +316,8 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/out_of_arena_step_census_probe.cpp
     src/tools/aot_probe/timer_tick_delivery_probe.cpp
     src/tools/aot_probe/jamma_input_timeline_probe.cpp
+    src/tools/aot_probe/romset_config_probe.cpp
+    src/tools/aot_probe/nvram_path_probe.cpp
     src/tools/aot_probe/aot_boundary_opcode_census_probe.cpp
     src/tools/aot_probe/aot_worker_timing_probe.cpp
     src/tools/aot_probe/selector_guard_probe.cpp
@@ -339,6 +359,7 @@ target_link_libraries(repiu_chd_cd_probe
 target_link_libraries(repiu_aot_probe
     PRIVATE
         repiu_exe
+        SDL3::SDL3-static
 )
 
 target_link_libraries(repiu_glide_issue_probe
@@ -354,6 +375,7 @@ target_include_directories(repiu_aot_probe
     PRIVATE
         src/platform/win32
         src/platform/win32/execution
+        src/platform/win32/input
         third_party/zydis
 )
 

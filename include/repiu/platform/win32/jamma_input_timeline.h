@@ -1,36 +1,19 @@
 #ifndef REPIU_PLATFORM_WIN32_JAMMA_INPUT_TIMELINE_H_
 #define REPIU_PLATFORM_WIN32_JAMMA_INPUT_TIMELINE_H_
 
+#include "repiu/input/jamma_input_key.h"
+
 #include <cstdint>
 #include <atomic>
 
 namespace repiu::platform::win32
 {
 
-enum class JammaInputKey : std::uint8_t
-{
-    kP1Up,
-    kP1Down,
-    kP1Left,
-    kP1Right,
-    kP1Center,
-    kCoin1,
-    kTest,
-    kService,
-    kClear,
-    kP2Up,
-    kP2Down,
-    kP2Left,
-    kP2Right,
-    kP2Center,
-    kCount,
-};
-
-constexpr std::uint16_t JammaInputKeyMask(JammaInputKey key)
-{
-    return static_cast<std::uint16_t>(
-        1U << static_cast<std::uint8_t>(key));
-}
+// The enumeration moved to repiu/input/jamma_input_key.h so the configuration
+// layer, which is platform neutral, can name the same inputs. These aliases
+// keep the win32 call sites reading as they did.
+using repiu::input::JammaInputKey;
+using repiu::input::JammaInputKeyMask;
 
 struct Win32JammaInputTimelineSnapshot
 {

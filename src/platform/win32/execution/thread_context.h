@@ -24,6 +24,7 @@
 #include "repiu/hle/glide_lfb.h"
 #include "repiu/hle/pit_timer.h"
 #include "repiu/hle/piu10_isa_board.h"
+#include "repiu/hle/bios_keyboard.h"
 #include "repiu/media/chd_cd_image.h"
 #include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/selector_table.h"
@@ -704,6 +705,7 @@ struct ThreadContext
     bool ymz_audio_available = false;
     bool piu_jamma_board_enabled = false;
     Win32JammaInputTimeline jamma_input_timeline;
+    hle::BiosKeyboard bios_keyboard;
     // Separate ISA16 PIU10 flash/MP3/security board at 0x02D0..0x02DF.
     // This is not the JAMMA/YMZ280B board at 0x02A0..0x02AF.
     Piu10Mp3AudioOut piu10_mp3_audio;

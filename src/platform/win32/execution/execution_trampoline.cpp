@@ -4669,6 +4669,7 @@ bool RunWin32ExecutionThread(
     }
 
     context.glide_backend.SetJammaInputTimeline(&context.jamma_input_timeline);
+    context.glide_backend.SetBiosKeyboard(&context.bios_keyboard);
     context.glide_backend.BindHostThread();
     DWORD guest_thread_id = 0;
     HANDLE thread = api.create_thread(nullptr,

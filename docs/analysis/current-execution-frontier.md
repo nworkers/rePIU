@@ -3698,3 +3698,23 @@ frame-based performance judgement can be trusted.**
 **Measurement procedure:** `eeprom.dat` is untracked persistent state, so performance comparisons
 must copy a fixed fixture per run and isolate it with `REPIU_EEPROM_PATH`. The first A/B without
 that isolation was invalid.
+## Task 496 창 키보드 BIOS 입력 / Window keyboard BIOS input
+
+**완료.** pumpit3의 렌더 루프는 `INT 16h AH=12h/11h/10h` 순서로 BIOS 키보드를
+폴링하지만 Task 401 구현은 항상 빈 상태만 반환했습니다. SDL 창 event를 15-entry BIOS
+FIFO와 shift/lock 상태로 변환하고, 기존 `INT 16h` check/read/flags 함수가 실제 상태를
+반환하도록 연결했습니다. 전용 probe는 문자와 modifier 조합, function/navigation/keypad,
+peek/read, repeat, overflow 및 focus-loss를 통과했고 기존 PIT/JAMMA probe도 통과했습니다.
+로컬 runtime smoke는 `pumpit3 CHD directory not found`로 실행 전 중단되어 실제 사용자 키
+입력 확인은 남아 있습니다.
+
+**Complete.** The pumpit3 render loop polls the BIOS keyboard through
+`INT 16h AH=12h/11h/10h`, but Task 401 always returned an empty state. SDL window events now
+translate into a 15-entry BIOS FIFO plus shift/lock state, and the existing `INT 16h`
+check/read/flags functions return that state. The dedicated probe passed character and modifier
+combinations, function/navigation/keypad keys, peek/read, repeat, overflow, and focus-loss cases;
+the existing PIT/JAMMA bundle and full `pumpit1/PIU.EXE` probe also passed. The local runtime smoke
+stopped before execution because
+the pumpit3 CHD directory was unavailable, so live user-key confirmation remains.
+
+---

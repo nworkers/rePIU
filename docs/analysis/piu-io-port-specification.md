@@ -80,6 +80,52 @@ this mode and is unrelated to the system CLEAR input.
 | `0x08` | Bottom-Left | 1 | `VK_END` |
 | `0x10` | Bottom-Right | 3 | `VK_NEXT` |
 
+### 2.4 호스트 키 매핑의 출처 (Task 497)
+### 2.4 Where the host key mapping now comes from (Task 497)
+
+2.1과 2.2에 적힌 호스트 키는 이제 **기본값**이며, 하드코딩 위치가 아니다. Task 497부터
+포트·비트·논리 입력·로그 이름은 `JammaPortBitTable()` 한 표에 있고, 각 논리 입력의 호스트 키는
+`cfg/<롬셋 ID>.ini`의 `[Input]` 섹션에서 롬셋별로 바꿀 수 있다. 설정 파일이 없으면 이 문서의
+값이 그대로 쓰인다.
+
+이전에는 로그용 비트 이름 표와 스캔 코드가 따로 있어서 서로 어긋나 있었다. 로그는 `0x02`를
+`P1-UpRight`로 불렀지만 스캔 코드의 열거 이름은 `kP1Down`이었다. 열거 이름은 실제 비트 의미에
+맞춰 `kP1UpRight` 등으로 정정했고, 열거 **순서**는 `JammaInputKeyMask`의 비트 위치이므로 바꾸지
+않았다.
+
+설정 키 이름은 이 문서의 발판 위치명을 따른다: `P1_UP_LEFT`, `P1_UP_RIGHT`, `P1_CENTER`,
+`P1_DOWN_LEFT`, `P1_DOWN_RIGHT`와 그 P2 대응, 그리고 `TEST`, `SERVICE`, `CLEAR`, `COIN1`.
+
+`COIN2`는 지원하지 않는다. `0x02A9`에서 COIN2에 해당하는 비트가 확정되지 않았고, 남은 비트
+(`0x01`, `0x08`, `0x10`, `0x20`) 중 하나를 근거 없이 고르는 것은 원본 하드웨어 동작을 지어내는
+일이 된다. 캐비닛 입력 포트 `0x02AB` 역시 아직 스캔하지 않는다. 두 입력을 지원하려면 먼저
+게임이 실제로 그 포트를 읽는지와 어느 비트를 보는지를 확인해야 한다.
+
+The host keys in 2.1 and 2.2 are now **defaults**, not hardcoded sites. From Task 497 the
+port, bit, logical input, and log name live in one `JammaPortBitTable()`, and each logical
+input's host key is configurable per ROM set through the `[Input]` section of
+`cfg/<rom-set-id>.ini`. With no config file the values in this document are what apply.
+
+Previously the bit-name table used for logging and the scan code were separate and had
+drifted apart: the log called `0x02` `P1-UpRight` while the scan code's enumerator was
+`kP1Down`. The enumerators were corrected to the actual bit meanings (`kP1UpRight` and so
+on); their **order** is unchanged because `JammaInputKeyMask` uses it as a bit position.
+
+Config key names follow this document's panel positions: `P1_UP_LEFT`, `P1_UP_RIGHT`,
+`P1_CENTER`, `P1_DOWN_LEFT`, `P1_DOWN_RIGHT` with their P2 counterparts, plus `TEST`,
+`SERVICE`, `CLEAR`, and `COIN1`.
+
+`COIN2` is not supported. Its bit in `0x02A9` is not identified, and picking one of the
+remaining bits (`0x01`, `0x08`, `0x10`, `0x20`) without evidence would mean inventing
+original hardware behavior. The cabinet input port `0x02AB` is likewise not scanned yet.
+Supporting either input requires first confirming that the game reads that port at all and
+which bits it examines.
+
+설정 파일 사용법은 [docs/guides/romset-config-files.md](../guides/romset-config-files.md)에
+있다.
+The configuration file guide is
+[docs/guides/romset-config-files.md](../guides/romset-config-files.md).
+
 ### 2.3 사운드 창의 ISA 바이트 레인 디코드 (Task 290에서 확정)
 ### 2.3 ISA byte-lane decode of the sound window (confirmed in Task 290)
 
@@ -122,7 +168,7 @@ Register semantics and address units are documented in
    - `0x02A0`/`0x02A2` (YMZ280B 읽기): 각각 외부 메모리 readback 래치와 상태 레지스터를 반환합니다. 사운드 창은 JAMMA 입력 범위(`0x02A0`~`0x02AF`) 안에 있으므로 **입력 분기보다 먼저** 가로채야 합니다. 그렇지 않으면 입력 폴백이 항상 `0xFF`를 돌려주어 상태 레지스터가 무의미해집니다.
 2. **포트 출력(Write) 에뮬레이션**:
    - `0x02A0`/`0x02A2` (YMZ280B 쓰기): 바이트 레인으로 분해해 레지스터 선택과 데이터 기록으로 전달합니다. **절대 NOP 패치하지 않습니다.** 사운드 레지스터는 재생마다 수십~수백 회 다시 프로그래밍되므로, 최초 1회 후 원본 `OUT`을 NOP으로 덮으면 그 시점 이후 영구 무음이 됩니다. EEPROM·JAMMA 경로와 같은 이유로 EIP만 전진시키고 매번 재트랩합니다 (Task 290).
-   - `0x02AC` (EEPROM 쓰기): EEPROM에 전송하는 제어 신호(CS, CLK, DI)를 `Eeprom93c46` 상태 머신으로 전달하여 `eeprom.dat` 파일에 설정값을 지속적으로 저장/반영합니다. NOP 패치 없이 매번 트랩되어 상태를 갱신합니다.
+   - `0x02AC` (EEPROM 쓰기): EEPROM에 전송하는 제어 신호(CS, CLK, DI)를 `Eeprom93c46` 상태 머신으로 전달하여 `nvram/<롬셋 ID>/eeprom.dat` 파일에 설정값을 지속적으로 저장/반영합니다(Task 498 이전에는 모든 롬셋이 작업 디렉터리의 `eeprom.dat` 하나를 공유했습니다). NOP 패치 없이 매번 트랩되어 상태를 갱신합니다.
    - `0x0043` (PIT 제어 쓰기): PC 스피커 톤 생성 및 타이머 주파수 조정을 위해 시스템 코드가 수행하는 PIT 제어 쓰기는 에뮬레이터 구동 안정성을 위해 `unsupported-ignored` 로그 기록을 남긴 뒤 무시 처리합니다.
 
 1. **Port Read Emulation**:
@@ -132,7 +178,7 @@ Register semantics and address units are documented in
    - `0x02A0`/`0x02A2` (YMZ280B reads): return the external memory readback latch and the status register respectively. The sound window sits inside the JAMMA input range (`0x02A0`–`0x02AF`), so it must be intercepted **before** the input branch; otherwise the input fallback answers `0xFF` and the status register becomes meaningless.
 2. **Port Write Emulation**:
    - `0x02A0`/`0x02A2` (YMZ280B writes): decomposed into byte lanes and forwarded as register select and register data. **Never NOP-patched.** Sound registers are reprogrammed dozens to hundreds of times per playback, so overwriting the original `OUT` with NOPs after the first execution means permanent silence from that point on. As on the EEPROM and JAMMA paths, EIP advances and the instruction re-traps each time (Task 290).
-   - `0x02AC` (EEPROM Write): Writes to EEPROM control lines (CS, CLK, DI) are routed to the `Eeprom93c46` state machine, which persists configurations into `eeprom.dat`. It is continuously trapped without NOP patching.
+   - `0x02AC` (EEPROM Write): Writes to EEPROM control lines (CS, CLK, DI) are routed to the `Eeprom93c46` state machine, which persists configurations into `nvram/<rom-set-id>/eeprom.dat` (before Task 498 every ROM set shared one `eeprom.dat` in the working directory). It is continuously trapped without NOP patching.
    - `0x0043` (PIT Control Write): Hardware-level timer rate initialization commands (e.g., `out 0x43, al`) are logged as `unsupported-ignored` and safely bypassed.
 
 ---

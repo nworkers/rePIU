@@ -10,6 +10,7 @@
 #include "append_phase_benchmark_probe.h"
 #include "arena_view_probe.h"
 #include "boundary_provenance_probe.h"
+#include "bios_keyboard_input_probe.h"
 #include "native_linear_span_probe.h"
 #include "plan_build_benchmark_probe.h"
 #include "pit_timer_probe.h"
@@ -49,6 +50,8 @@
 #include "execution_backend_probe.h"
 #include "execution_timeout_probe.h"
 #include "jamma_input_timeline_probe.h"
+#include "romset_config_probe.h"
+#include "nvram_path_probe.h"
 #include "dbt_return_fallback_probe.h"
 #include "dbt_indirect_dispatch_probe.h"
 #include "direct_edge_dispatch_probe.h"
@@ -640,6 +643,18 @@ int main(int argc, char** argv)
             repiu::tools::RunTimerTickDeliveryProbe() &&
             repiu::tools::RunJammaInputTimelineProbe() ? 0 : 1;
     }
+    if (argc == 2 && std::strcmp(argv[1], "--bios-keyboard-input") == 0)
+    {
+        return repiu::tools::RunBiosKeyboardInputProbe() ? 0 : 1;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--romset-config") == 0)
+    {
+        return repiu::tools::RunRomSetConfigProbe() ? 0 : 1;
+    }
+    if (argc == 2 && std::strcmp(argv[1], "--nvram-path") == 0)
+    {
+        return repiu::tools::RunNvramPathProbe() ? 0 : 1;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--jump-table-guard") == 0)
     {
         return repiu::tools::RunJumpTableGuardProbe() ? 0 : 1;
@@ -1068,6 +1083,18 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunJammaInputTimelineProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunBiosKeyboardInputProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunRomSetConfigProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunNvramPathProbe())
     {
         return 1;
     }

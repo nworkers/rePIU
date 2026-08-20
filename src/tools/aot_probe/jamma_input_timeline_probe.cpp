@@ -16,8 +16,8 @@ bool RunJammaInputTimelineProbe()
 
     Win32JammaInputTimeline timeline;
     timeline.Reset(100U, 0U);
-    timeline.RecordKeyEdge(200U, JammaInputKey::kP1Up, true);
-    timeline.RecordKeyEdge(400U, JammaInputKey::kP1Up, false);
+    timeline.RecordKeyEdge(200U, JammaInputKey::kP1UpLeft, true);
+    timeline.RecordKeyEdge(400U, JammaInputKey::kP1UpLeft, false);
 
     const bool queued =
         timeline.EnqueueTimerTick(150U) &&
@@ -49,14 +49,14 @@ bool RunJammaInputTimelineProbe()
         const std::uint64_t timestamp = 1000U + index * 10U;
         const bool pressed = (index & 1U) == 0U;
         pruning_timeline.RecordKeyEdge(
-            timestamp, JammaInputKey::kP1Up, pressed);
+            timestamp, JammaInputKey::kP1UpLeft, pressed);
         std::uint16_t sampled_state = 0xffffU;
         const bool queued_tick = pruning_timeline.EnqueueTimerTick(timestamp);
         const bool began = pruning_timeline.BeginTimerInterrupt(1100U, 1000U);
         const bool sampled =
             pruning_timeline.TryReplayPressedMask(900U, &sampled_state);
         const std::uint16_t expected_state = pressed
-            ? JammaInputKeyMask(JammaInputKey::kP1Up)
+            ? JammaInputKeyMask(JammaInputKey::kP1UpLeft)
             : 0U;
         pruning_sequence = pruning_sequence && queued_tick && began && sampled &&
             sampled_state == expected_state;
@@ -65,7 +65,7 @@ bool RunJammaInputTimelineProbe()
     const auto pruning_snapshot = pruning_timeline.Snapshot();
     const bool valid = queued && replayed && frame_retired && missing_due &&
         state_before == 0U &&
-        state_pressed == JammaInputKeyMask(JammaInputKey::kP1Up) &&
+        state_pressed == JammaInputKeyMask(JammaInputKey::kP1UpLeft) &&
         state_outer == 0U &&
         state_released == 0U &&
         snapshot.edge_count == 2U &&

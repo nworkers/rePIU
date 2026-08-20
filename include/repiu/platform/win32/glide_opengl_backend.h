@@ -34,6 +34,16 @@ namespace repiu::platform::win32
 
 class Win32JammaInputTimeline;
 
+}  // namespace repiu::platform::win32
+
+namespace repiu::hle
+{
+class BiosKeyboard;
+}
+
+namespace repiu::platform::win32
+{
+
 enum class GlideOpenGlCullFace : std::uint8_t
 {
     kDisabled,
@@ -68,6 +78,7 @@ public:
     void PumpHostCommands();
     void SetExecutionBackend(runtime::ExecutionBackend backend);
     void SetJammaInputTimeline(Win32JammaInputTimeline* timeline);
+    void SetBiosKeyboard(hle::BiosKeyboard* keyboard);
     std::uint64_t EventClockNanoseconds() const;
 
     // `origin` is the GrOriginLocation_t passed to grSstWinOpen:
@@ -356,6 +367,7 @@ private:
 
     std::thread::id host_thread_id_;
     Win32JammaInputTimeline* jamma_input_timeline_ = nullptr;
+    hle::BiosKeyboard* bios_keyboard_ = nullptr;
     // Mutable so the async snapshot accessors can stay const: they only read
     // counters this lock protects.
     mutable std::mutex host_command_mutex_;

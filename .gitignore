@@ -36,3 +36,9 @@ build/texture_dumps/
 # Run artifacts: loader stderr captures and scratch EEPROM images.
 run.txt
 test.dat
+# Per-ROM-set configuration. Generated on first run and edited locally, so a
+# user's own key mapping never shows up as a repository change.
+cfg/
+# Per-ROM-set NVRAM. The guest writes its own cabinet settings here; the
+# eeprom.dat entry above stays because it is now the carry-forward source.
+nvram/

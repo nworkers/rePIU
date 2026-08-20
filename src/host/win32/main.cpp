@@ -5,6 +5,10 @@
 #include "repiu/hle/glide_vertex_depth_census.h"
 #include "repiu/hle/hle_dispatcher.h"
 #include "repiu/hle/privileged_instruction.h"
+#include "repiu/config/romset_config.h"
+#include "repiu/storage/nvram_path.h"
+#include "repiu/platform/win32/active_jamma_bindings.h"
+#include "repiu/platform/win32/eeprom_backing_path.h"
 #include "repiu/platform/win32/execution_trampoline.h"
 #include "repiu/platform/win32/aot_code_cache_win32.h"
 #include "../../platform/win32/aot/aot_dbt_glide_gate_dispatch.h"
@@ -4499,6 +4503,94 @@ bool SelectAndReserveRelocatedImageBase(
     return false;
 }
 
+std::filesystem::path ExecutableDirectory(int argc, char** argv)
+{
+    if (argc < 1 || argv[0] == nullptr)
+    {
+        return std::filesystem::path();
+    }
+    std::error_code error;
+    const std::filesystem::path absolute =
+        std::filesystem::absolute(argv[0], error);
+    if (error)
+    {
+        return std::filesystem::path(argv[0]).parent_path();
+    }
+    return absolute.parent_path();
+}
+
+// Resolves cfg/<rom set>.ini, layering it over any parent ROM set's file and
+// the built-in defaults, then installs the result as the bindings for this
+// run. Config problems are logged and never fatal: a typo in a key mapping
+// must not stop the game from starting.
+void LoadRomSetInputConfiguration(spdlog::logger& logger,
+                                  std::string_view rom_set_id,
+                                  const std::filesystem::path& exe_directory)
+{
+    repiu::config::RomSetConfigRequest request =
+        repiu::config::MakeRomSetConfigRequestFromEnvironment(exe_directory);
+    request.layer_ids = repiu::config::BuildRomSetLayerIds(
+        rom_set_id,
+        [](std::string_view id) -> std::string_view
+        {
+            const repiu::target::TargetProfile* entry =
+                repiu::target::FindTargetProfileById(id);
+            return entry != nullptr ? entry->parent_rom_set_id
+                                    : std::string_view();
+        });
+
+    const repiu::config::RomSetConfigResult result =
+        repiu::config::LoadRomSetConfig(request);
+
+    logger.info("Config directory: {}", result.cfg_directory.string());
+    if (result.applied_files.empty())
+    {
+        logger.info("Config files applied: none (built-in defaults)");
+    }
+    else
+    {
+        for (const std::filesystem::path& path : result.applied_files)
+        {
+            logger.info("Config applied: {}", path.string());
+        }
+    }
+    if (result.generated_default_file)
+    {
+        logger.info("Config created: {}", result.generated_file.string());
+    }
+    for (const std::string& warning : result.warnings)
+    {
+        logger.warn("Config: {}", warning);
+    }
+
+    repiu::platform::win32::SetActiveJammaBindings(result.bindings);
+}
+
+// Points the 93C46 EEPROM at nvram/<rom set>/eeprom.dat, creating the
+// directory and carrying a pre-existing shared eeprom.dat forward the first
+// time. Path problems are logged and never fatal; a missing EEPROM starts at
+// 0xFFFF, which costs settings but not the run.
+void ResolveRomSetNvramPaths(spdlog::logger& logger,
+                             std::string_view rom_set_id,
+                             const std::filesystem::path& exe_directory)
+{
+    const repiu::storage::EepromPathResult eeprom =
+        repiu::storage::ResolveEepromPath(rom_set_id, exe_directory);
+
+    logger.info("EEPROM image: {}{}", eeprom.path.string(),
+                eeprom.from_override ? " (REPIU_EEPROM_PATH)" : "");
+    if (eeprom.carried_legacy_file)
+    {
+        logger.info("EEPROM carried forward from the shared eeprom.dat");
+    }
+    for (const std::string& warning : eeprom.warnings)
+    {
+        logger.warn("EEPROM: {}", warning);
+    }
+
+    repiu::platform::win32::SetEepromBackingPath(eeprom.path.string());
+}
+
 const repiu::target::TargetProfile* SelectTargetProfile(int argc,
                                                         char** argv)
 {
@@ -4627,6 +4719,21 @@ int main(int argc, char** argv)
                  profile->parent_rom_set_id.empty()
                      ? "none"
                      : profile->parent_rom_set_id);
+
+    // Task 497: per-ROM-set configuration. Loaded here, before the guest
+    // thread and the SDL window exist, because the resolved bindings are read
+    // without a lock from both of them afterwards.
+    if (!profile->rom_set_id.empty())
+    {
+        LoadRomSetInputConfiguration(*logger, profile->rom_set_id,
+                                     ExecutableDirectory(argc, argv));
+    }
+
+    // Task 498: per-ROM-set NVRAM. Resolved before the guest runs because the
+    // EEPROM device is created on its first port access and cannot be moved
+    // afterwards.
+    ResolveRomSetNvramPaths(*logger, profile->rom_set_id,
+                            ExecutableDirectory(argc, argv));
 #if defined(REPIU_WIN32_HOST_IMAGE_BASE)
     logger->info("Win32 host image base policy: {}",
                  Hex32(REPIU_WIN32_HOST_IMAGE_BASE));

@@ -2570,3 +2570,172 @@ with the viewport. The backend therefore uses the smaller drawable/logical axis
 ratio as point size, floors it at one physical pixel, and clamps it to
 `GL_ALIASED_POINT_SIZE_RANGE`. `ApplyDrawableViewport()` refreshes the value on
 resize and the common direct/batched `PrepareDrawState(GL_POINTS)` applies it.
+## 창 키보드 BIOS 입력 / Window keyboard BIOS input
+
+Task 496부터 SDL 게임 창의 key down/up event는 기존 JAMMA 경로와 별개로 BIOS 키보드
+HLE에도 전달됩니다. 플랫폼 공용 `hle::BiosKeyboard`는 실제 BIOS data area ring과 같은
+15-entry FIFO, legacy/enhanced AX 쌍, shift/lock 상태를 소유합니다. SDL host thread가
+producer이고 guest `INT 16h` thread가 consumer이므로 짧은 mutex 임계 구역으로 보호합니다.
+가득 찬 FIFO는 새 입력을 버려 기존 순서를 보존합니다.
+
+Win32 SDL adapter는 US 101-key scan code, ASCII, Shift/Caps/Ctrl/Alt 조합,
+function/navigation 및 numeric keypad를 변환합니다. key repeat는 DOS typematic keystroke로
+enqueue하고 key up은 modifier 상태만 갱신합니다. 포커스를 잃으면 눌림 modifier를 해제하고
+lock toggle은 유지합니다. `AH=01h/11h`는 head를 소비하지 않고 ZF로 유무를 알리며
+`AH=00h/10h`가 같은 head를 소비합니다. `AH=02h/12h`는 현재 shift flags를 반환합니다.
+원본 실행 파일과 게임 로직은 수정하지 않습니다.
+
+```mermaid
+flowchart LR
+    E["SDL keyboard event"] --> J["existing JAMMA mapping"]
+    E --> A["SDL BIOS adapter"]
+    A --> Q["BiosKeyboard FIFO + flags"]
+    Q --> I["INT 16h HLE"]
+    I --> G["original game keyboard poll"]
+```
+
+Since Task 496, SDL game-window key down/up events also feed the BIOS keyboard HLE independently
+of the existing JAMMA path. Platform-neutral `hle::BiosKeyboard` owns a 15-entry FIFO matching the
+usable capacity of the BIOS data-area ring, paired legacy/enhanced AX values, and shift/lock state.
+Short mutex critical sections protect the SDL host-thread producer and guest `INT 16h` consumer.
+A full FIFO drops the new input and preserves existing order.
+
+The Win32 SDL adapter translates US 101-key scan codes and ASCII, modifier combinations,
+function/navigation keys, and the numeric keypad. Key repeat enqueues DOS-style typematic
+keystrokes; key-up only updates modifier state. Focus loss releases pressed modifiers while
+retaining lock toggles. `AH=01h/11h` peeks without consuming and reports presence through ZF,
+`AH=00h/10h` consumes that head, and `AH=02h/12h` returns current shift flags. No executable or
+game logic is modified.
+
+---
+
+## 롬셋별 설정 파일 / Per-ROM-set configuration files
+
+Task 497부터 PIUIO(JAMMA) 입력의 호스트 키 매핑은 하드코딩이 아니라 `cfg/<롬셋 ID>.ini`에서
+읽습니다. 이전에는 같은 매핑이 세 곳에 서로 다른 키 표현으로 중복되어 있었습니다 —
+`ScanJammaPort8`와 `CaptureCurrentJammaPressedMask`는 Win32 가상키로,
+`glide_opengl_backend.cpp`의 SDL event 경로는 SDL keycode로 정의했습니다. 한 곳만 고치면
+조용히 어긋나는 구조였습니다.
+
+정식 키 타입은 `SDL_Keycode`이고 수식키 마스크는 `SDL_Keymod`입니다. SDL event 경로는 변환
+없이 직접 비교하고, 폴링 경로만 `SDL_Keycode` → Win32 가상키 변환 하나를 씁니다. 이름 문자열은
+SDL 것을 쓰지 않습니다. `SDL_GetScancodeName`이 헤더에서 안정적 양방향 매핑에 부적합하다고
+명시하고, 이름에 공백이 들어가며, `not thread safe`이기 때문입니다.
+
+계층은 플랫폼 중립 `repiu::config`(INI 파싱, cfg 탐색, 부모 사슬 레이어링, 첫 실행 생성)와
+`repiu::input`(이름 표, 조합키 파싱, 액션 정의와 기본값), 그리고 win32 전용 가상키 변환으로
+나뉩니다. 포트·비트·`JammaInputKey`·로그 이름은 `JammaPortBitTable()` 한 표로 합쳐, 로그와
+스캔이 어긋날 수 없게 했습니다.
+
+해석은 내장 기본값 → 부모 롬셋 파일 → 롬셋 파일 순으로 **키 단위** 덮어쓰기입니다. 파일이
+하나도 없으면 결과는 구현 이전 하드코딩 값과 가상키 단위로 동일하며, probe가 그 표를 직접
+전사해 검증합니다. 롬셋 파일이 없으면 해석 결과를 **주석 처리된 템플릿**으로 생성합니다.
+활성 항목으로 쓰면 자식 파일이 14개 키를 모두 덮어써 레이어링이 죽기 때문이며, 이 형태 덕분에
+"생성이 동작을 바꾸지 않는다"가 구조적으로 성립합니다.
+
+바인딩은 시작 시 1회 해석되어 `SetActiveJammaBindings()`로 설치되고 이후 read-only입니다.
+게스트 스레드와 SDL host thread가 동시에 읽지만 불변이므로 락이 없습니다. 스캔 경로에는 문자열
+비교·맵 조회·할당이 없고 가상키는 로드 시점에 이미 해석되어 있습니다. 수식키 조회는
+`any_binding_uses_modifiers`가 참일 때만, 스냅샷 갱신마다 한 번 수행합니다. 기본 설정은 거짓
+이므로 Task 403이 측정한 호스트 키 조회 횟수가 그대로 유지됩니다.
+
+From Task 497 the PIUIO (JAMMA) host key mapping is read from `cfg/<rom-set-id>.ini`
+instead of being hardcoded. The same mapping previously lived in three places in three
+key vocabularies — `ScanJammaPort8` and `CaptureCurrentJammaPressedMask` in Win32 virtual
+keys, and the SDL event path in `glide_opengl_backend.cpp` in SDL keycodes — so changing
+one silently desynchronized the others.
+
+`SDL_Keycode` is the canonical key type and `SDL_Keymod` the modifier mask. The SDL event
+path compares directly with no translation; only the polling path needs the single
+remaining `SDL_Keycode` to Win32 virtual key table. SDL's own name strings are not used:
+`SDL_GetScancodeName` documents them as unsuitable for a stable two-way mapping, they
+contain spaces, and the lookup is not thread safe.
+
+The layering splits into platform-neutral `repiu::config` (INI parsing, cfg discovery,
+parent-chain layering, first-run generation), `repiu::input` (name table, combination
+parsing, action definitions and defaults), and win32-only virtual key translation. Port,
+bit, `JammaInputKey`, and log name are merged into the single `JammaPortBitTable()`, so
+the log and the scan cannot disagree.
+
+Resolution overrides **per key**: built-in defaults, then the parent ROM set's file, then
+the ROM set's own. With no file present the result matches the pre-change hardcoded
+mapping virtual-key for virtual-key, which the probe verifies against a direct
+transcription of that table. When the ROM set has no file, the resolved values are written
+as a **commented-out template**; active entries would have the child file override all
+fourteen inputs and kill layering, and the commented form makes "generation does not change
+behavior" true by construction.
+
+Bindings are resolved once at startup, installed through `SetActiveJammaBindings()`, and
+read-only afterwards. The guest thread and the SDL host thread both read them without a
+lock because nothing writes. The scan path performs no string comparison, map lookup, or
+allocation, and virtual keys are already resolved at load time. Modifier state is read only
+when `any_binding_uses_modifiers` is set, once per snapshot refresh. The default
+configuration leaves it false, so the host key query count Task 403 measured is unchanged.
+
+사용자 문서는 [docs/guides/romset-config-files.md](docs/guides/romset-config-files.md)입니다.
+The user-facing guide is [docs/guides/romset-config-files.md](docs/guides/romset-config-files.md).
+
+---
+
+## 롬셋별 NVRAM 저장 / Per-ROM-set NVRAM storage
+
+Task 498부터 93C46 EEPROM 이미지는 MAME와 같이 롬셋별 디렉터리에 저장됩니다.
+
+```
+nvram/pumpit1/eeprom.dat
+nvram/pumpipx3/eeprom.dat
+```
+
+이전에는 모든 롬셋이 작업 디렉터리의 `eeprom.dat` 하나를 공유했습니다. 롬셋 22개가 EEPROM
+이미지 하나를 쓰므로 한 타이틀에서 저장한 캐비닛 설정이 다른 타이틀에도 그대로 보였고,
+게임마다 EEPROM 레이아웃이 다르므로 실기와도 달랐습니다.
+
+경로 결정은 `repiu::storage::ResolveEepromPath()`가 담당합니다. `REPIU_EEPROM_PATH` 전체
+경로 오버라이드가 최우선이며, 벤치마크 스크립트와 측정 가이드가 실행별 EEPROM 격리에 쓰고
+있으므로 의미를 유지합니다. 그다음 `nvram` 루트를 `cfg`와 같은 규칙으로 찾습니다 —
+`REPIU_NVRAM_DIR` → 작업 디렉터리 → 실행 파일 옆. `rom_set_id`가 빈 프로파일은 롬셋이
+아니므로 기존 `eeprom.dat` 경로를 유지합니다.
+
+**디렉터리 생성이 이 함수의 책임입니다.** `Eeprom93c46`는 파일이 없으면 생성자에서 바로
+`Save()`로 새 이미지를 쓰는데, `std::ofstream`은 상위 디렉터리가 없으면 조용히 실패합니다.
+순서를 어기면 EEPROM이 매 실행 초기화되면서 아무 오류도 남지 않습니다.
+
+롬셋별 파일이 없고 작업 디렉터리에 기존 `eeprom.dat`가 있으면 **한 번 복사해 승계**합니다.
+이전까지 그 파일 하나가 모든 롬셋의 상태였으므로, 승계하지 않으면 사용자가 맞춰 둔 캐비닛
+설정이 조용히 초기화됩니다. 원본은 남겨 되돌릴 여지를 두고, 대상이 이미 있으면 복사하지
+않습니다.
+
+주입은 `SetEepromBackingPath()` 하나입니다. `g_eeprom`은 첫 EEPROM 포트 접근에서 지연
+생성되므로 게스트 실행 전에 설정되어야 하며, 이미 열린 뒤의 호출은 무시하고 경고합니다.
+소멸자가 이번 실행 내용을 다른 이미지 위에 저장하는 것을 막기 위해서입니다.
+
+From Task 498 the 93C46 EEPROM image is stored per ROM set the way MAME does.
+
+Every ROM set previously shared one `eeprom.dat` in the working directory. With 22 ROM sets
+and one image, cabinet settings saved under one title were what another read back, and
+since EEPROM layout differs per game this did not match real hardware either.
+
+`repiu::storage::ResolveEepromPath()` owns path resolution. The `REPIU_EEPROM_PATH`
+full-path override wins first and keeps its meaning, because benchmark scripts and the
+measurement guides use it to isolate the EEPROM per run. The `nvram` root is then located
+by the same rule as `cfg`: `REPIU_NVRAM_DIR`, the working directory, then next to the
+executable. A profile with an empty `rom_set_id` is not a ROM set and keeps the old
+`eeprom.dat` path.
+
+**Creating the directory is that function's responsibility.** `Eeprom93c46` writes a fresh
+image through `Save()` from its constructor when the file is missing, and `std::ofstream`
+fails silently without a parent directory. Getting the order wrong resets the EEPROM every
+run and reports nothing.
+
+When the per-ROM-set file is absent and a legacy `eeprom.dat` exists in the working
+directory, it is **copied forward once**. That one file held every ROM set's state until
+now, so skipping the copy would silently reset the settings a user had built up. The
+original is left in place as a way back, and nothing is copied when the destination already
+exists.
+
+Injection is the single `SetEepromBackingPath()`. `g_eeprom` is created lazily on the first
+EEPROM port access, so the path must be set before the guest runs; a call after the device
+has opened is ignored and reported, which stops the destructor from saving this run's
+contents over a different image.
+
+---

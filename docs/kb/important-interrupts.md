@@ -133,3 +133,22 @@ For a 32-bit DPMI client, `INT 21h AH=35h` (Get Interrupt Vector) is served from
 MSCDEX uses `INT 2Fh AX=1500h` for installation/drive-count queries and `AX=1510h` to send a device-driver request. See the [RBIL INT 2Fh index](https://fd.lod.bz/rbil/zint/index_2f.html) and [RBIL AX=1510h entry](https://fd.lod.bz/rbil/interrup/io_disk/2f1510.html).
 
 For `INT 31h AX=0300h` (Simulate Real Mode Interrupt), the real-mode register data structure at `ES:EDI` places 32-bit registers first (EDI/ESI/EBP/reserved/EBX/EDX/ECX/EAX at `0x00`–`0x1F`) followed by 16-bit words: **FLAGS at `0x20`, ES at `0x22`, DS at `0x24`**, FS `0x26`, GS `0x28`, IP `0x2A`, CS `0x2C`, SP `0x2E`, SS `0x30`. Misreading ES at `0x24` (the DS slot) was the root cause of the declined MSCDEX request found in Task 211. Sources: [DPMI reference for INT 31h AX=0300h](https://www.delorie.com/djgpp/doc/dpmi/api/310300.html), [RBIL INT 31h AX=0300h](https://fd.lod.bz/rbil/interrup/dos_extenders/310300.html).
+## 2026-08-20 BIOS 키 버퍼와 enhanced key / BIOS key buffer and enhanced keys
+
+전통적인 BIOS data area의 키보드 ring은 16개 word 위치 중 head와 tail이 같을 때 빈 상태를
+나타내므로 실제 보관 용량은 15개 keystroke입니다. `AH=01h/11h` check는 head를 소비하지
+않고, 뒤따르는 `AH=00h/10h` read가 소비해야 합니다. enhanced navigation key는 legacy
+함수에서 `AL=00h`, enhanced 함수에서 `AL=E0h`로 구분할 수 있습니다. Shift, Ctrl, Alt
+자체는 문자 FIFO entry가 아니라 shift flags 상태입니다. host key repeat는 BIOS typematic과
+같이 반복 entry로 취급할 수 있습니다. 함수별 반환 계약은
+[RBIL INT 16h 색인](https://fd.lod.bz/rbil/zint/index_16.html)을 참고합니다.
+
+The traditional BIOS data-area keyboard ring uses equality of head and tail to represent empty, so
+its 16 word positions have a usable capacity of 15 keystrokes. `AH=01h/11h` checks must not consume
+the head; the following `AH=00h/10h` read consumes it. Enhanced navigation keys can return
+`AL=00h` through legacy functions and `AL=E0h` through enhanced functions. Shift, Ctrl, and Alt are
+shift-flag state rather than standalone character FIFO entries. Host key repeat can be represented
+as repeated entries matching BIOS typematic behavior. See the
+[RBIL INT 16h index](https://fd.lod.bz/rbil/zint/index_16.html) for the per-function contracts.
+
+---
