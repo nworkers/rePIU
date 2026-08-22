@@ -1206,6 +1206,77 @@ resolver target resolution, stack pop, and success continuation. Unsynchronized
 state fails open to patching, making the policy an optimization rather than a
 correctness prerequisite. Indirect call/jump and VEH returns are out of scope.
 
+Task 482부터 return handler에는 opt-in stage 계측이 있습니다.
+`REPIU_AOT_RETURN_STAGE_PROFILE`이 켜진 실행에서만 DBT adapter와 VEH 경로가 각각 outer
+창을 열고, 그 안에서 entry validation, guest stack target read와 call/return bookkeeping,
+target classification과 resolution, megamorphic policy와 patch, guest continuation 다섯
+단계를 서로 겹치지 않게 측정합니다. 같은 창에서 stage 합을 뺀 residual도 함께 누적하므로
+stage 경계가 실제 비용을 놓치면 residual이 자랍니다. adapter와 resolver가 한 return을 두 번
+세지 않도록 outer 창은 depth로 보호합니다. 계측이 꺼져 있으면 두 scope 모두 분기 하나만
+지나며 timestamp를 읽지 않습니다. 종료 요약은 stage별 cycles/counts/max, outer 대비
+coverage, residual과 Task 481 정책 site 중 관측 상위 16개를 함께 출력합니다. 이 계측은
+게스트 레지스터·메모리, cache layout, 해석된 target, patch 결정을 바꾸지 않으므로 A/B의
+대상이 아니라 다음 최적화 대상을 고르기 위한 근거입니다. 절차는
+[return stage 귀속 가이드](docs/guides/return-stage-attribution.md)에 있습니다.
+
+Since Task 482, the return handler carries opt-in stage instrumentation. Only while
+`REPIU_AOT_RETURN_STAGE_PROFILE` is set do the DBT adapter and the VEH path open an outer
+window, inside which five mutually exclusive stages are measured: entry validation, the guest
+stack target read with call/return bookkeeping, target classification and resolution, the
+megamorphic policy and patch, and guest continuation. The residual of that same window is
+accumulated beside them, so boundaries that miss real cost show up as a growing residual. Outer
+windows are depth-guarded, so the adapter and the resolver never count one return twice. With
+the instrument off, both scopes pass one branch and read no timestamp. The shutdown summary
+reports per-stage cycles, counts, and maxima, coverage against the outer window, the residual,
+and the sixteen most-observed Task 481 policy sites. It changes no guest register or memory, no
+cache layout, no resolved target, and no patch decision, so it is evidence for choosing the next
+optimization rather than a subject of A/B measurement. The procedure is in the
+[return-stage attribution guide](docs/guides/return-stage-attribution.md).
+
+## Megamorphic direct-return table / Megamorphic direct-return table
+
+Task 499부터 return inline cache의 miss 경로 **앞**에 probe를 emit합니다
+(`REPIU_AOT_DIRECT_RETURN_TABLE`, A/B 통과 후 **기본 ON**, `0`으로 끄면 도입 전과 같은
+바이트를 냅니다). probe는 게스트 return target을 공용
+direct-mapped memo table에서 찾아, 적중하면 게스트 return 슬롯을 cache target으로 덮어쓰고
+**원본 RET과 같은 스택 효과로** 돌아갑니다. host 전환도, PIC 재패치도 없습니다. 실패하면
+기존 miss 시퀀스로 그대로 떨어집니다.
+
+`miss_cache_offset`은 그대로 popfd를 가리킵니다 — push되는 miss address, adapter의 site
+조회 키, `IsAotInlineCacheMiss`의 Task 479 인덱스가 모두 그 값을 공유하기 때문입니다.
+대신 PIC guard만 probe를 향하며, guard target은 emitter·patcher·retirement의 guard reset
+세 곳이 `AotInlineCacheGuardTargetOffset()` 하나로 공유합니다.
+
+정확성은 새 불변식을 만들지 않습니다. table 적중은 4-entry PIC 적중과 의미가 같으므로,
+지켜야 할 것은 "항목이 PIC 항목과 같은 조건에서만 살아 있는가" 하나입니다. 삽입은 host가
+`ResolveAotTransferTarget`으로 검증한 `kActiveHit` 결과만 받고(Glide gate direct target과
+dynamic translation 결과는 제외), 무효화는 `ResetInlineCacheGuardsTargetingPage`가 PIC
+guard를 되돌리는 자리에서 table 전체를 지웁니다. 그 지점은 worker 스레드지만 게스트
+스레드가 retirement rendezvous로 정지해 있으므로 lock도 generation stamp도 필요 없습니다.
+적중 경로는 결과를 전역이 아니라 **스택 슬롯**으로 전달합니다 — 비동기 타이머 주입이
+store와 jump 사이에 끼어들 창을 없애기 위해서입니다.
+
+Since Task 499 a probe is emitted **ahead of** the return inline cache's miss path
+(`REPIU_AOT_DIRECT_RETURN_TABLE`, **on by default** after its A/B; `0` restores the pre-feature
+bytes exactly). It looks the guest return target up in a shared
+direct-mapped memo table and, on a hit, overwrites the guest return slot with the cache target and
+returns with **the original RET's own stack effect** — no host transition and no PIC repatch. A
+miss falls straight through into the existing sequence.
+
+`miss_cache_offset` keeps pointing at the popfd, because the pushed miss address, the adapter's
+site lookup key, and the Task 479 index behind `IsAotInlineCacheMiss` all share that value. Only
+the PIC guards point at the probe, through the single `AotInlineCacheGuardTargetOffset()` helper
+shared by the emitter, the patcher, and the retirement guard reset.
+
+Correctness adds no new invariant: a table hit is semantically identical to a four-entry PIC hit,
+so the only rule is that an entry lives exactly as long as a PIC entry would. Insertion accepts
+only `kActiveHit` resolutions the host validated through `ResolveAotTransferTarget`, which excludes
+Glide-gate direct targets and freshly translated code, and invalidation clears the whole table
+where `ResetInlineCacheGuardsTargetingPage` resets PIC guards — a worker-thread point at which the
+guest thread is already blocked for the retirement rendezvous, so no lock and no generation stamp
+are required. The hit path carries its result in a **stack slot** rather than a global, closing the
+window in which an asynchronous timer injection could overwrite it between the store and the jump.
+
 ## AOT build option toggle 관례 / AOT build-option toggle convention
 
 Task 424는 환경 변수 하나로 기능을 켜고 끄는 관례를 플랫폼 공용

@@ -235,9 +235,14 @@ std::uint32_t ResetInlineCacheGuardsTargetingPage(
             const std::uint32_t immediate_offset = site.entries.empty()
                 ? site.target_immediate_offset
                 : site.entries[index].target_immediate_offset;
+            // Task 499: a site carrying a direct-return probe must keep
+            // reaching the probe first, so the reset target is the guard target
+            // rather than the miss tail. Without a probe the two are the same.
+            const std::uint32_t guard_target =
+                runtime::AotInlineCacheGuardTargetOffset(site);
             if (guard_offset + 6U > placement->size ||
                 immediate_offset + 4U > placement->size ||
-                site.miss_cache_offset >= placement->size)
+                guard_target >= placement->size)
             {
                 continue;
             }
@@ -254,7 +259,7 @@ std::uint32_t ResetInlineCacheGuardsTargetingPage(
                 continue;
             }
             const std::int32_t miss_displacement =
-                static_cast<std::int32_t>(site.miss_cache_offset) -
+                static_cast<std::int32_t>(guard_target) -
                 (static_cast<std::int32_t>(guard_offset) + 5);
             bytes[guard_offset] = 0xE9U;
             std::memcpy(bytes + guard_offset + 1U, &miss_displacement,
@@ -692,6 +697,13 @@ bool RetireWin32AotGuestPage(
     std::vector<std::uint32_t> reset_guard_offsets;
     result->guard_reset_count = ResetInlineCacheGuardsTargetingPage(
         placement, bytes, result->guest_page, &reset_guard_offsets);
+    // Task 499. This is the one point where a guest-to-cache mapping can
+    // change, and the guest thread is blocked in
+    // RequestWin32AotGuestPageRetirement for the duration, so clearing the memo
+    // table here needs no lock and no generation stamp. Clearing everything
+    // rather than the affected range keeps the rule one sentence long, and
+    // retirements are rare.
+    runtime::ClearAotDirectReturnTable(&placement->direct_return_table);
     DWORD ignored = 0;
     if (VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ,
                        &ignored) == 0)

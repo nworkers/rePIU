@@ -182,6 +182,7 @@ add_library(repiu_exe
     src/platform/win32/telemetry/glide_setter_phase_timing.cpp
     src/platform/win32/telemetry/timer_tick_delivery.cpp
     src/platform/win32/telemetry/aot_residency_sample.cpp
+    src/platform/win32/telemetry/aot_return_stage_profile.cpp
     src/platform/win32/aot/aot_boundary_opcode_census.cpp
     src/platform/win32/io/port_io_emulator.cpp
     src/platform/win32/io/jamma_input_timeline.cpp
@@ -212,6 +213,7 @@ add_library(repiu_exe
     src/platform/win32/runtime_memory_policy.cpp
     src/runtime/guest_context.cpp
     src/runtime/aot_code_cache.cpp
+    src/runtime/aot_direct_return_table.cpp
     src/runtime/aot_translation_plan.cpp
     src/runtime/dos_low_memory.cpp
     src/runtime/env_toggle.cpp
@@ -295,6 +297,8 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/aot_inline_cache_site_index_probe.cpp
     src/tools/aot_probe/aot_return_dispatch_site_index_probe.cpp
     src/tools/aot_probe/aot_return_patch_policy_probe.cpp
+    src/tools/aot_probe/aot_return_stage_profile_probe.cpp
+    src/tools/aot_probe/aot_direct_return_table_probe.cpp
     src/tools/aot_probe/execution_time_profile_probe.cpp
     src/tools/aot_probe/glide_gate_timing_probe.cpp
     src/tools/aot_probe/glide_ordinal_timing_probe.cpp

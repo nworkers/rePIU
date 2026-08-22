@@ -69,6 +69,7 @@ AotReturnPatchAction ObserveAotReturnPatchMiss(
         return AotReturnPatchAction::kPatch;
     }
     IncrementSaturating(&policy.bypass_count);
+    IncrementSaturating(&state.bypass_count);
     return AotReturnPatchAction::kBypass;
 }
 

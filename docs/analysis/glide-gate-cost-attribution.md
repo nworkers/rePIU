@@ -353,6 +353,59 @@ share가 절반인 것과 같은 사실이며, 게스트 스레드는 Glide 호�
 전문: [Task 419 작업 로그](../work-logs/20260805-419-glide-rendezvous-spin-wait.md).
 기본값은 `REPIU_GLIDE_RENDEZVOUS_SPIN_US=20`이며 `0`이 예전 동작입니다.
 
+### 16. Task 482 pass 1 — 게이트 비용의 절반은 호스트에 닿지 않는 crossing입니다 (2026-08-22) — **확인됨, 3회 재현**
+
+pumpit8 Release, vsync OFF, `REPIU_GLIDE_ORDINAL_TIME_PROFILE=1` +
+`REPIU_EXECUTION_TIME_PROFILE=1`로 사용자가 3회 실행(약 53~57초, 33.4k~36.2k 프레임)한
+로그입니다. Glide gate는 `guest-run`의 **23.67~24.71%**입니다.
+
+**게이트 bucket의 구성 (3회 모두 1포인트 이내로 재현).**
+
+| 구성 | bucket 대비 | guest-run 대비 |
+|---|---:|---:|
+| **호스트에 닿지 않는 crossing** | **45.2~47.2%** | **10.7~11.6%** |
+| rendezvous `wake` (호스트 스레드 스케줄 대기) | 24.9~25.6% | 약 6% |
+| rendezvous `work` (실제 GL) | 18.9~20.6% | 약 4.7% |
+| rendezvous `complete` | 6.6~6.9% | — |
+| rendezvous `queue` | 약 2.0% | — |
+
+**확인됨 1 — crossing의 70.8~71.1%는 아무 일도 하지 않습니다.** 게이트 진입 15,235,411 /
+15,655,476 / 13,170,874회 중 setter elision이 걸러낸 것이 10,789,176 / 11,128,742 /
+9,331,423회입니다. Tasks 437·439·443·444의 elision은 **호스트 왕복**을 없앴지만
+**crossing 자체는 그대로 남아** 회당 약 1,790 cycle을 씁니다. 아무 부작용도 없는 호출
+1,300만 회가 게이트 bucket의 절반, `guest-run`의 11%입니다. **이 crossing 비용은 지금까지
+측정된 적이 없습니다** — 이전 A/B들은 elision이 없앤 rendezvous만 셌습니다.
+
+**확인됨 2 — 지배적인 ordinal은 있지만 "중복 host 작업"은 아닙니다.**
+
+| ordinal | gate 대비 | 회당 | 구성 |
+|---|---:|---:|---|
+| `grTexSource` | 25.97 / 25.97 / 26.27% | 약 14,600 | **wake 63~65%**, work 약 11% |
+| `grBufferSwap` | 14.82 / 15.18 / 16.67% | 약 220,000 | work 74~76% (실제 present) |
+| `grDrawTriangle` | 12.42 / 12.63 / 12.03% | 약 2,235 | rendezvous 0 (batch) |
+| `grConstantColorValue` | 11.49 / 11.29 / 11.23% | 약 3,450 | wake 22~24% |
+| `grAlphaBlendFunction` | 7.88 / 7.80 / 7.12% | 약 5,100 | wake 40~42% |
+
+`grTexSource`가 1위지만 그 시간의 대부분은 **호스트 스레드가 스케줄되기를 기다리는
+시간**이고 실제 GL 작업은 11%입니다. rendezvous 수(981,733)가 호출 수(900,209)보다 많은
+것은 텍스처 변경이 draw batch flush를 강제하기 때문으로 읽힙니다. `grBufferSwap`의 비용은
+74~76%가 실제 present 작업이므로 줄일 대상이 아닙니다. 즉 **설계 20260814-482의
+"중복 host 작업을 가진 지배적 ordinal" 분기는 해당 없음**입니다.
+
+**확인됨 3 — wake 단가는 rendezvous당 6,513~7,352 cycle입니다.** host spin은
+33.3~36.3% miss이고 guest spin은 1.0% miss입니다. 즉 게스트는 잘 기다리는데 **호스트
+스레드가 제때 깨지 못합니다.** 2026-08-13 세션이 "게스트가 CPU를 포화시켜 호스트가
+스케줄되지 못하는 증상"이라고 읽은 것에 크기를 붙인 값입니다 — `guest-run`의 약 6%.
+
+**관측 (별건, 확인 필요).** draw batch 평균이 **5.05**입니다. Task 439가 승격 근거로 잰
+16.02의 3분의 1이고, flush는 프레임당 약 18회(616,534회)입니다. 이 장면 고유인지
+회귀인지는 별도 확인이 필요합니다.
+
+**방법 주의.** 세 실행의 프레임당 삼각형은 82.2 / 81.4 / 73.6으로 Task 478의 3% 장면
+동일성 규칙을 넘습니다. 그러나 이 분석은 실행 **간** 비교가 아니라 실행 **안**의 귀속이고,
+비중이 세 실행에서 1포인트 이내로 재현되므로 결론은 유지됩니다. EEPROM은 실행별로
+격리되지 않았습니다(`nvram\pumpit8\eeprom.dat` 공용).
+
 ### 15. 열린 질문
 
 * 커널 예외 전달 비용의 실제 크기 (10절)
@@ -368,10 +421,51 @@ share가 절반인 것과 같은 사실이며, 게스트 스레드는 Glide 호�
   안으로). 사용자 판단 사항.
 * Task 365 batch 2의 남은 가치 (`grDepthMask` 단가가 53,204 cycle로 떨어졌으므로
   생략 상한은 wall 6.89% → 약 0.7%로 붕괴했을 것)
+* **elision 판정을 crossing 앞으로 옮길 수 있는가** (16절). 지금은 게이트를 넘은 뒤
+  호스트 경계 처리기에서 같은 값인지 판정하므로, 판정이 참인 1,300만 회도 회당 약 1,790
+  cycle을 이미 지불한 뒤입니다.
+* draw batch 평균이 16.02에서 5.05로 떨어진 것이 장면 차이인지 회귀인지 (16절)
 
 ---
 
 ## English
+
+**Task 482 pass 1: half the gate cost never reaches the host (2026-08-22, confirmed across
+three runs).** Three user runs of pumpit8 on Release with vsync off,
+`REPIU_GLIDE_ORDINAL_TIME_PROFILE=1` and `REPIU_EXECUTION_TIME_PROFILE=1`, each 53-57 seconds
+and 33.4k-36.2k frames, put the Glide gate at 23.67-24.71% of `guest-run` and split that bucket
+the same way to within one point every time: **45.2-47.2% is crossings that never reach the host
+thread** (10.7-11.6% of `guest-run`), 24.9-25.6% is rendezvous `wake`, 18.9-20.6% is real GL
+`work`, 6.6-6.9% `complete`, and about 2.0% `queue`.
+
+*Confirmed 1 — 70.8-71.1% of all crossings do nothing.* Of 15,235,411 / 15,655,476 / 13,170,874
+gate entries, setter elision discarded 10,789,176 / 11,128,742 / 9,331,423. The elision from
+Tasks 437, 439, 443, and 444 removed the **host round trip** but left the **crossing itself**, at
+about 1,790 cycles each. Thirteen million calls with no effect account for half the gate bucket
+and 11% of `guest-run`. That crossing cost had never been measured: the earlier A/Bs counted only
+the rendezvous the elision removed.
+
+*Confirmed 2 — there is a dominant ordinal, but not a redundant one.* `grTexSource` leads at
+25.97 / 25.97 / 26.27% of the gate, yet 63-65% of its time is `wake` and only about 11% is GL
+work; its rendezvous count (981,733) exceeds its call count (900,209), which reads as texture
+changes forcing draw-batch flushes. `grBufferSwap` follows at 14.82-16.67%, but 74-76% of that is
+real presentation work and is not a target. `grDrawTriangle` (12.0-12.6%, zero rendezvous, about
+2,235 cycles per call), `grConstantColorValue` (11.2-11.5%), and `grAlphaBlendFunction`
+(7.1-7.9%) complete the top five. Design 20260814-482's "dominant ordinal with redundant host
+work" branch therefore does not apply.
+
+*Confirmed 3 — waking the host costs 6,513-7,352 cycles per rendezvous.* The host spin misses
+33.3-36.3% of the time while the guest spin misses 1.0%: the guest waits well and the host thread
+is not scheduled in time. That puts a size on what the 2026-08-13 session read as CPU saturation,
+about 6% of `guest-run`.
+
+*Separate observation, needs checking.* The mean draw batch is 5.05, a third of the 16.02 Task
+439 used to promote batching, with about 18 flushes per frame (616,534 total). Whether that is
+specific to this scene or a regression is an open question.
+
+*Method note.* Triangles per frame were 82.2 / 81.4 / 73.6, outside the Task 478 3% scene rule,
+but this is attribution *within* each run rather than a comparison *between* runs, and the shares
+reproduce to within one point, so the conclusion stands. The EEPROM was not isolated per run.
 
 **Scene composition decides the answer (confirmed).** The same state-setter set
 holds 20.59% of wall in the Task 363 gameplay capture, 11.5–12.6% in three user

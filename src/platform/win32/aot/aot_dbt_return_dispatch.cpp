@@ -3,6 +3,7 @@
 #include "aot_runtime_dispatch.h"
 
 #include "repiu/platform/win32/aot_return_dispatch_site_index.h"
+#include "repiu/platform/win32/aot_return_stage_profile.h"
 
 #include <cstddef>
 
@@ -79,6 +80,14 @@ extern "C" void __stdcall ResolveAotDbtReturnMissFrame(
     {
         return;
     }
+    Win32AotReturnStageProfile* stage_profile =
+        context != nullptr ? &context->aot_return_stage_profile : nullptr;
+    // Task 482: the adapter is the outer window of a DBT-path return, so the
+    // dispatch-site lookup and the frame marshalling below are attributed
+    // rather than left in the resolver's residual.
+    const AotReturnOuterScope outer_stage(stage_profile);
+    AotReturnStageScope entry_stage(stage_profile,
+                                    AotReturnStage::kEntryValidation);
     if (context != nullptr)
     {
         context->aot_dbt_return_entry_count.fetch_add(
@@ -121,6 +130,7 @@ extern "C" void __stdcall ResolveAotDbtReturnMissFrame(
     context->aot_reentry_pending = true;
     AotDbtDispatchFallbackReason fallback_reason =
         AotDbtDispatchFallbackReason::kUnknown;
+    entry_stage.Close();
     if (!HandleAotReturnTransfer(
             &exception_info, &guest_context, context, &fallback_reason,
             Win32AotTransferOrigin::kHost, site_index))
@@ -129,6 +139,8 @@ extern "C" void __stdcall ResolveAotDbtReturnMissFrame(
         return;
     }
 
+    const AotReturnStageScope continuation_stage(
+        stage_profile, AotReturnStage::kContinuation);
     frame[kSavedEflagsIndex] = guest_context.EFlags;
     frame[kGuestSourceIndex] = cache_base + site.success_cache_offset;
     frame[kMissAddressIndex] = guest_context.Eip;

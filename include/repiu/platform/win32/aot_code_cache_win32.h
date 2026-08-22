@@ -99,6 +99,17 @@ struct Win32AotCodeCachePlacement
     std::uint32_t indirect_inline_cache_entry_count =
         runtime::kDefaultAotIndirectInlineCacheEntryCount;
     bool dbt_return_miss_dispatch_enabled = false;
+    // Task 499. The memo table generated code probes, its emission flag,
+    // and the probe sites whose absolute operands point at it. The table
+    // is allocated once, at first placement, because its address is baked
+    // into emitted code; invalidation clears it in place and never
+    // reallocates.
+    bool direct_return_table_enabled = false;
+    std::uint32_t direct_return_table_bits =
+        runtime::kDefaultAotDirectReturnTableBits;
+    runtime::AotDirectReturnTable direct_return_table;
+    std::vector<runtime::AotDirectReturnProbeSite>
+        direct_return_probe_sites;
     bool dbt_hle_dispatch_enabled = false;
     bool dbt_port_io_dispatch_enabled = false;
     bool dbt_segment_override_dispatch_enabled = false;

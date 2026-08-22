@@ -1,6 +1,7 @@
 #ifndef REPIU_RUNTIME_AOT_CODE_CACHE_H_
 #define REPIU_RUNTIME_AOT_CODE_CACHE_H_
 
+#include "repiu/runtime/aot_direct_return_table.h"
 #include "repiu/runtime/aot_translation_plan.h"
 
 #include <cstdint>
@@ -11,6 +12,25 @@ namespace repiu::runtime
 {
 
 constexpr std::uint32_t kDefaultAotIndirectInlineCacheEntryCount = 4U;
+
+// Task 499. Emitted ahead of the existing return miss sequence; a miss falls
+// straight through, so the bytes that follow move but never change. Exposed so
+// the probe suite can emit the identical sequence standalone and execute it.
+// `pop_bytes` is the original RET's total stack effect, four for `C3`.
+bool EmitAotDirectReturnProbe(std::vector<std::uint8_t>* bytes,
+                              std::uint32_t guest_source,
+                              std::uint32_t pop_bytes,
+                              struct AotDirectReturnProbeSite* site);
+
+// Writes the absolute table address, mask, and hit-counter address into an
+// emitted probe. `key_address` is the address of entry zero; the value operand
+// is derived from it.
+bool PatchAotDirectReturnProbe(std::uint8_t* bytes,
+                               std::size_t byte_count,
+                               const struct AotDirectReturnProbeSite& site,
+                               std::uint32_t key_address,
+                               std::uint32_t mask,
+                               std::uint32_t hit_counter_address);
 
 struct AotCodeCacheBuildOptions
 {
@@ -43,6 +63,12 @@ struct AotCodeCacheBuildOptions
     // backward branches so an AOT-native busy loop can reach the existing
     // pending timer-interrupt injection path without cross-thread TF changes.
     bool enable_timer_safe_points = false;
+    // Task 499. Probe a shared guest-to-cache memo table on the return miss
+    // path before crossing to the host. Off by default, and while off nothing
+    // is emitted, so the cache bytes are identical to a build without it.
+    bool enable_direct_return_table = false;
+    std::uint32_t direct_return_table_bits =
+        kDefaultAotDirectReturnTableBits;
 };
 
 enum class AotFixupKind
@@ -85,6 +111,13 @@ struct AotIndirectInlineCacheSite
     std::uint32_t guest_source = 0;
     std::uint32_t cache_offset = 0;
     std::uint32_t miss_cache_offset = 0;
+    // Task 499. When a direct-return probe precedes the miss tail, guards jump
+    // here instead so the probe runs before the host crossing. Zero means no
+    // probe was emitted and `miss_cache_offset` is the guard target, which is
+    // what every build without the feature produces. `miss_cache_offset` itself
+    // is deliberately unchanged: it is the key the reentry address, the site
+    // lookup, and the fallback-distance constant all share.
+    std::uint32_t miss_probe_cache_offset = 0;
     std::uint32_t target_immediate_offset = 0;
     std::uint32_t guard_offset = 0;
     std::uint32_t jump_displacement_offset = 0;
@@ -100,6 +133,14 @@ struct AotIndirectInlineCacheSite
     bool is_call = false;
     bool is_return = false;
 };
+
+// Task 499. The offset every inline-cache guard must jump to on a miss.
+[[nodiscard]] inline std::uint32_t AotInlineCacheGuardTargetOffset(
+    const AotIndirectInlineCacheSite& site)
+{
+    return site.miss_probe_cache_offset != 0U ? site.miss_probe_cache_offset
+                                              : site.miss_cache_offset;
+}
 
 struct AotDbtReturnDispatchSite
 {
@@ -245,6 +286,19 @@ struct AotTimerSafePointSite
     std::uint32_t breakpoint_offset = 0;
 };
 
+// Task 499. Absolute-address and mask operands the direct-return probe needs,
+// patched at placement exactly as AotTimerSafePointSite::request_address_offset
+// is and re-offset the same way on dynamic append.
+struct AotDirectReturnProbeSite
+{
+    std::uint32_t guest_source = 0;
+    std::uint32_t cache_offset = 0;
+    std::uint32_t mask_immediate_offset = 0;
+    std::uint32_t key_address_offset = 0;
+    std::uint32_t target_address_offset = 0;
+    std::uint32_t hit_counter_address_offset = 0;
+};
+
 struct AotCodeCacheImage
 {
     bool valid = false;
@@ -265,11 +319,17 @@ struct AotCodeCacheImage
     std::vector<AotGuardedSegmentLoadSite> guarded_segment_load_sites;
     std::vector<AotSegmentOverrideSite> segment_override_sites;
     std::vector<AotTimerSafePointSite> timer_safe_point_sites;
+    std::vector<AotDirectReturnProbeSite> direct_return_probe_sites;
     // Carried into platform placement so every later dynamic append uses the
     // same indirect call/jump layout as the initial image (Task 274).
     std::uint32_t indirect_inline_cache_entry_count =
         kDefaultAotIndirectInlineCacheEntryCount;
     bool dbt_return_miss_dispatch_enabled = false;
+    // Task 499. Carried on the image so later dynamic appends emit the
+    // same shape the initial placement did.
+    bool direct_return_table_enabled = false;
+    std::uint32_t direct_return_table_bits =
+        kDefaultAotDirectReturnTableBits;
     bool dbt_hle_dispatch_enabled = false;
     bool dbt_port_io_dispatch_enabled = false;
     bool dbt_segment_override_dispatch_enabled = false;

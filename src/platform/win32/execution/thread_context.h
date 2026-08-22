@@ -7,6 +7,7 @@
 #include "repiu/platform/win32/out_of_arena_step_census.h"
 #include "repiu/platform/win32/live_telemetry.h"
 #include "repiu/platform/win32/aot_retired_trap_profile.h"
+#include "repiu/platform/win32/aot_return_stage_profile.h"
 #include "repiu/platform/win32/cd_audio_wave_out.h"
 #include "repiu/platform/win32/mscdex_command_trace.h"
 #include "repiu/platform/win32/ymz280b_audio_out.h"
@@ -986,6 +987,11 @@ struct ThreadContext
     // Task 327: rendezvous timing across the guest and worker threads. Shares
     // the REPIU_EXECUTION_TIME_PROFILE opt-in.
     std::unique_ptr<Win32AotWorkerTimingProfile> aot_worker_timing;
+    // Task 482: the return handler split into five mutually exclusive stages
+    // and a residual. Own opt-in (REPIU_AOT_RETURN_STAGE_PROFILE) so this pass
+    // and the Glide-ordinal pass never instrument the same run. Small enough
+    // to hold by value; the disabled path never writes it.
+    Win32AotReturnStageProfile aot_return_stage_profile;
     // Route A sizing (native region execution). Of every single-stepped guest
     // instruction, how many are HLE-sensitive (segment op / INT / IO / string /
     // privileged) and would still require a trap under selective-breakpoint

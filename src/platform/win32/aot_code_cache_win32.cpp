@@ -185,6 +185,57 @@ void ResolveWin32AotJumpTables(const runtime::AotCodeCacheImage& image,
     }
 }
 
+// Task 499. Point every emitted probe at the one memo table. The table is
+// allocated on first use and never reallocated afterwards, because its address
+// is baked into cache bytes; invalidation clears it in place.
+bool ResolveWin32AotDirectReturnProbes(
+    const runtime::AotCodeCacheImage& image,
+    std::uint8_t* image_bytes,
+    std::size_t byte_count,
+    Win32AotCodeCachePlacement* placement)
+{
+    if (image.direct_return_probe_sites.empty())
+    {
+        return true;
+    }
+    if (image_bytes == nullptr || placement == nullptr)
+    {
+        return false;
+    }
+    if (placement->direct_return_table.entries.empty())
+    {
+        runtime::ResetAotDirectReturnTable(
+            &placement->direct_return_table,
+            image.direct_return_table_bits);
+    }
+    if (placement->direct_return_table.entries.empty())
+    {
+        return false;
+    }
+    const std::uintptr_t key_value = reinterpret_cast<std::uintptr_t>(
+        placement->direct_return_table.entries.data());
+    const std::uintptr_t counter_value = reinterpret_cast<std::uintptr_t>(
+        &placement->direct_return_table.hit_count);
+    if (key_value > std::numeric_limits<std::uint32_t>::max() ||
+        counter_value > std::numeric_limits<std::uint32_t>::max())
+    {
+        return false;
+    }
+    for (const runtime::AotDirectReturnProbeSite& site :
+         image.direct_return_probe_sites)
+    {
+        if (!runtime::PatchAotDirectReturnProbe(
+                image_bytes, byte_count, site,
+                static_cast<std::uint32_t>(key_value),
+                placement->direct_return_table.mask,
+                static_cast<std::uint32_t>(counter_value)))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool ResolveWin32AotDbtReturnDispatchSites(
     const runtime::AotCodeCacheImage& image,
     std::uint8_t* image_bytes,
@@ -812,6 +863,14 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
         placement->message = "AOT-DBT return thunk is unavailable";
         return true;
     }
+    if (!ResolveWin32AotDirectReturnProbes(
+            image, static_cast<std::uint8_t*>(memory), image.bytes.size(),
+            placement))
+    {
+        VirtualFree(memory, 0, MEM_RELEASE);
+        placement->message = "AOT direct-return table is unavailable";
+        return true;
+    }
     if (!ResolveWin32AotDbtDirectEdgeDispatchSites(
             image, static_cast<std::uint8_t*>(memory),
             static_cast<std::uint32_t>(base)))
@@ -891,6 +950,10 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
     placement->guarded_segment_load_enabled =
         image.guarded_segment_load_enabled;
     placement->timer_safe_points_enabled = image.timer_safe_points_enabled;
+    placement->direct_return_table_enabled =
+        image.direct_return_table_enabled;
+    placement->direct_return_table_bits = image.direct_return_table_bits;
+    placement->direct_return_probe_sites = image.direct_return_probe_sites;
     for (const runtime::AotTimerSafePointSite& site :
          image.timer_safe_point_sites)
     {
@@ -1022,6 +1085,10 @@ bool AppendWin32DynamicAotTranslation(
         placement->guarded_segment_load_enabled;
     build_options.enable_timer_safe_points =
         placement->timer_safe_points_enabled;
+    build_options.enable_direct_return_table =
+        placement->direct_return_table_enabled;
+    build_options.direct_return_table_bits =
+        placement->direct_return_table_bits;
     // Task 328 phases 2 and 3. Split out of the shared short-circuit into
     // sequential locals; the image build still runs only when the plan build
     // succeeded, exactly as before.
@@ -1198,6 +1265,17 @@ bool AppendWin32DynamicAotTranslation(
         result->message = "AOT-DBT return thunk is unavailable";
         return true;
     }
+    if (!ResolveWin32AotDirectReturnProbes(
+            image, static_cast<std::uint8_t*>(cache) + append_offset,
+            image.bytes.size(), placement))
+    {
+        DWORD ignored = 0;
+        VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ,
+                       &ignored);
+        result->unsafe_failure = true;
+        result->message = "AOT direct-return table is unavailable";
+        return true;
+    }
     if (!ResolveWin32AotDbtDirectEdgeDispatchSites(
             image, static_cast<std::uint8_t*>(cache) + append_offset,
             placement->base_address + append_offset))
@@ -1331,6 +1409,10 @@ bool AppendWin32DynamicAotTranslation(
     {
         site.cache_offset += append_offset;
         site.miss_cache_offset += append_offset;
+        if (site.miss_probe_cache_offset != 0U)
+        {
+            site.miss_probe_cache_offset += append_offset;
+        }
         site.target_immediate_offset += append_offset;
         site.guard_offset += append_offset;
         site.jump_displacement_offset += append_offset;
@@ -1432,6 +1514,16 @@ bool AppendWin32DynamicAotTranslation(
         site.load_shadow_address_offset += append_offset;
         site.fallback_offset += append_offset;
         placement->guarded_segment_read_sites.push_back(site);
+    }
+    for (runtime::AotDirectReturnProbeSite site :
+         image.direct_return_probe_sites)
+    {
+        site.cache_offset += append_offset;
+        site.mask_immediate_offset += append_offset;
+        site.key_address_offset += append_offset;
+        site.target_address_offset += append_offset;
+        site.hit_counter_address_offset += append_offset;
+        placement->direct_return_probe_sites.push_back(site);
     }
     for (runtime::AotTimerSafePointSite site :
          image.timer_safe_point_sites)
@@ -1764,7 +1856,8 @@ bool PatchWin32AotIndirectInlineCache(
     std::uint32_t immediate_offset = selected->target_immediate_offset;
     std::uint32_t displacement_offset = selected->jump_displacement_offset;
     std::uint32_t guard_offset = selected->guard_offset;
-    std::uint32_t guard_target_offset = selected->miss_cache_offset;
+    std::uint32_t guard_target_offset =
+        runtime::AotInlineCacheGuardTargetOffset(*selected);
     std::size_t chosen_entry = 0;
     if (!selected->entries.empty())
     {
@@ -1809,7 +1902,7 @@ bool PatchWin32AotIndirectInlineCache(
         guard_offset = entry.guard_offset;
         guard_target_offset = chosen + 1U < entry_count
             ? selected->entries[chosen + 1U].compare_offset
-            : selected->miss_cache_offset;
+            : runtime::AotInlineCacheGuardTargetOffset(*selected);
         chosen_entry = chosen;
     }
     // Temporary Task 220 diagnostics: sample the first patches and every

@@ -8,6 +8,8 @@
 #include "aot_residency_sample.h"
 #include "aot_dbt_call_return_trace.h"
 #include "repiu/platform/win32/aot_boundary_provenance.h"
+#include "repiu/platform/win32/aot_return_stage_profile.h"
+#include "repiu/runtime/aot_direct_return_table.h"
 #include "execution_internal.h"
 #include "guest_memory_access.h"
 #include "instruction_emulation.h"
@@ -1416,6 +1418,14 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
     const ExecutionTimeScope return_transfer_time_scope(
         context != nullptr ? context->execution_time_profile.get() : nullptr,
         ExecutionTimeBucket::kAotReturn);
+    // Task 482: five mutually exclusive stages plus the residual of this same
+    // window. The DBT adapter opens its own outer window around this call, so
+    // the scope below attributes only when the VEH path arrives here directly.
+    Win32AotReturnStageProfile* stage_profile =
+        context != nullptr ? &context->aot_return_stage_profile : nullptr;
+    const AotReturnOuterScope outer_stage(stage_profile);
+    AotReturnStageScope entry_stage(stage_profile,
+                                    AotReturnStage::kEntryValidation);
     if (fallback_reason != nullptr)
     {
         *fallback_reason = AotDbtDispatchFallbackReason::kUnknown;
@@ -1443,6 +1453,9 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
         }
         return false;
     }
+    entry_stage.Close();
+    AotReturnStageScope read_stage(stage_profile,
+                                   AotReturnStage::kTargetRead);
     std::uint32_t target = 0;
     if (!ReadGuestUInt32(
             context,
@@ -1528,6 +1541,9 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
             &context->shared_live_telemetry->aot_last_return_matches_call,
             context->aot_last_return_matches_call ? 1L : 0L);
     }
+    read_stage.Close();
+    AotReturnStageScope resolution_stage(
+        stage_profile, AotReturnStage::kTargetResolution);
     std::uint32_t cache_target = target;
     AotDbtDispatchFallbackReason target_failure =
         AotDbtDispatchFallbackReason::kTranslationFailure;
@@ -1549,13 +1565,30 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
     {
         target_failure = AotDbtDispatchFallbackReason::kNonGuestTarget;
     }
-    if (!ResolveAotTransferTarget(context, target, &cache_target))
+    AotRetiredTrapResolution target_resolution =
+        AotRetiredTrapResolution::kFallback;
+    if (!ResolveAotTransferTarget(context, target, &cache_target, false,
+                                  &target_resolution))
     {
         if (fallback_reason != nullptr)
         {
             *fallback_reason = target_failure;
         }
         return false;
+    }
+    resolution_stage.Close();
+    AotReturnStageScope patch_stage(stage_profile,
+                                    AotReturnStage::kPatchPolicy);
+    // Task 499: memoize only a resolution the host just validated as an active
+    // hit. Glide-gate direct targets and freshly translated code report other
+    // resolutions and stay out of the table, so a hit can only ever repeat a
+    // mapping this handler already accepted.
+    if (target_resolution == AotRetiredTrapResolution::kActiveHit &&
+        context->aot_placement->direct_return_table_enabled)
+    {
+        runtime::InsertAotDirectReturnEntry(
+            &context->aot_placement->direct_return_table, target,
+            cache_target);
     }
     if (IsAotInlineCacheMiss(context, context->aot_reentry_cache_address))
     {
@@ -1577,6 +1610,9 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
             }
         }
     }
+    patch_stage.Close();
+    const AotReturnStageScope continuation_stage(
+        stage_profile, AotReturnStage::kContinuation);
     std::uint32_t pop_bytes = 4U;
     if (instruction[0] == 0xC2U)
     {

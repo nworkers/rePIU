@@ -17,6 +17,176 @@ their original names** — read `aot-dbt` as `dynamic` when running a procedure.
 and `aot-dynamic` were removed and have no present-day equivalent; both already failed
 to build the pumpit3 image at the time of removal.
 
+## Task 482 return stage 귀속 계측 / Return-stage attribution (2026-08-22)
+
+**구현 완료, 측정 대기.** 2026-08-13 세션이 다음 과제로 지목한 뒤 483~498이 다른 축으로
+가면서 비어 있던 항목입니다. return handler를 서로 겹치지 않는 다섯 stage(entry 검증,
+게스트 스택 target read와 bookkeeping, target 분류·resolution, megamorphic 정책·patch,
+guest continuation)와 **같은 창의** residual로 나누는 opt-in 계측
+(`REPIU_AOT_RETURN_STAGE_PROFILE`)을 추가했습니다. DBT adapter와 VEH 경로가 각각 outer
+창을 열되 depth로 한 번만 세므로 adapter의 site 조회도 창 안에 들어옵니다. Task 481
+정책에 site별 bypass 수를 더해 관측 상위 16개 site를 종료 요약에 출력합니다.
+
+Debug/Release 빌드와 합성 probe 8항목, pumpit8 전체 probe(exit 0)가 통과했고, 60초
+pumpit8 Release 실행 1회로 계측이 실제로 값을 채우는 것을 확인했습니다(return
+43,197,279회, coverage 75.51%, clamp 0/0, return fallback 0, `scans=0`,
+`read`·`resolve`·`patch` count가 정책 관측 수와 정확히 일치).
+
+**단, 이 1회 실행은 판정이 아닙니다.** 같은 장면 3회 재현이 아니므로 성능 결론에 쓰지
+않습니다. 다만 다음 세 가설을 실제 pass에서 확인할 값어치가 있습니다.
+
+1. **기존 `kAotReturn` bucket이 return 비용을 1.38배 과소 계상합니다.** bucket
+   51,469,591,820 대 adapter 포함 outer 창 71,256,668,879. 차이는
+   `ResolveAotDbtReturnMissFrame`의 site 조회와 frame marshalling, 즉 resolver 밖
+   구간입니다. 2026-08-13 세션이 찾은 "핸들러가 VEH 밖에서 돈다"와 같은 형태가 한 겹 더
+   있었습니다.
+2. **`patch` 단계는 패치가 아니라 miss 판정 비용입니다.** 실제 패치는 관측의 0.75%
+   (317,719/42,432,363)뿐인데 단계는 covered의 30.08%입니다. 항목 3(패치 **횟수** 축)이
+   가리키던 지점과 일치합니다.
+3. **`resolve`가 covered의 30.72%로 최대 단계입니다.** 최대값 40,610,256 cycle은 이
+   실행 266회뿐인 dynamic translation이 그 창에서 일어난 결과이므로, 평균과 최대를 같은
+   원인으로 읽으면 안 됩니다.
+
+residual 24.49%(return당 약 404 cycle)는 계측 자신으로 보입니다 — Task 481의 비계측
+단가 1,275 cycle과 이번 outer 단가 1,650 cycle의 차이와 같은 크기입니다.
+
+### pass 1 측정 완료 (2026-08-22, 사용자 3회 실행)
+
+pumpit8 Release·vsync OFF로 `REPIU_GLIDE_ORDINAL_TIME_PROFILE=1` 실행 3회
+(`pass1~3.txt`, 53~57초, 33.4k~36.2k 프레임)를 분석했습니다. 전문은
+[Glide gate 비용 귀속 16절](glide-gate-cost-attribution.md).
+
+**게이트 bucket(guest-run의 23.67~24.71%)의 최대 구성은 호스트에 닿지 않는
+crossing입니다 — bucket의 45.2~47.2%, `guest-run`의 10.7~11.6%.** 게이트 진입의
+**70.8~71.1%**가 setter elision으로 걸러지는 호출인데, elision은 호스트 왕복만 없앴을 뿐
+crossing은 그대로 남아 회당 약 1,790 cycle을 씁니다. 아무 부작용 없는 호출 1,300만 회가
+게이트의 절반입니다.
+
+**"중복 host 작업을 가진 지배적 ordinal" 분기는 해당 없음입니다.** `grTexSource`가
+26%로 1위지만 그 시간의 63~65%가 `wake`(호스트 스레드 스케줄 대기)이고 실제 GL 작업은
+11%입니다. `grBufferSwap`(15~17%)은 74~76%가 실제 present 작업입니다. wake 단가는
+rendezvous당 6,513~7,352 cycle이고 host spin이 33~36% miss입니다(guest spin은 1.0%).
+
+따라서 Glide 축의 다음 후보는 특정 ordinal의 HLE 최적화가 아니라 **(a) elision 판정을
+crossing 앞으로 옮겨 crossing 자체를 없애는 것**과 **(b) 호스트 스레드 wake 지연**입니다.
+(a)는 `guest-run`의 최대 약 11%, (b)는 약 6% 규모입니다.
+
+### pass 2 측정 완료 (2026-08-22, 사용자 3회 실행)
+
+`pass4~6.txt`(pumpit8 Release, vsync OFF, `REPIU_AOT_RETURN_STAGE_PROFILE=1`, 33.3k~52.5k
+프레임). 세 실행 모두 clamp `0/0`, `scans=0`, return fallback 0입니다. 전문은
+[return miss dispatch 분석](aot-dbt-return-miss-dispatch.md).
+
+**확인됨 1 — return 비용은 알려진 것보다 1.39배 큽니다.** outer 창이 `guest-run`의
+35.76 / 36.44 / 36.38%인데 기존 `kAotReturn` bucket은 25.63 / 26.18 / 26.07%입니다
+(비 1.396 / 1.392 / 1.395). bucket은 `HandleAotReturnTransfer` 안만 재므로 adapter의
+site 조회·frame marshalling·writeback이 빠져 있었습니다. 계측 오버헤드를 뺀 실비용은
+**`guest-run`의 약 27%**입니다. **이 문서가 16.5~17.5%로 적어 온 수치는 과소 계상이었고,
+위 항목들의 상대 순위 판단에 그대로 영향을 줍니다.**
+
+**확인됨 2 — 지배적 단계가 없습니다.** return 하나 약 1,120~1,140 cycle(계측 제외)이
+`resolve` 31.7%(약 356) · `patch` 27.5%(약 313) · `entry` 25.1%(약 282) · `read` 8.3%(약
+93) · `continuation` 7.3%(약 82)로 갈립니다. 상위 셋이 84%이고 서로 25~32% 안에 있어
+설계의 **"여러 stage에 고르게 남는 경우"** 분기입니다.
+
+**확인됨 3 — `patch` 단계는 "하지 않기로 결정"하는 비용입니다.** 정책 관측의
+99.39~99.41%가 bypass이고 실제 패치는 0.59~0.62%인데 단계는 covered의 27.5~28.2%
+(`guest-run`의 약 7.5%)를 씁니다. `IsAotInlineCacheMiss`가 megamorphic 판정보다 **먼저**
+돌기 때문입니다. Glide의 elision과 정확히 같은 형태의 낭비입니다 — 둘 다 비싼 경로를
+지난 뒤에 "안 한다"를 결정합니다.
+
+### 2026-08-22 새 순위 (두 축 측정 후)
+
+`guest-run` 예산: **return 약 27%**, **Glide gate 약 24%**(호스트 미도달 crossing 약 11%,
+wake 약 6%, 실제 GL 약 4.7%), VEH 약 5%, port I/O 약 1%.
+
+| # | 할 일 | 상한 | 위험 |
+|---|---|---:|---|
+| **1** | **generated megamorphic direct-return table** — 99.4%의 return이 결국 guest→cache target 조회 하나인데 그 조회는 221~226 cycle이고 도달·복귀에 약 900 cycle을 더 씁니다. **[완료, Task 499 — 기본 ON 승격]** OFF/ON 각 3회 60초 A/B에서 프레임 37,385 → 59,586, **+59.38%**(623 → 993 fps), 두 집단 범위 무중첩, tri/frame +2.84%로 장면 동일. `ResolvePromotedToggle`로 기본 ON이며 `0`이 도입 전 캐시 바이트(473,078)를 정확히 복원합니다. 근거가 pumpit8 무인 attract 장면 하나이므로 게임플레이 장면에서 한 번 확인해 두는 것이 좋습니다. 60초 스모크 2회에서 생성 코드가 return을 스스로 해결(적중 99.76% → table 32K에서 **100.00%**), host dispatch 49,554,406 → 214,790 → **2,932**, `kAotReturn` bucket 25.63% → **0.13%**, fallback·scans 0, retirement 37회 중 무효화 정상. 같은 실행에서 Glide gate가 40.7%로 지배적이므로 **다음 축은 Glide입니다.** `REPIU_AOT_DIRECT_RETURN_TABLE` opt-in, 꺼짐은 이미지 바이트 동일(`cache_bytes=425108`), probe 5항목·pumpit8 전체 probe 통과, emit된 바이트열 실행 검증 포함 | `guest-run`의 15~20% | 정확성 경계는 [설계 20260822-499](../design/20260822-499-megamorphic-direct-return-table.md)에서 정리했습니다 — 삽입은 검증된 active hit만, 무효화는 PIC guard reset과 같은 자리 |
+| **1-a** | **선행 후보: megamorphic site에서 IC miss 판정 건너뛰기** — 정책 상태를 `IsAotInlineCacheMiss`보다 먼저 봅니다 | 약 7.5% | 낮음, 국소 변경 |
+| **2** | **Glide elision 판정을 crossing 앞으로** — 게이트 진입의 70.8~71.1%가 아무 일도 하지 않는데 회당 약 1,790 cycle을 씁니다 | 약 11% | 중간 |
+| 3 | 호스트 스레드 wake 지연 (host spin 33~36% miss) | 약 6% | 중간 |
+| 4 | draw batch 평균 5.05 (Task 439 승격 근거는 16.02) — 장면 차이인지 회귀인지 | 미상 | 낮음 |
+
+**2026-08-13 세션의 순위(항목 3~5)는 이 측정으로 대체됩니다.** 그때 3순위였던 "IC
+슬롯/return 정책 재설계 — 패치 **횟수** 축"은 여기 1-a와 1로 구체화됐고, 4순위였던
+"Glide rendezvous 재측정"은 완료되어 2·3번이 됐습니다.
+
+### pass 2 measured (2026-08-22, three user runs)
+
+`pass4-6.txt` on pumpit8 Release with vsync off, all with zero clamps, `scans=0`, and zero
+return fallbacks. The outer window is 35.76 / 36.44 / 36.38% of `guest-run` against a
+`kAotReturn` bucket of 25.63 / 26.18 / 26.07% — a ratio of 1.39 — because the bucket never
+counted the adapter's site lookup, frame marshalling, or writeback. Excluding the instrument,
+return handling is **about 27% of `guest-run`**, so the 16.5-17.5% this document carried was an
+undercount that affected the ranking above. No stage dominates: `resolve` 31.7%, `patch` 27.5%,
+`entry` 25.1%, `read` 8.3%, `continuation` 7.3%, with the top three at 84% and within 25-32% of
+each other. And the `patch` stage is the cost of deciding to do nothing — 99.4% of policy
+observations bypass, yet the stage holds 7.5% of `guest-run`, because `IsAotInlineCacheMiss` runs
+before the megamorphic verdict is consulted. That is the same shape as the Glide elision: both
+decide "skip" only after paying for the expensive path.
+
+**New ranking (2026-08-22).** The `guest-run` budget is return ~27%, Glide gate ~24% (crossings
+that never reach the host ~11%, wake ~6%, real GL ~4.7%), VEH ~5%, port I/O ~1%. In order: (1)
+the generated megamorphic direct-return table, ceiling 15-20%, high risk until the
+generation/retirement correctness boundary is designed; (1-a) its low-risk precursor, consulting
+the policy state before `IsAotInlineCacheMiss` at megamorphic sites, ceiling ~7.5%; (2) moving
+the Glide elision test ahead of the crossing, ceiling ~11%; (3) host wake latency, ~6%; and (4)
+checking whether the 5.05 mean draw batch against Task 439's 16.02 is scene or regression. **This
+supersedes items 3-5 of the 2026-08-13 ranking.**
+
+### pass 1 measured (2026-08-22, three user runs)
+
+Three pumpit8 Release runs with vsync off and `REPIU_GLIDE_ORDINAL_TIME_PROFILE=1` put the
+gate bucket at 23.67-24.71% of `guest-run` and showed its largest component is **crossings that
+never reach the host thread**: 45.2-47.2% of the bucket, 10.7-11.6% of `guest-run`. Setter
+elision discards 70.8-71.1% of all gate entries, but it removed only the host round trip, so
+about 1,790 cycles per crossing remain. The "dominant ordinal with redundant host work" branch
+does not apply: `grTexSource` leads at 26% but 63-65% of that is `wake` and only 11% is GL work,
+while `grBufferSwap`'s 15-17% is 74-76% real presentation. Waking the host costs 6,513-7,352
+cycles per rendezvous with the host spin missing 33-36% against the guest spin's 1.0%. The Glide
+axis therefore points at (a) moving the elision test ahead of the crossing, worth up to about 11%
+of `guest-run`, and (b) host wake latency, about 6%. Details in
+[Glide gate cost attribution](glide-gate-cost-attribution.md). **The three pass-2 runs are still
+outstanding.** 절차는 [return stage 귀속 가이드](../guides/return-stage-attribution.md),
+구현 근거는 [Task 482 작업 로그](../work-logs/20260822-482-post-return-bottleneck-attribution.md)에
+있습니다. **계측 실행의 FPS는 성능 근거로 쓰지 마십시오.**
+
+## Task 482 return-stage attribution (2026-08-22)
+
+**Implemented; not yet measured.** The 2026-08-13 session named this the next task, and it sat
+empty while Tasks 483-498 went to other axes. An opt-in instrument
+(`REPIU_AOT_RETURN_STAGE_PROFILE`) now splits the return handler into five mutually exclusive
+stages -- entry validation, the guest stack target read with bookkeeping, target classification
+and resolution, the megamorphic policy and patch, and guest continuation -- plus the residual of
+that same window. The DBT adapter and the VEH path each open an outer window, depth-guarded so
+one return is counted once and the adapter's site lookup stays inside it. The Task 481 policy
+gained a per-site bypass count, and the shutdown summary ranks the sixteen most-observed sites.
+
+Debug and Release builds, eight synthetic probe checks, and the complete pumpit8 probe (exit 0)
+pass, and one 60-second Release run on pumpit8 confirmed the instrument populates: 43,197,279
+returns, 75.51% coverage, zero clamps, zero return fallbacks, `scans=0`, and `read`/`resolve`/
+`patch` counts matching the policy observation count exactly.
+
+**That single run is not a judgement** -- it is one scene, not three reproductions -- but it
+raises three hypotheses worth testing in the real passes. The existing `kAotReturn` bucket
+undercounts return cost by 1.38x (51,469,591,820 against an outer window of 71,256,668,879),
+because the adapter's site lookup and frame marshalling sit outside the resolver, the same shape
+as the 2026-08-13 finding one layer down. The `patch` stage holds 30.08% of covered cycles while
+only 0.75% of observations patched, so what remains is the per-return miss test rather than
+patching. And `resolve` is the largest stage at 30.72%, though its 40,610,256-cycle maximum comes
+from the 266 dynamic translations that landed inside that window rather than from the average
+path. The residual of 24.49%, about 404 cycles per return, matches the gap between Task 481's
+uninstrumented 1,275 cycles and this run's 1,650-cycle outer window, so it reads as the
+instrument itself.
+
+The real attribution passes still need the same scene reproduced three times, which requires user
+runs. The procedure is in the
+[return-stage attribution guide](../guides/return-stage-attribution.md) and the implementation
+evidence in the
+[Task 482 work log](../work-logs/20260822-482-post-return-bottleneck-attribution.md). Never cite
+an instrumented run's FPS.
+
 ## Task 495 JAMMA history 안전 정리 / Safe JAMMA history pruning
 
 **완료:** Task 494 사용자 로그는 2P 다섯 위치의
@@ -601,6 +771,10 @@ DBT host-stack return site가 16회 이상 miss하면서 8개 이상의 서로 �
 index scan은 0입니다. 장면은 return/swap +55.29%, primitive/swap -31.85%로 동등하지
 않아 FPS와 전체 cycle/swap은 귀속하지 않습니다. 다음 과제는 Task 482의 Glide ordinal과
 return 잔여 sub-stage 귀속입니다.
+
+**2026-08-22 갱신:** Task 482 계측은 구현됐고 측정만 남았습니다. 위
+[Task 482 절](#task-482-return-stage-귀속-계측--return-stage-attribution-2026-08-22)을
+보십시오.
 
 #### 방법 규칙 (이번 세션에서 확인)
 

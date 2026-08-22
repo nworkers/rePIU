@@ -13,6 +13,7 @@
 #include "repiu/platform/win32/aot_worker_timing.h"
 #include "repiu/platform/win32/glide_buffer_swap_timing.h"
 #include "repiu/platform/win32/glide_gate_timing.h"
+#include "repiu/platform/win32/aot_return_stage_profile.h"
 #include "repiu/platform/win32/glide_ordinal_timing.h"
 #include "repiu/platform/win32/glide_gl_error_policy.h"
 #include "repiu/platform/win32/glide_setter_phase_timing.h"
@@ -677,6 +678,19 @@ struct Win32MinimalExecutionAttempt
     Win32GuestPositionCensusSnapshot guest_position_census;
     Win32ExecutionTimeProfileSnapshot execution_time_profile;
     Win32AotWorkerTimingSnapshot aot_worker_timing;
+    // Task 482: the return handler bucket split into five stages, the residual
+    // of the same window, and the Task 481 policy sites that produced the most
+    // observations. Filled only while REPIU_AOT_RETURN_STAGE_PROFILE is set.
+    Win32AotReturnStageSnapshot aot_return_stage_profile;
+    std::vector<Win32AotReturnStageSiteObservation> aot_return_stage_sites;
+    // Task 499: the memo table generated code probes on the return miss path.
+    bool aot_direct_return_table_enabled = false;
+    std::uint32_t aot_direct_return_table_entry_count = 0;
+    std::uint32_t aot_direct_return_table_hit_count = 0;
+    std::uint64_t aot_direct_return_table_insert_count = 0;
+    std::uint64_t aot_direct_return_table_overwrite_count = 0;
+    std::uint64_t aot_direct_return_table_clear_count = 0;
+    std::uint32_t aot_direct_return_probe_site_count = 0;
     // Task 333: the Glide host-thread rendezvous split into waiting and work.
     Win32GlideGateTimingSnapshot glide_gate_timing;
     // Task 419: how often a spin resolved that rendezvous before the condition

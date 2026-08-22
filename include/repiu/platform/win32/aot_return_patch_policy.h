@@ -19,6 +19,10 @@ struct Win32AotReturnPatchSiteState
     std::array<std::uint32_t, kAotReturnMegamorphicTargetCapacity> targets{};
     std::uint32_t target_count = 0;
     bool megamorphic = false;
+    // Task 482: the same bypass total the policy already keeps, kept per site
+    // as well so the shutdown report can rank sites without a second pass over
+    // the hot path. One saturating increment, no allocation.
+    std::uint32_t bypass_count = 0;
 };
 
 struct Win32AotReturnPatchPolicy

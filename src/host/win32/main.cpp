@@ -2559,6 +2559,75 @@ void PrintExecutionAttempt(
         attempt.aot_return_patch_policy_observation_count,
         attempt.aot_return_patch_policy_megamorphic_site_count,
         attempt.aot_return_patch_policy_bypass_count);
+    {
+        // Task 482: the return bucket split into five mutually exclusive
+        // stages. Coverage is reported beside the outer window so a residual
+        // that grows is visible as an attribution gap rather than as speed.
+        const auto& stage = attempt.aot_return_stage_profile;
+        const std::uint64_t covered =
+            repiu::platform::win32::AotReturnStageCoveredCycles(stage);
+        const double coverage = stage.outer_cycles != 0U
+            ? 100.0 * static_cast<double>(covered) /
+                static_cast<double>(stage.outer_cycles)
+            : 0.0;
+        logger.info(
+            "Win32 AOT return stage profile enabled/returns/outer/max-outer/"
+            "covered/coverage/residual: {}/{}/{}/{}/{}/{:.2f}%/{}",
+            stage.enabled, stage.outer_count, stage.outer_cycles,
+            stage.max_outer_cycles, covered, coverage,
+            stage.residual_cycles);
+        logger.info(
+            "Win32 AOT return stage cycles entry/read/resolve/patch/"
+            "continuation: {}/{}/{}/{}/{}",
+            stage.cycles[0], stage.cycles[1], stage.cycles[2],
+            stage.cycles[3], stage.cycles[4]);
+        logger.info(
+            "Win32 AOT return stage counts entry/read/resolve/patch/"
+            "continuation: {}/{}/{}/{}/{}",
+            stage.counts[0], stage.counts[1], stage.counts[2],
+            stage.counts[3], stage.counts[4]);
+        logger.info(
+            "Win32 AOT return stage max entry/read/resolve/patch/"
+            "continuation: {}/{}/{}/{}/{}",
+            stage.max_cycles[0], stage.max_cycles[1], stage.max_cycles[2],
+            stage.max_cycles[3], stage.max_cycles[4]);
+        logger.info(
+            "Win32 AOT return stage clamped residual/sample: {}/{}",
+            stage.residual_clamp_count, stage.clamped_sample_count);
+    }
+    {
+        // Task 499. Hits are counted by the emitted probe itself, so a nonzero
+        // value is direct evidence that generated code resolved a return
+        // without crossing to the host.
+        const std::uint64_t reached =
+            attempt.aot_direct_return_table_hit_count +
+            attempt.aot_return_patch_policy_observation_count;
+        const double hit_share = reached != 0U
+            ? 100.0 *
+                static_cast<double>(attempt.aot_direct_return_table_hit_count) /
+                static_cast<double>(reached)
+            : 0.0;
+        logger.info(
+            "Win32 AOT direct-return table enabled/sites/entries/hits/share/"
+            "inserts/overwrites/clears: {}/{}/{}/{}/{:.2f}%/{}/{}/{}",
+            attempt.aot_direct_return_table_enabled,
+            attempt.aot_direct_return_probe_site_count,
+            attempt.aot_direct_return_table_entry_count,
+            attempt.aot_direct_return_table_hit_count, hit_share,
+            attempt.aot_direct_return_table_insert_count,
+            attempt.aot_direct_return_table_overwrite_count,
+            attempt.aot_direct_return_table_clear_count);
+    }
+    for (const auto& site : attempt.aot_return_stage_sites)
+    {
+        logger.info(
+            "Win32 AOT return stage site: index={} guest={} miss_offset={} "
+            "observations={} distinct={} bypasses={} megamorphic={}",
+            site.site_index, Hex32(site.guest_source),
+            Hex32(site.miss_cache_offset), site.observation_count,
+            site.distinct_target_count, site.bypass_count,
+            site.megamorphic);
+    }
     logger.info("Win32 AOT code writes/retire attempt/success: {}/{}/{}",
                 attempt.aot_code_write_count,
                 attempt.aot_page_retire_attempt_count,
@@ -4988,6 +5057,19 @@ int main(int argc, char** argv)
         use_dynamic_backend &&
         repiu::runtime::ResolvePromotedToggle(
             std::getenv("REPIU_AOT_DBT_TIMER_SAFE_POINTS"));
+    // Task 499 promoted this after a controlled A/B: three alternating pairs of
+    // 60-second pumpit8 runs measured 37,385 against 59,586 frames, +59.38%,
+    // with the two groups not overlapping and triangles per frame agreeing to
+    // 2.84%. Explicit false and unknown values remain fail-closed opt-outs for
+    // diagnosis, matching Tasks 384, 386, and 390. While off nothing is
+    // emitted, so the control side stays a byte-for-byte control.
+    aot_build_options.enable_direct_return_table =
+        use_dynamic_backend &&
+        repiu::runtime::ResolvePromotedToggle(
+            std::getenv("REPIU_AOT_DIRECT_RETURN_TABLE"));
+    aot_build_options.direct_return_table_bits =
+        repiu::runtime::ResolveAotDirectReturnTableBits(
+            std::getenv("REPIU_AOT_DIRECT_RETURN_TABLE_BITS"));
     aot_build_options.enable_dbt_hle_dispatch =
         use_dynamic_backend &&
         repiu::runtime::ResolveOptInToggle(

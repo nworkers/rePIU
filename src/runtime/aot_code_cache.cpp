@@ -309,7 +309,7 @@ bool EmitIndirectInlineCacheSlot(const AotInstructionRecord& instruction,
     for (const AotInlineCacheEntry& entry : site.entries)
     {
         if (!PatchRel32(&image->bytes, entry.guard_offset + 1U,
-                        site.miss_cache_offset))
+                        AotInlineCacheGuardTargetOffset(site)))
         {
             return false;
         }
@@ -352,6 +352,7 @@ bool EmitJumpTableSlot(const AotInstructionRecord& instruction,
 
 bool EmitReturnInlineCacheSlot(const AotInstructionRecord& instruction,
                                bool enable_dbt_return_miss_dispatch,
+                               bool enable_direct_return_table,
                                AotCodeCacheImage* image)
 {
     if (image == nullptr || instruction.bytes.empty() ||
@@ -411,6 +412,19 @@ bool EmitReturnInlineCacheSlot(const AotInstructionRecord& instruction,
     site.guard_offset = site.entries[0].guard_offset;
     site.jump_displacement_offset =
         site.entries[0].jump_displacement_offset;
+    // Task 499: the probe precedes the miss tail so a guard reaches it first
+    // and a probe miss falls straight through. `miss_cache_offset` therefore
+    // keeps pointing at the popfd below, which every existing consumer keys on.
+    if (enable_direct_return_table && enable_dbt_return_miss_dispatch)
+    {
+        AotDirectReturnProbeSite probe_site;
+        if (EmitAotDirectReturnProbe(&image->bytes, instruction.guest_address,
+                                     pop_bytes, &probe_site))
+        {
+            site.miss_probe_cache_offset = probe_site.cache_offset;
+            image->direct_return_probe_sites.push_back(probe_site);
+        }
+    }
     site.miss_cache_offset = static_cast<std::uint32_t>(image->bytes.size());
     image->bytes.push_back(0x9DU);
     if (!enable_dbt_return_miss_dispatch)
@@ -445,7 +459,7 @@ bool EmitReturnInlineCacheSlot(const AotInstructionRecord& instruction,
     for (const AotInlineCacheEntry& entry : site.entries)
     {
         if (!PatchRel32(&image->bytes, entry.guard_offset + 1U,
-                        site.miss_cache_offset))
+                        AotInlineCacheGuardTargetOffset(site)))
         {
             return false;
         }
@@ -886,6 +900,109 @@ bool EmitUnresolvedDirectEdgeDispatch(AotCodeCacheFixup* fixup,
 }
 }  // namespace
 
+// Task 499. Fourteen instructions that resolve a megamorphic return without
+// crossing to the host. Entered with the site's pushfd still on the stack:
+// [esp] = flags, [esp+4] = the guest return target.
+//
+// The resolved target travels through the guest stack slot rather than a global
+// scratch word, because the host injects timer interrupts asynchronously and
+// could otherwise overwrite a global between the store and the jump. The
+// closing RET reproduces the original instruction's stack effect exactly, the
+// same technique the existing success continuation uses.
+bool EmitAotDirectReturnProbe(std::vector<std::uint8_t>* bytes,
+                              const std::uint32_t guest_source,
+                              const std::uint32_t pop_bytes,
+                              AotDirectReturnProbeSite* site)
+{
+    if (bytes == nullptr || site == nullptr || pop_bytes < 4U ||
+        pop_bytes > 0xFFFFU + 4U)
+    {
+        return false;
+    }
+    *site = AotDirectReturnProbeSite{};
+    site->guest_source = guest_source;
+    site->cache_offset = static_cast<std::uint32_t>(bytes->size());
+    bytes->push_back(0x50U);  // push eax
+    bytes->push_back(0x51U);  // push ecx
+    // mov eax, [esp+12] -- the guest return target under ecx, eax, and flags.
+    bytes->insert(bytes->end(), {0x8BU, 0x44U, 0x24U, 0x0CU});
+    bytes->insert(bytes->end(), {0x8BU, 0xC8U});         // mov ecx, eax
+    bytes->insert(bytes->end(), {0xC1U, 0xE9U, 0x0DU});  // shr ecx, 13
+    bytes->insert(bytes->end(), {0x33U, 0xC8U});         // xor ecx, eax
+    bytes->insert(bytes->end(), {0x81U, 0xE1U});         // and ecx, imm32
+    site->mask_immediate_offset = static_cast<std::uint32_t>(bytes->size());
+    AppendImmediate32(bytes, 0U);
+    // cmp [ecx*8 + table], eax
+    bytes->insert(bytes->end(), {0x39U, 0x04U, 0xCDU});
+    site->key_address_offset = static_cast<std::uint32_t>(bytes->size());
+    AppendImmediate32(bytes, 0U);
+    bytes->push_back(0x75U);  // jne .miss
+    const std::size_t miss_rel8_offset = bytes->size();
+    bytes->push_back(0U);
+    // mov ecx, [ecx*8 + table + 4]
+    bytes->insert(bytes->end(), {0x8BU, 0x0CU, 0xCDU});
+    site->target_address_offset = static_cast<std::uint32_t>(bytes->size());
+    AppendImmediate32(bytes, 0U);
+    // mov [esp+12], ecx -- overwrite the guest return slot with the cache
+    // target so the RET below jumps there.
+    bytes->insert(bytes->end(), {0x89U, 0x4CU, 0x24U, 0x0CU});
+    bytes->insert(bytes->end(), {0xFFU, 0x05U});  // inc dword ptr [counter]
+    site->hit_counter_address_offset =
+        static_cast<std::uint32_t>(bytes->size());
+    AppendImmediate32(bytes, 0U);
+    bytes->push_back(0x59U);  // pop ecx
+    bytes->push_back(0x58U);  // pop eax
+    bytes->push_back(0x9DU);  // popfd
+    if (pop_bytes == 4U)
+    {
+        bytes->push_back(0xC3U);
+    }
+    else
+    {
+        const std::uint32_t immediate = pop_bytes - 4U;
+        bytes->push_back(0xC2U);
+        bytes->push_back(static_cast<std::uint8_t>(immediate));
+        bytes->push_back(static_cast<std::uint8_t>(immediate >> 8U));
+    }
+    const std::size_t miss_offset = bytes->size();
+    bytes->push_back(0x59U);  // pop ecx
+    bytes->push_back(0x58U);  // pop eax
+    const std::ptrdiff_t relative = static_cast<std::ptrdiff_t>(miss_offset) -
+        static_cast<std::ptrdiff_t>(miss_rel8_offset + 1U);
+    if (relative < 0 || relative > 127)
+    {
+        return false;
+    }
+    (*bytes)[miss_rel8_offset] = static_cast<std::uint8_t>(relative);
+    return true;
+}
+
+bool PatchAotDirectReturnProbe(std::uint8_t* bytes,
+                               const std::size_t byte_count,
+                               const AotDirectReturnProbeSite& site,
+                               const std::uint32_t key_address,
+                               const std::uint32_t mask,
+                               const std::uint32_t hit_counter_address)
+{
+    if (bytes == nullptr || site.mask_immediate_offset + 4U > byte_count ||
+        site.key_address_offset + 4U > byte_count ||
+        site.target_address_offset + 4U > byte_count ||
+        site.hit_counter_address_offset + 4U > byte_count)
+    {
+        return false;
+    }
+    const std::uint32_t target_address = key_address + 4U;
+    std::memcpy(bytes + site.mask_immediate_offset, &mask, sizeof(mask));
+    std::memcpy(bytes + site.key_address_offset, &key_address,
+                sizeof(key_address));
+    std::memcpy(bytes + site.target_address_offset, &target_address,
+                sizeof(target_address));
+    std::memcpy(bytes + site.hit_counter_address_offset, &hit_counter_address,
+                sizeof(hit_counter_address));
+    return true;
+}
+
+
 bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                             AotCodeCacheImage* image)
 {
@@ -907,6 +1024,8 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
         options.indirect_inline_cache_entry_count;
     image->dbt_return_miss_dispatch_enabled =
         options.enable_dbt_return_miss_dispatch;
+    image->direct_return_table_enabled = options.enable_direct_return_table;
+    image->direct_return_table_bits = options.direct_return_table_bits;
     image->dbt_hle_dispatch_enabled =
         options.enable_dbt_hle_dispatch;
     image->dbt_port_io_dispatch_enabled =
@@ -955,7 +1074,8 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                 case AotInstructionKind::kReturn:
                     if (!EmitReturnInlineCacheSlot(
                             instruction,
-                            options.enable_dbt_return_miss_dispatch, image))
+                            options.enable_dbt_return_miss_dispatch,
+                            options.enable_direct_return_table, image))
                     {
                         image->bytes.push_back(0xCCU);
                         image->fixups.push_back({AotFixupKind::kIndirectExit,

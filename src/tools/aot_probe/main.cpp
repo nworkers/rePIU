@@ -22,6 +22,8 @@
 #include "aot_inline_cache_site_index_probe.h"
 #include "aot_return_dispatch_site_index_probe.h"
 #include "aot_return_patch_policy_probe.h"
+#include "aot_direct_return_table_probe.h"
+#include "aot_return_stage_profile_probe.h"
 #include "execution_time_profile_probe.h"
 #include "glide_gate_timing_probe.h"
 #include "glide_ordinal_timing_probe.h"
@@ -655,6 +657,16 @@ int main(int argc, char** argv)
     {
         return repiu::tools::RunNvramPathProbe() ? 0 : 1;
     }
+    if (argc == 2 &&
+        std::strcmp(argv[1], "--return-stage-profile") == 0)
+    {
+        return repiu::tools::RunAotReturnStageProfileProbe() ? 0 : 1;
+    }
+    if (argc == 2 &&
+        std::strcmp(argv[1], "--direct-return-table") == 0)
+    {
+        return repiu::tools::RunAotDirectReturnTableProbe() ? 0 : 1;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--jump-table-guard") == 0)
     {
         return repiu::tools::RunJumpTableGuardProbe() ? 0 : 1;
@@ -979,6 +991,14 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunAotReturnPatchPolicyProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunAotReturnStageProfileProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunAotDirectReturnTableProbe())
     {
         return 1;
     }

@@ -1075,6 +1075,8 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.aot_worker_timing != nullptr
             ? SnapshotAotWorkerTiming(*context.aot_worker_timing)
             : Win32AotWorkerTimingSnapshot{};
+    attempt->aot_return_stage_profile =
+        SnapshotAotReturnStageProfile(context.aot_return_stage_profile);
     // Task 333: read after the guest thread has stopped, so the backend's
     // counters are quiescent and no lock is needed here.
     attempt->glide_gate_timing = context.glide_backend.glide_gate_timing();
@@ -1455,6 +1457,33 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
             return_patch_policy.megamorphic_site_count;
         attempt->aot_return_patch_policy_bypass_count =
             return_patch_policy.bypass_count;
+        const runtime::AotDirectReturnTable& direct_return_table =
+            context.aot_placement->direct_return_table;
+        attempt->aot_direct_return_table_enabled =
+            context.aot_placement->direct_return_table_enabled;
+        attempt->aot_direct_return_table_entry_count =
+            static_cast<std::uint32_t>(direct_return_table.entries.size());
+        attempt->aot_direct_return_table_hit_count =
+            direct_return_table.hit_count;
+        attempt->aot_direct_return_table_insert_count =
+            direct_return_table.insert_count;
+        attempt->aot_direct_return_table_overwrite_count =
+            direct_return_table.overwrite_count;
+        attempt->aot_direct_return_table_clear_count =
+            direct_return_table.clear_count;
+        attempt->aot_direct_return_probe_site_count =
+            static_cast<std::uint32_t>(
+                context.aot_placement->direct_return_probe_sites.size());
+        // Task 482: rank the policy sites once, after the guest thread has
+        // stopped. The hot path only increments the per-site counters this
+        // reads, so nothing here runs while the game is running.
+        if (AotReturnStageProfileEnabled())
+        {
+            RankAotReturnStageSites(
+                return_patch_policy,
+                context.aot_placement->dbt_return_dispatch_sites,
+                &attempt->aot_return_stage_sites);
+        }
     }
     attempt->aot_last_reentry_cache_address =
         context.aot_reentry_cache_address;
