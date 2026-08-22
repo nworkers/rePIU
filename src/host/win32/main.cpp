@@ -30,6 +30,9 @@
 #include "repiu/runtime/runtime_memory.h"
 #include "repiu/runtime/runtime_memory_arena.h"
 #include "repiu/runtime/selector_table.h"
+#include "repiu/launcher/launcher_settings.h"
+#include "repiu/launcher/launcher_ui.h"
+#include "repiu/launcher/rom_set_catalog.h"
 #include "repiu/target/target_profile.h"
 
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -4672,6 +4675,73 @@ const repiu::target::TargetProfile* SelectTargetProfile(int argc,
     return repiu::target::FindTargetProfileById(target_id);
 }
 
+// Task 500. With no arguments the launcher chooses the ROM set; with any
+// argument the existing selection path is used untouched, so every scripted
+// invocation behaves exactly as before. REPIU_LAUNCHER is a fail-closed opt-out
+// for automation that runs the binary bare.
+bool LauncherRequested(int argc)
+{
+    if (argc >= 2)
+    {
+        return false;
+    }
+    return repiu::runtime::ResolvePromotedToggle(
+        std::getenv("REPIU_LAUNCHER"));
+}
+
+// Publishes the launcher's stored options as the environment variables the
+// existing consumers already read, without ever overwriting one the caller set.
+void PublishLauncherSettings(
+    const repiu::launcher::LauncherSettings& settings,
+    const repiu::launcher::LauncherEnvironmentOverrides& overrides,
+    const std::shared_ptr<spdlog::logger>& logger)
+{
+    const auto applied = repiu::launcher::ApplyLauncherSettings(
+        settings, overrides,
+        [](const char* name, const std::string& value) {
+            _putenv_s(name, value.c_str());
+        });
+    logger->info("Launcher settings published swap-interval/volume: {}/{}",
+                 applied.swap_interval_published,
+                 applied.ymz_volume_published);
+}
+
+// Task 500 revision. The launcher has to load a GPU driver to draw anything,
+// and that driver claims low address space the guest needs: a first attempt
+// that continued in the same process failed with the fixed reservation at
+// 0x00010000 blocked by a committed 12 KiB block and every relocated-image
+// candidate from 0x01000000 through 0x09000000 occupied. The guest address
+// space must be claimed before any driver loads, which cannot be reconciled
+// with drawing first, so the selection is carried into a fresh process whose
+// address space is still intact. The child receives the ROM set as its
+// argument, so it never opens the launcher itself, and it inherits the
+// environment the launcher just published.
+int RunSelectedRomSetInNewProcess(const char* executable_path,
+                                  const std::string& rom_set_id,
+                                  const std::shared_ptr<spdlog::logger>& logger)
+{
+    std::string command_line =
+        repiu::launcher::BuildLauncherChildCommandLine(executable_path,
+                                                       rom_set_id);
+
+    STARTUPINFOA startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    if (CreateProcessA(executable_path, command_line.data(), nullptr, nullptr,
+                       TRUE, 0, nullptr, nullptr, &startup, &process) == 0)
+    {
+        logger->error("Failed to start {} for {}: Win32 error {}",
+                      executable_path, rom_set_id, GetLastError());
+        return 1;
+    }
+    WaitForSingleObject(process.hProcess, INFINITE);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(process.hProcess, &exit_code);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    return static_cast<int>(exit_code);
+}
+
 std::optional<repiu::target::TargetProfile> BuildDirectExecutableProfile(
     int argc,
     char** argv)
@@ -4720,6 +4790,70 @@ int main(int argc, char** argv)
     // itself instead of vanishing into an exit code.
     repiu::platform::win32::InstallWin32HostCrashReporter();
     std::shared_ptr<spdlog::logger> logger = CreateLoaderLogger();
+
+    if (LauncherRequested(argc))
+    {
+        const std::filesystem::path config_directory("cfg");
+        // The caller's environment is captured once, before anything is
+        // published. After the first launch our own published variables would
+        // otherwise look like caller-set ones and freeze every later change the
+        // operator makes in the launcher.
+        const repiu::launcher::LauncherEnvironmentOverrides caller_overrides =
+            repiu::launcher::ResolveLauncherEnvironmentOverrides(
+                std::getenv(repiu::launcher::kLauncherSwapIntervalVariable),
+                std::getenv(repiu::launcher::kLauncherYmzVolumeVariable));
+        const char* const executable_path =
+            argc >= 1 && argv[0] != nullptr ? argv[0] : "repiu.exe";
+        bool launcher_available = true;
+        // The launcher is the front end for the whole session: a finished game
+        // returns here rather than ending the process, so an operator can pick
+        // another ROM set without starting rePIU again.
+        while (launcher_available)
+        {
+            auto stored =
+                repiu::launcher::LoadLauncherSettings(config_directory);
+            for (const std::string& warning : stored.warnings)
+            {
+                logger->warn("{}", warning);
+            }
+            const repiu::launcher::LauncherUiResult chosen =
+                repiu::launcher::RunLauncherUi(
+                    repiu::launcher::BuildRomSetCatalog("roms"),
+                    stored.settings);
+            if (chosen.unavailable)
+            {
+                // A headless or driver-less host must still run the previous
+                // no-argument behavior rather than fail to start.
+                logger->warn(
+                    "Launcher unavailable, using the default target: {}",
+                    chosen.message);
+                launcher_available = false;
+                break;
+            }
+            if (chosen.settings_changed &&
+                !repiu::launcher::SaveLauncherSettings(config_directory,
+                                                       chosen.settings))
+            {
+                logger->warn("Failed to write {}",
+                             repiu::launcher::LauncherSettingsPath(
+                                 config_directory)
+                                 .string());
+            }
+            if (!chosen.launch)
+            {
+                logger->info("Launcher closed without starting a ROM set");
+                return 0;
+            }
+            PublishLauncherSettings(chosen.settings, caller_overrides, logger);
+            logger->info("Launcher selected ROM set: {}", chosen.rom_set_id);
+            const int child_exit_code = RunSelectedRomSetInNewProcess(
+                executable_path, chosen.rom_set_id, logger);
+            // A failed run returns to the launcher instead of ending the
+            // session, so the operator can read the reason and choose again.
+            logger->info("{} exited with code {}; returning to the launcher",
+                         chosen.rom_set_id, child_exit_code);
+        }
+    }
 
     const repiu::target::TargetProfile* profile =
         SelectTargetProfile(argc, argv);

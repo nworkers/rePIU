@@ -24,7 +24,7 @@ std::uint32_t ReadLe32(const std::uint8_t* bytes)
            (static_cast<std::uint32_t>(bytes[3]) << 24U);
 }
 
-bool ZipContainsRequiredPiu10Entries(const std::filesystem::path& path)
+bool ZipContainsRequiredPiu10EntriesImpl(const std::filesystem::path& path)
 {
     std::ifstream stream(path, std::ios::binary);
     if (!stream)
@@ -385,6 +385,11 @@ bool ExtractTree(IsoTrackReader* reader,
 
 }  // namespace
 
+bool PiuRomZipHasRequiredEntries(const std::filesystem::path& rom_zip_path)
+{
+    return ZipContainsRequiredPiu10EntriesImpl(rom_zip_path);
+}
+
 bool PreparePiuChdMount(std::string_view rom_set_id,
                         const std::filesystem::path& roms_root,
                         const std::filesystem::path& cache_root,
@@ -409,7 +414,7 @@ bool PreparePiuChdMount(std::string_view rom_set_id,
     result->rom_zip_path = roms_root / (result->rom_set_id + ".zip");
     const std::filesystem::path chd_directory =
         roms_root / result->rom_set_id;
-    if (!ZipContainsRequiredPiu10Entries(result->rom_zip_path))
+    if (!PiuRomZipHasRequiredEntries(result->rom_zip_path))
     {
         result->message = result->rom_set_id +
             ".zip is missing required PIU10 ROM entries";

@@ -1277,6 +1277,38 @@ guest thread is already blocked for the retirement rendezvous, so no lock and no
 are required. The hit path carries its result in a **stack slot** rather than a global, closing the
 window in which an asynchronous timer injection could overwrite it between the store and the jump.
 
+## 런처 / Launcher
+
+Task 500부터 인자 없이 실행하면 런처가 열립니다. 네이티브 툴킷을 쓰지 않고 호스트가 이미
+만드는 SDL3 창에 Dear ImGui(MIT)로 직접 그립니다 — 리눅스에서 쓸 만한 크로스플랫폼 네이티브
+툴킷이 모두 LGPL 계열이라 프로젝트 라이선스 정책과 충돌하고, 캐비닛에는 키보드·마우스가
+없어 결국 게임 창 안에서 조작할 수 있어야 하며, 같은 레이어가 나중에 인게임 OSD가 되기
+때문입니다.
+
+구성은 플랫폼 공용을 우선합니다. `launcher::RomSetCatalog`는 `std::filesystem`만으로 내장
+프로필의 롬셋 가용성과 사유를 만들고(`PreparePiuChdMount`와 같은 규칙을 추출 없이 적용),
+`launcher::LauncherSettings`는 `cfg/repiu.ini`를 기존 `IniDocument`로 읽고 씁니다. UI는
+SDL3와 OpenGL만 쓰므로 역시 공용 트리에 있고, host `main.cpp`에는 배선만 남습니다.
+
+설정은 새 파라미터를 subsystem마다 통과시키는 대신 **기존 소비자가 이미 읽는 환경 변수로
+게시**합니다. 호출자가 이미 설정한 변수는 절대 덮어쓰지 않으므로, 벤치마크 스크립트와 진단
+절차의 우선권이 그대로 유지됩니다. 인자가 있는 실행은 런처를 거치지 않고
+`REPIU_LAUNCHER=0`은 인자 없는 실행에서도 런처를 건너뜁니다.
+
+Since Task 500, running with no arguments opens a launcher drawn with Dear ImGui (MIT) inside the
+SDL3 window the host already creates, rather than through a native toolkit: every cross-platform
+native toolkit that would serve Linux is LGPL-family and conflicts with the project's license
+policy, cabinets have no keyboard or mouse so the UI must eventually live in the game window
+anyway, and the same layer becomes the in-game OSD later. The structure is platform-neutral first:
+`launcher::RomSetCatalog` derives each ROM set's availability and reason with `std::filesystem`
+alone, applying the same rules as `PreparePiuChdMount` without extracting, and
+`launcher::LauncherSettings` reads and writes `cfg/repiu.ini` through the existing `IniDocument`.
+The UI touches only SDL3 and OpenGL, so it also lives in the shared tree, and `main.cpp` keeps just
+the wiring. Settings reach the run by being published as the environment variables the existing
+consumers already read, never overwriting one the caller set, so benchmark scripts and diagnostic
+procedures keep their precedence. An argument-bearing invocation bypasses the launcher, and
+`REPIU_LAUNCHER=0` skips it for argument-free automation.
+
 ## AOT build option toggle 관례 / AOT build-option toggle convention
 
 Task 424는 환경 변수 하나로 기능을 켜고 끄는 관례를 플랫폼 공용

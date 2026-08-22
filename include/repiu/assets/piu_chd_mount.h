@@ -27,6 +27,13 @@ struct PiuChdMountResult
     std::string message;
 };
 
+// Task 500: the ROM-zip half of the mount's own precondition, exposed so the
+// launcher can report availability without extracting a disc. Scans for the
+// PIU10 entry names rather than parsing the archive, which is what the mount
+// has always done.
+[[nodiscard]] bool PiuRomZipHasRequiredEntries(
+    const std::filesystem::path& rom_zip_path);
+
 bool PreparePiuChdMount(std::string_view rom_set_id,
                         const std::filesystem::path& roms_root,
                         const std::filesystem::path& cache_root,

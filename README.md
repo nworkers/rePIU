@@ -158,6 +158,40 @@ historical.*
 
 ## 사용 예 / Usage
 
+### 런처 / Launcher
+
+인자 없이 실행하면 런처가 열려 롬셋 목록을 보여주고, 고른 롬셋을 같은 프로세스에서
+실행합니다.
+
+```powershell
+build\win32_x86_debug\Debug\repiu.exe
+```
+
+목록에는 내장 카탈로그의 롬셋이 **전부** 나오고, 실행할 수 없는 것은 사유와 함께 흐리게
+표시됩니다(`roms\<id>.zip` 없음, 필수 PIU10 엔트리 없음, `roms\<id>\` 없음, CHD 없음,
+CHD가 둘 이상). 어떤 디스크가 왜 안 되는지 목록에서 바로 확인할 수 있습니다.
+
+vsync와 사운드 게인은 런처에서 바꿔 `cfg\repiu.ini`에 저장합니다. **같은 의미의 환경
+변수가 설정돼 있으면 환경 변수가 이깁니다** — 측정 스크립트와 진단 절차가 계속 우선권을
+갖습니다.
+
+게임을 끝내면 런처로 돌아오므로 다른 롬셋을 이어서 고를 수 있습니다. 종료는 런처의
+Quit입니다.
+
+인자를 하나라도 주면 런처는 뜨지 않고 기존 동작 그대로이며, **게임이 끝나면 프로세스도
+완전히 종료됩니다**(복귀 루프는 단독 실행에만 있습니다). 인자 없이 실행하는 자동화를
+위해 `REPIU_LAUNCHER=0`을 주면 런처를 건너뛰고 기존 기본값(`pumpit1`)으로 갑니다.
+
+*Running with no arguments opens the launcher, which lists the ROM sets and starts the selected
+one in the same process. Every catalog entry is listed, and the ones that cannot run are dimmed
+with the reason — missing `roms\<id>.zip`, missing PIU10 entries, missing `roms\<id>\`, no CHD,
+or more than one CHD — so it is clear why a disc is unavailable. Vertical sync and sound gain are
+edited there and stored in `cfg\repiu.ini`; an environment variable of the same meaning always
+wins, so measurement scripts keep control. Finishing a game returns to the launcher so another ROM set can be chosen, and Quit ends the
+session. Passing any argument keeps today's behavior exactly and **ends the process when the game
+ends**, since the return loop exists only for a standalone run; `REPIU_LAUNCHER=0` skips the
+launcher for automation that runs the binary bare.*
+
 ### DOS/4GW sample 실행
 
 ```powershell

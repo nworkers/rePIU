@@ -23,6 +23,7 @@
 #include "aot_return_dispatch_site_index_probe.h"
 #include "aot_return_patch_policy_probe.h"
 #include "aot_direct_return_table_probe.h"
+#include "launcher_probe.h"
 #include "aot_return_stage_profile_probe.h"
 #include "execution_time_profile_probe.h"
 #include "glide_gate_timing_probe.h"
@@ -667,6 +668,10 @@ int main(int argc, char** argv)
     {
         return repiu::tools::RunAotDirectReturnTableProbe() ? 0 : 1;
     }
+    if (argc == 2 && std::strcmp(argv[1], "--launcher") == 0)
+    {
+        return repiu::tools::RunLauncherProbe() ? 0 : 1;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--jump-table-guard") == 0)
     {
         return repiu::tools::RunJumpTableGuardProbe() ? 0 : 1;
@@ -999,6 +1004,10 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunAotDirectReturnTableProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunLauncherProbe())
     {
         return 1;
     }

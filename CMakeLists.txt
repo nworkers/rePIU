@@ -97,6 +97,35 @@ function(repiu_configure_win32_loader_host target_name)
     endif()
 endfunction()
 
+# Task 500: the launcher draws inside our own SDL window instead of using a
+# native toolkit, because every cross-platform native toolkit that would serve
+# Linux is LGPL-family and the project forbids copyleft dependencies. Dear ImGui
+# is MIT and ships the SDL3 and OpenGL3 backends this host already has.
+FetchContent_Declare(
+    imgui
+    GIT_REPOSITORY https://github.com/ocornut/imgui.git
+    GIT_TAG v1.92.1
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(imgui)
+
+# ImGui ships sources rather than a CMake target, so the sources it needs are
+# collected here: the core, plus only the two backends in use.
+add_library(repiu_imgui STATIC
+    ${imgui_SOURCE_DIR}/imgui.cpp
+    ${imgui_SOURCE_DIR}/imgui_draw.cpp
+    ${imgui_SOURCE_DIR}/imgui_tables.cpp
+    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+)
+target_include_directories(repiu_imgui
+    PUBLIC
+        ${imgui_SOURCE_DIR}
+        ${imgui_SOURCE_DIR}/backends
+)
+target_link_libraries(repiu_imgui PUBLIC SDL3::SDL3-static)
+
 add_library(repiu_exe
     src/assets/piu_chd_mount.cpp
     src/assets/rom_zip_archive.cpp
@@ -214,6 +243,8 @@ add_library(repiu_exe
     src/runtime/guest_context.cpp
     src/runtime/aot_code_cache.cpp
     src/runtime/aot_direct_return_table.cpp
+    src/launcher/rom_set_catalog.cpp
+    src/launcher/launcher_settings.cpp
     src/runtime/aot_translation_plan.cpp
     src/runtime/dos_low_memory.cpp
     src/runtime/env_toggle.cpp
@@ -299,6 +330,7 @@ add_executable(repiu_aot_probe
     src/tools/aot_probe/aot_return_patch_policy_probe.cpp
     src/tools/aot_probe/aot_return_stage_profile_probe.cpp
     src/tools/aot_probe/aot_direct_return_table_probe.cpp
+    src/tools/aot_probe/launcher_probe.cpp
     src/tools/aot_probe/execution_time_profile_probe.cpp
     src/tools/aot_probe/glide_gate_timing_probe.cpp
     src/tools/aot_probe/glide_ordinal_timing_probe.cpp
@@ -338,6 +370,7 @@ add_executable(repiu_glide_render_probe
 
 add_executable(repiu
     src/host/win32/main.cpp
+    src/launcher/launcher_ui.cpp
 )
 
 if(WIN32)
@@ -386,6 +419,7 @@ target_include_directories(repiu_aot_probe
 target_link_libraries(repiu
     PRIVATE
         repiu_exe
+        repiu_imgui
         spdlog::spdlog_header_only
 )
 
