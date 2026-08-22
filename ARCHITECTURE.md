@@ -1277,6 +1277,36 @@ guest thread is already blocked for the retirement rendezvous, so no lock and no
 are required. The hit path carries its result in a **stack slot** rather than a global, closing the
 window in which an asynchronous timer injection could overwrite it between the store and the jump.
 
+## 플랫폼 분리와 Linux 빌드 / Platform split and the Linux build
+
+Task 501부터 `repiu_exe`의 소스는 두 부류로 나뉩니다. 공용 코어 53개는 모든 플랫폼에서
+빌드되고, `src/platform/win32` 76개는 `if(WIN32)` 안에서만 빌드됩니다. 새 라이브러리
+타깃을 만드는 대신 조건부 소스로 나눈 것은 링크와 include 배선을 다시 하지 않기
+위해서입니다.
+
+측정이 이 구조를 뒷받침합니다 — 공용 코어는 Win32 헤더를 하나도 include하지 않고, MSVC
+전용 구문이 없으며, 32비트 포인터를 가정하지 않고, GCC 13에서 C++20으로 오류 없이
+컴파일됩니다. 반면 Win32 계층은 `CONTEXT` 270곳, `VirtualProtect` 47곳, `fs:[...]`
+어셈블리 28곳으로 결합도가 높습니다.
+
+`repiu_core_probe`는 플랫폼에 의존하지 않는 probe만 담아 **양쪽 OS에서 빌드**됩니다.
+구성원은 문자열 검색이 아니라 **컴파일과 링크로** 정합니다 — probe는 include 디렉터리를
+통해 `dos/dos_int21_services.h` 같은 상대 경로로 Win32 계층에 닿을 수 있고, 그것은
+grep에 잡히지 않습니다. 아키텍처는 i386입니다. 게스트의 32비트 코드를 같은 프로세스에서
+네이티브 실행하므로 호스트도 32비트여야 합니다.
+
+Since Task 501 the `repiu_exe` sources are split in two: 53 platform-neutral files that build
+everywhere and 76 under `src/platform/win32` that build only inside `if(WIN32)`. Conditional
+sources were chosen over a second library target to avoid rewiring every link and include
+relationship. Measurement backs the split: the neutral core includes no Win32 header, uses no
+MSVC-specific construct, assumes no 32-bit pointer, and compiles under GCC 13 with C++20 without
+error, while the Win32 layer carries 270 `CONTEXT` uses, 47 `VirtualProtect` calls, and 28
+`fs:[...]` assembly sites. `repiu_core_probe` collects the platform-independent probes and builds
+on both systems; its membership is decided by compiling and linking rather than by searching for
+strings, because a probe can reach the Win32 layer through an include directory with a relative
+name like `dos/dos_int21_services.h`. The architecture is i386, because the guest's 32-bit code
+runs natively in the host process.
+
 ## 런처 / Launcher
 
 Task 500부터 인자 없이 실행하면 런처가 열립니다. 네이티브 툴킷을 쓰지 않고 호스트가 이미

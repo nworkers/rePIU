@@ -27,17 +27,30 @@ void Check(bool condition, std::string_view label)
     std::cout << "[nvram-path] FAIL " << label << "\n";
 }
 
+// Task 501: the two platforms spell this differently, and the probe now builds
+// on both. Windows removes a variable by assigning it an empty value; POSIX has
+// a dedicated call for it. Either way the variable must actually disappear
+// between cases, or one case leaks into the next.
 void SetEnvironment(const char* name, const char* value)
 {
+#if defined(_WIN32)
     std::string assignment(name);
     assignment.push_back('=');
     if (value != nullptr)
     {
         assignment.append(value);
     }
-    // _putenv with an empty value removes the variable, which is what the
-    // probe needs between cases so one case cannot leak into the next.
     _putenv(assignment.c_str());
+#else
+    if (value == nullptr)
+    {
+        unsetenv(name);
+    }
+    else
+    {
+        setenv(name, value, 1);
+    }
+#endif
 }
 
 void WriteFile(const std::filesystem::path& path, std::string_view text)

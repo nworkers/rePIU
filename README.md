@@ -132,6 +132,26 @@ cmd /c scripts\build_win32_x86.bat
 
 출력은 `build/win32_x86_debug/Debug/`에 생성됩니다.
 
+### 6. Linux 빌드 (Stage 1) / Linux build
+
+플랫폼 공용 코어와 그 probe는 Linux에서 i386으로 빌드됩니다. **실행 엔진·로더·런처는 아직
+Windows 전용이라 게임은 실행되지 않습니다.**
+
+```bash
+sudo apt update && sudo apt install -y gcc-multilib g++-multilib libc6-dev-i386
+scripts/build_linux_i386.sh --config Debug --target repiu_exe --target repiu_core_probe
+build/linux_i386/repiu_core_probe
+```
+
+`repiu_core_probe`는 플랫폼에 의존하지 않는 probe 9개를 담고 **양쪽 OS에서 모두**
+빌드되므로, 같은 코드가 두 환경에서 같은 결과를 내는지 직접 비교할 수 있습니다. Windows
+에서는 `repiu_aot_probe`가 같은 probe를 계속 포함합니다.
+
+*The platform-neutral core and its probe build as i386 on Linux; the execution engine, loader,
+and launcher are still Windows-only, so no game runs yet. `repiu_core_probe` holds the nine
+platform-independent probes and builds on both systems, so the same code can be compared directly
+across them.*
+
 ### 5. Release 빌드 / Release build
 
 ```powershell

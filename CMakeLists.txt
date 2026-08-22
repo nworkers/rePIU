@@ -157,70 +157,6 @@ add_library(repiu_exe
     src/hle/piu10_isa_board.cpp
     src/hle/privileged_instruction.cpp
     src/media/chd_cd_image.cpp
-    src/platform/win32/cd_audio_wave_out.cpp
-    src/platform/win32/aot_code_cache_win32.cpp
-    src/platform/win32/aot_cache_address_index.cpp
-    src/platform/win32/aot_inline_cache_site_index.cpp
-    src/platform/win32/aot_return_dispatch_site_index.cpp
-    src/platform/win32/aot_return_patch_policy.cpp
-    src/platform/win32/aot/aot_worker_timing.cpp
-    src/platform/win32/aot/aot_timer_source_profile.cpp
-    src/platform/win32/aot_page_coherence_win32.cpp
-    src/platform/win32/aot/aot_boundary_provenance.cpp
-    src/platform/win32/aot/aot_boundary_reason.cpp
-    src/platform/win32/aot/aot_dbt_call_return_trace.cpp
-    src/platform/win32/aot/aot_dbt_call_step_probe.cpp
-    src/platform/win32/aot/aot_dbt_dispatch.cpp
-    src/platform/win32/aot/aot_dbt_direct_edge_dispatch.cpp
-    src/platform/win32/aot/aot_dbt_hle_dispatch.cpp
-    src/platform/win32/aot/aot_dbt_glide_gate_dispatch.cpp
-    src/platform/win32/aot/aot_dbt_indirect_dispatch.cpp
-    src/platform/win32/aot/aot_dbt_return_dispatch.cpp
-    src/platform/win32/aot/aot_retired_trap_profile.cpp
-    src/platform/win32/aot/aot_runtime_dispatch.cpp
-    src/platform/win32/bios/bios_keyboard_services.cpp
-    src/platform/win32/input/sdl_bios_keyboard_adapter.cpp
-    src/platform/win32/input/active_jamma_bindings.cpp
-    src/platform/win32/input/win32_host_key_translation.cpp
-    src/platform/win32/execution/execution_probe_memory_dump.cpp
-    src/platform/win32/execution/execution_trampoline.cpp
-    src/platform/win32/execution/single_step_hotspot_profile.cpp
-    src/platform/win32/dos/dos_int21_services.cpp
-    src/platform/win32/dos/dpmi_mscdex_services.cpp
-    src/platform/win32/exception/breakpoint_evidence_win32.cpp
-    src/platform/win32/exception/exception_rescue_win32.cpp
-    src/platform/win32/exception/host_crash_report.cpp
-    src/platform/win32/cpu_emul/guest_memory_access.cpp
-    src/platform/win32/cpu_emul/instruction_emulation.cpp
-    src/platform/win32/cpu_emul/low_memory_string_access.cpp
-    src/platform/win32/boundary/linexe_glide_boundary.cpp
-    src/platform/win32/boundary/timer_interrupt_boundary.cpp
-    src/platform/win32/telemetry/live_telemetry_snapshot.cpp
-    src/platform/win32/telemetry/execution_time_profile.cpp
-    src/platform/win32/telemetry/cd_audio_position_census.cpp
-    src/platform/win32/telemetry/mscdex_command_trace.cpp
-    src/platform/win32/telemetry/guest_position_census.cpp
-    src/platform/win32/telemetry/glide_gate_timing.cpp
-    src/platform/win32/telemetry/glide_ordinal_timing.cpp
-    src/platform/win32/telemetry/glide_buffer_swap_timing.cpp
-    src/platform/win32/telemetry/glide_setter_state_model.cpp
-    src/platform/win32/telemetry/glide_setter_state_census.cpp
-    src/platform/win32/telemetry/glide_async_present.cpp
-    src/platform/win32/telemetry/glide_draw_batch.cpp
-    src/platform/win32/telemetry/glide_setter_state_cache.cpp
-    src/platform/win32/telemetry/glide_setter_phase_timing.cpp
-    src/platform/win32/telemetry/timer_tick_delivery.cpp
-    src/platform/win32/telemetry/aot_residency_sample.cpp
-    src/platform/win32/telemetry/aot_return_stage_profile.cpp
-    src/platform/win32/aot/aot_boundary_opcode_census.cpp
-    src/platform/win32/io/port_io_emulator.cpp
-    src/platform/win32/io/jamma_input_timeline.cpp
-    src/platform/win32/io/piu10_mp3_frame_batch.cpp
-    src/platform/win32/io/port_io_delay_loop.cpp
-    src/platform/win32/io/eeprom_93c46.cpp
-    src/platform/win32/io/piu10_sound_port.cpp
-    src/platform/win32/ymz280b_audio_out.cpp
-    src/platform/win32/piu10_mp3_audio_out.cpp
     src/sound/ymz280b_device.cpp
     src/sound/ymz280b_sample_rom.cpp
     src/sound/dac3350a_control.cpp
@@ -228,18 +164,6 @@ add_library(repiu_exe
     src/sound/mpeg_audio_frame.cpp
     src/sound/spsc_byte_ring.cpp
     src/sound/stream_chunk_audit.cpp
-    src/platform/win32/native_fast_path.cpp
-    src/platform/win32/native_linear_span.cpp
-    src/platform/win32/native_phase_sampler.cpp
-    src/platform/win32/verified_region_analyzer.cpp
-    src/platform/win32/glide_gl_error_policy.cpp
-    src/platform/win32/glide_swap_interval_policy.cpp
-    src/platform/win32/glide_texture_census.cpp
-    src/platform/win32/out_of_arena_step_census.cpp
-    src/platform/win32/glide_opengl_backend.cpp
-    src/platform/win32/glide_opengl_shader.cpp
-    src/platform/win32/x87_context.cpp
-    src/platform/win32/runtime_memory_policy.cpp
     src/runtime/guest_context.cpp
     src/runtime/aot_code_cache.cpp
     src/runtime/aot_direct_return_table.cpp
@@ -257,6 +181,92 @@ add_library(repiu_exe
     src/storage/nvram_path.cpp
     src/target/target_profile.cpp
 )
+
+# Task 501: the Win32 platform layer compiles only on Windows. Every source in
+# the list above is platform-neutral -- none includes a Win32 header, none uses
+# an MSVC-specific construct, and the set passes GCC 13 with C++20 -- so Linux
+# builds them unchanged.
+if(WIN32)
+    target_sources(repiu_exe
+        PRIVATE
+            src/platform/win32/cd_audio_wave_out.cpp
+            src/platform/win32/aot_code_cache_win32.cpp
+            src/platform/win32/aot_cache_address_index.cpp
+            src/platform/win32/aot_inline_cache_site_index.cpp
+            src/platform/win32/aot_return_dispatch_site_index.cpp
+            src/platform/win32/aot_return_patch_policy.cpp
+            src/platform/win32/aot/aot_worker_timing.cpp
+            src/platform/win32/aot/aot_timer_source_profile.cpp
+            src/platform/win32/aot_page_coherence_win32.cpp
+            src/platform/win32/aot/aot_boundary_provenance.cpp
+            src/platform/win32/aot/aot_boundary_reason.cpp
+            src/platform/win32/aot/aot_dbt_call_return_trace.cpp
+            src/platform/win32/aot/aot_dbt_call_step_probe.cpp
+            src/platform/win32/aot/aot_dbt_dispatch.cpp
+            src/platform/win32/aot/aot_dbt_direct_edge_dispatch.cpp
+            src/platform/win32/aot/aot_dbt_hle_dispatch.cpp
+            src/platform/win32/aot/aot_dbt_glide_gate_dispatch.cpp
+            src/platform/win32/aot/aot_dbt_indirect_dispatch.cpp
+            src/platform/win32/aot/aot_dbt_return_dispatch.cpp
+            src/platform/win32/aot/aot_retired_trap_profile.cpp
+            src/platform/win32/aot/aot_runtime_dispatch.cpp
+            src/platform/win32/bios/bios_keyboard_services.cpp
+            src/platform/win32/input/sdl_bios_keyboard_adapter.cpp
+            src/platform/win32/input/active_jamma_bindings.cpp
+            src/platform/win32/input/win32_host_key_translation.cpp
+            src/platform/win32/execution/execution_probe_memory_dump.cpp
+            src/platform/win32/execution/execution_trampoline.cpp
+            src/platform/win32/execution/single_step_hotspot_profile.cpp
+            src/platform/win32/dos/dos_int21_services.cpp
+            src/platform/win32/dos/dpmi_mscdex_services.cpp
+            src/platform/win32/exception/breakpoint_evidence_win32.cpp
+            src/platform/win32/exception/exception_rescue_win32.cpp
+            src/platform/win32/exception/host_crash_report.cpp
+            src/platform/win32/cpu_emul/guest_memory_access.cpp
+            src/platform/win32/cpu_emul/instruction_emulation.cpp
+            src/platform/win32/cpu_emul/low_memory_string_access.cpp
+            src/platform/win32/boundary/linexe_glide_boundary.cpp
+            src/platform/win32/boundary/timer_interrupt_boundary.cpp
+            src/platform/win32/telemetry/live_telemetry_snapshot.cpp
+            src/platform/win32/telemetry/execution_time_profile.cpp
+            src/platform/win32/telemetry/cd_audio_position_census.cpp
+            src/platform/win32/telemetry/mscdex_command_trace.cpp
+            src/platform/win32/telemetry/guest_position_census.cpp
+            src/platform/win32/telemetry/glide_gate_timing.cpp
+            src/platform/win32/telemetry/glide_ordinal_timing.cpp
+            src/platform/win32/telemetry/glide_buffer_swap_timing.cpp
+            src/platform/win32/telemetry/glide_setter_state_model.cpp
+            src/platform/win32/telemetry/glide_setter_state_census.cpp
+            src/platform/win32/telemetry/glide_async_present.cpp
+            src/platform/win32/telemetry/glide_draw_batch.cpp
+            src/platform/win32/telemetry/glide_setter_state_cache.cpp
+            src/platform/win32/telemetry/glide_setter_phase_timing.cpp
+            src/platform/win32/telemetry/timer_tick_delivery.cpp
+            src/platform/win32/telemetry/aot_residency_sample.cpp
+            src/platform/win32/telemetry/aot_return_stage_profile.cpp
+            src/platform/win32/aot/aot_boundary_opcode_census.cpp
+            src/platform/win32/io/port_io_emulator.cpp
+            src/platform/win32/io/jamma_input_timeline.cpp
+            src/platform/win32/io/piu10_mp3_frame_batch.cpp
+            src/platform/win32/io/port_io_delay_loop.cpp
+            src/platform/win32/io/eeprom_93c46.cpp
+            src/platform/win32/io/piu10_sound_port.cpp
+            src/platform/win32/ymz280b_audio_out.cpp
+            src/platform/win32/piu10_mp3_audio_out.cpp
+            src/platform/win32/native_fast_path.cpp
+            src/platform/win32/native_linear_span.cpp
+            src/platform/win32/native_phase_sampler.cpp
+            src/platform/win32/verified_region_analyzer.cpp
+            src/platform/win32/glide_gl_error_policy.cpp
+            src/platform/win32/glide_swap_interval_policy.cpp
+            src/platform/win32/glide_texture_census.cpp
+            src/platform/win32/out_of_arena_step_census.cpp
+            src/platform/win32/glide_opengl_backend.cpp
+            src/platform/win32/glide_opengl_shader.cpp
+            src/platform/win32/x87_context.cpp
+            src/platform/win32/runtime_memory_policy.cpp
+    )
+endif()
 
 target_include_directories(repiu_exe
     PUBLIC
@@ -293,85 +303,137 @@ target_link_libraries(repiu_exe PRIVATE repiu_zydis chdr-static)
 # interface and every consumer needs them.
 target_link_libraries(repiu_exe PUBLIC SDL3::SDL3-static)
 
-add_executable(repiu_exe_analyzer
-    src/tools/exe_analyzer/main.cpp
-)
-
 add_executable(repiu_chd_cd_probe
     src/tools/chd_cd_probe/main.cpp
-)
-
-add_executable(repiu_aot_probe
-    src/tools/aot_probe/bios_keyboard_input_probe.cpp
-    src/tools/aot_probe/aot_timer_source_profile_probe.cpp
-    src/tools/aot_probe/append_phase_benchmark_probe.cpp
-    src/tools/aot_probe/arena_view_probe.cpp
-    src/tools/aot_probe/boundary_provenance_probe.cpp
-    src/tools/aot_probe/dbt_call_return_trace_probe.cpp
-    src/tools/aot_probe/dbt_call_step_probe.cpp
-    src/tools/aot_probe/dbt_indirect_dispatch_probe.cpp
-    src/tools/aot_probe/direct_edge_dispatch_probe.cpp
-    src/tools/aot_probe/dbt_return_fallback_probe.cpp
-    src/tools/aot_probe/env_toggle_probe.cpp
-    src/tools/aot_probe/execution_backend_probe.cpp
-    src/tools/aot_probe/execution_timeout_probe.cpp
-    src/tools/aot_probe/inline_cache_probe.cpp
-    src/tools/aot_probe/jump_table_guard_probe.cpp
-    src/tools/aot_probe/native_linear_span_probe.cpp
-    src/tools/aot_probe/plan_build_benchmark_probe.cpp
-    src/tools/aot_probe/pit_timer_probe.cpp
-    src/tools/aot_probe/piu10_isa_board_probe.cpp
-    src/tools/aot_probe/retired_trap_profile_probe.cpp
-    src/tools/aot_probe/single_step_hotspot_profile_probe.cpp
-    src/tools/aot_probe/exception_transition_calibration_probe.cpp
-    src/tools/aot_probe/aot_cache_address_index_probe.cpp
-    src/tools/aot_probe/aot_inline_cache_site_index_probe.cpp
-    src/tools/aot_probe/aot_return_dispatch_site_index_probe.cpp
-    src/tools/aot_probe/aot_return_patch_policy_probe.cpp
-    src/tools/aot_probe/aot_return_stage_profile_probe.cpp
-    src/tools/aot_probe/aot_direct_return_table_probe.cpp
-    src/tools/aot_probe/launcher_probe.cpp
-    src/tools/aot_probe/execution_time_profile_probe.cpp
-    src/tools/aot_probe/glide_gate_timing_probe.cpp
-    src/tools/aot_probe/glide_ordinal_timing_probe.cpp
-    src/tools/aot_probe/glide_buffer_swap_timing_probe.cpp
-    src/tools/aot_probe/glide_setter_state_census_probe.cpp
-    src/tools/aot_probe/glide_async_present_probe.cpp
-    src/tools/aot_probe/glide_draw_batch_probe.cpp
-    src/tools/aot_probe/glide_lfb_region_probe.cpp
-    src/tools/aot_probe/glide_texture_table_stack_probe.cpp
-    src/tools/aot_probe/dos_file_create_probe.cpp
-    src/tools/aot_probe/dos_date_probe.cpp
-    src/tools/aot_probe/glide_setter_state_cache_probe.cpp
-    src/tools/aot_probe/glide_setter_phase_timing_probe.cpp
-    src/tools/aot_probe/glide_gl_error_policy_probe.cpp
-    src/tools/aot_probe/glide_swap_interval_policy_probe.cpp
-    src/tools/aot_probe/veh_exception_gap_probe.cpp
-    src/tools/aot_probe/dos_file_handle_cache_probe.cpp
-    src/tools/aot_probe/glide_texture_census_probe.cpp
-    src/tools/aot_probe/out_of_arena_step_census_probe.cpp
-    src/tools/aot_probe/timer_tick_delivery_probe.cpp
-    src/tools/aot_probe/jamma_input_timeline_probe.cpp
-    src/tools/aot_probe/romset_config_probe.cpp
-    src/tools/aot_probe/nvram_path_probe.cpp
-    src/tools/aot_probe/aot_boundary_opcode_census_probe.cpp
-    src/tools/aot_probe/aot_worker_timing_probe.cpp
-    src/tools/aot_probe/selector_guard_probe.cpp
-    src/tools/aot_probe/main.cpp
 )
 
 add_executable(repiu_glide_issue_probe
     src/tools/glide_issue_probe/main.cpp
 )
 
-add_executable(repiu_glide_render_probe
-    src/tools/glide_render_probe/main.cpp
+# Task 501: the probes that need no platform layer, in one binary that builds
+# on every host so the same assertions can be compared across them.
+add_executable(repiu_core_probe
+    src/tools/core_probe/main.cpp
+    src/tools/aot_probe/dos_file_handle_cache_probe.cpp
+    src/tools/aot_probe/env_toggle_probe.cpp
+    src/tools/aot_probe/execution_backend_probe.cpp
+    src/tools/aot_probe/execution_timeout_probe.cpp
+    src/tools/aot_probe/glide_lfb_region_probe.cpp
+    src/tools/aot_probe/jump_table_guard_probe.cpp
+    src/tools/aot_probe/launcher_probe.cpp
+    src/tools/aot_probe/nvram_path_probe.cpp
+    src/tools/aot_probe/pit_timer_probe.cpp
 )
 
-add_executable(repiu
-    src/host/win32/main.cpp
-    src/launcher/launcher_ui.cpp
+target_include_directories(repiu_core_probe
+    PRIVATE
+        src/tools/aot_probe
 )
+
+target_link_libraries(repiu_core_probe
+    PRIVATE
+        repiu_exe
+)
+
+# Task 501: these carry the Win32 platform layer or the Win32 host, so they exist
+# only on Windows. The core library and the core probe below build everywhere.
+if(WIN32)
+    add_executable(repiu_exe_analyzer
+        src/tools/exe_analyzer/main.cpp
+    )
+    add_executable(repiu_aot_probe
+        src/tools/aot_probe/bios_keyboard_input_probe.cpp
+        src/tools/aot_probe/aot_timer_source_profile_probe.cpp
+        src/tools/aot_probe/append_phase_benchmark_probe.cpp
+        src/tools/aot_probe/arena_view_probe.cpp
+        src/tools/aot_probe/boundary_provenance_probe.cpp
+        src/tools/aot_probe/dbt_call_return_trace_probe.cpp
+        src/tools/aot_probe/dbt_call_step_probe.cpp
+        src/tools/aot_probe/dbt_indirect_dispatch_probe.cpp
+        src/tools/aot_probe/direct_edge_dispatch_probe.cpp
+        src/tools/aot_probe/dbt_return_fallback_probe.cpp
+        src/tools/aot_probe/env_toggle_probe.cpp
+        src/tools/aot_probe/execution_backend_probe.cpp
+        src/tools/aot_probe/execution_timeout_probe.cpp
+        src/tools/aot_probe/inline_cache_probe.cpp
+        src/tools/aot_probe/jump_table_guard_probe.cpp
+        src/tools/aot_probe/native_linear_span_probe.cpp
+        src/tools/aot_probe/plan_build_benchmark_probe.cpp
+        src/tools/aot_probe/pit_timer_probe.cpp
+        src/tools/aot_probe/piu10_isa_board_probe.cpp
+        src/tools/aot_probe/retired_trap_profile_probe.cpp
+        src/tools/aot_probe/single_step_hotspot_profile_probe.cpp
+        src/tools/aot_probe/exception_transition_calibration_probe.cpp
+        src/tools/aot_probe/aot_cache_address_index_probe.cpp
+        src/tools/aot_probe/aot_inline_cache_site_index_probe.cpp
+        src/tools/aot_probe/aot_return_dispatch_site_index_probe.cpp
+        src/tools/aot_probe/aot_return_patch_policy_probe.cpp
+        src/tools/aot_probe/aot_return_stage_profile_probe.cpp
+        src/tools/aot_probe/aot_direct_return_table_probe.cpp
+        src/tools/aot_probe/launcher_probe.cpp
+        src/tools/aot_probe/execution_time_profile_probe.cpp
+        src/tools/aot_probe/glide_gate_timing_probe.cpp
+        src/tools/aot_probe/glide_ordinal_timing_probe.cpp
+        src/tools/aot_probe/glide_buffer_swap_timing_probe.cpp
+        src/tools/aot_probe/glide_setter_state_census_probe.cpp
+        src/tools/aot_probe/glide_async_present_probe.cpp
+        src/tools/aot_probe/glide_draw_batch_probe.cpp
+        src/tools/aot_probe/glide_lfb_region_probe.cpp
+        src/tools/aot_probe/glide_texture_table_stack_probe.cpp
+        src/tools/aot_probe/dos_file_create_probe.cpp
+        src/tools/aot_probe/dos_date_probe.cpp
+        src/tools/aot_probe/glide_setter_state_cache_probe.cpp
+        src/tools/aot_probe/glide_setter_phase_timing_probe.cpp
+        src/tools/aot_probe/glide_gl_error_policy_probe.cpp
+        src/tools/aot_probe/glide_swap_interval_policy_probe.cpp
+        src/tools/aot_probe/veh_exception_gap_probe.cpp
+        src/tools/aot_probe/dos_file_handle_cache_probe.cpp
+        src/tools/aot_probe/glide_texture_census_probe.cpp
+        src/tools/aot_probe/out_of_arena_step_census_probe.cpp
+        src/tools/aot_probe/timer_tick_delivery_probe.cpp
+        src/tools/aot_probe/jamma_input_timeline_probe.cpp
+        src/tools/aot_probe/romset_config_probe.cpp
+        src/tools/aot_probe/nvram_path_probe.cpp
+        src/tools/aot_probe/aot_boundary_opcode_census_probe.cpp
+        src/tools/aot_probe/aot_worker_timing_probe.cpp
+        src/tools/aot_probe/selector_guard_probe.cpp
+        src/tools/aot_probe/main.cpp
+    )
+    add_executable(repiu_glide_render_probe
+        src/tools/glide_render_probe/main.cpp
+    )
+    add_executable(repiu
+        src/host/win32/main.cpp
+        src/launcher/launcher_ui.cpp
+    )
+    target_link_libraries(repiu_exe_analyzer
+        PRIVATE
+            repiu_exe
+    )
+    target_link_libraries(repiu_aot_probe
+        PRIVATE
+            repiu_exe
+            SDL3::SDL3-static
+    )
+    target_link_libraries(repiu_glide_render_probe
+        PRIVATE
+            repiu_exe
+    )
+    target_include_directories(repiu_aot_probe
+        PRIVATE
+            src/platform/win32
+            src/platform/win32/execution
+            src/platform/win32/input
+            third_party/zydis
+    )
+    target_link_libraries(repiu
+        PRIVATE
+            repiu_exe
+            repiu_imgui
+            spdlog::spdlog_header_only
+    )
+endif()
 
 if(WIN32)
     add_executable(repiu_supervisor_win32
@@ -383,44 +445,14 @@ if(WIN32)
     )
 endif()
 
-target_link_libraries(repiu_exe_analyzer
-    PRIVATE
-        repiu_exe
-)
-
 target_link_libraries(repiu_chd_cd_probe
     PRIVATE
         repiu_exe
 )
 
-target_link_libraries(repiu_aot_probe
-    PRIVATE
-        repiu_exe
-        SDL3::SDL3-static
-)
-
 target_link_libraries(repiu_glide_issue_probe
     PRIVATE
         repiu_exe
-)
-
-target_link_libraries(repiu_glide_render_probe
-    PRIVATE
-        repiu_exe
-)
-target_include_directories(repiu_aot_probe
-    PRIVATE
-        src/platform/win32
-        src/platform/win32/execution
-        src/platform/win32/input
-        third_party/zydis
-)
-
-target_link_libraries(repiu
-    PRIVATE
-        repiu_exe
-        repiu_imgui
-        spdlog::spdlog_header_only
 )
 
 if(WIN32)
