@@ -147,6 +147,19 @@ build/linux_i386/repiu_core_probe
 빌드되므로, 같은 코드가 두 환경에서 같은 결과를 내는지 직접 비교할 수 있습니다. Windows
 에서는 `repiu_aot_probe`가 같은 probe를 계속 포함합니다.
 
+런처는 Linux에서도 뜹니다. 32비트 데스크톱 개발 패키지가 필요합니다.
+
+```bash
+sudo dpkg --add-architecture i386 && sudo apt update
+sudo apt install -y libx11-dev:i386 libxext-dev:i386 libxrandr-dev:i386   libxi-dev:i386 libxcursor-dev:i386 libxfixes-dev:i386 libxkbcommon-dev:i386   libgl1-mesa-dev:i386 libasound2-dev:i386
+scripts/build_linux_i386.sh --config Debug --target repiu_launcher
+build/linux_i386/repiu_launcher
+```
+
+롬셋 목록과 옵션은 Windows와 같은 코드입니다. **실행 엔진은 아직 Windows 전용이라 롬셋을
+고르면 그 사실을 알리고 종료합니다.** 데스크톱 패키지 없이 코어와 probe만 빌드하려면
+`--headless`를 주십시오.
+
 *The platform-neutral core and its probe build as i386 on Linux; the execution engine, loader,
 and launcher are still Windows-only, so no game runs yet. `repiu_core_probe` holds the nine
 platform-independent probes and builds on both systems, so the same code can be compared directly

@@ -1289,6 +1289,12 @@ Task 501부터 `repiu_exe`의 소스는 두 부류로 나뉩니다. 공용 코�
 컴파일됩니다. 반면 Win32 계층은 `CONTEXT` 270곳, `VirtualProtect` 47곳, `fs:[...]`
 어셈블리 28곳으로 결합도가 높습니다.
 
+Task 502부터 런처도 Linux에서 빌드됩니다. `repiu_launcher`는 `src/host/linux/main.cpp`를
+진입점으로 두고 런처 화면을 Windows와 공유하며, Windows 쪽 복귀 루프와 자식 프로세스는
+가져오지 않습니다 — 둘 다 Win32 고유의 주소 공간 선점 순서에서 나온 것이라 Linux에도 같은
+제약이 있는지는 실행 엔진이 생긴 뒤에 판단합니다. 롬셋을 고르면 엔진이 아직 없다고 알리고
+종료합니다.
+
 `repiu_core_probe`는 플랫폼에 의존하지 않는 probe만 담아 **양쪽 OS에서 빌드**됩니다.
 구성원은 문자열 검색이 아니라 **컴파일과 링크로** 정합니다 — probe는 include 디렉터리를
 통해 `dos/dos_int21_services.h` 같은 상대 경로로 Win32 계층에 닿을 수 있고, 그것은

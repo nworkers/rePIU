@@ -13,13 +13,16 @@ set -euo pipefail
 
 configuration="Debug"
 targets=()
+headless=0
 
 usage()
 {
     cat <<'USAGE'
 usage: build_linux_i386.sh [--config Debug|Release|RelWithDebInfo|MinSizeRel]
-                           [--target NAME]...
+                           [--target NAME]... [--headless]
 Builds into build/linux_i386. With no --target, every default target is built.
+--headless drops SDL desktop support, which suits the core and its probes but
+not the launcher.
 USAGE
 }
 
@@ -32,6 +35,10 @@ while [[ $# -gt 0 ]]; do
         --target)
             targets+=("${2:?--target needs a value}")
             shift 2
+            ;;
+        --headless)
+            headless=1
+            shift
             ;;
         -h|--help)
             usage
@@ -69,13 +76,22 @@ NEEDS
     exit 1
 fi
 
-# SDL3 refuses to configure without X11 or Wayland development packages, which
-# Stage 1 does not need because nothing here opens a window. This is SDL's own
-# documented escape hatch; Stage 2, which brings the launcher over, installs the
-# real desktop packages instead.
+# SDL3 needs X11 or Wayland development packages to configure. --headless skips
+# that requirement for the core and its probes, which open no window; the
+# launcher needs the real desktop packages.
+#
+# XSCRNSAVER and XTEST are switched off rather than installed: both are optional
+# X11 extensions this project never uses, for inhibiting the screen saver and
+# simulating input, and every extension left on is one more 32-bit package an
+# operator has to hunt down.
+sdl_options=(-DSDL_X11_XSCRNSAVER=OFF -DSDL_X11_XTEST=OFF)
+if [[ $headless -ne 0 ]]; then
+    sdl_options+=(-DSDL_UNIX_CONSOLE_BUILD=ON)
+fi
+
 cmake -S "$root" -B "$build_dir" \
     -DCMAKE_BUILD_TYPE="$configuration" \
-    -DSDL_UNIX_CONSOLE_BUILD=ON \
+    "${sdl_options[@]}" \
     -DCMAKE_C_FLAGS=-m32 \
     -DCMAKE_CXX_FLAGS=-m32 \
     -DCMAKE_EXE_LINKER_FLAGS=-m32 \

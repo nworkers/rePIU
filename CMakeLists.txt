@@ -336,6 +336,27 @@ target_link_libraries(repiu_core_probe
         repiu_exe
 )
 
+# Task 502: the Linux launcher. It shares the launcher itself with the Windows
+# host and keeps only its own entry point, because the loop and the child
+# process on Windows exist for Win32-specific reasons.
+if(UNIX)
+    add_executable(repiu_launcher
+        src/host/linux/main.cpp
+        src/launcher/launcher_ui.cpp
+    )
+    # The launcher clears and sizes its own GL viewport, and on Windows those
+    # symbols arrive with opengl32 through the core library. Linux needs the
+    # library named. Plain `GL` rather than the imported target, because the
+    # 32-bit link has to resolve in the i386 library directory that -m32 puts on
+    # the search path.
+    target_link_libraries(repiu_launcher
+        PRIVATE
+            repiu_exe
+            repiu_imgui
+            GL
+    )
+endif()
+
 # Task 501: these carry the Win32 platform layer or the Win32 host, so they exist
 # only on Windows. The core library and the core probe below build everywhere.
 if(WIN32)
