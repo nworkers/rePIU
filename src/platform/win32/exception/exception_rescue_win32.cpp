@@ -1,5 +1,12 @@
 #include "exception_rescue_win32.h"
 
+// Task 503d-14. The header fences this declaration, so the definition follows.
+// On Linux the file is empty on purpose: a vectored exception handler is how
+// Windows hands a fault over, and the same faults arrive through the signal
+// handler 3c installs instead. Keeping the file rather than excluding it from
+// the build means the two hosts still compile the same source list.
+#if defined(_WIN32)
+
 namespace repiu::platform::win32
 {
 
@@ -9,3 +16,5 @@ LONG WINAPI GuestStackVectoredExceptionHandler(EXCEPTION_POINTERS* exception_inf
 }
 
 } // namespace repiu::platform::win32
+
+#endif  // defined(_WIN32)

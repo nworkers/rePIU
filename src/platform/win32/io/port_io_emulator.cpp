@@ -8,16 +8,17 @@
 #include "piu10_sound_port.h"
 #include "port_io_delay_loop.h"
 #include "repiu/input/jamma_input_bindings.h"
+#include <SDL3/SDL_keyboard.h>
 #include "repiu/platform/win32/execution_trampoline.h"
-#include "win32_host_key_translation.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <intrin.h>
 #include <iomanip>
 #include <memory>
 #include <sstream>
 #include <vector>
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/host_time.h"
 
 
 namespace repiu::platform::win32 {
@@ -103,8 +104,10 @@ static void LogJammaInputTransition(std::uint16_t port, std::uint8_t value) {
   }
 }
 
-// Task 403: counts GetAsyncKeyState calls so the port I/O cost can be split
-// between the host key scan and everything else in the handler.
+// Task 403: counts host key queries so the port I/O cost can be split between
+// the host key scan and everything else in the handler. Task 503d-13 turned
+// each one from a Win32 call into an array index, and the counter is kept so
+// the two measurements are of the same thing.
 static std::uint32_t g_jamma_key_query_count = 0;
 
 std::uint32_t TakeJammaKeyQueryCount() {
@@ -130,8 +133,13 @@ ScanJammaPort8(std::uint16_t port,
   // free and the host key query count matches what it was before.
   const SDL_Keymod modifier_state =
       (replay_pressed_mask == nullptr && bindings.any_binding_uses_modifiers)
-          ? ReadWin32ModifierState()
+          ? SDL_GetModState()
           : SDL_KMOD_NONE;
+
+  // SDL owns this array for the life of the process and documents reading it
+  // from any thread, so the pointer is taken once and the guest thread indexes
+  // it directly. SDL_PumpEvents on the host thread is what refreshes it.
+  static const bool *const key_state = SDL_GetKeyboardState(nullptr);
 
   auto is_pressed = [replay_pressed_mask, &bindings,
                      modifier_state](JammaInputKey key) -> bool {
@@ -141,15 +149,11 @@ ScanJammaPort8(std::uint16_t port,
     const repiu::input::JammaInputBinding &binding = bindings.Get(key);
     for (std::uint32_t slot = 0; slot < binding.alias_count; ++slot) {
       const repiu::input::HostKeyAlias &alias = binding.aliases[slot];
-      if (alias.virtual_key == 0) {
+      if (alias.scancode == SDL_SCANCODE_UNKNOWN) {
         continue;
       }
       ++g_jamma_key_query_count;
-      // Only the 0x8000 current-state bit is used. The 0x0001
-      // "pressed since last call" bit is state a call consumes, so reading it
-      // would make the snapshot below change meaning; it is deliberately not
-      // consulted.
-      if ((GetAsyncKeyState(alias.virtual_key) & 0x8000) != 0 &&
+      if (key_state[alias.scancode] &&
           alias.ModifiersMatch(modifier_state)) {
         return true;
       }
@@ -210,12 +214,7 @@ std::uint64_t JammaSnapshotIntervalMicroseconds() {
 }
 
 std::int64_t PerformanceFrequency() {
-  static const std::int64_t frequency = [] {
-    LARGE_INTEGER value = {};
-    QueryPerformanceFrequency(&value);
-    return value.QuadPart != 0 ? value.QuadPart : 1;
-  }();
-  return frequency;
+  return repiu::platform::PerformanceCounterFrequency();
 }
 
 struct JammaSnapshot {
@@ -250,9 +249,7 @@ static std::uint8_t ReadJammaPort8(ThreadContext *context,
     return ScanJammaPort8(port);
   }
 
-  LARGE_INTEGER counter = {};
-  QueryPerformanceCounter(&counter);
-  const std::int64_t now = counter.QuadPart;
+  const std::int64_t now = repiu::platform::PerformanceCounterTicks();
   const std::int64_t elapsed_ticks = now - g_jamma_snapshot.refreshed_at;
   const std::int64_t stale_ticks = static_cast<std::int64_t>(
       (PerformanceFrequency() * static_cast<std::int64_t>(interval)) / 1000000);
@@ -432,7 +429,7 @@ static void RecordPortIoAddress(ThreadContext *context,
   ApplyPortIoEntrySample(&entry, entry_sample);
 }
 
-static bool TryPiu10Mp3BytePortFastPath(CONTEXT *win32_context,
+static bool TryPiu10Mp3BytePortFastPath(repiu::platform::GuestCpuContext *win32_context,
                                         ThreadContext *context) {
   if (!context->piu10_isa_board_enabled ||
       !context->piu10_isa_board.available() ||
@@ -469,7 +466,7 @@ static bool TryPiu10Mp3BytePortFastPath(CONTEXT *win32_context,
   return true;
 }
 
-bool HandlePortIoInstruction(CONTEXT *win32_context, ThreadContext *context) {
+bool HandlePortIoInstruction(repiu::platform::GuestCpuContext *win32_context, ThreadContext *context) {
   if (win32_context == nullptr || context == nullptr) {
     return false;
   }
@@ -711,14 +708,14 @@ bool HandlePortIoInstruction(CONTEXT *win32_context, ThreadContext *context) {
     if (context->piu_jamma_board_enabled && port >= kPortPiuJammaBase &&
         port <= kPortPiuJammaEnd) {
       std::uint32_t emulated_val = 0;
-      const std::uint64_t scan_start = __rdtsc();
+      const std::uint64_t scan_start = repiu::platform::ReadCycleCounter();
       for (std::uint32_t i = 0; i < width; ++i) {
         emulated_val |= (static_cast<std::uint32_t>(ReadJammaPort8(
                              context, win32_context->Esp,
                              port + static_cast<std::uint16_t>(i)))
                          << (i * 8));
       }
-      context->port_io.jamma_scan_cycles += __rdtsc() - scan_start;
+      context->port_io.jamma_scan_cycles += repiu::platform::ReadCycleCounter() - scan_start;
       ++context->port_io.jamma_scan_count;
       context->port_io.key_query_count += TakeJammaKeyQueryCount();
 

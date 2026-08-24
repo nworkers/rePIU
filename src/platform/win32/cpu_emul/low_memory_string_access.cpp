@@ -6,6 +6,7 @@
 #include <Zydis.h>
 
 #include <cstring>
+#include "repiu/platform/guest_cpu_context.h"
 
 namespace repiu::platform::win32
 {
@@ -147,7 +148,7 @@ bool ReadStringOperand(ThreadContext* context,
     return true;
 }
 
-std::uint32_t ReadAccumulator(const CONTEXT& win32_context, std::uint32_t width)
+std::uint32_t ReadAccumulator(const repiu::platform::GuestCpuContext& win32_context, std::uint32_t width)
 {
     if (width == 1U)
     {
@@ -160,7 +161,7 @@ std::uint32_t ReadAccumulator(const CONTEXT& win32_context, std::uint32_t width)
     return win32_context.Eax;
 }
 
-void WriteAccumulator(CONTEXT* win32_context,
+void WriteAccumulator(repiu::platform::GuestCpuContext* win32_context,
                       std::uint32_t width,
                       std::uint32_t value)
 {
@@ -180,7 +181,7 @@ void WriteAccumulator(CONTEXT* win32_context,
 
 }  // namespace
 
-bool ServiceGuestLowMemoryStringInstruction(CONTEXT* win32_context,
+bool ServiceGuestLowMemoryStringInstruction(repiu::platform::GuestCpuContext* win32_context,
                                             ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr)

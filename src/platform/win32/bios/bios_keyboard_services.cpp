@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <sstream>
+#include "repiu/platform/guest_cpu_context.h"
 
 namespace repiu::platform::win32
 {
@@ -12,19 +13,19 @@ namespace
 
 constexpr std::uint32_t kEFlagsZero = 0x00000040U;
 
-void ReportNoKeystroke(CONTEXT* win32_context)
+void ReportNoKeystroke(repiu::platform::GuestCpuContext* win32_context)
 {
     win32_context->Eax &= 0xFFFF0000U;
     win32_context->EFlags |= kEFlagsZero;
 }
 
-void ReportKeystroke(CONTEXT* win32_context, std::uint16_t ax)
+void ReportKeystroke(repiu::platform::GuestCpuContext* win32_context, std::uint16_t ax)
 {
     win32_context->Eax = (win32_context->Eax & 0xFFFF0000U) | ax;
     win32_context->EFlags &= ~kEFlagsZero;
 }
 
-void ReportShiftFlags(CONTEXT* win32_context, std::uint16_t flags)
+void ReportShiftFlags(repiu::platform::GuestCpuContext* win32_context, std::uint16_t flags)
 {
     win32_context->Eax = (win32_context->Eax & 0xFFFF0000U) | flags;
     win32_context->EFlags &= ~kEFlagsZero;
@@ -32,7 +33,7 @@ void ReportShiftFlags(CONTEXT* win32_context, std::uint16_t flags)
 
 } // namespace
 
-bool HandleBiosInterrupt16(CONTEXT* win32_context, ThreadContext* context)
+bool HandleBiosInterrupt16(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     const std::uint16_t ax = static_cast<std::uint16_t>(
         win32_context->Eax & 0xFFFFU);

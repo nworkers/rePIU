@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <string_view>
+#include "repiu/platform/guest_cpu_context.h"
 
 namespace repiu::platform::win32
 {
@@ -12,7 +13,7 @@ namespace repiu::platform::win32
 // guest EIP, resume directly at an existing shared AOT cache entry instead of
 // executing one additional guest instruction under TF. A cache miss or other
 // failure leaves the caller's TF fallback state unchanged.
-bool TryResumeAotAfterHandledHle(CONTEXT* win32_context,
+bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context,
                                  std::uint32_t handled_guest_eip);
 

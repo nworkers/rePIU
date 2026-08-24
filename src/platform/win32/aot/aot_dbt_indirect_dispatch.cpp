@@ -4,6 +4,9 @@
 #include "aot_runtime_dispatch.h"
 
 #include <cstddef>
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/fault_handler.h"
+#include "repiu/platform/thunk_calling_convention.h"
 
 namespace repiu::platform::win32
 {
@@ -48,7 +51,7 @@ bool FindDispatchSite(
     return false;
 }
 
-extern "C" void __stdcall ResolveAotDbtIndirectMissFrame(
+extern "C" void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtIndirectMissFrame(
     ThreadContext* context, std::uint32_t* frame)
 {
     if (frame == nullptr)
@@ -90,7 +93,7 @@ extern "C" void __stdcall ResolveAotDbtIndirectMissFrame(
         return;
     }
 
-    CONTEXT guest_context{};
+    repiu::platform::GuestCpuContext guest_context{};
     guest_context.Edi = frame[0];
     guest_context.Esi = frame[1];
     guest_context.Ebp = frame[2];
@@ -102,17 +105,16 @@ extern "C" void __stdcall ResolveAotDbtIndirectMissFrame(
     guest_context.EFlags = frame[kSavedEflagsIndex];
     guest_context.Eip = guest_source;
 
-    EXCEPTION_RECORD exception_record{};
-    exception_record.ExceptionCode = EXCEPTION_BREAKPOINT;
-    exception_record.ExceptionAddress = reinterpret_cast<void*>(
-        static_cast<std::uintptr_t>(miss_address));
-    EXCEPTION_POINTERS exception_info{&exception_record, &guest_context};
+    repiu::platform::FaultEvent fault;
+    fault.kind = repiu::platform::FaultKind::kBreakpoint;
+    fault.instruction_address = miss_address;
+    fault.registers = &guest_context;
     context->aot_reentry_cache_address = miss_address;
     context->aot_reentry_pending = true;
     AotDbtDispatchFallbackReason fallback_reason =
         AotDbtDispatchFallbackReason::kUnknown;
     if (!HandleAotIndirectTransfer(
-            &exception_info, &guest_context, context, &fallback_reason,
+            fault, context, &fallback_reason,
             Win32AotTransferOrigin::kHost))
     {
         RecordAotDbtIndirectFallback(context, fallback_reason);
@@ -193,6 +195,13 @@ extern "C" __declspec(naked) void AotDbtIndirectMissThunk()
 }
 #endif
 
+#if !defined(_MSC_VER) && defined(__i386__)
+// Task 503d-12: the same thunk on Linux, one instantiation of the shared
+// bridge macro in src/platform/linux/aot_dbt_dispatch_thunks.S. GCC has no
+// naked functions on x86, so only the declaration is here.
+extern "C" void AotDbtIndirectMissThunk();
+#endif
+
 }  // namespace
 
 void RecordAotDbtIndirectFallback(
@@ -217,7 +226,7 @@ void RecordAotDbtIndirectFallback(
 
 void* GetAotDbtIndirectMissThunkAddress()
 {
-#if defined(_MSC_VER) && defined(_M_IX86)
+#if (defined(_MSC_VER) && defined(_M_IX86)) || defined(__i386__)
     return reinterpret_cast<void*>(&AotDbtIndirectMissThunk);
 #else
     return nullptr;

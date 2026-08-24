@@ -63,6 +63,7 @@ flowchart LR
 * [PIU LINEXE call-gate ABI](piu-linexe-call-gate-abi.md)
 * [CAT702 PIU lock check / CAT702 PIU 보안 검사](cat702-piu-lock-check.md)
 * [LINEXE arena runtime frontier](linexe-arena-runtime-frontier.md)
+* [Linux 이식 frontier / Linux port frontier](linux-port-frontier.md)
 * [RES/PTX resource loading analysis](res-ptx-resource-loading.md)
 
 The DOS/4G DLL loader analysis also records the [DOS/32A behavioral cross-reference and clean-room boundary](dll-loader-int21-ff00.md#dos32a-교차-확인과-적용-한계).

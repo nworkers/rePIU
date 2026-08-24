@@ -21,6 +21,15 @@ void SetActiveJammaBindings(const input::ResolvedJammaBindings& bindings);
 
 const input::ResolvedJammaBindings& ActiveJammaBindings();
 
+// Resolves the active bindings against the keyboard layout SDL sees now.
+//
+// SetActiveJammaBindings already does this, so this exists for the run that
+// loads no configuration and would otherwise keep the built-in defaults as
+// they were resolved on first use -- possibly before SDL had a layout at all.
+// Subject to the same threading contract: startup only, before the guest
+// thread and the SDL window exist.
+void ResolveActiveJammaScancodes();
+
 }  // namespace repiu::platform::win32
 
 #endif  // REPIU_PLATFORM_WIN32_ACTIVE_JAMMA_BINDINGS_H_

@@ -13,7 +13,15 @@
 #include <limits>
 #include <sstream>
 
+// Task 503d-16. psapi is read by the module enumeration inside
+// PollThreadUntilExit, which is fenced with everything else this process
+// does to observe another thread. The include follows what uses it.
+#if defined(_WIN32)
 #include <psapi.h>
+#endif
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/host_error_stream.h"
+#include "repiu/platform/host_time.h"
 
 namespace repiu::platform::win32
 {
@@ -55,6 +63,12 @@ void SaturatingAtomicAdd(std::atomic<std::uint32_t>* value,
 
 }  // namespace
 
+// Task 503d-16. The .cpp takes the boundary the header already drew in
+// 3d-14: the section another process maps, and the thread a watchdog waits
+// on. Neither is needed to run the guest, and neither has a counterpart
+// worth inventing -- Linux cannot suspend a thread and read its registers
+// from inside the same process at all.
+#if defined(_WIN32)
 SharedTelemetryMapping OpenSharedTelemetryMapping()
 {
     SharedTelemetryMapping result;
@@ -89,10 +103,15 @@ SharedTelemetryMapping OpenSharedTelemetryMapping()
     }
     return result;
 }
+#endif
 
+// Task 503d-16: not fenced. What it formats is the engine's own progress, and
+// the two counters are milliseconds and an iteration number rather than
+// anything Windows owns -- so they are spelled by what they mean. The format
+// already casts them at the call, which is why `%lu` still reads correctly.
 void WriteLiveTelemetrySnapshot(const ThreadContext& context,
-                                DWORD elapsed_milliseconds,
-                                DWORD poll_iteration)
+                                std::uint32_t elapsed_milliseconds,
+                                std::uint32_t poll_iteration)
 {
     char buffer[768] = {};
     const int length = std::snprintf(
@@ -228,19 +247,23 @@ void WriteLiveTelemetrySnapshot(const ThreadContext& context,
         return;
     }
 
-    HANDLE stderr_handle = GetStdHandle(STD_ERROR_HANDLE);
-    if (stderr_handle == nullptr || stderr_handle == INVALID_HANDLE_VALUE)
-    {
-        return;
-    }
-    DWORD written = 0;
-    const DWORD byte_count = static_cast<DWORD>(
-        length < static_cast<int>(sizeof(buffer)) ? length
-                                                  : sizeof(buffer) - 1U);
-    WriteFile(stderr_handle, buffer, byte_count, &written, nullptr);
+    // Task 503d-16: 3d-14 built this for exactly this shape -- one buffer, one
+    // unbuffered write, no stdio lock. This caller runs on the host thread
+    // beside a guest thread it can suspend, which is the reason that mattered.
+    const std::size_t byte_count =
+        static_cast<std::size_t>(length) < sizeof(buffer)
+            ? static_cast<std::size_t>(length)
+            : sizeof(buffer) - 1U;
+    repiu::platform::WriteHostErrorStream(buffer, byte_count);
 }
 
-DWORD PollThreadUntilExit(HANDLE thread,
+#if defined(_WIN32)
+// Task 503d-17. The host spells "no limit" with a neutral constant now, and it
+// arrives here as the timeout of a Win32 wait. They are the same number, and
+// this is what says so where a change to either would be noticed.
+static_assert(repiu::runtime::kWaitForeverMilliseconds == INFINITE);
+
+DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
                           DWORD timeout_milliseconds,
                           DWORD stall_timeout_milliseconds,
                           ThreadContext* progress_context,
@@ -248,17 +271,21 @@ DWORD PollThreadUntilExit(HANDLE thread,
                           DWORD* exit_code,
                           bool* stall_timed_out)
 {
-    const Win32ThreadApi& api = GetWin32ThreadApi();
-    if (api.get_exit_code_thread == nullptr)
+    if (!thread.valid)
     {
         return WAIT_FAILED;
     }
+    // Task 503d-18: the loop's own question goes through the layer, but the
+    // diagnostics below sample a thread with Win32 calls that take a HANDLE.
+    // `HostThread::handle` is documented as being one on this host, and this
+    // whole function is inside a Windows fence.
+    auto* thread_handle = static_cast<HANDLE>(thread.handle);
 
     if (stall_timed_out != nullptr)
     {
         *stall_timed_out = false;
     }
-    const DWORD start_tick = GetTickCount();
+    const DWORD start_tick = repiu::platform::MillisecondTicks();
     const auto read_event_clock = [host_context]() -> std::uint64_t {
         if (host_context != nullptr)
         {
@@ -374,7 +401,7 @@ DWORD PollThreadUntilExit(HANDLE thread,
                 {
                     WriteLiveTelemetrySnapshot(
                         *progress_context,
-                        GetTickCount() - start_tick,
+                        repiu::platform::MillisecondTicks() - start_tick,
                         iteration + 1);
                 }
                 return kWin32HostExitRequested;
@@ -452,17 +479,17 @@ DWORD PollThreadUntilExit(HANDLE thread,
                 ArmAotTimerSafePoint(progress_context);
             }
         }
-        DWORD current_exit_code = 0;
-        if (!api.get_exit_code_thread(thread, &current_exit_code))
-        {
-            return WAIT_FAILED;
-        }
-
-        if (current_exit_code != STILL_ACTIVE)
+        // Task 503d-18: one question, asked without waiting. What stood here
+        // read GetExitCodeThread and compared against STILL_ACTIVE, which is
+        // also a legal exit code -- a guest that returned 259 would have kept
+        // this loop spinning until the timeout.
+        const repiu::platform::HostThreadStatus status =
+            repiu::platform::QueryHostThread(thread);
+        if (!status.running)
         {
             if (exit_code != nullptr)
             {
-                *exit_code = current_exit_code;
+                *exit_code = static_cast<DWORD>(status.exit_code);
             }
             return WAIT_OBJECT_0;
         }
@@ -492,7 +519,7 @@ DWORD PollThreadUntilExit(HANDLE thread,
         if (progressed)
         {
             quiet_iterations = 0;
-            quiet_start_tick = GetTickCount();
+            quiet_start_tick = repiu::platform::MillisecondTicks();
         }
         else
         {
@@ -506,14 +533,14 @@ DWORD PollThreadUntilExit(HANDLE thread,
 
         if (stall_timeout_milliseconds != INFINITE &&
             progress_context != nullptr &&
-            GetTickCount() - quiet_start_tick >=
+            repiu::platform::MillisecondTicks() - quiet_start_tick >=
             stall_timeout_milliseconds)
         {
             if (progress_context != nullptr)
             {
                 WriteLiveTelemetrySnapshot(
                     *progress_context,
-                    GetTickCount() - start_tick,
+                    repiu::platform::MillisecondTicks() - start_tick,
                     iteration + 1);
             }
             if (stall_timed_out != nullptr)
@@ -524,19 +551,19 @@ DWORD PollThreadUntilExit(HANDLE thread,
         }
 
         if (timeout_milliseconds != INFINITE &&
-            GetTickCount() - start_tick >= timeout_milliseconds)
+            repiu::platform::MillisecondTicks() - start_tick >= timeout_milliseconds)
         {
             if (progress_context != nullptr)
             {
                 WriteLiveTelemetrySnapshot(
                     *progress_context,
-                    GetTickCount() - start_tick,
+                    repiu::platform::MillisecondTicks() - start_tick,
                     iteration + 1);
             }
             return WAIT_TIMEOUT;
         }
 
-        const DWORD current_tick = GetTickCount();
+        const DWORD current_tick = repiu::platform::MillisecondTicks();
         if (progress_context != nullptr)
         {
             const std::uint32_t dispatch_total =
@@ -572,7 +599,7 @@ DWORD PollThreadUntilExit(HANDLE thread,
             // Null telemetry: the stage marker belongs to the native sampler,
             // and overwriting it would confuse a reader of that instrument.
             if (CaptureWin32NativePhaseSample(
-                    thread, progress_context->aot_placement, nullptr,
+                    thread_handle, progress_context->aot_placement, nullptr,
                     &census_sample, loader_module_base, loader_module_size))
             {
                 const Win32GuestPositionClassification classification =
@@ -609,7 +636,7 @@ DWORD PollThreadUntilExit(HANDLE thread,
             FILETIME exit_time = {};
             FILETIME kernel_time = {};
             FILETIME user_time = {};
-            if (GetThreadTimes(thread, &creation_time, &exit_time,
+            if (GetThreadTimes(thread_handle, &creation_time, &exit_time,
                                &kernel_time, &user_time))
             {
                 const auto to_100ns = [](const FILETIME& value) {
@@ -685,7 +712,7 @@ DWORD PollThreadUntilExit(HANDLE thread,
         {
             Win32NativePhaseSample sample;
             if (CaptureWin32NativePhaseSample(
-                    thread, progress_context->aot_placement,
+                    thread_handle, progress_context->aot_placement,
                     progress_context->shared_live_telemetry, &sample))
             {
                 sample.last_indirect_source =
@@ -740,8 +767,9 @@ DWORD PollThreadUntilExit(HANDLE thread,
         }
     }
 }
+#endif
 
-void CopySnapshotFromContextRecord(const CONTEXT& source,
+void CopySnapshotFromContextRecord(const repiu::platform::GuestCpuContext& source,
                                    X86ExecutionSnapshot* snapshot)
 {
     if (snapshot == nullptr)
@@ -773,6 +801,7 @@ void CopySnapshotFromContextRecord(const CONTEXT& source,
 #endif
 }
 
+#if defined(_WIN32)
 void CaptureSuspendedThreadSnapshot(HANDLE thread,
                                     X86ExecutionSnapshot* snapshot)
 {
@@ -795,7 +824,7 @@ void CaptureSuspendedThreadSnapshot(HANDLE thread,
         return;
     }
 
-    CONTEXT thread_context = {};
+    repiu::platform::GuestCpuContext thread_context = {};
     thread_context.ContextFlags = CONTEXT_FULL | CONTEXT_SEGMENTS;
     if (api.get_thread_context(thread, &thread_context))
     {
@@ -807,6 +836,7 @@ void CaptureSuspendedThreadSnapshot(HANDLE thread,
     snapshot->captured = false;
 #endif
 }
+#endif  // _WIN32
 
 bool BuildSingleStepSnapshot(const ThreadContext& context,
                              X86ExecutionSnapshot* snapshot)

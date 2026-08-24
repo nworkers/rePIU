@@ -5,6 +5,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include "repiu/platform/guest_cpu_context.h"
 
 namespace repiu::platform::win32
 {
@@ -67,7 +68,7 @@ void CaptureStack(ThreadContext* context,
 
 Win32AotCallStepProbeEntry CaptureEntry(
     ThreadContext& context,
-    const CONTEXT& win32_context,
+    const repiu::platform::GuestCpuContext& win32_context,
     Win32AotCallStepProbeEventKind kind,
     std::uint32_t expected_eip,
     std::uint32_t expected_esp)
@@ -98,7 +99,7 @@ Win32AotCallStepProbeEntry CaptureEntry(
     return entry;
 }
 
-void RestoreDebugState(CONTEXT* win32_context, ThreadContext* context)
+void RestoreDebugState(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     win32_context->Dr0 = context->aot_dbt_call_step_probe_saved_dr0;
     win32_context->Dr1 = context->aot_dbt_call_step_probe_saved_dr1;
@@ -123,7 +124,7 @@ void FinishProbe(ThreadContext* context)
     context->aot_dbt_call_step_probe_active_call_sequence = 0U;
 }
 
-void RecordConflict(CONTEXT* win32_context, ThreadContext* context)
+void RecordConflict(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     AppendEntry(
         context,
@@ -233,18 +234,14 @@ bool MaybeArmAotDbtCallStepProbe(
     return true;
 }
 
-bool HandleAotDbtCallStepProbe(
-    EXCEPTION_POINTERS* exception_info,
-    CONTEXT* win32_context,
-    ThreadContext* context)
+bool HandleAotDbtCallStepProbe(const repiu::platform::FaultEvent& fault,
+                               ThreadContext* context)
 {
-    if (exception_info == nullptr ||
-        exception_info->ExceptionRecord == nullptr ||
-        win32_context == nullptr || context == nullptr ||
+    repiu::platform::GuestCpuContext* win32_context = fault.registers;
+    if (win32_context == nullptr || context == nullptr ||
         context->aot_dbt_call_step_probe_phase ==
             Win32AotCallStepProbePhase::kIdle ||
-        exception_info->ExceptionRecord->ExceptionCode !=
-            EXCEPTION_SINGLE_STEP)
+        fault.kind != repiu::platform::FaultKind::kSingleStep)
     {
         return false;
     }

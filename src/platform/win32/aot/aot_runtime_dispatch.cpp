@@ -22,6 +22,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/atomic_ops.h"
+#include "repiu/platform/worker_signal.h"
 
 namespace repiu::platform::win32
 {
@@ -31,7 +34,7 @@ void BumpAotBoundaryCount(ThreadContext* context)
     context->aot_boundary_count.fetch_add(1U, std::memory_order_relaxed);
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedIncrement(
+        repiu::platform::AtomicIncrement(
             &context->shared_live_telemetry->aot_boundary_count);
     }
 }
@@ -77,7 +80,7 @@ void BumpAotBoundaryReason(ThreadContext* context, AotBoundaryReason reason)
     }
     if (shared != nullptr)
     {
-        InterlockedIncrement(shared);
+        repiu::platform::AtomicIncrement(shared);
     }
 }
 
@@ -86,7 +89,7 @@ void BumpAotReentryCount(ThreadContext* context)
     context->aot_reentry_count.fetch_add(1U, std::memory_order_relaxed);
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedIncrement(
+        repiu::platform::AtomicIncrement(
             &context->shared_live_telemetry->aot_reentry_count);
     }
 }
@@ -119,18 +122,18 @@ void RecordAotOtherBoundarySample(ThreadContext* context,
     if (context->shared_live_telemetry != nullptr)
     {
         Win32SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
-        InterlockedExchange(&telemetry->aot_last_other_eip,
+        repiu::platform::AtomicExchange(&telemetry->aot_last_other_eip,
                             static_cast<long>(guest_eip));
-        InterlockedExchange(&telemetry->aot_last_other_bytes,
+        repiu::platform::AtomicExchange(&telemetry->aot_last_other_bytes,
                             static_cast<long>(packed));
         // Running max: this opcode is the histogram peak so far. Only the guest
         // thread writes these, so a plain read of the mirror is sufficient.
         if (static_cast<std::uint32_t>(telemetry->aot_other_top_opcode_count) <
             new_count)
         {
-            InterlockedExchange(&telemetry->aot_other_top_opcode,
+            repiu::platform::AtomicExchange(&telemetry->aot_other_top_opcode,
                                 static_cast<long>(opcode));
-            InterlockedExchange(&telemetry->aot_other_top_opcode_count,
+            repiu::platform::AtomicExchange(&telemetry->aot_other_top_opcode_count,
                                 static_cast<long>(new_count));
         }
     }
@@ -145,7 +148,7 @@ void BumpAotPageRetireAttemptCount(ThreadContext* context)
         1U, std::memory_order_relaxed);
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedIncrement(
+        repiu::platform::AtomicIncrement(
             &context->shared_live_telemetry->aot_page_retire_attempt_count);
     }
 }
@@ -156,7 +159,7 @@ void BumpAotPageRetireSuccessCount(ThreadContext* context)
         1U, std::memory_order_relaxed);
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedIncrement(
+        repiu::platform::AtomicIncrement(
             &context->shared_live_telemetry->aot_page_retire_success_count);
     }
 }
@@ -167,7 +170,7 @@ void BumpAotRetiredEntryTrapCount(ThreadContext* context)
         1U, std::memory_order_relaxed);
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedIncrement(
+        repiu::platform::AtomicIncrement(
             &context->shared_live_telemetry->aot_retired_entry_trap_count);
     }
 }
@@ -177,7 +180,7 @@ void BumpAotQuarantineCount(ThreadContext* context)
     context->aot_quarantine_count.fetch_add(1U, std::memory_order_relaxed);
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedIncrement(
+        repiu::platform::AtomicIncrement(
             &context->shared_live_telemetry->aot_quarantine_count);
     }
 }
@@ -187,13 +190,13 @@ void BumpAotQuarantineCount(ThreadContext* context)
 // 246): guest stack around ESP, live code bytes around code_center, the
 // tracked call frames, and the recent return trace. Fires at most four
 // times per process across both call sites.
-void DumpZeroReturnEvidence(const CONTEXT* win32_context,
+void DumpZeroReturnEvidence(const repiu::platform::GuestCpuContext* win32_context,
                             ThreadContext* context,
                             const char* reason,
                             std::uint32_t code_center)
 {
     static long zero_return_dump_count = 0;
-    const long dump_index = InterlockedIncrement(&zero_return_dump_count);
+    const long dump_index = repiu::platform::AtomicIncrement(&zero_return_dump_count);
     if (dump_index > 4)
     {
         return;
@@ -323,7 +326,7 @@ void RecordAotBreakpointProvenance(
         1U, std::memory_order_relaxed);
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedIncrement(
+        repiu::platform::AtomicIncrement(
             &context->shared_live_telemetry
                  ->aot_breakpoint_provenance_counts[index]);
     }
@@ -383,7 +386,7 @@ void ReResolveAotSegmentOverrides(ThreadContext* context)
     }
 }
 
-DWORD WINAPI AotTranslationWorkerProc(void* parameter)
+int AotTranslationWorkerProc(void* parameter)
 {
     ThreadContext* context = static_cast<ThreadContext*>(parameter);
     if (context == nullptr || context->aot_translation_request_event == nullptr ||
@@ -393,8 +396,8 @@ DWORD WINAPI AotTranslationWorkerProc(void* parameter)
     }
     for (;;)
     {
-        if (WaitForSingleObject(context->aot_translation_request_event,
-                                INFINITE) != WAIT_OBJECT_0)
+        if (!repiu::platform::WaitForWorkerSignal(
+                context->aot_translation_request_event))
         {
             return 2;
         }
@@ -480,7 +483,8 @@ DWORD WINAPI AotTranslationWorkerProc(void* parameter)
         // complete latency it anchors contains only scheduling.
         RecordAotWorkerCompleteSignal(
             worker_timing, ReadAotWorkerTimingCycles());
-        SetEvent(context->aot_translation_complete_event);
+        repiu::platform::SignalWorker(
+            context->aot_translation_complete_event);
     }
 }
 
@@ -490,13 +494,14 @@ bool RequestAotDynamicTranslation(ThreadContext* context,
                                   std::uint32_t* added_bytes)
 {
     if (context == nullptr || cache_entry == nullptr || added_bytes == nullptr ||
-        context->aot_translation_thread == nullptr ||
+        !context->aot_translation_thread.valid ||
         context->aot_translation_request_event == nullptr ||
         context->aot_translation_complete_event == nullptr)
     {
         return false;
     }
-    ResetEvent(context->aot_translation_complete_event);
+    repiu::platform::ResetWorkerSignal(
+        context->aot_translation_complete_event);
     context->aot_worker_operation.store(
         static_cast<std::uint32_t>(AotWorkerOperation::kTranslate),
         std::memory_order_release);
@@ -508,9 +513,10 @@ bool RequestAotDynamicTranslation(ThreadContext* context,
     const std::uint64_t request_cycles =
         worker_timing != nullptr ? ReadAotWorkerTimingCycles() : 0U;
     RecordAotWorkerRequestSignal(worker_timing, request_cycles);
-    if (SetEvent(context->aot_translation_request_event) == 0 ||
-        WaitForSingleObject(context->aot_translation_complete_event,
-                            INFINITE) != WAIT_OBJECT_0)
+    if (!repiu::platform::SignalWorker(
+            context->aot_translation_request_event) ||
+        !repiu::platform::WaitForWorkerSignal(
+            context->aot_translation_complete_event))
     {
         context->aot_terminal_failure.store(true, std::memory_order_release);
         return false;
@@ -561,19 +567,18 @@ void ReleaseUnneededWin32AotGuestPageWatches(ThreadContext* context,
     }
 }
 
-bool HandleAotGuestCodeWriteCompletion(EXCEPTION_POINTERS* exception_info,
-                                       CONTEXT* win32_context,
-                                       ThreadContext* context)
+bool HandleAotGuestCodeWriteCompletion(
+    const repiu::platform::FaultEvent& fault, ThreadContext* context)
 {
+    repiu::platform::GuestCpuContext* win32_context = fault.registers;
     // Task 326 handler-axis attribution. Function scope, so every early return
     // is covered.
     const ExecutionTimeScope write_completion_time_scope(
         context != nullptr ? context->execution_time_profile.get() : nullptr,
         ExecutionTimeBucket::kAotWriteCompletion);
-    if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
-        win32_context == nullptr || context == nullptr ||
+    if (win32_context == nullptr || context == nullptr ||
         !HasPendingWin32AotGuestWrite(context->aot_page_write_watch) ||
-        exception_info->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP)
+        fault.kind != repiu::platform::FaultKind::kSingleStep)
     {
         return false;
     }
@@ -599,25 +604,21 @@ bool HandleAotGuestCodeWriteCompletion(EXCEPTION_POINTERS* exception_info,
     return true;
 }
 
-bool HandleAotGuestCodeWriteFault(EXCEPTION_POINTERS* exception_info,
-                                  CONTEXT* win32_context,
+bool HandleAotGuestCodeWriteFault(const repiu::platform::FaultEvent& fault,
                                   ThreadContext* context)
 {
+    repiu::platform::GuestCpuContext* win32_context = fault.registers;
     const ExecutionTimeScope write_fault_time_scope(
         context != nullptr ? context->execution_time_profile.get() : nullptr,
         ExecutionTimeBucket::kAotWriteFault);
-    if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
-        win32_context == nullptr || context == nullptr ||
+    if (win32_context == nullptr || context == nullptr ||
         context->aot_placement == nullptr ||
-        exception_info->ExceptionRecord->ExceptionCode !=
-            EXCEPTION_ACCESS_VIOLATION ||
-        exception_info->ExceptionRecord->NumberParameters < 2U ||
-        exception_info->ExceptionRecord->ExceptionInformation[0] != 1U)
+        fault.kind != repiu::platform::FaultKind::kAccessViolation ||
+        !fault.access.valid || !fault.access.write_access)
     {
         return false;
     }
-    const std::uintptr_t destination_value =
-        exception_info->ExceptionRecord->ExceptionInformation[1];
+    const std::uintptr_t destination_value = fault.access.fault_address;
     if (destination_value > std::numeric_limits<std::uint32_t>::max())
     {
         return false;
@@ -700,7 +701,7 @@ bool RequestAotInlineCachePatch(ThreadContext* context,
                                 std::uint32_t guest_target,
                                 std::uint32_t cache_target)
 {
-    if (context == nullptr || context->aot_translation_thread == nullptr ||
+    if (context == nullptr || !context->aot_translation_thread.valid ||
         context->aot_translation_request_event == nullptr ||
         context->aot_translation_complete_event == nullptr)
     {
@@ -712,7 +713,8 @@ bool RequestAotInlineCachePatch(ThreadContext* context,
             context, cache_miss_address, guest_target, cache_target);
     }
     ++context->aot_inline_cache_worker_patch_count;
-    ResetEvent(context->aot_translation_complete_event);
+    repiu::platform::ResetWorkerSignal(
+        context->aot_translation_complete_event);
     context->aot_patch_cache_miss_address.store(
         cache_miss_address, std::memory_order_release);
     context->aot_patch_guest_target.store(guest_target,
@@ -722,9 +724,10 @@ bool RequestAotInlineCachePatch(ThreadContext* context,
     context->aot_worker_operation.store(
         static_cast<std::uint32_t>(AotWorkerOperation::kPatchInlineCache),
         std::memory_order_release);
-    if (SetEvent(context->aot_translation_request_event) == 0 ||
-        WaitForSingleObject(context->aot_translation_complete_event,
-                            INFINITE) != WAIT_OBJECT_0)
+    if (!repiu::platform::SignalWorker(
+            context->aot_translation_request_event) ||
+        !repiu::platform::WaitForWorkerSignal(
+            context->aot_translation_complete_event))
     {
         context->aot_terminal_failure.store(true, std::memory_order_release);
         return false;
@@ -799,13 +802,14 @@ bool RequestAotGuestPageRetirement(ThreadContext* context,
                                    std::uint32_t guest_page,
                                    bool quarantine)
 {
-    if (context == nullptr || context->aot_translation_thread == nullptr ||
+    if (context == nullptr || !context->aot_translation_thread.valid ||
         context->aot_translation_request_event == nullptr ||
         context->aot_translation_complete_event == nullptr)
     {
         return false;
     }
-    ResetEvent(context->aot_translation_complete_event);
+    repiu::platform::ResetWorkerSignal(
+        context->aot_translation_complete_event);
     context->aot_retire_guest_page.store(
         guest_page, std::memory_order_release);
     context->aot_retire_quarantine.store(
@@ -813,9 +817,10 @@ bool RequestAotGuestPageRetirement(ThreadContext* context,
     context->aot_worker_operation.store(
         static_cast<std::uint32_t>(AotWorkerOperation::kRetireGuestPage),
         std::memory_order_release);
-    if (SetEvent(context->aot_translation_request_event) == 0 ||
-        WaitForSingleObject(context->aot_translation_complete_event,
-                            INFINITE) != WAIT_OBJECT_0)
+    if (!repiu::platform::SignalWorker(
+            context->aot_translation_request_event) ||
+        !repiu::platform::WaitForWorkerSignal(
+            context->aot_translation_complete_event))
     {
         context->aot_terminal_failure.store(true, std::memory_order_release);
         return false;
@@ -1143,17 +1148,16 @@ bool EvaluateAotCondition(std::uint8_t condition, std::uint32_t eflags)
     return false;
 }
 
-bool HandleAotConditionalTransfer(EXCEPTION_POINTERS* exception_info,
-                                  CONTEXT* win32_context,
+bool HandleAotConditionalTransfer(const repiu::platform::FaultEvent& fault,
                                   ThreadContext* context)
 {
+    repiu::platform::GuestCpuContext* win32_context = fault.registers;
     const ExecutionTimeScope conditional_time_scope(
         context != nullptr ? context->execution_time_profile.get() : nullptr,
         ExecutionTimeBucket::kAotConditional);
-    if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
-        win32_context == nullptr || context == nullptr ||
+    if (win32_context == nullptr || context == nullptr ||
         context->aot_placement == nullptr || !context->aot_reentry_pending ||
-        exception_info->ExceptionRecord->ExceptionCode != EXCEPTION_BREAKPOINT)
+        fault.kind != repiu::platform::FaultKind::kBreakpoint)
     {
         return false;
     }
@@ -1211,12 +1215,12 @@ bool HandleAotConditionalTransfer(EXCEPTION_POINTERS* exception_info,
     return true;
 }
 
-bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
-                               CONTEXT* win32_context,
+bool HandleAotIndirectTransfer(const repiu::platform::FaultEvent& fault,
                                ThreadContext* context,
                                AotDbtDispatchFallbackReason* fallback_reason,
                                Win32AotTransferOrigin origin)
 {
+    repiu::platform::GuestCpuContext* win32_context = fault.registers;
     const ExecutionTimeScope indirect_time_scope(
         context != nullptr ? context->execution_time_profile.get() : nullptr,
         ExecutionTimeBucket::kAotIndirect);
@@ -1224,11 +1228,10 @@ bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
     {
         *fallback_reason = AotDbtDispatchFallbackReason::kUnknown;
     }
-    if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
-        win32_context == nullptr || context == nullptr ||
+    if (win32_context == nullptr || context == nullptr ||
         context->aot_placement == nullptr ||
         !context->aot_reentry_pending ||
-        exception_info->ExceptionRecord->ExceptionCode != EXCEPTION_BREAKPOINT)
+        fault.kind != repiu::platform::FaultKind::kBreakpoint)
     {
         if (fallback_reason != nullptr)
         {
@@ -1408,13 +1411,13 @@ bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
     return true;
 }
 
-bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
-                             CONTEXT* win32_context,
+bool HandleAotReturnTransfer(const repiu::platform::FaultEvent& fault,
                              ThreadContext* context,
                              AotDbtDispatchFallbackReason* fallback_reason,
                              Win32AotTransferOrigin origin,
                              std::uint32_t return_patch_site_index)
 {
+    repiu::platform::GuestCpuContext* win32_context = fault.registers;
     const ExecutionTimeScope return_transfer_time_scope(
         context != nullptr ? context->execution_time_profile.get() : nullptr,
         ExecutionTimeBucket::kAotReturn);
@@ -1430,11 +1433,10 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
     {
         *fallback_reason = AotDbtDispatchFallbackReason::kUnknown;
     }
-    if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
-        win32_context == nullptr || context == nullptr ||
+    if (win32_context == nullptr || context == nullptr ||
         context->aot_placement == nullptr ||
         !context->aot_reentry_pending ||
-        exception_info->ExceptionRecord->ExceptionCode != EXCEPTION_BREAKPOINT)
+        fault.kind != repiu::platform::FaultKind::kBreakpoint)
     {
         if (fallback_reason != nullptr)
         {
@@ -1528,16 +1530,16 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
     ++context->aot_return_trace_count;
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->aot_last_return_source,
             static_cast<long>(win32_context->Eip));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->aot_last_return_target,
             static_cast<long>(target));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->aot_last_expected_return,
             static_cast<long>(context->aot_last_expected_return));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->aot_last_return_matches_call,
             context->aot_last_return_matches_call ? 1L : 0L);
     }
@@ -1629,7 +1631,7 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
         1, std::memory_order_relaxed);
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedIncrement(
+        repiu::platform::AtomicIncrement(
             &context->shared_live_telemetry->aot_return_dispatch_count);
     }
     AccumulateAotResidency(context, target);
@@ -1644,7 +1646,7 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
 // selectors loaded (native push is correct); a mismatch means host-flat (native
 // push would push the host selector, so the translation must read the shadow).
 static void ProbePushSegBoundary(ThreadContext* context,
-                                 const CONTEXT* win32_context,
+                                 const repiu::platform::GuestCpuContext* win32_context,
                                  const std::uint8_t* bytes,
                                  std::size_t length)
 {
@@ -1695,20 +1697,20 @@ static void ProbePushSegBoundary(ThreadContext* context,
             return;
     }
     Win32SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
-    InterlockedIncrement(&telemetry->aot_pushseg_count);
-    InterlockedExchange(&telemetry->aot_pushseg_last_opcode,
+    repiu::platform::AtomicIncrement(&telemetry->aot_pushseg_count);
+    repiu::platform::AtomicExchange(&telemetry->aot_pushseg_last_opcode,
                         static_cast<long>(opcode));
-    InterlockedExchange(&telemetry->aot_pushseg_last_host_sel,
+    repiu::platform::AtomicExchange(&telemetry->aot_pushseg_last_host_sel,
                         static_cast<long>(host_selector));
-    InterlockedExchange(&telemetry->aot_pushseg_last_shadow_sel,
+    repiu::platform::AtomicExchange(&telemetry->aot_pushseg_last_shadow_sel,
                         static_cast<long>(shadow_selector));
     if ((host_selector & 0xFFFFU) == (shadow_selector & 0xFFFFU))
     {
-        InterlockedIncrement(&telemetry->aot_pushseg_match_count);
+        repiu::platform::AtomicIncrement(&telemetry->aot_pushseg_match_count);
     }
     else
     {
-        InterlockedIncrement(&telemetry->aot_pushseg_mismatch_count);
+        repiu::platform::AtomicIncrement(&telemetry->aot_pushseg_mismatch_count);
     }
 }
 
@@ -1782,42 +1784,38 @@ static void ProbeSegmentOverrideBoundary(ThreadContext* context,
         base = linear; // linear address for offset 0 == segment base
     }
     Win32SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
-    InterlockedIncrement(&telemetry->aot_segovr_count);
-    InterlockedExchange(&telemetry->aot_segovr_last_prefix,
+    repiu::platform::AtomicIncrement(&telemetry->aot_segovr_count);
+    repiu::platform::AtomicExchange(&telemetry->aot_segovr_last_prefix,
                         static_cast<long>(prefix));
-    InterlockedExchange(&telemetry->aot_segovr_last_selector,
+    repiu::platform::AtomicExchange(&telemetry->aot_segovr_last_selector,
                         static_cast<long>(selector));
-    InterlockedExchange(&telemetry->aot_segovr_last_base,
+    repiu::platform::AtomicExchange(&telemetry->aot_segovr_last_base,
                         static_cast<long>(base));
     if (base == 0U)
     {
-        InterlockedIncrement(&telemetry->aot_segovr_flat_count);
+        repiu::platform::AtomicIncrement(&telemetry->aot_segovr_flat_count);
     }
     else
     {
-        InterlockedIncrement(&telemetry->aot_segovr_nonflat_count);
+        repiu::platform::AtomicIncrement(&telemetry->aot_segovr_nonflat_count);
     }
 }
 
-bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
-                      CONTEXT* win32_context,
+bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
                       ThreadContext* context)
 {
+    repiu::platform::GuestCpuContext* win32_context = fault.registers;
     const ExecutionTimeScope reentry_time_scope(
         context != nullptr ? context->execution_time_profile.get() : nullptr,
         ExecutionTimeBucket::kAotReentry);
-    if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
-        win32_context == nullptr || context == nullptr ||
+    if (win32_context == nullptr || context == nullptr ||
         context->aot_placement == nullptr)
     {
         return false;
     }
-    const DWORD code = exception_info->ExceptionRecord->ExceptionCode;
-    if (code == EXCEPTION_BREAKPOINT)
+    if (fault.kind == repiu::platform::FaultKind::kBreakpoint)
     {
-        const std::uint32_t cache_address = static_cast<std::uint32_t>(
-            reinterpret_cast<std::uintptr_t>(
-                exception_info->ExceptionRecord->ExceptionAddress));
+        const std::uint32_t cache_address = fault.instruction_address;
         std::uint32_t guest_address = 0;
         // Task 334 interval 1. `FindAotGuestAddress` scans the whole address
         // map, which Task 324 fixed only in the opposite direction.
@@ -1943,7 +1941,7 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
         context->enable_single_step_trace = true;
         if (context->shared_live_telemetry != nullptr)
         {
-            InterlockedExchange(
+            repiu::platform::AtomicExchange(
                 &context->shared_live_telemetry->aot_boundary_guest_eip,
                 static_cast<long>(guest_address));
         }
@@ -2011,7 +2009,8 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
         }
         return false;
     }
-    if (code != EXCEPTION_SINGLE_STEP || !context->aot_reentry_pending)
+    if (fault.kind != repiu::platform::FaultKind::kSingleStep ||
+        !context->aot_reentry_pending)
     {
         return false;
     }
@@ -2072,9 +2071,9 @@ bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
                                               std::memory_order_relaxed);
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedIncrement(
+        repiu::platform::AtomicIncrement(
             &context->shared_live_telemetry->aot_legacy_fallback_count);
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->aot_last_fallback_address,
             static_cast<long>(current));
     }

@@ -9,6 +9,24 @@
 #include "thread_context.h"
 
 #include <cstdint>
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/fault_handler.h"
+
+// Task 503d-2. The only thing left in this header that needs the Win32 headers
+// is the translation worker's entry point below: CreateThread dictates its
+// return type and calling convention, so they are the operating system's to
+// name. Everything else moved to the platform-neutral types.
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
+// Task 503d-2. EXCEPTION_POINTERS is forward declared by its underlying tag so
+// this header needs no <windows.h>: a pointer to an incomplete type is all a
+// declaration requires, and on Windows it resolves to the very same type.
+struct _EXCEPTION_POINTERS;
 
 namespace repiu::platform::win32
 {
@@ -44,12 +62,16 @@ void BumpAotQuarantineCount(ThreadContext* context);
 // Evidence packet for a pathological zero return address / zero EIP
 // (design 246): guest stack around ESP, live code bytes around
 // code_center, tracked call frames, and the recent return trace.
-void DumpZeroReturnEvidence(const CONTEXT* win32_context,
+void DumpZeroReturnEvidence(const repiu::platform::GuestCpuContext* win32_context,
                             ThreadContext* context,
                             const char* reason,
                             std::uint32_t code_center);
 
-DWORD WINAPI AotTranslationWorkerProc(void* parameter);
+// Task 503d-6. Was a Win32 thread procedure, guarded so it could name DWORD
+// and WINAPI; now an ordinary function, and the Win32 shim at the creation site
+// casts its result back into a thread exit code. The guard went with the
+// signature, exactly as 503d-2 said it would.
+int AotTranslationWorkerProc(void* parameter);
 
 // Task 264 Phase 3a: build the per-segment resolution table (shadow addresses,
 // current selectors, descriptor bases) from the live guest context.
@@ -70,12 +92,10 @@ void ReleaseUnneededWin32AotGuestPageWatches(ThreadContext* context,
                                              std::uint32_t address,
                                              std::uint32_t size);
 
-bool HandleAotGuestCodeWriteCompletion(EXCEPTION_POINTERS* exception_info,
-                                       CONTEXT* win32_context,
-                                       ThreadContext* context);
+bool HandleAotGuestCodeWriteCompletion(
+    const repiu::platform::FaultEvent& fault, ThreadContext* context);
 
-bool HandleAotGuestCodeWriteFault(EXCEPTION_POINTERS* exception_info,
-                                  CONTEXT* win32_context,
+bool HandleAotGuestCodeWriteFault(const repiu::platform::FaultEvent& fault,
                                   ThreadContext* context);
 
 // Task 445: opt-in. When on, the inline-cache patch runs on the guest thread
@@ -115,20 +135,17 @@ bool ResolveAotTransferTarget(ThreadContext* context,
 
 bool EvaluateAotCondition(std::uint8_t condition, std::uint32_t eflags);
 
-bool HandleAotConditionalTransfer(EXCEPTION_POINTERS* exception_info,
-                                  CONTEXT* win32_context,
+bool HandleAotConditionalTransfer(const repiu::platform::FaultEvent& fault,
                                   ThreadContext* context);
 
-bool HandleAotIndirectTransfer(EXCEPTION_POINTERS* exception_info,
-                               CONTEXT* win32_context,
+bool HandleAotIndirectTransfer(const repiu::platform::FaultEvent& fault,
                                ThreadContext* context,
                                AotDbtDispatchFallbackReason* fallback_reason =
                                    nullptr,
                                Win32AotTransferOrigin origin =
                                    Win32AotTransferOrigin::kVeh);
 
-bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
-                             CONTEXT* win32_context,
+bool HandleAotReturnTransfer(const repiu::platform::FaultEvent& fault,
                              ThreadContext* context,
                              AotDbtDispatchFallbackReason* fallback_reason =
                                  nullptr,
@@ -137,8 +154,7 @@ bool HandleAotReturnTransfer(EXCEPTION_POINTERS* exception_info,
                              std::uint32_t return_patch_site_index =
                                  0xFFFFFFFFU);
 
-bool HandleAotReentry(EXCEPTION_POINTERS* exception_info,
-                      CONTEXT* win32_context,
+bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
                       ThreadContext* context);
 
 } // namespace repiu::platform::win32

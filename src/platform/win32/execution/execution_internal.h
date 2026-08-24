@@ -1,3 +1,4 @@
+#include "repiu/platform/guest_cpu_context.h"
 #pragma once
 
 // Declarations for functions that are defined in execution_trampoline.cpp but
@@ -34,15 +35,15 @@ bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
                                  std::uint32_t destination,
                                  std::uint32_t byte_count);
 
-void RecoverFromHleExit(CONTEXT* win32_context, ThreadContext* thread_context);
+void RecoverFromHleExit(repiu::platform::GuestCpuContext* win32_context, ThreadContext* thread_context);
 
 void RecordHandledDosInterrupt(ThreadContext* context, std::uint8_t vector, std::uint16_t ax);
 
-void RecordLowMemoryAccess(CONTEXT* win32_context, ThreadContext* context,
+void RecordLowMemoryAccess(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context,
                            std::uint8_t opcode, std::uint32_t destination, std::uint32_t value);
 
 std::uint16_t ReadGuestSegmentSelector(const ThreadContext& context,
-                                       std::uint8_t segment_register, const CONTEXT* win32_context);
+                                       std::uint8_t segment_register, const repiu::platform::GuestCpuContext* win32_context);
 
 bool ResolveSegmentLinearRange(ThreadContext* context, std::uint16_t selector,
                                std::uint32_t offset, std::uint32_t byte_count,
@@ -51,13 +52,13 @@ bool ResolveSegmentLinearRange(ThreadContext* context, std::uint16_t selector,
 bool IsGuestInstructionPointer(const ThreadContext* context, std::uint32_t eip);
 // Returns the number of expired PIT ticks consumed by a successful injection.
 // Zero means no interrupt was injected.
-std::uint32_t InjectPendingInterrupts(CONTEXT* win32_context,
+std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_context,
                                       ThreadContext* context);
 
-bool DispatchGuestHleInstruction(CONTEXT* win32_context,
+bool DispatchGuestHleInstruction(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context);
 
-void RecordExecutionProbe(CONTEXT* win32_context, ThreadContext* context);
-void RecordExecutionTrace(CONTEXT* win32_context, ThreadContext* context);
+void RecordExecutionProbe(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
+void RecordExecutionTrace(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 
 } // namespace repiu::platform::win32

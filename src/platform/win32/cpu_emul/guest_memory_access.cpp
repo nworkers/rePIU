@@ -1,6 +1,8 @@
 #include "guest_memory_access.h"
 #include "execution_internal.h"
 
+#include "repiu/platform/virtual_memory.h"
+
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -44,26 +46,33 @@ bool WriteGuestUInt16(ThreadContext* context,
         return false;
     }
 
-    DWORD previous_protect = 0;
-    if (!VirtualProtect(destination,
-                        sizeof(value),
-                        PAGE_EXECUTE_READWRITE,
-                        &previous_protect))
+    repiu::platform::MemoryProtection previous_protect =
+        repiu::platform::MemoryProtection::kOther;
+    if (!repiu::platform::ProtectMemory(
+            destination,
+            sizeof(value),
+            repiu::platform::MemoryProtection::kExecuteReadWrite,
+            &previous_protect))
     {
         std::ostringstream stream;
-        stream << "VirtualProtect failed for guest segment store with error "
-               << GetLastError();
+        // The host's error number is no longer carried, so the address takes
+        // its place -- which is the more useful of the two when a guest store
+        // into protected code is what went wrong.
+        stream << "protecting guest memory failed for guest segment store at 0x"
+               << std::hex
+               << reinterpret_cast<std::uintptr_t>(destination);
         context->hle_message = stream.str();
         return false;
     }
 
     std::memcpy(destination, &value, sizeof(value));
 
-    DWORD ignored_protect = 0;
-    if (!VirtualProtect(destination,
-                        sizeof(value),
-                        previous_protect,
-                        &ignored_protect))
+    // Putting back exactly what was there is the whole reason the call above
+    // reports it.
+    if (!repiu::platform::ProtectMemory(destination,
+                                        sizeof(value),
+                                        previous_protect,
+                                        nullptr))
     {
         return false;
     }
@@ -83,26 +92,33 @@ bool WriteGuestUInt8(ThreadContext* context,
         return false;
     }
 
-    DWORD previous_protect = 0;
-    if (!VirtualProtect(destination,
-                        sizeof(value),
-                        PAGE_EXECUTE_READWRITE,
-                        &previous_protect))
+    repiu::platform::MemoryProtection previous_protect =
+        repiu::platform::MemoryProtection::kOther;
+    if (!repiu::platform::ProtectMemory(
+            destination,
+            sizeof(value),
+            repiu::platform::MemoryProtection::kExecuteReadWrite,
+            &previous_protect))
     {
         std::ostringstream stream;
-        stream << "VirtualProtect failed for guest byte store with error "
-               << GetLastError();
+        // The host's error number is no longer carried, so the address takes
+        // its place -- which is the more useful of the two when a guest store
+        // into protected code is what went wrong.
+        stream << "protecting guest memory failed for guest byte store at 0x"
+               << std::hex
+               << reinterpret_cast<std::uintptr_t>(destination);
         context->hle_message = stream.str();
         return false;
     }
 
     std::memcpy(destination, &value, sizeof(value));
 
-    DWORD ignored_protect = 0;
-    if (!VirtualProtect(destination,
-                        sizeof(value),
-                        previous_protect,
-                        &ignored_protect))
+    // Putting back exactly what was there is the whole reason the call above
+    // reports it.
+    if (!repiu::platform::ProtectMemory(destination,
+                                        sizeof(value),
+                                        previous_protect,
+                                        nullptr))
     {
         return false;
     }
@@ -122,26 +138,33 @@ bool WriteGuestUInt32(ThreadContext* context,
         return false;
     }
 
-    DWORD previous_protect = 0;
-    if (!VirtualProtect(destination,
-                        sizeof(value),
-                        PAGE_EXECUTE_READWRITE,
-                        &previous_protect))
+    repiu::platform::MemoryProtection previous_protect =
+        repiu::platform::MemoryProtection::kOther;
+    if (!repiu::platform::ProtectMemory(
+            destination,
+            sizeof(value),
+            repiu::platform::MemoryProtection::kExecuteReadWrite,
+            &previous_protect))
     {
         std::ostringstream stream;
-        stream << "VirtualProtect failed for guest dword store with error "
-               << GetLastError();
+        // The host's error number is no longer carried, so the address takes
+        // its place -- which is the more useful of the two when a guest store
+        // into protected code is what went wrong.
+        stream << "protecting guest memory failed for guest dword store at 0x"
+               << std::hex
+               << reinterpret_cast<std::uintptr_t>(destination);
         context->hle_message = stream.str();
         return false;
     }
 
     std::memcpy(destination, &value, sizeof(value));
 
-    DWORD ignored_protect = 0;
-    if (!VirtualProtect(destination,
-                        sizeof(value),
-                        previous_protect,
-                        &ignored_protect))
+    // Putting back exactly what was there is the whole reason the call above
+    // reports it.
+    if (!repiu::platform::ProtectMemory(destination,
+                                        sizeof(value),
+                                        previous_protect,
+                                        nullptr))
     {
         return false;
     }

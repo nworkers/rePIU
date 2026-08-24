@@ -8,6 +8,9 @@
 #include <cstring>
 #include <sstream>
 #include <vector>
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/atomic_ops.h"
+#include "repiu/platform/host_time.h"
 
 namespace repiu::platform::win32
 {
@@ -119,16 +122,16 @@ void RecordIoctlSubfunction(ThreadContext* context, std::uint8_t subfunction,
     }
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->mscdex_last_ioctl_subfunction,
             static_cast<long>(subfunction) | (handled ? 0x100L : 0L));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->mscdex_ioctl_reject_mask,
             static_cast<long>(context->mscdex_ioctl_reject_mask));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->mscdex_last_ioctl_length,
             static_cast<long>(declared_length));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->cd_audio_reported_lba,
             static_cast<long>(context->cd_audio.current_lba()));
     }
@@ -142,13 +145,13 @@ void RecordMscdexPlayRequest(ThreadContext* context, std::uint8_t mode,
     context->mscdex_last_play_length = length;
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->mscdex_last_play_mode,
             static_cast<long>(mode));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->mscdex_last_play_start,
             static_cast<long>(start));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->mscdex_last_play_length,
             static_cast<long>(length));
     }
@@ -161,7 +164,7 @@ void RecordMscdexSeekRequest(ThreadContext* context, std::uint8_t mode,
     context->mscdex_last_seek_target = target;
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->mscdex_last_seek_target,
             static_cast<long>(target));
     }
@@ -313,7 +316,7 @@ bool HandleMscdexIoctlOutput(ThreadContext* context, std::uint8_t* request)
 }
 
 
-bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
+bool HandleDpmiInterrupt31(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     const std::uint16_t ax = static_cast<std::uint16_t>(
         win32_context->Eax & 0xFFFF);
@@ -390,13 +393,13 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
                         sizeof(frame_es));
             if (context->shared_live_telemetry != nullptr)
             {
-                InterlockedExchange(
+                repiu::platform::AtomicExchange(
                     &context->shared_live_telemetry->dpmi_frame_eax,
                     static_cast<long>(frame_eax));
-                InterlockedExchange(
+                repiu::platform::AtomicExchange(
                     &context->shared_live_telemetry->dpmi_frame_ebx,
                     static_cast<long>(frame_ebx));
-                InterlockedExchange(
+                repiu::platform::AtomicExchange(
                     &context->shared_live_telemetry->dpmi_frame_ecx,
                     static_cast<long>(frame_ecx));
             }
@@ -684,7 +687,7 @@ bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context)
     return false;
 }
 
-bool HandleMouseInterrupt33(CONTEXT* win32_context, ThreadContext* context)
+bool HandleMouseInterrupt33(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     const std::uint16_t ax = static_cast<std::uint16_t>(
         win32_context->Eax & 0xFFFF);
@@ -727,13 +730,13 @@ bool HandleMscdexRequest(ThreadContext* context,
     context->mscdex_last_header_bytes = header_bytes;
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->mscdex_frame_es,
             static_cast<long>(segment));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->mscdex_resolve_kind,
             static_cast<long>(resolve_kind));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->mscdex_header,
             static_cast<long>(header_bytes));
     }
@@ -743,7 +746,7 @@ bool HandleMscdexRequest(ThreadContext* context,
         context->mscdex_last_decline_reason = request == nullptr ? 1U : 2U;
         if (context->shared_live_telemetry != nullptr)
         {
-            InterlockedExchange(
+            repiu::platform::AtomicExchange(
                 &context->shared_live_telemetry->mscdex_decline_reason,
                 static_cast<long>(context->mscdex_last_decline_reason));
         }
@@ -752,10 +755,10 @@ bool HandleMscdexRequest(ThreadContext* context,
     ++context->mscdex_request_count;
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->mscdex_request_count,
             static_cast<long>(context->mscdex_request_count));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->mscdex_last_command,
             static_cast<long>(request[2]));
     }
@@ -810,7 +813,7 @@ bool HandleMscdexRequest(ThreadContext* context,
     {
         Win32MscdexCommandEntry entry;
         entry.wall_milliseconds =
-            static_cast<std::uint32_t>(GetTickCount()) -
+            static_cast<std::uint32_t>(repiu::platform::MillisecondTicks()) -
             context->mscdex_command_trace->base_tick;
         entry.command = request[2];
         entry.success = success;
@@ -836,7 +839,7 @@ bool HandleMscdexRequest(ThreadContext* context,
     }
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->mscdex_last_status,
             success ? 0x0100L : 0x8103L);
     }

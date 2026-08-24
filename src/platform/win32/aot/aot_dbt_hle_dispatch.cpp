@@ -11,6 +11,8 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/thunk_calling_convention.h"
 
 namespace repiu::platform::win32
 {
@@ -186,7 +188,7 @@ bool TryPiu10Mp3ByteFastPath(
     return true;
 }
 
-extern "C" void __stdcall ResolveAotDbtHleFrame(
+extern "C" void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtHleFrame(
     ThreadContext* context, std::uint32_t* frame)
 {
     if (frame == nullptr)
@@ -226,9 +228,9 @@ extern "C" void __stdcall ResolveAotDbtHleFrame(
         return;
     }
 
-    CONTEXT guest_context{};
+    repiu::platform::GuestCpuContext guest_context{};
     guest_context.ContextFlags =
-        CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS;
+        repiu::platform::kGuestCpuContextIntegerControlSegments;
     guest_context.Edi = frame[0];
     guest_context.Esi = frame[1];
     guest_context.Ebp = frame[2];
@@ -372,6 +374,13 @@ extern "C" __declspec(naked) void AotDbtHleDispatchThunk()
 }
 #endif
 
+#if !defined(_MSC_VER) && defined(__i386__)
+// Task 503d-12: the same thunk on Linux, one instantiation of the shared
+// bridge macro in src/platform/linux/aot_dbt_dispatch_thunks.S. GCC has no
+// naked functions on x86, so only the declaration is here.
+extern "C" void AotDbtHleDispatchThunk();
+#endif
+
 }  // namespace
 
 void RecordAotDbtHleFallback(
@@ -396,7 +405,7 @@ void RecordAotDbtHleFallback(
 
 void* GetAotDbtHleDispatchThunkAddress()
 {
-#if defined(_MSC_VER) && defined(_M_IX86)
+#if (defined(_MSC_VER) && defined(_M_IX86)) || defined(__i386__)
     return reinterpret_cast<void*>(&AotDbtHleDispatchThunk);
 #else
     return nullptr;

@@ -15,11 +15,14 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/atomic_ops.h"
+#include "repiu/platform/safe_memory_copy.h"
 
 namespace repiu::platform::win32
 {
 
-std::uint16_t ReadRegister16(const CONTEXT& win32_context,
+std::uint16_t ReadRegister16(const repiu::platform::GuestCpuContext& win32_context,
                              std::uint8_t register_id)
 {
     switch (register_id & 0x07)
@@ -45,7 +48,7 @@ std::uint16_t ReadRegister16(const CONTEXT& win32_context,
     }
 }
 
-void WriteRegister16(CONTEXT* win32_context,
+void WriteRegister16(repiu::platform::GuestCpuContext* win32_context,
                      std::uint8_t register_id,
                      std::uint16_t value)
 {
@@ -88,7 +91,7 @@ void WriteRegister16(CONTEXT* win32_context,
     }
 }
 
-std::uint8_t ReadRegister8(const CONTEXT& win32_context,
+std::uint8_t ReadRegister8(const repiu::platform::GuestCpuContext& win32_context,
                            std::uint8_t register_index)
 {
     const std::uint32_t registers[4] = {
@@ -102,11 +105,16 @@ std::uint8_t ReadRegister8(const CONTEXT& win32_context,
     return static_cast<std::uint8_t>((registers[base] >> shift) & 0xFFU);
 }
 
-void WriteRegister8(CONTEXT* win32_context,
+void WriteRegister8(repiu::platform::GuestCpuContext* win32_context,
                     std::uint8_t register_index,
                     std::uint8_t value)
 {
-    DWORD* registers[4] = {
+    // Not std::uint32_t*: on Windows these fields are DWORD, which is
+    // `unsigned long` and so a different pointer type from `unsigned int*`
+    // even though both are 32 bits. Asking the field what it is keeps the
+    // array valid on either host.
+    using RegisterField = decltype(win32_context->Eax);
+    RegisterField* registers[4] = {
         &win32_context->Eax,
         &win32_context->Ecx,
         &win32_context->Edx,
@@ -120,7 +128,7 @@ void WriteRegister8(CONTEXT* win32_context,
         (static_cast<std::uint32_t>(value) << shift);
 }
 
-void SetCompareFlags(CONTEXT* win32_context,
+void SetCompareFlags(repiu::platform::GuestCpuContext* win32_context,
                      std::uint32_t lhs,
                      std::uint32_t rhs,
                      std::uint32_t width_bytes)
@@ -173,14 +181,14 @@ void SetCompareFlags(CONTEXT* win32_context,
     win32_context->EFlags = flags;
 }
 
-void SetCompareFlags8(CONTEXT* win32_context,
+void SetCompareFlags8(repiu::platform::GuestCpuContext* win32_context,
                       std::uint8_t lhs,
                       std::uint8_t rhs)
 {
     SetCompareFlags(win32_context, lhs, rhs, 1U);
 }
 
-void RecordGuestSegmentLoad(CONTEXT* win32_context,
+void RecordGuestSegmentLoad(repiu::platform::GuestCpuContext* win32_context,
                             ThreadContext* context,
                             std::uint8_t segment_register,
                             std::uint16_t selector,
@@ -275,7 +283,7 @@ void RecordGuestSegmentLoad(CONTEXT* win32_context,
 }
 
 
-void RecordGuestSegmentStore(CONTEXT* win32_context,
+void RecordGuestSegmentStore(repiu::platform::GuestCpuContext* win32_context,
                              ThreadContext* context,
                              std::uint8_t segment_register,
                              std::uint16_t selector,
@@ -296,7 +304,7 @@ void RecordGuestSegmentStore(CONTEXT* win32_context,
     if (segment_register < 6U) { ++context->handled_segment_store_register_counts[segment_register]; }
 }
 
-void RecordGuestSegmentMemoryLoad(CONTEXT* win32_context,
+void RecordGuestSegmentMemoryLoad(repiu::platform::GuestCpuContext* win32_context,
                                   ThreadContext* context,
                                   std::uint8_t opcode,
                                   std::uint8_t segment_register,
@@ -321,7 +329,7 @@ void RecordGuestSegmentMemoryLoad(CONTEXT* win32_context,
     context->last_segment_memory_load_value = value;
 }
 
-void RecordGuestMemoryStore(CONTEXT* win32_context,
+void RecordGuestMemoryStore(repiu::platform::GuestCpuContext* win32_context,
                             ThreadContext* context,
                             std::uint32_t opcode,
                             std::uint32_t destination,
@@ -350,7 +358,7 @@ void RecordGuestMemoryStore(CONTEXT* win32_context,
     context->last_memory_store_applied = applied;
 }
 
-std::uint32_t ReadGeneralRegister32(const CONTEXT* win32_context,
+std::uint32_t ReadGeneralRegister32(const repiu::platform::GuestCpuContext* win32_context,
                                     std::uint8_t register_index)
 {
     switch (register_index & 0x07U)
@@ -376,7 +384,7 @@ std::uint32_t ReadGeneralRegister32(const CONTEXT* win32_context,
     }
 }
 
-void WriteGeneralRegister32(CONTEXT* win32_context,
+void WriteGeneralRegister32(repiu::platform::GuestCpuContext* win32_context,
                             std::uint8_t register_index,
                             std::uint32_t value)
 {
@@ -412,7 +420,7 @@ void WriteGeneralRegister32(CONTEXT* win32_context,
 }
 
 bool DecodeModRmMemoryAddress(
-    const CONTEXT* win32_context,
+    const repiu::platform::GuestCpuContext* win32_context,
     const std::uint8_t* instruction,
     std::uint32_t* destination,
     std::uint32_t* instruction_size)
@@ -479,36 +487,36 @@ bool DecodeModRmMemoryAddress(
     return true;
 }
 
-bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
+bool HandleSegmentLoadInstruction(repiu::platform::GuestCpuContext* win32_context,
                                   ThreadContext* context);
-bool HandleSegmentPopInstruction(CONTEXT* win32_context,
+bool HandleSegmentPopInstruction(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context);
 
-bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
+bool HandleSegmentStoreInstruction(repiu::platform::GuestCpuContext* win32_context,
                                    ThreadContext* context);
 
-bool HandleSegmentOverrideByteLoadInstruction(CONTEXT* win32_context,
+bool HandleSegmentOverrideByteLoadInstruction(repiu::platform::GuestCpuContext* win32_context,
                                               ThreadContext* context);
 
-bool HandleSegmentMemoryLoadInstruction(CONTEXT* win32_context,
+bool HandleSegmentMemoryLoadInstruction(repiu::platform::GuestCpuContext* win32_context,
                                         ThreadContext* context);
 
-bool HandleSegmentMemoryCompareInstruction(CONTEXT* win32_context,
+bool HandleSegmentMemoryCompareInstruction(repiu::platform::GuestCpuContext* win32_context,
                                            ThreadContext* context);
 
-bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
+bool HandleTracedMemoryStoreInstruction(repiu::platform::GuestCpuContext* win32_context,
                                         ThreadContext* context);
 
-bool HandleTracedMemoryTestInstruction(CONTEXT* win32_context,
+bool HandleTracedMemoryTestInstruction(repiu::platform::GuestCpuContext* win32_context,
                                        ThreadContext* context);
 
-bool HandleTracedFpuMemoryInstruction(CONTEXT* win32_context,
+bool HandleTracedFpuMemoryInstruction(repiu::platform::GuestCpuContext* win32_context,
                                       ThreadContext* context);
 
-bool HandleTracedMemoryLoadInstruction(CONTEXT* win32_context,
+bool HandleTracedMemoryLoadInstruction(repiu::platform::GuestCpuContext* win32_context,
                                        ThreadContext* context);
 
-bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
+bool HandleSegmentLoadInstruction(repiu::platform::GuestCpuContext* win32_context,
                                   ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -582,7 +590,7 @@ bool HandleSegmentLoadInstruction(CONTEXT* win32_context,
     return true;
 }
 
-bool HandleSegmentPopInstruction(CONTEXT* win32_context,
+bool HandleSegmentPopInstruction(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -634,7 +642,7 @@ bool HandleSegmentPopInstruction(CONTEXT* win32_context,
     return true;
 }
 
-bool HandleRepStosdInstruction(CONTEXT* win32_context,
+bool HandleRepStosdInstruction(repiu::platform::GuestCpuContext* win32_context,
                                ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -675,7 +683,7 @@ bool HandleRepStosdInstruction(CONTEXT* win32_context,
     return true;
 }
 
-bool HandleLodsbInstruction(CONTEXT* win32_context,
+bool HandleLodsbInstruction(repiu::platform::GuestCpuContext* win32_context,
                             ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -698,7 +706,7 @@ bool HandleLodsbInstruction(CONTEXT* win32_context,
     return true;
 }
 
-bool HandleSegmentStoreInstruction(CONTEXT* win32_context,
+bool HandleSegmentStoreInstruction(repiu::platform::GuestCpuContext* win32_context,
                                    ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -849,7 +857,7 @@ bool ReadSegmentOverrideByte(ThreadContext* context,
     return false;
 }
 
-bool HandleSegmentOverrideByteLoadInstruction(CONTEXT* win32_context,
+bool HandleSegmentOverrideByteLoadInstruction(repiu::platform::GuestCpuContext* win32_context,
                                               ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -1255,7 +1263,7 @@ bool ReadSegmentWord(ThreadContext* context,
     return false;
 }
 
-bool HandleSegmentOverrideMemoryLoadInstruction(CONTEXT* win32_context,
+bool HandleSegmentOverrideMemoryLoadInstruction(repiu::platform::GuestCpuContext* win32_context,
                                                 ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -1426,7 +1434,7 @@ bool HandleSegmentOverrideMemoryLoadInstruction(CONTEXT* win32_context,
     return true;
 }
 
-bool HandleFsSegmentWordLoadInstruction(CONTEXT* win32_context,
+bool HandleFsSegmentWordLoadInstruction(repiu::platform::GuestCpuContext* win32_context,
                                         ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -1496,7 +1504,7 @@ bool HandleFsSegmentWordLoadInstruction(CONTEXT* win32_context,
     return true;
 }
 
-bool HandleSegmentMemoryLoadInstruction(CONTEXT* win32_context,
+bool HandleSegmentMemoryLoadInstruction(repiu::platform::GuestCpuContext* win32_context,
                                         ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -1621,7 +1629,7 @@ bool HandleSegmentMemoryLoadInstruction(CONTEXT* win32_context,
     return false;
 }
 
-bool HandleSegmentMemoryCompareInstruction(CONTEXT* win32_context,
+bool HandleSegmentMemoryCompareInstruction(repiu::platform::GuestCpuContext* win32_context,
                                            ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -1670,12 +1678,12 @@ bool HandleSegmentMemoryCompareInstruction(CONTEXT* win32_context,
     return true;
 }
 
-bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
+bool HandleTracedMemoryStoreInstruction(repiu::platform::GuestCpuContext* win32_context,
                                         ThreadContext* context)
 {
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->guest_handler_phase,
             20);
     }
@@ -1820,7 +1828,7 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
         static_cast<std::uintptr_t>(destination));
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->guest_handler_phase,
             21);
     }
@@ -1829,7 +1837,7 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
     {
         if (context->shared_live_telemetry != nullptr)
         {
-            InterlockedExchange(
+            repiu::platform::AtomicExchange(
                 &context->shared_live_telemetry->guest_handler_phase,
                 22);
         }
@@ -1937,7 +1945,7 @@ bool HandleTracedMemoryStoreInstruction(CONTEXT* win32_context,
                            false);
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->guest_handler_phase,
             23);
     }
@@ -2078,7 +2086,7 @@ void AttachAllocatorReadProvenance(ThreadContext* context,
     }
 }
 
-bool HandleTracedMemoryLoadInstruction(CONTEXT* win32_context,
+bool HandleTracedMemoryLoadInstruction(repiu::platform::GuestCpuContext* win32_context,
                                        ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -2231,7 +2239,7 @@ bool HasEvenParity(std::uint8_t value)
     return even_parity;
 }
 
-void UpdateAdd32Flags(CONTEXT* win32_context,
+void UpdateAdd32Flags(repiu::platform::GuestCpuContext* win32_context,
                       std::uint32_t left,
                       std::uint32_t right,
                       std::uint32_t result)
@@ -2273,7 +2281,7 @@ void UpdateAdd32Flags(CONTEXT* win32_context,
     }
 }
 
-std::uint8_t ReadGeneralRegister8(const CONTEXT* win32_context,
+std::uint8_t ReadGeneralRegister8(const repiu::platform::GuestCpuContext* win32_context,
                                   std::uint8_t register_index)
 {
     const std::uint8_t byte_register = register_index & 0x07U;
@@ -2287,7 +2295,7 @@ std::uint8_t ReadGeneralRegister8(const CONTEXT* win32_context,
         0xFFU);
 }
 
-void UpdateLogical32Flags(CONTEXT* win32_context, std::uint32_t result)
+void UpdateLogical32Flags(repiu::platform::GuestCpuContext* win32_context, std::uint32_t result)
 {
     constexpr std::uint32_t kCarryFlag = 0x00000001U;
     constexpr std::uint32_t kParityFlag = 0x00000004U;
@@ -2312,7 +2320,7 @@ void UpdateLogical32Flags(CONTEXT* win32_context, std::uint32_t result)
     }
 }
 
-void UpdateSubtract8Flags(CONTEXT* win32_context,
+void UpdateSubtract8Flags(repiu::platform::GuestCpuContext* win32_context,
                           std::uint8_t left,
                           std::uint8_t right,
                           std::uint8_t result)
@@ -2354,7 +2362,7 @@ void UpdateSubtract8Flags(CONTEXT* win32_context,
     }
 }
 
-bool HandleTracedMemoryAddInstruction(CONTEXT* win32_context,
+bool HandleTracedMemoryAddInstruction(repiu::platform::GuestCpuContext* win32_context,
                                       ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -2393,7 +2401,7 @@ bool HandleTracedMemoryAddInstruction(CONTEXT* win32_context,
     return true;
 }
 
-bool HandleTracedMemoryOrInstruction(CONTEXT* win32_context,
+bool HandleTracedMemoryOrInstruction(repiu::platform::GuestCpuContext* win32_context,
                                      ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -2477,7 +2485,7 @@ bool HandleTracedMemoryOrInstruction(CONTEXT* win32_context,
     return true;
 }
 
-bool HandleTracedMemoryCompareByteInstruction(CONTEXT* win32_context,
+bool HandleTracedMemoryCompareByteInstruction(repiu::platform::GuestCpuContext* win32_context,
                                               ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -2516,7 +2524,7 @@ bool HandleTracedMemoryCompareByteInstruction(CONTEXT* win32_context,
     return true;
 }
 
-bool HandleTracedMemoryTestInstruction(CONTEXT* win32_context,
+bool HandleTracedMemoryTestInstruction(repiu::platform::GuestCpuContext* win32_context,
                                        ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -2567,7 +2575,7 @@ bool HandleTracedMemoryTestInstruction(CONTEXT* win32_context,
     return true;
 }
 
-bool HandleTracedFpuMemoryInstruction(CONTEXT* win32_context,
+bool HandleTracedFpuMemoryInstruction(repiu::platform::GuestCpuContext* win32_context,
                                       ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -2712,7 +2720,7 @@ bool HandleTracedFpuMemoryInstruction(CONTEXT* win32_context,
     return true;
 }
 
-bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
+bool HandleTracedDosInterrupt21(repiu::platform::GuestCpuContext* win32_context,
                                 ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr ||
@@ -2901,7 +2909,7 @@ bool HandleTracedDosInterrupt21(CONTEXT* win32_context,
     }
 }
 
-bool HandleTracedBiosInterrupt16(CONTEXT* win32_context,
+bool HandleTracedBiosInterrupt16(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr ||
@@ -2923,7 +2931,7 @@ bool HandleTracedBiosInterrupt16(CONTEXT* win32_context,
     return HandleBiosInterrupt16(win32_context, context);
 }
 
-void RecordUnsupportedTracedSoftwareInterrupt(CONTEXT* win32_context,
+void RecordUnsupportedTracedSoftwareInterrupt(repiu::platform::GuestCpuContext* win32_context,
                                               ThreadContext* context)
 {
     // Task 401: backends running with enable_dos_hle off never reach
@@ -2953,7 +2961,7 @@ void RecordUnsupportedTracedSoftwareInterrupt(CONTEXT* win32_context,
     context->hle_message = stream.str();
 }
 
-bool HandleTracedDosInterrupt2F(CONTEXT* win32_context,
+bool HandleTracedDosInterrupt2F(repiu::platform::GuestCpuContext* win32_context,
                                 ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr ||
@@ -2975,7 +2983,7 @@ bool HandleTracedDosInterrupt2F(CONTEXT* win32_context,
     return HandleDosInterrupt2F(win32_context, context);
 }
 
-bool HandleTracedDpmiInterrupt31(CONTEXT* win32_context,
+bool HandleTracedDpmiInterrupt31(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr ||
@@ -2997,7 +3005,7 @@ bool HandleTracedDpmiInterrupt31(CONTEXT* win32_context,
     return HandleDpmiInterrupt31(win32_context, context);
 }
 
-bool HandleTracedMouseInterrupt33(CONTEXT* win32_context,
+bool HandleTracedMouseInterrupt33(repiu::platform::GuestCpuContext* win32_context,
                                   ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr ||
@@ -3019,7 +3027,7 @@ bool HandleTracedMouseInterrupt33(CONTEXT* win32_context,
     return HandleMouseInterrupt33(win32_context, context);
 }
 
-bool HandleRepCmpsbInstruction(CONTEXT* win32_context,
+bool HandleRepCmpsbInstruction(repiu::platform::GuestCpuContext* win32_context,
                                ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -3076,14 +3084,10 @@ bool CopyHostMemoryWithoutVehRecursion(ThreadContext* context,
         return byte_count == 0;
     }
     std::vector<std::uint8_t> temporary(byte_count);
-    SIZE_T bytes_read = 0;
-    HANDLE process = GetCurrentProcess();
-    if (!ReadProcessMemory(process,
-                           source,
-                           temporary.data(),
-                           byte_count,
-                           &bytes_read) ||
-        bytes_read != byte_count)
+    const repiu::platform::SafeCopyResult read =
+        repiu::platform::CopyMemoryWithoutFaulting(
+            temporary.data(), source, byte_count);
+    if (!read.complete)
     {
         if (failure_stage != nullptr)
         {
@@ -3091,7 +3095,9 @@ bool CopyHostMemoryWithoutVehRecursion(ThreadContext* context,
         }
         if (windows_error != nullptr)
         {
-            *windows_error = GetLastError();
+            // The host's own code, as before -- the caller records it in the
+            // crash report rather than deciding on it.
+            *windows_error = read.error;
         }
         return false;
     }
@@ -3108,14 +3114,16 @@ bool CopyHostMemoryWithoutVehRecursion(ThreadContext* context,
         }
         if (windows_error != nullptr)
         {
-            *windows_error = GetLastError();
+            // The guest-range check that fails here sets no host error, so
+            // reading one only reported whatever was left over from before.
+            *windows_error = 0U;
         }
         return false;
     }
     return true;
 }
 
-bool HandleRepMovsInstruction(CONTEXT* win32_context,
+bool HandleRepMovsInstruction(repiu::platform::GuestCpuContext* win32_context,
                               ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(

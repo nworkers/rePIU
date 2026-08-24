@@ -4,6 +4,12 @@
 #include "verified_region_analyzer.h"
 #include "native_phase_sampler.h"
 #include "repiu/platform/win32/live_telemetry.h"
+#include "repiu/platform/virtual_memory.h"
+#include "repiu/platform/guest_stack_switch.h"
+#include "repiu/platform/host_environment.h"
+#include "repiu/platform/host_thread.h"
+#include "repiu/runtime/execution_timeout.h"
+#include "repiu/platform/thunk_calling_convention.h"
 #include "repiu/hle/linexe_call_gate.h"
 #include "repiu/hle/glide_hle.h"
 #include "repiu/assets/rom_zip_archive.h"
@@ -57,15 +63,27 @@
 #include "breakpoint_evidence_win32.h"
 #include "exception_rescue_win32.h"
 #include "live_telemetry_snapshot.h"
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/atomic_ops.h"
+#include "repiu/platform/host_time.h"
+#include "repiu/platform/fault_handler.h"
+#include "repiu/platform/worker_signal.h"
 
 namespace repiu::platform::win32
 {
+
+namespace
+{
+// Task 503d-6 wrote this thunk because CreateThread dictated its signature.
+// Task 503d-18: the thread layer takes `std::uint32_t(void*)` instead, so the
+// shape is the engine's own and the fence around it is gone. What is left is a
+// cast from the worker's own return type.
+std::uint32_t AotTranslationWorkerThunk(void* parameter)
+{
+    return static_cast<std::uint32_t>(AotTranslationWorkerProc(parameter));
+}
+}  // namespace
 extern "C" ThreadContext* g_repiu_active_thread_context = nullptr;
-extern "C" std::uint32_t g_repiu_dbt_host_esp = 0;
-extern "C" std::uint32_t g_repiu_dbt_host_stack_base = 0;
-extern "C" std::uint32_t g_repiu_dbt_host_stack_limit = 0;
-extern "C" std::uint32_t g_repiu_dbt_guest_stack_base = 0;
-extern "C" std::uint32_t g_repiu_dbt_guest_stack_limit = 0;
 namespace
 {
 
@@ -89,58 +107,57 @@ bool IsGuestStackSwitchSupported()
 #endif
 }
 
-#if defined(_WIN32)
-// Guest execution is serialized to one worker per loader process. Keeping the
-// VEH context outside Win32 TLS prevents a guest-modified FS selector from
-// escaping into compiler-generated TLS access during host recovery.
-std::uint32_t g_recovery_host_fs = 0;
-std::uint32_t g_recovery_host_ds = 0;
-std::uint32_t g_recovery_host_es = 0;
-std::uint32_t g_recovery_host_gs = 0;
-std::uint32_t g_recovery_host_stack_base = 0;
-std::uint32_t g_recovery_host_stack_limit = 0;
+// Task 503d-15. What used to be one `#if defined(_WIN32)` over the next two
+// thousand lines came from Task 233's file decomposition rather than from this
+// port. Measuring behind it found thirteen errors, so the fence was far wider
+// than what it protected. It is gone; the pieces that are genuinely Windows
+// carry their own fence and say why.
+// Task 503d-16: the recovery globals moved to
+// `repiu/platform/guest_stack_switch.h`. They had internal linkage here, which
+// was enough while the only reader was MSVC inline assembly in this same file;
+// the GAS counterparts are a separate object and need a symbol to reach.
 
 
+// Task 503d-16. One host entry appended in the shape DOS keeps its block in:
+// the name upper-cased, the value untouched, NUL-terminated.
+//
+// The name ends at the first `=`, and an entry that begins with one therefore
+// has an empty name and is copied verbatim. That is not a degenerate case to
+// guard against -- `cmd.exe` records each drive's current directory as `=C:`,
+// and this block has always carried them across.
+void AppendDosEnvironmentEntry(const char* entry, void* user_data)
+{
+    auto& block = *static_cast<std::vector<std::uint8_t>*>(user_data);
+    bool before_equals = true;
+    for (const char* current = entry; *current != 0; ++current)
+    {
+        unsigned char byte = static_cast<unsigned char>(*current);
+        if (before_equals && byte == '=')
+        {
+            before_equals = false;
+        }
+        else if (before_equals)
+        {
+            byte = static_cast<unsigned char>(std::toupper(byte));
+        }
+        block.push_back(static_cast<std::uint8_t>(byte));
+    }
+    block.push_back(0);
+}
+
+// Task 503d-16: the enumeration moved to the platform layer, so what stays here
+// is only the DOS shape. 3d-15 fenced this whole body to Windows, which left
+// Linux building an empty block -- invisible while nothing linked this file,
+// and wrong the moment something did.
 std::vector<std::uint8_t> BuildDosEnvironmentBlock()
 {
     std::vector<std::uint8_t> block;
+    repiu::platform::ForEachEnvironmentEntry(&AppendDosEnvironmentEntry,
+                                             &block);
 
-#if defined(_WIN32)
-    LPCH environment = GetEnvironmentStringsA();
-    if (environment != nullptr)
-    {
-        const char* cursor = environment;
-        while (*cursor != '\0')
-        {
-            const char* entry_begin = cursor;
-            while (*cursor != '\0')
-            {
-                ++cursor;
-            }
-
-            bool before_equals = true;
-            for (const char* current = entry_begin; current != cursor;
-                 ++current)
-            {
-                unsigned char byte = static_cast<unsigned char>(*current);
-                if (before_equals && byte == '=')
-                {
-                    before_equals = false;
-                }
-                else if (before_equals)
-                {
-                    byte = static_cast<unsigned char>(
-                        std::toupper(static_cast<unsigned char>(byte)));
-                }
-                block.push_back(static_cast<std::uint8_t>(byte));
-            }
-            block.push_back(0);
-            ++cursor;
-        }
-        FreeEnvironmentStringsA(environment);
-    }
-#endif
-
+    // A DOS environment block ends with an empty entry, so the terminator is
+    // two NULs -- one closing the last entry and one standing for the empty
+    // one. An environment with no entries at all still needs both.
     if (block.empty() || block.back() != 0)
     {
         block.push_back(0);
@@ -149,15 +166,20 @@ std::vector<std::uint8_t> BuildDosEnvironmentBlock()
     return block;
 }
 
-int CaptureException(EXCEPTION_POINTERS* exception_info,
+int CaptureException(const repiu::platform::FaultEvent& fault,
                      ThreadContext* context)
 {
-    if (exception_info != nullptr && context != nullptr)
+    if (fault.registers != nullptr && context != nullptr)
     {
-        if (exception_info->ExceptionRecord->ExceptionCode == 0xe06d7363U)
+#if defined(_WIN32)
+        // Task 503d-15. 0xE06D7363 is the exception code MSVC raises a C++
+        // throw with, so this block can only fire on Windows, and what it
+        // prints -- a host stack walk and the loaded module list -- is the
+        // operating system's to answer. A guest fault never reaches it.
+        if (fault.host_code == 0xe06d7363U)
         {
             fprintf(stderr, "[repiu-live-debug] Caught C++ Exception (0xe06d7363) at address 0x%p\n",
-                    exception_info->ExceptionRecord->ExceptionAddress);
+                    fault.instruction_address);
             void* stack[64];
             USHORT frames = CaptureStackBackTrace(0, 64, stack, nullptr);
             fprintf(stderr, "[repiu-live-debug] Host Stack trace (%d frames):\n", frames);
@@ -185,75 +207,94 @@ int CaptureException(EXCEPTION_POINTERS* exception_info,
                 }
             }
         }
+#endif
         context->exception_caught = true;
         context->exception_code =
-            exception_info->ExceptionRecord->ExceptionCode;
+            fault.host_code;
         context->exception_address = static_cast<std::uint32_t>(
-            reinterpret_cast<std::uintptr_t>(
-                exception_info->ExceptionRecord->ExceptionAddress));
-        MEMORY_BASIC_INFORMATION instruction_page = {};
-        if (VirtualQuery(exception_info->ExceptionRecord->ExceptionAddress,
-                         &instruction_page, sizeof(instruction_page)) ==
-            sizeof(instruction_page))
+            static_cast<std::uintptr_t>(fault.instruction_address));
+        const void* instruction_bytes = reinterpret_cast<const void*>(
+            static_cast<std::uintptr_t>(fault.instruction_address));
+        const repiu::platform::MemoryRegion instruction_page =
+            repiu::platform::QueryMemory(instruction_bytes);
+        if (instruction_page.valid)
         {
             std::uint8_t bytes[16] = {};
-            std::memcpy(bytes, exception_info->ExceptionRecord->ExceptionAddress,
-                        sizeof(bytes));
+            std::memcpy(bytes, instruction_bytes, sizeof(bytes));
+            // Task 503d-15: the protection prints as what it permits rather
+            // than as a host protection number. What a reader of this line
+            // wants is whether the faulting instruction sat on a page it could
+            // execute, and that is a question either host can answer.
             fprintf(stderr,
                     "[repiu-live-debug] exception instruction region "
-                    "base=0x%p alloc=0x%p size=0x%zX protect=0x%X "
-                    "alloc_protect=0x%X bytes=",
-                    instruction_page.BaseAddress,
-                    instruction_page.AllocationBase,
-                    instruction_page.RegionSize,
-                    instruction_page.Protect,
-                    instruction_page.AllocationProtect);
+                    "base=0x%p alloc=0x%p size=0x%zX access=%c%c%c bytes=",
+                    instruction_page.base,
+                    instruction_page.allocation_base,
+                    instruction_page.size,
+                    instruction_page.readable ? 'r' : '-',
+                    instruction_page.writable ? 'w' : '-',
+                    instruction_page.executable ? 'x' : '-');
             for (std::uint8_t byte : bytes)
             {
                 fprintf(stderr, "%02X", byte);
             }
             fprintf(stderr, "\n");
-        }        if (exception_info->ExceptionRecord->NumberParameters >= 2U)
+        }
+        if (fault.access.valid)
         {
-            context->exception_access_kind = static_cast<std::uint32_t>(
-                exception_info->ExceptionRecord->ExceptionInformation[0]);
-            context->exception_fault_va = static_cast<std::uint32_t>(
-                exception_info->ExceptionRecord->ExceptionInformation[1]);
-            MEMORY_BASIC_INFORMATION fault_page = {};
-            if (VirtualQuery(reinterpret_cast<const void*>(
-                                 static_cast<std::uintptr_t>(
-                                     context->exception_fault_va)),
-                             &fault_page, sizeof(fault_page)) ==
-                sizeof(fault_page))
+            // The recorded access kind keeps the host's own numbering, since
+            // this is crash-report detail rather than something decided on:
+            // 1 for a write, 8 for an instruction fetch, 0 otherwise.
+            context->exception_access_kind = fault.access.write_access ? 1U
+                : fault.access.execute_access ? 8U
+                                              : 0U;
+            context->exception_fault_va = fault.access.fault_address;
+            const void* fault_address = reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(context->exception_fault_va));
+            const repiu::platform::MemoryRegion fault_page =
+                repiu::platform::QueryMemory(fault_address);
+            if (fault_page.valid)
             {
                 context->exception_fault_region_base =
                     static_cast<std::uint32_t>(
-                        reinterpret_cast<std::uintptr_t>(
-                            fault_page.BaseAddress));
+                        reinterpret_cast<std::uintptr_t>(fault_page.base));
                 context->exception_fault_alloc_base =
                     static_cast<std::uint32_t>(
                         reinterpret_cast<std::uintptr_t>(
-                            fault_page.AllocationBase));
-                context->exception_fault_state = fault_page.State;
-                context->exception_fault_protect = fault_page.Protect;
+                            fault_page.allocation_base));
                 context->exception_fault_region_size =
-                    static_cast<std::uint32_t>(fault_page.RegionSize);
+                    static_cast<std::uint32_t>(fault_page.size);
+#if defined(_WIN32)
+                // Task 503d-15. These two keep the host numbering, because the
+                // crash report prints them as hex for a person who reads them
+                // as Windows constants. Rounding them to the neutral triple
+                // would change what an existing report means, so Linux leaves
+                // them zero rather than putting different numbers in the same
+                // fields.
+                MEMORY_BASIC_INFORMATION raw = {};
+                if (VirtualQuery(fault_address, &raw, sizeof(raw)) ==
+                    sizeof(raw))
+                {
+                    context->exception_fault_state = raw.State;
+                    context->exception_fault_protect = raw.Protect;
+                }
+#endif
             }
         }
 #if defined(_M_IX86)
-        CopySnapshotFromContextRecord(*exception_info->ContextRecord,
+        CopySnapshotFromContextRecord(*fault.registers,
                                       &context->exception_snapshot);
-        context->exception_eax = exception_info->ContextRecord->Eax;
-        context->exception_ebx = exception_info->ContextRecord->Ebx;
-        context->exception_ecx = exception_info->ContextRecord->Ecx;
-        context->exception_edx = exception_info->ContextRecord->Edx;
-        context->exception_esi = exception_info->ContextRecord->Esi;
-        context->exception_edi = exception_info->ContextRecord->Edi;
+        context->exception_eax = fault.registers->Eax;
+        context->exception_ebx = fault.registers->Ebx;
+        context->exception_ecx = fault.registers->Ecx;
+        context->exception_edx = fault.registers->Edx;
+        context->exception_esi = fault.registers->Esi;
+        context->exception_edi = fault.registers->Edi;
         for (std::uint32_t index = 0; index < 8U; ++index)
         {
             const std::uintptr_t source =
                 static_cast<std::uintptr_t>(
-                    exception_info->ContextRecord->Esi) +
+                    fault.registers->Esi) +
                 0x20U + index * 4U;
             SIZE_T copied = 0;
             if (ReadProcessMemory(GetCurrentProcess(),
@@ -270,12 +311,12 @@ int CaptureException(EXCEPTION_POINTERS* exception_info,
         // no extension) are diagnosed by seeing the actual string a register
         // holds; ESI in particular keeps the callee-saved source pointer.
         const std::uint32_t exception_register_values[6] = {
-            exception_info->ContextRecord->Eax,
-            exception_info->ContextRecord->Ebx,
-            exception_info->ContextRecord->Ecx,
-            exception_info->ContextRecord->Edx,
-            exception_info->ContextRecord->Esi,
-            exception_info->ContextRecord->Edi,
+            fault.registers->Eax,
+            fault.registers->Ebx,
+            fault.registers->Ecx,
+            fault.registers->Edx,
+            fault.registers->Esi,
+            fault.registers->Edi,
         };
         for (std::uint32_t reg = 0; reg < 6U; ++reg)
         {
@@ -299,7 +340,7 @@ int CaptureException(EXCEPTION_POINTERS* exception_info,
         // this window is what lets a terminal fault's wild-pointer argument be
         // traced back to the caller that supplied it.
         context->exception_stack_base =
-            static_cast<std::uint32_t>(exception_info->ContextRecord->Esp);
+            static_cast<std::uint32_t>(fault.registers->Esp);
         context->exception_stack_dword_count = 0;
         for (std::uint32_t index = 0;
              index < kWin32ExceptionStackDwordCapacity; ++index)
@@ -356,21 +397,63 @@ int CaptureException(EXCEPTION_POINTERS* exception_info,
 #endif
     }
 
+    // Task 503d-15: the return value is an SEH filter code, which only
+    // means anything to the __except that calls this. Elsewhere the
+    // handler decides with a FaultDisposition and never reads it.
+#if defined(_WIN32)
     return EXCEPTION_EXECUTE_HANDLER;
+#else
+    return 1;
+#endif
 }
 
+// Task 503d-15. The three hand-written assembly entries, declared out here so
+// the C++ that calls them compiles on both hosts. Their definitions below are
+// MSVC inline assembly and stay fenced; the GAS counterparts are the next
+// assembly step, exactly as the five dispatch thunks were declared before
+// 3d-12 wrote them. Nothing links this file on Linux yet, so an undefined
+// symbol here is a marker of what is owed rather than a cost.
+extern "C" std::uint32_t REPIU_THUNK_RESOLVER_CALL CallGuestEntryWithStack(
+    StackSwitchCallState* state);
+extern "C" void REPIU_THUNK_RESOLVER_CALL RecoverGuestStackException();
+extern "C" void RecoverHostStackException();
+
+// Task 503d-16. The offsets are checked on both hosts, not just where the MSVC
+// assembly reads them, because the GAS entries read the same header and this is
+// what ties its numbers to the structure. The last four were never asserted
+// even though the assembly has always used them.
+static_assert(offsetof(StackSwitchCallState, entry_address) ==
+              REPIU_STACK_SWITCH_ENTRY_ADDRESS);
+static_assert(offsetof(StackSwitchCallState, initial_esp) ==
+              REPIU_STACK_SWITCH_INITIAL_ESP);
+static_assert(offsetof(StackSwitchCallState, host_esp) ==
+              REPIU_STACK_SWITCH_HOST_ESP);
+static_assert(offsetof(StackSwitchCallState, guest_return_esp) ==
+              REPIU_STACK_SWITCH_GUEST_RETURN_ESP);
+static_assert(offsetof(StackSwitchCallState, result_code) ==
+              REPIU_STACK_SWITCH_RESULT_CODE);
+static_assert(offsetof(StackSwitchCallState, enable_single_step_trace) ==
+              REPIU_STACK_SWITCH_SINGLE_STEP);
+static_assert(offsetof(StackSwitchCallState, host_fs) ==
+              REPIU_STACK_SWITCH_HOST_FS);
+static_assert(offsetof(StackSwitchCallState, host_ds) ==
+              REPIU_STACK_SWITCH_HOST_DS);
+static_assert(offsetof(StackSwitchCallState, host_es) ==
+              REPIU_STACK_SWITCH_HOST_ES);
+static_assert(offsetof(StackSwitchCallState, host_gs) ==
+              REPIU_STACK_SWITCH_HOST_GS);
+static_assert(offsetof(StackSwitchCallState, host_ss) ==
+              REPIU_STACK_SWITCH_HOST_SS);
+static_assert(offsetof(StackSwitchCallState, guest_stack_base) ==
+              REPIU_STACK_SWITCH_GUEST_STACK_BASE);
+static_assert(offsetof(StackSwitchCallState, guest_stack_limit) ==
+              REPIU_STACK_SWITCH_GUEST_STACK_LIMIT);
+static_assert(offsetof(StackSwitchCallState, host_stack_base) ==
+              REPIU_STACK_SWITCH_HOST_STACK_BASE);
+static_assert(offsetof(StackSwitchCallState, host_stack_limit) ==
+              REPIU_STACK_SWITCH_HOST_STACK_LIMIT);
+
 #if defined(_MSC_VER) && defined(_M_IX86)
-static_assert(offsetof(StackSwitchCallState, entry_address) == 0);
-static_assert(offsetof(StackSwitchCallState, initial_esp) == 4);
-static_assert(offsetof(StackSwitchCallState, host_esp) == 8);
-static_assert(offsetof(StackSwitchCallState, guest_return_esp) == 12);
-static_assert(offsetof(StackSwitchCallState, result_code) == 16);
-static_assert(offsetof(StackSwitchCallState, enable_single_step_trace) == 20);
-static_assert(offsetof(StackSwitchCallState, host_fs) == 24);
-static_assert(offsetof(StackSwitchCallState, host_ds) == 28);
-static_assert(offsetof(StackSwitchCallState, host_es) == 32);
-static_assert(offsetof(StackSwitchCallState, host_gs) == 36);
-static_assert(offsetof(StackSwitchCallState, host_ss) == 40);
 
 extern "C" void RecoverHostStackException();
 
@@ -386,50 +469,50 @@ CallGuestEntryWithStack(StackSwitchCallState* state)
         push edi
 
         mov ecx, [ebp + 8]
-        mov eax, [ecx + 0]
-        mov edx, [ecx + 4]
+        mov eax, [ecx + REPIU_STACK_SWITCH_ENTRY_ADDRESS]
+        mov edx, [ecx + REPIU_STACK_SWITCH_INITIAL_ESP]
 
         // Save host stack base/limit
         mov ebx, dword ptr fs:[4]
-        mov [ecx + 52], ebx
+        mov [ecx + REPIU_STACK_SWITCH_HOST_STACK_BASE], ebx
         mov g_recovery_host_stack_base, ebx
         mov g_repiu_dbt_host_stack_base, ebx
         mov ebx, dword ptr fs:[8]
-        mov [ecx + 56], ebx
+        mov [ecx + REPIU_STACK_SWITCH_HOST_STACK_LIMIT], ebx
         mov g_recovery_host_stack_limit, ebx
         mov g_repiu_dbt_host_stack_limit, ebx
 
         // Set guest stack base/limit
-        mov ebx, [ecx + 44]
+        mov ebx, [ecx + REPIU_STACK_SWITCH_GUEST_STACK_BASE]
         mov dword ptr fs:[4], ebx
         mov g_repiu_dbt_guest_stack_base, ebx
-        mov ebx, [ecx + 48]
+        mov ebx, [ecx + REPIU_STACK_SWITCH_GUEST_STACK_LIMIT]
         mov dword ptr fs:[8], ebx
         mov g_repiu_dbt_guest_stack_limit, ebx
 
         xor ebx, ebx
         mov bx, fs
-        mov [ecx + 24], ebx
+        mov [ecx + REPIU_STACK_SWITCH_HOST_FS], ebx
         mov g_recovery_host_fs, ebx
         mov bx, ds
-        mov [ecx + 28], ebx
+        mov [ecx + REPIU_STACK_SWITCH_HOST_DS], ebx
         mov g_recovery_host_ds, ebx
         mov bx, es
-        mov [ecx + 32], ebx
+        mov [ecx + REPIU_STACK_SWITCH_HOST_ES], ebx
         mov g_recovery_host_es, ebx
         mov bx, gs
-        mov [ecx + 36], ebx
+        mov [ecx + REPIU_STACK_SWITCH_HOST_GS], ebx
         mov g_recovery_host_gs, ebx
         mov bx, ss
-        mov [ecx + 40], ebx
-        mov [ecx + 8], esp
+        mov [ecx + REPIU_STACK_SWITCH_HOST_SS], ebx
+        mov [ecx + REPIU_STACK_SWITCH_HOST_ESP], esp
         mov g_repiu_dbt_host_esp, esp
 
         mov esp, edx
-        cmp dword ptr [ecx + 20], 0
+        cmp dword ptr [ecx + REPIU_STACK_SWITCH_SINGLE_STEP], 0
         je no_single_step_trace
         pushfd
-        or dword ptr [esp], 100h
+        or dword ptr [esp], REPIU_STACK_SWITCH_TRAP_FLAG
         popfd
  no_single_step_trace:
         push ecx
@@ -437,14 +520,14 @@ CallGuestEntryWithStack(StackSwitchCallState* state)
         pop ecx
 
         // Restore host stack base/limit
-        mov ebx, [ecx + 52]
+        mov ebx, [ecx + REPIU_STACK_SWITCH_HOST_STACK_BASE]
         mov dword ptr fs:[4], ebx
-        mov ebx, [ecx + 56]
+        mov ebx, [ecx + REPIU_STACK_SWITCH_HOST_STACK_LIMIT]
         mov dword ptr fs:[8], ebx
 
-        mov [ecx + 12], esp
-        mov esp, [ecx + 8]
-        mov dword ptr [ecx + 16], 0
+        mov [ecx + REPIU_STACK_SWITCH_GUEST_RETURN_ESP], esp
+        mov esp, [ecx + REPIU_STACK_SWITCH_HOST_ESP]
+        mov dword ptr [ecx + REPIU_STACK_SWITCH_RESULT_CODE], 0
         xor eax, eax
 
         pop edi
@@ -477,29 +560,35 @@ RecoverGuestStackException()
         pop esi
         pop ebx
         pop ebp
-        mov eax, 2
+        mov eax, REPIU_STACK_SWITCH_RECOVERED
         ret 4
     }
 }
+#endif  // _MSC_VER && _M_IX86
 
-void RecoverToHost(CONTEXT* context, ThreadContext* thread_context)
+void RecoverToHost(repiu::platform::GuestCpuContext* context, ThreadContext* thread_context)
 {
-    context->Eip = reinterpret_cast<DWORD_PTR>(&RecoverGuestStackException);
+    // Task 503d-15: the casts below ask the fields what they are, because
+    // DWORD is `unsigned long` on Windows and the neutral structure says
+    // `std::uint32_t`, which are the same width and not the same type.
+    using RegisterField = decltype(context->Eip);
+    context->Eip = static_cast<RegisterField>(
+        reinterpret_cast<std::uintptr_t>(&RecoverGuestStackException));
     context->EFlags &= ~0x00000100U;
     context->EFlags &= ~0x00000400U;
     if (thread_context->active_call_state != nullptr)
     {
-        context->Ecx = reinterpret_cast<DWORD_PTR>(
-            thread_context->active_call_state);
-        context->SegFs = static_cast<DWORD>(
+        context->Ecx = static_cast<RegisterField>(
+            reinterpret_cast<std::uintptr_t>(thread_context->active_call_state));
+        context->SegFs = static_cast<RegisterField>(
             thread_context->active_call_state->host_fs);
-        context->SegDs = static_cast<DWORD>(
+        context->SegDs = static_cast<RegisterField>(
             thread_context->active_call_state->host_ds);
-        context->SegEs = static_cast<DWORD>(
+        context->SegEs = static_cast<RegisterField>(
             thread_context->active_call_state->host_es);
-        context->SegGs = static_cast<DWORD>(
+        context->SegGs = static_cast<RegisterField>(
             thread_context->active_call_state->host_gs);
-        context->SegSs = static_cast<DWORD>(
+        context->SegSs = static_cast<RegisterField>(
             thread_context->active_call_state->host_ss);
     }
     std::uint32_t host_esp = thread_context->host_esp;
@@ -512,16 +601,16 @@ void RecoverToHost(CONTEXT* context, ThreadContext* thread_context)
 }
 
 
-bool HandlePrivilegedTrapInstruction(CONTEXT* win32_context,
+bool HandlePrivilegedTrapInstruction(repiu::platform::GuestCpuContext* win32_context,
                                      ThreadContext* context);
-bool HandleSelectorLimitInstruction(CONTEXT* win32_context,
+bool HandleSelectorLimitInstruction(repiu::platform::GuestCpuContext* win32_context,
                                     ThreadContext* context);
 struct AotPlacementPlan;
 bool FindAotGuestAddress(const AotPlacementPlan& placement,
                          std::uint32_t host_address,
                          std::uint32_t* guest_address);
 
-bool HandleSelectorLimitInstruction(CONTEXT* win32_context,
+bool HandleSelectorLimitInstruction(repiu::platform::GuestCpuContext* win32_context,
                                     ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr ||
@@ -587,11 +676,11 @@ bool HandleSelectorLimitInstruction(CONTEXT* win32_context,
 
 
 
-bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context,
+bool HandleGuestLowMemoryReadFault(repiu::platform::GuestCpuContext* win32_context,
                                    ThreadContext* context,
                                    std::uint32_t fault_va,
                                    std::uint32_t decode_eip);
-bool HandleDosMemoryAccess(CONTEXT* win32_context,
+bool HandleDosMemoryAccess(repiu::platform::GuestCpuContext* win32_context,
                            ThreadContext* context);
 
 
@@ -601,7 +690,7 @@ bool HandleDosMemoryAccess(CONTEXT* win32_context,
 // current EIP, advancing EIP past it, WITHOUT touching the trap flag. Callers
 // decide whether to re-arm single-step (HandleSingleStepTrace) or stay native
 // (the region executor). Mirrors the former inline chain in HandleSingleStepTrace.
-bool DispatchGuestHleHandlers(CONTEXT* win32_context, ThreadContext* context)
+bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     constexpr std::uint32_t kMaximumX86InstructionBytes = 15U;
     if (win32_context == nullptr || context == nullptr ||
@@ -715,9 +804,8 @@ bool DispatchGuestHleHandlers(CONTEXT* win32_context, ThreadContext* context)
 bool RouteANativeRegionEnabled()
 {
     static const bool enabled = []() {
-        char value[2] = {};
-        return GetEnvironmentVariableA(
-                   "REPIU_NATIVE_REGION", value, sizeof(value)) > 0;
+        return repiu::platform::IsEnvironmentSettingPresent(
+            "REPIU_NATIVE_REGION");
     }();
     return enabled;
 }
@@ -726,7 +814,7 @@ bool RouteANativeRegionEnabled()
 // single-step, and clear the active flag. No guest byte is ever modified (the
 // sensitive instructions are trapped with hardware breakpoints, not INT3), so
 // there is nothing to unpatch.
-void LeaveNativeRegion(CONTEXT* win32_context, ThreadContext* context,
+void LeaveNativeRegion(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context,
                        bool returned)
 {
     detail::NativeFastPathState* state = &context->native_fast_path;
@@ -758,7 +846,7 @@ void LeaveNativeRegion(CONTEXT* win32_context, ThreadContext* context,
 // the breakpoints armed. Returns false if the instruction is at an unexpected
 // address or has no handler, so the caller tears the region down and lets the
 // single-step path take it (matching the single-step native fall-through).
-bool HandleNativeRegionSensitiveDr(CONTEXT* win32_context,
+bool HandleNativeRegionSensitiveDr(repiu::platform::GuestCpuContext* win32_context,
                                    ThreadContext* context)
 {
     detail::NativeFastPathState* state = &context->native_fast_path;
@@ -795,7 +883,7 @@ bool HandleNativeRegionSensitiveDr(CONTEXT* win32_context,
 // are trapped with hardware execution breakpoints (Dr1-Dr3); Dr0 breakpoints the
 // caller return address. Regions with more sensitive instructions than hardware
 // slots are declined (the single-step path keeps handling them).
-bool TryEnterNativeRegion(CONTEXT* win32_context, ThreadContext* context)
+bool TryEnterNativeRegion(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     detail::NativeFastPathState* state = &context->native_fast_path;
     const std::uint32_t runtime_base = context->runtime_base;
@@ -1020,7 +1108,7 @@ private:
 // Extracted from HandleSingleStepTrace in Task 322 so its cost can be attributed
 // to SingleStepProfileStage::kPrologueTrace without re-indenting the body. The
 // body is unchanged; only the enclosing function boundary moved.
-void RecordSingleStepDiagnostics(CONTEXT* win32_context, ThreadContext* context)
+void RecordSingleStepDiagnostics(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     RecordExecutionProbe(win32_context, context);
     RecordExecutionTrace(win32_context, context);
@@ -1265,7 +1353,7 @@ void RecordSingleStepDiagnostics(CONTEXT* win32_context, ThreadContext* context)
     }
 }
 
-bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
+bool HandleSingleStepTrace(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr ||
         !context->enable_single_step_trace)
@@ -1384,7 +1472,7 @@ bool HandleSingleStepTrace(CONTEXT* win32_context, ThreadContext* context)
 
 
 
-void RecordHandledHleTrap(CONTEXT* win32_context,
+void RecordHandledHleTrap(repiu::platform::GuestCpuContext* win32_context,
                           ThreadContext* context,
                           std::uint8_t opcode)
 {
@@ -1401,14 +1489,11 @@ void RecordHandledHleTrap(CONTEXT* win32_context,
 
 
 
-bool HandleOriginalFatalBreakpoint(EXCEPTION_POINTERS* exception_info,
-                                   CONTEXT* win32_context,
+bool HandleOriginalFatalBreakpoint(const repiu::platform::FaultEvent& fault,
                                    ThreadContext* context)
 {
-    if (exception_info == nullptr ||
-        exception_info->ExceptionRecord == nullptr ||
-        exception_info->ExceptionRecord->ExceptionCode !=
-            EXCEPTION_BREAKPOINT ||
+    repiu::platform::GuestCpuContext* win32_context = fault.registers;
+    if (fault.kind != repiu::platform::FaultKind::kBreakpoint ||
         win32_context == nullptr || context == nullptr ||
         win32_context->Eip == 0)
     {
@@ -1456,10 +1541,10 @@ bool HandleOriginalFatalBreakpoint(EXCEPTION_POINTERS* exception_info,
         static_cast<std::uint32_t>(win32_context->Edx);
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->fatal_breakpoint_count,
             static_cast<long>(context->handled_fatal_breakpoint_count));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->fatal_message_address,
             static_cast<long>(context->last_fatal_message_address));
     }
@@ -1478,7 +1563,7 @@ bool HandleOriginalFatalBreakpoint(EXCEPTION_POINTERS* exception_info,
 
 
 
-bool HandlePrivilegedTrapInstruction(CONTEXT* win32_context,
+bool HandlePrivilegedTrapInstruction(repiu::platform::GuestCpuContext* win32_context,
                                      ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr ||
@@ -1514,7 +1599,7 @@ bool HandlePrivilegedTrapInstruction(CONTEXT* win32_context,
 }
 
 
-bool HandleDosHleInstruction(CONTEXT* win32_context,
+bool HandleDosHleInstruction(repiu::platform::GuestCpuContext* win32_context,
                              ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -1550,7 +1635,7 @@ bool HandleDosHleInstruction(CONTEXT* win32_context,
     return false;
 }
 
-std::uint32_t ReadRegisterValueForAddress(const CONTEXT* win32_context, ZydisRegister reg)
+std::uint32_t ReadRegisterValueForAddress(const repiu::platform::GuestCpuContext* win32_context, ZydisRegister reg)
 {
     if (reg == ZYDIS_REGISTER_NONE)
     {
@@ -1570,7 +1655,7 @@ std::uint32_t ReadRegisterValueForAddress(const CONTEXT* win32_context, ZydisReg
     }
 }
 
-void WriteRegisterFromZydis(CONTEXT* win32_context, ZydisRegister reg, std::uint32_t value)
+void WriteRegisterFromZydis(repiu::platform::GuestCpuContext* win32_context, ZydisRegister reg, std::uint32_t value)
 {
     switch (reg)
     {
@@ -1606,7 +1691,7 @@ void WriteRegisterFromZydis(CONTEXT* win32_context, ZydisRegister reg, std::uint
     }
 }
 
-bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context, ThreadContext* context, std::uint32_t fault_va, std::uint32_t decode_eip)
+bool HandleGuestLowMemoryReadFault(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context, std::uint32_t fault_va, std::uint32_t decode_eip)
 {
     if (win32_context == nullptr || context == nullptr)
     {
@@ -1695,7 +1780,7 @@ bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context, ThreadContext* contex
     // instruction was preserved, and it then aborted the run as a false
     // positive. Count only repeats that made no forward progress, which is what
     // "runaway" actually means now that we step EIP over the load.
-    std::uint32_t current_tick = GetTickCount();
+    std::uint32_t current_tick = repiu::platform::MillisecondTicks();
     std::uint32_t elapsed_ticks = current_tick - context->last_low_memory_fault_tick;
     context->last_low_memory_fault_tick = current_tick;
 
@@ -1788,7 +1873,7 @@ bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context, ThreadContext* contex
             static long low_mem_trace_count = 0;
             static std::uint32_t seen_eips[32] = {};
             static long seen_count = 0;
-            const long index = InterlockedIncrement(&low_mem_trace_count);
+            const long index = repiu::platform::AtomicIncrement(&low_mem_trace_count);
             bool first_for_eip = true;
             for (long i = 0; i < seen_count; ++i)
             {
@@ -1829,7 +1914,7 @@ bool HandleGuestLowMemoryReadFault(CONTEXT* win32_context, ThreadContext* contex
     return true;
 }
 
-bool HandleDosMemoryAccess(CONTEXT* win32_context, ThreadContext* context)
+bool HandleDosMemoryAccess(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
@@ -1944,6 +2029,7 @@ bool HandleDosMemoryAccess(CONTEXT* win32_context, ThreadContext* context)
     return false;
 }
 
+#if defined(_MSC_VER) && defined(_M_IX86)
 extern "C" __declspec(naked) void
 RecoverHostStackException()
 {
@@ -1985,14 +2071,19 @@ void CallGuestEntryDirectTimed(ThreadContext* context)
 }
 #endif
 
-DWORD WINAPI GuestEntryThreadProc(void* parameter)
+// Task 503d-15 fenced this whole, because CreateThread named the signature and
+// the body is an SEH __try around the guest call. Task 503d-18 takes the first
+// of those away -- the signature is the thread layer's now -- and the fence
+// stays for the second, which is the part Linux answers differently.
+#if defined(_WIN32)
+std::uint32_t GuestEntryThreadProc(void* parameter)
 {
     ThreadContext* context = static_cast<ThreadContext*>(parameter);
     if (context == nullptr)
     {
         return 1;
     }
-    context->guest_thread_id = GetCurrentThreadId();
+    context->guest_thread_id = repiu::platform::CurrentThreadId();
 
     __try
     {
@@ -2005,10 +2096,18 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
             state.enable_single_step_trace =
                 context->enable_single_step_trace ? 1U : 0U;
 
-            MEMORY_BASIC_INFORMATION mbi{};
-            if (VirtualQuery(reinterpret_cast<void*>(context->guest_initial_esp - 4), &mbi, sizeof(mbi)) == sizeof(mbi))
+            const repiu::platform::MemoryRegion stack_region =
+                repiu::platform::QueryMemory(
+                    reinterpret_cast<void*>(context->guest_initial_esp - 4));
+            if (stack_region.valid)
             {
-                state.guest_stack_limit = reinterpret_cast<std::uint32_t>(mbi.AllocationBase);
+                // allocation_base, because the limit names the whole
+                // reservation rather than the run of pages sharing one
+                // protection -- the distinction 3b tracks separately for
+                // exactly this caller.
+                state.guest_stack_limit = static_cast<std::uint32_t>(
+                    reinterpret_cast<std::uintptr_t>(
+                        stack_region.allocation_base));
                 state.guest_stack_base = context->guest_initial_esp;
             }
             context->active_call_state = &state;
@@ -2067,16 +2166,18 @@ DWORD WINAPI GuestEntryThreadProc(void* parameter)
         context->returned = true;
         return 0;
     }
-    __except (CaptureException(GetExceptionInformation(), context))
+    __except (CaptureException(
+        repiu::platform::MakeFaultEventFromWin32(GetExceptionInformation()),
+        context))
     {
         return 2;
     }
 }
-#endif
+#endif  // defined(_WIN32)
 
 }  // namespace
 
-bool DispatchGuestHleInstruction(CONTEXT* win32_context,
+bool DispatchGuestHleInstruction(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context)
 {
     return DispatchGuestHleHandlers(win32_context, context);
@@ -2176,7 +2277,11 @@ std::uint32_t SingleStepRunBucket(std::uint32_t length)
     return 7U;
 }
 
-void RecordVehExceptionCensus(ThreadContext* context, DWORD code)
+// Task 503d-15: takes the event rather than a raw code, so the classification
+// reads the kind and only the "other" bucket, which names what it could not
+// classify, still reads the host's own number.
+void RecordVehExceptionCensus(ThreadContext* context,
+                              const repiu::platform::FaultEvent& fault)
 {
     if (context == nullptr)
     {
@@ -2188,20 +2293,22 @@ void RecordVehExceptionCensus(ThreadContext* context, DWORD code)
     // exactly one instruction between two consecutive single steps.
     RecordVehExceptionGap(
         context->execution_time_profile.get(),
-        code == EXCEPTION_SINGLE_STEP  ? VehGapClass::kSingleStep
-            : code == EXCEPTION_BREAKPOINT ? VehGapClass::kBreakpoint
-                                           : VehGapClass::kOther);
-    if (code == EXCEPTION_SINGLE_STEP)
+        fault.kind == repiu::platform::FaultKind::kSingleStep
+            ? VehGapClass::kSingleStep
+            : fault.kind == repiu::platform::FaultKind::kBreakpoint
+                ? VehGapClass::kBreakpoint
+                : VehGapClass::kOther);
+    if (fault.kind == repiu::platform::FaultKind::kSingleStep)
     {
         ++context->veh_single_step_exception_count;
         ++context->veh_single_step_run_length;
         return;
     }
-    if (code == EXCEPTION_BREAKPOINT)
+    if (fault.kind == repiu::platform::FaultKind::kBreakpoint)
     {
         ++context->veh_breakpoint_exception_count;
     }
-    else if (code == EXCEPTION_ACCESS_VIOLATION)
+    else if (fault.kind == repiu::platform::FaultKind::kAccessViolation)
     {
         ++context->veh_access_violation_exception_count;
     }
@@ -2215,10 +2322,10 @@ void RecordVehExceptionCensus(ThreadContext* context, DWORD code)
         {
             if (context->veh_other_exception_code_counts[index] == 0U ||
                 context->veh_other_exception_codes[index] ==
-                    static_cast<std::uint32_t>(code))
+                    fault.host_code)
             {
                 context->veh_other_exception_codes[index] =
-                    static_cast<std::uint32_t>(code);
+                    fault.host_code;
                 ++context->veh_other_exception_code_counts[index];
                 recorded = true;
                 break;
@@ -2259,7 +2366,7 @@ bool IsGuestInstructionPointer(const ThreadContext* context,
 // Copies the configured range into the buffer reserved before execution began.
 // This runs inside the exception handler, so it allocates nothing and reads
 // only ranges the guest-range check accepts in full.
-void RecordExecutionProbeDump(CONTEXT* win32_context, ThreadContext* context)
+void RecordExecutionProbeDump(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     const auto& request = context->execution_probe_dump_request;
     auto& result = context->execution_probe_dump_result;
@@ -2328,7 +2435,7 @@ void RecordExecutionProbeDump(CONTEXT* win32_context, ThreadContext* context)
     result.captured = true;
 }
 
-void RecordExecutionProbe(CONTEXT* win32_context, ThreadContext* context)
+void RecordExecutionProbe(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr ||
         !context->execution_probe_configured || context->execution_probe_hit ||
@@ -2382,7 +2489,7 @@ void RecordExecutionProbe(CONTEXT* win32_context, ThreadContext* context)
     RecordExecutionProbeDump(win32_context, context);
 }
 
-void RecordExecutionTrace(CONTEXT* win32_context, ThreadContext* context)
+void RecordExecutionTrace(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr ||
         !context->execution_trace_configured ||
@@ -2465,7 +2572,7 @@ bool ResolveSegmentLinearRange(ThreadContext* context,
 // the anonymous namespace) for use by DOS/DPMI/MSCDEX/segment modules.
 // Declared in execution_internal.h.
 
-void RecoverFromHleExit(CONTEXT* win32_context,
+void RecoverFromHleExit(repiu::platform::GuestCpuContext* win32_context,
                         ThreadContext* thread_context)
 {
     thread_context->process_exit = true;
@@ -2476,8 +2583,8 @@ void RecoverFromHleExit(CONTEXT* win32_context,
     }
     else
     {
-        win32_context->Eip =
-            reinterpret_cast<DWORD_PTR>(&RecoverHostStackException);
+        win32_context->Eip = static_cast<decltype(win32_context->Eip)>(
+            reinterpret_cast<std::uintptr_t>(&RecoverHostStackException));
     }
 }
 
@@ -2497,7 +2604,7 @@ void RecordHandledDosInterrupt(ThreadContext* context,
     ++context->handled_dos_interrupt_ah_counts[ax >> 8];
 }
 
-void RecordLowMemoryAccess(CONTEXT* win32_context,
+void RecordLowMemoryAccess(repiu::platform::GuestCpuContext* win32_context,
                            ThreadContext* context,
                            std::uint8_t opcode,
                            std::uint32_t destination,
@@ -2520,7 +2627,7 @@ void RecordLowMemoryAccess(CONTEXT* win32_context,
 
 std::uint16_t ReadGuestSegmentSelector(const ThreadContext& context,
                                        std::uint8_t segment_register,
-                                       const CONTEXT* win32_context)
+                                       const repiu::platform::GuestCpuContext* win32_context)
 {
     std::uint16_t shadow = 0;
     switch (segment_register)
@@ -2579,13 +2686,13 @@ std::uint16_t ReadGuestSegmentSelector(const ThreadContext& context,
     }
     if (context.shared_live_telemetry != nullptr)
     {
-        InterlockedIncrement(
+        repiu::platform::AtomicIncrement(
             &context.shared_live_telemetry->seg_divergence_count);
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context.shared_live_telemetry->seg_divergence_reg_physical,
             static_cast<long>((static_cast<std::uint32_t>(segment_register)
                                << 16) | physical));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context.shared_live_telemetry->seg_divergence_shadow,
             static_cast<long>(shadow));
     }
@@ -2616,7 +2723,7 @@ bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
                                  std::uint32_t byte_count)
 {
     if (context == nullptr || context->aot_placement == nullptr ||
-        context->aot_translation_thread == nullptr || byte_count == 0U)
+        !context->aot_translation_thread.valid || byte_count == 0U)
     {
         return true;
     }
@@ -2710,7 +2817,7 @@ bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
                 page, std::memory_order_relaxed);
             if (context->shared_live_telemetry != nullptr)
             {
-                InterlockedExchange(
+                repiu::platform::AtomicExchange(
                     &context->shared_live_telemetry->aot_last_retired_page,
                     static_cast<long>(page));
             }
@@ -2735,10 +2842,10 @@ bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
             destination, std::memory_order_relaxed);
         if (context->shared_live_telemetry != nullptr)
         {
-            InterlockedExchange(
+            repiu::platform::AtomicExchange(
                 &context->shared_live_telemetry->aot_last_code_write_source,
                 static_cast<long>(source));
-            InterlockedExchange(
+            repiu::platform::AtomicExchange(
                 &context->shared_live_telemetry
                      ->aot_last_code_write_destination,
                 static_cast<long>(destination));
@@ -2747,7 +2854,7 @@ bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
     return true;
 }
 
-std::uint32_t InjectPendingInterrupts(CONTEXT* win32_context,
+std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_context,
                                       ThreadContext* context)
 {
     if (!context->timer_interrupt_pending.load(std::memory_order_acquire))
@@ -2863,11 +2970,11 @@ void NoteVehExitSite(ThreadContext* context, VehExitSite site)
 // docs/design/20260803-410-veh-exit-site-attribution.md.
 struct VehExitRecorder
 {
-    CONTEXT* win32_context;
+    repiu::platform::GuestCpuContext* win32_context;
     ThreadContext* context;
     bool arena_single_step;
 
-    VehExitRecorder(CONTEXT* wc, ThreadContext* ctx, bool arena_step)
+    VehExitRecorder(repiu::platform::GuestCpuContext* wc, ThreadContext* ctx, bool arena_step)
         : win32_context(wc), context(ctx), arena_single_step(arena_step)
     {
     }
@@ -2906,13 +3013,13 @@ struct VehExitRecorder
 
 struct AotHleTranslationScope
 {
-    CONTEXT* win32_context;
+    repiu::platform::GuestCpuContext* win32_context;
     ThreadContext* context;
     std::uint32_t original_aot_eip;
     std::uint32_t guest_eip;
     bool is_aot_exception;
 
-    AotHleTranslationScope(CONTEXT* wc, ThreadContext* ctx)
+    AotHleTranslationScope(repiu::platform::GuestCpuContext* wc, ThreadContext* ctx)
         : win32_context(wc), context(ctx), original_aot_eip(0U), guest_eip(0U), is_aot_exception(false)
     {
         if (context != nullptr && context->aot_placement != nullptr &&
@@ -2964,56 +3071,20 @@ static inline bool IsPlausibleHostPointer(const void* pointer)
     return value >= 0x10000U && (value & 0x3U) == 0U;
 }
 
-// Task 296: VirtualQuery-based readability check for arbitrary host pointers.
-// Unlike IsGuestRangeReadable (which only covers the guest arena), this can
-// validate Windows-allocated structures such as CONTEXT/EXCEPTION_RECORD before
-// they are dereferenced. Only invoked when IsPlausibleHostPointer already flags
-// a pointer as suspicious, so its kernel-transition cost stays off the hot path.
-static bool IsHostPointerReadable(const void* pointer, std::size_t byte_count)
-{
-    if (pointer == nullptr || byte_count == 0)
-    {
-        return false;
-    }
-    const std::uint8_t* cursor = static_cast<const std::uint8_t*>(pointer);
-    const std::uint8_t* end = cursor + byte_count;
-    while (cursor < end)
-    {
-        MEMORY_BASIC_INFORMATION info = {};
-        if (VirtualQuery(cursor, &info, sizeof(info)) == 0)
-        {
-            return false;
-        }
-        if (info.State != MEM_COMMIT)
-        {
-            return false;
-        }
-        const DWORD protect = info.Protect;
-        if ((protect & PAGE_GUARD) != 0 || (protect & PAGE_NOACCESS) != 0)
-        {
-            return false;
-        }
-        const DWORD access = protect & 0xFFU;
-        const bool readable =
-            access == PAGE_READONLY || access == PAGE_READWRITE ||
-            access == PAGE_WRITECOPY || access == PAGE_EXECUTE_READ ||
-            access == PAGE_EXECUTE_READWRITE ||
-            access == PAGE_EXECUTE_WRITECOPY;
-        if (!readable)
-        {
-            return false;
-        }
-        const std::uint8_t* region_end =
-            static_cast<const std::uint8_t*>(info.BaseAddress) + info.RegionSize;
-        if (region_end <= cursor)
-        {
-            return false; // defensive: guarantee forward progress
-        }
-        cursor = region_end;
-    }
-    return true;
-}
+// Task 503d-15: what used to be a hand-written readability walk here is now
+// repiu::platform::IsRangeReadable, the third of the five classifiers 3b was
+// built to collect. It answers the same question -- committed, readable, not a
+// guard page, walking region by region -- and the callers below are unchanged
+// except in what they call. Still only reached when IsPlausibleHostPointer has
+// already flagged a pointer, so its kernel transition stays off the hot path.
 
+// Task 503d-15. From here to the end of DispatchGuestException is the Win32
+// delivery path: the structure the kernel fills in, the Task 296 checks that
+// it is well formed, and the entry a vectored handler calls. 3d-5 split the
+// dispatcher so that everything after this hands control to DispatchGuestFault,
+// which is where a Linux fault arrives directly from the 3c handler. There is
+// nothing here for the other host to become.
+#if defined(_WIN32)
 // Task 296: record a malformed EXCEPTION_POINTERS and emit a one-line
 // diagnostic. Safe to call even when the embedded pointers are unreadable.
 static void RecordMalformedExceptionPointers(ThreadContext* context,
@@ -3025,7 +3096,7 @@ static void RecordMalformedExceptionPointers(ThreadContext* context,
         1U;
     std::uint32_t bad_context = 0U;
     std::uint32_t bad_record = 0U;
-    if (IsHostPointerReadable(exception_info, sizeof(EXCEPTION_POINTERS)))
+    if (repiu::platform::IsRangeReadable(exception_info, sizeof(EXCEPTION_POINTERS)))
     {
         bad_context = static_cast<std::uint32_t>(
             reinterpret_cast<std::uintptr_t>(exception_info->ContextRecord));
@@ -3046,12 +3117,64 @@ static void RecordMalformedExceptionPointers(ThreadContext* context,
 // VEH dispatch logic relocated out of the anonymous namespace (external
 // linkage) so the thin GuestStackVectoredExceptionHandler entry in
 // exception_rescue_win32.cpp can forward to it. Declared in that header.
+// Task 503d-5. The Win32-shaped half, and all that is left of it: validate the
+// structure Windows handed over, then build the event and let the neutral body
+// have it. The validation cannot move down, because once the event exists there
+// is nothing left to validate -- and it cannot move into the 3c backend either,
+// since it is about pointers only a vectored handler ever sees.
 LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
 {
     ThreadContext* context = g_repiu_active_thread_context;
     if (context == nullptr || exception_info == nullptr)
     {
         return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    // Task 296: Windows can hand the VEH a malformed EXCEPTION_POINTERS (a
+    // non-null but unreadable ContextRecord/ExceptionRecord) when a fault is
+    // dispatched while the thread runs on the guest stack (TIB stack bounds
+    // still point at the host stack). Dereferencing it caused a secondary
+    // access violation inside this dispatcher (win32_context->Eip, CONTEXT
+    // offset 0xB8) that masked the original guest exception. Validate before
+    // any dereference and fail closed so the primary exception propagates to
+    // the outer handler and is recorded.
+    //
+    // The common (valid) case is settled with branch-only arithmetic so the hot
+    // exception path pays no kernel transition; only an implausible pointer
+    // falls through to the authoritative VirtualQuery check.
+    if (!IsPlausibleHostPointer(exception_info) ||
+        !IsPlausibleHostPointer(exception_info->ContextRecord) ||
+        !IsPlausibleHostPointer(exception_info->ExceptionRecord))
+    {
+        if (!repiu::platform::IsRangeReadable(exception_info, sizeof(EXCEPTION_POINTERS)) ||
+            !repiu::platform::IsRangeReadable(exception_info->ContextRecord,
+                                   sizeof(repiu::platform::GuestCpuContext)) ||
+            !repiu::platform::IsRangeReadable(exception_info->ExceptionRecord,
+                                   sizeof(EXCEPTION_RECORD)))
+        {
+            RecordMalformedExceptionPointers(context, exception_info);
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+    }
+
+    repiu::platform::FaultEvent fault =
+        repiu::platform::MakeFaultEventFromWin32(exception_info);
+    return DispatchGuestFault(fault) ==
+            repiu::platform::FaultDisposition::kResume
+        ? EXCEPTION_CONTINUE_EXECUTION
+        : EXCEPTION_CONTINUE_SEARCH;
+}
+#endif  // defined(_WIN32)
+
+// Everything below names no Windows type. What reaches it is the fault as 3c
+// reports it, whichever host produced it.
+repiu::platform::FaultDisposition DispatchGuestFault(
+    repiu::platform::FaultEvent& fault)
+{
+    ThreadContext* context = g_repiu_active_thread_context;
+    if (context == nullptr || fault.registers == nullptr)
+    {
+        return repiu::platform::FaultDisposition::kNotHandled;
     }
 
     // Task 323: the single choke point for every exception the guest thread
@@ -3068,54 +3191,24 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         context->execution_time_profile.get(),
         ExecutionTimeBucket::kVehPrologue);
 
-    // Task 296: Windows can hand the VEH a malformed EXCEPTION_POINTERS (a
-    // non-null but unreadable ContextRecord/ExceptionRecord) when a fault is
-    // dispatched while the thread runs on the guest stack (TIB stack bounds
-    // still point at the host stack). Dereferencing it caused a secondary
-    // access violation inside this dispatcher (win32_context->Eip, CONTEXT
-    // offset 0xB8) that masked the original guest exception. Validate before
-    // any dereference and fail closed so the primary exception propagates to
-    // the outer handler and is recorded.
-    //
-    // The common (valid) case is settled with branch-only arithmetic so the hot
-    // exception path pays no kernel transition; only an implausible pointer
-    // falls through to the authoritative VirtualQuery check. The `&&`
-    // short-circuit keeps reads of exception_info->{Context,Exception}Record
-    // guarded by the preceding IsPlausibleHostPointer(exception_info).
-    if (!IsPlausibleHostPointer(exception_info) ||
-        !IsPlausibleHostPointer(exception_info->ContextRecord) ||
-        !IsPlausibleHostPointer(exception_info->ExceptionRecord))
+    if (repiu::platform::CurrentThreadId() != context->guest_thread_id)
     {
-        if (!IsHostPointerReadable(exception_info, sizeof(EXCEPTION_POINTERS)) ||
-            !IsHostPointerReadable(exception_info->ContextRecord,
-                                   sizeof(CONTEXT)) ||
-            !IsHostPointerReadable(exception_info->ExceptionRecord,
-                                   sizeof(EXCEPTION_RECORD)))
-        {
-            RecordMalformedExceptionPointers(context, exception_info);
-            return EXCEPTION_CONTINUE_SEARCH;
-        }
-    }
-
-    if (GetCurrentThreadId() != context->guest_thread_id)
-    {
-        return EXCEPTION_CONTINUE_SEARCH;
+        return repiu::platform::FaultDisposition::kNotHandled;
     }
 
     if (context->use_guest_stack &&
         (context->active_call_state == nullptr ||
          context->active_call_state->host_esp == 0))
     {
-        return EXCEPTION_CONTINUE_SEARCH;
+        return repiu::platform::FaultDisposition::kNotHandled;
     }
 
-    CONTEXT* win32_context = exception_info->ContextRecord;
+    repiu::platform::GuestCpuContext* win32_context = fault.registers;
     // Task 337: classify every exception exactly once, before any handler can
     // consume it, so the census is exclusive by construction. A single-step run
     // is closed by the next non-single-step exception, which is what makes the
     // bucket "instructions walked under TF between two boundaries".
-    RecordVehExceptionCensus(context,
-                             exception_info->ExceptionRecord->ExceptionCode);
+    RecordVehExceptionCensus(context, fault);
     // Task 407: one slot of history, so a handler can ask what preceded it.
     // Six assignments and one range check on the choke point.
     context->prev_veh_code = context->last_veh_code;
@@ -3123,7 +3216,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     context->prev_veh_in_cache = context->last_veh_in_cache;
     context->last_veh_code =
         static_cast<std::uint32_t>(
-            exception_info->ExceptionRecord->ExceptionCode);
+            fault.host_code);
     context->last_veh_eip = static_cast<std::uint32_t>(win32_context->Eip);
     context->last_veh_in_cache =
         IsAotCacheAddress(context, context->last_veh_eip);
@@ -3140,13 +3233,13 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     // the destructor because handlers rewrite EIP on the way out.
     const VehExitRecorder veh_exit_recorder(
         win32_context, context,
-        exception_info->ExceptionRecord->ExceptionCode == EXCEPTION_SINGLE_STEP &&
+        fault.kind == repiu::platform::FaultKind::kSingleStep &&
             IsGuestInstructionPointer(context, context->last_veh_eip));
     Win32UnhandledBreakpointEvidence breakpoint_evidence;
-    if (exception_info->ExceptionRecord->ExceptionCode == EXCEPTION_BREAKPOINT)
+    if (fault.kind == repiu::platform::FaultKind::kBreakpoint)
     {
         breakpoint_evidence =
-            CaptureBreakpointEvidence(exception_info, context);
+            CaptureBreakpointEvidence(fault, context);
     }
 
     if (win32_context->Eip == 0U)
@@ -3157,7 +3250,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
             win32_context, context, "zero-eip-fail-closed",
             context->exception_dispatch_last_eip.load(
                 std::memory_order_relaxed));
-        CaptureException(exception_info, context);
+        CaptureException(fault, context);
         context->guest_return_esp =
             static_cast<std::uint32_t>(win32_context->Esp);
         if (context->use_guest_stack)
@@ -3166,17 +3259,16 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         }
         else
         {
-            win32_context->Eip =
-                reinterpret_cast<DWORD_PTR>(&RecoverHostStackException);
+            win32_context->Eip = static_cast<decltype(win32_context->Eip)>(
+                reinterpret_cast<std::uintptr_t>(&RecoverHostStackException));
         }
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
 
-    if (HandleAotDbtCallStepProbe(
-            exception_info, win32_context, context))
+    if (HandleAotDbtCallStepProbe(fault, context))
     {
         NoteVehExitSite(context, VehExitSite::kCallStepProbe);
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     // Task 275 linear spans use Dr0 only. On the expected boundary, restore
     // debug state and deliberately continue through the normal #DB chain so the
@@ -3185,28 +3277,20 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     if (NativeLinearSpanEnabled(context->execution_backend) &&
         context->native_fast_path.linear_span_active)
     {
-        const DWORD span_code = exception_info->ExceptionRecord != nullptr
-            ? exception_info->ExceptionRecord->ExceptionCode
-            : 0U;
         const bool reached_boundary =
-            span_code == EXCEPTION_SINGLE_STEP &&
+            fault.kind == repiu::platform::FaultKind::kSingleStep &&
             (static_cast<std::uint32_t>(win32_context->Dr6) & 0x1U) != 0U &&
             static_cast<std::uint32_t>(win32_context->Eip) ==
                 context->native_fast_path.linear_span_boundary;
         const bool write_fault_cancel =
-            span_code == EXCEPTION_ACCESS_VIOLATION &&
-            exception_info->ExceptionRecord->NumberParameters >= 2U &&
-            exception_info->ExceptionRecord->ExceptionInformation[0] == 1U &&
-            exception_info->ExceptionRecord->ExceptionInformation[1] <=
-                std::numeric_limits<std::uint32_t>::max() &&
+            fault.kind == repiu::platform::FaultKind::kAccessViolation &&
+            fault.access.valid && fault.access.write_access &&
             IsWin32AotGuestPageWriteWatched(
                 context->aot_page_write_watch,
-                static_cast<std::uint32_t>(
-                    exception_info->ExceptionRecord
-                        ->ExceptionInformation[1]));
+                fault.access.fault_address);
         LeaveNativeLinearSpan(
             win32_context, context, reached_boundary, write_fault_cancel,
-            static_cast<std::uint32_t>(span_code));
+            fault.kind, fault.host_code);
     }
     // Route A native region (Task 266): while a region runs natively, only its
     // hardware breakpoints trap -- Dr0 at the caller return address and Dr1-Dr3
@@ -3214,14 +3298,12 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     // here before any other consumer.
     if (RouteANativeRegionEnabled() && context->native_fast_path.region_active)
     {
-        const DWORD region_code = exception_info->ExceptionRecord != nullptr
-            ? exception_info->ExceptionRecord->ExceptionCode
-            : 0U;
+        const repiu::platform::FaultKind region_kind = fault.kind;
         const std::uint32_t region_eip =
             static_cast<std::uint32_t>(win32_context->Eip);
         const std::uint32_t region_dr6 =
             static_cast<std::uint32_t>(win32_context->Dr6);
-        if (region_code == EXCEPTION_SINGLE_STEP)
+        if (region_kind == repiu::platform::FaultKind::kSingleStep)
         {
             if ((region_dr6 & 0x1U) != 0U &&
                 region_eip ==
@@ -3229,13 +3311,13 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
             {
                 LeaveNativeRegion(win32_context, context, true);
                 NoteVehExitSite(context, VehExitSite::kNativeRegionReturn);
-                return EXCEPTION_CONTINUE_EXECUTION;
+                return repiu::platform::FaultDisposition::kResume;
             }
             if ((region_dr6 & 0x0EU) != 0U &&
                 HandleNativeRegionSensitiveDr(win32_context, context))
             {
                 NoteVehExitSite(context, VehExitSite::kNativeRegionSensitive);
-                return EXCEPTION_CONTINUE_EXECUTION;
+                return repiu::platform::FaultDisposition::kResume;
             }
         }
         // Unexpected exception (unhandled sensitive instruction, guest fault, or
@@ -3263,81 +3345,82 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
             ExecutionTimeBucket::kVehAotTransfer);
         if (stop_for_aot_terminal_failure())
         {
-            return EXCEPTION_CONTINUE_SEARCH;
+            return repiu::platform::FaultDisposition::kNotHandled;
         }
-        if (HandleAotGuestCodeWriteCompletion(
-                exception_info, win32_context, context))
+        // One event for the whole AOT handler chain. Every handler below now
+        // takes the fault as 3c reports it; this is the last place that still
+        // reads Windows' structure, and it goes when the dispatcher's own
+        // signature follows them over.
+        const repiu::platform::FaultEvent aot_fault =
+            fault;
+        if (HandleAotGuestCodeWriteCompletion(aot_fault, context))
         {
             NoteVehExitSite(context, VehExitSite::kAotWriteCompletion);
-            return EXCEPTION_CONTINUE_EXECUTION;
+            return repiu::platform::FaultDisposition::kResume;
         }
         if (stop_for_aot_terminal_failure())
         {
-            return EXCEPTION_CONTINUE_SEARCH;
+            return repiu::platform::FaultDisposition::kNotHandled;
         }
-        if (HandleAotGuestCodeWriteFault(
-                exception_info, win32_context, context))
+        if (HandleAotGuestCodeWriteFault(aot_fault, context))
         {
             NoteVehExitSite(context, VehExitSite::kAotWriteFault);
-            return EXCEPTION_CONTINUE_EXECUTION;
+            return repiu::platform::FaultDisposition::kResume;
         }
         if (stop_for_aot_terminal_failure())
         {
-            return EXCEPTION_CONTINUE_SEARCH;
+            return repiu::platform::FaultDisposition::kNotHandled;
         }
-        if (HandleAotTimerSafePoint(
-                exception_info, win32_context, context))
+        if (HandleAotTimerSafePoint(aot_fault, context))
         {
             NoteVehExitSite(context, VehExitSite::kAotTimerSafePoint);
-            return EXCEPTION_CONTINUE_EXECUTION;
+            return repiu::platform::FaultDisposition::kResume;
         }
         if (stop_for_aot_terminal_failure())
         {
-            return EXCEPTION_CONTINUE_SEARCH;
+            return repiu::platform::FaultDisposition::kNotHandled;
         }
-        if (HandleAotReentry(exception_info, win32_context, context))
+        if (HandleAotReentry(aot_fault, context))
         {
-            return EXCEPTION_CONTINUE_EXECUTION;
+            return repiu::platform::FaultDisposition::kResume;
         }
         if (stop_for_aot_terminal_failure())
         {
-            return EXCEPTION_CONTINUE_SEARCH;
+            return repiu::platform::FaultDisposition::kNotHandled;
         }
-        if (HandleAotIndirectTransfer(exception_info, win32_context, context))
+        if (HandleAotIndirectTransfer(aot_fault, context))
         {
             NoteVehExitSite(context, VehExitSite::kAotIndirectTransfer);
-            return EXCEPTION_CONTINUE_EXECUTION;
+            return repiu::platform::FaultDisposition::kResume;
         }
         if (stop_for_aot_terminal_failure())
         {
-            return EXCEPTION_CONTINUE_SEARCH;
+            return repiu::platform::FaultDisposition::kNotHandled;
         }
-        if (HandleAotConditionalTransfer(
-                exception_info, win32_context, context))
+        if (HandleAotConditionalTransfer(aot_fault, context))
         {
             NoteVehExitSite(context, VehExitSite::kAotConditionalTransfer);
-            return EXCEPTION_CONTINUE_EXECUTION;
+            return repiu::platform::FaultDisposition::kResume;
         }
         if (stop_for_aot_terminal_failure())
         {
-            return EXCEPTION_CONTINUE_SEARCH;
+            return repiu::platform::FaultDisposition::kNotHandled;
         }
-        if (HandleAotReturnTransfer(exception_info, win32_context, context))
+        if (HandleAotReturnTransfer(aot_fault, context))
         {
             NoteVehExitSite(context, VehExitSite::kAotReturnTransfer);
-            return EXCEPTION_CONTINUE_EXECUTION;
+            return repiu::platform::FaultDisposition::kResume;
         }
         if (stop_for_aot_terminal_failure())
         {
-            return EXCEPTION_CONTINUE_SEARCH;
+            return repiu::platform::FaultDisposition::kNotHandled;
         }
     }
     if (context->native_fast_path.active)
     {
         const bool returned =
-            exception_info->ExceptionRecord != nullptr &&
-            exception_info->ExceptionRecord->ExceptionCode ==
-                EXCEPTION_SINGLE_STEP &&
+            true &&
+            fault.kind == repiu::platform::FaultKind::kSingleStep &&
             win32_context->Eip ==
                 context->native_fast_path.return_address &&
             (win32_context->Dr6 & 0x1U) != 0;
@@ -3347,25 +3430,28 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     }
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->recovery_host_fs,
             static_cast<long>(g_recovery_host_fs));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->recovery_host_ds,
             static_cast<long>(g_recovery_host_ds));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->recovery_host_es,
             static_cast<long>(g_recovery_host_es));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->recovery_host_gs,
             static_cast<long>(g_recovery_host_gs));
     }
-    constexpr DWORD kVisualCppThreadNameException = 0x406D1388U;
-    constexpr DWORD kDebugPrintExceptionAnsi = 0x40010006U;
-    constexpr DWORD kDebugPrintExceptionWide = 0x4001000AU;
-    if (exception_info->ExceptionRecord != nullptr &&
-        exception_info->ExceptionRecord->ExceptionCode ==
-            EXCEPTION_SINGLE_STEP &&
+    // Task 503d-15: three codes only Windows raises -- a debugger print and the
+    // thread-name exception Visual C++ throws. They stay as numbers rather than
+    // becoming a FaultKind, because nothing decides control flow on them beyond
+    // passing them through, and there is no counterpart to invent.
+    constexpr std::uint32_t kVisualCppThreadNameException = 0x406D1388U;
+    constexpr std::uint32_t kDebugPrintExceptionAnsi = 0x40010006U;
+    constexpr std::uint32_t kDebugPrintExceptionWide = 0x4001000AU;
+    if (true &&
+        fault.kind == repiu::platform::FaultKind::kSingleStep &&
         !IsGuestInstructionPointer(
             context, static_cast<std::uint32_t>(win32_context->Eip)))
     {
@@ -3393,27 +3479,27 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         }
         NoteVehExitSite(context, VehExitSite::kOutOfArenaStepDiscard);
         win32_context->EFlags &= ~0x00000100U;
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
-    if (exception_info->ExceptionRecord != nullptr &&
-        (exception_info->ExceptionRecord->ExceptionCode ==
+    if (true &&
+        (fault.host_code ==
              kDebugPrintExceptionAnsi ||
-         exception_info->ExceptionRecord->ExceptionCode ==
+         fault.host_code ==
              kDebugPrintExceptionWide) &&
         !IsGuestInstructionPointer(
             context, static_cast<std::uint32_t>(win32_context->Eip)))
     {
         NoteVehExitSite(context, VehExitSite::kDebugPrintDiscard);
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
-    if (exception_info->ExceptionRecord != nullptr &&
-        exception_info->ExceptionRecord->ExceptionCode ==
+    if (true &&
+        fault.host_code ==
             kVisualCppThreadNameException &&
         !IsGuestInstructionPointer(
             context, static_cast<std::uint32_t>(win32_context->Eip)))
     {
         NoteVehExitSite(context, VehExitSite::kContinueSearch);
-        return EXCEPTION_CONTINUE_SEARCH;
+        return repiu::platform::FaultDisposition::kNotHandled;
     }
     // Task 325: nine InterlockedExchange writes plus allocator recording run on
     // every exception regardless of kind, so they are measured as fixed cost.
@@ -3422,41 +3508,41 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         context->execution_time_profile.get(),
         ExecutionTimeBucket::kVehTelemetry);
     if (context->shared_live_telemetry != nullptr &&
-        exception_info->ExceptionRecord != nullptr)
+        true)
     {
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->last_exception_code,
             static_cast<long>(
-                exception_info->ExceptionRecord->ExceptionCode));
+                fault.host_code));
         if (IsGuestInstructionPointer(
                 context,
                 static_cast<std::uint32_t>(win32_context->Eip)))
         {
-            InterlockedExchange(
+            repiu::platform::AtomicExchange(
                 &context->shared_live_telemetry->last_guest_eip,
                 static_cast<long>(win32_context->Eip));
-            InterlockedExchange(
+            repiu::platform::AtomicExchange(
                 &context->shared_live_telemetry->last_guest_eax,
                 static_cast<long>(win32_context->Eax));
-            InterlockedExchange(
+            repiu::platform::AtomicExchange(
                 &context->shared_live_telemetry->last_guest_ebx,
                 static_cast<long>(win32_context->Ebx));
-            InterlockedExchange(
+            repiu::platform::AtomicExchange(
                 &context->shared_live_telemetry->last_guest_ecx,
                 static_cast<long>(win32_context->Ecx));
-            InterlockedExchange(
+            repiu::platform::AtomicExchange(
                 &context->shared_live_telemetry->last_guest_edx,
                 static_cast<long>(win32_context->Edx));
-            InterlockedExchange(
+            repiu::platform::AtomicExchange(
                 &context->shared_live_telemetry->last_guest_esi,
                 static_cast<long>(win32_context->Esi));
-            InterlockedExchange(
+            repiu::platform::AtomicExchange(
                 &context->shared_live_telemetry->last_guest_edi,
                 static_cast<long>(win32_context->Edi));
-            InterlockedExchange(
+            repiu::platform::AtomicExchange(
                 &context->shared_live_telemetry->last_guest_esp,
                 static_cast<long>(win32_context->Esp));
-            InterlockedExchange(
+            repiu::platform::AtomicExchange(
                 &context->shared_live_telemetry->guest_handler_phase,
                 1);
         }
@@ -3468,13 +3554,13 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     ExceptionDispatchScope dispatch_scope(
         context,
         static_cast<std::uint32_t>(win32_context->Eip));
-    RecordAllocatorControlFlowException(exception_info, context);
+    RecordAllocatorControlFlowException(fault, context);
     telemetry_time_scope.reset();
     if (HandleGlideGateBoundary(win32_context, context))
     {
         InjectPendingInterrupts(win32_context, context);
         NoteVehExitSite(context, VehExitSite::kGlideGateBoundary);
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     // Task 325: the non-Glide boundary gates. Glide keeps its own bucket from
     // Task 323 so the render path stays separable.
@@ -3485,34 +3571,31 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         if (HandleTimerInterruptChainBoundary(win32_context, context))
         {
             NoteVehExitSite(context, VehExitSite::kTimerChainBoundary);
-            return EXCEPTION_CONTINUE_EXECUTION;
+            return repiu::platform::FaultDisposition::kResume;
         }
         if (HandleLinexeFarTransferBoundary(win32_context, context))
         {
             NoteVehExitSite(context, VehExitSite::kLinexeFarTransferBoundary);
-            return EXCEPTION_CONTINUE_EXECUTION;
+            return repiu::platform::FaultDisposition::kResume;
         }
     }
     // Task 376: `single_step_trace_count` only advances inside
     // HandleSingleStepTrace, which returns immediately when trace mode is off.
     // Comparing it against the exception census therefore measured two different
     // things, not a discarded population. This records the split.
-    if (exception_info->ExceptionRecord != nullptr &&
-        exception_info->ExceptionRecord->ExceptionCode ==
-            EXCEPTION_SINGLE_STEP)
+    if (true &&
+        fault.kind == repiu::platform::FaultKind::kSingleStep)
     {
         RecordSingleStepTraceDisposition(&context->out_of_arena_step_census,
                                          context->enable_single_step_trace);
     }
-    if (exception_info->ExceptionRecord != nullptr &&
-        (exception_info->ExceptionRecord->ExceptionCode ==
-             EXCEPTION_SINGLE_STEP ||
+    if (true &&
+        (fault.kind == repiu::platform::FaultKind::kSingleStep ||
          (context->aot_reentry_pending &&
-          exception_info->ExceptionRecord->ExceptionCode ==
-             EXCEPTION_BREAKPOINT)) &&
+          fault.kind == repiu::platform::FaultKind::kBreakpoint)) &&
         HandleSingleStepTrace(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     // Task 325: everything past this point is the sequential HLE handler chain
     // reached by exceptions the single-step path did not take -- principally
@@ -3537,25 +3620,25 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         win32_context->EFlags &= ~0x00000100U;
         CommitUnhandledBreakpointEvidence(
             breakpoint_evidence, win32_context, context);
-        CaptureException(exception_info, context);
+        CaptureException(fault, context);
         context->guest_return_esp =
             static_cast<std::uint32_t>(win32_context->Esp);
         context->host_esp = context->active_call_state->host_esp;
         RecoverToHost(win32_context, context);
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
 
     if (context->enable_privileged_trap_hle &&
         HandlePrivilegedTrapInstruction(win32_context, context))
     {
         NoteVehExitSite(context, VehExitSite::kHleChainPrivileged);
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_privileged_trap_hle &&
         HandlePortIoInstruction(win32_context, context))
     {
         NoteVehExitSite(context, VehExitSite::kHleChainPortIo);
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_traced_dos_hle &&
         (HandleTracedDosInterrupt21(win32_context, context) ||
@@ -3565,7 +3648,7 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
          HandleTracedBiosInterrupt16(win32_context, context)))
     {
         NoteVehExitSite(context, VehExitSite::kHleChainTracedDos);
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     // Task 410: the segment family is eighteen handlers with one answer, so it
     // is tagged once here rather than eighteen times. Every exit below this
@@ -3575,89 +3658,89 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     if (context->enable_segment_load_hle &&
         HandleSegmentLoadInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_segment_load_hle &&
         HandleSegmentPopInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_segment_load_hle &&
         HandleRepStosdInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_segment_load_hle &&
         HandleSegmentStoreInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_segment_load_hle &&
         HandleSegmentOverrideMemoryLoadInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_segment_load_hle &&
         HandleSegmentOverrideByteLoadInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_segment_load_hle &&
         HandleFsSegmentWordLoadInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_segment_load_hle &&
         HandleSegmentMemoryCompareInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_segment_load_hle &&
         HandleSegmentMemoryLoadInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_segment_load_hle &&
         HandleTracedMemoryLoadInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_segment_load_hle &&
         HandleTracedMemoryAddInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_segment_load_hle &&
         HandleTracedMemoryOrInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_segment_load_hle &&
         HandleTracedMemoryCompareByteInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_segment_load_hle &&
         HandleTracedMemoryStoreInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_segment_load_hle &&
         HandleTracedMemoryTestInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_segment_load_hle &&
         HandleTracedFpuMemoryInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_dos_hle &&
         HandleDosHleInstruction(win32_context, context))
     {
         InjectPendingInterrupts(win32_context, context);
         NoteVehExitSite(context, VehExitSite::kHleChainDosHle);
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     // Task 401: nothing below handles a software interrupt, so an INT that
     // reaches here is unsupported. Name it, since the DOS HLE fallback above --
@@ -3665,21 +3748,19 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     RecordUnsupportedTracedSoftwareInterrupt(win32_context, context);
     const bool hle_active = context->enable_dos_hle || context->enable_traced_dos_hle;
     if (hle_active &&
-        exception_info->ExceptionRecord != nullptr &&
-        exception_info->ExceptionRecord->ExceptionCode ==
-            EXCEPTION_ACCESS_VIOLATION)
+        fault.kind == repiu::platform::FaultKind::kAccessViolation)
     {
         bool handled = false;
-        if (exception_info->ExceptionRecord->NumberParameters >= 2)
+        if (fault.access.valid)
         {
-            const std::uint32_t access_kind = static_cast<std::uint32_t>(
-                exception_info->ExceptionRecord->ExceptionInformation[0]);
-            const std::uint32_t fault_va = static_cast<std::uint32_t>(
-                exception_info->ExceptionRecord->ExceptionInformation[1]);
-            
+            const std::uint32_t fault_va = fault.access.fault_address;
+
             bool is_aot_address = ((fault_va >= 0x0A000000U) && (fault_va < 0x0E000000U));
 
-            if (access_kind == 8 && is_aot_address)
+            // An instruction fetch, not a read or a write: the guest branched
+            // into the AOT cache's range through a path the engine did not
+            // translate.
+            if (fault.access.execute_access && is_aot_address)
             {
                 std::uint32_t decode_eip = 0;
                 if (context->aot_placement != nullptr)
@@ -3699,15 +3780,15 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
                 {
                     const std::uint32_t* esp_ptr = reinterpret_cast<const std::uint32_t*>(
                         static_cast<std::uintptr_t>(win32_context->Esp));
-                    MEMORY_BASIC_INFORMATION mbi = {};
-                    if (VirtualQuery(esp_ptr, &mbi, sizeof(mbi)) == sizeof(mbi) &&
-                        (mbi.State == MEM_COMMIT) &&
-                        ((mbi.Protect & PAGE_NOACCESS) == 0))
+                    const repiu::platform::MemoryRegion stack_page =
+                        repiu::platform::QueryMemory(esp_ptr);
+                    if (stack_page.valid && stack_page.committed &&
+                        stack_page.readable)
                     {
                         for (int i = 0; i < 32; ++i)
                         {
                             const std::uint32_t* cur_ptr = &esp_ptr[i];
-                            if (reinterpret_cast<std::uintptr_t>(cur_ptr) < reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize)
+                            if (reinterpret_cast<std::uintptr_t>(cur_ptr) < reinterpret_cast<std::uintptr_t>(stack_page.base) + stack_page.size)
                             {
                                 std::uint32_t stack_val = *cur_ptr;
                                 if (IsGuestInstructionPointer(context, stack_val))
@@ -3737,7 +3818,8 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
                     handled = true;
                 }
             }
-            else if (access_kind == 0)
+            else if (!fault.access.write_access &&
+                     !fault.access.execute_access)
             {
                 std::uint32_t decode_eip = win32_context->Eip;
                 if (IsAotCacheAddress(context, win32_context->Eip))
@@ -3786,49 +3868,46 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
         if (handled)
         {
             NoteVehExitSite(context, VehExitSite::kHleChainAccessViolation);
-            return EXCEPTION_CONTINUE_EXECUTION;
+            return repiu::platform::FaultDisposition::kResume;
         }
     }
     NoteVehExitSite(context, VehExitSite::kHleChainStringOp);
     if (context->enable_segment_load_hle &&
         HandleRepMovsInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_segment_load_hle &&
         HandleRepCmpsbInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_segment_load_hle &&
         HandleLodsbInstruction(win32_context, context))
     {
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
     if (context->aot_terminal_failure.load(std::memory_order_acquire))
     {
         NoteVehExitSite(context, VehExitSite::kTerminalFailureSearch);
         win32_context->EFlags &= ~0x00000100U;
-        return EXCEPTION_CONTINUE_SEARCH;
+        return repiu::platform::FaultDisposition::kNotHandled;
     }
-    if (HandleOriginalFatalBreakpoint(exception_info,
-                                      win32_context,
-                                      context))
+    if (HandleOriginalFatalBreakpoint(fault, context))
     {
         NoteVehExitSite(context, VehExitSite::kFatalBreakpoint);
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
 
     if (context->aot_reentry_pending &&
-        exception_info->ExceptionRecord != nullptr &&
-        exception_info->ExceptionRecord->ExceptionCode ==
-            EXCEPTION_BREAKPOINT)
+        true &&
+        fault.kind == repiu::platform::FaultKind::kBreakpoint)
     {
         // Indirect transfers, returns, and LOOP-family instructions execute
         // once from the original image under TF, then re-enter the cache.
         NoteVehExitSite(context,
                         VehExitSite::kReentryBreakpointPassThrough);
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
 
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
@@ -3836,13 +3915,13 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     if (!context->use_guest_stack &&
         (*instruction == 0xCC || instruction[-1] == 0xCC))
     {
-        const std::uint32_t byte_count = exception_info->ContextRecord->Ecx;
+        const std::uint32_t byte_count = fault.registers->Ecx;
         const void* source = reinterpret_cast<const void*>(
-            static_cast<std::uintptr_t>(exception_info->ContextRecord->Edx));
+            static_cast<std::uintptr_t>(fault.registers->Edx));
         AppendConsoleOutput(context, source, byte_count);
-        RecoverFromHleExit(exception_info->ContextRecord, context);
+        RecoverFromHleExit(fault.registers, context);
         NoteVehExitSite(context, VehExitSite::kConsoleOutputExit);
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return repiu::platform::FaultDisposition::kResume;
     }
 
     const std::uint32_t exception_address =
@@ -3888,21 +3967,22 @@ LONG DispatchGuestException(EXCEPTION_POINTERS* exception_info)
     win32_context->EFlags &= ~0x00000100U;
     CommitUnhandledBreakpointEvidence(
         breakpoint_evidence, win32_context, context);
-    CaptureException(exception_info, context);
+    CaptureException(fault, context);
     context->guest_return_esp =
-        static_cast<std::uint32_t>(exception_info->ContextRecord->Esp);
+        static_cast<std::uint32_t>(fault.registers->Esp);
 
     if (context->use_guest_stack)
     {
         context->host_esp = context->active_call_state->host_esp;
-        RecoverToHost(exception_info->ContextRecord, context);
+        RecoverToHost(fault.registers, context);
     }
     else
     {
-        exception_info->ContextRecord->Eip =
-            reinterpret_cast<DWORD_PTR>(&RecoverHostStackException);
+        fault.registers->Eip =
+            static_cast<decltype(fault.registers->Eip)>(
+                reinterpret_cast<std::uintptr_t>(&RecoverHostStackException));
     }
-    return EXCEPTION_CONTINUE_EXECUTION;
+    return repiu::platform::FaultDisposition::kResume;
 }
 
 // Boundary definitions promoted to external linkage (out of the anonymous
@@ -3919,26 +3999,34 @@ bool WriteGuestBytes(ThreadContext* context,
         return false;
     }
 
-    DWORD previous_protect = 0;
-    if (!VirtualProtect(destination,
-                        byte_count,
-                        PAGE_EXECUTE_READWRITE,
-                        &previous_protect))
+    // Task 503d-15: the same shape guest_memory_access.cpp moved to in 3d-3 --
+    // unprotect, write, put back exactly what was there, which is why the call
+    // below reports the previous protection at all.
+    repiu::platform::MemoryProtection previous_protect =
+        repiu::platform::MemoryProtection::kOther;
+    if (!repiu::platform::ProtectMemory(
+            destination,
+            byte_count,
+            repiu::platform::MemoryProtection::kExecuteReadWrite,
+            &previous_protect))
     {
         std::ostringstream stream;
-        stream << "VirtualProtect failed for guest byte store with error "
-               << GetLastError();
+        // The host error number is no longer carried, so the address takes its
+        // place; it is the more useful of the two when a guest store into
+        // protected code is what went wrong.
+        stream << "protecting guest memory failed for guest byte store at 0x"
+               << std::hex
+               << reinterpret_cast<std::uintptr_t>(destination);
         context->hle_message = stream.str();
         return false;
     }
 
     std::memcpy(destination, source, byte_count);
 
-    DWORD ignored_protect = 0;
-    if (!VirtualProtect(destination,
-                        byte_count,
-                        previous_protect,
-                        &ignored_protect))
+    if (!repiu::platform::ProtectMemory(destination,
+                                        byte_count,
+                                        previous_protect,
+                                        nullptr))
     {
         return false;
     }
@@ -4075,14 +4163,14 @@ bool RunWin32ExecutionThread(
             std::make_unique<Win32MscdexCommandTrace>();
         context.mscdex_command_trace->enabled = true;
         context.mscdex_command_trace->base_tick =
-            static_cast<std::uint32_t>(GetTickCount());
+            static_cast<std::uint32_t>(repiu::platform::MillisecondTicks());
     }
     SharedTelemetryMapping shared_telemetry =
         OpenSharedTelemetryMapping();
     context.shared_live_telemetry = shared_telemetry.telemetry;
     if (context.shared_live_telemetry != nullptr)
     {
-        InterlockedExchange(&context.shared_live_telemetry->host_phase, 1);
+        repiu::platform::AtomicExchange(&context.shared_live_telemetry->host_phase, 1);
     }
     context.entry_address = aot_placement != nullptr
         ? aot_placement->entry_address : entry_address;
@@ -4552,33 +4640,34 @@ bool RunWin32ExecutionThread(
                  0, true}));
         if (descriptors_registered)
         {
-            DWORD ignored = 0;
-            const bool client_protected = VirtualProtect(
+            using repiu::platform::MemoryProtection;
+            const bool client_protected = repiu::platform::ProtectMemory(
                 address(context.linexe_arena_layout.client_data_base),
-                0x1000U, PAGE_READONLY, &ignored) != 0;
-            const bool private_protected = VirtualProtect(
+                0x1000U, MemoryProtection::kReadOnly, nullptr);
+            const bool private_protected = repiu::platform::ProtectMemory(
                 address(context.linexe_arena_layout.private_data_base),
                 context.linexe_arena_layout.private_data_size,
-                extracted_linexe_valid ? PAGE_READWRITE : PAGE_READONLY,
-                &ignored) != 0;
-            const bool gates_protected = VirtualProtect(
+                extracted_linexe_valid ? MemoryProtection::kReadWrite
+                                       : MemoryProtection::kReadOnly,
+                nullptr);
+            const bool gates_protected = repiu::platform::ProtectMemory(
                 address(context.linexe_arena_layout.gate_code_base),
                 context.linexe_arena_layout.gate_code_size,
                 direct_glide_dispatch
-                    ? PAGE_EXECUTE_READ
+                    ? MemoryProtection::kExecuteRead
                     : (extracted_linexe_valid
-                           ? PAGE_READWRITE
-                           : PAGE_EXECUTE_READ),
-                &ignored) != 0;
+                           ? MemoryProtection::kReadWrite
+                           : MemoryProtection::kExecuteRead),
+                nullptr);
             const bool bss_protected = !extracted_linexe_valid ||
-                VirtualProtect(address(context.linexe_arena_layout.bss_base),
-                               context.linexe_arena_layout.bss_size,
-                               PAGE_READWRITE, &ignored) != 0;
+                repiu::platform::ProtectMemory(
+                    address(context.linexe_arena_layout.bss_base),
+                    context.linexe_arena_layout.bss_size,
+                    MemoryProtection::kReadWrite, nullptr);
             const bool gates_flushed = !direct_glide_dispatch ||
-                (gates_protected && FlushInstructionCache(
-                    GetCurrentProcess(),
+                (gates_protected && repiu::platform::FlushInstructionCacheRange(
                     address(context.linexe_arena_layout.gate_code_base),
-                    context.linexe_arena_layout.gate_code_size) != 0);
+                    context.linexe_arena_layout.gate_code_size));
             context.linexe_environment_active =
                 client_protected && private_protected && gates_protected &&
                 bss_protected && gates_flushed;
@@ -4595,41 +4684,40 @@ bool RunWin32ExecutionThread(
         context.dos_file_system = *dos_file_system;
     }
 
+    // Task 503d-18: creating threads, asking whether they still run, and
+    // collecting what they returned are the layer's now. What is still resolved
+    // out of kernel32 here is the watchdog's last resort, which 3d-19 decides
+    // the fate of.
     const Win32ThreadApi& api = GetWin32ThreadApi();
-    if (api.create_thread == nullptr ||
-        api.close_handle == nullptr ||
-        api.get_last_error == nullptr)
-    {
-        attempt->message = "failed to resolve required Win32 thread APIs";
-        return false;
-    }
 
     const auto stop_translation_worker = [&context]() {
-        if (context.aot_translation_thread != nullptr)
+        if (context.aot_translation_thread.valid)
         {
             context.aot_translation_shutdown.store(
                 true, std::memory_order_release);
             if (context.aot_translation_request_event == nullptr ||
                 SetEvent(context.aot_translation_request_event) == 0 ||
-                WaitForSingleObject(context.aot_translation_thread,
-                                    INFINITE) != WAIT_OBJECT_0)
+                !repiu::platform::JoinHostThread(
+                    context.aot_translation_thread,
+                    repiu::runtime::kWaitForeverMilliseconds, nullptr))
             {
                 // Context ownership cannot be released while the worker could
                 // still reference it. Treat an impossible join failure as a
                 // process-local terminal failure rather than creating UAF.
                 std::abort();
             }
-            CloseHandle(context.aot_translation_thread);
-            context.aot_translation_thread = nullptr;
+            repiu::platform::CloseHostThread(&context.aot_translation_thread);
         }
         if (context.aot_translation_request_event != nullptr)
         {
-            CloseHandle(context.aot_translation_request_event);
+            repiu::platform::DestroyWorkerSignal(
+                context.aot_translation_request_event);
             context.aot_translation_request_event = nullptr;
         }
         if (context.aot_translation_complete_event != nullptr)
         {
-            CloseHandle(context.aot_translation_complete_event);
+            repiu::platform::DestroyWorkerSignal(
+                context.aot_translation_complete_event);
             context.aot_translation_complete_event = nullptr;
         }
     };
@@ -4637,9 +4725,9 @@ bool RunWin32ExecutionThread(
     if (context.aot_placement != nullptr)
     {
         context.aot_translation_request_event =
-            CreateEventA(nullptr, FALSE, FALSE, nullptr);
+            repiu::platform::CreateWorkerSignal();
         context.aot_translation_complete_event =
-            CreateEventA(nullptr, FALSE, FALSE, nullptr);
+            repiu::platform::CreateWorkerSignal();
         if (context.aot_translation_request_event == nullptr ||
             context.aot_translation_complete_event == nullptr)
         {
@@ -4647,9 +4735,10 @@ bool RunWin32ExecutionThread(
             attempt->message = "failed to create AOT translation events";
             return false;
         }
-        context.aot_translation_thread = api.create_thread(
-            nullptr, 0, AotTranslationWorkerProc, &context, 0, nullptr);
-        if (context.aot_translation_thread == nullptr)
+        if (!repiu::platform::CreateHostThread(&AotTranslationWorkerThunk,
+                                               &context,
+                                               &context.aot_translation_thread,
+                                               nullptr))
         {
             stop_translation_worker();
             attempt->message = "failed to create AOT translation worker";
@@ -4671,18 +4760,14 @@ bool RunWin32ExecutionThread(
     context.glide_backend.SetJammaInputTimeline(&context.jamma_input_timeline);
     context.glide_backend.SetBiosKeyboard(&context.bios_keyboard);
     context.glide_backend.BindHostThread();
-    DWORD guest_thread_id = 0;
-    HANDLE thread = api.create_thread(nullptr,
-                                      0,
-                                      GuestEntryThreadProc,
-                                      &context,
-                                      0,
-                                      &guest_thread_id);
-    if (thread == nullptr)
+    repiu::platform::HostThread thread;
+    std::uint32_t create_error = 0;
+    if (!repiu::platform::CreateHostThread(&GuestEntryThreadProc, &context,
+                                           &thread, &create_error))
     {
-        const DWORD error = api.get_last_error();
         std::ostringstream stream;
-        stream << "CreateThread failed with error " << error;
+        stream << "guest thread creation failed with host error "
+               << create_error;
         attempt->message = stream.str();
         RestoreWin32AotGuestPageWriteWatches(&context.aot_page_write_watch);
         stop_translation_worker();
@@ -4692,20 +4777,20 @@ bool RunWin32ExecutionThread(
     attempt->attempted = true;
     if (context.shared_live_telemetry != nullptr)
     {
-        InterlockedExchange(&context.shared_live_telemetry->host_phase, 2);
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(&context.shared_live_telemetry->host_phase, 2);
+        repiu::platform::AtomicExchange(
             &context.shared_live_telemetry->guest_thread_id,
-            static_cast<long>(guest_thread_id));
-        InterlockedExchange(
+            static_cast<long>(thread.id));
+        repiu::platform::AtomicExchange(
             &context.shared_live_telemetry->host_main_thread_id,
             static_cast<long>(GetCurrentThreadId()));
         if (context.aot_placement != nullptr &&
             context.aot_placement->placed)
         {
-            InterlockedExchange(
+            repiu::platform::AtomicExchange(
                 &context.shared_live_telemetry->aot_cache_base,
                 static_cast<long>(context.aot_placement->base_address));
-            InterlockedExchange(
+            repiu::platform::AtomicExchange(
                 &context.shared_live_telemetry->aot_cache_size,
                 static_cast<long>(context.aot_placement->capacity));
         }
@@ -4741,12 +4826,17 @@ bool RunWin32ExecutionThread(
             host_exit_requested ? 0U : 3U;
         attempt->thread_exit_code = interruption_exit_code;
 
+        // Task 503d-18: the suspend-and-redirect path and the last resort
+        // below still speak Win32. `HostThread::handle` is documented as the
+        // HANDLE on this host, and reaching for it inside a Windows fence is
+        // what that documentation is for. 3d-19 decides what Linux does here.
+        auto* thread_handle = static_cast<HANDLE>(thread.handle);
         bool gracefully_interrupted = false;
-        if (SuspendThread(thread) != static_cast<DWORD>(-1))
+        if (SuspendThread(thread_handle) != static_cast<DWORD>(-1))
         {
-            CONTEXT win32_context = {};
+            repiu::platform::GuestCpuContext win32_context = {};
             win32_context.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS;
-            if (GetThreadContext(thread, &win32_context))
+            if (GetThreadContext(thread_handle, &win32_context))
             {
                 if (!host_exit_requested)
                 {
@@ -4762,22 +4852,21 @@ bool RunWin32ExecutionThread(
                         ? "SDL exit requested; hijacked guest thread for clean teardown"
                         : "timeout reached during guest execution; hijacked thread for clean teardown";
                     RecoverToHost(&win32_context, &context);
-                    SetThreadContext(thread, &win32_context);
+                    SetThreadContext(thread_handle, &win32_context);
                     gracefully_interrupted = true;
                 }
             }
-            ResumeThread(thread);
+            ResumeThread(thread_handle);
 
             if (gracefully_interrupted)
             {
-                DWORD thread_exit_code = 0;
-                if (WaitForSingleObject(thread, 3000U) == WAIT_OBJECT_0 &&
-                    GetExitCodeThread(thread, &thread_exit_code) &&
-                    thread_exit_code != STILL_ACTIVE)
-                {
-                    // Cleanly exited
-                }
-                else
+                // Task 503d-18: one question instead of two. What stood here
+                // waited and then read GetExitCodeThread, comparing against
+                // STILL_ACTIVE -- which is what that call also reports for a
+                // thread that is still running. The code it collected was
+                // never read, and what this establishes is only that the
+                // thread stopped, so the join says it on its own.
+                if (!repiu::platform::JoinHostThread(thread, 3000U, nullptr))
                 {
                     gracefully_interrupted = false;
                 }
@@ -4786,8 +4875,8 @@ bool RunWin32ExecutionThread(
 
         if (!gracefully_interrupted && api.terminate_thread != nullptr)
         {
-            api.terminate_thread(thread, interruption_exit_code);
-            WaitForSingleObject(thread, 5000U);
+            api.terminate_thread(thread_handle, interruption_exit_code);
+            (void)repiu::platform::JoinHostThread(thread, 5000U, nullptr);
         }
 
         // Task 401: the guest thread has stopped, so the census is final here.
@@ -4813,7 +4902,7 @@ bool RunWin32ExecutionThread(
                 ? "minimal execution stopped by SDL exit request"
                 : "minimal execution attempt timed out")
             : context.hle_message;
-        api.close_handle(thread);
+        repiu::platform::CloseHostThread(&thread);
         return true;
     }
 
@@ -4823,7 +4912,7 @@ bool RunWin32ExecutionThread(
     const auto set_teardown_phase = [&context](long phase) {
         if (context.shared_live_telemetry != nullptr)
         {
-            InterlockedExchange(
+            repiu::platform::AtomicExchange(
                 &context.shared_live_telemetry->host_phase, phase);
         }
     };
@@ -4834,7 +4923,7 @@ bool RunWin32ExecutionThread(
     set_teardown_phase(12);
     RestoreWin32AotGuestPageWriteWatches(&context.aot_page_write_watch);
     set_teardown_phase(13);
-    api.close_handle(thread);
+    repiu::platform::CloseHostThread(&thread);
     set_teardown_phase(14);
 
     attempt->returned = context.returned;

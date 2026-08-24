@@ -9,9 +9,8 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include "repiu/platform/guest_cpu_context.h"
 
-struct _CONTEXT;
-using CONTEXT = _CONTEXT;
 
 namespace repiu::platform::win32::detail
 {
@@ -130,11 +129,11 @@ struct NativeFastPathState
     std::atomic<std::uint32_t> linear_span_backward_jump_stop_count{0};
 };
 
-bool TryEnterNativeFastPath(CONTEXT* context,
+bool TryEnterNativeFastPath(repiu::platform::GuestCpuContext* context,
                             NativeFastPathState* state,
                             std::uint32_t runtime_base,
                             std::uint32_t runtime_size);
-void LeaveNativeFastPath(CONTEXT* context,
+void LeaveNativeFastPath(repiu::platform::GuestCpuContext* context,
                          NativeFastPathState* state,
                          bool returned);
 

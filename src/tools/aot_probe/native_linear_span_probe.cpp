@@ -398,8 +398,12 @@ bool RunNativeLinearSpanProbe()
         (retired_span_registers.EFlags & 0x00000100U) == 0U;
     retired_span_registers.Eip =
         retired_span_context->native_fast_path.linear_span_boundary;
+    // Task 503d-9 added the fault kind. It only decides which cancel counter
+    // moves, and this call reaches the boundary rather than cancelling, so it
+    // names the kind a #DB at the boundary arrives as and nothing reads it.
     platform::win32::LeaveNativeLinearSpan(
-        &retired_span_registers, retired_span_context.get(), true, false, 0U);
+        &retired_span_registers, retired_span_context.get(), true, false,
+        repiu::platform::FaultKind::kSingleStep, 0U);
     auto retired_reject_context =
         std::make_unique<platform::win32::ThreadContext>();
     retired_reject_context->runtime_base = base;

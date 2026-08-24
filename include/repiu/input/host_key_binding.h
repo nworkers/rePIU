@@ -2,6 +2,7 @@
 #define REPIU_INPUT_HOST_KEY_BINDING_H_
 
 #include <SDL3/SDL_keycode.h>
+#include <SDL3/SDL_scancode.h>
 
 #include <cstdint>
 #include <string>
@@ -34,9 +35,11 @@ constexpr std::uint32_t kMaxModifiersPerAlias = 3;
 struct HostKeyAlias
 {
     SDL_Keycode keycode = SDLK_UNKNOWN;
-    // Filled in by the platform layer at load time; 0 until then. Kept here so
-    // the scan path reads an already-translated value and never converts.
-    int virtual_key = 0;
+    // The physical key that produces `keycode` on the layout in force when the
+    // bindings were resolved. Filled in at load time and unknown until then:
+    // the scan path indexes SDL keyboard state with it and must never convert,
+    // which is the constraint Task 403 established.
+    SDL_Scancode scancode = SDL_SCANCODE_UNKNOWN;
     SDL_Keymod required[kMaxModifiersPerAlias] = {};
     std::uint32_t required_count = 0;
     SDL_Keymod forbidden = SDL_KMOD_NONE;

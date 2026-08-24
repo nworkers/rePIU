@@ -2,6 +2,8 @@
 
 #include "repiu/config/config_name.h"
 
+#include <SDL3/SDL_keyboard.h>
+
 #include <sstream>
 
 namespace repiu::input
@@ -239,6 +241,28 @@ std::string FormatJammaBinding(const ResolvedJammaBindings& bindings,
         text.append(alias);
     }
     return text;
+}
+
+void ResolveJammaHostScancodes(ResolvedJammaBindings* bindings)
+{
+    if (bindings == nullptr)
+    {
+        return;
+    }
+
+    for (std::uint32_t index = 0; index < kJammaInputKeyCount; ++index)
+    {
+        JammaInputBinding& binding = bindings->inputs[index];
+        for (std::uint32_t slot = 0; slot < binding.alias_count; ++slot)
+        {
+            HostKeyAlias& alias = binding.aliases[slot];
+            // Before SDL has a keymap -- a tool that never initializes video,
+            // or a static initializer running early -- this answers from SDL's
+            // default layout rather than failing, which is why an unresolved
+            // alias means the key genuinely has no place on the keyboard.
+            alias.scancode = SDL_GetScancodeFromKey(alias.keycode, nullptr);
+        }
+    }
 }
 
 }  // namespace repiu::input

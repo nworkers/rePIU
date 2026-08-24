@@ -33,6 +33,9 @@
 #include "native_fast_path.h"
 
 #include <memory>
+#include "repiu/platform/guest_stack_switch.h"
+#include "repiu/platform/host_thread.h"
+
 #include <cstdint>
 #include <atomic>
 #include <array>
@@ -40,10 +43,6 @@
 #include <vector>
 #include <array>
 #include <unordered_map>
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
 
 namespace repiu::platform::win32
 {
@@ -51,11 +50,10 @@ namespace repiu::platform::win32
 struct ThreadContext;
 
 extern "C" ThreadContext* g_repiu_active_thread_context;
-extern "C" std::uint32_t g_repiu_dbt_host_esp;
-extern "C" std::uint32_t g_repiu_dbt_host_stack_base;
-extern "C" std::uint32_t g_repiu_dbt_host_stack_limit;
-extern "C" std::uint32_t g_repiu_dbt_guest_stack_base;
-extern "C" std::uint32_t g_repiu_dbt_guest_stack_limit;
+
+// Task 503d-16: the five stack globals that stood here moved to
+// `repiu/platform/guest_stack_switch.h`, beside the field offsets the same
+// assembly reads. This header keeps only the one whose type it defines.
 
 struct StackSwitchCallState
 {
@@ -172,9 +170,17 @@ struct ThreadContext
     // read from the summary alone.
     std::uint64_t aot_inline_cache_direct_patch_count = 0;
     std::uint64_t aot_inline_cache_worker_patch_count = 0;
-    HANDLE aot_translation_thread = nullptr;
-    HANDLE aot_translation_request_event = nullptr;
-    HANDLE aot_translation_complete_event = nullptr;
+    // Task 503d-2. These were HANDLE, which is void* on Windows -- the same
+    // type, so nothing here changed except that this header no longer pulls in
+    // <windows.h>. It was the only thing it needed from it, and 24 of the 32
+    // sources that would not compile under GCC were stopped by exactly that.
+    // The thread and event API itself is still Win32-only; this says nothing
+    // about who creates these.
+    // Task 503d-18: the thread layer's handle rather than a bare void*, so the
+    // join and the release are the same two calls on both hosts.
+    repiu::platform::HostThread aot_translation_thread;
+    void* aot_translation_request_event = nullptr;
+    void* aot_translation_complete_event = nullptr;
     std::atomic<bool> aot_translation_shutdown{false};
     std::atomic<std::uint32_t> aot_translation_target{0};
     std::atomic<std::uint32_t> aot_worker_operation{

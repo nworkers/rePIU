@@ -1,11 +1,10 @@
-#define NOMINMAX
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
-
 #include "native_fast_path.h"
 #include "verified_region_analyzer.h"
 
+#include <cstdlib>
 #include <cstring>
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/host_environment.h"
 
 namespace repiu::platform::win32::detail
 {
@@ -26,18 +25,17 @@ bool IsRuntimeRange(std::uint32_t address,
 bool NativeFastPathDisabled()
 {
     static const bool disabled = []() {
-        char value[2] = {};
-        return GetEnvironmentVariableA(
-                   "REPIU_DISABLE_NATIVE_FAST_PATH",
-                   value,
-                   sizeof(value)) > 0;
+        // Presence alone, which is what the Win32 form meant: it counted
+        // characters, so a set-but-empty value read as absent there too.
+        return repiu::platform::IsEnvironmentSettingPresent(
+            "REPIU_DISABLE_NATIVE_FAST_PATH");
     }();
     return disabled;
 }
 
 }  // namespace
 
-bool TryEnterNativeFastPath(CONTEXT* context,
+bool TryEnterNativeFastPath(repiu::platform::GuestCpuContext* context,
                             NativeFastPathState* state,
                             std::uint32_t runtime_base,
                             std::uint32_t runtime_size)
@@ -118,7 +116,7 @@ bool TryEnterNativeFastPath(CONTEXT* context,
     return true;
 }
 
-void LeaveNativeFastPath(CONTEXT* context,
+void LeaveNativeFastPath(repiu::platform::GuestCpuContext* context,
                          NativeFastPathState* state,
                          bool returned)
 {

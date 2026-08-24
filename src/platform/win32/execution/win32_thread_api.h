@@ -3,6 +3,20 @@
 // Win32 kernel32 thread-API function-pointer table, resolved once at runtime.
 // Extracted from execution_trampoline.cpp (Phase 1 increment 4) so the live
 // telemetry TU can share it. GetWin32ThreadApi is inline (single shared cache).
+//
+// Task 503d-14. Fenced whole, because the file is a kernel32 table by
+// construction -- names resolved out of a DLL that exists on one host. Three of
+// its members are what the engine needs to run: create the translation worker,
+// create the guest thread, and close the handles afterwards. Those want a
+// neutral counterpart, and its shape has to come from the four call sites in
+// execution_trampoline.cpp rather than from this table.
+//
+// TerminateThread is the one with no POSIX counterpart. It is the execution
+// watchdog's last resort, used when the guest thread will not stop gracefully,
+// and pthread_cancel is not the same thing: it acts at cancellation points,
+// where TerminateThread does not ask. What Linux does there is a decision the
+// next sub-stage has to make, not one this fence settles.
+#if defined(_WIN32)
 
 #include <windows.h>
 
@@ -84,3 +98,5 @@ inline const Win32ThreadApi& GetWin32ThreadApi()
 }
 
 } // namespace repiu::platform::win32
+
+#endif  // defined(_WIN32)

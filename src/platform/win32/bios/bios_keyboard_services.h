@@ -5,10 +5,11 @@
 // software-interrupt boundary.
 
 #include "thread_context.h"
+#include "repiu/platform/guest_cpu_context.h"
 
 namespace repiu::platform::win32
 {
 
-bool HandleBiosInterrupt16(CONTEXT* win32_context, ThreadContext* context);
+bool HandleBiosInterrupt16(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 
 } // namespace repiu::platform::win32

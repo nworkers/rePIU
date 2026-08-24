@@ -2,6 +2,24 @@ cmake_minimum_required(VERSION 3.20)
 
 project(rePIU LANGUAGES C CXX)
 
+# Task 503d-2: NOMINMAX for every Windows target.
+#
+# It was already wanted project-wide, but was arriving by accident: one header,
+# thread_context.h, defined it before including <windows.h>, and nearly
+# everything included that header. Removing that include so the header could
+# compile under GCC let the min/max macros loose, and they break std::max at the
+# call site with an error that names neither. Declaring it here is what was
+# meant all along.
+if(WIN32)
+    add_compile_definitions(NOMINMAX)
+endif()
+
+# Task 503d: the AOT/DBT dispatch thunks are hand-written assembly on Linux,
+# because GCC has no __declspec(naked) on x86.
+if(UNIX)
+    enable_language(ASM)
+endif()
+
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/VERSION"
 )
@@ -180,91 +198,151 @@ add_library(repiu_exe
     src/runtime/selector_table.cpp
     src/storage/nvram_path.cpp
     src/target/target_profile.cpp
+    src/platform/guest_stack_switch_state.cpp
+    src/platform/host_error_stream.cpp
+    src/platform/host_thread.cpp
+    src/platform/host_time.cpp
 )
 
-# Task 501: the Win32 platform layer compiles only on Windows. Every source in
-# the list above is platform-neutral -- none includes a Win32 header, none uses
-# an MSVC-specific construct, and the set passes GCC 13 with C++20 -- so Linux
-# builds them unchanged.
-if(WIN32)
+# Task 501 put the execution engine behind if(WIN32) because none of it built
+# anywhere else. Task 503 moved it, one sub-stage at a time.
+#
+# Task 503d-17: no longer inside if(WIN32). Every one of these compiles on Linux
+# as of 3d-16, and linking them measured zero undefined symbols of the engine's
+# own -- what Win32 API remains is behind a fence in the file that carries it.
+#
+# The five with Linux counterparts (fault_handler_win32, virtual_memory_win32,
+# worker_signal_win32, safe_memory_copy_win32, host_environment_win32) compile
+# to empty objects there. Keeping one list rather than two is deliberate: a
+# split list makes every new file a question about which half it belongs in,
+# and the answer already lives in the fence inside the file.
+target_sources(repiu_exe
+    PRIVATE
+        src/platform/win32/cd_audio_wave_out.cpp
+        src/platform/win32/aot_code_cache_win32.cpp
+        src/platform/win32/aot_cache_address_index.cpp
+        src/platform/win32/aot_inline_cache_site_index.cpp
+        src/platform/win32/aot_return_dispatch_site_index.cpp
+        src/platform/win32/aot_return_patch_policy.cpp
+        src/platform/win32/aot/aot_worker_timing.cpp
+        src/platform/win32/aot/aot_timer_source_profile.cpp
+        src/platform/win32/aot_page_coherence_win32.cpp
+        src/platform/win32/aot/aot_boundary_provenance.cpp
+        src/platform/win32/aot/aot_boundary_reason.cpp
+        src/platform/win32/aot/aot_dbt_call_return_trace.cpp
+        src/platform/win32/aot/aot_dbt_call_step_probe.cpp
+        src/platform/win32/aot/aot_dbt_dispatch.cpp
+        src/platform/win32/aot/aot_dbt_direct_edge_dispatch.cpp
+        src/platform/win32/aot/aot_dbt_hle_dispatch.cpp
+        src/platform/win32/aot/aot_dbt_glide_gate_dispatch.cpp
+        src/platform/win32/aot/aot_dbt_indirect_dispatch.cpp
+        src/platform/win32/aot/aot_dbt_return_dispatch.cpp
+        src/platform/win32/aot/aot_retired_trap_profile.cpp
+        src/platform/win32/aot/aot_runtime_dispatch.cpp
+        src/platform/win32/bios/bios_keyboard_services.cpp
+        src/platform/win32/input/sdl_bios_keyboard_adapter.cpp
+        src/platform/win32/input/active_jamma_bindings.cpp
+        src/platform/win32/execution/execution_probe_memory_dump.cpp
+        src/platform/win32/execution/execution_trampoline.cpp
+        src/platform/win32/execution/single_step_hotspot_profile.cpp
+        src/platform/win32/dos/dos_int21_services.cpp
+        src/platform/win32/dos/dpmi_mscdex_services.cpp
+        src/platform/win32/exception/breakpoint_evidence_win32.cpp
+        src/platform/win32/exception/exception_rescue_win32.cpp
+        src/platform/win32/exception/host_crash_report.cpp
+        src/platform/win32/cpu_emul/guest_memory_access.cpp
+        src/platform/win32/cpu_emul/instruction_emulation.cpp
+        src/platform/win32/cpu_emul/low_memory_string_access.cpp
+        src/platform/win32/boundary/linexe_glide_boundary.cpp
+        src/platform/win32/boundary/timer_interrupt_boundary.cpp
+        src/platform/win32/telemetry/live_telemetry_snapshot.cpp
+        src/platform/win32/telemetry/execution_time_profile.cpp
+        src/platform/win32/telemetry/cd_audio_position_census.cpp
+        src/platform/win32/telemetry/mscdex_command_trace.cpp
+        src/platform/win32/telemetry/guest_position_census.cpp
+        src/platform/win32/telemetry/glide_gate_timing.cpp
+        src/platform/win32/telemetry/glide_ordinal_timing.cpp
+        src/platform/win32/telemetry/glide_buffer_swap_timing.cpp
+        src/platform/win32/telemetry/glide_setter_state_model.cpp
+        src/platform/win32/telemetry/glide_setter_state_census.cpp
+        src/platform/win32/telemetry/glide_async_present.cpp
+        src/platform/win32/telemetry/glide_draw_batch.cpp
+        src/platform/win32/telemetry/glide_setter_state_cache.cpp
+        src/platform/win32/telemetry/glide_setter_phase_timing.cpp
+        src/platform/win32/telemetry/timer_tick_delivery.cpp
+        src/platform/win32/telemetry/aot_residency_sample.cpp
+        src/platform/win32/telemetry/aot_return_stage_profile.cpp
+        src/platform/win32/aot/aot_boundary_opcode_census.cpp
+        src/platform/win32/io/port_io_emulator.cpp
+        src/platform/win32/io/jamma_input_timeline.cpp
+        src/platform/win32/io/piu10_mp3_frame_batch.cpp
+        src/platform/win32/io/port_io_delay_loop.cpp
+        src/platform/win32/io/eeprom_93c46.cpp
+        src/platform/win32/io/piu10_sound_port.cpp
+        src/platform/win32/ymz280b_audio_out.cpp
+        src/platform/win32/piu10_mp3_audio_out.cpp
+        src/platform/win32/native_fast_path.cpp
+        src/platform/win32/native_linear_span.cpp
+        src/platform/win32/native_phase_sampler.cpp
+        src/platform/win32/verified_region_analyzer.cpp
+        src/platform/win32/glide_gl_error_policy.cpp
+        src/platform/win32/glide_swap_interval_policy.cpp
+        src/platform/win32/glide_texture_census.cpp
+        src/platform/win32/out_of_arena_step_census.cpp
+        src/platform/win32/glide_opengl_backend.cpp
+        src/platform/win32/glide_opengl_shader.cpp
+        src/platform/win32/x87_context.cpp
+        src/platform/win32/runtime_memory_policy.cpp
+        src/platform/win32/virtual_memory_win32.cpp
+        src/platform/win32/fault_handler_win32.cpp
+        src/platform/win32/worker_signal_win32.cpp
+        src/platform/win32/safe_memory_copy_win32.cpp
+        src/platform/win32/host_environment_win32.cpp
+        src/platform/win32/host_process_win32.cpp
+)
+
+# Task 503d: the Linux binaries are linked non-PIE with their text segment
+# lifted to 0x40000000.
+#
+# Both halves of that matter. Hand-written thunks address globals directly, the
+# way the MSVC originals do, and in a PIE that produces a text relocation --
+# link-time DT_TEXTREL, which leaves the text segment writable and so defeats
+# the page protection this engine detects self-modifying code with. Linking
+# non-PIE removes the problem at the source.
+#
+# But plain -no-pie puts an i386 image at 0x08048000, which sits inside the
+# 0x01000000-0x09000000 range the guest's relocated image needs. Lifting the
+# text segment keeps that range free.
+function(repiu_link_linux_engine target)
+    if(UNIX)
+        target_compile_options(${target} PRIVATE -fno-pie)
+        target_link_options(${target} PRIVATE
+            -no-pie
+            -Wl,-Ttext-segment=0x40000000
+        )
+    endif()
+endfunction()
+
+# Task 503a-503c: the Linux platform layer. It holds the guest register context
+# conversion, the virtual memory API, and the signal-based fault handler.
+if(UNIX)
     target_sources(repiu_exe
         PRIVATE
-            src/platform/win32/cd_audio_wave_out.cpp
-            src/platform/win32/aot_code_cache_win32.cpp
-            src/platform/win32/aot_cache_address_index.cpp
-            src/platform/win32/aot_inline_cache_site_index.cpp
-            src/platform/win32/aot_return_dispatch_site_index.cpp
-            src/platform/win32/aot_return_patch_policy.cpp
-            src/platform/win32/aot/aot_worker_timing.cpp
-            src/platform/win32/aot/aot_timer_source_profile.cpp
-            src/platform/win32/aot_page_coherence_win32.cpp
-            src/platform/win32/aot/aot_boundary_provenance.cpp
-            src/platform/win32/aot/aot_boundary_reason.cpp
-            src/platform/win32/aot/aot_dbt_call_return_trace.cpp
-            src/platform/win32/aot/aot_dbt_call_step_probe.cpp
-            src/platform/win32/aot/aot_dbt_dispatch.cpp
-            src/platform/win32/aot/aot_dbt_direct_edge_dispatch.cpp
-            src/platform/win32/aot/aot_dbt_hle_dispatch.cpp
-            src/platform/win32/aot/aot_dbt_glide_gate_dispatch.cpp
-            src/platform/win32/aot/aot_dbt_indirect_dispatch.cpp
-            src/platform/win32/aot/aot_dbt_return_dispatch.cpp
-            src/platform/win32/aot/aot_retired_trap_profile.cpp
-            src/platform/win32/aot/aot_runtime_dispatch.cpp
-            src/platform/win32/bios/bios_keyboard_services.cpp
-            src/platform/win32/input/sdl_bios_keyboard_adapter.cpp
-            src/platform/win32/input/active_jamma_bindings.cpp
-            src/platform/win32/input/win32_host_key_translation.cpp
-            src/platform/win32/execution/execution_probe_memory_dump.cpp
-            src/platform/win32/execution/execution_trampoline.cpp
-            src/platform/win32/execution/single_step_hotspot_profile.cpp
-            src/platform/win32/dos/dos_int21_services.cpp
-            src/platform/win32/dos/dpmi_mscdex_services.cpp
-            src/platform/win32/exception/breakpoint_evidence_win32.cpp
-            src/platform/win32/exception/exception_rescue_win32.cpp
-            src/platform/win32/exception/host_crash_report.cpp
-            src/platform/win32/cpu_emul/guest_memory_access.cpp
-            src/platform/win32/cpu_emul/instruction_emulation.cpp
-            src/platform/win32/cpu_emul/low_memory_string_access.cpp
-            src/platform/win32/boundary/linexe_glide_boundary.cpp
-            src/platform/win32/boundary/timer_interrupt_boundary.cpp
-            src/platform/win32/telemetry/live_telemetry_snapshot.cpp
-            src/platform/win32/telemetry/execution_time_profile.cpp
-            src/platform/win32/telemetry/cd_audio_position_census.cpp
-            src/platform/win32/telemetry/mscdex_command_trace.cpp
-            src/platform/win32/telemetry/guest_position_census.cpp
-            src/platform/win32/telemetry/glide_gate_timing.cpp
-            src/platform/win32/telemetry/glide_ordinal_timing.cpp
-            src/platform/win32/telemetry/glide_buffer_swap_timing.cpp
-            src/platform/win32/telemetry/glide_setter_state_model.cpp
-            src/platform/win32/telemetry/glide_setter_state_census.cpp
-            src/platform/win32/telemetry/glide_async_present.cpp
-            src/platform/win32/telemetry/glide_draw_batch.cpp
-            src/platform/win32/telemetry/glide_setter_state_cache.cpp
-            src/platform/win32/telemetry/glide_setter_phase_timing.cpp
-            src/platform/win32/telemetry/timer_tick_delivery.cpp
-            src/platform/win32/telemetry/aot_residency_sample.cpp
-            src/platform/win32/telemetry/aot_return_stage_profile.cpp
-            src/platform/win32/aot/aot_boundary_opcode_census.cpp
-            src/platform/win32/io/port_io_emulator.cpp
-            src/platform/win32/io/jamma_input_timeline.cpp
-            src/platform/win32/io/piu10_mp3_frame_batch.cpp
-            src/platform/win32/io/port_io_delay_loop.cpp
-            src/platform/win32/io/eeprom_93c46.cpp
-            src/platform/win32/io/piu10_sound_port.cpp
-            src/platform/win32/ymz280b_audio_out.cpp
-            src/platform/win32/piu10_mp3_audio_out.cpp
-            src/platform/win32/native_fast_path.cpp
-            src/platform/win32/native_linear_span.cpp
-            src/platform/win32/native_phase_sampler.cpp
-            src/platform/win32/verified_region_analyzer.cpp
-            src/platform/win32/glide_gl_error_policy.cpp
-            src/platform/win32/glide_swap_interval_policy.cpp
-            src/platform/win32/glide_texture_census.cpp
-            src/platform/win32/out_of_arena_step_census.cpp
-            src/platform/win32/glide_opengl_backend.cpp
-            src/platform/win32/glide_opengl_shader.cpp
-            src/platform/win32/x87_context.cpp
-            src/platform/win32/runtime_memory_policy.cpp
+            src/platform/linux/guest_cpu_context.cpp
+            src/platform/linux/virtual_memory.cpp
+            src/platform/linux/fault_handler.cpp
+            src/platform/linux/worker_signal.cpp
+            src/platform/linux/safe_memory_copy.cpp
+            src/platform/linux/host_environment.cpp
+            src/platform/linux/host_process.cpp
+            # Task 503d-12: the five dispatch thunks. Their resolvers are still
+            # Win32-only sources, so nothing on Linux references these symbols
+            # yet and the archive member simply goes unused until it does.
+            src/platform/linux/aot_dbt_dispatch_thunks.S
+            # Task 503d-16: the trampoline's three entries into the guest. These
+            # do link today -- the globals they read moved to a source built on
+            # every host, so the probe can call them.
+            src/platform/linux/guest_stack_switch.S
     )
 endif()
 
@@ -291,9 +369,27 @@ target_include_directories(repiu_exe
         ${minimp3_SOURCE_DIR}
 )
 
+# Task 503d-17: miniz publishes MINIZ_NO_* on its own target, and taking its
+# include directory above without them leaves the header describing an API the
+# library does not contain. GCC then materialises the unused inline deflate
+# wrappers and nine symbols go undefined at link.
+#
+# The definitions are read from the target rather than spelled again here. The
+# options that produce them are miniz's, and a copy of their consequences goes
+# stale the first time one is turned on.
+set(REPIU_MINIZ_DEFINITIONS "")
+if(TARGET miniz)
+    get_target_property(REPIU_MINIZ_DEFINITIONS miniz
+                        INTERFACE_COMPILE_DEFINITIONS)
+    if(NOT REPIU_MINIZ_DEFINITIONS)
+        set(REPIU_MINIZ_DEFINITIONS "")
+    endif()
+endif()
+
 target_compile_definitions(repiu_exe
     PRIVATE
         REPIU_VERSION="${REPIU_VERSION}"
+        ${REPIU_MINIZ_DEFINITIONS}
 )
 
 target_link_libraries(repiu_exe PRIVATE repiu_zydis chdr-static)
@@ -317,13 +413,19 @@ add_executable(repiu_core_probe
     src/tools/core_probe/main.cpp
     src/tools/aot_probe/dos_file_handle_cache_probe.cpp
     src/tools/aot_probe/env_toggle_probe.cpp
+    src/tools/aot_probe/fault_handler_probe.cpp
     src/tools/aot_probe/execution_backend_probe.cpp
     src/tools/aot_probe/execution_timeout_probe.cpp
     src/tools/aot_probe/glide_lfb_region_probe.cpp
+    src/tools/aot_probe/guest_cpu_context_probe.cpp
+    src/tools/aot_probe/guest_stack_switch_probe.cpp
+    src/tools/aot_probe/host_thread_probe.cpp
     src/tools/aot_probe/jump_table_guard_probe.cpp
     src/tools/aot_probe/launcher_probe.cpp
     src/tools/aot_probe/nvram_path_probe.cpp
     src/tools/aot_probe/pit_timer_probe.cpp
+    src/tools/aot_probe/stack_bridge_probe.cpp
+    src/tools/aot_probe/virtual_memory_probe.cpp
 )
 
 target_include_directories(repiu_core_probe
@@ -335,6 +437,16 @@ target_link_libraries(repiu_core_probe
     PRIVATE
         repiu_exe
 )
+
+if(UNIX)
+    target_sources(repiu_core_probe
+        PRIVATE
+            src/tools/aot_probe/stack_bridge_probe.S
+            src/tools/aot_probe/guest_stack_switch_probe.S
+    )
+endif()
+
+repiu_link_linux_engine(repiu_core_probe)
 
 # Task 502: the Linux launcher. It shares the launcher itself with the Windows
 # host and keeps only its own entry point, because the loop and the child
@@ -355,6 +467,28 @@ if(UNIX)
             repiu_imgui
             GL
     )
+    repiu_link_linux_engine(repiu_launcher)
+
+    # Task 503d-17: the loader itself. The entry point is the same source the
+    # Windows host uses -- `src/host/win32/main.cpp` under a Linux build looks
+    # wrong against its path, but all of 3d already does that for
+    # `src/platform/win32`, and moving 5,577 lines would be the larger risk.
+    #
+    # GL by name for the same reason repiu_launcher names it: the Glide backend
+    # calls into it directly, and only the plain name resolves in the i386
+    # library directory `-m32` puts on the search path.
+    add_executable(repiu
+        src/host/win32/main.cpp
+        src/launcher/launcher_ui.cpp
+    )
+    target_link_libraries(repiu
+        PRIVATE
+            repiu_exe
+            repiu_imgui
+            spdlog::spdlog_header_only
+            GL
+    )
+    repiu_link_linux_engine(repiu)
 endif()
 
 # Task 501: these carry the Win32 platform layer or the Win32 host, so they exist

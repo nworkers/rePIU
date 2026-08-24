@@ -6,6 +6,7 @@
 #include "repiu/platform/win32/aot_code_cache_win32.h"
 #include "../../platform/win32/aot/aot_dbt_call_step_probe.h"
 #include "../../platform/win32/execution/thread_context.h"
+#include "repiu/platform/fault_handler.h"
 
 #include <cstdint>
 #include <memory>
@@ -69,21 +70,24 @@ bool RunAotDbtCallStepProbe()
         context.get(), Win32AotTransferOrigin::kHost, site, 1U,
         0x2000U, 0x500400U, 0x1002U, entry_esp, &saved_eflags);
 
-    EXCEPTION_RECORD record{};
-    record.ExceptionCode = EXCEPTION_SINGLE_STEP;
-    CONTEXT registers{};
-    EXCEPTION_POINTERS pointers{&record, &registers};
+    // Task 503d-5 moved the handler onto FaultEvent; the probe hands it the
+    // same thing the dispatcher does. The handler reads only the kind and the
+    // registers, and edits the registers in place.
+    repiu::platform::GuestCpuContext registers{};
+    repiu::platform::FaultEvent fault;
+    fault.kind = repiu::platform::FaultKind::kSingleStep;
+    fault.registers = &registers;
 
     registers.Eip = placement.base_address + site.success_cache_offset;
     registers.Esp = entry_esp - 8U;
     registers.EFlags = saved_eflags;
     const bool pre = HandleAotDbtCallStepProbe(
-        &pointers, &registers, context.get());
+        fault, context.get());
     registers.Eip = 0x500400U;
     registers.Esp = entry_esp - 4U;
     registers.EFlags |= 0x100U;
     const bool post = HandleAotDbtCallStepProbe(
-        &pointers, &registers, context.get());
+        fault, context.get());
     const bool watch =
         context->aot_dbt_call_step_probe_phase ==
             Win32AotCallStepProbePhase::kAwaitReturnTarget &&
@@ -94,7 +98,7 @@ bool RunAotDbtCallStepProbe()
     registers.Esp = entry_esp;
     registers.Dr6 = 0x1U;
     const bool returned = HandleAotDbtCallStepProbe(
-        &pointers, &registers, context.get());
+        fault, context.get());
     const bool completed =
         context->aot_dbt_call_step_probe_phase ==
             Win32AotCallStepProbePhase::kIdle &&
@@ -129,13 +133,13 @@ bool RunAotDbtCallStepProbe()
     registers.Esp = entry_esp - 8U;
     registers.EFlags = saved_eflags;
     const bool conflict_pre = HandleAotDbtCallStepProbe(
-        &pointers, &registers, conflict_context.get());
+        fault, conflict_context.get());
     registers.Eip = 0x500400U;
     registers.Esp = entry_esp - 4U;
     registers.EFlags |= 0x100U;
     registers.Dr7 = 0x1U;
     const bool conflict_post = HandleAotDbtCallStepProbe(
-        &pointers, &registers, conflict_context.get());
+        fault, conflict_context.get());
     const bool conflict =
         conflict_context->aot_dbt_call_step_probe_conflict_count == 1U &&
         conflict_context->aot_dbt_call_step_probe_phase ==

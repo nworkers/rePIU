@@ -4,6 +4,7 @@
 #include "../execution/thread_context.h"
 
 #include <cstddef>
+#include "repiu/platform/thunk_calling_convention.h"
 
 namespace repiu::platform::win32
 {
@@ -39,7 +40,7 @@ bool FindDispatchSite(
     return false;
 }
 
-extern "C" void __stdcall ResolveAotDbtDirectEdgeFrame(
+extern "C" void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtDirectEdgeFrame(
     ThreadContext* context, std::uint32_t* frame)
 {
     if (frame == nullptr)
@@ -118,11 +119,18 @@ extern "C" __declspec(naked) void AotDbtDirectEdgeDispatchThunk()
 }
 #endif
 
+#if !defined(_MSC_VER) && defined(__i386__)
+// Task 503d-12: the same thunk on Linux, one instantiation of the shared
+// bridge macro in src/platform/linux/aot_dbt_dispatch_thunks.S. GCC has no
+// naked functions on x86, so only the declaration is here.
+extern "C" void AotDbtDirectEdgeDispatchThunk();
+#endif
+
 }  // namespace
 
 void* GetAotDbtDirectEdgeDispatchThunkAddress()
 {
-#if defined(_MSC_VER) && defined(_M_IX86)
+#if (defined(_MSC_VER) && defined(_M_IX86)) || defined(__i386__)
     return reinterpret_cast<void*>(&AotDbtDirectEdgeDispatchThunk);
 #else
     return nullptr;

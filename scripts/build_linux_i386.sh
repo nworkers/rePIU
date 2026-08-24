@@ -94,6 +94,7 @@ cmake -S "$root" -B "$build_dir" \
     "${sdl_options[@]}" \
     -DCMAKE_C_FLAGS=-m32 \
     -DCMAKE_CXX_FLAGS=-m32 \
+    -DCMAKE_ASM_FLAGS=-m32 \
     -DCMAKE_EXE_LINKER_FLAGS=-m32 \
     -DCMAKE_SHARED_LINKER_FLAGS=-m32
 

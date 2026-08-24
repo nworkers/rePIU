@@ -20,6 +20,7 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include "repiu/platform/atomic_ops.h"
 #endif
 
 namespace repiu::platform::win32
@@ -1835,7 +1836,7 @@ bool PatchWin32AotIndirectInlineCache(
     {
         static long miss_lookup_failure_count = 0;
         const long failure_index =
-            InterlockedIncrement(&miss_lookup_failure_count);
+            repiu::platform::AtomicIncrement(&miss_lookup_failure_count);
         if (failure_index <= 16 || (failure_index & 0xFFF) == 0)
         {
             fprintf(stderr,
@@ -1909,7 +1910,7 @@ bool PatchWin32AotIndirectInlineCache(
     // 4096th so a patch that lands on dead bytes (stale site offsets after a
     // generation republish) becomes visible without flooding stderr.
     static long patch_call_count = 0;
-    const long patch_call_index = InterlockedIncrement(&patch_call_count);
+    const long patch_call_index = repiu::platform::AtomicIncrement(&patch_call_count);
     if (patch_call_index <= 16 || (patch_call_index & 0xFFF) == 0)
     {
         fprintf(stderr,

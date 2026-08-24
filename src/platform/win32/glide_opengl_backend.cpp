@@ -8,14 +8,18 @@
 #include "sdl_bios_keyboard_adapter.h"
 
 
-#if defined(_WIN32)
+// SDL is this project's cross-platform layer, so these need no guard. They had
+// one because nothing had ever compiled this file anywhere else, and on Linux
+// it removed every GL declaration the file uses.
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
-#endif
 
+// Task 419: the pause hint for the rendezvous spin. MSVC spells it in
+// <intrin.h>; on GCC it lives with the SSE2 intrinsics.
 #if defined(_MSC_VER)
-// Task 419: `_mm_pause` for the rendezvous spin.
 #include <intrin.h>
+#elif defined(__i386__) || defined(__x86_64__)
+#include <xmmintrin.h>
 #endif
 
 #include <algorithm>
@@ -341,7 +345,9 @@ bool GlideOpenGlBackend::SpinForRendezvousHint(const std::atomic<bool> &hint,
         }
         return true;
       }
+#if defined(_MSC_VER) || defined(__i386__) || defined(__x86_64__)
       _mm_pause();
+#endif
     }
     if (std::chrono::steady_clock::now() >= deadline) {
       break;

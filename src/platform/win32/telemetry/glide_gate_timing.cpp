@@ -2,22 +2,15 @@
 
 #include <algorithm>
 #include <chrono>
+#include "repiu/platform/host_time.h"
 
-#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
-#include <intrin.h>
-#endif
 
 namespace repiu::platform::win32
 {
 
 std::uint64_t ReadGlideGateTimingCycles()
 {
-#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
-    return __rdtsc();
-#else
-    return static_cast<std::uint64_t>(
-        std::chrono::steady_clock::now().time_since_epoch().count());
-#endif
+    return repiu::platform::ReadCycleCounter();
 }
 
 std::uint64_t GlideGateTimingDelta(Win32GlideGateTimingProfile* profile,

@@ -22,6 +22,9 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <cctype>
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/atomic_ops.h"
 
 namespace repiu::platform::win32
 {
@@ -45,6 +48,31 @@ bool DecodeGlideTexDownloadTableCall(const std::uint32_t* guest_stack,
 
 namespace
 {
+
+// DOS names arrive in whatever case the guest wrote them, so this comparison
+// has to ignore case. `_stricmp` is MSVC's name for it and `strcasecmp` is
+// POSIX's; comparing two short ASCII names directly avoids choosing.
+bool EqualsIgnoringCase(const char* left, const char* right)
+{
+    if (left == nullptr || right == nullptr)
+    {
+        return left == right;
+    }
+    while (*left != 0 && *right != 0)
+    {
+        const unsigned char lower_left = static_cast<unsigned char>(
+            std::tolower(static_cast<unsigned char>(*left)));
+        const unsigned char lower_right = static_cast<unsigned char>(
+            std::tolower(static_cast<unsigned char>(*right)));
+        if (lower_left != lower_right)
+        {
+            return false;
+        }
+        ++left;
+        ++right;
+    }
+    return *left == *right;
+}
 
 // Task 335. Off by default: the host poll loop is the only pump caller now.
 // Resolved once because the gate is a hot path.
@@ -498,7 +526,7 @@ bool QueueGlideDrawForBatch(ThreadContext* context,
 std::array<std::uint32_t,
            repiu::hle::kGlideImplementationIssueArgumentCapacity>
 CaptureGlideImplementationIssueArguments(
-    const CONTEXT* win32_context,
+    const repiu::platform::GuestCpuContext* win32_context,
     ThreadContext* context,
     const std::uint32_t argument_byte_count)
 {
@@ -530,7 +558,7 @@ CaptureGlideImplementationIssueArguments(
 }
 
 void RecordGlideImplementationIssue(
-    const CONTEXT* win32_context,
+    const repiu::platform::GuestCpuContext* win32_context,
     ThreadContext* context,
     const repiu::hle::GlideExportGate& glide_export,
     const repiu::hle::GlideImplementationIssueKind kind,
@@ -576,7 +604,7 @@ void RecordGlideImplementationIssue(
             line.c_str());
 }
 
-void RecordGlideTextureGateTrace(ThreadContext* context, const CONTEXT* win32_context, const repiu::hle::GlideExportGate& glide_export, std::uint32_t return_address, std::uint32_t return_eax, bool is_max_address)
+void RecordGlideTextureGateTrace(ThreadContext* context, const repiu::platform::GuestCpuContext* win32_context, const repiu::hle::GlideExportGate& glide_export, std::uint32_t return_address, std::uint32_t return_eax, bool is_max_address)
 {
     const std::uint32_t sequence = context->glide_texture_gate_trace_count + 1U;
     Win32GlideTextureGateTraceEntry& entry = context->glide_texture_gate_trace[(sequence - 1U) % kWin32GlideTextureGateTraceCapacity];
@@ -771,17 +799,16 @@ void DumpLfbSurfaceToBmp(std::uint32_t start_address, std::uint32_t format, std:
 } // namespace
 
 void RecordAllocatorControlFlowException(
-    EXCEPTION_POINTERS* exception_info,
+    const repiu::platform::FaultEvent& fault,
     ThreadContext* context)
 {
-    if (exception_info == nullptr || context == nullptr ||
-        exception_info->ContextRecord == nullptr)
+    if (context == nullptr || fault.registers == nullptr)
     {
         return;
     }
 
     const std::uint32_t eip = static_cast<std::uint32_t>(
-        exception_info->ContextRecord->Eip);
+        fault.registers->Eip);
     const std::uint64_t runtime_end =
         static_cast<std::uint64_t>(context->runtime_base) +
         context->runtime_size;
@@ -809,19 +836,17 @@ void RecordAllocatorControlFlowException(
     entry.valid = true;
     entry.sequence = sequence;
     entry.eip_offset = eip_offset;
-    entry.seh_code = exception_info->ExceptionRecord != nullptr
-        ? exception_info->ExceptionRecord->ExceptionCode
-        : 0;
+    entry.seh_code = fault.host_code;
     const std::uint8_t* instruction =
         reinterpret_cast<const std::uint8_t*>(
             static_cast<std::uintptr_t>(eip));
     std::memcpy(entry.opcode, instruction, sizeof(entry.opcode));
-    entry.eax = exception_info->ContextRecord->Eax;
-    entry.ebx = exception_info->ContextRecord->Ebx;
-    entry.edx = exception_info->ContextRecord->Edx;
-    entry.esi = exception_info->ContextRecord->Esi;
-    entry.edi = exception_info->ContextRecord->Edi;
-    entry.eflags = exception_info->ContextRecord->EFlags;
+    entry.eax = fault.registers->Eax;
+    entry.ebx = fault.registers->Ebx;
+    entry.edx = fault.registers->Edx;
+    entry.esi = fault.registers->Esi;
+    entry.edi = fault.registers->Edi;
+    entry.eflags = fault.registers->EFlags;
     entry.pending_valid = context->pending_shadow_allocation_valid;
     entry.pending_size = context->pending_shadow_allocation_size;
     observation.observed_count = sequence;
@@ -836,7 +861,7 @@ void RecordAllocatorControlFlowException(
     }
 }
 
-bool HandleLinexeFarTransferBoundary(CONTEXT* win32_context,
+bool HandleLinexeFarTransferBoundary(repiu::platform::GuestCpuContext* win32_context,
                                      ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr ||
@@ -988,7 +1013,7 @@ bool HandleLinexeFarTransferBoundary(CONTEXT* win32_context,
     // The bridge consumes its three dwords and restores the ES value saved by
     // the wrapper.  The shared epilogue then owns EBX/ESI/EDI/EBP and RET.
     const bool is_glide_module =
-        _stricmp(context->linexe_bridge_argument_text, "glide2x.ovl") == 0;
+        EqualsIgnoringCase(context->linexe_bridge_argument_text, "glide2x.ovl");
     const repiu::hle::GlideExportGate* glide_export =
         repiu::hle::FindGlideExportByName(
             context->glide_gate_plan,
@@ -1060,7 +1085,7 @@ bool HandleLinexeFarTransferBoundary(CONTEXT* win32_context,
     return true;
 }
 
-bool HandleGlideGateBoundary(CONTEXT* win32_context,
+bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                              ThreadContext* context)
 {
     const std::uint32_t gate_begin =
@@ -1208,7 +1233,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                 }
                 if (milestone != nullptr)
                 {
-                    InterlockedExchange(milestone, 1L);
+                    repiu::platform::AtomicExchange(milestone, 1L);
                 }
             }
         }
@@ -1233,7 +1258,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
              gate_id == go::kGrAlphaCombine))
         {
             static long tex_diag_count = 0;
-            const long diag_index = InterlockedIncrement(&tex_diag_count);
+            const long diag_index = repiu::platform::AtomicIncrement(&tex_diag_count);
             if (diag_index <= 256)
             {
                 std::uint32_t args[9] = {};
@@ -1259,7 +1284,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
     // frame — the confirmed zero-EIP mechanism at 0x0304ED35).
     {
         static long gate_entry_log_count = 0;
-        const long entry_index = InterlockedIncrement(&gate_entry_log_count);
+        const long entry_index = repiu::platform::AtomicIncrement(&gate_entry_log_count);
         if (entry_index <= 96)
         {
             fprintf(stderr,
@@ -1272,24 +1297,24 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
     }
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->glide_gate_ordinal,
             static_cast<long>(glide_export->ordinal));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->glide_gate_esp,
             static_cast<long>(win32_context->Esp));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->glide_gate_ebx,
             static_cast<long>(win32_context->Ebx));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->glide_gate_ecx,
             static_cast<long>(win32_context->Ecx));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->glide_gate_edx,
             static_cast<long>(win32_context->Edx));
         for (std::size_t index = 0; index < 8U; ++index)
         {
-            InterlockedExchange(
+            repiu::platform::AtomicExchange(
                 &context->shared_live_telemetry->glide_gate_stack[index],
                 static_cast<long>(context->glide_gate_stack[index]));
         }
@@ -1627,7 +1652,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                 ++context->glide_window_open_count;
                 if (context->shared_live_telemetry != nullptr)
                 {
-                    InterlockedExchange(
+                    repiu::platform::AtomicExchange(
                         &context->shared_live_telemetry
                              ->glide_window_open_milestone,
                         1L);
@@ -1707,7 +1732,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                     std::getenv("REPIU_GLIDE_TEX_CENSUS") != nullptr;
                 static long mem_required_log_count = 0;
                 if (tex_census_enabled &&
-                    InterlockedIncrement(&mem_required_log_count) <= 24)
+                    repiu::platform::AtomicIncrement(&mem_required_log_count) <= 24)
                 {
                     // Every field decoded as zero while the pointer looks like a
                     // real guest address, so the raw bytes decide between "the
@@ -1846,7 +1871,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                     // under investigation, which arrive with the select screen.
                     // There are well under two hundred in a run.
                     static long download_log_count = 0;
-                    if (InterlockedIncrement(&download_log_count) <= 200)
+                    if (repiu::platform::AtomicIncrement(&download_log_count) <= 200)
                     {
                         fprintf(stderr,
                                 "[repiu-tex-args] download tmu=%u addr=0x%08X"
@@ -1862,7 +1887,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                 if (format_census_enabled && format < 16U)
                 {
                     static long format_counts[16] = {};
-                    const long seen = InterlockedIncrement(&format_counts[format]);
+                    const long seen = repiu::platform::AtomicIncrement(&format_counts[format]);
                     if (seen <= 3)
                     {
                         fprintf(stderr,
@@ -1927,7 +1952,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                         if (format_census_enabled && !stored)
                         {
                             static long store_fail_log = 0;
-                            if (InterlockedIncrement(&store_fail_log) <= 12)
+                            if (repiu::platform::AtomicIncrement(&store_fail_log) <= 12)
                             {
                                 fprintf(stderr,
                                         "[repiu-tex-census] STORE FAILED format=%u"
@@ -2848,7 +2873,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             // triangle large enough to be background geometry regardless of when it
             // arrives.
             const bool diagnose_large =
-                is_large && InterlockedIncrement(&large_diag_count) <= 12;
+                is_large && repiu::platform::AtomicIncrement(&large_diag_count) <= 12;
             std::size_t before_non_black = 0;
             const bool diagnose_this_draw =
                 draw_diagnostic_enabled && (sequence <= 12U || diagnose_large);
@@ -2942,7 +2967,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                     const bool is_tiny_quad = width <= 8.0F && height <= 8.0F;
                     static long tiny_samples = 0;
                     if (draw_census_enabled && is_tiny_quad &&
-                        InterlockedIncrement(&tiny_samples) <= 40)
+                        repiu::platform::AtomicIncrement(&tiny_samples) <= 40)
                     {
                         fprintf(stderr,
                                 "[repiu-draw-census] tiny #%ld bbox=%.2fx%.2f"
@@ -2987,7 +3012,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                         static long small_texture_samples = 0;
                         const bool sample_this =
                             ((small_texture &&
-                              InterlockedIncrement(&small_texture_samples) <=
+                              repiu::platform::AtomicIncrement(&small_texture_samples) <=
                                   30) ||
                              small_samples <= 20 ||
                              small_samples % 500 == 0) &&
@@ -3329,7 +3354,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                         context->glide_lfb_surface.byte_count());
                 }
                 static long seed_log_count = 0;
-                const long seed_index = InterlockedIncrement(&seed_log_count);
+                const long seed_index = repiu::platform::AtomicIncrement(&seed_log_count);
                 if (seed_index <= 4)
                 {
                     std::size_t seed_non_black = 0;
@@ -3355,7 +3380,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
             std::memcpy(&caller_size, info, sizeof(caller_size));
             {
                 static long lfb_size_log_count = 0;
-                const long index = InterlockedIncrement(&lfb_size_log_count);
+                const long index = repiu::platform::AtomicIncrement(&lfb_size_log_count);
                 if (index <= 4)
                 {
                     // Dump what the caller staged in the struct before we touch it.
@@ -3430,7 +3455,7 @@ bool HandleGlideGateBoundary(CONTEXT* win32_context,
                     // non-zero count proves the lfbPtr round-trip works end to end and
                     // separates "blit is broken" from "guest never wrote".
                     static long unlock_probe_count = 0;
-                    const long probe = InterlockedIncrement(&unlock_probe_count);
+                    const long probe = repiu::platform::AtomicIncrement(&unlock_probe_count);
                     if (probe <= 8)
                     {
                         const std::uint8_t* pixels =

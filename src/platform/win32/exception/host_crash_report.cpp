@@ -7,6 +7,7 @@
 #include <dbghelp.h>
 
 #include <cstdio>
+#include "repiu/platform/guest_cpu_context.h"
 #endif
 
 namespace repiu::platform::win32
@@ -114,7 +115,7 @@ LONG WINAPI ReportUnhandledException(EXCEPTION_POINTERS* pointers)
     const bool symbols = SymInitialize(process, nullptr, TRUE) != 0;
 
     // A copy, because StackWalk64 modifies the context it walks.
-    CONTEXT context = *pointers->ContextRecord;
+    repiu::platform::GuestCpuContext context = *pointers->ContextRecord;
     STACKFRAME64 frame = {};
 #if defined(_M_IX86)
     frame.AddrPC.Offset = context.Eip;

@@ -15,14 +15,20 @@
 // grepping for "win32" reveals.
 
 #include "dos_file_handle_cache_probe.h"
+#include "fault_handler_probe.h"
 #include "env_toggle_probe.h"
 #include "execution_backend_probe.h"
 #include "execution_timeout_probe.h"
 #include "glide_lfb_region_probe.h"
+#include "guest_cpu_context_probe.h"
+#include "guest_stack_switch_probe.h"
+#include "host_thread_probe.h"
 #include "jump_table_guard_probe.h"
 #include "launcher_probe.h"
 #include "nvram_path_probe.h"
 #include "pit_timer_probe.h"
+#include "stack_bridge_probe.h"
+#include "virtual_memory_probe.h"
 
 #include <cstddef>
 #include <iostream>
@@ -43,8 +49,14 @@ constexpr CoreProbe kCoreProbes[] = {
     {"dos_file_handle_cache", &repiu::tools::RunDosFileHandleCacheProbe},
     {"pit_timer", &repiu::tools::RunPitTimerProbe},
     {"glide_lfb_region", &repiu::tools::RunGlideLfbRegionProbe},
+    {"guest_cpu_context", &repiu::tools::RunGuestCpuContextProbe},
     {"jump_table_guard", &repiu::tools::RunJumpTableGuardProbe},
     {"nvram_path", &repiu::tools::RunNvramPathProbe},
+    {"virtual_memory", &repiu::tools::RunVirtualMemoryProbe},
+    {"fault_handler", &repiu::tools::RunFaultHandlerProbe},
+    {"stack_bridge", &repiu::tools::RunStackBridgeProbe},
+    {"guest_stack_switch", &repiu::tools::RunGuestStackSwitchProbe},
+    {"host_thread", &repiu::tools::RunHostThreadProbe},
     {"launcher", &repiu::tools::RunLauncherProbe},
 };
 

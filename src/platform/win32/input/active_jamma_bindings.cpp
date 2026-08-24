@@ -1,6 +1,6 @@
 #include "repiu/platform/win32/active_jamma_bindings.h"
 
-#include "win32_host_key_translation.h"
+#include "repiu/input/jamma_input_bindings.h"
 
 namespace repiu::platform::win32
 {
@@ -16,7 +16,7 @@ input::ResolvedJammaBindings& MutableActiveJammaBindings()
     {
         input::ResolvedJammaBindings defaults =
             input::DefaultJammaBindings();
-        ResolveWin32VirtualKeys(&defaults);
+        input::ResolveJammaHostScancodes(&defaults);
         return defaults;
     }();
     return bindings;
@@ -29,14 +29,19 @@ void SetActiveJammaBindings(const input::ResolvedJammaBindings& bindings)
     input::ResolvedJammaBindings& active = MutableActiveJammaBindings();
     active = bindings;
     // Resolved here rather than at the call site so no caller can install a
-    // binding set whose virtual keys were never filled in, which would leave
-    // the polling path silently dead while the window path still worked.
-    ResolveWin32VirtualKeys(&active);
+    // binding set whose scancodes were never filled in, which would leave the
+    // polling path silently dead while the window path still worked.
+    input::ResolveJammaHostScancodes(&active);
 }
 
 const input::ResolvedJammaBindings& ActiveJammaBindings()
 {
     return MutableActiveJammaBindings();
+}
+
+void ResolveActiveJammaScancodes()
+{
+    input::ResolveJammaHostScancodes(&MutableActiveJammaBindings());
 }
 
 }  // namespace repiu::platform::win32

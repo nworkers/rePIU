@@ -6,6 +6,9 @@
 #include "guest_memory_access.h"
 
 #include <Zydis.h>
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/host_environment.h"
+#include <cstring>
 
 namespace repiu::platform::win32
 {
@@ -15,12 +18,10 @@ namespace
 bool PostHleTranslationEnabled()
 {
     static const bool enabled = [] {
-        char value[16] = {};
-        const DWORD length = GetEnvironmentVariableA(
-            "REPIU_AOT_DBT_POST_HLE_TRANSLATE", value, sizeof(value));
-        return length != 0U && length < sizeof(value) &&
-            ResolveAotDbtPostHleTranslationEnabled(
-                std::string_view(value, length));
+        const auto setting = repiu::platform::ReadEnvironmentSetting(
+            "REPIU_AOT_DBT_POST_HLE_TRANSLATE", 16U);
+        return setting.present && !setting.too_long &&
+            ResolveAotDbtPostHleTranslationEnabled(setting.value);
     }();
     return enabled;
 }
@@ -137,7 +138,7 @@ bool ResolveAotDbtPostHleTranslationEnabled(std::string_view setting)
     return setting == "1" || setting == "on" || setting == "true";
 }
 
-bool TryResumeAotAfterHandledHle(CONTEXT* win32_context,
+bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context,
                                  std::uint32_t handled_guest_eip)
 {

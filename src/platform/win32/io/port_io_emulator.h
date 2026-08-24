@@ -3,6 +3,7 @@
 #include "thread_context.h"
 #include <cstdint>
 #include <string>
+#include "repiu/platform/guest_cpu_context.h"
 
 namespace repiu::platform::win32
 {
@@ -21,6 +22,6 @@ bool IsPortIoTraceCandidate(std::uint16_t port,
                             std::uint32_t width,
                             bool is_input);
 
-bool HandlePortIoInstruction(CONTEXT* win32_context, ThreadContext* context);
+bool HandlePortIoInstruction(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 
 } // namespace repiu::platform::win32

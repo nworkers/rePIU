@@ -3,12 +3,13 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include "repiu/platform/guest_cpu_context.h"
 
 namespace repiu::platform::win32
 {
 
 #if defined(_WIN32)
-bool PushX87Float(CONTEXT* context, float value)
+bool PushX87Float(repiu::platform::GuestCpuContext* context, float value)
 {
     if (context == nullptr || !std::isfinite(value))
     {

@@ -8,6 +8,7 @@
 #include <Zydis.h>
 
 #include <cstdlib>
+#include "repiu/platform/atomic_ops.h"
 
 namespace repiu::platform::win32
 {
@@ -99,12 +100,12 @@ void AccumulateAotResidency(ThreadContext* context,
     if (context->shared_live_telemetry != nullptr)
     {
         Win32SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
-        InterlockedExchangeAdd(&telemetry->aot_residency_total,
+        repiu::platform::AtomicExchangeAdd(&telemetry->aot_residency_total,
                                static_cast<long>(count));
-        InterlockedIncrement(&telemetry->aot_residency_samples);
+        repiu::platform::AtomicIncrement(&telemetry->aot_residency_samples);
         if (static_cast<std::uint32_t>(telemetry->aot_residency_max) < count)
         {
-            InterlockedExchange(&telemetry->aot_residency_max,
+            repiu::platform::AtomicExchange(&telemetry->aot_residency_max,
                                 static_cast<long>(count));
         }
     }

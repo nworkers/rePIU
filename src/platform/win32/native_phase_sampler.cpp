@@ -3,11 +3,22 @@
 #include "repiu/platform/win32/aot_code_cache_win32.h"
 #include "repiu/platform/win32/live_telemetry.h"
 
+// Task 503d-14. Fenced: what needs it is the sampling itself, which suspends
+// another thread and reads its register context. Linux has no counterpart that
+// is the same thing -- stopping a running thread and reading its registers from
+// outside is a debugger's privilege there -- so the sampler is inert on Linux
+// and the engine loses a diagnostic rather than a way to run.
+#if defined(_WIN32) && defined(_M_IX86)
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#endif
+
+#include "repiu/platform/host_error_stream.h"
 
 #include <cstdio>
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/atomic_ops.h"
 
 namespace repiu::platform::win32
 {
@@ -74,7 +85,7 @@ bool CaptureWin32NativePhaseSample(void* thread,
     const auto mark_stage = [telemetry](long stage) {
         if (telemetry != nullptr)
         {
-            InterlockedExchange(&telemetry->native_sample_stage, stage);
+            repiu::platform::AtomicExchange(&telemetry->native_sample_stage, stage);
         }
     };
 
@@ -90,7 +101,7 @@ bool CaptureWin32NativePhaseSample(void* thread,
     }
     mark_stage(2);
 
-    CONTEXT thread_context = {};
+    repiu::platform::GuestCpuContext thread_context = {};
     thread_context.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
     if (GetThreadContext(thread_handle, &thread_context))
     {
@@ -183,47 +194,47 @@ void RecordWin32NativePhaseSample(const Win32NativePhaseSample& sample,
     {
         return;
     }
-    InterlockedExchange(&telemetry->native_sample_count,
+    repiu::platform::AtomicExchange(&telemetry->native_sample_count,
                         static_cast<long>(state->sample_count));
-    InterlockedExchange(&telemetry->native_sample_unmapped_count,
+    repiu::platform::AtomicExchange(&telemetry->native_sample_unmapped_count,
                         static_cast<long>(state->unmapped_count));
-    InterlockedExchange(&telemetry->native_sample_eip,
+    repiu::platform::AtomicExchange(&telemetry->native_sample_eip,
                         static_cast<long>(sample.eip));
-    InterlockedExchange(&telemetry->native_sample_guest_eip,
+    repiu::platform::AtomicExchange(&telemetry->native_sample_guest_eip,
                         static_cast<long>(sample.guest_eip));
-    InterlockedExchange(&telemetry->native_sample_eax,
+    repiu::platform::AtomicExchange(&telemetry->native_sample_eax,
                         static_cast<long>(sample.eax));
-    InterlockedExchange(&telemetry->native_sample_ebx,
+    repiu::platform::AtomicExchange(&telemetry->native_sample_ebx,
                         static_cast<long>(sample.ebx));
-    InterlockedExchange(&telemetry->native_sample_ecx,
+    repiu::platform::AtomicExchange(&telemetry->native_sample_ecx,
                         static_cast<long>(sample.ecx));
-    InterlockedExchange(&telemetry->native_sample_edx,
+    repiu::platform::AtomicExchange(&telemetry->native_sample_edx,
                         static_cast<long>(sample.edx));
-    InterlockedExchange(&telemetry->native_sample_esi,
+    repiu::platform::AtomicExchange(&telemetry->native_sample_esi,
                         static_cast<long>(sample.esi));
-    InterlockedExchange(&telemetry->native_sample_edi,
+    repiu::platform::AtomicExchange(&telemetry->native_sample_edi,
                         static_cast<long>(sample.edi));
-    InterlockedExchange(&telemetry->native_sample_esp,
+    repiu::platform::AtomicExchange(&telemetry->native_sample_esp,
                         static_cast<long>(sample.esp));
-    InterlockedExchange(&telemetry->native_sample_ebp,
+    repiu::platform::AtomicExchange(&telemetry->native_sample_ebp,
                         static_cast<long>(sample.ebp));
-    InterlockedExchange(&telemetry->native_sample_eflags,
+    repiu::platform::AtomicExchange(&telemetry->native_sample_eflags,
                         static_cast<long>(sample.eflags));
-    InterlockedExchange(&telemetry->native_sample_indirect_source,
+    repiu::platform::AtomicExchange(&telemetry->native_sample_indirect_source,
                         static_cast<long>(sample.last_indirect_source));
-    InterlockedExchange(&telemetry->native_sample_indirect_target,
+    repiu::platform::AtomicExchange(&telemetry->native_sample_indirect_target,
                         static_cast<long>(sample.last_indirect_target));
     static_assert(Win32NativePhaseSamplerState::kRingCapacity ==
                   kWin32NativeSampleRingCapacity);
     for (std::uint32_t index = 0;
          index < Win32NativePhaseSamplerState::kRingCapacity; ++index)
     {
-        InterlockedExchange(&telemetry->native_sample_ring[index],
+        repiu::platform::AtomicExchange(&telemetry->native_sample_ring[index],
                             static_cast<long>(state->ring[index]));
     }
-    InterlockedExchange(&telemetry->native_sample_ring_mapped_bits,
+    repiu::platform::AtomicExchange(&telemetry->native_sample_ring_mapped_bits,
                         static_cast<long>(state->ring_mapped_bits));
-    InterlockedExchange(&telemetry->native_sample_ring_cursor,
+    repiu::platform::AtomicExchange(&telemetry->native_sample_ring_cursor,
                         static_cast<long>(state->ring_cursor));
 }
 
@@ -270,16 +281,10 @@ void WriteWin32NativePhaseSampleLine(
     {
         return;
     }
-    HANDLE stderr_handle = GetStdHandle(STD_ERROR_HANDLE);
-    if (stderr_handle == nullptr || stderr_handle == INVALID_HANDLE_VALUE)
-    {
-        return;
-    }
-    DWORD written = 0;
-    const DWORD byte_count = static_cast<DWORD>(
+    const std::size_t byte_count = static_cast<std::size_t>(
         length < static_cast<int>(sizeof(buffer)) ? length
                                                   : sizeof(buffer) - 1U);
-    WriteFile(stderr_handle, buffer, byte_count, &written, nullptr);
+    repiu::platform::WriteHostErrorStream(buffer, byte_count);
 }
 
 }  // namespace repiu::platform::win32

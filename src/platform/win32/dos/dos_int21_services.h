@@ -7,6 +7,7 @@
 #include "thread_context.h"
 
 #include <string>
+#include "repiu/platform/guest_cpu_context.h"
 
 namespace repiu::platform::win32
 {
@@ -31,18 +32,18 @@ std::string BuildCurrentDosVirtualPath(
 std::string BuildCurrentDosHostPath(
     const repiu::hle::DosVirtualFileSystemState& state);
 
-bool HandleDosChangeDirectory(CONTEXT* win32_context, ThreadContext* context);
+bool HandleDosChangeDirectory(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 
-bool HandleDosGetCurrentDirectory(CONTEXT* win32_context,
+bool HandleDosGetCurrentDirectory(repiu::platform::GuestCpuContext* win32_context,
                                   ThreadContext* context);
 
-void HandleDosGetCurrentDrive(CONTEXT* win32_context, ThreadContext* context);
+void HandleDosGetCurrentDrive(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 
-void HandleDosGetSystemDate(CONTEXT* win32_context, ThreadContext* context);
+void HandleDosGetSystemDate(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 
-void HandleDosSetSystemDate(CONTEXT* win32_context, ThreadContext* context);
+void HandleDosSetSystemDate(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 
-void HandleDosGetSystemTime(CONTEXT* win32_context, ThreadContext* context);
+void HandleDosGetSystemTime(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 
 void RecordDosOpen(ThreadContext* context,
                    const std::string& guest_path,
@@ -50,15 +51,15 @@ void RecordDosOpen(ThreadContext* context,
                    std::uint16_t handle,
                    std::uint8_t access_mode);
 
-bool HandleDosOpenFile(CONTEXT* win32_context, ThreadContext* context);
+bool HandleDosOpenFile(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 
-bool HandleDosFileAttributes(CONTEXT* win32_context,
+bool HandleDosFileAttributes(repiu::platform::GuestCpuContext* win32_context,
                              ThreadContext* context);
 
-void CaptureDosTermination(CONTEXT* win32_context,
+void CaptureDosTermination(repiu::platform::GuestCpuContext* win32_context,
                            ThreadContext* context);
 
-void RecordDosRead(const CONTEXT* win32_context,
+void RecordDosRead(const repiu::platform::GuestCpuContext* win32_context,
                    ThreadContext* context,
                    std::uint16_t handle,
                    std::uint32_t requested_bytes,
@@ -68,7 +69,7 @@ void RecordDosRead(const CONTEXT* win32_context,
                    std::uint16_t error,
                    const std::vector<std::uint8_t>* bytes);
 
-bool HandleDosReadFile(CONTEXT* win32_context, ThreadContext* context);
+bool HandleDosReadFile(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 
 void RecordDosSeek(ThreadContext* context,
                    std::uint16_t handle,
@@ -79,14 +80,14 @@ void RecordDosSeek(ThreadContext* context,
                    bool success,
                    std::uint16_t error);
 
-bool HandleDosSeekFile(CONTEXT* win32_context, ThreadContext* context);
+bool HandleDosSeekFile(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 
 void RecordDosClose(ThreadContext* context,
                     std::uint16_t handle,
                     bool success,
                     std::uint16_t error);
 
-bool HandleDosCloseFile(CONTEXT* win32_context, ThreadContext* context);
+bool HandleDosCloseFile(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 
 void RecordDosIoctl(ThreadContext* context,
                     std::uint8_t subfunction,
@@ -95,7 +96,7 @@ void RecordDosIoctl(ThreadContext* context,
                     std::uint16_t error,
                     std::uint16_t device_info);
 
-bool HandleDosIoctl(CONTEXT* win32_context, ThreadContext* context);
+bool HandleDosIoctl(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 
 void RecordDosResize(ThreadContext* context,
                      std::uint16_t selector,
@@ -105,17 +106,17 @@ void RecordDosResize(ThreadContext* context,
                      std::uint32_t requested_end = 0,
                      std::uint32_t allocator_end = 0);
 
-bool HandleDosResizeMemoryBlock(CONTEXT* win32_context,
+bool HandleDosResizeMemoryBlock(repiu::platform::GuestCpuContext* win32_context,
                                 ThreadContext* context);
 
-void HandleDosGetInterruptVector(CONTEXT* win32_context,
+void HandleDosGetInterruptVector(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context);
 
-void HandleDosSetInterruptVector(CONTEXT* win32_context,
+void HandleDosSetInterruptVector(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context);
 
-bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context);
+bool HandleDosInterrupt21(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 
-bool HandleDosInterrupt2F(CONTEXT* win32_context, ThreadContext* context);
+bool HandleDosInterrupt2F(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 
 } // namespace repiu::platform::win32

@@ -1279,8 +1279,9 @@ window in which an asynchronous timer injection could overwrite it between the s
 
 ## 플랫폼 분리와 Linux 빌드 / Platform split and the Linux build
 
-Task 501부터 `repiu_exe`의 소스는 두 부류로 나뉩니다. 공용 코어 53개는 모든 플랫폼에서
-빌드되고, `src/platform/win32` 76개는 `if(WIN32)` 안에서만 빌드됩니다. 새 라이브러리
+Task 501부터 `repiu_exe`의 소스는 두 부류로 나뉘어 있었습니다. 공용 코어(3d-17 시점 57개)는
+모든 플랫폼에서, `src/platform/win32`(81개)는 `if(WIN32)` 안에서만 빌드됐습니다.
+**Task 503d-17부터 그 구분이 없습니다** — 실행 엔진 소스도 모든 플랫폼에서 빌드됩니다. 새 라이브러리
 타깃을 만드는 대신 조건부 소스로 나눈 것은 링크와 include 배선을 다시 하지 않기
 위해서입니다.
 
@@ -1295,14 +1296,100 @@ Task 502부터 런처도 Linux에서 빌드됩니다. `repiu_launcher`는 `src/h
 제약이 있는지는 실행 엔진이 생긴 뒤에 판단합니다. 롬셋을 고르면 엔진이 아직 없다고 알리고
 종료합니다.
 
+Task 503a부터 게스트 레지스터 상태는 `repiu::platform::GuestCpuContext`라는 이름을 갖습니다.
+Windows에서는 `CONTEXT`의 별칭이라 기존 900여 곳의 필드 접근이 그대로 컴파일되고, 그 밖의
+플랫폼에서는 **같은 필드 이름**을 가진 구조체입니다. 필드 이름을 유지하는 것이 요점입니다 —
+호출부를 새 접근자 API로 고치는 편집 자체가 이식에서 가장 큰 회귀 원인이 되기 때문입니다.
+플랫폼 차이는 `src/platform/linux/guest_cpu_context.cpp`의 `ucontext_t` 변환 두 함수로
+모입니다. `ContextFlags`는 Linux에서 무시되고, `FloatSave`는 glibc `_libc_fpstate`가 FSAVE
+이미지 그대로라 필드 대 필드로 옮겨지며, 디버그 레지스터는 항상 0입니다 — Linux 사용자
+공간은 자기 스레드의 디버그 레지스터를 쓸 수 없어 이를 쓰는 `native_linear_span`은 비활성입니다.
+
+Task 503b부터 가상 메모리도 `repiu::platform`에 있습니다 — `ReserveMemory`,
+`CommitMemory`, `ProtectMemory`, `ReleaseMemory`, `QueryMemory`, `IsRangeReadable`. 이 API는
+`Virtual*`를 그대로 흉내 내지 않고 **호출부 112곳이 실제로 묻는 것**을 묻습니다. 보호
+비트마스크 대신 `readable`·`writable`·`executable`을 돌려주므로, 같은 판정을 하던 손으로 쓴
+분류기 다섯 개가 하나로 줄어듭니다. Linux 백엔드는 `mprotect`가 이전 보호값을 알려주지 않아
+자기가 설정한 값을 그림자 테이블에 기록하고, rePIU가 만들지 않은 주소만
+`/proc/self/maps`로 넘깁니다 — 게스트 스토어마다 파일을 파싱할 수는 없기 때문입니다.
+커밋이 `ProtectMemory`와 별도 함수인 이유는 호스트가 갈리기 때문입니다: Linux는 `mprotect`로
+충분하지만 Windows의 `VirtualProtect`는 예약만 된 페이지에서 실패합니다.
+
+Task 503c부터 폴트 전달도 `repiu::platform`에 있습니다. Windows는 VEH, Linux는 `sigaction`이
+같은 `FaultKind`·`FaultEvent`를 만들고, 콜백이 레지스터를 편집한 뒤 재개 여부를 돌려줍니다.
+Windows에서 `GuestCpuContext`가 `CONTEXT`이므로 콜백은 **커널이 준 구조체를 직접 편집**하며
+복사가 없습니다. Linux는 `sigaltstack`으로 자기 스택에서 돌고 — 게스트 스택이 손상됐을 때도
+핸들러가 살아야 하기 때문입니다 — `SA_NODEFER`로 중첩을 허용합니다.
+
+`int3`의 `Eip` 규약은 계층이 통일합니다. Windows는 `int3` 바이트를, Linux는 다음 명령을
+가리키는데, 엔진이 `Eip`의 바이트를 읽어 경계를 판별하므로 **Linux 쪽을 되감아 Windows 규약**에
+맞춥니다. 그래서 규칙이 양쪽에서 하나입니다 — `Eip`는 `int3`를 가리키고, 지나가려면 핸들러가
+직접 전진시킵니다.
+
+Task 503d부터 Linux 바이너리는 **non-PIE로, 텍스트 세그먼트를 0x40000000에 올려** 링크합니다.
+두 가지가 동시에 걸립니다 — 손으로 쓴 thunk는 전역을 직접 주소로 읽는데 PIE에서는 그것이 텍스트
+재배치가 되고, 텍스트 세그먼트가 쓰기 가능해지면 페이지 보호로 SMC를 감지하는 방식이 무너집니다.
+반대로 평범한 `-no-pie`는 i386 이미지를 0x08048000에 올리는데 그 주소는 게스트 재배치 범위
+0x01000000~0x09000000 안입니다. 세그먼트를 들어 올리면 그 범위가 비워집니다.
+
+다섯 개 디스패치 thunk는 부르는 resolver만 다르므로 Linux에서는 복사본 다섯이 아니라
+`src/platform/linux/stack_bridge.inc.S`의 **매크로 하나**입니다. MSVC 원본과 줄 단위로 대조되도록
+Intel 문법으로 씁니다. Windows가 thunk마다 하는 `fs:[4]`·`fs:[8]` 조작(28곳)은 Linux 매크로에
+**없습니다** — 커널이 시그널을 `sigaltstack`으로 준 스택에 얹고 중단된 스택이 어디인지 묻지 않기
+때문이며, 이는 전환된 스택 위에서 폴트를 일으키는 probe로 확인했습니다.
+
+Task 503d-16부터 트램폴린이 게스트로 들어가는 세 진입점도 GAS에 있습니다 —
+`src/platform/linux/guest_stack_switch.S`의 `CallGuestEntryWithStack`(스택 전환 자체)과 폴트
+복귀 둘입니다. `StackSwitchCallState`의 필드 오프셋은
+`include/repiu/platform/guest_stack_switch.h`에 `#define`으로 한 번만 두고, `.S`가 C
+전처리기를 거치므로 어셈블리 두 벌과 C++ `static_assert`가 같은 숫자를 읽습니다.
+
+다섯 thunk와 달리 이 진입점에는 `fxsave`가 없습니다. 부르는 것이 호스트 resolver가 아니라
+게스트이고, i386 System V ABI는 호출 경계에서 x87 스택이 비어 있을 것을 요구하므로 건너갈
+호스트 상태가 없습니다. 반대로 `RecoverGuestStackException`의 세그먼트 복원은 Linux에서
+**유일한** 복원 경로입니다 — `StoreGuestCpuContext`가 세그먼트 레지스터를 되쓰지 않기
+때문입니다.
+
+어셈블리가 이름으로 읽는 전역 열한 개는 `src/platform/guest_stack_switch_state.cpp`에 모여
+있고, 이 파일은 모든 호스트에서 빌드됩니다. 그래서 Linux 어셈블리가 트램폴린 본체보다 먼저
+링크됩니다 — 엔진 코드가 Linux에서 컴파일만이 아니라 **링크된** 첫 사례입니다.
+
+환경 블록 **전체 열거**는 `ForEachEnvironmentEntry`로 계층에 있습니다. 변수 하나를 읽는 3d-9의
+`ReadEnvironmentSetting`과 달리 DOS 환경 블록은 전부를 복사해야 하고, Windows 백엔드는 CRT
+사본(`_environ`)이 아니라 `GetEnvironmentStringsA`로 프로세스 환경을 읽습니다 — 그 둘은 시작
+이후의 `SetEnvironmentVariable`에서 갈립니다. 쓰기 쪽 `PublishEnvironmentSetting`은 반대로
+Windows에서 `_putenv_s`여야 합니다. 이 계층은 읽기를 두 군데(`std::getenv`와
+`GetEnvironmentStringsA`)에서 하므로, 둘 다 갱신하는 함수만 답이 됩니다.
+
+Task 503d-17부터 **Linux에서 `repiu` 로더가 링크됩니다.** 진입점은 Windows와 같은
+`src/host/win32/main.cpp`이고, 자식 프로세스 재실행은 `repiu::platform::RunChildProcessAndWait`로
+갈라집니다 — Windows는 `CreateProcessA`, Linux는 `posix_spawn`입니다. Task 500이 이 재실행을
+만든 이유(GPU 드라이버의 주소 공간 선점)가 Linux에도 해당하는지는 **아직 측정하지
+않았습니다.** 무한 대기 표기도 중립 상수로 옮겼고, Windows 대기 옆의 `static_assert`가
+`INFINITE`와 같은 값임을 고정합니다.
+
+Task 503d-18부터 스레드도 `repiu::platform`에 있습니다 — `CreateHostThread`,
+`QueryHostThread`, `JoinHostThread`, `CloseHostThread`. 진입점은 `std::uint32_t(void*)`로,
+Windows의 `DWORD WINAPI(LPVOID)`도 POSIX의 `void*(void*)`도 아닌 호출부의 모양입니다.
+`QueryHostThread`가 **기다리지 않고** 답하는 것이 요점입니다 — 호스트 폴 루프는 질문 사이에
+Glide 명령을 펌프하고 타이머 틱을 전달해야 합니다.
+
+`running`과 `exit_code`를 따로 답하는 것도 의도입니다. Windows의 `GetExitCodeThread`는 도는
+스레드에 259를 돌려주는데 259는 적법한 종료 코드이기도 해서, `!= STILL_ACTIVE` 판정은 그
+값으로 끝난 스레드를 영원히 도는 것으로 읽습니다. Windows 백엔드는 길이 0의 대기로 먼저
+가릅니다. `TerminateThread`에는 Linux 대응물을 만들지 않습니다 — 그것은 최후 수단이고, 그 앞의
+우아한 경로(정지 → `RecoverToHost` → 재개)가 Linux에서는 시그널로 같은 일을 하므로 유일한
+경로가 됩니다.
+
 `repiu_core_probe`는 플랫폼에 의존하지 않는 probe만 담아 **양쪽 OS에서 빌드**됩니다.
 구성원은 문자열 검색이 아니라 **컴파일과 링크로** 정합니다 — probe는 include 디렉터리를
 통해 `dos/dos_int21_services.h` 같은 상대 경로로 Win32 계층에 닿을 수 있고, 그것은
 grep에 잡히지 않습니다. 아키텍처는 i386입니다. 게스트의 32비트 코드를 같은 프로세스에서
 네이티브 실행하므로 호스트도 32비트여야 합니다.
 
-Since Task 501 the `repiu_exe` sources are split in two: 53 platform-neutral files that build
-everywhere and 76 under `src/platform/win32` that build only inside `if(WIN32)`. Conditional
+Since Task 501 the `repiu_exe` sources were split in two: the platform-neutral files that build
+everywhere — 57 as of 3d-17 — and the 81 under `src/platform/win32` that built only inside
+`if(WIN32)`. **Since Task 503d-17 that split is gone**: the execution engine builds everywhere too. Conditional
 sources were chosen over a second library target to avoid rewiring every link and include
 relationship. Measurement backs the split: the neutral core includes no Win32 header, uses no
 MSVC-specific construct, assumes no 32-bit pointer, and compiles under GCC 13 with C++20 without
@@ -1312,6 +1399,93 @@ on both systems; its membership is decided by compiling and linking rather than 
 strings, because a probe can reach the Win32 layer through an include directory with a relative
 name like `dos/dos_int21_services.h`. The architecture is i386, because the guest's 32-bit code
 runs natively in the host process.
+
+Since Task 503a the guest's register state is named `repiu::platform::GuestCpuContext`: an alias for
+`CONTEXT` on Windows, so the roughly 900 existing field accesses compile unchanged, and a structure
+with the same field names elsewhere. Keeping the names is the point, because rewriting call sites
+onto a new accessor API would itself be the port's largest source of regressions. The platform
+difference collapses into the two `ucontext_t` conversions in
+`src/platform/linux/guest_cpu_context.cpp`. `ContextFlags` is ignored on Linux; `FloatSave` converts
+field for field because glibc's `_libc_fpstate` is the same FSAVE image Windows calls
+`FLOATING_SAVE_AREA`; and the debug registers are always zero, since Linux user space cannot write
+its own thread's, which is why `native_linear_span` stays disabled there.
+
+Since Task 503b virtual memory lives in `repiu::platform` as well — `ReserveMemory`, `CommitMemory`,
+`ProtectMemory`, `ReleaseMemory`, `QueryMemory`, and `IsRangeReadable`. The API does not mirror the
+`Virtual*` shapes; it asks what the 112 call sites actually ask, returning `readable`, `writable`,
+and `executable` instead of a protection bitmask, which collapses five hand-written classifiers of
+that same question into one. The Linux backend records the protections it sets in a shadow table,
+because `mprotect` does not report what it replaced and parsing `/proc/self/maps` on every guest
+store is not viable; only addresses rePIU did not map fall through to that file. Committing is a
+separate function from protecting because the hosts diverge: `mprotect` suffices on Linux, while
+Windows' `VirtualProtect` fails on reserved-but-uncommitted pages.
+
+Since Task 503c fault delivery lives in `repiu::platform` too: a vectored handler on Windows and
+`sigaction` on Linux produce the same `FaultKind` and `FaultEvent`, and the callback edits registers
+and says whether to resume. Because `GuestCpuContext` is `CONTEXT` on Windows the callback edits the
+kernel's own structure with no copy. Linux runs the handler on its own stack via `sigaltstack`, so it
+survives a damaged guest stack, and sets `SA_NODEFER` because nesting is normal here.
+
+The layer settles one convention the hosts disagree on. Windows reports `Eip` on the `int3` byte and
+Linux reports the following instruction; since the engine reads the byte at `Eip` to identify a
+boundary, the Linux backend rewinds to match. The rule is then the same everywhere — `Eip` names the
+`int3`, and a handler that wants to continue past it advances `Eip` itself.
+
+Since Task 503d the Linux binaries link non-PIE with their text segment lifted to 0x40000000, because
+two constraints bind at once: hand-written thunks address globals directly, which in a PIE becomes a
+text relocation, and a writable text segment defeats the page protection this engine detects
+self-modifying code with; while plain `-no-pie` puts an i386 image at 0x08048000, inside the
+0x01000000-0x09000000 range the guest's relocated image needs.
+
+The five dispatch thunks differ only in which resolver they call, so on Linux they are one macro in
+`src/platform/linux/stack_bridge.inc.S` rather than five copies, written in Intel syntax so it reads
+line for line against the MSVC originals. What the macro does not carry is the `fs:[4]`/`fs:[8]`
+swapping each Windows thunk performs — 28 sites — because the kernel delivers a signal onto the stack
+given to `sigaltstack` and asks nothing about where the interrupted stack lives. A probe that faults
+while on the switched stack confirms it.
+
+Since Task 503d-16 the trampoline's three entries into the guest are in GAS as well, in
+`src/platform/linux/guest_stack_switch.S`: `CallGuestEntryWithStack`, which is the stack switch
+itself, and the two fault recoveries. `StackSwitchCallState`'s field offsets are defined once as
+`#define`s in `include/repiu/platform/guest_stack_switch.h`, and because a `.S` goes through the C
+preprocessor both assemblies and the C++ `static_assert`s read the same numbers.
+
+Unlike the five thunks these entries carry no `fxsave`: what they call is the guest rather than a
+host resolver, and the i386 System V ABI requires the x87 stack to be empty at a call boundary, so no
+host state crosses the call. The segment restores in `RecoverGuestStackException` run the other way —
+on Linux they are the *only* thing that restores the host's selectors, because
+`StoreGuestCpuContext` deliberately does not write segment registers back.
+
+The eleven globals that assembly reads by name live in
+`src/platform/guest_stack_switch_state.cpp`, which is built on every host. That is what lets the
+Linux assembly link ahead of the trampoline itself, and makes it the first engine code to **link**
+on Linux rather than merely compile.
+
+Enumerating the *whole* environment block is in the layer as `ForEachEnvironmentEntry`. Unlike 3d-9's
+`ReadEnvironmentSetting`, which reads one variable, the DOS environment block copies all of them, and
+the Windows backend reads the process environment with `GetEnvironmentStringsA` rather than the CRT's
+`_environ` copy — the two diverge on any `SetEnvironmentVariable` after startup. The write half,
+`PublishEnvironmentSetting`, must be `_putenv_s` on Windows for the mirror-image reason: this layer
+reads in two places, `std::getenv` and `GetEnvironmentStringsA`, so only a function that updates both
+will do.
+
+Since Task 503d-18 threads are in `repiu::platform` as well — `CreateHostThread`,
+`QueryHostThread`, `JoinHostThread`, `CloseHostThread`. The entry is `std::uint32_t(void*)`, neither
+Windows' `DWORD WINAPI(LPVOID)` nor POSIX's `void*(void*)` but the call sites' own shape, and
+`QueryHostThread` answers **without waiting**, because the host poll loop has Glide commands to pump
+and timer ticks to deliver between questions. Reporting `running` and `exit_code` separately is
+equally deliberate: `GetExitCodeThread` returns 259 for a running thread and 259 is also a legal exit
+code, so a `!= STILL_ACTIVE` test reads a thread that ended with it as one that never stops; the
+Windows backend splits on a zero-length wait instead. `TerminateThread` gets no Linux counterpart —
+it is the last resort behind a graceful path (suspend, `RecoverToHost`, resume) that a signal
+performs there, which makes the graceful path the only one.
+
+Since Task 503d-17 the `repiu` loader **links on Linux**. Its entry point is the same
+`src/host/win32/main.cpp` the Windows host uses, and the child-process relaunch divides at
+`repiu::platform::RunChildProcessAndWait` — `CreateProcessA` on Windows, `posix_spawn` on Linux.
+Whether Task 500's reason for that relaunch, a GPU driver claiming the address space the guest needs,
+also applies to Linux is **not yet measured**. The unlimited-wait spelling moved to a neutral constant
+as well, held equal to `INFINITE` by a `static_assert` beside the Windows wait.
 
 ## 런처 / Launcher
 

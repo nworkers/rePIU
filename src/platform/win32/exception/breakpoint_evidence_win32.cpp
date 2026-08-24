@@ -6,6 +6,9 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/safe_memory_copy.h"
+#include "repiu/platform/virtual_memory.h"
 
 namespace repiu::platform::win32
 {
@@ -38,22 +41,6 @@ std::uint32_t CaptureStateFlags(const ThreadContext& context)
     return flags;
 }
 
-bool IsReadableProtection(DWORD protection)
-{
-    if ((protection & (PAGE_GUARD | PAGE_NOACCESS)) != 0U)
-    {
-        return false;
-    }
-    const DWORD access = protection & 0xFFU;
-    return access == PAGE_READONLY ||
-        access == PAGE_READWRITE ||
-        access == PAGE_WRITECOPY ||
-        access == PAGE_EXECUTE ||
-        access == PAGE_EXECUTE_READ ||
-        access == PAGE_EXECUTE_READWRITE ||
-        access == PAGE_EXECUTE_WRITECOPY;
-}
-
 void CaptureByteWindow(
     std::uint32_t focus,
     std::uint32_t* window_base,
@@ -67,20 +54,17 @@ void CaptureByteWindow(
         return;
     }
 
-    MEMORY_BASIC_INFORMATION memory = {};
-    if (VirtualQuery(
-            reinterpret_cast<const void*>(
-                static_cast<std::uintptr_t>(focus)),
-            &memory, sizeof(memory)) != sizeof(memory) ||
-        memory.State != MEM_COMMIT ||
-        !IsReadableProtection(memory.Protect))
+    const repiu::platform::MemoryRegion region =
+        repiu::platform::QueryMemory(reinterpret_cast<const void*>(
+            static_cast<std::uintptr_t>(focus)));
+    if (!region.valid || !region.committed || !region.readable)
     {
         return;
     }
 
     const std::uintptr_t region_begin =
-        reinterpret_cast<std::uintptr_t>(memory.BaseAddress);
-    const std::uintptr_t region_end = region_begin + memory.RegionSize;
+        reinterpret_cast<std::uintptr_t>(region.base);
+    const std::uintptr_t region_end = region_begin + region.size;
     const std::uintptr_t preferred_begin =
         focus >= kWin32BreakpointByteWindowCapacity / 2U
             ? static_cast<std::uintptr_t>(
@@ -97,14 +81,12 @@ void CaptureByteWindow(
         return;
     }
 
-    SIZE_T copied = 0;
-    ReadProcessMemory(
-        GetCurrentProcess(),
-        reinterpret_cast<const void*>(begin),
-        bytes, requested, &copied);
+    const repiu::platform::SafeCopyResult read =
+        repiu::platform::CopyMemoryWithoutFaulting(
+            bytes, reinterpret_cast<const void*>(begin), requested);
     *window_base = static_cast<std::uint32_t>(begin);
     *byte_count = static_cast<std::uint32_t>(
-        std::min<std::size_t>(copied, requested));
+        std::min<std::size_t>(read.bytes_copied, requested));
 }
 
 void CaptureStackTop(
@@ -118,12 +100,9 @@ void CaptureStackTop(
         const std::uintptr_t address =
             static_cast<std::uintptr_t>(esp) +
             index * sizeof(std::uint32_t);
-        SIZE_T copied = 0;
-        if (ReadProcessMemory(
-                GetCurrentProcess(),
-                reinterpret_cast<const void*>(address),
-                &dwords[index], sizeof(dwords[index]), &copied) != 0 &&
-            copied == sizeof(dwords[index]))
+        if (repiu::platform::CopyMemoryWithoutFaulting(
+                &dwords[index], reinterpret_cast<const void*>(address),
+                sizeof(dwords[index])).complete)
         {
             *valid_mask |= 1U << index;
         }
@@ -183,26 +162,21 @@ void CaptureProvenance(
 }  // namespace
 
 Win32UnhandledBreakpointEvidence CaptureBreakpointEvidence(
-    const EXCEPTION_POINTERS* exception_info,
+    const repiu::platform::FaultEvent& fault,
     const ThreadContext* context)
 {
     Win32UnhandledBreakpointEvidence evidence;
-    if (exception_info == nullptr ||
-        exception_info->ExceptionRecord == nullptr ||
-        exception_info->ContextRecord == nullptr ||
-        context == nullptr ||
-        exception_info->ExceptionRecord->ExceptionCode !=
-            EXCEPTION_BREAKPOINT)
+    if (fault.registers == nullptr || context == nullptr ||
+        fault.kind != repiu::platform::FaultKind::kBreakpoint)
     {
         return evidence;
     }
 
-    const CONTEXT& win32_context = *exception_info->ContextRecord;
+    const repiu::platform::GuestCpuContext& win32_context = *fault.registers;
     evidence.code =
-        exception_info->ExceptionRecord->ExceptionCode;
+        fault.host_code;
     evidence.exception_address = static_cast<std::uint32_t>(
-        reinterpret_cast<std::uintptr_t>(
-            exception_info->ExceptionRecord->ExceptionAddress));
+        static_cast<std::uintptr_t>(fault.instruction_address));
     evidence.entry_eip = static_cast<std::uint32_t>(win32_context.Eip);
     evidence.entry_esp = static_cast<std::uint32_t>(win32_context.Esp);
     evidence.entry_eflags =
@@ -227,12 +201,13 @@ Win32UnhandledBreakpointEvidence CaptureBreakpointEvidence(
 
 void CommitUnhandledBreakpointEvidence(
     Win32UnhandledBreakpointEvidence evidence,
-    const CONTEXT* final_context,
+    const repiu::platform::GuestCpuContext* final_context,
     ThreadContext* context)
 {
-    if (evidence.code != EXCEPTION_BREAKPOINT ||
-        final_context == nullptr ||
-        context == nullptr)
+    // The capture already refused anything that was not a breakpoint and left
+    // `valid` false, so re-testing the host's raw code here only asked the same
+    // question in a host-specific way.
+    if (!evidence.valid || final_context == nullptr || context == nullptr)
     {
         return;
     }

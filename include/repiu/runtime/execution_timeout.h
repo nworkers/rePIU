@@ -8,9 +8,21 @@ namespace repiu::runtime
 
 // Task 435: the guest execution budget policy. The unit is milliseconds and `0`
 // is the sentinel for "no limit" -- not a new rule, but the meaning
-// `REPIU_EXECUTION_TIMEOUT_MS=0` already had. The host maps it onto Win32
-// `INFINITE`, which stays there because it belongs to the wait API.
+// `REPIU_EXECUTION_TIMEOUT_MS=0` already had.
 inline constexpr std::uint32_t kUnlimitedExecutionTimeoutMilliseconds = 0U;
+
+// Task 503d-17. What the host passes on when the budget is unlimited.
+//
+// The policy sentinel above is `0`, but the value the host hands the engine is
+// the opposite extreme, because it ends up as the timeout of a wait. That
+// spelling used to be Win32 `INFINITE` at four call sites, which was accurate
+// while the wait was the only reader and wrong once the value crossed the
+// engine's API on a host that has no such constant.
+//
+// The number is unchanged, and the Windows wait still receives it unaltered --
+// a `static_assert` beside that wait holds the two equal, so this is a rename
+// and not a convention change.
+inline constexpr std::uint32_t kWaitForeverMilliseconds = 0xFFFFFFFFU;
 
 // The budget when nothing is set. The former 1,000 ms dates from when the only
 // question was whether the guest executed at all; with the render loop, timer

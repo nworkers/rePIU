@@ -13,6 +13,9 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/atomic_ops.h"
+#include "repiu/platform/host_time.h"
 
 namespace repiu::platform::win32
 {
@@ -101,7 +104,7 @@ std::string BuildCurrentDosHostPath(
     return host_path.lexically_normal().string();
 }
 
-bool HandleDosChangeDirectory(CONTEXT* win32_context, ThreadContext* context)
+bool HandleDosChangeDirectory(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     std::string guest_path;
     repiu::hle::DosResolvedPath resolved;
@@ -153,7 +156,7 @@ bool HandleDosChangeDirectory(CONTEXT* win32_context, ThreadContext* context)
     return true;
 }
 
-bool HandleDosGetCurrentDirectory(CONTEXT* win32_context,
+bool HandleDosGetCurrentDirectory(repiu::platform::GuestCpuContext* win32_context,
                                   ThreadContext* context)
 {
     const std::string current_directory =
@@ -225,7 +228,7 @@ bool HandleDosGetCurrentDirectory(CONTEXT* win32_context,
     return true;
 }
 
-void HandleDosGetCurrentDrive(CONTEXT* win32_context, ThreadContext* context)
+void HandleDosGetCurrentDrive(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     constexpr std::uint8_t kDefaultDriveC = 2;
     ++context->handled_dos_getdrive_count;
@@ -247,15 +250,15 @@ void HandleDosGetCurrentDrive(CONTEXT* win32_context, ThreadContext* context)
 // INT 21h AH=2Ah (Get System Date). Task 397: the guest's Watcom time()
 // calls date, time, then date again to detect a midnight rollover, so this
 // shares the host clock with HandleDosGetSystemTime.
-void HandleDosGetSystemDate(CONTEXT* win32_context, ThreadContext* context)
+void HandleDosGetSystemDate(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
-    SYSTEMTIME local_time = {};
-    GetLocalTime(&local_time);
+    const repiu::platform::LocalWallClock local_time =
+        repiu::platform::ReadLocalWallClock();
 
     repiu::hle::DosDate date = {
-        local_time.wYear,
-        static_cast<std::uint8_t>(local_time.wMonth),
-        static_cast<std::uint8_t>(local_time.wDay)};
+        local_time.year,
+        static_cast<std::uint8_t>(local_time.month),
+        static_cast<std::uint8_t>(local_time.day)};
     if (context != nullptr && context->dos_date_offset_valid)
     {
         repiu::hle::DosDate adjusted_date;
@@ -265,8 +268,11 @@ void HandleDosGetSystemDate(CONTEXT* win32_context, ThreadContext* context)
             date = adjusted_date;
         }
     }
-    std::uint8_t day_of_week =
-        static_cast<std::uint8_t>(local_time.wDayOfWeek);
+    // The host's own day of week is not used as a seed. It describes the host's
+    // date, while `date` may have been shifted by the ROM set's configured
+    // offset, so the two can disagree -- and the neutral calculation below
+    // overwrites it in every case anyway.
+    std::uint8_t day_of_week = 0U;
     repiu::hle::CalculateDosDateDayOfWeek(date, &day_of_week);
 
     const std::uint16_t month_day = static_cast<std::uint16_t>(
@@ -282,19 +288,19 @@ void HandleDosGetSystemDate(CONTEXT* win32_context, ThreadContext* context)
 
 // INT 21h AH=2Bh (Set System Date). Keep the change inside the virtual DOS
 // environment instead of mutating the host operating system clock.
-void HandleDosSetSystemDate(CONTEXT* win32_context, ThreadContext* context)
+void HandleDosSetSystemDate(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     const repiu::hle::DosDate requested_date = {
         static_cast<std::uint16_t>(win32_context->Ecx & 0xFFFFU),
         static_cast<std::uint8_t>((win32_context->Edx >> 8) & 0xFFU),
         static_cast<std::uint8_t>(win32_context->Edx & 0xFFU)};
 
-    SYSTEMTIME local_time = {};
-    GetLocalTime(&local_time);
+    const repiu::platform::LocalWallClock local_time =
+        repiu::platform::ReadLocalWallClock();
     const repiu::hle::DosDate host_date = {
-        local_time.wYear,
-        static_cast<std::uint8_t>(local_time.wMonth),
-        static_cast<std::uint8_t>(local_time.wDay)};
+        local_time.year,
+        static_cast<std::uint8_t>(local_time.month),
+        static_cast<std::uint8_t>(local_time.day)};
 
     std::int32_t offset_days = 0;
     const bool valid = context != nullptr &&
@@ -312,18 +318,18 @@ void HandleDosSetSystemDate(CONTEXT* win32_context, ThreadContext* context)
 // INT 21h AH=2Ch (Get System Time). Task 397: pumpit3 game code calibrates a
 // delay loop by counting how many of these it can issue while DH (seconds)
 // stays constant, so the reported clock must actually advance in real time.
-void HandleDosGetSystemTime(CONTEXT* win32_context, ThreadContext* context)
+void HandleDosGetSystemTime(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     (void)context;
 
-    SYSTEMTIME local_time = {};
-    GetLocalTime(&local_time);
+    const repiu::platform::LocalWallClock local_time =
+        repiu::platform::ReadLocalWallClock();
 
     const std::uint16_t hour_minute = static_cast<std::uint16_t>(
-        ((local_time.wHour & 0xFFU) << 8) | (local_time.wMinute & 0xFFU));
+        ((local_time.hour & 0xFFU) << 8) | (local_time.minute & 0xFFU));
     const std::uint16_t second_hundredth = static_cast<std::uint16_t>(
-        ((local_time.wSecond & 0xFFU) << 8) |
-        ((local_time.wMilliseconds / 10U) & 0xFFU));
+        ((local_time.second & 0xFFU) << 8) |
+        ((local_time.milliseconds / 10U) & 0xFFU));
 
     // Real DOS writes only the 16-bit registers; the guest's Watcom
     // _dos_gettime consumes the low halves alone (shl ecx,16 / mov cx,dx).
@@ -353,7 +359,7 @@ void RecordDosOpen(ThreadContext* context,
         if (asset_trace_enabled)
         {
             static long asset_trace_count = 0;
-            const long index = InterlockedIncrement(&asset_trace_count);
+            const long index = repiu::platform::AtomicIncrement(&asset_trace_count);
             const bool ok =
                 resolved.result == repiu::hle::DosPathResult::kOk;
             // Log every failure, but cap successes so a hot reload loop cannot
@@ -431,7 +437,7 @@ void RecordDosCreate(ThreadContext* context,
                        static_cast<std::uint8_t>(attributes));
 }
 
-bool HandleDosOpenFile(CONTEXT* win32_context, ThreadContext* context)
+bool HandleDosOpenFile(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     std::string guest_path;
     repiu::hle::DosResolvedPath resolved;
@@ -481,7 +487,7 @@ bool HandleDosOpenFile(CONTEXT* win32_context, ThreadContext* context)
 
 // INT 21h AH=3Ch: CX = attributes, DS:EDX = ASCIZ path. Returns the handle in AX
 // with CF clear, or a DOS error code in AX with CF set.
-bool HandleDosCreateFile(CONTEXT* win32_context, ThreadContext* context)
+bool HandleDosCreateFile(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     std::string guest_path;
     repiu::hle::DosResolvedPath resolved;
@@ -526,7 +532,7 @@ bool HandleDosCreateFile(CONTEXT* win32_context, ThreadContext* context)
     return true;
 }
 
-bool HandleDosFileAttributes(CONTEXT* win32_context,
+bool HandleDosFileAttributes(repiu::platform::GuestCpuContext* win32_context,
                              ThreadContext* context)
 {
     const std::uint8_t subfunction = static_cast<std::uint8_t>(
@@ -612,7 +618,7 @@ const repiu::hle::DosOpenFileHandle* FindDosOpenFile(
     return nullptr;
 }
 
-void CaptureDosTermination(CONTEXT* win32_context,
+void CaptureDosTermination(repiu::platform::GuestCpuContext* win32_context,
                            ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr)
@@ -665,7 +671,7 @@ Win32DosFileIoTraceEntry& AllocateDosFileIoTrace(
     return entry;
 }
 
-void RecordDosRead(const CONTEXT* win32_context,
+void RecordDosRead(const repiu::platform::GuestCpuContext* win32_context,
                    ThreadContext* context,
                    std::uint16_t handle,
                    std::uint32_t requested_bytes,
@@ -726,7 +732,7 @@ void RecordDosRead(const CONTEXT* win32_context,
     }
 }
 
-void RecordDosWrite(const CONTEXT* win32_context,
+void RecordDosWrite(const repiu::platform::GuestCpuContext* win32_context,
                     ThreadContext* context,
                     std::uint16_t handle,
                     std::uint32_t requested_bytes,
@@ -794,7 +800,7 @@ void RecordDosWrite(const CONTEXT* win32_context,
         static long echoed_writes = 0;
         constexpr long kMaxEchoedWrites = 64;
         constexpr std::size_t kMaxEchoedBytes = 240;
-        if (InterlockedIncrement(&echoed_writes) <= kMaxEchoedWrites)
+        if (repiu::platform::AtomicIncrement(&echoed_writes) <= kMaxEchoedWrites)
         {
             std::string text;
             const std::size_t limit =
@@ -815,7 +821,7 @@ void RecordDosWrite(const CONTEXT* win32_context,
 
 // INT 21h AH=40h against a writable VFS handle. The console fallback for every
 // other handle stays at the call site.
-bool HandleDosWriteFile(CONTEXT* win32_context, ThreadContext* context)
+bool HandleDosWriteFile(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     const std::uint16_t handle =
         static_cast<std::uint16_t>(win32_context->Ebx & 0xFFFFU);
@@ -865,7 +871,7 @@ bool HandleDosWriteFile(CONTEXT* win32_context, ThreadContext* context)
     return true;
 }
 
-bool HandleDosReadFile(CONTEXT* win32_context, ThreadContext* context)
+bool HandleDosReadFile(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     const std::uint16_t handle = static_cast<std::uint16_t>(
         win32_context->Ebx & 0xFFFFU);
@@ -905,7 +911,7 @@ bool HandleDosReadFile(CONTEXT* win32_context, ThreadContext* context)
         if (asset_trace_enabled)
         {
             static long read_trace_count = 0;
-            const long index = InterlockedIncrement(&read_trace_count);
+            const long index = repiu::platform::AtomicIncrement(&read_trace_count);
             // A short read is the signal worth catching: it means the guest
             // asked for more than the HLE returned, which is how a truncated
             // asset silently becomes missing content.
@@ -1008,7 +1014,7 @@ void RecordDosSeek(ThreadContext* context,
     entry.dos_error = error;
 }
 
-bool HandleDosSeekFile(CONTEXT* win32_context, ThreadContext* context)
+bool HandleDosSeekFile(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     const std::uint8_t origin = static_cast<std::uint8_t>(
         win32_context->Eax & 0xFFU);
@@ -1042,7 +1048,7 @@ bool HandleDosSeekFile(CONTEXT* win32_context, ThreadContext* context)
         if (asset_trace_enabled)
         {
             static long seek_trace_count = 0;
-            const long index = InterlockedIncrement(&seek_trace_count);
+            const long index = repiu::platform::AtomicIncrement(&seek_trace_count);
             if (dos_error != 0 || index <= 120)
             {
                 fprintf(stderr,
@@ -1108,7 +1114,7 @@ void RecordDosClose(ThreadContext* context,
     context->last_dos_close_error = error;
 }
 
-bool HandleDosCloseFile(CONTEXT* win32_context, ThreadContext* context)
+bool HandleDosCloseFile(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     const std::uint16_t handle = static_cast<std::uint16_t>(
         win32_context->Ebx & 0xFFFFU);
@@ -1155,7 +1161,7 @@ void RecordDosIoctl(ThreadContext* context,
     context->last_dos_ioctl_device_info = device_info;
 }
 
-bool HandleDosIoctl(CONTEXT* win32_context, ThreadContext* context)
+bool HandleDosIoctl(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     const std::uint8_t subfunction = static_cast<std::uint8_t>(
         win32_context->Eax & 0xFFU);
@@ -1227,7 +1233,7 @@ void RecordDosResize(ThreadContext* context,
 }
 
 
-bool HandleDosResizeMemoryBlock(CONTEXT* win32_context,
+bool HandleDosResizeMemoryBlock(repiu::platform::GuestCpuContext* win32_context,
                                 ThreadContext* context)
 {
     // DOS/4G resize requests can carry 32-bit paragraph counts in EBX;
@@ -1253,15 +1259,15 @@ bool HandleDosResizeMemoryBlock(CONTEXT* win32_context,
     }
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedIncrement(
+        repiu::platform::AtomicIncrement(
             &context->shared_live_telemetry->dos_resize_count);
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->dos_resize_last_ebx,
             static_cast<long>(full_ebx));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->dos_resize_last_selector,
             static_cast<long>(resize_selector));
-        InterlockedExchange(
+        repiu::platform::AtomicExchange(
             &context->shared_live_telemetry->dos_resize_last_base,
             static_cast<long>(selector_base));
     }
@@ -1304,7 +1310,7 @@ bool HandleDosResizeMemoryBlock(CONTEXT* win32_context,
                             final_allocator_end);
             if (context->shared_live_telemetry != nullptr)
             {
-                InterlockedIncrement(
+                repiu::platform::AtomicIncrement(
                     &context->shared_live_telemetry->dos_resize_reject_count);
             }
 
@@ -1329,7 +1335,7 @@ bool HandleDosResizeMemoryBlock(CONTEXT* win32_context,
     return true;
 }
 
-void HandleDosGetInterruptVector(CONTEXT* win32_context,
+void HandleDosGetInterruptVector(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context)
 {
     const std::uint8_t vector = static_cast<std::uint8_t>(
@@ -1360,7 +1366,7 @@ void HandleDosGetInterruptVector(CONTEXT* win32_context,
     win32_context->EFlags &= ~1U;
 }
 
-void HandleDosSetInterruptVector(CONTEXT* win32_context,
+void HandleDosSetInterruptVector(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context)
 {
     const std::uint8_t vector = static_cast<std::uint8_t>(
@@ -1388,7 +1394,7 @@ void HandleDosSetInterruptVector(CONTEXT* win32_context,
     win32_context->EFlags &= ~1U;
 }
 
-bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
+bool HandleDosInterrupt21(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     const std::uint16_t ax = static_cast<std::uint16_t>(
         win32_context->Eax & 0xFFFFU);
@@ -1418,7 +1424,8 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
             }
             AppendConsoleOutput(context, text, length);
             win32_context->Eax =
-                (win32_context->Eax & 0xFFFFFF00U) | static_cast<DWORD>('$');
+                (win32_context->Eax & 0xFFFFFF00U) |
+                static_cast<std::uint32_t>('$');
             break;
         }
         case 0x19:
@@ -1591,7 +1598,7 @@ bool HandleDosInterrupt21(CONTEXT* win32_context, ThreadContext* context)
     return true;
 }
 
-bool HandleDosInterrupt2F(CONTEXT* win32_context, ThreadContext* context)
+bool HandleDosInterrupt2F(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     const std::uint16_t ax = static_cast<std::uint16_t>(
         win32_context->Eax & 0xFFFF);
@@ -1607,7 +1614,7 @@ bool HandleDosInterrupt2F(CONTEXT* win32_context, ThreadContext* context)
         RecordHandledDosInterrupt(context, 0x2F, ax);
         if (context->shared_live_telemetry != nullptr)
         {
-            InterlockedIncrement(
+            repiu::platform::AtomicIncrement(
                 &context->shared_live_telemetry->mscdex_probe_count);
         }
         win32_context->Ebx = (win32_context->Ebx & 0xFFFF0000U) |

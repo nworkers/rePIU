@@ -2,10 +2,8 @@
 
 #include <chrono>
 #include <cstdlib>
+#include "repiu/platform/host_time.h"
 
-#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
-#include <intrin.h>
-#endif
 
 namespace repiu::platform::win32
 {
@@ -14,12 +12,7 @@ namespace
 
 std::uint64_t ReadExecutionTimeCycles()
 {
-#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
-    return __rdtsc();
-#else
-    return static_cast<std::uint64_t>(
-        std::chrono::steady_clock::now().time_since_epoch().count());
-#endif
+    return repiu::platform::ReadCycleCounter();
 }
 
 bool ReadExecutionTimeProfileSetting()

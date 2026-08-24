@@ -82,6 +82,16 @@ void ApplyJammaInputSection(const config::IniDocument& document,
 // contention rule and the any_binding_uses_modifiers flag.
 void FinalizeJammaBindings(ResolvedJammaBindings* bindings);
 
+// Fills HostKeyAlias::scancode for every alias from its keycode, against the
+// keyboard layout in force now.
+//
+// Separate from FinalizeJammaBindings because the two answer to different
+// events: finalizing follows a configuration layer, while this follows a layout
+// change and has to be repeated when SDL reports one. The scan path must never
+// do this conversion itself -- Task 403 measured the host key query as 99.21%
+// of the port I/O handler body, and a per-read lookup would put the cost back.
+void ResolveJammaHostScancodes(ResolvedJammaBindings* bindings);
+
 // Renders an input's current binding as config-file text. Returns an empty
 // string when the input has no key bound, which round trips: reading that back
 // leaves the input off again.

@@ -9,15 +9,26 @@
 
 #include <algorithm>
 #include <cstring>
+#include <cstdlib>
+#include <cstddef>
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/atomic_ops.h"
+#include "repiu/platform/host_environment.h"
+#include "repiu/platform/virtual_memory.h"
+#include "repiu/platform/fault_handler.h"
 
 namespace repiu::platform::win32
 {
 
 namespace
 {
+
+// The sixteen-byte buffer the Win32 reads used; the
+// values looked for are all short words, and anything longer was
+// treated as deliberately off.
+constexpr std::size_t kSettingCapacity = 16U;
 
 enum class NativeLinearSpanSetting
 {
@@ -42,90 +53,81 @@ NativeLinearSpanSetting ParseNativeLinearSpanSetting(
 
 NativeLinearSpanSetting ReadNativeLinearSpanSetting()
 {
-    char value[16] = {};
-    const DWORD length = GetEnvironmentVariableA(
-        "REPIU_NATIVE_LINEAR_SPAN", value, sizeof(value));
-    if (length == 0)
+    const auto setting = repiu::platform::ReadEnvironmentSetting(
+        "REPIU_NATIVE_LINEAR_SPAN", kSettingCapacity);
+    if (!setting.present)
     {
         return NativeLinearSpanSetting::kBackendDefault;
     }
-    if (length >= sizeof(value))
+    if (setting.too_long)
     {
         return NativeLinearSpanSetting::kDisabled;
     }
-    return ParseNativeLinearSpanSetting(
-        std::string_view(value, length));
+    return ParseNativeLinearSpanSetting(setting.value);
 }
 
 bool ReadNativeLinearSpanCacheSetting()
 {
-    char value[16] = {};
-    const DWORD length = GetEnvironmentVariableA(
-        "REPIU_NATIVE_LINEAR_SPAN_CACHE", value, sizeof(value));
-    if (length == 0 || length >= sizeof(value))
+    const auto setting = repiu::platform::ReadEnvironmentSetting(
+        "REPIU_NATIVE_LINEAR_SPAN_CACHE", kSettingCapacity);
+    if (!setting.present || setting.too_long)
     {
         return false;
     }
-    const std::string_view setting(value, length);
-    return setting == "1" || setting == "on" || setting == "true";
+    return setting.value == "1" || setting.value == "on" ||
+        setting.value == "true";
 }
 
 NativeLinearSpanSetting ReadNativeLinearSpanRejectCacheSetting()
 {
-    char value[16] = {};
-    const DWORD length = GetEnvironmentVariableA(
-        "REPIU_NATIVE_LINEAR_SPAN_REJECT_CACHE", value, sizeof(value));
-    if (length == 0)
+    const auto setting = repiu::platform::ReadEnvironmentSetting(
+        "REPIU_NATIVE_LINEAR_SPAN_REJECT_CACHE", kSettingCapacity);
+    if (!setting.present)
     {
         return NativeLinearSpanSetting::kBackendDefault;
     }
-    if (length >= sizeof(value))
+    if (setting.too_long)
     {
         return NativeLinearSpanSetting::kDisabled;
     }
-    return ParseNativeLinearSpanSetting(std::string_view(value, length));
+    return ParseNativeLinearSpanSetting(setting.value);
 }
 
 NativeLinearSpanSetting ReadRetiredTrapNativeSpanSetting()
 {
-    char value[16] = {};
-    const DWORD length = GetEnvironmentVariableA(
-        "REPIU_AOT_RETIRED_SPAN_REENTRY", value, sizeof(value));
-    if (length == 0)
+    const auto setting = repiu::platform::ReadEnvironmentSetting(
+        "REPIU_AOT_RETIRED_SPAN_REENTRY", kSettingCapacity);
+    if (!setting.present)
     {
         return NativeLinearSpanSetting::kBackendDefault;
     }
-    if (length >= sizeof(value))
+    if (setting.too_long)
     {
         return NativeLinearSpanSetting::kDisabled;
     }
-    return ParseNativeLinearSpanSetting(std::string_view(value, length));
+    return ParseNativeLinearSpanSetting(setting.value);
 }
 
 bool ReadNativeLinearSpanWritesSetting()
 {
-    char value[16] = {};
-    const DWORD length = GetEnvironmentVariableA(
-        "REPIU_NATIVE_LINEAR_SPAN_WRITES", value, sizeof(value));
-    if (length == 0 || length >= sizeof(value))
+    const auto setting = repiu::platform::ReadEnvironmentSetting(
+        "REPIU_NATIVE_LINEAR_SPAN_WRITES", kSettingCapacity);
+    if (!setting.present || setting.too_long)
     {
         return false;
     }
-    return ResolveNativeLinearSpanWritesEnabled(
-        std::string_view(value, length));
+    return ResolveNativeLinearSpanWritesEnabled(setting.value);
 }
 
 bool ReadNativeLinearSpanJumpsSetting()
 {
-    char value[16] = {};
-    const DWORD length = GetEnvironmentVariableA(
-        "REPIU_NATIVE_LINEAR_SPAN_JUMPS", value, sizeof(value));
-    if (length == 0 || length >= sizeof(value))
+    const auto setting = repiu::platform::ReadEnvironmentSetting(
+        "REPIU_NATIVE_LINEAR_SPAN_JUMPS", kSettingCapacity);
+    if (!setting.present || setting.too_long)
     {
         return false;
     }
-    return ResolveNativeLinearSpanJumpsEnabled(
-        std::string_view(value, length));
+    return ResolveNativeLinearSpanJumpsEnabled(setting.value);
 }
 
 bool ResolveNativeLinearSpanSetting(
@@ -186,7 +188,7 @@ bool NativeLinearSpanJumpsEnabled()
 struct NativeLinearSpanScanContext
 {
     const ThreadContext* thread = nullptr;
-    const CONTEXT* registers = nullptr;
+    const repiu::platform::GuestCpuContext* registers = nullptr;
     detail::NativeFastPathState* state = nullptr;
 };
 
@@ -214,7 +216,7 @@ bool ReadNativeLinearSpanRegister(
     {
         return false;
     }
-    const CONTEXT& registers = *scan->registers;
+    const repiu::platform::GuestCpuContext& registers = *scan->registers;
     switch (static_cast<ZydisRegister>(zydis_register))
     {
     case ZYDIS_REGISTER_EAX: *value = registers.Eax; return true;
@@ -272,19 +274,14 @@ bool IsNativeLinearSpanWriteTargetAllowed(
             }
             else
             {
-                MEMORY_BASIC_INFORMATION information{};
-                const bool queried = VirtualQuery(
-                    reinterpret_cast<const void*>(
-                        static_cast<std::uintptr_t>(current)),
-                    &information, sizeof(information)) != 0U;
-                const DWORD protection = queried ? information.Protect : 0U;
-                const DWORD base_protection = protection & 0xFFU;
-                writable = queried && information.State == MEM_COMMIT &&
-                    (protection & (PAGE_GUARD | PAGE_NOACCESS)) == 0U &&
-                    (base_protection == PAGE_READWRITE ||
-                     base_protection == PAGE_WRITECOPY ||
-                     base_protection == PAGE_EXECUTE_READWRITE ||
-                     base_protection == PAGE_EXECUTE_WRITECOPY);
+                // Another of the hand-written protection classifiers 3b's
+                // QueryMemory was built to answer directly -- this one asking
+                // about writing rather than reading.
+                const repiu::platform::MemoryRegion region =
+                    repiu::platform::QueryMemory(
+                        reinterpret_cast<const void*>(
+                            static_cast<std::uintptr_t>(current)));
+                writable = region.valid && region.committed && region.writable;
                 scan->state->linear_span_write_target_page_cache[page] =
                     writable;
             }
@@ -380,10 +377,11 @@ bool NativeLinearSpanEnabled(
     return ResolveNativeLinearSpanSetting(execution_backend, setting);
 }
 
-void LeaveNativeLinearSpan(CONTEXT* win32_context,
+void LeaveNativeLinearSpan(repiu::platform::GuestCpuContext* win32_context,
                            ThreadContext* context,
                            bool reached_boundary,
                            bool write_fault_cancel,
+                           repiu::platform::FaultKind fault_kind,
                            std::uint32_t exception_code)
 {
     detail::NativeFastPathState* state = &context->native_fast_path;
@@ -422,7 +420,7 @@ void LeaveNativeLinearSpan(CONTEXT* win32_context,
         state->linear_span_last_cancel_eip.store(
             entry_eip,
             std::memory_order_relaxed);
-        if (exception_code == EXCEPTION_SINGLE_STEP)
+        if (fault_kind == repiu::platform::FaultKind::kSingleStep)
         {
             std::atomic<std::uint32_t>* count =
                 &state->linear_span_cancel_other_db_count;
@@ -461,7 +459,7 @@ void LeaveNativeLinearSpan(CONTEXT* win32_context,
     }
 }
 
-bool TryEnterNativeLinearSpan(CONTEXT* win32_context,
+bool TryEnterNativeLinearSpan(repiu::platform::GuestCpuContext* win32_context,
                               ThreadContext* context)
 {
     detail::NativeFastPathState* state = &context->native_fast_path;
@@ -580,7 +578,7 @@ bool TryEnterNativeLinearSpan(CONTEXT* win32_context,
     return true;
 }
 
-bool TryEnterRetiredTrapNativeSpan(CONTEXT* win32_context,
+bool TryEnterRetiredTrapNativeSpan(repiu::platform::GuestCpuContext* win32_context,
                                    ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr)
@@ -591,7 +589,7 @@ bool TryEnterRetiredTrapNativeSpan(CONTEXT* win32_context,
         1U, std::memory_order_relaxed);
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedIncrement(
+        repiu::platform::AtomicIncrement(
             &context->shared_live_telemetry
                  ->aot_retired_span_attempt_count);
     }
@@ -603,7 +601,7 @@ bool TryEnterRetiredTrapNativeSpan(CONTEXT* win32_context,
         1U, std::memory_order_relaxed);
     if (context->shared_live_telemetry != nullptr)
     {
-        InterlockedIncrement(
+        repiu::platform::AtomicIncrement(
             &context->shared_live_telemetry
                  ->aot_retired_span_success_count);
     }

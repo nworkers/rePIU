@@ -7,6 +7,13 @@
 
 #include <cstddef>
 #include <cstdint>
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/fault_handler.h"
+
+// Task 503d-2. EXCEPTION_POINTERS is forward declared by its underlying tag so
+// this header needs no <windows.h>: a pointer to an incomplete type is all a
+// declaration requires, and on Windows it resolves to the very same type.
+struct _EXCEPTION_POINTERS;
 
 namespace repiu::platform::win32
 {
@@ -24,13 +31,13 @@ bool DecodeGlideTexDownloadTableCall(const std::uint32_t* guest_stack,
                                      GlideTexDownloadTableCall* call);
 
 void RecordAllocatorControlFlowException(
-    EXCEPTION_POINTERS* exception_info,
+    const repiu::platform::FaultEvent& fault,
     ThreadContext* context);
 
-bool HandleLinexeFarTransferBoundary(CONTEXT* win32_context,
+bool HandleLinexeFarTransferBoundary(repiu::platform::GuestCpuContext* win32_context,
                                      ThreadContext* context);
 
-bool HandleGlideGateBoundary(CONTEXT* win32_context,
+bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                              ThreadContext* context);
 
 } // namespace repiu::platform::win32

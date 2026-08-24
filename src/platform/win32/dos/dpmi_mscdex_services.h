@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include "repiu/platform/guest_cpu_context.h"
 
 namespace repiu::platform::win32
 {
@@ -43,9 +44,9 @@ bool HandleMscdexIoctl(ThreadContext* context, std::uint8_t* request);
 
 bool HandleMscdexIoctlOutput(ThreadContext* context, std::uint8_t* request);
 
-bool HandleDpmiInterrupt31(CONTEXT* win32_context, ThreadContext* context);
+bool HandleDpmiInterrupt31(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 
-bool HandleMouseInterrupt33(CONTEXT* win32_context, ThreadContext* context);
+bool HandleMouseInterrupt33(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 
 bool HandleMscdexRequest(ThreadContext* context,
                          std::uint16_t segment,

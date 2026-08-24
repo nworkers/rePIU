@@ -8,12 +8,7 @@
 #include "repiu/input/host_key_names.h"
 #include "repiu/input/jamma_input_bindings.h"
 #include "repiu/platform/win32/active_jamma_bindings.h"
-#include "win32_host_key_translation.h"
-
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
+#include <SDL3/SDL_keyboard.h>
 
 #include <cstdlib>
 #include <filesystem>
@@ -121,11 +116,11 @@ void ProbeBindingApplication()
 
     // A disabled input must also disappear from the polling path, which is
     // what the guest actually reads. An alias-free binding contributes no
-    // virtual key, so its port bit stays released.
+    // scancode, so its port bit stays released.
     ResolvedJammaBindings resolved = empty_value;
-    platform::win32::ResolveWin32VirtualKeys(&resolved);
+    input::ResolveJammaHostScancodes(&resolved);
     Check(resolved.Get(JammaInputKey::kTest).alias_count == 0,
-          "a disabled input resolves to no virtual key");
+          "a disabled input resolves to no scancode");
 
     ResolvedJammaBindings bindings = input::DefaultJammaBindings();
     std::vector<std::string> warnings;
@@ -169,7 +164,7 @@ void ProbeNameTable()
 
     bool duplicate_name = false;
     bool duplicate_keycode = false;
-    bool missing_virtual_key = false;
+    bool missing_scancode = false;
     bool round_trip_failed = false;
     for (std::uint32_t index = 0; index < count; ++index)
     {
@@ -187,11 +182,12 @@ void ProbeNameTable()
         }
 
         // Every configurable key must reach the polling path. Without this a
-        // key added to the table but missing a virtual key would bind fine in
-        // the window path and be silently dead in the guest.
-        if (platform::win32::SdlKeycodeToVirtualKey(table[index].keycode) == 0)
+        // key added to the table but missing a scancode would bind fine in the
+        // window path and be silently dead in the guest.
+        if (SDL_GetScancodeFromKey(table[index].keycode, nullptr) ==
+            SDL_SCANCODE_UNKNOWN)
         {
-            missing_virtual_key = true;
+            missing_scancode = true;
         }
 
         SDL_Keycode resolved = SDLK_UNKNOWN;
@@ -204,7 +200,7 @@ void ProbeNameTable()
 
     Check(!duplicate_name, "no duplicate key names");
     Check(!duplicate_keycode, "no duplicate keycodes");
-    Check(!missing_virtual_key, "every key name has a Win32 virtual key");
+    Check(!missing_scancode, "every key name resolves to a scancode");
     Check(!round_trip_failed, "every key name resolves to its own keycode");
 
     SDL_Keycode keycode = SDLK_UNKNOWN;
@@ -347,13 +343,13 @@ void ProbeLayeringAndGeneration(const std::filesystem::path& root)
     request.layer_ids = {"probeparent", "probechild"};
 
     // 7. With no file at all the result must equal the built-in defaults,
-    // virtual key for virtual key. This is the guard that configuration did
-    // not change what the emulator does out of the box.
+    // scancode for scancode. This is the guard that configuration did not
+    // change what the emulator does out of the box.
     const config::RomSetConfigResult bare = config::LoadRomSetConfig(request);
     ResolvedJammaBindings expected = input::DefaultJammaBindings();
-    platform::win32::ResolveWin32VirtualKeys(&expected);
+    input::ResolveJammaHostScancodes(&expected);
     ResolvedJammaBindings actual = bare.bindings;
-    platform::win32::ResolveWin32VirtualKeys(&actual);
+    input::ResolveJammaHostScancodes(&actual);
 
     bool identical = true;
     for (std::uint32_t index = 0; index < input::kJammaInputKeyCount; ++index)
@@ -367,8 +363,8 @@ void ProbeLayeringAndGeneration(const std::filesystem::path& root)
         }
         for (std::uint32_t slot = 0; slot < left.alias_count; ++slot)
         {
-            if (left.aliases[slot].virtual_key !=
-                    right.aliases[slot].virtual_key ||
+            if (left.aliases[slot].scancode !=
+                    right.aliases[slot].scancode ||
                 left.aliases[slot].keycode != right.aliases[slot].keycode)
             {
                 identical = false;
@@ -517,38 +513,44 @@ void ProbeGeneratedTemplate()
 // Comparing the resolved defaults against DefaultJammaBindings() only proves
 // the loader is self-consistent. This transcribes the mapping as it was
 // hardcoded in ScanJammaPort8 before configuration existed -- port, bit, and
-// the exact set of virtual keys that drove it -- and asserts the default
+// the exact set of host keys that drove it -- and asserts the default
 // configuration still produces precisely that.
+//
+// Task 503d-13 restated the keys as scancodes. The keypad entries used to need
+// their second alias because Windows reports a different virtual key for the
+// same physical key while NumLock is off; a scancode names the physical key, so
+// the first alias now covers both states and the second still covers the
+// dedicated navigation key it also always covered.
 void ProbeHistoricalDefaultMapping()
 {
     struct HistoricalBit
     {
         std::uint16_t port;
         std::uint8_t mask;
-        int virtual_keys[2];
-        std::uint32_t virtual_key_count;
+        SDL_Scancode scancodes[2];
+        std::uint32_t scancode_count;
     };
     constexpr HistoricalBit kHistorical[] = {
-        {0x02A8, 0x01, {'Q', 0}, 1},
-        {0x02A8, 0x02, {'E', 0}, 1},
-        {0x02A8, 0x04, {'S', 0}, 1},
-        {0x02A8, 0x08, {'Z', 0}, 1},
-        {0x02A8, 0x10, {'C', 0}, 1},
+        {0x02A8, 0x01, {SDL_SCANCODE_Q, SDL_SCANCODE_UNKNOWN}, 1},
+        {0x02A8, 0x02, {SDL_SCANCODE_E, SDL_SCANCODE_UNKNOWN}, 1},
+        {0x02A8, 0x04, {SDL_SCANCODE_S, SDL_SCANCODE_UNKNOWN}, 1},
+        {0x02A8, 0x08, {SDL_SCANCODE_Z, SDL_SCANCODE_UNKNOWN}, 1},
+        {0x02A8, 0x10, {SDL_SCANCODE_C, SDL_SCANCODE_UNKNOWN}, 1},
 
-        {0x02A9, 0x02, {VK_F1, 0}, 1},
-        {0x02A9, 0x04, {VK_F5, 0}, 1},
-        {0x02A9, 0x40, {VK_F2, 0}, 1},
-        {0x02A9, 0x80, {VK_F3, 0}, 1},
+        {0x02A9, 0x02, {SDL_SCANCODE_F1, SDL_SCANCODE_UNKNOWN}, 1},
+        {0x02A9, 0x04, {SDL_SCANCODE_F5, SDL_SCANCODE_UNKNOWN}, 1},
+        {0x02A9, 0x40, {SDL_SCANCODE_F2, SDL_SCANCODE_UNKNOWN}, 1},
+        {0x02A9, 0x80, {SDL_SCANCODE_F3, SDL_SCANCODE_UNKNOWN}, 1},
 
-        {0x02AA, 0x01, {VK_NUMPAD7, VK_HOME}, 2},
-        {0x02AA, 0x02, {VK_NUMPAD9, VK_PRIOR}, 2},
-        {0x02AA, 0x04, {VK_NUMPAD5, VK_CLEAR}, 2},
-        {0x02AA, 0x08, {VK_NUMPAD1, VK_END}, 2},
-        {0x02AA, 0x10, {VK_NUMPAD3, VK_NEXT}, 2},
+        {0x02AA, 0x01, {SDL_SCANCODE_KP_7, SDL_SCANCODE_HOME}, 2},
+        {0x02AA, 0x02, {SDL_SCANCODE_KP_9, SDL_SCANCODE_PAGEUP}, 2},
+        {0x02AA, 0x04, {SDL_SCANCODE_KP_5, SDL_SCANCODE_CLEAR}, 2},
+        {0x02AA, 0x08, {SDL_SCANCODE_KP_1, SDL_SCANCODE_END}, 2},
+        {0x02AA, 0x10, {SDL_SCANCODE_KP_3, SDL_SCANCODE_PAGEDOWN}, 2},
     };
 
     ResolvedJammaBindings defaults = input::DefaultJammaBindings();
-    platform::win32::ResolveWin32VirtualKeys(&defaults);
+    input::ResolveJammaHostScancodes(&defaults);
 
     std::uint32_t bit_count = 0;
     const input::JammaPortBit* bits = input::JammaPortBitTable(&bit_count);
@@ -578,12 +580,12 @@ void ProbeHistoricalDefaultMapping()
         }
 
         const input::JammaInputBinding& binding = defaults.Get(bit->key);
-        bool matches = binding.alias_count == expected.virtual_key_count;
+        bool matches = binding.alias_count == expected.scancode_count;
         for (std::uint32_t slot = 0;
-             matches && slot < expected.virtual_key_count; ++slot)
+             matches && slot < expected.scancode_count; ++slot)
         {
             const HostKeyAlias& alias = binding.aliases[slot];
-            matches = alias.virtual_key == expected.virtual_keys[slot] &&
+            matches = alias.scancode == expected.scancodes[slot] &&
                       !alias.has_modifiers();
         }
         Check(matches, label.str() + " keeps its historical host keys");

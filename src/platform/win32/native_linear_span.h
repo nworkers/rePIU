@@ -4,9 +4,9 @@
 
 #include <cstdint>
 #include <string_view>
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/fault_handler.h"
 
-struct _CONTEXT;
-using CONTEXT = _CONTEXT;
 
 namespace repiu::platform::win32
 {
@@ -29,14 +29,15 @@ bool NativeLinearSpanEnabled(
     runtime::ExecutionBackend execution_backend);
 bool RetiredTrapNativeSpanEnabled(
     runtime::ExecutionBackend execution_backend);
-bool TryEnterRetiredTrapNativeSpan(CONTEXT* win32_context,
+bool TryEnterRetiredTrapNativeSpan(repiu::platform::GuestCpuContext* win32_context,
                                    ThreadContext* context);
-bool TryEnterNativeLinearSpan(CONTEXT* win32_context,
+bool TryEnterNativeLinearSpan(repiu::platform::GuestCpuContext* win32_context,
                               ThreadContext* context);
-void LeaveNativeLinearSpan(CONTEXT* win32_context,
+void LeaveNativeLinearSpan(repiu::platform::GuestCpuContext* win32_context,
                            ThreadContext* context,
                            bool reached_boundary,
                            bool write_fault_cancel,
+                           repiu::platform::FaultKind fault_kind,
                            std::uint32_t exception_code);
 
 namespace detail

@@ -8,6 +8,8 @@
 #include "repiu/config/romset_config.h"
 #include "repiu/storage/nvram_path.h"
 #include "repiu/platform/win32/active_jamma_bindings.h"
+#include <SDL3/SDL_init.h>
+#include <SDL3/SDL_error.h>
 #include "repiu/platform/win32/eeprom_backing_path.h"
 #include "repiu/platform/win32/execution_trampoline.h"
 #include "repiu/platform/win32/aot_code_cache_win32.h"
@@ -20,6 +22,8 @@
 #include "repiu/platform/win32/live_telemetry.h"
 #include "repiu/platform/win32/veh_exit_site.h"
 #include "repiu/platform/win32/runtime_memory_policy.h"
+#include "repiu/platform/host_environment.h"
+#include "repiu/platform/host_process.h"
 #include "repiu/runtime/guest_context.h"
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/aot_translation_plan.h"
@@ -93,7 +97,7 @@ std::uint32_t ReadExecutionTimeoutMilliseconds()
         repiu::runtime::ResolveExecutionTimeoutMilliseconds(text);
     return milliseconds ==
             repiu::runtime::kUnlimitedExecutionTimeoutMilliseconds
-        ? INFINITE
+        ? repiu::runtime::kWaitForeverMilliseconds
         : milliseconds;
 }
 
@@ -103,7 +107,8 @@ std::uint32_t ReadStallTimeoutMilliseconds()
         repiu::platform::win32::kWin32StallTimeoutEnvironment);
     const std::uint32_t milliseconds =
         repiu::runtime::ResolveStallTimeoutMilliseconds(text);
-    return milliseconds == 0U ? INFINITE : milliseconds;
+    return milliseconds == 0U ? repiu::runtime::kWaitForeverMilliseconds
+                              : milliseconds;
 }
 
 std::shared_ptr<spdlog::logger> CreateLoaderLogger()
@@ -4699,7 +4704,7 @@ void PublishLauncherSettings(
     const auto applied = repiu::launcher::ApplyLauncherSettings(
         settings, overrides,
         [](const char* name, const std::string& value) {
-            _putenv_s(name, value.c_str());
+            repiu::platform::PublishEnvironmentSetting(name, value.c_str());
         });
     logger->info("Launcher settings published swap-interval/volume: {}/{}",
                  applied.swap_interval_published,
@@ -4724,22 +4729,26 @@ int RunSelectedRomSetInNewProcess(const char* executable_path,
         repiu::launcher::BuildLauncherChildCommandLine(executable_path,
                                                        rom_set_id);
 
-    STARTUPINFOA startup{};
-    startup.cb = sizeof(startup);
-    PROCESS_INFORMATION process{};
-    if (CreateProcessA(executable_path, command_line.data(), nullptr, nullptr,
-                       TRUE, 0, nullptr, nullptr, &startup, &process) == 0)
+    // Task 503d-17: the same launch stated twice, because Windows takes a
+    // command line and POSIX takes argv. The command line is still built by the
+    // launcher function the probe covers, so its quoting has one home.
+    const char* arguments[] = {rom_set_id.c_str()};
+    repiu::platform::ChildProcessLaunch launch;
+    launch.executable_path = executable_path;
+    launch.command_line = command_line.c_str();
+    launch.arguments = arguments;
+    launch.argument_count = rom_set_id.empty() ? 0U : 1U;
+
+    std::uint32_t host_error = 0;
+    const int exit_code =
+        repiu::platform::RunChildProcessAndWait(launch, &host_error);
+    if (exit_code == repiu::platform::kChildProcessDidNotStart)
     {
-        logger->error("Failed to start {} for {}: Win32 error {}",
-                      executable_path, rom_set_id, GetLastError());
+        logger->error("Failed to start {} for {}: host error {}",
+                      executable_path, rom_set_id, host_error);
         return 1;
     }
-    WaitForSingleObject(process.hProcess, INFINITE);
-    DWORD exit_code = 1;
-    GetExitCodeProcess(process.hProcess, &exit_code);
-    CloseHandle(process.hThread);
-    CloseHandle(process.hProcess);
-    return static_cast<int>(exit_code);
+    return exit_code;
 }
 
 std::optional<repiu::target::TargetProfile> BuildDirectExecutableProfile(
@@ -4926,11 +4935,25 @@ int main(int argc, char** argv)
     // Task 497: per-ROM-set configuration. Loaded here, before the guest
     // thread and the SDL window exist, because the resolved bindings are read
     // without a lock from both of them afterwards.
+    //
+    // Task 503d-13: the video subsystem is brought up first because that is
+    // what gives SDL a keyboard layout, and resolving a binding without one
+    // answers from SDL's default layout instead. It matters for the built-in
+    // defaults too, whose P1 keys are letters. The call is reference counted,
+    // so the render backend still initializes video for itself later; a
+    // failure here is not fatal and only costs the layout.
+    if (!SDL_InitSubSystem(SDL_INIT_VIDEO))
+    {
+        logger->warn("SDL video for keyboard layout: {}", SDL_GetError());
+    }
     if (!profile->rom_set_id.empty())
     {
         LoadRomSetInputConfiguration(*logger, profile->rom_set_id,
                                      ExecutableDirectory(argc, argv));
     }
+    // Covers the run that loads no configuration, whose defaults would
+    // otherwise stay resolved as they were on first use.
+    repiu::platform::win32::ResolveActiveJammaScancodes();
 
     // Task 498: per-ROM-set NVRAM. Resolved before the guest runs because the
     // EEPROM device is created on its first port access and cannot be moved
@@ -5422,7 +5445,8 @@ int main(int argc, char** argv)
         ReadExecutionTimeoutMilliseconds();
     const std::uint32_t stall_timeout_milliseconds =
         ReadStallTimeoutMilliseconds();
-    if (execution_timeout_milliseconds == INFINITE)
+    if (execution_timeout_milliseconds ==
+        repiu::runtime::kWaitForeverMilliseconds)
     {
         logger->info("Win32 guest execution timeout: disabled");
     }
@@ -5431,7 +5455,8 @@ int main(int argc, char** argv)
         logger->info("Win32 guest execution timeout: {} ms",
                      execution_timeout_milliseconds);
     }
-    if (stall_timeout_milliseconds == INFINITE)
+    if (stall_timeout_milliseconds ==
+        repiu::runtime::kWaitForeverMilliseconds)
     {
         logger->info("Win32 guest stall timeout: disabled");
     }

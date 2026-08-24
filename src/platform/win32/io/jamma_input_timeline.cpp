@@ -1,12 +1,7 @@
 #include "repiu/platform/win32/jamma_input_timeline.h"
 
 #include "repiu/platform/win32/active_jamma_bindings.h"
-#include "win32_host_key_translation.h"
-
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
+#include <SDL3/SDL_keyboard.h>
 
 #include <algorithm>
 #include <thread>
@@ -268,8 +263,12 @@ std::uint16_t CaptureCurrentJammaPressedMask() {
   // actually needs it. With the default configuration nothing does, so this
   // costs exactly what it did before configuration existed.
   const SDL_Keymod modifier_state = bindings.any_binding_uses_modifiers
-                                        ? ReadWin32ModifierState()
+                                        ? SDL_GetModState()
                                         : SDL_KMOD_NONE;
+
+  // As on the port I/O path: SDL owns the array for the life of the process
+  // and documents reading it from any thread.
+  static const bool *const key_state = SDL_GetKeyboardState(nullptr);
 
   std::uint16_t pressed_mask = 0U;
   for (std::uint32_t index = 0; index < repiu::input::kJammaInputKeyCount;
@@ -277,10 +276,10 @@ std::uint16_t CaptureCurrentJammaPressedMask() {
     const repiu::input::JammaInputBinding &binding = bindings.inputs[index];
     for (std::uint32_t slot = 0; slot < binding.alias_count; ++slot) {
       const repiu::input::HostKeyAlias &alias = binding.aliases[slot];
-      if (alias.virtual_key == 0) {
+      if (alias.scancode == SDL_SCANCODE_UNKNOWN) {
         continue;
       }
-      if ((GetAsyncKeyState(alias.virtual_key) & 0x8000) == 0 ||
+      if (!key_state[alias.scancode] ||
           !alias.ModifiersMatch(modifier_state)) {
         continue;
       }

@@ -13,6 +13,9 @@
 #include <limits>
 #include <string_view>
 #include <utility>
+#include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/thunk_calling_convention.h"
+#include "repiu/platform/virtual_memory.h"
 
 namespace repiu::platform::win32
 {
@@ -33,7 +36,7 @@ std::atomic<std::uint32_t> g_success_count{0};
 std::atomic<std::uint32_t> g_target_miss_count{0};
 std::atomic<std::uint32_t> g_terminal_failure_count{0};
 
-extern "C" void __stdcall ResolveAotDbtGlideGateFrame(
+extern "C" void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtGlideGateFrame(
     ThreadContext* context, std::uint32_t* frame)
 {
     if (context == nullptr || frame == nullptr)
@@ -55,9 +58,9 @@ extern "C" void __stdcall ResolveAotDbtGlideGateFrame(
     const std::uint32_t gate_address = continuation - 5U;
     const std::uint32_t original_esp = frame[kSavedEspIndex] + 8U;
 
-    CONTEXT guest_context{};
+    repiu::platform::GuestCpuContext guest_context{};
     guest_context.ContextFlags =
-        CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS;
+        repiu::platform::kGuestCpuContextIntegerControlSegments;
     guest_context.Edi = frame[0];
     guest_context.Esi = frame[1];
     guest_context.Ebp = frame[2];
@@ -171,6 +174,13 @@ extern "C" __declspec(naked) void AotDbtGlideGateDispatchThunk()
 }
 #endif
 
+#if !defined(_MSC_VER) && defined(__i386__)
+// Task 503d-12: the same thunk on Linux, one instantiation of the shared
+// bridge macro in src/platform/linux/aot_dbt_dispatch_thunks.S. GCC has no
+// naked functions on x86, so only the declaration is here.
+extern "C" void AotDbtGlideGateDispatchThunk();
+#endif
+
 }  // namespace
 
 bool ResolveWin32GlideGateDirectDispatchEnabled(const char* setting)
@@ -263,9 +273,12 @@ bool ActivateWin32GlideGateDirectTarget(
     {
         auto* cache = reinterpret_cast<void*>(
             static_cast<std::uintptr_t>(placement->base_address));
-        DWORD previous = 0U;
-        if (VirtualProtect(cache, placement->capacity,
-                           PAGE_EXECUTE_READWRITE, &previous) == 0)
+        repiu::platform::MemoryProtection previous =
+            repiu::platform::MemoryProtection::kOther;
+        if (!repiu::platform::ProtectMemory(
+                cache, placement->capacity,
+                repiu::platform::MemoryProtection::kExecuteReadWrite,
+                &previous))
         {
             return false;
         }
@@ -293,10 +306,9 @@ bool ActivateWin32GlideGateDirectTarget(
                     placement->base_address + offset)),
                 &displacement, sizeof(displacement));
         }
-        DWORD ignored = 0U;
-        const bool restored = VirtualProtect(
-            cache, placement->capacity, previous, &ignored) != 0;
-        FlushInstructionCache(GetCurrentProcess(), cache, placement->size);
+        const bool restored = repiu::platform::ProtectMemory(
+            cache, placement->capacity, previous, nullptr);
+        repiu::platform::FlushInstructionCacheRange(cache, placement->size);
         if (!restored)
         {
             return false;
@@ -407,7 +419,7 @@ ReadWin32GlideGateDirectDispatchStats()
 
 void* GetWin32GlideGateDirectDispatchThunkAddress()
 {
-#if defined(_MSC_VER) && defined(_M_IX86)
+#if (defined(_MSC_VER) && defined(_M_IX86)) || defined(__i386__)
     return reinterpret_cast<void*>(&AotDbtGlideGateDispatchThunk);
 #else
     return nullptr;

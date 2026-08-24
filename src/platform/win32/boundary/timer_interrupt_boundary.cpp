@@ -5,6 +5,7 @@
 #include "thread_context.h"
 
 #include <cstdint>
+#include "repiu/platform/atomic_ops.h"
 
 namespace repiu::platform::win32
 {
@@ -35,8 +36,8 @@ void ArmAotTimerSafePoint(ThreadContext* context)
     {
         return;
     }
-    InterlockedExchange(
-        reinterpret_cast<volatile LONG*>(
+    repiu::platform::AtomicExchange(
+        reinterpret_cast<volatile long*>(
             &context->aot_placement->timer_safe_point_request),
         1L);
 }
@@ -47,26 +48,25 @@ void ClearAotTimerSafePointRequest(ThreadContext* context)
     {
         return;
     }
-    InterlockedExchange(
-        reinterpret_cast<volatile LONG*>(
+    repiu::platform::AtomicExchange(
+        reinterpret_cast<volatile long*>(
             &context->aot_placement->timer_safe_point_request),
         0L);
 }
 
-bool HandleAotTimerSafePoint(_EXCEPTION_POINTERS* exception_info,
-                             _CONTEXT* win32_context,
+bool HandleAotTimerSafePoint(const repiu::platform::FaultEvent& fault,
                              ThreadContext* context)
 {
-    if (exception_info == nullptr || exception_info->ExceptionRecord == nullptr ||
-        win32_context == nullptr || context == nullptr ||
+    repiu::platform::GuestCpuContext* win32_context = fault.registers;
+    if (win32_context == nullptr || context == nullptr ||
         context->aot_placement == nullptr ||
-        exception_info->ExceptionRecord->ExceptionCode != EXCEPTION_BREAKPOINT)
+        fault.kind != repiu::platform::FaultKind::kBreakpoint)
     {
         return false;
     }
     Win32AotCodeCachePlacement* placement = context->aot_placement;
-    const std::uintptr_t exception_address = reinterpret_cast<std::uintptr_t>(
-        exception_info->ExceptionRecord->ExceptionAddress);
+    const std::uintptr_t exception_address =
+        static_cast<std::uintptr_t>(fault.instruction_address);
     if (exception_address < placement->base_address ||
         exception_address >= placement->base_address + placement->size)
     {
@@ -91,7 +91,7 @@ bool HandleAotTimerSafePoint(_EXCEPTION_POINTERS* exception_info,
             : 0U;
 
     ClearAotTimerSafePointRequest(context);
-    InterlockedIncrement(reinterpret_cast<volatile LONG*>(
+    repiu::platform::AtomicIncrement(reinterpret_cast<volatile long*>(
         &placement->timer_safe_point_trap_count));
     // Win32 reports the breakpoint at the INT3 byte and leaves EIP there for
     // this cache-origin trap. Resume at the translated branch immediately
@@ -106,12 +106,12 @@ bool HandleAotTimerSafePoint(_EXCEPTION_POINTERS* exception_info,
         static_cast<std::uint32_t>(win32_context->Eip) != resume_eip;
     if (injected)
     {
-        InterlockedIncrement(reinterpret_cast<volatile LONG*>(
+        repiu::platform::AtomicIncrement(reinterpret_cast<volatile long*>(
             &placement->timer_safe_point_injected_count));
     }
     else
     {
-        InterlockedIncrement(reinterpret_cast<volatile LONG*>(
+        repiu::platform::AtomicIncrement(reinterpret_cast<volatile long*>(
             &placement->timer_safe_point_deferred_count));
     }
     RecordAotTimerSourceEvent(
@@ -124,7 +124,7 @@ bool HandleAotTimerSafePoint(_EXCEPTION_POINTERS* exception_info,
     return true;
 }
 
-bool HandleTimerInterruptChainBoundary(_CONTEXT* win32_context,
+bool HandleTimerInterruptChainBoundary(repiu::platform::GuestCpuContext* win32_context,
                                        ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr ||

@@ -12,6 +12,7 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include "repiu/platform/atomic_ops.h"
 #endif
 
 namespace repiu::platform::win32
@@ -728,7 +729,7 @@ bool RetireWin32AotGuestPage(
     if (result->guard_reset_count != 0U)
     {
         static long guard_reset_events = 0;
-        const long event_index = InterlockedIncrement(&guard_reset_events);
+        const long event_index = repiu::platform::AtomicIncrement(&guard_reset_events);
         if (event_index <= 16 || (event_index & 0xFFF) == 0)
         {
             fprintf(stderr,

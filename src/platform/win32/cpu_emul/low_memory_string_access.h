@@ -10,6 +10,7 @@
 #include "thread_context.h"
 
 #include <cstdint>
+#include "repiu/platform/guest_cpu_context.h"
 
 namespace repiu::platform::win32
 {
@@ -23,7 +24,7 @@ constexpr std::uint32_t kLowMemoryStringIterationCap =
 // Attempts to service the string instruction at the current EIP. Returns false
 // when the instruction is not a supported low-memory string read, leaving the
 // context untouched so the caller can fall through to its own handling.
-bool ServiceGuestLowMemoryStringInstruction(CONTEXT* win32_context,
+bool ServiceGuestLowMemoryStringInstruction(repiu::platform::GuestCpuContext* win32_context,
                                             ThreadContext* context);
 
 }  // namespace repiu::platform::win32
