@@ -2331,6 +2331,91 @@ Windows 프로시저는 `__try`/`__except`로 감싸여 있고, VEH가 재개하
    봐야 합니다.
 4. **오디오 셋**은 여전히 무음입니다.
 
+## 3d-19a — 오디오는 이미 이식되어 있었습니다
+
+### 1. 결과
+
+Linux에서 소리 경로가 열립니다.
+
+```
+[repiu-ymz] YMZ280B ready through SDL3 at 88200 Hz
+```
+
+이전: `SDL YMZ280B stream creation failed: ALSA: Couldn't open audio device`.
+
+**코드는 한 줄도 고치지 않았습니다.** 고친 것은 빌드 스크립트 하나이고, 나머지는 환경이었습니다.
+
+### 2. 제가 틀렸습니다 — 이름을 보고 판단했습니다
+
+3d-17·3d-19의 frontier 기록은 오디오 출력 셋을 "Linux 백엔드 없음, 무음"으로 적었습니다.
+**틀렸습니다.**
+
+| 파일 | `SDL_` 호출 | waveOut 호출 |
+|---|---|---|
+| `ymz280b_audio_out.cpp` | 16 | **0** |
+| `piu10_mp3_audio_out.cpp` | 31 | **0** |
+| `cd_audio_wave_out.cpp` | 24 | **0** |
+
+`cd_audio_wave_out`은 **이름만** waveOut입니다. 이 설계 문서의 첫 절이 정확히 같은 실수를
+기록하고 있습니다 — `Win32AotPageWriteWatchSet`이라는 이름을 보고 `GetWriteWatch`를 쓴다고
+단정했다 틀린 것. 교훈이 이미 적혀 있는데 같은 함정에 빠졌습니다.
+
+**이식 대상을 세는 일에서 이름은 증거가 아닙니다.**
+
+### 3. 진짜 원인 둘, 겹쳐 있었습니다
+
+**빌드 쪽.** `libpulse.pc`는 32비트 패키지가 설치하는 곳에만 있습니다.
+
+```
+/usr/lib/i386-linux-gnu/pkgconfig/libpulse.pc   ← 설치되는 곳
+/usr/lib/x86_64-linux-gnu/pkgconfig             ← pkg-config가 찾는 곳
+```
+
+amd64 호스트의 pkg-config 기본 경로는 64비트 디렉터리만 봅니다. 그래서 SDL이
+`Package 'libpulse' not found`를 보고하고 PulseAudio 백엔드를 빼고 컴파일합니다 —
+**라이브러리가 디스크에 있는데도.** `apt install libpulse-dev:i386`만으로는 아무것도
+바뀌지 않는 이유입니다.
+
+빌드 스크립트가 `PKG_CONFIG_PATH`에 i386 디렉터리를 앞에 붙입니다. 기본값을 대체하지 않고
+앞에 붙이는 이유는 원래 방식으로 찾히던 것이 그대로 찾혀야 하기 때문입니다.
+
+**환경 쪽.** 그것을 고친 뒤에도 안 됐습니다. WSLg의 서비스가 죽어 있었습니다 —
+`/mnt/wslg/.X11-unix/`가 비어 있고 `runtime-dir/`에 wayland 소켓이 없고
+`pulseaudio.log`가 아예 없었습니다. `wsl --shutdown` 후 재시작하니 전부 돌아왔습니다.
+
+### 4. 중간에 한 번 잘못 짚었습니다
+
+PulseAudio를 붙인 뒤 기동이 멈춰서 **제 변경이 원인인가 의심했습니다.** 아니었습니다.
+
+`SDL_VIDEODRIVER`를 강제해 갈랐습니다.
+
+| 드라이버 | 결과 |
+|---|---|
+| 기본 / `x11` | 기동 정지 |
+| `wayland` | 정상 실행 |
+| `dummy` | 정상 실행 |
+
+X11만 멈추는 것이고, 그때 `/mnt/wslg/.X11-unix/`는 비어 있었습니다 — 없는 소켓에 접속하고
+있었던 것입니다. **변경을 의심하기 전에 환경을 확인해야 했습니다.**
+
+### 5. 확인하지 않은 것
+
+**소리가 실제로 들리는지는 확인할 수 없습니다.** SDL이 88200 Hz로 스트림을 열었고 ALSA
+실패가 사라진 것까지가 여기서 측정 가능한 범위입니다. WSLg를 거쳐 Windows 오디오로
+재생되는지는 사람이 들어야 합니다.
+
+### 6. 검증
+
+| 대상 | 결과 |
+|---|---|
+| SDL3 오디오 드라이버 | `alsa disk dummy pulseaudio(dynamic)` (이전: pulseaudio 없음) |
+| YMZ280B 스트림 | `ready through SDL3 at 88200 Hz` |
+| ALSA 실패 메시지 | 0건 (이전: 다수) |
+| 게스트 실행 | 그대로 — 같은 지점에서 같은 정지 |
+
+오디오가 붙어도 **9초 정지는 그대로입니다.** heartbeat 1,337,938, EIP 0x010F527A. 별개
+문제입니다.
+
 ---
 
 # Linux Execution Engine Work Log (Stage 3)
@@ -4305,3 +4390,88 @@ for: the classification may differ while the outcome does not.
 3. **Asset paths and the CHD mount**, out of the design's scope and needing that decision revisited
    before the game itself can run.
 4. **The three audio outputs** are still silent.
+
+## 3d-19a — The audio was already ported
+
+### Result
+
+The sound path opens on Linux.
+
+```
+[repiu-ymz] YMZ280B ready through SDL3 at 88200 Hz
+```
+
+Previously: `SDL YMZ280B stream creation failed: ALSA: Couldn't open audio device`.
+
+**Not one line of engine code changed.** One line of the build script did, and the rest was the
+environment.
+
+### I was wrong — I judged by the name
+
+The frontier notes from 3d-17 and 3d-19 recorded the three audio outputs as "silent, no Linux
+backend". **That was wrong.**
+
+| File | `SDL_` calls | waveOut calls |
+|---|---|---|
+| `ymz280b_audio_out.cpp` | 16 | **0** |
+| `piu10_mp3_audio_out.cpp` | 31 | **0** |
+| `cd_audio_wave_out.cpp` | 24 | **0** |
+
+Only the *name* `cd_audio_wave_out` says waveOut. This design document's own opening section records
+exactly the same mistake — assuming `Win32AotPageWriteWatchSet` used `GetWriteWatch` because of its
+name. The lesson was already written down and I walked into it again.
+
+**When counting what a port has left to do, a name is not evidence.**
+
+### Two real causes, stacked
+
+**The build.** `libpulse.pc` only exists where the 32-bit package puts it:
+
+```
+/usr/lib/i386-linux-gnu/pkgconfig/libpulse.pc   <- installed here
+/usr/lib/x86_64-linux-gnu/pkgconfig             <- searched here
+```
+
+pkg-config's default path on an amd64 host names only the 64-bit directory, so SDL reported
+`Package 'libpulse' not found` and compiled the PulseAudio backend out — **with the library sitting
+on disk.** That is why `apt install libpulse-dev:i386` on its own changes nothing.
+
+The build script now prepends the i386 directory to `PKG_CONFIG_PATH`. Prepended rather than
+replacing the default, so anything found the usual way still is.
+
+**The environment.** Fixing that was not enough. WSLg's services were dead: `/mnt/wslg/.X11-unix/`
+empty, no wayland socket in `runtime-dir/`, no `pulseaudio.log` at all. `wsl --shutdown` and a
+restart brought all of it back.
+
+### One wrong turn along the way
+
+When startup hung after PulseAudio was enabled, **I suspected my own change.** It was not.
+
+Forcing the video driver separated it:
+
+| Driver | Result |
+|---|---|
+| default / `x11` | hangs at startup |
+| `wayland` | runs |
+| `dummy` | runs |
+
+Only X11 hung, and `/mnt/wslg/.X11-unix/` was empty at the time — it was connecting to a socket that
+was not there. **The environment should have been checked before the change was suspected.**
+
+### Not established
+
+**Whether sound is actually audible.** That SDL opened a stream at 88200 Hz and the ALSA failures
+are gone is as far as measurement reaches here. Whether it reaches Windows audio through WSLg is for
+a person to hear.
+
+### Verification
+
+| Target | Result |
+|---|---|
+| SDL3 audio drivers | `alsa disk dummy pulseaudio(dynamic)` (previously: no pulseaudio) |
+| The YMZ280B stream | `ready through SDL3 at 88200 Hz` |
+| ALSA failure messages | none (previously: many) |
+| Guest execution | unchanged — the same stall at the same point |
+
+Audio being connected does not move the **nine-second stall**: heartbeat 1,337,938, EIP
+0x010F527A. A separate problem.

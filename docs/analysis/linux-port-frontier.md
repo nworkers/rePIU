@@ -106,12 +106,39 @@ REPIU_EXECUTION_BACKEND=legacy ./repiu     ../../build/openwatcom_samples/clibex
 |---|---|---|
 | 자식 프로세스 재실행이 Linux에도 필요한가 | **미측정** | Task 500의 근거(GPU 드라이버의 주소 공간 선점)가 Linux에도 해당하는지 확인한 적 없음. 되돌릴 자리는 `host_process.h` |
 | 자산 경로와 CHD 마운트의 Linux 검증 | **범위 밖** | 설계의 "범위 밖" 절. 실행 시도 전에 다시 볼 것 |
-| 오디오 출력 셋 | **무음** | `cd_audio_wave_out`·`ymz280b_audio_out`·`piu10_mp3_audio_out`이 컴파일·링크되지만 Linux 백엔드 없음 |
+| 오디오 출력 셋 | **정정됨** | 아래 8절 |
 | 하드웨어 디버그 레지스터 | **불가** | Linux 사용자 공간은 자기 스레드의 것을 쓸 수 없음. `native_linear_span`은 Linux에서 비활성 |
 | 교차 프로세스 텔레메트리 | **울타리 안** | `live_telemetry_snapshot.cpp`의 공유 섹션·정지 스냅샷. 게스트 구동에 불필요 |
 | `CaptureSuspendedThreadSnapshot` | **호출자 없음** | 정의만 있고 선언도 호출도 없음. 지우는 것은 의도 확인 후 |
 
-## 7. 반복해서 겪은 함정 — 그리고 컴파일로는 못 잡는 것
+## 7. 정정 — 오디오 출력은 이미 이식되어 있었습니다
+
+이 문서의 이전 판은 오디오 출력 셋을 "Linux 백엔드 없음, 무음"으로 적었습니다. **틀렸습니다.**
+세 파일 모두 이미 SDL을 쓰고 있고 waveOut 호출이 하나도 없습니다.
+
+| 파일 | `SDL_` 호출 | waveOut 호출 |
+|---|---|---|
+| `ymz280b_audio_out.cpp` | 16 | **0** |
+| `piu10_mp3_audio_out.cpp` | 31 | **0** |
+| `cd_audio_wave_out.cpp` | 24 | **0** |
+
+`cd_audio_wave_out`은 **이름만** waveOut입니다. 설계의 "정정 1"이 `Win32AotPageWriteWatchSet`
+이름을 보고 `GetWriteWatch`를 쓴다고 단정했다 틀린 것과 **같은 함정**이고, 그 교훈은 이미
+설계에 적혀 있었습니다 — **이름이 아니라 구현을 봐야 합니다.**
+
+소리가 나지 않은 진짜 이유는 SDL 쪽이었습니다. i386 빌드인데 `libpulse`의 32비트 판이 없어
+SDL이 PulseAudio 백엔드를 빼고 ALSA만 컴파일했고, WSL에는 ALSA가 직접 열 장치가 없습니다.
+
+```
+#define SDL_AUDIO_DRIVER_ALSA 1     ← 이것만 있었음
+#define SDL_AUDIO_DRIVER_DISK 1
+#define SDL_AUDIO_DRIVER_DUMMY 1
+```
+
+`libpulse-dev:i386`을 넣고 트리를 **버리고 다시 구성**해야 합니다 — SDL의 드라이버 감지는
+구성 시점에 캐시되므로, 남은 캐시가 "안 고쳐졌다"처럼 보이게 만듭니다.
+
+## 8. 반복해서 겪은 함정 — 그리고 컴파일로는 못 잡는 것
 
 **막고 있는 것 하나가 그 뒤의 숫자를 전부 가립니다.** 네 번 겪었습니다.
 
@@ -255,12 +282,40 @@ offsets.**
 |---|---|---|
 | Whether Linux needs the child-process relaunch | **not measured** | Task 500's reason (a GPU driver claiming the guest's address space) has never been checked on Linux. `host_process.h` is where it comes out |
 | Asset paths and the CHD mount on Linux | **out of scope** | the design's out-of-scope section; revisit before attempting a run |
-| The three audio outputs | **silent** | `cd_audio_wave_out`, `ymz280b_audio_out`, `piu10_mp3_audio_out` compile and link with no Linux backend |
+| The three audio outputs | **corrected** | see section 8 |
 | Hardware debug registers | **unavailable** | Linux user space cannot write its own thread's, so `native_linear_span` stays disabled there |
 | Cross-process telemetry | **fenced** | the shared section and suspended snapshot in `live_telemetry_snapshot.cpp`; not needed to run the guest |
 | `CaptureSuspendedThreadSnapshot` | **no callers** | defined, never declared or called; removing it wants its intent confirmed first |
 
-## 7. One trap met three times
+## 7. Correction — the audio outputs were already portable
+
+An earlier revision of this document recorded the three audio outputs as "silent, with no Linux
+backend". **That was wrong.** All three already use SDL, with no waveOut call between them.
+
+| File | `SDL_` calls | waveOut calls |
+|---|---|---|
+| `ymz280b_audio_out.cpp` | 16 | **0** |
+| `piu10_mp3_audio_out.cpp` | 31 | **0** |
+| `cd_audio_wave_out.cpp` | 24 | **0** |
+
+Only the *name* `cd_audio_wave_out` says waveOut. This is the **same trap** the design's first
+correction records — assuming `Win32AotPageWriteWatchSet` used `GetWriteWatch` because of its name —
+and its lesson was already written down: **read the implementation, not the name.**
+
+The real reason there was no sound is on the SDL side. This is an i386 build, and with no 32-bit
+`libpulse` present SDL compiled the PulseAudio backend out and left only ALSA, which has no device
+to open under WSL.
+
+```
+#define SDL_AUDIO_DRIVER_ALSA 1     ← the only one
+#define SDL_AUDIO_DRIVER_DISK 1
+#define SDL_AUDIO_DRIVER_DUMMY 1
+```
+
+The fix is `libpulse-dev:i386` and then **discarding and reconfiguring** the tree: SDL caches its
+driver detection at configure time, so a surviving cache makes this look as though it had not worked.
+
+## 8. One trap met four times
 
 **A single obstruction hides every number behind it.**
 

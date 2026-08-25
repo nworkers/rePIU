@@ -76,6 +76,24 @@ NEEDS
     exit 1
 fi
 
+# A warning rather than a failure: a silent build is still a usable build, and an
+# operator who only wants to check that the guest runs should not be stopped for
+# it. Note that SDL caches this decision, so installing the package later means
+# discarding the build directory -- reconfiguring an existing one keeps the
+# answer it already found.
+if [[ $headless -eq 0 ]] && ! ls /usr/lib/i386-linux-gnu/libpulse.so         /lib/i386-linux-gnu/libpulse.so > /dev/null 2>&1; then
+    cat >&2 <<'AUDIO'
+Note: no 32-bit libpulse, so SDL will build with ALSA only and the game will be
+silent on any host that routes audio through PulseAudio or PipeWire:
+
+    sudo apt install -y libpulse-dev:i386
+
+Then remove build/linux_i386 before rebuilding; SDL caches which audio drivers
+it found at configure time.
+
+AUDIO
+fi
+
 # SDL3 needs X11 or Wayland development packages to configure. --headless skips
 # that requirement for the core and its probes, which open no window; the
 # launcher needs the real desktop packages.
@@ -84,10 +102,30 @@ fi
 # X11 extensions this project never uses, for inhibiting the screen saver and
 # simulating input, and every extension left on is one more 32-bit package an
 # operator has to hunt down.
+#
+# Audio is the one that fails quietly. SDL compiles the drivers it can find at
+# configure time, so without libpulse-dev:i386 it keeps only ALSA -- which then
+# reports "Couldn't open audio device" on any host that routes sound through
+# PulseAudio or PipeWire, WSL among them. The build still succeeds and the game
+# still runs; it just never makes a sound. The check below names the package
+# rather than leaving that to be rediscovered.
 sdl_options=(-DSDL_X11_XSCRNSAVER=OFF -DSDL_X11_XTEST=OFF)
 if [[ $headless -ne 0 ]]; then
     sdl_options+=(-DSDL_UNIX_CONSOLE_BUILD=ON)
 fi
+
+# SDL finds its optional dependencies with pkg-config, and pkg-config's default
+# search path on an amd64 host names only the 64-bit directory. The 32-bit
+# packages install their .pc files somewhere it never looks:
+#
+#     /usr/lib/i386-linux-gnu/pkgconfig/libpulse.pc      <- installed here
+#     /usr/lib/x86_64-linux-gnu/pkgconfig                <- searched here
+#
+# So `apt install libpulse-dev:i386` alone changes nothing: SDL reports that the
+# package is not found while the library sits on disk. Naming the directory here
+# is what makes an installed 32-bit package visible to a 32-bit build. Prepended
+# rather than replacing the default, so anything found the usual way still is.
+export PKG_CONFIG_PATH="/usr/lib/i386-linux-gnu/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 
 cmake -S "$root" -B "$build_dir" \
     -DCMAKE_BUILD_TYPE="$configuration" \
