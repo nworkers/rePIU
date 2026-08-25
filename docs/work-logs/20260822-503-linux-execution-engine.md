@@ -2497,6 +2497,113 @@ X11만 멈추는 것이고, 그때 `/mnt/wslg/.X11-unix/`는 비어 있었습니
    9초 정지에서 게스트 EIP를 표본할 수 있게 됩니다 — 조사가 막힌 지점이 정확히 거기입니다.
 2. **감시견의 강제 중단.** 3d-18이 답을 정하고 3d-19가 울타리에 넣은 그것입니다.
 
+## 3d-21 — 표본기를 인터럽트 위에 올리기
+
+### 1. 결과
+
+`CaptureWin32NativePhaseSample`이 양쪽 호스트에서 돕니다. 3d-14가 이 파일에 친 울타리 —
+"도는 스레드를 밖에서 멈춰 레지스터를 읽는 건 Linux에서 디버거의 권한" — 가 3d-20이 대응물을
+만들면서 사라졌습니다.
+
+| 파일 | 내용 |
+|---|---|
+| `native_phase_sampler.{h,cpp}` | `HostThread`를 받고 `InterruptHostThread`로 표본, SEH 제거 |
+| `telemetry/live_telemetry_snapshot.cpp` | 표본 호출부 둘의 울타리 해제, `GetThreadTimes`만 남김 |
+| `platform/host_thread.{h,cpp}` | 인터럽트가 실패 이유를 돌려줌 |
+
+### 2. 작업을 둘로 나눈 기준
+
+콜백은 Linux에서 **시그널 핸들러 안**에서 돌므로 거기서 할 수 있는 일이 제한됩니다.
+
+| 어디서 | 무엇 | 왜 |
+|---|---|---|
+| 인터럽트 안 | 레지스터 복사, 스택 스캔 | 스택은 대상이 멈춰 있을 때만 일관됨 |
+| 인터럽트 밖 | AOT 주소 매핑 | 표본된 EIP의 순수 함수이고, 인덱스가 낡으면 10만 항목 스캔으로 퇴화 |
+
+10만 항목 스캔은 대상이 멈춘 동안 할 일이 아니고, 시그널 핸들러 안에서는 더더욱 아닙니다.
+밖으로 빼도 결과가 같습니다 — 입력이 이미 복사된 EIP뿐이기 때문입니다.
+
+### 3. SEH가 하나 사라졌습니다
+
+`ScanStackForModuleReturn`은 읽을 수 없는 스택을 `__try`/`__except`로 견디고 있었습니다. 그건
+3d-7이 `CopyMemoryWithoutFaulting`을 만든 바로 그 상황 — 헤더의 표현으로 **"정의상 의심스러운
+주소"** — 이고, 그 함수는 양쪽에서 돕니다.
+
+Linux 구현이 `process_vm_readv` 한 번이라는 점이 여기서 중요합니다. **락도 할당도 없어서
+시그널 핸들러 안에서 안전합니다.** 부분 읽기도 스캔합니다 — 도착한 워드가 스택 포인터에 가장
+가까운 것들이고, 복귀 주소가 있을 자리이기 때문입니다.
+
+### 4. `GetThreadTimes`만 따로 남겼습니다
+
+Linux에도 같은 분할이 `/proc/<pid>/task/<tid>/stat`에 있지만 **100ns 단위가 아니라 설정 가능한
+tick 기준 jiffies**입니다. 같은 이름 아래 다른 측정을 넣는 셈이라 대응물을 만들지 않았습니다 —
+3d-19가 예외 코드 두 필드에서 내린 것과 같은 판단입니다.
+
+### 5. 실패 이유를 계층이 말하게 했습니다
+
+표본기를 붙이자마자 Linux에서 **46번 시도해 전부 실패**했는데, 계층이 돌려주는 것은 참/거짓
+뿐이라 왜인지 알 수 없었습니다. `ThreadInterruptFailure`를 더했습니다.
+
+| 값 | 뜻 | 대응 |
+|---|---|---|
+| `kRefused` | 인자가 잘못됐거나 인터럽트가 이미 진행 중 | 호출자 버그 |
+| `kNotDelivered` | 시그널이 가지 않음 | 스레드가 없거나 마스크됨 |
+| `kTimedOut` | 갔는데 답이 없음 | **표본 대상 자체에 대한 발견** |
+
+`CreateHostThread`의 `host_error`와 같은 규약입니다 — 기록용이지 제어 흐름용이 아닙니다.
+**"실패했다"만 말하는 진단은 절반짜리 진단**이고, 이 경우 그 절반이 정확히 필요한 절반이었습니다.
+
+### 6. 그 이유가 바로 쓰였습니다
+
+`error=3`, 즉 `kTimedOut`이었습니다. 시그널은 전달되는데 게스트 스레드가 200ms 안에 핸들러를
+돌리지 못합니다. `/proc`으로 확인하니 이유가 나왔습니다.
+
+```
+SigBlk = 0x0000000200000000   ← 비트 33 = 시그널 34 = SIGRTMIN 차단
+SigPnd = 0x0000000200000000   ← 우리 시그널이 대기 중
+```
+
+**정확히 그 시그널 하나만** 차단돼 있고, 다른 스레드는 아무도 차단하지 않습니다. 시그널 34가
+차단되는 경우는 하나뿐입니다 — 그 스레드가 시그널 34의 핸들러 안에 있고 아직 반환하지 않은
+것입니다. 3d-20의 핸들러는 `SA_NODEFER`를 걸지 않았으므로 도는 동안 자기 시그널이 차단됩니다.
+
+**이것이 9초 정지의 원인은 아닙니다.** 시간 순서가 배제합니다 — 정지는 3d-20이 존재하기 전
+첫 pumpit1 실행에서 이미 있었고(9초, heartbeat 1,337,934, EIP 0x010F527A), 우리 시그널은
+9.5초에야 처음 갑니다. 이미 정지한 스레드 위에서 일어난 일이므로 **원인이 아니라 증상**일 수
+있고, 정지한 스레드가 시그널 핸들러조차 완주하지 못한다는 것 자체가 그 상태에 대한
+정보입니다.
+
+### 7. 커밋 전에 잡은 것: 제 probe가 간헐적이었습니다
+
+인터럽트 probe가 Windows에서 **12번 중 4번 실패**했습니다. 실패하는 단정은 "표본된 EIP가
+움직인다" 하나였습니다.
+
+원인은 단정이 아니라 **측정 방법**이었습니다. 표본을 연달아 뜨면 대상은 Suspend와 Resume
+사이에 거의 돌지 못하고 같은 명령에서 다시 잡힙니다. 확인하려는 것은 **값이 스레드를
+따라간다**는 것인데, 스레드가 돌 틈을 주지 않으면 그것을 관측할 수 없습니다. 표본 사이에
+1ms를 두자 양쪽에서 **15번 연속 통과**했습니다.
+
+**간헐적인 probe는 없는 것보다 나쁩니다** — 다음 사람이 실패를 자기 변경 탓으로 의심하게
+만듭니다. 커밋 전에 잡아서 다행이고, 왜 그랬는지를 코드에 적어 두었습니다.
+
+### 8. 검증
+
+| 대상 | 결과 |
+|---|---|
+| Windows Debug 전체 타깃 | 빌드 성공, 오류 없음 |
+| Windows Debug `repiu_core_probe` | `core_probe_total=15 failures=0` |
+| Linux i386 `repiu_core_probe` | `core_probe_total=15 failures=0`, exit 0 |
+| `repiu_aot_probe` 전체 | exit 0, romset-config 94/0, nvram-path 14/0 |
+| Linux DOS/4GW 샘플 | 그대로 실행 |
+| Linux pumpit1 표본기 | 돌고, 실패를 이유와 함께 보고 |
+
+### 9. 남은 것
+
+1. **인터럽트 핸들러가 반환하지 않는 것.** 후보 둘 — `SA_NODEFER` 부재(중첩되면 영구 차단),
+   그리고 이미 폴트 핸들러 안에 있는 스레드에 시그널을 얹은 상황.
+2. **9초 정지 자체.** 아직 원인 미상이고, 위가 풀려야 표본을 뜰 수 있습니다.
+3. **감시견의 강제 중단**과 **AOT 코드 캐시**는 그대로 남아 있습니다.
+
 ---
 
 # Linux Execution Engine Work Log (Stage 3)
@@ -4640,3 +4747,112 @@ Two consumers wait.
    and makes it possible to sample the guest's EIP during pumpit1's nine-second stall — which is
    exactly where that investigation ran out of instrument.
 2. **The watchdog's forced interruption**, settled by 3d-18 and fenced by 3d-19.
+
+## 3d-21 — Putting the sampler on the interrupt
+
+### Result
+
+`CaptureWin32NativePhaseSample` runs on both hosts. The fence 3d-14 put on this file — stopping a
+running thread to read its registers is a debugger's privilege on Linux — came off when 3d-20 built
+the counterpart.
+
+| File | What changed |
+|---|---|
+| `native_phase_sampler.{h,cpp}` | takes a `HostThread`, samples with `InterruptHostThread`, loses its SEH |
+| `telemetry/live_telemetry_snapshot.cpp` | both sampling call sites unfenced; only `GetThreadTimes` stays |
+| `platform/host_thread.{h,cpp}` | the interrupt reports why it failed |
+
+### Where the work was split, and on what basis
+
+The callback runs **inside a signal handler** on Linux, which limits what may happen there.
+
+| Where | What | Why |
+|---|---|---|
+| Inside the interrupt | copying registers, scanning the stack | the stack is only consistent while the target is stopped |
+| Outside it | the AOT address mapping | a pure function of the sampled EIP, and it degrades to a scan of a hundred thousand entries |
+
+That scan is not something to do while the target is stopped, and less so inside a signal handler.
+Moving it out changes nothing, because its only input is the EIP already copied.
+
+### One SEH gone
+
+`ScanStackForModuleReturn` survived an unreadable stack with `__try`/`__except`. That is exactly the
+situation 3d-7 built `CopyMemoryWithoutFaulting` for — the header calls such addresses "suspect by
+definition" — and that function works on both hosts.
+
+What matters here is that its Linux implementation is one `process_vm_readv`. **No lock and no
+allocation, which is what makes it safe inside a signal handler.** A partial read is still scanned:
+the words that arrived are the ones nearest the stack pointer, which is where a return address is.
+
+### `GetThreadTimes` stays fenced on its own
+
+Linux reports the same busy/blocked split in `/proc/<pid>/task/<tid>/stat`, but as jiffies against a
+configurable tick rather than in 100ns units. A counterpart would be a different measurement under
+this one's name — the same judgement 3d-19 made about the two exception-code fields.
+
+### The layer now says why it failed
+
+The sampler failed **46 times out of 46** on Linux as soon as it was connected, and the layer could
+only answer true or false. `ThreadInterruptFailure` fixes that.
+
+| Value | Meaning | What it points at |
+|---|---|---|
+| `kRefused` | bad arguments, or an interrupt already in flight | a caller's bug |
+| `kNotDelivered` | the signal did not go | the thread is gone or masked |
+| `kTimedOut` | it went and nothing answered | **a finding about the thread being sampled** |
+
+The same contract as `CreateHostThread`'s `host_error`: for the record, not for control flow. **A
+diagnostic that can only say "it failed" is half a diagnostic**, and here that half was precisely the
+half needed.
+
+### And it was used immediately
+
+`error=3`, `kTimedOut`: the signal is delivered and the guest thread does not run the handler within
+200 ms. `/proc` says why.
+
+```
+SigBlk = 0x0000000200000000   <- bit 33 = signal 34 = SIGRTMIN, blocked
+SigPnd = 0x0000000200000000   <- our signal, pending
+```
+
+**Exactly that one signal** is blocked, and no other thread blocks it. There is one way for signal 34
+to be blocked on a thread: the thread is inside a handler for signal 34 that has not returned. 3d-20's
+handler does not set `SA_NODEFER`, so its own signal is blocked while it runs.
+
+**This is not the cause of the nine-second stall.** The order rules it out: the stall was already
+there in the first pumpit1 run, before 3d-20 existed (nine seconds, heartbeat 1,337,934, EIP
+0x010F527A), and our first signal is not sent until 9.5 s. It happened on top of an
+already-stalled thread, so it may well be a symptom rather than a cause — and that a stalled thread
+cannot even finish a signal handler is itself information about that state.
+
+### Caught before committing: my own probe was flaky
+
+The interrupt probe failed **four runs in twelve** on Windows. One assertion did it: that the
+sampled EIP moves.
+
+The fault was in the measurement rather than the claim. Taken back to back, the target barely runs
+between a resume and the next suspend and is caught at the same instruction. What is under test is
+that **the value tracks the thread**, and that cannot be observed without letting the thread run.
+With a millisecond between samples it passes **15 consecutive runs on both hosts**.
+
+**A flaky probe is worse than no probe** — it teaches the next person to suspect their own change.
+Catching it before the commit was luck; the reason is now written into the code.
+
+### Verification
+
+| Target | Result |
+|---|---|
+| Windows Debug, all targets | builds, no errors |
+| Windows Debug `repiu_core_probe` | `core_probe_total=15 failures=0` |
+| Linux i386 `repiu_core_probe` | `core_probe_total=15 failures=0`, exit 0 |
+| `repiu_aot_probe`, full pass | exit 0, romset-config 94/0, nvram-path 14/0 |
+| The Linux DOS/4GW sample | still runs |
+| The Linux pumpit1 sampler | runs, and reports its failures with a reason |
+
+### Remaining
+
+1. **The interrupt handler not returning.** Two candidates: the missing `SA_NODEFER`, which makes a
+   nested delivery block the signal permanently, and the situation of signalling a thread already
+   inside a fault handler.
+2. **The nine-second stall itself**, still unexplained, and unsampleable until the above is fixed.
+3. **The watchdog's forced interruption** and **the AOT code cache** are where they were.

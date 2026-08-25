@@ -1,5 +1,7 @@
 #pragma once
 
+#include "repiu/platform/host_thread.h"
+
 #include <cstdint>
 
 namespace repiu::platform::win32
@@ -64,7 +66,10 @@ struct Win32NativePhaseSamplerState
 // the size keeps the original behaviour exactly, so the Task 309 sampler is
 // unaffected. The scan reads only while the thread is suspended, because the
 // stack contents it looks at are meaningless once the thread runs again.
-bool CaptureWin32NativePhaseSample(void* thread,
+// Task 503d-21: the thread is the layer's handle, and the sample is taken with
+// `InterruptHostThread` rather than by suspending it here -- which is what lets
+// this work on a host where a process cannot stop its own thread.
+bool CaptureWin32NativePhaseSample(const repiu::platform::HostThread& thread,
                                    const Win32AotCodeCachePlacement* placement,
                                    Win32SharedLiveTelemetry* telemetry,
                                    Win32NativePhaseSample* sample,

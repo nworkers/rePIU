@@ -319,17 +319,29 @@ bool JoinHostThread(const HostThread& thread,
 bool InterruptHostThread(const HostThread& thread,
                          ThreadInterruptCallback callback,
                          void* user_data,
-                         const std::uint32_t timeout_milliseconds)
+                         const std::uint32_t timeout_milliseconds,
+                         ThreadInterruptFailure* failure)
 {
+    const auto fail = [failure](const ThreadInterruptFailure reason) {
+        if (failure != nullptr)
+        {
+            *failure = reason;
+        }
+        return false;
+    };
+    if (failure != nullptr)
+    {
+        *failure = ThreadInterruptFailure::kNone;
+    }
     if (!thread.valid || thread.handle == nullptr || callback == nullptr)
     {
-        return false;
+        return fail(ThreadInterruptFailure::kRefused);
     }
 #if defined(_WIN32)
     auto handle = static_cast<HANDLE>(thread.handle);
     if (SuspendThread(handle) == static_cast<DWORD>(-1))
     {
-        return false;
+        return fail(ThreadInterruptFailure::kNotDelivered);
     }
     // The timeout has nothing to wait for on this host: SuspendThread has
     // already stopped the target by the time it returns, so the sample is
@@ -345,7 +357,11 @@ bool InterruptHostThread(const HostThread& thread,
         sampled = SetThreadContext(handle, &registers) != 0;
     }
     ResumeThread(handle);
-    return sampled;
+    if (!sampled)
+    {
+        return fail(ThreadInterruptFailure::kNotDelivered);
+    }
+    return true;
 #else
     auto* record = static_cast<HostThreadRecord*>(thread.handle);
     if (record->finished.load(std::memory_order_acquire))
@@ -353,12 +369,12 @@ bool InterruptHostThread(const HostThread& thread,
         // Signalling a thread that has exited is how a caller learns it has,
         // not something to attempt: pthread_kill on a stale pthread_t is
         // undefined rather than an error.
-        return false;
+        return fail(ThreadInterruptFailure::kNotDelivered);
     }
 
     if (!EnsureInterruptHandler())
     {
-        return false;
+        return fail(ThreadInterruptFailure::kRefused);
     }
 
     HostThreadRecord* expected = nullptr;
@@ -366,7 +382,7 @@ bool InterruptHostThread(const HostThread& thread,
                                                     std::memory_order_acq_rel))
     {
         // One at a time, as the handler's comment says.
-        return false;
+        return fail(ThreadInterruptFailure::kRefused);
     }
 
     record->interrupt_callback = callback;
@@ -375,8 +391,10 @@ bool InterruptHostThread(const HostThread& thread,
     record->interrupt_pending.store(true, std::memory_order_release);
 
     bool answered = false;
+    bool delivered = false;
     if (pthread_kill(record->thread, InterruptSignal()) == 0)
     {
+        delivered = true;
         const timespec deadline = DeadlineFromNow(timeout_milliseconds);
         while (!record->interrupt_finished.load(std::memory_order_acquire))
         {
@@ -398,7 +416,12 @@ bool InterruptHostThread(const HostThread& thread,
 
     record->interrupt_pending.store(false, std::memory_order_release);
     g_interrupt_target.store(nullptr, std::memory_order_release);
-    return answered;
+    if (!answered)
+    {
+        return fail(delivered ? ThreadInterruptFailure::kTimedOut
+                              : ThreadInterruptFailure::kNotDelivered);
+    }
+    return true;
 #endif
 }
 

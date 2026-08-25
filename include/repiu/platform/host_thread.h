@@ -93,11 +93,25 @@ void CloseHostThread(HostThread* thread);
 // hold -- the same constraints 3c's fault callback carries, for the same reason.
 //
 // Edits to `registers` take effect when the target resumes. On Linux that is the
-// signal return; on Windows it is SetThreadContext, which this performs only if
-// the callback reports a change, because writing a context back unchanged is not
-// free.
+// signal return; on Windows it is SetThreadContext. The context is written back
+// unconditionally on both, because asking whether the callback changed anything
+// would mean comparing the whole structure -- which costs more than the write it
+// would save.
 using ThreadInterruptCallback = void (*)(GuestCpuContext* registers,
                                          void* user_data);
+
+// Why an interrupt did not happen. A diagnostic that can only say "it failed"
+// is half a diagnostic, and these three want different responses: a refusal is
+// a caller's bug, a delivery failure means the thread is gone, and a timeout
+// means it is there but not answering -- which is itself a finding about the
+// thread being sampled.
+enum class ThreadInterruptFailure : std::uint8_t
+{
+    kNone,
+    kRefused,
+    kNotDelivered,
+    kTimedOut,
+};
 
 // Returns false if the target did not answer within the deadline, which is a
 // real outcome rather than a failure to report: a thread that is not scheduled,
@@ -106,10 +120,15 @@ using ThreadInterruptCallback = void (*)(GuestCpuContext* registers,
 // A deadline rather than an unbounded wait, because the caller asking is
 // usually the one investigating a stall, and joining the thing being
 // investigated is not an improvement.
+//
+// `failure` is optional and receives why, on the same terms `host_error` is
+// passed to `CreateHostThread`: for the record, not for control flow.
 [[nodiscard]] bool InterruptHostThread(const HostThread& thread,
                                        ThreadInterruptCallback callback,
                                        void* user_data,
-                                       std::uint32_t timeout_milliseconds);
+                                       std::uint32_t timeout_milliseconds,
+                                       ThreadInterruptFailure* failure =
+                                           nullptr);
 
 }  // namespace repiu::platform
 

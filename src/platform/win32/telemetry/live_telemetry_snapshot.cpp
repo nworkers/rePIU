@@ -281,9 +281,9 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
     // Task 503d-18: the loop's own question goes through the layer, but the
     // diagnostics below sample a thread with Win32 calls that take a HANDLE.
     // `HostThread::handle` is documented as being one on this host.
-    // Task 503d-19: those diagnostics are what stays fenced now that the loop
-    // itself runs on both hosts. Suspending another thread to read its
-    // registers is not something Linux can do from inside the same process.
+    // Task 503d-21: what stays fenced is `GetThreadTimes` alone. The register
+    // sampling that used to be here with it moved onto the platform layer's
+    // interrupt and runs on both hosts.
 #if defined(_WIN32)
     auto* thread_handle = static_cast<HANDLE>(thread.handle);
 #endif
@@ -594,12 +594,11 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
                 dispatch_quiet_start_tick = current_tick;
             }
         }
-        // Task 503d-19: fenced. Both samplers below capture the guest thread's
-        // registers by suspending it, and `GetThreadTimes` asks the kernel for
-        // its busy/blocked split. Neither is available to a Linux process for
-        // one of its own threads, and inventing a counterpart would mean
-        // reporting a different measurement under the same name.
-#if defined(_WIN32)
+        // Task 503d-21: the capture below runs on both hosts now, because
+        // 3d-20 gave Linux a way to read another thread's registers. Only
+        // `GetThreadTimes` stays fenced, further down -- the kernel's
+        // busy/blocked split for one thread has no counterpart worth
+        // inventing.
         // Task 411: the same capture, but on a plain wall-clock interval with
         // no dispatch-quiet gate. A stalled run faults continuously, so the
         // gate below never opens there, and the guest's position during the
@@ -622,7 +621,7 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
             // Null telemetry: the stage marker belongs to the native sampler,
             // and overwriting it would confuse a reader of that instrument.
             if (CaptureWin32NativePhaseSample(
-                    thread_handle, progress_context->aot_placement, nullptr,
+                    thread, progress_context->aot_placement, nullptr,
                     &census_sample, loader_module_base, loader_module_size))
             {
                 const Win32GuestPositionClassification classification =
@@ -655,6 +654,12 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
             }
             // Task 412: the busy-or-blocked split. One call per sample, on the
             // poll thread, and the last reading is the one reported.
+            //
+            // Task 503d-21: fenced on its own now. Linux reports the same split
+            // in /proc/<pid>/task/<tid>/stat, but as jiffies against a
+            // configurable tick rather than as 100ns units, so a counterpart
+            // would be a different measurement under this one's name.
+#if defined(_WIN32)
             FILETIME creation_time = {};
             FILETIME exit_time = {};
             FILETIME kernel_time = {};
@@ -672,9 +677,9 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
                     to_100ns(kernel_time), to_100ns(user_time),
                     static_cast<std::uint32_t>(current_tick - start_tick));
             }
+#endif
             last_position_census_tick = current_tick;
         }
-#endif
         // Task 421: the music position, on its own interval. `host_context` is
         // what owns the audio backend, while the census lives on the guest
         // context, so both have to be present.
@@ -728,7 +733,6 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
             last_cd_audio_census_tick = current_tick;
         }
 
-#if defined(_WIN32)
         if (native_sampling_enabled && progress_context != nullptr &&
             current_tick - dispatch_quiet_start_tick >=
                 kNativePhaseSampleQuietMilliseconds &&
@@ -737,7 +741,7 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
         {
             Win32NativePhaseSample sample;
             if (CaptureWin32NativePhaseSample(
-                    thread_handle, progress_context->aot_placement,
+                    thread, progress_context->aot_placement,
                     progress_context->shared_live_telemetry, &sample))
             {
                 sample.last_indirect_source =
@@ -756,7 +760,6 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
                                             current_tick - start_tick);
             native_sampler_state.last_sample_tick = current_tick;
         }
-#endif
         if (progress_context != nullptr &&
             current_tick - last_live_snapshot_tick >= 1000U)
         {

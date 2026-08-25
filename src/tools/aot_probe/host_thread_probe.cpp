@@ -1,6 +1,7 @@
 #include "host_thread_probe.h"
 
 #include "repiu/platform/host_thread.h"
+#include "repiu/platform/host_time.h"
 
 #include <atomic>
 #include <chrono>
@@ -260,9 +261,17 @@ bool ProbeInterruptSamplesAndEdits()
 
     // Sampling repeatedly must not report one constant. A fixed value would
     // mean the number came from somewhere other than the running thread.
+    //
+    // The target is given a moment between samples, and that is not padding:
+    // the first version of this ran the samples back to back and failed four
+    // times in twelve on Windows, because suspending a thread as fast as the
+    // loop can ask leaves it almost no time to advance and it is caught at the
+    // same instruction. What is under test is that the value tracks the thread,
+    // which cannot be observed unless the thread is allowed to run.
     bool moved = false;
     for (int attempt = 0; attempt < 32 && !moved && ok; ++attempt)
     {
+        repiu::platform::YieldMilliseconds(1U);
         if (!repiu::platform::InterruptHostThread(thread, &SampleEip, &witness,
                                                   2000U))
         {
