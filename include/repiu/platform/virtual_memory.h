@@ -49,8 +49,22 @@ enum class MemoryProtection : std::uint8_t
 struct MemoryRegion
 {
     // False when the address could not be described at all. A valid region may
-    // still be uncommitted.
+    // still be uncommitted, and may not even be claimed.
     bool valid = false;
+    // Task 503d-19. Whether the address space belongs to anyone.
+    //
+    // This is a third state, not a synonym for `committed`. Windows reports
+    // MEM_FREE, MEM_RESERVE and MEM_COMMIT, and only the first means an
+    // allocation there would succeed -- reserved-but-uncommitted space is
+    // claimed and would refuse a second reservation.
+    //
+    // The runtime memory policy asks exactly this before reserving the guest's
+    // fixed range, and it is where the two hosts disagreed most sharply: a
+    // Windows query describes free space, while a Linux query for an unmapped
+    // address used to fail outright. Absorbing that here rather than at the
+    // call site is what this layer is for -- an unclaimed region is now valid
+    // on both, with `base` and `size` naming the free run.
+    bool claimed = false;
     // Reserved address space that has not been committed reports false on both
     // hosts: Windows says MEM_RESERVE, and Linux maps such a reservation
     // PROT_NONE, which this API reads back the same way. The one case where the

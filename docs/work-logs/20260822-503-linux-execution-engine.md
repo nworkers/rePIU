@@ -2179,6 +2179,158 @@ grep했습니다. `aot_runtime_dispatch.cpp`에 `== nullptr` 비교가 셋 더 �
 `PollThreadUntilExit`에 해당하는 호스트 폴 루프, 그리고 `IsGuestStackSwitchSupported()`가
 Linux에서 참이 되는 것. 감시견의 정지·재개도 그때 시그널로 답합니다.
 
+## 3d-19 — 게스트를 Linux에서 돌린다
+
+### 1. 결과
+
+**게스트 코드가 Linux i386에서 실행됩니다.** DOS/4GW 샘플 하나가 `legacy` 백엔드로 돌았고,
+Windows와 **같은 명령에서 멈춥니다.**
+
+| 항목 | Linux | Windows |
+|---|---|---|
+| 폴트 총계 | **18** | **18** |
+| 스레드 종료 코드 | 2 (복구 경로) | 2 |
+| 저메모리 읽기 에뮬레이트 EIP | 0x0**1**00025A | 0x0**3**00025A |
+| 멈춘 명령의 바이트 창 | `… 8E C1 89 D6 42 [26] 80 3E 00 …` | 동일 |
+| focus offset / opcode | 0x10 / 0x80 | 동일 |
+| blocker 메시지 | 동일 | 동일 |
+
+주소 차이는 재배치 이미지 베이스뿐입니다(0x01000000 대 0x03000000). 오프셋 0x655·0x25A는
+같습니다. 남은 blocker는 이 샘플의 세그먼트 오버라이드 명령을 분류기가 모르는 것이고,
+**양쪽 호스트에 똑같이 있는 기존 엔진 한계**이지 이식 격차가 아닙니다.
+
+### 2. 벽 뒤를 먼저 쟀습니다
+
+| 벽 | 처음 | 끝 |
+|---|---|---|
+| 실행 드라이버 890줄 | 38 | 0 |
+| `PollThreadUntilExit` 약 500줄 | 69 | 0 |
+
+**폴 루프 측정은 두 번 걸렸습니다.** 첫 측정이 2를 보고했는데 그중 하나가 함수 **반환
+타입**의 `DWORD`였습니다. 시그니처가 파싱되지 않으면 GCC는 본문 전체를 건너뜁니다. 가이드가
+경고하는 함정의 **네 번째 형태**이고, 이번에는 헤더도 울타리도 아닌 함수 시그니처였습니다.
+
+69도 대부분 한 원인의 파생이었습니다. `DWORD`로 선언된 지역 변수 일곱이 선언에서 실패하면
+그것을 읽는 스물몇 곳이 전부 "선언되지 않음"이 됩니다. `MillisecondTicks()`가 돌려주는
+타입에서 파생시키자 서른 몇 개가 한 번에 사라졌습니다.
+
+### 3. 계층에 이미 있던 것들
+
+측정이 지목한 것을 그대로 옮겼습니다 — 환경 읽기 여덟 곳(3d-9), `GetCurrentThreadId`(3d-15),
+VEH 등록·해제(3c), 그리고 **3d-6이 놓쳤던 `SetEvent` 한 곳**. 같은 파일의 생성 쪽은 이미
+`CreateWorkerSignal`을 쓰고 있었으니, 한 짝만 남아 있던 자리입니다.
+
+`Sleep`에는 대응물이 없어 `YieldMilliseconds`를 만들었습니다. **0과 1을 같게 만들지
+않았습니다** — 0은 양보이고(Task 366이 240Hz 경계 직전에 쓰는 이유가 있습니다) 1은 짧은
+대기입니다(Task 333이 이 자리에서 무조건 sleep을 명령 대기로 바꿔 게이트 비용을 줄였습니다).
+POSIX 쪽은 0이면 `sched_yield`, 그 외에는 `nanosleep`이고, **EINTR만** 재개합니다 — 다른
+실패에서 무한히 재시도하면 이 함수가 조율하려던 루프를 멈추게 됩니다.
+
+폴 루프의 반환 규약은 `HostPollOutcome` 열거형이 됐습니다. `WAIT_OBJECT_0`·`WAIT_TIMEOUT`·
+`WAIT_FAILED`와 `WAIT_ABANDONED_0`을 작은 열거형처럼 쓰고 있었는데, **대기를 하지 않는 코드가
+대기 상수를 쓰던 것**입니다. 3b가 `readable`을, 3d-18이 `running`을 답한 것과 같은 자리입니다.
+
+### 4. 실행이 컴파일 측정으로는 볼 수 없는 벽을 찾았습니다
+
+드라이버와 폴 루프를 0으로 만들고 실제로 돌리자 로더가 정확히 어디서 막히는지 말했습니다.
+
+```
+Win32 direct x86 execution: unsupported
+Failed to probe fixed runtime range: Win32 runtime address probing requires Win32 host APIs
+```
+
+`runtime_memory_policy.cpp`에 같은 모양의 조기 반환이 **넷 더** 있었습니다. 이 파일은 컴파일
+측정에서 **늘 통과했습니다** — 컴파일되고 조기 반환만 하기 때문입니다.
+
+**이것이 이 단계의 가장 큰 교훈입니다.** 3d-15·16·17이 겪은 함정은 "막고 있는 것이 뒤의
+숫자를 가린다"였고 답은 사본으로 재는 것이었습니다. 이번 것은 다릅니다 — **컴파일되는 코드가
+아무것도 하지 않는 것은 어떤 컴파일 측정으로도 보이지 않습니다.** 그것을 찾은 것은 실행입니다.
+
+### 5. 3b에 세 번째 상태를 더했습니다
+
+그 probe가 묻는 것은 "이 범위를 예약할 수 있는가"인데, `MemoryRegion`은 **빈 주소 공간과
+예약만 된 공간을 구분하지 못했습니다.** Windows는 `MEM_FREE`·`MEM_RESERVE`·`MEM_COMMIT` 셋을
+보고하고 **첫째만** 예약이 성공합니다.
+
+두 호스트가 여기서 가장 크게 갈렸습니다. Windows 질의는 빈 공간을 **설명**하는데, Linux
+질의는 미매핑 주소에 대해 **실패**했습니다. `MemoryRegion::claimed`가 그 차이를 계층 안에서
+흡수합니다 — 3b가 존재하는 이유가 그것입니다. Linux 백엔드는 미매핑 주소에 대해
+`/proc/self/maps`에서 다음 매핑의 시작점을 찾아 **빈 구간의 범위**를 돌려줍니다.
+
+`runtime_memory_policy.cpp`의 `Virtual*` 호출 아홉(`VirtualAlloc` 2, `VirtualFree` 4,
+`VirtualProtect` 2, `VirtualQuery` 1)이 3b로 옮겨가고 조기 반환 넷이 사라졌습니다.
+
+### 6. Linux 스레드 프로시저는 `__except`가 하던 일을 콜백에서 합니다
+
+Windows 프로시저는 `__try`/`__except`로 감싸여 있고, VEH가 재개하지 않은 폴트를 SEH가
+풀어냅니다. Linux에는 풀어낼 것이 없습니다 — 시그널 핸들러에서 돌아가면 폴트 명령을 다시
+실행하고, 그러면 영원히 다시 폴트합니다.
+
+그래서 3c 콜백이 `DispatchGuestFault`에 먼저 물어보고, 그것이 거절한 것을 `CaptureException`
+으로 기록한 뒤 `RecoverToHost`로 게스트 컨텍스트를 복귀 진입점으로 돌립니다. 그러면
+`CallGuestEntryWithStack`이 전환이 끝난 것처럼 돌아오고, 호출부가 읽는
+`context->exception_caught`가 Windows와 같은 값이 됩니다. **이 왕복은 3d-16 probe가 엔진보다
+먼저 확인했습니다.**
+
+한 곳에서 Linux가 약합니다. 스택 전환을 쓰지 않는 직접 진입 경로에는 돌아갈 호스트 프레임이
+없어, 그 경로의 미처리 폴트는 프로세스가 기본 동작을 받습니다. Windows의 `__except`는 그것도
+잡습니다. 코드에 그렇게 적었습니다.
+
+두 프로시저가 공유하는 것은 함수 둘로 뽑았습니다 — 호출 상태를 채우는 여섯 필드와 메모리
+질의, 그리고 게스트가 남긴 것을 거두는 열네 줄. **복사하면 갈리는 정확히 그만큼의 코드**입니다.
+
+### 7. 지원 판정이 컴파일러가 아니라 아키텍처를 묻습니다
+
+`IsGuestStackSwitchSupported()`와 `IsDirectX86ExecutionSupported()`가 둘 다
+`defined(_WIN32) && defined(_MSC_VER) && defined(_M_IX86)`였습니다. 묻는 것은 "이 스택 전환이
+존재하는가"인데, **3d-16이 GAS로 쓴 뒤로는 컴파일러에 달려 있지 않습니다.** 32비트 x86이면
+있습니다.
+
+### 8. 범위에서 뺀 것 둘
+
+**감시견의 강제 중단**은 울타리 안에 두었습니다. 3d-18이 Linux 답을 시그널로 정했지만, 그
+경로는 예산이 만료되거나 창이 닫힐 때만 돌고 스스로 끝나는 실행은 도달하지 않습니다. Linux가
+그 자리에 오면 게스트 스레드를 세우지 못한다고 로그에 적습니다.
+
+**AOT 코드 캐시**는 되돌렸습니다. 배치 함수를 옮기다 이 파일에 Win32 메모리 호출이 **23곳**인
+것을 보고 멈췄습니다 — 동적 번역 경로가 캐시를 쓰기 가능으로 바꾸고, 패치하고, 실행 가능으로
+되돌리는 주기를 반복합니다. 절반만 옮긴 파일보다 다음 단계가 낫습니다. 그래서 Linux에서는
+오늘 `REPIU_EXECUTION_BACKEND=legacy`가 필요합니다.
+
+### 9. 검증
+
+| 대상 | 결과 |
+|---|---|
+| **Linux i386 게스트 실행** | **샘플 실행됨**, Windows와 같은 명령에서 정지 |
+| Linux i386 `repiu_core_probe` | `core_probe_total=15 failures=0`, exit 0 |
+| Linux i386 `repiu` | 링크 유지 |
+| Windows Debug 전체 타깃 | 빌드 성공, 오류 없음 |
+| Windows Debug `repiu_core_probe` | `core_probe_total=15 failures=0` |
+| `repiu_aot_probe` 전체 | exit 0, romset-config 94/0, nvram-path 14/0 |
+| Linux i386 컴파일 측정 | 81 / 81 유지 |
+| 같은 샘플 Windows 실행 | 폴트 18건, 같은 blocker |
+
+`virtual_memory` probe에 항목이 하나 늘었습니다 — 예약만 된 공간이 `claimed`이면서
+`committed`가 아니고, 커밋하면 둘째만 바뀐다는 단정입니다.
+
+### 10. 두 호스트가 갈리는 지점 둘, 둘 다 설명됩니다
+
+| 항목 | Linux | Windows | 이유 |
+|---|---|---|---|
+| 예외 코드 | `0x0000000B` | `0xC0000005` | 호스트 자신의 번호이고 기록용입니다. 제어 흐름은 `FaultKind`를 읽습니다(3d-5) |
+| census 칸 | 18 / 0 | 17 / 1 | 18건 중 하나가 다른 칸에 들어갑니다. Windows에는 구분되는 코드가 있고 Linux에는 SIGSEGV뿐이며, 설계의 매핑 표가 예측한 그대로입니다 |
+
+**총계와 정지 지점이 같다는 것이 요점입니다.** 3d-5가 디스패처를 가른 이유가 이것입니다 —
+분류는 갈려도 결과가 같습니다.
+
+### 11. 남은 것
+
+1. **AOT 코드 캐시**(3d-20). 기본 백엔드 `dynamic`이 Linux에서 돌려면 필요합니다.
+2. **감시견의 강제 중단**. 3d-18이 답을 정했고 구현만 남았습니다.
+3. **자산 경로와 CHD 마운트**. 설계가 범위 밖에 둔 것이고, 게임을 돌리려면 그 결정을 다시
+   봐야 합니다.
+4. **오디오 셋**은 여전히 무음입니다.
+
 ---
 
 # Linux Execution Engine Work Log (Stage 3)
@@ -3994,3 +4146,162 @@ handler forwards to `DispatchGuestFault` and turns an unhandled fault back with 
 host poll loop standing where `PollThreadUntilExit` does; and `IsGuestStackSwitchSupported()`
 answering true on Linux. The watchdog's suspend and resume are answered with a signal at the same
 time.
+
+## 3d-19 — Running the guest on Linux
+
+### Result
+
+**Guest code executes on Linux i386.** One DOS/4GW sample ran under the `legacy` backend, and it
+**stops at the same instruction as Windows.**
+
+| Item | Linux | Windows |
+|---|---|---|
+| Faults in total | **18** | **18** |
+| Thread exit code | 2 (the recovery path) | 2 |
+| Low-memory read emulate EIP | 0x0**1**00025A | 0x0**3**00025A |
+| Byte window at the stop | `… 8E C1 89 D6 42 [26] 80 3E 00 …` | identical |
+| Focus offset / opcode | 0x10 / 0x80 | identical |
+| Blocker message | identical | identical |
+
+The addresses differ only by the relocated image base, 0x01000000 against 0x03000000; the offsets
+0x655 and 0x25A are the same. The remaining blocker is the classifier not recognising this sample's
+segment-override instruction — **an existing engine limit present on both hosts**, not a gap in the
+port.
+
+### The walls were measured first
+
+| Wall | Start | End |
+|---|---|---|
+| the execution driver, 890 lines | 38 | 0 |
+| `PollThreadUntilExit`, about 500 lines | 69 | 0 |
+
+**The poll loop took two measurements.** The first reported 2, and one of those was `DWORD` in the
+function's **return type**. A signature that will not parse makes GCC skip the whole body. That is
+the **fourth shape** of the trap the guide warns about — not a header this time and not a fence, but
+a function signature.
+
+The 69 was mostly one cause propagating: seven locals declared `DWORD` fail at their declaration and
+the twenty-odd places that read them all report "not declared". Deriving them from what
+`MillisecondTicks()` returns took thirty-odd errors away at once.
+
+### What the layers already had
+
+The measurement named them, and they moved: eight environment reads (3d-9), `GetCurrentThreadId`
+(3d-15), installing and removing the fault handler (3c), and **one `SetEvent` that 3d-6 had missed**
+— the creation side in the same file already used `CreateWorkerSignal`, so it was half a pair left
+standing.
+
+`Sleep` had no counterpart, so `YieldMilliseconds` joins the time layer. **Zero and one were not
+collapsed**: zero yields, which Task 366 uses in the last millisecond before a 240 Hz timer edge, and
+one is a short wait, which is what Task 333 measured when it replaced an unconditional sleep here
+with a command wait. The POSIX side uses `sched_yield` for zero and `nanosleep` otherwise, resuming
+**only on EINTR** — retrying any other failure forever would hang the loop this function exists to
+pace.
+
+The poll loop's return convention became the `HostPollOutcome` enum. It had been using
+`WAIT_OBJECT_0`, `WAIT_TIMEOUT`, `WAIT_FAILED` and `WAIT_ABANDONED_0` as a small enumeration —
+**wait constants in code that does not wait.** The same place 3b answered `readable` and 3d-18
+answered `running`.
+
+### Running found a wall no compile measurement can see
+
+With the driver and the poll loop at zero, the first real run said exactly where it stopped:
+
+```
+Win32 direct x86 execution: unsupported
+Failed to probe fixed runtime range: Win32 runtime address probing requires Win32 host APIs
+```
+
+`runtime_memory_policy.cpp` held **four more** early returns of the same shape. That file had
+**always passed** the compile measurement, because it compiles and merely returns early.
+
+**This is the sub-stage's largest lesson.** The trap 3d-15, 3d-16 and 3d-17 met was an obstruction
+hiding the numbers behind it, and the answer was to measure a copy. This one is different: **code
+that compiles and does nothing is invisible to every compile measurement.** Running is what found it.
+
+### A third state for 3b
+
+What that probe asks is whether a range can be reserved, and `MemoryRegion` could not tell **free
+address space from space that is merely reserved**. Windows reports `MEM_FREE`, `MEM_RESERVE` and
+`MEM_COMMIT`, and only the first would accept a reservation.
+
+This is where the two hosts diverged most sharply: a Windows query *describes* free space, while a
+Linux query for an unmapped address *failed outright*. `MemoryRegion::claimed` absorbs that inside
+the layer, which is what 3b exists for. The Linux backend now finds the next mapping in
+`/proc/self/maps` and reports the extent of the free run.
+
+Nine `Virtual*` calls in `runtime_memory_policy.cpp` — two `VirtualAlloc`, four `VirtualFree`, two
+`VirtualProtect`, one `VirtualQuery` — moved onto 3b, and the four early returns went with them.
+
+### The Linux thread procedure does `__except`'s work in a callback
+
+The Windows procedure is wrapped in `__try`/`__except`, and SEH unwinds out of a fault the vectored
+handler did not resume. Linux has nothing to unwind: returning from a signal handler re-executes the
+faulting instruction, which would fault again forever.
+
+So the 3c callback asks `DispatchGuestFault` first, and what it declines is recorded with
+`CaptureException` and then pointed at the recovery entry with `RecoverToHost`.
+`CallGuestEntryWithStack` returns as though the switch had completed, and `context->exception_caught`
+— the field the caller reads — holds the same value as on Windows. **The 3d-16 probe exercised that
+round trip before the engine used it.**
+
+One place is weaker on Linux. The direct-entry path uses no stack switch and so has no host frame to
+land on, which means an unhandled fault there lets the process take the default action. Windows'
+`__except` catches that too. The code says so.
+
+What the two procedures share came out as two functions: filling the call state, six fields and a
+memory query, and collecting what the guest left, fourteen lines. **Exactly the amount of code that
+drifts when it is copied.**
+
+### The support tests ask about the architecture, not the compiler
+
+`IsGuestStackSwitchSupported()` and `IsDirectX86ExecutionSupported()` both read
+`defined(_WIN32) && defined(_MSC_VER) && defined(_M_IX86)`. What they ask is whether the stack switch
+exists, and **since 3d-16 wrote it in GAS that no longer depends on the compiler.** It depends on
+being 32-bit x86.
+
+### Two things left out of scope
+
+**The watchdog's forced interruption** stays fenced. 3d-18 settled that Linux answers it with a
+signal, but that path runs only when a budget expires or the window closes, and a run that ends by
+itself never reaches it. A Linux run that reaches it now says in the log that the guest thread was
+not stopped.
+
+**The AOT code cache was reverted.** Porting its placement function surfaced **23 Win32 memory calls**
+in that file — the dynamic translation path cycles the cache between writable and executable around
+every patch. A half-ported file is worse than a next sub-stage, so Linux needs
+`REPIU_EXECUTION_BACKEND=legacy` today.
+
+### Verification
+
+| Target | Result |
+|---|---|
+| **Linux i386 guest execution** | **the sample runs**, stopping where Windows does |
+| Linux i386 `repiu_core_probe` | `core_probe_total=15 failures=0`, exit 0 |
+| Linux i386 `repiu` | still links |
+| Windows Debug, all targets | builds, no errors |
+| Windows Debug `repiu_core_probe` | `core_probe_total=15 failures=0` |
+| `repiu_aot_probe`, full pass | exit 0, romset-config 94/0, nvram-path 14/0 |
+| Linux i386 compile measurement | holds at 81 of 81 |
+| The same sample on Windows | 18 faults, the same blocker |
+
+The `virtual_memory` probe gained a scenario: reserved-but-uncommitted space reads as claimed and not
+committed, and committing changes only the second answer.
+
+### Where the hosts differ, and why both are right
+
+| Item | Linux | Windows | Reason |
+|---|---|---|---|
+| Exception code | `0x0000000B` | `0xC0000005` | the host's own number, kept for the record; control flow reads `FaultKind` (3d-5) |
+| Census bucket | 18 / 0 | 17 / 1 | one of the 18 lands elsewhere, because Windows has distinct codes where Linux has only SIGSEGV — exactly what the design's mapping table predicts |
+
+**That the total and the stopping point match is the point.** It is what 3d-5 split the dispatcher
+for: the classification may differ while the outcome does not.
+
+### Remaining
+
+1. **The AOT code cache** (3d-20), which the default `dynamic` backend needs on Linux.
+2. **The watchdog's forced interruption**, where 3d-18 settled the answer and only the work is left.
+3. **Asset paths and the CHD mount**, out of the design's scope and needing that decision revisited
+   before the game itself can run.
+4. **The three audio outputs** are still silent.

@@ -10,6 +10,11 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#else
+#include <sched.h>
+#include <time.h>
+
+#include <cerrno>
 #endif
 
 namespace repiu::platform
@@ -105,6 +110,40 @@ LocalWallClock ReadLocalWallClock()
         static_cast<std::uint16_t>(remainder.count());
 
     return wall_clock;
+}
+
+// Task 503d-19. `Sleep(0)` on Windows yields to a ready thread of equal
+// priority and returns immediately; `sched_yield` is the POSIX counterpart, and
+// `nanosleep` is not -- it would enter the kernel's timer machinery for a
+// request that is about scheduling.
+//
+// For a non-zero request, `nanosleep` rather than `usleep`: the second is
+// obsolescent, and the first is the one that resumes correctly after a signal
+// without the caller having to think about it. This path is interrupted by
+// signals routinely, because that is how the engine delivers faults.
+void YieldMilliseconds(const std::uint32_t milliseconds)
+{
+#if defined(_WIN32)
+    Sleep(static_cast<DWORD>(milliseconds));
+#else
+    if (milliseconds == 0U)
+    {
+        sched_yield();
+        return;
+    }
+    timespec request{};
+    request.tv_sec = static_cast<time_t>(milliseconds / 1000U);
+    request.tv_nsec = static_cast<long>(milliseconds % 1000U) * 1000000L;
+    timespec remaining{};
+    // A signal shortens the sleep, and the remainder is what is left to serve.
+    // Resuming it keeps the loop's cadence from drifting with fault traffic.
+    // Only EINTR is resumed: any other failure is a malformed request, and
+    // retrying it forever would hang the loop this function exists to pace.
+    while (nanosleep(&request, &remaining) != 0 && errno == EINTR)
+    {
+        request = remaining;
+    }
+#endif
 }
 
 }  // namespace repiu::platform

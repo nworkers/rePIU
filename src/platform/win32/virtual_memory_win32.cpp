@@ -201,6 +201,8 @@ MemoryRegion QueryMemory(const void* address)
     region.allocation_base = information.AllocationBase != nullptr
         ? information.AllocationBase
         : information.BaseAddress;
+    // Task 503d-19: MEM_FREE is the one state where nothing owns the address.
+    region.claimed = information.State != MEM_FREE;
     region.committed = information.State == MEM_COMMIT;
     if (!region.committed)
     {

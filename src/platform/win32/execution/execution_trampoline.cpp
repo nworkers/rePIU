@@ -91,7 +91,10 @@ namespace
 
 bool IsDirectX86ExecutionSupported()
 {
-#if defined(_WIN32) && (defined(_M_IX86) || defined(__i386__))
+// Task 503d-19: the `_WIN32` half is gone. What running the guest's code in
+// this process requires is a 32-bit x86 host, and every Win32 API the driver
+// behind this used to need is in the platform layer now.
+#if defined(_M_IX86) || defined(__i386__)
     return true;
 #else
     return false;
@@ -100,7 +103,10 @@ bool IsDirectX86ExecutionSupported()
 
 bool IsGuestStackSwitchSupported()
 {
-#if defined(_WIN32) && defined(_MSC_VER) && defined(_M_IX86)
+// Task 503d-19: what this asks is whether the stack switch exists, and since
+// 3d-16 wrote it in GAS the answer no longer depends on the compiler. It
+// depends on the architecture, because the switch is 32-bit x86 assembly.
+#if defined(_M_IX86) || defined(__i386__)
     return true;
 #else
     return false;
@@ -2043,11 +2049,13 @@ RecoverHostStackException()
 
 #endif
 
-#if defined(_MSC_VER) && defined(_M_IX86)
+// Task 503d-19: the fence widened to name what these need, which is 32-bit x86
+// rather than MSVC. The Linux thread procedure calls both.
+#if defined(_M_IX86) || defined(__i386__)
 // Task 323 denominator: the whole guest execution window on this thread. The
 // scope lives here rather than in GuestEntryThreadProc because that function
-// uses __try, and MSVC rejects objects requiring unwinding in the same function
-// (C2712).
+// uses __try on Windows, and MSVC rejects objects requiring unwinding in the
+// same function (C2712).
 void CallGuestEntryWithStackTimed(StackSwitchCallState* state,
                                   ThreadContext* context)
 {
@@ -2071,10 +2079,63 @@ void CallGuestEntryDirectTimed(ThreadContext* context)
 }
 #endif
 
+// Task 503d-19. What both hosts' thread procedures do around the switch,
+// extracted rather than transcribed twice. Six fields and a memory query is
+// exactly the amount of code that drifts when it is copied.
+void FillGuestStackCallState(ThreadContext* context,
+                             StackSwitchCallState* state)
+{
+    state->entry_address = context->entry_address;
+    state->initial_esp = context->guest_initial_esp;
+    state->enable_single_step_trace =
+        context->enable_single_step_trace ? 1U : 0U;
+
+    const repiu::platform::MemoryRegion stack_region =
+        repiu::platform::QueryMemory(
+            reinterpret_cast<void*>(context->guest_initial_esp - 4));
+    if (stack_region.valid)
+    {
+        // allocation_base, because the limit names the whole reservation
+        // rather than the run of pages sharing one protection -- the
+        // distinction 3b tracks separately for exactly this caller.
+        state->guest_stack_limit = static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(stack_region.allocation_base));
+        state->guest_stack_base = context->guest_initial_esp;
+    }
+    context->active_call_state = state;
+}
+
+// The other half: what the guest left behind, and whether the procedure is
+// finished. Returns true when `*thread_exit_code` is the answer.
+bool FinishGuestStackCall(ThreadContext* context,
+                          const StackSwitchCallState& state,
+                          std::uint32_t* thread_exit_code)
+{
+    g_repiu_active_thread_context = nullptr;
+    context->active_call_state = nullptr;
+    context->host_esp = state.host_esp;
+    if (context->guest_return_esp == 0)
+    {
+        context->guest_return_esp = state.guest_return_esp;
+    }
+    if (context->exception_caught)
+    {
+        *thread_exit_code = 2;
+        return true;
+    }
+    if (context->process_exit)
+    {
+        *thread_exit_code = 0;
+        return true;
+    }
+    return false;
+}
+
 // Task 503d-15 fenced this whole, because CreateThread named the signature and
 // the body is an SEH __try around the guest call. Task 503d-18 takes the first
-// of those away -- the signature is the thread layer's now -- and the fence
-// stays for the second, which is the part Linux answers differently.
+// of those away -- the signature is the thread layer's now -- and 503d-19 the
+// second: what remains fenced is the SEH, and Linux gets a procedure of its own
+// below that answers the same question without it.
 #if defined(_WIN32)
 std::uint32_t GuestEntryThreadProc(void* parameter)
 {
@@ -2091,26 +2152,7 @@ std::uint32_t GuestEntryThreadProc(void* parameter)
         {
 #if defined(_MSC_VER) && defined(_M_IX86)
             StackSwitchCallState state;
-            state.entry_address = context->entry_address;
-            state.initial_esp = context->guest_initial_esp;
-            state.enable_single_step_trace =
-                context->enable_single_step_trace ? 1U : 0U;
-
-            const repiu::platform::MemoryRegion stack_region =
-                repiu::platform::QueryMemory(
-                    reinterpret_cast<void*>(context->guest_initial_esp - 4));
-            if (stack_region.valid)
-            {
-                // allocation_base, because the limit names the whole
-                // reservation rather than the run of pages sharing one
-                // protection -- the distinction 3b tracks separately for
-                // exactly this caller.
-                state.guest_stack_limit = static_cast<std::uint32_t>(
-                    reinterpret_cast<std::uintptr_t>(
-                        stack_region.allocation_base));
-                state.guest_stack_base = context->guest_initial_esp;
-            }
-            context->active_call_state = &state;
+            FillGuestStackCallState(context, &state);
             g_repiu_active_thread_context = context;
             context->vectored_handler = AddVectoredExceptionHandler(
                 1, GuestStackVectoredExceptionHandler);
@@ -2123,20 +2165,10 @@ std::uint32_t GuestEntryThreadProc(void* parameter)
 
             CallGuestEntryWithStackTimed(&state, context);
 
-            g_repiu_active_thread_context = nullptr;
-            context->active_call_state = nullptr;
-            context->host_esp = state.host_esp;
-            if (context->guest_return_esp == 0)
+            std::uint32_t finished_exit_code = 0;
+            if (FinishGuestStackCall(context, state, &finished_exit_code))
             {
-                context->guest_return_esp = state.guest_return_esp;
-            }
-            if (context->exception_caught)
-            {
-                return 2;
-            }
-            if (context->process_exit)
-            {
-                return 0;
+                return finished_exit_code;
             }
 #else
             return 4;
@@ -2172,6 +2204,102 @@ std::uint32_t GuestEntryThreadProc(void* parameter)
     {
         return 2;
     }
+}
+#else   // !defined(_WIN32)
+
+// Task 503d-19. What `__except` does above, done where Linux can do it.
+//
+// A fault reaches here through the 3c handler. `DispatchGuestFault` gets first
+// refusal, and everything it resumes -- guest INTs, self-modifying writes, the
+// single-step machinery -- never reaches the rest of this function.
+//
+// What it declines is what SEH unwinds out of on Windows, and Linux has nothing
+// to unwind: returning from a signal handler resumes the faulting instruction,
+// which would fault again forever. So the fault is recorded and the guest's
+// context is pointed at the recovery entry instead, which makes
+// `CallGuestEntryWithStack` return as though the switch had completed. 3d-16's
+// probe exercised exactly this round trip before the engine used it.
+repiu::platform::FaultDisposition GuestThreadFaultCallback(
+    repiu::platform::FaultEvent* fault, void* user_data)
+{
+    if (fault == nullptr || fault->registers == nullptr)
+    {
+        return repiu::platform::FaultDisposition::kNotHandled;
+    }
+    const repiu::platform::FaultDisposition disposition =
+        DispatchGuestFault(*fault);
+    if (disposition == repiu::platform::FaultDisposition::kResume)
+    {
+        return disposition;
+    }
+
+    auto* context = static_cast<ThreadContext*>(user_data);
+    if (context == nullptr || context->active_call_state == nullptr)
+    {
+        // No switch to return from. The direct-entry path has no host frame to
+        // land on, so this is where Linux is weaker than the SEH above: the
+        // fault goes unhandled and the process takes the default action.
+        return disposition;
+    }
+    CaptureException(*fault, context);
+    RecoverToHost(fault->registers, context);
+    return repiu::platform::FaultDisposition::kResume;
+}
+
+// The Linux guest thread procedure. Same shape as the Windows one, minus the
+// SEH and with 3c where the vectored handler was.
+std::uint32_t GuestEntryThreadProc(void* parameter)
+{
+    ThreadContext* context = static_cast<ThreadContext*>(parameter);
+    if (context == nullptr)
+    {
+        return 1;
+    }
+    context->guest_thread_id = repiu::platform::CurrentThreadId();
+
+    if (context->use_guest_stack)
+    {
+        StackSwitchCallState state;
+        FillGuestStackCallState(context, &state);
+        g_repiu_active_thread_context = context;
+        if (!repiu::platform::InstallFaultHandler(&GuestThreadFaultCallback,
+                                                  context))
+        {
+            g_repiu_active_thread_context = nullptr;
+            context->active_call_state = nullptr;
+            return 5;
+        }
+        // 3c owns the registration itself; this field is only the flag that
+        // says one is installed, which is what the teardown reads.
+        context->vectored_handler = context;
+
+        CallGuestEntryWithStackTimed(&state, context);
+
+        std::uint32_t finished_exit_code = 0;
+        if (FinishGuestStackCall(context, state, &finished_exit_code))
+        {
+            return finished_exit_code;
+        }
+    }
+    else
+    {
+        g_repiu_active_thread_context = context;
+        if (!repiu::platform::InstallFaultHandler(&GuestThreadFaultCallback,
+                                                  context))
+        {
+            g_repiu_active_thread_context = nullptr;
+            return 5;
+        }
+        context->vectored_handler = context;
+        CallGuestEntryDirectTimed(context);
+        g_repiu_active_thread_context = nullptr;
+        if (context->process_exit)
+        {
+            return 0;
+        }
+    }
+    context->returned = true;
+    return 0;
 }
 #endif  // defined(_WIN32)
 
@@ -4094,13 +4222,8 @@ bool RunWin32ExecutionThread(
     if (!attempt->supported)
     {
         attempt->valid = true;
-#if defined(_WIN32)
         attempt->message =
             "minimal original entry execution requires a 32-bit host";
-#else
-        attempt->message =
-            "minimal original entry execution requires Win32 host APIs";
-#endif
         return true;
     }
 
@@ -4108,16 +4231,10 @@ bool RunWin32ExecutionThread(
     {
         attempt->valid = true;
         attempt->message =
-            "guest stack execution requires 32-bit MSVC Win32 support";
+            "guest stack execution requires a 32-bit x86 host";
         return true;
     }
 
-#if !defined(_WIN32)
-    attempt->valid = true;
-    attempt->message =
-        "minimal original entry execution requires Win32 host APIs";
-    return true;
-#else
     if (!placement.valid || !placement.placed)
     {
         attempt->message = "relocated image is not placed";
@@ -4165,9 +4282,14 @@ bool RunWin32ExecutionThread(
         context.mscdex_command_trace->base_tick =
             static_cast<std::uint32_t>(repiu::platform::MillisecondTicks());
     }
+    // Task 503d-19: the shared section stays Windows-only, as 3d-16 left its
+    // type. Everything downstream already tests the pointer for null, so Linux
+    // simply runs with no external observer attached.
+#if defined(_WIN32)
     SharedTelemetryMapping shared_telemetry =
         OpenSharedTelemetryMapping();
     context.shared_live_telemetry = shared_telemetry.telemetry;
+#endif
     if (context.shared_live_telemetry != nullptr)
     {
         repiu::platform::AtomicExchange(&context.shared_live_telemetry->host_phase, 1);
@@ -4187,26 +4309,33 @@ bool RunWin32ExecutionThread(
     context.piu10_isa_board_enabled = enable_piu10_isa_board;
     context.aot_placement = aot_placement;
     context.execution_backend = execution_backend;
-    char call_return_trace_text[8] = {};
-    const DWORD call_return_trace_length = GetEnvironmentVariableA(
-        "REPIU_AOT_DBT_CALL_TRACE", call_return_trace_text,
-        static_cast<DWORD>(sizeof(call_return_trace_text)));
+    // Task 503d-19: onto 3d-9's layer, which was built for exactly this idiom
+    // -- a small buffer, a length, and the three outcomes absent / too long /
+    // present that the length was being decoded into.
+    const auto call_return_trace = repiu::platform::ReadEnvironmentSetting(
+        "REPIU_AOT_DBT_CALL_TRACE", 8U);
     context.aot_dbt_call_return_trace_configured =
-        call_return_trace_length == 1U &&
-        call_return_trace_text[0] == '1';
+        call_return_trace.present && !call_return_trace.too_long &&
+        call_return_trace.value == "1";
+    // The probe configurator takes a C string, so the value is copied into a
+    // buffer rather than pointed at. A value too long for it leaves the buffer
+    // empty, which is what the Win32 call did as well.
     char call_step_probe_text[128] = {};
-    GetEnvironmentVariableA(
-        "REPIU_AOT_DBT_CALL_STEP", call_step_probe_text,
-        static_cast<DWORD>(sizeof(call_step_probe_text)));
+    const auto call_step_probe = repiu::platform::ReadEnvironmentSetting(
+        "REPIU_AOT_DBT_CALL_STEP", sizeof(call_step_probe_text));
+    if (call_step_probe.present && !call_step_probe.too_long)
+    {
+        call_step_probe.value.copy(call_step_probe_text,
+                                   call_step_probe.value.size());
+    }
     ConfigureAotDbtCallStepProbe(&context, call_step_probe_text);
     context.glide_backend.SetExecutionBackend(execution_backend);
     char probe_offset_text[32] = {};
-    const DWORD probe_offset_length = GetEnvironmentVariableA(
-        "REPIU_EXECUTION_PROBE_OFFSET", probe_offset_text,
-        static_cast<DWORD>(sizeof(probe_offset_text)));
-    if (probe_offset_length > 0U &&
-        probe_offset_length < sizeof(probe_offset_text))
+    const auto probe_offset = repiu::platform::ReadEnvironmentSetting(
+        "REPIU_EXECUTION_PROBE_OFFSET", sizeof(probe_offset_text));
+    if (probe_offset.present && !probe_offset.too_long)
     {
+        probe_offset.value.copy(probe_offset_text, probe_offset.value.size());
         char* end = nullptr;
         const unsigned long value = std::strtoul(
             probe_offset_text, &end, 0);
@@ -4226,12 +4355,13 @@ bool RunWin32ExecutionThread(
     }
     const auto read_hex_env = [](const char* name, std::uint32_t* out) {
         char text[32] = {};
-        const DWORD length = GetEnvironmentVariableA(
-            name, text, static_cast<DWORD>(sizeof(text)));
-        if (length == 0U || length >= sizeof(text))
+        const auto setting =
+            repiu::platform::ReadEnvironmentSetting(name, sizeof(text));
+        if (!setting.present || setting.too_long)
         {
             return false;
         }
+        setting.value.copy(text, setting.value.size());
         char* end = nullptr;
         const unsigned long value = std::strtoul(text, &end, 0);
         if (end == text || *end != '\0' || value > UINT32_MAX)
@@ -4313,12 +4443,11 @@ bool RunWin32ExecutionThread(
     {
         constexpr std::uint32_t kMaximumMp3LatencyMs = 500U;
         char mp3_latency_text[16] = {};
-        const DWORD mp3_latency_length = GetEnvironmentVariableA(
-            "REPIU_PIU10_MP3_LATENCY_MS", mp3_latency_text,
-            static_cast<DWORD>(std::size(mp3_latency_text)));
-        if (mp3_latency_length != 0U &&
-            mp3_latency_length < std::size(mp3_latency_text))
+        const auto mp3_latency = repiu::platform::ReadEnvironmentSetting(
+            "REPIU_PIU10_MP3_LATENCY_MS", std::size(mp3_latency_text));
+        if (mp3_latency.present && !mp3_latency.too_long)
         {
+            mp3_latency.value.copy(mp3_latency_text, mp3_latency.value.size());
             char* end = nullptr;
             const unsigned long parsed = std::strtoul(
                 mp3_latency_text, &end, 10);
@@ -4340,24 +4469,22 @@ bool RunWin32ExecutionThread(
                      "[repiu-piu10-mp3] startup latency=%u ms\n",
                      piu10_mp3_latency_ms);
         context.piu10_mp3_frame_batch_enabled = true;
-        char mp3_batch_audit_value[2] = {};
+        const auto mp3_batch_audit = repiu::platform::ReadEnvironmentSetting(
+            "REPIU_PIU10_MP3_BATCH_AUDIT", 2U);
         context.piu10_mp3_frame_batch_audit_enabled =
             context.piu10_mp3_frame_batch_enabled &&
-            GetEnvironmentVariableA(
-                "REPIU_PIU10_MP3_BATCH_AUDIT", mp3_batch_audit_value,
-                static_cast<DWORD>(std::size(mp3_batch_audit_value))) == 1U &&
-            mp3_batch_audit_value[0] == '1';
+            mp3_batch_audit.present && !mp3_batch_audit.too_long &&
+            mp3_batch_audit.value == "1";
         if (context.piu10_mp3_frame_batch_audit_enabled)
         {
             std::fprintf(stderr,
                          "[repiu-piu10-mp3] frame-tail audit enabled\n");
         }
-        char mp3_stream_audit_value[2] = {};
+        const auto mp3_stream_audit = repiu::platform::ReadEnvironmentSetting(
+            "REPIU_PIU10_MP3_STREAM_AUDIT", 2U);
         const bool mp3_stream_audit_enabled =
-            GetEnvironmentVariableA(
-                "REPIU_PIU10_MP3_STREAM_AUDIT", mp3_stream_audit_value,
-                static_cast<DWORD>(std::size(mp3_stream_audit_value))) == 1U &&
-            mp3_stream_audit_value[0] == '1';
+            mp3_stream_audit.present && !mp3_stream_audit.too_long &&
+            mp3_stream_audit.value == "1";
         context.piu10_mp3_audio.SetStreamAuditEnabled(
             mp3_stream_audit_enabled);
         if (mp3_stream_audit_enabled)
@@ -4405,12 +4532,10 @@ bool RunWin32ExecutionThread(
             std::string piu10_message;
             context.piu10_isa_board.Initialize(
                 std::move(flash.data), cat702_transform, &piu10_message);
-            char dac_audit_value[2] = {};
-            const bool dac_audit_enabled =
-                GetEnvironmentVariableA(
-                    "REPIU_PIU10_DAC_AUDIT", dac_audit_value,
-                    static_cast<DWORD>(std::size(dac_audit_value))) == 1U &&
-                dac_audit_value[0] == '1';
+            const auto dac_audit = repiu::platform::ReadEnvironmentSetting(
+                "REPIU_PIU10_DAC_AUDIT", 2U);
+            const bool dac_audit_enabled = dac_audit.present &&
+                !dac_audit.too_long && dac_audit.value == "1";
             context.piu10_isa_board.SetDacControlSink(
                 [&context, dac_audit_enabled](
                     const repiu::sound::Dac3350aControlEvent& event) {
@@ -4684,19 +4809,14 @@ bool RunWin32ExecutionThread(
         context.dos_file_system = *dos_file_system;
     }
 
-    // Task 503d-18: creating threads, asking whether they still run, and
-    // collecting what they returned are the layer's now. What is still resolved
-    // out of kernel32 here is the watchdog's last resort, which 3d-19 decides
-    // the fate of.
-    const Win32ThreadApi& api = GetWin32ThreadApi();
-
     const auto stop_translation_worker = [&context]() {
         if (context.aot_translation_thread.valid)
         {
             context.aot_translation_shutdown.store(
                 true, std::memory_order_release);
             if (context.aot_translation_request_event == nullptr ||
-                SetEvent(context.aot_translation_request_event) == 0 ||
+                !repiu::platform::SignalWorker(
+                    context.aot_translation_request_event) ||
                 !repiu::platform::JoinHostThread(
                     context.aot_translation_thread,
                     repiu::runtime::kWaitForeverMilliseconds, nullptr))
@@ -4783,7 +4903,7 @@ bool RunWin32ExecutionThread(
             static_cast<long>(thread.id));
         repiu::platform::AtomicExchange(
             &context.shared_live_telemetry->host_main_thread_id,
-            static_cast<long>(GetCurrentThreadId()));
+            static_cast<long>(repiu::platform::CurrentThreadId()));
         if (context.aot_placement != nullptr &&
             context.aot_placement->placed)
         {
@@ -4796,42 +4916,57 @@ bool RunWin32ExecutionThread(
         }
     }
     attempt->guest_stack_switch_attempted = use_guest_stack;
-    DWORD exit_code = 0;
-    const DWORD wait_result = PollThreadUntilExit(
+    std::uint32_t exit_code = 0;
+    const HostPollOutcome wait_result = PollThreadUntilExit(
         thread,
         timeout_milliseconds,
         stall_timeout_milliseconds,
         (enable_single_step_trace || aot_placement != nullptr ||
-         stall_timeout_milliseconds != INFINITE)
+         stall_timeout_milliseconds !=
+             repiu::runtime::kWaitForeverMilliseconds)
             ? &context : nullptr,
         &context,
         &exit_code,
         &attempt->stall_timed_out);
 
+    // Task 503d-19: 3c owns installing and removing the fault handler on both
+    // hosts. `vectored_handler` is the flag saying one is installed; what it
+    // used to hold -- the cookie Windows hands back -- is the backend's
+    // business now.
     const auto remove_vectored_handler = [&context]() {
         if (context.vectored_handler != nullptr)
         {
-            RemoveVectoredExceptionHandler(context.vectored_handler);
+            repiu::platform::RemoveFaultHandler();
             context.vectored_handler = nullptr;
         }
     };
 
     const bool host_exit_requested =
-        wait_result == kWin32HostExitRequested;
-    if (wait_result == WAIT_TIMEOUT || host_exit_requested)
+        wait_result == HostPollOutcome::kHostExitRequested;
+    if (wait_result == HostPollOutcome::kTimedOut || host_exit_requested)
     {
         attempt->timed_out = !host_exit_requested;
         attempt->quit_requested = host_exit_requested;
-        const DWORD interruption_exit_code =
+        const std::uint32_t interruption_exit_code =
             host_exit_requested ? 0U : 3U;
         attempt->thread_exit_code = interruption_exit_code;
 
-        // Task 503d-18: the suspend-and-redirect path and the last resort
-        // below still speak Win32. `HostThread::handle` is documented as the
-        // HANDLE on this host, and reaching for it inside a Windows fence is
-        // what that documentation is for. 3d-19 decides what Linux does here.
-        auto* thread_handle = static_cast<HANDLE>(thread.handle);
+        // Task 503d-19: the forced interruption stays Windows-only, and this
+        // is the one thing Linux cannot do yet.
+        //
+        // 3d-18 settled what the answer is -- the graceful path here (suspend
+        // the thread, point its context at the recovery entry, resume) is what
+        // a signal performs on Linux, and `TerminateThread` below gets no
+        // counterpart at all. Building that is the next sub-stage's work,
+        // because this path runs only when a budget expires or the window
+        // closes, and a run that ends by itself never reaches it.
+        //
+        // Until then a Linux run that has to be interrupted leaves the guest
+        // thread where it is; the loader still reports the attempt, and the
+        // process exit is what stops the thread.
         bool gracefully_interrupted = false;
+#if defined(_WIN32)
+        auto* thread_handle = static_cast<HANDLE>(thread.handle);
         if (SuspendThread(thread_handle) != static_cast<DWORD>(-1))
         {
             repiu::platform::GuestCpuContext win32_context = {};
@@ -4873,11 +5008,22 @@ bool RunWin32ExecutionThread(
             }
         }
 
+        // Task 503d-19: resolved where it is used rather than at the top of a
+        // function that no longer needs the table for anything else.
+        const Win32ThreadApi& api = GetWin32ThreadApi();
         if (!gracefully_interrupted && api.terminate_thread != nullptr)
         {
-            api.terminate_thread(thread_handle, interruption_exit_code);
+            api.terminate_thread(thread_handle,
+                                 static_cast<DWORD>(interruption_exit_code));
             (void)repiu::platform::JoinHostThread(thread, 5000U, nullptr);
         }
+#else
+        // Said plainly rather than left blank: the run ended because a budget
+        // expired or the window closed, and the guest thread was not stopped.
+        context.hle_message = host_exit_requested
+            ? "exit requested; guest thread not interrupted on this host"
+            : "timeout reached; guest thread not interrupted on this host";
+#endif
 
         // Task 401: the guest thread has stopped, so the census is final here.
         // Write it before Glide close, handler removal, and worker shutdown --
@@ -5002,7 +5148,6 @@ bool RunWin32ExecutionThread(
     }
 
     return true;
-#endif
 }
 
 bool AttemptWin32GuestStackTrapExecution(

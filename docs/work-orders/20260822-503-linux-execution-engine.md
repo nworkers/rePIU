@@ -489,6 +489,79 @@ Linux i386에서 `repiu` 실행 파일이 **링크**되어야 합니다. Windows
 게스트가 Linux에서 도는 것은 이 단계의 완료 조건이 **아닙니다.** 스레드를 만들 수 있는 것과
 그 스레드가 게스트를 실행하는 것은 다른 일입니다.
 
+## 3d-19 — 게스트를 Linux에서 돌린다
+
+3d-18이 벽의 위치를 지목했습니다 — `AttemptWin32GuestStack*Execution`의
+`#if !defined(_WIN32)` 조기 반환과 그 아래 890줄. **두 벽 뒤를 각각 쟀습니다.**
+
+| 벽 | 오류 |
+|---|---|
+| 실행 드라이버 890줄 | **38** |
+| `PollThreadUntilExit` 약 500줄 | **69** |
+
+**폴 루프 측정은 두 번 걸렸습니다.** 첫 측정이 2를 보고했는데, 그중 하나가 함수 **반환
+타입**의 `DWORD`였습니다. 시그니처가 파싱되지 않으면 GCC는 본문 전체를 건너뜁니다. 가이드가
+경고하는 함정의 네 번째 형태이고, 이번에는 헤더도 울타리도 아닌 **함수 시그니처**였습니다.
+시그니처를 고친 사본으로 다시 재서 69를 얻었습니다.
+
+69도 대부분 한 원인의 파생입니다. `DWORD`로 선언된 지역 변수 일곱(`start_tick`,
+`current_tick`, `quiet_iterations` …)이 선언에서 실패하면 그것을 읽는 스물몇 곳이 전부
+"선언되지 않음"이 됩니다. **오류 개수가 작업량이 아니라는 것을 세 번째로 확인한 셈입니다.**
+
+1. **타입 표기부터 걷어내십시오.** 두 벽에 걸쳐 `DWORD`가 열아홉 곳입니다. 3d-3의 규칙 —
+   **폭이 같다고 같은 타입이 아닙니다.** 지역 tick 변수는 `MillisecondTicks()`가 돌려주는
+   타입에서 파생시키고, 그러면 뒤따르는 서른 몇 개가 함께 사라집니다.
+2. **이미 있는 계층으로 옮기십시오.** 측정이 지목한 것들입니다.
+   * `GetEnvironmentVariableA` 네 곳 → 3d-9 `ReadEnvironmentSetting`
+   * `GetCurrentThreadId` → 3d-15 `CurrentThreadId` (컴파일러가 이 이름을 직접 제안합니다)
+   * `SetEvent` 한 곳 → 3d-6 `SignalWorker`. **3d-6이 놓친 자리입니다** — 같은 파일의 생성
+     쪽은 이미 `CreateWorkerSignal`을 씁니다
+   * `AddVectoredExceptionHandler`·`RemoveVectoredExceptionHandler` → 3c
+     `InstallFaultHandler`·`RemoveFaultHandler`
+3. **`Sleep`에는 대응물이 없습니다.** `host_time.h`에는 시각을 읽는 것만 있습니다. 폴 루프가
+   쓰는 것은 0ms 또는 1ms이고, 0은 양보이고 1은 짧은 대기입니다. 계층에 하나 추가하되 **그
+   구분을 없애지 마십시오** — Task 333이 이 자리에서 1ms 무조건 sleep을 명령 대기로 바꿔
+   게이트 비용을 줄였고, Task 366이 240Hz 경계 근처에서 0을 쓰는 이유를 남겼습니다.
+4. **폴 루프의 반환 규약을 중립으로.** 지금은 `WAIT_OBJECT_0`·`WAIT_TIMEOUT`·`WAIT_FAILED`와
+   `kWin32HostExitRequested`(= `WAIT_ABANDONED_0`)를 작은 열거형처럼 씁니다. Win32 대기
+   코드를 상수로 쓰는 것이지 대기를 하는 것이 아니므로, **열거형으로 답하십시오** — 3b가
+   보호 비트마스크 대신 `readable`을, 3d-18이 `STILL_ACTIVE` 대신 `running`을 답한 것과 같은
+   자리입니다.
+5. **Windows 전용 진단은 울타리에 두십시오.** psapi 모듈 열거, `GetThreadTimes`, 네이티브
+   phase 샘플러, 공유 텔레메트리. 3d-16이 헤더에 이미 그은 선을 따라가고, Linux 대응물을
+   지어내지 마십시오.
+6. **Linux 게스트 스레드 프로시저.** SEH `__try` 없이 씁니다. `DispatchGuestFault`는 이미
+   중립이므로 3c 콜백이 그것을 부르면 되고, **처리되지 않은 폴트에서 `__except`가 하던 일**을
+   콜백이 대신합니다 — `CaptureException`으로 기록하고 `RecoverToHost`로 컨텍스트를 복귀
+   진입점으로 돌린 뒤 재개입니다. 그러면 `CallGuestEntryWithStack`이 2를 돌려주고, 호출부가
+   읽는 `context->exception_caught`가 Windows와 같은 값이 됩니다.
+   **이 왕복은 3d-16 probe가 이미 Linux에서 확인했습니다.** 새로 만드는 것은 그것을 엔진의
+   실제 핸들러에 연결하는 부분뿐입니다.
+7. **`IsGuestStackSwitchSupported()`가 Linux에서 참**이 되고, 6번 위의 `#if !defined(_WIN32)`
+   조기 반환이 사라집니다. 이 둘이 마지막입니다 — 앞의 여섯이 끝나기 전에 손대면 무엇이
+   실패했는지 말할 수 없게 됩니다.
+
+### 범위 밖 — 감시견의 강제 중단
+
+`SuspendThread`·`GetThreadContext`·`SetThreadContext`·`ResumeThread`로 도는 스레드를 멈추고
+복귀 진입점으로 돌리는 경로는 **이 단계에서 울타리 안에 둡니다.** 3d-18이 Linux 답을
+시그널로 정했지만, 그 경로는 **타임아웃이나 정지가 감지될 때만** 돌고 첫 실행에는 걸리지
+않습니다. 게스트가 도는 것과 안 멈추는 게스트를 세우는 것은 다른 일이므로 다음 단계로
+넘기고, Linux에서 그 자리에 도달하면 무엇을 못 하는지 기록만 남기십시오.
+
+### 완료 조건
+
+**Linux i386에서 게스트 코드가 실행되어야 합니다.** 게임 자산이 필요 없는 대상으로
+`build/openwatcom_samples/`의 DOS/4GW 샘플이 있고, HLE 프로파일 `dos4gw_console_sample`과
+direct executable 경로가 이미 존재합니다. 샘플 하나가 실행되어 종료 코드나 출력으로
+"게스트가 돌았다"를 보이면 이 단계는 끝입니다.
+
+Windows Debug 빌드와 `repiu_core_probe`·`repiu_aot_probe` 결과가 이전과 같아야 하고, Linux
+컴파일 측정과 `repiu` 링크가 유지되어야 합니다.
+
+게임이 도는 것은 완료 조건이 **아닙니다.** 자산 경로와 CHD 마운트는 설계가 범위 밖에 두었고,
+그 결정을 다시 보는 것은 별도의 일입니다.
+
 ---
 
 # Linux Execution Engine Work Order (Stage 3)
@@ -983,3 +1056,78 @@ the `repiu` link both hold.
 
 The guest running on Linux is **not** a completion criterion. Being able to create a thread and that
 thread executing the guest are different things.
+
+## 3d-19 — Running the guest on Linux
+
+3d-18 located the wall: the `#if !defined(_WIN32)` early return in
+`AttemptWin32GuestStack*Execution` and the 890 lines beneath it. **Both walls were measured.**
+
+| Wall | Errors |
+|---|---|
+| the execution driver, 890 lines | **38** |
+| `PollThreadUntilExit`, about 500 lines | **69** |
+
+**The poll loop took two measurements.** The first reported 2, and one of those was `DWORD` in the
+function's **return type**. A signature that will not parse makes GCC skip the entire body. That is
+the fourth shape of the trap the guide warns about — not a header this time, and not a fence, but a
+function signature. Re-measured on a copy with the signature repaired: 69.
+
+The 69 is mostly one cause propagating. Seven locals declared `DWORD` (`start_tick`,
+`current_tick`, `quiet_iterations`, …) fail at their declaration, and the twenty-odd places that read
+them all report "not declared". **That is the third confirmation that an error count is not a measure
+of work.**
+
+1. **Take the type spellings out first.** Nineteen `DWORD` sites across the two walls. 3d-3's rule
+   holds — **the same width is not the same type.** Derive the local tick variables from what
+   `MillisecondTicks()` returns, and thirty-odd errors go with them.
+2. **Move onto the layers that already exist.** The measurement names them:
+   * four `GetEnvironmentVariableA` → 3d-9's `ReadEnvironmentSetting`
+   * `GetCurrentThreadId` → 3d-15's `CurrentThreadId` (the compiler suggests this name itself)
+   * one `SetEvent` → 3d-6's `SignalWorker`. **This is a site 3d-6 missed** — the creation side in
+     the same file already uses `CreateWorkerSignal`
+   * `AddVectoredExceptionHandler` / `RemoveVectoredExceptionHandler` → 3c's `InstallFaultHandler`
+     and `RemoveFaultHandler`
+3. **`Sleep` has no counterpart yet.** `host_time.h` only reads the clock. The poll loop uses 0 ms
+   and 1 ms, where zero is a yield and one is a short wait. Add one to the layer but **do not
+   collapse that distinction**: Task 333 replaced an unconditional 1 ms sleep here with a command
+   wait and measured the gate cost down, and Task 366 recorded why zero is used near a 240 Hz edge.
+4. **Make the poll loop's return convention neutral.** It currently uses `WAIT_OBJECT_0`,
+   `WAIT_TIMEOUT`, `WAIT_FAILED` and `kWin32HostExitRequested` (which is `WAIT_ABANDONED_0`) as a
+   small enumeration. These are Win32 wait codes used as constants by something that does not wait,
+   so **answer with an enum** — the same place 3b returned `readable` instead of a protection
+   bitmask and 3d-18 returned `running` instead of `STILL_ACTIVE`.
+5. **Fence the Windows-only diagnostics**: the psapi module enumeration, `GetThreadTimes`, the
+   native phase sampler, the shared telemetry. Follow the line 3d-16 already drew in the header and
+   do not invent Linux counterparts.
+6. **The Linux guest thread procedure**, written without the SEH `__try`. `DispatchGuestFault` is
+   already neutral, so the 3c callback calls it; and **what `__except` did for an unhandled fault**
+   the callback does instead — record it with `CaptureException`, point the context at the recovery
+   entry with `RecoverToHost`, resume. `CallGuestEntryWithStack` then returns 2 and
+   `context->exception_caught`, which the caller reads, holds the same value as on Windows.
+   **The 3d-16 probe already exercised that round trip on Linux.** What is new is only wiring it to
+   the engine's own handler.
+7. **`IsGuestStackSwitchSupported()` answering true on Linux**, and the `#if !defined(_WIN32)` early
+   return above item 6 going away. These two are last: touching them before the other six are done
+   makes it impossible to say which of them failed.
+
+### Out of scope — the watchdog's forced interruption
+
+The path that stops a running thread with `SuspendThread`, `GetThreadContext`, `SetThreadContext`
+and `ResumeThread` and points it at the recovery entry **stays fenced in this sub-stage.** 3d-18
+settled that Linux answers it with a signal, but that path runs **only when a timeout or a stall is
+detected** and a first run does not reach it. Running the guest and stopping a guest that will not
+stop are different things; leave the second to the next sub-stage and record what Linux cannot do if
+it reaches that point.
+
+### Completion criteria
+
+**Guest code executes on Linux i386.** The target that needs no game assets is a DOS/4GW sample from
+`build/openwatcom_samples/`; the `dos4gw_console_sample` HLE profile and the direct-executable path
+already exist. One sample running, and showing through an exit code or its output that the guest
+ran, ends this sub-stage.
+
+The Windows Debug build with `repiu_core_probe` and `repiu_aot_probe` must match what they were, and
+the Linux compile measurement and the `repiu` link must hold.
+
+The game running is **not** a completion criterion. Asset paths and the CHD mount are out of the
+design's scope, and revisiting that decision is separate work.

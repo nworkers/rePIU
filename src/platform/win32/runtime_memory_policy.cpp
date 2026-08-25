@@ -1,5 +1,7 @@
 #include "repiu/platform/win32/runtime_memory_policy.h"
 
+#include "repiu/platform/virtual_memory.h"
+
 #include <algorithm>
 #include <cstring>
 #include <cstdint>
@@ -28,26 +30,30 @@ namespace
 
 bool IsDirectX86ExecutionSupported()
 {
-#if defined(_WIN32) && (defined(_M_IX86) || defined(__i386__))
+// Task 503d-19: the same answer the trampoline gives, and for the same reason.
+// Running the guest's code in this process needs a 32-bit x86 host; the Win32
+// APIs it used to also need are in the platform layer.
+#if defined(_M_IX86) || defined(__i386__)
     return true;
 #else
     return false;
 #endif
 }
 
-std::string MemoryStateName(DWORD state)
+// Task 503d-19. The three states a region can be in, as the diagnostic that
+// reads them has always spelled them.
+//
+// The Windows names are kept rather than renamed. What this string ends up in
+// is a loader log line that a person reads next to a Windows address map, and
+// the layer's `claimed` and `committed` reproduce the same three states exactly
+// -- so the spelling costs nothing and the familiarity is worth keeping.
+std::string RegionStateName(const repiu::platform::MemoryRegion& region)
 {
-    switch (state)
+    if (!region.claimed)
     {
-        case MEM_COMMIT:
-            return "MEM_COMMIT";
-        case MEM_FREE:
-            return "MEM_FREE";
-        case MEM_RESERVE:
-            return "MEM_RESERVE";
-        default:
-            return "UNKNOWN";
+        return "MEM_FREE";
     }
+    return region.committed ? "MEM_COMMIT" : "MEM_RESERVE";
 }
 
 std::uint32_t ClampToUint32(std::uintptr_t value)
@@ -71,27 +77,29 @@ std::uint32_t AlignUp(std::uint32_t value, std::uint32_t alignment)
     return value + (alignment - remainder);
 }
 
-DWORD ProtectionFromObjectFlags(std::uint32_t flags)
+// Task 503d-19: the object's own flags become the layer's protection rather
+// than a Win32 constant. The four cases are the same four.
+repiu::platform::MemoryProtection ProtectionFromObjectFlags(std::uint32_t flags)
 {
     const bool writable = (flags & 0x00000002) != 0;
     const bool executable = (flags & 0x00000004) != 0;
 
     if (executable && writable)
     {
-        return PAGE_EXECUTE_READWRITE;
+        return repiu::platform::MemoryProtection::kExecuteReadWrite;
     }
 
     if (executable)
     {
-        return PAGE_EXECUTE_READ;
+        return repiu::platform::MemoryProtection::kExecuteRead;
     }
 
     if (writable)
     {
-        return PAGE_READWRITE;
+        return repiu::platform::MemoryProtection::kReadWrite;
     }
 
-    return PAGE_READONLY;
+    return repiu::platform::MemoryProtection::kReadOnly;
 }
 
 }  // namespace
@@ -189,16 +197,6 @@ bool ProbeWin32RuntimeAddressRange(
     const Win32RuntimeMemoryPolicy& policy,
     Win32AddressRangeProbe* probe)
 {
-#if !defined(_WIN32)
-    if (probe == nullptr)
-    {
-        return false;
-    }
-    *probe = Win32AddressRangeProbe{};
-    probe->message = "Win32 runtime address probing requires Win32 host APIs";
-    return false;
-#else
-
     if (probe == nullptr)
     {
         return false;
@@ -235,37 +233,38 @@ bool ProbeWin32RuntimeAddressRange(
     std::uintptr_t current = base;
     while (current < end)
     {
-        MEMORY_BASIC_INFORMATION memory_info{};
-        const SIZE_T query_size = VirtualQuery(
-            reinterpret_cast<LPCVOID>(current),
-            &memory_info,
-            sizeof(memory_info));
-        if (query_size == 0)
+        // Task 503d-19: onto 3b, which answers `claimed` directly. What stood
+        // here compared MEM_FREE against the other two states, and this is the
+        // question that comparison was asking.
+        const repiu::platform::MemoryRegion region =
+            repiu::platform::QueryMemory(
+                reinterpret_cast<const void*>(current));
+        if (!region.valid)
         {
-            probe->message = "VirtualQuery failed while probing address range";
+            probe->message = "memory query failed while probing address range";
             return false;
         }
 
         const std::uintptr_t region_base =
-            reinterpret_cast<std::uintptr_t>(memory_info.BaseAddress);
+            reinterpret_cast<std::uintptr_t>(region.base);
         const std::uintptr_t region_size =
-            static_cast<std::uintptr_t>(memory_info.RegionSize);
+            static_cast<std::uintptr_t>(region.size);
         const std::uintptr_t region_end = region_base + region_size;
 
-        if (memory_info.State != MEM_FREE)
+        if (region.claimed)
         {
             probe->valid = true;
             probe->range_available = false;
             probe->first_block_base = ClampToUint32(region_base);
             probe->first_block_size = ClampToUint32(region_size);
-            probe->first_block_state = MemoryStateName(memory_info.State);
+            probe->first_block_state = RegionStateName(region);
             probe->message = "target address range is not fully free";
             return true;
         }
 
         if (region_end <= current)
         {
-            probe->message = "VirtualQuery returned a non-advancing region";
+            probe->message = "memory query returned a non-advancing region";
             return false;
         }
 
@@ -276,26 +275,14 @@ bool ProbeWin32RuntimeAddressRange(
     probe->range_available = true;
     probe->message = "target address range is fully free";
     return true;
-#endif
 }
 
 bool ReserveWin32RuntimeAddressRangeWithType(
     const Win32RuntimeMemoryPolicy& policy,
-    DWORD allocation_type,
+    bool commit,
     const char* operation_name,
     Win32AddressRangeReservation* reservation)
 {
-#if !defined(_WIN32)
-    if (reservation == nullptr)
-    {
-        return false;
-    }
-    *reservation = Win32AddressRangeReservation{};
-    reservation->message =
-        "Win32 runtime address reservation requires Win32 host APIs";
-    return false;
-#else
-
     if (reservation == nullptr)
     {
         return false;
@@ -313,41 +300,45 @@ bool ReserveWin32RuntimeAddressRangeWithType(
 
     void* requested_address = reinterpret_cast<void*>(
         static_cast<std::uintptr_t>(policy.preferred_allocation_base));
-    void* reserved_address = VirtualAlloc(
-        requested_address,
-        static_cast<SIZE_T>(policy.required_reserve_size),
-        allocation_type,
-        PAGE_READWRITE);
+    // Task 503d-19: onto 3b. The allocation type collapses into `commit`,
+    // which is the only thing the two callers differ in.
+    const repiu::platform::MemoryReservation reserved =
+        repiu::platform::ReserveMemory(
+            requested_address,
+            static_cast<std::size_t>(policy.required_reserve_size),
+            commit,
+            repiu::platform::MemoryProtection::kReadWrite);
 
     reservation->valid = true;
-    if (reserved_address == nullptr)
+    if (!reserved.valid || reserved.base == nullptr)
     {
-        reservation->windows_error = GetLastError();
+        reservation->windows_error = reserved.error;
         std::ostringstream stream;
-        stream << "VirtualAlloc " << operation_name
-               << " failed with error " << reservation->windows_error;
+        stream << "reservation " << operation_name
+               << " failed with host error " << reservation->windows_error;
         reservation->message = stream.str();
         return true;
     }
 
     reservation->reserved = true;
     reservation->reserved_base = ClampToUint32(
-        reinterpret_cast<std::uintptr_t>(reserved_address));
+        reinterpret_cast<std::uintptr_t>(reserved.base));
     reservation->reserved_size = policy.required_reserve_size;
 
-    if (reserved_address == requested_address)
+    if (reserved.base == requested_address)
     {
         reservation->message = operation_name;
         reservation->message += " target address range";
     }
     else
     {
+        // 3b's header states this outright: a preferred base is a request and
+        // the hosts fail it differently, so every caller compares.
         reservation->message =
-            "VirtualAlloc reserved a different address than requested";
+            "reservation returned a different address than requested";
     }
 
     return true;
-#endif
 }
 
 bool ReserveWin32RuntimeAddressRange(
@@ -355,7 +346,7 @@ bool ReserveWin32RuntimeAddressRange(
     Win32AddressRangeReservation* reservation)
 {
     return ReserveWin32RuntimeAddressRangeWithType(
-        policy, MEM_RESERVE, "MEM_RESERVE", reservation);
+        policy, false, "reserve", reservation);
 }
 
 bool ReserveAndCommitWin32RuntimeAddressRange(
@@ -363,10 +354,7 @@ bool ReserveAndCommitWin32RuntimeAddressRange(
     Win32AddressRangeReservation* reservation)
 {
     return ReserveWin32RuntimeAddressRangeWithType(
-        policy,
-        MEM_RESERVE | MEM_COMMIT,
-        "MEM_RESERVE|MEM_COMMIT",
-        reservation);
+        policy, true, "reserve and commit", reservation);
 }
 
 bool ReleaseWin32RuntimeAddressRange(
@@ -377,13 +365,10 @@ bool ReleaseWin32RuntimeAddressRange(
         return true;
     }
 
-#if defined(_WIN32)
     void* reserved_address = reinterpret_cast<void*>(
         static_cast<std::uintptr_t>(reservation.reserved_base));
-    return VirtualFree(reserved_address, 0, MEM_RELEASE) != 0;
-#else
-    return true;
-#endif
+    return repiu::platform::ReleaseMemory(
+        reserved_address, static_cast<std::size_t>(reservation.reserved_size));
 }
 
 bool PlaceWin32RelocatedImage(
@@ -398,15 +383,6 @@ bool PlaceWin32RelocatedImage(
     std::uint32_t minimum_reserve_size,
     Win32RelocatedImagePlacement* placement)
 {
-#if !defined(_WIN32)
-    if (placement == nullptr)
-    {
-        return false;
-    }
-    *placement = Win32RelocatedImagePlacement{};
-    placement->message = "Win32 relocated image placement requires Win32 host APIs";
-    return false;
-#else
 
     if (placement == nullptr)
     {
@@ -449,18 +425,20 @@ bool PlaceWin32RelocatedImage(
 
     void* requested_address = reinterpret_cast<void*>(
         static_cast<std::uintptr_t>(min_base));
-    void* placed_address = VirtualAlloc(
-        requested_address,
-        static_cast<SIZE_T>(reserve_size),
-        MEM_RESERVE | MEM_COMMIT,
-        PAGE_READWRITE);
+    const repiu::platform::MemoryReservation reserved =
+        repiu::platform::ReserveMemory(
+            requested_address,
+            static_cast<std::size_t>(reserve_size),
+            true,
+            repiu::platform::MemoryProtection::kReadWrite);
+    void* placed_address = reserved.valid ? reserved.base : nullptr;
 
     placement->valid = true;
     if (placed_address == nullptr)
     {
-        placement->windows_error = GetLastError();
+        placement->windows_error = reserved.error;
         std::ostringstream stream;
-        stream << "VirtualAlloc relocated image failed with error "
+        stream << "relocated image reservation failed with host error "
                << placement->windows_error;
         placement->message = stream.str();
         return true;
@@ -473,10 +451,10 @@ bool PlaceWin32RelocatedImage(
 
     if (placement->placed_base != min_base)
     {
-        placement->windows_error = ERROR_INVALID_ADDRESS;
+        placement->windows_error = 0;
         placement->message =
-            "VirtualAlloc returned a different relocated image address";
-        VirtualFree(placed_address, 0, MEM_RELEASE);
+            "reservation returned a different relocated image address";
+        repiu::platform::ReleaseMemory(placed_address, reserve_size);
         placement->placed_base = 0;
         placement->placed_size = 0;
         return true;
@@ -498,20 +476,16 @@ bool PlaceWin32RelocatedImage(
     {
         void* object_address = reinterpret_cast<void*>(
             static_cast<std::uintptr_t>(object.relocated_base_address));
-        const SIZE_T object_size =
-            static_cast<SIZE_T>(AlignUp(object.virtual_size, 4096));
-        DWORD old_protection = 0;
-        if (VirtualProtect(object_address,
-                           object_size,
-                           ProtectionFromObjectFlags(object.flags),
-                           &old_protection) == 0)
+        const std::size_t object_size =
+            static_cast<std::size_t>(AlignUp(object.virtual_size, 4096));
+        if (!repiu::platform::ProtectMemory(
+                object_address, object_size,
+                ProtectionFromObjectFlags(object.flags), nullptr))
         {
-            placement->windows_error = GetLastError();
-            std::ostringstream stream;
-            stream << "VirtualProtect relocated object failed with error "
-                   << placement->windows_error;
-            placement->message = stream.str();
-            VirtualFree(placed_address, 0, MEM_RELEASE);
+            placement->windows_error = 0;
+            placement->message =
+                "protecting a relocated object failed";
+            repiu::platform::ReleaseMemory(placed_address, reserve_size);
             placement->placed_base = 0;
             placement->placed_size = 0;
             return true;
@@ -519,11 +493,10 @@ bool PlaceWin32RelocatedImage(
         ++placement->protected_object_count;
     }
 
-    FlushInstructionCache(GetCurrentProcess(), placed_address, reserve_size);
+    repiu::platform::FlushInstructionCacheRange(placed_address, reserve_size);
     placement->placed = true;
-    placement->message = "relocated image placed in Win32 process memory";
+    placement->message = "relocated image placed in host process memory";
     return true;
-#endif
 }
 
 bool PlaceWin32RelocatedImageInReservedRange(
@@ -531,15 +504,6 @@ bool PlaceWin32RelocatedImageInReservedRange(
     const Win32AddressRangeReservation& reservation,
     Win32RelocatedImagePlacement* placement)
 {
-#if !defined(_WIN32)
-    if (placement == nullptr)
-    {
-        return false;
-    }
-    *placement = Win32RelocatedImagePlacement{};
-    placement->message = "Win32 relocated image placement requires Win32 host APIs";
-    return false;
-#else
 
     if (placement == nullptr)
     {
@@ -614,19 +578,14 @@ bool PlaceWin32RelocatedImageInReservedRange(
     {
         void* object_address = reinterpret_cast<void*>(
             static_cast<std::uintptr_t>(object.relocated_base_address));
-        const SIZE_T object_size =
-            static_cast<SIZE_T>(AlignUp(object.virtual_size, 4096));
-        DWORD old_protection = 0;
-        if (VirtualProtect(object_address,
-                           object_size,
-                           ProtectionFromObjectFlags(object.flags),
-                           &old_protection) == 0)
+        const std::size_t object_size =
+            static_cast<std::size_t>(AlignUp(object.virtual_size, 4096));
+        if (!repiu::platform::ProtectMemory(
+                object_address, object_size,
+                ProtectionFromObjectFlags(object.flags), nullptr))
         {
-            placement->windows_error = GetLastError();
-            std::ostringstream stream;
-            stream << "VirtualProtect relocated object failed with error "
-                   << placement->windows_error;
-            placement->message = stream.str();
+            placement->windows_error = 0;
+            placement->message = "protecting a relocated object failed";
             placement->placed_base = 0;
             placement->placed_size = 0;
             return true;
@@ -634,16 +593,14 @@ bool PlaceWin32RelocatedImageInReservedRange(
         ++placement->protected_object_count;
     }
 
-    FlushInstructionCache(
-        GetCurrentProcess(),
+    repiu::platform::FlushInstructionCacheRange(
         reinterpret_cast<void*>(
             static_cast<std::uintptr_t>(placement->placed_base)),
         placement->placed_size);
     placement->placed = true;
     placement->message =
-        "relocated image placed in precommitted Win32 process memory";
+        "relocated image placed in precommitted host process memory";
     return true;
-#endif
 }
 
 bool ReleaseWin32RelocatedImage(
@@ -654,13 +611,10 @@ bool ReleaseWin32RelocatedImage(
         return true;
     }
 
-#if defined(_WIN32)
     void* placed_address = reinterpret_cast<void*>(
         static_cast<std::uintptr_t>(placement.placed_base));
-    return VirtualFree(placed_address, 0, MEM_RELEASE) != 0;
-#else
-    return true;
-#endif
+    return repiu::platform::ReleaseMemory(
+        placed_address, static_cast<std::size_t>(placement.placed_size));
 }
 
 }  // namespace repiu::platform::win32

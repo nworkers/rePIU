@@ -270,6 +270,36 @@ GPU 드라이버가 게스트 주소 공간을 선점하기 때문인데, Linux�
 경로**이며, `pthread_cancel`은 답이 아닙니다 — 취소 지점에서만 작동하는데 게스트는 거기에
 도달하지 않습니다. 실제 인터럽트 구현은 폴 루프와 함께 3d-19의 일입니다.
 
+## 결정 9: 메모리 리전은 "임자가 있는가"를 따로 답합니다 (3d-19)
+
+3b는 `committed`로 두 상태를 답했습니다. 실제로는 셋입니다 — Windows가 `MEM_FREE`,
+`MEM_RESERVE`, `MEM_COMMIT`를 보고하고 **첫째만 새 예약이 성공합니다.**
+
+이 구분이 필요한 곳은 하나뿐이지만 그 하나가 결정적입니다. 런타임 메모리 정책이 게스트의
+고정 범위를 예약하기 전에 "이 범위가 비어 있는가"를 묻습니다. 그리고 여기가 **두 호스트가
+가장 크게 갈린 자리**입니다 — Windows 질의는 빈 공간을 설명하는데 Linux 질의는 미매핑
+주소에 대해 실패했습니다.
+
+`MemoryRegion::claimed`가 그 차이를 계층 안에서 흡수합니다. Linux 백엔드는 미매핑 주소에
+대해 `/proc/self/maps`에서 다음 매핑의 시작점을 찾아 빈 구간의 범위를 돌려줍니다. 호출부가
+두 호스트를 구분할 필요가 없어야 한다는 것이 3b의 전제이고, 이것이 그 전제를 지키는
+방법입니다.
+
+## 결정 10: `__except`의 자리는 3c 콜백입니다 (3d-19)
+
+Windows 게스트 스레드 프로시저는 `__try`/`__except`로 감싸여 있고, VEH가 재개하지 않은
+폴트를 SEH가 풀어냅니다. **Linux에는 풀어낼 것이 없습니다** — 시그널 핸들러에서 돌아가면
+폴트 명령을 다시 실행하고 영원히 다시 폴트합니다.
+
+그래서 3c 콜백이 `DispatchGuestFault`에 먼저 묻고, 거절당한 것을 `CaptureException`으로
+기록한 뒤 `RecoverToHost`로 게스트 컨텍스트를 복귀 진입점으로 돌립니다.
+`CallGuestEntryWithStack`이 전환이 끝난 것처럼 돌아오므로 호출부가 읽는 값이 Windows와
+같습니다. 3d-16 probe가 이 왕복을 엔진보다 먼저 확인했습니다.
+
+**Linux가 약한 자리 하나를 적어 둡니다.** 스택 전환을 쓰지 않는 직접 진입 경로에는 돌아갈
+호스트 프레임이 없어, 그 경로의 미처리 폴트는 프로세스가 기본 동작을 받습니다. Windows의
+`__except`는 그것도 잡습니다.
+
 ## 단계 구분
 
 | 하위 단계 | 내용 | Linux 실행 경로 |
@@ -462,6 +492,27 @@ a mechanism 3d-16 already stood up and probed on Linux, where a signal does the 
 the graceful path is therefore the only path; `pthread_cancel` is not the answer, since it acts at
 cancellation points the guest never reaches. The interrupt itself belongs to 3d-19, with the poll
 loop.
+
+**A memory region answers whether anything owns it, separately from whether it is committed.** 3b
+answered two states with `committed`. There are three: Windows reports `MEM_FREE`, `MEM_RESERVE` and
+`MEM_COMMIT`, and only the first would accept a new reservation. One caller needs the distinction and
+it is the decisive one — the runtime memory policy asks whether the guest's fixed range is free
+before claiming it — and it is where the two hosts diverged most sharply, since a Windows query
+describes free space while a Linux query for an unmapped address failed outright.
+`MemoryRegion::claimed` absorbs that inside the layer, with the Linux backend finding the next
+mapping in `/proc/self/maps` to report the extent of the free run. Call sites not having to tell the
+hosts apart is 3b's premise, and this is how it is kept.
+
+**`__except`'s place is the 3c callback.** The Windows guest thread procedure is wrapped in
+`__try`/`__except`, and SEH unwinds out of a fault the vectored handler did not resume. Linux has
+nothing to unwind: returning from a signal handler re-executes the faulting instruction, forever. So
+the 3c callback asks `DispatchGuestFault` first, records what it declines with `CaptureException`,
+and points the guest's context at the recovery entry with `RecoverToHost` —
+`CallGuestEntryWithStack` then returns as though the switch had completed, so the value the caller
+reads matches Windows. The 3d-16 probe exercised that round trip before the engine used it. One place
+is weaker and is recorded as such: the direct-entry path uses no stack switch and so has no host
+frame to land on, which leaves an unhandled fault there to the process's default action, where
+Windows' `__except` would have caught it.
 
 ## Sub-stages
 

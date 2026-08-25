@@ -311,6 +311,43 @@ bool ProbeForeignMemory()
     const MemoryRegion missing = repiu::platform::QueryMemory(unmapped);
     ok = ok && !missing.committed;
     ok = ok && !repiu::platform::IsRangeReadable(unmapped, 4U);
+    // Task 503d-19: and it belongs to nobody, which is a different statement.
+    // The two hosts used to answer this incompatibly -- Windows described the
+    // free space while Linux failed the query outright -- and the runtime
+    // memory policy has to ask it before reserving the guest's fixed range. An
+    // unclaimed region is valid on both now, and names the free run it sits in.
+    ok = ok && missing.valid && !missing.claimed && missing.size > 0U;
+    // What the stack sits in, by contrast, belongs to someone.
+    ok = ok && region.claimed;
+    return ok;
+}
+
+// Task 503d-19. The three states an address can be in, which is one more than
+// `committed` can express: free, reserved, and committed. Only the first would
+// accept a new reservation, and that is what the runtime memory policy asks
+// about the guest's fixed range before claiming it.
+bool ProbeClaimedVersusCommitted()
+{
+    constexpr std::size_t kPageBytes = 4096U;
+    const MemoryReservation reserved = repiu::platform::ReserveMemory(
+        nullptr, kPageBytes * 4U, false, MemoryProtection::kReadWrite);
+    if (!reserved.valid)
+    {
+        return false;
+    }
+
+    // Reserved without committing: claimed all the same, so a second
+    // reservation here would be refused.
+    const MemoryRegion region = repiu::platform::QueryMemory(reserved.base);
+    bool ok = region.valid && region.claimed && !region.committed;
+
+    // Committing changes only the second answer.
+    ok = ok && repiu::platform::CommitMemory(reserved.base, kPageBytes,
+                                             MemoryProtection::kReadWrite);
+    const MemoryRegion committed = repiu::platform::QueryMemory(reserved.base);
+    ok = ok && committed.valid && committed.claimed && committed.committed;
+
+    ok = repiu::platform::ReleaseMemory(reserved.base, reserved.size) && ok;
     return ok;
 }
 
@@ -325,8 +362,9 @@ bool RunVirtualMemoryProbe()
     const bool refusal_ok = ProbeRefusals();
     const bool span_ok = ProbeRangeSpansRegions();
     const bool foreign_ok = ProbeForeignMemory();
+    const bool claimed_ok = ProbeClaimedVersusCommitted();
     const bool all = reserve_ok && protection_ok && partial_ok &&
-        uncommitted_ok && refusal_ok && span_ok && foreign_ok;
+        uncommitted_ok && refusal_ok && span_ok && foreign_ok && claimed_ok;
 
     std::cout << "virtual_memory_reserve_query=" << (reserve_ok ? "true" : "false")
               << "\nvirtual_memory_protection_round_trip="
@@ -340,6 +378,8 @@ bool RunVirtualMemoryProbe()
               << (span_ok ? "true" : "false")
               << "\nvirtual_memory_foreign_memory="
               << (foreign_ok ? "true" : "false")
+              << "\nvirtual_memory_claimed_versus_committed="
+              << (claimed_ok ? "true" : "false")
               << "\nvirtual_memory_all=" << (all ? "true" : "false") << "\n";
     return all;
 }

@@ -71,6 +71,18 @@ struct LocalWallClock
 // the date expects the one on the wall behind the cabinet.
 LocalWallClock ReadLocalWallClock();
 
+// Task 503d-19. Giving the processor up for a moment, as the host poll loop
+// does between questions.
+//
+// Zero and one are not the same request and the distinction is load-bearing
+// here. Zero yields -- Task 366 uses it in the final millisecond before a 240Hz
+// timer edge so the next iteration observes that edge at high resolution -- and
+// one is a short wait, which is what the loop does when the next edge is
+// distant. Task 333 replaced an unconditional one-millisecond sleep on this
+// path with a command wait and measured the gate cost down, so anything that
+// collapses the two would undo a measurement.
+void YieldMilliseconds(std::uint32_t milliseconds);
+
 }  // namespace repiu::platform
 
 #endif  // REPIU_PLATFORM_HOST_TIME_H_

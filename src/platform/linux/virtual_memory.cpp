@@ -4,6 +4,7 @@
 
 #include <cerrno>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <mutex>
 
@@ -247,6 +248,9 @@ bool LookupShadow(ShadowState* shadow,
         return false;
     }
     region->valid = true;
+    // Task 503d-19: the shadow only holds what this backend mapped, so a hit
+    // is by definition claimed.
+    region->claimed = true;
     // A reservation made without committing is mapped PROT_NONE, and that is
     // exactly what Windows reports as reserved-but-not-committed. Since nothing
     // in this project ever asks to protect a page kNoAccess, the mapping from
@@ -339,6 +343,7 @@ bool ParseMapsLine(const char* line,
     const bool executable = line[offset + 2U] == 'x';
 
     region->valid = true;
+    region->claimed = true;
     region->committed = true;
     region->base = reinterpret_cast<const void*>(start);
     region->size = static_cast<std::size_t>(end - start);
@@ -354,8 +359,17 @@ bool ParseMapsLine(const char* line,
 // is far slower than the shadow lookup and is deliberately reached only when
 // the shadow misses -- which on the engine's paths means a host pointer, not a
 // guest one.
-bool QueryProcMaps(const std::uintptr_t address, MemoryRegion* region)
+// Task 503d-19: `next_mapping_start` receives the lowest mapping that begins
+// above `address` when nothing covers it, which is what turns a miss into the
+// extent of the free run rather than a failure.
+bool QueryProcMaps(const std::uintptr_t address,
+                   MemoryRegion* region,
+                   std::uintptr_t* next_mapping_start)
 {
+    if (next_mapping_start != nullptr)
+    {
+        *next_mapping_start = 0;
+    }
     const int file = ::open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
     if (file < 0)
     {
@@ -394,6 +408,13 @@ bool QueryProcMaps(const std::uintptr_t address, MemoryRegion* region)
                     *region = candidate;
                     found = true;
                     break;
+                }
+                // The file is ordered by address, so the first mapping that
+                // starts above the address is the end of the free run.
+                if (next_mapping_start != nullptr &&
+                    *next_mapping_start == 0 && base > address)
+                {
+                    *next_mapping_start = base;
                 }
             }
             line_start = index + 1U;
@@ -574,9 +595,25 @@ MemoryRegion QueryMemory(const void* address)
             return region;
         }
     }
-    if (!QueryProcMaps(value, &region))
+    std::uintptr_t next_mapping_start = 0;
+    if (!QueryProcMaps(value, &region, &next_mapping_start))
     {
-        return MemoryRegion{};
+        // Task 503d-19: nothing maps this address, which is an answer rather
+        // than a failure -- it is what Windows calls MEM_FREE. The run reaches
+        // the next mapping, or the end of the address space when there is none
+        // above.
+        region = MemoryRegion{};
+        region.valid = true;
+        region.claimed = false;
+        const std::uintptr_t page = static_cast<std::uintptr_t>(PageSize());
+        const std::uintptr_t start = value & ~(page - 1U);
+        region.base = reinterpret_cast<const void*>(start);
+        region.allocation_base = region.base;
+        const std::uintptr_t end = next_mapping_start > start
+            ? next_mapping_start
+            : std::numeric_limits<std::uintptr_t>::max();
+        region.size = static_cast<std::size_t>(end - start);
+        return region;
     }
     return region;
 }

@@ -257,35 +257,46 @@ void WriteLiveTelemetrySnapshot(const ThreadContext& context,
     repiu::platform::WriteHostErrorStream(buffer, byte_count);
 }
 
+// Task 503d-17. The host spells "no limit" with a neutral constant, and on
+// Windows it also reaches a Win32 wait. They are the same number, and this is
+// what says so where a change to either would be noticed.
 #if defined(_WIN32)
-// Task 503d-17. The host spells "no limit" with a neutral constant now, and it
-// arrives here as the timeout of a Win32 wait. They are the same number, and
-// this is what says so where a change to either would be noticed.
 static_assert(repiu::runtime::kWaitForeverMilliseconds == INFINITE);
+#endif
 
-DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
-                          DWORD timeout_milliseconds,
-                          DWORD stall_timeout_milliseconds,
+// Task 503d-19: out of the fence. The loop is what drives a run, and a host
+// being brought up needs it before anything else here.
+HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
+                          std::uint32_t timeout_milliseconds,
+                          std::uint32_t stall_timeout_milliseconds,
                           ThreadContext* progress_context,
                           ThreadContext* host_context,
-                          DWORD* exit_code,
+                          std::uint32_t* exit_code,
                           bool* stall_timed_out)
 {
     if (!thread.valid)
     {
-        return WAIT_FAILED;
+        return HostPollOutcome::kFailed;
     }
     // Task 503d-18: the loop's own question goes through the layer, but the
     // diagnostics below sample a thread with Win32 calls that take a HANDLE.
-    // `HostThread::handle` is documented as being one on this host, and this
-    // whole function is inside a Windows fence.
+    // `HostThread::handle` is documented as being one on this host.
+    // Task 503d-19: those diagnostics are what stays fenced now that the loop
+    // itself runs on both hosts. Suspending another thread to read its
+    // registers is not something Linux can do from inside the same process.
+#if defined(_WIN32)
     auto* thread_handle = static_cast<HANDLE>(thread.handle);
+#endif
 
     if (stall_timed_out != nullptr)
     {
         *stall_timed_out = false;
     }
-    const DWORD start_tick = repiu::platform::MillisecondTicks();
+    // Task 503d-19: derived from what the clock returns rather than spelled
+    // DWORD. Every variable below that holds a tick follows it, which is what
+    // took thirty-odd errors off the Linux measurement at once.
+    using TickCount = decltype(repiu::platform::MillisecondTicks());
+    const TickCount start_tick = repiu::platform::MillisecondTicks();
     const auto read_event_clock = [host_context]() -> std::uint64_t {
         if (host_context != nullptr)
         {
@@ -299,7 +310,7 @@ DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
     repiu::hle::PitIrqSchedule pit_irq_schedule;
     std::uint64_t next_timer_wait_nanoseconds = 0U;
     std::uint64_t bios_tick_count = 0;
-    DWORD quiet_start_tick = start_tick;
+    TickCount quiet_start_tick = start_tick;
     runtime::ExecutionProgressSnapshot last_progress_snapshot;
     if (progress_context != nullptr)
     {
@@ -325,8 +336,8 @@ DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
     // The composite `progressed` tracker is unsuitable as this gate because
     // lightweight AOT VEH paths (inline-cache misses, reentries) increment
     // aot_boundary/aot_reentry continuously without any dispatch.
-    constexpr DWORD kNativePhaseSampleQuietMilliseconds = 1000U;
-    constexpr DWORD kNativePhaseSampleIntervalMilliseconds = 500U;
+    constexpr TickCount kNativePhaseSampleQuietMilliseconds = 1000U;
+    constexpr TickCount kNativePhaseSampleIntervalMilliseconds = 500U;
     const char* sampling_environment =
         std::getenv("REPIU_NATIVE_SAMPLING");
     const bool native_sampling_enabled =
@@ -334,15 +345,15 @@ DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
         std::strcmp(sampling_environment, "0") != 0;
     Win32NativePhaseSamplerState native_sampler_state;
     // Task 411: independent of the native sampler's cadence and of its gate.
-    const DWORD position_census_interval = static_cast<DWORD>(
+    const TickCount position_census_interval = static_cast<TickCount>(
         GuestPositionCensusIntervalMilliseconds());
-    DWORD last_position_census_tick = start_tick;
+    TickCount last_position_census_tick = start_tick;
     // Task 421: the music position on its own cadence, sampled here rather than
     // in the audio worker so that a worker which is not running still produces
     // a reading — its absence is the measurement.
-    const DWORD cd_audio_census_interval = static_cast<DWORD>(
+    const TickCount cd_audio_census_interval = static_cast<TickCount>(
         CdAudioPositionCensusIntervalMilliseconds());
-    DWORD last_cd_audio_census_tick = start_tick;
+    TickCount last_cd_audio_census_tick = start_tick;
     std::uint32_t last_cd_audio_worker_iterations = 0;
     // Task 430: the same differencing for timer tick delivery, so each sample
     // carries the loss over its own interval instead of a run-long average that
@@ -357,6 +368,7 @@ DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
     // compares against it.
     std::uint32_t loader_module_base = 0;
     std::uint32_t loader_module_size = 0;
+#if defined(_WIN32)
     {
         const HMODULE loader_module = GetModuleHandleW(nullptr);
         MODULEINFO module_info = {};
@@ -370,7 +382,10 @@ DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
                 static_cast<std::uint32_t>(module_info.SizeOfImage);
         }
     }
-    DWORD dispatch_quiet_start_tick = start_tick;
+    // Left zero on Linux, which the sampling path reads as "no bounds known"
+    // -- it only compares an address against them.
+#endif
+    TickCount dispatch_quiet_start_tick = start_tick;
     std::uint32_t last_dispatch_total = 0;
     if (progress_context != nullptr)
     {
@@ -380,8 +395,8 @@ DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
             progress_context->exception_dispatch_exit_count.load(
                 std::memory_order_relaxed);
     }
-    DWORD quiet_iterations = 0;
-    DWORD last_live_snapshot_tick = start_tick;
+    TickCount quiet_iterations = 0;
+    TickCount last_live_snapshot_tick = start_tick;
     if (progress_context != nullptr)
     {
         progress_context->live_telemetry_phase.store(
@@ -389,7 +404,7 @@ DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
             std::memory_order_relaxed);
         WriteLiveTelemetrySnapshot(*progress_context, 0, 0);
     }
-    for (DWORD iteration = 0;; ++iteration)
+    for (TickCount iteration = 0;; ++iteration)
     {
         if (host_context != nullptr)
         {
@@ -404,7 +419,7 @@ DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
                         repiu::platform::MillisecondTicks() - start_tick,
                         iteration + 1);
                 }
-                return kWin32HostExitRequested;
+                return HostPollOutcome::kHostExitRequested;
             }
         }
         if (progress_context != nullptr)
@@ -489,9 +504,9 @@ DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
         {
             if (exit_code != nullptr)
             {
-                *exit_code = static_cast<DWORD>(status.exit_code);
+                *exit_code = status.exit_code;
             }
-            return WAIT_OBJECT_0;
+            return HostPollOutcome::kGuestThreadExited;
         }
 
         bool progressed = false;
@@ -531,7 +546,8 @@ DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
                 quiet_iterations;
         }
 
-        if (stall_timeout_milliseconds != INFINITE &&
+        if (stall_timeout_milliseconds !=
+                repiu::runtime::kWaitForeverMilliseconds &&
             progress_context != nullptr &&
             repiu::platform::MillisecondTicks() - quiet_start_tick >=
             stall_timeout_milliseconds)
@@ -547,10 +563,11 @@ DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
             {
                 *stall_timed_out = true;
             }
-            return WAIT_TIMEOUT;
+            return HostPollOutcome::kTimedOut;
         }
 
-        if (timeout_milliseconds != INFINITE &&
+        if (timeout_milliseconds !=
+                repiu::runtime::kWaitForeverMilliseconds &&
             repiu::platform::MillisecondTicks() - start_tick >= timeout_milliseconds)
         {
             if (progress_context != nullptr)
@@ -560,10 +577,10 @@ DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
                     repiu::platform::MillisecondTicks() - start_tick,
                     iteration + 1);
             }
-            return WAIT_TIMEOUT;
+            return HostPollOutcome::kTimedOut;
         }
 
-        const DWORD current_tick = repiu::platform::MillisecondTicks();
+        const TickCount current_tick = repiu::platform::MillisecondTicks();
         if (progress_context != nullptr)
         {
             const std::uint32_t dispatch_total =
@@ -577,6 +594,12 @@ DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
                 dispatch_quiet_start_tick = current_tick;
             }
         }
+        // Task 503d-19: fenced. Both samplers below capture the guest thread's
+        // registers by suspending it, and `GetThreadTimes` asks the kernel for
+        // its busy/blocked split. Neither is available to a Linux process for
+        // one of its own threads, and inventing a counterpart would mean
+        // reporting a different measurement under the same name.
+#if defined(_WIN32)
         // Task 411: the same capture, but on a plain wall-clock interval with
         // no dispatch-quiet gate. A stalled run faults continuously, so the
         // gate below never opens there, and the guest's position during the
@@ -651,6 +674,7 @@ DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
             }
             last_position_census_tick = current_tick;
         }
+#endif
         // Task 421: the music position, on its own interval. `host_context` is
         // what owns the audio backend, while the census lives on the guest
         // context, so both have to be present.
@@ -704,6 +728,7 @@ DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
             last_cd_audio_census_tick = current_tick;
         }
 
+#if defined(_WIN32)
         if (native_sampling_enabled && progress_context != nullptr &&
             current_tick - dispatch_quiet_start_tick >=
                 kNativePhaseSampleQuietMilliseconds &&
@@ -731,6 +756,7 @@ DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
                                             current_tick - start_tick);
             native_sampler_state.last_sample_tick = current_tick;
         }
+#endif
         if (progress_context != nullptr &&
             current_tick - last_live_snapshot_tick >= 1000U)
         {
@@ -763,11 +789,11 @@ DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
         }
         else
         {
-            Sleep(timer_deadline_near ? 0U : 1U);
+            repiu::platform::YieldMilliseconds(
+                timer_deadline_near ? 0U : 1U);
         }
     }
 }
-#endif
 
 void CopySnapshotFromContextRecord(const repiu::platform::GuestCpuContext& source,
                                    X86ExecutionSnapshot* snapshot)

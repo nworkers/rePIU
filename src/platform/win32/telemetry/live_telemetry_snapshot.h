@@ -27,9 +27,30 @@
 namespace repiu::platform::win32
 {
 
-#if defined(_WIN32)
-constexpr DWORD kWin32HostExitRequested = WAIT_ABANDONED_0;
+// Task 503d-19. What the host poll loop concluded.
+//
+// It used to answer with Win32 wait codes -- WAIT_OBJECT_0, WAIT_TIMEOUT,
+// WAIT_FAILED and WAIT_ABANDONED_0 standing in for "the window closed" -- which
+// are constants belonging to a wait this loop does not perform. It polls, and
+// pumps Glide commands and delivers timer ticks between the questions.
+//
+// Naming the four outcomes is the same move 3b made when it answered `readable`
+// instead of a protection bitmask, and 3d-18 when it answered `running` instead
+// of STILL_ACTIVE.
+enum class HostPollOutcome
+{
+    // The guest thread stopped by itself; the exit code is filled in.
+    kGuestThreadExited,
+    // The execution budget or the stall budget ran out.
+    kTimedOut,
+    // The host window asked to close, which is not a failure.
+    kHostExitRequested,
+    // The loop could not do its job -- a thread it was not given, and nothing
+    // else today.
+    kFailed,
+};
 
+#if defined(_WIN32)
 struct SharedTelemetryMapping
 {
     HANDLE mapping = nullptr;
@@ -57,18 +78,24 @@ struct SharedTelemetryMapping
         }
     }
 };
+#endif
 
 // Task 503d-18: the thread is the layer's handle, and the loop asks it whether
 // the guest is still running rather than reading GetExitCodeThread and comparing
 // against a sentinel that is also a legal exit code.
-DWORD PollThreadUntilExit(const repiu::platform::HostThread& thread,
-                          DWORD timeout_milliseconds,
-                          DWORD stall_timeout_milliseconds,
-                          ThreadContext* progress_context,
-                          ThreadContext* host_context,
-                          DWORD* exit_code,
-                          bool* stall_timed_out);
+// Task 503d-19: milliseconds are milliseconds on both hosts, and the outcome is
+// named rather than borrowed from a wait. It left the fence with them -- the
+// host loop is what drives a run, so it has to exist on the host that is being
+// brought up.
+HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
+                                    std::uint32_t timeout_milliseconds,
+                                    std::uint32_t stall_timeout_milliseconds,
+                                    ThreadContext* progress_context,
+                                    ThreadContext* host_context,
+                                    std::uint32_t* exit_code,
+                                    bool* stall_timed_out);
 
+#if defined(_WIN32)
 SharedTelemetryMapping OpenSharedTelemetryMapping();
 #endif
 
