@@ -9,9 +9,12 @@
 #endif
 #include <windows.h>
 #else
+#include <csignal>
 #include <pthread.h>
+#include <sched.h>
 #include <sys/syscall.h>
 #include <time.h>
+#include <ucontext.h>
 #include <unistd.h>
 
 #include <atomic>
@@ -41,6 +44,14 @@ struct HostThreadRecord
     std::atomic<bool> finished{false};
     std::atomic<std::uint32_t> exit_code{0};
     std::atomic<bool> joined{false};
+
+    // Task 503d-20. The interrupt's handshake. The signal handler runs on the
+    // target thread, so what passes between the two threads is this: the
+    // request under `pending`, and `finished` released when the sample is done.
+    std::atomic<bool> interrupt_pending{false};
+    std::atomic<bool> interrupt_finished{false};
+    ThreadInterruptCallback interrupt_callback = nullptr;
+    void* interrupt_user_data = nullptr;
 #endif
 };
 
@@ -85,6 +96,72 @@ timespec DeadlineFromNow(const std::uint32_t milliseconds)
         ++deadline.tv_sec;
     }
     return deadline;
+}
+
+#endif
+
+#if !defined(_WIN32)
+
+// Task 503d-20. A real-time signal, because 3c already owns SIGSEGV, SIGBUS,
+// SIGTRAP, SIGILL and SIGFPE, and a fault handler that fired for this would
+// classify it as a guest fault.
+//
+// SIGRTMIN rather than SIGUSR1: the two SIGUSR signals belong to whoever
+// embeds this, and a real-time signal is the one range a library can take
+// without arguing about it.
+int InterruptSignal()
+{
+    return SIGRTMIN;
+}
+
+// The record whose sample is being taken. One at a time: the callers are a
+// watchdog and a diagnostic, neither of which runs concurrently with itself,
+// and a per-thread registry would be state to keep correct for no gain.
+std::atomic<HostThreadRecord*> g_interrupt_target{nullptr};
+
+void InterruptSignalHandler(int, siginfo_t*, void* host_context)
+{
+    HostThreadRecord* record =
+        g_interrupt_target.load(std::memory_order_acquire);
+    if (record == nullptr ||
+        !record->interrupt_pending.load(std::memory_order_acquire))
+    {
+        return;
+    }
+    // Not pthread_self() against a stored id: the signal is directed at one
+    // thread, and a stray delivery is better ignored than acted on.
+    record->interrupt_pending.store(false, std::memory_order_relaxed);
+
+    GuestCpuContext registers;
+    if (LoadGuestCpuContext(host_context, &registers) &&
+        record->interrupt_callback != nullptr)
+    {
+        record->interrupt_callback(&registers, record->interrupt_user_data);
+        // Written back unconditionally. The callback may have changed nothing,
+        // and storing an unchanged context costs less than asking it.
+        StoreGuestCpuContext(registers, host_context);
+    }
+    record->interrupt_finished.store(true, std::memory_order_release);
+}
+
+// Installed once, on first use rather than at startup: a process that never
+// interrupts a thread should not have a handler for this signal at all, and
+// nothing here can install it before the callers exist.
+//
+// SA_ONSTACK matters for the guest thread, which runs on the guest's stack with
+// a sigaltstack that 3c installed. Without it the handler frame lands on the
+// guest's own stack, which is the stack this is usually called to inspect. A
+// thread with no alternate stack simply ignores the flag.
+bool EnsureInterruptHandler()
+{
+    static const bool installed = []() {
+        struct sigaction action = {};
+        action.sa_sigaction = &InterruptSignalHandler;
+        action.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART;
+        sigemptyset(&action.sa_mask);
+        return sigaction(InterruptSignal(), &action, nullptr) == 0;
+    }();
+    return installed;
 }
 
 #endif
@@ -236,6 +313,92 @@ bool JoinHostThread(const HostThread& thread,
         *exit_code = record->exit_code.load(std::memory_order_acquire);
     }
     return true;
+#endif
+}
+
+bool InterruptHostThread(const HostThread& thread,
+                         ThreadInterruptCallback callback,
+                         void* user_data,
+                         const std::uint32_t timeout_milliseconds)
+{
+    if (!thread.valid || thread.handle == nullptr || callback == nullptr)
+    {
+        return false;
+    }
+#if defined(_WIN32)
+    auto handle = static_cast<HANDLE>(thread.handle);
+    if (SuspendThread(handle) == static_cast<DWORD>(-1))
+    {
+        return false;
+    }
+    // The timeout has nothing to wait for on this host: SuspendThread has
+    // already stopped the target by the time it returns, so the sample is
+    // bounded by the callback itself.
+    (void)timeout_milliseconds;
+
+    GuestCpuContext registers = {};
+    registers.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS;
+    bool sampled = false;
+    if (GetThreadContext(handle, &registers))
+    {
+        callback(&registers, user_data);
+        sampled = SetThreadContext(handle, &registers) != 0;
+    }
+    ResumeThread(handle);
+    return sampled;
+#else
+    auto* record = static_cast<HostThreadRecord*>(thread.handle);
+    if (record->finished.load(std::memory_order_acquire))
+    {
+        // Signalling a thread that has exited is how a caller learns it has,
+        // not something to attempt: pthread_kill on a stale pthread_t is
+        // undefined rather than an error.
+        return false;
+    }
+
+    if (!EnsureInterruptHandler())
+    {
+        return false;
+    }
+
+    HostThreadRecord* expected = nullptr;
+    if (!g_interrupt_target.compare_exchange_strong(expected, record,
+                                                    std::memory_order_acq_rel))
+    {
+        // One at a time, as the handler's comment says.
+        return false;
+    }
+
+    record->interrupt_callback = callback;
+    record->interrupt_user_data = user_data;
+    record->interrupt_finished.store(false, std::memory_order_relaxed);
+    record->interrupt_pending.store(true, std::memory_order_release);
+
+    bool answered = false;
+    if (pthread_kill(record->thread, InterruptSignal()) == 0)
+    {
+        const timespec deadline = DeadlineFromNow(timeout_milliseconds);
+        while (!record->interrupt_finished.load(std::memory_order_acquire))
+        {
+            timespec now{};
+            clock_gettime(CLOCK_REALTIME, &now);
+            if (now.tv_sec > deadline.tv_sec ||
+                (now.tv_sec == deadline.tv_sec &&
+                 now.tv_nsec >= deadline.tv_nsec))
+            {
+                break;
+            }
+            // Yielding rather than sleeping: the target is usually running and
+            // the answer arrives in microseconds, and a caller investigating a
+            // stall should not add a millisecond of its own to every sample.
+            sched_yield();
+        }
+        answered = record->interrupt_finished.load(std::memory_order_acquire);
+    }
+
+    record->interrupt_pending.store(false, std::memory_order_release);
+    g_interrupt_target.store(nullptr, std::memory_order_release);
+    return answered;
 #endif
 }
 

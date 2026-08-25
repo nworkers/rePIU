@@ -1,6 +1,8 @@
 #ifndef REPIU_PLATFORM_HOST_THREAD_H_
 #define REPIU_PLATFORM_HOST_THREAD_H_
 
+#include "repiu/platform/guest_cpu_context.h"
+
 #include <cstdint>
 
 // Task 503d-15. The operating system's own number for the calling thread.
@@ -73,6 +75,41 @@ struct HostThreadStatus
 // Releases what `CreateHostThread` allocated. The thread must have exited; a
 // caller that has not established that has a bug rather than a cleanup step.
 void CloseHostThread(HostThread* thread);
+
+// Task 503d-20. Looking at another thread's registers, and changing them.
+//
+// Two callers want this and both want the same thing. The execution watchdog
+// stops a guest that will not stop by pointing its context at the recovery
+// entry; and asking a stalled guest where it is means reading its EIP while it
+// runs. On Windows both are the same SuspendThread / GetThreadContext pair, and
+// on Linux both are the same single signal, so this is one function rather than
+// a sampling API beside an editing one.
+//
+// **The callback runs on a different thread on each host.** Windows freezes the
+// target and runs the callback on the *calling* thread; Linux runs it on the
+// *target thread itself*, inside a signal handler. That difference cannot be
+// hidden and both callers have to be written for it: the callback must not
+// block, must not allocate, and must not take a lock the target might already
+// hold -- the same constraints 3c's fault callback carries, for the same reason.
+//
+// Edits to `registers` take effect when the target resumes. On Linux that is the
+// signal return; on Windows it is SetThreadContext, which this performs only if
+// the callback reports a change, because writing a context back unchanged is not
+// free.
+using ThreadInterruptCallback = void (*)(GuestCpuContext* registers,
+                                         void* user_data);
+
+// Returns false if the target did not answer within the deadline, which is a
+// real outcome rather than a failure to report: a thread that is not scheduled,
+// or one stopped inside a signal handler of its own, will not.
+//
+// A deadline rather than an unbounded wait, because the caller asking is
+// usually the one investigating a stall, and joining the thing being
+// investigated is not an improvement.
+[[nodiscard]] bool InterruptHostThread(const HostThread& thread,
+                                       ThreadInterruptCallback callback,
+                                       void* user_data,
+                                       std::uint32_t timeout_milliseconds);
 
 }  // namespace repiu::platform
 

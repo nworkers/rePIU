@@ -2416,6 +2416,87 @@ X11만 멈추는 것이고, 그때 `/mnt/wslg/.X11-unix/`는 비어 있었습니
 오디오가 붙어도 **9초 정지는 그대로입니다.** heartbeat 1,337,938, EIP 0x010F527A. 별개
 문제입니다.
 
+## 3d-20 — 다른 스레드의 레지스터를 읽고 고치기
+
+### 1. 결과
+
+`repiu::platform::InterruptHostThread`가 양쪽 호스트에 생겼습니다. 다른 스레드의 레지스터를
+보고, 필요하면 고칩니다.
+
+| 파일 | 내용 |
+|---|---|
+| `include/repiu/platform/host_thread.h` | `ThreadInterruptCallback`과 `InterruptHostThread` |
+| `src/platform/host_thread.cpp` | Windows는 정지·조회·재개, Linux는 실시간 시그널 하나 |
+| `tools/aot_probe/host_thread_probe.cpp` | 표본·편집·거부 세 항목 |
+
+### 2. 소비자가 둘인데 원하는 것은 하나입니다
+
+3d-18은 감시견 때문에 이것을 미뤘고, 3d-19의 pumpit1 조사가 두 번째 소비자를 만들었습니다.
+표면적으로는 "스레드를 멈춰 세운다"와 "지금 어디인지 본다"로 다르지만, 두 호스트 모두에서
+**같은 한 가지**입니다 — Windows는 같은 `SuspendThread`/`GetThreadContext` 쌍이고 Linux는
+같은 시그널 한 번입니다. 그래서 표본용과 편집용으로 나누지 않았습니다.
+
+### 3. 숨길 수 없는 차이는 헤더에 적었습니다
+
+콜백이 도는 스레드가 다릅니다.
+
+| | 콜백이 도는 곳 |
+|---|---|
+| Windows | 대상을 얼려두고 **호출자 스레드** |
+| Linux | **대상 스레드 자신**의 시그널 핸들러 안 |
+
+3a가 레지스터 컨텍스트를 별칭으로 숨긴 것과 반대 방향의 판단입니다. 그쪽은 숨겨서 이득이
+있었고(호출부 900곳이 안 바뀜), 이쪽은 숨기면 콜백을 쓰는 사람이 틀립니다 — 블록하면
+안 되고, 할당하면 안 되고, 대상이 쥐고 있을 수 있는 락을 잡으면 안 됩니다. 3c 콜백이 이미
+지고 있는 제약과 같습니다.
+
+### 4. 구현에서 정한 셋
+
+**시그널은 `SIGRTMIN`.** 3c가 `SIGSEGV`·`SIGBUS`·`SIGTRAP`·`SIGILL`·`SIGFPE`를 잡으므로
+그중 하나를 쓰면 3c의 핸들러가 먼저 받아 게스트 폴트로 분류합니다. `SIGUSR1`·`SIGUSR2`는
+이 코드를 embed하는 쪽의 것이고, 실시간 시그널이 라이브러리가 다툼 없이 가져갈 수 있는
+유일한 구간입니다.
+
+**`SA_ONSTACK`.** 게스트 스레드는 게스트 스택 위에서 돌고, 3c가 그 스레드에 이미
+`sigaltstack`을 깔아 두었습니다. 이 플래그가 없으면 **조사하려는 바로 그 스택에 핸들러
+프레임을 얹습니다.** 대체 스택이 없는 스레드는 이 플래그를 그냥 무시하므로 손해가 없습니다.
+
+**시한 있는 핸드셰이크.** 원자적 완료 플래그와 마감 시각을 두고, 대기는 `sched_yield`로
+돕니다. 시한이 없으면 정지를 조사하려던 쪽이 같이 멈춥니다 — 3c 작업 지시가 적은
+"멈춘 probe는 실패한 probe보다 훨씬 나쁘다"가 여기에도 그대로 적용됩니다.
+
+### 5. probe가 요구하는 것
+
+가장 중요한 단정은 **반복 표본이 한 값에 고정되지 않을 것**입니다. EIP가 0이 아닌 것만으로는
+부족합니다 — 어디선가 읽어온 상수도 그 조건을 통과합니다. 도는 스레드를 여러 번 표본해서
+값이 움직여야 그 숫자가 **실제로 그 스레드에서 왔다**는 뜻이 됩니다.
+
+나머지 둘은 편집이 대상에게 실제로 보이는지, 그리고 이미 끝난 스레드와 빈 핸들에 대해
+**시한 안에 거짓**을 돌려주는지입니다. 세 번째가 4번의 시한을 증거로 만듭니다.
+
+### 6. 검증
+
+| 대상 | 결과 |
+|---|---|
+| Windows Debug 전체 타깃 | 빌드 성공, 오류 없음 |
+| Windows Debug `repiu_core_probe` | `core_probe_total=15 failures=0` |
+| Linux i386 `repiu_core_probe` | `core_probe_total=15 failures=0`, exit 0 |
+| `host_thread` probe | `interrupt=true interrupt_refusals=true` (양쪽) |
+| `repiu_aot_probe` 전체 | exit 0, romset-config 94/0, nvram-path 14/0 |
+| Linux DOS/4GW 샘플 | 그대로 실행, 같은 지점에서 정지 |
+
+### 7. 남은 것
+
+**이 도구를 쓰는 일은 아직 안 했습니다.** 작업 지시가 그렇게 정했습니다 — 도구를 만드는 것과
+그것으로 답을 얻는 것을 한 단계에 묶으면 어느 쪽이 실패했는지 말할 수 없습니다.
+
+다음 둘이 이 API의 소비자입니다.
+
+1. **`CaptureWin32NativePhaseSample`을 이 API로.** 지금은 `SuspendThread`/`GetThreadContext`를
+   직접 부르고 3d-19가 Linux에서 울타리에 넣었습니다. 옮기면 그 울타리가 풀리고, pumpit1의
+   9초 정지에서 게스트 EIP를 표본할 수 있게 됩니다 — 조사가 막힌 지점이 정확히 거기입니다.
+2. **감시견의 강제 중단.** 3d-18이 답을 정하고 3d-19가 울타리에 넣은 그것입니다.
+
 ---
 
 # Linux Execution Engine Work Log (Stage 3)
@@ -4475,3 +4556,87 @@ a person to hear.
 
 Audio being connected does not move the **nine-second stall**: heartbeat 1,337,938, EIP
 0x010F527A. A separate problem.
+
+## 3d-20 — Reading and editing another thread's registers
+
+### Result
+
+`repiu::platform::InterruptHostThread` exists on both hosts: it looks at another thread's registers,
+and changes them if asked.
+
+| File | What changed |
+|---|---|
+| `include/repiu/platform/host_thread.h` | `ThreadInterruptCallback` and `InterruptHostThread` |
+| `src/platform/host_thread.cpp` | suspend/query/resume on Windows, one real-time signal on Linux |
+| `tools/aot_probe/host_thread_probe.cpp` | sampling, editing and refusals |
+
+### Two consumers wanting one thing
+
+3d-18 deferred this for the watchdog, and 3d-19's pumpit1 investigation produced the second consumer.
+"Stop a thread that will not stop" and "see where it is now" look different, but on both hosts they
+are **the same one thing** — the same `SuspendThread` / `GetThreadContext` pair on Windows, the same
+single signal on Linux. So this is one function rather than a sampling API beside an editing one.
+
+### The difference that cannot be hidden went into the header
+
+The callback runs on a different thread on each host.
+
+| | Where the callback runs |
+|---|---|
+| Windows | on the **calling** thread, with the target frozen |
+| Linux | on the **target thread itself**, inside a signal handler |
+
+This is the opposite judgement to 3a's, which hid the register context behind an alias. Hiding paid
+there — 900 call sites did not change. Hiding here would make everyone who writes a callback wrong:
+it must not block, must not allocate, and must not take a lock the target may already hold. The same
+constraints 3c's fault callback carries.
+
+### Three decisions in the implementation
+
+**`SIGRTMIN`.** 3c owns `SIGSEGV`, `SIGBUS`, `SIGTRAP`, `SIGILL` and `SIGFPE`, so using one of those
+would have 3c's handler take it first and classify it as a guest fault. `SIGUSR1` and `SIGUSR2`
+belong to whoever embeds this code; a real-time signal is the one range a library can take without
+arguing about it.
+
+**`SA_ONSTACK`.** The guest thread runs on the guest's stack and 3c has already installed a
+`sigaltstack` on it. Without the flag the handler frame lands on **the very stack this is called to
+inspect**. A thread with no alternate stack ignores the flag, so it costs nothing elsewhere.
+
+**A handshake with a deadline.** An atomic completion flag and an absolute deadline, waited on with
+`sched_yield`. Without the deadline, whoever is investigating a stall stalls with it — 3c's work
+order already put it plainly: a probe that hangs is far worse than one that fails.
+
+### What the probe demands
+
+The assertion that matters most is that **repeated samples do not report one constant.** A non-zero
+EIP is not enough — a number read from anywhere would pass that. Sampling a spinning thread several
+times and seeing the value move is what makes it mean the number **came from that thread**.
+
+The other two are that an edit is actually observed by the target, and that an exited thread and an
+empty handle are both **refused inside the deadline**. The third is what turns the deadline into
+evidence.
+
+### Verification
+
+| Target | Result |
+|---|---|
+| Windows Debug, all targets | builds, no errors |
+| Windows Debug `repiu_core_probe` | `core_probe_total=15 failures=0` |
+| Linux i386 `repiu_core_probe` | `core_probe_total=15 failures=0`, exit 0 |
+| The `host_thread` probe | `interrupt=true interrupt_refusals=true` on both |
+| `repiu_aot_probe`, full pass | exit 0, romset-config 94/0, nvram-path 14/0 |
+| The Linux DOS/4GW sample | still runs, stopping where it did |
+
+### Remaining
+
+**Nothing uses this yet**, by the work order's own instruction: building an instrument and getting an
+answer from it are different things, and tying them together makes it impossible to say which one
+failed.
+
+Two consumers wait.
+
+1. **`CaptureWin32NativePhaseSample` onto this API.** It calls `SuspendThread` and
+   `GetThreadContext` directly today, and 3d-19 fenced it out on Linux. Moving it lifts that fence
+   and makes it possible to sample the guest's EIP during pumpit1's nine-second stall — which is
+   exactly where that investigation ran out of instrument.
+2. **The watchdog's forced interruption**, settled by 3d-18 and fenced by 3d-19.

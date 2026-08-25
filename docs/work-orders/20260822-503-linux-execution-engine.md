@@ -562,6 +562,56 @@ Windows Debug 빌드와 `repiu_core_probe`·`repiu_aot_probe` 결과가 이전�
 게임이 도는 것은 완료 조건이 **아닙니다.** 자산 경로와 CHD 마운트는 설계가 범위 밖에 두었고,
 그 결정을 다시 보는 것은 별도의 일입니다.
 
+## 3d-20 — 다른 스레드의 레지스터를 읽고 고치기
+
+3d-18이 `TerminateThread`에 대응물을 만들지 않기로 하면서 "그 앞의 우아한 경로 — 정지 →
+`RecoverToHost` → 재개 — 를 Linux에서는 시그널로 한다"고 적었고, 구현은 3d-19로,
+3d-19는 다시 다음으로 넘겼습니다. **그 다음이 여기이고, 그 사이에 소비자가 하나 더
+생겼습니다.**
+
+pumpit1의 9초 정지를 조사하다 막혔습니다. 게스트 스레드는 `R` 상태로 돌고 있고, 페이지
+폴트는 4초간 하나도 없는데 커널 시간만 77%를 쓰고, 엔진의 폴트 카운터는 전부 얼어
+있습니다. 다음 질문은 하나 — **지금 게스트의 EIP가 어디인가** — 인데 그것을 답하는 계측
+둘(guest position census, native phase sampler)이 **3d-19가 Linux에서 울타리 안에 넣은 바로
+그것들**입니다. 둘 다 게스트 스레드를 정지시켜 레지스터를 읽고, Linux 프로세스는 자기
+스레드에 그것을 할 수 없습니다.
+
+`last_eip`는 **마지막 폴트 디스패치 지점**이지 현재 위치가 아닙니다. 폴트가 오지 않으면 그
+값은 정지 시점에 멈춘 채이고, 지금 어디인지는 알 방법이 없습니다.
+
+1. **`host_thread.h`에 인터럽트를 더합니다.** 소비자가 둘이고 둘 다 같은 것을 원합니다 —
+   **다른 스레드의 레지스터를 보고, 필요하면 고치는 것**입니다. 표본만 뜨는 API와 고치는
+   API로 나누지 마십시오. Windows에서는 같은 `SuspendThread`/`GetThreadContext` 쌍이고,
+   Linux에서는 같은 시그널 한 번입니다.
+2. **콜백이 도는 스레드가 두 호스트에서 다릅니다.** Windows는 대상을 얼려 두고 **호출자
+   스레드**에서 돌고, Linux는 **대상 스레드 자신**의 시그널 핸들러 안에서 돕니다. 이것은
+   숨길 수 없는 차이이므로 **헤더에 적으십시오.** 콜백은 블록하면 안 되고 할당하면 안
+   됩니다 — 3c의 콜백에 이미 걸린 것과 같은 제약입니다.
+3. **시그널은 3c가 쓰는 것과 겹치면 안 됩니다.** 3c는 `SIGSEGV`·`SIGBUS`·`SIGTRAP`·
+   `SIGILL`·`SIGFPE`를 잡습니다. 실시간 시그널 하나를 쓰되, `SA_ONSTACK`을 함께 거십시오 —
+   게스트 스레드는 게스트 스택 위에서 돌고 있고, 3c가 그 스레드에 이미 `sigaltstack`을
+   깔아 두었습니다. 그것을 쓰지 않으면 게스트 스택에 핸들러 프레임을 얹게 됩니다.
+4. **핸드셰이크가 필요합니다.** 시그널을 보낸 쪽은 표본이 끝났는지 알아야 합니다. 원자적
+   완료 플래그와 **시한**을 두십시오. 시한이 없는 대기는 정지를 조사하려다 조사하는 쪽이
+   같이 멈추는 길이고, 3c 작업 지시가 이미 적은 규칙입니다 — **멈춘 probe는 실패한 probe보다
+   훨씬 나쁩니다.**
+5. **Windows 호출부를 옮기지 마십시오.** 이 단계의 목적은 Linux에 없는 것을 만드는 것입니다.
+   `CaptureWin32NativePhaseSample`과 감시견을 이 API로 옮기는 것은 그 다음이고, 옮기기 전에
+   양쪽에서 같은 probe가 통과해야 합니다.
+6. **probe로 계약을 시험하십시오.** 최소한 셋입니다. 알려진 루프를 도는 스레드를 인터럽트해
+   **표본된 EIP가 그 루프 안**인지, 레지스터를 고치면 대상이 그것을 **실제로 반영**하는지,
+   그리고 응답하지 않는 대상에 대해 **시한 안에 거짓을 돌려주는지.** 세 번째가 4번을 증거로
+   만듭니다.
+
+### 완료 조건
+
+같은 probe 소스가 Windows와 Linux i386에서 통과해야 합니다. Windows Debug 빌드와
+`repiu_core_probe`·`repiu_aot_probe` 결과가 이전과 같고, Linux 컴파일 측정과 `repiu` 링크,
+그리고 DOS/4GW 샘플 실행이 유지되어야 합니다.
+
+9초 정지의 원인을 찾는 것은 이 단계의 완료 조건이 **아닙니다.** 도구를 만드는 것과 그것으로
+답을 얻는 것은 다른 일이고, 둘을 묶으면 어느 쪽이 실패했는지 말할 수 없게 됩니다.
+
 ---
 
 # Linux Execution Engine Work Order (Stage 3)
@@ -1131,3 +1181,53 @@ the Linux compile measurement and the `repiu` link must hold.
 
 The game running is **not** a completion criterion. Asset paths and the CHD mount are out of the
 design's scope, and revisiting that decision is separate work.
+
+## 3d-20 — Reading and editing another thread's registers
+
+When 3d-18 settled that `TerminateThread` gets no counterpart, it wrote that the graceful path ahead
+of it — suspend, `RecoverToHost`, resume — is done with a signal on Linux, and left the work to
+3d-19, which left it again. **This is that sub-stage, and a second consumer appeared in between.**
+
+Investigating pumpit1's nine-second stall ran out of instrument. The guest thread is in state `R`,
+takes **no page faults at all** across four seconds, spends 77% of its time in the kernel, and every
+one of the engine's fault counters is frozen. The next question is one thing — **where is the guest's
+EIP now** — and the two instruments that answer it, the guest position census and the native phase
+sampler, are **exactly what 3d-19 fenced out on Linux**. Both suspend the guest thread to read its
+registers, which a Linux process cannot do to its own thread.
+
+`last_eip` is the **last fault dispatch**, not the current position. With no faults arriving it stays
+frozen at the stall, and nothing says where the thread is now.
+
+1. **Add the interrupt to `host_thread.h`.** There are two consumers and both want the same thing:
+   **to see another thread's registers, and to change them if needed.** Do not split it into a
+   sampling API and an editing one — on Windows it is the same `SuspendThread`/`GetThreadContext`
+   pair, and on Linux it is the same single signal.
+2. **The callback runs on a different thread on each host.** Windows freezes the target and runs it
+   on the **calling** thread; Linux runs it on the **target thread itself**, inside a signal handler.
+   That difference cannot be hidden, so **write it into the header.** The callback must not block and
+   must not allocate — the same constraint 3c's callback already carries.
+3. **The signal must not collide with 3c's.** 3c handles `SIGSEGV`, `SIGBUS`, `SIGTRAP`, `SIGILL`
+   and `SIGFPE`. Use a real-time signal, and set `SA_ONSTACK` with it: the guest thread runs on the
+   guest's stack, and 3c has already installed a `sigaltstack` on that thread. Without the flag the
+   handler frame lands on the guest's stack.
+4. **A handshake is required.** The sender has to know the sample is finished. Use an atomic
+   completion flag and a **deadline**. An unbounded wait is how investigating a stall stalls the
+   investigator, and 3c's work order already stated the rule: **a probe that hangs is far worse than
+   one that fails.**
+5. **Do not move the Windows call sites.** The point of this sub-stage is to build what Linux does
+   not have. Moving `CaptureWin32NativePhaseSample` and the watchdog onto this API comes after, and
+   only once the same probe passes on both hosts.
+6. **Hold the contract to a probe.** Three scenarios at minimum: interrupt a thread spinning in a
+   known loop and assert the **sampled EIP is inside that loop**; edit a register and assert the
+   target **actually observes** the change; and assert that an unresponsive target **returns false
+   within the deadline**. The third is what turns item 4 into evidence.
+
+### Completion criteria
+
+The same probe source passes on Windows and Linux i386. The Windows Debug build with
+`repiu_core_probe` and `repiu_aot_probe` match what they were, and the Linux compile measurement, the
+`repiu` link, and the DOS/4GW sample run all hold.
+
+Finding the cause of the nine-second stall is **not** a completion criterion. Building the instrument
+and getting an answer from it are different things, and tying them together makes it impossible to
+say which one failed.
