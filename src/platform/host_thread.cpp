@@ -45,11 +45,29 @@ struct HostThreadRecord
     std::atomic<std::uint32_t> exit_code{0};
     std::atomic<bool> joined{false};
 
-    // Task 503d-20. The interrupt's handshake. The signal handler runs on the
-    // target thread, so what passes between the two threads is this: the
-    // request under `pending`, and `finished` released when the sample is done.
-    std::atomic<bool> interrupt_pending{false};
-    std::atomic<bool> interrupt_finished{false};
+    // Task 503d-20. The interrupt's handshake, as one state rather than a pair
+    // of flags.
+    //
+    // Task 503d-22: two flags were wrong, and wrong in a way that corrupted
+    // memory. A signal already on its way cannot be cancelled, so a requester
+    // that timed out and returned would leave the handler to run afterwards --
+    // against a `user_data` that had been a local of the caller's frame.
+    // Checking a flag and then clearing it cannot fix that: the handler can
+    // pass the check an instant before the clear.
+    //
+    // The states below are claimed with a compare-exchange, which makes the
+    // question "did the handler start" answerable exactly once. A requester
+    // that loses the race has to wait for `kDone`, because by then the handler
+    // is already touching its memory.
+    enum class InterruptState : std::uint8_t
+    {
+        kIdle,
+        kRequested,
+        kRunning,
+        kDone,
+        kAbandoned,
+    };
+    std::atomic<InterruptState> interrupt_state{InterruptState::kIdle};
     ThreadInterruptCallback interrupt_callback = nullptr;
     void* interrupt_user_data = nullptr;
 #endif
@@ -123,14 +141,22 @@ void InterruptSignalHandler(int, siginfo_t*, void* host_context)
 {
     HostThreadRecord* record =
         g_interrupt_target.load(std::memory_order_acquire);
-    if (record == nullptr ||
-        !record->interrupt_pending.load(std::memory_order_acquire))
+    if (record == nullptr)
     {
         return;
     }
-    // Not pthread_self() against a stored id: the signal is directed at one
-    // thread, and a stray delivery is better ignored than acted on.
-    record->interrupt_pending.store(false, std::memory_order_relaxed);
+    // Claiming the request is what makes the callback's `user_data` safe to
+    // touch: whoever loses this exchange does not run the callback, and the
+    // requester that loses it waits instead of returning.
+    auto expected = HostThreadRecord::InterruptState::kRequested;
+    if (!record->interrupt_state.compare_exchange_strong(
+            expected, HostThreadRecord::InterruptState::kRunning,
+            std::memory_order_acq_rel))
+    {
+        // A stray or late delivery. Ignoring it is right: the request it
+        // belonged to has been answered or abandoned.
+        return;
+    }
 
     GuestCpuContext registers;
     if (LoadGuestCpuContext(host_context, &registers) &&
@@ -141,7 +167,8 @@ void InterruptSignalHandler(int, siginfo_t*, void* host_context)
         // and storing an unchanged context costs less than asking it.
         StoreGuestCpuContext(registers, host_context);
     }
-    record->interrupt_finished.store(true, std::memory_order_release);
+    record->interrupt_state.store(HostThreadRecord::InterruptState::kDone,
+                                  std::memory_order_release);
 }
 
 // Installed once, on first use rather than at startup: a process that never
@@ -387,8 +414,15 @@ bool InterruptHostThread(const HostThread& thread,
 
     record->interrupt_callback = callback;
     record->interrupt_user_data = user_data;
-    record->interrupt_finished.store(false, std::memory_order_relaxed);
-    record->interrupt_pending.store(true, std::memory_order_release);
+    record->interrupt_state.store(HostThreadRecord::InterruptState::kRequested,
+                                  std::memory_order_release);
+
+    const auto past = [](const timespec& deadline) {
+        timespec now{};
+        clock_gettime(CLOCK_REALTIME, &now);
+        return now.tv_sec > deadline.tv_sec ||
+            (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec);
+    };
 
     bool answered = false;
     bool delivered = false;
@@ -396,25 +430,41 @@ bool InterruptHostThread(const HostThread& thread,
     {
         delivered = true;
         const timespec deadline = DeadlineFromNow(timeout_milliseconds);
-        while (!record->interrupt_finished.load(std::memory_order_acquire))
+        while (record->interrupt_state.load(std::memory_order_acquire) !=
+                   HostThreadRecord::InterruptState::kDone &&
+               !past(deadline))
         {
-            timespec now{};
-            clock_gettime(CLOCK_REALTIME, &now);
-            if (now.tv_sec > deadline.tv_sec ||
-                (now.tv_sec == deadline.tv_sec &&
-                 now.tv_nsec >= deadline.tv_nsec))
-            {
-                break;
-            }
             // Yielding rather than sleeping: the target is usually running and
             // the answer arrives in microseconds, and a caller investigating a
             // stall should not add a millisecond of its own to every sample.
             sched_yield();
         }
-        answered = record->interrupt_finished.load(std::memory_order_acquire);
+
+        // Task 503d-22. Giving up is a claim, not a decision. If the handler
+        // has not started, abandoning the request stops it from ever running
+        // against a `user_data` this call is about to return past. If it has
+        // started, there is nothing to abandon and the only safe move is to
+        // wait for it: the callback is holding the caller's memory.
+        auto expected = HostThreadRecord::InterruptState::kRequested;
+        if (record->interrupt_state.compare_exchange_strong(
+                expected, HostThreadRecord::InterruptState::kAbandoned,
+                std::memory_order_acq_rel))
+        {
+            answered = false;
+        }
+        else
+        {
+            while (record->interrupt_state.load(std::memory_order_acquire) !=
+                   HostThreadRecord::InterruptState::kDone)
+            {
+                sched_yield();
+            }
+            answered = true;
+        }
     }
 
-    record->interrupt_pending.store(false, std::memory_order_release);
+    record->interrupt_state.store(HostThreadRecord::InterruptState::kIdle,
+                                  std::memory_order_release);
     g_interrupt_target.store(nullptr, std::memory_order_release);
     if (!answered)
     {
