@@ -136,7 +136,20 @@ cmake -S "$root" -B "$build_dir" \
     -DCMAKE_EXE_LINKER_FLAGS=-m32 \
     -DCMAKE_SHARED_LINKER_FLAGS=-m32
 
-build_arguments=("--build" "$build_dir" "--parallel")
+# The job count is named rather than left to `--parallel` alone.
+#
+# A bare `--parallel` passes `-j` with no number to make, which means *unlimited*
+# jobs: make starts every target whose prerequisites are ready. On a four-core VM
+# that was measured at 58 concurrent cc1plus processes, and the engine's larger
+# translation units take well over a gigabyte each in Debug -- so the build did
+# not merely run slowly, it exhausted memory and took the whole WSL VM down with
+# it, three times, each looking like an unrelated failure.
+#
+# CMAKE_BUILD_PARALLEL_LEVEL does not help by itself: CMake consults it only when
+# `--parallel` is absent, so setting it while the option is passed has no effect
+# at all. Here it selects the count when set, and `nproc` is the default.
+jobs="${CMAKE_BUILD_PARALLEL_LEVEL:-$(nproc 2>/dev/null || echo 2)}"
+build_arguments=("--build" "$build_dir" "--parallel" "$jobs")
 for name in "${targets[@]:-}"; do
     if [[ -n "$name" ]]; then
         build_arguments+=("--target" "$name")
