@@ -2913,6 +2913,27 @@ Linux는 AOT 코드 캐시가 아직 이식되지 않아 legacy로 강제됩니�
 
 Windows는 디버그 레지스터가 있으므로 술어가 참이고 세 경로 모두 이전과 같습니다.
 
+### 이 검증이 말하지 않는 것 — 화면과 소리
+
+**위의 숫자는 전부 진행 지표입니다.** dispatch가 늘고 EIP가 움직인다는 것은 정지가 풀렸다는
+말이지 **게임이 제대로 돈다는 말이 아닙니다.** 이 프로젝트가 이미 배운 것과 같습니다 —
+크래시 없음 ≠ 정확 동작.
+
+| | 상태 |
+|---|---|
+| **소리** | 장치는 열립니다 — `[repiu-ymz] YMZ280B ready through SDL3 at 88200 Hz`. **들리는지는 사람이 들어야 합니다.** |
+| **화면** | **나오지 않습니다.** 렌더 백엔드가 Win32 전용입니다 — `glide_opengl_backend.cpp`의 `OpenWindowed`가 `#if !defined(_WIN32)`에서 곧바로 `return false`이고, 그 파일에 `_WIN32` 울타리가 44개입니다. |
+
+**그리고 이 때문에 A/B 표의 한 칸을 정정합니다.** `REPIU_DISABLE_NATIVE_FAST_PATH=1` 실행이
+exit 0에 "original entry returned to host trampoline"으로 끝난 것을 처음에 **정상 완주**로
+읽었습니다. 로그를 보면 그 실행은 `grSstWinOpen`을 호출해 `opened=0`("Win32 OpenGL backend is
+unavailable")을 받은 **직후** 게스트가 스스로 종료했습니다. 정상 완주가 아니라 **창을 못 열어
+게임이 포기한 것**으로 보는 편이 맞습니다.
+
+정지 판정 자체는 영향받지 않습니다 — 그것은 `dispatch_entry` 동결 대 증가, `last_eip` 고정 대
+이동, `fast=18/0/17` 대 `0/0/0`에 서 있고 종료 코드에 서 있지 않습니다. **다만 "exit 0 =
+건강함"은 취소합니다.** Linux에서 화면이 없는 한 종료 코드로 건강함을 읽을 수 없습니다.
+
 ### 덤으로 확정된 것: teardown SIGTRAP
 
 frontier가 "미확인"으로 적어 둔 teardown SIGTRAP은 **3회 중 3회 재현**됩니다(exit 133). 예산
@@ -5508,6 +5529,27 @@ budget. **No recurrence.**
 | Windows `repiu_aot_probe`, full pass | exit 0, romset-config 94/0, nvram-path 14/0 |
 
 Windows has the registers, so the predicate is true there and all three paths behave as before.
+
+### What this verification does not say — the screen and the sound
+
+**Every number above is a progress measure.** Dispatches climbing and an EIP that moves say the stall
+is gone; they do not say **the game runs correctly**. The same lesson this project has already
+learned: no crash is not correct behaviour.
+
+| | State |
+|---|---|
+| **Sound** | the device opens — `[repiu-ymz] YMZ280B ready through SDL3 at 88200 Hz`. **Whether it is audible is for a person to hear.** |
+| **Screen** | **nothing is drawn.** The render backend is Win32-only: `OpenWindowed` in `glide_opengl_backend.cpp` returns false straight out of `#if !defined(_WIN32)`, and that file carries 44 `_WIN32` fences. |
+
+**And this corrects one cell of the A/B table.** The `REPIU_DISABLE_NATIVE_FAST_PATH=1` run ending
+at exit 0 with "original entry returned to host trampoline" was first read as **finishing cleanly**.
+The log shows that run called `grSstWinOpen`, got `opened=0` ("Win32 OpenGL backend is unavailable"),
+and the guest exited by itself **immediately after**. Better read as **the game giving up because it
+could not open a window** than as a clean finish.
+
+The stall finding is unaffected — it rests on `dispatch_entry` frozen versus climbing, `last_eip`
+fixed versus moving, and `fast=18/0/17` versus `0/0/0`, not on an exit code. **But "exit 0 = healthy"
+is withdrawn.** While Linux draws nothing, an exit code cannot be read as health.
 
 ### A side result: the teardown SIGTRAP
 
