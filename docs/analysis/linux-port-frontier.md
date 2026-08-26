@@ -78,7 +78,9 @@ flowchart TD
 > 남습니다. 인터럽트 계층 자체는 양쪽 호스트에서 probe를 통과합니다.
 
 1. **AOT 코드 캐시**(`aot_code_cache_win32.cpp`). 기본 백엔드 `dynamic`이 Linux에서 돌려면
-   필요합니다. 3d-19가 배치 함수를 옮기다 **Win32 메모리 호출 23곳**을 보고 되돌렸습니다 —
+   필요하고, **Task 505 이후로는 화면을 여는 열쇠이기도 합니다** — legacy의 명령 단위 단일
+   스텝(초당 약 127,000 디스패치)으로는 시작 시 자산 디코드가 끝나지 않아 첫 프레임에
+   도달하지 못합니다(6절). 3d-19가 배치 함수를 옮기다 **Win32 메모리 호출 23곳**을 보고 되돌렸습니다 —
    동적 번역 경로가 캐시를 쓰기 가능으로 바꾸고, 패치하고, 실행 가능으로 되돌리는 주기를
    반복합니다. 전부 3b가 덮는 호출이라 기계적이지만 양이 있습니다.
 2. **감시견의 강제 중단.** 3d-18이 답을 정했습니다 — `TerminateThread`에는 대응물을 만들지
@@ -116,7 +118,7 @@ REPIU_EXECUTION_BACKEND=legacy ./repiu     ../../build/openwatcom_samples/clibex
 | 자식 프로세스 재실행이 Linux에도 필요한가 | **미측정** | Task 500의 근거(GPU 드라이버의 주소 공간 선점)가 Linux에도 해당하는지 확인한 적 없음. 되돌릴 자리는 `host_process.h` |
 | 자산 경로와 CHD 마운트의 Linux 검증 | **범위 밖** | 설계의 "범위 밖" 절. 실행 시도 전에 다시 볼 것 |
 | ~~렌더 백엔드 (창)~~ | **해결 (Task 505)** | 이식할 것이 없었습니다 — 두 파일 모두 이미 SDL3이고 진짜 Win32 API는 **0개**였습니다. 503d-10이 컴파일용으로 세운 울타리 57개(backend 44 + shader 13)가 전부였고, 실제 수정은 각 파일 한 줄(`SDL_FunctionPointer`)입니다. 이제 `opened=1`, 640x480 논리 창 2배(1280x960), 깊이 24비트 승인 |
-| **첫 프레임에 도달하지 못함 (화면)** | **원인 미상 — 새 경계** | 창은 열리고 Glide 상태 초기화도 완주(11종 setter, 오류 0건)하는데 **버퍼 스왑이 0회**입니다(30초·240초 모두). 38초부터 게스트가 `0x010EE18C`–`0x010EE3B2` **약 550바이트**를 벗어나지 않으며 그동안 디스패치는 2,380만 회. **느린 것이 아니라 대기 루프**입니다. 503d-23의 정지와 다릅니다 — 그건 디스패치가 동결(트랩 안 함), 이건 폭주(계속 트랩함). 무엇을 기다리는지 미확정 (2026-08-27) |
+| **첫 프레임에 도달하지 못함 (화면)** | **정체는 확인, 종료 여부 미확정 — 새 경계** | 창은 열리고 Glide 상태 초기화도 완주(11종 setter, 오류 0건)하는데 **버퍼 스왑이 0회**입니다(30초·240초 모두). 게스트는 `0x010EE170`–`0x010EE1DA`에 머무는데, 이곳은 **Task 219가 이미 확정한 비트스트림(Huffman류) 디코더**입니다 — 같은 주소(Windows 베이스로 `0x030EE170`). **대기가 아니라 디코드**이며, `--dump` 역어셈블(비트 버퍼 `[0x013a6194]`, 16회·256회 테이블 루프)이 이를 확인합니다. 감속 원인은 Task 219의 AOT 인라인 캐시 스래싱(Task 499에서 해소)이 아니라 **legacy의 명령 단위 단일 스텝**입니다 — 초당 약 127,000 디스패치, 네이티브 대비 약 만 배. 1,200초 실행에서 게스트는 디코더를 **드나듭니다**(418초 `0x010579F5`, 718초 `0x01087408`, 1078초 `0x010579B6`) — 갇힌 것이 아니라 자산을 하나씩 처리하며 전진하는 모습. 그래도 **스왑은 1,200초 내내 0회**. 유한한 디코드인지는 Task 219의 미확정 항목 (2) 그대로 미해결이며, **legacy로는 실용적이지 않다는 것이 결론** — 초당 127,000 디스패치는 네이티브 대비 약 만 배 (2026-08-27) |
 | 오디오 출력 셋 | **정정됨** | 아래 8절 |
 | 하드웨어 디버그 레지스터 | **불가 — 이제 술어로 강제** | Linux 사용자 공간은 자기 스레드의 것을 쓸 수 없습니다. **`native_linear_span`만이 아니라** `native_fast_path`·`native_region`도 이 위에 서 있었고, 그 중 `native_fast_path`는 **기본 켜짐**이라 9초 정지를 냈습니다(3d-23). `HardwareDebugRegistersAvailable()`이 셋 모두를 env 설정보다 앞에서 막습니다 |
 | 교차 프로세스 텔레메트리 | **울타리 안** | `live_telemetry_snapshot.cpp`의 공유 섹션·정지 스냅샷. 게스트 구동에 불필요 |
@@ -346,7 +348,9 @@ stopped being the question.
 > struck off** are still below. The interrupt layer itself passes its probe on both hosts.
 
 1. **The AOT code cache** (`aot_code_cache_win32.cpp`), which the default `dynamic` backend needs on
-   Linux. 3d-19 started porting its placement function and reverted on finding **23 Win32 memory
+   Linux — and which, since Task 505, **is also what opens the screen**: legacy's per-instruction
+   single-stepping (about 127,000 dispatches a second) never finishes the start-up asset decode, so
+   no first frame is reached (section 6). 3d-19 started porting its placement function and reverted on finding **23 Win32 memory
    calls** in the file — the dynamic translation path cycles the cache between writable and
    executable around every patch. All of them are calls 3b covers, so the work is mechanical, but
    there is a lot of it.
@@ -385,7 +389,7 @@ offsets.**
 | Whether Linux needs the child-process relaunch | **not measured** | Task 500's reason (a GPU driver claiming the guest's address space) has never been checked on Linux. `host_process.h` is where it comes out |
 | Asset paths and the CHD mount on Linux | **out of scope** | the design's out-of-scope section; revisit before attempting a run |
 | ~~The render backend (the window)~~ | **resolved (Task 505)** | There was nothing to port — both files were already SDL3 with **zero** real Win32 API calls. All of it was 57 fences 503d-10 raised to get them compiling (44 backend + 13 shader); the actual fix was one line each (`SDL_FunctionPointer`). Now `opened=1`, a 640x480 logical window at 2x (1280x960), depth 24 bits granted |
-| **No first frame is reached (the screen)** | **cause unknown — the new boundary** | The window opens and Glide state setup completes (eleven setters, zero errors), but **buffer swaps stay at zero** (at 30 s and at 240 s). From 38 s the guest never leaves `0x010EE18C`–`0x010EE3B2`, some **550 bytes**, while dispatches pass 23.8 million. **Not slow — a wait loop.** Unlike 503d-23's stall: there dispatches froze (not trapping), here they soar (trapping constantly). What it waits on is unresolved (2026-08-27) |
+| **No first frame is reached (the screen)** | **identified; whether it ends is unresolved — the new boundary** | The window opens and Glide state setup completes (eleven setters, zero errors), but **buffer swaps stay at zero** (at 30 s and at 240 s). The guest sits in `0x010EE170`–`0x010EE1DA`, which is **the bitstream (Huffman-style) decoder Task 219 already identified** — the same code at `0x030EE170` on the Windows base. **Decoding, not waiting**, confirmed by `--dump` disassembly (bit buffer `[0x013a6194]`, 16- and 256-iteration table loops). The slowness is not Task 219's AOT inline-cache thrashing (resolved by Task 499) but **legacy single-stepping every instruction** — about 127,000 dispatches a second, some ten thousand times slower than native. Over 1,200 seconds the guest goes **in and out** of the decoder (418 s `0x010579F5`, 718 s `0x01087408`, 1078 s `0x010579B6`) — not trapped, but working through assets one at a time. **Swaps stayed at zero for all 1,200 seconds.** Whether the decode is finite is still Task 219's open item (2); what is settled is that **legacy is not a practical route** — 127,000 dispatches a second is some ten thousand times slower than native (2026-08-27) |
 | The three audio outputs | **corrected** | see section 8 |
 | Hardware debug registers | **unavailable — now enforced by a predicate** | Linux user space cannot write its own thread's. **Not only `native_linear_span`** stood on them but `native_fast_path` and `native_region` too, and `native_fast_path` is **on by default**, which is what produced the nine-second stall (3d-23). `HardwareDebugRegistersAvailable()` now gates all three ahead of their environment settings |
 | Cross-process telemetry | **fenced** | the shared section and suspended snapshot in `live_telemetry_snapshot.cpp`; not needed to run the guest |

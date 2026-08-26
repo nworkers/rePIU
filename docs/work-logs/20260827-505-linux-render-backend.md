@@ -135,16 +135,80 @@ opened=1 message=Glide dummy fallback activated (no shader)
 `dispatch_entry`가 폭증하니 "일하고 있다"로 읽힙니다. **일하는 것과 나아가는 것은 다르고,
 그 둘을 가르는 것은 카운터가 아니라 EIP의 궤적입니다.**
 
-### 이것은 503d-23의 정지와 다른 종류입니다
+### 정정 — "대기 루프"가 아니었습니다. 이미 알려진 디코더입니다
+
+**위 소제목의 "대기 루프"는 틀렸고, 이 저장소가 이미 한 번 하고 정정한 오류를 제가 반복한
+것입니다.**
+
+구간을 `repiu_aot_probe --dump`로 떠서 디코드하니 비트스트림 리더였습니다.
+
+```asm
+mov   ecx, [0x013a6194]      ; 비트 버퍼 포인터
+sar   edi, 3                 ; 바이트 인덱스 = 비트위치 >> 3
+movzx edi, byte [ecx+edi]
+mov   ecx, 7 ; sub ecx, ebp  ; 비트 위치 = 7 - (비트위치 & 7), MSB first
+shl   ebp, cl ; test edi, ebp
+...
+inc eax ; cmp eax, edx ; jl -0x42   ; edx번 반복 — 경계가 있는 루프
+mov   [0x013a6190], ebx      ; 비트 위치를 전역에 되씀
+```
+
+주변에 16회 루프(코드 길이)와 256회 루프(심볼 테이블)가 붙어 있습니다. **허프만류 가변장
+부호 디코더**입니다.
+
+**그리고 이것은 Task 219가 이미 확정해 둔 바로 그 헬퍼입니다.** 그 기록의 제목이 이렇습니다 —
+*"동결의 정체 확정 — **멈춤이 아니라** ... 감속된 비트스트림 디코드 루프"*. 주소도 같습니다:
+Task 219의 `0x030EE170`–`0x030EE1DA`(Windows 베이스 0x03000000)가 여기 `0x010EE170`–`0x010EE1DA`
+입니다.
 
 | | 503d-23 | 여기 |
 |---|---|---|
 | 디스패치 | **동결** (트랩하지 않음) | **폭주** (계속 트랩함) |
-| 근인 | 경계 없이 네이티브로 풀려남 | 미확정 — 대기 루프 |
+| 정체 | 경계 없이 네이티브로 풀려남 | **알려진 비트스트림 디코더가 느리게 도는 중** |
 
-Glide 상태 초기화는 완주했고(`grColorCombine`·`grAlphaBlendFunction`·`grDepthBufferFunction`
-등 11종) 오류 메시지는 **0건**입니다. 게임이 **그리기 직전에 무언가를 기다리다 받지 못하는**
-모양입니다. 로그에 타이머·IRQ 관련 출력이 전혀 없어 무엇을 기다리는지는 **미확정**입니다.
+**감속 원인은 Task 219의 것과 다릅니다.** 그쪽은 AOT 반환 인라인 캐시 스래싱(단일 엔트리에
+반환 대상 2개가 교대)이었고 Task 499에서 해소됐습니다. 여기는 AOT가 아예 없는 legacy라
+**명령마다 단일 스텝**입니다 — 68초에 866만 디스패치, 초당 약 127,000회. 네이티브 대비
+약 만 배 느립니다.
+
+### 20분 실행 — 갇힌 것도 아니었습니다
+
+240초 관측으로 **"약 550바이트 구간을 벗어나지 않는다"**고 적었습니다. 1,200초를 돌리니
+**그것도 표본의 한계였습니다.** 게스트는 디코더를 드나듭니다.
+
+| 시각 | `last_eip` | |
+|---|---|---|
+| 298초 | `0x010EE6FB` | |
+| **418초** | **`0x010579F5`** | 디코더 밖 |
+| **718초** | **`0x01087408`** | 다른 구간 |
+| **1018초** | **`0x010ED1FF`** | |
+| **1078초** | **`0x010579B6`** | |
+| 1198초 | `0x010EE2AA` | 디코더로 복귀 |
+
+디코더에 들어갔다 나오기를 반복하며 사이에 다른 코드를 돕니다. **자산을 하나씩 처리하며
+전진하는 모습**이고, 갇힌 것이 아닙니다.
+
+스왑은 1,200초 내내 **0회**입니다.
+
+**두 번 좁혔고 두 번 다 관측 창이 짧아서 틀렸습니다.** 30초로는 "느리다", 240초로는
+"갇혔다", 1,200초에서야 "드나든다"가 보였습니다 — **관측 창보다 짧은 주기만 보인다**는
+당연한 성질에 두 번 걸린 셈입니다.
+
+**끝나는지는 여전히 미확정입니다.** Task 219의 미확정 항목 (2)가 같은 질문을 남겨 두었고
+아직 답이 없습니다 — *"이 디코드 루프가 유한한 자산 디코드인지 프레임마다 반복되는 오디오
+디코드인지"*. 드나든다는 관측은 **유한한 자산 디코드 쪽**을 지지하지만, 20분에 프레임
+하나 없는 것으로 유한하다고 단정할 수는 없습니다. 참고로 이 게임의 PTX는 465개입니다.
+
+### 그래서 Linux에서 화면을 보려면
+
+**legacy로는 실용적이지 않습니다.** 초당 127,000 디스패치는 네이티브 대비 약 만 배 느리고,
+시작 시 자산 디코드가 그 속도로는 끝나지 않습니다. **AOT 코드 캐시 이식이 화면을 여는
+열쇠**이며, 그것은 frontier가 이미 첫 항목으로 들고 있는 것입니다. 이번 조사가 그 우선순위에
+근거를 더했습니다.
+
+**교훈**: 카운터가 폭증하는 것을 보고 "대기 루프"라고 적었습니다. 궤적을 보고 "느린 게
+아니다"까지는 갔는데, **거기서 한 걸음 더 가 코드를 읽었어야 했습니다.** 저장소에 답이
+이미 있었습니다.
 
 **Task 505의 범위 밖입니다.** 별도 과제로 세웁니다.
 
@@ -296,17 +360,79 @@ The slowness story was attractive because the observations did not contradict it
 `dispatch_entry` reads as "working". **Working and advancing are different, and what separates them
 is not a counter but the trajectory of the EIP.**
 
-### This is a different kind of stall from 503d-23's
+### Correction — not a "wait loop". It is a decoder this repository already identified
+
+**The "wait loop" in the heading above is wrong, and it repeats a mistake this repository had already
+made and corrected once.**
+
+Dumping the range with `repiu_aot_probe --dump` and decoding it gives a bitstream reader.
+
+```asm
+mov   ecx, [0x013a6194]      ; bit buffer pointer
+sar   edi, 3                 ; byte index = bit position >> 3
+movzx edi, byte [ecx+edi]
+mov   ecx, 7 ; sub ecx, ebp  ; bit index = 7 - (position & 7), MSB first
+shl   ebp, cl ; test edi, ebp
+...
+inc eax ; cmp eax, edx ; jl -0x42   ; edx iterations -- a bounded loop
+mov   [0x013a6190], ebx      ; bit position written back to a global
+```
+
+Around it sit a 16-iteration loop (code lengths) and a 256-iteration loop (symbol table). It is a
+**Huffman-style variable-length decoder**.
+
+**And it is precisely the helper Task 219 already pinned down.** That record's title reads: *"the
+freeze identified — **not a stall** but a ... bitstream decode loop"*. The addresses match, too:
+Task 219's `0x030EE170`–`0x030EE1DA` (Windows base 0x03000000) is this `0x010EE170`–`0x010EE1DA`.
 
 | | 503d-23 | Here |
 |---|---|---|
 | Dispatches | **frozen** (not trapping) | **soaring** (trapping constantly) |
-| Cause | released natively with no bound | unknown — a wait loop |
+| What it is | released natively with no bound | **a known bitstream decoder running slowly** |
 
-Glide state initialisation completes (`grColorCombine`, `grAlphaBlendFunction`,
-`grDepthBufferFunction` and eight more) and there are **zero** error messages. It looks like the game
-waiting, immediately before drawing, for something it never receives. Nothing timer- or IRQ-related
-appears in the log, so what it waits on is **unresolved**.
+**The reason for the slowness differs from Task 219's.** There it was AOT return inline-cache
+thrashing (two alternating return targets in a single-entry cache), resolved by Task 499. Here there
+is no AOT at all, so legacy **single-steps every instruction** — 8.66 million dispatches in 68
+seconds, about 127,000 per second, roughly ten thousand times slower than native.
+
+### Twenty minutes — nor was it trapped
+
+On 240 seconds I wrote that it **never leaves some 550 bytes**. At 1,200 seconds **that too was the
+sample's limit.** The guest goes in and out of the decoder.
+
+| Time | `last_eip` | |
+|---|---|---|
+| 298 s | `0x010EE6FB` | |
+| **418 s** | **`0x010579F5`** | outside the decoder |
+| **718 s** | **`0x01087408`** | a different region |
+| **1018 s** | **`0x010ED1FF`** | |
+| **1078 s** | **`0x010579B6`** | |
+| 1198 s | `0x010EE2AA` | back in the decoder |
+
+It enters and leaves, running other code in between — **the shape of working through assets one at a
+time**, not of being trapped.
+
+Swaps stayed at **zero** for the whole 1,200 seconds.
+
+**Two narrowings, both wrong, and both because the observation window was too short.** Thirty seconds
+said "slow", 240 said "trapped", and only 1,200 showed "in and out" — caught twice by the plain fact
+that **a window shows nothing with a period longer than itself.**
+
+**Whether it terminates is still unresolved.** Task 219's own open item (2) asked the same question
+and still has no answer: *whether this decode loop is a finite asset decode or a per-frame audio
+decode*. Going in and out supports the **finite asset decode** reading, but twenty minutes without a
+single frame is not enough to call it finite. For scale: this game has 465 PTX textures.
+
+### So, for a picture on Linux
+
+**Legacy is not a practical route.** 127,000 dispatches a second is some ten thousand times slower
+than native, and a start-up asset decode does not finish at that rate. **Porting the AOT code cache
+is what opens the screen**, and that is already the frontier's first item. This investigation adds
+evidence to that priority.
+
+**The lesson**: a soaring counter got written up as a wait loop. The trajectory carried me as far as
+"it is not merely slow", and **that is exactly where one more step — reading the code — was owed.**
+The answer was already in the repository.
 
 **Outside Task 505's scope.** It becomes separate work.
 
