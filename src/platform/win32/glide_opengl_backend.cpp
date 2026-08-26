@@ -44,7 +44,6 @@
 namespace repiu::platform::win32 {
 namespace {
 
-#if defined(_WIN32)
 // Task 497: the mapping comes from the configured binding table instead of a
 // switch. The keycode needs no translation because SDL_Keycode is what a
 // binding stores, so this is a direct comparison against `event.key.key`.
@@ -103,7 +102,6 @@ std::uint16_t JammaInputMaskForKeycode(SDL_Keycode keycode) {
   }
   return mask;
 }
-#endif
 
 } // namespace
 
@@ -258,14 +256,7 @@ void GlideOpenGlBackend::SetBiosKeyboard(hle::BiosKeyboard *keyboard) {
 }
 
 std::uint64_t GlideOpenGlBackend::EventClockNanoseconds() const {
-#if defined(_WIN32)
   return SDL_GetTicksNS();
-#else
-  return static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now().time_since_epoch())
-          .count());
-#endif
 }
 
 void GlideOpenGlBackend::SetExecutionBackend(
@@ -384,7 +375,6 @@ bool GlideOpenGlBackend::GlideGlErrorCheckEnabled() {
   return glide_gl_error_check_enabled_;
 }
 
-#if defined(_WIN32)
 namespace {
 
 // GL_KHR_debug constants. `SDL_opengl.h` here is the 1.1 header, so the tokens
@@ -407,11 +397,19 @@ using GlDebugMessageControlProc = void(APIENTRY *)(GLenum source, GLenum type,
                                                    const GLuint *ids,
                                                    GLboolean enabled);
 
-// Same validation the shader module uses: `wglGetProcAddress` reports failure
-// as 0, 1, 2, 3, or -1 rather than only null.
+// Same validation the shader module uses: a GL loader reports failure as 0, 1,
+// 2, 3, or -1 rather than only null. That convention comes from
+// `wglGetProcAddress`, which is where this check was learned; the call below is
+// SDL's, and it inherits the convention from whatever loader SDL is sitting on.
+//
+// Task 505: the address is held as `SDL_FunctionPointer`, which is what SDL3
+// returns, rather than `void*`. MSVC converts between the two silently and GCC
+// refuses -- and GCC is right, because C++ does not guarantee a function
+// pointer fits in an object pointer. The failure test is unaffected: both
+// convert to `std::uintptr_t`.
 template <typename Function>
 bool ResolveOpenGlFunction(const char *name, Function *function) {
-  void *address = SDL_GL_GetProcAddress(name);
+  SDL_FunctionPointer address = SDL_GL_GetProcAddress(name);
   const auto value = reinterpret_cast<std::uintptr_t>(address);
   if (address == nullptr || value <= 3U || value == ~std::uintptr_t{0}) {
     return false;
@@ -441,12 +439,8 @@ void APIENTRY GlideGlDebugTrampoline(GLenum /*source*/, GLenum type, GLuint id,
 }
 
 } // namespace
-#endif
 
 bool GlideOpenGlBackend::InstallGlDebugOutput() {
-#if !defined(_WIN32)
-  return false;
-#else
   GlDebugMessageCallbackProc debug_message_callback = nullptr;
   if (!ResolveOpenGlFunction("glDebugMessageCallback",
                              &debug_message_callback)) {
@@ -466,11 +460,9 @@ bool GlideOpenGlBackend::InstallGlDebugOutput() {
   debug_message_callback(&GlideGlDebugTrampoline, this);
   glide_gl_error_policy_.debug_output_installed = true;
   return true;
-#endif
 }
 
 void GlideOpenGlBackend::RunGlErrorFrameCheck() {
-#if defined(_WIN32)
   if (glide_gl_error_frame_interval_ == 0U) {
     return;
   }
@@ -493,17 +485,12 @@ void GlideOpenGlBackend::RunGlErrorFrameCheck() {
   }
   RecordGlideGlErrorFrameCheck(&glide_gl_error_policy_, first_error_code,
                                drain_iterations);
-#endif
 }
 
 bool GlideOpenGlBackend::CheckGlErrorIfEnabled() {
-#if !defined(_WIN32)
-  return true;
-#else
   // Short-circuits before the call, not after it: the cost being removed is
   // the driver round trip inside `glGetError`, not the comparison.
   return !GlideGlErrorCheckEnabled() || glGetError() == GL_NO_ERROR;
-#endif
 }
 
 void GlideOpenGlBackend::InvokeOnHostThread(std::function<void()> command) {
@@ -793,10 +780,6 @@ bool GlideOpenGlBackend::WaitAndPumpHostCommands(
 }
 
 bool GlideOpenGlBackend::ApplyWindowScale(std::uint32_t scale) {
-#if !defined(_WIN32)
-  (void)scale;
-  return false;
-#else
   if (window_ == nullptr || scale < 1U || scale > 4U ||
       logical_width_ >
           static_cast<std::uint32_t>(std::numeric_limits<int>::max()) / scale ||
@@ -820,11 +803,9 @@ bool GlideOpenGlBackend::ApplyWindowScale(std::uint32_t scale) {
   message_ = stream.str();
   fprintf(stderr, "[repiu-live-debug] %s\n", message_.c_str());
   return true;
-#endif
 }
 
 void GlideOpenGlBackend::ApplyDrawableViewport() {
-#if defined(_WIN32)
   if (window_ == nullptr || render_context_ == nullptr || dummy_mode_) {
     return;
   }
@@ -850,7 +831,6 @@ void GlideOpenGlBackend::ApplyDrawableViewport() {
                               static_cast<std::uint32_t>(drawable_height));
   point_size_ =
       std::clamp(requested_size, supported_minimum, supported_maximum);
-#endif
 }
 
 std::string
@@ -871,7 +851,6 @@ void GlideOpenGlBackend::ResetFrameRateMeasurement() {
 }
 
 void GlideOpenGlBackend::RecordPresentedFrame() {
-#if defined(_WIN32)
   const auto now = std::chrono::steady_clock::now();
   if (frame_rate_frame_count_ == 0) {
     frame_rate_period_start_ = now;
@@ -896,7 +875,6 @@ void GlideOpenGlBackend::RecordPresentedFrame() {
   }
   frame_rate_period_start_ = now;
   frame_rate_frame_count_ = 1;
-#endif
 }
 
 bool GlideOpenGlBackend::OpenWindowed(std::uint32_t logical_width,
@@ -922,10 +900,6 @@ bool GlideOpenGlBackend::OpenWindowed(std::uint32_t logical_width,
   exit_requested_ = false;
   dummy_mode_ = false;
   origin_lower_left_ = origin == repiu::hle::kGlideOriginLowerLeft;
-#if !defined(_WIN32)
-  message_ = "Win32 OpenGL backend is unavailable";
-  return false;
-#else
   if (logical_width == 0 || logical_height == 0 || color_buffer_count < 2U) {
     message_ = "invalid Glide windowed framebuffer request";
     return false;
@@ -1073,7 +1047,6 @@ bool GlideOpenGlBackend::OpenWindowed(std::uint32_t logical_width,
          << window_width << "x" << window_height << ")";
   message_ = stream.str();
   return true;
-#endif
 }
 
 void GlideOpenGlBackend::PumpEvents() {
@@ -1084,7 +1057,6 @@ void GlideOpenGlBackend::PumpEvents() {
   if (dummy_mode_ || window_ == nullptr) {
     return;
   }
-#if defined(_WIN32)
   SDL_Event event{};
   while (SDL_PollEvent(&event)) {
     if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
@@ -1147,7 +1119,6 @@ void GlideOpenGlBackend::PumpEvents() {
       ApplyDrawableViewport();
     }
   }
-#endif
 }
 
 bool GlideOpenGlBackend::BufferClear(std::uint32_t color, std::uint32_t alpha,
@@ -1159,9 +1130,6 @@ bool GlideOpenGlBackend::BufferClear(std::uint32_t color, std::uint32_t alpha,
     });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   if (!is_open()) {
     message_ = "cannot clear Glide buffer without an OpenGL window";
     return false;
@@ -1179,7 +1147,6 @@ bool GlideOpenGlBackend::BufferClear(std::uint32_t color, std::uint32_t alpha,
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   message_ = "Glide buffer cleared";
   return true;
-#endif
 }
 
 bool GlideOpenGlBackend::BufferSwap(std::uint32_t swap_interval) {
@@ -1195,11 +1162,6 @@ bool GlideOpenGlBackend::BufferSwap(std::uint32_t swap_interval) {
 
 bool GlideOpenGlBackend::BufferSwapOnHostThread(std::uint32_t swap_interval,
                                                 bool guest_gate_command) {
-#if !defined(_WIN32)
-  (void)swap_interval;
-  (void)guest_gate_command;
-  return false;
-#else
   if (!is_open()) {
     message_ = "cannot swap Glide buffer without an OpenGL window";
     return false;
@@ -1289,7 +1251,6 @@ bool GlideOpenGlBackend::BufferSwapOnHostThread(std::uint32_t swap_interval,
                                 accounting_end_cycles, finish_cycles);
   }
   return true;
-#endif
 }
 
 // Task 420: `grDrawPoint` was accepted and discarded until now, so anything a
@@ -1300,12 +1261,8 @@ bool GlideOpenGlBackend::DrawPoint(const hle::GlideDrawVertex &a) {
     InvokeOnHostThread([this, &a, &result]() { result = DrawPoint(a); });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   const hle::GlideDrawVertex *const vertices[1] = {&a};
   return DrawPrimitive(vertices, 1U, GL_POINTS, "Glide point drawn");
-#endif
 }
 
 // Task 420: Glide requires `grDrawPolygon`'s vertices to describe a convex
@@ -1325,15 +1282,11 @@ bool GlideOpenGlBackend::DrawPolygon(const hle::GlideDrawVertex *vertices,
     });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   const hle::GlideDrawVertex *pointers[hle::kMaxGlidePolygonVertices] = {};
   for (std::size_t index = 0U; index < count; ++index) {
     pointers[index] = &vertices[index];
   }
   return DrawPrimitive(pointers, count, GL_TRIANGLE_FAN, "Glide polygon drawn");
-#endif
 }
 
 bool GlideOpenGlBackend::DrawLine(const hle::GlideDrawVertex &a,
@@ -1343,12 +1296,8 @@ bool GlideOpenGlBackend::DrawLine(const hle::GlideDrawVertex &a,
     InvokeOnHostThread([this, &a, &b, &result]() { result = DrawLine(a, b); });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   const hle::GlideDrawVertex *const vertices[2] = {&a, &b};
   return DrawPrimitive(vertices, 2U, GL_LINES, "Glide line drawn");
-#endif
 }
 
 bool GlideOpenGlBackend::DrawTriangle(const hle::GlideDrawVertex &a,
@@ -1360,26 +1309,15 @@ bool GlideOpenGlBackend::DrawTriangle(const hle::GlideDrawVertex &a,
         [this, &a, &b, &c, &result]() { result = DrawTriangle(a, b, c); });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   const hle::GlideDrawVertex *const vertices[3] = {&a, &b, &c};
   return DrawPrimitive(vertices, 3U, GL_TRIANGLES,
                        "Glide compact triangle drawn");
-#endif
 }
 
 bool GlideOpenGlBackend::PrepareDrawState(const std::uint32_t primitive,
                                           bool *sample_texture,
                                           float *inverse_width,
                                           float *inverse_height) {
-#if !defined(_WIN32)
-  (void)primitive;
-  (void)sample_texture;
-  (void)inverse_width;
-  (void)inverse_height;
-  return false;
-#else
   // R3: when the color combine selects the texture (SCALE_OTHER) and a texture
   // is currently sourced, bind it and sample; otherwise output iterated color.
   *sample_texture = texture_combine_enabled_ && current_texture_ != nullptr &&
@@ -1410,19 +1348,12 @@ bool GlideOpenGlBackend::PrepareDrawState(const std::uint32_t primitive,
     glLineWidth(1.0F);
   }
   return true;
-#endif
 }
 
 void GlideOpenGlBackend::EmitDrawVertex(const hle::GlideDrawVertex &vertex,
                                         const bool sample_texture,
                                         const float inverse_width,
                                         const float inverse_height) {
-#if !defined(_WIN32)
-  (void)vertex;
-  (void)sample_texture;
-  (void)inverse_width;
-  (void)inverse_height;
-#else
   glColor4f(vertex.r, vertex.g, vertex.b, vertex.a);
   if (sample_texture) {
     // Pack normalized sow/tow and the shared texture/fog oow. Because
@@ -1435,19 +1366,11 @@ void GlideOpenGlBackend::EmitDrawVertex(const hle::GlideDrawVertex &vertex,
     glTexCoord4f(0.0F, 0.0F, vertex.fog_oow, 1.0F);
   }
   glVertex3f(vertex.x, vertex.y, GlideOozToOrthoEyeZ(vertex.ooz));
-#endif
 }
 
 bool GlideOpenGlBackend::DrawPrimitive(
     const hle::GlideDrawVertex *const *vertices, const std::size_t vertex_count,
     const std::uint32_t primitive, const char *success_message) {
-#if !defined(_WIN32)
-  (void)vertices;
-  (void)vertex_count;
-  (void)primitive;
-  (void)success_message;
-  return false;
-#else
   if (!is_open()) {
     message_ = "cannot draw Glide primitive without an OpenGL window";
     return false;
@@ -1468,7 +1391,6 @@ bool GlideOpenGlBackend::DrawPrimitive(
   glEnd();
   message_ = success_message;
   return true;
-#endif
 }
 
 bool GlideOpenGlBackend::DrawPrimitiveBatch(
@@ -1487,9 +1409,6 @@ bool GlideOpenGlBackend::DrawPrimitiveBatch(
     });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   if (!is_open()) {
     message_ = "cannot draw Glide primitive without an OpenGL window";
     return false;
@@ -1517,7 +1436,6 @@ bool GlideOpenGlBackend::DrawPrimitiveBatch(
   glEnd();
   message_ = "Glide primitive batch drawn";
   return true;
-#endif
 }
 
 bool GlideOpenGlBackend::StoreTexture(
@@ -1533,9 +1451,6 @@ bool GlideOpenGlBackend::StoreTexture(
     });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   // Task 375: the rejection paths are recorded too. A format or a geometry the
   // backend refuses is exactly the "texture silently missing from the screen"
   // case the census exists to catch, and reporting only the decode failures
@@ -1650,7 +1565,6 @@ bool GlideOpenGlBackend::StoreTexture(
                GL_UNSIGNED_BYTE, rgba8.data());
   message_ = "Glide texture stored";
   return glGetError() == GL_NO_ERROR;
-#endif
 }
 
 bool GlideOpenGlBackend::RefreshPalettizedTextures(
@@ -1662,9 +1576,6 @@ bool GlideOpenGlBackend::RefreshPalettizedTextures(
     });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   if (palette_rgba8 == nullptr) {
     return false;
   }
@@ -1688,13 +1599,9 @@ bool GlideOpenGlBackend::RefreshPalettizedTextures(
   }
   message_ = "Glide palette generation advanced";
   return true;
-#endif
 }
 
 bool GlideOpenGlBackend::RefreshCurrentPalettizedTexture() {
-#if !defined(_WIN32)
-  return false;
-#else
   if (current_texture_ == nullptr ||
       !repiu::hle::IsGlidePalettizedTextureFormat(current_texture_->format) ||
       current_texture_->source.empty() || !palette_valid_ ||
@@ -1743,7 +1650,6 @@ bool GlideOpenGlBackend::RefreshCurrentPalettizedTexture() {
   current_texture_->palette_generation = palette_generation_;
   message_ = "Glide palette texture lazily refreshed";
   return true;
-#endif
 }
 
 bool GlideOpenGlBackend::SourceTexture(std::uint32_t start_address) {
@@ -1786,7 +1692,6 @@ void GlideOpenGlBackend::SetTextureClampMode(std::uint32_t s_clamp,
         [this, s_clamp, t_clamp]() { SetTextureClampMode(s_clamp, t_clamp); });
     return;
   }
-#if defined(_WIN32)
   tmu_s_clamp_ = s_clamp;
   tmu_t_clamp_ = t_clamp;
   if (is_open() && !dummy_mode_ && current_texture_ != nullptr &&
@@ -1797,7 +1702,6 @@ void GlideOpenGlBackend::SetTextureClampMode(std::uint32_t s_clamp,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
                     tmu_t_clamp_ == 1 ? GL_CLAMP_TO_EDGE : GL_REPEAT);
   }
-#endif
 }
 
 void GlideOpenGlBackend::SetTextureFilterMode(std::uint32_t min_filter,
@@ -1808,7 +1712,6 @@ void GlideOpenGlBackend::SetTextureFilterMode(std::uint32_t min_filter,
     });
     return;
   }
-#if defined(_WIN32)
   tmu_min_filter_ = min_filter;
   tmu_mag_filter_ = mag_filter;
   if (is_open() && !dummy_mode_ && current_texture_ != nullptr &&
@@ -1819,7 +1722,6 @@ void GlideOpenGlBackend::SetTextureFilterMode(std::uint32_t min_filter,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
                     tmu_mag_filter_ == 1 ? GL_LINEAR : GL_NEAREST);
   }
-#endif
 }
 
 void GlideOpenGlBackend::SetTextureCombineEnabled(bool enabled) {
@@ -1844,9 +1746,6 @@ bool GlideOpenGlBackend::PresentLfbSurface(const std::uint8_t *rgba8,
         });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   if (!is_open()) {
     message_ = "cannot present Glide LFB surface without an OpenGL window";
     return false;
@@ -2013,7 +1912,6 @@ bool GlideOpenGlBackend::PresentLfbSurface(const std::uint8_t *rgba8,
   glBindTexture(GL_TEXTURE_2D, static_cast<GLuint>(previous_texture));
   message_ = "Glide LFB surface presented";
   return glGetError() == GL_NO_ERROR;
-#endif
 }
 
 bool GlideOpenGlBackend::ReadbackFramebuffer(std::uint32_t width,
@@ -2026,9 +1924,6 @@ bool GlideOpenGlBackend::ReadbackFramebuffer(std::uint32_t width,
     });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   if (rgba8 == nullptr || width == 0U || height == 0U || !is_open()) {
     message_ = "cannot read back Glide framebuffer";
     return false;
@@ -2073,7 +1968,6 @@ bool GlideOpenGlBackend::ReadbackFramebuffer(std::uint32_t width,
   }
   message_ = "Glide framebuffer read back";
   return glGetError() == GL_NO_ERROR;
-#endif
 }
 bool GlideOpenGlBackend::SetColorMask(bool rgb, bool alpha) {
   if (!IsHostThread()) {
@@ -2082,9 +1976,6 @@ bool GlideOpenGlBackend::SetColorMask(bool rgb, bool alpha) {
         [this, rgb, alpha, &result]() { result = SetColorMask(rgb, alpha); });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   if (!is_open()) {
     message_ = "cannot set Glide color mask without an OpenGL window";
     return false;
@@ -2097,7 +1988,6 @@ bool GlideOpenGlBackend::SetColorMask(bool rgb, bool alpha) {
               rgb ? GL_TRUE : GL_FALSE, alpha ? GL_TRUE : GL_FALSE);
   message_ = "Glide color mask applied to OpenGL";
   return CheckGlErrorIfEnabled();
-#endif
 }
 
 bool GlideOpenGlBackend::SetRenderBuffer(std::uint32_t buffer) {
@@ -2107,9 +1997,6 @@ bool GlideOpenGlBackend::SetRenderBuffer(std::uint32_t buffer) {
         [this, buffer, &result]() { result = SetRenderBuffer(buffer); });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   constexpr std::uint32_t kGlideFrontBuffer = 0U;
   constexpr std::uint32_t kGlideBackBuffer = 1U;
   if (!is_open() ||
@@ -2127,7 +2014,6 @@ bool GlideOpenGlBackend::SetRenderBuffer(std::uint32_t buffer) {
   message_ = buffer == kGlideBackBuffer ? "Glide back buffer selected"
                                         : "Glide front buffer selected";
   return CheckGlErrorIfEnabled();
-#endif
 }
 
 bool GlideOpenGlBackend::SetDepthMask(bool enabled) {
@@ -2137,9 +2023,6 @@ bool GlideOpenGlBackend::SetDepthMask(bool enabled) {
         [this, enabled, &result]() { result = SetDepthMask(enabled); });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   if (!is_open()) {
     message_ = "cannot set Glide depth mask without an OpenGL window";
     return false;
@@ -2172,7 +2055,6 @@ bool GlideOpenGlBackend::SetDepthMask(bool enabled) {
                                  ReadGlideGateTimingCycles(), 0U, !no_error);
   }
   return no_error;
-#endif
 }
 
 bool GlideOpenGlBackend::SetDepthBufferMode(std::uint32_t mode) {
@@ -2182,9 +2064,6 @@ bool GlideOpenGlBackend::SetDepthBufferMode(std::uint32_t mode) {
         [this, mode, &result]() { result = SetDepthBufferMode(mode); });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   constexpr std::uint32_t kGlideDepthDisabled = 0U;
   constexpr std::uint32_t kGlideZBuffer = 1U;
   if (!is_open() || (mode != kGlideDepthDisabled && mode != kGlideZBuffer)) {
@@ -2204,7 +2083,6 @@ bool GlideOpenGlBackend::SetDepthBufferMode(std::uint32_t mode) {
     message_ = "Glide depth buffer disabled";
   }
   return CheckGlErrorIfEnabled();
-#endif
 }
 
 bool GlideOpenGlBackend::SetAlphaCombine(
@@ -2235,9 +2113,6 @@ bool GlideOpenGlBackend::SetConstantColor(std::uint32_t argb) {
         [this, argb, &result]() { result = SetConstantColor(argb); });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   if (!is_open()) {
     message_ = "cannot set constant color without an OpenGL window";
     return false;
@@ -2248,7 +2123,6 @@ bool GlideOpenGlBackend::SetConstantColor(std::uint32_t argb) {
   const bool result = shader_.SetConstantColor(argb);
   message_ = shader_.message();
   return result;
-#endif
 }
 
 bool GlideOpenGlBackend::SetColorCombine(
@@ -2272,7 +2146,6 @@ bool GlideOpenGlBackend::SetColorCombine(
   return applied;
 }
 
-#if defined(_WIN32)
 namespace {
 
 // Map a Glide GrAlphaBlendFnc_t factor to its OpenGL blend factor. Glide uses
@@ -2314,7 +2187,6 @@ bool MapGlideBlendFactor(std::uint32_t factor, bool is_source,
 }
 
 } // namespace
-#endif
 
 bool GlideOpenGlBackend::SetAlphaBlend(const hle::GlideAlphaBlendState &state) {
   if (!IsHostThread()) {
@@ -2323,9 +2195,6 @@ bool GlideOpenGlBackend::SetAlphaBlend(const hle::GlideAlphaBlendState &state) {
         [this, &state, &result]() { result = SetAlphaBlend(state); });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   constexpr std::uint32_t kGlideBlendZero = 0U;
   constexpr std::uint32_t kGlideBlendOne = 4U;
   GLenum gl_source = GL_ONE;
@@ -2376,7 +2245,6 @@ bool GlideOpenGlBackend::SetAlphaBlend(const hle::GlideAlphaBlendState &state) {
         ReadGlideGateTimingCycles(), drain_iterations, !no_error);
   }
   return no_error;
-#endif
 }
 
 bool GlideOpenGlBackend::SetAlphaTestFunction(std::uint32_t function) {
@@ -2387,9 +2255,6 @@ bool GlideOpenGlBackend::SetAlphaTestFunction(std::uint32_t function) {
     });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   if (!is_open() || function > 7U) {
     message_ = "unsupported Glide alpha-test function";
     return false;
@@ -2409,7 +2274,6 @@ bool GlideOpenGlBackend::SetAlphaTestFunction(std::uint32_t function) {
     message_ = "Glide alpha test enabled in OpenGL";
   }
   return CheckGlErrorIfEnabled();
-#endif
 }
 
 bool GlideOpenGlBackend::SetAlphaTestReferenceValue(
@@ -2421,9 +2285,6 @@ bool GlideOpenGlBackend::SetAlphaTestReferenceValue(
     });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   if (!is_open()) {
     return false;
   }
@@ -2435,7 +2296,6 @@ bool GlideOpenGlBackend::SetAlphaTestReferenceValue(
     glAlphaFunc(GL_NEVER + alpha_test_function_, alpha_test_reference_);
   }
   return CheckGlErrorIfEnabled();
-#endif
 }
 
 bool GlideOpenGlBackend::SetDepthBufferFunction(std::uint32_t function) {
@@ -2446,9 +2306,6 @@ bool GlideOpenGlBackend::SetDepthBufferFunction(std::uint32_t function) {
     });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   constexpr std::uint32_t kGlideCompareAlways = 7U;
   if (!is_open() || function > kGlideCompareAlways) {
     message_ = "unsupported Glide depth-buffer function";
@@ -2461,7 +2318,6 @@ bool GlideOpenGlBackend::SetDepthBufferFunction(std::uint32_t function) {
   glDepthFunc(GL_NEVER + function);
   message_ = "Glide depth comparison applied to OpenGL";
   return CheckGlErrorIfEnabled();
-#endif
 }
 
 bool GlideOpenGlBackend::SetFogMode(std::uint32_t mode) {
@@ -2470,9 +2326,6 @@ bool GlideOpenGlBackend::SetFogMode(std::uint32_t mode) {
     InvokeOnHostThread([this, mode, &result]() { result = SetFogMode(mode); });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   if (!is_open() || (mode != 0U && mode != 2U)) {
     message_ = "unsupported Glide fog mode";
     return false;
@@ -2488,7 +2341,6 @@ bool GlideOpenGlBackend::SetFogMode(std::uint32_t mode) {
                                    : "Glide table fog enabled in GLSL")
                      : "failed to apply Glide fog mode to GLSL";
   return applied && CheckGlErrorIfEnabled();
-#endif
 }
 
 bool GlideOpenGlBackend::SetFogColor(std::uint32_t argb) {
@@ -2497,9 +2349,6 @@ bool GlideOpenGlBackend::SetFogColor(std::uint32_t argb) {
     InvokeOnHostThread([this, argb, &result]() { result = SetFogColor(argb); });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   if (!is_open()) {
     message_ = "cannot set Glide fog color without an OpenGL window";
     return false;
@@ -2512,7 +2361,6 @@ bool GlideOpenGlBackend::SetFogColor(std::uint32_t argb) {
   message_ = applied ? "Glide fog color applied to GLSL"
                      : "failed to apply Glide fog color to GLSL";
   return applied;
-#endif
 }
 
 bool GlideOpenGlBackend::SetFogTable(const hle::GlideFogTable &table) {
@@ -2522,9 +2370,6 @@ bool GlideOpenGlBackend::SetFogTable(const hle::GlideFogTable &table) {
         [this, &table, &result]() { result = SetFogTable(table); });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   if (!is_open()) {
     message_ = "cannot set Glide fog table without an OpenGL window";
     return false;
@@ -2537,7 +2382,6 @@ bool GlideOpenGlBackend::SetFogTable(const hle::GlideFogTable &table) {
   message_ = applied ? "Glide fog table applied to GLSL"
                      : "failed to apply Glide fog table to GLSL";
   return applied;
-#endif
 }
 
 bool GlideOpenGlBackend::SetClipWindow(std::uint32_t min_x, std::uint32_t min_y,
@@ -2550,9 +2394,6 @@ bool GlideOpenGlBackend::SetClipWindow(std::uint32_t min_x, std::uint32_t min_y,
     });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   if (!is_open() || min_x != 0U || min_y != 0U || max_x != logical_width_ ||
       max_y != logical_height_) {
     message_ = "unsupported partial Glide clip window";
@@ -2566,7 +2407,6 @@ bool GlideOpenGlBackend::SetClipWindow(std::uint32_t min_x, std::uint32_t min_y,
   glEnable(GL_SCISSOR_TEST);
   message_ = "full Glide clip window applied to OpenGL";
   return CheckGlErrorIfEnabled();
-#endif
 }
 
 bool GlideOpenGlBackend::SetCullMode(std::uint32_t mode) {
@@ -2575,9 +2415,6 @@ bool GlideOpenGlBackend::SetCullMode(std::uint32_t mode) {
     InvokeOnHostThread([this, mode, &result]() { result = SetCullMode(mode); });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   GlideOpenGlCullFace face = GlideOpenGlCullFace::kDisabled;
   if (!is_open() ||
       !TranslateGlideOpenGlCullMode(mode, origin_lower_left_, &face)) {
@@ -2597,7 +2434,6 @@ bool GlideOpenGlBackend::SetCullMode(std::uint32_t mode) {
   }
   message_ = "Glide cull mode applied to OpenGL";
   return CheckGlErrorIfEnabled();
-#endif
 }
 
 bool GlideOpenGlBackend::SetDitherMode(std::uint32_t mode) {
@@ -2607,9 +2443,6 @@ bool GlideOpenGlBackend::SetDitherMode(std::uint32_t mode) {
         [this, mode, &result]() { result = SetDitherMode(mode); });
     return result;
   }
-#if !defined(_WIN32)
-  return false;
-#else
   constexpr std::uint32_t kObservedDitherMode = 2U;
   if (!is_open() || mode != kObservedDitherMode) {
     message_ = "unsupported Glide dither mode";
@@ -2625,7 +2458,6 @@ bool GlideOpenGlBackend::SetDitherMode(std::uint32_t mode) {
   glEnable(GL_DITHER);
   message_ = "observed Glide dither mode delegated to OpenGL";
   return CheckGlErrorIfEnabled();
-#endif
 }
 
 void GlideOpenGlBackend::Close() {

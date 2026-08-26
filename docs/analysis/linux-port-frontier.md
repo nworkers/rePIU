@@ -15,9 +15,10 @@
 명령에서 멈춥니다. 기본 백엔드 `dynamic`은 AOT 코드 캐시가 아직 Windows 전용이라 Linux에서는
 `REPIU_EXECUTION_BACKEND=legacy`가 필요합니다.
 
-**다만 "실행된다"는 "화면이 나온다"가 아닙니다.** 렌더 백엔드는 아직 Win32 전용이라 Linux에서는
-**아무것도 그리지 않습니다** — 6절을 보십시오. 오디오는 반대로 이미 이식되어 있어 장치가
-열립니다. 진행 지표(dispatch·EIP)로 판단할 때 이 구분을 잃지 마십시오.
+**창은 열립니다(Task 505). 화면은 아직 안 나옵니다.** Glide 창이 640x480 논리 해상도로 열리고
+상태 초기화도 완주하지만, 게스트가 **첫 프레임에 도달하지 못합니다** — 대기 루프에 갇힙니다
+(6절). 오디오는 장치가 열립니다. **"실행된다"·"창이 열린다"·"그려진다"는 서로 다른 세 가지이고,
+진행 지표(dispatch·EIP)는 그 중 첫째까지만 답합니다.**
 
 ## 2. 확인됨 — 지금 서 있는 것
 
@@ -114,7 +115,8 @@ REPIU_EXECUTION_BACKEND=legacy ./repiu     ../../build/openwatcom_samples/clibex
 |---|---|---|
 | 자식 프로세스 재실행이 Linux에도 필요한가 | **미측정** | Task 500의 근거(GPU 드라이버의 주소 공간 선점)가 Linux에도 해당하는지 확인한 적 없음. 되돌릴 자리는 `host_process.h` |
 | 자산 경로와 CHD 마운트의 Linux 검증 | **범위 밖** | 설계의 "범위 밖" 절. 실행 시도 전에 다시 볼 것 |
-| **렌더 백엔드 (화면)** | **미이식 — Linux에서 아무것도 그리지 않음** | `glide_opengl_backend.cpp`의 `OpenWindowed`가 `#if !defined(_WIN32)`에서 곧바로 `return false`("Win32 OpenGL backend is unavailable"). 그 파일에 `_WIN32` 울타리 44개. 게스트가 `grSstWinOpen`에 도달하면 `opened=0`을 받고, 관측된 실행 하나는 그 직후 스스로 종료했습니다 — **예산 완주와 구분되지 않는 종료**이므로 exit 0을 건강함으로 읽지 마십시오 (2026-08-27) |
+| ~~렌더 백엔드 (창)~~ | **해결 (Task 505)** | 이식할 것이 없었습니다 — 두 파일 모두 이미 SDL3이고 진짜 Win32 API는 **0개**였습니다. 503d-10이 컴파일용으로 세운 울타리 57개(backend 44 + shader 13)가 전부였고, 실제 수정은 각 파일 한 줄(`SDL_FunctionPointer`)입니다. 이제 `opened=1`, 640x480 논리 창 2배(1280x960), 깊이 24비트 승인 |
+| **첫 프레임에 도달하지 못함 (화면)** | **원인 미상 — 새 경계** | 창은 열리고 Glide 상태 초기화도 완주(11종 setter, 오류 0건)하는데 **버퍼 스왑이 0회**입니다(30초·240초 모두). 38초부터 게스트가 `0x010EE18C`–`0x010EE3B2` **약 550바이트**를 벗어나지 않으며 그동안 디스패치는 2,380만 회. **느린 것이 아니라 대기 루프**입니다. 503d-23의 정지와 다릅니다 — 그건 디스패치가 동결(트랩 안 함), 이건 폭주(계속 트랩함). 무엇을 기다리는지 미확정 (2026-08-27) |
 | 오디오 출력 셋 | **정정됨** | 아래 8절 |
 | 하드웨어 디버그 레지스터 | **불가 — 이제 술어로 강제** | Linux 사용자 공간은 자기 스레드의 것을 쓸 수 없습니다. **`native_linear_span`만이 아니라** `native_fast_path`·`native_region`도 이 위에 서 있었고, 그 중 `native_fast_path`는 **기본 켜짐**이라 9초 정지를 냈습니다(3d-23). `HardwareDebugRegistersAvailable()`이 셋 모두를 env 설정보다 앞에서 막습니다 |
 | 교차 프로세스 텔레메트리 | **울타리 안** | `live_telemetry_snapshot.cpp`의 공유 섹션·정지 스냅샷. 게스트 구동에 불필요 |
@@ -277,9 +279,10 @@ evidence is in the work log. Status labels follow this directory's convention: *
 same instruction as Windows. The default `dynamic` backend still needs the AOT code cache, which is
 Windows-only, so Linux needs `REPIU_EXECUTION_BACKEND=legacy` today.
 
-**But "executes" is not "draws".** The render backend is still Win32-only, so **nothing is drawn on
-Linux** — see section 6. Audio is the opposite: already ported, and the device opens. Keep that
-distinction when judging a run by its progress counters (dispatches, EIP).
+**A window opens (Task 505). The screen still does not.** The Glide window opens at 640x480 logical
+and state setup completes, but the guest **never reaches a first frame** — it is caught in a wait
+loop (section 6). Audio's device opens. **"Executes", "opens a window" and "draws" are three
+different things, and the progress counters (dispatches, EIP) answer only the first.**
 
 **A window and sound are confirmed on WSLg too** — the launcher's window, and `YMZ280B ready through
 SDL3 at 88200 Hz`. The 32-bit packages this needs, and the traps around them, are collected in 7.1.
@@ -381,7 +384,8 @@ offsets.**
 |---|---|---|
 | Whether Linux needs the child-process relaunch | **not measured** | Task 500's reason (a GPU driver claiming the guest's address space) has never been checked on Linux. `host_process.h` is where it comes out |
 | Asset paths and the CHD mount on Linux | **out of scope** | the design's out-of-scope section; revisit before attempting a run |
-| **The render backend (the screen)** | **not ported — nothing is drawn on Linux** | `OpenWindowed` in `glide_opengl_backend.cpp` returns false straight out of `#if !defined(_WIN32)` ("Win32 OpenGL backend is unavailable"), and that file carries 44 `_WIN32` fences. A guest reaching `grSstWinOpen` gets `opened=0`, and the one run observed doing so exited by itself immediately after — **an exit indistinguishable from finishing the budget**, so do not read exit 0 as healthy (2026-08-27) |
+| ~~The render backend (the window)~~ | **resolved (Task 505)** | There was nothing to port — both files were already SDL3 with **zero** real Win32 API calls. All of it was 57 fences 503d-10 raised to get them compiling (44 backend + 13 shader); the actual fix was one line each (`SDL_FunctionPointer`). Now `opened=1`, a 640x480 logical window at 2x (1280x960), depth 24 bits granted |
+| **No first frame is reached (the screen)** | **cause unknown — the new boundary** | The window opens and Glide state setup completes (eleven setters, zero errors), but **buffer swaps stay at zero** (at 30 s and at 240 s). From 38 s the guest never leaves `0x010EE18C`–`0x010EE3B2`, some **550 bytes**, while dispatches pass 23.8 million. **Not slow — a wait loop.** Unlike 503d-23's stall: there dispatches froze (not trapping), here they soar (trapping constantly). What it waits on is unresolved (2026-08-27) |
 | The three audio outputs | **corrected** | see section 8 |
 | Hardware debug registers | **unavailable — now enforced by a predicate** | Linux user space cannot write its own thread's. **Not only `native_linear_span`** stood on them but `native_fast_path` and `native_region` too, and `native_fast_path` is **on by default**, which is what produced the nine-second stall (3d-23). `HardwareDebugRegistersAvailable()` now gates all three ahead of their environment settings |
 | Cross-process telemetry | **fenced** | the shared section and suspended snapshot in `live_telemetry_snapshot.cpp`; not needed to run the guest |

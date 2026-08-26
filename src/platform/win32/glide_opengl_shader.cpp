@@ -2,10 +2,8 @@
 
 #include "repiu/platform/win32/glide_gl_error_policy.h"
 
-#if defined(_WIN32)
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
-#endif
 
 #include <sstream>
 
@@ -14,7 +12,6 @@ namespace repiu::platform::win32
 
 struct GlideOpenGlShader::Implementation
 {
-#if defined(_WIN32)
     using CreateShader = GLuint(APIENTRY*)(GLenum);
     using ShaderSource = void(APIENTRY*)(GLuint, GLsizei, const char* const*,
                                          const GLint*);
@@ -69,22 +66,24 @@ struct GlideOpenGlShader::Implementation
     GLint fog_mode = -1;
     GLint fog_color = -1;
     GLint fog_table = -1;
-#endif
 };
 
 namespace
 {
 
-#if defined(_WIN32)
 constexpr GLenum kGlVertexShader = 0x8B31;
 constexpr GLenum kGlFragmentShader = 0x8B30;
 constexpr GLenum kGlCompileStatus = 0x8B81;
 constexpr GLenum kGlLinkStatus = 0x8B82;
 
+// Task 505: `SDL_FunctionPointer` rather than `void*`, for the reason the
+// backend's copy of this function records -- it is what SDL3 returns, MSVC
+// converts silently, GCC refuses, and C++ does not guarantee a function pointer
+// fits in an object pointer. The failure test is unaffected.
 template <typename Function>
 bool ResolveOpenGlFunction(const char* name, Function* function)
 {
-    void* address = SDL_GL_GetProcAddress(name);
+    SDL_FunctionPointer address = SDL_GL_GetProcAddress(name);
     const auto value = reinterpret_cast<std::uintptr_t>(address);
     if (address == nullptr || value <= 3U || value == ~std::uintptr_t{0})
     {
@@ -147,7 +146,6 @@ GLuint CompileShader(GlideOpenGlShader::Implementation* implementation,
     implementation->delete_shader(shader);
     return 0;
 }
-#endif
 
 }  // namespace
 
@@ -161,10 +159,6 @@ GlideOpenGlShader::~GlideOpenGlShader()
 bool GlideOpenGlShader::Initialize()
 {
     Shutdown();
-#if !defined(_WIN32)
-    message_ = "Win32 GLSL shader backend is unavailable";
-    return false;
-#else
     implementation_ = std::make_unique<Implementation>();
     if (!ResolveFunctions(implementation_.get()))
     {
@@ -387,12 +381,10 @@ bool GlideOpenGlShader::Initialize()
                                  empty_fog_table);
     message_ = "Glide GLSL combine program initialized";
     return true;
-#endif
 }
 
 void GlideOpenGlShader::SetTextureEnabled(bool enabled)
 {
-#if defined(_WIN32)
     if (!implementation_ || implementation_->program == 0 ||
         implementation_->texture_enable < 0)
     {
@@ -401,14 +393,10 @@ void GlideOpenGlShader::SetTextureEnabled(bool enabled)
     implementation_->use_program(implementation_->program);
     implementation_->uniform_1i(implementation_->texture_enable,
                                 enabled ? 1 : 0);
-#else
-    (void)enabled;
-#endif
 }
 
 void GlideOpenGlShader::SetBlitMode(bool enabled)
 {
-#if defined(_WIN32)
     if (!implementation_ || implementation_->program == 0 ||
         implementation_->blit_mode < 0)
     {
@@ -417,17 +405,10 @@ void GlideOpenGlShader::SetBlitMode(bool enabled)
     implementation_->use_program(implementation_->program);
     implementation_->uniform_1i(implementation_->blit_mode,
                                 enabled ? 1 : 0);
-#else
-    (void)enabled;
-#endif
 }
 
 bool GlideOpenGlShader::SetFogMode(std::uint32_t mode)
 {
-#if !defined(_WIN32)
-    (void)mode;
-    return false;
-#else
     if (!implementation_ || implementation_->program == 0 ||
         implementation_->fog_mode < 0 || (mode != 0U && mode != 2U))
     {
@@ -437,15 +418,10 @@ bool GlideOpenGlShader::SetFogMode(std::uint32_t mode)
     implementation_->uniform_1i(implementation_->fog_mode,
                                 static_cast<GLint>(mode));
     return !GlideGlErrorCheckPolicyEnabled() || glGetError() == GL_NO_ERROR;
-#endif
 }
 
 bool GlideOpenGlShader::SetFogColor(std::uint32_t argb)
 {
-#if !defined(_WIN32)
-    (void)argb;
-    return false;
-#else
     if (!implementation_ || implementation_->program == 0 ||
         implementation_->fog_color < 0)
     {
@@ -458,15 +434,10 @@ bool GlideOpenGlShader::SetFogColor(std::uint32_t argb)
     implementation_->use_program(implementation_->program);
     implementation_->uniform_4f(implementation_->fog_color, r, g, b, a);
     return !GlideGlErrorCheckPolicyEnabled() || glGetError() == GL_NO_ERROR;
-#endif
 }
 
 bool GlideOpenGlShader::SetFogTable(const hle::GlideFogTable& table)
 {
-#if !defined(_WIN32)
-    (void)table;
-    return false;
-#else
     if (!implementation_ || implementation_->program == 0 ||
         implementation_->fog_table < 0)
     {
@@ -482,15 +453,11 @@ bool GlideOpenGlShader::SetFogTable(const hle::GlideFogTable& table)
         implementation_->fog_table,
         static_cast<GLsizei>(hle::kGlideFogTableEntryCount), normalized);
     return !GlideGlErrorCheckPolicyEnabled() || glGetError() == GL_NO_ERROR;
-#endif
 }
 
 bool GlideOpenGlShader::SetAlphaCombine(
     const hle::GlideAlphaCombineState& state)
 {
-#if !defined(_WIN32)
-    return false;
-#else
     if (!implementation_ || implementation_->program == 0 || !state.valid)
     {
         message_ = "unsupported Glide alpha-combine equation";
@@ -514,15 +481,11 @@ bool GlideOpenGlShader::SetAlphaCombine(
     }
     message_ = "observed Glide alpha-combine equation applied with GLSL";
     return true;
-#endif
 }
 
 bool GlideOpenGlShader::SetColorCombine(
     const hle::GlideColorCombineState& state)
 {
-#if !defined(_WIN32)
-    return false;
-#else
     if (!implementation_ || implementation_->program == 0 || !state.valid)
     {
         message_ = "unsupported Glide color-combine equation";
@@ -546,14 +509,10 @@ bool GlideOpenGlShader::SetColorCombine(
     }
     message_ = "observed Glide color-combine equation applied with GLSL";
     return true;
-#endif
 }
 
 bool GlideOpenGlShader::SetConstantColor(std::uint32_t argb)
 {
-#if !defined(_WIN32)
-    return false;
-#else
     if (!implementation_ || implementation_->program == 0 ||
         implementation_->constant_color < 0)
     {
@@ -566,19 +525,16 @@ bool GlideOpenGlShader::SetConstantColor(std::uint32_t argb)
     const float b = static_cast<float>(argb & 0xFF) / 255.0F;
     implementation_->uniform_4f(implementation_->constant_color, r, g, b, a);
     return true;
-#endif
 }
 
 void GlideOpenGlShader::Shutdown()
 {
-#if defined(_WIN32)
     if (implementation_ && implementation_->program != 0 &&
         implementation_->delete_program != nullptr)
     {
         implementation_->use_program(0);
         implementation_->delete_program(implementation_->program);
     }
-#endif
     implementation_.reset();
 }
 
