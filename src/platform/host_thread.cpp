@@ -195,6 +195,30 @@ void InterruptSignalHandler(int, siginfo_t*, void* host_context)
 // a sigaltstack that 3c installed. Without it the handler frame lands on the
 // guest's own stack, which is the stack this is usually called to inspect. A
 // thread with no alternate stack simply ignores the flag.
+//
+// SA_NODEFER is deliberately absent, and this is the place that says so,
+// because the absence has been mistaken for an oversight once already.
+//
+// Without it the kernel blocks this signal while its own handler runs and
+// unblocks it on return, so the handler cannot interrupt itself. 3c's fault
+// handler sets the opposite for a reason its own comment gives -- the engine
+// plants breakpoints and single-steps from inside that handler, so nesting is
+// normal there. This handler has the opposite shape: it copies registers and
+// returns. There is nothing here to nest.
+//
+// What made this look like a defect is a genuine finding, read out of /proc on
+// a stalled guest: SigBlk and SigPnd both carrying this signal's bit, meaning
+// the thread sat inside a handler that had not returned, so every later request
+// went pending and timed out. **That is the diagnostic, not the bug.** Exactly
+// one signal being blocked on exactly one thread is what says "the handler did
+// not return", and it says it only because the masking is on.
+//
+// Adding SA_NODEFER would not make a stuck handler return. It would let the
+// next delivery nest into one that is already stuck -- and on this thread, which
+// is already running on 3c's alternate stack, a nested frame goes on that same
+// alternate stack and can quietly overflow it. It would trade a legible timeout
+// for an unreadable one. The open question is why the handler does not return,
+// and this flag is not it.
 bool EnsureInterruptHandler()
 {
     static const bool installed = []() {

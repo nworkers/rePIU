@@ -4,6 +4,7 @@
 
 #include <csignal>
 #include <cstring>
+#include <pthread.h>
 #include <ucontext.h>
 
 namespace repiu::platform
@@ -124,10 +125,27 @@ void SignalHandler(int signal_number, siginfo_t* info, void* host_context)
     if (g_callback(&event, g_user_data) != FaultDisposition::kResume)
     {
         // Restoring the default and returning lets the fault happen again with
-        // nothing to catch it, which is how an unhandled fault should end. The
-        // signal is unblocked first, because it is masked for the duration of
-        // this handler and would otherwise be delivered only after a return
-        // that never comes.
+        // nothing to catch it, which is how an unhandled fault should end:
+        // returning resumes at the faulting instruction, because this path
+        // deliberately does not write the registers back.
+        //
+        // The unblock is not what the comment here used to claim. It said the
+        // signal "is masked for the duration of this handler" -- it is not,
+        // because `InstallFaultHandler` sets SA_NODEFER, which is exactly the
+        // flag that turns that masking off. Under this handler's own flags the
+        // call below is a no-op.
+        //
+        // It is kept, and this is why: it costs one syscall on a path that is
+        // about to end the process, and it guards the worst failure available
+        // here. If the signal ever is blocked -- an embedder that masked it, or
+        // a later change to those flags -- the default action cannot be taken,
+        // and "die with a core dump" silently becomes "hang forever".
+        // Guaranteeing the mask rather than assuming it is cheap insurance
+        // against the one outcome nobody can debug.
+        //
+        // `pthread_sigmask` rather than `sigprocmask`: this process is
+        // multithreaded, and POSIX leaves `sigprocmask` unspecified there. Both
+        // are async-signal-safe.
         struct sigaction fallback = {};
         fallback.sa_handler = SIG_DFL;
         sigemptyset(&fallback.sa_mask);
@@ -135,7 +153,7 @@ void SignalHandler(int signal_number, siginfo_t* info, void* host_context)
         sigset_t unblock;
         sigemptyset(&unblock);
         sigaddset(&unblock, signal_number);
-        sigprocmask(SIG_UNBLOCK, &unblock, nullptr);
+        pthread_sigmask(SIG_UNBLOCK, &unblock, nullptr);
         return;
     }
 

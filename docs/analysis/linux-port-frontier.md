@@ -116,7 +116,8 @@ REPIU_EXECUTION_BACKEND=legacy ./repiu     ../../build/openwatcom_samples/clibex
 | `CaptureSuspendedThreadSnapshot` | **호출자 없음** | 정의만 있고 선언도 호출도 없음. 지우는 것은 의도 확인 후 |
 | 종료 시 SIGTRAP | **미확인** | 실행 예산이 만료된 뒤 teardown에서 코어를 떨굽니다(2026-08-26, pumpit1, legacy, 8초 예산). 실행 자체는 정상이었고 오디오와도 무관합니다. 어느 단계에서 나는지 아직 좁히지 않았습니다 |
 | pumpit1의 9초 정지 | **원인 미상** | 3d-21이 관측한 `SigBlk`(시그널 34 차단)은 **원인이 아닙니다** — 정지는 첫 실행에서 이미 있었고 첫 시그널은 9.5초에야 나갑니다. 증상 쪽입니다. 3d-22 이후 표본기는 그 상태에서 스스로를 손상시키지 않으므로, 이제 관측을 다시 시도할 수 있습니다 |
-| 인터럽트 핸들러의 `SA_NODEFER` | **열려 있음** | 핸들러가 자기 시그널을 차단한 채 돌기 때문에 중첩 배달이 영구 차단으로 남을 수 있습니다. 3d-21이 후보로 적었고 3d-22는 건드리지 않았습니다 |
+| 인터럽트 핸들러가 반환하지 않는 것 | **원인 미상** | 정지한 게스트에서 첫 배달이 핸들러로 들어간 뒤 반환하지 않았고, 그래서 이후 46건이 전부 보류·시한 초과가 됐습니다. **`SA_NODEFER`는 답이 아닙니다** — 아래를 볼 것 |
+| ~~인터럽트 핸들러의 `SA_NODEFER`~~ | **후보에서 제외 (2026-08-27)** | 이것을 "고칠 거리"로 적어 둔 것이 오해였습니다. 이 플래그가 **없어서** 시그널 하나가 한 스레드에서 차단된 채 남고, 그것이 "핸들러가 반환하지 않았다"를 읽게 해 준 **진단 신호**입니다. 붙이면 멈춘 핸들러가 반환하게 되는 게 아니라 그 안으로 배달이 중첩되고, 이 스레드는 이미 3c의 대체 스택 위에 있어 그 스택이 조용히 넘칩니다. 근거는 `host_thread.cpp`의 `EnsureInterruptHandler` 주석에 있습니다 |
 
 ## 7. 정정 — 오디오 출력은 이미 이식되어 있었습니다
 
@@ -377,7 +378,8 @@ offsets.**
 | `CaptureSuspendedThreadSnapshot` | **no callers** | defined, never declared or called; removing it wants its intent confirmed first |
 | A SIGTRAP on teardown | **unconfirmed** | after the execution budget expires the process dumps core on the way down (2026-08-26, pumpit1, legacy, an 8-second budget). The run itself was healthy and this is unrelated to audio; which teardown step raises it has not been narrowed down |
 | pumpit1's nine-second stall | **cause unknown** | the `SigBlk` state 3d-21 observed (signal 34 blocked) is **not** the cause — the stall was there in the first run and the first signal does not go until 9.5 s, so it sits on the symptom side. Since 3d-22 the sampler no longer corrupts itself against that state, so the observation can be attempted again |
-| `SA_NODEFER` on the interrupt handler | **open** | the handler runs with its own signal blocked, so a nested delivery can leave it blocked permanently. 3d-21 named it as a candidate; 3d-22 did not touch it |
+| The interrupt handler not returning | **cause unknown** | on the stalled guest the first delivery entered the handler and never came back, which is why the 46 requests after it all went pending and timed out. **`SA_NODEFER` is not the answer** — see below |
+| ~~`SA_NODEFER` on the interrupt handler~~ | **struck as a candidate (2026-08-27)** | listing this as something to fix was a misreading. The flag's **absence** is what leaves one signal blocked on one thread, and that is the **diagnostic** that says "the handler did not return". Adding it would not make a stuck handler return; it would nest deliveries into one that already is, on a thread already running on 3c's alternate stack, which that nesting can quietly overflow. The reasoning is in the `EnsureInterruptHandler` comment in `host_thread.cpp` |
 
 ## 7. Correction — the audio outputs were already portable
 

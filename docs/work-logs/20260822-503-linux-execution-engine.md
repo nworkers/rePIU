@@ -2727,9 +2727,70 @@ Windows는 `host_thread_interrupt_abandon_skipped=true`로 **건너뜀**을 보�
 1. **9초 정지 자체.** 여전히 원인 미상입니다. 3d-21이 관측한 `SigBlk` 상태는 **정지의 원인이
    아닙니다** — 순서가 그것을 배제합니다(정지는 첫 pumpit1 실행에서 이미 있었고 첫 시그널은
    9.5초에야 나갑니다). 다만 이제 표본기가 그 상태에서 스스로를 손상시키지는 않습니다.
-2. **`SA_NODEFER`.** 3d-21이 후보로 적었고, 이번 단계는 그것을 건드리지 않았습니다. 중첩 배달
-   경로는 여전히 열려 있습니다.
+2. **인터럽트 핸들러가 왜 반환하지 않는가.** 첫 배달이 핸들러로 들어간 뒤 돌아오지 않았고,
+   그래서 이후 46건이 전부 보류·시한 초과가 됐습니다. 원인은 아직 모릅니다.
+   **`SA_NODEFER`는 후보에서 뺐습니다** — 3d-22b를 볼 것.
 3. **감시견의 강제 중단**과 **AOT 코드 캐시**는 그대로입니다.
+
+---
+
+## 3d-22b — `SA_NODEFER`는 고칠 거리가 아니었습니다
+
+### 결과
+
+3d-21이 남긴 "남은 것" 1번은 `SA_NODEFER` 부재를 **결함 후보**로 적었고, 3d-22의 첫 기록도
+그것을 그대로 옮겼습니다. 확인해 보니 **거꾸로였습니다.**
+
+| 파일 | 무엇이 바뀌었나 |
+|---|---|
+| `platform/host_thread.cpp` | `EnsureInterruptHandler`에 이 플래그가 **왜 일부러 없는지** 기록 |
+| `platform/linux/fault_handler.cpp` | 자기 파일의 `SA_NODEFER`와 모순되던 주석 정정, `sigprocmask` → `pthread_sigmask` |
+
+### 플래그가 하는 일과, 여기서의 방향
+
+기본 동작은 커널이 **핸들러가 도는 동안 그 시그널을 차단**하고 반환 시 푸는 것입니다.
+`SA_NODEFER`는 그 자동 차단을 꺼서 중첩을 허용합니다.
+
+3c의 폴트 핸들러는 이것을 **일부러 켭니다.** 주석이 이유를 적어 뒀습니다 — 엔진이 그 핸들러
+안에서 브레이크포인트를 심고 단일 스텝을 돌리므로 **거기선 중첩이 정상**입니다. 인터럽트
+핸들러는 모양이 반대입니다. 레지스터를 복사하고 반환하는 것이 전부라 중첩할 것이 없습니다.
+
+### 증상을 원인으로 읽었던 것
+
+정지한 게스트의 `/proc`이 보여 준 `SigBlk`/`SigPnd`는 **결함이 아니라 진단입니다.**
+
+한 스레드에서 **정확히 시그널 하나**만 차단되어 있다는 사실이 "그 스레드가 아직 반환하지 않은
+핸들러 안에 있다"를 말해 주고, 그렇게 말할 수 있는 이유가 바로 **자동 차단이 켜져 있기
+때문**입니다. 플래그를 붙이면 그 신호가 사라집니다.
+
+그리고 붙인다고 멈춘 핸들러가 반환하지도 않습니다. **이미 멈춰 있는 핸들러 안으로 다음 배달이
+중첩될 뿐**이고, 이 스레드는 `SA_ONSTACK`으로 3c의 대체 스택 위에서 돌고 있으므로 중첩 프레임이
+그 대체 스택에 쌓여 조용히 넘칩니다. **읽히는 시한 초과를 안 읽히는 것으로 바꾸는 거래입니다.**
+
+남는 질문은 그대로입니다 — **핸들러가 왜 반환하지 않는가.** 이 플래그는 그 답이 아닙니다.
+
+### 곁가지 — 같은 플래그를 두고 코드가 자기와 모순되어 있었습니다
+
+`fault_handler.cpp`의 미처리 폴트 경로 주석이 "이 핸들러가 도는 동안 시그널은 마스크된다"고
+적고 있었는데, **같은 파일 아래쪽이 `SA_NODEFER`를 걸어서 마스크되지 않습니다.** 주석이 근거로
+든 "오지 않을 반환" 역시 틀렸습니다 — 그 경로는 바로 다음 줄에서 `return`하고, 레지스터를 되쓰지
+않으므로 폴트 명령에서 재개되어 기본 동작으로 죽습니다.
+
+그래서 그 `sigprocmask` 호출은 **자기 핸들러의 플래그 아래에서는 no-op**입니다. 지우지 않고
+남긴 이유를 주석에 적었습니다. 프로세스를 끝내려는 경로에서 시스템 콜 하나 값이고, 막는 실패가
+여기서 가장 나쁜 것이기 때문입니다 — 시그널이 어떤 이유로든 차단되어 있으면 기본 동작을 못
+취하고 **"코어를 남기고 죽는다"가 조용히 "영원히 멈춘다"로 바뀝니다.**
+
+함께 `sigprocmask`를 `pthread_sigmask`로 바꿨습니다. 이 프로세스는 멀티스레드이고 POSIX는
+멀티스레드에서 `sigprocmask`의 동작을 규정하지 않습니다. 둘 다 async-signal-safe입니다.
+
+### 검증
+
+| 대상 | 결과 |
+|---|---|
+| Windows Debug 빌드 | 오류 없음 |
+| Windows / Linux i386 `repiu_core_probe` | 15/15, 실패 0 |
+| Linux DOS/4GW 샘플 | 3d-19 기준선 유지 |
 
 ---
 
@@ -5130,9 +5191,74 @@ for a check that never ran is something a later session believes.**
    its cause** — the order rules that out, since the stall was there in the first pumpit1 run and the
    first signal does not go until 9.5 s. What has changed is that the sampler no longer corrupts
    itself when it meets that state.
-2. **`SA_NODEFER`.** 3d-21 named it as a candidate and this sub-stage did not touch it; the nested
-   delivery path is still open.
+2. **Why the interrupt handler does not return.** The first delivery entered it and never came back,
+   which is why the 46 requests after it all went pending and timed out. The cause is still unknown.
+   **`SA_NODEFER` has been struck as a candidate** — see 3d-22b.
 3. **The watchdog's forced interruption** and **the AOT code cache** are where they were.
+
+---
+
+## 3d-22b — `SA_NODEFER` was not something to fix
+
+### Result
+
+3d-21's "Remaining" listed the missing `SA_NODEFER` as a **defect candidate**, and 3d-22's first
+write-up carried that forward. Checked, it is **the other way round.**
+
+| File | What changed |
+|---|---|
+| `platform/host_thread.cpp` | `EnsureInterruptHandler` now records **why the flag is deliberately absent** |
+| `platform/linux/fault_handler.cpp` | a comment that contradicted its own file's `SA_NODEFER` corrected; `sigprocmask` → `pthread_sigmask` |
+
+### What the flag does, and which way it points here
+
+By default the kernel **blocks a signal while its own handler runs** and unblocks it on return, so a
+handler cannot interrupt itself. `SA_NODEFER` turns that off and allows nesting.
+
+3c's fault handler sets it **on purpose**, and its comment says why: the engine plants breakpoints
+and single-steps from inside that handler, so **nesting is normal there**. The interrupt handler has
+the opposite shape — it copies registers and returns. There is nothing to nest.
+
+### Reading a diagnostic as a cause
+
+The `SigBlk` / `SigPnd` pair /proc showed on the stalled guest is **not the defect; it is the
+diagnostic.**
+
+**Exactly one signal** blocked on **exactly one thread** is what says "this thread is inside a
+handler that has not returned" — and it can say that **only because the automatic masking is on**.
+Setting the flag deletes the signal that made the stall legible.
+
+Nor would setting it make a stuck handler return. It would let the next delivery **nest into one that
+is already stuck**, and this thread runs with `SA_ONSTACK` on 3c's alternate stack, so nested frames
+pile onto that same alternate stack and can quietly overflow it. **It trades a legible timeout for an
+unreadable one.**
+
+The question that remains is the one that always was: **why does the handler not return?** This flag
+is not the answer.
+
+### An aside: the code contradicted itself about this same flag
+
+The unhandled-fault path in `fault_handler.cpp` carried a comment saying the signal "is masked for
+the duration of this handler" — and **the same file sets `SA_NODEFER` further down, so it is not.**
+The reason it gave ("a return that never comes") was wrong too: that path returns on the very next
+line, and because it deliberately does not write the registers back, execution resumes at the
+faulting instruction and dies through the default action.
+
+So the `sigprocmask` call there is **a no-op under its own handler's flags.** It was kept rather than
+deleted, with the reason now written down: one syscall on a path that is about to end the process,
+guarding the worst failure available here — if the signal ever *is* blocked, the default action
+cannot be taken and **"die with a core dump" silently becomes "hang forever".**
+
+It also became `pthread_sigmask`. This process is multithreaded and POSIX leaves `sigprocmask`
+unspecified there. Both are async-signal-safe.
+
+### Verification
+
+| Target | Result |
+|---|---|
+| Windows Debug build | no errors |
+| Windows / Linux i386 `repiu_core_probe` | 15/15, 0 failures |
+| The Linux DOS/4GW sample | 3d-19's baseline holds |
 
 ---
 
