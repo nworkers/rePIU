@@ -71,6 +71,40 @@ flowchart TD
 `IsGuestStackSwitchSupported()`와 `IsDirectX86ExecutionSupported()`는 이제 컴파일러가 아니라
 **아키텍처**를 묻습니다 — 3d-16이 스택 전환을 GAS로 쓴 뒤로 컴파일러에 달려 있지 않습니다.
 
+## 3.5 2026-08-27 main 병합 인계
+
+이 날 main에 들어간 것은 다섯입니다. 종합 설계는 없고, 각 작업의 설계·지시서·로그가 정본입니다.
+
+| 커밋 | 무엇 |
+|---|---|
+| `6f9ac34` | 503d-22 마감 — 포기한 인터럽트가 다시 오지 못함을 probe로 고정, 그 과정에서 드러난 교차 스레드 구멍을 닫음 |
+| `9acbabe` | `SA_NODEFER`를 **후보에서 제외** — 증상을 원인으로 읽고 있었음. 같은 플래그를 두고 자기모순이던 주석도 정정 |
+| `bd6e736` | 503d-23 — **9초 정지 해결.** `native_fast_path`가 복귀 브레이크포인트를 무장하면서 트랩 플래그를 해제하는데 Linux에서 무장만 버려짐 |
+| `db234db` | Task 505 — **Glide 창이 Linux에서 열림.** 이식이 아니라 울타리 57개 해제 |
+| `486fe09` | `0x010EE1xx`를 "대기 루프"라 한 것 정정 — Task 219가 이미 확정한 비트스트림 디코더 |
+
+### 이 날 반복해서 걸린 것
+
+**성공 신호 하나로 성공을 판정한 것**이 세 번입니다.
+
+| 무엇을 봤나 | 무엇으로 읽었나 | 실제 |
+|---|---|---|
+| `exit 0` | 정상 완주 | 창을 못 열어 게임이 포기 |
+| `opened=1` | 창이 열림 | 더미 폴백도 같은 값을 반환 |
+| `dispatch_entry` 폭증 | 전진 중 | 일하는 중이지 나아가는 중이 아님 |
+
+그리고 **관측 창보다 긴 주기는 보이지 않는다**에 두 번 걸렸습니다 — 30초는 "느리다",
+240초는 "갇혔다", 1,200초에서야 실상.
+
+세 경우 모두 **한 걸음 더 갔으면** 잡혔습니다. 종료 코드 대신 로그를, 반환값 대신 메시지를,
+카운터 대신 EIP 궤적과 코드를 봤어야 했습니다. `0x010EE1xx`는 특히 그렇습니다 — 답이
+저장소 안에 두 달 전부터 있었습니다.
+
+### 다음
+
+**AOT 코드 캐시 이식**([Task 506](../design/20260827-506-linux-aot-code-cache.md))이고, 성격이
+바뀌었습니다 — "기본 백엔드에 필요"가 아니라 **화면이 기다리는 항목**입니다.
+
 ## 4. 다음에 필요한 것
 
 > 이 절은 3d-20을 가리키고 있었습니다. 3d-20(다른 스레드의 레지스터)·3d-21(표본기)·
@@ -340,6 +374,41 @@ flowchart TD
 `IsGuestStackSwitchSupported()` and `IsDirectX86ExecutionSupported()` now ask about the
 **architecture** rather than the compiler — since 3d-16 wrote the stack switch in GAS, the compiler
 stopped being the question.
+
+## 3.5 Main-merge handoff, 2026-08-27
+
+Five things landed on main this day. There is no consolidated design; each task's design, work order
+and log are the record.
+
+| Commit | What |
+|---|---|
+| `6f9ac34` | Closing out 503d-22 — a probe pins that an abandoned interrupt cannot come back, and the cross-thread hole that surfaced while writing it is closed |
+| `9acbabe` | `SA_NODEFER` **struck as a candidate** — a symptom had been read as a cause. A comment that contradicted itself about the same flag is corrected |
+| `bd6e736` | 503d-23 — **the nine-second stall resolved.** `native_fast_path` arms a return breakpoint and clears the trap flag; on Linux only the arming was discarded |
+| `db234db` | Task 505 — **a Glide window opens on Linux.** Not a port but 57 fences taken down |
+| `486fe09` | Correcting "wait loop" for `0x010EE1xx` — it is the bitstream decoder Task 219 already identified |
+
+### What caught me repeatedly
+
+**Judging success from a single success signal**, three times.
+
+| What was seen | How it was read | What it was |
+|---|---|---|
+| `exit 0` | a clean finish | the game giving up for want of a window |
+| `opened=1` | a window opened | the dummy fallback returns the same value |
+| a soaring `dispatch_entry` | advancing | working, not advancing |
+
+And twice by **a window showing nothing with a period longer than itself** — thirty seconds said
+"slow", 240 said "trapped", and only 1,200 showed what was happening.
+
+All three would have been caught by **going one step further**: the log rather than the exit code,
+the message rather than the return value, the EIP trajectory and the code rather than the counter.
+`0x010EE1xx` most of all — the answer had been in this repository for two months.
+
+### Next
+
+**Porting the AOT code cache** ([Task 506](../design/20260827-506-linux-aot-code-cache.md)), and its
+character has changed: not "the default backend needs it" but **the item the screen is waiting on**.
 
 ## 4. What is needed next
 
