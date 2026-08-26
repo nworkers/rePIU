@@ -110,6 +110,7 @@ REPIU_EXECUTION_BACKEND=legacy ./repiu     ../../build/openwatcom_samples/clibex
 | 하드웨어 디버그 레지스터 | **불가** | Linux 사용자 공간은 자기 스레드의 것을 쓸 수 없음. `native_linear_span`은 Linux에서 비활성 |
 | 교차 프로세스 텔레메트리 | **울타리 안** | `live_telemetry_snapshot.cpp`의 공유 섹션·정지 스냅샷. 게스트 구동에 불필요 |
 | `CaptureSuspendedThreadSnapshot` | **호출자 없음** | 정의만 있고 선언도 호출도 없음. 지우는 것은 의도 확인 후 |
+| 종료 시 SIGTRAP | **미확인** | 실행 예산이 만료된 뒤 teardown에서 코어를 떨굽니다(2026-08-26, pumpit1, legacy, 8초 예산). 실행 자체는 정상이었고 오디오와도 무관합니다. 어느 단계에서 나는지 아직 좁히지 않았습니다 |
 
 ## 7. 정정 — 오디오 출력은 이미 이식되어 있었습니다
 
@@ -137,6 +138,52 @@ SDL이 PulseAudio 백엔드를 빼고 ALSA만 컴파일했고, WSL에는 ALSA가
 
 `libpulse-dev:i386`을 넣고 트리를 **버리고 다시 구성**해야 합니다 — SDL의 드라이버 감지는
 구성 시점에 캐시되므로, 남은 캐시가 "안 고쳐졌다"처럼 보이게 만듭니다.
+
+### 7.1 그래서 갖춰야 하는 구성 (2026-08-26 확인)
+
+위가 진단이고, 여기는 **실제로 세워 놓고 확인한 결과**입니다. 다음 세션이 데스크톱에서
+돌려 보려면 이 절만 보면 됩니다.
+
+패키지는 전부 `:i386`입니다. 32비트 프로세스가 링크하고 `dlopen` 하는 것들이라 amd64 판은
+설치돼 있어도 쓰이지 않습니다.
+
+```bash
+sudo dpkg --add-architecture i386
+sudo apt update && sudo apt install -y pkg-config \
+    libpulse-dev:i386 libasound2-dev:i386 libgl-dev:i386 \
+    libx11-dev:i386 libxext-dev:i386 libxrandr-dev:i386 libxi-dev:i386 \
+    libxfixes-dev:i386 libxcursor-dev:i386 libxrender-dev:i386 \
+    libxkbcommon-dev:i386
+```
+
+`libxss-dev`와 `libxtst-dev`는 **필요 없습니다.** 빌드 스크립트가 XSCRNSAVER와 XTEST를 끄고,
+그 주석이 이유를 적어 두었습니다 — 켜 둔 확장 하나가 곧 찾아야 할 32비트 패키지 하나입니다.
+
+`pkg-config`가 빠지기 쉽습니다. 없으면 SDL이 PulseAudio를 **조용히** 빼고, 있어도 i386 `.pc`가
+`/usr/lib/i386-linux-gnu/pkgconfig`에 있어 기본 검색 경로에 안 잡힙니다. 그래서 패키지를 깔아도
+"없다"는 답이 나옵니다. 빌드 스크립트가 `PKG_CONFIG_PATH`로 그 디렉터리를 앞에 붙입니다.
+
+확인된 것:
+
+| 항목 | 결과 |
+|---|---|
+| SDL 오디오 드라이버 | `PULSEAUDIO` + `ALSA` (이전엔 `DUMMY`뿐) |
+| SDL 비디오 드라이버 | `X11` (+ XCURSOR·XFIXES·XINPUT2·XRANDR·XSHAPE·XSYNC·XDBE) |
+| 런처 | WSLg에서 창 실행, 롬셋 22개 중 16개 인식 |
+| **오디오 장치** | `[repiu-ymz] YMZ280B ready through SDL3 at 88200 Hz` |
+| 게스트 실행 (pumpit1, legacy) | 8초 동안 dispatch 167,776회, EIP가 재배치 이미지 안에서 이동 |
+
+소리가 실제로 **들리는지**는 사람이 들어야 합니다. 측정이 답할 수 있는 것은 장치가 열렸다는
+데까지입니다.
+
+두 가지가 이 확인을 반복할 때 걸립니다.
+
+* **`--headless`로 구성된 트리는 창도 소리도 만들지 못합니다.** 그 옵션이 켜는
+  `SDL_UNIX_CONSOLE_BUILD=ON`은 X11/Wayland 요구를 통째로 건너뜁니다. 데스크톱에서 쓰려면
+  `--headless` 없이 구성하고, SDL이 감지 결과를 캐시하므로 **트리를 지우고** 다시 해야 합니다.
+* **WSLg 자체가 없을 수 있습니다.** `/mnt/wslg`가 없거나 `DISPLAY`·`PULSE_SERVER`가 비어 있으면
+  패키지가 아니라 WSL이 문제입니다. `wsl --update` 후 `wsl --shutdown`입니다. 오래된 커널
+  (5.10 대)에는 WSLg가 아예 없습니다.
 
 ## 8. 반복해서 겪은 함정 — 그리고 컴파일로는 못 잡는 것
 
@@ -170,6 +217,35 @@ SDL이 PulseAudio 백엔드를 빼고 ALSA만 컴파일했고, WSL에는 ALSA가
 
 3d-20의 목록이 이것입니다.
 
+### 8.1 빌드 스크립트가 스스로를 가린 경우
+
+**빌드가 죽은 자리가 빌드가 잘못한 자리는 아닙니다.**
+
+`cmake --build --parallel`을 숫자 없이 부르면 make에 `-j`가 숫자 없이 전달됩니다. 그것은
+코어 수가 아니라 **무제한**이고, 4코어 VM에서 `cc1plus` **58개**가 측정됐습니다. Debug의 큰
+번역 단위가 1 GB 넘게 쓰므로 VM 메모리가 고갈됐고, WSL이 세 번 통째로 멈췄습니다 — 그때마다
+**서로 다른 고장으로 보였습니다.**
+
+| 겉보기 | 실제 |
+|---|---|
+| `cc1plus`가 OOM으로 죽음 | 무제한 병렬 |
+| `Wsl/Service/E_UNEXPECTED` | 무제한 병렬 |
+| `Wsl/Service/0x8007274c` | 무제한 병렬 |
+
+가린 것을 하나 더 겹치게 만든 것은 **분명해 보이는 조절 수단이 아무 일도 하지 않는다**는
+점이었습니다. CMake는 `--parallel`이 붙어 있으면 `CMAKE_BUILD_PARALLEL_LEVEL`을 **보지
+않습니다.** 그래서 병렬도를 1이나 2로 낮췄다고 믿은 세 번의 시도가 전부 무제한이었고, 그 결과
+"이 머신이 이 프로젝트에는 작다"는 잘못된 결론이 두 번 나왔습니다. 커밋 `d838ce1`이 잡 수를
+명시합니다.
+
+호스트가 8 GB급이면 `.wslconfig`로 상한과 스왑을 주는 편이 안전합니다 — 죽는 대신 느려집니다.
+
+```ini
+[wsl2]
+memory=4GB
+swap=8GB
+```
+
 ---
 
 # Linux port frontier
@@ -188,6 +264,9 @@ evidence is in the work log. Status labels follow this directory's convention: *
 **Guest code executes on Linux.** A DOS/4GW sample runs under the `legacy` backend and stops at the
 same instruction as Windows. The default `dynamic` backend still needs the AOT code cache, which is
 Windows-only, so Linux needs `REPIU_EXECUTION_BACKEND=legacy` today.
+
+**A window and sound are confirmed on WSLg too** — the launcher's window, and `YMZ280B ready through
+SDL3 at 88200 Hz`. The 32-bit packages this needs, and the traps around them, are collected in 7.1.
 
 ## 2. Confirmed — what stands today
 
@@ -286,6 +365,7 @@ offsets.**
 | Hardware debug registers | **unavailable** | Linux user space cannot write its own thread's, so `native_linear_span` stays disabled there |
 | Cross-process telemetry | **fenced** | the shared section and suspended snapshot in `live_telemetry_snapshot.cpp`; not needed to run the guest |
 | `CaptureSuspendedThreadSnapshot` | **no callers** | defined, never declared or called; removing it wants its intent confirmed first |
+| A SIGTRAP on teardown | **unconfirmed** | after the execution budget expires the process dumps core on the way down (2026-08-26, pumpit1, legacy, an 8-second budget). The run itself was healthy and this is unrelated to audio; which teardown step raises it has not been narrowed down |
 
 ## 7. Correction — the audio outputs were already portable
 
@@ -314,6 +394,53 @@ to open under WSL.
 
 The fix is `libpulse-dev:i386` and then **discarding and reconfiguring** the tree: SDL caches its
 driver detection at configure time, so a surviving cache makes this look as though it had not worked.
+
+### 7.1 What the environment has to be (verified 2026-08-26)
+
+The above is the diagnosis; this is **what was actually stood up and confirmed**. A session that
+wants to run on a desktop needs only this subsection.
+
+Every package is `:i386`. A 32-bit process links and `dlopen`s these, so an amd64 copy goes unused
+even when installed.
+
+```bash
+sudo dpkg --add-architecture i386
+sudo apt update && sudo apt install -y pkg-config \
+    libpulse-dev:i386 libasound2-dev:i386 libgl-dev:i386 \
+    libx11-dev:i386 libxext-dev:i386 libxrandr-dev:i386 libxi-dev:i386 \
+    libxfixes-dev:i386 libxcursor-dev:i386 libxrender-dev:i386 \
+    libxkbcommon-dev:i386
+```
+
+`libxss-dev` and `libxtst-dev` are **not** needed: the build script turns XSCRNSAVER and XTEST off,
+and its comment says why — every extension left on is one more 32-bit package to hunt down.
+
+`pkg-config` is easy to miss. Without it SDL drops PulseAudio **silently**, and with it the i386
+`.pc` files still sit in `/usr/lib/i386-linux-gnu/pkgconfig`, which is not on the default search
+path — which is how an installed package still reports as missing. The build script prepends that
+directory through `PKG_CONFIG_PATH`.
+
+What was confirmed:
+
+| Item | Result |
+|---|---|
+| SDL audio drivers | `PULSEAUDIO` + `ALSA` (previously `DUMMY` alone) |
+| SDL video drivers | `X11` (+ XCURSOR, XFIXES, XINPUT2, XRANDR, XSHAPE, XSYNC, XDBE) |
+| The launcher | a window on WSLg; 22 ROM sets listed, 16 runnable |
+| **The audio device** | `[repiu-ymz] YMZ280B ready through SDL3 at 88200 Hz` |
+| The guest running (pumpit1, legacy) | 167,776 dispatches in 8 seconds, EIP moving inside the relocated image |
+
+Whether sound is **audible** is for a person to hear. What measurement reaches is that the device
+opened.
+
+Two things get in the way of repeating this check.
+
+* **A tree configured with `--headless` can produce neither a window nor a sound.** The
+  `SDL_UNIX_CONSOLE_BUILD=ON` it sets skips the X11/Wayland requirement outright. Configure without
+  `--headless`, and **discard the tree** first, because SDL caches what it detected.
+* **WSLg may simply not be there.** If `/mnt/wslg` is missing, or `DISPLAY` and `PULSE_SERVER` are
+  unset, the problem is WSL rather than the packages: `wsl --update`, then `wsl --shutdown`. An old
+  kernel (the 5.10 series) has no WSLg at all.
 
 ## 8. One trap met four times
 
@@ -346,3 +473,32 @@ Four of that shape remain, all on the AOT path (`grep -rn "requires Win32"`):
 | `aot_page_coherence_win32.cpp:637` | retiring a guest page |
 
 That is 3d-20's list.
+
+### 8.1 When the build script hid itself
+
+**Where a build dies is not where the build went wrong.**
+
+`cmake --build --parallel` with no number passes `-j` bare to make. That does not mean one job per
+core but **unlimited**, and on a four-core VM it was measured at **58** concurrent `cc1plus`
+processes. The engine's larger translation units take over a gigabyte each in Debug, so the VM ran
+out of memory and WSL went down with it three times — **looking like three different faults.**
+
+| Apparent | Actual |
+|---|---|
+| an OOM-killed `cc1plus` | unlimited parallelism |
+| `Wsl/Service/E_UNEXPECTED` | unlimited parallelism |
+| `Wsl/Service/0x8007274c` | unlimited parallelism |
+
+What layered a second concealment on top is that **the obvious control does nothing**: CMake
+consults `CMAKE_BUILD_PARALLEL_LEVEL` only when `--parallel` is absent. Three attempts believed to
+be running at parallel level 1 or 2 were all unlimited, and twice that produced the wrong
+conclusion — that the machine was too small for the project. Commit `d838ce1` names the job count.
+
+On a host with 8 GB or so, a ceiling and a swap file in `.wslconfig` are worth having: the build
+then slows instead of dying.
+
+```ini
+[wsl2]
+memory=4GB
+swap=8GB
+```
