@@ -145,6 +145,22 @@ void InterruptSignalHandler(int, siginfo_t*, void* host_context)
     {
         return;
     }
+    // Task 503d-22. The signal has to have arrived on the thread the request
+    // named. 3d-20 deliberately did not ask -- a delivery that belonged to no
+    // request could not happen then -- but abandonment creates exactly that: a
+    // signal left behind by a request already given up on, which cannot be
+    // recalled and which the *next* request is what it arrives during. Claiming
+    // that one would run the callback against a different thread's registers,
+    // and one of the two callers edits them.
+    //
+    // `record->thread` is written by `pthread_create` before `CreateHostThread`
+    // returns, and no request can exist before that, so the handler never reads
+    // it unset. `pthread_self` is async-signal-safe and `pthread_equal` is a
+    // comparison.
+    if (!pthread_equal(pthread_self(), record->thread))
+    {
+        return;
+    }
     // Claiming the request is what makes the callback's `user_data` safe to
     // touch: whoever loses this exchange does not run the callback, and the
     // requester that loses it waits instead of returning.

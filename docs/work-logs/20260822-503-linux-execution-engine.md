@@ -2606,6 +2606,153 @@ SigPnd = 0x0000000200000000   ← 우리 시그널이 대기 중
 
 ---
 
+## 3d-22 — 시한이 지난 인터럽트가 남기는 것
+
+### 결과
+
+3d-21이 시한을 세웠고, 시한이 있다는 것은 **포기한 요청이 생긴다**는 뜻입니다. 그리고 이미
+보낸 시그널은 취소할 수 없습니다. 이 절은 그것이 낳은 결함 **둘**을 닫습니다.
+
+| 파일 | 무엇이 바뀌었나 |
+|---|---|
+| `platform/host_thread.cpp` | 플래그 둘 → CAS 상태 다섯. 그리고 핸들러가 자기 스레드를 확인 |
+| `tools/aot_probe/host_thread_probe.cpp` | 포기 probe 신설, 표본 probe에 "어느 스레드에서 돌았는가" 단정 추가 |
+
+### 플래그 둘이 틀렸던 방식
+
+`pending`을 세우고 시한을 기다리다 반환하는 요청자의 `user_data`는 **그 프레임의 지역
+변수**였습니다. 시그널은 이미 떠났고 취소할 수 없으므로, 핸들러는 그 프레임이 사라진 뒤에
+그것을 건드립니다.
+
+**플래그를 검사하고 지우는 것으로는 고칠 수 없습니다.** 핸들러는 지우기 직전에 검사를 통과할
+수 있고, 그 창은 명령 몇 개 넓이입니다.
+
+compare-exchange가 대신 답하는 것은 **"핸들러가 시작했는가"가 정확히 한 번만 답해지는 질문이
+된다**는 것입니다. 교환에서 진 쪽은 콜백을 돌리지 않고, 교환에서 진 **요청자**는 반환하지 않고
+기다립니다 — 그 시점에 핸들러는 이미 요청자의 메모리를 만지고 있으니까요.
+
+### 포기가 만들어낸 두 번째 결함
+
+여기서 처음 보인 것이 하나 있습니다. **3d-20은 핸들러가 자기 스레드를 확인하지 않기로 했고,
+그때는 그것이 옳았습니다.** 당시 주석이 그 근거를 적어 두었습니다 — "시그널은 한 스레드를
+향해 가고, 빗나간 배달은 행동하는 것보다 무시하는 편이 낫다". 어느 요청에도 속하지 않는
+배달이 **존재할 수 없었기** 때문에 맞는 말이었습니다.
+
+**포기가 바로 그것을 만듭니다.** 버려진 요청이 남긴 시그널은 회수되지 않고, 대상이 그것을
+다시 받을 수 있게 되는 시점은 임의입니다. 그 시점이 *다음* 요청이 걸려 있는 창이면:
+
+| | 스레드 A | 스레드 B |
+|---|---|---|
+| 1 | 시그널 차단, 요청 → 시한 초과 → 포기 | |
+| 2 | (배달 보류 중) | 요청 → `kRequested` |
+| 3 | 배달 도착. 핸들러가 **B의 요청**을 점유 | |
+| 4 | **A의 레지스터**를 B의 `user_data`와 함께 콜백에 넘김 | 성공했다고 통보받음 |
+
+소비자 둘 중 감시견은 그 레지스터를 **고칩니다.** 잘못된 스레드를 복구 진입점으로 돌려
+보내는 결과가 됩니다. 핸들러에 `pthread_equal(pthread_self(), record->thread)` 한 줄이
+들어간 이유입니다.
+
+오늘 엔진에서 인터럽트 대상은 사실상 게스트 스레드 하나이므로 이 경로는 아직 도달되지
+않습니다. **닫아 둔 이유는 그것이 도달 불가능해서가 아니라, 도달했을 때 증상이 "감시견이
+엉뚱한 스레드를 건드렸다"이기 때문입니다.**
+
+### probe가 구분하지 못하는 함정
+
+여기가 이번 단계에서 가장 오래 걸린 지점입니다.
+
+명백해 보이는 시험 — 포기한 뒤 시그널을 흘려 보내고 콜백이 돌지 않는지 확인 — 은 **아무것도
+증명하지 않습니다.** 걸려 있는 요청이 없을 때 도착한 뒤늦은 배달은 **옛 코드도 무시합니다.**
+플래그가 이미 지워져 있으니까요. 옛 코드와 새 코드가 똑같이 통과합니다.
+
+차이는 **뒤늦은 배달이 다음 요청이 걸려 있는 동안 도착할 때에만** 드러납니다. probe는 그
+상황을 만들어야 하고, 경합으로 만들면 흔들립니다. 여유를 둔 방법은 이렇습니다.
+
+* 대상 스레드가 `pthread_sigmask`로 인터럽트 시그널을 **차단**합니다. `pthread_kill`은
+  성공하고 배달은 보류됩니다 — /proc이 정지한 게스트에서 읽어 준 `SigBlk`/`SigPnd` 상태를
+  일부러 재현한 것입니다.
+* A는 해제 지시를 받은 뒤 **20 ms를 더 기다린 다음** 차단을 풉니다.
+* 그 지시 직후 B에 **1,000 ms 시한**의 요청을 겁니다. B도 시그널을 차단하고 있으므로 요청은
+  1초 내내 걸려 있습니다.
+
+**20 ms 대 1,000 ms — 50배 여유입니다.** 경합이 아니라 창 안에 배달을 놓는 것이고, 3d-21이
+배운 것("흔들리는 probe는 없는 probe보다 나쁘다")을 지키는 방식입니다.
+
+### 음성 대조를 두 번 돌렸습니다
+
+**통과하는 probe는 실패할 수 있음을 보이기 전까지 아무것도 증명하지 않습니다.**
+
+| 무엇으로 되돌렸나 | `host_thread_interrupt_abandon` |
+|---|---|
+| 신원 확인만 무력화 | **false** |
+| 3d-22 이전 두 플래그 코드 전체 | **false** |
+| 현재 코드 | true |
+
+두 번째가 중요합니다. probe가 이번에 새로 넣은 한 줄만 지키는 것이 아니라 **3d-22가 고치려던
+원래 결함도 붙잡는다**는 뜻이기 때문입니다.
+
+### 그리고 그 과정에서 함정을 하나 더 밟았습니다
+
+되돌린 코드로 15회 반복을 돌렸을 때 **15회 전부 실패**했습니다. 원인은 코드가 아니라, 그
+명령에 함께 넣은 빌드가 셸 따옴표 오류로 **아예 실행되지 않은 것**이었습니다. 이진 파일은
+직전의 음성 대조 빌드 그대로였습니다.
+
+8절이 모으고 있는 것과 같은 종류입니다. **거기서는 하나의 막힘이 뒤의 모든 숫자를 가렸고,
+여기서는 돌지 않은 빌드가 정상인 변경을 고장난 것처럼 보이게 했습니다.** 실행되지 않은 단계는
+실패한 단계보다 읽기 어렵습니다.
+
+### 표본 probe도 한 가지를 더 주장하게 했습니다
+
+콜백이 **어느 스레드에서 돌았는가**입니다. 헤더가 두 호스트에서 다르다고 적어 둔 바로 그
+차이이고(Windows는 호출자, Linux는 대상), 지금까지 문서에만 있고 시험되지 않았습니다.
+
+이것은 위의 신원 확인이 지키는 불변식이기도 합니다. 다른 스레드가 대신 답한 표본을 의도한
+스레드의 표본과 구분하는 **유일한** 판별자가 이 값입니다.
+
+### 검증
+
+| 대상 | 결과 |
+|---|---|
+| Windows Debug 빌드 | 오류 없음 |
+| Windows `repiu_core_probe` | `core_probe_total=15 failures=0`, 15회 연속 실패 0 |
+| Linux i386 `repiu_core_probe` | `core_probe_total=15 failures=0`, 15회 연속 실패 0 |
+| `repiu_aot_probe` 전체 | exit 0, romset-config 94/0, nvram-path 14/0 |
+| Linux DOS/4GW 샘플 | 3d-19 기준선 유지 — exit 2, 초점 오프셋 0x10, opcode 0x80, 바이트 창 동일 |
+
+Windows는 `host_thread_interrupt_abandon_skipped=true`로 **건너뜀**을 보고합니다. 이 호스트에
+포기한 요청이라는 것이 없기 때문이고(`SuspendThread`는 반환 시점에 이미 대상을 세워 두었고
+시한은 기다릴 것이 없습니다), **돌지 않은 검사가 `true`라고 적힌 줄은 다음 세션이 믿습니다.**
+
+### 남은 것
+
+1. **9초 정지 자체.** 여전히 원인 미상입니다. 3d-21이 관측한 `SigBlk` 상태는 **정지의 원인이
+   아닙니다** — 순서가 그것을 배제합니다(정지는 첫 pumpit1 실행에서 이미 있었고 첫 시그널은
+   9.5초에야 나갑니다). 다만 이제 표본기가 그 상태에서 스스로를 손상시키지는 않습니다.
+2. **`SA_NODEFER`.** 3d-21이 후보로 적었고, 이번 단계는 그것을 건드리지 않았습니다. 중첩 배달
+   경로는 여전히 열려 있습니다.
+3. **감시견의 강제 중단**과 **AOT 코드 캐시**는 그대로입니다.
+
+---
+
+## 3d-22a — 빌드 스크립트가 자기를 가린 건
+
+`d838ce1`의 기록입니다. 분석은 [linux-port-frontier.md](../analysis/linux-port-frontier.md) 8.1절에
+있고, 여기에는 변경만 남깁니다.
+
+`cmake --build --parallel`에 숫자를 주지 않으면 make에 `-j`가 맨몸으로 넘어갑니다. 그것은
+"코어당 하나"가 아니라 **무제한**이고, 4코어 VM에서 동시 `cc1plus` **58개**로 측정됐습니다.
+Debug 빌드의 큰 번역 단위는 하나에 1 GB를 넘으므로 결과는 느린 빌드가 아니라 VM의 사망이었고,
+**서로 다른 세 가지 고장으로 보였습니다** — OOM으로 죽은 컴파일러, `Wsl/Service/E_UNEXPECTED`,
+`Wsl/Service/0x8007274c`.
+
+두 번째 은폐가 겹쳤습니다. **명백해 보이는 조종 장치가 아무 일도 하지 않습니다.** CMake는
+`--parallel`이 **없을 때에만** `CMAKE_BUILD_PARALLEL_LEVEL`을 봅니다. 병렬도 1이나 2로 돌고
+있다고 믿은 세 번의 시도가 전부 무제한이었고, 그 중 두 번은 **"이 기계가 프로젝트에 비해 너무
+작다"는 틀린 결론**을 낳았습니다.
+
+`scripts/build_linux_i386.sh`가 이제 작업 수를 이름으로 넘깁니다.
+
+---
+
 # Linux Execution Engine Work Log (Stage 3)
 
 Design: [20260822-503-linux-execution-engine.md](../design/20260822-503-linux-execution-engine.md)
@@ -4856,3 +5003,153 @@ Catching it before the commit was luck; the reason is now written into the code.
    inside a fault handler.
 2. **The nine-second stall itself**, still unexplained, and unsampleable until the above is fixed.
 3. **The watchdog's forced interruption** and **the AOT code cache** are where they were.
+
+---
+
+## 3d-22 — What a timed-out interrupt leaves behind
+
+### Result
+
+3d-21 introduced a deadline, and a deadline means **abandoned requests exist**. A signal that has
+been sent cannot be recalled. This sub-stage closes **two** defects that follow from that.
+
+| File | What changed |
+|---|---|
+| `platform/host_thread.cpp` | two flags become five compare-exchanged states, and the handler checks which thread it is on |
+| `tools/aot_probe/host_thread_probe.cpp` | a new abandonment probe; the sampling probe now asserts *which thread the callback ran on* |
+
+### How the two flags were wrong
+
+The `user_data` of a requester that set `pending`, waited out its deadline and returned **had been a
+local of that frame**. The signal was already gone and could not be recalled, so the handler touches
+that memory after the frame is gone.
+
+**Checking a flag and then clearing it cannot fix this.** The handler can pass the check an instant
+before the clear, and that window is a few instructions wide.
+
+What the compare-exchange answers instead is that **"did the handler start" becomes a question
+answerable exactly once**. Whoever loses the exchange does not run the callback, and the *requester*
+that loses it waits rather than returning — by then the handler is already holding its memory.
+
+### The second defect, which abandonment created
+
+One thing became visible here for the first time. **3d-20 decided the handler would not check which
+thread it was on, and was right at the time.** Its comment recorded the reasoning: the signal is
+directed at one thread, and a stray delivery is better ignored than acted on. That held because a
+delivery belonging to no request **could not exist**.
+
+**Abandonment is what creates one.** The signal an abandoned request leaves behind is not recalled,
+and when the target becomes able to take it again is arbitrary. If that moment falls inside the
+window of the *next* request:
+
+| | Thread A | Thread B |
+|---|---|---|
+| 1 | signal blocked; request → times out → abandoned | |
+| 2 | (delivery pending) | request → `kRequested` |
+| 3 | delivery lands. The handler claims **B's request** | |
+| 4 | hands the callback **A's registers** with B's `user_data` | is told it succeeded |
+
+Of the two consumers, the watchdog **edits** those registers — so the outcome is the wrong thread
+sent to the recovery entry. That is why one line,
+`pthread_equal(pthread_self(), record->thread)`, is now in the handler.
+
+The engine's interrupt target today is effectively the single guest thread, so this path is not yet
+reachable. **It is closed not because it is unreachable but because of what reaching it looks like:
+the watchdog having edited the wrong thread.**
+
+### The trap: the obvious probe does not discriminate
+
+This was the longest part of the sub-stage.
+
+The test that looks obvious — abandon, then let the signal through, then check the callback did not
+run — **proves nothing**. A late delivery arriving when nothing is outstanding is ignored **by the
+old code too**, because it finds the flag already cleared. Old and new pass identically.
+
+The difference only shows when the late delivery lands **while a later request is outstanding**. The
+probe has to construct that, and constructing it as a race makes it flaky. The margin version:
+
+* The target blocks the interrupt signal with `pthread_sigmask`. `pthread_kill` succeeds and the
+  delivery waits — deliberately reproducing the `SigBlk` / `SigPnd` state /proc reported on the
+  stalled guest.
+* A waits **a further 20 ms** after being told to unblock, and only then unblocks.
+* Immediately after giving that instruction, a request goes to B with a **1,000 ms deadline**. B has
+  the signal blocked too, so the request stays outstanding for the whole second.
+
+**20 ms against 1,000 ms — fifty to one.** The delivery is placed inside a window rather than raced
+against its edge, which is how 3d-21's lesson ("a flaky probe is worse than no probe") is kept.
+
+### Two negative controls
+
+**A passing probe proves nothing until it has been shown to fail.**
+
+| Reverted to | `host_thread_interrupt_abandon` |
+|---|---|
+| the identity check alone disabled | **false** |
+| the whole pre-3d-22 two-flag implementation | **false** |
+| current code | true |
+
+The second one is what matters: it says the probe pins not only the line added today but **the
+original defect 3d-22 set out to fix**.
+
+### And a trap was stepped in on the way
+
+The 15-run repeat against the reverted code failed **all 15 times**. The cause was not the code: the
+build bundled into that same command never ran, killed by a shell quoting error, so the binary was
+still the previous negative control's.
+
+Same family as the ones section 8 collects. **There, one obstruction hid every number behind it;
+here, a build that did not run made a healthy change look broken.** A step that was skipped is
+harder to read than a step that failed.
+
+### The sampling probe now claims one more thing
+
+**Which thread the callback ran on.** That is the difference the header records between the two
+hosts — Windows on the caller, Linux on the target — and until now it lived only in the comment.
+
+It is also the invariant the identity check above preserves: this value is the **only** discriminator
+between a sample of the intended thread and a sample some other thread answered in its place.
+
+### Verification
+
+| Target | Result |
+|---|---|
+| Windows Debug build | no errors |
+| Windows `repiu_core_probe` | `core_probe_total=15 failures=0`; 15 consecutive runs, 0 failures |
+| Linux i386 `repiu_core_probe` | `core_probe_total=15 failures=0`; 15 consecutive runs, 0 failures |
+| `repiu_aot_probe`, full pass | exit 0, romset-config 94/0, nvram-path 14/0 |
+| The Linux DOS/4GW sample | 3d-19's baseline holds — exit 2, focus offset 0x10, opcode 0x80, same byte window |
+
+Windows reports `host_thread_interrupt_abandon_skipped=true`, a **skip** rather than a pass. There is
+no abandoned request on that host to have an opinion about — `SuspendThread` has already stopped the
+target by the time it returns, and the timeout has nothing to wait for — and **a line saying `true`
+for a check that never ran is something a later session believes.**
+
+### Remaining
+
+1. **The nine-second stall itself**, still unexplained. The `SigBlk` state 3d-21 observed is **not
+   its cause** — the order rules that out, since the stall was there in the first pumpit1 run and the
+   first signal does not go until 9.5 s. What has changed is that the sampler no longer corrupts
+   itself when it meets that state.
+2. **`SA_NODEFER`.** 3d-21 named it as a candidate and this sub-stage did not touch it; the nested
+   delivery path is still open.
+3. **The watchdog's forced interruption** and **the AOT code cache** are where they were.
+
+---
+
+## 3d-22a — When the build script hid itself
+
+The record for `d838ce1`. The analysis is in section 8.1 of
+[linux-port-frontier.md](../analysis/linux-port-frontier.md); only the change is kept here.
+
+`cmake --build --parallel` with no number passes `-j` bare to make. That does not mean "one job per
+core" but **unlimited**, measured at **58** concurrent `cc1plus` on a four-core VM. The Debug build's
+larger translation units take over a gigabyte each, so the result was not a slow build but a dead VM
+— and it **looked like three different faults**: an OOM-killed compiler, then
+`Wsl/Service/E_UNEXPECTED`, then `Wsl/Service/0x8007274c`.
+
+A second concealment sat on top. **The obvious control does nothing.** CMake consults
+`CMAKE_BUILD_PARALLEL_LEVEL` **only when `--parallel` is absent**. Three attempts believed to be
+running at parallel level 1 or 2 were all unlimited, and twice that produced the wrong conclusion —
+that the machine was too small for the project.
+
+`scripts/build_linux_i386.sh` now names the job count.

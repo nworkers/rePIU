@@ -9,6 +9,11 @@
 #include <iostream>
 #include <thread>
 
+#if !defined(_WIN32)
+#include <csignal>
+#include <pthread.h>
+#endif
+
 namespace repiu::tools
 {
 namespace
@@ -180,12 +185,23 @@ struct InterruptWitness
     std::atomic<std::uint32_t> sampled_eip{0};
     std::atomic<std::uint32_t> callback_count{0};
     std::atomic<bool> edit_observed{false};
+    // Task 503d-22. Which thread the target is, and which one the callback
+    // actually ran on. The header documents these as different on the two
+    // hosts -- Windows freezes the target and runs the callback on the caller,
+    // Linux runs it on the target inside a signal handler -- and that is the
+    // documented difference this pins. It is also the only discriminator that
+    // separates a sample of the intended thread from a sample of some other
+    // thread that answered in its place.
+    std::atomic<std::uint32_t> target_thread_id{0};
+    std::atomic<std::uint32_t> callback_thread_id{0};
 };
 
 // The loop a sample has to land inside.
 std::uint32_t InterruptSpinEntry(void* parameter)
 {
     auto* witness = static_cast<InterruptWitness*>(parameter);
+    witness->target_thread_id.store(repiu::platform::CurrentThreadId(),
+                                    std::memory_order_relaxed);
     witness->spinning.store(true, std::memory_order_release);
     while (!witness->stop.load(std::memory_order_acquire))
     {
@@ -207,6 +223,8 @@ void SampleEip(repiu::platform::GuestCpuContext* registers, void* user_data)
 {
     auto* witness = static_cast<InterruptWitness*>(user_data);
     witness->callback_count.fetch_add(1, std::memory_order_relaxed);
+    witness->callback_thread_id.store(repiu::platform::CurrentThreadId(),
+                                      std::memory_order_relaxed);
     witness->sampled_eip.store(static_cast<std::uint32_t>(registers->Eip),
                                std::memory_order_release);
 }
@@ -258,6 +276,22 @@ bool ProbeInterruptSamplesAndEdits()
     // looks like, and it is the cheapest claim that still means "where the
     // thread is".
     ok = ok && sampled != 0U;
+
+    // Task 503d-22. And it ran on the thread the host says it should. The two
+    // answers are different by design, so this is not one claim written twice:
+    // on Linux the callback is a signal handler on the target, and a sample
+    // arriving on any other thread would be some other thread's registers
+    // reported under this one's name.
+    const std::uint32_t ran_on =
+        witness.callback_thread_id.load(std::memory_order_relaxed);
+    const std::uint32_t target =
+        witness.target_thread_id.load(std::memory_order_relaxed);
+    ok = ok && ran_on != 0U && target != 0U;
+#if defined(_WIN32)
+    ok = ok && ran_on == repiu::platform::CurrentThreadId();
+#else
+    ok = ok && ran_on == target;
+#endif
 
     // Sampling repeatedly must not report one constant. A fixed value would
     // mean the number came from somewhere other than the running thread.
@@ -321,6 +355,231 @@ bool ProbeInterruptRefusals()
     return ok;
 }
 
+// Task 503d-22. What a timed-out interrupt has to leave behind.
+//
+// POSIX-only, because the thing under test is. On Windows `SuspendThread` has
+// already stopped the target by the time it returns, so no request can outlive
+// the call that made it and the timeout has nothing to wait for. Linux sends a
+// signal, and a signal that has been sent cannot be recalled -- which is the
+// whole subject here.
+//
+// Two flags used to answer this, and they were wrong in a way that corrupted
+// memory: a requester that timed out returned while its signal was still in
+// flight, and the handler ran afterwards against a `user_data` that had been a
+// local of the frame it returned past. Checking a flag and then clearing it
+// cannot fix that, because the handler can pass the check an instant before the
+// clear.
+//
+// What is hard about probing this is that the obvious test does not
+// discriminate. A late delivery arriving when nothing is outstanding is ignored
+// by the old code too -- it finds the flag already cleared. The difference only
+// shows when the late delivery lands while a later request is outstanding, and
+// that is what part 3 below arranges, on purpose and with a margin rather than
+// a race.
+#if !defined(_WIN32)
+
+struct BlockedInterruptWitness
+{
+    std::atomic<bool> ready{false};
+    std::atomic<bool> unblock{false};
+    std::atomic<bool> unblocked{false};
+    std::atomic<bool> stop{false};
+    std::atomic<std::uint32_t> callback_count{0};
+    // How long the thread waits after being told to unblock, so a delivery can
+    // be placed inside a window rather than raced against its edge. Read once
+    // by the thread itself, before anything else writes it.
+    std::uint32_t unblock_delay_milliseconds = 0;
+};
+
+void CountInterruptCallback(repiu::platform::GuestCpuContext*, void* user_data)
+{
+    auto* witness = static_cast<BlockedInterruptWitness*>(user_data);
+    witness->callback_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+// A thread that cannot answer, made the way the stalled guest was found: with
+// the interrupt's signal blocked, so `pthread_kill` succeeds and the delivery
+// waits. /proc showed that state as SigBlk and SigPnd carrying the same bit,
+// and this reproduces it deliberately.
+//
+// Naming the signal here couples the probe to the layer's choice of SIGRTMIN.
+// That coupling is the point: if the layer moves off it, this stops reproducing
+// anything, and it should be moved with it rather than left passing.
+std::uint32_t BlockedSignalEntry(void* parameter)
+{
+    auto* witness = static_cast<BlockedInterruptWitness*>(parameter);
+    const std::uint32_t delay = witness->unblock_delay_milliseconds;
+
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGRTMIN);
+    pthread_sigmask(SIG_BLOCK, &mask, nullptr);
+    witness->ready.store(true, std::memory_order_release);
+
+    while (!witness->unblock.load(std::memory_order_acquire) &&
+           !witness->stop.load(std::memory_order_acquire))
+    {
+        std::this_thread::yield();
+    }
+    if (delay != 0U)
+    {
+        repiu::platform::YieldMilliseconds(delay);
+    }
+    // Unblocking is what delivers whatever is pending, and it happens here
+    // rather than at exit so the probe can watch what arrives while the thread
+    // is still alive to run it.
+    pthread_sigmask(SIG_UNBLOCK, &mask, nullptr);
+    witness->unblocked.store(true, std::memory_order_release);
+
+    while (!witness->stop.load(std::memory_order_acquire))
+    {
+        std::this_thread::yield();
+    }
+    return kExitMarker;
+}
+
+bool WaitUntilSet(const std::atomic<bool>& flag)
+{
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!flag.load(std::memory_order_acquire))
+    {
+        if (std::chrono::steady_clock::now() > deadline)
+        {
+            return false;
+        }
+        std::this_thread::yield();
+    }
+    return true;
+}
+
+// Stops a blocked thread and collects it. Written once because the probe below
+// has two of them to put down and an early failure must not leak either.
+bool ReleaseBlockedThread(BlockedInterruptWitness& witness, HostThread& thread)
+{
+    if (!thread.valid)
+    {
+        return true;
+    }
+    witness.stop.store(true, std::memory_order_release);
+    std::uint32_t exit_code = 0;
+    const bool joined = JoinHostThread(thread, 5000U, &exit_code);
+    CloseHostThread(&thread);
+    return joined && exit_code == kExitMarker;
+}
+
+bool ProbeInterruptTimeoutAbandon()
+{
+    // The witnesses outlive every delivery that could reach them, because each
+    // thread is joined before this returns. If the abandon were broken the
+    // callback would run against this memory, and the probe has to be able to
+    // report that rather than demonstrate it by corrupting itself.
+    BlockedInterruptWitness stalled;
+    // Long enough that the delivery lands well inside part 3's window, short
+    // enough that the probe costs a fraction of a second. The margin there is
+    // fifty to one: a probe that fails on someone else's machine teaches them
+    // to suspect their own change.
+    stalled.unblock_delay_milliseconds = 20U;
+
+    HostThread stalled_thread;
+    if (!CreateHostThread(&BlockedSignalEntry, &stalled, &stalled_thread,
+                          nullptr))
+    {
+        return false;
+    }
+    bool ok = WaitUntilSet(stalled.ready);
+
+    // 1. The deadline is reported rather than waited past. An investigation
+    //    into a stall that joins the stall is not an investigation.
+    const auto started = std::chrono::steady_clock::now();
+    auto failure = repiu::platform::ThreadInterruptFailure::kNone;
+    ok = ok && !repiu::platform::InterruptHostThread(stalled_thread,
+                                                     &CountInterruptCallback,
+                                                     &stalled, 100U, &failure);
+    const auto waited = std::chrono::steady_clock::now() - started;
+    ok = ok && failure == repiu::platform::ThreadInterruptFailure::kTimedOut;
+    // Generous, because what is under test is that it returns at all rather
+    // than how promptly it does.
+    ok = ok && waited < std::chrono::seconds(5);
+    ok = ok && stalled.callback_count.load(std::memory_order_relaxed) == 0U;
+
+    // 2. The layer is not left holding the request. A slot that stayed claimed
+    //    would turn every later sample into a refusal, which is how a fix for a
+    //    rare race becomes a permanent outage.
+    InterruptWitness healthy;
+    HostThread healthy_thread;
+    if (ok &&
+        CreateHostThread(&InterruptSpinEntry, &healthy, &healthy_thread,
+                         nullptr))
+    {
+        ok = WaitUntilSpinning(healthy);
+        ok = ok && repiu::platform::InterruptHostThread(healthy_thread,
+                                                        &SampleEip, &healthy,
+                                                        2000U);
+        ok = ok && healthy.callback_count.load(std::memory_order_relaxed) == 1U;
+        healthy.stop.store(true, std::memory_order_release);
+        std::uint32_t healthy_exit = 0;
+        ok = JoinHostThread(healthy_thread, 5000U, &healthy_exit) && ok;
+        ok = ok && healthy_exit == kExitMarker;
+        CloseHostThread(&healthy_thread);
+    }
+    else
+    {
+        ok = false;
+    }
+
+    // 3. The claim the compare-exchange makes, tested where it is the only
+    //    thing that holds: the abandoned signal is let through while a second
+    //    request is outstanding on a different thread.
+    //
+    //    Without it the late delivery claims the request it finds -- the
+    //    handler has no way to tell it apart from its own -- and runs the
+    //    callback against the second requester's `user_data`, reporting one
+    //    thread's registers under the other's name. The second requester would
+    //    then be told it succeeded.
+    BlockedInterruptWitness second;
+    HostThread second_thread;
+    if (ok &&
+        CreateHostThread(&BlockedSignalEntry, &second, &second_thread, nullptr))
+    {
+        ok = WaitUntilSet(second.ready);
+        // The stalled thread unblocks 20 ms from here. The request below stays
+        // outstanding for a second, because its own target has the signal
+        // blocked too.
+        stalled.unblock.store(true, std::memory_order_release);
+
+        auto stolen = repiu::platform::ThreadInterruptFailure::kNone;
+        ok = ok && !repiu::platform::InterruptHostThread(second_thread,
+                                                         &CountInterruptCallback,
+                                                         &second, 1000U,
+                                                         &stolen);
+        ok = ok && stolen == repiu::platform::ThreadInterruptFailure::kTimedOut;
+        // The two shapes the failure takes: the callback ran at all, or it ran
+        // and the request it took was reported as answered.
+        ok = ok && second.callback_count.load(std::memory_order_relaxed) == 0U;
+
+        ok = ok && WaitUntilSet(stalled.unblocked);
+        ok = ok && stalled.callback_count.load(std::memory_order_relaxed) == 0U;
+
+        // And the second thread's own pending signal, released with nothing
+        // outstanding: the case that was already safe, kept honest.
+        second.unblock.store(true, std::memory_order_release);
+        ok = ok && WaitUntilSet(second.unblocked);
+        repiu::platform::YieldMilliseconds(50U);
+        ok = ok && second.callback_count.load(std::memory_order_relaxed) == 0U;
+    }
+    else
+    {
+        ok = false;
+    }
+
+    ok = ReleaseBlockedThread(second, second_thread) && ok;
+    ok = ReleaseBlockedThread(stalled, stalled_thread) && ok;
+    return ok;
+}
+
+#endif  // !defined(_WIN32)
+
 }  // namespace
 
 bool RunHostThreadProbe()
@@ -330,8 +589,18 @@ bool RunHostThreadProbe()
     const bool refusals_ok = ProbeRefusals();
     const bool interrupt_ok = ProbeInterruptSamplesAndEdits();
     const bool interrupt_refusal_ok = ProbeInterruptRefusals();
+#if defined(_WIN32)
+    // Reported as skipped rather than as a pass. There is no abandoned request
+    // on this host to have an opinion about, and a line that says "true" for a
+    // check that never ran is the kind of thing a later session believes.
+    const bool abandon_ok = true;
+    const char* const abandon_label = "host_thread_interrupt_abandon_skipped";
+#else
+    const bool abandon_ok = ProbeInterruptTimeoutAbandon();
+    const char* const abandon_label = "host_thread_interrupt_abandon";
+#endif
     const bool all = run_ok && still_active_ok && refusals_ok &&
-        interrupt_ok && interrupt_refusal_ok;
+        interrupt_ok && interrupt_refusal_ok && abandon_ok;
     std::cout << "host_thread_run=" << (run_ok ? "true" : "false")
               << "\nhost_thread_still_active_exit_code="
               << (still_active_ok ? "true" : "false")
@@ -340,6 +609,8 @@ bool RunHostThreadProbe()
               << (interrupt_ok ? "true" : "false")
               << "\nhost_thread_interrupt_refusals="
               << (interrupt_refusal_ok ? "true" : "false")
+              << "\n" << abandon_label << "="
+              << (abandon_ok ? "true" : "false")
               << "\nhost_thread_all=" << (all ? "true" : "false") << "\n";
     return all;
 }

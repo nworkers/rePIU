@@ -614,6 +614,80 @@ pumpit1의 9초 정지를 조사하다 막혔습니다. 게스트 스레드는 `
 
 ---
 
+## 3d-21 — 표본기를 인터럽트 위에 올리기
+
+> 이 절과 다음 절은 **구현 뒤에 기록**되었습니다. 규칙은 지시서가 먼저이고, 그것을 지키지
+> 못했다는 사실 자체를 지우지 않기 위해 여기 적어 둡니다.
+
+3d-20이 계층을 만들었으니, 3d-19가 Linux에서 울타리 안에 넣은 소비자를 꺼낼 차례입니다.
+
+1. **`native_phase_sampler`가 `HostThread`를 받게 하십시오.** `SuspendThread`/
+   `GetThreadContext` 쌍을 직접 부르는 대신 `InterruptHostThread`를 통하게 합니다.
+   `telemetry/live_telemetry_snapshot.cpp`의 두 호출부도 함께 풉니다.
+2. **콜백 안에서 할 일과 밖에서 할 일을 나누십시오.** Linux에서 콜백은 **시그널 핸들러
+   안**에서 돕니다. 레지스터 복사와 스택 스캔은 대상이 멈춰 있는 동안에만 일관되므로 안에
+   두고, **AOT 주소 매핑은 밖으로 빼십시오** — 그것은 이미 복사한 EIP 하나만을 입력으로
+   하는 순수 함수이고, 최악의 경우 십만 개 항목을 훑습니다. 대상을 세워 둔 채, 그것도
+   시그널 핸들러 안에서 할 일이 아닙니다.
+3. **`ScanStackForModuleReturn`의 `__try`/`__except`를 걷어내십시오.** 3d-7의
+   `CopyMemoryWithoutFaulting`이 정확히 이 상황을 위해 만들어졌고 양쪽 호스트에서 돕니다.
+   Linux 구현이 `process_vm_readv` 하나라는 점이 중요합니다 — **락도 할당도 없고, 그것이
+   시그널 핸들러 안에서 안전한 이유입니다.**
+4. **`GetThreadTimes`는 울타리 안에 남기십시오.** Linux에 같은 분해가 있기는 하나 단위가
+   다르고(설정 가능한 tick 대 100ns), 이름만 같고 다른 측정을 넣는 것은 3d-19가 예외 코드
+   두 필드에 대해 이미 거절한 일입니다.
+5. **인터럽트 실패에 이유를 붙이십시오.** 참·거짓만 답하는 계층으로는 46번 실패를 46번
+   똑같이 볼 뿐입니다. `ThreadInterruptFailure`로 **거절**(호출자 버그)·**미전달**(스레드가
+   없음)·**시한 초과**(있는데 답하지 않음 — 이것은 대상에 대한 발견입니다)를 가르십시오.
+   `CreateHostThread`의 `host_error`와 같은 규약으로, 기록용이지 제어 흐름용이 아닙니다.
+
+### 완료 조건
+
+양쪽 호스트에서 `repiu_core_probe`가 통과하고, Linux pumpit1 표본기가 실패할 때 **이유와
+함께** 실패해야 합니다.
+
+**probe가 흔들리면 그 자체가 결함입니다.** 표본된 EIP가 움직인다는 주장은 표본 사이에 대상이
+실제로 돌 시간을 주어야 관측할 수 있습니다 — 등을 맞대고 뜨면 같은 명령에서 잡히고, 그것은
+주장이 틀린 것이 아니라 측정이 틀린 것입니다. **흔들리는 probe는 없는 probe보다 나쁩니다.**
+다음 사람에게 자기 변경을 의심하도록 가르치기 때문입니다.
+
+---
+
+## 3d-22 — 시한이 지난 인터럽트가 남기는 것
+
+3d-21이 시한을 세웠고, 시한이 있다는 것은 **포기한 요청이 생긴다**는 뜻입니다. 그리고
+**이미 보낸 시그널은 취소할 수 없습니다.** 이 절은 그 결과를 정리합니다.
+
+1. **플래그 두 개를 상태 하나로 바꾸십시오.** `pending`/`finished` 쌍은 메모리를 손상시키는
+   방식으로 틀렸습니다. 시한이 지나 반환한 요청자의 `user_data`는 그 프레임의 지역 변수였고,
+   뒤늦게 도착한 핸들러가 그것을 건드립니다. **플래그를 검사하고 지우는 것으로는 고칠 수
+   없습니다** — 핸들러가 지우기 직전에 검사를 통과할 수 있습니다.
+2. **compare-exchange로 요청을 점유하게 하십시오.** "핸들러가 시작했는가"가 **정확히 한 번**
+   답해지는 질문이 되어야 합니다. 교환에서 진 쪽은 콜백을 돌리지 않고, **교환에서 진 요청자는
+   반환하지 않고 기다립니다** — 그 시점에 핸들러는 이미 요청자의 메모리를 만지고 있습니다.
+3. **포기는 결정이 아니라 주장입니다.** 핸들러가 아직 시작하지 않았다면 요청을 `kAbandoned`로
+   바꾸어 **영원히 못 돌게** 하고, 이미 시작했다면 포기할 것이 없으므로 기다리는 것 외에
+   안전한 수가 없습니다.
+4. **핸들러가 자기 스레드를 확인하게 하십시오.** 3d-20은 이것을 일부러 묻지 않았고, 그때는
+   옳았습니다 — 어느 요청에도 속하지 않는 배달이 존재할 수 없었으니까요. **포기가 생기면서
+   바로 그것이 만들어집니다.** 뒤늦은 배달이 도착하는 곳은 *다음* 요청이 걸려 있는 창이고,
+   그것을 점유하면 **다른 스레드의 레지스터를 이 스레드의 것이라며** 콜백에 넘기게 됩니다.
+   소비자 둘 중 하나는 그 레지스터를 **고칩니다.**
+5. **probe가 실제로 구분하게 하십시오.** 여기가 어려운 지점입니다. 아무것도 걸려 있지 않을 때
+   도착한 뒤늦은 배달은 **옛 코드도 무시합니다** — 플래그가 이미 지워져 있으니까요. 차이는
+   **뒤늦은 배달이 다음 요청이 걸려 있는 동안 도착할 때에만** 드러나므로, probe는 그 상황을
+   **경합이 아니라 여유를 두고** 만들어야 합니다.
+
+### 완료 조건
+
+양쪽 호스트에서 `repiu_core_probe`가 통과해야 합니다. Windows에는 시험할 대상이 없으므로
+(`SuspendThread`는 반환 시점에 이미 대상을 세워 두었고 시한은 기다릴 것이 없습니다) **통과가
+아니라 건너뜀으로 보고하십시오** — 돌지 않은 검사가 `true`라고 적힌 줄은 다음 세션이 믿습니다.
+
+그리고 반복 실행에서 흔들리지 않아야 합니다. 3d-21이 배운 것이 여기에도 그대로 적용됩니다.
+
+---
+
 # Linux Execution Engine Work Order (Stage 3)
 
 Design: [20260822-503-linux-execution-engine.md](../design/20260822-503-linux-execution-engine.md)
@@ -1231,3 +1305,82 @@ The same probe source passes on Windows and Linux i386. The Windows Debug build 
 Finding the cause of the nine-second stall is **not** a completion criterion. Building the instrument
 and getting an answer from it are different things, and tying them together makes it impossible to
 say which one failed.
+
+---
+
+## 3d-21 — Putting the sampler on the interrupt
+
+> This section and the next were **recorded after the implementation**. The rule is that the order
+> comes first, and this note is here so that not having followed it is not quietly erased.
+
+3d-20 built the layer, so what follows is taking the consumer back out of the fence 3d-19 put it
+behind on Linux.
+
+1. **Give `native_phase_sampler` a `HostThread`.** It goes through `InterruptHostThread` rather than
+   calling the `SuspendThread` / `GetThreadContext` pair itself. The two call sites in
+   `telemetry/live_telemetry_snapshot.cpp` come unfenced with it.
+2. **Split what happens inside the callback from what happens outside.** On Linux the callback runs
+   **inside a signal handler**. Copying registers and scanning the stack are only consistent while
+   the target is stopped, so they stay in; **the AOT address mapping moves out** — it is a pure
+   function of the EIP already copied, and it degrades to a scan of a hundred thousand entries. That
+   is not something to do with the target stopped, and less so inside a signal handler.
+3. **Take the `__try`/`__except` off `ScanStackForModuleReturn`.** 3d-7 built
+   `CopyMemoryWithoutFaulting` for exactly this situation and it works on both hosts. What matters is
+   that its Linux implementation is one `process_vm_readv` — **no lock and no allocation, which is
+   what makes it safe inside a signal handler.**
+4. **Leave `GetThreadTimes` fenced.** Linux reports the same split but in jiffies against a
+   configurable tick rather than in 100ns units, and putting a different measurement under the same
+   name is what 3d-19 already refused for the two exception-code fields.
+5. **Give an interrupt failure a reason.** A layer that answers only true or false shows 46 failures
+   as the same failure 46 times. `ThreadInterruptFailure` separates a **refusal** (a caller's bug), a
+   **non-delivery** (the thread is gone), and a **timeout** (it is there and not answering — which is
+   itself a finding about the target). Same contract as `CreateHostThread`'s `host_error`: for the
+   record, not for control flow.
+
+### Completion criteria
+
+`repiu_core_probe` passes on both hosts, and the Linux pumpit1 sampler fails **with a reason** when
+it fails.
+
+**A probe that wobbles is itself the defect.** The claim that the sampled EIP moves cannot be
+observed without giving the target time to actually run between samples — taken back to back it is
+caught at the same instruction, and that is the measurement being wrong rather than the claim.
+**A flaky probe is worse than no probe**, because it teaches the next person to suspect their own
+change.
+
+---
+
+## 3d-22 — What a timed-out interrupt leaves behind
+
+3d-21 introduced a deadline, and a deadline means **abandoned requests exist**. And **a signal that
+has been sent cannot be recalled.** This sub-stage settles the consequences.
+
+1. **Replace the two flags with one state.** The `pending` / `finished` pair was wrong in a way that
+   corrupted memory: the `user_data` of a requester that timed out and returned had been a local of
+   that frame, and the handler arriving late touches it. **Checking a flag and then clearing it
+   cannot fix this** — the handler can pass the check an instant before the clear.
+2. **Claim the request with a compare-exchange.** "Did the handler start" has to become a question
+   answerable **exactly once**. Whoever loses the exchange does not run the callback, and **a
+   requester that loses it waits instead of returning** — by then the handler is already touching its
+   memory.
+3. **Giving up is a claim, not a decision.** If the handler has not started, move the request to
+   `kAbandoned` so it can **never** run; if it has, there is nothing to abandon and waiting is the
+   only safe move.
+4. **Make the handler check which thread it is on.** 3d-20 deliberately did not ask, and was right
+   then — a delivery belonging to no request could not exist. **Abandonment creates exactly that.**
+   The window a late delivery arrives in is the *next* request's, and claiming it hands the callback
+   **one thread's registers under another thread's name**. One of the two consumers **edits** those
+   registers.
+5. **Make the probe actually discriminate.** This is the hard part. A late delivery arriving when
+   nothing is outstanding is ignored **by the old code too** — it finds the flag already cleared. The
+   difference only shows when the late delivery lands **while a later request is outstanding**, so
+   the probe has to construct that situation **with a margin rather than as a race**.
+
+### Completion criteria
+
+`repiu_core_probe` passes on both hosts. Windows has nothing here to test — `SuspendThread` has
+already stopped the target by the time it returns, and the timeout has nothing to wait for — so it
+**reports as skipped rather than as a pass**: a line saying `true` for a check that never ran is
+something a later session believes.
+
+And it must not wobble across repeated runs. What 3d-21 learned applies here unchanged.

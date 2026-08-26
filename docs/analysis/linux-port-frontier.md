@@ -66,7 +66,11 @@ flowchart TD
 `IsGuestStackSwitchSupported()`와 `IsDirectX86ExecutionSupported()`는 이제 컴파일러가 아니라
 **아키텍처**를 묻습니다 — 3d-16이 스택 전환을 GAS로 쓴 뒤로 컴파일러에 달려 있지 않습니다.
 
-## 4. 다음 단계(3d-20)에 필요한 것
+## 4. 다음에 필요한 것
+
+> 이 절은 3d-20을 가리키고 있었습니다. 3d-20(다른 스레드의 레지스터)·3d-21(표본기)·
+> 3d-22(시한이 지난 인터럽트)는 끝났고, 목록에서 **빠지지 않은 둘**이 아래에 그대로
+> 남습니다. 인터럽트 계층 자체는 양쪽 호스트에서 probe를 통과합니다.
 
 1. **AOT 코드 캐시**(`aot_code_cache_win32.cpp`). 기본 백엔드 `dynamic`이 Linux에서 돌려면
    필요합니다. 3d-19가 배치 함수를 옮기다 **Win32 메모리 호출 23곳**을 보고 되돌렸습니다 —
@@ -111,6 +115,8 @@ REPIU_EXECUTION_BACKEND=legacy ./repiu     ../../build/openwatcom_samples/clibex
 | 교차 프로세스 텔레메트리 | **울타리 안** | `live_telemetry_snapshot.cpp`의 공유 섹션·정지 스냅샷. 게스트 구동에 불필요 |
 | `CaptureSuspendedThreadSnapshot` | **호출자 없음** | 정의만 있고 선언도 호출도 없음. 지우는 것은 의도 확인 후 |
 | 종료 시 SIGTRAP | **미확인** | 실행 예산이 만료된 뒤 teardown에서 코어를 떨굽니다(2026-08-26, pumpit1, legacy, 8초 예산). 실행 자체는 정상이었고 오디오와도 무관합니다. 어느 단계에서 나는지 아직 좁히지 않았습니다 |
+| pumpit1의 9초 정지 | **원인 미상** | 3d-21이 관측한 `SigBlk`(시그널 34 차단)은 **원인이 아닙니다** — 정지는 첫 실행에서 이미 있었고 첫 시그널은 9.5초에야 나갑니다. 증상 쪽입니다. 3d-22 이후 표본기는 그 상태에서 스스로를 손상시키지 않으므로, 이제 관측을 다시 시도할 수 있습니다 |
+| 인터럽트 핸들러의 `SA_NODEFER` | **열려 있음** | 핸들러가 자기 시그널을 차단한 채 돌기 때문에 중첩 배달이 영구 차단으로 남을 수 있습니다. 3d-21이 후보로 적었고 3d-22는 건드리지 않았습니다 |
 
 ## 7. 정정 — 오디오 출력은 이미 이식되어 있었습니다
 
@@ -320,7 +326,11 @@ flowchart TD
 **architecture** rather than the compiler — since 3d-16 wrote the stack switch in GAS, the compiler
 stopped being the question.
 
-## 4. What the next sub-stage (3d-20) needs
+## 4. What is needed next
+
+> This section used to point at 3d-20. 3d-20 (another thread's registers), 3d-21 (the sampler) and
+> 3d-22 (what a timed-out interrupt leaves behind) are done, and **the two items that were never
+> struck off** are still below. The interrupt layer itself passes its probe on both hosts.
 
 1. **The AOT code cache** (`aot_code_cache_win32.cpp`), which the default `dynamic` backend needs on
    Linux. 3d-19 started porting its placement function and reverted on finding **23 Win32 memory
@@ -366,6 +376,8 @@ offsets.**
 | Cross-process telemetry | **fenced** | the shared section and suspended snapshot in `live_telemetry_snapshot.cpp`; not needed to run the guest |
 | `CaptureSuspendedThreadSnapshot` | **no callers** | defined, never declared or called; removing it wants its intent confirmed first |
 | A SIGTRAP on teardown | **unconfirmed** | after the execution budget expires the process dumps core on the way down (2026-08-26, pumpit1, legacy, an 8-second budget). The run itself was healthy and this is unrelated to audio; which teardown step raises it has not been narrowed down |
+| pumpit1's nine-second stall | **cause unknown** | the `SigBlk` state 3d-21 observed (signal 34 blocked) is **not** the cause — the stall was there in the first run and the first signal does not go until 9.5 s, so it sits on the symptom side. Since 3d-22 the sampler no longer corrupts itself against that state, so the observation can be attempted again |
+| `SA_NODEFER` on the interrupt handler | **open** | the handler runs with its own signal blocked, so a nested delivery can leave it blocked permanently. 3d-21 named it as a candidate; 3d-22 did not touch it |
 
 ## 7. Correction — the audio outputs were already portable
 
