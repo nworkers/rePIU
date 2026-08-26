@@ -2794,6 +2794,134 @@ Windows는 `host_thread_interrupt_abandon_skipped=true`로 **건너뜀**을 보�
 
 ---
 
+## 3d-23 — 9초 정지 [해결]
+
+### 결과
+
+3d-19부터 남아 있던 pumpit1의 9초 정지를 찾아 고쳤습니다. **게임을 돌리기 전에 소스와 기존
+로그만으로 원인까지 도달했고**, 실행은 확인용 A/B 한 번이었습니다.
+
+| 파일 | 무엇이 바뀌었나 |
+|---|---|
+| `platform/guest_cpu_context.h` | `HardwareDebugRegistersAvailable()` 신설 — `Dr` 필드 바로 옆 |
+| `platform/win32/native_fast_path.cpp` | 그 조건을 env 설정보다 **앞에서** 검사 |
+| `platform/win32/native_linear_span.cpp` | 같음 |
+| `platform/win32/execution/execution_trampoline.cpp` | `RouteANativeRegionEnabled`도 같음 |
+
+### 근인 — 한 결정의 절반만 동작했습니다
+
+`TryEnterNativeFastPath`는 게스트를 네이티브로 풀어 주면서 복귀 주소에 하드웨어
+브레이크포인트를 겁니다. **두 동작은 한 결정의 양면입니다.**
+
+```cpp
+context->Dr0 = return_address;      // 무장
+context->Dr7 = (...) | 0x1U;        // 무장
+context->EFlags &= ~0x00000100U;    // 해제 (트랩 플래그)
+return true;
+```
+
+Linux에서 `Dr` 필드는 무력한 구조체 멤버입니다 — 헤더가 "컴파일되게 하려고 있고 항상 0"이라고
+적어 두었습니다. **무장은 버려지고 해제는 진짜로 일어납니다.** 게스트는 단일 스텝이 꺼진 채,
+되돌릴 것 없이 풀려납니다. 우연히 폴트를 내지 않는 리전 하나에 들어가면 그것으로 끝입니다.
+
+그리고 복귀 판정이:
+
+```cpp
+const bool returned = fault.kind == kSingleStep &&
+    win32_context->Eip == state->return_address &&
+    (win32_context->Dr6 & 0x1U) != 0;   // <- Dr6은 Linux에서 항상 0
+```
+
+**Linux에서는 복귀가 구조적으로 성립할 수 없습니다.** 열화된 모드가 아니라 **출구가 없는
+모드**입니다.
+
+### 계측이 이미 답을 들고 있었습니다
+
+```
+heartbeat=1339586 dispatch_entry=669793 dispatch_exit=669793 last_eip=0x010F527A
+fast=18/0/17
+```
+
+읽는 법 셋:
+
+1. **`heartbeat`는 명령이 아니라 예외 디스패치를 셉니다** — 진입·이탈 각각 +1. 그래서
+   **짝수는 마지막 디스패치가 정상 종료했다**는 뜻이고, 게스트가 디스패치 안에 갇힌 것이
+   아니라 **트랩하지 않는 코드를 돌고 있다**는 말입니다. 이 한 줄이 조사 범위를 절반으로
+   줄였습니다.
+2. **`last_eip`는 현재 위치가 아니라 마지막 폴트 지점**입니다. 폴트가 멈추면 같이 멈춥니다.
+3. **`fast=18/0/17`** — 진입 18, **복귀 0**, 취소 17. 복귀 0은 위 구조적 이유이고,
+   **18 − 17 = 1**은 취소되지도 복귀하지도 않은 진입 하나입니다. **정지가 카운터에 세어져
+   있었습니다.**
+
+### 왜 legacy만 걸리는가
+
+타이머 틱은 `timer_interrupt_pending`으로 표시만 되고, 주입은 게스트가 **세이프 포인트에
+도달해야** 일어납니다 — `InjectPendingInterrupts` 호출부 넷이 전부 폴트 기반입니다. AOT
+백엔드는 `INT3`으로 세이프 포인트를 **강제로** 만들지만, `ArmAotTimerSafePoint`는
+`aot_placement == nullptr`이면 즉시 반환합니다. **legacy에는 강제 세이프 포인트가 없습니다.**
+
+Linux는 AOT 코드 캐시가 아직 이식되지 않아 legacy로 강제됩니다. 그래서 Windows에서는 디버그
+레지스터가 메워 주던 자리가 Linux에서는 그대로 구멍입니다.
+
+### 설계는 이미 옳게 정해 뒀고, 실행되지 않았습니다
+
+설계의 "남은 실제 격차" 절이 `native_fast_path`를 **이름까지 적어** Linux에서 비활성으로
+두라고 했습니다. 근거는 이랬습니다 — "`REPIU_NATIVE_LINEAR_SPAN`은 기본 꺼짐".
+
+**그 근거는 세 경로 중 하나에만 참입니다.**
+
+| 경로 | 기본값 |
+|---|---|
+| `native_linear_span` | 꺼짐 (dynamic에서만 켜짐) |
+| `native_region` | 꺼짐 (`REPIU_NATIVE_REGION` opt-in) |
+| **`native_fast_path`** | **켜짐** (`REPIU_DISABLE_NATIVE_FAST_PATH`로만 꺼짐) |
+
+한 경로에서 확인한 사실을 셋에 일반화했고, 그래서 **옳은 결정이 이행되지 않은 채 남았습니다.**
+8절이 모으는 은폐와 같은 계열이되 방향이 반대입니다 — 여기서는 **문서가 이미 정답을 적어 두고
+있었고, 그 옆의 근거 한 줄이 검증을 면제해 주었습니다.**
+
+### 고친 방식 — 끄는 것으로 고쳤습니다
+
+`HardwareDebugRegistersAvailable()`을 `Dr` 필드 바로 옆에 두었습니다. 사실과 그 결과가 한
+자리에 있어야 다음 사람이 필드만 보고 쓰지 않습니다.
+
+세 경로 모두 **env 설정보다 앞에서** 이것을 검사합니다. 끄는 것은 허용하되 **동작할 수 없는
+곳에서 켜는 것은 허용하지 않습니다** — `REPIU_NATIVE_LINEAR_SPAN=1`을 Linux에서 걸면 같은
+폭주를 다시 만들 수 있었기 때문입니다.
+
+**이것은 기능 이식이 아니라 기능 차단입니다.** Linux는 그만큼 느려집니다. 바뀐 것은
+**조용한 폭주가 지원되는 느린 경로가 되었다는 것**뿐입니다. 제대로 된 답은 둘 중 하나이고
+둘 다 이 단계 밖입니다 — AOT 코드 캐시 이식(그러면 `INT3` 세이프 포인트가 생깁니다), 또는
+3d-20이 만든 `InterruptHostThread`로 폴트에 의존하지 않는 선점 주입.
+
+### 검증
+
+| 대상 | 수정 전 | 수정 후 |
+|---|---|---|
+| `dispatch_entry` | **669,793 동결** | **1,436,729, 증가 중** |
+| `last_eip` | **0x010F527A 고정** | **0x010F3B8E, 이동** |
+| `fast=` | **18/0/17** | **0/0/0** |
+| 15초 예산 | 9초에 정지 후 크래시 | **완주** |
+
+8초 예산 3회 반복: 3회 모두 `fast=0/0/0`, 3회 모두 예산까지 진행. **정지 재발 없음.**
+
+| 대상 | 결과 |
+|---|---|
+| Windows Debug 빌드 | 오류 없음 |
+| Windows `repiu_core_probe` | `core_probe_total=15 failures=0` |
+| Windows `repiu_aot_probe` 전체 | exit 0, romset-config 94/0, nvram-path 14/0 |
+
+Windows는 디버그 레지스터가 있으므로 술어가 참이고 세 경로 모두 이전과 같습니다.
+
+### 덤으로 확정된 것: teardown SIGTRAP
+
+frontier가 "미확인"으로 적어 둔 teardown SIGTRAP은 **3회 중 3회 재현**됩니다(exit 133). 예산
+만료로 잘린 실행에서 납니다. 게스트가 스스로 끝난 실행 하나는 exit 0에 "original entry
+returned to host trampoline"이었으므로, **예산이 잘라낸 실행에서만** 나는 것으로 좁혀집니다.
+이번 변경과는 무관하며(변경 전 기록이 2026-08-26로 앞섭니다) 미해결로 남습니다.
+
+---
+
 ## 3d-22a — 빌드 스크립트가 자기를 가린 건
 
 `d838ce1`의 기록입니다. 분석은 [linux-port-frontier.md](../analysis/linux-port-frontier.md) 8.1절에
@@ -5259,6 +5387,134 @@ unspecified there. Both are async-signal-safe.
 | Windows Debug build | no errors |
 | Windows / Linux i386 `repiu_core_probe` | 15/15, 0 failures |
 | The Linux DOS/4GW sample | 3d-19's baseline holds |
+
+---
+
+## 3d-23 — The nine-second stall [resolved]
+
+### Result
+
+The pumpit1 stall that has stood since 3d-19 is found and fixed. **The cause was reached from the
+source and the existing logs before the game was run at all**; the only run was one confirming A/B.
+
+| File | What changed |
+|---|---|
+| `platform/guest_cpu_context.h` | new `HardwareDebugRegistersAvailable()`, beside the `Dr` fields |
+| `platform/win32/native_fast_path.cpp` | asks it **ahead of** the environment setting |
+| `platform/win32/native_linear_span.cpp` | the same |
+| `platform/win32/execution/execution_trampoline.cpp` | `RouteANativeRegionEnabled` likewise |
+
+### The cause — half of one decision worked
+
+`TryEnterNativeFastPath` releases the guest to run natively and arms a hardware breakpoint on its
+return address. **Those are two halves of one decision.**
+
+```cpp
+context->Dr0 = return_address;      // arm
+context->Dr7 = (...) | 0x1U;        // arm
+context->EFlags &= ~0x00000100U;    // release (the trap flag)
+return true;
+```
+
+On Linux the `Dr` fields are inert struct members — the header says so: present so the code compiles,
+and always zero. **The arming is discarded and the release really happens.** The guest is let go with
+single-step off and nothing to bring it back. One region whose body faults on nothing ends the run.
+
+And the return test:
+
+```cpp
+const bool returned = fault.kind == kSingleStep &&
+    win32_context->Eip == state->return_address &&
+    (win32_context->Dr6 & 0x1U) != 0;   // <- Dr6 is always zero on Linux
+```
+
+**A return cannot be recognised on Linux at all.** It is not a degraded mode; it is a mode with no
+exit.
+
+### The instrumentation was already holding the answer
+
+```
+heartbeat=1339586 dispatch_entry=669793 dispatch_exit=669793 last_eip=0x010F527A
+fast=18/0/17
+```
+
+Three things to read:
+
+1. **`heartbeat` counts exception dispatches, not instructions** — once on entry, once on exit. So an
+   **even value means the last dispatch completed**: the guest is not trapped inside a dispatch, it
+   is **running code that does not trap**. That one line halved the search.
+2. **`last_eip` is the last fault point, not the current position.** When faults stop, it stops.
+3. **`fast=18/0/17`** — eighteen entries, **zero returns**, seventeen cancels. Zero returns for the
+   structural reason above, and **18 − 17 = 1** is the entry that was neither cancelled nor returned.
+   **The stall was sitting in a counter.**
+
+### Why only legacy is exposed
+
+A timer tick only sets `timer_interrupt_pending`; the injection needs the guest to reach a **safe
+point**, and all four `InjectPendingInterrupts` call sites are fault-driven. The AOT backend
+**forces** safe points with `INT3`, but `ArmAotTimerSafePoint` returns immediately when
+`aot_placement == nullptr` — **legacy has no forced safe point.**
+
+Linux is confined to legacy until the AOT code cache is ported, so what the debug registers cover on
+Windows is simply a hole there.
+
+### The design had already decided this, and it was not carried out
+
+The design's "remaining gap" section names `native_fast_path` **explicitly** and says the Linux port
+leaves these features disabled. Its reason: `REPIU_NATIVE_LINEAR_SPAN` is off by default.
+
+**That reason is true of only one of the three.**
+
+| Path | Default |
+|---|---|
+| `native_linear_span` | off (on only for the dynamic backend) |
+| `native_region` | off (`REPIU_NATIVE_REGION` opt-in) |
+| **`native_fast_path`** | **on** (off only via `REPIU_DISABLE_NATIVE_FAST_PATH`) |
+
+A fact checked on one path was generalised to three, and **a correct decision was left unexecuted**.
+Same family as the concealments section 8 collects, running the other way: here **the document
+already held the right answer, and one line of reasoning beside it excused the check.**
+
+### How it is fixed — by switching off
+
+`HardwareDebugRegistersAvailable()` sits beside the `Dr` fields, so the fact and its consequence are
+in one place and the next reader does not meet the fields alone.
+
+All three paths ask it **ahead of** their environment setting. Turning the feature off stays
+permitted; **turning it on where it cannot work does not** — `REPIU_NATIVE_LINEAR_SPAN=1` on Linux
+could otherwise recreate the same runaway.
+
+**This blocks a feature rather than porting one.** Linux is slower for it. What changed is only that
+**a silent runaway became a supported slower path.** The real answers are both outside this
+sub-stage: port the AOT code cache, which brings `INT3` safe points, or use the
+`InterruptHostThread` 3d-20 built to inject without depending on a fault.
+
+### Verification
+
+| Measure | Before | After |
+|---|---|---|
+| `dispatch_entry` | **frozen at 669,793** | **1,436,729 and climbing** |
+| `last_eip` | **fixed at 0x010F527A** | **0x010F3B8E, moving** |
+| `fast=` | **18/0/17** | **0/0/0** |
+| A 15-second budget | stalls at nine seconds, then crashes | **runs to the end** |
+
+Three repeats at an eight-second budget: `fast=0/0/0` in all three, all three progressing to the
+budget. **No recurrence.**
+
+| Target | Result |
+|---|---|
+| Windows Debug build | no errors |
+| Windows `repiu_core_probe` | `core_probe_total=15 failures=0` |
+| Windows `repiu_aot_probe`, full pass | exit 0, romset-config 94/0, nvram-path 14/0 |
+
+Windows has the registers, so the predicate is true there and all three paths behave as before.
+
+### A side result: the teardown SIGTRAP
+
+The teardown SIGTRAP the frontier carried as "unconfirmed" reproduces **three times in three**
+(exit 133), on runs the budget cut off. The one run that ended by itself exited 0 with "original
+entry returned to host trampoline", which narrows it to **runs terminated by the budget**. It is
+unrelated to this change — the earlier record predates it (2026-08-26) — and stays unresolved.
 
 ---
 

@@ -98,6 +98,39 @@ struct GuestCpuContext
 namespace repiu::platform
 {
 
+// Task 503d-23. Whether a write to the `Dr` fields reaches the hardware.
+//
+// This is not a question about performance, and asking it is not optional. The
+// engine has three paths that release the guest to run **natively** -- they
+// clear the trap flag -- and arrange for it to come back by arming a hardware
+// breakpoint on the return address. Those are two halves of one decision.
+//
+// Where a `Dr` write is discarded, only the first half happens. The guest is
+// released with single-step off and **nothing armed to bring it back**, so it
+// runs until it happens to fault; a region whose body faults on nothing runs
+// forever. Measured on Linux before this predicate existed: entry/return/cancel
+// of `18/0/17` -- eighteen releases, not one return, and the one that was never
+// cancelled either is the stall.
+//
+// The `returned` test on that path reads `Dr6`, so where these are inert the
+// engine cannot even recognise a return that did happen. It is not a degraded
+// mode; it is a mode with no exit.
+//
+// So every such path asks this first. The design settled it before any of this
+// was written -- Linux keeps the debug-register features disabled -- and this is
+// where that decision now lives, next to the fields it is about.
+inline constexpr bool HardwareDebugRegistersAvailable()
+{
+#if defined(_WIN32)
+    return true;
+#else
+    // Linux user space cannot write its own thread's debug registers; only a
+    // ptrace-attached process can set another's. If that ever becomes worth
+    // doing, this is the one place that changes.
+    return false;
+#endif
+}
+
 // Task 503d-11. What the engine puts in `ContextFlags` when it fills a context
 // by hand.
 //

@@ -688,6 +688,58 @@ pumpit1의 9초 정지를 조사하다 막혔습니다. 게스트 스레드는 `
 
 ---
 
+## 3d-23 — 9초 정지
+
+3d-19부터 pumpit1이 Linux에서 9초쯤 정지했고, 3d-20·3d-21은 그것을 **관측할 도구**를 만드느라
+지나갔습니다. 이 단계는 원인을 찾습니다.
+
+**게임을 반복 실행하지 마십시오.** 먼저 기존 로그와 소스만으로 갈 수 있는 데까지 가고, 실행은
+가설이 선 뒤 **이진 결과가 나오는 형태로 한 번** 하십시오.
+
+1. **`heartbeat`가 무엇을 세는지 먼저 확인하십시오.** 명령 카운터가 아니라 **예외 디스패치**
+   카운터이고, 진입과 이탈에서 각각 하나씩 올라갑니다. 따라서 **짝수는 마지막 디스패치가 정상
+   종료했다는 뜻**입니다 — 게스트가 디스패치 안에 갇힌 것이 아니라, **트랩하지 않는 코드를
+   돌고 있다**는 말입니다. 이 한 가지가 조사 범위를 절반으로 줄입니다.
+2. **`last_eip`를 현재 위치로 읽지 마십시오.** 그것은 **마지막 폴트 디스패치 지점**입니다.
+   폴트가 멈추면 그 값도 멈추고, 그때부터 게스트가 어디 있는지는 말해 주지 않습니다.
+3. **트랩하지 않는 게스트를 무엇이 되돌리는지 물으십시오.** 타이머 틱은 `timer_interrupt_pending`
+   으로 표시만 되고, 실제 주입은 게스트가 **세이프 포인트에 도달해야** 일어납니다.
+   `InjectPendingInterrupts` 호출부 넷이 전부 폴트 기반입니다. AOT 백엔드는 `INT3`으로 세이프
+   포인트를 **강제로** 만들지만, `ArmAotTimerSafePoint`는 `aot_placement == nullptr`이면 즉시
+   반환합니다 — **legacy 백엔드에는 강제 세이프 포인트가 없습니다.**
+4. **하드웨어 디버그 레지스터를 쓰는 경로를 세십시오.** 셋입니다 —
+   `TryEnterNativeFastPath`, `TryEnterNativeRegion`, `TryEnterNativeLinearSpan`. 각각 복귀
+   주소에 `Dr` 브레이크포인트를 **무장하고** 트랩 플래그를 **해제**합니다. 이 둘은 한 결정의
+   양면입니다.
+5. **`GuestCpuContext`의 `Dr` 필드가 Linux에서 무엇인지 확인하십시오.** 헤더가 적어 둔 대로
+   "컴파일되게 하려고 있고 항상 0"입니다. 즉 무장은 버려지고 **해제는 진짜로 일어납니다.**
+   게스트는 단일 스텝이 꺼진 채, 되돌릴 것 없이 풀려납니다.
+6. **각 경로의 기본값을 따로 확인하십시오.** 설계는 이 셋을 Linux에서 비활성으로 두라고 이미
+   정했고, 근거로 "`REPIU_NATIVE_LINEAR_SPAN`은 기본 꺼짐"을 들었습니다. 그 근거는 **셋 중
+   하나에만 참입니다.** `native_fast_path`는 정반대로 **기본 켜짐**이고
+   (`REPIU_DISABLE_NATIVE_FAST_PATH`로만 꺼짐), 그래서 결정은 옳았는데 실행되지 않았습니다.
+7. **실행은 A/B 하나로 끝내십시오.** `REPIU_DISABLE_NATIVE_FAST_PATH=1`을 걸고 안 걸고를
+   비교합니다. 예산은 `REPIU_EXECUTION_TIMEOUT_MS`로 주되 **`REPIU_STALL_TIMEOUT_MS=0`으로
+   무진행 감시견을 끄십시오** — 그것은 건강한 실행을 정지로 오판한 전력이 있습니다.
+   그리고 **저장소 루트에서 실행하십시오.** 로더는 `roms`와 `build/runtime_mounts`를 상대
+   경로로 찾습니다.
+8. **읽을 숫자는 `fast=진입/복귀/취소`입니다.** 복귀 판정이 `Dr6 & 0x1`을 요구하므로 Linux에서
+   **복귀는 구조적으로 0**이어야 하고, **진입 − 취소 = 1**이 곧 돌아오지 않은 진입 하나,
+   즉 정지입니다.
+
+### 완료 조건
+
+기본 설정의 Linux pumpit1이 예산 만료까지 **진행**해야 합니다 — `dispatch_entry`가 계속
+증가하고 `last_eip`가 움직이며, `fast=0/0/0`이어야 합니다.
+
+Windows는 **바뀌지 않아야 합니다.** 이 호스트에는 디버그 레지스터가 있으므로 세 경로 모두
+이전과 같이 동작해야 하고, `repiu_core_probe`·`repiu_aot_probe` 결과가 그대로여야 합니다.
+
+**끄는 것으로 고치는 것임을 문서에 명시하십시오.** 이것은 성능 기능을 **동작할 수 없는 곳에서
+꺼서** 조용한 폭주를 지원되는 느린 경로로 바꾸는 것이지, 기능을 이식한 것이 아닙니다.
+
+---
+
 # Linux Execution Engine Work Order (Stage 3)
 
 Design: [20260822-503-linux-execution-engine.md](../design/20260822-503-linux-execution-engine.md)
@@ -1384,3 +1436,55 @@ already stopped the target by the time it returns, and the timeout has nothing t
 something a later session believes.
 
 And it must not wobble across repeated runs. What 3d-21 learned applies here unchanged.
+
+---
+
+## 3d-23 — The nine-second stall
+
+pumpit1 has stalled about nine seconds into a Linux run since 3d-19, and 3d-20 and 3d-21 went past it
+building the **instrument** to observe it. This sub-stage finds the cause.
+
+**Do not run the game repeatedly.** Go as far as the existing logs and the source allow first, and
+when a run is needed, make it **one run with a binary outcome**.
+
+1. **Establish what `heartbeat` counts** before reading anything into it. It is not an instruction
+   counter but an **exception dispatch** counter, incremented once on entry and once on exit. So an
+   **even value means the last dispatch completed** — the guest is not trapped inside a dispatch, it
+   is **running code that does not trap**. That single fact halves the search.
+2. **Do not read `last_eip` as the current position.** It is the **last fault dispatch point**. When
+   faults stop, so does that value, and from then on it says nothing about where the guest is.
+3. **Ask what brings a non-trapping guest back.** A timer tick only sets `timer_interrupt_pending`;
+   the injection itself needs the guest to reach a **safe point**. All four `InjectPendingInterrupts`
+   call sites are fault-driven. The AOT backend **forces** safe points with `INT3`, but
+   `ArmAotTimerSafePoint` returns immediately when `aot_placement == nullptr` — **the legacy backend
+   has no forced safe point at all.**
+4. **Count the paths that use hardware debug registers.** There are three:
+   `TryEnterNativeFastPath`, `TryEnterNativeRegion`, `TryEnterNativeLinearSpan`. Each **arms** a `Dr`
+   breakpoint on the return address and **clears** the trap flag. Those are two halves of one
+   decision.
+5. **Check what the `Dr` fields of `GuestCpuContext` are on Linux.** As its header says: present so
+   the code compiles, and always zero. So the arming is discarded and **the release really happens**.
+   The guest is let go with single-step off and nothing to bring it back.
+6. **Check each path's default separately.** The design already decided these stay disabled on Linux,
+   and gave as its reason that `REPIU_NATIVE_LINEAR_SPAN` is off by default. That reason is **true of
+   only one of the three**. `native_fast_path` is the opposite — **on by default**, off only via
+   `REPIU_DISABLE_NATIVE_FAST_PATH` — which is how a correct decision went uncarried-out.
+7. **Settle it with one A/B.** With and without `REPIU_DISABLE_NATIVE_FAST_PATH=1`. Bound the run
+   with `REPIU_EXECUTION_TIMEOUT_MS`, but **disable the no-progress watchdog with
+   `REPIU_STALL_TIMEOUT_MS=0`** — it has a history of calling a healthy run a stall. And **run from
+   the repository root**: the loader resolves `roms` and `build/runtime_mounts` relatively.
+8. **The number to read is `fast=entry/return/cancel`.** The `returned` test requires `Dr6 & 0x1`, so
+   on Linux **return is structurally zero**, and **entry − cancel = 1** is the one release that never
+   came back: the stall itself.
+
+### Completion criteria
+
+Linux pumpit1 in its **default** configuration must **make progress** until the budget expires —
+`dispatch_entry` still climbing, `last_eip` moving, and `fast=0/0/0`.
+
+Windows must be **unchanged**. It has the registers, so all three paths behave as before, and
+`repiu_core_probe` and `repiu_aot_probe` match what they were.
+
+**Say plainly in the documentation that this fixes by switching off.** It turns a performance feature
+off **where it cannot work**, converting a silent runaway into a supported slower path. It does not
+port the feature.

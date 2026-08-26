@@ -24,6 +24,17 @@ bool IsRuntimeRange(std::uint32_t address,
 
 bool NativeFastPathDisabled()
 {
+    // Task 503d-23. The hardware check comes first and is not overridable.
+    //
+    // This path arms a `Dr0` breakpoint on the return address and then clears
+    // the trap flag. Where the first of those is discarded the second still
+    // happens, which releases the guest with nothing to bring it back -- the
+    // nine-second pumpit1 stall, measured as `fast=18/0/17`. The env var below
+    // can turn this path off; nothing may turn it on where it cannot work.
+    if (!repiu::platform::HardwareDebugRegistersAvailable())
+    {
+        return true;
+    }
     static const bool disabled = []() {
         // Presence alone, which is what the Win32 form meant: it counted
         // characters, so a set-but-empty value read as absent there too.

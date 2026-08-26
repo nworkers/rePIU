@@ -134,6 +134,15 @@ bool ResolveNativeLinearSpanSetting(
     runtime::ExecutionBackend execution_backend,
     NativeLinearSpanSetting setting)
 {
+    // Task 503d-23. Ahead of the explicit setting, because this one is not a
+    // preference. A span is entered by arming a `Dr` breakpoint and clearing the
+    // trap flag; where the arming is discarded the guest is released with
+    // nothing to bring it back. `kEnabled` may turn this off-by-default feature
+    // on, but not on a host where turning it on means losing the guest.
+    if (!repiu::platform::HardwareDebugRegistersAvailable())
+    {
+        return false;
+    }
     if (setting == NativeLinearSpanSetting::kEnabled)
     {
         return true;

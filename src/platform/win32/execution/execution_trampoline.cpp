@@ -809,6 +809,15 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
 // See docs/design/20260723-266-native-region-execution.md.
 bool RouteANativeRegionEnabled()
 {
+    // Task 503d-23. Same hardware condition as the fast path and the linear
+    // span: a region traps its return with `Dr0` and its sensitive instructions
+    // with `Dr1`-`Dr3`, then clears the trap flag. With the arming discarded
+    // that last step releases the guest for good, so the opt-in below cannot
+    // reach a host that has no debug registers to arm.
+    if (!repiu::platform::HardwareDebugRegistersAvailable())
+    {
+        return false;
+    }
     static const bool enabled = []() {
         return repiu::platform::IsEnvironmentSettingPresent(
             "REPIU_NATIVE_REGION");
