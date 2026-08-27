@@ -24,6 +24,13 @@ constexpr std::size_t kReserveBytes = 64U * 1024U;
 // point of this probe: it is not two implementations checked separately, it is
 // one set of promises checked against both.
 
+bool ProbeSystemPageSize()
+{
+    const std::size_t page_size = repiu::platform::SystemPageSize();
+    return page_size != 0U && (page_size & (page_size - 1U)) == 0U &&
+        kReserveBytes % page_size == 0U;
+}
+
 bool ProbeReserveAndQuery()
 {
     const MemoryReservation reservation = repiu::platform::ReserveMemory(
@@ -355,6 +362,7 @@ bool ProbeClaimedVersusCommitted()
 
 bool RunVirtualMemoryProbe()
 {
+    const bool page_size_ok = ProbeSystemPageSize();
     const bool reserve_ok = ProbeReserveAndQuery();
     const bool protection_ok = ProbeProtectionRoundTrip();
     const bool partial_ok = ProbePartialProtection();
@@ -363,10 +371,12 @@ bool RunVirtualMemoryProbe()
     const bool span_ok = ProbeRangeSpansRegions();
     const bool foreign_ok = ProbeForeignMemory();
     const bool claimed_ok = ProbeClaimedVersusCommitted();
-    const bool all = reserve_ok && protection_ok && partial_ok &&
+    const bool all = page_size_ok && reserve_ok && protection_ok && partial_ok &&
         uncommitted_ok && refusal_ok && span_ok && foreign_ok && claimed_ok;
 
-    std::cout << "virtual_memory_reserve_query=" << (reserve_ok ? "true" : "false")
+    std::cout << "virtual_memory_system_page_size="
+              << (page_size_ok ? "true" : "false")
+              << "\nvirtual_memory_reserve_query=" << (reserve_ok ? "true" : "false")
               << "\nvirtual_memory_protection_round_trip="
               << (protection_ok ? "true" : "false")
               << "\nvirtual_memory_partial_protection="

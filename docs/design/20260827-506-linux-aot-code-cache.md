@@ -54,6 +54,13 @@ Task 503이 게스트를 Linux에서 실행시켰고, 503d-23이 정지를 없�
 
 ## 결정 1: 명령 캐시 플러시는 계층에 올리되, x86에서 무엇인지 적습니다
 
+### 구현 시점 정정
+
+설계 뒤 선행 작업을 다시 대조하니 Task 503d-11이 이미
+`virtual_memory.h`에 `FlushInstructionCacheRange`와 양쪽 구현을 추가해 두었습니다. 별도
+`instruction_cache.h`를 만들지 않고 **이미 검증된 계층 함수를 재사용**합니다. AOT patch window가
+쓰던 `GetSystemInfo`도 같은 계층의 `SystemPageSize` 질의로 올립니다.
+
 `FlushInstructionCache`가 8곳입니다. **x86의 명령 캐시는 데이터 캐시와 일관되므로 이 호출은
 아키텍처상 불필요합니다** — Windows에서도 사실상 형식입니다.
 
@@ -151,6 +158,13 @@ no cheap Linux counterpart" is about **VirtualQuery in general**; the narrow que
 already covered.
 
 ## Decision 1: lift the instruction-cache flush into the layer, and record what it is on x86
+
+### Implementation-time correction
+
+Rechecking predecessor work after this design found that Task 503d-11 had already added
+`FlushInstructionCacheRange` and both host implementations to `virtual_memory.h`. No separate
+`instruction_cache.h` is created; the already-probed layer function is reused. The `GetSystemInfo`
+used by AOT patch windows moves to a `SystemPageSize` query in the same layer.
 
 There are eight `FlushInstructionCache` calls. **x86's instruction cache is coherent with its data
 cache, so the call is architecturally unnecessary** — it is close to ceremonial on Windows too.

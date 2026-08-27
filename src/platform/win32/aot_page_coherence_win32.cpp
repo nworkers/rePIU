@@ -1,19 +1,15 @@
 #include "repiu/platform/win32/aot_page_coherence_win32.h"
 #include "repiu/platform/win32/aot_code_cache_win32.h"
+#include "repiu/platform/atomic_ops.h"
+#include "repiu/platform/virtual_memory.h"
 
 #include <Zydis.h>
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <cerrno>
 #include <limits>
-
-#if defined(_WIN32)
-#define NOMINMAX
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include "repiu/platform/atomic_ops.h"
-#endif
 
 namespace repiu::platform::win32
 {
@@ -209,7 +205,6 @@ DecodedGuestWrite DecodeGuestWrite(std::uint32_t execution_address)
     return result;
 }
 
-#if defined(_WIN32)
 // A learned inline-cache guard whose guest target lies on the retired page
 // must fall back to its miss tail (design 238): the retired entry start is
 // now INT3, so a surviving hit would trap on every transfer without ever
@@ -295,28 +290,25 @@ bool EnsureWriteWatch(Win32AotPageWriteWatchSet* watch_set,
     {
         return true;
     }
-    MEMORY_BASIC_INFORMATION memory = {};
-    if (VirtualQuery(reinterpret_cast<const void*>(
-                         static_cast<std::uintptr_t>(page)),
-                     &memory, sizeof(memory)) == 0 ||
-        memory.State != MEM_COMMIT)
+    const repiu::platform::MemoryRegion memory =
+        repiu::platform::QueryMemory(reinterpret_cast<const void*>(
+            static_cast<std::uintptr_t>(page)));
+    if (!memory.valid || !memory.committed)
     {
         return false;
     }
-    const DWORD original = memory.Protect;
-    if ((original & 0xFFU) != PAGE_EXECUTE_READ)
+    const repiu::platform::MemoryProtection original = memory.protection;
+    if (original != repiu::platform::MemoryProtection::kExecuteRead)
     {
-        DWORD previous = 0;
-        if (VirtualProtect(reinterpret_cast<void*>(
-                               static_cast<std::uintptr_t>(page)),
-                           kGuestPageSize, PAGE_EXECUTE_READ,
-                           &previous) == 0)
+        if (!repiu::platform::ProtectMemory(
+                reinterpret_cast<void*>(static_cast<std::uintptr_t>(page)),
+                kGuestPageSize,
+                repiu::platform::MemoryProtection::kExecuteRead, nullptr))
         {
             return false;
         }
     }
-    watch_set->watches.insert(
-        found, {page, static_cast<std::uint32_t>(original)});
+    watch_set->watches.insert(found, {page, original});
     return true;
 }
 
@@ -351,13 +343,13 @@ void RestorePendingPagesToExecuteRead(
     for (std::uint32_t index = 0;
          index < watch_set->pending_page_count; ++index)
     {
-        DWORD ignored = 0;
-        VirtualProtect(reinterpret_cast<void*>(static_cast<std::uintptr_t>(
-                           watch_set->pending_pages[index])),
-                       kGuestPageSize, PAGE_EXECUTE_READ, &ignored);
+        repiu::platform::ProtectMemory(
+            reinterpret_cast<void*>(static_cast<std::uintptr_t>(
+                watch_set->pending_pages[index])),
+            kGuestPageSize,
+            repiu::platform::MemoryProtection::kExecuteRead, nullptr);
     }
 }
-#endif
 
 }  // namespace
 
@@ -633,10 +625,6 @@ bool RetireWin32AotGuestPage(
     result->attempted = true;
     result->guest_page = Win32AotGuestPage(guest_address);
     result->quarantined = quarantine;
-#if !defined(_WIN32)
-    result->message = "AOT guest-page retirement requires Win32";
-    return true;
-#else
     if (!placement->placed)
     {
         result->message = "AOT code cache placement is unavailable";
@@ -682,11 +670,11 @@ bool RetireWin32AotGuestPage(
     }
     void* cache = reinterpret_cast<void*>(
         static_cast<std::uintptr_t>(placement->base_address));
-    DWORD old_protection = 0;
-    if (VirtualProtect(cache, placement->capacity, PAGE_READWRITE,
-                       &old_protection) == 0)
+    if (!repiu::platform::ProtectMemory(
+            cache, placement->capacity,
+            repiu::platform::MemoryProtection::kReadWrite, nullptr))
     {
-        result->windows_error = GetLastError();
+        result->windows_error = static_cast<std::uint32_t>(errno);
         result->message = "failed to make AOT cache writable for retirement";
         return true;
     }
@@ -705,26 +693,25 @@ bool RetireWin32AotGuestPage(
     // rather than the affected range keeps the rule one sentence long, and
     // retirements are rare.
     runtime::ClearAotDirectReturnTable(&placement->direct_return_table);
-    DWORD ignored = 0;
-    if (VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ,
-                       &ignored) == 0)
+    if (!repiu::platform::ProtectMemory(
+            cache, placement->capacity,
+            repiu::platform::MemoryProtection::kExecuteRead, nullptr))
     {
-        result->windows_error = GetLastError();
+        result->windows_error = static_cast<std::uint32_t>(errno);
         result->message = "failed to restore AOT cache after retirement";
         return true;
     }
     for (std::uint32_t index : selected)
     {
-        FlushInstructionCache(
-            GetCurrentProcess(),
+        repiu::platform::FlushInstructionCacheRange(
             bytes + placement->address_map[index].cache_offset, 1U);
         placement->address_map_states[index].active = false;
         RecordInactiveMap(placement, index);
     }
     for (std::uint32_t guard_offset : reset_guard_offsets)
     {
-        FlushInstructionCache(GetCurrentProcess(),
-                              bytes + guard_offset, 6U);
+        repiu::platform::FlushInstructionCacheRange(
+            bytes + guard_offset, 6U);
     }
     if (result->guard_reset_count != 0U)
     {
@@ -752,7 +739,6 @@ bool RetireWin32AotGuestPage(
         ? "AOT guest page retired and quarantined"
         : "AOT guest page retired for a new generation";
     return true;
-#endif
 }
 
 bool InstallWin32AotGuestPageWriteWatches(
@@ -764,9 +750,6 @@ bool InstallWin32AotGuestPageWriteWatches(
     {
         return false;
     }
-#if !defined(_WIN32)
-    return false;
-#else
     if (selected_pages != nullptr)
     {
         for (std::uint32_t page : *selected_pages)
@@ -787,7 +770,6 @@ bool InstallWin32AotGuestPageWriteWatches(
         }
     }
     return true;
-#endif
 }
 
 void RestoreWin32AotGuestPageWriteWatches(
@@ -797,17 +779,13 @@ void RestoreWin32AotGuestPageWriteWatches(
     {
         return;
     }
-#if defined(_WIN32)
     for (const Win32AotGuestPageWriteWatch& watch : watch_set->watches)
     {
-        DWORD ignored = 0;
-        VirtualProtect(reinterpret_cast<void*>(static_cast<std::uintptr_t>(
-                           watch.guest_page)),
-                       kGuestPageSize,
-                       static_cast<DWORD>(watch.original_protection),
-                       &ignored);
+        repiu::platform::ProtectMemory(
+            reinterpret_cast<void*>(static_cast<std::uintptr_t>(
+                watch.guest_page)),
+            kGuestPageSize, watch.original_protection, nullptr);
     }
-#endif
     watch_set->watches.clear();
     watch_set->pending = false;
     watch_set->pending_page_count = 0U;
@@ -817,11 +795,6 @@ bool IsWin32AotGuestPageWriteWatched(
     const Win32AotPageWriteWatchSet& watch_set,
     std::uint32_t guest_address)
 {
-#if !defined(_WIN32)
-    static_cast<void>(watch_set);
-    static_cast<void>(guest_address);
-    return false;
-#else
     const std::uint32_t guest_page = Win32AotGuestPage(guest_address);
     const auto watch = std::lower_bound(
         watch_set.watches.begin(), watch_set.watches.end(), guest_page,
@@ -831,14 +804,12 @@ bool IsWin32AotGuestPageWriteWatched(
         });
     return watch != watch_set.watches.end() &&
            watch->guest_page == guest_page;
-#endif
 }
 
 void RemoveWin32AotPageWriteWatch(
     Win32AotPageWriteWatchSet* watch_set,
     std::uint32_t guest_address)
 {
-#if defined(_WIN32)
     if (watch_set == nullptr)
     {
         return;
@@ -851,16 +822,13 @@ void RemoveWin32AotPageWriteWatch(
         });
     if (watch != watch_set->watches.end() && watch->guest_page == guest_page)
     {
-        DWORD ignored = 0;
-        VirtualProtect(reinterpret_cast<void*>(static_cast<std::uintptr_t>(
-                           watch->guest_page)),
-                       kGuestPageSize, PAGE_EXECUTE_READWRITE, &ignored);
+        repiu::platform::ProtectMemory(
+            reinterpret_cast<void*>(static_cast<std::uintptr_t>(
+                watch->guest_page)),
+            kGuestPageSize,
+            repiu::platform::MemoryProtection::kExecuteReadWrite, nullptr);
         watch_set->watches.erase(watch);
     }
-#else
-    static_cast<void>(watch_set);
-    static_cast<void>(guest_address);
-#endif
 }
 
 bool HasPendingWin32AotGuestWrite(
@@ -881,9 +849,6 @@ bool BeginWin32AotGuestWrite(
     {
         return false;
     }
-#if !defined(_WIN32)
-    return false;
-#else
     const std::uint32_t fault_page = Win32AotGuestPage(fault_address);
     const auto fault_watch = FindWriteWatch(watch_set, fault_page);
     if (fault_watch == watch_set->watches.end() ||
@@ -950,11 +915,12 @@ bool BeginWin32AotGuestWrite(
                 ResetPendingWrite(watch_set);
                 return false;
             }
-            DWORD ignored = 0;
-            if (VirtualProtect(reinterpret_cast<void*>(
-                                   static_cast<std::uintptr_t>(page)),
-                               kGuestPageSize, PAGE_EXECUTE_READWRITE,
-                               &ignored) == 0)
+            if (!repiu::platform::ProtectMemory(
+                    reinterpret_cast<void*>(
+                        static_cast<std::uintptr_t>(page)),
+                    kGuestPageSize,
+                    repiu::platform::MemoryProtection::kExecuteReadWrite,
+                    nullptr))
             {
                 RestorePendingPagesToExecuteRead(watch_set);
                 ResetPendingWrite(watch_set);
@@ -968,7 +934,6 @@ bool BeginWin32AotGuestWrite(
         }
     }
     return watch_set->pending_page_count != 0U;
-#endif
 }
 
 bool CompleteWin32AotGuestWrite(
@@ -980,18 +945,16 @@ bool CompleteWin32AotGuestWrite(
     {
         return false;
     }
-#if !defined(_WIN32)
-    return false;
-#else
     bool restored = true;
     for (std::uint32_t index = 0;
          index < watch_set->pending_page_count; ++index)
     {
-        DWORD ignored = 0;
-        restored = VirtualProtect(
+        restored = repiu::platform::ProtectMemory(
             reinterpret_cast<void*>(static_cast<std::uintptr_t>(
                 watch_set->pending_pages[index])),
-            kGuestPageSize, PAGE_EXECUTE_READ, &ignored) != 0 && restored;
+            kGuestPageSize,
+            repiu::platform::MemoryProtection::kExecuteRead,
+            nullptr) && restored;
     }
     if (!restored)
     {
@@ -1004,7 +967,6 @@ bool CompleteWin32AotGuestWrite(
     completion->byte_count = watch_set->pending_byte_count;
     ResetPendingWrite(watch_set);
     return true;
-#endif
 }
 
 }  // namespace repiu::platform::win32

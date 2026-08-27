@@ -806,7 +806,12 @@ void CopySnapshotFromContextRecord(const repiu::platform::GuestCpuContext& sourc
         return;
     }
 
-#if defined(_M_IX86)
+// Task 507: `_M_IX86` alone is MSVC's macro, so every Linux build compiled the
+// branch below away and left `captured = false` -- which is how the timeout
+// snapshot came to be empty on a host where the registers were there to read.
+// The form is `native_phase_sampler.cpp`'s, and the question both ask is the
+// architecture rather than the compiler.
+#if defined(_M_IX86) || defined(__i386__)
     snapshot->captured = true;
     snapshot->eip = source.Eip;
     snapshot->eax = source.Eax;

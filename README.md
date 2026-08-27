@@ -132,20 +132,30 @@ cmd /c scripts\build_win32_x86.bat
 
 출력은 `build/win32_x86_debug/Debug/`에 생성됩니다.
 
-### 6. Linux 빌드 (Stage 1) / Linux build
+### 6. Linux 빌드 / Linux build
 
-플랫폼 공용 코어와 그 probe는 Linux에서 i386으로 빌드됩니다. **실행 엔진·로더·런처는 아직
-Windows 전용이라 게임은 실행되지 않습니다.**
+플랫폼 공용 코어, 실행 엔진, 로더와 probe는 Linux에서 i386으로 빌드됩니다. Task 506부터
+기본 `dynamic` AOT backend도 Linux에서 실행되며, WSLg의 `pumpit1`에서 실제 Glide 버퍼 스왑과
+non-black 픽셀이 확인되었습니다.
+
+*The platform-neutral core, execution engine, loader, and probes build as i386 on Linux. Since
+Task 506 the default `dynamic` AOT backend runs there as well; real Glide buffer swaps and non-black
+pixels have been confirmed with `pumpit1` under WSLg.*
 
 ```bash
 sudo apt update && sudo apt install -y gcc-multilib g++-multilib libc6-dev-i386
-scripts/build_linux_i386.sh --config Debug --target repiu_exe --target repiu_core_probe
+scripts/build_linux_i386.sh --config Debug --target repiu --target repiu_core_probe
 build/linux_i386/repiu_core_probe
+REPIU_GLIDE_PIXEL_DIAG=1 build/linux_i386/repiu pumpit1
 ```
 
-`repiu_core_probe`는 플랫폼에 의존하지 않는 probe 9개를 담고 **양쪽 OS에서 모두**
+`repiu_core_probe`는 플랫폼에 의존하지 않는 probe 15개를 담고 **양쪽 OS에서 모두**
 빌드되므로, 같은 코드가 두 환경에서 같은 결과를 내는지 직접 비교할 수 있습니다. Windows
 에서는 `repiu_aot_probe`가 같은 probe를 계속 포함합니다.
+
+*`repiu_core_probe` contains 15 platform-independent probes and builds on both operating systems,
+so the same contracts can be compared directly. On Windows, `repiu_aot_probe` continues to include
+the same probes.*
 
 런처는 Linux에서도 뜹니다. 32비트 데스크톱 개발 패키지가 필요합니다.
 
@@ -156,14 +166,13 @@ scripts/build_linux_i386.sh --config Debug --target repiu_launcher
 build/linux_i386/repiu_launcher
 ```
 
-롬셋 목록과 옵션은 Windows와 같은 코드입니다. **실행 엔진은 아직 Windows 전용이라 롬셋을
-고르면 그 사실을 알리고 종료합니다.** 데스크톱 패키지 없이 코어와 probe만 빌드하려면
-`--headless`를 주십시오.
+독립 `repiu_launcher`의 롬셋 목록과 옵션은 Windows와 같은 코드입니다. 게임은 위의 `repiu`
+실행 파일로 직접 시작합니다. 데스크톱 패키지 없이 코어와 probe만 빌드하려면 `--headless`를
+주십시오.
 
-*The platform-neutral core and its probe build as i386 on Linux; the execution engine, loader,
-and launcher are still Windows-only, so no game runs yet. `repiu_core_probe` holds the nine
-platform-independent probes and builds on both systems, so the same code can be compared directly
-across them.*
+*The standalone `repiu_launcher` shares its ROM-set list and options with Windows. Start games
+directly through the `repiu` executable shown above. Pass `--headless` when only the core and probes
+are needed without desktop packages.*
 
 ### 5. Release 빌드 / Release build
 

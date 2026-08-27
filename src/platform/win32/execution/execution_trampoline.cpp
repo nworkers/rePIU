@@ -7,6 +7,7 @@
 #include "repiu/platform/virtual_memory.h"
 #include "repiu/platform/guest_stack_switch.h"
 #include "repiu/platform/host_environment.h"
+#include "repiu/platform/host_error_stream.h"
 #include "repiu/platform/host_thread.h"
 #include "repiu/runtime/execution_timeout.h"
 #include "repiu/platform/thunk_calling_convention.h"
@@ -4191,6 +4192,60 @@ bool IsAotCacheAddress(const ThreadContext* context, std::uint32_t address)
     return address >= context->aot_placement->base_address && address < end;
 }
 
+// Task 507. What the shutdown path asks of the guest thread, and what it gets
+// back. One structure rather than captures, because this crosses a callback the
+// platform layer defines with a `void*`.
+struct GuestShutdownRecoveryRequest
+{
+    ThreadContext* context = nullptr;
+    // Filled only for a timeout: an exit the operator asked for is not a
+    // position worth reporting, and the field is read as "where it stopped".
+    X86ExecutionSnapshot* snapshot = nullptr;
+    // Set by the callback when it redirected the thread. False means the guest
+    // was somewhere this path will not recover from, which is a different
+    // outcome from the interrupt itself failing.
+    bool recovered = false;
+    // Where the last look found the thread. Kept whether or not the callback
+    // acted, because "not in recoverable code" is only half an answer without
+    // the address that says which code it was in.
+    std::uint32_t last_eip = 0;
+};
+
+// **This runs on a different thread on each host.** Windows freezes the guest
+// thread and runs this on the caller's; Linux runs it on the guest thread
+// itself, inside a signal handler. So it carries the fault callback's
+// constraints -- it allocates nothing, takes no lock, and blocks on nothing. The
+// message that used to be written here now belongs to the requesting thread,
+// because assigning a std::string is an allocation.
+void RecoverGuestThreadForShutdown(repiu::platform::GuestCpuContext* registers,
+                                   void* user_data)
+{
+    auto* request = static_cast<GuestShutdownRecoveryRequest*>(user_data);
+    if (request == nullptr || registers == nullptr ||
+        request->context == nullptr)
+    {
+        return;
+    }
+    if (request->snapshot != nullptr)
+    {
+        CopySnapshotFromContextRecord(*registers, request->snapshot);
+    }
+
+    // The one defence against recovering from the wrong place. Guest code and
+    // the AOT cache are the two regions whose frames the recovery entry knows
+    // how to unwind; anywhere else -- host code, or a fault handler of the
+    // engine's own -- it would return through a frame that was never set up.
+    const std::uint32_t eip = static_cast<std::uint32_t>(registers->Eip);
+    request->last_eip = eip;
+    if (!IsGuestInstructionPointer(request->context, eip) &&
+        !IsAotCacheAddress(request->context, eip))
+    {
+        return;
+    }
+    RecoverToHost(registers, request->context);
+    request->recovered = true;
+}
+
 bool RunWin32ExecutionThread(
     const Win32RelocatedImagePlacement& placement,
     std::uint32_t entry_address,
@@ -4960,96 +5015,289 @@ bool RunWin32ExecutionThread(
             host_exit_requested ? 0U : 3U;
         attempt->thread_exit_code = interruption_exit_code;
 
-        // Task 503d-19: the forced interruption stays Windows-only, and this
-        // is the one thing Linux cannot do yet.
+        // Task 507: the graceful path runs on both hosts now.
         //
-        // 3d-18 settled what the answer is -- the graceful path here (suspend
-        // the thread, point its context at the recovery entry, resume) is what
-        // a signal performs on Linux, and `TerminateThread` below gets no
-        // counterpart at all. Building that is the next sub-stage's work,
-        // because this path runs only when a budget expires or the window
-        // closes, and a run that ends by itself never reaches it.
+        // What stood here was four Win32 calls -- suspend, read the context,
+        // write it back, resume -- which is exactly what `InterruptHostThread`
+        // performs on Windows, and what a single signal performs on Linux.
+        // 3d-18 named that equivalence and 3d-20 built it; this is the caller
+        // that was waiting for it.
         //
-        // Until then a Linux run that has to be interrupted leaves the guest
-        // thread where it is; the loader still reports the attempt, and the
-        // process exit is what stops the thread.
-        bool gracefully_interrupted = false;
-#if defined(_WIN32)
-        auto* thread_handle = static_cast<HANDLE>(thread.handle);
-        if (SuspendThread(thread_handle) != static_cast<DWORD>(-1))
+        // **The callback runs on a different thread on each host**, so nothing
+        // that allocates may be inside it. The messages below are therefore
+        // written here, on the thread that asked, rather than in the callback
+        // where they used to be.
+        //
+        // A short deadline: this is a shutdown, and a guest thread that does not
+        // answer within it is a finding rather than something to wait out.
+        constexpr std::uint32_t kShutdownInterruptTimeoutMilliseconds = 200U;
+        // Task 507: asked more than once, because one look lands wherever the
+        // thread happens to be.
+        //
+        // The guest thread spends much of a frame inside the engine rather than
+        // inside guest code -- an HLE call, the Glide gate, a dispatch handler
+        // -- and the callback refuses all of those, correctly: they are frames
+        // the recovery entry cannot unwind. A single sample therefore reports
+        // "not in recoverable code" most of the time even though the thread
+        // returns to guest code microseconds later. Measured on `pumpit1`, one
+        // attempt found it there in none of the runs tried.
+        //
+        // Bounded, and short: this is the shutdown path, and a guest thread that
+        // never comes back to its own code -- one waiting on a host that has
+        // stopped pumping, for instance -- has to be given up on rather than
+        // waited for.
+        constexpr std::uint32_t kShutdownRecoveryAttempts = 40U;
+        constexpr std::uint32_t kShutdownRecoveryRetryMilliseconds = 5U;
+        GuestShutdownRecoveryRequest recovery_request;
+        recovery_request.context = &context;
+        recovery_request.snapshot =
+            host_exit_requested ? nullptr : &attempt->timeout_snapshot;
+        repiu::platform::ThreadInterruptFailure interrupt_failure =
+            repiu::platform::ThreadInterruptFailure::kNone;
+        bool interrupt_answered = false;
+        std::uint32_t recovery_attempts = 0;
+        while (recovery_attempts < kShutdownRecoveryAttempts)
         {
-            repiu::platform::GuestCpuContext win32_context = {};
-            win32_context.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS;
-            if (GetThreadContext(thread_handle, &win32_context))
+            ++recovery_attempts;
+            interrupt_answered = repiu::platform::InterruptHostThread(
+                thread, &RecoverGuestThreadForShutdown, &recovery_request,
+                kShutdownInterruptTimeoutMilliseconds, &interrupt_failure);
+            if (!interrupt_answered || recovery_request.recovered)
             {
-                if (!host_exit_requested)
-                {
-                    CopySnapshotFromContextRecord(
-                        win32_context, &attempt->timeout_snapshot);
-                }
-
-                const std::uint32_t suspended_eip = static_cast<std::uint32_t>(win32_context.Eip);
-                if (IsGuestInstructionPointer(&context, suspended_eip) ||
-                    IsAotCacheAddress(&context, suspended_eip))
-                {
-                    context.hle_message = host_exit_requested
-                        ? "SDL exit requested; hijacked guest thread for clean teardown"
-                        : "timeout reached during guest execution; hijacked thread for clean teardown";
-                    RecoverToHost(&win32_context, &context);
-                    SetThreadContext(thread_handle, &win32_context);
-                    gracefully_interrupted = true;
-                }
+                break;
             }
-            ResumeThread(thread_handle);
+            // The first sample is the one that answers "where was the guest when
+            // the run ended"; the ones after it are only looking for a moment to
+            // act on, and would otherwise overwrite that answer with a later
+            // position.
+            recovery_request.snapshot = nullptr;
+            // Task 507: the gate has to keep being served while this waits.
+            //
+            // A guest thread inside the Glide gate is waiting for the host to
+            // execute the command it handed over, and the host is here. Stop
+            // pumping and it never returns to guest code, so every attempt
+            // refuses and the loop spends its whole budget watching a thread
+            // that cannot move. Measured on `pumpit1`: a run whose guest was in
+            // the gate refused all forty attempts, and the same run's teardown
+            // then blocked behind the same thread.
+            context.glide_backend.PumpHostCommands();
+            repiu::platform::YieldMilliseconds(
+                kShutdownRecoveryRetryMilliseconds);
+        }
 
-            if (gracefully_interrupted)
+        bool gracefully_interrupted =
+            interrupt_answered && recovery_request.recovered;
+        if (!interrupt_answered &&
+            interrupt_failure ==
+                repiu::platform::ThreadInterruptFailure::kNotDelivered)
+        {
+            // Undelivered means there was no thread to deliver to, which on this
+            // path usually means it ended on its own between the poll loop
+            // giving up and this asking. A thread that has exited is one that
+            // stopped, so it is joined rather than detached.
+            gracefully_interrupted =
+                repiu::platform::JoinHostThread(thread, 100U, nullptr);
+        }
+        if (gracefully_interrupted && recovery_request.recovered)
+        {
+            // Task 503d-18: one question instead of two. What stood here waited
+            // and then read GetExitCodeThread, comparing against STILL_ACTIVE
+            // -- which is what that call also reports for a thread that is
+            // still running. The code it collected was never read, and what
+            // this establishes is only that the thread stopped, so the join
+            // says it on its own.
+            if (!repiu::platform::JoinHostThread(thread, 3000U, nullptr))
             {
-                // Task 503d-18: one question instead of two. What stood here
-                // waited and then read GetExitCodeThread, comparing against
-                // STILL_ACTIVE -- which is what that call also reports for a
-                // thread that is still running. The code it collected was
-                // never read, and what this establishes is only that the
-                // thread stopped, so the join says it on its own.
-                if (!repiu::platform::JoinHostThread(thread, 3000U, nullptr))
-                {
-                    gracefully_interrupted = false;
-                }
+                gracefully_interrupted = false;
             }
         }
 
+        if (gracefully_interrupted && recovery_request.recovered)
+        {
+            context.hle_message = host_exit_requested
+                ? "SDL exit requested; hijacked guest thread for clean teardown"
+                : "timeout reached during guest execution; hijacked thread for clean teardown";
+        }
+        else if (gracefully_interrupted)
+        {
+            // The thread had ended by itself before this asked.
+            context.hle_message = host_exit_requested
+                ? "exit requested; guest thread had already exited"
+                : "timeout reached; guest thread had already exited";
+        }
+        else if (!interrupt_answered)
+        {
+            // Which of the three it was decides what to look at next, so it is
+            // named rather than folded into "failed": a refusal is this caller's
+            // bug, an undelivered signal means the thread is already gone, and a
+            // timeout means it is there and not answering -- the shape the
+            // stalled interrupt handler in the frontier's section 6 leaves.
+            const char* reason = "refused";
+            switch (interrupt_failure)
+            {
+                case repiu::platform::ThreadInterruptFailure::kNotDelivered:
+                    reason = "not delivered";
+                    break;
+                case repiu::platform::ThreadInterruptFailure::kTimedOut:
+                    reason = "no answer within the deadline";
+                    break;
+                default:
+                    break;
+            }
+            context.hle_message =
+                (host_exit_requested
+                     ? std::string("exit requested; guest thread not stopped (")
+                     : std::string("timeout reached; guest thread not stopped (")) +
+                reason + ")";
+        }
+        else
+        {
+            // The interrupt worked and the callback declined: the guest thread
+            // was outside its own image and outside the AOT cache, so there was
+            // no frame to unwind it through.
+            context.hle_message = host_exit_requested
+                ? "exit requested; guest thread was not in recoverable code"
+                : "timeout reached; guest thread was not in recoverable code";
+        }
+
+#if defined(_WIN32)
         // Task 503d-19: resolved where it is used rather than at the top of a
         // function that no longer needs the table for anything else.
+        //
+        // Task 507: still Windows-only, and still deliberately so. Nothing in
+        // POSIX stops a thread that is not asking to be stopped -- pthread_cancel
+        // acts at cancellation points and guest code has none -- so on Linux a
+        // guest thread that refused the interrupt keeps running, and what
+        // changes below is only that the loader stops waiting for it.
         const Win32ThreadApi& api = GetWin32ThreadApi();
         if (!gracefully_interrupted && api.terminate_thread != nullptr)
         {
+            auto* thread_handle = static_cast<HANDLE>(thread.handle);
             api.terminate_thread(thread_handle,
                                  static_cast<DWORD>(interruption_exit_code));
-            (void)repiu::platform::JoinHostThread(thread, 5000U, nullptr);
+            gracefully_interrupted =
+                repiu::platform::JoinHostThread(thread, 5000U, nullptr);
         }
-#else
-        // Said plainly rather than left blank: the run ended because a budget
-        // expired or the window closed, and the guest thread was not stopped.
-        context.hle_message = host_exit_requested
-            ? "exit requested; guest thread not interrupted on this host"
-            : "timeout reached; guest thread not interrupted on this host";
 #endif
 
-        // Task 401: the guest thread has stopped, so the census is final here.
-        // Write it before Glide close, handler removal, and worker shutdown --
-        // a 45-second interrupted pumpit3 run was observed hanging in that
-        // sequence, which would otherwise discard the whole census.
+        // Task 507: written here rather than left to the loader's summary,
+        // because that summary is printed after teardown, and a teardown that
+        // dumps core takes it with it -- which is how this path came to be
+        // investigated with no record of what it had done. One unbuffered line,
+        // on the stream and through the call the live telemetry already uses.
+        {
+            char shutdown_line[256] = {};
+            const int length = std::snprintf(
+                shutdown_line, sizeof(shutdown_line),
+                "[repiu-shutdown] reason=%s attempts=%u answered=%d "
+                "recovered=%d stopped=%d failure=%u eip=0x%08X gate=%d\n",
+                host_exit_requested ? "exit-requested" : "timeout",
+                static_cast<unsigned>(recovery_attempts),
+                interrupt_answered ? 1 : 0,
+                recovery_request.recovered ? 1 : 0,
+                gracefully_interrupted ? 1 : 0,
+                static_cast<unsigned>(interrupt_failure),
+                static_cast<unsigned>(recovery_request.last_eip),
+                context.glide_backend.guest_in_glide_gate() ? 1 : 0);
+            if (length > 0)
+            {
+                repiu::platform::WriteHostErrorStream(
+                    shutdown_line,
+                    static_cast<std::size_t>(length) < sizeof(shutdown_line)
+                        ? static_cast<std::size_t>(length)
+                        : sizeof(shutdown_line) - 1U);
+            }
+        }
+
+        // Task 507: the same milestones the uninterrupted path publishes through
+        // `host_phase`, on the stream instead.
+        //
+        // The comment below already knew this sequence can block; what it could
+        // not say was where, because nothing on this path names the step it is
+        // in and the loader's summary comes after all of it. A run whose guest
+        // thread was left in the Glide gate blocked here for ten minutes with
+        // nothing between the decision above and silence.
+        const auto mark_shutdown_step = [](const char* step) {
+            char line[96] = {};
+            const int length = std::snprintf(
+                line, sizeof(line), "[repiu-shutdown] step=%s\n", step);
+            if (length > 0)
+            {
+                repiu::platform::WriteHostErrorStream(
+                    line,
+                    static_cast<std::size_t>(length) < sizeof(line)
+                        ? static_cast<std::size_t>(length)
+                        : sizeof(line) - 1U);
+            }
+        };
+
+        // Task 401: write the census before Glide close, handler removal, and
+        // worker shutdown -- a 45-second interrupted pumpit3 run was observed
+        // hanging in that sequence, which would otherwise discard the whole
+        // thing. That reason still holds; what 507 changed is the sentence this
+        // comment opened with, which said the guest thread has stopped by now.
+        // It has not necessarily, so this is first for the same reason it was:
+        // it is the last point at which the census is certain to be written.
         if (context.single_step_hotspot_profile != nullptr)
         {
+            mark_shutdown_step("hotspot-dump");
             WriteSingleStepHotspotDumpIfEnabled(
                 context.single_step_hotspot_profile.get(), nullptr, nullptr);
         }
 
+        // Task 508: a guest thread that refused recovery is still running, and
+        // everything below this point was written for one that stopped.
+        //
+        // The step that matters is `remove_vectored_handler`. It restores the
+        // dispositions of SIGSEGV, SIGBUS, SIGTRAP, SIGILL and SIGFPE to what
+        // they were before 3c installed itself, which is the default -- nothing
+        // else in this repository touches those five. A running guest thread
+        // plants an INT3 or sets the trap flag in the ordinary course of
+        // dispatching, so the next one it hits after this call has nothing left
+        // to receive it, and the kernel's default disposition dumps core. Two of
+        // six measured runs died that way, both with `translation-worker` -- the
+        // step right after the removal -- as the last marker they printed.
+        // **This path was removing a handler a live thread still needs.**
+        //
+        // So it is not removed, and neither is anything else done that only a
+        // stopped thread makes safe. What is skipped is not cleanup that got
+        // lost: `_Exit` hands the Glide and SDL resources back to the kernel,
+        // the worker join can block, restoring page protections under a running
+        // thread is the more dangerous of the two options, and `attempt` never
+        // reaches the caller from here. Both dumps that write a file survive --
+        // the hotspot census above, and the probe dump below, which only writes
+        // bytes captured earlier and so races nothing.
+        if (!gracefully_interrupted)
+        {
+            attempt->guest_thread_stopped = false;
+            mark_shutdown_step("probe-dump");
+            WriteWin32ExecutionProbeDump(context.execution_probe_dump_request,
+                                         &context.execution_probe_dump_result);
+            // Kept even though `_Exit` follows, because the call is this
+            // caller's statement that it cannot say the thread stopped. It is
+            // the half of the pair 507 built against `CloseHostThread`'s join,
+            // and dropping it would leave that function with no caller.
+            repiu::platform::DetachHostThread(&thread);
+            mark_shutdown_step("immediate-exit");
+            // Task 507's reasoning, unchanged: once recovery has been refused,
+            // nothing this process does afterwards can be trusted not to race
+            // the thread that is still running.
+            std::fflush(nullptr);
+            std::_Exit(static_cast<int>(interruption_exit_code));
+        }
+
+        mark_shutdown_step("glide-close");
         context.glide_backend.Close();
+        mark_shutdown_step("fault-handler");
         remove_vectored_handler();
+        mark_shutdown_step("translation-worker");
         stop_translation_worker();
+        mark_shutdown_step("write-watches");
         RestoreWin32AotGuestPageWriteWatches(&context.aot_page_write_watch);
+        mark_shutdown_step("probe-dump");
         WriteWin32ExecutionProbeDump(context.execution_probe_dump_request,
                                      &context.execution_probe_dump_result);
+        mark_shutdown_step("thread-release");
         CopyThreadObservationToAttempt(context, attempt);
         attempt->valid = true;
         attempt->message = context.hle_message.empty()
@@ -5057,7 +5305,17 @@ bool RunWin32ExecutionThread(
                 ? "minimal execution stopped by SDL exit request"
                 : "minimal execution attempt timed out")
             : context.hle_message;
+        // Task 507: `CloseHostThread` joins to reclaim the thread's stack, so on
+        // a guest thread still running it never returns -- which is what a Linux
+        // run asked to quit did, after SDL turned the signal into a quit event
+        // and brought it here.
+        //
+        // Task 508: the guard that used to stand here moved to the top of this
+        // sequence. Everything from here down runs only for a thread that
+        // stopped, so the join is once again the correct call rather than a
+        // choice between two.
         repiu::platform::CloseHostThread(&thread);
+        mark_shutdown_step("done");
         return true;
     }
 

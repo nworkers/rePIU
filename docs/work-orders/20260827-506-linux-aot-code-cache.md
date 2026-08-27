@@ -1,7 +1,7 @@
 # Task 506 작업 지시 — Linux AOT 코드 캐시
 
 설계: [20260827-506](../design/20260827-506-linux-aot-code-cache.md) ·
-작업 로그: 20260827-506 (구현 시 작성)
+작업 로그: [20260827-506](../work-logs/20260827-506-linux-aot-code-cache.md)
 
 ## 0. 시작 전에 — 규모를 다시 세십시오
 
@@ -17,21 +17,16 @@ grep -oE "\b(VirtualAlloc|VirtualFree|VirtualProtect|VirtualQuery|GetSystemInfo|
 `GetLastError` 4, `VirtualAlloc` 2, `VirtualQuery`·`GetSystemInfo` 각 1.
 `aot_page_coherence_win32.cpp`는 `VirtualProtect` 8, 나머지 소수.
 
-## 1. 명령 캐시 플러시 계층을 먼저 만드십시오
+## 1. 기존 명령 캐시 플러시 계층을 재사용하십시오
 
-이것이 **새로 만들어야 하는 유일한 것**입니다. 나머지는 3b가 이미 덮습니다.
+**구현 시점 정정:** Task 503d-11이 `FlushInstructionCacheRange`를 이미 양쪽 호스트에 구현했습니다.
+새 헤더를 만들지 말고 그 함수를 사용합니다. 페이지 크기는 `virtual_memory.h`에
+`SystemPageSize`를 추가해 AOT 코드가 호스트 API를 직접 부르지 않게 합니다.
 
-`include/repiu/platform/instruction_cache.h`에 하나:
-
-```cpp
-void FlushInstructionCache(void* address, std::size_t bytes);
-```
-
-* Windows: `::FlushInstructionCache(GetCurrentProcess(), address, bytes)`.
-* Linux: `__builtin___clear_cache`.
-
-**헤더에 x86에서 이것이 아무것도 하지 않는다는 사실을 적으십시오.** x86의 명령 캐시는 데이터
-캐시와 일관되므로 아키텍처상 불필요합니다. 그리고 이것이 frontier 8절이 모으는
+`SystemPageSize`만 새로 만들고 나머지는 3b가 이미 덮은 함수를 사용합니다.
+기존 `FlushInstructionCacheRange` 문서에는 x86에서 이것이 실질적으로 아무것도 하지 않는다는
+사실이 적혀 있습니다. x86의 명령 캐시는 데이터 캐시와 일관되므로 아키텍처상 불필요합니다.
+그리고 이것이 frontier 8절이 모으는
 *"컴파일되면서 아무것도 안 하는 코드"*와 **의도가 반대**라는 점을 함께 적으십시오 — 저것들은
 실수로 죽어 있었고, 이것은 **알고서 비워 둔 자리**입니다. 그 구분이 헤더에 없으면 다음 사람이
 8절의 목록에 이것을 올립니다.
@@ -47,7 +42,7 @@ void FlushInstructionCache(void* address, std::size_t bytes);
 | `VirtualProtect` | `ProtectMemory` — **`previous`를 쓰는 호출부를 확인할 것** |
 | `VirtualFree` | `ReleaseMemory` |
 | `VirtualQuery` | `QueryMemory` / `IsRangeReadable` |
-| `GetSystemInfo`(페이지 크기) | 3b가 이미 답하는지 먼저 볼 것, 없으면 `sysconf(_SC_PAGESIZE)` |
+| `GetSystemInfo`(페이지 크기) | `SystemPageSize` |
 | `GetLastError` | `errno` — **진단용이지 제어 흐름용이 아닙니다** |
 
 **`ProtectMemory`의 `previous`를 흘리지 마십시오.** 3b 헤더가 경고합니다 — `mprotect`는
@@ -124,7 +119,7 @@ aot_page_coherence_win32.cpp:637  게스트 페이지 회수
 # Task 506 Work Order — The Linux AOT code cache
 
 Design: [20260827-506](../design/20260827-506-linux-aot-code-cache.md) ·
-Work log: 20260827-506 (to be written during implementation)
+Work log: [20260827-506](../work-logs/20260827-506-linux-aot-code-cache.md)
 
 ## 0. Before starting — count the size again
 
@@ -140,22 +135,17 @@ Expected: `VirtualProtect` 17, `VirtualFree` 10, `FlushInstructionCache` and `Ge
 each, `GetLastError` 4, `VirtualAlloc` 2, `VirtualQuery` and `GetSystemInfo` 1 each.
 `aot_page_coherence_win32.cpp` has `VirtualProtect` 8 and a few others.
 
-## 1. Build the instruction-cache flush layer first
+## 1. Reuse the existing instruction-cache flush layer
 
-This is the **only thing that has to be built**. 3b already covers the rest.
+**Implementation-time correction:** Task 503d-11 already implemented `FlushInstructionCacheRange`
+on both hosts. Reuse it instead of creating another header. Add `SystemPageSize` to
+`virtual_memory.h` so AOT code does not call a host API directly for page size.
 
-One function in `include/repiu/platform/instruction_cache.h`:
-
-```cpp
-void FlushInstructionCache(void* address, std::size_t bytes);
-```
-
-* Windows: `::FlushInstructionCache(GetCurrentProcess(), address, bytes)`.
-* Linux: `__builtin___clear_cache`.
-
-**Write into the header that this does nothing on x86.** x86's instruction cache is coherent with its
-data cache, so the call is architecturally unnecessary. And write that this is the **opposite in
-intent** to what frontier section 8 collects — those functions were dead by mistake; this one is
+Only `SystemPageSize` is new; everything else uses functions 3b already covers. The existing
+`FlushInstructionCacheRange` documentation records that it is effectively a no-op on x86. Its
+instruction cache is coherent with its data cache, so the call is architecturally unnecessary.
+That is the **opposite in intent** to what frontier section 8 collects — those functions were dead
+by mistake; this one is
 **deliberately empty**. Without that distinction in the header, the next reader adds it to section
 8's list.
 
@@ -170,7 +160,7 @@ portable code keeps, and removing the calls removes the reason with them.
 | `VirtualProtect` | `ProtectMemory` — **check which call sites use `previous`** |
 | `VirtualFree` | `ReleaseMemory` |
 | `VirtualQuery` | `QueryMemory` / `IsRangeReadable` |
-| `GetSystemInfo` (page size) | see whether 3b already answers it; otherwise `sysconf(_SC_PAGESIZE)` |
+| `GetSystemInfo` (page size) | `SystemPageSize` |
 | `GetLastError` | `errno` — **for the record, not for control flow** |
 
 **Do not drop `ProtectMemory`'s `previous`.** The 3b header warns about it: `mprotect` does not report

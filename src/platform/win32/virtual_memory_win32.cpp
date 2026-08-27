@@ -186,6 +186,15 @@ bool FlushInstructionCacheRange(const void* address, const std::size_t bytes)
                                  static_cast<SIZE_T>(bytes)) != 0;
 }
 
+std::size_t SystemPageSize()
+{
+    SYSTEM_INFO information{};
+    GetSystemInfo(&information);
+    return information.dwPageSize != 0U
+        ? static_cast<std::size_t>(information.dwPageSize)
+        : static_cast<std::size_t>(4096U);
+}
+
 MemoryRegion QueryMemory(const void* address)
 {
     MemoryRegion region;

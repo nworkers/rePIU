@@ -2,6 +2,8 @@
 
 #include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/aot_translation_plan.h"
+#include "repiu/platform/atomic_ops.h"
+#include "repiu/platform/virtual_memory.h"
 #include "aot/aot_generation_failure_policy.h"
 #include "aot/aot_dbt_hle_dispatch.h"
 #include "aot/aot_dbt_direct_edge_dispatch.h"
@@ -11,17 +13,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cerrno>
 #include <limits>
 #include <algorithm>
 #include <unordered_map>
 #include <utility>
-
-#if defined(_WIN32)
-#define NOMINMAX
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include "repiu/platform/atomic_ops.h"
-#endif
 
 namespace repiu::platform::win32
 {
@@ -549,13 +545,11 @@ void ResolveWin32AotGuardedSegmentReads(
                     &shadow_address, sizeof(shadow_address));
     }
 }
-#if defined(_WIN32)
 // Task 329: referencing the live arena gives up the failure return that
 // `ReadProcessMemory` provided, so the range is checked once per process
 // instead of copied once per translation. One check is enough because nothing
-// decommits guest memory (the tree contains no `MEM_DECOMMIT`; every
-// `VirtualFree` is a teardown `MEM_RELEASE`) and guest page protection only
-// moves among readable values, never `PAGE_NOACCESS`.
+// decommits guest memory (every release is a whole-reservation teardown) and
+// guest page protection only moves among readable values, never no-access.
 //
 // Worker-thread only, like the rest of this path, so the cache is plain state.
 bool VerifyWin32GuestArenaDirectlyReadable(std::uint32_t runtime_base,
@@ -570,45 +564,23 @@ bool VerifyWin32GuestArenaDirectlyReadable(std::uint32_t runtime_base,
         return verified_result;
     }
 
-    const auto readable = [](DWORD protect) {
-        if ((protect & PAGE_GUARD) != 0U)
-        {
-            return false;
-        }
-        switch (protect & 0xFFU)
-        {
-            case PAGE_READONLY:
-            case PAGE_READWRITE:
-            case PAGE_WRITECOPY:
-            case PAGE_EXECUTE_READ:
-            case PAGE_EXECUTE_READWRITE:
-            case PAGE_EXECUTE_WRITECOPY:
-                return true;
-            default:
-                return false;
-        }
-    };
-
     const std::uint64_t end =
         static_cast<std::uint64_t>(runtime_base) + runtime_size;
     bool covered = true;
     std::uint64_t address = runtime_base;
     while (address < end)
     {
-        MEMORY_BASIC_INFORMATION information{};
-        if (VirtualQuery(reinterpret_cast<const void*>(
-                             static_cast<std::uintptr_t>(address)),
-                         &information, sizeof(information)) == 0 ||
-            information.State != MEM_COMMIT ||
-            !readable(information.Protect))
+        const repiu::platform::MemoryRegion region =
+            repiu::platform::QueryMemory(reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(address)));
+        if (!region.valid || !region.committed || !region.readable)
         {
             covered = false;
             break;
         }
         const std::uint64_t region_end =
             static_cast<std::uint64_t>(
-                reinterpret_cast<std::uintptr_t>(information.BaseAddress)) +
-            information.RegionSize;
+                reinterpret_cast<std::uintptr_t>(region.base)) + region.size;
         if (region_end <= address)
         {
             covered = false;
@@ -647,13 +619,7 @@ bool AotPatchWideProtectEnabled()
 
 std::size_t AotPatchPageSize()
 {
-    static const std::size_t page_size = [] {
-        SYSTEM_INFO info = {};
-        GetSystemInfo(&info);
-        return info.dwPageSize != 0U
-            ? static_cast<std::size_t>(info.dwPageSize)
-            : static_cast<std::size_t>(4096);
-    }();
+    static const std::size_t page_size = repiu::platform::SystemPageSize();
     return page_size;
 }
 
@@ -742,8 +708,6 @@ AotCachePatchWindow ComputeAotCachePatchWindow(
     }
     return AotCachePatchWindow{cache + start, end - start};
 }
-#endif
-
 }  // namespace
 
 void BuildWin32AotSegmentResolution(
@@ -808,10 +772,6 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
         placement->message = "AOT byte image is not ready for placement";
         return false;
     }
-#if !defined(_WIN32)
-    placement->message = "AOT code cache placement requires Win32";
-    return false;
-#else
     if (image.bytes.size() > std::numeric_limits<std::uint32_t>::max())
     {
         placement->message = "AOT code cache exceeds Win32 address size";
@@ -820,19 +780,22 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
     constexpr std::uint32_t kDynamicCacheCapacity = 16U * 1024U * 1024U;
     const std::size_t capacity = std::max<std::size_t>(
         image.bytes.size(), kDynamicCacheCapacity);
-    void* memory = VirtualAlloc(nullptr, capacity,
-                                MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    const repiu::platform::MemoryReservation reservation =
+        repiu::platform::ReserveMemory(
+            nullptr, capacity, true,
+            repiu::platform::MemoryProtection::kReadWrite);
+    void* memory = reservation.base;
     placement->valid = true;
     if (memory == nullptr)
     {
-        placement->windows_error = GetLastError();
-        placement->message = "VirtualAlloc for AOT code cache failed";
+        placement->windows_error = reservation.error;
+        placement->message = "AOT code-cache allocation failed";
         return true;
     }
     const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(memory);
     if (base > std::numeric_limits<std::uint32_t>::max())
     {
-        VirtualFree(memory, 0, MEM_RELEASE);
+        repiu::platform::ReleaseMemory(memory, capacity);
         placement->message = "AOT code cache is outside the x86 address range";
         return true;
     }
@@ -840,7 +803,7 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
     if (!ResolveWin32AotTimerSafePoints(
             image, static_cast<std::uint8_t*>(memory), placement))
     {
-        VirtualFree(memory, 0, MEM_RELEASE);
+        repiu::platform::ReleaseMemory(memory, capacity);
         placement->message = "AOT timer safe-point request is unavailable";
         return true;
     }
@@ -860,7 +823,7 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
             image, static_cast<std::uint8_t*>(memory),
             static_cast<std::uint32_t>(base)))
     {
-        VirtualFree(memory, 0, MEM_RELEASE);
+        repiu::platform::ReleaseMemory(memory, capacity);
         placement->message = "AOT-DBT return thunk is unavailable";
         return true;
     }
@@ -868,7 +831,7 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
             image, static_cast<std::uint8_t*>(memory), image.bytes.size(),
             placement))
     {
-        VirtualFree(memory, 0, MEM_RELEASE);
+        repiu::platform::ReleaseMemory(memory, capacity);
         placement->message = "AOT direct-return table is unavailable";
         return true;
     }
@@ -876,7 +839,7 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
             image, static_cast<std::uint8_t*>(memory),
             static_cast<std::uint32_t>(base)))
     {
-        VirtualFree(memory, 0, MEM_RELEASE);
+        repiu::platform::ReleaseMemory(memory, capacity);
         placement->message =
             "AOT-DBT direct-edge thunk is unavailable";
         return true;
@@ -885,7 +848,7 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
             image, static_cast<std::uint8_t*>(memory),
             static_cast<std::uint32_t>(base)))
     {
-        VirtualFree(memory, 0, MEM_RELEASE);
+        repiu::platform::ReleaseMemory(memory, capacity);
         placement->message = "AOT-DBT HLE thunk is unavailable";
         return true;
     }
@@ -893,20 +856,23 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
             image, static_cast<std::uint8_t*>(memory),
             static_cast<std::uint32_t>(base)))
     {
-        VirtualFree(memory, 0, MEM_RELEASE);
+        repiu::platform::ReleaseMemory(memory, capacity);
         placement->message = "AOT-DBT indirect thunk is unavailable";
         return true;
     }
-    DWORD old_protection = 0;
-    if (VirtualProtect(memory, capacity, PAGE_EXECUTE_READ,
-                       &old_protection) == 0)
+    repiu::platform::MemoryProtection old_protection =
+        repiu::platform::MemoryProtection::kNoAccess;
+    if (!repiu::platform::ProtectMemory(
+            memory, capacity,
+            repiu::platform::MemoryProtection::kExecuteRead,
+            &old_protection))
     {
-        placement->windows_error = GetLastError();
-        VirtualFree(memory, 0, MEM_RELEASE);
-        placement->message = "VirtualProtect for AOT code cache failed";
+        placement->windows_error = static_cast<std::uint32_t>(errno);
+        repiu::platform::ReleaseMemory(memory, capacity);
+        placement->message = "AOT code-cache execute protection failed";
         return true;
     }
-    FlushInstructionCache(GetCurrentProcess(), memory, image.bytes.size());
+    repiu::platform::FlushInstructionCacheRange(memory, image.bytes.size());
     placement->base_address = static_cast<std::uint32_t>(base);
     placement->size = static_cast<std::uint32_t>(image.bytes.size());
     placement->capacity = static_cast<std::uint32_t>(capacity);
@@ -968,7 +934,6 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
     placement->placed = true;
     placement->message = "AOT code cache placed as Win32 execute-read memory";
     return true;
-#endif
 }
 
 bool AppendWin32DynamicAotTranslation(
@@ -1019,10 +984,6 @@ bool AppendWin32DynamicAotTranslation(
     const auto phase_now = [timing]() {
         return timing != nullptr ? ReadAotWorkerTimingCycles() : 0U;
     };
-#if !defined(_WIN32)
-    result->message = "dynamic AOT translation requires Win32";
-    return true;
-#else
     if (!placement->placed || runtime_size == 0U ||
         guest_entry < runtime_base || guest_entry - runtime_base >= runtime_size)
     {
@@ -1218,11 +1179,11 @@ bool AppendWin32DynamicAotTranslation(
     }
     const std::uint32_t generation =
         AllocateWin32AotGeneration(placement);
-    DWORD old_protection = 0;
     void* cache = reinterpret_cast<void*>(
         static_cast<std::uintptr_t>(placement->base_address));
-    if (VirtualProtect(cache, placement->capacity, PAGE_READWRITE,
-                       &old_protection) == 0)
+    if (!repiu::platform::ProtectMemory(
+            cache, placement->capacity,
+            repiu::platform::MemoryProtection::kReadWrite, nullptr))
     {
         result->message = "failed to make AOT cache writable";
         return true;
@@ -1233,9 +1194,9 @@ bool AppendWin32DynamicAotTranslation(
             image, static_cast<std::uint8_t*>(cache) + append_offset,
             placement))
     {
-        DWORD ignored = 0;
-        VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ,
-                       &ignored);
+        repiu::platform::ProtectMemory(
+            cache, placement->capacity,
+            repiu::platform::MemoryProtection::kExecuteRead, nullptr);
         result->unsafe_failure = true;
         result->message = "AOT timer safe-point request is unavailable";
         return true;
@@ -1259,9 +1220,9 @@ bool AppendWin32DynamicAotTranslation(
             image, static_cast<std::uint8_t*>(cache) + append_offset,
             placement->base_address + append_offset))
     {
-        DWORD ignored = 0;
-        VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ,
-                       &ignored);
+        repiu::platform::ProtectMemory(
+            cache, placement->capacity,
+            repiu::platform::MemoryProtection::kExecuteRead, nullptr);
         result->unsafe_failure = true;
         result->message = "AOT-DBT return thunk is unavailable";
         return true;
@@ -1270,9 +1231,9 @@ bool AppendWin32DynamicAotTranslation(
             image, static_cast<std::uint8_t*>(cache) + append_offset,
             image.bytes.size(), placement))
     {
-        DWORD ignored = 0;
-        VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ,
-                       &ignored);
+        repiu::platform::ProtectMemory(
+            cache, placement->capacity,
+            repiu::platform::MemoryProtection::kExecuteRead, nullptr);
         result->unsafe_failure = true;
         result->message = "AOT direct-return table is unavailable";
         return true;
@@ -1281,9 +1242,9 @@ bool AppendWin32DynamicAotTranslation(
             image, static_cast<std::uint8_t*>(cache) + append_offset,
             placement->base_address + append_offset))
     {
-        DWORD ignored = 0;
-        VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ,
-                       &ignored);
+        repiu::platform::ProtectMemory(
+            cache, placement->capacity,
+            repiu::platform::MemoryProtection::kExecuteRead, nullptr);
         result->unsafe_failure = true;
         result->message =
             "AOT-DBT direct-edge thunk is unavailable";
@@ -1293,9 +1254,9 @@ bool AppendWin32DynamicAotTranslation(
             image, static_cast<std::uint8_t*>(cache) + append_offset,
             placement->base_address + append_offset))
     {
-        DWORD ignored = 0;
-        VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ,
-                       &ignored);
+        repiu::platform::ProtectMemory(
+            cache, placement->capacity,
+            repiu::platform::MemoryProtection::kExecuteRead, nullptr);
         result->unsafe_failure = true;
         result->message = "AOT-DBT HLE thunk is unavailable";
         return true;
@@ -1304,9 +1265,9 @@ bool AppendWin32DynamicAotTranslation(
             image, static_cast<std::uint8_t*>(cache) + append_offset,
             placement->base_address + append_offset))
     {
-        DWORD ignored = 0;
-        VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ,
-                       &ignored);
+        repiu::platform::ProtectMemory(
+            cache, placement->capacity,
+            repiu::platform::MemoryProtection::kExecuteRead, nullptr);
         result->unsafe_failure = true;
         result->message = "AOT-DBT indirect thunk is unavailable";
         return true;
@@ -1362,17 +1323,15 @@ bool AppendWin32DynamicAotTranslation(
             ++result->relinked_entry_count;
         }
     }
-    DWORD ignored = 0;
-    const bool protected_rx = VirtualProtect(
-        cache, placement->capacity, PAGE_EXECUTE_READ, &ignored) != 0;
-    FlushInstructionCache(
-        GetCurrentProcess(),
+    const bool protected_rx = repiu::platform::ProtectMemory(
+        cache, placement->capacity,
+        repiu::platform::MemoryProtection::kExecuteRead, nullptr);
+    repiu::platform::FlushInstructionCacheRange(
         static_cast<std::uint8_t*>(cache) + append_offset,
         image.bytes.size());
     for (std::uint32_t cache_offset : relinked_cache_offsets)
     {
-        FlushInstructionCache(
-            GetCurrentProcess(),
+        repiu::platform::FlushInstructionCacheRange(
             static_cast<std::uint8_t*>(cache) + cache_offset, 5U);
     }
     if (!protected_rx)
@@ -1550,7 +1509,6 @@ bool AppendWin32DynamicAotTranslation(
     result->appended = true;
     result->message = "dynamic AOT translation appended";
     return true;
-#endif
 }
 
 std::uint32_t ReResolveWin32AotSegmentOverrides(
@@ -1558,12 +1516,6 @@ std::uint32_t ReResolveWin32AotSegmentOverrides(
     const Win32AotSegmentTable* segment_table,
     Win32AotSegmentPatchStats* stats)
 {
-#if !defined(_WIN32)
-    (void)placement;
-    (void)segment_table;
-    (void)stats;
-    return 0U;
-#else
     if (placement == nullptr || !placement->placed ||
         segment_table == nullptr ||
         (placement->segment_override_sites.empty() &&
@@ -1575,9 +1527,9 @@ std::uint32_t ReResolveWin32AotSegmentOverrides(
     }
     void* cache = reinterpret_cast<void*>(
         static_cast<std::uintptr_t>(placement->base_address));
-    DWORD old_protection = 0;
-    if (VirtualProtect(cache, placement->capacity, PAGE_READWRITE,
-                       &old_protection) == 0)
+    if (!repiu::platform::ProtectMemory(
+            cache, placement->capacity,
+            repiu::platform::MemoryProtection::kReadWrite, nullptr))
     {
         return 0U;
     }
@@ -1748,11 +1700,11 @@ std::uint32_t ReResolveWin32AotSegmentOverrides(
             ++stats->guarded_read_site_count;
         }
     }
-    DWORD ignored = 0;
-    VirtualProtect(cache, placement->capacity, PAGE_EXECUTE_READ, &ignored);
-    FlushInstructionCache(GetCurrentProcess(), cache, placement->size);
+    repiu::platform::ProtectMemory(
+        cache, placement->capacity,
+        repiu::platform::MemoryProtection::kExecuteRead, nullptr);
+    repiu::platform::FlushInstructionCacheRange(cache, placement->size);
     return processed;
-#endif
 }
 
 bool PatchWin32AotIndirectInlineCache(
@@ -1771,10 +1723,6 @@ bool PatchWin32AotIndirectInlineCache(
     result->cache_miss_address = cache_miss_address;
     result->guest_target = guest_target;
     result->cache_target = cache_target;
-#if !defined(_WIN32)
-    result->message = "AOT inline-cache patching requires Win32";
-    return true;
-#else
     if (!placement->placed ||
         cache_miss_address < placement->base_address)
     {
@@ -1934,11 +1882,11 @@ bool PatchWin32AotIndirectInlineCache(
     const AotCachePatchWindow patch_window =
         ComputeAotCachePatchWindow(*placement, patch_first_offset,
                                    patch_last_offset);
-    DWORD old_protection = 0;
-    if (VirtualProtect(patch_window.base, patch_window.size, PAGE_READWRITE,
-                       &old_protection) == 0)
+    if (!repiu::platform::ProtectMemory(
+            patch_window.base, patch_window.size,
+            repiu::platform::MemoryProtection::kReadWrite, nullptr))
     {
-        result->windows_error = GetLastError();
+        result->windows_error = static_cast<std::uint32_t>(errno);
         result->message = "failed to make AOT inline cache writable";
         return true;
     }
@@ -1951,9 +1899,9 @@ bool PatchWin32AotIndirectInlineCache(
     if (relative < std::numeric_limits<std::int32_t>::min() ||
         relative > std::numeric_limits<std::int32_t>::max())
     {
-        DWORD ignored = 0;
-        VirtualProtect(patch_window.base, patch_window.size,
-                       PAGE_EXECUTE_READ, &ignored);
+        repiu::platform::ProtectMemory(
+            patch_window.base, patch_window.size,
+            repiu::platform::MemoryProtection::kExecuteRead, nullptr);
         result->message = "AOT inline-cache target is outside rel32 range";
         return true;
     }
@@ -1966,22 +1914,20 @@ bool PatchWin32AotIndirectInlineCache(
     bytes[guard_offset + 1U] = 0x85U;
     std::memcpy(bytes + guard_offset + 2U,
                 &miss_displacement, sizeof(miss_displacement));
-    DWORD ignored = 0;
-    if (VirtualProtect(patch_window.base, patch_window.size,
-                       PAGE_EXECUTE_READ, &ignored) == 0)
+    if (!repiu::platform::ProtectMemory(
+            patch_window.base, patch_window.size,
+            repiu::platform::MemoryProtection::kExecuteRead, nullptr))
     {
-        result->windows_error = GetLastError();
+        result->windows_error = static_cast<std::uint32_t>(errno);
         result->message = "failed to restore AOT inline-cache RX protection";
         return true;
     }
-    FlushInstructionCache(GetCurrentProcess(),
-                          bytes + selected->cache_offset,
-                          selected->miss_cache_offset + 2U -
-                              selected->cache_offset);
+    repiu::platform::FlushInstructionCacheRange(
+        bytes + selected->cache_offset,
+        selected->miss_cache_offset + 2U - selected->cache_offset);
     result->patched = true;
     result->message = "AOT indirect inline cache patched";
     return true;
-#endif
 }
 
 void ReleaseWin32AotCodeCache(Win32AotCodeCachePlacement* placement)
@@ -1990,14 +1936,13 @@ void ReleaseWin32AotCodeCache(Win32AotCodeCachePlacement* placement)
     {
         return;
     }
-#if defined(_WIN32)
     if (placement->placed && placement->base_address != 0U)
     {
-        VirtualFree(reinterpret_cast<void*>(
-                        static_cast<std::uintptr_t>(placement->base_address)),
-                    0, MEM_RELEASE);
+        repiu::platform::ReleaseMemory(
+            reinterpret_cast<void*>(
+                static_cast<std::uintptr_t>(placement->base_address)),
+            placement->capacity);
     }
-#endif
     *placement = Win32AotCodeCachePlacement{};
 }
 
@@ -2134,32 +2079,27 @@ bool InstallWin32AotProbeSentinel(Win32AotCodeCachePlacement* placement,
     {
         return false;
     }
-#if !defined(_WIN32)
-    return false;
-#else
     std::uint32_t cache_address = 0;
     if (!FindAotCacheAddress(*placement, guest_address, &cache_address))
     {
         return false;
     }
-    DWORD old_protection = 0;
     void* cache = reinterpret_cast<void*>(
         static_cast<std::uintptr_t>(placement->base_address));
-    if (VirtualProtect(cache, placement->capacity, PAGE_READWRITE,
-                       &old_protection) == 0)
+    if (!repiu::platform::ProtectMemory(
+            cache, placement->capacity,
+            repiu::platform::MemoryProtection::kReadWrite, nullptr))
     {
         return false;
     }
     *reinterpret_cast<std::uint8_t*>(
         static_cast<std::uintptr_t>(cache_address)) = 0xCCU;
-    DWORD ignored = 0;
-    const bool restored = VirtualProtect(cache, placement->capacity,
-                                         PAGE_EXECUTE_READ, &ignored) != 0;
-    FlushInstructionCache(GetCurrentProcess(),
-                          reinterpret_cast<void*>(
-                              static_cast<std::uintptr_t>(cache_address)), 1);
+    const bool restored = repiu::platform::ProtectMemory(
+        cache, placement->capacity,
+        repiu::platform::MemoryProtection::kExecuteRead, nullptr);
+    repiu::platform::FlushInstructionCacheRange(
+        reinterpret_cast<void*>(static_cast<std::uintptr_t>(cache_address)), 1);
     return restored;
-#endif
 }
 
 }  // namespace repiu::platform::win32

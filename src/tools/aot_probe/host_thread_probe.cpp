@@ -150,6 +150,47 @@ bool ProbeStillActiveExitCode()
     return ok;
 }
 
+// Task 507. Releasing a thread the caller cannot establish has stopped.
+//
+// This is the shape the shutdown path meets when the guest thread refuses to
+// leave: the run is over, the thread is not, and the loader has to go down
+// anyway. `CloseHostThread` is the wrong call there -- it joins to reclaim the
+// stack, so on a thread still running it never returns, and that is exactly how
+// a Linux run asked to quit came to hang instead. What is under test is that
+// the other call returns.
+bool ProbeDetachRunningThread()
+{
+    // Static because the thread outlives this function by design. A witness on
+    // this frame would be read by a detached thread after the frame is gone,
+    // which is the bug this probe would then be reporting instead of the layer.
+    static ThreadWitness witness;
+    HostThread thread;
+    bool ok = CreateHostThread(&WitnessEntry, &witness, &thread, nullptr);
+    if (!ok)
+    {
+        return false;
+    }
+    ok = ok && WaitUntilRan(witness);
+    // Still spinning, on purpose.
+    ok = ok && QueryHostThread(thread).running;
+
+    const auto started = std::chrono::steady_clock::now();
+    repiu::platform::DetachHostThread(&thread);
+    const auto waited = std::chrono::steady_clock::now() - started;
+    // Generous, because what is under test is that it returns at all rather
+    // than how promptly. A join here would not return until the release below,
+    // which is after this measurement.
+    ok = ok && waited < std::chrono::seconds(1);
+    ok = ok && !thread.valid;
+
+    // Releasing what it already cleared is not a crash, on the same terms as
+    // `CloseHostThread` in the refusal probe.
+    repiu::platform::DetachHostThread(&thread);
+
+    witness.release.store(true, std::memory_order_release);
+    return ok;
+}
+
 // Refusals. A layer that returns true for an impossible request hides the
 // failure until something further along cannot explain itself.
 bool ProbeRefusals()
@@ -586,6 +627,7 @@ bool RunHostThreadProbe()
 {
     const bool run_ok = ProbeRunAndCollect();
     const bool still_active_ok = ProbeStillActiveExitCode();
+    const bool detach_ok = ProbeDetachRunningThread();
     const bool refusals_ok = ProbeRefusals();
     const bool interrupt_ok = ProbeInterruptSamplesAndEdits();
     const bool interrupt_refusal_ok = ProbeInterruptRefusals();
@@ -599,11 +641,12 @@ bool RunHostThreadProbe()
     const bool abandon_ok = ProbeInterruptTimeoutAbandon();
     const char* const abandon_label = "host_thread_interrupt_abandon";
 #endif
-    const bool all = run_ok && still_active_ok && refusals_ok &&
+    const bool all = run_ok && still_active_ok && detach_ok && refusals_ok &&
         interrupt_ok && interrupt_refusal_ok && abandon_ok;
     std::cout << "host_thread_run=" << (run_ok ? "true" : "false")
               << "\nhost_thread_still_active_exit_code="
               << (still_active_ok ? "true" : "false")
+              << "\nhost_thread_detach=" << (detach_ok ? "true" : "false")
               << "\nhost_thread_refusals=" << (refusals_ok ? "true" : "false")
               << "\nhost_thread_interrupt="
               << (interrupt_ok ? "true" : "false")

@@ -1306,7 +1306,8 @@ Windows에서는 `CONTEXT`의 별칭이라 기존 900여 곳의 필드 접근이
 공간은 자기 스레드의 디버그 레지스터를 쓸 수 없어 이를 쓰는 `native_linear_span`은 비활성입니다.
 
 Task 503b부터 가상 메모리도 `repiu::platform`에 있습니다 — `ReserveMemory`,
-`CommitMemory`, `ProtectMemory`, `ReleaseMemory`, `QueryMemory`, `IsRangeReadable`. 이 API는
+`CommitMemory`, `ProtectMemory`, `ReleaseMemory`, `QueryMemory`, `IsRangeReadable`,
+`FlushInstructionCacheRange`, `SystemPageSize`. 이 API는
 `Virtual*`를 그대로 흉내 내지 않고 **호출부 112곳이 실제로 묻는 것**을 묻습니다. 보호
 비트마스크 대신 `readable`·`writable`·`executable`을 돌려주므로, 같은 판정을 하던 손으로 쓴
 분류기 다섯 개가 하나로 줄어듭니다. Linux 백엔드는 `mprotect`가 이전 보호값을 알려주지 않아
@@ -1314,6 +1315,14 @@ Task 503b부터 가상 메모리도 `repiu::platform`에 있습니다 — `Reser
 `/proc/self/maps`로 넘깁니다 — 게스트 스토어마다 파일을 파싱할 수는 없기 때문입니다.
 커밋이 `ProtectMemory`와 별도 함수인 이유는 호스트가 갈리기 때문입니다: Linux는 `mprotect`로
 충분하지만 Windows의 `VirtualProtect`는 예약만 된 페이지에서 실패합니다.
+
+Task 506부터 AOT 코드 캐시와 게스트 페이지 coherence도 같은 계층만 사용합니다. 코드 캐시는
+예약·방출과 RW↔RX 보호 전환을 공용 API로 수행하고, 동적 append·인라인 캐시 패치·페이지
+retirement 뒤에는 `FlushInstructionCacheRange`를 호출합니다. x86에서는 데이터 쓰기와 명령
+fetch가 일관되므로 플러시는 의도적으로 무동작에 가깝지만, 코드 수정 뒤 실행한다는 호출부의
+계약은 보존합니다. 게스트 write-watch가 저장하는 이전 보호도 OS 비트마스크가 아니라
+`MemoryProtection`입니다. 이 구조로 Linux 기본 `dynamic` backend가 같은 원본 x86 실행 경로를
+사용하며, WSLg `pumpit1`에서 버퍼 스왑과 non-black 픽셀이 확인되었습니다.
 
 Task 503c부터 폴트 전달도 `repiu::platform`에 있습니다. Windows는 VEH, Linux는 `sigaction`이
 같은 `FaultKind`·`FaultEvent`를 만들고, 콜백이 레지스터를 편집한 뒤 재개 여부를 돌려줍니다.
@@ -1411,7 +1420,8 @@ field for field because glibc's `_libc_fpstate` is the same FSAVE image Windows 
 its own thread's, which is why `native_linear_span` stays disabled there.
 
 Since Task 503b virtual memory lives in `repiu::platform` as well — `ReserveMemory`, `CommitMemory`,
-`ProtectMemory`, `ReleaseMemory`, `QueryMemory`, and `IsRangeReadable`. The API does not mirror the
+`ProtectMemory`, `ReleaseMemory`, `QueryMemory`, `IsRangeReadable`, `FlushInstructionCacheRange`,
+and `SystemPageSize`. The API does not mirror the
 `Virtual*` shapes; it asks what the 112 call sites actually ask, returning `readable`, `writable`,
 and `executable` instead of a protection bitmask, which collapses five hand-written classifiers of
 that same question into one. The Linux backend records the protections it sets in a shadow table,
@@ -1419,6 +1429,15 @@ because `mprotect` does not report what it replaced and parsing `/proc/self/maps
 store is not viable; only addresses rePIU did not map fall through to that file. Committing is a
 separate function from protecting because the hosts diverge: `mprotect` suffices on Linux, while
 Windows' `VirtualProtect` fails on reserved-but-uncommitted pages.
+
+Since Task 506 the AOT code cache and guest-page coherence use only that layer as well. Cache
+reservation and release, RW-to-RX transitions, dynamic appends, inline-cache patches, and page
+retirement no longer call Win32 memory APIs directly. Every code-write path retains an explicit
+`FlushInstructionCacheRange`; on x86 it is deliberately close to a no-op because instruction fetch
+is coherent with data writes, but the portable write-then-execute contract remains visible. Guest
+write watches store their previous protection as `MemoryProtection`, not an OS bitmask. The default
+`dynamic` backend therefore follows the same original-x86 execution path on Linux, where WSLg
+`pumpit1` has produced buffer swaps and non-black pixels.
 
 Since Task 503c fault delivery lives in `repiu::platform` too: a vectored handler on Windows and
 `sigaction` on Linux produce the same `FaultKind` and `FaultEvent`, and the callback edits registers

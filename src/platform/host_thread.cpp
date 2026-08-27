@@ -538,4 +538,34 @@ void CloseHostThread(HostThread* thread)
     *thread = HostThread{};
 }
 
+void DetachHostThread(HostThread* thread)
+{
+    if (thread == nullptr || !thread->valid || thread->handle == nullptr)
+    {
+        return;
+    }
+#if defined(_WIN32)
+    // The record is the trampoline's own here, and it frees it when the entry
+    // returns -- which for a thread that never returns means it is not freed at
+    // all. That is the same leak this function accepts on the other host, for
+    // the same reason.
+    CloseHandle(static_cast<HANDLE>(thread->handle));
+#else
+    auto* record = static_cast<HostThreadRecord*>(thread->handle);
+    if (!record->joined.load(std::memory_order_acquire))
+    {
+        // Detaching rather than joining: the caller reached here because the
+        // thread would not stop, and the point of this function is not to wait.
+        // The record outlives this call on purpose -- see the header.
+        pthread_detach(record->thread);
+    }
+    else
+    {
+        // Already joined, so the thread is gone and the record is only memory.
+        delete record;
+    }
+#endif
+    *thread = HostThread{};
+}
+
 }  // namespace repiu::platform

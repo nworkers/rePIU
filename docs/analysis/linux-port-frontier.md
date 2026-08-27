@@ -11,14 +11,23 @@
 
 ## 1. 한 줄 요약
 
-**게스트 코드가 Linux에서 실행됩니다.** DOS/4GW 샘플이 `legacy` 백엔드로 돌고 Windows와 같은
-명령에서 멈춥니다. 기본 백엔드 `dynamic`은 AOT 코드 캐시가 아직 Windows 전용이라 Linux에서는
-`REPIU_EXECUTION_BACKEND=legacy`가 필요합니다.
+**게스트 코드와 기본 `dynamic` AOT backend가 Linux에서 실행됩니다.** DOS/4GW 샘플은
+`legacy`와 `dynamic` 모두 같은 종료 코드 2·초점 오프셋 0x10·opcode 0x80에서 멈춥니다.
 
-**창은 열립니다(Task 505). 화면은 아직 안 나옵니다.** Glide 창이 640x480 논리 해상도로 열리고
-상태 초기화도 완주하지만, 게스트가 **첫 프레임에 도달하지 못합니다** — 대기 루프에 갇힙니다
-(6절). 오디오는 장치가 열립니다. **"실행된다"·"창이 열린다"·"그려진다"는 서로 다른 세 가지이고,
-진행 지표(dispatch·EIP)는 그 중 첫째까지만 답합니다.**
+**화면도 열렸습니다(Task 506).** WSLg `pumpit1`은 약 45.1초에 첫 버퍼 스왑, 약 51.7초에
+69,263/307,200 non-black 픽셀을 기록했고 이후 스왑이 계속되었습니다. 오디오 장치도 열립니다.
+
+**종료도 스스로 됩니다(Task 507).** 예산 만료·SIGTERM 여덟 번 모두 프로세스가 스스로
+끝났습니다 — 이전에는 TERM을 받고도 영원히 기다렸습니다.
+
+**그리고 코어 덤프 없이 끝납니다(Task 508).** 507 뒤에 남아 있던 것은 회수를 거절당한 실행이
+SIGTRAP으로 끝나는 경우였습니다. 60초 예산 6회에서 거절 6회 중 2회가 그렇게 끝났고, 수정 후
+같은 6회에서 거절은 그대로 6회·SIGTRAP은 0회입니다. **이제 Linux에서 `exit=133`을 보면 그것은
+회귀입니다.**
+
+**화면이 나오는 것을 사람이 확인했습니다(2026-08-28, 사용자 관측).** 같은 관측이 남긴 다음
+과제는 **속도**입니다 — "아주 느리다". Linux 프레임률은 아직 한 번도 측정된 적이 없으므로,
+다음 축은 4절에 적은 대로 **먼저 재는 것**입니다.
 
 ## 2. 확인됨 — 지금 서 있는 것
 
@@ -32,6 +41,9 @@
 | 스레드 생성·조회·대기·해제 | 양쪽에서 같은 probe 통과 | 3d-18 |
 | **게스트 실행** | **샘플 실행, Windows와 같은 명령에서 정지** | **3d-19** |
 | 폴트 18건·종료 코드·blocker | 두 호스트 일치 | 3d-19 |
+| **Linux dynamic AOT** | 캐시 배치·인라인 패치·pumpit1 스왑/non-black 픽셀 | **Task 506** |
+| **Linux 종료 경로** | 예산 만료·SIGTERM 모두 프로세스가 스스로 종료 | **Task 507** |
+| **Linux 종료 경로 — 코어 덤프 없음** | 회수 거절 6/6에서 SIGTRAP **0회** (수정 전 2회) | **Task 508** |
 
 계층으로 내려간 것들입니다.
 
@@ -102,8 +114,12 @@ flowchart TD
 
 ### 다음
 
-**AOT 코드 캐시 이식**([Task 506](../design/20260827-506-linux-aot-code-cache.md))이고, 성격이
-바뀌었습니다 — "기본 백엔드에 필요"가 아니라 **화면이 기다리는 항목**입니다.
+**감시견과 종료 경로의 강제 중단을 안전한 Linux 복구 경로로 바꾸는 작업**입니다. Task 506
+검증에서도 측정을 마치고 종료를 요청했을 때 TERM에 응답하지 않아 측정 프로세스를 PID 확인 후
+강제 종료했습니다.
+
+> 이 항목은 Task 507·508로 끝났습니다. **현재의 다음 항목은 아래 4절**에 있습니다. 이 절은
+> 2026-08-27 시점의 기록으로 남깁니다.
 
 ## 4. 다음에 필요한 것
 
@@ -111,16 +127,48 @@ flowchart TD
 > 3d-22(시한이 지난 인터럽트)는 끝났고, 목록에서 **빠지지 않은 둘**이 아래에 그대로
 > 남습니다. 인터럽트 계층 자체는 양쪽 호스트에서 probe를 통과합니다.
 
-1. **AOT 코드 캐시**(`aot_code_cache_win32.cpp`). 기본 백엔드 `dynamic`이 Linux에서 돌려면
-   필요하고, **Task 505 이후로는 화면을 여는 열쇠이기도 합니다** — legacy의 명령 단위 단일
-   스텝(초당 약 127,000 디스패치)으로는 시작 시 자산 디코드가 끝나지 않아 첫 프레임에
-   도달하지 못합니다(6절). 3d-19가 배치 함수를 옮기다 **Win32 메모리 호출 23곳**을 보고 되돌렸습니다 —
-   동적 번역 경로가 캐시를 쓰기 가능으로 바꾸고, 패치하고, 실행 가능으로 되돌리는 주기를
-   반복합니다. 전부 3b가 덮는 호출이라 기계적이지만 양이 있습니다.
-2. **감시견의 강제 중단.** 3d-18이 답을 정했습니다 — `TerminateThread`에는 대응물을 만들지
-   않고, 그 앞의 우아한 경로(정지 → `RecoverToHost` → 재개)를 Linux에서는 시그널로 합니다.
-   구현만 남았습니다. 이 경로는 예산 만료나 창 닫힘에만 도는 것이라 3d-19의 실행에는
-   걸리지 않았습니다.
+1. ~~**AOT 코드 캐시**~~ — **해결 (Task 506).** Win32 메모리 호출 62곳을 3b 계층으로 옮겼고,
+   Linux `dynamic`에서 배치·동적 실행·인라인 패치·페이지 retirement가 동작합니다. `pumpit1`은
+   45.1초에 첫 스왑, 51.7초에 첫 non-black 스왑을 기록했습니다.
+2. ~~**감시견의 강제 중단.**~~ — **해결 (Task 507).** 종료 블록을 `InterruptHostThread`로
+   옮겼습니다. 회수에 성공하면 정상 종료하고, 회수가 거절되면 `DetachHostThread`로 기다리지
+   않고 내려가며 AOT 캐시 해제를 건너뛰고 `_Exit`로 프로세스를 즉시 끝냅니다. `pumpit1`에서
+   예산 만료·SIGTERM 여덟 번 모두 스스로 종료했습니다(더 이상 매달리지 않음). 회수가 거절된
+   경로에서 SIGTRAP으로 끝나는 경우가 남아 있고, 그 원인은 위 6절에 적었습니다 — 프로세스가
+   끝나는 것 자체는 507의 조건을 만족합니다.
+3. ~~**회수를 거절당한 종료의 코어 덤프.**~~ — **해결 (Task 508).** 근인은 트랩이 아니라
+   **순서**였습니다. 종료 블록이 회수 성공 여부와 무관하게 `RemoveFaultHandler()`를 부르는데,
+   거절당한 실행에서는 그 뒤로도 게스트 스레드가 돌면서 AOT 엔진이 평소처럼 심는 INT3을
+   밟습니다. 508은 거절된 갈래에서 정리를 통째로 건너뛰고(핸들러도 떼지 않고) 파일로 나가는
+   두 진단과 detach만 남긴 뒤 `_Exit` 합니다. 60초 예산 6회에서 거절 6/6·SIGTRAP 0회.
+
+### 그다음은 속도입니다
+
+세 항목이 모두 닫히면서 **Linux에서 게스트가 돌고, 창이 열리고, 종료가 됩니다.**
+
+**그리고 화면이 나오는 것을 사람이 확인했습니다 (2026-08-28, 사용자 관측).** 계측이 닿는
+데까지는 non-black 픽셀 수였고, "실제로 게임 화면이 보이는가"는 사람이 봐야 하는
+질문이었습니다 — 그 답이 예입니다. 같은 관측이 남긴 것은 **"속도가 아주 느리다"**입니다.
+
+그래서 다음 축은 렌더 정확성이 아니라 **Linux 실행 속도**입니다. 아직 **측정된 적이
+없습니다** — Windows에는 프레임률·`guest-run` 예산 귀속·ordinal 시간 귀속이 모두 있는데
+Linux에는 하나도 없습니다. 순서는 이렇습니다.
+
+1. **Linux 프레임률을 먼저 잽니다.** Windows와 같은 장면·같은 계측으로 잡아야 "몇 배
+   느린가"라는 문장이 성립합니다. 비교 대상이 없으면 "느리다"는 고칠 수 없습니다.
+2. 그다음 **어디에서 느린가**를 귀속합니다. Windows에서 이미 쓰는 노브가 그대로 있습니다 —
+   `REPIU_GLIDE_ORDINAL_TIME_PROFILE`, `REPIU_AOT_RETURN_STAGE_PROFILE`. 다만 Windows의
+   순위(return 약 27%, Glide 게이트 약 24%)를 **Linux에 그대로 옮겨 읽으면 안 됩니다.**
+   호스트가 다르면 예외·시그널·GL 드라이버 비용이 전부 다릅니다.
+3. WSLg인지 실제 데스크톱인지도 나눠야 합니다. WSLg는 X11을 한 겹 더 지나므로 present
+   비용이 다를 수 있습니다.
+
+**무엇이 그려지는가**(Task 506이 "별도 검증"으로 남긴 것)는 사람이 화면을 본 것으로 절반이
+닫혔고, Windows와 같은 장면인지 프레임 단위로 대조하는 것은 남아 있습니다.
+`REPIU_GLIDE_FRAME_DUMP`가 두 호스트에 다 있으므로 대조 자체는 가능합니다.
+
+6절의 나머지(핸들러 미반환, 자식 프로세스 재실행, CHD 마운트)는 게스트 구동을 막고 있지
+않으므로 그 뒤입니다.
 
 ## 5. 실행 확인 방법 (3d-19에서 확립)
 
@@ -152,12 +200,12 @@ REPIU_EXECUTION_BACKEND=legacy ./repiu     ../../build/openwatcom_samples/clibex
 | 자식 프로세스 재실행이 Linux에도 필요한가 | **미측정** | Task 500의 근거(GPU 드라이버의 주소 공간 선점)가 Linux에도 해당하는지 확인한 적 없음. 되돌릴 자리는 `host_process.h` |
 | 자산 경로와 CHD 마운트의 Linux 검증 | **범위 밖** | 설계의 "범위 밖" 절. 실행 시도 전에 다시 볼 것 |
 | ~~렌더 백엔드 (창)~~ | **해결 (Task 505)** | 이식할 것이 없었습니다 — 두 파일 모두 이미 SDL3이고 진짜 Win32 API는 **0개**였습니다. 503d-10이 컴파일용으로 세운 울타리 57개(backend 44 + shader 13)가 전부였고, 실제 수정은 각 파일 한 줄(`SDL_FunctionPointer`)입니다. 이제 `opened=1`, 640x480 논리 창 2배(1280x960), 깊이 24비트 승인 |
-| **첫 프레임에 도달하지 못함 (화면)** | **정체는 확인, 종료 여부 미확정 — 새 경계** | 창은 열리고 Glide 상태 초기화도 완주(11종 setter, 오류 0건)하는데 **버퍼 스왑이 0회**입니다(30초·240초 모두). 게스트는 `0x010EE170`–`0x010EE1DA`에 머무는데, 이곳은 **Task 219가 이미 확정한 비트스트림(Huffman류) 디코더**입니다 — 같은 주소(Windows 베이스로 `0x030EE170`). **대기가 아니라 디코드**이며, `--dump` 역어셈블(비트 버퍼 `[0x013a6194]`, 16회·256회 테이블 루프)이 이를 확인합니다. 감속 원인은 Task 219의 AOT 인라인 캐시 스래싱(Task 499에서 해소)이 아니라 **legacy의 명령 단위 단일 스텝**입니다 — 초당 약 127,000 디스패치, 네이티브 대비 약 만 배. 1,200초 실행에서 게스트는 디코더를 **드나듭니다**(418초 `0x010579F5`, 718초 `0x01087408`, 1078초 `0x010579B6`) — 갇힌 것이 아니라 자산을 하나씩 처리하며 전진하는 모습. 그래도 **스왑은 1,200초 내내 0회**. 유한한 디코드인지는 Task 219의 미확정 항목 (2) 그대로 미해결이며, **legacy로는 실용적이지 않다는 것이 결론** — 초당 127,000 디스패치는 네이티브 대비 약 만 배 (2026-08-27) |
+| ~~첫 프레임에 도달하지 못함 (화면)~~ | **해결 (Task 506)** | `dynamic` AOT가 legacy의 명령 단위 단일 스텝 병목을 우회했습니다. `pumpit1`은 약 45.1초에 첫 스왑(검정), 약 51.7초에 69,263/307,200 non-black 픽셀, 이후 40회 이상의 연속 스왑을 기록했습니다. 무엇이 정확히 그려지는지는 별도 검증입니다. |
 | 오디오 출력 셋 | **정정됨** | 아래 8절 |
 | 하드웨어 디버그 레지스터 | **불가 — 이제 술어로 강제** | Linux 사용자 공간은 자기 스레드의 것을 쓸 수 없습니다. **`native_linear_span`만이 아니라** `native_fast_path`·`native_region`도 이 위에 서 있었고, 그 중 `native_fast_path`는 **기본 켜짐**이라 9초 정지를 냈습니다(3d-23). `HardwareDebugRegistersAvailable()`이 셋 모두를 env 설정보다 앞에서 막습니다 |
 | 교차 프로세스 텔레메트리 | **울타리 안** | `live_telemetry_snapshot.cpp`의 공유 섹션·정지 스냅샷. 게스트 구동에 불필요 |
 | `CaptureSuspendedThreadSnapshot` | **호출자 없음** | 정의만 있고 선언도 호출도 없음. 지우는 것은 의도 확인 후 |
-| 종료 시 SIGTRAP | **미확인** | 실행 예산이 만료된 뒤 teardown에서 코어를 떨굽니다(2026-08-26, pumpit1, legacy, 8초 예산). 실행 자체는 정상이었고 오디오와도 무관합니다. 어느 단계에서 나는지 아직 좁히지 않았습니다 |
+| ~~종료 시 SIGTRAP~~ | **해결 (Task 508)** | 507이 재현했고 508이 근인을 확정했습니다 — **트랩이 아니라 순서**입니다. 종료 블록은 회수 성공 여부와 무관하게 같은 정리 순서를 밟고, 그 세 번째 단계가 `RemoveFaultHandler()`입니다. 회수를 거절당했다는 것은 게스트 스레드가 계속 돈다는 뜻이고, `dynamic` backend는 정상 동작으로 INT3과 트랩 플래그를 심으므로 핸들러가 사라진 뒤 그중 하나를 밟으면 커널 기본 처분(코어 덤프)이 실행됩니다. 507이 넣어 둔 단계 표시가 증거였습니다 — **두 번의 SIGTRAP 모두 마지막 줄이 `step=translation-worker`**, 곧 `step=fault-handler` 바로 다음이었습니다. 508은 거절된 갈래에서 정리를 하지 않습니다: `probe-dump` → `DetachHostThread` → `_Exit`. 60초 예산 6회에서 거절 6/6, SIGTRAP 0회 (수정 전 같은 조건 6회에서 2회). 507이 걱정한 "해제된 AOT 캐시를 가리키는 EIP"는 발생하지 않습니다 — **해제 자체를 하지 않기 때문**입니다. |
 | ~~pumpit1의 9초 정지~~ | **해결 (3d-23)** | 근인은 `native_fast_path`가 복귀 브레이크포인트를 무장하면서 트랩 플래그를 해제하는데, Linux에서 무장만 버려진 것. 게스트가 되돌릴 것 없이 풀려났습니다. `fast=18/0/17`(복귀 0)이 카운터에 그대로 있었습니다. 디버그 레지스터가 없는 곳에서 세 경로를 차단해 수정 |
 | 인터럽트 핸들러가 반환하지 않는 것 | **원인 미상** | 정지한 게스트에서 첫 배달이 핸들러로 들어간 뒤 반환하지 않았고, 그래서 이후 46건이 전부 보류·시한 초과가 됐습니다. **`SA_NODEFER`는 답이 아닙니다** — 아래를 볼 것 |
 | ~~인터럽트 핸들러의 `SA_NODEFER`~~ | **후보에서 제외 (2026-08-27)** | 이것을 "고칠 거리"로 적어 둔 것이 오해였습니다. 이 플래그가 **없어서** 시그널 하나가 한 스레드에서 차단된 채 남고, 그것이 "핸들러가 반환하지 않았다"를 읽게 해 준 **진단 신호**입니다. 붙이면 멈춘 핸들러가 반환하게 되는 게 아니라 그 안으로 배달이 중첩되고, 이 스레드는 이미 3c의 대체 스택 위에 있어 그 스택이 조용히 넘칩니다. 근거는 `host_thread.cpp`의 `EnsureInterruptHandler` 주석에 있습니다 |
@@ -311,14 +359,24 @@ evidence is in the work log. Status labels follow this directory's convention: *
 
 ## 1. In one line
 
-**Guest code executes on Linux.** A DOS/4GW sample runs under the `legacy` backend and stops at the
-same instruction as Windows. The default `dynamic` backend still needs the AOT code cache, which is
-Windows-only, so Linux needs `REPIU_EXECUTION_BACKEND=legacy` today.
+**Guest code and the default `dynamic` AOT backend execute on Linux.** The DOS/4GW sample stops under
+both `legacy` and `dynamic` with exit code 2, focus offset 0x10, and opcode 0x80.
 
-**A window opens (Task 505). The screen still does not.** The Glide window opens at 640x480 logical
-and state setup completes, but the guest **never reaches a first frame** — it is caught in a wait
-loop (section 6). Audio's device opens. **"Executes", "opens a window" and "draws" are three
-different things, and the progress counters (dispatches, EIP) answer only the first.**
+**The screen opens too (Task 506).** WSLg `pumpit1` recorded its first buffer swap at about 45.1
+seconds and 69,263 of 307,200 non-black pixels at about 51.7 seconds, followed by continuing swaps.
+The audio device opens as well.
+
+**Shutdown ends by itself too (Task 507).** Eight budget-expiry and SIGTERM runs all ended the
+process by itself -- before this, TERM was accepted and then waited on forever.
+
+**And it ends without a core dump (Task 508).** What 507 left was that a run whose recovery was
+refused sometimes ended in SIGTRAP. Two of six refused runs on a 60-second budget ended that way;
+after the fix, the same six were still refused six times with zero SIGTRAPs. **An `exit=133` on Linux
+is now a regression.**
+
+**A person has confirmed the screen appears (2026-08-28, user observation).** What the same
+observation left is **speed**: "very slow". The Linux frame rate has never been measured, so the next
+axis is, as section 4 records, **to measure it first**.
 
 **A window and sound are confirmed on WSLg too** — the launcher's window, and `YMZ280B ready through
 SDL3 at 88200 Hz`. The 32-bit packages this needs, and the traps around them, are collected in 7.1.
@@ -335,6 +393,9 @@ SDL3 at 88200 Hz`. The 32-bit packages this needs, and the traps around them, ar
 | Thread create, query, join, release | the same probe passes on both | 3d-18 |
 | **Guest execution** | **the sample runs, stopping where Windows does** | **3d-19** |
 | 18 faults, exit code, blocker | the two hosts agree | 3d-19 |
+| **Linux dynamic AOT** | cache placement, inline patching, pumpit1 swaps/non-black pixels | **Task 506** |
+| **The Linux shutdown path** | budget expiry and SIGTERM both end the process by itself | **Task 507** |
+| **The Linux shutdown path, no core dump** | **zero** SIGTRAPs across 6 of 6 refused runs (two before the fix) | **Task 508** |
 
 What moved into the platform layer:
 
@@ -407,8 +468,12 @@ the message rather than the return value, the EIP trajectory and the code rather
 
 ### Next
 
-**Porting the AOT code cache** ([Task 506](../design/20260827-506-linux-aot-code-cache.md)), and its
-character has changed: not "the default backend needs it" but **the item the screen is waiting on**.
+**Replace the watchdog and shutdown forced-stop path with safe Linux recovery.** When measurement
+ended, the Task 506 run also stopped responding to TERM and had to be killed after confirming the
+exact PID.
+
+> This item was finished by Tasks 507 and 508. **The current next item is in section 4 below.** This
+> section is kept as the record it was on 2026-08-27.
 
 ## 4. What is needed next
 
@@ -416,17 +481,51 @@ character has changed: not "the default backend needs it" but **the item the scr
 > 3d-22 (what a timed-out interrupt leaves behind) are done, and **the two items that were never
 > struck off** are still below. The interrupt layer itself passes its probe on both hosts.
 
-1. **The AOT code cache** (`aot_code_cache_win32.cpp`), which the default `dynamic` backend needs on
-   Linux — and which, since Task 505, **is also what opens the screen**: legacy's per-instruction
-   single-stepping (about 127,000 dispatches a second) never finishes the start-up asset decode, so
-   no first frame is reached (section 6). 3d-19 started porting its placement function and reverted on finding **23 Win32 memory
-   calls** in the file — the dynamic translation path cycles the cache between writable and
-   executable around every patch. All of them are calls 3b covers, so the work is mechanical, but
-   there is a lot of it.
-2. **The watchdog's forced interruption.** 3d-18 settled the answer — no counterpart for
-   `TerminateThread`, and the graceful path ahead of it (suspend, `RecoverToHost`, resume) done with
-   a signal — leaving only the work. That path runs on a budget expiry or a window close, which is
-   why 3d-19's run never reached it.
+1. ~~**The AOT code cache**~~ — **resolved in Task 506.** Its 62 Win32 memory calls moved onto the 3b
+   layer, and placement, dynamic execution, inline patching, and page retirement now run under
+   Linux. `pumpit1` reached its first swap at 45.1 seconds and first non-black swap at 51.7 seconds.
+2. ~~**The watchdog's forced interruption.**~~ — **resolved in Task 507.** The shutdown block moved
+   onto `InterruptHostThread`. A successful recovery ends the run normally; a refused recovery goes
+   down through `DetachHostThread` without waiting, skips releasing the AOT cache, and ends the
+   process immediately with `_Exit`. Eight budget-expiry and SIGTERM runs on `pumpit1` all ended by
+   themselves -- none hung. A refused-recovery run sometimes ends in a SIGTRAP instead of a clean
+   exit; section 6 above records why. The process ending either way satisfies 507's criterion.
+3. ~~**The core dump on a refused-recovery shutdown.**~~ — **resolved in Task 508.** The cause was
+   the **ordering**, not the trap: the shutdown block called `RemoveFaultHandler()` whether or not
+   recovery had succeeded, and on a refused run the guest thread kept going and hit an INT3 the AOT
+   engine plants in the ordinary course of dispatching. 508 skips the cleanup wholesale on the
+   refused arm -- the handler included -- keeping only the two diagnostics that write a file, plus
+   the detach, before `_Exit`. Six 60-second-budget runs: 6 of 6 refused, zero SIGTRAPs.
+
+### After this, speed
+
+With those three closed, **the guest runs on Linux, a window opens, and shutdown works.**
+
+**And a person has confirmed the screen appears (2026-08-28, user observation).** Measurement reached
+as far as a non-black pixel count; whether a game screen is actually visible was a question only a
+person could answer, and the answer is yes. What the same observation added is that **it is very
+slow**.
+
+So the next axis is not rendering accuracy but **Linux execution speed**, which has **never been
+measured**. Windows has a frame rate, a `guest-run` budget attribution and an ordinal time
+attribution; Linux has none of them. In order:
+
+1. **Measure the Linux frame rate first.** It has to be the same scene and the same instrument as
+   Windows for "how many times slower" to be a sentence at all. Without a comparison, "slow" is not
+   something that can be fixed.
+2. Then attribute **where** it is slow. The knobs Windows already uses are right there --
+   `REPIU_GLIDE_ORDINAL_TIME_PROFILE`, `REPIU_AOT_RETURN_STAGE_PROFILE`. But **Windows' ranking
+   (return about 27%, the Glide gate about 24%) must not be carried over and read as Linux's.**
+   Different host, different exception, signal and GL driver costs.
+3. WSLg and a real desktop have to be separated too: WSLg goes through one more layer of X11, so
+   present cost may differ.
+
+**What is drawn** -- Task 506's "separate verification" -- is half closed by a person having seen the
+screen; comparing frame by frame against Windows remains. `REPIU_GLIDE_FRAME_DUMP` exists on both
+hosts, so the comparison itself is available.
+
+The rest of section 6 -- the handler that does not return, the child-process relaunch, the CHD mount
+-- is not blocking the guest from running, so it comes after.
 
 ## 5. How to check that the guest runs (established in 3d-19)
 
@@ -458,12 +557,12 @@ offsets.**
 | Whether Linux needs the child-process relaunch | **not measured** | Task 500's reason (a GPU driver claiming the guest's address space) has never been checked on Linux. `host_process.h` is where it comes out |
 | Asset paths and the CHD mount on Linux | **out of scope** | the design's out-of-scope section; revisit before attempting a run |
 | ~~The render backend (the window)~~ | **resolved (Task 505)** | There was nothing to port — both files were already SDL3 with **zero** real Win32 API calls. All of it was 57 fences 503d-10 raised to get them compiling (44 backend + 13 shader); the actual fix was one line each (`SDL_FunctionPointer`). Now `opened=1`, a 640x480 logical window at 2x (1280x960), depth 24 bits granted |
-| **No first frame is reached (the screen)** | **identified; whether it ends is unresolved — the new boundary** | The window opens and Glide state setup completes (eleven setters, zero errors), but **buffer swaps stay at zero** (at 30 s and at 240 s). The guest sits in `0x010EE170`–`0x010EE1DA`, which is **the bitstream (Huffman-style) decoder Task 219 already identified** — the same code at `0x030EE170` on the Windows base. **Decoding, not waiting**, confirmed by `--dump` disassembly (bit buffer `[0x013a6194]`, 16- and 256-iteration table loops). The slowness is not Task 219's AOT inline-cache thrashing (resolved by Task 499) but **legacy single-stepping every instruction** — about 127,000 dispatches a second, some ten thousand times slower than native. Over 1,200 seconds the guest goes **in and out** of the decoder (418 s `0x010579F5`, 718 s `0x01087408`, 1078 s `0x010579B6`) — not trapped, but working through assets one at a time. **Swaps stayed at zero for all 1,200 seconds.** Whether the decode is finite is still Task 219's open item (2); what is settled is that **legacy is not a practical route** — 127,000 dispatches a second is some ten thousand times slower than native (2026-08-27) |
+| ~~No first frame is reached (the screen)~~ | **resolved in Task 506** | `dynamic` AOT bypassed legacy's per-instruction single-step bottleneck. `pumpit1` produced its first black swap at about 45.1 seconds, 69,263/307,200 non-black pixels at about 51.7 seconds, and more than forty continuing swaps. What is drawn accurately remains a separate verification question. |
 | The three audio outputs | **corrected** | see section 8 |
 | Hardware debug registers | **unavailable — now enforced by a predicate** | Linux user space cannot write its own thread's. **Not only `native_linear_span`** stood on them but `native_fast_path` and `native_region` too, and `native_fast_path` is **on by default**, which is what produced the nine-second stall (3d-23). `HardwareDebugRegistersAvailable()` now gates all three ahead of their environment settings |
 | Cross-process telemetry | **fenced** | the shared section and suspended snapshot in `live_telemetry_snapshot.cpp`; not needed to run the guest |
 | `CaptureSuspendedThreadSnapshot` | **no callers** | defined, never declared or called; removing it wants its intent confirmed first |
-| A SIGTRAP on teardown | **unconfirmed** | after the execution budget expires the process dumps core on the way down (2026-08-26, pumpit1, legacy, an 8-second budget). The run itself was healthy and this is unrelated to audio; which teardown step raises it has not been narrowed down |
+| ~~A SIGTRAP on teardown~~ | **resolved (Task 508)** | 507 reproduced it and 508 settled the cause: **the ordering, not the trap**. The shutdown block walks the same cleanup sequence whether or not recovery succeeded, and its third step is `RemoveFaultHandler()`. A refused recovery means the guest thread keeps running, and the `dynamic` backend plants INT3s and sets the trap flag in the ordinary course of dispatching, so hitting one after the handler is gone runs the kernel's default disposition -- a core dump. 507's own step markers were the evidence: **both SIGTRAPs printed `step=translation-worker` last**, the step immediately after `step=fault-handler`. 508 does no cleanup on the refused arm: `probe-dump`, `DetachHostThread`, `_Exit`. Six 60-second-budget runs gave 6 of 6 refused and zero SIGTRAPs (two under the same conditions before the fix). The "EIP pointing into an already-released AOT cache" 507 worried about does not arise -- **because nothing is released**. |
 | ~~pumpit1's nine-second stall~~ | **resolved (3d-23)** | `native_fast_path` armed a return breakpoint and cleared the trap flag; on Linux only the arming was discarded, so the guest was released with nothing to bring it back. `fast=18/0/17` (zero returns) had been sitting in the counters. Fixed by blocking all three such paths where there are no debug registers |
 | The interrupt handler not returning | **cause unknown** | on the stalled guest the first delivery entered the handler and never came back, which is why the 46 requests after it all went pending and timed out. **`SA_NODEFER` is not the answer** — see below |
 | ~~`SA_NODEFER` on the interrupt handler~~ | **struck as a candidate (2026-08-27)** | listing this as something to fix was a misreading. The flag's **absence** is what leaves one signal blocked on one thread, and that is the **diagnostic** that says "the handler did not return". Adding it would not make a stuck handler return; it would nest deliveries into one that already is, on a thread already running on 3c's alternate stack, which that nesting can quietly overflow. The reasoning is in the `EnsureInterruptHandler` comment in `host_thread.cpp` |

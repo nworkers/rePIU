@@ -146,6 +146,10 @@ bool ProtectMemory(void* address,
 // refuses.
 bool FlushInstructionCacheRange(const void* address, std::size_t bytes);
 
+// Returns the host virtual-memory page size. AOT patch windows use this to
+// change protection only on the pages that contain modified code.
+[[nodiscard]] std::size_t SystemPageSize();
+
 // Whether every byte of the range can be read. Spans regions, so a range that
 // crosses from a readable page into an unmapped one is correctly rejected.
 [[nodiscard]] bool IsRangeReadable(const void* address, std::size_t bytes);

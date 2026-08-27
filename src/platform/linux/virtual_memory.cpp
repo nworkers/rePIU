@@ -579,6 +579,11 @@ bool FlushInstructionCacheRange(const void* address, const std::size_t bytes)
     return true;
 }
 
+std::size_t SystemPageSize()
+{
+    return PageSize();
+}
+
 MemoryRegion QueryMemory(const void* address)
 {
     MemoryRegion region;

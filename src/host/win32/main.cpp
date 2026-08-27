@@ -5541,7 +5541,15 @@ int main(int argc, char** argv)
         glide_dispatch_stats.success_count,
         glide_dispatch_stats.target_miss_count,
         glide_dispatch_stats.terminal_failure_count);
-    repiu::platform::win32::ReleaseWin32AotCodeCache(&aot_placement);
+    // Task 507: skipped, on the same terms as `ReleaseWin32RelocatedImage`
+    // below, when the shutdown path could not stop the guest thread. A thread
+    // left running keeps a claim on this memory -- a host call the AOT cache
+    // made can return into it -- and freeing it under that thread is a
+    // use-after-free the process is exiting anyway, not a leak worth avoiding.
+    if (attempt.guest_thread_stopped)
+    {
+        repiu::platform::win32::ReleaseWin32AotCodeCache(&aot_placement);
+    }
     if (attempt.exception_caught)
     {
         std::uint32_t target_address = attempt.seh_exception_address;

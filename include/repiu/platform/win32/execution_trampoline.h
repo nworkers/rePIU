@@ -525,6 +525,14 @@ struct Win32MinimalExecutionAttempt
     bool timed_out = false;
     bool stall_timed_out = false;
     bool quit_requested = false;
+    // Task 507. True except on the one path that can leave the guest thread
+    // running: a timeout or quit request whose recovery attempt was refused or
+    // went unanswered. `timed_out` alone cannot stand in for this -- it is true
+    // for every interruption on this path, including the ones that did recover
+    // the thread. A caller freeing memory the guest might still touch (the AOT
+    // cache, the relocated image) has to gate on this rather than on
+    // `timed_out`.
+    bool guest_thread_stopped = true;
     bool guest_stack_switch_supported = false;
     bool guest_stack_switch_attempted = false;
     std::uint32_t entry_address = 0;

@@ -74,7 +74,32 @@ struct HostThreadStatus
 
 // Releases what `CreateHostThread` allocated. The thread must have exited; a
 // caller that has not established that has a bug rather than a cleanup step.
+//
+// The POSIX backend joins here to reclaim the thread's stack, which is why the
+// precondition is a precondition and not advice: called on a thread still
+// running, this waits for it forever. A caller that cannot establish the thread
+// exited wants `DetachHostThread` instead.
 void CloseHostThread(HostThread* thread);
+
+// Task 507. The other half of `CloseHostThread`, for the caller that cannot
+// establish the thread stopped.
+//
+// The shutdown path has one such caller. When a budget expires, the window
+// closes, or the watchdog fires, the engine asks the guest thread to leave
+// through the recovery entry -- and that request can be refused, because the
+// thread may be somewhere the engine will not redirect it from, or may not
+// answer at all. Windows finishes the job with `TerminateThread`; Linux has no
+// counterpart and 3d-18 decided not to invent one, so the honest end of that
+// path is a thread still running while the process goes down.
+//
+// This releases the caller's claim on such a thread without waiting for it.
+// Windows closes the handle. POSIX detaches the thread and **deliberately keeps
+// the record**: a thread that is still alive writes its completion flag and exit
+// code into it when it ends, so freeing it here would be a use-after-free, while
+// keeping it costs one allocation on the way out of the process. The loader
+// makes the same trade for the relocated image, which it releases only when the
+// run was not interrupted.
+void DetachHostThread(HostThread* thread);
 
 // Task 503d-20. Looking at another thread's registers, and changing them.
 //

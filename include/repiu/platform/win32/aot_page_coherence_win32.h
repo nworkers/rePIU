@@ -3,6 +3,7 @@
 
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/aot_translation_plan.h"
+#include "repiu/platform/virtual_memory.h"
 
 #include <array>
 #include <cstdint>
@@ -45,7 +46,8 @@ struct Win32AotGuestPageRetireResult
 struct Win32AotGuestPageWriteWatch
 {
     std::uint32_t guest_page = 0;
-    std::uint32_t original_protection = 0;
+    repiu::platform::MemoryProtection original_protection =
+        repiu::platform::MemoryProtection::kNoAccess;
 };
 
 struct Win32AotGuestWriteCompletion
