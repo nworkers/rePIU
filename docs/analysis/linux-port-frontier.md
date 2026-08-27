@@ -51,6 +51,7 @@ SIGTRAP으로 끝나는 경우였습니다. 60초 예산 6회에서 거절 6회 
 | **Linux i386 Release 빌드** | 성공(프로젝트 최초), 샘플이 3d-19 기준선 통과 | **Task 509** |
 | **Linux 프레임률** | 27.21 fps 대 Windows 730.05 fps — 약 **26.8배** | **Task 509** |
 | **격차의 축** | 폴트 핸들러가 프레임당 격차의 **68.3%** (42.6배), 3회 재현 | **Task 511** |
+| **그 42.6배의 분해** | 프레임당 경계 **13.6배** × 핸들러 본문 **3.3배**. 커널 전달은 Linux가 **0.44배**로 더 쌈 | **Task 512** |
 
 계층으로 내려간 것들입니다.
 
@@ -137,7 +138,8 @@ flowchart TD
 | `f2694dc` | Tasks 506·507·508 — **화면이 나오고, 종료가 되고, 코어를 덤프하지 않습니다** |
 | `1f914db` | Task 509 — 실행이 자기 프레임률을 보고합니다. **Linux는 Windows의 3.7%** |
 | `9d5a12b` | Task 510 — Glide 게이트를 축에서 **배제**. 코드 변경 0 |
-| `2cd1e13` | Task 511 — 실행 중 귀속 보고. **격차의 68%가 폴트 전달** |
+| `2cd1e13` | Task 511 — 실행 중 귀속 보고. **격차의 68%가 폴트 핸들러** |
+| `bd0ebaa` | Task 512 — 그 68%를 **횟수 13.6배 × 단가 3.3배**로 분해. 시그널 전달 자체는 **무죄** |
 
 ### 하나의 사슬로 읽으십시오
 
@@ -175,22 +177,26 @@ Release에서는 약 2초입니다. "자산 디코드가 오래 걸린다"는 �
 
 ### 다음 — 시그널 전달의 횟수인가 단가인가
 
-**축은 확정입니다**(`veh` = 폴트 핸들러 = Linux에서는 시그널 전달, 격차의 68.3%). 남은 질문
-하나이고, **새 측정 장비가 거의 필요 없습니다.**
+**축은 확정되고 분해까지 끝났습니다.** `veh`(폴트 핸들러)가 격차의 68.3%이고, 그 42.6배는
+**프레임당 경계 13.6배 × 핸들러 본문 3.3배**입니다. **시그널 전달 자체는 무죄입니다** —
+커널 왕복이 Linux에서 0.44배로 더 쌉니다(512).
 
-`Win32ExecutionTimeProfile`은 버킷마다 `cycles`와 **`counts`를 같이** 쌓고 있습니다. 지금
-`[repiu-live-profile]` 줄은 cycles만 싣습니다. **`counts[kVehTotal]`을 그 줄에 더하고 한 번
-돌리면** 회당 단가가 바로 나옵니다.
+**다음 질문 하나: 왜 경계를 13.6배 더 밟는가.**
 
-| 결과 | 뜻 | 고치는 방향 |
-|---|---|---|
-| 배달 **횟수**가 Windows와 비슷한데 단가가 크다 | 시그널 전달 경로 자체가 비싸다 | 경계를 시그널이 아닌 것으로 바꾸는 일 |
-| 단가는 비슷한데 **횟수**가 많다 | Linux가 더 자주 폴트한다 | 폴트를 만드는 자리를 줄이는 일 |
+초과분은 **single-step이 아닙니다**(Linux 배달의 3.6%, Windows 24.4%). breakpoint이거나
+access violation입니다.
 
-**둘은 고치는 방법이 전혀 다르므로 먼저 갈라야 합니다.**
+**유력 후보는 아래 6절에 이미 적혀 있습니다** — Linux 사용자 공간이 하드웨어 디버그
+레지스터를 못 써서 `native_fast_path`·`native_region`·`native_linear_span` **셋이 모두
+차단**돼 있습니다. **그 셋은 정확히 트랩을 피하려고 있는 경로**이고, 꺼진 대가는 측정된 적이
+없습니다.
 
-곁가지로 `dos`가 프레임당 **433.9배**입니다. 격차 기여는 1.9%로 작지만 배율은 표에서 가장
-큽니다 — 작다고 넘기지 말 것.
+먼저 할 일은 **초과 배달의 종류를 세는 것**입니다. `veh_gap_counts`가 이미 single-step /
+breakpoint / other 세 칸으로 나뉘어 있으므로, 511의 보고 줄에 나머지 두 칸을 더하면 종류별
+분포가 바로 나옵니다 — 512와 같은 모양의, 새로 세지 않는 변경입니다.
+
+남은 둘: **핸들러 본문 3.3배**(하위 버킷 `kVehPrologue`·`kAotReentry` 등이 가릅니다), 그리고
+`dos`의 **433.9배**(격차 기여는 1.9%로 작지만 배율은 표에서 가장 큽니다 — 작다고 넘기지 말 것).
 
 ### 재현에 필요한 것
 
@@ -286,7 +292,8 @@ bash scripts/task508_refused_recovery_repro.sh 3 60000 <label> # 종료 갈래
 | port-io | 0.006 | 0.105 | 18.6x | 0.1% |
 | 합계 | 5.843 | 131.805 | 22.6x | 126.0M |
 
-**Linux 격차의 68%가 폴트 핸들러이고, Linux에서 그것은 시그널 전달입니다.** `veh` 몫은 3회에서
+**Linux 격차의 68%가 폴트 핸들러입니다.** (511은 이것을 "시그널 전달"이라 불렀는데 **Task 512가
+정정했습니다** — 전달 경로 자체는 Linux가 더 쌉니다. 아래 512 절을 볼 것.) `veh` 몫은 3회에서
 66.82% · 66.71% · 64.55%로 재현되고, Windows 대조군은 35.35%입니다.
 
 **510과 어긋나지 않습니다.** 510이 시험한 것은 호스트 왕복 **횟수**와 크로싱 **횟수**였고,
@@ -295,7 +302,39 @@ bash scripts/task508_refused_recovery_repro.sh 3 60000 <label> # 종료 갈래
 **그리고 프레임당 비용이 실행 중에 세 배가 됩니다**(83M → 272M). "일정하게 26.8배"가 아니라
 장면이 진행될수록 나빠집니다 — 누적 평균만 냈으면 보이지 않았을 것입니다.
 
-### 그다음 — 시그널 전달의 횟수인가 단가인가
+### 귀속 3차 (Task 512) — 전달은 범인이 아닙니다. 횟수입니다
+
+511이 축을 "시그널 전달"이라 불렀는데 **정정합니다.** 42.6배를 두 인자로 갈랐습니다.
+
+| | Windows | Linux | 배율 |
+|---|---:|---:|---:|
+| 프레임당 배달 | 18.8 | 256.3 | **13.6x** |
+| 배달당 cycle (핸들러 본문) | 104,002 | 341,557 | **3.3x** |
+| 곱 | | | 44.8x ≈ 511의 42.6x |
+| **커널 왕복 바닥 (`gap min`)** | 21,756 | **9,632** | **0.44x** |
+| **커널 왕복 single-step 평균** | 28,185 | **16,466** | **0.58x** |
+
+**`gap`은 핸들러가 나간 뒤 다음 진입까지, 곧 커널의 전달 경로만 봅니다**(Task 372). 그 값이
+Linux에서 더 작습니다 — **시그널 전달은 Windows의 예외 디스패치보다 두 배 이상 쌉니다.**
+비싼 것은 전달이 아니라 그 주위입니다.
+
+**정규화 주의.** 초당으로 보면 Linux가 폴트를 **40% 적게** 냅니다(7,732 대 12,951). 프레임당이
+큰 것은 프레임이 24배 드물기 때문입니다. 프레임당이 하중을 지는 정규화이지만(한 프레임 =
+`grBufferSwap` 한 번 = 같은 게스트 경로), **게임 로직이 저프레임률에서 일을 줄이는 구조라면
+그 전제가 깨집니다 — 확인되지 않았습니다.**
+
+### 그다음 — 왜 경계를 13.6배 더 밟는가
+
+**초과분은 single-step이 아닙니다.** `gap_ss_count`가 Linux 배달의 **3.6%**인데 Windows는
+**24.4%**입니다. 초과분은 breakpoint이거나 access violation입니다.
+
+**유력 후보가 이 문서 6절에 이미 있습니다** — 하드웨어 디버그 레지스터를 Linux 사용자 공간이
+쓸 수 없어 `native_fast_path`·`native_region`·`native_linear_span` **셋이 모두 차단**되어
+있습니다. 그 셋은 정확히 **트랩을 피하려고** 있는 경로이고, 그것들이 꺼진 대가는 **측정된 적이
+없습니다.** 이것이 다음 단위입니다.
+
+남은 둘: **핸들러 본문 3.3배**(하위 버킷 `kVehPrologue`·`kAotReentry` 등이 가릅니다),
+그리고 `dos`의 **433.9배**.
 
 `veh`가 축인 것은 확정입니다. 남은 질문은 **배달이 많은 것인가 회당 단가가 큰 것인가**이고,
 `veh` 버킷의 `counts`가 그 답을 갖고 있습니다. 둘은 고칠 방법이 전혀 다릅니다 — 횟수면
@@ -562,6 +601,7 @@ SDL3 at 88200 Hz`. The 32-bit packages this needs, and the traps around them, ar
 | **A Linux i386 Release build** | succeeds (a project first); the sample passes 3d-19's baseline | **Task 509** |
 | **The Linux frame rate** | 27.21 fps against Windows' 730.05 -- about **26.8x** | **Task 509** |
 | **The axis of the gap** | the fault handler is **68.3%** of the per-frame gap (42.6x), over three runs | **Task 511** |
+| **That 42.6x, decomposed** | **13.6x** more boundaries a frame times a **3.3x** handler body; kernel delivery is **0.44x**, cheaper on Linux | **Task 512** |
 
 What moved into the platform layer:
 
@@ -651,7 +691,8 @@ slow**.
 | `f2694dc` | Tasks 506, 507, 508 -- **a picture on the screen, a run that stops, and no core dump** |
 | `1f914db` | Task 509 -- a run reports its own frame rate. **Linux is at 3.7% of Windows** |
 | `9d5a12b` | Task 510 -- the Glide gate **ruled out** as the axis. No code change |
-| `2cd1e13` | Task 511 -- attribution during the run. **68% of the gap is fault delivery** |
+| `2cd1e13` | Task 511 -- attribution during the run. **68% of the gap is the fault handler** |
+| `bd0ebaa` | Task 512 -- that 68% split into **13.6x count times 3.3x price**. Signal delivery itself is **cleared** |
 
 ### Read them as one chain
 
@@ -680,22 +721,27 @@ the engine.
 
 ### Next — is signal delivery a count problem or a price problem
 
-**The axis is settled** (`veh` = the fault handler = signal delivery on Linux = 68.3% of the gap).
-One question remains, and **it needs almost no new instrumentation.**
+**The axis is settled and decomposed.** `veh` (the fault handler) is 68.3% of the gap, and its 42.6x
+is **13.6x more boundaries a frame times a 3.3x handler body**. **Signal delivery itself is
+cleared** -- the kernel round trip is 0.44x, cheaper on Linux (512).
 
-`Win32ExecutionTimeProfile` already accumulates `counts` alongside `cycles` for every bucket, and the
-`[repiu-live-profile]` line currently carries only cycles. **Add `counts[kVehTotal]` to that line and
-run once** -- the price per delivery falls out.
+**One question next: why 13.6x more boundaries.**
 
-| Outcome | Meaning | Direction of a fix |
-|---|---|---|
-| The **count** is like Windows' but each is expensive | the delivery path itself costs | change the boundary to something that is not a signal |
-| The price is similar but the **count** is high | Linux faults more often | remove the places that create faults |
+The excess is **not single steps** (3.6% of Linux's deliveries against Windows' 24.4%). It is
+breakpoints or access violations.
 
-**The two have completely different fixes, so they have to be separated first.**
+**A strong candidate is already written in section 6 below**: Linux user space cannot use the
+hardware debug registers, so `native_fast_path`, `native_region` and `native_linear_span` are **all
+three blocked**. **Those exist precisely to avoid traps**, and the price of running without them has
+never been measured.
 
-On the side, `dos` is **433.9x** per frame. Its share of the gap is a small 1.9%, but the factor is
-the largest in the table -- not something to wave off as small.
+The first step is **counting what the excess deliveries are**. `veh_gap_counts` is already split into
+single-step, breakpoint and other, so adding the remaining two to 511's report line gives the
+distribution directly -- the same shape of change as 512, counting nothing new.
+
+Two others remain: the **3.3x handler body** (which the sub-buckets `kVehPrologue`, `kAotReentry` and
+the rest separate), and `dos` at **433.9x** (a small 1.9% of the gap, but the largest factor in the
+table -- not something to wave off as small).
 
 ### What reproducing needs
 
@@ -796,7 +842,8 @@ so TSC cycles compare directly -- per frame, in millions of cycles:
 | port-io | 0.006 | 0.105 | 18.6x | 0.1% |
 | total | 5.843 | 131.805 | 22.6x | 126.0M |
 
-**68% of Linux's gap is the fault handler, and on Linux that is signal delivery.** The `veh` share
+**68% of Linux's gap is the fault handler.** (511 called this "signal delivery"; **Task 512 corrected
+that** -- the delivery path itself is cheaper on Linux. See 512's section below.) The `veh` share
 reproduces at 66.82%, 66.71% and 64.55% over three runs, against a Windows control of 35.35%.
 
 **This does not contradict 510.** What 510 varied was the **number** of host round trips and the
@@ -806,7 +853,40 @@ count.
 **And the cost per frame triples during a run** (83M to 272M). It is not "uniformly 26.8x"; it gets
 worse as the scene proceeds -- which a cumulative average alone would not have shown.
 
-### Next — is it the number of deliveries or the price of each
+### Third attribution pass (Task 512) — delivery is not the culprit; the count is
+
+511 called the axis "signal delivery", and that **needs correcting.** The 42.6x splits into two
+factors:
+
+| | Windows | Linux | Factor |
+|---|---:|---:|---:|
+| Deliveries per frame | 18.8 | 256.3 | **13.6x** |
+| Cycles per delivery (handler body) | 104,002 | 341,557 | **3.3x** |
+| Product | | | 44.8x, against 511's 42.6x |
+| **Kernel round-trip floor (`gap min`)** | 21,756 | **9,632** | **0.44x** |
+| **Kernel round trip, single-step mean** | 28,185 | **16,466** | **0.58x** |
+
+**The `gap` measures handler exit to next entry -- the kernel's delivery path alone** (Task 372). It
+is smaller on Linux: **signal delivery is more than twice as cheap as Windows' exception dispatch.**
+What costs is not the delivery but everything around it.
+
+**A normalisation caution.** Per second, Linux takes **40% fewer** faults (7,732 against 12,951). The
+per-frame figure is large because frames are 24x rarer. Per frame is the load-bearing normalisation
+(one frame is one `grBufferSwap`, and the guest code between two of them walks the same path), **but
+that premise breaks if the game logic sheds work at a low frame rate, which has not been checked.**
+
+### Next — why 13.6x more boundaries
+
+**The excess is not single steps.** `gap_ss_count` is **3.6%** of Linux's deliveries against Windows'
+**24.4%**. The excess is breakpoints or access violations.
+
+**A strong candidate is already in section 6 of this document**: Linux user space cannot use the
+hardware debug registers, so `native_fast_path`, `native_region` and `native_linear_span` are **all
+three blocked**. Those paths exist precisely **to avoid traps**, and the price of running without
+them has **never been measured**. That is the next unit.
+
+Two others remain: the **3.3x handler body** (which the sub-buckets `kVehPrologue`, `kAotReentry` and
+the rest separate), and `dos` at **433.9x**.
 
 That `veh` is the axis is settled. What remains is **whether there are many deliveries or each one is
 expensive**, and the `counts` beside the `veh` bucket holds that answer. The two have completely

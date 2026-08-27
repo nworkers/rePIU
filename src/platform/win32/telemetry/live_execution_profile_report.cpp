@@ -140,6 +140,52 @@ void ReportLiveExecutionProfileIfDue(
                 : sizeof(line) - 1U);
     }
 
+    // Task 512: a second line, because the first answers "where does the time
+    // go" and this answers "why is that bucket large" -- and one line carrying
+    // both reads worse for a person and for a script.
+    //
+    // A handler bucket is a product: deliveries a frame times cycles a
+    // delivery. Which of the two carries a cross-host factor decides the fix
+    // completely, so both are printed rather than the product alone.
+    //
+    // `gap` is Task 372's interval from handler exit to the next entry -- the
+    // kernel's delivery path with no handler body in it. The single-step class
+    // is the purest reading, since the guest executes exactly one instruction
+    // between two of them, and the minimum is a floor no sample goes below.
+    const std::uint32_t veh_count =
+        snapshot.counts[static_cast<std::uint32_t>(
+            ExecutionTimeBucket::kVehTotal)];
+    const std::uint32_t gap_single_step_count =
+        snapshot.veh_gap_counts[static_cast<std::uint32_t>(
+            VehGapClass::kSingleStep)];
+    const std::uint64_t gap_single_step_cycles =
+        snapshot.veh_gap_cycles[static_cast<std::uint32_t>(
+            VehGapClass::kSingleStep)];
+    char veh_line[320] = {};
+    const int veh_length = std::snprintf(
+        veh_line, sizeof(veh_line),
+        "[repiu-live-veh] #%u veh_count=%llu per_frame=%llu "
+        "cycles_per_veh=%llu gap_min=%llu gap_ss_mean=%llu gap_ss_count=%llu\n",
+        static_cast<unsigned>(g_report_index),
+        static_cast<unsigned long long>(veh_count),
+        static_cast<unsigned long long>(frames == 0U ? 0U : veh_count / frames),
+        static_cast<unsigned long long>(
+            veh_count == 0U ? 0U : shares.veh / veh_count),
+        static_cast<unsigned long long>(snapshot.veh_gap_min_cycles),
+        static_cast<unsigned long long>(
+            gap_single_step_count == 0U
+                ? 0U
+                : gap_single_step_cycles / gap_single_step_count),
+        static_cast<unsigned long long>(gap_single_step_count));
+    if (veh_length > 0)
+    {
+        repiu::platform::WriteHostErrorStream(
+            veh_line,
+            static_cast<std::size_t>(veh_length) < sizeof(veh_line)
+                ? static_cast<std::size_t>(veh_length)
+                : sizeof(veh_line) - 1U);
+    }
+
     g_last_report_ticks = now;
     g_last_total = shares.total;
     g_last_frames = frames;
