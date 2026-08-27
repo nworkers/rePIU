@@ -26,8 +26,9 @@ SIGTRAP으로 끝나는 경우였습니다. 60초 예산 6회에서 거절 6회 
 회귀입니다.**
 
 **화면이 나오는 것을 사람이 확인했습니다(2026-08-28, 사용자 관측).** 같은 관측이 남긴 다음
-과제는 **속도**입니다 — "아주 느리다". Linux 프레임률은 아직 한 번도 측정된 적이 없으므로,
-다음 축은 4절에 적은 대로 **먼저 재는 것**입니다.
+과제가 **속도**였고, Task 509가 쟀습니다 — **Linux는 Windows의 3.7%, 약 26.8배 느립니다**
+(Release, vsync OFF, `pumpit1`, 호스트당 3회, 범위 무중첩). 남은 것은 **어디가 느린가**이고,
+4절에 순서를 적었습니다.
 
 ## 2. 확인됨 — 지금 서 있는 것
 
@@ -44,6 +45,8 @@ SIGTRAP으로 끝나는 경우였습니다. 60초 예산 6회에서 거절 6회 
 | **Linux dynamic AOT** | 캐시 배치·인라인 패치·pumpit1 스왑/non-black 픽셀 | **Task 506** |
 | **Linux 종료 경로** | 예산 만료·SIGTERM 모두 프로세스가 스스로 종료 | **Task 507** |
 | **Linux 종료 경로 — 코어 덤프 없음** | 회수 거절 6/6에서 SIGTRAP **0회** (수정 전 2회) | **Task 508** |
+| **Linux i386 Release 빌드** | 성공(프로젝트 최초), 샘플이 3d-19 기준선 통과 | **Task 509** |
+| **Linux 프레임률** | 27.21 fps 대 Windows 730.05 fps — 약 **26.8배** | **Task 509** |
 
 계층으로 내려간 것들입니다.
 
@@ -142,26 +145,39 @@ flowchart TD
    밟습니다. 508은 거절된 갈래에서 정리를 통째로 건너뛰고(핸들러도 떼지 않고) 파일로 나가는
    두 진단과 detach만 남긴 뒤 `_Exit` 합니다. 60초 예산 6회에서 거절 6/6·SIGTRAP 0회.
 
-### 그다음은 속도입니다
+### 측정됨 (Task 509) — Linux는 Windows의 3.7%입니다
+
+| 호스트 | fps (Release, vsync OFF, `pumpit1` 90초, 3회) | 평균 | 프레임당 |
+|---|---|---:|---:|
+| Windows | 743.91 · 737.46 · 708.79 | **730.05** | 1.37 ms |
+| Linux (WSLg) | 26.22 · 27.76 · 27.65 | **27.21** | 36.75 ms |
+
+**약 26.8배이고 두 집단의 범위가 겹치지 않습니다.** 가장 보수적으로 잡아도 25.5배입니다.
+프레임당 Linux가 **35.4 ms를 더 씁니다.**
+
+**기동은 원인이 아닙니다** — 양쪽 모두 `span_ms` 88초로 첫 프레임까지 2초 남짓입니다. 차이는
+전부 렌더 루프 안입니다. 여기서 Task 506의 "약 45.1초에 첫 스왑"이 **Debug 수치**였음이
+드러납니다. Release에서는 약 2초입니다.
+
+**배율이 아직 분해되지 않았습니다.** 컴파일러 차이(MSVC 대 GCC)와 WSLg의 X11 한 겹이 26.8배
+안에 함께 들어 있습니다.
+
+### 그다음은 귀속입니다
 
 세 항목이 모두 닫히면서 **Linux에서 게스트가 돌고, 창이 열리고, 종료가 됩니다.**
 
 **그리고 화면이 나오는 것을 사람이 확인했습니다 (2026-08-28, 사용자 관측).** 계측이 닿는
 데까지는 non-black 픽셀 수였고, "실제로 게임 화면이 보이는가"는 사람이 봐야 하는
-질문이었습니다 — 그 답이 예입니다. 같은 관측이 남긴 것은 **"속도가 아주 느리다"**입니다.
+질문이었습니다 — 그 답이 예입니다. 같은 관측이 남긴 것은 **"속도가 아주 느리다"**였고,
+Task 509가 그것을 숫자로 바꿨습니다(위 표).
 
-그래서 다음 축은 렌더 정확성이 아니라 **Linux 실행 속도**입니다. 아직 **측정된 적이
-없습니다** — Windows에는 프레임률·`guest-run` 예산 귀속·ordinal 시간 귀속이 모두 있는데
-Linux에는 하나도 없습니다. 순서는 이렇습니다.
+이제 남은 것은 **어디에서 느린가**입니다. Windows에서 이미 쓰는 노브가 그대로 있습니다 —
+`REPIU_GLIDE_ORDINAL_TIME_PROFILE`, `REPIU_AOT_RETURN_STAGE_PROFILE`. 다만 Windows의
+순위(return 약 27%, Glide 게이트 약 24%)를 **Linux에 그대로 옮겨 읽으면 안 됩니다.**
+호스트가 다르면 예외·시그널·GL 드라이버 비용이 전부 다릅니다.
 
-1. **Linux 프레임률을 먼저 잽니다.** Windows와 같은 장면·같은 계측으로 잡아야 "몇 배
-   느린가"라는 문장이 성립합니다. 비교 대상이 없으면 "느리다"는 고칠 수 없습니다.
-2. 그다음 **어디에서 느린가**를 귀속합니다. Windows에서 이미 쓰는 노브가 그대로 있습니다 —
-   `REPIU_GLIDE_ORDINAL_TIME_PROFILE`, `REPIU_AOT_RETURN_STAGE_PROFILE`. 다만 Windows의
-   순위(return 약 27%, Glide 게이트 약 24%)를 **Linux에 그대로 옮겨 읽으면 안 됩니다.**
-   호스트가 다르면 예외·시그널·GL 드라이버 비용이 전부 다릅니다.
-3. WSLg인지 실제 데스크톱인지도 나눠야 합니다. WSLg는 X11을 한 겹 더 지나므로 present
-   비용이 다를 수 있습니다.
+그리고 **WSLg인지 실제 데스크톱인지**를 나누는 것이 배율 분해의 절반입니다. WSLg는 X11을
+한 겹 더 지나므로 present 비용이 다를 수 있고, 26.8배 안에 그 몫이 얼마인지 모릅니다.
 
 **무엇이 그려지는가**(Task 506이 "별도 검증"으로 남긴 것)는 사람이 화면을 본 것으로 절반이
 닫혔고, Windows와 같은 장면인지 프레임 단위로 대조하는 것은 남아 있습니다.
@@ -203,6 +219,7 @@ REPIU_EXECUTION_BACKEND=legacy ./repiu     ../../build/openwatcom_samples/clibex
 | ~~첫 프레임에 도달하지 못함 (화면)~~ | **해결 (Task 506)** | `dynamic` AOT가 legacy의 명령 단위 단일 스텝 병목을 우회했습니다. `pumpit1`은 약 45.1초에 첫 스왑(검정), 약 51.7초에 69,263/307,200 non-black 픽셀, 이후 40회 이상의 연속 스왑을 기록했습니다. 무엇이 정확히 그려지는지는 별도 검증입니다. |
 | 오디오 출력 셋 | **정정됨** | 아래 8절 |
 | 하드웨어 디버그 레지스터 | **불가 — 이제 술어로 강제** | Linux 사용자 공간은 자기 스레드의 것을 쓸 수 없습니다. **`native_linear_span`만이 아니라** `native_fast_path`·`native_region`도 이 위에 서 있었고, 그 중 `native_fast_path`는 **기본 켜짐**이라 9초 정지를 냈습니다(3d-23). `HardwareDebugRegistersAvailable()`이 셋 모두를 env 설정보다 앞에서 막습니다 |
+| **Release probe 실패** | **미해결 (Task 509에서 발견)** | probe 모음이 **Release에서 검증된 적이 없습니다.** Linux Release는 `dos_file_handle_cache` 뒤 `== pit_timer ==` 헤더 전에 **segfault(exit 139)**, Windows Release는 `fault_handler_data_faults`·`stack_bridge_contract` **2건 실패**. 양쪽 Debug는 15/15이고, 509의 변경을 넣은 Windows Debug도 15/15입니다 — 호스트가 아니라 **구성**이 가르는 문제입니다. **엔진은 Release에서 정상** — Linux Release `repiu`가 DOS/4GW 샘플에서 3d-19 기준선을 그대로 냅니다. 509의 변경(프레임 카운터·종료 줄)은 이 probe들의 경로를 지나지 않습니다 |
 | 교차 프로세스 텔레메트리 | **울타리 안** | `live_telemetry_snapshot.cpp`의 공유 섹션·정지 스냅샷. 게스트 구동에 불필요 |
 | `CaptureSuspendedThreadSnapshot` | **호출자 없음** | 정의만 있고 선언도 호출도 없음. 지우는 것은 의도 확인 후 |
 | ~~종료 시 SIGTRAP~~ | **해결 (Task 508)** | 507이 재현했고 508이 근인을 확정했습니다 — **트랩이 아니라 순서**입니다. 종료 블록은 회수 성공 여부와 무관하게 같은 정리 순서를 밟고, 그 세 번째 단계가 `RemoveFaultHandler()`입니다. 회수를 거절당했다는 것은 게스트 스레드가 계속 돈다는 뜻이고, `dynamic` backend는 정상 동작으로 INT3과 트랩 플래그를 심으므로 핸들러가 사라진 뒤 그중 하나를 밟으면 커널 기본 처분(코어 덤프)이 실행됩니다. 507이 넣어 둔 단계 표시가 증거였습니다 — **두 번의 SIGTRAP 모두 마지막 줄이 `step=translation-worker`**, 곧 `step=fault-handler` 바로 다음이었습니다. 508은 거절된 갈래에서 정리를 하지 않습니다: `probe-dump` → `DetachHostThread` → `_Exit`. 60초 예산 6회에서 거절 6/6, SIGTRAP 0회 (수정 전 같은 조건 6회에서 2회). 507이 걱정한 "해제된 AOT 캐시를 가리키는 EIP"는 발생하지 않습니다 — **해제 자체를 하지 않기 때문**입니다. |
@@ -375,8 +392,9 @@ after the fix, the same six were still refused six times with zero SIGTRAPs. **A
 is now a regression.**
 
 **A person has confirmed the screen appears (2026-08-28, user observation).** What the same
-observation left is **speed**: "very slow". The Linux frame rate has never been measured, so the next
-axis is, as section 4 records, **to measure it first**.
+observation left was **speed**, and Task 509 measured it: **Linux runs at 3.7% of Windows, about
+26.8x slower** (Release, vsync off, `pumpit1`, three runs per host, non-overlapping ranges). What
+remains is **where** it is slow, and section 4 records the order.
 
 **A window and sound are confirmed on WSLg too** — the launcher's window, and `YMZ280B ready through
 SDL3 at 88200 Hz`. The 32-bit packages this needs, and the traps around them, are collected in 7.1.
@@ -396,6 +414,8 @@ SDL3 at 88200 Hz`. The 32-bit packages this needs, and the traps around them, ar
 | **Linux dynamic AOT** | cache placement, inline patching, pumpit1 swaps/non-black pixels | **Task 506** |
 | **The Linux shutdown path** | budget expiry and SIGTERM both end the process by itself | **Task 507** |
 | **The Linux shutdown path, no core dump** | **zero** SIGTRAPs across 6 of 6 refused runs (two before the fix) | **Task 508** |
+| **A Linux i386 Release build** | succeeds (a project first); the sample passes 3d-19's baseline | **Task 509** |
+| **The Linux frame rate** | 27.21 fps against Windows' 730.05 -- about **26.8x** | **Task 509** |
 
 What moved into the platform layer:
 
@@ -497,28 +517,40 @@ exact PID.
    refused arm -- the handler included -- keeping only the two diagnostics that write a file, plus
    the detach, before `_Exit`. Six 60-second-budget runs: 6 of 6 refused, zero SIGTRAPs.
 
-### After this, speed
+### Measured (Task 509) — Linux runs at 3.7% of Windows
+
+| Host | fps (Release, vsync off, `pumpit1`, 90 s, 3 runs) | Mean | Per frame |
+|---|---|---:|---:|
+| Windows | 743.91 · 737.46 · 708.79 | **730.05** | 1.37 ms |
+| Linux (WSLg) | 26.22 · 27.76 · 27.65 | **27.21** | 36.75 ms |
+
+**About 26.8x, and the two groups do not overlap.** Taken as conservatively as the data allows it is
+still 25.5x. Per frame, Linux spends **35.4 ms more**.
+
+**Start-up is not the cause** -- `span_ms` is 88 seconds on both, so both reach their first frame in
+about two seconds. The whole difference is inside the render loop. This is also where Task 506's
+"first swap at about 45.1 seconds" turns out to have been a **Debug** number; in Release it is about
+two seconds.
+
+**The factor has not been decomposed.** The compiler difference (MSVC against GCC) and WSLg's extra
+layer of X11 are both inside the 26.8x.
+
+### After this, attribution
 
 With those three closed, **the guest runs on Linux, a window opens, and shutdown works.**
 
 **And a person has confirmed the screen appears (2026-08-28, user observation).** Measurement reached
 as far as a non-black pixel count; whether a game screen is actually visible was a question only a
 person could answer, and the answer is yes. What the same observation added is that **it is very
-slow**.
+slow**, and Task 509 turned that into the number in the table above.
 
-So the next axis is not rendering accuracy but **Linux execution speed**, which has **never been
-measured**. Windows has a frame rate, a `guest-run` budget attribution and an ordinal time
-attribution; Linux has none of them. In order:
+What remains is **where** it is slow. The knobs Windows already uses are right there --
+`REPIU_GLIDE_ORDINAL_TIME_PROFILE`, `REPIU_AOT_RETURN_STAGE_PROFILE`. But **Windows' ranking (return
+about 27%, the Glide gate about 24%) must not be carried over and read as Linux's.** Different host,
+different exception delivery, signals and GL driver.
 
-1. **Measure the Linux frame rate first.** It has to be the same scene and the same instrument as
-   Windows for "how many times slower" to be a sentence at all. Without a comparison, "slow" is not
-   something that can be fixed.
-2. Then attribute **where** it is slow. The knobs Windows already uses are right there --
-   `REPIU_GLIDE_ORDINAL_TIME_PROFILE`, `REPIU_AOT_RETURN_STAGE_PROFILE`. But **Windows' ranking
-   (return about 27%, the Glide gate about 24%) must not be carried over and read as Linux's.**
-   Different host, different exception, signal and GL driver costs.
-3. WSLg and a real desktop have to be separated too: WSLg goes through one more layer of X11, so
-   present cost may differ.
+And **separating WSLg from a real desktop** is half of decomposing the factor: WSLg goes through one
+more layer of X11, and how much of the 26.8x that accounts for is unknown.
 
 **What is drawn** -- Task 506's "separate verification" -- is half closed by a person having seen the
 screen; comparing frame by frame against Windows remains. `REPIU_GLIDE_FRAME_DUMP` exists on both
@@ -560,6 +592,7 @@ offsets.**
 | ~~No first frame is reached (the screen)~~ | **resolved in Task 506** | `dynamic` AOT bypassed legacy's per-instruction single-step bottleneck. `pumpit1` produced its first black swap at about 45.1 seconds, 69,263/307,200 non-black pixels at about 51.7 seconds, and more than forty continuing swaps. What is drawn accurately remains a separate verification question. |
 | The three audio outputs | **corrected** | see section 8 |
 | Hardware debug registers | **unavailable — now enforced by a predicate** | Linux user space cannot write its own thread's. **Not only `native_linear_span`** stood on them but `native_fast_path` and `native_region` too, and `native_fast_path` is **on by default**, which is what produced the nine-second stall (3d-23). `HardwareDebugRegistersAvailable()` now gates all three ahead of their environment settings |
+| **The Release probe failures** | **open (found in Task 509)** | the probe suite has **never been validated in Release.** Linux Release **segfaults (exit 139)** after `dos_file_handle_cache` and before the `== pit_timer ==` header; Windows Release fails `fault_handler_data_faults` and `stack_bridge_contract`. Debug is 15 of 15 on both, including a Windows Debug build carrying 509's change -- what separates them is the **configuration**, not the host. **The engine is fine in Release** -- the Linux Release `repiu` reproduces 3d-19's baseline on the DOS/4GW sample. 509's change (frame counters and one shutdown line) does not pass through these probes |
 | Cross-process telemetry | **fenced** | the shared section and suspended snapshot in `live_telemetry_snapshot.cpp`; not needed to run the guest |
 | `CaptureSuspendedThreadSnapshot` | **no callers** | defined, never declared or called; removing it wants its intent confirmed first |
 | ~~A SIGTRAP on teardown~~ | **resolved (Task 508)** | 507 reproduced it and 508 settled the cause: **the ordering, not the trap**. The shutdown block walks the same cleanup sequence whether or not recovery succeeded, and its third step is `RemoveFaultHandler()`. A refused recovery means the guest thread keeps running, and the `dynamic` backend plants INT3s and sets the trap flag in the ordinary course of dispatching, so hitting one after the handler is gone runs the kernel's default disposition -- a core dump. 507's own step markers were the evidence: **both SIGTRAPs printed `step=translation-worker` last**, the step immediately after `step=fault-handler`. 508 does no cleanup on the refused arm: `probe-dump`, `DetachHostThread`, `_Exit`. Six 60-second-budget runs gave 6 of 6 refused and zero SIGTRAPs (two under the same conditions before the fix). The "EIP pointing into an already-released AOT cache" 507 worried about does not arise -- **because nothing is released**. |

@@ -848,10 +848,35 @@ GlideOpenGlBackend::BuildWindowTitle(double frames_per_second) const {
 void GlideOpenGlBackend::ResetFrameRateMeasurement() {
   frame_rate_period_start_ = {};
   frame_rate_frame_count_ = 0;
+  // Task 509: resolved here rather than per frame. This runs when the window
+  // opens or is rebuilt, which is often enough and never on the frame path.
+  //
+  // The presented-frame total is deliberately *not* reset: a window rebuilt
+  // mid-run does not un-draw the frames before it, and the total exists to say
+  // what the run drew.
+  log_frame_rate_ = std::getenv("REPIU_GLIDE_FRAME_RATE_LOG") != nullptr;
+}
+
+std::uint64_t GlideOpenGlBackend::presented_frame_total() const {
+  return presented_frame_total_;
+}
+
+std::uint64_t GlideOpenGlBackend::presented_frame_span_milliseconds() const {
+  if (presented_frame_total_ == 0) {
+    return 0;
+  }
+  const auto elapsed = std::chrono::steady_clock::now() - presented_frame_first_;
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
 }
 
 void GlideOpenGlBackend::RecordPresentedFrame() {
   const auto now = std::chrono::steady_clock::now();
+  // Task 509: the run's own total, kept apart from the one-second window below.
+  if (presented_frame_total_ == 0) {
+    presented_frame_first_ = now;
+  }
+  ++presented_frame_total_;
   if (frame_rate_frame_count_ == 0) {
     frame_rate_period_start_ = now;
     frame_rate_frame_count_ = 1;
@@ -867,6 +892,18 @@ void GlideOpenGlBackend::RecordPresentedFrame() {
 
   const double frames_per_second =
       static_cast<double>(frame_rate_frame_count_ - 1) / elapsed_seconds;
+  // Task 509: the same value the title carries, on the log, when asked for.
+  //
+  // One average over a run cannot tell "uniformly slow" from "collapses
+  // somewhere", and this port has twice been misled by a period longer than the
+  // observation window. A value per second separates them from one run.
+  if (log_frame_rate_) {
+    fprintf(stderr, "[repiu-frame-rate] fps=%.1f frames=%llu span_ms=%llu\n",
+            frames_per_second,
+            static_cast<unsigned long long>(presented_frame_total_),
+            static_cast<unsigned long long>(
+                presented_frame_span_milliseconds()));
+  }
   const std::string window_title = BuildWindowTitle(frames_per_second);
   if (!SDL_SetWindowTitle(static_cast<SDL_Window *>(window_),
                           window_title.c_str())) {

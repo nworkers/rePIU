@@ -113,6 +113,26 @@ public:
     bool PostToHostThread(std::function<void()> command, bool swap_command);
     std::uint32_t glide_pending_swap_count() const;
     Win32GlideAsyncPresentSnapshot glide_async_present() const;
+    // Task 509: how fast this run actually drew, in a form the shutdown path
+    // can read.
+    //
+    // The frame rate has always been computed -- once a second, into the window
+    // title -- but a run that left only a log kept no trace of it, and on Linux
+    // there is no window-title reader to scrape. These two are what the
+    // `[repiu-shutdown]` line reports instead.
+    //
+    // `presented_frame_span_milliseconds` runs from the **first** presented
+    // frame, not from process start. `pumpit1` spends roughly its first
+    // forty-five seconds decoding start-up assets with nothing on screen, so a
+    // rate taken over the whole budget understates the real one several times
+    // over.
+    //
+    // **Host thread only.** Both counters are written in `RecordPresentedFrame`,
+    // which runs on the thread that performs the swap -- the same thread that
+    // runs the teardown block that reads them. That is why no lock is involved,
+    // and why a caller on any other thread would need one.
+    std::uint64_t presented_frame_total() const;
+    std::uint64_t presented_frame_span_milliseconds() const;
     // Task 420: the remaining Glide draw entry points. A point is one vertex
     // with `GL_POINTS`; a polygon is a convex fan, which is what Glide's
     // `grDrawPolygon` contract guarantees.
@@ -449,6 +469,13 @@ private:
         runtime::ExecutionBackend::kLegacy;
     std::chrono::steady_clock::time_point frame_rate_period_start_;
     std::uint64_t frame_rate_frame_count_ = 0;
+    // Task 509. Deliberately separate from the two above: those measure one
+    // second at a time and reset, which is what a window title wants and what a
+    // total must not do.
+    std::chrono::steady_clock::time_point presented_frame_first_;
+    std::uint64_t presented_frame_total_ = 0;
+    // Read once, where the backend initialises, rather than per frame.
+    bool log_frame_rate_ = false;
 
     std::uint32_t alpha_test_function_ = 7U; // GR_CMP_ALWAYS
     float alpha_test_reference_ = 0.0f;

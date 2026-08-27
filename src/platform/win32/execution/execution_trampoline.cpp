@@ -5186,11 +5186,24 @@ bool RunWin32ExecutionThread(
         // investigated with no record of what it had done. One unbuffered line,
         // on the stream and through the call the live telemetry already uses.
         {
-            char shutdown_line[256] = {};
+            // Task 509: `frames` and `span_ms` ride along here because this is
+            // the one line both arms print, and because a Linux run that
+            // reaches rendering takes the arm that prints nothing else -- so
+            // this is the only place its speed can be recorded at all.
+            //
+            // `span_ms` starts at the first presented frame rather than at
+            // process start: `pumpit1` spends roughly forty-five seconds
+            // decoding assets with nothing on screen, and dividing by the whole
+            // budget would understate the rate several times over.
+            //
+            // Read without a lock on purpose -- both counters are written on the
+            // host thread, which is the thread running this block.
+            char shutdown_line[320] = {};
             const int length = std::snprintf(
                 shutdown_line, sizeof(shutdown_line),
                 "[repiu-shutdown] reason=%s attempts=%u answered=%d "
-                "recovered=%d stopped=%d failure=%u eip=0x%08X gate=%d\n",
+                "recovered=%d stopped=%d failure=%u eip=0x%08X gate=%d "
+                "frames=%llu span_ms=%llu\n",
                 host_exit_requested ? "exit-requested" : "timeout",
                 static_cast<unsigned>(recovery_attempts),
                 interrupt_answered ? 1 : 0,
@@ -5198,7 +5211,11 @@ bool RunWin32ExecutionThread(
                 gracefully_interrupted ? 1 : 0,
                 static_cast<unsigned>(interrupt_failure),
                 static_cast<unsigned>(recovery_request.last_eip),
-                context.glide_backend.guest_in_glide_gate() ? 1 : 0);
+                context.glide_backend.guest_in_glide_gate() ? 1 : 0,
+                static_cast<unsigned long long>(
+                    context.glide_backend.presented_frame_total()),
+                static_cast<unsigned long long>(
+                    context.glide_backend.presented_frame_span_milliseconds()));
             if (length > 0)
             {
                 repiu::platform::WriteHostErrorStream(
