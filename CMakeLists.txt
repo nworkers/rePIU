@@ -257,6 +257,7 @@ target_sources(repiu_exe
         src/platform/win32/boundary/timer_interrupt_boundary.cpp
         src/platform/win32/telemetry/live_telemetry_snapshot.cpp
         src/platform/win32/telemetry/execution_time_profile.cpp
+        src/platform/win32/telemetry/live_execution_profile_report.cpp
         src/platform/win32/telemetry/cd_audio_position_census.cpp
         src/platform/win32/telemetry/mscdex_command_trace.cpp
         src/platform/win32/telemetry/guest_position_census.cpp

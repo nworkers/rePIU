@@ -1514,25 +1514,16 @@ void PrintExecutionAttempt(
             return time_profile.inside_veh_cycles[
                 static_cast<std::uint32_t>(id)];
         };
-        const std::uint64_t total =
-            bucket(ExecutionTimeBucket::kGuestRunTotal);
-        const std::uint64_t veh = bucket(ExecutionTimeBucket::kVehTotal);
-        const std::uint64_t service_inside =
-            inside(ExecutionTimeBucket::kGlideGate) +
-            inside(ExecutionTimeBucket::kPortIoDevice) +
-            inside(ExecutionTimeBucket::kDosService);
-        const std::uint64_t service_outside =
-            (bucket(ExecutionTimeBucket::kGlideGate) -
-             inside(ExecutionTimeBucket::kGlideGate)) +
-            (bucket(ExecutionTimeBucket::kPortIoDevice) -
-             inside(ExecutionTimeBucket::kPortIoDevice)) +
-            (bucket(ExecutionTimeBucket::kDosService) -
-             inside(ExecutionTimeBucket::kDosService));
-        const std::uint64_t veh_exclusive =
-            veh > service_inside ? veh - service_inside : 0U;
-        const std::uint64_t accounted = veh + service_outside;
-        const std::uint64_t unaccounted =
-            total > accounted ? total - accounted : 0U;
+        // Task 511: the formulas moved into the profile module, because the live
+        // report needs the same five numbers and a second copy is how two
+        // reports come to disagree. The names below are unchanged, so everything
+        // downstream reads exactly what it read before.
+        const repiu::platform::win32::Win32ExecutionTimeShares shares =
+            repiu::platform::win32::ComputeExecutionTimeShares(time_profile);
+        const std::uint64_t total = shares.total;
+        const std::uint64_t veh = shares.veh;
+        const std::uint64_t veh_exclusive = shares.veh_exclusive;
+        const std::uint64_t unaccounted = shares.unaccounted;
         logger.info(
             "Win32 execution time profile enabled: {}", time_profile.enabled);
         logger.info(

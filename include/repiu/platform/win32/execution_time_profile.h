@@ -203,6 +203,31 @@ void RecordVehExceptionGap(Win32ExecutionTimeProfile* profile,
 Win32ExecutionTimeProfileSnapshot SnapshotExecutionTimeProfile(
     const Win32ExecutionTimeProfile& profile);
 
+// Task 511: the five numbers a report actually quotes, derived once.
+//
+// The two interesting ones are not buckets. `veh_exclusive` and `unaccounted`
+// come out of the formulas at the top of this header, and until now those
+// formulas lived inline in the loader's summary. A second reader needed them --
+// the live report, which prints while the run is still going, because a Linux
+// run that reaches rendering never stops its guest thread and so never reaches
+// that summary at all. Two copies of a formula is how two reports come to
+// disagree, so there is one.
+struct Win32ExecutionTimeShares
+{
+    std::uint64_t total = 0;
+    std::uint64_t veh = 0;
+    std::uint64_t veh_exclusive = 0;
+    std::uint64_t glide_gate = 0;
+    std::uint64_t port_io = 0;
+    std::uint64_t dos_service = 0;
+    // Guest execution inside the AOT code cache plus kernel transition time --
+    // what no handler can observe from the inside.
+    std::uint64_t unaccounted = 0;
+};
+
+[[nodiscard]] Win32ExecutionTimeShares ComputeExecutionTimeShares(
+    const Win32ExecutionTimeProfileSnapshot& snapshot);
+
 class ExecutionTimeScope
 {
 public:

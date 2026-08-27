@@ -24,6 +24,7 @@
 #include <vector>
 #include <cctype>
 #include "repiu/platform/guest_cpu_context.h"
+#include "repiu/platform/win32/live_execution_profile_report.h"
 #include "repiu/platform/atomic_ops.h"
 
 namespace repiu::platform::win32
@@ -2440,6 +2441,17 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
             {
                 Win32GlideAdvanceFrameDump();
             }
+            // Task 511: the one place the attribution can be read on a host
+            // where the guest thread never stops.
+            //
+            // Here rather than at gate entry because a clock read on every
+            // entry would make the instrument part of what it measures, which
+            // is Task 353's rule. Here rather than at teardown because this is
+            // the guest thread -- the thread that writes every counter the
+            // report reads -- so nothing can tear and nothing needs a lock.
+            ReportLiveExecutionProfileIfDue(
+                context->execution_time_profile.get(),
+                context->glide_backend.presented_frame_total());
             const std::uint32_t swap_interval = context->glide_gate_stack[1];
             if (GlideAsyncPresentEnabled())
             {

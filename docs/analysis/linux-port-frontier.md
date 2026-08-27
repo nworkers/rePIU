@@ -25,6 +25,9 @@ SIGTRAP으로 끝나는 경우였습니다. 60초 예산 6회에서 거절 6회 
 같은 6회에서 거절은 그대로 6회·SIGTRAP은 0회입니다. **이제 Linux에서 `exit=133`을 보면 그것은
 회귀입니다.**
 
+**그리고 왜 느린지도 이제 압니다(Task 511).** 프레임당 격차 126M cycle 중 **68%가 폴트
+핸들러**이고, Linux에서 그것은 시그널 전달입니다. 아래 4절에 분해가 있습니다.
+
 **화면이 나오는 것을 사람이 확인했습니다(2026-08-28, 사용자 관측).** 같은 관측이 남긴 다음
 과제가 **속도**였고, Task 509가 쟀습니다 — **Linux는 Windows의 3.7%, 약 26.8배 느립니다**
 (Release, vsync OFF, `pumpit1`, 호스트당 3회, 범위 무중첩). 남은 것은 **어디가 느린가**이고,
@@ -47,6 +50,7 @@ SIGTRAP으로 끝나는 경우였습니다. 60초 예산 6회에서 거절 6회 
 | **Linux 종료 경로 — 코어 덤프 없음** | 회수 거절 6/6에서 SIGTRAP **0회** (수정 전 2회) | **Task 508** |
 | **Linux i386 Release 빌드** | 성공(프로젝트 최초), 샘플이 3d-19 기준선 통과 | **Task 509** |
 | **Linux 프레임률** | 27.21 fps 대 Windows 730.05 fps — 약 **26.8배** | **Task 509** |
+| **격차의 축** | 폴트 핸들러가 프레임당 격차의 **68.3%** (42.6배), 3회 재현 | **Task 511** |
 
 계층으로 내려간 것들입니다.
 
@@ -124,6 +128,84 @@ flowchart TD
 > 이 항목은 Task 507·508로 끝났습니다. **현재의 다음 항목은 아래 4절**에 있습니다. 이 절은
 > 2026-08-27 시점의 기록으로 남깁니다.
 
+## 3.6 2026-08-28 main 병합 인계
+
+이 날 main에 들어간 것은 넷입니다. 화면이 열린 다음 **왜 느린지까지** 갔습니다.
+
+| 커밋 | 무엇 |
+|---|---|
+| `f2694dc` | Tasks 506·507·508 — **화면이 나오고, 종료가 되고, 코어를 덤프하지 않습니다** |
+| `1f914db` | Task 509 — 실행이 자기 프레임률을 보고합니다. **Linux는 Windows의 3.7%** |
+| `9d5a12b` | Task 510 — Glide 게이트를 축에서 **배제**. 코드 변경 0 |
+| `2cd1e13` | Task 511 — 실행 중 귀속 보고. **격차의 68%가 폴트 전달** |
+
+### 하나의 사슬로 읽으십시오
+
+세 작업이 같은 벽에 세 번 부딪혔고, 세 번째에야 이름을 붙였습니다.
+
+```mermaid
+flowchart TD
+    A["508: 회수 거절 갈래는 정리를 하지 않는다"] --> B["그 갈래는 로더 요약에 닿지 않는다"]
+    B --> C["509: 프레임 수를 못 읽음<br/>→ 종료 줄에 실었다"]
+    B --> D["510: 귀속을 못 읽음<br/>→ 공짜 A/B로 우회했다"]
+    B --> E["511: 벽에 이름을 붙이고 치웠다<br/>→ 게스트 스레드가 스스로 보고"]
+    style E fill:#dfd,stroke:#0a0
+    style B fill:#fdd,stroke:#c00
+```
+
+**교훈**: Linux에서 계측이 아무것도 내지 않으면, 계측을 의심하기 전에 **그것이 `attempt`를
+거쳐 `main.cpp`로 나가는지** 먼저 보십시오. 그렇다면 렌더까지 간 Linux 실행에서는 나오지
+않습니다.
+
+### 이 날 걸린 것
+
+**하나. 배율이 크면 백분율이 거짓말을 합니다.** `SETTER_ELIDE=0`이 Linux에서 −1.0%라 "호스트
+왕복은 공짜"로 읽힐 뻔했습니다. 같은 노브가 Windows에서 27.1%를 깎는데, **절대 비용은 양쪽이
+같습니다**(+0.51 대 +0.38 ms). 안 보인 이유는 싸서가 아니라 프레임이 36.75 ms이기
+때문입니다. → **항상 프레임당 ms 또는 cycle로 비교하십시오.**
+
+**둘. 널 결과는 그 자체로 읽을 수 없습니다.** "축이 아니다"와 "노브가 이 장면에서 아무 일도
+안 했다"가 같은 모양입니다. → **대조군을 돌리십시오.** 510이 그렇게 살아났습니다.
+
+**셋. Debug 수치를 성질로 읽었습니다.** Task 506의 "약 45.1초에 첫 스왑"은 Debug였고,
+Release에서는 약 2초입니다. "자산 디코드가 오래 걸린다"는 엔진의 성질이 아니었습니다.
+
+**넷. 누적 평균은 변화를 지웁니다.** Linux 프레임당 비용이 실행 중 83M → 272M cycle로 세 배가
+됩니다. 시간별 보고가 없었으면 "일정하게 26.8배"로 적었을 것입니다.
+
+### 다음 — 시그널 전달의 횟수인가 단가인가
+
+**축은 확정입니다**(`veh` = 폴트 핸들러 = Linux에서는 시그널 전달, 격차의 68.3%). 남은 질문
+하나이고, **새 측정 장비가 거의 필요 없습니다.**
+
+`Win32ExecutionTimeProfile`은 버킷마다 `cycles`와 **`counts`를 같이** 쌓고 있습니다. 지금
+`[repiu-live-profile]` 줄은 cycles만 싣습니다. **`counts[kVehTotal]`을 그 줄에 더하고 한 번
+돌리면** 회당 단가가 바로 나옵니다.
+
+| 결과 | 뜻 | 고치는 방향 |
+|---|---|---|
+| 배달 **횟수**가 Windows와 비슷한데 단가가 크다 | 시그널 전달 경로 자체가 비싸다 | 경계를 시그널이 아닌 것으로 바꾸는 일 |
+| 단가는 비슷한데 **횟수**가 많다 | Linux가 더 자주 폴트한다 | 폴트를 만드는 자리를 줄이는 일 |
+
+**둘은 고치는 방법이 전혀 다르므로 먼저 갈라야 합니다.**
+
+곁가지로 `dos`가 프레임당 **433.9배**입니다. 격차 기여는 1.9%로 작지만 배율은 표에서 가장
+큽니다 — 작다고 넘기지 말 것.
+
+### 재현에 필요한 것
+
+```bash
+./scripts/build_linux_i386.sh --config Release
+bash scripts/task509_frame_rate_measure.sh 3 90000 <label>     # 프레임률
+bash scripts/task508_refused_recovery_repro.sh 3 60000 <label> # 종료 갈래
+```
+
+귀속은 `REPIU_EXECUTION_TIME_PROFILE=1 REPIU_LIVE_PROFILE_INTERVAL_MS=10000`입니다. 조건과
+함정은 [실행 프레임률 측정 절차](../guides/execution-frame-rate-measurement.md)에 있습니다.
+
+**Linux 빌드 트리는 지금 Release입니다.** 단일 구성 생성기라 Debug를 대체했고, 정확성 작업으로
+돌아가려면 `--config Debug` 재구성이 필요합니다(SDL 재빌드 포함).
+
 ## 4. 다음에 필요한 것
 
 > 이 절은 3d-20을 가리키고 있었습니다. 3d-20(다른 스레드의 레지스터)·3d-21(표본기)·
@@ -162,7 +244,65 @@ flowchart TD
 **배율이 아직 분해되지 않았습니다.** 컴파일러 차이(MSVC 대 GCC)와 WSLg의 X11 한 겹이 26.8배
 안에 함께 들어 있습니다.
 
-### 그다음은 귀속입니다
+### 귀속 1차 (Task 510) — Glide 게이트는 축이 아닙니다
+
+이미 있는 노브 다섯 변인을 A/B 했습니다(코드 변경 0). **프레임당 ms로 비교해야 합니다** —
+배율이 26.8배인 곳에서 백분율은 같은 비용을 한쪽 37%, 다른 쪽 1%로 보이게 합니다.
+
+| 변인 | 평균 fps | 프레임당 | 기준선 대비 |
+|---|---:|---:|---:|
+| Linux 기준선 | 27.21 | 36.75 ms | — |
+| `RENDEZVOUS_SPIN_US=2000` | 30.50 | 32.78 ms | −3.97 ms |
+| `ASYNC_PRESENT=1` | 32.83 | 30.46 ms | −6.29 ms |
+| 위 둘 동시 | 33.12 | 30.19 ms | −6.56 ms (가산 아님) |
+| `SETTER_ELIDE=0` | 26.93 | 37.13 ms | +0.38 ms |
+| `DRAW_BATCH=0` | 28.14 | 35.54 ms | −1.21 ms |
+| **Windows `SETTER_ELIDE=0`** | 532.29 | 1.88 ms | **+0.51 ms** |
+
+마지막 줄이 대조군입니다. **같은 노브가 Windows에서 27.1% 떨어집니다** — 노브는 이 장면에서
+살아 있습니다. 그런데 **절대 비용은 양쪽이 같습니다**(+0.51 대 +0.38 ms). Linux에서 안 보인
+이유는 그 일이 싸서가 아니라 프레임이 36.75 ms이기 때문입니다.
+
+**배제됨**: rendezvous 깨우기 지연(한 몫이나 지배항 아님), present 임계 경로(같음), 호스트
+왕복 **횟수**, 게이트 **크로싱 횟수**.
+
+**남은 것: 프레임당 약 30 ms.** 어떤 Glide 노브도 닿지 못했고, 최선의 조합으로도 Windows의
+22.0배입니다.
+
+**보조 정황(추정)**: 기동 구간(스왑 0회, 게스트 코드가 자산 디코드)은 첫 프레임까지 300 ms
+안쪽 차이 — 약 10~15%입니다. 게스트 코드 실행 자체가 20배 느린 것은 아니라는 방향입니다.
+
+### 귀속 2차 (Task 511) — 축은 폴트 전달입니다
+
+벽을 치웠습니다(실행 중 보고, 게스트 스레드 위). 같은 기계이므로 TSC cycle이 직접 비교됩니다 —
+프레임당, 100만 cycle 단위입니다.
+
+| 버킷 | Windows | Linux | 배율 | **격차 기여** |
+|---|---:|---:|---:|---:|
+| **veh (폴트 핸들러)** | 2.065 | 88.072 | **42.6x** | **68.3%** |
+| glide | 1.618 | 26.480 | 16.4x | 19.7% |
+| unaccounted | 2.159 | 17.214 | 8.0x | 12.0% |
+| dos | 0.006 | 2.438 | **433.9x** | 1.9% |
+| port-io | 0.006 | 0.105 | 18.6x | 0.1% |
+| 합계 | 5.843 | 131.805 | 22.6x | 126.0M |
+
+**Linux 격차의 68%가 폴트 핸들러이고, Linux에서 그것은 시그널 전달입니다.** `veh` 몫은 3회에서
+66.82% · 66.71% · 64.55%로 재현되고, Windows 대조군은 35.35%입니다.
+
+**510과 어긋나지 않습니다.** 510이 시험한 것은 호스트 왕복 **횟수**와 크로싱 **횟수**였고,
+여기 glide 26.5M cycle의 대부분은 횟수가 아니라 회당 비용과 대기입니다.
+
+**그리고 프레임당 비용이 실행 중에 세 배가 됩니다**(83M → 272M). "일정하게 26.8배"가 아니라
+장면이 진행될수록 나빠집니다 — 누적 평균만 냈으면 보이지 않았을 것입니다.
+
+### 그다음 — 시그널 전달의 횟수인가 단가인가
+
+`veh`가 축인 것은 확정입니다. 남은 질문은 **배달이 많은 것인가 회당 단가가 큰 것인가**이고,
+`veh` 버킷의 `counts`가 그 답을 갖고 있습니다. 둘은 고칠 방법이 전혀 다릅니다 — 횟수면
+경계를 줄이는 일이고, 단가면 전달 경로 자체의 문제입니다.
+
+`dos`의 **433.9배**도 따로 봐야 합니다. 격차 기여는 1.9%로 작지만 배율은 이 표에서 가장
+큽니다.
 
 세 항목이 모두 닫히면서 **Linux에서 게스트가 돌고, 창이 열리고, 종료가 됩니다.**
 
@@ -171,10 +311,12 @@ flowchart TD
 질문이었습니다 — 그 답이 예입니다. 같은 관측이 남긴 것은 **"속도가 아주 느리다"**였고,
 Task 509가 그것을 숫자로 바꿨습니다(위 표).
 
-이제 남은 것은 **어디에서 느린가**입니다. Windows에서 이미 쓰는 노브가 그대로 있습니다 —
-`REPIU_GLIDE_ORDINAL_TIME_PROFILE`, `REPIU_AOT_RETURN_STAGE_PROFILE`. 다만 Windows의
-순위(return 약 27%, Glide 게이트 약 24%)를 **Linux에 그대로 옮겨 읽으면 안 됩니다.**
-호스트가 다르면 예외·시그널·GL 드라이버 비용이 전부 다릅니다.
+이제 남은 것은 **어디에서 느린가**이고, Task 510이 Glide 축을 배제했습니다(위 표).
+그런데 세밀한 귀속 계측은 **Linux에서 출력되지 않습니다** — `REPIU_GLIDE_ORDINAL_TIME_PROFILE`과
+`REPIU_AOT_RETURN_STAGE_PROFILE`이 전부 `attempt`를 거쳐 `main.cpp`가 찍는데, `attempt`를 채우는
+`CopyThreadObservationToAttempt`가 "게스트 스레드가 멈췄다"를 전제로 하고 Linux 렌더 실행은
+`stopped=0`이라 거기 닿지 못합니다(Task 508). **509에서 프레임 수가 없던 것과 같은 벽입니다.**
+다음 단위가 그 벽입니다.
 
 그리고 **WSLg인지 실제 데스크톱인지**를 나누는 것이 배율 분해의 절반입니다. WSLg는 X11을
 한 겹 더 지나므로 present 비용이 다를 수 있고, 26.8배 안에 그 몫이 얼마인지 모릅니다.
@@ -391,6 +533,9 @@ refused sometimes ended in SIGTRAP. Two of six refused runs on a 60-second budge
 after the fix, the same six were still refused six times with zero SIGTRAPs. **An `exit=133` on Linux
 is now a regression.**
 
+**And now we know why it is slow (Task 511).** Of the 126M-cycle gap per frame, **68% is the fault
+handler**, which on Linux is signal delivery. Section 4 below carries the decomposition.
+
 **A person has confirmed the screen appears (2026-08-28, user observation).** What the same
 observation left was **speed**, and Task 509 measured it: **Linux runs at 3.7% of Windows, about
 26.8x slower** (Release, vsync off, `pumpit1`, three runs per host, non-overlapping ranges). What
@@ -416,6 +561,7 @@ SDL3 at 88200 Hz`. The 32-bit packages this needs, and the traps around them, ar
 | **The Linux shutdown path, no core dump** | **zero** SIGTRAPs across 6 of 6 refused runs (two before the fix) | **Task 508** |
 | **A Linux i386 Release build** | succeeds (a project first); the sample passes 3d-19's baseline | **Task 509** |
 | **The Linux frame rate** | 27.21 fps against Windows' 730.05 -- about **26.8x** | **Task 509** |
+| **The axis of the gap** | the fault handler is **68.3%** of the per-frame gap (42.6x), over three runs | **Task 511** |
 
 What moved into the platform layer:
 
@@ -495,6 +641,77 @@ exact PID.
 > This item was finished by Tasks 507 and 508. **The current next item is in section 4 below.** This
 > section is kept as the record it was on 2026-08-27.
 
+## 3.6 Main-merge handoff, 2026-08-28
+
+Four things landed on main this day. The screen opened, and then the question moved to **why it is
+slow**.
+
+| Commit | What |
+|---|---|
+| `f2694dc` | Tasks 506, 507, 508 -- **a picture on the screen, a run that stops, and no core dump** |
+| `1f914db` | Task 509 -- a run reports its own frame rate. **Linux is at 3.7% of Windows** |
+| `9d5a12b` | Task 510 -- the Glide gate **ruled out** as the axis. No code change |
+| `2cd1e13` | Task 511 -- attribution during the run. **68% of the gap is fault delivery** |
+
+### Read them as one chain
+
+Three tasks hit the same wall three times, and only the third named it.
+
+**The lesson**: when an instrument produces nothing on Linux, before suspecting the instrument, check
+**whether it reports through `attempt` and `main.cpp`**. If it does, a Linux run that reaches
+rendering will never print it.
+
+### What caught me this day
+
+**One: where the factor is large, percentages lie.** `SETTER_ELIDE=0` costs 1.0% on Linux, which
+almost read as "host round trips are free there". The same knob costs Windows 27.1%, and **the
+absolute cost is the same on both** (+0.51 against +0.38 ms). It is invisible because the frame is
+36.75 ms, not because it is cheap. → **Always compare in ms or cycles per frame.**
+
+**Two: a null result cannot be read on its own.** "Not the axis" and "the knob did nothing in this
+scene" look identical. → **Run the control.** That is what rescued 510.
+
+**Three: a Debug number was read as a property.** Task 506's "first swap at about 45.1 seconds" was
+Debug; in Release it is about two seconds. "The asset decode takes a long time" was not a property of
+the engine.
+
+**Four: a cumulative average erases change.** Linux's cost per frame triples during a run, 83M to
+272M cycles. Without reporting over time this would have been written down as "uniformly 26.8x".
+
+### Next — is signal delivery a count problem or a price problem
+
+**The axis is settled** (`veh` = the fault handler = signal delivery on Linux = 68.3% of the gap).
+One question remains, and **it needs almost no new instrumentation.**
+
+`Win32ExecutionTimeProfile` already accumulates `counts` alongside `cycles` for every bucket, and the
+`[repiu-live-profile]` line currently carries only cycles. **Add `counts[kVehTotal]` to that line and
+run once** -- the price per delivery falls out.
+
+| Outcome | Meaning | Direction of a fix |
+|---|---|---|
+| The **count** is like Windows' but each is expensive | the delivery path itself costs | change the boundary to something that is not a signal |
+| The price is similar but the **count** is high | Linux faults more often | remove the places that create faults |
+
+**The two have completely different fixes, so they have to be separated first.**
+
+On the side, `dos` is **433.9x** per frame. Its share of the gap is a small 1.9%, but the factor is
+the largest in the table -- not something to wave off as small.
+
+### What reproducing needs
+
+```bash
+./scripts/build_linux_i386.sh --config Release
+bash scripts/task509_frame_rate_measure.sh 3 90000 <label>     # the frame rate
+bash scripts/task508_refused_recovery_repro.sh 3 60000 <label> # the shutdown arm
+```
+
+Attribution is `REPIU_EXECUTION_TIME_PROFILE=1 REPIU_LIVE_PROFILE_INTERVAL_MS=10000`. The conditions
+and the traps are in [Measuring the execution frame
+rate](../guides/execution-frame-rate-measurement.md).
+
+**The Linux build tree is currently Release.** It uses a single-config generator, so that replaced
+the Debug tree; going back to correctness work means `--config Debug` again, and SDL rebuilds.
+
 ## 4. What is needed next
 
 > This section used to point at 3d-20. 3d-20 (another thread's registers), 3d-21 (the sampler) and
@@ -535,7 +752,69 @@ two seconds.
 **The factor has not been decomposed.** The compiler difference (MSVC against GCC) and WSLg's extra
 layer of X11 are both inside the 26.8x.
 
-### After this, attribution
+### First attribution pass (Task 510) — the Glide gate is not the axis
+
+Five variables A/B'd over knobs that already exist, with no code change. **Compare in ms per frame**:
+where the factor is 26.8x, percentages make the same cost look like 37% on one host and 1% on the
+other.
+
+| Variable | Mean fps | Per frame | vs baseline |
+|---|---:|---:|---:|
+| Linux baseline | 27.21 | 36.75 ms | — |
+| `RENDEZVOUS_SPIN_US=2000` | 30.50 | 32.78 ms | −3.97 ms |
+| `ASYNC_PRESENT=1` | 32.83 | 30.46 ms | −6.29 ms |
+| both together | 33.12 | 30.19 ms | −6.56 ms (not additive) |
+| `SETTER_ELIDE=0` | 26.93 | 37.13 ms | +0.38 ms |
+| `DRAW_BATCH=0` | 28.14 | 35.54 ms | −1.21 ms |
+| **Windows `SETTER_ELIDE=0`** | 532.29 | 1.88 ms | **+0.51 ms** |
+
+The last row is the control. **The same knob costs Windows 27.1%** -- it is alive in this scene. Yet
+**the absolute cost is the same on both** (+0.51 against +0.38 ms). It is invisible on Linux not
+because it is cheap there but because the frame is 36.75 ms.
+
+**Ruled out**: rendezvous wake latency (a share, not dominant), present on the critical path (same),
+the **number** of host round trips, the **number** of gate crossings.
+
+**What remains: about 30 ms per frame.** No Glide knob touched it, and the best combination is still
+22.0x Windows.
+
+**Supporting, inferred**: the start-up stretch (zero swaps, guest code decoding assets) differs by
+under 300 ms to the first frame -- about 10-15%. That points away from guest code execution itself
+being twenty times slower.
+
+### Second attribution pass (Task 511) — the axis is fault delivery
+
+The wall came down (reporting during the run, on the guest thread). Both hosts are the same machine,
+so TSC cycles compare directly -- per frame, in millions of cycles:
+
+| Bucket | Windows | Linux | Factor | **Share of the gap** |
+|---|---:|---:|---:|---:|
+| **veh (the fault handler)** | 2.065 | 88.072 | **42.6x** | **68.3%** |
+| glide | 1.618 | 26.480 | 16.4x | 19.7% |
+| unaccounted | 2.159 | 17.214 | 8.0x | 12.0% |
+| dos | 0.006 | 2.438 | **433.9x** | 1.9% |
+| port-io | 0.006 | 0.105 | 18.6x | 0.1% |
+| total | 5.843 | 131.805 | 22.6x | 126.0M |
+
+**68% of Linux's gap is the fault handler, and on Linux that is signal delivery.** The `veh` share
+reproduces at 66.82%, 66.71% and 64.55% over three runs, against a Windows control of 35.35%.
+
+**This does not contradict 510.** What 510 varied was the **number** of host round trips and the
+**number** of crossings; most of the 26.5M glide cycles here is cost per crossing and waiting, not
+count.
+
+**And the cost per frame triples during a run** (83M to 272M). It is not "uniformly 26.8x"; it gets
+worse as the scene proceeds -- which a cumulative average alone would not have shown.
+
+### Next — is it the number of deliveries or the price of each
+
+That `veh` is the axis is settled. What remains is **whether there are many deliveries or each one is
+expensive**, and the `counts` beside the `veh` bucket holds that answer. The two have completely
+different fixes: a count problem means removing boundaries, a price problem is the delivery path
+itself.
+
+`dos` at **433.9x** also wants looking at on its own. Its share of the gap is a small 1.9%, but the
+factor is the largest in the table.
 
 With those three closed, **the guest runs on Linux, a window opens, and shutdown works.**
 
@@ -544,10 +823,13 @@ as far as a non-black pixel count; whether a game screen is actually visible was
 person could answer, and the answer is yes. What the same observation added is that **it is very
 slow**, and Task 509 turned that into the number in the table above.
 
-What remains is **where** it is slow. The knobs Windows already uses are right there --
-`REPIU_GLIDE_ORDINAL_TIME_PROFILE`, `REPIU_AOT_RETURN_STAGE_PROFILE`. But **Windows' ranking (return
-about 27%, the Glide gate about 24%) must not be carried over and read as Linux's.** Different host,
-different exception delivery, signals and GL driver.
+What remains is **where** it is slow, and Task 510 ruled the Glide axis out (table above). The
+fine-grained attribution, though, **cannot be printed on Linux**:
+`REPIU_GLIDE_ORDINAL_TIME_PROFILE` and `REPIU_AOT_RETURN_STAGE_PROFILE` all travel through `attempt`
+and are printed by `main.cpp`, and `CopyThreadObservationToAttempt`, which fills `attempt`, stands on
+"the guest thread has stopped" -- which a Linux render run does not, reporting `stopped=0` and ending
+at `_Exit` (Task 508). **It is the same wall that hid the frame count in 509**, and it is the next
+unit.
 
 And **separating WSLg from a real desktop** is half of decomposing the factor: WSLg goes through one
 more layer of X11, and how much of the 26.8x that accounts for is unknown.

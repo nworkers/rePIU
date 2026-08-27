@@ -121,6 +121,44 @@ Win32ExecutionTimeProfileSnapshot SnapshotExecutionTimeProfile(
     return snapshot;
 }
 
+Win32ExecutionTimeShares ComputeExecutionTimeShares(
+    const Win32ExecutionTimeProfileSnapshot& snapshot)
+{
+    const auto bucket = [&snapshot](ExecutionTimeBucket id) {
+        return snapshot.cycles[static_cast<std::uint32_t>(id)];
+    };
+    const auto inside = [&snapshot](ExecutionTimeBucket id) {
+        return snapshot.inside_veh_cycles[static_cast<std::uint32_t>(id)];
+    };
+
+    Win32ExecutionTimeShares shares;
+    shares.total = bucket(ExecutionTimeBucket::kGuestRunTotal);
+    shares.veh = bucket(ExecutionTimeBucket::kVehTotal);
+    shares.glide_gate = bucket(ExecutionTimeBucket::kGlideGate);
+    shares.port_io = bucket(ExecutionTimeBucket::kPortIoDevice);
+    shares.dos_service = bucket(ExecutionTimeBucket::kDosService);
+
+    // The buckets are not mutually exclusive: a service is reachable both from
+    // inside the handler and from outside it, so each one carries the portion
+    // entered while the handler was on the stack. That is what makes these two
+    // subtractions the only way to state exclusivity.
+    const std::uint64_t service_inside =
+        inside(ExecutionTimeBucket::kGlideGate) +
+        inside(ExecutionTimeBucket::kPortIoDevice) +
+        inside(ExecutionTimeBucket::kDosService);
+    const std::uint64_t service_outside =
+        (shares.glide_gate - inside(ExecutionTimeBucket::kGlideGate)) +
+        (shares.port_io - inside(ExecutionTimeBucket::kPortIoDevice)) +
+        (shares.dos_service - inside(ExecutionTimeBucket::kDosService));
+
+    shares.veh_exclusive =
+        shares.veh > service_inside ? shares.veh - service_inside : 0U;
+    const std::uint64_t accounted = shares.veh + service_outside;
+    shares.unaccounted =
+        shares.total > accounted ? shares.total - accounted : 0U;
+    return shares;
+}
+
 ExecutionTimeScope::ExecutionTimeScope(Win32ExecutionTimeProfile* profile,
                                        ExecutionTimeBucket bucket,
                                        std::uint64_t* completed_cycles)
