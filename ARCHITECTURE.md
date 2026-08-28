@@ -1506,6 +1506,78 @@ Whether Task 500's reason for that relaunch, a GPU driver claiming the address s
 also applies to Linux is **not yet measured**. The unlimited-wait spelling moved to a neutral constant
 as well, held equal to `INFINITE` by a `static_assert` beside the Windows wait.
 
+## 웹(wasm) 빌드 / The web (wasm) build
+
+Task 513 Stage 1부터 플랫폼 공용 코어가 **wasm32로 빌드됩니다.** `scripts/build_web_wasm.sh`가
+`emcmake`로 `build/web_wasm`에 만들고, `repiu_core_probe`는 Node에서 돕니다.
+
+**게임은 실행되지 않으며, 지금 구조로는 실행될 수 없습니다.** 실행 backend 둘이 모두 네이티브
+x86 위에 서 있습니다 — `legacy`는 트랩 플래그 단일 스텝과 하드웨어 폴트 전달, `dynamic`은 RX로
+매핑한 x86 코드 캐시와 INT3 sentinel입니다. wasm에는 어느 쪽도 형태가 없습니다. 그래서 Linux
+이식과 달리 `src/platform/win32`의 82개 실행 엔진 소스가 Emscripten 구성에서 **제외**되고,
+wasm32 빌드는 `repiu_exe`의 코어 57개 소스뿐입니다.
+
+13개 플랫폼 헤더 중 다섯이 성립하지 않습니다 — `fault_handler`(wasm 트랩은 레지스터 컨텍스트를
+싣지 않고 재개하지 않습니다), `guest_cpu_context`(호스트에 x86 레지스터가 없습니다),
+`guest_stack_switch`(x86 어셈블리이고 wasm 스택은 주소지정 불가), `virtual_memory`(선형
+메모리에 페이지 보호가 없습니다), `host_process`(브라우저에 자식 프로세스가 없습니다).
+`src/platform/web/`가 그 다섯을 **거짓을 반환하고 이유를 한 번 찍는 stub**으로 두고, 성립하는
+`safe_memory_copy`만 구현합니다. `host_environment`와 `worker_signal`은 내용이 순수 POSIX라
+`src/platform/linux/`의 것을 그대로 씁니다.
+
+**`if(UNIX)`는 Emscripten에서도 참입니다.** CMake의 다섯 가드가 모두 "리눅스 호스트"라는 뜻으로
+쓰여 있었으므로 전부 `if(UNIX AND NOT EMSCRIPTEN)`이 됐습니다. 그러지 않으면 웹 빌드가 x86
+어셈블리와 `-m32`를 끌어옵니다.
+
+Stage 1 측정: 코어 소스 **수정 0건**, 엔진 자신의 미해결 심볼 **0개**, probe **9/9 통과**(성립
+하지 않는 6개는 이름과 함께 `core_probe_skipped`로 출력), 포인터 폭 4바이트로 i386과 동일.
+브라우저 실행까지의 나머지 네 단계는 [설계](docs/design/20260828-513-web-wasm-execution.md)에
+있습니다.
+
+Task 514 Stage 2가 더한 `repiu_instruction_census`는 **세 호스트 전부에서 빌드되는 첫
+도구**입니다. parse → runtime plan → relocation → translation plan 사슬이 전부 `src/exe`와
+`src/runtime`에 있어 `repiu_exe`만으로 서기 때문이고, Task 501이 `repiu_core_probe`로 세운
+"같은 코드가 여러 호스트에서 같은 답을 내는가" 관례를 그대로 따릅니다. 새 디스어셈블러를 쓰지
+않고 `runtime::BuildAotTranslationPlan`이 이미 만드는 계획을 셉니다 — 엔진이 실제로 번역하는
+집합이 곧 Stage 3이 구현해야 하는 집합이기 때문입니다. Emscripten 구성에서만 이 타깃에
+`-sNODERAWFS`가 붙습니다(Node가 호스트 파일 시스템의 EXE를 읽어야 하며, 브라우저 타깃에는
+쓰지 않습니다).
+
+Task 514 Stage 2 added `repiu_instruction_census`, the **first tool that builds on all three
+hosts**. The chain parse → runtime plan → relocation → translation plan lives entirely in `src/exe`
+and `src/runtime`, so it stands on `repiu_exe` alone, and it follows the convention Task 501
+established with `repiu_core_probe`: does the same code give the same answer on every host. It
+writes no disassembler of its own and counts the plan `runtime::BuildAotTranslationPlan` already
+produces, because the set the engine actually translates is the set Stage 3 has to implement. Only
+the Emscripten configuration attaches `-sNODERAWFS` to this target, so Node can read an EXE off the
+host filesystem; no browser target uses it.
+
+Since Task 513 Stage 1 the platform-neutral core **builds for wasm32.** `scripts/build_web_wasm.sh`
+configures `build/web_wasm` through `emcmake`, and `repiu_core_probe` runs under Node.
+
+**The game does not run there, and cannot with the present structure.** Both execution backends
+stand on native x86: `legacy` on trap-flag single-stepping with hardware fault delivery, `dynamic`
+on an RX-mapped x86 code cache with INT3 sentinels. Neither has a wasm form. So unlike the Linux
+port, the 82 execution-engine sources under `src/platform/win32` are **excluded** from the
+Emscripten configuration, and the wasm32 build is `repiu_exe`'s 57 core sources alone.
+
+Five of the thirteen platform headers do not hold: `fault_handler` (a wasm trap carries no register
+context and does not resume), `guest_cpu_context` (the host has no x86 registers),
+`guest_stack_switch` (x86 assembly, and the wasm stack is not addressable), `virtual_memory` (linear
+memory has no page protection), and `host_process` (a browser has no child processes).
+`src/platform/web/` keeps those five as **stubs that return false and state their reason once**, and
+implements only `safe_memory_copy`, which does hold. `host_environment` and `worker_signal` are used
+from `src/platform/linux/` unchanged, being plain POSIX inside.
+
+**`if(UNIX)` is true under Emscripten as well.** All five guards in CMake were written to mean "the
+Linux host", so all five became `if(UNIX AND NOT EMSCRIPTEN)`; otherwise the web build pulls in x86
+assembly and `-m32`.
+
+Stage 1 measurements: **zero** core sources modified, **zero** unresolved symbols of the engine's
+own, **9 of 9** probes passing (the six that do not hold are printed by name as
+`core_probe_skipped`), and a 4-byte pointer, the same as i386. The remaining four stages toward a
+browser are in the [design](docs/design/20260828-513-web-wasm-execution.md).
+
 ## 런처 / Launcher
 
 Task 500부터 인자 없이 실행하면 런처가 열립니다. 네이티브 툴킷을 쓰지 않고 호스트가 이미

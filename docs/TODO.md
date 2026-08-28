@@ -2,8 +2,10 @@
 
 ## 현재 상태
 
-2026-08-19 기준 활성 TODO는 없습니다. Task 492~495의 JAMMA 입력 timing, IRQ0 replay,
-2P 숫자패드 별칭과 history 정리는 사용자 120초 실행으로 최종 검증됐습니다.
+2026-08-28 기준 항목은 웹 이식 Stage 3~5 하나이고, **보류 중**입니다 — Linux 성능 축이
+먼저입니다. Task 492~495의 JAMMA 입력
+timing, IRQ0 replay, 2P 숫자패드 별칭과 history 정리는 사용자 120초 실행으로 최종
+검증됐습니다.
 
 현재 실행 우선순위와 확인된 병목은 [현재 실행 frontier](analysis/current-execution-frontier.md),
 승인된 구현 단위는 [`work-orders/`](work-orders/), 완료 결과와 검증 근거는
@@ -11,7 +13,22 @@
 
 ## 활성 항목
 
-없습니다.
+- **웹(WebAssembly) 이식 Stage 3~5 — 보류(2026-08-28).** 상태와 재개 조건은
+  [웹 이식 frontier](analysis/web-port-frontier.md)가 정본입니다. **보류 이유는 이 작업의
+  문제가 아니라 우선순위입니다** — Linux는 게임이 이미 화면까지 나오고 성능 축이 열려 있는데,
+  웹은 아직 실행 backend가 없습니다.
+  Task 513 Stage 1이 플랫폼 공용 코어를 wasm32로
+  빌드했고, Task 514 Stage 2가 크기를 쟀습니다 — **명령 형태 320개, 상위 17 mnemonic이
+  87.89%.** 브라우저에서 게임은 아직 실행되지 않습니다. 현재 실행 backend 둘(`legacy`,
+  `dynamic`)이 모두 네이티브 x86 위에 서 있어 wasm에 형태가 없기 때문입니다.
+  다섯 단계는 [웹 실행 설계](design/20260828-513-web-wasm-execution.md)에 있습니다.
+  **재개 조건:** 다음 단위는 Stage 3(플랫폼 중립 인터프리터)이고, 상위 17개가 87.89%이므로
+  점진적으로 세울 수 있습니다. **단 x87 표현은 동적 census 뒤에 정합니다** — 80비트가
+  관측 가능한 것은 확인됐고(14곳), 레지스터 파일 전체가 메모리로 노출되는지는 미확정입니다
+  ([Task 514 로그](work-logs/20260828-514-guest-instruction-census.md)의 x87 절).
+  80비트 레지스터 파일을 나중에 바꾸는 것은 인터프리터를 다시 쓰는 일입니다.
+  **그리고 Stage 3은 Worker 실행을 전제로 설계합니다** — CHD가 플레이 내내 열려 있어야 하고
+  브라우저에서 동기 파일 I/O는 Worker 안에서만 성립하기 때문입니다(설계 513 결정 7).
 
 ## 이번 정리에서 닫힌 이전 항목
 
@@ -39,7 +56,9 @@
 
 ## Current Status
 
-As of 2026-08-19, there are no active TODO items. A 120-second user run completed final validation
+As of 2026-08-28 there is one item, Stages 3 through 5 of the web port, and it is **on hold** --
+the Linux performance axis comes first. A 120-second user run
+completed final validation
 of Tasks 492 through 495: JAMMA input timing, IRQ0 replay, 2P numpad aliases, and history pruning.
 
 Current execution priorities and confirmed bottlenecks live in the
@@ -49,7 +68,23 @@ units in [`work-orders/`](work-orders/), and completed results and verification 
 
 ## Active Item
 
-None.
+- **Web (WebAssembly) port, Stages 3 through 5 -- on hold (2026-08-28).** The state and the resume
+  conditions live in the [web port frontier](analysis/web-port-frontier.md). **It is on hold for
+  priority, not because anything is wrong with it**: on Linux the game already reaches the screen and
+  the performance axis is open, while the web has no execution backend yet.
+  Task 513 Stage 1 built the platform-neutral core
+  for wasm32, and Task 514 Stage 2 measured the size: **320 instruction forms, with the top 17
+  mnemonics covering 87.89%.** The game still does not run in a browser: both current execution
+  backends (`legacy` and `dynamic`) stand on native x86, which has no wasm form. The five stages are
+  in the [web execution design](design/20260828-513-web-wasm-execution.md).
+  **Resume condition:** the next unit is Stage 3, the platform-neutral interpreter, and the top 17
+  covering 87.89% means it can be built incrementally. **But settle the x87 representation after a
+  dynamic census**: 80 bits are confirmed observable (14 sites), while whether the whole register
+  file is exposed to memory is unresolved (see the x87 section of the
+  [Task 514 log](work-logs/20260828-514-guest-instruction-census.md)). Changing the 80-bit register
+  file later means writing the interpreter twice.
+  **And design Stage 3 for running in a Worker**: the CHD has to stay open throughout play, and
+  synchronous file I/O in a browser holds only inside a Worker (design 513, Decision 7).
 
 ## Previous Entries Closed by This Cleanup
 

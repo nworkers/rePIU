@@ -151,11 +151,13 @@ REPIU_GLIDE_PIXEL_DIAG=1 build/linux_i386/repiu pumpit1
 
 `repiu_core_probe`는 플랫폼에 의존하지 않는 probe 15개를 담고 **양쪽 OS에서 모두**
 빌드되므로, 같은 코드가 두 환경에서 같은 결과를 내는지 직접 비교할 수 있습니다. Windows
-에서는 `repiu_aot_probe`가 같은 probe를 계속 포함합니다.
+에서는 `repiu_aot_probe`가 같은 probe를 계속 포함합니다. wasm32에서는 9개만 도는데, 나머지
+여섯은 아래 웹 빌드 절을 보십시오.
 
 *`repiu_core_probe` contains 15 platform-independent probes and builds on both operating systems,
 so the same contracts can be compared directly. On Windows, `repiu_aot_probe` continues to include
-the same probes.*
+the same probes. Only nine of them run on wasm32; the web build section below says why the other
+six do not.*
 
 런처는 Linux에서도 뜹니다. 32비트 데스크톱 개발 패키지가 필요합니다.
 
@@ -173,6 +175,37 @@ build/linux_i386/repiu_launcher
 *The standalone `repiu_launcher` shares its ROM-set list and options with Windows. Start games
 directly through the `repiu` executable shown above. Pass `--headless` when only the core and probes
 are needed without desktop packages.*
+
+### 7. 웹(wasm) 빌드 / Web (wasm) build
+
+**게임은 브라우저에서 아직 실행되지 않습니다.** Task 513 Stage 1이 만든 것은 플랫폼 공용
+코어의 wasm32 빌드이고, 실행 엔진은 여기 없습니다 — 현재 backend 둘이 모두 네이티브 x86을
+실행하기 때문입니다. 브라우저 실행까지의 계획은
+[웹 실행 설계](docs/design/20260828-513-web-wasm-execution.md)에 다섯 단계로 있습니다.
+
+***The game does not run in a browser yet.*** *What Task 513 Stage 1 produced is a wasm32 build of
+the platform-neutral core; the execution engine is not in it, because both current backends execute
+native x86. The five stages toward a browser are in the*
+*[web execution design](docs/design/20260828-513-web-wasm-execution.md).*
+
+```bash
+git clone --depth 1 https://github.com/emscripten-core/emsdk.git ~/emsdk
+cd ~/emsdk && ./emsdk install latest && ./emsdk activate latest && source ~/emsdk/emsdk_env.sh
+
+cd <repo>
+scripts/build_web_wasm.sh --target repiu_core_probe
+node build/web_wasm/repiu_core_probe.js
+```
+
+`repiu_core_probe`는 wasm32에서 probe 9개를 돌고, 성립하지 않는 여섯의 **이름을 함께
+출력**합니다 — `guest_cpu_context`, `virtual_memory`, `fault_handler`, `stack_bridge`,
+`guest_stack_switch`, `host_thread`. 앞의 둘은 인라인 x86 어셈블리라 컴파일에 닿지 못하고,
+나머지는 wasm에 없는 플랫폼 설비를 부릅니다.
+
+*`repiu_core_probe` runs nine probes on wasm32 and prints the **names** of the six that do not hold:
+`guest_cpu_context`, `virtual_memory`, `fault_handler`, `stack_bridge`, `guest_stack_switch`, and
+`host_thread`. Two of them are inline x86 assembly and never reach the compiler; the rest call
+platform facilities wasm does not have.*
 
 ### 5. Release 빌드 / Release build
 

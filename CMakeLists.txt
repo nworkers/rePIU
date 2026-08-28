@@ -16,7 +16,14 @@ endif()
 
 # Task 503d: the AOT/DBT dispatch thunks are hand-written assembly on Linux,
 # because GCC has no __declspec(naked) on x86.
-if(UNIX)
+#
+# Task 513: `AND NOT EMSCRIPTEN` here and at every other `if(UNIX)` below.
+# CMake sets UNIX for an Emscripten toolchain, so each of those guards would
+# otherwise be taken for the web build and pull in x86 assembly, -m32, and the
+# Linux platform layer -- none of which mean anything for wasm32. The guards
+# were written when UNIX and "the Linux host" were the same thing; they are not
+# any more, and this is the whole of what that change costs.
+if(UNIX AND NOT EMSCRIPTEN)
     enable_language(ASM)
 endif()
 
@@ -67,15 +74,29 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(spdlog CONFIG QUIET)
-if(NOT spdlog_FOUND)
-    FetchContent_Declare(
-        spdlog
-        GIT_REPOSITORY https://github.com/gabime/spdlog.git
-        GIT_TAG v1.14.1
-        GIT_SHALLOW TRUE
-    )
-    FetchContent_MakeAvailable(spdlog)
+# Task 513: spdlog is not fetched for Emscripten, and this is a scope decision
+# rather than a workaround.
+#
+# Its only consumer is the `repiu` loader, which is a Windows and Linux target.
+# But FetchContent_MakeAvailable adds spdlog's compiled library to `all`, so a
+# bare `cmake --build` builds a dependency no wasm target links -- and spdlog
+# 1.14.1 vendors a copy of fmt that its FMT_COMPILE_STRING macro cannot get past
+# Emscripten's clang. Fetching it here would mean carrying a version bump for a
+# library the web build never uses.
+#
+# `spdlog::spdlog_header_only` is named only inside the WIN32 and Linux target
+# blocks, so the missing target is unreachable rather than merely unused.
+if(NOT EMSCRIPTEN)
+    find_package(spdlog CONFIG QUIET)
+    if(NOT spdlog_FOUND)
+        FetchContent_Declare(
+            spdlog
+            GIT_REPOSITORY https://github.com/gabime/spdlog.git
+            GIT_TAG v1.14.1
+            GIT_SHALLOW TRUE
+        )
+        FetchContent_MakeAvailable(spdlog)
+    endif()
 endif()
 
 # Task 412: Release keeps every optimisation flag and gains debug information
@@ -216,6 +237,22 @@ add_library(repiu_exe
 # to empty objects there. Keeping one list rather than two is deliberate: a
 # split list makes every new file a question about which half it belongs in,
 # and the answer already lives in the fence inside the file.
+#
+# Task 513: excluded from the Emscripten configuration, and this is the one
+# place the web build differs in kind rather than in detail. These sources are
+# the execution engine, and the engine executes guest x86 on the host CPU --
+# an RX code cache, INT3 sentinels, trap-flag single-stepping, hand-written
+# thunks. Not one of those has a wasm form. The Linux stage could take the whole
+# list because Linux still runs x86; the web stage cannot, and Stage 3 is where
+# the engine gets a shape that does not need to.
+#
+# So the wasm32 build is `repiu_exe`'s platform-neutral core alone, which is
+# exactly what Stage 1 sets out to prove portable.
+#
+# The list below is deliberately left at its original indentation rather than
+# shifted inside this guard: re-indenting 82 lines would bury a two-line change
+# in an 84-line diff, and every later `git blame` on this list would stop here.
+if(NOT EMSCRIPTEN)
 target_sources(repiu_exe
     PRIVATE
         src/platform/win32/cd_audio_wave_out.cpp
@@ -301,6 +338,34 @@ target_sources(repiu_exe
         src/platform/win32/host_environment_win32.cpp
         src/platform/win32/host_process_win32.cpp
 )
+endif()
+
+# Task 513: the web platform layer.
+#
+# Two of its files are not here. `host_environment.cpp` and `worker_signal.cpp`
+# are taken from `src/platform/linux/` unchanged, because both open with
+# `#if !defined(_WIN32)` and both are plain POSIX inside -- `environ`/`setenv`
+# and a mutex with a condition variable. A second copy under a `web` path would
+# read more accurately and diverge the first time one of them is fixed.
+#
+# `safe_memory_copy` cannot be shared the same way: the Linux one calls
+# `process_vm_readv`, which Emscripten does not have, and wasm needs a bounds
+# check rather than a fault-tolerant read.
+#
+# The remaining four are stubs that return failure and say why, once. See
+# src/platform/web/README.md for why none of them pretends to succeed.
+if(EMSCRIPTEN)
+    target_sources(repiu_exe
+        PRIVATE
+            src/platform/linux/host_environment.cpp
+            src/platform/linux/worker_signal.cpp
+            src/platform/web/safe_memory_copy.cpp
+            src/platform/web/guest_cpu_context.cpp
+            src/platform/web/fault_handler.cpp
+            src/platform/web/virtual_memory.cpp
+            src/platform/web/host_process.cpp
+    )
+endif()
 
 # Task 503d: the Linux binaries are linked non-PIE with their text segment
 # lifted to 0x40000000.
@@ -315,7 +380,7 @@ target_sources(repiu_exe
 # 0x01000000-0x09000000 range the guest's relocated image needs. Lifting the
 # text segment keeps that range free.
 function(repiu_link_linux_engine target)
-    if(UNIX)
+    if(UNIX AND NOT EMSCRIPTEN)
         target_compile_options(${target} PRIVATE -fno-pie)
         target_link_options(${target} PRIVATE
             -no-pie
@@ -326,7 +391,7 @@ endfunction()
 
 # Task 503a-503c: the Linux platform layer. It holds the guest register context
 # conversion, the virtual memory API, and the signal-based fault handler.
-if(UNIX)
+if(UNIX AND NOT EMSCRIPTEN)
     target_sources(repiu_exe
         PRIVATE
             src/platform/linux/guest_cpu_context.cpp
@@ -408,26 +473,78 @@ add_executable(repiu_glide_issue_probe
     src/tools/glide_issue_probe/main.cpp
 )
 
+# Task 514, web port Stage 2. Counts the x86 instructions the guest reaches, so
+# the size of the Stage 3 interpreter stops being a guess.
+#
+# On all three configurations deliberately. The whole chain it walks -- parse,
+# runtime plan, relocation, translation plan -- lives in src/exe and src/runtime,
+# so the tool stands on repiu_exe alone and the three hosts can be compared the
+# way Task 501 set up with repiu_core_probe.
+add_executable(repiu_instruction_census
+    src/tools/instruction_census/main.cpp
+)
+
+target_link_libraries(repiu_instruction_census
+    PRIVATE
+        repiu_exe
+        repiu_zydis
+)
+
+repiu_link_linux_engine(repiu_instruction_census)
+
+if(EMSCRIPTEN)
+    # This tool reads an EXE off the host filesystem, and Emscripten's default
+    # MEMFS cannot see one -- the wall repiu_chd_cd_probe hit in Stage 1. Scoped
+    # to this target: NODERAWFS is a Node-only escape hatch and has no meaning in
+    # a browser, which is where Stage 5 goes.
+    #
+    # ALLOW_MEMORY_GROWTH is not a build-system detail, it is the first hard
+    # number the web target has produced about memory. Emscripten starts with a
+    # 16 MiB heap and, by default, aborts rather than growing it. The relocated
+    # guest image is 20,382,644 bytes on its own, so the very first thing this
+    # tool does exceeds the default -- it died with Aborted(OOM) out of
+    # emscripten_resize_heap before printing a line.
+    #
+    # Growth rather than a larger INITIAL_MEMORY: the plan structures on top of
+    # the image are not a fixed size, and a fixed initial heap picked to fit one
+    # title would be a number nothing keeps true.
+    target_link_options(repiu_instruction_census
+        PRIVATE
+            -sNODERAWFS=1
+            -sALLOW_MEMORY_GROWTH=1
+    )
+endif()
+
 # Task 501: the probes that need no platform layer, in one binary that builds
 # on every host so the same assertions can be compared across them.
 add_executable(repiu_core_probe
     src/tools/core_probe/main.cpp
     src/tools/aot_probe/dos_file_handle_cache_probe.cpp
     src/tools/aot_probe/env_toggle_probe.cpp
-    src/tools/aot_probe/fault_handler_probe.cpp
     src/tools/aot_probe/execution_backend_probe.cpp
     src/tools/aot_probe/execution_timeout_probe.cpp
     src/tools/aot_probe/glide_lfb_region_probe.cpp
-    src/tools/aot_probe/guest_cpu_context_probe.cpp
-    src/tools/aot_probe/guest_stack_switch_probe.cpp
-    src/tools/aot_probe/host_thread_probe.cpp
     src/tools/aot_probe/jump_table_guard_probe.cpp
     src/tools/aot_probe/launcher_probe.cpp
     src/tools/aot_probe/nvram_path_probe.cpp
     src/tools/aot_probe/pit_timer_probe.cpp
-    src/tools/aot_probe/stack_bridge_probe.cpp
-    src/tools/aot_probe/virtual_memory_probe.cpp
 )
+
+# Task 513: the six that ask the platform layer for something wasm does not
+# have. Two of them are inline x86 assembly and would not compile; the other
+# four would only measure that the Stage 1 stubs refuse. `main.cpp` fences the
+# same six and prints their names, so a shorter run is never a quieter one.
+if(NOT EMSCRIPTEN)
+    target_sources(repiu_core_probe
+        PRIVATE
+            src/tools/aot_probe/fault_handler_probe.cpp
+            src/tools/aot_probe/guest_cpu_context_probe.cpp
+            src/tools/aot_probe/guest_stack_switch_probe.cpp
+            src/tools/aot_probe/host_thread_probe.cpp
+            src/tools/aot_probe/stack_bridge_probe.cpp
+            src/tools/aot_probe/virtual_memory_probe.cpp
+    )
+endif()
 
 target_include_directories(repiu_core_probe
     PRIVATE
@@ -439,7 +556,7 @@ target_link_libraries(repiu_core_probe
         repiu_exe
 )
 
-if(UNIX)
+if(UNIX AND NOT EMSCRIPTEN)
     target_sources(repiu_core_probe
         PRIVATE
             src/tools/aot_probe/stack_bridge_probe.S
@@ -452,7 +569,7 @@ repiu_link_linux_engine(repiu_core_probe)
 # Task 502: the Linux launcher. It shares the launcher itself with the Windows
 # host and keeps only its own entry point, because the loop and the child
 # process on Windows exist for Win32-specific reasons.
-if(UNIX)
+if(UNIX AND NOT EMSCRIPTEN)
     add_executable(repiu_launcher
         src/host/linux/main.cpp
         src/launcher/launcher_ui.cpp

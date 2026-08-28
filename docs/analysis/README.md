@@ -65,6 +65,7 @@ flowchart LR
 * [LINEXE arena runtime frontier](linexe-arena-runtime-frontier.md)
 * [Linux 이식 frontier / Linux port frontier](linux-port-frontier.md)
 * [RES/PTX resource loading analysis](res-ptx-resource-loading.md)
+* [웹(WebAssembly) 이식 frontier / Web port frontier](web-port-frontier.md)
 
 The DOS/4G DLL loader analysis also records the [DOS/32A behavioral cross-reference and clean-room boundary](dll-loader-int21-ff00.md#dos32a-교차-확인과-적용-한계).
 
