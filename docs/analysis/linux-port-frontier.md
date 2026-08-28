@@ -212,6 +212,47 @@ bash scripts/task508_refused_recovery_repro.sh 3 60000 <label> # 종료 갈래
 **Linux 빌드 트리는 지금 Release입니다.** 단일 구성 생성기라 Debug를 대체했고, 정확성 작업으로
 돌아가려면 `--config Debug` 재구성이 필요합니다(SDL 재빌드 포함).
 
+## 3.7 2026-08-29 main 병합 인계
+
+이 날 main에 들어간 것은 Linux 성능 축의 다섯입니다(Tasks 515~519). **한 줄로: 26.8배의
+정체를 "재진입마다 트랩 하나"까지 좁혔고, 그 다음 한 걸음에서 네 번 틀렸습니다.**
+
+| 커밋 | 무엇 |
+|---|---|
+| `15cae5e` | 515 — 초과 경계는 **breakpoint**(69%). 후보 둘을 대조군으로 지움 |
+| `b357ec1` | 516 — 축은 boundary가 아니라 **재진입**. Linux는 재진입당 트랩 1.010, Windows 0.0432 |
+| `6d3b59b` | 517 — Linux에서 direct dispatch는 **돈다**(87%). 그런데 성공해도 트랩이 붙음 |
+| `08f1074` | 518 — 디스패치마다 relink 6.1회 (**결론은 519가 철회**) |
+| `d3870cb` | 519 — relink는 지속성과 무관한 수였음. `content=0` |
+
+### 지금 쓸 수 있는 계측
+
+실행 중에 네 줄이 나옵니다. `REPIU_EXECUTION_TIME_PROFILE=1`과
+`REPIU_LIVE_PROFILE_INTERVAL_MS=10000`으로 켭니다.
+
+| 줄 | 무엇 |
+|---|---|
+| `[repiu-live-profile]` | guest-run 대비 veh/glide/port-io/dos/unaccounted 몫, 창 값 포함 |
+| `[repiu-live-veh]` | 배달 수·배달당 cycle·커널 gap, 그리고 클래스 셋(ss/bp/other) |
+| `[repiu-live-aot]` | 캐시 entry/boundary/재진입, 경계 사유 다섯, `sum_ok` |
+| `[repiu-live-gdd]` | Glide direct dispatch: patched/verified/resolved/relinked(content·fixup)/entry/success |
+
+**이 넷이 이 축에서 나온 실질 산출물입니다.** Linux는 로더 요약에 닿지 못하므로 이 줄들이
+아니면 아무것도 읽을 수 없습니다.
+
+### 다음 한 걸음
+
+**Windows에서 그 INT3은 왜 다시 밟히지 않는가.** 활성화는 `Eip`만 돌리고 INT3을 지우지
+않는데, Windows에서는 재진입의 95%가 트랩 없이 처리되고 Linux에서는 100%가 트랩을 냅니다.
+
+**시작하기 전에 위 8절의 표를 읽으십시오** — 같은 실수를 네 번 했습니다.
+
+### 남은 다른 축
+
+* `other`(접근 위반) 프레임당 **10.7배** — 페이지 보호·포트 I/O·write watch.
+* 핸들러 본문 **3.3배** — 하위 버킷(`kVehPrologue`·`kAotReentry` 등)이 가릅니다.
+* `dos` 프레임당 **433.9배** — 격차 기여는 1.9%로 작지만 배율은 가장 큽니다.
+
 ## 4. 다음에 필요한 것
 
 > 이 절은 3d-20을 가리키고 있었습니다. 3d-20(다른 스레드의 레지스터)·3d-21(표본기)·
@@ -323,7 +364,85 @@ Linux에서 더 작습니다 — **시그널 전달은 Windows의 예외 디스�
 `grBufferSwap` 한 번 = 같은 게스트 경로), **게임 로직이 저프레임률에서 일을 줄이는 구조라면
 그 전제가 깨집니다 — 확인되지 않았습니다.**
 
-### 그다음 — 왜 경계를 13.6배 더 밟는가
+### 귀속 4차 (Task 515) — 초과분은 breakpoint이고, 후보 둘은 반증됐습니다
+
+**프레임당 배달 수**로 봅니다.
+
+| 클래스 | Windows | Linux | 배율 | 초과분 기여 |
+|---|---:|---:|---:|---:|
+| single-step | 4.87 | 8.95 | 1.8x | 1.8% |
+| **breakpoint** | 6.94 | **167.80** | **24.2x** | **69%** |
+| other (접근 위반) | 6.92 | 74.29 | 10.7x | 29% |
+
+성격 자체가 뒤집혀 있습니다 — Windows는 세 클래스가 고른데(24/39/37%), Linux는 **breakpoint
+67.0%**에 몰려 있습니다.
+
+**후보 둘을 Windows 대조군으로 반증했습니다.**
+
+| Windows 대조군 | bp/frame | 기준선 대비 |
+|---|---:|---:|
+| 기준선 | 6.94 | — |
+| `native_fast_path` 끔 | 6.67 | −3.9% |
+| direct-return table 끔 | 6.73 | −2.9% |
+
+**정제 하나**: `native_region`·`native_linear_span`은 Windows에서도 opt-in이라 기본 꺼짐입니다.
+**기본값이 두 호스트에서 다른 것은 `native_fast_path` 하나뿐**입니다 — 그런데 그 카운터가
+**기준선에서도 `0/0/0`**입니다. 이 장면에서는 Windows에서도 한 번도 작동하지 않으므로
+**두 호스트의 차이가 될 수 없습니다.** (노브를 껐는데 안 변할 때 카운터를 보라는 510의 규칙이
+여기서 약한 결론을 강한 결론으로 바꿨습니다.)
+
+### 귀속 5~8차 (Tasks 516~519) — 재진입마다 트랩이 하나, 그리고 틀린 답 셋
+
+**516: 축은 boundary가 아니라 재진입입니다.**
+
+| | Windows | Linux | 배율 |
+|---|---:|---:|---:|
+| 프레임당 boundary | 6.69 | 13.78 | 2.1x |
+| 프레임당 reentry | 160.63 | ~154 | **0.90x** |
+| **reentry당 breakpoint** | **0.0432** | **1.010** | **23x** |
+
+재진입 비율은 Linux가 오히려 10% 적습니다. 다른 것은 **나올 때마다 트랩을 내는가**이고, 이
+23배가 515의 breakpoint 24.2배와 맞습니다. Windows가 트랩을 피하는 경로는 **Glide direct
+dispatch**로, 재진입의 95.1%(8,719,788 / 9,171,551)를 처리합니다.
+
+**517: 그 경로는 Linux에서도 돕니다.** `patched=172 verified=172 entry=338,929
+success=338,928 miss=0`, 재진입의 87%. 그런데 산술이 강제합니다 — Linux의 비-gdd 재진입은
+50,685뿐인데 트랩이 392,670으로 **7.7배 초과**합니다. **성공한 direct dispatch도 트랩을
+냅니다.**
+
+**518~519: relink 카운터는 이 질문에 답할 수 없는 수였습니다.** 518이 "디스패치마다 6.1회
+relink → 패치가 안 붙는다"고 적었고, 519가 카운터를 갈라 **`content=0`, `fixup`이 전부**임을
+보였습니다. `fixup` 쪽은 캐시를 읽지 않고 매번 다시 쓰므로 지속성과 무관합니다.
+**518의 결론은 철회됐습니다.**
+
+### 그다음 — Windows에서 그 INT3은 왜 다시 밟히지 않는가
+
+`ActivateWin32GlideGateDirectTarget`은 breakpoint 폴트 핸들러 안에서 불리고, 성공하면 `Eip`를
+게스트 게이트 주소로 돌리고 트랩 플래그를 끕니다. **INT3 자체는 지우지 않습니다.** 그런데
+Windows에서는 같은 INT3이 사실상 다시 밟히지 않고, Linux에서는 매번 밟힙니다. **여기가 다음
+자리입니다.**
+
+**측정 다섯 번 동안 제 추정이 네 번 틀렸습니다.** 공통 원인이 하나이고, 다음 사람에게
+그것이 이 절에서 가장 값나가는 내용입니다.
+
+| # | 함의 | 실제 |
+|---|---|---|
+| 515 | 껐는데 안 변하니 원인이 아니다 | 애초에 한 번도 안 돌고 있었음 (`0/0/0`) |
+| 516 | `residency_mean=0`이니 캐시가 안 돈다 | 표본 카운터가 이 경로에서 안 채워짐 |
+| 517 | 트랩이 매 재진입에 있으니 direct dispatch가 안 돈다 | 87%가 그 경로로 감 |
+| 519 | relink가 많으니 패치가 안 붙는다 | relink는 지속성과 무관한 수 |
+
+**넷 다 카운터의 이름으로 뜻을 추정하고 증가 지점을 읽지 않은 것입니다.** 새 카운터를 읽기
+전에 `fetch_add`가 어디에 있는지부터 보십시오.
+
+다음 후보는 **AOT 코드 캐시가 Linux에서 경계를 얼마나 이어 붙이는가**입니다 — direct edge
+연결과 인라인 패치의 **효과**. Task 506이 "동작한다"까지는 확인했지만 얼마나 효과적인지는
+재지 않았습니다.
+
+그 수치(patched/verified/resolved-target/fallback 계열)는 지금 `main.cpp` 요약으로만 나가
+**Linux에서 읽을 수 없습니다.** 512·515와 같은 모양으로 live 줄에 실으면 됩니다.
+
+`other`의 10.7배도 남습니다 — 페이지 보호·포트 I/O·write watch 쪽입니다.
 
 **초과분은 single-step이 아닙니다.** `gap_ss_count`가 Linux 배달의 **3.6%**인데 Windows는
 **24.4%**입니다. 초과분은 breakpoint이거나 access violation입니다.
@@ -758,6 +877,47 @@ rate](../guides/execution-frame-rate-measurement.md).
 **The Linux build tree is currently Release.** It uses a single-config generator, so that replaced
 the Debug tree; going back to correctness work means `--config Debug` again, and SDL rebuilds.
 
+## 3.7 Main-merge handoff, 2026-08-29
+
+Five tasks on the Linux performance axis landed this day (515-519). **In one line: the 26.8x was
+narrowed to "one trap per cache reentry", and the step after that was got wrong four times.**
+
+| Commit | What |
+|---|---|
+| `15cae5e` | 515 -- the excess boundaries are **breakpoints** (69%); two candidates struck by control |
+| `b357ec1` | 516 -- the axis is **reentries**, not boundaries. 1.010 traps per reentry against Windows' 0.0432 |
+| `6d3b59b` | 517 -- direct dispatch **does run** on Linux (87%), yet a success still costs a trap |
+| `08f1074` | 518 -- 6.1 relinks per dispatch (**conclusion withdrawn by 519**) |
+| `d3870cb` | 519 -- relink cannot speak to persistence. `content=0` |
+
+### The instrument that now exists
+
+Four lines during a run, enabled with `REPIU_EXECUTION_TIME_PROFILE=1` and
+`REPIU_LIVE_PROFILE_INTERVAL_MS=10000`.
+
+| Line | What |
+|---|---|
+| `[repiu-live-profile]` | veh / glide / port-io / dos / unaccounted as shares of guest-run, with a window value |
+| `[repiu-live-veh]` | deliveries, cycles per delivery, the kernel gap, and the three classes |
+| `[repiu-live-aot]` | cache entry / boundary / reentry, the five boundary reasons, `sum_ok` |
+| `[repiu-live-gdd]` | Glide direct dispatch: patched / verified / resolved / relinked (content and fixup) / entry / success |
+
+**These four are the durable product of this axis.** Linux never reaches the loader summary, so
+without them nothing here can be read at all.
+
+### The next single step
+
+**Why does that INT3 stop being hit on Windows.** Activation only redirects `Eip` and never removes
+the INT3, yet Windows resolves 95% of reentries without a trap and Linux traps on all of them.
+
+**Read the table in section 8 above before starting** -- the same mistake was made four times.
+
+### The other axes still open
+
+* `other` (access violations) at **10.7x** a frame -- page protection, port I/O, write watches.
+* The handler body at **3.3x** -- separated by the sub-buckets (`kVehPrologue`, `kAotReentry`).
+* `dos` at **433.9x** a frame -- a small 1.9% of the gap but the largest factor in the table.
+
 ## 4. What is needed next
 
 > This section used to point at 3d-20. 3d-20 (another thread's registers), 3d-21 (the sampler) and
@@ -875,7 +1035,86 @@ per-frame figure is large because frames are 24x rarer. Per frame is the load-be
 (one frame is one `grBufferSwap`, and the guest code between two of them walks the same path), **but
 that premise breaks if the game logic sheds work at a low frame rate, which has not been checked.**
 
-### Next — why 13.6x more boundaries
+### Fourth attribution pass (Task 515) — the excess is breakpoints, and two candidates are refuted
+
+Read as **deliveries per frame**:
+
+| Class | Windows | Linux | Factor | Share of the excess |
+|---|---:|---:|---:|---:|
+| Single-step | 4.87 | 8.95 | 1.8x | 1.8% |
+| **Breakpoint** | 6.94 | **167.80** | **24.2x** | **69%** |
+| Other (access violations) | 6.92 | 74.29 | 10.7x | 29% |
+
+The character itself is inverted: Windows spreads evenly across the three (24/39/37%), Linux
+concentrates at **67.0% breakpoint**.
+
+**Two candidates were refuted by Windows control.**
+
+| Windows control | bp/frame | vs baseline |
+|---|---:|---:|
+| Baseline | 6.94 | — |
+| `native_fast_path` off | 6.67 | −3.9% |
+| Direct-return table off | 6.73 | −2.9% |
+
+**One refinement**: `native_region` and `native_linear_span` are opt-in on Windows too, so they are
+off by default there. **The only default that differs between the hosts is `native_fast_path`** --
+and its counter reads **`0/0/0` in the baseline as well.** It never engages in this scene on Windows
+either, so it **cannot be the difference between the hosts.** (Task 510's rule -- check the counter
+when a knob changes nothing -- turned a weak conclusion into a strong one here.)
+
+### Attribution passes five to eight (Tasks 516-519) — one trap per reentry, and three wrong answers
+
+**516: the axis is reentries, not boundaries.**
+
+| | Windows | Linux | Factor |
+|---|---:|---:|---:|
+| Boundaries a frame | 6.69 | 13.78 | 2.1x |
+| Reentries a frame | 160.63 | ~154 | **0.90x** |
+| **Breakpoints per reentry** | **0.0432** | **1.010** | **23x** |
+
+Linux actually reenters 10% less often. What differs is **whether leaving costs a trap**, and that
+23x matches 515's 24.2x breakpoint excess. The path Windows uses to avoid it is **Glide direct
+dispatch**, carrying 95.1% of its reentries (8,719,788 of 9,171,551).
+
+**517: that path runs on Linux too.** `patched=172 verified=172 entry=338,929 success=338,928
+miss=0`, and 87% of reentries. Yet the arithmetic forces a conclusion: only 50,685 Linux reentries
+skip direct dispatch while there are 392,670 breakpoints -- **7.7x more traps than reentries to
+account for them.** A successful direct dispatch traps too.
+
+**518-519: the relink counter could not answer this question.** 518 measured 6.1 relinks per
+dispatch and concluded the patch was not sticking; 519 split the counter and found **`content=0`
+with `fixup` carrying all of it.** The fixup collection never reads the cache and rewrites every
+time, so it says nothing about persistence. **518's conclusion is withdrawn.**
+
+### Next — why does that INT3 stop being hit on Windows
+
+`ActivateWin32GlideGateDirectTarget` runs inside the breakpoint fault handler, and on success
+redirects `Eip` to the guest gate address and clears the trap flag. **It never removes the INT3.**
+Yet on Windows that INT3 is effectively never hit again, and on Linux it is hit every time. That is
+where this goes next.
+
+**Across five measurements, four of my inferences were wrong**, all in the same way, and for the
+next reader that is the most valuable thing in this section.
+
+| # | The inference | What was true |
+|---|---|---|
+| 515 | turning it off changed nothing, so it is not the cause | it had never run at all (`0/0/0`) |
+| 516 | `residency_mean=0`, so the cache runs nothing | the sample counter does not fill on this path |
+| 517 | a trap on every reentry, so direct dispatch is not running | 87% of reentries go through it |
+| 519 | many relinks, so the patch does not stick | relink cannot speak to persistence |
+
+**All four took a counter's meaning from its name instead of from where it increments.** Read the
+`fetch_add` before reading the number.
+
+The next candidate is **how well the AOT code cache links its boundaries on Linux** -- the
+effectiveness of direct-edge linking and inline patching. Task 506 confirmed they *run*; how
+effective they are was never measured.
+
+Those numbers (the patched / verified / resolved-target / fallback family) leave only through
+`main.cpp`'s summary today and so **cannot be read on Linux**. Putting them on the live line is the
+same shape of change as 512 and 515.
+
+`other` at 10.7x also remains -- page protection, port I/O and write watches.
 
 **The excess is not single steps.** `gap_ss_count` is **3.6%** of Linux's deliveries against Windows'
 **24.4%**. The excess is breakpoints or access violations.

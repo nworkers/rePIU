@@ -73,7 +73,8 @@ bool LiveExecutionProfileReportEnabled()
 
 void ReportLiveExecutionProfileIfDue(
     const Win32ExecutionTimeProfile* profile,
-    const std::uint64_t frames)
+    const std::uint64_t frames,
+    const Win32LiveAotCounters& aot)
 {
     const std::uint32_t interval = IntervalMilliseconds();
     if (interval == 0U || profile == nullptr || !profile->enabled)
@@ -155,28 +156,43 @@ void ReportLiveExecutionProfileIfDue(
     const std::uint32_t veh_count =
         snapshot.counts[static_cast<std::uint32_t>(
             ExecutionTimeBucket::kVehTotal)];
+    // Task 515: all three classes, not just the single-step one.
+    //
+    // 512 printed single-step alone and used it to rule that class out of the
+    // 13.6x excess -- 3.6% of Linux's deliveries against 24.4% of Windows'. What
+    // the other 96.4% is decides the next step completely: breakpoints point at
+    // the policy that plants them, and `other` at access violations, which is
+    // page protection, port I/O and write watches. The counters for both were
+    // already filling.
+    const auto gap_count = [&snapshot](VehGapClass gap_class) {
+        return snapshot.veh_gap_counts[static_cast<std::uint32_t>(gap_class)];
+    };
+    const auto gap_mean = [&snapshot](VehGapClass gap_class) -> std::uint64_t {
+        const std::uint32_t index = static_cast<std::uint32_t>(gap_class);
+        const std::uint32_t count = snapshot.veh_gap_counts[index];
+        return count == 0U ? 0U : snapshot.veh_gap_cycles[index] / count;
+    };
     const std::uint32_t gap_single_step_count =
-        snapshot.veh_gap_counts[static_cast<std::uint32_t>(
-            VehGapClass::kSingleStep)];
-    const std::uint64_t gap_single_step_cycles =
-        snapshot.veh_gap_cycles[static_cast<std::uint32_t>(
-            VehGapClass::kSingleStep)];
-    char veh_line[320] = {};
+        gap_count(VehGapClass::kSingleStep);
+    char veh_line[448] = {};
     const int veh_length = std::snprintf(
         veh_line, sizeof(veh_line),
         "[repiu-live-veh] #%u veh_count=%llu per_frame=%llu "
-        "cycles_per_veh=%llu gap_min=%llu gap_ss_mean=%llu gap_ss_count=%llu\n",
+        "cycles_per_veh=%llu gap_min=%llu "
+        "ss_count=%llu ss_mean=%llu bp_count=%llu bp_mean=%llu "
+        "other_count=%llu other_mean=%llu\n",
         static_cast<unsigned>(g_report_index),
         static_cast<unsigned long long>(veh_count),
         static_cast<unsigned long long>(frames == 0U ? 0U : veh_count / frames),
         static_cast<unsigned long long>(
             veh_count == 0U ? 0U : shares.veh / veh_count),
         static_cast<unsigned long long>(snapshot.veh_gap_min_cycles),
-        static_cast<unsigned long long>(
-            gap_single_step_count == 0U
-                ? 0U
-                : gap_single_step_cycles / gap_single_step_count),
-        static_cast<unsigned long long>(gap_single_step_count));
+        static_cast<unsigned long long>(gap_single_step_count),
+        static_cast<unsigned long long>(gap_mean(VehGapClass::kSingleStep)),
+        static_cast<unsigned long long>(gap_count(VehGapClass::kBreakpoint)),
+        static_cast<unsigned long long>(gap_mean(VehGapClass::kBreakpoint)),
+        static_cast<unsigned long long>(gap_count(VehGapClass::kOther)),
+        static_cast<unsigned long long>(gap_mean(VehGapClass::kOther)));
     if (veh_length > 0)
     {
         repiu::platform::WriteHostErrorStream(
@@ -184,6 +200,90 @@ void ReportLiveExecutionProfileIfDue(
             static_cast<std::size_t>(veh_length) < sizeof(veh_line)
                 ? static_cast<std::size_t>(veh_length)
                 : sizeof(veh_line) - 1U);
+    }
+
+    // Task 516: a third line, for what the code cache did between boundaries.
+    //
+    // 515 named the excess as breakpoints -- the INT3s the engine plants at
+    // boundaries -- so the question became why this cache reaches a boundary so
+    // much more often. These counters answer it: `residency` is how far the
+    // cache runs from an entry before its first control transfer, and the five
+    // reasons say which guest instruction let go.
+    //
+    // The five sum to `boundary`, and that identity is printed as `sum_ok` so a
+    // reader can see the split holds rather than assuming it.
+    const std::uint32_t reason_sum =
+        aot.boundary_return + aot.boundary_indirect + aot.boundary_direct +
+        aot.boundary_conditional + aot.boundary_other;
+    char aot_line[448] = {};
+    const int aot_length = std::snprintf(
+        aot_line, sizeof(aot_line),
+        "[repiu-live-aot] #%u entry=%llu boundary=%llu per_frame=%llu "
+        "residency_mean=%llu ret=%llu ind=%llu dir=%llu cond=%llu oth=%llu "
+        "reentry=%llu fallback=%llu sum_ok=%d\n",
+        static_cast<unsigned>(g_report_index),
+        static_cast<unsigned long long>(aot.cache_entry),
+        static_cast<unsigned long long>(aot.boundary),
+        static_cast<unsigned long long>(
+            frames == 0U ? 0U : aot.boundary / frames),
+        static_cast<unsigned long long>(
+            aot.residency_samples == 0U
+                ? 0U
+                : aot.residency_instructions / aot.residency_samples),
+        static_cast<unsigned long long>(aot.boundary_return),
+        static_cast<unsigned long long>(aot.boundary_indirect),
+        static_cast<unsigned long long>(aot.boundary_direct),
+        static_cast<unsigned long long>(aot.boundary_conditional),
+        static_cast<unsigned long long>(aot.boundary_other),
+        static_cast<unsigned long long>(aot.reentry),
+        static_cast<unsigned long long>(aot.legacy_fallback),
+        reason_sum == aot.boundary ? 1 : 0);
+    if (aot_length > 0)
+    {
+        repiu::platform::WriteHostErrorStream(
+            aot_line,
+            static_cast<std::size_t>(aot_length) < sizeof(aot_line)
+                ? static_cast<std::size_t>(aot_length)
+                : sizeof(aot_line) - 1U);
+    }
+
+    // Task 517: whether the trap-free reentry path is running at all.
+    //
+    // Printed as its own line for the same reason the others are: this answers
+    // a different question from the ones above it, and a reader or a script
+    // should not have to split a long line to get at it.
+    //
+    // `per_reentry` is the number that matters. Windows resolves 95.1% of its
+    // reentries here; a value near zero says the reentries are going the other
+    // way, through a trap.
+    char glide_line[384] = {};
+    const int glide_length = std::snprintf(
+        glide_line, sizeof(glide_line),
+        "[repiu-live-gdd] #%u patched=%llu verified=%llu resolved=%llu "
+        "relinked=%llu content=%llu fixup=%llu entry=%llu "
+        "success=%llu miss=%llu terminal=%llu per_reentry=%.4f\n",
+        static_cast<unsigned>(g_report_index),
+        static_cast<unsigned long long>(aot.glide_patched_sites),
+        static_cast<unsigned long long>(aot.glide_verified_sites),
+        static_cast<unsigned long long>(aot.glide_resolved_target),
+        static_cast<unsigned long long>(aot.glide_relinked_cache_target),
+        static_cast<unsigned long long>(aot.glide_relink_content),
+        static_cast<unsigned long long>(aot.glide_relink_fixup),
+        static_cast<unsigned long long>(aot.glide_entry),
+        static_cast<unsigned long long>(aot.glide_success),
+        static_cast<unsigned long long>(aot.glide_target_miss),
+        static_cast<unsigned long long>(aot.glide_terminal_failure),
+        aot.reentry == 0U
+            ? 0.0
+            : static_cast<double>(aot.glide_entry) /
+                  static_cast<double>(aot.reentry));
+    if (glide_length > 0)
+    {
+        repiu::platform::WriteHostErrorStream(
+            glide_line,
+            static_cast<std::size_t>(glide_length) < sizeof(glide_line)
+                ? static_cast<std::size_t>(glide_length)
+                : sizeof(glide_line) - 1U);
     }
 
     g_last_report_ticks = now;

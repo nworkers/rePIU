@@ -19,6 +19,13 @@ struct Win32GlideGateDirectDispatchStats
     std::uint32_t success_count = 0;
     std::uint32_t target_miss_count = 0;
     std::uint32_t terminal_failure_count = 0;
+    // Task 519: `relinked_cache_target_count` split by how the slot was found.
+    // Content slots are matched against what the cache currently holds, so one
+    // collected twice for the same site says the earlier write did not stick.
+    // Fixup slots come from the static list and are rewritten every time
+    // regardless, which is why the combined total cannot answer that.
+    std::uint32_t relink_content_patch_count = 0;
+    std::uint32_t relink_fixup_patch_count = 0;
 };
 
 bool ResolveWin32GlideGateDirectDispatchEnabled(const char* setting);

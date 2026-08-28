@@ -25,6 +25,7 @@
 #include <cctype>
 #include "repiu/platform/guest_cpu_context.h"
 #include "repiu/platform/win32/live_execution_profile_report.h"
+#include "../aot/aot_dbt_glide_gate_dispatch.h"
 #include "repiu/platform/atomic_ops.h"
 
 namespace repiu::platform::win32
@@ -2449,9 +2450,57 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
             // is Task 353's rule. Here rather than at teardown because this is
             // the guest thread -- the thread that writes every counter the
             // report reads -- so nothing can tear and nothing needs a lock.
+            // Task 516: the cache counters travel as a plain struct rather than
+            // the context itself, so the reporter never depends on the execution
+            // engine's types. Relaxed loads: the writer is this same thread, and
+            // the ordering against anything else is not what is being asked.
+            Win32LiveAotCounters live_aot;
+            const auto load_counter =
+                [](const std::atomic<std::uint32_t>& counter) {
+                    return counter.load(std::memory_order_relaxed);
+                };
+            live_aot.cache_entry = load_counter(context->aot_cache_entry_count);
+            live_aot.boundary = load_counter(context->aot_boundary_count);
+            live_aot.boundary_return =
+                load_counter(context->aot_boundary_return_count);
+            live_aot.boundary_indirect =
+                load_counter(context->aot_boundary_indirect_count);
+            live_aot.boundary_direct =
+                load_counter(context->aot_boundary_direct_count);
+            live_aot.boundary_conditional =
+                load_counter(context->aot_boundary_conditional_count);
+            live_aot.boundary_other =
+                load_counter(context->aot_boundary_other_count);
+            live_aot.reentry = load_counter(context->aot_reentry_count);
+            live_aot.legacy_fallback =
+                load_counter(context->aot_legacy_fallback_count);
+            live_aot.residency_instructions =
+                load_counter(context->aot_residency_instruction_total);
+            live_aot.residency_samples =
+                load_counter(context->aot_residency_sample_count);
+            // Task 517: process-global rather than per-context, so it is read
+            // through its own accessor rather than off the context above.
+            const Win32GlideGateDirectDispatchStats direct_dispatch =
+                ReadWin32GlideGateDirectDispatchStats();
+            live_aot.glide_patched_sites = direct_dispatch.patched_gate_count;
+            live_aot.glide_verified_sites = direct_dispatch.verified_gate_count;
+            live_aot.glide_entry = direct_dispatch.entry_count;
+            live_aot.glide_success = direct_dispatch.success_count;
+            live_aot.glide_target_miss = direct_dispatch.target_miss_count;
+            live_aot.glide_terminal_failure =
+                direct_dispatch.terminal_failure_count;
+            live_aot.glide_resolved_target =
+                direct_dispatch.resolved_target_count;
+            live_aot.glide_relinked_cache_target =
+                direct_dispatch.relinked_cache_target_count;
+            live_aot.glide_relink_content =
+                direct_dispatch.relink_content_patch_count;
+            live_aot.glide_relink_fixup =
+                direct_dispatch.relink_fixup_patch_count;
             ReportLiveExecutionProfileIfDue(
                 context->execution_time_profile.get(),
-                context->glide_backend.presented_frame_total());
+                context->glide_backend.presented_frame_total(),
+                live_aot);
             const std::uint32_t swap_interval = context->glide_gate_stack[1];
             if (GlideAsyncPresentEnabled())
             {

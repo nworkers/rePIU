@@ -31,6 +31,16 @@ std::atomic<std::uint32_t> g_patched_gate_count{0};
 std::atomic<std::uint32_t> g_verified_gate_count{0};
 std::atomic<std::uint32_t> g_resolved_target_count{0};
 std::atomic<std::uint32_t> g_relinked_cache_target_count{0};
+// Task 519: the same total, split by how each patch was found.
+//
+// `content` slots are collected by reading the cache and matching the boundary
+// address, so a slot that was patched last time cannot be collected again --
+// finding one means the write did not stick. `fixup` slots come from the static
+// fixup list and are rewritten on every activation regardless, so they say
+// nothing about persistence. Only the first number can answer it, and the
+// combined counter cannot.
+std::atomic<std::uint32_t> g_relink_content_patch_count{0};
+std::atomic<std::uint32_t> g_relink_fixup_patch_count{0};
 std::atomic<std::uint32_t> g_entry_count{0};
 std::atomic<std::uint32_t> g_success_count{0};
 std::atomic<std::uint32_t> g_target_miss_count{0};
@@ -317,6 +327,12 @@ bool ActivateWin32GlideGateDirectTarget(
             static_cast<std::uint32_t>(
                 patches.size() + direct_patches.size()),
             std::memory_order_relaxed);
+        g_relink_content_patch_count.fetch_add(
+            static_cast<std::uint32_t>(patches.size()),
+            std::memory_order_relaxed);
+        g_relink_fixup_patch_count.fetch_add(
+            static_cast<std::uint32_t>(direct_patches.size()),
+            std::memory_order_relaxed);
     }
     return true;
 }
@@ -414,6 +430,8 @@ ReadWin32GlideGateDirectDispatchStats()
         g_success_count.load(std::memory_order_relaxed),
         g_target_miss_count.load(std::memory_order_relaxed),
         g_terminal_failure_count.load(std::memory_order_relaxed),
+        g_relink_content_patch_count.load(std::memory_order_relaxed),
+        g_relink_fixup_patch_count.load(std::memory_order_relaxed),
     };
 }
 
