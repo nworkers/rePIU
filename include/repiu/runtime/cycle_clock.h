@@ -13,7 +13,7 @@ namespace repiu::runtime
 
 // Task 330: a platform-neutral cycle source so platform-neutral code can be
 // attributed without pulling in a platform header. Mirrors the semantics of
-// `platform::win32::ReadAotWorkerTimingCycles`, which stays where it is because
+// `engine::ReadAotWorkerTimingCycles`, which stays where it is because
 // it is only used by Win32 rendezvous code.
 //
 // The unit is a TSC tick where one exists and a steady_clock tick otherwise, so

@@ -1,6 +1,6 @@
 #include "aot_worker_timing_probe.h"
 
-#include "repiu/platform/win32/aot_worker_timing.h"
+#include "repiu/engine/aot_worker_timing.h"
 
 #include <cstdint>
 #include <iostream>
@@ -11,7 +11,7 @@ namespace repiu::tools
 
 bool RunAotWorkerTimingProbe()
 {
-    using namespace repiu::platform::win32;
+    using namespace repiu::engine;
 
     // Replay one rendezvous with synthetic timestamps, in the exact order the
     // guest and worker record them.

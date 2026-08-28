@@ -1,7 +1,7 @@
 #include "aot_return_dispatch_site_index_probe.h"
 
-#include "repiu/platform/win32/aot_code_cache_win32.h"
-#include "repiu/platform/win32/aot_return_dispatch_site_index.h"
+#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_return_dispatch_site_index.h"
 
 #include <cstdint>
 #include <iostream>
@@ -12,11 +12,11 @@ namespace repiu::tools
 namespace
 {
 
-using repiu::platform::win32::AotReturnDispatchSiteLookup;
-using repiu::platform::win32::EnsureAotReturnDispatchSiteIndex;
-using repiu::platform::win32::InvalidateAotReturnDispatchSiteIndex;
-using repiu::platform::win32::LookupAotReturnDispatchSiteIndex;
-using repiu::platform::win32::Win32AotCodeCachePlacement;
+using repiu::engine::AotReturnDispatchSiteLookup;
+using repiu::engine::EnsureAotReturnDispatchSiteIndex;
+using repiu::engine::InvalidateAotReturnDispatchSiteIndex;
+using repiu::engine::LookupAotReturnDispatchSiteIndex;
+using repiu::engine::Win32AotCodeCachePlacement;
 
 void AddSite(Win32AotCodeCachePlacement* placement,
              std::uint32_t guest_source,

@@ -1,7 +1,7 @@
 #include "aot_cache_address_index_probe.h"
 
-#include "repiu/platform/win32/aot_cache_address_index.h"
-#include "repiu/platform/win32/aot_code_cache_win32.h"
+#include "repiu/engine/aot_cache_address_index.h"
+#include "repiu/engine/aot_code_cache_win32.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -13,10 +13,10 @@ namespace repiu::tools
 namespace
 {
 
-using repiu::platform::win32::EnsureAotCacheAddressIndex;
-using repiu::platform::win32::FindAotCacheAddress;
-using repiu::platform::win32::InvalidateAotCacheAddressIndex;
-using repiu::platform::win32::Win32AotCodeCachePlacement;
+using repiu::engine::EnsureAotCacheAddressIndex;
+using repiu::engine::FindAotCacheAddress;
+using repiu::engine::InvalidateAotCacheAddressIndex;
+using repiu::engine::Win32AotCodeCachePlacement;
 
 // The pre-Task-324 implementation, kept verbatim as the reference oracle. Any
 // divergence from this is a defect regardless of which answer looks nicer.
@@ -176,7 +176,7 @@ bool ReverseAgreesEverywhere(const Win32AotCodeCachePlacement& placement)
     {
         std::uint32_t actual = 0xDEADBEEFU;
         std::uint32_t expected = 0xDEADBEEFU;
-        const bool actual_found = repiu::platform::win32::FindAotGuestAddress(
+        const bool actual_found = repiu::engine::FindAotGuestAddress(
             placement, query, &actual);
         const bool expected_found =
             ReferenceFindAotGuestAddress(placement, query, &expected);
@@ -352,7 +352,7 @@ bool RunAotCacheAddressIndexProbe()
     EnsureAotCacheAddressIndex(&unsorted);
     const bool reverse_unsorted =
         !unsorted.cache_address_index.cache_offset_sorted &&
-        !repiu::platform::win32::LookupAotGuestAddressIndex(
+        !repiu::engine::LookupAotGuestAddressIndex(
              unsorted, 0x100U).usable &&
         ReverseAgreesEverywhere(unsorted);
 

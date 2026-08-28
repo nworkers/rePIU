@@ -1,4 +1,4 @@
-#include "repiu/platform/win32/live_telemetry.h"
+#include "repiu/engine/live_telemetry.h"
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -104,7 +104,7 @@ void PrintGuardPageEvent(HANDLE process,
 }
 
 void PrintSnapshot(
-    repiu::platform::win32::Win32SharedLiveTelemetry& telemetry,
+    repiu::engine::Win32SharedLiveTelemetry& telemetry,
     std::uint32_t elapsed_milliseconds,
     HANDLE child_process)
 {
@@ -379,7 +379,7 @@ void PrintSnapshot(
                      &telemetry.native_sample_indirect_target))
               << " sample_ring=";
     for (std::uint32_t index = 0;
-         index < repiu::platform::win32::kWin32NativeSampleRingCapacity;
+         index < repiu::engine::kWin32NativeSampleRingCapacity;
          ++index)
     {
         std::cout << (index == 0 ? "0x" : ",0x") << std::hex
@@ -527,7 +527,7 @@ int main(int argc, char** argv)
         nullptr,
         PAGE_READWRITE,
         0,
-        sizeof(repiu::platform::win32::Win32SharedLiveTelemetry),
+        sizeof(repiu::engine::Win32SharedLiveTelemetry),
         mapping_name.c_str());
     if (mapping == nullptr)
     {
@@ -535,9 +535,9 @@ int main(int argc, char** argv)
                   << GetLastError() << "\n";
         return 2;
     }
-    repiu::platform::win32::Win32SharedLiveTelemetry fallback_telemetry;
+    repiu::engine::Win32SharedLiveTelemetry fallback_telemetry;
     auto* telemetry = static_cast<
-        repiu::platform::win32::Win32SharedLiveTelemetry*>(
+        repiu::engine::Win32SharedLiveTelemetry*>(
             MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, 0));
     if (telemetry == nullptr)
     {
@@ -552,17 +552,17 @@ int main(int argc, char** argv)
         mapping = nullptr;
         telemetry = &fallback_telemetry;
     }
-    *telemetry = repiu::platform::win32::Win32SharedLiveTelemetry{};
+    *telemetry = repiu::engine::Win32SharedLiveTelemetry{};
 
     if (mapping != nullptr)
     {
         SetEnvironmentVariableA(
-            repiu::platform::win32::kWin32LiveTelemetryEnvironment,
+            repiu::engine::kWin32LiveTelemetryEnvironment,
             mapping_name.c_str());
     }
     const std::string child_timeout = "0";
     SetEnvironmentVariableA(
-        repiu::platform::win32::kWin32ExecutionTimeoutEnvironment,
+        repiu::engine::kWin32ExecutionTimeoutEnvironment,
         child_timeout.c_str());
     std::string command =
         "\"" + loader_path.string() + "\" " + target;
@@ -583,11 +583,11 @@ int main(int argc, char** argv)
     if (mapping != nullptr)
     {
         SetEnvironmentVariableA(
-            repiu::platform::win32::kWin32LiveTelemetryEnvironment,
+            repiu::engine::kWin32LiveTelemetryEnvironment,
             nullptr);
     }
     SetEnvironmentVariableA(
-        repiu::platform::win32::kWin32ExecutionTimeoutEnvironment,
+        repiu::engine::kWin32ExecutionTimeoutEnvironment,
         nullptr);
     if (!created)
     {

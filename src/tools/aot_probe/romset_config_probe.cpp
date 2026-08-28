@@ -7,7 +7,7 @@
 #include "repiu/input/host_key_binding.h"
 #include "repiu/input/host_key_names.h"
 #include "repiu/input/jamma_input_bindings.h"
-#include "repiu/platform/win32/active_jamma_bindings.h"
+#include "repiu/engine/active_jamma_bindings.h"
 #include <SDL3/SDL_keyboard.h>
 
 #include <cstdlib>

@@ -1,6 +1,6 @@
 #include "glide_gate_timing_probe.h"
 
-#include "repiu/platform/win32/glide_gate_timing.h"
+#include "repiu/engine/glide_gate_timing.h"
 
 #include <cstdint>
 #include <iostream>
@@ -17,28 +17,28 @@ namespace
 //   -> resume 3350
 //
 // queue 100, wake 2000, work 200, complete 50, total 2350.
-void PlayOneRendezvous(platform::win32::Win32GlideGateTimingProfile* profile,
+void PlayOneRendezvous(engine::Win32GlideGateTimingProfile* profile,
                        std::uint64_t enter,
                        std::uint64_t publish,
                        std::uint64_t host_start,
                        std::uint64_t host_finish,
                        std::uint64_t resume)
 {
-    platform::win32::RecordGlideGatePublish(profile, enter, publish);
-    platform::win32::RecordGlideGateHostCommand(profile, host_start,
+    engine::RecordGlideGatePublish(profile, enter, publish);
+    engine::RecordGlideGateHostCommand(profile, host_start,
                                                 host_finish);
-    platform::win32::RecordGlideGateResume(profile, enter, resume);
+    engine::RecordGlideGateResume(profile, enter, resume);
 }
 
 }  // namespace
 
 bool RunGlideGateTimingProbe()
 {
-    platform::win32::Win32GlideGateTimingProfile profile;
+    engine::Win32GlideGateTimingProfile profile;
     PlayOneRendezvous(&profile, 1000U, 1100U, 3100U, 3300U, 3350U);
 
-    const platform::win32::Win32GlideGateTimingSnapshot first =
-        platform::win32::SnapshotGlideGateTiming(profile);
+    const engine::Win32GlideGateTimingSnapshot first =
+        engine::SnapshotGlideGateTiming(profile);
     const bool intervals = first.enabled && first.rendezvous_count == 1U &&
         first.queue_cycles == 100U && first.wake_cycles == 2000U &&
         first.work_cycles == 200U && first.complete_cycles == 50U &&
@@ -47,8 +47,8 @@ bool RunGlideGateTimingProbe()
     // A second, cheaper rendezvous must accumulate rather than replace, and the
     // maxima must stay with the first.
     PlayOneRendezvous(&profile, 4000U, 4010U, 4020U, 4120U, 4130U);
-    const platform::win32::Win32GlideGateTimingSnapshot second =
-        platform::win32::SnapshotGlideGateTiming(profile);
+    const engine::Win32GlideGateTimingSnapshot second =
+        engine::SnapshotGlideGateTiming(profile);
     const bool accumulates = second.rendezvous_count == 2U &&
         second.queue_cycles == 110U && second.wake_cycles == 2010U &&
         second.work_cycles == 300U && second.complete_cycles == 60U &&
@@ -58,9 +58,9 @@ bool RunGlideGateTimingProbe()
 
     // Commands run on the host thread take no rendezvous, so they must move
     // only the direct axis.
-    platform::win32::RecordGlideGateDirectCommand(&profile, 700U);
-    const platform::win32::Win32GlideGateTimingSnapshot third =
-        platform::win32::SnapshotGlideGateTiming(profile);
+    engine::RecordGlideGateDirectCommand(&profile, 700U);
+    const engine::Win32GlideGateTimingSnapshot third =
+        engine::SnapshotGlideGateTiming(profile);
     const bool direct_separate = third.direct_count == 1U &&
         third.direct_work_cycles == 700U &&
         third.rendezvous_count == second.rendezvous_count &&
@@ -68,10 +68,10 @@ bool RunGlideGateTimingProbe()
 
     // A backwards TSC read clamps to zero and is counted, rather than wrapping
     // into an enormous interval.
-    platform::win32::Win32GlideGateTimingProfile backwards;
+    engine::Win32GlideGateTimingProfile backwards;
     PlayOneRendezvous(&backwards, 5000U, 4900U, 4800U, 4700U, 4600U);
-    const platform::win32::Win32GlideGateTimingSnapshot clamped =
-        platform::win32::SnapshotGlideGateTiming(backwards);
+    const engine::Win32GlideGateTimingSnapshot clamped =
+        engine::SnapshotGlideGateTiming(backwards);
     const bool clamps = clamped.queue_cycles == 0U &&
         clamped.wake_cycles == 0U && clamped.work_cycles == 0U &&
         clamped.complete_cycles == 0U && clamped.total_cycles == 0U &&
@@ -79,13 +79,13 @@ bool RunGlideGateTimingProbe()
 
     // A null profile must be inert, since the rendezvous runs with timing off
     // in every normal run.
-    platform::win32::RecordGlideGatePublish(nullptr, 1U, 2U);
-    platform::win32::RecordGlideGateHostCommand(nullptr, 1U, 2U);
-    platform::win32::RecordGlideGateResume(nullptr, 1U, 2U);
-    platform::win32::RecordGlideGateDirectCommand(nullptr, 1U);
-    const platform::win32::Win32GlideGateTimingProfile untouched;
-    const platform::win32::Win32GlideGateTimingSnapshot disabled =
-        platform::win32::SnapshotGlideGateTiming(untouched);
+    engine::RecordGlideGatePublish(nullptr, 1U, 2U);
+    engine::RecordGlideGateHostCommand(nullptr, 1U, 2U);
+    engine::RecordGlideGateResume(nullptr, 1U, 2U);
+    engine::RecordGlideGateDirectCommand(nullptr, 1U);
+    const engine::Win32GlideGateTimingProfile untouched;
+    const engine::Win32GlideGateTimingSnapshot disabled =
+        engine::SnapshotGlideGateTiming(untouched);
     const bool inert = !disabled.enabled && disabled.rendezvous_count == 0U &&
         disabled.total_cycles == 0U;
 

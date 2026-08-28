@@ -1,6 +1,6 @@
 #include "selector_guard_probe.h"
 
-#include "repiu/platform/win32/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache_win32.h"
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/aot_translation_plan.h"
 #include "repiu/runtime/selector_table.h"
@@ -25,8 +25,8 @@ namespace
 {
 
 bool IsPolicy(
-    const platform::win32::Win32AotSegmentResolution& resolution,
-    platform::win32::Win32AotSegmentAccessPolicy expected)
+    const engine::Win32AotSegmentResolution& resolution,
+    engine::Win32AotSegmentAccessPolicy expected)
 {
     return resolution.policy == expected;
 }
@@ -50,35 +50,35 @@ bool RunSelectorGuardProbe()
             &selector_table,
             {0x0090U, 0x00002000U, 0x00000FFFU, 0x0092U, true});
 
-    platform::win32::Win32AotSegmentResolution flat;
-    platform::win32::Win32AotSegmentResolution nonflat;
-    platform::win32::Win32AotSegmentResolution selector_zero;
-    platform::win32::Win32AotSegmentResolution low_memory;
-    platform::win32::Win32AotSegmentResolution unresolved;
+    engine::Win32AotSegmentResolution flat;
+    engine::Win32AotSegmentResolution nonflat;
+    engine::Win32AotSegmentResolution selector_zero;
+    engine::Win32AotSegmentResolution low_memory;
+    engine::Win32AotSegmentResolution unresolved;
     constexpr std::uint32_t kShadowAddress = 0x00123456U;
-    platform::win32::BuildWin32AotSegmentResolution(
+    engine::BuildWin32AotSegmentResolution(
         selector_table, kShadowAddress, 0x0080U, &flat);
-    platform::win32::BuildWin32AotSegmentResolution(
+    engine::BuildWin32AotSegmentResolution(
         selector_table, kShadowAddress, 0x0088U, &nonflat);
-    platform::win32::BuildWin32AotSegmentResolution(
+    engine::BuildWin32AotSegmentResolution(
         selector_table, kShadowAddress, 0U, &selector_zero);
-    platform::win32::BuildWin32AotSegmentResolution(
+    engine::BuildWin32AotSegmentResolution(
         selector_table, kShadowAddress, 0x0090U, &low_memory);
-    platform::win32::BuildWin32AotSegmentResolution(
+    engine::BuildWin32AotSegmentResolution(
         selector_table, kShadowAddress, 0x0098U, &unresolved);
 
     const bool descriptor_policy =
         descriptors_ready &&
         IsPolicy(flat,
-                 platform::win32::Win32AotSegmentAccessPolicy::kNativeFolded) &&
+                 engine::Win32AotSegmentAccessPolicy::kNativeFolded) &&
         IsPolicy(nonflat,
-                 platform::win32::Win32AotSegmentAccessPolicy::kNativeFolded) &&
+                 engine::Win32AotSegmentAccessPolicy::kNativeFolded) &&
         IsPolicy(selector_zero,
-                 platform::win32::Win32AotSegmentAccessPolicy::kHleLowMemory) &&
+                 engine::Win32AotSegmentAccessPolicy::kHleLowMemory) &&
         IsPolicy(low_memory,
-                 platform::win32::Win32AotSegmentAccessPolicy::kHleLowMemory) &&
+                 engine::Win32AotSegmentAccessPolicy::kHleLowMemory) &&
         IsPolicy(unresolved,
-                 platform::win32::Win32AotSegmentAccessPolicy::kUnresolved);
+                 engine::Win32AotSegmentAccessPolicy::kUnresolved);
 
     runtime::AotInstructionRecord record;
     record.guest_address = 0x00101000U;
@@ -281,19 +281,19 @@ bool RunSelectorGuardProbe()
             !disabled_read_image.address_map.empty() &&
             disabled_read_image.bytes[
                 disabled_read_image.address_map[0].cache_offset] == 0xCCU;
-        platform::win32::Win32AotCodeCachePlacement read_placement;
-        if (platform::win32::PlaceWin32AotCodeCache(
+        engine::Win32AotCodeCachePlacement read_placement;
+        if (engine::PlaceWin32AotCodeCache(
                 read_image, &read_placement) && read_placement.placed)
         {
             std::uint16_t shadow_selector = 0x0088U;
             const std::uintptr_t shadow_pointer =
                 reinterpret_cast<std::uintptr_t>(&shadow_selector);
-            platform::win32::Win32AotSegmentTable segment_table;
+            engine::Win32AotSegmentTable segment_table;
             segment_table.segments[3].shadow_address =
                 static_cast<std::uint32_t>(shadow_pointer);
-            platform::win32::Win32AotSegmentPatchStats stats;
+            engine::Win32AotSegmentPatchStats stats;
             const std::uint32_t processed =
-                platform::win32::ReResolveWin32AotSegmentOverrides(
+                engine::ReResolveWin32AotSegmentOverrides(
                     &read_placement, &segment_table, &stats);
             const auto* cache = reinterpret_cast<const std::uint8_t*>(
                 static_cast<std::uintptr_t>(read_placement.base_address));
@@ -312,7 +312,7 @@ bool RunSelectorGuardProbe()
                 patched_load_shadow ==
                     static_cast<std::uint32_t>(shadow_pointer);
         }
-        platform::win32::ReleaseWin32AotCodeCache(&read_placement);
+        engine::ReleaseWin32AotCodeCache(&read_placement);
     }
     runtime::RelocatedRuntimeImage load_runtime;
     load_runtime.valid = true;
@@ -396,19 +396,19 @@ bool RunSelectorGuardProbe()
             !disabled_load_image.address_map.empty() &&
             disabled_load_image.bytes[
                 disabled_load_image.address_map[0].cache_offset] == 0xCCU;
-        platform::win32::Win32AotCodeCachePlacement load_placement;
-        if (platform::win32::PlaceWin32AotCodeCache(
+        engine::Win32AotCodeCachePlacement load_placement;
+        if (engine::PlaceWin32AotCodeCache(
                 load_image, &load_placement) && load_placement.placed)
         {
             std::uint16_t shadow_selector = 0x002BU;
             const std::uintptr_t shadow_pointer =
                 reinterpret_cast<std::uintptr_t>(&shadow_selector);
-            platform::win32::Win32AotSegmentTable segment_table;
+            engine::Win32AotSegmentTable segment_table;
             segment_table.segments[0].shadow_address =
                 static_cast<std::uint32_t>(shadow_pointer);
-            platform::win32::Win32AotSegmentPatchStats stats;
+            engine::Win32AotSegmentPatchStats stats;
             const std::uint32_t processed =
-                platform::win32::ReResolveWin32AotSegmentOverrides(
+                engine::ReResolveWin32AotSegmentOverrides(
                     &load_placement, &segment_table, &stats);
             const auto* cache = reinterpret_cast<const std::uint8_t*>(
                 static_cast<std::uintptr_t>(load_placement.base_address));
@@ -421,7 +421,7 @@ bool RunSelectorGuardProbe()
                 cache[site.cache_offset] == 0x9CU &&
                 patched_shadow == static_cast<std::uint32_t>(shadow_pointer);
         }
-        platform::win32::ReleaseWin32AotCodeCache(&load_placement);
+        engine::ReleaseWin32AotCodeCache(&load_placement);
     }
     const auto remains_hle = [](std::vector<std::uint8_t> bytes) {
         bytes.resize(bytes.size() + 15U, 0x90U);
@@ -488,7 +488,7 @@ bool RunSelectorGuardProbe()
     {
         auto* bytes = static_cast<std::uint8_t*>(memory);
         bytes[0] = 0xCCU;
-        platform::win32::Win32AotCodeCachePlacement placement;
+        engine::Win32AotCodeCachePlacement placement;
         placement.valid = true;
         placement.placed = true;
         placement.base_address = static_cast<std::uint32_t>(
@@ -513,11 +513,11 @@ bool RunSelectorGuardProbe()
         pop_site.segment_register = 5U;
         placement.guarded_segment_pop_sites.push_back(pop_site);
 
-        platform::win32::Win32AotSegmentTable segment_table;
+        engine::Win32AotSegmentTable segment_table;
         segment_table.segments[5] = nonflat;
-        platform::win32::Win32AotSegmentPatchStats native_stats;
+        engine::Win32AotSegmentPatchStats native_stats;
         const std::uint32_t native_processed =
-            platform::win32::ReResolveWin32AotSegmentOverrides(
+            engine::ReResolveWin32AotSegmentOverrides(
                 &placement, &segment_table, &native_stats);
         std::uint32_t patched_shadow = 0;
         std::uint16_t patched_selector = 0;
@@ -554,9 +554,9 @@ bool RunSelectorGuardProbe()
             patched_fallback_counter == expected_fallback_counter;
 
         segment_table.segments[5] = selector_zero;
-        platform::win32::Win32AotSegmentPatchStats hle_stats;
+        engine::Win32AotSegmentPatchStats hle_stats;
         const std::uint32_t hle_processed =
-            platform::win32::ReResolveWin32AotSegmentOverrides(
+            engine::ReResolveWin32AotSegmentOverrides(
                 &placement, &segment_table, &hle_stats);
         hle_patch =
             hle_processed == 2U && hle_stats.hle_site_count == 1U &&
@@ -624,8 +624,8 @@ bool RunSelectorGuardProbe()
                 hle_plan, broken_hle, &failure_guest) &&
             failure_guest == hle_record.guest_address;
 
-        platform::win32::Win32AotCodeCachePlacement hle_placement;
-        if (platform::win32::PlaceWin32AotCodeCache(
+        engine::Win32AotCodeCachePlacement hle_placement;
+        if (engine::PlaceWin32AotCodeCache(
                 hle_image, &hle_placement) &&
             hle_placement.placed &&
             hle_placement.dbt_hle_dispatch_sites.size() == 1U)
@@ -642,7 +642,7 @@ bool RunSelectorGuardProbe()
                 patched_dispatch ==
                     hle_placement.base_address + site.dispatch_cache_offset;
         }
-        platform::win32::ReleaseWin32AotCodeCache(&hle_placement);
+        engine::ReleaseWin32AotCodeCache(&hle_placement);
     }
 
     runtime::AotTranslationPlan port_plan = hle_plan;
@@ -721,8 +721,8 @@ bool RunSelectorGuardProbe()
     bool segment_override_hybrid_patch = false;
     if (segment_override_dispatch_specific)
     {
-        platform::win32::Win32AotCodeCachePlacement hybrid_placement;
-        if (platform::win32::PlaceWin32AotCodeCache(
+        engine::Win32AotCodeCachePlacement hybrid_placement;
+        if (engine::PlaceWin32AotCodeCache(
                 segment_dispatch_image, &hybrid_placement) &&
             hybrid_placement.placed &&
             hybrid_placement.segment_override_sites.size() == 1U &&
@@ -732,11 +732,11 @@ bool RunSelectorGuardProbe()
                 hybrid_placement.segment_override_sites[0];
             auto* hybrid_bytes = reinterpret_cast<std::uint8_t*>(
                 static_cast<std::uintptr_t>(hybrid_placement.base_address));
-            platform::win32::Win32AotSegmentTable hybrid_table{};
+            engine::Win32AotSegmentTable hybrid_table{};
             hybrid_table.segments[0] = nonflat;
-            platform::win32::Win32AotSegmentPatchStats hybrid_native_stats;
+            engine::Win32AotSegmentPatchStats hybrid_native_stats;
             const std::uint32_t hybrid_native_processed =
-                platform::win32::ReResolveWin32AotSegmentOverrides(
+                engine::ReResolveWin32AotSegmentOverrides(
                     &hybrid_placement, &hybrid_table,
                     &hybrid_native_stats);
             const bool native_routed = hybrid_native_processed == 1U &&
@@ -744,9 +744,9 @@ bool RunSelectorGuardProbe()
                 hybrid_bytes[hybrid_site.cache_offset] == 0x9CU;
 
             hybrid_table.segments[0] = selector_zero;
-            platform::win32::Win32AotSegmentPatchStats hybrid_hle_stats;
+            engine::Win32AotSegmentPatchStats hybrid_hle_stats;
             const std::uint32_t hybrid_hle_processed =
-                platform::win32::ReResolveWin32AotSegmentOverrides(
+                engine::ReResolveWin32AotSegmentOverrides(
                     &hybrid_placement, &hybrid_table, &hybrid_hle_stats);
             std::int32_t hybrid_relative = 0;
             std::memcpy(&hybrid_relative,
@@ -760,9 +760,9 @@ bool RunSelectorGuardProbe()
                 hybrid_target == hybrid_site.dispatch_cache_offset;
 
             hybrid_table.segments[0] = unresolved;
-            platform::win32::Win32AotSegmentPatchStats hybrid_unresolved_stats;
+            engine::Win32AotSegmentPatchStats hybrid_unresolved_stats;
             const std::uint32_t hybrid_unresolved_processed =
-                platform::win32::ReResolveWin32AotSegmentOverrides(
+                engine::ReResolveWin32AotSegmentOverrides(
                     &hybrid_placement, &hybrid_table,
                     &hybrid_unresolved_stats);
             const bool unresolved_routed =
@@ -772,7 +772,7 @@ bool RunSelectorGuardProbe()
             segment_override_hybrid_patch =
                 native_routed && hle_routed && unresolved_routed;
         }
-        platform::win32::ReleaseWin32AotCodeCache(&hybrid_placement);
+        engine::ReleaseWin32AotCodeCache(&hybrid_placement);
     }
     hle::GlideGatePlan glide_direct_plan;
     glide_direct_plan.valid = true;
@@ -791,7 +791,7 @@ bool RunSelectorGuardProbe()
     const auto invalid_before = invalid_glide_direct_plan.image;
     constexpr std::uint32_t kSyntheticGateBase = 0x03000000U;
     const bool glide_direct_patched =
-        platform::win32::PatchWin32GlideGatePlanForDirectDispatch(
+        engine::PatchWin32GlideGatePlanForDirectDispatch(
             kSyntheticGateBase, &glide_direct_plan);
     std::int32_t glide_call_displacement = 0;
     if (glide_direct_patched)
@@ -805,31 +805,31 @@ bool RunSelectorGuardProbe()
     const bool glide_direct_dispatch_layout = glide_direct_patched &&
         glide_direct_plan.image[16U] == 0xE8U &&
         glide_call_target == static_cast<std::uint32_t>(
-            reinterpret_cast<std::uintptr_t>(platform::win32::
+            reinterpret_cast<std::uintptr_t>(engine::
                 GetWin32GlideGateDirectDispatchThunkAddress())) &&
         glide_direct_plan.image[21U] == 0xC2U &&
         glide_direct_plan.image[22U] == 0x0CU &&
         glide_direct_plan.image[23U] == 0x00U &&
-        !platform::win32::PatchWin32GlideGatePlanForDirectDispatch(
+        !engine::PatchWin32GlideGatePlanForDirectDispatch(
             kSyntheticGateBase, &invalid_glide_direct_plan) &&
         invalid_glide_direct_plan.image == invalid_before;
     const bool glide_direct_dispatch_policy =
-        platform::win32::ResolveWin32GlideGateDirectDispatchEnabled(nullptr) &&
-        platform::win32::ResolveWin32GlideGateDirectDispatchEnabled("1") &&
-        platform::win32::ResolveWin32GlideGateDirectDispatchEnabled("on") &&
-        platform::win32::ResolveWin32GlideGateDirectDispatchEnabled("true") &&
-        !platform::win32::ResolveWin32GlideGateDirectDispatchEnabled("") &&
-        !platform::win32::ResolveWin32GlideGateDirectDispatchEnabled("0") &&
-        !platform::win32::ResolveWin32GlideGateDirectDispatchEnabled("off") &&
-        !platform::win32::ResolveWin32GlideGateDirectDispatchEnabled("false") &&
-        !platform::win32::ResolveWin32GlideGateDirectDispatchEnabled("invalid");
+        engine::ResolveWin32GlideGateDirectDispatchEnabled(nullptr) &&
+        engine::ResolveWin32GlideGateDirectDispatchEnabled("1") &&
+        engine::ResolveWin32GlideGateDirectDispatchEnabled("on") &&
+        engine::ResolveWin32GlideGateDirectDispatchEnabled("true") &&
+        !engine::ResolveWin32GlideGateDirectDispatchEnabled("") &&
+        !engine::ResolveWin32GlideGateDirectDispatchEnabled("0") &&
+        !engine::ResolveWin32GlideGateDirectDispatchEnabled("off") &&
+        !engine::ResolveWin32GlideGateDirectDispatchEnabled("false") &&
+        !engine::ResolveWin32GlideGateDirectDispatchEnabled("invalid");
     const bool policy =
-        !platform::win32::ResolveAotDbtPostHleTranslationEnabled("") &&
-        platform::win32::ResolveAotDbtPostHleTranslationEnabled("1") &&
-        platform::win32::ResolveAotDbtPostHleTranslationEnabled("on") &&
-        platform::win32::ResolveAotDbtPostHleTranslationEnabled("true") &&
-        !platform::win32::ResolveAotDbtPostHleTranslationEnabled("0") &&
-        !platform::win32::ResolveAotDbtPostHleTranslationEnabled("invalid");
+        !engine::ResolveAotDbtPostHleTranslationEnabled("") &&
+        engine::ResolveAotDbtPostHleTranslationEnabled("1") &&
+        engine::ResolveAotDbtPostHleTranslationEnabled("on") &&
+        engine::ResolveAotDbtPostHleTranslationEnabled("true") &&
+        !engine::ResolveAotDbtPostHleTranslationEnabled("0") &&
+        !engine::ResolveAotDbtPostHleTranslationEnabled("invalid");
     const bool all = descriptor_policy && mismatch_fails_closed &&
         whole_cfg_coverage && missing_guard_rejected && native_patch &&
         hle_patch && guarded_pop_patch && guarded_pop_ready &&

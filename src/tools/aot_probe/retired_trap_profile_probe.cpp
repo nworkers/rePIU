@@ -1,7 +1,7 @@
 #include "retired_trap_profile_probe.h"
 
-#include "repiu/platform/win32/aot_code_cache_win32.h"
-#include "repiu/platform/win32/aot_retired_trap_profile.h"
+#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_retired_trap_profile.h"
 
 #include <cstdint>
 #include <iostream>
@@ -11,7 +11,7 @@ namespace repiu::tools
 
 bool RunAotRetiredTrapProfileProbe()
 {
-    using namespace repiu::platform::win32;
+    using namespace repiu::engine;
     const bool policy =
         !ResolveAotRetiredTrapProfileEnabled("") &&
         ResolveAotRetiredTrapProfileEnabled("1") &&

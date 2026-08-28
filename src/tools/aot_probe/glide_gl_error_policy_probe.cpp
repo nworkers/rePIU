@@ -1,6 +1,6 @@
 #include "glide_gl_error_policy_probe.h"
 
-#include "repiu/platform/win32/glide_gl_error_policy.h"
+#include "repiu/engine/glide_gl_error_policy.h"
 
 #include <iostream>
 #include <string>
@@ -10,11 +10,11 @@ namespace repiu::tools
 
 bool RunGlideGlErrorPolicyProbe()
 {
-    using platform::win32::RecordGlideGlDebugMessage;
-    using platform::win32::RecordGlideGlErrorFrameCheck;
-    using platform::win32::ResolveGlideGlErrorCheckEnabled;
-    using platform::win32::SnapshotGlideGlErrorPolicy;
-    using platform::win32::Win32GlideGlErrorPolicyProfile;
+    using engine::RecordGlideGlDebugMessage;
+    using engine::RecordGlideGlErrorFrameCheck;
+    using engine::ResolveGlideGlErrorCheckEnabled;
+    using engine::SnapshotGlideGlErrorPolicy;
+    using engine::Win32GlideGlErrorPolicyProfile;
 
     // The accepted set is exact. A trailing space is the failure that actually
     // happened during Task 369 measurement -- `set VAR=1 && ...` in cmd puts the
@@ -32,14 +32,14 @@ bool RunGlideGlErrorPolicyProbe()
     // so it must parse rather than be rejected as empty.
     std::uint32_t interval = 0xFFFFFFFFU;
     const bool interval_policy =
-        platform::win32::ResolveGlideGlErrorFrameInterval("64", &interval) &&
+        engine::ResolveGlideGlErrorFrameInterval("64", &interval) &&
         interval == 64U &&
-        platform::win32::ResolveGlideGlErrorFrameInterval("0", &interval) &&
+        engine::ResolveGlideGlErrorFrameInterval("0", &interval) &&
         interval == 0U &&
-        !platform::win32::ResolveGlideGlErrorFrameInterval("", &interval) &&
-        !platform::win32::ResolveGlideGlErrorFrameInterval("64 ", &interval) &&
-        !platform::win32::ResolveGlideGlErrorFrameInterval("x", &interval) &&
-        !platform::win32::ResolveGlideGlErrorFrameInterval("64", nullptr);
+        !engine::ResolveGlideGlErrorFrameInterval("", &interval) &&
+        !engine::ResolveGlideGlErrorFrameInterval("64 ", &interval) &&
+        !engine::ResolveGlideGlErrorFrameInterval("x", &interval) &&
+        !engine::ResolveGlideGlErrorFrameInterval("64", nullptr);
 
     Win32GlideGlErrorPolicyProfile profile;
     RecordGlideGlErrorFrameCheck(&profile, 0U, 0U);
@@ -75,14 +75,14 @@ bool RunGlideGlErrorPolicyProbe()
     // An oversized message is truncated, not overrun, and stays terminated.
     Win32GlideGlErrorPolicyProfile long_profile;
     const std::string oversized(
-        platform::win32::kGlideGlDebugMessageCapacity + 64U, 'x');
+        engine::kGlideGlDebugMessageCapacity + 64U, 'x');
     RecordGlideGlDebugMessage(&long_profile, 7U, true, oversized.c_str(),
                               oversized.size());
     const auto long_snapshot =
         SnapshotGlideGlErrorPolicy(long_profile, false, 0U);
     const bool truncated =
         std::string(long_snapshot.first_debug_message.data()).size() ==
-            platform::win32::kGlideGlDebugMessageCapacity - 1U &&
+            engine::kGlideGlDebugMessageCapacity - 1U &&
         long_snapshot.first_debug_message.back() == '\0';
 
     const bool clean_run_reports_zero =

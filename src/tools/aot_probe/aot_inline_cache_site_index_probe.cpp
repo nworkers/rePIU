@@ -1,7 +1,7 @@
 #include "aot_inline_cache_site_index_probe.h"
 
-#include "repiu/platform/win32/aot_code_cache_win32.h"
-#include "repiu/platform/win32/aot_inline_cache_site_index.h"
+#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_inline_cache_site_index.h"
 
 #include <cstdint>
 #include <iostream>
@@ -12,11 +12,11 @@ namespace repiu::tools
 namespace
 {
 
-using repiu::platform::win32::AotInlineCacheSiteLookup;
-using repiu::platform::win32::EnsureAotInlineCacheSiteIndex;
-using repiu::platform::win32::InvalidateAotInlineCacheSiteIndex;
-using repiu::platform::win32::LookupAotInlineCacheSiteIndex;
-using repiu::platform::win32::Win32AotCodeCachePlacement;
+using repiu::engine::AotInlineCacheSiteLookup;
+using repiu::engine::EnsureAotInlineCacheSiteIndex;
+using repiu::engine::InvalidateAotInlineCacheSiteIndex;
+using repiu::engine::LookupAotInlineCacheSiteIndex;
+using repiu::engine::Win32AotCodeCachePlacement;
 
 // The pre-Task-479 lookup, kept verbatim as the reference oracle. Any divergence
 // from this is a defect regardless of which answer looks nicer.

@@ -32,7 +32,7 @@ bool Translates(SDL_Scancode scancode,
                 std::uint16_t enhanced_ax)
 {
     hle::BiosKeystroke keystroke;
-    return platform::win32::TranslateSdlBiosKeystroke(
+    return engine::TranslateSdlBiosKeystroke(
                scancode, modifiers, &keystroke) &&
         keystroke.legacy_ax == legacy_ax &&
         keystroke.enhanced_ax == enhanced_ax;
@@ -57,10 +57,10 @@ bool RunBiosKeyboardInputProbe()
         Translates(SDL_SCANCODE_KP_1, SDL_KMOD_NUM, 0x4F31U, 0x4F31U);
 
     hle::BiosKeyboard keyboard;
-    platform::win32::HandleSdlBiosKeyboardEvent(
+    engine::HandleSdlBiosKeyboardEvent(
         MakeKeyEvent(SDL_EVENT_KEY_DOWN, SDL_SCANCODE_A, SDL_KMOD_LSHIFT),
         &keyboard);
-    platform::win32::HandleSdlBiosKeyboardEvent(
+    engine::HandleSdlBiosKeyboardEvent(
         MakeKeyEvent(
             SDL_EVENT_KEY_DOWN, SDL_SCANCODE_A, SDL_KMOD_LSHIFT, true),
         &keyboard);
@@ -73,13 +73,13 @@ bool RunBiosKeyboardInputProbe()
         keyboard.Pop(false, &second_read) && second_read == 0x1E41U &&
         !keyboard.Peek(false, &first_peek);
 
-    platform::win32::HandleSdlBiosKeyboardEvent(
+    engine::HandleSdlBiosKeyboardEvent(
         MakeKeyEvent(
             SDL_EVENT_KEY_DOWN, SDL_SCANCODE_CAPSLOCK,
             static_cast<SDL_Keymod>(SDL_KMOD_LSHIFT | SDL_KMOD_CAPS)),
         &keyboard);
     const std::uint16_t flags_before_focus = keyboard.shift_flags();
-    platform::win32::HandleSdlBiosKeyboardFocusLost(&keyboard);
+    engine::HandleSdlBiosKeyboardFocusLost(&keyboard);
     const std::uint16_t flags_after_focus = keyboard.shift_flags();
     const bool modifier_valid =
         (flags_before_focus & 0x0042U) == 0x0042U &&

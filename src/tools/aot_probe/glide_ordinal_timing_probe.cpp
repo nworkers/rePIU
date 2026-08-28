@@ -1,6 +1,6 @@
 #include "glide_ordinal_timing_probe.h"
 
-#include "repiu/platform/win32/glide_ordinal_timing.h"
+#include "repiu/engine/glide_ordinal_timing.h"
 
 #include <iostream>
 
@@ -8,18 +8,18 @@ namespace repiu::tools
 {
 bool RunGlideOrdinalTimingProbe()
 {
-    using platform::win32::RecordGlideOrdinalDirectWork;
-    using platform::win32::RecordGlideOrdinalGateTime;
-    using platform::win32::RecordGlideOrdinalRendezvous;
-    using platform::win32::SnapshotGlideOrdinalTiming;
-    using platform::win32::Win32GlideOrdinalTimingProfile;
+    using engine::RecordGlideOrdinalDirectWork;
+    using engine::RecordGlideOrdinalGateTime;
+    using engine::RecordGlideOrdinalRendezvous;
+    using engine::SnapshotGlideOrdinalTiming;
+    using engine::Win32GlideOrdinalTimingProfile;
 
     const bool policy =
-        !platform::win32::ResolveGlideOrdinalTimingProfileEnabled("") &&
-        !platform::win32::ResolveGlideOrdinalTimingProfileEnabled("0") &&
-        platform::win32::ResolveGlideOrdinalTimingProfileEnabled("1") &&
-        platform::win32::ResolveGlideOrdinalTimingProfileEnabled("on") &&
-        platform::win32::ResolveGlideOrdinalTimingProfileEnabled("true");
+        !engine::ResolveGlideOrdinalTimingProfileEnabled("") &&
+        !engine::ResolveGlideOrdinalTimingProfileEnabled("0") &&
+        engine::ResolveGlideOrdinalTimingProfileEnabled("1") &&
+        engine::ResolveGlideOrdinalTimingProfileEnabled("on") &&
+        engine::ResolveGlideOrdinalTimingProfileEnabled("true");
 
     Win32GlideOrdinalTimingProfile profile;
     RecordGlideOrdinalGateTime(&profile, 73U, 150U);

@@ -1,6 +1,6 @@
 #include "glide_swap_interval_policy_probe.h"
 
-#include "repiu/platform/win32/glide_swap_interval_policy.h"
+#include "repiu/engine/glide_swap_interval_policy.h"
 
 #include <iostream>
 
@@ -9,8 +9,8 @@ namespace repiu::tools
 
 bool RunGlideSwapIntervalPolicyProbe()
 {
-    using platform::win32::ResolveGlideSwapIntervalOverride;
-    using platform::win32::Win32GlideSwapIntervalPolicySnapshot;
+    using engine::ResolveGlideSwapIntervalOverride;
+    using engine::Win32GlideSwapIntervalPolicySnapshot;
 
     std::int32_t interval = 99;
     const bool accepted =

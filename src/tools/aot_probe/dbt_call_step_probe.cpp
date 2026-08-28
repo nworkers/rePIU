@@ -3,9 +3,9 @@
 #include <iostream>
 
 #if defined(_WIN32)
-#include "repiu/platform/win32/aot_code_cache_win32.h"
-#include "../../platform/win32/aot/aot_dbt_call_step_probe.h"
-#include "../../platform/win32/execution/thread_context.h"
+#include "repiu/engine/aot_code_cache_win32.h"
+#include "../../engine/aot/aot_dbt_call_step_probe.h"
+#include "../../engine/execution/thread_context.h"
 #include "repiu/platform/fault_handler.h"
 
 #include <cstdint>
@@ -21,13 +21,13 @@ bool RunAotDbtCallStepProbe()
     std::cout << "dbt_call_step_probe_skipped=true\n";
     return true;
 #else
-    using platform::win32::ConfigureAotDbtCallStepProbe;
-    using platform::win32::HandleAotDbtCallStepProbe;
-    using platform::win32::MaybeArmAotDbtCallStepProbe;
-    using platform::win32::ThreadContext;
-    using platform::win32::Win32AotCallStepProbeEventKind;
-    using platform::win32::Win32AotCallStepProbePhase;
-    using platform::win32::Win32AotTransferOrigin;
+    using engine::ConfigureAotDbtCallStepProbe;
+    using engine::HandleAotDbtCallStepProbe;
+    using engine::MaybeArmAotDbtCallStepProbe;
+    using engine::ThreadContext;
+    using engine::Win32AotCallStepProbeEventKind;
+    using engine::Win32AotCallStepProbePhase;
+    using engine::Win32AotTransferOrigin;
 
     auto context = std::make_unique<ThreadContext>();
     context->aot_dbt_call_return_trace_configured = true;
@@ -42,7 +42,7 @@ bool RunAotDbtCallStepProbe()
     site.guest_source = 0x1000U;
     site.success_cache_offset = 0x200U;
     site.is_call = true;
-    platform::win32::Win32AotCodeCachePlacement placement;
+    engine::Win32AotCodeCachePlacement placement;
     placement.placed = true;
     placement.base_address = 0x500000U;
     runtime::AotAddressMapEntry return_map;

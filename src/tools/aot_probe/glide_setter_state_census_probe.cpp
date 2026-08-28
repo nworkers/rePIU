@@ -1,6 +1,6 @@
 #include "glide_setter_state_census_probe.h"
 
-#include "repiu/platform/win32/glide_setter_state_census.h"
+#include "repiu/engine/glide_setter_state_census.h"
 
 #include <iostream>
 #include <memory>
@@ -11,11 +11,11 @@ namespace
 {
 
 using go = repiu::hle::GlideGateId;
-using platform::win32::BuildGlideSetterStateKey;
-using platform::win32::RecordGlideSetterCensusCall;
-using platform::win32::Win32GlideSetterCensusOutcome;
-using platform::win32::Win32GlideSetterCensusProfile;
-using platform::win32::Win32GlideSetterStateKey;
+using engine::BuildGlideSetterStateKey;
+using engine::RecordGlideSetterCensusCall;
+using engine::Win32GlideSetterCensusOutcome;
+using engine::Win32GlideSetterCensusProfile;
+using engine::Win32GlideSetterStateKey;
 
 // One profile holds 256 per-ordinal entries, so it lives on the heap here for
 // the same reason the snapshot carries aggregates only.
@@ -44,22 +44,22 @@ void Apply(Win32GlideSetterCensusProfile* profile,
 
 bool RunGlideSetterStateCensusProbe()
 {
-    using platform::win32::IsGlideSetterStateGate;
-    using platform::win32::IsGlideSetterStateInvalidatingGate;
-    using platform::win32::IsGlideSetterStateTextureGenerationGate;
-    using platform::win32::IsGlideSetterStateTextureDependentGate;
-    using platform::win32::RecordGlideSetterCensusFrameBoundary;
-    using platform::win32::RecordGlideSetterCensusInvalidation;
-    using platform::win32::RecordGlideSetterCensusKeyOverflow;
-    using platform::win32::RecordGlideSetterCensusTextureGeneration;
-    using platform::win32::SnapshotGlideSetterCensus;
+    using engine::IsGlideSetterStateGate;
+    using engine::IsGlideSetterStateInvalidatingGate;
+    using engine::IsGlideSetterStateTextureGenerationGate;
+    using engine::IsGlideSetterStateTextureDependentGate;
+    using engine::RecordGlideSetterCensusFrameBoundary;
+    using engine::RecordGlideSetterCensusInvalidation;
+    using engine::RecordGlideSetterCensusKeyOverflow;
+    using engine::RecordGlideSetterCensusTextureGeneration;
+    using engine::SnapshotGlideSetterCensus;
 
     const bool policy =
-        !platform::win32::ResolveGlideSetterCensusEnabled("") &&
-        !platform::win32::ResolveGlideSetterCensusEnabled("0") &&
-        platform::win32::ResolveGlideSetterCensusEnabled("1") &&
-        platform::win32::ResolveGlideSetterCensusEnabled("on") &&
-        platform::win32::ResolveGlideSetterCensusEnabled("true");
+        !engine::ResolveGlideSetterCensusEnabled("") &&
+        !engine::ResolveGlideSetterCensusEnabled("0") &&
+        engine::ResolveGlideSetterCensusEnabled("1") &&
+        engine::ResolveGlideSetterCensusEnabled("on") &&
+        engine::ResolveGlideSetterCensusEnabled("true");
 
     // The target list must contain state setters and exclude every gate whose
     // arguments carry pointers, coordinates, or per-call payloads.
@@ -192,7 +192,7 @@ bool RunGlideSetterStateCensusProbe()
         overflowed.key_overflow_count == 1U &&
         overflowed.ordinal_overflow_count == 1U &&
         clamped_key.word_count ==
-            platform::win32::kWin32GlideSetterStateKeyWords;
+            engine::kWin32GlideSetterStateKeyWords;
 
     RecordGlideSetterCensusCall(nullptr, kDepthMask, OneWordKey(1U),
                                 Win32GlideSetterCensusOutcome::kApplied);

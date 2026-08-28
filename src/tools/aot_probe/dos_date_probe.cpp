@@ -63,12 +63,12 @@ bool RunDosDateProbe()
     }
 
     auto context =
-        std::make_unique<repiu::platform::win32::ThreadContext>();
+        std::make_unique<repiu::engine::ThreadContext>();
     CONTEXT win32_context = {};
     win32_context.Eax = 0x12342B7FU;
     win32_context.Ecx = 2024U;
     win32_context.Edx = 0x021DU;
-    repiu::platform::win32::HandleDosSetSystemDate(
+    repiu::engine::HandleDosSetSystemDate(
         &win32_context, context.get());
     if ((win32_context.Eax & 0xFFU) != 0U ||
         !context->dos_date_offset_valid)
@@ -81,7 +81,7 @@ bool RunDosDateProbe()
     win32_context.Eax = 0x12342B00U;
     win32_context.Ecx = 2023U;
     win32_context.Edx = 0x021DU;
-    repiu::platform::win32::HandleDosSetSystemDate(
+    repiu::engine::HandleDosSetSystemDate(
         &win32_context, context.get());
     if ((win32_context.Eax & 0xFFU) != 0xFFU ||
         !context->dos_date_offset_valid ||
@@ -94,7 +94,7 @@ bool RunDosDateProbe()
     win32_context.Eax = 0x12342A00U;
     win32_context.Ecx = 0xABCD0000U;
     win32_context.Edx = 0xDCBA0000U;
-    repiu::platform::win32::HandleDosGetSystemDate(
+    repiu::engine::HandleDosGetSystemDate(
         &win32_context, context.get());
     if ((win32_context.Ecx & 0xFFFFU) != 2024U ||
         (win32_context.Edx & 0xFFFFU) != 0x021DU ||

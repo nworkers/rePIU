@@ -3,10 +3,10 @@
 #include <iostream>
 
 #if defined(_WIN32)
-#include "repiu/platform/win32/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache_win32.h"
 #include "repiu/runtime/aot_code_cache.h"
-#include "../../platform/win32/aot/aot_dbt_direct_edge_dispatch.h"
-#include "../../platform/win32/execution/thread_context.h"
+#include "../../engine/aot/aot_dbt_direct_edge_dispatch.h"
+#include "../../engine/execution/thread_context.h"
 
 #include <cstdint>
 #include <cstring>
@@ -93,7 +93,7 @@ bool ValidateImage(const runtime::AotCodeCacheImage& image)
 }
 
 bool ValidatePlacement(
-    const platform::win32::Win32AotCodeCachePlacement& placement)
+    const engine::Win32AotCodeCachePlacement& placement)
 {
     if (!placement.placed ||
         placement.dbt_direct_edge_dispatch_sites.size() != 1U)
@@ -113,7 +113,7 @@ bool ValidatePlacement(
             ReadInt32(bytes, site.thunk_displacement_offset));
     const std::uint32_t thunk = static_cast<std::uint32_t>(
         reinterpret_cast<std::uintptr_t>(
-            platform::win32::GetAotDbtDirectEdgeDispatchThunkAddress()));
+            engine::GetAotDbtDirectEdgeDispatchThunkAddress()));
     return ReadUint32(bytes, site.dispatch_address_immediate_offset) ==
                dispatch &&
         resolved_thunk == thunk;
@@ -145,17 +145,17 @@ bool RunAotDbtDirectEdgeDispatchProbe()
         MakePlan(true), options, &mapped) &&
         mapped.dbt_direct_edge_dispatch_sites.empty();
 
-    platform::win32::Win32AotCodeCachePlacement placement;
+    engine::Win32AotCodeCachePlacement placement;
     const bool placed = emitted &&
-        platform::win32::PlaceWin32AotCodeCache(image, &placement) &&
+        engine::PlaceWin32AotCodeCache(image, &placement) &&
         placement.placed && placement.dbt_direct_edge_dispatch_enabled &&
         ValidatePlacement(placement);
 
-    auto context = std::make_unique<platform::win32::ThreadContext>();
+    auto context = std::make_unique<engine::ThreadContext>();
     context->aot_placement = &placement;
     std::uint32_t fallback_target = 0U;
     const bool fallback = placed &&
-        platform::win32::FindAotDbtDirectEdgeFallbackTarget(
+        engine::FindAotDbtDirectEdgeFallbackTarget(
             context.get(),
             placement.base_address +
                 placement.dbt_direct_edge_dispatch_sites[0]
@@ -178,7 +178,7 @@ bool RunAotDbtDirectEdgeDispatchProbe()
               << "\ndbt_direct_edge_dispatch_all="
               << (all ? "true" : "false") << "\n";
 
-    platform::win32::ReleaseWin32AotCodeCache(&placement);
+    engine::ReleaseWin32AotCodeCache(&placement);
     return all;
 #endif
 }

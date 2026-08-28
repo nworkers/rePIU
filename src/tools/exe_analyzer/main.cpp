@@ -2,7 +2,7 @@
 #include "repiu/exe/dos4gw_loader.h"
 #include "repiu/exe/executable_headers.h"
 #include "repiu/hle/hle_profile.h"
-#include "repiu/platform/win32/runtime_memory_policy.h"
+#include "repiu/engine/runtime_memory_policy.h"
 #include "repiu/runtime/runtime_memory.h"
 #include "repiu/target/target_profile.h"
 
@@ -592,7 +592,7 @@ void PrintRelocatedRuntimeImage(
 }
 
 void PrintWin32RuntimeMemoryPolicy(
-    const repiu::platform::win32::Win32RuntimeMemoryPolicy& policy)
+    const repiu::engine::Win32RuntimeMemoryPolicy& policy)
 {
     std::cout << "Win32 runtime memory policy: "
               << (policy.valid ? "valid" : "invalid") << "\n";
@@ -613,7 +613,7 @@ void PrintWin32RuntimeMemoryPolicy(
 }
 
 void PrintWin32AddressRangeProbe(
-    const repiu::platform::win32::Win32AddressRangeProbe& probe)
+    const repiu::engine::Win32AddressRangeProbe& probe)
 {
     std::cout << "Win32 allocation dry run: "
               << (probe.valid ? "valid" : "invalid") << "\n";
@@ -793,8 +793,8 @@ int main(int argc, char** argv)
 
     PrintRelocatedRuntimeImage(relocated_image);
 
-    repiu::platform::win32::Win32RuntimeMemoryPolicy win32_policy;
-    if (!repiu::platform::win32::BuildWin32RuntimeMemoryPolicy(
+    repiu::engine::Win32RuntimeMemoryPolicy win32_policy;
+    if (!repiu::engine::BuildWin32RuntimeMemoryPolicy(
             runtime_plan, &win32_policy))
     {
         std::cerr << "Failed to build Win32 runtime memory policy\n";
@@ -803,8 +803,8 @@ int main(int argc, char** argv)
 
     PrintWin32RuntimeMemoryPolicy(win32_policy);
 
-    repiu::platform::win32::Win32AddressRangeProbe win32_probe;
-    if (!repiu::platform::win32::ProbeWin32RuntimeAddressRange(
+    repiu::engine::Win32AddressRangeProbe win32_probe;
+    if (!repiu::engine::ProbeWin32RuntimeAddressRange(
             win32_policy, &win32_probe))
     {
         std::cerr << "Failed to probe Win32 runtime address range: "

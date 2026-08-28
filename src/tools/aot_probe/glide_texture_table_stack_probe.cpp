@@ -18,8 +18,8 @@ bool RunGlideTextureTableStackProbe()
     const std::array<std::uint32_t, 4> frame = {
         kReturnAddress, 0U, 2U, kPaletteAddress};
 
-    platform::win32::GlideTexDownloadTableCall call;
-    if (!platform::win32::DecodeGlideTexDownloadTableCall(
+    engine::GlideTexDownloadTableCall call;
+    if (!engine::DecodeGlideTexDownloadTableCall(
             frame.data(), frame.size(), &call) ||
         call.tmu != 0U || call.type != 2U ||
         call.data != kPaletteAddress || call.stack_advance != 16U)
@@ -28,9 +28,9 @@ bool RunGlideTextureTableStackProbe()
                   << " was decoded incorrectly\n";
         return false;
     }
-    if (platform::win32::DecodeGlideTexDownloadTableCall(
+    if (engine::DecodeGlideTexDownloadTableCall(
             frame.data(), frame.size() - 1U, &call) ||
-        platform::win32::DecodeGlideTexDownloadTableCall(
+        engine::DecodeGlideTexDownloadTableCall(
             frame.data(), frame.size(), nullptr))
     {
         std::cerr << "glide_texture_table_stack_probe failure: invalid frame"

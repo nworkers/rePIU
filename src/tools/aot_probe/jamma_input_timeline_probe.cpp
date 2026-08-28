@@ -1,6 +1,6 @@
 #include "jamma_input_timeline_probe.h"
 
-#include "repiu/platform/win32/jamma_input_timeline.h"
+#include "repiu/engine/jamma_input_timeline.h"
 
 #include <cstdint>
 #include <iostream>
@@ -10,9 +10,9 @@ namespace repiu::tools
 
 bool RunJammaInputTimelineProbe()
 {
-    using platform::win32::JammaInputKey;
-    using platform::win32::JammaInputKeyMask;
-    using platform::win32::Win32JammaInputTimeline;
+    using engine::JammaInputKey;
+    using engine::JammaInputKeyMask;
+    using engine::Win32JammaInputTimeline;
 
     Win32JammaInputTimeline timeline;
     timeline.Reset(100U, 0U);

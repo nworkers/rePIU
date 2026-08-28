@@ -1,7 +1,7 @@
 #include "aot_return_patch_policy_probe.h"
 
-#include "repiu/platform/win32/aot_code_cache_win32.h"
-#include "repiu/platform/win32/aot_return_patch_policy.h"
+#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_return_patch_policy.h"
 
 #include <cstdint>
 #include <iostream>
@@ -11,11 +11,11 @@ namespace repiu::tools
 namespace
 {
 
-using repiu::platform::win32::AotReturnPatchAction;
-using repiu::platform::win32::ObserveAotReturnPatchMiss;
-using repiu::platform::win32::SyncAotReturnPatchPolicy;
-using repiu::platform::win32::Win32AotCodeCachePlacement;
-using repiu::platform::win32::kAotReturnMegamorphicMissThreshold;
+using repiu::engine::AotReturnPatchAction;
+using repiu::engine::ObserveAotReturnPatchMiss;
+using repiu::engine::SyncAotReturnPatchPolicy;
+using repiu::engine::Win32AotCodeCachePlacement;
+using repiu::engine::kAotReturnMegamorphicMissThreshold;
 
 void AddSite(Win32AotCodeCachePlacement* placement,
              std::uint32_t guest_source,

@@ -1,10 +1,10 @@
 #include "inline_cache_probe.h"
 
-#include "repiu/platform/win32/aot_code_cache_win32.h"
-#include "repiu/platform/win32/aot_page_coherence_win32.h"
+#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_page_coherence_win32.h"
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/aot_translation_plan.h"
-#include "../../platform/win32/aot/aot_dbt_return_dispatch.h"
+#include "../../engine/aot/aot_dbt_return_dispatch.h"
 
 #include <cstdint>
 #include <cstring>
@@ -134,7 +134,7 @@ bool ValidateInitialSite(const runtime::AotCodeCacheImage& image,
 }
 
 bool PatchAndValidateSite(
-    platform::win32::Win32AotCodeCachePlacement* placement,
+    engine::Win32AotCodeCachePlacement* placement,
     std::size_t site_index,
     std::uint32_t first_guest_target)
 {
@@ -149,8 +149,8 @@ bool PatchAndValidateSite(
         placement->base_address + initial_site.miss_cache_offset;
     for (std::size_t index = 0; index < kExpectedEntryCount; ++index)
     {
-        platform::win32::Win32AotInlineCachePatchResult result;
-        if (!platform::win32::PatchWin32AotIndirectInlineCache(
+        engine::Win32AotInlineCachePatchResult result;
+        if (!engine::PatchWin32AotIndirectInlineCache(
                 placement, miss_address,
                 first_guest_target + static_cast<std::uint32_t>(index * 4U),
                 placement->entry_address, &result) || !result.patched)
@@ -277,9 +277,9 @@ bool RunAotIndirectInlineCacheProbe()
         dbt_return_image.bytes[
             dbt_return_image.dbt_return_dispatch_sites[0]
                 .success_cache_offset] == 0xC2U;
-    platform::win32::Win32AotCodeCachePlacement dbt_placement;
+    engine::Win32AotCodeCachePlacement dbt_placement;
     const bool dbt_return_placement = dbt_return_layout &&
-        platform::win32::PlaceWin32AotCodeCache(
+        engine::PlaceWin32AotCodeCache(
             dbt_return_image, &dbt_placement) && dbt_placement.placed &&
         dbt_placement.dbt_return_dispatch_sites.size() == 1U &&
         [&dbt_placement]() {
@@ -298,12 +298,12 @@ bool RunAotIndirectInlineCacheProbe()
                        miss &&
                 resolved_thunk == static_cast<std::uint32_t>(
                     reinterpret_cast<std::uintptr_t>(
-                        platform::win32::GetAotDbtReturnMissThunkAddress()));
+                        engine::GetAotDbtReturnMissThunkAddress()));
         }();
 
-    platform::win32::Win32AotCodeCachePlacement placement;
+    engine::Win32AotCodeCachePlacement placement;
     const bool placed = call_layout && jump_layout &&
-        platform::win32::PlaceWin32AotCodeCache(image, &placement) &&
+        engine::PlaceWin32AotCodeCache(image, &placement) &&
         placement.placed;
     const bool call_chain = placed && PatchAndValidateSite(
         &placement, 0U, kGuestPage + 0x100U);
@@ -315,9 +315,9 @@ bool RunAotIndirectInlineCacheProbe()
     {
         const runtime::AotIndirectInlineCacheSite& call_site =
             placement.indirect_inline_cache_sites[0];
-        platform::win32::Win32AotInlineCachePatchResult result;
+        engine::Win32AotInlineCachePatchResult result;
         const std::uint32_t replacement_target = kGuestPage + 0x300U;
-        replacement = platform::win32::PatchWin32AotIndirectInlineCache(
+        replacement = engine::PatchWin32AotIndirectInlineCache(
             &placement, placement.base_address + call_site.miss_cache_offset,
             replacement_target, placement.entry_address, &result) &&
             result.patched;
@@ -332,8 +332,8 @@ bool RunAotIndirectInlineCacheProbe()
     bool retirement = false;
     if (replacement)
     {
-        platform::win32::Win32AotGuestPageRetireResult result;
-        retirement = platform::win32::RetireWin32AotGuestPage(
+        engine::Win32AotGuestPageRetireResult result;
+        retirement = engine::RetireWin32AotGuestPage(
             &placement, kGuestPage, false, &result) && result.retired &&
             result.guard_reset_count == 2U * kExpectedEntryCount;
         const auto* bytes = reinterpret_cast<const std::uint8_t*>(
@@ -375,8 +375,8 @@ bool RunAotIndirectInlineCacheProbe()
               << (retirement ? "true" : "false")
               << "\ninline_cache_all=" << (all ? "true" : "false")
               << "\n";
-    platform::win32::ReleaseWin32AotCodeCache(&placement);
-    platform::win32::ReleaseWin32AotCodeCache(&dbt_placement);
+    engine::ReleaseWin32AotCodeCache(&placement);
+    engine::ReleaseWin32AotCodeCache(&dbt_placement);
     return all;
 #endif
 }

@@ -1,6 +1,6 @@
 #include "glide_buffer_swap_timing_probe.h"
 
-#include "repiu/platform/win32/glide_buffer_swap_timing.h"
+#include "repiu/engine/glide_buffer_swap_timing.h"
 
 #include <iostream>
 
@@ -9,17 +9,17 @@ namespace repiu::tools
 
 bool RunGlideBufferSwapTimingProbe()
 {
-    using platform::win32::RecordGlideBufferSwapSdlInterval;
-    using platform::win32::RecordGlideBufferSwapTiming;
-    using platform::win32::SnapshotGlideBufferSwapTiming;
-    using platform::win32::Win32GlideBufferSwapTimingProfile;
+    using engine::RecordGlideBufferSwapSdlInterval;
+    using engine::RecordGlideBufferSwapTiming;
+    using engine::SnapshotGlideBufferSwapTiming;
+    using engine::Win32GlideBufferSwapTimingProfile;
 
     const bool policy =
-        !platform::win32::ResolveGlideBufferSwapTimingProfileEnabled("") &&
-        !platform::win32::ResolveGlideBufferSwapTimingProfileEnabled("0") &&
-        platform::win32::ResolveGlideBufferSwapTimingProfileEnabled("1") &&
-        platform::win32::ResolveGlideBufferSwapTimingProfileEnabled("on") &&
-        platform::win32::ResolveGlideBufferSwapTimingProfileEnabled("true");
+        !engine::ResolveGlideBufferSwapTimingProfileEnabled("") &&
+        !engine::ResolveGlideBufferSwapTimingProfileEnabled("0") &&
+        engine::ResolveGlideBufferSwapTimingProfileEnabled("1") &&
+        engine::ResolveGlideBufferSwapTimingProfileEnabled("on") &&
+        engine::ResolveGlideBufferSwapTimingProfileEnabled("true");
 
     Win32GlideBufferSwapTimingProfile profile;
     RecordGlideBufferSwapSdlInterval(&profile, true, 0);

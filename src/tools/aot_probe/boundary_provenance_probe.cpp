@@ -1,7 +1,7 @@
 #include "boundary_provenance_probe.h"
 
-#include "repiu/platform/win32/aot_boundary_provenance.h"
-#include "repiu/platform/win32/aot_code_cache_win32.h"
+#include "repiu/engine/aot_boundary_provenance.h"
+#include "repiu/engine/aot_code_cache_win32.h"
 
 #include <iostream>
 
@@ -10,9 +10,9 @@ namespace repiu::tools
 
 bool RunAotBoundaryProvenanceProbe()
 {
-    using repiu::platform::win32::AotCacheBreakpointProvenance;
-    using repiu::platform::win32::ClassifyAotCacheBreakpointProvenance;
-    repiu::platform::win32::Win32AotCodeCachePlacement placement;
+    using repiu::engine::AotCacheBreakpointProvenance;
+    using repiu::engine::ClassifyAotCacheBreakpointProvenance;
+    repiu::engine::Win32AotCodeCachePlacement placement;
     placement.placed = true;
     placement.base_address = 0x10000000U;
 

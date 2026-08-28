@@ -3,11 +3,11 @@
 #include <iostream>
 
 #if defined(_WIN32)
-#include "repiu/platform/win32/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache_win32.h"
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/aot_translation_plan.h"
-#include "../../platform/win32/aot/aot_dbt_indirect_dispatch.h"
-#include "../../platform/win32/execution/thread_context.h"
+#include "../../engine/aot/aot_dbt_indirect_dispatch.h"
+#include "../../engine/execution/thread_context.h"
 
 #include <cstdint>
 #include <cstring>
@@ -108,7 +108,7 @@ bool ValidateDispatchLayout(const runtime::AotCodeCacheImage& image,
     return true;
 }
 
-bool ValidatePlacement(const platform::win32::Win32AotCodeCachePlacement&
+bool ValidatePlacement(const engine::Win32AotCodeCachePlacement&
                            placement)
 {
     if (placement.dbt_indirect_dispatch_sites.size() != 2U)
@@ -119,7 +119,7 @@ bool ValidatePlacement(const platform::win32::Win32AotCodeCachePlacement&
         static_cast<std::uintptr_t>(placement.base_address));
     const std::uint32_t thunk = static_cast<std::uint32_t>(
         reinterpret_cast<std::uintptr_t>(
-            platform::win32::GetAotDbtIndirectMissThunkAddress()));
+            engine::GetAotDbtIndirectMissThunkAddress()));
     for (const runtime::AotDbtIndirectDispatchSite& site :
          placement.dbt_indirect_dispatch_sites)
     {
@@ -188,20 +188,20 @@ bool RunAotDbtIndirectDispatchProbe()
         ValidateDispatchLayout(image, image.dbt_indirect_dispatch_sites[1],
                                false);
 
-    platform::win32::Win32AotCodeCachePlacement placement;
+    engine::Win32AotCodeCachePlacement placement;
     const bool placed = call_layout && jump_layout &&
-        platform::win32::PlaceWin32AotCodeCache(image, &placement) &&
+        engine::PlaceWin32AotCodeCache(image, &placement) &&
         placement.placed && placement.dbt_indirect_miss_dispatch_enabled;
     const bool placement_ok = placed && ValidatePlacement(placement);
 
     auto context =
-        std::make_unique<platform::win32::ThreadContext>();
+        std::make_unique<engine::ThreadContext>();
     for (std::uint32_t index = 0;
-         index < platform::win32::kAotDbtDispatchFallbackReasonCount; ++index)
+         index < engine::kAotDbtDispatchFallbackReasonCount; ++index)
     {
-        platform::win32::RecordAotDbtIndirectFallback(
+        engine::RecordAotDbtIndirectFallback(
             context.get(),
-            static_cast<platform::win32::AotDbtDispatchFallbackReason>(index));
+            static_cast<engine::AotDbtDispatchFallbackReason>(index));
     }
     const std::uint32_t total =
         context->aot_dbt_indirect_fallback_count.load(
@@ -209,7 +209,7 @@ bool RunAotDbtIndirectDispatchProbe()
     std::uint32_t reason_total = 0;
     bool slots = true;
     for (std::uint32_t index = 0;
-         index < platform::win32::kAotDbtDispatchFallbackReasonCount; ++index)
+         index < engine::kAotDbtDispatchFallbackReasonCount; ++index)
     {
         const std::uint32_t count =
             context->aot_dbt_indirect_fallback_reason_counts[index].load(
@@ -218,7 +218,7 @@ bool RunAotDbtIndirectDispatchProbe()
         slots = slots && count == 1U;
     }
     const bool accounting =
-        total == platform::win32::kAotDbtDispatchFallbackReasonCount &&
+        total == engine::kAotDbtDispatchFallbackReasonCount &&
         total == reason_total;
 
     const bool all = disabled_layout && call_layout && jump_layout &&

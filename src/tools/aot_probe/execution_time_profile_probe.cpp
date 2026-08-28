@@ -1,6 +1,6 @@
 #include "execution_time_profile_probe.h"
 
-#include "repiu/platform/win32/execution_time_profile.h"
+#include "repiu/engine/execution_time_profile.h"
 
 #include <cstdint>
 #include <iostream>
@@ -11,7 +11,7 @@ namespace repiu::tools
 
 bool RunExecutionTimeProfileProbe()
 {
-    using namespace repiu::platform::win32;
+    using namespace repiu::engine;
 
     const bool policy =
         !ResolveExecutionTimeProfileEnabled("") &&

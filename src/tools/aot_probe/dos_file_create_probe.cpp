@@ -207,7 +207,7 @@ bool RunDosFileCreateProbe()
     // implemented in the common handler cannot be omitted from the traced
     // allow-list again.
     auto dispatch_context =
-        std::make_unique<repiu::platform::win32::ThreadContext>();
+        std::make_unique<repiu::engine::ThreadContext>();
     std::array<std::uint8_t, 32> guest_memory = {};
     guest_memory[0] = 0xCDU;
     guest_memory[1] = 0x21U;
@@ -227,7 +227,7 @@ bool RunDosFileCreateProbe()
     win32_context.Eip = dispatch_context->runtime_base;
     win32_context.EFlags = 1U;
     bool traced_dispatch = dispatch_initialized &&
-        repiu::platform::win32::HandleTracedDosInterrupt21(
+        repiu::engine::HandleTracedDosInterrupt21(
             &win32_context, dispatch_context.get()) &&
         win32_context.Eip == dispatch_context->runtime_base + 2U &&
         (win32_context.EFlags & 1U) == 0U &&

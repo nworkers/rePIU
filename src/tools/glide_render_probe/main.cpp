@@ -2,7 +2,7 @@
 #include "repiu/hle/glide_lfb.h"
 #include "repiu/hle/glide_vertex.h"
 #if defined(_WIN32)
-#include "repiu/platform/win32/glide_opengl_backend.h"
+#include "repiu/engine/glide_opengl_backend.h"
 #endif
 
 #include <array>
@@ -167,10 +167,10 @@ int main(int argc, char** argv)
     }
 
 #if defined(_WIN32)
-    using repiu::platform::win32::GlideOpenGlCullFace;
+    using repiu::engine::GlideOpenGlCullFace;
     const auto point_size = [](const std::uint32_t drawable_width,
                                const std::uint32_t drawable_height) {
-        return repiu::platform::win32::CalculateGlidePointSize(
+        return repiu::engine::CalculateGlidePointSize(
             640U, 480U, drawable_width, drawable_height);
     };
     if (!Check(point_size(640U, 480U) == 1.0F,
@@ -183,7 +183,7 @@ int main(int argc, char** argv)
                "non-uniform point scale did not preserve square points") ||
         !Check(point_size(320U, 240U) == 1.0F,
                "downscaled point size fell below one pixel") ||
-        !Check(repiu::platform::win32::CalculateGlidePointSize(
+        !Check(repiu::engine::CalculateGlidePointSize(
                    0U, 480U, 1280U, 960U) == 1.0F,
                "invalid logical size did not use one pixel"))
     {
@@ -191,27 +191,27 @@ int main(int argc, char** argv)
     }
 
     GlideOpenGlCullFace cull_face = GlideOpenGlCullFace::kDisabled;
-    if (!Check(repiu::platform::win32::TranslateGlideOpenGlCullMode(
+    if (!Check(repiu::engine::TranslateGlideOpenGlCullMode(
                    0U, false, &cull_face) &&
                    cull_face == GlideOpenGlCullFace::kDisabled,
                "cull disable translation failed") ||
-        !Check(repiu::platform::win32::TranslateGlideOpenGlCullMode(
+        !Check(repiu::engine::TranslateGlideOpenGlCullMode(
                    1U, true, &cull_face) &&
                    cull_face == GlideOpenGlCullFace::kBack,
                "lower-left negative cull translation failed") ||
-        !Check(repiu::platform::win32::TranslateGlideOpenGlCullMode(
+        !Check(repiu::engine::TranslateGlideOpenGlCullMode(
                    2U, true, &cull_face) &&
                    cull_face == GlideOpenGlCullFace::kFront,
                "lower-left positive cull translation failed") ||
-        !Check(repiu::platform::win32::TranslateGlideOpenGlCullMode(
+        !Check(repiu::engine::TranslateGlideOpenGlCullMode(
                    1U, false, &cull_face) &&
                    cull_face == GlideOpenGlCullFace::kFront,
                "upper-left negative cull translation failed") ||
-        !Check(repiu::platform::win32::TranslateGlideOpenGlCullMode(
+        !Check(repiu::engine::TranslateGlideOpenGlCullMode(
                    2U, false, &cull_face) &&
                    cull_face == GlideOpenGlCullFace::kBack,
                "upper-left positive cull translation failed") ||
-        !Check(!repiu::platform::win32::TranslateGlideOpenGlCullMode(
+        !Check(!repiu::engine::TranslateGlideOpenGlCullMode(
                     3U, false, &cull_face),
                "invalid cull mode was accepted"))
     {
@@ -230,7 +230,7 @@ int main(int argc, char** argv)
             source[index + 2U] = 16U;
             source[index + 3U] = 255U;
         }
-        repiu::platform::win32::GlideOpenGlBackend backend;
+        repiu::engine::GlideOpenGlBackend backend;
         backend.BindHostThread();
         if (!Check(backend.OpenWindowed(kWidth, kHeight, 2U, 1U, 1U),
                    "OpenGL backend did not open") ||

@@ -1,6 +1,6 @@
 #include "aot_timer_source_profile_probe.h"
 
-#include "repiu/platform/win32/aot_timer_source_profile.h"
+#include "repiu/engine/aot_timer_source_profile.h"
 
 #include <iostream>
 
@@ -9,7 +9,7 @@ namespace repiu::tools
 
 bool RunAotTimerSourceProfileProbe()
 {
-    using namespace repiu::platform::win32;
+    using namespace repiu::engine;
 
     const bool policy =
         !ResolveAotTimerSourceProfileEnabled("") &&

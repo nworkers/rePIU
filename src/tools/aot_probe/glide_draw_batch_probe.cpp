@@ -1,6 +1,6 @@
 #include "glide_draw_batch_probe.h"
 
-#include "repiu/platform/win32/glide_draw_batch.h"
+#include "repiu/engine/glide_draw_batch.h"
 
 #include <functional>
 #include <iostream>
@@ -13,10 +13,10 @@ namespace
 {
 
 using go = repiu::hle::GlideGateId;
-using platform::win32::QueueGlideDrawPrimitive;
-using platform::win32::Win32GlideBatchPrimitive;
-using platform::win32::Win32GlideDrawBatch;
-using platform::win32::Win32GlideDrawBatchFlushReason;
+using engine::QueueGlideDrawPrimitive;
+using engine::Win32GlideBatchPrimitive;
+using engine::Win32GlideDrawBatch;
+using engine::Win32GlideDrawBatchFlushReason;
 
 repiu::hle::GlideDrawVertex MakeVertex(float x)
 {
@@ -63,11 +63,11 @@ bool QueueOne(Win32GlideDrawBatch* batch, float x,
 
 bool RunGlideDrawBatchProbe()
 {
-    using platform::win32::FlushGlideDrawBatch;
-    using platform::win32::IsGlideDrawBatchGate;
-    using platform::win32::kWin32GlideDrawBatchVertexCapacity;
-    using platform::win32::ResolveGlideDrawBatchEnabled;
-    using platform::win32::SnapshotGlideDrawBatch;
+    using engine::FlushGlideDrawBatch;
+    using engine::IsGlideDrawBatchGate;
+    using engine::kWin32GlideDrawBatchVertexCapacity;
+    using engine::ResolveGlideDrawBatchEnabled;
+    using engine::SnapshotGlideDrawBatch;
 
     // Task 439: promoted, so unset and empty are ON and only an explicit
     // `0|off|false` opts out. An unrecognised spelling stays fail-closed OFF,

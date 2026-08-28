@@ -1,7 +1,7 @@
 #include "aot_return_stage_profile_probe.h"
 
-#include "repiu/platform/win32/aot_return_patch_policy.h"
-#include "repiu/platform/win32/aot_return_stage_profile.h"
+#include "repiu/engine/aot_return_patch_policy.h"
+#include "repiu/engine/aot_return_stage_profile.h"
 #include "repiu/runtime/aot_code_cache.h"
 
 #include <cstdint>
@@ -13,20 +13,20 @@ namespace repiu::tools
 namespace
 {
 
-using repiu::platform::win32::AotReturnStage;
-using repiu::platform::win32::AotReturnStageCoveredCycles;
-using repiu::platform::win32::AotReturnStageProfileEnabled;
-using repiu::platform::win32::AotReturnStageScope;
-using repiu::platform::win32::RankAotReturnStageSites;
-using repiu::platform::win32::RecordAotReturnOuterSample;
-using repiu::platform::win32::RecordAotReturnStageSample;
-using repiu::platform::win32::ResolveAotReturnStageProfileEnabled;
-using repiu::platform::win32::SnapshotAotReturnStageProfile;
-using repiu::platform::win32::Win32AotReturnPatchPolicy;
-using repiu::platform::win32::Win32AotReturnStageProfile;
-using repiu::platform::win32::Win32AotReturnStageSiteObservation;
-using repiu::platform::win32::kAotReturnStageCount;
-using repiu::platform::win32::kAotReturnStageSiteReportCapacity;
+using repiu::engine::AotReturnStage;
+using repiu::engine::AotReturnStageCoveredCycles;
+using repiu::engine::AotReturnStageProfileEnabled;
+using repiu::engine::AotReturnStageScope;
+using repiu::engine::RankAotReturnStageSites;
+using repiu::engine::RecordAotReturnOuterSample;
+using repiu::engine::RecordAotReturnStageSample;
+using repiu::engine::ResolveAotReturnStageProfileEnabled;
+using repiu::engine::SnapshotAotReturnStageProfile;
+using repiu::engine::Win32AotReturnPatchPolicy;
+using repiu::engine::Win32AotReturnStageProfile;
+using repiu::engine::Win32AotReturnStageSiteObservation;
+using repiu::engine::kAotReturnStageCount;
+using repiu::engine::kAotReturnStageSiteReportCapacity;
 
 std::size_t StageIndex(const AotReturnStage stage)
 {

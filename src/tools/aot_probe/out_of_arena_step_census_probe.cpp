@@ -1,6 +1,6 @@
 #include "out_of_arena_step_census_probe.h"
 
-#include "repiu/platform/win32/out_of_arena_step_census.h"
+#include "repiu/engine/out_of_arena_step_census.h"
 
 #include <iostream>
 
@@ -9,11 +9,11 @@ namespace repiu::tools
 
 bool RunOutOfArenaStepCensusProbe()
 {
-    using platform::win32::kOutOfArenaStepAddressCapacity;
-    using platform::win32::OutOfArenaStepLocation;
-    using platform::win32::RecordOutOfArenaStep;
-    using platform::win32::SnapshotOutOfArenaStepCensus;
-    using platform::win32::Win32OutOfArenaStepCensus;
+    using engine::kOutOfArenaStepAddressCapacity;
+    using engine::OutOfArenaStepLocation;
+    using engine::RecordOutOfArenaStep;
+    using engine::SnapshotOutOfArenaStepCensus;
+    using engine::Win32OutOfArenaStepCensus;
 
     Win32OutOfArenaStepCensus census;
     RecordOutOfArenaStep(&census, 0x0C000010U,

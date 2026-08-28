@@ -1,6 +1,6 @@
 #include "single_step_hotspot_profile_probe.h"
 
-#include "repiu/platform/win32/single_step_hotspot_profile.h"
+#include "repiu/engine/single_step_hotspot_profile.h"
 
 #include <cstdint>
 #include <iostream>
@@ -11,7 +11,7 @@ namespace repiu::tools
 
 bool RunSingleStepHotspotProfileProbe()
 {
-    using namespace repiu::platform::win32;
+    using namespace repiu::engine;
     const bool policy =
         !ResolveSingleStepHotspotProfileEnabled("") &&
         ResolveSingleStepHotspotProfileEnabled("1") &&

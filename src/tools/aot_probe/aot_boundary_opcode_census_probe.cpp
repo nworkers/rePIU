@@ -1,6 +1,6 @@
 #include "aot_boundary_opcode_census_probe.h"
 
-#include "repiu/platform/win32/aot_boundary_opcode_census.h"
+#include "repiu/engine/aot_boundary_opcode_census.h"
 
 #include <iostream>
 #include <memory>
@@ -10,11 +10,11 @@ namespace repiu::tools
 namespace
 {
 
-using platform::win32::kWin32AotMaxLegacyPrefixes;
-using platform::win32::RankAotOpcodeHistogram;
-using platform::win32::RecordAotBoundaryOpcodeSample;
-using platform::win32::Win32AotBoundaryOpcodeCensus;
-using platform::win32::Win32AotOpcodeRank;
+using engine::kWin32AotMaxLegacyPrefixes;
+using engine::RankAotOpcodeHistogram;
+using engine::RecordAotBoundaryOpcodeSample;
+using engine::Win32AotBoundaryOpcodeCensus;
+using engine::Win32AotOpcodeRank;
 
 using CensusPtr = std::unique_ptr<Win32AotBoundaryOpcodeCensus>;
 
@@ -33,7 +33,7 @@ void Record(Win32AotBoundaryOpcodeCensus* census,
 std::uint32_t HistogramTotal(const std::uint32_t* counts)
 {
     std::uint32_t total = 0;
-    for (std::size_t i = 0; i < platform::win32::kWin32AotOpcodeHistogramSize;
+    for (std::size_t i = 0; i < engine::kWin32AotOpcodeHistogramSize;
          ++i)
     {
         total += counts[i];
@@ -45,7 +45,7 @@ std::uint32_t HistogramTotal(const std::uint32_t* counts)
 
 bool RunAotBoundaryOpcodeCensusProbe()
 {
-    using platform::win32::IsX86LegacyPrefix;
+    using engine::IsX86LegacyPrefix;
 
     const bool prefix_set =
         IsX86LegacyPrefix(0x26U) && IsX86LegacyPrefix(0x2EU) &&

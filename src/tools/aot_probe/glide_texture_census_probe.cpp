@@ -1,6 +1,6 @@
 #include "glide_texture_census_probe.h"
 
-#include "repiu/platform/win32/glide_texture_census.h"
+#include "repiu/engine/glide_texture_census.h"
 
 #include <iostream>
 #include <vector>
@@ -10,14 +10,14 @@ namespace repiu::tools
 
 bool RunGlideTextureCensusProbe()
 {
-    using platform::win32::HashGlideTexturePixels;
-    using platform::win32::RecordGlidePaletteDownload;
-    using platform::win32::RecordGlidePaletteRefresh;
-    using platform::win32::RecordGlideTextureUpload;
-    using platform::win32::ResolveGlideTextureDumpDirectory;
-    using platform::win32::SnapshotGlideTextureCensus;
-    using platform::win32::Win32GlideTextureCensus;
-    using platform::win32::Win32GlideTextureUpload;
+    using engine::HashGlideTexturePixels;
+    using engine::RecordGlidePaletteDownload;
+    using engine::RecordGlidePaletteRefresh;
+    using engine::RecordGlideTextureUpload;
+    using engine::ResolveGlideTextureDumpDirectory;
+    using engine::SnapshotGlideTextureCensus;
+    using engine::Win32GlideTextureCensus;
+    using engine::Win32GlideTextureUpload;
 
     Win32GlideTextureUpload upload;
     upload.start_address = 0x1000U;

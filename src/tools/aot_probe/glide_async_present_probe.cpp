@@ -1,7 +1,7 @@
 #include "glide_async_present_probe.h"
 
-#include "repiu/platform/win32/glide_async_present.h"
-#include "repiu/platform/win32/glide_opengl_backend.h"
+#include "repiu/engine/glide_async_present.h"
+#include "repiu/engine/glide_opengl_backend.h"
 
 #include <atomic>
 #include <chrono>
@@ -16,7 +16,7 @@ namespace repiu::tools
 namespace
 {
 
-using platform::win32::GlideOpenGlBackend;
+using engine::GlideOpenGlBackend;
 
 // Records the order commands actually executed in. Ordering is the whole
 // correctness argument of the asynchronous path, so it is asserted directly
@@ -43,9 +43,9 @@ struct OrderLog
 
 bool RunGlideAsyncPresentProbe()
 {
-    using platform::win32::kWin32GlideAsyncCommandCapacity;
-    using platform::win32::kWin32GlideMaxOutstandingSwaps;
-    using platform::win32::ResolveGlideAsyncPresentEnabled;
+    using engine::kWin32GlideAsyncCommandCapacity;
+    using engine::kWin32GlideMaxOutstandingSwaps;
+    using engine::ResolveGlideAsyncPresentEnabled;
 
     // Opt-in until measured: unset and empty are OFF, unrecognised stays
     // fail-closed OFF.

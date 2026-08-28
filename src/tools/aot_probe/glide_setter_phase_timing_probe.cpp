@@ -1,6 +1,6 @@
 #include "glide_setter_phase_timing_probe.h"
 
-#include "repiu/platform/win32/glide_setter_phase_timing.h"
+#include "repiu/engine/glide_setter_phase_timing.h"
 
 #include <iostream>
 
@@ -9,17 +9,17 @@ namespace repiu::tools
 
 bool RunGlideSetterPhaseTimingProbe()
 {
-    using platform::win32::RecordGlideSetterPhaseSample;
-    using platform::win32::SnapshotGlideSetterPhaseTiming;
-    using platform::win32::Win32GlideSetterPhaseKind;
-    using platform::win32::Win32GlideSetterPhaseProfile;
+    using engine::RecordGlideSetterPhaseSample;
+    using engine::SnapshotGlideSetterPhaseTiming;
+    using engine::Win32GlideSetterPhaseKind;
+    using engine::Win32GlideSetterPhaseProfile;
 
     const bool policy =
-        !platform::win32::ResolveGlideSetterPhaseProfileEnabled("") &&
-        !platform::win32::ResolveGlideSetterPhaseProfileEnabled("0") &&
-        platform::win32::ResolveGlideSetterPhaseProfileEnabled("1") &&
-        platform::win32::ResolveGlideSetterPhaseProfileEnabled("on") &&
-        platform::win32::ResolveGlideSetterPhaseProfileEnabled("true");
+        !engine::ResolveGlideSetterPhaseProfileEnabled("") &&
+        !engine::ResolveGlideSetterPhaseProfileEnabled("0") &&
+        engine::ResolveGlideSetterPhaseProfileEnabled("1") &&
+        engine::ResolveGlideSetterPhaseProfileEnabled("on") &&
+        engine::ResolveGlideSetterPhaseProfileEnabled("true");
 
     Win32GlideSetterPhaseProfile profile;
     // Depth mask: entry and apply-start are the same instant, so drain is zero

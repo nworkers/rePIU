@@ -1,6 +1,6 @@
 #include "glide_setter_state_cache_probe.h"
 
-#include "repiu/platform/win32/glide_setter_state_cache.h"
+#include "repiu/engine/glide_setter_state_cache.h"
 
 #include <iostream>
 #include <memory>
@@ -11,9 +11,9 @@ namespace
 {
 
 using go = repiu::hle::GlideGateId;
-using platform::win32::BuildGlideSetterStateKey;
-using platform::win32::Win32GlideSetterStateCache;
-using platform::win32::Win32GlideSetterStateKey;
+using engine::BuildGlideSetterStateKey;
+using engine::Win32GlideSetterStateCache;
+using engine::Win32GlideSetterStateKey;
 
 using CachePtr = std::unique_ptr<Win32GlideSetterStateCache>;
 
@@ -33,8 +33,8 @@ Win32GlideSetterStateKey OneWordKey(std::uint32_t value,
 // the state. Checked exhaustively rather than by spot check.
 bool ElisionListIsSubsetOfStateGates()
 {
-    using platform::win32::IsGlideSetterElisionGate;
-    using platform::win32::IsGlideSetterStateGate;
+    using engine::IsGlideSetterElisionGate;
+    using engine::IsGlideSetterStateGate;
     for (std::uint32_t raw = 0; raw <= static_cast<std::uint32_t>(
                                           go::kGrTexSource); ++raw)
     {
@@ -52,23 +52,23 @@ bool ElisionListIsSubsetOfStateGates()
 
 bool RunGlideSetterStateCacheProbe()
 {
-    using platform::win32::BumpGlideSetterStateCacheTextureGeneration;
-    using platform::win32::InvalidateGlideSetterStateCache;
-    using platform::win32::IsGlideSetterElisionGate;
-    using platform::win32::RecordGlideSetterStateApplied;
-    using platform::win32::RecordGlideSetterStateElided;
-    using platform::win32::RecordGlideSetterStateVoided;
-    using platform::win32::ShouldElideGlideSetterState;
-    using platform::win32::SnapshotGlideSetterStateCache;
+    using engine::BumpGlideSetterStateCacheTextureGeneration;
+    using engine::InvalidateGlideSetterStateCache;
+    using engine::IsGlideSetterElisionGate;
+    using engine::RecordGlideSetterStateApplied;
+    using engine::RecordGlideSetterStateElided;
+    using engine::RecordGlideSetterStateVoided;
+    using engine::ShouldElideGlideSetterState;
+    using engine::SnapshotGlideSetterStateCache;
 
     // Absent means enabled: this is a default-on optimization with a kill switch.
     const bool policy =
-        platform::win32::ResolveGlideSetterElisionEnabled("") &&
-        platform::win32::ResolveGlideSetterElisionEnabled("1") &&
-        platform::win32::ResolveGlideSetterElisionEnabled("on") &&
-        !platform::win32::ResolveGlideSetterElisionEnabled("0") &&
-        !platform::win32::ResolveGlideSetterElisionEnabled("off") &&
-        !platform::win32::ResolveGlideSetterElisionEnabled("false");
+        engine::ResolveGlideSetterElisionEnabled("") &&
+        engine::ResolveGlideSetterElisionEnabled("1") &&
+        engine::ResolveGlideSetterElisionEnabled("on") &&
+        !engine::ResolveGlideSetterElisionEnabled("0") &&
+        !engine::ResolveGlideSetterElisionEnabled("off") &&
+        !engine::ResolveGlideSetterElisionEnabled("false");
 
     const bool membership =
         ElisionListIsSubsetOfStateGates() &&
@@ -93,8 +93,8 @@ bool RunGlideSetterStateCacheProbe()
     // Task 437 batch two. The list is a pure classification; whether it is
     // consulted is the opt-in switch, whose unset-is-off convention is pinned by
     // the env toggle probe. What must hold here is the membership itself.
-    using platform::win32::IsGlideSetterStateGate;
-    using platform::win32::IsGlideSetterTextureStateElisionGate;
+    using engine::IsGlideSetterStateGate;
+    using engine::IsGlideSetterTextureStateElisionGate;
     const bool texture_membership =
         IsGlideSetterTextureStateElisionGate(go::kGrTexClampMode) &&
         IsGlideSetterTextureStateElisionGate(go::kGrTexFilterMode) &&
@@ -120,7 +120,7 @@ bool RunGlideSetterStateCacheProbe()
     // Task 442 batch three. `grTexSource` is elidable here and nowhere else, and
     // the three lists stay disjoint so a switch can only widen what is covered,
     // never redefine it.
-    using platform::win32::IsGlideSetterBatchThreeElisionGate;
+    using engine::IsGlideSetterBatchThreeElisionGate;
     const bool batch_three_membership =
         IsGlideSetterBatchThreeElisionGate(go::kGrTexSource) &&
         IsGlideSetterBatchThreeElisionGate(go::kGrConstantColorValue) &&
@@ -143,7 +143,7 @@ bool RunGlideSetterStateCacheProbe()
     // the life of the process. `grFogTable` is excluded because its argument is
     // a pointer to a table, so an identical pointer proves nothing about the
     // contents -- the same hazard `grTexSource` was wrongly accused of.
-    using platform::win32::IsGlideSetterBatchFourElisionGate;
+    using engine::IsGlideSetterBatchFourElisionGate;
     const bool batch_four_membership =
         IsGlideSetterBatchFourElisionGate(go::kGrFogColorValue) &&
         IsGlideSetterBatchFourElisionGate(go::kGrDitherMode) &&

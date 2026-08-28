@@ -1,7 +1,7 @@
 #include "piu10_isa_board_probe.h"
 
 #include "repiu/hle/piu10_isa_board.h"
-#include "repiu/platform/win32/piu10_mp3_audio_out.h"
+#include "repiu/engine/piu10_mp3_audio_out.h"
 #include "repiu/sound/decoder_input_fifo.h"
 #include "repiu/sound/mpeg_audio_frame.h"
 #include "repiu/sound/stream_chunk_audit.h"
@@ -274,12 +274,12 @@ bool RunPiu10IsaBoardProbe()
         gain_near(sound::Dac3350aControl::CalculateAnalogGain(63U),
                   7.943282F);
     const bool mp3_latency_bytes_valid =
-        platform::win32::Piu10Mp3AudioOut::CalculateStartupSilenceBytes(
+        engine::Piu10Mp3AudioOut::CalculateStartupSilenceBytes(
             0U, 44100, 2) == 0U &&
-        platform::win32::Piu10Mp3AudioOut::CalculateStartupSilenceBytes(
+        engine::Piu10Mp3AudioOut::CalculateStartupSilenceBytes(
             50U, 44100, 2) == 8820U;
-    platform::win32::Piu10Mp3AudioOut unopened_audio;
-    const platform::win32::Piu10Mp3AudioSnapshot unopened_snapshot =
+    engine::Piu10Mp3AudioOut unopened_audio;
+    const engine::Piu10Mp3AudioSnapshot unopened_snapshot =
         unopened_audio.Snapshot();
     const bool mp3_snapshot_valid =
         !unopened_snapshot.available &&
@@ -292,14 +292,14 @@ bool RunPiu10IsaBoardProbe()
         unopened_snapshot.decoded_frames == 0U;
 
     sound::DecoderInputFifo decoder_fifo(
-        platform::win32::Piu10Mp3AudioOut::kCompressedFifoBytes, 4096U);
+        engine::Piu10Mp3AudioOut::kCompressedFifoBytes, 4096U);
     std::vector<std::uint8_t> logical_fill(
-        platform::win32::Piu10Mp3AudioOut::kCompressedFifoBytes, 0x5AU);
+        engine::Piu10Mp3AudioOut::kCompressedFifoBytes, 0x5AU);
     bool ring_valid =
         decoder_fifo.PushBatch(logical_fill) == logical_fill.size();
     const bool demand_deasserted =
         decoder_fifo.inflight_size() ==
-            platform::win32::Piu10Mp3AudioOut::kCompressedFifoBytes &&
+            engine::Piu10Mp3AudioOut::kCompressedFifoBytes &&
         !decoder_fifo.demand();
     std::array<std::uint8_t, 512> first_ring_read = {};
     ring_valid = ring_valid &&
@@ -308,12 +308,12 @@ bool RunPiu10IsaBoardProbe()
                     [](std::uint8_t value) { return value == 0x5AU; });
     const bool demand_stays_low_after_pop =
         decoder_fifo.inflight_size() ==
-            platform::win32::Piu10Mp3AudioOut::kCompressedFifoBytes &&
+            engine::Piu10Mp3AudioOut::kCompressedFifoBytes &&
         !decoder_fifo.demand();
     ring_valid = ring_valid && decoder_fifo.Consume(417U);
     const bool demand_reasserted =
         decoder_fifo.inflight_size() ==
-            platform::win32::Piu10Mp3AudioOut::kCompressedFifoBytes - 417U &&
+            engine::Piu10Mp3AudioOut::kCompressedFifoBytes - 417U &&
         decoder_fifo.demand();
     std::array<std::uint8_t, 512> logical_refill = {};
     const bool batch_refill_valid =
@@ -343,7 +343,7 @@ bool RunPiu10IsaBoardProbe()
     constexpr std::size_t kSyntheticArenaBytes = 0x00300000U;
     std::vector<std::uint8_t> synthetic_arena(kSyntheticArenaBytes, 0U);
     auto batch_context =
-        std::make_unique<platform::win32::ThreadContext>();
+        std::make_unique<engine::ThreadContext>();
     batch_context->runtime_base = static_cast<std::uint32_t>(
         reinterpret_cast<std::uintptr_t>(synthetic_arena.data()));
     batch_context->runtime_size =
@@ -425,10 +425,10 @@ bool RunPiu10IsaBoardProbe()
         0x11U, 0x22U, 0x33U, 0x44U};
     std::memcpy(synthetic_arena.data() + kSourceBufferOffset + 11U,
                 batch_payload.data(), batch_payload.size());
-    platform::win32::Piu10Mp3FrameBatchPlan batch_plan;
+    engine::Piu10Mp3FrameBatchPlan batch_plan;
     std::uint32_t batch_ecx = 100U;
     const bool batch_plan_valid =
-        platform::win32::BuildPiu10Mp3FrameBatchPlan(
+        engine::BuildPiu10Mp3FrameBatchPlan(
             batch_context.get(), runtime_address(kBatchOutOffset), 0U, 10U,
             &batch_plan) &&
         batch_plan.bytes.size() == batch_payload.size() &&
@@ -486,9 +486,9 @@ bool RunPiu10IsaBoardProbe()
     variant_loop[14] = 0x1BU;
     std::memcpy(variant_loop + 42, service_prefix.data(),
                 service_prefix.size());
-    platform::win32::Piu10Mp3FrameBatchPlan variant_plan;
+    engine::Piu10Mp3FrameBatchPlan variant_plan;
     const bool variant_plan_valid =
-        platform::win32::BuildPiu10Mp3FrameBatchPlan(
+        engine::BuildPiu10Mp3FrameBatchPlan(
             batch_context.get(), runtime_address(kVariantBatchOutOffset),
             0U, 10U, &variant_plan) &&
         variant_plan.bytes.size() == batch_payload.size() &&
@@ -568,9 +568,9 @@ bool RunPiu10IsaBoardProbe()
     write_u32(synthetic_arena.data() + kWrappedStackOffset, 0x12345678U);
     write_u32(synthetic_arena.data() + kWrappedStackOffset + 4U,
               runtime_address(kWrappedReturnOffset));
-    platform::win32::Piu10Mp3FrameBatchPlan wrapped_plan;
+    engine::Piu10Mp3FrameBatchPlan wrapped_plan;
     const bool wrapped_plan_valid =
-        platform::win32::BuildPiu10Mp3FrameBatchPlan(
+        engine::BuildPiu10Mp3FrameBatchPlan(
             batch_context.get(), runtime_address(kWrappedOutOffset),
             runtime_address(kWrappedStackOffset), 10U, &wrapped_plan) &&
         wrapped_plan.bytes.size() == batch_payload.size() &&
@@ -580,9 +580,9 @@ bool RunPiu10IsaBoardProbe()
                    batch_payload.begin());
     write_u32(synthetic_arena.data() + kWrappedStackOffset + 4U,
               runtime_address(kWrappedReturnOffset + 1U));
-    platform::win32::Piu10Mp3FrameBatchPlan wrapped_rejected_plan;
+    engine::Piu10Mp3FrameBatchPlan wrapped_rejected_plan;
     const bool wrapped_fail_closed =
-        !platform::win32::BuildPiu10Mp3FrameBatchPlan(
+        !engine::BuildPiu10Mp3FrameBatchPlan(
             batch_context.get(), runtime_address(kWrappedOutOffset),
             runtime_address(kWrappedStackOffset), 10U,
             &wrapped_rejected_plan);
@@ -590,14 +590,14 @@ bool RunPiu10IsaBoardProbe()
               runtime_address(kWrappedReturnOffset));
 
     write_u32(batch_out - 18, cursor_address + 4U);
-    platform::win32::Piu10Mp3FrameBatchPlan rejected_plan;
+    engine::Piu10Mp3FrameBatchPlan rejected_plan;
     const bool relocation_independent_fail_closed =
-        !platform::win32::BuildPiu10Mp3FrameBatchPlan(
+        !engine::BuildPiu10Mp3FrameBatchPlan(
             batch_context.get(), runtime_address(kBatchOutOffset), 0U, 10U,
             &rejected_plan);
     write_u32(batch_out - 18, cursor_address);
     const bool batch_commit_valid = batch_plan_valid &&
-        platform::win32::CommitPiu10Mp3FrameBatch(
+        engine::CommitPiu10Mp3FrameBatch(
             batch_plan, 3U, &batch_ecx) &&
         batch_ecx == 103U &&
         *batch_plan.source_cursor == 14U &&
@@ -610,7 +610,7 @@ bool RunPiu10IsaBoardProbe()
     write_u32(synthetic_arena.data() + kFrameCountOffset, 1U);
     batch_context->piu10_mp3_frame_batch_audit_enabled = true;
     std::uint32_t audit_ecx = 100U;
-    platform::win32::TransferPiu10Mp3FrameTail(
+    engine::TransferPiu10Mp3FrameTail(
         batch_context.get(), runtime_address(kBatchOutOffset), 0U, 0xAAU,
         &audit_ecx);
     for (std::size_t index = 0U; index < batch_payload.size(); ++index)
@@ -620,7 +620,7 @@ bool RunPiu10IsaBoardProbe()
         write_u32(synthetic_arena.data() + kFrameCountOffset,
                   static_cast<std::uint32_t>(2U + index));
         audit_ecx = static_cast<std::uint32_t>(101U + index);
-        platform::win32::TransferPiu10Mp3FrameTail(
+        engine::TransferPiu10Mp3FrameTail(
             batch_context.get(), runtime_address(kBatchOutOffset),
             0U, batch_payload[index], &audit_ecx);
     }
@@ -817,7 +817,7 @@ bool RunPiu10IsaBoardProbe()
     std::cout << "piu10_mp3_latency_bytes="
               << (mp3_latency_bytes_valid ? "true" : "false")
               << ",bytes="
-              << platform::win32::Piu10Mp3AudioOut::
+              << engine::Piu10Mp3AudioOut::
                      CalculateStartupSilenceBytes(50U, 44100, 2)
               << "\n";
     std::cout << "piu10_dac3350a_control="

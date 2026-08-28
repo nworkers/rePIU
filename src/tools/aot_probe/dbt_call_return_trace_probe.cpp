@@ -3,8 +3,8 @@
 #include <iostream>
 
 #if defined(_WIN32)
-#include "../../platform/win32/aot/aot_dbt_call_return_trace.h"
-#include "../../platform/win32/execution/thread_context.h"
+#include "../../engine/aot/aot_dbt_call_return_trace.h"
+#include "../../engine/execution/thread_context.h"
 
 #include <memory>
 #endif
@@ -18,11 +18,11 @@ bool RunAotDbtCallReturnTraceProbe()
     std::cout << "dbt_call_return_trace_probe_skipped=true\n";
     return true;
 #else
-    using platform::win32::RecordAotDbtCallReturnCall;
-    using platform::win32::RecordAotDbtCallReturnReturn;
-    using platform::win32::ThreadContext;
-    using platform::win32::Win32AotCallReturnTraceEventKind;
-    using platform::win32::Win32AotTransferOrigin;
+    using engine::RecordAotDbtCallReturnCall;
+    using engine::RecordAotDbtCallReturnReturn;
+    using engine::ThreadContext;
+    using engine::Win32AotCallReturnTraceEventKind;
+    using engine::Win32AotTransferOrigin;
 
     auto context = std::make_unique<ThreadContext>();
     const bool disabled =
@@ -89,7 +89,7 @@ bool RunAotDbtCallReturnTraceProbe()
     auto wrap_context = std::make_unique<ThreadContext>();
     wrap_context->aot_dbt_call_return_trace_configured = true;
     for (std::uint32_t index = 0;
-         index < platform::win32::kWin32AotCallReturnTraceCapacity + 4U;
+         index < engine::kWin32AotCallReturnTraceCapacity + 4U;
          ++index)
     {
         RecordAotDbtCallReturnCall(
@@ -100,7 +100,7 @@ bool RunAotDbtCallReturnTraceProbe()
     bool wrap = wrap_context->aot_dbt_call_return_overwrite_count == 4U;
     const std::uint32_t begin =
         wrap_context->aot_dbt_call_return_trace_count -
-        platform::win32::kWin32AotCallReturnTraceCapacity;
+        engine::kWin32AotCallReturnTraceCapacity;
     for (std::uint32_t sequence = begin;
          wrap && sequence <
              wrap_context->aot_dbt_call_return_trace_count;
@@ -108,7 +108,7 @@ bool RunAotDbtCallReturnTraceProbe()
     {
         const auto& entry = wrap_context->aot_dbt_call_return_trace[
             sequence %
-            platform::win32::kWin32AotCallReturnTraceCapacity];
+            engine::kWin32AotCallReturnTraceCapacity];
         wrap = entry.sequence == sequence + 1U;
     }
 

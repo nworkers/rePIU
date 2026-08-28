@@ -255,82 +255,82 @@ add_library(repiu_exe
 if(NOT EMSCRIPTEN)
 target_sources(repiu_exe
     PRIVATE
-        src/platform/win32/cd_audio_wave_out.cpp
-        src/platform/win32/aot_code_cache_win32.cpp
-        src/platform/win32/aot_cache_address_index.cpp
-        src/platform/win32/aot_inline_cache_site_index.cpp
-        src/platform/win32/aot_return_dispatch_site_index.cpp
-        src/platform/win32/aot_return_patch_policy.cpp
-        src/platform/win32/aot/aot_worker_timing.cpp
-        src/platform/win32/aot/aot_timer_source_profile.cpp
-        src/platform/win32/aot_page_coherence_win32.cpp
-        src/platform/win32/aot/aot_boundary_provenance.cpp
-        src/platform/win32/aot/aot_boundary_reason.cpp
-        src/platform/win32/aot/aot_dbt_call_return_trace.cpp
-        src/platform/win32/aot/aot_dbt_call_step_probe.cpp
-        src/platform/win32/aot/aot_dbt_dispatch.cpp
-        src/platform/win32/aot/aot_dbt_direct_edge_dispatch.cpp
-        src/platform/win32/aot/aot_dbt_hle_dispatch.cpp
-        src/platform/win32/aot/aot_dbt_glide_gate_dispatch.cpp
-        src/platform/win32/aot/aot_dbt_indirect_dispatch.cpp
-        src/platform/win32/aot/aot_dbt_return_dispatch.cpp
-        src/platform/win32/aot/aot_retired_trap_profile.cpp
-        src/platform/win32/aot/aot_runtime_dispatch.cpp
-        src/platform/win32/bios/bios_keyboard_services.cpp
-        src/platform/win32/input/sdl_bios_keyboard_adapter.cpp
-        src/platform/win32/input/active_jamma_bindings.cpp
-        src/platform/win32/execution/execution_probe_memory_dump.cpp
-        src/platform/win32/execution/execution_trampoline.cpp
-        src/platform/win32/execution/single_step_hotspot_profile.cpp
-        src/platform/win32/dos/dos_int21_services.cpp
-        src/platform/win32/dos/dpmi_mscdex_services.cpp
-        src/platform/win32/exception/breakpoint_evidence_win32.cpp
-        src/platform/win32/exception/exception_rescue_win32.cpp
-        src/platform/win32/exception/host_crash_report.cpp
-        src/platform/win32/cpu_emul/guest_memory_access.cpp
-        src/platform/win32/cpu_emul/instruction_emulation.cpp
-        src/platform/win32/cpu_emul/low_memory_string_access.cpp
-        src/platform/win32/boundary/linexe_glide_boundary.cpp
-        src/platform/win32/boundary/timer_interrupt_boundary.cpp
-        src/platform/win32/telemetry/live_telemetry_snapshot.cpp
-        src/platform/win32/telemetry/execution_time_profile.cpp
-        src/platform/win32/telemetry/live_execution_profile_report.cpp
-        src/platform/win32/telemetry/cd_audio_position_census.cpp
-        src/platform/win32/telemetry/mscdex_command_trace.cpp
-        src/platform/win32/telemetry/guest_position_census.cpp
-        src/platform/win32/telemetry/glide_gate_timing.cpp
-        src/platform/win32/telemetry/glide_ordinal_timing.cpp
-        src/platform/win32/telemetry/glide_buffer_swap_timing.cpp
-        src/platform/win32/telemetry/glide_setter_state_model.cpp
-        src/platform/win32/telemetry/glide_setter_state_census.cpp
-        src/platform/win32/telemetry/glide_async_present.cpp
-        src/platform/win32/telemetry/glide_draw_batch.cpp
-        src/platform/win32/telemetry/glide_setter_state_cache.cpp
-        src/platform/win32/telemetry/glide_setter_phase_timing.cpp
-        src/platform/win32/telemetry/timer_tick_delivery.cpp
-        src/platform/win32/telemetry/aot_residency_sample.cpp
-        src/platform/win32/telemetry/aot_return_stage_profile.cpp
-        src/platform/win32/aot/aot_boundary_opcode_census.cpp
-        src/platform/win32/io/port_io_emulator.cpp
-        src/platform/win32/io/jamma_input_timeline.cpp
-        src/platform/win32/io/piu10_mp3_frame_batch.cpp
-        src/platform/win32/io/port_io_delay_loop.cpp
-        src/platform/win32/io/eeprom_93c46.cpp
-        src/platform/win32/io/piu10_sound_port.cpp
-        src/platform/win32/ymz280b_audio_out.cpp
-        src/platform/win32/piu10_mp3_audio_out.cpp
-        src/platform/win32/native_fast_path.cpp
-        src/platform/win32/native_linear_span.cpp
-        src/platform/win32/native_phase_sampler.cpp
-        src/platform/win32/verified_region_analyzer.cpp
-        src/platform/win32/glide_gl_error_policy.cpp
-        src/platform/win32/glide_swap_interval_policy.cpp
-        src/platform/win32/glide_texture_census.cpp
-        src/platform/win32/out_of_arena_step_census.cpp
-        src/platform/win32/glide_opengl_backend.cpp
-        src/platform/win32/glide_opengl_shader.cpp
-        src/platform/win32/x87_context.cpp
-        src/platform/win32/runtime_memory_policy.cpp
+        src/engine/cd_audio_wave_out.cpp
+        src/engine/aot_code_cache_win32.cpp
+        src/engine/aot_cache_address_index.cpp
+        src/engine/aot_inline_cache_site_index.cpp
+        src/engine/aot_return_dispatch_site_index.cpp
+        src/engine/aot_return_patch_policy.cpp
+        src/engine/aot/aot_worker_timing.cpp
+        src/engine/aot/aot_timer_source_profile.cpp
+        src/engine/aot_page_coherence_win32.cpp
+        src/engine/aot/aot_boundary_provenance.cpp
+        src/engine/aot/aot_boundary_reason.cpp
+        src/engine/aot/aot_dbt_call_return_trace.cpp
+        src/engine/aot/aot_dbt_call_step_probe.cpp
+        src/engine/aot/aot_dbt_dispatch.cpp
+        src/engine/aot/aot_dbt_direct_edge_dispatch.cpp
+        src/engine/aot/aot_dbt_hle_dispatch.cpp
+        src/engine/aot/aot_dbt_glide_gate_dispatch.cpp
+        src/engine/aot/aot_dbt_indirect_dispatch.cpp
+        src/engine/aot/aot_dbt_return_dispatch.cpp
+        src/engine/aot/aot_retired_trap_profile.cpp
+        src/engine/aot/aot_runtime_dispatch.cpp
+        src/engine/bios/bios_keyboard_services.cpp
+        src/engine/input/sdl_bios_keyboard_adapter.cpp
+        src/engine/input/active_jamma_bindings.cpp
+        src/engine/execution/execution_probe_memory_dump.cpp
+        src/engine/execution/execution_trampoline.cpp
+        src/engine/execution/single_step_hotspot_profile.cpp
+        src/engine/dos/dos_int21_services.cpp
+        src/engine/dos/dpmi_mscdex_services.cpp
+        src/engine/exception/breakpoint_evidence_win32.cpp
+        src/engine/exception/exception_rescue_win32.cpp
+        src/engine/exception/host_crash_report.cpp
+        src/engine/cpu_emul/guest_memory_access.cpp
+        src/engine/cpu_emul/instruction_emulation.cpp
+        src/engine/cpu_emul/low_memory_string_access.cpp
+        src/engine/boundary/linexe_glide_boundary.cpp
+        src/engine/boundary/timer_interrupt_boundary.cpp
+        src/engine/telemetry/live_telemetry_snapshot.cpp
+        src/engine/telemetry/execution_time_profile.cpp
+        src/engine/telemetry/live_execution_profile_report.cpp
+        src/engine/telemetry/cd_audio_position_census.cpp
+        src/engine/telemetry/mscdex_command_trace.cpp
+        src/engine/telemetry/guest_position_census.cpp
+        src/engine/telemetry/glide_gate_timing.cpp
+        src/engine/telemetry/glide_ordinal_timing.cpp
+        src/engine/telemetry/glide_buffer_swap_timing.cpp
+        src/engine/telemetry/glide_setter_state_model.cpp
+        src/engine/telemetry/glide_setter_state_census.cpp
+        src/engine/telemetry/glide_async_present.cpp
+        src/engine/telemetry/glide_draw_batch.cpp
+        src/engine/telemetry/glide_setter_state_cache.cpp
+        src/engine/telemetry/glide_setter_phase_timing.cpp
+        src/engine/telemetry/timer_tick_delivery.cpp
+        src/engine/telemetry/aot_residency_sample.cpp
+        src/engine/telemetry/aot_return_stage_profile.cpp
+        src/engine/aot/aot_boundary_opcode_census.cpp
+        src/engine/io/port_io_emulator.cpp
+        src/engine/io/jamma_input_timeline.cpp
+        src/engine/io/piu10_mp3_frame_batch.cpp
+        src/engine/io/port_io_delay_loop.cpp
+        src/engine/io/eeprom_93c46.cpp
+        src/engine/io/piu10_sound_port.cpp
+        src/engine/ymz280b_audio_out.cpp
+        src/engine/piu10_mp3_audio_out.cpp
+        src/engine/native_fast_path.cpp
+        src/engine/native_linear_span.cpp
+        src/engine/native_phase_sampler.cpp
+        src/engine/verified_region_analyzer.cpp
+        src/engine/glide_gl_error_policy.cpp
+        src/engine/glide_swap_interval_policy.cpp
+        src/engine/glide_texture_census.cpp
+        src/engine/out_of_arena_step_census.cpp
+        src/engine/glide_opengl_backend.cpp
+        src/engine/glide_opengl_shader.cpp
+        src/engine/x87_context.cpp
+        src/engine/runtime_memory_policy.cpp
         src/platform/win32/virtual_memory_win32.cpp
         src/platform/win32/fault_handler_win32.cpp
         src/platform/win32/worker_signal_win32.cpp
@@ -416,19 +416,22 @@ target_include_directories(repiu_exe
     PUBLIC
         include
     PRIVATE
-        # win32 execution_trampoline decomposition: local module headers live in
-        # subsystem subdirectories but are included by short name ("foo.h").
-        src/platform/win32
-        src/platform/win32/execution
-        src/platform/win32/exception
-        src/platform/win32/io
-        src/platform/win32/input
-        src/platform/win32/dos
-        src/platform/win32/bios
-        src/platform/win32/cpu_emul
-        src/platform/win32/aot
-        src/platform/win32/boundary
-        src/platform/win32/telemetry
+        # Task 520: the engine's own module headers live in subsystem
+        # subdirectories and are included by short name ("foo.h"), so each one
+        # is on the private include path. The Windows backend is not here: the
+        # engine reaches it only through include/repiu/platform/win32, which is
+        # what keeps the dependency one-way.
+        src/engine
+        src/engine/execution
+        src/engine/exception
+        src/engine/io
+        src/engine/input
+        src/engine/dos
+        src/engine/bios
+        src/engine/cpu_emul
+        src/engine/aot
+        src/engine/boundary
+        src/engine/telemetry
         # miniz ships inside libchdr, which links it PRIVATE, so the headers do
         # not propagate even though the symbols do.
         ${REPIU_MINIZ_INCLUDE_DIR}
@@ -589,8 +592,9 @@ if(UNIX AND NOT EMSCRIPTEN)
 
     # Task 503d-17: the loader itself. The entry point is the same source the
     # Windows host uses -- `src/host/win32/main.cpp` under a Linux build looks
-    # wrong against its path, but all of 3d already does that for
-    # `src/platform/win32`, and moving 5,577 lines would be the larger risk.
+    # wrong against its path. Task 520 fixed that mismatch for the engine by
+    # moving it to `src/engine`; the loader is the one that remains, and moving
+    # 5,577 lines is a task of its own.
     #
     # GL by name for the same reason repiu_launcher names it: the Glide backend
     # calls into it directly, and only the plain name resolves in the i386
@@ -695,9 +699,9 @@ if(WIN32)
     )
     target_include_directories(repiu_aot_probe
         PRIVATE
-            src/platform/win32
-            src/platform/win32/execution
-            src/platform/win32/input
+            src/engine
+            src/engine/execution
+            src/engine/input
             third_party/zydis
     )
     target_link_libraries(repiu

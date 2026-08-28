@@ -1,6 +1,6 @@
 #include "timer_tick_delivery_probe.h"
 
-#include "repiu/platform/win32/timer_tick_delivery.h"
+#include "repiu/engine/timer_tick_delivery.h"
 
 #include <iostream>
 
@@ -9,13 +9,13 @@ namespace repiu::tools
 namespace
 {
 
-using platform::win32::kWin32TimerTickBacklogCapacity;
-using platform::win32::RecordTimerTickBacklogCleared;
-using platform::win32::RecordTimerTickDeferred;
-using platform::win32::RecordTimerTickInjected;
-using platform::win32::RecordTimerTicksDue;
-using platform::win32::SnapshotTimerTickDelivery;
-using platform::win32::Win32TimerTickDeliveryCounters;
+using engine::kWin32TimerTickBacklogCapacity;
+using engine::RecordTimerTickBacklogCleared;
+using engine::RecordTimerTickDeferred;
+using engine::RecordTimerTickInjected;
+using engine::RecordTimerTicksDue;
+using engine::SnapshotTimerTickDelivery;
+using engine::Win32TimerTickDeliveryCounters;
 
 // The gate the whole decomposition rests on: every owed tick must end up in
 // exactly one of delivered, coalesced away, dropped, or still owed.
@@ -35,15 +35,15 @@ bool RunTimerTickDeliveryProbe()
     // (nullptr) and unrecognised values must resolve to on -- a typo in the
     // variable must not silently restore the tick-losing path.
     const bool policy =
-        platform::win32::ResolveTimerTickBacklogEnabled(nullptr) &&
-        platform::win32::ResolveTimerTickBacklogEnabled("") &&
-        platform::win32::ResolveTimerTickBacklogEnabled("yes") &&
-        !platform::win32::ResolveTimerTickBacklogEnabled("0") &&
-        !platform::win32::ResolveTimerTickBacklogEnabled("off") &&
-        !platform::win32::ResolveTimerTickBacklogEnabled("false") &&
-        platform::win32::ResolveTimerTickBacklogEnabled("1") &&
-        platform::win32::ResolveTimerTickBacklogEnabled("on") &&
-        platform::win32::ResolveTimerTickBacklogEnabled("true");
+        engine::ResolveTimerTickBacklogEnabled(nullptr) &&
+        engine::ResolveTimerTickBacklogEnabled("") &&
+        engine::ResolveTimerTickBacklogEnabled("yes") &&
+        !engine::ResolveTimerTickBacklogEnabled("0") &&
+        !engine::ResolveTimerTickBacklogEnabled("off") &&
+        !engine::ResolveTimerTickBacklogEnabled("false") &&
+        engine::ResolveTimerTickBacklogEnabled("1") &&
+        engine::ResolveTimerTickBacklogEnabled("on") &&
+        engine::ResolveTimerTickBacklogEnabled("true");
 
     // The opt-out path, kept as the regression control: three owed ticks become
     // one injection and two losses, because delivery is a single boolean.

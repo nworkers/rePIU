@@ -1,6 +1,6 @@
 #include "veh_exception_gap_probe.h"
 
-#include "repiu/platform/win32/execution_time_profile.h"
+#include "repiu/engine/execution_time_profile.h"
 
 #include <iostream>
 
@@ -9,12 +9,12 @@ namespace repiu::tools
 
 bool RunVehExceptionGapProbe()
 {
-    using platform::win32::ExecutionTimeBucket;
-    using platform::win32::ExecutionTimeScope;
-    using platform::win32::RecordVehExceptionGap;
-    using platform::win32::SnapshotExecutionTimeProfile;
-    using platform::win32::VehGapClass;
-    using platform::win32::Win32ExecutionTimeProfile;
+    using engine::ExecutionTimeBucket;
+    using engine::ExecutionTimeScope;
+    using engine::RecordVehExceptionGap;
+    using engine::SnapshotExecutionTimeProfile;
+    using engine::VehGapClass;
+    using engine::Win32ExecutionTimeProfile;
 
     // The first VEH frame has no predecessor, so it must bank nothing: an
     // interval measured from a zero timestamp would be the whole run.

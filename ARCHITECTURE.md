@@ -28,7 +28,11 @@ DOS/4G binaries as native x86 while providing DOS, DPMI, and hardware boundaries
 
 * `include/`: 외부에서 참조 가능한 프로젝트 C++ 헤더
 * `src/`: 플랫폼 공용 로더와 런타임 코어
-* `src/platform/win32/`: Win32 전용 실행, 메모리, 창, 입력, 파일 시스템 세부 구현
+* `src/engine/`: 플랫폼 공용 실행 엔진 — AOT/DBT, 경계 처리, 실행 트램폴린, 텔레메트리,
+  명령 에뮬레이션, DOS/BIOS/포트 I/O HLE, Glide. **Task 520 이전에는 이 코드가
+  `src/platform/win32/` 안에 있었고, 이름과 내용이 어긋난 채 Linux가 그것을 컴파일했다.**
+* `src/platform/win32/`: Win32 백엔드 — 3a~3d 계층의 Windows 구현(폴트 전달, 가상 메모리,
+  워커 신호, 안전한 메모리 복사, 환경 변수, 자식 프로세스)
 * `src/platform/linux/`: Linux 전용 세부 구현
 * `src/platform/web/`: Web 전용 세부 구현
 
@@ -40,7 +44,7 @@ DOS/4G binaries as native x86 while providing DOS, DPMI, and hardware boundaries
 * `scripts/`: 반복 검증용 빌드 스크립트
 * `src/exe/`: MZ/LE 파서 구현
 * `src/hle/`: 정적 HLE profile 등록 구현
-* `src/platform/win32/`: Win32 전용 실행 메모리 정책과 이후 실행 backend 구현 위치
+* `src/engine/`: 실행 메모리 정책과 실행 backend 구현 위치 (플랫폼 공용)
 * `src/target/`: 정적 target profile 등록 구현
 * `src/tools/exe_analyzer/`: 비실행 콘솔 분석 도구
 
@@ -70,14 +74,14 @@ DOS/4G binaries as native x86 while providing DOS, DPMI, and hardware boundaries
 * `VirtualGlideModule`: `glide2x.ovl`의 hardware code를 실행하지 않고 LINEXE handle과 asset-validated export gate를 제공한다.
 * `GlideGateDispatcher`: `{linear address, client CS}` procedure pointer를 제공하고 ordinal별 trap에서 guest stdcall ABI를 해석한다. 현재 init/query/select까지 관찰 기반 최소 의미를 제공하며 `grSstWinOpen` presentation 정책이 다음 경계다.
 * `GlideHle` (`include/repiu/hle/glide_hle.h`, `src/hle/glide_hle.cpp`): asset-derived export registry, ordinal gate image, decorated argument size, resolution decoding과 플랫폼 공용 논리 상태를 담당한다.
-* `Win32GlideOpenGlBackend` (`include/repiu/platform/win32/glide_opengl_backend.h`, `src/platform/win32/glide_opengl_backend.cpp`): SDL3 resizable host window, OpenGL context, texture cache, GLSL combine/perspective/fog, LFB presentation과 event pump를 담당한다. Glide 논리 해상도는 640×480으로 유지하고 host window는 기본 2배이며 `Alt+1..4`로 1–4배를 선택한다. 실행기 메인 스레드가 SDL video/GL을 소유하고 게스트 작업 스레드의 Glide 호출은 동기 명령 큐로 전달된다.
+* `Win32GlideOpenGlBackend` (`include/repiu/engine/glide_opengl_backend.h`, `src/engine/glide_opengl_backend.cpp`): SDL3 resizable host window, OpenGL context, texture cache, GLSL combine/perspective/fog, LFB presentation과 event pump를 담당한다. Glide 논리 해상도는 640×480으로 유지하고 host window는 기본 2배이며 `Alt+1..4`로 1–4배를 선택한다. 실행기 메인 스레드가 SDL video/GL을 소유하고 게스트 작업 스레드의 Glide 호출은 동기 명령 큐로 전달된다.
 * `Win32ExecutionTrampoline`은 Glide 구현을 직접 소유하지 않고 guest stack/register ABI를 공용 Glide HLE와 platform backend에 연결한다.
 * `GlideSignatureCatalog`: 실제 관찰된 API의 stack byte count와 void/EAX/x87 반환 kind를 중앙에서 관리하며 asset `@N`과 교차 검증한다.
 * `GlideLogicalState`는 lazy OpenGL texture object와 독립적으로 8 MiB virtual TMU 범위(`0..0x007FFFF8`)와 LFB pixel-format 상태를 보존한다.
 * `GlideLfb` (`include/repiu/hle/glide_lfb.h`, `src/hle/glide_lfb.cpp`): LFB staging surface, `GrLfbInfo_t` 직렬화, color-format 인식 565↔RGBA8 변환을 담당하는 플랫폼 공용 계층이다. `grLfbLock`은 게스트가 네이티브 명령으로 직접 기록할 실제 주소를 건네므로, HLE 경계가 함수가 아니라 **메모리 표면**이 되는 유일한 Glide 경로다. staging buffer는 아레나가 아닌 호스트 소유 할당이며(게스트는 flat DS로 네이티브 실행), 모든 lock에서 현재 framebuffer로 seeding해 write lock이 기존 화면을 지우지 않게 한다. ARGB/RGBA lock은 RGB565, ABGR/BGRA lock은 BGR565로 encode/decode하며 `grSstWinOpen`의 color format을 기본값으로, `grLfbWriteColorFormat` 상태를 write lock override로 사용한다.
 * `GlideLfbRegion` (`include/repiu/hle/glide_lfb_region.h`, `src/hle/glide_lfb_region.cpp`): lock 없이 사각형을 옮기는 `grLfbWriteRegion`/`grLfbReadRegion`의 플랫폼 공용 계층이다. `GrLfbSrcFmt_t` 표(565=`0x00`, 555, 1555, 888, 8888), stride 규칙(0이면 `width * bpp`), 사각형 클립, 565 staging surface와의 픽셀 변환을 담당한다. `GrLfbSrcFmt_t`는 픽셀 크기만 정하고 채널 순서는 `grLfbWriteColorFormat`(기본값은 `grSstWinOpen`의 cFormat)이 정하므로, 변환은 source 색 형식으로 풀어 목적지 색 형식으로 싼다. region의 `y`는 origin 상대가 아니라 프레임 버퍼 native 행 번호이므로 lock과 달리 뒤집지 않는다. 두 gate는 staging surface를 프레임 버퍼 shadow로 공유하며, region이 아닌 gate 진입 전에 한 번만 present한다. 행마다 present하면 seeding되지 않은 화면을 덮어써 그림을 파괴하고 프레임당 전체 화면 왕복이 행 수만큼 발생한다.
 * Glide 텍스처 크기 규약(`GrLOD_t`는 열거값이며 `GR_LOD_256`=0)은 `docs/kb/glide-texture-lod-and-formats.md`에서 관리한다. `grTexTextureMemRequired`의 반환값은 게스트가 자기 TMU 배치를 결정하는 입력이므로 정확성이 게스트 동작에 직접 전파된다.
-* `Win32X87Context` (`include/repiu/platform/win32/x87_context.h`, `src/platform/win32/x87_context.cpp`): SEH `CONTEXT`의 x87 TOP/tag/80-bit register를 갱신하여 guest float 반환을 독립적으로 처리한다.
+* `Win32X87Context` (`include/repiu/engine/x87_context.h`, `src/engine/x87_context.cpp`): SEH `CONTEXT`의 x87 TOP/tag/80-bit register를 갱신하여 guest float 반환을 독립적으로 처리한다.
 
 ## Planned Structure
 
@@ -85,7 +89,12 @@ Planned shared structure:
 
 * `include/`: project C++ headers intended for external inclusion
 * `src/`: platform-neutral loader and runtime core
-* `src/platform/win32/`: Win32-specific execution, memory, window, input, and filesystem details
+* `src/engine/`: the platform-neutral execution engine -- AOT/DBT, boundary handling, the execution
+  trampoline, telemetry, instruction emulation, the DOS/BIOS/port-I/O HLE, and Glide. **Before Task
+  520 this lived under `src/platform/win32/`, where its name contradicted its contents and Linux
+  compiled it anyway.**
+* `src/platform/win32/`: the Win32 backend -- the Windows implementations of the 3a-3d layer (fault
+  delivery, virtual memory, worker signals, safe memory copy, environment, child processes)
 * `src/platform/linux/`: Linux-specific details
 * `src/platform/web/`: Web-specific details
 
@@ -97,7 +106,7 @@ Directories added now:
 * `scripts/`: build scripts for repeated verification
 * `src/exe/`: MZ/LE parser implementation
 * `src/hle/`: static HLE profile registration implementation
-* `src/platform/win32/`: Win32-specific executable memory policy and future execution backend location
+* `src/engine/`: executable memory policy and the execution backends (platform-neutral)
 * `src/target/`: static target profile registration implementation
 * `src/tools/exe_analyzer/`: non-executing console analysis tool
 * `src/host/win32/`: Win32 loader application entry point. This is the practical loader path that selects a target, loads the DOS/4GW executable, builds a relocated image, places it in Win32 process memory, and performs the current minimal execution attempt.
@@ -157,14 +166,14 @@ Planned major modules:
 * `VirtualGlideModule`: exposes a LINEXE handle and asset-validated export gates without executing `glide2x.ovl` hardware code.
 * `GlideGateDispatcher`: returns `{linear address, client CS}` procedure pointers and decodes guest stdcall ABI at ordinal traps. Observation-backed init/query/select semantics are present; `grSstWinOpen` presentation policy is the next boundary.
 * `GlideHle` (`include/repiu/hle/glide_hle.h`, `src/hle/glide_hle.cpp`) owns the asset-derived export registry, ordinal gate image, decorated argument sizes, resolution decoding, and platform-neutral logical state.
-* `Win32GlideOpenGlBackend` (`include/repiu/platform/win32/glide_opengl_backend.h`, `src/platform/win32/glide_opengl_backend.cpp`) owns the SDL3 resizable host window, OpenGL context, texture cache, GLSL combine/perspective/fog, LFB presentation, and event pump. Glide remains logically 640×480, while the host window defaults to 2× and `Alt+1..4` selects 1×–4×. The executor main thread owns SDL video/GL, and synchronous commands carry guest-worker Glide calls to it.
+* `Win32GlideOpenGlBackend` (`include/repiu/engine/glide_opengl_backend.h`, `src/engine/glide_opengl_backend.cpp`) owns the SDL3 resizable host window, OpenGL context, texture cache, GLSL combine/perspective/fog, LFB presentation, and event pump. Glide remains logically 640×480, while the host window defaults to 2× and `Alt+1..4` selects 1×–4×. The executor main thread owns SDL video/GL, and synchronous commands carry guest-worker Glide calls to it.
 * `Win32ExecutionTrampoline` does not own Glide implementation details; it connects guest stack/register ABI to shared Glide HLE and the platform backend.
 * `GlideSignatureCatalog` centrally records observed API stack-byte counts and void/EAX/x87 return kinds, cross-checked against asset `@N` metadata.
 * `GlideLogicalState` exposes an 8 MiB virtual TMU range (`0..0x007FFFF8`) independently of lazy OpenGL texture objects and retains LFB pixel-format state.
 * `GlideLfb` (`include/repiu/hle/glide_lfb.h`, `src/hle/glide_lfb.cpp`) is the platform-neutral LFB layer: staging surface, `GrLfbInfo_t` serialization, and color-format-aware 565↔RGBA8 conversion. `grLfbLock` hands the guest a real address it writes with native instructions, making this the one Glide path whose HLE boundary is a **memory surface** rather than a function. The staging buffer is a host-owned allocation rather than an arena carve (the guest executes natively under a flat DS) and is seeded from the current framebuffer on every lock so a write lock never erases existing content. ARGB/RGBA locks encode and decode RGB565, while ABGR/BGRA locks use BGR565; `grSstWinOpen` supplies the default and `grLfbWriteColorFormat` overrides write-lock state.
 * `GlideLfbRegion` (`include/repiu/hle/glide_lfb_region.h`, `src/hle/glide_lfb_region.cpp`) is the platform-neutral layer for the lock-free rectangle transfers `grLfbWriteRegion` and `grLfbReadRegion`: the `GrLfbSrcFmt_t` table (565 = `0x00`, 555, 1555, 888, 8888), the stride rule (0 means `width * bpp`), rectangle clipping, and conversion against the 565 staging surface. `GrLfbSrcFmt_t` fixes only the pixel size; the channel order comes from `grLfbWriteColorFormat` (defaulting to `grSstWinOpen`'s cFormat), so conversion unpacks in the source format and packs in the destination one. Region `y` is a native frame buffer row rather than an origin-relative one, so unlike a lock it never flips. Both gates share the staging surface as a frame buffer shadow presented once before the next non-region gate; presenting per row would blit an unseeded screen over the picture and cost one full-screen round trip per scanline.
 * Glide texture sizing rules (`GrLOD_t` is an enumeration with `GR_LOD_256` = 0) are maintained in `docs/kb/glide-texture-lod-and-formats.md`. `grTexTextureMemRequired`'s return value is an input to the guest's own TMU layout, so its accuracy propagates directly into guest behavior.
-* `Win32X87Context` (`include/repiu/platform/win32/x87_context.h`, `src/platform/win32/x87_context.cpp`) independently updates x87 TOP, tags, and 80-bit registers in an SEH `CONTEXT` for guest float returns.
+* `Win32X87Context` (`include/repiu/engine/x87_context.h`, `src/engine/x87_context.cpp`) independently updates x87 TOP, tags, and 80-bit registers in an SEH `CONTEXT` for guest float returns.
 
 ## 갱신 규칙
 
@@ -328,9 +337,9 @@ This entry point currently owns target profile selection, original executable re
 
 ## Win32 execution_trampoline 분해 / Win32 execution_trampoline decomposition
 
-`src/platform/win32/execution_trampoline.cpp`는 한때 12,117줄 단일 파일이었으나, Task 233(Phase 1)에서 동작 보존 리팩토링으로 서브시스템별 모듈로 분해했다(약 3,200줄로 축소). 트램폴린에는 VEH 디스패치 코어, 실행 드라이버(`RunWin32ExecutionThread`/`AttemptWin32*`), 여러 모듈이 공유하는 substrate만 남겼다. 모듈들은 `src/platform/win32/` 아래 서브디렉토리로 그룹화되며, 짧은 이름 include는 CMake include 경로로 해석된다.
+`src/engine/execution_trampoline.cpp`는 한때 12,117줄 단일 파일이었으나, Task 233(Phase 1)에서 동작 보존 리팩토링으로 서브시스템별 모듈로 분해했다(약 3,200줄로 축소). 트램폴린에는 VEH 디스패치 코어, 실행 드라이버(`RunWin32ExecutionThread`/`AttemptWin32*`), 여러 모듈이 공유하는 substrate만 남겼다. 모듈들은 `src/engine/` 아래 서브디렉토리로 그룹화되며(Task 520 이전에는 `src/platform/win32/`), 짧은 이름 include는 CMake include 경로로 해석된다.
 
-Originally a single 12,117-line file, `execution_trampoline.cpp` was decomposed in Task 233 (Phase 1) via behavior-preserving refactoring into per-subsystem modules (down to ~3,200 lines). The trampoline retains only the VEH dispatch core, the execution driver, and the substrate shared across modules. Modules are grouped into subdirectories under `src/platform/win32/`; short-name includes resolve via CMake include directories.
+Originally a single 12,117-line file, `execution_trampoline.cpp` was decomposed in Task 233 (Phase 1) via behavior-preserving refactoring into per-subsystem modules (down to ~3,200 lines). The trampoline retains only the VEH dispatch core, the execution driver, and the substrate shared across modules. Modules are grouped into subdirectories under `src/engine/` (`src/platform/win32/` before Task 520); short-name includes resolve via CMake include directories.
 
 | 디렉토리 / directory | 모듈 / module | 책임 / responsibility |
 |---|---|---|
@@ -1281,6 +1290,7 @@ window in which an asynchronous timer injection could overwrite it between the s
 
 Task 501부터 `repiu_exe`의 소스는 두 부류로 나뉘어 있었습니다. 공용 코어(3d-17 시점 57개)는
 모든 플랫폼에서, `src/platform/win32`(81개)는 `if(WIN32)` 안에서만 빌드됐습니다.
+(**당시 경로입니다. Task 520이 그 트리를 `src/engine/`으로 옮겼습니다.**)
 **Task 503d-17부터 그 구분이 없습니다** — 실행 엔진 소스도 모든 플랫폼에서 빌드됩니다. 새 라이브러리
 타깃을 만드는 대신 조건부 소스로 나눈 것은 링크와 include 배선을 다시 하지 않기
 위해서입니다.
@@ -1397,7 +1407,8 @@ grep에 잡히지 않습니다. 아키텍처는 i386입니다. 게스트의 32�
 네이티브 실행하므로 호스트도 32비트여야 합니다.
 
 Since Task 501 the `repiu_exe` sources were split in two: the platform-neutral files that build
-everywhere — 57 as of 3d-17 — and the 81 under `src/platform/win32` that built only inside
+everywhere — 57 as of 3d-17 — and the 81 under `src/platform/win32` (**the path at the time;
+Task 520 moved that tree to `src/engine/`**) that built only inside
 `if(WIN32)`. **Since Task 503d-17 that split is gone**: the execution engine builds everywhere too. Conditional
 sources were chosen over a second library target to avoid rewiring every link and include
 relationship. Measurement backs the split: the neutral core includes no Win32 header, uses no
