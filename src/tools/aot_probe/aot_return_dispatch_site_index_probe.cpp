@@ -1,6 +1,6 @@
 #include "aot_return_dispatch_site_index_probe.h"
 
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 #include "repiu/engine/aot_return_dispatch_site_index.h"
 
 #include <cstdint>
@@ -16,9 +16,9 @@ using repiu::engine::AotReturnDispatchSiteLookup;
 using repiu::engine::EnsureAotReturnDispatchSiteIndex;
 using repiu::engine::InvalidateAotReturnDispatchSiteIndex;
 using repiu::engine::LookupAotReturnDispatchSiteIndex;
-using repiu::engine::Win32AotCodeCachePlacement;
+using repiu::engine::AotCodeCachePlacement;
 
-void AddSite(Win32AotCodeCachePlacement* placement,
+void AddSite(AotCodeCachePlacement* placement,
              std::uint32_t guest_source,
              std::uint32_t miss_offset)
 {
@@ -28,7 +28,7 @@ void AddSite(Win32AotCodeCachePlacement* placement,
     placement->dbt_return_dispatch_sites.push_back(site);
 }
 
-bool ReferenceFindSite(const Win32AotCodeCachePlacement& placement,
+bool ReferenceFindSite(const AotCodeCachePlacement& placement,
                        std::uint32_t miss_offset,
                        std::uint32_t* site_index)
 {
@@ -45,7 +45,7 @@ bool ReferenceFindSite(const Win32AotCodeCachePlacement& placement,
     return false;
 }
 
-bool Agrees(const Win32AotCodeCachePlacement& placement,
+bool Agrees(const AotCodeCachePlacement& placement,
             const std::vector<std::uint32_t>& queries)
 {
     for (const std::uint32_t query : queries)
@@ -86,7 +86,7 @@ bool BuildCollisionPair(std::uint32_t* first, std::uint32_t* second)
 
 bool RunAotReturnDispatchSiteIndexProbe()
 {
-    Win32AotCodeCachePlacement ordinary;
+    AotCodeCachePlacement ordinary;
     AddSite(&ordinary, 0x04010000U, 0x100U);
     AddSite(&ordinary, 0x04020000U, 0x280U);
     AddSite(&ordinary, 0x04030000U, 0x900U);
@@ -94,7 +94,7 @@ bool RunAotReturnDispatchSiteIndexProbe()
     const bool ordinary_ok = Agrees(
         ordinary, {0x100U, 0x280U, 0x900U, 0U, 0xFFFFFFFFU});
 
-    Win32AotCodeCachePlacement duplicate;
+    AotCodeCachePlacement duplicate;
     AddSite(&duplicate, 0x04040000U, 0x400U);
     AddSite(&duplicate, 0x04050000U, 0x400U);
     EnsureAotReturnDispatchSiteIndex(&duplicate);
@@ -107,7 +107,7 @@ bool RunAotReturnDispatchSiteIndexProbe()
     std::uint32_t collision_b = 0;
     const bool collision_built =
         BuildCollisionPair(&collision_a, &collision_b);
-    Win32AotCodeCachePlacement collision;
+    AotCodeCachePlacement collision;
     if (collision_built)
     {
         AddSite(&collision, 0x04060000U, collision_a);
@@ -128,7 +128,7 @@ bool RunAotReturnDispatchSiteIndexProbe()
     const bool invalidated_ok =
         !LookupAotReturnDispatchSiteIndex(ordinary, 0x100U).usable;
 
-    Win32AotCodeCachePlacement empty;
+    AotCodeCachePlacement empty;
     EnsureAotReturnDispatchSiteIndex(&empty);
     const bool empty_ok =
         !LookupAotReturnDispatchSiteIndex(empty, 0x100U).usable;

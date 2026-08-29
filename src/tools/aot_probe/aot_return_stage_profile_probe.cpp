@@ -22,9 +22,9 @@ using repiu::engine::RecordAotReturnOuterSample;
 using repiu::engine::RecordAotReturnStageSample;
 using repiu::engine::ResolveAotReturnStageProfileEnabled;
 using repiu::engine::SnapshotAotReturnStageProfile;
-using repiu::engine::Win32AotReturnPatchPolicy;
-using repiu::engine::Win32AotReturnStageProfile;
-using repiu::engine::Win32AotReturnStageSiteObservation;
+using repiu::engine::AotReturnPatchPolicy;
+using repiu::engine::AotReturnStageProfile;
+using repiu::engine::AotReturnStageSiteObservation;
 using repiu::engine::kAotReturnStageCount;
 using repiu::engine::kAotReturnStageSiteReportCapacity;
 
@@ -35,7 +35,7 @@ std::size_t StageIndex(const AotReturnStage stage)
 
 // Records the five stages of one return with the given per-stage cost starting
 // at `base`, then closes an outer window `outer` cycles wide around them.
-void RecordOneReturn(Win32AotReturnStageProfile* profile,
+void RecordOneReturn(AotReturnStageProfile* profile,
                      const std::uint64_t base,
                      const std::uint64_t per_stage,
                      const std::uint64_t outer)
@@ -79,7 +79,7 @@ bool ProbeToggle()
 
 bool ProbeStageAccounting()
 {
-    Win32AotReturnStageProfile profile;
+    AotReturnStageProfile profile;
     RecordOneReturn(&profile, 1000U, 10U, 100U);
     RecordOneReturn(&profile, 2000U, 20U, 200U);
     bool ok = profile.enabled && profile.outer_count == 2U &&
@@ -101,7 +101,7 @@ bool ProbeStageAccounting()
 
 bool ProbeSnapshotCopy()
 {
-    Win32AotReturnStageProfile profile;
+    AotReturnStageProfile profile;
     RecordOneReturn(&profile, 500U, 7U, 90U);
     const auto snapshot = SnapshotAotReturnStageProfile(profile);
     bool ok = snapshot.enabled == profile.enabled &&
@@ -118,7 +118,7 @@ bool ProbeSnapshotCopy()
             snapshot.counts[stage] == profile.counts[stage] &&
             snapshot.max_cycles[stage] == profile.max_cycles[stage];
     }
-    const Win32AotReturnStageProfile empty;
+    const AotReturnStageProfile empty;
     const auto empty_snapshot = SnapshotAotReturnStageProfile(empty);
     return ok && !empty_snapshot.enabled &&
         AotReturnStageCoveredCycles(empty_snapshot) == 0U &&
@@ -127,7 +127,7 @@ bool ProbeSnapshotCopy()
 
 bool ProbeResidualClamp()
 {
-    Win32AotReturnStageProfile profile;
+    AotReturnStageProfile profile;
     // A window narrower than the stages recorded inside it must not underflow
     // the residual. It is counted instead.
     RecordOneReturn(&profile, 100U, 40U, 50U);
@@ -142,7 +142,7 @@ bool ProbeResidualClamp()
 
 bool ProbeSampleClamp()
 {
-    Win32AotReturnStageProfile profile;
+    AotReturnStageProfile profile;
     RecordAotReturnStageSample(&profile, AotReturnStage::kTargetRead, 900U,
                                800U);
     const bool stage_ok =
@@ -162,7 +162,7 @@ bool ProbeSampleClamp()
 
 bool ProbeDisabledScope()
 {
-    Win32AotReturnStageProfile profile;
+    AotReturnStageProfile profile;
     {
         const AotReturnStageScope scope(&profile,
                                         AotReturnStage::kPatchPolicy);
@@ -176,9 +176,9 @@ bool ProbeDisabledScope()
 
 bool ProbeEmptyCensus()
 {
-    Win32AotReturnPatchPolicy policy;
+    AotReturnPatchPolicy policy;
     std::vector<repiu::runtime::AotDbtReturnDispatchSite> sites;
-    std::vector<Win32AotReturnStageSiteObservation> observations;
+    std::vector<AotReturnStageSiteObservation> observations;
     observations.push_back({});
     RankAotReturnStageSites(policy, sites, &observations);
     const bool empty_ok = observations.empty();
@@ -200,7 +200,7 @@ bool ProbeEmptyCensus()
 
 bool ProbeTopNOrdering()
 {
-    Win32AotReturnPatchPolicy policy;
+    AotReturnPatchPolicy policy;
     std::vector<repiu::runtime::AotDbtReturnDispatchSite> sites;
     constexpr std::uint32_t kSiteCount = 20U;
     policy.sites.resize(kSiteCount);
@@ -212,7 +212,7 @@ bool ProbeTopNOrdering()
         policy.sites[index].bypass_count = index;
         policy.sites[index].megamorphic = index % 2U == 0U;
     }
-    std::vector<Win32AotReturnStageSiteObservation> observations;
+    std::vector<AotReturnStageSiteObservation> observations;
     RankAotReturnStageSites(policy, sites, &observations);
     bool ok = observations.size() == kAotReturnStageSiteReportCapacity;
     for (std::size_t index = 0; ok && index < observations.size(); ++index)
@@ -234,7 +234,7 @@ bool ProbeTopNOrdering()
     }
 
     // Equal observation counts rank by bypasses first and site index last.
-    Win32AotReturnPatchPolicy tie_policy;
+    AotReturnPatchPolicy tie_policy;
     std::vector<repiu::runtime::AotDbtReturnDispatchSite> tie_sites;
     tie_policy.sites.resize(3U);
     for (std::uint32_t index = 0; index < 3U; ++index)
@@ -243,7 +243,7 @@ bool ProbeTopNOrdering()
         tie_policy.sites[index].miss_count = 5U;
     }
     tie_policy.sites[2].bypass_count = 4U;
-    std::vector<Win32AotReturnStageSiteObservation> tie_observations;
+    std::vector<AotReturnStageSiteObservation> tie_observations;
     RankAotReturnStageSites(tie_policy, tie_sites, &tie_observations);
     const bool tie_ok = tie_observations.size() == 3U &&
         tie_observations[0].site_index == 2U &&

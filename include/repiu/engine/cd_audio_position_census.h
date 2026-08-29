@@ -16,12 +16,12 @@ namespace repiu::engine
 // (design section 2, candidate B).
 // See docs/design/20260805-421-cd-audio-position-reporting.md.
 
-constexpr std::uint32_t kWin32CdAudioPositionCensusCapacity = 4096U;
-constexpr std::uint32_t kWin32CdAudioPositionCensusDefaultMilliseconds = 100U;
+constexpr std::uint32_t kCdAudioPositionCensusCapacity = 4096U;
+constexpr std::uint32_t kCdAudioPositionCensusDefaultMilliseconds = 100U;
 
 // One reading of everything the position is derived from, so a wrong value can
 // be attributed rather than guessed at.
-struct Win32CdAudioPositionEntry
+struct CdAudioPositionEntry
 {
     std::uint32_t wall_milliseconds = 0;
     // What the guest would read right now.
@@ -61,11 +61,11 @@ struct Win32CdAudioPositionEntry
     bool paused = false;
 };
 
-struct Win32CdAudioPositionCensus
+struct CdAudioPositionCensus
 {
     bool enabled = false;
     std::uint32_t interval_milliseconds =
-        kWin32CdAudioPositionCensusDefaultMilliseconds;
+        kCdAudioPositionCensusDefaultMilliseconds;
     std::uint32_t total_samples = 0;
     std::uint32_t overflow_count = 0;
     // Readings whose `current_lba` was below the previous one. A nonzero count
@@ -73,20 +73,20 @@ struct Win32CdAudioPositionCensus
     // while playing.
     std::uint32_t regression_count = 0;
     std::uint32_t entry_count = 0;
-    Win32CdAudioPositionEntry entries[kWin32CdAudioPositionCensusCapacity];
+    CdAudioPositionEntry entries[kCdAudioPositionCensusCapacity];
 };
 
 bool CdAudioPositionCensusEnabled();
 std::uint32_t CdAudioPositionCensusIntervalMilliseconds();
 
-void RecordCdAudioPosition(Win32CdAudioPositionCensus* census,
-                           const Win32CdAudioPositionEntry& entry);
+void RecordCdAudioPosition(CdAudioPositionCensus* census,
+                           const CdAudioPositionEntry& entry);
 
 // Writes the series to `build/cd_audio_position_census.txt` (or the path in
 // `REPIU_CD_AUDIO_POSITION_CENSUS_DUMP`) and reports what it wrote. Called on
 // teardown, after the guest thread has stopped.
 bool WriteCdAudioPositionCensusDump(
-    const Win32CdAudioPositionCensus& census,
+    const CdAudioPositionCensus& census,
     std::uint32_t* written_entry_count,
     std::uint32_t* regression_count);
 

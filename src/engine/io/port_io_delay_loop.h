@@ -37,7 +37,7 @@ enum class PortIoDelayLoopOutcome : std::uint32_t
 constexpr std::uint32_t kPortIoDelayLoopOutcomeCount =
     static_cast<std::uint32_t>(PortIoDelayLoopOutcome::kCount);
 
-struct Win32PortIoDelayLoopStats
+struct PortIoDelayLoopStats
 {
     bool enabled = false;
     std::uint32_t attempt_count = 0;
@@ -72,7 +72,7 @@ bool PortIoDelayLoopEnabled();
 // Guest-thread-only statistics. Kept here rather than in ThreadContext because
 // that header is included nearly everywhere and adding a field to it forces a
 // full rebuild.
-const Win32PortIoDelayLoopStats& GetPortIoDelayLoopStats();
+const PortIoDelayLoopStats& GetPortIoDelayLoopStats();
 
 // Attempts the batch after `IN` has already been emulated at `in_address`
 // (guest address) with `in_length` bytes. `registers` points at the guest's

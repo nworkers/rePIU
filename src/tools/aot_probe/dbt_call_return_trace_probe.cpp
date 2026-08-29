@@ -21,38 +21,38 @@ bool RunAotDbtCallReturnTraceProbe()
     using engine::RecordAotDbtCallReturnCall;
     using engine::RecordAotDbtCallReturnReturn;
     using engine::ThreadContext;
-    using engine::Win32AotCallReturnTraceEventKind;
-    using engine::Win32AotTransferOrigin;
+    using engine::AotCallReturnTraceEventKind;
+    using engine::AotTransferOrigin;
 
     auto context = std::make_unique<ThreadContext>();
     const bool disabled =
         RecordAotDbtCallReturnCall(
-            context.get(), Win32AotTransferOrigin::kHost,
+            context.get(), AotTransferOrigin::kHost,
             0x1000U, 0x2000U, 0x1002U, 0x4000U) == 0U &&
         context->aot_dbt_call_return_trace_count == 0U;
 
     context->aot_dbt_call_return_trace_configured = true;
     const std::uint32_t call_sequence = RecordAotDbtCallReturnCall(
-        context.get(), Win32AotTransferOrigin::kHost,
+        context.get(), AotTransferOrigin::kHost,
         0x1000U, 0x2000U, 0x1002U, 0x4000U);
     RecordAotDbtCallReturnReturn(
-        context.get(), Win32AotTransferOrigin::kHost,
+        context.get(), AotTransferOrigin::kHost,
         0x2100U, 0x1002U, 0x3FFCU, call_sequence,
         0x1000U, 0x2000U, 0x1002U, 0x4000U);
     const auto& call = context->aot_dbt_call_return_trace[0];
     const auto& matching_return = context->aot_dbt_call_return_trace[1];
     const bool matching =
         call_sequence == 1U &&
-        call.kind == Win32AotCallReturnTraceEventKind::kCall &&
-        call.origin == Win32AotTransferOrigin::kHost &&
+        call.kind == AotCallReturnTraceEventKind::kCall &&
+        call.origin == AotTransferOrigin::kHost &&
         call.call_sequence == 1U &&
         call.source == 0x1000U &&
         call.target == 0x2000U &&
         call.return_address == 0x1002U &&
         call.esp == 0x4000U &&
         matching_return.kind ==
-            Win32AotCallReturnTraceEventKind::kReturn &&
-        matching_return.origin == Win32AotTransferOrigin::kHost &&
+            AotCallReturnTraceEventKind::kReturn &&
+        matching_return.origin == AotTransferOrigin::kHost &&
         matching_return.call_sequence == call_sequence &&
         matching_return.correlated &&
         matching_return.target_matches &&
@@ -61,10 +61,10 @@ bool RunAotDbtCallReturnTraceProbe()
         context->aot_dbt_call_return_mismatch_count == 0U;
 
     const std::uint32_t mismatch_call = RecordAotDbtCallReturnCall(
-        context.get(), Win32AotTransferOrigin::kVeh,
+        context.get(), AotTransferOrigin::kVeh,
         0x3000U, 0x5000U, 0x3002U, 0x6000U);
     RecordAotDbtCallReturnReturn(
-        context.get(), Win32AotTransferOrigin::kVeh,
+        context.get(), AotTransferOrigin::kVeh,
         0x5100U, 0x3002U, 0x5FF8U, mismatch_call,
         0x3000U, 0x5000U, 0x3002U, 0x6000U);
     const bool mismatch =
@@ -72,13 +72,13 @@ bool RunAotDbtCallReturnTraceProbe()
         context->aot_dbt_call_return_first_divergence_valid &&
         context->aot_dbt_call_return_first_divergence.sequence == 4U &&
         context->aot_dbt_call_return_first_divergence.origin ==
-            Win32AotTransferOrigin::kVeh &&
+            AotTransferOrigin::kVeh &&
         context->aot_dbt_call_return_first_divergence.call_sequence ==
             mismatch_call &&
         context->aot_dbt_call_return_first_divergence.target_matches &&
         !context->aot_dbt_call_return_first_divergence.esp_matches;
     RecordAotDbtCallReturnReturn(
-        context.get(), Win32AotTransferOrigin::kVeh,
+        context.get(), AotTransferOrigin::kVeh,
         0x5200U, 0xDEADBEEFU, 0x5FF8U, mismatch_call,
         0x3000U, 0x5000U, 0x3002U, 0x6000U);
     const bool uncorrelated_filtered =
@@ -89,18 +89,18 @@ bool RunAotDbtCallReturnTraceProbe()
     auto wrap_context = std::make_unique<ThreadContext>();
     wrap_context->aot_dbt_call_return_trace_configured = true;
     for (std::uint32_t index = 0;
-         index < engine::kWin32AotCallReturnTraceCapacity + 4U;
+         index < engine::kAotCallReturnTraceCapacity + 4U;
          ++index)
     {
         RecordAotDbtCallReturnCall(
-            wrap_context.get(), Win32AotTransferOrigin::kHost,
+            wrap_context.get(), AotTransferOrigin::kHost,
             0x1000U + index, 0x2000U + index,
             0x1002U + index, 0x4000U);
     }
     bool wrap = wrap_context->aot_dbt_call_return_overwrite_count == 4U;
     const std::uint32_t begin =
         wrap_context->aot_dbt_call_return_trace_count -
-        engine::kWin32AotCallReturnTraceCapacity;
+        engine::kAotCallReturnTraceCapacity;
     for (std::uint32_t sequence = begin;
          wrap && sequence <
              wrap_context->aot_dbt_call_return_trace_count;
@@ -108,7 +108,7 @@ bool RunAotDbtCallReturnTraceProbe()
     {
         const auto& entry = wrap_context->aot_dbt_call_return_trace[
             sequence %
-            engine::kWin32AotCallReturnTraceCapacity];
+            engine::kAotCallReturnTraceCapacity];
         wrap = entry.sequence == sequence + 1U;
     }
 

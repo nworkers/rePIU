@@ -16,19 +16,19 @@ namespace repiu::engine
 // prefixes to record the effective opcode and separately records the second byte
 // behind a `0F` escape. It counts only; nothing here changes behaviour.
 
-constexpr std::size_t kWin32AotOpcodeHistogramSize = 256U;
+constexpr std::size_t kAotOpcodeHistogramSize = 256U;
 
 // A malformed or truncated byte sequence must never let the prefix skip run past
 // the sample, so the walk is bounded and the overflow is counted.
-constexpr std::uint32_t kWin32AotMaxLegacyPrefixes = 4U;
+constexpr std::uint32_t kAotMaxLegacyPrefixes = 4U;
 
-struct Win32AotBoundaryOpcodeCensus
+struct AotBoundaryOpcodeCensus
 {
     // Effective opcode after legacy prefixes, for every sample.
-    std::uint32_t effective_opcode_counts[kWin32AotOpcodeHistogramSize] = {};
+    std::uint32_t effective_opcode_counts[kAotOpcodeHistogramSize] = {};
     // Second byte of a `0F`-escaped instruction. This is what identifies the
     // largest population.
-    std::uint32_t escape_opcode_counts[kWin32AotOpcodeHistogramSize] = {};
+    std::uint32_t escape_opcode_counts[kAotOpcodeHistogramSize] = {};
     std::uint32_t sample_count = 0;
     std::uint32_t escape_count = 0;
     std::uint32_t prefixed_count = 0;
@@ -47,11 +47,11 @@ bool IsX86LegacyPrefix(std::uint8_t value);
 
 // Counts one boundary sample. `bytes`/`length` are the instruction bytes the
 // dispatcher already captured.
-void RecordAotBoundaryOpcodeSample(Win32AotBoundaryOpcodeCensus* census,
+void RecordAotBoundaryOpcodeSample(AotBoundaryOpcodeCensus* census,
                                    const std::uint8_t* bytes,
                                    std::size_t length);
 
-struct Win32AotOpcodeRank
+struct AotOpcodeRank
 {
     std::uint8_t opcode = 0;
     std::uint32_t count = 0;
@@ -60,7 +60,7 @@ struct Win32AotOpcodeRank
 // Fills `ranks` with the top `capacity` entries by count, descending, ties broken
 // by opcode. Called at exit only.
 void RankAotOpcodeHistogram(const std::uint32_t* counts,
-                            Win32AotOpcodeRank* ranks,
+                            AotOpcodeRank* ranks,
                             std::size_t capacity);
 
 }  // namespace repiu::engine

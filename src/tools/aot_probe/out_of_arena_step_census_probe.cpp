@@ -13,9 +13,9 @@ bool RunOutOfArenaStepCensusProbe()
     using engine::OutOfArenaStepLocation;
     using engine::RecordOutOfArenaStep;
     using engine::SnapshotOutOfArenaStepCensus;
-    using engine::Win32OutOfArenaStepCensus;
+    using engine::OutOfArenaStepCensus;
 
-    Win32OutOfArenaStepCensus census;
+    OutOfArenaStepCensus census;
     RecordOutOfArenaStep(&census, 0x0C000010U,
                          OutOfArenaStepLocation::kAotCodeCache, true, true);
     RecordOutOfArenaStep(&census, 0x0C000010U,
@@ -44,7 +44,7 @@ bool RunOutOfArenaStepCensusProbe()
 
     // Overflow must be counted, not silently dropped, or a full table would read
     // as a dominant site when it is merely a truncated one.
-    Win32OutOfArenaStepCensus full;
+    OutOfArenaStepCensus full;
     for (std::uint32_t index = 0;
          index < kOutOfArenaStepAddressCapacity + 5U; ++index)
     {
@@ -56,7 +56,7 @@ bool RunOutOfArenaStepCensusProbe()
         full_snapshot.address_overflow_count == 5U &&
         full_snapshot.total_count == kOutOfArenaStepAddressCapacity + 5U;
 
-    Win32OutOfArenaStepCensus untouched;
+    OutOfArenaStepCensus untouched;
     RecordOutOfArenaStep(nullptr, 0x1U, OutOfArenaStepLocation::kOther, true,
                          true);
     const bool inert =

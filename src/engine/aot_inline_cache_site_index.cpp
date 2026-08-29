@@ -1,6 +1,6 @@
 #include "repiu/engine/aot_inline_cache_site_index.h"
 
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 
 #include <algorithm>
 
@@ -31,12 +31,12 @@ std::uint32_t RoundUpToPowerOfTwo(std::uint32_t value)
 
 // Keeps the lowest matching site index in `match`, which is what the scan this
 // replaces returned: it stopped at the first site in array order.
-void CollectLowestMatch(const Win32AotCodeCachePlacement& placement,
+void CollectLowestMatch(const AotCodeCachePlacement& placement,
                         std::uint32_t key,
                         bool* found,
                         std::uint32_t* match)
 {
-    const Win32AotInlineCacheSiteIndex& index =
+    const AotInlineCacheSiteIndex& index =
         placement.inline_cache_site_index;
     const std::uint32_t bucket_count =
         static_cast<std::uint32_t>(index.buckets.size());
@@ -44,7 +44,7 @@ void CollectLowestMatch(const Win32AotCodeCachePlacement& placement,
         index.buckets[HashMissOffset(key, bucket_count)];
     // Bounded so a corrupted chain cannot spin forever.
     std::uint32_t visited = 0;
-    while (candidate != Win32AotInlineCacheSiteIndex::kInvalidIndex &&
+    while (candidate != AotInlineCacheSiteIndex::kInvalidIndex &&
            candidate < index.indexed_site_count &&
            visited <= index.indexed_site_count)
     {
@@ -65,20 +65,20 @@ void CollectLowestMatch(const Win32AotCodeCachePlacement& placement,
 
 }  // namespace
 
-void RebuildAotInlineCacheSiteIndex(Win32AotCodeCachePlacement* placement)
+void RebuildAotInlineCacheSiteIndex(AotCodeCachePlacement* placement)
 {
     if (placement == nullptr)
     {
         return;
     }
-    Win32AotInlineCacheSiteIndex& index = placement->inline_cache_site_index;
+    AotInlineCacheSiteIndex& index = placement->inline_cache_site_index;
     const std::uint32_t site_count = static_cast<std::uint32_t>(
         placement->indirect_inline_cache_sites.size());
 
     index.buckets.assign(RoundUpToPowerOfTwo(site_count),
-                         Win32AotInlineCacheSiteIndex::kInvalidIndex);
+                         AotInlineCacheSiteIndex::kInvalidIndex);
     index.next_in_bucket.assign(
-        site_count, Win32AotInlineCacheSiteIndex::kInvalidIndex);
+        site_count, AotInlineCacheSiteIndex::kInvalidIndex);
 
     const std::uint32_t bucket_count =
         static_cast<std::uint32_t>(index.buckets.size());
@@ -95,7 +95,7 @@ void RebuildAotInlineCacheSiteIndex(Win32AotCodeCachePlacement* placement)
     ++index.rebuild_count;
 }
 
-void EnsureAotInlineCacheSiteIndex(Win32AotCodeCachePlacement* placement)
+void EnsureAotInlineCacheSiteIndex(AotCodeCachePlacement* placement)
 {
     if (placement == nullptr)
     {
@@ -114,24 +114,24 @@ void EnsureAotInlineCacheSiteIndex(Win32AotCodeCachePlacement* placement)
     }
 }
 
-void InvalidateAotInlineCacheSiteIndex(Win32AotCodeCachePlacement* placement)
+void InvalidateAotInlineCacheSiteIndex(AotCodeCachePlacement* placement)
 {
     if (placement == nullptr)
     {
         return;
     }
-    Win32AotInlineCacheSiteIndex& index = placement->inline_cache_site_index;
+    AotInlineCacheSiteIndex& index = placement->inline_cache_site_index;
     index.indexed_site_count = 0;
     index.buckets.clear();
     index.next_in_bucket.clear();
 }
 
 AotInlineCacheSiteLookup LookupAotInlineCacheSiteIndex(
-    const Win32AotCodeCachePlacement& placement,
+    const AotCodeCachePlacement& placement,
     std::uint32_t miss_offset)
 {
     AotInlineCacheSiteLookup result;
-    const Win32AotInlineCacheSiteIndex& index =
+    const AotInlineCacheSiteIndex& index =
         placement.inline_cache_site_index;
     if (index.buckets.empty() ||
         index.indexed_site_count !=

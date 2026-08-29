@@ -1,5 +1,5 @@
-#ifndef REPIU_PLATFORM_WIN32_YMZ280B_AUDIO_OUT_H_
-#define REPIU_PLATFORM_WIN32_YMZ280B_AUDIO_OUT_H_
+#ifndef REPIU_ENGINE_YMZ280B_AUDIO_OUT_H_
+#define REPIU_ENGINE_YMZ280B_AUDIO_OUT_H_
 
 #include <cstdint>
 #include <filesystem>
@@ -55,4 +55,4 @@ private:
 
 }  // namespace repiu::engine
 
-#endif  // REPIU_PLATFORM_WIN32_YMZ280B_AUDIO_OUT_H_
+#endif  // REPIU_ENGINE_YMZ280B_AUDIO_OUT_H_

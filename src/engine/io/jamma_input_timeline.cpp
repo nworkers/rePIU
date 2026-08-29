@@ -25,7 +25,7 @@ private:
 
 } // namespace
 
-void Win32JammaInputTimeline::Reset(std::uint64_t timestamp_nanoseconds,
+void JammaInputTimeline::Reset(std::uint64_t timestamp_nanoseconds,
                                     std::uint16_t pressed_mask) {
   TimelineLock lock(&lock_);
   history_size_ = 0;
@@ -51,7 +51,7 @@ void Win32JammaInputTimeline::Reset(std::uint64_t timestamp_nanoseconds,
   replay_frame_overflow_count_ = 0;
 }
 
-void Win32JammaInputTimeline::RecordStateLocked(
+void JammaInputTimeline::RecordStateLocked(
     std::uint64_t timestamp_nanoseconds, std::uint16_t pressed_mask) {
   if (pressed_mask == latest_pressed_mask_) {
     return;
@@ -77,7 +77,7 @@ void Win32JammaInputTimeline::RecordStateLocked(
   ++edge_count_;
 }
 
-void Win32JammaInputTimeline::RecordKeyEdge(std::uint64_t timestamp_nanoseconds,
+void JammaInputTimeline::RecordKeyEdge(std::uint64_t timestamp_nanoseconds,
                                             JammaInputKey key, bool pressed) {
   if (key >= JammaInputKey::kCount) {
     return;
@@ -90,13 +90,13 @@ void Win32JammaInputTimeline::RecordKeyEdge(std::uint64_t timestamp_nanoseconds,
   RecordStateLocked(timestamp_nanoseconds, next);
 }
 
-void Win32JammaInputTimeline::RecordAllReleased(
+void JammaInputTimeline::RecordAllReleased(
     std::uint64_t timestamp_nanoseconds) {
   TimelineLock lock(&lock_);
   RecordStateLocked(timestamp_nanoseconds, 0U);
 }
 
-bool Win32JammaInputTimeline::EnqueueTimerTick(
+bool JammaInputTimeline::EnqueueTimerTick(
     std::uint64_t due_timestamp_nanoseconds) {
   TimelineLock lock(&lock_);
   if (due_size_ == kDueCapacity) {
@@ -113,7 +113,7 @@ bool Win32JammaInputTimeline::EnqueueTimerTick(
   return true;
 }
 
-void Win32JammaInputTimeline::ClearTimerTicks() {
+void JammaInputTimeline::ClearTimerTicks() {
   TimelineLock lock(&lock_);
   due_head_ = 0;
   due_size_ = 0;
@@ -121,7 +121,7 @@ void Win32JammaInputTimeline::ClearTimerTicks() {
   PruneHistoryLocked();
 }
 
-bool Win32JammaInputTimeline::BeginTimerInterrupt(
+bool JammaInputTimeline::BeginTimerInterrupt(
     std::uint32_t pre_interrupt_esp, std::uint32_t interrupt_frame_esp) {
   TimelineLock lock(&lock_);
   RetireReplayFramesLocked(pre_interrupt_esp);
@@ -146,7 +146,7 @@ bool Win32JammaInputTimeline::BeginTimerInterrupt(
   return true;
 }
 
-void Win32JammaInputTimeline::RetireReplayFramesLocked(
+void JammaInputTimeline::RetireReplayFramesLocked(
     std::uint32_t current_esp) {
   while (replay_frame_depth_ != 0U &&
          current_esp >
@@ -156,7 +156,7 @@ void Win32JammaInputTimeline::RetireReplayFramesLocked(
   }
 }
 
-void Win32JammaInputTimeline::PruneHistoryLocked() {
+void JammaInputTimeline::PruneHistoryLocked() {
   if (history_size_ == 0U) {
     return;
   }
@@ -202,7 +202,7 @@ void Win32JammaInputTimeline::PruneHistoryLocked() {
 }
 
 std::uint16_t
-Win32JammaInputTimeline::StateAtLocked(std::uint64_t timestamp_nanoseconds) {
+JammaInputTimeline::StateAtLocked(std::uint64_t timestamp_nanoseconds) {
   if (timestamp_nanoseconds < history_floor_timestamp_) {
     ++history_coverage_miss_count_;
   }
@@ -216,7 +216,7 @@ Win32JammaInputTimeline::StateAtLocked(std::uint64_t timestamp_nanoseconds) {
   return state;
 }
 
-bool Win32JammaInputTimeline::TryReplayPressedMask(
+bool JammaInputTimeline::TryReplayPressedMask(
     std::uint32_t current_esp, std::uint16_t *pressed_mask) {
   if (pressed_mask == nullptr) {
     return false;
@@ -233,11 +233,11 @@ bool Win32JammaInputTimeline::TryReplayPressedMask(
   return true;
 }
 
-Win32JammaInputTimelineSnapshot Win32JammaInputTimeline::Snapshot() const {
+JammaInputTimelineSnapshot JammaInputTimeline::Snapshot() const {
   // Called only after the guest thread has stopped. It deliberately takes no
   // lock: timeout teardown may terminate the guest while it owns the spin
   // guard, and diagnostics must remain readable in that case.
-  Win32JammaInputTimelineSnapshot result;
+  JammaInputTimelineSnapshot result;
   result.edge_count = edge_count_;
   result.history_pruned_count = history_pruned_count_;
   result.history_overflow_count = history_overflow_count_;

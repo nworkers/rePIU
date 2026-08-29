@@ -12,18 +12,18 @@ namespace
 struct BaseRegisterName
 {
     const char* text;
-    Win32ExecutionProbeDumpBase base;
+    ExecutionProbeDumpBase base;
 };
 
 constexpr BaseRegisterName kBaseRegisterNames[] = {
-    {"eax", Win32ExecutionProbeDumpBase::kEax},
-    {"ebx", Win32ExecutionProbeDumpBase::kEbx},
-    {"ecx", Win32ExecutionProbeDumpBase::kEcx},
-    {"edx", Win32ExecutionProbeDumpBase::kEdx},
-    {"esi", Win32ExecutionProbeDumpBase::kEsi},
-    {"edi", Win32ExecutionProbeDumpBase::kEdi},
-    {"ebp", Win32ExecutionProbeDumpBase::kEbp},
-    {"esp", Win32ExecutionProbeDumpBase::kEsp},
+    {"eax", ExecutionProbeDumpBase::kEax},
+    {"ebx", ExecutionProbeDumpBase::kEbx},
+    {"ecx", ExecutionProbeDumpBase::kEcx},
+    {"edx", ExecutionProbeDumpBase::kEdx},
+    {"esi", ExecutionProbeDumpBase::kEsi},
+    {"edi", ExecutionProbeDumpBase::kEdi},
+    {"ebp", ExecutionProbeDumpBase::kEbp},
+    {"esp", ExecutionProbeDumpBase::kEsp},
 };
 
 char LowerAscii(char value)
@@ -73,8 +73,8 @@ const char* ReadEnvironment(const char* name)
 
 }  // namespace
 
-bool ResolveWin32ExecutionProbeDumpBase(
-    const char* text, Win32ExecutionProbeDumpBase* out_base,
+bool ResolveExecutionProbeDumpBase(
+    const char* text, ExecutionProbeDumpBase* out_base,
     std::uint32_t* out_absolute)
 {
     if (text == nullptr || out_base == nullptr || out_absolute == nullptr)
@@ -95,14 +95,14 @@ bool ResolveWin32ExecutionProbeDumpBase(
     {
         return false;
     }
-    *out_base = Win32ExecutionProbeDumpBase::kAbsolute;
+    *out_base = ExecutionProbeDumpBase::kAbsolute;
     *out_absolute = absolute;
     return true;
 }
 
-Win32ExecutionProbeDumpRequest ReadWin32ExecutionProbeDumpRequest()
+ExecutionProbeDumpRequest ReadExecutionProbeDumpRequest()
 {
-    Win32ExecutionProbeDumpRequest request;
+    ExecutionProbeDumpRequest request;
     const char* path = ReadEnvironment("REPIU_EXECUTION_PROBE_DUMP_PATH");
     const char* byte_count_text =
         ReadEnvironment("REPIU_EXECUTION_PROBE_DUMP_BYTES");
@@ -112,13 +112,13 @@ Win32ExecutionProbeDumpRequest ReadWin32ExecutionProbeDumpRequest()
     }
     std::uint32_t byte_count = 0;
     if (!ParseUnsigned(byte_count_text, &byte_count) || byte_count == 0U ||
-        byte_count > kWin32ExecutionProbeDumpMaxBytes)
+        byte_count > kExecutionProbeDumpMaxBytes)
     {
         return request;
     }
     const char* base_text = ReadEnvironment("REPIU_EXECUTION_PROBE_DUMP_BASE");
     if (base_text != nullptr &&
-        !ResolveWin32ExecutionProbeDumpBase(
+        !ResolveExecutionProbeDumpBase(
             base_text, &request.base, &request.absolute_base))
     {
         return request;
@@ -139,9 +139,9 @@ Win32ExecutionProbeDumpRequest ReadWin32ExecutionProbeDumpRequest()
     return request;
 }
 
-bool WriteWin32ExecutionProbeDump(
-    const Win32ExecutionProbeDumpRequest& request,
-    Win32ExecutionProbeDumpResult* result)
+bool WriteExecutionProbeDump(
+    const ExecutionProbeDumpRequest& request,
+    ExecutionProbeDumpResult* result)
 {
     if (result == nullptr || !request.configured || !result->captured ||
         result->written || request.path.empty() || result->byte_count == 0U ||

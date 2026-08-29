@@ -2,7 +2,7 @@
 
 #include "aot_runtime_dispatch.h"
 #include "aot_residency_sample.h"
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 #include "../boundary/linexe_glide_boundary.h"
 #include "../execution/execution_internal.h"
 #include "../execution/thread_context.h"
@@ -193,7 +193,7 @@ extern "C" void AotDbtGlideGateDispatchThunk();
 
 }  // namespace
 
-bool ResolveWin32GlideGateDirectDispatchEnabled(const char* setting)
+bool ResolveGlideGateDirectDispatchEnabled(const char* setting)
 {
     if (setting == nullptr)
     {
@@ -203,7 +203,7 @@ bool ResolveWin32GlideGateDirectDispatchEnabled(const char* setting)
     return value == "1" || value == "on" || value == "true";
 }
 
-bool ResolveWin32GlideGateDirectTarget(
+bool ResolveGlideGateDirectTarget(
     const ThreadContext* context,
     std::uint32_t target,
     std::uint32_t* direct_target)
@@ -229,13 +229,13 @@ bool ResolveWin32GlideGateDirectTarget(
     return true;
 }
 
-bool ActivateWin32GlideGateDirectTarget(
+bool ActivateGlideGateDirectTarget(
     ThreadContext* context,
     std::uint32_t cache_boundary_address,
     std::uint32_t gate_address)
 {
     std::uint32_t direct_target = 0U;
-    if (!ResolveWin32GlideGateDirectTarget(
+    if (!ResolveGlideGateDirectTarget(
             context, gate_address, &direct_target) ||
         context->aot_placement == nullptr)
     {
@@ -337,12 +337,12 @@ bool ActivateWin32GlideGateDirectTarget(
     return true;
 }
 
-bool PatchWin32GlideGatePlanForDirectDispatch(
+bool PatchGlideGatePlanForDirectDispatch(
     std::uint32_t gate_code_base,
     repiu::hle::GlideGatePlan* plan)
 {
     const std::uintptr_t thunk_value = reinterpret_cast<std::uintptr_t>(
-        GetWin32GlideGateDirectDispatchThunkAddress());
+        GetGlideGateDirectDispatchThunkAddress());
     if (plan == nullptr || !plan->valid || plan->gate_stride != 8U ||
         thunk_value == 0U ||
         thunk_value > std::numeric_limits<std::uint32_t>::max())
@@ -392,7 +392,7 @@ bool PatchWin32GlideGatePlanForDirectDispatch(
     return true;
 }
 
-bool VerifyWin32GlideGateDirectDispatchImage(
+bool VerifyGlideGateDirectDispatchImage(
     std::uint32_t gate_code_base,
     const repiu::hle::GlideGatePlan& plan)
 {
@@ -418,8 +418,8 @@ bool VerifyWin32GlideGateDirectDispatchImage(
     return true;
 }
 
-Win32GlideGateDirectDispatchStats
-ReadWin32GlideGateDirectDispatchStats()
+GlideGateDirectDispatchStats
+ReadGlideGateDirectDispatchStats()
 {
     return {
         g_patched_gate_count.load(std::memory_order_relaxed),
@@ -435,7 +435,7 @@ ReadWin32GlideGateDirectDispatchStats()
     };
 }
 
-void* GetWin32GlideGateDirectDispatchThunkAddress()
+void* GetGlideGateDirectDispatchThunkAddress()
 {
 #if (defined(_MSC_VER) && defined(_M_IX86)) || defined(__i386__)
     return reinterpret_cast<void*>(&AotDbtGlideGateDispatchThunk);

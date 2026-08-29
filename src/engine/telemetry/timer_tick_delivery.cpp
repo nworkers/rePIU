@@ -27,7 +27,7 @@ void RaiseMaximum(std::atomic<std::uint32_t>* maximum, std::uint32_t value)
 
 }  // namespace
 
-Win32TimerTickDeliveryGuard::Win32TimerTickDeliveryGuard(
+TimerTickDeliveryGuard::TimerTickDeliveryGuard(
     std::atomic_flag* lock) : lock_(lock)
 {
     if (lock_ == nullptr)
@@ -40,12 +40,12 @@ Win32TimerTickDeliveryGuard::Win32TimerTickDeliveryGuard(
     }
 }
 
-Win32TimerTickDeliveryGuard::~Win32TimerTickDeliveryGuard()
+TimerTickDeliveryGuard::~TimerTickDeliveryGuard()
 {
     Release();
 }
 
-void Win32TimerTickDeliveryGuard::Release()
+void TimerTickDeliveryGuard::Release()
 {
     if (lock_ != nullptr)
     {
@@ -74,7 +74,7 @@ bool TimerTickBacklogEnabled()
 }
 
 std::uint32_t RecordTimerTicksDue(
-    Win32TimerTickDeliveryCounters* counters,
+    TimerTickDeliveryCounters* counters,
     std::uint32_t due,
     bool already_pending,
     bool backlog_enabled,
@@ -113,8 +113,8 @@ std::uint32_t RecordTimerTicksDue(
     // parked ever further in the past, so the excess is counted and dropped
     // rather than delivered late enough to be meaningless.
     std::uint32_t backlog = counters->backlog.load(std::memory_order_relaxed);
-    const std::uint32_t room = kWin32TimerTickBacklogCapacity > backlog
-        ? kWin32TimerTickBacklogCapacity - backlog
+    const std::uint32_t room = kTimerTickBacklogCapacity > backlog
+        ? kTimerTickBacklogCapacity - backlog
         : 0U;
     const std::uint32_t accepted = std::min(due, room);
     if (due > accepted)
@@ -128,7 +128,7 @@ std::uint32_t RecordTimerTicksDue(
     return accepted;
 }
 
-bool RecordTimerTickInjected(Win32TimerTickDeliveryCounters* counters,
+bool RecordTimerTickInjected(TimerTickDeliveryCounters* counters,
                              bool backlog_enabled)
 {
     if (counters == nullptr)
@@ -148,7 +148,7 @@ bool RecordTimerTickInjected(Win32TimerTickDeliveryCounters* counters,
     return backlog_enabled && backlog != 0U;
 }
 
-void RecordTimerTickDeferred(Win32TimerTickDeliveryCounters* counters)
+void RecordTimerTickDeferred(TimerTickDeliveryCounters* counters)
 {
     if (counters == nullptr)
     {
@@ -158,7 +158,7 @@ void RecordTimerTickDeferred(Win32TimerTickDeliveryCounters* counters)
 }
 
 void RecordTimerTickBacklogCleared(
-    Win32TimerTickDeliveryCounters* counters)
+    TimerTickDeliveryCounters* counters)
 {
     if (counters == nullptr)
     {
@@ -172,10 +172,10 @@ void RecordTimerTickBacklogCleared(
     }
 }
 
-Win32TimerTickDeliverySnapshot SnapshotTimerTickDelivery(
-    const Win32TimerTickDeliveryCounters& counters)
+TimerTickDeliverySnapshot SnapshotTimerTickDelivery(
+    const TimerTickDeliveryCounters& counters)
 {
-    Win32TimerTickDeliverySnapshot snapshot;
+    TimerTickDeliverySnapshot snapshot;
     snapshot.backlog_enabled = TimerTickBacklogEnabled();
     snapshot.due_total = counters.due_total.load(std::memory_order_relaxed);
     snapshot.injected_total =

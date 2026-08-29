@@ -12,9 +12,9 @@ bool RunJammaInputTimelineProbe()
 {
     using engine::JammaInputKey;
     using engine::JammaInputKeyMask;
-    using engine::Win32JammaInputTimeline;
+    using engine::JammaInputTimeline;
 
-    Win32JammaInputTimeline timeline;
+    JammaInputTimeline timeline;
     timeline.Reset(100U, 0U);
     timeline.RecordKeyEdge(200U, JammaInputKey::kP1UpLeft, true);
     timeline.RecordKeyEdge(400U, JammaInputKey::kP1UpLeft, false);
@@ -41,7 +41,7 @@ bool RunJammaInputTimelineProbe()
     const bool missing_due = !timeline.BeginTimerInterrupt(1100U, 1000U);
 
     const auto snapshot = timeline.Snapshot();
-    Win32JammaInputTimeline pruning_timeline;
+    JammaInputTimeline pruning_timeline;
     pruning_timeline.Reset(0U, 0U);
     bool pruning_sequence = true;
     for (std::uint32_t index = 0; index < 300U; ++index)

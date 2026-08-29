@@ -16,7 +16,7 @@
 #include "repiu/assets/rom_zip_archive.h"
 #include "repiu/engine/glide_opengl_backend.h"
 #include "repiu/engine/cd_audio_wave_out.h"
-#include "repiu/engine/aot_page_coherence_win32.h"
+#include "repiu/engine/aot_page_coherence.h"
 #include "repiu/media/chd_cd_image.h"
 #include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/selector_table.h"
@@ -61,8 +61,9 @@
 #include "repiu/platform/win32/win32_thread_api.h"
 #include "execution_internal.h"
 #include "port_io_emulator.h"
-#include "breakpoint_evidence_win32.h"
+#include "breakpoint_evidence.h"
 #include "repiu/engine/exception_rescue_win32.h"
+#include "guest_owned_breakpoint.h"
 #include "live_telemetry_snapshot.h"
 #include "repiu/platform/guest_cpu_context.h"
 #include "repiu/platform/atomic_ops.h"
@@ -350,7 +351,7 @@ int CaptureException(const repiu::platform::FaultEvent& fault,
             static_cast<std::uint32_t>(fault.registers->Esp);
         context->exception_stack_dword_count = 0;
         for (std::uint32_t index = 0;
-             index < kWin32ExceptionStackDwordCapacity; ++index)
+             index < kExceptionStackDwordCapacity; ++index)
         {
             const std::uintptr_t source =
                 static_cast<std::uintptr_t>(context->exception_stack_base) +
@@ -1378,7 +1379,7 @@ bool HandleSingleStepTrace(repiu::platform::GuestCpuContext* win32_context, Thre
     }
     const std::uint32_t profile_eip =
         static_cast<std::uint32_t>(win32_context->Eip);
-    Win32SingleStepHotspotProfile* hotspot_profile =
+    SingleStepHotspotProfile* hotspot_profile =
         context->single_step_hotspot_profile != nullptr &&
         IsGuestInstructionPointer(context, profile_eip)
             ? context->single_step_hotspot_profile.get()
@@ -2516,32 +2517,32 @@ void RecordExecutionProbeDump(repiu::platform::GuestCpuContext* win32_context, T
     std::uint32_t base = request.absolute_base;
     switch (request.base)
     {
-        case Win32ExecutionProbeDumpBase::kEax:
+        case ExecutionProbeDumpBase::kEax:
             base = win32_context->Eax;
             break;
-        case Win32ExecutionProbeDumpBase::kEbx:
+        case ExecutionProbeDumpBase::kEbx:
             base = win32_context->Ebx;
             break;
-        case Win32ExecutionProbeDumpBase::kEcx:
+        case ExecutionProbeDumpBase::kEcx:
             base = win32_context->Ecx;
             break;
-        case Win32ExecutionProbeDumpBase::kEdx:
+        case ExecutionProbeDumpBase::kEdx:
             base = win32_context->Edx;
             break;
-        case Win32ExecutionProbeDumpBase::kEsi:
+        case ExecutionProbeDumpBase::kEsi:
             base = win32_context->Esi;
             break;
-        case Win32ExecutionProbeDumpBase::kEdi:
+        case ExecutionProbeDumpBase::kEdi:
             base = win32_context->Edi;
             break;
-        case Win32ExecutionProbeDumpBase::kEbp:
+        case ExecutionProbeDumpBase::kEbp:
             base = win32_context->Ebp;
             break;
-        case Win32ExecutionProbeDumpBase::kEsp:
+        case ExecutionProbeDumpBase::kEsp:
             base = win32_context->Esp;
             break;
-        case Win32ExecutionProbeDumpBase::kAbsolute:
-        case Win32ExecutionProbeDumpBase::kCount:
+        case ExecutionProbeDumpBase::kAbsolute:
+        case ExecutionProbeDumpBase::kCount:
             break;
     }
     if (base > UINT32_MAX - request.offset)
@@ -2595,7 +2596,7 @@ void RecordExecutionProbe(repiu::platform::GuestCpuContext* win32_context, Threa
                     sizeof(context->execution_probe_stack));
     }
     const std::uint32_t register_values[
-        kWin32ExecutionProbeRegisterCount] = {
+        kExecutionProbeRegisterCount] = {
             win32_context->Eax,
             win32_context->Ebx,
             win32_context->Ecx,
@@ -2605,7 +2606,7 @@ void RecordExecutionProbe(repiu::platform::GuestCpuContext* win32_context, Threa
             win32_context->Ebp,
         };
     for (std::uint32_t index = 0;
-         index < kWin32ExecutionProbeRegisterCount; ++index)
+         index < kExecutionProbeRegisterCount; ++index)
     {
         auto& window = context->execution_probe_memory[index];
         if (register_values[index] >
@@ -2618,7 +2619,7 @@ void RecordExecutionProbe(repiu::platform::GuestCpuContext* win32_context, Threa
         const void* source = reinterpret_cast<const void*>(
             static_cast<std::uintptr_t>(window.address));
         if (IsGuestRangeReadable(
-                context, source, kWin32ExecutionProbeMemoryByteCount))
+                context, source, kExecutionProbeMemoryByteCount))
         {
             std::memcpy(window.bytes, source, sizeof(window.bytes));
             window.valid = true;
@@ -2642,7 +2643,7 @@ void RecordExecutionTrace(repiu::platform::GuestCpuContext* win32_context, Threa
     {
         return;
     }
-    Win32ExecutionTraceEntry entry{};
+    ExecutionTraceEntry entry{};
     entry.sequence = context->execution_trace_hit_count;
     entry.eip = static_cast<std::uint32_t>(win32_context->Eip);
     entry.esp = static_cast<std::uint32_t>(win32_context->Esp);
@@ -2654,7 +2655,7 @@ void RecordExecutionTrace(repiu::platform::GuestCpuContext* win32_context, Threa
                     sizeof(entry.value_at_esp_offset));
     }
     const std::uint32_t slot = context->execution_trace_hit_count %
-        kWin32ExecutionTraceCapacity;
+        kExecutionTraceCapacity;
     context->execution_trace[slot] = entry;
     ++context->execution_trace_hit_count;
 }
@@ -2735,6 +2736,22 @@ void RecordHandledDosInterrupt(ThreadContext* context,
         return;
     }
 
+    // Task 523 diagnostic (temporary): the sequence of DOS/DPMI services the
+    // guest actually got, so two hosts can be diffed. The last one before a
+    // divergence names the call that answered differently.
+    if (std::getenv("REPIU_DOS_INT_TRACE") != nullptr)
+    {
+        char line[96] = {};
+        const int length = std::snprintf(
+            line, sizeof(line), "[repiu-dos-int] #%u int=%02X ax=%04X\n",
+            static_cast<unsigned>(context->handled_dos_interrupt_count + 1U),
+            static_cast<unsigned>(vector), static_cast<unsigned>(ax));
+        if (length > 0)
+        {
+            repiu::platform::WriteHostErrorStream(
+                line, static_cast<std::size_t>(length));
+        }
+    }
     ++context->handled_dos_interrupt_count;
     context->last_dos_interrupt_vector = vector;
     context->last_dos_interrupt_ah = static_cast<std::uint8_t>(ax >> 8);
@@ -2877,14 +2894,14 @@ bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
     }
     const std::uint32_t last_page = static_cast<std::uint32_t>(
         (write_end - 1U) & kPageMask);
-    bool relevant = Win32AotGuestRangeHasActiveTranslation(
+    bool relevant = AotGuestRangeHasActiveTranslation(
         *context->aot_placement, destination, byte_count);
     for (std::uint32_t page = first_page;
          !relevant; page += 0x1000U)
     {
-        relevant = IsWin32AotGuestPageRetired(
+        relevant = IsAotGuestPageRetired(
                        *context->aot_placement, page) ||
-            IsWin32AotGuestPageQuarantined(
+            IsAotGuestPageQuarantined(
                 *context->aot_placement, page);
         if (page == last_page || page > 0xFFFFEFFFU)
         {
@@ -2908,11 +2925,11 @@ bool NoteSuccessfulAotGuestWrite(ThreadContext* context,
             static_cast<std::uint64_t>(page) + 0x1000U;
         const std::uint32_t range_size = static_cast<std::uint32_t>(
             std::min(write_end, page_end) - range_begin);
-        const bool active = Win32AotGuestRangeHasActiveTranslation(
+        const bool active = AotGuestRangeHasActiveTranslation(
             *context->aot_placement, range_begin, range_size);
         retired_provenance = retired_provenance ||
-            IsWin32AotGuestPageRetired(*context->aot_placement, page) ||
-            IsWin32AotGuestPageQuarantined(
+            IsAotGuestPageRetired(*context->aot_placement, page) ||
+            IsAotGuestPageQuarantined(
                 *context->aot_placement, page);
         if (active)
         {
@@ -3000,7 +3017,7 @@ std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_co
         return 0U;
     }
 
-    Win32TimerTickDeliveryGuard timer_guard(
+    TimerTickDeliveryGuard timer_guard(
         &context->timer_tick_delivery_lock);
     if (!context->timer_interrupt_pending.load(std::memory_order_acquire))
     {
@@ -3373,7 +3390,7 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         win32_context, context,
         fault.kind == repiu::platform::FaultKind::kSingleStep &&
             IsGuestInstructionPointer(context, context->last_veh_eip));
-    Win32UnhandledBreakpointEvidence breakpoint_evidence;
+    UnhandledBreakpointEvidence breakpoint_evidence;
     if (fault.kind == repiu::platform::FaultKind::kBreakpoint)
     {
         breakpoint_evidence =
@@ -3423,7 +3440,7 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         const bool write_fault_cancel =
             fault.kind == repiu::platform::FaultKind::kAccessViolation &&
             fault.access.valid && fault.access.write_access &&
-            IsWin32AotGuestPageWriteWatched(
+            IsAotGuestPageWriteWatched(
                 context->aot_page_write_watch,
                 fault.access.fault_address);
         LeaveNativeLinearSpan(
@@ -3529,6 +3546,14 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         if (HandleAotIndirectTransfer(aot_fault, context))
         {
             NoteVehExitSite(context, VehExitSite::kAotIndirectTransfer);
+            return repiu::platform::FaultDisposition::kResume;
+        }
+        // Task 523: after every handler that could own an INT3 has declined,
+        // one that the engine never planted is the guest's own. Placed here
+        // rather than earlier precisely so it cannot take a breakpoint that
+        // belongs to the cache.
+        if (HandleGuestOwnedBreakpoint(aot_fault, context))
+        {
             return repiu::platform::FaultDisposition::kResume;
         }
         if (stop_for_aot_terminal_failure())
@@ -4246,8 +4271,8 @@ void RecoverGuestThreadForShutdown(repiu::platform::GuestCpuContext* registers,
     request->recovered = true;
 }
 
-bool RunWin32ExecutionThread(
-    const Win32RelocatedImagePlacement& placement,
+bool RunExecutionThread(
+    const RelocatedImagePlacement& placement,
     std::uint32_t entry_address,
     std::uint32_t guest_initial_esp,
     bool use_guest_stack,
@@ -4266,18 +4291,18 @@ bool RunWin32ExecutionThread(
     bool enable_cat702,
     std::string_view parent_rom_set_id,
     std::uint32_t piu10_mp3_latency_ms,
-    Win32AotCodeCachePlacement* aot_placement,
+    AotCodeCachePlacement* aot_placement,
     runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
     std::uint32_t stall_timeout_milliseconds,
-    Win32MinimalExecutionAttempt* attempt)
+    MinimalExecutionAttempt* attempt)
 {
     if (attempt == nullptr)
     {
         return false;
     }
 
-    *attempt = Win32MinimalExecutionAttempt{};
+    *attempt = MinimalExecutionAttempt{};
     attempt->entry_address = entry_address;
     attempt->supported = IsDirectX86ExecutionSupported();
     attempt->guest_stack_switch_supported = IsGuestStackSwitchSupported();
@@ -4309,21 +4334,21 @@ bool RunWin32ExecutionThread(
     if (SingleStepHotspotProfileEnabled())
     {
         context.single_step_hotspot_profile =
-            std::make_unique<Win32SingleStepHotspotProfile>();
+            std::make_unique<SingleStepHotspotProfile>();
     }
     if (ExecutionTimeProfileEnabled())
     {
         context.execution_time_profile =
-            std::make_unique<Win32ExecutionTimeProfile>();
+            std::make_unique<ExecutionTimeProfile>();
         context.aot_worker_timing =
-            std::make_unique<Win32AotWorkerTimingProfile>();
+            std::make_unique<AotWorkerTimingProfile>();
     }
     // Task 411: sampled by the poll thread, not this one, so the allocation is
     // the only thing the guest thread's setup owes it.
     if (GuestPositionCensusEnabled())
     {
         context.guest_position_census =
-            std::make_unique<Win32GuestPositionCensus>();
+            std::make_unique<GuestPositionCensus>();
         context.guest_position_census->interval_milliseconds =
             GuestPositionCensusIntervalMilliseconds();
     }
@@ -4331,7 +4356,7 @@ bool RunWin32ExecutionThread(
     if (CdAudioPositionCensusEnabled())
     {
         context.cd_audio_position_census =
-            std::make_unique<Win32CdAudioPositionCensus>();
+            std::make_unique<CdAudioPositionCensus>();
         context.cd_audio_position_census->enabled = true;
         context.cd_audio_position_census->interval_milliseconds =
             CdAudioPositionCensusIntervalMilliseconds();
@@ -4341,7 +4366,7 @@ bool RunWin32ExecutionThread(
     if (MscdexCommandTraceEnabled())
     {
         context.mscdex_command_trace =
-            std::make_unique<Win32MscdexCommandTrace>();
+            std::make_unique<MscdexCommandTrace>();
         context.mscdex_command_trace->enabled = true;
         context.mscdex_command_trace->base_tick =
             static_cast<std::uint32_t>(repiu::platform::MillisecondTicks());
@@ -4411,7 +4436,7 @@ bool RunWin32ExecutionThread(
         }
     }
     if (context.execution_probe_configured && aot_placement != nullptr &&
-        !InstallWin32AotProbeSentinel(
+        !InstallAotProbeSentinel(
             aot_placement,
             context.runtime_base + context.execution_probe_offset))
     {
@@ -4440,7 +4465,7 @@ bool RunWin32ExecutionThread(
     // The capture buffer is reserved here, before the guest thread starts, so
     // the first-hit recorder never allocates inside the exception handler.
     context.execution_probe_dump_request =
-        ReadWin32ExecutionProbeDumpRequest();
+        ReadExecutionProbeDumpRequest();
     if (context.execution_probe_dump_request.configured)
     {
         context.execution_probe_dump_result.bytes.assign(
@@ -4458,7 +4483,7 @@ bool RunWin32ExecutionThread(
         context.execution_trace_configured = true;
     }
     if (context.execution_trace_configured && aot_placement != nullptr &&
-        !InstallWin32AotProbeSentinel(
+        !InstallAotProbeSentinel(
             aot_placement,
             context.runtime_base + context.execution_trace_start_offset))
     {
@@ -4475,7 +4500,7 @@ bool RunWin32ExecutionThread(
                      &context.execution_trace_sentinel2_offset))
     {
         context.execution_trace_sentinel2_configured =
-            InstallWin32AotProbeSentinel(
+            InstallAotProbeSentinel(
                 aot_placement,
                 context.runtime_base + context.execution_trace_sentinel2_offset);
     }
@@ -4755,20 +4780,27 @@ bool RunWin32ExecutionThread(
         const bool direct_glide_dispatch =
             repiu::runtime::ExecutionBackendUsesDynamicTranslation(
                 context.execution_backend) &&
-            ResolveWin32GlideGateDirectDispatchEnabled(
+            ResolveGlideGateDirectDispatchEnabled(
                 std::getenv("REPIU_AOT_DBT_GLIDE_GATE_DISPATCH"));
         context.aot_dbt_glide_direct_dispatch = direct_glide_dispatch;
         if (glide_gate_fits && direct_glide_dispatch)
         {
-            glide_gate_fits = PatchWin32GlideGatePlanForDirectDispatch(
+            glide_gate_fits = PatchGlideGatePlanForDirectDispatch(
                 context.linexe_arena_layout.gate_code_base,
                 &context.glide_gate_plan);
         }
-        const bool images_written =
+        // Task 524: the five writes are named so a failure says which one.
+        //
+        // Folded into one expression they were indistinguishable, and the
+        // whole DOS/4G environment -- and with it INT 21h AX=FF00h -- hangs
+        // off their conjunction.
+        const bool client_image_written =
             WriteGuestBytes(&context,
                             address(context.linexe_arena_layout.client_data_base),
                             context.linexe_gate_plan.client_data_image.data(),
-                            context.linexe_gate_plan.client_data_image.size()) &&
+                            context.linexe_gate_plan.client_data_image.size());
+        const bool gate_code_written =
+            client_image_written &&
             WriteGuestBytes(&context,
                             address(context.linexe_arena_layout.gate_code_base),
                             extracted_linexe_valid
@@ -4776,19 +4808,24 @@ bool RunWin32ExecutionThread(
                                 : context.linexe_gate_plan.gate_image.data(),
                             extracted_linexe_valid
                                 ? extracted_code->image.size()
-                                : context.linexe_gate_plan.gate_image.size()) &&
-            glide_gate_fits &&
+                                : context.linexe_gate_plan.gate_image.size());
+        const bool glide_gate_written =
+            gate_code_written && glide_gate_fits &&
             WriteGuestBytes(
                 &context,
                 address(context.linexe_arena_layout.gate_code_base +
                         kGlideFirstGateOffset),
                 context.glide_gate_plan.image.data(),
-                context.glide_gate_plan.image.size()) &&
+                context.glide_gate_plan.image.size());
+        const bool bss_image_written =
+            glide_gate_written &&
             (!extracted_linexe_valid || WriteGuestBytes(
                 &context,
                 address(context.linexe_arena_layout.bss_base),
                 extracted_bss->image.data(),
-                extracted_bss->image.size())) &&
+                extracted_bss->image.size()));
+        const bool images_written =
+            bss_image_written &&
             WriteGuestBytes(&context,
                             address(context.linexe_arena_layout.private_data_base),
                             extracted_linexe_valid
@@ -4799,7 +4836,7 @@ bool RunWin32ExecutionThread(
                                 : context.linexe_gate_plan.private_data_image.size());
         const bool direct_glide_image_verified =
             !direct_glide_dispatch ||
-            (images_written && VerifyWin32GlideGateDirectDispatchImage(
+            (images_written && VerifyGlideGateDirectDispatchImage(
                 context.linexe_arena_layout.gate_code_base,
                 context.glide_gate_plan));
         const bool descriptors_registered =
@@ -4928,11 +4965,11 @@ bool RunWin32ExecutionThread(
             attempt->message = "failed to create AOT translation worker";
             return false;
         }
-        if (!InstallWin32AotGuestPageWriteWatches(
+        if (!InstallAotGuestPageWriteWatches(
                 *context.aot_placement, nullptr,
                 &context.aot_page_write_watch))
         {
-            RestoreWin32AotGuestPageWriteWatches(
+            RestoreAotGuestPageWriteWatches(
                 &context.aot_page_write_watch);
             stop_translation_worker();
             attempt->message =
@@ -4953,7 +4990,7 @@ bool RunWin32ExecutionThread(
         stream << "guest thread creation failed with host error "
                << create_error;
         attempt->message = stream.str();
-        RestoreWin32AotGuestPageWriteWatches(&context.aot_page_write_watch);
+        RestoreAotGuestPageWriteWatches(&context.aot_page_write_watch);
         stop_translation_worker();
         return false;
     }
@@ -5289,7 +5326,7 @@ bool RunWin32ExecutionThread(
         {
             attempt->guest_thread_stopped = false;
             mark_shutdown_step("probe-dump");
-            WriteWin32ExecutionProbeDump(context.execution_probe_dump_request,
+            WriteExecutionProbeDump(context.execution_probe_dump_request,
                                          &context.execution_probe_dump_result);
             // Kept even though `_Exit` follows, because the call is this
             // caller's statement that it cannot say the thread stopped. It is
@@ -5311,9 +5348,9 @@ bool RunWin32ExecutionThread(
         mark_shutdown_step("translation-worker");
         stop_translation_worker();
         mark_shutdown_step("write-watches");
-        RestoreWin32AotGuestPageWriteWatches(&context.aot_page_write_watch);
+        RestoreAotGuestPageWriteWatches(&context.aot_page_write_watch);
         mark_shutdown_step("probe-dump");
-        WriteWin32ExecutionProbeDump(context.execution_probe_dump_request,
+        WriteExecutionProbeDump(context.execution_probe_dump_request,
                                      &context.execution_probe_dump_result);
         mark_shutdown_step("thread-release");
         CopyThreadObservationToAttempt(context, attempt);
@@ -5352,7 +5389,7 @@ bool RunWin32ExecutionThread(
     set_teardown_phase(11);
     stop_translation_worker();
     set_teardown_phase(12);
-    RestoreWin32AotGuestPageWriteWatches(&context.aot_page_write_watch);
+    RestoreAotGuestPageWriteWatches(&context.aot_page_write_watch);
     set_teardown_phase(13);
     repiu::platform::CloseHostThread(&thread);
     set_teardown_phase(14);
@@ -5402,7 +5439,7 @@ bool RunWin32ExecutionThread(
     std::memcpy(attempt->aot_probe_cache_bytes,
                 context.aot_probe_cache_bytes,
                 sizeof(attempt->aot_probe_cache_bytes));
-    WriteWin32ExecutionProbeDump(context.execution_probe_dump_request,
+    WriteExecutionProbeDump(context.execution_probe_dump_request,
                                  &context.execution_probe_dump_result);
     CopyThreadObservationToAttempt(context, attempt);
     attempt->thread_exit_code = exit_code;
@@ -5435,8 +5472,8 @@ bool RunWin32ExecutionThread(
     return true;
 }
 
-bool AttemptWin32GuestStackTrapExecution(
-    const Win32RelocatedImagePlacement& placement,
+bool AttemptGuestStackTrapExecution(
+    const RelocatedImagePlacement& placement,
     const runtime::GuestStackSwitchPlan& stack_plan,
     const hle::DosVirtualFileSystemState& dos_file_system,
     const exe::Dos16mBoundModule* linexe_module,
@@ -5450,7 +5487,7 @@ bool AttemptWin32GuestStackTrapExecution(
     std::uint32_t piu10_mp3_latency_ms,
     std::uint32_t timeout_milliseconds,
     std::uint32_t stall_timeout_milliseconds,
-    Win32MinimalExecutionAttempt* attempt)
+    MinimalExecutionAttempt* attempt)
 {
     if (attempt == nullptr)
     {
@@ -5459,14 +5496,14 @@ bool AttemptWin32GuestStackTrapExecution(
 
     if (!stack_plan.valid)
     {
-        *attempt = Win32MinimalExecutionAttempt{};
+        *attempt = MinimalExecutionAttempt{};
         attempt->entry_address = stack_plan.entry_eip;
         attempt->guest_stack_initial_esp = stack_plan.initial_esp;
         attempt->message = "guest stack switch plan is not valid";
         return false;
     }
 
-    return RunWin32ExecutionThread(
+    return RunExecutionThread(
         placement,
         stack_plan.entry_eip,
         stack_plan.initial_esp,
@@ -5493,13 +5530,13 @@ bool AttemptWin32GuestStackTrapExecution(
         attempt);
 }
 
-bool AttemptWin32GuestStackHleExecution(
-    const Win32RelocatedImagePlacement& placement,
+bool AttemptGuestStackHleExecution(
+    const RelocatedImagePlacement& placement,
     const runtime::GuestStackSwitchPlan& stack_plan,
     const hle::DosVirtualFileSystemState& dos_file_system,
     std::uint32_t timeout_milliseconds,
     std::uint32_t stall_timeout_milliseconds,
-    Win32MinimalExecutionAttempt* attempt)
+    MinimalExecutionAttempt* attempt)
 {
     if (attempt == nullptr)
     {
@@ -5508,14 +5545,14 @@ bool AttemptWin32GuestStackHleExecution(
 
     if (!stack_plan.valid)
     {
-        *attempt = Win32MinimalExecutionAttempt{};
+        *attempt = MinimalExecutionAttempt{};
         attempt->entry_address = stack_plan.entry_eip;
         attempt->guest_stack_initial_esp = stack_plan.initial_esp;
         attempt->message = "guest stack switch plan is not valid";
         return false;
     }
 
-    return RunWin32ExecutionThread(
+    return RunExecutionThread(
         placement,
         stack_plan.entry_eip,
         stack_plan.initial_esp,
@@ -5542,9 +5579,9 @@ bool AttemptWin32GuestStackHleExecution(
         attempt);
 }
 
-bool AttemptWin32GuestStackAotExecution(
-    const Win32RelocatedImagePlacement& placement,
-    Win32AotCodeCachePlacement& aot_placement,
+bool AttemptGuestStackAotExecution(
+    const RelocatedImagePlacement& placement,
+    AotCodeCachePlacement& aot_placement,
     const runtime::GuestStackSwitchPlan& stack_plan,
     const hle::DosVirtualFileSystemState& dos_file_system,
     const exe::Dos16mBoundModule* linexe_module,
@@ -5559,20 +5596,20 @@ bool AttemptWin32GuestStackAotExecution(
     runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
     std::uint32_t stall_timeout_milliseconds,
-    Win32MinimalExecutionAttempt* attempt)
+    MinimalExecutionAttempt* attempt)
 {
     if (attempt == nullptr || !stack_plan.valid || !aot_placement.placed)
     {
         if (attempt != nullptr)
         {
-            *attempt = Win32MinimalExecutionAttempt{};
+            *attempt = MinimalExecutionAttempt{};
             attempt->message = !stack_plan.valid
                 ? "guest stack switch plan is not valid"
                 : "AOT code cache placement is not valid";
         }
         return false;
     }
-    return RunWin32ExecutionThread(
+    return RunExecutionThread(
         placement, stack_plan.entry_eip, stack_plan.initial_esp,
         true, true, true, true, false, false, &dos_file_system,
         linexe_module, glide_exports, cd_chd_path, sound_rom_zip_path,

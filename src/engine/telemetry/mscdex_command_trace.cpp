@@ -36,15 +36,15 @@ bool MscdexCommandTraceEnabled()
     return enabled;
 }
 
-void RecordMscdexCommand(Win32MscdexCommandTrace* trace,
-                         const Win32MscdexCommandEntry& entry)
+void RecordMscdexCommand(MscdexCommandTrace* trace,
+                         const MscdexCommandEntry& entry)
 {
     if (trace == nullptr)
     {
         return;
     }
     ++trace->total_commands;
-    if (trace->entry_count >= kWin32MscdexCommandTraceCapacity)
+    if (trace->entry_count >= kMscdexCommandTraceCapacity)
     {
         // The interesting window is the storm that precedes the stall, and that
         // is at the end, so a full ring keeps counting rather than wrapping and
@@ -56,7 +56,7 @@ void RecordMscdexCommand(Win32MscdexCommandTrace* trace,
     ++trace->entry_count;
 }
 
-bool WriteMscdexCommandTraceDump(const Win32MscdexCommandTrace& trace,
+bool WriteMscdexCommandTraceDump(const MscdexCommandTrace& trace,
                                  std::uint32_t* written_entry_count)
 {
     if (written_entry_count != nullptr)
@@ -95,7 +95,7 @@ bool WriteMscdexCommandTraceDump(const Win32MscdexCommandTrace& trace,
            "argument_lba argument_length success current_lba\n";
     for (std::uint32_t index = 0; index < trace.entry_count; ++index)
     {
-        const Win32MscdexCommandEntry& entry = trace.entries[index];
+        const MscdexCommandEntry& entry = trace.entries[index];
         out << entry.wall_milliseconds << ' '
             << static_cast<unsigned>(entry.command) << ' '
             << CommandName(entry.command) << ' '

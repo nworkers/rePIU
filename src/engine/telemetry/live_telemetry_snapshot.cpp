@@ -73,7 +73,7 @@ SharedTelemetryMapping OpenSharedTelemetryMapping()
 {
     SharedTelemetryMapping result;
     char mapping_name[256] = {};
-    if (GetEnvironmentVariableA(kWin32LiveTelemetryEnvironment,
+    if (GetEnvironmentVariableA(kLiveTelemetryEnvironment,
                                 mapping_name,
                                 sizeof(mapping_name)) == 0)
     {
@@ -87,11 +87,11 @@ SharedTelemetryMapping OpenSharedTelemetryMapping()
     {
         return result;
     }
-    result.telemetry = static_cast<Win32SharedLiveTelemetry*>(
+    result.telemetry = static_cast<SharedLiveTelemetry*>(
         MapViewOfFile(result.mapping, FILE_MAP_ALL_ACCESS, 0, 0, 0));
     if (result.telemetry == nullptr ||
-        result.telemetry->magic != kWin32LiveTelemetryMagic ||
-        result.telemetry->version != kWin32LiveTelemetryVersion)
+        result.telemetry->magic != kLiveTelemetryMagic ||
+        result.telemetry->version != kLiveTelemetryVersion)
     {
         if (result.telemetry != nullptr)
         {
@@ -343,7 +343,7 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
     const bool native_sampling_enabled =
         sampling_environment == nullptr ||
         std::strcmp(sampling_environment, "0") != 0;
-    Win32NativePhaseSamplerState native_sampler_state;
+    NativePhaseSamplerState native_sampler_state;
     // Task 411: independent of the native sampler's cadence and of its gate.
     const TickCount position_census_interval = static_cast<TickCount>(
         GuestPositionCensusIntervalMilliseconds());
@@ -458,7 +458,7 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
                 // could not have been delivered at all -- that window runs no
                 // guest code, so no safe point is reachable.
                 {
-                    Win32TimerTickDeliveryGuard timer_guard(
+                    TimerTickDeliveryGuard timer_guard(
                         &progress_context->timer_tick_delivery_lock);
                     const std::uint32_t accepted = RecordTimerTicksDue(
                         &progress_context->timer_tick_delivery,
@@ -617,14 +617,14 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
                 cache_size = static_cast<std::uint32_t>(
                     progress_context->aot_placement->size);
             }
-            Win32NativePhaseSample census_sample;
+            NativePhaseSample census_sample;
             // Null telemetry: the stage marker belongs to the native sampler,
             // and overwriting it would confuse a reader of that instrument.
-            if (CaptureWin32NativePhaseSample(
+            if (CaptureNativePhaseSample(
                     thread, progress_context->aot_placement, nullptr,
                     &census_sample, loader_module_base, loader_module_size))
             {
-                const Win32GuestPositionClassification classification =
+                const GuestPositionClassification classification =
                     ClassifyGuestPosition(
                         census_sample.eip,
                         census_sample.mapped,
@@ -688,7 +688,7 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
             current_tick - last_cd_audio_census_tick >=
                 cd_audio_census_interval)
         {
-            Win32CdAudioPositionEntry entry;
+            CdAudioPositionEntry entry;
             entry.wall_milliseconds =
                 static_cast<std::uint32_t>(current_tick - start_tick);
             host_context->cd_audio.FillPositionSample(&entry);
@@ -702,7 +702,7 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
             // the music advances on real time, so this pair is what separates a
             // drifting guest clock from a healthy one — on the same time axis
             // as the position beside it.
-            const Win32TimerTickDeliverySnapshot ticks =
+            const TimerTickDeliverySnapshot ticks =
                 SnapshotTimerTickDelivery(
                     progress_context->timer_tick_delivery);
             entry.timer_ticks_due =
@@ -739,8 +739,8 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
             current_tick - native_sampler_state.last_sample_tick >=
                 kNativePhaseSampleIntervalMilliseconds)
         {
-            Win32NativePhaseSample sample;
-            if (CaptureWin32NativePhaseSample(
+            NativePhaseSample sample;
+            if (CaptureNativePhaseSample(
                     thread, progress_context->aot_placement,
                     progress_context->shared_live_telemetry, &sample))
             {
@@ -750,12 +750,12 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
                 sample.last_indirect_target =
                     progress_context->aot_last_indirect_target.load(
                         std::memory_order_relaxed);
-                RecordWin32NativePhaseSample(
+                RecordNativePhaseSample(
                     sample,
                     &native_sampler_state,
                     progress_context->shared_live_telemetry);
             }
-            WriteWin32NativePhaseSampleLine(sample,
+            WriteNativePhaseSampleLine(sample,
                                             native_sampler_state,
                                             current_tick - start_tick);
             native_sampler_state.last_sample_tick = current_tick;
@@ -926,7 +926,7 @@ bool BuildSingleStepSnapshot(const ThreadContext& context,
 }
 
 void CopyThreadObservationToAttempt(const ThreadContext& context,
-                                    Win32MinimalExecutionAttempt* attempt)
+                                    MinimalExecutionAttempt* attempt)
 {
     if (attempt == nullptr)
     {
@@ -1071,7 +1071,7 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     // truncate the report.
     static_assert(
         kVehExitSiteCount <=
-            Win32MinimalExecutionAttempt::kVehExitSiteSnapshotCapacity,
+            MinimalExecutionAttempt::kVehExitSiteSnapshotCapacity,
         "VEH exit site snapshot capacity must cover the enumeration");
     attempt->veh_arena_single_step_count =
         context.veh_arena_single_step_count;
@@ -1084,7 +1084,7 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         context.single_step_hotspot_profile != nullptr
             ? SnapshotSingleStepHotspotProfile(
                   *context.single_step_hotspot_profile)
-            : Win32SingleStepHotspotProfileSnapshot{};
+            : SingleStepHotspotProfileSnapshot{};
     // Task 400: this runs exactly once per attempt, on both the interrupted and
     // the normal teardown path, so the full-table dump belongs here rather than
     // inside the snapshot function.
@@ -1102,7 +1102,7 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->guest_position_census =
         context.guest_position_census != nullptr
             ? SnapshotGuestPositionCensus(*context.guest_position_census)
-            : Win32GuestPositionCensusSnapshot{};
+            : GuestPositionCensusSnapshot{};
     if (context.guest_position_census != nullptr)
     {
         attempt->guest_position_census.dump_written =
@@ -1135,11 +1135,11 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->execution_time_profile =
         context.execution_time_profile != nullptr
             ? SnapshotExecutionTimeProfile(*context.execution_time_profile)
-            : Win32ExecutionTimeProfileSnapshot{};
+            : ExecutionTimeProfileSnapshot{};
     attempt->aot_worker_timing =
         context.aot_worker_timing != nullptr
             ? SnapshotAotWorkerTiming(*context.aot_worker_timing)
-            : Win32AotWorkerTimingSnapshot{};
+            : AotWorkerTimingSnapshot{};
     attempt->aot_return_stage_profile =
         SnapshotAotReturnStageProfile(context.aot_return_stage_profile);
     // Task 333: read after the guest thread has stopped, so the backend's
@@ -1328,16 +1328,16 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     // Task 367: the same samples ranked by real instruction rather than by lead
     // byte. Sorting happens here, at exit, never on the hot path.
     {
-        const Win32AotBoundaryOpcodeCensus& census =
+        const AotBoundaryOpcodeCensus& census =
             context.aot_boundary_opcode_census;
         RankAotOpcodeHistogram(
             census.effective_opcode_counts,
             attempt->aot_effective_opcode_ranks,
-            Win32MinimalExecutionAttempt::kAotOpcodeRankCount);
+            MinimalExecutionAttempt::kAotOpcodeRankCount);
         RankAotOpcodeHistogram(
             census.escape_opcode_counts,
             attempt->aot_escape_opcode_ranks,
-            Win32MinimalExecutionAttempt::kAotOpcodeRankCount);
+            MinimalExecutionAttempt::kAotOpcodeRankCount);
         attempt->aot_opcode_census_samples = census.sample_count;
         attempt->aot_opcode_census_escapes = census.escape_count;
         attempt->aot_opcode_census_prefixed = census.prefixed_count;
@@ -1495,7 +1495,7 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         : 0U;
     if (context.aot_placement != nullptr)
     {
-        const Win32AotInlineCacheSiteIndex& site_index =
+        const AotInlineCacheSiteIndex& site_index =
             context.aot_placement->inline_cache_site_index;
         attempt->aot_inline_cache_site_index_lookup_count =
             site_index.lookup_count;
@@ -1503,7 +1503,7 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
             site_index.fallback_scan_count;
         attempt->aot_inline_cache_site_index_rebuild_count =
             site_index.rebuild_count;
-        const Win32AotReturnDispatchSiteIndex& return_index =
+        const AotReturnDispatchSiteIndex& return_index =
             context.aot_placement->return_dispatch_site_index;
         attempt->aot_return_dispatch_site_count =
             static_cast<std::uint32_t>(
@@ -1514,7 +1514,7 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
             return_index.fallback_scan_count;
         attempt->aot_return_dispatch_site_index_rebuild_count =
             return_index.rebuild_count;
-        const Win32AotReturnPatchPolicy& return_patch_policy =
+        const AotReturnPatchPolicy& return_patch_policy =
             context.aot_placement->return_patch_policy;
         attempt->aot_return_patch_policy_observation_count =
             return_patch_policy.observation_count;
@@ -1947,7 +1947,7 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         {
             continue;
         }
-        Win32MinimalExecutionAttempt::GlideCallObservation observation;
+        MinimalExecutionAttempt::GlideCallObservation observation;
         observation.ordinal = static_cast<std::uint16_t>(ordinal);
         observation.count = context.glide_call_counts[ordinal];
         observation.name = context.glide_call_names[ordinal];
@@ -1959,13 +1959,13 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     for (std::size_t ordinal = 0;
          ordinal < attempt->glide_ordinal_timing.entries.size(); ++ordinal)
     {
-        const Win32GlideOrdinalTimingEntry& timing =
+        const GlideOrdinalTimingEntry& timing =
             attempt->glide_ordinal_timing.entries[ordinal];
         if (timing.count == 0U)
         {
             continue;
         }
-        Win32MinimalExecutionAttempt::GlideOrdinalTimingObservation
+        MinimalExecutionAttempt::GlideOrdinalTimingObservation
             observation;
         observation.ordinal = static_cast<std::uint16_t>(ordinal);
         observation.name = context.glide_call_names[ordinal];
@@ -1988,16 +1988,16 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     for (std::size_t ordinal = 0;
          ordinal < context.glide_setter_census.entries.size(); ++ordinal)
     {
-        const Win32GlideSetterCensusEntry& census =
+        const GlideSetterCensusEntry& census =
             context.glide_setter_census.entries[ordinal];
-        const Win32GlideSetterStateCacheEntry& cache =
+        const GlideSetterStateCacheEntry& cache =
             context.glide_setter_state_cache.entries[ordinal];
         if (census.call_count == 0U && census.key_overflow_count == 0U &&
             cache.elided_count == 0U && cache.applied_count == 0U)
         {
             continue;
         }
-        Win32MinimalExecutionAttempt::GlideSetterCensusObservation observation;
+        MinimalExecutionAttempt::GlideSetterCensusObservation observation;
         observation.ordinal = static_cast<std::uint16_t>(ordinal);
         observation.name = context.glide_call_names[ordinal];
         observation.census = census;
@@ -2110,7 +2110,7 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
     attempt->last_hle_trap_address = context.last_hle_trap_address;
     attempt->last_hle_trap_opcode = context.last_hle_trap_opcode;
     attempt->port_io = context.port_io;
-    const Win32JammaInputTimelineSnapshot jamma_timeline =
+    const JammaInputTimelineSnapshot jamma_timeline =
         context.jamma_input_timeline.Snapshot();
     attempt->port_io.jamma_timeline_edge_count = jamma_timeline.edge_count;
     attempt->port_io.jamma_timeline_history_pruned_count =

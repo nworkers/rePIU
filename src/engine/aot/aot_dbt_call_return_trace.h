@@ -11,7 +11,7 @@ struct ThreadContext;
 
 std::uint32_t RecordAotDbtCallReturnCall(
     ThreadContext* context,
-    Win32AotTransferOrigin origin,
+    AotTransferOrigin origin,
     std::uint32_t source,
     std::uint32_t target,
     std::uint32_t return_address,
@@ -19,7 +19,7 @@ std::uint32_t RecordAotDbtCallReturnCall(
 
 void RecordAotDbtCallReturnReturn(
     ThreadContext* context,
-    Win32AotTransferOrigin origin,
+    AotTransferOrigin origin,
     std::uint32_t source,
     std::uint32_t target,
     std::uint32_t esp,

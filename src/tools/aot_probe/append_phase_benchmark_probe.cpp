@@ -1,6 +1,6 @@
 #include "append_phase_benchmark_probe.h"
 
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 #include "repiu/engine/aot_worker_timing.h"
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/aot_translation_plan.h"
@@ -205,8 +205,8 @@ bool MeasureAppends(
     std::uint32_t guest_entry,
     const std::vector<runtime::AotExcludedGuestRange>& excluded_ranges,
     std::uint32_t repetitions,
-    engine::Win32AotCodeCachePlacement* placement,
-    engine::Win32AotPageWriteWatchSet* watch_set,
+    engine::AotCodeCachePlacement* placement,
+    engine::AotPageWriteWatchSet* watch_set,
     AppendSample* sample)
 {
     if (sample == nullptr)
@@ -217,12 +217,12 @@ bool MeasureAppends(
     std::uint64_t total_sum = 0;
     for (std::uint32_t repetition = 0; repetition < repetitions; ++repetition)
     {
-        engine::Win32AotWorkerTimingProfile timing;
+        engine::AotWorkerTimingProfile timing;
         timing.enabled = true;
-        engine::Win32AotDynamicAppendResult result;
+        engine::AotDynamicAppendResult result;
         const std::uint64_t start =
             engine::ReadAotWorkerTimingCycles();
-        const bool called = engine::AppendWin32DynamicAotTranslation(
+        const bool called = engine::AppendDynamicAotTranslation(
             arena_base, arena_size, guest_entry, excluded_ranges, watch_set,
             placement, nullptr, &result, &timing);
         const std::uint64_t elapsed = engine::AotWorkerTimingDelta(
@@ -501,7 +501,7 @@ bool RunAppendPhaseBenchmarkProbe(const exe::Dos4gwLoadResult& load)
     // are amortized O(1) and the relink lookup is a hash.
     runtime::AotTranslationPlan seed_plan;
     runtime::AotCodeCacheImage seed_image;
-    engine::Win32AotCodeCachePlacement placement;
+    engine::AotCodeCachePlacement placement;
     const bool seed_planned = window != 0U &&
         runtime::BuildAotTranslationPlanFromEntry(
             image, guest_entry, WindowExclusion(guest_entry, window),
@@ -510,10 +510,10 @@ bool RunAppendPhaseBenchmarkProbe(const exe::Dos4gwLoadResult& load)
         runtime::BuildAotCodeCacheImage(seed_plan, &seed_image) &&
         seed_image.valid;
     const bool seeded = seed_emitted &&
-        engine::PlaceWin32AotCodeCache(seed_image, &placement) &&
+        engine::PlaceAotCodeCache(seed_image, &placement) &&
         placement.placed;
 
-    engine::Win32AotPageWriteWatchSet watches;
+    engine::AotPageWriteWatchSet watches;
     AppendSample small_sample;
     AppendSample large_sample;
     const bool measured = seeded && window != 0U &&
@@ -527,8 +527,8 @@ bool RunAppendPhaseBenchmarkProbe(const exe::Dos4gwLoadResult& load)
     // Releasing the placement resets it, so anything reported about it is read
     // first.
     const std::string placement_message = placement.message;
-    engine::RestoreWin32AotGuestPageWriteWatches(&watches);
-    engine::ReleaseWin32AotCodeCache(&placement);
+    engine::RestoreAotGuestPageWriteWatches(&watches);
+    engine::ReleaseAotCodeCache(&placement);
     VirtualFree(arena, 0, MEM_RELEASE);
 
     if (!measured)

@@ -21,7 +21,7 @@ bool RunSingleStepHotspotProfileProbe()
         !ResolveSingleStepHotspotProfileEnabled("off") &&
         !ResolveSingleStepHotspotProfileEnabled("invalid");
 
-    auto profile = std::make_unique<Win32SingleStepHotspotProfile>();
+    auto profile = std::make_unique<SingleStepHotspotProfile>();
     constexpr std::uint32_t guest_a = 0x03010000U;
     constexpr std::uint32_t guest_b = 0x03020000U;
     for (std::uint32_t index = 0; index < 3U; ++index)
@@ -34,7 +34,7 @@ bool RunSingleStepHotspotProfileProbe()
         profile.get(), guest_b, 500U,
         SingleStepProfileOutcome::kTrapFlagRearm);
 
-    const Win32SingleStepHotspotProfileSnapshot snapshot =
+    const SingleStepHotspotProfileSnapshot snapshot =
         SnapshotSingleStepHotspotProfile(*profile);
     const auto hle = static_cast<std::uint32_t>(
         SingleStepProfileOutcome::kHandledHle);
@@ -61,21 +61,21 @@ bool RunSingleStepHotspotProfileProbe()
         snapshot.top_cycle_coverage_cycles == 590U;
 
     auto capacity_profile =
-        std::make_unique<Win32SingleStepHotspotProfile>();
+        std::make_unique<SingleStepHotspotProfile>();
     for (std::uint32_t index = 0;
-         index <= kWin32SingleStepHotspotCapacity; ++index)
+         index <= kSingleStepHotspotCapacity; ++index)
     {
         RecordSingleStepHotspot(
             capacity_profile.get(), 0x04000000U + index, 1U,
             SingleStepProfileOutcome::kTrapFlagRearm);
     }
-    const Win32SingleStepHotspotProfileSnapshot capacity_snapshot =
+    const SingleStepHotspotProfileSnapshot capacity_snapshot =
         SnapshotSingleStepHotspotProfile(*capacity_profile);
     const bool capacity =
         capacity_snapshot.total_sample_count ==
-            kWin32SingleStepHotspotCapacity + 1U &&
+            kSingleStepHotspotCapacity + 1U &&
         capacity_snapshot.distinct_guest_count ==
-            kWin32SingleStepHotspotCapacity &&
+            kSingleStepHotspotCapacity &&
         capacity_snapshot.overflow_count == 1U;
 
     // Task 322 stage attribution. Verify that stage totals accumulate
@@ -89,8 +89,8 @@ bool RunSingleStepHotspotProfileProbe()
     const auto aot_resume = static_cast<std::uint32_t>(
         SingleStepProfileStage::kAotResume);
 
-    auto stage_profile = std::make_unique<Win32SingleStepHotspotProfile>();
-    Win32SingleStepStageTally tally;
+    auto stage_profile = std::make_unique<SingleStepHotspotProfile>();
+    SingleStepStageTally tally;
     tally.counts[prologue] = 1U;
     tally.cycles[prologue] = 40U;
     tally.counts[hle_dispatch] = 1U;
@@ -108,7 +108,7 @@ bool RunSingleStepHotspotProfileProbe()
         stage_profile.get(), guest_b, 10U,
         SingleStepProfileOutcome::kTrapFlagRearm);
 
-    const Win32SingleStepHotspotProfileSnapshot stage_snapshot =
+    const SingleStepHotspotProfileSnapshot stage_snapshot =
         SnapshotSingleStepHotspotProfile(*stage_profile);
     std::uint64_t staged_cycles = 0;
     for (std::uint32_t index = 0;
@@ -116,8 +116,8 @@ bool RunSingleStepHotspotProfileProbe()
     {
         staged_cycles += stage_snapshot.stage_cycles[index];
     }
-    const Win32SingleStepHotspotSample* guest_a_sample = nullptr;
-    const Win32SingleStepHotspotSample* guest_b_sample = nullptr;
+    const SingleStepHotspotSample* guest_a_sample = nullptr;
+    const SingleStepHotspotSample* guest_b_sample = nullptr;
     for (std::uint32_t index = 0;
          index < stage_snapshot.cycle_hotspot_count; ++index)
     {
@@ -147,7 +147,7 @@ bool RunSingleStepHotspotProfileProbe()
         staged_cycles <= stage_snapshot.total_cycles;
 
     // A null profile must remain inert even when a tally is supplied.
-    Win32SingleStepStageTally discarded = tally;
+    SingleStepStageTally discarded = tally;
     RecordSingleStepHotspot(
         nullptr, guest_a, 1U,
         SingleStepProfileOutcome::kHandledHle, &discarded);
@@ -155,8 +155,8 @@ bool RunSingleStepHotspotProfileProbe()
     // Task 323: the kAotResume sub-stages must stay within their parent stage,
     // which is what makes the reported sub-stage residual meaningful.
     auto sub_stage_profile =
-        std::make_unique<Win32SingleStepHotspotProfile>();
-    Win32SingleStepStageTally sub_tally;
+        std::make_unique<SingleStepHotspotProfile>();
+    SingleStepStageTally sub_tally;
     const auto aot_resume_index = static_cast<std::uint32_t>(
         SingleStepProfileStage::kAotResume);
     const auto cache_lookup = static_cast<std::uint32_t>(
@@ -172,7 +172,7 @@ bool RunSingleStepHotspotProfileProbe()
     RecordSingleStepHotspot(
         sub_stage_profile.get(), guest_a, 1200U,
         SingleStepProfileOutcome::kHandledHle, &sub_tally);
-    const Win32SingleStepHotspotProfileSnapshot sub_stage_snapshot =
+    const SingleStepHotspotProfileSnapshot sub_stage_snapshot =
         SnapshotSingleStepHotspotProfile(*sub_stage_profile);
     std::uint64_t sub_stage_total = 0;
     for (std::uint32_t index = kSingleStepProfileFirstAotResumeSubStage;

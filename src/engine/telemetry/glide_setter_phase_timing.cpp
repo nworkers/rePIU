@@ -15,7 +15,7 @@ bool ReadGlideSetterPhaseProfileSetting()
 }
 
 std::uint64_t CounterDelta(
-    Win32GlideSetterPhaseProfile* profile,
+    GlideSetterPhaseProfile* profile,
     std::uint64_t before,
     std::uint64_t after)
 {
@@ -41,8 +41,8 @@ bool GlideSetterPhaseProfileEnabled()
 }
 
 void RecordGlideSetterPhaseSample(
-    Win32GlideSetterPhaseProfile* profile,
-    Win32GlideSetterPhaseKind kind,
+    GlideSetterPhaseProfile* profile,
+    GlideSetterPhaseKind kind,
     std::uint64_t entry_cycles,
     std::uint64_t apply_start_cycles,
     std::uint64_t error_start_cycles,
@@ -55,8 +55,8 @@ void RecordGlideSetterPhaseSample(
         return;
     }
     profile->enabled = true;
-    Win32GlideSetterPhaseEntry& entry =
-        kind == Win32GlideSetterPhaseKind::kDepthMask
+    GlideSetterPhaseEntry& entry =
+        kind == GlideSetterPhaseKind::kDepthMask
             ? profile->depth_mask
             : profile->alpha_blend;
 
@@ -84,10 +84,10 @@ void RecordGlideSetterPhaseSample(
     }
 }
 
-Win32GlideSetterPhaseSnapshot SnapshotGlideSetterPhaseTiming(
-    const Win32GlideSetterPhaseProfile& profile)
+GlideSetterPhaseSnapshot SnapshotGlideSetterPhaseTiming(
+    const GlideSetterPhaseProfile& profile)
 {
-    Win32GlideSetterPhaseSnapshot snapshot;
+    GlideSetterPhaseSnapshot snapshot;
     snapshot.enabled = profile.enabled;
     snapshot.clamped_sample_count = profile.clamped_sample_count;
     snapshot.depth_mask = profile.depth_mask;

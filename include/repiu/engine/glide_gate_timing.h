@@ -25,7 +25,7 @@ namespace repiu::engine
 // enough.
 //
 // See docs/design/20260728-333-glide-gate-rendezvous-timing.md.
-struct Win32GlideGateTimingProfile
+struct GlideGateTimingProfile
 {
     bool enabled = false;
 
@@ -56,7 +56,7 @@ struct Win32GlideGateTimingProfile
     std::uint32_t clamped_sample_count = 0;
 };
 
-struct Win32GlideGateTimingSnapshot
+struct GlideGateTimingSnapshot
 {
     bool enabled = false;
     std::uint32_t rendezvous_count = 0;
@@ -82,7 +82,7 @@ struct Win32GlideGateTimingSnapshot
 // `REPIU_GLIDE_RENDEZVOUS_SPIN_US`, where zero means the spin is disabled and
 // every count is expected to read zero.
 // See docs/design/20260805-419-glide-rendezvous-spin-wait.md.
-struct Win32GlideRendezvousSpinSnapshot
+struct GlideRendezvousSpinSnapshot
 {
     std::uint64_t guest_hit = 0;
     std::uint64_t guest_miss = 0;
@@ -94,30 +94,30 @@ struct Win32GlideRendezvousSpinSnapshot
 std::uint64_t ReadGlideGateTimingCycles();
 
 // Difference that clamps a backwards TSC read to zero and counts it.
-std::uint64_t GlideGateTimingDelta(Win32GlideGateTimingProfile* profile,
+std::uint64_t GlideGateTimingDelta(GlideGateTimingProfile* profile,
                                    std::uint64_t start,
                                    std::uint64_t end);
 
 // Guest side, immediately after publishing the command and notifying.
-void RecordGlideGatePublish(Win32GlideGateTimingProfile* profile,
+void RecordGlideGatePublish(GlideGateTimingProfile* profile,
                             std::uint64_t enter_cycles,
                             std::uint64_t publish_cycles);
 
 // Host side, around executing one command.
-void RecordGlideGateHostCommand(Win32GlideGateTimingProfile* profile,
+void RecordGlideGateHostCommand(GlideGateTimingProfile* profile,
                                 std::uint64_t start_cycles,
                                 std::uint64_t finish_cycles);
 
 // Guest side, after the completion wait returns.
-void RecordGlideGateResume(Win32GlideGateTimingProfile* profile,
+void RecordGlideGateResume(GlideGateTimingProfile* profile,
                            std::uint64_t enter_cycles,
                            std::uint64_t resume_cycles);
 
 // A command run inline because the caller already was the host thread.
-void RecordGlideGateDirectCommand(Win32GlideGateTimingProfile* profile,
+void RecordGlideGateDirectCommand(GlideGateTimingProfile* profile,
                                   std::uint64_t cycles);
 
-Win32GlideGateTimingSnapshot SnapshotGlideGateTiming(
-    const Win32GlideGateTimingProfile& profile);
+GlideGateTimingSnapshot SnapshotGlideGateTiming(
+    const GlideGateTimingProfile& profile);
 
 }  // namespace repiu::engine

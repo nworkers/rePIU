@@ -30,16 +30,16 @@ bool ReadSingleStepHotspotProfileSetting()
 std::uint32_t HashGuestAddress(std::uint32_t guest_address)
 {
     static_assert(
-        (kWin32SingleStepHotspotCapacity &
-         (kWin32SingleStepHotspotCapacity - 1U)) == 0U);
+        (kSingleStepHotspotCapacity &
+         (kSingleStepHotspotCapacity - 1U)) == 0U);
     return (guest_address * 2654435761U) &
-        (kWin32SingleStepHotspotCapacity - 1U);
+        (kSingleStepHotspotCapacity - 1U);
 }
 
-Win32SingleStepHotspotSample MakeSample(
-    const Win32SingleStepHotspotEntry& entry)
+SingleStepHotspotSample MakeSample(
+    const SingleStepHotspotEntry& entry)
 {
-    Win32SingleStepHotspotSample sample;
+    SingleStepHotspotSample sample;
     sample.guest_address = entry.guest_address;
     sample.sample_count = entry.sample_count;
     sample.total_cycles = entry.total_cycles;
@@ -52,7 +52,7 @@ Win32SingleStepHotspotSample MakeSample(
 }
 
 template <typename CountArray, typename CycleArray>
-void AccumulateStageTally(const Win32SingleStepStageTally* stages,
+void AccumulateStageTally(const SingleStepStageTally* stages,
                           CountArray* counts,
                           CycleArray* cycles)
 {
@@ -82,11 +82,11 @@ bool SingleStepHotspotProfileEnabled()
 }
 
 void RecordSingleStepHotspot(
-    Win32SingleStepHotspotProfile* profile,
+    SingleStepHotspotProfile* profile,
     std::uint32_t guest_address,
     std::uint64_t cycles,
     SingleStepProfileOutcome outcome,
-    const Win32SingleStepStageTally* stages)
+    const SingleStepStageTally* stages)
 {
     if (profile == nullptr)
     {
@@ -110,12 +110,12 @@ void RecordSingleStepHotspot(
 
     const std::uint32_t first = HashGuestAddress(guest_address);
     for (std::uint32_t probe = 0;
-         probe < kWin32SingleStepHotspotCapacity; ++probe)
+         probe < kSingleStepHotspotCapacity; ++probe)
     {
-        Win32SingleStepHotspotEntry& entry =
+        SingleStepHotspotEntry& entry =
             profile->entries[
                 (first + probe) &
-                (kWin32SingleStepHotspotCapacity - 1U)];
+                (kSingleStepHotspotCapacity - 1U)];
         if (!entry.occupied)
         {
             entry.occupied = true;
@@ -138,10 +138,10 @@ void RecordSingleStepHotspot(
     ++profile->overflow_count;
 }
 
-Win32SingleStepHotspotProfileSnapshot SnapshotSingleStepHotspotProfile(
-    const Win32SingleStepHotspotProfile& profile)
+SingleStepHotspotProfileSnapshot SnapshotSingleStepHotspotProfile(
+    const SingleStepHotspotProfile& profile)
 {
-    Win32SingleStepHotspotProfileSnapshot snapshot;
+    SingleStepHotspotProfileSnapshot snapshot;
     snapshot.enabled = profile.enabled;
     snapshot.total_sample_count = profile.total_sample_count;
     snapshot.distinct_guest_count = profile.distinct_guest_count;
@@ -153,9 +153,9 @@ Win32SingleStepHotspotProfileSnapshot SnapshotSingleStepHotspotProfile(
     snapshot.stage_counts = profile.stage_counts;
     snapshot.stage_cycles = profile.stage_cycles;
 
-    std::vector<Win32SingleStepHotspotSample> samples;
+    std::vector<SingleStepHotspotSample> samples;
     samples.reserve(profile.distinct_guest_count);
-    for (const Win32SingleStepHotspotEntry& entry : profile.entries)
+    for (const SingleStepHotspotEntry& entry : profile.entries)
     {
         if (entry.occupied)
         {
@@ -178,7 +178,7 @@ Win32SingleStepHotspotProfileSnapshot SnapshotSingleStepHotspotProfile(
         });
     snapshot.count_hotspot_count = std::min<std::uint32_t>(
         static_cast<std::uint32_t>(samples.size()),
-        kWin32SingleStepHotspotReportCapacity);
+        kSingleStepHotspotReportCapacity);
     for (std::uint32_t index = 0;
          index < snapshot.count_hotspot_count; ++index)
     {
@@ -201,7 +201,7 @@ Win32SingleStepHotspotProfileSnapshot SnapshotSingleStepHotspotProfile(
         });
     snapshot.cycle_hotspot_count = std::min<std::uint32_t>(
         static_cast<std::uint32_t>(samples.size()),
-        kWin32SingleStepHotspotReportCapacity);
+        kSingleStepHotspotReportCapacity);
     for (std::uint32_t index = 0;
          index < snapshot.cycle_hotspot_count; ++index)
     {
@@ -238,7 +238,7 @@ std::filesystem::path SingleStepHotspotDumpPath()
 
 bool WriteSingleStepHotspotDump(
     const std::filesystem::path& path,
-    Win32SingleStepHotspotProfile* profile,
+    SingleStepHotspotProfile* profile,
     std::uint32_t* written_entry_count)
 {
     if (written_entry_count != nullptr)
@@ -257,11 +257,11 @@ bool WriteSingleStepHotspotDump(
         }
         return true;
     }
-    const Win32SingleStepHotspotProfile& profile_ref = *profile;
+    const SingleStepHotspotProfile& profile_ref = *profile;
 
-    std::vector<Win32SingleStepHotspotSample> samples;
+    std::vector<SingleStepHotspotSample> samples;
     samples.reserve(profile_ref.distinct_guest_count);
-    for (const Win32SingleStepHotspotEntry& entry : profile_ref.entries)
+    for (const SingleStepHotspotEntry& entry : profile_ref.entries)
     {
         if (entry.occupied)
         {
@@ -298,7 +298,7 @@ bool WriteSingleStepHotspotDump(
          << " total_cycles=" << profile_ref.total_cycles << "\n"
          << "# guest_address sample_count total_cycles max_cycles"
             " hle timer native tf\n";
-    for (const Win32SingleStepHotspotSample& sample : samples)
+    for (const SingleStepHotspotSample& sample : samples)
     {
         file << "0x" << std::uppercase << std::hex << std::setw(8)
              << std::setfill('0') << sample.guest_address << std::nouppercase
@@ -326,7 +326,7 @@ bool WriteSingleStepHotspotDump(
 }
 
 bool WriteSingleStepHotspotDumpIfEnabled(
-    Win32SingleStepHotspotProfile* profile,
+    SingleStepHotspotProfile* profile,
     std::uint32_t* written_entry_count,
     std::string* resolved_path)
 {
@@ -339,7 +339,7 @@ bool WriteSingleStepHotspotDumpIfEnabled(
 }
 
 SingleStepHotspotCycleScope::SingleStepHotspotCycleScope(
-    Win32SingleStepHotspotProfile* profile,
+    SingleStepHotspotProfile* profile,
     std::uint32_t guest_address)
     : profile_(profile),
       guest_address_(guest_address),

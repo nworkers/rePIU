@@ -1,6 +1,6 @@
 #include "repiu/engine/aot_return_patch_policy.h"
 
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 
 #include <algorithm>
 #include <limits>
@@ -20,7 +20,7 @@ void IncrementSaturating(std::uint32_t* value)
 
 }  // namespace
 
-void SyncAotReturnPatchPolicy(Win32AotCodeCachePlacement* placement)
+void SyncAotReturnPatchPolicy(AotCodeCachePlacement* placement)
 {
     if (placement == nullptr)
     {
@@ -31,7 +31,7 @@ void SyncAotReturnPatchPolicy(Win32AotCodeCachePlacement* placement)
 }
 
 AotReturnPatchAction ObserveAotReturnPatchMiss(
-    Win32AotCodeCachePlacement* placement,
+    AotCodeCachePlacement* placement,
     std::uint32_t site_index,
     std::uint32_t guest_target)
 {
@@ -43,8 +43,8 @@ AotReturnPatchAction ObserveAotReturnPatchMiss(
         return AotReturnPatchAction::kPatch;
     }
 
-    Win32AotReturnPatchPolicy& policy = placement->return_patch_policy;
-    Win32AotReturnPatchSiteState& state = policy.sites[site_index];
+    AotReturnPatchPolicy& policy = placement->return_patch_policy;
+    AotReturnPatchSiteState& state = policy.sites[site_index];
     IncrementSaturating(&policy.observation_count);
     IncrementSaturating(&state.miss_count);
 

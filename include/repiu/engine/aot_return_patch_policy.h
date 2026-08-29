@@ -8,12 +8,12 @@
 namespace repiu::engine
 {
 
-struct Win32AotCodeCachePlacement;
+struct AotCodeCachePlacement;
 
 constexpr std::uint32_t kAotReturnMegamorphicMissThreshold = 16U;
 constexpr std::size_t kAotReturnMegamorphicTargetCapacity = 8U;
 
-struct Win32AotReturnPatchSiteState
+struct AotReturnPatchSiteState
 {
     std::uint32_t miss_count = 0;
     std::array<std::uint32_t, kAotReturnMegamorphicTargetCapacity> targets{};
@@ -25,9 +25,9 @@ struct Win32AotReturnPatchSiteState
     std::uint32_t bypass_count = 0;
 };
 
-struct Win32AotReturnPatchPolicy
+struct AotReturnPatchPolicy
 {
-    std::vector<Win32AotReturnPatchSiteState> sites;
+    std::vector<AotReturnPatchSiteState> sites;
     std::uint32_t observation_count = 0;
     std::uint32_t megamorphic_site_count = 0;
     std::uint32_t bypass_count = 0;
@@ -39,10 +39,10 @@ enum class AotReturnPatchAction : std::uint8_t
     kBypass,
 };
 
-void SyncAotReturnPatchPolicy(Win32AotCodeCachePlacement* placement);
+void SyncAotReturnPatchPolicy(AotCodeCachePlacement* placement);
 
 AotReturnPatchAction ObserveAotReturnPatchMiss(
-    Win32AotCodeCachePlacement* placement,
+    AotCodeCachePlacement* placement,
     std::uint32_t site_index,
     std::uint32_t guest_target);
 

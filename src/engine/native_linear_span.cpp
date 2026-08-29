@@ -2,7 +2,7 @@
 
 #include "execution/thread_context.h"
 #include "aot/aot_runtime_dispatch.h"
-#include "repiu/engine/aot_page_coherence_win32.h"
+#include "repiu/engine/aot_page_coherence.h"
 #include "verified_region_analyzer.h"
 
 #include <Zydis.h>
@@ -208,9 +208,9 @@ bool IsNativeLinearSpanPageWriteGuarded(
     const auto* scan =
         static_cast<const NativeLinearSpanScanContext*>(opaque_context);
     return scan != nullptr && scan->thread != nullptr &&
-        !HasPendingWin32AotGuestWrite(
+        !HasPendingAotGuestWrite(
             scan->thread->aot_page_write_watch) &&
-        IsWin32AotGuestPageWriteWatched(
+        IsAotGuestPageWriteWatched(
             scan->thread->aot_page_write_watch, guest_page);
 }
 
@@ -269,8 +269,8 @@ bool IsNativeLinearSpanWriteTargetAllowed(
     while (cursor < end)
     {
         const std::uint32_t current = static_cast<std::uint32_t>(cursor);
-        const std::uint32_t page = Win32AotGuestPage(current);
-        bool writable = IsWin32AotGuestPageWriteWatched(
+        const std::uint32_t page = AotGuestPage(current);
+        bool writable = IsAotGuestPageWriteWatched(
             scan->thread->aot_page_write_watch, page);
         if (!writable)
         {
@@ -314,7 +314,7 @@ bool IsNativeLinearSpanDirectJumpTargetAllowed(
     return scan != nullptr && scan->thread != nullptr &&
         scan->thread->aot_placement != nullptr &&
         !IsAotHleBoundaryAddress(scan->thread, target) &&
-        !IsWin32AotGuestPageQuarantined(
+        !IsAotGuestPageQuarantined(
             *scan->thread->aot_placement, target);
 }
 
@@ -325,9 +325,9 @@ bool QueryNativeLinearSpanGeneration(
 {
     return context != nullptr &&
         context->aot_placement != nullptr &&
-        IsWin32AotGuestPageWriteWatched(
+        IsAotGuestPageWriteWatched(
             context->aot_page_write_watch, entry) &&
-        QueryWin32AotActiveGuestPageGeneration(
+        QueryAotActiveGuestPageGeneration(
             *context->aot_placement, entry, generation);
 }
 
@@ -481,8 +481,8 @@ bool TryEnterNativeLinearSpan(repiu::platform::GuestCpuContext* win32_context,
     detail::NativeLinearSpan span;
     const bool cache_enabled = NativeLinearSpanCacheEnabled();
     const bool writes_enabled = NativeLinearSpanWritesEnabled() &&
-        !HasPendingWin32AotGuestWrite(context->aot_page_write_watch) &&
-        IsWin32AotGuestPageWriteWatched(
+        !HasPendingAotGuestWrite(context->aot_page_write_watch) &&
+        IsAotGuestPageWriteWatched(
             context->aot_page_write_watch, entry);
     const bool jumps_enabled = NativeLinearSpanJumpsEnabled();
     const bool reject_cache_enabled =
@@ -520,7 +520,7 @@ bool TryEnterNativeLinearSpan(repiu::platform::GuestCpuContext* win32_context,
     if (cacheable_page)
     {
         scan_succeeded = detail::LookupNativeLinearSpanScanCache(
-            state, entry, Win32AotGuestPage(entry), generation, &span);
+            state, entry, AotGuestPage(entry), generation, &span);
     }
     else if (cache_enabled)
     {
@@ -538,11 +538,11 @@ bool TryEnterNativeLinearSpan(repiu::platform::GuestCpuContext* win32_context,
                 state, entry, span);
         }
         if (scan_succeeded && cacheable_page &&
-            Win32AotGuestPage(span.boundary_address) ==
-                Win32AotGuestPage(entry))
+            AotGuestPage(span.boundary_address) ==
+                AotGuestPage(entry))
         {
             detail::StoreNativeLinearSpanScanCache(
-                state, entry, Win32AotGuestPage(entry), generation, span);
+                state, entry, AotGuestPage(entry), generation, span);
         }
     }
     if (span.boundary_write_guard_uncovered)

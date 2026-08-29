@@ -1,6 +1,6 @@
 #include "native_phase_sampler.h"
 
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 #include "repiu/engine/live_telemetry.h"
 
 // Task 503d-14 fenced this file, saying Linux had no counterpart for stopping a
@@ -71,7 +71,7 @@ std::uint32_t ScanStackForModuleReturn(std::uint32_t esp,
 // Task 503d-21. What the interrupt callback carries between the two threads.
 struct NativePhaseCaptureRequest
 {
-    Win32NativePhaseSample* sample = nullptr;
+    NativePhaseSample* sample = nullptr;
     std::uint32_t module_base = 0;
     std::uint32_t module_size = 0;
 };
@@ -87,7 +87,7 @@ void CaptureNativePhaseRegisters(repiu::platform::GuestCpuContext* registers,
                                  void* user_data)
 {
     auto* request = static_cast<NativePhaseCaptureRequest*>(user_data);
-    Win32NativePhaseSample* sample = request->sample;
+    NativePhaseSample* sample = request->sample;
     sample->captured = true;
     sample->eip = registers->Eip;
     sample->eax = registers->Eax;
@@ -114,10 +114,10 @@ void CaptureNativePhaseRegisters(repiu::platform::GuestCpuContext* registers,
 
 }  // namespace
 
-bool CaptureWin32NativePhaseSample(const repiu::platform::HostThread& thread,
-                                   const Win32AotCodeCachePlacement* placement,
-                                   Win32SharedLiveTelemetry* telemetry,
-                                   Win32NativePhaseSample* sample,
+bool CaptureNativePhaseSample(const repiu::platform::HostThread& thread,
+                                   const AotCodeCachePlacement* placement,
+                                   SharedLiveTelemetry* telemetry,
+                                   NativePhaseSample* sample,
                                    std::uint32_t module_base,
                                    std::uint32_t module_size)
 {
@@ -125,7 +125,7 @@ bool CaptureWin32NativePhaseSample(const repiu::platform::HostThread& thread,
     {
         return false;
     }
-    *sample = Win32NativePhaseSample{};
+    *sample = NativePhaseSample{};
     const auto mark_stage = [telemetry](long stage) {
         if (telemetry != nullptr)
         {
@@ -194,9 +194,9 @@ bool CaptureWin32NativePhaseSample(const repiu::platform::HostThread& thread,
 #endif
 }
 
-void RecordWin32NativePhaseSample(const Win32NativePhaseSample& sample,
-                                  Win32NativePhaseSamplerState* state,
-                                  Win32SharedLiveTelemetry* telemetry)
+void RecordNativePhaseSample(const NativePhaseSample& sample,
+                                  NativePhaseSamplerState* state,
+                                  SharedLiveTelemetry* telemetry)
 {
     if (!sample.captured || state == nullptr)
     {
@@ -209,7 +209,7 @@ void RecordWin32NativePhaseSample(const Win32NativePhaseSample& sample,
         ++state->unmapped_count;
     }
     const std::uint32_t slot =
-        state->ring_cursor % Win32NativePhaseSamplerState::kRingCapacity;
+        state->ring_cursor % NativePhaseSamplerState::kRingCapacity;
     state->ring[slot] = sample.mapped ? sample.guest_eip : sample.eip;
     if (sample.mapped)
     {
@@ -221,7 +221,7 @@ void RecordWin32NativePhaseSample(const Win32NativePhaseSample& sample,
     }
     state->ring_cursor =
         (state->ring_cursor + 1U) %
-        Win32NativePhaseSamplerState::kRingCapacity;
+        NativePhaseSamplerState::kRingCapacity;
 
     if (telemetry == nullptr)
     {
@@ -257,10 +257,10 @@ void RecordWin32NativePhaseSample(const Win32NativePhaseSample& sample,
                         static_cast<long>(sample.last_indirect_source));
     repiu::platform::AtomicExchange(&telemetry->native_sample_indirect_target,
                         static_cast<long>(sample.last_indirect_target));
-    static_assert(Win32NativePhaseSamplerState::kRingCapacity ==
-                  kWin32NativeSampleRingCapacity);
+    static_assert(NativePhaseSamplerState::kRingCapacity ==
+                  kNativeSampleRingCapacity);
     for (std::uint32_t index = 0;
-         index < Win32NativePhaseSamplerState::kRingCapacity; ++index)
+         index < NativePhaseSamplerState::kRingCapacity; ++index)
     {
         repiu::platform::AtomicExchange(&telemetry->native_sample_ring[index],
                             static_cast<long>(state->ring[index]));
@@ -271,9 +271,9 @@ void RecordWin32NativePhaseSample(const Win32NativePhaseSample& sample,
                         static_cast<long>(state->ring_cursor));
 }
 
-void WriteWin32NativePhaseSampleLine(
-    const Win32NativePhaseSample& sample,
-    const Win32NativePhaseSamplerState& state,
+void WriteNativePhaseSampleLine(
+    const NativePhaseSample& sample,
+    const NativePhaseSamplerState& state,
     std::uint32_t elapsed_milliseconds)
 {
     char buffer[256] = {};

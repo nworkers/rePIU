@@ -1,5 +1,5 @@
-#ifndef REPIU_PLATFORM_WIN32_CD_AUDIO_WAVE_OUT_H_
-#define REPIU_PLATFORM_WIN32_CD_AUDIO_WAVE_OUT_H_
+#ifndef REPIU_ENGINE_CD_AUDIO_WAVE_OUT_H_
+#define REPIU_ENGINE_CD_AUDIO_WAVE_OUT_H_
 
 #include "repiu/engine/cd_audio_position_census.h"
 
@@ -39,7 +39,7 @@ public:
     // Task 421: everything `current_lba()` is derived from, read together so a
     // wrong position can be attributed instead of guessed at. Safe to call from
     // another thread; every field is an atomic load.
-    void FillPositionSample(Win32CdAudioPositionEntry* entry) const;
+    void FillPositionSample(CdAudioPositionEntry* entry) const;
     const std::string& message() const;
 
 private:
@@ -49,4 +49,4 @@ private:
 
 }  // namespace repiu::engine
 
-#endif  // REPIU_PLATFORM_WIN32_CD_AUDIO_WAVE_OUT_H_
+#endif  // REPIU_ENGINE_CD_AUDIO_WAVE_OUT_H_

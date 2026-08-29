@@ -21,16 +21,16 @@ namespace repiu::engine
 // Two bounds, both deliberate. One outstanding swap matches double buffering and
 // keeps the guest from running more than a frame ahead; the queue bound catches
 // everything else, and a post that would exceed either waits.
-constexpr std::uint32_t kWin32GlideMaxOutstandingSwaps = 1U;
-constexpr std::size_t kWin32GlideAsyncCommandCapacity = 64U;
+constexpr std::uint32_t kGlideMaxOutstandingSwaps = 1U;
+constexpr std::size_t kGlideAsyncCommandCapacity = 64U;
 
 // Heap-owned by the backend. `ThreadContext` -- which holds the backend -- is a
 // stack local in the execution trampoline, and this state's queue plus counters
 // were enough to overflow that stack at `grSstWinOpen`. One pointer here, the
 // rest on the heap.
-struct Win32GlideAsyncPresentState;
+struct GlideAsyncPresentState;
 
-struct Win32GlideAsyncPresentSnapshot
+struct GlideAsyncPresentSnapshot
 {
     bool enabled = false;
     std::uint64_t posted_count = 0;

@@ -6,7 +6,7 @@
 namespace repiu::engine
 {
 
-struct Win32GlideBufferSwapTimingProfile
+struct GlideBufferSwapTimingProfile
 {
     bool enabled = false;
     std::uint32_t call_count = 0;
@@ -31,7 +31,7 @@ struct Win32GlideBufferSwapTimingProfile
     std::int32_t observed_sdl_interval = 0;
 };
 
-struct Win32GlideBufferSwapTimingSnapshot
+struct GlideBufferSwapTimingSnapshot
 {
     bool enabled = false;
     std::uint32_t call_count = 0;
@@ -62,7 +62,7 @@ bool GlideBufferSwapTimingProfileEnabled();
 std::uint64_t ReadGlideBufferSwapTimingCycles();
 
 void RecordGlideBufferSwapTiming(
-    Win32GlideBufferSwapTimingProfile* profile,
+    GlideBufferSwapTimingProfile* profile,
     std::uint32_t requested_interval,
     bool succeeded,
     std::uint64_t entry_cycles,
@@ -72,11 +72,11 @@ void RecordGlideBufferSwapTiming(
     std::uint64_t finish_cycles);
 
 void RecordGlideBufferSwapSdlInterval(
-    Win32GlideBufferSwapTimingProfile* profile,
+    GlideBufferSwapTimingProfile* profile,
     bool succeeded,
     std::int32_t interval);
 
-Win32GlideBufferSwapTimingSnapshot SnapshotGlideBufferSwapTiming(
-    const Win32GlideBufferSwapTimingProfile& profile);
+GlideBufferSwapTimingSnapshot SnapshotGlideBufferSwapTiming(
+    const GlideBufferSwapTimingProfile& profile);
 
 }  // namespace repiu::engine

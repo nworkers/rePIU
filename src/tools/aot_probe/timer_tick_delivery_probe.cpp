@@ -9,17 +9,17 @@ namespace repiu::tools
 namespace
 {
 
-using engine::kWin32TimerTickBacklogCapacity;
+using engine::kTimerTickBacklogCapacity;
 using engine::RecordTimerTickBacklogCleared;
 using engine::RecordTimerTickDeferred;
 using engine::RecordTimerTickInjected;
 using engine::RecordTimerTicksDue;
 using engine::SnapshotTimerTickDelivery;
-using engine::Win32TimerTickDeliveryCounters;
+using engine::TimerTickDeliveryCounters;
 
 // The gate the whole decomposition rests on: every owed tick must end up in
 // exactly one of delivered, coalesced away, dropped, or still owed.
-bool PartitionHolds(const Win32TimerTickDeliveryCounters& counters)
+bool PartitionHolds(const TimerTickDeliveryCounters& counters)
 {
     const auto snapshot = SnapshotTimerTickDelivery(counters);
     return snapshot.due_total ==
@@ -47,7 +47,7 @@ bool RunTimerTickDeliveryProbe()
 
     // The opt-out path, kept as the regression control: three owed ticks become
     // one injection and two losses, because delivery is a single boolean.
-    Win32TimerTickDeliveryCounters legacy;
+    TimerTickDeliveryCounters legacy;
     const std::uint32_t legacy_retained_first =
         RecordTimerTicksDue(&legacy, 3U, false, false, false);
     const bool legacy_armed_once =
@@ -69,7 +69,7 @@ bool RunTimerTickDeliveryProbe()
     // A poll arriving while a tick is still outstanding loses all of its own
     // ticks, since even the one it would have kept is a duplicate of the tick
     // not yet taken.
-    Win32TimerTickDeliveryCounters outstanding;
+    TimerTickDeliveryCounters outstanding;
     const std::uint32_t outstanding_retained_first =
         RecordTimerTicksDue(&outstanding, 1U, false, false, false);
     const std::uint32_t outstanding_retained_second =
@@ -85,7 +85,7 @@ bool RunTimerTickDeliveryProbe()
         PartitionHolds(outstanding);
 
     // Backlog mode keeps owed ticks and drains one per safe point.
-    Win32TimerTickDeliveryCounters backlog;
+    TimerTickDeliveryCounters backlog;
     const std::uint32_t backlog_retained =
         RecordTimerTicksDue(&backlog, 3U, false, true, false);
     const bool drain_first = RecordTimerTickInjected(&backlog, true);
@@ -103,23 +103,23 @@ bool RunTimerTickDeliveryProbe()
 
     // The cap bounds how far into the past the guest can be parked, and the
     // excess is counted rather than delivered late.
-    Win32TimerTickDeliveryCounters capped;
+    TimerTickDeliveryCounters capped;
     const std::uint32_t capped_retained_first = RecordTimerTicksDue(
-        &capped, kWin32TimerTickBacklogCapacity + 10U, false, true, false);
+        &capped, kTimerTickBacklogCapacity + 10U, false, true, false);
     const std::uint32_t capped_retained_second =
         RecordTimerTicksDue(&capped, 5U, false, true, false);
     const auto capped_snapshot = SnapshotTimerTickDelivery(capped);
     const bool capping =
-        capped_retained_first == kWin32TimerTickBacklogCapacity &&
+        capped_retained_first == kTimerTickBacklogCapacity &&
         capped_retained_second == 0U &&
-        capped_snapshot.backlog == kWin32TimerTickBacklogCapacity &&
+        capped_snapshot.backlog == kTimerTickBacklogCapacity &&
         capped_snapshot.dropped_total == 15U &&
-        capped_snapshot.max_backlog == kWin32TimerTickBacklogCapacity &&
+        capped_snapshot.max_backlog == kTimerTickBacklogCapacity &&
         PartitionHolds(capped);
 
     // Abandoning delivery must account the owed ticks, not drop them out of the
     // identity.
-    Win32TimerTickDeliveryCounters cleared;
+    TimerTickDeliveryCounters cleared;
     RecordTimerTicksDue(&cleared, 6U, false, true, false);
     RecordTimerTickBacklogCleared(&cleared);
     const auto cleared_snapshot = SnapshotTimerTickDelivery(cleared);
@@ -129,7 +129,7 @@ bool RunTimerTickDeliveryProbe()
         PartitionHolds(cleared);
 
     // Deferrals are delays, not losses, so they stay out of the partition.
-    Win32TimerTickDeliveryCounters deferred;
+    TimerTickDeliveryCounters deferred;
     RecordTimerTicksDue(&deferred, 1U, false, true, false);
     RecordTimerTickDeferred(&deferred);
     RecordTimerTickDeferred(&deferred);
@@ -144,7 +144,7 @@ bool RunTimerTickDeliveryProbe()
     // Task 431: in-gate ticks are a subset of the same partition, never a
     // separate bucket -- a loss counted twice would overstate the gate's share,
     // which is the whole quantity the attribution turns on.
-    Win32TimerTickDeliveryCounters gated;
+    TimerTickDeliveryCounters gated;
     RecordTimerTicksDue(&gated, 3U, false, false, true);
     RecordTimerTickInjected(&gated, false);
     RecordTimerTicksDue(&gated, 4U, false, false, false);
@@ -165,7 +165,7 @@ bool RunTimerTickDeliveryProbe()
     const bool inert =
         !RecordTimerTickInjected(nullptr, true) &&
         SnapshotTimerTickDelivery(
-            Win32TimerTickDeliveryCounters{}).due_total == 0U;
+            TimerTickDeliveryCounters{}).due_total == 0U;
 
     const bool all = policy && coalescing && already_pending && draining &&
         capping && clearing && deferral && gate_attribution && inert;

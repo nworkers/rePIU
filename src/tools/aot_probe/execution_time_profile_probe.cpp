@@ -27,12 +27,12 @@ bool RunExecutionTimeProfileProbe()
     };
 
     // Direct accumulation, including the inside-VEH split.
-    auto profile = std::make_unique<Win32ExecutionTimeProfile>();
+    auto profile = std::make_unique<ExecutionTimeProfile>();
     RecordExecutionTimeBucket(
         profile.get(), ExecutionTimeBucket::kGlideGate, 100U, false);
     RecordExecutionTimeBucket(
         profile.get(), ExecutionTimeBucket::kGlideGate, 40U, true);
-    const Win32ExecutionTimeProfileSnapshot direct =
+    const ExecutionTimeProfileSnapshot direct =
         SnapshotExecutionTimeProfile(*profile);
     const bool accumulation =
         direct.enabled &&
@@ -45,7 +45,7 @@ bool RunExecutionTimeProfileProbe()
 
     // A service scope opened inside a VEH scope must be tagged inside, and one
     // opened outside must not be. Nested VEH frames must attribute once.
-    auto nested = std::make_unique<Win32ExecutionTimeProfile>();
+    auto nested = std::make_unique<ExecutionTimeProfile>();
     {
         const ExecutionTimeScope outside(
             nested.get(), ExecutionTimeBucket::kPortIoDevice);
@@ -62,7 +62,7 @@ bool RunExecutionTimeProfileProbe()
         (void)inner_veh;
         (void)inside;
     }
-    const Win32ExecutionTimeProfileSnapshot nested_snapshot =
+    const ExecutionTimeProfileSnapshot nested_snapshot =
         SnapshotExecutionTimeProfile(*nested);
     const bool depth_tracking =
         nested_snapshot.counts[
@@ -77,7 +77,7 @@ bool RunExecutionTimeProfileProbe()
 
     // Task 325 invariant: the sub-buckets decompose kVehTotal, so their sum can
     // never exceed it when they are opened inside it.
-    auto veh_profile = std::make_unique<Win32ExecutionTimeProfile>();
+    auto veh_profile = std::make_unique<ExecutionTimeProfile>();
     {
         const ExecutionTimeScope veh(
             veh_profile.get(), ExecutionTimeBucket::kVehTotal);
@@ -98,7 +98,7 @@ bool RunExecutionTimeProfileProbe()
         }
         (void)veh;
     }
-    const Win32ExecutionTimeProfileSnapshot veh_snapshot =
+    const ExecutionTimeProfileSnapshot veh_snapshot =
         SnapshotExecutionTimeProfile(*veh_profile);
     std::uint64_t sub_bucket_cycles = 0;
     for (std::uint32_t index = kFirstVehSubBucket;
@@ -144,8 +144,8 @@ bool RunExecutionTimeProfileProbe()
     (void)inert;
     RecordExecutionTimeBucket(
         nullptr, ExecutionTimeBucket::kVehHleChain, 10U, true);
-    const Win32ExecutionTimeProfileSnapshot empty =
-        SnapshotExecutionTimeProfile(Win32ExecutionTimeProfile{});
+    const ExecutionTimeProfileSnapshot empty =
+        SnapshotExecutionTimeProfile(ExecutionTimeProfile{});
     bool disabled = !empty.enabled;
     for (std::uint32_t index = 0; index < kExecutionTimeBucketCount; ++index)
     {
@@ -156,7 +156,7 @@ bool RunExecutionTimeProfileProbe()
     // Task 326: the function axis nests inside the handler axis, and each axis
     // must stay within kVehAotTransfer on its own. Summing the two axes would
     // exceed it, which is why reporting never adds them together.
-    auto axes_profile = std::make_unique<Win32ExecutionTimeProfile>();
+    auto axes_profile = std::make_unique<ExecutionTimeProfile>();
     {
         const ExecutionTimeScope transfer(
             axes_profile.get(), ExecutionTimeBucket::kVehAotTransfer);
@@ -173,7 +173,7 @@ bool RunExecutionTimeProfileProbe()
         }
         (void)transfer;
     }
-    const Win32ExecutionTimeProfileSnapshot axes =
+    const ExecutionTimeProfileSnapshot axes =
         SnapshotExecutionTimeProfile(*axes_profile);
     std::uint64_t handler_axis = 0;
     for (std::uint32_t index = kFirstAotHandlerBucket;
@@ -197,7 +197,7 @@ bool RunExecutionTimeProfileProbe()
         handler_axis <= transfer_total &&
         function_axis <= transfer_total;
 
-    auto completed_profile = std::make_unique<Win32ExecutionTimeProfile>();
+    auto completed_profile = std::make_unique<ExecutionTimeProfile>();
     std::uint64_t completed_cycles = 0U;
     {
         const ExecutionTimeScope completed(
@@ -206,7 +206,7 @@ bool RunExecutionTimeProfileProbe()
             &completed_cycles);
         (void)completed;
     }
-    const Win32ExecutionTimeProfileSnapshot completed_snapshot =
+    const ExecutionTimeProfileSnapshot completed_snapshot =
         SnapshotExecutionTimeProfile(*completed_profile);
     std::uint64_t disabled_completed_cycles = 1U;
     {

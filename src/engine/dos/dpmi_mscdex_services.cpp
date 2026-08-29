@@ -811,7 +811,7 @@ bool HandleMscdexRequest(ThreadContext* context,
     // the handlers above read, already converted to a logical LBA.
     if (context->mscdex_command_trace != nullptr)
     {
-        Win32MscdexCommandEntry entry;
+        MscdexCommandEntry entry;
         entry.wall_milliseconds =
             static_cast<std::uint32_t>(repiu::platform::MillisecondTicks()) -
             context->mscdex_command_trace->base_tick;

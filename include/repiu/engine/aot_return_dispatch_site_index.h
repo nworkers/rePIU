@@ -6,9 +6,9 @@
 namespace repiu::engine
 {
 
-struct Win32AotCodeCachePlacement;
+struct AotCodeCachePlacement;
 
-struct Win32AotReturnDispatchSiteIndex
+struct AotReturnDispatchSiteIndex
 {
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFU;
 
@@ -28,13 +28,13 @@ struct AotReturnDispatchSiteLookup
 };
 
 void RebuildAotReturnDispatchSiteIndex(
-    Win32AotCodeCachePlacement* placement);
+    AotCodeCachePlacement* placement);
 void EnsureAotReturnDispatchSiteIndex(
-    Win32AotCodeCachePlacement* placement);
+    AotCodeCachePlacement* placement);
 void InvalidateAotReturnDispatchSiteIndex(
-    Win32AotCodeCachePlacement* placement);
+    AotCodeCachePlacement* placement);
 AotReturnDispatchSiteLookup LookupAotReturnDispatchSiteIndex(
-    const Win32AotCodeCachePlacement& placement,
+    const AotCodeCachePlacement& placement,
     std::uint32_t miss_offset);
 
 }  // namespace repiu::engine

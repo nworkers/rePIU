@@ -54,11 +54,11 @@ void RecordDosPathTrace(ThreadContext* context,
         return;
     }
 
-    Win32DosPathObservation& observation = context->dos_path;
+    DosPathObservation& observation = context->dos_path;
     const std::uint32_t sequence = observation.observed_count + 1;
     const std::uint32_t slot =
-        (sequence - 1) % kWin32DosPathTraceCapacity;
-    Win32DosPathTraceEntry& entry = observation.trace[slot];
+        (sequence - 1) % kDosPathTraceCapacity;
+    DosPathTraceEntry& entry = observation.trace[slot];
     entry.valid = true;
     entry.sequence = sequence;
     entry.service = service;
@@ -70,7 +70,7 @@ void RecordDosPathTrace(ThreadContext* context,
     entry.drive = drive;
     entry.access_mode = access_mode;
     observation.observed_count = sequence;
-    if (observation.trace_stored_count < kWin32DosPathTraceCapacity)
+    if (observation.trace_stored_count < kDosPathTraceCapacity)
     {
         ++observation.trace_stored_count;
     }
@@ -640,16 +640,16 @@ void CaptureDosTermination(repiu::platform::GuestCpuContext* win32_context,
     }
 }
 
-Win32DosFileIoTraceEntry& AllocateDosFileIoTrace(
+DosFileIoTraceEntry& AllocateDosFileIoTrace(
     ThreadContext* context,
     const char* operation,
     std::uint16_t handle)
 {
-    Win32DosFileIoObservation& observation = context->dos_file_io;
+    DosFileIoObservation& observation = context->dos_file_io;
     const std::uint32_t sequence = ++observation.observed_count;
     const std::uint32_t slot =
-        (sequence - 1U) % kWin32DosFileIoTraceCapacity;
-    Win32DosFileIoTraceEntry& entry = observation.trace[slot];
+        (sequence - 1U) % kDosFileIoTraceCapacity;
+    DosFileIoTraceEntry& entry = observation.trace[slot];
     entry = {};
     entry.valid = true;
     entry.sequence = sequence;
@@ -665,9 +665,9 @@ Win32DosFileIoTraceEntry& AllocateDosFileIoTrace(
         entry.position_after = entry.position_before;
     }
     observation.trace_stored_count = std::min(
-        observation.observed_count, kWin32DosFileIoTraceCapacity);
+        observation.observed_count, kDosFileIoTraceCapacity);
     observation.trace_wrapped =
-        observation.observed_count > kWin32DosFileIoTraceCapacity;
+        observation.observed_count > kDosFileIoTraceCapacity;
     return entry;
 }
 
@@ -693,7 +693,7 @@ void RecordDosRead(const repiu::platform::GuestCpuContext* win32_context,
     context->last_dos_read_buffer = buffer;
     context->last_dos_read_success = success;
     context->last_dos_read_error = error;
-    Win32DosFileIoTraceEntry& entry =
+    DosFileIoTraceEntry& entry =
         AllocateDosFileIoTrace(context, "read", handle);
     if (win32_context != nullptr)
     {
@@ -724,7 +724,7 @@ void RecordDosRead(const repiu::platform::GuestCpuContext* win32_context,
     if (bytes != nullptr)
     {
         entry.prefix_size = static_cast<std::uint32_t>(std::min<std::size_t>(
-            bytes->size(), kWin32DosFileIoPrefixCapacity));
+            bytes->size(), kDosFileIoPrefixCapacity));
         if (entry.prefix_size != 0)
         {
             std::memcpy(entry.prefix, bytes->data(), entry.prefix_size);
@@ -754,7 +754,7 @@ void RecordDosWrite(const repiu::platform::GuestCpuContext* win32_context,
     context->last_dos_write_buffer = buffer;
     context->last_dos_write_success = success;
     context->last_dos_write_error = error;
-    Win32DosFileIoTraceEntry& entry =
+    DosFileIoTraceEntry& entry =
         AllocateDosFileIoTrace(context, "write", handle);
     if (win32_context != nullptr)
     {
@@ -785,7 +785,7 @@ void RecordDosWrite(const repiu::platform::GuestCpuContext* win32_context,
     if (bytes != nullptr)
     {
         entry.prefix_size = static_cast<std::uint32_t>(std::min<std::size_t>(
-            bytes->size(), kWin32DosFileIoPrefixCapacity));
+            bytes->size(), kDosFileIoPrefixCapacity));
         if (entry.prefix_size != 0)
         {
             std::memcpy(entry.prefix, bytes->data(), entry.prefix_size);
@@ -1005,7 +1005,7 @@ void RecordDosSeek(ThreadContext* context,
     context->last_dos_seek_position = position;
     context->last_dos_seek_success = success;
     context->last_dos_seek_error = error;
-    Win32DosFileIoTraceEntry& entry =
+    DosFileIoTraceEntry& entry =
         AllocateDosFileIoTrace(context, "seek", handle);
     entry.origin = origin;
     entry.seek_offset = offset;

@@ -19,8 +19,8 @@ bool ReadGlideSetterElisionSetting()
     return value == nullptr || ResolveGlideSetterElisionEnabled(value);
 }
 
-Win32GlideSetterStateCacheEntry* FindEntry(
-    Win32GlideSetterStateCache* cache,
+GlideSetterStateCacheEntry* FindEntry(
+    GlideSetterStateCache* cache,
     std::uint16_t ordinal)
 {
     if (cache == nullptr)
@@ -150,24 +150,24 @@ bool IsGlideSetterElisionGate(repiu::hle::GlideGateId gate_id)
 }
 
 bool ShouldElideGlideSetterState(
-    Win32GlideSetterStateCache* cache,
+    GlideSetterStateCache* cache,
     std::uint16_t ordinal,
-    const Win32GlideSetterStateKey& key)
+    const GlideSetterStateKey& key)
 {
     if (cache == nullptr || ordinal >= cache->entries.size())
     {
         return false;
     }
-    const Win32GlideSetterStateCacheEntry& entry = cache->entries[ordinal];
+    const GlideSetterStateCacheEntry& entry = cache->entries[ordinal];
     return entry.applied_valid &&
         GlideSetterStateKeysEqual(entry.applied_key, key);
 }
 
 void RecordGlideSetterStateElided(
-    Win32GlideSetterStateCache* cache,
+    GlideSetterStateCache* cache,
     std::uint16_t ordinal)
 {
-    Win32GlideSetterStateCacheEntry* entry = FindEntry(cache, ordinal);
+    GlideSetterStateCacheEntry* entry = FindEntry(cache, ordinal);
     if (entry == nullptr)
     {
         return;
@@ -177,11 +177,11 @@ void RecordGlideSetterStateElided(
 }
 
 void RecordGlideSetterStateApplied(
-    Win32GlideSetterStateCache* cache,
+    GlideSetterStateCache* cache,
     std::uint16_t ordinal,
-    const Win32GlideSetterStateKey& key)
+    const GlideSetterStateKey& key)
 {
-    Win32GlideSetterStateCacheEntry* entry = FindEntry(cache, ordinal);
+    GlideSetterStateCacheEntry* entry = FindEntry(cache, ordinal);
     if (entry == nullptr)
     {
         return;
@@ -193,10 +193,10 @@ void RecordGlideSetterStateApplied(
 }
 
 void RecordGlideSetterStateVoided(
-    Win32GlideSetterStateCache* cache,
+    GlideSetterStateCache* cache,
     std::uint16_t ordinal)
 {
-    Win32GlideSetterStateCacheEntry* entry = FindEntry(cache, ordinal);
+    GlideSetterStateCacheEntry* entry = FindEntry(cache, ordinal);
     if (entry == nullptr)
     {
         return;
@@ -205,7 +205,7 @@ void RecordGlideSetterStateVoided(
     ++cache->voided_count;
 }
 
-void InvalidateGlideSetterStateCache(Win32GlideSetterStateCache* cache)
+void InvalidateGlideSetterStateCache(GlideSetterStateCache* cache)
 {
     if (cache == nullptr)
     {
@@ -213,14 +213,14 @@ void InvalidateGlideSetterStateCache(Win32GlideSetterStateCache* cache)
     }
     cache->enabled = true;
     ++cache->invalidation_count;
-    for (Win32GlideSetterStateCacheEntry& entry : cache->entries)
+    for (GlideSetterStateCacheEntry& entry : cache->entries)
     {
         entry.applied_valid = false;
     }
 }
 
 void BumpGlideSetterStateCacheTextureGeneration(
-    Win32GlideSetterStateCache* cache)
+    GlideSetterStateCache* cache)
 {
     if (cache == nullptr)
     {
@@ -235,10 +235,10 @@ void BumpGlideSetterStateCacheTextureGeneration(
     ++cache->texture_generation;
 }
 
-Win32GlideSetterStateCacheSnapshot SnapshotGlideSetterStateCache(
-    const Win32GlideSetterStateCache& cache)
+GlideSetterStateCacheSnapshot SnapshotGlideSetterStateCache(
+    const GlideSetterStateCache& cache)
 {
-    Win32GlideSetterStateCacheSnapshot snapshot;
+    GlideSetterStateCacheSnapshot snapshot;
     snapshot.enabled = cache.enabled;
     // Read from the policy rather than the cache: the counters below were
     // produced under whichever batch this process is running, and a log that
@@ -252,7 +252,7 @@ Win32GlideSetterStateCacheSnapshot SnapshotGlideSetterStateCache(
     snapshot.voided_count = cache.voided_count;
     snapshot.invalidation_count = cache.invalidation_count;
     snapshot.ordinal_overflow_count = cache.ordinal_overflow_count;
-    for (const Win32GlideSetterStateCacheEntry& entry : cache.entries)
+    for (const GlideSetterStateCacheEntry& entry : cache.entries)
     {
         if (entry.elided_count == 0U && entry.applied_count == 0U)
         {

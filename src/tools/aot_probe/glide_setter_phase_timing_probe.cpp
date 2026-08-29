@@ -11,8 +11,8 @@ bool RunGlideSetterPhaseTimingProbe()
 {
     using engine::RecordGlideSetterPhaseSample;
     using engine::SnapshotGlideSetterPhaseTiming;
-    using engine::Win32GlideSetterPhaseKind;
-    using engine::Win32GlideSetterPhaseProfile;
+    using engine::GlideSetterPhaseKind;
+    using engine::GlideSetterPhaseProfile;
 
     const bool policy =
         !engine::ResolveGlideSetterPhaseProfileEnabled("") &&
@@ -21,17 +21,17 @@ bool RunGlideSetterPhaseTimingProbe()
         engine::ResolveGlideSetterPhaseProfileEnabled("on") &&
         engine::ResolveGlideSetterPhaseProfileEnabled("true");
 
-    Win32GlideSetterPhaseProfile profile;
+    GlideSetterPhaseProfile profile;
     // Depth mask: entry and apply-start are the same instant, so drain is zero
     // by construction rather than by omission.
     RecordGlideSetterPhaseSample(
-        &profile, Win32GlideSetterPhaseKind::kDepthMask,
+        &profile, GlideSetterPhaseKind::kDepthMask,
         100U, 100U, 130U, 200U, 0U, false);
     RecordGlideSetterPhaseSample(
-        &profile, Win32GlideSetterPhaseKind::kDepthMask,
+        &profile, GlideSetterPhaseKind::kDepthMask,
         300U, 300U, 310U, 330U, 0U, true);
     RecordGlideSetterPhaseSample(
-        &profile, Win32GlideSetterPhaseKind::kAlphaBlend,
+        &profile, GlideSetterPhaseKind::kAlphaBlend,
         1000U, 1040U, 1060U, 1100U, 3U, false);
 
     const auto snapshot = SnapshotGlideSetterPhaseTiming(profile);
@@ -64,9 +64,9 @@ bool RunGlideSetterPhaseTimingProbe()
                 snapshot.alpha_blend.error_cycles ==
             snapshot.alpha_blend.total_cycles;
 
-    Win32GlideSetterPhaseProfile clamped_profile;
+    GlideSetterPhaseProfile clamped_profile;
     RecordGlideSetterPhaseSample(
-        &clamped_profile, Win32GlideSetterPhaseKind::kAlphaBlend,
+        &clamped_profile, GlideSetterPhaseKind::kAlphaBlend,
         400U, 300U, 200U, 100U, 0U, false);
     const auto clamped = SnapshotGlideSetterPhaseTiming(clamped_profile);
     const bool clamps =
@@ -74,9 +74,9 @@ bool RunGlideSetterPhaseTimingProbe()
         clamped.alpha_blend.total_cycles == 0U;
 
     RecordGlideSetterPhaseSample(
-        nullptr, Win32GlideSetterPhaseKind::kDepthMask,
+        nullptr, GlideSetterPhaseKind::kDepthMask,
         0U, 1U, 2U, 3U, 0U, false);
-    const Win32GlideSetterPhaseProfile untouched;
+    const GlideSetterPhaseProfile untouched;
     const auto inert_snapshot = SnapshotGlideSetterPhaseTiming(untouched);
     const bool inert =
         !inert_snapshot.enabled &&

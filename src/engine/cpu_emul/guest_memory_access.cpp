@@ -1,9 +1,11 @@
 #include "guest_memory_access.h"
 #include "execution_internal.h"
 
+#include "repiu/platform/host_error_stream.h"
 #include "repiu/platform/virtual_memory.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <sstream>
@@ -334,6 +336,19 @@ bool AppendConsoleOutput(ThreadContext* context,
         source,
         copied);
     *output_size += copied;
+    // Task 523: echo it as the guest writes it.
+    //
+    // The buffer above is printed by the loader's summary, which a run that
+    // ends any other way never reaches -- and a guest that is failing prints
+    // exactly then. Its own message is the best diagnostic available and it
+    // was being swallowed by the very failure it describes.
+    if (std::getenv("REPIU_DOS_INT_TRACE") != nullptr)
+    {
+        repiu::platform::WriteHostErrorStream("[repiu-guest-out] ", 18U);
+        repiu::platform::WriteHostErrorStream(
+            reinterpret_cast<const char*>(source), copied);
+        repiu::platform::WriteHostErrorStream("\n", 1U);
+    }
     return true;
 }
 

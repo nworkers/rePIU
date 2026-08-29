@@ -12,7 +12,7 @@ bool RunGlideOrdinalTimingProbe()
     using engine::RecordGlideOrdinalGateTime;
     using engine::RecordGlideOrdinalRendezvous;
     using engine::SnapshotGlideOrdinalTiming;
-    using engine::Win32GlideOrdinalTimingProfile;
+    using engine::GlideOrdinalTimingProfile;
 
     const bool policy =
         !engine::ResolveGlideOrdinalTimingProfileEnabled("") &&
@@ -21,7 +21,7 @@ bool RunGlideOrdinalTimingProbe()
         engine::ResolveGlideOrdinalTimingProfileEnabled("on") &&
         engine::ResolveGlideOrdinalTimingProfileEnabled("true");
 
-    Win32GlideOrdinalTimingProfile profile;
+    GlideOrdinalTimingProfile profile;
     RecordGlideOrdinalGateTime(&profile, 73U, 150U);
     RecordGlideOrdinalRendezvous(
         &profile, 73U, 1000U, 1010U, 1030U, 1060U, 1100U);
@@ -54,7 +54,7 @@ bool RunGlideOrdinalTimingProbe()
         draw.backend_total_cycles == 110U &&
         swap.backend_total_cycles == 0U;
 
-    Win32GlideOrdinalTimingProfile clamped_profile;
+    GlideOrdinalTimingProfile clamped_profile;
     RecordGlideOrdinalGateTime(&clamped_profile, 1U, 10U);
     RecordGlideOrdinalRendezvous(
         &clamped_profile, 1U, 50U, 40U, 30U, 20U, 10U);
@@ -63,7 +63,7 @@ bool RunGlideOrdinalTimingProbe()
         clamped.rendezvous_count == 1U &&
         clamped.backend_total_cycles == 0U;
 
-    Win32GlideOrdinalTimingProfile overflow_profile;
+    GlideOrdinalTimingProfile overflow_profile;
     RecordGlideOrdinalGateTime(&overflow_profile, 300U, 10U);
     const auto overflow = SnapshotGlideOrdinalTiming(overflow_profile);
     const bool capacity = overflow.enabled &&
@@ -74,7 +74,7 @@ bool RunGlideOrdinalTimingProbe()
     RecordGlideOrdinalRendezvous(
         nullptr, 1U, 0U, 1U, 2U, 3U, 4U);
     RecordGlideOrdinalDirectWork(nullptr, 1U, 1U);
-    const Win32GlideOrdinalTimingProfile untouched;
+    const GlideOrdinalTimingProfile untouched;
     const auto inert_snapshot = SnapshotGlideOrdinalTiming(untouched);
     const bool inert = !inert_snapshot.enabled &&
         inert_snapshot.completed_gate_count == 0U;

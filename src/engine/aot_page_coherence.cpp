@@ -1,5 +1,5 @@
-#include "repiu/engine/aot_page_coherence_win32.h"
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_page_coherence.h"
+#include "repiu/engine/aot_code_cache.h"
 #include "repiu/platform/atomic_ops.h"
 #include "repiu/platform/virtual_memory.h"
 
@@ -19,30 +19,30 @@ namespace
 constexpr std::uint32_t kGuestPageSize = 4096U;
 constexpr std::uint32_t kGuestPageMask = ~(kGuestPageSize - 1U);
 
-auto FindGuestPageState(Win32AotCodeCachePlacement* placement,
+auto FindGuestPageState(AotCodeCachePlacement* placement,
                         std::uint32_t guest_page)
 {
     return std::lower_bound(
         placement->guest_pages.begin(), placement->guest_pages.end(),
         guest_page,
-        [](const Win32AotGuestPageState& state, std::uint32_t page) {
+        [](const AotGuestPageState& state, std::uint32_t page) {
             return state.guest_page < page;
         });
 }
 
-auto FindGuestPageState(const Win32AotCodeCachePlacement& placement,
+auto FindGuestPageState(const AotCodeCachePlacement& placement,
                         std::uint32_t guest_page)
 {
     return std::lower_bound(
         placement.guest_pages.begin(), placement.guest_pages.end(),
         guest_page,
-        [](const Win32AotGuestPageState& state, std::uint32_t page) {
+        [](const AotGuestPageState& state, std::uint32_t page) {
             return state.guest_page < page;
         });
 }
 
-Win32AotGuestPageState* EnsureGuestPageState(
-    Win32AotCodeCachePlacement* placement,
+AotGuestPageState* EnsureGuestPageState(
+    AotCodeCachePlacement* placement,
     std::uint32_t guest_page)
 {
     auto found = FindGuestPageState(placement, guest_page);
@@ -50,7 +50,7 @@ Win32AotGuestPageState* EnsureGuestPageState(
         found->guest_page != guest_page)
     {
         found = placement->guest_pages.insert(
-            found, Win32AotGuestPageState{guest_page});
+            found, AotGuestPageState{guest_page});
     }
     return &*found;
 }
@@ -67,7 +67,7 @@ bool RangesOverlap(std::uint32_t left_address,
     return left_address < right_end && right_address < left_end;
 }
 
-void InsertRetiredGuestAddress(Win32AotCodeCachePlacement* placement,
+void InsertRetiredGuestAddress(AotCodeCachePlacement* placement,
                                std::uint32_t guest_address)
 {
     auto address = std::lower_bound(
@@ -80,7 +80,7 @@ void InsertRetiredGuestAddress(Win32AotCodeCachePlacement* placement,
     }
 }
 
-void RecordInactiveMap(Win32AotCodeCachePlacement* placement,
+void RecordInactiveMap(AotCodeCachePlacement* placement,
                        std::uint32_t map_index)
 {
     if (placement == nullptr || map_index >= placement->address_map.size())
@@ -111,7 +111,7 @@ void InsertGuestPage(std::uint32_t page,
     }
 }
 
-void RegisterAddressMapPages(Win32AotCodeCachePlacement* placement,
+void RegisterAddressMapPages(AotCodeCachePlacement* placement,
                              const runtime::AotAddressMapEntry& entry,
                              std::uint32_t map_index,
                              std::vector<std::uint32_t>* active_guest_pages)
@@ -127,15 +127,15 @@ void RegisterAddressMapPages(Win32AotCodeCachePlacement* placement,
     {
         return;
     }
-    const std::uint32_t first_page = Win32AotGuestPage(entry.guest_address);
-    const std::uint32_t last_page = Win32AotGuestPage(
+    const std::uint32_t first_page = AotGuestPage(entry.guest_address);
+    const std::uint32_t last_page = AotGuestPage(
         static_cast<std::uint32_t>(last));
     for (std::uint32_t page = first_page;; page += kGuestPageSize)
     {
-        Win32AotGuestPageState* state =
+        AotGuestPageState* state =
             EnsureGuestPageState(placement, page);
         state->map_indices.push_back(map_index);
-        const Win32AotAddressMapState& map_state =
+        const AotAddressMapState& map_state =
             placement->address_map_states[map_index];
         if (map_state.active)
         {
@@ -213,7 +213,7 @@ DecodedGuestWrite DecodeGuestWrite(std::uint32_t execution_address)
 // for the dispatcher's normal repatch protocol. Caller holds the cache
 // writable and flushes the returned offsets afterwards.
 std::uint32_t ResetInlineCacheGuardsTargetingPage(
-    Win32AotCodeCachePlacement* placement,
+    AotCodeCachePlacement* placement,
     std::uint8_t* bytes,
     std::uint32_t guest_page,
     std::vector<std::uint32_t>* reset_guard_offsets)
@@ -271,20 +271,20 @@ std::uint32_t ResetInlineCacheGuardsTargetingPage(
     return reset_count;
 }
 
-auto FindWriteWatch(Win32AotPageWriteWatchSet* watch_set,
+auto FindWriteWatch(AotPageWriteWatchSet* watch_set,
                     std::uint32_t guest_page)
 {
     return std::lower_bound(
         watch_set->watches.begin(), watch_set->watches.end(), guest_page,
-        [](const Win32AotGuestPageWriteWatch& watch, std::uint32_t page) {
+        [](const AotGuestPageWriteWatch& watch, std::uint32_t page) {
             return watch.guest_page < page;
         });
 }
 
-bool EnsureWriteWatch(Win32AotPageWriteWatchSet* watch_set,
+bool EnsureWriteWatch(AotPageWriteWatchSet* watch_set,
                       std::uint32_t guest_address)
 {
-    const std::uint32_t page = Win32AotGuestPage(guest_address);
+    const std::uint32_t page = AotGuestPage(guest_address);
     auto found = FindWriteWatch(watch_set, page);
     if (found != watch_set->watches.end() && found->guest_page == page)
     {
@@ -312,7 +312,7 @@ bool EnsureWriteWatch(Win32AotPageWriteWatchSet* watch_set,
     return true;
 }
 
-void ResetPendingWrite(Win32AotPageWriteWatchSet* watch_set)
+void ResetPendingWrite(AotPageWriteWatchSet* watch_set)
 {
     watch_set->pending = false;
     watch_set->pending_from_guest = false;
@@ -323,7 +323,7 @@ void ResetPendingWrite(Win32AotPageWriteWatchSet* watch_set)
     watch_set->pending_byte_count = 0U;
 }
 
-bool PendingContainsPage(const Win32AotPageWriteWatchSet& watch_set,
+bool PendingContainsPage(const AotPageWriteWatchSet& watch_set,
                          std::uint32_t page)
 {
     for (std::uint32_t index = 0;
@@ -338,7 +338,7 @@ bool PendingContainsPage(const Win32AotPageWriteWatchSet& watch_set,
 }
 
 void RestorePendingPagesToExecuteRead(
-    Win32AotPageWriteWatchSet* watch_set)
+    AotPageWriteWatchSet* watch_set)
 {
     for (std::uint32_t index = 0;
          index < watch_set->pending_page_count; ++index)
@@ -353,13 +353,13 @@ void RestorePendingPagesToExecuteRead(
 
 }  // namespace
 
-std::uint32_t Win32AotGuestPage(std::uint32_t guest_address)
+std::uint32_t AotGuestPage(std::uint32_t guest_address)
 {
     return guest_address & kGuestPageMask;
 }
 
-void InitializeWin32AotPageCoherence(
-    Win32AotCodeCachePlacement* placement,
+void InitializeAotPageCoherence(
+    AotCodeCachePlacement* placement,
     std::uint32_t initial_generation)
 {
     if (placement == nullptr)
@@ -380,22 +380,22 @@ void InitializeWin32AotPageCoherence(
     for (std::uint32_t index = 0;
          index < placement->address_map.size(); ++index)
     {
-        RegisterWin32AotAddressMap(
+        RegisterAotAddressMap(
             placement, index, initial_generation, true, true,
-            Win32AotGuestPage(placement->address_map[index].guest_address),
+            AotGuestPage(placement->address_map[index].guest_address),
             nullptr);
     }
     EnsureAotCacheAddressIndex(placement);
 }
 
-std::uint32_t AllocateWin32AotGeneration(
-    Win32AotCodeCachePlacement* placement)
+std::uint32_t AllocateAotGeneration(
+    AotCodeCachePlacement* placement)
 {
     return placement != nullptr ? placement->next_generation++ : 0U;
 }
 
-bool CanActivateWin32AotAddressMapEntry(
-    const Win32AotCodeCachePlacement& placement,
+bool CanActivateAotAddressMapEntry(
+    const AotCodeCachePlacement& placement,
     const runtime::AotAddressMapEntry& entry,
     std::uint32_t requested_page)
 {
@@ -410,8 +410,8 @@ bool CanActivateWin32AotAddressMapEntry(
     {
         return false;
     }
-    const std::uint32_t first_page = Win32AotGuestPage(entry.guest_address);
-    const std::uint32_t last_page = Win32AotGuestPage(
+    const std::uint32_t first_page = AotGuestPage(entry.guest_address);
+    const std::uint32_t last_page = AotGuestPage(
         static_cast<std::uint32_t>(last));
     for (std::uint32_t page = first_page;; page += kGuestPageSize)
     {
@@ -431,7 +431,7 @@ bool CanActivateWin32AotAddressMapEntry(
     return true;
 }
 
-bool Win32AotAddressMapTracksGuestBytes(
+bool AotAddressMapTracksGuestBytes(
     const runtime::AotAddressMapEntry& entry,
     const std::vector<runtime::AotExcludedGuestRange>& excluded_ranges)
 {
@@ -447,8 +447,8 @@ bool Win32AotAddressMapTracksGuestBytes(
     return true;
 }
 
-void RegisterWin32AotAddressMap(
-    Win32AotCodeCachePlacement* placement,
+void RegisterAotAddressMap(
+    AotCodeCachePlacement* placement,
     std::uint32_t map_index,
     std::uint32_t generation,
     bool active,
@@ -473,9 +473,9 @@ void RegisterWin32AotAddressMap(
         RegisterAddressMapPages(
             placement, entry, map_index,
             active ? active_guest_pages : nullptr);
-        if (active && Win32AotGuestPage(entry.guest_address) == requested_page)
+        if (active && AotGuestPage(entry.guest_address) == requested_page)
         {
-            Win32AotGuestPageState* state =
+            AotGuestPageState* state =
                 EnsureGuestPageState(placement, requested_page);
             state->retired = false;
             state->latest_generation = generation;
@@ -491,8 +491,8 @@ void RegisterWin32AotAddressMap(
     AppendAotCacheAddressIndexEntry(placement, map_index);
 }
 
-bool Win32AotGuestRangeHasActiveTranslation(
-    const Win32AotCodeCachePlacement& placement,
+bool AotGuestRangeHasActiveTranslation(
+    const AotCodeCachePlacement& placement,
     std::uint32_t guest_address,
     std::uint32_t byte_count)
 {
@@ -507,8 +507,8 @@ bool Win32AotGuestRangeHasActiveTranslation(
     {
         return false;
     }
-    const std::uint32_t first_page = Win32AotGuestPage(guest_address);
-    const std::uint32_t last_page = Win32AotGuestPage(
+    const std::uint32_t first_page = AotGuestPage(guest_address);
+    const std::uint32_t last_page = AotGuestPage(
         static_cast<std::uint32_t>(end - 1U));
     for (std::uint32_t page = first_page;; page += kGuestPageSize)
     {
@@ -522,7 +522,7 @@ bool Win32AotGuestRangeHasActiveTranslation(
                 {
                     continue;
                 }
-                const Win32AotAddressMapState& map_state =
+                const AotAddressMapState& map_state =
                     placement.address_map_states[index];
                 const runtime::AotAddressMapEntry& entry =
                     placement.address_map[index];
@@ -543,8 +543,8 @@ bool Win32AotGuestRangeHasActiveTranslation(
     return false;
 }
 
-bool QueryWin32AotActiveGuestPageGeneration(
-    const Win32AotCodeCachePlacement& placement,
+bool QueryAotActiveGuestPageGeneration(
+    const AotCodeCachePlacement& placement,
     std::uint32_t guest_address,
     std::uint32_t* generation)
 {
@@ -552,7 +552,7 @@ bool QueryWin32AotActiveGuestPageGeneration(
     {
         return false;
     }
-    const std::uint32_t page = Win32AotGuestPage(guest_address);
+    const std::uint32_t page = AotGuestPage(guest_address);
     const auto state = FindGuestPageState(placement, page);
     if (state == placement.guest_pages.end() ||
         state->guest_page != page ||
@@ -566,28 +566,28 @@ bool QueryWin32AotActiveGuestPageGeneration(
     return true;
 }
 
-bool IsWin32AotGuestPageRetired(
-    const Win32AotCodeCachePlacement& placement,
+bool IsAotGuestPageRetired(
+    const AotCodeCachePlacement& placement,
     std::uint32_t guest_address)
 {
-    const std::uint32_t page = Win32AotGuestPage(guest_address);
+    const std::uint32_t page = AotGuestPage(guest_address);
     const auto state = FindGuestPageState(placement, page);
     return state != placement.guest_pages.end() &&
            state->guest_page == page && state->retired;
 }
 
-bool IsWin32AotGuestPageQuarantined(
-    const Win32AotCodeCachePlacement& placement,
+bool IsAotGuestPageQuarantined(
+    const AotCodeCachePlacement& placement,
     std::uint32_t guest_address)
 {
-    const std::uint32_t page = Win32AotGuestPage(guest_address);
+    const std::uint32_t page = AotGuestPage(guest_address);
     const auto state = FindGuestPageState(placement, page);
     return state != placement.guest_pages.end() &&
            state->guest_page == page && state->quarantined;
 }
 
-bool HasWin32AotRetiredGuestAddress(
-    const Win32AotCodeCachePlacement& placement,
+bool HasAotRetiredGuestAddress(
+    const AotCodeCachePlacement& placement,
     std::uint32_t guest_address)
 {
     return std::binary_search(
@@ -595,8 +595,8 @@ bool HasWin32AotRetiredGuestAddress(
         placement.retired_guest_addresses.end(), guest_address);
 }
 
-bool IsWin32AotCacheAddressRetired(
-    const Win32AotCodeCachePlacement& placement,
+bool IsAotCacheAddressRetired(
+    const AotCodeCachePlacement& placement,
     std::uint32_t cache_address)
 {
     if (!placement.placed || cache_address < placement.base_address)
@@ -611,19 +611,19 @@ bool IsWin32AotCacheAddressRetired(
         !placement.address_map_states[found->second].active;
 }
 
-bool RetireWin32AotGuestPage(
-    Win32AotCodeCachePlacement* placement,
+bool RetireAotGuestPage(
+    AotCodeCachePlacement* placement,
     std::uint32_t guest_address,
     bool quarantine,
-    Win32AotGuestPageRetireResult* result)
+    AotGuestPageRetireResult* result)
 {
     if (placement == nullptr || result == nullptr)
     {
         return false;
     }
-    *result = Win32AotGuestPageRetireResult{};
+    *result = AotGuestPageRetireResult{};
     result->attempted = true;
-    result->guest_page = Win32AotGuestPage(guest_address);
+    result->guest_page = AotGuestPage(guest_address);
     result->quarantined = quarantine;
     if (!placement->placed)
     {
@@ -647,7 +647,7 @@ bool RetireWin32AotGuestPage(
         }
         const runtime::AotAddressMapEntry& entry =
             placement->address_map[map_index];
-        const Win32AotAddressMapState& map_state =
+        const AotAddressMapState& map_state =
             placement->address_map_states[map_index];
         if (map_state.active && map_state.tracks_guest_bytes &&
             RangesOverlap(result->guest_page, kGuestPageSize,
@@ -688,7 +688,7 @@ bool RetireWin32AotGuestPage(
         placement, bytes, result->guest_page, &reset_guard_offsets);
     // Task 499. This is the one point where a guest-to-cache mapping can
     // change, and the guest thread is blocked in
-    // RequestWin32AotGuestPageRetirement for the duration, so clearing the memo
+    // RequestAotGuestPageRetirement for the duration, so clearing the memo
     // table here needs no lock and no generation stamp. Clearing everything
     // rather than the affected range keeps the rule one sentence long, and
     // retirements are rare.
@@ -741,10 +741,10 @@ bool RetireWin32AotGuestPage(
     return true;
 }
 
-bool InstallWin32AotGuestPageWriteWatches(
-    const Win32AotCodeCachePlacement& placement,
+bool InstallAotGuestPageWriteWatches(
+    const AotCodeCachePlacement& placement,
     const std::vector<std::uint32_t>* selected_pages,
-    Win32AotPageWriteWatchSet* watch_set)
+    AotPageWriteWatchSet* watch_set)
 {
     if (watch_set == nullptr)
     {
@@ -762,7 +762,7 @@ bool InstallWin32AotGuestPageWriteWatches(
         return true;
     }
     watch_set->watches.reserve(placement.guest_pages.size());
-    for (const Win32AotGuestPageState& page : placement.guest_pages)
+    for (const AotGuestPageState& page : placement.guest_pages)
     {
         if (!EnsureWriteWatch(watch_set, page.guest_page))
         {
@@ -772,14 +772,14 @@ bool InstallWin32AotGuestPageWriteWatches(
     return true;
 }
 
-void RestoreWin32AotGuestPageWriteWatches(
-    Win32AotPageWriteWatchSet* watch_set)
+void RestoreAotGuestPageWriteWatches(
+    AotPageWriteWatchSet* watch_set)
 {
     if (watch_set == nullptr)
     {
         return;
     }
-    for (const Win32AotGuestPageWriteWatch& watch : watch_set->watches)
+    for (const AotGuestPageWriteWatch& watch : watch_set->watches)
     {
         repiu::platform::ProtectMemory(
             reinterpret_cast<void*>(static_cast<std::uintptr_t>(
@@ -791,14 +791,14 @@ void RestoreWin32AotGuestPageWriteWatches(
     watch_set->pending_page_count = 0U;
 }
 
-bool IsWin32AotGuestPageWriteWatched(
-    const Win32AotPageWriteWatchSet& watch_set,
+bool IsAotGuestPageWriteWatched(
+    const AotPageWriteWatchSet& watch_set,
     std::uint32_t guest_address)
 {
-    const std::uint32_t guest_page = Win32AotGuestPage(guest_address);
+    const std::uint32_t guest_page = AotGuestPage(guest_address);
     const auto watch = std::lower_bound(
         watch_set.watches.begin(), watch_set.watches.end(), guest_page,
-        [](const Win32AotGuestPageWriteWatch& value,
+        [](const AotGuestPageWriteWatch& value,
            std::uint32_t page) {
             return value.guest_page < page;
         });
@@ -806,18 +806,18 @@ bool IsWin32AotGuestPageWriteWatched(
            watch->guest_page == guest_page;
 }
 
-void RemoveWin32AotPageWriteWatch(
-    Win32AotPageWriteWatchSet* watch_set,
+void RemoveAotPageWriteWatch(
+    AotPageWriteWatchSet* watch_set,
     std::uint32_t guest_address)
 {
     if (watch_set == nullptr)
     {
         return;
     }
-    const std::uint32_t guest_page = Win32AotGuestPage(guest_address);
+    const std::uint32_t guest_page = AotGuestPage(guest_address);
     auto watch = std::lower_bound(
         watch_set->watches.begin(), watch_set->watches.end(), guest_page,
-        [](const Win32AotGuestPageWriteWatch& value, std::uint32_t page) {
+        [](const AotGuestPageWriteWatch& value, std::uint32_t page) {
             return value.guest_page < page;
         });
     if (watch != watch_set->watches.end() && watch->guest_page == guest_page)
@@ -831,14 +831,14 @@ void RemoveWin32AotPageWriteWatch(
     }
 }
 
-bool HasPendingWin32AotGuestWrite(
-    const Win32AotPageWriteWatchSet& watch_set)
+bool HasPendingAotGuestWrite(
+    const AotPageWriteWatchSet& watch_set)
 {
     return watch_set.pending;
 }
 
-bool BeginWin32AotGuestWrite(
-    Win32AotPageWriteWatchSet* watch_set,
+bool BeginAotGuestWrite(
+    AotPageWriteWatchSet* watch_set,
     std::uint32_t execution_address,
     std::uint32_t fault_address,
     bool from_guest,
@@ -849,7 +849,7 @@ bool BeginWin32AotGuestWrite(
     {
         return false;
     }
-    const std::uint32_t fault_page = Win32AotGuestPage(fault_address);
+    const std::uint32_t fault_page = AotGuestPage(fault_address);
     const auto fault_watch = FindWriteWatch(watch_set, fault_page);
     if (fault_watch == watch_set->watches.end() ||
         fault_watch->guest_page != fault_page)
@@ -898,8 +898,8 @@ bool BeginWin32AotGuestWrite(
         }
     }
 
-    const std::uint32_t first_page = Win32AotGuestPage(range_begin);
-    const std::uint32_t last_page = Win32AotGuestPage(
+    const std::uint32_t first_page = AotGuestPage(range_begin);
+    const std::uint32_t last_page = AotGuestPage(
         static_cast<std::uint32_t>(range_end - 1U));
     for (std::uint32_t page = first_page;; page += kGuestPageSize)
     {
@@ -909,7 +909,7 @@ bool BeginWin32AotGuestWrite(
             !PendingContainsPage(*watch_set, page))
         {
             if (watch_set->pending_page_count >=
-                Win32AotPageWriteWatchSet::kPendingPageCapacity)
+                AotPageWriteWatchSet::kPendingPageCapacity)
             {
                 RestorePendingPagesToExecuteRead(watch_set);
                 ResetPendingWrite(watch_set);
@@ -936,9 +936,9 @@ bool BeginWin32AotGuestWrite(
     return watch_set->pending_page_count != 0U;
 }
 
-bool CompleteWin32AotGuestWrite(
-    Win32AotPageWriteWatchSet* watch_set,
-    Win32AotGuestWriteCompletion* completion)
+bool CompleteAotGuestWrite(
+    AotPageWriteWatchSet* watch_set,
+    AotGuestWriteCompletion* completion)
 {
     if (watch_set == nullptr || completion == nullptr ||
         !watch_set->pending || watch_set->pending_page_count == 0U)

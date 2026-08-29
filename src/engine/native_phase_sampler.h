@@ -7,10 +7,10 @@
 namespace repiu::engine
 {
 
-struct Win32AotCodeCachePlacement;
-struct Win32SharedLiveTelemetry;
+struct AotCodeCachePlacement;
+struct SharedLiveTelemetry;
 
-struct Win32NativePhaseSample
+struct NativePhaseSample
 {
     bool captured = false;
     bool mapped = false;
@@ -43,7 +43,7 @@ struct Win32NativePhaseSample
     bool host_scan_failed = false;
 };
 
-struct Win32NativePhaseSamplerState
+struct NativePhaseSamplerState
 {
     static constexpr std::uint32_t kRingCapacity = 8;
     std::uint32_t sample_count = 0;
@@ -69,23 +69,23 @@ struct Win32NativePhaseSamplerState
 // Task 503d-21: the thread is the layer's handle, and the sample is taken with
 // `InterruptHostThread` rather than by suspending it here -- which is what lets
 // this work on a host where a process cannot stop its own thread.
-bool CaptureWin32NativePhaseSample(const repiu::platform::HostThread& thread,
-                                   const Win32AotCodeCachePlacement* placement,
-                                   Win32SharedLiveTelemetry* telemetry,
-                                   Win32NativePhaseSample* sample,
+bool CaptureNativePhaseSample(const repiu::platform::HostThread& thread,
+                                   const AotCodeCachePlacement* placement,
+                                   SharedLiveTelemetry* telemetry,
+                                   NativePhaseSample* sample,
                                    std::uint32_t module_base = 0,
                                    std::uint32_t module_size = 0);
 
 // Updates the sampler ring and publishes the sample to shared telemetry
 // (both optional consumers of a successful capture).
-void RecordWin32NativePhaseSample(const Win32NativePhaseSample& sample,
-                                  Win32NativePhaseSamplerState* state,
-                                  Win32SharedLiveTelemetry* telemetry);
+void RecordNativePhaseSample(const NativePhaseSample& sample,
+                                  NativePhaseSamplerState* state,
+                                  SharedLiveTelemetry* telemetry);
 
 // Writes one bounded "[repiu-sample]" line to stderr without heap use.
-void WriteWin32NativePhaseSampleLine(
-    const Win32NativePhaseSample& sample,
-    const Win32NativePhaseSamplerState& state,
+void WriteNativePhaseSampleLine(
+    const NativePhaseSample& sample,
+    const NativePhaseSamplerState& state,
     std::uint32_t elapsed_milliseconds);
 
 }  // namespace repiu::engine

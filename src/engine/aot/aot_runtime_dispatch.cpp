@@ -43,7 +43,7 @@ void BumpAotBoundaryReason(ThreadContext* context, AotBoundaryReason reason)
 {
     std::atomic<std::uint32_t>* local = nullptr;
     volatile long* shared = nullptr;
-    Win32SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
+    SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
     switch (reason)
     {
         case AotBoundaryReason::kReturn:
@@ -121,7 +121,7 @@ void RecordAotOtherBoundarySample(ThreadContext* context,
                                                  std::memory_order_relaxed);
     if (context->shared_live_telemetry != nullptr)
     {
-        Win32SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
+        SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
         repiu::platform::AtomicExchange(&telemetry->aot_last_other_eip,
                             static_cast<long>(guest_eip));
         repiu::platform::AtomicExchange(&telemetry->aot_last_other_bytes,
@@ -262,8 +262,8 @@ void DumpZeroReturnEvidence(const repiu::platform::GuestCpuContext* win32_contex
     {
         const std::uint32_t slot =
             (context->aot_return_trace_count - 1U - index) %
-            kWin32AotReturnTraceCapacity;
-        const Win32AotReturnTraceEntry& entry =
+            kAotReturnTraceCapacity;
+        const AotReturnTraceEntry& entry =
             context->aot_return_trace[slot];
         fprintf(stderr,
                 "[repiu-live-debug]   ret[-%u] source=0x%08X actual=0x%08X"
@@ -273,14 +273,14 @@ void DumpZeroReturnEvidence(const repiu::platform::GuestCpuContext* win32_contex
     }
 }
 
-void BuildWin32AotSegmentTable(ThreadContext* context,
-                               Win32AotSegmentTable* table)
+void BuildAotSegmentTable(ThreadContext* context,
+                               AotSegmentTable* table)
 {
     if (context == nullptr || table == nullptr)
     {
         return;
     }
-    *table = Win32AotSegmentTable{};
+    *table = AotSegmentTable{};
     const std::uint16_t selectors[6] = {
         context->guest_es, 0U, context->guest_ss,
         context->guest_ds, context->guest_fs, context->guest_gs};
@@ -302,7 +302,7 @@ void BuildWin32AotSegmentTable(ThreadContext* context,
         {
             continue; // CS has no shadow
         }
-        BuildWin32AotSegmentResolution(
+        BuildAotSegmentResolution(
             context->selector_table, addresses[seg], selectors[seg],
             &table->segments[seg]);
     }
@@ -333,8 +333,8 @@ void RecordAotBreakpointProvenance(
 }
 
 bool SameAotSegmentResolution(
-    const Win32AotSegmentResolution& left,
-    const Win32AotSegmentResolution& right)
+    const AotSegmentResolution& left,
+    const AotSegmentResolution& right)
 {
     return left.shadow_address == right.shadow_address &&
         left.selector == right.selector && left.base == right.base &&
@@ -350,8 +350,8 @@ void ReResolveAotSegmentOverrides(ThreadContext* context)
     {
         return;
     }
-    Win32AotSegmentTable table{};
-    BuildWin32AotSegmentTable(context, &table);
+    AotSegmentTable table{};
+    BuildAotSegmentTable(context, &table);
     // Only pay the cache re-protect/flush when the complete selector descriptor
     // changes. Selector-only gating leaves stale folded bases after DPMI updates.
     bool changed = !context->aot_segment_resolutions_initialized;
@@ -368,7 +368,7 @@ void ReResolveAotSegmentOverrides(ThreadContext* context)
     {
         return;
     }
-    Win32AotSegmentPatchStats stats{};
+    AotSegmentPatchStats stats{};
     if (ReResolveWin32AotSegmentOverrides(
             context->aot_placement, &table, &stats) != 0U)
     {
@@ -408,7 +408,7 @@ int AotTranslationWorkerProc(void* parameter)
         {
             return 0;
         }
-        Win32AotWorkerTimingProfile* worker_timing =
+        AotWorkerTimingProfile* worker_timing =
             context->aot_worker_timing.get();
         const auto operation = static_cast<AotWorkerOperation>(
             context->aot_worker_operation.load(std::memory_order_acquire));
@@ -423,8 +423,8 @@ int AotTranslationWorkerProc(void* parameter)
         if (operation == AotWorkerOperation::kPatchInlineCache)
         {
             context->aot_inline_cache_patch_result =
-                Win32AotInlineCachePatchResult{};
-            PatchWin32AotIndirectInlineCache(
+                AotInlineCachePatchResult{};
+            PatchAotIndirectInlineCache(
                 context->aot_placement,
                 context->aot_patch_cache_miss_address.load(
                     std::memory_order_acquire),
@@ -437,8 +437,8 @@ int AotTranslationWorkerProc(void* parameter)
         else if (operation == AotWorkerOperation::kRetireGuestPage)
         {
             context->aot_guest_page_retire_result =
-                Win32AotGuestPageRetireResult{};
-            RetireWin32AotGuestPage(
+                AotGuestPageRetireResult{};
+            RetireAotGuestPage(
                 context->aot_placement,
                 context->aot_retire_guest_page.load(
                     std::memory_order_acquire),
@@ -450,19 +450,19 @@ int AotTranslationWorkerProc(void* parameter)
         {
             const std::uint32_t target = context->aot_translation_target.load(
                 std::memory_order_acquire);
-            context->aot_translation_result = Win32AotDynamicAppendResult{};
+            context->aot_translation_result = AotDynamicAppendResult{};
             // Task 264 Phase 3a: resolve each shadow segment register so the
             // translator can fold the base into segment-override accesses.
-            Win32AotSegmentTable segment_table{};
+            AotSegmentTable segment_table{};
             const std::uint64_t segment_table_start =
                 ReadAotWorkerTimingCycles();
-            BuildWin32AotSegmentTable(context, &segment_table);
+            BuildAotSegmentTable(context, &segment_table);
             const std::uint64_t append_start = ReadAotWorkerTimingCycles();
             RecordAotWorkerSegmentTable(
                 worker_timing,
                 AotWorkerTimingDelta(
                     worker_timing, segment_table_start, append_start));
-            AppendWin32DynamicAotTranslation(
+            AppendDynamicAotTranslation(
                 context->runtime_base, context->runtime_size, target,
                 context->aot_excluded_guest_ranges,
                 &context->aot_page_write_watch, context->aot_placement,
@@ -508,7 +508,7 @@ bool RequestAotDynamicTranslation(ThreadContext* context,
     context->aot_translation_target.store(target, std::memory_order_release);
     // Task 327: T0 must be taken immediately before the signal, or the wake
     // latency it anchors would absorb setup work instead.
-    Win32AotWorkerTimingProfile* worker_timing =
+    AotWorkerTimingProfile* worker_timing =
         context->aot_worker_timing.get();
     const std::uint64_t request_cycles =
         worker_timing != nullptr ? ReadAotWorkerTimingCycles() : 0U;
@@ -540,7 +540,7 @@ bool RequestAotDynamicTranslation(ThreadContext* context,
     return true;
 }
 
-void ReleaseUnneededWin32AotGuestPageWatches(ThreadContext* context,
+void ReleaseUnneededAotGuestPageWatches(ThreadContext* context,
                                              std::uint32_t address,
                                              std::uint32_t size)
 {
@@ -553,16 +553,16 @@ void ReleaseUnneededWin32AotGuestPageWatches(ThreadContext* context,
 
     for (std::uint32_t page = first_page; page <= last_page; page += 0x1000U)
     {
-        bool relevant = Win32AotGuestRangeHasActiveTranslation(
+        bool relevant = AotGuestRangeHasActiveTranslation(
             *context->aot_placement, page, 0x1000U);
         if (!relevant)
         {
-            relevant = IsWin32AotGuestPageRetired(*context->aot_placement, page) ||
-                       IsWin32AotGuestPageQuarantined(*context->aot_placement, page);
+            relevant = IsAotGuestPageRetired(*context->aot_placement, page) ||
+                       IsAotGuestPageQuarantined(*context->aot_placement, page);
         }
         if (!relevant)
         {
-            RemoveWin32AotPageWriteWatch(&context->aot_page_write_watch, page);
+            RemoveAotPageWriteWatch(&context->aot_page_write_watch, page);
         }
     }
 }
@@ -577,13 +577,13 @@ bool HandleAotGuestCodeWriteCompletion(
         context != nullptr ? context->execution_time_profile.get() : nullptr,
         ExecutionTimeBucket::kAotWriteCompletion);
     if (win32_context == nullptr || context == nullptr ||
-        !HasPendingWin32AotGuestWrite(context->aot_page_write_watch) ||
+        !HasPendingAotGuestWrite(context->aot_page_write_watch) ||
         fault.kind != repiu::platform::FaultKind::kSingleStep)
     {
         return false;
     }
-    Win32AotGuestWriteCompletion completion;
-    if (!CompleteWin32AotGuestWrite(
+    AotGuestWriteCompletion completion;
+    if (!CompleteAotGuestWrite(
             &context->aot_page_write_watch, &completion) ||
         !NoteSuccessfulAotGuestWrite(
             context, completion.destination, completion.byte_count))
@@ -591,7 +591,7 @@ bool HandleAotGuestCodeWriteCompletion(
         context->aot_terminal_failure.store(true, std::memory_order_release);
         return false;
     }
-    ReleaseUnneededWin32AotGuestPageWatches(context, completion.destination, completion.byte_count);
+    ReleaseUnneededAotGuestPageWatches(context, completion.destination, completion.byte_count);
     if (completion.keep_single_step ||
         (completion.from_guest && context->aot_reentry_pending))
     {
@@ -625,7 +625,7 @@ bool HandleAotGuestCodeWriteFault(const repiu::platform::FaultEvent& fault,
     }
     const std::uint32_t destination =
         static_cast<std::uint32_t>(destination_value);
-    if (!IsWin32AotGuestPageWriteWatched(
+    if (!IsAotGuestPageWriteWatched(
             context->aot_page_write_watch, destination))
     {
         return false;
@@ -642,7 +642,7 @@ bool HandleAotGuestCodeWriteFault(const repiu::platform::FaultEvent& fault,
         (win32_context->EFlags & 0x00000100U) != 0U ||
         context->enable_single_step_trace ||
         context->aot_reentry_pending || context->aot_legacy_fallback;
-    if (!BeginWin32AotGuestWrite(
+    if (!BeginAotGuestWrite(
             &context->aot_page_write_watch, execution_address, destination,
             from_guest, keep_single_step,
             AotGuestAddressForExecutionAddress(context, execution_address)))
@@ -688,8 +688,8 @@ bool PatchAotInlineCacheOnGuestThread(ThreadContext* context,
                                       std::uint32_t guest_target,
                                       std::uint32_t cache_target)
 {
-    context->aot_inline_cache_patch_result = Win32AotInlineCachePatchResult{};
-    PatchWin32AotIndirectInlineCache(
+    context->aot_inline_cache_patch_result = AotInlineCachePatchResult{};
+    PatchAotIndirectInlineCache(
         context->aot_placement, cache_miss_address, guest_target, cache_target,
         &context->aot_inline_cache_patch_result);
     ++context->aot_inline_cache_direct_patch_count;
@@ -865,7 +865,7 @@ bool IsAotInlineCacheMiss(const ThreadContext* context,
     {
         return false;
     }
-    Win32AotCodeCachePlacement* placement = context->aot_placement;
+    AotCodeCachePlacement* placement = context->aot_placement;
     const std::uint32_t offset = cache_address - placement->base_address;
     // Task 479. This test runs immediately before every patch attempt and on
     // every return dispatch that turns out not to be one, and a "no" answer
@@ -938,7 +938,7 @@ bool IsAotHleBoundaryAddress(const ThreadContext* context,
 
 // Task 404: one failed re-translation quarantines a guest page for the rest of
 // the run, and on pumpit3 the page it takes carries the 200-iteration I/O delay
-// loop. `AppendWin32DynamicAotTranslation` names the cause in `message` and six
+// loop. `AppendDynamicAotTranslation` names the cause in `message` and six
 // different causes are possible, so the string is what decides where the fix
 // belongs. Guest thread only, called from the VEH path.
 static void RecordAotGenerationFailure(ThreadContext* context,
@@ -955,7 +955,7 @@ static void RecordAotGenerationFailure(ThreadContext* context,
         context->generation_failure_trace[
             context->generation_failure_trace_count++];
     entry.target = target;
-    entry.page = Win32AotGuestPage(target);
+    entry.page = AotGuestPage(target);
     entry.quarantined = quarantined;
     entry.terminal =
         context->aot_terminal_failure.load(std::memory_order_acquire);
@@ -984,7 +984,7 @@ bool ResolveAotTransferTarget(ThreadContext* context,
     {
         return false;
     }
-    if (ResolveWin32GlideGateDirectTarget(
+    if (ResolveGlideGateDirectTarget(
             context, target, cache_target))
     {
         return true;
@@ -993,7 +993,7 @@ bool ResolveAotTransferTarget(ThreadContext* context,
     {
         return false;
     }
-    if (IsWin32AotGuestPageQuarantined(
+    if (IsAotGuestPageQuarantined(
             *context->aot_placement, target))
     {
         if (retired_resolution != nullptr)
@@ -1012,8 +1012,8 @@ bool ResolveAotTransferTarget(ThreadContext* context,
         return true;
     }
     const bool retired_target = force_generation ||
-        IsWin32AotGuestPageRetired(*context->aot_placement, target) ||
-        HasWin32AotRetiredGuestAddress(*context->aot_placement, target);
+        IsAotGuestPageRetired(*context->aot_placement, target) ||
+        HasAotRetiredGuestAddress(*context->aot_placement, target);
     // Task 415: an address whose generation already failed is never attempted
     // again. This is the property quarantine was providing -- no retry storm --
     // without taking the rest of the page down with it.
@@ -1205,7 +1205,7 @@ bool HandleAotConditionalTransfer(const repiu::platform::FaultEvent& fault,
     context->enable_single_step_trace = false;
     context->aot_indirect_dispatch_count.fetch_add(1, std::memory_order_relaxed);
     context->aot_transfer_trace[
-        context->aot_transfer_trace_count % kWin32AotTransferTraceCapacity] = {
+        context->aot_transfer_trace_count % kAotTransferTraceCapacity] = {
             source, target, false};
     ++context->aot_transfer_trace_count;
     context->aot_last_indirect_source.store(source, std::memory_order_relaxed);
@@ -1218,7 +1218,7 @@ bool HandleAotConditionalTransfer(const repiu::platform::FaultEvent& fault,
 bool HandleAotIndirectTransfer(const repiu::platform::FaultEvent& fault,
                                ThreadContext* context,
                                AotDbtDispatchFallbackReason* fallback_reason,
-                               Win32AotTransferOrigin origin)
+                               AotTransferOrigin origin)
 {
     repiu::platform::GuestCpuContext* win32_context = fault.registers;
     const ExecutionTimeScope indirect_time_scope(
@@ -1320,7 +1320,7 @@ bool HandleAotIndirectTransfer(const repiu::platform::FaultEvent& fault,
     {
         target_failure = AotDbtDispatchFallbackReason::kHleTarget;
     }
-    else if (IsWin32AotGuestPageQuarantined(
+    else if (IsAotGuestPageQuarantined(
                  *context->aot_placement, target))
     {
         target_failure = AotDbtDispatchFallbackReason::kQuarantinedTarget;
@@ -1399,7 +1399,7 @@ bool HandleAotIndirectTransfer(const repiu::platform::FaultEvent& fault,
     context->aot_indirect_dispatch_count.fetch_add(
         1, std::memory_order_relaxed);
     const std::uint32_t transfer_slot =
-        context->aot_transfer_trace_count % kWin32AotTransferTraceCapacity;
+        context->aot_transfer_trace_count % kAotTransferTraceCapacity;
     context->aot_transfer_trace[transfer_slot] = {source, target, is_call};
     ++context->aot_transfer_trace_count;
     context->aot_last_indirect_source.store(source,
@@ -1414,7 +1414,7 @@ bool HandleAotIndirectTransfer(const repiu::platform::FaultEvent& fault,
 bool HandleAotReturnTransfer(const repiu::platform::FaultEvent& fault,
                              ThreadContext* context,
                              AotDbtDispatchFallbackReason* fallback_reason,
-                             Win32AotTransferOrigin origin,
+                             AotTransferOrigin origin,
                              std::uint32_t return_patch_site_index)
 {
     repiu::platform::GuestCpuContext* win32_context = fault.registers;
@@ -1424,7 +1424,7 @@ bool HandleAotReturnTransfer(const repiu::platform::FaultEvent& fault,
     // Task 482: five mutually exclusive stages plus the residual of this same
     // window. The DBT adapter opens its own outer window around this call, so
     // the scope below attributes only when the VEH path arrives here directly.
-    Win32AotReturnStageProfile* stage_profile =
+    AotReturnStageProfile* stage_profile =
         context != nullptr ? &context->aot_return_stage_profile : nullptr;
     const AotReturnOuterScope outer_stage(stage_profile);
     AotReturnStageScope entry_stage(stage_profile,
@@ -1522,7 +1522,7 @@ bool HandleAotReturnTransfer(const repiu::platform::FaultEvent& fault,
         expected_frame != nullptr ? expected_frame->fallthrough : 0U,
         expected_frame != nullptr ? expected_frame->entry_esp : 0U);
     const std::uint32_t trace_slot =
-        context->aot_return_trace_count % kWin32AotReturnTraceCapacity;
+        context->aot_return_trace_count % kAotReturnTraceCapacity;
     context->aot_return_trace[trace_slot] = {
         static_cast<std::uint32_t>(win32_context->Eip), target,
         context->aot_last_expected_return, win32_context->Esp,
@@ -1557,7 +1557,7 @@ bool HandleAotReturnTransfer(const repiu::platform::FaultEvent& fault,
     {
         target_failure = AotDbtDispatchFallbackReason::kHleTarget;
     }
-    else if (IsWin32AotGuestPageQuarantined(
+    else if (IsAotGuestPageQuarantined(
                  *context->aot_placement, target))
     {
         target_failure = AotDbtDispatchFallbackReason::kQuarantinedTarget;
@@ -1696,7 +1696,7 @@ static void ProbePushSegBoundary(ThreadContext* context,
         default:
             return;
     }
-    Win32SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
+    SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
     repiu::platform::AtomicIncrement(&telemetry->aot_pushseg_count);
     repiu::platform::AtomicExchange(&telemetry->aot_pushseg_last_opcode,
                         static_cast<long>(opcode));
@@ -1759,10 +1759,10 @@ static void ProbeSegmentOverrideBoundary(ThreadContext* context,
             break;
         default: return; // not a segment-override prefix (CS 0x2E has no shadow)
     }
-    Win32AotSegmentResolution resolution{};
-    BuildWin32AotSegmentResolution(
+    AotSegmentResolution resolution{};
+    BuildAotSegmentResolution(
         context->selector_table, shadow_address, selector, &resolution);
-    if (resolution.policy == Win32AotSegmentAccessPolicy::kNativeFolded)
+    if (resolution.policy == AotSegmentAccessPolicy::kNativeFolded)
     {
         context->aot_selector_guard_mismatch_count.fetch_add(
             1U, std::memory_order_relaxed);
@@ -1783,7 +1783,7 @@ static void ProbeSegmentOverrideBoundary(ThreadContext* context,
     {
         base = linear; // linear address for offset 0 == segment base
     }
-    Win32SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
+    SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
     repiu::platform::AtomicIncrement(&telemetry->aot_segovr_count);
     repiu::platform::AtomicExchange(&telemetry->aot_segovr_last_prefix,
                         static_cast<long>(prefix));
@@ -1834,7 +1834,7 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
             return false;
         }
         context->aot_reentry_cache_address = cache_address;
-        if (ActivateWin32GlideGateDirectTarget(
+        if (ActivateGlideGateDirectTarget(
                 context, cache_address, guest_address))
         {
             win32_context->Eip = guest_address;
@@ -1874,7 +1874,7 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
                 ClassifyAotCacheBreakpointProvenance(
                     *context->aot_placement, cache_address,
                     is_tracked_trace_address));
-            retired_entry = IsWin32AotCacheAddressRetired(
+            retired_entry = IsAotCacheAddressRetired(
                 *context->aot_placement, cache_address);
         }
         // Task 334 interval 3. The early return inside still closes the scope,
@@ -1885,7 +1885,7 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
                 context->execution_time_profile.get(),
                 ExecutionTimeBucket::kAotReentryRetired);
             BumpAotRetiredEntryTrapCount(context);
-            Win32AotRetiredTrapProfile* retired_profile =
+            AotRetiredTrapProfile* retired_profile =
                 AotRetiredTrapProfileEnabled()
                     ? &context->aot_retired_trap_profile
                     : nullptr;
@@ -1989,7 +1989,7 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
         }
         if (is_tracked_trace_address)
         {
-            if (InstallWin32AotProbeSentinel(
+            if (InstallAotProbeSentinel(
                     context->aot_placement, guest_address))
             {
                 ++context->execution_trace_sentinel_rearm_count;
@@ -2028,7 +2028,7 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
         BumpAotReentryCount(context);
         return true;
     }
-    if (IsWin32AotGuestPageQuarantined(
+    if (IsAotGuestPageQuarantined(
             *context->aot_placement, current))
     {
         NoteVehExitSite(context, VehExitSite::kAotReentryQuarantined);
@@ -2051,7 +2051,7 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
         BumpAotReentryCount(context);
         return true;
     }
-    if (IsWin32AotGuestPageQuarantined(
+    if (IsAotGuestPageQuarantined(
             *context->aot_placement, current))
     {
         NoteVehExitSite(context, VehExitSite::kAotReentryQuarantined);

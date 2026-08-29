@@ -39,7 +39,7 @@ bool AotReturnStageProfileEnabled()
     return enabled;
 }
 
-void RecordAotReturnStageSample(Win32AotReturnStageProfile* profile,
+void RecordAotReturnStageSample(AotReturnStageProfile* profile,
                                 const AotReturnStage stage,
                                 const std::uint64_t start_cycles,
                                 const std::uint64_t end_cycles)
@@ -67,7 +67,7 @@ void RecordAotReturnStageSample(Win32AotReturnStageProfile* profile,
     profile->stage_total_cycles += cycles;
 }
 
-void RecordAotReturnOuterSample(Win32AotReturnStageProfile* profile,
+void RecordAotReturnOuterSample(AotReturnStageProfile* profile,
                                 const std::uint64_t start_cycles,
                                 const std::uint64_t end_cycles,
                                 const std::uint64_t stage_total_at_entry)
@@ -100,10 +100,10 @@ void RecordAotReturnOuterSample(Win32AotReturnStageProfile* profile,
     profile->residual_cycles += cycles - stage_cycles;
 }
 
-Win32AotReturnStageSnapshot SnapshotAotReturnStageProfile(
-    const Win32AotReturnStageProfile& profile)
+AotReturnStageSnapshot SnapshotAotReturnStageProfile(
+    const AotReturnStageProfile& profile)
 {
-    Win32AotReturnStageSnapshot snapshot;
+    AotReturnStageSnapshot snapshot;
     snapshot.enabled = profile.enabled;
     snapshot.cycles = profile.cycles;
     snapshot.counts = profile.counts;
@@ -119,7 +119,7 @@ Win32AotReturnStageSnapshot SnapshotAotReturnStageProfile(
 }
 
 std::uint64_t AotReturnStageCoveredCycles(
-    const Win32AotReturnStageSnapshot& snapshot)
+    const AotReturnStageSnapshot& snapshot)
 {
     std::uint64_t covered = 0;
     for (const std::uint64_t cycles : snapshot.cycles)
@@ -130,9 +130,9 @@ std::uint64_t AotReturnStageCoveredCycles(
 }
 
 void RankAotReturnStageSites(
-    const Win32AotReturnPatchPolicy& policy,
+    const AotReturnPatchPolicy& policy,
     const std::vector<runtime::AotDbtReturnDispatchSite>& sites,
-    std::vector<Win32AotReturnStageSiteObservation>* observations)
+    std::vector<AotReturnStageSiteObservation>* observations)
 {
     if (observations == nullptr)
     {
@@ -142,12 +142,12 @@ void RankAotReturnStageSites(
     const std::size_t site_count = std::min(policy.sites.size(), sites.size());
     for (std::size_t index = 0; index < site_count; ++index)
     {
-        const Win32AotReturnPatchSiteState& state = policy.sites[index];
+        const AotReturnPatchSiteState& state = policy.sites[index];
         if (state.miss_count == 0U)
         {
             continue;
         }
-        Win32AotReturnStageSiteObservation observation;
+        AotReturnStageSiteObservation observation;
         observation.site_index = static_cast<std::uint32_t>(index);
         observation.guest_source = sites[index].guest_source;
         observation.miss_cache_offset = sites[index].miss_cache_offset;
@@ -158,8 +158,8 @@ void RankAotReturnStageSites(
         observations->push_back(observation);
     }
     std::sort(observations->begin(), observations->end(),
-              [](const Win32AotReturnStageSiteObservation& left,
-                 const Win32AotReturnStageSiteObservation& right) {
+              [](const AotReturnStageSiteObservation& left,
+                 const AotReturnStageSiteObservation& right) {
                   if (left.observation_count != right.observation_count)
                   {
                       return left.observation_count > right.observation_count;
@@ -177,7 +177,7 @@ void RankAotReturnStageSites(
 }
 
 AotReturnStageScope::AotReturnStageScope(
-    Win32AotReturnStageProfile* profile, const AotReturnStage stage)
+    AotReturnStageProfile* profile, const AotReturnStage stage)
 {
     // The gate comes before the clock read so a disabled run never issues
     // RDTSC on the return path.
@@ -206,7 +206,7 @@ AotReturnStageScope::~AotReturnStageScope()
     Close();
 }
 
-AotReturnOuterScope::AotReturnOuterScope(Win32AotReturnStageProfile* profile)
+AotReturnOuterScope::AotReturnOuterScope(AotReturnStageProfile* profile)
 {
     if (profile == nullptr || !AotReturnStageProfileEnabled())
     {

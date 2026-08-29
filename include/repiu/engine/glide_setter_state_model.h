@@ -17,9 +17,9 @@ namespace repiu::engine
 // The gate stack mirror holds the return address plus seven argument dwords, so a
 // key can carry seven arguments. A wider setter is excluded rather than truncated
 // into a colliding key.
-constexpr std::size_t kWin32GlideSetterStateKeyWords = 7U;
+constexpr std::size_t kGlideSetterStateKeyWords = 7U;
 
-struct Win32GlideSetterStateKey
+struct GlideSetterStateKey
 {
     std::uint32_t word_count = 0;
     // Monotonic counter incremented by every texture download. Texture-state
@@ -28,13 +28,13 @@ struct Win32GlideSetterStateKey
     // carry it; every other setter builds its key with zero, so a download does
     // not spuriously invalidate an unrelated mask.
     std::uint32_t texture_generation = 0;
-    std::array<std::uint32_t, kWin32GlideSetterStateKeyWords> words = {};
+    std::array<std::uint32_t, kGlideSetterStateKeyWords> words = {};
 };
 
-bool GlideSetterStateKeysEqual(const Win32GlideSetterStateKey& left,
-                               const Win32GlideSetterStateKey& right);
+bool GlideSetterStateKeysEqual(const GlideSetterStateKey& left,
+                               const GlideSetterStateKey& right);
 
-Win32GlideSetterStateKey BuildGlideSetterStateKey(
+GlideSetterStateKey BuildGlideSetterStateKey(
     const std::uint32_t* argument_words,
     std::uint32_t argument_word_count,
     std::uint32_t texture_generation);

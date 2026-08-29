@@ -52,8 +52,8 @@ std::uint64_t HashGlideTexturePixels(const std::uint8_t* rgba8,
     return hash;
 }
 
-void RecordGlideTextureUpload(Win32GlideTextureCensus* census,
-                              const Win32GlideTextureUpload& upload,
+void RecordGlideTextureUpload(GlideTextureCensus* census,
+                              const GlideTextureUpload& upload,
                               const std::uint8_t* rgba8,
                               std::size_t byte_count)
 {
@@ -109,7 +109,7 @@ void RecordGlideTextureUpload(Win32GlideTextureCensus* census,
     existing->second = hash;
 }
 
-void RecordGlidePaletteDownload(Win32GlideTextureCensus* census,
+void RecordGlidePaletteDownload(GlideTextureCensus* census,
                                 const bool identical)
 {
     if (census == nullptr)
@@ -128,7 +128,7 @@ void RecordGlidePaletteDownload(Win32GlideTextureCensus* census,
     }
 }
 
-void RecordGlidePaletteRefresh(Win32GlideTextureCensus* census,
+void RecordGlidePaletteRefresh(GlideTextureCensus* census,
                                const bool success,
                                const std::size_t source_bytes,
                                const std::size_t rgba_bytes,
@@ -152,10 +152,10 @@ void RecordGlidePaletteRefresh(Win32GlideTextureCensus* census,
     census->palette_refresh_rgba_bytes += rgba_bytes;
 }
 
-Win32GlideTextureCensusSnapshot SnapshotGlideTextureCensus(
-    const Win32GlideTextureCensus& census)
+GlideTextureCensusSnapshot SnapshotGlideTextureCensus(
+    const GlideTextureCensus& census)
 {
-    Win32GlideTextureCensusSnapshot snapshot;
+    GlideTextureCensusSnapshot snapshot;
     snapshot.enabled = census.enabled;
     snapshot.upload_count = census.upload_count;
     snapshot.distinct_address_count = census.distinct_address_count;
@@ -236,7 +236,7 @@ std::uint32_t GlideTextureDumpLimit()
 
 bool WriteGlideTextureDump(const std::filesystem::path& directory,
                            std::uint32_t sequence,
-                           const Win32GlideTextureUpload& upload,
+                           const GlideTextureUpload& upload,
                            std::uint64_t content_hash,
                            const std::uint8_t* rgba8,
                            std::size_t byte_count)

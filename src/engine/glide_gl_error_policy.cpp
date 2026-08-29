@@ -28,7 +28,7 @@ bool GlideGlErrorCheckPolicyEnabled()
     return enabled;
 }
 
-void RecordGlideGlErrorFrameCheck(Win32GlideGlErrorPolicyProfile* profile,
+void RecordGlideGlErrorFrameCheck(GlideGlErrorPolicyProfile* profile,
                                   std::uint32_t first_error_code,
                                   std::uint32_t drain_iterations)
 {
@@ -75,7 +75,7 @@ bool TryReadGlideGlErrorFrameInterval(std::uint32_t* interval)
         ResolveGlideGlErrorFrameInterval(value, interval);
 }
 
-void RecordGlideGlDebugMessage(Win32GlideGlErrorPolicyProfile* profile,
+void RecordGlideGlDebugMessage(GlideGlErrorPolicyProfile* profile,
                                std::uint32_t id,
                                bool is_error,
                                const char* message,
@@ -109,12 +109,12 @@ void RecordGlideGlDebugMessage(Win32GlideGlErrorPolicyProfile* profile,
     profile->first_debug_message[copied] = '\0';
 }
 
-Win32GlideGlErrorPolicySnapshot SnapshotGlideGlErrorPolicy(
-    const Win32GlideGlErrorPolicyProfile& profile,
+GlideGlErrorPolicySnapshot SnapshotGlideGlErrorPolicy(
+    const GlideGlErrorPolicyProfile& profile,
     bool per_call_check_enabled,
     std::uint32_t frame_interval)
 {
-    Win32GlideGlErrorPolicySnapshot snapshot;
+    GlideGlErrorPolicySnapshot snapshot;
     snapshot.per_call_check_enabled = per_call_check_enabled;
     snapshot.frame_interval = frame_interval;
     snapshot.frame_check_count = profile.frame_check_count;

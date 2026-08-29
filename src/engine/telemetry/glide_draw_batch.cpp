@@ -50,10 +50,10 @@ bool IsGlideDrawBatchGate(repiu::hle::GlideGateId gate_id)
     }
 }
 
-bool QueueGlideDrawPrimitive(Win32GlideDrawBatch* batch,
+bool QueueGlideDrawPrimitive(GlideDrawBatch* batch,
                              const repiu::hle::GlideDrawVertex* vertices,
                              const std::size_t vertex_count,
-                             const Win32GlideBatchPrimitive primitive,
+                             const GlideBatchPrimitive primitive,
                              bool* flush_required)
 {
     if (flush_required != nullptr)
@@ -61,20 +61,20 @@ bool QueueGlideDrawPrimitive(Win32GlideDrawBatch* batch,
         *flush_required = false;
     }
     if (batch == nullptr || vertices == nullptr || vertex_count == 0U ||
-        primitive == Win32GlideBatchPrimitive::kNone)
+        primitive == GlideBatchPrimitive::kNone)
     {
         return false;
     }
     // One primitive must never straddle a flush, so a batch that cannot hold
     // the whole primitive is flushed first rather than partially filled.
-    if (vertex_count > kWin32GlideDrawBatchVertexCapacity)
+    if (vertex_count > kGlideDrawBatchVertexCapacity)
     {
         return false;
     }
     if (!batch->vertices.empty() &&
         (batch->primitive != primitive ||
          batch->vertices.size() + vertex_count >
-             kWin32GlideDrawBatchVertexCapacity))
+             kGlideDrawBatchVertexCapacity))
     {
         if (flush_required != nullptr)
         {
@@ -82,9 +82,9 @@ bool QueueGlideDrawPrimitive(Win32GlideDrawBatch* batch,
         }
         return false;
     }
-    if (batch->vertices.capacity() < kWin32GlideDrawBatchVertexCapacity)
+    if (batch->vertices.capacity() < kGlideDrawBatchVertexCapacity)
     {
-        batch->vertices.reserve(kWin32GlideDrawBatchVertexCapacity);
+        batch->vertices.reserve(kGlideDrawBatchVertexCapacity);
     }
     batch->enabled = true;
     batch->primitive = primitive;
@@ -96,10 +96,10 @@ bool QueueGlideDrawPrimitive(Win32GlideDrawBatch* batch,
     return true;
 }
 
-Win32GlideDrawBatchSnapshot SnapshotGlideDrawBatch(
-    const Win32GlideDrawBatch& batch)
+GlideDrawBatchSnapshot SnapshotGlideDrawBatch(
+    const GlideDrawBatch& batch)
 {
-    Win32GlideDrawBatchSnapshot snapshot;
+    GlideDrawBatchSnapshot snapshot;
     snapshot.enabled = batch.enabled;
     snapshot.queued_vertex_count = batch.queued_vertex_count;
     snapshot.drawn_vertex_count = batch.drawn_vertex_count;

@@ -30,7 +30,7 @@ void ConfigureAotDbtCallStepProbe(
 
 bool MaybeArmAotDbtCallStepProbe(
     ThreadContext* context,
-    Win32AotTransferOrigin origin,
+    AotTransferOrigin origin,
     const runtime::AotDbtIndirectDispatchSite& site,
     std::uint32_t call_sequence,
     std::uint32_t guest_target,

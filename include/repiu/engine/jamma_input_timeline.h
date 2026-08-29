@@ -1,5 +1,5 @@
-#ifndef REPIU_PLATFORM_WIN32_JAMMA_INPUT_TIMELINE_H_
-#define REPIU_PLATFORM_WIN32_JAMMA_INPUT_TIMELINE_H_
+#ifndef REPIU_ENGINE_JAMMA_INPUT_TIMELINE_H_
+#define REPIU_ENGINE_JAMMA_INPUT_TIMELINE_H_
 
 #include "repiu/input/jamma_input_key.h"
 
@@ -15,7 +15,7 @@ namespace repiu::engine
 using repiu::input::JammaInputKey;
 using repiu::input::JammaInputKeyMask;
 
-struct Win32JammaInputTimelineSnapshot
+struct JammaInputTimelineSnapshot
 {
     std::uint64_t edge_count = 0;
     std::uint64_t history_pruned_count = 0;
@@ -34,7 +34,7 @@ struct Win32JammaInputTimelineSnapshot
     std::uint32_t replay_frame_depth = 0;
 };
 
-class Win32JammaInputTimeline
+class JammaInputTimeline
 {
 public:
     static constexpr std::uint32_t kHistoryCapacity = 256U;
@@ -54,7 +54,7 @@ public:
     bool TryReplayPressedMask(std::uint32_t current_esp,
                               std::uint16_t* pressed_mask);
 
-    Win32JammaInputTimelineSnapshot Snapshot() const;
+    JammaInputTimelineSnapshot Snapshot() const;
 
 private:
     struct HistoryEntry
@@ -109,4 +109,4 @@ std::uint16_t CaptureCurrentJammaPressedMask();
 
 }  // namespace repiu::engine
 
-#endif  // REPIU_PLATFORM_WIN32_JAMMA_INPUT_TIMELINE_H_
+#endif  // REPIU_ENGINE_JAMMA_INPUT_TIMELINE_H_

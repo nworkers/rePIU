@@ -1,6 +1,6 @@
 #include "aot_return_patch_policy_probe.h"
 
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 #include "repiu/engine/aot_return_patch_policy.h"
 
 #include <cstdint>
@@ -14,10 +14,10 @@ namespace
 using repiu::engine::AotReturnPatchAction;
 using repiu::engine::ObserveAotReturnPatchMiss;
 using repiu::engine::SyncAotReturnPatchPolicy;
-using repiu::engine::Win32AotCodeCachePlacement;
+using repiu::engine::AotCodeCachePlacement;
 using repiu::engine::kAotReturnMegamorphicMissThreshold;
 
-void AddSite(Win32AotCodeCachePlacement* placement,
+void AddSite(AotCodeCachePlacement* placement,
              std::uint32_t guest_source,
              std::uint32_t miss_offset)
 {
@@ -27,7 +27,7 @@ void AddSite(Win32AotCodeCachePlacement* placement,
     placement->dbt_return_dispatch_sites.push_back(site);
 }
 
-bool ObserveRepeatedTargets(Win32AotCodeCachePlacement* placement,
+bool ObserveRepeatedTargets(AotCodeCachePlacement* placement,
                             std::uint32_t site_index,
                             std::uint32_t target_count,
                             std::uint32_t observations,
@@ -47,13 +47,13 @@ bool ObserveRepeatedTargets(Win32AotCodeCachePlacement* placement,
 
 bool RunAotReturnPatchPolicyProbe()
 {
-    Win32AotCodeCachePlacement unavailable;
+    AotCodeCachePlacement unavailable;
     AddSite(&unavailable, 0x04010000U, 0x100U);
     const bool unavailable_ok = ObserveAotReturnPatchMiss(
         &unavailable, 0U, 0x03010000U) == AotReturnPatchAction::kPatch &&
         unavailable.return_patch_policy.observation_count == 0U;
 
-    Win32AotCodeCachePlacement monomorphic;
+    AotCodeCachePlacement monomorphic;
     AddSite(&monomorphic, 0x04020000U, 0x200U);
     SyncAotReturnPatchPolicy(&monomorphic);
     const bool monomorphic_ok = ObserveRepeatedTargets(
@@ -61,7 +61,7 @@ bool RunAotReturnPatchPolicyProbe()
         AotReturnPatchAction::kPatch) &&
         monomorphic.return_patch_policy.megamorphic_site_count == 0U;
 
-    Win32AotCodeCachePlacement four_way;
+    AotCodeCachePlacement four_way;
     AddSite(&four_way, 0x04030000U, 0x300U);
     SyncAotReturnPatchPolicy(&four_way);
     const bool four_way_ok = ObserveRepeatedTargets(
@@ -69,7 +69,7 @@ bool RunAotReturnPatchPolicyProbe()
         AotReturnPatchAction::kPatch) &&
         four_way.return_patch_policy.megamorphic_site_count == 0U;
 
-    Win32AotCodeCachePlacement megamorphic;
+    AotCodeCachePlacement megamorphic;
     AddSite(&megamorphic, 0x04040000U, 0x400U);
     AddSite(&megamorphic, 0x04050000U, 0x500U);
     SyncAotReturnPatchPolicy(&megamorphic);

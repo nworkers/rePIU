@@ -12,17 +12,17 @@ namespace
 
 using go = repiu::hle::GlideGateId;
 using engine::BuildGlideSetterStateKey;
-using engine::Win32GlideSetterStateCache;
-using engine::Win32GlideSetterStateKey;
+using engine::GlideSetterStateCache;
+using engine::GlideSetterStateKey;
 
-using CachePtr = std::unique_ptr<Win32GlideSetterStateCache>;
+using CachePtr = std::unique_ptr<GlideSetterStateCache>;
 
 CachePtr MakeCache()
 {
-    return std::make_unique<Win32GlideSetterStateCache>();
+    return std::make_unique<GlideSetterStateCache>();
 }
 
-Win32GlideSetterStateKey OneWordKey(std::uint32_t value,
+GlideSetterStateKey OneWordKey(std::uint32_t value,
                                     std::uint32_t generation = 0U)
 {
     return BuildGlideSetterStateKey(&value, 1U, generation);

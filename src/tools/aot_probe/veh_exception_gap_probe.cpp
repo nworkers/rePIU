@@ -14,11 +14,11 @@ bool RunVehExceptionGapProbe()
     using engine::RecordVehExceptionGap;
     using engine::SnapshotExecutionTimeProfile;
     using engine::VehGapClass;
-    using engine::Win32ExecutionTimeProfile;
+    using engine::ExecutionTimeProfile;
 
     // The first VEH frame has no predecessor, so it must bank nothing: an
     // interval measured from a zero timestamp would be the whole run.
-    Win32ExecutionTimeProfile first;
+    ExecutionTimeProfile first;
     {
         const ExecutionTimeScope scope(&first, ExecutionTimeBucket::kVehTotal);
         RecordVehExceptionGap(&first, VehGapClass::kSingleStep);
@@ -31,7 +31,7 @@ bool RunVehExceptionGapProbe()
 
     // Two further frames each bank the interval since the previous exit, and the
     // class comes from the census call rather than the scope.
-    Win32ExecutionTimeProfile profile;
+    ExecutionTimeProfile profile;
     const auto run_frame = [&profile](VehGapClass gap_class) {
         const ExecutionTimeScope scope(&profile,
                                        ExecutionTimeBucket::kVehTotal);
@@ -60,7 +60,7 @@ bool RunVehExceptionGapProbe()
 
     // An unclassified frame keeps its interval in the residual rather than
     // leaking it into the next exception's measurement.
-    Win32ExecutionTimeProfile unclassified;
+    ExecutionTimeProfile unclassified;
     {
         const ExecutionTimeScope scope(&unclassified,
                                        ExecutionTimeBucket::kVehTotal);
@@ -77,7 +77,7 @@ bool RunVehExceptionGapProbe()
 
     // A nested fault inside a handler must not bank an interval that never
     // contained guest execution, so only the outermost frame attributes.
-    Win32ExecutionTimeProfile nested;
+    ExecutionTimeProfile nested;
     {
         const ExecutionTimeScope outer(&nested,
                                        ExecutionTimeBucket::kVehTotal);
@@ -90,7 +90,7 @@ bool RunVehExceptionGapProbe()
     const bool nested_ignored =
         SnapshotExecutionTimeProfile(nested).veh_gap_counts[0] == 0U;
 
-    Win32ExecutionTimeProfile untouched;
+    ExecutionTimeProfile untouched;
     RecordVehExceptionGap(nullptr, VehGapClass::kSingleStep);
     RecordVehExceptionGap(&untouched, VehGapClass::kSingleStep);
     const bool inert =

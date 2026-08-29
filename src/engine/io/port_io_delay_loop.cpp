@@ -33,15 +33,15 @@ struct LoopBody
     bool zeroes_destination = false;
 };
 
-Win32PortIoDelayLoopStats& MutableStats()
+PortIoDelayLoopStats& MutableStats()
 {
-    static Win32PortIoDelayLoopStats stats;
+    static PortIoDelayLoopStats stats;
     return stats;
 }
 
 void CountOutcome(PortIoDelayLoopOutcome outcome)
 {
-    Win32PortIoDelayLoopStats& stats = MutableStats();
+    PortIoDelayLoopStats& stats = MutableStats();
     const std::uint32_t index = static_cast<std::uint32_t>(outcome);
     if (index < kPortIoDelayLoopOutcomeCount)
     {
@@ -175,7 +175,7 @@ WrappedLoopResult TryBatchWrappedCallLoop(ThreadContext* context,
         return WrappedLoopResult::kNotCandidate;
     }
 
-    Win32PortIoDelayLoopStats& stats = MutableStats();
+    PortIoDelayLoopStats& stats = MutableStats();
     ++stats.wrapped_candidate_count;
 
     // The wrapper's PUSH EDX leaves the caller's counter at [ESP] and the
@@ -336,7 +336,7 @@ bool PortIoDelayLoopEnabled()
     return enabled;
 }
 
-const Win32PortIoDelayLoopStats& GetPortIoDelayLoopStats()
+const PortIoDelayLoopStats& GetPortIoDelayLoopStats()
 {
     return MutableStats();
 }
@@ -352,7 +352,7 @@ bool TryBatchPortIoDelayLoop(ThreadContext* context,
     {
         return false;
     }
-    Win32PortIoDelayLoopStats& stats = MutableStats();
+    PortIoDelayLoopStats& stats = MutableStats();
     stats.enabled = true;
     ++stats.attempt_count;
     if (!guest_bytes_readable)

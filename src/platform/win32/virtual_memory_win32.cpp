@@ -9,7 +9,7 @@ namespace repiu::platform
 namespace
 {
 
-DWORD ToWin32Protection(const MemoryProtection protection)
+DWORD ToProtection(const MemoryProtection protection)
 {
     switch (protection)
     {
@@ -32,7 +32,7 @@ DWORD ToWin32Protection(const MemoryProtection protection)
     return 0;
 }
 
-MemoryProtection FromWin32Protection(const DWORD protection)
+MemoryProtection FromProtection(const DWORD protection)
 {
     // The access bits live in the low byte; PAGE_GUARD, PAGE_NOCACHE, and
     // PAGE_WRITECOMBINE are modifiers above it.
@@ -98,7 +98,7 @@ MemoryReservation ReserveMemory(void* preferred_base,
                                 const MemoryProtection protection)
 {
     MemoryReservation reservation;
-    const DWORD win32_protection = ToWin32Protection(protection);
+    const DWORD win32_protection = ToProtection(protection);
     if (bytes == 0U || win32_protection == 0U)
     {
         reservation.error = ERROR_INVALID_PARAMETER;
@@ -125,7 +125,7 @@ bool CommitMemory(void* base,
                   const std::size_t bytes,
                   const MemoryProtection protection)
 {
-    const DWORD win32_protection = ToWin32Protection(protection);
+    const DWORD win32_protection = ToProtection(protection);
     if (base == nullptr || bytes == 0U || win32_protection == 0U)
     {
         return false;
@@ -156,7 +156,7 @@ bool ProtectMemory(void* address,
                    const MemoryProtection protection,
                    MemoryProtection* previous)
 {
-    const DWORD win32_protection = ToWin32Protection(protection);
+    const DWORD win32_protection = ToProtection(protection);
     if (address == nullptr || bytes == 0U || win32_protection == 0U)
     {
         return false;
@@ -171,7 +171,7 @@ bool ProtectMemory(void* address,
     }
     if (previous != nullptr)
     {
-        *previous = FromWin32Protection(win32_previous);
+        *previous = FromProtection(win32_previous);
     }
     return true;
 }
@@ -219,7 +219,7 @@ MemoryRegion QueryMemory(const void* address)
         // reading it there would report zero, which classifies as kOther.
         return region;
     }
-    region.protection = FromWin32Protection(information.Protect);
+    region.protection = FromProtection(information.Protect);
     Classify(information.Protect, &region);
     return region;
 }

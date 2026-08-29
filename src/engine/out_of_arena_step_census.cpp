@@ -3,7 +3,7 @@
 namespace repiu::engine
 {
 
-void RecordOutOfArenaStep(Win32OutOfArenaStepCensus* census,
+void RecordOutOfArenaStep(OutOfArenaStepCensus* census,
                           std::uint32_t eip,
                           OutOfArenaStepLocation location,
                           bool trace_enabled,
@@ -58,7 +58,7 @@ void RecordOutOfArenaStep(Win32OutOfArenaStepCensus* census,
     ++census->address_overflow_count;
 }
 
-void RecordSingleStepTraceDisposition(Win32OutOfArenaStepCensus* census,
+void RecordSingleStepTraceDisposition(OutOfArenaStepCensus* census,
                                       bool trace_enabled)
 {
     if (census == nullptr)
@@ -73,10 +73,10 @@ void RecordSingleStepTraceDisposition(Win32OutOfArenaStepCensus* census,
     ++census->trace_disabled_fallthrough_count;
 }
 
-Win32OutOfArenaStepCensusSnapshot SnapshotOutOfArenaStepCensus(
-    const Win32OutOfArenaStepCensus& census)
+OutOfArenaStepCensusSnapshot SnapshotOutOfArenaStepCensus(
+    const OutOfArenaStepCensus& census)
 {
-    Win32OutOfArenaStepCensusSnapshot snapshot;
+    OutOfArenaStepCensusSnapshot snapshot;
     snapshot.total_count = census.total_count;
     snapshot.location_counts = census.location_counts;
     snapshot.trace_enabled_count = census.trace_enabled_count;

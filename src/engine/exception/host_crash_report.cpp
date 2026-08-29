@@ -159,7 +159,7 @@ LONG WINAPI ReportUnhandledException(EXCEPTION_POINTERS* pointers)
 }  // namespace
 #endif
 
-void InstallWin32HostCrashReporter()
+void InstallHostCrashReporter()
 {
 #if defined(_WIN32)
     SetUnhandledExceptionFilter(&ReportUnhandledException);

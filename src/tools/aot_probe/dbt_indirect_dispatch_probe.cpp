@@ -3,7 +3,7 @@
 #include <iostream>
 
 #if defined(_WIN32)
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/aot_translation_plan.h"
 #include "../../engine/aot/aot_dbt_indirect_dispatch.h"
@@ -108,7 +108,7 @@ bool ValidateDispatchLayout(const runtime::AotCodeCacheImage& image,
     return true;
 }
 
-bool ValidatePlacement(const engine::Win32AotCodeCachePlacement&
+bool ValidatePlacement(const engine::AotCodeCachePlacement&
                            placement)
 {
     if (placement.dbt_indirect_dispatch_sites.size() != 2U)
@@ -188,9 +188,9 @@ bool RunAotDbtIndirectDispatchProbe()
         ValidateDispatchLayout(image, image.dbt_indirect_dispatch_sites[1],
                                false);
 
-    engine::Win32AotCodeCachePlacement placement;
+    engine::AotCodeCachePlacement placement;
     const bool placed = call_layout && jump_layout &&
-        engine::PlaceWin32AotCodeCache(image, &placement) &&
+        engine::PlaceAotCodeCache(image, &placement) &&
         placement.placed && placement.dbt_indirect_miss_dispatch_enabled;
     const bool placement_ok = placed && ValidatePlacement(placement);
 

@@ -1,5 +1,5 @@
-#ifndef REPIU_PLATFORM_WIN32_X87_CONTEXT_H_
-#define REPIU_PLATFORM_WIN32_X87_CONTEXT_H_
+#ifndef REPIU_ENGINE_X87_CONTEXT_H_
+#define REPIU_ENGINE_X87_CONTEXT_H_
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -16,4 +16,4 @@ bool PushX87Float(CONTEXT* context, float value);
 
 }  // namespace repiu::engine
 
-#endif  // REPIU_PLATFORM_WIN32_X87_CONTEXT_H_
+#endif  // REPIU_ENGINE_X87_CONTEXT_H_

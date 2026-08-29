@@ -1,7 +1,7 @@
 #include "inline_cache_probe.h"
 
-#include "repiu/engine/aot_code_cache_win32.h"
-#include "repiu/engine/aot_page_coherence_win32.h"
+#include "repiu/engine/aot_code_cache.h"
+#include "repiu/engine/aot_page_coherence.h"
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/aot_translation_plan.h"
 #include "../../engine/aot/aot_dbt_return_dispatch.h"
@@ -134,7 +134,7 @@ bool ValidateInitialSite(const runtime::AotCodeCacheImage& image,
 }
 
 bool PatchAndValidateSite(
-    engine::Win32AotCodeCachePlacement* placement,
+    engine::AotCodeCachePlacement* placement,
     std::size_t site_index,
     std::uint32_t first_guest_target)
 {
@@ -149,8 +149,8 @@ bool PatchAndValidateSite(
         placement->base_address + initial_site.miss_cache_offset;
     for (std::size_t index = 0; index < kExpectedEntryCount; ++index)
     {
-        engine::Win32AotInlineCachePatchResult result;
-        if (!engine::PatchWin32AotIndirectInlineCache(
+        engine::AotInlineCachePatchResult result;
+        if (!engine::PatchAotIndirectInlineCache(
                 placement, miss_address,
                 first_guest_target + static_cast<std::uint32_t>(index * 4U),
                 placement->entry_address, &result) || !result.patched)
@@ -277,9 +277,9 @@ bool RunAotIndirectInlineCacheProbe()
         dbt_return_image.bytes[
             dbt_return_image.dbt_return_dispatch_sites[0]
                 .success_cache_offset] == 0xC2U;
-    engine::Win32AotCodeCachePlacement dbt_placement;
+    engine::AotCodeCachePlacement dbt_placement;
     const bool dbt_return_placement = dbt_return_layout &&
-        engine::PlaceWin32AotCodeCache(
+        engine::PlaceAotCodeCache(
             dbt_return_image, &dbt_placement) && dbt_placement.placed &&
         dbt_placement.dbt_return_dispatch_sites.size() == 1U &&
         [&dbt_placement]() {
@@ -301,9 +301,9 @@ bool RunAotIndirectInlineCacheProbe()
                         engine::GetAotDbtReturnMissThunkAddress()));
         }();
 
-    engine::Win32AotCodeCachePlacement placement;
+    engine::AotCodeCachePlacement placement;
     const bool placed = call_layout && jump_layout &&
-        engine::PlaceWin32AotCodeCache(image, &placement) &&
+        engine::PlaceAotCodeCache(image, &placement) &&
         placement.placed;
     const bool call_chain = placed && PatchAndValidateSite(
         &placement, 0U, kGuestPage + 0x100U);
@@ -315,9 +315,9 @@ bool RunAotIndirectInlineCacheProbe()
     {
         const runtime::AotIndirectInlineCacheSite& call_site =
             placement.indirect_inline_cache_sites[0];
-        engine::Win32AotInlineCachePatchResult result;
+        engine::AotInlineCachePatchResult result;
         const std::uint32_t replacement_target = kGuestPage + 0x300U;
-        replacement = engine::PatchWin32AotIndirectInlineCache(
+        replacement = engine::PatchAotIndirectInlineCache(
             &placement, placement.base_address + call_site.miss_cache_offset,
             replacement_target, placement.entry_address, &result) &&
             result.patched;
@@ -332,8 +332,8 @@ bool RunAotIndirectInlineCacheProbe()
     bool retirement = false;
     if (replacement)
     {
-        engine::Win32AotGuestPageRetireResult result;
-        retirement = engine::RetireWin32AotGuestPage(
+        engine::AotGuestPageRetireResult result;
+        retirement = engine::RetireAotGuestPage(
             &placement, kGuestPage, false, &result) && result.retired &&
             result.guard_reset_count == 2U * kExpectedEntryCount;
         const auto* bytes = reinterpret_cast<const std::uint8_t*>(
@@ -375,8 +375,8 @@ bool RunAotIndirectInlineCacheProbe()
               << (retirement ? "true" : "false")
               << "\ninline_cache_all=" << (all ? "true" : "false")
               << "\n";
-    engine::ReleaseWin32AotCodeCache(&placement);
-    engine::ReleaseWin32AotCodeCache(&dbt_placement);
+    engine::ReleaseAotCodeCache(&placement);
+    engine::ReleaseAotCodeCache(&dbt_placement);
     return all;
 #endif
 }

@@ -16,7 +16,7 @@ bool ReadGlideOrdinalTimingProfileSetting()
 }
 
 template <typename T>
-T CounterDelta(Win32GlideOrdinalTimingProfile* profile,
+T CounterDelta(GlideOrdinalTimingProfile* profile,
                T before,
                T after)
 {
@@ -28,8 +28,8 @@ T CounterDelta(Win32GlideOrdinalTimingProfile* profile,
     return 0;
 }
 
-Win32GlideOrdinalTimingEntry* FindEntry(
-    Win32GlideOrdinalTimingProfile* profile,
+GlideOrdinalTimingEntry* FindEntry(
+    GlideOrdinalTimingProfile* profile,
     std::uint16_t ordinal)
 {
     if (profile == nullptr)
@@ -59,11 +59,11 @@ bool GlideOrdinalTimingProfileEnabled()
 }
 
 void RecordGlideOrdinalGateTime(
-    Win32GlideOrdinalTimingProfile* profile,
+    GlideOrdinalTimingProfile* profile,
     std::uint16_t ordinal,
     std::uint64_t gate_cycles)
 {
-    Win32GlideOrdinalTimingEntry* entry = FindEntry(profile, ordinal);
+    GlideOrdinalTimingEntry* entry = FindEntry(profile, ordinal);
     if (entry == nullptr)
     {
         return;
@@ -75,7 +75,7 @@ void RecordGlideOrdinalGateTime(
 }
 
 void RecordGlideOrdinalRendezvous(
-    Win32GlideOrdinalTimingProfile* profile,
+    GlideOrdinalTimingProfile* profile,
     std::uint16_t ordinal,
     std::uint64_t enter_cycles,
     std::uint64_t publish_cycles,
@@ -83,7 +83,7 @@ void RecordGlideOrdinalRendezvous(
     std::uint64_t host_finish_cycles,
     std::uint64_t resume_cycles)
 {
-    Win32GlideOrdinalTimingEntry* entry = FindEntry(profile, ordinal);
+    GlideOrdinalTimingEntry* entry = FindEntry(profile, ordinal);
     if (entry == nullptr)
     {
         return;
@@ -102,11 +102,11 @@ void RecordGlideOrdinalRendezvous(
 }
 
 void RecordGlideOrdinalDirectWork(
-    Win32GlideOrdinalTimingProfile* profile,
+    GlideOrdinalTimingProfile* profile,
     std::uint16_t ordinal,
     std::uint64_t cycles)
 {
-    Win32GlideOrdinalTimingEntry* entry = FindEntry(profile, ordinal);
+    GlideOrdinalTimingEntry* entry = FindEntry(profile, ordinal);
     if (entry == nullptr)
     {
         return;
@@ -115,15 +115,15 @@ void RecordGlideOrdinalDirectWork(
     entry->direct_work_cycles += cycles;
 }
 
-Win32GlideOrdinalTimingSnapshot SnapshotGlideOrdinalTiming(
-    const Win32GlideOrdinalTimingProfile& profile)
+GlideOrdinalTimingSnapshot SnapshotGlideOrdinalTiming(
+    const GlideOrdinalTimingProfile& profile)
 {
-    Win32GlideOrdinalTimingSnapshot snapshot;
+    GlideOrdinalTimingSnapshot snapshot;
     snapshot.enabled = profile.enabled;
     snapshot.entries = profile.entries;
     snapshot.overflow_count = profile.overflow_count;
     snapshot.clamped_sample_count = profile.clamped_sample_count;
-    for (const Win32GlideOrdinalTimingEntry& entry : profile.entries)
+    for (const GlideOrdinalTimingEntry& entry : profile.entries)
     {
         if (entry.count == 0U && entry.rendezvous_count == 0U &&
             entry.direct_count == 0U)

@@ -115,7 +115,7 @@ extern "C" void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtIndirectMissFrame(
         AotDbtDispatchFallbackReason::kUnknown;
     if (!HandleAotIndirectTransfer(
             fault, context, &fallback_reason,
-            Win32AotTransferOrigin::kHost))
+            AotTransferOrigin::kHost))
     {
         RecordAotDbtIndirectFallback(context, fallback_reason);
         return;
@@ -127,7 +127,7 @@ extern "C" void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtIndirectMissFrame(
         const ThreadContext::AotCallFrame& call_frame =
             context->aot_call_frames[context->aot_call_depth - 1U];
         MaybeArmAotDbtCallStepProbe(
-            context, Win32AotTransferOrigin::kHost, site,
+            context, AotTransferOrigin::kHost, site,
             call_frame.trace_sequence,
             call_frame.target,
             static_cast<std::uint32_t>(guest_context.Eip),

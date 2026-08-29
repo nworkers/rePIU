@@ -591,8 +591,8 @@ void PrintRelocatedRuntimeImage(
     }
 }
 
-void PrintWin32RuntimeMemoryPolicy(
-    const repiu::engine::Win32RuntimeMemoryPolicy& policy)
+void PrintRuntimeMemoryPolicy(
+    const repiu::engine::RuntimeMemoryPolicy& policy)
 {
     std::cout << "Win32 runtime memory policy: "
               << (policy.valid ? "valid" : "invalid") << "\n";
@@ -612,8 +612,8 @@ void PrintWin32RuntimeMemoryPolicy(
               << policy.message << "\n";
 }
 
-void PrintWin32AddressRangeProbe(
-    const repiu::engine::Win32AddressRangeProbe& probe)
+void PrintAddressRangeProbe(
+    const repiu::engine::AddressRangeProbe& probe)
 {
     std::cout << "Win32 allocation dry run: "
               << (probe.valid ? "valid" : "invalid") << "\n";
@@ -793,18 +793,18 @@ int main(int argc, char** argv)
 
     PrintRelocatedRuntimeImage(relocated_image);
 
-    repiu::engine::Win32RuntimeMemoryPolicy win32_policy;
-    if (!repiu::engine::BuildWin32RuntimeMemoryPolicy(
+    repiu::engine::RuntimeMemoryPolicy win32_policy;
+    if (!repiu::engine::BuildRuntimeMemoryPolicy(
             runtime_plan, &win32_policy))
     {
         std::cerr << "Failed to build Win32 runtime memory policy\n";
         return 1;
     }
 
-    PrintWin32RuntimeMemoryPolicy(win32_policy);
+    PrintRuntimeMemoryPolicy(win32_policy);
 
-    repiu::engine::Win32AddressRangeProbe win32_probe;
-    if (!repiu::engine::ProbeWin32RuntimeAddressRange(
+    repiu::engine::AddressRangeProbe win32_probe;
+    if (!repiu::engine::ProbeRuntimeAddressRange(
             win32_policy, &win32_probe))
     {
         std::cerr << "Failed to probe Win32 runtime address range: "
@@ -812,6 +812,6 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    PrintWin32AddressRangeProbe(win32_probe);
+    PrintAddressRangeProbe(win32_probe);
     return 0;
 }

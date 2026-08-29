@@ -72,9 +72,9 @@ bool LiveExecutionProfileReportEnabled()
 }
 
 void ReportLiveExecutionProfileIfDue(
-    const Win32ExecutionTimeProfile* profile,
+    const ExecutionTimeProfile* profile,
     const std::uint64_t frames,
-    const Win32LiveAotCounters& aot)
+    const LiveAotCounters& aot)
 {
     const std::uint32_t interval = IntervalMilliseconds();
     if (interval == 0U || profile == nullptr || !profile->enabled)
@@ -99,9 +99,9 @@ void ReportLiveExecutionProfileIfDue(
         return;
     }
 
-    const Win32ExecutionTimeProfileSnapshot snapshot =
+    const ExecutionTimeProfileSnapshot snapshot =
         SnapshotExecutionTimeProfile(*profile);
-    const Win32ExecutionTimeShares shares =
+    const ExecutionTimeShares shares =
         ComputeExecutionTimeShares(snapshot);
 
     // Reported as a window rather than only as a running total. A total over a

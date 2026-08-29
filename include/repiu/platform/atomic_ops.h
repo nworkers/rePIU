@@ -4,7 +4,7 @@
 // Task 503d-3. Atomic read-modify-write on plain `long`.
 //
 // The engine already uses std::atomic for its own counters. These are for the
-// ones it cannot: `Win32SharedLiveTelemetry` is a fixed layout mapped by a
+// ones it cannot: `SharedLiveTelemetry` is a fixed layout mapped by a
 // second process, so its fields are `volatile long` and have to stay that way.
 // Wrapping them in std::atomic would change what that other process reads.
 //

@@ -32,19 +32,19 @@ bool IsTargetSequence(const ThreadContext& context,
 }
 
 void AppendEntry(ThreadContext* context,
-                 Win32AotCallStepProbeEntry entry)
+                 AotCallStepProbeEntry entry)
 {
     const std::uint32_t sequence =
         context->aot_dbt_call_step_probe_trace_count + 1U;
     entry.sequence = sequence;
     context->aot_dbt_call_step_probe_trace[
-        (sequence - 1U) % kWin32AotCallStepProbeTraceCapacity] = entry;
+        (sequence - 1U) % kAotCallStepProbeTraceCapacity] = entry;
     context->aot_dbt_call_step_probe_trace_count = sequence;
 }
 
 void CaptureStack(ThreadContext* context,
                   std::uint32_t esp,
-                  Win32AotCallStepProbeEntry* entry)
+                  AotCallStepProbeEntry* entry)
 {
     if (context == nullptr || entry == nullptr)
     {
@@ -66,14 +66,14 @@ void CaptureStack(ThreadContext* context,
     }
 }
 
-Win32AotCallStepProbeEntry CaptureEntry(
+AotCallStepProbeEntry CaptureEntry(
     ThreadContext& context,
     const repiu::platform::GuestCpuContext& win32_context,
-    Win32AotCallStepProbeEventKind kind,
+    AotCallStepProbeEventKind kind,
     std::uint32_t expected_eip,
     std::uint32_t expected_esp)
 {
-    Win32AotCallStepProbeEntry entry;
+    AotCallStepProbeEntry entry;
     entry.kind = kind;
     entry.call_sequence =
         context.aot_dbt_call_step_probe_active_call_sequence;
@@ -120,7 +120,7 @@ void RestoreDebugState(repiu::platform::GuestCpuContext* win32_context, ThreadCo
 void FinishProbe(ThreadContext* context)
 {
     context->aot_dbt_call_step_probe_phase =
-        Win32AotCallStepProbePhase::kIdle;
+        AotCallStepProbePhase::kIdle;
     context->aot_dbt_call_step_probe_active_call_sequence = 0U;
 }
 
@@ -130,7 +130,7 @@ void RecordConflict(repiu::platform::GuestCpuContext* win32_context, ThreadConte
         context,
         CaptureEntry(
             *context, *win32_context,
-            Win32AotCallStepProbeEventKind::kConflict,
+            AotCallStepProbeEventKind::kConflict,
             context->aot_dbt_call_step_probe_guest_return,
             context->aot_dbt_call_step_probe_entry_esp));
     ++context->aot_dbt_call_step_probe_conflict_count;
@@ -151,7 +151,7 @@ void ConfigureAotDbtCallStepProbe(
     const char* cursor = sequence_list;
     while (*cursor != '\0' &&
            context->aot_dbt_call_step_probe_target_count <
-               kWin32AotCallStepProbeTargetCapacity)
+               kAotCallStepProbeTargetCapacity)
     {
         char* end = nullptr;
         const unsigned long parsed = std::strtoul(cursor, &end, 10);
@@ -192,7 +192,7 @@ void ConfigureAotDbtCallStepProbe(
 
 bool MaybeArmAotDbtCallStepProbe(
     ThreadContext* context,
-    Win32AotTransferOrigin origin,
+    AotTransferOrigin origin,
     const runtime::AotDbtIndirectDispatchSite& site,
     std::uint32_t call_sequence,
     std::uint32_t guest_target,
@@ -204,14 +204,14 @@ bool MaybeArmAotDbtCallStepProbe(
     if (context == nullptr || saved_eflags == nullptr ||
         !context->aot_dbt_call_step_probe_configured ||
         context->aot_placement == nullptr ||
-        origin != Win32AotTransferOrigin::kHost || !site.is_call ||
+        origin != AotTransferOrigin::kHost || !site.is_call ||
         call_sequence == 0U ||
         !IsTargetSequence(*context, call_sequence))
     {
         return false;
     }
     if (context->aot_dbt_call_step_probe_phase !=
-        Win32AotCallStepProbePhase::kIdle)
+        AotCallStepProbePhase::kIdle)
     {
         ++context->aot_dbt_call_step_probe_skipped_count;
         return false;
@@ -228,7 +228,7 @@ bool MaybeArmAotDbtCallStepProbe(
     context->aot_dbt_call_step_probe_original_tf =
         *saved_eflags & kTrapFlag;
     context->aot_dbt_call_step_probe_phase =
-        Win32AotCallStepProbePhase::kAwaitPreC3;
+        AotCallStepProbePhase::kAwaitPreC3;
     *saved_eflags |= kTrapFlag;
     ++context->aot_dbt_call_step_probe_arm_count;
     return true;
@@ -240,21 +240,21 @@ bool HandleAotDbtCallStepProbe(const repiu::platform::FaultEvent& fault,
     repiu::platform::GuestCpuContext* win32_context = fault.registers;
     if (win32_context == nullptr || context == nullptr ||
         context->aot_dbt_call_step_probe_phase ==
-            Win32AotCallStepProbePhase::kIdle ||
+            AotCallStepProbePhase::kIdle ||
         fault.kind != repiu::platform::FaultKind::kSingleStep)
     {
         return false;
     }
 
-    const Win32AotCallStepProbePhase phase =
+    const AotCallStepProbePhase phase =
         context->aot_dbt_call_step_probe_phase;
-    if (phase == Win32AotCallStepProbePhase::kAwaitPreC3)
+    if (phase == AotCallStepProbePhase::kAwaitPreC3)
     {
         const std::uint32_t expected_esp =
             context->aot_dbt_call_step_probe_entry_esp - 8U;
-        Win32AotCallStepProbeEntry entry = CaptureEntry(
+        AotCallStepProbeEntry entry = CaptureEntry(
             *context, *win32_context,
-            Win32AotCallStepProbeEventKind::kPreC3,
+            AotCallStepProbeEventKind::kPreC3,
             context->aot_dbt_call_step_probe_pre_eip,
             expected_esp);
         AppendEntry(context, entry);
@@ -264,7 +264,7 @@ bool HandleAotDbtCallStepProbe(const repiu::platform::FaultEvent& fault,
                 context,
                 CaptureEntry(
                     *context, *win32_context,
-                    Win32AotCallStepProbeEventKind::kUnexpected,
+                    AotCallStepProbeEventKind::kUnexpected,
                     context->aot_dbt_call_step_probe_pre_eip,
                     expected_esp));
             if (context->aot_dbt_call_step_probe_original_tf != 0U)
@@ -280,19 +280,19 @@ bool HandleAotDbtCallStepProbe(const repiu::platform::FaultEvent& fault,
             return false;
         }
         context->aot_dbt_call_step_probe_phase =
-            Win32AotCallStepProbePhase::kAwaitPostC3;
+            AotCallStepProbePhase::kAwaitPostC3;
         win32_context->Dr6 = 0U;
         win32_context->EFlags |= kTrapFlag;
         return true;
     }
 
-    if (phase == Win32AotCallStepProbePhase::kAwaitPostC3)
+    if (phase == AotCallStepProbePhase::kAwaitPostC3)
     {
         const std::uint32_t expected_esp =
             context->aot_dbt_call_step_probe_entry_esp - 4U;
-        Win32AotCallStepProbeEntry entry = CaptureEntry(
+        AotCallStepProbeEntry entry = CaptureEntry(
             *context, *win32_context,
-            Win32AotCallStepProbeEventKind::kPostC3,
+            AotCallStepProbeEventKind::kPostC3,
             context->aot_dbt_call_step_probe_post_eip,
             expected_esp);
         AppendEntry(context, entry);
@@ -347,11 +347,11 @@ bool HandleAotDbtCallStepProbe(const repiu::platform::FaultEvent& fault,
              ~(kDebugEnableMask | kDr01ControlMask)) |
             (has_return_cache ? 0x5U : 0x1U);
         context->aot_dbt_call_step_probe_phase =
-            Win32AotCallStepProbePhase::kAwaitReturnTarget;
+            AotCallStepProbePhase::kAwaitReturnTarget;
         return true;
     }
 
-    if (phase == Win32AotCallStepProbePhase::kAwaitReturnTarget)
+    if (phase == AotCallStepProbePhase::kAwaitReturnTarget)
     {
         const std::uint32_t dr6 =
             static_cast<std::uint32_t>(win32_context->Dr6);
@@ -373,7 +373,7 @@ bool HandleAotDbtCallStepProbe(const repiu::platform::FaultEvent& fault,
             context,
             CaptureEntry(
                 *context, *win32_context,
-                Win32AotCallStepProbeEventKind::kReturnTarget,
+                AotCallStepProbeEventKind::kReturnTarget,
                 cache_hit
                     ? (context->aot_dbt_call_step_probe_return_cache_eip != 0U
                            ? context->aot_dbt_call_step_probe_return_cache_eip
@@ -392,7 +392,7 @@ bool AotDbtCallStepReturnWatchActive(const ThreadContext* context)
 {
     return context != nullptr &&
            context->aot_dbt_call_step_probe_phase ==
-               Win32AotCallStepProbePhase::kAwaitReturnTarget;
+               AotCallStepProbePhase::kAwaitReturnTarget;
 }
 
 }  // namespace repiu::engine

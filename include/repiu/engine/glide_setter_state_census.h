@@ -13,14 +13,14 @@ namespace repiu::engine
 // that was last applied successfully" without changing any dispatch result. It is
 // observation only. Task 365's cache acts on the answer, and both take their rules
 // from `glide_setter_state_model.h` so they cannot disagree.
-constexpr std::size_t kWin32GlideSetterCensusCapacity = 256U;
+constexpr std::size_t kGlideSetterCensusCapacity = 256U;
 
 // Distinct-value tracking is a bounded linear set: state setters in the target
 // list use a handful of values, and a saturating counter is enough to tell "two
 // alternating values" from "a wide distribution".
-constexpr std::size_t kWin32GlideSetterCensusDistinctCapacity = 8U;
+constexpr std::size_t kGlideSetterCensusDistinctCapacity = 8U;
 
-struct Win32GlideSetterCensusEntry
+struct GlideSetterCensusEntry
 {
     std::uint32_t call_count = 0;
     // No successfully applied state was on record for this ordinal yet.
@@ -42,16 +42,16 @@ struct Win32GlideSetterCensusEntry
     std::uint32_t distinct_key_count = 0;
     std::uint32_t distinct_overflow_count = 0;
     bool applied_valid = false;
-    Win32GlideSetterStateKey applied_key;
-    std::array<Win32GlideSetterStateKey,
-               kWin32GlideSetterCensusDistinctCapacity> distinct_keys = {};
+    GlideSetterStateKey applied_key;
+    std::array<GlideSetterStateKey,
+               kGlideSetterCensusDistinctCapacity> distinct_keys = {};
 };
 
-struct Win32GlideSetterCensusProfile
+struct GlideSetterCensusProfile
 {
     bool enabled = false;
-    std::array<Win32GlideSetterCensusEntry,
-               kWin32GlideSetterCensusCapacity> entries = {};
+    std::array<GlideSetterCensusEntry,
+               kGlideSetterCensusCapacity> entries = {};
     std::uint32_t ordinal_overflow_count = 0;
     std::uint32_t invalidation_count = 0;
     std::uint32_t frame_count = 0;
@@ -62,7 +62,7 @@ struct Win32GlideSetterCensusProfile
 // directly by the reporting path: an entry is a few hundred bytes and the array is
 // 256 wide, so duplicating it into a by-value snapshot would put a hundred
 // kilobytes on the stack at every copy.
-struct Win32GlideSetterCensusSnapshot
+struct GlideSetterCensusSnapshot
 {
     bool enabled = false;
     std::uint32_t active_entry_count = 0;
@@ -81,7 +81,7 @@ struct Win32GlideSetterCensusSnapshot
 };
 
 // The outcome the boundary observed after the unmodified dispatch ran.
-enum class Win32GlideSetterCensusOutcome : std::uint8_t
+enum class GlideSetterCensusOutcome : std::uint8_t
 {
     kApplied = 0,
     kUnsupported,
@@ -92,27 +92,27 @@ bool ResolveGlideSetterCensusEnabled(std::string_view setting);
 bool GlideSetterCensusEnabled();
 
 void RecordGlideSetterCensusCall(
-    Win32GlideSetterCensusProfile* profile,
+    GlideSetterCensusProfile* profile,
     std::uint16_t ordinal,
-    const Win32GlideSetterStateKey& key,
-    Win32GlideSetterCensusOutcome outcome);
+    const GlideSetterStateKey& key,
+    GlideSetterCensusOutcome outcome);
 
 void RecordGlideSetterCensusKeyOverflow(
-    Win32GlideSetterCensusProfile* profile,
+    GlideSetterCensusProfile* profile,
     std::uint16_t ordinal);
 
 void RecordGlideSetterCensusInvalidation(
-    Win32GlideSetterCensusProfile* profile);
+    GlideSetterCensusProfile* profile);
 
 void RecordGlideSetterCensusTextureGeneration(
-    Win32GlideSetterCensusProfile* profile);
+    GlideSetterCensusProfile* profile);
 
 // `grBufferSwap` is the frame boundary: it rolls the per-frame maxima and resets
 // the per-frame counters.
 void RecordGlideSetterCensusFrameBoundary(
-    Win32GlideSetterCensusProfile* profile);
+    GlideSetterCensusProfile* profile);
 
-Win32GlideSetterCensusSnapshot SnapshotGlideSetterCensus(
-    const Win32GlideSetterCensusProfile& profile);
+GlideSetterCensusSnapshot SnapshotGlideSetterCensus(
+    const GlideSetterCensusProfile& profile);
 
 }  // namespace repiu::engine

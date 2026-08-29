@@ -104,7 +104,7 @@ enum class VehGapClass : std::uint32_t
 constexpr std::uint32_t kVehGapClassCount =
     static_cast<std::uint32_t>(VehGapClass::kCount);
 
-struct Win32ExecutionTimeProfile
+struct ExecutionTimeProfile
 {
     bool enabled = false;
     std::array<std::uint64_t, kExecutionTimeBucketCount> cycles = {};
@@ -162,7 +162,7 @@ struct Win32ExecutionTimeProfile
     std::uint32_t veh_gap_clamped_count = 0;
 };
 
-struct Win32ExecutionTimeProfileSnapshot
+struct ExecutionTimeProfileSnapshot
 {
     bool enabled = false;
     std::array<std::uint64_t, kExecutionTimeBucketCount> cycles = {};
@@ -188,7 +188,7 @@ struct Win32ExecutionTimeProfileSnapshot
 bool ResolveExecutionTimeProfileEnabled(std::string_view setting);
 bool ExecutionTimeProfileEnabled();
 
-void RecordExecutionTimeBucket(Win32ExecutionTimeProfile* profile,
+void RecordExecutionTimeBucket(ExecutionTimeProfile* profile,
                                ExecutionTimeBucket bucket,
                                std::uint64_t cycles,
                                bool inside_veh);
@@ -197,11 +197,11 @@ void RecordExecutionTimeBucket(Win32ExecutionTimeProfile* profile,
 // exception turned out to be. Called from the census, which runs after the
 // exception record has been validated -- classifying inside the scope
 // constructor would have to read a record Task 296 showed can be malformed.
-void RecordVehExceptionGap(Win32ExecutionTimeProfile* profile,
+void RecordVehExceptionGap(ExecutionTimeProfile* profile,
                            VehGapClass gap_class);
 
-Win32ExecutionTimeProfileSnapshot SnapshotExecutionTimeProfile(
-    const Win32ExecutionTimeProfile& profile);
+ExecutionTimeProfileSnapshot SnapshotExecutionTimeProfile(
+    const ExecutionTimeProfile& profile);
 
 // Task 511: the five numbers a report actually quotes, derived once.
 //
@@ -212,7 +212,7 @@ Win32ExecutionTimeProfileSnapshot SnapshotExecutionTimeProfile(
 // run that reaches rendering never stops its guest thread and so never reaches
 // that summary at all. Two copies of a formula is how two reports come to
 // disagree, so there is one.
-struct Win32ExecutionTimeShares
+struct ExecutionTimeShares
 {
     std::uint64_t total = 0;
     std::uint64_t veh = 0;
@@ -225,13 +225,13 @@ struct Win32ExecutionTimeShares
     std::uint64_t unaccounted = 0;
 };
 
-[[nodiscard]] Win32ExecutionTimeShares ComputeExecutionTimeShares(
-    const Win32ExecutionTimeProfileSnapshot& snapshot);
+[[nodiscard]] ExecutionTimeShares ComputeExecutionTimeShares(
+    const ExecutionTimeProfileSnapshot& snapshot);
 
 class ExecutionTimeScope
 {
 public:
-    ExecutionTimeScope(Win32ExecutionTimeProfile* profile,
+    ExecutionTimeScope(ExecutionTimeProfile* profile,
                        ExecutionTimeBucket bucket,
                        std::uint64_t* completed_cycles = nullptr);
     ~ExecutionTimeScope();
@@ -240,7 +240,7 @@ public:
     ExecutionTimeScope& operator=(const ExecutionTimeScope&) = delete;
 
 private:
-    Win32ExecutionTimeProfile* profile_ = nullptr;
+    ExecutionTimeProfile* profile_ = nullptr;
     ExecutionTimeBucket bucket_ = ExecutionTimeBucket::kGuestRunTotal;
     std::uint64_t start_cycles_ = 0;
     std::uint64_t* completed_cycles_ = nullptr;

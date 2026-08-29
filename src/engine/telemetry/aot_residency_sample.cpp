@@ -99,7 +99,7 @@ void AccumulateAotResidency(ThreadContext* context,
     }
     if (context->shared_live_telemetry != nullptr)
     {
-        Win32SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
+        SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
         repiu::platform::AtomicExchangeAdd(&telemetry->aot_residency_total,
                                static_cast<long>(count));
         repiu::platform::AtomicIncrement(&telemetry->aot_residency_samples);

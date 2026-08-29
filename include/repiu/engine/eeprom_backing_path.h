@@ -1,5 +1,5 @@
-#ifndef REPIU_PLATFORM_WIN32_EEPROM_BACKING_PATH_H_
-#define REPIU_PLATFORM_WIN32_EEPROM_BACKING_PATH_H_
+#ifndef REPIU_ENGINE_EEPROM_BACKING_PATH_H_
+#define REPIU_ENGINE_EEPROM_BACKING_PATH_H_
 
 #include <string>
 
@@ -21,4 +21,4 @@ void SetEepromBackingPath(const std::string& path);
 
 }  // namespace repiu::engine
 
-#endif  // REPIU_PLATFORM_WIN32_EEPROM_BACKING_PATH_H_
+#endif  // REPIU_ENGINE_EEPROM_BACKING_PATH_H_

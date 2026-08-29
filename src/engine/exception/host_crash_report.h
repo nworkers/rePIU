@@ -15,6 +15,6 @@ namespace repiu::engine
 // Installed once from `main`. It fires only on an exception that would have
 // terminated the process anyway, so it can never mask a fault -- it prints and
 // then lets the process die.
-void InstallWin32HostCrashReporter();
+void InstallHostCrashReporter();
 
 }  // namespace repiu::engine

@@ -307,8 +307,8 @@ void RecordPortIo(ThreadContext *context, std::uint32_t address,
   } else {
     ++context->port_io.unhandled_count;
   }
-  if (context->port_io.trace_stored_count < kWin32PortIoTraceCapacity) {
-    Win32PortIoTraceEntry &entry =
+  if (context->port_io.trace_stored_count < kPortIoTraceCapacity) {
+    PortIoTraceEntry &entry =
         context->port_io.trace[context->port_io.trace_stored_count];
     entry.valid = true;
     entry.sequence = context->port_io.observed_count;
@@ -837,7 +837,7 @@ bool HandlePortIoInstruction(repiu::platform::GuestCpuContext *win32_context, Th
 
   if (context->piu_jamma_board_enabled &&
       IsPortIoTraceCandidate(port, width, false)) {
-    if (context->port_io.observed_count >= kWin32DeferredPortIoLimit) {
+    if (context->port_io.observed_count >= kDeferredPortIoLimit) {
       context->port_io.trace_limit_reached = true;
       RecordPortIo(context, static_cast<std::uint32_t>(win32_context->Eip),
                    opcode, port, width, value, false, true, "deferred-limit");

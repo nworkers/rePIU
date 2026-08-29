@@ -43,8 +43,8 @@ struct OrderLog
 
 bool RunGlideAsyncPresentProbe()
 {
-    using engine::kWin32GlideAsyncCommandCapacity;
-    using engine::kWin32GlideMaxOutstandingSwaps;
+    using engine::kGlideAsyncCommandCapacity;
+    using engine::kGlideMaxOutstandingSwaps;
     using engine::ResolveGlideAsyncPresentEnabled;
 
     // Opt-in until measured: unset and empty are OFF, unrecognised stays
@@ -61,8 +61,8 @@ bool RunGlideAsyncPresentProbe()
     // One outstanding swap is double buffering; the queue bound catches
     // everything else. Both are what stop the guest running away from the host.
     const bool bounds =
-        kWin32GlideMaxOutstandingSwaps == 1U &&
-        kWin32GlideAsyncCommandCapacity >= 8U;
+        kGlideMaxOutstandingSwaps == 1U &&
+        kGlideAsyncCommandCapacity >= 8U;
 
     auto backend = std::make_unique<GlideOpenGlBackend>();
     OrderLog log;

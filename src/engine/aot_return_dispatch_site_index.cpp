@@ -1,6 +1,6 @@
 #include "repiu/engine/aot_return_dispatch_site_index.h"
 
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 
 #include <algorithm>
 
@@ -30,20 +30,20 @@ std::uint32_t RoundUpToPowerOfTwo(std::uint32_t value)
 }  // namespace
 
 void RebuildAotReturnDispatchSiteIndex(
-    Win32AotCodeCachePlacement* placement)
+    AotCodeCachePlacement* placement)
 {
     if (placement == nullptr)
     {
         return;
     }
-    Win32AotReturnDispatchSiteIndex& index =
+    AotReturnDispatchSiteIndex& index =
         placement->return_dispatch_site_index;
     const std::uint32_t site_count = static_cast<std::uint32_t>(
         placement->dbt_return_dispatch_sites.size());
     index.buckets.assign(RoundUpToPowerOfTwo(site_count),
-                         Win32AotReturnDispatchSiteIndex::kInvalidIndex);
+                         AotReturnDispatchSiteIndex::kInvalidIndex);
     index.next_in_bucket.assign(
-        site_count, Win32AotReturnDispatchSiteIndex::kInvalidIndex);
+        site_count, AotReturnDispatchSiteIndex::kInvalidIndex);
 
     const std::uint32_t bucket_count =
         static_cast<std::uint32_t>(index.buckets.size());
@@ -61,7 +61,7 @@ void RebuildAotReturnDispatchSiteIndex(
 }
 
 void EnsureAotReturnDispatchSiteIndex(
-    Win32AotCodeCachePlacement* placement)
+    AotCodeCachePlacement* placement)
 {
     if (placement == nullptr)
     {
@@ -76,13 +76,13 @@ void EnsureAotReturnDispatchSiteIndex(
 }
 
 void InvalidateAotReturnDispatchSiteIndex(
-    Win32AotCodeCachePlacement* placement)
+    AotCodeCachePlacement* placement)
 {
     if (placement == nullptr)
     {
         return;
     }
-    Win32AotReturnDispatchSiteIndex& index =
+    AotReturnDispatchSiteIndex& index =
         placement->return_dispatch_site_index;
     index.indexed_site_count = 0;
     index.buckets.clear();
@@ -90,11 +90,11 @@ void InvalidateAotReturnDispatchSiteIndex(
 }
 
 AotReturnDispatchSiteLookup LookupAotReturnDispatchSiteIndex(
-    const Win32AotCodeCachePlacement& placement,
+    const AotCodeCachePlacement& placement,
     std::uint32_t miss_offset)
 {
     AotReturnDispatchSiteLookup result;
-    const Win32AotReturnDispatchSiteIndex& index =
+    const AotReturnDispatchSiteIndex& index =
         placement.return_dispatch_site_index;
     if (index.buckets.empty() ||
         index.indexed_site_count != static_cast<std::uint32_t>(
@@ -110,8 +110,8 @@ AotReturnDispatchSiteLookup LookupAotReturnDispatchSiteIndex(
     std::uint32_t candidate =
         index.buckets[HashMissOffset(miss_offset, bucket_count)];
     std::uint32_t visited = 0;
-    std::uint32_t lowest = Win32AotReturnDispatchSiteIndex::kInvalidIndex;
-    while (candidate != Win32AotReturnDispatchSiteIndex::kInvalidIndex &&
+    std::uint32_t lowest = AotReturnDispatchSiteIndex::kInvalidIndex;
+    while (candidate != AotReturnDispatchSiteIndex::kInvalidIndex &&
            candidate < index.indexed_site_count &&
            visited <= index.indexed_site_count)
     {
@@ -123,7 +123,7 @@ AotReturnDispatchSiteLookup LookupAotReturnDispatchSiteIndex(
         candidate = index.next_in_bucket[candidate];
         ++visited;
     }
-    result.found = lowest != Win32AotReturnDispatchSiteIndex::kInvalidIndex;
+    result.found = lowest != AotReturnDispatchSiteIndex::kInvalidIndex;
     result.site_index = result.found ? lowest : 0U;
     return result;
 }

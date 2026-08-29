@@ -26,7 +26,7 @@ bool IsX86LegacyPrefix(std::uint8_t value)
         value == 0x66U || value == 0x67U || value == 0xF0U;
 }
 
-void RecordAotBoundaryOpcodeSample(Win32AotBoundaryOpcodeCensus* census,
+void RecordAotBoundaryOpcodeSample(AotBoundaryOpcodeCensus* census,
                                    const std::uint8_t* bytes,
                                    std::size_t length)
 {
@@ -53,7 +53,7 @@ void RecordAotBoundaryOpcodeSample(Win32AotBoundaryOpcodeCensus* census,
     bool saw_lock = false;
     while (index < length && IsX86LegacyPrefix(bytes[index]))
     {
-        if (prefix_count >= kWin32AotMaxLegacyPrefixes)
+        if (prefix_count >= kAotMaxLegacyPrefixes)
         {
             ++census->prefix_overflow_count;
             break;
@@ -117,7 +117,7 @@ void RecordAotBoundaryOpcodeSample(Win32AotBoundaryOpcodeCensus* census,
 }
 
 void RankAotOpcodeHistogram(const std::uint32_t* counts,
-                            Win32AotOpcodeRank* ranks,
+                            AotOpcodeRank* ranks,
                             std::size_t capacity)
 {
     if (ranks == nullptr || capacity == 0U)
@@ -126,7 +126,7 @@ void RankAotOpcodeHistogram(const std::uint32_t* counts,
     }
     for (std::size_t slot = 0; slot < capacity; ++slot)
     {
-        ranks[slot] = Win32AotOpcodeRank{};
+        ranks[slot] = AotOpcodeRank{};
     }
     if (counts == nullptr)
     {
@@ -134,7 +134,7 @@ void RankAotOpcodeHistogram(const std::uint32_t* counts,
     }
     // Selection into a small fixed array: the histogram is 256 wide and this runs
     // once at exit, so a simple insertion keeps the code obvious.
-    for (std::size_t opcode = 0; opcode < kWin32AotOpcodeHistogramSize;
+    for (std::size_t opcode = 0; opcode < kAotOpcodeHistogramSize;
          ++opcode)
     {
         const std::uint32_t count = counts[opcode];

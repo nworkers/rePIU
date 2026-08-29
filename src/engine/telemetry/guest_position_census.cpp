@@ -24,27 +24,27 @@ namespace
 
 std::uint32_t HashCensusAddress(std::uint32_t address)
 {
-    static_assert((kWin32GuestPositionCensusCapacity &
-                   (kWin32GuestPositionCensusCapacity - 1U)) == 0U);
+    static_assert((kGuestPositionCensusCapacity &
+                   (kGuestPositionCensusCapacity - 1U)) == 0U);
     return (address * 2654435761U) &
-        (kWin32GuestPositionCensusCapacity - 1U);
+        (kGuestPositionCensusCapacity - 1U);
 }
 
-Win32GuestPositionSample MakeSample(const Win32GuestPositionEntry& entry)
+GuestPositionSample MakeSample(const GuestPositionEntry& entry)
 {
-    Win32GuestPositionSample sample;
+    GuestPositionSample sample;
     sample.address = entry.address;
     sample.sample_count = entry.sample_count;
     sample.origin_counts = entry.origin_counts;
     return sample;
 }
 
-std::vector<Win32GuestPositionSample> CollectSortedSamples(
-    const Win32GuestPositionCensus& census)
+std::vector<GuestPositionSample> CollectSortedSamples(
+    const GuestPositionCensus& census)
 {
-    std::vector<Win32GuestPositionSample> samples;
+    std::vector<GuestPositionSample> samples;
     samples.reserve(census.distinct_address_count);
-    for (const Win32GuestPositionEntry& entry : census.entries)
+    for (const GuestPositionEntry& entry : census.entries)
     {
         if (entry.occupied)
         {
@@ -95,7 +95,7 @@ std::uint32_t ResolveGuestPositionCensusIntervalMilliseconds(
 {
     if (setting.empty())
     {
-        return kWin32GuestPositionCensusDefaultIntervalMs;
+        return kGuestPositionCensusDefaultIntervalMs;
     }
     std::uint32_t parsed = 0;
     const char* first = setting.data();
@@ -104,7 +104,7 @@ std::uint32_t ResolveGuestPositionCensusIntervalMilliseconds(
         std::from_chars(first, last, parsed);
     if (result.ec != std::errc{} || result.ptr != last || parsed == 0U)
     {
-        return kWin32GuestPositionCensusDefaultIntervalMs;
+        return kGuestPositionCensusDefaultIntervalMs;
     }
     return std::min<std::uint32_t>(parsed, 1000U);
 }
@@ -119,7 +119,7 @@ std::uint32_t GuestPositionCensusIntervalMilliseconds()
     return interval;
 }
 
-Win32GuestPositionClassification ClassifyGuestPosition(
+GuestPositionClassification ClassifyGuestPosition(
     std::uint32_t eip,
     bool mapped,
     std::uint32_t guest_eip,
@@ -128,7 +128,7 @@ Win32GuestPositionClassification ClassifyGuestPosition(
     std::uint32_t cache_base,
     std::uint32_t cache_size)
 {
-    Win32GuestPositionClassification classification;
+    GuestPositionClassification classification;
     if (mapped)
     {
         classification.address = guest_eip;
@@ -150,8 +150,8 @@ Win32GuestPositionClassification ClassifyGuestPosition(
     return classification;
 }
 
-void RecordGuestPosition(Win32GuestPositionCensus* census,
-                         const Win32GuestPositionClassification& sample)
+void RecordGuestPosition(GuestPositionCensus* census,
+                         const GuestPositionClassification& sample)
 {
     if (census == nullptr)
     {
@@ -169,11 +169,11 @@ void RecordGuestPosition(Win32GuestPositionCensus* census,
 
     const std::uint32_t first = HashCensusAddress(sample.address);
     for (std::uint32_t probe = 0;
-         probe < kWin32GuestPositionCensusCapacity; ++probe)
+         probe < kGuestPositionCensusCapacity; ++probe)
     {
-        Win32GuestPositionEntry& entry =
+        GuestPositionEntry& entry =
             census->entries[(first + probe) &
-                            (kWin32GuestPositionCensusCapacity - 1U)];
+                            (kGuestPositionCensusCapacity - 1U)];
         if (!entry.occupied)
         {
             entry.occupied = true;
@@ -191,7 +191,7 @@ void RecordGuestPosition(Win32GuestPositionCensus* census,
     ++census->overflow_count;
 }
 
-void RecordGuestPositionCaptureFailure(Win32GuestPositionCensus* census)
+void RecordGuestPositionCaptureFailure(GuestPositionCensus* census)
 {
     if (census == nullptr)
     {
@@ -201,7 +201,7 @@ void RecordGuestPositionCaptureFailure(Win32GuestPositionCensus* census)
     ++census->capture_failure_count;
 }
 
-void RecordGuestPositionHostSite(Win32GuestPositionCensus* census,
+void RecordGuestPositionHostSite(GuestPositionCensus* census,
                                  std::uint32_t site,
                                  bool scan_failed)
 {
@@ -223,13 +223,13 @@ void RecordGuestPositionHostSite(Win32GuestPositionCensus* census,
     ++census->host_scan_sited_count;
 
     const std::uint32_t first =
-        (site * 2654435761U) & (kWin32GuestPositionHostSiteCapacity - 1U);
+        (site * 2654435761U) & (kGuestPositionHostSiteCapacity - 1U);
     for (std::uint32_t probe = 0;
-         probe < kWin32GuestPositionHostSiteCapacity; ++probe)
+         probe < kGuestPositionHostSiteCapacity; ++probe)
     {
-        Win32GuestPositionHostSiteEntry& entry =
+        GuestPositionHostSiteEntry& entry =
             census->host_sites[(first + probe) &
-                               (kWin32GuestPositionHostSiteCapacity - 1U)];
+                               (kGuestPositionHostSiteCapacity - 1U)];
         if (!entry.occupied)
         {
             entry.occupied = true;
@@ -246,7 +246,7 @@ void RecordGuestPositionHostSite(Win32GuestPositionCensus* census,
     ++census->host_site_overflow_count;
 }
 
-void RecordGuestPositionThreadTime(Win32GuestPositionCensus* census,
+void RecordGuestPositionThreadTime(GuestPositionCensus* census,
                                    std::uint64_t kernel_time_100ns,
                                    std::uint64_t user_time_100ns,
                                    std::uint32_t elapsed_milliseconds)
@@ -261,10 +261,10 @@ void RecordGuestPositionThreadTime(Win32GuestPositionCensus* census,
     census->thread_time_valid = true;
 }
 
-Win32GuestPositionCensusSnapshot SnapshotGuestPositionCensus(
-    const Win32GuestPositionCensus& census)
+GuestPositionCensusSnapshot SnapshotGuestPositionCensus(
+    const GuestPositionCensus& census)
 {
-    Win32GuestPositionCensusSnapshot snapshot;
+    GuestPositionCensusSnapshot snapshot;
     snapshot.enabled = census.enabled;
     snapshot.total_sample_count = census.total_sample_count;
     snapshot.distinct_address_count = census.distinct_address_count;
@@ -286,20 +286,20 @@ Win32GuestPositionCensusSnapshot SnapshotGuestPositionCensus(
     snapshot.host_site_distinct_count = census.host_site_distinct_count;
     snapshot.host_site_overflow_count = census.host_site_overflow_count;
 
-    const std::vector<Win32GuestPositionSample> samples =
+    const std::vector<GuestPositionSample> samples =
         CollectSortedSamples(census);
     snapshot.top_count = std::min<std::uint32_t>(
         static_cast<std::uint32_t>(samples.size()),
-        kWin32GuestPositionReportCapacity);
+        kGuestPositionReportCapacity);
     for (std::uint32_t index = 0; index < snapshot.top_count; ++index)
     {
         snapshot.top[index] = samples[index];
         snapshot.top_coverage_count += samples[index].sample_count;
     }
 
-    std::vector<Win32GuestPositionHostSiteEntry> sites;
+    std::vector<GuestPositionHostSiteEntry> sites;
     sites.reserve(census.host_site_distinct_count);
-    for (const Win32GuestPositionHostSiteEntry& entry : census.host_sites)
+    for (const GuestPositionHostSiteEntry& entry : census.host_sites)
     {
         if (entry.occupied)
         {
@@ -316,7 +316,7 @@ Win32GuestPositionCensusSnapshot SnapshotGuestPositionCensus(
               });
     snapshot.host_site_top_count = std::min<std::uint32_t>(
         static_cast<std::uint32_t>(sites.size()),
-        kWin32GuestPositionHostSiteReportCapacity);
+        kGuestPositionHostSiteReportCapacity);
     for (std::uint32_t index = 0; index < snapshot.host_site_top_count;
          ++index)
     {
@@ -418,7 +418,7 @@ private:
 }  // namespace
 
 void ResolveGuestPositionCensusSymbols(
-    Win32GuestPositionCensusSnapshot* snapshot)
+    GuestPositionCensusSnapshot* snapshot)
 {
     if (snapshot == nullptr || !snapshot->enabled)
     {
@@ -438,7 +438,7 @@ void ResolveGuestPositionCensusSymbols(
     for (std::uint32_t index = 0; index < snapshot->host_site_top_count;
          ++index)
     {
-        Win32GuestPositionHostSiteSample& site =
+        GuestPositionHostSiteSample& site =
             snapshot->host_site_top[index];
         std::string name;
         std::uint32_t offset = 0;
@@ -456,7 +456,7 @@ void ResolveGuestPositionCensusSymbols(
 }
 #else
 void ResolveGuestPositionCensusSymbols(
-    Win32GuestPositionCensusSnapshot* snapshot)
+    GuestPositionCensusSnapshot* snapshot)
 {
     (void)snapshot;
 }
@@ -488,7 +488,7 @@ std::filesystem::path GuestPositionCensusDumpPath()
 }
 
 bool WriteGuestPositionCensusDump(const std::filesystem::path& path,
-                                  Win32GuestPositionCensus* census,
+                                  GuestPositionCensus* census,
                                   std::uint32_t* written_entry_count)
 {
     if (written_entry_count != nullptr)
@@ -508,7 +508,7 @@ bool WriteGuestPositionCensusDump(const std::filesystem::path& path,
         return true;
     }
 
-    const std::vector<Win32GuestPositionSample> samples =
+    const std::vector<GuestPositionSample> samples =
         CollectSortedSamples(*census);
 
     const std::filesystem::path parent = path.parent_path();
@@ -531,7 +531,7 @@ bool WriteGuestPositionCensusDump(const std::filesystem::path& path,
          << " capture_failures=" << census->capture_failure_count
          << " interval_ms=" << census->interval_milliseconds << "\n"
          << "# address sample_count arena cache_mapped cache_unmapped host\n";
-    for (const Win32GuestPositionSample& sample : samples)
+    for (const GuestPositionSample& sample : samples)
     {
         file << "0x" << std::uppercase << std::hex << std::setw(8)
              << std::setfill('0') << sample.address << std::nouppercase
@@ -557,7 +557,7 @@ bool WriteGuestPositionCensusDump(const std::filesystem::path& path,
     return true;
 }
 
-bool WriteGuestPositionCensusDumpIfEnabled(Win32GuestPositionCensus* census,
+bool WriteGuestPositionCensusDumpIfEnabled(GuestPositionCensus* census,
                                            std::uint32_t* written_entry_count,
                                            std::string* resolved_path)
 {

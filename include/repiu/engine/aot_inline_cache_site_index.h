@@ -6,10 +6,10 @@
 namespace repiu::engine
 {
 
-struct Win32AotCodeCachePlacement;
+struct AotCodeCachePlacement;
 
 // O(1) miss-offset lookup over
-// Win32AotCodeCachePlacement::indirect_inline_cache_sites (Task 479).
+// AotCodeCachePlacement::indirect_inline_cache_sites (Task 479).
 //
 // Task 478 measured the patch path at about 75,100 cycles per call over
 // 1,203,695 calls -- roughly 28.7% of guest-run on pumpit8 -- with the site
@@ -29,7 +29,7 @@ struct Win32AotCodeCachePlacement;
 // to slow rather than wrong.
 //
 // See docs/design/20260814-479-inline-cache-site-index.md.
-struct Win32AotInlineCacheSiteIndex
+struct AotInlineCacheSiteIndex
 {
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFU;
 
@@ -50,15 +50,15 @@ struct Win32AotInlineCacheSiteIndex
 
 // Discards and rebuilds the whole index from
 // placement->indirect_inline_cache_sites.
-void RebuildAotInlineCacheSiteIndex(Win32AotCodeCachePlacement* placement);
+void RebuildAotInlineCacheSiteIndex(AotCodeCachePlacement* placement);
 
 // Rebuilds only when the index does not cover the site array. Sites are assigned
 // wholesale at placement and appended by dynamic translation, and are never
 // removed, so a count comparison is a sufficient staleness test.
-void EnsureAotInlineCacheSiteIndex(Win32AotCodeCachePlacement* placement);
+void EnsureAotInlineCacheSiteIndex(AotCodeCachePlacement* placement);
 
 // Drops the index so lookups fall back to the linear scan until a rebuild.
-void InvalidateAotInlineCacheSiteIndex(Win32AotCodeCachePlacement* placement);
+void InvalidateAotInlineCacheSiteIndex(AotCodeCachePlacement* placement);
 
 // Returns the same site the linear scan would return -- the lowest site index
 // whose miss_cache_offset equals `miss_offset` or `miss_offset - 1` -- in O(1).
@@ -73,7 +73,7 @@ struct AotInlineCacheSiteLookup
 };
 
 AotInlineCacheSiteLookup LookupAotInlineCacheSiteIndex(
-    const Win32AotCodeCachePlacement& placement,
+    const AotCodeCachePlacement& placement,
     std::uint32_t miss_offset);
 
 }  // namespace repiu::engine

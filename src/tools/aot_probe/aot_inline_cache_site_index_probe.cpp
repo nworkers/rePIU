@@ -1,6 +1,6 @@
 #include "aot_inline_cache_site_index_probe.h"
 
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 #include "repiu/engine/aot_inline_cache_site_index.h"
 
 #include <cstdint>
@@ -16,11 +16,11 @@ using repiu::engine::AotInlineCacheSiteLookup;
 using repiu::engine::EnsureAotInlineCacheSiteIndex;
 using repiu::engine::InvalidateAotInlineCacheSiteIndex;
 using repiu::engine::LookupAotInlineCacheSiteIndex;
-using repiu::engine::Win32AotCodeCachePlacement;
+using repiu::engine::AotCodeCachePlacement;
 
 // The pre-Task-479 lookup, kept verbatim as the reference oracle. Any divergence
 // from this is a defect regardless of which answer looks nicer.
-bool ReferenceFindSite(const Win32AotCodeCachePlacement& placement,
+bool ReferenceFindSite(const AotCodeCachePlacement& placement,
                        std::uint32_t miss_offset,
                        std::uint32_t* site_index)
 {
@@ -39,7 +39,7 @@ bool ReferenceFindSite(const Win32AotCodeCachePlacement& placement,
     return false;
 }
 
-void AddSite(Win32AotCodeCachePlacement* placement,
+void AddSite(AotCodeCachePlacement* placement,
              std::uint32_t guest_source,
              std::uint32_t miss_cache_offset)
 {
@@ -53,7 +53,7 @@ void AddSite(Win32AotCodeCachePlacement* placement,
 
 // Every key of every site plus both neighbours, so an off-by-one in either
 // direction is caught rather than sampled past.
-bool AgreesEverywhere(const Win32AotCodeCachePlacement& placement)
+bool AgreesEverywhere(const AotCodeCachePlacement& placement)
 {
     std::vector<std::uint32_t> queries;
     for (const repiu::runtime::AotIndirectInlineCacheSite& site :
@@ -94,9 +94,9 @@ bool AgreesEverywhere(const Win32AotCodeCachePlacement& placement)
     return true;
 }
 
-Win32AotCodeCachePlacement MakeBasePlacement()
+AotCodeCachePlacement MakeBasePlacement()
 {
-    Win32AotCodeCachePlacement placement;
+    AotCodeCachePlacement placement;
     placement.valid = true;
     placement.placed = true;
     placement.base_address = 0x0D770000U;
@@ -128,7 +128,7 @@ bool BuildCollisionPair(std::uint32_t* first, std::uint32_t* second)
 bool RunAotInlineCacheSiteIndexProbe()
 {
     // 1. Ordinary spacing: each site owns two keys and nothing else.
-    Win32AotCodeCachePlacement spaced = MakeBasePlacement();
+    AotCodeCachePlacement spaced = MakeBasePlacement();
     AddSite(&spaced, 0x04010000U, 0x00000100U);
     AddSite(&spaced, 0x04020000U, 0x00000240U);
     AddSite(&spaced, 0x04030000U, 0x00001000U);
@@ -140,11 +140,11 @@ bool RunAotInlineCacheSiteIndexProbe()
     // 2. Adjacent miss offsets, both orders. The scan stopped at the first site
     //    in array order, so the shared key must resolve to the lower index in
     //    both layouts rather than to whichever site the chain reaches first.
-    Win32AotCodeCachePlacement adjacent_forward = MakeBasePlacement();
+    AotCodeCachePlacement adjacent_forward = MakeBasePlacement();
     AddSite(&adjacent_forward, 0x04040000U, 0x00000200U);
     AddSite(&adjacent_forward, 0x04050000U, 0x00000201U);
     EnsureAotInlineCacheSiteIndex(&adjacent_forward);
-    Win32AotCodeCachePlacement adjacent_reverse = MakeBasePlacement();
+    AotCodeCachePlacement adjacent_reverse = MakeBasePlacement();
     AddSite(&adjacent_reverse, 0x04060000U, 0x00000201U);
     AddSite(&adjacent_reverse, 0x04070000U, 0x00000200U);
     EnsureAotInlineCacheSiteIndex(&adjacent_reverse);
@@ -156,7 +156,7 @@ bool RunAotInlineCacheSiteIndexProbe()
                 .site_index == 0U;
 
     // 3. Duplicate key: the lowest index wins, as the scan's break did.
-    Win32AotCodeCachePlacement duplicate = MakeBasePlacement();
+    AotCodeCachePlacement duplicate = MakeBasePlacement();
     AddSite(&duplicate, 0x04080000U, 0x00000400U);
     AddSite(&duplicate, 0x04090000U, 0x00000400U);
     EnsureAotInlineCacheSiteIndex(&duplicate);
@@ -168,7 +168,7 @@ bool RunAotInlineCacheSiteIndexProbe()
     std::uint32_t collision_b = 0;
     const bool collision_built =
         BuildCollisionPair(&collision_a, &collision_b);
-    Win32AotCodeCachePlacement collision = MakeBasePlacement();
+    AotCodeCachePlacement collision = MakeBasePlacement();
     if (collision_built)
     {
         AddSite(&collision, 0x040A0000U, collision_a);
@@ -182,7 +182,7 @@ bool RunAotInlineCacheSiteIndexProbe()
     //    key zero, and a site at 0xFFFFFFFF owns key zero as well through the
     //    scan's `+ 1U` wrap, so the index must reproduce that rather than skip
     //    the second probe.
-    Win32AotCodeCachePlacement wrapped = MakeBasePlacement();
+    AotCodeCachePlacement wrapped = MakeBasePlacement();
     AddSite(&wrapped, 0x040C0000U, 0xFFFFFFFFU);
     AddSite(&wrapped, 0x040D0000U, 0x00000000U);
     EnsureAotInlineCacheSiteIndex(&wrapped);
@@ -192,7 +192,7 @@ bool RunAotInlineCacheSiteIndexProbe()
 
     // 6. Append after the index is live, past the initial table width, with the
     //    rebuild driven only by the count changing.
-    Win32AotCodeCachePlacement appended = MakeBasePlacement();
+    AotCodeCachePlacement appended = MakeBasePlacement();
     AddSite(&appended, 0x04100000U, 0x00002000U);
     EnsureAotInlineCacheSiteIndex(&appended);
     bool append_agrees = AgreesEverywhere(appended);
@@ -225,14 +225,14 @@ bool RunAotInlineCacheSiteIndexProbe()
 
     // 8. No sites at all: nothing to index, and the lookup must not claim an
     //    answer for a placement the patch path will scan.
-    Win32AotCodeCachePlacement empty = MakeBasePlacement();
+    AotCodeCachePlacement empty = MakeBasePlacement();
     EnsureAotInlineCacheSiteIndex(&empty);
     const bool empty_ok =
         !LookupAotInlineCacheSiteIndex(empty, 0x00000100U).usable;
 
     // 9. A placement built directly, the way several probes build one, is never
     //    answered from a stale index.
-    Win32AotCodeCachePlacement unindexed = MakeBasePlacement();
+    AotCodeCachePlacement unindexed = MakeBasePlacement();
     AddSite(&unindexed, 0x04200000U, 0x00003000U);
     const bool unindexed_ok =
         !LookupAotInlineCacheSiteIndex(unindexed, 0x00003000U).usable &&

@@ -10,21 +10,21 @@ namespace repiu::tools
 namespace
 {
 
-using engine::kWin32AotMaxLegacyPrefixes;
+using engine::kAotMaxLegacyPrefixes;
 using engine::RankAotOpcodeHistogram;
 using engine::RecordAotBoundaryOpcodeSample;
-using engine::Win32AotBoundaryOpcodeCensus;
-using engine::Win32AotOpcodeRank;
+using engine::AotBoundaryOpcodeCensus;
+using engine::AotOpcodeRank;
 
-using CensusPtr = std::unique_ptr<Win32AotBoundaryOpcodeCensus>;
+using CensusPtr = std::unique_ptr<AotBoundaryOpcodeCensus>;
 
 CensusPtr MakeCensus()
 {
-    return std::make_unique<Win32AotBoundaryOpcodeCensus>();
+    return std::make_unique<AotBoundaryOpcodeCensus>();
 }
 
 template <std::size_t N>
-void Record(Win32AotBoundaryOpcodeCensus* census,
+void Record(AotBoundaryOpcodeCensus* census,
             const std::uint8_t (&bytes)[N])
 {
     RecordAotBoundaryOpcodeSample(census, bytes, N);
@@ -33,7 +33,7 @@ void Record(Win32AotBoundaryOpcodeCensus* census,
 std::uint32_t HistogramTotal(const std::uint32_t* counts)
 {
     std::uint32_t total = 0;
-    for (std::size_t i = 0; i < engine::kWin32AotOpcodeHistogramSize;
+    for (std::size_t i = 0; i < engine::kAotOpcodeHistogramSize;
          ++i)
     {
         total += counts[i];
@@ -123,7 +123,7 @@ bool RunAotBoundaryOpcodeCensusProbe()
         overflow->sample_count == 1U &&
         // Stopped at the bound, so the byte there is what gets counted.
         HistogramTotal(overflow->effective_opcode_counts) == 1U &&
-        kWin32AotMaxLegacyPrefixes == 4U;
+        kAotMaxLegacyPrefixes == 4U;
 
     // Prefixes filling the whole sample leave no opcode visible.
     const CensusPtr prefix_only = MakeCensus();
@@ -134,7 +134,7 @@ bool RunAotBoundaryOpcodeCensusProbe()
         prefix_only->escape_truncated_count == 1U &&
         HistogramTotal(prefix_only->effective_opcode_counts) == 0U;
 
-    Win32AotOpcodeRank ranks[4] = {};
+    AotOpcodeRank ranks[4] = {};
     RankAotOpcodeHistogram(census->effective_opcode_counts, ranks, 4U);
     const bool ranking =
         ranks[0].opcode == 0x0FU && ranks[0].count == 3U &&
@@ -142,7 +142,7 @@ bool RunAotBoundaryOpcodeCensusProbe()
         ranks[2].opcode == 0x8EU && ranks[2].count == 1U &&
         ranks[3].count == 0U;
 
-    Win32AotBoundaryOpcodeCensus untouched;
+    AotBoundaryOpcodeCensus untouched;
     RecordAotBoundaryOpcodeSample(nullptr, mov_sreg, sizeof(mov_sreg));
     RecordAotBoundaryOpcodeSample(&untouched, nullptr, 4U);
     RecordAotBoundaryOpcodeSample(&untouched, mov_sreg, 0U);

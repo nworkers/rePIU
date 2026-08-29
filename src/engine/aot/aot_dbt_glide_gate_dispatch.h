@@ -9,7 +9,7 @@ namespace repiu::engine
 
 struct ThreadContext;
 
-struct Win32GlideGateDirectDispatchStats
+struct GlideGateDirectDispatchStats
 {
     std::uint32_t patched_gate_count = 0;
     std::uint32_t verified_gate_count = 0;
@@ -28,29 +28,29 @@ struct Win32GlideGateDirectDispatchStats
     std::uint32_t relink_fixup_patch_count = 0;
 };
 
-bool ResolveWin32GlideGateDirectDispatchEnabled(const char* setting);
+bool ResolveGlideGateDirectDispatchEnabled(const char* setting);
 
-bool ResolveWin32GlideGateDirectTarget(
+bool ResolveGlideGateDirectTarget(
     const ThreadContext* context,
     std::uint32_t target,
     std::uint32_t* direct_target);
 
-bool ActivateWin32GlideGateDirectTarget(
+bool ActivateGlideGateDirectTarget(
     ThreadContext* context,
     std::uint32_t cache_boundary_address,
     std::uint32_t gate_address);
 
-bool PatchWin32GlideGatePlanForDirectDispatch(
+bool PatchGlideGatePlanForDirectDispatch(
     std::uint32_t gate_code_base,
     repiu::hle::GlideGatePlan* plan);
 
-bool VerifyWin32GlideGateDirectDispatchImage(
+bool VerifyGlideGateDirectDispatchImage(
     std::uint32_t gate_code_base,
     const repiu::hle::GlideGatePlan& plan);
 
-Win32GlideGateDirectDispatchStats
-ReadWin32GlideGateDirectDispatchStats();
+GlideGateDirectDispatchStats
+ReadGlideGateDirectDispatchStats();
 
-void* GetWin32GlideGateDirectDispatchThunkAddress();
+void* GetGlideGateDirectDispatchThunkAddress();
 
 }  // namespace repiu::engine

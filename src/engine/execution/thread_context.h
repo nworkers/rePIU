@@ -3,7 +3,7 @@
 #include "repiu/engine/execution_trampoline.h"
 #include "repiu/engine/execution_probe_memory_dump.h"
 #include "repiu/engine/runtime_memory_policy.h"
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 #include "repiu/engine/out_of_arena_step_census.h"
 #include "repiu/engine/live_telemetry.h"
 #include "repiu/engine/aot_retired_trap_profile.h"
@@ -141,7 +141,7 @@ struct ThreadContext
         std::uint32_t fallthrough = 0;
         std::uint32_t trace_sequence = 0;
         std::uint32_t entry_esp = 0;
-        Win32AotTransferOrigin origin = Win32AotTransferOrigin::kVeh;
+        AotTransferOrigin origin = AotTransferOrigin::kVeh;
     };
     static constexpr std::uint32_t kAotCallFrameCapacity = 1024;
     std::uint32_t entry_address = 0;
@@ -158,9 +158,9 @@ struct ThreadContext
     bool enable_segment_load_hle = false;
     bool enable_dos_hle = false;
     bool enable_single_step_trace = false;
-    Win32AotCodeCachePlacement* aot_placement = nullptr;
+    AotCodeCachePlacement* aot_placement = nullptr;
     // Task 376: single steps discarded outside the guest arena, classified.
-    Win32OutOfArenaStepCensus out_of_arena_step_census;
+    OutOfArenaStepCensus out_of_arena_step_census;
     bool aot_reentry_pending = false;
     bool aot_legacy_fallback = false;
     runtime::ExecutionBackend execution_backend =
@@ -203,11 +203,11 @@ struct ThreadContext
     std::atomic<std::uint32_t> aot_patch_cache_target{0};
     std::atomic<std::uint32_t> aot_retire_guest_page{0};
     std::atomic<bool> aot_retire_quarantine{false};
-    Win32AotDynamicAppendResult aot_translation_result;
+    AotDynamicAppendResult aot_translation_result;
     std::vector<runtime::AotExcludedGuestRange> aot_excluded_guest_ranges;
-    Win32AotInlineCachePatchResult aot_inline_cache_patch_result;
-    Win32AotGuestPageRetireResult aot_guest_page_retire_result;
-    Win32AotPageWriteWatchSet aot_page_write_watch;
+    AotInlineCachePatchResult aot_inline_cache_patch_result;
+    AotGuestPageRetireResult aot_guest_page_retire_result;
+    AotPageWriteWatchSet aot_page_write_watch;
     std::atomic<bool> aot_terminal_failure{false};
     std::uint32_t aot_reentry_cache_address = 0;
     std::atomic<std::uint32_t> aot_cache_entry_count{0};
@@ -228,7 +228,7 @@ struct ThreadContext
     std::uint32_t aot_other_opcode_histogram[256] = {};
     // Task 367: the same samples resolved past prefixes and the two-byte escape,
     // so the dominant exception population can be named by instruction.
-    Win32AotBoundaryOpcodeCensus aot_boundary_opcode_census;
+    AotBoundaryOpcodeCensus aot_boundary_opcode_census;
     std::atomic<std::uint32_t> aot_last_other_boundary_eip{0};
     std::atomic<std::uint32_t> aot_last_other_boundary_bytes{0};
     // Task 263(b): AOT residency proxy. Straight-line guest instruction count from
@@ -240,13 +240,16 @@ struct ThreadContext
     // Task 289 Stage 1: complete descriptor fingerprints last folded into
     // segment-override sites. Selector-only comparison misses same-selector
     // DPMI base/limit changes.
-    std::array<Win32AotSegmentResolution, 6> aot_resolved_segments = {};
+    std::array<AotSegmentResolution, 6> aot_resolved_segments = {};
     bool aot_segment_resolutions_initialized = false;
     std::atomic<std::uint32_t> aot_selector_guard_native_site_count{0};
     std::atomic<std::uint32_t> aot_selector_guard_hle_site_count{0};
     std::atomic<std::uint32_t> aot_selector_guard_unresolved_site_count{0};
     std::atomic<std::uint32_t> aot_selector_guard_hle_exit_count{0};
     std::atomic<std::uint32_t> aot_selector_guard_mismatch_count{0};
+    // Task 523: breakpoints the engine did not plant -- the guest's own 0xCC.
+    // Guest-thread only, like the trap that produces it.
+    std::uint32_t guest_owned_breakpoint_count = 0;
     std::atomic<std::uint32_t> aot_reentry_count{0};
     std::atomic<std::uint32_t> aot_legacy_fallback_count{0};
     std::atomic<std::uint32_t> aot_last_fallback_address{0};
@@ -451,7 +454,7 @@ struct ThreadContext
     std::atomic<std::uint32_t> aot_generation_failure_count{0};
     std::atomic<std::uint32_t> aot_generation_relinked_entry_count{0};
     std::atomic<std::uint32_t> aot_retired_entry_trap_count{0};
-    Win32AotRetiredTrapProfile aot_retired_trap_profile;
+    AotRetiredTrapProfile aot_retired_trap_profile;
     std::atomic<std::uint32_t> aot_retired_span_attempt_count{0};
     std::atomic<std::uint32_t> aot_retired_span_success_count{0};
     std::atomic<std::uint32_t> aot_quarantine_count{0};
@@ -477,10 +480,10 @@ struct ThreadContext
     std::uint32_t execution_probe_memory_offset = 0;
     X86ExecutionSnapshot execution_probe_snapshot;
     std::uint32_t execution_probe_stack[8] = {};
-    Win32ExecutionProbeMemoryWindow execution_probe_memory[
-        kWin32ExecutionProbeRegisterCount] = {};
-    Win32ExecutionProbeDumpRequest execution_probe_dump_request;
-    Win32ExecutionProbeDumpResult execution_probe_dump_result;
+    ExecutionProbeMemoryWindow execution_probe_memory[
+        kExecutionProbeRegisterCount] = {};
+    ExecutionProbeDumpRequest execution_probe_dump_request;
+    ExecutionProbeDumpResult execution_probe_dump_result;
     bool execution_trace_configured = false;
     std::uint32_t execution_trace_start_offset = 0;
     std::uint32_t execution_trace_end_offset = 0;
@@ -489,8 +492,8 @@ struct ThreadContext
     bool execution_trace_sentinel2_configured = false;
     std::uint32_t execution_trace_sentinel2_offset = 0;
     std::uint32_t execution_trace_sentinel_rearm_count = 0;
-    Win32ExecutionTraceEntry
-        execution_trace[kWin32ExecutionTraceCapacity] = {};
+    ExecutionTraceEntry
+        execution_trace[kExecutionTraceCapacity] = {};
     std::uint32_t aot_call_depth = 0;
     AotCallFrame aot_call_frames[kAotCallFrameCapacity] = {};
     bool aot_last_return_matches_call = false;
@@ -500,11 +503,11 @@ struct ThreadContext
     std::uint32_t aot_last_expected_call_source = 0;
     std::uint32_t aot_last_expected_call_target = 0;
     std::uint32_t aot_return_trace_count = 0;
-    Win32AotReturnTraceEntry
-        aot_return_trace[kWin32AotReturnTraceCapacity] = {};
+    AotReturnTraceEntry
+        aot_return_trace[kAotReturnTraceCapacity] = {};
     std::uint32_t aot_transfer_trace_count = 0;
-    Win32AotTransferTraceEntry
-        aot_transfer_trace[kWin32AotTransferTraceCapacity] = {};
+    AotTransferTraceEntry
+        aot_transfer_trace[kAotTransferTraceCapacity] = {};
     bool aot_dbt_call_return_trace_configured = false;
     std::uint32_t aot_dbt_call_return_trace_count = 0;
     std::uint32_t aot_dbt_call_return_call_count = 0;
@@ -513,20 +516,20 @@ struct ThreadContext
     std::uint32_t aot_dbt_call_return_mismatch_count = 0;
     std::uint32_t aot_dbt_call_return_overwrite_count = 0;
     bool aot_dbt_call_return_first_divergence_valid = false;
-    Win32AotCallReturnTraceEntry aot_dbt_call_return_first_divergence;
-    Win32AotCallReturnTraceEntry
-        aot_dbt_call_return_trace[kWin32AotCallReturnTraceCapacity] = {};
+    AotCallReturnTraceEntry aot_dbt_call_return_first_divergence;
+    AotCallReturnTraceEntry
+        aot_dbt_call_return_trace[kAotCallReturnTraceCapacity] = {};
     bool aot_dbt_call_step_probe_configured = false;
     std::uint32_t aot_dbt_call_step_probe_target_count = 0;
     std::uint32_t aot_dbt_call_step_probe_targets[
-        kWin32AotCallStepProbeTargetCapacity] = {};
+        kAotCallStepProbeTargetCapacity] = {};
     std::uint32_t aot_dbt_call_step_probe_trace_count = 0;
     std::uint32_t aot_dbt_call_step_probe_arm_count = 0;
     std::uint32_t aot_dbt_call_step_probe_complete_count = 0;
     std::uint32_t aot_dbt_call_step_probe_conflict_count = 0;
     std::uint32_t aot_dbt_call_step_probe_skipped_count = 0;
-    Win32AotCallStepProbePhase aot_dbt_call_step_probe_phase =
-        Win32AotCallStepProbePhase::kIdle;
+    AotCallStepProbePhase aot_dbt_call_step_probe_phase =
+        AotCallStepProbePhase::kIdle;
     std::uint32_t aot_dbt_call_step_probe_active_call_sequence = 0;
     std::uint32_t aot_dbt_call_step_probe_guest_source = 0;
     std::uint32_t aot_dbt_call_step_probe_guest_target = 0;
@@ -542,8 +545,8 @@ struct ThreadContext
     std::uint32_t aot_dbt_call_step_probe_saved_dr3 = 0;
     std::uint32_t aot_dbt_call_step_probe_saved_dr6 = 0;
     std::uint32_t aot_dbt_call_step_probe_saved_dr7 = 0;
-    Win32AotCallStepProbeEntry aot_dbt_call_step_probe_trace[
-        kWin32AotCallStepProbeTraceCapacity] = {};
+    AotCallStepProbeEntry aot_dbt_call_step_probe_trace[
+        kAotCallStepProbeTraceCapacity] = {};
     detail::NativeFastPathState native_fast_path;
     bool returned = false;
     bool process_exit = false;
@@ -551,7 +554,7 @@ struct ThreadContext
     std::uint32_t dos_termination_ax = 0;
     std::uint32_t dos_termination_eip = 0;
     std::uint32_t dos_termination_esp = 0;
-    std::uint32_t dos_termination_stack[kWin32DosTerminationStackCapacity] = {};
+    std::uint32_t dos_termination_stack[kDosTerminationStackCapacity] = {};
     bool exception_caught = false;
     std::uint32_t exception_code = 0;
     std::uint32_t exception_address = 0;
@@ -574,9 +577,9 @@ struct ThreadContext
     std::uint8_t exception_register_strings[6][32] = {};
     std::uint32_t exception_register_string_valid_mask = 0;
     std::uint32_t exception_stack_base = 0;
-    std::uint32_t exception_stack_dwords[kWin32ExceptionStackDwordCapacity] = {};
+    std::uint32_t exception_stack_dwords[kExceptionStackDwordCapacity] = {};
     std::uint32_t exception_stack_dword_count = 0;
-    Win32UnhandledBreakpointEvidence unhandled_breakpoint_evidence;
+    UnhandledBreakpointEvidence unhandled_breakpoint_evidence;
     std::uint32_t aot_probe_guest_address = 0;
     std::uint32_t aot_probe_cache_address = 0;
     std::uint32_t aot_probe_cache_valid = 0;
@@ -678,26 +681,26 @@ struct ThreadContext
     repiu::hle::GlideImplementationIssueTracker glide_implementation_issues;
     std::uint32_t glide_texture_gate_trace_count = 0;
     bool glide_texture_gate_trace_wrapped = false;
-    Win32GlideTextureGateTraceEntry glide_texture_gate_trace[kWin32GlideTextureGateTraceCapacity] = {};
-    Win32GlideTriangleObservation glide_first_triangle;
+    GlideTextureGateTraceEntry glide_texture_gate_trace[kGlideTextureGateTraceCapacity] = {};
+    GlideTriangleObservation glide_first_triangle;
     std::uint32_t glide_triangle_trace_count = 0;
     bool glide_triangle_trace_wrapped = false;
-    Win32GlideTriangleTraceEntry glide_triangle_trace[kWin32GlideTriangleTraceCapacity] = {};
+    GlideTriangleTraceEntry glide_triangle_trace[kGlideTriangleTraceCapacity] = {};
     std::array<std::uint32_t, 256> glide_call_counts = {};
     std::array<std::array<std::uint32_t, 8>, 256> glide_first_stacks = {};
     std::array<std::string, 256> glide_call_names = {};
     // Task 353: decoded gate and existing backend rendezvous time by ordinal.
-    Win32GlideOrdinalTimingProfile glide_ordinal_timing;
+    GlideOrdinalTimingProfile glide_ordinal_timing;
     // Task 364: exact repeated-versus-changing state-setter arguments. Guest
     // thread only, and observation only — it never changes a dispatch result.
-    Win32GlideSetterCensusProfile glide_setter_census;
+    GlideSetterCensusProfile glide_setter_census;
     // Task 365: which state was last applied successfully on the host, so an exact
     // repeat can skip the rendezvous. Shares its rules with the census above.
-    Win32GlideSetterStateCache glide_setter_state_cache;
+    GlideSetterStateCache glide_setter_state_cache;
     // Task 438: primitives waiting for the next ordering boundary. Owned by
     // the guest thread; the host only ever sees it inside a flush, which is
     // itself a rendezvous, so no locking is needed.
-    Win32GlideDrawBatch glide_draw_batch;
+    GlideDrawBatch glide_draw_batch;
     std::uint32_t glide_window_open_count = 0;
     std::uint32_t glide_logical_width = 0;
     std::uint32_t glide_logical_height = 0;
@@ -711,7 +714,7 @@ struct ThreadContext
     Ymz280bAudioOut ymz_audio;
     bool ymz_audio_available = false;
     bool piu_jamma_board_enabled = false;
-    Win32JammaInputTimeline jamma_input_timeline;
+    JammaInputTimeline jamma_input_timeline;
     hle::BiosKeyboard bios_keyboard;
     // Separate ISA16 PIU10 flash/MP3/security board at 0x02D0..0x02DF.
     // This is not the JAMMA/YMZ280B board at 0x02A0..0x02AF.
@@ -781,11 +784,11 @@ struct ThreadContext
     std::uint32_t dpmi_allocate_call_count = 0;
     std::uint16_t dpmi_last_allocate_requested_count = 0;
     std::uint16_t dpmi_last_allocated_selector = 0;
-    Win32PortIoObservation port_io;
-    Win32DosPathObservation dos_path;
-    Win32DosFileIoObservation dos_file_io;
-    Win32AllocatorProbeObservation allocator_probe;
-    Win32AllocatorControlFlowObservation allocator_control_flow;
+    PortIoObservation port_io;
+    DosPathObservation dos_path;
+    DosFileIoObservation dos_file_io;
+    AllocatorProbeObservation allocator_probe;
+    AllocatorControlFlowObservation allocator_control_flow;
     std::uint32_t handled_dos_interrupt_count = 0;
     std::uint32_t last_dos_interrupt_vector = 0;
     std::uint32_t last_dos_interrupt_ah = 0;
@@ -870,7 +873,7 @@ struct ThreadContext
     std::uint32_t last_segment_load_selector = 0;
     std::uint32_t last_segment_load_source = 0;
     std::uint32_t handled_segment_load_register_counts[6] = {};
-    Win32SegmentLoadObservation segment_load;
+    SegmentLoadObservation segment_load;
     std::uint32_t handled_segment_store_count = 0;
     std::uint32_t last_segment_store_address = 0;
     std::uint32_t last_segment_store_opcode = 0;
@@ -969,18 +972,18 @@ struct ThreadContext
     std::uint32_t veh_single_step_run_buckets[kSingleStepRunBucketCount] = {};
     std::uint32_t veh_single_step_run_total = 0;
     std::uint32_t veh_single_step_run_max = 0;
-    std::unique_ptr<Win32SingleStepHotspotProfile>
+    std::unique_ptr<SingleStepHotspotProfile>
         single_step_hotspot_profile;
     // Task 411: filled by the poll thread around its SuspendThread of the guest
     // thread and read only after that thread has stopped, so it needs no
     // synchronisation of its own. Allocated only when the census is enabled.
-    std::unique_ptr<Win32GuestPositionCensus> guest_position_census;
+    std::unique_ptr<GuestPositionCensus> guest_position_census;
     // Task 421: sampled by the poll thread so a starved audio worker cannot
     // hide its own starvation.
-    std::unique_ptr<Win32CdAudioPositionCensus> cd_audio_position_census;
+    std::unique_ptr<CdAudioPositionCensus> cd_audio_position_census;
     // Task 422: the sequence of CD commands the guest issues, since the
     // existing telemetry keeps only the last one and cannot show a storm.
-    std::unique_ptr<Win32MscdexCommandTrace> mscdex_command_trace;
+    std::unique_ptr<MscdexCommandTrace> mscdex_command_trace;
     // Task 323: the cycle scope owned by the current HandleSingleStepTrace
     // invocation, so regions measured in other translation units (the
     // TryResumeAotAfterHandledHle sub-stages) can attribute into the same
@@ -989,15 +992,15 @@ struct ThreadContext
     SingleStepHotspotCycleScope* active_hotspot_scope = nullptr;
     // Task 323: guest-thread wall-clock buckets. Allocated only when
     // REPIU_EXECUTION_TIME_PROFILE is set, so the normal path pays one branch.
-    std::unique_ptr<Win32ExecutionTimeProfile> execution_time_profile;
+    std::unique_ptr<ExecutionTimeProfile> execution_time_profile;
     // Task 327: rendezvous timing across the guest and worker threads. Shares
     // the REPIU_EXECUTION_TIME_PROFILE opt-in.
-    std::unique_ptr<Win32AotWorkerTimingProfile> aot_worker_timing;
+    std::unique_ptr<AotWorkerTimingProfile> aot_worker_timing;
     // Task 482: the return handler split into five mutually exclusive stages
     // and a residual. Own opt-in (REPIU_AOT_RETURN_STAGE_PROFILE) so this pass
     // and the Glide-ordinal pass never instrument the same run. Small enough
     // to hold by value; the disabled path never writes it.
-    Win32AotReturnStageProfile aot_return_stage_profile;
+    AotReturnStageProfile aot_return_stage_profile;
     // Route A sizing (native region execution). Of every single-stepped guest
     // instruction, how many are HLE-sensitive (segment op / INT / IO / string /
     // privileged) and would still require a trap under selective-breakpoint
@@ -1036,7 +1039,7 @@ struct ThreadContext
     std::atomic<std::uint32_t> exception_dispatch_last_bad_record{0};
     std::atomic<std::uint32_t> live_telemetry_heartbeat{0};
     std::atomic<std::uint32_t> live_telemetry_phase{0};
-    Win32SharedLiveTelemetry* shared_live_telemetry = nullptr;
+    SharedLiveTelemetry* shared_live_telemetry = nullptr;
     void* vectored_handler = nullptr;
     std::unordered_map<std::uint32_t, std::uint8_t> shadow_memory;
     std::array<ShadowWriteProvenance, kShadowWriteProvenanceCapacity>
@@ -1067,7 +1070,7 @@ struct ThreadContext
     // Task 366: how many ticks the schedule owed against how many the guest
     // actually received. Always on; the bounded backlog that preserves owed
     // ticks is opt-in.
-    Win32TimerTickDeliveryCounters timer_tick_delivery;
+    TimerTickDeliveryCounters timer_tick_delivery;
     std::atomic<std::uint32_t> last_timer_injection_ticks{0};
     // Task 351: expired PIT ticks not yet attributed to the safe-point source
     // that successfully delivers them. Deferred traps leave this untouched.

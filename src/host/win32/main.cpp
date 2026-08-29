@@ -12,7 +12,7 @@
 #include <SDL3/SDL_error.h>
 #include "repiu/engine/eeprom_backing_path.h"
 #include "repiu/engine/execution_trampoline.h"
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 #include "../../engine/aot/aot_dbt_glide_gate_dispatch.h"
 #include "../../engine/telemetry/aot_residency_sample.h"
 #include "../../engine/io/port_io_delay_loop.h"
@@ -43,6 +43,7 @@
 #include <spdlog/spdlog.h>
 
 #include <cstdio>
+#include <cctype>
 #include <algorithm>
 #include <cstdlib>
 #include <cstdint>
@@ -53,6 +54,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <string_view>
 #include <vector>
 
@@ -91,7 +93,7 @@ bool ReadAotIndirectInlineCacheEntryCount(std::uint32_t* entry_count)
 std::uint32_t ReadExecutionTimeoutMilliseconds()
 {
     const char* text = std::getenv(
-        repiu::engine::kWin32ExecutionTimeoutEnvironment);
+        repiu::engine::kExecutionTimeoutEnvironment);
     fprintf(stderr, "[repiu-live-debug] env REPIU_EXECUTION_TIMEOUT_MS = %s\n", text ? text : "NULL");
     const std::uint32_t milliseconds =
         repiu::runtime::ResolveExecutionTimeoutMilliseconds(text);
@@ -104,7 +106,7 @@ std::uint32_t ReadExecutionTimeoutMilliseconds()
 std::uint32_t ReadStallTimeoutMilliseconds()
 {
     const char* text = std::getenv(
-        repiu::engine::kWin32StallTimeoutEnvironment);
+        repiu::engine::kStallTimeoutEnvironment);
     const std::uint32_t milliseconds =
         repiu::runtime::ResolveStallTimeoutMilliseconds(text);
     return milliseconds == 0U ? repiu::runtime::kWaitForeverMilliseconds
@@ -204,6 +206,45 @@ void LogGuestOutput(spdlog::logger& logger,
     }
 }
 
+// Task 524: resolve an asset beside the executable without trusting its case.
+//
+// The arcade dumps carry whatever case the original media had -- this tree has
+// DOS4GW.EXE next to glide2x.ovl -- and a Windows or DrvFs host hides the
+// difference because those filesystems match case-insensitively. On ext4 an
+// exact-case lookup misses, and the callers below treat a miss as "the asset
+// is absent" and carry on, so the mismatch surfaces much later as a guest that
+// cannot initialize its DLL loader.
+std::filesystem::path ResolveSiblingAssetPath(
+    const std::filesystem::path& directory,
+    std::string_view filename)
+{
+    const std::filesystem::path exact = directory / filename;
+    if (std::filesystem::exists(exact))
+    {
+        return exact;
+    }
+
+    const auto equal_ignoring_case = [](std::string_view left,
+                                        std::string_view right) {
+        return left.size() == right.size() &&
+            std::equal(left.begin(), left.end(), right.begin(),
+                       [](unsigned char a, unsigned char b) {
+                           return std::tolower(a) == std::tolower(b);
+                       });
+    };
+
+    std::error_code directory_error;
+    for (const auto& entry :
+         std::filesystem::directory_iterator(directory, directory_error))
+    {
+        const std::string candidate = entry.path().filename().string();
+        if (equal_ignoring_case(candidate, filename))
+        {
+            return entry.path();
+        }
+    }
+    return {};
+}
 bool ReadBinaryFile(const std::filesystem::path& path,
                     std::vector<std::uint8_t>* data,
                     std::string* error_message)
@@ -491,7 +532,7 @@ void PrintParseError(spdlog::logger& logger,
 
 void PrintPolicy(
     spdlog::logger& logger,
-    const repiu::engine::Win32RuntimeMemoryPolicy& policy)
+    const repiu::engine::RuntimeMemoryPolicy& policy)
 {
     logger.info("Win32 loader policy: {}",
                 policy.valid ? "valid" : "invalid");
@@ -510,7 +551,7 @@ void PrintPolicy(
 
 void PrintReservation(
     spdlog::logger& logger,
-    const repiu::engine::Win32AddressRangeReservation& reservation)
+    const repiu::engine::AddressRangeReservation& reservation)
 {
     logger.info("Win32 early reservation attempt: {}",
                 reservation.valid ? "valid" : "invalid");
@@ -552,7 +593,7 @@ void PrintReservation(
 
 void PrintProbe(
     spdlog::logger& logger,
-    const repiu::engine::Win32AddressRangeProbe& probe)
+    const repiu::engine::AddressRangeProbe& probe)
 {
     logger.info("Win32 host range probe: {}",
                 probe.valid ? "valid" : "invalid");
@@ -589,7 +630,7 @@ void PrintProbe(
 
 void PrintPlacement(
     spdlog::logger& logger,
-    const repiu::engine::Win32RelocatedImagePlacement& placement)
+    const repiu::engine::RelocatedImagePlacement& placement)
 {
     logger.info("Win32 relocated image placement: {}",
                 placement.valid ? "valid" : "invalid");
@@ -633,7 +674,7 @@ void PrintPlacement(
 
 void PrintExecutionAttempt(
     spdlog::logger& logger,
-    const repiu::engine::Win32MinimalExecutionAttempt& attempt,
+    const repiu::engine::MinimalExecutionAttempt& attempt,
     std::string_view executable_name)
 {
     logger.info("Win32 minimal execution attempt: {}",
@@ -1518,7 +1559,7 @@ void PrintExecutionAttempt(
         // report needs the same five numbers and a second copy is how two
         // reports come to disagree. The names below are unchanged, so everything
         // downstream reads exactly what it read before.
-        const repiu::engine::Win32ExecutionTimeShares shares =
+        const repiu::engine::ExecutionTimeShares shares =
             repiu::engine::ComputeExecutionTimeShares(time_profile);
         const std::uint64_t total = shares.total;
         const std::uint64_t veh = shares.veh;
@@ -2162,7 +2203,7 @@ void PrintExecutionAttempt(
             // from this line -- vertices queued against flushes performed.
             const auto& batch = attempt.glide_draw_batch;
             using reason = repiu::engine::
-                Win32GlideDrawBatchFlushReason;
+                GlideDrawBatchFlushReason;
             const auto reason_count = [&batch](reason value) {
                 return batch.flush_reasons[static_cast<std::size_t>(value)];
             };
@@ -2746,15 +2787,15 @@ void PrintExecutionAttempt(
     logger.info("Win32 AOT return trace entries: {}",
                 attempt.aot_return_trace_count);
     const std::uint32_t trace_begin = attempt.aot_return_trace_count >
-        repiu::engine::kWin32AotReturnTraceCapacity
+        repiu::engine::kAotReturnTraceCapacity
         ? attempt.aot_return_trace_count -
-              repiu::engine::kWin32AotReturnTraceCapacity
+              repiu::engine::kAotReturnTraceCapacity
         : 0U;
     for (std::uint32_t sequence = trace_begin;
          sequence < attempt.aot_return_trace_count; ++sequence)
     {
         const auto& trace = attempt.aot_return_trace[
-            sequence % repiu::engine::kWin32AotReturnTraceCapacity];
+            sequence % repiu::engine::kAotReturnTraceCapacity];
         logger.info("Win32 AOT return trace #{} source/actual/expected/ESP/match: {}/{}/{}/{}/{}",
                     sequence + 1U, Hex32(trace.source),
                     Hex32(trace.actual_target), Hex32(trace.expected_target),
@@ -2763,15 +2804,15 @@ void PrintExecutionAttempt(
     logger.info("Win32 AOT transfer trace entries: {}",
                 attempt.aot_transfer_trace_count);
     const std::uint32_t transfer_begin = attempt.aot_transfer_trace_count >
-        repiu::engine::kWin32AotTransferTraceCapacity
+        repiu::engine::kAotTransferTraceCapacity
         ? attempt.aot_transfer_trace_count -
-              repiu::engine::kWin32AotTransferTraceCapacity
+              repiu::engine::kAotTransferTraceCapacity
         : 0U;
     for (std::uint32_t sequence = transfer_begin;
          sequence < attempt.aot_transfer_trace_count; ++sequence)
     {
         const auto& transfer = attempt.aot_transfer_trace[
-            sequence % repiu::engine::kWin32AotTransferTraceCapacity];
+            sequence % repiu::engine::kAotTransferTraceCapacity];
         logger.info("Win32 AOT transfer trace #{} source/target/kind: {}/{}/{}",
                     sequence + 1U, Hex32(transfer.source),
                     Hex32(transfer.target),
@@ -2793,13 +2834,13 @@ void PrintExecutionAttempt(
         const auto log_call_return_trace =
             [&logger](const char* prefix,
                       const repiu::engine::
-                          Win32AotCallReturnTraceEntry& entry) {
+                          AotCallReturnTraceEntry& entry) {
                 const char* origin = entry.origin ==
-                        repiu::engine::Win32AotTransferOrigin::kHost
+                        repiu::engine::AotTransferOrigin::kHost
                     ? "host"
                     : "veh";
                 if (entry.kind == repiu::engine::
-                                      Win32AotCallReturnTraceEventKind::kCall)
+                                      AotCallReturnTraceEventKind::kCall)
                 {
                     logger.info(
                         "{} #{} CALL origin/source/target/return/ESP: "
@@ -2833,10 +2874,10 @@ void PrintExecutionAttempt(
         const std::uint32_t call_return_begin =
             attempt.aot_dbt_call_return_trace_count >
                     repiu::engine::
-                        kWin32AotCallReturnTraceCapacity
+                        kAotCallReturnTraceCapacity
                 ? attempt.aot_dbt_call_return_trace_count -
                       repiu::engine::
-                          kWin32AotCallReturnTraceCapacity
+                          kAotCallReturnTraceCapacity
                 : 0U;
         for (std::uint32_t sequence = call_return_begin;
              sequence < attempt.aot_dbt_call_return_trace_count;
@@ -2845,24 +2886,24 @@ void PrintExecutionAttempt(
             const auto& entry = attempt.aot_dbt_call_return_trace[
                 sequence %
                 repiu::engine::
-                    kWin32AotCallReturnTraceCapacity];
+                    kAotCallReturnTraceCapacity];
             log_call_return_trace("Win32 AOT-DBT CALL/RET trace", entry);
         }
     }
     if (attempt.aot_dbt_call_step_probe_configured)
     {
         const auto phase_name =
-            [](repiu::engine::Win32AotCallStepProbePhase phase) {
+            [](repiu::engine::AotCallStepProbePhase phase) {
                 switch (phase)
                 {
                     case repiu::engine::
-                        Win32AotCallStepProbePhase::kAwaitPreC3:
+                        AotCallStepProbePhase::kAwaitPreC3:
                         return "await-pre-c3";
                     case repiu::engine::
-                        Win32AotCallStepProbePhase::kAwaitPostC3:
+                        AotCallStepProbePhase::kAwaitPostC3:
                         return "await-post-c3";
                     case repiu::engine::
-                        Win32AotCallStepProbePhase::kAwaitReturnTarget:
+                        AotCallStepProbePhase::kAwaitReturnTarget:
                         return "await-return-target";
                     default:
                         return "idle";
@@ -2896,10 +2937,10 @@ void PrintExecutionAttempt(
         const std::uint32_t begin =
             attempt.aot_dbt_call_step_probe_trace_count >
                     repiu::engine::
-                        kWin32AotCallStepProbeTraceCapacity
+                        kAotCallStepProbeTraceCapacity
                 ? attempt.aot_dbt_call_step_probe_trace_count -
                       repiu::engine::
-                          kWin32AotCallStepProbeTraceCapacity
+                          kAotCallStepProbeTraceCapacity
                 : 0U;
         for (std::uint32_t sequence = begin;
              sequence < attempt.aot_dbt_call_step_probe_trace_count;
@@ -2908,24 +2949,24 @@ void PrintExecutionAttempt(
             const auto& entry = attempt.aot_dbt_call_step_probe_trace[
                 sequence %
                 repiu::engine::
-                    kWin32AotCallStepProbeTraceCapacity];
+                    kAotCallStepProbeTraceCapacity];
             const char* kind = "unexpected";
             switch (entry.kind)
             {
                 case repiu::engine::
-                    Win32AotCallStepProbeEventKind::kPreC3:
+                    AotCallStepProbeEventKind::kPreC3:
                     kind = "pre-c3";
                     break;
                 case repiu::engine::
-                    Win32AotCallStepProbeEventKind::kPostC3:
+                    AotCallStepProbeEventKind::kPostC3:
                     kind = "post-c3";
                     break;
                 case repiu::engine::
-                    Win32AotCallStepProbeEventKind::kReturnTarget:
+                    AotCallStepProbeEventKind::kReturnTarget:
                     kind = "return-target";
                     break;
                 case repiu::engine::
-                    Win32AotCallStepProbeEventKind::kConflict:
+                    AotCallStepProbeEventKind::kConflict:
                     kind = "conflict";
                     break;
                 default:
@@ -2997,11 +3038,11 @@ void PrintExecutionAttempt(
                     Hex32(attempt.execution_probe_stack[6]),
                     Hex32(attempt.execution_probe_stack[7]));
         constexpr const char* kRegisterNames[
-            repiu::engine::kWin32ExecutionProbeRegisterCount] = {
+            repiu::engine::kExecutionProbeRegisterCount] = {
                 "EAX", "EBX", "ECX", "EDX", "ESI", "EDI", "EBP"};
         for (std::uint32_t index = 0;
              index < repiu::engine::
-                         kWin32ExecutionProbeRegisterCount;
+                         kExecutionProbeRegisterCount;
              ++index)
         {
             const auto& window = attempt.execution_probe_memory[index];
@@ -3727,10 +3768,10 @@ void PrintExecutionAttempt(
                     attempt.port_io.trace_limit_reached ? "true" : "false");
         for (std::uint32_t index = 0;
              index < attempt.port_io.trace_stored_count &&
-             index < repiu::engine::kWin32PortIoTraceCapacity;
+             index < repiu::engine::kPortIoTraceCapacity;
              ++index)
         {
-            const repiu::engine::Win32PortIoTraceEntry& entry =
+            const repiu::engine::PortIoTraceEntry& entry =
                 attempt.port_io.trace[index];
             if (!entry.valid)
             {
@@ -3768,8 +3809,8 @@ void PrintExecutionAttempt(
         {
             const std::uint32_t slot =
                 (sequence - 1) % repiu::engine::
-                    kWin32DosPathTraceCapacity;
-            const repiu::engine::Win32DosPathTraceEntry& entry =
+                    kDosPathTraceCapacity;
+            const repiu::engine::DosPathTraceEntry& entry =
                 attempt.dos_path.trace[slot];
             if (!entry.valid || entry.sequence != sequence)
             {
@@ -3813,7 +3854,7 @@ void PrintExecutionAttempt(
              ++sequence)
         {
             const std::uint32_t slot = (sequence - 1U) %
-                repiu::engine::kWin32DosFileIoTraceCapacity;
+                repiu::engine::kDosFileIoTraceCapacity;
             const auto& entry = attempt.dos_file_io.trace[slot];
             if (!entry.valid || entry.sequence != sequence)
             {
@@ -3882,7 +3923,7 @@ void PrintExecutionAttempt(
         {
             const std::uint32_t slot =
                 (sequence - 1) % repiu::engine::
-                    kWin32AllocatorProbeTraceCapacity;
+                    kAllocatorProbeTraceCapacity;
             const auto& entry = attempt.allocator_probe.trace[slot];
             if (!entry.valid || entry.sequence != sequence)
             {
@@ -3923,7 +3964,7 @@ void PrintExecutionAttempt(
         {
             const std::uint32_t slot =
                 (sequence - 1) % repiu::engine::
-                    kWin32AllocatorControlFlowTraceCapacity;
+                    kAllocatorControlFlowTraceCapacity;
             const auto& entry =
                 attempt.allocator_control_flow.trace[slot];
             if (!entry.valid || entry.sequence != sequence)
@@ -4001,7 +4042,7 @@ void PrintExecutionAttempt(
         attempt.allocator_control_flow.root_transition);
     logger.info("Win32 handled DOS interrupt count: {}",
                 attempt.handled_dos_interrupt_count);
-    repiu::engine::Win32AotOpcodeRank dos_ah_ranks[4] = {};
+    repiu::engine::AotOpcodeRank dos_ah_ranks[4] = {};
     repiu::engine::RankAotOpcodeHistogram(
         attempt.handled_dos_interrupt_ah_counts, dos_ah_ranks, 4U);
     logger.info("Win32 DOS AH hotspots [{:02X}:{} {:02X}:{} {:02X}:{} {:02X}:{}]",
@@ -4264,7 +4305,7 @@ void PrintExecutionAttempt(
         {
             const std::uint32_t slot =
                 (sequence - 1) % repiu::engine::
-                    kWin32SegmentLoadTraceCapacity;
+                    kSegmentLoadTraceCapacity;
             const auto& entry = attempt.segment_load.trace[slot];
             if (!entry.valid || entry.sequence != sequence)
             {
@@ -4453,7 +4494,7 @@ void PrintExecutionAttempt(
         std::ostringstream stack;
         for (std::uint32_t index = 0;
              index < repiu::engine::
-                 kWin32DosTerminationStackCapacity;
+                 kDosTerminationStackCapacity;
              ++index)
         {
             if (index != 0)
@@ -4499,13 +4540,13 @@ void PrintExecutionAttempt(
 bool SelectAndReserveRelocatedImageBase(
     std::uint32_t reserve_size,
     spdlog::logger& logger,
-    repiu::engine::Win32AddressRangeReservation* reservation)
+    repiu::engine::AddressRangeReservation* reservation)
 {
     if (reservation == nullptr)
     {
         return false;
     }
-    *reservation = repiu::engine::Win32AddressRangeReservation{};
+    *reservation = repiu::engine::AddressRangeReservation{};
 
     const std::vector<std::uint32_t> candidates = {
         0x01000000,
@@ -4521,15 +4562,15 @@ bool SelectAndReserveRelocatedImageBase(
 
     for (std::uint32_t candidate : candidates)
     {
-        repiu::engine::Win32RuntimeMemoryPolicy policy;
-        if (!repiu::engine::BuildWin32RuntimeMemoryPolicyFromFixedRange(
+        repiu::engine::RuntimeMemoryPolicy policy;
+        if (!repiu::engine::BuildRuntimeMemoryPolicyFromFixedRange(
                 candidate, reserve_size, &policy))
         {
             continue;
         }
 
-        repiu::engine::Win32AddressRangeProbe probe;
-        if (!repiu::engine::ProbeWin32RuntimeAddressRange(
+        repiu::engine::AddressRangeProbe probe;
+        if (!repiu::engine::ProbeRuntimeAddressRange(
                 policy, &probe))
         {
             continue;
@@ -4543,8 +4584,8 @@ bool SelectAndReserveRelocatedImageBase(
             continue;
         }
 
-        repiu::engine::Win32AddressRangeReservation candidate_reservation;
-        if (!repiu::engine::ReserveAndCommitWin32RuntimeAddressRange(
+        repiu::engine::AddressRangeReservation candidate_reservation;
+        if (!repiu::engine::ReserveAndCommitRuntimeAddressRange(
                 policy, &candidate_reservation))
         {
             continue;
@@ -4556,7 +4597,7 @@ bool SelectAndReserveRelocatedImageBase(
             logger.warn("Win32 relocated base candidate {} reserve result: {}",
                         Hex32(candidate),
                         candidate_reservation.message);
-            repiu::engine::ReleaseWin32RuntimeAddressRange(
+            repiu::engine::ReleaseRuntimeAddressRange(
                 candidate_reservation);
             continue;
         }
@@ -4788,7 +4829,7 @@ int main(int argc, char** argv)
 {
     // Task 441: first thing, so a host crash anywhere after this point names
     // itself instead of vanishing into an exit code.
-    repiu::engine::InstallWin32HostCrashReporter();
+    repiu::engine::InstallHostCrashReporter();
     std::shared_ptr<spdlog::logger> logger = CreateLoaderLogger();
 
     if (LauncherRequested(argc))
@@ -4962,8 +5003,8 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    repiu::engine::Win32RuntimeMemoryPolicy policy;
-    if (!repiu::engine::BuildWin32RuntimeMemoryPolicyFromFixedRange(
+    repiu::engine::RuntimeMemoryPolicy policy;
+    if (!repiu::engine::BuildRuntimeMemoryPolicyFromFixedRange(
             profile->runtime_reservation_hint.base_address,
             profile->runtime_reservation_hint.reserve_size,
             &policy))
@@ -4974,8 +5015,8 @@ int main(int argc, char** argv)
 
     PrintPolicy(*logger, policy);
 
-    repiu::engine::Win32AddressRangeProbe probe;
-    if (!repiu::engine::ProbeWin32RuntimeAddressRange(
+    repiu::engine::AddressRangeProbe probe;
+    if (!repiu::engine::ProbeRuntimeAddressRange(
             policy, &probe))
     {
         logger->error("Failed to probe fixed runtime range: {}",
@@ -4985,8 +5026,8 @@ int main(int argc, char** argv)
 
     PrintProbe(*logger, probe);
 
-    repiu::engine::Win32AddressRangeReservation reservation;
-    if (!repiu::engine::ReserveWin32RuntimeAddressRange(
+    repiu::engine::AddressRangeReservation reservation;
+    if (!repiu::engine::ReserveRuntimeAddressRange(
             policy, &reservation))
     {
         logger->error("Failed to run early reservation attempt");
@@ -4994,7 +5035,7 @@ int main(int argc, char** argv)
     }
 
     PrintReservation(*logger, reservation);
-    repiu::engine::ReleaseWin32RuntimeAddressRange(reservation);
+    repiu::engine::ReleaseRuntimeAddressRange(reservation);
 
     std::vector<std::uint8_t> data;
     std::string read_error;
@@ -5006,10 +5047,10 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    const std::filesystem::path dos4gw_path =
-        profile->executable_path.parent_path() / "DOS4GW.EXE";
+    const std::filesystem::path dos4gw_path = ResolveSiblingAssetPath(
+        profile->executable_path.parent_path(), "DOS4GW.EXE");
     std::optional<repiu::exe::Dos16mBoundModule> linexe_runtime_module;
-    if (std::filesystem::exists(dos4gw_path))
+    if (!dos4gw_path.empty())
     {
         std::vector<std::uint8_t> dos4gw_data;
         if (!ReadBinaryFile(dos4gw_path, &dos4gw_data, &read_error))
@@ -5061,9 +5102,17 @@ int main(int argc, char** argv)
     }
 
     std::vector<repiu::exe::LeResidentName> glide_exports;
-    const std::filesystem::path glide_path =
-        profile->executable_path.parent_path() / "Glide2x.ovl";
-    if (std::filesystem::exists(glide_path))
+    const std::filesystem::path glide_path = ResolveSiblingAssetPath(
+        profile->executable_path.parent_path(), "Glide2x.ovl");
+    if (glide_path.empty())
+    {
+        // Silence here is what made this expensive to find: the whole DOS/4G
+        // environment is built from these exports, so an absent overlay shows
+        // up much later as a guest whose DLL loader will not initialize.
+        logger->warn("No Glide2x.ovl beside {}; Glide gates will be absent",
+                     profile->executable_path.string());
+    }
+    else
     {
         std::vector<std::uint8_t> glide_data;
         repiu::exe::MzHeader glide_mz;
@@ -5112,7 +5161,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    repiu::engine::Win32AddressRangeReservation
+    repiu::engine::AddressRangeReservation
         relocated_arena_reservation;
     if (!SelectAndReserveRelocatedImageBase(
             arena_size_plan.arena_reserve_size,
@@ -5139,7 +5188,7 @@ int main(int argc, char** argv)
     {
         PrintRuntimeMemoryArenaPlan(*logger, arena_plan);
         logger->error("Failed to build relocated runtime memory arena plan");
-        repiu::engine::ReleaseWin32RuntimeAddressRange(
+        repiu::engine::ReleaseRuntimeAddressRange(
             relocated_arena_reservation);
         return 1;
     }
@@ -5151,7 +5200,7 @@ int main(int argc, char** argv)
             load_result, relocated_image_base, &relocatable_plan, &error))
     {
         PrintParseError(*logger, error);
-        repiu::engine::ReleaseWin32RuntimeAddressRange(
+        repiu::engine::ReleaseRuntimeAddressRange(
             relocated_arena_reservation);
         return 1;
     }
@@ -5161,7 +5210,7 @@ int main(int argc, char** argv)
             load_result, relocatable_plan, &relocated_image, &error))
     {
         PrintParseError(*logger, error);
-        repiu::engine::ReleaseWin32RuntimeAddressRange(
+        repiu::engine::ReleaseRuntimeAddressRange(
             relocated_arena_reservation);
         return 1;
     }
@@ -5172,7 +5221,7 @@ int main(int argc, char** argv)
     {
         logger->error(
             "REPIU_EXECUTION_BACKEND must be legacy or dynamic");
-        repiu::engine::ReleaseWin32RuntimeAddressRange(
+        repiu::engine::ReleaseRuntimeAddressRange(
             relocated_arena_reservation);
         return 1;
     }
@@ -5182,7 +5231,7 @@ int main(int argc, char** argv)
     const bool direct_glide_dispatch_enabled =
         use_dynamic_backend &&
         repiu::engine::
-            ResolveWin32GlideGateDirectDispatchEnabled(
+            ResolveGlideGateDirectDispatchEnabled(
                 std::getenv("REPIU_AOT_DBT_GLIDE_GATE_DISPATCH"));
     repiu::runtime::AotCodeCacheBuildOptions aot_build_options;
     // Task 424: these three were decided by the backend value alone from the
@@ -5286,7 +5335,7 @@ int main(int argc, char** argv)
     {
         logger->error(
             "REPIU_AOT_INDIRECT_CACHE_SLOTS must be either 1 or 4");
-        repiu::engine::ReleaseWin32RuntimeAddressRange(
+        repiu::engine::ReleaseRuntimeAddressRange(
             relocated_arena_reservation);
         return 1;
     }
@@ -5300,7 +5349,7 @@ int main(int argc, char** argv)
     {
         logger->error("Failed to build requested AOT execution image: {} / {}",
                       aot_plan.message, aot_image.message);
-        repiu::engine::ReleaseWin32RuntimeAddressRange(
+        repiu::engine::ReleaseRuntimeAddressRange(
             relocated_arena_reservation);
         return 1;
     }
@@ -5381,20 +5430,20 @@ int main(int argc, char** argv)
     {
         PrintDosVirtualFileSystem(*logger, dos_file_system);
         logger->error("Failed to initialize DOS virtual filesystem");
-        repiu::engine::ReleaseWin32RuntimeAddressRange(
+        repiu::engine::ReleaseRuntimeAddressRange(
             relocated_arena_reservation);
         return 1;
     }
     PrintDosVirtualFileSystem(*logger, dos_file_system);
 
-    repiu::engine::Win32RelocatedImagePlacement placement;
-    if (!repiu::engine::PlaceWin32RelocatedImageInReservedRange(
+    repiu::engine::RelocatedImagePlacement placement;
+    if (!repiu::engine::PlaceRelocatedImageInReservedRange(
             relocated_image,
             relocated_arena_reservation,
             &placement))
     {
         logger->error("Failed to place relocated image");
-        repiu::engine::ReleaseWin32RuntimeAddressRange(
+        repiu::engine::ReleaseRuntimeAddressRange(
             relocated_arena_reservation);
         return 1;
     }
@@ -5402,20 +5451,20 @@ int main(int argc, char** argv)
     PrintPlacement(*logger, placement);
     if (!placement.placed)
     {
-        repiu::engine::ReleaseWin32RuntimeAddressRange(
+        repiu::engine::ReleaseRuntimeAddressRange(
             relocated_arena_reservation);
         logger->error("Failed to place relocated image");
         return 1;
     }
-    repiu::engine::Win32AotCodeCachePlacement aot_placement;
+    repiu::engine::AotCodeCachePlacement aot_placement;
     if (use_dynamic_backend &&
-        (!repiu::engine::PlaceWin32AotCodeCache(
+        (!repiu::engine::PlaceAotCodeCache(
              aot_image, &aot_placement) ||
          !aot_placement.placed))
     {
         logger->error("Failed to place requested AOT code cache: {}",
                       aot_placement.message);
-        repiu::engine::ReleaseWin32RelocatedImage(placement);
+        repiu::engine::ReleaseRelocatedImage(placement);
         return 1;
     }
     if (use_dynamic_backend)
@@ -5429,7 +5478,7 @@ int main(int argc, char** argv)
                      aot_plan.jump_table_target_count);
     }
     logger->flush();
-    repiu::engine::Win32MinimalExecutionAttempt attempt;
+    repiu::engine::MinimalExecutionAttempt attempt;
     const bool use_dos_console_hle =
         profile->hle_profile_id == "dos4gw_console_sample";
     const std::uint32_t execution_timeout_milliseconds =
@@ -5457,7 +5506,7 @@ int main(int argc, char** argv)
                      stall_timeout_milliseconds);
     }
     const bool attempted_execution = use_dynamic_backend
-        ? repiu::engine::AttemptWin32GuestStackAotExecution(
+        ? repiu::engine::AttemptGuestStackAotExecution(
               placement,
               aot_placement,
               stack_plan,
@@ -5476,14 +5525,14 @@ int main(int argc, char** argv)
               stall_timeout_milliseconds,
               &attempt)
         : use_dos_console_hle
-            ? repiu::engine::AttemptWin32GuestStackHleExecution(
+            ? repiu::engine::AttemptGuestStackHleExecution(
                   placement,
                   stack_plan,
                   dos_file_system,
                   execution_timeout_milliseconds,
                   stall_timeout_milliseconds,
                   &attempt)
-            : repiu::engine::AttemptWin32GuestStackTrapExecution(
+            : repiu::engine::AttemptGuestStackTrapExecution(
                   placement,
                   stack_plan,
                   dos_file_system,
@@ -5502,8 +5551,8 @@ int main(int argc, char** argv)
     if (!attempted_execution)
     {
         logger->error("Failed to attempt minimal original entry execution");
-        repiu::engine::ReleaseWin32AotCodeCache(&aot_placement);
-        repiu::engine::ReleaseWin32RelocatedImage(placement);
+        repiu::engine::ReleaseAotCodeCache(&aot_placement);
+        repiu::engine::ReleaseRelocatedImage(placement);
         return 1;
     }
 
@@ -5519,7 +5568,7 @@ int main(int argc, char** argv)
                           attempt,
                           profile->executable_path.filename().string());
     const auto glide_dispatch_stats = repiu::engine::
-        ReadWin32GlideGateDirectDispatchStats();
+        ReadGlideGateDirectDispatchStats();
     logger->info(
         "Win32 Glide direct dispatch patched/verified/resolved-target/"
         "relinked-cache/entry/success/target-miss/terminal: "
@@ -5532,14 +5581,14 @@ int main(int argc, char** argv)
         glide_dispatch_stats.success_count,
         glide_dispatch_stats.target_miss_count,
         glide_dispatch_stats.terminal_failure_count);
-    // Task 507: skipped, on the same terms as `ReleaseWin32RelocatedImage`
+    // Task 507: skipped, on the same terms as `ReleaseRelocatedImage`
     // below, when the shutdown path could not stop the guest thread. A thread
     // left running keeps a claim on this memory -- a host call the AOT cache
     // made can return into it -- and freeing it under that thread is a
     // use-after-free the process is exiting anyway, not a leak worth avoiding.
     if (attempt.guest_thread_stopped)
     {
-        repiu::engine::ReleaseWin32AotCodeCache(&aot_placement);
+        repiu::engine::ReleaseAotCodeCache(&aot_placement);
     }
     if (attempt.exception_caught)
     {
@@ -5579,7 +5628,7 @@ int main(int argc, char** argv)
     }
     if (!attempt.timed_out)
     {
-        repiu::engine::ReleaseWin32RelocatedImage(placement);
+        repiu::engine::ReleaseRelocatedImage(placement);
     }
     return 0;
 }

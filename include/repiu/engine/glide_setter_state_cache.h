@@ -17,21 +17,21 @@ namespace repiu::engine
 // call order are all unaffected -- only `InvokeOnHostThread` and the redundant
 // OpenGL application are skipped. The rules come from
 // `glide_setter_state_model.h`, shared with the census that measured the ceiling.
-constexpr std::size_t kWin32GlideSetterStateCacheCapacity = 256U;
+constexpr std::size_t kGlideSetterStateCacheCapacity = 256U;
 
-struct Win32GlideSetterStateCacheEntry
+struct GlideSetterStateCacheEntry
 {
     bool applied_valid = false;
-    Win32GlideSetterStateKey applied_key;
+    GlideSetterStateKey applied_key;
     std::uint32_t elided_count = 0;
     std::uint32_t applied_count = 0;
 };
 
-struct Win32GlideSetterStateCache
+struct GlideSetterStateCache
 {
     bool enabled = false;
-    std::array<Win32GlideSetterStateCacheEntry,
-               kWin32GlideSetterStateCacheCapacity> entries = {};
+    std::array<GlideSetterStateCacheEntry,
+               kGlideSetterStateCacheCapacity> entries = {};
     std::uint32_t texture_generation = 0;
     std::uint32_t elided_count = 0;
     std::uint32_t applied_count = 0;
@@ -41,7 +41,7 @@ struct Win32GlideSetterStateCache
 };
 
 // Aggregates only, for the same stack-size reason as the census snapshot.
-struct Win32GlideSetterStateCacheSnapshot
+struct GlideSetterStateCacheSnapshot
 {
     bool enabled = false;
     // Task 437: which batch the counters below were produced under, so an A/B log
@@ -125,32 +125,32 @@ bool IsGlideSetterElisionGate(repiu::hle::GlideGateId gate_id);
 // True when this exact state was already applied successfully and no invalidating
 // event has happened since.
 bool ShouldElideGlideSetterState(
-    Win32GlideSetterStateCache* cache,
+    GlideSetterStateCache* cache,
     std::uint16_t ordinal,
-    const Win32GlideSetterStateKey& key);
+    const GlideSetterStateKey& key);
 
 void RecordGlideSetterStateElided(
-    Win32GlideSetterStateCache* cache,
+    GlideSetterStateCache* cache,
     std::uint16_t ordinal);
 
 // Called only after the host actually applied the state successfully.
 void RecordGlideSetterStateApplied(
-    Win32GlideSetterStateCache* cache,
+    GlideSetterStateCache* cache,
     std::uint16_t ordinal,
-    const Win32GlideSetterStateKey& key);
+    const GlideSetterStateKey& key);
 
 // A declined gate or a retained-but-unexpressed argument leaves the host state
 // unknown, so the record must go.
 void RecordGlideSetterStateVoided(
-    Win32GlideSetterStateCache* cache,
+    GlideSetterStateCache* cache,
     std::uint16_t ordinal);
 
-void InvalidateGlideSetterStateCache(Win32GlideSetterStateCache* cache);
+void InvalidateGlideSetterStateCache(GlideSetterStateCache* cache);
 
 void BumpGlideSetterStateCacheTextureGeneration(
-    Win32GlideSetterStateCache* cache);
+    GlideSetterStateCache* cache);
 
-Win32GlideSetterStateCacheSnapshot SnapshotGlideSetterStateCache(
-    const Win32GlideSetterStateCache& cache);
+GlideSetterStateCacheSnapshot SnapshotGlideSetterStateCache(
+    const GlideSetterStateCache& cache);
 
 }  // namespace repiu::engine

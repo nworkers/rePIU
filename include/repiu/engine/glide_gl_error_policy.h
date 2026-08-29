@@ -41,7 +41,7 @@ bool TryReadGlideGlErrorFrameInterval(std::uint32_t* interval);
 // host thread inside arbitrary GL calls, where allocation is not acceptable.
 constexpr std::size_t kGlideGlDebugMessageCapacity = 192U;
 
-struct Win32GlideGlErrorPolicyProfile
+struct GlideGlErrorPolicyProfile
 {
     std::uint32_t frame_check_count = 0;
     std::uint32_t frame_error_count = 0;
@@ -57,7 +57,7 @@ struct Win32GlideGlErrorPolicyProfile
     std::array<char, kGlideGlDebugMessageCapacity> first_debug_message{};
 };
 
-struct Win32GlideGlErrorPolicySnapshot
+struct GlideGlErrorPolicySnapshot
 {
     bool per_call_check_enabled = false;
     std::uint32_t frame_interval = 0;
@@ -75,7 +75,7 @@ struct Win32GlideGlErrorPolicySnapshot
 // `first_error_code` is GL_NO_ERROR (0) when the frame was clean. `drain_iterations`
 // counts how many codes the frame check had to pop, which is how a burst of
 // distinct errors stays visible even though only the first code is retained.
-void RecordGlideGlErrorFrameCheck(Win32GlideGlErrorPolicyProfile* profile,
+void RecordGlideGlErrorFrameCheck(GlideGlErrorPolicyProfile* profile,
                                   std::uint32_t first_error_code,
                                   std::uint32_t drain_iterations);
 
@@ -83,14 +83,14 @@ void RecordGlideGlErrorFrameCheck(Win32GlideGlErrorPolicyProfile* profile,
 // the driver invokes it on the host thread from inside an arbitrary GL call.
 // `is_error` separates real errors from the performance and notification chatter
 // drivers emit, and only an error supplies the retained first message.
-void RecordGlideGlDebugMessage(Win32GlideGlErrorPolicyProfile* profile,
+void RecordGlideGlDebugMessage(GlideGlErrorPolicyProfile* profile,
                                std::uint32_t id,
                                bool is_error,
                                const char* message,
                                std::size_t length);
 
-Win32GlideGlErrorPolicySnapshot SnapshotGlideGlErrorPolicy(
-    const Win32GlideGlErrorPolicyProfile& profile,
+GlideGlErrorPolicySnapshot SnapshotGlideGlErrorPolicy(
+    const GlideGlErrorPolicyProfile& profile,
     bool per_call_check_enabled,
     std::uint32_t frame_interval);
 

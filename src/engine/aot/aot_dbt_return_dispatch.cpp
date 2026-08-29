@@ -34,7 +34,7 @@ bool FindDispatchSite(
     {
         return false;
     }
-    Win32AotCodeCachePlacement* placement = context->aot_placement;
+    AotCodeCachePlacement* placement = context->aot_placement;
     const std::uint32_t offset =
         miss_address - context->aot_placement->base_address;
     EnsureAotReturnDispatchSiteIndex(placement);
@@ -83,7 +83,7 @@ extern "C" void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtReturnMissFrame(
     {
         return;
     }
-    Win32AotReturnStageProfile* stage_profile =
+    AotReturnStageProfile* stage_profile =
         context != nullptr ? &context->aot_return_stage_profile : nullptr;
     // Task 482: the adapter is the outer window of a DBT-path return, so the
     // dispatch-site lookup and the frame marshalling below are attributed
@@ -135,7 +135,7 @@ extern "C" void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtReturnMissFrame(
     entry_stage.Close();
     if (!HandleAotReturnTransfer(
             fault, context, &fallback_reason,
-            Win32AotTransferOrigin::kHost, site_index))
+            AotTransferOrigin::kHost, site_index))
     {
         RecordAotDbtReturnFallback(context, fallback_reason);
         return;

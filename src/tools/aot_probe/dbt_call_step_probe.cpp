@@ -3,7 +3,7 @@
 #include <iostream>
 
 #if defined(_WIN32)
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 #include "../../engine/aot/aot_dbt_call_step_probe.h"
 #include "../../engine/execution/thread_context.h"
 #include "repiu/platform/fault_handler.h"
@@ -25,9 +25,9 @@ bool RunAotDbtCallStepProbe()
     using engine::HandleAotDbtCallStepProbe;
     using engine::MaybeArmAotDbtCallStepProbe;
     using engine::ThreadContext;
-    using engine::Win32AotCallStepProbeEventKind;
-    using engine::Win32AotCallStepProbePhase;
-    using engine::Win32AotTransferOrigin;
+    using engine::AotCallStepProbeEventKind;
+    using engine::AotCallStepProbePhase;
+    using engine::AotTransferOrigin;
 
     auto context = std::make_unique<ThreadContext>();
     context->aot_dbt_call_return_trace_configured = true;
@@ -42,7 +42,7 @@ bool RunAotDbtCallStepProbe()
     site.guest_source = 0x1000U;
     site.success_cache_offset = 0x200U;
     site.is_call = true;
-    engine::Win32AotCodeCachePlacement placement;
+    engine::AotCodeCachePlacement placement;
     placement.placed = true;
     placement.base_address = 0x500000U;
     runtime::AotAddressMapEntry return_map;
@@ -64,10 +64,10 @@ bool RunAotDbtCallStepProbe()
     std::uint32_t saved_eflags = 0x202U;
     const bool disabled_origin =
         !MaybeArmAotDbtCallStepProbe(
-            context.get(), Win32AotTransferOrigin::kVeh, site, 1U,
+            context.get(), AotTransferOrigin::kVeh, site, 1U,
             0x2000U, 0x500400U, 0x1002U, entry_esp, &saved_eflags);
     const bool armed = MaybeArmAotDbtCallStepProbe(
-        context.get(), Win32AotTransferOrigin::kHost, site, 1U,
+        context.get(), AotTransferOrigin::kHost, site, 1U,
         0x2000U, 0x500400U, 0x1002U, entry_esp, &saved_eflags);
 
     // Task 503d-5 moved the handler onto FaultEvent; the probe hands it the
@@ -90,7 +90,7 @@ bool RunAotDbtCallStepProbe()
         fault, context.get());
     const bool watch =
         context->aot_dbt_call_step_probe_phase ==
-            Win32AotCallStepProbePhase::kAwaitReturnTarget &&
+            AotCallStepProbePhase::kAwaitReturnTarget &&
         registers.Dr0 == 0x500300U &&
         registers.Dr1 == 0x1002U &&
         (registers.Dr7 & 0x5U) == 0x5U;
@@ -101,19 +101,19 @@ bool RunAotDbtCallStepProbe()
         fault, context.get());
     const bool completed =
         context->aot_dbt_call_step_probe_phase ==
-            Win32AotCallStepProbePhase::kIdle &&
+            AotCallStepProbePhase::kIdle &&
         context->aot_dbt_call_step_probe_complete_count == 1U &&
         context->aot_dbt_call_step_probe_trace_count == 3U &&
         context->aot_dbt_call_step_probe_trace[0].kind ==
-            Win32AotCallStepProbeEventKind::kPreC3 &&
+            AotCallStepProbeEventKind::kPreC3 &&
         context->aot_dbt_call_step_probe_trace[0].eip_matches &&
         context->aot_dbt_call_step_probe_trace[0].esp_matches &&
         context->aot_dbt_call_step_probe_trace[1].kind ==
-            Win32AotCallStepProbeEventKind::kPostC3 &&
+            AotCallStepProbeEventKind::kPostC3 &&
         context->aot_dbt_call_step_probe_trace[1].eip_matches &&
         context->aot_dbt_call_step_probe_trace[1].esp_matches &&
         context->aot_dbt_call_step_probe_trace[2].kind ==
-            Win32AotCallStepProbeEventKind::kReturnTarget &&
+            AotCallStepProbeEventKind::kReturnTarget &&
         context->aot_dbt_call_step_probe_trace[2].esp_matches &&
         registers.Dr0 == 0U && registers.Dr1 == 0U &&
         registers.Dr7 == 0U && (registers.EFlags & 0x100U) == 0U;
@@ -126,7 +126,7 @@ bool RunAotDbtCallStepProbe()
     conflict_context->runtime_size = sizeof(stack);
     saved_eflags = 0x202U;
     const bool conflict_armed = MaybeArmAotDbtCallStepProbe(
-        conflict_context.get(), Win32AotTransferOrigin::kHost, site, 1U,
+        conflict_context.get(), AotTransferOrigin::kHost, site, 1U,
         0x2000U, 0x500400U, 0x1002U, entry_esp, &saved_eflags);
     registers = {};
     registers.Eip = placement.base_address + site.success_cache_offset;
@@ -143,7 +143,7 @@ bool RunAotDbtCallStepProbe()
     const bool conflict =
         conflict_context->aot_dbt_call_step_probe_conflict_count == 1U &&
         conflict_context->aot_dbt_call_step_probe_phase ==
-            Win32AotCallStepProbePhase::kIdle &&
+            AotCallStepProbePhase::kIdle &&
         registers.Dr7 == 0x1U;
 
     auto disabled_context = std::make_unique<ThreadContext>();

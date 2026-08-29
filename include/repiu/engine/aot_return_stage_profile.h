@@ -14,7 +14,7 @@ struct AotDbtReturnDispatchSite;
 namespace repiu::engine
 {
 
-struct Win32AotReturnPatchPolicy;
+struct AotReturnPatchPolicy;
 
 // Task 482: attribution inside the return handler bucket.
 //
@@ -53,7 +53,7 @@ constexpr std::uint32_t kAotReturnStageCount =
 // without a formatted dump of every site.
 constexpr std::size_t kAotReturnStageSiteReportCapacity = 16U;
 
-struct Win32AotReturnStageProfile
+struct AotReturnStageProfile
 {
     bool enabled = false;
     std::array<std::uint64_t, kAotReturnStageCount> cycles = {};
@@ -78,7 +78,7 @@ struct Win32AotReturnStageProfile
     std::uint32_t outer_depth = 0;
 };
 
-struct Win32AotReturnStageSnapshot
+struct AotReturnStageSnapshot
 {
     bool enabled = false;
     std::array<std::uint64_t, kAotReturnStageCount> cycles = {};
@@ -95,7 +95,7 @@ struct Win32AotReturnStageSnapshot
 
 // One return-dispatch site of the Task 481 policy, resolved against the plan so
 // the report names guest addresses rather than indices alone.
-struct Win32AotReturnStageSiteObservation
+struct AotReturnStageSiteObservation
 {
     std::uint32_t site_index = 0;
     std::uint32_t guest_source = 0;
@@ -113,22 +113,22 @@ struct Win32AotReturnStageSiteObservation
 bool ResolveAotReturnStageProfileEnabled(const char* setting);
 bool AotReturnStageProfileEnabled();
 
-void RecordAotReturnStageSample(Win32AotReturnStageProfile* profile,
+void RecordAotReturnStageSample(AotReturnStageProfile* profile,
                                 AotReturnStage stage,
                                 std::uint64_t start_cycles,
                                 std::uint64_t end_cycles);
 
-void RecordAotReturnOuterSample(Win32AotReturnStageProfile* profile,
+void RecordAotReturnOuterSample(AotReturnStageProfile* profile,
                                 std::uint64_t start_cycles,
                                 std::uint64_t end_cycles,
                                 std::uint64_t stage_total_at_entry);
 
-Win32AotReturnStageSnapshot SnapshotAotReturnStageProfile(
-    const Win32AotReturnStageProfile& profile);
+AotReturnStageSnapshot SnapshotAotReturnStageProfile(
+    const AotReturnStageProfile& profile);
 
 // Sum of the five stages, for coverage against the outer window.
 std::uint64_t AotReturnStageCoveredCycles(
-    const Win32AotReturnStageSnapshot& snapshot);
+    const AotReturnStageSnapshot& snapshot);
 
 std::uint64_t ReadAotReturnStageCycles();
 
@@ -136,16 +136,16 @@ std::uint64_t ReadAotReturnStageCycles();
 // first, and keeps at most kAotReturnStageSiteReportCapacity of them. Called
 // once at teardown, never on the return path.
 void RankAotReturnStageSites(
-    const Win32AotReturnPatchPolicy& policy,
+    const AotReturnPatchPolicy& policy,
     const std::vector<runtime::AotDbtReturnDispatchSite>& sites,
-    std::vector<Win32AotReturnStageSiteObservation>* observations);
+    std::vector<AotReturnStageSiteObservation>* observations);
 
 // Times one stage. Reads the clock only while the profile is enabled, so a
 // disabled run pays one predictable branch at each stage boundary.
 class AotReturnStageScope
 {
 public:
-    AotReturnStageScope(Win32AotReturnStageProfile* profile,
+    AotReturnStageScope(AotReturnStageProfile* profile,
                         AotReturnStage stage);
     ~AotReturnStageScope();
 
@@ -157,7 +157,7 @@ public:
     void Close();
 
 private:
-    Win32AotReturnStageProfile* profile_ = nullptr;
+    AotReturnStageProfile* profile_ = nullptr;
     AotReturnStage stage_ = AotReturnStage::kEntryValidation;
     std::uint64_t start_cycles_ = 0;
 };
@@ -167,14 +167,14 @@ private:
 class AotReturnOuterScope
 {
 public:
-    explicit AotReturnOuterScope(Win32AotReturnStageProfile* profile);
+    explicit AotReturnOuterScope(AotReturnStageProfile* profile);
     ~AotReturnOuterScope();
 
     AotReturnOuterScope(const AotReturnOuterScope&) = delete;
     AotReturnOuterScope& operator=(const AotReturnOuterScope&) = delete;
 
 private:
-    Win32AotReturnStageProfile* profile_ = nullptr;
+    AotReturnStageProfile* profile_ = nullptr;
     std::uint64_t start_cycles_ = 0;
     std::uint64_t stage_total_at_entry_ = 0;
     bool owns_depth_ = false;

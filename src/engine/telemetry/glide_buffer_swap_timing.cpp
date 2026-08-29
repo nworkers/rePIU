@@ -19,7 +19,7 @@ bool ReadGlideBufferSwapTimingProfileSetting()
 }
 
 std::uint64_t CounterDelta(
-    Win32GlideBufferSwapTimingProfile* profile,
+    GlideBufferSwapTimingProfile* profile,
     std::uint64_t before,
     std::uint64_t after)
 {
@@ -50,7 +50,7 @@ std::uint64_t ReadGlideBufferSwapTimingCycles()
 }
 
 void RecordGlideBufferSwapTiming(
-    Win32GlideBufferSwapTimingProfile* profile,
+    GlideBufferSwapTimingProfile* profile,
     std::uint32_t requested_interval,
     bool succeeded,
     std::uint64_t entry_cycles,
@@ -113,7 +113,7 @@ void RecordGlideBufferSwapTiming(
 }
 
 void RecordGlideBufferSwapSdlInterval(
-    Win32GlideBufferSwapTimingProfile* profile,
+    GlideBufferSwapTimingProfile* profile,
     bool succeeded,
     std::int32_t interval)
 {
@@ -134,10 +134,10 @@ void RecordGlideBufferSwapSdlInterval(
     }
 }
 
-Win32GlideBufferSwapTimingSnapshot SnapshotGlideBufferSwapTiming(
-    const Win32GlideBufferSwapTimingProfile& profile)
+GlideBufferSwapTimingSnapshot SnapshotGlideBufferSwapTiming(
+    const GlideBufferSwapTimingProfile& profile)
 {
-    Win32GlideBufferSwapTimingSnapshot snapshot;
+    GlideBufferSwapTimingSnapshot snapshot;
     snapshot.enabled = profile.enabled;
     snapshot.call_count = profile.call_count;
     snapshot.success_count = profile.success_count;

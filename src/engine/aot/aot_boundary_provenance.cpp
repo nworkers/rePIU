@@ -1,12 +1,12 @@
 #include "repiu/engine/aot_boundary_provenance.h"
 
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 
 namespace repiu::engine
 {
 
 AotCacheBreakpointProvenance ClassifyAotCacheBreakpointProvenance(
-    const Win32AotCodeCachePlacement& placement,
+    const AotCodeCachePlacement& placement,
     std::uint32_t cache_address,
     bool explicit_probe_sentinel)
 {
@@ -14,7 +14,7 @@ AotCacheBreakpointProvenance ClassifyAotCacheBreakpointProvenance(
     {
         return AotCacheBreakpointProvenance::kUnknown;
     }
-    if (IsWin32AotCacheAddressRetired(placement, cache_address))
+    if (IsAotCacheAddressRetired(placement, cache_address))
     {
         return AotCacheBreakpointProvenance::kRetiredOrInactiveEntry;
     }

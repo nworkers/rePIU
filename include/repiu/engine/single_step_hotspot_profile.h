@@ -9,8 +9,8 @@
 namespace repiu::engine
 {
 
-constexpr std::uint32_t kWin32SingleStepHotspotCapacity = 8192U;
-constexpr std::uint32_t kWin32SingleStepHotspotReportCapacity = 32U;
+constexpr std::uint32_t kSingleStepHotspotCapacity = 8192U;
+constexpr std::uint32_t kSingleStepHotspotReportCapacity = 32U;
 
 enum class SingleStepProfileOutcome : std::uint32_t
 {
@@ -54,7 +54,7 @@ constexpr std::uint32_t kSingleStepProfileFirstAotResumeSubStage =
 constexpr std::uint32_t kSingleStepProfileStageCount =
     static_cast<std::uint32_t>(SingleStepProfileStage::kCount);
 
-struct Win32SingleStepHotspotEntry
+struct SingleStepHotspotEntry
 {
     std::uint32_t guest_address = 0;
     std::uint32_t sample_count = 0;
@@ -71,7 +71,7 @@ struct Win32SingleStepHotspotEntry
     bool occupied = false;
 };
 
-struct Win32SingleStepHotspotProfile
+struct SingleStepHotspotProfile
 {
     bool enabled = false;
     std::uint32_t total_sample_count = 0;
@@ -87,8 +87,8 @@ struct Win32SingleStepHotspotProfile
         stage_counts = {};
     std::array<std::uint64_t, kSingleStepProfileStageCount>
         stage_cycles = {};
-    std::array<Win32SingleStepHotspotEntry,
-               kWin32SingleStepHotspotCapacity> entries = {};
+    std::array<SingleStepHotspotEntry,
+               kSingleStepHotspotCapacity> entries = {};
     // Task 401: teardown can hang after the guest thread stops, so the dump is
     // written as early as teardown allows and reported again later. These keep
     // the second call from rewriting the file and let it report the same
@@ -97,7 +97,7 @@ struct Win32SingleStepHotspotProfile
     std::uint32_t dump_entry_count = 0;
 };
 
-struct Win32SingleStepHotspotSample
+struct SingleStepHotspotSample
 {
     std::uint32_t guest_address = 0;
     std::uint32_t sample_count = 0;
@@ -113,7 +113,7 @@ struct Win32SingleStepHotspotSample
         stage_cycles = {};
 };
 
-struct Win32SingleStepHotspotProfileSnapshot
+struct SingleStepHotspotProfileSnapshot
 {
     bool enabled = false;
     std::uint32_t total_sample_count = 0;
@@ -133,10 +133,10 @@ struct Win32SingleStepHotspotProfileSnapshot
     std::uint32_t cycle_hotspot_count = 0;
     std::uint32_t top_count_coverage_count = 0;
     std::uint64_t top_cycle_coverage_cycles = 0;
-    std::array<Win32SingleStepHotspotSample,
-               kWin32SingleStepHotspotReportCapacity> count_hotspots = {};
-    std::array<Win32SingleStepHotspotSample,
-               kWin32SingleStepHotspotReportCapacity> cycle_hotspots = {};
+    std::array<SingleStepHotspotSample,
+               kSingleStepHotspotReportCapacity> count_hotspots = {};
+    std::array<SingleStepHotspotSample,
+               kSingleStepHotspotReportCapacity> cycle_hotspots = {};
     // Task 400: the top-32 lists answer "where is time spent", not "what else
     // ran at all". A stall diagnosis needs the second question, and a routine
     // executing two orders of magnitude less often than the hot loop cannot
@@ -148,7 +148,7 @@ struct Win32SingleStepHotspotProfileSnapshot
 
 // Per-sample stage totals collected by one SingleStepHotspotCycleScope before
 // they are folded into the profile.
-struct Win32SingleStepStageTally
+struct SingleStepStageTally
 {
     std::array<std::uint32_t, kSingleStepProfileStageCount> counts = {};
     std::array<std::uint64_t, kSingleStepProfileStageCount> cycles = {};
@@ -158,14 +158,14 @@ bool ResolveSingleStepHotspotProfileEnabled(std::string_view setting);
 bool SingleStepHotspotProfileEnabled();
 
 void RecordSingleStepHotspot(
-    Win32SingleStepHotspotProfile* profile,
+    SingleStepHotspotProfile* profile,
     std::uint32_t guest_address,
     std::uint64_t cycles,
     SingleStepProfileOutcome outcome,
-    const Win32SingleStepStageTally* stages = nullptr);
+    const SingleStepStageTally* stages = nullptr);
 
-Win32SingleStepHotspotProfileSnapshot SnapshotSingleStepHotspotProfile(
-    const Win32SingleStepHotspotProfile& profile);
+SingleStepHotspotProfileSnapshot SnapshotSingleStepHotspotProfile(
+    const SingleStepHotspotProfile& profile);
 
 // `REPIU_SINGLE_STEP_HOTSPOT_DUMP`: unset or empty disables the dump, "1"
 // selects build/single_step_hotspot.txt, anything else is used as the path.
@@ -178,13 +178,13 @@ std::filesystem::path SingleStepHotspotDumpPath();
 // can be read as a complete execution census rather than a top-N ranking.
 bool WriteSingleStepHotspotDump(
     const std::filesystem::path& path,
-    Win32SingleStepHotspotProfile* profile,
+    SingleStepHotspotProfile* profile,
     std::uint32_t* written_entry_count);
 
 // Resolves the configured path and writes once. Safe to call from several
 // teardown points; only the first call touches the file.
 bool WriteSingleStepHotspotDumpIfEnabled(
-    Win32SingleStepHotspotProfile* profile,
+    SingleStepHotspotProfile* profile,
     std::uint32_t* written_entry_count,
     std::string* resolved_path);
 
@@ -192,7 +192,7 @@ class SingleStepHotspotCycleScope
 {
 public:
     SingleStepHotspotCycleScope(
-        Win32SingleStepHotspotProfile* profile,
+        SingleStepHotspotProfile* profile,
         std::uint32_t guest_address);
     ~SingleStepHotspotCycleScope();
 
@@ -209,12 +209,12 @@ public:
     void AddStageCycles(SingleStepProfileStage stage, std::uint64_t cycles);
 
 private:
-    Win32SingleStepHotspotProfile* profile_ = nullptr;
+    SingleStepHotspotProfile* profile_ = nullptr;
     std::uint32_t guest_address_ = 0;
     std::uint64_t start_cycles_ = 0;
     SingleStepProfileOutcome outcome_ =
         SingleStepProfileOutcome::kTrapFlagRearm;
-    Win32SingleStepStageTally stages_ = {};
+    SingleStepStageTally stages_ = {};
 };
 
 // Measures one sequential region of HandleSingleStepTrace. Stage scopes must

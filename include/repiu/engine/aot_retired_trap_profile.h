@@ -1,5 +1,5 @@
-#ifndef REPIU_PLATFORM_WIN32_AOT_RETIRED_TRAP_PROFILE_H_
-#define REPIU_PLATFORM_WIN32_AOT_RETIRED_TRAP_PROFILE_H_
+#ifndef REPIU_ENGINE_AOT_RETIRED_TRAP_PROFILE_H_
+#define REPIU_ENGINE_AOT_RETIRED_TRAP_PROFILE_H_
 
 #include <array>
 #include <cstdint>
@@ -9,10 +9,10 @@
 namespace repiu::engine
 {
 
-struct Win32AotCodeCachePlacement;
+struct AotCodeCachePlacement;
 
-constexpr std::uint32_t kWin32AotRetiredTrapHotspotCapacity = 16U;
-constexpr std::uint32_t kWin32AotRetiredTrapHistogramCapacity = 65536U;
+constexpr std::uint32_t kAotRetiredTrapHotspotCapacity = 16U;
+constexpr std::uint32_t kAotRetiredTrapHistogramCapacity = 65536U;
 
 enum class AotRetiredTrapResolution : std::uint32_t
 {
@@ -28,7 +28,7 @@ enum class AotRetiredTrapResolution : std::uint32_t
 constexpr std::uint32_t kAotRetiredTrapResolutionCount =
     static_cast<std::uint32_t>(AotRetiredTrapResolution::kCount);
 
-struct Win32AotRetiredTrapCacheSample
+struct AotRetiredTrapCacheSample
 {
     std::uint32_t cache_address = 0;
     std::uint32_t guest_address = 0;
@@ -39,7 +39,7 @@ struct Win32AotRetiredTrapCacheSample
     bool metadata_valid = false;
 };
 
-struct Win32AotRetiredTrapProfile
+struct AotRetiredTrapProfile
 {
     bool enabled = false;
     std::uint32_t total_trap_count = 0;
@@ -51,17 +51,17 @@ struct Win32AotRetiredTrapProfile
     std::array<std::uint32_t, kAotRetiredTrapResolutionCount>
         resolution_counts = {};
     std::unordered_map<std::uint32_t, std::uint32_t> guest_histogram;
-    std::unordered_map<std::uint32_t, Win32AotRetiredTrapCacheSample>
+    std::unordered_map<std::uint32_t, AotRetiredTrapCacheSample>
         cache_histogram;
 };
 
-struct Win32AotRetiredTrapGuestHotspot
+struct AotRetiredTrapGuestHotspot
 {
     std::uint32_t guest_address = 0;
     std::uint32_t trap_count = 0;
 };
 
-struct Win32AotRetiredTrapProfileSnapshot
+struct AotRetiredTrapProfileSnapshot
 {
     bool enabled = false;
     std::uint32_t total_trap_count = 0;
@@ -77,24 +77,24 @@ struct Win32AotRetiredTrapProfileSnapshot
         resolution_counts = {};
     std::uint32_t guest_hotspot_count = 0;
     std::uint32_t cache_hotspot_count = 0;
-    std::array<Win32AotRetiredTrapGuestHotspot,
-               kWin32AotRetiredTrapHotspotCapacity> guest_hotspots = {};
-    std::array<Win32AotRetiredTrapCacheSample,
-               kWin32AotRetiredTrapHotspotCapacity> cache_hotspots = {};
+    std::array<AotRetiredTrapGuestHotspot,
+               kAotRetiredTrapHotspotCapacity> guest_hotspots = {};
+    std::array<AotRetiredTrapCacheSample,
+               kAotRetiredTrapHotspotCapacity> cache_hotspots = {};
 };
 
 bool ResolveAotRetiredTrapProfileEnabled(std::string_view setting);
 bool AotRetiredTrapProfileEnabled();
 void RecordAotRetiredTrap(
-    Win32AotRetiredTrapProfile* profile,
-    const Win32AotCodeCachePlacement& placement,
+    AotRetiredTrapProfile* profile,
+    const AotCodeCachePlacement& placement,
     std::uint32_t cache_address,
     std::uint32_t guest_address);
 void RecordAotRetiredTrapResolution(
-    Win32AotRetiredTrapProfile* profile,
+    AotRetiredTrapProfile* profile,
     AotRetiredTrapResolution resolution);
-Win32AotRetiredTrapProfileSnapshot SnapshotAotRetiredTrapProfile(
-    const Win32AotRetiredTrapProfile& profile);
+AotRetiredTrapProfileSnapshot SnapshotAotRetiredTrapProfile(
+    const AotRetiredTrapProfile& profile);
 
 } // namespace repiu::engine
 

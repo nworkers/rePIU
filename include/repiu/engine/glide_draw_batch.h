@@ -25,13 +25,13 @@ namespace repiu::engine
 // Independent primitives only. `GL_TRIANGLE_FAN`, which `grDrawPolygon` uses,
 // cannot be concatenated inside one `glBegin`/`glEnd` and is therefore never
 // queued -- it draws immediately as before. PIU calls no polygon entry point.
-constexpr std::size_t kWin32GlideDrawBatchVertexCapacity = 3072U;
+constexpr std::size_t kGlideDrawBatchVertexCapacity = 3072U;
 
 // The primitive kinds a batch can hold. Kept as our own enum rather than the GL
 // constants so the boundary never depends on a GL header, and so that "nothing
 // pending" has a value of its own -- `GL_POINTS` is zero, which would otherwise
 // be indistinguishable from an empty batch.
-enum class Win32GlideBatchPrimitive : std::uint32_t
+enum class GlideBatchPrimitive : std::uint32_t
 {
     kNone = 0,
     kPoints,
@@ -44,7 +44,7 @@ enum class Win32GlideBatchPrimitive : std::uint32_t
 // before each of them. What can remain pending at process exit is a fraction of
 // a frame that was never presented, and the snapshot reports it as
 // `pending_vertex_count` rather than pretending it was drawn.
-enum class Win32GlideDrawBatchFlushReason
+enum class GlideDrawBatchFlushReason
 {
     kNonDrawGate,
     kPrimitiveChange,
@@ -52,11 +52,11 @@ enum class Win32GlideDrawBatchFlushReason
     kCount
 };
 
-struct Win32GlideDrawBatch
+struct GlideDrawBatch
 {
     bool enabled = false;
     // A pending batch always holds at least one primitive, all of this kind.
-    Win32GlideBatchPrimitive primitive = Win32GlideBatchPrimitive::kNone;
+    GlideBatchPrimitive primitive = GlideBatchPrimitive::kNone;
     std::vector<repiu::hle::GlideDrawVertex> vertices;
     std::uint64_t queued_vertex_count = 0;
     std::uint64_t drawn_vertex_count = 0;
@@ -71,13 +71,13 @@ struct Win32GlideDrawBatch
     std::uint32_t max_batch_primitive_count = 0;
     std::array<std::uint64_t,
                static_cast<std::size_t>(
-                   Win32GlideDrawBatchFlushReason::kCount)>
+                   GlideDrawBatchFlushReason::kCount)>
         flush_reasons = {};
 };
 
 // Aggregates only, matching the setter cache snapshot, so the summary can be
 // taken without copying the vertex storage.
-struct Win32GlideDrawBatchSnapshot
+struct GlideDrawBatchSnapshot
 {
     bool enabled = false;
     std::uint64_t queued_vertex_count = 0;
@@ -91,7 +91,7 @@ struct Win32GlideDrawBatchSnapshot
     std::uint32_t pending_primitive_count = 0;
     std::array<std::uint64_t,
                static_cast<std::size_t>(
-                   Win32GlideDrawBatchFlushReason::kCount)>
+                   GlideDrawBatchFlushReason::kCount)>
         flush_reasons = {};
 };
 
@@ -108,18 +108,18 @@ bool IsGlideDrawBatchGate(repiu::hle::GlideGateId gate_id);
 // Appends one primitive. Returns false only when the batch could not take it
 // and the caller must draw it directly; a flush failure is recorded and the
 // vertices are dropped rather than drawn out of order.
-bool QueueGlideDrawPrimitive(Win32GlideDrawBatch* batch,
+bool QueueGlideDrawPrimitive(GlideDrawBatch* batch,
                              const repiu::hle::GlideDrawVertex* vertices,
                              std::size_t vertex_count,
-                             Win32GlideBatchPrimitive primitive,
+                             GlideBatchPrimitive primitive,
                              bool* flush_required);
 
 // Hands the pending vertices to `draw`, which must apply them in order. A batch
 // that is empty is a success with no call, because the boundary flushes before
 // every non-draw gate and most find nothing pending.
 template <typename DrawFn>
-bool FlushGlideDrawBatch(Win32GlideDrawBatch* batch,
-                         Win32GlideDrawBatchFlushReason reason,
+bool FlushGlideDrawBatch(GlideDrawBatch* batch,
+                         GlideDrawBatchFlushReason reason,
                          DrawFn&& draw)
 {
     if (batch == nullptr || batch->vertices.empty())
@@ -129,7 +129,7 @@ bool FlushGlideDrawBatch(Win32GlideDrawBatch* batch,
     const std::uint32_t count =
         static_cast<std::uint32_t>(batch->vertices.size());
     const std::uint32_t primitive_count = batch->pending_primitive_count;
-    const Win32GlideBatchPrimitive primitive = batch->primitive;
+    const GlideBatchPrimitive primitive = batch->primitive;
     const bool drawn = draw(batch->vertices.data(), batch->vertices.size(),
                             primitive);
     ++batch->flush_count;
@@ -149,11 +149,11 @@ bool FlushGlideDrawBatch(Win32GlideDrawBatch* batch,
     }
     batch->vertices.clear();
     batch->pending_primitive_count = 0;
-    batch->primitive = Win32GlideBatchPrimitive::kNone;
+    batch->primitive = GlideBatchPrimitive::kNone;
     return drawn;
 }
 
-Win32GlideDrawBatchSnapshot SnapshotGlideDrawBatch(
-    const Win32GlideDrawBatch& batch);
+GlideDrawBatchSnapshot SnapshotGlideDrawBatch(
+    const GlideDrawBatch& batch);
 
 }  // namespace repiu::engine

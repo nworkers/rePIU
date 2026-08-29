@@ -14,9 +14,9 @@ namespace
 
 using go = repiu::hle::GlideGateId;
 using engine::QueueGlideDrawPrimitive;
-using engine::Win32GlideBatchPrimitive;
-using engine::Win32GlideDrawBatch;
-using engine::Win32GlideDrawBatchFlushReason;
+using engine::GlideBatchPrimitive;
+using engine::GlideDrawBatch;
+using engine::GlideDrawBatchFlushReason;
 
 repiu::hle::GlideDrawVertex MakeVertex(float x)
 {
@@ -30,12 +30,12 @@ repiu::hle::GlideDrawVertex MakeVertex(float x)
 struct FlushRecorder
 {
     std::vector<float> drawn_x;
-    std::vector<Win32GlideBatchPrimitive> kinds;
+    std::vector<GlideBatchPrimitive> kinds;
     bool result = true;
 
     bool operator()(const repiu::hle::GlideDrawVertex* vertices,
                     std::size_t vertex_count,
-                    Win32GlideBatchPrimitive primitive)
+                    GlideBatchPrimitive primitive)
     {
         for (std::size_t index = 0; index < vertex_count; ++index)
         {
@@ -46,8 +46,8 @@ struct FlushRecorder
     }
 };
 
-bool QueueOne(Win32GlideDrawBatch* batch, float x,
-              Win32GlideBatchPrimitive primitive, std::size_t vertex_count,
+bool QueueOne(GlideDrawBatch* batch, float x,
+              GlideBatchPrimitive primitive, std::size_t vertex_count,
               bool* flush_required)
 {
     std::vector<repiu::hle::GlideDrawVertex> vertices;
@@ -65,7 +65,7 @@ bool RunGlideDrawBatchProbe()
 {
     using engine::FlushGlideDrawBatch;
     using engine::IsGlideDrawBatchGate;
-    using engine::kWin32GlideDrawBatchVertexCapacity;
+    using engine::kGlideDrawBatchVertexCapacity;
     using engine::ResolveGlideDrawBatchEnabled;
     using engine::SnapshotGlideDrawBatch;
 
@@ -104,25 +104,25 @@ bool RunGlideDrawBatchProbe()
 
     // Vertices come out in the order they went in, once, under one primitive
     // kind. This is the property the whole ordering argument rests on.
-    auto batch = std::make_unique<Win32GlideDrawBatch>();
+    auto batch = std::make_unique<GlideDrawBatch>();
     bool flush_required = false;
     const bool queued =
-        QueueOne(batch.get(), 1.0F, Win32GlideBatchPrimitive::kTriangles, 3U,
+        QueueOne(batch.get(), 1.0F, GlideBatchPrimitive::kTriangles, 3U,
                  &flush_required) &&
         !flush_required &&
-        QueueOne(batch.get(), 2.0F, Win32GlideBatchPrimitive::kTriangles, 3U,
+        QueueOne(batch.get(), 2.0F, GlideBatchPrimitive::kTriangles, 3U,
                  &flush_required) &&
         !flush_required && batch->vertices.size() == 6U;
     FlushRecorder recorder;
     const bool flushed =
         FlushGlideDrawBatch(batch.get(),
-                            Win32GlideDrawBatchFlushReason::kNonDrawGate,
+                            GlideDrawBatchFlushReason::kNonDrawGate,
                             std::ref(recorder)) &&
         recorder.drawn_x.size() == 6U &&
         recorder.drawn_x.front() == 1.0F &&
         recorder.drawn_x[3] == 2.0F &&
         recorder.kinds.size() == 1U &&
-        recorder.kinds.front() == Win32GlideBatchPrimitive::kTriangles &&
+        recorder.kinds.front() == GlideBatchPrimitive::kTriangles &&
         batch->vertices.empty() &&
         // Two triangles handed over in one flush is the whole point: the
         // reduction factor is primitives per flush, not vertices per flush.
@@ -134,42 +134,42 @@ bool RunGlideDrawBatchProbe()
     FlushRecorder empty_recorder;
     const bool empty_flush =
         FlushGlideDrawBatch(batch.get(),
-                            Win32GlideDrawBatchFlushReason::kNonDrawGate,
+                            GlideDrawBatchFlushReason::kNonDrawGate,
                             std::ref(empty_recorder)) &&
         empty_recorder.kinds.empty() &&
         FlushGlideDrawBatch(nullptr,
-                            Win32GlideDrawBatchFlushReason::kNonDrawGate,
+                            GlideDrawBatchFlushReason::kNonDrawGate,
                             std::ref(empty_recorder));
 
     // A different primitive kind cannot join the pending batch; the caller is
     // told to flush and then succeeds.
-    auto mixed = std::make_unique<Win32GlideDrawBatch>();
-    QueueOne(mixed.get(), 1.0F, Win32GlideBatchPrimitive::kTriangles, 3U,
+    auto mixed = std::make_unique<GlideDrawBatch>();
+    QueueOne(mixed.get(), 1.0F, GlideBatchPrimitive::kTriangles, 3U,
              &flush_required);
     const bool rejected_kind =
-        !QueueOne(mixed.get(), 5.0F, Win32GlideBatchPrimitive::kLines, 2U,
+        !QueueOne(mixed.get(), 5.0F, GlideBatchPrimitive::kLines, 2U,
                   &flush_required) &&
         flush_required;
     FlushRecorder mixed_recorder;
     FlushGlideDrawBatch(mixed.get(),
-                        Win32GlideDrawBatchFlushReason::kPrimitiveChange,
+                        GlideDrawBatchFlushReason::kPrimitiveChange,
                         std::ref(mixed_recorder));
     const bool primitive_change =
         rejected_kind &&
-        QueueOne(mixed.get(), 5.0F, Win32GlideBatchPrimitive::kLines, 2U,
+        QueueOne(mixed.get(), 5.0F, GlideBatchPrimitive::kLines, 2U,
                  &flush_required) &&
         !flush_required &&
-        mixed->primitive == Win32GlideBatchPrimitive::kLines;
+        mixed->primitive == GlideBatchPrimitive::kLines;
 
     // The capacity bound holds and never splits a primitive across a flush.
-    auto full = std::make_unique<Win32GlideDrawBatch>();
+    auto full = std::make_unique<GlideDrawBatch>();
     bool capacity_flush_requested = false;
     std::size_t accepted = 0;
     for (std::size_t index = 0;
-         index < kWin32GlideDrawBatchVertexCapacity; ++index)
+         index < kGlideDrawBatchVertexCapacity; ++index)
     {
         if (!QueueOne(full.get(), static_cast<float>(index),
-                      Win32GlideBatchPrimitive::kTriangles, 3U,
+                      GlideBatchPrimitive::kTriangles, 3U,
                       &flush_required))
         {
             capacity_flush_requested = flush_required;
@@ -179,20 +179,20 @@ bool RunGlideDrawBatchProbe()
     }
     const bool capacity =
         capacity_flush_requested &&
-        full->vertices.size() + 3U > kWin32GlideDrawBatchVertexCapacity &&
+        full->vertices.size() + 3U > kGlideDrawBatchVertexCapacity &&
         full->vertices.size() % 3U == 0U &&
         accepted * 3U == full->vertices.size();
 
     // A backend failure is counted and the vertices are dropped rather than
     // retried later, because a retry would draw them after whatever came next.
-    auto failing = std::make_unique<Win32GlideDrawBatch>();
-    QueueOne(failing.get(), 1.0F, Win32GlideBatchPrimitive::kTriangles, 3U,
+    auto failing = std::make_unique<GlideDrawBatch>();
+    QueueOne(failing.get(), 1.0F, GlideBatchPrimitive::kTriangles, 3U,
              &flush_required);
     FlushRecorder failing_recorder;
     failing_recorder.result = false;
     const bool failure_counted =
         !FlushGlideDrawBatch(failing.get(),
-                             Win32GlideDrawBatchFlushReason::kNonDrawGate,
+                             GlideDrawBatchFlushReason::kNonDrawGate,
                              std::ref(failing_recorder)) &&
         failing->vertices.empty() &&
         SnapshotGlideDrawBatch(*failing).failure_count == 1U &&
@@ -204,9 +204,9 @@ bool RunGlideDrawBatchProbe()
 
     const bool inert =
         !QueueGlideDrawPrimitive(nullptr, nullptr, 0U,
-                                 Win32GlideBatchPrimitive::kTriangles,
+                                 GlideBatchPrimitive::kTriangles,
                                  nullptr) &&
-        !SnapshotGlideDrawBatch(Win32GlideDrawBatch{}).enabled;
+        !SnapshotGlideDrawBatch(GlideDrawBatch{}).enabled;
 
     const bool all = policy && membership && queued && flushed &&
         empty_flush && primitive_change && capacity && failure_counted &&

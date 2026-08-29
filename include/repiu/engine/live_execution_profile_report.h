@@ -39,7 +39,7 @@ namespace repiu::engine
 // The five reasons sum to `boundary`. That identity is the check that says the
 // split can be trusted, and a report that breaks it is a finding rather than a
 // number to interpret.
-struct Win32LiveAotCounters
+struct LiveAotCounters
 {
     std::uint32_t cache_entry = 0;
     std::uint32_t boundary = 0;
@@ -100,8 +100,8 @@ struct Win32LiveAotCounters
 // cycles per frame rather than leaving the reader to divide by a number printed
 // somewhere else.
 void ReportLiveExecutionProfileIfDue(
-    const Win32ExecutionTimeProfile* profile,
+    const ExecutionTimeProfile* profile,
     std::uint64_t frames,
-    const Win32LiveAotCounters& aot);
+    const LiveAotCounters& aot);
 
 }  // namespace repiu::engine

@@ -1,4 +1,4 @@
-#include "breakpoint_evidence_win32.h"
+#include "breakpoint_evidence.h"
 
 #include "execution_internal.h"
 #include "thread_context.h"
@@ -20,23 +20,23 @@ std::uint32_t CaptureStateFlags(const ThreadContext& context)
     std::uint32_t flags = 0;
     if (context.aot_reentry_pending)
     {
-        flags |= kWin32BreakpointAotReentryPending;
+        flags |= kBreakpointAotReentryPending;
     }
     if (context.enable_single_step_trace)
     {
-        flags |= kWin32BreakpointSingleStepTrace;
+        flags |= kBreakpointSingleStepTrace;
     }
     if (context.native_fast_path.active)
     {
-        flags |= kWin32BreakpointNativeFastPath;
+        flags |= kBreakpointNativeFastPath;
     }
     if (context.native_fast_path.linear_span_active)
     {
-        flags |= kWin32BreakpointNativeLinearSpan;
+        flags |= kBreakpointNativeLinearSpan;
     }
     if (context.native_fast_path.region_active)
     {
-        flags |= kWin32BreakpointNativeRegion;
+        flags |= kBreakpointNativeRegion;
     }
     return flags;
 }
@@ -66,16 +66,16 @@ void CaptureByteWindow(
         reinterpret_cast<std::uintptr_t>(region.base);
     const std::uintptr_t region_end = region_begin + region.size;
     const std::uintptr_t preferred_begin =
-        focus >= kWin32BreakpointByteWindowCapacity / 2U
+        focus >= kBreakpointByteWindowCapacity / 2U
             ? static_cast<std::uintptr_t>(
-                  focus - kWin32BreakpointByteWindowCapacity / 2U)
+                  focus - kBreakpointByteWindowCapacity / 2U)
             : static_cast<std::uintptr_t>(focus);
     const std::uintptr_t begin = std::max(region_begin, preferred_begin);
     const std::size_t available = region_end > begin
         ? static_cast<std::size_t>(region_end - begin)
         : 0U;
     const std::size_t requested = std::min<std::size_t>(
-        kWin32BreakpointByteWindowCapacity, available);
+        kBreakpointByteWindowCapacity, available);
     if (requested == 0U)
     {
         return;
@@ -161,11 +161,11 @@ void CaptureProvenance(
 
 }  // namespace
 
-Win32UnhandledBreakpointEvidence CaptureBreakpointEvidence(
+UnhandledBreakpointEvidence CaptureBreakpointEvidence(
     const repiu::platform::FaultEvent& fault,
     const ThreadContext* context)
 {
-    Win32UnhandledBreakpointEvidence evidence;
+    UnhandledBreakpointEvidence evidence;
     if (fault.registers == nullptr || context == nullptr ||
         fault.kind != repiu::platform::FaultKind::kBreakpoint)
     {
@@ -200,7 +200,7 @@ Win32UnhandledBreakpointEvidence CaptureBreakpointEvidence(
 }
 
 void CommitUnhandledBreakpointEvidence(
-    Win32UnhandledBreakpointEvidence evidence,
+    UnhandledBreakpointEvidence evidence,
     const repiu::platform::GuestCpuContext* final_context,
     ThreadContext* context)
 {

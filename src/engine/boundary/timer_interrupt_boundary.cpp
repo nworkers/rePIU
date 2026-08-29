@@ -64,7 +64,7 @@ bool HandleAotTimerSafePoint(const repiu::platform::FaultEvent& fault,
     {
         return false;
     }
-    Win32AotCodeCachePlacement* placement = context->aot_placement;
+    AotCodeCachePlacement* placement = context->aot_placement;
     const std::uintptr_t exception_address =
         static_cast<std::uintptr_t>(fault.instruction_address);
     if (exception_address < placement->base_address ||

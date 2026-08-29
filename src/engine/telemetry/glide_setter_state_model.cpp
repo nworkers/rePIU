@@ -11,8 +11,8 @@ using go = repiu::hle::GlideGateId;
 
 }  // namespace
 
-bool GlideSetterStateKeysEqual(const Win32GlideSetterStateKey& left,
-                               const Win32GlideSetterStateKey& right)
+bool GlideSetterStateKeysEqual(const GlideSetterStateKey& left,
+                               const GlideSetterStateKey& right)
 {
     if (left.word_count != right.word_count ||
         left.texture_generation != right.texture_generation)
@@ -29,12 +29,12 @@ bool GlideSetterStateKeysEqual(const Win32GlideSetterStateKey& left,
     return true;
 }
 
-Win32GlideSetterStateKey BuildGlideSetterStateKey(
+GlideSetterStateKey BuildGlideSetterStateKey(
     const std::uint32_t* argument_words,
     std::uint32_t argument_word_count,
     std::uint32_t texture_generation)
 {
-    Win32GlideSetterStateKey key;
+    GlideSetterStateKey key;
     key.texture_generation = texture_generation;
     if (argument_words == nullptr)
     {
@@ -42,7 +42,7 @@ Win32GlideSetterStateKey BuildGlideSetterStateKey(
     }
     key.word_count = std::min<std::uint32_t>(
         argument_word_count,
-        static_cast<std::uint32_t>(kWin32GlideSetterStateKeyWords));
+        static_cast<std::uint32_t>(kGlideSetterStateKeyWords));
     for (std::uint32_t index = 0; index < key.word_count; ++index)
     {
         key.words[index] = argument_words[index];

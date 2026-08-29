@@ -11,7 +11,7 @@ namespace repiu::input
 // Names describe the physical stage panel, matching the port bit tables in
 // docs/analysis/piu-io-port-specification.md. The enumerator ORDER is load
 // bearing: JammaInputKeyMask turns it into a bit position and the timeline in
-// Win32JammaInputTimeline stores those masks, so entries may be renamed but
+// JammaInputTimeline stores those masks, so entries may be renamed but
 // never reordered.
 enum class JammaInputKey : std::uint8_t
 {

@@ -14,9 +14,9 @@ namespace repiu::engine
 // and what we answered.
 // See docs/design/20260805-422-mscdex-command-trace.md.
 
-constexpr std::uint32_t kWin32MscdexCommandTraceCapacity = 8192U;
+constexpr std::uint32_t kMscdexCommandTraceCapacity = 8192U;
 
-struct Win32MscdexCommandEntry
+struct MscdexCommandEntry
 {
     std::uint32_t wall_milliseconds = 0;
     // MSCDEX request header command byte (0x03 IOCTL in, 0x0C IOCTL out,
@@ -37,7 +37,7 @@ struct Win32MscdexCommandEntry
     std::uint32_t current_lba = 0;
 };
 
-struct Win32MscdexCommandTrace
+struct MscdexCommandTrace
 {
     bool enabled = false;
     // `GetTickCount` at construction. Entries store time relative to it so the
@@ -47,17 +47,17 @@ struct Win32MscdexCommandTrace
     std::uint32_t total_commands = 0;
     std::uint32_t overflow_count = 0;
     std::uint32_t entry_count = 0;
-    Win32MscdexCommandEntry entries[kWin32MscdexCommandTraceCapacity];
+    MscdexCommandEntry entries[kMscdexCommandTraceCapacity];
 };
 
 bool MscdexCommandTraceEnabled();
 
-void RecordMscdexCommand(Win32MscdexCommandTrace* trace,
-                         const Win32MscdexCommandEntry& entry);
+void RecordMscdexCommand(MscdexCommandTrace* trace,
+                         const MscdexCommandEntry& entry);
 
 // Writes the sequence to `build/mscdex_command_trace.txt`, or to the path in
 // `REPIU_MSCDEX_COMMAND_TRACE_DUMP`. Called on teardown.
-bool WriteMscdexCommandTraceDump(const Win32MscdexCommandTrace& trace,
+bool WriteMscdexCommandTraceDump(const MscdexCommandTrace& trace,
                                  std::uint32_t* written_entry_count);
 
 }  // namespace repiu::engine

@@ -1,5 +1,5 @@
-#ifndef REPIU_PLATFORM_WIN32_ACTIVE_JAMMA_BINDINGS_H_
-#define REPIU_PLATFORM_WIN32_ACTIVE_JAMMA_BINDINGS_H_
+#ifndef REPIU_ENGINE_ACTIVE_JAMMA_BINDINGS_H_
+#define REPIU_ENGINE_ACTIVE_JAMMA_BINDINGS_H_
 
 #include "repiu/input/jamma_input_bindings.h"
 
@@ -32,4 +32,4 @@ void ResolveActiveJammaScancodes();
 
 }  // namespace repiu::engine
 
-#endif  // REPIU_PLATFORM_WIN32_ACTIVE_JAMMA_BINDINGS_H_
+#endif  // REPIU_ENGINE_ACTIVE_JAMMA_BINDINGS_H_

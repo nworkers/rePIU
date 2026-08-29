@@ -26,7 +26,7 @@ bool ResolveGlideSwapIntervalOverride(std::string_view setting,
 
 bool TryReadGlideSwapIntervalOverride(std::int32_t* interval);
 
-struct Win32GlideSwapIntervalPolicySnapshot
+struct GlideSwapIntervalPolicySnapshot
 {
     bool override_requested = false;
     std::int32_t requested_interval = 0;

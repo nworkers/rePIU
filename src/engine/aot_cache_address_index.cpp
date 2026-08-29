@@ -1,6 +1,6 @@
 #include "repiu/engine/aot_cache_address_index.h"
 
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 
 #include <algorithm>
 
@@ -29,7 +29,7 @@ std::uint32_t RoundUpToPowerOfTwo(std::uint32_t value)
     return result;
 }
 
-void LinkEntry(Win32AotCacheAddressIndex* index,
+void LinkEntry(AotCacheAddressIndex* index,
                const std::vector<runtime::AotAddressMapEntry>& address_map,
                std::uint32_t map_index)
 {
@@ -51,7 +51,7 @@ namespace
 // Task 334: maintained alongside the hash chains so the reverse lookup can
 // binary-search. Sortedness is a property of how entries are produced, so it is
 // checked rather than trusted.
-void ObserveCacheOffsetOrder(Win32AotCacheAddressIndex* index,
+void ObserveCacheOffsetOrder(AotCacheAddressIndex* index,
                              const std::vector<runtime::AotAddressMapEntry>&
                                  address_map,
                              std::uint32_t map_index)
@@ -68,21 +68,21 @@ void ObserveCacheOffsetOrder(Win32AotCacheAddressIndex* index,
 
 }  // namespace
 
-void RebuildAotCacheAddressIndex(Win32AotCodeCachePlacement* placement)
+void RebuildAotCacheAddressIndex(AotCodeCachePlacement* placement)
 {
     if (placement == nullptr)
     {
         return;
     }
-    Win32AotCacheAddressIndex& index = placement->cache_address_index;
+    AotCacheAddressIndex& index = placement->cache_address_index;
     const std::uint32_t entry_count =
         static_cast<std::uint32_t>(placement->address_map.size());
 
     index.buckets.assign(
         RoundUpToPowerOfTwo(entry_count),
-        Win32AotCacheAddressIndex::kInvalidIndex);
+        AotCacheAddressIndex::kInvalidIndex);
     index.next_in_bucket.assign(
-        entry_count, Win32AotCacheAddressIndex::kInvalidIndex);
+        entry_count, AotCacheAddressIndex::kInvalidIndex);
     index.cache_offset_sorted = true;
     index.max_emitted_length = 0;
 
@@ -95,7 +95,7 @@ void RebuildAotCacheAddressIndex(Win32AotCodeCachePlacement* placement)
     index.indexed_entry_count = entry_count;
 }
 
-void EnsureAotCacheAddressIndex(Win32AotCodeCachePlacement* placement)
+void EnsureAotCacheAddressIndex(AotCodeCachePlacement* placement)
 {
     if (placement == nullptr)
     {
@@ -108,19 +108,19 @@ void EnsureAotCacheAddressIndex(Win32AotCodeCachePlacement* placement)
     }
 }
 
-void InvalidateAotCacheAddressIndex(Win32AotCodeCachePlacement* placement)
+void InvalidateAotCacheAddressIndex(AotCodeCachePlacement* placement)
 {
     if (placement == nullptr)
     {
         return;
     }
-    Win32AotCacheAddressIndex& index = placement->cache_address_index;
+    AotCacheAddressIndex& index = placement->cache_address_index;
     index.indexed_entry_count = 0;
     index.buckets.clear();
     index.next_in_bucket.clear();
 }
 
-void AppendAotCacheAddressIndexEntry(Win32AotCodeCachePlacement* placement,
+void AppendAotCacheAddressIndexEntry(AotCodeCachePlacement* placement,
                                      std::uint32_t map_index)
 {
     if (placement == nullptr ||
@@ -128,7 +128,7 @@ void AppendAotCacheAddressIndexEntry(Win32AotCodeCachePlacement* placement,
     {
         return;
     }
-    Win32AotCacheAddressIndex& index = placement->cache_address_index;
+    AotCacheAddressIndex& index = placement->cache_address_index;
     const std::uint32_t entry_count =
         static_cast<std::uint32_t>(placement->address_map.size());
 
@@ -147,7 +147,7 @@ void AppendAotCacheAddressIndexEntry(Win32AotCodeCachePlacement* placement,
     {
         index.buckets.assign(
             RoundUpToPowerOfTwo(entry_count),
-            Win32AotCacheAddressIndex::kInvalidIndex);
+            AotCacheAddressIndex::kInvalidIndex);
     }
     else if (entry_count > static_cast<std::uint32_t>(index.buckets.size()))
     {
@@ -158,18 +158,18 @@ void AppendAotCacheAddressIndexEntry(Win32AotCodeCachePlacement* placement,
     }
 
     index.next_in_bucket.push_back(
-        Win32AotCacheAddressIndex::kInvalidIndex);
+        AotCacheAddressIndex::kInvalidIndex);
     LinkEntry(&index, placement->address_map, map_index);
     ObserveCacheOffsetOrder(&index, placement->address_map, map_index);
     index.indexed_entry_count = map_index + 1U;
 }
 
 AotGuestAddressLookup LookupAotGuestAddressIndex(
-    const Win32AotCodeCachePlacement& placement,
+    const AotCodeCachePlacement& placement,
     std::uint32_t cache_offset)
 {
     AotGuestAddressLookup result;
-    const Win32AotCacheAddressIndex& index = placement.cache_address_index;
+    const AotCacheAddressIndex& index = placement.cache_address_index;
     if (!index.cache_offset_sorted ||
         index.indexed_entry_count !=
             static_cast<std::uint32_t>(placement.address_map.size()) ||
@@ -218,12 +218,12 @@ AotGuestAddressLookup LookupAotGuestAddressIndex(
     return result;
 }
 
-bool LookupAotCacheAddressIndex(const Win32AotCodeCachePlacement& placement,
+bool LookupAotCacheAddressIndex(const AotCodeCachePlacement& placement,
                                 std::uint32_t guest_address,
                                 bool newest_active,
                                 std::uint32_t* map_index)
 {
-    const Win32AotCacheAddressIndex& index = placement.cache_address_index;
+    const AotCacheAddressIndex& index = placement.cache_address_index;
     if (map_index == nullptr || index.buckets.empty() ||
         index.indexed_entry_count !=
             static_cast<std::uint32_t>(placement.address_map.size()) ||
@@ -236,10 +236,10 @@ bool LookupAotCacheAddressIndex(const Win32AotCodeCachePlacement& placement,
         static_cast<std::uint32_t>(index.buckets.size());
     std::uint32_t candidate = index.buckets[
         HashGuestAddress(guest_address, bucket_count)];
-    std::uint32_t oldest_match = Win32AotCacheAddressIndex::kInvalidIndex;
+    std::uint32_t oldest_match = AotCacheAddressIndex::kInvalidIndex;
     // Bounded so a corrupted chain cannot spin forever.
     std::uint32_t visited = 0;
-    while (candidate != Win32AotCacheAddressIndex::kInvalidIndex &&
+    while (candidate != AotCacheAddressIndex::kInvalidIndex &&
            candidate < index.indexed_entry_count &&
            visited <= index.indexed_entry_count)
     {
@@ -268,7 +268,7 @@ bool LookupAotCacheAddressIndex(const Win32AotCodeCachePlacement& placement,
     }
 
     if (!newest_active &&
-        oldest_match != Win32AotCacheAddressIndex::kInvalidIndex)
+        oldest_match != AotCacheAddressIndex::kInvalidIndex)
     {
         *map_index = oldest_match;
         return true;

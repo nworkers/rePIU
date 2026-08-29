@@ -207,7 +207,7 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
             ++context->hle_reentry_reject_outside_arena;
             return false;
         }
-        if (IsWin32AotGuestPageQuarantined(*context->aot_placement, current))
+        if (IsAotGuestPageQuarantined(*context->aot_placement, current))
         {
             ++context->hle_reentry_reject_quarantined;
             return false;

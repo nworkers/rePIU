@@ -1,5 +1,5 @@
-#ifndef REPIU_PLATFORM_WIN32_LIVE_TELEMETRY_H_
-#define REPIU_PLATFORM_WIN32_LIVE_TELEMETRY_H_
+#ifndef REPIU_ENGINE_LIVE_TELEMETRY_H_
+#define REPIU_ENGINE_LIVE_TELEMETRY_H_
 
 #include "repiu/engine/aot_boundary_provenance.h"
 
@@ -8,20 +8,20 @@
 namespace repiu::engine
 {
 
-constexpr std::uint32_t kWin32LiveTelemetryMagic = 0x5250544CU;
-constexpr std::uint32_t kWin32LiveTelemetryVersion = 23;
-constexpr std::uint32_t kWin32NativeSampleRingCapacity = 8;
-constexpr const char* kWin32LiveTelemetryEnvironment =
+constexpr std::uint32_t kLiveTelemetryMagic = 0x5250544CU;
+constexpr std::uint32_t kLiveTelemetryVersion = 23;
+constexpr std::uint32_t kNativeSampleRingCapacity = 8;
+constexpr const char* kLiveTelemetryEnvironment =
     "REPIU_LIVE_TELEMETRY_MAPPING";
-constexpr const char* kWin32ExecutionTimeoutEnvironment =
+constexpr const char* kExecutionTimeoutEnvironment =
     "REPIU_EXECUTION_TIMEOUT_MS";
-constexpr const char* kWin32StallTimeoutEnvironment =
+constexpr const char* kStallTimeoutEnvironment =
     "REPIU_STALL_TIMEOUT_MS";
 
-struct Win32SharedLiveTelemetry
+struct SharedLiveTelemetry
 {
-    std::uint32_t magic = kWin32LiveTelemetryMagic;
-    std::uint32_t version = kWin32LiveTelemetryVersion;
+    std::uint32_t magic = kLiveTelemetryMagic;
+    std::uint32_t version = kLiveTelemetryVersion;
     volatile long host_phase = 0;
     volatile long heartbeat = 0;
     volatile long dispatch_entry_count = 0;
@@ -199,7 +199,7 @@ struct Win32SharedLiveTelemetry
     volatile long native_sample_eflags = 0;
     volatile long native_sample_indirect_source = 0;
     volatile long native_sample_indirect_target = 0;
-    volatile long native_sample_ring[kWin32NativeSampleRingCapacity] = {};
+    volatile long native_sample_ring[kNativeSampleRingCapacity] = {};
     volatile long native_sample_ring_mapped_bits = 0;
     volatile long native_sample_ring_cursor = 0;
 };
@@ -208,4 +208,4 @@ static_assert(sizeof(long) == 4);
 
 }  // namespace repiu::engine
 
-#endif  // REPIU_PLATFORM_WIN32_LIVE_TELEMETRY_H_
+#endif  // REPIU_ENGINE_LIVE_TELEMETRY_H_

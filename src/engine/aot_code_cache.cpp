@@ -1,4 +1,4 @@
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 
 #include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/aot_translation_plan.h"
@@ -27,7 +27,7 @@ namespace
 void IndexAotBreakpointProvenance(
     const runtime::AotCodeCacheImage& image,
     std::uint32_t append_offset,
-    Win32AotCodeCachePlacement* placement)
+    AotCodeCachePlacement* placement)
 {
     if (placement == nullptr)
     {
@@ -114,10 +114,10 @@ void IndexAotBreakpointProvenance(
     }
 }
 
-bool ResolveWin32AotTimerSafePoints(
+bool ResolveAotTimerSafePoints(
     const runtime::AotCodeCacheImage& image,
     std::uint8_t* image_bytes,
-    Win32AotCodeCachePlacement* placement)
+    AotCodeCachePlacement* placement)
 {
     if (image.timer_safe_point_sites.empty())
     {
@@ -148,7 +148,7 @@ bool ResolveWin32AotTimerSafePoints(
 // final absolute base the displacement and every table entry become absolute
 // cache addresses. Targets missing from the image fall back to the slot's
 // INT3 so the dispatcher re-executes the original guest branch.
-void ResolveWin32AotJumpTables(const runtime::AotCodeCacheImage& image,
+void ResolveAotJumpTables(const runtime::AotCodeCacheImage& image,
                                std::uint8_t* image_bytes,
                                std::uint32_t image_absolute_base)
 {
@@ -185,11 +185,11 @@ void ResolveWin32AotJumpTables(const runtime::AotCodeCacheImage& image,
 // Task 499. Point every emitted probe at the one memo table. The table is
 // allocated on first use and never reallocated afterwards, because its address
 // is baked into cache bytes; invalidation clears it in place.
-bool ResolveWin32AotDirectReturnProbes(
+bool ResolveAotDirectReturnProbes(
     const runtime::AotCodeCacheImage& image,
     std::uint8_t* image_bytes,
     std::size_t byte_count,
-    Win32AotCodeCachePlacement* placement)
+    AotCodeCachePlacement* placement)
 {
     if (image.direct_return_probe_sites.empty())
     {
@@ -233,7 +233,7 @@ bool ResolveWin32AotDirectReturnProbes(
     return true;
 }
 
-bool ResolveWin32AotDbtReturnDispatchSites(
+bool ResolveAotDbtReturnDispatchSites(
     const runtime::AotCodeCacheImage& image,
     std::uint8_t* image_bytes,
     std::uint32_t image_absolute_base)
@@ -267,7 +267,7 @@ bool ResolveWin32AotDbtReturnDispatchSites(
     return true;
 }
 
-bool ResolveWin32AotDbtDirectEdgeDispatchSites(
+bool ResolveAotDbtDirectEdgeDispatchSites(
     const runtime::AotCodeCacheImage& image,
     std::uint8_t* image_bytes,
     std::uint32_t image_absolute_base)
@@ -301,7 +301,7 @@ bool ResolveWin32AotDbtDirectEdgeDispatchSites(
     }
     return true;
 }
-bool ResolveWin32AotDbtHleDispatchSites(
+bool ResolveAotDbtHleDispatchSites(
     const runtime::AotCodeCacheImage& image,
     std::uint8_t* image_bytes,
     std::uint32_t image_absolute_base)
@@ -336,7 +336,7 @@ bool ResolveWin32AotDbtHleDispatchSites(
     return true;
 }
 
-bool ResolveWin32AotDbtIndirectDispatchSites(
+bool ResolveAotDbtIndirectDispatchSites(
     const runtime::AotCodeCacheImage& image,
     std::uint8_t* image_bytes,
     std::uint32_t image_absolute_base)
@@ -374,10 +374,10 @@ bool ResolveWin32AotDbtIndirectDispatchSites(
 // selector and base into the emitted guard and displacement, in place, while the
 // image bytes are still writable. Offsets are image-relative, matching the
 // pointer the caller passes (the image's placed location).
-void ResolveWin32AotSegmentOverrides(
+void ResolveAotSegmentOverrides(
     const runtime::AotCodeCacheImage& image,
     std::uint8_t* image_bytes,
-    const Win32AotSegmentTable* segment_table)
+    const AotSegmentTable* segment_table)
 {
     if (image.segment_override_sites.empty() || image_bytes == nullptr)
     {
@@ -394,9 +394,9 @@ void ResolveWin32AotSegmentOverrides(
             image_bytes[site.cache_offset] = 0xCCU;
             continue;
         }
-        const Win32AotSegmentResolution& resolution =
+        const AotSegmentResolution& resolution =
             segment_table->segments[seg];
-        if (resolution.policy == Win32AotSegmentAccessPolicy::kHleLowMemory)
+        if (resolution.policy == AotSegmentAccessPolicy::kHleLowMemory)
         {
             if (site.dispatch_cache_offset == 0U)
             {
@@ -412,7 +412,7 @@ void ResolveWin32AotSegmentOverrides(
             }
             continue;
         }
-        if (resolution.policy != Win32AotSegmentAccessPolicy::kNativeFolded)
+        if (resolution.policy != AotSegmentAccessPolicy::kNativeFolded)
         {
             image_bytes[site.cache_offset] = 0xCCU;
             continue;
@@ -433,11 +433,11 @@ void ResolveWin32AotSegmentOverrides(
     }
 }
 
-void ResolveWin32AotGuardedSegmentPops(
+void ResolveAotGuardedSegmentPops(
     const runtime::AotCodeCacheImage& image,
     std::uint8_t* image_bytes,
-    Win32AotCodeCachePlacement* placement,
-    const Win32AotSegmentTable* segment_table)
+    AotCodeCachePlacement* placement,
+    const AotSegmentTable* segment_table)
 {
     if (image.guarded_segment_pop_sites.empty() || image_bytes == nullptr ||
         placement == nullptr)
@@ -475,11 +475,11 @@ void ResolveWin32AotGuardedSegmentPops(
     }
 }
 
-void ResolveWin32AotGuardedSegmentLoads(
+void ResolveAotGuardedSegmentLoads(
     const runtime::AotCodeCacheImage& image,
     std::uint8_t* image_bytes,
-    Win32AotCodeCachePlacement* placement,
-    const Win32AotSegmentTable* segment_table)
+    AotCodeCachePlacement* placement,
+    const AotSegmentTable* segment_table)
 {
     if (image.guarded_segment_load_sites.empty() || image_bytes == nullptr ||
         placement == nullptr)
@@ -517,10 +517,10 @@ void ResolveWin32AotGuardedSegmentLoads(
     }
 }
 
-void ResolveWin32AotGuardedSegmentReads(
+void ResolveAotGuardedSegmentReads(
     const runtime::AotCodeCacheImage& image,
     std::uint8_t* image_bytes,
-    const Win32AotSegmentTable* segment_table)
+    const AotSegmentTable* segment_table)
 {
     if (image.guarded_segment_read_sites.empty() || image_bytes == nullptr)
     {
@@ -552,7 +552,7 @@ void ResolveWin32AotGuardedSegmentReads(
 // guest page protection only moves among readable values, never no-access.
 //
 // Worker-thread only, like the rest of this path, so the cache is plain state.
-bool VerifyWin32GuestArenaDirectlyReadable(std::uint32_t runtime_base,
+bool VerifyGuestArenaDirectlyReadable(std::uint32_t runtime_base,
                                            std::uint32_t runtime_size)
 {
     static std::uint32_t verified_base = 0;
@@ -623,7 +623,7 @@ std::size_t AotPatchPageSize()
     return page_size;
 }
 
-// Task 417. `CanActivateWin32AotAddressMapEntry` refuses an entry that spans a
+// Task 417. `CanActivateAotAddressMapEntry` refuses an entry that spans a
 // retired page unless that page is the requested one. pumpit3's entry at
 // `0x0301DFFE` straddles the boundary into `0x0301E000`, so once the neighbour
 // is retired the entry can never be re-translated, execution falls back to the
@@ -643,7 +643,7 @@ bool AotStrictSpanningEntryEnabled()
     return enabled;
 }
 
-bool EntrySpansQuarantinedPage(const Win32AotCodeCachePlacement& placement,
+bool EntrySpansQuarantinedPage(const AotCodeCachePlacement& placement,
                                const runtime::AotAddressMapEntry& entry)
 {
     if (entry.guest_length == 0U)
@@ -657,12 +657,12 @@ bool EntrySpansQuarantinedPage(const Win32AotCodeCachePlacement& placement,
     {
         return true;
     }
-    const std::uint32_t first_page = Win32AotGuestPage(entry.guest_address);
+    const std::uint32_t first_page = AotGuestPage(entry.guest_address);
     const std::uint32_t last_page =
-        Win32AotGuestPage(static_cast<std::uint32_t>(last));
+        AotGuestPage(static_cast<std::uint32_t>(last));
     for (std::uint32_t page = first_page;; page += 0x1000U)
     {
-        if (IsWin32AotGuestPageQuarantined(placement, page))
+        if (IsAotGuestPageQuarantined(placement, page))
         {
             return true;
         }
@@ -679,7 +679,7 @@ bool EntrySpansQuarantinedPage(const Win32AotCodeCachePlacement& placement,
 // mis-computed window can only be as wide as the old behaviour, never narrower
 // than what is written.
 AotCachePatchWindow ComputeAotCachePatchWindow(
-    const Win32AotCodeCachePlacement& placement,
+    const AotCodeCachePlacement& placement,
     std::uint32_t first_offset,
     std::uint32_t last_offset_exclusive)
 {
@@ -710,17 +710,17 @@ AotCachePatchWindow ComputeAotCachePatchWindow(
 }
 }  // namespace
 
-void BuildWin32AotSegmentResolution(
+void BuildAotSegmentResolution(
     const runtime::SelectorTable& selector_table,
     std::uint32_t shadow_address,
     std::uint16_t selector,
-    Win32AotSegmentResolution* resolution)
+    AotSegmentResolution* resolution)
 {
     if (resolution == nullptr)
     {
         return;
     }
-    *resolution = Win32AotSegmentResolution{};
+    *resolution = AotSegmentResolution{};
     resolution->shadow_address = shadow_address;
     resolution->selector = selector;
     if (shadow_address == 0U)
@@ -729,7 +729,7 @@ void BuildWin32AotSegmentResolution(
     }
     if (selector == 0U)
     {
-        resolution->policy = Win32AotSegmentAccessPolicy::kHleLowMemory;
+        resolution->policy = AotSegmentAccessPolicy::kHleLowMemory;
         return;
     }
     const runtime::GuestDescriptor* descriptor =
@@ -750,20 +750,20 @@ void BuildWin32AotSegmentResolution(
     if (descriptor->base < runtime::kDosLowMemorySize &&
         end < runtime::kDosLowMemorySize)
     {
-        resolution->policy = Win32AotSegmentAccessPolicy::kHleLowMemory;
+        resolution->policy = AotSegmentAccessPolicy::kHleLowMemory;
         return;
     }
-    resolution->policy = Win32AotSegmentAccessPolicy::kNativeFolded;
+    resolution->policy = AotSegmentAccessPolicy::kNativeFolded;
 }
 
-bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
-                            Win32AotCodeCachePlacement* placement)
+bool PlaceAotCodeCache(const runtime::AotCodeCacheImage& image,
+                            AotCodeCachePlacement* placement)
 {
     if (placement == nullptr)
     {
         return false;
     }
-    *placement = Win32AotCodeCachePlacement{};
+    *placement = AotCodeCachePlacement{};
     InitializeAotTimerSourceProfile(
         AotTimerSourceProfileEnabled(),
         &placement->timer_source_profile);
@@ -800,26 +800,26 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
         return true;
     }
     std::memcpy(memory, image.bytes.data(), image.bytes.size());
-    if (!ResolveWin32AotTimerSafePoints(
+    if (!ResolveAotTimerSafePoints(
             image, static_cast<std::uint8_t*>(memory), placement))
     {
         repiu::platform::ReleaseMemory(memory, capacity);
         placement->message = "AOT timer safe-point request is unavailable";
         return true;
     }
-    ResolveWin32AotJumpTables(image, static_cast<std::uint8_t*>(memory),
+    ResolveAotJumpTables(image, static_cast<std::uint8_t*>(memory),
                               static_cast<std::uint32_t>(base));
     // The static placement has no live segment table, so any segment-override
     // sites fall back to boundaries (single-step) instead of a faulting guard.
-    ResolveWin32AotSegmentOverrides(image, static_cast<std::uint8_t*>(memory),
+    ResolveAotSegmentOverrides(image, static_cast<std::uint8_t*>(memory),
                                     nullptr);
-    ResolveWin32AotGuardedSegmentPops(
+    ResolveAotGuardedSegmentPops(
         image, static_cast<std::uint8_t*>(memory), placement, nullptr);
-    ResolveWin32AotGuardedSegmentReads(
+    ResolveAotGuardedSegmentReads(
         image, static_cast<std::uint8_t*>(memory), nullptr);
-    ResolveWin32AotGuardedSegmentLoads(
+    ResolveAotGuardedSegmentLoads(
         image, static_cast<std::uint8_t*>(memory), placement, nullptr);
-    if (!ResolveWin32AotDbtReturnDispatchSites(
+    if (!ResolveAotDbtReturnDispatchSites(
             image, static_cast<std::uint8_t*>(memory),
             static_cast<std::uint32_t>(base)))
     {
@@ -827,7 +827,7 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
         placement->message = "AOT-DBT return thunk is unavailable";
         return true;
     }
-    if (!ResolveWin32AotDirectReturnProbes(
+    if (!ResolveAotDirectReturnProbes(
             image, static_cast<std::uint8_t*>(memory), image.bytes.size(),
             placement))
     {
@@ -835,7 +835,7 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
         placement->message = "AOT direct-return table is unavailable";
         return true;
     }
-    if (!ResolveWin32AotDbtDirectEdgeDispatchSites(
+    if (!ResolveAotDbtDirectEdgeDispatchSites(
             image, static_cast<std::uint8_t*>(memory),
             static_cast<std::uint32_t>(base)))
     {
@@ -844,7 +844,7 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
             "AOT-DBT direct-edge thunk is unavailable";
         return true;
     }
-    if (!ResolveWin32AotDbtHleDispatchSites(
+    if (!ResolveAotDbtHleDispatchSites(
             image, static_cast<std::uint8_t*>(memory),
             static_cast<std::uint32_t>(base)))
     {
@@ -852,7 +852,7 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
         placement->message = "AOT-DBT HLE thunk is unavailable";
         return true;
     }
-    if (!ResolveWin32AotDbtIndirectDispatchSites(
+    if (!ResolveAotDbtIndirectDispatchSites(
             image, static_cast<std::uint8_t*>(memory),
             static_cast<std::uint32_t>(base)))
     {
@@ -879,7 +879,7 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
     placement->entry_address = placement->base_address +
                                image.entry_cache_offset;
     placement->address_map = image.address_map;
-    InitializeWin32AotPageCoherence(placement, 1U);
+    InitializeAotPageCoherence(placement, 1U);
     placement->fixups = image.fixups;
     placement->indirect_inline_cache_sites =
         image.indirect_inline_cache_sites;
@@ -936,38 +936,38 @@ bool PlaceWin32AotCodeCache(const runtime::AotCodeCacheImage& image,
     return true;
 }
 
-bool AppendWin32DynamicAotTranslation(
+bool AppendDynamicAotTranslation(
     std::uint32_t runtime_base,
     std::uint32_t runtime_size,
     std::uint32_t guest_entry,
     const std::vector<runtime::AotExcludedGuestRange>& excluded_ranges,
-    Win32AotPageWriteWatchSet* write_watch_set,
-    Win32AotCodeCachePlacement* placement,
-    const Win32AotSegmentTable* segment_table,
-    Win32AotDynamicAppendResult* result,
-    Win32AotWorkerTimingProfile* timing)
+    AotPageWriteWatchSet* write_watch_set,
+    AotCodeCachePlacement* placement,
+    const AotSegmentTable* segment_table,
+    AotDynamicAppendResult* result,
+    AotWorkerTimingProfile* timing)
 {
     if (placement == nullptr || result == nullptr)
     {
         return false;
     }
-    *result = Win32AotDynamicAppendResult{};
+    *result = AotDynamicAppendResult{};
     result->attempted = true;
     result->guest_entry = guest_entry;
 
     // Task 328: phases are accumulated on every exit path, including the early
     // returns below, so a failed append still reports what it spent. Worker
     // thread only, so no atomics.
-    Win32AotAppendPhaseSample append_phases;
-    Win32AotAppendScaleSample append_scale;
+    AotAppendPhaseSample append_phases;
+    AotAppendScaleSample append_scale;
     // Placement runs from its start to whichever exit is taken, so it is closed
     // by the same destructor that commits the sample.
     std::uint64_t placement_phase_start = 0;
     struct AppendPhaseCommit
     {
-        Win32AotWorkerTimingProfile* timing;
-        Win32AotAppendPhaseSample* phases;
-        const Win32AotAppendScaleSample* scale;
+        AotWorkerTimingProfile* timing;
+        AotAppendPhaseSample* phases;
+        const AotAppendScaleSample* scale;
         const std::uint64_t* placement_start;
         ~AppendPhaseCommit()
         {
@@ -999,7 +999,7 @@ bool AppendWin32DynamicAotTranslation(
     // `RelocatedRuntimeObject::external_bytes`.
     const std::uint64_t arena_view_start = phase_now();
     const bool arena_readable =
-        VerifyWin32GuestArenaDirectlyReadable(runtime_base, runtime_size);
+        VerifyGuestArenaDirectlyReadable(runtime_base, runtime_size);
     runtime::RelocatedRuntimeImage arena_view;
     arena_view.valid = true;
     arena_view.relocated_image_base = runtime_base;
@@ -1099,7 +1099,7 @@ bool AppendWin32DynamicAotTranslation(
         return true;
     }
     const std::uint32_t append_offset = placement->size;
-    const std::uint32_t requested_page = Win32AotGuestPage(guest_entry);
+    const std::uint32_t requested_page = AotGuestPage(guest_entry);
     std::vector<bool> image_active(image.address_map.size(), true);
     std::vector<bool> image_tracks_guest_bytes(
         image.address_map.size(), true);
@@ -1109,8 +1109,8 @@ bool AppendWin32DynamicAotTranslation(
     {
         runtime::AotAddressMapEntry& entry = image.address_map[index];
         image_tracks_guest_bytes[index] =
-            Win32AotAddressMapTracksGuestBytes(entry, excluded_ranges);
-        bool can_activate = CanActivateWin32AotAddressMapEntry(
+            AotAddressMapTracksGuestBytes(entry, excluded_ranges);
+        bool can_activate = CanActivateAotAddressMapEntry(
             *placement, entry, requested_page);
         // Task 417: the entry this request exists to produce is allowed to span
         // a retired page, because this image was just built from that page's
@@ -1145,8 +1145,8 @@ bool AppendWin32DynamicAotTranslation(
             return true;
         }
         const std::uint32_t first_page =
-            Win32AotGuestPage(entry.guest_address);
-        const std::uint32_t last_page = Win32AotGuestPage(
+            AotGuestPage(entry.guest_address);
+        const std::uint32_t last_page = AotGuestPage(
             static_cast<std::uint32_t>(last));
         for (std::uint32_t page = first_page;; page += 0x1000U)
         {
@@ -1170,7 +1170,7 @@ bool AppendWin32DynamicAotTranslation(
         return true;
     }
     if (write_watch_set != nullptr &&
-        !InstallWin32AotGuestPageWriteWatches(
+        !InstallAotGuestPageWriteWatches(
             *placement, &candidate_active_pages, write_watch_set))
     {
         result->message =
@@ -1178,7 +1178,7 @@ bool AppendWin32DynamicAotTranslation(
         return true;
     }
     const std::uint32_t generation =
-        AllocateWin32AotGeneration(placement);
+        AllocateAotGeneration(placement);
     void* cache = reinterpret_cast<void*>(
         static_cast<std::uintptr_t>(placement->base_address));
     if (!repiu::platform::ProtectMemory(
@@ -1190,7 +1190,7 @@ bool AppendWin32DynamicAotTranslation(
     }
     std::memcpy(static_cast<std::uint8_t*>(cache) + append_offset,
                 image.bytes.data(), image.bytes.size());
-    if (!ResolveWin32AotTimerSafePoints(
+    if (!ResolveAotTimerSafePoints(
             image, static_cast<std::uint8_t*>(cache) + append_offset,
             placement))
     {
@@ -1201,22 +1201,22 @@ bool AppendWin32DynamicAotTranslation(
         result->message = "AOT timer safe-point request is unavailable";
         return true;
     }
-    ResolveWin32AotJumpTables(
+    ResolveAotJumpTables(
         image, static_cast<std::uint8_t*>(cache) + append_offset,
         placement->base_address + append_offset);
-    ResolveWin32AotSegmentOverrides(
+    ResolveAotSegmentOverrides(
         image, static_cast<std::uint8_t*>(cache) + append_offset,
         segment_table);
-    ResolveWin32AotGuardedSegmentPops(
+    ResolveAotGuardedSegmentPops(
         image, static_cast<std::uint8_t*>(cache) + append_offset,
         placement, segment_table);
-    ResolveWin32AotGuardedSegmentReads(
+    ResolveAotGuardedSegmentReads(
         image, static_cast<std::uint8_t*>(cache) + append_offset,
         segment_table);
-    ResolveWin32AotGuardedSegmentLoads(
+    ResolveAotGuardedSegmentLoads(
         image, static_cast<std::uint8_t*>(cache) + append_offset,
         placement, segment_table);
-    if (!ResolveWin32AotDbtReturnDispatchSites(
+    if (!ResolveAotDbtReturnDispatchSites(
             image, static_cast<std::uint8_t*>(cache) + append_offset,
             placement->base_address + append_offset))
     {
@@ -1227,7 +1227,7 @@ bool AppendWin32DynamicAotTranslation(
         result->message = "AOT-DBT return thunk is unavailable";
         return true;
     }
-    if (!ResolveWin32AotDirectReturnProbes(
+    if (!ResolveAotDirectReturnProbes(
             image, static_cast<std::uint8_t*>(cache) + append_offset,
             image.bytes.size(), placement))
     {
@@ -1238,7 +1238,7 @@ bool AppendWin32DynamicAotTranslation(
         result->message = "AOT direct-return table is unavailable";
         return true;
     }
-    if (!ResolveWin32AotDbtDirectEdgeDispatchSites(
+    if (!ResolveAotDbtDirectEdgeDispatchSites(
             image, static_cast<std::uint8_t*>(cache) + append_offset,
             placement->base_address + append_offset))
     {
@@ -1250,7 +1250,7 @@ bool AppendWin32DynamicAotTranslation(
             "AOT-DBT direct-edge thunk is unavailable";
         return true;
     }
-    if (!ResolveWin32AotDbtHleDispatchSites(
+    if (!ResolveAotDbtHleDispatchSites(
             image, static_cast<std::uint8_t*>(cache) + append_offset,
             placement->base_address + append_offset))
     {
@@ -1261,7 +1261,7 @@ bool AppendWin32DynamicAotTranslation(
         result->message = "AOT-DBT HLE thunk is unavailable";
         return true;
     }
-    if (!ResolveWin32AotDbtIndirectDispatchSites(
+    if (!ResolveAotDbtIndirectDispatchSites(
             image, static_cast<std::uint8_t*>(cache) + append_offset,
             placement->base_address + append_offset))
     {
@@ -1350,7 +1350,7 @@ bool AppendWin32DynamicAotTranslation(
         placement->address_map.push_back(entry);
         const std::uint32_t map_index = static_cast<std::uint32_t>(
             previous_map_count + image_index);
-        RegisterWin32AotAddressMap(
+        RegisterAotAddressMap(
             placement, map_index, generation, image_active[image_index],
             image_tracks_guest_bytes[image_index], requested_page,
             &result->active_guest_pages);
@@ -1512,9 +1512,9 @@ bool AppendWin32DynamicAotTranslation(
 }
 
 std::uint32_t ReResolveWin32AotSegmentOverrides(
-    Win32AotCodeCachePlacement* placement,
-    const Win32AotSegmentTable* segment_table,
-    Win32AotSegmentPatchStats* stats)
+    AotCodeCachePlacement* placement,
+    const AotSegmentTable* segment_table,
+    AotSegmentPatchStats* stats)
 {
     if (placement == nullptr || !placement->placed ||
         segment_table == nullptr ||
@@ -1536,7 +1536,7 @@ std::uint32_t ReResolveWin32AotSegmentOverrides(
     auto* bytes = static_cast<std::uint8_t*>(cache);
     if (stats != nullptr)
     {
-        *stats = Win32AotSegmentPatchStats{};
+        *stats = AotSegmentPatchStats{};
     }
     std::uint32_t processed = 0U;
     for (const runtime::AotSegmentOverrideSite& site :
@@ -1547,7 +1547,7 @@ std::uint32_t ReResolveWin32AotSegmentOverrides(
         {
             continue;
         }
-        const Win32AotSegmentResolution& resolution =
+        const AotSegmentResolution& resolution =
             segment_table->segments[seg];
         ++processed;
         if (resolution.shadow_address == 0U)
@@ -1559,7 +1559,7 @@ std::uint32_t ReResolveWin32AotSegmentOverrides(
             }
             continue;
         }
-        if (resolution.policy == Win32AotSegmentAccessPolicy::kHleLowMemory)
+        if (resolution.policy == AotSegmentAccessPolicy::kHleLowMemory)
         {
             if (site.dispatch_cache_offset == 0U)
             {
@@ -1579,7 +1579,7 @@ std::uint32_t ReResolveWin32AotSegmentOverrides(
             }
             continue;
         }
-        if (resolution.policy != Win32AotSegmentAccessPolicy::kNativeFolded)
+        if (resolution.policy != AotSegmentAccessPolicy::kNativeFolded)
         {
             bytes[site.cache_offset] = 0xCCU;
             if (stats != nullptr)
@@ -1707,18 +1707,18 @@ std::uint32_t ReResolveWin32AotSegmentOverrides(
     return processed;
 }
 
-bool PatchWin32AotIndirectInlineCache(
-    Win32AotCodeCachePlacement* placement,
+bool PatchAotIndirectInlineCache(
+    AotCodeCachePlacement* placement,
     std::uint32_t cache_miss_address,
     std::uint32_t guest_target,
     std::uint32_t cache_target,
-    Win32AotInlineCachePatchResult* result)
+    AotInlineCachePatchResult* result)
 {
     if (placement == nullptr || result == nullptr)
     {
         return false;
     }
-    *result = Win32AotInlineCachePatchResult{};
+    *result = AotInlineCachePatchResult{};
     result->attempted = true;
     result->cache_miss_address = cache_miss_address;
     result->guest_target = guest_target;
@@ -1930,7 +1930,7 @@ bool PatchWin32AotIndirectInlineCache(
     return true;
 }
 
-void ReleaseWin32AotCodeCache(Win32AotCodeCachePlacement* placement)
+void ReleaseAotCodeCache(AotCodeCachePlacement* placement)
 {
     if (placement == nullptr)
     {
@@ -1943,10 +1943,10 @@ void ReleaseWin32AotCodeCache(Win32AotCodeCachePlacement* placement)
                 static_cast<std::uintptr_t>(placement->base_address)),
             placement->capacity);
     }
-    *placement = Win32AotCodeCachePlacement{};
+    *placement = AotCodeCachePlacement{};
 }
 
-bool FindAotGuestAddress(const Win32AotCodeCachePlacement& placement,
+bool FindAotGuestAddress(const AotCodeCachePlacement& placement,
                          std::uint32_t cache_address,
                          std::uint32_t* guest_address)
 {
@@ -1988,7 +1988,7 @@ bool FindAotGuestAddress(const Win32AotCodeCachePlacement& placement,
     return false;
 }
 
-bool FindAotCacheAddress(const Win32AotCodeCachePlacement& placement,
+bool FindAotCacheAddress(const AotCodeCachePlacement& placement,
                          std::uint32_t guest_address,
                          std::uint32_t* cache_address)
 {
@@ -2072,7 +2072,7 @@ bool FindAotCacheAddress(const Win32AotCodeCachePlacement& placement,
     return false;
 }
 
-bool InstallWin32AotProbeSentinel(Win32AotCodeCachePlacement* placement,
+bool InstallAotProbeSentinel(AotCodeCachePlacement* placement,
                                   std::uint32_t guest_address)
 {
     if (placement == nullptr || !placement->placed)

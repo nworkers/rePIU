@@ -8,16 +8,16 @@ namespace
 {
 
 void AppendTraceEntry(ThreadContext* context,
-                      Win32AotCallReturnTraceEntry entry)
+                      AotCallReturnTraceEntry entry)
 {
     const std::uint32_t sequence =
         context->aot_dbt_call_return_trace_count + 1U;
     entry.sequence = sequence;
     const std::uint32_t slot =
-        (sequence - 1U) % kWin32AotCallReturnTraceCapacity;
+        (sequence - 1U) % kAotCallReturnTraceCapacity;
     context->aot_dbt_call_return_trace[slot] = entry;
     context->aot_dbt_call_return_trace_count = sequence;
-    if (sequence > kWin32AotCallReturnTraceCapacity)
+    if (sequence > kAotCallReturnTraceCapacity)
     {
         ++context->aot_dbt_call_return_overwrite_count;
     }
@@ -27,7 +27,7 @@ void AppendTraceEntry(ThreadContext* context,
 
 std::uint32_t RecordAotDbtCallReturnCall(
     ThreadContext* context,
-    Win32AotTransferOrigin origin,
+    AotTransferOrigin origin,
     std::uint32_t source,
     std::uint32_t target,
     std::uint32_t return_address,
@@ -38,8 +38,8 @@ std::uint32_t RecordAotDbtCallReturnCall(
     {
         return 0;
     }
-    Win32AotCallReturnTraceEntry entry;
-    entry.kind = Win32AotCallReturnTraceEventKind::kCall;
+    AotCallReturnTraceEntry entry;
+    entry.kind = AotCallReturnTraceEventKind::kCall;
     entry.origin = origin;
     entry.source = source;
     entry.target = target;
@@ -50,14 +50,14 @@ std::uint32_t RecordAotDbtCallReturnCall(
     const std::uint32_t sequence =
         context->aot_dbt_call_return_trace_count;
     context->aot_dbt_call_return_trace[
-        (sequence - 1U) % kWin32AotCallReturnTraceCapacity]
+        (sequence - 1U) % kAotCallReturnTraceCapacity]
         .call_sequence = sequence;
     return sequence;
 }
 
 void RecordAotDbtCallReturnReturn(
     ThreadContext* context,
-    Win32AotTransferOrigin origin,
+    AotTransferOrigin origin,
     std::uint32_t source,
     std::uint32_t target,
     std::uint32_t esp,
@@ -72,8 +72,8 @@ void RecordAotDbtCallReturnReturn(
     {
         return;
     }
-    Win32AotCallReturnTraceEntry entry;
-    entry.kind = Win32AotCallReturnTraceEventKind::kReturn;
+    AotCallReturnTraceEntry entry;
+    entry.kind = AotCallReturnTraceEventKind::kReturn;
     entry.origin = origin;
     entry.call_sequence = call_sequence;
     entry.source = source;

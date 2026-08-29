@@ -17,7 +17,7 @@ namespace
 //   -> resume 3350
 //
 // queue 100, wake 2000, work 200, complete 50, total 2350.
-void PlayOneRendezvous(engine::Win32GlideGateTimingProfile* profile,
+void PlayOneRendezvous(engine::GlideGateTimingProfile* profile,
                        std::uint64_t enter,
                        std::uint64_t publish,
                        std::uint64_t host_start,
@@ -34,10 +34,10 @@ void PlayOneRendezvous(engine::Win32GlideGateTimingProfile* profile,
 
 bool RunGlideGateTimingProbe()
 {
-    engine::Win32GlideGateTimingProfile profile;
+    engine::GlideGateTimingProfile profile;
     PlayOneRendezvous(&profile, 1000U, 1100U, 3100U, 3300U, 3350U);
 
-    const engine::Win32GlideGateTimingSnapshot first =
+    const engine::GlideGateTimingSnapshot first =
         engine::SnapshotGlideGateTiming(profile);
     const bool intervals = first.enabled && first.rendezvous_count == 1U &&
         first.queue_cycles == 100U && first.wake_cycles == 2000U &&
@@ -47,7 +47,7 @@ bool RunGlideGateTimingProbe()
     // A second, cheaper rendezvous must accumulate rather than replace, and the
     // maxima must stay with the first.
     PlayOneRendezvous(&profile, 4000U, 4010U, 4020U, 4120U, 4130U);
-    const engine::Win32GlideGateTimingSnapshot second =
+    const engine::GlideGateTimingSnapshot second =
         engine::SnapshotGlideGateTiming(profile);
     const bool accumulates = second.rendezvous_count == 2U &&
         second.queue_cycles == 110U && second.wake_cycles == 2010U &&
@@ -59,7 +59,7 @@ bool RunGlideGateTimingProbe()
     // Commands run on the host thread take no rendezvous, so they must move
     // only the direct axis.
     engine::RecordGlideGateDirectCommand(&profile, 700U);
-    const engine::Win32GlideGateTimingSnapshot third =
+    const engine::GlideGateTimingSnapshot third =
         engine::SnapshotGlideGateTiming(profile);
     const bool direct_separate = third.direct_count == 1U &&
         third.direct_work_cycles == 700U &&
@@ -68,9 +68,9 @@ bool RunGlideGateTimingProbe()
 
     // A backwards TSC read clamps to zero and is counted, rather than wrapping
     // into an enormous interval.
-    engine::Win32GlideGateTimingProfile backwards;
+    engine::GlideGateTimingProfile backwards;
     PlayOneRendezvous(&backwards, 5000U, 4900U, 4800U, 4700U, 4600U);
-    const engine::Win32GlideGateTimingSnapshot clamped =
+    const engine::GlideGateTimingSnapshot clamped =
         engine::SnapshotGlideGateTiming(backwards);
     const bool clamps = clamped.queue_cycles == 0U &&
         clamped.wake_cycles == 0U && clamped.work_cycles == 0U &&
@@ -83,8 +83,8 @@ bool RunGlideGateTimingProbe()
     engine::RecordGlideGateHostCommand(nullptr, 1U, 2U);
     engine::RecordGlideGateResume(nullptr, 1U, 2U);
     engine::RecordGlideGateDirectCommand(nullptr, 1U);
-    const engine::Win32GlideGateTimingProfile untouched;
-    const engine::Win32GlideGateTimingSnapshot disabled =
+    const engine::GlideGateTimingProfile untouched;
+    const engine::GlideGateTimingSnapshot disabled =
         engine::SnapshotGlideGateTiming(untouched);
     const bool inert = !disabled.enabled && disabled.rendezvous_count == 0U &&
         disabled.total_cycles == 0U;

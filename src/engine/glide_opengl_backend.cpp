@@ -109,7 +109,7 @@ std::uint16_t JammaInputMaskForKeycode(SDL_Keycode keycode) {
 // stack footprint. Guarded by the backend's `host_command_mutex_`, so it shares
 // one lock with the synchronous slot and "drain, then run the sync command"
 // stays a single ordered decision.
-struct Win32GlideAsyncPresentState {
+struct GlideAsyncPresentState {
   std::deque<std::function<void()>> commands;
   // Atomics, not plain counters under the channel lock. The timeout path
   // terminates the guest thread outright, and a thread killed while holding
@@ -180,17 +180,17 @@ bool TranslateGlideOpenGlCullMode(const std::uint32_t mode,
   return true;
 }
 
-Win32GlideAsyncPresentState &GlideOpenGlBackend::async_present() {
+GlideAsyncPresentState &GlideOpenGlBackend::async_present() {
   if (async_present_state_ == nullptr) {
-    async_present_state_ = std::make_unique<Win32GlideAsyncPresentState>();
+    async_present_state_ = std::make_unique<GlideAsyncPresentState>();
   }
   return *async_present_state_;
 }
 
-const Win32GlideAsyncPresentState &GlideOpenGlBackend::async_present() const {
+const GlideAsyncPresentState &GlideOpenGlBackend::async_present() const {
   // Allocated on first use by the non-const path; a reader that arrives first
   // sees an empty state, which is what "nothing has been posted" means.
-  static const Win32GlideAsyncPresentState empty;
+  static const GlideAsyncPresentState empty;
   return async_present_state_ != nullptr ? *async_present_state_ : empty;
 }
 
@@ -247,7 +247,7 @@ void GlideOpenGlBackend::BindHostThread() {
 }
 
 void GlideOpenGlBackend::SetJammaInputTimeline(
-    Win32JammaInputTimeline *timeline) {
+    JammaInputTimeline *timeline) {
   jamma_input_timeline_ = timeline;
 }
 
@@ -587,10 +587,10 @@ bool GlideOpenGlBackend::PostToHostThread(std::function<void()> command,
   std::unique_lock<std::mutex> lock(host_command_mutex_);
   async_present().enabled.store(true, std::memory_order_relaxed);
   const auto has_room = [this, swap_command]() {
-    return async_present().commands.size() < kWin32GlideAsyncCommandCapacity &&
+    return async_present().commands.size() < kGlideAsyncCommandCapacity &&
            (!swap_command ||
             pending_swap_count_.load(std::memory_order_relaxed) <
-                kWin32GlideMaxOutstandingSwaps);
+                kGlideMaxOutstandingSwaps);
   };
   if (!has_room()) {
     // The bound reached: this is the back pressure that keeps the guest from
@@ -656,7 +656,7 @@ bool GlideOpenGlBackend::PostBufferClear(const std::uint32_t color,
 
 bool GlideOpenGlBackend::PostDrawPrimitiveBatch(
     const hle::GlideDrawVertex *vertices, const std::size_t vertex_count,
-    const Win32GlideBatchPrimitive primitive) {
+    const GlideBatchPrimitive primitive) {
   if (vertices == nullptr || vertex_count == 0U) {
     return true;
   }
@@ -679,8 +679,8 @@ std::uint32_t GlideOpenGlBackend::glide_pending_swap_count() const {
   return pending_swap_count_.load(std::memory_order_relaxed);
 }
 
-Win32GlideAsyncPresentSnapshot GlideOpenGlBackend::glide_async_present() const {
-  Win32GlideAsyncPresentSnapshot snapshot;
+GlideAsyncPresentSnapshot GlideOpenGlBackend::glide_async_present() const {
+  GlideAsyncPresentSnapshot snapshot;
   const auto &state = async_present();
   const auto load64 = [](const std::atomic<std::uint64_t> &value) {
     return value.load(std::memory_order_relaxed);
@@ -1206,7 +1206,7 @@ bool GlideOpenGlBackend::BufferSwapOnHostThread(std::uint32_t swap_interval,
   if (dummy_mode_) {
     return true;
   }
-  Win32GlideBufferSwapTimingProfile *swap_timing =
+  GlideBufferSwapTimingProfile *swap_timing =
       guest_gate_command && GlideBufferSwapTimingProfileEnabled()
           ? &glide_buffer_swap_timing_
           : nullptr;
@@ -1432,9 +1432,9 @@ bool GlideOpenGlBackend::DrawPrimitive(
 
 bool GlideOpenGlBackend::DrawPrimitiveBatch(
     const hle::GlideDrawVertex *vertices, const std::size_t vertex_count,
-    const Win32GlideBatchPrimitive primitive) {
+    const GlideBatchPrimitive primitive) {
   if (vertices == nullptr || vertex_count == 0U ||
-      primitive == Win32GlideBatchPrimitive::kNone) {
+      primitive == GlideBatchPrimitive::kNone) {
     // An empty flush is not a failure: the boundary flushes unconditionally
     // before every non-draw gate, and most of those find nothing pending.
     return true;
@@ -1454,8 +1454,8 @@ bool GlideOpenGlBackend::DrawPrimitiveBatch(
     return true;
   }
   const std::uint32_t gl_primitive =
-      primitive == Win32GlideBatchPrimitive::kPoints  ? GL_POINTS
-      : primitive == Win32GlideBatchPrimitive::kLines ? GL_LINES
+      primitive == GlideBatchPrimitive::kPoints  ? GL_POINTS
+      : primitive == GlideBatchPrimitive::kLines ? GL_LINES
                                                       : GL_TRIANGLES;
   bool sample_texture = false;
   float inv_w = 1.0F;
@@ -1493,7 +1493,7 @@ bool GlideOpenGlBackend::StoreTexture(
   // case the census exists to catch, and reporting only the decode failures
   // would leave those invisible -- the same blind spot the census replaced.
   const auto record_rejection = [&](std::uint32_t rejected_format) {
-    Win32GlideTextureUpload rejected;
+    GlideTextureUpload rejected;
     rejected.start_address = start_address;
     rejected.format = rejected_format;
     rejected.large_lod = large_lod;
@@ -1517,7 +1517,7 @@ bool GlideOpenGlBackend::StoreTexture(
     message_ = "unsupported Glide texture dimensions";
     return false;
   }
-  Win32GlideTextureUpload census_upload;
+  GlideTextureUpload census_upload;
   census_upload.start_address = start_address;
   census_upload.format = format;
   census_upload.large_lod = large_lod;
@@ -2087,7 +2087,7 @@ bool GlideOpenGlBackend::SetDepthMask(bool enabled) {
     // Depth mask has no leading drain, so entry and apply-start are the
     // same instant and the drain interval is zero by construction.
     RecordGlideSetterPhaseSample(&glide_setter_phase_timing_,
-                                 Win32GlideSetterPhaseKind::kDepthMask,
+                                 GlideSetterPhaseKind::kDepthMask,
                                  phase_entry, phase_entry, phase_error_start,
                                  ReadGlideGateTimingCycles(), 0U, !no_error);
   }
@@ -2277,7 +2277,7 @@ bool GlideOpenGlBackend::SetAlphaBlend(const hle::GlideAlphaBlendState &state) {
   const bool no_error = CheckGlErrorIfEnabled();
   if (phase) {
     RecordGlideSetterPhaseSample(
-        &glide_setter_phase_timing_, Win32GlideSetterPhaseKind::kAlphaBlend,
+        &glide_setter_phase_timing_, GlideSetterPhaseKind::kAlphaBlend,
         phase_entry, phase_apply_start, phase_error_start,
         ReadGlideGateTimingCycles(), drain_iterations, !no_error);
   }

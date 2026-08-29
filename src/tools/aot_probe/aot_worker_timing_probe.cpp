@@ -15,7 +15,7 @@ bool RunAotWorkerTimingProbe()
 
     // Replay one rendezvous with synthetic timestamps, in the exact order the
     // guest and worker record them.
-    auto profile = std::make_unique<Win32AotWorkerTimingProfile>();
+    auto profile = std::make_unique<AotWorkerTimingProfile>();
     RecordAotWorkerRequestSignal(profile.get(), 1000U);   // guest T0
     RecordAotWorkerWake(profile.get(), 1300U);            // worker T1
     RecordAotWorkerSegmentTable(profile.get(), 50U);
@@ -23,7 +23,7 @@ bool RunAotWorkerTimingProbe()
     RecordAotWorkerCompleteSignal(profile.get(), 2100U);  // worker T2
     RecordAotWorkerGuestResume(profile.get(), 1000U, 2400U);  // guest T3
 
-    const Win32AotWorkerTimingSnapshot one =
+    const AotWorkerTimingSnapshot one =
         SnapshotAotWorkerTiming(*profile);
     const bool single_rendezvous =
         one.enabled &&
@@ -46,7 +46,7 @@ bool RunAotWorkerTimingProbe()
     RecordAotWorkerAppend(profile.get(), 4000U);
     RecordAotWorkerCompleteSignal(profile.get(), 9200U);
     RecordAotWorkerGuestResume(profile.get(), 5000U, 9300U);
-    const Win32AotWorkerTimingSnapshot two =
+    const AotWorkerTimingSnapshot two =
         SnapshotAotWorkerTiming(*profile);
     const bool accumulation =
         two.translate_count == 2U &&
@@ -58,12 +58,12 @@ bool RunAotWorkerTimingProbe()
 
     // A backwards TSC read clamps to zero and is counted rather than wrapping
     // into an enormous unsigned value.
-    auto clamped = std::make_unique<Win32AotWorkerTimingProfile>();
+    auto clamped = std::make_unique<AotWorkerTimingProfile>();
     RecordAotWorkerRequestSignal(clamped.get(), 9000U);
     RecordAotWorkerWake(clamped.get(), 8000U);
     RecordAotWorkerCompleteSignal(clamped.get(), 9500U);
     RecordAotWorkerGuestResume(clamped.get(), 9000U, 9400U);
-    const Win32AotWorkerTimingSnapshot clamp_snapshot =
+    const AotWorkerTimingSnapshot clamp_snapshot =
         SnapshotAotWorkerTiming(*clamped);
     const bool clamping =
         clamp_snapshot.wake_latency_cycles == 0U &&
@@ -72,10 +72,10 @@ bool RunAotWorkerTimingProbe()
         clamp_snapshot.clamped_sample_count == 2U;
 
     // Non-translate operations share the event pair and are counted only.
-    auto other = std::make_unique<Win32AotWorkerTimingProfile>();
+    auto other = std::make_unique<AotWorkerTimingProfile>();
     RecordAotWorkerOtherOperation(other.get());
     RecordAotWorkerOtherOperation(other.get());
-    const Win32AotWorkerTimingSnapshot other_snapshot =
+    const AotWorkerTimingSnapshot other_snapshot =
         SnapshotAotWorkerTiming(*other);
     const bool other_operations =
         other_snapshot.enabled &&
@@ -91,8 +91,8 @@ bool RunAotWorkerTimingProbe()
     RecordAotWorkerCompleteSignal(nullptr, 5U);
     RecordAotWorkerGuestResume(nullptr, 1U, 6U);
     RecordAotWorkerOtherOperation(nullptr);
-    const Win32AotWorkerTimingSnapshot empty =
-        SnapshotAotWorkerTiming(Win32AotWorkerTimingProfile{});
+    const AotWorkerTimingSnapshot empty =
+        SnapshotAotWorkerTiming(AotWorkerTimingProfile{});
     const bool disabled =
         !empty.enabled && empty.translate_count == 0U &&
         empty.guest_total_cycles == 0U &&
@@ -102,14 +102,14 @@ bool RunAotWorkerTimingProbe()
     // Task 328: append phases and scale. A failed append still commits the
     // phases it reached, so partial samples must accumulate rather than be
     // dropped.
-    auto phases_profile = std::make_unique<Win32AotWorkerTimingProfile>();
-    Win32AotAppendPhaseSample full_phases;
+    auto phases_profile = std::make_unique<AotWorkerTimingProfile>();
+    AotAppendPhaseSample full_phases;
     full_phases.arena_snapshot_cycles = 900U;
     full_phases.plan_build_cycles = 200U;
     full_phases.image_emit_cycles = 100U;
     full_phases.validate_cycles = 30U;
     full_phases.placement_cycles = 70U;
-    Win32AotAppendScaleSample full_scale;
+    AotAppendScaleSample full_scale;
     full_scale.plan_block_count = 12U;
     full_scale.plan_instruction_count = 340U;
     full_scale.emitted_bytes = 2048U;
@@ -117,14 +117,14 @@ bool RunAotWorkerTimingProbe()
     RecordAotAppendPhases(phases_profile.get(), full_phases);
     RecordAotAppendScale(phases_profile.get(), full_scale);
 
-    Win32AotAppendPhaseSample partial_phases;
+    AotAppendPhaseSample partial_phases;
     partial_phases.arena_snapshot_cycles = 500U;
-    Win32AotAppendScaleSample partial_scale;
+    AotAppendScaleSample partial_scale;
     partial_scale.snapshot_bytes = 140004352U;
     RecordAotAppendPhases(phases_profile.get(), partial_phases);
     RecordAotAppendScale(phases_profile.get(), partial_scale);
 
-    const Win32AotWorkerTimingSnapshot phase_snapshot =
+    const AotWorkerTimingSnapshot phase_snapshot =
         SnapshotAotWorkerTiming(*phases_profile);
     const bool append_phases_ok =
         phase_snapshot.enabled &&

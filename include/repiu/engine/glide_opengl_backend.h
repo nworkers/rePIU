@@ -1,5 +1,5 @@
-#ifndef REPIU_PLATFORM_WIN32_GLIDE_OPENGL_BACKEND_H_
-#define REPIU_PLATFORM_WIN32_GLIDE_OPENGL_BACKEND_H_
+#ifndef REPIU_ENGINE_GLIDE_OPENGL_BACKEND_H_
+#define REPIU_ENGINE_GLIDE_OPENGL_BACKEND_H_
 
 #include "repiu/hle/glide_hle.h"
 #include "repiu/hle/glide_vertex.h"
@@ -32,7 +32,7 @@
 namespace repiu::engine
 {
 
-class Win32JammaInputTimeline;
+class JammaInputTimeline;
 
 }  // namespace repiu::engine
 
@@ -77,7 +77,7 @@ public:
     void BindHostThread();
     void PumpHostCommands();
     void SetExecutionBackend(runtime::ExecutionBackend backend);
-    void SetJammaInputTimeline(Win32JammaInputTimeline* timeline);
+    void SetJammaInputTimeline(JammaInputTimeline* timeline);
     void SetBiosKeyboard(hle::BiosKeyboard* keyboard);
     std::uint64_t EventClockNanoseconds() const;
 
@@ -103,7 +103,7 @@ public:
                          std::uint32_t depth);
     bool PostDrawPrimitiveBatch(const hle::GlideDrawVertex* vertices,
                                 std::size_t vertex_count,
-                                Win32GlideBatchPrimitive primitive);
+                                GlideBatchPrimitive primitive);
     // Outstanding swaps, which is what `grBufferNumPending` must answer. Zero
     // whenever the asynchronous path is off, matching today's behaviour.
     // Appends to the asynchronous FIFO and returns without waiting.
@@ -112,7 +112,7 @@ public:
     // directly rather than only through the gates that use it.
     bool PostToHostThread(std::function<void()> command, bool swap_command);
     std::uint32_t glide_pending_swap_count() const;
-    Win32GlideAsyncPresentSnapshot glide_async_present() const;
+    GlideAsyncPresentSnapshot glide_async_present() const;
     // Task 509: how fast this run actually drew, in a form the shutdown path
     // can read.
     //
@@ -151,7 +151,7 @@ public:
     // together identical to drawing them one at a time.
     bool DrawPrimitiveBatch(const hle::GlideDrawVertex* vertices,
                             std::size_t vertex_count,
-                            Win32GlideBatchPrimitive primitive);
+                            GlideBatchPrimitive primitive);
     // Decode a Glide texture download into an OpenGL texture keyed by its TMU
     // start address (R3). format/large_lod/aspect follow the observed
     // GrTexInfo; source is guest texel data of source_size bytes.
@@ -255,21 +255,21 @@ public:
     // Task 333: the host-thread rendezvous split into waiting and work. Off
     // unless REPIU_EXECUTION_TIME_PROFILE is set, so the normal path pays one
     // branch. Read from the exit summary after the guest thread has stopped.
-    Win32GlideGateTimingSnapshot glide_gate_timing() const
+    GlideGateTimingSnapshot glide_gate_timing() const
     {
         return SnapshotGlideGateTiming(glide_gate_timing_);
     }
 
-    Win32GlideBufferSwapTimingSnapshot glide_buffer_swap_timing() const
+    GlideBufferSwapTimingSnapshot glide_buffer_swap_timing() const
     {
         return SnapshotGlideBufferSwapTiming(glide_buffer_swap_timing_);
     }
 
     // Task 419: how often a spin resolved the rendezvous before the condition
     // variable had to. Read from the exit summary like the timing above.
-    Win32GlideRendezvousSpinSnapshot rendezvous_spin_counts() const
+    GlideRendezvousSpinSnapshot rendezvous_spin_counts() const
     {
-        return Win32GlideRendezvousSpinSnapshot{
+        return GlideRendezvousSpinSnapshot{
             rendezvous_spin_guest_hit_, rendezvous_spin_guest_miss_,
             rendezvous_spin_host_hit_, rendezvous_spin_host_miss_,
             rendezvous_spin_microseconds_};
@@ -278,7 +278,7 @@ public:
     // Task 364: the OpenGL interval of the two leading state setters, split
     // into error drain, state application, and trailing error check. Off
     // unless REPIU_GLIDE_SETTER_PHASE is set.
-    Win32GlideSetterPhaseSnapshot glide_setter_phase_timing() const
+    GlideSetterPhaseSnapshot glide_setter_phase_timing() const
     {
         return SnapshotGlideSetterPhaseTiming(glide_setter_phase_timing_);
     }
@@ -287,7 +287,7 @@ public:
     // the once-per-frame check that replaced it. Reported unconditionally: a
     // silent policy that suppresses error reporting has to say so in the
     // summary, or a later run cannot tell a clean frame from an unchecked one.
-    Win32GlideGlErrorPolicySnapshot glide_gl_error_policy() const
+    GlideGlErrorPolicySnapshot glide_gl_error_policy() const
     {
         // The free accessor rather than the cached member: a run that never
         // reached a setter has not resolved the member yet, and reporting the
@@ -300,14 +300,14 @@ public:
     // Task 375: texture upload attributes, including the uploads that failed to
     // decode. Always collected -- one hash per upload on a path that sees a
     // couple of uploads per second is not a hot path.
-    Win32GlideTextureCensusSnapshot glide_texture_census() const
+    GlideTextureCensusSnapshot glide_texture_census() const
     {
         return SnapshotGlideTextureCensus(glide_texture_census_);
     }
 
     // Task 371: what the swap interval override asked for and what the driver
     // actually reported back afterwards.
-    Win32GlideSwapIntervalPolicySnapshot glide_swap_interval_policy() const
+    GlideSwapIntervalPolicySnapshot glide_swap_interval_policy() const
     {
         return glide_swap_interval_policy_;
     }
@@ -325,7 +325,7 @@ public:
             &glide_gl_error_policy_, id, is_error, message, length);
     }
 
-    void BeginGlideOrdinalTiming(Win32GlideOrdinalTimingProfile* profile,
+    void BeginGlideOrdinalTiming(GlideOrdinalTimingProfile* profile,
                                  std::uint16_t ordinal)
     {
         active_ordinal_timing_ = profile;
@@ -386,7 +386,7 @@ private:
     void RecordPresentedFrame();
 
     std::thread::id host_thread_id_;
-    Win32JammaInputTimeline* jamma_input_timeline_ = nullptr;
+    JammaInputTimeline* jamma_input_timeline_ = nullptr;
     hle::BiosKeyboard* bios_keyboard_ = nullptr;
     // Mutable so the async snapshot accessors can stay const: they only read
     // counters this lock protects.
@@ -419,7 +419,7 @@ private:
     // One pointer, not the queue and counters themselves: `ThreadContext` holds
     // this backend and is a stack local, and the inline members overflowed that
     // stack at window creation.
-    std::unique_ptr<Win32GlideAsyncPresentState> async_present_state_;
+    std::unique_ptr<GlideAsyncPresentState> async_present_state_;
     // Read by the guest thread every frame through `grBufferNumPending`, which
     // runs on the guest's own small stack. Kept as a direct atomic so that read
     // touches no lazily-created state, no function-local static and no
@@ -428,8 +428,8 @@ private:
     // Runs posted commands only, never the synchronous slot, so a command may
     // call it without re-entering itself.
     void DrainAsyncCommands();
-    Win32GlideAsyncPresentState& async_present();
-    const Win32GlideAsyncPresentState& async_present() const;
+    GlideAsyncPresentState& async_present();
+    const GlideAsyncPresentState& async_present() const;
     // Atomic, and deliberately never guarded by `host_command_mutex_`. The
     // timeout path terminates the guest thread, which takes that mutex on every
     // Glide gate; acquiring a mutex a killed thread still owns faults. Teardown
@@ -504,21 +504,21 @@ private:
     std::uint32_t lfb_texture_ = 0;
     // Task 333. Guarded by `host_command_mutex_` except for the guest's own
     // enter timestamp, which is thread-local to the call.
-    Win32GlideGateTimingProfile glide_gate_timing_;
+    GlideGateTimingProfile glide_gate_timing_;
     // Task 354: grBufferSwap host work split. Only guest-gate commands are
     // recorded; internal LFB presentation through BufferSwap remains separate.
-    Win32GlideBufferSwapTimingProfile glide_buffer_swap_timing_;
+    GlideBufferSwapTimingProfile glide_buffer_swap_timing_;
     // Task 364: host thread only, so it needs no lock — every writer runs
     // inside a host-thread setter body.
-    Win32GlideSetterPhaseProfile glide_setter_phase_timing_;
+    GlideSetterPhaseProfile glide_setter_phase_timing_;
     // Task 369: host thread only, like the phase profile above — the frame
     // check runs inside `BufferSwapOnHostThread`.
-    Win32GlideGlErrorPolicyProfile glide_gl_error_policy_;
+    GlideGlErrorPolicyProfile glide_gl_error_policy_;
     // Task 371: written once during window creation, read at teardown.
-    Win32GlideSwapIntervalPolicySnapshot glide_swap_interval_policy_;
+    GlideSwapIntervalPolicySnapshot glide_swap_interval_policy_;
     // Task 375: host thread only, written inside StoreTexture.
-    Win32GlideTextureCensus glide_texture_census_;
-    Win32GlideOrdinalTimingProfile* active_ordinal_timing_ = nullptr;
+    GlideTextureCensus glide_texture_census_;
+    GlideOrdinalTimingProfile* active_ordinal_timing_ = nullptr;
     std::uint16_t active_ordinal_ = 0;
     bool glide_gate_timing_enabled_ = false;
     bool glide_gate_timing_resolved_ = false;
@@ -550,4 +550,4 @@ private:
 
 }  // namespace repiu::engine
 
-#endif  // REPIU_PLATFORM_WIN32_GLIDE_OPENGL_BACKEND_H_
+#endif  // REPIU_ENGINE_GLIDE_OPENGL_BACKEND_H_

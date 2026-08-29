@@ -256,14 +256,14 @@ if(NOT EMSCRIPTEN)
 target_sources(repiu_exe
     PRIVATE
         src/engine/cd_audio_wave_out.cpp
-        src/engine/aot_code_cache_win32.cpp
+        src/engine/aot_code_cache.cpp
         src/engine/aot_cache_address_index.cpp
         src/engine/aot_inline_cache_site_index.cpp
         src/engine/aot_return_dispatch_site_index.cpp
         src/engine/aot_return_patch_policy.cpp
         src/engine/aot/aot_worker_timing.cpp
         src/engine/aot/aot_timer_source_profile.cpp
-        src/engine/aot_page_coherence_win32.cpp
+        src/engine/aot_page_coherence.cpp
         src/engine/aot/aot_boundary_provenance.cpp
         src/engine/aot/aot_boundary_reason.cpp
         src/engine/aot/aot_dbt_call_return_trace.cpp
@@ -284,7 +284,8 @@ target_sources(repiu_exe
         src/engine/execution/single_step_hotspot_profile.cpp
         src/engine/dos/dos_int21_services.cpp
         src/engine/dos/dpmi_mscdex_services.cpp
-        src/engine/exception/breakpoint_evidence_win32.cpp
+        src/engine/exception/breakpoint_evidence.cpp
+        src/engine/exception/guest_owned_breakpoint.cpp
         src/engine/exception/exception_rescue_win32.cpp
         src/engine/exception/host_crash_report.cpp
         src/engine/cpu_emul/guest_memory_access.cpp

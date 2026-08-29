@@ -1,10 +1,10 @@
-#ifndef REPIU_PLATFORM_WIN32_EXECUTION_TRAMPOLINE_H_
-#define REPIU_PLATFORM_WIN32_EXECUTION_TRAMPOLINE_H_
+#ifndef REPIU_ENGINE_EXECUTION_TRAMPOLINE_H_
+#define REPIU_ENGINE_EXECUTION_TRAMPOLINE_H_
 
 #include "repiu/engine/runtime_memory_policy.h"
 #include "repiu/runtime/guest_context.h"
 #include "repiu/runtime/execution_backend.h"
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 #include "repiu/engine/aot_boundary_provenance.h"
 #include "repiu/engine/aot_retired_trap_profile.h"
 #include "repiu/engine/single_step_hotspot_profile.h"
@@ -39,24 +39,24 @@
 namespace repiu::engine
 {
 
-constexpr std::uint32_t kWin32PortIoTraceCapacity = 16;
-constexpr std::uint32_t kWin32DosPathTraceCapacity = 16;
-constexpr std::uint32_t kWin32DosFileIoTraceCapacity = 64;
-constexpr std::uint32_t kWin32DosFileIoPrefixCapacity = 16;
-constexpr std::uint32_t kWin32DosTerminationStackCapacity = 128;
-constexpr std::uint32_t kWin32ExceptionStackDwordCapacity = 96;
-constexpr std::uint32_t kWin32BreakpointByteWindowCapacity = 32;
-constexpr std::uint32_t kWin32AllocatorProbeTraceCapacity = 16;
-constexpr std::uint32_t kWin32AllocatorControlFlowTraceCapacity = 32;
-constexpr std::uint32_t kWin32SegmentLoadTraceCapacity = 16;
-constexpr std::uint32_t kWin32GlideTextureGateTraceCapacity = 16;
-constexpr std::uint32_t kWin32GlideVertexDwordCount = 18;
-constexpr std::uint32_t kWin32GlideTriangleTraceCapacity = 16;
+constexpr std::uint32_t kPortIoTraceCapacity = 16;
+constexpr std::uint32_t kDosPathTraceCapacity = 16;
+constexpr std::uint32_t kDosFileIoTraceCapacity = 64;
+constexpr std::uint32_t kDosFileIoPrefixCapacity = 16;
+constexpr std::uint32_t kDosTerminationStackCapacity = 128;
+constexpr std::uint32_t kExceptionStackDwordCapacity = 96;
+constexpr std::uint32_t kBreakpointByteWindowCapacity = 32;
+constexpr std::uint32_t kAllocatorProbeTraceCapacity = 16;
+constexpr std::uint32_t kAllocatorControlFlowTraceCapacity = 32;
+constexpr std::uint32_t kSegmentLoadTraceCapacity = 16;
+constexpr std::uint32_t kGlideTextureGateTraceCapacity = 16;
+constexpr std::uint32_t kGlideVertexDwordCount = 18;
+constexpr std::uint32_t kGlideTriangleTraceCapacity = 16;
 constexpr std::uint32_t kWin32GlideProducerVertexDwordCount = 15;
-constexpr std::uint32_t kWin32DeferredPortIoLimit = 65536;
+constexpr std::uint32_t kDeferredPortIoLimit = 65536;
 constexpr std::uint32_t kAotDbtHleFallbackReasonCount = 6;
-constexpr std::uint32_t kWin32ExecutionProbeRegisterCount = 7;
-constexpr std::uint32_t kWin32ExecutionProbeMemoryByteCount = 32;
+constexpr std::uint32_t kExecutionProbeRegisterCount = 7;
+constexpr std::uint32_t kExecutionProbeMemoryByteCount = 32;
 
 // Task 281 introduced this exclusive cause model for RET miss dispatch; Task 282
 // shares it with indirect call/jump miss dispatch, which fails for the same
@@ -81,16 +81,16 @@ enum class AotDbtDispatchFallbackReason : std::uint32_t
 constexpr std::uint32_t kAotDbtDispatchFallbackReasonCount =
     static_cast<std::uint32_t>(AotDbtDispatchFallbackReason::kCount);
 
-enum Win32BreakpointStateFlag : std::uint32_t
+enum BreakpointStateFlag : std::uint32_t
 {
-    kWin32BreakpointAotReentryPending = 1U << 0U,
-    kWin32BreakpointSingleStepTrace = 1U << 1U,
-    kWin32BreakpointNativeFastPath = 1U << 2U,
-    kWin32BreakpointNativeLinearSpan = 1U << 3U,
-    kWin32BreakpointNativeRegion = 1U << 4U,
+    kBreakpointAotReentryPending = 1U << 0U,
+    kBreakpointSingleStepTrace = 1U << 1U,
+    kBreakpointNativeFastPath = 1U << 2U,
+    kBreakpointNativeLinearSpan = 1U << 3U,
+    kBreakpointNativeRegion = 1U << 4U,
 };
 
-struct Win32UnhandledBreakpointEvidence
+struct UnhandledBreakpointEvidence
 {
     bool valid = false;
     std::uint32_t code = 0;
@@ -131,23 +131,23 @@ struct Win32UnhandledBreakpointEvidence
     std::uint32_t eip_previous_provenance = 0;
     std::uint32_t exception_window_base = 0;
     std::uint32_t exception_window_count = 0;
-    std::uint8_t exception_window[kWin32BreakpointByteWindowCapacity] = {};
+    std::uint8_t exception_window[kBreakpointByteWindowCapacity] = {};
     std::uint32_t eip_window_base = 0;
     std::uint32_t eip_window_count = 0;
-    std::uint8_t eip_window[kWin32BreakpointByteWindowCapacity] = {};
+    std::uint8_t eip_window[kBreakpointByteWindowCapacity] = {};
     std::uint32_t stack_dwords[4] = {};
     std::uint32_t stack_valid_mask = 0;
 };
 
-struct Win32GlideTriangleObservation
+struct GlideTriangleObservation
 {
     bool valid = false;
     std::uint32_t pointers[3] = {};
     bool pointer_readable[3] = {};
-    std::uint32_t dwords[3][kWin32GlideVertexDwordCount] = {};
+    std::uint32_t dwords[3][kGlideVertexDwordCount] = {};
 };
 
-struct Win32GlideTriangleTraceEntry
+struct GlideTriangleTraceEntry
 {
     bool valid = false;
     std::uint32_t sequence = 0;
@@ -156,7 +156,7 @@ struct Win32GlideTriangleTraceEntry
     std::uint32_t dwords[3][kWin32GlideProducerVertexDwordCount] = {};
 };
 
-struct Win32GlideTextureGateTraceEntry
+struct GlideTextureGateTraceEntry
 {
     bool valid = false;
     std::uint32_t sequence = 0;
@@ -170,13 +170,13 @@ struct Win32GlideTextureGateTraceEntry
     std::uint32_t return_eax = 0;
     std::uint32_t planned_return_esp = 0;
 };
-constexpr std::uint32_t kWin32ExecutionTraceCapacity = 64;
+constexpr std::uint32_t kExecutionTraceCapacity = 64;
 
 // One capture per single-stepped instruction inside a guest code range
 // (see RecordExecutionTrace). `value_at_esp_offset` is read relative to the
 // live ESP at capture time, not a hardcoded absolute address, so it stays
 // correct across stack reuse between calls to the traced function.
-struct Win32ExecutionTraceEntry
+struct ExecutionTraceEntry
 {
     std::uint32_t sequence = 0;
     std::uint32_t eip = 0;
@@ -205,14 +205,14 @@ struct X86ExecutionSnapshot
     std::uint16_t gs = 0;
 };
 
-struct Win32ExecutionProbeMemoryWindow
+struct ExecutionProbeMemoryWindow
 {
     bool valid = false;
     std::uint32_t address = 0;
-    std::uint8_t bytes[kWin32ExecutionProbeMemoryByteCount] = {};
+    std::uint8_t bytes[kExecutionProbeMemoryByteCount] = {};
 };
 
-struct Win32PortIoTraceEntry
+struct PortIoTraceEntry
 {
     bool valid = false;
     std::uint32_t sequence = 0;
@@ -225,7 +225,7 @@ struct Win32PortIoTraceEntry
     bool handled = false;
 };
 
-struct Win32PortIoObservation
+struct PortIoObservation
 {
     std::uint32_t observed_count = 0;
     std::uint32_t last_address = 0;
@@ -264,10 +264,10 @@ struct Win32PortIoObservation
     std::uint64_t jamma_timeline_frame_retire_count = 0;
     std::uint64_t jamma_timeline_frame_overflow_count = 0;
     std::uint32_t jamma_timeline_active_frame_depth = 0;
-    Win32PortIoTraceEntry trace[kWin32PortIoTraceCapacity];
+    PortIoTraceEntry trace[kPortIoTraceCapacity];
 };
 
-struct Win32DosPathTraceEntry
+struct DosPathTraceEntry
 {
     bool valid = false;
     std::uint32_t sequence = 0;
@@ -281,7 +281,7 @@ struct Win32DosPathTraceEntry
     std::uint8_t access_mode = 0;
 };
 
-struct Win32DosPathObservation
+struct DosPathObservation
 {
     std::uint32_t observed_count = 0;
     std::uint32_t trace_stored_count = 0;
@@ -291,10 +291,10 @@ struct Win32DosPathObservation
     std::uint32_t output_count = 0;
     std::uint32_t handled_count = 0;
     std::uint32_t unhandled_count = 0;
-    Win32DosPathTraceEntry trace[kWin32DosPathTraceCapacity];
+    DosPathTraceEntry trace[kDosPathTraceCapacity];
 };
 
-struct Win32DosFileIoTraceEntry
+struct DosFileIoTraceEntry
 {
     bool valid = false;
     std::uint32_t sequence = 0;
@@ -308,14 +308,14 @@ struct Win32DosFileIoTraceEntry
     std::uint32_t requested_bytes = 0;
     std::uint32_t actual_bytes = 0;
     std::uint16_t dos_error = 0;
-    std::uint8_t prefix[kWin32DosFileIoPrefixCapacity] = {};
+    std::uint8_t prefix[kDosFileIoPrefixCapacity] = {};
     std::uint32_t prefix_size = 0;
     std::uint32_t guest_eip = 0;
     std::uint32_t guest_esp = 0;
     std::uint32_t guest_stack[8] = {};
 };
 
-struct Win32DosFileIoObservation
+struct DosFileIoObservation
 {
     std::uint32_t observed_count = 0;
     std::uint32_t trace_stored_count = 0;
@@ -324,10 +324,10 @@ struct Win32DosFileIoObservation
     // handle cache, which is what made a 4 KB read cost milliseconds.
     std::uint32_t read_count = 0;
     std::uint32_t host_open_count = 0;
-    Win32DosFileIoTraceEntry trace[kWin32DosFileIoTraceCapacity];
+    DosFileIoTraceEntry trace[kDosFileIoTraceCapacity];
 };
 
-struct Win32AllocatorProbeTraceEntry
+struct AllocatorProbeTraceEntry
 {
     bool valid = false;
     std::uint32_t sequence = 0;
@@ -342,16 +342,16 @@ struct Win32AllocatorProbeTraceEntry
     std::string result;
 };
 
-struct Win32AllocatorProbeObservation
+struct AllocatorProbeObservation
 {
     std::uint32_t observed_count = 0;
     std::uint32_t trace_stored_count = 0;
     bool trace_wrapped = false;
-    Win32AllocatorProbeTraceEntry
-        trace[kWin32AllocatorProbeTraceCapacity];
+    AllocatorProbeTraceEntry
+        trace[kAllocatorProbeTraceCapacity];
 };
 
-struct Win32AllocatorControlFlowTraceEntry
+struct AllocatorControlFlowTraceEntry
 {
     bool valid = false;
     std::uint32_t sequence = 0;
@@ -380,22 +380,22 @@ struct Win32AllocatorControlFlowTraceEntry
     std::uint32_t writer_width = 0;
 };
 
-struct Win32AllocatorControlFlowObservation
+struct AllocatorControlFlowObservation
 {
     std::uint32_t observed_count = 0;
     std::uint32_t trace_stored_count = 0;
     bool trace_wrapped = false;
     bool null_link_transition_valid = false;
-    Win32AllocatorControlFlowTraceEntry null_link_transition;
+    AllocatorControlFlowTraceEntry null_link_transition;
     bool poison_link_transition_valid = false;
-    Win32AllocatorControlFlowTraceEntry poison_link_transition;
+    AllocatorControlFlowTraceEntry poison_link_transition;
     bool root_transition_valid = false;
-    Win32AllocatorControlFlowTraceEntry root_transition;
-    Win32AllocatorControlFlowTraceEntry
-        trace[kWin32AllocatorControlFlowTraceCapacity];
+    AllocatorControlFlowTraceEntry root_transition;
+    AllocatorControlFlowTraceEntry
+        trace[kAllocatorControlFlowTraceCapacity];
 };
 
-struct Win32SegmentLoadTraceEntry
+struct SegmentLoadTraceEntry
 {
     bool valid = false;
     std::uint32_t sequence = 0;
@@ -405,15 +405,15 @@ struct Win32SegmentLoadTraceEntry
     std::uint32_t source = 0;
 };
 
-struct Win32SegmentLoadObservation
+struct SegmentLoadObservation
 {
     std::uint32_t observed_count = 0;
     std::uint32_t trace_stored_count = 0;
     bool trace_wrapped = false;
-    Win32SegmentLoadTraceEntry trace[kWin32SegmentLoadTraceCapacity];
+    SegmentLoadTraceEntry trace[kSegmentLoadTraceCapacity];
 };
 
-struct Win32AotReturnTraceEntry
+struct AotReturnTraceEntry
 {
     std::uint32_t source = 0;
     std::uint32_t actual_target = 0;
@@ -422,35 +422,35 @@ struct Win32AotReturnTraceEntry
     bool matches = false;
 };
 
-constexpr std::uint32_t kWin32AotReturnTraceCapacity = 16;
+constexpr std::uint32_t kAotReturnTraceCapacity = 16;
 
-struct Win32AotTransferTraceEntry
+struct AotTransferTraceEntry
 {
     std::uint32_t source = 0;
     std::uint32_t target = 0;
     bool is_call = false;
 };
 
-constexpr std::uint32_t kWin32AotTransferTraceCapacity = 32;
+constexpr std::uint32_t kAotTransferTraceCapacity = 32;
 
-enum class Win32AotTransferOrigin : std::uint32_t
+enum class AotTransferOrigin : std::uint32_t
 {
     kVeh = 0,
     kHost = 1,
 };
 
-enum class Win32AotCallReturnTraceEventKind : std::uint32_t
+enum class AotCallReturnTraceEventKind : std::uint32_t
 {
     kCall = 0,
     kReturn = 1,
 };
 
-struct Win32AotCallReturnTraceEntry
+struct AotCallReturnTraceEntry
 {
     std::uint32_t sequence = 0;
-    Win32AotCallReturnTraceEventKind kind =
-        Win32AotCallReturnTraceEventKind::kCall;
-    Win32AotTransferOrigin origin = Win32AotTransferOrigin::kVeh;
+    AotCallReturnTraceEventKind kind =
+        AotCallReturnTraceEventKind::kCall;
+    AotTransferOrigin origin = AotTransferOrigin::kVeh;
     std::uint32_t call_sequence = 0;
     std::uint32_t source = 0;
     std::uint32_t target = 0;
@@ -465,9 +465,9 @@ struct Win32AotCallReturnTraceEntry
     bool esp_matches = false;
 };
 
-constexpr std::uint32_t kWin32AotCallReturnTraceCapacity = 256;
+constexpr std::uint32_t kAotCallReturnTraceCapacity = 256;
 
-enum class Win32AotCallStepProbePhase : std::uint32_t
+enum class AotCallStepProbePhase : std::uint32_t
 {
     kIdle = 0,
     kAwaitPreC3 = 1,
@@ -475,7 +475,7 @@ enum class Win32AotCallStepProbePhase : std::uint32_t
     kAwaitReturnTarget = 3,
 };
 
-enum class Win32AotCallStepProbeEventKind : std::uint32_t
+enum class AotCallStepProbeEventKind : std::uint32_t
 {
     kPreC3 = 0,
     kPostC3 = 1,
@@ -484,11 +484,11 @@ enum class Win32AotCallStepProbeEventKind : std::uint32_t
     kUnexpected = 4,
 };
 
-struct Win32AotCallStepProbeEntry
+struct AotCallStepProbeEntry
 {
     std::uint32_t sequence = 0;
-    Win32AotCallStepProbeEventKind kind =
-        Win32AotCallStepProbeEventKind::kPreC3;
+    AotCallStepProbeEventKind kind =
+        AotCallStepProbeEventKind::kPreC3;
     std::uint32_t call_sequence = 0;
     std::uint32_t guest_source = 0;
     std::uint32_t guest_target = 0;
@@ -512,10 +512,10 @@ struct Win32AotCallStepProbeEntry
     bool esp_matches = false;
 };
 
-constexpr std::uint32_t kWin32AotCallStepProbeTargetCapacity = 8;
-constexpr std::uint32_t kWin32AotCallStepProbeTraceCapacity = 32;
+constexpr std::uint32_t kAotCallStepProbeTargetCapacity = 8;
+constexpr std::uint32_t kAotCallStepProbeTraceCapacity = 32;
 
-struct Win32MinimalExecutionAttempt
+struct MinimalExecutionAttempt
 {
     bool valid = false;
     bool supported = false;
@@ -559,9 +559,9 @@ struct Win32MinimalExecutionAttempt
     std::uint8_t exception_register_strings[6][32] = {};
     std::uint32_t exception_register_string_valid_mask = 0;
     std::uint32_t exception_stack_base = 0;
-    std::uint32_t exception_stack_dwords[kWin32ExceptionStackDwordCapacity] = {};
+    std::uint32_t exception_stack_dwords[kExceptionStackDwordCapacity] = {};
     std::uint32_t exception_stack_dword_count = 0;
-    Win32UnhandledBreakpointEvidence unhandled_breakpoint_evidence;
+    UnhandledBreakpointEvidence unhandled_breakpoint_evidence;
     std::uint32_t aot_probe_guest_address = 0;
     std::uint32_t aot_probe_cache_address = 0;
     std::uint32_t aot_probe_cache_valid = 0;
@@ -679,18 +679,18 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t
         veh_arena_single_step_exit_site_counts[kVehExitSiteSnapshotCapacity] =
             {};
-    Win32SingleStepHotspotProfileSnapshot
+    SingleStepHotspotProfileSnapshot
         single_step_hotspot_profile;
     // Task 411: where the guest thread actually was, sampled on wall-clock
     // intervals rather than at exception boundaries.
-    Win32GuestPositionCensusSnapshot guest_position_census;
-    Win32ExecutionTimeProfileSnapshot execution_time_profile;
-    Win32AotWorkerTimingSnapshot aot_worker_timing;
+    GuestPositionCensusSnapshot guest_position_census;
+    ExecutionTimeProfileSnapshot execution_time_profile;
+    AotWorkerTimingSnapshot aot_worker_timing;
     // Task 482: the return handler bucket split into five stages, the residual
     // of the same window, and the Task 481 policy sites that produced the most
     // observations. Filled only while REPIU_AOT_RETURN_STAGE_PROFILE is set.
-    Win32AotReturnStageSnapshot aot_return_stage_profile;
-    std::vector<Win32AotReturnStageSiteObservation> aot_return_stage_sites;
+    AotReturnStageSnapshot aot_return_stage_profile;
+    std::vector<AotReturnStageSiteObservation> aot_return_stage_sites;
     // Task 499: the memo table generated code probes on the return miss path.
     bool aot_direct_return_table_enabled = false;
     std::uint32_t aot_direct_return_table_entry_count = 0;
@@ -700,33 +700,33 @@ struct Win32MinimalExecutionAttempt
     std::uint64_t aot_direct_return_table_clear_count = 0;
     std::uint32_t aot_direct_return_probe_site_count = 0;
     // Task 333: the Glide host-thread rendezvous split into waiting and work.
-    Win32GlideGateTimingSnapshot glide_gate_timing;
+    GlideGateTimingSnapshot glide_gate_timing;
     // Task 419: how often a spin resolved that rendezvous before the condition
     // variable had to, with the budget that produced the counts.
-    Win32GlideRendezvousSpinSnapshot glide_rendezvous_spin;
+    GlideRendezvousSpinSnapshot glide_rendezvous_spin;
     // Task 353: decoded gate and rendezvous time attributed by Glide ordinal.
-    Win32GlideOrdinalTimingSnapshot glide_ordinal_timing;
+    GlideOrdinalTimingSnapshot glide_ordinal_timing;
     // Task 354: guest grBufferSwap host work split around SDL presentation.
-    Win32GlideBufferSwapTimingSnapshot glide_buffer_swap_timing;
+    GlideBufferSwapTimingSnapshot glide_buffer_swap_timing;
     // Task 364: repeated-versus-changing state-setter arguments, and the
     // OpenGL interval of the two leading setters split by phase.
-    Win32GlideSetterCensusSnapshot glide_setter_census;
-    Win32GlideSetterPhaseSnapshot glide_setter_phase_timing;
+    GlideSetterCensusSnapshot glide_setter_census;
+    GlideSetterPhaseSnapshot glide_setter_phase_timing;
     // Task 365: how much of that repetition was actually elided.
-    Win32GlideSetterStateCacheSnapshot glide_setter_state_cache;
-    Win32GlideDrawBatchSnapshot glide_draw_batch;
-    Win32GlideAsyncPresentSnapshot glide_async_present;
+    GlideSetterStateCacheSnapshot glide_setter_state_cache;
+    GlideDrawBatchSnapshot glide_draw_batch;
+    GlideAsyncPresentSnapshot glide_async_present;
     // Task 369: whether the per-call setter error check ran, and what the
     // once-per-frame replacement found.
-    Win32GlideGlErrorPolicySnapshot glide_gl_error_policy;
+    GlideGlErrorPolicySnapshot glide_gl_error_policy;
     // Task 371: swap interval override request and the driver's answer.
-    Win32GlideSwapIntervalPolicySnapshot glide_swap_interval_policy;
+    GlideSwapIntervalPolicySnapshot glide_swap_interval_policy;
     // Task 375: texture upload attributes and dump accounting.
-    Win32GlideTextureCensusSnapshot glide_texture_census;
+    GlideTextureCensusSnapshot glide_texture_census;
     // Task 376: single steps discarded outside the guest arena.
-    Win32OutOfArenaStepCensusSnapshot out_of_arena_step_census;
+    OutOfArenaStepCensusSnapshot out_of_arena_step_census;
     // Task 366: timer ticks owed against timer ticks the guest received.
-    Win32TimerTickDeliverySnapshot timer_tick_delivery;
+    TimerTickDeliverySnapshot timer_tick_delivery;
     std::uint32_t native_fast_path_entry_count = 0;
     std::uint32_t native_fast_path_return_count = 0;
     std::uint32_t native_fast_path_cancel_count = 0;
@@ -788,8 +788,8 @@ struct Win32MinimalExecutionAttempt
     // Task 367: the same samples resolved to real instructions. `effective` skips
     // legacy prefixes; `escape` is the second byte behind a `0F`.
     static constexpr std::size_t kAotOpcodeRankCount = 8U;
-    Win32AotOpcodeRank aot_effective_opcode_ranks[kAotOpcodeRankCount] = {};
-    Win32AotOpcodeRank aot_escape_opcode_ranks[kAotOpcodeRankCount] = {};
+    AotOpcodeRank aot_effective_opcode_ranks[kAotOpcodeRankCount] = {};
+    AotOpcodeRank aot_escape_opcode_ranks[kAotOpcodeRankCount] = {};
     std::uint32_t aot_opcode_census_samples = 0;
     std::uint32_t aot_opcode_census_escapes = 0;
     std::uint32_t aot_opcode_census_prefixed = 0;
@@ -833,7 +833,7 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t aot_timer_safe_point_trap_count = 0;
     std::uint32_t aot_timer_safe_point_injected_count = 0;
     std::uint32_t aot_timer_safe_point_deferred_count = 0;
-    Win32AotTimerSourceProfile aot_timer_source_profile;
+    AotTimerSourceProfile aot_timer_source_profile;
     // `entry` counts C++ resolver entries; `attempt` is derived as
     // success + fallback so the accounting invariant also holds for a sample
     // whose graceful timeout landed inside the resolver (Task 281 open item).
@@ -874,7 +874,7 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t aot_generation_failure_count = 0;
     std::uint32_t aot_generation_relinked_entry_count = 0;
     std::uint32_t aot_retired_entry_trap_count = 0;
-    Win32AotRetiredTrapProfileSnapshot aot_retired_trap_profile;
+    AotRetiredTrapProfileSnapshot aot_retired_trap_profile;
     std::uint32_t aot_retired_span_attempt_count = 0;
     std::uint32_t aot_retired_span_success_count = 0;
     std::uint32_t aot_quarantine_count = 0;
@@ -899,8 +899,8 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t execution_probe_memory_offset = 0;
     X86ExecutionSnapshot execution_probe_snapshot;
     std::uint32_t execution_probe_stack[8] = {};
-    Win32ExecutionProbeMemoryWindow execution_probe_memory[
-        kWin32ExecutionProbeRegisterCount] = {};
+    ExecutionProbeMemoryWindow execution_probe_memory[
+        kExecutionProbeRegisterCount] = {};
     // Status only: the dumped bytes go to the file, never through the snapshot,
     // which is copied on every telemetry poll.
     bool execution_probe_dump_configured = false;
@@ -918,7 +918,7 @@ struct Win32MinimalExecutionAttempt
     bool execution_trace_sentinel2_configured = false;
     std::uint32_t execution_trace_sentinel2_offset = 0;
     std::uint32_t execution_trace_sentinel_rearm_count = 0;
-    Win32ExecutionTraceEntry execution_trace[kWin32ExecutionTraceCapacity];
+    ExecutionTraceEntry execution_trace[kExecutionTraceCapacity];
     std::uint32_t aot_call_depth = 0;
     bool aot_last_return_matches_call = false;
     std::uint32_t aot_last_expected_return = 0;
@@ -927,11 +927,11 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t aot_last_expected_call_source = 0;
     std::uint32_t aot_last_expected_call_target = 0;
     std::uint32_t aot_return_trace_count = 0;
-    Win32AotReturnTraceEntry
-        aot_return_trace[kWin32AotReturnTraceCapacity];
+    AotReturnTraceEntry
+        aot_return_trace[kAotReturnTraceCapacity];
     std::uint32_t aot_transfer_trace_count = 0;
-    Win32AotTransferTraceEntry
-        aot_transfer_trace[kWin32AotTransferTraceCapacity];
+    AotTransferTraceEntry
+        aot_transfer_trace[kAotTransferTraceCapacity];
     bool aot_dbt_call_return_trace_configured = false;
     std::uint32_t aot_dbt_call_return_trace_count = 0;
     std::uint32_t aot_dbt_call_return_call_count = 0;
@@ -940,23 +940,23 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t aot_dbt_call_return_mismatch_count = 0;
     std::uint32_t aot_dbt_call_return_overwrite_count = 0;
     bool aot_dbt_call_return_first_divergence_valid = false;
-    Win32AotCallReturnTraceEntry aot_dbt_call_return_first_divergence;
-    Win32AotCallReturnTraceEntry
-        aot_dbt_call_return_trace[kWin32AotCallReturnTraceCapacity];
+    AotCallReturnTraceEntry aot_dbt_call_return_first_divergence;
+    AotCallReturnTraceEntry
+        aot_dbt_call_return_trace[kAotCallReturnTraceCapacity];
     bool aot_dbt_call_step_probe_configured = false;
     std::uint32_t aot_dbt_call_step_probe_target_count = 0;
     std::uint32_t aot_dbt_call_step_probe_targets[
-        kWin32AotCallStepProbeTargetCapacity] = {};
+        kAotCallStepProbeTargetCapacity] = {};
     std::uint32_t aot_dbt_call_step_probe_trace_count = 0;
     std::uint32_t aot_dbt_call_step_probe_arm_count = 0;
     std::uint32_t aot_dbt_call_step_probe_complete_count = 0;
     std::uint32_t aot_dbt_call_step_probe_conflict_count = 0;
     std::uint32_t aot_dbt_call_step_probe_skipped_count = 0;
-    Win32AotCallStepProbePhase aot_dbt_call_step_probe_phase =
-        Win32AotCallStepProbePhase::kIdle;
+    AotCallStepProbePhase aot_dbt_call_step_probe_phase =
+        AotCallStepProbePhase::kIdle;
     std::uint32_t aot_dbt_call_step_probe_active_call_sequence = 0;
-    Win32AotCallStepProbeEntry aot_dbt_call_step_probe_trace[
-        kWin32AotCallStepProbeTraceCapacity];
+    AotCallStepProbeEntry aot_dbt_call_step_probe_trace[
+        kAotCallStepProbeTraceCapacity];
     std::uint32_t diagnostic_poll_iteration_count = 0;
     std::uint32_t diagnostic_progress_count = 0;
     std::uint32_t diagnostic_quiet_iteration_count = 0;
@@ -1078,11 +1078,11 @@ struct Win32MinimalExecutionAttempt
     repiu::hle::GlideImplementationIssueTracker glide_implementation_issues;
     std::uint32_t glide_texture_gate_trace_count = 0;
     bool glide_texture_gate_trace_wrapped = false;
-    Win32GlideTextureGateTraceEntry glide_texture_gate_trace[kWin32GlideTextureGateTraceCapacity] = {};
-    Win32GlideTriangleObservation glide_first_triangle;
+    GlideTextureGateTraceEntry glide_texture_gate_trace[kGlideTextureGateTraceCapacity] = {};
+    GlideTriangleObservation glide_first_triangle;
     std::uint32_t glide_triangle_trace_count = 0;
     bool glide_triangle_trace_wrapped = false;
-    Win32GlideTriangleTraceEntry glide_triangle_trace[kWin32GlideTriangleTraceCapacity] = {};
+    GlideTriangleTraceEntry glide_triangle_trace[kGlideTriangleTraceCapacity] = {};
     struct GlideCallObservation
     {
         std::uint16_t ordinal = 0;
@@ -1095,14 +1095,14 @@ struct Win32MinimalExecutionAttempt
     {
         std::uint16_t ordinal = 0;
         std::string name;
-        Win32GlideOrdinalTimingEntry timing;
+        GlideOrdinalTimingEntry timing;
     };
     std::vector<GlideOrdinalTimingObservation> glide_ordinal_timings;
     struct GlideSetterCensusObservation
     {
         std::uint16_t ordinal = 0;
         std::string name;
-        Win32GlideSetterCensusEntry census;
+        GlideSetterCensusEntry census;
         // Task 365: reported next to the census so the per-ordinal cross-check
         // "observed duplicates == actually elided" is readable from one line.
         std::uint32_t elided_count = 0;
@@ -1158,11 +1158,11 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t handled_hle_trap_count = 0;
     std::uint32_t last_hle_trap_address = 0;
     std::uint32_t last_hle_trap_opcode = 0;
-    Win32PortIoObservation port_io;
-    Win32DosPathObservation dos_path;
-    Win32DosFileIoObservation dos_file_io;
-    Win32AllocatorProbeObservation allocator_probe;
-    Win32AllocatorControlFlowObservation allocator_control_flow;
+    PortIoObservation port_io;
+    DosPathObservation dos_path;
+    DosFileIoObservation dos_file_io;
+    AllocatorProbeObservation allocator_probe;
+    AllocatorControlFlowObservation allocator_control_flow;
     std::uint32_t handled_dos_interrupt_count = 0;
     std::uint32_t last_dos_interrupt_vector = 0;
     std::uint32_t last_dos_interrupt_ah = 0;
@@ -1242,7 +1242,7 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t last_segment_load_selector = 0;
     std::uint32_t last_segment_load_source = 0;
     std::uint32_t handled_segment_load_register_counts[6] = {};
-    Win32SegmentLoadObservation segment_load;
+    SegmentLoadObservation segment_load;
     std::uint32_t handled_segment_store_count = 0;
     std::uint32_t last_segment_store_address = 0;
     std::uint32_t last_segment_store_opcode = 0;
@@ -1306,14 +1306,14 @@ struct Win32MinimalExecutionAttempt
     std::uint32_t dos_termination_ax = 0;
     std::uint32_t dos_termination_eip = 0;
     std::uint32_t dos_termination_esp = 0;
-    std::uint32_t dos_termination_stack[kWin32DosTerminationStackCapacity] = {};
+    std::uint32_t dos_termination_stack[kDosTerminationStackCapacity] = {};
     std::string hle_stdout_output;
     std::string hle_stderr_output;
     std::string message;
 };
 
-bool AttemptWin32GuestStackTrapExecution(
-    const Win32RelocatedImagePlacement& placement,
+bool AttemptGuestStackTrapExecution(
+    const RelocatedImagePlacement& placement,
     const runtime::GuestStackSwitchPlan& stack_plan,
     const hle::DosVirtualFileSystemState& dos_file_system,
     const exe::Dos16mBoundModule* linexe_module,
@@ -1327,11 +1327,11 @@ bool AttemptWin32GuestStackTrapExecution(
     std::uint32_t piu10_mp3_latency_ms,
     std::uint32_t timeout_milliseconds,
     std::uint32_t stall_timeout_milliseconds,
-    Win32MinimalExecutionAttempt* attempt);
+    MinimalExecutionAttempt* attempt);
 
-bool AttemptWin32GuestStackAotExecution(
-    const Win32RelocatedImagePlacement& placement,
-    Win32AotCodeCachePlacement& aot_placement,
+bool AttemptGuestStackAotExecution(
+    const RelocatedImagePlacement& placement,
+    AotCodeCachePlacement& aot_placement,
     const runtime::GuestStackSwitchPlan& stack_plan,
     const hle::DosVirtualFileSystemState& dos_file_system,
     const exe::Dos16mBoundModule* linexe_module,
@@ -1346,16 +1346,16 @@ bool AttemptWin32GuestStackAotExecution(
     runtime::ExecutionBackend execution_backend,
     std::uint32_t timeout_milliseconds,
     std::uint32_t stall_timeout_milliseconds,
-    Win32MinimalExecutionAttempt* attempt);
+    MinimalExecutionAttempt* attempt);
 
-bool AttemptWin32GuestStackHleExecution(
-    const Win32RelocatedImagePlacement& placement,
+bool AttemptGuestStackHleExecution(
+    const RelocatedImagePlacement& placement,
     const runtime::GuestStackSwitchPlan& stack_plan,
     const hle::DosVirtualFileSystemState& dos_file_system,
     std::uint32_t timeout_milliseconds,
     std::uint32_t stall_timeout_milliseconds,
-    Win32MinimalExecutionAttempt* attempt);
+    MinimalExecutionAttempt* attempt);
 
 }  // namespace repiu::engine
 
-#endif  // REPIU_PLATFORM_WIN32_EXECUTION_TRAMPOLINE_H_
+#endif  // REPIU_ENGINE_EXECUTION_TRAMPOLINE_H_

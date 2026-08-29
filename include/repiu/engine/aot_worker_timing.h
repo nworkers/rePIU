@@ -25,7 +25,7 @@ namespace repiu::engine
 // happens-before that SetEvent/WaitForSingleObject already supply.
 //
 // See docs/design/20260727-327-translation-worker-timing.md.
-struct Win32AotWorkerTimingProfile
+struct AotWorkerTimingProfile
 {
     bool enabled = false;
 
@@ -59,7 +59,7 @@ struct Win32AotWorkerTimingProfile
     // value means rendezvous cost exists outside translation too.
     std::uint32_t other_operation_count = 0;
 
-    // Task 328: phases inside AppendWin32DynamicAotTranslation, which Task 327
+    // Task 328: phases inside AppendDynamicAotTranslation, which Task 327
     // measured at 101.00% of the rendezvous. Worker thread only, so no atomics.
     std::uint32_t append_phase_count = 0;
     std::uint64_t arena_snapshot_cycles = 0;
@@ -95,7 +95,7 @@ struct Win32AotWorkerTimingProfile
 };
 
 // One append's phase timings. Phases not reached stay zero.
-struct Win32AotAppendPhaseSample
+struct AotAppendPhaseSample
 {
     std::uint64_t arena_snapshot_cycles = 0;
     std::uint64_t plan_build_cycles = 0;
@@ -104,7 +104,7 @@ struct Win32AotAppendPhaseSample
     std::uint64_t placement_cycles = 0;
 };
 
-struct Win32AotAppendScaleSample
+struct AotAppendScaleSample
 {
     std::uint32_t plan_block_count = 0;
     std::uint32_t plan_instruction_count = 0;
@@ -115,7 +115,7 @@ struct Win32AotAppendScaleSample
     std::uint32_t snapshot_bytes = 0;
 };
 
-struct Win32AotWorkerTimingSnapshot
+struct AotWorkerTimingSnapshot
 {
     bool enabled = false;
     std::uint32_t translate_count = 0;
@@ -160,47 +160,47 @@ struct Win32AotWorkerTimingSnapshot
 std::uint64_t ReadAotWorkerTimingCycles();
 
 // Difference that clamps a backwards TSC read to zero and counts it.
-std::uint64_t AotWorkerTimingDelta(Win32AotWorkerTimingProfile* profile,
+std::uint64_t AotWorkerTimingDelta(AotWorkerTimingProfile* profile,
                                    std::uint64_t start,
                                    std::uint64_t end);
 
 // Guest side, immediately before SetEvent(request).
-void RecordAotWorkerRequestSignal(Win32AotWorkerTimingProfile* profile,
+void RecordAotWorkerRequestSignal(AotWorkerTimingProfile* profile,
                                   std::uint64_t signal_cycles);
 
 // Worker side, immediately after waking for a translate operation.
-void RecordAotWorkerWake(Win32AotWorkerTimingProfile* profile,
+void RecordAotWorkerWake(AotWorkerTimingProfile* profile,
                          std::uint64_t wake_cycles);
 
-void RecordAotWorkerSegmentTable(Win32AotWorkerTimingProfile* profile,
+void RecordAotWorkerSegmentTable(AotWorkerTimingProfile* profile,
                                  std::uint64_t cycles);
-void RecordAotWorkerAppend(Win32AotWorkerTimingProfile* profile,
+void RecordAotWorkerAppend(AotWorkerTimingProfile* profile,
                            std::uint64_t cycles);
 
 // Worker side, immediately before SetEvent(complete).
-void RecordAotWorkerCompleteSignal(Win32AotWorkerTimingProfile* profile,
+void RecordAotWorkerCompleteSignal(AotWorkerTimingProfile* profile,
                                    std::uint64_t signal_cycles);
 
 // Guest side, after WaitForSingleObject returns.
-void RecordAotWorkerGuestResume(Win32AotWorkerTimingProfile* profile,
+void RecordAotWorkerGuestResume(AotWorkerTimingProfile* profile,
                                 std::uint64_t request_cycles,
                                 std::uint64_t resume_cycles);
 
-void RecordAotWorkerOtherOperation(Win32AotWorkerTimingProfile* profile);
+void RecordAotWorkerOtherOperation(AotWorkerTimingProfile* profile);
 
 // Task 328. Called once per append, on the worker thread, with whatever phases
 // were reached before an early return.
-void RecordAotAppendPhases(Win32AotWorkerTimingProfile* profile,
-                           const Win32AotAppendPhaseSample& phases);
-void RecordAotAppendScale(Win32AotWorkerTimingProfile* profile,
-                          const Win32AotAppendScaleSample& scale);
+void RecordAotAppendPhases(AotWorkerTimingProfile* profile,
+                           const AotAppendPhaseSample& phases);
+void RecordAotAppendScale(AotWorkerTimingProfile* profile,
+                          const AotAppendScaleSample& scale);
 
 // Task 330. Accumulates one plan build's neutral stage profile. Ignored when
 // the plan builder was called without profiling.
-void RecordAotPlanBuildProfile(Win32AotWorkerTimingProfile* profile,
+void RecordAotPlanBuildProfile(AotWorkerTimingProfile* profile,
                                const runtime::AotPlanBuildProfile& plan);
 
-Win32AotWorkerTimingSnapshot SnapshotAotWorkerTiming(
-    const Win32AotWorkerTimingProfile& profile);
+AotWorkerTimingSnapshot SnapshotAotWorkerTiming(
+    const AotWorkerTimingProfile& profile);
 
 }  // namespace repiu::engine

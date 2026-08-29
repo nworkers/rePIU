@@ -13,7 +13,7 @@ std::uint64_t ReadGlideGateTimingCycles()
     return repiu::platform::ReadCycleCounter();
 }
 
-std::uint64_t GlideGateTimingDelta(Win32GlideGateTimingProfile* profile,
+std::uint64_t GlideGateTimingDelta(GlideGateTimingProfile* profile,
                                    std::uint64_t start,
                                    std::uint64_t end)
 {
@@ -28,7 +28,7 @@ std::uint64_t GlideGateTimingDelta(Win32GlideGateTimingProfile* profile,
     return 0U;
 }
 
-void RecordGlideGatePublish(Win32GlideGateTimingProfile* profile,
+void RecordGlideGatePublish(GlideGateTimingProfile* profile,
                             std::uint64_t enter_cycles,
                             std::uint64_t publish_cycles)
 {
@@ -46,7 +46,7 @@ void RecordGlideGatePublish(Win32GlideGateTimingProfile* profile,
     profile->host_finish_cycles = 0;
 }
 
-void RecordGlideGateHostCommand(Win32GlideGateTimingProfile* profile,
+void RecordGlideGateHostCommand(GlideGateTimingProfile* profile,
                                 std::uint64_t start_cycles,
                                 std::uint64_t finish_cycles)
 {
@@ -67,7 +67,7 @@ void RecordGlideGateHostCommand(Win32GlideGateTimingProfile* profile,
     profile->host_finish_cycles = finish_cycles;
 }
 
-void RecordGlideGateResume(Win32GlideGateTimingProfile* profile,
+void RecordGlideGateResume(GlideGateTimingProfile* profile,
                            std::uint64_t enter_cycles,
                            std::uint64_t resume_cycles)
 {
@@ -85,7 +85,7 @@ void RecordGlideGateResume(Win32GlideGateTimingProfile* profile,
     profile->max_total_cycles = std::max(profile->max_total_cycles, total);
 }
 
-void RecordGlideGateDirectCommand(Win32GlideGateTimingProfile* profile,
+void RecordGlideGateDirectCommand(GlideGateTimingProfile* profile,
                                   std::uint64_t cycles)
 {
     if (profile == nullptr)
@@ -97,10 +97,10 @@ void RecordGlideGateDirectCommand(Win32GlideGateTimingProfile* profile,
     profile->direct_work_cycles += cycles;
 }
 
-Win32GlideGateTimingSnapshot SnapshotGlideGateTiming(
-    const Win32GlideGateTimingProfile& profile)
+GlideGateTimingSnapshot SnapshotGlideGateTiming(
+    const GlideGateTimingProfile& profile)
 {
-    Win32GlideGateTimingSnapshot snapshot;
+    GlideGateTimingSnapshot snapshot;
     snapshot.enabled = profile.enabled;
     snapshot.rendezvous_count = profile.rendezvous_count;
     snapshot.queue_cycles = profile.queue_cycles;

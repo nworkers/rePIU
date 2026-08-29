@@ -16,10 +16,10 @@ bool RunGlideTextureCensusProbe()
     using engine::RecordGlideTextureUpload;
     using engine::ResolveGlideTextureDumpDirectory;
     using engine::SnapshotGlideTextureCensus;
-    using engine::Win32GlideTextureCensus;
-    using engine::Win32GlideTextureUpload;
+    using engine::GlideTextureCensus;
+    using engine::GlideTextureUpload;
 
-    Win32GlideTextureUpload upload;
+    GlideTextureUpload upload;
     upload.start_address = 0x1000U;
     upload.format = 5U;
     upload.large_lod = 8U;
@@ -34,7 +34,7 @@ bool RunGlideTextureCensusProbe()
     std::vector<std::uint8_t> pixels_b(64U * 64U * 4U, 0x40U);
     pixels_b[7] = 0xFFU;
 
-    Win32GlideTextureCensus census;
+    GlideTextureCensus census;
     // First upload is distinct; the same bytes again are a wasted repeat; changed
     // bytes are a real one. That three-way split is what the census exists for.
     RecordGlideTextureUpload(&census, upload, pixels_a.data(), pixels_a.size());
@@ -44,7 +44,7 @@ bool RunGlideTextureCensusProbe()
     // content counts as identical rather than changed again.
     RecordGlideTextureUpload(&census, upload, pixels_b.data(), pixels_b.size());
 
-    Win32GlideTextureUpload other = upload;
+    GlideTextureUpload other = upload;
     other.start_address = 0x2000U;
     RecordGlideTextureUpload(&census, other, pixels_a.data(), pixels_a.size());
 
@@ -57,7 +57,7 @@ bool RunGlideTextureCensusProbe()
 
     // A decode failure must be recorded rather than dropped, and must not be
     // counted as an upload -- nothing decoded.
-    Win32GlideTextureUpload failing = upload;
+    GlideTextureUpload failing = upload;
     failing.format = 11U;
     RecordGlideTextureUpload(&census, failing, nullptr, 0U);
     const auto after_failure = SnapshotGlideTextureCensus(census);
@@ -81,8 +81,8 @@ bool RunGlideTextureCensusProbe()
 
     // A palettized format arriving without a palette decodes to wrong colours
     // rather than failing, so it is counted rather than left to inference.
-    Win32GlideTextureCensus palette_census;
-    Win32GlideTextureUpload palettized = upload;
+    GlideTextureCensus palette_census;
+    GlideTextureUpload palettized = upload;
     palettized.format = 5U;
     palettized.has_palette = false;
     RecordGlideTextureUpload(&palette_census, palettized, pixels_a.data(),
@@ -125,7 +125,7 @@ bool RunGlideTextureCensusProbe()
         !ResolveGlideTextureDumpDirectory("1").empty() &&
         ResolveGlideTextureDumpDirectory("D:\\tex").string() == "D:\\tex";
 
-    Win32GlideTextureCensus untouched;
+    GlideTextureCensus untouched;
     RecordGlideTextureUpload(nullptr, upload, pixels_a.data(),
                              pixels_a.size());
     const bool inert =

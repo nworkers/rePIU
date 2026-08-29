@@ -3,7 +3,7 @@
 #include <iostream>
 
 #if defined(_WIN32)
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 #include "repiu/runtime/aot_code_cache.h"
 #include "../../engine/aot/aot_dbt_direct_edge_dispatch.h"
 #include "../../engine/execution/thread_context.h"
@@ -93,7 +93,7 @@ bool ValidateImage(const runtime::AotCodeCacheImage& image)
 }
 
 bool ValidatePlacement(
-    const engine::Win32AotCodeCachePlacement& placement)
+    const engine::AotCodeCachePlacement& placement)
 {
     if (!placement.placed ||
         placement.dbt_direct_edge_dispatch_sites.size() != 1U)
@@ -145,9 +145,9 @@ bool RunAotDbtDirectEdgeDispatchProbe()
         MakePlan(true), options, &mapped) &&
         mapped.dbt_direct_edge_dispatch_sites.empty();
 
-    engine::Win32AotCodeCachePlacement placement;
+    engine::AotCodeCachePlacement placement;
     const bool placed = emitted &&
-        engine::PlaceWin32AotCodeCache(image, &placement) &&
+        engine::PlaceAotCodeCache(image, &placement) &&
         placement.placed && placement.dbt_direct_edge_dispatch_enabled &&
         ValidatePlacement(placement);
 
@@ -178,7 +178,7 @@ bool RunAotDbtDirectEdgeDispatchProbe()
               << "\ndbt_direct_edge_dispatch_all="
               << (all ? "true" : "false") << "\n";
 
-    engine::ReleaseWin32AotCodeCache(&placement);
+    engine::ReleaseAotCodeCache(&placement);
     return all;
 #endif
 }

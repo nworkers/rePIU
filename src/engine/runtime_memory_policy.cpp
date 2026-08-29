@@ -104,16 +104,16 @@ repiu::platform::MemoryProtection ProtectionFromObjectFlags(std::uint32_t flags)
 
 }  // namespace
 
-bool BuildWin32RuntimeMemoryPolicy(
+bool BuildRuntimeMemoryPolicy(
     const runtime::RuntimeMemoryPlan& memory_plan,
-    Win32RuntimeMemoryPolicy* policy)
+    RuntimeMemoryPolicy* policy)
 {
     if (policy == nullptr)
     {
         return false;
     }
 
-    *policy = Win32RuntimeMemoryPolicy{};
+    *policy = RuntimeMemoryPolicy{};
     policy->host_pointer_bits = static_cast<std::uint32_t>(sizeof(void*) * 8);
     policy->direct_x86_execution_supported =
         IsDirectX86ExecutionSupported();
@@ -152,17 +152,17 @@ bool BuildWin32RuntimeMemoryPolicy(
     return true;
 }
 
-bool BuildWin32RuntimeMemoryPolicyFromFixedRange(
+bool BuildRuntimeMemoryPolicyFromFixedRange(
     std::uint32_t preferred_allocation_base,
     std::uint32_t required_reserve_size,
-    Win32RuntimeMemoryPolicy* policy)
+    RuntimeMemoryPolicy* policy)
 {
     if (policy == nullptr)
     {
         return false;
     }
 
-    *policy = Win32RuntimeMemoryPolicy{};
+    *policy = RuntimeMemoryPolicy{};
     policy->host_pointer_bits = static_cast<std::uint32_t>(sizeof(void*) * 8);
     policy->direct_x86_execution_supported =
         IsDirectX86ExecutionSupported();
@@ -193,16 +193,16 @@ bool BuildWin32RuntimeMemoryPolicyFromFixedRange(
     return true;
 }
 
-bool ProbeWin32RuntimeAddressRange(
-    const Win32RuntimeMemoryPolicy& policy,
-    Win32AddressRangeProbe* probe)
+bool ProbeRuntimeAddressRange(
+    const RuntimeMemoryPolicy& policy,
+    AddressRangeProbe* probe)
 {
     if (probe == nullptr)
     {
         return false;
     }
 
-    *probe = Win32AddressRangeProbe{};
+    *probe = AddressRangeProbe{};
     probe->checked_base = policy.preferred_allocation_base;
     probe->checked_size = policy.required_reserve_size;
 
@@ -277,18 +277,18 @@ bool ProbeWin32RuntimeAddressRange(
     return true;
 }
 
-bool ReserveWin32RuntimeAddressRangeWithType(
-    const Win32RuntimeMemoryPolicy& policy,
+bool ReserveRuntimeAddressRangeWithType(
+    const RuntimeMemoryPolicy& policy,
     bool commit,
     const char* operation_name,
-    Win32AddressRangeReservation* reservation)
+    AddressRangeReservation* reservation)
 {
     if (reservation == nullptr)
     {
         return false;
     }
 
-    *reservation = Win32AddressRangeReservation{};
+    *reservation = AddressRangeReservation{};
     reservation->requested_base = policy.preferred_allocation_base;
     reservation->requested_size = policy.required_reserve_size;
 
@@ -341,24 +341,24 @@ bool ReserveWin32RuntimeAddressRangeWithType(
     return true;
 }
 
-bool ReserveWin32RuntimeAddressRange(
-    const Win32RuntimeMemoryPolicy& policy,
-    Win32AddressRangeReservation* reservation)
+bool ReserveRuntimeAddressRange(
+    const RuntimeMemoryPolicy& policy,
+    AddressRangeReservation* reservation)
 {
-    return ReserveWin32RuntimeAddressRangeWithType(
+    return ReserveRuntimeAddressRangeWithType(
         policy, false, "reserve", reservation);
 }
 
-bool ReserveAndCommitWin32RuntimeAddressRange(
-    const Win32RuntimeMemoryPolicy& policy,
-    Win32AddressRangeReservation* reservation)
+bool ReserveAndCommitRuntimeAddressRange(
+    const RuntimeMemoryPolicy& policy,
+    AddressRangeReservation* reservation)
 {
-    return ReserveWin32RuntimeAddressRangeWithType(
+    return ReserveRuntimeAddressRangeWithType(
         policy, true, "reserve and commit", reservation);
 }
 
-bool ReleaseWin32RuntimeAddressRange(
-    const Win32AddressRangeReservation& reservation)
+bool ReleaseRuntimeAddressRange(
+    const AddressRangeReservation& reservation)
 {
     if (!reservation.valid || !reservation.reserved)
     {
@@ -371,17 +371,17 @@ bool ReleaseWin32RuntimeAddressRange(
         reserved_address, static_cast<std::size_t>(reservation.reserved_size));
 }
 
-bool PlaceWin32RelocatedImage(
+bool PlaceRelocatedImage(
     const runtime::RelocatedRuntimeImage& image,
-    Win32RelocatedImagePlacement* placement)
+    RelocatedImagePlacement* placement)
 {
-    return PlaceWin32RelocatedImage(image, 0, placement);
+    return PlaceRelocatedImage(image, 0, placement);
 }
 
-bool PlaceWin32RelocatedImage(
+bool PlaceRelocatedImage(
     const runtime::RelocatedRuntimeImage& image,
     std::uint32_t minimum_reserve_size,
-    Win32RelocatedImagePlacement* placement)
+    RelocatedImagePlacement* placement)
 {
 
     if (placement == nullptr)
@@ -389,7 +389,7 @@ bool PlaceWin32RelocatedImage(
         return false;
     }
 
-    *placement = Win32RelocatedImagePlacement{};
+    *placement = RelocatedImagePlacement{};
     placement->requested_base = image.relocated_image_base;
 
     if (!image.valid || image.objects.empty())
@@ -499,10 +499,10 @@ bool PlaceWin32RelocatedImage(
     return true;
 }
 
-bool PlaceWin32RelocatedImageInReservedRange(
+bool PlaceRelocatedImageInReservedRange(
     const runtime::RelocatedRuntimeImage& image,
-    const Win32AddressRangeReservation& reservation,
-    Win32RelocatedImagePlacement* placement)
+    const AddressRangeReservation& reservation,
+    RelocatedImagePlacement* placement)
 {
 
     if (placement == nullptr)
@@ -510,7 +510,7 @@ bool PlaceWin32RelocatedImageInReservedRange(
         return false;
     }
 
-    *placement = Win32RelocatedImagePlacement{};
+    *placement = RelocatedImagePlacement{};
     placement->requested_base = reservation.requested_base;
     placement->requested_size = reservation.requested_size;
 
@@ -603,8 +603,8 @@ bool PlaceWin32RelocatedImageInReservedRange(
     return true;
 }
 
-bool ReleaseWin32RelocatedImage(
-    const Win32RelocatedImagePlacement& placement)
+bool ReleaseRelocatedImage(
+    const RelocatedImagePlacement& placement)
 {
     if (!placement.valid || !placement.placed)
     {

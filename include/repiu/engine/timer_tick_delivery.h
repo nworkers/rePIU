@@ -44,17 +44,17 @@ namespace repiu::engine
 // this is about a quarter second of owed time. Hitting it is itself a finding --
 // it means the host cannot catch up, and the cause is execution speed rather than
 // delivery.
-constexpr std::uint32_t kWin32TimerTickBacklogCapacity = 64U;
+constexpr std::uint32_t kTimerTickBacklogCapacity = 64U;
 
-class Win32TimerTickDeliveryGuard
+class TimerTickDeliveryGuard
 {
 public:
-    explicit Win32TimerTickDeliveryGuard(std::atomic_flag* lock);
-    ~Win32TimerTickDeliveryGuard();
+    explicit TimerTickDeliveryGuard(std::atomic_flag* lock);
+    ~TimerTickDeliveryGuard();
 
-    Win32TimerTickDeliveryGuard(const Win32TimerTickDeliveryGuard&) = delete;
-    Win32TimerTickDeliveryGuard& operator=(
-        const Win32TimerTickDeliveryGuard&) = delete;
+    TimerTickDeliveryGuard(const TimerTickDeliveryGuard&) = delete;
+    TimerTickDeliveryGuard& operator=(
+        const TimerTickDeliveryGuard&) = delete;
 
     void Release();
 
@@ -62,7 +62,7 @@ private:
     std::atomic_flag* lock_ = nullptr;
 };
 
-struct Win32TimerTickDeliveryCounters
+struct TimerTickDeliveryCounters
 {
     // Ticks the schedule said were owed. This is the programmed time base.
     std::atomic<std::uint32_t> due_total{0};
@@ -87,7 +87,7 @@ struct Win32TimerTickDeliveryCounters
     std::atomic<std::uint32_t> backlog{0};
 };
 
-struct Win32TimerTickDeliverySnapshot
+struct TimerTickDeliverySnapshot
 {
     bool backlog_enabled = false;
     std::uint32_t due_total = 0;
@@ -115,7 +115,7 @@ bool TimerTickBacklogEnabled();
 // `in_gate` (Task 431) says the guest thread was blocked in the Glide gate at
 // this moment, which is what makes a coalesced tick undeliverable rather than
 // merely late.
-std::uint32_t RecordTimerTicksDue(Win32TimerTickDeliveryCounters* counters,
+std::uint32_t RecordTimerTicksDue(TimerTickDeliveryCounters* counters,
                                   std::uint32_t due,
                                   bool already_pending,
                                   bool backlog_enabled,
@@ -124,18 +124,18 @@ std::uint32_t RecordTimerTicksDue(Win32TimerTickDeliveryCounters* counters,
 // Called when an `INT 8` frame was actually pushed. Returns true when a further
 // tick is still owed and delivery should stay armed, which is how the backlog
 // drains one interrupt per safe point instead of bursting.
-bool RecordTimerTickInjected(Win32TimerTickDeliveryCounters* counters,
+bool RecordTimerTickInjected(TimerTickDeliveryCounters* counters,
                              bool backlog_enabled);
 
 // Called when an injection attempt hit an existing safe-point condition.
-void RecordTimerTickDeferred(Win32TimerTickDeliveryCounters* counters);
+void RecordTimerTickDeferred(TimerTickDeliveryCounters* counters);
 
 // Called when delivery is abandoned without injecting -- an unhooked vector, for
 // instance -- so the owed ticks are accounted rather than silently vanishing.
 void RecordTimerTickBacklogCleared(
-    Win32TimerTickDeliveryCounters* counters);
+    TimerTickDeliveryCounters* counters);
 
-Win32TimerTickDeliverySnapshot SnapshotTimerTickDelivery(
-    const Win32TimerTickDeliveryCounters& counters);
+TimerTickDeliverySnapshot SnapshotTimerTickDelivery(
+    const TimerTickDeliveryCounters& counters);
 
 }  // namespace repiu::engine

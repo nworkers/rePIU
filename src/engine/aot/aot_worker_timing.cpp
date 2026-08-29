@@ -13,7 +13,7 @@ std::uint64_t ReadAotWorkerTimingCycles()
     return repiu::platform::ReadCycleCounter();
 }
 
-std::uint64_t AotWorkerTimingDelta(Win32AotWorkerTimingProfile* profile,
+std::uint64_t AotWorkerTimingDelta(AotWorkerTimingProfile* profile,
                                    std::uint64_t start,
                                    std::uint64_t end)
 {
@@ -28,7 +28,7 @@ std::uint64_t AotWorkerTimingDelta(Win32AotWorkerTimingProfile* profile,
     return 0U;
 }
 
-void RecordAotWorkerRequestSignal(Win32AotWorkerTimingProfile* profile,
+void RecordAotWorkerRequestSignal(AotWorkerTimingProfile* profile,
                                   std::uint64_t signal_cycles)
 {
     if (profile == nullptr)
@@ -45,7 +45,7 @@ void RecordAotWorkerRequestSignal(Win32AotWorkerTimingProfile* profile,
     profile->request_signal_cycles = signal_cycles;
 }
 
-void RecordAotWorkerWake(Win32AotWorkerTimingProfile* profile,
+void RecordAotWorkerWake(AotWorkerTimingProfile* profile,
                          std::uint64_t wake_cycles)
 {
     if (profile == nullptr)
@@ -59,7 +59,7 @@ void RecordAotWorkerWake(Win32AotWorkerTimingProfile* profile,
         std::max(profile->max_wake_latency_cycles, latency);
 }
 
-void RecordAotWorkerSegmentTable(Win32AotWorkerTimingProfile* profile,
+void RecordAotWorkerSegmentTable(AotWorkerTimingProfile* profile,
                                  std::uint64_t cycles)
 {
     if (profile != nullptr)
@@ -68,7 +68,7 @@ void RecordAotWorkerSegmentTable(Win32AotWorkerTimingProfile* profile,
     }
 }
 
-void RecordAotWorkerAppend(Win32AotWorkerTimingProfile* profile,
+void RecordAotWorkerAppend(AotWorkerTimingProfile* profile,
                            std::uint64_t cycles)
 {
     if (profile == nullptr)
@@ -80,7 +80,7 @@ void RecordAotWorkerAppend(Win32AotWorkerTimingProfile* profile,
         std::max(profile->max_append_cycles, cycles);
 }
 
-void RecordAotWorkerCompleteSignal(Win32AotWorkerTimingProfile* profile,
+void RecordAotWorkerCompleteSignal(AotWorkerTimingProfile* profile,
                                    std::uint64_t signal_cycles)
 {
     if (profile != nullptr)
@@ -89,7 +89,7 @@ void RecordAotWorkerCompleteSignal(Win32AotWorkerTimingProfile* profile,
     }
 }
 
-void RecordAotWorkerGuestResume(Win32AotWorkerTimingProfile* profile,
+void RecordAotWorkerGuestResume(AotWorkerTimingProfile* profile,
                                 std::uint64_t request_cycles,
                                 std::uint64_t resume_cycles)
 {
@@ -107,7 +107,7 @@ void RecordAotWorkerGuestResume(Win32AotWorkerTimingProfile* profile,
         std::max(profile->max_guest_total_cycles, total);
 }
 
-void RecordAotWorkerOtherOperation(Win32AotWorkerTimingProfile* profile)
+void RecordAotWorkerOtherOperation(AotWorkerTimingProfile* profile)
 {
     if (profile != nullptr)
     {
@@ -116,8 +116,8 @@ void RecordAotWorkerOtherOperation(Win32AotWorkerTimingProfile* profile)
     }
 }
 
-void RecordAotAppendPhases(Win32AotWorkerTimingProfile* profile,
-                           const Win32AotAppendPhaseSample& phases)
+void RecordAotAppendPhases(AotWorkerTimingProfile* profile,
+                           const AotAppendPhaseSample& phases)
 {
     if (profile == nullptr)
     {
@@ -134,8 +134,8 @@ void RecordAotAppendPhases(Win32AotWorkerTimingProfile* profile,
         profile->max_arena_snapshot_cycles, phases.arena_snapshot_cycles);
 }
 
-void RecordAotAppendScale(Win32AotWorkerTimingProfile* profile,
-                          const Win32AotAppendScaleSample& scale)
+void RecordAotAppendScale(AotWorkerTimingProfile* profile,
+                          const AotAppendScaleSample& scale)
 {
     if (profile == nullptr)
     {
@@ -149,7 +149,7 @@ void RecordAotAppendScale(Win32AotWorkerTimingProfile* profile,
         profile->max_plan_instruction_count, scale.plan_instruction_count);
 }
 
-void RecordAotPlanBuildProfile(Win32AotWorkerTimingProfile* profile,
+void RecordAotPlanBuildProfile(AotWorkerTimingProfile* profile,
                                const runtime::AotPlanBuildProfile& plan)
 {
     if (profile == nullptr || !plan.enabled)
@@ -173,10 +173,10 @@ void RecordAotPlanBuildProfile(Win32AotWorkerTimingProfile* profile,
         profile->max_plan_sweep_pass_count, plan.sweep_pass_count);
 }
 
-Win32AotWorkerTimingSnapshot SnapshotAotWorkerTiming(
-    const Win32AotWorkerTimingProfile& profile)
+AotWorkerTimingSnapshot SnapshotAotWorkerTiming(
+    const AotWorkerTimingProfile& profile)
 {
-    Win32AotWorkerTimingSnapshot snapshot;
+    AotWorkerTimingSnapshot snapshot;
     snapshot.enabled = profile.enabled;
     snapshot.translate_count = profile.translate_count;
     snapshot.wake_latency_cycles = profile.wake_latency_cycles;

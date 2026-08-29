@@ -10,7 +10,7 @@ namespace repiu::tools
 bool RunGlideSwapIntervalPolicyProbe()
 {
     using engine::ResolveGlideSwapIntervalOverride;
-    using engine::Win32GlideSwapIntervalPolicySnapshot;
+    using engine::GlideSwapIntervalPolicySnapshot;
 
     std::int32_t interval = 99;
     const bool accepted =
@@ -35,7 +35,7 @@ bool RunGlideSwapIntervalPolicyProbe()
 
     // A default-constructed snapshot must read as "no override requested" so an
     // unset run is distinguishable from one that requested interval zero.
-    const Win32GlideSwapIntervalPolicySnapshot inert_snapshot;
+    const GlideSwapIntervalPolicySnapshot inert_snapshot;
     const bool inert =
         !inert_snapshot.override_requested && !inert_snapshot.applied &&
         !inert_snapshot.effective_valid &&
@@ -44,7 +44,7 @@ bool RunGlideSwapIntervalPolicyProbe()
 
     // A refused override must stay visible: requested true with applied false is
     // the state that would otherwise silently invalidate an A/B.
-    Win32GlideSwapIntervalPolicySnapshot refused;
+    GlideSwapIntervalPolicySnapshot refused;
     refused.override_requested = true;
     refused.requested_interval = 0;
     refused.applied = false;

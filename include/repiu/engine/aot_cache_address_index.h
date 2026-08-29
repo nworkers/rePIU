@@ -6,9 +6,9 @@
 namespace repiu::engine
 {
 
-struct Win32AotCodeCachePlacement;
+struct AotCodeCachePlacement;
 
-// O(1) guest-address lookup over Win32AotCodeCachePlacement::address_map
+// O(1) guest-address lookup over AotCodeCachePlacement::address_map
 // (Task 324).
 //
 // Task 323 measured the previous linear scan at 87.75% of kAotResume, averaging
@@ -32,7 +32,7 @@ struct Win32AotCodeCachePlacement;
 // placement built without the update hooks degrades to slow rather than wrong.
 //
 // See docs/design/20260727-324-aot-cache-address-hash-index.md.
-struct Win32AotCacheAddressIndex
+struct AotCacheAddressIndex
 {
     static constexpr std::uint32_t kInvalidIndex = 0xFFFFFFFFU;
 
@@ -60,27 +60,27 @@ struct Win32AotCacheAddressIndex
 };
 
 // Discards and rebuilds the whole index from placement->address_map.
-void RebuildAotCacheAddressIndex(Win32AotCodeCachePlacement* placement);
+void RebuildAotCacheAddressIndex(AotCodeCachePlacement* placement);
 
 // Rebuilds only when the index does not cover address_map. Used as a safety net
 // after a batch of appends.
-void EnsureAotCacheAddressIndex(Win32AotCodeCachePlacement* placement);
+void EnsureAotCacheAddressIndex(AotCodeCachePlacement* placement);
 
 // Drops the index so lookups fall back to the linear scan until a rebuild.
-void InvalidateAotCacheAddressIndex(Win32AotCodeCachePlacement* placement);
+void InvalidateAotCacheAddressIndex(AotCodeCachePlacement* placement);
 
 // Links one newly appended address_map entry in O(1) when it extends the
 // indexed range. Any other shape -- an out-of-order registration, or a map
 // replaced wholesale -- invalidates instead of rebuilding, so callers that
 // register n entries in a loop stay O(n) rather than O(n^2); the trailing
 // EnsureAotCacheAddressIndex restores the index once.
-void AppendAotCacheAddressIndexEntry(Win32AotCodeCachePlacement* placement,
+void AppendAotCacheAddressIndexEntry(AotCodeCachePlacement* placement,
                                      std::uint32_t map_index);
 
 // Returns false when the index is stale, when no entry matches, or when
 // newest_active is requested and no active entry matches. `newest_active`
 // selects the retired-generation rule; false selects the oldest-entry rule.
-bool LookupAotCacheAddressIndex(const Win32AotCodeCachePlacement& placement,
+bool LookupAotCacheAddressIndex(const AotCodeCachePlacement& placement,
                                 std::uint32_t guest_address,
                                 bool newest_active,
                                 std::uint32_t* map_index);
@@ -98,7 +98,7 @@ struct AotGuestAddressLookup
 };
 
 AotGuestAddressLookup LookupAotGuestAddressIndex(
-    const Win32AotCodeCachePlacement& placement,
+    const AotCodeCachePlacement& placement,
     std::uint32_t cache_offset);
 
 }  // namespace repiu::engine

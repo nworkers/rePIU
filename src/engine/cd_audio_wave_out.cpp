@@ -312,7 +312,7 @@ std::uint32_t CdAudioWaveOut::current_lba() const
 // worker: the position only refreshes at the top of that loop, so if the count
 // does not move between two samples, neither could the position.
 void CdAudioWaveOut::FillPositionSample(
-    Win32CdAudioPositionEntry* entry) const
+    CdAudioPositionEntry* entry) const
 {
     if (entry == nullptr)
     {

@@ -20,7 +20,7 @@ constexpr std::uint32_t kGlideTextureFormatBuckets = 16U;
 constexpr std::uint32_t kGlideTextureDimensionBuckets = 12U;
 constexpr std::uint32_t kDefaultGlideTextureDumpLimit = 512U;
 
-struct Win32GlideTextureCensus
+struct GlideTextureCensus
 {
     bool enabled = false;
     std::uint32_t upload_count = 0;
@@ -63,7 +63,7 @@ struct Win32GlideTextureCensus
     std::unordered_map<std::uint32_t, std::uint64_t> address_hashes;
 };
 
-struct Win32GlideTextureCensusSnapshot
+struct GlideTextureCensusSnapshot
 {
     bool enabled = false;
     std::uint32_t upload_count = 0;
@@ -91,7 +91,7 @@ struct Win32GlideTextureCensusSnapshot
     bool dump_limit_reached = false;
 };
 
-struct Win32GlideTextureUpload
+struct GlideTextureUpload
 {
     std::uint32_t start_address = 0;
     std::uint32_t format = 0;
@@ -112,22 +112,22 @@ std::uint64_t HashGlideTexturePixels(const std::uint8_t* rgba8,
 
 // `rgba8` may be null, which records the upload as a decode failure -- a silently
 // dropped texture is exactly what would not otherwise show up anywhere.
-void RecordGlideTextureUpload(Win32GlideTextureCensus* census,
-                              const Win32GlideTextureUpload& upload,
+void RecordGlideTextureUpload(GlideTextureCensus* census,
+                              const GlideTextureUpload& upload,
                               const std::uint8_t* rgba8,
                               std::size_t byte_count);
 
-void RecordGlidePaletteDownload(Win32GlideTextureCensus* census,
+void RecordGlidePaletteDownload(GlideTextureCensus* census,
                                 bool identical);
-void RecordGlidePaletteRefresh(Win32GlideTextureCensus* census,
+void RecordGlidePaletteRefresh(GlideTextureCensus* census,
                                bool success,
                                std::size_t source_bytes,
                                std::size_t rgba_bytes,
                                std::uint64_t decode_nanoseconds,
                                std::uint64_t upload_nanoseconds);
 
-Win32GlideTextureCensusSnapshot SnapshotGlideTextureCensus(
-    const Win32GlideTextureCensus& census);
+GlideTextureCensusSnapshot SnapshotGlideTextureCensus(
+    const GlideTextureCensus& census);
 
 // Empty when dumping is off. "1" selects build/texture_dumps; anything else is
 // taken as the directory itself.
@@ -141,7 +141,7 @@ std::uint32_t GlideTextureDumpLimit();
 // reader hunting a decode bug that is not there.
 bool WriteGlideTextureDump(const std::filesystem::path& directory,
                            std::uint32_t sequence,
-                           const Win32GlideTextureUpload& upload,
+                           const GlideTextureUpload& upload,
                            std::uint64_t content_hash,
                            const std::uint8_t* rgba8,
                            std::size_t byte_count);

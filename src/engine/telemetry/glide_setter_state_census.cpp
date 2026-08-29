@@ -14,8 +14,8 @@ bool ReadGlideSetterCensusSetting()
     return value != nullptr && ResolveGlideSetterCensusEnabled(value);
 }
 
-Win32GlideSetterCensusEntry* FindEntry(
-    Win32GlideSetterCensusProfile* profile,
+GlideSetterCensusEntry* FindEntry(
+    GlideSetterCensusProfile* profile,
     std::uint16_t ordinal)
 {
     if (profile == nullptr)
@@ -31,8 +31,8 @@ Win32GlideSetterCensusEntry* FindEntry(
     return &profile->entries[ordinal];
 }
 
-void TrackDistinctKey(Win32GlideSetterCensusEntry* entry,
-                      const Win32GlideSetterStateKey& key)
+void TrackDistinctKey(GlideSetterCensusEntry* entry,
+                      const GlideSetterStateKey& key)
 {
     for (std::uint32_t index = 0; index < entry->distinct_key_count; ++index)
     {
@@ -64,12 +64,12 @@ bool GlideSetterCensusEnabled()
 }
 
 void RecordGlideSetterCensusCall(
-    Win32GlideSetterCensusProfile* profile,
+    GlideSetterCensusProfile* profile,
     std::uint16_t ordinal,
-    const Win32GlideSetterStateKey& key,
-    Win32GlideSetterCensusOutcome outcome)
+    const GlideSetterStateKey& key,
+    GlideSetterCensusOutcome outcome)
 {
-    Win32GlideSetterCensusEntry* entry = FindEntry(profile, ordinal);
+    GlideSetterCensusEntry* entry = FindEntry(profile, ordinal);
     if (entry == nullptr)
     {
         return;
@@ -82,14 +82,14 @@ void RecordGlideSetterCensusCall(
     // Classification order matters: a failed or unsupported call tells us
     // nothing about host state, so it can neither count as a repeat nor become
     // the applied record.
-    if (outcome == Win32GlideSetterCensusOutcome::kFailed)
+    if (outcome == GlideSetterCensusOutcome::kFailed)
     {
         ++entry->failure_count;
         entry->applied_valid = false;
         entry->current_repeat_run = 0;
         return;
     }
-    if (outcome == Win32GlideSetterCensusOutcome::kUnsupported)
+    if (outcome == GlideSetterCensusOutcome::kUnsupported)
     {
         ++entry->unsupported_count;
         entry->applied_valid = false;
@@ -121,10 +121,10 @@ void RecordGlideSetterCensusCall(
 }
 
 void RecordGlideSetterCensusKeyOverflow(
-    Win32GlideSetterCensusProfile* profile,
+    GlideSetterCensusProfile* profile,
     std::uint16_t ordinal)
 {
-    Win32GlideSetterCensusEntry* entry = FindEntry(profile, ordinal);
+    GlideSetterCensusEntry* entry = FindEntry(profile, ordinal);
     if (entry == nullptr)
     {
         return;
@@ -133,7 +133,7 @@ void RecordGlideSetterCensusKeyOverflow(
 }
 
 void RecordGlideSetterCensusInvalidation(
-    Win32GlideSetterCensusProfile* profile)
+    GlideSetterCensusProfile* profile)
 {
     if (profile == nullptr)
     {
@@ -141,7 +141,7 @@ void RecordGlideSetterCensusInvalidation(
     }
     profile->enabled = true;
     ++profile->invalidation_count;
-    for (Win32GlideSetterCensusEntry& entry : profile->entries)
+    for (GlideSetterCensusEntry& entry : profile->entries)
     {
         entry.applied_valid = false;
         entry.current_repeat_run = 0;
@@ -149,7 +149,7 @@ void RecordGlideSetterCensusInvalidation(
 }
 
 void RecordGlideSetterCensusTextureGeneration(
-    Win32GlideSetterCensusProfile* profile)
+    GlideSetterCensusProfile* profile)
 {
     if (profile == nullptr)
     {
@@ -165,7 +165,7 @@ void RecordGlideSetterCensusTextureGeneration(
 }
 
 void RecordGlideSetterCensusFrameBoundary(
-    Win32GlideSetterCensusProfile* profile)
+    GlideSetterCensusProfile* profile)
 {
     if (profile == nullptr)
     {
@@ -173,7 +173,7 @@ void RecordGlideSetterCensusFrameBoundary(
     }
     profile->enabled = true;
     ++profile->frame_count;
-    for (Win32GlideSetterCensusEntry& entry : profile->entries)
+    for (GlideSetterCensusEntry& entry : profile->entries)
     {
         entry.max_frame_call_count =
             std::max(entry.max_frame_call_count, entry.frame_call_count);
@@ -184,16 +184,16 @@ void RecordGlideSetterCensusFrameBoundary(
     }
 }
 
-Win32GlideSetterCensusSnapshot SnapshotGlideSetterCensus(
-    const Win32GlideSetterCensusProfile& profile)
+GlideSetterCensusSnapshot SnapshotGlideSetterCensus(
+    const GlideSetterCensusProfile& profile)
 {
-    Win32GlideSetterCensusSnapshot snapshot;
+    GlideSetterCensusSnapshot snapshot;
     snapshot.enabled = profile.enabled;
     snapshot.ordinal_overflow_count = profile.ordinal_overflow_count;
     snapshot.invalidation_count = profile.invalidation_count;
     snapshot.frame_count = profile.frame_count;
     snapshot.texture_generation = profile.texture_generation;
-    for (const Win32GlideSetterCensusEntry& entry : profile.entries)
+    for (const GlideSetterCensusEntry& entry : profile.entries)
     {
         if (entry.call_count == 0U && entry.key_overflow_count == 0U)
         {

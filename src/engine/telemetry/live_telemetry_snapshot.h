@@ -54,7 +54,7 @@ enum class HostPollOutcome
 struct SharedTelemetryMapping
 {
     HANDLE mapping = nullptr;
-    Win32SharedLiveTelemetry* telemetry = nullptr;
+    SharedLiveTelemetry* telemetry = nullptr;
 
     SharedTelemetryMapping() = default;
     SharedTelemetryMapping(const SharedTelemetryMapping&) = delete;
@@ -106,6 +106,6 @@ void CopySnapshotFromContextRecord(
     X86ExecutionSnapshot* snapshot);
 
 void CopyThreadObservationToAttempt(const ThreadContext& context,
-                                    Win32MinimalExecutionAttempt* attempt);
+                                    MinimalExecutionAttempt* attempt);
 
 } // namespace repiu::engine

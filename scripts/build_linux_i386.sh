@@ -94,6 +94,31 @@ it found at configure time.
 AUDIO
 fi
 
+# The same shape of quiet failure, one layer up: on a Wayland desktop there are
+# no server-side decorations, so the client draws its own and SDL delegates that
+# to libdecor. Without libdecor-0-dev:i386 SDL compiles its Wayland driver with
+# the support left out entirely, and the game opens a window with no title bar
+# and nothing to drag or close it by. Nothing reports this -- the window is
+# simply bare. Observed on Ubuntu 25.10 (GNOME/Wayland), where the amd64
+# libdecor was installed and the i386 one was not.
+if [[ $headless -eq 0 ]] && ! ls /usr/lib/i386-linux-gnu/libdecor-0.so \
+        /lib/i386-linux-gnu/libdecor-0.so > /dev/null 2>&1; then
+    cat >&2 <<'DECOR'
+Note: no 32-bit libdecor, so on a Wayland desktop the window will open without a
+title bar or borders:
+
+    sudo apt install -y libdecor-0-dev:i386 libdecor-0-0:i386 libdecor-0-plugin-1-gtk:i386
+
+SDL caches the lookup, so installing it afterwards needs the cached answer
+cleared -- cheaper than discarding the build directory:
+
+    cmake -U "PC_LIBDECOR*" -U HAVE_LIBDECOR_H -S . -B build/linux_i386
+
+Running with SDL_VIDEODRIVER=x11 is the workaround that needs no rebuild.
+
+DECOR
+fi
+
 # SDL3 needs X11 or Wayland development packages to configure. --headless skips
 # that requirement for the core and its probes, which open no window; the
 # launcher needs the real desktop packages.

@@ -34,7 +34,7 @@ bool ExecutionTimeProfileEnabled()
     return enabled;
 }
 
-void RecordExecutionTimeBucket(Win32ExecutionTimeProfile* profile,
+void RecordExecutionTimeBucket(ExecutionTimeProfile* profile,
                                ExecutionTimeBucket bucket,
                                std::uint64_t cycles,
                                bool inside_veh)
@@ -58,7 +58,7 @@ void RecordExecutionTimeBucket(Win32ExecutionTimeProfile* profile,
     }
 }
 
-void RecordVehExceptionGap(Win32ExecutionTimeProfile* profile,
+void RecordVehExceptionGap(ExecutionTimeProfile* profile,
                            VehGapClass gap_class)
 {
     if (profile == nullptr || profile->veh_gap_pending_cycles == 0U)
@@ -85,10 +85,10 @@ void RecordVehExceptionGap(Win32ExecutionTimeProfile* profile,
     profile->veh_gap_pending_cycles = 0;
 }
 
-Win32ExecutionTimeProfileSnapshot SnapshotExecutionTimeProfile(
-    const Win32ExecutionTimeProfile& profile)
+ExecutionTimeProfileSnapshot SnapshotExecutionTimeProfile(
+    const ExecutionTimeProfile& profile)
 {
-    Win32ExecutionTimeProfileSnapshot snapshot;
+    ExecutionTimeProfileSnapshot snapshot;
     snapshot.enabled = profile.enabled;
     snapshot.veh_gap_cycles = profile.veh_gap_cycles;
     snapshot.veh_gap_counts = profile.veh_gap_counts;
@@ -121,8 +121,8 @@ Win32ExecutionTimeProfileSnapshot SnapshotExecutionTimeProfile(
     return snapshot;
 }
 
-Win32ExecutionTimeShares ComputeExecutionTimeShares(
-    const Win32ExecutionTimeProfileSnapshot& snapshot)
+ExecutionTimeShares ComputeExecutionTimeShares(
+    const ExecutionTimeProfileSnapshot& snapshot)
 {
     const auto bucket = [&snapshot](ExecutionTimeBucket id) {
         return snapshot.cycles[static_cast<std::uint32_t>(id)];
@@ -131,7 +131,7 @@ Win32ExecutionTimeShares ComputeExecutionTimeShares(
         return snapshot.inside_veh_cycles[static_cast<std::uint32_t>(id)];
     };
 
-    Win32ExecutionTimeShares shares;
+    ExecutionTimeShares shares;
     shares.total = bucket(ExecutionTimeBucket::kGuestRunTotal);
     shares.veh = bucket(ExecutionTimeBucket::kVehTotal);
     shares.glide_gate = bucket(ExecutionTimeBucket::kGlideGate);
@@ -159,7 +159,7 @@ Win32ExecutionTimeShares ComputeExecutionTimeShares(
     return shares;
 }
 
-ExecutionTimeScope::ExecutionTimeScope(Win32ExecutionTimeProfile* profile,
+ExecutionTimeScope::ExecutionTimeScope(ExecutionTimeProfile* profile,
                                        ExecutionTimeBucket bucket,
                                        std::uint64_t* completed_cycles)
     : profile_(profile),

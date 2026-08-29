@@ -1,7 +1,7 @@
 #include "aot_cache_address_index_probe.h"
 
 #include "repiu/engine/aot_cache_address_index.h"
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -16,11 +16,11 @@ namespace
 using repiu::engine::EnsureAotCacheAddressIndex;
 using repiu::engine::FindAotCacheAddress;
 using repiu::engine::InvalidateAotCacheAddressIndex;
-using repiu::engine::Win32AotCodeCachePlacement;
+using repiu::engine::AotCodeCachePlacement;
 
 // The pre-Task-324 implementation, kept verbatim as the reference oracle. Any
 // divergence from this is a defect regardless of which answer looks nicer.
-bool ReferenceFindAotCacheAddress(const Win32AotCodeCachePlacement& placement,
+bool ReferenceFindAotCacheAddress(const AotCodeCachePlacement& placement,
                                   std::uint32_t guest_address,
                                   std::uint32_t* cache_address)
 {
@@ -77,7 +77,7 @@ bool ReferenceFindAotCacheAddress(const Win32AotCodeCachePlacement& placement,
     return false;
 }
 
-void AddEntry(Win32AotCodeCachePlacement* placement,
+void AddEntry(AotCodeCachePlacement* placement,
               std::uint32_t guest_address,
               std::uint32_t cache_offset,
               std::uint32_t generation,
@@ -91,7 +91,7 @@ void AddEntry(Win32AotCodeCachePlacement* placement,
 
 // Compares index and oracle over every guest address in the map plus misses and
 // neighbours, so both a wrong hit and a wrong miss are caught.
-bool AgreesEverywhere(const Win32AotCodeCachePlacement& placement)
+bool AgreesEverywhere(const AotCodeCachePlacement& placement)
 {
     std::vector<std::uint32_t> queries;
     for (const repiu::runtime::AotAddressMapEntry& entry :
@@ -128,7 +128,7 @@ bool AgreesEverywhere(const Win32AotCodeCachePlacement& placement)
 // Task 334: the pre-index reverse scan, kept verbatim as the oracle for the
 // cache-to-guest direction. First match by map index wins, which is what the
 // binary search has to reproduce.
-bool ReferenceFindAotGuestAddress(const Win32AotCodeCachePlacement& placement,
+bool ReferenceFindAotGuestAddress(const AotCodeCachePlacement& placement,
                                   std::uint32_t cache_address,
                                   std::uint32_t* guest_address)
 {
@@ -153,7 +153,7 @@ bool ReferenceFindAotGuestAddress(const Win32AotCodeCachePlacement& placement,
 
 // Every byte of every entry plus the gaps around them, so an off-by-one at
 // either end of a range is caught rather than sampled past.
-bool ReverseAgreesEverywhere(const Win32AotCodeCachePlacement& placement)
+bool ReverseAgreesEverywhere(const AotCodeCachePlacement& placement)
 {
     std::vector<std::uint32_t> queries;
     for (const repiu::runtime::AotAddressMapEntry& entry :
@@ -192,9 +192,9 @@ bool ReverseAgreesEverywhere(const Win32AotCodeCachePlacement& placement)
     return true;
 }
 
-Win32AotCodeCachePlacement MakeBasePlacement()
+AotCodeCachePlacement MakeBasePlacement()
 {
-    Win32AotCodeCachePlacement placement;
+    AotCodeCachePlacement placement;
     placement.valid = true;
     placement.placed = true;
     placement.base_address = 0x0D770000U;
@@ -228,7 +228,7 @@ bool RunAotCacheAddressIndexProbe()
 {
     // 1. No retired generations: oldest entry wins even when a newer duplicate
     //    exists and even when the oldest is inactive.
-    Win32AotCodeCachePlacement no_retired = MakeBasePlacement();
+    AotCodeCachePlacement no_retired = MakeBasePlacement();
     AddEntry(&no_retired, 0x03010000U, 0x100U, 1U, false);
     AddEntry(&no_retired, 0x03020000U, 0x200U, 1U, true);
     AddEntry(&no_retired, 0x03010000U, 0x300U, 2U, true);
@@ -237,7 +237,7 @@ bool RunAotCacheAddressIndexProbe()
 
     // 2. Retired generation present for one address only, so the two rules run
     //    side by side in the same placement.
-    Win32AotCodeCachePlacement mixed = MakeBasePlacement();
+    AotCodeCachePlacement mixed = MakeBasePlacement();
     AddEntry(&mixed, 0x03010000U, 0x100U, 1U, false);
     AddEntry(&mixed, 0x03020000U, 0x200U, 1U, true);
     AddEntry(&mixed, 0x03010000U, 0x300U, 2U, true);
@@ -248,7 +248,7 @@ bool RunAotCacheAddressIndexProbe()
 
     // 3. Newest entry inactive with an older active one behind it: the newest
     //    ACTIVE entry must win, not simply the newest.
-    Win32AotCodeCachePlacement newest_inactive = MakeBasePlacement();
+    AotCodeCachePlacement newest_inactive = MakeBasePlacement();
     AddEntry(&newest_inactive, 0x03010000U, 0x100U, 1U, true);
     AddEntry(&newest_inactive, 0x03010000U, 0x200U, 2U, true);
     AddEntry(&newest_inactive, 0x03010000U, 0x300U, 3U, false);
@@ -257,7 +257,7 @@ bool RunAotCacheAddressIndexProbe()
     const bool inactive_newest = AgreesEverywhere(newest_inactive);
 
     // 4. All generations inactive: both implementations must miss.
-    Win32AotCodeCachePlacement all_inactive = MakeBasePlacement();
+    AotCodeCachePlacement all_inactive = MakeBasePlacement();
     AddEntry(&all_inactive, 0x03010000U, 0x100U, 1U, false);
     AddEntry(&all_inactive, 0x03010000U, 0x200U, 2U, false);
     all_inactive.retired_guest_addresses = {0x03010000U};
@@ -270,7 +270,7 @@ bool RunAotCacheAddressIndexProbe()
     std::uint32_t collision_b = 0;
     const bool collision_built =
         BuildCollisionPair(&collision_a, &collision_b);
-    Win32AotCodeCachePlacement collision = MakeBasePlacement();
+    AotCodeCachePlacement collision = MakeBasePlacement();
     if (collision_built)
     {
         AddEntry(&collision, collision_a, 0x100U, 1U, true);
@@ -284,7 +284,7 @@ bool RunAotCacheAddressIndexProbe()
 
     // 6. Dynamic append after the index is live, including growth past the
     //    initial table width.
-    Win32AotCodeCachePlacement appended = MakeBasePlacement();
+    AotCodeCachePlacement appended = MakeBasePlacement();
     AddEntry(&appended, 0x03040000U, 0x100U, 1U, true);
     EnsureAotCacheAddressIndex(&appended);
     bool append_agrees = AgreesEverywhere(appended);
@@ -314,7 +314,7 @@ bool RunAotCacheAddressIndexProbe()
 
     // 8. An unindexed placement (built the way several probes build one) must
     //    behave exactly as before this task.
-    Win32AotCodeCachePlacement unindexed = MakeBasePlacement();
+    AotCodeCachePlacement unindexed = MakeBasePlacement();
     AddEntry(&unindexed, 0x03050000U, 0x100U, 1U, true);
     AddEntry(&unindexed, 0x03050000U, 0x200U, 2U, true);
     unindexed.retired_guest_addresses = {0x03050000U};
@@ -329,7 +329,7 @@ bool RunAotCacheAddressIndexProbe()
         ReverseAgreesEverywhere(appended) &&
         ReverseAgreesEverywhere(unindexed);
 
-    Win32AotCodeCachePlacement ranged = MakeBasePlacement();
+    AotCodeCachePlacement ranged = MakeBasePlacement();
     ranged.address_map.push_back({0x03060000U, 0x000U, 4U, 16U});
     ranged.address_map_states.push_back({1U, true, true});
     ranged.address_map.push_back({0x03060010U, 0x010U, 4U, 1U});
@@ -344,7 +344,7 @@ bool RunAotCacheAddressIndexProbe()
 
     // An out-of-order cache offset is the one shape the binary search cannot
     // answer, so the index must report itself unusable and the scan must run.
-    Win32AotCodeCachePlacement unsorted = MakeBasePlacement();
+    AotCodeCachePlacement unsorted = MakeBasePlacement();
     unsorted.address_map.push_back({0x03070000U, 0x100U, 4U, 8U});
     unsorted.address_map_states.push_back({1U, true, true});
     unsorted.address_map.push_back({0x03070010U, 0x080U, 4U, 8U});

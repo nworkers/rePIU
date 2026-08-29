@@ -35,6 +35,11 @@ SIGTRAP으로 끝나는 경우였습니다. 60초 예산 6회에서 거절 6회 
 
 ## 2. 확인됨 — 지금 서 있는 것
 
+> **범위 (2026-08-29, [3.8](#38-2026-08-29-실제-ubuntu--wslg는-대표-환경이-아니었습니다)).**
+> 이 절과 Tasks 505~519의 측정은 **WSLg에서** 이루어졌습니다. 실제 ext4 데스크톱은 다르게
+> 동작할 수 있고, 실제로 달랐습니다 — 그 환경에서는 게임이 시작조차 못 하고 있었습니다.
+> 아래를 인용할 때 환경을 함께 적으십시오.
+
 | 항목 | 상태 | 근거 |
 |---|---|---|
 | `src/platform/win32` 81개 소스 Linux 컴파일 | **81 / 81** | 3d-16, 3d-17 측정 |
@@ -252,6 +257,103 @@ bash scripts/task508_refused_recovery_repro.sh 3 60000 <label> # 종료 갈래
 * `other`(접근 위반) 프레임당 **10.7배** — 페이지 보호·포트 I/O·write watch.
 * 핸들러 본문 **3.3배** — 하위 버킷(`kVehPrologue`·`kAotReentry` 등)이 가릅니다.
 * `dos` 프레임당 **433.9배** — 격차 기여는 1.9%로 작지만 배율은 가장 큽니다.
+
+
+## 3.8 2026-08-29 실제 Ubuntu — WSLg는 대표 환경이 아니었습니다
+
+Tasks 522~523. **한 줄로: 505~519의 "확인됨"은 전부 WSLg 한정이었고, 실제 ext4 데스크톱에서는
+게임이 시작조차 하지 못했습니다.**
+
+VMware Ubuntu(커널 7.0.0-30-generic)에서 창이 열리지 않았습니다. 단일 스텝 인구 조사가 한
+주소 `0x010F3438`에 **814,138 / 814,683 샘플(99.93%)**을 보여 주었습니다 — 초당 3만 4천 번,
+25초 내내. 진행이 아니라 정지입니다.
+
+### 사슬 — 원인과 증상 사이 여덟 단계
+
+```
+Glide2x.ovl 대소문자 불일치 (ext4)
+  → glide_exports 0개        → 게이트 계획 무효
+  → 이미지 쓰기 3/5 실패      → 디스크립터 등록 실패
+  → linexe_environment_active = false
+  → INT 21h AX=FF00h 폴백(AL=0) → DOS/4G DLL 로더 초기화 실패
+  → 게스트 fatal 경로 → 자기 0xCC에서 영원히 회전
+```
+
+**여덟 단계 중 어디에서도 오류가 보고되지 않았습니다.** `exists()`가 거짓이면 `if` 하나가
+조용히 건너뛰어지고 실행이 계속되기 때문입니다.
+
+| 호스트 | 파일시스템 | `"Glide2x.ovl"` |
+|---|---|---|
+| Windows | NTFS | 대소문자 무시 → 찾음 |
+| WSLg | DrvFs (`/mnt/e/...`) | 대소문자 무시 → 찾음 |
+| **실제 Ubuntu** | **ext4** | **구분 → 못 찾음** |
+
+### 결정적 관측 기법
+
+**두 호스트의 DOS/DPMI 호출 순서를 나란히 놓는 것**이었습니다. `REPIU_DOS_INT_TRACE=1`.
+
+| # | WSLg | VMware (전) | VMware (후) |
+|---|---|---|---|
+| 2 | `21 FF00` | `21 FF00` | `21 FF00` |
+| **3** | `31 0006` | **`21 ED2B`** | **`31 0006`** |
+
+세 번째 호출이 갈리는 지점이고, 그것이 일치로 돌아오는 것이 수정의 서명입니다.
+
+### 얻은 것
+
+| | 전 | 후 |
+|---|---:|---:|
+| Glide exports | 0 | **173** |
+| `linexe_environment_active` | false | **true** |
+| 게스트 INT3 트랩 | 814,138 | **0** |
+| Glide 게이트 진입 | 0 | **96** |
+| 종료 | segfault (139) | 타임아웃 (3) |
+
+### 이 절이 바꾸는 것
+
+* **"확인됨"에 환경을 적으십시오.** 이 문서의 505~519 주장은 WSLg에서 측정된 것입니다.
+  실제 데스크톱에서 다시 재지 않았습니다.
+* **크래시 없음 ≠ 정상 동작**을 또 만났습니다 — 이번에는 "로그 없음 ≠ 문제 없음"의 형태로.
+* `docs/analysis/dll-loader-int21-ff00.md`의 원인 서술이 낡아 있었습니다. **문서를 먼저 읽되,
+  코드로 확인해야 합니다.**
+
+### 남은 것
+
+* **창 확인은 VM 데스크톱에서.** SSH 세션에는 `DISPLAY`가 없어 SDL이 더미 폴백을 타고
+  `frames=0`입니다.
+* VM teardown의 segfault는 `step=thread-release` 이후 `step=done` 전에서 여전히 발생합니다.
+* 실제 데스크톱에서의 성능 수치는 아직 없습니다.
+
+
+### 데스크톱 패키지 — 같은 조용한 실패가 한 겹 더 있었습니다
+
+창이 열린 뒤 **제목줄이 없었습니다.** Wayland에는 서버 측 장식이 없어 클라이언트가 직접
+그려야 하고, SDL3는 그것을 `libdecor`에 맡깁니다. 그런데 SDL 구성이 이랬습니다.
+
+```
+/* #undef HAVE_LIBDECOR_H */    ← 지원이 통째로 컴파일에서 빠짐
+#define SDL_VIDEO_DRIVER_WAYLAND 1
+```
+
+`libdecor-0-dev:i386`이 없어 SDL이 지원을 빼고 빌드했고, **아무것도 그 사실을 보고하지
+않았습니다.** 창이 그냥 맨몸으로 열릴 뿐입니다. 런타임에도 `libdecor-0-0`은 `:amd64`만 깔려
+있었는데 `repiu`는 32비트입니다 — 빌드를 고쳤어도 거기서 또 막혔을 상황이었습니다.
+
+| | 조치 |
+|---|---|
+| 재빌드 없는 우회 | `SDL_VIDEODRIVER=x11` (XWayland는 서버가 장식을 그림) |
+| 정식 | `libdecor-0-dev:i386 libdecor-0-0:i386 libdecor-0-plugin-1-gtk:i386` |
+
+**패키지 설치만으로는 안 됩니다.** CMake가 패키지 없던 시절의 실패를 캐시에 담고 있습니다
+(`SDL_WAYLAND_LIBDECOR=ON`인데 `PC_LIBDECOR_FOUND=`가 빈 값). 빌드 디렉터리를 통째로 버리는
+것보다 캐시 항목만 비우는 편이 쌉니다.
+
+```
+cmake -U "PC_LIBDECOR*" -U HAVE_LIBDECOR_H -S . -B build/linux_i386
+```
+
+`scripts/build_linux_i386.sh`가 이제 이것을 점검하고 경고합니다 — libpulse와 같은 방식이고,
+같은 이유입니다. **빌드는 성공하고 게임도 도는데 조용히 반쪽만 동작하는** 부류입니다.
 
 ## 4. 다음에 필요한 것
 
@@ -704,6 +806,11 @@ SDL3 at 88200 Hz`. The 32-bit packages this needs, and the traps around them, ar
 
 ## 2. Confirmed — what stands today
 
+> **Scope (2026-08-29, [3.8](#38-a-real-ubuntu-desktop-2026-08-29--wslg-was-not-representative)).**
+> This section and the Tasks 505–519 measurements were taken **on WSLg**. A real ext4 desktop
+> can behave differently, and did — the game was not starting there at all. Name the
+> environment whenever you quote these.
+
 | Item | State | Evidence |
 |---|---|---|
 | The 81 `src/platform/win32` sources compiling on Linux | **81 of 81** | 3d-16, 3d-17 measurements |
@@ -917,6 +1024,103 @@ the INT3, yet Windows resolves 95% of reentries without a trap and Linux traps o
 * `other` (access violations) at **10.7x** a frame -- page protection, port I/O, write watches.
 * The handler body at **3.3x** -- separated by the sub-buckets (`kVehPrologue`, `kAotReentry`).
 * `dos` at **433.9x** a frame -- a small 1.9% of the gap but the largest factor in the table.
+
+
+## 3.8 A real Ubuntu desktop, 2026-08-29 — WSLg was not representative
+
+Tasks 522–523. **In one line: everything Tasks 505–519 called confirmed was confirmed on WSLg
+only, and on a real ext4 desktop the game did not start at all.**
+
+No window opened on VMware Ubuntu (kernel 7.0.0-30-generic). A single-step census put
+**814,138 of 814,683 samples (99.93%)** on one address, `0x010F3438` — 34,000 traps a second for
+25 seconds. That is a stall, not progress.
+
+### The chain — eight steps between cause and symptom
+
+```
+Glide2x.ovl case mismatch (ext4)
+  → glide_exports empty       → gate plan invalid
+  → 3 of 5 image writes fail  → descriptor registration fails
+  → linexe_environment_active = false
+  → INT 21h AX=FF00h falls back (AL=0) → DOS/4G DLL loader init fails
+  → guest fatal path → spins forever on its own 0xCC
+```
+
+**Not one of those eight steps reported an error**, because a false `exists()` skips one `if`
+and execution carries on.
+
+| Host | Filesystem | `"Glide2x.ovl"` |
+|---|---|---|
+| Windows | NTFS | case-insensitive → found |
+| WSLg | DrvFs (`/mnt/e/...`) | case-insensitive → found |
+| **Real Ubuntu** | **ext4** | **case-sensitive → missed** |
+
+### The decisive technique
+
+**Putting the two hosts' DOS/DPMI call sequences side by side** (`REPIU_DOS_INT_TRACE=1`).
+
+| # | WSLg | VMware (before) | VMware (after) |
+|---|---|---|---|
+| 2 | `21 FF00` | `21 FF00` | `21 FF00` |
+| **3** | `31 0006` | **`21 ED2B`** | **`31 0006`** |
+
+The third call is where they diverge, and its return to agreement is the fix's signature.
+
+### What it bought
+
+| | Before | After |
+|---|---:|---:|
+| Glide exports | 0 | **173** |
+| `linexe_environment_active` | false | **true** |
+| Guest INT3 traps | 814,138 | **0** |
+| Glide gate entries | 0 | **96** |
+| Exit | segfault (139) | timeout (3) |
+
+### What this section changes
+
+* **Name the environment beside every "confirmed".** The 505–519 claims in this document were
+  measured on WSLg and have not been re-measured on a real desktop.
+* **No crash is not correct behaviour** — met again, this time as *no log is not no problem*.
+* The cause narrative in `docs/analysis/dll-loader-int21-ff00.md` had gone stale. **Read the
+  documents first, then confirm against the code.**
+
+### Still open
+
+* **The window itself must be checked from the VM desktop.** An SSH session has no `DISPLAY`,
+  so SDL takes its dummy fallback and `frames=0`.
+* The teardown segfault after `step=thread-release` and before `step=done` remains.
+* There is still no performance figure from a real desktop.
+
+
+### Desktop packages — the same quiet failure, one layer up
+
+The window opened with **no title bar.** Wayland has no server-side decorations, so the client
+draws its own and SDL3 delegates that to `libdecor`. The SDL configuration read:
+
+```
+/* #undef HAVE_LIBDECOR_H */    <- support compiled out entirely
+#define SDL_VIDEO_DRIVER_WAYLAND 1
+```
+
+`libdecor-0-dev:i386` was absent, so SDL built its Wayland driver without the support, and
+**nothing reported it** — the window is simply bare. At runtime only the amd64 `libdecor-0-0`
+was installed while `repiu` is 32-bit, so a fixed build would have been blocked there too.
+
+| | Action |
+|---|---|
+| Workaround, no rebuild | `SDL_VIDEODRIVER=x11` (XWayland gets server-side decorations) |
+| Proper | `libdecor-0-dev:i386 libdecor-0-0:i386 libdecor-0-plugin-1-gtk:i386` |
+
+**Installing the package is not enough.** CMake caches the failure from before it existed
+(`SDL_WAYLAND_LIBDECOR=ON` while `PC_LIBDECOR_FOUND=` is empty). Clearing the cached entries is
+cheaper than discarding the build directory:
+
+```
+cmake -U "PC_LIBDECOR*" -U HAVE_LIBDECOR_H -S . -B build/linux_i386
+```
+
+`scripts/build_linux_i386.sh` now checks for this and warns, the same way and for the same
+reason it does for libpulse: **the build succeeds and the game runs, quietly half-working.**
 
 ## 4. What is needed next
 

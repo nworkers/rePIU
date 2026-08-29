@@ -1,5 +1,5 @@
-#ifndef REPIU_PLATFORM_WIN32_AOT_PAGE_COHERENCE_WIN32_H_
-#define REPIU_PLATFORM_WIN32_AOT_PAGE_COHERENCE_WIN32_H_
+#ifndef REPIU_ENGINE_AOT_PAGE_COHERENCE_H_
+#define REPIU_ENGINE_AOT_PAGE_COHERENCE_H_
 
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/aot_translation_plan.h"
@@ -13,9 +13,9 @@
 namespace repiu::engine
 {
 
-struct Win32AotCodeCachePlacement;
+struct AotCodeCachePlacement;
 
-struct Win32AotGuestPageState
+struct AotGuestPageState
 {
     std::uint32_t guest_page = 0;
     std::uint32_t latest_generation = 0;
@@ -24,14 +24,14 @@ struct Win32AotGuestPageState
     std::vector<std::uint32_t> map_indices;
 };
 
-struct Win32AotAddressMapState
+struct AotAddressMapState
 {
     std::uint32_t generation = 0;
     bool active = true;
     bool tracks_guest_bytes = true;
 };
 
-struct Win32AotGuestPageRetireResult
+struct AotGuestPageRetireResult
 {
     bool attempted = false;
     bool retired = false;
@@ -43,14 +43,14 @@ struct Win32AotGuestPageRetireResult
     std::string message;
 };
 
-struct Win32AotGuestPageWriteWatch
+struct AotGuestPageWriteWatch
 {
     std::uint32_t guest_page = 0;
     repiu::platform::MemoryProtection original_protection =
         repiu::platform::MemoryProtection::kNoAccess;
 };
 
-struct Win32AotGuestWriteCompletion
+struct AotGuestWriteCompletion
 {
     bool from_guest = false;
     bool keep_single_step = false;
@@ -59,10 +59,10 @@ struct Win32AotGuestWriteCompletion
     std::uint32_t byte_count = 0;
 };
 
-struct Win32AotPageWriteWatchSet
+struct AotPageWriteWatchSet
 {
     static constexpr std::uint32_t kPendingPageCapacity = 16U;
-    std::vector<Win32AotGuestPageWriteWatch> watches;
+    std::vector<AotGuestPageWriteWatch> watches;
     bool pending = false;
     bool pending_from_guest = false;
     bool pending_keep_single_step = false;
@@ -73,21 +73,21 @@ struct Win32AotPageWriteWatchSet
     std::uint32_t pending_byte_count = 0;
 };
 
-std::uint32_t Win32AotGuestPage(std::uint32_t guest_address);
-void InitializeWin32AotPageCoherence(
-    Win32AotCodeCachePlacement* placement,
+std::uint32_t AotGuestPage(std::uint32_t guest_address);
+void InitializeAotPageCoherence(
+    AotCodeCachePlacement* placement,
     std::uint32_t initial_generation);
-std::uint32_t AllocateWin32AotGeneration(
-    Win32AotCodeCachePlacement* placement);
-bool CanActivateWin32AotAddressMapEntry(
-    const Win32AotCodeCachePlacement& placement,
+std::uint32_t AllocateAotGeneration(
+    AotCodeCachePlacement* placement);
+bool CanActivateAotAddressMapEntry(
+    const AotCodeCachePlacement& placement,
     const runtime::AotAddressMapEntry& entry,
     std::uint32_t requested_page);
-bool Win32AotAddressMapTracksGuestBytes(
+bool AotAddressMapTracksGuestBytes(
     const runtime::AotAddressMapEntry& entry,
     const std::vector<runtime::AotExcludedGuestRange>& excluded_ranges);
-void RegisterWin32AotAddressMap(
-    Win32AotCodeCachePlacement* placement,
+void RegisterAotAddressMap(
+    AotCodeCachePlacement* placement,
     std::uint32_t map_index,
     std::uint32_t generation,
     bool active,
@@ -95,57 +95,57 @@ void RegisterWin32AotAddressMap(
     std::uint32_t requested_page,
     std::vector<std::uint32_t>* active_guest_pages);
 
-bool Win32AotGuestRangeHasActiveTranslation(
-    const Win32AotCodeCachePlacement& placement,
+bool AotGuestRangeHasActiveTranslation(
+    const AotCodeCachePlacement& placement,
     std::uint32_t guest_address,
     std::uint32_t byte_count);
-bool QueryWin32AotActiveGuestPageGeneration(
-    const Win32AotCodeCachePlacement& placement,
+bool QueryAotActiveGuestPageGeneration(
+    const AotCodeCachePlacement& placement,
     std::uint32_t guest_address,
     std::uint32_t* generation);
-bool IsWin32AotGuestPageRetired(
-    const Win32AotCodeCachePlacement& placement,
+bool IsAotGuestPageRetired(
+    const AotCodeCachePlacement& placement,
     std::uint32_t guest_address);
-bool IsWin32AotGuestPageQuarantined(
-    const Win32AotCodeCachePlacement& placement,
+bool IsAotGuestPageQuarantined(
+    const AotCodeCachePlacement& placement,
     std::uint32_t guest_address);
-bool HasWin32AotRetiredGuestAddress(
-    const Win32AotCodeCachePlacement& placement,
+bool HasAotRetiredGuestAddress(
+    const AotCodeCachePlacement& placement,
     std::uint32_t guest_address);
-bool IsWin32AotCacheAddressRetired(
-    const Win32AotCodeCachePlacement& placement,
+bool IsAotCacheAddressRetired(
+    const AotCodeCachePlacement& placement,
     std::uint32_t cache_address);
-bool RetireWin32AotGuestPage(
-    Win32AotCodeCachePlacement* placement,
+bool RetireAotGuestPage(
+    AotCodeCachePlacement* placement,
     std::uint32_t guest_address,
     bool quarantine,
-    Win32AotGuestPageRetireResult* result);
+    AotGuestPageRetireResult* result);
 
-bool InstallWin32AotGuestPageWriteWatches(
-    const Win32AotCodeCachePlacement& placement,
+bool InstallAotGuestPageWriteWatches(
+    const AotCodeCachePlacement& placement,
     const std::vector<std::uint32_t>* selected_pages,
-    Win32AotPageWriteWatchSet* watch_set);
-void RestoreWin32AotGuestPageWriteWatches(
-    Win32AotPageWriteWatchSet* watch_set);
-bool IsWin32AotGuestPageWriteWatched(
-    const Win32AotPageWriteWatchSet& watch_set,
+    AotPageWriteWatchSet* watch_set);
+void RestoreAotGuestPageWriteWatches(
+    AotPageWriteWatchSet* watch_set);
+bool IsAotGuestPageWriteWatched(
+    const AotPageWriteWatchSet& watch_set,
     std::uint32_t guest_address);
-void RemoveWin32AotPageWriteWatch(
-    Win32AotPageWriteWatchSet* watch_set,
+void RemoveAotPageWriteWatch(
+    AotPageWriteWatchSet* watch_set,
     std::uint32_t guest_address);
-bool HasPendingWin32AotGuestWrite(
-    const Win32AotPageWriteWatchSet& watch_set);
-bool BeginWin32AotGuestWrite(
-    Win32AotPageWriteWatchSet* watch_set,
+bool HasPendingAotGuestWrite(
+    const AotPageWriteWatchSet& watch_set);
+bool BeginAotGuestWrite(
+    AotPageWriteWatchSet* watch_set,
     std::uint32_t execution_address,
     std::uint32_t fault_address,
     bool from_guest,
     bool keep_single_step,
     std::uint32_t guest_source);
-bool CompleteWin32AotGuestWrite(
-    Win32AotPageWriteWatchSet* watch_set,
-    Win32AotGuestWriteCompletion* completion);
+bool CompleteAotGuestWrite(
+    AotPageWriteWatchSet* watch_set,
+    AotGuestWriteCompletion* completion);
 
 }  // namespace repiu::engine
 
-#endif  // REPIU_PLATFORM_WIN32_AOT_PAGE_COHERENCE_WIN32_H_
+#endif  // REPIU_ENGINE_AOT_PAGE_COHERENCE_H_

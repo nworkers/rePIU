@@ -1,5 +1,5 @@
 #include "repiu/exe/dos4gw_loader.h"
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/aot_translation_plan.h"
 #include "repiu/runtime/runtime_memory.h"
@@ -317,7 +317,7 @@ bool RunTimerSafePointProbe()
     repiu::runtime::AotCodeCacheImage disabled;
     repiu::runtime::AotCodeCacheBuildOptions options;
     options.enable_timer_safe_points = true;
-    repiu::engine::Win32AotCodeCachePlacement placement;
+    repiu::engine::AotCodeCachePlacement placement;
     const bool plan_built = repiu::runtime::BuildAotTranslationPlanFromEntry(
         runtime, guest_address, &plan);
     const bool enabled_built = plan_built &&
@@ -325,7 +325,7 @@ bool RunTimerSafePointProbe()
     const bool disabled_built = enabled_built &&
         repiu::runtime::BuildAotCodeCacheImage(plan, &disabled);
     const bool placed = disabled_built &&
-        repiu::engine::PlaceWin32AotCodeCache(
+        repiu::engine::PlaceAotCodeCache(
             enabled, &placement) && placement.placed;
     const bool built = plan_built && enabled_built && disabled_built && placed;
     bool valid = built && enabled.timer_safe_points_enabled &&
@@ -371,7 +371,7 @@ bool RunTimerSafePointProbe()
         direct_enabled.timer_safe_point_sites.size() == 1U &&
         direct_enabled.timer_safe_point_sites.front().guest_source ==
             guest_address;
-    repiu::engine::ReleaseWin32AotCodeCache(&placement);
+    repiu::engine::ReleaseAotCodeCache(&placement);
     VirtualFree(guest, 0, MEM_RELEASE);
     std::cout << "timer_safe_point_probe="
               << (valid ? "true" : "false") << std::endl;
@@ -415,16 +415,16 @@ bool RunCoherenceProbe()
 
     repiu::runtime::AotTranslationPlan plan;
     repiu::runtime::AotCodeCacheImage cache;
-    repiu::engine::Win32AotCodeCachePlacement placement;
+    repiu::engine::AotCodeCachePlacement placement;
     const bool built =
         repiu::runtime::BuildAotTranslationPlanFromEntry(
             runtime, guest_address, &plan) &&
         repiu::runtime::BuildAotCodeCacheImage(plan, &cache) &&
-        repiu::engine::PlaceWin32AotCodeCache(
+        repiu::engine::PlaceAotCodeCache(
             cache, &placement) && placement.placed;
     if (!built)
     {
-        repiu::engine::ReleaseWin32AotCodeCache(&placement);
+        repiu::engine::ReleaseAotCodeCache(&placement);
         VirtualFree(guest, 0, MEM_RELEASE);
         std::cout << "coherence_all=false\n";
         return false;
@@ -435,37 +435,37 @@ bool RunCoherenceProbe()
     const bool initial =
         repiu::engine::FindAotCacheAddress(
             placement, guest_address, &old_cache) &&
-        repiu::engine::Win32AotGuestRangeHasActiveTranslation(
+        repiu::engine::AotGuestRangeHasActiveTranslation(
             placement, guest_address, sizeof(original)) &&
-        repiu::engine::QueryWin32AotActiveGuestPageGeneration(
+        repiu::engine::QueryAotActiveGuestPageGeneration(
             placement, guest_address, &initial_page_generation) &&
         initial_page_generation == 1U;
-    repiu::engine::Win32AotGuestPageRetireResult retirement;
+    repiu::engine::AotGuestPageRetireResult retirement;
     const bool retired =
-        repiu::engine::RetireWin32AotGuestPage(
+        repiu::engine::RetireAotGuestPage(
             &placement, guest_address, false, &retirement) &&
         retirement.retired && !retirement.quarantined &&
         retirement.retired_entry_count >= 1U;
     std::uint32_t lookup_after_retire = 0U;
     std::uint32_t provenance_guest = 0U;
     const bool provenance = retired &&
-        !repiu::engine::QueryWin32AotActiveGuestPageGeneration(
+        !repiu::engine::QueryAotActiveGuestPageGeneration(
             placement, guest_address, &initial_page_generation) &&
         !repiu::engine::FindAotCacheAddress(
             placement, guest_address, &lookup_after_retire) &&
         repiu::engine::FindAotGuestAddress(
             placement, old_cache, &provenance_guest) &&
         provenance_guest == guest_address &&
-        repiu::engine::IsWin32AotCacheAddressRetired(
+        repiu::engine::IsAotCacheAddressRetired(
             placement, old_cache) &&
         *reinterpret_cast<const std::uint8_t*>(
             static_cast<std::uintptr_t>(old_cache)) == 0xCCU;
 
     guest[4] = 0x13U;
-    repiu::engine::Win32AotPageWriteWatchSet watches;
-    repiu::engine::Win32AotDynamicAppendResult generation;
+    repiu::engine::AotPageWriteWatchSet watches;
+    repiu::engine::AotDynamicAppendResult generation;
     const bool appended =
-        repiu::engine::AppendWin32DynamicAotTranslation(
+        repiu::engine::AppendDynamicAotTranslation(
             guest_address, 2U * kPageSize, guest_address, {}, &watches,
             &placement, nullptr, &generation) && generation.appended;
     std::uint32_t new_cache = 0U;
@@ -480,19 +480,19 @@ bool RunCoherenceProbe()
         std::memcmp(reinterpret_cast<const void*>(
                         static_cast<std::uintptr_t>(new_cache)),
                     expected, sizeof(expected)) == 0 &&
-        !repiu::engine::IsWin32AotGuestPageRetired(
+        !repiu::engine::IsAotGuestPageRetired(
             placement, guest_address) &&
-        !repiu::engine::IsWin32AotGuestPageQuarantined(
+        !repiu::engine::IsAotGuestPageQuarantined(
             placement, guest_address) &&
-         repiu::engine::Win32AotGuestRangeHasActiveTranslation(
+         repiu::engine::AotGuestRangeHasActiveTranslation(
              placement, guest_address, sizeof(original)) &&
-        repiu::engine::QueryWin32AotActiveGuestPageGeneration(
+        repiu::engine::QueryAotActiveGuestPageGeneration(
             placement, guest_address, &published_page_generation) &&
         published_page_generation == generation.generation;
 
     const std::uint32_t watched_write = guest_address + 0x30U;
     const bool write_watch_began =
-        repiu::engine::BeginWin32AotGuestWrite(
+        repiu::engine::BeginAotGuestWrite(
             &watches, guest_address + 0x20U, watched_write, false, false,
             guest_address + 0x20U);
     const bool write_watch_writable = write_watch_began && HasPageProtection(
@@ -501,9 +501,9 @@ bool RunCoherenceProbe()
     {
         guest[0x30U] = 0xA5U;
     }
-    repiu::engine::Win32AotGuestWriteCompletion completion;
+    repiu::engine::AotGuestWriteCompletion completion;
     const bool write_watch_completed = write_watch_began &&
-        repiu::engine::CompleteWin32AotGuestWrite(
+        repiu::engine::CompleteAotGuestWrite(
             &watches, &completion);
     const bool write_watch = write_watch_writable && write_watch_completed &&
         completion.destination == watched_write && completion.byte_count == 1U &&
@@ -522,20 +522,20 @@ bool RunCoherenceProbe()
             static_cast<std::uintptr_t>(old_cache)) == 0xE9U &&
         relink_target == new_cache;
 
-    repiu::engine::Win32AotGuestPageRetireResult second_retirement;
+    repiu::engine::AotGuestPageRetireResult second_retirement;
     const bool repeat_retirement =
-        repiu::engine::RetireWin32AotGuestPage(
+        repiu::engine::RetireAotGuestPage(
             &placement, guest_address, false, &second_retirement) &&
         second_retirement.retired &&
         second_retirement.retired_entry_count >= 1U &&
-        !repiu::engine::QueryWin32AotActiveGuestPageGeneration(
+        !repiu::engine::QueryAotActiveGuestPageGeneration(
             placement, guest_address, &published_page_generation);
 
     const std::uint32_t excluded_target = guest_address + kPageSize;
     const std::int32_t jump_displacement = static_cast<std::int32_t>(
         excluded_target - (guest_address + 5U));
     const bool excluded_write_began =
-        repiu::engine::BeginWin32AotGuestWrite(
+        repiu::engine::BeginAotGuestWrite(
             &watches, guest_address + 0x20U, guest_address, false, false,
             guest_address + 0x20U);
     if (excluded_write_began)
@@ -545,9 +545,9 @@ bool RunCoherenceProbe()
         guest[kPageSize] = 0x0FU;
         guest[kPageSize + 1U] = 0x0BU;
     }
-    repiu::engine::Win32AotGuestWriteCompletion excluded_completion;
+    repiu::engine::AotGuestWriteCompletion excluded_completion;
     const bool excluded_write_completed = excluded_write_began &&
-        repiu::engine::CompleteWin32AotGuestWrite(
+        repiu::engine::CompleteAotGuestWrite(
             &watches, &excluded_completion);
     std::memcpy(runtime.objects[0].memory.data(), guest, 2U * kPageSize);
     repiu::runtime::AotTranslationPlan excluded_plan;
@@ -569,14 +569,14 @@ bool RunCoherenceProbe()
             }
             return false;
         }();
-    repiu::engine::Win32AotDynamicAppendResult excluded_generation;
+    repiu::engine::AotDynamicAppendResult excluded_generation;
     const bool excluded_appended = excluded_write_completed &&
-        repiu::engine::AppendWin32DynamicAotTranslation(
+        repiu::engine::AppendDynamicAotTranslation(
             guest_address, 2U * kPageSize, guest_address,
             {{excluded_target, 8U}}, &watches, &placement,
             nullptr, &excluded_generation) && excluded_generation.appended;
     const bool excluded_unwatched = excluded_appended &&
-        !repiu::engine::IsWin32AotGuestPageWriteWatched(
+        !repiu::engine::IsAotGuestPageWriteWatched(
             watches, excluded_target) &&
         [&placement, excluded_target]() {
             for (std::size_t index = 0;
@@ -590,7 +590,7 @@ bool RunCoherenceProbe()
             }
             return false;
         }();
-    repiu::engine::RestoreWin32AotGuestPageWriteWatches(&watches);
+    repiu::engine::RestoreAotGuestPageWriteWatches(&watches);
     const bool watch_cleanup = HasPageProtection(guest, PAGE_READWRITE) &&
         HasPageProtection(guest + kPageSize, PAGE_READWRITE);
 
@@ -620,7 +620,7 @@ bool RunCoherenceProbe()
               << "\ncoherence_generation_id=" << generation.generation
               << "\ncoherence_all=" << (all ? "true" : "false") << "\n";
 
-    repiu::engine::ReleaseWin32AotCodeCache(&placement);
+    repiu::engine::ReleaseAotCodeCache(&placement);
     VirtualFree(guest, 0, MEM_RELEASE);
     return all;
 }
@@ -919,8 +919,8 @@ int main(int argc, char** argv)
     {
         return 1;
     }
-    repiu::engine::Win32AotCodeCachePlacement placement;
-    if (!repiu::engine::PlaceWin32AotCodeCache(cache, &placement) ||
+    repiu::engine::AotCodeCachePlacement placement;
+    if (!repiu::engine::PlaceAotCodeCache(cache, &placement) ||
         !placement.placed)
     {
         std::cout << "cache_placement=false\ncache_placement_message="
@@ -938,7 +938,7 @@ int main(int argc, char** argv)
         mapped_cache == placement.entry_address;
     std::cout << "cache_placement=true\ncache_round_trip="
               << (round_trip ? "true" : "false") << "\n";
-    repiu::engine::ReleaseWin32AotCodeCache(&placement);
+    repiu::engine::ReleaseAotCodeCache(&placement);
     if (!round_trip)
     {
         return 1;

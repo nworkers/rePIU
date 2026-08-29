@@ -19,7 +19,7 @@ bool RunAotTimerSourceProfileProbe()
         !ResolveAotTimerSourceProfileEnabled("0") &&
         !ResolveAotTimerSourceProfileEnabled("invalid");
 
-    Win32AotTimerSourceProfile profile;
+    AotTimerSourceProfile profile;
     InitializeAotTimerSourceProfile(true, &profile);
     RecordAotTimerSourceEvent(
         &profile, 0x03001000U, 10U, false, 0U);
@@ -47,7 +47,7 @@ bool RunAotTimerSourceProfileProbe()
         top[0].guest_source == 0x03001000U &&
         top[1].guest_source == 0x03002000U;
 
-    Win32AotTimerSourceProfile overflow;
+    AotTimerSourceProfile overflow;
     InitializeAotTimerSourceProfile(true, &overflow);
     for (std::uint32_t index = 0;
          index < kAotTimerSourceProfileCapacity + 2U; ++index)
@@ -61,7 +61,7 @@ bool RunAotTimerSourceProfileProbe()
         overflow.attributed_tick_count ==
             kAotTimerSourceProfileCapacity;
 
-    Win32AotTimerSourceProfile disabled;
+    AotTimerSourceProfile disabled;
     InitializeAotTimerSourceProfile(false, &disabled);
     RecordAotTimerSourceEvent(
         &disabled, 0x03001000U, 1U, true, 1U);

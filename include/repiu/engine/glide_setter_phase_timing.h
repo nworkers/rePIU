@@ -12,13 +12,13 @@ namespace repiu::engine
 // — separating `glDepthMask` from the `glGetError` right after it requires a
 // clock read between them — so it carries its own opt-in
 // (`REPIU_GLIDE_SETTER_PHASE`) and its own observer verdict.
-enum class Win32GlideSetterPhaseKind : std::uint8_t
+enum class GlideSetterPhaseKind : std::uint8_t
 {
     kDepthMask = 0,
     kAlphaBlend,
 };
 
-struct Win32GlideSetterPhaseEntry
+struct GlideSetterPhaseEntry
 {
     std::uint32_t call_count = 0;
     // `grDepthMask` has no leading drain, so its drain interval is length zero
@@ -34,20 +34,20 @@ struct Win32GlideSetterPhaseEntry
     std::uint32_t error_count = 0;
 };
 
-struct Win32GlideSetterPhaseProfile
+struct GlideSetterPhaseProfile
 {
     bool enabled = false;
     std::uint32_t clamped_sample_count = 0;
-    Win32GlideSetterPhaseEntry depth_mask;
-    Win32GlideSetterPhaseEntry alpha_blend;
+    GlideSetterPhaseEntry depth_mask;
+    GlideSetterPhaseEntry alpha_blend;
 };
 
-struct Win32GlideSetterPhaseSnapshot
+struct GlideSetterPhaseSnapshot
 {
     bool enabled = false;
     std::uint32_t clamped_sample_count = 0;
-    Win32GlideSetterPhaseEntry depth_mask;
-    Win32GlideSetterPhaseEntry alpha_blend;
+    GlideSetterPhaseEntry depth_mask;
+    GlideSetterPhaseEntry alpha_blend;
 };
 
 bool ResolveGlideSetterPhaseProfileEnabled(std::string_view setting);
@@ -59,8 +59,8 @@ bool GlideSetterPhaseProfileEnabled();
 // `drain + apply + error == total` therefore holds by construction and is
 // checked as a gate by the probe and the measurement script.
 void RecordGlideSetterPhaseSample(
-    Win32GlideSetterPhaseProfile* profile,
-    Win32GlideSetterPhaseKind kind,
+    GlideSetterPhaseProfile* profile,
+    GlideSetterPhaseKind kind,
     std::uint64_t entry_cycles,
     std::uint64_t apply_start_cycles,
     std::uint64_t error_start_cycles,
@@ -68,7 +68,7 @@ void RecordGlideSetterPhaseSample(
     std::uint32_t drain_iterations,
     bool error_reported);
 
-Win32GlideSetterPhaseSnapshot SnapshotGlideSetterPhaseTiming(
-    const Win32GlideSetterPhaseProfile& profile);
+GlideSetterPhaseSnapshot SnapshotGlideSetterPhaseTiming(
+    const GlideSetterPhaseProfile& profile);
 
 }  // namespace repiu::engine

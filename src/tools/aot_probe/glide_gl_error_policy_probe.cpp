@@ -14,7 +14,7 @@ bool RunGlideGlErrorPolicyProbe()
     using engine::RecordGlideGlErrorFrameCheck;
     using engine::ResolveGlideGlErrorCheckEnabled;
     using engine::SnapshotGlideGlErrorPolicy;
-    using engine::Win32GlideGlErrorPolicyProfile;
+    using engine::GlideGlErrorPolicyProfile;
 
     // The accepted set is exact. A trailing space is the failure that actually
     // happened during Task 369 measurement -- `set VAR=1 && ...` in cmd puts the
@@ -41,7 +41,7 @@ bool RunGlideGlErrorPolicyProbe()
         !engine::ResolveGlideGlErrorFrameInterval("x", &interval) &&
         !engine::ResolveGlideGlErrorFrameInterval("64", nullptr);
 
-    Win32GlideGlErrorPolicyProfile profile;
+    GlideGlErrorPolicyProfile profile;
     RecordGlideGlErrorFrameCheck(&profile, 0U, 0U);
     RecordGlideGlErrorFrameCheck(&profile, 0x0501U, 1U);
     RecordGlideGlErrorFrameCheck(&profile, 0x0502U, 2U);
@@ -60,7 +60,7 @@ bool RunGlideGlErrorPolicyProbe()
 
     // Task 370: non-error chatter counts but must not claim the first message,
     // and the retained message is a copy rather than the driver's pointer.
-    Win32GlideGlErrorPolicyProfile debug_profile;
+    GlideGlErrorPolicyProfile debug_profile;
     RecordGlideGlDebugMessage(&debug_profile, 0x1111U, false, "chatter", 7U);
     RecordGlideGlDebugMessage(&debug_profile, 0x2222U, true, "first fault", 11U);
     RecordGlideGlDebugMessage(&debug_profile, 0x3333U, true, "second", 6U);
@@ -73,7 +73,7 @@ bool RunGlideGlErrorPolicyProbe()
         std::string(debug_snapshot.first_debug_message.data()) == "first fault";
 
     // An oversized message is truncated, not overrun, and stays terminated.
-    Win32GlideGlErrorPolicyProfile long_profile;
+    GlideGlErrorPolicyProfile long_profile;
     const std::string oversized(
         engine::kGlideGlDebugMessageCapacity + 64U, 'x');
     RecordGlideGlDebugMessage(&long_profile, 7U, true, oversized.c_str(),
@@ -86,12 +86,12 @@ bool RunGlideGlErrorPolicyProbe()
         long_snapshot.first_debug_message.back() == '\0';
 
     const bool clean_run_reports_zero =
-        SnapshotGlideGlErrorPolicy(Win32GlideGlErrorPolicyProfile{}, true, 0U)
+        SnapshotGlideGlErrorPolicy(GlideGlErrorPolicyProfile{}, true, 0U)
                 .first_error_code == 0U &&
-        SnapshotGlideGlErrorPolicy(Win32GlideGlErrorPolicyProfile{}, true, 0U)
+        SnapshotGlideGlErrorPolicy(GlideGlErrorPolicyProfile{}, true, 0U)
             .per_call_check_enabled;
 
-    Win32GlideGlErrorPolicyProfile untouched;
+    GlideGlErrorPolicyProfile untouched;
     RecordGlideGlErrorFrameCheck(nullptr, 0x0501U, 4U);
     RecordGlideGlDebugMessage(nullptr, 1U, true, "ignored", 7U);
     const bool inert =

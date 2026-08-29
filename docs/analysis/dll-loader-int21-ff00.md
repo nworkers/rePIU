@@ -1,5 +1,23 @@
 # DOS/4G DLL loader와 INT 21h AX=FF00h 역추적
 
+> **2026-08-29 갱신 ([Task 523](../work-logs/20260829-523-sibling-asset-case.md)).**
+> 아래 본문이 "직접 원인은 `AX=FF00h` HLE가 **임시로** `AL=0`을 반환하는 것"이라고 적은
+> 부분은 **더 이상 사실이 아닙니다.** 그 핸들러는 이후
+> `kDos4gwIdentificationAxResult`(`EAX=FFFF3447h`)와 `kDos4gwClientDataSelector`를 실제로
+> 구현했습니다. 본문이 예측한 signature가 그대로 구현된 것입니다.
+>
+> `AL=0`은 이제 **폴백**입니다. 성공 경로는 세 조건의 AND이고
+> (`AX==FF00h` && `DX==0078h` && `linexe_environment_active`), 셋 중 하나라도 어긋나면
+> `AL=0`으로 떨어집니다.
+>
+> 실제 Ubuntu(ext4)에서 이 fatal 경로를 다시 만난 원인은 세 번째 항이었습니다:
+> 자산 파일이 `glide2x.ovl`인데 로더가 `Glide2x.ovl`을 정확한 대소문자로 찾아
+> `glide_exports`가 비었고, 그 결과 `linexe_environment_active`가 `false`가 되었습니다.
+> 대소문자 무시 해석으로 수정했습니다.
+>
+> **이 문서의 역추적(주소, 세 fatal 분기, DOS/32A 교차 확인)은 여전히 유효합니다.**
+> 낡은 것은 "무엇이 그 경로를 촉발했는가"뿐입니다.
+
 ## 결론
 
 **확인됨:** arena `+0xF3438`의 `INT 3`는 Open Watcom 계열 DLL lazy-loader의 fatal 공통 경로이다. 실제 실행은 세 fatal 조건 중 “DLL loader 초기화 실패”를 선택했다. 직접 원인은 현재 `INT 21h AX=FF00h` HLE가 임시로 `AL=0`을 반환하여 DOS/4G private environment 경로를 비활성화하는 것이다.

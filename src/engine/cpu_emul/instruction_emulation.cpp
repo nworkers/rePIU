@@ -212,11 +212,11 @@ void RecordGuestSegmentLoad(repiu::platform::GuestCpuContext* win32_context,
     context->last_segment_load_selector = selector;
     context->last_segment_load_source = source;
     if (segment_register < 6U) { ++context->handled_segment_load_register_counts[segment_register]; }
-    Win32SegmentLoadObservation& observation = context->segment_load;
+    SegmentLoadObservation& observation = context->segment_load;
     const std::uint32_t sequence = observation.observed_count + 1;
     const std::uint32_t slot =
-        (sequence - 1) % kWin32SegmentLoadTraceCapacity;
-    Win32SegmentLoadTraceEntry& entry = observation.trace[slot];
+        (sequence - 1) % kSegmentLoadTraceCapacity;
+    SegmentLoadTraceEntry& entry = observation.trace[slot];
     entry.valid = true;
     entry.sequence = sequence;
     entry.eip_offset =
@@ -229,7 +229,7 @@ void RecordGuestSegmentLoad(repiu::platform::GuestCpuContext* win32_context,
     entry.selector = selector;
     entry.source = source;
     observation.observed_count = sequence;
-    if (observation.trace_stored_count < kWin32SegmentLoadTraceCapacity)
+    if (observation.trace_stored_count < kSegmentLoadTraceCapacity)
     {
         ++observation.trace_stored_count;
     }
@@ -1996,8 +1996,8 @@ void AttachAllocatorReadProvenance(ThreadContext* context,
     const std::uint32_t sequence =
         context->allocator_control_flow.observed_count;
     const std::uint32_t slot =
-        (sequence - 1) % kWin32AllocatorControlFlowTraceCapacity;
-    Win32AllocatorControlFlowTraceEntry& entry =
+        (sequence - 1) % kAllocatorControlFlowTraceCapacity;
+    AllocatorControlFlowTraceEntry& entry =
         context->allocator_control_flow.trace[slot];
     if (!entry.valid || entry.sequence != sequence ||
         entry.eip_offset != eip_offset)
@@ -2070,7 +2070,7 @@ void AttachAllocatorReadProvenance(ThreadContext* context,
     }
     if (eip_offset == 0x000F7A83U && source != 8U)
     {
-        Win32AllocatorControlFlowObservation& observation =
+        AllocatorControlFlowObservation& observation =
             context->allocator_control_flow;
         if (value == 0 && !observation.null_link_transition_valid)
         {
@@ -2122,12 +2122,12 @@ bool HandleTracedMemoryLoadInstruction(repiu::platform::GuestCpuContext* win32_c
         {
             return;
         }
-        Win32AllocatorProbeObservation& observation =
+        AllocatorProbeObservation& observation =
             context->allocator_probe;
         const std::uint32_t sequence = observation.observed_count + 1;
         const std::uint32_t slot =
-            (sequence - 1) % kWin32AllocatorProbeTraceCapacity;
-        Win32AllocatorProbeTraceEntry& entry = observation.trace[slot];
+            (sequence - 1) % kAllocatorProbeTraceCapacity;
+        AllocatorProbeTraceEntry& entry = observation.trace[slot];
         entry.valid = true;
         entry.sequence = sequence;
         entry.eax = win32_context->Eax;
@@ -2141,7 +2141,7 @@ bool HandleTracedMemoryLoadInstruction(repiu::platform::GuestCpuContext* win32_c
         entry.result = result != nullptr ? result : "unknown";
         observation.observed_count = sequence;
         if (observation.trace_stored_count <
-            kWin32AllocatorProbeTraceCapacity)
+            kAllocatorProbeTraceCapacity)
         {
             ++observation.trace_stored_count;
         }

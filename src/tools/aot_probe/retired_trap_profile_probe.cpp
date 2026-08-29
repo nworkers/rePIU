@@ -1,6 +1,6 @@
 #include "retired_trap_profile_probe.h"
 
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 #include "repiu/engine/aot_retired_trap_profile.h"
 
 #include <cstdint>
@@ -21,7 +21,7 @@ bool RunAotRetiredTrapProfileProbe()
         !ResolveAotRetiredTrapProfileEnabled("off") &&
         !ResolveAotRetiredTrapProfileEnabled("invalid");
 
-    Win32AotCodeCachePlacement placement;
+    AotCodeCachePlacement placement;
     placement.placed = true;
     placement.base_address = 0x10000000U;
     const std::uint32_t guest_a = 0x03010000U;
@@ -36,7 +36,7 @@ bool RunAotRetiredTrapProfileProbe()
     placement.inactive_map_index_by_cache_offset.emplace(0x200U, 1U);
     placement.inactive_map_index_by_cache_offset.emplace(0x300U, 2U);
 
-    Win32AotRetiredTrapProfile profile;
+    AotRetiredTrapProfile profile;
     for (std::uint32_t index = 0; index < 3U; ++index)
     {
         RecordAotRetiredTrap(
@@ -56,7 +56,7 @@ bool RunAotRetiredTrapProfileProbe()
         &profile, AotRetiredTrapResolution::kQuarantined);
     RecordAotRetiredTrapResolution(
         &profile, AotRetiredTrapResolution::kFallback);
-    const Win32AotRetiredTrapProfileSnapshot snapshot =
+    const AotRetiredTrapProfileSnapshot snapshot =
         SnapshotAotRetiredTrapProfile(profile);
     const bool behavior = snapshot.enabled &&
         snapshot.total_trap_count == 5U &&
@@ -80,22 +80,22 @@ bool RunAotRetiredTrapProfileProbe()
         snapshot.resolution_counts[2] == 1U &&
         snapshot.resolution_counts[4] == 1U;
 
-    Win32AotCodeCachePlacement empty_placement;
-    Win32AotRetiredTrapProfile capacity_profile;
+    AotCodeCachePlacement empty_placement;
+    AotRetiredTrapProfile capacity_profile;
     for (std::uint32_t index = 0;
-         index <= kWin32AotRetiredTrapHistogramCapacity; ++index)
+         index <= kAotRetiredTrapHistogramCapacity; ++index)
     {
         RecordAotRetiredTrap(
             &capacity_profile, empty_placement,
             0x20000000U + index, 0x40000000U + index);
     }
-    const Win32AotRetiredTrapProfileSnapshot capacity_snapshot =
+    const AotRetiredTrapProfileSnapshot capacity_snapshot =
         SnapshotAotRetiredTrapProfile(capacity_profile);
     const bool capacity =
         capacity_snapshot.distinct_guest_count ==
-            kWin32AotRetiredTrapHistogramCapacity &&
+            kAotRetiredTrapHistogramCapacity &&
         capacity_snapshot.distinct_cache_count ==
-            kWin32AotRetiredTrapHistogramCapacity &&
+            kAotRetiredTrapHistogramCapacity &&
         capacity_snapshot.guest_histogram_overflow_count == 1U &&
         capacity_snapshot.cache_histogram_overflow_count == 1U;
 

@@ -5,7 +5,7 @@
 namespace repiu::tools
 {
 
-// Task 331. Measures the five phases of `AppendWin32DynamicAotTranslation` over
+// Task 331. Measures the five phases of `AppendDynamicAotTranslation` over
 // the real image in whichever configuration the probe was built as, so the
 // append distribution Tasks 328 and 329 measured in Debug can be re-attributed
 // in Release without running the game.

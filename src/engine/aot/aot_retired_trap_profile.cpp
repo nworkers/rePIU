@@ -1,6 +1,6 @@
 #include "repiu/engine/aot_retired_trap_profile.h"
 
-#include "repiu/engine/aot_code_cache_win32.h"
+#include "repiu/engine/aot_code_cache.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -31,8 +31,8 @@ bool AotRetiredTrapProfileEnabled()
 }
 
 void RecordAotRetiredTrap(
-    Win32AotRetiredTrapProfile* profile,
-    const Win32AotCodeCachePlacement& placement,
+    AotRetiredTrapProfile* profile,
+    const AotCodeCachePlacement& placement,
     std::uint32_t cache_address,
     std::uint32_t guest_address)
 {
@@ -49,7 +49,7 @@ void RecordAotRetiredTrap(
         ++guest->second;
     }
     else if (profile->guest_histogram.size() <
-             kWin32AotRetiredTrapHistogramCapacity)
+             kAotRetiredTrapHistogramCapacity)
     {
         profile->guest_histogram.emplace(guest_address, 1U);
     }
@@ -77,13 +77,13 @@ void RecordAotRetiredTrap(
         return;
     }
     if (profile->cache_histogram.size() >=
-        kWin32AotRetiredTrapHistogramCapacity)
+        kAotRetiredTrapHistogramCapacity)
     {
         ++profile->cache_histogram_overflow_count;
         return;
     }
 
-    Win32AotRetiredTrapCacheSample sample;
+    AotRetiredTrapCacheSample sample;
     sample.cache_address = cache_address;
     sample.guest_address = guest_address;
     sample.trap_count = 1U;
@@ -101,7 +101,7 @@ void RecordAotRetiredTrap(
         {
             const runtime::AotAddressMapEntry& entry =
                 placement.address_map[map_position->second];
-            const Win32AotAddressMapState& state =
+            const AotAddressMapState& state =
                 placement.address_map_states[map_position->second];
             sample.guest_address = entry.guest_address;
             sample.generation = state.generation;
@@ -127,7 +127,7 @@ void RecordAotRetiredTrap(
 }
 
 void RecordAotRetiredTrapResolution(
-    Win32AotRetiredTrapProfile* profile,
+    AotRetiredTrapProfile* profile,
     AotRetiredTrapResolution resolution)
 {
     if (profile == nullptr)
@@ -141,10 +141,10 @@ void RecordAotRetiredTrapResolution(
     }
 }
 
-Win32AotRetiredTrapProfileSnapshot SnapshotAotRetiredTrapProfile(
-    const Win32AotRetiredTrapProfile& profile)
+AotRetiredTrapProfileSnapshot SnapshotAotRetiredTrapProfile(
+    const AotRetiredTrapProfile& profile)
 {
-    Win32AotRetiredTrapProfileSnapshot snapshot;
+    AotRetiredTrapProfileSnapshot snapshot;
     snapshot.enabled = profile.enabled;
     snapshot.total_trap_count = profile.total_trap_count;
     snapshot.distinct_guest_count = static_cast<std::uint32_t>(
@@ -160,7 +160,7 @@ Win32AotRetiredTrapProfileSnapshot SnapshotAotRetiredTrapProfile(
         profile.cache_histogram_overflow_count;
     snapshot.resolution_counts = profile.resolution_counts;
 
-    std::vector<Win32AotRetiredTrapGuestHotspot> guest_hotspots;
+    std::vector<AotRetiredTrapGuestHotspot> guest_hotspots;
     guest_hotspots.reserve(profile.guest_histogram.size());
     for (const auto& entry : profile.guest_histogram)
     {
@@ -174,7 +174,7 @@ Win32AotRetiredTrapProfileSnapshot SnapshotAotRetiredTrapProfile(
               });
     snapshot.guest_hotspot_count = std::min<std::uint32_t>(
         static_cast<std::uint32_t>(guest_hotspots.size()),
-        kWin32AotRetiredTrapHotspotCapacity);
+        kAotRetiredTrapHotspotCapacity);
     for (std::uint32_t index = 0;
          index < snapshot.guest_hotspot_count; ++index)
     {
@@ -182,7 +182,7 @@ Win32AotRetiredTrapProfileSnapshot SnapshotAotRetiredTrapProfile(
         snapshot.top_guest_coverage_count += guest_hotspots[index].trap_count;
     }
 
-    std::vector<Win32AotRetiredTrapCacheSample> cache_hotspots;
+    std::vector<AotRetiredTrapCacheSample> cache_hotspots;
     cache_hotspots.reserve(profile.cache_histogram.size());
     for (const auto& entry : profile.cache_histogram)
     {
@@ -196,7 +196,7 @@ Win32AotRetiredTrapProfileSnapshot SnapshotAotRetiredTrapProfile(
               });
     snapshot.cache_hotspot_count = std::min<std::uint32_t>(
         static_cast<std::uint32_t>(cache_hotspots.size()),
-        kWin32AotRetiredTrapHotspotCapacity);
+        kAotRetiredTrapHotspotCapacity);
     for (std::uint32_t index = 0;
          index < snapshot.cache_hotspot_count; ++index)
     {

@@ -12,7 +12,7 @@ bool RunGlideBufferSwapTimingProbe()
     using engine::RecordGlideBufferSwapSdlInterval;
     using engine::RecordGlideBufferSwapTiming;
     using engine::SnapshotGlideBufferSwapTiming;
-    using engine::Win32GlideBufferSwapTimingProfile;
+    using engine::GlideBufferSwapTimingProfile;
 
     const bool policy =
         !engine::ResolveGlideBufferSwapTimingProfileEnabled("") &&
@@ -21,7 +21,7 @@ bool RunGlideBufferSwapTimingProbe()
         engine::ResolveGlideBufferSwapTimingProfileEnabled("on") &&
         engine::ResolveGlideBufferSwapTimingProfileEnabled("true");
 
-    Win32GlideBufferSwapTimingProfile profile;
+    GlideBufferSwapTimingProfile profile;
     RecordGlideBufferSwapSdlInterval(&profile, true, 0);
     RecordGlideBufferSwapSdlInterval(&profile, false, 7);
     RecordGlideBufferSwapTiming(
@@ -56,7 +56,7 @@ bool RunGlideBufferSwapTimingProbe()
         snapshot.sdl_interval_query_failure_count == 1U &&
         snapshot.observed_sdl_interval == 0;
 
-    Win32GlideBufferSwapTimingProfile clamped_profile;
+    GlideBufferSwapTimingProfile clamped_profile;
     RecordGlideBufferSwapTiming(
         &clamped_profile, 0U, false, 50U, 40U, 30U, 20U, 10U);
     const auto clamped = SnapshotGlideBufferSwapTiming(clamped_profile);
@@ -67,7 +67,7 @@ bool RunGlideBufferSwapTimingProbe()
     RecordGlideBufferSwapTiming(
         nullptr, 0U, true, 0U, 1U, 2U, 3U, 4U);
     RecordGlideBufferSwapSdlInterval(nullptr, true, 1);
-    const Win32GlideBufferSwapTimingProfile untouched;
+    const GlideBufferSwapTimingProfile untouched;
     const auto inert_snapshot = SnapshotGlideBufferSwapTiming(untouched);
     const bool inert =
         !inert_snapshot.enabled &&

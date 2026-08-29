@@ -1,12 +1,12 @@
-#ifndef REPIU_PLATFORM_WIN32_AOT_BOUNDARY_PROVENANCE_H_
-#define REPIU_PLATFORM_WIN32_AOT_BOUNDARY_PROVENANCE_H_
+#ifndef REPIU_ENGINE_AOT_BOUNDARY_PROVENANCE_H_
+#define REPIU_ENGINE_AOT_BOUNDARY_PROVENANCE_H_
 
 #include <cstdint>
 
 namespace repiu::engine
 {
 
-struct Win32AotCodeCachePlacement;
+struct AotCodeCachePlacement;
 
 // Structural origin of an INT3 reached inside the placed code cache. This is
 // deliberately independent from the guest-opcode boundary reason: a copied
@@ -29,10 +29,10 @@ constexpr std::uint32_t kAotCacheBreakpointProvenanceCount =
     static_cast<std::uint32_t>(AotCacheBreakpointProvenance::kCount);
 
 AotCacheBreakpointProvenance ClassifyAotCacheBreakpointProvenance(
-    const Win32AotCodeCachePlacement& placement,
+    const AotCodeCachePlacement& placement,
     std::uint32_t cache_address,
     bool explicit_probe_sentinel);
 
 }  // namespace repiu::engine
 
-#endif  // REPIU_PLATFORM_WIN32_AOT_BOUNDARY_PROVENANCE_H_
+#endif  // REPIU_ENGINE_AOT_BOUNDARY_PROVENANCE_H_

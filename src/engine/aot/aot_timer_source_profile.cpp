@@ -38,18 +38,18 @@ bool AotTimerSourceProfileEnabled()
 
 void InitializeAotTimerSourceProfile(
     bool enabled,
-    Win32AotTimerSourceProfile* profile)
+    AotTimerSourceProfile* profile)
 {
     if (profile == nullptr)
     {
         return;
     }
-    *profile = Win32AotTimerSourceProfile{};
+    *profile = AotTimerSourceProfile{};
     profile->enabled = enabled;
 }
 
 void RecordAotTimerSourceEvent(
-    Win32AotTimerSourceProfile* profile,
+    AotTimerSourceProfile* profile,
     std::uint32_t guest_source,
     std::uint32_t global_tick,
     bool injected,
@@ -60,7 +60,7 @@ void RecordAotTimerSourceEvent(
         return;
     }
 
-    Win32AotTimerSourceProfileEntry* entry = nullptr;
+    AotTimerSourceProfileEntry* entry = nullptr;
     for (std::uint32_t index = 0; index < profile->entry_count; ++index)
     {
         if (profile->entries[index].guest_source == guest_source)
@@ -98,17 +98,17 @@ void RecordAotTimerSourceEvent(
     }
 }
 
-std::vector<Win32AotTimerSourceProfileEntry>
+std::vector<AotTimerSourceProfileEntry>
 BuildAotTimerSourceProfileTopEntries(
-    const Win32AotTimerSourceProfile& profile,
+    const AotTimerSourceProfile& profile,
     std::uint32_t maximum_count)
 {
-    std::vector<Win32AotTimerSourceProfileEntry> entries(
+    std::vector<AotTimerSourceProfileEntry> entries(
         profile.entries, profile.entries + profile.entry_count);
     std::sort(
         entries.begin(), entries.end(),
-        [](const Win32AotTimerSourceProfileEntry& left,
-           const Win32AotTimerSourceProfileEntry& right) {
+        [](const AotTimerSourceProfileEntry& left,
+           const AotTimerSourceProfileEntry& right) {
             if (left.attributed_tick_count !=
                 right.attributed_tick_count)
             {

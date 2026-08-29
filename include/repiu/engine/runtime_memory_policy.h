@@ -1,5 +1,5 @@
-#ifndef REPIU_PLATFORM_WIN32_RUNTIME_MEMORY_POLICY_H_
-#define REPIU_PLATFORM_WIN32_RUNTIME_MEMORY_POLICY_H_
+#ifndef REPIU_ENGINE_RUNTIME_MEMORY_POLICY_H_
+#define REPIU_ENGINE_RUNTIME_MEMORY_POLICY_H_
 
 #include "repiu/runtime/runtime_memory.h"
 
@@ -9,7 +9,7 @@
 namespace repiu::engine
 {
 
-struct Win32RuntimeMemoryPolicy
+struct RuntimeMemoryPolicy
 {
     bool valid = false;
     std::uint32_t host_pointer_bits = 0;
@@ -20,7 +20,7 @@ struct Win32RuntimeMemoryPolicy
     std::string message;
 };
 
-struct Win32AddressRangeProbe
+struct AddressRangeProbe
 {
     bool valid = false;
     bool range_available = false;
@@ -32,7 +32,7 @@ struct Win32AddressRangeProbe
     std::string message;
 };
 
-struct Win32AddressRangeReservation
+struct AddressRangeReservation
 {
     bool valid = false;
     bool reserved = false;
@@ -44,7 +44,7 @@ struct Win32AddressRangeReservation
     std::string message;
 };
 
-struct Win32RelocatedImagePlacement
+struct RelocatedImagePlacement
 {
     bool valid = false;
     bool placed = false;
@@ -61,47 +61,47 @@ struct Win32RelocatedImagePlacement
     std::string message;
 };
 
-bool BuildWin32RuntimeMemoryPolicy(
+bool BuildRuntimeMemoryPolicy(
     const runtime::RuntimeMemoryPlan& memory_plan,
-    Win32RuntimeMemoryPolicy* policy);
+    RuntimeMemoryPolicy* policy);
 
-bool BuildWin32RuntimeMemoryPolicyFromFixedRange(
+bool BuildRuntimeMemoryPolicyFromFixedRange(
     std::uint32_t preferred_allocation_base,
     std::uint32_t required_reserve_size,
-    Win32RuntimeMemoryPolicy* policy);
+    RuntimeMemoryPolicy* policy);
 
-bool ProbeWin32RuntimeAddressRange(
-    const Win32RuntimeMemoryPolicy& policy,
-    Win32AddressRangeProbe* probe);
+bool ProbeRuntimeAddressRange(
+    const RuntimeMemoryPolicy& policy,
+    AddressRangeProbe* probe);
 
-bool ReserveWin32RuntimeAddressRange(
-    const Win32RuntimeMemoryPolicy& policy,
-    Win32AddressRangeReservation* reservation);
+bool ReserveRuntimeAddressRange(
+    const RuntimeMemoryPolicy& policy,
+    AddressRangeReservation* reservation);
 
-bool ReserveAndCommitWin32RuntimeAddressRange(
-    const Win32RuntimeMemoryPolicy& policy,
-    Win32AddressRangeReservation* reservation);
+bool ReserveAndCommitRuntimeAddressRange(
+    const RuntimeMemoryPolicy& policy,
+    AddressRangeReservation* reservation);
 
-bool ReleaseWin32RuntimeAddressRange(
-    const Win32AddressRangeReservation& reservation);
+bool ReleaseRuntimeAddressRange(
+    const AddressRangeReservation& reservation);
 
-bool PlaceWin32RelocatedImage(
+bool PlaceRelocatedImage(
     const runtime::RelocatedRuntimeImage& image,
-    Win32RelocatedImagePlacement* placement);
+    RelocatedImagePlacement* placement);
 
-bool PlaceWin32RelocatedImage(
+bool PlaceRelocatedImage(
     const runtime::RelocatedRuntimeImage& image,
     std::uint32_t minimum_reserve_size,
-    Win32RelocatedImagePlacement* placement);
+    RelocatedImagePlacement* placement);
 
-bool PlaceWin32RelocatedImageInReservedRange(
+bool PlaceRelocatedImageInReservedRange(
     const runtime::RelocatedRuntimeImage& image,
-    const Win32AddressRangeReservation& reservation,
-    Win32RelocatedImagePlacement* placement);
+    const AddressRangeReservation& reservation,
+    RelocatedImagePlacement* placement);
 
-bool ReleaseWin32RelocatedImage(
-    const Win32RelocatedImagePlacement& placement);
+bool ReleaseRelocatedImage(
+    const RelocatedImagePlacement& placement);
 
 }  // namespace repiu::engine
 
-#endif  // REPIU_PLATFORM_WIN32_RUNTIME_MEMORY_POLICY_H_
+#endif  // REPIU_ENGINE_RUNTIME_MEMORY_POLICY_H_

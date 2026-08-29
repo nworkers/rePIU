@@ -1,5 +1,5 @@
-#ifndef REPIU_PLATFORM_WIN32_GLIDE_OPENGL_SHADER_H_
-#define REPIU_PLATFORM_WIN32_GLIDE_OPENGL_SHADER_H_
+#ifndef REPIU_ENGINE_GLIDE_OPENGL_SHADER_H_
+#define REPIU_ENGINE_GLIDE_OPENGL_SHADER_H_
 
 #include "repiu/hle/glide_hle.h"
 
@@ -43,4 +43,4 @@ private:
 
 }  // namespace repiu::engine
 
-#endif  // REPIU_PLATFORM_WIN32_GLIDE_OPENGL_SHADER_H_
+#endif  // REPIU_ENGINE_GLIDE_OPENGL_SHADER_H_

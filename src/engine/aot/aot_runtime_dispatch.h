@@ -31,7 +31,7 @@ struct _EXCEPTION_POINTERS;
 namespace repiu::engine
 {
 
-struct Win32AotSegmentTable;
+struct AotSegmentTable;
 
 void BumpAotBoundaryCount(ThreadContext* context);
 
@@ -75,8 +75,8 @@ int AotTranslationWorkerProc(void* parameter);
 
 // Task 264 Phase 3a: build the per-segment resolution table (shadow addresses,
 // current selectors, descriptor bases) from the live guest context.
-void BuildWin32AotSegmentTable(ThreadContext* context,
-                               Win32AotSegmentTable* table);
+void BuildAotSegmentTable(ThreadContext* context,
+                               AotSegmentTable* table);
 
 // Re-apply the guard selectors and folded bases to every segment-override site,
 // using the current segment state. Called after the guest reloads a segment
@@ -88,7 +88,7 @@ bool RequestAotDynamicTranslation(ThreadContext* context,
                                   std::uint32_t* cache_entry,
                                   std::uint32_t* added_bytes);
 
-void ReleaseUnneededWin32AotGuestPageWatches(ThreadContext* context,
+void ReleaseUnneededAotGuestPageWatches(ThreadContext* context,
                                              std::uint32_t address,
                                              std::uint32_t size);
 
@@ -142,15 +142,15 @@ bool HandleAotIndirectTransfer(const repiu::platform::FaultEvent& fault,
                                ThreadContext* context,
                                AotDbtDispatchFallbackReason* fallback_reason =
                                    nullptr,
-                               Win32AotTransferOrigin origin =
-                                   Win32AotTransferOrigin::kVeh);
+                               AotTransferOrigin origin =
+                                   AotTransferOrigin::kVeh);
 
 bool HandleAotReturnTransfer(const repiu::platform::FaultEvent& fault,
                              ThreadContext* context,
                              AotDbtDispatchFallbackReason* fallback_reason =
                                  nullptr,
-                             Win32AotTransferOrigin origin =
-                                 Win32AotTransferOrigin::kVeh,
+                             AotTransferOrigin origin =
+                                 AotTransferOrigin::kVeh,
                              std::uint32_t return_patch_site_index =
                                  0xFFFFFFFFU);
 

@@ -1,5 +1,5 @@
-#ifndef REPIU_PLATFORM_WIN32_PIU10_MP3_AUDIO_OUT_H_
-#define REPIU_PLATFORM_WIN32_PIU10_MP3_AUDIO_OUT_H_
+#ifndef REPIU_ENGINE_PIU10_MP3_AUDIO_OUT_H_
+#define REPIU_ENGINE_PIU10_MP3_AUDIO_OUT_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -78,4 +78,4 @@ private:
 
 }  // namespace repiu::engine
 
-#endif  // REPIU_PLATFORM_WIN32_PIU10_MP3_AUDIO_OUT_H_
+#endif  // REPIU_ENGINE_PIU10_MP3_AUDIO_OUT_H_

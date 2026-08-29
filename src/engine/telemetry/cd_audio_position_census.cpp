@@ -26,13 +26,13 @@ std::uint32_t ResolveInterval()
     const char* value = std::getenv("REPIU_CD_AUDIO_POSITION_CENSUS_MS");
     if (value == nullptr)
     {
-        return kWin32CdAudioPositionCensusDefaultMilliseconds;
+        return kCdAudioPositionCensusDefaultMilliseconds;
     }
     char* end = nullptr;
     const unsigned long parsed = std::strtoul(value, &end, 10);
     if (end == value || parsed < 1UL || parsed > 10000UL)
     {
-        return kWin32CdAudioPositionCensusDefaultMilliseconds;
+        return kCdAudioPositionCensusDefaultMilliseconds;
     }
     return static_cast<std::uint32_t>(parsed);
 }
@@ -51,8 +51,8 @@ std::uint32_t CdAudioPositionCensusIntervalMilliseconds()
     return interval;
 }
 
-void RecordCdAudioPosition(Win32CdAudioPositionCensus* census,
-                           const Win32CdAudioPositionEntry& entry)
+void RecordCdAudioPosition(CdAudioPositionCensus* census,
+                           const CdAudioPositionEntry& entry)
 {
     if (census == nullptr)
     {
@@ -64,7 +64,7 @@ void RecordCdAudioPosition(Win32CdAudioPositionCensus* census,
     // it is counted even after the ring fills and stops keeping entries.
     if (census->entry_count != 0U && entry.playing)
     {
-        const Win32CdAudioPositionEntry& previous =
+        const CdAudioPositionEntry& previous =
             census->entries[census->entry_count - 1U];
         if (previous.playing && previous.generation == entry.generation &&
             entry.current_lba < previous.current_lba)
@@ -73,7 +73,7 @@ void RecordCdAudioPosition(Win32CdAudioPositionCensus* census,
         }
     }
 
-    if (census->entry_count >= kWin32CdAudioPositionCensusCapacity)
+    if (census->entry_count >= kCdAudioPositionCensusCapacity)
     {
         ++census->overflow_count;
         return;
@@ -83,7 +83,7 @@ void RecordCdAudioPosition(Win32CdAudioPositionCensus* census,
 }
 
 bool WriteCdAudioPositionCensusDump(
-    const Win32CdAudioPositionCensus& census,
+    const CdAudioPositionCensus& census,
     std::uint32_t* written_entry_count,
     std::uint32_t* regression_count)
 {
@@ -135,7 +135,7 @@ bool WriteCdAudioPositionCensusDump(
     std::uint64_t cumulative_injected = 0;
     for (std::uint32_t index = 0; index < census.entry_count; ++index)
     {
-        const Win32CdAudioPositionEntry& entry = census.entries[index];
+        const CdAudioPositionEntry& entry = census.entries[index];
         // The signed delta is what a reader actually scans for: a negative
         // value is a position moving backwards, and a zero across a playing
         // interval is the freeze that precedes a jump.

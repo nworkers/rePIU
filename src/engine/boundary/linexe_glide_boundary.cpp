@@ -90,7 +90,7 @@ bool GlideGatePumpEventsEnabled()
 class GlideOrdinalTimingScope
 {
   public:
-    GlideOrdinalTimingScope(Win32GlideOrdinalTimingProfile* profile,
+    GlideOrdinalTimingScope(GlideOrdinalTimingProfile* profile,
                             GlideOpenGlBackend* backend,
                             const std::uint64_t* gate_cycles)
         : profile_(profile),
@@ -125,7 +125,7 @@ class GlideOrdinalTimingScope
     GlideOrdinalTimingScope& operator=(const GlideOrdinalTimingScope&) = delete;
 
   private:
-    Win32GlideOrdinalTimingProfile* profile_ = nullptr;
+    GlideOrdinalTimingProfile* profile_ = nullptr;
     std::uint16_t ordinal_ = 0;
     GlideOpenGlBackend* backend_ = nullptr;
     const std::uint64_t* gate_cycles_ = nullptr;
@@ -145,8 +145,8 @@ class GlideOrdinalTimingScope
 class GlideSetterStateScope
 {
   public:
-    GlideSetterStateScope(Win32GlideSetterCensusProfile* census,
-                          Win32GlideSetterStateCache* cache,
+    GlideSetterStateScope(GlideSetterCensusProfile* census,
+                          GlideSetterStateCache* cache,
                           const ThreadContext* context)
         : census_(census),
           cache_(cache),
@@ -168,16 +168,16 @@ class GlideSetterStateScope
             // configurations, which gate E1 depends on.
             RecordGlideSetterCensusCall(
                 census_, ordinal_, key_,
-                Win32GlideSetterCensusOutcome::kApplied);
+                GlideSetterCensusOutcome::kApplied);
             return;
         }
-        const Win32GlideSetterCensusOutcome outcome = Classify();
+        const GlideSetterCensusOutcome outcome = Classify();
         RecordGlideSetterCensusCall(census_, ordinal_, key_, outcome);
         if (!elision_candidate_)
         {
             return;
         }
-        if (outcome == Win32GlideSetterCensusOutcome::kApplied)
+        if (outcome == GlideSetterCensusOutcome::kApplied)
         {
             RecordGlideSetterStateApplied(cache_, ordinal_, key_);
         }
@@ -220,7 +220,7 @@ class GlideSetterStateScope
         ordinal_ = glide_export.ordinal;
         const std::uint32_t argument_words =
             glide_export.argument_byte_count / sizeof(std::uint32_t);
-        if (argument_words > kWin32GlideSetterStateKeyWords)
+        if (argument_words > kGlideSetterStateKeyWords)
         {
             // Truncating would collide distinct states into one key, so the call
             // is counted and excluded instead. A nonzero total means the target
@@ -285,7 +285,7 @@ class GlideSetterStateScope
             issues.total(kind::kAbiReject);
     }
 
-    Win32GlideSetterCensusOutcome Classify() const
+    GlideSetterCensusOutcome Classify() const
     {
         // A gate that never reached the handled path, and any backend failure,
         // leave the host state unknown. Anything else that recorded an issue was
@@ -296,19 +296,19 @@ class GlideSetterStateScope
                 repiu::hle::GlideImplementationIssueKind::kBackendFailure) !=
                 backend_failures_before_)
         {
-            return Win32GlideSetterCensusOutcome::kFailed;
+            return GlideSetterCensusOutcome::kFailed;
         }
         if (TotalIssues() != issues_before_)
         {
-            return Win32GlideSetterCensusOutcome::kUnsupported;
+            return GlideSetterCensusOutcome::kUnsupported;
         }
-        return Win32GlideSetterCensusOutcome::kApplied;
+        return GlideSetterCensusOutcome::kApplied;
     }
 
-    Win32GlideSetterCensusProfile* census_ = nullptr;
-    Win32GlideSetterStateCache* cache_ = nullptr;
+    GlideSetterCensusProfile* census_ = nullptr;
+    GlideSetterStateCache* cache_ = nullptr;
     const ThreadContext* context_ = nullptr;
-    Win32GlideSetterStateKey key_;
+    GlideSetterStateKey key_;
     std::uint16_t ordinal_ = 0;
     std::uint32_t handled_before_ = 0;
     std::uint64_t issues_before_ = 0;
@@ -322,7 +322,7 @@ class GlideSetterStateScope
 // Flushing an empty batch is a no-op success, which matters because the caller
 // flushes unconditionally before every non-draw gate.
 bool FlushGlideDrawBatchToBackend(ThreadContext* context,
-                                  Win32GlideDrawBatchFlushReason reason)
+                                  GlideDrawBatchFlushReason reason)
 {
     // Task 440: with the asynchronous present on, the flush is posted rather
     // than waited on. It has to be: left synchronous it would block the guest at
@@ -333,7 +333,7 @@ bool FlushGlideDrawBatchToBackend(ThreadContext* context,
         &context->glide_draw_batch, reason,
         [context, asynchronous](const repiu::hle::GlideDrawVertex* vertices,
                                 std::size_t vertex_count,
-                                Win32GlideBatchPrimitive primitive) {
+                                GlideBatchPrimitive primitive) {
             if (asynchronous)
             {
                 return context->glide_backend.PostDrawPrimitiveBatch(
@@ -497,10 +497,10 @@ bool FlushGlideLfbRegionShadow(ThreadContext* context)
 // draws it directly and ordering is still preserved -- the batch is empty by
 // then either way.
 bool QueueGlideDrawForBatch(ThreadContext* context,
-                            Win32GlideDrawBatch* batch,
+                            GlideDrawBatch* batch,
                             const repiu::hle::GlideDrawVertex* vertices,
                             std::size_t vertex_count,
-                            Win32GlideBatchPrimitive primitive)
+                            GlideBatchPrimitive primitive)
 {
     if (batch == nullptr)
     {
@@ -516,10 +516,10 @@ bool QueueGlideDrawForBatch(ThreadContext* context,
     {
         return false;
     }
-    const Win32GlideDrawBatchFlushReason reason =
+    const GlideDrawBatchFlushReason reason =
         batch->primitive != primitive
-            ? Win32GlideDrawBatchFlushReason::kPrimitiveChange
-            : Win32GlideDrawBatchFlushReason::kCapacity;
+            ? GlideDrawBatchFlushReason::kPrimitiveChange
+            : GlideDrawBatchFlushReason::kCapacity;
     FlushGlideDrawBatchToBackend(context, reason);
     return QueueGlideDrawPrimitive(batch, vertices, vertex_count, primitive,
                                    &flush_required);
@@ -609,7 +609,7 @@ void RecordGlideImplementationIssue(
 void RecordGlideTextureGateTrace(ThreadContext* context, const repiu::platform::GuestCpuContext* win32_context, const repiu::hle::GlideExportGate& glide_export, std::uint32_t return_address, std::uint32_t return_eax, bool is_max_address)
 {
     const std::uint32_t sequence = context->glide_texture_gate_trace_count + 1U;
-    Win32GlideTextureGateTraceEntry& entry = context->glide_texture_gate_trace[(sequence - 1U) % kWin32GlideTextureGateTraceCapacity];
+    GlideTextureGateTraceEntry& entry = context->glide_texture_gate_trace[(sequence - 1U) % kGlideTextureGateTraceCapacity];
     entry.valid = true;
     entry.sequence = sequence;
     entry.ordinal = glide_export.ordinal;
@@ -622,7 +622,7 @@ void RecordGlideTextureGateTrace(ThreadContext* context, const repiu::platform::
     entry.return_eax = return_eax;
     entry.planned_return_esp = entry.entry_esp + 2U * sizeof(std::uint32_t);
     context->glide_texture_gate_trace_count = sequence;
-    if (sequence > kWin32GlideTextureGateTraceCapacity)
+    if (sequence > kGlideTextureGateTraceCapacity)
     {
         context->glide_texture_gate_trace_wrapped = true;
     }
@@ -630,7 +630,7 @@ void RecordGlideTextureGateTrace(ThreadContext* context, const repiu::platform::
 
 // Task 332 frame dump. Enabled by REPIU_GLIDE_FRAME_DUMP, which names how many
 // swaps to skip between dumped frames; every draw of a dumped frame is logged.
-bool Win32GlideFrameDumpEnabled()
+bool GlideFrameDumpEnabled()
 {
     static const bool enabled =
         std::getenv("REPIU_GLIDE_FRAME_DUMP") != nullptr;
@@ -641,7 +641,7 @@ long g_frame_dump_swap_index = 0;
 long g_frame_dump_frames_done = 0;
 bool g_frame_dump_active = false;
 
-void Win32GlideAdvanceFrameDump()
+void GlideAdvanceFrameDump()
 {
     constexpr long kMaxDumpedFrames = 4;
     const char* value = std::getenv("REPIU_GLIDE_FRAME_DUMP");
@@ -829,12 +829,12 @@ void RecordAllocatorControlFlowException(
         return;
     }
 
-    Win32AllocatorControlFlowObservation& observation =
+    AllocatorControlFlowObservation& observation =
         context->allocator_control_flow;
     const std::uint32_t sequence = observation.observed_count + 1;
     const std::uint32_t slot =
-        (sequence - 1) % kWin32AllocatorControlFlowTraceCapacity;
-    Win32AllocatorControlFlowTraceEntry& entry = observation.trace[slot];
+        (sequence - 1) % kAllocatorControlFlowTraceCapacity;
+    AllocatorControlFlowTraceEntry& entry = observation.trace[slot];
     entry.valid = true;
     entry.sequence = sequence;
     entry.eip_offset = eip_offset;
@@ -853,7 +853,7 @@ void RecordAllocatorControlFlowException(
     entry.pending_size = context->pending_shadow_allocation_size;
     observation.observed_count = sequence;
     if (observation.trace_stored_count <
-        kWin32AllocatorControlFlowTraceCapacity)
+        kAllocatorControlFlowTraceCapacity)
     {
         ++observation.trace_stored_count;
     }
@@ -1114,7 +1114,7 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
         &ordinal_gate_cycles);
     // Task 438: null when batching is off, which keeps the draw cases on exactly
     // the path they took before -- one rendezvous per primitive.
-    Win32GlideDrawBatch* const draw_batch =
+    GlideDrawBatch* const draw_batch =
         GlideDrawBatchEnabled() ? &context->glide_draw_batch : nullptr;
     // Tasks 364/365: declared here so its destructor observes the dispatch outcome
     // on every return path, and begun below once the argument mirror is filled.
@@ -1496,7 +1496,7 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
     if (draw_batch != nullptr && !IsGlideDrawBatchGate(glide_export->gate_id))
     {
         FlushGlideDrawBatchToBackend(
-            context, Win32GlideDrawBatchFlushReason::kNonDrawGate);
+            context, GlideDrawBatchFlushReason::kNonDrawGate);
     }
     // 100% Unified GateId O(1) Switch Dispatcher (Task 321)
     switch (glide_export->gate_id)
@@ -2438,9 +2438,9 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
             // instead. One complete frame of the screen in question lists the
             // dot draws next to everything else and needs no guess about what
             // distinguishes them.
-            if (Win32GlideFrameDumpEnabled())
+            if (GlideFrameDumpEnabled())
             {
-                Win32GlideAdvanceFrameDump();
+                GlideAdvanceFrameDump();
             }
             // Task 511: the one place the attribution can be read on a host
             // where the guest thread never stops.
@@ -2454,7 +2454,7 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
             // the context itself, so the reporter never depends on the execution
             // engine's types. Relaxed loads: the writer is this same thread, and
             // the ordering against anything else is not what is being asked.
-            Win32LiveAotCounters live_aot;
+            LiveAotCounters live_aot;
             const auto load_counter =
                 [](const std::atomic<std::uint32_t>& counter) {
                     return counter.load(std::memory_order_relaxed);
@@ -2480,8 +2480,8 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                 load_counter(context->aot_residency_sample_count);
             // Task 517: process-global rather than per-context, so it is read
             // through its own accessor rather than off the context above.
-            const Win32GlideGateDirectDispatchStats direct_dispatch =
-                ReadWin32GlideGateDirectDispatchStats();
+            const GlideGateDirectDispatchStats direct_dispatch =
+                ReadGlideGateDirectDispatchStats();
             live_aot.glide_patched_sites = direct_dispatch.patched_gate_count;
             live_aot.glide_verified_sites = direct_dispatch.verified_gate_count;
             live_aot.glide_entry = direct_dispatch.entry_count;
@@ -2575,7 +2575,7 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                 }
             }
             if (!QueueGlideDrawForBatch(context, draw_batch, vertices, 2U,
-                                        Win32GlideBatchPrimitive::kLines) &&
+                                        GlideBatchPrimitive::kLines) &&
                 !context->glide_backend.DrawLine(vertices[0], vertices[1]))
             {
                 context->glide_backend_message =
@@ -2625,7 +2625,7 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                 }
             }
             if (!QueueGlideDrawForBatch(context, draw_batch, vertices, 3U,
-                                        Win32GlideBatchPrimitive::kTriangles) &&
+                                        GlideBatchPrimitive::kTriangles) &&
                 !context->glide_backend.DrawTriangle(vertices[0], vertices[1],
                                                      vertices[2]))
             {
@@ -2674,7 +2674,7 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                 return decline_gate("draw-point-decode-failure");
             }
             if (!QueueGlideDrawForBatch(context, draw_batch, &vertex, 1U,
-                                        Win32GlideBatchPrimitive::kPoints) &&
+                                        GlideBatchPrimitive::kPoints) &&
                 !context->glide_backend.DrawPoint(vertex))
             {
                 context->glide_backend_message =
@@ -2844,7 +2844,7 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
             // variable in the captured 60-byte producer layout, so the
             // observed non-projected texture path shares dword 8's oow for
             // both perspective correction and table fog.
-            Win32GlideTriangleObservation& triangle =
+            GlideTriangleObservation& triangle =
                 context->glide_first_triangle;
             if (!triangle.valid)
             {
@@ -2879,9 +2879,9 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                 }
             }
             const std::uint32_t sequence = ++context->glide_triangle_trace_count;
-            Win32GlideTriangleTraceEntry& trace = context->glide_triangle_trace[
-                (sequence - 1U) % kWin32GlideTriangleTraceCapacity];
-            trace = Win32GlideTriangleTraceEntry{};
+            GlideTriangleTraceEntry& trace = context->glide_triangle_trace[
+                (sequence - 1U) % kGlideTriangleTraceCapacity];
+            trace = GlideTriangleTraceEntry{};
             trace.valid = true;
             trace.sequence = sequence;
             for (std::size_t index = 0; index < 3U; ++index)
@@ -2897,7 +2897,7 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                                 sizeof(trace.dwords[index]));
                 }
             }
-            if (sequence > kWin32GlideTriangleTraceCapacity)
+            if (sequence > kGlideTriangleTraceCapacity)
             {
                 context->glide_triangle_trace_wrapped = true;
             }
@@ -2967,7 +2967,7 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
             {
                 static const bool draw_census_enabled =
                     std::getenv("REPIU_GLIDE_DRAW_CENSUS") != nullptr;
-                if (draw_census_enabled || Win32GlideFrameDumpEnabled())
+                if (draw_census_enabled || GlideFrameDumpEnabled())
                 {
                     const float width = max_x - min_x;
                     const float height = max_y - min_y;
@@ -3139,7 +3139,7 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                 }
             }
             if (!QueueGlideDrawForBatch(context, draw_batch, vertices, 3U,
-                                        Win32GlideBatchPrimitive::kTriangles) &&
+                                        GlideBatchPrimitive::kTriangles) &&
                 !context->glide_backend.DrawTriangle(vertices[0], vertices[1], vertices[2]))
             {
                 context->glide_backend_message = context->glide_backend.message();

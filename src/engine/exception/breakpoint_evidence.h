@@ -14,19 +14,18 @@
 //
 // Handing these functions a FaultEvent instead belongs with migrating the
 // dispatcher itself, not here.
-struct _EXCEPTION_POINTERS;
 
 namespace repiu::engine
 {
 
 struct ThreadContext;
 
-Win32UnhandledBreakpointEvidence CaptureBreakpointEvidence(
+UnhandledBreakpointEvidence CaptureBreakpointEvidence(
     const repiu::platform::FaultEvent& fault,
     const ThreadContext* context);
 
 void CommitUnhandledBreakpointEvidence(
-    Win32UnhandledBreakpointEvidence evidence,
+    UnhandledBreakpointEvidence evidence,
     const repiu::platform::GuestCpuContext* final_context,
     ThreadContext* context);
 

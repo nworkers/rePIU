@@ -13,31 +13,31 @@ namespace
 using go = repiu::hle::GlideGateId;
 using engine::BuildGlideSetterStateKey;
 using engine::RecordGlideSetterCensusCall;
-using engine::Win32GlideSetterCensusOutcome;
-using engine::Win32GlideSetterCensusProfile;
-using engine::Win32GlideSetterStateKey;
+using engine::GlideSetterCensusOutcome;
+using engine::GlideSetterCensusProfile;
+using engine::GlideSetterStateKey;
 
 // One profile holds 256 per-ordinal entries, so it lives on the heap here for
 // the same reason the snapshot carries aggregates only.
-using ProfilePtr = std::unique_ptr<Win32GlideSetterCensusProfile>;
+using ProfilePtr = std::unique_ptr<GlideSetterCensusProfile>;
 
 ProfilePtr MakeProfile()
 {
-    return std::make_unique<Win32GlideSetterCensusProfile>();
+    return std::make_unique<GlideSetterCensusProfile>();
 }
 
-Win32GlideSetterStateKey OneWordKey(std::uint32_t value,
+GlideSetterStateKey OneWordKey(std::uint32_t value,
                                     std::uint32_t generation = 0U)
 {
     return BuildGlideSetterStateKey(&value, 1U, generation);
 }
 
-void Apply(Win32GlideSetterCensusProfile* profile,
+void Apply(GlideSetterCensusProfile* profile,
            std::uint16_t ordinal,
-           const Win32GlideSetterStateKey& key)
+           const GlideSetterStateKey& key)
 {
     RecordGlideSetterCensusCall(
-        profile, ordinal, key, Win32GlideSetterCensusOutcome::kApplied);
+        profile, ordinal, key, GlideSetterCensusOutcome::kApplied);
 }
 
 }  // namespace
@@ -94,13 +94,13 @@ bool RunGlideSetterStateCensusProbe()
     Apply(profile.get(), kDepthMask, OneWordKey(0U));
     RecordGlideSetterCensusCall(
         profile.get(), kDepthMask, OneWordKey(0U),
-        Win32GlideSetterCensusOutcome::kFailed);
+        GlideSetterCensusOutcome::kFailed);
     // A failure voids the record, so the next identical call is a first, not a
     // repeat: eliding it would have assumed a host state that never landed.
     Apply(profile.get(), kDepthMask, OneWordKey(0U));
     RecordGlideSetterCensusCall(
         profile.get(), kDepthMask, OneWordKey(0U),
-        Win32GlideSetterCensusOutcome::kUnsupported);
+        GlideSetterCensusOutcome::kUnsupported);
     Apply(profile.get(), kDepthMask, OneWordKey(0U));
 
     const auto snapshot = SnapshotGlideSetterCensus(*profile);
@@ -186,16 +186,16 @@ bool RunGlideSetterStateCensusProbe()
     const std::uint32_t wide[9] = {1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 9U};
     const auto clamped_key = BuildGlideSetterStateKey(wide, 9U, 0U);
     RecordGlideSetterCensusCall(overflow_profile.get(), 300U, clamped_key,
-                                Win32GlideSetterCensusOutcome::kApplied);
+                                GlideSetterCensusOutcome::kApplied);
     const auto overflowed = SnapshotGlideSetterCensus(*overflow_profile);
     const bool overflow =
         overflowed.key_overflow_count == 1U &&
         overflowed.ordinal_overflow_count == 1U &&
         clamped_key.word_count ==
-            engine::kWin32GlideSetterStateKeyWords;
+            engine::kGlideSetterStateKeyWords;
 
     RecordGlideSetterCensusCall(nullptr, kDepthMask, OneWordKey(1U),
-                                Win32GlideSetterCensusOutcome::kApplied);
+                                GlideSetterCensusOutcome::kApplied);
     RecordGlideSetterCensusInvalidation(nullptr);
     RecordGlideSetterCensusTextureGeneration(nullptr);
     RecordGlideSetterCensusFrameBoundary(nullptr);

@@ -32,13 +32,13 @@ constexpr std::uint32_t kOutOfArenaStepLocationCount =
 // does not.
 constexpr std::uint32_t kOutOfArenaStepAddressCapacity = 12U;
 
-struct Win32OutOfArenaStepAddress
+struct OutOfArenaStepAddress
 {
     std::uint32_t eip = 0;
     std::uint32_t count = 0;
 };
 
-struct Win32OutOfArenaStepCensus
+struct OutOfArenaStepCensus
 {
     std::uint32_t total_count = 0;
     std::array<std::uint32_t, kOutOfArenaStepLocationCount> location_counts = {};
@@ -54,11 +54,11 @@ struct Win32OutOfArenaStepCensus
     // taking another branch. These name which one.
     std::uint32_t trace_disabled_fallthrough_count = 0;
     std::uint32_t trace_enabled_handled_count = 0;
-    std::array<Win32OutOfArenaStepAddress, kOutOfArenaStepAddressCapacity>
+    std::array<OutOfArenaStepAddress, kOutOfArenaStepAddressCapacity>
         addresses = {};
 };
 
-struct Win32OutOfArenaStepCensusSnapshot
+struct OutOfArenaStepCensusSnapshot
 {
     std::uint32_t total_count = 0;
     std::array<std::uint32_t, kOutOfArenaStepLocationCount> location_counts = {};
@@ -69,13 +69,13 @@ struct Win32OutOfArenaStepCensusSnapshot
     std::uint32_t address_overflow_count = 0;
     std::uint32_t trace_disabled_fallthrough_count = 0;
     std::uint32_t trace_enabled_handled_count = 0;
-    std::array<Win32OutOfArenaStepAddress, kOutOfArenaStepAddressCapacity>
+    std::array<OutOfArenaStepAddress, kOutOfArenaStepAddressCapacity>
         addresses = {};
 };
 
 // Counter increments only -- this runs on the exception path, so it takes no
 // clock reading and allocates nothing.
-void RecordOutOfArenaStep(Win32OutOfArenaStepCensus* census,
+void RecordOutOfArenaStep(OutOfArenaStepCensus* census,
                           std::uint32_t eip,
                           OutOfArenaStepLocation location,
                           bool trace_enabled,
@@ -84,10 +84,10 @@ void RecordOutOfArenaStep(Win32OutOfArenaStepCensus* census,
 // A single step arriving with trace mode off does not reach
 // RecordSingleStepDiagnostics, so it never appears in `single_step_trace_count`.
 // It is handled further down the chain rather than discarded.
-void RecordSingleStepTraceDisposition(Win32OutOfArenaStepCensus* census,
+void RecordSingleStepTraceDisposition(OutOfArenaStepCensus* census,
                                       bool trace_enabled);
 
-Win32OutOfArenaStepCensusSnapshot SnapshotOutOfArenaStepCensus(
-    const Win32OutOfArenaStepCensus& census);
+OutOfArenaStepCensusSnapshot SnapshotOutOfArenaStepCensus(
+    const OutOfArenaStepCensus& census);
 
 }  // namespace repiu::engine
