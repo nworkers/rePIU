@@ -378,6 +378,19 @@ cmake -U "PC_LIBDECOR*" -U HAVE_LIBDECOR_H -S . -B build/linux_i386
 
 ### 측정됨 (Task 509) — Linux는 Windows의 3.7%입니다
 
+
+> **2026-08-29 재측정 ([Task 524](../work-logs/20260829-524-wslg-baseline-remeasure.md)).**
+> 같은 조건으로 v0.0.172에서 다시 재니 WSLg가 **34.11 · 35.22 · 36.96, 평균 35.43 fps
+> (프레임당 28.2 ms)**였습니다. 아래 표의 27.21보다 **1.30배 빠르고 두 집단의 범위가 겹치지
+> 않습니다**(최저 34.11 > 최고 27.76).
+>
+> **왜 빨라졌는지는 모릅니다.** 그 사이 머지에 성능을 노린 변경은 없었습니다. 측정 시점의
+> 호스트 상태 차이일 수도 있고 아래 값이 이미 낡았을 수도 있습니다. 원인을 확인하지 않았으므로
+> 추정하지 않습니다.
+>
+> **Windows 쪽은 다시 재지 않았습니다.** 730.05와 비교하면 격차는 26.8배에서 **약 20.6배**로
+> 줄지만, 한쪽만 새로 잰 비교이므로 그 배수는 아래 표만큼 단단하지 않습니다.
+
 | 호스트 | fps (Release, vsync OFF, `pumpit1` 90초, 3회) | 평균 | 프레임당 |
 |---|---|---:|---:|
 | Windows | 743.91 · 737.46 · 708.79 | **730.05** | 1.37 ms |
@@ -1145,6 +1158,19 @@ reason it does for libpulse: **the build succeeds and the game runs, quietly hal
    the detach, before `_Exit`. Six 60-second-budget runs: 6 of 6 refused, zero SIGTRAPs.
 
 ### Measured (Task 509) — Linux runs at 3.7% of Windows
+
+
+> **Re-measured 2026-08-29 ([Task 524](../work-logs/20260829-524-wslg-baseline-remeasure.md)).**
+> Under the same conditions at v0.0.172, WSLg gave **34.11 · 35.22 · 36.96, mean 35.43 fps
+> (28.2 ms per frame)** — **1.30x faster** than the 27.21 below, with the two groups not
+> overlapping (lowest 34.11 > highest 27.76).
+>
+> **Why it got faster is not known.** No merge in between aimed at performance. It may be host
+> conditions at measurement time, or the figure below may simply have gone stale. The cause was
+> not established, so none is claimed.
+>
+> **Windows was not re-measured.** Against 730.05 the gap narrows from 26.8x to **about 20.6x**,
+> but only one side is new, so that multiple is not as firm as the table below.
 
 | Host | fps (Release, vsync off, `pumpit1`, 90 s, 3 runs) | Mean | Per frame |
 |---|---|---:|---:|

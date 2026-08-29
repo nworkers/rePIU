@@ -37,7 +37,10 @@ bool HandleGuestOwnedBreakpoint(const repiu::platform::FaultEvent& fault,
     }
     // The tracked execution-trace sentinels are the engine's, planted in guest
     // memory, so they are the one guest-address breakpoint that is not the
-    // guest's.
+    // guest's. HandleSingleStepTrace owns them and runs before this, but only
+    // when the fault is a single step or a breakpoint with a reentry pending --
+    // a sentinel that fires as a plain breakpoint reaches here instead, so this
+    // check carries weight rather than merely repeating that one.
     if (context->execution_trace_configured &&
         (eip == context->runtime_base + context->execution_trace_start_offset ||
          (context->execution_trace_sentinel2_configured &&

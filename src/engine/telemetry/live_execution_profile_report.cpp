@@ -220,7 +220,8 @@ void ReportLiveExecutionProfileIfDue(
         aot_line, sizeof(aot_line),
         "[repiu-live-aot] #%u entry=%llu boundary=%llu per_frame=%llu "
         "residency_mean=%llu ret=%llu ind=%llu dir=%llu cond=%llu oth=%llu "
-        "reentry=%llu fallback=%llu sum_ok=%d\n",
+        "reentry=%llu fallback=%llu retired=%llu quarantine=%llu "
+        "translate=%llu sum_ok=%d\n",
         static_cast<unsigned>(g_report_index),
         static_cast<unsigned long long>(aot.cache_entry),
         static_cast<unsigned long long>(aot.boundary),
@@ -237,6 +238,9 @@ void ReportLiveExecutionProfileIfDue(
         static_cast<unsigned long long>(aot.boundary_other),
         static_cast<unsigned long long>(aot.reentry),
         static_cast<unsigned long long>(aot.legacy_fallback),
+        static_cast<unsigned long long>(aot.retired_entry_trap),
+        static_cast<unsigned long long>(aot.quarantine),
+        static_cast<unsigned long long>(aot.dynamic_attempt),
         reason_sum == aot.boundary ? 1 : 0);
     if (aot_length > 0)
     {
@@ -256,12 +260,13 @@ void ReportLiveExecutionProfileIfDue(
     // `per_reentry` is the number that matters. Windows resolves 95.1% of its
     // reentries here; a value near zero says the reentries are going the other
     // way, through a trap.
-    char glide_line[384] = {};
+    char glide_line[512] = {};
     const int glide_length = std::snprintf(
         glide_line, sizeof(glide_line),
         "[repiu-live-gdd] #%u patched=%llu verified=%llu resolved=%llu "
         "relinked=%llu content=%llu fixup=%llu entry=%llu "
-        "success=%llu miss=%llu terminal=%llu per_reentry=%.4f\n",
+        "success=%llu miss=%llu terminal=%llu per_reentry=%.4f "
+        "at_target=%llu elsewhere=%llu other=%llu step_after=%llu clean=%llu\n",
         static_cast<unsigned>(g_report_index),
         static_cast<unsigned long long>(aot.glide_patched_sites),
         static_cast<unsigned long long>(aot.glide_verified_sites),
@@ -276,7 +281,12 @@ void ReportLiveExecutionProfileIfDue(
         aot.reentry == 0U
             ? 0.0
             : static_cast<double>(aot.glide_entry) /
-                  static_cast<double>(aot.reentry));
+                  static_cast<double>(aot.reentry),
+        static_cast<unsigned long long>(aot.direct_trap_at_target),
+        static_cast<unsigned long long>(aot.direct_trap_elsewhere),
+        static_cast<unsigned long long>(aot.direct_other_elsewhere),
+        static_cast<unsigned long long>(aot.direct_step_after),
+        static_cast<unsigned long long>(aot.direct_clean));
     if (glide_length > 0)
     {
         repiu::platform::WriteHostErrorStream(
@@ -284,6 +294,38 @@ void ReportLiveExecutionProfileIfDue(
             static_cast<std::size_t>(glide_length) < sizeof(glide_line)
                 ? static_cast<std::size_t>(glide_length)
                 : sizeof(glide_line) - 1U);
+    }
+
+    // Task 526: the sites those follow-on breakpoints land on. Its own line
+    // because a histogram does not fit the shape of the one above it.
+    char site_line[384] = {};
+    int site_length = std::snprintf(
+        site_line, sizeof(site_line), "[repiu-live-site] #%u",
+        static_cast<unsigned>(g_report_index));
+    for (std::size_t slot = 0; slot < 8U && site_length > 0; ++slot)
+    {
+        if (aot.direct_trap_site_count[slot] == 0U)
+        {
+            break;
+        }
+        const int written = std::snprintf(
+            site_line + site_length,
+            sizeof(site_line) - static_cast<std::size_t>(site_length),
+            " %08X=%u",
+            static_cast<unsigned>(aot.direct_trap_site_address[slot]),
+            static_cast<unsigned>(aot.direct_trap_site_count[slot]));
+        if (written <= 0)
+        {
+            break;
+        }
+        site_length += written;
+    }
+    if (site_length > 0 &&
+        static_cast<std::size_t>(site_length) < sizeof(site_line) - 1U)
+    {
+        site_line[site_length] = '\n';
+        repiu::platform::WriteHostErrorStream(
+            site_line, static_cast<std::size_t>(site_length) + 1U);
     }
 
     g_last_report_ticks = now;

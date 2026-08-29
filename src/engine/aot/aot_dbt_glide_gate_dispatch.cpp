@@ -125,6 +125,18 @@ extern "C" void REPIU_THUNK_RESOLVER_CALL ResolveAotDbtGlideGateFrame(
         AccumulateAotResidency(
             context, static_cast<std::uint32_t>(guest_context.Eip));
         BumpAotReentryCount(context);
+        // Task 526: arm the classifier. The next fault this thread takes --
+        // or the absence of one before the next dispatch -- is what says
+        // whether this trap-free path actually stayed trap-free.
+        if (context->direct_dispatch_trap_pending)
+        {
+            // Still armed from the previous dispatch, so no fault came
+            // between the two: that one really was trap-free.
+            context->direct_dispatch_clean.fetch_add(
+                1U, std::memory_order_relaxed);
+        }
+        context->last_direct_dispatch_target = cache_target;
+        context->direct_dispatch_trap_pending = true;
         g_success_count.fetch_add(1U, std::memory_order_relaxed);
         return;
     }

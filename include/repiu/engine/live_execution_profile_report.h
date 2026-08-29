@@ -50,6 +50,12 @@ struct LiveAotCounters
     std::uint32_t boundary_other = 0;
     std::uint32_t reentry = 0;
     std::uint32_t legacy_fallback = 0;
+    // Task 527: whether the cache is being torn down and rebuilt underneath
+    // the dispatches. A retired entry trap and a quarantine are the two ways
+    // a translation stops being valid, and 526 left that as a hypothesis.
+    std::uint32_t retired_entry_trap = 0;
+    std::uint32_t quarantine = 0;
+    std::uint32_t dynamic_attempt = 0;
     // Task 263(b)'s residency proxy: straight-line guest instructions from a
     // cache entry to its first control transfer, and how many entries were
     // sampled. Their ratio says how far the cache runs before it lets go.
@@ -74,6 +80,14 @@ struct LiveAotCounters
     std::uint32_t glide_success = 0;
     std::uint32_t glide_target_miss = 0;
     std::uint32_t glide_terminal_failure = 0;
+    // Task 526: what followed each trap-free reentry.
+    std::uint32_t direct_trap_at_target = 0;
+    std::uint32_t direct_trap_elsewhere = 0;
+    std::uint32_t direct_other_elsewhere = 0;
+    std::uint32_t direct_step_after = 0;
+    std::uint32_t direct_clean = 0;
+    std::uint32_t direct_trap_site_address[8] = {};
+    std::uint32_t direct_trap_site_count[8] = {};
     // Task 518: what the patch resolved to.
     //
     // 517 established that the patched sites are entered and succeed on Linux,

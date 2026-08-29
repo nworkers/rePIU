@@ -3390,6 +3390,66 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         win32_context, context,
         fault.kind == repiu::platform::FaultKind::kSingleStep &&
             IsGuestInstructionPointer(context, context->last_veh_eip));
+    // Task 526: classify what followed the last trap-free reentry.
+    //
+    // Done at the top of the dispatcher, before any handler can rewrite Eip,
+    // because the address the fault arrived at is the whole question. Split by
+    // kind because "a fault followed" and "a breakpoint followed" are different
+    // claims, and only the second one says the cache still holds an INT3.
+    if (context->direct_dispatch_trap_pending)
+    {
+        context->direct_dispatch_trap_pending = false;
+        if (fault.kind == repiu::platform::FaultKind::kSingleStep)
+        {
+            context->direct_dispatch_step_after.fetch_add(
+                1U, std::memory_order_relaxed);
+        }
+        else if (fault.instruction_address ==
+                 context->last_direct_dispatch_target)
+        {
+            context->direct_dispatch_trap_at_target.fetch_add(
+                1U, std::memory_order_relaxed);
+        }
+        else if (fault.kind == repiu::platform::FaultKind::kBreakpoint)
+        {
+            context->direct_dispatch_trap_elsewhere.fetch_add(
+                1U, std::memory_order_relaxed);
+            // Evict the coldest slot when full. Filling eight slots and
+            // freezing captures whichever sites the first eight faults hit,
+            // which are startup sites, and then reports nothing about the
+            // steady state -- the first version of this did exactly that and
+            // showed eight addresses at one hit each.
+            const std::uint32_t site = fault.instruction_address;
+            std::size_t victim = 0;
+            bool placed = false;
+            for (std::size_t slot = 0;
+                 slot < ThreadContext::kDirectTrapSiteCapacity; ++slot)
+            {
+                if (context->direct_trap_site_address[slot] == site &&
+                    context->direct_trap_site_count[slot] != 0U)
+                {
+                    ++context->direct_trap_site_count[slot];
+                    placed = true;
+                    break;
+                }
+                if (context->direct_trap_site_count[slot] <
+                    context->direct_trap_site_count[victim])
+                {
+                    victim = slot;
+                }
+            }
+            if (!placed)
+            {
+                context->direct_trap_site_address[victim] = site;
+                context->direct_trap_site_count[victim] = 1U;
+            }
+        }
+        else
+        {
+            context->direct_dispatch_other_elsewhere.fetch_add(
+                1U, std::memory_order_relaxed);
+        }
+    }
     UnhandledBreakpointEvidence breakpoint_evidence;
     if (fault.kind == repiu::platform::FaultKind::kBreakpoint)
     {
@@ -3546,14 +3606,6 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         if (HandleAotIndirectTransfer(aot_fault, context))
         {
             NoteVehExitSite(context, VehExitSite::kAotIndirectTransfer);
-            return repiu::platform::FaultDisposition::kResume;
-        }
-        // Task 523: after every handler that could own an INT3 has declined,
-        // one that the engine never planted is the guest's own. Placed here
-        // rather than earlier precisely so it cannot take a breakpoint that
-        // belongs to the cache.
-        if (HandleGuestOwnedBreakpoint(aot_fault, context))
-        {
             return repiu::platform::FaultDisposition::kResume;
         }
         if (stop_for_aot_terminal_failure())
@@ -3757,6 +3809,21 @@ repiu::platform::FaultDisposition DispatchGuestFault(
          (context->aot_reentry_pending &&
           fault.kind == repiu::platform::FaultKind::kBreakpoint)) &&
         HandleSingleStepTrace(win32_context, context))
+    {
+        return repiu::platform::FaultDisposition::kResume;
+    }
+    // Task 525: a breakpoint that reaches here is the guest's own.
+    //
+    // Last in the chain, and the position is the correctness argument: every
+    // handler that could own an INT3 -- the AOT cache handlers, the boundary
+    // gates, and the trace sentinels inside HandleSingleStepTrace -- has now
+    // declined it. Taking it any earlier would step over a byte that one of
+    // them planted and skip the work that byte exists to trigger.
+    //
+    // It is also the last chance to claim it: below this the chain decodes the
+    // instruction at Eip, and a guest that placed 0xCC there gets reported as
+    // unsupported rather than resumed.
+    if (HandleGuestOwnedBreakpoint(fault, context))
     {
         return repiu::platform::FaultDisposition::kResume;
     }

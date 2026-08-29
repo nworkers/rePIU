@@ -2497,6 +2497,28 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                 direct_dispatch.relink_content_patch_count;
             live_aot.glide_relink_fixup =
                 direct_dispatch.relink_fixup_patch_count;
+            live_aot.direct_trap_at_target =
+                load_counter(context->direct_dispatch_trap_at_target);
+            live_aot.direct_trap_elsewhere =
+                load_counter(context->direct_dispatch_trap_elsewhere);
+            live_aot.direct_other_elsewhere =
+                load_counter(context->direct_dispatch_other_elsewhere);
+            live_aot.direct_step_after =
+                load_counter(context->direct_dispatch_step_after);
+            live_aot.direct_clean =
+                load_counter(context->direct_dispatch_clean);
+            live_aot.retired_entry_trap =
+                load_counter(context->aot_retired_entry_trap_count);
+            live_aot.quarantine = load_counter(context->aot_quarantine_count);
+            live_aot.dynamic_attempt =
+                load_counter(context->aot_dynamic_attempt_count);
+            for (std::size_t slot = 0; slot < 8U; ++slot)
+            {
+                live_aot.direct_trap_site_address[slot] =
+                    context->direct_trap_site_address[slot];
+                live_aot.direct_trap_site_count[slot] =
+                    context->direct_trap_site_count[slot];
+            }
             ReportLiveExecutionProfileIfDue(
                 context->execution_time_profile.get(),
                 context->glide_backend.presented_frame_total(),

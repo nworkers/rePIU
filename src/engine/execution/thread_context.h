@@ -250,6 +250,27 @@ struct ThreadContext
     // Task 523: breakpoints the engine did not plant -- the guest's own 0xCC.
     // Guest-thread only, like the trap that produces it.
     std::uint32_t guest_owned_breakpoint_count = 0;
+    // Task 526: what follows a reentry that took the trap-free path.
+    //
+    // Windows resolves 95% of its reentries through Glide direct dispatch and
+    // pays no trap for them; Linux takes that path for 87% and traps anyway.
+    // Whether the trap lands on the very cache address the dispatch just
+    // jumped to is the difference between "the jump did not take" and "the
+    // target itself still holds a breakpoint", and no existing counter
+    // separates those. Guest-thread only, like the faults they count.
+    std::uint32_t last_direct_dispatch_target = 0;
+    bool direct_dispatch_trap_pending = false;
+    std::atomic<std::uint32_t> direct_dispatch_trap_at_target{0};
+    std::atomic<std::uint32_t> direct_dispatch_trap_elsewhere{0};
+    std::atomic<std::uint32_t> direct_dispatch_other_elsewhere{0};
+    std::atomic<std::uint32_t> direct_dispatch_step_after{0};
+    std::atomic<std::uint32_t> direct_dispatch_clean{0};
+    // Where the follow-on breakpoint actually lands. A small fixed histogram
+    // because the answer expected is a handful of sites, and anything larger
+    // would allocate inside a fault handler.
+    static constexpr std::size_t kDirectTrapSiteCapacity = 8;
+    std::uint32_t direct_trap_site_address[kDirectTrapSiteCapacity] = {};
+    std::uint32_t direct_trap_site_count[kDirectTrapSiteCapacity] = {};
     std::atomic<std::uint32_t> aot_reentry_count{0};
     std::atomic<std::uint32_t> aot_legacy_fallback_count{0};
     std::atomic<std::uint32_t> aot_last_fallback_address{0};
