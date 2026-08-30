@@ -8,6 +8,9 @@
 #include "aot_residency_sample.h"
 #include "aot_dbt_call_return_trace.h"
 #include "repiu/engine/aot_boundary_provenance.h"
+#include "repiu/engine/aot_ff_boundary_attribution.h"
+#include "repiu/engine/aot_ff_boundary_target_attribution.h"
+#include "repiu/engine/aot_ff_target_timing.h"
 #include "repiu/engine/aot_return_stage_profile.h"
 #include "repiu/runtime/aot_direct_return_table.h"
 #include "execution_internal.h"
@@ -24,6 +27,7 @@
 #include <vector>
 #include "repiu/platform/guest_cpu_context.h"
 #include "repiu/platform/atomic_ops.h"
+#include "repiu/platform/host_time.h"
 #include "repiu/platform/worker_signal.h"
 
 namespace repiu::engine
@@ -42,7 +46,7 @@ void BumpAotBoundaryCount(ThreadContext* context)
 void BumpAotBoundaryReason(ThreadContext* context, AotBoundaryReason reason)
 {
     std::atomic<std::uint32_t>* local = nullptr;
-    volatile long* shared = nullptr;
+    volatile std::int32_t* shared = nullptr;
     SharedLiveTelemetry* telemetry = context->shared_live_telemetry;
     switch (reason)
     {
@@ -110,6 +114,8 @@ void RecordAotOtherBoundarySample(ThreadContext* context,
     // instruction produced the exception.
     RecordAotBoundaryOpcodeSample(
         &context->aot_boundary_opcode_census, bytes, length);
+    RecordAotFfBoundarySample(
+        &context->aot_ff_boundary_attribution, guest_eip, bytes, length);
     std::uint32_t packed = 0;
     for (std::size_t i = 0; i < 4U && i < length; ++i)
     {
@@ -1815,6 +1821,8 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
     }
     if (fault.kind == repiu::platform::FaultKind::kBreakpoint)
     {
+        ClearAotFfTargetTimingCandidate(
+            &context->aot_ff_boundary_attribution.target_timing);
         const std::uint32_t cache_address = fault.instruction_address;
         std::uint32_t guest_address = 0;
         // Task 334 interval 1. `FindAotGuestAddress` scans the whole address
@@ -1978,6 +1986,13 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
             {
                 RecordAotOtherBoundarySample(context, guest_address,
                                              boundary_bytes, readable);
+                RecordAotFfBoundaryTargetSample(
+                    &context->aot_ff_boundary_attribution,
+                    context,
+                    win32_context,
+                    guest_address,
+                    boundary_bytes,
+                    readable);
             }
             // Task 264 prerequisite probe (instrumentation only): at a
             // push-segment boundary, compare the host segment register against
@@ -2042,6 +2057,14 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
     if (ResolveAotTransferTarget(context, current, &cache_address))
     {
         NoteVehExitSite(context, VehExitSite::kAotReentryResolved);
+        if (AotFfTargetTimingEnabled())
+        {
+            BeginAotFfTargetTimingIfMatched(
+                &context->aot_ff_boundary_attribution.target_timing,
+                current,
+                cache_address,
+                repiu::platform::ReadCycleCounter());
+        }
         win32_context->Eip = cache_address;
         win32_context->EFlags &= ~0x00000100U;
         context->aot_reentry_pending = false;

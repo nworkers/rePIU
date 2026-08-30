@@ -13,9 +13,10 @@
 namespace
 {
 
-long ReadInterlocked(volatile long* value)
+std::int32_t ReadInterlocked(volatile std::int32_t* value)
 {
-    return InterlockedCompareExchange(value, 0, 0);
+    return static_cast<std::int32_t>(InterlockedCompareExchange(
+        reinterpret_cast<volatile long*>(value), 0, 0));
 }
 
 void PrintPage(const char* label, HANDLE process, std::uint32_t address)

@@ -1,11 +1,24 @@
 #pragma once
 
+#include "repiu/engine/aot_ff_boundary_attribution.h"
 #include "repiu/engine/execution_time_profile.h"
 
 #include <cstdint>
 
 namespace repiu::engine
 {
+
+// Task 528. A trace-free snapshot of handled interrupts and the INT 21h AH
+// histogram.
+// The counters are filled by the execution engine and ranked at the frame
+// boundary, so the reporter does not depend on ThreadContext.
+struct LiveDosCounters
+{
+    std::uint32_t handled_interrupt_count = 0;
+    std::uint32_t int21_count = 0;
+    std::uint8_t top_int21_ah[4] = {};
+    std::uint32_t top_int21_ah_count[4] = {};
+};
 
 // Task 511. The execution time attribution, printed while the run is going.
 //
@@ -56,6 +69,30 @@ struct LiveAotCounters
     std::uint32_t retired_entry_trap = 0;
     std::uint32_t quarantine = 0;
     std::uint32_t dynamic_attempt = 0;
+    // Task 528: which instruction is throwing the run out of the cache.
+    // Ranked here rather than in the reporter so the reporter stays a
+    // formatter. Escape entries are the second byte behind a 0F.
+    std::uint32_t opcode_samples = 0;
+    std::uint8_t top_opcode[4] = {};
+    std::uint32_t top_opcode_count[4] = {};
+    std::uint8_t top_escape[4] = {};
+    std::uint32_t top_escape_count[4] = {};
+    // Task 529: the ModRM reg groups behind effective FF opcodes.
+    std::uint32_t ff_group_counts[8] = {};
+    std::uint32_t ff_modrm_truncated_count = 0;
+    std::uint32_t ff4_sample_count = 0;
+    std::uint32_t ff4_modrm_truncated_count = 0;
+    std::uint32_t ff4_site_overflow_count = 0;
+    std::uint32_t ff4_target_resolved_count = 0;
+    std::uint32_t ff4_target_unresolved_count = 0;
+    std::uint32_t ff4_target_instruction_truncated_count = 0;
+    std::uint32_t ff4_target_unsupported_count = 0;
+    std::uint32_t ff4_target_memory_unreadable_count = 0;
+    std::uint32_t ff4_addressing_mode_counts[
+        kAotFfAddressingModeCount] = {};
+    AotFfBoundarySiteHotspot ff4_site_hotspots[
+        kAotFfBoundarySiteHotspotCapacity] = {};
+    AotFfTargetTimingProfile ff4_target_timing;
     // Task 263(b)'s residency proxy: straight-line guest instructions from a
     // cache entry to its first control transfer, and how many entries were
     // sampled. Their ratio says how far the cache runs before it lets go.
@@ -116,6 +153,7 @@ struct LiveAotCounters
 void ReportLiveExecutionProfileIfDue(
     const ExecutionTimeProfile* profile,
     std::uint64_t frames,
-    const LiveAotCounters& aot);
+    const LiveAotCounters& aot,
+    const LiveDosCounters& dos);
 
 }  // namespace repiu::engine

@@ -1378,3 +1378,53 @@ and batched points apply it through common draw state. The Release
 invalid-dimension cases. Visual comparison of the actual service screen remains
 for a user run; line width and fixed-surface nearest-neighbor presentation are
 unchanged.
+
+## Linux P_8/AP_88 경로 검토 (2026-08-30 Task 540) — **포트 누락 없음; WSLg renderer 위험**
+
+Linux 빌드는 Win32와 동일한 `glide_opengl_backend.cpp`와 `glide_texture_decode.cpp`를
+사용합니다. P_8/AP_88은 CPU에서 RGBA8로 디코드하고 `glTexImage2D`로 업로드하며,
+palette generation이 바뀌면 `glTexSubImage2D`로 지연 갱신합니다. Linux 전용 palette
+구현이 따로 없어 포팅 누락이 발생할 구조도 아닙니다.
+
+Linux WSLg `pumpipx3` 실행은 실제로 이 경로를 사용했습니다. texture upload 54회 중
+P_8(`format 5`)이 42회였고, palette 변경 266회, 성공한 lazy refresh 224회였습니다.
+refresh source/RGBA bytes는 `14,680,064/58,720,256`, decode/upload 시간은
+`25.845/7.021 ms`였습니다. decode failure, palette missing, GL debug error는 모두 0입니다.
+
+현재 WSLg EGL/OpenGL renderer는 Mesa `llvmpipe`, `Accelerated: no`입니다. 이는 모든
+Linux의 결론이 아니라 현재 측정 환경의 사실이지만, RGBA8로 확장된 texture의 sampling과
+rasterization까지 소프트웨어로 수행될 수 있어 하드웨어 가속 Win32보다 paletted texture
+장면이 불리할 수 있습니다. refresh 호출 누계만으로는 지속적인 5 fps 구간을 설명할 수
+없지만, upload 이후 draw의 소프트웨어 texture sampling 비용은 해당 누계에 포함되지
+않았습니다.
+
+추가 코드 후보로 texture upload와 palette refresh가 `glTexImage2D`/`glTexSubImage2D` 직후
+`glGetError()`를 무조건 호출하는 점이 있습니다. 다른 setter 경로의 공용 error-check
+정책과 다르며, Linux driver에서 동기화 비용을 만드는지는 아직 측정하지 않았습니다.
+전체 late drop의 원인을 이 경로로 확정하려면 하드웨어 가속 native Linux 비교와 frame별
+P_8 draw 계측이 필요합니다.
+
+## Linux P_8/AP_88 path review (2026-08-30 Task 540) — **no port omission; WSLg renderer risk**
+
+The Linux build uses the same `glide_opengl_backend.cpp` and `glide_texture_decode.cpp` as
+Win32. P_8/AP_88 are decoded on the CPU to RGBA8, uploaded with `glTexImage2D`, and lazily
+updated with `glTexSubImage2D` after palette generations change. There is no separate Linux
+palette implementation that could have been left unported.
+
+The Linux WSLg `pumpipx3` run did use the path: 54 texture uploads included 42 P_8 textures,
+and the run recorded 266 changed palette downloads and 224 successful lazy refreshes. The
+refresh totals were 14,680,064 indexed source bytes and 58,720,256 RGBA bytes, with 25.845 ms
+of decode time and 7.021 ms of upload time. Decode failures, missing palettes, and GL debug
+errors were all zero.
+
+The current WSLg EGL/OpenGL renderer is Mesa `llvmpipe` with `Accelerated: no`. This is an
+environment-level Linux risk: the expanded RGBA8 texture is sampled and rasterized in
+software, so a paletted-texture-heavy scene can be slower than on hardware-accelerated
+Win32. The refresh-call total alone is too small to explain the sustained 5 FPS interval,
+but the subsequent software texture sampling cost was not included in that total.
+
+One smaller code-level candidate remains: texture upload and palette-refresh paths call
+`glGetError()` unconditionally immediately after `glTexImage2D`/`glTexSubImage2D`, while most
+setter paths follow the shared error-check policy. Whether that synchronizes expensively on a
+Linux driver is unmeasured. An accelerated native Linux run and per-frame P_8 draw accounting
+are required before attributing the entire late drop to this path.

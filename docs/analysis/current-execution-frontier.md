@@ -3891,4 +3891,776 @@ the existing PIT/JAMMA bundle and full `pumpit1/PIU.EXE` probe also passed. The 
 stopped before execution because
 the pumpit3 CHD directory was unavailable, so live user-key confirmation remains.
 
+## 2026-08-30 Task 528: pumpipx3 성능 귀속 — DOS AH2C 증가는 late drop의 설명이 아님
+
+**확인됨:** Linux i386 Release에서 `REPIU_STALL_TIMEOUT_MS=0`,
+`REPIU_GLIDE_SWAP_INTERVAL=0`, `REPIU_LIVE_PROFILE_INTERVAL_MS=10000`을 동일하게 적용한
+보정 실행을 수행했습니다. `pumpipx3`는 45초 실행에서 `frames=1403`,
+`span_ms=41602`로 종료했고, `pumpit1`은 `frames=1746`, `span_ms=42953`으로 종료했습니다.
+절대 FPS는 실행 상태에 따라 변동하므로 이 한 쌍의 값만으로 성능 비율을 고정하지 않습니다.
+
+**확인됨(호출 분포):** 기존 `handled_dos_interrupt_ah_counts`는 모든 HLE interrupt vector의
+AH를 합산했습니다. 이를 보완해 `INT 21h` 전용 누적 배열을 추가했습니다. 보정된 live 보고
+마지막 표본에서 `pumpipx3`는 `handled=399060`, `int21=396180`, `AH2C=395893`이었고,
+`pumpit1`은 `handled=1256`, `int21=906`이며 상위 AH가 `3B/4A/44/3F`였습니다. 따라서
+키보드 등 다른 vector의 AH를 DOS AH로 잘못 해석하지 않습니다.
+
+**확인됨(AOT/VEH):** 같은 마지막 표본에서 `pumpipx3`의 AOT 경계는 `425069`, 재진입은
+`1528013`, VEH 비율은 `77.57%`, cycle/frame은 `85430774`였습니다. `pumpit1`은 각각
+`24000`, `185022`, `55.67%`, `105590371`이었습니다. `pumpipx3`의 경계 표본 opcode는
+`CD=399060`이 가장 많았고, `pumpit1`은 `8A/88/89/8E`가 상위였습니다. 이는 두 타이틀의
+실행 경계 형태가 크게 다르다는 근거이지만, 그 자체로 late drop의 단일 원인을 확정하지는
+않습니다.
+
+**확인됨(late drop):** 이번 `pumpipx3` 실행은 약 38.6초에 `11.3 FPS`를 거쳐 이후
+`4.7~4.9 FPS`로 내려갔습니다. 그러나 live 표본 #3에서 #4로 갈 때 `AH2C=395893`은
+증가하지 않았습니다. 따라서 late drop은 새로 늘어난 AH2C 호출량으로 설명되지 않습니다.
+Task 402의 self-calibrating delay 및 DOS 서비스 본체 비용에 대한 결론을 유지합니다.
+
+**추정:** 현재 관측은 원본 게스트 timing 경로와 HLE/AOT 경계 비용이 함께 작동함을 가리킵니다.
+다만 현재 실행에서는 late drop 부근에 AOT `FF` 표본과 MP3 초기화 로그가 증가했으므로,
+이것을 원인으로 단정하지 않고 다음 분석 축의 후보로만 남깁니다. Task 527에서 확인한
+캐시 재구축 부재(`retired/quarantine` 및 translate 증가가 작음)와도 일관됩니다.
+
+**미확정(다음 frontier):** late drop을 유발한 게스트 장면/상태 변화와 AOT `FF` 경로의
+정확한 관계는 아직 확인하지 못했습니다. 다음 작업에서는 원본 실행 파일의 해당 상태 전환과
+late-drop 직전·직후 경계 경로를 시간축으로 좁혀야 하며, 추측성 DOS/HLE 최적화는 적용하지
+않습니다.
+
+## 2026-08-30 Task 528: pumpipx3 performance attribution — AH2C growth does not explain the late drop
+
+**Confirmed:** A corrected Linux i386 Release run used identical
+`REPIU_STALL_TIMEOUT_MS=0`, `REPIU_GLIDE_SWAP_INTERVAL=0`, and
+`REPIU_LIVE_PROFILE_INTERVAL_MS=10000` settings. `pumpipx3` ended after 45 seconds with
+`frames=1403`, `span_ms=41602`; `pumpit1` ended with `frames=1746`, `span_ms=42953`.
+Absolute FPS varies with the run state, so this pair is not used to establish a fixed performance
+ratio.
+
+**Confirmed (call distribution):** the existing `handled_dos_interrupt_ah_counts` aggregates AH
+across every HLE interrupt vector. A separate cumulative histogram for `INT 21h` was added. In the
+corrected final live sample, `pumpipx3` reported `handled=399060`, `int21=396180`, and
+`AH2C=395893`; `pumpit1` reported `handled=1256`, `int21=906`, with top AH values `3B/4A/44/3F`.
+Keyboard and other interrupt-vector AH values are therefore not misclassified as DOS AH values.
+
+**Confirmed (AOT/VEH):** in the same final sample, `pumpipx3` reported AOT boundary `425069`,
+reentry `1528013`, VEH share `77.57%`, and `85430774` cycles/frame. `pumpit1` reported
+`24000`, `185022`, `55.67%`, and `105590371`, respectively. `pumpipx3` was dominated by
+boundary opcode `CD=399060`, while `pumpit1` was led by `8A/88/89/8E`. This establishes a large
+difference in execution-boundary shape, but not a single late-drop cause.
+
+**Confirmed (late drop):** this `pumpipx3` run passed through `11.3 FPS` at about 38.6 seconds
+and then stayed around `4.7–4.9 FPS`. `AH2C=395893` did not increase from live sample #3 to #4.
+The late drop is therefore not explained by a new increase in AH2C call volume. Task 402's
+self-calibrating-delay and DOS-service-body conclusions remain unchanged.
+
+**Inferred:** the observation points to interaction between original guest timing and HLE/AOT
+boundary work. AOT `FF` samples and an MP3 initialization message increased near the late drop in
+this run, but that is only a candidate correlation. It is consistent with Task 527's finding that
+the cache is not being rebuilt continuously.
+
+**Unresolved (next frontier):** the exact relationship between the guest scene/state transition,
+the AOT `FF` path, and the late drop remains unconfirmed. The next unit should narrow the boundary
+path immediately before and after the drop; no speculative DOS/HLE tuning is justified yet.
+
+**보조 60초 확인:** 계획 범위의 장기 실행에서도 `pumpipx3`는 `frames=1497`,
+`span_ms=56786`으로 종료했고, 약 35.6초부터 `4.8~5.1 FPS`를 유지했습니다. 이 실행의
+live 표본 #1~#5에서 `AH2C=356476`은 고정됐습니다. `pumpit1`은 `frames=2207`,
+`span_ms=57964`로 종료했고 고정 5 FPS 상태에 들어가지 않았습니다. 이 결과는 45초 표본의
+late-drop 관측을 보강하지만, 절대 FPS 자체를 안정적인 benchmark로 만들지는 않습니다.
+
+**Supplemental 60-second check:** in the longer run, `pumpipx3` ended with `frames=1497`,
+`span_ms=56786` and stayed at `4.8–5.1 FPS` from about 35.6 seconds onward. Its live samples
+#1–#5 kept `AH2C=356476` unchanged. `pumpit1` ended with `frames=2207`, `span_ms=57964` and
+did not enter a fixed 5 FPS state. This strengthens the 45-second late-drop observation, but does
+not turn absolute FPS into a stable benchmark.
+
+## 2026-08-30 Task 530: `FF /4` is concentrated at title-specific SIB sites
+
+**구현 및 검증:** `FF /4` 표본을 guest EIP별로 고정 슬롯에 누적하고, 유효 opcode 앞의
+legacy prefix를 포함한 최대 4바이트와 ModRM addressing mode를 함께 기록하도록 확장했습니다.
+`reg`, `abs`, `base`, `sib`, `addr16` 모드를 분류하며, site overflow와 ModRM truncation도
+별도 계수합니다. Windows `repiu_aot_probe`의 mode/site/overflow/truncation 검사가 모두
+통과했고 Linux i386 Release 본체도 빌드되었습니다.
+
+**확인됨:** 같은 trace-free 60초 조건에서 두 타이틀의 관측된 `FF /4`는 모두 SIB 형식이며,
+site overflow와 ModRM truncation은 0입니다. 누적 live 표본은 다음과 같습니다. `packed`는
+출력 정수의 little-endian byte 순서로, 예를 들어 `0x9524FF2E`는 `2E FF 24 95`입니다.
+
+| live 표본 | `pumpipx3` | `pumpit1` |
+| --- | --- | --- |
+| #3 | `/4=2850`, `sib=2850`; `0x010EF6DE:2828`, `0x0102A963:11`, `0x010E785C:11`; 주 site `packed=0x9524FF2E` | `/4=58`, `sib=58`; `0x010F1DD7:58`; `packed=0x8524FF2E` |
+| #4 | `/4=2850`, `sib=2850`; 주 site `0x010EF6DE:2828` | `/4=91`, `sib=91`; `0x010F1DD7:91` |
+| #5 | `/4=3628`, `sib=3628`; 주 site `0x010EF6DE:3600` | `/4=91`, `sib=91`; `0x010F1DD7:91` |
+
+`pumpipx3`의 #5 증가는 주 site에서 `2828 -> 3600`으로 발생했고, 나머지 두 site는 각각
+`11 -> 14`였습니다. 주 site는 전체의 약 99.2%이며 모든 관측에서 `byte_change=0`,
+`mode_change=0`입니다. `pumpit1`은 단일 site만 관측되었고, `0x010F1DD7`의 captured
+bytes는 `2E FF 24 85`로 `pumpipx3`의 `2E FF 24 95`와 SIB index byte가 다릅니다.
+
+**추정:** 두 타이틀 모두 반복되는 하나의 `CS:FF /4` SIB site가 존재하지만, site EIP와
+SIB index가 다릅니다. `pumpipx3`에서 late drop과 함께 `/4`가 증가한 후보 site는
+`0x010EF6DE`로 좁혀졌습니다. 다만 현재 window는 displacement와 계산된 indirect target을
+포함하지 않으므로, 이 결과만으로 실제 target이나 비용을 확정할 수 없습니다.
+
+**미확정 및 다음 축:** 다음 작업에서 해당 site의 instruction 뒤 displacement와 실행 시
+계산된 target을 관측하고, late-drop 전후 window의 site별 cycle과 연결해야 합니다. 원본 guest
+code와 실행 경로에는 최적화를 적용하지 않았습니다.
+
+## 2026-08-30 Task 529: pumpipx3 late drop aligns with an AOT `FF /4` boundary surge
+
+**구현 및 검증:** AOT boundary census가 유효 opcode `FF` 뒤의 ModRM reg field를 `FF /0`~`FF /7`로
+누적 분류하고, ModRM이 캡처되지 않은 표본을 별도로 셉니다. live reporter는 `[repiu-live-ff]`로
+0이 아닌 그룹만 출력합니다. Windows `repiu_aot_probe`의 기존 검사와 `/2`, `/4`, truncated
+검사가 모두 통과했고, Linux i386 Release 빌드도 통과했습니다. 이 계측은 원본 guest code와
+실행 의미를 변경하지 않습니다.
+
+**확인됨:** 동일한 trace-free 60초 조건에서 두 타이틀 모두 관측된 `FF` 표본은 `/4`뿐이었고,
+`/2`와 truncated 표본은 없었습니다.
+
+| live 표본 | `pumpipx3` | `pumpit1` |
+| --- | --- | --- |
+| #3, late drop 직전 | `/2=0 /4=3628`, `cycles/frame=118270439` | `/2=0 /4=58`, `cycles/frame=118027477` |
+| #4, 약 40초 | `/2=0 /4=15811`, `cycles/frame=79325953`, FPS 약 3.9 | `/2=0 /4=90`, `cycles/frame=107165901`, FPS 약 30.8~33.9 |
+| #5, 약 50초 | `/2=0 /4=15811`, `cycles/frame=945417753`, FPS 약 4.0 | `/2=0 /4=90`, `cycles/frame=133918358`, FPS 약 22~26 |
+
+`pumpipx3`의 누적 `/4`는 #3에서 #4 사이에 `3628 -> 15811`로 `12183` 증가했습니다. 같은
+구간에서 frame-rate가 약 38.1 FPS에서 3.9 FPS로 떨어졌고, 이후 `/4=15811`과 약 4 FPS가
+유지됐습니다. `pumpit1`의 `/4` 증가는 같은 구간에서 `58 -> 90`에 그쳤고 고정 5 FPS 상태는
+나타나지 않았습니다. `pumpipx3`의 `AH2C`도 이 실행의 #3~#5에서 `434544`로 변하지 않았습니다.
+
+**추정:** `FF /4`는 near indirect jump 경로를 식별하므로, 이번 결과는 late drop과 함께 늘어난
+간접 jump 경계가 타이틀 특이적 후보임을 보여줍니다. 다만 이 census는 경계에서 관측한 opcode와
+누적 횟수만 기록하므로, 하나의 site가 반복된 것인지 여러 site가 실행된 것인지, 각 site의
+target/addressing mode와 실제 소요 cycle이 무엇인지는 알 수 없습니다. 따라서 `/4` 증가를
+late drop의 원인으로 확정하지 않으며, 이 작업에서 최적화도 적용하지 않았습니다.
+
+**미확정 및 다음 축:** `FF /4` 표본을 guest EIP/site, ModRM addressing mode, resolved target,
+그리고 late-drop 전후 window cycle과 연결해야 합니다. 다음 분석은 이 주소·target 귀속을
+추적하되, 원본 실행 경로를 유지하고 관측 전용으로 진행해야 합니다.
+
+## 2026-08-30 Task 529: pumpipx3 late drop aligns with an AOT `FF /4` boundary surge
+
+**Implementation and verification:** the AOT boundary census now classifies the ModRM reg field
+following an effective `FF` opcode into `FF /0` through `FF /7`, and counts samples whose ModRM byte
+was not captured. The live reporter emits non-zero groups on `[repiu-live-ff]`. The Windows
+`repiu_aot_probe` passed its existing checks plus `/2`, `/4`, and truncated-input checks, and the
+Linux i386 Release build passed. The instrumentation does not change original guest code or
+execution semantics.
+
+**Confirmed:** under identical trace-free 60-second conditions, every observed `FF` sample in both
+titles was `/4`; neither `/2` nor truncated samples occurred.
+
+| live sample | `pumpipx3` | `pumpit1` |
+| --- | --- | --- |
+| #3, before the late drop | `/2=0 /4=3628`, `cycles/frame=118270439` | `/2=0 /4=58`, `cycles/frame=118027477` |
+| #4, around 40 s | `/2=0 /4=15811`, `cycles/frame=79325953`, about 3.9 FPS | `/2=0 /4=90`, `cycles/frame=107165901`, about 30.8–33.9 FPS |
+| #5, around 50 s | `/2=0 /4=15811`, `cycles/frame=945417753`, about 4.0 FPS | `/2=0 /4=90`, `cycles/frame=133918358`, about 22–26 FPS |
+
+The cumulative `pumpipx3` `/4` count rose from `3628` to `15811` between #3 and #4, an increase of
+`12183`. In the same interval, frame rate fell from about 38.1 FPS to 3.9 FPS, after which `/4=15811`
+and roughly 4 FPS remained stable. `pumpit1` rose only from `58` to `90` over the corresponding
+interval and did not enter a fixed 5 FPS state. `pumpipx3` `AH2C` also stayed at `434544` from #3
+through #5 in this run.
+
+**Inferred:** `FF /4` identifies a near indirect-jump path, so the result makes the simultaneously
+growing indirect-jump boundary a title-specific late-drop candidate. However, this census records
+only the boundary opcode and cumulative count. It cannot tell whether one site repeated or many sites
+ran, nor does it record each site's target/addressing mode or actual cycle cost. The `/4` increase is
+therefore not established as the cause, and no optimization was applied in this unit.
+
+**Unresolved and next axis:** connect `FF /4` samples to guest EIP/site, ModRM addressing mode,
+resolved target, and window cycle data before and after the drop. The next analysis should remain
+observational and preserve the original execution path.
+
+## 2026-08-30 Task 530: `FF /4` concentrates at title-specific SIB sites
+
+**Implementation and verification:** `FF /4` samples are now accumulated by guest EIP in fixed
+slots, with the captured four-byte boundary window and ModRM addressing mode. The classifier
+reports `reg`, `abs`, `base`, `sib`, and `addr16`, and keeps site-overflow and ModRM-truncation
+counters separate. The Windows `repiu_aot_probe` mode/site/overflow/truncation checks all passed,
+and the Linux i386 Release executable built successfully.
+
+**Confirmed:** under the same trace-free 60-second conditions, every observed `FF /4` sample in
+both titles used SIB addressing; site overflow and ModRM truncation were zero. The cumulative live
+samples were:
+
+| live sample | `pumpipx3` | `pumpit1` |
+| --- | --- | --- |
+| #3 | `/4=2850`, `sib=2850`; `0x010EF6DE:2828`, `0x0102A963:11`, `0x010E785C:11`; top-site `packed=0x9524FF2E` | `/4=58`, `sib=58`; `0x010F1DD7:58`; `packed=0x8524FF2E` |
+| #4 | `/4=2850`, `sib=2850`; top site `0x010EF6DE:2828` | `/4=91`, `sib=91`; `0x010F1DD7:91` |
+| #5 | `/4=3628`, `sib=3628`; top site `0x010EF6DE:3600` | `/4=91`, `sib=91`; `0x010F1DD7:91` |
+
+The `pumpipx3` increase at #5 came mainly from the top site, `2828 -> 3600`; the two other sites
+rose from `11` to `14` each. The top site accounts for about 99.2% of the `pumpipx3` samples, and
+all observed sites had `byte_change=0` and `mode_change=0`. `pumpit1` exposed only one site.
+Because `packed` is printed as a little-endian integer, `0x9524FF2E` is the captured byte sequence
+`2E FF 24 95`, while `0x8524FF2E` is `2E FF 24 85`. Thus the two titles have different captured
+SIB index bytes even though both use SIB addressing.
+
+**Inferred:** both titles contain a repeated `CS:FF /4` SIB site, but the site EIP and SIB index
+differ. The `pumpipx3` site that grows near the late drop is narrowed to `0x010EF6DE`. The current
+four-byte window does not include the displacement or resolved indirect target, so it cannot yet
+establish the target or its execution cost.
+
+**Unresolved and next axis:** observe the displacement following each site, resolve the runtime
+indirect target, and correlate those values with site-specific cycles before and after the late drop.
+No optimization was applied to the original guest code or execution path.
+
 ---
+
+## 2026-08-30 Task 531: `FF /4` target가 타이틀별 jump-table entry로 해석됨
+
+**구현·검증:** Task 530의 고정 site census에 마지막 displacement, operand pointer, raw dword
+target, target 변화 count를 추가하고, `HandleAotReentry`에서 최대 15바이트의 읽기 가능
+window만 사용하는 별도 target evaluator를 연결했습니다. Windows `repiu_aot_probe`의 기존
+census 검사와 register/absolute/SIB/target-change/truncated/unreadable 검사가 모두
+통과했고 Linux i386 Release build도 통과했습니다. 원본 guest register·memory·EIP와 AOT
+dispatch 결과는 변경하지 않았습니다.
+
+**확인됨:** 새 60초 측정에서 두 타이틀의 관측된 `/4` 표본은 모두 target read가 성공했습니다.
+`resolved=sample_count`, `unresolved=0`, target truncated/unsupported/unreadable 모두
+0이었습니다.
+
+| live 표본 | `pumpipx3` | `pumpit1` |
+| --- | --- | --- |
+| #3 | `/4=2849`; `0x010EF6DE:2827`, `d=0x010EF65C`, `p=0x010EF678`, `t=0x010EF8E9`, `tc=21` | `/4=58`; `0x010F1DD7:58`, `d=0x010F1D8F`, `p=0x010F1D9B`, `t=0x010F1CFD`, `tc=8` |
+| #4 | `/4=3626`; `0x010EF6DE:3598`, 같은 `d/p/t`, `tc=27` | `/4=90`; `0x010F1DD7:90`, `p=0x010F1D97`, `t=0x010F1CF4`, `tc=13` |
+| #5 | `/4=15808`; `0x010EF6DE:15686`, 같은 `d/p/t`, `tc=121` | `/4=90`; 같은 `p/t`, `tc=13` |
+
+정적 `repiu_aot_probe` 대조에서 `pumpipx3` site `0x010EF6DE`는
+`jmp cs:[edx*4+0x010EF65C]`이고, 관측 pointer `0x010EF678`는 index 7의 table entry이며
+그 값 `0x010EF8E9`는 `mov ebx, esi` instruction으로 확인되었습니다. `pumpit1` site
+`0x010F1DD7`는 `jmp cs:[eax*4+0x010F1D8F]`입니다. `p=...9B`는 index 3의
+`t=0x010F1CFD` entry이고 `p=...97`는 index 2의 `t=0x010F1CF4` entry입니다.
+두 target은 각각 target table의 서로 다른 instruction으로 확인되었습니다.
+
+**추정:** `pumpipx3` late-drop의 `/4` 증가는 같은 jump-table entry(index 7)를 반복 읽는
+횟수의 증가이며, pointer는 고정되고 table entry의 raw target만 중간에 변합니다.
+`pumpit1`은 동일한 site에서 EAX index가 3에서 2로 바뀌어 pointer와 target이 함께
+바뀝니다. 따라서 두 타이틀의 차이는 단순히 `/4` opcode 수가 아니라, `pumpipx3`의 특정
+table index 반복과 target-table 내용 변화까지 좁혀졌습니다. 이는 target/사이트 상관관계에
+대한 해석이며, 여전히 `/4`가 late drop의 원인이라고 단정하지 않습니다.
+
+**미확정·다음 축:** 현재 telemetry는 매 target read의 실행 cycle과 table-entry writer를
+연결하지 않습니다. 다음 분석은 `0x010EF65C` entry를 누가 쓰는지, 그리고 drop 직전·직후
+target code에서 window cycle이 어떻게 달라지는지를 관측해야 합니다. 원본 코드 수정이나
+dispatch 최적화는 아직 적용하지 않습니다.
+
+---
+
+## 2026-08-30 Task 532: `FF /4` target 변화는 pointer 변화와 함께 발생함
+
+**구현·검증:** Task 531의 `target_change_count`만으로는 같은 table pointer의 dword 변화와
+register/index 변화에 따른 다른 pointer 선택을 구분할 수 없었습니다. 이번 작업은 resolved
+memory operand의 `pointer_change_count`, pointer validity, 동일 pointer target 변화 count,
+pointer 변경 동반 target 변화 count를 site와 live reporter에 추가했습니다. Synthetic probe는
+동일 pointer의 target dword 변경과 두 번째 SIB index 선택을 각각 검증했고, Win32 x86 Debug
+probe와 Linux i386 Release build가 통과했습니다. guest state와 dispatch는 변경하지 않았습니다.
+
+**확인됨:** 새 trace-free 60초 측정에서 두 주요 site의 target read는 모두 resolved였고,
+pointer는 모두 유효했습니다. 관측된 target 변화는 모두 pointer 변경과 함께 발생했으며,
+동일 pointer에서 target만 변경된 표본은 없었습니다.
+
+| live 표본 | `pumpipx3` dominant `0x010EF6DE` | `pumpit1` `0x010F1DD7` |
+| --- | --- | --- |
+| #1 | `/4=2849`, site `2827`, `p=0x010EF678`, `t=0x010EF8E9`, `pc=21`, `tc=21`, `spc=0`, `ppc=21` | `/4=58`, site `58`, `p=0x010F1D9B`, `t=0x010F1CFD`, `pc=8`, `tc=8`, `spc=0`, `ppc=8` |
+| #3 | `/4=3626`, site `3598`, 같은 `p/t`, `pc=27`, `tc=27`, `spc=0`, `ppc=27` | `/4=58`, site `58`, 같은 `p/t`, `pc=8`, `tc=8`, `spc=0`, `ppc=8` |
+| #4/#5 | `/4=15808`, site `15686`, 같은 `p/t`, `pc=121`, `tc=121`, `spc=0`, `ppc=121` | `/4=90`, site `90`, `p=0x010F1D97`, `t=0x010F1CF4`, `pc=13`, `tc=13`, `spc=0`, `ppc=13` |
+
+모든 표본에서 `resolved=sample_count`, `unresolved=0`, `target_truncated=0`,
+`target_unsupported=0`, `target_unreadable=0`이 유지되었습니다. `pumpipx3` shutdown은
+`frames=1482`, `span_ms=56576`, `pumpit1`은 `frames=1827`, `span_ms=57075`였으며, 둘 다
+60초 timeout 경계에서 종료되었습니다.
+
+**정정된 추정:** Task 531에서 `pumpipx3`의 고정 pointer와 증가하는 `target_change_count`를
+근거로 제시했던 target-table mutation 해석은 이번 계측으로 지지되지 않습니다. 현재 관측은
+`pumpipx3`의 `edx` 기반 index/operand pointer 변화가 target 변화와 함께 일어났다는 해석을
+지지하며, `pumpit1`의 EAX index 3→2 변화와도 일관됩니다. 다만 이것은 late drop의 원인을
+확정하는 결과가 아니며, pointer를 만든 register producer 또는 guest writer는 아직 찾지
+못했습니다.
+
+**미확정·다음 축:** pointer 변화의 실제 producer/writer, resolved target instruction별 cycle
+비용, pointer/target 변화와 late drop의 인과관계가 남아 있습니다. 다음 작업은 이 세 항목을
+관측 전용으로 연결해야 하며 원본 실행 경로와 dispatch semantics는 유지합니다.
+
+---
+
+## 2026-08-30 Task 532: `FF /4` target changes occur with pointer changes
+
+**Implementation and verification:** Task 531's `target_change_count` could not distinguish a dword
+change at the same table pointer from selecting another pointer through a register/index change.
+This unit added resolved-memory `pointer_change_count`, pointer validity, same-pointer target-change
+count, and pointer-accompanied target-change count to the site state and live reporter. The synthetic
+probe independently verified a target dword change at one pointer and selection of a second SIB
+index. The Win32 x86 Debug probe and Linux i386 Release build passed. Guest state and dispatch were
+unchanged.
+
+**Confirmed:** In the new trace-free 60-second runs, all target reads at the two main sites resolved
+and all pointers were valid. Every observed target change was accompanied by a pointer change; no
+same-pointer target-only change was observed.
+
+| live sample | `pumpipx3` dominant `0x010EF6DE` | `pumpit1` `0x010F1DD7` |
+| --- | --- | --- |
+| #1 | `/4=2849`, site `2827`, `p=0x010EF678`, `t=0x010EF8E9`, `pc=21`, `tc=21`, `spc=0`, `ppc=21` | `/4=58`, site `58`, `p=0x010F1D9B`, `t=0x010F1CFD`, `pc=8`, `tc=8`, `spc=0`, `ppc=8` |
+| #3 | `/4=3626`, site `3598`, same `p/t`, `pc=27`, `tc=27`, `spc=0`, `ppc=27` | `/4=58`, site `58`, same `p/t`, `pc=8`, `tc=8`, `spc=0`, `ppc=8` |
+| #4/#5 | `/4=15808`, site `15686`, same `p/t`, `pc=121`, `tc=121`, `spc=0`, `ppc=121` | `/4=90`, site `90`, `p=0x010F1D97`, `t=0x010F1CF4`, `pc=13`, `tc=13`, `spc=0`, `ppc=13` |
+
+Across all samples, `resolved=sample_count`, `unresolved=0`, `target_truncated=0`,
+`target_unsupported=0`, and `target_unreadable=0` remained true. `pumpipx3` shut down with
+`frames=1482`, `span_ms=56576`; `pumpit1` with `frames=1827`, `span_ms=57075`. Both reached the
+60-second timeout boundary.
+
+**Corrected inference:** Task 531 inferred target-table mutation from pumpipx3's fixed last pointer
+and growing `target_change_count`. The new classification does not support that interpretation. The
+current observation favors EDX-based index/operand-pointer changes that occur with target changes,
+consistent with pumpit1's EAX index change from 3 to 2. This does not establish the cause of the late
+drop, and the register producer or guest writer of the pointer remains unidentified.
+
+**Unresolved and next axis:** The actual pointer producer/writer, per-target instruction cycle cost,
+and causal relation between pointer/target changes and the late drop remain open. The next unit should
+connect those observations while preserving the original execution path and dispatch semantics.
+
+---
+
+## 2026-08-30 Task 531: `FF /4` targets resolve to title-specific jump-table entries
+
+**Implementation and verification:** The fixed site census from Task 530 now carries the last
+displacement, operand pointer, raw dword target, and target-change count. A separate evaluator
+reads only up to 15 bytes after the existing runtime-range check and is called from
+`HandleAotReentry`. Existing census checks plus register/absolute/SIB/target-change,
+truncated, and unreadable checks passed in the Windows `repiu_aot_probe`; the Linux i386
+Release build also passed. Guest registers, memory, EIP, and AOT dispatch results are unchanged.
+
+**Confirmed:** In the new 60-second runs, every observed `/4` sample resolved a target:
+`resolved=sample_count`, `unresolved=0`, and target truncated/unsupported/unreadable were all
+zero.
+
+| live sample | `pumpipx3` | `pumpit1` |
+| --- | --- | --- |
+| #3 | `/4=2849`; `0x010EF6DE:2827`, `d=0x010EF65C`, `p=0x010EF678`, `t=0x010EF8E9`, `tc=21` | `/4=58`; `0x010F1DD7:58`, `d=0x010F1D8F`, `p=0x010F1D9B`, `t=0x010F1CFD`, `tc=8` |
+| #4 | `/4=3626`; `0x010EF6DE:3598`, same `d/p/t`, `tc=27` | `/4=90`; `0x010F1DD7:90`, `p=0x010F1D97`, `t=0x010F1CF4`, `tc=13` |
+| #5 | `/4=15808`; `0x010EF6DE:15686`, same `d/p/t`, `tc=121` | `/4=90`; same `p/t`, `tc=13` |
+
+Static `repiu_aot_probe` correlation shows that pumpipx3 site `0x010EF6DE` is
+`jmp cs:[edx*4+0x010EF65C]`. The observed pointer `0x010EF678` is table index 7, and its
+value `0x010EF8E9` is the `mov ebx, esi` instruction. Pumpit1 site `0x010F1DD7` is
+`jmp cs:[eax*4+0x010F1D8F]`: `p=...9B` is index 3 with target `0x010F1CFD`, while
+`p=...97` is index 2 with target `0x010F1CF4`. Each target was confirmed as a different
+instruction in the target table.
+
+**Inferred:** The pumpipx3 late-drop `/4` increase is repeated reads of the same jump-table
+index (7); the pointer stays fixed while the raw table target changes during the run. Pumpit1
+changes EAX from index 3 to 2 at the same site, so its pointer and target change together. The
+difference is therefore narrowed beyond opcode volume to pumpipx3's specific table-index
+repetition and target-table mutation. This is a site/target correlation, not proof that `/4`
+causes the late drop.
+
+**Unresolved and next axis:** The telemetry does not yet associate per-read cycle cost with the
+target-table writer. The next observation should identify who writes the `0x010EF65C` table entry
+and compare window cycles in the target code immediately before and after the drop. No original
+code change or dispatch optimization has been applied.
+
+## 2026-08-30 Task 533: FF /4 pointer changes are index-component changes
+
+**Implementation and verification:** Task 533 added the resolved SIB index/base register number,
+value, validity, and component-change counts to the FF /4 target result, site state, hotspot state,
+and live reporter. The synthetic SIB probe verified that an index change increments only the index
+counter. The Win32 x86 Debug probe and Linux i386 Release build passed. Guest state, memory,
+instruction bytes, EIP, and AOT dispatch were unchanged.
+
+**Confirmed runtime evidence:** In the new trace-free 60-second runs, the dominant pumpipx3 site
+`0x010EF6DE` reported `ir=2` (EDX), `iv=7`, no base component, and `index-change-count` equal to
+`pointer-change-count`: `21/21` at live sample #1, `27/27` at #3, and `121/121` at #4/#5. The
+pumpit1 site `0x010F1DD7` reported `ir=0` (EAX), no base component, and matching counts: `8/8`
+while EAX was 3, then `13/13` while EAX was 2. All observed target reads remained resolved;
+unresolved, truncated, unsupported, and unreadable counts stayed zero.
+
+| live sample | `pumpipx3` dominant `0x010EF6DE` | `pumpit1` `0x010F1DD7` |
+| --- | --- | --- |
+| #1 | site `2827`, `pc=21`, `tc=21`, `ir=2`, `iv=7`, `ic=21`, `bvv=0`, `bc=0` | site `58`, `pc=8`, `tc=8`, `ir=0`, `iv=3`, `ic=8`, `bvv=0`, `bc=0` |
+| #3 | site `3600`, `pc=27`, `tc=27`, `ir=2`, `iv=7`, `ic=27`, `bvv=0`, `bc=0` | site `58`, `pc=8`, `tc=8`, `ir=0`, `iv=3`, `ic=8`, `bvv=0`, `bc=0` |
+| #4/#5 | site `15689`, `pc=121`, `tc=121`, `ir=2`, `iv=7`, `ic=121`, `bvv=0`, `bc=0` | site `90`, `pc=13`, `tc=13`, `ir=0`, `iv=2`, `ic=13`, `bvv=0`, `bc=0` |
+
+**Static correlation:** Pumpipx3's site is the boundedly disassembled sequence
+`xor edx, edx` at `0x010EF6DA` followed by `mov dl, bl` at `0x010EF6DC`, with the preceding
+`mov bl, [eax]` at `0x010EF6CF`. This is a strong local producer candidate consistent with the
+runtime EDX index value 7, but the exception boundary alone does not prove the complete producer
+chain. Pumpit1's site is `jmp cs:[eax*4+0x010F1D8F]`; its preceding `mov edx, eax` at
+`0x010F1DD5` does not write EAX, so the EAX producer remains unresolved.
+
+**Conclusion and limits:** The runtime component evidence confirms that the observed pointer
+changes at both sites are index-driven, not base-driven, and provides no support for a same-pointer
+target-table mutation during these windows. It does not identify the pumpit1 EAX producer, the
+guest memory writer, or the cause of the late drop. Pure resolved-target instruction cycles were
+not measured because the current sample hook is inside FF-boundary VEH handling and would mix
+kernel, handler, and subsequent guest work with target cost. A dedicated timing boundary remains
+the next analysis axis.
+
+## 2026-08-30 Task 533 observation
+
+Task 533 added resolved SIB index/base register number, value, validity, and component-change
+counts to the FF /4 target result, site state, hotspot state, and live reporter. The synthetic SIB
+probe verified that an index change increments only the index counter. The Win32 x86 Debug probe and
+Linux i386 Release build passed. Guest state, memory, instruction bytes, EIP, and AOT dispatch
+were unchanged.
+
+In new trace-free 60-second runs, the dominant pumpipx3 site `0x010EF6DE` reported `ir=2` (EDX),
+`iv=7`, no base component, and index-change counts equal to pointer-change counts: `21/21` at
+sample #1, `27/27` at #3, and `121/121` at #4/#5. Pumpit1's `0x010F1DD7` reported `ir=0` (EAX),
+no base component, and matching counts: `8/8` while EAX was 3, then `13/13` while EAX was 2.
+All observed target reads remained resolved; unresolved, truncated, unsupported, and unreadable
+counts were zero.
+
+Static bounded disassembly shows pumpipx3's local sequence as `xor edx, edx` at `0x010EF6DA`
+followed by `mov dl, bl` at `0x010EF6DC`, preceded by `mov bl, [eax]` at `0x010EF6CF`. This is
+consistent with the runtime EDX index 7 and is a producer candidate, not proof of the complete
+producer chain. Pumpit1's site is `jmp cs:[eax*4+0x010F1D8F]`; `mov edx, eax` at `0x010F1DD5`
+does not write EAX, so its producer remains unresolved.
+
+The evidence confirms index-driven pointer changes at both sites and provides no support for the
+earlier same-pointer target-table mutation interpretation in these windows. The guest writer,
+pumpit1 EAX producer, late-drop causality, and pure target-instruction cycle cost remain unresolved.
+Pure target cycles were intentionally deferred because the current hook is inside FF-boundary VEH
+handling and would combine handler and guest work with target cost.
+
+## 2026-08-30 Task 534: FF /4 index histogram exposes transient table indexes
+
+**Implementation and verification:** Task 534 added a fixed eight-slot histogram of resolved SIB
+index register/value pairs to each FF /4 site and hotspot. It also reports the index observation
+sample count, distinct slot count, overflow sample count, and each populated slot in the live site
+line. Repeated observations share one slot. The synthetic probe verified three observations of EDX
+zero and one of EDX one as two slots with no overflow. The Win32 x86 Debug probe and Linux i386
+Release build passed. Guest code, registers, memory, EIP, and dispatch were unchanged.
+
+**Confirmed runtime evidence:** The new `pumpipx3` run at `0x010EF6DE` recorded two index values,
+`EDX=0` and `EDX=7`, rather than only the final value 7. At live sample #1 the histogram was
+`0:11` and `7:2818` out of `2829` index observations; at #5 it was `0:14` and `7:3587` out of
+`3601`. `pumpit1` at `0x010F1DD7` likewise recorded EAX values 3 and 2: `3:28, 2:30` out of
+`58` at #1 and `3:41, 2:49` out of `90` at #5. Both sites had two slots and zero overflow.
+
+| live sample | `pumpipx3` dominant `0x010EF6DE` | `pumpit1` `0x010F1DD7` |
+| --- | --- | --- |
+| #1 | `ix=2829`, `is=2`, `io=0`, `i0=EDX/0 (11)`, `i1=EDX/7 (2818)`, `pc=21`, `tc=21` | `ix=58`, `is=2`, `io=0`, `i0=EAX/3 (28)`, `i1=EAX/2 (30)`, `pc=8`, `tc=8` |
+| #5 | `ix=3601`, `is=2`, `io=0`, `i0=EDX/0 (14)`, `i1=EDX/7 (3587)`, `pc=27`, `tc=27` | `ix=90`, `is=2`, `io=0`, `i0=EAX/3 (41)`, `i1=EAX/2 (49)`, `pc=13`, `tc=13` |
+
+All observed target reads remained resolved and every index observation was represented by a slot;
+unresolved, truncated, unsupported, unreadable, and histogram-overflow counts were zero. The
+pumpipx3 run completed timeout teardown with `frames=1394`, `span_ms=55709`. The pumpit1 run
+reached live sample #5 and had valid FF data, but its timeout cleanup ended with
+`recovered=0, stopped=0` and process exit 1; this is recorded as a run-cleanup limitation, not a
+target-resolution failure.
+
+**Static correlation:** Pumpipx3's static table at `0x010EF65C` maps index 0 to target
+`0x010EF6E6` and index 7 to `0x010EF8E9`; the latter is the previously observed `mov ebx, esi`
+target. The new index-0 observations therefore identify a second jump-table entry, not a dword
+change at the index-7 pointer. Pumpit1's two observed indexes match the previously resolved index-3
+and index-2 pointers/targets.
+
+**Conclusion and limits:** The histogram directly rejects the stronger form of the earlier
+same-pointer target-table mutation explanation for these windows: the dominant pumpipx3 site
+observed both index 0 and index 7, while target changes remained accompanied by pointer changes.
+It does not record transition order, identify the instruction producing pumpit1 EAX, identify a
+guest writer, or measure pure target cycles. The next useful axis is a bounded transition sequence
+or timing observation that remains outside the contaminated FF-boundary VEH measurement.
+
+## 2026-08-30 Task 534 observation
+
+Task 534 added a fixed eight-slot histogram for resolved SIB index register/value pairs to every
+FF /4 site and hotspot. The live line now includes index observation samples, distinct slots,
+overflow samples, and populated slot values/counts. The synthetic probe verified two slots for
+EDX=0 and EDX=1, with no overflow. The Win32 x86 Debug probe and Linux i386 Release build passed;
+guest execution and dispatch were unchanged.
+
+The new pumpipx3 run at `0x010EF6DE` recorded EDX values 0 and 7: `0:11, 7:2818` out of 2829
+observations at sample #1, then `0:14, 7:3587` out of 3601 at #5. Pumpit1 at `0x010F1DD7`
+recorded EAX values 3 and 2: `3:28, 2:30` out of 58 at #1, then `3:41, 2:49` out of 90 at #5.
+Both sites had two slots and zero overflow, and all target reads resolved.
+
+Pumpipx3's static table at `0x010EF65C` maps index 0 to `0x010EF6E6` and index 7 to
+`0x010EF8E9` (`mov ebx, esi`). Thus the transient index-0 observations identify a second table
+entry rather than same-pointer mutation of the index-7 dword. Pumpit1's values match its earlier
+index-3 and index-2 pointer/target observations.
+
+The result rejects the stronger same-pointer target-table mutation interpretation for these windows.
+Transition order, the pumpit1 EAX producer, the guest writer, and pure target cycles remain
+unresolved. Pumpit1's FF data reached sample #5, but timeout cleanup ended with `recovered=0` and
+`stopped=0` (process exit 1), which is retained as a cleanup limitation.
+
+## 2026-08-30 Task 535: FF /4 index transition order
+
+**구현 및 검증:** Task 535는 각 FF /4 site와 hotspot에 최대 32개의 resolved SIB index 전환을
+`from-register/from-value -> to-register/to-value` 순서로 저장하고, 전체 전환 수(`tx`), 저장된
+슬롯 수(`ts`), overflow 수(`to`)를 live line에 출력하도록 확장했습니다. 전환 기록은 직전과
+현재의 index component가 모두 유효하고 값 또는 register가 달라질 때만 증가하며,
+`tx == index-change-count`, `ts + to == tx` 불변식을 유지합니다. Synthetic probe에서
+EDX 0, EDX 0, EDX 0, EDX 1 입력이 0→1 전환 하나로 기록되는 것을 확인했습니다. Win32 x86
+Debug와 Linux i386 Release 빌드가 모두 성공했고, probe 결과는
+`aot_ff_boundary_target_attribution=true`, `aot_boundary_opcode_census_all=true`였습니다.
+Guest code, registers, memory, EIP, and AOT dispatch were unchanged.
+
+**확인된 runtime evidence:** 동일 조건 60초 실행에서 `pumpipx3`의 dominant site
+`0x010EF6DE`는 register id 2인 EDX를 사용했습니다. Live sample #1은
+`tx=21, ts=21, to=0`이고 첫 전환은 `EDX 0→7`, 이후 `7→0`, `0→7`로 교대했습니다. 후반
+sample #5는 `tx=121, ts=32, to=89`이며 저장된 첫 32개도 같은 교대 순서였습니다. 따라서
+초기 전환 전체는 보존되었고, 후반에는 고정 trace 용량을 초과한 전환이 overflow로 집계되었습니다.
+`pumpit1`의 `0x010F1DD7`은 register id 0인 EAX를 사용했습니다. Sample #1은
+`tx=8, ts=8, to=0`으로 `3→2→3→2`를 기록했고, sample #5는 `tx=13, ts=13, to=0`으로
+동일한 교대 순서를 기록했습니다.
+
+| live sample | `pumpipx3` dominant `0x010EF6DE` | `pumpit1` `0x010F1DD7` |
+| --- | --- | --- |
+| #1 | `ix=2829`, `ir=2`, `tx=21`, `ts=21`, `to=0`, `0→7→0→7...` | `ix=58`, `ir=0`, `tx=8`, `ts=8`, `to=0`, `3→2→3→2...` |
+| #5 | `ix=15692`, `ir=2`, `tx=121`, `ts=32`, `to=89`, stored `0→7→0→7...` | `ix=90`, `ir=0`, `tx=13`, `ts=13`, `to=0`, `3→2→3→2...` |
+
+모든 관찰된 target read는 resolved였고 unresolved, target-truncated, unsupported,
+unreadable count는 0이었습니다. 이번 두 실행은 timeout teardown에서 각각
+`recovered=0, stopped=0`으로 종료되어 process exit 1이 되었지만, live FF data와 transition
+counter는 수집되었습니다. 이는 cleanup 한계이며 target attribution 실패로 해석하지 않습니다.
+
+**정적 상관:** Pumpipx3의 `0x010EF65C` jump table은 index 0을
+`0x010EF6E6` (`mov ebp, [ecx+0x04]`)으로, index 7을 `0x010EF8E9` (`mov ebx, esi`)로
+연결합니다. Site 직전에는 `0x010EF6DA xor edx, edx`, `0x010EF6DC mov dl, bl`이 있고,
+앞쪽에 `0x010EF6CF mov bl, [eax]`가 있습니다. 그러므로 관측된 `0↔7`은 서로 다른 jump-table
+entry 선택 순서이며, 같은 pointer의 target dword 변이로만 설명할 수 없습니다. Pumpit1의
+`3↔2`도 기존에 확인한 `0x010F1D9B -> 0x010F1CFD`와
+`0x010F1D97 -> 0x010F1CF4` pointer/target 쌍 사이의 선택 전환입니다.
+
+**추정 및 미확정:** 두 title 모두 pointer/target 변화의 순서를 index component 전환과
+직접 연결할 수 있게 되었으며, pumpipx3의 이전 same-pointer target-table mutation 가설은
+이 관측 구간에서 더 약해졌습니다. 그러나 이 trace만으로 EDX/EAX를 생산하는 전체 guest
+producer chain, jump-table writer, late performance drop의 원인, 또는 resolved target
+instruction 자체의 cycle cost를 확정할 수 없습니다. Pumpipx3 후반 sample의 89개 전환은
+fixed 32-slot trace overflow로 순서가 저장되지 않았으므로, 전체 후반 sequence가 필요하면
+다음 단계에서 streaming/hash 방식 또는 더 큰 bounded trace를 별도로 설계해야 합니다. Pure
+target cycle 측정은 FF-boundary VEH hook 오염을 피하는 전용 timing boundary가 필요합니다.
+
+## 2026-08-30 Task 535 observation
+
+Task 535 records up to 32 resolved FF /4 SIB-index transitions per site and hotspot. Each
+transition stores the previous and current register/value pair, while `tx`, `ts`, and `to`
+report total transitions, stored slots, and trace overflow. The synthetic probe verified one
+transition for EDX 0, EDX 0, EDX 0, EDX 1. Win32 x86 Debug and Linux i386 Release builds passed,
+and the attribution probes returned true without changing guest state or dispatch.
+
+The dominant pumpipx3 site `0x010EF6DE` uses EDX (register id 2). At sample #1 it recorded
+`tx=21, ts=21, to=0` with the sequence `0→7→0→7...`; at sample #5 it recorded `tx=121,
+ts=32, to=89`, with the stored prefix continuing the same alternation. Pumpit1's
+`0x010F1DD7` uses EAX (register id 0): sample #1 recorded `tx=8, ts=8, to=0` for
+`3→2→3→2...`, and sample #5 recorded `tx=13, ts=13, to=0` with the same order. All target
+reads were resolved and target-read failure counters stayed zero.
+
+The pumpipx3 static table maps index 0 at `0x010EF65C` to `0x010EF6E6` and index 7 to
+`0x010EF8E9`; the local producer candidate remains `xor edx, edx` / `mov dl, bl`, preceded by
+`mov bl, [eax]`. Pumpit1's transitions select the previously resolved index-3 and index-2
+pointer/target pairs. This makes the index-driven selection order explicit and further weakens
+the same-pointer target mutation interpretation, but does not identify either complete producer
+chain, the guest writer, late-drop causality, or pure target cycles. Both runs ended with cleanup
+`recovered=0, stopped=0` and process exit 1; the FF evidence itself remained valid. The 89 late
+pumpipx3 transitions beyond the first 32 are intentionally recorded only as overflow.
+
+## 2026-08-30 Task 536: existing hotspot boundary cannot observe resolved FF /4 targets
+
+**측정 및 검증:** Task 536은 코드와 guest 실행 경로를 변경하지 않고 기존
+`SingleStepHotspotProfile`과 full dump를 활성화하여, Task 535에서 확인한 resolved target
+주소가 현재 timing 경계에 나타나는지 확인했습니다. `pumpipx3` dump는
+`total_samples=381761`, `distinct=114`, `overflow=0`, `total_cycles=4251287558`이었고,
+`pumpit1` dump는 `total_samples=26363`, `distinct=106`, `overflow=0`,
+`total_cycles=8945029040`이었습니다. 두 dump 모두 생성되었으며 FF live attribution도
+계속 resolved 상태를 유지했습니다.
+
+**확인된 관측:** `pumpipx3`의 FF site `0x010EF6DE`는 hotspot dump에
+`sample_count=3600`, `total_cycles=11281020`, `max_cycles=312909`로 나타났습니다. 그러나
+resolved target 후보 `0x010EF6E6`과 `0x010EF8E9`는 dump에 나타나지 않았습니다.
+`pumpit1`의 FF site `0x010F1DD7`은 `sample_count=90`, `total_cycles=1885705`,
+`max_cycles=74000`으로 나타났지만, target 후보 `0x010F1CFD`와 `0x010F1CF4`는 역시
+관측되지 않았습니다.
+
+| title | FF site entry | target candidate entries | 판정 |
+| --- | --- | --- | --- |
+| `pumpipx3` | `3600 samples`, `11281020 cycles`, `avg≈3134` | `0x010EF6E6`: absent; `0x010EF8E9`: absent | target not observed |
+| `pumpit1` | `90 samples`, `1885705 cycles`, `avg≈20952` | `0x010F1CFD`: absent; `0x010F1CF4`: absent | target not observed |
+
+이 수치는 target instruction 비용이 아니라 `HandleSingleStepTrace` handler window의 비용입니다.
+이번 측정의 두 실행은 timeout teardown에서 `recovered=0, stopped=0`, process exit 1로
+끝났지만 hotspot dump와 FF data는 기록되었습니다. 이는 cleanup 한계이며 target resolution
+실패가 아닙니다.
+
+**판정 및 추정:** 기존 hotspot 경계는 FF boundary site를 기록할 수 있지만, 두 title에서
+resolved target guest 주소가 `HandleSingleStepTrace` sample로 이어지는 것을 관측하지 못합니다.
+Dispatcher 순서상 FF를 실행한 뒤의 target은 `HandleAotReentry`가 먼저 cache target으로
+재진입시키고, `HandleSingleStepTrace` 경계는 그 target을 별도 sample로 열지 않는 경로와
+일치합니다. 따라서 기존 dump의 site cycle을 resolved target cycle로 사용할 수 없습니다.
+
+**미확정 및 다음 축:** 실제 target이 AOT cache에서 실행되는 host 구간의 비용, index 0/7 또는
+3/2별 비용 차이, late drop과의 인과관계는 아직 미확정입니다. 다음 작업은 원본 guest
+instruction을 수정하지 않고 AOT address map과 target entry/다음 boundary 사이를 연결하는
+전용 timing boundary를 설계해야 합니다. 그 경계가 없으면 target instruction cycle 비용에
+대한 수치 결론을 내리지 않습니다.
+
+## 2026-08-30 Task 536 observation
+
+Task 536 enabled the existing full single-step hotspot dump without changing code or guest
+execution. It recorded the FF sites but none of the resolved target candidates. Pumpipx3's
+`0x010EF6DE` entry had 3,600 samples and 11,281,020 handler-window cycles; pumpit1's
+`0x010F1DD7` had 90 samples and 1,885,705 handler-window cycles. Pumpipx3 targets
+`0x010EF6E6`/`0x010EF8E9` and pumpit1 targets `0x010F1CFD`/`0x010F1CF4` were absent.
+
+The existing hotspot boundary therefore cannot provide pure resolved-target cycles. The observed
+absence is consistent with `HandleAotReentry` resolving the post-FF target before the separate
+`HandleSingleStepTrace` hotspot scope runs. Target execution cost, per-index cost differences,
+and late-drop causality remain unresolved and require a dedicated AOT target timing boundary.
+
+## 2026-08-30 Task 537: FF4 AOT target interval measurement
+
+**구현 및 검증:** Task 537은 원본 guest code를 변경하지 않고 FF4 target attribution과
+`HandleAotReentry` resolved path, `DispatchGuestFault` 공통 진입점을 연결하는 전용
+`AotFfTargetTimingProfile`을 추가했습니다. Profile은 16개 고정 key 슬롯을 사용하며
+`REPIU_AOT_FF_TARGET_TIMING=1`일 때만 cycle counter를 읽습니다. FF4 sample은 후보를
+남기고, 동일 target이 AOT cache로 resolve될 때 interval을 시작하며, 다음 exception이
+dispatcher에 도착하면 종료합니다. 합성 probe는 후보 match와 100-cycle aggregate를
+확인했고, Windows x86 Debug 및 Linux i386 Release 빌드도 성공했습니다.
+
+여기서 측정한 값은 **순수 target instruction cycle이 아닙니다.** AOT target block,
+그 block의 예외, 다음 exception entry 및 dispatcher 진입 전 작업이 포함될 수 있으므로
+`AOT target interval`로만 해석합니다.
+
+**동일 조건 실측:** 두 title 모두 `REPIU_STALL_TIMEOUT_MS=0`,
+`REPIU_EXECUTION_TIMEOUT_MS=60000`, `REPIU_GLIDE_SWAP_INTERVAL=0`, frame-rate log,
+execution profile, 10초 live profile을 사용했고 timing toggle만 추가했습니다. 파일
+redirection으로 전체 live line을 보존했습니다.
+
+| title | FF4 resolved | interval started/completed | mismatch | active/overflow | interval aggregate |
+| --- | ---: | ---: | ---: | --- | ---: |
+| `pumpipx3` | 15,811 | 15,799 / 15,799 | 12 | 0 / 0 | 785,219,364 cycles, avg 49,700.57 |
+| `pumpit1` | 90 | 90 / 90 | 0 | 0 / 0 | 144,273,952 cycles, avg 1,603,043.91 |
+
+`pumpipx3`의 dominant target pair는 `0x010EF6DE -> 0x010EF8E9`, EDX index 7이며
+15,616회, `sum=762,449,236`, `min=10,730`, `max=14,939,564`, `avg≈48,824.87`입니다.
+같은 site의 index 0 target `0x010EF6E6`은 61회, `sum=781,696`,
+`avg≈12,814.69`입니다. 보조 key로 `0x010E785C -> 0x010E787F` index 6이 19회,
+`0x0102A963 -> 0x0102A9FF` index 6이 19회 관찰되었습니다. 후반 live report의
+`ff-site`는 15,811개 sample 전체에서 unresolved/unsupported/unreadable 없이
+resolved였고, timing profile의 12 mismatch만 별도로 남았습니다.
+
+`pumpit1`은 `0x010F1DD7 -> 0x010F1CFD` EAX index 3이 41회,
+`sum=18,193,868`, `avg≈443,752.88`, `min=33,781`, `max=5,934,652`였고,
+`0x010F1DD7 -> 0x010F1CF4` EAX index 2가 49회,
+`sum=126,080,084`, `avg≈2,573,062.94`, `min=26,862`, `max=31,553,082`였습니다.
+
+**성능 분석 판정:** target interval은 두 title에서 실제로 닫히므로 Task 536의
+"target 주소를 기존 hotspot이 관측하지 못한다"는 한계를 해소했습니다. 그러나
+`pumpipx3` interval aggregate는 guest run cycle의 약 0.3886%, `pumpit1`은 약
+0.0730%에 불과합니다. 따라서 이 경계의 target interval만으로 pumpipx3 후반의
+`fps≈4.2`, `VEH≈79.10%`, 또는 전체 late drop을 설명할 수 없습니다. 이번 실행에서도
+보다 큰 차이는 AOT boundary가 `pumpipx3` 390,483회 대 `pumpit1` 27,431회였고,
+FF4 resolved sample이 15,811 대 90이었다는 점입니다. 이는 AOT boundary churn과의
+상관을 강화하지만, 인과를 확정하지는 않습니다.
+
+두 실행은 모두 timeout에서 `attempts=40`, `answered=1`, `recovered=0`, `stopped=0`,
+`failure=0`으로 끝났습니다. 이는 기존 cleanup 한계이며 timing profile의 completed
+interval 또는 FF target resolution failure로 해석하지 않습니다. 다음 분석에서는
+12 mismatch가 발생한 pumpipx3 경로와 FF4/AOT boundary churn의 producer 및 exception
+경로를 별도로 좁혀야 합니다.
+
+## 2026-08-30 Task 537 observation
+
+Task 537 adds a dedicated fixed-capacity FF4 target timing profile without modifying guest
+code. It records a candidate when FF4 target attribution succeeds, starts when the same guest
+target resolves to an AOT cache address, and completes at the next common
+`DispatchGuestFault` entry. The synthetic probe verified a matching 100-cycle aggregate;
+Windows x86 Debug and Linux i386 Release builds passed.
+
+The measurement is explicitly an **AOT target interval**, not pure target instruction cycles.
+It can include the target AOT block, its exception, subsequent exception entry, and work before
+the common dispatcher boundary.
+
+Under the same runtime conditions with only `REPIU_AOT_FF_TARGET_TIMING=1` added, pumpipx3
+had 15,811 resolved FF4 samples and 15,799 started/completed intervals, with 12 candidate
+mismatches, no active interval at the final report, and no slot overflow. Pumpit1 had 90
+resolved and 90 started/completed intervals, with no mismatch, active interval, or overflow.
+
+Pumpipx3's dominant pair `0x010EF6DE -> 0x010EF8E9` at EDX index 7 accounted for 15,616
+intervals and 762,449,236 cycles (`avg≈48,824.87`); its index-0 target accounted for 61
+intervals and 781,696 cycles (`avg≈12,814.69`). Pumpit1's index-3 pair accounted for 41
+intervals and 18,193,868 cycles (`avg≈443,752.88`), while index 2 accounted for 49 intervals
+and 126,080,084 cycles (`avg≈2,573,062.94`). The title totals were 785,219,364 cycles
+across 15,799 intervals and 144,273,952 across 90 intervals.
+
+The intervals are therefore observable, but they represent only about 0.3886% of pumpipx3's
+guest-run cycles and 0.0730% of pumpit1's. They do not explain pumpipx3's late `fps≈4.2`
+or `VEH≈79.10%` by themselves. The larger observed difference remains AOT boundary volume
+(390,483 versus 27,431 in the final live windows) and FF4 resolved sample volume (15,811
+versus 90); this is correlation, not yet causality. Both runs retained the known timeout
+cleanup limitation (`answered=1`, `recovered=0`, `stopped=0`, `failure=0`). The 12 pumpipx3
+mismatches and the producer/exception path behind the boundary churn remain open.
+## 2026-08-30 Task 538: 1-second FF4 burst and late-drop timeline
+
+**측정 조건:** 소스와 guest code를 변경하지 않고 기존 Linux i386 Release 실행 파일을
+`REPIU_AOT_FF_TARGET_TIMING=1`, `REPIU_EXECUTION_TIMEOUT_MS=60000`,
+`REPIU_LIVE_PROFILE_INTERVAL_MS=1000`, `REPIU_EXECUTION_TIME_PROFILE=1` 조건으로 각각
+실행했습니다. 출력은 `build/` 아래의 Git-ignored 임시 로그에 직접 보존했습니다. 각
+`repiu-live-*` 행의 누적 카운터를 인접 행끼리 차분했으며, `#`은 1초 보고 순번이지
+정확한 wall-clock 초를 뜻하지 않습니다.
+
+**확인된 pumpipx3 시간축:** 초기 FF4 누적값은 #1~#29에서 2,849로 유지되었습니다.
+#30 창에서 FF4가 `+777` 증가했지만 성능이 유지되었고, #38 창에서 `+12,183` 증가하여
+누적 15,809가 되었습니다. 같은 #38 창의 AOT boundary는 `+13,073` 증가했으며,
+`CD`는 `+261`만 증가했습니다. #38의 창 성능은 42 frames, `105,428,704` cycles/frame로
+이미 악화되었고, 다음 #39 창에서는 5 frames, `811,557,496` cycles/frame로 떨어졌으며
+FF4 delta는 0이었습니다.
+
+| report window | frames in window | cycles/frame | FF4 delta | AOT boundary delta | CD delta |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| #29 | 30 | 127,014,013 | 0 | 60 | 60 |
+| #30 | 52 | 71,508,353 | +777 | +934 | +115 |
+| #37 | 48 | 77,453,031 | 0 | +96 | +96 |
+| #38 | 42 | 105,428,704 | +12,183 | +13,073 | +261 |
+| #39 | 5 | 811,557,496 | 0 | +202 | +12 |
+| #40 | 5 | 806,691,182 | 0 | +190 | +10 |
+
+별도 frame-rate log에서도 같은 순서가 보입니다. 약 37.541초 시점에는 `47.9 fps`,
+약 38.696초에는 `34.6 fps`, 약 39.779초에는 `4.6 fps`였고 이후 약 4.5~4.8 fps가
+지속되었습니다. 따라서 FF4/AOT burst는 지속적인 5 fps 구간보다 한 보고창 앞서
+관측되며, 시간적 precursor라는 점은 확인됩니다. 그러나 같은 창에서 발생한 상태
+전환이 원인인지, burst를 유발한 공통 guest 상태가 원인인지는 미확정입니다.
+
+`pumpit1`에서는 FF4가 #1~#6에서 47, #7에서 `+12` 증가한 뒤 멈췄고, #33에서 다시
+`+32` 증가했습니다. #33은 19 frames와 `262,783,428` cycles/frame의 일시적 저하를
+보였지만 다음 #34에서 47 frames, `82,093,010` cycles/frame로 회복했으며 5 fps 절벽은
+없었습니다. 최종 FF4는 91, AOT boundary는 29,611이었습니다.
+
+**판정:** `pumpipx3`의 절벽 직전에는 FF4 burst와 AOT boundary burst가 함께 발생하고,
+그 다음 창에서 지속적인 프레임 붕괴가 시작됩니다. 이는 기존의 단순한 누적 상관보다
+강한 시간적 상관 증거입니다. 다만 Task 537에서 계산한 FF4 target interval이 guest-run
+cycle의 약 0.39%였고, 이번 burst 자체도 target instruction 비용을 측정한 것이 아니므로
+FF4 target interval을 직접 원인으로 확정하지 않습니다. CD 누적 증가는 burst에 비해
+작아, 이 시점의 새로운 DOS `INT 21h` 급증도 관측되지 않았습니다.
+
+**남은 frontier:** burst를 발생시킨 guest scene/state 전환, `0x010EF6DE`의 EDX 값
+producer 및 그 writer, 그리고 burst 이후 AOT boundary가 `oth` 경계로 반복되는 정확한
+exception/cache 경로를 연결해야 합니다. FF4와 boundary의 시간적 선후관계만으로 HLE
+최적화나 guest 상태 변경을 먼저 적용하지 않습니다.
+
+## 2026-08-30 Task 538 observation
+
+Task 538 reran the existing Linux i386 Release binary with a one-second live-profile interval
+and no guest or source changes. Adjacent cumulative rows were differenced. In pumpipx3, FF4
+stayed at 2,849 through report #29, increased by 777 at #30 without a collapse, then increased
+by 12,183 at #38. The same #38 window added 13,073 AOT boundaries but only 261 CD samples.
+It had 42 frames and 105,428,704 cycles/frame; the next #39 window had 5 frames and
+811,557,496 cycles/frame, with no further FF4 increase.
+
+The frame-rate log places the transition at roughly 38.696 seconds (`34.6 fps`) followed by
+4.6 fps at roughly 39.779 seconds and approximately 4.5–4.8 fps afterward. The FF4/AOT
+burst therefore precedes the persistent collapse by one report window. This is confirmed
+temporal-precursor evidence, not proof that FF4 is causal.
+
+Pumpit1 showed only small FF4 changes: +12 at #7 and +32 at #33. The #33 window briefly
+reached 262,783,428 cycles/frame and 19 frames, then recovered to 82,093,010 cycles/frame
+and 47 frames at #34. It did not enter the sustained 5 fps state. Its final FF4 count was 91
+and its AOT boundary count was 29,611.
+
+The new timeline strengthens the correlation between the pumpipx3 FF4 burst and AOT-boundary
+churn while showing no new CD surge at the transition. It does not identify the guest state
+transition, the EDX producer/writer, or the exact exception/cache path, and no HLE or guest
+behavior change is justified yet.

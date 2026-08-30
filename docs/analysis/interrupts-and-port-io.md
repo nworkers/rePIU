@@ -875,3 +875,43 @@ targets and the complete pumpit1 probe passed. A 10-second pumpito smoke reporte
 `history-coverage-miss`, `due-overflow`, `missing-due`, and `frame-overflow`. Execution exception,
 wall timeout, and stall timeout were all false, and shutdown came from an SDL exit request. This
 closes the input validation for Tasks 492 through 495.
+
+## 2026-08-30 Task 528: INT 21h 전용 live AH 계측
+
+**확인됨:** `RecordHandledDosInterrupt`의 기존 `handled_dos_interrupt_ah_counts`는 함수명과
+달리 모든 HLE interrupt vector에서 같은 AH 배열을 갱신합니다. 따라서 INT 16h의 `AH=11h/12h`
+같은 값이 DOS 호출 분포에 섞일 수 있었습니다.
+
+**수정됨:** `ThreadContext`에 `vector=0x21`일 때만 증가하는
+`handled_dos_int21_count`와 `handled_dos_int21_ah_counts[256]`를 추가했습니다. frame-boundary
+live reporter는 기존 전체 HLE 처리 수와 함께 INT 21h 처리 수 및 상위 INT 21h AH 네 개를
+출력합니다. DOS 서비스 의미, 호출 위치, 원본 게스트 코드는 변경하지 않습니다.
+
+**성능 분석 결과:** 보정된 무트레이스 실행에서 `pumpipx3`의 INT 21h 상위 값은
+`AH2C=395893`이었고, live 표본 #1~#4에서 이 값은 증가하지 않았습니다. 같은 실행에서
+late drop이 약 38.6초에 발생했으므로 AH2C 호출 증가를 late drop의 직접 원인으로 볼 수
+없습니다. `pumpit1`은 `AH3B/4A/44/3F`가 상위였고 AH2C는 관측되지 않았습니다.
+
+## 2026-08-30 Task 528: INT 21h-specific live AH census
+
+**Confirmed:** despite its name, the existing `handled_dos_interrupt_ah_counts` updates one AH
+array for every HLE interrupt vector. Values such as `INT 16h AH=11h/12h` could therefore be mixed
+into a DOS call distribution.
+
+**Corrected:** `ThreadContext` now has `handled_dos_int21_count` and
+`handled_dos_int21_ah_counts[256]`, incremented only when `vector=0x21`. The frame-boundary live
+reporter prints the existing total HLE-interrupt count alongside the INT 21h count and top four
+INT 21h AH values. DOS-service semantics, call locations, and original guest code are unchanged.
+
+**Performance result:** in the corrected trace-free run, `pumpipx3`'s top INT 21h value was
+`AH2C=395893`, and it did not increase across live samples #1–#4. The late drop occurred at about
+38.6 seconds in that run, so an increase in AH2C calls cannot be treated as its direct cause.
+`pumpit1` was led by `AH3B/4A/44/3F`, with no observed AH2C.
+
+**보조 60초 실행:** `pumpipx3`는 `AH2C=356476`이 live 표본 #1~#5에서 고정된 채 약
+35.6초부터 5 FPS 수준으로 내려갔습니다. `pumpit1`은 `int21=906` 및 `AH3B/4A/44/3F`
+분포를 유지하면서 약 58초까지 고정 5 FPS로 내려가지 않았습니다.
+
+**Supplemental 60-second run:** `pumpipx3` kept `AH2C=356476` unchanged across live samples
+#1–#5 while falling to roughly 5 FPS at about 35.6 seconds. `pumpit1` retained `int21=906` and
+the `AH3B/4A/44/3F` distribution and did not enter a fixed 5 FPS state through about 58 seconds.

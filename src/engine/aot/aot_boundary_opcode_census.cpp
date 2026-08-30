@@ -6,6 +6,7 @@ namespace
 {
 
 constexpr std::uint8_t kTwoByteEscape = 0x0FU;
+constexpr std::uint8_t kFfOpcode = 0xFFU;
 
 bool IsSegmentPrefix(std::uint8_t value)
 {
@@ -102,6 +103,19 @@ void RecordAotBoundaryOpcodeSample(AotBoundaryOpcodeCensus* census,
 
     const std::uint8_t opcode = bytes[index];
     ++census->effective_opcode_counts[opcode];
+    if (opcode == kFfOpcode)
+    {
+        if (index + 1U >= length)
+        {
+            ++census->ff_modrm_truncated_count;
+        }
+        else
+        {
+            const std::uint8_t modrm = bytes[index + 1U];
+            const std::size_t group = (modrm >> 3U) & 7U;
+            ++census->ff_group_counts[group];
+        }
+    }
     if (opcode != kTwoByteEscape)
     {
         return;

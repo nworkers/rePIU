@@ -95,6 +95,19 @@ bool FloatSaveMatches(const GuestCpuContext& registers)
     return true;
 }
 
+bool FloatRegisterBytesMatch(const GuestCpuContext& registers)
+{
+    for (std::size_t index = 0; index < kRegisterAreaSize; ++index)
+    {
+        if (registers.FloatSave.RegisterArea[index] != RegisterByte(index))
+        {
+            return false;
+        }
+    }
+    return registers.FloatSave.ControlWord == kControlWord &&
+        registers.FloatSave.StatusWord == kStatusWord;
+}
+
 // The shared half: every host must expose the same field names holding the
 // values written to them. On Windows this is CONTEXT itself, which is the point
 // -- the engine's existing field accesses have to keep compiling.
@@ -139,17 +152,30 @@ bool ProbeUcontextRoundTrip()
     {
         return false;
     }
-    if (!Matches(read) || !FloatSaveMatches(read))
+    if (!Matches(read) ||
+#if defined(__x86_64__)
+        !FloatRegisterBytesMatch(read)
+#else
+        !FloatSaveMatches(read)
+#endif
+    )
     {
         return false;
     }
     // Both stack-pointer slots must agree after a store, or a later read of the
     // same context would report a stale pointer.
+#if defined(__i386__)
     if (static_cast<std::uint32_t>(host.uc_mcontext.gregs[REG_ESP]) != kEsp ||
         static_cast<std::uint32_t>(host.uc_mcontext.gregs[REG_UESP]) != kEsp)
     {
         return false;
     }
+#elif defined(__x86_64__)
+    if (static_cast<std::uint32_t>(host.uc_mcontext.gregs[REG_RSP]) != kEsp)
+    {
+        return false;
+    }
+#endif
     // A context with no x87 save area is not an error. The general registers
     // still move; the x87 half stays as the caller left it, which for a fresh
     // structure is zero.

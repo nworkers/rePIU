@@ -312,6 +312,9 @@ target_sources(repiu_exe
         src/engine/telemetry/aot_residency_sample.cpp
         src/engine/telemetry/aot_return_stage_profile.cpp
         src/engine/aot/aot_boundary_opcode_census.cpp
+        src/engine/aot/aot_ff_boundary_attribution.cpp
+        src/engine/aot/aot_ff_boundary_target_attribution.cpp
+        src/engine/aot/aot_ff_target_timing.cpp
         src/engine/io/port_io_emulator.cpp
         src/engine/io/jamma_input_timeline.cpp
         src/engine/io/piu10_mp3_frame_batch.cpp
@@ -402,15 +405,25 @@ if(UNIX AND NOT EMSCRIPTEN)
             src/platform/linux/safe_memory_copy.cpp
             src/platform/linux/host_environment.cpp
             src/platform/linux/host_process.cpp
-            # Task 503d-12: the five dispatch thunks. Their resolvers are still
-            # Win32-only sources, so nothing on Linux references these symbols
-            # yet and the archive member simply goes unused until it does.
-            src/platform/linux/aot_dbt_dispatch_thunks.S
-            # Task 503d-16: the trampoline's three entries into the guest. These
-            # do link today -- the globals they read moved to a source built on
-            # every host, so the probe can call them.
-            src/platform/linux/guest_stack_switch.S
     )
+
+    # Task 545: both assembly units below are i386 execution contracts. They
+    # use 32-bit registers, stack frames, and selector state; collecting them
+    # in an x64 build does not provide a partial port and only hides the next
+    # C++/link barrier behind an assembler failure.
+    if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+        # Task 503d-12: the five dispatch thunks. Their resolvers are still
+        # Win32-only sources, so nothing on Linux references these symbols
+        # yet and the archive member simply goes unused until it does.
+        target_sources(repiu_exe
+            PRIVATE
+                src/platform/linux/aot_dbt_dispatch_thunks.S
+                # Task 503d-16: the trampoline's three entries into the guest.
+                # These do link today -- the globals they read moved to a
+                # source built on every host, so the probe can call them.
+                src/platform/linux/guest_stack_switch.S
+        )
+    endif()
 endif()
 
 target_include_directories(repiu_exe
@@ -543,11 +556,22 @@ if(NOT EMSCRIPTEN)
         PRIVATE
             src/tools/aot_probe/fault_handler_probe.cpp
             src/tools/aot_probe/guest_cpu_context_probe.cpp
-            src/tools/aot_probe/guest_stack_switch_probe.cpp
             src/tools/aot_probe/host_thread_probe.cpp
-            src/tools/aot_probe/stack_bridge_probe.cpp
             src/tools/aot_probe/virtual_memory_probe.cpp
     )
+
+    if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+        target_sources(repiu_core_probe
+            PRIVATE
+                src/tools/aot_probe/guest_stack_switch_probe.cpp
+                src/tools/aot_probe/stack_bridge_probe.cpp
+        )
+    else()
+        target_compile_definitions(repiu_core_probe
+            PRIVATE
+                REPIU_NO_I386_PROBES=1
+        )
+    endif()
 endif()
 
 target_include_directories(repiu_core_probe
@@ -561,10 +585,27 @@ target_link_libraries(repiu_core_probe
 )
 
 if(UNIX AND NOT EMSCRIPTEN)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+        target_sources(repiu_core_probe
+            PRIVATE
+                src/tools/aot_probe/stack_bridge_probe.S
+                src/tools/aot_probe/guest_stack_switch_probe.S
+        )
+    endif()
+endif()
+
+# Task 547: the first x64 execution contract is a synthetic frame/ABI probe.
+# It is Linux x64-only because the bridge tests the SysV AMD64 register and stack
+# contract; it does not claim to execute a guest block.
+if(UNIX AND NOT EMSCRIPTEN AND CMAKE_SIZEOF_VOID_P GREATER 4)
     target_sources(repiu_core_probe
         PRIVATE
-            src/tools/aot_probe/stack_bridge_probe.S
-            src/tools/aot_probe/guest_stack_switch_probe.S
+            src/tools/aot_probe/linux_x64_aot_frame_probe.cpp
+            src/tools/aot_probe/linux_x64_aot_frame_probe.S
+    )
+    target_compile_definitions(repiu_core_probe
+        PRIVATE
+            REPIU_LINUX_X64_AOT_FRAME_PROBE=1
     )
 endif()
 

@@ -776,6 +776,507 @@ memory=4GB
 swap=8GB
 ```
 
+## 2026-08-30 Task 540: Linux P_8/AP_88 경로 검토
+
+사용자가 Win32의 느린 구간이 paletted texture 사용 구간이었다고 확인하여 Linux 실행을
+추가 대조했습니다. Linux CMake도 Win32와 동일한 공용
+`src/engine/glide_opengl_backend.cpp`와 `src/hle/glide_texture_decode.cpp`를 사용합니다.
+따라서 Linux에 별도의 palette 구현 누락은 없습니다. P_8/AP_88은 CPU에서 RGBA8로
+확장되고 OpenGL texture로 업로드되며, palette 변경 뒤에는 현재 draw의 stale texture만
+지연 갱신됩니다.
+
+현재 Linux WSLg `pumpipx3`의 texture census는 uploads/distinct `54/48`, P_8(`format 5`)
+`42`, ARGB_4444(`format 12`) `12`, palette downloads/changed/identical `266/266/0`,
+lazy refresh/failure `224/0`을 기록했습니다. refresh source/RGBA bytes는
+`14,680,064/58,720,256`, decode/upload time은 `25.845/7.021 ms`였고, decode failure,
+palette missing, GL debug error는 모두 0입니다.
+
+이번 확인에서 Linux 환경의 실제 EGL/OpenGL renderer는 Mesa `llvmpipe`이며
+`Accelerated: no`였습니다. 이는 모든 Linux에 대한 결론이 아니라 현재 WSLg 측정 환경에
+대한 사실입니다. 그러나 P_8을 RGBA8로 확장한 texture의 fragment sampling과
+rasterization까지 소프트웨어로 수행될 수 있으므로, 하드웨어 가속 Win32보다 paletted
+texture 장면이 불리할 수 있습니다.
+
+refresh decode/upload 누계 32.866 ms만으로는 지속적인 5 fps 구간 전체를 설명할 수 없습니다.
+반면 upload 뒤 실제 draw에서 발생하는 llvmpipe의 texture sampling 비용은 해당 계측에
+포함되지 않았으므로 아직 배제할 수 없습니다. 또한 texture upload 경로의 무조건적인
+`glGetError()`가 Linux driver에서 동기화 비용을 만드는지는 미측정입니다.
+
+**판정:** Linux 포트의 기능 누락은 확인되지 않았고, 현재 Linux에서 가장 구체적인
+추가 위험은 WSLg가 하드웨어 가속이 아닌 `llvmpipe`라는 점입니다. 전체 late drop을
+paletted texture에 귀속하려면 하드웨어 가속 native Linux와의 비교 및 frame별 P_8 draw
+비용 계측이 필요합니다.
+
+## 2026-08-30 Task 540: Linux P_8/AP_88 path review
+
+Following the user's confirmation that the slow Win32 section used paletted textures, the
+Linux run was checked separately. Linux builds the same shared
+`src/engine/glide_opengl_backend.cpp` and `src/hle/glide_texture_decode.cpp` as Win32, so
+there is no separate Linux palette implementation missing. P_8/AP_88 are expanded to RGBA8
+on the CPU and uploaded as OpenGL textures; after a palette change, only the stale texture
+used by the current draw is refreshed lazily.
+
+The current Linux WSLg `pumpipx3` texture census reported uploads/distinct `54/48`, P_8
+(`format 5`) `42`, ARGB_4444 (`format 12`) `12`, palette downloads/changed/identical
+`266/266/0`, and lazy refresh/failure `224/0`. Refresh source/RGBA bytes were
+`14,680,064/58,720,256`; decode/upload time was `25.845/7.021 ms`. Decode failures,
+missing palettes, and GL debug errors were all zero.
+
+The actual EGL/OpenGL renderer in this Linux environment is Mesa `llvmpipe` with
+`Accelerated: no`. This is a fact about the current WSLg measurement environment, not every
+Linux installation. It does mean that fragment sampling and rasterization of the RGBA8
+expansion can be performed in software, making a paletted-texture scene less favourable than
+hardware-accelerated Win32.
+
+The 32.866 ms refresh decode/upload total cannot explain the entire sustained 5 FPS interval.
+However, the llvmpipe texture-sampling cost during later draws is not included in that upload
+measurement and is not yet ruled out. The unconditional `glGetError()` in the texture upload
+paths may also synchronize expensively on a Linux driver, but that has not been measured.
+
+**Decision:** no missing Linux functionality was found. The most concrete additional Linux
+risk is that WSLg uses unaccelerated `llvmpipe`. Attributing the entire late drop to paletted
+textures requires an accelerated native-Linux comparison and per-frame P_8 draw accounting.
+
+## 2026-08-30 Task 541: WSLg acceleration versus the i386 runtime
+
+### 한국어
+
+Task 540의 `llvmpipe` 관찰은 WSLg 전체의 3D 가속 부재를 의미하지 않습니다. 같은
+WSLg 세션에서 기본 `glxinfo -B`는 `llvmpipe`와 `Accelerated: no`를 보고했지만,
+`GALLIUM_DRIVER=d3d12 glxinfo -B`는 `Microsoft Corporation`,
+`D3D12 (NVIDIA GeForce RTX 4090)`, `Accelerated: yes`를 보고했습니다. `/dev/dxg`와
+`/dev/dri/renderD128`도 존재했습니다. Microsoft WSLg 문서가 설명하는 D3D12 Gallium
+가속 경로 자체는 동작합니다.
+
+이번 측정 대상 `build/linux_i386/repiu`는 ELF 32-bit i386이며
+`/lib/i386-linux-gnu/libGL.so.1`과 `libGLX.so.0`를 사용합니다. i386 Mesa 패키지는
+설치되어 있었지만 `/usr/lib/i386-linux-gnu/dri/d3d12_dri.so`는 없었고,
+64-bit 쪽 `/usr/lib/x86_64-linux-gnu/dri/d3d12_dri.so`만 확인되었습니다.
+
+**확인됨**
+
+- WSLg에서 64-bit GL client의 D3D12 하드웨어 가속이 동작합니다.
+- 기존 측정의 기본 GL client는 `llvmpipe`였습니다.
+- 게임 바이너리는 32-bit i386입니다.
+- i386 Mesa D3D12 DRI 모듈은 현재 테스트 환경에서 보이지 않습니다.
+
+**추정**
+
+- 32-bit 게임 프로세스는 i386 D3D12 DRI 모듈을 로드하지 못해
+  `swrast/llvmpipe`로 폴백했을 가능성이 높습니다.
+- 따라서 Task 540에서 관찰한 RGBA8 paletted texture의 sampling/rasterization 비용은
+  Linux 포트 자체보다 현재 i386 GL runtime 제약의 영향을 크게 받았을 수 있습니다.
+
+**미확정**
+
+- 게임 프로세스 내부의 실제 `GL_RENDERER` 값은 아직 기록하지 않았습니다. 64-bit
+  `glxinfo`의 성공만으로 i386 게임의 renderer를 확정할 수 없습니다.
+- i386 D3D12 DRI 모듈이 Ubuntu 24.04 패키지에서 제공되지 않는 이유와 대체 경로는
+  아직 확인하지 않았습니다.
+
+**판정 변경:** “Linux/WSLg가 소프트웨어 OpenGL이라서 느리다”가 아니라,
+“이번 WSLg 측정에서는 기본 GL 경로가 소프트웨어로 폴백했으며, 특히 32-bit 게임용
+i386 D3D12 DRI가 없는 것이 유력한 환경 제약”이 현재의 정확한 결론입니다. 다음 비교는
+게임 프로세스 내부 renderer 로그와 가속 전·후 동일 장면의 frame/P_8 draw 계측이어야 합니다.
+
+참고: [Microsoft WSLg](https://github.com/microsoft/wslg),
+[WSLg GPU selection](https://github.com/microsoft/wslg/wiki/GPU-selection-in-WSLg)
+
+### English
+
+Task 540's `llvmpipe` observation does not mean that WSLg lacks 3D acceleration. In the
+same WSLg session, the default `glxinfo -B` reported `llvmpipe` and `Accelerated: no`,
+while `GALLIUM_DRIVER=d3d12 glxinfo -B` reported `Microsoft Corporation`,
+`D3D12 (NVIDIA GeForce RTX 4090)`, and `Accelerated: yes`. `/dev/dxg` and
+`/dev/dri/renderD128` were also present. The D3D12 Gallium path described by the
+Microsoft WSLg documentation works.
+
+The measured `build/linux_i386/repiu` is an ELF 32-bit i386 executable using
+`/lib/i386-linux-gnu/libGL.so.1` and `libGLX.so.0`. The i386 Mesa packages were installed,
+but `/usr/lib/i386-linux-gnu/dri/d3d12_dri.so` was absent; only the 64-bit
+`/usr/lib/x86_64-linux-gnu/dri/d3d12_dri.so` was present.
+
+**Confirmed**
+
+- A 64-bit GL client can use WSLg D3D12 hardware acceleration.
+- The default GL client in the previous measurement used `llvmpipe`.
+- The game binary is 32-bit i386.
+- The i386 Mesa D3D12 DRI module is absent in the current test environment.
+
+**Inferred**
+
+- The 32-bit game likely fails to load an i386 D3D12 DRI module and falls back to
+  `swrast/llvmpipe`.
+- The RGBA8 paletted-texture sampling/rasterization cost observed in Task 540 may therefore
+  be dominated by the i386 GL runtime constraint rather than the Linux port itself.
+
+**Unresolved**
+
+- The actual `GL_RENDERER` inside the game process has not yet been recorded. A successful
+  64-bit `glxinfo` check cannot establish the renderer used by the i386 game.
+- Why the i386 D3D12 DRI module is not supplied by the Ubuntu 24.04 package, and whether an
+  alternative runtime path exists, remains unverified.
+
+**Decision update:** The precise conclusion is not “Linux/WSLg is software OpenGL and is
+slow.” It is “the default GL path in this WSLg measurement fell back to software, and the
+absence of an i386 D3D12 DRI module is a likely environment constraint for the 32-bit game.”
+The next comparison should log the renderer inside the game process and measure the same
+scene's frame time and P_8 draw cost with acceleration enabled.
+
+References: [Microsoft WSLg](https://github.com/microsoft/wslg),
+[WSLg GPU selection](https://github.com/microsoft/wslg/wiki/GPU-selection-in-WSLg)
+
+## 2026-08-30 Task 542: Linux x64 host feasibility
+
+### 한국어
+
+WSLg 가속을 활용하기 위한 Linux x64 host 전환은 장기 후보로 검토할 가치가 있습니다.
+그러나 원본 guest는 32-bit DOS/4G 코드이므로, 이것은 guest를 64-bit로 변환하는
+작업이 아닙니다. 현재 engine의 32-bit native 실행 경계를 x86-64 host에 맞게 새로
+설계하는 작업입니다.
+
+현재 제약은 명확합니다. Linux build script가 `-m32`를 사용하고, 실행 엔진의
+`IsDirectX86ExecutionSupported()`와 `IsGuestStackSwitchSupported()`가 i386만 허용하며,
+`guest_cpu_context.cpp`도 `__i386__`의 `REG_EIP`/`REG_ESP` context만 처리합니다.
+Linux GAS trampoline은 EAX/ESP/EBP와 32-bit cdecl/stdcall frame을 사용합니다.
+`aot_code_cache.cpp`는 thunk·counter·cache pointer를 32-bit immediate로 patch하고
+4 GiB 밖의 code-cache 배치를 거부합니다. non-PIE와 고정 guest/code address range도
+현재 실행 계약의 일부입니다.
+
+**판정:** x64 host를 `-m64`만으로 재빌드하는 것은 불가능합니다. 가능한 장기 경로는
+(1) x86-64 AOT/DBT로 guest 실행을 번역하거나, (2) 32-bit native guest와 x64 renderer를
+분리하는 IPC 구조입니다. 우선순위는 x64 graphics-only GL probe, x64 compile probe,
+그 다음 실행 모델 선택 순서로 정합니다.
+
+설계 근거는 [20260830-542 Linux x64 host feasibility](../design/20260830-542-linux-x64-host-feasibility.md)에
+기록했습니다.
+
+### x64 컴파일 probe 결과
+
+graphics-only probe에서 64비트 WSLg client가 D3D12 가속을 사용할 수 있음은 이미
+확인했습니다. 이어서 수행한 `-m64` CMake build는 third-party dependency를
+컴파일하고 프로젝트 소스까지 도달했지만, 첫 번째 프로젝트 소유 ABI assertion에서
+중단되었습니다.
+
+```text
+include/repiu/engine/live_telemetry.h:207:28: error: static assertion failed
+static_assert(sizeof(long) == 4);
+note: the comparison reduces to ‘(8 == 4)’
+```
+
+이는 renderer 오류가 아니라 Linux x86-64 LP64의 실제 장벽입니다.
+`SharedLiveTelemetry`는 다른 process가 map하는 고정 레이아웃이고 여러
+`volatile long` field를 포함하므로 host의 `long` 폭을 그대로 사용하면 shared-memory
+layout도 바뀝니다. 따라서 다음 구현 단위는 실행 계층을 probe하기 전에 이 ABI에
+명시적인 32비트 field type과 대응 atomic operation을 도입하는 것입니다. probe
+자체에서는 source code를 변경하지 않았습니다.
+
+### English
+
+A Linux x64 host remains a worthwhile long-term candidate for using WSLg acceleration.
+The original guest is 32-bit DOS/4G code, however, so this is not a conversion of the
+guest to 64-bit. It is a redesign of the current 32-bit native-execution boundary for an
+x86-64 host.
+
+The constraints are concrete. The Linux build script uses `-m32`; the execution engine's
+`IsDirectX86ExecutionSupported()` and `IsGuestStackSwitchSupported()` accept only i386;
+and `guest_cpu_context.cpp` handles only the `__i386__` `REG_EIP`/`REG_ESP` context. The
+Linux GAS trampoline uses EAX/ESP/EBP and 32-bit cdecl/stdcall frames. `aot_code_cache.cpp`
+patches thunk, counter, and cache pointers as 32-bit immediates and rejects code-cache
+placements above 4 GiB. Non-PIE and fixed guest/code address ranges are also part of the
+current execution contract.
+
+**Decision:** rebuilding the host with only `-m64` is not viable. The long-term options are
+(1) translating guest execution through x86-64 AOT/DBT or (2) separating the 32-bit native
+guest and an x64 renderer through IPC. First run an x64 graphics-only GL probe, then an x64
+compile probe, and choose the execution model.
+
+The design rationale is recorded in [20260830-542 Linux x64 host feasibility](../design/20260830-542-linux-x64-host-feasibility.md).
+
+### x64 compile probe result
+
+The graphics-only probe had already established that a 64-bit WSLg client can use
+D3D12 acceleration. The following `-m64` CMake build compiled the third-party
+dependencies and reached the project sources, but stopped at the first project-owned
+ABI assertion:
+
+```text
+include/repiu/engine/live_telemetry.h:207:28: error: static assertion failed
+static_assert(sizeof(long) == 4);
+note: the comparison reduces to ‘(8 == 4)’
+```
+
+This is a real Linux x86-64 LP64 barrier, not a renderer failure. `SharedLiveTelemetry`
+is mapped by another process and contains many `volatile long` fields, so using the
+host `long` width would change the shared-memory layout. The next implementation unit
+is therefore to give this ABI an explicit 32-bit field type and matching atomic
+operations before probing the execution layer again. No source code was changed by
+the probe itself.
+
+## 2026-08-31 Task 543: Linux x64 telemetry ABI normalization
+
+### 한국어
+
+Task 543은 `SharedLiveTelemetry`의 host-sized `long` 의존성을 제거했습니다.
+고정 shared-memory field는 `std::int32_t` 기반 `LiveTelemetryWord`가 되었고,
+shared field 및 32비트 placement counter에는 4바이트 atomic overload가 사용됩니다.
+기존 local `volatile long` counter 경로는 그대로 유지했습니다.
+
+Linux i386 `repiu_exe` 정적 라이브러리와 Win32 `repiu_supervisor_win32` Debug
+target은 성공했습니다. Linux x64 probe는 첫 LP64 assertion을 통과했지만 다음
+오류에서 중단되었습니다.
+
+```text
+src/engine/execution/execution_trampoline.cpp:2288:9:
+error: ‘CallGuestEntryWithStackTimed’ was not declared in this scope
+src/engine/execution/execution_trampoline.cpp:2306:9:
+error: ‘CallGuestEntryDirectTimed’ was not declared in this scope
+```
+
+두 함수는 `_M_IX86 || __i386__`에서만 정의되고 Linux x64 guest thread procedure는
+이를 호출합니다. 따라서 다음 작업은 x64에서 이 호출을 억지로 활성화하는 것이
+아니라, x86-64 host의 guest entry 및 stack bridge 설계를 분리하는 것입니다.
+
+### English
+
+Task 543 removed the host-sized `long` dependency from `SharedLiveTelemetry`.
+Fixed shared-memory fields now use the `std::int32_t`-based `LiveTelemetryWord`, and
+four-byte atomic overloads are used for shared fields and 32-bit placement counters.
+The existing local `volatile long` counter path remains unchanged.
+
+The Linux i386 `repiu_exe` static library and Win32 `repiu_supervisor_win32` Debug
+target succeeded. The Linux x64 probe passed the first LP64 assertion and stopped at:
+
+```text
+src/engine/execution/execution_trampoline.cpp:2288:9:
+error: ‘CallGuestEntryWithStackTimed’ was not declared in this scope
+src/engine/execution/execution_trampoline.cpp:2306:9:
+error: ‘CallGuestEntryDirectTimed’ was not declared in this scope
+```
+
+The two functions are defined only under `_M_IX86 || __i386__`, while the Linux x64
+guest thread procedure calls them. The next unit must therefore separate the x86-64
+host guest-entry and stack-bridge design instead of force-enabling this call path.
+
+## 2026-08-31 Task 544: Linux x64 guest entry build fence
+
+### 한국어
+
+Linux non-Win32 `GuestEntryThreadProc`에 x64 fail-closed 경계를 추가했습니다. x64
+host는 기존 i386 timed entry를 호출하지 않고 unsupported code 4를 반환하며,
+i386 guest entry 경로는 그대로 유지합니다.
+
+그 결과 Linux x64 C++ 단계는 통과했지만, 첫 assembler 장벽이
+`src/platform/linux/aot_dbt_dispatch_thunks.S`에서 확인되었습니다.
+
+```text
+Error: `pusha' is not supported in 64-bit mode
+Error: operand size mismatch for `push'
+Error: `popa' is not supported in 64-bit mode
+```
+
+현재 thunk가 32비트 register-save frame과 stack ABI를 직접 사용한다는 뜻입니다.
+따라서 x64 port는 기존 assembly에 `-m64`를 적용하는 작업이 아니며, 다음 단위에서
+x86-64 register frame·SysV ABI bridge·guest state bridge를 설계해야 합니다.
+
+### English
+
+Added an x64 fail-closed boundary to the non-Win32 Linux `GuestEntryThreadProc`.
+An x64 host returns unsupported code 4 instead of calling the existing i386 timed
+entry, while the i386 guest-entry path remains unchanged.
+
+The Linux x64 C++ stage then passed, but the first assembler barrier appeared in
+`src/platform/linux/aot_dbt_dispatch_thunks.S`:
+
+```text
+Error: `pusha' is not supported in 64-bit mode
+Error: operand size mismatch for `push'
+Error: `popa' is not supported in 64-bit mode
+```
+
+The current thunk directly uses a 32-bit register-save frame and stack ABI. The x64
+port therefore cannot reuse this assembly with `-m64`; the next unit must design an
+x86-64 register frame, SysV ABI bridge, and guest-state bridge.
+
+## 2026-08-31 Task 545: Linux x64 32-bit assembly fence
+
+### 한국어
+
+Linux x64 compile probe가 i386 전용 GAS에서 멈추지 않도록
+`aot_dbt_dispatch_thunks.S`와 `guest_stack_switch.S`를 실제 포인터 폭이 4바이트인
+구성에서만 수집하도록 CMake 경계를 추가했습니다. `repiu_core_probe`의
+`stack_bridge`와 `guest_stack_switch`도 같은 조건으로 제한하고, x64 출력에서는
+두 probe를 skipped로 표시합니다.
+
+이 변경은 x64 실행을 제공하지 않습니다. Task 544의 fail-closed guest entry와
+thunk 주소의 unsupported 정책은 유지됩니다. 목적은 x64 C++/POSIX 계층의 다음
+장벽을 독립적으로 관찰하는 것이며, 32비트 assembly를 x64로 변환한 것으로
+간주하지 않습니다.
+
+현재 세션에서는 WSL 빌드가 `Wsl/Service/CreateInstance/E_ACCESSDENIED`로
+거부되어 실제 x64 재빌드를 완료하지 못했습니다. 소스 정적 검증에서는 x64
+구성의 포인터 폭이 8, i386 구성의 포인터 폭이 4로 기록되어 조건의 대상이
+분리되어 있음을 확인했습니다. 실제 빌드 결과는 다음 검증 세션에서 보완해야
+합니다.
+
+### English
+
+Added a CMake boundary so Linux x64 collects `aot_dbt_dispatch_thunks.S` and
+`guest_stack_switch.S` only in configurations with four-byte pointers. The
+`stack_bridge` and `guest_stack_switch` probes are restricted by the same condition
+and are reported as skipped by the x64 core probe.
+
+This does not provide x64 execution. Task 544's fail-closed guest entry and the
+unsupported thunk-address policy remain in effect. The purpose is to observe the next
+x64 C++/POSIX barriers independently rather than treating a converted 32-bit
+assembly unit as an x64 port.
+
+The WSL build could not be rerun in this session because the environment rejected
+`Wsl/Service/CreateInstance/E_ACCESSDENIED`. Static source/build-cache checks confirmed
+that the x64 configuration records an eight-byte pointer width and the i386
+configuration records four bytes, so the intended inputs are separated. The concrete
+build result must be completed in the next Linux verification session.
+
+## 2026-08-31 Task 546: Linux x64 AOT/DBT execution model
+
+### 한국어
+
+Task 545에서 i386 assembly 입력을 x64 build에서 분리한 뒤, x64 실행 모델의 설계를
+고정했습니다. x64 경로는 host RSP를 guest ESP로 바꾸지 않고, guest GPR/EIP/ESP/
+EFLAGS/selector/x87 상태를 32비트로 유지하면서 host pointer와 x64 code-cache 주소를
+별도 타입으로 취급해야 합니다.
+
+현재 `kCopy`는 LEGACY_32 decoder가 읽은 바이트를 그대로 emitted code에 넣을 수
+있다는 뜻이지만, x64 long mode에서는 stack, address-size, segment, absolute address,
+control-transfer semantics가 달라질 수 있습니다. 따라서 x64 emitter는 semantic
+re-encode 또는 helper 경계를 사용해야 하며, 검증되지 않은 복사는 허용하지 않습니다.
+Resolver는 `pushad` frame index 대신 이름 있는 x64 frame과 SysV AMD64 bridge를
+사용하고, fault는 host RIP를 guest EIP로 간주하지 않고 active frame과 code-cache
+address map으로 복원해야 합니다.
+
+다음 구현 순서는 x64 frame/type header, synthetic ABI probe, 제한된 emitter subset,
+dispatch/fault 연결, DOS/4GW sample 상태 비교입니다. 이 단위에서는 실행 코드를
+추가하지 않았습니다.
+
+설계 근거는 [20260831-546 Linux x64 AOT/DBT execution model](../design/20260831-546-linux-x64-aot-dbt-execution-model.md)에
+기록했습니다.
+
+### English
+
+After Task 545 separated i386 assembly inputs from the x64 build, Task 546 fixed the
+x64 execution model. The x64 path must keep guest GPR/EIP/ESP/EFLAGS/selectors/x87 state
+at 32-bit width, keep host pointers and x64 code-cache addresses in separate types, and
+never replace host RSP with guest ESP.
+
+The current `kCopy` means that bytes decoded in LEGACY_32 mode may be copied into the
+emitted image, but stack, address-size, segment, absolute-address, and control-transfer
+semantics can differ in x64 long mode. The x64 emitter therefore needs semantic
+re-encoding or helper boundaries, and unverified copies must remain unsupported.
+Resolvers need a named x64 frame and SysV AMD64 bridge instead of `pushad` frame indexes.
+Fault recovery must not treat host RIP as guest EIP; it must use the active frame and the
+code-cache address map.
+
+The next implementation order is the x64 frame/type header, a synthetic ABI probe, a
+restricted emitter subset, dispatch/fault integration, and DOS/4GW sample state
+comparison. This unit adds no execution code.
+
+The design rationale is recorded in [20260831-546 Linux x64 AOT/DBT execution model](../design/20260831-546-linux-x64-aot-dbt-execution-model.md).
+
+## 2026-08-31 Task 547: Linux x64 frame/ABI probe
+
+### 한국어
+
+Task 546의 첫 구현으로 Linux x64 전용 `LinuxX64AotDispatchFrame`을 추가했습니다.
+guest register, EIP/ESP, metadata는 `std::uint32_t`로 유지하고 context, guest memory
+base, host continuation은 64비트 `std::uintptr_t`로 분리했습니다. frame은 16바이트
+정렬되며 C++ assertion이 assembly에서 사용하는 오프셋과 구조체 layout을 고정합니다.
+
+`repiu_core_probe`에는 실제 guest를 호출하지 않는 synthetic SysV AMD64 probe를
+추가했습니다. 이 probe는 resolver에 frame과 context를 전달하고, 16-byte call-site
+stack alignment, callee-saved register 보존, XMM state의 FXSAVE/FXRSTOR 복원,
+named frame 수정 여부를 검사합니다. x64 production thunk나 guest emitter는 아직
+추가하지 않았습니다.
+
+이번 세션에서는 WSL 권한 제한으로 Linux x64 compile/run을 완료하지 못했으므로,
+assembler와 probe의 실제 결과는 미확정입니다. 다음 검증에서 `repiu_core_probe`를
+실행하여 synthetic contract를 확인해야 합니다.
+
+### English
+
+As the first implementation of Task 546, added the Linux x64-only
+`LinuxX64AotDispatchFrame`. Guest registers, EIP/ESP, and metadata remain
+`std::uint32_t`, while context, guest-memory base, and host continuation are separate
+64-bit `std::uintptr_t` fields. The frame is 16-byte aligned, and C++ assertions pin the
+layout and the offsets consumed by assembly.
+
+Added a synthetic SysV AMD64 probe to `repiu_core_probe` without calling a real guest.
+It passes context and the named frame to a resolver and checks 16-byte call-site stack
+alignment, callee-saved-register preservation, XMM state restoration through
+FXSAVE/FXRSTOR, and named-frame edits. No production x64 thunk or guest emitter is
+included yet.
+
+WSL was rechecked successfully: `Ubuntu-24.04` is running under WSL2. The Linux x64
+Release and Debug `repiu_core_probe` C++/GAS compile and link both succeeded. The Debug
+probe passed the existing `dos_file_handle_cache` stage, then produced no output at
+`pit_timer` and was manually interrupted. The synthetic SysV ABI probe therefore remains
+unexecuted and must be isolated from the shared `pit_timer` hang in the next session.
+
+## 2026-08-31 Task 548: Linux x64 ucontext adapter
+
+### 한국어
+
+Task 547의 x64 core-probe 빌드에서 기존 `guest_cpu_context_probe`가 i386 전용
+`REG_ESP`/`REG_UESP`를 직접 참조하는 다음 포팅 장벽을 확인했습니다. Linux x64
+`ucontext_t`에 맞춰 GPR, RIP, RSP, EFLAGS를 32비트 guest context로 변환하고,
+`REG_CSGSFS`에 packed된 CS/GS/FS를 읽도록 adapter를 확장했습니다. x64 signal
+context에 없는 DS/ES/SS는 0으로 두며 signal return 시 segment selector를 쓰지
+않습니다.
+
+FXSAVE의 x87 80-bit register bytes와 abridged tag는 기존 FSAVE-style
+`GuestFloatingSaveArea`로 변환했습니다. 현재 계약에 XMM/MXCSR를 추가하지 않았고,
+이 adapter를 통해 host 64비트 RIP/RSP를 guest native 실행 주소로 재개하지 않는
+경계도 유지했습니다.
+
+WSL 재확인 결과 `Ubuntu-24.04`가 WSL2로 실행 중이었고, Linux x64 Release
+`repiu_exe`와 Release/Debug `repiu_core_probe`의 C++/GAS 빌드·링크가 성공했습니다.
+Debug core probe는 `env_toggle`, `execution_backend`, `execution_timeout`,
+`dos_file_handle_cache`까지 통과했지만 `pit_timer`에서 출력 없이 멈춰 수동
+중단했습니다. 따라서 `guest_cpu_context_all`과 `linux_x64_aot_frame_all`은 아직
+실행 확인되지 않았습니다.
+
+**확인됨:** x64 ucontext adapter 컴파일·링크, x64 core-probe 컴파일·링크,
+WSL2 실행 환경.
+
+**미확정:** x64 context probe 실행 결과, synthetic frame ABI 실행 결과, 공통
+`pit_timer` hang의 원인.
+
+### English
+
+The next x64 porting barrier appeared while building Task 547's core probe: the
+existing `guest_cpu_context_probe` directly referenced the i386-only
+`REG_ESP`/`REG_UESP` fields. The Linux x64 adapter now maps GPRs, RIP, RSP, and EFLAGS
+into the 32-bit guest context and reads CS/GS/FS from packed `REG_CSGSFS`. DS/ES/SS are
+left zero because the x64 signal context does not provide them, and segment selectors
+are not written back on signal return.
+
+The adapter converts x87 80-bit register bytes and the FXSAVE abridged tag into the
+existing FSAVE-style `GuestFloatingSaveArea`. XMM/MXCSR were not added to the current
+contract, and the boundary preventing host 64-bit RIP/RSP from being used to resume
+native guest execution remains in place.
+
+WSL was rechecked successfully: `Ubuntu-24.04` is running under WSL2. The Linux x64
+Release `repiu_exe` and the Release/Debug `repiu_core_probe` C++/GAS builds and links
+both succeeded. The Debug core probe passed `env_toggle`, `execution_backend`,
+`execution_timeout`, and `dos_file_handle_cache`, then produced no output at `pit_timer`
+and was manually interrupted. `guest_cpu_context_all` and
+`linux_x64_aot_frame_all` therefore remain unexecuted.
+
+**Confirmed:** x64 ucontext adapter compile/link, x64 core-probe compile/link, and the
+WSL2 execution environment.
+
+**Unresolved:** x64 context-probe execution, synthetic frame-ABI execution, and the
+cause of the shared `pit_timer` hang.
+
 ---
 
 # Linux port frontier

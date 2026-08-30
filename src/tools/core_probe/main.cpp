@@ -39,10 +39,15 @@
 #if !defined(__EMSCRIPTEN__)
 #include "fault_handler_probe.h"
 #include "guest_cpu_context_probe.h"
-#include "guest_stack_switch_probe.h"
 #include "host_thread_probe.h"
-#include "stack_bridge_probe.h"
 #include "virtual_memory_probe.h"
+#if !defined(REPIU_NO_I386_PROBES)
+#include "guest_stack_switch_probe.h"
+#include "stack_bridge_probe.h"
+#endif
+#if defined(REPIU_LINUX_X64_AOT_FRAME_PROBE)
+#include "linux_x64_aot_frame_probe.h"
+#endif
 #endif
 
 #include <cstddef>
@@ -70,8 +75,13 @@ constexpr CoreProbe kCoreProbes[] = {
     {"guest_cpu_context", &repiu::tools::RunGuestCpuContextProbe},
     {"virtual_memory", &repiu::tools::RunVirtualMemoryProbe},
     {"fault_handler", &repiu::tools::RunFaultHandlerProbe},
+#if !defined(__EMSCRIPTEN__) && !defined(REPIU_NO_I386_PROBES)
     {"stack_bridge", &repiu::tools::RunStackBridgeProbe},
     {"guest_stack_switch", &repiu::tools::RunGuestStackSwitchProbe},
+#endif
+#if defined(REPIU_LINUX_X64_AOT_FRAME_PROBE)
+    {"linux_x64_aot_frame", &repiu::tools::RunLinuxX64AotFrameProbe},
+#endif
     {"host_thread", &repiu::tools::RunHostThreadProbe},
 #endif
     {"launcher", &repiu::tools::RunLauncherProbe},
@@ -79,10 +89,14 @@ constexpr CoreProbe kCoreProbes[] = {
 
 // Task 513. Named, not counted: a list of what this host cannot ask is worth
 // more than a number, and the next reader wants to know which six.
-#if defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__) || defined(REPIU_NO_I386_PROBES)
 constexpr const char* kSkippedProbes[] = {
-    "guest_cpu_context", "virtual_memory",     "fault_handler",
-    "stack_bridge",      "guest_stack_switch", "host_thread",
+#if defined(__EMSCRIPTEN__)
+    "guest_cpu_context", "virtual_memory", "fault_handler", "stack_bridge",
+    "guest_stack_switch", "host_thread",
+#else
+    "stack_bridge", "guest_stack_switch",
+#endif
 };
 #endif
 
@@ -108,15 +122,20 @@ int main()
               << "\ncore_probe_failures=" << failures
               << "\ncore_probe_all=" << (failures == 0 ? "true" : "false")
               << "\n";
-#if defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__) || defined(REPIU_NO_I386_PROBES)
     std::cout << "core_probe_skipped="
               << sizeof(kSkippedProbes) / sizeof(kSkippedProbes[0]);
     for (const char* name : kSkippedProbes)
     {
         std::cout << ' ' << name;
     }
+#if defined(__EMSCRIPTEN__)
     std::cout << "\ncore_probe_host=wasm32 (Task 513 Stage 1: the execution "
                  "engine is not built here)\n";
+#else
+    std::cout << "\ncore_probe_host=x64 (Task 545: i386 assembly probes are "
+                 "not built)\n";
+#endif
 #endif
     return failures == 0 ? 0 : 1;
 }

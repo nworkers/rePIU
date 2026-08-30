@@ -74,7 +74,8 @@ bool LiveExecutionProfileReportEnabled()
 void ReportLiveExecutionProfileIfDue(
     const ExecutionTimeProfile* profile,
     const std::uint64_t frames,
-    const LiveAotCounters& aot)
+    const LiveAotCounters& aot,
+    const LiveDosCounters& dos)
 {
     const std::uint32_t interval = IntervalMilliseconds();
     if (interval == 0U || profile == nullptr || !profile->enabled)
@@ -328,6 +329,365 @@ void ReportLiveExecutionProfileIfDue(
             site_line, static_cast<std::size_t>(site_length) + 1U);
     }
 
+    // Task 528: the instructions the boundary samples land on.
+    //
+    // Its own line because it answers "which instruction" rather than "how
+    // many", and because the loader summary that used to carry this census is
+    // never reached by a Linux run.
+    char opcode_line[384] = {};
+    int opcode_length = std::snprintf(
+        opcode_line, sizeof(opcode_line),
+        "[repiu-live-opcode] #%u samples=%llu",
+        static_cast<unsigned>(g_report_index),
+        static_cast<unsigned long long>(aot.opcode_samples));
+    for (std::size_t slot = 0; slot < 4U && opcode_length > 0; ++slot)
+    {
+        if (aot.top_opcode_count[slot] == 0U)
+        {
+            break;
+        }
+        const int written = std::snprintf(
+            opcode_line + opcode_length,
+            sizeof(opcode_line) - static_cast<std::size_t>(opcode_length),
+            " %02X=%u",
+            static_cast<unsigned>(aot.top_opcode[slot]),
+            static_cast<unsigned>(aot.top_opcode_count[slot]));
+        if (written <= 0)
+        {
+            break;
+        }
+        opcode_length += written;
+    }
+    for (std::size_t slot = 0; slot < 4U && opcode_length > 0; ++slot)
+    {
+        if (aot.top_escape_count[slot] == 0U)
+        {
+            break;
+        }
+        const int written = std::snprintf(
+            opcode_line + opcode_length,
+            sizeof(opcode_line) - static_cast<std::size_t>(opcode_length),
+            " 0F%02X=%u",
+            static_cast<unsigned>(aot.top_escape[slot]),
+            static_cast<unsigned>(aot.top_escape_count[slot]));
+        if (written <= 0)
+        {
+            break;
+        }
+        opcode_length += written;
+    }
+    if (opcode_length > 0 &&
+        static_cast<std::size_t>(opcode_length) < sizeof(opcode_line) - 1U)
+    {
+        opcode_line[opcode_length] = '\n';
+        repiu::platform::WriteHostErrorStream(
+            opcode_line, static_cast<std::size_t>(opcode_length) + 1U);
+    }
+
+    // Task 529: the ModRM group behind each effective FF boundary sample.
+    char ff_line[384] = {};
+    int ff_length = std::snprintf(
+        ff_line, sizeof(ff_line),
+        "[repiu-live-ff] #%u truncated=%u",
+        static_cast<unsigned>(g_report_index),
+        static_cast<unsigned>(aot.ff_modrm_truncated_count));
+    for (std::size_t group = 0; group < 8U && ff_length > 0; ++group)
+    {
+        if (aot.ff_group_counts[group] == 0U)
+        {
+            continue;
+        }
+        const int written = std::snprintf(
+            ff_line + ff_length,
+            sizeof(ff_line) - static_cast<std::size_t>(ff_length),
+            " /%u=%u",
+            static_cast<unsigned>(group),
+            static_cast<unsigned>(aot.ff_group_counts[group]));
+        if (written <= 0)
+        {
+            break;
+        }
+        ff_length += written;
+    }
+    if (ff_length > 0 &&
+        static_cast<std::size_t>(ff_length) < sizeof(ff_line) - 1U)
+    {
+        ff_line[ff_length] = '\n';
+        repiu::platform::WriteHostErrorStream(
+            ff_line, static_cast<std::size_t>(ff_length) + 1U);
+    }
+
+    // Task 530: identify which guest sites produce the FF /4 population.
+    char ff_site_line[2048] = {};
+    int ff_site_length = std::snprintf(
+        ff_site_line, sizeof(ff_site_line),
+        "[repiu-live-ff-site] #%u samples=%u truncated=%u overflow=%u "
+        "resolved=%u unresolved=%u target_truncated=%u "
+        "target_unsupported=%u target_unreadable=%u",
+        static_cast<unsigned>(g_report_index),
+        static_cast<unsigned>(aot.ff4_sample_count),
+        static_cast<unsigned>(aot.ff4_modrm_truncated_count),
+        static_cast<unsigned>(aot.ff4_site_overflow_count),
+        static_cast<unsigned>(aot.ff4_target_resolved_count),
+        static_cast<unsigned>(aot.ff4_target_unresolved_count),
+        static_cast<unsigned>(aot.ff4_target_instruction_truncated_count),
+        static_cast<unsigned>(aot.ff4_target_unsupported_count),
+        static_cast<unsigned>(aot.ff4_target_memory_unreadable_count));
+    if (ff_site_length > 0 &&
+        static_cast<std::size_t>(ff_site_length) < sizeof(ff_site_line))
+    {
+        for (std::size_t mode = 0U;
+             mode < kAotFfAddressingModeCount && ff_site_length > 0;
+             ++mode)
+        {
+            const std::uint32_t count =
+                aot.ff4_addressing_mode_counts[mode];
+            if (count == 0U)
+            {
+                continue;
+            }
+            const int written = std::snprintf(
+                ff_site_line + ff_site_length,
+                sizeof(ff_site_line) - static_cast<std::size_t>(ff_site_length),
+                " %s=%u",
+                AotFfAddressingModeName(
+                    static_cast<AotFfAddressingMode>(mode)),
+                static_cast<unsigned>(count));
+            if (written <= 0 ||
+                static_cast<std::size_t>(written) >=
+                    sizeof(ff_site_line) -
+                        static_cast<std::size_t>(ff_site_length))
+            {
+                ff_site_length = -1;
+                break;
+            }
+            ff_site_length += written;
+        }
+    }
+    for (std::size_t slot = 0U;
+         slot < kAotFfBoundarySiteHotspotCapacity && ff_site_length > 0;
+         ++slot)
+    {
+        const AotFfBoundarySiteHotspot& site =
+            aot.ff4_site_hotspots[slot];
+        if (site.count == 0U)
+        {
+            continue;
+        }
+        const int written = std::snprintf(
+            ff_site_line + ff_site_length,
+            sizeof(ff_site_line) - static_cast<std::size_t>(ff_site_length),
+            " site=0x%08X:%u:%s:0x%08X:c%u:m%u:d=0x%08X:p=0x%08X:"
+            "t=0x%08X:r%u:f%u:pv%u:pc%u:dc%u:tc%u:spc%u:ppc%u:"
+            "ir%u:iv=0x%08X:ivv%u:ic%u:br%u:bv=0x%08X:bvv%u:bc%u:"
+            "ix%u:is%u:io%u:tx%u:ts%u:to%u",
+            static_cast<unsigned>(site.guest_eip),
+            static_cast<unsigned>(site.count),
+            AotFfAddressingModeName(site.addressing_mode),
+            static_cast<unsigned>(site.last_packed_bytes),
+            static_cast<unsigned>(site.byte_change_count),
+            static_cast<unsigned>(site.mode_change_count),
+            static_cast<unsigned>(site.last_displacement),
+            static_cast<unsigned>(site.last_pointer_address),
+            static_cast<unsigned>(site.last_target),
+            static_cast<unsigned>(site.target_read_count),
+            static_cast<unsigned>(site.target_failure_count),
+            site.last_pointer_address_valid ? 1U : 0U,
+            static_cast<unsigned>(site.pointer_change_count),
+            static_cast<unsigned>(site.displacement_change_count),
+            static_cast<unsigned>(site.target_change_count),
+            static_cast<unsigned>(site.target_change_with_same_pointer_count),
+            static_cast<unsigned>(
+                site.target_change_with_pointer_change_count),
+            static_cast<unsigned>(site.last_index_register),
+            static_cast<unsigned>(site.last_index_value),
+            site.last_index_value_valid ? 1U : 0U,
+            static_cast<unsigned>(site.index_value_change_count),
+            static_cast<unsigned>(site.last_base_register),
+            static_cast<unsigned>(site.last_base_value),
+            site.last_base_value_valid ? 1U : 0U,
+            static_cast<unsigned>(site.base_value_change_count),
+            static_cast<unsigned>(site.index_value_observation_sample_count),
+            static_cast<unsigned>(site.index_value_observation_slot_count),
+            static_cast<unsigned>(site.index_value_observation_overflow_count),
+            static_cast<unsigned>(site.index_transition_count),
+            static_cast<unsigned>(site.index_transition_slot_count),
+            static_cast<unsigned>(site.index_transition_overflow_count));
+        if (written <= 0 ||
+            static_cast<std::size_t>(written) >=
+                sizeof(ff_site_line) - static_cast<std::size_t>(ff_site_length))
+        {
+            ff_site_length = -1;
+            break;
+        }
+        ff_site_length += written;
+        for (std::size_t index_slot = 0U;
+             index_slot < kAotFfBoundaryIndexObservationCapacity &&
+             ff_site_length > 0;
+             ++index_slot)
+        {
+            const AotFfBoundaryIndexObservation& observation =
+                site.index_value_observations[index_slot];
+            if (!observation.valid)
+            {
+                continue;
+            }
+            const int observation_written = std::snprintf(
+                ff_site_line + ff_site_length,
+                sizeof(ff_site_line) - static_cast<std::size_t>(ff_site_length),
+                " i%u=%u/0x%08X/%u",
+                static_cast<unsigned>(index_slot),
+                static_cast<unsigned>(observation.register_number),
+                static_cast<unsigned>(observation.value),
+                static_cast<unsigned>(observation.count));
+            if (observation_written <= 0 ||
+                static_cast<std::size_t>(observation_written) >=
+                    sizeof(ff_site_line) -
+                        static_cast<std::size_t>(ff_site_length))
+            {
+                ff_site_length = -1;
+                break;
+            }
+            ff_site_length += observation_written;
+        }
+        for (std::size_t transition_slot = 0U;
+             transition_slot < kAotFfBoundaryIndexTransitionCapacity &&
+             ff_site_length > 0;
+             ++transition_slot)
+        {
+            const AotFfBoundaryIndexTransition& transition =
+                site.index_transitions[transition_slot];
+            if (!transition.valid)
+            {
+                continue;
+            }
+            const int transition_written = std::snprintf(
+                ff_site_line + ff_site_length,
+                sizeof(ff_site_line) - static_cast<std::size_t>(ff_site_length),
+                " tr%u=%u/0x%08X>%u/0x%08X",
+                static_cast<unsigned>(transition_slot),
+                static_cast<unsigned>(transition.from_register),
+                static_cast<unsigned>(transition.from_value),
+                static_cast<unsigned>(transition.to_register),
+                static_cast<unsigned>(transition.to_value));
+            if (transition_written <= 0 ||
+                static_cast<std::size_t>(transition_written) >=
+                    sizeof(ff_site_line) -
+                        static_cast<std::size_t>(ff_site_length))
+            {
+                ff_site_length = -1;
+                break;
+            }
+            ff_site_length += transition_written;
+        }
+    }
+    if (ff_site_length > 0 &&
+        static_cast<std::size_t>(ff_site_length) < sizeof(ff_site_line) - 1U)
+    {
+        ff_site_line[ff_site_length] = '\n';
+        repiu::platform::WriteHostErrorStream(
+            ff_site_line, static_cast<std::size_t>(ff_site_length) + 1U);
+    }
+
+    // Task 537: the resolved FF4 target interval has a separate boundary from
+    // the site and transition attribution above.
+    char ff_target_line[2048] = {};
+    int ff_target_length = std::snprintf(
+        ff_target_line, sizeof(ff_target_line),
+        "[repiu-live-ff-target] #%u started=%u completed=%u active=%u "
+        "candidate=%u mismatch=%u discarded=%u overflow=%u",
+        static_cast<unsigned>(g_report_index),
+        static_cast<unsigned>(
+            aot.ff4_target_timing.interval_started_count),
+        static_cast<unsigned>(
+            aot.ff4_target_timing.interval_completed_count),
+        aot.ff4_target_timing.interval_active ? 1U : 0U,
+        aot.ff4_target_timing.candidate_valid ? 1U : 0U,
+        static_cast<unsigned>(
+            aot.ff4_target_timing.candidate_mismatch_count),
+        static_cast<unsigned>(
+            aot.ff4_target_timing.discarded_interval_count),
+        static_cast<unsigned>(aot.ff4_target_timing.entry_overflow_count));
+    for (std::size_t slot = 0U;
+         slot < kAotFfTargetTimingEntryCapacity && ff_target_length > 0;
+         ++slot)
+    {
+        const AotFfTargetTimingEntry& entry =
+            aot.ff4_target_timing.entries[slot];
+        if (!entry.valid)
+        {
+            continue;
+        }
+        const int written = std::snprintf(
+            ff_target_line + ff_target_length,
+            sizeof(ff_target_line) -
+                static_cast<std::size_t>(ff_target_length),
+            " e%u=s0x%08X:t0x%08X:c0x%08X:i%u/%u/0x%08X:n%u:sum%llu:"
+            "min%llu:max%llu",
+            static_cast<unsigned>(slot),
+            static_cast<unsigned>(entry.source_guest_eip),
+            static_cast<unsigned>(entry.target_guest_eip),
+            static_cast<unsigned>(entry.cache_target),
+            entry.index_value_valid ? 1U : 0U,
+            static_cast<unsigned>(entry.index_register),
+            static_cast<unsigned>(entry.index_value),
+            static_cast<unsigned>(entry.interval_count),
+            static_cast<unsigned long long>(entry.total_cycles),
+            static_cast<unsigned long long>(entry.min_cycles),
+            static_cast<unsigned long long>(entry.max_cycles));
+        if (written <= 0 ||
+            static_cast<std::size_t>(written) >=
+                sizeof(ff_target_line) -
+                    static_cast<std::size_t>(ff_target_length))
+        {
+            ff_target_length = -1;
+            break;
+        }
+        ff_target_length += written;
+    }
+    if (ff_target_length > 0 &&
+        static_cast<std::size_t>(ff_target_length) <
+            sizeof(ff_target_line) - 1U)
+    {
+        ff_target_line[ff_target_length] = '\n';
+        repiu::platform::WriteHostErrorStream(
+            ff_target_line,
+            static_cast<std::size_t>(ff_target_length) + 1U);
+    }
+
+    // Task 528: the INT 21h AH distribution without per-call trace output.
+    char dos_line[192] = {};
+    int dos_length = std::snprintf(
+        dos_line, sizeof(dos_line),
+        "[repiu-live-dos] #%u handled=%u int21=%u",
+        static_cast<unsigned>(g_report_index),
+        static_cast<unsigned>(dos.handled_interrupt_count),
+        static_cast<unsigned>(dos.int21_count));
+    for (std::size_t slot = 0; slot < 4U && dos_length > 0; ++slot)
+    {
+        if (dos.top_int21_ah_count[slot] == 0U)
+        {
+            break;
+        }
+        const int written = std::snprintf(
+            dos_line + dos_length,
+            sizeof(dos_line) - static_cast<std::size_t>(dos_length),
+            " AH%02X=%u",
+            static_cast<unsigned>(dos.top_int21_ah[slot]),
+            static_cast<unsigned>(dos.top_int21_ah_count[slot]));
+        if (written <= 0)
+        {
+            break;
+        }
+        dos_length += written;
+    }
+    if (dos_length > 0 &&
+        static_cast<std::size_t>(dos_length) < sizeof(dos_line) - 1U)
+    {
+        dos_line[dos_length] = '\n';
+        repiu::platform::WriteHostErrorStream(
+            dos_line, static_cast<std::size_t>(dos_length) + 1U);
+    }
     g_last_report_ticks = now;
     g_last_total = shares.total;
     g_last_frames = frames;

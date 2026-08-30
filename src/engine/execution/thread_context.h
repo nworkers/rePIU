@@ -20,6 +20,7 @@
 #include "repiu/engine/timer_tick_delivery.h"
 #include "repiu/engine/jamma_input_timeline.h"
 #include "repiu/engine/aot_boundary_opcode_census.h"
+#include "repiu/engine/aot_ff_boundary_attribution.h"
 #include "repiu/hle/linexe_call_gate.h"
 #include "repiu/hle/glide_hle.h"
 #include "repiu/hle/glide_lfb.h"
@@ -229,6 +230,7 @@ struct ThreadContext
     // Task 367: the same samples resolved past prefixes and the two-byte escape,
     // so the dominant exception population can be named by instruction.
     AotBoundaryOpcodeCensus aot_boundary_opcode_census;
+    AotFfBoundaryAttribution aot_ff_boundary_attribution;
     std::atomic<std::uint32_t> aot_last_other_boundary_eip{0};
     std::atomic<std::uint32_t> aot_last_other_boundary_bytes{0};
     // Task 263(b): AOT residency proxy. Straight-line guest instruction count from
@@ -815,6 +817,10 @@ struct ThreadContext
     std::uint32_t last_dos_interrupt_ah = 0;
     std::uint32_t last_dos_interrupt_ax = 0;
     std::uint32_t handled_dos_interrupt_ah_counts[256] = {};
+    // Task 528: the aggregate AH histogram above includes every HLE interrupt
+    // vector. Keep an INT 21h-specific histogram for trace-free live analysis.
+    std::uint32_t handled_dos_int21_count = 0;
+    std::uint32_t handled_dos_int21_ah_counts[256] = {};
     bool dos_date_offset_valid = false;
     std::int32_t dos_date_offset_days = 0;
     repiu::hle::DosVirtualFileSystemState dos_file_system;

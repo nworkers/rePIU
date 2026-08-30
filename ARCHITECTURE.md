@@ -348,7 +348,7 @@ Originally a single 12,117-line file, `execution_trampoline.cpp` was decomposed 
 | `io/` | `port_io_emulator` | IN/OUT 포트 I/O 트랩 |
 | `dos/` | `dos_int21_services`, `dpmi_mscdex_services` | DOS INT 21h/2Fh, DPMI INT 31h, 마우스 INT 33h, MSCDEX |
 | `cpu_emul/` | `instruction_emulation`, `guest_memory_access` | 레지스터/플래그/디코드·세그먼트·traced 메모리·REP 명령 에뮬, 게스트/섀도 메모리 접근 |
-| `aot/` | `aot_runtime_dispatch` | AOT 번역 워커·전이/재진입 디스패치·코드쓰기 watch |
+| `aot/` | `aot_runtime_dispatch`, `aot_ff_boundary_attribution`, `aot_ff_boundary_target_attribution` | AOT 번역 워커·전이/재진입 디스패치·코드쓰기 watch·bounded `FF /4` site/target 관측 |
 | `boundary/` | `linexe_glide_boundary` | linexe far-transfer·Glide 게이트·allocator 제어흐름 |
 | `telemetry/` | `live_telemetry_snapshot` | 라이브 텔레메트리 매핑·실행 스냅샷 |
 

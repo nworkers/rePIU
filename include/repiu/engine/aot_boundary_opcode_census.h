@@ -29,6 +29,10 @@ struct AotBoundaryOpcodeCensus
     // Second byte of a `0F`-escaped instruction. This is what identifies the
     // largest population.
     std::uint32_t escape_opcode_counts[kAotOpcodeHistogramSize] = {};
+    // ModRM reg field for an effective `FF` opcode. The field identifies the
+    // instruction group (`FF /2` indirect call, `FF /4` indirect jump, etc.).
+    std::uint32_t ff_group_counts[8] = {};
+    std::uint32_t ff_modrm_truncated_count = 0;
     std::uint32_t sample_count = 0;
     std::uint32_t escape_count = 0;
     std::uint32_t prefixed_count = 0;

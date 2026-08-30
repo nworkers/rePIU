@@ -17,6 +17,7 @@
 #include "repiu/engine/glide_opengl_backend.h"
 #include "repiu/engine/cd_audio_wave_out.h"
 #include "repiu/engine/aot_page_coherence.h"
+#include "repiu/engine/aot_ff_target_timing.h"
 #include "repiu/media/chd_cd_image.h"
 #include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/selector_table.h"
@@ -2261,6 +2262,12 @@ repiu::platform::FaultDisposition GuestThreadFaultCallback(
 // SEH and with 3c where the vectored handler was.
 std::uint32_t GuestEntryThreadProc(void* parameter)
 {
+#if !defined(_M_IX86) && !defined(__i386__)
+    // The current Linux guest entry is a 32-bit native ABI. Do not let an x64
+    // host reach it through a truncated guest function pointer or stack state.
+    (void)parameter;
+    return 4;
+#else
     ThreadContext* context = static_cast<ThreadContext*>(parameter);
     if (context == nullptr)
     {
@@ -2311,6 +2318,7 @@ std::uint32_t GuestEntryThreadProc(void* parameter)
     }
     context->returned = true;
     return 0;
+#endif
 }
 #endif  // defined(_WIN32)
 
@@ -2753,6 +2761,11 @@ void RecordHandledDosInterrupt(ThreadContext* context,
         }
     }
     ++context->handled_dos_interrupt_count;
+    if (vector == 0x21U)
+    {
+        ++context->handled_dos_int21_count;
+        ++context->handled_dos_int21_ah_counts[ax >> 8];
+    }
     context->last_dos_interrupt_vector = vector;
     context->last_dos_interrupt_ah = static_cast<std::uint8_t>(ax >> 8);
     context->last_dos_interrupt_ax = ax;
@@ -3330,6 +3343,12 @@ repiu::platform::FaultDisposition DispatchGuestFault(
     if (context == nullptr || fault.registers == nullptr)
     {
         return repiu::platform::FaultDisposition::kNotHandled;
+    }
+    if (AotFfTargetTimingEnabled())
+    {
+        CompleteAotFfTargetTiming(
+            &context->aot_ff_boundary_attribution.target_timing,
+            repiu::platform::ReadCycleCounter());
     }
 
     // Task 323: the single choke point for every exception the guest thread

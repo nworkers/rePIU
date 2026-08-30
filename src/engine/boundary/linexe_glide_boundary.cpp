@@ -1,3 +1,4 @@
+#include "repiu/engine/aot_boundary_opcode_census.h"
 #include "linexe_glide_boundary.h"
 #include "aot/aot_runtime_dispatch.h"
 #include "execution_internal.h"
@@ -1205,7 +1206,7 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
             if (context->shared_live_telemetry != nullptr)
             {
                 using go = repiu::hle::GlideGateId;
-                volatile long* milestone = nullptr;
+                volatile std::int32_t* milestone = nullptr;
                 const repiu::hle::GlideGateId gate_id = glide_export->gate_id;
                 if (gate_id == go::kGrSstWinOpen)
                 {
@@ -2512,6 +2513,75 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
             live_aot.quarantine = load_counter(context->aot_quarantine_count);
             live_aot.dynamic_attempt =
                 load_counter(context->aot_dynamic_attempt_count);
+            {
+                const AotBoundaryOpcodeCensus& census =
+                    context->aot_boundary_opcode_census;
+                live_aot.opcode_samples = census.sample_count;
+                AotOpcodeRank ranks[4] = {};
+                RankAotOpcodeHistogram(
+                    census.effective_opcode_counts, ranks, 4U);
+                for (std::size_t slot = 0; slot < 4U; ++slot)
+                {
+                    live_aot.top_opcode[slot] = ranks[slot].opcode;
+                    live_aot.top_opcode_count[slot] = ranks[slot].count;
+                }
+                AotOpcodeRank escapes[4] = {};
+                RankAotOpcodeHistogram(
+                    census.escape_opcode_counts, escapes, 4U);
+                for (std::size_t slot = 0; slot < 4U; ++slot)
+                {
+                    live_aot.top_escape[slot] = escapes[slot].opcode;
+                    live_aot.top_escape_count[slot] = escapes[slot].count;
+                }
+                for (std::size_t group = 0; group < 8U; ++group)
+                {
+                    live_aot.ff_group_counts[group] =
+                        census.ff_group_counts[group];
+                }
+                live_aot.ff_modrm_truncated_count =
+                    census.ff_modrm_truncated_count;
+                const AotFfBoundaryAttribution& ff4 =
+                    context->aot_ff_boundary_attribution;
+                live_aot.ff4_sample_count = ff4.sample_count;
+                live_aot.ff4_modrm_truncated_count =
+                    ff4.modrm_truncated_count;
+                live_aot.ff4_site_overflow_count = ff4.site_overflow_count;
+                live_aot.ff4_target_resolved_count =
+                    ff4.target_resolved_count;
+                live_aot.ff4_target_unresolved_count =
+                    ff4.target_unresolved_count;
+                live_aot.ff4_target_instruction_truncated_count =
+                    ff4.target_instruction_truncated_count;
+                live_aot.ff4_target_unsupported_count =
+                    ff4.target_unsupported_count;
+                live_aot.ff4_target_memory_unreadable_count =
+                    ff4.target_memory_unreadable_count;
+                for (std::size_t mode = 0U;
+                     mode < kAotFfAddressingModeCount; ++mode)
+                {
+                    live_aot.ff4_addressing_mode_counts[mode] =
+                        ff4.addressing_mode_counts[mode];
+                }
+                RankAotFfBoundarySites(
+                    ff4,
+                    live_aot.ff4_site_hotspots,
+                    kAotFfBoundarySiteHotspotCapacity);
+                live_aot.ff4_target_timing = ff4.target_timing;
+            }
+            LiveDosCounters live_dos;
+            live_dos.handled_interrupt_count =
+                context->handled_dos_interrupt_count;
+            live_dos.int21_count = context->handled_dos_int21_count;
+            AotOpcodeRank dos_ah_ranks[4] = {};
+            RankAotOpcodeHistogram(
+                context->handled_dos_int21_ah_counts,
+                dos_ah_ranks,
+                4U);
+            for (std::size_t slot = 0; slot < 4U; ++slot)
+            {
+                live_dos.top_int21_ah[slot] = dos_ah_ranks[slot].opcode;
+                live_dos.top_int21_ah_count[slot] = dos_ah_ranks[slot].count;
+            }
             for (std::size_t slot = 0; slot < 8U; ++slot)
             {
                 live_aot.direct_trap_site_address[slot] =
@@ -2522,7 +2592,8 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
             ReportLiveExecutionProfileIfDue(
                 context->execution_time_profile.get(),
                 context->glide_backend.presented_frame_total(),
-                live_aot);
+                live_aot,
+                live_dos);
             const std::uint32_t swap_interval = context->glide_gate_stack[1];
             if (GlideAsyncPresentEnabled())
             {

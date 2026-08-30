@@ -37,7 +37,7 @@ void ArmAotTimerSafePoint(ThreadContext* context)
         return;
     }
     repiu::platform::AtomicExchange(
-        reinterpret_cast<volatile long*>(
+        reinterpret_cast<volatile std::uint32_t*>(
             &context->aot_placement->timer_safe_point_request),
         1L);
 }
@@ -49,7 +49,7 @@ void ClearAotTimerSafePointRequest(ThreadContext* context)
         return;
     }
     repiu::platform::AtomicExchange(
-        reinterpret_cast<volatile long*>(
+        reinterpret_cast<volatile std::uint32_t*>(
             &context->aot_placement->timer_safe_point_request),
         0L);
 }
@@ -91,7 +91,7 @@ bool HandleAotTimerSafePoint(const repiu::platform::FaultEvent& fault,
             : 0U;
 
     ClearAotTimerSafePointRequest(context);
-    repiu::platform::AtomicIncrement(reinterpret_cast<volatile long*>(
+    repiu::platform::AtomicIncrement(reinterpret_cast<volatile std::uint32_t*>(
         &placement->timer_safe_point_trap_count));
     // Win32 reports the breakpoint at the INT3 byte and leaves EIP there for
     // this cache-origin trap. Resume at the translated branch immediately
@@ -106,12 +106,12 @@ bool HandleAotTimerSafePoint(const repiu::platform::FaultEvent& fault,
         static_cast<std::uint32_t>(win32_context->Eip) != resume_eip;
     if (injected)
     {
-        repiu::platform::AtomicIncrement(reinterpret_cast<volatile long*>(
+        repiu::platform::AtomicIncrement(reinterpret_cast<volatile std::uint32_t*>(
             &placement->timer_safe_point_injected_count));
     }
     else
     {
-        repiu::platform::AtomicIncrement(reinterpret_cast<volatile long*>(
+        repiu::platform::AtomicIncrement(reinterpret_cast<volatile std::uint32_t*>(
             &placement->timer_safe_point_deferred_count));
     }
     RecordAotTimerSourceEvent(
