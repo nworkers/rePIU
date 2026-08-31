@@ -61,8 +61,10 @@ void EmitTimerSafePoint(const AotInstructionRecord& instruction,
 // x86-64. Returns false when the bytes may not be emitted at all, and the
 // caller writes the boundary the emitter already uses for everything else.
 bool EmitLongModeCopy(const AotInstructionRecord& instruction,
-                      AotCodeCacheImage* image)
+                      AotCodeCacheImage* image,
+                      std::size_t* const emitted_instructions)
 {
+    *emitted_instructions = 0U;
     if (instruction.bytes.empty())
     {
         return false;
@@ -74,6 +76,7 @@ bool EmitLongModeCopy(const AotInstructionRecord& instruction,
         image->bytes.insert(image->bytes.end(), instruction.bytes.begin(),
                             instruction.bytes.end());
         ++image->long_mode_copied_count;
+        *emitted_instructions = 1U;
         return true;
     }
     if (verdict.lowering == LongModeLowering::kNone)
@@ -82,9 +85,10 @@ bool EmitLongModeCopy(const AotInstructionRecord& instruction,
     }
     std::uint8_t lowered[kMaxLoweredBytes] = {};
     std::size_t lowered_count = 0U;
+    std::size_t lowered_instructions = 0U;
     if (!LowerLongModeBytes(instruction.bytes.data(), instruction.bytes.size(),
-                            lowered, &lowered_count) ||
-        lowered_count == 0U)
+                            lowered, &lowered_count, &lowered_instructions) ||
+        lowered_count == 0U || lowered_instructions == 0U)
     {
         // A named lowering that the rewriter declines is still a refusal. It
         // happens for real encodings -- `kAbsoluteToSib` needs the disp32 to be
@@ -94,6 +98,7 @@ bool EmitLongModeCopy(const AotInstructionRecord& instruction,
     }
     image->bytes.insert(image->bytes.end(), lowered, lowered + lowered_count);
     ++image->long_mode_lowered_count;
+    *emitted_instructions = lowered_instructions;
     return true;
 }
 
@@ -1093,6 +1098,11 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
     image->guarded_segment_load_enabled =
         options.enable_guarded_segment_load;
     std::unordered_map<std::uint32_t, std::uint32_t> guest_to_cache;
+    // Task 559. How many instructions the emitter meant each long-mode entry to
+    // be, parallel to `address_map`. It stays local rather than becoming a
+    // field on `AotAddressMapEntry`, because verification runs a few dozen
+    // lines below in this same function and nothing after placement wants it.
+    std::vector<std::uint32_t> long_mode_entry_instructions;
 
     for (const AotBasicBlock& block : plan.blocks)
     {
@@ -1122,18 +1132,23 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
             // still shows the i386 emitter exactly as it was.
             if (options.enable_long_mode_emission)
             {
+                std::size_t emitted_instructions = 0U;
                 if (instruction.kind != AotInstructionKind::kCopy ||
-                    !EmitLongModeCopy(instruction, image))
+                    !EmitLongModeCopy(instruction, image,
+                                      &emitted_instructions))
                 {
                     ++image->long_mode_refused_count;
                     image->bytes.push_back(0xCCU);
                     image->fixups.push_back({AotFixupKind::kHleBoundary,
                                              instruction.guest_address, 0U,
                                              cache_offset, false});
+                    emitted_instructions = 1U;  // the INT3
                 }
                 map.emitted_length = static_cast<std::uint8_t>(
                     image->bytes.size() - cache_offset);
                 image->address_map.push_back(map);
+                long_mode_entry_instructions.push_back(
+                    static_cast<std::uint32_t>(emitted_instructions));
                 continue;
             }
             switch (instruction.kind)
@@ -1403,8 +1418,10 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                      options.enable_long_mode_emission
                          ? ZYDIS_STACK_WIDTH_64
                          : ZYDIS_STACK_WIDTH_32);
-    for (const AotAddressMapEntry& map : image->address_map)
+    for (std::size_t entry_index = 0;
+         entry_index < image->address_map.size(); ++entry_index)
     {
+        const AotAddressMapEntry& map = image->address_map[entry_index];
         std::uint32_t decoded_bytes = 0;
         std::uint32_t decoded_instructions = 0;
         while (decoded_bytes < map.emitted_length)
@@ -1431,12 +1448,23 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
         // itself.
         //
         // Under long-mode emission there is a stronger one available, because
-        // every entry on that path is exactly one instruction -- a copy, a
-        // lowering, or one `0xCC`. Nothing on it emits a sequence. So the count
-        // is checked as well as the coverage, and a byte string that decodes as
-        // two instructions of the right total length is caught.
+        // the emitter knows how many instructions it meant each entry to be. So
+        // the count is checked as well as the coverage, and a byte string that
+        // decodes as a different number of instructions of the right total
+        // length is caught.
+        //
+        // Task 553 wrote this as "exactly one", which held while every entry
+        // was a copy, a single-instruction lowering, or one `0xCC`. Task 559's
+        // stack sequences are several instructions, so the rule became the
+        // emitter's own count rather than being dropped -- weakening it back to
+        // total length would restore the hole 553 measured.
+        const std::uint32_t expected_instructions =
+            entry_index < long_mode_entry_instructions.size()
+                ? long_mode_entry_instructions[entry_index]
+                : 0U;
         if (decoded_bytes != map.emitted_length ||
-            (options.enable_long_mode_emission && decoded_instructions != 1U))
+            (options.enable_long_mode_emission &&
+             decoded_instructions != expected_instructions))
         {
             ++image->decode_failure_count;
         }

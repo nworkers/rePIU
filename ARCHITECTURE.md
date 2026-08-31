@@ -1806,6 +1806,21 @@ Task 419가 대기 세 곳(publish 전 pending 대기, 완료 대기, host의 pe
 LINEXE/Glide 합성 gate는 복사된 `UD2`로 실행하지 않고 cache sentinel에서 원본
 guest 주소로 나온 뒤 기존 HLE dispatcher가 처리합니다.
 
+x64에서 guest 상태가 어디 있는지는 `linux_x64_guest_registers.h`가 결정으로 들고
+있습니다(Task 558·559). guest GPR *n*은 host GPR *n*이고(항등이며, `kIdenticalBytes`가
+강제합니다), guest `ESP`는 `R15D`, emitter scratch는 `R14D`입니다 — 확장 레지스터인 이유는
+**32비트 인코딩이 그것들을 이름 부를 수 없기** 때문이고, callee-saved라 SysV가 보존합니다.
+stack 명령은 `R15D`를 쓰는 시퀀스로 낮춰지며 `ESP` 조정은 항상 `LEA`입니다 — guest
+`PUSH`·`POP`이 flag를 바꾸지 않기 때문입니다.
+
+Where guest state lives on x64 is held as a decision in
+`linux_x64_guest_registers.h` (Tasks 558 and 559). Guest GPR *n* is host GPR *n* -- the
+identity, forced by `kIdenticalBytes` -- while guest `ESP` is `R15D` and the emitter's
+scratch is `R14D`; they are extended registers because **a 32-bit encoding cannot name
+them**, and callee-saved so SysV preserves them. Stack instructions lower to sequences
+using `R15D`, and the `ESP` adjustment is always a `LEA`, because guest `PUSH` and `POP`
+change no flags.
+
 emitter는 long mode 호스트를 위한 방출 모드를 하나 갖습니다(Task 553).
 `AotCodeCacheBuildOptions::enable_long_mode_emission`이 켜지면 `kCopy`마다
 `ClassifyLongModeBytes`(Task 550)로 판정하고 `LowerLongModeBytes`(Task 552)로 낮추며,

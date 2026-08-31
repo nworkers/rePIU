@@ -224,6 +224,124 @@ bool ProbeStackPointerRefusal()
 // compare against another hand-written table -- it decodes the lowered bytes
 // with a long-mode decoder and asks whether the mnemonic and the register came
 // out the way the original meant. That is what catches a transcription slip.
+// Task 559. The stack sequences, checked by decoding what they produce.
+//
+// Same method as Task 557's: the encoding table was written by hand, so the
+// check is a long-mode decoder reading the result rather than a second table
+// written by the same hand. Here it also asserts the instruction count, which
+// is what the emitter's verification now compares against.
+bool ProbeStackSequenceLowering()
+{
+    ZydisDecoder long_mode;
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(&long_mode, ZYDIS_MACHINE_MODE_LONG_64,
+                                       ZYDIS_STACK_WIDTH_64)))
+    {
+        std::cout << "long_mode_stack_sequence_decoder=false" "\n";
+        return false;
+    }
+
+    struct SeqCase
+    {
+        const char* name;
+        std::vector<std::uint8_t> bytes;
+        std::size_t instructions;
+        // The mnemonic each emitted instruction must decode to, in order.
+        std::vector<ZydisMnemonic> mnemonics;
+    };
+    const std::vector<SeqCase> cases = {
+        {"push_eax", {0x50U}, 2, {ZYDIS_MNEMONIC_LEA, ZYDIS_MNEMONIC_MOV}},
+        {"push_edi", {0x57U}, 2, {ZYDIS_MNEMONIC_LEA, ZYDIS_MNEMONIC_MOV}},
+        {"pop_eax", {0x58U}, 2, {ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_LEA}},
+        {"pop_edi", {0x5FU}, 2, {ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_LEA}},
+        {"push_esp", {0x54U}, 3,
+         {ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_LEA, ZYDIS_MNEMONIC_MOV}},
+        {"pop_esp", {0x5CU}, 1, {ZYDIS_MNEMONIC_MOV}},
+        {"push_imm32", {0x68U, 0x78U, 0x56U, 0x34U, 0x12U}, 2,
+         {ZYDIS_MNEMONIC_LEA, ZYDIS_MNEMONIC_MOV}},
+        {"push_imm8", {0x6AU, 0xFFU}, 2,
+         {ZYDIS_MNEMONIC_LEA, ZYDIS_MNEMONIC_MOV}},
+        {"pushfd", {0x9CU}, 4,
+         {ZYDIS_MNEMONIC_PUSHFQ, ZYDIS_MNEMONIC_POP, ZYDIS_MNEMONIC_LEA,
+          ZYDIS_MNEMONIC_MOV}},
+        {"popfd", {0x9DU}, 4,
+         {ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_LEA, ZYDIS_MNEMONIC_PUSH,
+          ZYDIS_MNEMONIC_POPFQ}},
+        {"leave", {0xC9U}, 3,
+         {ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_LEA}},
+    };
+
+    bool ok = true;
+    for (const SeqCase& item : cases)
+    {
+        const LongModeCompatibilityResult verdict =
+            ClassifyLongModeBytes(item.bytes.data(), item.bytes.size());
+        std::uint8_t lowered[repiu::runtime::kMaxLoweredBytes] = {};
+        std::size_t count = 0;
+        std::size_t instructions = 0;
+        bool good = verdict.lowering ==
+                repiu::runtime::LongModeLowering::kStackSequence &&
+            repiu::runtime::LowerLongModeBytes(item.bytes.data(),
+                                               item.bytes.size(), lowered,
+                                               &count, &instructions) &&
+            instructions == item.instructions;
+        // Decode every emitted instruction and compare it with what the
+        // sequence table says it should be.
+        std::size_t offset = 0;
+        for (std::size_t index = 0; good && index < item.mnemonics.size();
+             ++index)
+        {
+            ZydisDecodedInstruction decoded{};
+            if (!ZYAN_SUCCESS(ZydisDecoderDecodeInstruction(
+                    &long_mode, nullptr, lowered + offset, count - offset,
+                    &decoded)) ||
+                decoded.mnemonic != item.mnemonics[index])
+            {
+                good = false;
+                break;
+            }
+            offset += decoded.length;
+        }
+        good = good && offset == count;
+        if (!good)
+        {
+            std::cout << "  long_mode_stack_seq_" << item.name << "=false"
+                      "\n";
+        }
+        ok = ok && good;
+    }
+
+    // Sign extension, called out on its own because getting it wrong puts a
+    // different value on the guest's stack and raises nothing. `6A FF` is
+    // `push -1`, so the emitted immediate must be 0xFFFFFFFF.
+    const std::uint8_t push_minus_one[] = {0x6AU, 0xFFU};
+    std::uint8_t lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t count = 0;
+    bool sign_ok = repiu::runtime::LowerLongModeBytes(
+        push_minus_one, sizeof(push_minus_one), lowered, &count, nullptr) &&
+        count >= 4U;
+    if (sign_ok)
+    {
+        const std::uint8_t* immediate = lowered + count - 4U;
+        sign_ok = immediate[0] == 0xFFU && immediate[1] == 0xFFU &&
+            immediate[2] == 0xFFU && immediate[3] == 0xFFU;
+    }
+
+    // Still refused, because they change EIP as well as the stack.
+    const std::uint8_t ret_bytes[] = {0xC3U};
+    const std::uint8_t call_bytes[] = {0xE8U, 0x00U, 0x00U, 0x00U, 0x00U};
+    const bool control_still_refused =
+        ClassifyLongModeBytes(ret_bytes, sizeof(ret_bytes)).lowering ==
+            repiu::runtime::LongModeLowering::kNone &&
+        ClassifyLongModeBytes(call_bytes, sizeof(call_bytes)).lowering ==
+            repiu::runtime::LongModeLowering::kNone;
+
+    std::cout << "long_mode_stack_sequences=" << (ok ? "true" : "false")
+              << ",push_imm8_sign_extended=" << (sign_ok ? "true" : "false")
+              << ",control_flow_still_refused="
+              << (control_still_refused ? "true" : "false") << "\n";
+    return ok && sign_ok && control_still_refused;
+}
+
 bool ProbeIncDecLowering()
 {
     ZydisDecoder legacy;
@@ -405,11 +523,13 @@ bool RunLongModeCompatibilityProbe()
     const bool reasons_ok = ProbeDivergenceReasons();
     const bool stack_ok = ProbeStackPointerRefusal();
     const bool inc_dec_ok = ProbeIncDecLowering();
+    const bool stack_seq_ok = ProbeStackSequenceLowering();
     const bool subset_ok = ProbeAdmittedSubset();
     const bool refusals_ok = ProbeRefusals();
 
     const bool all = silent_ok && invalid_ok && width_ok && width_kind_ok &&
-        reasons_ok && stack_ok && inc_dec_ok && subset_ok && refusals_ok;
+        reasons_ok && stack_ok && inc_dec_ok && stack_seq_ok && subset_ok &&
+        refusals_ok;
     std::cout << "long_mode_compatibility_all=" << (all ? "true" : "false")
               << "\n";
     return all;

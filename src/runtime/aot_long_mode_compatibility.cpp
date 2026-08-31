@@ -128,6 +128,42 @@ bool NeedsWidthReencode(const std::uint8_t opcode,
     }
 }
 
+// Task 559. The stack instructions this unit knows how to rewrite.
+//
+// Not the whole of `NeedsWidthReencode`: `CALL`, `RET` and the `FF` group also
+// change EIP, so they belong with the dispatch resolver rather than here, and
+// `PUSH r/m` reaches a second memory operand that may name ESP itself -- the
+// general re-encoder's problem.
+//
+// Prefix-free forms only. `66 50` is `push ax`, a two-byte push with different
+// semantics, and admitting it here would lower it as though it moved four.
+bool HasStackSequenceLowering(const std::uint8_t opcode,
+                              const ZydisDecodedInstruction& instruction)
+{
+    const std::size_t length = instruction.length;
+    if (opcode >= 0x50U && opcode <= 0x5FU)
+    {
+        return length == 1U;  // PUSH/POP r32, ESP included as a special case
+    }
+    switch (opcode)
+    {
+        case 0x68U:
+            return length == 5U;  // PUSH imm32
+        case 0x6AU:
+            return length == 2U;  // PUSH imm8, sign-extended
+        case 0x8FU:
+            // Only the register form, which is `58+r` spelled differently. The
+            // memory form is refused above.
+            return length == 2U && instruction.raw.modrm.mod == 3U;
+        case 0x9CU:
+        case 0x9DU:
+        case 0xC9U:
+            return length == 1U;  // PUSHFD, POPFD, LEAVE
+        default:
+            return false;
+    }
+}
+
 // PUSH/POP FS and GS, the two-byte forms. Long mode keeps them and widens them
 // to eight bytes, so they belong with the width group rather than the invalid
 // one.
@@ -321,7 +357,10 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
         }
         if (NeedsWidthReencode(opcode, instruction))
         {
-            return Reencode(LongModeDivergence::kOperandWidth);
+            return Reencode(LongModeDivergence::kOperandWidth,
+                            HasStackSequenceLowering(opcode, instruction)
+                                ? LongModeLowering::kStackSequence
+                                : LongModeLowering::kNone);
         }
     }
     else if (instruction.opcode_map == ZYDIS_OPCODE_MAP_0F)
@@ -423,16 +462,212 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
                   LongModeDivergence::kNone, LongModeLowering::kNone};
 }
 
+namespace
+{
+
+// Task 559. The pieces every stack sequence is built from.
+//
+// Guest ESP is R15D and the emitter's scratch is R14D (Task 558, and Task 559
+// for the scratch). Each helper appends one instruction and is named for what
+// it emits, so the sequences below read as the assembly they are.
+struct SequenceWriter
+{
+    std::uint8_t* out = nullptr;
+    std::size_t written = 0;
+    std::size_t instructions = 0;
+
+    void Byte(const std::uint8_t value)
+    {
+        out[written++] = value;
+    }
+
+    // lea r15d, [r15 + disp8]. A LEA and never an ADD or SUB: guest PUSH and
+    // POP change no flags, and the guest's next branch reads them.
+    void AdjustGuestEsp(const std::int8_t displacement)
+    {
+        Byte(0x45U);  // REX.R (r15 as reg) + REX.B (r15 as base)
+        Byte(0x8DU);
+        Byte(0x7FU);  // mod=01, reg=111 (r15), rm=111 (r15)
+        Byte(static_cast<std::uint8_t>(displacement));
+        ++instructions;
+    }
+
+    // mov [r15], r32
+    void StoreGuestRegister(const std::uint8_t reg)
+    {
+        Byte(0x41U);  // REX.B for r15 as the base
+        Byte(0x89U);
+        Byte(static_cast<std::uint8_t>(0x07U | (reg << 3U)));
+        ++instructions;
+    }
+
+    // mov r32, [r15]
+    void LoadGuestRegister(const std::uint8_t reg)
+    {
+        Byte(0x41U);
+        Byte(0x8BU);
+        Byte(static_cast<std::uint8_t>(0x07U | (reg << 3U)));
+        ++instructions;
+    }
+
+    // mov dword ptr [r15], imm32
+    void StoreImmediate(const std::uint32_t value)
+    {
+        Byte(0x41U);
+        Byte(0xC7U);
+        Byte(0x07U);
+        Byte(static_cast<std::uint8_t>(value));
+        Byte(static_cast<std::uint8_t>(value >> 8U));
+        Byte(static_cast<std::uint8_t>(value >> 16U));
+        Byte(static_cast<std::uint8_t>(value >> 24U));
+        ++instructions;
+    }
+
+    // One of the fixed extended-register moves, given its ModRM byte.
+    void ExtendedMove(const std::uint8_t rex, const std::uint8_t opcode,
+                      const std::uint8_t modrm)
+    {
+        Byte(rex);
+        Byte(opcode);
+        Byte(modrm);
+        ++instructions;
+    }
+
+    void Single(const std::uint8_t opcode)
+    {
+        Byte(opcode);
+        ++instructions;
+    }
+
+    void Pair(const std::uint8_t first, const std::uint8_t second)
+    {
+        Byte(first);
+        Byte(second);
+        ++instructions;
+    }
+};
+
+// The stack sequences. Returns false for anything the classifier named but this
+// does not build, which would be a disagreement between the two rather than an
+// ordinary refusal -- so it is written to be impossible rather than handled.
+bool WriteStackSequence(const std::uint8_t* const bytes,
+                        const ZydisDecodedInstruction& instruction,
+                        SequenceWriter* const writer)
+{
+    const std::uint8_t opcode = instruction.opcode;
+    if (opcode >= 0x50U && opcode <= 0x5FU)
+    {
+        const std::uint8_t reg = static_cast<std::uint8_t>(opcode & 0x07U);
+        const bool is_pop = (opcode & 0x08U) != 0U;
+        if (reg == 4U)
+        {
+            // ESP is not in a host GPR, so these two cannot go through the
+            // general path.
+            if (is_pop)
+            {
+                // pop esp: the loaded value overrides the increment, so the
+                // whole instruction is one load. mov r15d, [r15]
+                writer->ExtendedMove(0x45U, 0x8BU, 0x3FU);
+                return true;
+            }
+            // push esp pushes ESP *as it was before the decrement*, so the
+            // value has to be kept before adjusting. mov r14d, r15d
+            writer->ExtendedMove(0x45U, 0x89U, 0xFEU);
+            writer->AdjustGuestEsp(-4);
+            writer->ExtendedMove(0x45U, 0x89U, 0x37U);  // mov [r15], r14d
+            return true;
+        }
+        if (is_pop)
+        {
+            writer->LoadGuestRegister(reg);
+            writer->AdjustGuestEsp(4);
+            return true;
+        }
+        writer->AdjustGuestEsp(-4);
+        writer->StoreGuestRegister(reg);
+        return true;
+    }
+
+    switch (opcode)
+    {
+        case 0x68U:
+        {
+            std::uint32_t immediate = 0U;
+            for (std::size_t index = 0; index < 4U; ++index)
+            {
+                immediate |= static_cast<std::uint32_t>(bytes[1U + index])
+                    << (8U * index);
+            }
+            writer->AdjustGuestEsp(-4);
+            writer->StoreImmediate(immediate);
+            return true;
+        }
+        case 0x6AU:
+        {
+            // Sign-extended, which is the whole content of this case. Pushing
+            // `-1` as 0x000000FF would put a different value on the guest's
+            // stack and raise nothing.
+            const auto immediate = static_cast<std::uint32_t>(
+                static_cast<std::int32_t>(
+                    static_cast<std::int8_t>(bytes[1])));
+            writer->AdjustGuestEsp(-4);
+            writer->StoreImmediate(immediate);
+            return true;
+        }
+        case 0x8FU:
+        {
+            const std::uint8_t reg = instruction.raw.modrm.rm;
+            if (reg == 4U)
+            {
+                writer->ExtendedMove(0x45U, 0x8BU, 0x3FU);
+                return true;
+            }
+            writer->LoadGuestRegister(reg);
+            writer->AdjustGuestEsp(4);
+            return true;
+        }
+        case 0x9CU:
+            // Long mode has no 32-bit PUSHFD and no way to move flags to a
+            // register, so the host stack is a balanced temporary.
+            writer->Single(0x9CU);                      // pushfq
+            writer->Pair(0x41U, 0x5EU);                 // pop r14
+            writer->AdjustGuestEsp(-4);
+            writer->ExtendedMove(0x45U, 0x89U, 0x37U);  // mov [r15], r14d
+            return true;
+        case 0x9DU:
+            writer->ExtendedMove(0x45U, 0x8BU, 0x37U);  // mov r14d, [r15]
+            writer->AdjustGuestEsp(4);
+            writer->Pair(0x41U, 0x56U);                 // push r14
+            writer->Single(0x9DU);                      // popfq
+            return true;
+        case 0xC9U:
+            // leave is `mov esp, ebp` then `pop ebp`.
+            writer->ExtendedMove(0x41U, 0x89U, 0xEFU);  // mov r15d, ebp
+            writer->ExtendedMove(0x41U, 0x8BU, 0x2FU);  // mov ebp, [r15]
+            writer->AdjustGuestEsp(4);
+            return true;
+        default:
+            return false;
+    }
+}
+
+}  // namespace
+
 bool LowerLongModeBytes(const std::uint8_t* const bytes,
                         const std::size_t byte_count,
                         std::uint8_t* const lowered,
-                        std::size_t* const lowered_count)
+                        std::size_t* const lowered_count,
+                        std::size_t* const instruction_count)
 {
     if (bytes == nullptr || lowered == nullptr || lowered_count == nullptr)
     {
         return false;
     }
     *lowered_count = 0U;
+    if (instruction_count != nullptr)
+    {
+        *instruction_count = 0U;
+    }
 
     const LongModeCompatibilityResult verdict =
         ClassifyLongModeBytes(bytes, byte_count);
@@ -472,6 +707,28 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
             lowered[index + 1U] = bytes[index];
         }
         *lowered_count = length + 1U;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 559. Several instructions rather than one, which is why the count is
+    // reported at all.
+    if (verdict.lowering == LongModeLowering::kStackSequence)
+    {
+        SequenceWriter writer{lowered, 0U, 0U};
+        if (!WriteStackSequence(bytes, instruction, &writer) ||
+            writer.written > kMaxLoweredBytes)
+        {
+            return false;
+        }
+        *lowered_count = writer.written;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = writer.instructions;
+        }
         return true;
     }
 
@@ -494,6 +751,10 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
         lowered[1] = static_cast<std::uint8_t>(
             0xC0U | (extension << 3U) | reg);
         *lowered_count = 2U;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
         return true;
     }
 
@@ -529,6 +790,10 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
         lowered[out++] = bytes[modrm_offset + 1U + index];
     }
     *lowered_count = out;
+    if (instruction_count != nullptr)
+    {
+        *instruction_count = 1U;
+    }
     return true;
 }
 

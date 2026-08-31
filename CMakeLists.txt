@@ -620,6 +620,21 @@ if(UNIX AND NOT EMSCRIPTEN AND CMAKE_SIZEOF_VOID_P GREATER 4)
     )
 endif()
 
+# Task 558: the guest register mapping, checked by running emitted bytes under
+# it. Linux x64-only because it executes long-mode output; a 32-bit host has
+# nothing here to test.
+if(UNIX AND NOT EMSCRIPTEN AND CMAKE_SIZEOF_VOID_P GREATER 4)
+    target_sources(repiu_core_probe
+        PRIVATE
+            src/tools/aot_probe/linux_x64_guest_register_probe.cpp
+            src/tools/aot_probe/linux_x64_guest_register_probe.S
+    )
+    target_compile_definitions(repiu_core_probe
+        PRIVATE
+            REPIU_LINUX_X64_GUEST_REGISTER_PROBE=1
+    )
+endif()
+
 # Task 552: the memory-operand lowering, checked by executing it. Linux x64-only
 # for the same reason as Task 547's: on a 32-bit host the lowering is not merely
 # unnecessary, it has nothing to demonstrate -- the bytes already mean there what

@@ -11,6 +11,11 @@
 
 ## 1. 한 줄 요약
 
+> **두 축이 있습니다.** 아래 대부분은 **Linux i386** 축이고 게임이 화면까지 나옵니다.
+> **Linux x64** 축은 별도이고 **[3.10 인수인계](#310-세션-인수인계-2026-09-01--x64가-guest-바이트를-실행하고-명령의-23를-낼-수-있다)가
+> 정본입니다** — 거기서는 guest가 아직 실행되지 않고, emitter가 명령의 66.17%를 낼 수
+> 있으며 완결 block은 2.66%입니다.
+
 **게스트 코드와 기본 `dynamic` AOT backend가 Linux에서 실행됩니다.** DOS/4GW 샘플은
 `legacy`와 `dynamic` 모두 같은 종료 코드 2·초점 오프셋 0x10·opcode 0x80에서 멈춥니다.
 
@@ -1687,7 +1692,7 @@ fail-closed 그대로입니다.**
 
 > **2026-09-01 갱신 — 이 걸음은 [Task 553](#2026-09-01-task-553-emitter에-연결됨--wired-to-the-emitter)이
 > 끝냈습니다.** 아래는 그때의 기록으로 남깁니다. Task 546 구현 순서 3단계는 완료이고,
-> 다음은 4단계(x64 dispatch resolver)입니다.
+> 현재 상태와 다음 한 걸음은 **3.10 인수인계**가 정본입니다.
 
 **lowering을 code cache emitter의 `kCopy` 경로에 연결하는 것.** 지금은 판정기와
 `LowerLongModeBytes`가 독립적으로 존재하고 emitter는 둘 다 호출하지 않으므로, **i386
@@ -1775,8 +1780,8 @@ refuses a different build type in the same directory. The trees are
 
 > **Updated 2026-09-01 -- this step is done, by
 > [Task 553](#2026-09-01-task-553-emitter에-연결됨--wired-to-the-emitter).** What follows is
-> kept as the record of the time. Step 3 of Task 546's order is complete; step 4, the x64
-> dispatch resolver, is next.
+> kept as the record of the time. Step 3 of Task 546's order is complete; **3.10 is the
+> current handoff** for where things stand and what comes next.
 
 **Connect the lowering to the code cache emitter's `kCopy` path.** Today the classifier
 and `LowerLongModeBytes` stand on their own and the emitter calls neither, which is why
@@ -1814,6 +1819,346 @@ And I made the same kind of error in this session. I stated that a PIE default p
 executable high and that `-no-pie` would collide at `0x400000` — while the project has
 been linking `-no-pie -Wl,-Ttext-segment=0x40000000` since Task 503. **One measurement
 overturned one inference.**
+
+## 3.10 세션 인수인계, 2026-09-01 — x64가 guest 바이트를 실행하고, 명령의 2/3를 낼 수 있다
+
+Tasks 553–559. **`v0.0.176`으로 main에 머지됐습니다.**
+
+**한 줄로: x64가 emitter의 바이트를 실제로 실행하고, guest 명령의 66.17%를 낼 수 있습니다.
+그런데 끝까지 방출되는 block은 2.66%뿐이고, 그 이유가 다음 단위를 정합니다.**
+
+| Commit | 내용 |
+|---|---|
+| `a340457` | 553 — lowering을 emitter에 연결. 검증기가 "조용히 다른 명령"을 놓치던 것도 수정 |
+| `b515ddc` | 554 — x64는 code cache를 하나도 배치하지 못하고 있었음. 하위 4 GiB 후보 사다리 |
+| `e5b3a00` | 555 — `add esp,16`이 cache에 그대로 복사되고 있었음. 적히지 않은 전제를 기록 |
+| `f8239d2` | 556 — 남은 거리를 숫자로: 명령 51%, block 1.8% |
+| `d32fb17` | 557 — `INC`/`DEC r32` 재인코딩. x87의 자리를 정정 |
+| `bf9f04c` | 558 — guest 상태 배치 결정. **x64가 처음으로 방출된 바이트를 실행** |
+| `adf2425` | 559 — stack lowering. `operand-width` 8,217 → 3 |
+
+### 지금 어디까지 왔나 — 숫자
+
+`pumpit1`의 `PIU.EXE`, 14,307 block · 59,908 명령 기준입니다.
+
+| 항목 | 556 | 557 | 559 |
+|---|---:|---:|---:|
+| 복사 | 32.03% | 32.03% | 32.03% |
+| lowering | 19.13% | 20.43% | **34.15%** |
+| **방출 가능** | 51.15% | 52.46% | **66.17%** |
+| **완결 block** | 1.82% | 2.21% | **2.66%** |
+
+**두 숫자를 함께 읽어야 합니다.** 명령의 2/3를 낼 수 있는데 완결 block은 2.66%입니다.
+block은 control flow로 끝나고 그것이 아직 하나도 방출되지 않으므로, 완결 block에서
+출발해도 **기대 연쇄 길이가 약 1 block**입니다. 실행은 여전히 사실상 0입니다.
+
+### 남은 거절 — 이 표가 다음 순서를 정합니다
+
+| 사유 | 건수 | 무엇인가 |
+|---|---:|---|
+| `not-a-copy-record` | **12,856** | control flow, guarded slot, port I/O |
+| `stack-pointer` | **6,401** | `ESP`를 피연산자로 쓰는 일반 명령 (x87 대부분 포함) |
+| `silently-different` | 682 | moffs `A0`–`A3`(`mov` 681), `BOUND`·`ARPL`·`LES`·`LDS` |
+| `rip-relative/lowering-declined` | 265 | `disp32` 뒤에 immediate가 오는 형태 |
+| `invalid-in-long-mode` | 58 | `PUSH`/`POP` seg 등 |
+| `operand-width` | 3 | `PUSH`/`POP` `FS`·`GS`, `FF /6` |
+
+### 지금 존재하는 것
+
+| 요소 | 상태 |
+|---|---|
+| guest register mapping | guest GPR *n* = host GPR *n* (**강제**), `ESP` = `R15D`, scratch = `R14D` |
+| code cache 배치 | 하위 4 GiB 후보 사다리, 실측 `0x20000000` |
+| 방출 | 복사 · `0x67` lowering · `FF /0` 재인코딩 · stack 시퀀스 |
+| 실행 | **x64가 방출된 바이트를 실행하고 guest가 뜻한 값을 냄** |
+| 검증기 | entry별로 **방출자가 의도한 명령 개수**와 대조 |
+| 측정 도구 | census가 실제 image를 빌드해 emitter 카운터를 읽고 `agrees=` 출력 |
+
+핵심 파일:
+
+* `include/repiu/platform/linux_x64_guest_registers.h` — mapping 결정, static assertion
+* `include/repiu/runtime/aot_long_mode_compatibility.h` — 판정기·lowering 계약, **전제 문장**
+* `src/runtime/aot_long_mode_compatibility.cpp` — 판정과 시퀀스 생성
+* `src/runtime/aot_code_cache.cpp` — `EmitLongModeCopy`, 방출 루프, 검증기
+* `src/runtime/aot_code_cache_reservation.cpp` — 배치 정책
+* `src/tools/aot_probe/linux_x64_guest_register_probe.{cpp,S}` — **실행 harness**
+* `src/tools/instruction_census/main.cpp` — 방출 비율 census
+
+### Task 546 구현 순서 기준 현재 위치
+
+| 단계 | 상태 |
+|---|---|
+| 1. frame/type header + width assertion | ✅ 547 |
+| 2. synthetic x64 ABI probe | ✅ 547 |
+| 3. x64 emitter 명령 subset | ◐ 데이터 명령은 거의 끝. **control flow와 `ESP` operand 남음** |
+| 4. dispatch resolver + fault-context adapter | ◐ adapter(548·549), 배치(554). **resolver·thunk·slot 미착수** |
+| 5. DOS/4GW sample block 단위 상태 비교 | ⬜ |
+
+### 다음 한 걸음 — control flow와 dispatch resolver
+
+**이것 없이는 완결 block이 늘지 않습니다.** `ESP` operand 재인코더(6,401)가 건수는 비슷해
+보이지만, 그것을 먼저 해도 block은 여전히 control flow에서 멈춥니다.
+
+다음 세션이 알아야 할 것:
+
+* Task 553 결정 2에 따라 **long mode 방출에서 `kCopy` 외의 모든 kind는 fail-closed**입니다.
+  control flow를 여는 것은 그 결정에 x64용 slot을 더하는 일이고, 32비트 slot을 되살리는
+  일이 아닙니다.
+* **`E9 rel32`는 이미 long mode에서 그대로 유효**하고 block fallthrough가 쓰고 있습니다.
+  cache 내부 분기는 여기서 출발할 수 있습니다.
+* `CALL`/`RET`은 guest stack에 **guest 주소**를 밀고 꺼내는데, 점프 목표는 **cache 주소**
+  입니다. 둘을 잇는 것이 resolver의 일이고, `R15D`를 통한 push/pop은 Task 559의 시퀀스가
+  이미 합니다.
+* frame은 `include/repiu/platform/linux_x64_aot_frame.h`(Task 547)에 이미 있고 offset
+  매크로가 assembly에서 쓸 수 있게 정의돼 있습니다. `RepiuLinuxX64AotFrameAbiProbe`가
+  SysV 계약(callee-saved·정렬·XMM)을 이미 통과시켰습니다.
+* i386 thunk는 `src/platform/linux/aot_dbt_dispatch_thunks.S`이고 **i386 assembly**입니다.
+  x64는 새로 써야 합니다. resolver의 i386 쪽 계약은
+  `src/engine/aot/aot_dbt_hle_dispatch.cpp`의 `ResolveAotDbtHleFrame`이 `pushad` 순서
+  `uint32_t*`를 받는 형태입니다 — x64는 named frame을 받아야 합니다.
+* **`R14D`는 이미 emitter scratch로 쓰이고 있습니다.** control flow가 또 하나 필요하면
+  `R12`·`R13`이 남아 있지만 base 인코딩 예외가 있습니다(`R12`는 SIB 필요, `R13`은
+  `mod=00`에서 disp8 필요).
+
+### 실행·측정 절차
+
+```bash
+# x64 (WSL Ubuntu-24.04, 저장소는 /mnt/e/MYWORK/Projects/rePIU)
+./scripts/build_linux_x64.sh --config Release --build-dir build/linux_x64_probe \
+    --headless --target repiu_core_probe
+./build/linux_x64_probe/repiu_core_probe
+
+# 방출 비율
+./build/linux_x64_probe/repiu_instruction_census \
+    build/runtime_mounts/pumpit1/PIU/PIU.EXE
+```
+
+Windows는 `build/win32_x86_debug`, Linux i386은 `build/linux_i386`입니다. **문서가 말하는
+`build/linux_x64`·`build/linux_x64_release`는 이 머신에 없습니다** — 실제로 있는 것은
+`build/linux_x64_debug`와 `build/linux_x64_probe`입니다.
+
+### 열려 있는 항목
+
+* **`mmap_min_addr` 여유 0** (551). guest base `0x00010000`이 커널 기본 floor와 같은
+  값이고, **i386도 같은 노출**입니다.
+* **Task 546 문서의 결정 번호가 한국어 절과 영어 절에서 다릅니다.** 549–559의 "결정 5·6"
+  인용은 영어 번호를 따릅니다. 결정 3·4는 양쪽 일치.
+* **segment override** — 결정 5에 따라 helper 경계로 남아 있고 lowering이 없습니다.
+* **`8F` 메모리 형태, `FF /6` `PUSH r/m`** — 두 번째 메모리 피연산자가 `ESP`를 쓸 수 있어
+  일반 재인코더의 일입니다.
+* **guest `EIP`를 register에 둘지** 미정. 지금은 frame입니다.
+
+### 이번 세션에서 배운 것 — 방법 하나가 계속 통했습니다
+
+**고친 것을 되돌려서 재는 것.** 553·555·557·559에서 전부 이 방법이 결정적이었습니다.
+
+| Task | 되돌려 잰 것 | 결과 |
+|---|---|---|
+| 553 | 검증 디코드 모드 | 통과해 버림 → 규칙이 약하다는 발견 |
+| 555 | stack pointer 검사 | `copied=2` → `add esp,16`이 복사되고 있었음 |
+| 557 | (예측만 함) | **예측이 틀림** — 남은 21건은 prefix가 아니라 `[esp]` |
+| 559 | `LEA` → `SUB` | 값은 전부 맞고 **flag만 파괴** |
+
+> 고쳤다고 말하려면, 고치기 전에 그것이 실패하는 것을 봐야 합니다.
+
+그리고 **제 예측이 세 번 틀렸고 셋 다 쌌습니다.**
+
+1. 553 설계: "모드를 안 바꾸면 실패한다" → 통과했습니다. 검증기가 길이 합계만 봤기 때문.
+2. 556 로그: "`operand-width`는 stack + x87" → x87은 거기 없었습니다. 전부 `push`/`pop`.
+3. 557 설계: "805보다 적으면 prefix 형태가 남은 것" → `[esp]` 형태였습니다.
+
+셋 다 **재기 전에 적었고, 재는 비용이 낮았습니다.** 다음 세션에 남기는 규칙:
+
+> 설계에 예측을 적었으면, 그 예측을 재는 항목도 같이 적으십시오.
+
+그리고 555가 남긴 것:
+
+> 적히지 않은 전제는 지켜지지 않습니다.
+
+`0x67` lowering은 "guest GPR *n*이 host GPR *n*에 있다"에 기대고 있었는데 어디에도 적혀
+있지 않았고, 그래서 `ESP`에서 깨졌습니다. 558이 그것을 결정으로 만들고 헤더에 static
+assertion으로 두었습니다.
+
+### 아직 아닌 것
+
+**guest는 실행되지 않습니다.** Task 544의 fence 그대로입니다. x64가 실행한 것은 **probe가
+만든 프로그램**이지 게임이 아닙니다. 게임까지는 control flow, `ESP` operand, dispatch
+resolver, 그리고 5단계의 block 단위 대조가 남았습니다.
+
+## 3.10 (English) Session handoff, 2026-09-01 — x64 runs guest bytes, and can emit two thirds of them
+
+Tasks 553–559, **merged to main as `v0.0.176`.**
+
+**In one line: x64 actually executes the emitter's bytes and can produce 66.17% of the
+guest's instructions -- but only 2.66% of blocks come out complete, and that is what sets
+the next unit.**
+
+| Commit | What |
+|---|---|
+| `a340457` | 553 — wired the lowering into the emitter, and fixed a verifier that was missing "quietly a different instruction" |
+| `b515ddc` | 554 — x64 was placing no code cache at all; a below-4-GiB candidate ladder |
+| `e5b3a00` | 555 — `add esp,16` was being copied into the cache verbatim; the unwritten premise recorded |
+| `f8239d2` | 556 — the distance as numbers: 51% of instructions, 1.8% of blocks |
+| `d32fb17` | 557 — `INC`/`DEC r32` re-encoded; x87's place corrected |
+| `bf9f04c` | 558 — guest state placement settled; **x64 executed emitted bytes for the first time** |
+| `adf2425` | 559 — the stack lowering; `operand-width` 8,217 → 3 |
+
+### Where it stands -- the numbers
+
+Against `pumpit1`'s `PIU.EXE`: 14,307 blocks, 59,908 instructions.
+
+| Item | 556 | 557 | 559 |
+|---|---:|---:|---:|
+| Copied | 32.03% | 32.03% | 32.03% |
+| Lowered | 19.13% | 20.43% | **34.15%** |
+| **Emittable** | 51.15% | 52.46% | **66.17%** |
+| **Complete blocks** | 1.82% | 2.21% | **2.66%** |
+
+**Both numbers have to be read together.** Two thirds of instructions can be emitted and
+2.66% of blocks come out complete. A block ends in control flow and none of that is emitted
+yet, so even starting from a complete block the **expected chain is about one block**.
+Execution is still effectively zero.
+
+### What is still refused -- this table sets the order
+
+| Reason | Count | What it is |
+|---|---:|---|
+| `not-a-copy-record` | **12,856** | control flow, guarded slots, port I/O |
+| `stack-pointer` | **6,401** | ordinary instructions naming `ESP` (most x87 among them) |
+| `silently-different` | 682 | moffs `A0`-`A3` (681 of them `mov`), `BOUND`, `ARPL`, `LES`, `LDS` |
+| `rip-relative/lowering-declined` | 265 | a `disp32` followed by an immediate |
+| `invalid-in-long-mode` | 58 | `PUSH`/`POP` of segments and friends |
+| `operand-width` | 3 | `PUSH`/`POP` `FS`/`GS`, `FF /6` |
+
+### What exists now
+
+| Piece | State |
+|---|---|
+| Guest register mapping | guest GPR *n* = host GPR *n* (**forced**), `ESP` = `R15D`, scratch = `R14D` |
+| Code cache placement | below-4-GiB candidate ladder, measured at `0x20000000` |
+| Emission | copies, `0x67` lowering, `FF /0` re-encoding, stack sequences |
+| Execution | **x64 runs the emitted bytes and produces the value the guest meant** |
+| Verifier | compares each entry against **the instruction count the emitter intended** |
+| Measurement | the census builds a real image, reads the emitter's counters, prints `agrees=` |
+
+The files that matter:
+
+* `include/repiu/platform/linux_x64_guest_registers.h` — the mapping decision, with static
+  assertions
+* `include/repiu/runtime/aot_long_mode_compatibility.h` — the classifier and lowering
+  contract, and **the premise sentence**
+* `src/runtime/aot_long_mode_compatibility.cpp` — the judgement and the sequence writer
+* `src/runtime/aot_code_cache.cpp` — `EmitLongModeCopy`, the emit loop, the verifier
+* `src/runtime/aot_code_cache_reservation.cpp` — the placement policy
+* `src/tools/aot_probe/linux_x64_guest_register_probe.{cpp,S}` — **the execution harness**
+* `src/tools/instruction_census/main.cpp` — the emittable-fraction census
+
+### Position against Task 546's implementation order
+
+| Step | State |
+|---|---|
+| 1. frame/type header and width assertions | ✅ 547 |
+| 2. synthetic x64 ABI probe | ✅ 547 |
+| 3. the x64 emitter's instruction subset | ◐ the data instructions are nearly done. **Control flow and `ESP` operands remain** |
+| 4. dispatch resolver and fault-context adapter | ◐ the adapter (548, 549) and placement (554). **No resolver, thunk or slot** |
+| 5. block-level state comparison on a DOS/4GW sample | ⬜ |
+
+### The next single step -- control flow and the dispatch resolver
+
+**Without it, complete blocks do not grow.** The `ESP` operand re-encoder (6,401) looks
+comparable by count, but doing it first still leaves every block stopping at its control
+flow.
+
+What the next session needs to know:
+
+* Per Task 553's decision 2, **every kind other than `kCopy` is fail-closed under long-mode
+  emission.** Opening control flow means adding x64 slots to that decision, not reviving
+  the 32-bit ones.
+* **`E9 rel32` is already valid unchanged in long mode** and the block fallthrough uses it.
+  Intra-cache branches can start from there.
+* `CALL` and `RET` push and pop a **guest address** on the guest stack while the jump
+  target is a **cache address**. Joining the two is the resolver's job; the push and pop
+  through `R15D` are already what Task 559's sequences do.
+* The frame already exists in `include/repiu/platform/linux_x64_aot_frame.h` (Task 547),
+  with offset macros usable from assembly, and `RepiuLinuxX64AotFrameAbiProbe` has already
+  passed the SysV contract (callee-saved, alignment, XMM).
+* The i386 thunk is `src/platform/linux/aot_dbt_dispatch_thunks.S` and is **i386
+  assembly**; x64 needs its own. The i386 resolver contract is
+  `ResolveAotDbtHleFrame` in `src/engine/aot/aot_dbt_hle_dispatch.cpp`, which takes a
+  `pushad`-ordered `uint32_t*` -- x64 must take the named frame instead.
+* **`R14D` is already in use as the emitter's scratch.** If control flow needs another,
+  `R12` and `R13` remain, but both carry base-encoding exceptions (`R12` needs a SIB byte,
+  `R13` needs a disp8 at `mod=00`).
+
+### How to build and measure
+
+```bash
+# x64 (WSL Ubuntu-24.04; the repository is /mnt/e/MYWORK/Projects/rePIU)
+./scripts/build_linux_x64.sh --config Release --build-dir build/linux_x64_probe \
+    --headless --target repiu_core_probe
+./build/linux_x64_probe/repiu_core_probe
+
+# the emittable fraction
+./build/linux_x64_probe/repiu_instruction_census \
+    build/runtime_mounts/pumpit1/PIU/PIU.EXE
+```
+
+Windows is `build/win32_x86_debug` and Linux i386 is `build/linux_i386`. **The
+`build/linux_x64` and `build/linux_x64_release` this document mentions elsewhere do not
+exist on this machine** -- what exists is `build/linux_x64_debug` and
+`build/linux_x64_probe`.
+
+### Open items
+
+* **Zero `mmap_min_addr` headroom** (551). The guest base `0x00010000` is the same number as
+  the kernel's default floor, and **i386 has the same exposure.**
+* **Task 546's decision numbers differ between its Korean and English halves.** The
+  "decision 5/6" citations in 549-559 follow the English numbering. Decisions 3 and 4 agree
+  in both.
+* **Segment overrides** stay at a helper boundary per decision 5, with no lowering.
+* **The `8F` memory form and `FF /6` `PUSH r/m`** -- their second memory operand may name
+  `ESP`, so they belong to the general re-encoder.
+* **Whether guest `EIP` wants a register** is undecided; it is in the frame today.
+
+### What this session taught -- one method kept working
+
+**Turning the fix off and measuring.** It was decisive in 553, 555, 557 and 559.
+
+| Task | Reverted and measured | Result |
+|---|---|---|
+| 553 | the verification decode mode | it passed anyway → the rule was too weak |
+| 555 | the stack pointer check | `copied=2` → `add esp,16` was being copied |
+| 557 | (only predicted) | **the prediction was wrong** — the remaining 21 were `[esp]`, not prefixed |
+| 559 | `LEA` → `SUB` | every value correct and **only the flags destroyed** |
+
+> To say something is fixed, you have to have watched it fail first.
+
+And **three of my predictions were wrong, and all three were cheap to check.**
+
+1. 553's design: "without the mode change this fails" -- it passed, because the verifier
+   looked only at total length.
+2. 556's log: "`operand-width` is stack plus x87" -- x87 was not in it at all; it is `push`
+   and `pop`.
+3. 557's design: "fewer than 805 means prefixed forms remain" -- they were `[esp]` forms.
+
+All three were **written down before measuring, and measuring was cheap.** The rule this
+leaves for the next session:
+
+> If a design states a prediction, give it an item that measures the prediction.
+
+And what 555 left:
+
+> A premise that is not written down is not kept.
+
+The `0x67` lowering rested on "guest GPR *n* is in host GPR *n*" while that appeared
+nowhere, and it broke at `ESP`. Task 558 made it a decision with static assertions in a
+header.
+
+### What this is not yet
+
+**The guest does not run.** Task 544's fence stands. What x64 executed is **a program the
+probe built**, not the game. Between here and the game are control flow, the `ESP`
+operands, the dispatch resolver, and step 5's block-level comparison.
 
 ## 4. What is needed next
 
@@ -3369,3 +3714,221 @@ emitted.**
 
 > x87 is not a separate mass. Most of it already works, and the rest comes with the stack
 > lowering.
+
+## 2026-09-01 Task 558: x64가 emitter의 바이트를 처음 실행했습니다 / x64 ran the emitted bytes
+
+### 한국어
+
+설계는 [20260901-558](../design/20260901-558-x64-guest-register-placement.md), 로그는
+[20260901-558](../work-logs/20260901-558-x64-guest-register-placement.md)입니다.
+
+#### 확인됨 — 실행됐고, guest가 뜻한 값이 나왔습니다
+
+```text
+guest_register_emitted=true copied=5 lowered=2 refused=1
+  eax observed=0x11224345 expected=0x11224345
+  r15 observed=0xabcdef expected=0xabcdef
+guest_register_mapping=true,guest_esp_held=true
+```
+
+| guest 명령 | 방출 | 확인된 것 |
+|---|---|---|
+| `mov eax,[ebx+4]` | `0x67` lowering (552) | guest base로 옳은 주소를 읽음 |
+| `inc eax` | `FF C0` (557) | REX가 아니라 `INC`로 실행 |
+| 나머지 5개 | 복사 (550) | mapping이 항등이라 그대로 맞음 |
+
+#### 결정 — mapping은 강제된 것입니다
+
+guest GPR *n* = host GPR *n*. `kIdenticalBytes`가 존재하는 한 다른 선택지가 없습니다 —
+다른 mapping을 고르면 Tasks 550·552·553·557이 전부 무의미해집니다. Task 555가 "적히지 않은
+전제"로 남긴 것이 이제 결정이고 헤더에 static assertion으로 있습니다.
+
+guest `ESP`만 **`R15D`**입니다. 이유는 취향이 아닙니다.
+
+> **32비트 인코딩은 `R8`–`R15`를 이름 부를 수 없습니다.** REX가 필요한데 32비트에는 REX가
+> 없기 때문입니다. 즉 복사된 guest 명령이 guest `ESP`의 거처에 닿는 인코딩 자체가
+> 없습니다. 메모리 슬롯에는 그런 보장이 없습니다.
+
+그리고 `R12`–`R15`는 callee-saved라 SysV ABI가 대신 보존합니다. `R15`는 `R12`·`R13`이 가진
+base 인코딩 예외가 없습니다.
+
+#### 상위 절반 0은 실행으로 확인했습니다
+
+bridge가 적재 전에 `R15`를 `0xDEADBEEF00000000`으로 오염시킵니다 — 그러지 않으면 0이 나와도
+32비트 적재가 한 일인지 알 수 없기 때문입니다.
+
+#### 부수 수정 — 32비트 호스트가 제외를 숨기고 있었습니다
+
+x64 전용 probe 셋이 `core_probe_skipped`에 없어서 32비트 호스트가 "19/19 통과"만 찍고
+있었습니다. `core_probe/main.cpp`가 첫머리에 막겠다고 적어 둔 바로 그 읽힘입니다.
+
+```text
+core_probe_skipped=3 linux_x64_aot_frame long_mode_lowering linux_x64_guest_register
+core_probe_host=i386
+```
+
+#### 측정
+
+| Host | 결과 |
+|---|---|
+| Linux x64 Release | `core_probe_all=true`, **20/20**, skipped 2 |
+| Linux i386 Release | `core_probe_all=true`, 19/19, skipped 3 |
+| Win32 x86 Debug | `core_probe_all=true`, 19/19, skipped 3 |
+
+### English
+
+The design is
+[20260901-558](../design/20260901-558-x64-guest-register-placement.md); the log is
+[20260901-558](../work-logs/20260901-558-x64-guest-register-placement.md).
+
+#### Confirmed -- it ran, and produced the value the guest meant
+
+```text
+guest_register_emitted=true copied=5 lowered=2 refused=1
+  eax observed=0x11224345 expected=0x11224345
+  r15 observed=0xabcdef expected=0xabcdef
+guest_register_mapping=true,guest_esp_held=true
+```
+
+| Guest instruction | Emitted as | What it confirms |
+|---|---|---|
+| `mov eax,[ebx+4]` | `0x67` lowering (552) | the right address through a guest base |
+| `inc eax` | `FF C0` (557) | runs as `INC`, not as a REX prefix |
+| five more | copied (550) | the identity mapping makes a copy correct |
+
+#### The decision -- the mapping is forced
+
+Guest GPR *n* = host GPR *n*. While `kIdenticalBytes` exists there is no alternative;
+choosing another mapping erases Tasks 550, 552, 553 and 557. What Task 555 recorded as an
+unwritten premise is now a decision, with static assertions in a header.
+
+Only guest `ESP` differs, and it lives in **`R15D`** for a reason that is not preference.
+
+> **A 32-bit encoding cannot name `R8`-`R15`**, because that needs a REX prefix and 32-bit
+> mode has none. So no encoding exists by which a copied guest instruction could reach
+> guest `ESP`'s home. A memory slot carries no such guarantee.
+
+And `R12`-`R15` are callee-saved, so the SysV ABI preserves it. `R15` lacks the base
+encoding exceptions `R12` and `R13` carry.
+
+#### The zero upper half was confirmed by execution
+
+The bridge poisons `R15` with `0xDEADBEEF00000000` before the load -- without it, a zero
+could not be told apart from what was already there.
+
+#### Fixed along the way -- 32-bit hosts were hiding their exclusions
+
+The three x64-only probes were missing from `core_probe_skipped`, so a 32-bit host printed
+"19 of 19 passed" alone. That is the exact reading `core_probe/main.cpp` says at the top of
+the file that it exists to prevent.
+
+```text
+core_probe_skipped=3 linux_x64_aot_frame long_mode_lowering linux_x64_guest_register
+core_probe_host=i386
+```
+
+#### What was measured
+
+| Host | Result |
+|---|---|
+| Linux x64 Release | `core_probe_all=true`, **20 of 20**, 2 skipped |
+| Linux i386 Release | `core_probe_all=true`, 19 of 19, 3 skipped |
+| Win32 x86 Debug | `core_probe_all=true`, 19 of 19, 3 skipped |
+
+## 2026-09-01 Task 559: stack lowering — 방출 가능 66.17% / The stack lowering
+
+### 한국어
+
+설계는 [20260901-559](../design/20260901-559-x64-stack-instruction-lowering.md), 로그는
+[20260901-559](../work-logs/20260901-559-x64-stack-instruction-lowering.md)입니다.
+
+| 항목 | 557 | 559 |
+|---|---:|---:|
+| **방출 가능** | 52.46% | **66.17%** |
+| `operand-width` | 8,217 | **3** |
+| 완결 block | 316 (2.21%) | 381 (2.66%) |
+
+`PUSH`/`POP`/`PUSHFD`/`POPFD`/`LEAVE`가 guest `ESP`(=`R15D`)를 쓰는 시퀀스로 낮춰집니다.
+
+#### 확인됨 — `LEA`여야 합니다. `SUB`가 아닙니다
+
+guest `PUSH`·`POP`은 flag를 바꾸지 않으므로 `ESP` 조정을 `LEA`로 합니다. 반대로 해 보면
+왜인지 드러납니다 — `SUB`/`ADD`는 바이트 수도 명령 개수도 같은데:
+
+```text
+guest_stack_data=true                                  ← 값은 전부 맞음
+  zf_after_push_pop observed=0x0 expected=0x1  MISMATCH ← flag만 파괴
+```
+
+> 값이 틀리면 스스로 드러납니다. flag가 틀리면 아무것도 일으키지 않습니다.
+
+#### 실행으로 확인했습니다
+
+`push`가 **guest stack 메모리에 실제로** 쓰는지(레지스터가 아니라 메모리를 직접 읽어),
+`pop`이 되돌리는지, `ESP`가 정확히 ±4인지, flag가 보존되는지, `pushfd`/`popfd` 왕복이
+flag를 복원하고 `ESP`가 균형 잡히는지 — 모두 통과했습니다.
+
+#### 검증기 규칙은 약해지지 않았습니다
+
+Task 553의 "entry 하나 = 명령 하나"는 시퀀스 때문에 더 이상 맞지 않지만, 지우는 대신
+**방출자가 의도한 개수**와 비교하도록 정확하게 만들었습니다.
+
+#### 측정
+
+| Host | 결과 |
+|---|---|
+| Linux x64 Release | `core_probe_all=true`, 20/20, skipped 2 |
+| Linux i386 Release | `core_probe_all=true`, 19/19, skipped 3 |
+| Win32 x86 Debug | `core_probe_all=true`, 19/19, skipped 3 |
+
+남은 것은 `not-a-copy-record` 12,856(control flow)과 `stack-pointer` 6,401입니다. 완결
+block이 2.66%에 그친 것은 **block이 control flow로 끝나기 때문**입니다.
+
+### English
+
+The design is
+[20260901-559](../design/20260901-559-x64-stack-instruction-lowering.md); the log is
+[20260901-559](../work-logs/20260901-559-x64-stack-instruction-lowering.md).
+
+| Item | 557 | 559 |
+|---|---:|---:|
+| **Emittable** | 52.46% | **66.17%** |
+| `operand-width` | 8,217 | **3** |
+| Complete blocks | 316 (2.21%) | 381 (2.66%) |
+
+`PUSH`, `POP`, `PUSHFD`, `POPFD` and `LEAVE` become sequences that use guest `ESP` in
+`R15D`.
+
+#### Confirmed -- it has to be `LEA`, not `SUB`
+
+Guest `PUSH` and `POP` change no flags, so the `ESP` adjustment is a `LEA`. Doing it the
+other way shows why -- `SUB`/`ADD` is the same byte count and the same instruction count:
+
+```text
+guest_stack_data=true                                  <- every value correct
+  zf_after_push_pop observed=0x0 expected=0x1  MISMATCH <- only the flags destroyed
+```
+
+> A wrong value announces itself. Wrong flags raise nothing.
+
+#### Confirmed by execution
+
+That a push **actually reaches guest stack memory** (read from memory rather than a
+register), that a pop brings it back, that `ESP` moves by exactly four, that flags survive,
+and that a `pushfd`/`popfd` round trip restores the flags and balances `ESP`.
+
+#### The verifier's rule was not weakened
+
+Task 553's "one entry, one instruction" no longer holds for sequences, but rather than
+dropping it, it now compares against **the count the emitter intended**.
+
+#### What was measured
+
+| Host | Result |
+|---|---|
+| Linux x64 Release | `core_probe_all=true`, 20 of 20, 2 skipped |
+| Linux i386 Release | `core_probe_all=true`, 19 of 19, 3 skipped |
+| Win32 x86 Debug | `core_probe_all=true`, 19 of 19, 3 skipped |
+
+What is left is `not-a-copy-record` at 12,856 (control flow) and `stack-pointer` at 6,401.
+Complete blocks reached only 2.66% because **a block ends in control flow**.

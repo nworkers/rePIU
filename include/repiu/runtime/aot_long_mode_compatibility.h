@@ -119,6 +119,14 @@ enum class LongModeLowering
     // in both modes -- and `NeedsWidthReencode` already lets `FF /0` and `/1`
     // through, filtering only `/2` and `/3`.
     kIncDecToModRm,
+    // Task 559. A stack instruction becomes a sequence that names guest ESP in
+    // R15D, because long mode has no 32-bit PUSH or POP and a 0x66 prefix asks
+    // for 16 bits rather than 32 -- there is no encoding that gets back.
+    //
+    // The ESP adjustment inside these is always a LEA, never SUB or ADD: guest
+    // PUSH and POP change no flags, and an arithmetic adjustment would quietly
+    // change the ones the guest's next branch reads.
+    kStackSequence,
 };
 
 struct LongModeCompatibilityResult
@@ -144,10 +152,18 @@ struct LongModeCompatibilityResult
 // classifier exists to draw.
 inline constexpr std::size_t kMaxLoweredBytes = 24;
 
+// `instruction_count` reports how many instructions the lowered bytes are, and
+// may be null when the caller does not care. It exists because Task 553's
+// verification checks that an emitted entry decodes to the number of
+// instructions the emitter meant -- the check that catches a byte string of the
+// right length that decodes as something else. A stack sequence is several
+// instructions, so "one" stopped being the answer in Task 559 and the emitter
+// has to be told the real one rather than the rule being dropped.
 [[nodiscard]] bool LowerLongModeBytes(const std::uint8_t* bytes,
                                       std::size_t byte_count,
                                       std::uint8_t* lowered,
-                                      std::size_t* lowered_count);
+                                      std::size_t* lowered_count,
+                                      std::size_t* instruction_count = nullptr);
 
 }  // namespace repiu::runtime
 
