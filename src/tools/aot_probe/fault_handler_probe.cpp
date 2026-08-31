@@ -82,6 +82,33 @@ struct ProbeState
 
 ProbeState g_state;
 
+// Task 549. The stage crosses into a signal handler, so it is stored and read
+// as a volatile object rather than an ordinary global.
+//
+// It is the only field this probe hands *to* the handler between two library
+// calls -- `data_page` and `code_page` are set before `InstallFaultHandler`, so
+// the compiler has to have written them by then. `stage` is set immediately
+// before the faulting access and set back immediately after, and what sits
+// between the two stores is a `volatile` load of a completely different object.
+// That orders nothing here: nothing the compiler can see reads `stage` in
+// between, so the first store is dead and deleting it is correct.
+//
+// GCC did delete it at -O2. The handler then ran with the stage still `kIdle`,
+// fell to the `default` arm, and answered `kNotHandled`; the fault layer
+// restored SIG_DFL as it must, and the retried read took the process down with
+// the page still unreadable. Linux i386 Release died exactly there while the
+// same source passed on a -O0 tree, which is what a dead store looks like from
+// outside -- a fault handler that does nothing, on one build only.
+void PublishStage(ProbeState* state, const Stage stage)
+{
+    *static_cast<volatile Stage*>(&state->stage) = stage;
+}
+
+Stage ReadStage(const ProbeState* state)
+{
+    return *static_cast<const volatile Stage*>(&state->stage);
+}
+
 FaultDisposition OnFault(FaultEvent* event, void* user_data)
 {
     auto* state = static_cast<ProbeState*>(user_data);
@@ -101,9 +128,11 @@ FaultDisposition OnFault(FaultEvent* event, void* user_data)
         return FaultDisposition::kResume;
     }
 
+    const Stage stage = ReadStage(state);
+
     // Measured on every fault, whatever the scenario, because the claim is
     // about all of them and not just the one being exercised.
-    if (state->stage != Stage::kIdle && state->stage != Stage::kFinished)
+    if (stage != Stage::kIdle && stage != Stage::kFinished)
     {
         ++state->instruction_address_checks;
         if (event->instruction_address == event->registers->Eip)
@@ -115,7 +144,7 @@ FaultDisposition OnFault(FaultEvent* event, void* user_data)
     const auto data_base =
         reinterpret_cast<std::uintptr_t>(state->data_page);
 
-    switch (state->stage)
+    switch (stage)
     {
         case Stage::kReadFault:
         {
@@ -174,7 +203,7 @@ FaultDisposition OnFault(FaultEvent* event, void* user_data)
             // Arming the trap flag here is exactly how the engine begins a
             // single-step run, so the next instruction must trap.
             event->registers->EFlags |= kTrapFlag;
-            state->stage = Stage::kSingleStep;
+            PublishStage(state, Stage::kSingleStep);
             return FaultDisposition::kResume;
         }
         case Stage::kSingleStep:
@@ -183,7 +212,7 @@ FaultDisposition OnFault(FaultEvent* event, void* user_data)
             // it set would trap again on the next instruction, and again after
             // that.
             event->registers->EFlags &= ~kTrapFlag;
-            state->stage = Stage::kFinished;
+            PublishStage(state, Stage::kFinished);
             if (event->kind != FaultKind::kSingleStep)
             {
                 state->unexpected = true;
@@ -257,10 +286,10 @@ bool ProbeDataFaults()
     ok = ok && repiu::platform::ProtectMemory(bytes, kPageBytes,
                                               MemoryProtection::kNoAccess,
                                               nullptr);
-    g_state.stage = Stage::kReadFault;
+    PublishStage(&g_state, Stage::kReadFault);
     const std::uint8_t observed = *static_cast<volatile std::uint8_t*>(
         static_cast<void*>(bytes + kReadOffset));
-    g_state.stage = Stage::kIdle;
+    PublishStage(&g_state, Stage::kIdle);
     ok = ok && g_state.read_fault_seen && g_state.read_fault_address_matched &&
         g_state.read_fault_reported_read && observed == kReadMarker;
 
@@ -269,10 +298,10 @@ bool ProbeDataFaults()
     ok = ok && repiu::platform::ProtectMemory(bytes, kPageBytes,
                                               MemoryProtection::kReadOnly,
                                               nullptr);
-    g_state.stage = Stage::kWriteFault;
+    PublishStage(&g_state, Stage::kWriteFault);
     *static_cast<volatile std::uint8_t*>(
         static_cast<void*>(bytes + kWriteOffset)) = kWriteMarker;
-    g_state.stage = Stage::kIdle;
+    PublishStage(&g_state, Stage::kIdle);
     ok = ok && g_state.write_fault_seen &&
         g_state.write_fault_address_matched &&
         g_state.write_fault_reported_write &&
@@ -328,12 +357,12 @@ bool ProbeBreakpointAndSingleStep()
         return false;
     }
 
-    g_state.stage = Stage::kBreakpoint;
+    PublishStage(&g_state, Stage::kBreakpoint);
     using Program = std::uint32_t (*)();
     Program entry = nullptr;
     std::memcpy(&entry, &code, sizeof(entry));
     const std::uint32_t returned = entry();
-    g_state.stage = Stage::kIdle;
+    PublishStage(&g_state, Stage::kIdle);
 
     // Reported individually, because "the trap round trip failed" says nothing
     // about which half of it did.

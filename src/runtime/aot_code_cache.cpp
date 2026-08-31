@@ -1,8 +1,11 @@
 #include "repiu/runtime/aot_code_cache.h"
 
+#include "repiu/runtime/aot_long_mode_compatibility.h"
+
 #include <Zydis.h>
 
 #include <chrono>
+#include <cstddef>
 #include <cstring>
 #include <limits>
 #include <unordered_map>
@@ -48,6 +51,50 @@ void EmitTimerSafePoint(const AotInstructionRecord& instruction,
     image->timer_safe_point_sites.push_back({
         instruction.guest_address, cache_offset, request_address_offset,
         breakpoint_offset});
+}
+
+// Task 553. The `kCopy` path for a long-mode host.
+//
+// This is the point where Task 550's judgement and Task 552's rewrite stop
+// standing on their own: until this function existed the emitter copied the
+// guest's bytes without asking, which is the identity on i386 and is not on
+// x86-64. Returns false when the bytes may not be emitted at all, and the
+// caller writes the boundary the emitter already uses for everything else.
+bool EmitLongModeCopy(const AotInstructionRecord& instruction,
+                      AotCodeCacheImage* image)
+{
+    if (instruction.bytes.empty())
+    {
+        return false;
+    }
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        instruction.bytes.data(), instruction.bytes.size());
+    if (verdict.compatibility == LongModeByteCompatibility::kIdenticalBytes)
+    {
+        image->bytes.insert(image->bytes.end(), instruction.bytes.begin(),
+                            instruction.bytes.end());
+        ++image->long_mode_copied_count;
+        return true;
+    }
+    if (verdict.lowering == LongModeLowering::kNone)
+    {
+        return false;
+    }
+    std::uint8_t lowered[kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    if (!LowerLongModeBytes(instruction.bytes.data(), instruction.bytes.size(),
+                            lowered, &lowered_count) ||
+        lowered_count == 0U)
+    {
+        // A named lowering that the rewriter declines is still a refusal. It
+        // happens for real encodings -- `kAbsoluteToSib` needs the disp32 to be
+        // the instruction's tail, which `C7 05 disp32 imm32` is not -- so this
+        // is an expected outcome rather than an internal error.
+        return false;
+    }
+    image->bytes.insert(image->bytes.end(), lowered, lowered + lowered_count);
+    ++image->long_mode_lowered_count;
+    return true;
 }
 
 bool ReadConditionOpcode(std::uint16_t mnemonic, std::uint8_t* opcode)
@@ -1037,6 +1084,7 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
     image->dbt_direct_edge_dispatch_enabled =
         options.enable_dbt_direct_edge_dispatch;
     image->timer_safe_points_enabled = options.enable_timer_safe_points;
+    image->long_mode_emission_enabled = options.enable_long_mode_emission;
     const auto started = std::chrono::steady_clock::now();
     image->guarded_segment_pop_enabled =
         options.enable_guarded_segment_pop;
@@ -1064,6 +1112,30 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
             map.guest_address = instruction.guest_address;
             map.cache_offset = cache_offset;
             map.guest_length = instruction.length;
+            // Task 553. On a long-mode host the emitter's subset is `kCopy`
+            // alone. Every other kind's slot is a hand-built 32-bit sequence,
+            // and long mode reinterprets several of them without raising, so
+            // they reach the boundary here rather than being emitted wrong.
+            //
+            // The whole long-mode decision lives in this one branch rather than
+            // being spread through the cases below, so that reading the switch
+            // still shows the i386 emitter exactly as it was.
+            if (options.enable_long_mode_emission)
+            {
+                if (instruction.kind != AotInstructionKind::kCopy ||
+                    !EmitLongModeCopy(instruction, image))
+                {
+                    ++image->long_mode_refused_count;
+                    image->bytes.push_back(0xCCU);
+                    image->fixups.push_back({AotFixupKind::kHleBoundary,
+                                             instruction.guest_address, 0U,
+                                             cache_offset, false});
+                }
+                map.emitted_length = static_cast<std::uint8_t>(
+                    image->bytes.size() - cache_offset);
+                image->address_map.push_back(map);
+                continue;
+            }
             switch (instruction.kind)
             {
                 case AotInstructionKind::kCopy:
@@ -1255,7 +1327,12 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
         }
         const AotInstructionRecord& tail = block.instructions.back();
         const std::uint32_t target = tail.guest_address + tail.length;
+        // The `E9 rel32` below is emitted in both modes: its encoding and its
+        // meaning are the same in long mode. The timer safe point in front of
+        // it is not -- it is a hand-built 32-bit `pushfd`/`popfd` sequence, so
+        // a long-mode image goes without one.
         if (options.enable_timer_safe_points &&
+            !options.enable_long_mode_emission &&
             target <= tail.guest_address)
         {
             EmitTimerSafePoint(tail, image);
@@ -1312,12 +1389,24 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
     }
     image->entry_cache_offset = entry->second;
 
+    // The mode the emitted bytes are for, which is not always the mode the
+    // guest's bytes came from. A lowered instruction carries a `0x67`, which
+    // means a 16-bit address size in 32-bit mode, so a 32-bit decoder reads a
+    // long-mode image as different instructions than the ones emitted
+    // (Task 553). It does not necessarily *say* so -- see the count check
+    // below, which is what makes this mode switch observable.
     ZydisDecoder decoder;
-    ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LEGACY_32,
-                     ZYDIS_STACK_WIDTH_32);
+    ZydisDecoderInit(&decoder,
+                     options.enable_long_mode_emission
+                         ? ZYDIS_MACHINE_MODE_LONG_64
+                         : ZYDIS_MACHINE_MODE_LEGACY_32,
+                     options.enable_long_mode_emission
+                         ? ZYDIS_STACK_WIDTH_64
+                         : ZYDIS_STACK_WIDTH_32);
     for (const AotAddressMapEntry& map : image->address_map)
     {
         std::uint32_t decoded_bytes = 0;
+        std::uint32_t decoded_instructions = 0;
         while (decoded_bytes < map.emitted_length)
         {
             ZydisDecodedInstruction instruction{};
@@ -1332,8 +1421,22 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                 break;
             }
             decoded_bytes += instruction.length;
+            ++decoded_instructions;
         }
-        if (decoded_bytes != map.emitted_length)
+        // Task 553. Covering the bytes is not the same as decoding them as
+        // intended, and this loop was measured failing to tell the difference:
+        // the SIB absolute form `67 8B 04 25 <disp32>` reads in 32-bit mode as
+        // a three-byte `mov` followed by a five-byte `and`, which covers all
+        // eight bytes and reports nothing. Total length is a weak check by
+        // itself.
+        //
+        // Under long-mode emission there is a stronger one available, because
+        // every entry on that path is exactly one instruction -- a copy, a
+        // lowering, or one `0xCC`. Nothing on it emits a sequence. So the count
+        // is checked as well as the coverage, and a byte string that decodes as
+        // two instructions of the right total length is caught.
+        if (decoded_bytes != map.emitted_length ||
+            (options.enable_long_mode_emission && decoded_instructions != 1U))
         {
             ++image->decode_failure_count;
         }

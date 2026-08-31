@@ -224,16 +224,36 @@ bool StoreGuestCpuContext(const GuestCpuContext& registers, void* host_context)
 #elif defined(__x86_64__)
     auto* context = static_cast<ucontext_t*>(host_context);
     mcontext_t& machine = context->uc_mcontext;
-    machine.gregs[REG_RDI] = static_cast<greg_t>(registers.Edi);
-    machine.gregs[REG_RSI] = static_cast<greg_t>(registers.Esi);
-    machine.gregs[REG_RBX] = static_cast<greg_t>(registers.Ebx);
-    machine.gregs[REG_RDX] = static_cast<greg_t>(registers.Edx);
-    machine.gregs[REG_RCX] = static_cast<greg_t>(registers.Ecx);
-    machine.gregs[REG_RAX] = static_cast<greg_t>(registers.Eax);
-    machine.gregs[REG_RBP] = static_cast<greg_t>(registers.Ebp);
-    machine.gregs[REG_RIP] = static_cast<greg_t>(registers.Eip);
-    machine.gregs[REG_RSP] = static_cast<greg_t>(registers.Esp);
-    machine.gregs[REG_EFL] = static_cast<greg_t>(registers.EFlags);
+    // Task 549. The low half is written and the host's upper half is kept.
+    //
+    // Assigning a `std::uint32_t` to a `greg_t` zeroes bits 32..63, and on this
+    // host those bits are not spare: the pages this process executes on and
+    // faults in sit far above 4 GiB. A signal resume that wrote a truncated RIP
+    // back therefore returned to an address that had never been mapped,
+    // refaulted at once, and went on doing that -- which is what a Linux x64
+    // core-probe run looked like from the outside, and why the run before this
+    // one never reached the probes after `fault_handler`.
+    //
+    // Writing only 32 bits is also the whole of what an edit through this
+    // structure may mean. `GuestCpuContext` is a fixed 32-bit contract on every
+    // host, so it can say what the low half of a register becomes and nothing
+    // about the half above it. Task 546 states the same rule from the other
+    // side: host RIP is not guest EIP.
+    const auto merge = [](const greg_t host, const std::uint32_t low) {
+        return static_cast<greg_t>(
+            (static_cast<std::uint64_t>(host) & UINT64_C(0xFFFFFFFF00000000)) |
+            static_cast<std::uint64_t>(low));
+    };
+    machine.gregs[REG_RDI] = merge(machine.gregs[REG_RDI], registers.Edi);
+    machine.gregs[REG_RSI] = merge(machine.gregs[REG_RSI], registers.Esi);
+    machine.gregs[REG_RBX] = merge(machine.gregs[REG_RBX], registers.Ebx);
+    machine.gregs[REG_RDX] = merge(machine.gregs[REG_RDX], registers.Edx);
+    machine.gregs[REG_RCX] = merge(machine.gregs[REG_RCX], registers.Ecx);
+    machine.gregs[REG_RAX] = merge(machine.gregs[REG_RAX], registers.Eax);
+    machine.gregs[REG_RBP] = merge(machine.gregs[REG_RBP], registers.Ebp);
+    machine.gregs[REG_RIP] = merge(machine.gregs[REG_RIP], registers.Eip);
+    machine.gregs[REG_RSP] = merge(machine.gregs[REG_RSP], registers.Esp);
+    machine.gregs[REG_EFL] = merge(machine.gregs[REG_EFL], registers.EFlags);
     if (context->uc_mcontext.fpregs != nullptr)
     {
         StoreFloatingSave(registers.FloatSave, context->uc_mcontext.fpregs);

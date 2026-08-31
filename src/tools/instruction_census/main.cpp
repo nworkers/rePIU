@@ -15,6 +15,8 @@
 // See docs/design/20260828-514-guest-instruction-census.md.
 
 #include "repiu/exe/dos4gw_loader.h"
+#include "repiu/runtime/aot_code_cache.h"
+#include "repiu/runtime/aot_long_mode_compatibility.h"
 #include "repiu/runtime/aot_translation_plan.h"
 #include "repiu/runtime/runtime_memory.h"
 #include "repiu/target/target_profile.h"
@@ -49,6 +51,91 @@ struct MnemonicTally
     std::uint64_t instructions = 0;
     std::set<std::string> forms;
 };
+
+// Task 556. What the x64 emitter can produce from this guest, and what stops
+// the rest.
+//
+// The totals here are deliberately NOT the authority: the image is built with
+// `enable_long_mode_emission` and the emitter's own counters are the headline,
+// because a census that reimplements the emission rule drifts from it the first
+// time the rule changes. These tallies exist to explain those counters, and
+// whether the two agree is printed rather than assumed.
+struct LongModeTally
+{
+    std::uint64_t considered = 0;
+    std::uint64_t copied = 0;
+    std::uint64_t lowered = 0;
+    std::uint64_t refused = 0;
+    // Refused because the plan record is not `kCopy` at all -- every control
+    // flow record, every guarded segment slot, every port I/O record. Counted
+    // apart from the classifier's refusals because no lowering of an
+    // instruction's bytes would change it; it needs an x64 slot instead.
+    std::uint64_t refused_non_copy = 0;
+    std::map<std::string, std::uint64_t> refusal_reasons;
+    // The mnemonics behind the refusals, by volume, so the next unit is chosen
+    // from data rather than from an impression of what is common.
+    std::map<std::string, std::uint64_t> refused_mnemonics;
+    std::uint64_t blocks = 0;
+    std::uint64_t blocks_complete = 0;
+};
+
+const char* DivergenceName(const repiu::runtime::LongModeDivergence divergence)
+{
+    switch (divergence)
+    {
+        case repiu::runtime::LongModeDivergence::kNone:
+            return "unproven";
+        case repiu::runtime::LongModeDivergence::kSilentlyDifferent:
+            return "silently-different";
+        case repiu::runtime::LongModeDivergence::kInvalidInLongMode:
+            return "invalid-in-long-mode";
+        case repiu::runtime::LongModeDivergence::kOperandWidth:
+            return "operand-width";
+        case repiu::runtime::LongModeDivergence::kAddressSize:
+            return "address-size";
+        case repiu::runtime::LongModeDivergence::kRipRelativeDisplacement:
+            return "rip-relative";
+        case repiu::runtime::LongModeDivergence::kSegmentRegister:
+            return "segment-register";
+        case repiu::runtime::LongModeDivergence::kStackPointerRegister:
+            return "stack-pointer";
+    }
+    return "unknown";
+}
+
+// The emitter's `kCopy` rule, mirrored: classify, and if a lowering is named,
+// require that it actually produces bytes. A named lowering the rewriter
+// declines is still a refusal, which is what the emitter does too.
+bool ClassifyEmittable(const repiu::runtime::AotInstructionRecord& record,
+                       bool* lowered, std::string* reason)
+{
+    const repiu::runtime::LongModeCompatibilityResult verdict =
+        repiu::runtime::ClassifyLongModeBytes(record.bytes.data(),
+                                              record.bytes.size());
+    *lowered = false;
+    if (verdict.compatibility ==
+        repiu::runtime::LongModeByteCompatibility::kIdenticalBytes)
+    {
+        return true;
+    }
+    if (verdict.lowering != repiu::runtime::LongModeLowering::kNone)
+    {
+        std::uint8_t bytes[repiu::runtime::kMaxLoweredBytes] = {};
+        std::size_t count = 0;
+        if (repiu::runtime::LowerLongModeBytes(record.bytes.data(),
+                                               record.bytes.size(), bytes,
+                                               &count) && count != 0U)
+        {
+            *lowered = true;
+            return true;
+        }
+        *reason = std::string(DivergenceName(verdict.divergence)) +
+            "/lowering-declined";
+        return false;
+    }
+    *reason = DivergenceName(verdict.divergence);
+    return false;
+}
 
 struct X87Tally
 {
@@ -365,6 +452,86 @@ int main(int argc, char** argv)
         }
     }
 
+    // Task 556. The same plan through the x64 emitter's rules.
+    //
+    // The emitter's dedup is mirrored here -- it skips a guest address it has
+    // already emitted -- so that the totals below can be compared with the
+    // image's own counters. Without that the comparison fails for a reason
+    // that has nothing to do with what is being measured.
+    LongModeTally long_mode;
+    {
+        std::set<std::uint32_t> seen;
+        for (const repiu::runtime::AotBasicBlock& block : plan.blocks)
+        {
+            ++long_mode.blocks;
+            bool complete = !block.instructions.empty();
+            for (const repiu::runtime::AotInstructionRecord& record :
+                 block.instructions)
+            {
+                if (!seen.insert(record.guest_address).second)
+                {
+                    continue;
+                }
+                ++long_mode.considered;
+                if (record.kind !=
+                    repiu::runtime::AotInstructionKind::kCopy)
+                {
+                    ++long_mode.refused;
+                    ++long_mode.refused_non_copy;
+                    ++long_mode.refusal_reasons["not-a-copy-record"];
+                    complete = false;
+                    continue;
+                }
+                bool lowered = false;
+                std::string reason;
+                if (record.bytes.empty() ||
+                    !ClassifyEmittable(record, &lowered, &reason))
+                {
+                    ++long_mode.refused;
+                    ++long_mode.refusal_reasons[
+                        reason.empty() ? "no-bytes" : reason];
+                    complete = false;
+                    ZydisDecodedInstruction refused_instruction{};
+                    if (!record.bytes.empty() &&
+                        ZYAN_SUCCESS(ZydisDecoderDecodeInstruction(
+                            &decoder, nullptr, record.bytes.data(),
+                            record.bytes.size(), &refused_instruction)))
+                    {
+                        // Keyed by mnemonic *and* reason. Task 557 needed to
+                        // know whether the 21 remaining `inc` were prefixed
+                        // forms or memory-operand forms, and a bare mnemonic
+                        // count could not say. The next lowerings will ask the
+                        // same question of `push` and `mov`.
+                        ++long_mode.refused_mnemonics[
+                            std::string(ZydisMnemonicGetString(
+                                refused_instruction.mnemonic)) + "  " + reason];
+                    }
+                    continue;
+                }
+                if (lowered)
+                {
+                    ++long_mode.lowered;
+                }
+                else
+                {
+                    ++long_mode.copied;
+                }
+            }
+            if (complete)
+            {
+                ++long_mode.blocks_complete;
+            }
+        }
+    }
+
+    // The authority. Building the image runs the emitter itself, so these three
+    // cannot drift from what would actually be emitted.
+    repiu::runtime::AotCodeCacheBuildOptions long_mode_options;
+    long_mode_options.enable_long_mode_emission = true;
+    repiu::runtime::AotCodeCacheImage long_mode_image;
+    const bool long_mode_built = repiu::runtime::BuildAotCodeCacheImage(
+        plan, long_mode_options, &long_mode_image);
+
     LinearSweep sweep;
     std::uint64_t swept_bytes = 0;
     for (const repiu::runtime::RelocatedRuntimeObject& object : image.objects)
@@ -512,6 +679,92 @@ int main(int argc, char** argv)
     }
     std::cout << std::defaultfloat << "\n";
 
+    // Task 556. What an x64 host could emit from this guest today.
+    const auto percent = [](std::uint64_t part, std::uint64_t whole) {
+        return whole == 0 ? 0.0
+                          : 100.0 * static_cast<double>(part) /
+                                static_cast<double>(whole);
+    };
+    std::cout << "-- x64 long-mode emission (Task 553 rules) --\n";
+    if (!long_mode_built)
+    {
+        std::cout << "  image did not build: " << long_mode_image.message
+                  << "\n";
+    }
+    const std::uint64_t emitted = long_mode.copied + long_mode.lowered;
+    std::cout << std::fixed << std::setprecision(2);
+    std::cout << "  considered          " << long_mode.considered << "\n";
+    std::cout << "  copied              " << long_mode.copied << "  ("
+              << percent(long_mode.copied, long_mode.considered) << "%)\n";
+    std::cout << "  lowered             " << long_mode.lowered << "  ("
+              << percent(long_mode.lowered, long_mode.considered) << "%)\n";
+    std::cout << "  emittable           " << emitted << "  ("
+              << percent(emitted, long_mode.considered) << "%)\n";
+    std::cout << "  refused             " << long_mode.refused << "  ("
+              << percent(long_mode.refused, long_mode.considered) << "%)\n";
+    std::cout << "    of which not a kCopy record  "
+              << long_mode.refused_non_copy << "\n";
+    // The number that decides whether anything runs. A block that stops at an
+    // INT3 has no way to the next one.
+    std::cout << "  blocks              " << long_mode.blocks << "\n";
+    std::cout << "  blocks complete     " << long_mode.blocks_complete << "  ("
+              << percent(long_mode.blocks_complete, long_mode.blocks)
+              << "%)\n";
+    std::cout << std::defaultfloat;
+
+    // Whether the explanation matches the authority. A mismatch means the
+    // census copied the emitter's rule wrongly, or the emitter and the
+    // classifier disagree -- either is a finding rather than a rounding note.
+    const bool agrees = long_mode_built &&
+        long_mode_image.long_mode_copied_count == long_mode.copied &&
+        long_mode_image.long_mode_lowered_count == long_mode.lowered &&
+        long_mode_image.long_mode_refused_count == long_mode.refused;
+    std::cout << "  emitter counters    copied="
+              << long_mode_image.long_mode_copied_count
+              << " lowered=" << long_mode_image.long_mode_lowered_count
+              << " refused=" << long_mode_image.long_mode_refused_count
+              << "  agrees=" << (agrees ? "true" : "false") << "\n\n";
+
+    std::cout << "-- why the rest cannot be emitted --\n";
+    {
+        std::vector<std::pair<std::string, std::uint64_t>> reasons(
+            long_mode.refusal_reasons.begin(),
+            long_mode.refusal_reasons.end());
+        std::sort(reasons.begin(), reasons.end(),
+                  [](const auto& left, const auto& right) {
+                      return left.second > right.second;
+                  });
+        for (const auto& reason : reasons)
+        {
+            std::cout << "  " << std::left << std::setw(30) << reason.first
+                      << std::right << std::setw(10) << reason.second << "\n";
+        }
+    }
+    std::cout << "\n-- refused mnemonics and reasons, by volume (top 30) --\n";
+    {
+        std::vector<std::pair<std::string, std::uint64_t>> refused(
+            long_mode.refused_mnemonics.begin(),
+            long_mode.refused_mnemonics.end());
+        std::sort(refused.begin(), refused.end(),
+                  [](const auto& left, const auto& right) {
+                      return left.second > right.second;
+                  });
+        std::size_t shown = 0;
+        for (const auto& entry : refused)
+        {
+            // Thirty rather than twenty since Task 557 split each row by
+            // reason: the same cut showed fewer instructions than it used to,
+            // and the item this task was measuring fell just below it.
+            if (shown++ >= 30)
+            {
+                break;
+            }
+            std::cout << "  " << std::left << std::setw(40) << entry.first
+                      << std::right << std::setw(10) << entry.second << "\n";
+        }
+    }
+    std::cout << "\n";
+
     // The machine-readable pair. Two lines rather than one: Task 512 recorded
     // that a single long line reads worse for both people and scripts.
     std::cout << "[repiu-census] target=" << profile->id
@@ -525,6 +778,15 @@ int main(int argc, char** argv)
               << " sweep_failed=" << sweep.failed
               << " sweep_only=" << sweep_only.size()
               << " reachable_only=" << reachable_only.size() << "\n";
+    std::cout << "[repiu-census-x64] considered=" << long_mode.considered
+              << " copied=" << long_mode.copied
+              << " lowered=" << long_mode.lowered
+              << " refused=" << long_mode.refused
+              << " refused_non_copy=" << long_mode.refused_non_copy
+              << " blocks=" << long_mode.blocks
+              << " blocks_complete=" << long_mode.blocks_complete
+              << " image_built=" << (long_mode_built ? 1 : 0)
+              << " agrees=" << (agrees ? 1 : 0) << "\n";
     std::cout << "[repiu-census-x87] total=" << x87.total
               << " float80_mem=" << x87.float80_memory_operands
               << " control_word=" << x87.control_word_access

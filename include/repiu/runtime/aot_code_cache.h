@@ -69,6 +69,25 @@ struct AotCodeCacheBuildOptions
     bool enable_direct_return_table = false;
     std::uint32_t direct_return_table_bits =
         kDefaultAotDirectReturnTableBits;
+    // Task 553. Emit an image for a long-mode host: the guest's copied bytes go
+    // through Task 550's classifier and Task 552's lowering, and everything the
+    // emitter cannot yet produce for x86-64 reaches the existing INT3 boundary.
+    //
+    // Deliberately an option rather than a host `#ifdef`. Emission is pure
+    // computation -- it produces bytes and executes nothing -- so the answer for
+    // a given plan has to be the same on every host, and an `#ifdef` would make
+    // that answer unobservable on Windows, which is where this project's test
+    // loop actually runs.
+    //
+    // The name says image rather than copy on purpose. With it on, only `kCopy`
+    // is emitted; every other kind falls to the boundary, because the slots the
+    // emitter writes for them are hand-built 32-bit sequences and long mode
+    // changes several of them without raising anything (`68 imm32` pushes eight
+    // bytes there). Lowering the copies while emitting those would recreate one
+    // layer up the silent divergence the classifier exists to prevent.
+    //
+    // Off by default, so the i386 path emits the same bytes it always has.
+    bool enable_long_mode_emission = false;
 };
 
 enum class AotFixupKind
@@ -339,6 +358,14 @@ struct AotCodeCacheImage
     bool dbt_indirect_miss_dispatch_enabled = false;
     bool dbt_direct_edge_dispatch_enabled = false;
     bool timer_safe_points_enabled = false;
+    // Task 553. What the long-mode emission actually managed, counted rather
+    // than asserted. Without these "wired" is one yes-or-no and nobody can say
+    // what fraction of a real plan an x86-64 host could emit. All zero when
+    // `long_mode_emission_enabled` is false.
+    bool long_mode_emission_enabled = false;
+    std::uint32_t long_mode_copied_count = 0;
+    std::uint32_t long_mode_lowered_count = 0;
+    std::uint32_t long_mode_refused_count = 0;
     std::uint32_t resolved_fixup_count = 0;
     std::uint32_t external_fixup_count = 0;
     std::uint32_t unsupported_branch_count = 0;

@@ -1,0 +1,535 @@
+#include "repiu/runtime/aot_long_mode_compatibility.h"
+
+#include <Zydis.h>
+
+namespace repiu::runtime
+{
+namespace
+{
+
+using Result = LongModeCompatibilityResult;
+
+Result Refuse(const LongModeDivergence divergence)
+{
+    return Result{LongModeByteCompatibility::kUnsupported, divergence,
+                  LongModeLowering::kNone};
+}
+
+Result Reencode(const LongModeDivergence divergence,
+                const LongModeLowering lowering = LongModeLowering::kNone)
+{
+    return Result{LongModeByteCompatibility::kNeedsReencode, divergence,
+                  lowering};
+}
+
+// The one-byte opcodes long mode decodes as something else entirely. These are
+// the dangerous ones: nothing raises, and the program runs on doing the wrong
+// thing.
+//
+// `40`-`4F` matters most by volume. In 32-bit code they are `INC`/`DEC` of a
+// register, among the most common single-byte instructions there is; in long
+// mode every one of them is a REX prefix that modifies the *next* instruction.
+// Copying one does not produce a wrong result so much as delete an instruction
+// and rewrite its successor.
+bool IsSilentlyDifferentOpcode(const std::uint8_t opcode)
+{
+    // Task 557 removed `40`-`4F` from this list. They are still the single most
+    // dangerous range -- every one of them is a REX prefix in long mode -- but
+    // they are no longer *refused* for it: `IsIncDecRegisterOpcode` below names
+    // the re-encoding that keeps their meaning, and the classifier reaches that
+    // before it reaches this list.
+    switch (opcode)
+    {
+        case 0x62U:  // BOUND -> EVEX prefix
+        case 0x63U:  // ARPL -> MOVSXD
+        case 0xC4U:  // LES -> three-byte VEX prefix
+        case 0xC5U:  // LDS -> two-byte VEX prefix
+        // MOV AL/eAX, moffs32 -> moffs64. This one also changes the
+        // instruction's length, from five bytes to nine, so everything decoded
+        // after it is wrong as well.
+        case 0xA0U:
+        case 0xA1U:
+        case 0xA2U:
+        case 0xA3U:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Task 557. `INC r32` (`40+r`) and `DEC r32` (`48+r`), the opcode-embedded
+// register forms.
+//
+// These are the range long mode reuses for REX, so they cannot be copied. But
+// the operation itself is unchanged in long mode under a different encoding,
+// which makes them a rewrite rather than a refusal -- and by volume they are
+// the largest thing this classifier was giving up on: 805 of the guest's
+// instructions, measured in Task 556.
+bool IsIncDecRegisterOpcode(const std::uint8_t opcode)
+{
+    return opcode >= 0x40U && opcode <= 0x4FU;
+}
+
+// Removed from long mode. These raise #UD rather than running, which makes them
+// the safe half of the refusal list -- but they are still refused by name.
+// Catching #UD in a fault handler is an execution strategy someone might choose
+// later; it is not a reason to call these bytes compatible now.
+bool IsInvalidInLongMode(const std::uint8_t opcode)
+{
+    switch (opcode)
+    {
+        case 0x06U: case 0x0EU: case 0x16U: case 0x1EU:  // PUSH ES/CS/SS/DS
+        case 0x07U: case 0x17U: case 0x1FU:              // POP ES/SS/DS
+        case 0x27U: case 0x2FU:                          // DAA, DAS
+        case 0x37U: case 0x3FU:                          // AAA, AAS
+        case 0x60U: case 0x61U:                          // PUSHAD, POPAD
+        case 0x9AU:                                      // CALL far ptr16:32
+        case 0xCEU:                                      // INTO
+        case 0xD4U: case 0xD5U:                          // AAM, AAD
+        case 0xD6U:                                      // SALC
+        case 0xEAU:                                      // JMP far ptr16:32
+            return true;
+        default:
+            return false;
+    }
+}
+
+// The stack instructions. Long mode gives every one of them a 64-bit operand
+// size and offers no way back down: a `66` prefix asks for 16 bits, not 32.
+// The meaning survives, so these are re-encodable rather than refused outright
+// -- but the x64 emitter has to do the lowering, and until it exists these
+// cannot be copied.
+//
+// `E9`, a `JMP rel32`, is deliberately absent: it touches no stack, and its
+// encoding and meaning are the same in both modes.
+bool NeedsWidthReencode(const std::uint8_t opcode,
+                        const ZydisDecodedInstruction& instruction)
+{
+    if (opcode >= 0x50U && opcode <= 0x5FU)
+    {
+        return true;  // PUSH/POP r32 -> r64
+    }
+    switch (opcode)
+    {
+        case 0x68U: case 0x6AU:  // PUSH imm32 / imm8
+        case 0x8FU:              // POP r/m
+        case 0x9CU: case 0x9DU:  // PUSHFD / POPFD
+        case 0xC2U: case 0xC3U:  // RET imm16 / RET
+        case 0xC9U:              // LEAVE
+        case 0xE8U:              // CALL rel32, which pushes eight bytes
+            return true;
+        case 0xFFU:
+            // Only the CALL and JMP extensions of the group; `/0` INC and `/1`
+            // DEC through this encoding are ordinary and stay eligible.
+            return instruction.raw.modrm.reg == 2U ||
+                instruction.raw.modrm.reg == 3U;
+        default:
+            return false;
+    }
+}
+
+// PUSH/POP FS and GS, the two-byte forms. Long mode keeps them and widens them
+// to eight bytes, so they belong with the width group rather than the invalid
+// one.
+bool NeedsWidthReencodeTwoByte(const std::uint8_t opcode)
+{
+    switch (opcode)
+    {
+        case 0xA0U: case 0xA8U:  // PUSH FS / PUSH GS
+        case 0xA1U: case 0xA9U:  // POP FS / POP GS
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool TouchesSegmentRegister(const ZydisDecodedInstruction& instruction,
+                            const ZydisDecodedOperand* operands)
+{
+    for (std::uint8_t index = 0; index < instruction.operand_count; ++index)
+    {
+        if (operands[index].type != ZYDIS_OPERAND_TYPE_REGISTER)
+        {
+            continue;
+        }
+        switch (operands[index].reg.value)
+        {
+            case ZYDIS_REGISTER_ES:
+            case ZYDIS_REGISTER_CS:
+            case ZYDIS_REGISTER_SS:
+            case ZYDIS_REGISTER_DS:
+            case ZYDIS_REGISTER_FS:
+            case ZYDIS_REGISTER_GS:
+                return true;
+            default:
+                break;
+        }
+    }
+    return false;
+}
+
+bool IsStackPointerRegister(const ZydisRegister reg)
+{
+    switch (reg)
+    {
+        case ZYDIS_REGISTER_RSP:
+        case ZYDIS_REGISTER_ESP:
+        case ZYDIS_REGISTER_SP:
+        case ZYDIS_REGISTER_SPL:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Task 555. Whether the instruction names the stack pointer in any role.
+//
+// Task 546's decision 3 keeps host RSP as the SysV stack and holds guest ESP as
+// state, so in long mode `ESP` is the low half of the host's stack pointer.
+// Copying or prefixing anything that names it does not address the guest's
+// stack -- it reaches the host's.
+//
+// Both roles are checked because the two failures differ in kind.
+// `mov eax,[esp+8]` has a memory operand and would have been lowered with a
+// prefix, yielding wrong data. `add esp,16` has none, so it never reaches the
+// memory path at all and passed as `kIdenticalBytes` -- and writing `ESP` in
+// long mode zero-extends into `RSP` and destroys the host stack pointer. The
+// second is why this check sits ahead of the memory-operand judgement rather
+// than inside it.
+//
+// Every operand is scanned, hidden ones included: the implicit stack operands
+// belong to instructions the opcode lists already refuse, but a check that
+// depended on that ordering would be one edit away from being wrong.
+bool TouchesStackPointer(const ZydisDecodedInstruction& instruction,
+                         const ZydisDecodedOperand* operands)
+{
+    for (std::uint8_t index = 0; index < instruction.operand_count; ++index)
+    {
+        const ZydisDecodedOperand& operand = operands[index];
+        if (operand.type == ZYDIS_OPERAND_TYPE_REGISTER &&
+            IsStackPointerRegister(operand.reg.value))
+        {
+            return true;
+        }
+        if (operand.type != ZYDIS_OPERAND_TYPE_MEMORY)
+        {
+            continue;
+        }
+        // `ESP` cannot be a SIB index -- that encoding is what "no index"
+        // means -- so the index arm completes the check rather than catching a
+        // case that occurs.
+        if (IsStackPointerRegister(operand.mem.base) ||
+            IsStackPointerRegister(operand.mem.index))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool HasMemoryOperand(const ZydisDecodedInstruction& instruction,
+                      const ZydisDecodedOperand* operands)
+{
+    for (std::uint8_t index = 0; index < instruction.operand_count; ++index)
+    {
+        if (operands[index].type == ZYDIS_OPERAND_TYPE_MEMORY)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ModRM mod=00, rm=101. In 32-bit mode that is an absolute `disp32` with no
+// base register; in long mode the same bits mean RIP-relative.
+//
+// It is checked apart from the opcode lists because it is a property of the
+// addressing form, so no list of opcodes catches it -- and apart from the plain
+// memory-operand check because of what it costs. Reading a global by absolute
+// address is what compiled 32-bit code does constantly, so this single
+// divergence is spread through the whole program rather than confined to a few
+// instructions.
+bool IsAbsoluteDisplacementForm(const ZydisDecodedInstruction& instruction)
+{
+    return (instruction.attributes & ZYDIS_ATTRIB_HAS_MODRM) != 0U &&
+        instruction.raw.modrm.mod == 0U && instruction.raw.modrm.rm == 5U;
+}
+
+}  // namespace
+
+LongModeCompatibilityResult ClassifyLongModeBytes(
+    const std::uint8_t* const bytes, const std::size_t byte_count)
+{
+    if (bytes == nullptr || byte_count == 0U)
+    {
+        return Refuse(LongModeDivergence::kNone);
+    }
+
+    // The guest's ISA is the source, so the decode stays LEGACY_32. This asks
+    // what these bytes mean where they came from; what they would mean in long
+    // mode is the judgement below, and decoding them as 64-bit would answer a
+    // different question.
+    ZydisDecoder decoder;
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LEGACY_32,
+                                       ZYDIS_STACK_WIDTH_32)))
+    {
+        return Refuse(LongModeDivergence::kNone);
+    }
+
+    ZydisDecodedInstruction instruction{};
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+    if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, bytes, byte_count,
+                                             &instruction, operands)))
+    {
+        // Not an instruction is an answer, and the answer is no.
+        return Refuse(LongModeDivergence::kNone);
+    }
+
+    const std::uint8_t opcode = instruction.opcode;
+
+    if (instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT)
+    {
+        if (IsIncDecRegisterOpcode(opcode))
+        {
+            // `inc esp` lowers to `FF C4`, which writes the host's stack
+            // pointer -- the hole Task 555 closed. This judgement returns from
+            // inside the opcode-map block and so never reaches the
+            // stack-pointer check further down, which is why the check is
+            // called here rather than duplicated as `rm == 4`.
+            if (TouchesStackPointer(instruction, operands))
+            {
+                return Refuse(LongModeDivergence::kStackPointerRegister);
+            }
+            // Only the bare byte. A prefixed form (`66 40` is `inc ax`) could
+            // be lowered the same way, but Task 557 keeps what it proves to the
+            // smallest thing, and the census measures whether the restriction
+            // costs anything.
+            if (instruction.length != 1U)
+            {
+                return Refuse(LongModeDivergence::kSilentlyDifferent);
+            }
+            return Reencode(LongModeDivergence::kSilentlyDifferent,
+                            LongModeLowering::kIncDecToModRm);
+        }
+        if (IsSilentlyDifferentOpcode(opcode))
+        {
+            return Refuse(LongModeDivergence::kSilentlyDifferent);
+        }
+        if (IsInvalidInLongMode(opcode))
+        {
+            return Refuse(LongModeDivergence::kInvalidInLongMode);
+        }
+        if (NeedsWidthReencode(opcode, instruction))
+        {
+            return Reencode(LongModeDivergence::kOperandWidth);
+        }
+    }
+    else if (instruction.opcode_map == ZYDIS_OPCODE_MAP_0F)
+    {
+        if (NeedsWidthReencodeTwoByte(opcode))
+        {
+            return Reencode(LongModeDivergence::kOperandWidth);
+        }
+    }
+    else
+    {
+        // Every remaining map arrives through a byte long mode reads as a VEX,
+        // EVEX, or XOP prefix, so the encoding itself is in question before its
+        // meaning is.
+        return Refuse(LongModeDivergence::kSilentlyDifferent);
+    }
+
+    // Anything that still writes the instruction pointer is control flow, and
+    // control flow on x64 belongs to the dispatch frame rather than to copied
+    // bytes.
+    if (instruction.meta.category == ZYDIS_CATEGORY_CALL ||
+        instruction.meta.category == ZYDIS_CATEGORY_RET ||
+        instruction.meta.category == ZYDIS_CATEGORY_UNCOND_BR ||
+        instruction.meta.category == ZYDIS_CATEGORY_COND_BR ||
+        instruction.meta.category == ZYDIS_CATEGORY_INTERRUPT ||
+        instruction.meta.category == ZYDIS_CATEGORY_SYSCALL ||
+        instruction.meta.category == ZYDIS_CATEGORY_SYSRET)
+    {
+        return Reencode(LongModeDivergence::kOperandWidth);
+    }
+
+    if (TouchesSegmentRegister(instruction, operands))
+    {
+        return Refuse(LongModeDivergence::kSegmentRegister);
+    }
+
+    // Task 555. Ahead of the memory-operand judgement below, because the worse
+    // of the two shapes has no memory operand: `add esp,16` was reaching the
+    // `kIdenticalBytes` return at the bottom of this function.
+    if (TouchesStackPointer(instruction, operands))
+    {
+        return Refuse(LongModeDivergence::kStackPointerRegister);
+    }
+
+    // Task 552. A memory operand is now a rewrite rather than a refusal,
+    // because Task 546's decision 4 is settled: guest memory is placed below
+    // 4 GiB, so a 32-bit address computation zero-extended to 64 bits names the
+    // address the guest meant. Task 551 measured that placement rather than
+    // assuming it.
+    //
+    // A segment override is not covered by that and stays refused. `FS` and
+    // `GS` have real bases in long mode but host TLS is using `FS`, and
+    // decision 5 says raw guest segments are never installed into host `FS` or
+    // `GS`; the other overrides are ignored in long mode. Neither is a problem
+    // an address-size prefix moves.
+    if (const bool has_memory = HasMemoryOperand(instruction, operands);
+        has_memory)
+    {
+        if ((instruction.attributes & ZYDIS_ATTRIB_HAS_SEGMENT) != 0U)
+        {
+            return Refuse(LongModeDivergence::kSegmentRegister);
+        }
+        // Checked apart from the ordinary case, and lowered differently: a
+        // prefix does not turn RIP-relative off, only truncate it, so this form
+        // needs its ModRM rewritten into the SIB absolute encoding as well.
+        if (IsAbsoluteDisplacementForm(instruction))
+        {
+            return Reencode(LongModeDivergence::kRipRelativeDisplacement,
+                            LongModeLowering::kAbsoluteToSib);
+        }
+        return Reencode(LongModeDivergence::kAddressSize,
+                        LongModeLowering::kAddressSizePrefix);
+    }
+
+    // No memory operand, so the addressing form cannot be the absolute one; a
+    // bare `mod=00 rm=101` without a memory operand is not a form this reaches.
+    if (IsAbsoluteDisplacementForm(instruction))
+    {
+        return Refuse(LongModeDivergence::kRipRelativeDisplacement);
+    }
+
+    // A privileged instruction is refused rather than judged. Whether it means
+    // the same thing is not the interesting question about it.
+    if ((instruction.attributes & ZYDIS_ATTRIB_IS_PRIVILEGED) != 0U)
+    {
+        return Refuse(LongModeDivergence::kNone);
+    }
+
+    // What is left is register-only work at 8, 16, or 32 bits: the ordinary
+    // GPR and flags subset Task 546 named, and the only thing this unit is
+    // willing to call identical.
+    if (instruction.operand_width != 8U && instruction.operand_width != 16U &&
+        instruction.operand_width != 32U)
+    {
+        return Refuse(LongModeDivergence::kOperandWidth);
+    }
+
+    return Result{LongModeByteCompatibility::kIdenticalBytes,
+                  LongModeDivergence::kNone, LongModeLowering::kNone};
+}
+
+bool LowerLongModeBytes(const std::uint8_t* const bytes,
+                        const std::size_t byte_count,
+                        std::uint8_t* const lowered,
+                        std::size_t* const lowered_count)
+{
+    if (bytes == nullptr || lowered == nullptr || lowered_count == nullptr)
+    {
+        return false;
+    }
+    *lowered_count = 0U;
+
+    const LongModeCompatibilityResult verdict =
+        ClassifyLongModeBytes(bytes, byte_count);
+    if (verdict.lowering == LongModeLowering::kNone)
+    {
+        return false;
+    }
+
+    // Decoded a second time rather than threaded out of the classifier. The
+    // cost is one decode on a path that emits, and what it buys is that the
+    // classifier's answer stays a judgement about bytes rather than a carrier
+    // for a decode nobody else can check.
+    ZydisDecoder decoder;
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LEGACY_32,
+                                       ZYDIS_STACK_WIDTH_32)))
+    {
+        return false;
+    }
+    ZydisDecodedInstruction instruction{};
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+    if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, bytes, byte_count,
+                                             &instruction, operands)))
+    {
+        return false;
+    }
+
+    const std::size_t length = instruction.length;
+    if (verdict.lowering == LongModeLowering::kAddressSizePrefix)
+    {
+        if (length + 1U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+        lowered[0] = 0x67U;
+        for (std::size_t index = 0; index < length; ++index)
+        {
+            lowered[index + 1U] = bytes[index];
+        }
+        *lowered_count = length + 1U;
+        return true;
+    }
+
+    // Task 557. `40+r` and `48+r` carry their register in the low three bits of
+    // the opcode. The group form puts it in ModRM's `rm` with `mod=11`
+    // (register direct) and uses `reg` as the extension that picks the
+    // operation: `/0` is INC, `/1` is DEC. The classifier admits only the bare
+    // byte, so there is nothing before or after the opcode to carry over.
+    if (verdict.lowering == LongModeLowering::kIncDecToModRm)
+    {
+        if (length != 1U || kMaxLoweredBytes < 2U)
+        {
+            return false;
+        }
+        const std::uint8_t opcode = bytes[0];
+        const std::uint8_t reg = static_cast<std::uint8_t>(opcode & 0x07U);
+        const std::uint8_t extension =
+            static_cast<std::uint8_t>((opcode & 0x08U) != 0U ? 1U : 0U);
+        lowered[0] = 0xFFU;
+        lowered[1] = static_cast<std::uint8_t>(
+            0xC0U | (extension << 3U) | reg);
+        *lowered_count = 2U;
+        return true;
+    }
+
+    // kAbsoluteToSib. The ModRM byte keeps its `reg` field and its `mod`, and
+    // its `rm` becomes 100 to say "a SIB byte follows"; the SIB then says
+    // base=101 with index=100, which is the encoding for a bare disp32 with no
+    // base and no index. The displacement itself is copied unchanged -- it is
+    // already the absolute guest address, and the 0x67 in front is what keeps
+    // it zero-extended rather than sign-extended.
+    const std::size_t modrm_offset = instruction.raw.modrm.offset;
+    if (modrm_offset >= length || length + 2U > kMaxLoweredBytes)
+    {
+        return false;
+    }
+    // Four displacement bytes follow the ModRM byte in this form, and nothing
+    // may sit between them.
+    if (modrm_offset + 1U + 4U != length)
+    {
+        return false;
+    }
+
+    std::size_t out = 0U;
+    lowered[out++] = 0x67U;
+    for (std::size_t index = 0; index < modrm_offset; ++index)
+    {
+        lowered[out++] = bytes[index];
+    }
+    const std::uint8_t modrm = bytes[modrm_offset];
+    lowered[out++] = static_cast<std::uint8_t>((modrm & 0xF8U) | 0x04U);
+    lowered[out++] = 0x25U;  // SIB: scale=0, index=100, base=101
+    for (std::size_t index = 0; index < 4U; ++index)
+    {
+        lowered[out++] = bytes[modrm_offset + 1U + index];
+    }
+    *lowered_count = out;
+    return true;
+}
+
+}  // namespace repiu::runtime

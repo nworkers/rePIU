@@ -10,7 +10,10 @@ flowchart TD
     DOS --> LOWMEM["DOS/4GW Low-Memory Model"]
     DPMI --> INT["Important interrupts"]
     CPU["x86 segmentation and width"] --> HLE["Exception-driven HLE"]
+    CPU --> LONG["32-bit encodings in long mode"]
+    LONG --> DYNAREC
     LE["LE format and relocation"] --> HLE
+    SIG["POSIX signal handler state"] --> HLE
     LOWMEM --> HLE
     TERMS["Arena / sentinel / shadow"] --> HLE
     SMC["Self-modifying code"] --> CACHE["AOT code-cache coherency"]
@@ -27,10 +30,12 @@ flowchart TD
 * [DOS/4GW와 DPMI](dos4gw-and-dpmi.md)
 * [DOS/4GW 저지대 메모리 모델 및 관용](dos4gw-low-memory-model.md)
 * [x86 segmentation과 16/32비트 처리](x86-segmentation-and-bit-width.md)
+* [32비트 encoding을 long mode에서 실행할 때](x86-32bit-encodings-in-long-mode.md)
 * [Arena, sentinel, shadow memory 용어](memory-terms.md)
 * [주요 DOS/DPMI interrupt](important-interrupts.md)
 * [LE 실행 형식과 fixup/relocation](le-format-and-relocation.md)
 * [HLE와 예외 기반 직접 실행](hle-and-exception-driven-execution.md)
+* [POSIX signal handler와 상태 공유](posix-signal-handler-state-sharing.md)
 * [동적 재컴파일(dynarec)과 예외 기반 AOT 디스패치](dynamic-recompilation-and-aot-dispatch.md)
 * [Self-modifying code와 code-cache 일관성](self-modifying-code-and-cache-coherency.md)
 * [CHD와 ISO9660](chd-and-iso9660.md)

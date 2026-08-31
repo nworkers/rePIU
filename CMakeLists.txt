@@ -209,6 +209,8 @@ add_library(repiu_exe
     src/launcher/rom_set_catalog.cpp
     src/launcher/launcher_settings.cpp
     src/runtime/aot_translation_plan.cpp
+    src/runtime/aot_code_cache_reservation.cpp
+    src/runtime/aot_long_mode_compatibility.cpp
     src/runtime/dos_low_memory.cpp
     src/runtime/env_toggle.cpp
     src/runtime/execution_backend.cpp
@@ -536,13 +538,17 @@ endif()
 # on every host so the same assertions can be compared across them.
 add_executable(repiu_core_probe
     src/tools/core_probe/main.cpp
+    src/tools/aot_probe/code_cache_placement_probe.cpp
     src/tools/aot_probe/dos_file_handle_cache_probe.cpp
     src/tools/aot_probe/env_toggle_probe.cpp
     src/tools/aot_probe/execution_backend_probe.cpp
     src/tools/aot_probe/execution_timeout_probe.cpp
     src/tools/aot_probe/glide_lfb_region_probe.cpp
+    src/tools/aot_probe/guest_address_space_probe.cpp
     src/tools/aot_probe/jump_table_guard_probe.cpp
     src/tools/aot_probe/launcher_probe.cpp
+    src/tools/aot_probe/long_mode_compatibility_probe.cpp
+    src/tools/aot_probe/long_mode_emission_probe.cpp
     src/tools/aot_probe/nvram_path_probe.cpp
     src/tools/aot_probe/pit_timer_probe.cpp
 )
@@ -579,9 +585,14 @@ target_include_directories(repiu_core_probe
         src/tools/aot_probe
 )
 
+# Task 557 added repiu_zydis. The classifier's probe now decodes the bytes its
+# lowering produces with a long-mode decoder, which is what catches a
+# transcription slip in a hand-written encoding table -- and that needs Zydis's
+# headers, which repiu_exe links PRIVATE and so does not pass on.
 target_link_libraries(repiu_core_probe
     PRIVATE
         repiu_exe
+        repiu_zydis
 )
 
 if(UNIX AND NOT EMSCRIPTEN)
@@ -606,6 +617,21 @@ if(UNIX AND NOT EMSCRIPTEN AND CMAKE_SIZEOF_VOID_P GREATER 4)
     target_compile_definitions(repiu_core_probe
         PRIVATE
             REPIU_LINUX_X64_AOT_FRAME_PROBE=1
+    )
+endif()
+
+# Task 552: the memory-operand lowering, checked by executing it. Linux x64-only
+# for the same reason as Task 547's: on a 32-bit host the lowering is not merely
+# unnecessary, it has nothing to demonstrate -- the bytes already mean there what
+# the rewrite makes them mean here.
+if(UNIX AND NOT EMSCRIPTEN AND CMAKE_SIZEOF_VOID_P GREATER 4)
+    target_sources(repiu_core_probe
+        PRIVATE
+            src/tools/aot_probe/long_mode_lowering_probe.cpp
+    )
+    target_compile_definitions(repiu_core_probe
+        PRIVATE
+            REPIU_LINUX_X64_LOWERING_PROBE=1
     )
 endif()
 

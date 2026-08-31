@@ -1,5 +1,7 @@
 #include "repiu/engine/aot_code_cache.h"
 
+#include "repiu/runtime/aot_code_cache_reservation.h"
+
 #include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/aot_translation_plan.h"
 #include "repiu/platform/atomic_ops.h"
@@ -780,10 +782,13 @@ bool PlaceAotCodeCache(const runtime::AotCodeCacheImage& image,
     constexpr std::uint32_t kDynamicCacheCapacity = 16U * 1024U * 1024U;
     const std::size_t capacity = std::max<std::size_t>(
         image.bytes.size(), kDynamicCacheCapacity);
-    const repiu::platform::MemoryReservation reservation =
-        repiu::platform::ReserveMemory(
-            nullptr, capacity, true,
-            repiu::platform::MemoryProtection::kReadWrite);
+    // Task 554. The reservation is a policy of its own now: a cache address is
+    // a host pointer kept in a 32-bit field, so on x86-64 the address has to be
+    // asked for rather than accepted. Below-4-GiB candidates first, the
+    // unhinted request last, and on a 32-bit host only the unhinted request --
+    // which is exactly what stood here before.
+    const runtime::AotCodeCacheReservation reservation =
+        runtime::ReserveAotCodeCacheMemory(capacity);
     void* memory = reservation.base;
     placement->valid = true;
     if (memory == nullptr)
@@ -795,7 +800,10 @@ bool PlaceAotCodeCache(const runtime::AotCodeCacheImage& image,
     const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(memory);
     if (base > std::numeric_limits<std::uint32_t>::max())
     {
-        repiu::platform::ReleaseMemory(memory, capacity);
+        // Reached only when every candidate was taken and the host then chose
+        // an address the cache's 32-bit fields cannot hold. It stopped being
+        // the ordinary x86-64 outcome in Task 554 and became the last guard.
+        runtime::ReleaseAotCodeCacheMemory(reservation);
         placement->message = "AOT code cache is outside the x86 address range";
         return true;
     }

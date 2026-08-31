@@ -26,13 +26,17 @@
 // Excluding them is not the same as their passing. `core_probe_skipped` below
 // keeps that distinction on screen, because "9 of 9 passed" printed alone would
 // read as a complete run.
+#include "code_cache_placement_probe.h"
 #include "dos_file_handle_cache_probe.h"
 #include "env_toggle_probe.h"
 #include "execution_backend_probe.h"
 #include "execution_timeout_probe.h"
 #include "glide_lfb_region_probe.h"
+#include "guest_address_space_probe.h"
 #include "jump_table_guard_probe.h"
 #include "launcher_probe.h"
+#include "long_mode_compatibility_probe.h"
+#include "long_mode_emission_probe.h"
 #include "nvram_path_probe.h"
 #include "pit_timer_probe.h"
 
@@ -47,6 +51,9 @@
 #endif
 #if defined(REPIU_LINUX_X64_AOT_FRAME_PROBE)
 #include "linux_x64_aot_frame_probe.h"
+#endif
+#if defined(REPIU_LINUX_X64_LOWERING_PROBE)
+#include "long_mode_lowering_probe.h"
 #endif
 #endif
 
@@ -70,7 +77,29 @@ constexpr CoreProbe kCoreProbes[] = {
     {"pit_timer", &repiu::tools::RunPitTimerProbe},
     {"glide_lfb_region", &repiu::tools::RunGlideLfbRegionProbe},
     {"jump_table_guard", &repiu::tools::RunJumpTableGuardProbe},
+    // Task 550. Decodes bytes and judges them; it executes nothing, so it runs
+    // on every host and its answers are the same everywhere. That is the point
+    // of having it here rather than under an x64 fence -- the classifier is a
+    // claim about the x86-64 host, and a Windows or i386 run that disagreed
+    // with the Linux x64 one would mean the claim had drifted.
+    {"long_mode_compatibility",
+     &repiu::tools::RunLongModeCompatibilityProbe},
+    // Task 553. The emitter's side of the same claim, and here for the same
+    // reason: it builds a code cache image and executes none of it, so the
+    // bytes it produces for a given plan are the same on every host. A Windows
+    // run disagreeing with a Linux x64 one would mean the emitter and the
+    // classifier had drifted apart.
+    {"long_mode_emission", &repiu::tools::RunLongModeEmissionProbe},
     {"nvram_path", &repiu::tools::RunNvramPathProbe},
+    // Task 551. Reserves real address ranges, so it belongs after the probes
+    // that only compute -- but before the ones that fault, because what it
+    // measures is whether this host can give the guest its arena at all.
+    {"guest_address_space", &repiu::tools::RunGuestAddressSpaceProbe},
+    // Task 554. Reserves the code cache the way the engine really does, so it
+    // sits with guest_address_space rather than with the pure computations: the
+    // two together say whether this host can hold both halves of the execution
+    // layer -- the guest's memory and the cache that runs it.
+    {"code_cache_placement", &repiu::tools::RunCodeCachePlacementProbe},
 #if !defined(__EMSCRIPTEN__)
     {"guest_cpu_context", &repiu::tools::RunGuestCpuContextProbe},
     {"virtual_memory", &repiu::tools::RunVirtualMemoryProbe},
@@ -81,6 +110,9 @@ constexpr CoreProbe kCoreProbes[] = {
 #endif
 #if defined(REPIU_LINUX_X64_AOT_FRAME_PROBE)
     {"linux_x64_aot_frame", &repiu::tools::RunLinuxX64AotFrameProbe},
+#endif
+#if defined(REPIU_LINUX_X64_LOWERING_PROBE)
+    {"long_mode_lowering", &repiu::tools::RunLongModeLoweringProbe},
 #endif
     {"host_thread", &repiu::tools::RunHostThreadProbe},
 #endif
@@ -104,9 +136,28 @@ constexpr const char* kSkippedProbes[] = {
 
 int main()
 {
+    // Task 549. Unbuffered, so that where the output stops is where the run
+    // stopped.
+    //
+    // A newline flushes nothing when stdout is a pipe, and a pipe is what it is
+    // whenever this runs through `wsl.exe` from a Windows session or under any
+    // capture. The stream then holds whole blocks, so a run that is killed --
+    // for a hang, a timeout, or an operator's patience -- loses everything the
+    // buffer still held. What survives is the last flushed boundary, and
+    // reading that as the stopping point names the wrong probe.
+    //
+    // Two bring-up sessions, Tasks 547 and 548, recorded a stop at `pit_timer`
+    // on Linux x64 and left every probe after it unmeasured. `pit_timer` holds
+    // no loop, no wait, and no syscall, so that attribution could not have been
+    // right either way. One flush per line on a binary that prints a few dozen
+    // is what rules the question out for good.
+    std::cout << std::unitbuf;
+
     std::size_t failures = 0;
     for (const CoreProbe& probe : kCoreProbes)
     {
+        // Printed before the probe runs, which is what lets a killed run name
+        // the probe it was inside rather than the last one that finished.
         std::cout << "== " << probe.name << " ==\n";
         // Every probe is run even after one fails, because a platform bring-up
         // wants the whole picture rather than the first stumble.

@@ -1315,6 +1315,14 @@ Windows에서는 `CONTEXT`의 별칭이라 기존 900여 곳의 필드 접근이
 이미지 그대로라 필드 대 필드로 옮겨지며, 디버그 레지스터는 항상 0입니다 — Linux 사용자
 공간은 자기 스레드의 디버그 레지스터를 쓸 수 없어 이를 쓰는 `native_linear_span`은 비활성입니다.
 
+Task 549부터 x86-64 host에서의 write-back 규칙이 명시됩니다. `GuestCpuContext`는 모든
+host에서 고정 32비트 계약이므로, 이 구조체를 통한 편집은 host register의 **low half만**
+정하고 상위 절반은 host가 두었던 값을 유지합니다. 상위 절반을 0으로 미는 것은 이 host에서
+안전한 절삭이 아니라 손실입니다 — 실행 중인 page와 fault가 일어나는 page가 4 GiB보다 훨씬
+위에 있어서, 잘린 RIP로 재개하면 매핑된 적 없는 주소로 돌아갑니다. 같은 이유로 fault
+handler가 planted `int3` 앞 바이트를 확인할 때는 `Eip`가 아니라 host context의 RIP를
+사용합니다.
+
 Task 503b부터 가상 메모리도 `repiu::platform`에 있습니다 — `ReserveMemory`,
 `CommitMemory`, `ProtectMemory`, `ReleaseMemory`, `QueryMemory`, `IsRangeReadable`,
 `FlushInstructionCacheRange`, `SystemPageSize`. 이 API는
@@ -1429,6 +1437,14 @@ difference collapses into the two `ucontext_t` conversions in
 field for field because glibc's `_libc_fpstate` is the same FSAVE image Windows calls
 `FLOATING_SAVE_AREA`; and the debug registers are always zero, since Linux user space cannot write
 its own thread's, which is why `native_linear_span` stays disabled there.
+
+Since Task 549 the write-back rule on an x86-64 host is explicit. `GuestCpuContext` is a fixed
+32-bit contract on every host, so an edit through it settles the **low half** of a host register and
+leaves the half above it as the host had it. Zeroing that upper half is a loss rather than a safe
+truncation here: the pages this process executes on and faults in sit far above 4 GiB, so resuming
+from a truncated RIP returns to an address that was never mapped. For the same reason the fault
+handler finds the byte before a planted `int3` through the host context's RIP rather than through
+`Eip`.
 
 Since Task 503b virtual memory lives in `repiu::platform` as well — `ReserveMemory`, `CommitMemory`,
 `ProtectMemory`, `ReleaseMemory`, `QueryMemory`, `IsRangeReadable`, `FlushInstructionCacheRange`,
@@ -1790,8 +1806,33 @@ Task 419가 대기 세 곳(publish 전 pending 대기, 완료 대기, host의 pe
 LINEXE/Glide 합성 gate는 복사된 `UD2`로 실행하지 않고 cache sentinel에서 원본
 guest 주소로 나온 뒤 기존 HLE dispatcher가 처리합니다.
 
+emitter는 long mode 호스트를 위한 방출 모드를 하나 갖습니다(Task 553).
+`AotCodeCacheBuildOptions::enable_long_mode_emission`이 켜지면 `kCopy`마다
+`ClassifyLongModeBytes`(Task 550)로 판정하고 `LowerLongModeBytes`(Task 552)로 낮추며,
+낮출 수 없는 것과 `kCopy`가 아닌 모든 kind는 기존 `INT3` 경계로 갑니다 — 다른 kind의
+slot은 손으로 쓴 32비트 시퀀스이고 long mode가 그 중 여럿을 조용히 다르게 읽기
+때문입니다. 기본값은 `false`이므로 i386 방출은 이 판단을 지나가지 않습니다.
+호스트 매크로가 아니라 option인 이유는 방출이 계산이어서 같은 plan에 대한 답이 모든
+호스트에서 같아야 하고, 그래야 Windows에서 그 답을 볼 수 있기 때문입니다.
+
+The emitter has one emission mode for a long-mode host (Task 553). With
+`AotCodeCacheBuildOptions::enable_long_mode_emission` on, every `kCopy` is judged by
+`ClassifyLongModeBytes` (Task 550) and lowered by `LowerLongModeBytes` (Task 552);
+anything that cannot be lowered, and every kind that is not `kCopy`, reaches the existing
+`INT3` boundary, because the other kinds' slots are hand-written 32-bit sequences that
+long mode reads differently without raising. The default is `false`, so i386 emission
+never enters that judgement. It is an option rather than a host macro because emission is
+computation: the answer for a given plan must be the same on every host, which is what
+keeps it observable on Windows.
+
 파일 책임은 다음과 같습니다.
 
+* `aot_code_cache_reservation`: code cache를 어디에 놓아도 되는가. cache 주소는
+  host pointer인데 placement가 32비트 필드에 담으므로, 64비트 host에서는 하위 4 GiB
+  후보를 차례로 요청하고 32비트 host에서는 예전처럼 hint 없이 요청한다(Task 554).
+  *Where a code cache may live. A cache address is a host pointer kept in a 32-bit
+  placement field, so a 64-bit host asks for below-4-GiB candidates in turn while a
+  32-bit host asks with no hint exactly as before (Task 554).*
 * `aot_page_coherence_win32`: page index/state, overlap query, retirement,
   write-watch 보호 전환
 * `aot_code_cache_win32`: placement, dynamic append, generation publication,

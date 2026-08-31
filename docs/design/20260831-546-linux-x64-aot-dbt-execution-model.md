@@ -77,6 +77,24 @@ effect, near target, absolute address가 포함된 instruction은 별도 lowerin
 - 기존 4 GiB 이하 배치 정책은 guest address 보존을 위해 필요한 부분과 host
   pointer를 4 GiB 아래에 두려는 우연한 가정으로 나누어 제거합니다.
 
+**확정 (Task 551, 측정으로).** 위 두 갈래의 답이 실제로 갈렸고 측정으로 닫혔습니다.
+
+- **guest memory는 하위 4 GiB에 둡니다.** 요구사항이지 선호가 아닙니다 — guest
+  relocation이 이미 그 주소를 guest memory 안에 써 넣었기 때문입니다. x86-64 Linux가
+  PIU 프로파일의 134 MB arena를 `0x00010000`에 `MAP_FIXED_NOREPLACE`로 정확히
+  내주는 것을 확인했습니다. 이 배치가 성립하지 않는 host에서는 guest를 실행하지
+  않습니다.
+- **host pointer가 4 GiB 아래라는 가정은 제거합니다.** engine 자신의 image는
+  Task 503이 `-no-pie -Wl,-Ttext-segment=0x40000000`으로 의도적으로 낮게 두지만,
+  stack과 shared library는 build가 정할 수 없고 실측에서 4 GiB 위에 있습니다.
+  둘 중 하나를 담을 수 있는 host pointer는 `uintptr_t`여야 합니다.
+
+전자를 확정해도 `RIP`-relative는 사라지지 않습니다. `0x67` prefix는 RIP-relative를
+끄지 못하고 EIP-relative로 바꿀 뿐이므로, 절대 `disp32`는 SIB 재인코딩이 필요합니다.
+측정 근거는 [20260831-551 작업 로그](../work-logs/20260831-551-guest-address-space-placement.md),
+이 확정에 따른 lowering 설계는
+[20260831-552](20260831-552-linux-x64-memory-operand-lowering.md)에 있습니다.
+
 #### 5. fault와 재진입은 x64 AOT frame을 기준으로 복원합니다
 
 x64 signal handler는 host `ucontext_t`의 RIP/RSP를 읽을 수 있어야 하지만, host
@@ -160,6 +178,22 @@ compiler flags alone.
    alignment for `(ThreadContext*, frame)` calls.
 4. Keep guest addresses as `uint32_t`, but use pointer-width relocation for x64 cache,
    thunk, counter, and table addresses. Use rel32 only when its range is proven.
+
+   **Settled by measurement in Task 551.** The two halves of this decision have
+   different answers. **Guest memory is placed below 4 GiB** -- a requirement rather than
+   a preference, because the guest's relocations have already written that address into
+   guest memory; x86-64 Linux was measured giving the PIU profile's 134 MB arena exactly
+   `0x00010000` through `MAP_FIXED_NOREPLACE`, and a host where that placement fails does
+   not run the guest. **The assumption that host pointers sit below 4 GiB is removed**:
+   the engine's own image is deliberately low (Task 503's
+   `-no-pie -Wl,-Ttext-segment=0x40000000`), but the stack and the shared libraries are
+   not the build's to place and measure above 4 GiB, so any host pointer that can hold
+   one of those must be `uintptr_t`. Settling the first half does not retire
+   `RIP`-relative: a `0x67` prefix makes the form `EIP`-relative rather than absolute, so
+   an absolute `disp32` still needs SIB re-encoding. Evidence is in the
+   [20260831-551 work log](../work-logs/20260831-551-guest-address-space-placement.md);
+   the lowering this enables is designed in
+   [20260831-552](20260831-552-linux-x64-memory-operand-lowering.md).
 5. Treat copied 32-bit instruction bytes as x86-only unless the x64 emitter proves their
    long-mode semantics. Stack, segment, absolute-address, and control-flow instructions
    need explicit lowering or a semantic helper.

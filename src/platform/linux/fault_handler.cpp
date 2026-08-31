@@ -76,16 +76,43 @@ FaultKind ClassifySignal(const int signal_number, const siginfo_t& info)
 // Only when the preceding byte really is `0xCC`. A SIGTRAP from anywhere else --
 // `raise`, a debugger -- must not have its Eip moved. Reading that byte needs no
 // guard: it is the instruction that just executed, so it is mapped.
-void RewindPastBreakpoint(GuestCpuContext* registers)
+//
+// Task 549. The byte is found through the host's own instruction pointer, not
+// through `registers->Eip`.
+//
+// They are the same number on i386 and only there. `GuestCpuContext` is a
+// 32-bit contract on every host, so on x86-64 `Eip` holds the low half of RIP,
+// and the `int3` this rewinds past sits at a host address well above 4 GiB.
+// Subtracting one from the truncated half and dereferencing it reads an address
+// that was never mapped -- a fault raised inside the fault handler, which is
+// the one place it cannot be reported.
+std::uintptr_t HostInstructionPointer(const void* host_context)
 {
-    if (registers->Eip == 0U)
+    const auto* context = static_cast<const ucontext_t*>(host_context);
+#if defined(__i386__)
+    return static_cast<std::uintptr_t>(context->uc_mcontext.gregs[REG_EIP]);
+#elif defined(__x86_64__)
+    return static_cast<std::uintptr_t>(context->uc_mcontext.gregs[REG_RIP]);
+#else
+    (void)context;
+    return 0U;
+#endif
+}
+
+void RewindPastBreakpoint(GuestCpuContext* registers, const void* host_context)
+{
+    const std::uintptr_t host_instruction = HostInstructionPointer(
+        host_context);
+    if (host_instruction == 0U)
     {
         return;
     }
-    const auto candidate =
-        static_cast<std::uintptr_t>(registers->Eip) - 1U;
+    const std::uintptr_t candidate = host_instruction - 1U;
     if (*reinterpret_cast<const std::uint8_t*>(candidate) == 0xCCU)
     {
+        // The low half is what the caller reads, and on x86-64 the upper half
+        // it belongs to is restored by `StoreGuestCpuContext`, which preserves
+        // what it does not own.
         registers->Eip = static_cast<std::uint32_t>(candidate);
     }
 }
@@ -114,7 +141,7 @@ void SignalHandler(int signal_number, siginfo_t* info, void* host_context)
     }
     else if (event.kind == FaultKind::kBreakpoint)
     {
-        RewindPastBreakpoint(&registers);
+        RewindPastBreakpoint(&registers, host_context);
     }
     // Linux has nothing that corresponds; Eip is the faulting instruction for
     // every fault this handler takes, and for a breakpoint that is after the

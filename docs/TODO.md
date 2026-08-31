@@ -2,16 +2,52 @@
 
 ## 현재 상태
 
-2026-08-28 기준 항목은 웹 이식 Stage 3~5 하나이고, **보류 중**입니다 — Linux 성능 축이
-먼저입니다. Task 492~495의 JAMMA 입력
-timing, IRQ0 replay, 2P 숫자패드 별칭과 history 정리는 사용자 120초 실행으로 최종
-검증됐습니다.
+2026-08-31 기준 활성 항목은 둘입니다. **Linux x64 host 이식이 진행 중**이고, 웹 이식
+Stage 3~5는 **보류 중**입니다 — 보류 이유는 우선순위이며 아래 항목에 적혀 있습니다.
+
+Task 492~495의 JAMMA 입력 timing, IRQ0 replay, 2P 숫자패드 별칭과 history 정리는 사용자
+120초 실행으로 최종 검증됐습니다.
 
 현재 실행 우선순위와 확인된 병목은 [현재 실행 frontier](analysis/current-execution-frontier.md),
 승인된 구현 단위는 [`work-orders/`](work-orders/), 완료 결과와 검증 근거는
 [`work-logs/`](work-logs/)에서 관리합니다.
 
 ## 활성 항목
+
+- **Linux x64 host 이식 — 진행 중(2026-09-01).** 상태와 다음 한 걸음은
+  [Linux 이식 frontier](analysis/linux-port-frontier.md)의 **3.9 세션 인수인계**가
+  정본이고, 실행 모델은 [Task 546 설계](design/20260831-546-linux-x64-aot-dbt-execution-model.md)
+  입니다. Tasks 549–557은 **`v0.0.175`로 main에 머지됐습니다**.
+  **지금까지:** x64 host가 실제 fault를 받아 재개하고, `int3` rewind와 trap flag
+  single-step이 동작하며, 다른 thread의 register를 편집합니다. guest arena가 하위
+  4 GiB에 배치되는 것을 측정했고(결정 4 확정), 32비트 바이트를 복사해도 되는지 판정하는
+  fail-closed 판정기와 memory operand lowering이 실행으로 검증됐습니다.
+  **Task 553이 그 lowering을 code cache emitter에 연결했습니다(구현 순서 3단계 완료).**
+  경계는 `enable_long_mode_emission` build option이고 기본값이 `false`라 **i386 경로는
+  그 판단 branch를 지나가지 않습니다**. 켜면 `kCopy`만 방출되고 나머지 kind는 전부
+  fail-closed입니다. 같은 작업에서 방출 후 검증기가 "조용히 다른 명령"을 놓치고 있던 것을
+  찾아 고쳤습니다 — 길이 합계만 보고 있었습니다.
+  **Task 554가 step 4 앞의 막힌 곳을 찾아 열었습니다: x64 host는 code cache를 하나도
+  배치하지 못하고 있었습니다.** cache 주소가 host pointer인데 32비트 필드에 담기고,
+  hint 없는 요청은 `0x00007fdd…`로 떨어져 거절됐습니다. 넓히는 대신(참조 121곳, 그리고
+  방출된 `disp32`는 넓어지지 않음) 64비트 host에서만 하위 4 GiB 후보 사다리를 타게 했고,
+  이제 `0x20000000`에 배치됩니다.
+  **Task 555가 lowering의 결함 하나를 닫았습니다:** `add esp,16`이 `kIdenticalBytes`로
+  cache에 그대로 복사되고 있었고, long mode에서 그것은 host stack pointer를 파괴합니다.
+  근인은 적히지 않은 전제("lowering 시점에 guest GPR n이 host GPR n에 있다")였고 이제
+  헤더에 적혀 있습니다.
+  **Task 556이 남은 거리를 숫자로 만들었습니다: 명령의 51.15%, 그러나 완결 block은
+  1.82%(260/14,307)입니다.** block은 control flow로 끝나므로 기대 연쇄 길이가 약 1
+  block이고, **명령의 51%는 실행의 51%가 아닙니다.** 거절은 stack 계열 14,618(50%)과
+  control flow 12,856(44%)이 거의 같은 크기이며 **둘 다 있어야 연쇄가 생깁니다.**
+  **Task 557이 싼 항목을 처리했습니다:** `INC`/`DEC r32` 784건이 `FF /0`·`FF /1`로
+  낮춰져 방출 가능이 52.46%, 완결 block이 316(2.21%)이 됐고, 가장 위험한 부류인
+  `silently-different`가 1,466 → 682로 줄었습니다. 같은 측정이 **Task 556의 서술 하나를
+  정정했습니다** — `operand-width`는 사실상 전부 `push`·`pop`이고 **x87은 거기 없습니다.**
+  x87 거절은 전부 `[esp]` 때문이며 2,758건 중 약 1,900건은 이미 방출됩니다.
+  **다음 단위:** (1) stack 명령 lowering + guest ESP를 state에서 꺼내기, (2) x64 dispatch
+  slot 방출·thunk·resolver. 두 개가 한 묶음이고, x87 대부분이 (1)에 딸려 옵니다.
+  **guest 실행 자체는 Task 544의 fail-closed 그대로입니다.**
 
 - **웹(WebAssembly) 이식 Stage 3~5 — 보류(2026-08-28).** 상태와 재개 조건은
   [웹 이식 frontier](analysis/web-port-frontier.md)가 정본입니다. **보류 이유는 이 작업의

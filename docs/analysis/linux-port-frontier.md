@@ -1636,6 +1636,185 @@ cmake -U "PC_LIBDECOR*" -U HAVE_LIBDECOR_H -S . -B build/linux_i386
 `scripts/build_linux_i386.sh` now checks for this and warns, the same way and for the same
 reason it does for libpulse: **the build succeeds and the game runs, quietly half-working.**
 
+## 3.9 세션 인수인계, 2026-08-31 — x64 host가 fault를 받고 주소를 갖고 낮추는 법을 안다
+
+Tasks 549–552, branch `task549-linux-x64-core-probe-hang`.
+
+> **2026-09-01 갱신.** 이 절이 쓰인 시점의 기록입니다. 그 뒤 Tasks 553–557이 같은 branch에
+> 이어졌고, **전체가 `v0.0.175`로 main에 머지됐습니다.**
+
+**한 줄로: x64 host가 실제 fault를 받아 재개하고, guest에게 guest 자신의 주소를 줄 수
+있으며, memory operand를 어떻게 낮출지 압니다. guest 실행은 여전히 Task 544의
+fail-closed 그대로입니다.**
+
+| Commit | 내용 |
+|---|---|
+| `0cbba6e` | 549 — 실제 정지 지점은 `pit_timer`가 아니라 `fault_handler`. 결함 3개 수정 |
+| `1204947` | 550 — long-mode byte 판정기. 복사해도 되는 바이트를 fail-closed로 정함 |
+| `e33054e` | 551 — 결정 4를 측정으로 닫음. guest arena가 하위 4 GiB에 배치됨 |
+| `db6413a` | 552 — 결정 4 확정 + memory operand lowering, 실행으로 검증 |
+
+### 지금 존재하는 것
+
+세 host에서 `core_probe_all=true`이고, x64는 skipped 2(i386 assembly)를 뺀 17/17입니다.
+
+| Probe | 무엇을 답하나 |
+|---|---|
+| `guest_cpu_context` | x64 `ucontext_t` ↔ 32비트 guest context 변환 |
+| `fault_handler` | x64에서 실제 fault를 받아 재개, `int3` rewind, trap flag single-step |
+| `linux_x64_aot_frame` | SysV AMD64 frame·정렬·callee-saved·XMM (Task 547) |
+| `host_thread` | 다른 thread의 register를 읽고 편집해 되쓰기 |
+| `long_mode_compatibility` | 32비트 바이트를 long mode에서 복사해도 되는가 (host 무관) |
+| `guest_address_space` | 이 host가 guest에게 그 주소를 줄 수 있는가 |
+| `long_mode_lowering` | lowering된 바이트를 **실행해서** 같은 주소를 읽는지 (x64 전용) |
+
+빌드는 `scripts/build_linux_x64.sh`입니다. **두 configuration을 동시에 두려면
+`--build-dir`이 필요합니다** — 같은 디렉터리에 다른 build type을 요청하면 거부합니다.
+현재 tree는 `build/linux_x64`(Debug), `build/linux_x64_release`(Release),
+`build/linux_i386`(Release), `build/win32_x86_debug`입니다.
+
+### Task 546 구현 순서 기준 현재 위치
+
+| 단계 | 상태 |
+|---|---|
+| 1. frame/type header + width assertion | ✅ 547 |
+| 2. synthetic x64 ABI probe | ✅ 547, 549에서 측정 |
+| 3. x64 emitter 명령 subset | ✅ 553에서 emitter에 연결됨 (550·552 + 553) |
+| 4. dispatch resolver + fault-context adapter | ◐ adapter만 (548·549). resolver 미착수 |
+| 5. DOS/4GW sample에서 block 단위 상태 비교 | ⬜ |
+
+### 다음 한 걸음
+
+> **2026-09-01 갱신 — 이 걸음은 [Task 553](#2026-09-01-task-553-emitter에-연결됨--wired-to-the-emitter)이
+> 끝냈습니다.** 아래는 그때의 기록으로 남깁니다. Task 546 구현 순서 3단계는 완료이고,
+> 다음은 4단계(x64 dispatch resolver)입니다.
+
+**lowering을 code cache emitter의 `kCopy` 경로에 연결하는 것.** 지금은 판정기와
+`LowerLongModeBytes`가 독립적으로 존재하고 emitter는 둘 다 호출하지 않으므로, **i386
+동작은 한 줄도 바뀌지 않았습니다.** 연결하는 순간 그 성질이 사라지므로, x64에서만
+호출되도록 경계를 먼저 정하고 시작해야 합니다.
+
+### 열려 있는 항목
+
+* **`mmap_min_addr` 여유 0** (551). PIU 프로파일의 guest base `0x00010000`이 커널 기본
+  floor와 **같은 값**입니다. 이 값을 올린 배포판·컨테이너에서는 guest를 배치할 수 없고,
+  **x64만이 아니라 i386도 같은 노출**입니다. 기본값이 마침 일치해 지금까지 보이지
+  않았을 뿐입니다.
+* **Task 546 문서의 결정 번호 불일치.** 한국어 절은 결정이 5개, 영어 절은 6개이고 서로
+  대응하지 않습니다. 영어 결정 5(`kCopy`는 자동이 아니다)는 한국어에서 번호 없이 결정 3
+  본문에 있고, 영어 결정 6이 한국어 결정 5입니다. 549–552 문서의 "결정 5·6" 인용은
+  **영어 번호를 따른 것이라 한국어 절 독자에게는 어긋납니다**(결정 4는 양쪽 일치).
+* **segment override.** 결정 5에 따라 helper 경계로 남아 있고 lowering이 없습니다.
+* **stack/control 명령의 lowering.** 판정기가 `kNeedsReencode`로 표시만 하고 변환은
+  없습니다.
+
+### 이번에 반복해서 걸린 것
+
+**한 번은 다른 사람의 실수, 두 번은 패턴입니다.**
+
+Task 547과 548이 연속으로 "`pit_timer`에서 멈춤"을 기록했고, 그 때문에 두 세션 분량의
+측정이 미확정으로 남았습니다. `pit_timer`에는 loop도 대기도 syscall도 없으므로 소스를
+한 번만 읽었어도 배제됐을 것입니다. 실제로는 buffering 때문에 **출력이 멈춘 곳이 실행이
+멈춘 곳과 달랐습니다.** §8과 §8.1의 형태가 한 단계 얕은 곳에서 반복된 것입니다.
+
+> 출력이 멈춘 곳은 실행이 멈춘 곳이 아니다.
+
+그리고 이번 세션에서 저 자신도 같은 종류로 틀렸습니다. "PIE 기본값이라 실행 파일이 높은
+주소에 놓이고 `-no-pie`로 낮추면 `0x400000` 충돌이 생긴다"고 단정했는데, 이 프로젝트는
+이미 `-no-pie -Wl,-Ttext-segment=0x40000000`으로 링크하고 있었습니다(Task 503). **측정
+하나가 추론 하나를 뒤집었습니다.**
+
+## 3.9 (English) Session handoff, 2026-08-31 — the x64 host takes faults, holds addresses, and knows how to lower
+
+Tasks 549–552 on branch `task549-linux-x64-core-probe-hang`.
+
+> **Updated 2026-09-01.** This is the record as of when the section was written. Tasks
+> 553–557 followed on the same branch, and **all of it merged to main as `v0.0.175`.**
+
+**In one line: the x64 host takes real faults and resumes from them, can give the guest
+the guest's own addresses, and knows how to lower a memory operand. Guest execution is
+still fail-closed exactly as Task 544 left it.**
+
+| Commit | What |
+|---|---|
+| `0cbba6e` | 549 — the real stop is `fault_handler`, not `pit_timer`. Three defects fixed |
+| `1204947` | 550 — the long-mode byte classifier, fail-closed, for what may be copied |
+| `e33054e` | 551 — decision 4 closed by measurement; the guest arena is placed below 4 GiB |
+| `db6413a` | 552 — decision 4 settled, plus memory-operand lowering verified by execution |
+
+### What exists now
+
+`core_probe_all=true` on all three hosts; x64 is 17 of 17 with 2 skipped (i386 assembly).
+
+| Probe | What it answers |
+|---|---|
+| `guest_cpu_context` | x64 `ucontext_t` ↔ the 32-bit guest context |
+| `fault_handler` | taking and resuming real faults on x64, `int3` rewind, trap-flag single step |
+| `linux_x64_aot_frame` | the SysV AMD64 frame, alignment, callee-saved, XMM (Task 547) |
+| `host_thread` | reading, editing and writing back another thread's registers |
+| `long_mode_compatibility` | whether 32-bit bytes may be copied in long mode (host-independent) |
+| `guest_address_space` | whether this host can give the guest those addresses |
+| `long_mode_lowering` | **executing** lowered bytes to see they read the same address (x64 only) |
+
+The build is `scripts/build_linux_x64.sh`. **Two configurations need `--build-dir`** — it
+refuses a different build type in the same directory. The trees are
+`build/linux_x64` (Debug), `build/linux_x64_release` (Release), `build/linux_i386`
+(Release), and `build/win32_x86_debug`.
+
+### Position against Task 546's implementation order
+
+| Step | State |
+|---|---|
+| 1. frame/type header and width assertions | ✅ 547 |
+| 2. synthetic x64 ABI probe | ✅ 547, measured in 549 |
+| 3. the x64 emitter's instruction subset | ✅ wired to the emitter in 553 (550, 552, 553) |
+| 4. dispatch resolver and fault-context adapter | ◐ the adapter only (548, 549); no resolver |
+| 5. block-level state comparison on a DOS/4GW sample | ⬜ |
+
+### The next single step
+
+> **Updated 2026-09-01 -- this step is done, by
+> [Task 553](#2026-09-01-task-553-emitter에-연결됨--wired-to-the-emitter).** What follows is
+> kept as the record of the time. Step 3 of Task 546's order is complete; step 4, the x64
+> dispatch resolver, is next.
+
+**Connect the lowering to the code cache emitter's `kCopy` path.** Today the classifier
+and `LowerLongModeBytes` stand on their own and the emitter calls neither, which is why
+**not one line of i386 behaviour has changed.** Wiring them ends that property, so the
+boundary that keeps the calls to x64 only has to be settled before starting.
+
+### Open items
+
+* **Zero `mmap_min_addr` headroom** (551). The PIU profiles' guest base `0x00010000` is
+  **the same number** as the kernel's default floor. Any distribution or container that
+  raises it cannot place the guest, and **this is i386's exposure too**, invisible only
+  because the defaults happen to match.
+* **The decision numbering in Task 546 disagrees between its halves.** The Korean section
+  numbers five decisions and the English six, and they do not correspond. English
+  decision 5 (`kCopy` is not automatic) appears unnumbered inside Korean decision 3, and
+  English 6 is Korean 5. The "decision 5/6" citations in the 549–552 documents follow the
+  **English** numbering and therefore do not line up for a reader of the Korean half;
+  decision 4 agrees in both.
+* **Segment overrides** stay at a helper boundary per decision 5, with no lowering.
+* **Stack and control instructions** are marked `kNeedsReencode` with no transform.
+
+### What caught me repeatedly
+
+**Once is someone's mistake; twice is a pattern.**
+
+Tasks 547 and 548 both recorded a stop at `pit_timer`, and two sessions' worth of
+measurement was left unresolved because of it. `pit_timer` holds no loop, no wait and no
+syscall, so one reading of its source would have ruled it out. What actually happened is
+that buffering made **where the output stopped differ from where the run stopped** — §8
+and §8.1's shape, one layer shallower.
+
+> Where the output stops is not where the run stopped.
+
+And I made the same kind of error in this session. I stated that a PIE default puts the
+executable high and that `-no-pie` would collide at `0x400000` — while the project has
+been linking `-no-pie -Wl,-Ttext-segment=0x40000000` since Task 503. **One measurement
+overturned one inference.**
+
 ## 4. What is needed next
 
 > This section used to point at 3d-20. 3d-20 (another thread's registers), 3d-21 (the sampler) and
@@ -2067,3 +2246,1126 @@ then slows instead of dying.
 memory=4GB
 swap=8GB
 ```
+
+## 2026-08-31 Task 549: 멈춘 곳과 멈췄다고 읽은 곳 / Where it stopped and where it was read as stopping
+
+### 한국어
+
+두 세션(Task 547, 548)이 Linux x64 core probe가 `pit_timer`에서 멈춘다고 기록했고,
+그 때문에 `guest_cpu_context_all`과 `linux_x64_aot_frame_all`이 두 번 연속
+미확정으로 남았습니다. **`pit_timer`는 멈춘 적이 없습니다.**
+
+`repiu_core_probe`는 `std::cout`에 개행만 쓰고 flush하지 않습니다. `wsl.exe`를 통해
+실행하면 stdout이 pipe가 되어 block buffering 되고, 죽거나 강제 중단된 실행은 buffer가
+들고 있던 내용을 전부 잃습니다. 남는 것은 마지막으로 flush된 경계입니다.
+
+이것은 §8 "One trap met four times"와 §8.1 "빌드가 죽은 곳은 빌드가 잘못된 곳이
+아니다"와 같은 형태입니다. 여기서는 한 단계 더 얕습니다.
+
+> 출력이 멈춘 곳은 실행이 멈춘 곳이 아니다.
+
+`pit_timer`에는 loop도, 대기도, syscall도 없습니다. 귀속을 코드로 한 번만 확인했다면
+어느 세션에서든 배제할 수 있었습니다.
+
+| 겉보기 | 실제 |
+|---|---|
+| `pit_timer`에서 정지 | `fault_handler`에서 정지 |
+| Linux x64 전용 문제 | i386도 같은 probe에서 죽고 있었음 |
+| i386 대 x64 차이 | Release 대 Debug 차이 |
+
+`std::cout << std::unitbuf` 한 줄과 probe 단계 표지를 넣자 세 개의 결함이 한 번에
+드러났습니다.
+
+#### 1. x86-64 register write-back이 host 상위 32비트를 지웠다 (확인됨)
+
+`machine.gregs[REG_RIP] = static_cast<greg_t>(registers.Eip)`는 bits 32..63을 0으로
+만듭니다. 측정된 host page는 `0x7791a47c0000`이었고, 잘린 값은 `0xa47c0000`입니다.
+signal resume이 매핑된 적 없는 주소로 돌아가 즉시 다시 fault하고, 그 상태가
+무한히 이어졌습니다. `timeout`이 아니면 끝나지 않는 정지입니다.
+
+`GuestCpuContext`는 모든 host에서 고정 32비트 계약이므로, 이 구조체를 통한 편집은
+register의 low half가 무엇이 되는지만 말할 수 있고 그 위 절반에 대해서는 아무것도
+말할 수 없습니다. 이제 low half만 쓰고 상위 절반은 보존합니다. Task 546 결정 6의
+"host RIP is not guest EIP"가 여기서 처음 실물로 나타났습니다.
+
+#### 2. breakpoint rewind가 잘린 Eip로 host memory를 읽었다 (확인됨)
+
+`RewindPastBreakpoint`는 `registers->Eip - 1`의 바이트가 `0xCC`인지 확인합니다.
+x64에서 그 값은 RIP의 low half이므로, 역참조 대상은 매핑된 적 없는 주소입니다.
+fault handler 안에서 일어나는 fault는 보고될 곳이 없는 유일한 fault입니다. 이제 host
+context의 RIP에서 직접 후보 주소를 구합니다. i386에서는 두 값이 같습니다.
+
+#### 3. signal handler에 건네는 상태가 -O2에서 사라졌다 (확인됨, i386 회귀)
+
+`fault_handler_probe`의 `stage`는 signal handler가 읽는 값인데 ordinary global이었고,
+두 store 사이에 있는 것은 *다른* 객체에 대한 `volatile` load뿐입니다. 그것은 아무
+순서도 강제하지 않고, 그 사이에서 `stage`를 읽는 코드가 없으므로 첫 store는 dead
+store입니다. 삭제는 컴파일러가 옳습니다.
+
+커널 보고가 이를 확정했습니다.
+
+```text
+segfault at f7f70010 ip 4001793d sp ff940c90 error 4
+Code: ... <0f> b6 43 10        movzx eax, byte ptr [ebx+0x10]
+```
+
+fault 주소는 probe의 page + `kReadOffset`, error 4는 "user read, page not present",
+faulting instruction은 probe 자신의 재시도 read입니다. 즉 **handler가 접근을 허용하지
+않은 채 재개했다**는 뜻입니다. handler 진입은 정확히 한 번이었고 `kind`는
+`kAccessViolation`이었으므로, `kNotHandled`에 도달할 수 있는 경로는 `stage`가
+`kReadFault`가 아닌 경우뿐입니다.
+
+이 회귀는 Linux i386 Release에서만 보였습니다. x64 tree는 Debug라 같은 소스가
+통과합니다. 최적화 수준이 바뀌면 언제든 다시 나타날 수 있는 UB였고, 08-27 바이너리가
+통과했던 것은 정확성이 아니라 운입니다.
+
+> signal handler와 나누어 쓰는 상태는 `volatile`이거나 atomic이어야 한다. 그 사이에
+> 있는 다른 객체의 `volatile` 접근은 아무것도 보장하지 않는다.
+
+#### 측정 결과
+
+| Host | 결과 |
+|---|---|
+| Linux x64 Debug | `core_probe_all=true`, 14/14, skipped 2 |
+| Linux i386 Release | `core_probe_all=true`, 15/15 |
+
+x64에서 처음으로 확인된 것:
+
+```text
+guest_cpu_context_all=true
+fault_handler_all=true
+linux_x64_aot_frame_all=true
+host_thread_all=true
+```
+
+x64 host가 실제 fault를 받아 재개하고, planted `int3`에서 rewind하고, trap flag로 한
+instruction을 single-step하며, 다른 thread의 register를 읽고 편집해 되씁니다. Task
+547의 synthetic SysV AMD64 frame probe도 통과합니다. guest 실행은 여전히 Task 544의
+fail-closed 상태이며, 이 결과가 그것을 바꾸지는 않습니다.
+
+### English
+
+Two sessions (Tasks 547 and 548) recorded that the Linux x64 core probe stopped at
+`pit_timer`, which is why `guest_cpu_context_all` and `linux_x64_aot_frame_all` were left
+unresolved twice. **`pit_timer` never stopped.**
+
+`repiu_core_probe` writes newlines to `std::cout` and never flushes. Run through
+`wsl.exe`, stdout is a pipe and buffers in whole blocks, so a run that dies or is
+interrupted loses everything the buffer still held; what survives is the last flushed
+boundary.
+
+This is the shape of §8 and §8.1, one layer shallower.
+
+> Where the output stops is not where the run stopped.
+
+`pit_timer` holds no loop, no wait, and no syscall. One reading of its source would have
+ruled it out in either session.
+
+| Apparent | Actual |
+|---|---|
+| stopped at `pit_timer` | stopped at `fault_handler` |
+| a Linux x64 problem | i386 was dying in the same probe |
+| i386 versus x64 | Release versus Debug |
+
+One `std::cout << std::unitbuf` and a set of stage markers exposed three defects at once.
+
+#### 1. The x86-64 register write-back zeroed the host's upper 32 bits (confirmed)
+
+`machine.gregs[REG_RIP] = static_cast<greg_t>(registers.Eip)` clears bits 32..63. The
+measured host page was `0x7791a47c0000`; truncated it is `0xa47c0000`. A signal resume
+returned to an address that had never been mapped, refaulted at once, and went on doing
+that -- a stop that only `timeout` ends.
+
+`GuestCpuContext` is a fixed 32-bit contract on every host, so an edit through it can say
+what the low half of a register becomes and nothing about the half above it. The adapter
+now writes the low half and preserves the upper. Task 546's decision 6, "host RIP is not
+guest EIP", showed up here in the concrete for the first time.
+
+#### 2. The breakpoint rewind read host memory through a truncated Eip (confirmed)
+
+`RewindPastBreakpoint` checks whether the byte at `registers->Eip - 1` is `0xCC`. On x64
+that value is the low half of RIP, so the dereference targets an address that was never
+mapped -- and a fault inside the fault handler is the one fault with nowhere to be
+reported. The candidate address now comes from the host context's own RIP. On i386 the
+two are the same number.
+
+#### 3. State handed to a signal handler vanished at -O2 (confirmed; an i386 regression)
+
+`fault_handler_probe`'s `stage` is read by a signal handler but was an ordinary global,
+and what sits between its two stores is a `volatile` load of a *different* object. That
+orders nothing, and nothing the compiler can see reads `stage` in between, so the first
+store is dead. Deleting it is the compiler being right.
+
+The kernel's report settled it:
+
+```text
+segfault at f7f70010 ip 4001793d sp ff940c90 error 4
+Code: ... <0f> b6 43 10        movzx eax, byte ptr [ebx+0x10]
+```
+
+The fault address is the probe's page plus `kReadOffset`, error 4 is a user read of a
+page that is not present, and the faulting instruction is the probe's own retried read --
+so **the handler resumed without granting access**. The handler was entered exactly once
+with `kind` as `kAccessViolation`, and the only path to `kNotHandled` from there is a
+`stage` that is not `kReadFault`.
+
+The regression was visible only on Linux i386 Release; the x64 tree is a Debug tree, so
+the same source passed there. It is undefined behaviour that can return whenever an
+optimisation decision changes, and the 08-27 binary passing was luck rather than
+correctness.
+
+> State shared with a signal handler must be `volatile` or atomic. A `volatile` access to
+> some other object in between guarantees nothing.
+
+#### What was measured
+
+| Host | Result |
+|---|---|
+| Linux x64 Debug | `core_probe_all=true`, 14 of 14, 2 skipped |
+| Linux i386 Release | `core_probe_all=true`, 15 of 15 |
+
+Confirmed on x64 for the first time:
+
+```text
+guest_cpu_context_all=true
+fault_handler_all=true
+linux_x64_aot_frame_all=true
+host_thread_all=true
+```
+
+The x64 host takes real faults and resumes from them, rewinds onto a planted `int3`,
+single-steps one instruction under the trap flag, and reads, edits and writes back
+another thread's registers. Task 547's synthetic SysV AMD64 frame probe passes as well.
+Guest execution remains fail-closed as Task 544 left it, and none of this changes that.
+
+## 2026-08-31 Task 550: 복사해도 되는 바이트를 정하는 판정기 / What may be copied
+
+### 한국어
+
+Task 546 구현 순서 3단계(x64 emitter subset)에 착수하려다, 그 단계가 의존하는 판정이
+없다는 것을 확인했습니다. 결정 5는 "x64 emitter가 long-mode 의미를 증명하기 전에는
+복사된 32비트 바이트를 x86 전용으로 취급한다"고 적었지만 증명할 주체가 없었습니다.
+
+`ClassifyLongModeBytes`는 fail-closed입니다. 기본값이 `kUnsupported`이고, 살펴본
+적 없는 명령은 거부되며, 누군가 안전한 이유를 적어 넣을 때 통과합니다.
+
+**핵심: x64에서 32비트 바이트를 실행할 때 위험한 것은 fault가 아니라 조용한 오답입니다.**
+
+Task 544가 만난 `pusha`/`popa`는 assembler가 거부해 주었으므로 세 갈래 중 가장 운이
+좋은 쪽이었습니다.
+
+| 갈래 | 무슨 일이 일어나나 | 발견 난이도 |
+|---|---|---|
+| `#UD` | long mode에 그 opcode가 없다 | 쉬움 — 예외가 난다 |
+| 폭 변화 | 같은 연산이 64비트로 수행된다 | 중간 — 값이 어긋난다 |
+| **의미 변화** | **다른 명령으로 해석되어 실행된다** | **어려움 — 조용하다** |
+
+확인된 의미 변화 (Intel SDM Vol.2 / AMD64 APM Vol.3):
+
+| 바이트 | 32비트 | 64비트 |
+|---|---|---|
+| `40`–`4F` | `INC`/`DEC r32` | REX prefix — 뒤따르는 명령에 붙는다 |
+| `62` / `63` | `BOUND` / `ARPL` | EVEX prefix / `MOVSXD` |
+| `C4` / `C5` | `LES` / `LDS` | VEX3 / VEX2 prefix |
+| `A0`–`A3` | `mov eAX, moffs32` | `moffs64` — 길이가 5에서 9로 바뀐다 |
+| ModRM `mod=00,rm=101` | 절대 `disp32` | `RIP`-relative |
+
+`40`–`4F`와 마지막 줄이 가장 무겁습니다. 앞의 것은 32비트 코드에서 가장 흔한 1바이트
+명령 축에 들고, 뒤의 것은 전역을 절대 주소로 읽는 모든 곳에 나타납니다. 마지막 줄은
+opcode가 아니라 addressing form이라 opcode 목록으로는 잡히지 않아 별도 검사가
+필요합니다. `A0`–`A3`는 길이까지 바뀌므로 **그 뒤 바이트들의 해석도** 어긋납니다.
+
+memory operand가 있는 명령은 어느 것도 통과시키지 않습니다. `67` prefix가 32비트
+주소 계산을 되살리지만, 그것이 정답이 되려면 guest memory가 하위 4 GiB에 있어야 하고
+그 배치는 Task 546 결정 4의 미결 항목입니다. **판정기가 정할 문제가 아닙니다.**
+
+통과하는 subset은 register 대 register ALU와 `MOV`, 8·16·32비트뿐입니다.
+
+#### probe를 거부 중심으로 쓴 이유
+
+> 통과 목록만 확인하는 probe는 모든 것을 허용하는 판정기에 대해서도 통과한다.
+
+그래서 probe는 A·B·C 목록을 바이트로 만들어 하나도 `kIdenticalBytes`를 받지 않는지
+확인합니다. A의 여덟 항목은 개별 이름으로 보고합니다 — 조용히 통과하면 안 되는
+것들이라 집계 하나에 묻히면 안 됩니다.
+
+이 probe는 해독해 판정할 뿐 실행하지 않으므로 모든 host에서 같은 답을 내야 합니다.
+x64 fence 뒤가 아니라 공용 목록에 둔 이유입니다.
+
+#### 측정 결과
+
+| Host | 결과 |
+|---|---|
+| Linux x64 Debug | `core_probe_all=true`, 15/15, skipped 2 |
+| Linux x64 Release | `core_probe_all=true`, 15/15, skipped 2 |
+| Linux i386 Release | `core_probe_all=true`, 16/16 |
+| Win32 x86 Debug | `core_probe_all=true`, 16/16 |
+
+i386과 x64의 `long_mode_*` 16줄은 `diff`로 동일합니다.
+
+#### Task 549를 Release에서 재확인
+
+Task 549는 Debug tree에서만 검증됐고, 같은 작업이 찾은 결함은 `-O0`에서 보이지 않는
+종류였습니다. x64 Release tree를 따로 만들어 돌린 결과 `fault_handler_all=true`,
+`linux_x64_aot_frame_all=true`, `host_thread_all=true`로 Debug와 같습니다. Task 549의
+수정은 최적화 수준에 의존하지 않습니다.
+
+그 과정에서 Task 549가 추가한 `scripts/build_linux_x64.sh`의 결함도 드러났습니다.
+`--config Release`가 Debug tree를 그 자리에서 reconfigure해 검증된 tree를 지웠을
+것입니다. 이제 거부하고 `--build-dir`을 안내합니다.
+
+> Task 549의 결함이 보인 것은 Debug와 Release를 나란히 둘 수 있었기 때문이다. 한쪽을
+> 지우는 스크립트는 그 능력을 없앤다.
+
+### English
+
+Starting step 3 of Task 546's implementation order -- the x64 emitter subset -- showed
+that the judgement it depends on did not exist. Decision 5 says copied 32-bit bytes are
+x86-only "unless the x64 emitter proves their long-mode semantics", and nothing did the
+proving.
+
+`ClassifyLongModeBytes` is fail-closed: `kUnsupported` is the default, an instruction
+nobody has looked at is refused, and it passes only once someone writes down why it is
+safe.
+
+**The point: what is dangerous about executing 32-bit bytes on x64 is not faulting but
+being quietly wrong.**
+
+Task 544 met `pusha`/`popa`, which the assembler refused outright -- the luckiest of the
+three outcomes.
+
+| Kind | What happens | How hard to notice |
+|---|---|---|
+| `#UD` | the opcode is gone from long mode | easy -- it raises |
+| Width change | the same operation runs at 64 bits | moderate -- values drift |
+| **Meaning change** | **it decodes as a different instruction and runs** | **hard -- it is silent** |
+
+Confirmed meaning changes (Intel SDM Vol.2 / AMD64 APM Vol.3):
+
+| Bytes | 32-bit | 64-bit |
+|---|---|---|
+| `40`–`4F` | `INC`/`DEC r32` | REX prefix, applied to what follows |
+| `62` / `63` | `BOUND` / `ARPL` | EVEX prefix / `MOVSXD` |
+| `C4` / `C5` | `LES` / `LDS` | VEX3 / VEX2 prefix |
+| `A0`–`A3` | `mov eAX, moffs32` | `moffs64`; length goes from five to nine |
+| ModRM `mod=00,rm=101` | absolute `disp32` | `RIP`-relative |
+
+`40`–`4F` and the last row carry the most weight: the first is among the most common
+one-byte instructions in 32-bit code, the last appears wherever a global is read by
+absolute address. The last row is an addressing form rather than an opcode, so no opcode
+list catches it and it is checked separately. `A0`–`A3` also changes length, so **the
+decode of everything after it** is wrong too.
+
+No instruction with a memory operand is admitted. A `67` prefix would restore 32-bit
+address computation, but that is only correct while guest memory sits below 4 GiB, and
+that placement is Task 546's still-open decision 4. **It is not the classifier's to
+settle.**
+
+The admitted subset is register-to-register ALU and `MOV` at 8, 16, and 32 bits.
+
+#### Why the probe is written around refusals
+
+> A probe that checks only the pass list also passes against a classifier that allows
+> everything.
+
+So it builds the bytes for lists A, B, and C and checks that not one is answered
+`kIdenticalBytes`, reporting A's eight entries under their own names -- they are the ones
+that must never pass quietly, so they must not hide in a count.
+
+The probe decodes and judges without executing, so every host must give the same answer.
+That is why it sits in the shared list rather than behind an x64 fence.
+
+#### What was measured
+
+| Host | Result |
+|---|---|
+| Linux x64 Debug | `core_probe_all=true`, 15 of 15, 2 skipped |
+| Linux x64 Release | `core_probe_all=true`, 15 of 15, 2 skipped |
+| Linux i386 Release | `core_probe_all=true`, 16 of 16 |
+| Win32 x86 Debug | `core_probe_all=true`, 16 of 16 |
+
+The sixteen `long_mode_*` lines from i386 and x64 are identical under `diff`.
+
+#### Task 549 rechecked on Release
+
+Task 549 was verified on a Debug tree only, and the defect it found was of a kind `-O0`
+cannot show. An x64 Release tree was built separately and run: `fault_handler_all=true`,
+`linux_x64_aot_frame_all=true`, `host_thread_all=true`, the same as Debug. Task 549's
+fixes do not depend on the optimisation level.
+
+Doing that exposed a flaw in the `scripts/build_linux_x64.sh` Task 549 added: `--config
+Release` would have reconfigured the Debug tree in place and destroyed the verified tree.
+It now refuses and points at `--build-dir`.
+
+> Task 549's defect was visible because a Debug tree and a Release tree could sit side by
+> side. A script that overwrites one takes that away.
+
+## 2026-08-31 Task 551: 결정 4를 측정으로 닫다 / Decision 4, closed by measurement
+
+### 한국어
+
+Task 546 결정 4는 "하위 4 GiB 배치" 정책을 둘로 쪼개라고 적었습니다 — guest address
+보존에 **진짜 필요한** 부분과, host pointer가 4 GiB 아래 있으리라는 **우연한 가정**.
+두 갈래의 답이 실제로 다르고, 둘 다 코드를 읽는 것만으로는 확정되지 않았습니다.
+
+#### (a) guest memory — 됩니다 (확인됨)
+
+```text
+guest_arena base=0x10000 size=0x85d7000 placed=true host_error=0 overlaps_own_image=0
+```
+
+x86-64 Linux가 134 MB arena를 `0x00010000`에 `MAP_FIXED_NOREPLACE`로 정확히 내줍니다.
+guest relocation이 이미 그 주소를 guest memory에 써 넣었으므로 이건 선호가 아니라
+요구사항이었고, 거절당했다면 port가 거기서 끝났습니다. **memory operand lowering을
+막던 미결 항목이 풀렸습니다.**
+
+#### (b) host pointer — 부분적으로만 (확인됨)
+
+| 항목 | Linux x64 | 정하는 주체 |
+|---|---|---|
+| engine 자신의 code | 4 GiB 아래 | Task 503의 `-no-pie -Wl,-Ttext-segment=0x40000000` |
+| heap | 4 GiB 아래 | non-PIE image를 따라감 |
+| stack | **4 GiB 위** | 커널 |
+| 실행 가능한 매핑 | **4 GiB 위**, 최고 `0x788914de2000` | `ld.so`와 런타임 `dlopen` |
+
+engine 이미지가 낮은 것은 우연이 아니라 Task 503이 guest 재배치 범위 밖에 두려고
+`0x400000`이 아닌 `0x40000000`을 고른 결과입니다. 그러나 stack과 shared library는
+build가 정할 수 없으므로 **그 둘을 담을 수 있는 host pointer는 `uintptr_t`여야
+합니다.** 결정 4가 제거하라고 한 가정이 정확히 이 부분입니다.
+
+#### 하위 4 GiB로 옮겨도 RIP-relative는 그대로 남습니다
+
+(a)가 확인됐다고 Task 550의 목록이 줄어들지는 않습니다. `0x67` prefix는 RIP-relative
+addressing을 끄지 못합니다 — Intel SDM이 명시하듯 RIP-relative는 64-bit *mode*가 켜는
+것이지 64비트 address-size가 켜는 것이 아니고, address-size prefix는 계산 결과를
+32비트로 자를 뿐입니다. 즉 `67`을 붙이면 절대 주소가 아니라 **EIP-relative**가 됩니다.
+
+```
+8B 05 78 56 34 12      32비트: mov eax, [0x12345678]       (절대)
+67 8B 05 78 56 34 12   64비트: mov eax, [eip + 0x12345678]  (여전히 상대)
+```
+
+절대 주소를 얻으려면 SIB로 `base=101, index=100, mod=00` 형태로 다시 인코딩해야
+합니다. **가장 흔한 silent divergence는 배치 결정과 무관하게 남습니다.**
+
+또한 (a)가 확인돼도 memory operand가 `kIdenticalBytes`가 되지는 않습니다. `67`을
+붙이는 순간 복사가 아니라 lowering이므로, 판정기에서는 `kUnsupported`가 아니라
+`kNeedsReencode`(prefix 한 바이트짜리 가장 싼 lowering)로 옮겨가는 것입니다.
+
+#### 새로 드러난 위험: `mmap_min_addr` 여유가 0
+
+```text
+guest_address_space_mmap_min_addr=65536,lowest_guest_base=65536,headroom=0
+```
+
+PIU 프로파일의 base가 커널 기본 floor와 **같은 값**입니다. 여유가 한 바이트도
+없으므로 `vm.mmap_min_addr`을 조금이라도 높인 환경에서는 guest를 배치할 수 없습니다.
+**x64만의 문제가 아니라 i386도 같습니다.** 기본값이 마침 같아서 지금까지 보이지
+않았을 뿐입니다.
+
+#### Win32의 `placed=false`는 Windows 이야기가 아닙니다
+
+```text
+guest_arena base=0x10000 size=0x85d7000 placed=false host_error=487 overlaps_own_image=1
+```
+
+평범한 MSVC 실행 파일은 `0x400000`에 놓이고 그것은 arena 범위 안입니다. 실제 Win32
+loader host는 `/BASE:0x10000000`으로 링크되어 arena 위쪽이라 충돌하지 않습니다.
+
+> 배치 실패는 host의 성질이 아니라 **묻고 있는 바이너리의 성질**일 수 있다.
+
+probe가 `overlaps_own_image`를 함께 보고하지 않았다면 이 줄은 "Windows는 guest를
+배치할 수 없다"로 읽혔을 것입니다.
+
+#### 계약과 측정을 나눈 것이 값을 했습니다
+
+probe는 **계약**만 판정합니다 — 정확히 그 주소로 오거나 아예 오지 않을 것. 정확한
+배치의 성공 여부는 host마다 다른 **측정값**이라 값으로만 남깁니다. 배치 실패를 probe
+실패로 만들었다면 Win32 core probe 전체가 빨간색이 됐을 것이고 그건 거짓 신호입니다.
+
+| Host | arena 배치 | `core_probe_all` |
+|---|---|---|
+| Linux x64 Debug | `placed=true` | true, 16/16, skipped 2 |
+| Linux i386 Release | `placed=true` | true, 17/17 |
+| Win32 x86 Debug | `placed=false` (자기 image 겹침) | true, 17/17 |
+
+### English
+
+Task 546's decision 4 asks the "place below 4 GiB" policy to be split into what is
+**genuinely required** to preserve guest addresses and the **accidental assumption** that
+host pointers sit below 4 GiB. The two halves really do have different answers, and
+neither was settled by reading code.
+
+#### (a) Guest memory -- it works (confirmed)
+
+x86-64 Linux gives the 134 MB arena the exact base it asks for, at `0x00010000`, through
+`MAP_FIXED_NOREPLACE`. The guest's relocations have already written that address into
+guest memory, so this was a requirement rather than a preference, and a refusal would
+have ended the port. **The item blocking memory-operand lowering is now open.**
+
+#### (b) Host pointers -- only partly (confirmed)
+
+| Item | Linux x64 | Decided by |
+|---|---|---|
+| The engine's own code | below 4 GiB | Task 503's `-no-pie -Wl,-Ttext-segment=0x40000000` |
+| Heap | below 4 GiB | follows the non-PIE image |
+| Stack | **above 4 GiB** | the kernel |
+| Executable mappings | **above 4 GiB**, highest `0x788914de2000` | `ld.so` and runtime `dlopen` |
+
+The engine image being low is not an accident -- Task 503 chose `0x40000000` over
+`0x400000` to stay clear of the guest's relocation range. But the stack and the shared
+libraries are not the build's to place, so **any host pointer that can hold one must be
+`uintptr_t`**, which is exactly the assumption decision 4 asks to be removed.
+
+#### Placing the guest low does not retire RIP-relative
+
+Confirming (a) does not shorten Task 550's list. A `0x67` prefix cannot switch
+RIP-relative addressing off: as the Intel SDM states, RIP-relative is enabled by 64-bit
+*mode* rather than by a 64-bit address size, and the address-size prefix only truncates
+the computed address to 32 bits. With `67` the form becomes **EIP-relative**, not
+absolute.
+
+```
+8B 05 78 56 34 12      32-bit: mov eax, [0x12345678]       (absolute)
+67 8B 05 78 56 34 12   64-bit: mov eax, [eip + 0x12345678]  (still relative)
+```
+
+An absolute address needs re-encoding through SIB with `base=101, index=100, mod=00`.
+**The most common silent divergence survives the placement decision.**
+
+Nor does (a) make memory operands `kIdenticalBytes`: adding `67` is a lowering, not a
+copy, so in the classifier they move from `kUnsupported` to `kNeedsReencode` -- the
+cheapest lowering there is, one prefix byte.
+
+#### A new risk: zero `mmap_min_addr` headroom
+
+The PIU profiles' base is **the same number** as the kernel's default floor, so there is
+not one byte of margin. Any environment that raises `vm.mmap_min_addr` cannot place the
+guest, and **this is not specific to x64 -- i386 has it too**. It has stayed invisible
+only because the default happens to match.
+
+#### `placed=false` on Win32 is not about Windows
+
+An ordinary MSVC executable is based at `0x400000`, inside the arena range. The real
+Win32 loader host links at `/BASE:0x10000000`, above the arena, and does not collide.
+
+> A placement failure can be a property of **the binary asking**, not of the host.
+
+Without the probe reporting `overlaps_own_image` beside it, that line would read as
+"Windows cannot place the guest".
+
+#### Separating the contract from the measurement earned its keep
+
+The probe judges only the contract -- land exactly there or not at all. Whether exact
+placement succeeds is a measurement reported as a value. Had a placement failure been a
+probe failure, the whole Win32 core probe would have gone red on a false signal.
+
+## 2026-08-31 Task 552: 결정 4가 연 것 / What decision 4 opened
+
+### 한국어
+
+결정 4가 "guest memory는 하위 4 GiB"로 확정되면서 Task 550이 전부 거절하던 memory
+operand가 **거절에서 재작성으로** 바뀌었습니다.
+
+| 형태 | 판정 | lowering |
+|---|---|---|
+| base/index 사용 | `kNeedsReencode` | `kAddressSizePrefix` — `0x67` 한 바이트 |
+| `mod=00, rm=101` | `kNeedsReencode` | `kAbsoluteToSib` — `0x67` + ModRM을 SIB 절대형으로 |
+| segment override | `kUnsupported` | 없음 (결정 5: helper 경계) |
+
+`kIdenticalBytes`가 되지는 않습니다. `0x67`을 붙이는 순간 바이트가 달라지므로 복사가
+아니라 lowering입니다. 판정만 하고 변환을 남에게 맡기지 않도록 `LowerLongModeBytes`를
+같은 파일에 두었습니다 — 판정과 변환이 갈라지면 둘 다 믿을 수 없게 됩니다.
+
+#### 절대형에 prefix만으로는 부족한 이유 (확인됨)
+
+`0x67`은 RIP-relative를 끄지 못하고 **EIP-relative**로 바꿀 뿐이라 여전히 상대
+주소입니다. 절대 주소는 SIB(`mod=00`, `rm=100`, SIB `base=101`, `index=100`)로만
+표현됩니다.
+
+`0x67`은 SIB 절대형에도 필요합니다. 없으면 `disp32`가 64비트로 **sign-extend** 되어
+bit 31이 선 주소가 `0xFFFFFFFF8…`이 됩니다. 현재 arena는 `0x085E7000` 아래라 그럴 일이
+없지만 **그것은 우연한 안전이지 규칙이 아닙니다.**
+
+#### 실행으로 확인했습니다
+
+주장이 "이렇게 바꾸면 같은 주소를 읽는다"였으므로 매뉴얼 인용이 아니라 실행으로
+확인했습니다. lowering된 바이트를 실행 가능한 페이지에 써 넣고 호출합니다.
+
+```text
+long_mode_lowering_prefix=true,observed=0x5a17c0de
+long_mode_lowering_absolute=true,distinct_pages=1,observed=0x5a17c0de,0x5a17c0de
+```
+
+- **prefix**: base register 상위 절반에 `0xDEADBEEF`를 채웠습니다. `0x67`이 그 절반을
+  버리지 않았다면 매핑되지 않은 주소를 건드렸을 것입니다.
+- **absolute**: 같은 바이트를 **서로 다른 주소의 두 페이지**에서 실행해 같은 값을
+  얻었습니다. RIP-relative였다면 두 결과가 갈렸을 것이므로, 이 한 줄이 재작성이
+  필요한 이유이자 통했다는 증거입니다.
+
+재작성하지 않은 형태는 일부러 실행하지 않았습니다. 그 형태의 문제가 "어디에 놓였느냐에
+따라 다른 것을 읽는다"이고, 이 host에서는 매핑되지 않은 주소를 뜻하므로 probe 안에서
+증명하면 실행 자체가 끝납니다.
+
+> 재작성이 옳다는 주장은 프로세서에 대한 주장이다. 매뉴얼을 인용하는 것은 측정이
+> 아니다.
+
+#### 측정 결과
+
+| Host | 결과 |
+|---|---|
+| Linux x64 Debug | `core_probe_all=true`, 17/17, skipped 2 |
+| Linux i386 Release | `core_probe_all=true`, 17/17 |
+| Win32 x86 Debug | `core_probe_all=true`, 17/17 |
+
+32비트 host에서는 lowering probe가 빌드되지 않습니다. 불필요한 것을 넘어 보여줄 것이
+없기 때문입니다. 판정기는 host와 무관하므로 i386과 x64의 `long_mode_*` 16줄은
+`diff`로 동일합니다.
+
+### English
+
+With decision 4 settled as "guest memory below 4 GiB", the memory operands Task 550
+refused entirely move **from refusal to rewrite**.
+
+| Form | Verdict | Lowering |
+|---|---|---|
+| base/index used | `kNeedsReencode` | `kAddressSizePrefix` -- one `0x67` |
+| `mod=00, rm=101` | `kNeedsReencode` | `kAbsoluteToSib` -- `0x67` plus a SIB rewrite |
+| segment override | `kUnsupported` | none (decision 5: a helper boundary) |
+
+They do not become `kIdenticalBytes`: adding `0x67` changes the bytes, so it is a
+lowering rather than a copy. `LowerLongModeBytes` sits beside the classifier so the
+judgement and the rewrite cannot drift apart -- if they did, neither could be believed.
+
+#### Why a prefix is not enough for the absolute form (confirmed)
+
+`0x67` cannot switch RIP-relative off; it makes the form **EIP-relative**, which is still
+relative. An absolute address is expressible only through SIB (`mod=00`, `rm=100`, SIB
+`base=101`, `index=100`).
+
+The `0x67` is needed on the SIB form too: without it the `disp32` is **sign-extended** to
+64 bits, so an address with bit 31 set becomes `0xFFFFFFFF8…`. Today's arena ends below
+`0x085E7000` and never sets that bit, but **that is accidental safety rather than a
+rule.**
+
+#### Confirmed by running it
+
+The claim is "rewritten this way, it reads the same address" -- so it was run rather than
+quoted. The lowered bytes are written into an executable page and called.
+
+- **prefix**: the base register carried `0xDEADBEEF` in its upper half. Had `0x67` not
+  discarded it, the instruction would have touched an unmapped address.
+- **absolute**: the same bytes executed from **two pages at two different addresses**
+  returned the same value. RIP-relative bytes would have disagreed, so that line is both
+  the reason for the rewrite and the evidence it works.
+
+The un-lowered form is deliberately not executed: its problem is that what it reads
+depends on where it sits, which here means an unmapped address, and proving that inside a
+probe would end the run.
+
+> A claim that a rewrite is correct is a claim about a processor. Quoting the manual at
+> it is not a measurement.
+
+#### What was measured
+
+| Host | Result |
+|---|---|
+| Linux x64 Debug | `core_probe_all=true`, 17 of 17, 2 skipped |
+| Linux i386 Release | `core_probe_all=true`, 17 of 17 |
+| Win32 x86 Debug | `core_probe_all=true`, 17 of 17 |
+
+The lowering probe is not built on the 32-bit hosts, because there it has nothing to
+demonstrate rather than merely being unnecessary. The classifier is host-independent, so
+the sixteen `long_mode_*` lines from i386 and x64 remain identical under `diff`.
+
+## 2026-09-01 Task 553: emitter에 연결됨 / Wired to the emitter
+
+### 한국어
+
+Task 550의 판정기와 Task 552의 lowering이 **code cache emitter에 연결됐습니다.** Task 546
+구현 순서 3단계가 끝났습니다. 설계는
+[20260831-553](../design/20260831-553-linux-x64-code-cache-long-mode-emission.md),
+로그는 [20260901-553](../work-logs/20260901-553-linux-x64-code-cache-long-mode-emission.md)입니다.
+
+`AotCodeCacheBuildOptions::enable_long_mode_emission`이 경계입니다. 기본값 `false`이고,
+**호스트 매크로가 아닙니다** — 방출은 계산이라 같은 plan에 대한 답이 모든 호스트에서
+같아야 하고, `#ifdef`로 갈랐다면 그 답을 Windows에서 볼 수 없게 됩니다.
+
+| 결과 | 방출 |
+|---|---|
+| `kIdenticalBytes` | guest 바이트 그대로 |
+| lowering 이름 있음 | `LowerLongModeBytes`의 바이트 |
+| 그 외 · lowering 실패 · `kCopy` 아님 | `0xCC` + `kHleBoundary` fixup |
+
+option이 켜지면 **`kCopy`만 방출됩니다.** 나머지 kind의 slot은 손으로 쓴 32비트
+시퀀스이고 long mode가 그 중 여럿을 조용히 다르게 읽으므로(`68 imm32`는 그곳에서 8바이트를
+민다) 전부 fail-closed입니다.
+
+#### 확인됨 — 검증기가 "조용히 다른 명령"을 놓치고 있었습니다
+
+이번에 측정이 추론 하나를 뒤집었습니다. "검증 디코드 모드를 바꾸지 않으면 실패한다"고
+적었는데, 되돌려 재보니 **그대로 통과했습니다.**
+
+code cache의 방출 후 검증은 **길이 합계만** 봅니다. `67 8B 04 25 78 56 34 12`를 32비트
+모드로 읽으면 3바이트 `mov`와 5바이트 `and` 두 명령이고, 합이 8바이트로 맞아 아무 말도
+하지 않습니다. 판정기가 다루는 위험이 한 층 위 검증기에서 그대로 재현된 것입니다.
+
+**수정:** long mode 방출에서는 map entry 하나가 정확히 명령 한 개이므로(복사·lowering·
+`0xCC`), 길이에 더해 개수를 확인합니다. 그 뒤 모드를 되돌린 build는 `decode_failures=1`로
+실패합니다.
+
+> 바이트를 덮는 것과 의도한 대로 디코드되는 것은 다릅니다.
+
+#### 측정
+
+| Host | 결과 |
+|---|---|
+| Win32 x86 Debug | `core_probe_all=true`, 18/18 |
+| Linux x64 Release | `core_probe_all=true`, 18/18, skipped 2 |
+| Linux i386 Release | `core_probe_all=true`, 18/18 |
+
+새 probe `long_mode_emission`은 호스트 무관이라 세 호스트 출력이 줄 단위로 동일합니다.
+
+**guest 실행은 여전히 Task 544의 fail-closed 그대로입니다.**
+
+### English
+
+Task 550's classifier and Task 552's lowering are **wired to the code cache emitter**,
+finishing step 3 of Task 546's implementation order. The design is
+[20260831-553](../design/20260831-553-linux-x64-code-cache-long-mode-emission.md) and the
+log is
+[20260901-553](../work-logs/20260901-553-linux-x64-code-cache-long-mode-emission.md).
+
+The boundary is `AotCodeCacheBuildOptions::enable_long_mode_emission`, defaulting to
+`false` and **not a host macro** — emission is computation, so the answer for a given plan
+must be the same everywhere, and an `#ifdef` would have hidden that answer from Windows.
+
+| Outcome | Emitted |
+|---|---|
+| `kIdenticalBytes` | the guest's bytes unchanged |
+| a named lowering | what `LowerLongModeBytes` produces |
+| anything else, a failed lowering, or not `kCopy` | `0xCC` + a `kHleBoundary` fixup |
+
+With the option on **only `kCopy` is emitted.** The other kinds' slots are hand-written
+32-bit sequences and long mode reads several of them differently without raising
+(`68 imm32` pushes eight bytes there), so all of them are fail-closed.
+
+#### Confirmed -- the verifier was missing "quietly a different instruction"
+
+One measurement overturned one inference again. The design said that without changing the
+verification decode's mode this would fail; reverted and measured, it **still passed.**
+
+The code cache's post-emission verification checks **total length only**. Read in 32-bit
+mode, `67 8B 04 25 78 56 34 12` is a three-byte `mov` and a five-byte `and`; the eight
+bytes are covered and nothing is said. The classifier's own hazard, reappearing one layer
+up inside the verifier.
+
+**Fixed:** under long-mode emission a map entry is exactly one instruction -- a copy, a
+lowering, or one `0xCC` -- so the count is checked alongside the length. With that in
+place, the build with the mode reverted fails with `decode_failures=1`.
+
+> Covering the bytes is not the same as decoding them as intended.
+
+#### What was measured
+
+| Host | Result |
+|---|---|
+| Win32 x86 Debug | `core_probe_all=true`, 18 of 18 |
+| Linux x64 Release | `core_probe_all=true`, 18 of 18, 2 skipped |
+| Linux i386 Release | `core_probe_all=true`, 18 of 18 |
+
+The new `long_mode_emission` probe is host-independent, and the three hosts' output is
+identical line for line.
+
+**Guest execution is still fail-closed exactly as Task 544 left it.**
+
+## 2026-09-01 Task 554: x64는 code cache를 놓을 자리가 없었다 / The cache had nowhere to go
+
+### 한국어
+
+step 4(dispatch resolver)로 들어가려다 그 앞에서 막힌 것을 찾았습니다. 설계는
+[20260901-554](../design/20260901-554-linux-x64-code-cache-placement.md), 로그는
+[20260901-554](../work-logs/20260901-554-linux-x64-code-cache-placement.md)입니다.
+
+#### 확인됨 — x64 host는 code cache를 하나도 배치하지 못하고 있었습니다
+
+code cache 주소는 host pointer인데 engine은 `std::uint32_t`에 담고
+(`AotCodeCachePlacement::base_address`, `FindAotGuestAddress`,
+`FindAotCacheAddress`), 4 GiB를 넘으면 **절단하지 않고 거절합니다**
+(`AOT code cache is outside the x86 address range`). 그리고 `PlaceAotCodeCache`는 hint
+없이 요청합니다.
+
+| 요청 | 결과 | 하위 4 GiB |
+|---|---|---|
+| `hint=NULL` | `0x00007fddf72e8000` | 아니오 |
+| `MAP_32BIT` | `0x00000000419d5000` | 예 |
+| `hint=0x20000000` | `0x0000000020000000` | 예 |
+
+Task 551의 `mmap_min_addr` 여유 0과 같은 형태입니다 — 기본값이 맞는지 아닌지에 결과가
+달려 있고, 여기서는 맞지 않았습니다.
+
+#### 넓히지 않고 낮췄습니다
+
+`base_address` 참조가 121곳이고 `uintptr_t`로 넓히는 것이 대안이었지만, 결정적인 이유가
+하나 있습니다.
+
+> **cache 주소는 C++ 필드만이 아닙니다.** inline cache의 `abs32` patch target, timer safe
+> point의 request address, jump table 항목처럼 **방출된 바이트 안에도** 있습니다. C++
+> 필드를 넓혀도 방출된 `disp32`는 넓어지지 않습니다.
+
+그래서 64비트 host에서만 하위 4 GiB 후보 사다리(`0x20000000`부터 128 MiB 간격 넷)를 타고,
+32비트 host는 예전처럼 hint 없이 요청합니다. 정책은
+`src/runtime/aot_code_cache_reservation.cpp`로 분리했습니다.
+
+#### 측정 — 대비
+
+| 사다리 | x64 base | addressable |
+|---|---|---|
+| 끔 (이전 동작) | `0x00007f733924e000` | **0** |
+| 켬 | `0x0000000020000000` | **1** |
+
+rung이 하나면 안 되는 이유도 같은 probe가 보여줍니다. 둘을 동시에 잡으면 두 번째가
+`0x28000000`으로 갑니다 — `MAP_FIXED_NOREPLACE`는 덮지 않고 실패하기 때문입니다.
+
+| Host | 결과 | attempt |
+|---|---|---|
+| Linux x64 Release | `core_probe_all=true`, 19/19, skipped 2 | `0` (`0x20000000`) |
+| Linux i386 Release | `core_probe_all=true`, 19/19 | `unhinted` |
+| Win32 x86 Debug | `core_probe_all=true`, 19/19 | `unhinted` |
+
+**배치가 됐을 뿐입니다.** x64 dispatch slot 방출도, thunk도, resolver 본체도 아직
+없습니다. guest 실행은 Task 544의 fence 그대로입니다.
+
+### English
+
+The blocker in front of step 4 (the dispatch resolver). The design is
+[20260901-554](../design/20260901-554-linux-x64-code-cache-placement.md); the log is
+[20260901-554](../work-logs/20260901-554-linux-x64-code-cache-placement.md).
+
+#### Confirmed -- an x64 host was placing no code cache at all
+
+A code cache address is a host pointer that the engine keeps in a `std::uint32_t`
+(`AotCodeCachePlacement::base_address`, `FindAotGuestAddress`, `FindAotCacheAddress`), and
+above 4 GiB the engine **refuses rather than truncating**
+(`AOT code cache is outside the x86 address range`). `PlaceAotCodeCache` asks with no hint.
+
+| Request | Result | Below 4 GiB |
+|---|---|---|
+| `hint=NULL` | `0x00007fddf72e8000` | no |
+| `MAP_32BIT` | `0x00000000419d5000` | yes |
+| `hint=0x20000000` | `0x0000000020000000` | yes |
+
+The same shape as Task 551's zero `mmap_min_addr` headroom -- the outcome turns on whether
+the defaults happen to line up, and here they did not.
+
+#### Lowered rather than widened
+
+`base_address` has 121 references and widening it to `uintptr_t` was the alternative. One
+reason decided it.
+
+> **A cache address is not only a C++ field.** It is also **inside the emitted bytes** --
+> the inline cache's `abs32` patch targets, the timer safe point's request address, the
+> jump table's entries. Widening a C++ field does not widen an emitted `disp32`.
+
+So a 64-bit host walks a ladder of below-4-GiB candidates (four, 128 MiB apart from
+`0x20000000`) and a 32-bit host asks without a hint exactly as before. The policy lives in
+`src/runtime/aot_code_cache_reservation.cpp`.
+
+#### Measured -- the contrast
+
+| Ladder | x64 base | addressable |
+|---|---|---|
+| off (the previous behaviour) | `0x00007f733924e000` | **0** |
+| on | `0x0000000020000000` | **1** |
+
+The same probe shows why one rung would not do: hold two at once and the second takes
+`0x28000000`, because `MAP_FIXED_NOREPLACE` refuses rather than displacing.
+
+| Host | Result | attempt |
+|---|---|---|
+| Linux x64 Release | `core_probe_all=true`, 19 of 19, 2 skipped | `0` (`0x20000000`) |
+| Linux i386 Release | `core_probe_all=true`, 19 of 19 | `unhinted` |
+| Win32 x86 Debug | `core_probe_all=true`, 19 of 19 | `unhinted` |
+
+**Only the placement.** There is no x64 dispatch slot emission, no thunk and no resolver
+body yet, and guest execution is fenced exactly as Task 544 left it.
+
+## 2026-09-01 Task 555: lowering이 host stack을 건드리고 있었다 / The lowering was reaching the host stack
+
+### 한국어
+
+x64 현황을 설명하려고 판정기를 다시 읽다가 나온 결함입니다. 설계는
+[20260901-555](../design/20260901-555-linux-x64-stack-pointer-refusal.md), 로그는
+[20260901-555](../work-logs/20260901-555-linux-x64-stack-pointer-refusal.md)입니다.
+
+#### 확인됨 — `add esp,16`이 cache에 그대로 복사되고 있었습니다
+
+Task 546 결정 3은 host RSP를 SysV stack으로 남기고 guest ESP는 state로 둡니다. 그러면
+long mode에서 `ESP`는 **host stack pointer의 하위 절반**입니다. 그런데 판정기는 base
+register가 무엇인지 보지 않았습니다.
+
+| 형태 | 이전 판정 | 실제 결과 |
+|---|---|---|
+| `mov eax,[esp+8]` | `kAddressSizePrefix` | host stack을 읽음 |
+| `add esp,16` | **`kIdenticalBytes`** | host RSP를 씀 — **host stack pointer 파괴** |
+
+두 번째가 더 나쁘고, memory operand가 없어 Task 552의 lowering 경로를 지나가지도
+않았습니다. **Task 550부터 있던 구멍**이고 Task 553이 emitter에 연결했습니다.
+
+검사를 껐다 켠 측정이 이것을 말합니다.
+
+```text
+검사 끔:  copied=2, lowered=2, refused=2
+검사 켬:  copied=1, lowered=2, refused=3
+```
+
+#### 근인은 적히지 않은 전제였습니다
+
+Task 552의 lowering이 옳으려면 **lowering 시점에 guest GPR *n*이 host GPR *n*에 있어야**
+합니다. `0x67`이 뜻을 갖는 이유가 그것인데 어디에도 없었습니다. 지금은 헤더에 문장으로
+있습니다. register mapping이 미결정이라 대부분의 register에 대해 이것은 **미확정**이고,
+`ESP`만 **이미 거짓으로 결정된** 경우입니다.
+
+> 적히지 않은 전제는 지켜지지 않습니다.
+
+#### 측정
+
+세 호스트 전부 `core_probe_all=true`, 19/19(x64는 skipped 2)입니다.
+
+```text
+long_mode_stack_pointer_refused=true,non_stack_base_still_lowered=true
+```
+
+두 값이 한 줄에 있는 것이 의도입니다 — 거절이 표적이지 담요가 아님을 같은 자리에서
+보입니다.
+
+### English
+
+A defect that surfaced while re-reading the classifier to explain the x64 status. The
+design is [20260901-555](../design/20260901-555-linux-x64-stack-pointer-refusal.md); the
+log is [20260901-555](../work-logs/20260901-555-linux-x64-stack-pointer-refusal.md).
+
+#### Confirmed -- `add esp,16` was being copied into the cache verbatim
+
+Task 546's decision 3 keeps host RSP as the SysV stack and holds guest ESP as state, so in
+long mode `ESP` is **the low half of the host's stack pointer**. The classifier never
+looked at what the base register was.
+
+| Shape | Previous verdict | What actually happened |
+|---|---|---|
+| `mov eax,[esp+8]` | `kAddressSizePrefix` | reads the host stack |
+| `add esp,16` | **`kIdenticalBytes`** | writes host RSP -- **destroys the host stack pointer** |
+
+The second is worse, and having no memory operand it never entered Task 552's lowering path
+at all. It is **a hole from Task 550**, which Task 553 then wired into the emitter.
+
+Measured with the check off and on:
+
+```text
+check off:  copied=2, lowered=2, refused=2
+check on:   copied=1, lowered=2, refused=3
+```
+
+#### The cause was an unstated premise
+
+For Task 552's lowering to be correct, **guest GPR *n* must be in host GPR *n* when the
+lowered instruction runs.** That is what makes `0x67` mean anything, and it was written
+nowhere. It is now a sentence in the header. The register mapping is undecided, so for most
+registers this is **undecided**; `ESP` is the one already **decided false**.
+
+> A premise that is not written down is not kept.
+
+#### What was measured
+
+All three hosts report `core_probe_all=true`, 19 of 19 (x64 with 2 skipped).
+
+```text
+long_mode_stack_pointer_refused=true,non_stack_base_still_lowered=true
+```
+
+The two values share a line deliberately -- the refusal is shown to be targeted rather than
+a blanket, in the same place.
+
+## 2026-09-01 Task 556: 명령의 51%, block의 1.8% / 51% of instructions, 1.8% of blocks
+
+### 한국어
+
+x64가 실제 guest에서 얼마나 낼 수 있는지 쟀습니다. 설계는
+[20260901-556](../design/20260901-556-x64-emittable-fraction-census.md), 로그는
+[20260901-556](../work-logs/20260901-556-x64-emittable-fraction-census.md)입니다.
+
+`pumpit1`의 `PIU.EXE`, 14,307 block · 59,908 명령.
+
+| 항목 | 수 | 비율 |
+|---|---:|---:|
+| 복사 | 19,187 | 32.03% |
+| lowering | 11,458 | 19.13% |
+| **방출 가능** | **30,645** | **51.15%** |
+| **완결 block** | **260 / 14,307** | **1.82%** |
+
+#### 두 숫자를 함께 읽어야 합니다
+
+명령 비율만 보면 절반을 왔다고 읽게 됩니다. block은 control flow로 끝나므로, 완결
+block이 1.82%라는 것은 완결 block에서 출발해도 다음이 완결일 확률이 1.82%라는 뜻입니다 —
+**기대 연쇄 길이 약 1 block.**
+
+> 명령의 51%는 실행의 51%가 아닙니다.
+
+#### 거절 사유
+
+| 사유 | 건수 | 비중 |
+|---|---:|---:|
+| `not-a-copy-record` (control flow 등) | 12,856 | 43.9% |
+| `operand-width` (사실상 전부 `push`·`pop`) | 8,217 | 28.1% |
+| `stack-pointer` (Task 555) | 6,401 | 21.9% |
+| `silently-different` | 1,466 | 5.0% |
+| `rip-relative/lowering-declined` | 265 | 0.9% |
+| `invalid-in-long-mode` | 58 | 0.2% |
+
+**stack 계열(14,618, 거절의 50%)과 control flow(12,856, 44%)가 거의 같은 크기이고 둘 다
+있어야 연쇄가 생깁니다.** `push`를 다 낮춰도 block 끝의 `ret`이 INT3이고, 그 반대도
+같습니다. 그래서 둘이 한 묶음이고 다음 두 단위입니다.
+
+싼 항목 하나: **`INC`/`DEC r32` 805건**은 `40+r` → `FF /0`·`FF /1` 2바이트 재인코딩이고,
+가장 위험한 부류인 `silently-different`를 절반 넘게 줍니다.
+
+x87은 plan 안에 2,758건인데, **Task 557이 그 자리를 정정했습니다** — x87 거절은 전부
+`stack-pointer`이고(`[esp]`를 가리켜서) 약 1,900건은 이미 방출됩니다. 별개의 덩어리가
+아니라 **stack lowering이 함께 여는 것**입니다.
+
+#### 도구가 스스로를 검사합니다
+
+census는 방출 규칙을 다시 구현하지 않고 **실제 image를 빌드해** emitter 카운터를 읽은 뒤
+자신의 분해와 대조해 `agrees=`를 출력합니다. Windows와 Linux x64가 같은 숫자입니다.
+
+### English
+
+How much of the real guest an x64 host can emit. The design is
+[20260901-556](../design/20260901-556-x64-emittable-fraction-census.md); the log is
+[20260901-556](../work-logs/20260901-556-x64-emittable-fraction-census.md).
+
+`pumpit1`'s `PIU.EXE`: 14,307 blocks, 59,908 instructions.
+
+| Item | Count | Share |
+|---|---:|---:|
+| Copied | 19,187 | 32.03% |
+| Lowered | 11,458 | 19.13% |
+| **Emittable** | **30,645** | **51.15%** |
+| **Complete blocks** | **260 / 14,307** | **1.82%** |
+
+#### The two numbers have to be read together
+
+The instruction share alone looks half done. A block ends in control flow, so 1.82%
+complete means that from a complete block the next one is complete with probability
+1.82% -- **an expected chain of about one block.**
+
+> 51% of instructions is not 51% of execution.
+
+#### Refusal reasons
+
+| Reason | Count | Share |
+|---|---:|---:|
+| `not-a-copy-record` (control flow and friends) | 12,856 | 43.9% |
+| `operand-width` (essentially all `push` and `pop`) | 8,217 | 28.1% |
+| `stack-pointer` (Task 555) | 6,401 | 21.9% |
+| `silently-different` | 1,466 | 5.0% |
+| `rip-relative/lowering-declined` | 265 | 0.9% |
+| `invalid-in-long-mode` | 58 | 0.2% |
+
+**The stack family (14,618, half of all refusals) and control flow (12,856, 44%) are
+nearly equal, and a chain needs both.** Lower every `push` and the `ret` at the block's
+end is still an INT3, and the reverse holds too. They are one pair, and they are the next
+two units.
+
+One cheap item: **`INC`/`DEC r32`, 805**, is a two-byte re-encoding of `40+r` into `FF /0`
+and `FF /1`, and it removes more than half of `silently-different`, the most dangerous
+class.
+
+x87 is 2,758 in the plan, and **Task 557 corrected where it sits**: every x87 refusal is
+`stack-pointer`, for pointing through `[esp]`, and about 1,900 are already emitted. It is
+not a separate mass but **something the stack lowering opens with it.**
+
+#### The tool checks itself
+
+The census does not reimplement the emission rule: it **builds a real image**, reads the
+emitter's counters, and prints `agrees=` after comparing them with its own breakdown.
+Windows and Linux x64 produce the same numbers.
+
+## 2026-09-01 Task 557: `INC`/`DEC r32` 재인코딩, 그리고 x87의 자리 정정 / Re-encoded, and x87 relocated
+
+### 한국어
+
+Task 556 표에서 노력 대비 건수가 가장 좋은 항목을 처리했습니다. 설계는
+[20260901-557](../design/20260901-557-inc-dec-modrm-lowering.md), 로그는
+[20260901-557](../work-logs/20260901-557-inc-dec-modrm-lowering.md)입니다.
+
+`40+r` → `FF /0`, `48+r` → `FF /1`. **784건**이 낮춰졌습니다.
+
+| 항목 | 556 | 557 |
+|---|---:|---:|
+| 방출 가능 | 51.15% | **52.46%** |
+| `silently-different` | 1,466 | **682** |
+| 완결 block | 260 (1.82%) | **316 (2.21%)** |
+
+`inc esp`·`dec esp`는 `kStackPointerRegister`로 거절됩니다 — 낮추면 `FF C4`가 되어 host
+RSP를 쓰기 때문이고, Task 555의 구멍이 이 문으로 다시 들어오지 못하게 합니다.
+
+#### 확인됨 — 이 guest에 prefix가 붙은 `INC`/`DEC`는 없습니다
+
+805건 중 784건이 낮춰지고 21건이 남았습니다. 설계는 "805보다 적으면 prefix 형태"라고
+예상했는데 **틀렸습니다.** mnemonic별 표에 사유를 붙여 재니 남은 것은
+`inc stack-pointer 20` — `FF /0`에 `[esp+N]`이 붙은 형태입니다.
+
+#### 정정 — `operand-width`는 x87이 아니라 전부 stack 명령입니다
+
+Task 556이 `operand-width`를 "stack 명령 + x87"이라고 적은 것은 **틀렸습니다.**
+
+```text
+push  operand-width  4923
+pop   operand-width  3291     합계 8,214 / 8,217
+```
+
+x87은 거기 없습니다. **x87 거절은 전부 `stack-pointer`**이고, 이유는 x87이라서가 아니라
+`[esp]`를 가리켜서입니다. plan 안 x87 2,758건 중 **약 1,900건은 이미 방출됩니다.**
+
+> x87은 별개의 큰 덩어리가 아닙니다. 대부분 이미 되고, 나머지는 stack lowering이 함께
+> 엽니다.
+
+### English
+
+The best count-per-effort item from Task 556's table. The design is
+[20260901-557](../design/20260901-557-inc-dec-modrm-lowering.md); the log is
+[20260901-557](../work-logs/20260901-557-inc-dec-modrm-lowering.md).
+
+`40+r` becomes `FF /0` and `48+r` becomes `FF /1`. **784** instructions lowered.
+
+| Item | 556 | 557 |
+|---|---:|---:|
+| Emittable | 51.15% | **52.46%** |
+| `silently-different` | 1,466 | **682** |
+| Complete blocks | 260 (1.82%) | **316 (2.21%)** |
+
+`inc esp` and `dec esp` are refused as `kStackPointerRegister` -- lowered they would be
+`FF C4`, writing host RSP, and this keeps Task 555's hole from returning through this door.
+
+#### Confirmed -- this guest has no prefixed `INC`/`DEC`
+
+784 of 805 lowered, 21 left. The design predicted "fewer than 805 means prefixed forms
+remain"; **that was wrong.** With reasons attached to the per-mnemonic table, what remains
+is `inc stack-pointer 20` -- the `FF /0` form with an `[esp+N]` operand.
+
+#### Correction -- `operand-width` is all stack instructions, not x87
+
+Task 556 describing `operand-width` as "stack instructions + x87" was **wrong.**
+
+```text
+push  operand-width  4923
+pop   operand-width  3291     total 8,214 of 8,217
+```
+
+x87 is not there. **Every x87 refusal is `stack-pointer`**, not for being x87 but for
+pointing through `[esp]`. Of the plan's 2,758 x87 instructions, **about 1,900 are already
+emitted.**
+
+> x87 is not a separate mass. Most of it already works, and the rest comes with the stack
+> lowering.
