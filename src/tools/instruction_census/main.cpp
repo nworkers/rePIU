@@ -130,6 +130,7 @@ struct LongModeTally
     // `returns` because unlike either they are not finished when emitted: the
     // engine patches the guard and the folded base before the cache runs.
     std::uint64_t segment_overrides = 0;
+    std::uint64_t guarded_segment_loads = 0;
     std::uint64_t refused = 0;
     // Refused because the plan record is not `kCopy` at all -- every control
     // flow record, every guarded segment slot, every port I/O record. Counted
@@ -257,6 +258,8 @@ bool RecordIsEmitted(const repiu::runtime::AotInstructionRecord& record)
             // the engine before the cache runs -- the same contract the i386
             // slot has always had.
             return repiu::runtime::LongModeSegmentOverrideEmittable(record);
+        case AotInstructionKind::kGuardedSegmentLoad:
+            return repiu::runtime::LongModeGuardedSegmentLoadEmittable(record);
         default:
             return false;
     }
@@ -807,6 +810,13 @@ int main(int argc, char** argv)
                     ++long_mode.segment_overrides;
                     continue;
                 }
+                if (record.kind == repiu::runtime::AotInstructionKind::
+                                       kGuardedSegmentLoad &&
+                    repiu::runtime::LongModeGuardedSegmentLoadEmittable(record))
+                {
+                    ++long_mode.guarded_segment_loads;
+                    continue;
+                }
                 if (record.kind !=
                     repiu::runtime::AotInstructionKind::kCopy)
                 {
@@ -1044,7 +1054,8 @@ int main(int argc, char** argv)
     }
     const std::uint64_t emitted =
         long_mode.copied + long_mode.lowered + long_mode.branches +
-        long_mode.returns;
+        long_mode.returns + long_mode.segment_overrides +
+        long_mode.guarded_segment_loads;
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "  considered          " << long_mode.considered << "\n";
     std::cout << "  copied              " << long_mode.copied << "  ("
@@ -1055,6 +1066,13 @@ int main(int argc, char** argv)
               << percent(long_mode.branches, long_mode.considered) << "%)\n";
     std::cout << "  returns             " << long_mode.returns << "  ("
               << percent(long_mode.returns, long_mode.considered) << "%)\n";
+    std::cout << "  segment overrides   " << long_mode.segment_overrides << "  ("
+              << percent(long_mode.segment_overrides, long_mode.considered)
+              << "%)\n";
+    std::cout << "  guarded seg loads   "
+              << long_mode.guarded_segment_loads << "  ("
+              << percent(long_mode.guarded_segment_loads,
+                         long_mode.considered) << "%)\n";
     std::cout << "  emittable           " << emitted << "  ("
               << percent(emitted, long_mode.considered) << "%)\n";
     std::cout << "  refused             " << long_mode.refused << "  ("
@@ -1079,6 +1097,8 @@ int main(int argc, char** argv)
         long_mode_image.long_mode_return_count == long_mode.returns &&
         long_mode_image.long_mode_segment_override_count ==
             long_mode.segment_overrides &&
+        long_mode_image.long_mode_guarded_segment_load_count ==
+            long_mode.guarded_segment_loads &&
         long_mode_image.long_mode_refused_count == long_mode.refused;
     std::cout << "  emitter counters    copied="
               << long_mode_image.long_mode_copied_count
@@ -1087,6 +1107,8 @@ int main(int argc, char** argv)
               << " returns=" << long_mode_image.long_mode_return_count
               << " segments="
               << long_mode_image.long_mode_segment_override_count
+              << " segloads="
+              << long_mode_image.long_mode_guarded_segment_load_count
               << " refused=" << long_mode_image.long_mode_refused_count
               << "  agrees=" << (agrees ? "true" : "false") << "\n";
     // Task 560. The edges that had to become boundaries after all, because

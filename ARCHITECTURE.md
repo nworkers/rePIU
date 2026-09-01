@@ -1824,21 +1824,68 @@ change no flags.
 emitter는 long mode 호스트를 위한 방출 모드를 하나 갖습니다(Task 553).
 `AotCodeCacheBuildOptions::enable_long_mode_emission`이 켜지면 `kCopy`마다
 `ClassifyLongModeBytes`(Task 550)로 판정하고 `LowerLongModeBytes`(Task 552)로 낮추며,
-낮출 수 없는 것과 `kCopy`가 아닌 모든 kind는 기존 `INT3` 경계로 갑니다 — 다른 kind의
+낮출 수 없는 것과 x64 전용 slot이 아직 없는 kind는 기존 `INT3` 경계로 갑니다 — i386
 slot은 손으로 쓴 32비트 시퀀스이고 long mode가 그 중 여럿을 조용히 다르게 읽기
-때문입니다. 기본값은 `false`이므로 i386 방출은 이 판단을 지나가지 않습니다.
+때문입니다. direct branch/call/return, segment override, guarded segment load는 후속 task가
+각각 전용 x64 slot과 실행 probe를 만든 뒤 열었습니다. 기본값은 `false`이므로 i386 방출은 이 판단을 지나가지 않습니다.
 호스트 매크로가 아니라 option인 이유는 방출이 계산이어서 같은 plan에 대한 답이 모든
 호스트에서 같아야 하고, 그래야 Windows에서 그 답을 볼 수 있기 때문입니다.
 
 The emitter has one emission mode for a long-mode host (Task 553). With
 `AotCodeCacheBuildOptions::enable_long_mode_emission` on, every `kCopy` is judged by
 `ClassifyLongModeBytes` (Task 550) and lowered by `LowerLongModeBytes` (Task 552);
-anything that cannot be lowered, and every kind that is not `kCopy`, reaches the existing
-`INT3` boundary, because the other kinds' slots are hand-written 32-bit sequences that
-long mode reads differently without raising. The default is `false`, so i386 emission
+anything that cannot be lowered, and every kind without a dedicated x64 slot, reaches the
+existing `INT3` boundary, because the i386 slots are hand-written 32-bit sequences that
+long mode reads differently without raising. Later tasks opened direct branches, calls,
+returns, segment overrides, and guarded segment loads only after adding dedicated x64
+slots and execution probes. The default is `false`, so i386 emission
 never enters that judgement. It is an option rather than a host macro because emission is
 computation: the answer for a given plan must be the same on every host, which is what
 keeps it observable on Windows.
+
+Task 569부터 `kGuardedSegmentLoad`도 x64 전용 slot을 갖습니다. x64는 guest
+selector를 host `ES`/`DS`/`FS`/`GS`에 설치하지 않으므로 i386 slot의 물리
+selector 비교를 옮기지 않습니다. 대신 source GPR의 하위 16비트가 shadow
+selector와 같을 때만 원본 `MOV Sreg,r16`을 의미상 no-op으로 통과시키고, 다르면
+flags를 복원한 뒤 INT3 HLE 경계로 갑니다. 비교 전후 flags 저장·복원은 Task 559의
+stack lowering을 재사용하고 shadow access는 하위 4 GiB absolute SIB 형식입니다.
+
+guarded-load patch의 바이트 쓰기는 segment override와 같은 runtime/engine 경계를
+따릅니다. emitter가 자기 prologue를 site에 기록하고
+`PatchAotGuardedSegmentLoadSites`가 writable bytes에 shadow 주소와 i386에서만 있는
+counter 주소를 씁니다. engine은 page protection과 instruction-cache flush만
+담당합니다. 따라서 patcher는 x64 slot을 i386의 `9C` 시작이라고 가정하지 않습니다.
+
+Since Task 569, `kGuardedSegmentLoad` also has an x64-specific slot. An x64 host
+does not install guest selectors into host `ES`/`DS`/`FS`/`GS`, so the i386
+slot's physical-selector comparison is not carried over. Instead, the original
+`MOV Sreg,r16` passes as a semantic no-op only when the source GPR's low 16 bits
+equal the shadow selector. A mismatch restores flags and reaches the INT3 HLE
+boundary. Task 559's stack lowering saves and restores flags around the
+comparison, and the shadow access uses the below-4-GiB absolute SIB form.
+
+Guarded-load byte patching follows the same runtime/engine seam as segment
+overrides. The emitter records its own prologue in the site,
+`PatchAotGuardedSegmentLoadSites` writes the shadow address and the i386-only
+counter addresses into writable bytes, and the engine owns only page
+protection and instruction-cache flushing. The patcher therefore never assumes
+that an x64 slot begins with i386's `9C` layout.
+
+Task 570부터 x64 segment-override slot은 기존 absolute `disp32` 외에 비-SIB
+`base+disp8`도 허용합니다. `disp8`을 부호 확장하고 ModRM을 `mod=10`으로 바꿔
+`disp32`로 넓힌 뒤, 기존 site의 `original_displacement + live segment base` patch
+계약을 그대로 적용합니다. access 앞의 `0x67`은 long mode에서도 guest의 32비트
+base register 주소 계산을 유지합니다. guest `ESP`는 `R15D`에 있으므로 다른 operand가
+`ESP`를 가리키는 명령과 SIB 및 다른 displacement 형식은 계속 fail-closed합니다.
+
+Since Task 570, the x64 segment-override slot admits a non-SIB base-plus-disp8
+form in addition to the existing absolute disp32 form. It sign-extends disp8,
+forces ModRM to `mod=10`, widens the field to disp32, and applies the existing
+site contract of `original displacement + live segment base`. The access's
+`0x67` retains the guest's 32-bit base-register address calculation in long
+mode. Instructions naming guest `ESP` in another operand remain fail-closed
+because it lives in `R15D`; SIB and the other displacement forms remain closed
+as well.
 
 파일 책임은 다음과 같습니다.
 

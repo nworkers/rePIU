@@ -79,12 +79,12 @@ struct AotCodeCacheBuildOptions
     // that answer unobservable on Windows, which is where this project's test
     // loop actually runs.
     //
-    // The name says image rather than copy on purpose. With it on, only `kCopy`
-    // is emitted; every other kind falls to the boundary, because the slots the
-    // emitter writes for them are hand-built 32-bit sequences and long mode
-    // changes several of them without raising anything (`68 imm32` pushes eight
-    // bytes there). Lowering the copies while emitting those would recreate one
-    // layer up the silent divergence the classifier exists to prevent.
+    // The name says image rather than copy on purpose. `kCopy` goes through the
+    // classifier, while each non-copy kind remains a boundary until it gains a
+    // dedicated long-mode slot. Reusing its hand-built i386 slot is forbidden:
+    // long mode changes several without raising (`68 imm32` pushes eight bytes
+    // there). The dedicated branch, return, segment-override, and guarded-load
+    // paths below were opened one at a time with execution probes.
     //
     // Off by default, so the i386 path emits the same bytes it always has.
     bool enable_long_mode_emission = false;
@@ -129,11 +129,17 @@ struct AotAddressMapEntry
 [[nodiscard]] bool LongModeReturnDispatchAvailable();
 
 // Task 568. Whether the long-mode segment-override slot can be emitted for this
-// record. The emitter admits one addressing shape out of many and refuses FS
-// and GS outright, so "how many segment overrides are emitted" is not the same
-// number as "how many exist". Exposed for the same reason as the line above:
-// so the census asks instead of keeping a copy of the rule that goes stale.
+// record. The emitter admits the absolute-disp32 shape and, since Task 570, a
+// non-SIB base-plus-disp8 shape. It refuses FS and GS outright, so "how many
+// segment overrides are emitted" is not the same number as "how many exist".
+// Exposed so the census asks instead of keeping a copy of a rule that drifts.
 [[nodiscard]] bool LongModeSegmentOverrideEmittable(
+    const AotInstructionRecord& instruction);
+
+// Task 569. Whether a guarded register-source segment load has the one shape
+// the long-mode slot can preserve as a semantic no-op. Kept beside the emitter
+// so the census does not duplicate the admission rule.
+[[nodiscard]] bool LongModeGuardedSegmentLoadEmittable(
     const AotInstructionRecord& instruction);
 
 struct AotCodeCacheFixup
@@ -330,6 +336,15 @@ struct AotGuardedSegmentLoadSite
     std::uint32_t fallback_offset = 0;
     std::uint8_t segment_register = 0xFFU;
     std::uint8_t gpr_register = 0xFFU;
+    // Task 569. Re-resolution can close the slot with INT3 and later reopen it.
+    // The emitter therefore carries the bytes it actually wrote rather than
+    // making the patcher assume the i386 `9C` opening.
+    std::uint8_t guard_prologue[kAotSegmentGuardPrologueBytes] = {};
+    std::uint8_t guard_prologue_size = 0;
+    // The i386 slot keeps its two telemetry operands. The long-mode slot has
+    // none, because their host addresses are not guaranteed to fit its abs32
+    // operands in an x64 process.
+    bool has_counter_operands = false;
 };
 
 // A guarded MOV r32,Sreg slot. It compares the physical selector with the
@@ -433,6 +448,9 @@ struct AotCodeCacheImage
     // operands are zero here. A count rising without the patcher means the
     // census sees emission where execution would read a base of zero.
     std::uint32_t long_mode_segment_override_count = 0;
+    // Task 569. Only a source equal to the shadow is admitted as a no-op; a
+    // mismatch reaches the existing segment-load HLE boundary.
+    std::uint32_t long_mode_guarded_segment_load_count = 0;
     std::uint32_t resolved_fixup_count = 0;
     std::uint32_t external_fixup_count = 0;
     std::uint32_t unsupported_branch_count = 0;

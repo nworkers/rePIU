@@ -386,8 +386,8 @@ void AppendImmediate32(std::vector<std::uint8_t>* bytes, std::uint32_t value)
 // head a second time. A second listing is another copy of the same fact, which
 // is what this whole change exists to remove; reading the buffer back cannot
 // disagree with what was written. Call once the slot's head is emitted.
-void RecordSegmentGuardPrologue(const AotCodeCacheImage& image,
-                                AotSegmentOverrideSite* const site)
+template <typename Site>
+void RecordGuardPrologue(const AotCodeCacheImage& image, Site* const site)
 {
     if (site->cache_offset > image.bytes.size())
     {
@@ -399,6 +399,26 @@ void RecordSegmentGuardPrologue(const AotCodeCacheImage& image,
     std::memcpy(site->guard_prologue,
                 image.bytes.data() + site->cache_offset, count);
     site->guard_prologue_size = static_cast<std::uint8_t>(count);
+}
+
+bool LongModeGuardedSegmentLoadEmittableImpl(
+    const AotInstructionRecord& instruction)
+{
+    if (instruction.kind != AotInstructionKind::kGuardedSegmentLoad ||
+        instruction.gpr_register > 7U || instruction.gpr_register == 4U)
+    {
+        return false;
+    }
+    return instruction.segment_register == 0U ||
+        instruction.segment_register == 3U ||
+        instruction.segment_register == 4U ||
+        instruction.segment_register == 5U;
+}
+
+bool IsLongModeStackPointerRegister(const ZydisRegister reg)
+{
+    return reg == ZYDIS_REGISTER_RSP || reg == ZYDIS_REGISTER_ESP ||
+        reg == ZYDIS_REGISTER_SP || reg == ZYDIS_REGISTER_SPL;
 }
 
 // Task 568. Whether the long-mode segment-override slot can be emitted for this
@@ -440,15 +460,35 @@ bool LongModeSegmentOverrideEmittable(const AotInstructionRecord& instruction,
     {
         return false;
     }
-    // One shape only: the absolute `disp32` form, `mod=00 rm=101`, which is what
-    // the entry chain stops on. A base or index form needs the folded
-    // displacement plus a `0x67` and nothing else, but opening both at once
-    // would make two things to verify at the same time.
+    // Task 570. Keep the proven absolute form and admit the first base form the
+    // reachable chain needs: non-SIB mod=01 disp8. It is widened to mod=10
+    // disp32 by the emitter so the live segment base has somewhere to be
+    // folded. Other ModRM shapes stay closed until reachability asks for one.
+    const bool absolute_disp32 = insn.raw.modrm.mod == 0U &&
+        insn.raw.modrm.rm == 5U && insn.raw.disp.size == 32U;
+    const bool base_disp8 = insn.raw.modrm.mod == 1U &&
+        insn.raw.modrm.rm != 4U && insn.raw.disp.size == 8U;
     if ((insn.attributes & ZYDIS_ATTRIB_HAS_MODRM) == 0U ||
-        insn.raw.modrm.mod != 0U || insn.raw.modrm.rm != 5U ||
-        insn.raw.disp.size != 32U || insn.opcode_map != ZYDIS_OPCODE_MAP_DEFAULT)
+        (!absolute_disp32 && !base_disp8) ||
+        insn.opcode_map != ZYDIS_OPCODE_MAP_DEFAULT ||
+        insn.raw.disp.offset + insn.raw.disp.size / 8U > insn.length)
     {
         return false;
+    }
+    // Guest ESP lives in R15D. A segment access that names ESP in another
+    // operand would otherwise read or write host RSP even though its memory
+    // address happened to be safe.
+    for (std::uint8_t index = 0; index < insn.operand_count; ++index)
+    {
+        const ZydisDecodedOperand& operand = operands[index];
+        if ((operand.type == ZYDIS_OPERAND_TYPE_REGISTER &&
+             IsLongModeStackPointerRegister(operand.reg.value)) ||
+            (operand.type == ZYDIS_OPERAND_TYPE_MEMORY &&
+             (IsLongModeStackPointerRegister(operand.mem.base) ||
+              IsLongModeStackPointerRegister(operand.mem.index))))
+        {
+            return false;
+        }
     }
     if (insn.raw.modrm.offset < insn.raw.prefix_count ||
         insn.raw.modrm.offset >= insn.length)
@@ -525,9 +565,18 @@ bool EmitLongModeSegmentOverride(const AotInstructionRecord& instruction,
     site.guest_source = instruction.guest_address;
     site.cache_offset = static_cast<std::uint32_t>(image->bytes.size());
     site.segment_register = instruction.segment_override_register;
-    std::memcpy(&site.original_displacement,
-                instruction.bytes.data() + insn.raw.disp.offset,
-                sizeof(site.original_displacement));
+    if (insn.raw.disp.size == 32U)
+    {
+        std::memcpy(&site.original_displacement,
+                    instruction.bytes.data() + insn.raw.disp.offset,
+                    sizeof(site.original_displacement));
+    }
+    else
+    {
+        site.original_displacement = static_cast<std::int32_t>(
+            static_cast<std::int8_t>(
+                instruction.bytes[insn.raw.disp.offset]));
+    }
 
     std::size_t instructions = 0U;
     image->bytes.insert(image->bytes.end(), flags_save,
@@ -572,7 +621,9 @@ bool EmitLongModeSegmentOverride(const AotInstructionRecord& instruction,
     instructions += restore_instructions;
 
     // The access itself: every prefix but the override, then `0x67`, then the
-    // opcode, then ModRM with `rm` moved to the SIB form.
+    // opcode. The absolute form moves `rm` to a no-base SIB so it does not turn
+    // RIP-relative. Task 570's base+disp8 form keeps `rm` and widens `mod` to
+    // disp32, preserving the guest base register.
     for (std::uint32_t index = 0; index < prefix_count; ++index)
     {
         if (instruction.bytes[index] != segment_prefix)
@@ -585,12 +636,23 @@ bool EmitLongModeSegmentOverride(const AotInstructionRecord& instruction,
     {
         image->bytes.push_back(instruction.bytes[index]);
     }
-    image->bytes.push_back(static_cast<std::uint8_t>(
-        (instruction.bytes[modrm_offset] & 0x38U) | 0x04U));
-    image->bytes.push_back(0x25U);
+    const bool absolute_disp32 = insn.raw.modrm.mod == 0U;
+    if (absolute_disp32)
+    {
+        image->bytes.push_back(static_cast<std::uint8_t>(
+            (instruction.bytes[modrm_offset] & 0x38U) | 0x04U));
+        image->bytes.push_back(0x25U);
+    }
+    else
+    {
+        image->bytes.push_back(static_cast<std::uint8_t>(
+            (instruction.bytes[modrm_offset] & 0x3FU) | 0x80U));
+    }
     site.displacement_offset = static_cast<std::uint32_t>(image->bytes.size());
     AppendImmediate32(&image->bytes, 0U);
-    for (std::size_t index = insn.raw.disp.offset + 4U;
+    const std::size_t original_displacement_bytes = insn.raw.disp.size / 8U;
+    for (std::size_t index =
+             insn.raw.disp.offset + original_displacement_bytes;
          index < instruction.bytes.size(); ++index)
     {
         image->bytes.push_back(instruction.bytes[index]);
@@ -609,9 +671,97 @@ bool EmitLongModeSegmentOverride(const AotInstructionRecord& instruction,
                              branch_offset + 1U, false});
     ++instructions;
 
-    RecordSegmentGuardPrologue(*image, &site);
+    RecordGuardPrologue(*image, &site);
     image->segment_override_sites.push_back(site);
     ++image->long_mode_segment_override_count;
+    *emitted_instructions = instructions;
+    return true;
+}
+
+// Task 569. A register-source segment load that changes no guest-visible
+// selector state. Long mode never installs guest selectors into host segment
+// registers, so the i386 physical-selector comparison is not meaningful here.
+// Equality with the shadow proves this load is a no-op; a mismatch restores
+// flags and reaches the existing HLE boundary.
+bool EmitLongModeGuardedSegmentLoad(
+    const AotInstructionRecord& instruction,
+    AotCodeCacheImage* const image,
+    std::size_t* const emitted_instructions)
+{
+    if (image == nullptr || emitted_instructions == nullptr ||
+        !LongModeGuardedSegmentLoadEmittableImpl(instruction))
+    {
+        return false;
+    }
+
+    std::uint8_t flags_save[kMaxLoweredBytes] = {};
+    std::uint8_t flags_restore[kMaxLoweredBytes] = {};
+    std::size_t save_count = 0U;
+    std::size_t restore_count = 0U;
+    std::size_t save_instructions = 0U;
+    std::size_t restore_instructions = 0U;
+    const std::uint8_t pushfd = 0x9CU;
+    const std::uint8_t popfd = 0x9DU;
+    if (!LowerLongModeBytes(&pushfd, 1U, flags_save, &save_count,
+                            &save_instructions) ||
+        !LowerLongModeBytes(&popfd, 1U, flags_restore, &restore_count,
+                            &restore_instructions))
+    {
+        return false;
+    }
+
+    AotGuardedSegmentLoadSite site;
+    site.guest_source = instruction.guest_address;
+    site.cache_offset = static_cast<std::uint32_t>(image->bytes.size());
+    site.segment_register = instruction.segment_register;
+    site.gpr_register = instruction.gpr_register;
+
+    std::size_t instructions = 0U;
+    image->bytes.insert(image->bytes.end(), flags_save,
+                        flags_save + save_count);
+    instructions += save_instructions;
+
+    // cmp word ptr [abs32], source-r16. The address-size override and absolute
+    // SIB form prevent long mode from interpreting the disp32 as RIP relative.
+    image->bytes.insert(image->bytes.end(), {0x67U, 0x66U, 0x39U});
+    image->bytes.push_back(static_cast<std::uint8_t>(
+        0x04U | (instruction.gpr_register << 3U)));
+    image->bytes.push_back(0x25U);
+    site.shadow_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    ++instructions;
+
+    // Equality skips the mismatch restore and its INT3.
+    image->bytes.push_back(0x74U);
+    image->bytes.push_back(static_cast<std::uint8_t>(restore_count + 1U));
+    ++instructions;
+
+    image->bytes.insert(image->bytes.end(), flags_restore,
+                        flags_restore + restore_count);
+    instructions += restore_instructions;
+    site.fallback_offset = static_cast<std::uint32_t>(image->bytes.size());
+    image->bytes.push_back(0xCCU);
+    ++instructions;
+    image->fixups.push_back({AotFixupKind::kHleBoundary,
+                             instruction.guest_address, 0U,
+                             site.fallback_offset, false});
+
+    image->bytes.insert(image->bytes.end(), flags_restore,
+                        flags_restore + restore_count);
+    instructions += restore_instructions;
+    const std::uint32_t branch_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendRel32(&image->bytes, 0xE9U);
+    image->fixups.push_back({AotFixupKind::kBlockFallthrough,
+                             instruction.guest_address,
+                             instruction.guest_address + instruction.length,
+                             branch_offset + 1U, false});
+    ++instructions;
+
+    RecordGuardPrologue(*image, &site);
+    image->guarded_segment_load_sites.push_back(site);
+    ++image->long_mode_guarded_segment_load_count;
     *emitted_instructions = instructions;
     return true;
 }
@@ -1176,7 +1326,7 @@ bool EmitSegmentOverrideSlot(const AotInstructionRecord& instruction,
         std::memcpy(image->bytes.data() + dispatch_jump_patch,
                     &relative, sizeof(relative));
     }
-    RecordSegmentGuardPrologue(*image, &site);
+    RecordGuardPrologue(*image, &site);
     image->segment_override_sites.push_back(site);
     return true;
 }
@@ -1289,6 +1439,8 @@ bool EmitGuardedSegmentLoadSlot(const AotInstructionRecord& instruction,
     image->bytes.insert(image->bytes.end(), {0x58U, 0x9DU});
     site.fallback_offset = static_cast<std::uint32_t>(image->bytes.size());
     image->bytes.push_back(0xCCU);
+    site.has_counter_operands = true;
+    RecordGuardPrologue(*image, &site);
     image->guarded_segment_load_sites.push_back(site);
     return true;
 }
@@ -1538,6 +1690,12 @@ bool LongModeSegmentOverrideEmittable(const AotInstructionRecord& instruction)
     return LongModeSegmentOverrideEmittable(instruction, nullptr, nullptr);
 }
 
+bool LongModeGuardedSegmentLoadEmittable(
+    const AotInstructionRecord& instruction)
+{
+    return LongModeGuardedSegmentLoadEmittableImpl(instruction);
+}
+
 bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                             AotCodeCacheImage* image)
 {
@@ -1605,10 +1763,12 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
             map.guest_address = instruction.guest_address;
             map.cache_offset = cache_offset;
             map.guest_length = instruction.length;
-            // Task 553. On a long-mode host the emitter's subset is `kCopy`
-            // alone. Every other kind's slot is a hand-built 32-bit sequence,
-            // and long mode reinterprets several of them without raising, so
-            // they reach the boundary here rather than being emitted wrong.
+            // Task 553. On a long-mode host `kCopy` goes through the byte
+            // classifier, while each non-copy kind needs its own long-mode
+            // slot. Reusing a hand-built i386 slot is forbidden because long
+            // mode reinterprets several of them without raising. Branches,
+            // returns, segment overrides, and guarded loads were opened here
+            // only after gaining dedicated sequences and execution probes.
             //
             // The whole long-mode decision lives in this one branch rather than
             // being spread through the cases below, so that reading the switch
@@ -1618,6 +1778,10 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                 std::size_t emitted_instructions = 0U;
                 if (EmitLongModeDirectBranch(instruction, image,
                                              &emitted_instructions) ||
+                    (instruction.kind ==
+                         AotInstructionKind::kGuardedSegmentLoad &&
+                     EmitLongModeGuardedSegmentLoad(
+                         instruction, image, &emitted_instructions)) ||
                     (instruction.kind ==
                          AotInstructionKind::kSegmentOverrideMem &&
                      options.enable_long_mode_segment_override &&

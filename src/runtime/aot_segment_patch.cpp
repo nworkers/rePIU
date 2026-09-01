@@ -90,4 +90,58 @@ std::uint32_t PatchAotSegmentOverrideSites(
     return processed;
 }
 
+std::uint32_t PatchAotGuardedSegmentLoadSites(
+    std::uint8_t* const bytes,
+    const std::vector<AotGuardedSegmentLoadSite>& sites,
+    const AotSegmentTable& table,
+    const std::uint32_t success_counter_address,
+    const std::uint32_t fallback_counter_address,
+    AotGuardedSegmentLoadPatchStats* const stats)
+{
+    if (bytes == nullptr)
+    {
+        return 0U;
+    }
+    std::uint32_t processed = 0U;
+    for (const AotGuardedSegmentLoadSite& site : sites)
+    {
+        ++processed;
+        const bool counters_ready = !site.has_counter_operands ||
+            (success_counter_address != 0U &&
+             fallback_counter_address != 0U);
+        if (site.segment_register >= 6U ||
+            table.segments[site.segment_register].shadow_address == 0U ||
+            site.guard_prologue_size == 0U || !counters_ready)
+        {
+            bytes[site.cache_offset] = 0xCCU;
+            if (stats != nullptr)
+            {
+                ++stats->unresolved_site_count;
+            }
+            continue;
+        }
+
+        std::memcpy(bytes + site.cache_offset, site.guard_prologue,
+                    site.guard_prologue_size);
+        const std::uint32_t shadow_address =
+            table.segments[site.segment_register].shadow_address;
+        std::memcpy(bytes + site.shadow_address_offset, &shadow_address,
+                    sizeof(shadow_address));
+        if (site.has_counter_operands)
+        {
+            std::memcpy(bytes + site.success_counter_address_offset,
+                        &success_counter_address,
+                        sizeof(success_counter_address));
+            std::memcpy(bytes + site.fallback_counter_address_offset,
+                        &fallback_counter_address,
+                        sizeof(fallback_counter_address));
+        }
+        if (stats != nullptr)
+        {
+            ++stats->native_site_count;
+        }
+    }
+    return processed;
+}
+
 }  // namespace repiu::runtime

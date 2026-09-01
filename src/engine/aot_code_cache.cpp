@@ -1563,36 +1563,18 @@ std::uint32_t ReResolveWin32AotSegmentOverrides(
         &placement->guarded_segment_load_success_count);
     const std::uintptr_t load_fallback_address = reinterpret_cast<std::uintptr_t>(
         &placement->guarded_segment_load_fallback_count);
-    for (const runtime::AotGuardedSegmentLoadSite& site :
-         placement->guarded_segment_load_sites)
+    runtime::AotGuardedSegmentLoadPatchStats load_stats;
+    const std::uint32_t load_success = load_success_address <= UINT32_MAX
+        ? static_cast<std::uint32_t>(load_success_address) : 0U;
+    const std::uint32_t load_fallback = load_fallback_address <= UINT32_MAX
+        ? static_cast<std::uint32_t>(load_fallback_address) : 0U;
+    processed += runtime::PatchAotGuardedSegmentLoadSites(
+        bytes, placement->guarded_segment_load_sites, *segment_table,
+        load_success, load_fallback, &load_stats);
+    if (stats != nullptr)
     {
-        ++processed;
-        const std::uint8_t seg = site.segment_register;
-        if (seg >= 6U ||
-            segment_table->segments[seg].shadow_address == 0U ||
-            load_success_address > UINT32_MAX ||
-            load_fallback_address > UINT32_MAX)
-        {
-            bytes[site.cache_offset] = 0xCCU;
-            continue;
-        }
-        bytes[site.cache_offset] = 0x9CU;
-        const std::uint32_t shadow_address =
-            segment_table->segments[seg].shadow_address;
-        const std::uint32_t success =
-            static_cast<std::uint32_t>(load_success_address);
-        const std::uint32_t fallback =
-            static_cast<std::uint32_t>(load_fallback_address);
-        std::memcpy(bytes + site.shadow_address_offset,
-                    &shadow_address, sizeof(shadow_address));
-        std::memcpy(bytes + site.success_counter_address_offset,
-                    &success, sizeof(success));
-        std::memcpy(bytes + site.fallback_counter_address_offset,
-                    &fallback, sizeof(fallback));
-        if (stats != nullptr)
-        {
-            ++stats->guarded_load_site_count;
-        }
+        stats->guarded_load_site_count += load_stats.native_site_count;
+        stats->unresolved_site_count += load_stats.unresolved_site_count;
     }
     const std::uintptr_t success_address = reinterpret_cast<std::uintptr_t>(
         &placement->guarded_segment_pop_success_count);

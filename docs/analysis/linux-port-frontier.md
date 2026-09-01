@@ -5091,3 +5091,152 @@ reachable          8       11
 serviced          12       13
 first stop     26 8b 1d   8e c0   (MOV ES, AX)
 ```
+
+## 3.14 Task 569 — segment load 한 번이 일곱 block을 열었다
+
+x64 guarded segment-load slot을 만들고 실제 emitted bytes로 검증했다. 설계는
+[20260902-569](../design/20260902-569-linux-x64-guarded-segment-load.md), 실행 결과는
+[작업 기록](../work-logs/20260902-569-linux-x64-guarded-segment-load.md)에 있다.
+
+x64는 guest selector를 host segment register에 설치하지 않는다. 따라서 i386
+slot처럼 host `ES`까지 비교하면 guest 상태가 아니라 host ABI를 묻게 된다. x64
+slot은 source의 하위 16비트와 shadow selector만 비교한다. 같으면 원본
+`MOV ES,AX`는 guest-visible 상태를 바꾸지 않는 no-op이고, 다르면 descriptor base까지
+바꿔야 하므로 flags를 복원하고 HLE 경계로 간다.
+
+실제 실행 probe는 세 가지를 확인했다.
+
+- `AX == shadow ES`: 다음 marker 실행, `EAX`와 flags 및 guest ESP 보존.
+- `AX != shadow ES`: marker 미실행, slot 내부 INT3를 정확히 한 번 관측.
+- unresolved → native 재patch: 첫 바이트 `CC` 뒤 원래 x64 prologue가 복원되고
+  일치 경로가 다시 실행됨.
+
+원본 `pumpipx3/PIU/PIU.EXE` census 결과는 다음과 같다.
+
+| 항목 | Task 568 | Task 569 |
+|---|---:|---:|
+| 도달 가능 block | 11 | **18** |
+| serviced block | 13 | **16** |
+
+현재 전체 수치는 complete block **84.83%**, emittable instruction **97.77%**다.
+이 백분율은 이전 문서의 수치와 순증 비교로 쓰지 않는다. 현재 census는 segment
+override와 guarded load를 headline `emittable` 합에 포함하고, 현재 원본의 planner
+수치도 함께 다시 계산한다. emitter 자체의 비교 계약은 `agrees=true`다.
+
+새 첫 정지는 `0x10fc27d`, `26 8a 4f ff` = `mov cl, es:[edi-1]`이다. kind는 다시
+`kSegmentOverrideMem`이지만 Task 567/568이 연 absolute disp32가 아니라
+**base + disp8** 형태다. 다음 단위는 segment 의미를 새로 만들 일이 아니라, 검증된
+base fold와 shadow guard를 일반 ModRM 주소 형식에 합성하는 일이다.
+
+---
+
+## 3.14 (English) Task 569 — one segment load opened seven blocks
+
+The x64 guarded segment-load slot was built and verified by executing the
+actual emitted bytes. The design is
+[20260902-569](../design/20260902-569-linux-x64-guarded-segment-load.md), and the
+results are in the
+[work log](../work-logs/20260902-569-linux-x64-guarded-segment-load.md).
+
+An x64 host does not install guest selectors in host segment registers.
+Carrying over the i386 slot's comparison with host `ES` would therefore ask
+about the host ABI, not guest state. The x64 slot compares only the source's
+low 16 bits with the shadow selector. Equality makes the original `MOV ES,AX`
+a guest-visible no-op; a mismatch requires changing the descriptor base too,
+so it restores flags and reaches HLE.
+
+The execution probe confirmed three paths:
+
+- `AX == shadow ES`: the following marker runs and `EAX`, flags, and guest ESP
+  are preserved;
+- `AX != shadow ES`: the marker does not run and the slot's INT3 is observed
+  exactly once;
+- unresolved to native re-patch: after the first byte becomes `CC`, the
+  original x64 prologue is restored and the matching path runs again.
+
+The census over the original `pumpipx3/PIU/PIU.EXE` reports:
+
+| Item | Task 568 | Task 569 |
+|---|---:|---:|
+| Reachable blocks | 11 | **18** |
+| Serviced blocks | 13 | **16** |
+
+The current totals are **84.83%** complete blocks and **97.77%** emittable
+instructions. These percentages are not used as a like-for-like incremental
+comparison with the older document: the current headline includes segment
+overrides and guarded loads in `emittable`, and the current planner totals were
+recomputed. The emitter/census contract itself reports `agrees=true`.
+
+The new first stop is `26 8a 4f ff` at `0x10fc27d`,
+`mov cl, es:[edi-1]`. It is again `kSegmentOverrideMem`, but unlike the absolute
+disp32 form opened by Tasks 567 and 568, this is a **base plus disp8** form. The
+next unit needs no new segment semantics; it needs to compose the verified base
+fold and shadow guard with a general ModRM address form.
+
+## 3.15 Task 570 — base+disp8 하나가 열 block을 열었다
+
+설계는 [20260902-570](../design/20260902-570-linux-x64-segment-base-disp8.md),
+실행 증거는 [작업 기록](../work-logs/20260902-570-linux-x64-segment-base-disp8.md)에
+있다.
+
+`26 8a 4f ff`의 핵심은 segment가 아니라 displacement 폭이었다. guest의 `-1`을
+부호 확장해 `disp32`로 만들고 ModRM을 `mod=01`에서 `mod=10`으로 바꾸면, Task 568의
+patcher가 똑같이 `-1 + live ES base`를 쓸 수 있다. `0x67`을 붙였으므로 long mode의
+주소 계산도 32비트 `EDI`를 사용한다.
+
+실제 emitted bytes probe는 새 base+disp8 slot을 기존 absolute slot보다 먼저 두었다.
+selector가 맞으면 `EDI + ES_base - 1`의 `0x5a`가 `CL`에 들어가고 이어서 absolute
+load도 `0xfeedface`를 읽었다. selector가 다르면 새 첫 slot에서 INT3가 한 번 발생해
+두 access 모두 실행되지 않았다. 두 site를 HLE로 닫았다가 native로 다시 열어도 두
+값이 다시 관측됐다.
+
+| 항목 | Task 569 | Task 570 |
+|---|---:|---:|
+| segment override emitted | 4 | **7** |
+| emittable instruction | 72,672 | **72,675** |
+| complete block | 14,733 | **14,736** |
+| 도달 가능 block | 18 | **28** |
+| serviced block | 16 | **18** |
+
+emitter와 census는 `agrees=true`다. 첫 정지는 `0x10fc2d5`, 바이트 `1f`의 plain
+`POP DS`, planner kind `kGuardedSegmentPop`으로 이동했다. i386 slot은 host의 물리
+segment selector와 guest stack word 및 shadow selector를 비교하지만, x64는 guest
+selector를 host `DS`에 설치하지 않는다. 다음 단위는 Task 569의 원칙처럼 physical
+selector 비교를 옮기지 않고, stack word가 shadow와 같을 때 selector load를 의미상
+no-op으로 처리하며 guest ESP만 4 증가시키는 x64 전용 slot이어야 한다.
+
+---
+
+## 3.15 (English) Task 570 — one base-plus-disp8 opened ten blocks
+
+The design is [20260902-570](../design/20260902-570-linux-x64-segment-base-disp8.md),
+and the execution evidence is in the
+[work log](../work-logs/20260902-570-linux-x64-segment-base-disp8.md).
+
+The essential difference in `26 8a 4f ff` was displacement width, not segment
+semantics. Sign-extending guest `-1` to disp32 and changing ModRM from `mod=01`
+to `mod=10` lets Task 568's patcher write the same `-1 + live ES base`. The
+`0x67` makes long mode use the guest's 32-bit `EDI` address calculation.
+
+The actual emitted-byte probe puts the new base-plus-disp8 slot before the
+existing absolute slot. With a matching selector, the `0x5a` at
+`EDI + ES_base - 1` enters `CL` and the following absolute load reads
+`0xfeedface`. With a mismatch, one INT3 occurs in the new first slot and neither
+access runs. Closing both sites to HLE and resolving them back to native makes
+both values observable again.
+
+| Item | Task 569 | Task 570 |
+|---|---:|---:|
+| Segment overrides emitted | 4 | **7** |
+| Emittable instructions | 72,672 | **72,675** |
+| Complete blocks | 14,733 | **14,736** |
+| Reachable blocks | 18 | **28** |
+| Serviced blocks | 16 | **18** |
+
+The emitter and census report `agrees=true`. The first stop moved to plain
+`POP DS` (`1f`) at `0x10fc2d5`, planner kind `kGuardedSegmentPop`. The i386 slot
+compares the host's physical segment selector with the guest stack word and the
+shadow selector, but x64 never installs the guest selector in host `DS`. The
+next unit should follow Task 569's rule: do not carry over the physical-selector
+comparison; treat the load as a semantic no-op when the stack word equals the
+shadow, while advancing guest ESP by four in a dedicated x64 slot.

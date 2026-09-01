@@ -51,6 +51,12 @@ struct AotSegmentOverridePatchStats
     std::uint32_t unresolved_site_count = 0;
 };
 
+struct AotGuardedSegmentLoadPatchStats
+{
+    std::uint32_t native_site_count = 0;
+    std::uint32_t unresolved_site_count = 0;
+};
+
 // Patch every segment-override site in `sites` into `bytes`, which must already
 // be writable and must be the base of the placed image the offsets refer to.
 // Returns how many sites were considered.
@@ -59,5 +65,16 @@ std::uint32_t PatchAotSegmentOverrideSites(
     const std::vector<AotSegmentOverrideSite>& sites,
     const AotSegmentTable& table,
     AotSegmentOverridePatchStats* stats);
+
+// Patch guarded segment-load sites into already-writable image bytes. Counter
+// addresses are required only by i386 sites that declare counter operands;
+// long-mode sites patch only the shadow selector address.
+std::uint32_t PatchAotGuardedSegmentLoadSites(
+    std::uint8_t* bytes,
+    const std::vector<AotGuardedSegmentLoadSite>& sites,
+    const AotSegmentTable& table,
+    std::uint32_t success_counter_address,
+    std::uint32_t fallback_counter_address,
+    AotGuardedSegmentLoadPatchStats* stats);
 
 }  // namespace repiu::runtime

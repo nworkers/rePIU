@@ -903,7 +903,7 @@ repiu::platform::FaultDisposition OnSegmentBoundary(
     return repiu::platform::FaultDisposition::kResume;
 }
 
-// Task 567. The segment-override slot, patched and then run both ways.
+// Tasks 567 and 570. The segment-override slots, patched and run both ways.
 //
 // The guard is the whole point of the slot, and a probe that only ran the
 // matching case would not be able to tell a guard from its absence -- the
@@ -916,8 +916,9 @@ repiu::platform::FaultDisposition OnSegmentBoundary(
 // by doing the patch in the test that claims correctness.
 bool ProbeSegmentOverride()
 {
-    // 26 8B 1D <disp32>: mov ebx, es:[disp32]. The shape Task 565's chain
-    // stopped on, and the one this unit admits.
+    // Put Task 570's base+disp8 form first. A mismatch therefore traps in the
+    // new slot before either access, while a match also reaches Task 567's
+    // absolute form and keeps that earlier contract covered.
     AotTranslationPlan plan;
     plan.valid = true;
     plan.entry_address = kGuestBase;
@@ -927,17 +928,24 @@ bool ProbeSegmentOverride()
     access.guest_address = kGuestBase;
     access.kind = AotInstructionKind::kSegmentOverrideMem;
     access.segment_override_register = 0U;  // ES
-    access.bytes = {0x26U, 0x8BU, 0x1DU, 0x40U, 0x00U, 0x00U, 0x00U};
-    access.length = 7U;
+    access.bytes = {0x26U, 0x8AU, 0x4FU, 0xFFU};  // mov cl,es:[edi-1]
+    access.length = 4U;
     block.instructions.push_back(access);
+    AotInstructionRecord absolute;
+    absolute.guest_address = kGuestBase + 4U;
+    absolute.kind = AotInstructionKind::kSegmentOverrideMem;
+    absolute.segment_override_register = 0U;  // ES
+    absolute.bytes = {0x26U, 0x8BU, 0x1DU, 0x40U, 0x00U, 0x00U, 0x00U};
+    absolute.length = 7U;
+    block.instructions.push_back(absolute);
     AotInstructionRecord tail;
-    tail.guest_address = kGuestBase + 7U;
+    tail.guest_address = kGuestBase + 11U;
     tail.kind = AotInstructionKind::kCopy;
     tail.bytes = {0x90U};
     tail.length = 1U;
     block.instructions.push_back(tail);
     AotInstructionRecord closing;
-    closing.guest_address = kGuestBase + 8U;
+    closing.guest_address = kGuestBase + 12U;
     closing.kind = AotInstructionKind::kReturn;
     closing.bytes = {0xC3U};
     closing.length = 1U;
@@ -949,8 +957,8 @@ bool ProbeSegmentOverride()
     options.enable_long_mode_segment_override = true;
     AotCodeCacheImage image;
     if (!BuildAotCodeCacheImage(plan, options, &image) || !image.valid ||
-        image.long_mode_segment_override_count != 1U ||
-        image.segment_override_sites.size() != 1U)
+        image.long_mode_segment_override_count != 2U ||
+        image.segment_override_sites.size() != 2U)
     {
         std::cout << "guest_segment_override=false slots="
                   << image.long_mode_segment_override_count << " message=\""
@@ -959,7 +967,7 @@ bool ProbeSegmentOverride()
     }
 
     const PlacedProgram placed =
-        PlaceImage("segment", image, kGuestBase + 7U);
+        PlaceImage("segment", image, kGuestBase + 11U);
     if (!placed.valid)
     {
         std::cout << "guest_segment_override=false\n";
@@ -968,20 +976,23 @@ bool ProbeSegmentOverride()
 
     // The guest data the fold has to reach, and the shadow selector the guard
     // reads. Both live in the writable half, whose address is below 4 GiB.
-    constexpr std::uint32_t kSegmentBase = 0x100U;
     constexpr std::uint32_t kGuestDisplacement = 0x40U;
     constexpr std::uint16_t kSelector = 0x0024U;
     constexpr std::uint32_t kValue = 0xFEEDFACEU;
+    constexpr std::uint8_t kByteValue = 0x5AU;
     const std::uint32_t shadow_address = placed.data_address;
-    const std::uint32_t data_address =
+    const std::uint32_t absolute_data_address =
         placed.data_address + 0x200U;
     // The fold: the access must reach base + displacement, so the base is
     // chosen to land the sum on the data.
-    const std::uint32_t folded = data_address - kGuestDisplacement;
+    const std::uint32_t folded =
+        absolute_data_address - kGuestDisplacement;
+    const std::uint32_t byte_data_address = placed.data_address + 0x240U;
+    const std::uint32_t guest_edi = byte_data_address - folded + 1U;
     std::memcpy(placed.data + 0x200U, &kValue, sizeof(kValue));
+    std::memcpy(placed.data + 0x240U, &kByteValue, sizeof(kByteValue));
     std::uint16_t shadow = kSelector;
     std::memcpy(placed.data, &shadow, sizeof(shadow));
-    (void)kSegmentBase;
 
     // Task 568. Patch with the engine's own patcher, not by hand.
     //
@@ -1019,8 +1030,8 @@ bool ProbeSegmentOverride()
         repiu::runtime::PatchAotSegmentOverrideSites(
             placed.code, image.segment_override_sites, segment_table,
             &patch_stats);
-    bool ok = Check("segment_patcher_sites", patched, 1U);
-    ok = Check("segment_patcher_native", patch_stats.native_site_count, 1U) &&
+    bool ok = Check("segment_patcher_sites", patched, 2U);
+    ok = Check("segment_patcher_native", patch_stats.native_site_count, 2U) &&
          ok;
     if (!repiu::platform::FlushInstructionCacheRange(placed.code, kCodeBytes))
     {
@@ -1032,8 +1043,12 @@ bool ProbeSegmentOverride()
     const std::uint32_t stack_top = placed.data_address + 0x800U;
     GuestRegisterProbeState matched;
     matched.gpr[kEsp] = stack_top;
+    matched.gpr[kEcx] = 0xAABBCCDDU;
+    matched.gpr[kEdi] = guest_edi;
     RepiuLinuxX64GuestRegisterProbe(placed.code, &matched);
 
+    ok = Check("segment_base_disp8_value", matched.gpr[kEcx],
+               0xAABBCC5AU) && ok;
     ok = Check("segment_access_value", matched.gpr[kEbx], kValue) && ok;
     // Flags and the guest stack came back as they went in: the guard's compare
     // is bracketed by the lowered pushfd/popfd, and neither may leak.
@@ -1057,12 +1072,16 @@ bool ProbeSegmentOverride()
     GuestRegisterProbeState mismatched;
     mismatched.gpr[kEsp] = stack_top;
     mismatched.gpr[kEbx] = 0U;
+    mismatched.gpr[kEcx] = 0xAABBCCDDU;
+    mismatched.gpr[kEdi] = guest_edi;
     RepiuLinuxX64GuestRegisterProbe(placed.code, &mismatched);
     repiu::platform::RemoveFaultHandler();
 
     ok = Check("segment_guard_boundary", g_boundary_hits, 1U) && ok;
     // The access must not have run: EBX is still what it went in as.
     ok = Check("segment_guard_no_access", mismatched.gpr[kEbx], 0U) && ok;
+    ok = Check("segment_guard_no_base_disp8", mismatched.gpr[kEcx],
+               0xAABBCCDDU) && ok;
     // And the fallback restored flags before trapping, so guest ESP balances
     // on this path too.
     ok = Check("segment_guard_esp", mismatched.observed_r15,
@@ -1081,7 +1100,7 @@ bool ProbeSegmentOverride()
     resolution.policy = repiu::runtime::AotSegmentAccessPolicy::kHleLowMemory;
     repiu::runtime::PatchAotSegmentOverrideSites(
         placed.code, image.segment_override_sites, segment_table, &hle_stats);
-    ok = Check("segment_hle_routed", hle_stats.hle_site_count, 1U) && ok;
+    ok = Check("segment_hle_routed", hle_stats.hle_site_count, 2U) && ok;
     ok = Check("segment_hle_trapped", placed.code[0], 0xCCU) && ok;
 
     repiu::runtime::AotSegmentOverridePatchStats restore_stats;
@@ -1089,7 +1108,7 @@ bool ProbeSegmentOverride()
     repiu::runtime::PatchAotSegmentOverrideSites(
         placed.code, image.segment_override_sites, segment_table,
         &restore_stats);
-    ok = Check("segment_restore_native", restore_stats.native_site_count, 1U) &&
+    ok = Check("segment_restore_native", restore_stats.native_site_count, 2U) &&
          ok;
     if (!repiu::platform::FlushInstructionCacheRange(placed.code, kCodeBytes))
     {
@@ -1103,11 +1122,174 @@ bool ProbeSegmentOverride()
     std::memcpy(placed.data, &shadow, sizeof(shadow));
     GuestRegisterProbeState restored;
     restored.gpr[kEsp] = stack_top;
+    restored.gpr[kEcx] = 0xAABBCCDDU;
+    restored.gpr[kEdi] = guest_edi;
     RepiuLinuxX64GuestRegisterProbe(placed.code, &restored);
+    ok = Check("segment_restored_base_disp8", restored.gpr[kEcx],
+               0xAABBCC5AU) && ok;
     ok = Check("segment_restored_value", restored.gpr[kEbx], kValue) && ok;
 
     std::cout << "guest_segment_override=" << (ok ? "true" : "false")
               << " slots=" << image.long_mode_segment_override_count << "\n";
+    Release(placed);
+    return ok;
+}
+
+// Task 569. MOV ES,AX is safe to skip only while AX names the selector already
+// held in the guest ES shadow. The matching run proves the emitted slot keeps
+// flags and registers intact; the mismatching run proves the guard, and the
+// unresolved-to-native round trip proves the patcher restores the x64 opening
+// rather than assuming the i386 `9C` layout.
+bool ProbeGuardedSegmentLoad()
+{
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = kGuestBase;
+    AotBasicBlock block;
+    block.guest_address = kGuestBase;
+
+    AotInstructionRecord establish_flags;
+    establish_flags.guest_address = kGuestBase;
+    establish_flags.kind = AotInstructionKind::kCopy;
+    establish_flags.bytes = {0x39U, 0xC0U};  // cmp eax,eax: ZF=1
+    establish_flags.length = 2U;
+    block.instructions.push_back(establish_flags);
+
+    AotInstructionRecord load;
+    load.guest_address = kGuestBase + 2U;
+    load.kind = AotInstructionKind::kGuardedSegmentLoad;
+    load.segment_register = 0U;  // ES
+    load.gpr_register = 0U;      // AX
+    load.bytes = {0x8EU, 0xC0U};
+    load.length = 2U;
+    load.fallthrough_target = kGuestBase + 4U;
+    block.instructions.push_back(load);
+
+    AotInstructionRecord observe_flags;
+    observe_flags.guest_address = kGuestBase + 4U;
+    observe_flags.kind = AotInstructionKind::kCopy;
+    observe_flags.bytes = {0x0FU, 0x95U, 0xC2U};  // setnz dl
+    observe_flags.length = 3U;
+    block.instructions.push_back(observe_flags);
+
+    AotInstructionRecord marker;
+    marker.guest_address = kGuestBase + 7U;
+    marker.kind = AotInstructionKind::kCopy;
+    marker.bytes = {0xBBU, 0x78U, 0x56U, 0x34U, 0x12U};
+    marker.length = 5U;
+    block.instructions.push_back(marker);
+
+    AotInstructionRecord closing;
+    closing.guest_address = kGuestBase + 12U;
+    closing.kind = AotInstructionKind::kReturn;
+    closing.bytes = {0xC3U};
+    closing.length = 1U;
+    block.instructions.push_back(closing);
+    plan.blocks.push_back(block);
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    if (!BuildAotCodeCacheImage(plan, options, &image) || !image.valid ||
+        image.long_mode_guarded_segment_load_count != 1U ||
+        image.guarded_segment_load_sites.size() != 1U)
+    {
+        std::cout << "guest_segment_load=false slots="
+                  << image.long_mode_guarded_segment_load_count
+                  << " message=\"" << image.message << "\"\n";
+        return false;
+    }
+
+    const PlacedProgram placed =
+        PlaceImage("segment-load", image, marker.guest_address);
+    if (!placed.valid || !repiu::platform::ProtectMemory(
+            placed.code, kCodeBytes,
+            repiu::platform::MemoryProtection::kExecuteReadWrite, nullptr))
+    {
+        std::cout << "guest_segment_load=false,reason=place\n";
+        Release(placed);
+        return false;
+    }
+
+    constexpr std::uint16_t kSelector = 0x001CU;
+    std::uint16_t shadow = kSelector;
+    std::memcpy(placed.data, &shadow, sizeof(shadow));
+    repiu::runtime::AotSegmentTable table;
+    table.segments[0].shadow_address = placed.data_address;
+    repiu::runtime::AotGuardedSegmentLoadPatchStats patch_stats;
+    const std::uint32_t patched =
+        repiu::runtime::PatchAotGuardedSegmentLoadSites(
+            placed.code, image.guarded_segment_load_sites, table, 0U, 0U,
+            &patch_stats);
+    bool ok = Check("segment_load_patcher_sites", patched, 1U);
+    ok = Check("segment_load_patcher_native",
+               patch_stats.native_site_count, 1U) && ok;
+
+    // Close and reopen before the first run. This makes prologue restoration
+    // observable instead of writing the same bytes over themselves.
+    repiu::runtime::AotGuardedSegmentLoadPatchStats unresolved_stats;
+    table.segments[0].shadow_address = 0U;
+    repiu::runtime::PatchAotGuardedSegmentLoadSites(
+        placed.code, image.guarded_segment_load_sites, table, 0U, 0U,
+        &unresolved_stats);
+    ok = Check("segment_load_unresolved",
+               unresolved_stats.unresolved_site_count, 1U) && ok;
+    const std::uint32_t load_cache_offset =
+        image.guarded_segment_load_sites.front().cache_offset;
+    ok = Check("segment_load_unresolved_trap",
+               placed.code[load_cache_offset], 0xCCU) && ok;
+
+    table.segments[0].shadow_address = placed.data_address;
+    repiu::runtime::AotGuardedSegmentLoadPatchStats restore_stats;
+    repiu::runtime::PatchAotGuardedSegmentLoadSites(
+        placed.code, image.guarded_segment_load_sites, table, 0U, 0U,
+        &restore_stats);
+    ok = Check("segment_load_restored",
+               restore_stats.native_site_count, 1U) && ok;
+    if (!repiu::platform::FlushInstructionCacheRange(
+            placed.code, kCodeBytes))
+    {
+        std::cout << "guest_segment_load=false,reason=flush\n";
+        Release(placed);
+        return false;
+    }
+
+    const std::uint32_t stack_top = placed.data_address + 0x800U;
+    GuestRegisterProbeState matched;
+    matched.gpr[kEax] = kSelector;
+    matched.gpr[kEdx] = 0xFFFFFFFFU;
+    matched.gpr[kEsp] = stack_top;
+    RepiuLinuxX64GuestRegisterProbe(placed.code, &matched);
+    ok = Check("segment_load_marker", matched.gpr[kEbx], 0x12345678U) && ok;
+    ok = Check("segment_load_source", matched.gpr[kEax], kSelector) && ok;
+    ok = Check("segment_load_flags", matched.gpr[kEdx], 0xFFFFFF00U) && ok;
+    ok = Check("segment_load_esp", matched.observed_r15,
+               static_cast<std::uint64_t>(stack_top)) && ok;
+
+    g_boundary_target = reinterpret_cast<std::uintptr_t>(placed.code) +
+        placed.ret_offset;
+    g_boundary_hits = 0U;
+    if (!repiu::platform::InstallFaultHandler(&OnSegmentBoundary, nullptr))
+    {
+        std::cout << "guest_segment_load=false,reason=handler\n";
+        Release(placed);
+        return false;
+    }
+    GuestRegisterProbeState mismatched;
+    mismatched.gpr[kEax] = static_cast<std::uint32_t>(kSelector + 8U);
+    mismatched.gpr[kEbx] = 0U;
+    mismatched.gpr[kEdx] = 0xFFFFFFFFU;
+    mismatched.gpr[kEsp] = stack_top;
+    RepiuLinuxX64GuestRegisterProbe(placed.code, &mismatched);
+    repiu::platform::RemoveFaultHandler();
+    ok = Check("segment_load_boundary", g_boundary_hits, 1U) && ok;
+    ok = Check("segment_load_no_marker", mismatched.gpr[kEbx], 0U) && ok;
+    ok = Check("segment_load_mismatch_esp", mismatched.observed_r15,
+               static_cast<std::uint64_t>(stack_top)) && ok;
+
+    std::cout << "guest_segment_load=" << (ok ? "true" : "false")
+              << " slots=" << image.long_mode_guarded_segment_load_count
+              << "\n";
     Release(placed);
     return ok;
 }
@@ -1126,9 +1308,10 @@ bool RunLinuxX64GuestRegisterProbe()
     const bool call_return = ProbeCallAndReturn();
     const bool esp = ProbeStackPointerReencode();
     const bool segment = ProbeSegmentOverride();
+    const bool segment_load = ProbeGuardedSegmentLoad();
     const bool all =
         mapping && stack && flags && round_trip && branch && call &&
-        unresolved && call_return && esp && segment;
+        unresolved && call_return && esp && segment && segment_load;
     std::cout << "linux_x64_guest_register_all=" << (all ? "true" : "false")
               << "\n";
     return all;
