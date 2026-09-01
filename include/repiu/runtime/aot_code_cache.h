@@ -108,6 +108,16 @@ struct AotAddressMapEntry
     std::uint8_t emitted_length = 0;
 };
 
+// Task 562. Whether this host has the return-dispatch thunk an emitted `ret`
+// jumps to.
+//
+// The first thing in long-mode emission that differs by host rather than by
+// instruction: everything before it was a judgement about bytes and answered
+// the same everywhere. A host without the thunk emits the boundary it emitted
+// before. Exposed so the census asks the emitter this question instead of
+// mirroring the `#if`, which is how the two would drift.
+[[nodiscard]] bool LongModeReturnDispatchAvailable();
+
 struct AotCodeCacheFixup
 {
     AotFixupKind kind = AotFixupKind::kDirectJump;
@@ -366,6 +376,19 @@ struct AotCodeCacheImage
     std::uint32_t long_mode_copied_count = 0;
     std::uint32_t long_mode_lowered_count = 0;
     std::uint32_t long_mode_refused_count = 0;
+    // Task 560. Direct branches emitted, and how many of those had to become a
+    // boundary after all because their target fell outside the cache. Counted
+    // separately from `long_mode_refused_count` because they are refusals of a
+    // different thing: not "these bytes cannot be emitted" but "this edge has
+    // nowhere in this image to land", which is a property of what got
+    // translated rather than of the instruction.
+    std::uint32_t long_mode_branch_count = 0;
+    std::uint32_t long_mode_unresolved_branch_count = 0;
+    // Task 562. Return slots emitted. Counted apart from branches because a
+    // return is the first edge whose target is not known until the guest runs:
+    // a branch resolves at build time or becomes a boundary, while every one of
+    // these reaches a resolver.
+    std::uint32_t long_mode_return_count = 0;
     std::uint32_t resolved_fixup_count = 0;
     std::uint32_t external_fixup_count = 0;
     std::uint32_t unsupported_branch_count = 0;

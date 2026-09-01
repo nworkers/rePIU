@@ -3932,3 +3932,465 @@ dropping it, it now compares against **the count the emitter intended**.
 
 What is left is `not-a-copy-record` at 12,856 (control flow) and `stack-pointer` at 6,401.
 Complete blocks reached only 2.66% because **a block ends in control flow**.
+
+## 2026-09-01 Task 560: 완결 block 2.66% → 38.32% / Complete blocks, 14x
+
+### 한국어
+
+설계는 [20260901-560](../design/20260901-560-x64-direct-branch-emission.md), 로그는
+[20260901-560](../work-logs/20260901-560-x64-direct-branch-emission.md)입니다.
+
+`kDirectJump`와 `kConditionalBranch`를 long-mode emission에서 방출합니다.
+
+| 항목 | 559 | 560 |
+|---|---:|---:|
+| 방출 가능 | 39,643 (66.17%) | **46,490 (77.60%)** |
+| **완결 block** | 381 (2.66%) | **5,482 (38.32%)** |
+| non-copy 거부 | 12,856 | 6,009 |
+
+**명령은 11.4%p 늘었는데 완결 block은 14.4배입니다.** block은 terminator 하나만 있으면
+완결되기 때문이고, Task 556이 "두 수를 함께 읽어야 한다"고 한 것이 반대 방향으로도
+성립한다는 뜻입니다.
+
+#### 측정이 순서를 정했습니다
+
+`not-a-copy-record` 12,856은 그동안 한 덩어리였습니다. plan kind로 나누자 순서가 바로
+나왔습니다. **예측("block terminator가 지배적")은 맞았습니다 — 12,174 / 12,856 (94.7%).**
+
+| kind | 이전 | 이후 | 필요한 것 |
+|---|---:|---:|---|
+| `kConditionalBranch` | 5,202 | **18** | `0F 8x rel32` — 그대로 유효 |
+| `kDirectJump` | 1,663 | **0** | `E9 rel32` — 그대로 유효 |
+| `kDirectCall` | 4,204 | 4,204 | guest 주소 push — 559 시퀀스 |
+| `kReturn` | 1,105 | 1,105 | **dispatch resolver** |
+
+남은 18개는 `ReadConditionOpcode`가 철자를 모르는 조건이고, i386에서도 INT3입니다.
+
+#### 새 판단이 아니라 기존 판단의 확장입니다
+
+block fallthrough가 이 문제를 이미 풀어 두었습니다 — `E9 rel32`는 양쪽 모드에서 내고,
+timer safe point만 long mode에서 뺍니다. 이유도 코드에 적혀 있습니다.
+
+`EmitTimerSafePoint`는 x64에서 **세 군데가 동시에 조용히 틀립니다**.
+
+| 바이트 | 32비트 | 64비트 |
+|---|---|---|
+| `9C` / `9D` | `pushfd` / `popfd` | **8바이트, host RSP** |
+| `83 3D <abs32> 00` | 절대 주소 비교 | **RIP-relative** |
+
+셋 다 예외를 일으키지 않습니다. **x64 backward edge는 timer safe point를 잃습니다** —
+guest가 아직 실행되지 않으므로 지금은 기록으로 충분합니다.
+
+#### cache 밖 target이 위험 지점이었습니다
+
+`enable_dbt_direct_edge_dispatch`가 기본 `false`라, 미해결 direct edge는
+**이미지 빌드 전체를 실패**시킵니다. 분기를 여는 순간 오늘 성립하는 x64 빌드가 깨질 수
+있었습니다. long mode에서는 slot을 `0xCC`로 덮고 boundary로 세되, 덮기 전에 그 바이트가
+예상한 opcode인지 확인합니다.
+
+```text
+branch edges        emitted=6847 unresolved=0
+```
+
+실제 이미지에서는 **0**입니다. 따라서 38.32%는 미해결 edge로 부풀려지지 않았고, 동시에
+그 안전망은 이 이미지로 검증되지 않았습니다.
+
+#### 실행으로 확인했고, 첫 실행이 틀린 것을 잡았습니다
+
+```text
+branch_taken_eax       observed=0x1111 expected=0x1111
+branch_fallthrough_eax observed=0x2222 expected=0x2222
+```
+
+한 방향만 봤다면 "분기하지 않는 `jz`"와 "분기를 빼먹은 emitter"를 구분하지 못했습니다.
+
+**첫 실행은 `unresolved=1`로 실패했고, 원인은 emitter가 아니라 probe가 만든
+프로그램이었습니다** — join block이 어떤 block도 소유하지 않는 주소로 fallthrough
+하고 있었고, emitter는 규정대로 그 edge를 boundary로 돌렸습니다.
+
+> 안전망이 처음 울린 곳은 안전망이 틀린 곳이 아니었다.
+
+그리고 그 사고가 이 단위에서 유일하게 그 경로를 실행시킨 순간이기도 합니다.
+
+#### 측정
+
+| Host | 결과 |
+|---|---|
+| Linux x64 Release | `core_probe_all=true`, 20/20, skipped 2 |
+| Linux i386 Release | `core_probe_all=true`, 19/19, skipped 3 |
+| Win32 x86 Debug | `core_probe_all=true`, 19/19, skipped 3 |
+
+census의 `agrees=true`가 새 branch 카운터까지 포함해 유지됩니다.
+
+#### 다음
+
+non-copy 6,009 중 `kDirectCall` 4,204(69.96%)와 `kReturn` 1,105(18.39%)가 88%입니다.
+`kReturn`은 guest 주소를 cache 주소로 잇는 dispatch resolver를 요구하며, 그것이
+없으면 call을 열어도 호출된 곳에서 되돌아올 수 없습니다.
+
+### English
+
+The design is [20260901-560](../design/20260901-560-x64-direct-branch-emission.md); the
+log is [20260901-560](../work-logs/20260901-560-x64-direct-branch-emission.md).
+
+`kDirectJump` and `kConditionalBranch` are emitted under long-mode emission.
+
+| Item | 559 | 560 |
+|---|---:|---:|
+| Emittable | 39,643 (66.17%) | **46,490 (77.60%)** |
+| **Complete blocks** | 381 (2.66%) | **5,482 (38.32%)** |
+| non-copy refusals | 12,856 | 6,009 |
+
+**Instructions rose 11.4 points and complete blocks went up 14.4-fold**, because a block
+needs only its terminator. Task 556's "read both numbers together" holds in this direction
+too.
+
+#### The measurement set the order
+
+`not-a-copy-record`'s 12,856 had been one bucket. Splitting it by plan kind gave the order
+at once, and **the prediction that block terminators dominate held: 12,174 of 12,856
+(94.7%).**
+
+| Kind | Before | After | What it needs |
+|---|---:|---:|---|
+| `kConditionalBranch` | 5,202 | **18** | `0F 8x rel32`, unchanged |
+| `kDirectJump` | 1,663 | **0** | `E9 rel32`, unchanged |
+| `kDirectCall` | 4,204 | 4,204 | pushing a guest address — 559's sequences |
+| `kReturn` | 1,105 | 1,105 | **the dispatch resolver** |
+
+The remaining 18 are conditions `ReadConditionOpcode` cannot spell; they are INT3 on i386
+as well.
+
+#### Not a new judgement but an existing one extended
+
+The block fallthrough had already settled this: `E9 rel32` in both modes, the timer safe
+point left out of long mode, with the reason in the code.
+
+`EmitTimerSafePoint` is **wrong in three places at once** on x64: `9C`/`9D` become
+eight-byte `pushfq`/`popfq` against the *host* RSP, and `cmp dword ptr [abs32],0` becomes
+RIP-relative. None of them raise. **Backward edges lose their safe point on x64**, which is
+recorded rather than fixed because the guest does not run there yet.
+
+#### The out-of-cache target was the hazard
+
+With `enable_dbt_direct_edge_dispatch` defaulting to false, an unresolved direct edge
+**fails the whole image build**. Opening branches could therefore have broken an x64 build
+that works today. In long mode the slot becomes `0xCC` and is counted as a boundary, with
+the byte at the derived position checked against the opcode it must be first.
+
+On the real image it never happened -- `unresolved=0` -- so the 38.32% is not inflated,
+and equally that safety net went unexercised by this measurement.
+
+#### Confirmed by execution, and the first run caught a wrong one
+
+Checking one direction would not have separated "a `jz` that never jumps" from "an emitter
+that dropped the branch". **The first run failed with `unresolved=1`, and the cause was the
+program the probe built, not the emitter**: its join block fell through to an address no
+block owned, and the emitter turned that edge into a boundary exactly as designed.
+
+> Where the safety net first fired was not where the safety net was wrong.
+
+That accident is also the only thing that has exercised the path.
+
+#### What was measured
+
+| Host | Result |
+|---|---|
+| Linux x64 Release | `core_probe_all=true`, 20 of 20, 2 skipped |
+| Linux i386 Release | `core_probe_all=true`, 19 of 19, 3 skipped |
+| Win32 x86 Debug | `core_probe_all=true`, 19 of 19, 3 skipped |
+
+The census still agrees with the emitter, now including the branch counter.
+
+#### Next
+
+`kDirectCall` (4,204) and `kReturn` (1,105) are 88% of the remaining 6,009. `kReturn` needs
+the dispatch resolver that joins a guest address to a cache address; without it, opening
+calls still leaves nothing able to come back.
+
+## 2026-09-01 Task 561: direct call — 완결 block 59.90% / The direct call
+
+### 한국어
+
+설계는 [20260901-561](../design/20260901-561-x64-direct-call-emission.md), 로그는
+[20260901-561](../work-logs/20260901-561-x64-direct-call-emission.md)입니다.
+
+| 항목 | 559 | 560 | 561 |
+|---|---:|---:|---:|
+| 방출 가능 | 66.17% | 77.60% | **84.62%** |
+| **완결 block** | 2.66% | 38.32% | **59.90%** |
+| non-copy 거부 | 12,856 | 6,009 | **1,805** |
+
+#### 새 시퀀스 없이 두 조각을 이었습니다
+
+i386 call slot은 "복귀 주소 push + 대상으로 jump"이고 x64에는 둘 다 이미 있었습니다 —
+Task 559의 stack lowering, Task 560의 direct edge. push는 `{0x68, fallthrough}`를
+합성해 **기존 lowering에 통과**시킵니다.
+
+```text
+45 8D 7F FC          lea r15d, [r15-4]     ESP -= 4, flag 불변
+41 C7 07 <imm32>     mov dword ptr [r15], 복귀 주소
+```
+
+Task 559가 `LEA`를 쓰는 이유는 `SUB`로 해 보고 guest ZF가 파괴되는 것을 관측해서
+얻은 것입니다. 같은 시퀀스를 다시 쓰면 그것이 다시 틀릴 자리가 하나 더 생깁니다.
+
+#### 실행으로 확인했습니다
+
+```text
+call_reached_callee   observed=0x3333 expected=0x3333
+call_return_address   observed=0x14000a expected=0x14000a
+call_esp              observed=0x200017fc expected=0x200017fc
+```
+
+점프만 봤다면 **call이 아니라 jump를 확인한 것**입니다. call을 call로 만드는 것은
+guest stack에 남는 복귀 주소이므로 register가 아니라 guest 메모리를 직접 읽었습니다.
+
+#### 오류 경로를 시험해 두 결함을 잡았고, 하나는 이미 들어와 있던 것입니다
+
+미해결 call에 전용 검사를 붙이자 연달아 둘이 나왔습니다.
+
+**1. push가 trap보다 먼저 실행됩니다.** 처음엔 `E9`만 덮었습니다. call은 push가 jump
+앞에 있으므로 guest ESP가 내려가고 복귀 주소가 쓰인 뒤 trap하고, boundary 핸들러는
+guest의 `call`에서 재개하므로 **두 번 push**합니다.
+
+**2. 검증기가 이미지를 거부했습니다.**
+
+```text
+guest_unresolved_call=false message="emitted code cache failed decode verification"
+```
+
+entry는 "3 명령"이라는데 바이트는 `INT3` + 잔여물이 됐기 때문입니다. Task 559가
+정확하게 만든 검증기가 정확히 그 불일치를 잡았습니다. slot 전체를 `INT3`로 채우고
+의도 명령 수를 길이에 맞추자 통과했습니다 — trap 하나가 명령 하나라 스스로
+일관됩니다.
+
+**두 번째 결함은 Task 560의 경로에도 이미 있었습니다.** 실제 이미지에서 `unresolved=0`
+이라 한 번도 실행되지 않아 드러나지 않았을 뿐이고, Task 560 로그가 "검증되지 않은
+안전망"이라고 적어 둔 그것이 **실제로 고장나 있었습니다**.
+
+> 실행되지 않는 오류 경로는 작동한다는 증거가 없는 코드다.
+
+이는 §8 계열과 같은 형태입니다 — 측정되지 않은 것은 성립한다고 읽히지만 성립하지
+않습니다.
+
+#### 이것만으로 실행이 이어지지는 않습니다
+
+피호출자의 `ret`은 여전히 boundary입니다. guest stack에는 올바른 복귀 주소가
+들어가지만 그 guest 주소를 cache 주소로 바꿀 것이 없습니다. 늘어난 것은 **방출 범위와
+완결 block**이며, 체인이 길어지는 것은 resolver 이후입니다.
+
+#### 측정
+
+| Host | 결과 |
+|---|---|
+| Linux x64 Release | `core_probe_all=true`, 20/20, skipped 2 |
+| Linux i386 Release | `core_probe_all=true`, 19/19, skipped 3 |
+| Win32 x86 Debug | `core_probe_all=true`, 19/19, skipped 3 |
+
+`agrees=true`, `branch edges emitted=11051 unresolved=0`.
+
+#### 다음
+
+남은 non-copy 1,805 중 `kReturn` 1,105(61%)가 최대이며 dispatch resolver를 요구합니다.
+call과 return은 짝이라 어느 하나만으로는 함수를 드나들 수 없습니다.
+
+### English
+
+The design is [20260901-561](../design/20260901-561-x64-direct-call-emission.md); the log
+is [20260901-561](../work-logs/20260901-561-x64-direct-call-emission.md).
+
+| Item | 559 | 560 | 561 |
+|---|---:|---:|---:|
+| Emittable | 66.17% | 77.60% | **84.62%** |
+| **Complete blocks** | 2.66% | 38.32% | **59.90%** |
+| non-copy refusals | 12,856 | 6,009 | **1,805** |
+
+#### Two pieces joined, no new sequence
+
+The i386 slot is a push of the return address plus a jump, and x64 had both halves
+already. The push is synthesised as `{0x68, fallthrough}` and put **through the existing
+lowering**. Task 559's reason for `LEA` was learned by trying `SUB` and watching the
+guest's ZF die; a second copy of that sequence would be a second place to get it wrong.
+
+#### Confirmed by execution
+
+Checking only the jump would have confirmed **a jump, not a call**. What makes it a call
+is the return address on the guest stack, so it was read from guest memory rather than a
+register.
+
+#### Testing the error path caught two defects, one of them already present
+
+**1. The push runs before the trap.** Overwriting only the `E9` would let guest ESP move
+and the return address be stored before trapping -- and the handler resumes at the guest's
+`call`, pushing again.
+
+**2. The verifier refused the image**, because the entry claimed three instructions while
+its bytes were a trap plus leftovers. Filling the whole slot with `INT3` and setting the
+count to its length is self-consistent and passed.
+
+**That second defect was already in Task 560's path**, invisible only because no edge went
+unresolved on the real image. What Task 560's log called an unexercised safety net was in
+fact broken.
+
+> An error path that never runs is code with no evidence it works.
+
+This is §8's shape again: what is not measured reads as holding, and does not.
+
+#### This alone does not make execution continue
+
+The callee's `ret` is still a boundary. Emission coverage and complete blocks rose; chains
+lengthen after the resolver.
+
+#### What was measured
+
+| Host | Result |
+|---|---|
+| Linux x64 Release | `core_probe_all=true`, 20 of 20, 2 skipped |
+| Linux i386 Release | `core_probe_all=true`, 19 of 19, 3 skipped |
+| Win32 x86 Debug | `core_probe_all=true`, 19 of 19, 3 skipped |
+
+#### Next
+
+`kReturn` is 1,105 of the 1,805 left (61%) and needs the dispatch resolver. Call and
+return are a pair: neither alone lets control both enter and leave a function.
+
+## 2026-09-01 Task 562: call과 return이 이어졌습니다 / The call and the return joined
+
+### 한국어
+
+설계는 [20260901-562](../design/20260901-562-x64-return-dispatch.md), 로그는
+[20260901-562](../work-logs/20260901-562-x64-return-dispatch.md)입니다.
+
+```text
+returned_to_after_call  observed=0x4444 expected=0x4444
+resolver_asked          observed=0x14000a expected=0x14000a
+esp_balanced            observed=0x20001800 expected=0x20001800
+```
+
+**호출하고, 피호출자가 실행되고, `ret`이 resolver에게 물어, 호출 다음 명령이
+실행됐습니다.**
+
+| 항목 | 559 | 560 | 561 | 562 |
+|---|---:|---:|---:|---:|
+| 방출 가능 | 66.17% | 77.60% | 84.62% | **86.46%** |
+| **완결 block** | 2.66% | 38.32% | 59.90% | **64.13%** |
+| non-copy 거부 | 12,856 | 6,009 | 1,805 | **700** |
+
+#### return이 다른 이유
+
+560·561의 edge는 대상이 emit 시점에 알려져 rel32 하나로 끝났습니다. `ret`은 대상이
+**실행 중 guest stack에서 나오는 guest 주소**이고 뛸 곳은 **cache 주소**입니다.
+
+#### 배제한 대안 셋 — 각각 이 저장소가 이미 배운 것 때문입니다
+
+| 대안 | 왜 안 되는가 |
+|---|---|
+| `jmp rel32` | cache-engine 거리가 Task 554의 배치 사다리 때문에 보장되지 않음 |
+| `jmp qword ptr [rip+disp]` | code 안 8바이트 데이터를 **검증기가 명령으로 decode** — Task 561이 그 형태로 걸림 |
+| scratch R13 | **실행 harness의 state 포인터** — emitted code가 harness를 부숨 |
+
+alignment도 `and rsp, -16`으로 **강제**했습니다. thunk는 `jmp`로 도달하므로 진입 위상에
+계약이 없고, 지금 경로가 하나라는 것은 계약이 아닙니다.
+
+#### 규칙을 바꾸자 그 규칙을 검사하던 probe가 빨개졌습니다
+
+`long_mode_emission`이 "`kCopy` 외 전부 boundary"를 **`kReturn`으로** 검사하고
+있었습니다. 이번 단위가 정확히 그것을 바꿨으므로 probe는 과거를 주장하고 있었습니다.
+아직 slot이 없는 `kPortIo`로 옮겼습니다.
+
+> 규칙을 바꾸면 그 규칙을 검사하던 것도 함께 바뀌어야 한다. 빨개지는 것이 그것을
+> 알려주는 방법이다.
+
+#### census가 어긋난 것을 스스로 잡았습니다
+
+`agrees=false`, 차이는 정확히 1,105(return 수)였습니다. 그리고 새 성질이 하나
+생겼습니다 — **return 방출은 host에 따라 달라지는 첫 결과입니다.** 그 전까지 long-mode
+판정은 전부 바이트에 대한 판단이라 어느 host에서든 답이 같았습니다.
+
+census가 `#if`를 복사하는 대신 `LongModeReturnDispatchAvailable()`로 emitter에게 묻게
+했습니다. 복사한 규칙이 어긋나는 일이 방금 일어났으니 같은 방식을 한 번 더 쓸 이유가
+없습니다.
+
+#### 아직 아닌 것
+
+**guest는 실행되지 않습니다.** Task 544의 fence는 그대로이고, 이어진 것은 **probe가
+만든 프로그램**입니다. resolver도 probe의 것이며 image의 address map을 조회할 뿐입니다.
+engine runtime이 x64에 닿으면 전역 셋이 실제 `ThreadContext`의 필드가 됩니다.
+**inline cache도 없습니다** — 지금은 모든 return이 resolver를 부릅니다.
+
+#### 측정
+
+| Host | 결과 |
+|---|---|
+| Linux x64 Release | `core_probe_all=true`, 20/20, skipped 2 |
+| Linux i386 Release | `core_probe_all=true`, 19/19, skipped 3 |
+| Win32 x86 Debug | `core_probe_all=true`, 19/19, skipped 3 |
+
+#### 다음
+
+남은 non-copy 700: `kHleBoundary` 177, `kPortIo` 138, `kIndirectExit` 109, guarded
+segment 셋 171, `kJumpTable` 22. **어느 것도 지배적이지 않으므로 다음 단위는 수가
+아니라 무엇이 실행을 막는가로 골라야 합니다** — 560이 수로 고를 수 있었던 국면은
+끝났습니다.
+
+### English
+
+The design is [20260901-562](../design/20260901-562-x64-return-dispatch.md); the log is
+[20260901-562](../work-logs/20260901-562-x64-return-dispatch.md).
+
+**Control called in, the callee ran, the `ret` asked the resolver, and the instruction
+after the call executed.**
+
+| Item | 559 | 560 | 561 | 562 |
+|---|---:|---:|---:|---:|
+| Emittable | 66.17% | 77.60% | 84.62% | **86.46%** |
+| **Complete blocks** | 2.66% | 38.32% | 59.90% | **64.13%** |
+| non-copy refusals | 12,856 | 6,009 | 1,805 | **700** |
+
+#### Why return differs
+
+560's and 561's edges had targets known at emit time. A `ret`'s target is a **guest
+address that appears on the guest stack at run time**, and the place to jump is a **cache
+address**.
+
+#### Three alternatives ruled out, each by something already learned here
+
+| Alternative | Why not |
+|---|---|
+| `jmp rel32` | the cache-to-engine distance is not guaranteed (Task 554) |
+| `jmp qword ptr [rip+disp]` | eight bytes of data inside code that **the verifier decodes** -- Task 561's shape |
+| R13 as scratch | **the execution harness's state pointer** lives there |
+
+Alignment is forced with `and rsp, -16` too: the thunk is reached by `jmp`, and there
+being one entry path today is not a contract.
+
+#### Changing the rule turned the probe that checked it red
+
+`long_mode_emission` checked "everything but `kCopy` is a boundary" **using a `kReturn`**,
+which this unit changed, so the probe was asserting the past. It moved to `kPortIo`.
+
+> Change a rule and the thing checking it has to change with it. Going red is how that
+> gets said.
+
+#### The census caught its own drift
+
+`agrees=false`, off by exactly the 1,105 returns. With it came a new property: **emitting
+a return is the first long-mode outcome that depends on the host**, since it needs the
+thunk; everything before was a judgement about bytes that answered the same everywhere.
+So the census asks the emitter through `LongModeReturnDispatchAvailable()` instead of
+copying the `#if` -- a copied rule drifting had just happened.
+
+#### What this is not yet
+
+**The guest does not run.** Task 544's fence stands and what joined up is **a program the
+probe built**, resolved by the probe's own resolver reading the image's address map. When
+the engine runtime reaches x64 the three globals become fields it owns. **There is no
+inline cache**: every return calls the resolver.
+
+#### Next
+
+Of the 700 non-copy records left -- `kHleBoundary` 177, `kPortIo` 138, `kIndirectExit`
+109, the guarded-segment kinds 171, `kJumpTable` 22 -- none dominates. **The next unit has
+to be chosen by what blocks execution rather than by count**; the phase where 560 could
+pick by volume is over.

@@ -2,6 +2,10 @@
 
 #include "repiu/runtime/aot_long_mode_compatibility.h"
 
+#if !defined(_WIN32) && defined(__x86_64__)
+#include "repiu/platform/linux_x64_aot_dispatch.h"
+#endif
+
 #include <Zydis.h>
 
 #include <chrono>
@@ -134,6 +138,236 @@ void AppendRel32(std::vector<std::uint8_t>* bytes, std::uint8_t opcode)
 {
     bytes->push_back(opcode);
     bytes->insert(bytes->end(), 4U, 0U);
+}
+
+// Task 562. Where an emitted return goes to ask where a guest address lives.
+//
+// Zero everywhere the thunk does not exist, and zero is the answer that matters
+// rather than a missing case: a host without it emits the boundary it emitted
+// before, so nothing changes for i386 or Windows by this returning nothing.
+std::uintptr_t LongModeReturnThunkAddress()
+{
+#if !defined(_WIN32) && defined(__x86_64__)
+    return repiu::platform::LinuxX64ReturnThunkAddress();
+#else
+    return 0U;
+#endif
+}
+
+// Task 560. The two control-flow kinds a long-mode host can emit as they are.
+//
+// `E9 rel32` and `0F 8x rel32` mean the same thing in long mode as in 32-bit
+// mode, and their displacement is relative to a point inside one cache image
+// far smaller than rel32's range. Nothing about them needs the guest stack or
+// the dispatch resolver, which is what separates them from `kDirectCall` and
+// `kReturn` -- and by count they are 6,865 of the 12,856 records the long-mode
+// emitter was refusing.
+//
+// The timer safe point the i386 path puts in front of a backward edge is not
+// emitted here. It is a hand-built 32-bit sequence and long mode reinterprets
+// three of its pieces at once: `9C`/`9D` become eight-byte `pushfq`/`popfq`
+// against the *host* stack pointer, and `cmp dword ptr [abs32],0` becomes
+// RIP-relative. None of the three raises. The block fallthrough already leaves
+// it out for exactly this reason, so this is that decision extended rather than
+// a new one.
+bool EmitLongModeDirectBranch(const AotInstructionRecord& instruction,
+                              AotCodeCacheImage* image,
+                              std::size_t* const emitted_instructions)
+{
+    const std::uint32_t cache_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    if (instruction.kind == AotInstructionKind::kDirectJump)
+    {
+        AppendRel32(&image->bytes, 0xE9U);
+        image->fixups.push_back({AotFixupKind::kDirectJump,
+                                 instruction.guest_address,
+                                 instruction.direct_target,
+                                 cache_offset + 1U, false});
+        ++image->long_mode_branch_count;
+        *emitted_instructions = 1U;
+        return true;
+    }
+    // Task 562. A return, which is the first edge whose target is not known
+    // until the guest runs.
+    //
+    // The slot pops the guest return address into the scratch, advances guest
+    // ESP, and jumps to the thunk that asks a resolver where that guest address
+    // lives in the cache. `LEA` again, for Task 559's reason: a guest `ret`
+    // changes no flags.
+    //
+    // The thunk's address goes into R12 through `movabs` rather than a rel32,
+    // because nothing guarantees the distance from the cache to the engine
+    // image, and rather than `jmp qword ptr [rip+disp]`, because that leaves
+    // eight bytes of data inside an entry the verifier decodes. R12 rather than
+    // R13: R14D is already the emitter's scratch and R13 is the execution
+    // harness's state pointer.
+    if (instruction.kind == AotInstructionKind::kReturn)
+    {
+        const std::uintptr_t thunk = LongModeReturnThunkAddress();
+        if (thunk == 0U)
+        {
+            return false;
+        }
+        // mov r14d, dword ptr [r15]
+        image->bytes.insert(image->bytes.end(), {0x45U, 0x8BU, 0x37U});
+        // lea r15d, [r15+4]
+        image->bytes.insert(image->bytes.end(),
+                            {0x45U, 0x8DU, 0x7FU, 0x04U});
+        // movabs r12, <thunk>
+        image->bytes.insert(image->bytes.end(), {0x49U, 0xBCU});
+        for (std::size_t index = 0; index < 8U; ++index)
+        {
+            image->bytes.push_back(static_cast<std::uint8_t>(
+                (static_cast<std::uint64_t>(thunk) >> (index * 8U)) & 0xFFU));
+        }
+        // jmp r12
+        image->bytes.insert(image->bytes.end(), {0x41U, 0xFFU, 0xE4U});
+        ++image->long_mode_return_count;
+        *emitted_instructions = 4U;
+        return true;
+    }
+    // Task 561. A direct call is the push of a guest return address followed by
+    // the same direct edge above.
+    //
+    // The push is synthesised as `68 <fallthrough>` and put through the stack
+    // lowering rather than written out here. Task 559's sequence adjusts guest
+    // ESP with `LEA` precisely because a guest `PUSH` changes no flags, and that
+    // was found by getting it wrong; a second copy of the sequence in this file
+    // is a second place for that to be got wrong again.
+    if (instruction.kind == AotInstructionKind::kDirectCall)
+    {
+        std::uint8_t push[5] = {0x68U, 0U, 0U, 0U, 0U};
+        for (std::size_t index = 0; index < 4U; ++index)
+        {
+            push[index + 1U] = static_cast<std::uint8_t>(
+                (instruction.fallthrough_target >> (index * 8U)) & 0xFFU);
+        }
+        std::uint8_t lowered[kMaxLoweredBytes] = {};
+        std::size_t lowered_count = 0U;
+        std::size_t lowered_instructions = 0U;
+        if (!LowerLongModeBytes(push, sizeof(push), lowered, &lowered_count,
+                                &lowered_instructions) ||
+            lowered_count == 0U || lowered_instructions == 0U)
+        {
+            return false;
+        }
+        image->bytes.insert(image->bytes.end(), lowered,
+                            lowered + lowered_count);
+        const std::uint32_t branch_offset =
+            static_cast<std::uint32_t>(image->bytes.size());
+        AppendRel32(&image->bytes, 0xE9U);
+        image->fixups.push_back({AotFixupKind::kDirectCall,
+                                 instruction.guest_address,
+                                 instruction.direct_target,
+                                 branch_offset + 1U, false});
+        ++image->long_mode_branch_count;
+        *emitted_instructions = lowered_instructions + 1U;
+        return true;
+    }
+    if (instruction.kind != AotInstructionKind::kConditionalBranch)
+    {
+        return false;
+    }
+    std::uint8_t opcode = 0;
+    if (!ReadConditionOpcode(instruction.mnemonic, &opcode))
+    {
+        // The same answer i386 gives: a condition this does not know how to
+        // spell is a boundary, not a guess.
+        return false;
+    }
+    image->bytes.push_back(0x0FU);
+    AppendRel32(&image->bytes, opcode);
+    image->fixups.push_back({AotFixupKind::kConditionalBranch,
+                             instruction.guest_address,
+                             instruction.direct_target,
+                             cache_offset + 2U, false});
+    ++image->long_mode_branch_count;
+    *emitted_instructions = 1U;
+    return true;
+}
+
+// Turns a long-mode branch slot whose target fell outside the cache back into a
+// boundary.
+//
+// The whole slot is filled with INT3 rather than only its first byte, and the
+// entry's intended instruction count is set to match. Writing one INT3 and
+// leaving the rest was the first attempt and the verifier refused the image:
+// an entry that says "one instruction" whose bytes are a trap followed by four
+// stray ones is exactly the disagreement Task 559 taught that check to find.
+// A slot of N traps decodes as N instructions and says what it is.
+//
+// The i386 path answers this case with `EmitUnresolvedDirectEdgeDispatch`, a
+// `68 imm32` sequence x64 cannot use -- and with `enable_dbt_direct_edge_dispatch`
+// defaulting to false it answers it by failing the whole image build instead.
+// Neither is wanted here: Task 553's rule is that anything long mode cannot
+// emit reaches the boundary, and an image that builds today must not stop
+// building because branches were opened.
+//
+// The slot's bounds come from its address-map entry rather than being derived
+// from the patch offset by kind, and the patch site is required to lie inside
+// those bounds. Deriving them worked while a slot was one instruction and
+// stopped working the moment a call became a push followed by a jump; asking
+// the entry works for both, and mismatched bounds refuse rather than overwrite
+// something else.
+bool NeutraliseLongModeBranch(const AotCodeCacheFixup& fixup,
+                              AotCodeCacheImage* image,
+                              std::vector<std::uint32_t>* entry_instructions)
+{
+    // The block fallthrough is the one slot that is not an address-map entry of
+    // its own: it is appended after the tail instruction's entry ends, so the
+    // verifier never reads it and one INT3 over its `E9` is enough.
+    if (fixup.kind == AotFixupKind::kBlockFallthrough)
+    {
+        if (fixup.cache_patch_offset < 1U ||
+            fixup.cache_patch_offset - 1U >= image->bytes.size() ||
+            image->bytes[fixup.cache_patch_offset - 1U] != 0xE9U)
+        {
+            return false;
+        }
+        image->bytes[fixup.cache_patch_offset - 1U] = 0xCCU;
+        return true;
+    }
+    if (fixup.kind != AotFixupKind::kDirectJump &&
+        fixup.kind != AotFixupKind::kDirectCall &&
+        fixup.kind != AotFixupKind::kConditionalBranch)
+    {
+        return false;
+    }
+    // Everything else emitted by the long-mode branch path is one address-map
+    // entry, and the entry is what says where the slot begins. For a call that
+    // matters twice over: its push comes before its jump, so an INT3 written at
+    // the jump would let guest ESP move and a return address be stored before
+    // the trap -- and the boundary's handler resumes at the guest's own `call`,
+    // which would push a second time.
+    if (image->address_map.size() != entry_instructions->size())
+    {
+        return false;
+    }
+    for (std::size_t index = 0; index < image->address_map.size(); ++index)
+    {
+        const AotAddressMapEntry& entry = image->address_map[index];
+        if (entry.guest_address != fixup.guest_source)
+        {
+            continue;
+        }
+        const std::size_t start = entry.cache_offset;
+        const std::size_t length = entry.emitted_length;
+        // The slot has to contain its own patch site, or this is not the entry
+        // that emitted it.
+        if (length == 0U || start + length > image->bytes.size() ||
+            fixup.cache_patch_offset < start ||
+            fixup.cache_patch_offset + 4U > start + length)
+        {
+            return false;
+        }
+        for (std::size_t offset = 0; offset < length; ++offset)
+        {
+            image->bytes[start + offset] = 0xCCU;
+        }
+        (*entry_instructions)[index] = static_cast<std::uint32_t>(length);
+        return true;
+    }
+    return false;
 }
 
 void AppendImmediate32(std::vector<std::uint8_t>* bytes, std::uint32_t value)
@@ -1055,6 +1289,11 @@ bool PatchAotDirectReturnProbe(std::uint8_t* bytes,
 }
 
 
+bool LongModeReturnDispatchAvailable()
+{
+    return LongModeReturnThunkAddress() != 0U;
+}
+
 bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                             AotCodeCacheImage* image)
 {
@@ -1133,6 +1372,16 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
             if (options.enable_long_mode_emission)
             {
                 std::size_t emitted_instructions = 0U;
+                if (EmitLongModeDirectBranch(instruction, image,
+                                             &emitted_instructions))
+                {
+                    map.emitted_length = static_cast<std::uint8_t>(
+                        image->bytes.size() - cache_offset);
+                    image->address_map.push_back(map);
+                    long_mode_entry_instructions.push_back(
+                        static_cast<std::uint32_t>(emitted_instructions));
+                    continue;
+                }
                 if (instruction.kind != AotInstructionKind::kCopy ||
                     !EmitLongModeCopy(instruction, image,
                                       &emitted_instructions))
@@ -1378,6 +1627,24 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
         {
             if (IsDirectEdgeFixup(fixup.kind))
             {
+                // Task 560. On a long-mode host the slot becomes a boundary
+                // rather than the 32-bit dispatch stub below, and the image
+                // still builds. The refusal is counted where every other
+                // long-mode refusal is counted, so the census keeps agreeing
+                // with the emitter.
+                if (options.enable_long_mode_emission)
+                {
+                    if (!NeutraliseLongModeBranch(
+                            fixup, image, &long_mode_entry_instructions))
+                    {
+                        image->message =
+                            "long-mode branch slot could not be neutralised";
+                        return false;
+                    }
+                    ++image->long_mode_unresolved_branch_count;
+                    ++image->external_fixup_count;
+                    continue;
+                }
                 if (options.enable_dbt_direct_edge_dispatch &&
                     EmitUnresolvedDirectEdgeDispatch(&fixup, image))
                 {

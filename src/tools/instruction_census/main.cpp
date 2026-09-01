@@ -52,6 +52,59 @@ struct MnemonicTally
     std::set<std::string> forms;
 };
 
+// Task 560. Named rather than numbered, because the point of the breakdown is
+// to be read. A kind this does not know about must say so loudly rather than
+// silently joining another bucket -- a new record kind added later would
+// otherwise appear as one of these and be counted as work already understood.
+const char* AotInstructionKindName(const repiu::runtime::AotInstructionKind kind)
+{
+    using repiu::runtime::AotInstructionKind;
+    switch (kind)
+    {
+        case AotInstructionKind::kCopy: return "kCopy";
+        case AotInstructionKind::kDirectCall: return "kDirectCall";
+        case AotInstructionKind::kDirectJump: return "kDirectJump";
+        case AotInstructionKind::kConditionalBranch:
+            return "kConditionalBranch";
+        case AotInstructionKind::kReturn: return "kReturn";
+        case AotInstructionKind::kHleBoundary: return "kHleBoundary";
+        case AotInstructionKind::kIndirectExit: return "kIndirectExit";
+        case AotInstructionKind::kJumpTable: return "kJumpTable";
+        case AotInstructionKind::kSegmentOverrideMem:
+            return "kSegmentOverrideMem";
+        case AotInstructionKind::kGuardedSegmentRead:
+            return "kGuardedSegmentRead";
+        case AotInstructionKind::kGuardedSegmentLoad:
+            return "kGuardedSegmentLoad";
+        case AotInstructionKind::kGuardedSegmentPop:
+            return "kGuardedSegmentPop";
+        case AotInstructionKind::kPortIo: return "kPortIo";
+    }
+    return "kUnknown";
+}
+
+// Task 560. Whether the emitter can spell this condition. A `Jcc` whose
+// mnemonic has no `0F 8x` here is a boundary on both hosts, so the census must
+// ask the same question the emitter asks rather than counting every
+// `kConditionalBranch` as emitted.
+bool ReadsConditionOpcode(const std::uint16_t mnemonic)
+{
+    switch (static_cast<ZydisMnemonic>(mnemonic))
+    {
+        case ZYDIS_MNEMONIC_JO: case ZYDIS_MNEMONIC_JNO:
+        case ZYDIS_MNEMONIC_JB: case ZYDIS_MNEMONIC_JNB:
+        case ZYDIS_MNEMONIC_JZ: case ZYDIS_MNEMONIC_JNZ:
+        case ZYDIS_MNEMONIC_JBE: case ZYDIS_MNEMONIC_JNBE:
+        case ZYDIS_MNEMONIC_JS: case ZYDIS_MNEMONIC_JNS:
+        case ZYDIS_MNEMONIC_JP: case ZYDIS_MNEMONIC_JNP:
+        case ZYDIS_MNEMONIC_JL: case ZYDIS_MNEMONIC_JNL:
+        case ZYDIS_MNEMONIC_JLE: case ZYDIS_MNEMONIC_JNLE:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // Task 556. What the x64 emitter can produce from this guest, and what stops
 // the rest.
 //
@@ -65,12 +118,25 @@ struct LongModeTally
     std::uint64_t considered = 0;
     std::uint64_t copied = 0;
     std::uint64_t lowered = 0;
+    // Task 560. Direct jumps and conditional branches, emitted as themselves.
+    // Kept apart from `copied` because they are not copies of the guest's bytes
+    // -- the opcode survives but the displacement is rewritten for the cache.
+    std::uint64_t branches = 0;
+    // Task 562. Returns, emitted as a slot that asks a resolver at run time.
+    // Apart from `branches` because a branch resolves when the image is built
+    // and a return cannot: its target is not known until the guest runs.
+    std::uint64_t returns = 0;
     std::uint64_t refused = 0;
     // Refused because the plan record is not `kCopy` at all -- every control
     // flow record, every guarded segment slot, every port I/O record. Counted
     // apart from the classifier's refusals because no lowering of an
     // instruction's bytes would change it; it needs an x64 slot instead.
     std::uint64_t refused_non_copy = 0;
+    // Task 560. Which record kinds those are, because "not a kCopy record" is
+    // the largest refusal there is and naming it that way says nothing about
+    // what to build next. A block terminator and a port I/O slot are both in
+    // here, and they are not the same unit of work.
+    std::map<std::string, std::uint64_t> refused_kinds;
     std::map<std::string, std::uint64_t> refusal_reasons;
     // The mnemonics behind the refusals, by volume, so the next unit is chosen
     // from data rather than from an impression of what is common.
@@ -473,12 +539,46 @@ int main(int argc, char** argv)
                     continue;
                 }
                 ++long_mode.considered;
+                // Task 560. Two of the control-flow kinds are emitted now, so
+                // they stop being refusals. Whether their *edge* resolves is
+                // not knowable here -- that depends on what else landed in the
+                // cache -- so this counts them as emitted and the emitter's own
+                // `long_mode_unresolved_branch_count` reports the ones that had
+                // to become boundaries after all. The `agrees=` line below is
+                // what keeps the two from drifting.
+                // Task 562. A return is emitted only where the dispatch thunk
+                // exists, which is the first long-mode outcome that depends on
+                // the host rather than on the instruction. The emitter is asked
+                // rather than the `#if` copied, because a copy is what drifts.
+                if (record.kind ==
+                        repiu::runtime::AotInstructionKind::kReturn &&
+                    repiu::runtime::LongModeReturnDispatchAvailable())
+                {
+                    ++long_mode.returns;
+                    continue;
+                }
+                if (record.kind ==
+                        repiu::runtime::AotInstructionKind::kDirectJump ||
+                    // Task 561. A direct call is emitted as a lowered push plus
+                    // the same jump, and the push is the stack sequence that
+                    // already exists, so nothing here can decline it.
+                    record.kind ==
+                        repiu::runtime::AotInstructionKind::kDirectCall ||
+                    (record.kind == repiu::runtime::AotInstructionKind::
+                                        kConditionalBranch &&
+                     ReadsConditionOpcode(record.mnemonic)))
+                {
+                    ++long_mode.branches;
+                    continue;
+                }
                 if (record.kind !=
                     repiu::runtime::AotInstructionKind::kCopy)
                 {
                     ++long_mode.refused;
                     ++long_mode.refused_non_copy;
                     ++long_mode.refusal_reasons["not-a-copy-record"];
+                    ++long_mode.refused_kinds[AotInstructionKindName(
+                        record.kind)];
                     complete = false;
                     continue;
                 }
@@ -691,13 +791,19 @@ int main(int argc, char** argv)
         std::cout << "  image did not build: " << long_mode_image.message
                   << "\n";
     }
-    const std::uint64_t emitted = long_mode.copied + long_mode.lowered;
+    const std::uint64_t emitted =
+        long_mode.copied + long_mode.lowered + long_mode.branches +
+        long_mode.returns;
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "  considered          " << long_mode.considered << "\n";
     std::cout << "  copied              " << long_mode.copied << "  ("
               << percent(long_mode.copied, long_mode.considered) << "%)\n";
     std::cout << "  lowered             " << long_mode.lowered << "  ("
               << percent(long_mode.lowered, long_mode.considered) << "%)\n";
+    std::cout << "  branches            " << long_mode.branches << "  ("
+              << percent(long_mode.branches, long_mode.considered) << "%)\n";
+    std::cout << "  returns             " << long_mode.returns << "  ("
+              << percent(long_mode.returns, long_mode.considered) << "%)\n";
     std::cout << "  emittable           " << emitted << "  ("
               << percent(emitted, long_mode.considered) << "%)\n";
     std::cout << "  refused             " << long_mode.refused << "  ("
@@ -718,12 +824,23 @@ int main(int argc, char** argv)
     const bool agrees = long_mode_built &&
         long_mode_image.long_mode_copied_count == long_mode.copied &&
         long_mode_image.long_mode_lowered_count == long_mode.lowered &&
+        long_mode_image.long_mode_branch_count == long_mode.branches &&
+        long_mode_image.long_mode_return_count == long_mode.returns &&
         long_mode_image.long_mode_refused_count == long_mode.refused;
     std::cout << "  emitter counters    copied="
               << long_mode_image.long_mode_copied_count
               << " lowered=" << long_mode_image.long_mode_lowered_count
+              << " branches=" << long_mode_image.long_mode_branch_count
+              << " returns=" << long_mode_image.long_mode_return_count
               << " refused=" << long_mode_image.long_mode_refused_count
-              << "  agrees=" << (agrees ? "true" : "false") << "\n\n";
+              << "  agrees=" << (agrees ? "true" : "false") << "\n";
+    // Task 560. The edges that had to become boundaries after all, because
+    // their target was not in this image. Reported beside the branch count
+    // rather than folded into it: an emitted branch whose edge did not resolve
+    // is not a branch that runs.
+    std::cout << "  branch edges        emitted="
+              << long_mode_image.long_mode_branch_count << " unresolved="
+              << long_mode_image.long_mode_unresolved_branch_count << "\n\n";
 
     std::cout << "-- why the rest cannot be emitted --\n";
     {
@@ -740,6 +857,29 @@ int main(int argc, char** argv)
                       << std::right << std::setw(10) << reason.second << "\n";
         }
     }
+    // Task 560. The largest refusal, split by what it actually is. `kCopy` is
+    // the emitter's whole long-mode subset, so everything else arrives here as
+    // one number -- and one number cannot say whether the work in front is a
+    // branch encoding, a dispatch resolver, or a port I/O slot.
+    std::cout << "\n-- not-a-copy-record, by plan kind --\n";
+    {
+        std::vector<std::pair<std::string, std::uint64_t>> kinds(
+            long_mode.refused_kinds.begin(), long_mode.refused_kinds.end());
+        std::sort(kinds.begin(), kinds.end(),
+                  [](const auto& left, const auto& right) {
+                      return left.second > right.second;
+                  });
+        for (const auto& kind : kinds)
+        {
+            std::cout << "  " << std::left << std::setw(30) << kind.first
+                      << std::right << std::setw(10) << kind.second << "  ("
+                      << std::fixed << std::setprecision(2)
+                      << percent(kind.second, long_mode.refused_non_copy)
+                      << "% of non-copy)\n"
+                      << std::defaultfloat;
+        }
+    }
+
     std::cout << "\n-- refused mnemonics and reasons, by volume (top 30) --\n";
     {
         std::vector<std::pair<std::string, std::uint64_t>> refused(

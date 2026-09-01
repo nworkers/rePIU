@@ -426,6 +426,17 @@ if(UNIX AND NOT EMSCRIPTEN)
                 src/platform/linux/guest_stack_switch.S
         )
     endif()
+
+    # Task 562: the x64 return-dispatch thunk and the three pointers it reads.
+    # The mirror of the fence above -- this assembly is a long-mode contract and
+    # means nothing in a 32-bit build.
+    if(CMAKE_SIZEOF_VOID_P GREATER 4)
+        target_sources(repiu_exe
+            PRIVATE
+                src/platform/linux/aot_dbt_dispatch_x64.cpp
+                src/platform/linux/aot_dbt_return_thunk_x64.S
+        )
+    endif()
 endif()
 
 target_include_directories(repiu_exe

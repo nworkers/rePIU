@@ -76,9 +76,15 @@ const std::vector<std::uint8_t> kIncEaxLowered = {0xFFU, 0xC0U};
 // been copied verbatim into the cache.
 const std::vector<std::uint8_t> kStackPointerWrite = {0x83U, 0xC4U, 0x10U};
 
-// A return, so the block's tail is not a `kCopy` and no fallthrough edge is
-// emitted. It also stands for the whole non-`kCopy` half of the switch.
-const std::vector<std::uint8_t> kReturn = {0xC3U};
+// Port I/O: `in eax, dx`. It stands for the kinds long mode still has no slot
+// for, and it closes a block without a fallthrough edge because its kind is not
+// `kCopy`.
+//
+// A return did both jobs until Task 562 gave returns a slot. A probe that went
+// on asserting a boundary there would have been asserting the past -- which is
+// what it did, and what turned this item red the moment returns started
+// working.
+const std::vector<std::uint8_t> kPortIo = {0xEDU};
 
 struct PlannedInstruction
 {
@@ -102,7 +108,7 @@ std::vector<PlannedInstruction> PlannedInstructions()
     add(AotInstructionKind::kCopy, kSilentlyDifferent);
     add(AotInstructionKind::kCopy, kIncEax);
     add(AotInstructionKind::kCopy, kStackPointerWrite);
-    add(AotInstructionKind::kReturn, kReturn);
+    add(AotInstructionKind::kPortIo, kPortIo);
     return planned;
 }
 
@@ -252,8 +258,13 @@ bool ProbeLongModeOutcomes()
     const bool stack = Expect("long_mode_emission_refused_stack_pointer", image,
                               planned[5].guest_address, {0xCCU}) &&
         HasBoundaryFixupAt(image, planned[5].guest_address);
-    // Everything that is not `kCopy`, standing in for the hand-built 32-bit
-    // slots that must not reach a long-mode image.
+    // The kinds long mode still has no slot for, standing in for the
+    // hand-built 32-bit slots that must not reach a long-mode image.
+    //
+    // It used to say "everything that is not `kCopy`", which stopped being the
+    // rule when Tasks 560 to 562 gave jumps, branches, calls and returns their
+    // own long-mode slots. What must reach a boundary is now what the emitter
+    // has not built, and port I/O is one of those.
     const bool non_copy = Expect("long_mode_emission_non_copy_boundary", image,
                                  planned[6].guest_address, {0xCCU}) &&
         HasBoundaryFixupAt(image, planned[6].guest_address);
@@ -291,13 +302,16 @@ bool ProbeAllRefusedStillBuilds()
     block.instructions.push_back(record);
     record.guest_address = kBase + 1U;
     block.instructions.push_back(record);
-    // A return closes the block. A block whose tail is `kCopy` also gets a
-    // fallthrough edge, and its target would have to be a block of its own --
-    // a property of the planner rather than of this unit, and not what this
-    // item is asking about.
+    // A non-`kCopy` tail closes the block. A block whose tail is `kCopy` also
+    // gets a fallthrough edge, and its target would have to be a block of its
+    // own -- a property of the planner rather than of this unit, and not what
+    // this item is asking about.
+    //
+    // Port I/O rather than a return, since Task 562: this item counts three
+    // refusals, and a return is emitted now.
     record.guest_address = kBase + 2U;
-    record.kind = AotInstructionKind::kReturn;
-    record.bytes = kReturn;
+    record.kind = AotInstructionKind::kPortIo;
+    record.bytes = kPortIo;
     block.instructions.push_back(record);
     plan.blocks.push_back(block);
 
