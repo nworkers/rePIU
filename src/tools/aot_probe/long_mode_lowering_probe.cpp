@@ -156,6 +156,93 @@ bool ProbeAddressSizePrefix(const std::uint32_t* data)
     return ok;
 }
 
+// 3. Task 565. The moffs forms, read and written.
+//
+// `A1 disp32` is `mov eax, [disp32]` in five bytes and `mov eax, moffs64` in
+// nine in long mode, so the instruction's own length changes and every decode
+// after it moves. The re-encoding sends it to the same SIB absolute form
+// `kAbsoluteToSib` produces.
+//
+// Both directions are run. A read alone would not show that the store form
+// reaches the same address, and `A3` is the one that was blocking the entry
+// chain -- as `66 A3 disp32`, the operand-size variant.
+bool ProbeMoffs(std::uint32_t* data)
+{
+    const auto address = static_cast<std::uint32_t>(
+        reinterpret_cast<std::uintptr_t>(data));
+    const auto with_address = [address](std::vector<std::uint8_t> head) {
+        for (int shift = 0; shift < 32; shift += 8)
+        {
+            head.push_back(
+                static_cast<std::uint8_t>((address >> shift) & 0xFFU));
+        }
+        return head;
+    };
+
+    // mov eax, [addr] · ret
+    std::vector<std::uint8_t> load_lowered;
+    if (!Lower(with_address({0xA1U}), &load_lowered) ||
+        load_lowered.size() != 8U || load_lowered[0] != 0x67U ||
+        load_lowered[1] != 0x8BU)
+    {
+        std::cout << "long_mode_lowering_moffs=false,reason=load_lowering\n";
+        return false;
+    }
+    std::vector<std::uint8_t> load_code = load_lowered;
+    load_code.push_back(0xC3U);
+
+    ExecutablePage load_page;
+    if (!AllocateCodePage(&load_page) || !WriteAndArm(load_page, load_code))
+    {
+        ReleasePage(&load_page);
+        std::cout << "long_mode_lowering_moffs=false,reason=page\n";
+        return false;
+    }
+    using Load = std::uint32_t (*)();
+    Load load = nullptr;
+    std::memcpy(&load, &load_page.base, sizeof(load));
+    *data = kMarker;
+    const std::uint32_t observed = load();
+    ReleasePage(&load_page);
+
+    // mov [addr], eax, with the value arriving in the first argument so the
+    // store has something of its own to write.
+    std::vector<std::uint8_t> store_lowered;
+    if (!Lower(with_address({0xA3U}), &store_lowered) ||
+        store_lowered.size() != 8U || store_lowered[1] != 0x89U)
+    {
+        std::cout << "long_mode_lowering_moffs=false,reason=store_lowering\n";
+        return false;
+    }
+    // mov eax, edi (SysV first argument) · <lowered store> · ret
+    std::vector<std::uint8_t> store_code = {0x89U, 0xF8U};
+    store_code.insert(store_code.end(), store_lowered.begin(),
+                      store_lowered.end());
+    store_code.push_back(0xC3U);
+
+    ExecutablePage store_page;
+    if (!AllocateCodePage(&store_page) || !WriteAndArm(store_page, store_code))
+    {
+        ReleasePage(&store_page);
+        std::cout << "long_mode_lowering_moffs=false,reason=store_page\n";
+        return false;
+    }
+    using Store = void (*)(std::uint32_t);
+    Store store = nullptr;
+    std::memcpy(&store, &store_page.base, sizeof(store));
+    constexpr std::uint32_t kStored = 0x1234ABCDU;
+    *data = 0U;
+    store(kStored);
+    const std::uint32_t written = *data;
+    ReleasePage(&store_page);
+
+    const bool ok = observed == kMarker && written == kStored;
+    std::cout << "long_mode_lowering_moffs=" << (ok ? "true" : "false")
+              << ",read=0x" << std::hex << observed << ",wrote=0x" << written
+              << std::dec << "\n";
+    return ok;
+}
+
 // 2. The absolute form, and the reason it needs more than a prefix.
 //
 // `mov eax, [disp32]` is absolute in 32-bit mode and RIP-relative in long mode,
@@ -313,9 +400,13 @@ bool RunLongModeLoweringProbe()
 
     const bool prefix_ok = ProbeAddressSizePrefix(data);
     const bool absolute_ok = ProbeAbsoluteToSib(data);
+    // After the two above, because it writes through `data` and they read a
+    // marker from it.
+    const bool moffs_ok = ProbeMoffs(data);
     platform::ReleaseMemory(reserved.base, kPageBytes);
 
-    const bool all = classification_ok && prefix_ok && absolute_ok;
+    const bool all =
+        classification_ok && prefix_ok && absolute_ok && moffs_ok;
     std::cout << "long_mode_lowering_all=" << (all ? "true" : "false") << "\n";
     return all;
 }

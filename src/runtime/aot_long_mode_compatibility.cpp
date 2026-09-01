@@ -40,17 +40,16 @@ bool IsSilentlyDifferentOpcode(const std::uint8_t opcode)
     // before it reaches this list.
     switch (opcode)
     {
+        // Task 565 removed `A0`-`A3` from this list, the same way Task 557
+        // removed `40`-`4F`. They are still exactly as dangerous -- the offset
+        // is four bytes here and eight in long mode, so the instruction's own
+        // length changes and every decode after it moves -- but they are no
+        // longer *refused* for it: `IsMoffsOpcode` names the re-encoding, and
+        // the classifier reaches that first.
         case 0x62U:  // BOUND -> EVEX prefix
         case 0x63U:  // ARPL -> MOVSXD
         case 0xC4U:  // LES -> three-byte VEX prefix
         case 0xC5U:  // LDS -> two-byte VEX prefix
-        // MOV AL/eAX, moffs32 -> moffs64. This one also changes the
-        // instruction's length, from five bytes to nine, so everything decoded
-        // after it is wrong as well.
-        case 0xA0U:
-        case 0xA1U:
-        case 0xA2U:
-        case 0xA3U:
             return true;
         default:
             return false;
@@ -68,6 +67,32 @@ bool IsSilentlyDifferentOpcode(const std::uint8_t opcode)
 bool IsIncDecRegisterOpcode(const std::uint8_t opcode)
 {
     return opcode >= 0x40U && opcode <= 0x4FU;
+}
+
+// Task 565. `MOV`'s moffs forms, whose absolute offset the opcode carries
+// directly with no ModRM byte at all.
+//
+// 681 of the 682 encodings this classifier still called silently different are
+// these, which is what put them next: Task 564 moved the obstruction twenty-one
+// bytes and this is what it landed on.
+bool IsMoffsOpcode(const std::uint8_t opcode)
+{
+    return opcode >= 0xA0U && opcode <= 0xA3U;
+}
+
+// The ModRM-form opcode that means the same thing. `A0`/`A2` move a byte and
+// `A1`/`A3` a dword; the low bit of the moffs opcode is that width and the
+// second bit is the direction, which is the same layout `88`-`8B` uses.
+std::uint8_t MoffsModRmOpcode(const std::uint8_t opcode)
+{
+    switch (opcode)
+    {
+        case 0xA0U: return 0x8AU;  // mov al, [disp32]
+        case 0xA1U: return 0x8BU;  // mov eax, [disp32]
+        case 0xA2U: return 0x88U;  // mov [disp32], al
+        case 0xA3U: return 0x89U;  // mov [disp32], eax
+        default: return 0x00U;
+    }
 }
 
 // Removed from long mode. These raise #UD rather than running, which makes them
@@ -236,6 +261,86 @@ bool IsStackPointerRegister(const ZydisRegister reg)
 // Every operand is scanned, hidden ones included: the implicit stack operands
 // belong to instructions the opcode lists already refuse, but a check that
 // depended on that ordering would be one edit away from being wrong.
+// Task 564. Which encoding fields name `ESP`, and whether all of them are ones
+// this unit can rewrite.
+//
+// `ESP` can appear in three places, and Zydis's `operand.encoding` says which:
+// ModRM `reg`, ModRM `rm`, and the SIB base. All three become `R15D` the same
+// way -- the field goes to `111` and the matching `REX` bit is set -- so the
+// work is deciding which bits, not how.
+//
+// What is deliberately not admitted is a register embedded in the opcode
+// (`push esp`, `inc esp`): those are Task 559's and Task 557's, and a second
+// path to them here would be a second place to get them wrong.
+struct StackPointerFields
+{
+    bool rex_r = false;
+    bool rex_b = false;
+    bool supported = false;
+};
+
+StackPointerFields ClassifyStackPointerFields(
+    const ZydisDecodedInstruction& instruction,
+    const ZydisDecodedOperand* operands)
+{
+    StackPointerFields fields;
+    if ((instruction.attributes & ZYDIS_ATTRIB_HAS_MODRM) == 0U)
+    {
+        return fields;
+    }
+    for (std::uint8_t index = 0; index < instruction.operand_count; ++index)
+    {
+        const ZydisDecodedOperand& operand = operands[index];
+        if (operand.type == ZYDIS_OPERAND_TYPE_REGISTER &&
+            IsStackPointerRegister(operand.reg.value))
+        {
+            if (operand.encoding == ZYDIS_OPERAND_ENCODING_MODRM_REG)
+            {
+                fields.rex_r = true;
+                continue;
+            }
+            if (operand.encoding == ZYDIS_OPERAND_ENCODING_MODRM_RM &&
+                instruction.raw.modrm.mod == 3U)
+            {
+                fields.rex_b = true;
+                continue;
+            }
+            // Embedded in the opcode, or an implicit operand. Not this unit's.
+            return StackPointerFields{};
+        }
+        if (operand.type != ZYDIS_OPERAND_TYPE_MEMORY)
+        {
+            continue;
+        }
+        if (IsStackPointerRegister(operand.mem.index))
+        {
+            // Unreachable by encoding -- `index=100` is "no index" -- and
+            // refused rather than assumed away.
+            return StackPointerFields{};
+        }
+        if (!IsStackPointerRegister(operand.mem.base))
+        {
+            continue;
+        }
+        // A base of `ESP` is only expressible through a SIB byte, so one has to
+        // be there for this to be the shape it looks like.
+        if ((instruction.attributes & ZYDIS_ATTRIB_HAS_SIB) == 0U ||
+            instruction.raw.modrm.rm != 4U)
+        {
+            return StackPointerFields{};
+        }
+        fields.rex_b = true;
+    }
+    fields.supported = fields.rex_r || fields.rex_b;
+    return fields;
+}
+
+bool CanReencodeStackPointer(const ZydisDecodedInstruction& instruction,
+                             const ZydisDecodedOperand* operands)
+{
+    return ClassifyStackPointerFields(instruction, operands).supported;
+}
+
 bool TouchesStackPointer(const ZydisDecodedInstruction& instruction,
                          const ZydisDecodedOperand* operands)
 {
@@ -347,6 +452,30 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
             return Reencode(LongModeDivergence::kSilentlyDifferent,
                             LongModeLowering::kIncDecToModRm);
         }
+        // Task 565. Ahead of the refusal list because these were on it.
+        //
+        // Two lengths: the bare five-byte form, and six bytes when an
+        // operand-size `66` makes it `mov ax, moffs`. The first attempt admitted
+        // only the bare one, on Task 557's policy of proving the smallest thing
+        // and letting the census say what the restriction costs -- and the
+        // census answered at once. The instruction still blocking the entry
+        // chain was `66 A3 disp32`, one of the 216 the restriction had left
+        // behind, so the restriction cost exactly the case that mattered.
+        //
+        // Anything else stays refused. `67 A1` is a different instruction --
+        // the address-size prefix makes the offset sixteen bits.
+        if (IsMoffsOpcode(opcode))
+        {
+            const bool bare = instruction.length == 5U;
+            const bool operand_size = instruction.length == 6U &&
+                bytes[0] == 0x66U;
+            if (!bare && !operand_size)
+            {
+                return Refuse(LongModeDivergence::kSilentlyDifferent);
+            }
+            return Reencode(LongModeDivergence::kSilentlyDifferent,
+                            LongModeLowering::kMoffsToSib);
+        }
         if (IsSilentlyDifferentOpcode(opcode))
         {
             return Refuse(LongModeDivergence::kSilentlyDifferent);
@@ -397,11 +526,21 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
         return Refuse(LongModeDivergence::kSegmentRegister);
     }
 
-    // Task 555. Ahead of the memory-operand judgement below, because the worse
-    // of the two shapes has no memory operand: `add esp,16` was reaching the
-    // `kIdenticalBytes` return at the bottom of this function.
+    // Task 555, and Task 564 for what happens after it. Ahead of the
+    // memory-operand judgement below, because the worse of the two shapes has
+    // no memory operand: `add esp,16` was reaching the `kIdenticalBytes` return
+    // at the bottom of this function.
+    //
+    // The refusal was right; what was missing was the re-encoding. Guest ESP is
+    // R15D, so an instruction naming ESP in ModRM or SIB can name R15D instead,
+    // and Task 563 measured that these are what hold execution to one block.
     if (TouchesStackPointer(instruction, operands))
     {
+        if (CanReencodeStackPointer(instruction, operands))
+        {
+            return Reencode(LongModeDivergence::kStackPointerRegister,
+                            LongModeLowering::kStackPointerToR15);
+        }
         return Refuse(LongModeDivergence::kStackPointerRegister);
     }
 
@@ -707,6 +846,133 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
             lowered[index + 1U] = bytes[index];
         }
         *lowered_count = length + 1U;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 565. The moffs form rewritten into the SIB absolute form.
+    //
+    // The destination is the one `kAbsoluteToSib` already produces; only the
+    // starting encoding differs, since moffs carries its offset straight after
+    // the opcode with no ModRM. So the opcode is exchanged for the ModRM-form
+    // one and the displacement is copied unchanged -- it is already the
+    // absolute guest address, and the `0x67` in front is what keeps it
+    // zero-extended rather than sign-extended.
+    if (verdict.lowering == LongModeLowering::kMoffsToSib)
+    {
+        const std::uint8_t modrm_opcode = MoffsModRmOpcode(instruction.opcode);
+        // The offset is always the last four bytes and the opcode the one
+        // before them, which locates both without assuming how many prefixes
+        // came first or in what order.
+        if (modrm_opcode == 0U || (length != 5U && length != 6U) ||
+            length + 3U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+        const std::size_t opcode_index = length - 5U;
+        std::size_t out = 0U;
+        if (opcode_index == 1U)
+        {
+            if (bytes[0] != 0x66U)
+            {
+                return false;
+            }
+            // The operand-size prefix is kept: it is what makes this a 16-bit
+            // move, and the rewrite changes the addressing rather than the
+            // width.
+            lowered[out++] = 0x66U;
+        }
+        lowered[out++] = 0x67U;
+        lowered[out++] = modrm_opcode;
+        lowered[out++] = 0x04U;  // mod=00, reg=000 (AL/AX/EAX), rm=100 (SIB)
+        lowered[out++] = 0x25U;  // scale=0, index=100 (none), base=101 (disp32)
+        for (std::size_t index = 0; index < 4U; ++index)
+        {
+            lowered[out++] = bytes[length - 4U + index];
+        }
+        *lowered_count = out;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 564. The same instruction with `R15D` where `ESP` was.
+    //
+    // A `REX` is inserted between the legacy prefixes and the opcode -- guest
+    // code is 32-bit so it can never already carry one -- and the field naming
+    // `ESP` goes to `111`. Nothing else moves: same opcode, same displacement,
+    // same immediate, one byte longer.
+    if (verdict.lowering == LongModeLowering::kStackPointerToR15)
+    {
+        const StackPointerFields fields =
+            ClassifyStackPointerFields(instruction, operands);
+        const std::size_t opcode_offset = instruction.raw.modrm.offset > 0U
+            ? static_cast<std::size_t>(instruction.raw.modrm.offset) - 1U
+            : 0U;
+        if (!fields.supported || length + 1U > kMaxLoweredBytes ||
+            instruction.raw.modrm.offset == 0U ||
+            opcode_offset >= length)
+        {
+            return false;
+        }
+        // Everything before the opcode is a legacy prefix and is copied as it
+        // is. Zydis reports the ModRM byte's offset, and in every form this
+        // unit admits the opcode is the byte before it -- a two-byte opcode map
+        // never reaches here, because `ESP` in ModRM or SIB is a one-byte-opcode
+        // shape and anything else was refused above.
+        if (instruction.opcode_map != ZYDIS_OPCODE_MAP_DEFAULT)
+        {
+            return false;
+        }
+        std::size_t out = 0U;
+        for (std::size_t index = 0; index < opcode_offset; ++index)
+        {
+            lowered[out++] = bytes[index];
+        }
+        std::uint8_t rex = 0x40U;
+        rex |= fields.rex_r ? 0x04U : 0x00U;
+        rex |= fields.rex_b ? 0x01U : 0x00U;
+        lowered[out++] = rex;
+        for (std::size_t index = opcode_offset; index < length; ++index)
+        {
+            lowered[out++] = bytes[index];
+        }
+
+        // The ModRM and SIB bytes moved by one when the `REX` went in.
+        const std::size_t modrm_out =
+            static_cast<std::size_t>(instruction.raw.modrm.offset) + 1U;
+        if (fields.rex_r)
+        {
+            // reg = 111
+            lowered[modrm_out] = static_cast<std::uint8_t>(
+                (lowered[modrm_out] & 0xC7U) | 0x38U);
+        }
+        if (fields.rex_b)
+        {
+            if (instruction.raw.modrm.mod == 3U)
+            {
+                // rm = 111, the register form.
+                lowered[modrm_out] = static_cast<std::uint8_t>(
+                    (lowered[modrm_out] & 0xF8U) | 0x07U);
+            }
+            else
+            {
+                // SIB base = 111. The SIB byte follows ModRM.
+                const std::size_t sib_out = modrm_out + 1U;
+                if (sib_out >= out)
+                {
+                    return false;
+                }
+                lowered[sib_out] = static_cast<std::uint8_t>(
+                    (lowered[sib_out] & 0xF8U) | 0x07U);
+            }
+        }
+        *lowered_count = out;
         if (instruction_count != nullptr)
         {
             *instruction_count = 1U;

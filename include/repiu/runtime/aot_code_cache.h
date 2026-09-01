@@ -88,6 +88,16 @@ struct AotCodeCacheBuildOptions
     //
     // Off by default, so the i386 path emits the same bytes it always has.
     bool enable_long_mode_emission = false;
+    // Task 567 added this off, because the slot is correct only once patched
+    // and nothing patched it. Task 568 made the real patcher fit the long-mode
+    // slot and verified the whole round trip -- HLE routing and back -- so the
+    // reason for the default is gone and it is on.
+    //
+    // The slot still depends on the patcher running before the cache executes,
+    // exactly as the i386 slot has always done: unpatched, its guard reads
+    // address zero. That contract is the engine's, and it is the same contract
+    // on both hosts.
+    bool enable_long_mode_segment_override = true;
 };
 
 enum class AotFixupKind
@@ -117,6 +127,14 @@ struct AotAddressMapEntry
 // before. Exposed so the census asks the emitter this question instead of
 // mirroring the `#if`, which is how the two would drift.
 [[nodiscard]] bool LongModeReturnDispatchAvailable();
+
+// Task 568. Whether the long-mode segment-override slot can be emitted for this
+// record. The emitter admits one addressing shape out of many and refuses FS
+// and GS outright, so "how many segment overrides are emitted" is not the same
+// number as "how many exist". Exposed for the same reason as the line above:
+// so the census asks instead of keeping a copy of the rule that goes stale.
+[[nodiscard]] bool LongModeSegmentOverrideEmittable(
+    const AotInstructionRecord& instruction);
 
 struct AotCodeCacheFixup
 {
@@ -247,6 +265,11 @@ struct AotJumpTableSite
 // translation path fills selector S, the shadow address, and folds the segment
 // base into the displacement, all from the live selector table. Offsets are
 // image-relative until placement.
+// Task 568. The length of the `JMP rel32` that HLE routing writes over the head
+// of a segment-override slot, and therefore exactly how much has to be restored
+// when the site returns to native folding.
+inline constexpr std::size_t kAotSegmentGuardPrologueBytes = 5U;
+
 struct AotSegmentOverrideSite
 {
     std::uint32_t guest_source = 0;
@@ -264,6 +287,21 @@ struct AotSegmentOverrideSite
     std::int32_t original_displacement = 0;
     // 0=ES,2=SS,3=DS,4=FS,5=GS.
     std::uint8_t segment_register = 0xFFU;
+    // Task 568. The slot's own opening bytes, so re-resolving to native can put
+    // back what HLE routing overwrote with its `JMP rel32`.
+    //
+    // The emitter records these rather than the patcher holding a constant,
+    // because the two hosts do not open a slot the same way: i386 begins
+    // `9C 66 81 3D`, long mode begins with a lowered `pushfd`. A constant would
+    // be right for one host and would quietly corrupt the other -- and this is
+    // the same duplicated-knowledge shape that put a stale `#if` in the census
+    // (Task 562) and stale rules in four probes.
+    //
+    // Anything that builds a site by hand is standing in for an emitter and
+    // must fill this too. Forgetting is caught: the `selector_guard` probe
+    // asserts the restored first byte.
+    std::uint8_t guard_prologue[kAotSegmentGuardPrologueBytes] = {};
+    std::uint8_t guard_prologue_size = 0;
 };
 // Task 291. A guarded segment-pop slot reads the physical segment selector and
 // compares it with both the original guest stack word and this shadow word.
@@ -389,6 +427,12 @@ struct AotCodeCacheImage
     // a branch resolves at build time or becomes a boundary, while every one of
     // these reaches a resolver.
     std::uint32_t long_mode_return_count = 0;
+    // Task 567. Segment-override slots emitted. Counted apart from everything
+    // above because these are the first long-mode slots that are **not correct
+    // until something patches them**: the folded displacement and the guard's
+    // operands are zero here. A count rising without the patcher means the
+    // census sees emission where execution would read a base of zero.
+    std::uint32_t long_mode_segment_override_count = 0;
     std::uint32_t resolved_fixup_count = 0;
     std::uint32_t external_fixup_count = 0;
     std::uint32_t unsupported_branch_count = 0;

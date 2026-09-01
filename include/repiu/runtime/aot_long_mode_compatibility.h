@@ -127,6 +127,22 @@ enum class LongModeLowering
     // PUSH and POP change no flags, and an arithmetic adjustment would quietly
     // change the ones the guest's next branch reads.
     kStackSequence,
+    // Task 564. The instruction names guest `ESP`, which lives in `R15D`, so
+    // the encoding field that names it becomes `111` and the matching `REX` bit
+    // is set. Three places take it -- ModRM `reg`, ModRM `rm`, and the SIB base
+    // -- and one instruction may take two of them at once.
+    //
+    // Unlike every lowering above it, this one grows the instruction by exactly
+    // the `REX` byte it inserts and changes nothing else: no displacement, no
+    // immediate, no opcode.
+    kStackPointerToR15,
+    // Task 565. `MOV`'s moffs forms (`A0`-`A3`), whose absolute offset is four
+    // bytes in 32-bit mode and eight in long mode -- so the instruction's own
+    // length changes and every decode after it moves. Re-encoded into the same
+    // SIB absolute form `kAbsoluteToSib` produces, but starting from an
+    // encoding with no ModRM at all, which is why it is its own lowering rather
+    // than a branch inside that one.
+    kMoffsToSib,
 };
 
 struct LongModeCompatibilityResult

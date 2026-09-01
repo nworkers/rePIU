@@ -7,6 +7,7 @@
 
 #include "aot_boundary_reason.h"
 #include "thread_context.h"
+#include "repiu/runtime/aot_segment_patch.h"
 
 #include <cstdint>
 #include "repiu/platform/guest_cpu_context.h"
@@ -31,7 +32,10 @@ struct _EXCEPTION_POINTERS;
 namespace repiu::engine
 {
 
-struct AotSegmentTable;
+// Task 568. `AotSegmentTable` is now an alias for the runtime type, and an
+// alias cannot be forward-declared as a struct. The header it lives in is
+// small and has no engine dependencies, so including it costs nothing.
+using AotSegmentTable = runtime::AotSegmentTable;
 
 void BumpAotBoundaryCount(ThreadContext* context);
 

@@ -126,6 +126,10 @@ struct LongModeTally
     // Apart from `branches` because a branch resolves when the image is built
     // and a return cannot: its target is not known until the guest runs.
     std::uint64_t returns = 0;
+    // Task 568. Segment-override slots, kept apart from `branches` and
+    // `returns` because unlike either they are not finished when emitted: the
+    // engine patches the guard and the folded base before the cache runs.
+    std::uint64_t segment_overrides = 0;
     std::uint64_t refused = 0;
     // Refused because the plan record is not `kCopy` at all -- every control
     // flow record, every guarded segment slot, every port I/O record. Counted
@@ -143,7 +147,28 @@ struct LongModeTally
     std::map<std::string, std::uint64_t> refused_mnemonics;
     std::uint64_t blocks = 0;
     std::uint64_t blocks_complete = 0;
+    // Task 563. Reachability from the entry, which is a different question
+    // from coverage: a chain stops at the first block it cannot complete
+    // regardless of how much of the image is emittable.
+    std::set<std::uint32_t> complete_blocks;
+    std::uint64_t reachable_blocks = 0;
+    std::uint64_t reachable_instructions = 0;
+    // Task 565. Blocks reachable once serviced boundaries are walked through.
+    // "Reachable with no runtime help" and "reachable if the dispatcher does
+    // its job" are different claims and both are worth having.
+    std::uint64_t reachable_serviced_blocks = 0;
+    // Where a chain stopped, by the kind of the record that stopped it. This is
+    // the list the next unit should be chosen from -- not the image-wide
+    // refusal counts, which say what is missing rather than what is in the way.
+    std::map<std::string, std::uint64_t> frontier_kinds;
+    std::uint64_t frontier_edges_outside_plan = 0;
+    // Where the first chain stopped, so the claim can be checked in a
+    // disassembler rather than taken on trust.
+    std::uint32_t frontier_first_address = 0;
+    std::uint32_t walk_entry_address = 0;
+    std::vector<std::uint8_t> frontier_first_bytes;
 };
+
 
 const char* DivergenceName(const repiu::runtime::LongModeDivergence divergence)
 {
@@ -201,6 +226,206 @@ bool ClassifyEmittable(const repiu::runtime::AotInstructionRecord& record,
     }
     *reason = DivergenceName(verdict.divergence);
     return false;
+}
+// Task 565. Whether the emitter produces this record, asked in one place.
+//
+// It was written out twice inside the walk before -- once to decide whether a
+// block was traversable and once to name what stopped it -- and two copies of
+// the emission rule is exactly the drift the census's `agrees=` line exists to
+// catch elsewhere.
+bool RecordIsEmitted(const repiu::runtime::AotInstructionRecord& record)
+{
+    using repiu::runtime::AotInstructionKind;
+    switch (record.kind)
+    {
+        case AotInstructionKind::kCopy:
+        {
+            bool lowered = false;
+            std::string reason;
+            return !record.bytes.empty() &&
+                ClassifyEmittable(record, &lowered, &reason);
+        }
+        case AotInstructionKind::kDirectJump:
+        case AotInstructionKind::kDirectCall:
+            return true;
+        case AotInstructionKind::kConditionalBranch:
+            return ReadsConditionOpcode(record.mnemonic);
+        case AotInstructionKind::kReturn:
+            return repiu::runtime::LongModeReturnDispatchAvailable();
+        case AotInstructionKind::kSegmentOverrideMem:
+            // Task 568. Emitted when the slot admits its shape, and patched by
+            // the engine before the cache runs -- the same contract the i386
+            // slot has always had.
+            return repiu::runtime::LongModeSegmentOverrideEmittable(record);
+        default:
+            return false;
+    }
+}
+
+// Task 563. Walks the blocks execution could actually reach from the entry.
+//
+// Stops at a block that is not complete and records the kind that stopped it,
+// which is the question "what is in the way" rather than "what is missing".
+void WalkReachable(const repiu::runtime::AotTranslationPlan& plan,
+                   const std::set<std::uint32_t>& complete,
+                   LongModeTally* tally)
+{
+    using repiu::runtime::AotBasicBlock;
+    using repiu::runtime::AotInstructionKind;
+
+    std::map<std::uint32_t, const AotBasicBlock*> by_address;
+    for (const AotBasicBlock& block : plan.blocks)
+    {
+        by_address.emplace(block.guest_address, &block);
+    }
+
+    tally->walk_entry_address = plan.entry_address;
+    std::set<std::uint32_t> visited;
+    std::vector<std::uint32_t> pending{plan.entry_address};
+    while (!pending.empty())
+    {
+        const std::uint32_t address = pending.back();
+        pending.pop_back();
+        if (!visited.insert(address).second)
+        {
+            continue;
+        }
+        const auto found = by_address.find(address);
+        if (found == by_address.end())
+        {
+            // An edge the planner never gave a block. Counted rather than
+            // ignored: it is a hole in the plan, not in the emitter.
+            ++tally->frontier_edges_outside_plan;
+            continue;
+        }
+        const AotBasicBlock& block = *found->second;
+        // Task 565. A boundary is a door, not a wall.
+        //
+        // The walk as Task 563 wrote it stopped at every record the emitter did
+        // not produce, which conflated two different things. An `INT 21h` is
+        // never going to be emitted -- it is a DOS service and belongs to the
+        // HLE dispatcher by design -- and on i386 the handler services it and
+        // execution carries on at the next instruction. Counting that as the
+        // end of a chain measures the emitter for something that was never its
+        // job.
+        //
+        // So a block whose only unemitted records are serviced kinds is walked
+        // through, and counted apart: "reachable if boundaries are serviced" is
+        // a different claim from "reachable with no runtime help at all", and
+        // both are worth having.
+        const bool block_complete = complete.find(address) != complete.end();
+        bool serviceable = true;
+        if (!block_complete)
+        {
+            for (const repiu::runtime::AotInstructionRecord& record :
+                 block.instructions)
+            {
+                if (record.kind == AotInstructionKind::kHleBoundary ||
+                    record.kind == AotInstructionKind::kPortIo)
+                {
+                    continue;
+                }
+                if (!RecordIsEmitted(record))
+                {
+                    serviceable = false;
+                    break;
+                }
+            }
+        }
+        // An empty block is not serviceable, it is nothing -- and asking for
+        // its tail is what crashed the first run of this.
+        if (!block_complete && serviceable && !block.instructions.empty())
+        {
+            ++tally->reachable_serviced_blocks;
+            const repiu::runtime::AotInstructionRecord& tail =
+                block.instructions.back();
+            // Same successor rules as below; a serviced boundary does not end
+            // the block, so its tail decides where control goes next.
+            switch (tail.kind)
+            {
+                case AotInstructionKind::kConditionalBranch:
+                    pending.push_back(tail.direct_target);
+                    pending.push_back(tail.guest_address + tail.length);
+                    break;
+                case AotInstructionKind::kDirectJump:
+                    pending.push_back(tail.direct_target);
+                    break;
+                case AotInstructionKind::kDirectCall:
+                    pending.push_back(tail.direct_target);
+                    pending.push_back(tail.fallthrough_target);
+                    break;
+                case AotInstructionKind::kReturn:
+                    break;
+                default:
+                    pending.push_back(tail.guest_address + tail.length);
+                    break;
+            }
+            continue;
+        }
+        if (!block_complete)
+        {
+            // The first record this host cannot emit is what stopped the chain.
+            for (const repiu::runtime::AotInstructionRecord& record :
+                 block.instructions)
+            {
+                if (!RecordIsEmitted(record))
+                {
+                    // Keyed by the reason as well as the kind, for Task 557's
+                    // reason: "a kCopy was refused" does not say which unit
+                    // would clear it, and the point of this table is to choose
+                    // one.
+                    std::string key = AotInstructionKindName(record.kind);
+                    if (record.kind == AotInstructionKind::kCopy)
+                    {
+                        bool lowered = false;
+                        std::string reason;
+                        ClassifyEmittable(record, &lowered, &reason);
+                        key += "  " + (reason.empty() ? "no-bytes" : reason);
+                    }
+                    if (tally->frontier_first_address == 0U)
+                    {
+                        tally->frontier_first_address = record.guest_address;
+                        // The bytes too. Task 565 spent a round guessing which
+                        // encoding was in the way and guessed wrong; the bytes
+                        // turn that into a fact costing nothing.
+                        tally->frontier_first_bytes = record.bytes;
+                    }
+                    ++tally->frontier_kinds[key];
+                    break;
+                }
+            }
+            continue;
+        }
+
+        ++tally->reachable_blocks;
+        tally->reachable_instructions += block.instructions.size();
+        if (block.instructions.empty())
+        {
+            continue;
+        }
+        const repiu::runtime::AotInstructionRecord& tail =
+            block.instructions.back();
+        switch (tail.kind)
+        {
+            case AotInstructionKind::kConditionalBranch:
+                pending.push_back(tail.direct_target);
+                pending.push_back(tail.guest_address + tail.length);
+                break;
+            case AotInstructionKind::kDirectJump:
+                pending.push_back(tail.direct_target);
+                break;
+            case AotInstructionKind::kDirectCall:
+                pending.push_back(tail.direct_target);
+                pending.push_back(tail.fallthrough_target);
+                break;
+            case AotInstructionKind::kReturn:
+                // Nowhere static to go; the caller's fallthrough is already in.
+                break;
+            default:
+                pending.push_back(tail.guest_address + tail.length);
+                break;
+        }
+    }
 }
 
 struct X87Tally
@@ -571,6 +796,17 @@ int main(int argc, char** argv)
                     ++long_mode.branches;
                     continue;
                 }
+                // Task 568. Emitted as a guarded slot the engine patches. This
+                // is the third place in this file that has had to learn a new
+                // emitted kind, and `agrees=` caught the omission each time --
+                // which is the argument for the line existing.
+                if (record.kind == repiu::runtime::AotInstructionKind::
+                                       kSegmentOverrideMem &&
+                    repiu::runtime::LongModeSegmentOverrideEmittable(record))
+                {
+                    ++long_mode.segment_overrides;
+                    continue;
+                }
                 if (record.kind !=
                     repiu::runtime::AotInstructionKind::kCopy)
                 {
@@ -620,9 +856,24 @@ int main(int argc, char** argv)
             if (complete)
             {
                 ++long_mode.blocks_complete;
+                long_mode.complete_blocks.insert(block.guest_address);
             }
         }
     }
+
+    // Task 563. How far execution could get from the entry point.
+    //
+    // "86% of instructions and 64% of blocks" are counts over the whole image,
+    // and an image is not a run. What decides whether anything executes is
+    // reachability: a chain from the entry that stops at the first block it
+    // cannot complete, however small a fraction of the image that block is.
+    //
+    // A call is followed both ways -- into the callee and on at the
+    // fallthrough -- because that is what happens. A return is not followed at
+    // all: its target is whatever called, and the caller's fallthrough was
+    // already enqueued when the call was taken. That makes this an
+    // under-approximation in one direction only, which is the safe one.
+    WalkReachable(plan, long_mode.complete_blocks, &long_mode);
 
     // The authority. Building the image runs the emitter itself, so these three
     // cannot drift from what would actually be emitted.
@@ -826,12 +1077,16 @@ int main(int argc, char** argv)
         long_mode_image.long_mode_lowered_count == long_mode.lowered &&
         long_mode_image.long_mode_branch_count == long_mode.branches &&
         long_mode_image.long_mode_return_count == long_mode.returns &&
+        long_mode_image.long_mode_segment_override_count ==
+            long_mode.segment_overrides &&
         long_mode_image.long_mode_refused_count == long_mode.refused;
     std::cout << "  emitter counters    copied="
               << long_mode_image.long_mode_copied_count
               << " lowered=" << long_mode_image.long_mode_lowered_count
               << " branches=" << long_mode_image.long_mode_branch_count
               << " returns=" << long_mode_image.long_mode_return_count
+              << " segments="
+              << long_mode_image.long_mode_segment_override_count
               << " refused=" << long_mode_image.long_mode_refused_count
               << "  agrees=" << (agrees ? "true" : "false") << "\n";
     // Task 560. The edges that had to become boundaries after all, because
@@ -861,6 +1116,83 @@ int main(int argc, char** argv)
     // the emitter's whole long-mode subset, so everything else arrives here as
     // one number -- and one number cannot say whether the work in front is a
     // branch encoding, a dispatch resolver, or a port I/O slot.
+    // Task 563. Coverage says what is missing from the image; this says what is
+    // in the way of a run. They are different questions and the second is the
+    // one that decides whether anything executes.
+    std::cout << "  reachable serviced  "
+              << long_mode.reachable_serviced_blocks
+              << "  (walked through a serviced boundary)\n";
+    std::cout << "  reachable blocks    " << long_mode.reachable_blocks
+              << "  (" << std::fixed << std::setprecision(2)
+              << percent(long_mode.reachable_blocks, long_mode.blocks)
+              << "% of blocks)\n"
+              << "  reachable instrs    "
+              << long_mode.reachable_instructions << "\n"
+              << std::defaultfloat;
+
+    std::cout << "\n-- where a chain from the entry stops --\n";
+    {
+        std::vector<std::pair<std::string, std::uint64_t>> frontier(
+            long_mode.frontier_kinds.begin(), long_mode.frontier_kinds.end());
+        std::sort(frontier.begin(), frontier.end(),
+                  [](const auto& left, const auto& right) {
+                      return left.second > right.second;
+                  });
+        for (const auto& entry : frontier)
+        {
+            std::cout << "  " << std::left << std::setw(30) << entry.first
+                      << std::right << std::setw(10) << entry.second << "\n";
+        }
+        std::cout << "  " << std::left << std::setw(30)
+                  << "edge outside the plan" << std::right << std::setw(10)
+                  << long_mode.frontier_edges_outside_plan << "\n";
+        std::cout << "  entry=0x" << std::hex << long_mode.walk_entry_address
+                  << " first stop=0x" << long_mode.frontier_first_address
+                  << std::dec << "\n";
+        // The bytes as well. Task 565 spent a round reasoning about which
+        // encoding was in the way; printing it costs nothing and settles it.
+        std::cout << "  first stop bytes ";
+        for (const std::uint8_t byte : long_mode.frontier_first_bytes)
+        {
+            std::cout << " " << std::hex << std::setw(2) << std::setfill('0')
+                      << static_cast<unsigned>(byte);
+        }
+        std::cout << std::dec << std::setfill(' ') << "\n";
+    }
+
+    // Task 565's frontier is `mov ebx, es:[0x5c]`, and whether that can be
+    // handled by simply dropping the prefix turns on one number: the segment's
+    // base. Long mode ignores the `CS`/`DS`/`ES`/`SS` overrides and treats
+    // their base as zero, so a guest whose bases are already zero loses nothing
+    // by having the prefix removed -- and a guest whose bases are not zero
+    // needs the i386 path's fold instead.
+    //
+    // Printed rather than reasoned about, for Task 565's reason: the last two
+    // units each spent a round on a guess the bytes could have settled.
+    std::cout << "\n-- selector bindings (segment bases) --\n";
+    {
+        std::size_t shown = 0;
+        for (const repiu::runtime::RelocatedSelectorBinding& binding :
+             image.selector_bindings)
+        {
+            if (shown++ >= 16U)
+            {
+                std::cout << "  ... "
+                          << image.selector_bindings.size() - 16U
+                          << " more\n";
+                break;
+            }
+            std::cout << "  selector=0x" << std::hex << binding.selector
+                      << " base=0x" << binding.relocated_base_address
+                      << " limit=0x" << binding.limit << std::dec
+                      << " object=" << binding.target_object << "\n";
+        }
+        if (image.selector_bindings.empty())
+        {
+            std::cout << "  (none recorded)\n";
+        }
+    }
+
     std::cout << "\n-- not-a-copy-record, by plan kind --\n";
     {
         std::vector<std::pair<std::string, std::uint64_t>> kinds(

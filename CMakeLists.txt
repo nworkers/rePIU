@@ -205,6 +205,7 @@ add_library(repiu_exe
     src/sound/stream_chunk_audit.cpp
     src/runtime/guest_context.cpp
     src/runtime/aot_code_cache.cpp
+    src/runtime/aot_segment_patch.cpp
     src/runtime/aot_direct_return_table.cpp
     src/launcher/rom_set_catalog.cpp
     src/launcher/launcher_settings.cpp

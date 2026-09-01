@@ -160,16 +160,21 @@ bool ProbeWidthIsReencodeRatherThanRefusal()
     return ok;
 }
 
-// Task 555. The stack pointer, in both roles.
+// Task 555, rewritten by Task 564. The stack pointer, in all three roles.
 //
-// Written to check a refusal that used to be an admission: `add esp,16` reached
-// `kIdenticalBytes`, and in long mode writing `ESP` zero-extends into `RSP` --
-// the host's stack pointer. `mov eax,[esp+8]` is the milder half, lowered with
-// a prefix and reading the host stack.
+// 555 wrote this to check a refusal that used to be an admission: `add esp,16`
+// reached `kIdenticalBytes`, and in long mode writing `ESP` zero-extends into
+// `RSP` -- the host's stack pointer.
 //
-// The last case is the one that keeps this honest. `mov eax,[ebx+8]` must still
-// be lowered, or the "fix" would just be a blanket refusal of memory operands,
-// which is what Task 552's measurement opened.
+// 564 re-encodes them instead, so what must hold is no longer "refused" but
+// "never `kIdenticalBytes`, and named as the R15 rewrite". The danger these
+// cases carry is unchanged; only the answer to it is. Asserting the refusal
+// after the re-encoder existed would have been asserting the past, which is the
+// third time this has come up -- see Task 562's `kReturn`.
+//
+// The last case keeps it honest: `mov eax,[ebx+8]` must still get the ordinary
+// prefix lowering, or "fixed" would just mean a blanket refusal of memory
+// operands.
 bool ProbeStackPointerRefusal()
 {
     struct StackCase
@@ -190,21 +195,23 @@ bool ProbeStackPointerRefusal()
     {
         const LongModeCompatibilityResult result =
             ClassifyLongModeBytes(item.bytes.data(), item.bytes.size());
-        const bool refused = result.compatibility ==
-                LongModeByteCompatibility::kUnsupported &&
+        const bool reencoded = result.compatibility ==
+                LongModeByteCompatibility::kNeedsReencode &&
             result.divergence ==
                 LongModeDivergence::kStackPointerRegister &&
-            result.lowering == repiu::runtime::LongModeLowering::kNone;
-        if (!refused)
+            result.lowering ==
+                repiu::runtime::LongModeLowering::kStackPointerToR15;
+        if (!reencoded)
         {
-            std::cout << "  long_mode_stack_refused_" << item.name
+            std::cout << "  long_mode_stack_reencoded_" << item.name
                       << "=false\n";
         }
-        ok = ok && refused;
+        ok = ok && reencoded;
     }
 
     // The control: a base register the project has decided nothing against is
-    // still lowered, so the refusal above is targeted rather than a blanket.
+    // still lowered with the ordinary prefix, so the R15 rewrite above is
+    // targeted rather than swallowing every memory operand.
     const std::uint8_t base_relative[] = {0x8BU, 0x43U, 0x08U};
     const LongModeCompatibilityResult control =
         ClassifyLongModeBytes(base_relative, sizeof(base_relative));
@@ -212,7 +219,7 @@ bool ProbeStackPointerRefusal()
             LongModeByteCompatibility::kNeedsReencode &&
         control.lowering ==
             repiu::runtime::LongModeLowering::kAddressSizePrefix;
-    std::cout << "long_mode_stack_pointer_refused=" << (ok ? "true" : "false")
+    std::cout << "long_mode_stack_pointer_reencoded=" << (ok ? "true" : "false")
               << ",non_stack_base_still_lowered="
               << (control_ok ? "true" : "false") << "\n";
     return ok && control_ok;

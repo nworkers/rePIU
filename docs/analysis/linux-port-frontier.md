@@ -2160,6 +2160,187 @@ header.
 probe built**, not the game. Between here and the game are control flow, the `ESP`
 operands, the dispatch resolver, and step 5's block-level comparison.
 
+## 3.11 세션 인수인계, 2026-09-01 (2) — 커버리지가 아니라 도달 가능성을 재기 시작했습니다
+
+Tasks 560–566. **560–562는 `v0.0.177`로 main에 머지됐고, 563–566은 branch
+`task563-x64-execution-frontier`에 있으며 머지되지 않았습니다.**
+
+**한 줄로: x64가 guest 명령의 97.88%를 낼 수 있고 call과 return이 이어지지만, 진입점에서
+실제로 갈 수 있는 block은 8개입니다. 이 세 번째 수를 재기 시작한 것이 이번 구간에서
+가장 중요한 변화입니다.**
+
+| 항목 | 559 | 562 | 566 |
+|---|---:|---:|---:|
+| 방출 가능 | 66.17% | 86.46% | **97.88%** |
+| 완결 block | 2.66% | 64.13% | **86.13%** |
+| **도달 가능 block** | — | — | **8** (+ serviced 12) |
+
+| Commit | 내용 |
+|---|---|
+| `948ca69` | 560–562 (merged, `v0.0.177`) — 분기·호출·복귀 방출, call이 돌아옴 |
+| `17ba5b6` | 563 — 도달 가능성 측정. **답은 1이었습니다** |
+| `1642d1a` | 564 — `ESP` → `R15D` 재인코딩. 장애물이 21바이트 이동 |
+| `5ba7124` | 565 — moffs 재인코딩, 벽과 문 구분. 도달 가능 1 → 8 |
+| `bfc067e` | 566 — segment base 측정. flat model 아님 |
+
+### 이번 구간이 바꾼 것 — 세는 대상
+
+Task 556 이후 진척은 방출 가능 비율과 완결 block 비율로 읽혀 왔습니다. 562를 마쳤을 때
+86.46%와 64.13%였고 "거의 다 왔다"처럼 보였습니다.
+
+563이 세 번째 수를 만들었습니다 — **진입점에서 실제로 갈 수 있는 block.** 답은 **1**
+이었습니다.
+
+> 이미지는 실행이 아니다. 무엇이 빠졌는가와 무엇이 가로막는가는 다른 질문이다.
+
+이후 모든 단위는 이 수로 성패를 판정합니다. 564는 커버리지를 86%에서 97%로 올리고도
+**자기 기준으로는 실패**했습니다 — 도달 가능이 1에서 움직이지 않았기 때문입니다.
+
+### 다음 한 걸음 — x64 segment override
+
+정지 지점 `0x10f4c83`, 바이트 `26 8b 1d 5c 00 00 00` = `mov ebx, es:[0x5c]`.
+frontier는 `kGuardedSegmentLoad` 2와 `kSegmentOverrideMem` 2입니다.
+
+**566이 방법을 좁혀 두었습니다.** segment base가 0이 아니므로(`0x1000000` 등) long mode가
+override를 무시하는 것은 **정확히 틀린 답**이고, prefix를 떼는 손쉬운 길은 없습니다.
+
+i386의 `EmitSegmentOverrideSlot`이 옳은 방법을 씁니다 — prefix 제거, ModRM을 disp32
+형태로 확장, **base를 displacement에 접어 넣기**, shadow selector guard. x64에서는 그
+결과에 Task 552/564의 memory operand lowering이 **한 번 더** 얹혀야 합니다.
+
+**변환 둘을 합성하는 것이므로, 합성 결과를 실행으로 검증하지 않은 채 열면 안 됩니다.**
+
+### 다음 세션이 알아야 할 것
+
+* **census를 먼저 돌리십시오.** 이번 구간에서 추측이 세 번 졌고 세 번 다 census가 한
+  번에 답했습니다. 그래서 census에 세 줄이 상설로 남아 있습니다.
+
+  ```bash
+  ./build/linux_x64_release/repiu_instruction_census \
+      build/runtime_mounts/pumpit1/PIU/PIU.EXE
+  ```
+
+  | 줄 | 답하는 질문 |
+  |---|---|
+  | `reachable blocks` / `reachable serviced` | 얼마나 갈 수 있는가 |
+  | `first stop` + `first stop bytes` | **무엇이** 막는가 |
+  | `selector bindings` | segment base가 얼마인가 |
+
+* **`agrees=true`를 확인하십시오.** census가 emitter의 규칙을 거울처럼 따라 하므로,
+  어긋나면 둘 중 하나가 틀린 것입니다. 562에서 실제로 잡혔습니다.
+* **규칙을 바꾸면 그 규칙을 검사하던 probe가 빨개집니다.** 이번 구간에 세 번
+  있었습니다(561 검증기, 562 `kReturn`, 564 `ESP`). 빨개지는 것이 정상이고, probe를
+  **현재 규칙에 맞게 옮기되 검사하는 위험은 유지**하십시오.
+* **guest는 여전히 실행되지 않습니다.** Task 544의 fence가 그대로이고, 이어진 call/return은
+  probe가 만든 프로그램에 probe의 resolver입니다. thunk가 읽는 전역 셋은 임시입니다.
+
+### 열린 항목
+
+* **x64 segment override** — 위. 다음 한 걸음
+* **`mmap_min_addr` 여유 0** (551) — i386도 같은 노출
+* **32비트 wraparound** (564) — `ESP + disp` 감쌈이 보존되지 않음. 현재 arena에서는
+  일어날 수 없지만 우연한 안전
+* **Task 546 결정 번호 불일치** — 한국어 5개 / 영어 6개
+* **inline cache 없음** (562) — 모든 return이 resolver를 부름
+* **남은 non-copy 700** — `kHleBoundary` 177, guarded segment 171, `kPortIo` 138,
+  `kIndirectExit` 109, `kJumpTable` 22
+
+### 이번 구간이 남긴 규칙
+
+> 성공 기준을 미리 적어 두십시오. 564는 커버리지가 크게 올랐고, 기준을 적어 두지
+> 않았다면 진척으로 읽었을 것입니다.
+
+> 추측한 것을 재는 줄을 census에 남기십시오. 답을 적는 것보다 질문을 남기는 편이 다음
+> 번에 값을 합니다.
+
+> 거부를 증명하는 probe를 지우지 마십시오. 565에서 `return true;` 하나를 실수로 지워
+> BOUND·ARPL·LES·LDS가 전부 통과하게 됐고, `long_mode_refused_arpl=false` 한 줄이
+> 잡았습니다.
+
+## 3.11 (English) Session handoff, 2026-09-01 (2) — measuring reachability, not coverage
+
+Tasks 560–566. **560–562 merged to main as `v0.0.177`; 563–566 sit on branch
+`task563-x64-execution-frontier`, unmerged.**
+
+**In one line: x64 can emit 97.88% of the guest's instructions and a call now returns, but
+execution reaches eight blocks from the entry -- and starting to measure that third number
+is the most important thing this stretch did.**
+
+| Item | 559 | 562 | 566 |
+|---|---:|---:|---:|
+| Emittable | 66.17% | 86.46% | **97.88%** |
+| Complete blocks | 2.66% | 64.13% | **86.13%** |
+| **Reachable blocks** | — | — | **8** (plus 12 serviced) |
+
+| Commit | What |
+|---|---|
+| `948ca69` | 560–562 (merged, `v0.0.177`) — branches, calls and returns; a call comes back |
+| `17ba5b6` | 563 — reachability measured. **The answer was one** |
+| `1642d1a` | 564 — `ESP` re-encoded to `R15D`; the obstruction moved 21 bytes |
+| `5ba7124` | 565 — moffs re-encoded, walls told from doors; reachable 1 → 8 |
+| `bfc067e` | 566 — segment bases measured; not a flat model |
+
+### What changed: what is counted
+
+Progress had been read through the emittable and complete-block fractions. At the end of
+562 those were 86.46% and 64.13% and looked like nearly there. Task 563 added a third
+number -- blocks execution actually reaches from the entry -- and it was **one**.
+
+> An image is not a run. What is missing and what is in the way are different questions.
+
+Every unit since is judged by it. Task 564 raised coverage from 86% to 97% and **failed by
+its own criterion**, because reachable did not move.
+
+### The next single step -- the x64 segment override
+
+The stop is `0x10f4c83`, `26 8b 1d 5c 00 00 00`, `mov ebx, es:[0x5c]`, with the frontier
+two `kGuardedSegmentLoad` and two `kSegmentOverrideMem`.
+
+**Task 566 narrowed the method.** The bases are not zero, so long mode ignoring the
+override is exactly the wrong answer and there is no cheap prefix-dropping route.
+
+i386's `EmitSegmentOverrideSlot` does it right -- drop the prefix, widen ModRM to a disp32
+form, **fold the base into the displacement**, guard on the shadow selector. On x64 that
+result then needs Task 552's and 564's memory-operand lowering **on top**.
+
+**Two transforms composed, so do not open it without running the combination.**
+
+### What the next session needs to know
+
+* **Run the census first.** Three guesses lost this stretch and the census answered each
+  in one round, which is why it now keeps three standing lines:
+
+  | Line | Question it answers |
+  |---|---|
+  | `reachable blocks` / `reachable serviced` | how far execution gets |
+  | `first stop` + `first stop bytes` | **what** is in the way |
+  | `selector bindings` | what the segment bases are |
+
+* **Check `agrees=true`.** The census mirrors the emitter's rule, so a mismatch means one
+  of them is wrong. It caught a real one in 562.
+* **Changing a rule turns its checker red** -- three times this stretch. That is correct
+  behaviour: move the probe to the current rule while **keeping the danger it guards**.
+* **The guest still does not run.** Task 544's fence stands; the joined call and return
+  are a program the probe built, resolved by the probe's own resolver, and the globals the
+  thunk reads are temporary.
+
+### Open items
+
+x64 segment override (above); zero `mmap_min_addr` headroom (551, i386 too); 32-bit
+wraparound not preserved by the `ESP` re-encoding (564, accidental safety today); Task
+546's decision numbering differing between its halves; no inline cache (562); and the 700
+non-copy records, none dominant.
+
+### Rules this stretch leaves
+
+> Write the success criterion down first. 564's coverage rose a great deal and would have
+> read as progress without one.
+
+> Leave the census a line that asks what you guessed, not a note of the answer.
+
+> Do not weaken a probe that proves refusals. In 565 one deleted `return true;` let BOUND,
+> ARPL, LES and LDS all through, and `long_mode_refused_arpl=false` caught it.
+
 ## 4. What is needed next
 
 > This section used to point at 3d-20. 3d-20 (another thread's registers), 3d-21 (the sampler) and
@@ -4394,3 +4575,519 @@ Of the 700 non-copy records left -- `kHleBoundary` 177, `kPortIo` 138, `kIndirec
 109, the guarded-segment kinds 171, `kJumpTable` 22 -- none dominates. **The next unit has
 to be chosen by what blocks execution rather than by count**; the phase where 560 could
 pick by volume is over.
+
+## 2026-09-01 Task 563: 도달 가능한 block은 1개입니다 / One reachable block
+
+### 한국어
+
+설계는 [20260901-563](../design/20260901-563-x64-reachability-from-entry.md), 로그는
+[20260901-563](../work-logs/20260901-563-x64-reachability-from-entry.md)입니다.
+
+```text
+reachable blocks    1  (0.01% of blocks)
+kCopy  stack-pointer            1
+entry=0x10f4bb8 first stop=0x10f4c31
+```
+
+| 수치 | 값 |
+|---|---:|
+| 방출 가능 | 86.46% |
+| 완결 block | 64.13% |
+| **진입점에서 도달 가능한 block** | **1** |
+
+#### 두 수는 틀리지 않았습니다. 다른 질문에 답하고 있었습니다
+
+| 질문 | 답하는 수 |
+|---|---|
+| 무엇이 **빠졌는가** | 방출 가능 비율, 완결 block 비율 |
+| 무엇이 **가로막는가** | 진입점에서 도달 가능한 block 수 |
+
+이미지의 86%가 방출 가능해도 진입 직후 한 명령이 거부되면 체인은 거기서 끝납니다.
+Task 556이 "두 수를 함께 읽어야 한다"고 한 것보다 한 걸음 더 나아간 곳입니다 —
+**두 수를 함께 읽어도 실행 여부는 알 수 없습니다.**
+
+> 이미지는 실행이 아니다.
+
+#### 예측이 틀렸고, 그것이 이 측정의 값입니다
+
+Task 562를 마치며 "다음은 아마 engine runtime 연결일 것"이라고 적었습니다. 아닙니다.
+runtime을 붙여도 두 번째 block에서 멈춥니다. 남은 non-copy 700개도 아닙니다 — 체인이
+거기 닿지도 않습니다.
+
+막는 것은 **`stack-pointer` 거부 6,401개**이고, 첫 하나가 진입 바로 다음에 있습니다.
+당연한 자리입니다 — 프로그램 진입부가 가장 먼저 하는 일이 스택 프레임 세우기이고,
+Task 555가 `ESP` 쓰기를 거부하게 만든 이유(long mode에서 `ESP` 쓰기가 zero-extend되어
+**host `RSP`를 파괴**)가 곧 거기서 걸리는 이유입니다.
+
+#### 6,401개의 형태 — 두 경우입니다
+
+| mnemonic | 수 | 형태 |
+|---|---:|---|
+| `mov` | 3,800 | 대부분 `[esp+N]` 메모리 base |
+| `add` `sub` | 1,120 | `ESP` 자체가 register operand |
+| `fstp` `fild` `fld` … | 약 900 | x87의 `[esp]` 메모리 base |
+| `push` `lea` `cmp` … | 나머지 | 혼재 |
+
+메모리 base는 SIB base를, register operand는 ModRM `rm`을 `R15D`로 바꿔야 하며 둘 다
+`REX.B`가 붙습니다. 재인코딩 방식이 다르므로 두 경우로 나뉩니다.
+
+#### 인수인계 3.10의 판단은 틀리지 않았습니다
+
+3.10은 `ESP` 재인코더를 두고 "수로는 비슷해 보여도 먼저 해도 block은 여전히 control
+flow에서 멈춘다"며 control flow를 앞세웠습니다. **그때는 맞았습니다** — 완결 block이
+2.66%에서 64.13%로 갔습니다. 순서가 뒤바뀐 것뿐이고, 그 사실은 이 측정이 생기기 전에는
+알 수 없었습니다.
+
+### English
+
+The design is [20260901-563](../design/20260901-563-x64-reachability-from-entry.md); the
+log is [20260901-563](../work-logs/20260901-563-x64-reachability-from-entry.md).
+
+| Number | Value |
+|---|---:|
+| Emittable | 86.46% |
+| Complete blocks | 64.13% |
+| **Blocks reachable from the entry** | **1** |
+
+#### The two numbers are not wrong. They answer a different question
+
+What is **missing** is the emittable and complete-block fractions; what is **in the way**
+is the reachable count. Eighty-six percent of an image can be emittable and the chain
+still ends at the first refused instruction after the entry. This goes a step past Task
+556's "read both numbers together": **reading both together still does not say whether
+anything runs.**
+
+> An image is not a run.
+
+#### A prediction was wrong, and that is what the measurement was for
+
+Finishing Task 562 I wrote that the next thing was probably connecting the engine
+runtime. It is not: with the runtime attached execution still stops at the second block.
+Nor is it the 700 non-copy records -- no chain reaches them.
+
+What blocks it is the **6,401 `stack-pointer` refusals**, the first immediately after the
+entry -- the obvious place, since setting up a stack frame is a program entry's first act,
+and Task 555's reason for refusing `ESP` writes (they zero-extend and **destroy the host's
+`RSP`**) is the reason it is hit there.
+
+#### The shape of the 6,401 -- two cases
+
+`mov` 3,800 is mostly the `[esp+N]` memory-base form; `add` and `sub` at 1,120 name `ESP`
+as a register operand; roughly 900 x87 instructions use `[esp]`. A memory base needs its
+SIB base changed to `R15D`, a register operand its ModRM `rm`, and both take `REX.B`. The
+two re-encode differently.
+
+#### Handoff 3.10's judgement was not wrong
+
+It put control flow ahead of the `ESP` re-encoder, reasoning that 6,401 first would still
+leave blocks stopping at their control flow. **That was right then** -- complete blocks
+went from 2.66% to 64.13%. The order has reversed, and that could not have been known
+before this measurement existed.
+
+## 2026-09-01 Task 564: `ESP` 재인코딩 — 장애물이 21바이트 옮겨갔습니다 / The obstruction moved 21 bytes
+
+### 한국어
+
+설계는 [20260901-564](../design/20260901-564-x64-esp-operand-reencode.md), 로그는
+[20260901-564](../work-logs/20260901-564-x64-esp-operand-reencode.md)입니다.
+
+| 항목 | 563 | 564 |
+|---|---:|---:|
+| 방출 가능 | 86.46% | **96.74%** |
+| 완결 block | 64.13% | **83.01%** |
+| `stack-pointer` 거부 | 6,401 | **234** |
+| **도달 가능 block** | 1 | **1** |
+| 정지 지점 | `0x10f4c31` `stack-pointer` | `0x10f4c46` `silently-different` |
+
+#### 설계가 세운 기준으로는 실패입니다
+
+설계에 **"방출 가능 비율이 아니라 도달 가능 block이 성패를 말한다"** 고 적어 두었고,
+그 수는 움직이지 않았습니다. 커버리지 두 수치가 크게 올랐으니 그것으로 성공을 말할 수는
+있지만, 그건 Task 563이 방금 "다른 질문에 답하는 수"라고 확인한 바로 그 수치입니다.
+
+> 하나의 장애물을 걷어내면 그 뒤의 것이 드러난다.
+
+§8이 네 번 만난 형태이고, 이번에는 **걷어낸 즉시** 같은 block 안에서 드러났습니다.
+성공 기준을 미리 적어 두지 않았다면 96.74%를 보고 진척으로 읽었을 것입니다.
+
+#### 재인코딩 자체는 맞고, 실행으로 확인했습니다
+
+`ESP`는 세 곳에 나타나며 셋 다 한 가지 변환입니다 — 필드를 `111`로, 대응하는 `REX`
+비트를.
+
+| 자리 | 예 | 결과 |
+|---|---|---|
+| ModRM `rm` | `83 C4 10` | `41 83 C7 10` `add r15d,16` |
+| ModRM `reg` | `89 E2` | `41 89 FA` |
+| SIB `base` | `8B 44 24 08` | `41 8B 44 27 08` |
+
+`add esp,16` 검사에서 **값보다 중요한 것은 실행이 돌아왔다는 사실**입니다. 재인코딩이
+없었다면 host `RSP`가 16 옮겨져 복귀 주소를 엉뚱한 곳에서 읽었을 것이고, 값을 비교할
+기회조차 없었을 것입니다.
+
+#### 남긴 것 — 32비트 wraparound
+
+`R15`로 바꾼 뒤 `0x67`을 붙이지 않으므로 `ESP + disp`의 32비트 감쌈이 보존되지
+않습니다. arena가 `0x085E7000` 아래라 현재는 일어날 수 없지만 **우연한 안전이지 규칙이
+아닙니다.**
+
+#### 세 번째로 probe가 옛 규칙을 주장했습니다
+
+`long_mode_compatibility`와 `long_mode_emission`이 "`ESP`는 거부"를 검사하다
+빨개졌습니다. Task 561의 검증기, Task 562의 `kReturn`에 이어 세 번째입니다.
+
+> 규칙을 바꾸면 그 규칙을 검사하던 것도 함께 바뀌어야 한다. 빨개지는 것이 그것을
+> 알려주는 방법이다.
+
+### English
+
+| Item | 563 | 564 |
+|---|---:|---:|
+| Emittable | 86.46% | **96.74%** |
+| Complete blocks | 64.13% | **83.01%** |
+| `stack-pointer` refusals | 6,401 | **234** |
+| **Reachable blocks** | 1 | **1** |
+| Stopping point | `0x10f4c31` `stack-pointer` | `0x10f4c46` `silently-different` |
+
+#### By the criterion its own design set, this unit failed
+
+The design said **reachable blocks decide it, not the emittable fraction**, and that number
+did not move. The coverage numbers rose a great deal and could be called success -- but
+they are exactly the numbers Task 563 had just shown answer a different question.
+
+> Remove one obstruction and the next appears.
+
+§8's shape again, and this time it appeared **the moment the first was cleared**, inside
+the same block. Without the criterion written down first, 96.74% would have read as
+progress.
+
+#### The re-encoding itself is right, and was run
+
+Three places, one transform -- the field to `111`, the matching `REX` bit. For
+`add esp,16`, **what matters more than the value is that the run came back**: without the
+re-encoding the host's `RSP` would have moved by sixteen and there would have been no
+chance to compare anything.
+
+#### What it gives up: 32-bit wraparound
+
+No `0x67` after the base becomes `R15`, so an `ESP + disp` that wrapped past 32 bits would
+not wrap. The arena makes that impossible today -- accidental safety, not a rule.
+
+#### A probe asserted the past, for the third time
+
+After Task 561's verifier and Task 562's `kReturn`, `long_mode_compatibility` and
+`long_mode_emission` both went red for checking "`ESP` is refused".
+
+> Change a rule and the thing checking it has to change with it.
+
+## 2026-09-01 Task 565: moffs 재인코딩, 그리고 벽과 문 / Walls and doors
+
+### 한국어
+
+설계는 [20260901-565](../design/20260901-565-x64-moffs-reencode.md), 로그는
+[20260901-565](../work-logs/20260901-565-x64-moffs-reencode.md)입니다.
+
+| 항목 | 563 | 564 | 565 |
+|---|---:|---:|---:|
+| 방출 가능 | 86.46% | 96.74% | **97.88%** |
+| 완결 block | 64.13% | 83.01% | **86.13%** |
+| **도달 가능 block** | 1 | 1 | **8** |
+| serviced 통과 | — | — | **12** |
+
+**도달 가능 block이 세 단위 만에 처음 움직였습니다.**
+
+#### 벽과 문 — 측정의 정의가 숫자를 낮추고 있었습니다
+
+`66 A3`를 통과시키자 다음 정지가 `cd 21`(`INT 21h`)이었습니다. 그것은 emitter가 못 내는
+것이 아니라 **HLE dispatcher가 처리하도록 설계된 것**이고, i386에서는 handler가
+서비스한 뒤 다음 명령에서 실행이 이어집니다.
+
+Task 563의 walk는 방출되지 않은 모든 record에서 멈춰 **벽과 문을 같은 것으로 셌습니다.**
+serviced boundary를 통과하게 하자 1 → 8이 됐습니다.
+
+> 측정이 낮았던 이유의 일부는 측정의 정의였다.
+
+두 수를 따로 보고합니다 — "runtime 도움 없이"와 "dispatcher가 제 일을 하면"은 다른
+주장입니다.
+
+#### 제한이 정확히 문제의 명령을 놓쳤고, 바이트가 그것을 말했습니다
+
+Task 557의 방침대로 맨 5바이트 형태만 통과시키고 "제한이 무엇을 놓치는지는 census가
+잰다"고 적었습니다. 즉시 답이 나왔습니다 — 216개가 남았고 막고 있던 것은
+`66 a3 24 66 1a 01`(`mov [0x011A6624], ax`), 제외한 바로 그 형태였습니다.
+
+Task 564가 "다음은 moffs"라고 예측했다가 형태를 틀린 직후라, 이번에는 **막는 바이트를
+찍도록** census를 고쳤습니다. 추론 한 라운드가 사실 한 줄로 바뀝니다.
+
+#### Task 550의 probe가 오늘 값을 했습니다
+
+`A0`–`A3`를 거부 목록에서 빼면서 **그 케이스들이 공유하던 `return true;`까지
+지웠습니다.** `62`(BOUND)·`63`(ARPL)·`C4`(LES)·`C5`(LDS)가 전부 거부되지 않게 됐고,
+넷 다 Task 550이 "조용히 다른 명령이 되는" 부류로 분류한 것들입니다. 복사됐다면 실행되는
+잘못된 프로그램이 나왔을 것입니다.
+
+`long_mode_refused_arpl=false` 한 줄이 잡았습니다.
+
+> 통과 목록만 확인하는 probe는 모든 것을 허용하는 판정기에 대해서도 통과한다.
+
+Task 550이 설계에 적어 둔 문장이고, 오늘 그것이 실제 회귀를 잡았습니다.
+
+#### 다음
+
+정지 지점 `0x10f4c83`, 바이트 `26 8b 1d 5c 00 00 00` = **`mov ebx, es:[0x5c]`**. frontier는
+`kGuardedSegmentLoad` 2와 `kSegmentOverrideMem` 2입니다.
+
+Task 552가 segment override를 미뤄 둔 근거는 `FS`/`GS`였습니다. **`ES`는 다릅니다** —
+long mode에서 `CS`/`DS`/`ES`/`SS` override는 무시되고 base가 0이므로, flat guest라면
+prefix를 떼는 것이 같은 의미일 수 있습니다. i386 경로도 이미 base를 displacement에 접어
+넣는 guard를 씁니다. **확인하고 정할 문제입니다.**
+
+### English
+
+| Item | 563 | 564 | 565 |
+|---|---:|---:|---:|
+| Emittable | 86.46% | 96.74% | **97.88%** |
+| Complete blocks | 64.13% | 83.01% | **86.13%** |
+| **Reachable blocks** | 1 | 1 | **8** |
+| Walked through serviced | — | — | **12** |
+
+**Reachable blocks moved for the first time in three units.**
+
+#### Walls and doors -- the definition was holding the number down
+
+With `66 A3` admitted the next stop was `cd 21`, an `INT 21h`: not something the emitter
+fails to produce but something the HLE dispatcher handles, after which i386 execution
+carries on at the next instruction. Task 563's walk stopped at every unemitted record and
+so **counted doors as walls**. Passing through serviced kinds takes it from one to eight.
+
+> Part of why the number was low was the definition of the number.
+
+Both are reported: "with no runtime help" and "if the dispatcher does its job" are
+different claims.
+
+#### The restriction missed exactly the instruction that mattered, and the bytes said so
+
+Only the bare five-byte moffs was admitted, on Task 557's policy, with the design saying
+the census would measure the cost. It answered at once: the blocker was
+`66 a3 24 66 1a 01`, the operand-size form that had been excluded. Task 564 had just
+predicted "moffs next" and got the shape wrong, so this time the census was made to
+**print the blocking bytes** -- a round of reasoning replaced by one line of fact.
+
+#### Task 550's probe earned its keep
+
+Taking `A0`–`A3` off the refusal list removed **the `return true;` those cases shared**,
+so `62`, `63`, `C4` and `C5` -- BOUND, ARPL, LES, LDS, all of Task 550's "quietly a
+different instruction" class -- stopped being refused. Copied, they would have produced a
+program that runs and is wrong. One line, `long_mode_refused_arpl=false`, caught it.
+
+> A probe that checks only the pass list also passes against a classifier that allows
+> everything.
+
+That was written in Task 550's design, and today it caught a real regression.
+
+#### Next
+
+The stop is `26 8b 1d 5c 00 00 00`, `mov ebx, es:[0x5c]`, with the frontier two
+`kGuardedSegmentLoad` and two `kSegmentOverrideMem`. Task 552 deferred segment overrides
+on `FS`/`GS` grounds, and **`ES` is not those**: long mode ignores `CS`/`DS`/`ES`/`SS`
+overrides and their base is zero, so under a flat guest dropping the prefix might mean the
+same thing, and the i386 path already folds a base into the displacement behind a guard.
+Something to check and decide, not to assert.
+
+## 2026-09-01 Task 566: guest는 flat model이 아닙니다 / The guest is not flat
+
+### 한국어
+
+로그는 [20260901-566](../work-logs/20260901-566-guest-segment-bases.md)입니다.
+
+```text
+selector=0x1c base=0x1000000  limit=0xf       object=1
+selector=0x24 base=0x1010000  limit=0xef0cf   object=2
+selector=0x2c base=0x1100000  limit=0x47      object=3
+selector=0x34 base=0x1110000  limit=0x4c6e5f  object=4
+```
+
+**segment base가 0이 아니라 재배치된 object base입니다.**
+
+#### 이것이 뒤집은 것
+
+Task 565를 마치며 "`ES`는 `FS`/`GS`와 다르고, flat guest면 prefix를 떼는 것으로 충분할
+수 있다 — **확인하고 정할 문제**"라고 적었습니다. 확인했고, 아닙니다.
+
+base가 0이 아니므로 long mode가 `CS`/`DS`/`ES`/`SS` override를 무시하는 것은 편의가
+아니라 **정확히 틀린 답**입니다. `mov ebx, es:[0x5c]`는 `[ES_base + 0x5c]`이고, prefix를
+떼면 예외 없이 다른 주소를 읽습니다 — Task 550이 분류한 "조용히 다른 명령이 되는"
+부류와 같은 성질입니다.
+
+#### x64 segment override는 두 변환의 합성입니다
+
+i386의 `EmitSegmentOverrideSlot`이 이미 옳은 방법을 씁니다 — prefix를 떼고, ModRM을
+disp32 형태로 넓히고, **base를 displacement에 접어 넣고**, shadow selector가 어긋나면
+boundary로 가는 guard를 답니다.
+
+x64에서는 그 결과에 Task 552/564의 memory operand lowering이 한 번 더 얹혀야 합니다.
+변환 둘을 합성하는 것이므로 별도 단위이며, 그 조합이 검증되지 않은 채로는 열 수
+없습니다.
+
+#### 추측이 세 번 졌습니다
+
+| 단위 | 추측 | 측정 |
+|---|---|---|
+| 563 | "다음은 engine runtime 연결" | `stack-pointer`가 진입 직후를 막고 있었음 |
+| 564 | "다음 장애물은 moffs" | 맞았으나 **형태를 틀림** (`66` prefix) |
+| 565 | "flat guest면 prefix를 떼면 됨" | **base가 0이 아님** |
+
+세 번 다 측정이 한 번에 답했고, 그때마다 census에 그것을 묻는 줄을 남겼습니다 — 정지
+지점(563), 정지 바이트(565), selector base(566).
+
+> 다음 세션은 추론으로 시작하지 않아도 된다.
+
+### English
+
+The log is [20260901-566](../work-logs/20260901-566-guest-segment-bases.md).
+
+**The segment bases are the relocated object bases, not zero.**
+
+#### What that overturns
+
+Task 565 closed by saying `ES` is not `FS`/`GS`, that a flat guest might let the prefix
+simply be dropped, and that this was **something to check and decide**. Checked, and it is
+not so.
+
+With non-zero bases, long mode ignoring the `CS`/`DS`/`ES`/`SS` overrides is not a
+convenience but **exactly the wrong answer**: `mov ebx, es:[0x5c]` means
+`[ES_base + 0x5c]`, and dropping the prefix reads a different address without raising --
+Task 550's "quietly a different instruction" shape once more.
+
+#### The x64 segment override is two transforms composed
+
+i386's `EmitSegmentOverrideSlot` already does it right: drop the prefix, widen ModRM to a
+disp32 form, **fold the base into the displacement**, and guard on the shadow selector.
+On x64 that result then needs Task 552's and 564's memory-operand lowering on top. Two
+transforms composed, so its own unit, and not one to open without the combination
+verified.
+
+#### Three guesses lost
+
+| Unit | Guess | Measurement |
+|---|---|---|
+| 563 | "next is the engine runtime" | `stack-pointer` blocked right after the entry |
+| 564 | "next obstruction is moffs" | right, **wrong shape** -- the `66`-prefixed form |
+| 565 | "flat guest, drop the prefix" | **the bases are not zero** |
+
+Each answered in one round, and each left the census a line that asks it: where the chain
+stops, the bytes that stop it, the selector bases.
+
+> The next session does not have to start by reasoning.
+
+## 3.12 Task 567 — segment override slot, 그리고 +1이라는 수치
+
+x64 segment override slot을 만들고 양방향으로 검증했다. 실행 결과와 판단은
+[작업 기록](../work-logs/20260901-567-x64-segment-override.md)에 있다.
+
+여기 남길 것은 **수치의 해석**이다. census에 새 줄을 넣어 물었다.
+
+```
+reachable blocks     8
+reachable if seg     9   (가정: segment override가 patch됨)
+then stops at        0x10f4ca2   8e c0     ; MOV ES, AX
+```
+
+`+1`이다. 그런데 다음 벽이 `MOV ES, AX`라는 사실이 이 `+1`의 의미를 정한다.
+guest 진입부는 DOS/4GW startup의 segment 설정 구간이라, override 다음이 곧장
+load다. 즉 지금 남은 것은 서로 무관한 긴 꼬리가 아니라 **segment 작업 한
+덩어리**이고, 하나씩 만들면 한 칸씩 나가고 묶어서 만들면 덩어리째 나간다.
+
+`reachable if seg`는 가정이라고 이름에 적혀 있고 headline과 분리되어 있다.
+patcher가 없는 동안 headline은 8에서 움직이지 않는다. 움직이게 만들려면 slot을
+기본으로 켜면 되지만, 그러면 지표는 오르고 실행은 틀린다.
+
+---
+
+## 3.12 (English) Task 567 — the segment-override slot, and what +1 means
+
+The x64 segment-override slot was built and verified in both directions; the
+results and the reasoning are in the
+[work log](../work-logs/20260901-567-x64-segment-override.md).
+
+What belongs here is the **reading of the number**. A new census line asks it:
+
+```
+reachable blocks     8
+reachable if seg     9   (hypothetical: segment overrides patched)
+then stops at        0x10f4ca2   8e c0     ; MOV ES, AX
+```
+
+`+1` -- but the identity of the next wall is what fixes its meaning. The
+guest's entry is the DOS/4GW startup's segment-setup run, so a segment load
+follows the override immediately. What remains is therefore not a long tail of
+unrelated obstructions but **one cluster of segment work**: built one at a
+time it advances one block at a time; built together it advances as a cluster.
+
+`reachable if seg` is named as a hypothesis and kept apart from the headline.
+While no patcher exists the headline stays at 8. It could be made to move by
+turning the slot on by default -- and then the metric would rise while
+execution became wrong.
+
+## 3.13 Task 568 — 없던 것은 patcher가 아니라 맞는 patcher였다
+
+x64 segment override를 실제 patcher에 연결했다. 실행 결과는
+[작업 기록](../work-logs/20260901-568-x64-segment-patcher.md)에 있다.
+
+여기 남길 것은 두 가지다.
+
+**첫째, 이음매.** x64 probe를 진짜 patcher에 붙이려다 link가 깨졌다.
+`repiu_core_probe`는 플랫폼 계층 없이 모든 host에서 빌드되는 타깃인데 engine을
+링크하면 OpenGL이 딸려오고, Linux에는 engine을 링크하는 probe 타깃이 없다.
+그 실패가 이음매를 가리켰다 — **어떤 바이트를 쓸지는 emitter 옆의 runtime
+지식이고, 어느 페이지를 열지는 engine의 일이다.** 둘이 한 함수에 있어서 앞의
+것을 검증하려면 뒤의 것을 통째로 링크해야 했다. 링크 오류가 설계 문제를 가리킨
+경우다.
+
+**둘째, 측정의 복제.** 567은 census에 가정을 넣어 "8 → 9"라고 적었다. 켜 보니
+11이다. census는 "발행됨"을 두 곳에서 판단하는데 가정이 한 곳에만 적용됐다.
+이 단위가 engine에서 지운 것과 **똑같은 복제가 측정 도구 안에도** 있었다.
+
+여기서 규칙이 하나 굳는다. **가정을 재는 코드는 사실을 재는 코드와 같은 술어를
+써야 한다.** 아니면 재는 것은 가정이 아니라 그 가정을 반쯤 적용한 무언가다.
+
+```
+              이전    이후
+도달 가능      8      11
+serviced      12      13
+첫 정지    26 8b 1d   8e c0   (MOV ES, AX)
+```
+
+---
+
+## 3.13 (English) Task 568 — what was missing was not a patcher but a fitting one
+
+The x64 segment override is connected to the real patcher; the results are in
+the [work log](../work-logs/20260901-568-x64-segment-patcher.md).
+
+Two things belong here.
+
+**First, a seam.** Wiring the x64 probe to the real patcher broke the link:
+`repiu_core_probe` builds on every host with no platform layer, linking the
+engine drags OpenGL in, and Linux has no probe target that links the engine.
+That failure pointed at the seam -- **what bytes to write is runtime knowledge
+belonging beside the emitter; which page to open is the engine's business.**
+Having both in one function meant verifying the first required linking all of
+the second. A link error pointing at a design problem.
+
+**Second, duplication inside the measurement.** Task 567 put a hypothesis in the
+census and recorded "8 -> 9". Turned on for real it is 11. The census decides
+"emitted" in two places and the hypothesis reached only one of them. The very
+duplication this unit deleted from the engine **was also sitting in the
+measuring tool**.
+
+A rule hardens out of that. **Code that measures a hypothesis must use the same
+predicate as the code that measures the fact.** Otherwise what is measured is
+not the hypothesis but something with the hypothesis half applied.
+
+```
+                 before   after
+reachable          8       11
+serviced          12       13
+first stop     26 8b 1d   8e c0   (MOV ES, AX)
+```

@@ -1,5 +1,7 @@
 #include "linux_x64_guest_register_probe.h"
+#include "repiu/runtime/aot_segment_patch.h"
 
+#include "repiu/platform/fault_handler.h"
 #include "repiu/platform/linux_x64_aot_dispatch.h"
 #include "repiu/platform/linux_x64_guest_registers.h"
 #include "repiu/platform/virtual_memory.h"
@@ -75,6 +77,9 @@ struct PlacedProgram
     std::uint32_t copied = 0;
     std::uint32_t lowered = 0;
     std::uint32_t refused = 0;
+    // Task 567. Where the probe's own closing `ret` sits, so a handler can send
+    // a trapped run there rather than leaving it standing on an INT3.
+    std::uint32_t ret_offset = 0;
 };
 
 AotTranslationPlan MakePlan(const Program& program)
@@ -171,6 +176,7 @@ PlacedProgram PlaceImage(const char* label, const AotCodeCacheImage& image,
     placed.data = placed.code + kCodeBytes;
     placed.data_address = static_cast<std::uint32_t>(
         reinterpret_cast<std::uintptr_t>(placed.data));
+    placed.ret_offset = static_cast<std::uint32_t>(executable.size()) - 1U;
     std::memcpy(placed.code, executable.data(), executable.size());
 
     // Only the code page becomes executable. The rest stays writable, because
@@ -828,6 +834,284 @@ bool ProbeCallAndReturn()
     return ok;
 }
 
+// Task 564. Guest `ESP` named in each of the three encoding places, executed.
+//
+// The third case is the one that needs care. `add esp, 16` re-encoded wrongly
+// writes the *host's* stack pointer, and a probe that only compared values
+// might not notice -- so what is checked is that the run comes back at all.
+// Without the re-encoding, RSP would have moved by 16 at that instruction and
+// the return address would be read from the wrong place.
+bool ProbeStackPointerReencode()
+{
+    // mov eax,[esp+8] (SIB base) · add esp,16 (ModRM rm) · mov edx,esp (ModRM
+    // reg, with ESP as the source).
+    const Program program = {
+        {0x8BU, 0x44U, 0x24U, 0x08U},
+        {0x83U, 0xC4U, 0x10U},
+        {0x89U, 0xE2U},
+    };
+    const PlacedProgram placed = Place("esp_reencode", program);
+    if (!placed.valid)
+    {
+        std::cout << "guest_esp_reencode=false\n";
+        return false;
+    }
+    constexpr std::uint32_t kOnStack = 0xC0FFEE01U;
+    const std::uint32_t stack_top = placed.data_address + 0x800U;
+    // The value `[esp+8]` must find.
+    std::memcpy(placed.data + 0x800U + 8U, &kOnStack, sizeof(kOnStack));
+
+    GuestRegisterProbeState state;
+    state.gpr[kEsp] = stack_top;
+    RepiuLinuxX64GuestRegisterProbe(placed.code, &state);
+
+    // The SIB-base form read the guest stack rather than the host's.
+    bool ok = Check("esp_memory_base", state.gpr[kEax], kOnStack);
+    // The ModRM-rm form moved guest ESP, which lives in R15D.
+    ok = Check("esp_register_operand", state.observed_r15,
+               static_cast<std::uint64_t>(stack_top + 16U)) && ok;
+    // The ModRM-reg form read guest ESP out, after the add.
+    ok = Check("esp_as_source", state.gpr[kEdx], stack_top + 16U) && ok;
+    // Reaching this line at all is the host's stack pointer having survived
+    // `add esp,16`. Un-re-encoded, that instruction moves RSP and the return
+    // never comes back here.
+    std::cout << "guest_esp_reencode=" << (ok ? "true" : "false")
+              << " lowered=" << placed.lowered << "\n";
+    Release(placed);
+    return ok;
+}
+
+// Task 567. Where a trapped run is sent, and how many times it trapped.
+//
+// The guard's fallback is an INT3, so the mismatching run has to be caught or
+// it ends the probe. The handler redirects to the closing `ret` the harness
+// appended, which is reached with flags restored and guest ESP balanced --
+// the fallback path does both before trapping.
+std::uintptr_t g_boundary_target = 0;
+std::uint32_t g_boundary_hits = 0;
+
+repiu::platform::FaultDisposition OnSegmentBoundary(
+    repiu::platform::FaultEvent* event, void* /*user_data*/)
+{
+    if (event == nullptr || event->registers == nullptr ||
+        event->kind != repiu::platform::FaultKind::kBreakpoint)
+    {
+        return repiu::platform::FaultDisposition::kNotHandled;
+    }
+    ++g_boundary_hits;
+    event->registers->Eip = static_cast<std::uint32_t>(g_boundary_target);
+    return repiu::platform::FaultDisposition::kResume;
+}
+
+// Task 567. The segment-override slot, patched and then run both ways.
+//
+// The guard is the whole point of the slot, and a probe that only ran the
+// matching case would not be able to tell a guard from its absence -- the
+// access would read the right byte either way. So the selector is made to
+// disagree on a second run and the boundary has to be reached.
+//
+// The patching is done here rather than assumed, because nothing on x64 patches
+// these yet. An unpatched slot reads with a base of zero, which is the exact
+// error the fold exists to prevent, so "emitted" and "correct" are held apart
+// by doing the patch in the test that claims correctness.
+bool ProbeSegmentOverride()
+{
+    // 26 8B 1D <disp32>: mov ebx, es:[disp32]. The shape Task 565's chain
+    // stopped on, and the one this unit admits.
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = kGuestBase;
+    AotBasicBlock block;
+    block.guest_address = kGuestBase;
+    AotInstructionRecord access;
+    access.guest_address = kGuestBase;
+    access.kind = AotInstructionKind::kSegmentOverrideMem;
+    access.segment_override_register = 0U;  // ES
+    access.bytes = {0x26U, 0x8BU, 0x1DU, 0x40U, 0x00U, 0x00U, 0x00U};
+    access.length = 7U;
+    block.instructions.push_back(access);
+    AotInstructionRecord tail;
+    tail.guest_address = kGuestBase + 7U;
+    tail.kind = AotInstructionKind::kCopy;
+    tail.bytes = {0x90U};
+    tail.length = 1U;
+    block.instructions.push_back(tail);
+    AotInstructionRecord closing;
+    closing.guest_address = kGuestBase + 8U;
+    closing.kind = AotInstructionKind::kReturn;
+    closing.bytes = {0xC3U};
+    closing.length = 1U;
+    block.instructions.push_back(closing);
+    plan.blocks.push_back(block);
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    options.enable_long_mode_segment_override = true;
+    AotCodeCacheImage image;
+    if (!BuildAotCodeCacheImage(plan, options, &image) || !image.valid ||
+        image.long_mode_segment_override_count != 1U ||
+        image.segment_override_sites.size() != 1U)
+    {
+        std::cout << "guest_segment_override=false slots="
+                  << image.long_mode_segment_override_count << " message=\""
+                  << image.message << "\"\n";
+        return false;
+    }
+
+    const PlacedProgram placed =
+        PlaceImage("segment", image, kGuestBase + 7U);
+    if (!placed.valid)
+    {
+        std::cout << "guest_segment_override=false\n";
+        return false;
+    }
+
+    // The guest data the fold has to reach, and the shadow selector the guard
+    // reads. Both live in the writable half, whose address is below 4 GiB.
+    constexpr std::uint32_t kSegmentBase = 0x100U;
+    constexpr std::uint32_t kGuestDisplacement = 0x40U;
+    constexpr std::uint16_t kSelector = 0x0024U;
+    constexpr std::uint32_t kValue = 0xFEEDFACEU;
+    const std::uint32_t shadow_address = placed.data_address;
+    const std::uint32_t data_address =
+        placed.data_address + 0x200U;
+    // The fold: the access must reach base + displacement, so the base is
+    // chosen to land the sum on the data.
+    const std::uint32_t folded = data_address - kGuestDisplacement;
+    std::memcpy(placed.data + 0x200U, &kValue, sizeof(kValue));
+    std::uint16_t shadow = kSelector;
+    std::memcpy(placed.data, &shadow, sizeof(shadow));
+    (void)kSegmentBase;
+
+    // Task 568. Patch with the engine's own patcher, not by hand.
+    //
+    // Task 567's version of this probe wrote the three fields itself with
+    // `memcpy`. That verified the slot but could not verify the thing this unit
+    // changes, because the patcher is what is under test. It opens its own
+    // write window and re-protects afterwards, so the manual unlock is gone.
+    // The write window is the probe's here, because the runtime patcher takes
+    // bytes that are already writable -- opening the page is the engine's half
+    // of the split, and the engine is not linked into this probe. `PlaceImage`
+    // leaves the code execute-only, and patching through that faults, which is
+    // how Task 567's first run ended.
+    if (!repiu::platform::ProtectMemory(
+            placed.code, kCodeBytes,
+            repiu::platform::MemoryProtection::kExecuteReadWrite, nullptr))
+    {
+        std::cout << "guest_segment_override=false,reason=unlock\n";
+        Release(placed);
+        return false;
+    }
+
+    repiu::runtime::AotSegmentTable segment_table;
+    repiu::runtime::AotSegmentResolution& resolution =
+        segment_table.segments[
+            image.segment_override_sites.front().segment_register];
+    resolution.shadow_address = shadow_address;
+    resolution.selector = kSelector;
+    // A base, not a pre-folded address: folding it into the guest displacement
+    // is the patcher's job and therefore part of what is under test.
+    resolution.base = folded;
+    resolution.policy = repiu::runtime::AotSegmentAccessPolicy::kNativeFolded;
+
+    repiu::runtime::AotSegmentOverridePatchStats patch_stats;
+    const std::uint32_t patched =
+        repiu::runtime::PatchAotSegmentOverrideSites(
+            placed.code, image.segment_override_sites, segment_table,
+            &patch_stats);
+    bool ok = Check("segment_patcher_sites", patched, 1U);
+    ok = Check("segment_patcher_native", patch_stats.native_site_count, 1U) &&
+         ok;
+    if (!repiu::platform::FlushInstructionCacheRange(placed.code, kCodeBytes))
+    {
+        std::cout << "guest_segment_override=false,reason=flush\n";
+        Release(placed);
+        return false;
+    }
+
+    const std::uint32_t stack_top = placed.data_address + 0x800U;
+    GuestRegisterProbeState matched;
+    matched.gpr[kEsp] = stack_top;
+    RepiuLinuxX64GuestRegisterProbe(placed.code, &matched);
+
+    ok = Check("segment_access_value", matched.gpr[kEbx], kValue) && ok;
+    // Flags and the guest stack came back as they went in: the guard's compare
+    // is bracketed by the lowered pushfd/popfd, and neither may leak.
+    ok = Check("segment_esp_balanced", matched.observed_r15,
+               static_cast<std::uint64_t>(stack_top)) && ok;
+
+    // The other direction. Without it this would be measuring the access and
+    // not the guard: with the fold correct, a slot that had no guard at all
+    // would read the same right value.
+    g_boundary_target = reinterpret_cast<std::uintptr_t>(placed.code) +
+        placed.ret_offset;
+    g_boundary_hits = 0U;
+    if (!repiu::platform::InstallFaultHandler(&OnSegmentBoundary, nullptr))
+    {
+        std::cout << "guest_segment_override=false,reason=handler\n";
+        Release(placed);
+        return false;
+    }
+    shadow = static_cast<std::uint16_t>(kSelector + 1U);
+    std::memcpy(placed.data, &shadow, sizeof(shadow));
+    GuestRegisterProbeState mismatched;
+    mismatched.gpr[kEsp] = stack_top;
+    mismatched.gpr[kEbx] = 0U;
+    RepiuLinuxX64GuestRegisterProbe(placed.code, &mismatched);
+    repiu::platform::RemoveFaultHandler();
+
+    ok = Check("segment_guard_boundary", g_boundary_hits, 1U) && ok;
+    // The access must not have run: EBX is still what it went in as.
+    ok = Check("segment_guard_no_access", mismatched.gpr[kEbx], 0U) && ok;
+    // And the fallback restored flags before trapping, so guest ESP balances
+    // on this path too.
+    ok = Check("segment_guard_esp", mismatched.observed_r15,
+               static_cast<std::uint64_t>(stack_top)) && ok;
+
+    // Task 568. The round trip the recorded prologue exists for.
+    //
+    // Everything above leaves the slot's opening bytes untouched, so the
+    // restore writes back what is already there and a wrong recording would
+    // only show up as corruption. Routing the site to HLE first makes the
+    // restore do real work: with no companion slot the patcher stamps `0xCC`
+    // over the first byte, and going back to native has to undo exactly that.
+    // This is the path that would have silently broken had the patcher kept
+    // its i386 constant.
+    repiu::runtime::AotSegmentOverridePatchStats hle_stats;
+    resolution.policy = repiu::runtime::AotSegmentAccessPolicy::kHleLowMemory;
+    repiu::runtime::PatchAotSegmentOverrideSites(
+        placed.code, image.segment_override_sites, segment_table, &hle_stats);
+    ok = Check("segment_hle_routed", hle_stats.hle_site_count, 1U) && ok;
+    ok = Check("segment_hle_trapped", placed.code[0], 0xCCU) && ok;
+
+    repiu::runtime::AotSegmentOverridePatchStats restore_stats;
+    resolution.policy = repiu::runtime::AotSegmentAccessPolicy::kNativeFolded;
+    repiu::runtime::PatchAotSegmentOverrideSites(
+        placed.code, image.segment_override_sites, segment_table,
+        &restore_stats);
+    ok = Check("segment_restore_native", restore_stats.native_site_count, 1U) &&
+         ok;
+    if (!repiu::platform::FlushInstructionCacheRange(placed.code, kCodeBytes))
+    {
+        std::cout << "guest_segment_override=false,reason=reflush\n";
+        Release(placed);
+        return false;
+    }
+    // Executed, not merely compared: the whole slot has to work again, which a
+    // byte-by-byte comparison against a remembered head would not establish.
+    shadow = kSelector;
+    std::memcpy(placed.data, &shadow, sizeof(shadow));
+    GuestRegisterProbeState restored;
+    restored.gpr[kEsp] = stack_top;
+    RepiuLinuxX64GuestRegisterProbe(placed.code, &restored);
+    ok = Check("segment_restored_value", restored.gpr[kEbx], kValue) && ok;
+
+    std::cout << "guest_segment_override=" << (ok ? "true" : "false")
+              << " slots=" << image.long_mode_segment_override_count << "\n";
+    Release(placed);
+    return ok;
+}
+
 }  // namespace
 
 bool RunLinuxX64GuestRegisterProbe()
@@ -840,9 +1124,11 @@ bool RunLinuxX64GuestRegisterProbe()
     const bool call = ProbeDirectCall();
     const bool unresolved = ProbeUnresolvedCall();
     const bool call_return = ProbeCallAndReturn();
+    const bool esp = ProbeStackPointerReencode();
+    const bool segment = ProbeSegmentOverride();
     const bool all =
         mapping && stack && flags && round_trip && branch && call &&
-        unresolved && call_return;
+        unresolved && call_return && esp && segment;
     std::cout << "linux_x64_guest_register_all=" << (all ? "true" : "false")
               << "\n";
     return all;

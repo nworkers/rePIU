@@ -502,6 +502,18 @@ bool RunSelectorGuardProbe()
         site.displacement_offset = 12U;
         site.original_displacement = -4;
         site.segment_register = 5U;
+        // Task 568. This slot is hand-built, so it stands in for an emitter and
+        // must declare its own opening bytes the way one does. The fifth is the
+        // first byte of the abs32, which the address patch overwrites straight
+        // after; it is recorded anyway so the length matches the JMP rel32 that
+        // HLE routing would have written over it.
+        site.guard_prologue[0] = 0x9CU;
+        site.guard_prologue[1] = 0x66U;
+        site.guard_prologue[2] = 0x81U;
+        site.guard_prologue[3] = 0x3DU;
+        site.guard_prologue[4] = 0x00U;
+        site.guard_prologue_size =
+            static_cast<std::uint8_t>(runtime::kAotSegmentGuardPrologueBytes);
         placement.segment_override_sites.push_back(site);
         bytes[32U] = 0xCCU;
         runtime::AotGuardedSegmentPopSite pop_site;

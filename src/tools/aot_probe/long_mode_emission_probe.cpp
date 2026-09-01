@@ -54,16 +54,19 @@ const std::vector<std::uint8_t> kAbsolute = {0x8BU, 0x05U, 0x78U, 0x56U,
 const std::vector<std::uint8_t> kAbsoluteLowered = {
     0x67U, 0x8BU, 0x04U, 0x25U, 0x78U, 0x56U, 0x34U, 0x12U};
 
-// mov eax, [0x12345678] in the moffs form. Long mode reads the offset as eight
-// bytes, so the instruction's own length changes and every decode after it
-// moves. Nothing raises.
+// `LES`, which long mode reads as a three-byte VEX prefix. Nothing raises; the
+// bytes simply become some other instruction.
 //
-// This was `40` (`inc eax`) until Task 557 gave that a re-encoding. The item is
-// the same one either way -- an encoding that must never be copied -- and it
-// moved because the classifier learned to lower the old example, which is the
-// direction this is supposed to go.
-const std::vector<std::uint8_t> kSilentlyDifferent = {0xA1U, 0x78U, 0x56U,
-                                                      0x34U, 0x12U};
+// This example has now moved twice. It was `40` (`inc eax`) until Task 557 gave
+// that a re-encoding, then the moffs `A1` until Task 565 gave *that* one. The
+// item being checked is the same throughout -- an encoding that must never be
+// copied -- and each move happened because the classifier learned to lower the
+// previous example, which is the direction this is supposed to go.
+//
+// It is worth noticing that the example keeps having to move. A probe pinned to
+// a specific encoding measures that encoding; what this item is for is the
+// category, so it will move again.
+const std::vector<std::uint8_t> kSilentlyDifferent = {0xC4U, 0x04U, 0x24U};
 
 // inc eax, and its lowering. Task 557: the register moves out of the opcode and
 // into a ModRM byte, because in long mode `40` is a REX prefix.
@@ -75,6 +78,10 @@ const std::vector<std::uint8_t> kIncEaxLowered = {0xFFU, 0xC0U};
 // carries no memory operand, so it reached `kIdenticalBytes` and would have
 // been copied verbatim into the cache.
 const std::vector<std::uint8_t> kStackPointerWrite = {0x83U, 0xC4U, 0x10U};
+// Task 564: `add r15d, 16`. REX.B before the opcode, and ModRM `rm` from `100`
+// (ESP) to `111` (R15). Same opcode, same immediate, one byte longer.
+const std::vector<std::uint8_t> kStackPointerWriteLowered = {0x41U, 0x83U,
+                                                             0xC7U, 0x10U};
 
 // Port I/O: `in eax, dx`. It stands for the kinds long mode still has no slot
 // for, and it closes a block without a fallthrough edge because its kind is not
@@ -254,10 +261,16 @@ bool ProbeLongModeOutcomes()
     // Task 557. The INC that used to be refused outright.
     const bool inc_dec = Expect("long_mode_emission_inc_to_modrm", image,
                                 planned[4].guest_address, kIncEaxLowered);
-    // Task 555. The stack pointer, which had been passing as identical bytes.
-    const bool stack = Expect("long_mode_emission_refused_stack_pointer", image,
-                              planned[5].guest_address, {0xCCU}) &&
-        HasBoundaryFixupAt(image, planned[5].guest_address);
+    // Task 555 found this passing as identical bytes; Task 564 re-encodes it.
+    //
+    // `add esp, 16` becomes `add r15d, 16`: a REX.B inserted before the opcode
+    // and the ModRM `rm` moved from `100` (ESP) to `111` (R15). Guest ESP lives
+    // in R15D, so this is the same arithmetic on the register that actually
+    // holds it -- and the host's RSP, which the original would have written, is
+    // left alone.
+    const bool stack = Expect("long_mode_emission_stack_pointer_to_r15", image,
+                              planned[5].guest_address,
+                              kStackPointerWriteLowered);
     // The kinds long mode still has no slot for, standing in for the
     // hand-built 32-bit slots that must not reach a long-mode image.
     //
@@ -271,8 +284,9 @@ bool ProbeLongModeOutcomes()
 
     const bool counted = image.long_mode_emission_enabled &&
         image.long_mode_copied_count == 1U &&
-        image.long_mode_lowered_count == 3U &&
-        image.long_mode_refused_count == 3U;
+        // Task 564 moved the stack-pointer write from refused to lowered.
+        image.long_mode_lowered_count == 4U &&
+        image.long_mode_refused_count == 2U;
     std::cout << "long_mode_emission_counts=" << (counted ? "true" : "false")
               << ",copied=" << image.long_mode_copied_count
               << ",lowered=" << image.long_mode_lowered_count

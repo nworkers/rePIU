@@ -10,6 +10,7 @@
 #include "repiu/engine/aot_worker_timing.h"
 #include "repiu/engine/aot_timer_source_profile.h"
 #include "repiu/runtime/aot_code_cache.h"
+#include "repiu/runtime/aot_segment_patch.h"
 #include "repiu/runtime/selector_table.h"
 
 #include <cstdint>
@@ -170,28 +171,14 @@ bool InstallAotProbeSentinel(AotCodeCachePlacement* placement,
 // address of the guest's shadow selector (for the guard's memory compare),
 // selector is its value at translation time, and base is its descriptor base
 // (0 when the selector is flat/unresolved).
-enum class AotSegmentAccessPolicy : std::uint8_t
-{
-    kUnresolved = 0,
-    kNativeFolded,
-    kHleLowMemory,
-};
-
-struct AotSegmentResolution
-{
-    std::uint32_t shadow_address = 0;
-    std::uint16_t selector = 0;
-    std::uint32_t base = 0;
-    std::uint32_t limit = 0;
-    std::uint32_t flags = 0;
-    AotSegmentAccessPolicy policy =
-        AotSegmentAccessPolicy::kUnresolved;
-};
-
-struct AotSegmentTable
-{
-    AotSegmentResolution segments[6];
-};
+// Task 568. These moved to runtime, beside the emitter that produces the sites
+// they describe, so the patch loop can be exercised without linking the engine
+// -- which on Linux drags OpenGL into a probe built to have no platform layer.
+// Aliased here because the names are used across the engine and its probes, and
+// renaming those is a separate concern from moving the definition.
+using AotSegmentAccessPolicy = runtime::AotSegmentAccessPolicy;
+using AotSegmentResolution = runtime::AotSegmentResolution;
+using AotSegmentTable = runtime::AotSegmentTable;
 
 struct AotSegmentPatchStats
 {

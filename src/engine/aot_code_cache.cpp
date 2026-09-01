@@ -1546,75 +1546,18 @@ std::uint32_t ReResolveWin32AotSegmentOverrides(
     {
         *stats = AotSegmentPatchStats{};
     }
-    std::uint32_t processed = 0U;
-    for (const runtime::AotSegmentOverrideSite& site :
-         placement->segment_override_sites)
+    // Task 568. The override sites' bytes are written by runtime code, beside
+    // the emitter that produced them. What stays here is the memory work: the
+    // page was opened above and is closed and flushed below.
+    runtime::AotSegmentOverridePatchStats override_stats;
+    std::uint32_t processed = runtime::PatchAotSegmentOverrideSites(
+        bytes, placement->segment_override_sites, *segment_table,
+        &override_stats);
+    if (stats != nullptr)
     {
-        const std::uint8_t seg = site.segment_register;
-        if (seg >= 6U)
-        {
-            continue;
-        }
-        const AotSegmentResolution& resolution =
-            segment_table->segments[seg];
-        ++processed;
-        if (resolution.shadow_address == 0U)
-        {
-            bytes[site.cache_offset] = 0xCCU;
-            if (stats != nullptr)
-            {
-                ++stats->unresolved_site_count;
-            }
-            continue;
-        }
-        if (resolution.policy == AotSegmentAccessPolicy::kHleLowMemory)
-        {
-            if (site.dispatch_cache_offset == 0U)
-            {
-                bytes[site.cache_offset] = 0xCCU;
-            }
-            else
-            {
-                bytes[site.cache_offset] = 0xE9U;
-                const std::int32_t relative = static_cast<std::int32_t>(
-                    site.dispatch_cache_offset - (site.cache_offset + 5U));
-                std::memcpy(bytes + site.cache_offset + 1U,
-                            &relative, sizeof(relative));
-            }
-            if (stats != nullptr)
-            {
-                ++stats->hle_site_count;
-            }
-            continue;
-        }
-        if (resolution.policy != AotSegmentAccessPolicy::kNativeFolded)
-        {
-            bytes[site.cache_offset] = 0xCCU;
-            if (stats != nullptr)
-            {
-                ++stats->unresolved_site_count;
-            }
-            continue;
-        }
-        // Restore the full guard prefix because HLE routing overwrites its
-        // first five bytes with JMP rel32.
-        bytes[site.cache_offset] = 0x9CU;
-        bytes[site.cache_offset + 1U] = 0x66U;
-        bytes[site.cache_offset + 2U] = 0x81U;
-        bytes[site.cache_offset + 3U] = 0x3DU;
-        std::memcpy(bytes + site.guard_address_offset,
-                    &resolution.shadow_address, sizeof(std::uint32_t));
-        std::memcpy(bytes + site.guard_selector_offset,
-                    &resolution.selector, sizeof(std::uint16_t));
-        const std::uint32_t displacement =
-            static_cast<std::uint32_t>(site.original_displacement) +
-            resolution.base;
-        std::memcpy(bytes + site.displacement_offset, &displacement,
-                    sizeof(displacement));
-        if (stats != nullptr)
-        {
-            ++stats->native_site_count;
-        }
+        stats->native_site_count += override_stats.native_site_count;
+        stats->hle_site_count += override_stats.hle_site_count;
+        stats->unresolved_site_count += override_stats.unresolved_site_count;
     }
     const std::uintptr_t load_success_address = reinterpret_cast<std::uintptr_t>(
         &placement->guarded_segment_load_success_count);
