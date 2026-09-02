@@ -436,6 +436,15 @@ if(UNIX AND NOT EMSCRIPTEN)
             PRIVATE
                 src/platform/linux/aot_dbt_dispatch_x64.cpp
                 src/platform/linux/aot_dbt_return_thunk_x64.S
+                # Task 575: the two fault-recovery symbols the fence above
+                # takes away. They are the only ones an x64 `repiu` link was
+                # missing, and they are `ud2` here rather than a return --
+                # nothing on x64 can reach them, and the file says why.
+                src/platform/linux/guest_stack_recover_x64.S
+                # Task 578: the guest entry itself. Not the guest's own bytes --
+                # the placed long-mode cache, with guest state loaded under Task
+                # 558's mapping.
+                src/platform/linux/guest_entry_x64.S
         )
     endif()
 endif()

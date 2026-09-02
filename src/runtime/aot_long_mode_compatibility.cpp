@@ -911,21 +911,43 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
     {
         const StackPointerFields fields =
             ClassifyStackPointerFields(instruction, operands);
-        const std::size_t opcode_offset = instruction.raw.modrm.offset > 0U
-            ? static_cast<std::size_t>(instruction.raw.modrm.offset) - 1U
-            : 0U;
+        // Task 574. Everything before the opcode is a legacy prefix and is
+        // copied as it is, so where the prefixes end is where the opcode
+        // begins. This used to be derived as `modrm.offset - 1`, which is true
+        // only of a one-byte opcode -- and the comment defending that read
+        // "a two-byte opcode map never reaches here, because `ESP` in ModRM or
+        // SIB is a one-byte-opcode shape".
+        //
+        // That was false. `movzx esi, byte ptr [esp+8]` is `0F B6` with `ESP`
+        // as the SIB base: a two-byte opcode in exactly the shape this unit
+        // admits. `movzx` has no other encoding, so every one the census
+        // counted was refused right here.
+        //
+        // `prefix_count` is the opcode's start in both maps, and it puts the
+        // REX after any mandatory `66`/`F2`/`F3`, which is where the encoding
+        // rules require it.
+        const std::size_t opcode_offset = instruction.raw.prefix_count;
         if (!fields.supported || length + 1U > kMaxLoweredBytes ||
             instruction.raw.modrm.offset == 0U ||
-            opcode_offset >= length)
+            opcode_offset >= length ||
+            instruction.raw.modrm.offset <= opcode_offset)
         {
             return false;
         }
-        // Everything before the opcode is a legacy prefix and is copied as it
-        // is. Zydis reports the ModRM byte's offset, and in every form this
-        // unit admits the opcode is the byte before it -- a two-byte opcode map
-        // never reaches here, because `ESP` in ModRM or SIB is a one-byte-opcode
-        // shape and anything else was refused above.
-        if (instruction.opcode_map != ZYDIS_OPCODE_MAP_DEFAULT)
+        // And the layout is asserted rather than assumed. Moving the opcode's
+        // start is not on its own a reason to believe ModRM is where this code
+        // then writes to: a REX placed between `0F` and its second opcode byte
+        // encodes a different instruction and raises nothing.
+        //
+        // `0F38` and `0F3A` never arrive -- the classifier refuses them -- but
+        // a function that writes a layout checks the layout it writes.
+        const std::size_t expected_modrm_offset =
+            instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT
+                ? opcode_offset + 1U
+                : opcode_offset + 2U;
+        if ((instruction.opcode_map != ZYDIS_OPCODE_MAP_DEFAULT &&
+             instruction.opcode_map != ZYDIS_OPCODE_MAP_0F) ||
+            instruction.raw.modrm.offset != expected_modrm_offset)
         {
             return false;
         }
@@ -1035,9 +1057,65 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
     {
         return false;
     }
-    // Four displacement bytes follow the ModRM byte in this form, and nothing
-    // may sit between them.
-    if (modrm_offset + 1U + 4U != length)
+    // Task 572. Four displacement bytes follow the ModRM byte in this form, and
+    // nothing may sit between them -- but something may sit *after* them.
+    //
+    // This used to read `modrm_offset + 1 + 4 != length`, which additionally
+    // demanded that the displacement be the instruction's last field. That
+    // demand refused every absolute form carrying an immediate, and those were
+    // 865 of the 1,609 instructions the census still refused: `cmp
+    // [abs32],imm8`, `test [abs32],imm32`, `mov [abs32],imm32`, and their
+    // group-1 siblings.
+    //
+    // An immediate may be carried through because **its value does not depend
+    // on where it sits**. Inserting the SIB byte pushes it one byte later and no
+    // field refers to that offset. The one field whose position does carry
+    // meaning is the RIP-relative displacement, which is precisely what this
+    // lowering is removing.
+    //
+    // The single arithmetic identity above asserted both "the disp32 is here"
+    // and "nothing follows it". Only the first is wanted, so the field
+    // positions are now asked of the decoder rather than inferred from length.
+    if (instruction.raw.disp.size != 32U ||
+        instruction.raw.disp.offset != modrm_offset + 1U)
+    {
+        // `IsAbsoluteDisplacementForm` reads only ModRM's `mod` and `rm`. Under
+        // an existing 0x67 prefix the guest is addressing in 16 bits, where
+        // `mod=00 rm=101` is `[DI]` and not absolute at all; that form carries
+        // no displacement and is refused here. The replaced arithmetic used to
+        // reject it as a side effect, so the protection is carried across
+        // explicitly rather than dropped.
+        return false;
+    }
+    const std::size_t displacement_end = instruction.raw.disp.offset + 4U;
+    if (displacement_end > length)
+    {
+        return false;
+    }
+    // Every byte between the displacement and the end of the instruction has to
+    // be accounted for as an immediate. In legacy 32-bit decoding nothing else
+    // follows ModRM/SIB/displacement, so this holds for the forms meant here --
+    // and where it does not, the encoding is one this unit did not understand
+    // and is refused rather than guessed at.
+    std::size_t immediate_bytes = 0U;
+    for (const auto& immediate : instruction.raw.imm)
+    {
+        if (immediate.size == 0U)
+        {
+            continue;
+        }
+        // A relative immediate is a branch displacement, and its value *does*
+        // depend on the instruction's length -- the one thing that breaks this
+        // lowering's premise. Control flow is refused by the classifier long
+        // before here, so this is the premise written down rather than a case
+        // expected to occur.
+        if (immediate.is_relative)
+        {
+            return false;
+        }
+        immediate_bytes += immediate.size / 8U;
+    }
+    if (displacement_end + immediate_bytes != length)
     {
         return false;
     }
@@ -1054,6 +1132,12 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
     for (std::size_t index = 0; index < 4U; ++index)
     {
         lowered[out++] = bytes[modrm_offset + 1U + index];
+    }
+    // The immediate, byte for byte. It moved two bytes later in the encoding
+    // and its value is unchanged, which is the whole of decision 1.
+    for (std::size_t index = displacement_end; index < length; ++index)
+    {
+        lowered[out++] = bytes[index];
     }
     *lowered_count = out;
     if (instruction_count != nullptr)

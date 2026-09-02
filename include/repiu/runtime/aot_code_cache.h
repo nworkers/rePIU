@@ -128,6 +128,26 @@ struct AotAddressMapEntry
 // mirroring the `#if`, which is how the two would drift.
 [[nodiscard]] bool LongModeReturnDispatchAvailable();
 
+// Task 576. Whether this host must emit in long mode, asked in one place.
+//
+// Not a preference and not a toggle. Task 550's premise is that long mode reads
+// several of the guest's 32-bit encodings differently and that some of those
+// raise nothing -- a one-byte `inc eax` becomes a REX prefix on whatever
+// follows it, an absolute `disp32` becomes RIP-relative. So on an x86-64 host an
+// image built with `enable_long_mode_emission` off is a *wrong* image rather
+// than a different one, and leaving it switchable would leave a wrong
+// configuration quietly runnable.
+//
+// The test is the architecture rather than `sizeof(void*)`, because the question
+// is "will the CPU decode these bytes in long mode". Under the x32 ABI pointers
+// are four bytes while the CPU is still in long mode, and pointer size answers
+// that question wrongly.
+//
+// Task 575 found this missing by running: nothing in the engine set the flag, so
+// an x64 loader was building an i386-style image. Kept here so the loader, the
+// placement, and the dynamic-append path cannot each answer it differently.
+[[nodiscard]] bool HostRequiresLongModeEmission();
+
 // Task 568. Whether the long-mode segment-override slot can be emitted for this
 // record. The emitter admits the absolute-disp32 shape and, since Task 570, a
 // non-SIB base-plus-disp8 shape. It refuses FS and GS outright, so "how many
@@ -140,6 +160,20 @@ struct AotAddressMapEntry
 // the long-mode slot can preserve as a semantic no-op. Kept beside the emitter
 // so the census does not duplicate the admission rule.
 [[nodiscard]] bool LongModeGuardedSegmentLoadEmittable(
+    const AotInstructionRecord& instruction);
+
+// Task 571. Whether a guarded segment pop has the one shape the long-mode slot
+// can preserve: a stack word already equal to the shadow, whose only remaining
+// effect is the four-byte stack adjustment the slot performs itself. Kept
+// beside the emitter so the census does not duplicate the admission rule.
+[[nodiscard]] bool LongModeGuardedSegmentPopEmittable(
+    const AotInstructionRecord& instruction);
+
+// Task 573. Whether the long-mode indirect-call slot admits this record: a near
+// `FF /2` through memory, whose operand does not name guest `ESP` and whose
+// address form the lowering can move into long mode. Kept beside the emitter so
+// the census does not duplicate the admission rule.
+[[nodiscard]] bool LongModeIndirectCallEmittable(
     const AotInstructionRecord& instruction);
 
 struct AotCodeCacheFixup
@@ -322,6 +356,12 @@ struct AotGuardedSegmentPopSite
     std::uint32_t fallback_counter_address_offset = 0;
     std::uint32_t fallback_offset = 0;
     std::uint8_t segment_register = 0xFFU;
+    // Task 571. Carried for the same reason as the load site's: the two hosts
+    // do not open a slot alike, and the long-mode slot has no counter operands
+    // whose abs32 fields a host address is guaranteed to fit.
+    std::uint8_t guard_prologue[kAotSegmentGuardPrologueBytes] = {};
+    std::uint8_t guard_prologue_size = 0;
+    bool has_counter_operands = false;
 };
 
 // A guarded register-source MOV Sreg,r16 slot. Success is a semantic no-op
@@ -451,6 +491,16 @@ struct AotCodeCacheImage
     // Task 569. Only a source equal to the shadow is admitted as a no-op; a
     // mismatch reaches the existing segment-load HLE boundary.
     std::uint32_t long_mode_guarded_segment_load_count = 0;
+    // Task 571. The same admission for a stack-sourced selector, counted apart
+    // because this is the first long-mode guard whose success path changes
+    // guest state -- it consumes the popped dword -- rather than proving there
+    // was nothing to change.
+    std::uint32_t long_mode_guarded_segment_pop_count = 0;
+    // Task 573. Indirect calls given the target-load / push / thunk slot.
+    // Counted apart because this is the first long-mode slot that leaves the
+    // cache for a target no static analysis knows -- the return slot leaves for
+    // one the guest stack holds, and every other slot stays inside.
+    std::uint32_t long_mode_indirect_call_count = 0;
     std::uint32_t resolved_fixup_count = 0;
     std::uint32_t external_fixup_count = 0;
     std::uint32_t unsupported_branch_count = 0;

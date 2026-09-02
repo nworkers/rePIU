@@ -120,6 +120,11 @@ struct AotCodeCachePlacement
     bool guarded_segment_read_enabled = false;
     bool guarded_segment_load_enabled = false;
     bool timer_safe_points_enabled = false;
+    // Task 576. Carried so the dynamic-append path builds the same kind of
+    // image the static placement did. Append inherits it here rather than
+    // asking the host again, because two answers to one question is how the
+    // static cache and the appended blocks would come to disagree.
+    bool long_mode_emission_enabled = false;
     // Written by the telemetry poller and consumed only on the guest thread.
     volatile std::uint32_t timer_safe_point_request = 0;
     volatile std::uint32_t timer_safe_point_trap_count = 0;

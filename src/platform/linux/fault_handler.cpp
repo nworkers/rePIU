@@ -6,6 +6,7 @@
 #include <cstring>
 #include <pthread.h>
 #include <ucontext.h>
+#include <unistd.h>
 
 namespace repiu::platform
 {
@@ -117,6 +118,58 @@ void RewindPastBreakpoint(GuestCpuContext* registers, const void* host_context)
     }
 }
 
+// Task 578. The unhandled-fault line, written with `write` alone.
+//
+// Nothing here may allocate, lock, or call into a logging library: this runs on
+// a signal handler that is about to let the process die, and a handler that
+// hangs replaces a diagnosable crash with an undiagnosable one.
+void WriteHex(char* out, std::size_t* length, std::uint64_t value)
+{
+    out[(*length)++] = '0';
+    out[(*length)++] = 'x';
+    bool leading = true;
+    for (int shift = 60; shift >= 0; shift -= 4)
+    {
+        const auto digit = static_cast<unsigned>((value >> shift) & 0xFU);
+        if (leading && digit == 0U && shift != 0)
+        {
+            continue;
+        }
+        leading = false;
+        out[(*length)++] = static_cast<char>(
+            digit < 10U ? '0' + digit : 'a' + (digit - 10U));
+    }
+}
+
+void ReportUnhandledFault(const int signal_number,
+                          const std::uint32_t instruction_address,
+                          const std::uint32_t access_address)
+{
+    char line[160];
+    std::size_t length = 0;
+    const char prefix[] = "[repiu-fault] unhandled signal=";
+    for (std::size_t index = 0; index + 1U < sizeof(prefix); ++index)
+    {
+        line[length++] = prefix[index];
+    }
+    WriteHex(line, &length, static_cast<std::uint64_t>(signal_number));
+    const char eip_text[] = " eip=";
+    for (std::size_t index = 0; index + 1U < sizeof(eip_text); ++index)
+    {
+        line[length++] = eip_text[index];
+    }
+    WriteHex(line, &length, instruction_address);
+    const char access_text[] = " access=";
+    for (std::size_t index = 0; index + 1U < sizeof(access_text); ++index)
+    {
+        line[length++] = access_text[index];
+    }
+    WriteHex(line, &length, access_address);
+    line[length++] = static_cast<char>(10);  // newline
+    const ssize_t written = write(2, line, length);
+    (void)written;
+}
+
 void SignalHandler(int signal_number, siginfo_t* info, void* host_context)
 {
     if (g_callback == nullptr || info == nullptr || host_context == nullptr)
@@ -151,6 +204,17 @@ void SignalHandler(int signal_number, siginfo_t* info, void* host_context)
 
     if (g_callback(&event, g_user_data) != FaultDisposition::kResume)
     {
+        // Task 578. Say where, before dying.
+        //
+        // Windows has an unhandled-exception filter that reports this; Linux
+        // had nothing, so an unhandled guest fault ended as a bare exit 139
+        // with the address in a core dump nobody could read without a debugger.
+        // Bringing up x64 execution is exactly the situation that needs it.
+        //
+        // Async-signal-safe: `write` only, no formatting library, and the
+        // number rendered by hand into a stack buffer.
+        ReportUnhandledFault(signal_number, registers.Eip,
+                             event.access.fault_address);
         // Restoring the default and returning lets the fault happen again with
         // nothing to catch it, which is how an unhandled fault should end:
         // returning resumes at the faulting instruction, because this path

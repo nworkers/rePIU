@@ -57,6 +57,12 @@ struct AotGuardedSegmentLoadPatchStats
     std::uint32_t unresolved_site_count = 0;
 };
 
+struct AotGuardedSegmentPopPatchStats
+{
+    std::uint32_t native_site_count = 0;
+    std::uint32_t unresolved_site_count = 0;
+};
+
 // Patch every segment-override site in `sites` into `bytes`, which must already
 // be writable and must be the base of the placed image the offsets refer to.
 // Returns how many sites were considered.
@@ -76,5 +82,17 @@ std::uint32_t PatchAotGuardedSegmentLoadSites(
     std::uint32_t success_counter_address,
     std::uint32_t fallback_counter_address,
     AotGuardedSegmentLoadPatchStats* stats);
+
+// Patch guarded segment-pop sites into already-writable image bytes, on the
+// same contract as the load patcher above. Task 571 moved this off the engine,
+// which had assumed every site opens `9C` and carries two counter operands --
+// true of the i386 slot and of neither long-mode slot.
+std::uint32_t PatchAotGuardedSegmentPopSites(
+    std::uint8_t* bytes,
+    const std::vector<AotGuardedSegmentPopSite>& sites,
+    const AotSegmentTable& table,
+    std::uint32_t success_counter_address,
+    std::uint32_t fallback_counter_address,
+    AotGuardedSegmentPopPatchStats* stats);
 
 }  // namespace repiu::runtime

@@ -12,9 +12,16 @@
 ## 1. 한 줄 요약
 
 > **두 축이 있습니다.** 아래 대부분은 **Linux i386** 축이고 게임이 화면까지 나옵니다.
-> **Linux x64** 축은 별도이고 **[3.10 인수인계](#310-세션-인수인계-2026-09-01--x64가-guest-바이트를-실행하고-명령의-23를-낼-수-있다)가
-> 정본입니다** — 거기서는 guest가 아직 실행되지 않고, emitter가 명령의 66.17%를 낼 수
-> 있으며 완결 block은 2.66%입니다.
+> **Linux x64** 축은 별도이고 **[3.19](#319-task-574--주석이-사실이-아니었고-census가-그것을-소거로-확정했다)가
+> 최신 상태입니다** — 거기서는 guest가 아직 실행되지 않고, emitter가 명령의 99.21%를
+> 낼 수 있으며 완결 block은 90.09%, entry에서 도달 가능한 block은 44.47%입니다.
+> **Linux x64 축의 정본은 [3.27 인수인계](#327-세션-인수인계-2026-09-03--x64가-게스트를-실행하기-시작했다)입니다.**
+> x64는 `repiu`를 만들고, 로더가 동작하고, code cache로 진입해 게스트 명령을
+> 실행하며, 두 번째 방출 block의 `sti`가 일으킨 #GP에서 멈춥니다. — 로더·DOS FS·LE 재배치·AOT code cache 배치가
+> 모두 x64에서 동작하고, Task 544의 32비트 요구에서 멈춥니다(exit 0). 남은 작업
+> 표는 3.20이며 3.21·3.22가 갱신합니다.
+> ([3.10 인수인계](#310-세션-인수인계-2026-09-01--x64가-guest-바이트를-실행하고-명령의-23를-낼-수-있다)는
+> 그 축의 배경이고, 수치는 3.11~3.17이 갱신합니다.)
 
 **게스트 코드와 기본 `dynamic` AOT backend가 Linux에서 실행됩니다.** DOS/4GW 샘플은
 `legacy`와 `dynamic` 모두 같은 종료 코드 2·초점 오프셋 0x10·opcode 0x80에서 멈춥니다.
@@ -5240,3 +5247,1660 @@ shadow selector, but x64 never installs the guest selector in host `DS`. The
 next unit should follow Task 569's rule: do not carry over the physical-selector
 comparison; treat the load as a semantic no-op when the stack word equals the
 shadow, while advancing guest ESP by four in a dedicated x64 slot.
+
+---
+
+## 3.16 Task 571 — segment pop, 그리고 offset이라는 진짜 위험
+
+설계는 [20260902-571](../design/20260902-571-linux-x64-guarded-segment-pop.md),
+실행 증거는 [작업 기록](../work-logs/20260902-571-linux-x64-guarded-segment-pop.md)에
+있다.
+
+long-mode `kGuardedSegmentPop` slot을 추가했다. guest stack top의 하위 16비트가
+shadow selector와 같으면 명령의 남은 효과는 `ESP += 4` 하나뿐이므로 slot이 그것만
+수행한다. 다르면 guest ESP를 그대로 둔 채 INT3 HLE 경계로 간다.
+
+이 단위의 실제 위험은 segment 의미가 아니라 **offset**이었다. Task 559의 lowered
+`PUSHFD`는 host stack이 아니라 guest stack에 쓴다. 따라서 flags를 저장한 뒤 비교할
+stack word는 `[r15]`가 아니라 `[r15+4]`에 있다. `[r15]`를 읽었다면 저장된 flags를
+selector와 비교하게 되고 그것은 **항상 불일치**하므로, 크래시 없이 fallback만 타는
+guard가 된다. 그래서 probe가 값과 ESP를 둘 다 고정한다.
+
+pop patch를 runtime `PatchAotGuardedSegmentPopSites`로 옮기는 과정에서 **기존 결함
+하나를 확인했다.** `ResolveAotGuardedSegmentLoads`는 counter operand가 항상 있다고
+가정하고 `image_bytes + success_counter_address_offset`에 무조건 썼다. Task 569의
+x64 load site는 counter operand가 없어 그 offset이 0이므로, 이 경로는 counter 주소를
+**이미지의 첫 4바이트에** 쓴다. x64가 아직 게스트를 돌리지 않아 드러나지 않았을
+뿐이다. 두 patcher가 `has_counter_operands`를 보도록 통일해 없앴다.
+
+| 항목 | Task 570 | Task 571 |
+|---|---:|---:|
+| guarded seg pops | 0 | **49** |
+| emittable | 72,675 | **72,724** |
+| complete block | 14,736 | **14,782** |
+| 도달 가능 block | 28 | **29** |
+
+`agrees=true`다. 49개 slot이 열렸는데 도달 block은 1개만 늘었다 — 나머지 48개가
+아직 도달 불가능한 영역에 있다는 뜻이고, emittable과 reachable이 다른 척도라는
+Task 563의 지적이 그대로 유효하다. 첫 정지는 `0x10fc2fa`,
+`80 3d a6 93 15 01 01` = `cmp byte ptr [0x11593a6], 1`로 옮겨갔고 **kind가 바뀌었다** —
+지금까지 세 단위를 막던 non-copy kind가 아니라 refused `kCopy`다.
+
+## 3.16 (English) Task 571 — the segment pop, and the offset that was the real hazard
+
+The design is [20260902-571](../design/20260902-571-linux-x64-guarded-segment-pop.md),
+and the execution evidence is in the
+[work log](../work-logs/20260902-571-linux-x64-guarded-segment-pop.md).
+
+The long-mode `kGuardedSegmentPop` slot was added. When the low 16 bits of the
+guest stack top equal the shadow selector, the instruction's only remaining
+effect is `ESP += 4` and the slot performs exactly that; otherwise it leaves
+guest ESP alone and reaches the INT3 HLE boundary.
+
+The real hazard was not segment semantics but the **offset**. Task 559's lowered
+`PUSHFD` writes to the guest stack, not the host's, so after the flags save the
+word to compare sits at `[r15+4]` and not `[r15]`. Reading `[r15]` would compare
+saved flags against a selector, which **always mismatches** — a guard that
+crashes nothing and only ever falls back. The probe therefore pins both the
+value and the ESP left behind.
+
+Moving pop patching into the runtime's `PatchAotGuardedSegmentPopSites`
+**confirmed an existing defect.** `ResolveAotGuardedSegmentLoads` assumed counter
+operands are always present and wrote unconditionally to
+`image_bytes + success_counter_address_offset`. Task 569's x64 load sites have
+none, so that offset is zero and the path wrote counter addresses into the
+**image's first four bytes** — invisible only because x64 does not run a guest
+yet. Making both patchers honour `has_counter_operands` removes it.
+
+| Item | Task 570 | Task 571 |
+|---|---:|---:|
+| Guarded segment pops | 0 | **49** |
+| Emittable | 72,675 | **72,724** |
+| Complete blocks | 14,736 | **14,782** |
+| Reachable blocks | 28 | **29** |
+
+`agrees=true`. Forty-nine slots opened and only one more block became reachable,
+which means the other forty-eight sit in regions still unreachable — Task 563's
+point that emittability and reachability are different measures continues to
+hold. The first stop moved to `0x10fc2fa`, `80 3d a6 93 15 01 01`
+(`cmp byte ptr [0x11593a6], 1`), and **the kind changed**: what blocks now is a
+refused `kCopy`, not the non-copy kinds that blocked the previous three units.
+
+---
+
+## 3.17 Task 572 — 조건 한 줄이 도달 가능 block을 255배로 늘렸다
+
+설계는 [20260903-572](../design/20260903-572-linux-x64-absolute-displacement-immediate.md),
+실행 증거는 [작업 기록](../work-logs/20260903-572-linux-x64-absolute-displacement-immediate.md)에
+있다.
+
+**이 단위는 slot을 추가하지 않았다.** 분류기는 이미 `cmp byte ptr [abs32], 1`을
+`kAbsoluteToSib`로 판정하고 있었고, 거절하는 것은 rewriter였다.
+`LowerLongModeBytes`의 폭 조건이 이렇게 되어 있었다.
+
+```cpp
+if (modrm_offset + 1U + 4U != length) { return false; }
+```
+
+이 산술 하나가 "disp32가 여기 있다"와 "뒤에 아무것도 없다"를 동시에 주장하고
+있었다. 필요한 것은 앞의 주장뿐이었고, 뒤의 주장이 **immediate를 갖는 absolute
+형식 전부**를 거절하고 있었다 — census 기준 865건으로, 남아 있던 거절 1,609건의
+53.8%다.
+
+immediate의 값은 인코딩 안에서의 위치에 의존하지 않으므로 SIB를 끼워 넣고 그대로
+뒤에 두면 된다. 위치가 의미를 바꾸는 유일한 필드는 RIP-relative displacement이고,
+이 lowering이 없애고 있는 것이 정확히 그것이다.
+
+### 없앤 조건이 부수 효과로 하고 있던 일
+
+`IsAbsoluteDisplacementForm`은 ModRM의 `mod`와 `rm` **필드만** 본다. 명령에 이미
+`0x67`이 붙어 있으면 guest는 16-bit addressing이고 `mod=00 rm=101`은 절대 주소가
+아니라 `[DI]`인데, 분류기는 그것도 `kAbsoluteToSib`라고 답한다. 그것을 막고 있던
+것은 분류기가 아니라 위 **산술의 부수 효과**였다. 조건을 푸는 순간 보호가 함께
+사라지므로 `raw.disp.size == 32`로 명시적으로 옮기고 probe로 고정했다.
+
+| 항목 | Task 571 | Task 572 |
+|---|---:|---:|
+| emittable | 72,724 (97.84%) | **73,589 (99.00%)** |
+| refused | 1,609 | **744** |
+| complete block | 14,782 (85.12%) | **15,525 (89.39%)** |
+| **도달 가능 block** | **29 (0.17%)** | **7,404 (42.63%)** |
+| **reachable instrs** | **77** | **31,770** |
+| serviced block | 18 | 55 |
+
+`agrees=true`이고 `rip-relative/lowering-declined`는 한 건도 남지 않았다.
+
+### 왜 이번만 도달 범위가 움직였는가
+
+Tasks 569–571은 방출 가능 명령을 늘렸지만 도달 가능 block은 18 → 28 → 29로만
+움직였다. 이번에는 29 → 7,404이다. 차이는 열린 명령의 **수**가 아니라 **위치**다.
+`cmp [abs32], imm` 계열은 전역 플래그를 읽는 코드의 기본 형태이고 분기 직전에
+놓인다. 하나가 막히면 그 분기 뒤의 block 전체가 도달 불가능해진다. 865개를 연 것이
+아니라 **분기 앞을 막고 있던 것을 치운 것**이다.
+
+**이것이 Task 563의 지적을 뒤집지는 않는다.** emittable과 reachable은 여전히 다른
+척도다. 이 단위가 보태는 것은 그 둘의 관계가 선형이 아니라는 것 — 어떤 명령이
+열리느냐가 몇 개가 열리느냐보다 크게 작용한다는 것이다.
+
+### 다음 — 이제 막는 것은 lowering이 아니다
+
+정지 지점이 한 종류에서 아홉 종류 123곳으로 바뀌었다. 새 first stop은 `0x1101370`,
+바이트 `06` = `PUSH ES`(`invalid-in-long-mode`)다. 그러나 **가장 큰 정지 원인은
+`kIndirectExit` 60건**이고, 그다음이 `stack-pointer` 계열 29건, `kJumpTable` 12건이다.
+
+다음 단위가 볼 곳은 lowering 표가 아니라 **indirect 분기 처리**다.
+
+## 3.17 (English) Task 572 — one condition, 255x the reachable blocks
+
+The design is [20260903-572](../design/20260903-572-linux-x64-absolute-displacement-immediate.md),
+and the execution evidence is in the
+[work log](../work-logs/20260903-572-linux-x64-absolute-displacement-immediate.md).
+
+**This unit added no slot.** The classifier already judged
+`cmp byte ptr [abs32], 1` to be `kAbsoluteToSib`; what refused it was the
+rewriter. `LowerLongModeBytes`'s width condition read:
+
+```cpp
+if (modrm_offset + 1U + 4U != length) { return false; }
+```
+
+That single arithmetic identity asserted both "the disp32 is here" and "nothing
+follows it". Only the first was wanted, and the second refused **every absolute
+form carrying an immediate** — 865 in the census, 53.8% of the 1,609 refusals
+that remained.
+
+An immediate's value does not depend on where it sits in the encoding, so the
+SIB byte goes in and the immediate follows unchanged. The one field whose
+position does carry meaning is the RIP-relative displacement, which is precisely
+what this lowering removes.
+
+### What the removed condition was doing as a side effect
+
+`IsAbsoluteDisplacementForm` inspects **only** ModRM's `mod` and `rm` fields.
+Under an existing `0x67` prefix the guest addresses in 16 bits and
+`mod=00 rm=101` is `[DI]`, not an absolute address — and the classifier calls
+that `kAbsoluteToSib` too. What kept it out was not the classifier but a **side
+effect of the arithmetic above**. Lifting the condition would have dropped the
+protection with it, so it moved into `raw.disp.size == 32` explicitly and is
+pinned by a probe.
+
+| Item | Task 571 | Task 572 |
+|---|---:|---:|
+| Emittable | 72,724 (97.84%) | **73,589 (99.00%)** |
+| Refused | 1,609 | **744** |
+| Complete blocks | 14,782 (85.12%) | **15,525 (89.39%)** |
+| **Reachable blocks** | **29 (0.17%)** | **7,404 (42.63%)** |
+| **Reachable instructions** | **77** | **31,770** |
+| Serviced blocks | 18 | 55 |
+
+`agrees=true`, and not one `rip-relative/lowering-declined` remains.
+
+### Why reachability moved this time
+
+Tasks 569–571 added emittable instructions while reachable blocks moved only
+18 → 28 → 29. This time it went 29 → 7,404. The difference is not the **number**
+of instructions opened but their **position**. The `cmp [abs32], imm` family is
+the ordinary shape of code reading a global flag, and it sits immediately before
+a branch; one of them blocked makes every block behind that branch unreachable.
+This did not open 865 instructions so much as **clear what stood in front of the
+branches**.
+
+**This does not overturn Task 563's point.** Emittability and reachability
+remain different measures. What this unit adds is that the relation between them
+is not linear — *which* instructions open matters more than how many.
+
+### Next — what blocks now is not the lowering
+
+The stopping points went from one kind to nine kinds across 123 places. The new
+first stop is `0x1101370`, byte `06` (`PUSH ES`, `invalid-in-long-mode`). But the
+**largest cause of stopping is `kIndirectExit` at 60**, followed by the
+`stack-pointer` family at 29 and `kJumpTable` at 12.
+
+The next unit should look at **indirect branch handling**, not at the lowering
+table.
+
+---
+
+## 3.18 Task 573 — indirect call, 그리고 kind가 unit을 고르지 못한다는 것
+
+설계는 [20260903-573](../design/20260903-573-linux-x64-indirect-call.md),
+실행 증거는 [작업 기록](../work-logs/20260903-573-linux-x64-indirect-call.md)에 있다.
+
+Task 572의 정지 표는 `kIndirectExit 60`이라고만 말했고, 그것으로는 무엇을 만들지
+정할 수 없었다. indirect **call**과 indirect **jump**는 같은 slot을 쓰지만 walk를
+완전히 다른 곳에 남긴다. Task 557이 `kCopy` 행에 이유를 붙인 것과 같은 이유로
+형식을 붙여 다시 쟀고, **그 측정이 설계를 바꿨다.**
+
+| 형식 | 건수 |
+|---|---:|
+| `call-base+disp` / return-in-plan | **34** |
+| `call-base+disp` / return-absent | 20 |
+| `call-abs32` / return-absent | 4 |
+| `call-sib` / return-absent | 2 |
+
+60건 전부가 `FF /2` indirect call이고 jump는 하나도 없다. 그리고 34건은 return
+지점에 이미 plan block이 있다. 두 번째가 이 unit을 할지를 갈랐다 — planner는
+indirect exit에서 block을 끝내고 다음 주소를 push하지 않으므로, return 지점 block이
+없으면 slot을 내도 정지가 "edge outside the plan"으로 **이름만 바뀐다.**
+
+### 새 기계는 없었다
+
+indirect call은 기존 세 조각의 결합이다. Task 572의 주소 재작성이 target을 읽고,
+Task 559의 stack sequence가 return 주소를 push하고, Task 562의 thunk가 resolver에게
+묻는다. thunk 계약은 "R14D에 guest 주소가 있으니 그리로 가라"이고 **return에 고유한
+것이 하나도 없다** — 이름은 누가 만들었는지를 기록할 뿐이다.
+
+target을 읽는 명령도 손으로 쓰지 않았다. guest bytes에서 opcode `FF`를 `8B`로,
+ModRM의 `reg`를 `010`에서 `110`으로 바꾼 32-bit 명령을 합성해 lowering에 넘긴다.
+`110`은 R14의 하위 3비트이므로 REX.R 한 바이트면 R14D가 된다.
+
+### 진짜 위험은 순서였다
+
+x86의 `CALL r/m32`은 target을 먼저 계산하고 그다음에 push한다. 그리고 load가
+먼저이므로 **push sequence가 R14D를 건드리면 안 된다.** 현재 `PUSH imm32`는 안전하지만
+같은 파일의 Task 559 `PUSHFD`는 R14D를 scratch로 쓴다 — 즉 이것은 slot이 기대는
+전제이지 slot이 보장하는 성질이 아니고, 바뀌면 조용히 틀린다.
+
+probe가 둘을 한 값으로 고정한다. operand를 push가 덮을 word에 두고 callee 주소를
+심으면, 순서가 옳을 때만 resolver의 **첫** 질문이 callee다. round trip에서 마지막
+질문은 어느 순서든 return 지점이므로 첫 질문만이 둘을 구분한다.
+
+| 항목 | Task 572 | Task 573 |
+|---|---:|---:|
+| indirect calls | 0 | **100** |
+| emittable | 73,589 (99.00%) | **73,689 (99.13%)** |
+| refused | 744 | **644** |
+| complete block | 15,525 (89.39%) | **15,614 (89.91%)** |
+| 도달 가능 block | 7,404 (42.63%) | **7,462 (42.97%)** |
+| **edge outside the plan** | **0** | **24** |
+
+`agrees=true`. 정지 표에서 `kIndirectExit` 60건 중 **58건이 사라졌고**, 남은 2건은
+설계가 일부러 닫아 둔 ESP 기반 SIB 형식이다.
+
+### 다음 — 이제 막는 것은 planner다
+
+first stop은 `0x1101370`의 `06` = `PUSH ES`로 Task 572 이후 그대로이고,
+`invalid-in-long-mode` 부류다. 남은 정지는
+`stack-pointer` 계열 29건, `invalid-in-long-mode` 16건, `kJumpTable` 12건이다.
+
+그러나 이번에 새로 생긴 **`edge outside the plan` 24건은 emitter가 아니라 planner의
+구멍이다.** planner가 indirect call 뒤를 잇지 않기 때문이고, i386에서는 dynamic
+append가 실행 중에 메우는 자리다. 정적 census를 더 밀려면 그쪽을 봐야 한다.
+
+## 3.18 (English) Task 573 — the indirect call, and why a kind cannot choose a unit
+
+The design is [20260903-573](../design/20260903-573-linux-x64-indirect-call.md),
+and the execution evidence is in the
+[work log](../work-logs/20260903-573-linux-x64-indirect-call.md).
+
+Task 572's stop table said only `kIndirectExit 60`, and that cannot decide what
+to build: an indirect **call** and an indirect **jump** use the same slot but
+leave the walk in completely different places. For the reason Task 557 attached
+reasons to the `kCopy` rows, the form was attached and the measurement repeated
+— and **that measurement changed the design.**
+
+| Form | Count |
+|---|---:|
+| `call-base+disp` / return-in-plan | **34** |
+| `call-base+disp` / return-absent | 20 |
+| `call-abs32` / return-absent | 4 |
+| `call-sib` / return-absent | 2 |
+
+All 60 are `FF /2` indirect calls, with not one jump. And 34 already have a plan
+block at their return site. The second decided whether to do the unit at all:
+the planner ends a block at an indirect exit and does not push the following
+address, so where that block is absent a slot only **changes the stop's name** to
+"edge outside the plan".
+
+### There was no new machinery
+
+An indirect call is a composition of three existing pieces. Task 572's address
+rewrite reads the target, Task 559's stack sequence pushes the return address,
+and Task 562's thunk asks the resolver. That thunk's contract is "R14D holds a
+guest address, go there", and **nothing in it is specific to returns** — its
+name records who built it.
+
+The instruction reading the target was not hand-written either. A 32-bit
+instruction is synthesised from the guest bytes by changing opcode `FF` to `8B`
+and ModRM's `reg` from `010` to `110`, then handed to the lowering. Since `110`
+is R14's low three bits, one REX.R byte makes it R14D.
+
+### The real hazard was the order
+
+x86's `CALL r/m32` computes the target before pushing. And because the load comes
+first, **the push sequence must not touch R14D.** Today's `PUSH imm32` is safe,
+but Task 559's `PUSHFD` in the same file does use R14D as scratch — a premise the
+slot rests on rather than a property it guarantees, and one that would fail
+silently.
+
+The probe pins both with one value. Placing the operand at the word the push
+overwrites and seeding it with the callee's address makes the resolver's
+**first** question the callee only when the order is right. In a round trip the
+last question is the return site either way, so only the first can tell them
+apart.
+
+| Item | Task 572 | Task 573 |
+|---|---:|---:|
+| Indirect calls | 0 | **100** |
+| Emittable | 73,589 (99.00%) | **73,689 (99.13%)** |
+| Refused | 744 | **644** |
+| Complete blocks | 15,525 (89.39%) | **15,614 (89.91%)** |
+| Reachable blocks | 7,404 (42.63%) | **7,462 (42.97%)** |
+| **Edge outside the plan** | **0** | **24** |
+
+`agrees=true`. **Fifty-eight of the 60 `kIndirectExit` stops are gone**, and the
+two that remain are the ESP-based SIB form the design deliberately left closed.
+
+### Next — what blocks now is the planner
+
+The first stop is still `0x1101370`, `06` (`PUSH ES`), unchanged since Task 572
+and part of the `invalid-in-long-mode` family. The remaining stops are the
+`stack-pointer` family at 29, `invalid-in-long-mode` at 16, and `kJumpTable` at
+12.
+
+But the **24 new `edge outside the plan` are a hole in the planner, not the
+emitter.** The planner does not continue past an indirect call, and on i386
+dynamic append fills that in at run time. Pushing the static census further
+means looking there.
+
+---
+
+## 3.19 Task 574 — 주석이 사실이 아니었고, census가 그것을 소거로 확정했다
+
+설계는 [20260903-574](../design/20260903-574-linux-x64-two-byte-stack-pointer-reencode.md),
+실행 증거는 [작업 기록](../work-logs/20260903-574-linux-x64-two-byte-stack-pointer-reencode.md)에
+있다.
+
+정지 표의 `kCopy` 행에 mnemonic을 붙였다. 이유는 분류기가 왜 거절했는지를 말할 뿐
+**무엇을 쓸지는 말하지 않는다.** Task 573이 `kIndirectExit`를 형식으로 나눈 논리를
+한 단계 아래에 적용한 것이고, 두 가지가 드러났다.
+
+첫째, `push`라는 이름 아래 **완전히 다른 두 작업**이 있었다 — 세그먼트
+push(`06`/`0E`/`16`/`1E`) 15건과 `FF /6` 12건. `stack-pointer` 이유만 보고 있었을
+때는 구분되지 않았다.
+
+둘째, `lowering-declined` 17건이 `imul`과 `movzx` 둘뿐이었다. `movzx`의 인코딩은
+`0F B6`과 `0F B7`뿐이므로, 그 18건은 두 바이트 opcode를 막는 조건 말고는 거절될
+경로가 없다. **근인이 추정이 아니라 소거로 확정됐다.**
+
+### 주석의 주장
+
+```cpp
+// ... 두 바이트 opcode map은 여기 오지 않는다. `ESP`가 ModRM이나 SIB에 있는 것은
+// 한 바이트 opcode의 형태이고, 그 밖은 위에서 이미 거절됐기 때문이다.
+if (instruction.opcode_map != ZYDIS_OPCODE_MAP_DEFAULT) { return false; }
+```
+
+`movzx esi, byte ptr [esp+8]`은 `0F B6`이고 `ESP`는 SIB base다 — 두 바이트
+opcode이면서 정확히 이 unit이 허용한다고 말하는 형태다.
+
+opcode 위치를 `modrm.offset - 1`에서 `raw.prefix_count`로 바꿨다. 앞의 식은 한
+바이트 opcode에서만 참이고, 두 바이트를 허용하는 순간 `0F`와 실제 opcode 사이에
+REX를 끼운다 — raise 없이 실행되는 **다른 명령**이다.
+
+| 항목 | Task 573 | Task 574 |
+|---|---:|---:|
+| lowered | 31,746 | **31,805** (+59) |
+| emittable | 73,689 (99.13%) | **73,748 (99.21%)** |
+| refused | 644 | **585** |
+| complete block | 15,614 (89.91%) | **15,646 (90.09%)** |
+| 도달 가능 block | 7,462 (42.97%) | **7,723 (44.47%)** |
+| reachable instrs | 32,055 | **34,188** |
+
+`agrees=true`. `+59`는 census가 앞서 센 `imul` 41 + `movzx` 18과 정확히 같다.
+
+### 검증에서 틀린 것 — 기대값이었다
+
+byte 검사의 기대값을 `41 0F B6 74 24 08`로 적었는데 실제는
+`41 0F B6 74 27 08`이었다. **틀린 쪽은 코드가 아니라 기대값이었다.** SIB base를
+`100`(ESP) 그대로 두고 REX.B만 붙이면 R15가 아니다 — REX.B가 상위 비트를, SIB
+base `111`이 하위 세 비트를 대야 한다.
+
+이것은 사소한 오타가 아니다. SIB가 그대로 살아남기를 기대하는 검사는 **host RSP로
+주소를 계산하는 lowering을 통과시키는 검사**다. 실행 probe가 먼저 통과하고 byte
+검사만 실패한 것이 이것을 빨리 잡았다.
+
+### 다음
+
+| 정지 | 건수 |
+|---|---:|
+| `invalid-in-long-mode` `push` (세그먼트 push) | 15 |
+| `stack-pointer` `push` (`FF /6`) | 12 |
+| `kJumpTable` | 12 |
+| edge outside the plan | 24 |
+
+`FF /6`은 image 전체로 261건이라 남은 거절 585건의 **44.6%**이고, Task 573의
+합성-lowering 기법을 그대로 쓸 수 있다. 세그먼트 push는 shadow selector가
+필요하므로 patch site가 있는 slot이어야 하고, planner가 그것을 `kCopy`로
+분류한다는 점 때문에 앞의 세 세그먼트 단위보다 구조가 크다.
+
+## 3.19 (English) Task 574 — the comment was untrue, and the census settled it by elimination
+
+The design is [20260903-574](../design/20260903-574-linux-x64-two-byte-stack-pointer-reencode.md),
+and the execution evidence is in the
+[work log](../work-logs/20260903-574-linux-x64-two-byte-stack-pointer-reencode.md).
+
+Mnemonics were attached to the stop table's `kCopy` rows. A reason says why the
+classifier refused; it **does not say what to write**. This is Task 573's
+argument for splitting `kIndirectExit` by form, applied one level down, and it
+showed two things.
+
+First, there were **two entirely different jobs** under the name `push` — 15
+segment pushes (`06`/`0E`/`16`/`1E`) and 12 `FF /6`. The `stack-pointer` reason
+alone did not distinguish them.
+
+Second, the 17 `lowering-declined` were only `imul` and `movzx`. `movzx` has no
+encoding but `0F B6` and `0F B7`, so those 18 could not have been refused
+anywhere except the condition blocking two-byte opcodes. **The root cause was
+settled by elimination rather than inferred.**
+
+### The comment's claim
+
+```cpp
+// ... a two-byte opcode map never reaches here, because `ESP` in ModRM or SIB
+// is a one-byte-opcode shape and anything else was refused above.
+if (instruction.opcode_map != ZYDIS_OPCODE_MAP_DEFAULT) { return false; }
+```
+
+`movzx esi, byte ptr [esp+8]` is `0F B6` with `ESP` as the SIB base — a two-byte
+opcode in exactly the shape the unit says it admits.
+
+The opcode's position moved from `modrm.offset - 1` to `raw.prefix_count`. The
+former is true only of a one-byte opcode, and admitting two-byte ones would put
+the REX between `0F` and the opcode proper — a **different instruction** that
+runs without raising.
+
+| Item | Task 573 | Task 574 |
+|---|---:|---:|
+| Lowered | 31,746 | **31,805** (+59) |
+| Emittable | 73,689 (99.13%) | **73,748 (99.21%)** |
+| Refused | 644 | **585** |
+| Complete blocks | 15,614 (89.91%) | **15,646 (90.09%)** |
+| Reachable blocks | 7,462 (42.97%) | **7,723 (44.47%)** |
+| Reachable instructions | 32,055 | **34,188** |
+
+`agrees=true`. The `+59` is exactly the `imul` 41 plus `movzx` 18 already
+counted.
+
+### What was wrong in verification — the expectation
+
+The byte check expected `41 0F B6 74 24 08`; the actual was
+`41 0F B6 74 27 08`. **What was wrong was the expectation, not the code.**
+Leaving the SIB base at `100` (ESP) and adding only REX.B does not name R15 —
+the REX bit supplies the high bit and SIB base `111` the low three.
+
+This is not a typo worth passing over. A check expecting the SIB byte to survive
+unchanged is **a check that would pass a lowering still addressing through host
+RSP**. The execution probe passing while only the byte check failed is what
+caught it quickly.
+
+### Next
+
+| Stop | Count |
+|---|---:|
+| `invalid-in-long-mode` `push` (segment pushes) | 15 |
+| `stack-pointer` `push` (`FF /6`) | 12 |
+| `kJumpTable` | 12 |
+| Edge outside the plan | 24 |
+
+`FF /6` is 261 image-wide, **44.6%** of the 585 refusals that remain, and Task
+573's synthesise-then-lower technique applies to it directly. The segment pushes
+need the shadow selector and therefore a slot with a patch site, and because the
+planner classifies them as `kCopy` they are structurally larger than the three
+segment units before them.
+
+---
+
+## 3.20 x64가 게스트를 돌리기까지 무엇이 남았는가 (2026-09-03 측정)
+
+Tasks 550~574는 Task 546이 정한 다섯 단계 중 **3단계(제한된 emitter subset)** 안에
+있었다. 이 절은 4·5단계를 재서, "x64 `repiu`가 언제 게스트를 돌리는가"를 파일 개수가
+아니라 측정으로 답한다. **코드는 바꾸지 않았다.**
+
+### 확인됨 — x64 `repiu`는 링크 직전까지 간다
+
+`repiu` 타깃은 [CMakeLists.txt](../../CMakeLists.txt)에서 `if(UNIX AND NOT
+EMSCRIPTEN)` 안에 있고 **비트수 게이트가 없다.** x64 트리에 없었던 것은 막혀서가
+아니라 지금까지 probe 타깃만 지정해 빌드했기 때문이다.
+
+실제로 빌드하면 SDL·엔진·로더의 C++가 전부 컴파일되고 **링크에서 정확히 두 심볼**로
+멈춘다.
+
+```text
+undefined reference to `RecoverGuestStackException'
+undefined reference to `RecoverHostStackException'
+```
+
+둘 다 `src/platform/linux/guest_stack_switch.S`에 있고, Task 545가 i386 실행 계약
+이라는 이유로 `if(CMAKE_SIZEOF_VOID_P EQUAL 4)` 안에 넣어 x64 빌드에서 제외했다.
+그 밖의 미해결 심볼은 **하나도 없다.**
+
+즉 "x64는 게임을 빌드하지 않는다"는 표현은 정확하지 않다. **두 심볼이 없을 뿐이다.**
+
+### 확인됨 — 다섯 개의 i386 dispatch thunk는 x64 경로에 없다
+
+`aot_dbt_dispatch_thunks.S`가 x64 빌드에서 빠져 있고 다섯 dispatch 소스
+(`direct_edge`·`glide_gate`·`hle`·`indirect`·`return`)가 모두 `_M_IX86`/`__i386__`
+울타리를 갖고 있어서, 이것이 4단계의 본체처럼 보인다. **아니다.**
+
+`BuildAotCodeCacheImage`의 long-mode 분기는
+[aot_code_cache.cpp:2116](../../src/runtime/aot_code_cache.cpp#L2116)에서 `continue`
+하며, dbt dispatch site를 만드는 `switch`는
+[2118행](../../src/runtime/aot_code_cache.cpp#L2118)부터다. 그 switch에 **도달하지
+않으므로** long-mode 이미지에는 `dbt_*_dispatch_sites`가 하나도 생기지 않고, 다섯
+thunk가 참조되지 않는다.
+
+x64의 경계 모델은 다르다 — 낼 수 없는 것은 `INT3`이 되어 fault handler가 서비스하고,
+target이 동적인 것은 Task 562의 return thunk로 나간다. **이 항목의 남은 작업은
+0이다.**
+
+### 확인됨 — 진짜 4단계 공백은 fault 경로의 guest 상태 어댑터다
+
+`src/platform/linux/guest_cpu_context.cpp`의 x64 분기:
+
+```cpp
+registers->Eip = Register(machine, REG_RIP);   // host RIP의 하위 32비트
+registers->Esp = Register(machine, REG_RSP);   // host RSP의 하위 32비트
+```
+
+i386에서는 이 둘이 게스트 자신의 값이다. **x64에서는 아니다.**
+
+* `Eip`에 들어가는 것은 **code cache 주소**다. guest EIP가 되려면 address map을
+  거쳐야 한다. **[3.23]의 정정**: 엔진은 이미 그렇게 하고 있고 i386에서도 같으므로
+  `Eip`는 틀리지 않았다. 이 항목은 `Esp` 하나였다.
+* `Esp`에 들어가는 것은 **host의 SysV 스택**이다. guest ESP는 Task 558에 따라
+  `R15D`에 있다.
+
+둘 다 **타입은 맞고 값이 틀린** 형태이고, 이것이 Task 546이 "fault 복구는 host RIP를
+guest EIP로 간주하면 안 되고 active frame과 code-cache address map을 써야 한다"고
+적어 둔 바로 그 지점이다.
+
+지금 당장 손상으로 이어지지는 않는다. `HandleOriginalFatalBreakpoint`는
+`registers->Eip`를 게스트 arena에 대해 `IsGuestRangeReadable`로 검사하므로, cache
+주소는 그 검사에서 떨어져 **fail-closed**가 된다. 그러나 경계를 서비스하는 모든
+핸들러가 같은 전제를 깔고 있으므로, 게스트를 돌리기 전에 이 어댑터가 먼저 바뀌어야
+한다.
+
+### 확인됨 — guest entry는 울타리이고, 대체물이 이미 probe 형태로 있다
+
+[execution_trampoline.cpp:2263](../../src/engine/execution/execution_trampoline.cpp#L2263)의
+`GuestEntryThreadProc`은 non-i386에서 `return 4`다(Task 544).
+
+그 자리를 채울 것이 이미 있다. `src/tools/aot_probe/linux_x64_guest_register_probe.S`
+74줄은 callee-saved 레지스터를 저장하고, state block에서 guest GPR을 싣고(ESP는
+`R15D`로), code cache를 `call`하고, 상태를 다시 쓴다 — 모양으로는 entry 그
+자체다. 없는 것은 x87 상태, fault handler 설치, timed entry, 그리고 probe의 state
+block 대신 `ThreadContext`에 연결되는 것이다.
+
+### 남은 작업 표
+
+| # | 항목 | 상태 | 규모 |
+|---|---|---|---|
+| 1 | `RecoverGuestStackException` / `RecoverHostStackException` | 링크 실패 | **작음** — 심볼 둘 |
+| 2 | fault 경로의 `Eip`/`Esp` 의미 | **틀린 값** | 중간 — address map 역참조 + `R15D` |
+| 3 | guest entry (`return 4`) | 울타리 | 중간 — probe `.S`가 씨앗 |
+| 4 | 다섯 dispatch thunk | **불필요** | **0** |
+| 5 | 경계 서비스 핸들러들의 전제 | 미측정 | ? |
+| 6 | DOS/4GW 샘플 상태 비교 (5단계) | 미착수 | ? |
+
+이미 x64로 올라와 있는 것: `fault_handler.cpp`의 `HostInstructionPointer`,
+`guest_cpu_context.cpp`의 machine context 지원, code cache 배치(554), return
+thunk와 dispatch 설치(562), 그리고 emitter subset(99.21% 방출 가능·44.47% 도달
+가능).
+
+### 이 측정이 바꾸는 것
+
+4단계를 "다섯 개의 thunk를 포팅하는 일"로 보고 있었다면 그것은 **틀린 그림**이었다.
+그 항목은 0이고, 대신 **한 파일 두 줄의 의미 문제**(항목 2)가 실질적인 공백이다.
+그리고 링크는 두 심볼로 끝난다.
+
+다음 단위는 항목 1과 2 중 하나여야 한다. 항목 1이 먼저면 x64 `repiu`가 링크되어
+**실행 파일이 생기고**, 그때부터는 정적 census가 아니라 실제 실행으로 잴 수 있다 —
+Task 508 이후 Linux i386에서 그랬던 것처럼. 다만 항목 2를 고치기 전에는 boundary가
+잘못된 `Eip`를 보게 되므로, 링크만으로 게스트가 도는 것은 아니다.
+
+## 3.20 (English) What remains before x64 runs a guest (measured 2026-09-03)
+
+Tasks 550–574 sat inside **step 3 (the restricted emitter subset)** of the five
+Task 546 laid out. This section measures steps 4 and 5 so that "when does x64
+`repiu` run a guest" is answered by measurement rather than by counting files.
+**No code was changed.**
+
+### Confirmed — x64 `repiu` gets as far as the link
+
+The `repiu` target sits inside `if(UNIX AND NOT EMSCRIPTEN)` in
+[CMakeLists.txt](../../CMakeLists.txt) with **no bitness gate**. Its absence from
+the x64 tree was not a fence but the consequence of only ever naming probe
+targets on the build command line.
+
+Building it actually compiles all of SDL, the engine, and the loader, and stops
+at the link with **exactly two symbols**:
+
+```text
+undefined reference to `RecoverGuestStackException'
+undefined reference to `RecoverHostStackException'
+```
+
+Both live in `src/platform/linux/guest_stack_switch.S`, which Task 545 placed
+inside `if(CMAKE_SIZEOF_VOID_P EQUAL 4)` as an i386 execution contract. There is
+**not one other** unresolved symbol.
+
+So "x64 does not build the game" is not accurate. **Two symbols are missing.**
+
+### Confirmed — the five i386 dispatch thunks are not on the x64 path
+
+With `aot_dbt_dispatch_thunks.S` excluded from the x64 build and all five
+dispatch sources (`direct_edge`, `glide_gate`, `hle`, `indirect`, `return`)
+carrying `_M_IX86`/`__i386__` fences, this looks like the substance of step 4.
+**It is not.**
+
+`BuildAotCodeCacheImage`'s long-mode branch `continue`s at
+[aot_code_cache.cpp:2116](../../src/runtime/aot_code_cache.cpp#L2116), and the
+`switch` that creates dbt dispatch sites begins at
+[line 2118](../../src/runtime/aot_code_cache.cpp#L2118). That switch is **never
+reached**, so a long-mode image holds no `dbt_*_dispatch_sites` and never
+references those thunks.
+
+x64's boundary model is different: what cannot be emitted becomes an `INT3` the
+fault handler services, and dynamic targets leave through Task 562's return
+thunk. **The remaining work in this row is zero.**
+
+### Confirmed — the real step-4 gap is the fault path's guest-state adapter
+
+The x64 branch of `src/platform/linux/guest_cpu_context.cpp`:
+
+```cpp
+registers->Eip = Register(machine, REG_RIP);   // low 32 bits of host RIP
+registers->Esp = Register(machine, REG_RSP);   // low 32 bits of host RSP
+```
+
+On i386 both are the guest's own values. **On x64 neither is.**
+
+* `Eip` receives a **code-cache address**. Becoming a guest EIP requires the
+  address map. **Corrected in 3.23**: the engine already does exactly that, on
+  i386 too, so `Eip` was not wrong. This item was `Esp` alone.
+* `Esp` receives the **host's SysV stack**. Guest ESP lives in `R15D` per Task
+  558.
+
+Both are the **right type carrying the wrong value**, which is exactly where
+Task 546 wrote that "fault recovery must not treat host RIP as guest EIP; it
+must use the active frame and the code-cache address map."
+
+Nothing is corrupted today. `HandleOriginalFatalBreakpoint` tests
+`registers->Eip` against the guest arena with `IsGuestRangeReadable`, and a cache
+address fails that test — so it is **fail-closed**. But every handler servicing a
+boundary rests on the same assumption, so this adapter has to change before a
+guest runs.
+
+### Confirmed — the guest entry is a fence, and its replacement exists in probe form
+
+`GuestEntryThreadProc` at
+[execution_trampoline.cpp:2263](../../src/engine/execution/execution_trampoline.cpp#L2263)
+returns 4 on non-i386 (Task 544).
+
+What would fill that place already exists. The 74 lines of
+`src/tools/aot_probe/linux_x64_guest_register_probe.S` save the callee-saved
+registers, load guest GPRs from a state block (ESP into `R15D`), `call` the code
+cache, and write the state back — in shape, that is the entry. What it lacks is
+x87 state, fault-handler installation, a timed entry, and being wired to
+`ThreadContext` rather than a probe's state block.
+
+### The remaining-work table
+
+| # | Item | Status | Size |
+|---|---|---|---|
+| 1 | `RecoverGuestStackException` / `RecoverHostStackException` | link failure | **small** — two symbols |
+| 2 | The fault path's `Eip`/`Esp` meaning | **wrong values** | medium — address-map lookup plus `R15D` |
+| 3 | Guest entry (`return 4`) | fenced | medium — the probe `.S` is the seed |
+| 4 | The five dispatch thunks | **not needed** | **0** |
+| 5 | The assumptions in the boundary handlers | not measured | ? |
+| 6 | DOS/4GW sample state comparison (step 5) | not started | ? |
+
+Already carried to x64: `HostInstructionPointer` in `fault_handler.cpp`,
+machine-context support in `guest_cpu_context.cpp`, code-cache placement (554),
+the return thunk and dispatch installation (562), and the emitter subset (99.21%
+emittable, 44.47% reachable).
+
+### What this measurement changes
+
+Reading step 4 as "port five thunks" was **the wrong picture**. That row is zero,
+and the actual gap is **a two-line meaning problem in one file** (item 2). The
+link, meanwhile, ends at two symbols.
+
+The next unit should be item 1 or item 2. Item 1 first would make x64 `repiu`
+link and **produce an executable**, after which measurement can come from running
+rather than from a static census — as it did on Linux i386 after Task 508.
+Linking alone does not make a guest run, though: until item 2 is fixed the
+boundary handlers would be reading the wrong `Eip`.
+
+---
+
+## 3.21 Task 575 — x64 `repiu`가 생겼고, 첫 실행이 3.20의 표를 고쳤다
+
+설계는 [20260903-575](../design/20260903-575-linux-x64-repiu-link.md),
+실행 증거는 [작업 기록](../work-logs/20260903-575-linux-x64-repiu-link.md)에 있다.
+
+3.20절이 잰 두 심볼을 `guest_stack_recover_x64.S`에 `ud2`로 정의했다. `ret`가
+아닌 이유는 도달 자체가 결함이기 때문이다 — i386 동작을 흉내 내면 쓰레기 프레임
+위에서 "복구된 것처럼" 보인다.
+
+**x64 `repiu` 실행 파일이 생겼다.** ELF 64-bit x86-64, 엔진 심볼 미해결 0.
+
+### 정정 — 설계가 걱정한 주소 잘림은 이 구성에 없다
+
+설계는 32비트 `Eip`에 x64 함수 주소를 넣으면 잘린다고 적었다. 실제 심볼은
+`0x401b2ed6`이다. `repiu_link_linux_engine`이 `-no-pie`와
+`-Wl,-Ttext-segment=0x40000000`을 UNIX 전체에 적용하므로(Task 503d) x64 text도
+4 GiB 아래에 있고, 잘림이 무손실이다. **가정이었고 측정으로 반증됐다.**
+
+### 첫 실행이 드러낸 것 — 엔진은 long-mode 방출을 켜지 않는다
+
+로더는 x64에서 동작한다. DOS 가상 파일시스템, LE 이미지 재배치(0x01000000, object
+4개), selector binding 4개까지 전부 성공한다. 그리고 **Task 544의 guest entry
+울타리에 닿기도 전에** 멈춘다.
+
+```text
+[error] [loader] Failed to place requested AOT code cache:
+                 AOT timer safe-point request is unavailable
+```
+
+`ResolveAotTimerSafePoints`는 site가 없으면 바로 성공하므로, 실패는 site가 있다는
+뜻이다. 그런데 Task 553은 long-mode 이미지가 timer safe point를 내지 않는다고
+적었다. 모순의 답은 하나다.
+
+```
+$ grep -rn "long_mode_emission" src/engine/
+(결과 없음)
+```
+
+`enable_long_mode_emission`은 기본값 `false`이고 **엔진 어디에서도 켜지 않는다.**
+`true`로 두는 곳은 census와 probe뿐이다.
+
+**즉 x64에서 로더는 i386 방식 이미지를 만든다** — 게스트의 32비트 바이트를 그대로
+복사하고 손으로 쓴 32비트 timer safe point를 낸다. 실패는 그 request 주소가 4 GiB
+위에 있기 때문이다(`AotCodeCachePlacement`는 힙/스택에 있어 0x40000000 특례를 받지
+않는다).
+
+**Tasks 550~574가 만든 long-mode emitter 전체가 엔진에 연결되어 있지 않다.**
+
+### 3.20의 표에 항목 0이 있었다
+
+| # | 항목 | 3.20 | 지금 |
+|---|---|---|---|
+| 0 | 엔진이 long-mode 방출을 켜는 것 | **몰랐음** | **미해결 — 다음** |
+| 1 | 심볼 두 개 | 링크 실패 | **해결** |
+| 2 | fault 경로 `Eip`/`Esp` 의미 | 틀린 값 | 미해결 |
+| 3 | guest entry (`return 4`) | 울타리 | 미해결 |
+| 4 | dispatch thunk 5개 | 불필요 | 불필요 |
+
+항목 0 없이는 2·3을 고쳐도 x64가 i386 바이트를 실행하려 든다. 그리고 항목 0을
+켜면 timer safe point가 사라지므로 지금 막고 있는 오류도 함께 없어질 수 있다 —
+가설이고, 재야 한다.
+
+정적 census로는 이 사실에 닿을 수 없었다. 실행 파일을 만든 것이 이 단위의 성과이고,
+첫 실행이 곧바로 보여 줬다.
+
+## 3.21 (English) Task 575 — an x64 `repiu` exists, and its first run corrected 3.20's table
+
+The design is [20260903-575](../design/20260903-575-linux-x64-repiu-link.md), and
+the execution evidence is in the
+[work log](../work-logs/20260903-575-linux-x64-repiu-link.md).
+
+The two symbols section 3.20 measured are defined as `ud2` in
+`guest_stack_recover_x64.S`. Not `ret`, because arriving is itself the defect —
+imitating i386 would look recovered on top of a rubbish frame.
+
+**An x64 `repiu` executable exists.** ELF 64-bit x86-64, zero unresolved engine
+symbols.
+
+### Correction — the truncation the design worried about is not in this configuration
+
+The design wrote that putting an x64 function address into a 32-bit `Eip`
+truncates. The actual symbol is at `0x401b2ed6`: `repiu_link_linux_engine`
+applies `-no-pie` and `-Wl,-Ttext-segment=0x40000000` across all of UNIX (Task
+503d), so x64 text also sits below 4 GiB and the truncation is lossless. **It was
+an assumption, and measurement refuted it.**
+
+### What the first run revealed — the engine never enables long-mode emission
+
+The loader works on x64. The DOS virtual filesystem, the LE image relocation
+(0x01000000, four objects), and four selector bindings all succeed. Then it
+stops — **before ever reaching Task 544's guest-entry fence.**
+
+```text
+[error] [loader] Failed to place requested AOT code cache:
+                 AOT timer safe-point request is unavailable
+```
+
+`ResolveAotTimerSafePoints` succeeds immediately when there are no sites, so
+failing means sites exist. But Task 553 recorded that a long-mode image emits no
+timer safe point. There is one resolution:
+
+```
+$ grep -rn "long_mode_emission" src/engine/
+(no results)
+```
+
+`enable_long_mode_emission` defaults to `false` and **nothing in the engine sets
+it.** Only the census and the probes set it true.
+
+**So on x64 the loader builds an i386-style image** — the guest's 32-bit bytes
+copied verbatim, with hand-built 32-bit timer safe points. The failure is that
+such a request address is above 4 GiB (`AotCodeCachePlacement` lives on the heap
+or stack and gets no 0x40000000 treatment).
+
+**The entire long-mode emitter Tasks 550–574 built is not wired into the
+engine.**
+
+### 3.20's table had an item 0
+
+| # | Item | At 3.20 | Now |
+|---|---|---|---|
+| 0 | The engine enabling long-mode emission | **not known** | **open — next** |
+| 1 | Two symbols | link failure | **done** |
+| 2 | The fault path's `Eip`/`Esp` meaning | wrong values | open |
+| 3 | Guest entry (`return 4`) | fenced | open |
+| 4 | The five dispatch thunks | not needed | not needed |
+
+Without item 0, fixing 2 and 3 still leaves x64 trying to execute i386 bytes. And
+enabling item 0 removes timer safe points, so the error blocking it today may go
+with it — a hypothesis, to be measured.
+
+The static census could not reach this fact. Producing an executable is the
+unit's result, and the first run showed it at once.
+
+---
+
+## 3.22 Task 576 — x64 실행이 guest entry 울타리까지 갔다
+
+설계는 [20260903-576](../design/20260903-576-engine-long-mode-emission.md),
+실행 증거는 [작업 기록](../work-logs/20260903-576-engine-long-mode-emission.md)에
+있다.
+
+Task 575가 드러낸 항목 0을 닫았다. `HostRequiresLongModeEmission()`을 runtime에
+두고 로더가 그것으로 `enable_long_mode_emission`을 설정한다. env toggle이 아닌
+이유는 x86-64에서 이 플래그가 꺼진 이미지가 다른 선택지가 아니라 **틀린
+이미지**이기 때문이다 — Task 550의 전제 그대로다.
+
+판정은 `sizeof(void*)`가 아니라 `__x86_64__`/`_M_X64`다. 질문이 "CPU가 이 바이트를
+long mode로 디코드하는가"이고, x32 ABI에서는 pointer 크기가 틀린 답을 낸다.
+
+배선은 다른 옵션과 같은 경로다. 이미지가 이미 기록하고 있었으므로 placement가
+물려받고 append가 되읽는 두 홉만 더했다. **append가 host를 다시 묻지 않는 것**이
+요점이다 — 정적 캐시와 나중에 붙는 block이 다른 종류가 되는 것을 막는다.
+
+### 같은 ROM 세트(`pumpit2a`) 비교
+
+| | Task 575 | Task 576 |
+|---|---|---|
+| timer safe point site | 존재 | **`true/0`** |
+| AOT code cache 배치 | **실패** | **성공** |
+| 도달 지점 | AOT 배치 | **guest entry** |
+| 정지 메시지 | `timer safe-point request is unavailable` | `minimal original entry execution requires a 32-bit host` |
+| 종료 코드 | 1 | **0** |
+
+`sites: true/0`이 설계 예측을 그대로 보인다 — timer safe point는 요청되지만
+long-mode 이미지가 하나도 내지 않으므로 resolver가 즉시 성공한다.
+
+**x64 실행이 처음으로 Task 544의 울타리에 닿았다.** 그 앞의 모든 단계 — 로더, DOS
+가상 파일시스템, LE 재배치, AOT 배치 — 가 x64에서 동작한다.
+
+### 정정 — Task 571의 validator 서술이 불완전했다
+
+Task 571의 작업 로그는 `ValidateAotCodeCacheHleCoverage`가 "Win32 전용
+`repiu_aot_probe`에서만 호출된다"고 적었다. **엔진의 dynamic append 경로도
+호출한다.** 그 함수는 i386 바이트 배치를 그대로 검사하므로 long-mode 이미지에
+실패한다. 이번 변경이 막히지 않은 이유는 정적 배치 경로가 그것을 호출하지 않기
+때문이다.
+
+### 표
+
+| # | 항목 | 상태 |
+|---|---|---|
+| 0 | 엔진이 long-mode 방출을 켜는 것 | **해결 (576)** |
+| 1 | 심볼 두 개 | 해결 (575) |
+| 2 | fault 경로 `Eip`/`Esp` 의미 | 미해결 |
+| 3 | guest entry (`return 4`) | **이제 여기까지 도달** |
+| 4 | dispatch thunk 5개 | 불필요 |
+| 5 | `ValidateAotCodeCacheHleCoverage`의 i386 전제 | 새로 확인됨 |
+
+항목 3이 다음으로 보이지만 열면 항목 2가 즉시 필요해진다 — 게스트가 돌기 시작하면
+첫 boundary에서 fault 경로가 틀린 `Eip`를 본다.
+
+## 3.22 (English) Task 576 — the x64 run reaches the guest-entry fence
+
+The design is [20260903-576](../design/20260903-576-engine-long-mode-emission.md),
+and the execution evidence is in the
+[work log](../work-logs/20260903-576-engine-long-mode-emission.md).
+
+Item 0, which Task 575 uncovered, is closed. `HostRequiresLongModeEmission()`
+lives in the runtime and the loader sets `enable_long_mode_emission` from it. Not
+an environment toggle, because on x86-64 an image with the flag off is a **wrong
+image** rather than an alternative — Task 550's premise, unchanged.
+
+The test is `__x86_64__`/`_M_X64` rather than `sizeof(void*)`: the question is
+whether the CPU decodes these bytes in long mode, and under the x32 ABI pointer
+size answers it wrongly.
+
+The wiring follows the path every other option takes. The image already recorded
+it, so only two hops were added — the placement inherits it and append reads it
+back. The point is that **append does not ask the host again**, which is what
+would let the static cache and later-appended blocks become different kinds of
+image.
+
+### Same ROM set (`pumpit2a`)
+
+| | Task 575 | Task 576 |
+|---|---|---|
+| Timer safe-point sites | present | **`true/0`** |
+| AOT code cache placement | **failed** | **succeeds** |
+| Stage reached | AOT placement | **guest entry** |
+| Stopping message | `timer safe-point request is unavailable` | `minimal original entry execution requires a 32-bit host` |
+| Exit code | 1 | **0** |
+
+`sites: true/0` is the design's prediction exactly: timer safe points are
+requested, a long-mode image emits none, and the resolver succeeds at once.
+
+**The x64 run reaches Task 544's fence for the first time.** Every stage before
+it — the loader, the DOS virtual filesystem, the LE relocation, the AOT
+placement — works on x64.
+
+### Correction — Task 571's account of the validator was incomplete
+
+Task 571's work log said `ValidateAotCodeCacheHleCoverage` "is called only from
+the Win32-only `repiu_aot_probe`". **The engine's dynamic-append path calls it
+too.** That function checks i386 byte placement literally, so it fails on a
+long-mode image. This change was not blocked by it only because the static
+placement path does not call it.
+
+### The table
+
+| # | Item | Status |
+|---|---|---|
+| 0 | The engine enabling long-mode emission | **done (576)** |
+| 1 | Two symbols | done (575) |
+| 2 | The fault path's `Eip`/`Esp` meaning | open |
+| 3 | Guest entry (`return 4`) | **now reached** |
+| 4 | The five dispatch thunks | not needed |
+| 5 | `ValidateAotCodeCacheHleCoverage`'s i386 assumption | newly confirmed |
+
+Item 3 looks like the next step, but opening it makes item 2 immediately
+necessary: once a guest starts running, the first boundary puts the fault path in
+front of a wrong `Eip`.
+
+---
+
+## 3.23 Task 577 — guest `ESP`는 `R15`에 있고, `Eip`는 애초에 옳았다
+
+설계는 [20260903-577](../design/20260903-577-x64-guest-esp-context.md),
+실행 증거는 [작업 기록](../work-logs/20260903-577-x64-guest-esp-context.md)에 있다.
+
+### 정정 — 3.20 항목 2는 절반이 틀린 진단이었다
+
+3.20절은 이 항목을 "`Eip`와 `Esp` 둘 다 틀린 값"으로 적었다. **`Eip`는 틀리지
+않았다.**
+
+엔진은 fault 시점의 `Eip`를 guest EIP가 아니라 **cache 주소로 취급한다** —
+`IsAotCacheAddress`로 판정하고 `AotGuestAddressForExecutionAddress`로 변환한다.
+i386에서도 같다. x64에서 `REG_RIP`의 하위 32비트가 그 cache 주소가 되려면 cache가
+4 GiB 아래여야 하는데, 실행이 확인해 준다 — `AOT cache base 0x20000000`.
+
+**이 세션에서 가정이 측정으로 반증된 세 번째다** — Task 574의 SIB 기대값, Task
+575의 주소 잘림, 그리고 이번 `Eip`. 세 번 다 "틀렸을 것"이라고 적어 둔 쪽이
+틀렸다.
+
+### `Esp`는 두 방향으로 틀렸다
+
+i386에서는 guest ESP와 host ESP가 한 레지스터다. x64에서는 Task 546 결정 3이 host
+RSP를 SysV 스택으로, Task 558이 guest ESP를 `R15D`로 둔다.
+
+읽기: 엔진은 `Esp`를 guest 주소로 쓴다(`[Esp+8]` 읽기, `guest_return_esp`,
+`in_range` 검사). **쓰기가 더 나쁘다** — 엔진은 `Esp`를 수정하고, 그 값이
+`REG_RSP`로 돌아가면 host 스택 포인터가 게스트 주소로 옮겨진 채 커널이 resume
+한다.
+
+수정: 읽기는 `REG_R15`, 쓰기는 `REG_R15`에 **zero-extend**, `REG_RSP` 기록
+**제거**. zero-extend인 이유는 Task 558의 불변식이다 — `[r15]` 접근에서 64비트
+전체가 주소이므로 상위 절반이 0이어야 하고, `merge`는 그것을 유지하는 것이 아니라
+가정하는 것이다.
+
+### 검사를 믿기 전에 검사를 시험했다
+
+probe는 원래 x64에서 `gregs[REG_RSP] == kEsp`를 단언했다 — **바꾸려는 그 가정을
+검사하고 있었다.** 새 계약은 `Esp`가 `R15`로 왕복하고(64비트 전체 비교), `RSP`에
+심어 둔 4 GiB 위 표식이 store 뒤에도 남는 것이다.
+
+두 번째가 없으면 `RSP`를 여전히 덮어쓰는 구현이 통과하므로, **실제로 확인했다** —
+`REG_RSP` 기록을 일시적으로 되살리니 `round_trip=false`로 실패하고, 되돌리니 다시
+통과한다. 검사가 옛 동작을 잡는다는 것이 추론이 아니라 관측이다.
+
+x64 `repiu`의 정지 지점은 **움직이지 않는다**. 이 단위는 게스트를 돌리기 시작하지
+않으므로 움직였다면 회귀다.
+
+### 표
+
+| # | 항목 | 상태 |
+|---|---|---|
+| 0 | 엔진이 long-mode 방출을 켜는 것 | 해결 (576) |
+| 1 | 심볼 두 개 | 해결 (575) |
+| 2 | fault 경로 `Esp` | **해결 (577)** — `Eip`는 애초에 옳았음 |
+| 3 | guest entry (`return 4`) | 미해결 — **다음** |
+| 4 | dispatch thunk 5개 | 불필요 |
+| 5 | `ValidateAotCodeCacheHleCoverage`의 i386 전제 | 미해결 |
+
+항목 3을 열면 게스트가 실제로 돌기 시작하고, 그때 항목 5가 dynamic append에서
+기다린다. 그리고 이번 변경은 fault 경로가 **실제로 실행되는 상황**에서는 아직
+검증되지 않았다 — probe는 손으로 만든 `ucontext_t`를 왕복시킬 뿐이다.
+
+## 3.23 (English) Task 577 — guest `ESP` lives in `R15`, and `Eip` was right all along
+
+The design is [20260903-577](../design/20260903-577-x64-guest-esp-context.md),
+and the execution evidence is in the
+[work log](../work-logs/20260903-577-x64-guest-esp-context.md).
+
+### Correction — half of 3.20's item 2 was a wrong diagnosis
+
+Section 3.20 recorded the item as "`Eip` and `Esp`, both wrong values". **`Eip`
+is not wrong.**
+
+The engine treats a faulting `Eip` as **a cache address** rather than a guest
+EIP: `IsAotCacheAddress` decides, and `AotGuestAddressForExecutionAddress`
+translates. The same is true on i386. For `REG_RIP`'s low 32 bits to be that
+cache address on x64 the cache must sit below 4 GiB, and the run confirms it —
+`AOT cache base 0x20000000`.
+
+**This is the third assumption measurement has refuted this session** — Task
+574's expected SIB byte, Task 575's address truncation, and now `Eip`. Each time
+the error ran the same way: what had been written down as wrong was right.
+
+### `Esp` was wrong in both directions
+
+On i386 guest ESP and host ESP are one register. On x64, Task 546's decision 3
+keeps host RSP as the SysV stack and Task 558 puts guest ESP in `R15D`.
+
+Reading: the engine spends `Esp` as a guest address (`[Esp+8]`,
+`guest_return_esp`, the `in_range` test). **Writing is worse** — the engine
+modifies `Esp`, and sending that back into `REG_RSP` leaves the kernel resuming
+with the host stack pointer moved to a guest address.
+
+The fix: load from `REG_R15`, store to `REG_R15` **zero-extended**, and **remove**
+the `REG_RSP` write. Zero-extension because of Task 558's invariant — all 64 bits
+of `R15` are the address in an `[r15]` access, so the upper half must be zero, and
+`merge` assumes that rather than maintaining it.
+
+### The check was tested before it was trusted
+
+The probe used to assert `gregs[REG_RSP] == kEsp` on x64 — **checking the very
+assumption being changed.** The new contract is that `Esp` round-trips through
+`R15` (compared as all 64 bits) and that a marker planted above 4 GiB in `RSP`
+survives the store.
+
+Without the second, an implementation that still overwrote `RSP` would pass, so
+**that was confirmed**: temporarily restoring the `REG_RSP` write gives
+`round_trip=false`, and reverting passes again. That the check catches the old
+behaviour is an observation, not an inference.
+
+The x64 `repiu` stopping point **does not move**. This unit does not start
+running a guest, so a moved stop would be a regression.
+
+### The table
+
+| # | Item | Status |
+|---|---|---|
+| 0 | The engine enabling long-mode emission | done (576) |
+| 1 | Two symbols | done (575) |
+| 2 | The fault path's `Esp` | **done (577)** — `Eip` was right all along |
+| 3 | Guest entry (`return 4`) | open — **next** |
+| 4 | The five dispatch thunks | not needed |
+| 5 | `ValidateAotCodeCacheHleCoverage`'s i386 assumption | open |
+
+Opening item 3 starts a guest actually running, and item 5 waits there on the
+dynamic-append path. This change is also **not yet verified with the fault path
+actually executing** — the probe only round-trips a hand-built `ucontext_t`.
+
+---
+
+## 3.24 Task 578 — x64가 게스트 명령을 실행했다
+
+설계는 [20260903-578](../design/20260903-578-x64-guest-entry.md),
+실행 증거는 [작업 기록](../work-logs/20260903-578-x64-guest-entry.md)에 있다.
+
+```text
+[repiu-fault] unhandled signal=0xb eip=0x20000005 access=0x0
+```
+
+**이 프로젝트에서 x64가 게스트 명령을 실행한 첫 기록이다.** 정지 지점이
+`minimal original entry execution requires a 32-bit host`에서 **code cache 안의
+주소**로 옮겨갔다.
+
+### 진입은 세 번째 경로다
+
+`IsDirectX86ExecutionSupported`를 거짓말시키지 않았다. 그 함수는 "게스트 자신의
+바이트로 뛰어들 수 있는가"를 묻고 x64에서 답은 진짜로 아니오다. 새 술어
+`IsCodeCacheEntrySupported`는 다른 질문 — 방출된 cache로 들어가는가 — 이고,
+브리지는 guest GPR을 host 동번호 레지스터에, guest ESP를 `R15D`에 싣는다.
+resolver는 `FindAotCacheAddress` 위의 어댑터이고, 0을 답하면 Task 562의 thunk가
+`INT3`을 놓는다.
+
+### 설계가 놓친 것 — 울타리는 셋이었다
+
+첫 울타리를 열자 두 번째에서 멈췄다: `guest stack execution requires a 32-bit
+x86 host`. `IsGuestStackSwitchSupported`를 x64에서 false로 유지한 판단은 옳았다 —
+되돌릴 전환이 없다. 놓친 것은 **호출자가 요구하는 것이 "전환"이 아니라 "게스트가
+자기 스택 위에서 돈다"**는 것이고, x64는 진입이 `R15D`에 guest ESP를 심으므로 전환
+없이 이미 만족한다. 술어는 그대로 두고 거절 조건을 두 메커니즘을 아는 형태로
+고쳤다.
+
+### 계측 하나 — Linux에는 미처리 fault를 말해 줄 것이 없었다
+
+첫 실행이 `exit=139`로 끝났는데 어디인지 알 방법이 없었다. `InstallHostCrashReporter`의
+본문은 통째로 `#if defined(_WIN32)`이고, WSL에 gdb도 없다. fault handler의 미처리
+경로에 signal·`Eip`·접근 주소를 `write(2, ...)` 하나로 쓰는 줄을 넣었다 —
+async-signal-safe하게, 서식 라이브러리도 할당도 없이.
+
+### 관측, 그리고 관측과 어긋나는 예상
+
+cache base와 entry가 모두 `0x20000000`이므로 fault는 cache 진입 5바이트 지점이다.
+게스트 entry `0x010F16B0`은 `eb 76` 하나짜리 block(Watcom 배너 건너뛰기)이고 long
+mode에서 `E9 rel32` 5바이트가 되므로, `0x20000005`는 **두 번째 방출 block의
+시작**이다. 점프 대상 `0x010F1728`은 `fb` = `sti`로 시작한다.
+
+`sti`는 privileged이므로 `INT3`이 놓여야 하고 그러면 `SIGTRAP`(0x5)이어야 한다.
+관측된 것은 `SIGSEGV`(0xb), 접근 주소 0이다. **이 불일치는 확정하지 않고 넘긴다** —
+방출된 캐시 바이트를 덤프해야 결정되고 그 도구가 아직 없으며, 추측을 결론으로
+적는 방식은 이 세션에서 세 번(574·575·577) 반증됐다.
+
+### 표
+
+| # | 항목 | 상태 |
+|---|---|---|
+| 0~2 | long-mode 방출 / 심볼 / `Esp` | 해결 |
+| 3 | guest entry | **해결 (578)** |
+| 4 | dispatch thunk 5개 | 불필요 |
+| 5 | validator의 i386 전제 | 미해결 (아직 도달 못 함) |
+| **6** | **cache+5의 SIGSEGV** | **신규 — 다음** |
+
+항목 6의 첫 필요는 **방출된 캐시 바이트를 덤프하는 수단**이다.
+
+## 3.24 (English) Task 578 — x64 executed a guest instruction
+
+The design is [20260903-578](../design/20260903-578-x64-guest-entry.md), and the
+execution evidence is in the
+[work log](../work-logs/20260903-578-x64-guest-entry.md).
+
+```text
+[repiu-fault] unhandled signal=0xb eip=0x20000005 access=0x0
+```
+
+**This is the first record of x64 executing a guest instruction in this
+project.** The stopping point moved from `minimal original entry execution
+requires a 32-bit host` to **an address inside the code cache**.
+
+### The entry is a third path
+
+`IsDirectX86ExecutionSupported` was not made to lie. It asks whether the guest's
+own bytes may be jumped at, and on x64 the answer is genuinely no. The new
+`IsCodeCacheEntrySupported` is a different question — may the emitted cache be
+entered — and the bridge loads guest GPRs into the host registers of the same
+number with guest ESP in `R15D`. The resolver is an adapter over
+`FindAotCacheAddress`; answering zero makes Task 562's thunk plant an `INT3`.
+
+### What the design missed — there were three fences
+
+Opening the first stopped at a second: `guest stack execution requires a 32-bit
+x86 host`. Keeping `IsGuestStackSwitchSupported` false on x64 was the right
+judgement — there is no switch to undo. What was missed is that **the caller asks
+not for "a switch" but for "the guest runs on its own stack"**, which x64 already
+satisfies without one because the entry seeds guest ESP into `R15D`. The
+predicate stayed and the refusal was taught about both mechanisms.
+
+### One instrument — Linux had nothing to report an unhandled fault
+
+The first run ended in `exit=139` with no way to know where.
+`InstallHostCrashReporter`'s entire body is inside `#if defined(_WIN32)`, and
+there is no gdb in this WSL. The fault handler's unhandled path gained a line
+writing the signal, `Eip` and access address through a single `write(2, ...)` —
+async-signal-safe, with no formatting library and no allocation.
+
+### The observation, and the expectation it contradicts
+
+Cache base and entry are both `0x20000000`, so the fault is five bytes into the
+cache. The guest entry `0x010F16B0` is a one-instruction block, `eb 76` jumping
+over the Watcom banner, emitted in long mode as a 5-byte `E9 rel32` — so
+`0x20000005` is **the start of the second emitted block**. Its target
+`0x010F1728` begins `fb`, `sti`.
+
+`sti` is privileged, so an `INT3` should be planted and the result should be
+`SIGTRAP` (0x5). What was observed is `SIGSEGV` (0xb) with an access address of
+zero. **That discrepancy is left unsettled**: deciding it means dumping the
+emitted cache bytes, no tool does that yet, and writing a guess down as a
+conclusion is the method this session has had refuted three times (574, 575,
+577).
+
+### The table
+
+| # | Item | Status |
+|---|---|---|
+| 0–2 | long-mode emission / symbols / `Esp` | done |
+| 3 | Guest entry | **done (578)** |
+| 4 | The five dispatch thunks | not needed |
+| 5 | The validator's i386 assumption | open (not yet reached) |
+| **6** | **The SIGSEGV at cache+5** | **new — next** |
+
+Item 6's first need is **a way to dump the emitted cache bytes**.
+
+---
+
+## 3.25 Task 579 — `sti`는 그대로 복사되어 있었고, 크래시는 설계된 메커니즘이었다
+
+설계는 [20260903-579](../design/20260903-579-emitted-cache-dump.md),
+실행 증거는 [작업 기록](../work-logs/20260903-579-emitted-cache-dump.md)에 있다.
+
+census에 `--cache <offset>` 을 더했다. 폴트가 주는 것은 cache 주소이므로 질문
+방향은 offset → 명령이고, 그 반대가 아니다.
+
+```text
+-- emitted cache window around 0x5 --
+     cache=0x0 len=5  guest=0x10f16b0   emitted: e9 00 00 00 00
+  >> cache=0x5 len=1  guest=0x10f1728   emitted: fb
+     cache=0x6 len=4  guest=0x10f1729   emitted: 41 83 e7 fc
+     cache=0xa len=3  guest=0x10f172c   emitted: 44 89 fb
+```
+
+**`sti`는 `INT3`이 아니라 그대로 복사되어 있다.** 그리고 뒤의 두 항목은 emitter가
+제대로 일하고 있음을 보인다 — `and esp,-4` → `and r15d,-4`, `mov ebx,esp` →
+`mov ebx,r15d`. Task 574·577의 `ESP`→`R15D` 경로가 실제 게스트 코드에서 동작한다.
+
+### 진단
+
+`STI`는 CPL 3에서 #GP를 일으키고, Linux는 그것을 `SIGSEGV`·`si_addr=0`으로
+전달한다. Task 578이 관측한 `signal=0xb access=0x0`이 정확히 그것이다.
+
+그리고 이것은 사고가 아니다. `src/hle/privileged_instruction.cpp`가 opcode `0xFB`를
+`"STI"`로 다룬다 — i386에서도 `sti`는 그대로 복사되어 실행되고 #GP를 일으키고,
+fault handler가 잡아 HLE로 처리한다. **폴트가 HLE가 제어를 얻는 방법이다.**
+
+따라서 x64의 문제는 방출이 아니라 **그 폴트를 handler가 서비스하지 못한 것**이다.
+
+### 네 번째 반증
+
+Task 578은 "`sti`는 privileged이므로 `INT3`이 놓여야 하고 `SIGTRAP`이어야 한다"고
+추론했다. **전제가 틀렸다.** 분류기는 `sti`를 거절하지 않고 통과시키며, 그것이 옳다.
+
+Task 578이 그 불일치를 확정하지 않고 넘긴 판단이 값을 했다. 추측을 결론으로
+적었다면 "분류기가 `sti`를 거절하지 않는 버그"를 고치러 갔을 것이고, 그것은
+i386에서 동작하는 메커니즘을 부수는 일이었다.
+
+이 세션에서 관측이 추론을 뒤집은 네 번째다 — 574의 SIB 기대값, 575의 주소 잘림,
+577의 `Eip`, 그리고 이번 `sti`.
+
+### 곁가지
+
+진입 분기의 `e9 00 00 00 00`은 미해결이 아니라 옳게 해결된 것이다
+(`rel32 = 5 - (1+4) = 0`). 다만 `pumpit2a`에는 미해결 분기가 하나 있다
+(`unresolved=1`; `pumpipx3`은 0). 쫓지 않았다.
+
+### 표
+
+| # | 항목 | 상태 |
+|---|---|---|
+| 0~3 | 방출·심볼·`Esp`·guest entry | 해결 |
+| 5 | validator의 i386 전제 | 미해결 (아직 도달 못 함) |
+| 6 | cache+5의 SIGSEGV | **진단 완료 — `sti`의 #GP** |
+| **7** | **x64 handler가 privileged 폴트를 서비스하지 못함** | **신규 — 다음** |
+
+i386에는 동작하는 경로가 있으므로, 다음 질문은 "무엇을 만드는가"가 아니라
+**"x64에서 그 경로의 어디가 끊기는가"**다.
+
+## 3.25 (English) Task 579 — `sti` was copied verbatim, and the crash is the designed mechanism
+
+The design is [20260903-579](../design/20260903-579-emitted-cache-dump.md), and
+the execution evidence is in the
+[work log](../work-logs/20260903-579-emitted-cache-dump.md).
+
+The census gained `--cache <offset>`. A fault hands over a cache address, so the
+question runs offset → instruction, not the reverse.
+
+```text
+-- emitted cache window around 0x5 --
+     cache=0x0 len=5  guest=0x10f16b0   emitted: e9 00 00 00 00
+  >> cache=0x5 len=1  guest=0x10f1728   emitted: fb
+     cache=0x6 len=4  guest=0x10f1729   emitted: 41 83 e7 fc
+     cache=0xa len=3  guest=0x10f172c   emitted: 44 89 fb
+```
+
+**`sti` was copied verbatim, not turned into an `INT3`.** And the two entries
+after it show the emitter working: `and esp,-4` became `and r15d,-4`, and
+`mov ebx,esp` became `mov ebx,r15d`. Tasks 574 and 577's `ESP`→`R15D` path works
+on real guest code.
+
+### The diagnosis
+
+`STI` raises #GP at CPL 3, and Linux delivers that as `SIGSEGV` with
+`si_addr=0` — exactly the `signal=0xb access=0x0` Task 578 observed.
+
+It is not an accident. `src/hle/privileged_instruction.cpp` handles opcode `0xFB`
+as `"STI"`: on i386 too, `sti` is copied verbatim, executed, raises #GP, and the
+fault handler catches it and services it through the HLE. **The fault is how the
+HLE gets control.**
+
+So x64's problem is not the emission but **the handler not servicing that
+fault**.
+
+### The fourth refutation
+
+Task 578 reasoned that "`sti` is privileged, so an `INT3` should be planted and
+the result should be `SIGTRAP`". **The premise was wrong.** The classifier does
+not refuse `sti`, and that is correct.
+
+Task 578's judgement to leave the discrepancy unsettled paid here. Written down
+as a conclusion, the next step would have been to "fix" the classifier for not
+refusing `sti` — breaking a mechanism that works on i386.
+
+This is the fourth time this session that observation overturned reasoning: Task
+574's expected SIB byte, Task 575's address truncation, Task 577's `Eip`, and now
+`sti`.
+
+### Side notes
+
+The entry branch's `e9 00 00 00 00` is not unresolved but correctly resolved
+(`rel32 = 5 - (1+4) = 0`). Separately, `pumpit2a` carries one unresolved branch
+(`unresolved=1`, where `pumpipx3` has none). Not chased.
+
+### The table
+
+| # | Item | Status |
+|---|---|---|
+| 0–3 | emission / symbols / `Esp` / guest entry | done |
+| 5 | The validator's i386 assumption | open (not yet reached) |
+| 6 | The SIGSEGV at cache+5 | **diagnosed — `sti`'s #GP** |
+| **7** | **The x64 handler does not service the privileged fault** | **new — next** |
+
+i386 has a working path, so the next question is not "what must be built" but
+**"where does that path break on x64"**.
+
+---
+
+## 3.26 Task 580 — cache 안 폴트를 서비스하는 경로가 없다
+
+실행 증거는 [작업 기록](../work-logs/20260903-580-x64-cache-fault-service-gap.md)에
+있다.
+
+Task 579의 덤프에 **kind 열이 빠져 있었다.** 설계가 표로 정해 두었는데 구현이
+빠뜨렸고, 그 누락이 조사 하나를 낭비하게 했다 — `fb`만 보고 `kCopy`를 보지
+못하면 "거절되어 INT3가 된 것인가, 일부러 복사된 것인가"가 열린 채 남는데 그것이
+물어야 할 질문이었다. 열을 더하니 `kind=kCopy`다. **planner가 `sti`를 `kCopy`로
+표시하므로 i386 emitter도 같은 `fb`를 복사한다.**
+
+### 확인된 것
+
+* `HandlePrivilegedTrapInstruction`은 `Eip`에서 직접 바이트를 읽고
+  `IsGuestRangeReadable`을 요구하며, 그것은 **게스트 arena만** 허용한다. cache는
+  `0x20000000`으로 그 밖이다.
+* cache 주소를 guest 주소로 되돌리는 `HandleAotReentry`는
+  **`fault.kind == kBreakpoint`일 때만** 그렇게 한다.
+* `sti`의 #GP는 breakpoint가 아니라 access violation이다.
+
+**cache 안에서 일어난 access-violation 폴트를 guest 주소로 되돌리는 경로가 없다.**
+
+### 추정 — i386에서 드러나지 않은 이유
+
+같은 ROM으로 i386 `repiu`는 42초를 계속 돌고 `repiu-fault`는 한 번도 찍히지
+않는다(`single_step=14304`, `aot=14481/197211`). single-step 비중이 크고 cache
+진입이 dispatch를 거치므로 entry 영역의 `sti`를 cache에서 실행하지 않을 가능성이
+높다 — **그러나 그 블록이 실제로 어떻게 실행되는지는 재지 않았다.**
+
+x64는 Task 578의 진입이 첫 block부터 곧장 cache로 들어가므로 두 번째 block에서
+곧바로 공백에 닿는다.
+
+### 다음 — 두 방향
+
+* cache 안 access-violation 폴트도 guest 주소로 되돌린다(공백을 메운다).
+* x64도 dispatch를 거쳐 cache에 들어간다(i386 경로를 따른다).
+
+첫 번째가 작아 보이지만 서비스 후 `++Eip`한 guest 주소를 다시 cache 주소로
+되돌리는 반대 방향도 필요하므로 **작아 보이는 것이 함정일 수 있다.** 어느 쪽이든
+i386이 이 `sti`를 실제로 어떻게 실행하는지 먼저 재는 편이 낫다 — 이 세션에서
+추정이 네 번 반증됐다.
+
+## 3.26 (English) Task 580 — nothing services a fault raised inside the cache
+
+The execution evidence is in the
+[work log](../work-logs/20260903-580-x64-cache-fault-service-gap.md).
+
+Task 579's dump was **missing its kind column.** The design fixed the columns in
+a table and the implementation left one out, and that omission wasted an
+investigation: seeing `fb` without `kCopy` beside it leaves "refused into an INT3
+or copied on purpose" open, which was the question. With the column,
+`kind=kCopy`. **The planner marks `sti` as `kCopy`, so the i386 emitter copies
+the same `fb`.**
+
+### Confirmed
+
+* `HandlePrivilegedTrapInstruction` reads bytes directly at `Eip` and requires
+  `IsGuestRangeReadable`, which admits only the **guest arena**. The cache is at
+  `0x20000000`, outside it.
+* `HandleAotReentry`, which maps a cache address back to a guest address, does so
+  **only when `fault.kind == kBreakpoint`**.
+* `sti`'s #GP is an access violation, not a breakpoint.
+
+**Nothing translates an access-violation fault raised inside the cache back to a
+guest address.**
+
+### Inferred — why i386 never showed it
+
+On the same ROM the i386 `repiu` keeps running for 42 seconds and prints no
+`repiu-fault` at all (`single_step=14304`, `aot=14481/197211`). Single-stepping
+is a large share of its execution and cache entry goes through dispatch, so it
+very likely does not execute the entry region's `sti` from the cache — **but how
+that block actually executes was not measured.**
+
+x64 differs: Task 578's entry goes straight into the cache from the first block,
+so it meets the gap at the second.
+
+### Next — two directions
+
+* Make an access-violation fault inside the cache translate back to a guest
+  address too (fill the gap).
+* Have x64 reach the cache through dispatch as i386 does (follow the path).
+
+The first looks smaller, but servicing then `++Eip`s a *guest* address that has
+to be mapped back to a cache address to resume, so **looking smaller may be the
+trap.** Either way, measuring how i386 actually executes this `sti` comes first —
+four inferences have been refuted this session.
+
+---
+
+## 3.27 세션 인수인계 2026-09-03 — x64가 게스트를 실행하기 시작했다
+
+이 절이 **Linux x64 축의 현재 정본**입니다. 3.10을 대체합니다.
+
+### 한 줄
+
+x64는 이제 **`repiu` 실행 파일을 만들고, 로더가 동작하고, code cache로 진입해
+게스트 명령을 실행합니다.** 두 번째 방출 block의 `sti`가 일으킨 #GP에서 멈추고,
+그 폴트를 서비스하는 경로가 없다는 것까지 진단됐습니다.
+
+### 이 세션에서 옮긴 것
+
+| | 세션 시작 | 세션 끝 |
+|---|---|---|
+| emittable | 72,724 (97.84%) | **73,748 (99.21%)** |
+| 완결 block | 14,782 (85.12%) | **15,646 (90.09%)** |
+| 도달 가능 block | **29 (0.17%)** | **7,723 (44.47%)** |
+| reachable instrs | 77 | **34,188** |
+| x64 `repiu` | 링크 실패 | **실행되고 게스트를 돌림** |
+
+### 두 단계로 나뉩니다
+
+**Tasks 571~574 — emitter.** 정지 표를 하나씩 지웠습니다. 572가 `kAbsoluteToSib`의
+폭 제한을 없애 도달 가능 block을 29 → 7,404로(255배) 늘렸고, 573이 indirect call
+slot을, 574가 두 바이트 opcode의 `ESP` 재인코딩을 열었습니다.
+
+**Tasks 575~580 — 실행.** 3.20이 잰 "게스트 실행까지 무엇이 남았는가"를 따라
+링크(575), 엔진의 long-mode 방출 연결(576), fault 경로의 guest `ESP`(577), guest
+entry(578)를 차례로 닫고, 579·580이 남은 정지를 진단했습니다.
+
+### 지금 어디서 멈추는가
+
+```text
+[repiu-fault] unhandled signal=0xb eip=0x20000005 access=0x0
+```
+
+`build/linux_x64_repiu/repiu pumpit2a` 기준. cache base는 `0x20000000`이고
+`0x20000005`는 두 번째 방출 block, guest `0x10f1728`의 `sti`입니다.
+
+### 남은 작업 (3.20의 표, 갱신)
+
+| # | 항목 | 상태 |
+|---|---|---|
+| 0 | 엔진이 long-mode 방출을 켜는 것 | 해결 (576) |
+| 1 | 링크 심볼 두 개 | 해결 (575) |
+| 2 | fault 경로 `Esp` | 해결 (577). `Eip`는 애초에 옳았음 |
+| 3 | guest entry | 해결 (578) |
+| 4 | dispatch thunk 5개 | **불필요** — long-mode 이미지는 dbt site를 만들지 않음 |
+| 5 | `ValidateAotCodeCacheHleCoverage`의 i386 전제 | 미해결, 아직 도달 못 함 |
+| 6 | cache+5의 SIGSEGV | 진단 완료 (579·580) |
+| **7** | **cache 안 access-violation 폴트를 서비스할 경로가 없음** | **다음** |
+
+### 다음 세션이 할 일
+
+**먼저 재십시오.** i386이 이 `sti`를 실제로 어떻게 실행하는지는 **재지 않았습니다.**
+"single-step이라 cache에서 안 돈다"는 것은 추정입니다.
+
+그다음 둘 중 하나를 고릅니다.
+
+- cache 안 access-violation 폴트도 guest 주소로 되돌린다(공백을 메운다).
+- x64도 dispatch를 거쳐 cache에 들어간다(i386 경로를 따른다).
+
+첫 번째가 작아 보이지만, 서비스 후 `++Eip`한 **guest 주소를 다시 cache 주소로
+되돌리는 반대 방향**도 필요합니다.
+
+### 쓸 수 있는 도구
+
+```bash
+# 방출된 캐시 바이트 — 폴트가 준 offset으로 조회
+./build/linux_x64_release/repiu_instruction_census --cache 0x5 \
+    build/runtime_mounts/pumpit2a/PIU/PIU.EXE
+
+# x64 게스트 실행
+./scripts/build_linux_x64.sh --config Release \
+    --build-dir build/linux_x64_repiu --target repiu
+timeout 180 ./build/linux_x64_repiu/repiu pumpit2a
+```
+
+미처리 폴트는 이제 `[repiu-fault] unhandled signal=… eip=… access=…`를 찍습니다
+(Task 578). Linux에는 그전까지 아무것도 없었고 WSL에 gdb도 없습니다.
+
+### 이 세션의 방법론 — 추정이 다섯 번 반증됐습니다
+
+| 단위 | 적어 둔 것 | 실제 |
+|---|---|---|
+| 574 | SIB 바이트가 `24`로 남는다 | `27` — R15는 REX.B와 base 필드 둘 다 필요 |
+| 575 | 32비트 `Eip`가 x64 주소를 자른다 | text가 `0x40000000`이라 무손실 |
+| 577 | `Eip`가 틀린 값이다 | 엔진이 cache 주소로 취급하므로 옳았음 |
+| 578 | `sti`는 `INT3`이 된다 | 그대로 복사됨 — 폴트가 HLE 진입점 |
+| 580 | (진행 중) i386은 cache에서 안 돈다 | **아직 안 잼** |
+
+578이 그 불일치를 **확정하지 않고 넘긴 것**이 값을 했습니다. 추측을 결론으로
+적었다면 "분류기가 `sti`를 거절하지 않는 버그"를 고치러 갔을 것이고, 그것은
+i386에서 동작하는 메커니즘을 부수는 일이었습니다.
+
+## 3.27 (English) Session handoff 2026-09-03 — x64 began executing a guest
+
+**This section is the current record for the Linux x64 axis.** It supersedes 3.10.
+
+### One line
+
+x64 now **produces a `repiu` executable, runs its loader, enters the code cache
+and executes guest instructions.** It stops at a #GP raised by the `sti` in the
+second emitted block, and the absence of a path servicing that fault is
+diagnosed.
+
+### What this session moved
+
+| | Session start | Session end |
+|---|---|---|
+| Emittable | 72,724 (97.84%) | **73,748 (99.21%)** |
+| Complete blocks | 14,782 (85.12%) | **15,646 (90.09%)** |
+| Reachable blocks | **29 (0.17%)** | **7,723 (44.47%)** |
+| Reachable instructions | 77 | **34,188** |
+| x64 `repiu` | link failure | **runs, and runs a guest** |
+
+### It divides in two
+
+**Tasks 571–574 — the emitter.** The stop table was cleared row by row. 572
+removed `kAbsoluteToSib`'s width restriction and took reachable blocks from 29 to
+7,404 (255x); 573 added the indirect-call slot; 574 opened the `ESP` re-encode
+for two-byte opcodes.
+
+**Tasks 575–580 — execution.** Following 3.20's measurement of what stood between
+x64 and a running guest: the link (575), wiring long-mode emission into the
+engine (576), guest `ESP` in the fault path (577), and the guest entry (578),
+with 579 and 580 diagnosing what stops it now.
+
+### Where it stops now
+
+```text
+[repiu-fault] unhandled signal=0xb eip=0x20000005 access=0x0
+```
+
+From `build/linux_x64_repiu/repiu pumpit2a`. The cache base is `0x20000000`, so
+`0x20000005` is the second emitted block — the `sti` at guest `0x10f1728`.
+
+### Remaining work (3.20's table, updated)
+
+| # | Item | Status |
+|---|---|---|
+| 0 | The engine enabling long-mode emission | done (576) |
+| 1 | Two link symbols | done (575) |
+| 2 | The fault path's `Esp` | done (577). `Eip` was right all along |
+| 3 | Guest entry | done (578) |
+| 4 | The five dispatch thunks | **not needed** — a long-mode image creates no dbt sites |
+| 5 | `ValidateAotCodeCacheHleCoverage`'s i386 assumption | open, not yet reached |
+| 6 | The SIGSEGV at cache+5 | diagnosed (579, 580) |
+| **7** | **No path services an access-violation fault inside the cache** | **next** |
+
+### What the next session should do
+
+**Measure first.** How i386 actually executes this `sti` **was not measured**.
+"It single-steps, so it does not run from the cache" is an inference.
+
+Then pick one of two:
+
+- make an access-violation fault inside the cache translate back to a guest
+  address (fill the gap); or
+- have x64 reach the cache through dispatch as i386 does (follow the path).
+
+The first looks smaller, but servicing then `++Eip`s a **guest** address that has
+to be mapped back to a cache address to resume.
+
+### Tools available
+
+```bash
+# Emitted cache bytes, looked up by the offset a fault hands over
+./build/linux_x64_release/repiu_instruction_census --cache 0x5 \
+    build/runtime_mounts/pumpit2a/PIU/PIU.EXE
+
+# Running a guest on x64
+./scripts/build_linux_x64.sh --config Release \
+    --build-dir build/linux_x64_repiu --target repiu
+timeout 180 ./build/linux_x64_repiu/repiu pumpit2a
+```
+
+An unhandled fault now prints `[repiu-fault] unhandled signal=… eip=… access=…`
+(Task 578). Linux had nothing before it, and there is no gdb in this WSL.
+
+### This session's method — five inferences refuted
+
+| Unit | What was written down | What was true |
+|---|---|---|
+| 574 | the SIB byte stays `24` | `27` — naming R15 needs REX.B *and* the base field |
+| 575 | a 32-bit `Eip` truncates an x64 address | text sits at `0x40000000`, so it is lossless |
+| 577 | `Eip` is a wrong value | the engine treats it as a cache address, so it was right |
+| 578 | `sti` becomes an `INT3` | copied verbatim — the fault is the HLE's entry point |
+| 580 | (open) i386 does not run it from the cache | **not measured yet** |
+
+578's choice to **leave its contradiction unsettled** rather than act on it paid
+off. Acting would have meant "fixing" the classifier for not refusing `sti`,
+breaking a mechanism i386 depends on.

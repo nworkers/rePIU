@@ -415,10 +415,112 @@ bool LongModeGuardedSegmentLoadEmittableImpl(
         instruction.segment_register == 5U;
 }
 
+bool LongModeGuardedSegmentPopEmittableImpl(
+    const AotInstructionRecord& instruction)
+{
+    if (instruction.kind != AotInstructionKind::kGuardedSegmentPop)
+    {
+        return false;
+    }
+    // The i386 slot's set. This one never installs a selector into a host
+    // segment register, so FS and GS need no separate refusal here -- the same
+    // reasoning Task 569 applied to the register-source load.
+    return instruction.segment_register == 0U ||
+        instruction.segment_register == 3U ||
+        instruction.segment_register == 4U ||
+        instruction.segment_register == 5U;
+}
+
 bool IsLongModeStackPointerRegister(const ZydisRegister reg)
 {
     return reg == ZYDIS_REGISTER_RSP || reg == ZYDIS_REGISTER_ESP ||
         reg == ZYDIS_REGISTER_SP || reg == ZYDIS_REGISTER_SPL;
+}
+
+// Task 573. The instruction that reads an indirect call's target into R14D.
+//
+// It is not written out here. The operand is the guest's own, and moving a
+// memory operand into long mode -- the `0x67`, and the ModRM-to-SIB rewrite for
+// the absolute form -- is exactly what `LowerLongModeBytes` does. So the guest's
+// `FF /2` is turned into the 32-bit `8B /r` that reads the same operand into
+// ESI, and that is handed to the lowering. Task 561 synthesised its push the
+// same way and for the same reason: a second copy of a rewrite is a second
+// place to get it wrong.
+//
+// ESI because its number is `110`, which is R14's low three bits. The lowered
+// bytes then need one REX.R to mean R14 instead, and nothing else changes.
+//
+// Returns the lowered bytes *without* the REX; the caller inserts it, because
+// where it goes is a fact about the lowering's output that this function
+// verifies rather than assumes.
+bool LowerLongModeIndirectTargetLoad(const AotInstructionRecord& instruction,
+                                     std::uint8_t* const lowered,
+                                     std::size_t* const lowered_count)
+{
+    if (instruction.kind != AotInstructionKind::kIndirectExit ||
+        instruction.bytes.size() < 2U || instruction.bytes[0] != 0xFFU)
+    {
+        return false;
+    }
+    const std::uint8_t modrm = instruction.bytes[1];
+    if (((modrm >> 3U) & 0x07U) != 2U)
+    {
+        return false;  // not `/2`, so not a near indirect call
+    }
+    if ((modrm >> 6U) == 3U)
+    {
+        // The register form. Left closed: it does not appear in the measured
+        // stops, and opening a form the census has not costed is what Task 570
+        // declined to do.
+        return false;
+    }
+
+    // Opcode `FF` becomes `8B`, and ModRM's `reg` goes from `010` to `110`.
+    // Everything that describes the address -- mod, rm, SIB, displacement --
+    // is carried over untouched, which is the point.
+    std::vector<std::uint8_t> synthesised(instruction.bytes.begin(),
+                                          instruction.bytes.end());
+    synthesised[0] = 0x8BU;
+    synthesised[1] = static_cast<std::uint8_t>((modrm & 0xC7U) | 0x30U);
+
+    // An operand naming guest ESP takes the `kStackPointerToR15` path, which
+    // inserts a REX of its own. There is only one REX, so that case cannot also
+    // take the REX.R this needs; merging the two intentions is separate work
+    // and the form stays refused (design decision 4).
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        synthesised.data(), synthesised.size());
+    if (verdict.lowering != LongModeLowering::kAddressSizePrefix &&
+        verdict.lowering != LongModeLowering::kAbsoluteToSib)
+    {
+        return false;
+    }
+
+    std::size_t produced = 0U;
+    if (!LowerLongModeBytes(synthesised.data(), synthesised.size(), lowered,
+                            &produced, nullptr) ||
+        produced < 2U || produced + 1U > kMaxLoweredBytes)
+    {
+        return false;
+    }
+    // The synthesised instruction carries no prefixes of its own, so the
+    // lowering's output begins with the `0x67` it prepends and then the opcode.
+    // Asserted rather than assumed: it is what makes the REX's insertion point
+    // a fact instead of a guess.
+    if (lowered[0] != 0x67U || lowered[1] != 0x8BU)
+    {
+        return false;
+    }
+    *lowered_count = produced;
+    return true;
+}
+
+bool LongModeIndirectCallEmittableImpl(
+    const AotInstructionRecord& instruction)
+{
+    std::uint8_t lowered[kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    return LongModeReturnThunkAddress() != 0U &&
+        LowerLongModeIndirectTargetLoad(instruction, lowered, &lowered_count);
 }
 
 // Task 568. Whether the long-mode segment-override slot can be emitted for this
@@ -763,6 +865,185 @@ bool EmitLongModeGuardedSegmentLoad(
     image->guarded_segment_load_sites.push_back(site);
     ++image->long_mode_guarded_segment_load_count;
     *emitted_instructions = instructions;
+    return true;
+}
+
+// Task 571. A stack-sourced segment load that changes no guest-visible selector
+// state. Same admission as Task 569's register-source load -- equality with the
+// shadow proves the load is a no-op -- with one difference that matters: this
+// instruction still has an effect after the selector is ruled out, because it
+// pops. Success therefore advances guest ESP by four; a mismatch leaves the
+// stack word in place so the HLE can re-execute the original instruction.
+bool EmitLongModeGuardedSegmentPop(
+    const AotInstructionRecord& instruction,
+    AotCodeCacheImage* const image,
+    std::size_t* const emitted_instructions)
+{
+    if (image == nullptr || emitted_instructions == nullptr ||
+        !LongModeGuardedSegmentPopEmittableImpl(instruction))
+    {
+        return false;
+    }
+
+    std::uint8_t flags_save[kMaxLoweredBytes] = {};
+    std::uint8_t flags_restore[kMaxLoweredBytes] = {};
+    std::size_t save_count = 0U;
+    std::size_t restore_count = 0U;
+    std::size_t save_instructions = 0U;
+    std::size_t restore_instructions = 0U;
+    const std::uint8_t pushfd = 0x9CU;
+    const std::uint8_t popfd = 0x9DU;
+    if (!LowerLongModeBytes(&pushfd, 1U, flags_save, &save_count,
+                            &save_instructions) ||
+        !LowerLongModeBytes(&popfd, 1U, flags_restore, &restore_count,
+                            &restore_instructions))
+    {
+        return false;
+    }
+
+    AotGuardedSegmentPopSite site;
+    site.guest_source = instruction.guest_address;
+    site.cache_offset = static_cast<std::uint32_t>(image->bytes.size());
+    site.segment_register = instruction.segment_register;
+
+    std::size_t instructions = 0U;
+    image->bytes.insert(image->bytes.end(), flags_save,
+                        flags_save + save_count);
+    instructions += save_instructions;
+
+    // mov r14d, [r15+4]. The lowered PUSHFD above pushes onto the *guest*
+    // stack, so guest ESP is already four below where it entered and the word
+    // this instruction pops is one slot further up. Reading [r15] here would
+    // compare the saved flags against a selector.
+    image->bytes.insert(image->bytes.end(), {0x45U, 0x8BU, 0x77U, 0x04U});
+    ++instructions;
+
+    // cmp r14w, word ptr [abs32]. The address-size override and absolute SIB
+    // form prevent long mode from reading the disp32 as RIP relative.
+    image->bytes.insert(image->bytes.end(),
+                        {0x67U, 0x66U, 0x44U, 0x3BU, 0x34U, 0x25U});
+    site.shadow_address_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendImmediate32(&image->bytes, 0U);
+    ++instructions;
+
+    // Equality skips the mismatch restore and its INT3.
+    image->bytes.push_back(0x74U);
+    image->bytes.push_back(static_cast<std::uint8_t>(restore_count + 1U));
+    ++instructions;
+
+    image->bytes.insert(image->bytes.end(), flags_restore,
+                        flags_restore + restore_count);
+    instructions += restore_instructions;
+    site.fallback_offset = static_cast<std::uint32_t>(image->bytes.size());
+    image->bytes.push_back(0xCCU);
+    ++instructions;
+    image->fixups.push_back({AotFixupKind::kHleBoundary,
+                             instruction.guest_address, 0U,
+                             site.fallback_offset, false});
+
+    image->bytes.insert(image->bytes.end(), flags_restore,
+                        flags_restore + restore_count);
+    instructions += restore_instructions;
+    // lea r15d, [r15+4]. The pop itself, and a LEA rather than an ADD because
+    // the guest's next branch reads the flags this slot just restored.
+    image->bytes.insert(image->bytes.end(), {0x45U, 0x8DU, 0x7FU, 0x04U});
+    ++instructions;
+
+    // Unlike the register-source load, this record ends its block in the
+    // planner, so `fallthrough_target` is the address that was set for it.
+    const std::uint32_t branch_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendRel32(&image->bytes, 0xE9U);
+    image->fixups.push_back({AotFixupKind::kBlockFallthrough,
+                             instruction.guest_address,
+                             instruction.fallthrough_target,
+                             branch_offset + 1U, false});
+    ++instructions;
+
+    RecordGuardPrologue(*image, &site);
+    image->guarded_segment_pop_sites.push_back(site);
+    ++image->long_mode_guarded_segment_pop_count;
+    *emitted_instructions = instructions;
+    return true;
+}
+
+// Task 573. The long-mode indirect call.
+//
+// Three pieces, all of which already existed: Task 572's address rewrite reads
+// the target, Task 559's stack sequence pushes the return address, and Task
+// 562's thunk asks a resolver where a guest address lives in the cache. That
+// thunk's contract -- R14D holds a guest address, R15D is guest ESP, guest GPRs
+// are in host GPRs -- has nothing return-specific in it; the name records who
+// built it, not who may use it.
+//
+// **The order is load, push, jump, and that is required rather than tidy.**
+// x86's `CALL r/m32` computes its target before pushing, so an operand that is
+// ESP-relative, or that points at the word the push is about to overwrite,
+// reads a different value if the push goes first.
+//
+// That order in turn rests on the push leaving R14D alone. `PUSH imm32` lowers
+// to a `LEA` on R15D and a store, and touches no R14D -- but Task 559's
+// `PUSHFD` in the same file does use R14D as scratch, so this is a premise to
+// pin rather than a property to assume. The probe pins it by value.
+bool EmitLongModeIndirectCall(const AotInstructionRecord& instruction,
+                              AotCodeCacheImage* const image,
+                              std::size_t* const emitted_instructions)
+{
+    const std::uintptr_t thunk = LongModeReturnThunkAddress();
+    std::uint8_t target_load[kMaxLoweredBytes] = {};
+    std::size_t target_load_count = 0U;
+    if (thunk == 0U ||
+        !LowerLongModeIndirectTargetLoad(instruction, target_load,
+                                         &target_load_count))
+    {
+        return false;
+    }
+
+    // The return address the guest would push. The planner leaves
+    // `fallthrough_target` at zero for an indirect exit -- it does not continue
+    // the walk past one -- so it is computed here rather than read.
+    const std::uint32_t return_address =
+        instruction.guest_address + instruction.length;
+    std::uint8_t push[5] = {0x68U, 0U, 0U, 0U, 0U};
+    for (std::size_t index = 0; index < 4U; ++index)
+    {
+        push[index + 1U] = static_cast<std::uint8_t>(
+            (return_address >> (index * 8U)) & 0xFFU);
+    }
+    std::uint8_t push_lowered[kMaxLoweredBytes] = {};
+    std::size_t push_count = 0U;
+    std::size_t push_instructions = 0U;
+    if (!LowerLongModeBytes(push, sizeof(push), push_lowered, &push_count,
+                            &push_instructions) ||
+        push_count == 0U || push_instructions == 0U)
+    {
+        return false;
+    }
+
+    // 1. The target, into R14D. The REX.R goes after the `0x67` and before the
+    // opcode, which is where REX belongs and where the verified prefix layout
+    // puts it.
+    image->bytes.push_back(target_load[0]);  // 0x67
+    image->bytes.push_back(0x44U);           // REX.R, so reg 110 means R14
+    image->bytes.insert(image->bytes.end(), target_load + 1U,
+                        target_load + target_load_count);
+
+    // 2. The return address, onto the guest stack.
+    image->bytes.insert(image->bytes.end(), push_lowered,
+                        push_lowered + push_count);
+
+    // 3. The transfer, the same bytes Task 562's return slot uses.
+    image->bytes.insert(image->bytes.end(), {0x49U, 0xBCU});  // movabs r12
+    for (std::size_t index = 0; index < 8U; ++index)
+    {
+        image->bytes.push_back(static_cast<std::uint8_t>(
+            (static_cast<std::uint64_t>(thunk) >> (index * 8U)) & 0xFFU));
+    }
+    image->bytes.insert(image->bytes.end(), {0x41U, 0xFFU, 0xE4U});  // jmp r12
+
+    ++image->long_mode_indirect_call_count;
+    *emitted_instructions = 1U + push_instructions + 2U;
     return true;
 }
 
@@ -1378,6 +1659,8 @@ bool EmitGuardedSegmentPopSlot(const AotInstructionRecord& instruction,
     image->bytes.insert(image->bytes.end(), {0x58U, 0x9DU});
     site.fallback_offset = static_cast<std::uint32_t>(image->bytes.size());
     image->bytes.push_back(0xCCU);
+    site.has_counter_operands = true;
+    RecordGuardPrologue(*image, &site);
     image->guarded_segment_pop_sites.push_back(site);
     return true;
 }
@@ -1696,6 +1979,26 @@ bool LongModeGuardedSegmentLoadEmittable(
     return LongModeGuardedSegmentLoadEmittableImpl(instruction);
 }
 
+bool LongModeGuardedSegmentPopEmittable(
+    const AotInstructionRecord& instruction)
+{
+    return LongModeGuardedSegmentPopEmittableImpl(instruction);
+}
+
+bool LongModeIndirectCallEmittable(const AotInstructionRecord& instruction)
+{
+    return LongModeIndirectCallEmittableImpl(instruction);
+}
+
+bool HostRequiresLongModeEmission()
+{
+#if defined(__x86_64__) || defined(_M_X64)
+    return true;
+#else
+    return false;
+#endif
+}
+
 bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                             AotCodeCacheImage* image)
 {
@@ -1782,6 +2085,14 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                          AotInstructionKind::kGuardedSegmentLoad &&
                      EmitLongModeGuardedSegmentLoad(
                          instruction, image, &emitted_instructions)) ||
+                    (instruction.kind ==
+                         AotInstructionKind::kGuardedSegmentPop &&
+                     EmitLongModeGuardedSegmentPop(
+                         instruction, image, &emitted_instructions)) ||
+                    (instruction.kind ==
+                         AotInstructionKind::kIndirectExit &&
+                     EmitLongModeIndirectCall(instruction, image,
+                                              &emitted_instructions)) ||
                     (instruction.kind ==
                          AotInstructionKind::kSegmentOverrideMem &&
                      options.enable_long_mode_segment_override &&

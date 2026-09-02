@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -131,6 +132,12 @@ struct LongModeTally
     // engine patches the guard and the folded base before the cache runs.
     std::uint64_t segment_overrides = 0;
     std::uint64_t guarded_segment_loads = 0;
+    // Task 571. Kept apart from `guarded_segment_loads` for the same reason
+    // those are kept apart from `branches`: this is the first guarded slot
+    // whose success path changes guest state rather than proving it need not.
+    std::uint64_t guarded_segment_pops = 0;
+    // Task 573. Indirect calls the long-mode slot admits.
+    std::uint64_t indirect_calls = 0;
     std::uint64_t refused = 0;
     // Refused because the plan record is not `kCopy` at all -- every control
     // flow record, every guarded segment slot, every port I/O record. Counted
@@ -260,9 +267,92 @@ bool RecordIsEmitted(const repiu::runtime::AotInstructionRecord& record)
             return repiu::runtime::LongModeSegmentOverrideEmittable(record);
         case AotInstructionKind::kGuardedSegmentLoad:
             return repiu::runtime::LongModeGuardedSegmentLoadEmittable(record);
+        case AotInstructionKind::kGuardedSegmentPop:
+            return repiu::runtime::LongModeGuardedSegmentPopEmittable(record);
+        case AotInstructionKind::kIndirectExit:
+            return repiu::runtime::LongModeIndirectCallEmittable(record);
         default:
             return false;
     }
+}
+
+// Task 573. Which indirect exit, not just that one is in the way.
+//
+// "kIndirectExit 60" names a kind and stops there, and a kind is not something
+// a unit can be built against: an indirect *call* and an indirect *jump* need
+// the same slot but leave the walk in completely different places -- the call
+// has a fallthrough and the jump has none. Task 557 made the `kCopy` rows carry
+// their reason for exactly this, and the same argument applies here.
+//
+// The operand form is named too, because that is what decides whether a slot
+// can read the target at all.
+std::string IndirectExitFormName(
+    const repiu::runtime::AotInstructionRecord& record)
+{
+    if (record.bytes.size() < 2U || record.bytes[0] != 0xFFU)
+    {
+        // Not the `FF /2` or `FF /4` group at all. Named rather than folded in,
+        // because a slot built for that group would not cover it.
+        return "not-ff-group";
+    }
+    const std::uint8_t modrm = record.bytes[1];
+    const std::uint8_t operation = (modrm >> 3U) & 0x07U;
+    const std::uint8_t mod = modrm >> 6U;
+    const std::uint8_t rm = modrm & 0x07U;
+
+    std::string name;
+    if (operation == 2U)
+    {
+        name = "call";
+    }
+    else if (operation == 4U)
+    {
+        name = "jmp";
+    }
+    else
+    {
+        // `/3` and `/5` are the far forms, which are a different problem.
+        name = "op" + std::to_string(static_cast<int>(operation));
+    }
+
+    if (mod == 3U)
+    {
+        name += "-reg";
+    }
+    else if (mod == 0U && rm == 5U)
+    {
+        name += "-abs32";
+    }
+    else if (rm == 4U)
+    {
+        name += "-sib";
+    }
+    else if (mod == 0U)
+    {
+        name += "-base";
+    }
+    else
+    {
+        name += "-base+disp";
+    }
+    return name;
+}
+
+// Task 573. Whether an indirect exit leaves a fallthrough behind.
+//
+// A near indirect **call** (`FF /2`) returns to the address after it, so the
+// walk continues there. An indirect **jump** (`FF /4`) does not: nothing even
+// promises the next byte begins an instruction execution reaches.
+//
+// This has never mattered, because a `kIndirectExit` block was never complete
+// and the walk's `default:` -- which pushes that address for any tail it does
+// not name -- never ran on one. Task 573's slot makes such blocks complete, so
+// it runs now, and left alone it would count unreached code as reached.
+bool IndirectExitReturnsToFallthrough(
+    const repiu::runtime::AotInstructionRecord& record)
+{
+    return record.bytes.size() >= 2U && record.bytes[0] == 0xFFU &&
+        ((record.bytes[1] >> 3U) & 0x07U) == 2U;
 }
 
 // Task 563. Walks the blocks execution could actually reach from the entry.
@@ -359,6 +449,12 @@ void WalkReachable(const repiu::runtime::AotTranslationPlan& plan,
                     break;
                 case AotInstructionKind::kReturn:
                     break;
+                case AotInstructionKind::kIndirectExit:
+                    if (IndirectExitReturnsToFallthrough(tail))
+                    {
+                        pending.push_back(tail.guest_address + tail.length);
+                    }
+                    break;
                 default:
                     pending.push_back(tail.guest_address + tail.length);
                     break;
@@ -384,6 +480,35 @@ void WalkReachable(const repiu::runtime::AotTranslationPlan& plan,
                         std::string reason;
                         ClassifyEmittable(record, &lowered, &reason);
                         key += "  " + (reason.empty() ? "no-bytes" : reason);
+                        // Task 574. And the mnemonic. A reason names why the
+                        // classifier said no; it does not say what to write.
+                        // `invalid-in-long-mode` covers the one-byte segment
+                        // pushes and `PUSHAD` alike, and those are not the same
+                        // unit of work -- the same argument Task 573 made for
+                        // splitting `kIndirectExit` by form, one level down.
+                        const char* const mnemonic = ZydisMnemonicGetString(
+                            static_cast<ZydisMnemonic>(record.mnemonic));
+                        key += std::string("  ") +
+                            (mnemonic != nullptr ? mnemonic : "?");
+                    }
+                    else if (record.kind == AotInstructionKind::kIndirectExit)
+                    {
+                        key += "  " + IndirectExitFormName(record);
+                        // Task 573. Whether a slot here would have anywhere to
+                        // go. The planner ends a block at an indirect exit and
+                        // does not push the following address, so the return
+                        // site of an indirect call exists only if some other
+                        // path reached it. Emitting a slot turns a stop into a
+                        // walk that needs that block -- and if it is absent the
+                        // stop becomes an edge outside the plan rather than
+                        // reachable code. That is the difference between this
+                        // unit moving reachability and merely relabelling it,
+                        // so it is measured before the slot is designed.
+                        const std::uint32_t return_site =
+                            record.guest_address + record.length;
+                        key += by_address.find(return_site) != by_address.end()
+                            ? "/return-in-plan"
+                            : "/return-absent";
                     }
                     if (tally->frontier_first_address == 0U)
                     {
@@ -423,6 +548,12 @@ void WalkReachable(const repiu::runtime::AotTranslationPlan& plan,
                 break;
             case AotInstructionKind::kReturn:
                 // Nowhere static to go; the caller's fallthrough is already in.
+                break;
+            case AotInstructionKind::kIndirectExit:
+                if (IndirectExitReturnsToFallthrough(tail))
+                {
+                    pending.push_back(tail.guest_address + tail.length);
+                }
                 break;
             default:
                 pending.push_back(tail.guest_address + tail.length);
@@ -638,8 +769,142 @@ void PrintUsage()
 
 }  // namespace
 
+// Task 579. `--cache <offset>`: what was emitted at a cache offset.
+//
+// A fault hands over a cache address, so this is the direction the question
+// actually runs -- offset to instruction, not instruction to offset. Task 578
+// stopped with `eip=0x20000005` and nothing could say what sat there.
+//
+// Parsed out of argv before the target profile is chosen, so the existing
+// positional handling is untouched and a run without the option produces
+// exactly the output it produced before.
+bool ExtractCacheOffsetOption(int* argc, char** argv, bool* requested,
+                              std::uint32_t* offset)
+{
+    *requested = false;
+    *offset = 0U;
+    for (int index = 1; index < *argc; ++index)
+    {
+        if (std::string_view(argv[index]) != "--cache")
+        {
+            continue;
+        }
+        if (index + 1 >= *argc)
+        {
+            return false;
+        }
+        char* end = nullptr;
+        const unsigned long value = std::strtoul(argv[index + 1], &end, 0);
+        if (end == argv[index + 1] || *end != '\0')
+        {
+            return false;
+        }
+        *requested = true;
+        *offset = static_cast<std::uint32_t>(value);
+        for (int shift = index; shift + 2 <= *argc; ++shift)
+        {
+            argv[shift] = argv[shift + 2];
+        }
+        *argc -= 2;
+        return true;
+    }
+    return true;
+}
+
+// The window around the entry that covers the offset. One entry does not
+// explain how control arrived; what the entry before it ended with is the other
+// half of that.
+void PrintEmittedWindow(const repiu::runtime::AotTranslationPlan& plan,
+                        const repiu::runtime::AotCodeCacheImage& image,
+                        const std::uint32_t offset)
+{
+    // Task 580. The record kind, which Task 579's design asked for and its
+    // implementation left out. Its absence cost an investigation: seeing
+    // `fb` without `kCopy` beside it left "refused into an INT3 or copied on
+    // purpose" open, and that was exactly the question.
+    //
+    // The address map carries no kind, so it is looked up in the plan.
+    std::map<std::uint32_t, std::string> kinds;
+    for (const repiu::runtime::AotBasicBlock& block : plan.blocks)
+    {
+        for (const repiu::runtime::AotInstructionRecord& record :
+             block.instructions)
+        {
+            kinds.emplace(record.guest_address,
+                          AotInstructionKindName(record.kind));
+        }
+    }
+
+    const auto hex_bytes = [](const std::uint8_t* bytes, std::size_t count) {
+        std::string text;
+        const char digits[] = "0123456789abcdef";
+        for (std::size_t index = 0; index < count; ++index)
+        {
+            text += digits[(bytes[index] >> 4U) & 0x0FU];
+            text += digits[bytes[index] & 0x0FU];
+            text += ' ';
+        }
+        return text;
+    };
+
+    std::cout << "\n-- emitted cache window around 0x" << std::hex << offset
+              << std::dec << " --\n";
+    std::size_t covering = image.address_map.size();
+    for (std::size_t index = 0; index < image.address_map.size(); ++index)
+    {
+        const repiu::runtime::AotAddressMapEntry& entry =
+            image.address_map[index];
+        if (offset >= entry.cache_offset &&
+            offset < entry.cache_offset + entry.emitted_length)
+        {
+            covering = index;
+            break;
+        }
+    }
+    if (covering == image.address_map.size())
+    {
+        std::cout << "  no address-map entry covers that offset ("
+                  << image.address_map.size() << " entries, "
+                  << image.bytes.size() << " bytes)\n";
+        return;
+    }
+    const std::size_t first = covering >= 2U ? covering - 2U : 0U;
+    const std::size_t last =
+        std::min(image.address_map.size(), covering + 3U);
+    for (std::size_t index = first; index < last; ++index)
+    {
+        const repiu::runtime::AotAddressMapEntry& entry =
+            image.address_map[index];
+        std::cout << (index == covering ? "  >> " : "     ")
+                  << "cache=0x" << std::hex << entry.cache_offset
+                  << " len=" << std::dec
+                  << static_cast<unsigned>(entry.emitted_length)
+                  << "  guest=0x" << std::hex << entry.guest_address
+                  << std::dec;
+        const auto kind = kinds.find(entry.guest_address);
+        std::cout << "  kind="
+                  << (kind != kinds.end() ? kind->second
+                                          : std::string("?"))
+                  << "\n";
+        if (entry.cache_offset + entry.emitted_length <= image.bytes.size())
+        {
+            std::cout << "        emitted: "
+                      << hex_bytes(image.bytes.data() + entry.cache_offset,
+                                   entry.emitted_length)
+                      << "\n";
+        }
+    }
+}
+
 int main(int argc, char** argv)
 {
+    bool dump_cache = false;
+    std::uint32_t dump_cache_offset = 0U;
+    if (!ExtractCacheOffsetOption(&argc, argv, &dump_cache, &dump_cache_offset))
+    {
+        std::cerr << "--cache needs a numeric offset\n";
+        return 2;
+    }
     std::filesystem::path path;
     const repiu::target::TargetProfile* profile =
         SelectTargetProfile(argc, argv, &path);
@@ -815,6 +1080,23 @@ int main(int argc, char** argv)
                     repiu::runtime::LongModeGuardedSegmentLoadEmittable(record))
                 {
                     ++long_mode.guarded_segment_loads;
+                    continue;
+                }
+                if (record.kind == repiu::runtime::AotInstructionKind::
+                                       kGuardedSegmentPop &&
+                    repiu::runtime::LongModeGuardedSegmentPopEmittable(record))
+                {
+                    ++long_mode.guarded_segment_pops;
+                    continue;
+                }
+                // Task 573. The first emitted kind whose target no static
+                // analysis knows. Asked of the emitter for the same reason as
+                // every kind above it.
+                if (record.kind ==
+                        repiu::runtime::AotInstructionKind::kIndirectExit &&
+                    repiu::runtime::LongModeIndirectCallEmittable(record))
+                {
+                    ++long_mode.indirect_calls;
                     continue;
                 }
                 if (record.kind !=
@@ -1047,6 +1329,10 @@ int main(int argc, char** argv)
                                 static_cast<double>(whole);
     };
     std::cout << "-- x64 long-mode emission (Task 553 rules) --\n";
+    if (dump_cache)
+    {
+        PrintEmittedWindow(plan, long_mode_image, dump_cache_offset);
+    }
     if (!long_mode_built)
     {
         std::cout << "  image did not build: " << long_mode_image.message
@@ -1055,7 +1341,8 @@ int main(int argc, char** argv)
     const std::uint64_t emitted =
         long_mode.copied + long_mode.lowered + long_mode.branches +
         long_mode.returns + long_mode.segment_overrides +
-        long_mode.guarded_segment_loads;
+        long_mode.guarded_segment_loads + long_mode.guarded_segment_pops +
+        long_mode.indirect_calls;
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "  considered          " << long_mode.considered << "\n";
     std::cout << "  copied              " << long_mode.copied << "  ("
@@ -1073,6 +1360,14 @@ int main(int argc, char** argv)
               << long_mode.guarded_segment_loads << "  ("
               << percent(long_mode.guarded_segment_loads,
                          long_mode.considered) << "%)\n";
+    std::cout << "  guarded seg pops    "
+              << long_mode.guarded_segment_pops << "  ("
+              << percent(long_mode.guarded_segment_pops,
+                         long_mode.considered) << "%)\n";
+    std::cout << "  indirect calls      "
+              << long_mode.indirect_calls << "  ("
+              << percent(long_mode.indirect_calls, long_mode.considered)
+              << "%)\n";
     std::cout << "  emittable           " << emitted << "  ("
               << percent(emitted, long_mode.considered) << "%)\n";
     std::cout << "  refused             " << long_mode.refused << "  ("
@@ -1099,6 +1394,10 @@ int main(int argc, char** argv)
             long_mode.segment_overrides &&
         long_mode_image.long_mode_guarded_segment_load_count ==
             long_mode.guarded_segment_loads &&
+        long_mode_image.long_mode_guarded_segment_pop_count ==
+            long_mode.guarded_segment_pops &&
+        long_mode_image.long_mode_indirect_call_count ==
+            long_mode.indirect_calls &&
         long_mode_image.long_mode_refused_count == long_mode.refused;
     std::cout << "  emitter counters    copied="
               << long_mode_image.long_mode_copied_count
@@ -1109,6 +1408,10 @@ int main(int argc, char** argv)
               << long_mode_image.long_mode_segment_override_count
               << " segloads="
               << long_mode_image.long_mode_guarded_segment_load_count
+              << " segpops="
+              << long_mode_image.long_mode_guarded_segment_pop_count
+              << " indcalls="
+              << long_mode_image.long_mode_indirect_call_count
               << " refused=" << long_mode_image.long_mode_refused_count
               << "  agrees=" << (agrees ? "true" : "false") << "\n";
     // Task 560. The edges that had to become boundaries after all, because

@@ -320,6 +320,196 @@ bool ProbeAbsoluteToSib(const std::uint32_t* data)
     return ok;
 }
 
+// 2b. The absolute form with an immediate after it (Task 572).
+//
+// `cmp byte ptr [disp32], imm8` is the shape that stopped the reachable chain at
+// `0x10fc2fa`, and the shape 865 of the census's 1,609 refusals share. Its
+// displacement is not the last field, which the previous width condition
+// required.
+//
+// Two things have to be shown and they are different claims. That the *address*
+// is absolute is what `ProbeAbsoluteToSib` shows for this family already. What
+// is new here is that the **immediate survives the SIB insertion**, and an
+// immediate that were dropped or misread would still produce a running
+// instruction reading a valid address -- it would just compare against the
+// wrong number. So the immediate is pinned by its effect: the same instruction
+// is run twice against the same byte, once with an immediate equal to it and
+// once with one that differs, and the two runs must disagree in ZF.
+//
+// Comparing against only one immediate would not do. A lowering that lost the
+// immediate entirely and compared against zero would still answer "not equal"
+// and pass a single unequal case.
+bool ProbeAbsoluteToSibImmediate(const std::uint32_t* data)
+{
+    const auto address = static_cast<std::uint32_t>(
+        reinterpret_cast<std::uintptr_t>(data));
+    // The low byte of the marker, which is what a byte-sized compare against
+    // this address reads.
+    const auto marker_byte = static_cast<std::uint8_t>(kMarker & 0xFFU);
+    const auto other_byte = static_cast<std::uint8_t>(marker_byte ^ 0xFFU);
+
+    const auto build = [address](const std::uint8_t immediate) {
+        std::vector<std::uint8_t> guest = {0x80U, 0x3DU};  // cmp byte [abs], ib
+        for (int shift = 0; shift < 32; shift += 8)
+        {
+            guest.push_back(
+                static_cast<std::uint8_t>((address >> shift) & 0xFFU));
+        }
+        guest.push_back(immediate);
+        return guest;
+    };
+
+    // The exact bytes, not just the length. `67 80 3C 25 <disp32> <imm8>`: the
+    // ModRM keeps `reg=111` and takes `rm=100`, the SIB is the no-base no-index
+    // form, and the displacement and immediate are copied unchanged.
+    const std::vector<std::uint8_t> equal_guest = build(marker_byte);
+    std::vector<std::uint8_t> equal_lowered;
+    std::vector<std::uint8_t> other_lowered;
+    std::vector<std::uint8_t> expected = {0x67U, 0x80U, 0x3CU, 0x25U};
+    for (int shift = 0; shift < 32; shift += 8)
+    {
+        expected.push_back(static_cast<std::uint8_t>((address >> shift) & 0xFFU));
+    }
+    expected.push_back(marker_byte);
+    if (!Lower(equal_guest, &equal_lowered) ||
+        !Lower(build(other_byte), &other_lowered) ||
+        equal_lowered != expected)
+    {
+        std::cout << "long_mode_lowering_absolute_imm=false,reason=lowering\n";
+        return false;
+    }
+
+    // `sete al` then `movzx eax, al`, so the observed value is ZF itself.
+    // Nothing between the compare and the `sete` touches flags.
+    const std::uint8_t tail[] = {0x0FU, 0x94U, 0xC0U,   // sete al
+                                 0x0FU, 0xB6U, 0xC0U,   // movzx eax, al
+                                 0xC3U};                // ret
+    std::uint32_t observed[2] = {0xFFFFFFFFU, 0xFFFFFFFFU};
+    const std::vector<std::uint8_t>* variants[2] = {&equal_lowered,
+                                                    &other_lowered};
+    ExecutablePage pages[2];
+    bool prepared = true;
+    for (int index = 0; index < 2; ++index)
+    {
+        std::vector<std::uint8_t> code = *variants[index];
+        code.insert(code.end(), tail, tail + sizeof(tail));
+        prepared = prepared && AllocateCodePage(&pages[index]) &&
+            WriteAndArm(pages[index], code);
+    }
+    if (prepared)
+    {
+        for (int index = 0; index < 2; ++index)
+        {
+            using Entry = std::uint32_t (*)();
+            Entry entry = nullptr;
+            std::memcpy(&entry, &pages[index].base, sizeof(entry));
+            observed[index] = entry();
+        }
+    }
+    for (int index = 0; index < 2; ++index)
+    {
+        ReleasePage(&pages[index]);
+    }
+    if (!prepared)
+    {
+        std::cout << "long_mode_lowering_absolute_imm=false,reason=page\n";
+        return false;
+    }
+
+    const bool ok = observed[0] == 1U && observed[1] == 0U;
+    std::cout << "long_mode_lowering_absolute_imm=" << (ok ? "true" : "false")
+              << ",zf_equal=" << observed[0] << ",zf_other=" << observed[1]
+              << "\n";
+    return ok;
+}
+
+// 2c. What the width condition was protecting, kept after replacing it.
+//
+// `IsAbsoluteDisplacementForm` reads only ModRM's `mod` and `rm`. Under a `0x67`
+// prefix the guest addresses in 16 bits, where `mod=00 rm=101` is `[DI]` --
+// not absolute, and carrying no displacement at all. The classifier still names
+// `kAbsoluteToSib` for it, so the rewriter is the only thing standing between
+// that form and a lowering that would invent a displacement out of whatever
+// followed.
+//
+// Task 572 replaced the arithmetic that used to reject this as a side effect, so
+// the refusal is asserted here rather than left to coincidence.
+bool ProbeAbsoluteRefusals()
+{
+    // 67 8B 05 -> mov eax, [di] in 32-bit mode: mod=00 rm=101, no displacement.
+    const std::uint8_t sixteen_bit_addressing[] = {0x67U, 0x8BU, 0x05U};
+    const auto verdict = ClassifyLongModeBytes(sixteen_bit_addressing,
+                                               sizeof(sixteen_bit_addressing));
+    const bool classified_absolute =
+        verdict.lowering == LongModeLowering::kAbsoluteToSib;
+
+    std::uint8_t buffer[kMaxLoweredBytes] = {};
+    std::size_t produced = 0U;
+    const bool refused = !LowerLongModeBytes(sixteen_bit_addressing,
+                                             sizeof(sixteen_bit_addressing),
+                                             buffer, &produced);
+
+    const bool ok = classified_absolute && refused;
+    std::cout << "long_mode_lowering_absolute_refusals="
+              << (ok ? "true" : "false")
+              << ",classified_absolute=" << (classified_absolute ? 1 : 0)
+              << ",refused=" << (refused ? 1 : 0) << "\n";
+    return ok;
+}
+
+// 2d. The `ESP` re-encode on a two-byte opcode (Task 574).
+//
+// `movzx esi, byte ptr [esp+8]` is `0F B6` with `ESP` as the SIB base, and it
+// was refused because the lowering located the opcode as the byte before ModRM
+// -- true only of a one-byte opcode.
+//
+// The bytes are compared exactly rather than by length, because the failure this
+// guards against has the right length. A REX inserted one byte late gives
+// `0F 41 B6 ...`, which is a *different instruction* long mode decodes and runs
+// without raising: the `41` becomes a prefix on `B6`, and `0F` picks up
+// whatever follows. Only the byte string tells the two apart.
+bool ProbeStackPointerTwoByteOpcode()
+{
+    // movzx esi, byte ptr [esp+8]  ->  REX.B before the whole opcode, and the
+    // SIB base from `100` (ESP) to `111`. Naming R15 takes both: the REX bit
+    // supplies the high bit and the field the low three, so a check that
+    // expected the SIB byte to survive unchanged would be checking for a
+    // lowering that still addressed through host RSP.
+    const std::vector<std::uint8_t> two_byte = {0x0FU, 0xB6U, 0x74U, 0x24U,
+                                                0x08U};
+    const std::vector<std::uint8_t> two_byte_expected = {
+        0x41U, 0x0FU, 0xB6U, 0x74U, 0x27U, 0x08U};
+    // mov eax, [esp+8], the one-byte form Task 564 already handled. Kept here
+    // so the change to how the opcode is located is shown not to move it.
+    const std::vector<std::uint8_t> one_byte = {0x8BU, 0x44U, 0x24U, 0x08U};
+    const std::vector<std::uint8_t> one_byte_expected = {0x41U, 0x8BU, 0x44U,
+                                                         0x27U, 0x08U};
+
+    std::vector<std::uint8_t> two_byte_lowered;
+    std::vector<std::uint8_t> one_byte_lowered;
+    const bool two_byte_ok = Lower(two_byte, &two_byte_lowered) &&
+        two_byte_lowered == two_byte_expected;
+    const bool one_byte_ok = Lower(one_byte, &one_byte_lowered) &&
+        one_byte_lowered == one_byte_expected;
+
+    const auto hex = [](const std::vector<std::uint8_t>& bytes) {
+        std::string text;
+        for (const std::uint8_t byte : bytes)
+        {
+            const char digits[] = "0123456789abcdef";
+            text += digits[(byte >> 4U) & 0x0FU];
+            text += digits[byte & 0x0FU];
+        }
+        return text;
+    };
+
+    const bool ok = two_byte_ok && one_byte_ok;
+    std::cout << "long_mode_lowering_two_byte_esp=" << (ok ? "true" : "false")
+              << ",two_byte=" << hex(two_byte_lowered)
+              << ",one_byte=" << hex(one_byte_lowered) << "\n";
+    return ok;
+}
+
 // The classifier and the rewrite must agree about which instructions have a
 // lowering at all, and a segment override must still have none.
 bool ProbeClassification()
@@ -398,15 +588,19 @@ bool RunLongModeLoweringProbe()
                            kMarkerOffset));
     *data = kMarker;
 
+    const bool refusals_ok = ProbeAbsoluteRefusals();
+    const bool two_byte_esp_ok = ProbeStackPointerTwoByteOpcode();
     const bool prefix_ok = ProbeAddressSizePrefix(data);
     const bool absolute_ok = ProbeAbsoluteToSib(data);
-    // After the two above, because it writes through `data` and they read a
+    const bool absolute_imm_ok = ProbeAbsoluteToSibImmediate(data);
+    // After the ones above, because it writes through `data` and they read a
     // marker from it.
     const bool moffs_ok = ProbeMoffs(data);
     platform::ReleaseMemory(reserved.base, kPageBytes);
 
-    const bool all =
-        classification_ok && prefix_ok && absolute_ok && moffs_ok;
+    const bool all = classification_ok && refusals_ok &&
+        two_byte_esp_ok && prefix_ok && absolute_ok &&
+        absolute_imm_ok && moffs_ok;
     std::cout << "long_mode_lowering_all=" << (all ? "true" : "false") << "\n";
     return all;
 }

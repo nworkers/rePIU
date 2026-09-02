@@ -523,6 +523,19 @@ bool RunSelectorGuardProbe()
         pop_site.fallback_counter_address_offset = 71U;
         pop_site.fallback_offset = 77U;
         pop_site.segment_register = 5U;
+        // Task 571. Hand-built here too, and standing in for the i386 emitter,
+        // so it declares the same two things that emitter now records: the
+        // bytes its slot opens with (`pushfd`, `push eax`, `mov ax, gs`, the
+        // first operand-size prefix) and that it has counter operands.
+        pop_site.guard_prologue[0] = 0x9CU;
+        pop_site.guard_prologue[1] = 0x50U;
+        pop_site.guard_prologue[2] = 0x8CU;
+        pop_site.guard_prologue[3] = static_cast<std::uint8_t>(
+            0xC0U | (pop_site.segment_register << 3U));
+        pop_site.guard_prologue[4] = 0x66U;
+        pop_site.guard_prologue_size =
+            static_cast<std::uint8_t>(runtime::kAotSegmentGuardPrologueBytes);
+        pop_site.has_counter_operands = true;
         placement.guarded_segment_pop_sites.push_back(pop_site);
 
         engine::AotSegmentTable segment_table;

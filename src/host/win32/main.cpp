@@ -5339,6 +5339,13 @@ int main(int argc, char** argv)
             relocated_arena_reservation);
         return 1;
     }
+    // Task 576. Not a toggle beside the ones above: on an x86-64 host an image
+    // built without long-mode emission is wrong rather than different, because
+    // long mode reads several of the guest's encodings differently and some of
+    // them raise nothing. The host is asked instead of an environment variable
+    // so a wrong configuration is not quietly runnable.
+    aot_build_options.enable_long_mode_emission =
+        repiu::runtime::HostRequiresLongModeEmission();
     repiu::runtime::AotTranslationPlan aot_plan;
     repiu::runtime::AotCodeCacheImage aot_image;
     if (use_dynamic_backend &&

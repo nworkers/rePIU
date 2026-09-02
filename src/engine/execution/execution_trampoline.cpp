@@ -9,6 +9,11 @@
 #include "repiu/platform/host_environment.h"
 #include "repiu/platform/host_error_stream.h"
 #include "repiu/platform/host_thread.h"
+#if defined(__x86_64__)
+// Task 578. The x64 entry bridge and the dispatch frame its resolver fills.
+#include "repiu/platform/linux_x64_aot_dispatch.h"
+#include "repiu/platform/linux_x64_guest_entry.h"
+#endif
 #include "repiu/runtime/execution_timeout.h"
 #include "repiu/platform/thunk_calling_convention.h"
 #include "repiu/hle/linexe_call_gate.h"
@@ -98,6 +103,27 @@ bool IsDirectX86ExecutionSupported()
 // this process requires is a 32-bit x86 host, and every Win32 API the driver
 // behind this used to need is in the platform layer now.
 #if defined(_M_IX86) || defined(__i386__)
+    return true;
+#else
+    return false;
+#endif
+}
+
+// Task 578. Whether this host enters the guest through the emitted cache.
+//
+// A different question from the two around it, and deliberately not a
+// relaxation of either. `IsDirectX86ExecutionSupported` asks whether the guest's
+// own bytes may be jumped at, and on x64 the answer stays no -- long mode reads
+// several of those encodings differently (Task 550). What an x64 host can enter
+// is the *emitted* long-mode cache, which is this.
+//
+// `IsGuestStackSwitchSupported` also stays false on x64, and for a reason
+// rather than by omission: there is no switch to make. Host RSP stays the SysV
+// stack and guest ESP lives in R15D (Tasks 546 and 558), so the two are separate
+// to begin with.
+bool IsCodeCacheEntrySupported()
+{
+#if defined(_M_X64) || defined(__x86_64__)
     return true;
 #else
     return false;
@@ -2091,6 +2117,62 @@ void CallGuestEntryDirectTimed(ThreadContext* context)
 }
 #endif
 
+#if defined(__x86_64__)
+// Task 578. Where an x64 host asks how to continue.
+//
+// The whole question is "where in the cache is this guest address", and the
+// engine already answers it for other callers, so this is an adapter rather
+// than a mechanism. Answering zero is not a failure path to avoid: Task 562's
+// thunk turns it into an INT3, which is the fail-closed boundary that keeps a
+// guest address the cache does not hold from continuing anywhere at all.
+std::uintptr_t LinuxX64EngineResolver(
+    void* resolver_context, repiu::platform::LinuxX64AotDispatchFrame* frame)
+{
+    auto* const context = static_cast<ThreadContext*>(resolver_context);
+    if (context == nullptr || frame == nullptr ||
+        context->aot_placement == nullptr)
+    {
+        return 0U;
+    }
+    std::uint32_t cache_address = 0U;
+    if (!FindAotCacheAddress(*context->aot_placement, frame->guest_source,
+                             &cache_address))
+    {
+        return 0U;
+    }
+    return static_cast<std::uintptr_t>(cache_address);
+}
+
+// Task 578. The third entry path: not the guest's bytes, but the placed cache.
+//
+// Guest ESP is seeded into R15D because there is no stack switch on x64 to put
+// it anywhere else -- the guest's stack and the host's are separate registers
+// from the start (Task 546 decision 3). The other guest registers start at zero,
+// which is what the i386 direct path effectively gives them too: it calls the
+// entry with whatever the ABI left behind and the guest's own prologue sets up
+// what it needs.
+void CallGuestCacheEntryTimed(ThreadContext* context)
+{
+    const ExecutionTimeScope guest_run_time_scope(
+        context != nullptr ? context->execution_time_profile.get() : nullptr,
+        ExecutionTimeBucket::kGuestRunTotal);
+    if (context == nullptr || context->aot_placement == nullptr ||
+        !context->aot_placement->placed)
+    {
+        return;
+    }
+    repiu::platform::LinuxX64AotDispatchFrame frame;
+    repiu::platform::InstallLinuxX64Dispatch(&frame, context,
+                                             &LinuxX64EngineResolver);
+    repiu::platform::LinuxX64GuestEntryState state;
+    state.guest_esp = static_cast<std::uint64_t>(context->guest_initial_esp);
+    void* const entry = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(context->aot_placement->entry_address));
+    repiu::platform::RepiuLinuxX64GuestEntry(entry, &state);
+    repiu::platform::ClearLinuxX64Dispatch();
+}
+#endif
+
 // Task 503d-19. What both hosts' thread procedures do around the switch,
 // extracted rather than transcribed twice. Six fields and a memory query is
 // exactly the amount of code that drifts when it is copied.
@@ -2320,6 +2402,39 @@ std::uint32_t GuestEntryThreadProc(void* parameter)
     return 0;
 #endif
 }
+
+#if defined(__x86_64__)
+// Task 578. The x64 thread procedure.
+//
+// The same shape as the i386 direct path above -- install the fault handler,
+// run, clear it -- with the one difference this port is about: what is entered
+// is the emitted cache rather than the guest's own bytes.
+std::uint32_t GuestCacheEntryThreadProc(void* parameter)
+{
+    ThreadContext* context = static_cast<ThreadContext*>(parameter);
+    if (context == nullptr)
+    {
+        return 1;
+    }
+    context->guest_thread_id = repiu::platform::CurrentThreadId();
+    g_repiu_active_thread_context = context;
+    if (!repiu::platform::InstallFaultHandler(&GuestThreadFaultCallback,
+                                              context))
+    {
+        g_repiu_active_thread_context = nullptr;
+        return 5;
+    }
+    context->vectored_handler = context;
+    CallGuestCacheEntryTimed(context);
+    g_repiu_active_thread_context = nullptr;
+    if (context->process_exit)
+    {
+        return 0;
+    }
+    context->returned = true;
+    return 0;
+}
+#endif
 #endif  // defined(_WIN32)
 
 }  // namespace
@@ -4390,7 +4505,12 @@ bool RunExecutionThread(
 
     *attempt = MinimalExecutionAttempt{};
     attempt->entry_address = entry_address;
-    attempt->supported = IsDirectX86ExecutionSupported();
+    // Task 578. Either way of entering the guest counts as supported, and they
+    // are different ways: i386 jumps at the guest's own bytes, x64 enters the
+    // emitted cache. `IsDirectX86ExecutionSupported` keeps meaning only the
+    // first, so the routing is a disjunction rather than a loosened predicate.
+    attempt->supported =
+        IsDirectX86ExecutionSupported() || IsCodeCacheEntrySupported();
     attempt->guest_stack_switch_supported = IsGuestStackSwitchSupported();
     attempt->guest_stack_initial_esp = guest_initial_esp;
 
@@ -4402,7 +4522,18 @@ bool RunExecutionThread(
         return true;
     }
 
-    if (use_guest_stack && !attempt->guest_stack_switch_supported)
+    // Task 578. What the caller is asking for is that the guest run on its own
+    // stack, and there are two ways to provide that. i386 switches host ESP
+    // onto it. x64 never has to: the entry seeds guest ESP into R15D and host
+    // RSP stays the SysV stack, so the guest is on its own stack from the first
+    // instruction and there is no switch to support.
+    //
+    // `IsGuestStackSwitchSupported` therefore keeps meaning "is there a 32-bit
+    // switch" and keeps answering no on x64, exactly as
+    // `IsDirectX86ExecutionSupported` does. The refusal below is the one that
+    // has to know about both mechanisms.
+    if (use_guest_stack && !attempt->guest_stack_switch_supported &&
+        !IsCodeCacheEntrySupported())
     {
         attempt->valid = true;
         attempt->message =
@@ -5069,7 +5200,14 @@ bool RunExecutionThread(
     context.glide_backend.BindHostThread();
     repiu::platform::HostThread thread;
     std::uint32_t create_error = 0;
-    if (!repiu::platform::CreateHostThread(&GuestEntryThreadProc, &context,
+#if defined(__x86_64__)
+    const repiu::platform::HostThreadEntry guest_thread_proc =
+        &GuestCacheEntryThreadProc;
+#else
+    const repiu::platform::HostThreadEntry guest_thread_proc =
+        &GuestEntryThreadProc;
+#endif
+    if (!repiu::platform::CreateHostThread(guest_thread_proc, &context,
                                            &thread, &create_error))
     {
         std::ostringstream stream;

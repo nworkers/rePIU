@@ -1887,6 +1887,133 @@ mode. Instructions naming guest `ESP` in another operand remain fail-closed
 because it lives in `R15D`; SIB and the other displacement forms remain closed
 as well.
 
+Task 571부터 `kGuardedSegmentPop`도 x64 전용 slot을 갖습니다. i386 slot은 host의
+물리 segment selector를 비교하지만 x64는 guest selector를 host `DS`에 설치하지
+않으므로, x64 slot은 guest stack top의 하위 16비트를 shadow selector와 비교하고
+일치하면 `ESP += 4`만 수행합니다. 비교 대상 stack word는 `[r15]`가 아니라
+`[r15+4]`에 있습니다 — Task 559의 lowered `PUSHFD`가 guest stack에 쓰기 때문에
+flags 저장 뒤 guest ESP가 진입 값보다 4 작기 때문입니다.
+
+Since Task 571, `kGuardedSegmentPop` has an x64-specific slot too. The i386 slot
+compares the host's physical segment selector, but an x64 host never installs a
+guest selector into host `DS`, so the x64 slot compares the low 16 bits of the
+guest stack top against the shadow selector and performs only `ESP += 4` on a
+match. The stack word to compare sits at `[r15+4]`, not `[r15]`: Task 559's
+lowered `PUSHFD` writes to the guest stack, so after the flags save guest ESP is
+four below its entry value.
+
+Task 572부터 `kAbsoluteToSib` lowering은 disp32 뒤에 immediate가 오는 형식도
+허용합니다. immediate의 값은 인코딩 안의 위치에 의존하지 않으므로 SIB 삽입으로
+한 바이트 밀려도 의미가 보존됩니다. 허용 여부는 length 산술이 아니라 Zydis raw
+정보로 판단합니다 — `disp.size == 32`, `disp.offset == modrm_offset + 1`,
+displacement 끝과 명령 끝 사이의 바이트가 전부 immediate로 설명될 것, `is_relative`
+immediate가 없을 것. `disp.size == 32` 조건은 `0x67` prefix가 붙은 16-bit
+addressing의 `mod=00 rm=101`(`[DI]`, displacement 없음)을 계속 거절합니다.
+
+Since Task 572, the `kAbsoluteToSib` lowering also admits forms with an
+immediate after the disp32. An immediate's value does not depend on where it
+sits in the encoding, so pushing it one byte later with the SIB preserves the
+meaning. Admission is decided from Zydis raw information rather than length
+arithmetic: `disp.size == 32`, `disp.offset == modrm_offset + 1`, every byte
+between the end of the displacement and the end of the instruction accounted for
+as an immediate, and no `is_relative` immediate. The `disp.size == 32` condition
+keeps refusing 16-bit addressing's `mod=00 rm=101` under a `0x67` prefix, which
+is `[DI]` and carries no displacement at all.
+
+Task 573부터 `kIndirectExit`도 x64 전용 slot을 갖습니다. near `FF /2`의 memory
+형식만 열려 있고, 세 조각의 결합입니다 — target을 `R14D`로 읽고, return 주소를
+guest stack에 push하고, Task 562의 thunk로 넘깁니다. 그 thunk 계약은 "`R14D`에
+guest 주소가 있으니 그리로 가라"이므로 return에 고유하지 않습니다. target을 읽는
+명령은 guest bytes에서 opcode `FF`를 `8B`로, ModRM `reg`를 `010`에서 `110`으로 바꾼
+32-bit 명령을 합성해 `LowerLongModeBytes`에 넘겨 얻고, `REX.R` 한 바이트로 `ESI`를
+`R14D`로 바꿉니다. **순서는 load 다음 push이며 정확성 요건입니다** — x86은 target을
+먼저 계산하고, 그래서 push sequence가 `R14D`를 건드리지 않아야 합니다. register
+형식, `FF /4` jump, guest `ESP`를 가리키는 operand는 계속 거절합니다.
+
+Since Task 573, `kIndirectExit` has an x64-specific slot as well. Only the
+memory forms of a near `FF /2` are open, and it is a composition of three
+pieces: read the target into `R14D`, push the return address onto the guest
+stack, and hand over to Task 562's thunk. That thunk's contract -- "`R14D` holds
+a guest address, go there" -- is not return-specific. The instruction reading
+the target is obtained by synthesising a 32-bit instruction from the guest bytes
+(opcode `FF` to `8B`, ModRM `reg` from `010` to `110`), passing it through
+`LowerLongModeBytes`, and turning `ESI` into `R14D` with one `REX.R`. **The
+order is load then push, and it is a correctness requirement**: x86 computes the
+target first, which in turn requires that the push sequence leave `R14D` alone.
+The register form, `FF /4` jumps, and operands naming guest `ESP` remain
+refused.
+
+Task 574부터 `kStackPointerToR15` 재인코딩은 두 바이트 opcode도 처리합니다.
+opcode가 시작하는 자리를 `modrm.offset - 1`이 아니라 `raw.prefix_count`에서
+읽으므로 `0F` map에서도 `REX`가 opcode 전체 앞에 오고, 필수 prefix가 있으면 그
+뒤에 옵니다. map별 ModRM 위치(`DEFAULT`는 `prefix_count + 1`, `0F`는 `+ 2`)를
+단언하고 그 밖의 map은 거절합니다. `ESP`를 `R15`로 바꾸는 데는 `REX.B`와 함께
+SIB base 필드를 `111`로 바꾸는 것이 둘 다 필요합니다 — 한쪽만으로는 host `RSP`를
+계속 가리킵니다.
+
+Since Task 574, the `kStackPointerToR15` re-encoding also handles two-byte
+opcodes. It reads where the opcode begins from `raw.prefix_count` rather than
+`modrm.offset - 1`, so in the `0F` map the `REX` lands before the whole opcode
+and after any mandatory prefix. The per-map ModRM position is asserted
+(`prefix_count + 1` for `DEFAULT`, `+ 2` for `0F`) and other maps are refused.
+Turning `ESP` into `R15` takes both the `REX.B` bit and the SIB base field
+becoming `111`; either alone still addresses through host `RSP`.
+
+### x64가 게스트를 실행하는 경로 (Tasks 575~578)
+
+x86-64 host는 게스트 자신의 바이트를 실행하지 않습니다. `IsDirectX86ExecutionSupported`
+는 x64에서 계속 false이고 그것이 옳습니다 — long mode는 게스트의 여러 인코딩을 다르게
+읽습니다(Task 550). 대신 `IsCodeCacheEntrySupported`가 참이고, 진입은 stack switch·
+direct 옆의 **세 번째 경로**입니다.
+
+* `enable_long_mode_emission`은 `HostRequiresLongModeEmission()`이 정합니다(Task 576).
+  toggle이 아닙니다 — x86-64에서 이 플래그가 꺼진 이미지는 다른 선택지가 아니라 틀린
+  이미지입니다. 플래그는 image → placement → dynamic append로 흐르므로, 정적 캐시와
+  나중에 붙는 block이 다른 종류가 될 수 없습니다.
+* `guest_entry_x64.S`가 guest GPR을 host 동번호 레지스터에, guest ESP를 `R15D`에 싣고
+  placement의 `entry_address`로 들어갑니다(Task 578).
+* resolver는 `FindAotCacheAddress` 위의 어댑터이고, 0을 답하면 Task 562의 thunk가
+  `INT3`을 놓습니다.
+* fault 경로에서 `GuestCpuContext::Esp`는 `R15`에 연결되고 host `RSP`는 기록되지
+  않습니다(Task 577). `Eip`는 `RIP` 그대로입니다 — 엔진이 그것을 cache 주소로 취급해
+  address map으로 변환하기 때문이고, cache가 4 GiB 아래에 있으므로 잘림이 없습니다.
+* 미처리 폴트는 `[repiu-fault] unhandled signal=… eip=… access=…`를 씁니다. Windows의
+  unhandled-exception filter에 해당하는 것이 Linux에 없었습니다.
+
+**알려진 공백**: cache 안에서 일어난 access-violation 폴트를 guest 주소로 되돌리는
+경로가 없습니다. `HandleAotReentry`는 `kBreakpoint`일 때만 그 변환을 하고, `Eip`에서
+바이트를 읽는 HLE handler들은 `Eip`가 게스트 arena 안일 것을 요구합니다. 자세한 것은
+`docs/analysis/linux-port-frontier.md` 3.26·3.27.
+
+### How x64 runs a guest (Tasks 575–578)
+
+An x86-64 host does not execute the guest's own bytes.
+`IsDirectX86ExecutionSupported` stays false there and that is correct -- long mode
+reads several of the guest's encodings differently (Task 550). What is true
+instead is `IsCodeCacheEntrySupported`, and the entry is a **third path** beside
+the stack switch and the direct call.
+
+* `enable_long_mode_emission` is decided by `HostRequiresLongModeEmission()`
+  (Task 576). Not a toggle: on x86-64 an image with the flag off is a wrong image
+  rather than a different one. The flag flows image → placement → dynamic append,
+  so the static cache and later-appended blocks cannot become different kinds.
+* `guest_entry_x64.S` loads guest GPRs into the host registers of the same number
+  and guest ESP into `R15D`, then enters at the placement's `entry_address`
+  (Task 578).
+* The resolver is an adapter over `FindAotCacheAddress`; answering zero makes
+  Task 562's thunk plant an `INT3`.
+* In the fault path `GuestCpuContext::Esp` binds to `R15` and host `RSP` is never
+  written (Task 577). `Eip` stays `RIP`, because the engine treats it as a cache
+  address and translates it through the address map, and the cache sits below
+  4 GiB so nothing truncates.
+* An unhandled fault writes `[repiu-fault] unhandled signal=… eip=… access=…`.
+  Linux had no equivalent of Windows's unhandled-exception filter.
+
+**Known gap**: nothing translates an access-violation fault raised inside the
+cache back to a guest address. `HandleAotReentry` does that only for
+`kBreakpoint`, and the HLE handlers that read bytes at `Eip` require `Eip` to be
+inside the guest arena. See `docs/analysis/linux-port-frontier.md` 3.26 and 3.27.
+
 파일 책임은 다음과 같습니다.
 
 * `aot_code_cache_reservation`: code cache를 어디에 놓아도 되는가. cache 주소는

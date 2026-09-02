@@ -34,6 +34,14 @@ constexpr std::uint32_t kEbp = 0x77770007U;
 constexpr std::uint32_t kEip = 0x88880008U;
 constexpr std::uint32_t kEsp = 0x99990009U;
 constexpr std::uint32_t kFlags = 0x00000246U;
+#if defined(__x86_64__)
+// Task 577. A value planted in host RSP before a store, so that "host RSP is
+// not written" is checked rather than assumed. Deliberately above 4 GiB: that
+// is where a real host stack lives and where a 32-bit guest value cannot
+// accidentally land.
+constexpr greg_t kHostStackPointerMarker =
+    static_cast<greg_t>(UINT64_C(0x00007FFF12345678));
+#endif
 constexpr std::uint32_t kContextFlags = 0x0001000FU;
 constexpr std::uint32_t kControlWord = 0x0000037FU;
 constexpr std::uint32_t kStatusWord = 0x00003800U;
@@ -140,6 +148,10 @@ bool ProbeUcontextRoundTrip()
     // to supply one, and the null case is checked separately below.
     _libc_fpstate x87{};
     host.uc_mcontext.fpregs = &x87;
+#if defined(__x86_64__)
+    // Planted before the store, checked after it.
+    host.uc_mcontext.gregs[REG_RSP] = kHostStackPointerMarker;
+#endif
 
     GuestCpuContext written{};
     Fill(&written);
@@ -171,7 +183,27 @@ bool ProbeUcontextRoundTrip()
         return false;
     }
 #elif defined(__x86_64__)
-    if (static_cast<std::uint32_t>(host.uc_mcontext.gregs[REG_RSP]) != kEsp)
+    // Task 577. On x64 guest ESP is R15D and host RSP is the SysV stack, so the
+    // two claims here are different ones and both are needed.
+    //
+    // This used to assert `RSP == kEsp`, which encoded the mapping being
+    // corrected: the engine spends `Esp` as a guest address, and the host's
+    // stack pointer is not one.
+    // Compared as the whole 64 bits, not the low half, because the upper half
+    // is load-bearing. Task 558 keeps it zero so that an access emitted as
+    // `[r15]` -- where all 64 bits are the address -- reaches the guest's
+    // arena. A store that merged instead of zero-extending would leave rubbish
+    // up there and still pass a 32-bit comparison.
+    if (static_cast<std::uint64_t>(host.uc_mcontext.gregs[REG_R15]) !=
+        static_cast<std::uint64_t>(kEsp))
+    {
+        return false;
+    }
+    // And host RSP survives the store untouched. Without this check an
+    // implementation that wrote the guest value into RSP as well would pass
+    // every assertion above, and the kernel would resume the guest thread with
+    // its stack pointer pointing into guest memory.
+    if (host.uc_mcontext.gregs[REG_RSP] != kHostStackPointerMarker)
     {
         return false;
     }

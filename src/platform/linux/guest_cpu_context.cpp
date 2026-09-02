@@ -170,7 +170,20 @@ bool LoadGuestCpuContext(const void* host_context, GuestCpuContext* registers)
     registers->Eax = Register(machine, REG_RAX);
     registers->Ebp = Register(machine, REG_RBP);
     registers->Eip = Register(machine, REG_RIP);
-    registers->Esp = Register(machine, REG_RSP);
+    // Task 577. Guest ESP is R15D, not RSP.
+    //
+    // On i386 these are one register and reading RSP is right. On x64 they are
+    // two: Task 546's decision 3 keeps host RSP as the SysV stack and Task 558
+    // puts guest ESP in R15D. The engine spends `Esp` as a guest address --
+    // reading `[Esp+8]` off the guest stack, storing it as `guest_return_esp`,
+    // testing it against the guest arena -- and host RSP is none of those
+    // things.
+    //
+    // `Eip` above is deliberately still RIP. The engine treats a faulting `Eip`
+    // as a *cache* address and translates it through the address map, which is
+    // what it does on i386 too; the cache is placed below 4 GiB (Task 554), so
+    // the truncation is lossless and the value is the one the engine expects.
+    registers->Esp = Register(machine, REG_R15);
     registers->EFlags = Register(machine, REG_EFL);
     const std::uint64_t selectors = static_cast<std::uint64_t>(
         machine.gregs[REG_CSGSFS]);
@@ -252,7 +265,21 @@ bool StoreGuestCpuContext(const GuestCpuContext& registers, void* host_context)
     machine.gregs[REG_RAX] = merge(machine.gregs[REG_RAX], registers.Eax);
     machine.gregs[REG_RBP] = merge(machine.gregs[REG_RBP], registers.Ebp);
     machine.gregs[REG_RIP] = merge(machine.gregs[REG_RIP], registers.Eip);
-    machine.gregs[REG_RSP] = merge(machine.gregs[REG_RSP], registers.Esp);
+    // Task 577. Guest ESP goes back to R15, and host RSP is not written at all.
+    //
+    // Not writing RSP is the safety condition. The engine *modifies* `Esp` --
+    // a `ZYDIS_REGISTER_ESP` write, `RecoverToHost`'s `context->Esp` -- and the
+    // kernel resumes on this context. Sending a guest value into RSP would move
+    // the host's stack pointer to a guest address.
+    //
+    // Zero-extended rather than merged, unlike every register above. Task 558's
+    // invariant is that R15's upper half is zero, because an access through
+    // guest ESP is emitted as `[r15]` where the whole 64-bit register is the
+    // address; the emitter keeps it so by writing `lea r15d, ...` and letting
+    // the hardware zero-extend. `merge` would leave the upper half as it found
+    // it, which assumes the invariant instead of maintaining it.
+    machine.gregs[REG_R15] = static_cast<greg_t>(
+        static_cast<std::uint64_t>(registers.Esp));
     machine.gregs[REG_EFL] = merge(machine.gregs[REG_EFL], registers.EFlags);
     if (context->uc_mcontext.fpregs != nullptr)
     {

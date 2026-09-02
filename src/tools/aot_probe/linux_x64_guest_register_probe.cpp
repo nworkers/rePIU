@@ -686,6 +686,11 @@ struct ResolverContext
     const AotCodeCacheImage* image = nullptr;
     const std::uint8_t* code = nullptr;
     std::uint32_t asked = 0;
+    // Task 573. The first question, kept because `asked` is overwritten and the
+    // claim being made is about which address the slot read *first*. In a round
+    // trip the last question is always the return site, whichever order the
+    // slot loaded and pushed in, so only the first one can tell them apart.
+    std::uint32_t first_asked = 0;
     std::uint32_t calls = 0;
 };
 
@@ -701,6 +706,10 @@ std::uintptr_t TestResolver(void* context,
     }
     ++state->calls;
     state->asked = frame->guest_source;
+    if (state->calls == 1U)
+    {
+        state->first_asked = frame->guest_source;
+    }
     for (const repiu::runtime::AotAddressMapEntry& entry :
          state->image->address_map)
     {
@@ -878,6 +887,399 @@ bool ProbeStackPointerReencode()
     std::cout << "guest_esp_reencode=" << (ok ? "true" : "false")
               << " lowered=" << placed.lowered << "\n";
     Release(placed);
+    return ok;
+}
+
+// Task 574. The `ESP` re-encode on a two-byte opcode, run through the emitter.
+//
+// `movzx esi, byte ptr [esp+8]` and `imul esi, dword ptr [esp+4]` are `0F B6`
+// and `0F AF` with `ESP` as the SIB base. Before Task 574 the lowering located
+// the opcode as the byte before ModRM and refused both.
+//
+// Running them is what separates "the bytes look right" from "the guest's stack
+// is what they read". Without the re-encode these address through host RSP,
+// which is a mapped, readable, entirely wrong place -- so the failure is a
+// value, not a fault, and only planting known values in the guest stack catches
+// it.
+bool ProbeTwoByteStackPointer()
+{
+    // movzx esi, byte ptr [esp+8]  ·  imul esi, dword ptr [esp+4]
+    const Program program = {
+        {0x0FU, 0xB6U, 0x74U, 0x24U, 0x08U},
+        {0x0FU, 0xAFU, 0x74U, 0x24U, 0x04U},
+    };
+    const PlacedProgram placed = Place("two_byte_esp", program);
+    if (!placed.valid)
+    {
+        std::cout << "guest_two_byte_esp=false\n";
+        return false;
+    }
+
+    const std::uint32_t stack_top = placed.data_address + 0x800U;
+    // 0x07 at [esp+8] and 6 at [esp+4]: the movzx takes 7, the imul multiplies
+    // it by 6. A product rather than a copy, so a run that read the right byte
+    // and then the wrong multiplier still fails.
+    constexpr std::uint8_t kByte = 0x07U;
+    constexpr std::uint32_t kMultiplier = 6U;
+    placed.data[0x800U + 8U] = kByte;
+    std::memcpy(placed.data + 0x800U + 4U, &kMultiplier, sizeof(kMultiplier));
+
+    GuestRegisterProbeState state;
+    state.gpr[kEsp] = stack_top;
+    RepiuLinuxX64GuestRegisterProbe(placed.code, &state);
+
+    bool ok = Check("two_byte_esp_product", state.gpr[kEsi],
+                    static_cast<std::uint64_t>(kByte) * kMultiplier);
+    // Guest ESP was only read, never written.
+    ok = Check("two_byte_esp_preserved", state.observed_r15,
+               static_cast<std::uint64_t>(stack_top)) && ok;
+    // Both went through the rewrite rather than being copied.
+    ok = Check("two_byte_esp_lowered", placed.lowered, 2U) && ok;
+
+    std::cout << "guest_two_byte_esp=" << (ok ? "true" : "false")
+              << " lowered=" << placed.lowered << " copied=" << placed.copied
+              << "\n";
+    Release(placed);
+    return ok;
+}
+
+// Task 573. The indirect call slot, run through the emitter.
+//
+// Four claims, and they fail in different ways:
+//
+//   * the resolver is asked about the value the *operand pointed at*, not the
+//     operand's address and not the instruction's own address;
+//   * the return address reaches the guest stack and guest ESP falls by four;
+//   * **the target is read before the push**, which x86 requires and which a
+//     probe reading a value the push cannot touch would not notice; and
+//   * control actually arrives where the resolver sent it.
+//
+// The third is the one this probe is shaped around. The operand is deliberately
+// placed at the word the push is about to overwrite, and seeded with the target
+// while that word holds something else afterwards. Load-then-push reads the
+// seeded target; push-then-load reads the return address the push just wrote.
+// Both run, neither faults, and only the value tells them apart.
+bool ProbeIndirectCall()
+{
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = kGuestBase;
+
+    const std::uint32_t call_address = kGuestBase + 0x05U;
+    const std::uint32_t after_call = call_address + 0x06U;
+    const std::uint32_t callee = kGuestBase + 0x20U;
+
+    AotBasicBlock caller;
+    caller.guest_address = kGuestBase;
+    AotInstructionRecord first;
+    first.guest_address = kGuestBase;
+    first.kind = AotInstructionKind::kCopy;
+    first.bytes = {0xB8U, 0x11U, 0x11U, 0x00U, 0x00U};  // mov eax, 0x1111
+    first.length = 5U;
+    caller.instructions.push_back(first);
+    // call dword ptr [abs32]; the displacement is filled in once the region is
+    // placed, because the operand has to name a real address below 4 GiB.
+    AotInstructionRecord call;
+    call.guest_address = call_address;
+    call.kind = AotInstructionKind::kIndirectExit;
+    call.length = 6U;
+    call.bytes = {0xFFU, 0x15U, 0U, 0U, 0U, 0U};
+    caller.instructions.push_back(call);
+    plan.blocks.push_back(caller);
+
+    AotBasicBlock target;
+    target.guest_address = callee;
+    AotInstructionRecord callee_marker;
+    callee_marker.guest_address = callee;
+    callee_marker.kind = AotInstructionKind::kCopy;
+    callee_marker.bytes = {0xB8U, 0x33U, 0x33U, 0x00U, 0x00U};
+    callee_marker.length = 5U;
+    target.instructions.push_back(callee_marker);
+    AotInstructionRecord callee_ret;
+    callee_ret.guest_address = callee + 5U;
+    callee_ret.kind = AotInstructionKind::kReturn;
+    callee_ret.length = 1U;
+    callee_ret.bytes = {0xC3U};
+    target.instructions.push_back(callee_ret);
+    plan.blocks.push_back(target);
+
+    // The block the call returns to. Its presence is what makes a reversed
+    // load/push order fail by *value* rather than by trapping: that order asks
+    // the resolver about this address first, and it resolves.
+    AotBasicBlock resumed;
+    resumed.guest_address = after_call;
+    AotInstructionRecord resumed_marker;
+    resumed_marker.guest_address = after_call;
+    resumed_marker.kind = AotInstructionKind::kCopy;
+    resumed_marker.bytes = {0xB8U, 0x44U, 0x44U, 0x00U, 0x00U};
+    resumed_marker.length = 5U;
+    resumed.instructions.push_back(resumed_marker);
+    AotInstructionRecord resumed_ret;
+    resumed_ret.guest_address = after_call + 5U;
+    resumed_ret.kind = AotInstructionKind::kReturn;
+    resumed_ret.length = 1U;
+    resumed_ret.bytes = {0xC3U};
+    resumed.instructions.push_back(resumed_ret);
+    plan.blocks.push_back(resumed);
+
+    // The region has to exist before the operand can name a word inside it, and
+    // the emitter has to run before the region is placed. So the image is built
+    // once with a placeholder, placed, and the displacement written into the
+    // emitted bytes afterwards -- the same two-phase shape the segment probes
+    // use, and the reason they patch rather than assume.
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    if (!BuildAotCodeCacheImage(plan, options, &image) || !image.valid ||
+        image.long_mode_indirect_call_count != 1U ||
+        image.long_mode_refused_count != 0U)
+    {
+        std::cout << "guest_indirect_call=false indcalls="
+                  << image.long_mode_indirect_call_count << " refused="
+                  << image.long_mode_refused_count << " message=\""
+                  << image.message << "\"\n";
+        return false;
+    }
+
+    const PlacedProgram placed = PlaceImage("indirect_call", image, after_call);
+    if (!placed.valid)
+    {
+        std::cout << "guest_indirect_call=false\n";
+        return false;
+    }
+
+    const std::uint32_t stack_top = placed.data_address + 0x800U;
+    // The word the push will write, and where the operand reads from. One
+    // address serving both roles is what makes the ordering observable.
+    const std::uint32_t operand_address = stack_top - 4U;
+    std::memcpy(placed.data + 0x800U - 4U, &callee, sizeof(callee));
+
+    // The emitted target load is `67 44 8B 34 25 <disp32>`: the displacement is
+    // the last four bytes of the slot's first instruction.
+    std::uint32_t slot_offset = 0U;
+    bool found = false;
+    for (const repiu::runtime::AotAddressMapEntry& entry : image.address_map)
+    {
+        if (entry.guest_address == call_address)
+        {
+            slot_offset = entry.cache_offset;
+            found = true;
+            break;
+        }
+    }
+    if (!found || placed.code[slot_offset] != 0x67U ||
+        placed.code[slot_offset + 1U] != 0x44U ||
+        placed.code[slot_offset + 2U] != 0x8BU ||
+        placed.code[slot_offset + 3U] != 0x34U ||
+        placed.code[slot_offset + 4U] != 0x25U)
+    {
+        std::cout << "guest_indirect_call=false,reason=slot_layout\n";
+        Release(placed);
+        return false;
+    }
+    // The page is executable and not writable, so the displacement goes in
+    // through the image's own copy and the page is rewritten.
+    repiu::platform::MemoryProtection previous =
+        repiu::platform::MemoryProtection::kNoAccess;
+    if (!repiu::platform::ProtectMemory(
+            placed.code, kCodeBytes,
+            repiu::platform::MemoryProtection::kReadWrite, &previous))
+    {
+        std::cout << "guest_indirect_call=false,reason=unprotect\n";
+        Release(placed);
+        return false;
+    }
+    std::memcpy(placed.code + slot_offset + 5U, &operand_address,
+                sizeof(operand_address));
+    if (!repiu::platform::ProtectMemory(
+            placed.code, kCodeBytes,
+            repiu::platform::MemoryProtection::kExecuteRead, &previous) ||
+        !repiu::platform::FlushInstructionCacheRange(placed.code, kCodeBytes))
+    {
+        std::cout << "guest_indirect_call=false,reason=reprotect\n";
+        Release(placed);
+        return false;
+    }
+
+    g_resolver_context = ResolverContext{};
+    g_resolver_context.image = &image;
+    g_resolver_context.code = placed.code;
+    repiu::platform::LinuxX64AotDispatchFrame frame;
+    repiu::platform::InstallLinuxX64Dispatch(&frame, &g_resolver_context,
+                                             &TestResolver);
+
+    GuestRegisterProbeState state;
+    state.gpr[kEsp] = stack_top;
+    RepiuLinuxX64GuestRegisterProbe(placed.code, &state);
+    repiu::platform::ClearLinuxX64Dispatch();
+
+    // **The ordering check.** The first question was about the callee, which is
+    // what the operand held *before* the push. Had the push gone first, that
+    // same word would hold the return address and the first question would have
+    // been about `after_call`.
+    bool ok = Check("indirect_first_asked", g_resolver_context.first_asked,
+                    callee);
+    // Two questions: the call's target, then the callee's return.
+    ok = Check("indirect_resolver_calls", g_resolver_context.calls, 2U) && ok;
+    // 0x4444 is the whole round trip -- the call went, the callee ran, the
+    // return came back. 0x3333 would mean control stopped at the callee and
+    // 0x1111 that the call never went at all.
+    ok = Check("indirect_resumed", state.gpr[kEax], 0x4444U) && ok;
+    // The push took four and the callee's return gave them back.
+    ok = Check("indirect_esp_balanced", state.observed_r15,
+               static_cast<std::uint64_t>(stack_top)) && ok;
+    // And what the push actually wrote is the address after the call.
+    std::uint32_t pushed = 0U;
+    std::memcpy(&pushed, placed.data + 0x800U - 4U, sizeof(pushed));
+    ok = Check("indirect_return_address", pushed, after_call) && ok;
+
+    std::cout << "guest_indirect_call=" << (ok ? "true" : "false")
+              << " indcalls=" << image.long_mode_indirect_call_count << "\n";
+    Release(placed);
+    return ok;
+}
+
+// Task 573. What the slot still refuses, asserted rather than left to chance.
+//
+// Each of these would emit something that runs. A `mod=3` register form and an
+// `FF /4` jump both have a target the slot could load; what they lack is a
+// reason to believe the rest of the machinery around them is right -- the jump
+// has no return site, and neither appears in the measured stops. An ESP-based
+// operand is worse: its lowering inserts a REX of its own, and a second REX is
+// not a thing an encoding can carry.
+bool ProbeIndirectCallRefusals()
+{
+    const auto make = [](const std::vector<std::uint8_t>& bytes) {
+        AotInstructionRecord record;
+        record.guest_address = kGuestBase;
+        record.kind = AotInstructionKind::kIndirectExit;
+        record.length = static_cast<std::uint8_t>(bytes.size());
+        record.bytes = bytes;
+        return record;
+    };
+    using repiu::runtime::LongModeIndirectCallEmittable;
+
+    // call dword ptr [eax+8] -- admitted, so the refusals below mean something.
+    const bool admits_memory =
+        LongModeIndirectCallEmittable(make({0xFFU, 0x50U, 0x08U}));
+    // call eax -- the register form.
+    const bool refuses_register =
+        !LongModeIndirectCallEmittable(make({0xFFU, 0xD0U}));
+    // jmp dword ptr [eax+8] -- `/4`, not `/2`.
+    const bool refuses_jump =
+        !LongModeIndirectCallEmittable(make({0xFFU, 0x60U, 0x08U}));
+    // call dword ptr [esp+8] -- SIB with base ESP.
+    const bool refuses_esp = !LongModeIndirectCallEmittable(
+        make({0xFFU, 0x54U, 0x24U, 0x08U}));
+
+    const bool ok = admits_memory && refuses_register && refuses_jump &&
+        refuses_esp;
+    std::cout << "guest_indirect_call_refusals=" << (ok ? "true" : "false")
+              << ",memory=" << (admits_memory ? 1 : 0)
+              << ",register=" << (refuses_register ? 1 : 0)
+              << ",jump=" << (refuses_jump ? 1 : 0)
+              << ",esp=" << (refuses_esp ? 1 : 0) << "\n";
+    return ok;
+}
+
+// Task 572. The absolute form with an immediate, run through the emitter.
+//
+// The lowering probe already runs these bytes standalone. What this adds is the
+// other half of the claim: that the **emitter** now produces them, embedded in a
+// block, with guest registers where the mapping puts them. Those are separable
+// -- a lowering can be right while the path that reaches it still refuses -- and
+// before Task 572 the emitter refused this form outright.
+//
+// The immediate is pinned by comparing the same byte twice, once against an
+// equal immediate and once against a different one, into two different guest
+// registers. A lowering that dropped the immediate would compare against zero
+// and answer "not equal" both times, which one comparison could not tell apart.
+constexpr std::uint32_t kAbsoluteDataAddress = 0x31000000U;
+constexpr std::size_t kAbsoluteDataBytes = 4096U;
+constexpr std::size_t kAbsoluteDataOffset = 0x40U;
+
+void AppendAbsoluteCompare(Program* program, const std::uint32_t address,
+                           const std::uint8_t immediate)
+{
+    std::vector<std::uint8_t> bytes = {0x80U, 0x3DU};  // cmp byte [abs32], ib
+    for (int shift = 0; shift < 32; shift += 8)
+    {
+        bytes.push_back(static_cast<std::uint8_t>((address >> shift) & 0xFFU));
+    }
+    bytes.push_back(immediate);
+    program->push_back(bytes);
+}
+
+bool ProbeAbsoluteImmediate()
+{
+    // The data page is placed at a chosen low address rather than wherever the
+    // host likes, because the absolute displacement has to be baked into the
+    // guest bytes before the code is placed -- and because a 32-bit address
+    // zero-extended to 64 bits only names the right byte below 4 GiB, which is
+    // the placement Task 546's decision 4 settles.
+    const repiu::platform::MemoryReservation reserved =
+        repiu::platform::ReserveMemory(
+            reinterpret_cast<void*>(
+                static_cast<std::uintptr_t>(kAbsoluteDataAddress)),
+            kAbsoluteDataBytes, true,
+            repiu::platform::MemoryProtection::kReadWrite);
+    const bool placed_low = reserved.valid && reserved.base != nullptr &&
+        reinterpret_cast<std::uintptr_t>(reserved.base) ==
+            static_cast<std::uintptr_t>(kAbsoluteDataAddress);
+    if (reserved.valid && reserved.base != nullptr && !placed_low)
+    {
+        repiu::platform::ReleaseMemory(reserved.base, kAbsoluteDataBytes);
+    }
+    if (!placed_low)
+    {
+        std::cout << "guest_absolute_immediate=false,reason=data_page\n";
+        return false;
+    }
+
+    constexpr std::uint8_t kStored = 0x5AU;
+    constexpr std::uint8_t kOther = 0xA5U;
+    const std::uint32_t compare_address =
+        kAbsoluteDataAddress + static_cast<std::uint32_t>(kAbsoluteDataOffset);
+    *(static_cast<std::uint8_t*>(reserved.base) + kAbsoluteDataOffset) =
+        kStored;
+
+    Program program;
+    AppendAbsoluteCompare(&program, compare_address, kStored);
+    program.push_back({0x0FU, 0x94U, 0xC0U});  // sete al
+    program.push_back({0x0FU, 0xB6U, 0xC0U});  // movzx eax, al
+    AppendAbsoluteCompare(&program, compare_address, kOther);
+    program.push_back({0x0FU, 0x94U, 0xC2U});  // sete dl
+    program.push_back({0x0FU, 0xB6U, 0xD2U});  // movzx edx, dl
+
+    const PlacedProgram placed = Place("absolute_immediate", program);
+    if (!placed.valid)
+    {
+        repiu::platform::ReleaseMemory(reserved.base, kAbsoluteDataBytes);
+        std::cout << "guest_absolute_immediate=false\n";
+        return false;
+    }
+
+    // Guest ESP is given a value the program never names, so R15 coming back
+    // unchanged says the lowered compares left it alone.
+    const std::uint32_t stack_top = placed.data_address + 0x800U;
+    GuestRegisterProbeState state;
+    state.gpr[kEsp] = stack_top;
+    RepiuLinuxX64GuestRegisterProbe(placed.code, &state);
+
+    // Equal immediate: ZF set. This is what fails if the immediate is lost.
+    bool ok = Check("absolute_immediate_equal", state.gpr[kEax], 1U);
+    // Different immediate: ZF clear, against the same byte at the same address.
+    ok = Check("absolute_immediate_other", state.gpr[kEdx], 0U) && ok;
+    ok = Check("absolute_immediate_esp", state.observed_r15,
+               static_cast<std::uint64_t>(stack_top)) && ok;
+    // Both compares needed the rewrite; the four setcc/movzx bytes did not.
+    ok = Check("absolute_immediate_lowered", placed.lowered, 2U) && ok;
+
+    std::cout << "guest_absolute_immediate=" << (ok ? "true" : "false")
+              << " lowered=" << placed.lowered << " copied=" << placed.copied
+              << "\n";
+    Release(placed);
+    repiu::platform::ReleaseMemory(reserved.base, kAbsoluteDataBytes);
     return ok;
 }
 
@@ -1294,6 +1696,192 @@ bool ProbeGuardedSegmentLoad()
     return ok;
 }
 
+// Task 571. The stack-sourced guard, executed.
+//
+// The offset is the whole risk here. Task 559's lowered `pushfd` pushes onto
+// the *guest* stack, so by the time the guard compares anything guest ESP is
+// already four below where the slot was entered and the word being popped has
+// moved to `[r15+4]`. Reading `[r15]` instead would compare the saved flags
+// against a selector -- which mismatches, falls back, and looks exactly like a
+// working guard that simply never takes its fast path. So the checks below pin
+// both the value that reached the guest and the ESP it left behind.
+bool ProbeGuardedSegmentPop()
+{
+    constexpr std::uint16_t kSelector = 0x001CU;
+    const std::uint32_t fallthrough = kGuestBase + 3U;
+
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = kGuestBase;
+
+    AotBasicBlock block;
+    block.guest_address = kGuestBase;
+
+    AotInstructionRecord establish_flags;
+    establish_flags.guest_address = kGuestBase;
+    establish_flags.kind = AotInstructionKind::kCopy;
+    establish_flags.bytes = {0x39U, 0xC0U};  // cmp eax,eax: ZF=1
+    establish_flags.length = 2U;
+    block.instructions.push_back(establish_flags);
+
+    // `POP DS`, which ends its block in the planner. The record therefore
+    // carries `fallthrough_target`, and the slot's edge is built from it.
+    AotInstructionRecord pop;
+    pop.guest_address = kGuestBase + 2U;
+    pop.kind = AotInstructionKind::kGuardedSegmentPop;
+    pop.segment_register = 3U;  // DS
+    pop.bytes = {0x1FU};
+    pop.length = 1U;
+    pop.fallthrough_target = fallthrough;
+    block.instructions.push_back(pop);
+    plan.blocks.push_back(block);
+
+    AotBasicBlock after;
+    after.guest_address = fallthrough;
+
+    AotInstructionRecord observe_flags;
+    observe_flags.guest_address = fallthrough;
+    observe_flags.kind = AotInstructionKind::kCopy;
+    observe_flags.bytes = {0x0FU, 0x95U, 0xC2U};  // setnz dl
+    observe_flags.length = 3U;
+    after.instructions.push_back(observe_flags);
+
+    AotInstructionRecord marker;
+    marker.guest_address = fallthrough + 3U;
+    marker.kind = AotInstructionKind::kCopy;
+    marker.bytes = {0xBBU, 0x78U, 0x56U, 0x34U, 0x12U};
+    marker.length = 5U;
+    after.instructions.push_back(marker);
+
+    AotInstructionRecord closing;
+    closing.guest_address = fallthrough + 8U;
+    closing.kind = AotInstructionKind::kReturn;
+    closing.bytes = {0xC3U};
+    closing.length = 1U;
+    after.instructions.push_back(closing);
+    plan.blocks.push_back(after);
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    if (!BuildAotCodeCacheImage(plan, options, &image) || !image.valid ||
+        image.long_mode_guarded_segment_pop_count != 1U ||
+        image.guarded_segment_pop_sites.size() != 1U)
+    {
+        std::cout << "guest_segment_pop=false slots="
+                  << image.long_mode_guarded_segment_pop_count
+                  << " message=\"" << image.message << "\"\n";
+        return false;
+    }
+
+    const PlacedProgram placed =
+        PlaceImage("segment-pop", image, marker.guest_address);
+    if (!placed.valid || !repiu::platform::ProtectMemory(
+            placed.code, kCodeBytes,
+            repiu::platform::MemoryProtection::kExecuteReadWrite, nullptr))
+    {
+        std::cout << "guest_segment_pop=false,reason=place\n";
+        Release(placed);
+        return false;
+    }
+
+    std::uint16_t shadow = kSelector;
+    std::memcpy(placed.data, &shadow, sizeof(shadow));
+    repiu::runtime::AotSegmentTable table;
+    table.segments[3].shadow_address = placed.data_address;
+    repiu::runtime::AotGuardedSegmentPopPatchStats patch_stats;
+    const std::uint32_t patched =
+        repiu::runtime::PatchAotGuardedSegmentPopSites(
+            placed.code, image.guarded_segment_pop_sites, table, 0U, 0U,
+            &patch_stats);
+    bool ok = Check("segment_pop_patcher_sites", patched, 1U);
+    ok = Check("segment_pop_patcher_native",
+               patch_stats.native_site_count, 1U) && ok;
+
+    // Close and reopen before the first run, so prologue restoration is
+    // observable rather than writing the same bytes over themselves.
+    repiu::runtime::AotGuardedSegmentPopPatchStats unresolved_stats;
+    table.segments[3].shadow_address = 0U;
+    repiu::runtime::PatchAotGuardedSegmentPopSites(
+        placed.code, image.guarded_segment_pop_sites, table, 0U, 0U,
+        &unresolved_stats);
+    ok = Check("segment_pop_unresolved",
+               unresolved_stats.unresolved_site_count, 1U) && ok;
+    const std::uint32_t pop_cache_offset =
+        image.guarded_segment_pop_sites.front().cache_offset;
+    ok = Check("segment_pop_unresolved_trap",
+               placed.code[pop_cache_offset], 0xCCU) && ok;
+
+    table.segments[3].shadow_address = placed.data_address;
+    repiu::runtime::AotGuardedSegmentPopPatchStats restore_stats;
+    repiu::runtime::PatchAotGuardedSegmentPopSites(
+        placed.code, image.guarded_segment_pop_sites, table, 0U, 0U,
+        &restore_stats);
+    ok = Check("segment_pop_restored",
+               restore_stats.native_site_count, 1U) && ok;
+    if (!repiu::platform::FlushInstructionCacheRange(
+            placed.code, kCodeBytes))
+    {
+        std::cout << "guest_segment_pop=false,reason=flush\n";
+        Release(placed);
+        return false;
+    }
+
+    const std::uint32_t stack_top = placed.data_address + 0x800U;
+    // The popped word: a matching selector in the low half and a high half
+    // that differs from the shadow. A 32-bit compare would fail on it, and
+    // `POP DS` does not look at it.
+    const std::uint32_t stack_word =
+        0xDEAD0000U | static_cast<std::uint32_t>(kSelector);
+    std::memcpy(placed.data + 0x800U, &stack_word, sizeof(stack_word));
+
+    GuestRegisterProbeState matched;
+    matched.gpr[kEdx] = 0xFFFFFFFFU;
+    matched.gpr[kEsp] = stack_top;
+    RepiuLinuxX64GuestRegisterProbe(placed.code, &matched);
+    ok = Check("segment_pop_marker", matched.gpr[kEbx], 0x12345678U) && ok;
+    ok = Check("segment_pop_flags", matched.gpr[kEdx], 0xFFFFFF00U) && ok;
+    // The instruction's whole remaining effect, and the reason the `[r15+4]`
+    // offset above has to be right.
+    ok = Check("segment_pop_esp", matched.observed_r15,
+               static_cast<std::uint64_t>(stack_top + 4U)) && ok;
+
+    g_boundary_target = reinterpret_cast<std::uintptr_t>(placed.code) +
+        placed.ret_offset;
+    g_boundary_hits = 0U;
+    if (!repiu::platform::InstallFaultHandler(&OnSegmentBoundary, nullptr))
+    {
+        std::cout << "guest_segment_pop=false,reason=handler\n";
+        Release(placed);
+        return false;
+    }
+    const std::uint32_t mismatched_word =
+        0xDEAD0000U | static_cast<std::uint32_t>(kSelector + 8U);
+    std::memcpy(placed.data + 0x800U, &mismatched_word,
+                sizeof(mismatched_word));
+    GuestRegisterProbeState mismatched;
+    mismatched.gpr[kEbx] = 0U;
+    mismatched.gpr[kEdx] = 0xFFFFFFFFU;
+    mismatched.gpr[kEsp] = stack_top;
+    RepiuLinuxX64GuestRegisterProbe(placed.code, &mismatched);
+    repiu::platform::RemoveFaultHandler();
+    ok = Check("segment_pop_boundary", g_boundary_hits, 1U) && ok;
+    ok = Check("segment_pop_no_marker", mismatched.gpr[kEbx], 0U) && ok;
+    // Entry state, so the HLE can re-execute the guest's own `POP`: ESP still
+    // addresses the word, and the word is still there.
+    ok = Check("segment_pop_mismatch_esp", mismatched.observed_r15,
+               static_cast<std::uint64_t>(stack_top)) && ok;
+    std::uint32_t remaining = 0U;
+    std::memcpy(&remaining, placed.data + 0x800U, sizeof(remaining));
+    ok = Check("segment_pop_mismatch_word", remaining, mismatched_word) && ok;
+
+    std::cout << "guest_segment_pop=" << (ok ? "true" : "false")
+              << " slots=" << image.long_mode_guarded_segment_pop_count
+              << "\n";
+    Release(placed);
+    return ok;
+}
+
 }  // namespace
 
 bool RunLinuxX64GuestRegisterProbe()
@@ -1307,11 +1895,18 @@ bool RunLinuxX64GuestRegisterProbe()
     const bool unresolved = ProbeUnresolvedCall();
     const bool call_return = ProbeCallAndReturn();
     const bool esp = ProbeStackPointerReencode();
+    const bool absolute_immediate = ProbeAbsoluteImmediate();
+    const bool two_byte_esp = ProbeTwoByteStackPointer();
+    const bool indirect_call = ProbeIndirectCall();
+    const bool indirect_refusals = ProbeIndirectCallRefusals();
     const bool segment = ProbeSegmentOverride();
     const bool segment_load = ProbeGuardedSegmentLoad();
+    const bool segment_pop = ProbeGuardedSegmentPop();
     const bool all =
         mapping && stack && flags && round_trip && branch && call &&
-        unresolved && call_return && esp && segment && segment_load;
+        unresolved && call_return && esp && absolute_immediate &&
+        two_byte_esp && indirect_call && indirect_refusals &&
+        segment && segment_load && segment_pop;
     std::cout << "linux_x64_guest_register_all=" << (all ? "true" : "false")
               << "\n";
     return all;

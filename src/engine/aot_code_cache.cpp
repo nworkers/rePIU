@@ -435,6 +435,34 @@ void ResolveAotSegmentOverrides(
     }
 }
 
+// Task 571. The address of a placement counter as an abs32 operand, or zero
+// when it does not fit one. Zero is what the runtime patchers read as "no
+// counter address available", which closes any site that needs one.
+std::uint32_t CounterOperandAddress(
+    const volatile std::uint32_t* const counter)
+{
+    const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(counter);
+    return address <= UINT32_MAX ? static_cast<std::uint32_t>(address) : 0U;
+}
+
+// Task 571. A segment table for a placement that has none.
+//
+// Static placement has no live descriptors, so every guarded slot must close.
+// The patchers already do that for an all-zero table -- a zero shadow address
+// is the unresolved case -- so the absence is expressed as a table rather than
+// as a second code path that also has to know how to close a slot.
+const AotSegmentTable& EmptySegmentTable()
+{
+    static const AotSegmentTable table{};
+    return table;
+}
+
+// Task 571. These three used to write the patch bytes themselves, and knew that
+// a slot opens `9C` and always carries two counter operands. Both facts are
+// true of the i386 slots and of neither long-mode slot: an x64 site has no
+// counter operands, so its two offsets are zero and the counter addresses went
+// to the first four bytes of the image. What to write belongs beside the
+// emitter (Task 568's seam); what is left here is the memory work.
 void ResolveAotGuardedSegmentPops(
     const runtime::AotCodeCacheImage& image,
     std::uint8_t* image_bytes,
@@ -446,35 +474,13 @@ void ResolveAotGuardedSegmentPops(
     {
         return;
     }
-    const std::uintptr_t success_address = reinterpret_cast<std::uintptr_t>(
-        &placement->guarded_segment_pop_success_count);
-    const std::uintptr_t fallback_address = reinterpret_cast<std::uintptr_t>(
-        &placement->guarded_segment_pop_fallback_count);
-    for (const runtime::AotGuardedSegmentPopSite& site :
-         image.guarded_segment_pop_sites)
-    {
-        const std::uint8_t seg = site.segment_register;
-        if (segment_table == nullptr || seg >= 6U ||
-            segment_table->segments[seg].shadow_address == 0U ||
-            success_address > UINT32_MAX || fallback_address > UINT32_MAX)
-        {
-            image_bytes[site.cache_offset] = 0xCCU;
-            continue;
-        }
-        image_bytes[site.cache_offset] = 0x9CU;
-        const std::uint32_t shadow_address =
-            segment_table->segments[seg].shadow_address;
-        const std::uint32_t success =
-            static_cast<std::uint32_t>(success_address);
-        const std::uint32_t fallback =
-            static_cast<std::uint32_t>(fallback_address);
-        std::memcpy(image_bytes + site.shadow_address_offset,
-                    &shadow_address, sizeof(shadow_address));
-        std::memcpy(image_bytes + site.success_counter_address_offset,
-                    &success, sizeof(success));
-        std::memcpy(image_bytes + site.fallback_counter_address_offset,
-                    &fallback, sizeof(fallback));
-    }
+    runtime::AotGuardedSegmentPopPatchStats stats;
+    runtime::PatchAotGuardedSegmentPopSites(
+        image_bytes, image.guarded_segment_pop_sites,
+        segment_table != nullptr ? *segment_table : EmptySegmentTable(),
+        CounterOperandAddress(&placement->guarded_segment_pop_success_count),
+        CounterOperandAddress(&placement->guarded_segment_pop_fallback_count),
+        &stats);
 }
 
 void ResolveAotGuardedSegmentLoads(
@@ -488,35 +494,13 @@ void ResolveAotGuardedSegmentLoads(
     {
         return;
     }
-    const std::uintptr_t success_address = reinterpret_cast<std::uintptr_t>(
-        &placement->guarded_segment_load_success_count);
-    const std::uintptr_t fallback_address = reinterpret_cast<std::uintptr_t>(
-        &placement->guarded_segment_load_fallback_count);
-    for (const runtime::AotGuardedSegmentLoadSite& site :
-         image.guarded_segment_load_sites)
-    {
-        const std::uint8_t seg = site.segment_register;
-        if (segment_table == nullptr || seg >= 6U ||
-            segment_table->segments[seg].shadow_address == 0U ||
-            success_address > UINT32_MAX || fallback_address > UINT32_MAX)
-        {
-            image_bytes[site.cache_offset] = 0xCCU;
-            continue;
-        }
-        image_bytes[site.cache_offset] = 0x9CU;
-        const std::uint32_t shadow_address =
-            segment_table->segments[seg].shadow_address;
-        const std::uint32_t success =
-            static_cast<std::uint32_t>(success_address);
-        const std::uint32_t fallback =
-            static_cast<std::uint32_t>(fallback_address);
-        std::memcpy(image_bytes + site.shadow_address_offset,
-                    &shadow_address, sizeof(shadow_address));
-        std::memcpy(image_bytes + site.success_counter_address_offset,
-                    &success, sizeof(success));
-        std::memcpy(image_bytes + site.fallback_counter_address_offset,
-                    &fallback, sizeof(fallback));
-    }
+    runtime::AotGuardedSegmentLoadPatchStats stats;
+    runtime::PatchAotGuardedSegmentLoadSites(
+        image_bytes, image.guarded_segment_load_sites,
+        segment_table != nullptr ? *segment_table : EmptySegmentTable(),
+        CounterOperandAddress(&placement->guarded_segment_load_success_count),
+        CounterOperandAddress(&placement->guarded_segment_load_fallback_count),
+        &stats);
 }
 
 void ResolveAotGuardedSegmentReads(
@@ -925,6 +909,8 @@ bool PlaceAotCodeCache(const runtime::AotCodeCacheImage& image,
     placement->guarded_segment_load_enabled =
         image.guarded_segment_load_enabled;
     placement->timer_safe_points_enabled = image.timer_safe_points_enabled;
+    placement->long_mode_emission_enabled =
+        image.long_mode_emission_enabled;
     placement->direct_return_table_enabled =
         image.direct_return_table_enabled;
     placement->direct_return_table_bits = image.direct_return_table_bits;
@@ -1055,6 +1041,8 @@ bool AppendDynamicAotTranslation(
         placement->guarded_segment_load_enabled;
     build_options.enable_timer_safe_points =
         placement->timer_safe_points_enabled;
+    build_options.enable_long_mode_emission =
+        placement->long_mode_emission_enabled;
     build_options.enable_direct_return_table =
         placement->direct_return_table_enabled;
     build_options.direct_return_table_bits =
@@ -1559,56 +1547,27 @@ std::uint32_t ReResolveWin32AotSegmentOverrides(
         stats->hle_site_count += override_stats.hle_site_count;
         stats->unresolved_site_count += override_stats.unresolved_site_count;
     }
-    const std::uintptr_t load_success_address = reinterpret_cast<std::uintptr_t>(
-        &placement->guarded_segment_load_success_count);
-    const std::uintptr_t load_fallback_address = reinterpret_cast<std::uintptr_t>(
-        &placement->guarded_segment_load_fallback_count);
     runtime::AotGuardedSegmentLoadPatchStats load_stats;
-    const std::uint32_t load_success = load_success_address <= UINT32_MAX
-        ? static_cast<std::uint32_t>(load_success_address) : 0U;
-    const std::uint32_t load_fallback = load_fallback_address <= UINT32_MAX
-        ? static_cast<std::uint32_t>(load_fallback_address) : 0U;
     processed += runtime::PatchAotGuardedSegmentLoadSites(
         bytes, placement->guarded_segment_load_sites, *segment_table,
-        load_success, load_fallback, &load_stats);
+        CounterOperandAddress(&placement->guarded_segment_load_success_count),
+        CounterOperandAddress(&placement->guarded_segment_load_fallback_count),
+        &load_stats);
     if (stats != nullptr)
     {
         stats->guarded_load_site_count += load_stats.native_site_count;
         stats->unresolved_site_count += load_stats.unresolved_site_count;
     }
-    const std::uintptr_t success_address = reinterpret_cast<std::uintptr_t>(
-        &placement->guarded_segment_pop_success_count);
-    const std::uintptr_t fallback_address = reinterpret_cast<std::uintptr_t>(
-        &placement->guarded_segment_pop_fallback_count);
-    for (const runtime::AotGuardedSegmentPopSite& site :
-         placement->guarded_segment_pop_sites)
+    runtime::AotGuardedSegmentPopPatchStats pop_stats;
+    processed += runtime::PatchAotGuardedSegmentPopSites(
+        bytes, placement->guarded_segment_pop_sites, *segment_table,
+        CounterOperandAddress(&placement->guarded_segment_pop_success_count),
+        CounterOperandAddress(&placement->guarded_segment_pop_fallback_count),
+        &pop_stats);
+    if (stats != nullptr)
     {
-        ++processed;
-        const std::uint8_t seg = site.segment_register;
-        if (seg >= 6U ||
-            segment_table->segments[seg].shadow_address == 0U ||
-            success_address > UINT32_MAX || fallback_address > UINT32_MAX)
-        {
-            bytes[site.cache_offset] = 0xCCU;
-            continue;
-        }
-        bytes[site.cache_offset] = 0x9CU;
-        const std::uint32_t shadow_address =
-            segment_table->segments[seg].shadow_address;
-        const std::uint32_t success =
-            static_cast<std::uint32_t>(success_address);
-        const std::uint32_t fallback =
-            static_cast<std::uint32_t>(fallback_address);
-        std::memcpy(bytes + site.shadow_address_offset,
-                    &shadow_address, sizeof(shadow_address));
-        std::memcpy(bytes + site.success_counter_address_offset,
-                    &success, sizeof(success));
-        std::memcpy(bytes + site.fallback_counter_address_offset,
-                    &fallback, sizeof(fallback));
-        if (stats != nullptr)
-        {
-            ++stats->guarded_pop_site_count;
-        }
+        stats->guarded_pop_site_count += pop_stats.native_site_count;
+        stats->unresolved_site_count += pop_stats.unresolved_site_count;
     }
     for (const runtime::AotGuardedSegmentReadSite& site :
          placement->guarded_segment_read_sites)
