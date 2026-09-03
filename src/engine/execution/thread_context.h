@@ -154,6 +154,18 @@ struct ThreadContext
     std::uint32_t guest_thread_id = 0;
     StackSwitchCallState* active_call_state = nullptr;
     bool use_guest_stack = false;
+    // Task 583: a guest is executing through the x64 cache entry right now.
+    //
+    // The second way to satisfy `use_guest_stack`. i386 satisfies it by
+    // switching host ESP onto the guest stack, which fills `active_call_state`;
+    // x64 satisfies it by seeding guest ESP into R15D at entry, which fills
+    // nothing, because there is no switch to record or undo.
+    //
+    // It exists because the fault guard has to tell "a guest is running" from
+    // "there is a host frame to unwind to", and on i386 those were the same
+    // fact. Set only by `GuestCacheEntryThreadProc`, so it is always false on
+    // i386 and that host's decisions are unchanged.
+    bool cache_entry_active = false;
     bool enable_privileged_trap_hle = false;
     bool enable_traced_dos_hle = false;
     bool enable_segment_load_hle = false;

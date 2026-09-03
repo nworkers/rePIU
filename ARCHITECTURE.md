@@ -350,7 +350,7 @@ Originally a single 12,117-line file, `execution_trampoline.cpp` was decomposed 
 | `cpu_emul/` | `instruction_emulation`, `guest_memory_access` | 레지스터/플래그/디코드·세그먼트·traced 메모리·REP 명령 에뮬, 게스트/섀도 메모리 접근 |
 | `aot/` | `aot_runtime_dispatch`, `aot_ff_boundary_attribution`, `aot_ff_boundary_target_attribution` | AOT 번역 워커·전이/재진입 디스패치·코드쓰기 watch·bounded `FF /4` site/target 관측 |
 | `boundary/` | `linexe_glide_boundary` | linexe far-transfer·Glide 게이트·allocator 제어흐름 |
-| `telemetry/` | `live_telemetry_snapshot` | 라이브 텔레메트리 매핑·실행 스냅샷 |
+| `telemetry/` | `live_telemetry_snapshot`, `guest_address_watch`, `fault_exit_trace` | 라이브 텔레메트리 매핑·실행 스냅샷, guest 주소 하나의 실행 경로 관측(`REPIU_GUEST_WATCH`, Task 581), 거절된 폴트의 exit site 출력(`REPIU_FAULT_EXIT_TRACE`, Task 582) |
 
 ```mermaid
 flowchart TD

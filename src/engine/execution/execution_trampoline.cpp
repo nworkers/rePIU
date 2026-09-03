@@ -58,6 +58,8 @@
 #include "aot_dbt_dispatch.h"
 #include "aot_dbt_glide_gate_dispatch.h"
 #include "aot_runtime_dispatch.h"
+#include "guest_address_watch.h"
+#include "fault_exit_trace.h"
 #include "instruction_emulation.h"
 #include "dpmi_mscdex_services.h"
 #include "bios_keyboard_services.h"
@@ -1383,6 +1385,10 @@ void RecordSingleStepDiagnostics(repiu::platform::GuestCpuContext* win32_context
         context->single_step_trace_count.fetch_add(
             1,
             std::memory_order_relaxed);
+        // Task 581: inside the guest-EIP branch, so the watch sees the address
+        // the interpreter is actually about to step rather than every fault.
+        RecordGuestAddressWatch(
+            GuestAddressWatchEvent::kSingleStep, eip, eip);
         bool routea_segment = false;
         if (ClassifyRouteASensitive(eip, &routea_segment))
         {
@@ -1529,6 +1535,13 @@ void RecordHandledHleTrap(repiu::platform::GuestCpuContext* win32_context,
     context->last_hle_trap_address =
         static_cast<std::uint32_t>(win32_context->Eip);
     context->last_hle_trap_opcode = opcode;
+    // Task 581. Placed here rather than at the three call sites in
+    // HandlePrivilegedTrapInstruction, which are its only callers: this
+    // function is reached exactly when the privileged instruction was
+    // serviced, which is the event the watch names.
+    RecordGuestAddressWatch(GuestAddressWatchEvent::kPrivilegedService,
+                            context->last_hle_trap_address,
+                            context->last_hle_trap_address);
 }
 
 
@@ -2328,6 +2341,13 @@ repiu::platform::FaultDisposition GuestThreadFaultCallback(
     }
 
     auto* context = static_cast<ThreadContext*>(user_data);
+    // Task 582. The only place that sees DispatchGuestFault's answer, and it
+    // holds the context, which is why the line is printed from here rather than
+    // from the platform's unhandled-fault reporter -- that one knows nothing of
+    // ThreadContext, and teaching it would make platform depend on engine.
+    //
+    // Before the recovery below, which rewrites the state this reports.
+    RecordFaultExit(context, *fault);
     if (context == nullptr || context->active_call_state == nullptr)
     {
         // No switch to return from. The direct-entry path has no host frame to
@@ -2425,7 +2445,14 @@ std::uint32_t GuestCacheEntryThreadProc(void* parameter)
         return 5;
     }
     context->vectored_handler = context;
+    // Task 583: the window in which a guest is executing by this mechanism.
+    // The fault guard reads it to answer "is a guest running", which on this
+    // host cannot be answered by `active_call_state` -- there is no switch to
+    // record. Cleared immediately after, so a fault taken outside the run is
+    // declined here exactly as it was before.
+    context->cache_entry_active = true;
     CallGuestCacheEntryTimed(context);
+    context->cache_entry_active = false;
     g_repiu_active_thread_context = nullptr;
     if (context->process_exit)
     {
@@ -3465,6 +3492,16 @@ repiu::platform::FaultDisposition DispatchGuestFault(
             &context->aot_ff_boundary_attribution.target_timing,
             repiu::platform::ReadCycleCounter());
     }
+    // Task 581. Hooked at this choke point rather than in any one handler,
+    // because a fault raised inside the cache is precisely what no handler
+    // claims -- that is the gap Task 580 found. The reverse address-map lookup
+    // sits behind the watch's own gate.
+    if (context->aot_placement != nullptr)
+    {
+        RecordGuestAddressWatchCacheFault(
+            *context->aot_placement,
+            static_cast<std::uint32_t>(fault.registers->Eip));
+    }
 
     // Task 323: the single choke point for every exception the guest thread
     // takes -- single steps, INT3 boundaries, and access violations alike.
@@ -3480,15 +3517,43 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         context->execution_time_profile.get(),
         ExecutionTimeBucket::kVehPrologue);
 
+    // Task 582: both exits below are tagged explicitly rather than left to the
+    // rotation that resets the tag, because that rotation runs *after* them --
+    // reading the field here without writing it would report the previous
+    // fault's exit. Moving the rotation up instead would admit other threads'
+    // faults into `last_veh_eip` and `last_veh_code`, changing what existing
+    // instrumentation means.
     if (repiu::platform::CurrentThreadId() != context->guest_thread_id)
     {
+        NoteVehExitSite(context, VehExitSite::kForeignThread);
         return repiu::platform::FaultDisposition::kNotHandled;
     }
 
-    if (context->use_guest_stack &&
-        (context->active_call_state == nullptr ||
-         context->active_call_state->host_esp == 0))
+    // Task 583. This guard used to ask two questions at once, and they are not
+    // the same question:
+    //
+    //   A. is a guest executing right now?
+    //   B. if this fault cannot be serviced, can we unwind to the host?
+    //
+    // On i386 one fact answers both -- the switch having happened means a guest
+    // is running *and* that `host_esp` holds somewhere to return to -- so the
+    // fusion never showed. On x64 they diverge: a guest is running and there is
+    // no switch to undo, and the fused guard let the "no" to B drag A down with
+    // it, refusing the fault before any handler could see it (Task 582).
+    //
+    // So B moved to where it is actually asked: the two give-up sites below
+    // that unwind. Here only A is asked.
+    //
+    // `host_esp` is what makes `guest_stack_entered` mean what it says: the
+    // switch assembly is the only thing that writes it, so a zero means the
+    // switch has been set up but has not run yet.
+    const bool guest_stack_entered =
+        context->active_call_state != nullptr &&
+        context->active_call_state->host_esp != 0;
+    if (context->use_guest_stack && !guest_stack_entered &&
+        !context->cache_entry_active)
     {
+        NoteVehExitSite(context, VehExitSite::kGuestStackNotEntered);
         return repiu::platform::FaultDisposition::kNotHandled;
     }
 
@@ -3977,6 +4042,17 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         kMaximumX86InstructionBytes);
     if (context->use_guest_stack && !guest_decode_window_readable)
     {
+        // Task 583: question B, asked where it is actually needed. The entry
+        // guard used to answer it for this site, which is why the dereference
+        // below was unconditional. With only "is a guest running" asked up
+        // front, a host that cannot unwind reaches here, and unwinding it would
+        // mean jumping at a `ud2` through a truncated 32-bit Eip. Declining is
+        // what such a host already did, so this preserves its behavior exactly.
+        if (context->active_call_state == nullptr)
+        {
+            NoteVehExitSite(context, VehExitSite::kNoHostFrameToUnwind);
+            return repiu::platform::FaultDisposition::kNotHandled;
+        }
         NoteVehExitSite(context, VehExitSite::kUnreadableDecodeWindow);
         // Task 300: preserve the primary guest exception. Calling opcode
         // probes with an invalid EIP creates a host AV that masks the original
@@ -4327,6 +4403,14 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         }
     }
 
+    // Task 583: question B again, at the chain's last exit. Tagged before the
+    // work below so the trace names this refusal rather than the recovery that
+    // does not happen.
+    if (context->use_guest_stack && context->active_call_state == nullptr)
+    {
+        NoteVehExitSite(context, VehExitSite::kNoHostFrameToUnwind);
+        return repiu::platform::FaultDisposition::kNotHandled;
+    }
     NoteVehExitSite(context, VehExitSite::kUnhandledRecover);
     win32_context->EFlags &= ~0x00000100U;
     CommitUnhandledBreakpointEvidence(

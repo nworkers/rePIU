@@ -6,6 +6,7 @@
 
 #include "native_linear_span.h"
 #include "aot_residency_sample.h"
+#include "guest_address_watch.h"
 #include "aot_dbt_call_return_trace.h"
 #include "repiu/engine/aot_boundary_provenance.h"
 #include "repiu/engine/aot_ff_boundary_attribution.h"
@@ -972,11 +973,17 @@ static void RecordAotGenerationFailure(ThreadContext* context,
     entry.message[copied] = '\0';
 }
 
-bool ResolveAotTransferTarget(ThreadContext* context,
-                              std::uint32_t target,
-                              std::uint32_t* cache_target,
-                              bool force_generation,
-                              AotRetiredTrapResolution* retired_resolution)
+// Task 581: the resolver body, separated so the watch in the wrapper below has
+// one place to observe both the request and its outcome. The alternative was a
+// record call beside each of the five success returns scattered through it.
+namespace
+{
+
+bool ResolveAotTransferTargetBody(ThreadContext* context,
+                                  std::uint32_t target,
+                                  std::uint32_t* cache_target,
+                                  bool force_generation,
+                                  AotRetiredTrapResolution* retired_resolution)
 {
     const ExecutionTimeScope transfer_resolve_time_scope(
         context != nullptr ? context->execution_time_profile.get() : nullptr,
@@ -1123,6 +1130,28 @@ bool ResolveAotTransferTarget(ThreadContext* context,
     }
     *cache_target = dynamic_cache_entry;
     return true;
+}
+
+}  // namespace
+
+bool ResolveAotTransferTarget(ThreadContext* context,
+                              std::uint32_t target,
+                              std::uint32_t* cache_target,
+                              bool force_generation,
+                              AotRetiredTrapResolution* retired_resolution)
+{
+    RecordGuestAddressWatch(
+        GuestAddressWatchEvent::kDispatchRequest, target, target);
+    const bool resolved = ResolveAotTransferTargetBody(
+        context, target, cache_target, force_generation, retired_resolution);
+    if (resolved)
+    {
+        RecordGuestAddressWatch(
+            GuestAddressWatchEvent::kCacheEntry,
+            target,
+            cache_target != nullptr ? *cache_target : 0U);
+    }
+    return resolved;
 }
 
 bool EvaluateAotCondition(std::uint8_t condition, std::uint32_t eflags)

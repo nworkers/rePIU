@@ -6623,6 +6623,10 @@ i386 has a working path, so the next question is not "what must be built" but
 
 ## 3.26 Task 580 — cache 안 폴트를 서비스하는 경로가 없다
 
+> **정정: 이 절의 결론 두 개가 3.28(Task 581)에서 반증됐다.** 경로는 있고
+> (`AotHleTranslationScope`), i386은 그 `sti`를 cache에서 실행한다. 절 제목은
+> 당시 기록으로 남기고 고치지 않는다.
+
 실행 증거는 [작업 기록](../work-logs/20260903-580-x64-cache-fault-service-gap.md)에
 있다.
 
@@ -6664,6 +6668,11 @@ i386이 이 `sti`를 실제로 어떻게 실행하는지 먼저 재는 편이 �
 추정이 네 번 반증됐다.
 
 ## 3.26 (English) Task 580 — nothing services a fault raised inside the cache
+
+> **Correction: two of this section's conclusions are refuted in 3.28 (Task
+> 581).** The path exists (`AotHleTranslationScope`), and i386 does execute that
+> `sti` from the cache. The heading is left as written, as the record of what
+> was believed at the time.
 
 The execution evidence is in the
 [work log](../work-logs/20260903-580-x64-cache-fault-service-gap.md).
@@ -6760,10 +6769,19 @@ entry(578)를 차례로 닫고, 579·580이 남은 정지를 진단했습니다.
 | 3 | guest entry | 해결 (578) |
 | 4 | dispatch thunk 5개 | **불필요** — long-mode 이미지는 dbt site를 만들지 않음 |
 | 5 | `ValidateAotCodeCacheHleCoverage`의 i386 전제 | 미해결, 아직 도달 못 함 |
-| 6 | cache+5의 SIGSEGV | 진단 완료 (579·580) |
-| **7** | **cache 안 access-violation 폴트를 서비스할 경로가 없음** | **다음** |
+| 6 | cache+5의 SIGSEGV | 진단 완료 (579·580·581) |
+| 7 | cache 안 access-violation 폴트를 서비스할 경로가 없음 | **틀린 항목** (581) — 경로는 있다 |
+| 8 | x64가 `DispatchGuestFault`와 HLE chain 사이에서 그 폴트를 거절함 | 진단 완료 (582) — `guest-stack-not-entered` |
+| 9 | x64가 `use_guest_stack`은 참인데 `active_call_state`가 없음 | **해결** (583) — 가드를 두 질문으로 쪼갬 |
+| 10 | guest `0x010F18A4`의 `mov eax,[esi]`가 `0x200202`에서 폴트 | `access == esi` 확인 (584) — base 미적용 확정 |
+| **11** | **`ESI`가 `0x200202`여야 했는가 — i386과 대조 필요** | **다음** (584, 3.31절) |
 
 ### 다음 세션이 할 일
+
+*(3.28이 대체합니다. Task 581이 이 문단이 요구한 측정을 했고, 아래 두 선택은
+둘 다 틀린 전제 위에 있었습니다 — 되돌리는 경로는 이미 있고, i386은 그 block을
+cache에서 돌립니다. 지금의 질문은 "x64가 `DispatchGuestFault`의 어느 조기
+반환을 타는가"이고, 그것은 아직 재지 않았습니다.)*
 
 **먼저 재십시오.** i386이 이 `sti`를 실제로 어떻게 실행하는지는 **재지 않았습니다.**
 "single-step이라 cache에서 안 돈다"는 것은 추정입니다.
@@ -6787,10 +6805,20 @@ entry(578)를 차례로 닫고, 579·580이 남은 정지를 진단했습니다.
 ./scripts/build_linux_x64.sh --config Release \
     --build-dir build/linux_x64_repiu --target repiu
 timeout 180 ./build/linux_x64_repiu/repiu pumpit2a
+
+# guest 주소 하나가 어떤 경로로 실행되는지 (Task 581)
+REPIU_GUEST_WATCH=0x010F1728 timeout 45 ./build/linux_i386/repiu pumpit2a
+
+# 거절된 폴트가 어느 exit site로 나갔는지 (Task 582)
+REPIU_FAULT_EXIT_TRACE=1 timeout 30 ./build/linux_x64/repiu pumpit2a
 ```
 
 미처리 폴트는 이제 `[repiu-fault] unhandled signal=… eip=… access=…`를 찍습니다
 (Task 578). Linux에는 그전까지 아무것도 없었고 WSL에 gdb도 없습니다.
+
+`REPIU_GUEST_WATCH`는 `[repiu-watch] event=… guest=… n=… at=…`를 찍습니다.
+event는 `step`·`dispatch`·`cache`·`priv`·`fault` 다섯 가지이고, 두 호스트가 같은
+계측을 가지므로 나란히 비교할 수 있습니다.
 
 ### 이 세션의 방법론 — 추정이 다섯 번 반증됐습니다
 
@@ -6800,7 +6828,7 @@ timeout 180 ./build/linux_x64_repiu/repiu pumpit2a
 | 575 | 32비트 `Eip`가 x64 주소를 자른다 | text가 `0x40000000`이라 무손실 |
 | 577 | `Eip`가 틀린 값이다 | 엔진이 cache 주소로 취급하므로 옳았음 |
 | 578 | `sti`는 `INT3`이 된다 | 그대로 복사됨 — 폴트가 HLE 진입점 |
-| 580 | (진행 중) i386은 cache에서 안 돈다 | **아직 안 잼** |
+| 580 | i386은 cache에서 안 돈다 | **cache에서 돈다** (581) — 서비스 경로도 이미 있었다 |
 
 578이 그 불일치를 **확정하지 않고 넘긴 것**이 값을 했습니다. 추측을 결론으로
 적었다면 "분류기가 `sti`를 거절하지 않는 버그"를 고치러 갔을 것이고, 그것은
@@ -6858,10 +6886,20 @@ From `build/linux_x64_repiu/repiu pumpit2a`. The cache base is `0x20000000`, so
 | 3 | Guest entry | done (578) |
 | 4 | The five dispatch thunks | **not needed** — a long-mode image creates no dbt sites |
 | 5 | `ValidateAotCodeCacheHleCoverage`'s i386 assumption | open, not yet reached |
-| 6 | The SIGSEGV at cache+5 | diagnosed (579, 580) |
-| **7** | **No path services an access-violation fault inside the cache** | **next** |
+| 6 | The SIGSEGV at cache+5 | diagnosed (579, 580, 581) |
+| 7 | No path services an access-violation fault inside the cache | **a wrong item** (581) — one does |
+| 8 | x64 declines that fault between `DispatchGuestFault` and the HLE chain | diagnosed (582) — `guest-stack-not-entered` |
+| 9 | x64 has `use_guest_stack` true with no `active_call_state` | **resolved** (583) — the guard was split into its two questions |
+| 10 | `mov eax,[esi]` at guest `0x010F18A4` faults on `0x200202` | `access == esi` confirmed (584) — no base applied |
+| **11** | **Should `ESI` have held `0x200202` — needs an i386 comparison** | **next** (584, section 3.31) |
 
 ### What the next session should do
+
+*(Superseded by 3.28. Task 581 made the measurement this paragraph asked for,
+and both of the two choices below turned out to rest on a wrong premise: the
+translation already exists, and i386 does run the block from the cache. The
+question is now "which early return in `DispatchGuestFault` does x64 take", and
+it is unmeasured.)*
 
 **Measure first.** How i386 actually executes this `sti` **was not measured**.
 "It single-steps, so it does not run from the cache" is an inference.
@@ -6886,10 +6924,20 @@ to be mapped back to a cache address to resume.
 ./scripts/build_linux_x64.sh --config Release \
     --build-dir build/linux_x64_repiu --target repiu
 timeout 180 ./build/linux_x64_repiu/repiu pumpit2a
+
+# Which path executes one guest address (Task 581)
+REPIU_GUEST_WATCH=0x010F1728 timeout 45 ./build/linux_i386/repiu pumpit2a
+
+# Which exit site a declined fault left by (Task 582)
+REPIU_FAULT_EXIT_TRACE=1 timeout 30 ./build/linux_x64/repiu pumpit2a
 ```
 
 An unhandled fault now prints `[repiu-fault] unhandled signal=… eip=… access=…`
 (Task 578). Linux had nothing before it, and there is no gdb in this WSL.
+
+`REPIU_GUEST_WATCH` prints `[repiu-watch] event=… guest=… n=… at=…`. The five
+events are `step`, `dispatch`, `cache`, `priv` and `fault`, and both hosts carry
+the same instrumentation, so the two can be read side by side.
 
 ### This session's method — five inferences refuted
 
@@ -6899,8 +6947,561 @@ An unhandled fault now prints `[repiu-fault] unhandled signal=… eip=… access
 | 575 | a 32-bit `Eip` truncates an x64 address | text sits at `0x40000000`, so it is lossless |
 | 577 | `Eip` is a wrong value | the engine treats it as a cache address, so it was right |
 | 578 | `sti` becomes an `INT3` | copied verbatim — the fault is the HLE's entry point |
-| 580 | (open) i386 does not run it from the cache | **not measured yet** |
+| 580 | i386 does not run it from the cache | **it does** (581) — and the servicing path existed all along |
 
 578's choice to **leave its contradiction unsettled** rather than act on it paid
 off. Acting would have meant "fixing" the classifier for not refusing `sti`,
 breaking a mechanism i386 depends on.
+
+---
+
+## 3.28 Task 581 — i386은 cache 안에서 `sti`를 실행하고, 그것을 서비스한다
+
+실행 증거는 [작업 기록](../work-logs/20260903-581-guest-address-watch.md)에 있다.
+
+### 3.26의 두 결론이 반증됐다
+
+3.26은 두 가지를 적었다. 둘 다 틀렸다.
+
+| 3.26이 적은 것 | Task 581이 잰 것 |
+|---|---|
+| i386은 entry 영역의 `sti`를 cache에서 실행하지 않을 가능성이 높다 (추정) | **cache에서 실행한다** |
+| cache 안 access-violation 폴트를 guest 주소로 되돌리는 경로가 없다 (확인됨으로 적음) | **경로가 있다 — `AotHleTranslationScope`** |
+
+두 번째가 더 무겁다. 3.26은 그것을 "확인된 것"으로 적었고, 그 근거는
+`HandleAotReentry`가 `kBreakpoint`에서만 되돌린다는 것이었다. 그 관찰 자체는
+옳지만 **그것이 유일한 경로라는 결론이 틀렸다.**
+
+### 확인된 것 — 계측 관측
+
+`REPIU_GUEST_WATCH=0x010F1728`로 `pumpit2a`를 돌린 두 호스트.
+
+```text
+i386  [repiu-watch] event=fault guest=0x010F1728 n=1 at=0xF5372005
+      [repiu-watch] event=priv  guest=0x010F1728 n=1 at=0x010F1728
+
+x64   [repiu-watch] event=fault guest=0x010F1728 n=1 at=0x20000005
+      [repiu-fault] unhandled signal=0xb eip=0x20000005 access=0x0
+```
+
+* **두 호스트가 같은 폴트를 낸다.** 둘 다 cache offset 5, 둘 다 guest
+  `0x010F1728`로 되돌아간다. 방출된 entry block은 양쪽 다 5바이트다.
+* **i386은 그것을 서비스한다.** `priv` 이벤트의 `at=`이 guest 주소다 — 폴트가
+  cache 주소로 도착했는데 handler는 guest 주소에서 명령을 읽었다. 그 사이에서
+  `Eip`를 바꾼 것이 `AotHleTranslationScope`다.
+* **`step`·`dispatch`·`cache` 이벤트는 하나도 없다.** i386은 그 block에
+  dispatch로 들어가지 않는다 — cache 안의 직접 점프로 닿는다. 3.26의 추정이
+  가리킨 것과 정반대다.
+* 43초 실행에서 `n=1`이다. 그 block은 한 번 돈다.
+
+### `AotHleTranslationScope` — 이미 있는 메커니즘
+
+`src/engine/execution/execution_trampoline.cpp`, HLE handler chain의 머리에서
+생성되는 RAII scope다.
+
+* 생성자 — `Eip`가 cache 주소면 `FindAotGuestAddress`로 guest 주소를 찾아
+  `Eip`에 넣는다.
+* 소멸자 — handler가 `Eip`를 바꿨으면(`sti` 서비스의 `++Eip`) 그 guest 주소를
+  `FindAotCacheAddress`로 cache 주소로 되돌리고, 바꾸지 않았으면 원래 cache
+  주소를 복원한다.
+
+3.26이 "작아 보이는 것이 함정"이라며 필요하다고 적은 **반대 방향이 이미 여기
+있다.** 3.26의 두 방향 중 첫 번째는 이미 구현되어 있었다.
+
+### 그래서 남은 질문은 더 좁다
+
+x64에서도 `DispatchGuestFault`는 **도달한다.** Task 581의 `fault` 훅은 그 함수의
+모든 조기 반환보다 위에 있고, 실제로 찍혔다.
+
+**따라서 폴트가 안 오는 것이 아니라, `DispatchGuestFault` 진입과 HLE chain
+사이에서 x64가 그것을 거절한다.** i386은 같은 자리를 지나 서비스한다.
+
+### 아직 재지 않음
+
+어느 조기 반환인지는 **재지 않았다.** 후보는 guest thread id 검사,
+`use_guest_stack`·`active_call_state` 검사, 그리고 `AotHleTranslationScope`
+앞에 있는 handler들이다. **이것은 후보 목록이지 진단이 아니다** — 이 세션에서
+추정이 다섯 번 반증됐다.
+
+---
+
+## 3.28 (English) Task 581 — i386 runs the `sti` inside the cache, and services it
+
+The execution evidence is in the
+[work log](../work-logs/20260903-581-guest-address-watch.md).
+
+### Two of 3.26's conclusions are refuted
+
+3.26 wrote down two things. Both were wrong.
+
+| What 3.26 wrote | What Task 581 measured |
+|---|---|
+| i386 very likely does not execute the entry region's `sti` from the cache (inferred) | **it does** |
+| nothing translates an access-violation fault inside the cache back to a guest address (written as confirmed) | **something does — `AotHleTranslationScope`** |
+
+The second is the heavier one. 3.26 filed it under "Confirmed", resting on the
+observation that `HandleAotReentry` translates only for `kBreakpoint`. That
+observation is correct; **the conclusion that it was the only such path was
+not.**
+
+### Confirmed — the instrumented observation
+
+Both hosts, `pumpit2a`, with `REPIU_GUEST_WATCH=0x010F1728`.
+
+```text
+i386  [repiu-watch] event=fault guest=0x010F1728 n=1 at=0xF5372005
+      [repiu-watch] event=priv  guest=0x010F1728 n=1 at=0x010F1728
+
+x64   [repiu-watch] event=fault guest=0x010F1728 n=1 at=0x20000005
+      [repiu-fault] unhandled signal=0xb eip=0x20000005 access=0x0
+```
+
+* **Both hosts raise the same fault.** Cache offset 5 on each, and each maps
+  back to guest `0x010F1728`. The emitted entry block is five bytes on both.
+* **i386 services it.** The `priv` event's `at=` is the *guest* address: the
+  fault arrived at a cache address, yet the handler read the instruction at the
+  guest one. What changed `Eip` in between is `AotHleTranslationScope`.
+* **Not one `step`, `dispatch` or `cache` event.** i386 does not enter that
+  block through dispatch — it arrives by a direct jump inside the cache, the
+  opposite of what 3.26 inferred.
+* `n=1` over a 43-second run. The block executes once.
+
+### `AotHleTranslationScope` — the mechanism that already exists
+
+In `src/engine/execution/execution_trampoline.cpp`, an RAII scope constructed at
+the head of the HLE handler chain.
+
+* Constructor — when `Eip` is a cache address, resolve the guest address with
+  `FindAotGuestAddress` and put it in `Eip`.
+* Destructor — if a handler moved `Eip` (the `++Eip` of servicing `sti`), map
+  that guest address back through `FindAotCacheAddress`; otherwise restore the
+  original cache address.
+
+**The reverse direction 3.26 called "the trap" is already here.** The first of
+3.26's two directions was already implemented.
+
+### So the remaining question is narrower
+
+`DispatchGuestFault` **is reached** on x64. Task 581's `fault` hook sits above
+every early return in that function, and it printed.
+
+**So the fault is not failing to arrive; x64 declines it somewhere between the
+entry of `DispatchGuestFault` and the HLE chain,** where i386 passes through and
+services it.
+
+### Not yet measured
+
+Which early return it is was **not measured.** The candidates are the guest
+thread-id check, the `use_guest_stack`/`active_call_state` check, and the
+handlers ahead of `AotHleTranslationScope`. **That is a candidate list, not a
+diagnosis** — five inferences have been refuted this session.
+
+---
+
+## 3.29 Task 582 — x64는 첫 handler에 닿기도 전에 나간다
+
+실행 증거는 [작업 기록](../work-logs/20260903-582-fault-exit-attribution.md)에 있다.
+
+### 답 — `guest-stack-not-entered`
+
+```text
+x64   [repiu-watch] event=fault guest=0x010F1728 n=1 at=0x20000005
+      [repiu-exit]  site=guest-stack-not-entered eip=0x20000005 code=0x0000000B
+                    guest_stack=1 call_state=0 n=1
+      [repiu-fault] unhandled signal=0xb eip=0x20000005 access=0x0
+
+i386  [repiu-watch] event=fault guest=0x010F1728 n=1 at=0xF5357005
+      [repiu-watch] event=priv  guest=0x010F1728 n=1 at=0x010F1728
+      (43.8초 동안 [repiu-exit] 0줄)
+```
+
+Task 582가 적어 둔 세 후보 중 **두 번째**다.
+
+```c
+if (context->use_guest_stack &&
+    (context->active_call_state == nullptr ||
+     context->active_call_state->host_esp == 0))
+```
+
+x64는 `use_guest_stack=1`이고 `call_state=0`이다. 그래서 `DispatchGuestFault`는
+**AOT transfer도, single-step도, HLE chain도 시작하기 전에** 반환한다.
+`AotHleTranslationScope`는 실행되지 않는다 — 도달하지 못하므로.
+
+### 대조군이 대칭을 확정한다
+
+i386은 같은 추적을 켜고 43.8초를 돌면서 `[repiu-exit]`를 **한 줄도** 내지
+않는다. 폴트를 거절하는 일 자체가 없다. 그래서 이것은 "i386도 가끔 여기서
+나가는데 x64가 더 자주 나간다"가 아니라 **x64만 나간다**이다.
+
+### 왜 그런가 — 확인된 구조
+
+`GuestCacheEntryThreadProc`(Task 578)은 i386의 **direct** 경로와 같은 모양이다 —
+fault handler를 걸고, 실행하고, 지운다. `active_call_state`를 채우지 않는다.
+i386에서 `use_guest_stack`이 참이면 `GuestEntryThreadProc`은 stack-switch 분기로
+가서 `StackSwitchCallState`를 채우고 `active_call_state`를 설정한다.
+
+**x64는 `use_guest_stack`이 참인 채로 그 분기를 거치지 않는다.**
+
+이것은 Task 578이 이미 한 번 부딪힌 비대칭의 세 번째 결과다. 그 작업 로그는
+"울타리는 둘이 아니라 셋이었습니다"라고 적었다 — 넷이었다.
+
+### 같은 두 값이 한 곳 더를 막는다
+
+`GuestThreadFaultCallback`도 `active_call_state == nullptr`이면 거절을 복구로
+바꾸지 못하고 그대로 돌려보낸다. 그 함수의 주석이 그것을 이미 적어 두었다 —
+"direct-entry 경로에는 착지할 host frame이 없다".
+
+즉 **하나의 사실이 두 곳을 막고 있다.**
+
+### 다음 단위가 정할 것
+
+두 가지가 가능하고, 어느 쪽인지는 이 단위가 정하지 않는다.
+
+* x64가 `active_call_state`를 채운다. 전환이 없는데 `host_esp`가 무엇을
+  뜻하는지 정의해야 한다.
+* 그 가드를 지금 실제로 요구하는 것 — "게스트가 자기 스택 위에서 돈다" — 으로
+  다시 쓴다. Task 578이 `IsGuestStackSwitchSupported`에 적용한 것과 같은 논리다.
+
+### 아직 재지 않음
+
+가드를 통과시킨 뒤 x64가 어디까지 가는지는 **재지 않았다.** `sti`가 서비스된 뒤
+다음 벽이 무엇인지는 열린 채로 남는다.
+
+---
+
+## 3.29 (English) Task 582 — x64 leaves before it reaches any handler
+
+The execution evidence is in the
+[work log](../work-logs/20260903-582-fault-exit-attribution.md).
+
+### The answer — `guest-stack-not-entered`
+
+```text
+x64   [repiu-watch] event=fault guest=0x010F1728 n=1 at=0x20000005
+      [repiu-exit]  site=guest-stack-not-entered eip=0x20000005 code=0x0000000B
+                    guest_stack=1 call_state=0 n=1
+      [repiu-fault] unhandled signal=0xb eip=0x20000005 access=0x0
+
+i386  [repiu-watch] event=fault guest=0x010F1728 n=1 at=0xF5357005
+      [repiu-watch] event=priv  guest=0x010F1728 n=1 at=0x010F1728
+      (zero [repiu-exit] lines over 43.8 seconds)
+```
+
+The **second** of the three candidates Task 582 wrote down.
+
+```c
+if (context->use_guest_stack &&
+    (context->active_call_state == nullptr ||
+     context->active_call_state->host_esp == 0))
+```
+
+x64 has `use_guest_stack=1` and `call_state=0`. So `DispatchGuestFault` returns
+**before the AOT transfer block, before single-step handling, before the HLE
+chain.** `AotHleTranslationScope` never runs, because it is never reached.
+
+### The control settles the asymmetry
+
+i386, with the same trace on, runs 43.8 seconds and prints **not one**
+`[repiu-exit]`. It never declines a fault at all. So this is not "i386 leaves
+here sometimes and x64 more often" — **only x64 leaves.**
+
+### Why — the confirmed structure
+
+`GuestCacheEntryThreadProc` (Task 578) has the same shape as i386's **direct**
+path: install the fault handler, run, clear it. It does not fill
+`active_call_state`. On i386, when `use_guest_stack` is true,
+`GuestEntryThreadProc` takes the stack-switch branch, which fills a
+`StackSwitchCallState` and sets `active_call_state`.
+
+**x64 leaves `use_guest_stack` true while never taking that branch.**
+
+This is the third consequence of an asymmetry Task 578 already met once. Its
+work log wrote "the fences were three, not two" — they were four.
+
+### The same two values block one more place
+
+`GuestThreadFaultCallback` also cannot turn a decline into a recovery when
+`active_call_state` is null, and hands it straight back. That function's own
+comment already said so: "the direct-entry path has no host frame to land on".
+
+So **one fact is blocking two places.**
+
+### What the next unit decides
+
+Two things are possible, and this unit does not choose between them.
+
+* Have x64 fill an `active_call_state`. That requires defining what `host_esp`
+  means where there is no switch to return from.
+* Rewrite the guard in terms of what it actually requires today — "the guest is
+  running on its own stack" — the same reasoning Task 578 applied to
+  `IsGuestStackSwitchSupported`.
+
+### Not yet measured
+
+**How far x64 gets once past that guard was not measured.** What the next wall
+is after the `sti` is serviced remains open.
+
+---
+
+## 3.30 Task 583 — x64가 `sti`를 서비스하고, 673바이트 뒤에서 멈춘다
+
+실행 증거는 [작업 기록](../work-logs/20260903-583-fault-guard-two-questions.md)에 있다.
+
+### 무엇을 고쳤나
+
+`DispatchGuestFault`의 두 번째 가드가 서로 다른 두 질문을 하나로 묶고 있었다.
+
+* A — 게스트가 지금 실행 중인가?
+* B — 포기하면 호스트로 되돌아갈 수 있는가?
+
+i386은 두 답이 같은 사실(전환이 일어났는가)에서 나오므로 융합이 드러나지 않았다.
+x64는 A가 예, B가 아니오여서 B의 아니오가 A를 끌어내렸다.
+
+B를 실제로 물어야 할 자리 — 되감기를 시도하는 포기 지점 두 곳 — 로 옮겼다.
+진입 가드는 A만 묻는다. A의 x64 쪽 답은 `cache_entry_active`이고, **i386에서는
+항상 거짓이므로 그 호스트의 판단은 논리적으로 동일하다.**
+
+### 확인된 것 — x64가 `sti`를 서비스한다
+
+```text
+[repiu-watch] event=fault guest=0x010F1728 n=1 at=0x20000005
+[repiu-watch] event=priv  guest=0x010F1728 n=1 at=0x010F1728
+```
+
+**i386이 내는 것과 같은 두 줄이다.** `AotHleTranslationScope`가 cache→guest로
+번역했고, `HandlePrivilegedTrapInstruction`이 서비스했고, 실행이 재개됐다.
+
+설계가 미리 적어 둔 예상 실패 — 서비스 후 guest `0x010F1729`를 cache 주소로
+되돌리는 조회가 실패할 수 있다 — 는 **일어나지 않았다.** 되돌아갔고 실행이
+이어졌다.
+
+### 새 정지점 — guest `0x010F18A4`
+
+```text
+[repiu-exit]  site=no-host-frame-to-unwind eip=0x200002AA code=0x0000000B
+              guest_stack=1 call_state=0 n=1
+[repiu-fault] unhandled signal=0xb eip=0x200002aa access=0x200202
+```
+
+census `--cache 0x2aa`가 그 자리를 이렇게 찍는다.
+
+```text
+   cache=0x26e len=58  guest=0x10f189a  kind=kSegmentOverrideMem
+      emitted: ... 66 67 8e 1c 25 00 00 00 00 e9 00 00 00 00
+   cache=0x2a8 len=2   guest=0x10f18a2  kind=kCopy   emitted: 29 ed
+>> cache=0x2aa len=3   guest=0x10f18a4  kind=kCopy   emitted: 67 8b 06
+```
+
+guest `0x010F18A4`의 `mov eax, [esi]`다. long mode에서 32비트 주소로 만들려고
+`67` 접두사가 붙어 그대로 복사됐다.
+
+**cache offset 5에서 0x2AA로 673바이트 전진했다.** 그 사이에 `kSegmentOverrideMem`
+블록 하나와 guarded DS load가 들어 있다.
+
+### 추정 — 세그먼트 base가 붙지 않았을 가능성
+
+접근 주소가 `0x200202`다. 이 이미지의 selector base는 `0x1000000`,
+`0x1010000`, `0x1100000`, `0x1110000`이다. **어느 base도 더해지지 않은 값과
+일관된다** — 예컨대 `0x1010000`이 더해졌다면 주소는 `0x1210202` 근방이었을 것이다.
+
+바로 앞 블록이 guarded DS load(`8e 1c 25 ...`)로 끝나고, 문제의 명령은 세그먼트
+override가 없는 `kCopy`이므로 **기본 DS를 쓴다.** long mode에서 DS base는 0이다.
+
+**이것은 추정이다.** `ESI`의 실제 값을 재지 않았으므로 "base가 빠졌다"와
+"`ESI`가 애초에 그 값이었다"를 구분하지 못한다. 다음 단위가 먼저 재야 할 것이
+그것이다.
+
+### 부수적으로 정정한 것
+
+`guest_stack_recover_x64.S`의 주석이 "x64에서는 게스트 스레드가 시작되지
+않으므로 이 심볼들은 도달 불가"라고 적고 있었다. Task 575 시점에는 사실이었고
+Task 578 이후로는 거짓이다. 이 단위가 x64를 그 영역에 더 가까이 보내므로 같이
+정정했다. `ud2` 본문은 그대로다 — 이제 도달 불가는 우연이 아니라
+`no-host-frame-to-unwind` 거절로 **강제된다.**
+
+---
+
+## 3.30 (English) Task 583 — x64 services the `sti` and stops 673 bytes later
+
+The execution evidence is in the
+[work log](../work-logs/20260903-583-fault-guard-two-questions.md).
+
+### What was repaired
+
+`DispatchGuestFault`'s second guard fused two different questions.
+
+* A — is a guest executing right now?
+* B — if we give up, can we unwind to the host?
+
+On i386 both answers come from one fact (did the switch happen), so the fusion
+never showed. On x64 A is yes and B is no, and the no dragged A down with it.
+
+B moved to where it is actually asked — the two give-up sites that attempt an
+unwind. The entry guard asks only A. A's x64 answer is `cache_entry_active`,
+which is **always false on i386, so that host's decision is logically
+identical.**
+
+### Confirmed — x64 services the `sti`
+
+```text
+[repiu-watch] event=fault guest=0x010F1728 n=1 at=0x20000005
+[repiu-watch] event=priv  guest=0x010F1728 n=1 at=0x010F1728
+```
+
+**The same two lines i386 produces.** `AotHleTranslationScope` translated
+cache→guest, `HandlePrivilegedTrapInstruction` serviced it, and execution
+resumed.
+
+The failure the design anticipated — that mapping the post-service guest address
+`0x010F1729` back to a cache address might fail — **did not happen.** It mapped
+back and execution continued.
+
+### The new stopping point — guest `0x010F18A4`
+
+```text
+[repiu-exit]  site=no-host-frame-to-unwind eip=0x200002AA code=0x0000000B
+              guest_stack=1 call_state=0 n=1
+[repiu-fault] unhandled signal=0xb eip=0x200002aa access=0x200202
+```
+
+The census `--cache 0x2aa` prints that place as:
+
+```text
+   cache=0x26e len=58  guest=0x10f189a  kind=kSegmentOverrideMem
+      emitted: ... 66 67 8e 1c 25 00 00 00 00 e9 00 00 00 00
+   cache=0x2a8 len=2   guest=0x10f18a2  kind=kCopy   emitted: 29 ed
+>> cache=0x2aa len=3   guest=0x10f18a4  kind=kCopy   emitted: 67 8b 06
+```
+
+`mov eax, [esi]` at guest `0x010F18A4`, copied with a `67` prefix to keep the
+address 32-bit in long mode.
+
+**673 bytes of forward progress, from cache offset 5 to 0x2AA,** across one
+`kSegmentOverrideMem` block and a guarded DS load.
+
+### Inferred — a segment base that may not have been applied
+
+The access address is `0x200202`. This image's selector bases are `0x1000000`,
+`0x1010000`, `0x1100000` and `0x1110000`. **The value is consistent with none of
+them having been added** — with `0x1010000` applied it would have been near
+`0x1210202`.
+
+The immediately preceding block ends in a guarded DS load (`8e 1c 25 ...`), and
+the faulting instruction is a `kCopy` with no segment override, so it uses
+**the default DS**, whose base in long mode is zero.
+
+**This is an inference.** `ESI`'s actual value was not measured, so "the base is
+missing" and "`ESI` simply held that value" are not yet separated. That is what
+the next unit should measure first.
+
+### Corrected in passing
+
+`guest_stack_recover_x64.S` carried a comment saying these symbols are
+unreachable because no guest thread starts on x64. True as of Task 575, false
+since Task 578. This unit moves x64 nearer that region, so the comment was
+corrected alongside. The `ud2` bodies are unchanged — unreachability is now
+**enforced** by the `no-host-frame-to-unwind` refusal rather than incidental.
+
+---
+
+## 3.31 Task 584 — `access`와 `ESI`가 같다
+
+실행 증거는 [작업 기록](../work-logs/20260903-584-declined-fault-registers.md)에 있다.
+
+### 답 — base가 붙지 않았다
+
+```text
+[repiu-exit] site=no-host-frame-to-unwind eip=0x200002AA code=0x0000000B
+             guest_stack=1 call_state=0 n=1
+[repiu-regs] access=0x00200202 eax=0x00000000 ecx=0x00000000 edx=0x01380000
+             ebx=0x00000024 esp=0x0158CC74 ebp=0x00000000 esi=0x00200202
+             edi=0x0138CC96 eflags=0x00210246 cs=0x0033 fs=0x0000 gs=0x0000
+```
+
+`access == esi == 0x00200202`. 방출된 `67 8b 06`(`mov eax,[esi]`)이 만든 선형
+주소는 **정확히 `ESI`**다. long mode에서 DS base가 0이므로 예상되는 결과이고,
+3.30이 "어느 base도 더해지지 않은 값과 일관된다"고 적은 것이 **확정됐다.**
+
+### 확정된 것과 확정되지 않은 것을 구분한다
+
+| 질문 | 상태 |
+|---|---|
+| 방출된 명령이 base 없이 주소를 만들었는가 | **확인됨** — `access == esi` |
+| `ESI`가 애초에 `0x200202`여야 했는가 | **미확정** — 재지 않았다 |
+
+두 번째가 남은 질문이다. `0x200202`가 이미 base가 적용된 완전한 선형 주소인데
+그 영역이 매핑되지 않은 것일 수도, base를 기다리는 세그먼트 상대 offset일 수도
+있다. **i386에서 같은 guest EIP의 `ESI`를 읽어 대조하는 것이 그것을 가른다.**
+
+### 부수 관측 — 레지스터 파일이 일관돼 보인다
+
+`edx=0x01380000`, `edi=0x0138CC96`, `esp=0x0158CC74`가 게스트 arena 대역의
+그럴듯한 주소다. **x64 실행이 여기까지 헤맨 것이 아니라 실제로 진행했다**는
+정황이다.
+
+`ebx=0x00000024`가 눈에 띈다 — selector 번호와 같은 값이다. **정황일 뿐
+확인된 것이 아니다.**
+
+### 새로 기록한 제약
+
+x64 fault context는 **`DS`·`ES`·`SS`를 주지 않는다.** Linux의 `mcontext_t`가
+`REG_CSGSFS`에 CS·GS·FS만 담기 때문이고, `guest_cpu_context.cpp`는 나머지 셋을
+0으로 채운다. 그러므로 그 0은 게스트 상태가 아니다.
+
+세그먼트 모양의 벽 앞에서 이것은 오독하기 딱 좋은 값이므로 `[repiu-regs]`는 그
+셋을 **찍지 않는다.** 자세한 것은
+[Linux x86-64 fault context](linux-x64-fault-context.md)에 있다.
+
+---
+
+## 3.31 (English) Task 584 — `access` and `ESI` are the same
+
+The execution evidence is in the
+[work log](../work-logs/20260903-584-declined-fault-registers.md).
+
+### The answer — no base was applied
+
+```text
+[repiu-exit] site=no-host-frame-to-unwind eip=0x200002AA code=0x0000000B
+             guest_stack=1 call_state=0 n=1
+[repiu-regs] access=0x00200202 eax=0x00000000 ecx=0x00000000 edx=0x01380000
+             ebx=0x00000024 esp=0x0158CC74 ebp=0x00000000 esi=0x00200202
+             edi=0x0138CC96 eflags=0x00210246 cs=0x0033 fs=0x0000 gs=0x0000
+```
+
+`access == esi == 0x00200202`. The linear address formed by the emitted
+`67 8b 06` (`mov eax,[esi]`) is **exactly `ESI`** — the expected result with DS's
+base zero in long mode, and it **confirms** 3.30's "consistent with no base
+having been added".
+
+### Separating what is settled from what is not
+
+| Question | Status |
+|---|---|
+| Did the emitted instruction form its address with no base? | **Confirmed** — `access == esi` |
+| Should `ESI` have held `0x200202` at all? | **Unresolved** — not measured |
+
+The second is what remains. `0x200202` might already be a complete linear
+address into a region that is simply unmapped, or a segment-relative offset
+still waiting for a base. **Reading `ESI` at the same guest EIP on i386 is what
+separates those.**
+
+### An incidental observation — the register file looks coherent
+
+`edx=0x01380000`, `edi=0x0138CC96` and `esp=0x0158CC74` are plausible addresses
+in the guest arena band. That is circumstantial evidence that **x64 execution
+genuinely progressed to here rather than wandering.**
+
+`ebx=0x00000024` stands out — the same value as a selector number. **That is
+circumstance, not a confirmed fact.**
+
+### A newly recorded constraint
+
+The x64 fault context **does not provide `DS`, `ES` or `SS`.** Linux's
+`mcontext_t` packs only CS, GS and FS into `REG_CSGSFS`, and
+`guest_cpu_context.cpp` fills the other three with zero, so those zeros are not
+guest state.
+
+In front of a segment-shaped wall that is exactly the value that invites a
+misreading, so `[repiu-regs]` **does not print** those three. The details are in
+[Linux x86-64 fault context](linux-x64-fault-context.md).

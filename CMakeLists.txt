@@ -312,6 +312,8 @@ target_sources(repiu_exe
         src/engine/telemetry/glide_setter_state_cache.cpp
         src/engine/telemetry/glide_setter_phase_timing.cpp
         src/engine/telemetry/timer_tick_delivery.cpp
+        src/engine/telemetry/guest_address_watch.cpp
+        src/engine/telemetry/fault_exit_trace.cpp
         src/engine/telemetry/aot_residency_sample.cpp
         src/engine/telemetry/aot_return_stage_profile.cpp
         src/engine/aot/aot_boundary_opcode_census.cpp

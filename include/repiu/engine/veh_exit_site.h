@@ -73,10 +73,22 @@ enum class VehExitSite : std::uint8_t
     kUnhandledRecover,
     kTerminalFailureSearch,
     kContinueSearch,
+    // Task 582: the two exits taken before the handler does any work at all.
+    // They were the only untagged ones left, and an untagged exit is invisible
+    // to exactly the question Task 581 ended on -- where x64 declines a fault
+    // that i386 services. Appended rather than placed with the other
+    // pre-chain consumers above, because these values are stable identifiers.
+    kForeignThread,
+    kGuestStackNotEntered,
+    // Task 583: a fault the chain could not service, on a host with no frame to
+    // unwind to. Distinct from kUnhandledRecover, which is the same giving up
+    // on a host that *can* unwind and therefore resumes; this one declines and
+    // lets the platform report an unhandled fault.
+    kNoHostFrameToUnwind,
 };
 
 inline constexpr std::uint32_t kVehExitSiteCount =
-    static_cast<std::uint32_t>(VehExitSite::kContinueSearch) + 1U;
+    static_cast<std::uint32_t>(VehExitSite::kNoHostFrameToUnwind) + 1U;
 
 // Short, stable names for the host report. Kept adjacent to the enumeration so
 // a new value without a name is a compile-time-visible omission rather than a
@@ -126,6 +138,9 @@ inline const char* VehExitSiteName(std::uint32_t site)
         case VehExitSite::kUnhandledRecover: return "unhandled-recover";
         case VehExitSite::kTerminalFailureSearch: return "terminal-failure-search";
         case VehExitSite::kContinueSearch: return "continue-search";
+        case VehExitSite::kForeignThread: return "foreign-thread";
+        case VehExitSite::kGuestStackNotEntered: return "guest-stack-not-entered";
+        case VehExitSite::kNoHostFrameToUnwind: return "no-host-frame-to-unwind";
     }
     return "invalid";
 }

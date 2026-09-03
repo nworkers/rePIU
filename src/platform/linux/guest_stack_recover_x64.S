@@ -10,10 +10,20 @@
 // **Neither is called.** On i386 the fault handler plants their address in the
 // resumed context's EIP, so what runs at fault-resume time is the recovery.
 //
-// **Neither is reachable here.** Both sites are inside a `use_guest_stack`
-// branch or on a fault path taken only while a guest thread runs, and
+// **Neither was reachable when this was written, and that has changed.** The
+// original reasoning was that both sites sit inside a `use_guest_stack` branch
+// or on a fault path taken only while a guest thread runs, and that
 // `GuestEntryThreadProc` returns 4 on a non-i386 host (Task 544), so no guest
-// thread starts on x64 at all.
+// thread started on x64 at all.
+//
+// Task 578 added `GuestCacheEntryThreadProc`, and a guest thread does start
+// here now. Task 583 then let x64's faults through the handler chain, which
+// brings execution nearer to these two symbols than it has ever been.
+//
+// They are still not reached, and that is now enforced rather than incidental:
+// Task 583 declines at both unwind sites when there is no `active_call_state`,
+// which is every x64 run, tagging the refusal `no-host-frame-to-unwind`. If one
+// of these is ever entered, that guard is what failed -- start there.
 //
 // That leaves two possible definitions, and only one of them is honest.
 //

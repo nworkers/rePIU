@@ -64,6 +64,7 @@ flowchart LR
 * [CAT702 PIU lock check / CAT702 PIU 보안 검사](cat702-piu-lock-check.md)
 * [LINEXE arena runtime frontier](linexe-arena-runtime-frontier.md)
 * [Linux 이식 frontier / Linux port frontier](linux-port-frontier.md)
+* [Linux x86-64 fault context에서 실제로 관측되는 게스트 상태](linux-x64-fault-context.md)
 * [RES/PTX resource loading analysis](res-ptx-resource-loading.md)
 * [웹(WebAssembly) 이식 frontier / Web port frontier](web-port-frontier.md)
 
