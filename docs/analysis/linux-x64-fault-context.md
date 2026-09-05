@@ -46,7 +46,7 @@ Task 577·578에서 정해진 것으로, 여기에도 함께 적어 둡니다.
 
 | 필드 | x64에서의 출처 | 근거 |
 |---|---|---|
-| `Eip` | `REG_RIP` | 엔진이 이것을 cache 주소로 다루고, cache는 4 GiB 아래에 놓이므로 절단이 무손실 |
+| `Eip` | `REG_RIP`의 하위 32비트 | RIP가 4 GiB 아래 AOT cache 주소일 때만 절단이 무손실이며, 일반 host RIP 표현은 아님 |
 | `Esp` | `REG_R15` | 게스트 ESP는 R15D에 있고 host RSP는 SysV 스택 그대로 |
 | GPR 8개 | 동번호 host 레지스터 | 진입이 그렇게 심음 |
 | `SegCs`·`SegFs`·`SegGs` | `REG_CSGSFS` | 실제 관측 |
@@ -62,6 +62,18 @@ Task 577·578에서 정해진 것으로, 여기에도 함께 적어 둡니다.
 
 * [Linux port frontier 3.30·3.31](linux-port-frontier.md)
 * 작업 기록 [20260903-584](../work-logs/20260903-584-declined-fault-registers.md)
+* 작업 기록 [20260905-588](../work-logs/20260905-588-linux-x64-full-rip-attribution.md)
+
+## 확인됨 — 미처리 fault의 `rip`와 `eip`는 다른 질문에 답한다
+
+Task 588은 Linux 미처리 fault 한 줄에 `rip=`을 추가했다. 이는 kernel `ucontext_t`의
+full `REG_RIP`이고, `eip=`은 dispatcher가 사용하는 32-bit `GuestCpuContext` 투영을
+그대로 유지한다.
+
+Task 587 뒤 재현은 INT3에서 `rip=0x402aaef7`, `eip=0x402aaef6`을 보였다. 한 byte
+차이는 full RIP가 INT3 뒤를 가리키고 handler가 EIP를 trapping byte로 되감기 때문에
+정상이다. 이 주소는 4 GiB 아래이므로, 해당 fault에 한해서는 high-half merge alias
+가설도 배제한다.
 
 ---
 
@@ -117,7 +129,7 @@ Settled in Tasks 577 and 578; recorded here alongside.
 
 | Field | Source on x64 | Reason |
 |---|---|---|
-| `Eip` | `REG_RIP` | the engine treats it as a cache address, and the cache is placed below 4 GiB, so the truncation is lossless |
+| `Eip` | low 32 bits of `REG_RIP` | lossless only while RIP is a below-4-GiB AOT cache address; it is not a general host-RIP representation |
 | `Esp` | `REG_R15` | guest ESP lives in R15D while host RSP stays the SysV stack |
 | The eight GPRs | the same-numbered host registers | that is how entry seeds them |
 | `SegCs`, `SegFs`, `SegGs` | `REG_CSGSFS` | genuine observations |
@@ -134,3 +146,15 @@ Settled in Tasks 577 and 578; recorded here alongside.
 
 * [Linux port frontier, sections 3.30 and 3.31](linux-port-frontier.md)
 * Work log [20260903-584](../work-logs/20260903-584-declined-fault-registers.md)
+* Work log [20260905-588](../work-logs/20260905-588-linux-x64-full-rip-attribution.md)
+
+## Confirmed — unhandled-fault `rip` and `eip` answer different questions
+
+Task 588 adds `rip=` to the Linux unhandled-fault line. It is the full
+`REG_RIP` from the kernel `ucontext_t`; `eip=` remains the 32-bit
+`GuestCpuContext` projection used by the dispatcher.
+
+The Task 587 follow-up measured `rip=0x402aaef7` and `eip=0x402aaef6` for an
+INT3. The one-byte difference is expected: the full RIP is after the INT3 while
+the handler rewinds EIP to the trapping byte. The address is below 4 GiB, so it
+also disproves a high-half merge alias for that fault specifically.

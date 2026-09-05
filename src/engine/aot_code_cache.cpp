@@ -376,75 +376,6 @@ bool ResolveAotDbtIndirectDispatchSites(
 // selector and base into the emitted guard and displacement, in place, while the
 // image bytes are still writable. Offsets are image-relative, matching the
 // pointer the caller passes (the image's placed location).
-void ResolveAotSegmentOverrides(
-    const runtime::AotCodeCacheImage& image,
-    std::uint8_t* image_bytes,
-    const AotSegmentTable* segment_table)
-{
-    if (image.segment_override_sites.empty() || image_bytes == nullptr)
-    {
-        return;
-    }
-    for (const runtime::AotSegmentOverrideSite& site :
-         image.segment_override_sites)
-    {
-        const std::uint8_t seg = site.segment_register;
-        if (segment_table == nullptr || seg >= 6U ||
-            segment_table->segments[seg].shadow_address == 0U)
-        {
-            // Cannot resolve: preserve the original INT3/VEH semantic path.
-            image_bytes[site.cache_offset] = 0xCCU;
-            continue;
-        }
-        const AotSegmentResolution& resolution =
-            segment_table->segments[seg];
-        if (resolution.policy == AotSegmentAccessPolicy::kHleLowMemory)
-        {
-            if (site.dispatch_cache_offset == 0U)
-            {
-                image_bytes[site.cache_offset] = 0xCCU;
-            }
-            else
-            {
-                image_bytes[site.cache_offset] = 0xE9U;
-                const std::int32_t relative = static_cast<std::int32_t>(
-                    site.dispatch_cache_offset - (site.cache_offset + 5U));
-                std::memcpy(image_bytes + site.cache_offset + 1U,
-                            &relative, sizeof(relative));
-            }
-            continue;
-        }
-        if (resolution.policy != AotSegmentAccessPolicy::kNativeFolded)
-        {
-            image_bytes[site.cache_offset] = 0xCCU;
-            continue;
-        }
-        image_bytes[site.cache_offset] = 0x9CU;
-        image_bytes[site.cache_offset + 1U] = 0x66U;
-        image_bytes[site.cache_offset + 2U] = 0x81U;
-        image_bytes[site.cache_offset + 3U] = 0x3DU;
-        std::memcpy(image_bytes + site.guard_address_offset,
-                    &resolution.shadow_address, sizeof(std::uint32_t));
-        std::memcpy(image_bytes + site.guard_selector_offset,
-                    &resolution.selector, sizeof(std::uint16_t));
-        const std::uint32_t displacement =
-            static_cast<std::uint32_t>(site.original_displacement) +
-            resolution.base;
-        std::memcpy(image_bytes + site.displacement_offset, &displacement,
-                    sizeof(displacement));
-    }
-}
-
-// Task 571. The address of a placement counter as an abs32 operand, or zero
-// when it does not fit one. Zero is what the runtime patchers read as "no
-// counter address available", which closes any site that needs one.
-std::uint32_t CounterOperandAddress(
-    const volatile std::uint32_t* const counter)
-{
-    const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(counter);
-    return address <= UINT32_MAX ? static_cast<std::uint32_t>(address) : 0U;
-}
-
 // Task 571. A segment table for a placement that has none.
 //
 // Static placement has no live descriptors, so every guarded slot must close.
@@ -455,6 +386,42 @@ const AotSegmentTable& EmptySegmentTable()
 {
     static const AotSegmentTable table{};
     return table;
+}
+
+void ResolveAotSegmentOverrides(
+    const runtime::AotCodeCacheImage& image,
+    std::uint8_t* image_bytes,
+    const AotSegmentTable* segment_table)
+{
+    if (image.segment_override_sites.empty() || image_bytes == nullptr)
+    {
+        return;
+    }
+    // Task 586. This function used to write the slot's opening bytes itself, as
+    // the constant `9C 66 81 3D`. That is the i386 slot head; a long-mode slot
+    // opens with a lowered `pushfd`, so on x86-64 the constant turned a working
+    // guard into `pushfq; cmp word ptr [rip+disp32], imm16` followed by the
+    // remains of the sequence it overwrote.
+    //
+    // Task 568 introduced `AotSegmentOverrideSite::guard_prologue` to end
+    // exactly that guess, and Task 571 moved the pop and load resolvers onto
+    // the runtime patchers. This one was missed, and the dynamic-append path
+    // calls it with a live segment table -- so the constant was reachable.
+    runtime::AotSegmentOverridePatchStats stats;
+    runtime::PatchAotSegmentOverrideSites(
+        image_bytes, image.segment_override_sites,
+        segment_table != nullptr ? *segment_table : EmptySegmentTable(),
+        &stats);
+}
+
+// Task 571. The address of a placement counter as an abs32 operand, or zero
+// when it does not fit one. Zero is what the runtime patchers read as "no
+// counter address available", which closes any site that needs one.
+std::uint32_t CounterOperandAddress(
+    const volatile std::uint32_t* const counter)
+{
+    const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(counter);
+    return address <= UINT32_MAX ? static_cast<std::uint32_t>(address) : 0U;
 }
 
 // Task 571. These three used to write the patch bytes themselves, and knew that
@@ -512,24 +479,11 @@ void ResolveAotGuardedSegmentReads(
     {
         return;
     }
-    for (const runtime::AotGuardedSegmentReadSite& site :
-         image.guarded_segment_read_sites)
-    {
-        const std::uint8_t seg = site.segment_register;
-        if (segment_table == nullptr || seg >= 6U ||
-            segment_table->segments[seg].shadow_address == 0U)
-        {
-            image_bytes[site.cache_offset] = 0xCCU;
-            continue;
-        }
-        image_bytes[site.cache_offset] = 0x9CU;
-        const std::uint32_t shadow_address =
-            segment_table->segments[seg].shadow_address;
-        std::memcpy(image_bytes + site.shadow_address_offset,
-                    &shadow_address, sizeof(shadow_address));
-        std::memcpy(image_bytes + site.load_shadow_address_offset,
-                    &shadow_address, sizeof(shadow_address));
-    }
+    runtime::AotGuardedSegmentReadPatchStats stats;
+    runtime::PatchAotGuardedSegmentReadSites(
+        image_bytes, image.guarded_segment_read_sites,
+        segment_table != nullptr ? *segment_table : EmptySegmentTable(),
+        &stats);
 }
 // Task 329: referencing the live arena gives up the failure return that
 // `ReadProcessMemory` provided, so the range is checked once per process
@@ -1086,7 +1040,21 @@ bool AppendDynamicAotTranslation(
         AotWorkerTimingDelta(timing, validate_start, placement_phase_start);
     if (!hle_covered)
     {
-        result->message = "dynamic AOT CFG lacks complete HLE/selector-guard coverage";
+        if (unsafe_hle_address != 0U)
+        {
+            char message[112] = {};
+            std::snprintf(
+                message, sizeof(message),
+                "dynamic AOT CFG lacks complete HLE/selector-guard coverage "
+                "at 0x%08X",
+                unsafe_hle_address);
+            result->message = message;
+        }
+        else
+        {
+            result->message =
+                "dynamic AOT CFG lacks complete HLE/selector-guard coverage";
+        }
         return true;
     }
     if (image.bytes.size() > placement->capacity - placement->size)
@@ -1569,28 +1537,14 @@ std::uint32_t ReResolveWin32AotSegmentOverrides(
         stats->guarded_pop_site_count += pop_stats.native_site_count;
         stats->unresolved_site_count += pop_stats.unresolved_site_count;
     }
-    for (const runtime::AotGuardedSegmentReadSite& site :
-         placement->guarded_segment_read_sites)
+    runtime::AotGuardedSegmentReadPatchStats read_stats;
+    processed += runtime::PatchAotGuardedSegmentReadSites(
+        bytes, placement->guarded_segment_read_sites, *segment_table,
+        &read_stats);
+    if (stats != nullptr)
     {
-        ++processed;
-        const std::uint8_t seg = site.segment_register;
-        if (seg >= 6U ||
-            segment_table->segments[seg].shadow_address == 0U)
-        {
-            bytes[site.cache_offset] = 0xCCU;
-            continue;
-        }
-        bytes[site.cache_offset] = 0x9CU;
-        const std::uint32_t shadow_address =
-            segment_table->segments[seg].shadow_address;
-        std::memcpy(bytes + site.shadow_address_offset,
-                    &shadow_address, sizeof(shadow_address));
-        std::memcpy(bytes + site.load_shadow_address_offset,
-                    &shadow_address, sizeof(shadow_address));
-        if (stats != nullptr)
-        {
-            ++stats->guarded_read_site_count;
-        }
+        stats->guarded_read_site_count += read_stats.native_site_count;
+        stats->unresolved_site_count += read_stats.unresolved_site_count;
     }
     repiu::platform::ProtectMemory(
         cache, placement->capacity,

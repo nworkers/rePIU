@@ -17,6 +17,7 @@ enum class AotInstructionKind
     kDirectJump,
     kConditionalBranch,
     kReturn,
+    kFarReturn,
     kHleBoundary,
     kIndirectExit,
     kJumpTable,
@@ -81,6 +82,7 @@ struct AotTranslationPlan
     std::uint32_t direct_jump_count = 0;
     std::uint32_t conditional_branch_count = 0;
     std::uint32_t return_count = 0;
+    std::uint32_t far_return_count = 0;
     std::uint32_t hle_boundary_count = 0;
     std::uint32_t indirect_exit_count = 0;
     std::uint32_t jump_table_count = 0;

@@ -950,9 +950,18 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                 const auto category = instruction.meta.category;
                 if (category == ZYDIS_CATEGORY_RET)
                 {
-                    record.kind = AotInstructionKind::kReturn;
+                    if (instruction.meta.branch_type ==
+                        ZYDIS_BRANCH_TYPE_FAR)
+                    {
+                        record.kind = AotInstructionKind::kFarReturn;
+                        ++plan->far_return_count;
+                    }
+                    else
+                    {
+                        record.kind = AotInstructionKind::kReturn;
+                        ++plan->return_count;
+                    }
                     block.instructions.push_back(std::move(record));
-                    ++plan->return_count;
                     break;
                 }
                 if (category == ZYDIS_CATEGORY_CALL ||

@@ -281,7 +281,7 @@ void DumpZeroReturnEvidence(const repiu::platform::GuestCpuContext* win32_contex
 }
 
 void BuildAotSegmentTable(ThreadContext* context,
-                               AotSegmentTable* table)
+                           AotSegmentTable* table)
 {
     if (context == nullptr || table == nullptr)
     {
@@ -291,23 +291,43 @@ void BuildAotSegmentTable(ThreadContext* context,
     const std::uint16_t selectors[6] = {
         context->guest_es, 0U, context->guest_ss,
         context->guest_ds, context->guest_fs, context->guest_gs};
-    const std::uint32_t addresses[6] = {
-        static_cast<std::uint32_t>(
-            reinterpret_cast<std::uintptr_t>(&context->guest_es)),
-        0U,
-        static_cast<std::uint32_t>(
-            reinterpret_cast<std::uintptr_t>(&context->guest_ss)),
-        static_cast<std::uint32_t>(
-            reinterpret_cast<std::uintptr_t>(&context->guest_ds)),
-        static_cast<std::uint32_t>(
-            reinterpret_cast<std::uintptr_t>(&context->guest_fs)),
-        static_cast<std::uint32_t>(
-            reinterpret_cast<std::uintptr_t>(&context->guest_gs))};
+
+    if (context->shadow_selectors != nullptr)
+    {
+        context->shadow_selectors->selectors[0] = selectors[0];
+        context->shadow_selectors->selectors[1] = 0U;
+        context->shadow_selectors->selectors[2] = selectors[2];
+        context->shadow_selectors->selectors[3] = selectors[3];
+        context->shadow_selectors->selectors[4] = selectors[4];
+        context->shadow_selectors->selectors[5] = selectors[5];
+    }
+
+    std::uint32_t addresses[6] = {};
     for (std::uint8_t seg = 0; seg < 6U; ++seg)
     {
         if (seg == 1U)
         {
             continue; // CS has no shadow
+        }
+        if (context->shadow_selectors != nullptr)
+        {
+            const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(
+                &context->shadow_selectors->selectors[seg]);
+            addresses[seg] = address <= UINT32_MAX
+                ? static_cast<std::uint32_t>(address)
+                : 0U;
+        }
+        else
+        {
+            const std::uintptr_t local_addr =
+                seg == 0 ? reinterpret_cast<std::uintptr_t>(&context->guest_es) :
+                seg == 2 ? reinterpret_cast<std::uintptr_t>(&context->guest_ss) :
+                seg == 3 ? reinterpret_cast<std::uintptr_t>(&context->guest_ds) :
+                seg == 4 ? reinterpret_cast<std::uintptr_t>(&context->guest_fs) :
+                           reinterpret_cast<std::uintptr_t>(&context->guest_gs);
+            addresses[seg] = local_addr <= UINT32_MAX
+                ? static_cast<std::uint32_t>(local_addr)
+                : 0U;
         }
         BuildAotSegmentResolution(
             context->selector_table, addresses[seg], selectors[seg],
@@ -1765,32 +1785,38 @@ static void ProbeSegmentOverrideBoundary(ThreadContext* context,
     std::uint16_t selector = 0;
     std::uint32_t shadow_address = 0;
     const std::uint8_t prefix = bytes[0];
+    auto resolve_shadow = [context](const std::uint8_t seg, const std::uint16_t sel, const void* local_ptr) -> std::uint32_t {
+        if (context->shadow_selectors != nullptr)
+        {
+            context->shadow_selectors->selectors[seg] = sel;
+            const std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(
+                &context->shadow_selectors->selectors[seg]);
+            return addr <= UINT32_MAX ? static_cast<std::uint32_t>(addr) : 0U;
+        }
+        const std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(local_ptr);
+        return addr <= UINT32_MAX ? static_cast<std::uint32_t>(addr) : 0U;
+    };
     switch (prefix)
     {
         case 0x65U:
             selector = context->guest_gs;
-            shadow_address = static_cast<std::uint32_t>(
-                reinterpret_cast<std::uintptr_t>(&context->guest_gs));
+            shadow_address = resolve_shadow(5, selector, &context->guest_gs);
             break;
         case 0x64U:
             selector = context->guest_fs;
-            shadow_address = static_cast<std::uint32_t>(
-                reinterpret_cast<std::uintptr_t>(&context->guest_fs));
+            shadow_address = resolve_shadow(4, selector, &context->guest_fs);
             break;
         case 0x3EU:
             selector = context->guest_ds;
-            shadow_address = static_cast<std::uint32_t>(
-                reinterpret_cast<std::uintptr_t>(&context->guest_ds));
+            shadow_address = resolve_shadow(3, selector, &context->guest_ds);
             break;
         case 0x26U:
             selector = context->guest_es;
-            shadow_address = static_cast<std::uint32_t>(
-                reinterpret_cast<std::uintptr_t>(&context->guest_es));
+            shadow_address = resolve_shadow(0, selector, &context->guest_es);
             break;
         case 0x36U:
             selector = context->guest_ss;
-            shadow_address = static_cast<std::uint32_t>(
-                reinterpret_cast<std::uintptr_t>(&context->guest_ss));
+            shadow_address = resolve_shadow(2, selector, &context->guest_ss);
             break;
         default: return; // not a segment-override prefix (CS 0x2E has no shadow)
     }

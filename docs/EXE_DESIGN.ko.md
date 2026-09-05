@@ -1,5 +1,23 @@
 # 실행 파일 설계 노트
 
+## Task 606: FPU word stack / FPU word stack
+
+Task 606에서 `pumpit2a`의 FPU 초기화 루틴은 guest `0x010F839E`의
+`PUSH AX`와 `0x010F83C2`의 `POP AX` 사이에서 `FLDCW [ESP]` 및
+`XCHG AX,[ESP]`를 수행함을 확인했다. 호출 반환주소는 `0x010F4B7E`이다.
+16비트 stack lowering이 누락된 x64 실행에서는 이 반환주소가 `0x010F0103`으로
+손상되었고, lowering 보완 후 원래 주소로 복귀한다. 따라서 이전에 관찰한
+`INT 31h AX=1E7Fh`는 이 손상 경로의 결과이며 사설 서비스 ABI의 증거가 아니다.
+
+Task 606 identifies the `pumpit2a` FPU initialization sequence: `PUSH AX` at
+ guest `0x010F839E`, `FLDCW [ESP]` and `XCHG AX,[ESP]`, then `POP AX` at
+`0x010F83C2`. Its caller return address is `0x010F4B7E`. Missing word-stack
+lowering in the x64 run corrupted that address to `0x010F0103`; adding the
+lowering restores the original return. The observed `INT 31h AX=1E7Fh` therefore
+belongs to the corrupted path and does not establish a private-service ABI.
+
+근거 / Evidence: [Task 606](work-logs/20260905-606-x64-word-stack-lowering.md).
+
 ## 목적
 
 이 문서는 원본 실행 파일 분석으로 확인한 구조와 로더 설계 결정을 누적 기록한다.

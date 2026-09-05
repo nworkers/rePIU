@@ -1821,6 +1821,14 @@ them**, and callee-saved so SysV preserves them. Stack instructions lower to seq
 using `R15D`, and the `ESP` adjustment is always a `LEA`, because guest `PUSH` and `POP`
 change no flags.
 
+Task 606은 정확한 `66 50..5F` register PUSH/POP을 16비트 MOV와 ESP ±2로
+변환합니다. 상위 register 비트와 인접 반환주소를 보존하며 SP는 R14 scratch를
+통해 감소 전 저장 및 증가 후 하위 word 반영을 처리합니다.
+
+Task 606 lowers exact `66 50..5F` register PUSH/POP with word MOV and ESP ±2.
+It preserves upper register bits and adjacent return addresses. SP uses R14
+scratch for the pre-decrement value and post-increment low-word update.
+
 emitter는 long mode 호스트를 위한 방출 모드를 하나 갖습니다(Task 553).
 `AotCodeCacheBuildOptions::enable_long_mode_emission`이 켜지면 `kCopy`마다
 `ClassifyLongModeBytes`(Task 550)로 판정하고 `LowerLongModeBytes`(Task 552)로 낮추며,
@@ -1973,12 +1981,15 @@ direct 옆의 **세 번째 경로**입니다.
 * `guest_entry_x64.S`가 guest GPR을 host 동번호 레지스터에, guest ESP를 `R15D`에 싣고
   placement의 `entry_address`로 들어갑니다(Task 578).
 * resolver는 `FindAotCacheAddress` 위의 어댑터이고, 0을 답하면 Task 562의 thunk가
-  `INT3`을 놓습니다.
+  `INT3`을 놓습니다. return continuation은 공용 `ResolveAotTransferTarget`으로
+  기존 cache를 찾거나 dynamic append를 요청하며, append가 coverage 검증에서 거절되면
+  같은 fail-closed INT3 계약을 유지합니다.
 * fault 경로에서 `GuestCpuContext::Esp`는 `R15`에 연결되고 host `RSP`는 기록되지
-  않습니다(Task 577). `Eip`는 `RIP` 그대로입니다 — 엔진이 그것을 cache 주소로 취급해
-  address map으로 변환하기 때문이고, cache가 4 GiB 아래에 있으므로 잘림이 없습니다.
-* 미처리 폴트는 `[repiu-fault] unhandled signal=… eip=… access=…`를 씁니다. Windows의
-  unhandled-exception filter에 해당하는 것이 Linux에 없었습니다.
+  않습니다(Task 577). `Eip`는 `RIP`의 하위 32비트이며, 엔진이 그것을 cache 주소로
+  취급해 address map으로 변환할 때 cache가 4 GiB 아래에 있으므로 잘림이 없습니다.
+* 미처리 폴트는 `[repiu-fault] unhandled signal=… rip=… eip=… access=…`를 씁니다.
+  `rip`는 kernel context의 full host RIP이고 `eip`는 engine의 32-bit 투영입니다.
+  Windows의 unhandled-exception filter에 해당하는 것이 Linux에 없었습니다.
 
 **알려진 공백**: cache 안에서 일어난 access-violation 폴트를 guest 주소로 되돌리는
 경로가 없습니다. `HandleAotReentry`는 `kBreakpoint`일 때만 그 변환을 하고, `Eip`에서
@@ -2000,14 +2011,18 @@ the stack switch and the direct call.
 * `guest_entry_x64.S` loads guest GPRs into the host registers of the same number
   and guest ESP into `R15D`, then enters at the placement's `entry_address`
   (Task 578).
-* The resolver is an adapter over `FindAotCacheAddress`; answering zero makes
-  Task 562's thunk plant an `INT3`.
+* The resolver uses the shared `ResolveAotTransferTarget` policy for return
+  continuations, finding an existing cache entry or requesting a dynamic append.
+  A coverage-rejected append still answers zero, making Task 562's thunk plant
+  the same fail-closed `INT3`.
 * In the fault path `GuestCpuContext::Esp` binds to `R15` and host `RSP` is never
-  written (Task 577). `Eip` stays `RIP`, because the engine treats it as a cache
-  address and translates it through the address map, and the cache sits below
-  4 GiB so nothing truncates.
-* An unhandled fault writes `[repiu-fault] unhandled signal=… eip=… access=…`.
-  Linux had no equivalent of Windows's unhandled-exception filter.
+  written (Task 577). `Eip` is the low 32 bits of `RIP`; when the engine treats
+  it as a cache address and translates it through the address map, the cache
+  sits below 4 GiB so nothing truncates.
+* An unhandled fault writes `[repiu-fault] unhandled signal=… rip=… eip=… access=…`.
+  `rip` is the full host RIP from the kernel context; `eip` is the engine's
+  32-bit projection. Linux had no equivalent of Windows's unhandled-exception
+  filter.
 
 **Known gap**: nothing translates an access-violation fault raised inside the
 cache back to a guest address. `HandleAotReentry` does that only for

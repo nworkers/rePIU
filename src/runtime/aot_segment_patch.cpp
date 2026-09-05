@@ -198,4 +198,47 @@ std::uint32_t PatchAotGuardedSegmentPopSites(
     return processed;
 }
 
+std::uint32_t PatchAotGuardedSegmentReadSites(
+    std::uint8_t* const bytes,
+    const std::vector<AotGuardedSegmentReadSite>& sites,
+    const AotSegmentTable& table,
+    AotGuardedSegmentReadPatchStats* const stats)
+{
+    if (bytes == nullptr)
+    {
+        return 0U;
+    }
+    std::uint32_t processed = 0U;
+    for (const AotGuardedSegmentReadSite& site : sites)
+    {
+        ++processed;
+        if (site.segment_register >= 6U ||
+            table.segments[site.segment_register].shadow_address == 0U ||
+            site.guard_prologue_size == 0U)
+        {
+            bytes[site.cache_offset] = 0xCCU;
+            if (stats != nullptr)
+            {
+                ++stats->unresolved_site_count;
+            }
+            continue;
+        }
+
+        std::memcpy(bytes + site.cache_offset, site.guard_prologue,
+                    site.guard_prologue_size);
+        const std::uint32_t shadow_address =
+            table.segments[site.segment_register].shadow_address;
+        std::memcpy(bytes + site.shadow_address_offset, &shadow_address,
+                    sizeof(shadow_address));
+        std::memcpy(bytes + site.load_shadow_address_offset, &shadow_address,
+                    sizeof(shadow_address));
+        if (stats != nullptr)
+        {
+            ++stats->native_site_count;
+        }
+    }
+    return processed;
+}
+
 }  // namespace repiu::runtime
+

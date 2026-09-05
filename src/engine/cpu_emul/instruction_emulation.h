@@ -84,6 +84,12 @@ bool DecodeModRmMemoryAddress(
 
 bool HandleSegmentLoadInstruction(repiu::platform::GuestCpuContext* win32_context,
                                   ThreadContext* context);
+bool HandleSegmentPushInstruction(repiu::platform::GuestCpuContext* win32_context,
+                                  ThreadContext* context);
+bool HandleFarJumpInstruction(repiu::platform::GuestCpuContext* win32_context,
+                              ThreadContext* context);
+bool HandleFarReturnInstruction(repiu::platform::GuestCpuContext* win32_context,
+                                ThreadContext* context);
 bool HandleSegmentPopInstruction(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context);
 

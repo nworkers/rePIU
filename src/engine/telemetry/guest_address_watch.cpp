@@ -1,6 +1,7 @@
 #include "guest_address_watch.h"
 
 #include "repiu/engine/aot_code_cache.h"
+#include "repiu/platform/guest_cpu_context.h"
 #include "repiu/platform/host_error_stream.h"
 
 #include <atomic>
@@ -28,9 +29,9 @@ const char* GuestAddressWatchEventName(GuestAddressWatchEvent event)
     switch (event)
     {
         case GuestAddressWatchEvent::kSingleStep: return "step";
-        case GuestAddressWatchEvent::kDispatchRequest: return "dispatch";
-        case GuestAddressWatchEvent::kCacheEntry: return "cache";
-        case GuestAddressWatchEvent::kPrivilegedService: return "priv";
+        case GuestAddressWatchEvent::kDispatchRequest: return "dispatch_req";
+        case GuestAddressWatchEvent::kCacheEntry: return "cache_enter";
+        case GuestAddressWatchEvent::kPrivilegedService: return "priv_service";
         case GuestAddressWatchEvent::kCacheFault: return "fault";
     }
     return "unknown";
@@ -68,9 +69,12 @@ bool GuestAddressWatchEnabled()
     return GuestAddressWatchAddress() != 0U;
 }
 
-void RecordGuestAddressWatch(GuestAddressWatchEvent event,
-                             std::uint32_t guest_address,
-                             std::uint32_t observed_address)
+void RecordGuestAddressWatch(
+    GuestAddressWatchEvent event,
+    std::uint32_t guest_address,
+    std::uint32_t observed_address,
+    const repiu::platform::GuestCpuContext* registers,
+    std::optional<std::uint64_t> le_bytes)
 {
     // The gate comes first so a watch that is off costs one comparison against
     // a value already in a register, with no formatting and no writes.
@@ -95,15 +99,68 @@ void RecordGuestAddressWatch(GuestAddressWatchEvent event,
     // host_error_stream.h records: several of these hooks run inside the fault
     // handler, and a diagnostic that can block on stdio's lock is one that can
     // stop the thing it measures.
-    char line[128] = {};
-    const int length = std::snprintf(
-        line,
-        sizeof(line),
-        "[repiu-watch] event=%s guest=0x%08X n=%u at=0x%08X\n",
-        GuestAddressWatchEventName(event),
-        guest_address,
-        occurrence,
-        observed_address);
+    char line[256] = {};
+    int length = 0;
+    if (registers != nullptr)
+    {
+        if (le_bytes.has_value())
+        {
+            length = std::snprintf(
+                line,
+                sizeof(line),
+                "[repiu-watch] event=%s guest=0x%08X n=%u at=0x%08X le_bytes=0x%016llX esi=0x%08X esp=0x%08X ebx=0x%08X eflags=0x%08X\n",
+                GuestAddressWatchEventName(event),
+                guest_address,
+                occurrence,
+                observed_address,
+                static_cast<unsigned long long>(*le_bytes),
+                static_cast<std::uint32_t>(registers->Esi),
+                static_cast<std::uint32_t>(registers->Esp),
+                static_cast<std::uint32_t>(registers->Ebx),
+                static_cast<std::uint32_t>(registers->EFlags));
+        }
+        else
+        {
+            length = std::snprintf(
+                line,
+                sizeof(line),
+                "[repiu-watch] event=%s guest=0x%08X n=%u at=0x%08X esi=0x%08X esp=0x%08X ebx=0x%08X eflags=0x%08X\n",
+                GuestAddressWatchEventName(event),
+                guest_address,
+                occurrence,
+                observed_address,
+                static_cast<std::uint32_t>(registers->Esi),
+                static_cast<std::uint32_t>(registers->Esp),
+                static_cast<std::uint32_t>(registers->Ebx),
+                static_cast<std::uint32_t>(registers->EFlags));
+        }
+    }
+    else
+    {
+        if (le_bytes.has_value())
+        {
+            length = std::snprintf(
+                line,
+                sizeof(line),
+                "[repiu-watch] event=%s guest=0x%08X n=%u at=0x%08X le_bytes=0x%016llX\n",
+                GuestAddressWatchEventName(event),
+                guest_address,
+                occurrence,
+                observed_address,
+                static_cast<unsigned long long>(*le_bytes));
+        }
+        else
+        {
+            length = std::snprintf(
+                line,
+                sizeof(line),
+                "[repiu-watch] event=%s guest=0x%08X n=%u at=0x%08X\n",
+                GuestAddressWatchEventName(event),
+                guest_address,
+                occurrence,
+                observed_address);
+        }
+    }
     if (length > 0)
     {
         repiu::platform::WriteHostErrorStream(
@@ -111,8 +168,10 @@ void RecordGuestAddressWatch(GuestAddressWatchEvent event,
     }
 }
 
-void RecordGuestAddressWatchCacheFault(const AotCodeCachePlacement& placement,
-                                       std::uint32_t cache_address)
+void RecordGuestAddressWatchCacheFault(
+    const AotCodeCachePlacement& placement,
+    std::uint32_t cache_address,
+    const repiu::platform::GuestCpuContext* registers)
 {
     // Gated before the lookup rather than inside RecordGuestAddressWatch: the
     // reverse address-map search is the expensive part, and an off watch must
@@ -126,9 +185,11 @@ void RecordGuestAddressWatchCacheFault(const AotCodeCachePlacement& placement,
     {
         return;
     }
-    RecordGuestAddressWatch(GuestAddressWatchEvent::kCacheFault,
-                            guest_address,
-                            cache_address);
+    RecordGuestAddressWatch(
+        GuestAddressWatchEvent::kCacheFault,
+        guest_address,
+        cache_address,
+        registers);
 }
 
 }  // namespace repiu::engine

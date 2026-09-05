@@ -316,12 +316,70 @@ bool ProbeStackData()
     return ok;
 }
 
-// C. Task 559 decision 1. Guest PUSH and POP change no flags, so the emitted
-// sequence must not either -- which is why the ESP adjustment is a LEA and not
-// a SUB.
-//
-// This is the item worth the most here. A wrong value announces itself; wrong
-// flags raise nothing at all and simply send the next branch elsewhere.
+// Task 606. Word stack operations preserve adjacent data and register halves.
+bool ProbeWordStack()
+{
+    // Reproduce the control-word exchange without depending on the host FPU.
+    // The return-address marker immediately above the word must survive.
+    const Program program = {
+        {0x39U, 0xC0U}, {0x66U, 0x50U}, {0x89U, 0xE1U},
+        {0x66U, 0xC7U, 0x04U, 0x24U, 0x03U, 0x01U},
+        {0x66U, 0x87U, 0x04U, 0x24U}, {0x66U, 0x58U},
+        {0x0FU, 0x94U, 0xC2U},
+    };
+    const PlacedProgram placed = Place("word_stack", program);
+    if (!placed.valid)
+    {
+        std::cout << "guest_word_stack=false,reason=placement\n";
+        return false;
+    }
+    constexpr std::uint32_t kReturn = 0x010F4B7EU;
+    constexpr std::uint32_t kCanary = 0xAABBCCDDU;
+    const std::uint32_t top = placed.data_address + 0x800U;
+    std::memcpy(placed.data + 0x800U, &kReturn, sizeof(kReturn));
+    std::memcpy(placed.data + 0x7FCU, &kCanary, sizeof(kCanary));
+    GuestRegisterProbeState state;
+    state.gpr[kEax] = 0xBEEF1E7FU;
+    state.gpr[kEsp] = top;
+    RepiuLinuxX64GuestRegisterProbe(placed.code, &state);
+    std::uint32_t marker = 0;
+    std::uint32_t below = 0;
+    std::memcpy(&marker, placed.data + 0x800U, sizeof(marker));
+    std::memcpy(&below, placed.data + 0x7FCU, sizeof(below));
+    bool ok = Check("word_return_preserved", marker, kReturn);
+    ok = Check("word_write_width", below, 0x1E7FCCDDU) && ok;
+    ok = Check("word_eax_upper_preserved", state.gpr[kEax], 0xBEEF1E7FU) && ok;
+    ok = Check("word_push_esp", state.gpr[kEcx], top - 2U) && ok;
+    ok = Check("word_pop_esp", state.observed_r15, top) && ok;
+    ok = Check("word_flags", state.gpr[kEdx], 1U) && ok;
+    Release(placed);
+
+    const Program sp_program = {
+        {0x66U, 0x54U}, {0x66U, 0x5BU},
+        {0x66U, 0x50U}, {0x66U, 0x5CU},
+    };
+    const PlacedProgram sp = Place("word_sp", sp_program);
+    if (!sp.valid)
+    {
+        std::cout << "guest_word_stack=false,reason=sp_placement\n";
+        return false;
+    }
+    GuestRegisterProbeState sp_state;
+    const std::uint32_t sp_top = sp.data_address + 0x800U;
+    sp_state.gpr[kEsp] = sp_top;
+    sp_state.gpr[kEbx] = 0xCAFEFFFFU;
+    sp_state.gpr[kEax] = 0xDEAD1234U;
+    RepiuLinuxX64GuestRegisterProbe(sp.code, &sp_state);
+    ok = Check("push_sp_old_value", sp_state.gpr[kEbx],
+               0xCAFE0000U | (sp_top & 0xFFFFU)) && ok;
+    ok = Check("pop_sp_upper_preserved", sp_state.observed_r15,
+               (sp_top & 0xFFFF0000U) | 0x1234U) && ok;
+    Release(sp);
+    std::cout << "guest_word_stack=" << (ok ? "true" : "false") << "\n";
+    return ok;
+}
+
+// Task 559. PUSH and POP must preserve the flags consumed by the next branch.
 bool ProbeFlagsSurvive()
 {
     // xor edx,edx · cmp eax,eax (ZF=1) · push ebx · pop edi · setz dl
@@ -1888,6 +1946,7 @@ bool RunLinuxX64GuestRegisterProbe()
 {
     const bool mapping = ProbeMapping();
     const bool stack = ProbeStackData();
+    const bool word_stack = ProbeWordStack();
     const bool flags = ProbeFlagsSurvive();
     const bool round_trip = ProbeFlagsRoundTrip();
     const bool branch = ProbeConditionalBranch();
@@ -1903,7 +1962,7 @@ bool RunLinuxX64GuestRegisterProbe()
     const bool segment_load = ProbeGuardedSegmentLoad();
     const bool segment_pop = ProbeGuardedSegmentPop();
     const bool all =
-        mapping && stack && flags && round_trip && branch && call &&
+        mapping && stack && word_stack && flags && round_trip && branch && call &&
         unresolved && call_return && esp && absolute_immediate &&
         two_byte_esp && indirect_call && indirect_refusals &&
         segment && segment_load && segment_pop;

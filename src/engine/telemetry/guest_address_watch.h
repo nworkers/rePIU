@@ -4,7 +4,9 @@
 // reached it.
 //
 // This is diagnostic instrumentation only. It reads counters and prints lines;
-// it never touches guest registers, guest memory, or control flow.
+// callers may provide an already safely-captured guest byte word, but the
+// instrumentation never changes guest registers, guest memory, or control
+// flow.
 //
 // It exists to answer a question Task 580 left open -- how the i386 host
 // executes the `sti` at guest 0x010F1728, where the x64 host raises a #GP
@@ -13,6 +15,12 @@
 // "i386 does this, x64 does that" sayable.
 
 #include <cstdint>
+#include <optional>
+
+namespace repiu::platform
+{
+struct GuestCpuContext;
+}
 
 namespace repiu::engine
 {
@@ -49,9 +57,12 @@ bool GuestAddressWatchEnabled();
 // is the guest address itself except at the cache fault hook, where it is the
 // cache address. Returns immediately when the watch is off or the address is
 // not the watched one.
-void RecordGuestAddressWatch(GuestAddressWatchEvent event,
-                             std::uint32_t guest_address,
-                             std::uint32_t observed_address);
+void RecordGuestAddressWatch(
+    GuestAddressWatchEvent event,
+    std::uint32_t guest_address,
+    std::uint32_t observed_address,
+    const repiu::platform::GuestCpuContext* registers = nullptr,
+    std::optional<std::uint64_t> le_bytes = std::nullopt);
 
 // The cache fault hook. Maps `cache_address` back through the placement and
 // records `kCacheFault` when it lands in the watched address's block.
@@ -60,7 +71,9 @@ void RecordGuestAddressWatch(GuestAddressWatchEvent event,
 // reached the address" and "execution reached it by a direct jump inside the
 // cache", which moves no counter. A privileged instruction must fault, so a
 // fault inside its block settles that.
-void RecordGuestAddressWatchCacheFault(const AotCodeCachePlacement& placement,
-                                       std::uint32_t cache_address);
+void RecordGuestAddressWatchCacheFault(
+    const AotCodeCachePlacement& placement,
+    std::uint32_t cache_address,
+    const repiu::platform::GuestCpuContext* registers = nullptr);
 
 }  // namespace repiu::engine

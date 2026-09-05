@@ -29,6 +29,8 @@
 #include "code_cache_placement_probe.h"
 #include "dos_file_handle_cache_probe.h"
 #include "env_toggle_probe.h"
+#include "far_jump_probe.h"
+#include "far_return_probe.h"
 #include "execution_backend_probe.h"
 #include "execution_timeout_probe.h"
 #include "glide_lfb_region_probe.h"
@@ -39,6 +41,7 @@
 #include "long_mode_emission_probe.h"
 #include "nvram_path_probe.h"
 #include "pit_timer_probe.h"
+#include "segment_push_probe.h"
 
 #if !defined(__EMSCRIPTEN__)
 #include "fault_handler_probe.h"
@@ -74,10 +77,13 @@ struct CoreProbe
 
 constexpr CoreProbe kCoreProbes[] = {
     {"env_toggle", &repiu::tools::RunEnvToggleProbe},
+    {"far_jump", &repiu::tools::RunFarJumpProbe},
+    {"far_return", &repiu::tools::RunFarReturnProbe},
     {"execution_backend", &repiu::tools::RunExecutionBackendProbe},
     {"execution_timeout", &repiu::tools::RunExecutionTimeoutProbe},
     {"dos_file_handle_cache", &repiu::tools::RunDosFileHandleCacheProbe},
     {"pit_timer", &repiu::tools::RunPitTimerProbe},
+    {"segment_push", &repiu::tools::RunSegmentPushProbe},
     {"glide_lfb_region", &repiu::tools::RunGlideLfbRegionProbe},
     {"jump_table_guard", &repiu::tools::RunJumpTableGuardProbe},
     // Task 550. Decodes bytes and judges them; it executes nothing, so it runs

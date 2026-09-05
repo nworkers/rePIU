@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <utility>
 #include <vector>
 
 namespace repiu::tools
@@ -93,6 +94,11 @@ const std::vector<std::uint8_t> kStackPointerWriteLowered = {0x41U, 0x83U,
 // working.
 const std::vector<std::uint8_t> kPortIo = {0xEDU};
 
+// Object 3's `66 CB`: a far return whose correct width depends on the guest
+// descriptor mode. It must not enter the near-return resolver slot until that
+// descriptor-aware ABI exists.
+const std::vector<std::uint8_t> kFarReturn = {0x66U, 0xCBU};
+
 struct PlannedInstruction
 {
     std::uint32_t guest_address = 0U;
@@ -115,6 +121,7 @@ std::vector<PlannedInstruction> PlannedInstructions()
     add(AotInstructionKind::kCopy, kSilentlyDifferent);
     add(AotInstructionKind::kCopy, kIncEax);
     add(AotInstructionKind::kCopy, kStackPointerWrite);
+    add(AotInstructionKind::kFarReturn, kFarReturn);
     add(AotInstructionKind::kPortIo, kPortIo);
     return planned;
 }
@@ -279,20 +286,23 @@ bool ProbeLongModeOutcomes()
     // own long-mode slots. What must reach a boundary is now what the emitter
     // has not built, and port I/O is one of those.
     const bool non_copy = Expect("long_mode_emission_non_copy_boundary", image,
-                                 planned[6].guest_address, {0xCCU}) &&
+                                 planned[7].guest_address, {0xCCU}) &&
+        HasBoundaryFixupAt(image, planned[7].guest_address);
+    const bool far_return = Expect("long_mode_emission_far_return_boundary",
+                                   image, planned[6].guest_address, {0xCCU}) &&
         HasBoundaryFixupAt(image, planned[6].guest_address);
 
     const bool counted = image.long_mode_emission_enabled &&
         image.long_mode_copied_count == 1U &&
         // Task 564 moved the stack-pointer write from refused to lowered.
         image.long_mode_lowered_count == 4U &&
-        image.long_mode_refused_count == 2U;
+        image.long_mode_refused_count == 3U;
     std::cout << "long_mode_emission_counts=" << (counted ? "true" : "false")
               << ",copied=" << image.long_mode_copied_count
               << ",lowered=" << image.long_mode_lowered_count
               << ",refused=" << image.long_mode_refused_count << "\n";
     return built && copied && prefixed && sib && refused && inc_dec && stack &&
-        non_copy && counted;
+        far_return && non_copy && counted;
 }
 
 // C. A plan the emitter can produce nothing for still builds.
@@ -341,6 +351,64 @@ bool ProbeAllRefusedStillBuilds()
     return ok;
 }
 
+// Task 592. The pop guard has a dedicated long-mode ABI: it saves guest flags,
+// compares the saved guest-stack selector, and restores flags on both exits.
+// It must validate as a slot rather than being mistaken for the i386 layout or
+// accepted as arbitrary non-INT3 bytes.
+bool ProbeLongModeSegmentGuardCoverage()
+{
+    runtime::RelocatedRuntimeImage pop_runtime;
+    pop_runtime.valid = true;
+    pop_runtime.relocated_image_base = 0x00124000U;
+    pop_runtime.relocated_entry_linear_address = 0x00124000U;
+    runtime::RelocatedRuntimeObject pop_object;
+    pop_object.relocated_base_address = 0x00124000U;
+    pop_object.memory = {0x07U, 0xC3U};  // pop es; ret
+    pop_object.memory.resize(16U, 0x90U);
+    pop_object.virtual_size =
+        static_cast<std::uint32_t>(pop_object.memory.size());
+    pop_runtime.objects.push_back(std::move(pop_object));
+
+    AotTranslationPlan pop_plan;
+    AotCodeCacheImage pop_image;
+    AotCodeCacheBuildOptions pop_options;
+    pop_options.enable_long_mode_emission = true;
+    pop_options.enable_guarded_segment_pop = true;
+    const bool pop_plan_built = runtime::BuildAotTranslationPlanFromEntry(
+        pop_runtime, pop_runtime.relocated_entry_linear_address, &pop_plan);
+    const bool pop_image_built = pop_plan_built &&
+        runtime::BuildAotCodeCacheImage(pop_plan, pop_options, &pop_image);
+    const bool pop_site_ready = pop_image_built &&
+        pop_image.guarded_segment_pop_sites.size() == 1U;
+    const bool pop_coverage = pop_site_ready &&
+        runtime::ValidateAotCodeCacheHleCoverage(pop_plan, pop_image);
+    const bool pop_ready = pop_coverage;
+    bool pop_corruption_rejected = false;
+    if (pop_ready)
+    {
+        const runtime::AotGuardedSegmentPopSite& site =
+            pop_image.guarded_segment_pop_sites[0];
+        runtime::AotCodeCacheImage broken_pop = pop_image;
+        broken_pop.bytes[site.fallback_offset] = 0x90U;
+        std::uint32_t failure_guest = 0U;
+        pop_corruption_rejected =
+            !runtime::ValidateAotCodeCacheHleCoverage(
+                pop_plan, broken_pop, &failure_guest) &&
+            failure_guest == pop_runtime.relocated_entry_linear_address;
+    }
+
+    const bool all = pop_ready && pop_corruption_rejected;
+    std::cout << "long_mode_segment_guard_coverage="
+              << (all ? "true" : "false")
+              << ",pop_plan=" << (pop_plan_built ? "true" : "false")
+              << ",pop_image=" << (pop_image_built ? "true" : "false")
+              << ",pop_site=" << (pop_site_ready ? "true" : "false")
+              << ",pop_coverage=" << (pop_coverage ? "true" : "false")
+              << ",pop_corruption_rejected="
+              << (pop_corruption_rejected ? "true" : "false") << "\n";
+    return all;
+}
+
 }  // namespace
 
 bool RunLongModeEmissionProbe()
@@ -348,8 +416,10 @@ bool RunLongModeEmissionProbe()
     const bool default_ok = ProbeDefaultIsUnchanged();
     const bool outcomes_ok = ProbeLongModeOutcomes();
     const bool refused_ok = ProbeAllRefusedStillBuilds();
+    const bool segment_guard_coverage_ok = ProbeLongModeSegmentGuardCoverage();
 
-    const bool all = default_ok && outcomes_ok && refused_ok;
+    const bool all = default_ok && outcomes_ok && refused_ok &&
+        segment_guard_coverage_ok;
     std::cout << "long_mode_emission_all=" << (all ? "true" : "false") << "\n";
     return all;
 }

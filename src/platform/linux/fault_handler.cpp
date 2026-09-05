@@ -5,6 +5,10 @@
 #include <csignal>
 #include <cstring>
 #include <pthread.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#include <sys/uio.h>
+#endif
 #include <ucontext.h>
 #include <unistd.h>
 
@@ -141,11 +145,173 @@ void WriteHex(char* out, std::size_t* length, std::uint64_t value)
     }
 }
 
-void ReportUnhandledFault(const int signal_number,
-                          const std::uint32_t instruction_address,
-                          const std::uint32_t access_address)
+void WriteNamedHex(char* out, std::size_t* length, const char* name,
+                   std::uint32_t value)
 {
-    char line[160];
+    for (const char* cursor = name; *cursor != '\0'; ++cursor)
+    {
+        out[(*length)++] = *cursor;
+    }
+    WriteHex(out, length, value);
+}
+
+// Task 597. Read the instruction bytes without dereferencing an arbitrary
+// address from a signal handler. A data fault has already fetched the
+// instruction at RIP, but an instruction-fetch fault may point at an unmapped
+// page, so the latter is reported as unreadable without attempting a read.
+constexpr std::size_t kFaultInstructionByteCount = 16U;
+
+struct FaultInstructionBytes
+{
+    std::uint8_t bytes[kFaultInstructionByteCount] = {};
+    std::size_t count = 0U;
+};
+
+FaultInstructionBytes ReadFaultInstructionBytes(
+    const std::uintptr_t host_instruction_address,
+    const bool execute_access)
+{
+    FaultInstructionBytes result;
+    if (host_instruction_address == 0U || execute_access)
+    {
+        return result;
+    }
+    // `process_vm_readv` reports EFAULT through its return value instead of
+    // delivering another SIGSEGV to this handler. It is used only on the
+    // unhandled path, after the normal callback has declined the fault.
+#if defined(__linux__) && defined(SYS_process_vm_readv)
+    struct iovec local = {};
+    local.iov_base = result.bytes;
+    local.iov_len = sizeof(result.bytes);
+    struct iovec remote = {};
+    remote.iov_base = reinterpret_cast<void*>(host_instruction_address);
+    remote.iov_len = sizeof(result.bytes);
+    const long copied = syscall(
+        SYS_process_vm_readv, static_cast<long>(getpid()), &local, 1U,
+        &remote, 1U, 0U);
+    if (copied > 0L)
+    {
+        result.count = static_cast<std::size_t>(copied) > sizeof(result.bytes)
+            ? sizeof(result.bytes)
+            : static_cast<std::size_t>(copied);
+    }
+#endif
+    return result;
+}
+
+// Task 597. On Linux, GuestCpuContext::Esp is the guest stack pointer carried
+// by the x64 AOT frame. Keep the two dwords immediately before it in the
+// report: after `pop es` and `pop ebx`, the second one is the value that fed
+// the original `pop ebx`.
+constexpr std::size_t kFaultGuestStackWordCount = 4U;
+
+struct FaultGuestStackWords
+{
+    std::uint32_t base = 0U;
+    std::uint32_t words[kFaultGuestStackWordCount] = {};
+    std::size_t count = 0U;
+};
+
+FaultGuestStackWords ReadFaultGuestStackWords(
+    const std::uint32_t guest_esp)
+{
+    FaultGuestStackWords result;
+    if (guest_esp < 8U)
+    {
+        return result;
+    }
+    result.base = guest_esp - 8U;
+#if defined(__linux__) && defined(SYS_process_vm_readv)
+    struct iovec local = {};
+    local.iov_base = result.words;
+    local.iov_len = sizeof(result.words);
+    struct iovec remote = {};
+    remote.iov_base = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(result.base));
+    remote.iov_len = sizeof(result.words);
+    const long copied = syscall(
+        SYS_process_vm_readv, static_cast<long>(getpid()), &local, 1U,
+        &remote, 1U, 0U);
+    if (copied > 0L)
+    {
+        result.count = static_cast<std::size_t>(copied) /
+            sizeof(result.words[0]);
+        if (result.count > kFaultGuestStackWordCount)
+        {
+            result.count = kFaultGuestStackWordCount;
+        }
+    }
+#endif
+    return result;
+}
+
+void WriteByteHex(char* out, std::size_t* length, const std::uint8_t value)
+{
+    const char digits[] = "0123456789abcdef";
+    out[(*length)++] = digits[(value >> 4U) & 0x0FU];
+    out[(*length)++] = digits[value & 0x0FU];
+}
+
+void WriteFaultInstructionBytes(char* out, std::size_t* length,
+                                const std::uintptr_t host_instruction_address,
+                                const bool execute_access)
+{
+    const char prefix[] = " bytes=";
+    for (std::size_t index = 0; index + 1U < sizeof(prefix); ++index)
+    {
+        out[(*length)++] = prefix[index];
+    }
+    const FaultInstructionBytes bytes = ReadFaultInstructionBytes(
+        host_instruction_address, execute_access);
+    if (bytes.count == 0U)
+    {
+        const char unavailable[] = "<unreadable>";
+        for (std::size_t index = 0; index + 1U < sizeof(unavailable); ++index)
+        {
+            out[(*length)++] = unavailable[index];
+        }
+        return;
+    }
+    for (std::size_t index = 0; index < bytes.count; ++index)
+    {
+        if (index != 0U)
+        {
+            out[(*length)++] = ' ';
+        }
+        WriteByteHex(out, length, bytes.bytes[index]);
+    }
+}
+
+void WriteFaultGuestStack(char* out, std::size_t* length,
+                          const std::uint32_t guest_esp)
+{
+    const FaultGuestStackWords stack = ReadFaultGuestStackWords(guest_esp);
+    if (stack.count == 0U)
+    {
+        const char unavailable[] = " guest_stack=<unreadable>";
+        for (std::size_t index = 0; index + 1U < sizeof(unavailable); ++index)
+        {
+            out[(*length)++] = unavailable[index];
+        }
+        return;
+    }
+    static constexpr const char* kNames[kFaultGuestStackWordCount] = {
+        " guest_stack_m8=", " guest_stack_m4=", " guest_stack_0=",
+        " guest_stack_p4="};
+    for (std::size_t index = 0; index < stack.count; ++index)
+    {
+        WriteNamedHex(out, length, kNames[index], stack.words[index]);
+    }
+}
+
+void ReportUnhandledFault(const int signal_number,
+                          const std::uintptr_t host_instruction_address,
+                          const std::uint32_t instruction_address,
+                          const std::uint32_t access_address,
+                          const bool execute_access,
+                          const GuestCpuContext& registers)
+{
+    char line[512];
     std::size_t length = 0;
     const char prefix[] = "[repiu-fault] unhandled signal=";
     for (std::size_t index = 0; index + 1U < sizeof(prefix); ++index)
@@ -153,6 +319,12 @@ void ReportUnhandledFault(const int signal_number,
         line[length++] = prefix[index];
     }
     WriteHex(line, &length, static_cast<std::uint64_t>(signal_number));
+    const char rip_text[] = " rip=";
+    for (std::size_t index = 0; index + 1U < sizeof(rip_text); ++index)
+    {
+        line[length++] = rip_text[index];
+    }
+    WriteHex(line, &length, host_instruction_address);
     const char eip_text[] = " eip=";
     for (std::size_t index = 0; index + 1U < sizeof(eip_text); ++index)
     {
@@ -165,6 +337,17 @@ void ReportUnhandledFault(const int signal_number,
         line[length++] = access_text[index];
     }
     WriteHex(line, &length, access_address);
+    WriteFaultInstructionBytes(line, &length, host_instruction_address,
+                               execute_access);
+    WriteFaultGuestStack(line, &length, registers.Esp);
+    WriteNamedHex(line, &length, " eax=", registers.Eax);
+    WriteNamedHex(line, &length, " ebx=", registers.Ebx);
+    WriteNamedHex(line, &length, " ecx=", registers.Ecx);
+    WriteNamedHex(line, &length, " edx=", registers.Edx);
+    WriteNamedHex(line, &length, " esi=", registers.Esi);
+    WriteNamedHex(line, &length, " edi=", registers.Edi);
+    WriteNamedHex(line, &length, " esp=", registers.Esp);
+    WriteNamedHex(line, &length, " eflags=", registers.EFlags);
     line[length++] = static_cast<char>(10);  // newline
     const ssize_t written = write(2, line, length);
     (void)written;
@@ -204,17 +387,23 @@ void SignalHandler(int signal_number, siginfo_t* info, void* host_context)
 
     if (g_callback(&event, g_user_data) != FaultDisposition::kResume)
     {
-        // Task 578. Say where, before dying.
+        // Tasks 578 and 597. Say where and which host instruction faulted,
+        // before dying.
         //
         // Windows has an unhandled-exception filter that reports this; Linux
         // had nothing, so an unhandled guest fault ended as a bare exit 139
         // with the address in a core dump nobody could read without a debugger.
         // Bringing up x64 execution is exactly the situation that needs it.
         //
-        // Async-signal-safe: `write` only, no formatting library, and the
-        // number rendered by hand into a stack buffer.
-        ReportUnhandledFault(signal_number, registers.Eip,
-                             event.access.fault_address);
+        // Async-signal-safe: direct system-call read plus `write`, no
+        // formatting library, and all values rendered by hand into a stack
+        // buffer.
+        ReportUnhandledFault(signal_number,
+                             HostInstructionPointer(host_context),
+                             registers.Eip,
+                             event.access.fault_address,
+                             event.access.execute_access,
+                             registers);
         // Restoring the default and returning lets the fault happen again with
         // nothing to catch it, which is how an unhandled fault should end:
         // returning resumes at the faulting instruction, because this path

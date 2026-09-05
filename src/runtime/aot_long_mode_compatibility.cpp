@@ -160,15 +160,18 @@ bool NeedsWidthReencode(const std::uint8_t opcode,
 // `PUSH r/m` reaches a second memory operand that may name ESP itself -- the
 // general re-encoder's problem.
 //
-// Prefix-free forms only. `66 50` is `push ax`, a two-byte push with different
-// semantics, and admitting it here would lower it as though it moved four.
+// Task 606 also admits a single operand-size prefix on register PUSH/POP.
+// Its two-byte stack effect is emitted explicitly below.
 bool HasStackSequenceLowering(const std::uint8_t opcode,
                               const ZydisDecodedInstruction& instruction)
 {
     const std::size_t length = instruction.length;
     if (opcode >= 0x50U && opcode <= 0x5FU)
     {
-        return length == 1U;  // PUSH/POP r32, ESP included as a special case
+        return length == 1U ||
+            (length == 2U && instruction.operand_width == 16U &&
+             instruction.raw.prefix_count == 1U &&
+             instruction.raw.prefixes[0].value == 0x66U);
     }
     switch (opcode)
     {
@@ -698,6 +701,37 @@ bool WriteStackSequence(const std::uint8_t* const bytes,
     {
         const std::uint8_t reg = static_cast<std::uint8_t>(opcode & 0x07U);
         const bool is_pop = (opcode & 0x08U) != 0U;
+        if (instruction.operand_width == 16U)
+        {
+            if (reg == 4U)
+            {
+                if (is_pop)
+                {
+                    writer->Byte(0x66U);
+                    writer->ExtendedMove(0x45U, 0x8BU, 0x37U); // mov r14w,[r15]
+                    writer->AdjustGuestEsp(2);
+                    writer->Byte(0x66U);
+                    writer->ExtendedMove(0x45U, 0x89U, 0xF7U); // mov r15w,r14w
+                    return true;
+                }
+                writer->ExtendedMove(0x45U, 0x89U, 0xFEU); // mov r14d,r15d
+                writer->AdjustGuestEsp(-2);
+                writer->Byte(0x66U);
+                writer->ExtendedMove(0x45U, 0x89U, 0x37U); // mov [r15],r14w
+                return true;
+            }
+            if (is_pop)
+            {
+                writer->Byte(0x66U);
+                writer->LoadGuestRegister(reg);
+                writer->AdjustGuestEsp(2);
+                return true;
+            }
+            writer->AdjustGuestEsp(-2);
+            writer->Byte(0x66U);
+            writer->StoreGuestRegister(reg);
+            return true;
+        }
         if (reg == 4U)
         {
             // ESP is not in a host GPR, so these two cannot go through the

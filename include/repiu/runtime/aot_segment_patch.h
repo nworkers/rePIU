@@ -63,6 +63,12 @@ struct AotGuardedSegmentPopPatchStats
     std::uint32_t unresolved_site_count = 0;
 };
 
+struct AotGuardedSegmentReadPatchStats
+{
+    std::uint32_t native_site_count = 0;
+    std::uint32_t unresolved_site_count = 0;
+};
+
 // Patch every segment-override site in `sites` into `bytes`, which must already
 // be writable and must be the base of the placed image the offsets refer to.
 // Returns how many sites were considered.
@@ -95,4 +101,15 @@ std::uint32_t PatchAotGuardedSegmentPopSites(
     std::uint32_t fallback_counter_address,
     AotGuardedSegmentPopPatchStats* stats);
 
+// Patch guarded segment-read sites into already-writable image bytes, on the
+// same contract as the two patchers above. Task 586 moved this off the engine,
+// which had two copies of it -- placement and re-resolution -- each assuming the
+// i386 `9C` opening.
+std::uint32_t PatchAotGuardedSegmentReadSites(
+    std::uint8_t* bytes,
+    const std::vector<AotGuardedSegmentReadSite>& sites,
+    const AotSegmentTable& table,
+    AotGuardedSegmentReadPatchStats* stats);
+
 }  // namespace repiu::runtime
+

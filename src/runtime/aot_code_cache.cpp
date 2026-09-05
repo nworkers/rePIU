@@ -227,6 +227,14 @@ bool EmitLongModeDirectBranch(const AotInstructionRecord& instruction,
         *emitted_instructions = 4U;
         return true;
     }
+    // Task 603. `kFarReturn` is deliberately not sent through the near-return
+    // resolver. Its selector consumption and stack effect depend on the guest
+    // code/stack descriptors, which the current x64 thunk does not carry.
+    // Returning false leaves the caller's fail-closed INT3 boundary in place.
+    if (instruction.kind == AotInstructionKind::kFarReturn)
+    {
+        return false;
+    }
     // Task 561. A direct call is the push of a guest return address followed by
     // the same direct edge above.
     //
@@ -1769,6 +1777,7 @@ bool EmitGuardedSegmentReadSlot(const AotInstructionRecord& instruction,
                              false});
     site.fallback_offset = static_cast<std::uint32_t>(image->bytes.size());
     image->bytes.insert(image->bytes.end(), {0x58U, 0x9DU, 0xCCU});
+    RecordGuardPrologue(*image, &site);
     image->guarded_segment_read_sites.push_back(site);
     return true;
 }
@@ -2142,6 +2151,12 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                                                  instruction.guest_address, 0U,
                                                  cache_offset, false});
                     }
+                    break;
+                case AotInstructionKind::kFarReturn:
+                    image->bytes.push_back(0xCCU);
+                    image->fixups.push_back({AotFixupKind::kHleBoundary,
+                                             instruction.guest_address, 0U,
+                                             cache_offset, false});
                     break;
                 case AotInstructionKind::kDirectCall:
                 case AotInstructionKind::kDirectJump:
@@ -2531,6 +2546,93 @@ bool ValidateAotCodeCacheHleCoverage(
                 const std::uint32_t slot = pop_site !=
                     image.guarded_segment_pop_sites.end()
                         ? pop_site->cache_offset : 0U;
+                if (image.long_mode_emission_enabled)
+                {
+                    std::uint8_t flags_save[kMaxLoweredBytes] = {};
+                    std::uint8_t flags_restore[kMaxLoweredBytes] = {};
+                    std::size_t save_count = 0U;
+                    std::size_t restore_count = 0U;
+                    const std::uint8_t pushfd = 0x9CU;
+                    const std::uint8_t popfd = 0x9DU;
+                    if (!LowerLongModeBytes(&pushfd, 1U, flags_save,
+                                            &save_count, nullptr) ||
+                        !LowerLongModeBytes(&popfd, 1U, flags_restore,
+                                            &restore_count, nullptr))
+                    {
+                        return fail(instruction.guest_address);
+                    }
+                    const std::uint32_t selector_load_offset =
+                        slot + static_cast<std::uint32_t>(save_count);
+                    const std::uint32_t shadow_offset =
+                        selector_load_offset + 10U;
+                    const std::uint32_t mismatch_branch_offset =
+                        shadow_offset + 4U;
+                    const std::uint32_t fallback_offset =
+                        mismatch_branch_offset + 2U +
+                        static_cast<std::uint32_t>(restore_count);
+                    const std::uint32_t success_restore_offset =
+                        fallback_offset + 1U;
+                    const std::uint32_t stack_advance_offset =
+                        success_restore_offset +
+                        static_cast<std::uint32_t>(restore_count);
+                    const std::uint32_t jump_offset = stack_advance_offset + 4U;
+                    const std::uint32_t slot_end = jump_offset + 5U;
+                    const auto fallthrough_fixup = std::find_if(
+                        image.fixups.begin(), image.fixups.end(),
+                        [&instruction, jump_offset](
+                            const AotCodeCacheFixup& fixup) {
+                            return fixup.kind ==
+                                    AotFixupKind::kBlockFallthrough &&
+                                fixup.guest_source == instruction.guest_address &&
+                                fixup.guest_target ==
+                                    instruction.fallthrough_target &&
+                                fixup.cache_patch_offset == jump_offset + 1U &&
+                                fixup.resolved;
+                        });
+                    const bool fallthrough_matches =
+                        fallthrough_fixup != image.fixups.end() &&
+                        fallthrough_fixup->cache_patch_offset ==
+                            jump_offset + 1U;
+                    if (pop_site == image.guarded_segment_pop_sites.end() ||
+                        !fallthrough_matches || slot != map->cache_offset ||
+                        map->emitted_length != slot_end - slot ||
+                        slot_end > image.bytes.size() ||
+                        pop_site->shadow_address_offset != shadow_offset ||
+                        pop_site->fallback_offset != fallback_offset ||
+                        pop_site->has_counter_operands ||
+                        !std::equal(flags_save, flags_save + save_count,
+                                    image.bytes.data() + slot) ||
+                        image.bytes[selector_load_offset] != 0x45U ||
+                        image.bytes[selector_load_offset + 1U] != 0x8BU ||
+                        image.bytes[selector_load_offset + 2U] != 0x77U ||
+                        image.bytes[selector_load_offset + 3U] != 0x04U ||
+                        image.bytes[selector_load_offset + 4U] != 0x67U ||
+                        image.bytes[selector_load_offset + 5U] != 0x66U ||
+                        image.bytes[selector_load_offset + 6U] != 0x44U ||
+                        image.bytes[selector_load_offset + 7U] != 0x3BU ||
+                        image.bytes[selector_load_offset + 8U] != 0x34U ||
+                        image.bytes[selector_load_offset + 9U] != 0x25U ||
+                        image.bytes[mismatch_branch_offset] != 0x74U ||
+                        image.bytes[mismatch_branch_offset + 1U] !=
+                            static_cast<std::uint8_t>(restore_count + 1U) ||
+                        !std::equal(flags_restore,
+                                    flags_restore + restore_count,
+                                    image.bytes.data() +
+                                        mismatch_branch_offset + 2U) ||
+                        image.bytes[fallback_offset] != 0xCCU ||
+                        !std::equal(flags_restore,
+                                    flags_restore + restore_count,
+                                    image.bytes.data() + success_restore_offset) ||
+                        image.bytes[stack_advance_offset] != 0x45U ||
+                        image.bytes[stack_advance_offset + 1U] != 0x8DU ||
+                        image.bytes[stack_advance_offset + 2U] != 0x7FU ||
+                        image.bytes[stack_advance_offset + 3U] != 0x04U ||
+                        image.bytes[jump_offset] != 0xE9U)
+                    {
+                        return fail(instruction.guest_address);
+                    }
+                    continue;
+                }
                 const auto fallthrough_fixup = std::find_if(
                     image.fixups.begin(), image.fixups.end(),
                     [&instruction, slot](const AotCodeCacheFixup& fixup) {

@@ -57,6 +57,7 @@
 #include "aot_dbt_call_step_probe.h"
 #include "aot_dbt_dispatch.h"
 #include "aot_dbt_glide_gate_dispatch.h"
+#include "aot_guard_compare_fault.h"
 #include "aot_runtime_dispatch.h"
 #include "guest_address_watch.h"
 #include "fault_exit_trace.h"
@@ -761,8 +762,20 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
         case 0x8CU:
             if (context->enable_segment_load_hle && HandleSegmentStoreInstruction(win32_context, context)) return true;
             break;
+        case 0x06U: case 0x16U: case 0x1EU:
+            if (context->enable_segment_load_hle && HandleSegmentPushInstruction(win32_context, context)) return true;
+            break;
         case 0x07U: case 0x1FU:
             if (context->enable_segment_load_hle && HandleSegmentPopInstruction(win32_context, context)) return true;
+            break;
+        case 0x0FU:
+            if (context->enable_segment_load_hle && HandleSegmentPushInstruction(win32_context, context)) return true;
+            break;
+        case 0xEAU:
+            if (context->enable_segment_load_hle && HandleFarJumpInstruction(win32_context, context)) return true;
+            break;
+        case 0xCBU:
+            if (context->enable_segment_load_hle && HandleFarReturnInstruction(win32_context, context)) return true;
             break;
         case 0xCDU:
             if (context->enable_traced_dos_hle &&
@@ -809,6 +822,9 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
     }
     if (context->enable_segment_load_hle &&
         (HandleSegmentLoadInstruction(win32_context, context) ||
+         HandleSegmentPushInstruction(win32_context, context) ||
+         HandleFarJumpInstruction(win32_context, context) ||
+         HandleFarReturnInstruction(win32_context, context) ||
          HandleSegmentPopInstruction(win32_context, context) ||
          HandleRepStosdInstruction(win32_context, context) ||
          HandleRepMovsInstruction(win32_context, context) ||
@@ -1387,8 +1403,24 @@ void RecordSingleStepDiagnostics(repiu::platform::GuestCpuContext* win32_context
             std::memory_order_relaxed);
         // Task 581: inside the guest-EIP branch, so the watch sees the address
         // the interpreter is actually about to step rather than every fault.
+        std::optional<std::uint64_t> le_bytes;
+        if (GuestAddressWatchAddress() == eip)
+        {
+            const auto* guest_eip = reinterpret_cast<const std::uint8_t*>(
+                static_cast<std::uintptr_t>(eip));
+            if (IsGuestRangeReadable(context, guest_eip, sizeof(std::uint64_t)))
+            {
+                std::uint64_t captured = 0U;
+                std::memcpy(&captured, guest_eip, sizeof(captured));
+                le_bytes = captured;
+            }
+        }
         RecordGuestAddressWatch(
-            GuestAddressWatchEvent::kSingleStep, eip, eip);
+            GuestAddressWatchEvent::kSingleStep,
+            eip,
+            eip,
+            win32_context,
+            le_bytes);
         bool routea_segment = false;
         if (ClassifyRouteASensitive(eip, &routea_segment))
         {
@@ -2131,6 +2163,27 @@ void CallGuestEntryDirectTimed(ThreadContext* context)
 #endif
 
 #if defined(__x86_64__)
+bool LinuxX64ReturnTraceEnabled()
+{
+    static const bool enabled = std::getenv("REPIU_LINUX_X64_RETURN_TRACE") != nullptr;
+    return enabled;
+}
+
+void TraceLinuxX64ReturnResolver(const char* const result,
+                                 const std::uint32_t guest_source,
+                                 const std::uint32_t cache_address,
+                                 const char* const detail = "")
+{
+    if (!LinuxX64ReturnTraceEnabled())
+    {
+        return;
+    }
+    std::fprintf(stderr,
+                 "[repiu-x64-return] result=%s source=0x%08X cache=0x%08X detail=%s\n",
+                 result, static_cast<unsigned>(guest_source),
+                 static_cast<unsigned>(cache_address), detail);
+}
+
 // Task 578. Where an x64 host asks how to continue.
 //
 // The whole question is "where in the cache is this guest address", and the
@@ -2145,14 +2198,30 @@ std::uintptr_t LinuxX64EngineResolver(
     if (context == nullptr || frame == nullptr ||
         context->aot_placement == nullptr)
     {
+        TraceLinuxX64ReturnResolver("invalid-state",
+                                   frame != nullptr ? frame->guest_source : 0U,
+                                   0U);
         return 0U;
     }
     std::uint32_t cache_address = 0U;
-    if (!FindAotCacheAddress(*context->aot_placement, frame->guest_source,
-                             &cache_address))
+    const std::uint64_t dynamic_attempts_before =
+        context->aot_dynamic_attempt_count.load(std::memory_order_relaxed);
+    if (!ResolveAotTransferTarget(context, frame->guest_source, &cache_address))
     {
+        const bool attempted_dynamic_translation =
+            context->aot_dynamic_attempt_count.load(std::memory_order_relaxed) !=
+            dynamic_attempts_before;
+        TraceLinuxX64ReturnResolver(
+            attempted_dynamic_translation ? "translation-failed"
+                                          : "policy-refused",
+            frame->guest_source, 0U,
+            attempted_dynamic_translation
+                ? context->aot_translation_result.message.c_str()
+                : "");
         return 0U;
     }
+    TraceLinuxX64ReturnResolver("resolved", frame->guest_source,
+                                cache_address);
     return static_cast<std::uintptr_t>(cache_address);
 }
 
@@ -2808,6 +2877,33 @@ void RecordExecutionTrace(repiu::platform::GuestCpuContext* win32_context, Threa
         kExecutionTraceCapacity;
     context->execution_trace[slot] = entry;
     ++context->execution_trace_hit_count;
+    // Task 598. The normal trace ring is reported after a normal attempt
+    // return, but a Linux terminal fault exits before that summary. An explicit
+    // opt-in line preserves the capture without changing trace/reentry state.
+    if (context->execution_trace_log_enabled)
+    {
+        char line[256] = {};
+        const int length = std::snprintf(
+            line, sizeof(line),
+            "[repiu-exec-trace] #%u eip=0x%08X esp=0x%08X stack=0x%08X "
+            "eax=0x%08X ebx=0x%08X edx=0x%08X eflags=0x%08X\n",
+            static_cast<unsigned>(entry.sequence),
+            static_cast<unsigned>(entry.eip),
+            static_cast<unsigned>(entry.esp),
+            static_cast<unsigned>(entry.value_at_esp_offset),
+            static_cast<unsigned>(win32_context->Eax),
+            static_cast<unsigned>(win32_context->Ebx),
+            static_cast<unsigned>(win32_context->Edx),
+            static_cast<unsigned>(win32_context->EFlags));
+        if (length > 0)
+        {
+            repiu::platform::WriteHostErrorStream(
+                line,
+                static_cast<std::size_t>(length) < sizeof(line)
+                    ? static_cast<std::size_t>(length)
+                    : sizeof(line) - 1U);
+        }
+    }
 }
 
 // ResolveSegmentLinearRange promoted to external linkage (relocated out of the
@@ -3500,7 +3596,64 @@ repiu::platform::FaultDisposition DispatchGuestFault(
     {
         RecordGuestAddressWatchCacheFault(
             *context->aot_placement,
-            static_cast<std::uint32_t>(fault.registers->Eip));
+            static_cast<std::uint32_t>(fault.registers->Eip),
+            fault.registers);
+        // Task 597. The byte reporter identifies the host instruction; this
+        // opt-in line identifies whether that address belongs to a registered
+        // guest instruction range. Keep it outside the normal path because a
+        // reverse lookup and formatted output are diagnostic-only costs.
+        if (fault.kind == repiu::platform::FaultKind::kAccessViolation &&
+            std::getenv("REPIU_AOT_FAULT_TRACE") != nullptr)
+        {
+            static std::atomic<std::uint32_t> aot_fault_trace_count{0U};
+            const std::uint32_t occurrence =
+                aot_fault_trace_count.fetch_add(1U, std::memory_order_relaxed) +
+                1U;
+            if (occurrence <= 16U)
+            {
+                const std::uint32_t cache_address =
+                    static_cast<std::uint32_t>(fault.registers->Eip);
+                std::uint32_t guest_address = 0U;
+                const bool mapped = FindAotGuestAddress(
+                    *context->aot_placement, cache_address, &guest_address);
+                std::fprintf(
+                    stderr,
+                    "[repiu-aot-fault] cache=0x%08X mapped=%u guest=0x%08X "
+                    "size=%u maps=%zu n=%u\n",
+                    cache_address,
+                    mapped ? 1U : 0U,
+                    guest_address,
+                    context->aot_placement->size,
+                    context->aot_placement->address_map.size(),
+                    occurrence);
+            }
+        }
+        // Task 586. Hooked beside the watch for the same reason: a fault inside
+        // a guard slot's compare is the one no handler claims, and it is also
+        // the one that silently strands EFLAGS on the guest stack. Reported
+        // once per occurrence and never repaired -- see the header for why.
+        AotGuardCompareFault guard_fault;
+        if (fault.kind == repiu::platform::FaultKind::kAccessViolation &&
+            FindAotGuardCompareFault(
+                *context->aot_placement,
+                static_cast<std::uint32_t>(fault.registers->Eip),
+                &guard_fault))
+        {
+            context->aot_guard_compare_fault_count.fetch_add(
+                1U, std::memory_order_relaxed);
+            std::fprintf(
+                stderr,
+                "[repiu-guard-compare-fault] slot=%s guest=0x%08X "
+                "cache=0x%08X seg=%u shadow=0x%08X access=0x%08X "
+                "esp=0x%08X\n",
+                AotGuardSlotKindName(guard_fault.kind),
+                guard_fault.guest_source,
+                guard_fault.cache_offset,
+                static_cast<unsigned>(guard_fault.segment_register),
+                guard_fault.shadow_address,
+                fault.access.fault_address,
+                static_cast<std::uint32_t>(fault.registers->Esp));
+        }
     }
 
     // Task 323: the single choke point for every exception the guest thread
@@ -3993,6 +4146,15 @@ repiu::platform::FaultDisposition DispatchGuestFault(
             return repiu::platform::FaultDisposition::kResume;
         }
     }
+    // Task 525/596: a breakpoint that reaches here is the guest's own after
+    // the AOT transfer and boundary gates have declined it. This check must
+    // precede HandleSingleStepTrace: a cache boundary can resume at a guest
+    // INT3 with `aot_reentry_pending` still set, and the trace path would then
+    // re-arm TF without advancing the guest breakpoint.
+    if (HandleGuestOwnedBreakpoint(fault, context))
+    {
+        return repiu::platform::FaultDisposition::kResume;
+    }
     // Task 376: `single_step_trace_count` only advances inside
     // HandleSingleStepTrace, which returns immediately when trace mode is off.
     // Comparing it against the exception census therefore measured two different
@@ -4008,21 +4170,6 @@ repiu::platform::FaultDisposition DispatchGuestFault(
          (context->aot_reentry_pending &&
           fault.kind == repiu::platform::FaultKind::kBreakpoint)) &&
         HandleSingleStepTrace(win32_context, context))
-    {
-        return repiu::platform::FaultDisposition::kResume;
-    }
-    // Task 525: a breakpoint that reaches here is the guest's own.
-    //
-    // Last in the chain, and the position is the correctness argument: every
-    // handler that could own an INT3 -- the AOT cache handlers, the boundary
-    // gates, and the trace sentinels inside HandleSingleStepTrace -- has now
-    // declined it. Taking it any earlier would step over a byte that one of
-    // them planted and skip the work that byte exists to trigger.
-    //
-    // It is also the last chance to claim it: below this the chain decodes the
-    // instruction at Eip, and a guest that placed 0xCC there gets reported as
-    // unsupported rather than resumed.
-    if (HandleGuestOwnedBreakpoint(fault, context))
     {
         return repiu::platform::FaultDisposition::kResume;
     }
@@ -4095,6 +4242,21 @@ repiu::platform::FaultDisposition DispatchGuestFault(
     // point sets its own site, and the last call before the return wins, so a
     // fall-through past the family cannot be misread as one of its handlers.
     NoteVehExitSite(context, VehExitSite::kHleChainSegment);
+    if (context->enable_segment_load_hle &&
+        HandleSegmentPushInstruction(win32_context, context))
+    {
+        return repiu::platform::FaultDisposition::kResume;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleFarJumpInstruction(win32_context, context))
+    {
+        return repiu::platform::FaultDisposition::kResume;
+    }
+    if (context->enable_segment_load_hle &&
+        HandleFarReturnInstruction(win32_context, context))
+    {
+        return repiu::platform::FaultDisposition::kResume;
+    }
     if (context->enable_segment_load_hle &&
         HandleSegmentLoadInstruction(win32_context, context))
     {
@@ -4783,6 +4945,10 @@ bool RunExecutionThread(
     {
         context.execution_trace_configured = true;
     }
+    const auto trace_log = repiu::platform::ReadEnvironmentSetting(
+        "REPIU_EXECUTION_TRACE_LOG", 2U);
+    const bool trace_log_requested =
+        trace_log.present && !trace_log.too_long && trace_log.value == "1";
     if (context.execution_trace_configured && aot_placement != nullptr &&
         !InstallAotProbeSentinel(
             aot_placement,
@@ -4790,6 +4956,8 @@ bool RunExecutionThread(
     {
         context.execution_trace_configured = false;
     }
+    context.execution_trace_log_enabled =
+        context.execution_trace_configured && trace_log_requested;
     // A single sentinel only forces single-stepping until the AOT dispatcher
     // (HandleAotReentry) finds a resolvable cached target for the NEXT guest
     // address and jumps straight back into fast cached execution — typically
@@ -5009,9 +5177,41 @@ bool RunExecutionThread(
     repiu::runtime::InitializeSelectorAllocator(
         &context.dpmi_selector_allocator, 0x00A4U);
     repiu::runtime::InitializeDosLowMemory(&context.dos_low_memory);
+    context.shadow_selector_reservation =
+        repiu::runtime::ReserveAotShadowSelectorBlock();
+    context.shadow_selectors = context.shadow_selector_reservation.block;
+    // Task 586. Reported rather than assumed. A failure here is not fatal --
+    // `BuildAotSegmentTable` closes every guard slot when there is no shadow --
+    // but it silently converts a natively-folded run into an all-boundary one,
+    // and every other reservation this loader makes prints a line.
+    //
+    // The ES and SS operand addresses are printed rather than only the base,
+    // because they are what actually distinguishes this block from the
+    // `&context->guest_xx` fallback the guards used before Task 585: the
+    // block's words are four bytes apart, `ThreadContext`'s adjacent
+    // `guest_es`/`guest_ss` are two.
+    const auto* const shadow_block = context.shadow_selectors;
+    std::fprintf(
+        stderr,
+        "[repiu-shadow-selector] valid=%s es=0x%08X ss=0x%08X %s\n",
+        context.shadow_selector_reservation.valid ? "true" : "false",
+        shadow_block == nullptr ? 0U : static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(&shadow_block->selectors[0])),
+        shadow_block == nullptr ? 0U : static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(&shadow_block->selectors[2])),
+        context.shadow_selector_reservation.message);
     for (const repiu::runtime::RelocatedSelectorBinding& binding :
          placement.selector_bindings)
     {
+        const bool executable =
+            (binding.object_flags & repiu::runtime::kLeObjectExecutable) != 0U;
+        const repiu::runtime::GuestCodeDefaultOperandSize code_default =
+            executable
+                ? ((binding.object_flags &
+                    repiu::runtime::kLeObjectBigDefault) != 0U
+                      ? repiu::runtime::GuestCodeDefaultOperandSize::k32
+                      : repiu::runtime::GuestCodeDefaultOperandSize::k16)
+                : repiu::runtime::GuestCodeDefaultOperandSize::kUnknown;
         repiu::runtime::RegisterDescriptor(
             &context.selector_table,
             repiu::runtime::GuestDescriptor{
@@ -5020,6 +5220,9 @@ bool RunExecutionThread(
                 binding.limit,
                 0,
                 true,
+                binding.object_flags,
+                executable,
+                code_default,
         });
     }
     const auto find_linexe_segment =

@@ -68,6 +68,7 @@ const char* AotInstructionKindName(const repiu::runtime::AotInstructionKind kind
         case AotInstructionKind::kConditionalBranch:
             return "kConditionalBranch";
         case AotInstructionKind::kReturn: return "kReturn";
+        case AotInstructionKind::kFarReturn: return "kFarReturn";
         case AotInstructionKind::kHleBoundary: return "kHleBoundary";
         case AotInstructionKind::kIndirectExit: return "kIndirectExit";
         case AotInstructionKind::kJumpTable: return "kJumpTable";
@@ -260,6 +261,8 @@ bool RecordIsEmitted(const repiu::runtime::AotInstructionRecord& record)
             return ReadsConditionOpcode(record.mnemonic);
         case AotInstructionKind::kReturn:
             return repiu::runtime::LongModeReturnDispatchAvailable();
+        case AotInstructionKind::kFarReturn:
+            return false;
         case AotInstructionKind::kSegmentOverrideMem:
             // Task 568. Emitted when the slot admits its shape, and patched by
             // the engine before the cache runs -- the same contract the i386
@@ -449,6 +452,8 @@ void WalkReachable(const repiu::runtime::AotTranslationPlan& plan,
                     break;
                 case AotInstructionKind::kReturn:
                     break;
+                case AotInstructionKind::kFarReturn:
+                    break;
                 case AotInstructionKind::kIndirectExit:
                     if (IndirectExitReturnsToFallthrough(tail))
                     {
@@ -548,6 +553,10 @@ void WalkReachable(const repiu::runtime::AotTranslationPlan& plan,
                 break;
             case AotInstructionKind::kReturn:
                 // Nowhere static to go; the caller's fallthrough is already in.
+                break;
+            case AotInstructionKind::kFarReturn:
+                // Its selector/stack semantics are not yet available to the
+                // x64 planner, so it remains a terminal boundary.
                 break;
             case AotInstructionKind::kIndirectExit:
                 if (IndirectExitReturnsToFallthrough(tail))

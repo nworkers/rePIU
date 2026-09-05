@@ -1361,6 +1361,10 @@ void HandleDosGetInterruptVector(repiu::platform::GuestCpuContext* win32_context
 
     context->guest_es = segment;
     win32_context->SegEs = segment;
+    if (context->shadow_selectors != nullptr)
+    {
+        context->shadow_selectors->selectors[0] = segment;
+    }
     ReResolveAotSegmentOverrides(context);
     win32_context->Ebx = offset;
     win32_context->EFlags &= ~1U;

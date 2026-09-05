@@ -11,9 +11,12 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <limits>
 #include <sstream>
 #include <string>
+#include <cstdlib>
 #include <vector>
 #include "repiu/platform/guest_cpu_context.h"
 #include "repiu/platform/atomic_ops.h"
@@ -276,6 +279,10 @@ void RecordGuestSegmentLoad(repiu::platform::GuestCpuContext* win32_context,
         default:
             break;
     }
+    if (context->shadow_selectors != nullptr && segment_register < 6U)
+    {
+        context->shadow_selectors->selectors[segment_register] = selector;
+    }
     // Task 264 Phase 3a: the guest just (re)configured a segment register, so
     // re-fold selectors and bases into the natively-translated segment-override
     // sites (self-gated on an actual change; no-op without an AOT placement).
@@ -489,6 +496,8 @@ bool DecodeModRmMemoryAddress(
 
 bool HandleSegmentLoadInstruction(repiu::platform::GuestCpuContext* win32_context,
                                   ThreadContext* context);
+bool HandleSegmentPushInstruction(repiu::platform::GuestCpuContext* win32_context,
+                                  ThreadContext* context);
 bool HandleSegmentPopInstruction(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context);
 
@@ -639,6 +648,240 @@ bool HandleSegmentPopInstruction(repiu::platform::GuestCpuContext* win32_context
 
     win32_context->Esp += 4;
     win32_context->Eip += instruction_size;
+    return true;
+}
+
+bool HandleSegmentPushInstruction(repiu::platform::GuestCpuContext* win32_context,
+                                  ThreadContext* context)
+{
+    const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
+        win32_context->Eip);
+    std::uint16_t selector = 0;
+    std::uint32_t instruction_size = 1;
+    switch (instruction[0])
+    {
+        case 0x06U:
+            selector = context->guest_es;
+            break;
+        case 0x0EU:
+            if (!repiu::runtime::FindSelectorForLinearAddress(
+                    context->selector_table, win32_context->Eip, &selector))
+            {
+                return false;
+            }
+            break;
+        case 0x16U:
+            selector = context->guest_ss;
+            break;
+        case 0x1EU:
+            selector = context->guest_ds;
+            break;
+        case 0x0FU:
+            if (instruction[1] == 0xA0U)
+            {
+                selector = context->guest_fs;
+                instruction_size = 2;
+                break;
+            }
+            if (instruction[1] == 0xA8U)
+            {
+                selector = context->guest_gs;
+                instruction_size = 2;
+                break;
+            }
+            return false;
+        default:
+            return false;
+    }
+
+    const std::uint32_t destination =
+        static_cast<std::uint32_t>(win32_context->Esp) - 4U;
+    void* const destination_pointer = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(destination));
+    if (!IsGuestRangeWritable(context, destination_pointer,
+                              sizeof(std::uint32_t)))
+    {
+        return false;
+    }
+
+    // A 32-bit guest push consumes one dword even though the selector is
+    // 16 bits. Zero extension keeps the otherwise unused high word stable.
+    const std::uint32_t value = selector;
+    std::memcpy(destination_pointer, &value, sizeof(value));
+    win32_context->Esp = destination;
+    win32_context->Eip += instruction_size;
+    return true;
+}
+
+bool HandleFarJumpInstruction(repiu::platform::GuestCpuContext* win32_context,
+                              ThreadContext* context)
+{
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return false;
+    }
+    const auto* instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(win32_context->Eip));
+    constexpr std::uint32_t kInstructionSize = 6U;
+    if (!IsGuestRangeReadable(context, instruction, kInstructionSize) ||
+        instruction[0] != 0x66U || instruction[1] != 0xEAU)
+    {
+        return false;
+    }
+
+    const std::uint16_t offset = static_cast<std::uint16_t>(
+        static_cast<std::uint16_t>(instruction[2]) |
+        (static_cast<std::uint16_t>(instruction[3]) << 8U));
+    const std::uint16_t selector = static_cast<std::uint16_t>(
+        static_cast<std::uint16_t>(instruction[4]) |
+        (static_cast<std::uint16_t>(instruction[5]) << 8U));
+    std::uint32_t target = 0;
+    if (!repiu::runtime::TranslateSelectorOffset(
+            context->selector_table, selector, offset, 1U, &target))
+    {
+        return false;
+    }
+    win32_context->Eip = target;
+    return true;
+}
+
+bool HandleFarReturnInstruction(
+    repiu::platform::GuestCpuContext* win32_context,
+    ThreadContext* context)
+{
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return false;
+    }
+
+    const bool trace = std::getenv("REPIU_LINUX_X64_RETURN_TRACE") != nullptr;
+    const auto trace_stage = [&](const char* stage) {
+        if (trace)
+        {
+            std::fprintf(stderr,
+                         "[repiu-far-return] stage=%s eip=0x%08X "
+                         "esp=0x%08X\n",
+                         stage,
+                         static_cast<unsigned>(win32_context->Eip),
+                         static_cast<unsigned>(win32_context->Esp));
+        }
+    };
+
+    const auto* instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(win32_context->Eip));
+    if (!IsGuestRangeReadable(context, instruction, 2U) ||
+        instruction[0] != 0x66U || instruction[1] != 0xCBU)
+    {
+        return false;
+    }
+    trace_stage("matched");
+
+    std::uint16_t current_selector = 0U;
+    if (!repiu::runtime::FindSelectorForLinearAddress(
+            context->selector_table,
+            static_cast<std::uint32_t>(win32_context->Eip),
+            &current_selector))
+    {
+        trace_stage("current-selector-rejected");
+        return false;
+    }
+    if (trace)
+    {
+        const repiu::runtime::GuestDescriptor* descriptor =
+            repiu::runtime::FindDescriptor(
+                context->selector_table, current_selector);
+        std::fprintf(stderr,
+                     "[repiu-far-return] current_selector=0x%04X "
+                     "executable=%s mode=%u object_flags=0x%08X\n",
+                     static_cast<unsigned>(current_selector),
+                     descriptor != nullptr && descriptor->executable
+                         ? "true" : "false",
+                     descriptor != nullptr
+                         ? static_cast<unsigned>(
+                               descriptor->code_default_operand_size)
+                         : 0U,
+                     descriptor != nullptr
+                         ? static_cast<unsigned>(descriptor->object_flags)
+                         : 0U);
+    }
+
+    const std::uint32_t old_esp =
+        static_cast<std::uint32_t>(win32_context->Esp);
+    constexpr std::uint32_t kFrameBytes =
+        repiu::runtime::kGuestFarReturn32FrameBytes;
+    if (old_esp > std::numeric_limits<std::uint32_t>::max() - kFrameBytes)
+    {
+        trace_stage("esp-overflow");
+        return false;
+    }
+    const void* const frame = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(old_esp));
+    if (!IsGuestRangeReadable(context, frame, kFrameBytes))
+    {
+        trace_stage("stack-unreadable");
+        return false;
+    }
+
+    std::uint32_t target_offset = 0U;
+    std::uint32_t raw_selector_slot = 0U;
+    if (!ReadGuestUInt32(context, frame, &target_offset) ||
+        !ReadGuestUInt32(
+            context,
+            reinterpret_cast<const std::uint8_t*>(frame) + 4U,
+            &raw_selector_slot))
+    {
+        trace_stage("stack-read-rejected");
+        return false;
+    }
+
+    repiu::runtime::GuestFarReturnResolution resolution;
+    if (!repiu::runtime::ResolveGuestFarReturn32Frame(
+            context->selector_table,
+            current_selector,
+            target_offset,
+            raw_selector_slot,
+            &resolution))
+    {
+        if (trace)
+        {
+            const std::uint16_t target_selector =
+                static_cast<std::uint16_t>(raw_selector_slot & 0xFFFFU);
+            const repiu::runtime::GuestDescriptor* descriptor =
+                repiu::runtime::FindDescriptor(
+                    context->selector_table, target_selector);
+            std::fprintf(stderr,
+                         "[repiu-far-return] target_offset=0x%08X "
+                         "raw_cs=0x%08X target_selector=0x%04X "
+                         "base=0x%08X limit=0x%08X executable=%s\n",
+                         static_cast<unsigned>(target_offset),
+                         static_cast<unsigned>(raw_selector_slot),
+                         static_cast<unsigned>(target_selector),
+                         descriptor != nullptr
+                             ? static_cast<unsigned>(descriptor->base)
+                             : 0U,
+                         descriptor != nullptr
+                             ? static_cast<unsigned>(descriptor->limit)
+                             : 0U,
+                         descriptor != nullptr && descriptor->executable
+                             ? "true" : "false");
+        }
+        trace_stage("frame-rejected");
+        return false;
+    }
+    if (!IsGuestRangeReadable(
+            context,
+            reinterpret_cast<const void*>(static_cast<std::uintptr_t>(
+                resolution.target_linear)),
+            1U))
+    {
+        trace_stage("target-unreadable");
+        return false;
+    }
+
+    win32_context->Eip = resolution.target_linear;
+    win32_context->SegCs = resolution.target_selector;
+    win32_context->Esp = old_esp + resolution.stack_bytes;
+    trace_stage("resolved");
     return true;
 }
 

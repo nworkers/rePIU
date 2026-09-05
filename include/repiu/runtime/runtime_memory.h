@@ -126,6 +126,7 @@ struct RelocatedSelectorBinding
     std::uint32_t target_object = 0;
     std::uint32_t relocated_base_address = 0;
     std::uint32_t limit = 0;
+    std::uint32_t object_flags = 0;
 };
 
 struct RelocatedRuntimeImage

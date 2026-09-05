@@ -398,6 +398,12 @@ struct AotGuardedSegmentReadSite
     std::uint32_t fallback_offset = 0;
     std::uint8_t segment_register = 0xFFU;
     std::uint8_t gpr_register = 0xFFU;
+    // Task 586. Carried for the same reason as the load, pop and override
+    // sites': re-resolution closes the slot with INT3 and can reopen it, and
+    // the bytes it puts back must be the ones the emitter wrote rather than a
+    // constant that happens to be right for one host.
+    std::uint8_t guard_prologue[kAotSegmentGuardPrologueBytes] = {};
+    std::uint8_t guard_prologue_size = 0;
 };
 
 struct AotTimerSafePointSite

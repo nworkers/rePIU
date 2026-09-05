@@ -495,6 +495,7 @@ bool BuildRelocatedRuntimeImage(
             region.object_index,
             region.relocated_base_address,
             region.virtual_size - 1U,
+            region.flags,
         });
     }
 

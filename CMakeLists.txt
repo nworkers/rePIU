@@ -206,6 +206,7 @@ add_library(repiu_exe
     src/runtime/guest_context.cpp
     src/runtime/aot_code_cache.cpp
     src/runtime/aot_segment_patch.cpp
+    src/runtime/aot_shadow_selector_block.cpp
     src/runtime/aot_direct_return_table.cpp
     src/launcher/rom_set_catalog.cpp
     src/launcher/launcher_settings.cpp
@@ -278,6 +279,7 @@ target_sources(repiu_exe
         src/engine/aot/aot_dbt_indirect_dispatch.cpp
         src/engine/aot/aot_dbt_return_dispatch.cpp
         src/engine/aot/aot_retired_trap_profile.cpp
+        src/engine/aot/aot_guard_compare_fault.cpp
         src/engine/aot/aot_runtime_dispatch.cpp
         src/engine/bios/bios_keyboard_services.cpp
         src/engine/input/sdl_bios_keyboard_adapter.cpp
@@ -564,6 +566,8 @@ add_executable(repiu_core_probe
     src/tools/aot_probe/code_cache_placement_probe.cpp
     src/tools/aot_probe/dos_file_handle_cache_probe.cpp
     src/tools/aot_probe/env_toggle_probe.cpp
+    src/tools/aot_probe/far_jump_probe.cpp
+    src/tools/aot_probe/far_return_probe.cpp
     src/tools/aot_probe/execution_backend_probe.cpp
     src/tools/aot_probe/execution_timeout_probe.cpp
     src/tools/aot_probe/glide_lfb_region_probe.cpp
@@ -574,6 +578,7 @@ add_executable(repiu_core_probe
     src/tools/aot_probe/long_mode_emission_probe.cpp
     src/tools/aot_probe/nvram_path_probe.cpp
     src/tools/aot_probe/pit_timer_probe.cpp
+    src/tools/aot_probe/segment_push_probe.cpp
 )
 
 # Task 513: the six that ask the platform layer for something wasm does not

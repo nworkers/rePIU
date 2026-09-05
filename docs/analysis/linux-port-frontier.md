@@ -1,5 +1,27 @@
 # Linux 이식 frontier / Linux port frontier
 
+## 최신 x64 검증: Task 606 / Latest x64 verification: Task 606
+
+**확인됨 (2026-09-05):** 16비트 register PUSH/POP lowering 누락을 보완한 뒤
+FPU 초기화 루틴의 반환주소 `0x010F4B7E`가 보존된다. Task 605의
+`AX=1E7Fh` 사설 ABI blocker 및 의도적 중첩 진입 결론은 철회한다.
+기본 실행에서 그 호출과 `0x010F4AD2` null 쓰기가 사라졌으며 새 오류는
+guest `0x010F1E0F`, 바이트 `80 3C 24 00` (`CMP byte ptr [ESP],0`)이다.
+fault의 `access`는 실행마다 달라지고 guest ESP `0x0158CC68`과 일치하지 않는다.
+**미확정:** 새 오류에서 raw guest 실행과 host/guest stack 주소의 관계.
+빌드와 core probe 23개는 통과했다.
+
+**Confirmed (2026-09-05):** word register PUSH/POP lowering preserves the FPU
+initialization return address `0x010F4B7E`. Task 605's private `AX=1E7Fh` ABI
+and intentional-overlap conclusions are withdrawn. The default run no longer
+reaches that call or the `0x010F4AD2` null write. The new fault is at guest
+`0x010F1E0F`, bytes `80 3C 24 00`, guest `CMP byte ptr [ESP],0`.
+The access address varies between runs and differs from guest ESP `0x0158CC68`.
+**Unresolved:** raw guest execution and host/guest stack handling at this fault.
+The build and all 23 core probes pass.
+
+근거 / Evidence: [Task 606 log](../work-logs/20260905-606-x64-word-stack-lowering.md).
+
 설계: [20260822-503](../design/20260822-503-linux-execution-engine.md) ·
 작업 지시: [20260822-503](../work-orders/20260822-503-linux-execution-engine.md) ·
 작업 로그: [20260822-503](../work-logs/20260822-503-linux-execution-engine.md) ·
@@ -7505,3 +7527,1295 @@ guest state.
 In front of a segment-shaped wall that is exactly the value that invites a
 misreading, so `[repiu-regs]` **does not print** those three. The details are in
 [Linux x86-64 fault context](linux-x64-fault-context.md).
+
+---
+
+## 3.32 Task 585~587 — shadow selector 뒤의 segment PUSH frontier
+
+Task 585의 low-4GiB shadow selector block은 long-mode guard의 `cmp word ptr
+[disp32]`가 잘린 host pointer를 읽던 문제를 제거했습니다. Linux x64 `pumpit2a`
+실행에서 `0x010F18A4`는 `ESI=0x00000000`으로 환경 블록을 읽고, 이후 문자열을
+스캔하며 ESI가 증가합니다. 이전의 `0x00200202` EFLAGS 누수는 재현되지 않았습니다.
+
+그 다음 원본 frontier는 `0x010F4A96: 06` (`push es`)입니다. 32-bit guest에서는
+유효하지만 long mode에서는 `push es`/`push ss`/`push ds`가 불법입니다. Task 587은
+ES·SS·DS·FS·GS selector를 shadow state에서 읽어 guest stack의 4-byte slot에
+zero-extended dword로 저장하는 HLE를 추가했습니다. 이 handler는 일반 fault chain과
+`DispatchGuestHleHandlers` 양쪽에 연결되어, AOT boundary의 legacy single-step 이전에
+처리됩니다.
+
+현재 실행은 `0x010F4A96`의 AOT boundary까지 도달하고 HLE dispatch에 진입하지만,
+그 뒤 `eip=0x402AAE46`의 SIGTRAP와 바로 다음 `eip=0x402AAE47`의 SIGILL로 끝납니다.
+이 주소들은 guest arena/low AOT cache 주소가 아니며, **guest `push es` SIGILL과는
+별개의 새 frontier**입니다. segment PUSH의 stack 결과를 독립적으로 관측하는 작은
+probe와 high-half host RIP 보존 경로의 attribution이 다음 작업에 필요합니다.
+
+| 항목 | 상태 |
+|---|---|
+| `0x010F18A4` EFLAGS stack leak | **확인됨: 해결됨** |
+| `0x010F4A96`의 원본 opcode | **확인됨: `push es` (`06`)** |
+| segment PUSH HLE의 AOT boundary 도달 | **확인됨** |
+| PUSH 뒤 `0x402AAE46/47` host-address fault 원인 | **미확정** |
+
+---
+
+## 3.32 (English) Tasks 585–587 — segment PUSH frontier after the shadow selector
+
+Task 585's low-4GiB shadow-selector block removed the long-mode guard's
+truncated-host-pointer `cmp word ptr [disp32]`. On Linux x64 `pumpit2a`,
+`0x010F18A4` now reads the environment block with `ESI=0x00000000` and then
+increments ESI while scanning strings. The old `0x00200202` EFLAGS leak no
+longer reproduces.
+
+The next original frontier is `0x010F4A96: 06` (`push es`). It is valid in the
+32-bit guest but `push es`/`push ss`/`push ds` are invalid in long mode. Task
+587 adds HLE that reads ES, SS, DS, FS, or GS from shadow state and writes its
+zero-extended dword to a four-byte guest-stack slot. The handler is connected
+both to the ordinary fault chain and to `DispatchGuestHleHandlers`, before an
+AOT boundary can fall back to legacy single-stepping.
+
+The current run reaches the AOT boundary at `0x010F4A96` and enters HLE
+dispatch, but then ends at SIGTRAP `eip=0x402AAE46` followed immediately by
+SIGILL `eip=0x402AAE47`. Those are neither guest-arena nor low-AOT-cache
+addresses, so they are a **new frontier separate from the guest `push es`
+SIGILL**. The next task needs a small probe for the PUSH stack result and
+attribution of the high-half host-RIP preservation path.
+
+| Item | Status |
+|---|---|
+| EFLAGS stack leak at `0x010F18A4` | **Confirmed: resolved** |
+| Original opcode at `0x010F4A96` | **Confirmed: `push es` (`06`)** |
+| Segment PUSH HLE reaches the AOT boundary | **Confirmed** |
+| Cause of post-PUSH host-address fault at `0x402AAE46/47` | **Unresolved** |
+
+---
+
+## 3.33 Task 588 — full RIP가 가리킨 것은 recovery alias가 아니라 return thunk의 INT3
+
+Task 588은 Linux의 미처리 fault 로그에 kernel context의 full `rip=`을 추가했다.
+`pumpit2a`를 같은 watch point로 재현한 결과는 다음과 같다.
+
+```text
+[repiu-fault] unhandled signal=0x5 rip=0x402aaef7 eip=0x402aaef6 access=0x0
+[repiu-fault] unhandled signal=0x4 rip=0x402aaef7 eip=0x402aaef7 access=0x0
+```
+
+`addr2line`과 `objdump`는 `0x402AAEF7`을 `RecoverGuestStackException`의 `ud2`로,
+그 바로 앞 `0x402AAEF6`을 `RepiuLinuxX64ReturnThunk`의 unresolved `int3`로 확인했다.
+따라서 첫 SIGTRAP는 return thunk가 resolver에서 zero target을 받고 의도적으로 멈춘
+것이며, signal handler가 breakpoint를 한 byte 되감아 `eip=0x402AAEF6`로 보인다.
+그 breakpoint가 미처리된 뒤 기본 동작으로 재실행되면서 바로 다음 주소의 `ud2`가
+SIGILL로 보이는 것은 **인접한 recovery symbol의 fall-through**다.
+
+이번 full RIP는 `0x00000000402AAEF7`로, 4 GiB 아래이고 `eip`와 상위 절반도 같다.
+따라서 Task 587 뒤 fault는 high-half merge alias가 아니라 **Linux x64 return-dispatch
+resolver가 null target을 반환한 frontier**로 확정됐다.
+
+| 질문 | 상태 |
+|---|---|
+| `rip`가 실제 host RIP를 나타내는가 | **확인됨** |
+| `0x402AAEF6`의 정체 | **확인됨: `RepiuLinuxX64ReturnThunk` unresolved INT3** |
+| `0x402AAEF7`의 정체 | **확인됨: `RecoverGuestStackException`의 `ud2`** |
+| return resolver가 zero를 답한 이유 | **미확정** |
+
+다음 작업은 return thunk가 전달하는 guest return address, resolver 선택, target 값을
+독립적으로 기록해 zero-answer 원인을 AOT cache miss, 설치 누락, 또는 resolver 정책으로
+분리해야 한다.
+
+---
+
+## 3.33 (English) Task 588 — full RIP identifies the return thunk's INT3, not a recovery alias
+
+Task 588 added full kernel-context `rip=` to the Linux unhandled-fault line.
+Reproducing `pumpit2a` at the same watch point produced:
+
+```text
+[repiu-fault] unhandled signal=0x5 rip=0x402aaef7 eip=0x402aaef6 access=0x0
+[repiu-fault] unhandled signal=0x4 rip=0x402aaef7 eip=0x402aaef7 access=0x0
+```
+
+`addr2line` and `objdump` identify `0x402AAEF7` as the `ud2` in
+`RecoverGuestStackException`, and the preceding `0x402AAEF6` as the unresolved
+`int3` in `RepiuLinuxX64ReturnThunk`. The first SIGTRAP is therefore the thunk's
+intentional stop after its resolver answered zero. Linux breakpoint handling
+rewinds EIP by one, and re-executing that unhandled INT3 falls through to the
+adjacent recovery symbol's `ud2`, explaining the SIGILL.
+
+The full RIP is `0x00000000402AAEF7`, below 4 GiB, and shares its upper half
+with EIP. So the post-Task-587 fault is not a high-half merge alias: it is a
+**Linux x64 return-dispatch resolver returning a null target**. The reason for
+that zero answer remains unresolved.
+
+---
+
+## 3.34 Task 589 — return target `0x010F4AD1`은 AOT cache miss
+
+Task 589은 `REPIU_LINUX_X64_RETURN_TRACE=1` opt-in을 추가해 normal C++ resolver의
+입력과 답을 기록했다. `push es` watch 재현은 다음과 같다.
+
+```text
+[repiu-x64-return] result=cache-miss source=0x010F4AD1 cache=0x00000000
+```
+
+이는 return thunk가 설치된 `LinuxX64EngineResolver`를 실제로 호출했으며, null
+target의 원인이 dispatch 설치 누락이나 null context가 아니라 `0x010F4AD1`의
+`FindAotCacheAddress` miss임을 확인한다. thunk의 INT3는 이 miss의 의도된 fail-closed
+결과다.
+
+원본 실행 파일의 `0x010F4AC0` 덤프는
+`... 1E 07 52 FF D0 5A C6 03 02 ...`이다. 즉 `0x010F4AD1`은 `5A` (`pop edx`)이며,
+직전 간접 `call eax` (`FF D0`) 다음의 continuation이다. 따라서 miss는 임의의 잘못된
+target이 아니라 **guest basic block 내부 복귀 주소**이고, 현재 map에는 이를 가리키는
+cache entry가 없다.
+
+다음 작업은 `0x010F4AD1`이 return address로 필요한 이유와 address-map 부재의 원인을
+원본/AOT image에서 확인한 뒤, cache miss에서 safe translation 또는 기존 boundary
+reentry로 연결하는 정책을 설계해야 한다. 원본 guest byte를 long mode로 실행해서는 안 된다.
+
+---
+
+## 3.34 (English) Task 589 — return target `0x010F4AD1` is an AOT cache miss
+
+Task 589 added the opt-in `REPIU_LINUX_X64_RETURN_TRACE` for the normal C++
+resolver. The watched segment-PUSH reproduction reports:
+
+```text
+[repiu-x64-return] result=cache-miss source=0x010F4AD1 cache=0x00000000
+```
+
+The return thunk did call its installed `LinuxX64EngineResolver`; the null
+target is neither missing dispatch installation nor null context, but
+`FindAotCacheAddress` missing guest `0x010F4AD1`. The thunk's INT3 is the
+intended fail-closed result of that miss.
+
+The original executable dump at `0x010F4AC0` contains
+`... 1E 07 52 FF D0 5A C6 03 02 ...`: `0x010F4AD1` is `5A` (`pop edx`), the
+continuation immediately after the indirect `call eax` (`FF D0`). The miss is
+therefore structurally a **return to an address inside a guest basic block**,
+not an arbitrary bad target. The current map cannot resolve that continuation
+to a cache entry.
+
+The next task must identify why `0x010F4AD1` is the return address and why it is
+absent from the address map, then design a safe translation or existing-boundary
+reentry policy. It must not execute the original guest byte in long mode.
+
+---
+
+## 3.35 Task 590 — return continuation dynamic translation은 CFG coverage에서 안전하게 거절됐다
+
+Task 590은 Linux x64 return resolver를 직접 map lookup 대신 공용
+`ResolveAotTransferTarget`에 연결했다. 이로써 `0x010F4AD1` miss는 dynamic translation
+worker까지 도달했다. 그러나 실행 결과는 다음과 같다.
+
+```text
+[repiu-x64-return] result=translation-failed source=0x010F4AD1 cache=0x00000000
+    detail=dynamic AOT CFG lacks complete HLE/selector-guard coverage
+```
+
+이는 dispatch 설치 문제나 raw guest 실행이 아니라, dynamic CFG가 해당 continuation에서
+필요한 HLE/selector guard 경로를 완전하게 만들지 못했음을 append validator가 감지해
+거절한 것이다. resolver는 zero를 반환하고 기존 INT3 fail-closed 동작을 유지한다.
+
+다음 구현 단위는 dynamic CFG의 coverage 검증이 요구하는 HLE/selector guard boundary를
+`0x010F4AD1`부터 포함하도록 plan/translation 범위를 보강해야 한다. validator를 우회하거나
+원본 바이트로 재개하는 것은 허용되지 않는다.
+
+---
+
+## 3.35 (English) Task 590 — dynamic translation of the return continuation is safely rejected by CFG coverage
+
+Task 590 connected the Linux x64 return resolver to the shared
+`ResolveAotTransferTarget` policy. The `0x010F4AD1` miss reached the dynamic
+translation worker, which reported:
+
+```text
+[repiu-x64-return] result=translation-failed source=0x010F4AD1 cache=0x00000000
+    detail=dynamic AOT CFG lacks complete HLE/selector-guard coverage
+```
+
+This is neither missing dispatch installation nor raw guest execution. The
+append validator detected incomplete required HLE/selector-guard coverage in
+the dynamic CFG and rejected it; the resolver returns zero and retains the
+existing fail-closed INT3.
+
+The next unit must expand the plan/translation range from `0x010F4AD1` so the
+dynamic CFG contains the required HLE and selector-guard boundaries. It must
+not bypass validation or resume original guest bytes.
+
+---
+
+## 3.36 Task 591 — dynamic coverage 실패 boundary는 `0x010F4ACD`다
+
+Task 591은 `ValidateAotCodeCacheHleCoverage()`가 이미 계산하는
+`failure_guest_address`를 dynamic append result message에 보존했다. validator false,
+append 생략, resolver zero, return thunk의 INT3 fail-closed 동작은 그대로다.
+
+같은 watched `pumpit2a` 재현은 다음을 확인했다.
+
+```text
+[repiu-x64-return] result=translation-failed source=0x010F4AD1 cache=0x00000000
+    detail=dynamic AOT CFG lacks complete HLE/selector-guard coverage at 0x010F4ACD
+```
+
+따라서 `0x010F4AD1` continuation을 번역하는 CFG의 누락은 일반적인 범위 문제가 아니라
+구체적으로 `0x010F4ACD` record의 coverage 계약에 있다. 다음 작업은 이 주소의 planner
+kind와 emitted bytes/options를 대조해야 한다. validator 우회나 raw guest reentry는 여전히
+허용되지 않는다.
+
+---
+
+## 3.36 (English) Task 591 — the dynamic coverage failure boundary is `0x010F4ACD`
+
+Task 591 preserved the `failure_guest_address` already calculated by
+`ValidateAotCodeCacheHleCoverage()` in the dynamic-append result message. The
+false validator outcome, skipped append, zero resolver result, and the return
+thunk's INT3 fail-closed behavior are unchanged.
+
+The same watched `pumpit2a` reproduction established:
+
+```text
+[repiu-x64-return] result=translation-failed source=0x010F4AD1 cache=0x00000000
+    detail=dynamic AOT CFG lacks complete HLE/selector-guard coverage at 0x010F4ACD
+```
+
+The omission is therefore not a generic range issue: it is the coverage contract
+of the concrete `0x010F4ACD` record reached by the continuation CFG. The next
+task must compare that planner kind with emitted bytes and options. It must not
+bypass validation or resume raw guest code.
+
+---
+
+## 3.37 Task 592 — long-mode segment-pop coverage가 return continuation을 통과시켰다
+
+`0x010F4ACD`는 `pop es` (`0x07`) `kGuardedSegmentPop`이었다. Task 592는 long-mode
+emitter의 실제 56-byte lowered flags/guest-stack slot을 validator가 검사하도록 바꿨다.
+정상 synthetic slot은 통과하고 fallback INT3를 손상한 slot은 같은 guest 주소로 거절한다.
+
+watched 실행은 다음처럼 `0x010F4AD1` dynamic translation의 성공을 확인했다.
+
+```text
+[repiu-x64-return] result=resolved source=0x010F4AD1 cache=0x2004FB64 detail=
+```
+
+기존 `0x010F4ACD` coverage 실패와 signal-5/signal-4 return thunk 종료는 사라졌다. 다만
+실행은 이후 raw guest `rip=eip=0x010F010C`에서 `signal=0xB`로 멈췄다. 이는 cache
+continuation이 해결된 뒤 드러난 새 dispatch/resolver frontier이며, raw guest reentry를
+허용하는 해결책은 사용할 수 없다.
+
+---
+
+## 3.37 (English) Task 592 — long-mode segment-pop coverage passes the return continuation
+
+`0x010F4ACD` is `pop es` (`0x07`), a `kGuardedSegmentPop`. Task 592 taught the
+validator to check the long-mode emitter's actual 56-byte lowered
+flags/guest-stack slot. A normal synthetic slot passes and a corrupted fallback
+INT3 is rejected at the same guest address.
+
+The watched run established successful dynamic translation of `0x010F4AD1`:
+
+```text
+[repiu-x64-return] result=resolved source=0x010F4AD1 cache=0x2004FB64 detail=
+```
+
+The former `0x010F4ACD` coverage failure and signal-5/signal-4 return-thunk
+termination are gone. Execution then stops at raw guest `signal=0xB`,
+`rip=eip=0x010F010C`. This is a newly exposed dispatch/resolver frontier, not
+permission to resume raw guest bytes.
+
+---
+
+## 3.38 Task 593 — raw single-step byte attribution identifies `INT 31h`
+
+Task 593 extended the watched single-step event so it can print the first eight
+guest bytes when the watched EIP is fully readable in the guest range. The
+cache-fault event still reports its cache address in `at`; the step event reads
+the guest image and prints the optional little-endian word. The watched
+`pumpit2a` run produced:
+
+```text
+[repiu-watch] event=fault guest=0x010F010C n=1 at=0x200050EF ...
+[repiu-watch] event=step guest=0x010F010C n=1 at=0x010F010C le_bytes=0x00000118820F31CD ...
+[repiu-fault] unhandled signal=0xb rip=0x10f010c eip=0x10f010c access=0x0
+```
+
+The little-endian value is the byte sequence `CD 31 0F 82 18 01 00 00`.
+Therefore the first raw guest instruction at this frontier is `INT 31h`
+(`CD 31`), followed by the bytes of a conditional branch. The fault and step
+events both identify guest `0x010F010C`; only the step event carries the byte
+word because the fault hook's `at` value is a cache address.
+
+The process still reaches the same unhandled Linux x64 `SIGSEGV` at
+`RIP/EIP 0x010F010C`, so the byte attribution is diagnostic evidence only. It
+does not authorize execution of the original guest instruction in long mode.
+
+| Question | Status |
+|---|---|
+| Watched guest bytes at `0x010F010C` | **Confirmed**: `CD 31 0F 82 18 01 00 00` |
+| First instruction at the raw frontier | **Confirmed**: `INT 31h` |
+| Cache fault and single-step guest attribution | **Confirmed**: both identify `0x010F010C` |
+| Safe long-mode handling for `INT 31h` | **Unresolved** |
+
+---
+
+## 3.38 (English) Task 593 — raw single-step byte attribution identifies `INT 31h`
+
+Task 593 extended the watched single-step event to print the first eight guest
+bytes when the watched EIP is fully readable in the guest range. The cache-fault
+event continues to report its cache address in `at`; the step event reads the
+guest image and prints an optional little-endian word. The watched `pumpit2a`
+run produced:
+
+```text
+[repiu-watch] event=fault guest=0x010F010C n=1 at=0x200050EF ...
+[repiu-watch] event=step guest=0x010F010C n=1 at=0x010F010C le_bytes=0x00000118820F31CD ...
+[repiu-fault] unhandled signal=0xb rip=0x10f010c eip=0x10f010c access=0x0
+```
+
+The little-endian value is the byte sequence `CD 31 0F 82 18 01 00 00`.
+The first raw guest instruction at this frontier is therefore `INT 31h`
+(`CD 31`), followed by the bytes of a conditional branch. Both the fault and
+step events identify guest `0x010F010C`; only the step event carries the byte
+word because the fault hook's `at` value is a cache address.
+
+The process still reaches the same unhandled Linux x64 `SIGSEGV` at
+`RIP/EIP 0x010F010C`, so this byte attribution is diagnostic evidence only. It
+does not authorize executing the original guest instruction in long mode.
+
+| Question | Status |
+|---|---|
+| Watched guest bytes at `0x010F010C` | **Confirmed**: `CD 31 0F 82 18 01 00 00` |
+| First instruction at the raw frontier | **Confirmed**: `INT 31h` |
+| Cache fault and single-step guest attribution | **Confirmed**: both identify `0x010F010C` |
+| Safe long-mode handling for `INT 31h` | **Unresolved** |
+
+---
+
+## 3.39 Task 595 — `INT 31h AX=1E7F` is handled as an unsupported DPMI function
+
+Task 595 confirmed that the next raw guest instruction at `0x010F010C`
+loads `AX=1E7F` before executing `INT 31h`. The DPMI HLE dispatcher now
+records the interrupt, returns `AX=8001h` with CF set for an undefined or
+unsupported function, and advances EIP past the two-byte interrupt. The raw
+`INT 31h` is therefore not executed by the Linux x64 host.
+
+The watched run reached the following new frontier:
+
+```text
+[repiu-dos-int] #3 int=31 ax=1E7F
+[repiu-watch] event=fault guest=0x010F022C n=1 at=0x200017F8 ...
+[repiu-watch] event=step guest=0x010F022C n=1 at=0x010F022C le_bytes=0x5B078BADF00DB8CC ...
+```
+
+The bytes are `CC B8 0D F0 AD 8B 07 5B`: a guest-owned `INT3`, followed by
+`MOV EAX,8BADF00Dh`, `POP ES`, and `POP EBX`. The DPMI error choice follows
+the DPMI 1.0 unsupported-function error contract.
+
+| Question | Status |
+|---|---|
+| `INT 31h` dispatch at `0x010F010C` | **Confirmed**: `AX=1E7F` reaches HLE |
+| Unsupported DPMI result | **Confirmed**: `AX=8001h`, CF set, EIP advanced by 2 |
+| Raw Linux x64 execution of `INT 31h` | **Confirmed avoided** |
+| Next guest frontier | **Confirmed**: guest-owned `INT3` at `0x010F022C` |
+
+---
+
+## 3.39 (English) Task 595 — `INT 31h AX=1E7F` is handled as an unsupported DPMI function
+
+Task 595 confirmed that the raw guest instruction at `0x010F010C` loads
+`AX=1E7F` before `INT 31h`. The DPMI HLE dispatcher now records the interrupt,
+returns `AX=8001h` with CF set for an undefined or unsupported function, and
+advances EIP past the two-byte interrupt. Linux x64 therefore never executes
+the raw `INT 31h`.
+
+The watched run reached this new frontier:
+
+```text
+[repiu-dos-int] #3 int=31 ax=1E7F
+[repiu-watch] event=fault guest=0x010F022C n=1 at=0x200017F8 ...
+[repiu-watch] event=step guest=0x010F022C n=1 at=0x010F022C le_bytes=0x5B078BADF00DB8CC ...
+```
+
+The bytes are `CC B8 0D F0 AD 8B 07 5B`: a guest-owned `INT3`, followed by
+`MOV EAX,8BADF00Dh`, `POP ES`, and `POP EBX`. The DPMI result follows the
+DPMI 1.0 unsupported-function error contract.
+
+| Question | Status |
+|---|---|
+| `INT 31h` dispatch at `0x010F010C` | **Confirmed**: `AX=1E7F` reaches HLE |
+| Unsupported DPMI result | **Confirmed**: `AX=8001h`, CF set, EIP advanced by 2 |
+| Raw Linux x64 execution of `INT 31h` | **Confirmed avoided** |
+| Next guest frontier | **Confirmed**: guest-owned `INT3` at `0x010F022C` |
+
+---
+
+## 3.40 Task 596 — guest-owned `INT3` is consumed before single-step reentry
+
+Task 596 moved the guest-owned breakpoint check ahead of the single-step
+trace handler in `DispatchGuestFault`. This preserves the distinction between
+an engine cache breakpoint and the guest's own `CC` byte while allowing the
+guest breakpoint to advance EIP before trace reentry can re-arm TF at the same
+address.
+
+The Linux x64 rebuild and core probe passed:
+
+```text
+core_probe_total=20
+core_probe_failures=0
+core_probe_all=true
+```
+
+The runtime recorded `[repiu-guest-int3]` exactly once and then reached a
+dispatch/cache entry for guest `0x010F0232`. The old `0x010F022C` repetition
+was not observed. The next blocker is a separate unhandled null-address
+SIGSEGV at AOT cache `0x2004FB6B`, after the guest-owned breakpoint has been
+consumed.
+
+| Question | Status |
+|---|---|
+| Guest `INT3` consumed once | **Confirmed** |
+| Old `0x010F022C` repetition | **Resolved** |
+| Next AOT frontier at `0x010F0232` | **Confirmed** |
+| AOT cache fault at `0x2004FB6B` | **Confirmed**: `si_addr=0` |
+| Faulting AOT opcode / slot ownership | **Unresolved** |
+
+---
+
+
+Task 602 reran the probe-success runtime after the Task 601 far-jump HLE. The
+former guest SIGILL at `0x010F016B` remained resolved, and the guest `INT3` at
+the far-jump target `0x01100042` was consumed exactly once.
+
+**Confirmed:** the next watched instruction at `0x010F0232` has bytes
+`07 5B 5E 5F 5D C3`, decoding in the 32-bit guest as `POP ES`, `POP EBX`,
+`POP ESI`, `POP EDI`, `POP EBP`, and `RET`. The return trace reports:
+
+```text
+[repiu-x64-return] result=translation-failed source=0x000000FF cache=0x00000000
+  detail=dynamic AOT target is outside the guest arena
+```
+
+The unhandled-fault guest stack window also reports `guest_stack_m4=0x000000FF`.
+This confirms that guest `RET` consumed `0x000000FF`, rather than a translated
+AOT address. The value is outside the guest arena.
+
+**Confirmed:** the host address belongs to the x64 AOT return boundary:
+
+```text
+00000000402ad353 T RepiuLinuxX64ReturnThunk
+00000000402ad3dd T RecoverGuestStackException
+00000000402ad3df T RecoverHostStackException
+
+402ad3dc: cc                    int3
+402ad3dd <RecoverGuestStackException>:
+402ad3dd: 0f 0b                 ud2
+```
+
+The zero resolver result therefore reaches the intentional `INT3` in
+`RepiuLinuxX64ReturnThunk`; the next instruction is the x64 fail-closed
+`RecoverGuestStackException` `UD2`. This is a host AOT return-resolution
+failure boundary, not an additional guest `UD2` frontier and not a failure of
+the `002C:0004` far-jump translation.
+
+**Unresolved:** `REPIU_DPMI_1E7F_PROBE_SUCCESS=1` clears only CF for diagnosis.
+The actual private-service contract and success-path return frame remain
+unknown. The resolver must not fabricate a target or ignore `0xFF` until the
+original binary flow establishes that ABI.
+
+| Question | Status |
+|---|---|
+| Far-jump HLE `002C:0004 -> 0x01100004` | **Confirmed** |
+| Guest `INT3` at `0x01100042` | **Confirmed**: consumed once |
+| `0x010F0232` instruction boundary | **Confirmed**: guest `RET` |
+| Return source consumed by `RET` | **Confirmed**: `0x000000FF` |
+| Ownership of `0x402AD3DC` / `0x402AD3DD` | **Confirmed**: return sentinel / recovery `UD2` |
+| `1E7Fh` private success ABI | **Unresolved** |
+
+---
+
+## 3.47 (한국어) Task 605 — `0x010F0107`은 유효한 중첩 엔트리이며 `1E7Fh` ABI가 실제 blocker임
+
+> **Task 606에서 결론 철회:** AOT map 등록과 디코드 가능성은 원본의 의도적 진입을
+> 입증하지 않는다. FPU 초기화 중 누락된 `66 PUSH/POP` lowering이 스택 반환주소를
+> `0x010F4B7E`에서 `0x010F0103`으로 손상시켰다. Task 606 수정 후 원래 주소로 복귀하고
+> `1E7Fh` 호출이 사라졌다. 아래의 사설 ABI 및 AOT 오류 반증 표는 당시의 가설 기록이다.
+
+Task 604 이후 `0x010F010C`의 `INT 31h` 주변을 원본 LE object 2와 Linux x64 AOT trace로 다시 대조했다.
+
+**확인됨:** relocated object 2 base는 `0x01010000`이고, guest `0x010F0107`은 object 2 offset `0xE0107`이다. 해당 원본 바이트는 다음과 같다.
+
+```text
+guest 0x010F0104: 66 8B 4D 1E
+guest 0x010F0107: 1E 66 8B 55 1C CD 31
+guest 0x010F010C: CD 31
+```
+
+`0x010F0104`에서 순차 디코드할 때 `1E`는 `66 8B 4D 1E`의 displacement이다. 반면 AOT가 별도 등록한 `0x010F0107`에서 시작하면 `1E`는 유효한 `PUSH DS`이고, 이어서 `MOV DX,[EBP+1C]`와 `INT 31h`가 실행된다. 이는 x86 원본에서 가능한 중첩 엔트리이며, AOT가 instruction 중간으로 잘못 진입했다는 증거가 아니다.
+
+trace도 이를 확인한다.
+
+```text
+[repiu-aot-fault] cache=0x2004FDCE ... guest=0x010F0107
+[repiu-exec-trace] #0 eip=0x010F0107 ... eax=0x00001E7F
+[repiu-exec-trace] #1 eip=0x010F010C ... eax=0x00001E7F
+[repiu-dpmi-1e7f] ... probe-success=0
+```
+
+따라서 주변의 `MOV EAX,7`을 실행시키기 위한 AOT reverse-map 보정이나 guest 바이트 수정은 근거가 없다. 실제 제품 blocker는 caller-prepared `AX=1E7Fh`의 사설 서비스 계약이다. 기본 경로는 `AX=8001h`와 CF를 반환하고, 후속 오류 경로는 `0x010F4AD2`에서 `EBX=0` null write에 도달한다. `REPIU_DPMI_1E7F_PROBE_SUCCESS=1`은 진단용 관찰 스위치일 뿐 성공 ABI 구현이 아니다.
+
+**미확정:** `1E7Fh`의 성공 시 레지스터 출력, 메모리 효과, 반환 frame과 호출자 후속 분기.
+
+| 질문 | 상태 |
+|---|---|
+| `0x010F0107` AOT entry의 유효성 | **확인됨**: `PUSH DS` 중첩 엔트리 |
+| `0x010F010C`에서 caller-prepared `AX=1E7Fh` | **확인됨** |
+| AOT instruction-boundary 오류 | **반증됨** |
+| `0x010F4AD2` `EBX=0` write | **확인됨**: 기본 오류 경로 frontier |
+| `1E7Fh` private success ABI | **미확정** |
+
+## 3.47 (English) Task 605 — `0x010F0107` is a valid overlapping entry and `1E7Fh` is the product blocker
+
+> **Conclusion withdrawn by Task 606:** AOT registration and decodability do not prove
+> intended entry. Missing `66 PUSH/POP` lowering during FPU initialization corrupted
+> the return address from `0x010F4B7E` to `0x010F0103`. Task 606 restores the original
+> return and removes the `1E7Fh` call. The private-ABI and AOT-error-refutation claims
+> below are historical hypotheses, not current conclusions.
+
+After Task 604, the area around the `INT 31h` at `0x010F010C` was correlated again with reconstructed LE object 2 and the Linux x64 AOT trace.
+
+**Confirmed:** relocated object 2 base is `0x01010000`, and guest `0x010F0107` is object 2 offset `0xE0107`. The original bytes are:
+
+```text
+guest 0x010F0104: 66 8B 4D 1E
+guest 0x010F0107: 1E 66 8B 55 1C CD 31
+guest 0x010F010C: CD 31
+```
+
+Sequential decoding from `0x010F0104` treats `1E` as the displacement in `66 8B 4D 1E`. Starting from the separately registered AOT entry `0x010F0107` makes `1E` a valid `PUSH DS`, followed by `MOV DX,[EBP+1C]` and `INT 31h`. This is a valid overlapping entry pattern in the original x86 code, not evidence of an incorrect AOT entry into the middle of an instruction.
+
+The trace confirms the same behavior:
+
+```text
+[repiu-aot-fault] cache=0x2004FDCE ... guest=0x010F0107
+[repiu-exec-trace] #0 eip=0x010F0107 ... eax=0x00001E7F
+[repiu-exec-trace] #1 eip=0x010F010C ... eax=0x00001E7F
+[repiu-dpmi-1e7f] ... probe-success=0
+```
+
+There is therefore no evidence for an AOT reverse-map correction or guest-byte modification to force execution of the nearby `MOV EAX,7`. The actual product blocker is the private service contract for caller-prepared `AX=1E7Fh`. The default path returns `AX=8001h` with CF set, and its follow-on error path reaches the `EBX=0` null write at `0x010F4AD2`. `REPIU_DPMI_1E7F_PROBE_SUCCESS=1` is only a diagnostic observation switch, not a success-ABI implementation.
+
+**Unresolved:** success-register outputs, memory effects, return frame, and caller follow-up branch for `1E7Fh`.
+
+| Question | Status |
+|---|---|
+| Validity of the `0x010F0107` AOT entry | **Confirmed**: overlapping `PUSH DS` entry |
+| Caller-prepared `AX=1E7Fh` at `0x010F010C` | **Confirmed** |
+| AOT instruction-boundary error | **Refuted** |
+| `EBX=0` write at `0x010F4AD2` | **Confirmed**: default error-path frontier |
+| Private `1E7Fh` success ABI | **Unresolved** |
+
+---
+
+## 3.48 Task 604 — Linux x64 mixed-mode far-return frame
+
+### 확인된 사실
+
+Task 603에서 분리한 guest `66 CB` 경계를 fault HLE 경로에 연결했습니다.
+LE object flag를 selector descriptor까지 전달하여 `0x002C` current code를
+executable/16-bit default로, `0x0024` target code를 executable/32-bit
+default로 식별하도록 했습니다.
+
+첫 실행에서는 frame의 `[ESP] = 0x010F0232`, `[ESP+4] = 0x00000024`가
+`0x0024`의 selector-relative offset으로는 limit을 벗어나므로 fail-closed
+되었습니다. 그러나 target descriptor의 relocated base가 `0x01010000`,
+limit이 `0x000EBBDF`이므로 raw 값 `0x010F0232`는 그 descriptor의 mapped
+linear window 안에 있습니다. 이에 따라 resolver는 selector-relative 해석을
+먼저 시도하고, descriptor window로 제한된 absolute-linear 해석을 보조
+표현으로 허용합니다.
+
+### 구현 및 검증 결과
+
+순수 frame resolver probe는 다음을 확인했습니다.
+
+```text
+far_return_frame=true,offset=0x10f0232,selector=0x24,stack_bytes=8,target=0x10f0232
+far_return_refusals=true,relative_offset=true,offset_limit=true,current_32_bit=true
+far_return_all=true
+core_probe_total=23
+core_probe_failures=0
+core_probe_all=true
+```
+
+probe-success 실행에서는 다음과 같이 far return이 실제로 경계를 통과했습니다.
+
+```text
+[repiu-far-return] stage=resolved eip=0x010F0232 esp=0x0158CC5C
+```
+
+기존 frame 시작 ESP가 `0x0158CC54`였으므로 32-bit operand-size far return의
+8바이트 frame 소비가 확인되었습니다. 이후 실행은 기존에 기록된 frontier인
+cache `0x2004FB6B`, guest `0x010F4AD2`로 진행했고, 다음 bytes는
+`67 C6 03 02` (`MOV byte ptr [EBX], 2`), `EBX=0`으로 관찰되었습니다.
+
+### 범위와 미해결 사항
+
+이번 작업은 `66 CB`의 관찰된 frame과 fault HLE 연결만 다룹니다. `INT 31h`
+`AX=1E7Fh`, generic near `RET`, 원본 guest bytes, null 주소 write는 변경하지
+않았습니다. 다음 구현 frontier는 `0x010F4AD2`의 `EBX=0` write semantics이며,
+`1E7Fh` private success ABI는 여전히 미해결입니다.
+
+### English — Task 604
+
+The guest `66 CB` boundary separated in Task 603 is now connected to the fault
+HLE path. LE object flags are carried into selector descriptors, identifying
+current code `0x002C` as executable with a 16-bit default and target code
+`0x0024` as executable with a 32-bit default.
+
+The first runtime attempt rejected `[ESP] = 0x010F0232` and `[ESP+4] = 0x24`
+because the raw value is outside the `0x0024` selector-relative limit. The target
+descriptor has relocated base `0x01010000` and limit `0x000EBBDF`, however, so
+`0x010F0232` lies inside its mapped linear window. The resolver therefore tries
+the selector-relative interpretation first and permits the bounded observed
+absolute-linear representation only within that descriptor window.
+
+The pure resolver and complete core probe passed:
+
+```text
+far_return_all=true
+core_probe_total=23
+core_probe_failures=0
+core_probe_all=true
+```
+
+The probe-success runtime crossed the boundary:
+
+```text
+[repiu-far-return] stage=resolved eip=0x010F0232 esp=0x0158CC5C
+```
+
+The frame began at `0x0158CC54`, confirming consumption of the 8-byte 32-bit
+operand-size far-return frame. Execution then reached the existing frontier at
+cache `0x2004FB6B`, guest `0x010F4AD2`, bytes `67 C6 03 02` (`MOV byte ptr
+[EBX], 2`) with `EBX=0`.
+
+`INT 31h AX=1E7Fh`, generic near `RET`, original guest bytes, and the null write
+semantics remain unchanged. The next implementation frontier is the
+`0x010F4AD2` `EBX=0` write behavior; the private `1E7Fh` success ABI remains
+unresolved.
+
+---
+
+## 3.47 Task 603 — 혼합 모드 `66 CB`를 generic near return에서 분리
+
+Task 603은 Task 602의 `0x000000FF` 원인을 더 앞선 명령 경계까지 분리했다.
+`REPIU_EXECUTION_TRACE_ESP_OFFSET=0x10` 관찰에서 `INT 31h AX=1E7Fh` 진입 전후의
+`ESP=0x0158CC5C`와 `[ESP+0x10]=0x000000FF`가 유지되었다. 따라서 `1E7Fh` HLE가
+해당 값을 기록했다는 근거는 없으며, 문제의 값은 wrapper의 이후 near `RET`가
+읽은 기존 stack word이다.
+
+원본 LE와 정적 코드의 관계도 확인했다. object 2는 `0x2045`로 32-bit
+`OBJBIGDEF` code object이고, object 3은 `0x1045`로 `OBJALIAS16` code object이다.
+object 2의 `0x010F0117` 주변 코드는 `PUSH CS`, `PUSH 0x010F0232` 뒤
+`66 EA`로 selector `002C:0004`에 진입한다. object 3의 끝에는
+`0x01100040: 66 CB`가 있으며, object 3의 16-bit code mode에서 이는
+32-bit offset과 16-bit selector를 소비하는 protected-mode far return으로
+분류된다. LE object flag의 D-bit 및 alias 의미는 [Open Watcom LE flag definitions](https://github.com/open-watcom/open-watcom-v2/blob/master/bld/watcom/h/exeflat.h#L1186-L1243)와
+[IBM LE/LX object table specification](https://komh.github.io/os2books/os2tk45/lxref.htm#37)에
+기록된 정의와 일치한다.
+
+```mermaid
+flowchart LR
+    A[object 2: 32-bit wrapper] -->|66 EA 002C:0004| B[object 3: 16-bit alias]
+    B -->|66 CB at 01100040| C[kFarReturn boundary]
+    C --> D[ABI 미확정 상태로 중단]
+    A -->|near RET at 010F0232| E[기존 stack word 000000FF]
+```
+
+구현은 planner에서 Zydis `ZYDIS_BRANCH_TYPE_FAR` return을 `kFarReturn`과
+`far_return_count`로 분리하고, long-mode 및 기본 emitter가 이를 generic near
+return resolver에 연결하지 않고 `CC` boundary로 남기도록 했다. 합성 `66 CB`
+emission probe도 이 경계를 확인한다.
+
+검증 결과:
+
+```text
+long_mode_emission_far_return_boundary=true
+long_mode_emission_counts=true,copied=1,lowered=4,refused=3
+core_probe_total=22
+core_probe_failures=0
+core_probe_all=true
+```
+
+probe-success runtime은 다음 순서로 진행되었다.
+
+```text
+[repiu-dpmi-1e7f] ... eip=0x010F010C ... esp=0x0158CC5C ... probe-success=1
+[repiu-dos-int] #3 int=31 ax=1E7F
+[repiu-guest-int3] #1 eip=0x01100042 ... esp=0x0158CC48
+[repiu-fault] ... rip=0x1100040 eip=0x1100040 ... bytes=66 cb cc ...
+  guest_stack_m4=0x0 guest_stack_0=0x10f0232 guest_stack_p4=0x24
+```
+
+이제 이 경로에서는 `source=0x000000FF` x64 return resolver 실패가 먼저
+발생하지 않고, guest `0x01100040`의 명시적인 far-return boundary가 관찰된다.
+이는 far-return ABI가 해결되었다는 뜻이 아니다. selector 소비, object D-bit,
+stack-segment B-bit, selector base/limit를 반영한 반환 프레임 규칙은 여전히
+미확정이며, `ESP += 6` 같은 추정 패치는 적용하지 않았다.
+
+| 질문 | 상태 |
+|---|---|
+| `1E7Fh` 진입 시 `0x000000FF` 선행 존재 | **확인됨** |
+| object 2/3 혼합 모드 경로 | **확인됨** |
+| `0x01100040`의 `66 CB` | **확인됨** |
+| `66 CB`의 generic near resolver 유입 | **해결됨**: `kFarReturn` boundary로 분리 |
+| far-return frame ABI | **미확정** |
+| `1E7Fh` private success ABI | **미확정** |
+
+---
+
+## 3.47 (English) Task 603 — separate mixed-mode `66 CB` from generic near return
+
+Task 603 pushed the Task 602 `0x000000FF` finding back to the preceding
+instruction boundary. With `REPIU_EXECUTION_TRACE_ESP_OFFSET=0x10`, the
+`INT 31h AX=1E7Fh` entry and exit preserve `ESP=0x0158CC5C` and
+`[ESP+0x10]=0x000000FF`. There is therefore no evidence that the `1E7Fh` HLE
+wrote the value; it is an existing stack word later consumed by the wrapper's
+near `RET`.
+
+The original LE and static code relationship is also confirmed. Object 2 has
+`0x2045`, a 32-bit `OBJBIGDEF` code object, while object 3 has `0x1045`, an
+`OBJALIAS16` code object. Around object 2's `0x010F0117`, the wrapper executes
+`PUSH CS`, `PUSH 0x010F0232`, and then `66 EA` enters selector `002C:0004`.
+Object 3 ends with `0x01100040: 66 CB`; in its 16-bit code mode this is a
+protected-mode far return consuming a 32-bit offset and a 16-bit selector. The
+LE flag and alias interpretation matches the definitions in [Open Watcom LE flag definitions](https://github.com/open-watcom/open-watcom-v2/blob/master/bld/watcom/h/exeflat.h#L1186-L1243) and the
+[IBM LE/LX object table specification](https://komh.github.io/os2books/os2tk45/lxref.htm#37).
+
+The implementation records Zydis `ZYDIS_BRANCH_TYPE_FAR` returns as
+`kFarReturn` with `far_return_count`. Both the long-mode and default emitters
+keep this kind out of the generic near-return resolver and leave a `CC`
+boundary. The synthetic `66 CB` emission probe verifies the same policy.
+
+Verification:
+
+```text
+long_mode_emission_far_return_boundary=true
+long_mode_emission_counts=true,copied=1,lowered=4,refused=3
+core_probe_total=22
+core_probe_failures=0
+core_probe_all=true
+```
+
+The probe-success runtime now reaches the explicit far-return boundary at guest
+`0x01100040` (`bytes=66 cb cc ...`) after the guest `INT3` at `0x01100042`.
+The former `source=0x000000FF` x64 return-resolver failure is no longer the first
+failure on this path. This does not resolve the far-return ABI: selector
+consumption, object D-bit, stack-segment B-bit, and selector base/limit still
+need a descriptor-aware design. No guessed `ESP += 6` patch was applied.
+
+| Question | Status |
+|---|---|
+| `0x000000FF` already present at `1E7Fh` entry | **Confirmed** |
+| Mixed-mode object 2/object 3 path | **Confirmed** |
+| `66 CB` at `0x01100040` | **Confirmed** |
+| `66 CB` entering generic near resolver | **Resolved**: separated as `kFarReturn` boundary |
+| Far-return frame ABI | **Unresolved** |
+| Private `1E7Fh` success ABI | **Unresolved** |
+
+---
+
+## 3.41 Task 597 — AOT fault는 등록된 `MOV [EBX],2`이며 `EBX=0` 상태를 재현한다
+
+Task 597은 Linux unhandled fault line에 faulting host RIP의 최대 16바이트와
+guest stack window를 추가하고, opt-in reverse address-map 진단을 추가했다. AOT trace는
+반복 fault에서 로그가 폭증하지 않도록 프로세스당 최초 16건으로 제한했다.
+
+Linux x64 대상과 probe를 다시 빌드한 결과는 다음과 같다.
+
+```text
+cmake --build build/linux_x64_debug --target repiu repiu_core_probe -j 2
+exit_code=0
+core_probe_total=20
+core_probe_failures=0
+core_probe_all=true
+```
+
+재빌드본의 `pumpit2a` 실행은 다음 frontier를 재현했다.
+
+```text
+[repiu-dos-int] #3 int=31 ax=1E7F
+[repiu-guest-int3] #1 eip=0x010F022C eax=0x00008001 ...
+[repiu-watch] event=fault guest=0x010F4AD2 n=1 at=0x2004FB6B ... ebx=0x00000000 ...
+[repiu-fault] unhandled signal=0xb rip=0x2004fb6b eip=0x2004fb6b access=0x0 bytes=67 c6 03 02 e9 00 00 00 00 3e be b6 7a 1a 01 3e guest_stack_m8=0x10f4ad1 guest_stack_m4=0xff guest_stack_0=0x0 guest_stack_p4=0x138007c ...
+```
+
+`0x2004FB6B`는 미등록 cache 주소가 아니다. `REPIU_GUEST_WATCH=0x010F4AD2`의
+cache-fault reverse lookup이 `guest=0x010F4AD2`를 반환했다. 별도 opt-in trace에서도
+초기 AOT faults가 `mapped=1`로 기록됐고 cache size/map count가 함께 출력됐다.
+
+fault bytes의 첫 네 바이트 `67 C6 03 02`는 long mode에서 address-size override를
+사용한 `MOV byte ptr [EBX], 02h`이다. 따라서 `EBX=0`과 `si_addr=0`은 같은 명령의
+null write로 일치한다. 이 명령은 host가 임의로 삽입한 코드가 아니라 guest
+`0x010F4AD2`에 대응하는 등록된 AOT translation에서 실행됐다.
+
+stack window는 현재 fault 바로 앞의 `0x010F4AD1`이 `POP EDX`인 사실과도 맞는다.
+`guest_stack_m4=0xFF`가 fault context의 `EDX=0xFF`와 일치한다. 그러므로 이 window는
+근접 stack 상태를 확인하지만, 이 시점만으로 앞선 `POP EBX`의 입력이 0이었다고
+단정할 수는 없다. `EBX=0`이 만들어진 upstream 경로와 실제 guest stack source는
+여전히 미확정이다. synthetic Linux x64 stack/pop probe는 통과하므로 일반적인
+`POP` lowering 계약은 확인됐지만, 이 특정 guest 실행의 상태 보존까지 증명하지는
+않는다.
+
+| 질문 | 상태 |
+|---|---|
+| Linux x64 rebuild / core probe | **확인됨**: exit 0, failures 0 |
+| `0x2004FB6B` cache ownership | **확인됨**: registered AOT map → guest `0x010F4AD2` |
+| faulting guest instruction | **확인됨**: `67 C6 03 02` = `MOV byte ptr [EBX],2` |
+| null write 원인 | **확인됨**: `EBX=0`, `si_addr=0` |
+| `EBX=0`의 upstream source | **미확정** |
+| AOT map gap/raw guest reentry 여부 | **해당 없음**: map gap이 아니며 raw guest 재개도 관측되지 않음 |
+
+다음 작업은 `0x010F0233`의 실제 `POP EBX` 입력과 그 직후 register state를
+관측하여 `EBX=0`이 원본 stack data인지, segment-pop/stack transition 과정의 상태
+손실인지 분리하는 것이다. 원본 guest bytes를 수정하거나 null write를 무시하는
+방식은 사용하지 않는다.
+
+## 3.41 (English) Task 597 — the AOT fault is a registered `MOV [EBX],2` with `EBX=0`
+
+Task 597 added up to 16 bytes at the faulting host RIP and a guest stack window to
+the Linux unhandled-fault line, plus an opt-in reverse address-map diagnostic. The
+AOT trace is capped at the first 16 faults per process so a repeated fault cannot
+flood the log.
+
+The Linux x64 targets and probes were rebuilt successfully:
+
+```text
+cmake --build build/linux_x64_debug --target repiu repiu_core_probe -j 2
+exit_code=0
+core_probe_total=20
+core_probe_failures=0
+core_probe_all=true
+```
+
+The rebuilt `pumpit2a` run reproduced this frontier:
+
+```text
+[repiu-dos-int] #3 int=31 ax=1E7F
+[repiu-guest-int3] #1 eip=0x010F022C eax=0x00008001 ...
+[repiu-watch] event=fault guest=0x010F4AD2 n=1 at=0x2004FB6B ... ebx=0x00000000 ...
+[repiu-fault] unhandled signal=0xb rip=0x2004fb6b eip=0x2004fb6b access=0x0 bytes=67 c6 03 02 e9 00 00 00 00 3e be b6 7a 1a 01 3e guest_stack_m8=0x10f4ad1 guest_stack_m4=0xff guest_stack_0=0x0 guest_stack_p4=0x138007c ...
+```
+
+`0x2004FB6B` is not an unregistered cache address. With
+`REPIU_GUEST_WATCH=0x010F4AD2`, the cache-fault reverse lookup returned
+`guest=0x010F4AD2`. The separate opt-in trace also reported early AOT faults as
+`mapped=1` and included the cache size and map count.
+
+The first four fault bytes, `67 C6 03 02`, decode in long mode as
+`MOV byte ptr [EBX],02h` with a 32-bit address-size override. Thus `EBX=0` and
+`si_addr=0` are consistent with the same instruction attempting a null write.
+This is not host-injected code: it is the registered AOT translation corresponding
+to guest `0x010F4AD2`.
+
+The stack window also agrees with the fact that the preceding guest instruction,
+`0x010F4AD1`, is `POP EDX`: `guest_stack_m4=0xFF` matches the fault context's
+`EDX=0xFF`. The window is therefore useful nearby stack evidence, but it does
+not by itself prove that the earlier `POP EBX` consumed zero. The upstream path
+that produced `EBX=0` and the exact guest stack source remain unresolved. The
+synthetic Linux x64 stack/pop probes pass, confirming the general `POP` lowering
+contract but not state preservation for this particular guest execution.
+
+| Question | Status |
+|---|---|
+| Linux x64 rebuild / core probe | **Confirmed**: exit 0, zero failures |
+| `0x2004FB6B` cache ownership | **Confirmed**: registered AOT map → guest `0x010F4AD2` |
+| Faulting guest instruction | **Confirmed**: `67 C6 03 02` = `MOV byte ptr [EBX],2` |
+| Null write cause | **Confirmed**: `EBX=0`, `si_addr=0` |
+| Upstream source of `EBX=0` | **Unresolved** |
+| AOT map gap/raw guest reentry | **Not applicable**: no map gap and no raw guest resume was observed |
+
+The next task is to observe the actual input and immediate register state at
+`0x010F0233`'s `POP EBX`, separating original stack data from any state loss in
+the segment-pop or stack-transition path. It must not modify the original guest
+bytes or swallow the null write.
+
+---
+
+## 3.42 Task 598 — `POP EBX`는 zero guest stack word를 그대로 소비한다
+
+Task 598은 기존 execution trace ring에 `REPIU_EXECUTION_TRACE_LOG=1` opt-in
+immediate stderr 출력을 추가했다. Linux x64 terminal fault는 normal attempt summary
+이전에 종료되므로, 이 출력이 capture evidence를 보존한다. 기본 실행(설정 없음)에서는
+`[repiu-exec-trace]` line이 없고 Task 597과 같은 `0x010F4AD2` null write만 재현됐다.
+
+두 sentinel로 실행한 한 번의 재현은 다음 capture를 남겼다.
+
+```text
+[repiu-exec-trace] #0 eip=0x010F0233 esp=0x0158CC60 stack=0x00000000
+    eax=0x8BADF00D ebx=0x011A7AEC edx=0x00000000 eflags=0x00200397
+```
+
+첫 sentinel은 `0x010F0232`의 `POP ES`를 one-step으로 실행한다. 따라서 post-step
+EIP `0x010F0233`의 `stack`은 아직 실행되지 않은 `POP EBX`의 입력이며, 실제 값은
+zero다. 이 시점의 EBX는 이전 `0x011A7AEC`이므로 `POP EBX`가 실행되면 EBX가 zero가
+되는 것이 x86 guest semantics와 정확히 일치한다. Task 597의 fault context
+`EBX=0`은 일반적인 AOT `POP` lowering 오류가 아니라 이 guest stack word의 결과다.
+
+두 번째 sentinel(`0x010F0233`)은 예상한 post-step `0x010F0234` line을 남기지 못했다.
+그 capture 직후 host `0x402ACEB9`에서 `SIGTRAP` 뒤 `SIGILL` (`0F 0B`)이 발생했다.
+두 번째 sentinel 없이 동일 trace setting을 실행하면 original null-write frontier는
+재현되었지만 first capture도 발생하지 않았다. 이 dynamic AOT reentry/sentinel
+도달성은 진단 경로의 별도 제한으로 기록하며, 첫 capture가 확인한 zero input보다
+넓은 결론을 내리지 않는다.
+
+Linux x64 rebuild와 core probe는 성공했다(`core_probe_failures=0`).
+
+| 질문 | 상태 |
+|---|---|
+| `POP EBX` 직전 input | **확인됨**: `0x00000000` |
+| `POP EBX` 직전 EBX | **확인됨**: `0x011A7AEC` |
+| 이후 fault의 `EBX=0` | **확인됨**: guest stack zero를 pop한 결과와 일치 |
+| 일반적인 AOT POP lowering 오류 | **배제됨**: 이 frontier의 직접 원인이 아님 |
+| guest stack zero를 만든 upstream writer/contract | **미확정** |
+| 두 번째 sentinel post-POP capture | **미확정**: diagnostic reentry가 host trap/illegal instruction으로 종료 |
+
+다음 분석은 `INT 31h AX=1E7F` HLE가 `AX=8001h, CF=1`을 반환한 직후 이 zero stack
+frame을 만들도록 guest를 error path로 유도했는지, 또는 다른 upstream writer가 zero를
+저장했는지를 원본 control-flow와 DPMI/DOS4GW contract로 분리해야 한다.
+
+## 3.42 (English) Task 598 — `POP EBX` consumes a zero guest-stack word
+
+Task 598 added opt-in immediate stderr output to the existing execution-trace
+ring under `REPIU_EXECUTION_TRACE_LOG=1`. A Linux x64 terminal fault exits before
+the normal attempt summary, so this preserves capture evidence. With the setting
+unset, no `[repiu-exec-trace]` line was emitted and the Task 597 null write at
+`0x010F4AD2` reproduced unchanged.
+
+One two-sentinel reproduction produced this capture:
+
+```text
+[repiu-exec-trace] #0 eip=0x010F0233 esp=0x0158CC60 stack=0x00000000
+    eax=0x8BADF00D ebx=0x011A7AEC edx=0x00000000 eflags=0x00200397
+```
+
+The first sentinel single-steps `POP ES` at `0x010F0232`. Its post-step EIP,
+`0x010F0233`, therefore sees the not-yet-consumed input of `POP EBX`, which is
+actually zero. EBX is still `0x011A7AEC` at that point, so x86 guest semantics
+make `POP EBX` load zero. The Task 597 fault-context `EBX=0` is thus the result
+of this guest stack word, not a generic AOT `POP` lowering error.
+
+The second sentinel at `0x010F0233` did not produce the expected post-step
+`0x010F0234` line. Immediately after the first capture, host `0x402ACEB9`
+received `SIGTRAP` followed by `SIGILL` (`0F 0B`). Running the same trace without
+the second sentinel reproduced the original null-write frontier but did not
+produce the first capture either. This dynamic AOT reentry/sentinel reachability
+is recorded as a diagnostic limitation and does not broaden the conclusion from
+the confirmed zero input.
+
+The Linux x64 rebuild and core probe succeeded (`core_probe_failures=0`).
+
+| Question | Status |
+|---|---|
+| Input before `POP EBX` | **Confirmed**: `0x00000000` |
+| EBX before `POP EBX` | **Confirmed**: `0x011A7AEC` |
+| Later fault's `EBX=0` | **Confirmed**: consistent with popping the zero guest word |
+| Generic AOT POP lowering defect | **Ruled out** as this frontier's direct cause |
+| Upstream writer/contract that produced zero | **Unresolved** |
+| Second-sentinel post-POP capture | **Unresolved**: diagnostic reentry terminated at host trap/illegal instruction |
+
+The next analysis must separate whether `INT 31h AX=1E7F` HLE returning
+`AX=8001h, CF=1` led the guest to construct this zero stack frame as an error
+path, or whether another upstream writer stored zero, using original control
+flow and the DPMI/DOS4GW contract.
+
+## 3.43 Task 599 — `1E7Fh` probe reaches guest `PUSH CS`
+
+**Confirmed:** the DPMI request enters `0x010F010C` with
+`EAX=00001E7Fh`, `EBX=011A7AECh`, `ECX=EDX=0`, `ESI=EDI=011A7B28h`, and
+`ESP=0158CC5Ch`. The Task 595 default response (`AX=8001h`, CF=1) takes the
+immediately following `JB` to `0x010F022C`; it is therefore the direct cause of
+the already documented error path rather than an unrelated upstream writer.
+
+**Confirmed:** an opt-in diagnostic response that preserves registers and clears
+only CF bypasses that branch and stops at guest `0x010F0117`, whose first byte is
+`0Eh` (`PUSH CS`). Linux x64 raises SIGILL because that segment push is not a
+valid long-mode instruction.
+
+**Unresolved:** `AX=1E7Fh` is not established as a public DPMI function and its
+private DOS4GW output contract remains unknown. CF clear is an observation
+probe only; it is not a compatibility implementation.
+
+| Question | Status |
+|---|---|
+| `1E7Fh` entry registers | **Confirmed**: `EAX=1E7Fh`, `EBX=011A7AECh`, `ECX=EDX=0` |
+| Current error path trigger | **Confirmed**: Task 595 CF=1 takes `JB 0x010F022C` |
+| Probe-success next frontier | **Confirmed**: guest `0x010F0117`, `PUSH CS` (`0Eh`) |
+| `1E7Fh` private ABI | **Unresolved** |
+| Appropriate next Linux x64 HLE | **Confirmed**: 32-bit guest `PUSH CS` semantics |
+
+## 3.44 Task 600 — `PUSH CS` HLE reaches operand-size far jump
+
+**Confirmed:** `PUSH CS` (`0Eh`) was the omitted case in the existing
+segment-push HLE. It now finds the sole present selector descriptor that covers
+the current EIP, pushes its zero-extended selector as one dword, and advances
+EIP. No descriptor or a second overlapping descriptor is rejected.
+
+**Confirmed:** PIU `0x010F0117` maps uniquely to selector `0x0024`; the core
+probe also verifies absent and overlapping-range rejection. With the Task 599
+diagnostic CF-clear probe, the old `0x010F0117` SIGILL no longer occurs.
+
+**Confirmed:** the next frontier is guest `0x010F016B`, bytes
+`66 EA 04 00 2C 00`: an operand-size-override far jump to `002C:0004` that is
+invalid in x86-64 long mode.
+
+| Question | Status |
+|---|---|
+| CS selector at `0x010F0117` | **Confirmed**: `0x0024` |
+| `PUSH CS` guest stack width | **Confirmed**: one zero-extended dword |
+| Old `0x010F0117` SIGILL | **Resolved** |
+| New frontier | **Confirmed**: `66 EA ptr16:16`, target `002C:0004` |
+| `1E7Fh` private ABI | **Unresolved** |
+
+---
+
+## 3.44 (English) Task 600 — `PUSH CS` HLE reaches an operand-size far jump
+
+**Confirmed:** `PUSH CS` (`0Eh`) was omitted from the existing segment-push HLE.
+It now finds the sole present selector descriptor that covers current EIP,
+pushes its zero-extended selector as one dword, and advances EIP. An absent or
+overlapping descriptor is rejected.
+
+**Confirmed:** PIU `0x010F0117` maps uniquely to selector `0x0024`, while the
+core probe verifies both absent and overlapping-range rejection. With the Task
+599 diagnostic CF-clear probe, the old `0x010F0117` SIGILL does not recur.
+
+**Confirmed:** the next frontier is guest `0x010F016B`, bytes
+`66 EA 04 00 2C 00`: an operand-size-override far jump to `002C:0004`, invalid
+in x86-64 long mode.
+
+| Question | Status |
+|---|---|
+| CS selector at `0x010F0117` | **Confirmed**: `0x0024` |
+| `PUSH CS` guest stack width | **Confirmed**: one zero-extended dword |
+| Old `0x010F0117` SIGILL | **Resolved** |
+| New frontier | **Confirmed**: `66 EA ptr16:16`, target `002C:0004` |
+| `1E7Fh` private ABI | **Unresolved** |
+
+## 3.45 Task 601 — `66 EA` far jump HLE reaches a new AOT re-entry frontier
+
+**Confirmed:** Linux x64 now handles the observed six-byte guest instruction
+`66 EA 04 00 2C 00` as a 32-bit protected-mode `JMP FAR ptr16:16`. The HLE
+reads offset `0x0004` and selector `0x002C`, validates the selector table entry
+and limit, and updates only the linear guest EIP. The core probe confirms that
+`002C:0004` becomes `0x01100004`; absent and out-of-limit entries are rejected.
+
+**Confirmed:** with the diagnostic `REPIU_DPMI_1E7F_PROBE_SUCCESS=1`, the former
+SIGILL at `0x010F016B` no longer occurs. Execution proceeds through the far
+jump target and consumes the guest-owned `INT3` at `0x01100042` once.
+
+**Unresolved:** execution then reaches a host AOT `CC/UD2` location and emits
+SIGTRAP/SIGILL. This is recorded as a new frontier only. The current evidence
+does not yet distinguish an AOT re-entry sentinel from a genuinely unsupported
+guest path, and does not change the conclusion that the `1E7Fh` success ABI is
+unknown.
+
+| Question | Status |
+|---|---|
+| `66 EA 04 00 2C 00` target | **Confirmed**: `0x01100004` |
+| ESP/EFLAGS effect of HLE | **Confirmed**: preserved |
+| Old `0x010F016B` SIGILL | **Resolved** |
+| Guest `INT3` at `0x01100042` | **Confirmed**: consumed once |
+| Following host `CC/UD2` cause | **Unresolved** |
+| `1E7Fh` private ABI | **Unresolved** |
+
+---
+
+## 3.45 (English) Task 601 — `66 EA` far-jump HLE reaches a new AOT re-entry frontier
+
+**Confirmed:** Linux x64 now handles the observed six-byte guest instruction
+`66 EA 04 00 2C 00` as a 32-bit protected-mode `JMP FAR ptr16:16`. The HLE
+reads offset `0x0004` and selector `0x002C`, validates the selector-table entry
+and limit, and updates only the linear guest EIP. The core probe confirms that
+`002C:0004` becomes `0x01100004`; absent and out-of-limit entries are rejected.
+
+**Confirmed:** with the diagnostic `REPIU_DPMI_1E7F_PROBE_SUCCESS=1`, the former
+SIGILL at `0x010F016B` no longer occurs. Execution proceeds through the far-jump
+target and consumes the guest-owned `INT3` at `0x01100042` once.
+
+**Unresolved:** execution then reaches a host AOT `CC/UD2` location and emits
+SIGTRAP/SIGILL. This is recorded only as a new frontier. The evidence does not
+yet distinguish an AOT re-entry sentinel from a genuinely unsupported guest
+path, and it does not change the conclusion that the `1E7Fh` success ABI is
+unknown.
+
+| Question | Status |
+|---|---|
+| `66 EA 04 00 2C 00` target | **Confirmed**: `0x01100004` |
+| ESP/EFLAGS effect of HLE | **Confirmed**: preserved |
+| Old `0x010F016B` SIGILL | **Resolved** |
+| Guest `INT3` at `0x01100042` | **Confirmed**: consumed once |
+| Following host `CC/UD2` cause | **Unresolved** |
+| `1E7Fh` private ABI | **Unresolved** |
+
+---
+
+## 3.43 (English) Task 599 — the `1E7Fh` probe reaches guest `PUSH CS`
+
+**Confirmed:** the DPMI request reaches `0x010F010C` with
+`EAX=00001E7Fh`, `EBX=011A7AECh`, `ECX=EDX=0`, `ESI=EDI=011A7B28h`, and
+`ESP=0158CC5Ch`. The Task 595 default response (`AX=8001h`, CF=1) takes the
+immediately following `JB` to `0x010F022C`, so it directly selects the
+documented error path rather than merely correlating with an upstream writer.
+
+**Confirmed:** an opt-in diagnostic response that preserves registers and clears
+only CF bypasses that branch and stops at guest `0x010F0117`, whose first byte is
+`0Eh` (`PUSH CS`). Linux x64 raises SIGILL because that segment push is not a
+valid long-mode instruction.
+
+**Unresolved:** `AX=1E7Fh` has not been established as a public DPMI function,
+and its private DOS4GW output contract is unknown. CF clear is an observation
+probe only, not a compatibility implementation.
+
+| Question | Status |
+|---|---|
+| `1E7Fh` entry registers | **Confirmed**: `EAX=1E7Fh`, `EBX=011A7AECh`, `ECX=EDX=0` |
+| Current error path trigger | **Confirmed**: Task 595 CF=1 takes `JB 0x010F022C` |
+| Probe-success next frontier | **Confirmed**: guest `0x010F0117`, `PUSH CS` (`0Eh`) |
+| `1E7Fh` private ABI | **Unresolved** |
+| Appropriate next Linux x64 HLE | **Confirmed**: 32-bit guest `PUSH CS` semantics |
+
+---
+
+## 3.40 (English) Task 596 — the guest-owned `INT3` is consumed before single-step reentry
+
+Task 596 moved the guest-owned breakpoint check ahead of the single-step trace
+handler in `DispatchGuestFault`. This preserves the distinction between an
+engine cache breakpoint and the guest's own `CC` byte while allowing the guest
+breakpoint to advance EIP before trace reentry can re-arm TF at the same address.
+
+The Linux x64 rebuild and core probe passed:
+
+```text
+core_probe_total=20
+core_probe_failures=0
+core_probe_all=true
+```
+
+The runtime recorded `[repiu-guest-int3]` exactly once and then reached a
+dispatch/cache entry for guest `0x010F0232`. The old `0x010F022C` repetition
+did not recur. The next blocker is separate: an unhandled null-address
+SIGSEGV at AOT cache `0x2004FB6B`, after the guest-owned breakpoint was
+consumed.
+
+| Question | Status |
+|---|---|
+| Guest `INT3` consumed once | **Confirmed** |
+| Old `0x010F022C` repetition | **Resolved** |
+| Next AOT frontier at `0x010F0232` | **Confirmed** |
+| AOT cache fault at `0x2004FB6B` | **Confirmed**: `si_addr=0` |
+| Faulting AOT opcode / slot ownership | **Unresolved** |
+
+---
+
+## 3.46 Task 602 — `RET` invalid source reaches the x64 return fail-closed sentinel
+
+Task 602 reran the probe-success runtime after the Task 601 far-jump HLE. The
+old guest SIGILL at `0x010F016B` remained resolved, and the far-jump target's
+guest `INT3` at `0x01100042` was consumed exactly once.
+
+**Confirmed:** the next watched instruction at `0x010F0232` has bytes
+`07 5B 5E 5F 5D C3`, which decode in the 32-bit guest as `POP ES`, `POP EBX`,
+`POP ESI`, `POP EDI`, `POP EBP`, and `RET`. The return trace then reports:
+
+```text
+[repiu-x64-return] result=translation-failed source=0x000000FF cache=0x00000000
+  detail=dynamic AOT target is outside the guest arena
+```
+
+The unhandled-fault guest stack window also reports `guest_stack_m4=0x000000FF`.
+This confirms that the guest `RET` consumed `0x000000FF`, not a translated AOT
+address. The value is outside the guest arena.
+
+**Confirmed:** the host address belongs to the x64 AOT return boundary:
+
+```text
+00000000402ad353 T RepiuLinuxX64ReturnThunk
+00000000402ad3dd T RecoverGuestStackException
+00000000402ad3df T RecoverHostStackException
+
+402ad3dc: cc                    int3
+402ad3dd <RecoverGuestStackException>:
+402ad3dd: 0f 0b                 ud2
+```
+
+The zero resolver result therefore reaches the intentional `INT3` in
+`RepiuLinuxX64ReturnThunk`; the next instruction is the x64 fail-closed
+`RecoverGuestStackException` `UD2`. This is a host AOT return-resolution
+failure boundary, not an additional guest `UD2` frontier and not a failure of
+the `002C:0004` far-jump translation.
+
+**Unresolved:** `REPIU_DPMI_1E7F_PROBE_SUCCESS=1` only clears CF for diagnosis.
+The actual private service contract and the success-path return frame are still
+unknown. The resolver must not fabricate a target or ignore `0xFF` until the
+original binary flow establishes that ABI.
+
+| Question | Status |
+|---|---|
+| Far-jump HLE `002C:0004 -> 0x01100004` | **Confirmed** |
+| Guest `INT3` at `0x01100042` | **Confirmed**: consumed once |
+| `0x010F0232` instruction boundary | **Confirmed**: guest `RET` |
+| Return source consumed by `RET` | **Confirmed**: `0x000000FF` |
+| `0x402AD3DC` / `0x402AD3DD` ownership | **Confirmed**: return sentinel / recovery `UD2` |
+| `1E7Fh` private success ABI | **Unresolved** |
+
+---
+
+## 3.46 (English) Task 602 — `RET` invalid source reaches the x64 return fail-closed sentinel
+
+Task 602 reran the probe-success runtime after the Task 601 far-jump HLE. The
+former guest SIGILL at `0x010F016B` remained resolved, and the guest `INT3` at
+the far-jump target `0x01100042` was consumed exactly once.
+
+**Confirmed:** the next watched instruction at `0x010F0232` has bytes
+`07 5B 5E 5F 5D C3`, decoding in the 32-bit guest as `POP ES`, `POP EBX`,
+`POP ESI`, `POP EDI`, `POP EBP`, and `RET`. The return trace reports:
+
+```text
+[repiu-x64-return] result=translation-failed source=0x000000FF cache=0x00000000
+  detail=dynamic AOT target is outside the guest arena
+```
+
+The unhandled-fault guest stack window also reports `guest_stack_m4=0x000000FF`.
+This confirms that guest `RET` consumed `0x000000FF`, rather than a translated
+AOT address. The value is outside the guest arena.
+
+**Confirmed:** the host address belongs to the x64 AOT return boundary:
+
+```text
+00000000402ad353 T RepiuLinuxX64ReturnThunk
+00000000402ad3dd T RecoverGuestStackException
+00000000402ad3df T RecoverHostStackException
+
+402ad3dc: cc                    int3
+402ad3dd <RecoverGuestStackException>:
+402ad3dd: 0f 0b                 ud2
+```
+
+The zero resolver result therefore reaches the intentional `INT3` in
+`RepiuLinuxX64ReturnThunk`; the next instruction is the x64 fail-closed
+`RecoverGuestStackException` `UD2`. This is a host AOT return-resolution
+failure boundary, not an additional guest `UD2` frontier and not a failure of
+the `002C:0004` far-jump translation.
+
+**Unresolved:** `REPIU_DPMI_1E7F_PROBE_SUCCESS=1` clears only CF for diagnosis.
+The actual private-service contract and success-path return frame remain
+unknown. The resolver must not fabricate a target or ignore `0xFF` until the
+original binary flow establishes that ABI.
+
+| Question | Status |
+|---|---|
+| Far-jump HLE `002C:0004 -> 0x01100004` | **Confirmed** |
+| Guest `INT3` at `0x01100042` | **Confirmed**: consumed once |
+| `0x010F0232` instruction boundary | **Confirmed**: guest `RET` |
+| Return source consumed by `RET` | **Confirmed**: `0x000000FF` |
+| Ownership of `0x402AD3DC` / `0x402AD3DD` | **Confirmed**: return sentinel / recovery `UD2` |
+| `1E7Fh` private success ABI | **Unresolved** |

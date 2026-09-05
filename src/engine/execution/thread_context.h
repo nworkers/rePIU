@@ -28,6 +28,7 @@
 #include "repiu/hle/piu10_isa_board.h"
 #include "repiu/hle/bios_keyboard.h"
 #include "repiu/media/chd_cd_image.h"
+#include "repiu/runtime/aot_shadow_selector_block.h"
 #include "repiu/runtime/dos_low_memory.h"
 #include "repiu/runtime/selector_table.h"
 #include "repiu/engine/veh_exit_site.h"
@@ -520,6 +521,7 @@ struct ThreadContext
     ExecutionProbeDumpRequest execution_probe_dump_request;
     ExecutionProbeDumpResult execution_probe_dump_result;
     bool execution_trace_configured = false;
+    bool execution_trace_log_enabled = false;
     std::uint32_t execution_trace_start_offset = 0;
     std::uint32_t execution_trace_end_offset = 0;
     std::uint32_t execution_trace_esp_offset = 0;
@@ -1138,5 +1140,27 @@ struct ThreadContext
     std::uint32_t debug_emulate_stage = 0;
     std::uint32_t debug_emulate_decode_result = 0;
     std::uint32_t debug_emulate_calculated_address = 0;
+
+    // Task 585. The selector words the emitted guard slots compare against,
+    // in memory their 32-bit operand can name. `shadow_selectors` is null when
+    // the reservation failed; every reader treats that as "no shadow", which
+    // closes the guard slots rather than pointing them somewhere.
+    repiu::runtime::AotShadowSelectorReservation shadow_selector_reservation{};
+    repiu::runtime::AotShadowSelectorBlock* shadow_selectors = nullptr;
+
+    // Task 586. How many faults landed inside a guard slot's compare. This
+    // should stay zero: a compare that faults leaves EFLAGS on the guest stack
+    // (see aot_guard_compare_fault.h), and Task 585 removed the only known way
+    // to reach it.
+    std::atomic<std::uint32_t> aot_guard_compare_fault_count{0};
+
+    ~ThreadContext()
+    {
+        repiu::runtime::ReleaseAotShadowSelectorBlock(
+            shadow_selector_reservation);
+        shadow_selector_reservation = {};
+        shadow_selectors = nullptr;
+    }
 };
 } // namespace repiu::engine
+
