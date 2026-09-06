@@ -36,6 +36,11 @@ void ClearLinuxX64Dispatch()
     repiu_linux_x64_dispatch_resolver = nullptr;
 }
 
+std::uintptr_t LinuxX64DispatchFramePointerAddress()
+{
+    return reinterpret_cast<std::uintptr_t>(&repiu_linux_x64_dispatch_frame);
+}
+
 std::uintptr_t LinuxX64ReturnThunkAddress()
 {
     return reinterpret_cast<std::uintptr_t>(&RepiuLinuxX64ReturnThunk);

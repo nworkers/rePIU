@@ -178,8 +178,10 @@ bool ReadGuardedSegmentReadRegisters(
         instruction.operand_count_visible != 2U ||
         operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER ||
         operands[1].type != ZYDIS_OPERAND_TYPE_REGISTER ||
-        ZydisRegisterGetClass(operands[0].reg.value) !=
-            ZYDIS_REGCLASS_GPR32 ||
+        (ZydisRegisterGetClass(operands[0].reg.value) !=
+             ZYDIS_REGCLASS_GPR16 &&
+         ZydisRegisterGetClass(operands[0].reg.value) !=
+             ZYDIS_REGCLASS_GPR32) ||
         ZydisRegisterGetClass(operands[1].reg.value) !=
             ZYDIS_REGCLASS_SEGMENT)
     {

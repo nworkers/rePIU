@@ -5,6 +5,8 @@
 #include "dos_int21_services.h"
 #include "dpmi_mscdex_services.h"
 #include "aot_runtime_dispatch.h"
+#include "guest_address_watch.h"
+#include "repiu/engine/guest_write_trace.h"
 
 #include <Zydis.h>
 
@@ -20,6 +22,7 @@
 #include <vector>
 #include "repiu/platform/guest_cpu_context.h"
 #include "repiu/platform/atomic_ops.h"
+#include "repiu/platform/host_error_stream.h"
 #include "repiu/platform/safe_memory_copy.h"
 
 namespace repiu::engine
@@ -191,6 +194,41 @@ void SetCompareFlags8(repiu::platform::GuestCpuContext* win32_context,
     SetCompareFlags(win32_context, lhs, rhs, 1U);
 }
 
+void TraceGuestSegmentEvent(const char* event,
+                            const repiu::platform::GuestCpuContext& win32_context,
+                            const ThreadContext& context,
+                            std::uint8_t segment_register,
+                            std::uint16_t selector,
+                            std::uint32_t address_or_register)
+{
+    if (std::getenv("REPIU_DOS_INT_TRACE") == nullptr)
+    {
+        return;
+    }
+
+    char line[256] = {};
+    const int length = std::snprintf(
+        line,
+        sizeof(line),
+        "[repiu-segment-%s] eip=0x%08X segment=%u selector=0x%04X "
+        "value=0x%08X ds=0x%04X es=0x%04X ss=0x%04X fs=0x%04X gs=0x%04X\n",
+        event,
+        static_cast<std::uint32_t>(win32_context.Eip),
+        static_cast<unsigned>(segment_register),
+        static_cast<unsigned>(selector),
+        static_cast<unsigned>(address_or_register),
+        static_cast<unsigned>(context.guest_ds),
+        static_cast<unsigned>(context.guest_es),
+        static_cast<unsigned>(context.guest_ss),
+        static_cast<unsigned>(context.guest_fs),
+        static_cast<unsigned>(context.guest_gs));
+    if (length > 0)
+    {
+        repiu::platform::WriteHostErrorStream(
+            line, static_cast<std::size_t>(length));
+    }
+}
+
 void RecordGuestSegmentLoad(repiu::platform::GuestCpuContext* win32_context,
                             ThreadContext* context,
                             std::uint8_t segment_register,
@@ -279,6 +317,12 @@ void RecordGuestSegmentLoad(repiu::platform::GuestCpuContext* win32_context,
         default:
             break;
     }
+    TraceGuestSegmentEvent("load",
+                           *win32_context,
+                           *context,
+                           segment_register,
+                           selector,
+                           source);
     if (context->shadow_selectors != nullptr && segment_register < 6U)
     {
         context->shadow_selectors->selectors[segment_register] = selector;
@@ -309,6 +353,12 @@ void RecordGuestSegmentStore(repiu::platform::GuestCpuContext* win32_context,
     context->last_segment_store_selector = selector;
     context->last_segment_store_destination = destination;
     if (segment_register < 6U) { ++context->handled_segment_store_register_counts[segment_register]; }
+    TraceGuestSegmentEvent("store",
+                           *win32_context,
+                           *context,
+                           segment_register,
+                           selector,
+                           destination);
 }
 
 void RecordGuestSegmentMemoryLoad(repiu::platform::GuestCpuContext* win32_context,
@@ -654,6 +704,10 @@ bool HandleSegmentPopInstruction(repiu::platform::GuestCpuContext* win32_context
 bool HandleSegmentPushInstruction(repiu::platform::GuestCpuContext* win32_context,
                                   ThreadContext* context)
 {
+    const std::uint32_t instruction_address =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    const std::uint32_t esp_before =
+        static_cast<std::uint32_t>(win32_context->Esp);
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
     std::uint16_t selector = 0;
@@ -707,9 +761,37 @@ bool HandleSegmentPushInstruction(repiu::platform::GuestCpuContext* win32_contex
     // A 32-bit guest push consumes one dword even though the selector is
     // 16 bits. Zero extension keeps the otherwise unused high word stable.
     const std::uint32_t value = selector;
-    std::memcpy(destination_pointer, &value, sizeof(value));
+    if (GuestWriteTracePageMatches(destination))
+    {
+        // A diagnostic write-watch makes the guest page execute-read. Reuse
+        // the ordinary HLE write helper so this opt-in path temporarily
+        // restores write access and then re-arms the watch protection.
+        if (!WriteGuestUInt32(context, destination_pointer, value))
+        {
+            return false;
+        }
+    }
+    else
+    {
+        std::memcpy(destination_pointer, &value, sizeof(value));
+    }
     win32_context->Esp = destination;
     win32_context->Eip += instruction_size;
+    if (GuestAddressWatchAddress() == instruction_address)
+    {
+        std::fprintf(
+            stderr,
+            "[repiu-segment-hle-watch] eip=0x%08X opcode=0x%02X selector=0x%04X destination=0x%08X value=0x%08X esp=0x%08X->0x%08X next_eip=0x%08X size=%u\n",
+            instruction_address,
+            static_cast<unsigned int>(instruction[0]),
+            static_cast<unsigned int>(selector),
+            destination,
+            value,
+            esp_before,
+            static_cast<std::uint32_t>(win32_context->Esp),
+            static_cast<std::uint32_t>(win32_context->Eip),
+            instruction_size);
+    }
     return true;
 }
 
@@ -2733,7 +2815,11 @@ bool HandleTracedMemoryCompareByteInstruction(repiu::platform::GuestCpuContext* 
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
-    if (instruction[0] != 0x38)
+    const bool register_compare = instruction[0] == 0x38U;
+    const bool immediate_compare =
+        instruction[0] == 0x80U &&
+        ((instruction[1] >> 3U) & 0x07U) == 0x07U;
+    if (!register_compare && !immediate_compare)
     {
         return false;
     }
@@ -2748,22 +2834,32 @@ bool HandleTracedMemoryCompareByteInstruction(repiu::platform::GuestCpuContext* 
         return false;
     }
 
-    std::uint8_t source_value = 0;
-    if (!ReadShadowUInt8(context, source, &source_value))
+    std::uint8_t source_value = 0U;
+    const void* source_pointer = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(source));
+    if (immediate_compare &&
+        !ReadGuestUInt8(context, source_pointer, &source_value) &&
+        !ReadShadowUInt8(context, source, &source_value))
+    {
+        return false;
+    }
+    if (register_compare && !ReadShadowUInt8(context, source, &source_value))
     {
         return false;
     }
 
-    const std::uint8_t register_index = (instruction[1] >> 3) & 0x07U;
-    const std::uint8_t register_value =
-        ReadGeneralRegister8(win32_context, register_index);
+    const std::uint8_t right_value = register_compare
+        ? ReadGeneralRegister8(
+              win32_context,
+              static_cast<std::uint8_t>((instruction[1] >> 3U) & 0x07U))
+        : instruction[instruction_size];
     const std::uint8_t result = static_cast<std::uint8_t>(
-        source_value - register_value);
+        source_value - right_value);
     UpdateSubtract8Flags(win32_context,
                          source_value,
-                         register_value,
+                         right_value,
                          result);
-    win32_context->Eip += instruction_size;
+    win32_context->Eip += instruction_size + (immediate_compare ? 1U : 0U);
     return true;
 }
 
@@ -2963,6 +3059,42 @@ bool HandleTracedFpuMemoryInstruction(repiu::platform::GuestCpuContext* win32_co
     return true;
 }
 
+void TraceDosInterrupt21Registers(
+    const char* phase,
+    const repiu::platform::GuestCpuContext& win32_context,
+    const ThreadContext& context)
+{
+    if (std::getenv("REPIU_DOS_INT_TRACE") == nullptr)
+    {
+        return;
+    }
+
+    char line[256] = {};
+    const int length = std::snprintf(
+        line,
+        sizeof(line),
+        "[repiu-dos-int-context] phase=%s eip=0x%08X eax=0x%08X "
+        "ebx=0x%08X ecx=0x%08X edx=0x%08X esi=0x%08X edi=0x%08X "
+        "esp=0x%08X eflags=0x%08X gs=0x%04X linexe=%u\n",
+        phase,
+        static_cast<std::uint32_t>(win32_context.Eip),
+        static_cast<std::uint32_t>(win32_context.Eax),
+        static_cast<std::uint32_t>(win32_context.Ebx),
+        static_cast<std::uint32_t>(win32_context.Ecx),
+        static_cast<std::uint32_t>(win32_context.Edx),
+        static_cast<std::uint32_t>(win32_context.Esi),
+        static_cast<std::uint32_t>(win32_context.Edi),
+        static_cast<std::uint32_t>(win32_context.Esp),
+        static_cast<std::uint32_t>(win32_context.EFlags),
+        static_cast<unsigned>(context.guest_gs),
+        context.linexe_environment_active ? 1U : 0U);
+    if (length > 0)
+    {
+        repiu::platform::WriteHostErrorStream(
+            line, static_cast<std::size_t>(length));
+    }
+}
+
 bool HandleTracedDosInterrupt21(repiu::platform::GuestCpuContext* win32_context,
                                 ThreadContext* context)
 {
@@ -2992,6 +3124,7 @@ bool HandleTracedDosInterrupt21(repiu::platform::GuestCpuContext* win32_context,
         win32_context->Eax & 0xFFFFU);
     const std::uint8_t ah = static_cast<std::uint8_t>(
         (win32_context->Eax >> 8) & 0xFF);
+    TraceDosInterrupt21Registers("enter", *win32_context, *context);
     switch (ah)
     {
         case 0x09:
@@ -3006,10 +3139,16 @@ bool HandleTracedDosInterrupt21(repiu::platform::GuestCpuContext* win32_context,
             RecordHandledDosInterrupt(context, 0x21, ax);
             win32_context->Eax =
                 (win32_context->Eax & 0xFFFF0000U) | 0x0007U;
+            if (Dos4gwPharlapMemoryPathProbeEnabled())
+            {
+                win32_context->Eax |= 0x44580000U;
+            }
             win32_context->Ebx = 0;
             win32_context->Ecx = 0;
             win32_context->EFlags &= ~1U;
             win32_context->Eip += 2;
+            TraceDosInterrupt21Registers("return", *win32_context,
+                                         *context);
             return true;
         case 0x25:
             RecordHandledDosInterrupt(context, 0x21, ax);
@@ -3051,6 +3190,7 @@ bool HandleTracedDosInterrupt21(repiu::platform::GuestCpuContext* win32_context,
                 return false;
             }
             win32_context->Eip += 2;
+            TraceDosInterrupt21Registers("return", *win32_context, *context);
             return true;
         case 0x3E:
             RecordHandledDosInterrupt(context, 0x21, ax);
@@ -3076,9 +3216,22 @@ bool HandleTracedDosInterrupt21(repiu::platform::GuestCpuContext* win32_context,
             const std::uint32_t byte_count = win32_context->Ecx;
             AppendConsoleOutput(
                 context, text, byte_count, win32_context->Ebx == 2U);
+            if (std::getenv("REPIU_DOS_INT_TRACE") != nullptr)
+            {
+                fprintf(stderr,
+                        "[repiu-dos-io] op=console-write eip=0x%08X "
+                        "eax=0x%08X handle=0x%04X buffer=0x%08X "
+                        "requested=%u actual=%u error=0x0000\n",
+                        static_cast<std::uint32_t>(win32_context->Eip),
+                        static_cast<std::uint32_t>(win32_context->Eax),
+                        static_cast<unsigned>(win32_context->Ebx & 0xFFFFU),
+                        static_cast<std::uint32_t>(win32_context->Edx),
+                        byte_count, byte_count);
+            }
             win32_context->Eax = byte_count;
             win32_context->EFlags &= ~1U;
             win32_context->Eip += 2;
+            TraceDosInterrupt21Registers("return", *win32_context, *context);
             return true;
         }
         case 0x42:
@@ -3117,10 +3270,17 @@ bool HandleTracedDosInterrupt21(repiu::platform::GuestCpuContext* win32_context,
             RecordHandledDosInterrupt(context, 0x21, ax);
             CaptureDosTermination(win32_context, context);
             RecoverFromHleExit(win32_context, context);
+            TraceDosInterrupt21Registers("return", *win32_context, *context);
             return true;
         case 0xFF:
             RecordHandledDosInterrupt(context, 0x21, ax);
-            return HandleDosInterrupt21(win32_context, context);
+            {
+                const bool handled = HandleDosInterrupt21(
+                    win32_context, context);
+                TraceDosInterrupt21Registers(
+                    handled ? "return" : "reject", *win32_context, *context);
+                return handled;
+            }
         case 0xED:
             RecordHandledDosInterrupt(context, 0x21, ax);
             win32_context->Eax &= 0xFFFFFF00U;
@@ -3134,6 +3294,8 @@ bool HandleTracedDosInterrupt21(repiu::platform::GuestCpuContext* win32_context,
                 return false;
             }
             win32_context->Eip += 2;
+            TraceDosInterrupt21Registers("return", *win32_context,
+                                         *context);
             return true;
         default:
         {

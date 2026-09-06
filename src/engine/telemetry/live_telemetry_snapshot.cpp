@@ -806,12 +806,11 @@ void CopySnapshotFromContextRecord(const repiu::platform::GuestCpuContext& sourc
         return;
     }
 
-// Task 507: `_M_IX86` alone is MSVC's macro, so every Linux build compiled the
-// branch below away and left `captured = false` -- which is how the timeout
-// snapshot came to be empty on a host where the registers were there to read.
-// The form is `native_phase_sampler.cpp`'s, and the question both ask is the
-// architecture rather than the compiler.
-#if defined(_M_IX86) || defined(__i386__)
+// Task 507 and Task 613: the question is whether this is the fixed-width guest
+// context, not whether the host is a 32-bit process. Linux x64 carries the
+// same guest fields in its platform context and must copy them as well; only a
+// native Windows x64 CONTEXT lacks these Eip/Eax-style fields.
+#if defined(_M_IX86) || defined(__i386__) || defined(__x86_64__)
     snapshot->captured = true;
     snapshot->eip = source.Eip;
     snapshot->eax = source.Eax;

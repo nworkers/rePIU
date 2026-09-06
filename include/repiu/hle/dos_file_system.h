@@ -100,6 +100,8 @@ struct DosOpenFileHandle
     std::string guest_path;
     std::filesystem::path host_path;
     std::string dos_path;
+    // DOS character devices have a handle but no host regular-file path.
+    bool console_device = false;
     // Task 374: read once at open. Task 477 added the write path this note
     // anticipated, so WriteDosFile updates the value instead of leaving it stale.
     std::uint64_t cached_file_size = 0;
@@ -182,6 +184,11 @@ bool WriteDosFile(DosVirtualFileSystemState* state,
 // on. Standard handles 0-4 are never VFS handles, so they keep the console path.
 bool IsDosFileHandleWritable(const DosVirtualFileSystemState& state,
                              std::uint16_t handle);
+
+// True when the handle names the DOS CON character device rather than a host
+// regular file.
+bool IsDosConsoleFileHandle(const DosVirtualFileSystemState& state,
+                            std::uint16_t handle);
 
 bool ReadDosFile(DosVirtualFileSystemState* state,
                  std::uint16_t handle,

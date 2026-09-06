@@ -9,6 +9,7 @@
 #include "guest_address_watch.h"
 #include "aot_dbt_call_return_trace.h"
 #include "repiu/engine/aot_boundary_provenance.h"
+#include "repiu/engine/guest_write_trace.h"
 #include "repiu/engine/aot_ff_boundary_attribution.h"
 #include "repiu/engine/aot_ff_boundary_target_attribution.h"
 #include "repiu/engine/aot_ff_target_timing.h"
@@ -21,6 +22,7 @@
 #include <Zydis.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -564,6 +566,27 @@ bool RequestAotDynamicTranslation(ThreadContext* context,
     }
     *cache_entry = context->aot_translation_result.cache_entry;
     *added_bytes = context->aot_translation_result.added_bytes;
+    // The initial probe sentinel does not cover cache generations appended
+    // after execution starts. Patch the latest generation after the worker has
+    // published its map and before the guest resumes at the returned entry.
+    if (context->execution_probe_configured &&
+        context->execution_probe_offset <=
+            UINT32_MAX - context->runtime_base)
+    {
+        const std::uint32_t probe_guest_address =
+            context->runtime_base + context->execution_probe_offset;
+        if (InstallAotProbeSentinelInLatestAppend(
+                context->aot_placement, probe_guest_address, *added_bytes))
+        {
+            std::fprintf(
+                stderr,
+                "[repiu-aot-probe] dynamic guest=0x%08X generation=%u "
+                "added_bytes=%u installed=1\n",
+                probe_guest_address,
+                context->aot_translation_result.generation,
+                *added_bytes);
+        }
+    }
     return true;
 }
 
@@ -589,6 +612,10 @@ void ReleaseUnneededAotGuestPageWatches(ThreadContext* context,
         }
         if (!relevant)
         {
+            if (GuestWriteTracePageMatches(page))
+            {
+                continue;
+            }
             RemoveAotPageWriteWatch(&context->aot_page_write_watch, page);
         }
     }
@@ -618,6 +645,16 @@ bool HandleAotGuestCodeWriteCompletion(
         context->aot_terminal_failure.store(true, std::memory_order_release);
         return false;
     }
+    RecordGuestWriteTrace(
+        GuestWriteTraceEvent::kNativeComplete,
+        context->exception_dispatch_last_eip.load(
+            std::memory_order_relaxed),
+        completion.source,
+        completion.destination,
+        completion.byte_count,
+        reinterpret_cast<const void*>(static_cast<std::uintptr_t>(
+            completion.destination)),
+        win32_context);
     ReleaseUnneededAotGuestPageWatches(context, completion.destination, completion.byte_count);
     if (completion.keep_single_step ||
         (completion.from_guest && context->aot_reentry_pending))
@@ -669,10 +706,19 @@ bool HandleAotGuestCodeWriteFault(const repiu::platform::FaultEvent& fault,
         (win32_context->EFlags & 0x00000100U) != 0U ||
         context->enable_single_step_trace ||
         context->aot_reentry_pending || context->aot_legacy_fallback;
+    const std::uint32_t guest_source =
+        AotGuestAddressForExecutionAddress(context, execution_address);
+    RecordGuestWriteTrace(
+        GuestWriteTraceEvent::kNativeFault,
+        execution_address,
+        guest_source,
+        destination,
+        0U,
+        nullptr,
+        win32_context);
     if (!BeginAotGuestWrite(
             &context->aot_page_write_watch, execution_address, destination,
-            from_guest, keep_single_step,
-            AotGuestAddressForExecutionAddress(context, execution_address)))
+            from_guest, keep_single_step, guest_source))
     {
         context->aot_terminal_failure.store(true, std::memory_order_release);
         return false;
@@ -1081,6 +1127,29 @@ bool ResolveAotTransferTargetBody(ThreadContext* context,
     }
     if (dynamic_translation_failed)
     {
+        // Task 607: correlate a legacy fallback with the worker's actual
+        // refusal. The fallback site alone cannot distinguish a plan failure
+        // from a worker rendezvous failure, while the result message names the
+        // shared translation contract that declined the target.
+        if (std::getenv("REPIU_AOT_FALLBACK_TRACE") != nullptr)
+        {
+            static std::atomic<std::uint32_t> translation_failure_trace_count{
+                0U};
+            const std::uint32_t occurrence =
+                translation_failure_trace_count.fetch_add(
+                    1U, std::memory_order_relaxed);
+            if (occurrence < 32U)
+            {
+                std::fprintf(
+                    stderr,
+                    "[repiu-aot-translation-failure] #%u target=0x%08X appended=%u unsafe=%u message=%s\n",
+                    occurrence + 1U,
+                    target,
+                    context->aot_translation_result.appended ? 1U : 0U,
+                    context->aot_translation_result.unsafe_failure ? 1U : 0U,
+                    context->aot_translation_result.message.c_str());
+            }
+        }
         if (retired_target)
         {
             if (retired_resolution != nullptr)
@@ -2147,6 +2216,45 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
         1, std::memory_order_relaxed);
     context->aot_last_fallback_address.store(current,
                                               std::memory_order_relaxed);
+    // Task 607: keep the first few fallback decisions observable without
+    // changing the default runtime output. The raw guest bytes are useful here
+    // because a fallback can be caused by a missing map entry or by a rejected
+    // dynamic translation, and those cases look identical in the counters.
+    static const bool fallback_trace_enabled = [] {
+        const char* value = std::getenv("REPIU_AOT_FALLBACK_TRACE");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    static std::atomic<std::uint32_t> fallback_trace_count{0U};
+    const std::uint32_t fallback_trace_index =
+        fallback_trace_count.fetch_add(1U, std::memory_order_relaxed);
+    if (fallback_trace_enabled && fallback_trace_index < 32U)
+    {
+        std::uint32_t mapped_cache = 0U;
+        const bool mapped = FindAotCacheAddress(
+            *context->aot_placement, current, &mapped_cache);
+        const bool readable = IsGuestRangeReadable(
+            context,
+            reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(current)),
+            4U);
+        const std::uint8_t* bytes = readable
+            ? reinterpret_cast<const std::uint8_t*>(
+                  static_cast<std::uintptr_t>(current))
+            : nullptr;
+        fprintf(stderr,
+                "[repiu-aot-fallback] #%u guest=0x%08X mapped=%u cache=0x%08X readable=%u bytes=%02X %02X %02X %02X esp=0x%08X eflags=0x%08X\n",
+                fallback_trace_index + 1U,
+                current,
+                mapped ? 1U : 0U,
+                mapped_cache,
+                readable ? 1U : 0U,
+                bytes != nullptr ? bytes[0] : 0U,
+                bytes != nullptr ? bytes[1] : 0U,
+                bytes != nullptr ? bytes[2] : 0U,
+                bytes != nullptr ? bytes[3] : 0U,
+                static_cast<std::uint32_t>(win32_context->Esp),
+                static_cast<std::uint32_t>(win32_context->EFlags));
+    }
     if (context->shared_live_telemetry != nullptr)
     {
         repiu::platform::AtomicIncrement(

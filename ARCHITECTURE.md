@@ -435,6 +435,22 @@ Host recovery now saves entry-time selectors in serialized global recovery slots
 
 DOS file diagnostics include a bounded 64-entry read/seek ring. It preserves chronological handle, path, position, size, result, guest EIP/ESP, eight stack dwords, and bounded read-prefix evidence without changing guest-visible file behavior. The protected-mode DOS/4GW `INT 21h AH=3Fh` bridge consumes the 32-bit byte count in `ECX` and returns the 32-bit byte count in `EAX`; reducing these values to real-mode `CX/AX` breaks large Watcom reads.
 
+DOS 문자 디바이스는 host regular-file VFS와 분리합니다. 현재 관찰된
+`CON`/`CON:` 경로는 DOS 경로의 마지막 구성요소에서 대소문자 구분 없이
+인식되고, 일반 user handle을 받으며 host path를 갖지 않습니다.
+protected-mode `INT 21h AH=40h` bridge는 `CON` handle을 공용 DOS console
+output sink로 전달하고 요청된 byte 수를 반환합니다. read, keyboard 의미론,
+관찰되지 않은 DOS device는 binary evidence가 생길 때까지 이 경계 밖에
+둡니다.
+
+DOS character devices remain separate from the host regular-file VFS. The
+currently observed `CON`/`CON:` path is recognized case-insensitively in the
+final DOS path component, receives a normal user handle, and has no host path.
+The protected-mode `INT 21h AH=40h` bridge routes a `CON` handle to the shared
+DOS console output sink and returns the requested byte count. Reads, keyboard
+semantics, and unobserved DOS devices remain outside this boundary until binary
+evidence requires them.
+
 Win32 native execution uses a fail-closed function return fast path implemented by `native_fast_path.*` and `verified_region_analyzer.*`. Pinned Zydis v4.1.1 decodes observed direct-call targets in legacy 32-bit mode; rePIU recursively verifies runtime-bounded direct control flow and rejects privileged, interrupt, I/O, system, segment-dependent, indirect, far, or undecodable paths. An approved function runs with Trap Flag cleared until an x86 hardware execution breakpoint at its validated guest return address reenters VEH. Any intermediate exception restores debug registers and single-step state and permanently rejects that function for the current run.
 
 Task 275의 `native_linear_span.*`은 함수 진입으로 증명되지 않은 일반 single-step
@@ -2029,6 +2045,29 @@ cache back to a guest address. `HandleAotReentry` does that only for
 `kBreakpoint`, and the HLE handlers that read bytes at `Eip` require `Eip` to be
 inside the guest arena. See `docs/analysis/linux-port-frontier.md` 3.26 and 3.27.
 
+Task 607은 DOS 종료를 받은 cache 실행을 위한 Linux x64 전용 종료 경계를
+추가합니다. `FaultEvent::host_resume_address`는 선택적인 full-width 값이며,
+일반 `GuestCpuContext` 되쓰기는 여전히 32비트 guest register를 담당하고
+변경되지 않습니다. `RecoverFromHleExit`가 `process_exit`를 세운 뒤 Linux
+signal callback은 single-step·direction flag를 지우고 native RIP를
+`RepiuLinuxX64GuestExit`로 기록합니다. 이 assembly stub은 하나의 `ret`만
+수행하여 `RepiuLinuxX64GuestEntry`가 SysV stack에 둔 host return address를
+소비하고, 기존 entry bridge가 상태를 기록하고 저장 register를 복원하게
+합니다. 이 경로는 의도된 HLE 종료에만 적용되며, 무관한 cache fault는 계속
+fail-closed 미처리 fault 경로를 따릅니다.
+
+Task 607 adds a separate Linux x64 exit edge for a cache run that has received
+an intentional DOS termination. `FaultEvent::host_resume_address` is optional
+and full-width; the ordinary `GuestCpuContext` write-back still owns the
+32-bit guest registers and remains unchanged. After `RecoverFromHleExit` marks
+`process_exit`, the Linux signal callback clears single-step and direction flags
+and writes the native RIP of `RepiuLinuxX64GuestExit`. That assembly stub is a
+single `ret`: it consumes the host return address that
+`RepiuLinuxX64GuestEntry` placed on the SysV stack, then lets the existing entry
+bridge write back state and unwind its saved registers. The path is restricted
+to the intentional HLE exit; an unrelated cache fault still follows the
+fail-closed unhandled-fault path.
+
 파일 책임은 다음과 같습니다.
 
 * `aot_code_cache_reservation`: code cache를 어디에 놓아도 되는가. cache 주소는
@@ -3060,6 +3099,19 @@ external PMU-class method that avoids both biases.
 Win32 `dynamic`는 `REPIU_AOT_DBT_GLIDE_GATE_DISPATCH`가 미설정이거나 `1|on|true`이면 자산 유래 Glide gate metadata와 합성 stub 원본을 검증한 뒤 `CALL host-stack thunk + RET argument_bytes` stub을 설치합니다. 첫 cache boundary는 같은 gate를 가리키는 direct fixup과 indirect inline-cache target을 executable LINEXE gate로 재연결하며, 이후 transfer resolution도 검증된 gate를 직접 반환합니다. 일반 excluded range, opt-out, 검증 실패는 기존 `INT3`/VEH 경로를 보존합니다.
 
 On Win32 `dynamic`, an unset `REPIU_AOT_DBT_GLIDE_GATE_DISPATCH` or `1|on|true` validates asset-derived Glide metadata and the original synthetic stub, then installs a `CALL host-stack thunk + RET argument_bytes` stub. The first cache boundary relinks matching direct fixups and indirect inline-cache targets to the executable LINEXE gate, and later transfer resolution returns validated gates directly. General excluded ranges, opt-out, and validation failures preserve the existing `INT3`/VEH path.
+
+direct-dispatch 설정은 정책 요청이며 capability 보장이 아닙니다. loader와
+LINEXE setup은 32비트 guest image에 표현 가능한 host thunk가 실제로
+제공되는지 별도로 확인합니다. Linux x64처럼 thunk가 없는 host에서는 실제
+direct-dispatch를 끄고 검증된 base HLE gate image를 유지하여 LINEXE 활성화와
+기존 trap/HLE 경계를 계속 사용할 수 있게 합니다.
+
+The direct-dispatch setting is a policy request, not a capability guarantee.
+The loader and LINEXE setup separately test whether the host supplies a thunk
+that can be represented in the 32-bit guest image. On Linux x64 and other hosts
+without that thunk, actual direct dispatch is false and the validated base HLE
+gate image remains installed, allowing LINEXE activation and the existing
+trap/HLE boundary to continue.
 
 ### Glide gate 직접 dispatch 기본 정책 / Glide-gate direct-dispatch default policy
 

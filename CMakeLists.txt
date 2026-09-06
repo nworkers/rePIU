@@ -315,6 +315,7 @@ target_sources(repiu_exe
         src/engine/telemetry/glide_setter_phase_timing.cpp
         src/engine/telemetry/timer_tick_delivery.cpp
         src/engine/telemetry/guest_address_watch.cpp
+        src/engine/telemetry/guest_write_trace.cpp
         src/engine/telemetry/fault_exit_trace.cpp
         src/engine/telemetry/aot_residency_sample.cpp
         src/engine/telemetry/aot_return_stage_profile.cpp
@@ -564,6 +565,7 @@ endif()
 add_executable(repiu_core_probe
     src/tools/core_probe/main.cpp
     src/tools/aot_probe/code_cache_placement_probe.cpp
+    src/tools/aot_probe/dos_console_device_probe.cpp
     src/tools/aot_probe/dos_file_handle_cache_probe.cpp
     src/tools/aot_probe/env_toggle_probe.cpp
     src/tools/aot_probe/far_jump_probe.cpp

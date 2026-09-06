@@ -8,12 +8,88 @@
 #include <Zydis.h>
 #include "repiu/platform/guest_cpu_context.h"
 #include "repiu/platform/host_environment.h"
+#include <atomic>
+#include <cstdlib>
 #include <cstring>
+#include <limits>
 
 namespace repiu::engine
 {
 namespace
 {
+
+std::uint32_t HleReentryTraceAddress()
+{
+    static const std::uint32_t address = [] {
+        const auto setting = repiu::platform::ReadEnvironmentSetting(
+            "REPIU_AOT_HLE_REENTRY_TRACE", 32U);
+        if (!setting.present || setting.too_long || setting.value.empty())
+        {
+            return 0U;
+        }
+        char text[33] = {};
+        std::memcpy(text, setting.value.data(), setting.value.size());
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(text, &end, 0);
+        if (end == text || *end != '\0' ||
+            parsed > std::numeric_limits<std::uint32_t>::max())
+        {
+            return 0U;
+        }
+        return static_cast<std::uint32_t>(parsed);
+    }();
+    return address;
+}
+
+bool HleReentryTraceMatches(const std::uint32_t handled_guest_eip,
+                            const std::uint32_t current_guest_eip)
+{
+    const std::uint32_t watched = HleReentryTraceAddress();
+    return watched != 0U &&
+        (watched == handled_guest_eip || watched == current_guest_eip);
+}
+
+void TraceHleReentry(const char* stage,
+                     const ThreadContext* context,
+                     const std::uint32_t handled_guest_eip,
+                     const std::uint32_t current_guest_eip,
+                     const bool cache_hit,
+                     const bool span_safe,
+                     const bool post_hle_enabled,
+                     const bool translation_resolved,
+                     const std::uint32_t cache_target,
+                     const char* detail)
+{
+    if (!HleReentryTraceMatches(handled_guest_eip, current_guest_eip))
+    {
+        return;
+    }
+    static std::atomic<std::uint32_t> trace_count{0U};
+    const std::uint32_t occurrence =
+        trace_count.fetch_add(1U, std::memory_order_relaxed) + 1U;
+    if (occurrence > 32U)
+    {
+        return;
+    }
+    std::fprintf(
+        stderr,
+        "[repiu-hle-reentry] stage=%s n=%u watch=0x%08X "
+        "handled=0x%08X current=0x%08X pending=%u cache_hit=%u "
+        "span_safe=%u posthle=%u translated=%u cache_target=0x%08X "
+        "detail=%s\n",
+        stage == nullptr ? "unknown" : stage,
+        occurrence,
+        HleReentryTraceAddress(),
+        handled_guest_eip,
+        current_guest_eip,
+        context != nullptr && context->aot_reentry_pending ? 1U : 0U,
+        cache_hit ? 1U : 0U,
+        span_safe ? 1U : 0U,
+        post_hle_enabled ? 1U : 0U,
+        translation_resolved ? 1U : 0U,
+        cache_target,
+        detail == nullptr ? "" : detail);
+}
 
 bool PostHleTranslationEnabled()
 {
@@ -84,10 +160,19 @@ SegmentWriteProbe ProbeGuestInstructionSegmentWrite(ThreadContext* context,
 }
 
 bool IsImmediateHleReentrySpanSafe(ThreadContext* context,
-                                   std::uint32_t guest_entry)
+                                   std::uint32_t guest_entry,
+                                   const char** reason)
 {
+    if (reason != nullptr)
+    {
+        *reason = "unknown";
+    }
     if (context == nullptr)
     {
+        if (reason != nullptr)
+        {
+            *reason = "no-context";
+        }
         return false;
     }
 
@@ -95,6 +180,10 @@ bool IsImmediateHleReentrySpanSafe(ThreadContext* context,
     if (!ZYAN_SUCCESS(ZydisDecoderInit(
             &decoder, ZYDIS_MACHINE_MODE_LEGACY_32, ZYDIS_STACK_WIDTH_32)))
     {
+        if (reason != nullptr)
+        {
+            *reason = "decoder-init";
+        }
         return false;
     }
 
@@ -104,12 +193,20 @@ bool IsImmediateHleReentrySpanSafe(ThreadContext* context,
     {
         if (IsAotHleBoundaryAddress(context, eip))
         {
+            if (reason != nullptr)
+            {
+                *reason = "hle-boundary";
+            }
             return false;
         }
         const auto* code = reinterpret_cast<const std::uint8_t*>(
             static_cast<std::uintptr_t>(eip));
         if (!IsGuestRangeReadable(context, code, 15U))
         {
+            if (reason != nullptr)
+            {
+                *reason = "unreadable";
+            }
             return false;
         }
         ZydisDecodedInstruction instruction{};
@@ -117,6 +214,10 @@ bool IsImmediateHleReentrySpanSafe(ThreadContext* context,
         if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(
                 &decoder, code, 15U, &instruction, operands)))
         {
+            if (reason != nullptr)
+            {
+                *reason = "decode";
+            }
             return false;
         }
         if (instruction.meta.branch_type != ZYDIS_BRANCH_TYPE_NONE ||
@@ -124,9 +225,17 @@ bool IsImmediateHleReentrySpanSafe(ThreadContext* context,
             instruction.mnemonic == ZYDIS_MNEMONIC_IRET ||
             instruction.mnemonic == ZYDIS_MNEMONIC_IRETD)
         {
+            if (reason != nullptr)
+            {
+                *reason = "control-transfer";
+            }
             return true;
         }
         eip += instruction.length;
+    }
+    if (reason != nullptr)
+    {
+        *reason = "instruction-cap";
     }
     return false;
 }
@@ -153,6 +262,12 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
     // placement check above already implies the dynamic backend, because the
     // trampoline's four non-AOT entry points hard-code a null placement and
     // `kLegacy` at the call site, so it could never reject anything.
+    const std::uint32_t current =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    TraceHleReentry(
+        "entry", context, handled_guest_eip, current, false, false,
+        false, false, 0U,
+        context->aot_reentry_pending ? "pending" : "not-pending");
     if (!context->aot_reentry_pending)
     {
         ++context->hle_reentry_reject_not_pending;
@@ -192,8 +307,6 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
 
     context->aot_dbt_hle_reentry_attempt_count.fetch_add(
         1, std::memory_order_relaxed);
-    const std::uint32_t current =
-        static_cast<std::uint32_t>(win32_context->Eip);
     {
         SingleStepHotspotStageScope stage_scope(
             context->active_hotspot_scope,
@@ -228,7 +341,14 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
         SingleStepHotspotStageScope stage_scope(
             context->active_hotspot_scope,
             SingleStepProfileStage::kSpanSafety);
-        if (!IsImmediateHleReentrySpanSafe(context, current))
+        const char* span_reason = nullptr;
+        const bool span_safe = IsImmediateHleReentrySpanSafe(
+            context, current, &span_reason);
+        TraceHleReentry(
+            span_safe ? "cache-hit-span-safe" : "cache-hit-span-unsafe",
+            context, handled_guest_eip, current, true, span_safe, false, false,
+            cache_address, span_safe ? "resume-candidate" : span_reason);
+        if (!span_safe)
         {
             ++context->hle_reentry_reject_span_unsafe;
             return false;
@@ -240,7 +360,14 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
         // visible whether or not post-HLE translation is enabled. Task 339
         // found this branch unreachable in practice; this proves it per run.
         ++context->hle_reentry_reject_cache_miss;
-        if (!PostHleTranslationEnabled())
+        const bool post_hle_enabled = PostHleTranslationEnabled();
+        TraceHleReentry(
+            post_hle_enabled ? "cache-miss-gate-enabled"
+                             : "cache-miss-gate-disabled",
+            context, handled_guest_eip, current, false, false,
+            post_hle_enabled, false, 0U,
+            post_hle_enabled ? "translate" : "reject");
+        if (!post_hle_enabled)
         {
             return false;
         }
@@ -249,8 +376,15 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
         if (!ResolveAotTransferTarget(
                 context, current, &cache_address))
         {
+            TraceHleReentry(
+                "translation-failed", context, handled_guest_eip, current,
+                false, false, true, false, 0U,
+                context->aot_translation_result.message.c_str());
             return false;
         }
+        TraceHleReentry(
+            "translation-success", context, handled_guest_eip, current,
+            false, false, true, true, cache_address, "resume-candidate");
         context->aot_dbt_hle_translation_success_count.fetch_add(
             1U, std::memory_order_relaxed);
     }
@@ -263,6 +397,9 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
     ++context->hle_reentry_success;
     context->aot_dbt_hle_reentry_success_count.fetch_add(
         1, std::memory_order_relaxed);
+    TraceHleReentry(
+        "resumed", context, handled_guest_eip, current, cache_hit, true,
+        !cache_hit, true, cache_address, "resume");
     AccumulateAotResidency(context, current);
     BumpAotReentryCount(context);
     return true;

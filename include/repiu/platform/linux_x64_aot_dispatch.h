@@ -42,6 +42,11 @@ void InstallLinuxX64Dispatch(LinuxX64AotDispatchFrame* frame,
 
 void ClearLinuxX64Dispatch();
 
+// The address of the temporary frame-pointer global used by emitted diagnostic
+// sequences. A cache image may be farther than rel32 from the dispatch code, so
+// the emitter materializes this address with movabs when tracing is enabled.
+[[nodiscard]] std::uintptr_t LinuxX64DispatchFramePointerAddress();
+
 // The address emitted return slots jump to. Taken as a value rather than
 // called: the emitter writes it into the slot with `movabs`, because the
 // distance from the code cache to this function is not something the placement

@@ -136,6 +136,11 @@ enum class LongModeLowering
     // the `REX` byte it inserts and changes nothing else: no displacement, no
     // immediate, no opcode.
     kStackPointerToR15,
+    // Task 614. A REX makes ModRM high-byte registers (`AH`/`CH`/`DH`/`BH`)
+    // name the low-byte registers (`SPL`/`BPL`/`SIL`/`DIL`) instead. When the
+    // instruction also names guest ESP through memory, materialise the source
+    // high byte in the R14B scratch and re-encode the operation with R14B.
+    kStackPointerHighByteToR15,
     // Task 565. `MOV`'s moffs forms (`A0`-`A3`), whose absolute offset is four
     // bytes in 32-bit mode and eight in long mode -- so the instruction's own
     // length changes and every decode after it moves. Re-encoded into the same

@@ -93,6 +93,11 @@ struct FaultEvent
     // CONTEXT the kernel supplied, so there is no copy; on Linux it points at a
     // structure converted from the machine context and written back on resume.
     GuestCpuContext* registers = nullptr;
+    // Optional full-width host address used by a platform-specific exit path.
+    // The normal guest resume path leaves this zero. Linux x64 uses it when a
+    // cache run must return through the host call frame rather than resume a
+    // 32-bit guest EIP.
+    std::uintptr_t host_resume_address = 0;
 };
 
 enum class FaultDisposition : std::uint8_t

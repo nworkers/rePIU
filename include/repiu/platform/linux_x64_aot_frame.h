@@ -12,6 +12,10 @@
 #define REPIU_LINUX_X64_FRAME_CONTEXT 80
 #define REPIU_LINUX_X64_FRAME_GUEST_MEMORY_BASE 88
 #define REPIU_LINUX_X64_FRAME_HOST_CONTINUATION 96
+#define REPIU_LINUX_X64_FRAME_STACK_TRACE_SEQUENCE 104
+#define REPIU_LINUX_X64_FRAME_STACK_TRACE_RECORDS 108
+#define REPIU_LINUX_X64_FRAME_STACK_TRACE_RECORD_SIZE 16
+#define REPIU_LINUX_X64_FRAME_STACK_TRACE_CAPACITY 16384
 
 #if !defined(__ASSEMBLER__)
 
@@ -45,6 +49,14 @@ struct LinuxX64GuestRegisterState
     LinuxX64GuestWord seg_ss = 0;
 };
 
+struct LinuxX64StackWriteTraceRecord
+{
+    LinuxX64GuestWord site = 0;
+    LinuxX64GuestWord fallthrough = 0;
+    LinuxX64GuestWord guest_esp = 0;
+    LinuxX64GuestWord value = 0;
+};
+
 struct alignas(16) LinuxX64AotDispatchFrame
 {
     LinuxX64GuestRegisterState guest;
@@ -55,6 +67,9 @@ struct alignas(16) LinuxX64AotDispatchFrame
     LinuxX64HostPointer context = 0;
     LinuxX64HostPointer guest_memory_base = 0;
     LinuxX64HostPointer host_continuation = 0;
+    LinuxX64GuestWord stack_trace_sequence = 0;
+    LinuxX64StackWriteTraceRecord stack_trace[
+        REPIU_LINUX_X64_FRAME_STACK_TRACE_CAPACITY] = {};
 };
 
 static_assert(sizeof(LinuxX64GuestWord) == 4);
@@ -75,7 +90,13 @@ static_assert(offsetof(LinuxX64AotDispatchFrame, guest_memory_base) ==
               REPIU_LINUX_X64_FRAME_GUEST_MEMORY_BASE);
 static_assert(offsetof(LinuxX64AotDispatchFrame, host_continuation) ==
               REPIU_LINUX_X64_FRAME_HOST_CONTINUATION);
-static_assert(sizeof(LinuxX64AotDispatchFrame) == 112);
+static_assert(offsetof(LinuxX64AotDispatchFrame, stack_trace_sequence) ==
+              REPIU_LINUX_X64_FRAME_STACK_TRACE_SEQUENCE);
+static_assert(offsetof(LinuxX64AotDispatchFrame, stack_trace) ==
+              REPIU_LINUX_X64_FRAME_STACK_TRACE_RECORDS);
+static_assert(sizeof(LinuxX64StackWriteTraceRecord) ==
+              REPIU_LINUX_X64_FRAME_STACK_TRACE_RECORD_SIZE);
+static_assert(sizeof(LinuxX64AotDispatchFrame) == 262256);
 
 }  // namespace repiu::platform
 

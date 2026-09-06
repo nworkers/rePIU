@@ -67,6 +67,28 @@ std::string BuildDosPath(const std::vector<std::string>& components)
     return result;
 }
 
+bool IsDosConsoleDeviceName(const std::string& guest_path)
+{
+    std::string normalized = guest_path;
+    for (char& ch : normalized)
+    {
+        if (ch == '/')
+        {
+            ch = '\\';
+        }
+    }
+
+    const std::size_t separator = normalized.find_last_of('\\');
+    std::string name = separator == std::string::npos
+        ? normalized
+        : normalized.substr(separator + 1U);
+    if (!name.empty() && name.back() == ':')
+    {
+        name.pop_back();
+    }
+    return ToUpperAscii(name) == "CON";
+}
+
 bool BuildCurrentComponentsFromHostPath(
     const std::filesystem::path& absolute_root,
     const std::filesystem::path& absolute_current_directory,
@@ -368,6 +390,49 @@ bool OpenDosFile(DosVirtualFileSystemState* state,
         return true;
     }
 
+    if (IsDosConsoleDeviceName(guest_path))
+    {
+        const std::uint16_t allocated_handle =
+            AllocateLowestFreeDosHandle(*state);
+        if (allocated_handle == 0)
+        {
+            resolved->result = DosPathResult::kAccessDenied;
+            resolved->message = "DOS file handle table is exhausted";
+            return true;
+        }
+
+        DosOpenFileHandle new_handle{};
+        new_handle.open = true;
+        new_handle.handle = allocated_handle;
+        new_handle.access_mode = access_mode;
+        new_handle.guest_path = guest_path;
+        new_handle.host_path.clear();
+        new_handle.dos_path = resolved->dos_path;
+        new_handle.console_device = true;
+        new_handle.writable = (access_mode & 0x07U) == 0x01U ||
+            (access_mode & 0x07U) == 0x02U;
+
+        bool reused_slot = false;
+        for (DosOpenFileHandle& slot : state->open_files)
+        {
+            if (!slot.open)
+            {
+                slot = std::move(new_handle);
+                reused_slot = true;
+                break;
+            }
+        }
+        if (!reused_slot)
+        {
+            state->open_files.push_back(std::move(new_handle));
+        }
+        *handle = allocated_handle;
+        resolved->host_path.clear();
+        resolved->message = "DOS CON device opened";
+        state->message = "DOS CON device opened";
+        return true;
+    }
+
     std::error_code error;
     if (!std::filesystem::exists(resolved->host_path, error) || error ||
         !std::filesystem::is_regular_file(resolved->host_path, error) ||
@@ -567,6 +632,19 @@ bool IsDosFileHandleWritable(const DosVirtualFileSystemState& state,
     return false;
 }
 
+bool IsDosConsoleFileHandle(const DosVirtualFileSystemState& state,
+                            std::uint16_t handle)
+{
+    for (const DosOpenFileHandle& candidate : state.open_files)
+    {
+        if (candidate.open && candidate.handle == handle)
+        {
+            return candidate.console_device;
+        }
+    }
+    return false;
+}
+
 bool WriteDosFile(DosVirtualFileSystemState* state,
                   std::uint16_t handle,
                   const std::uint8_t* bytes,
@@ -603,6 +681,13 @@ bool WriteDosFile(DosVirtualFileSystemState* state,
     {
         *dos_error = 0x0005;
         state->message = "DOS file write failed: handle is read-only";
+        return true;
+    }
+    if (open_file->console_device)
+    {
+        *dos_error = 0x0005;
+        state->message =
+            "DOS console write requires the execution HLE output sink";
         return true;
     }
     // DOS truncates the file at the current offset for a zero-length write. The

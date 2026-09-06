@@ -901,6 +901,63 @@ bool ProbeCallAndReturn()
     return ok;
 }
 
+bool ProbeReturnImmediateStackAdjustment()
+{
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = kGuestBase;
+    AotBasicBlock block;
+    block.guest_address = kGuestBase;
+    AotInstructionRecord ret;
+    ret.guest_address = kGuestBase;
+    ret.kind = AotInstructionKind::kReturn;
+    ret.length = 3U;
+    ret.bytes = {0xC2U, 0x04U, 0x00U};
+    block.instructions.push_back(ret);
+    plan.blocks.push_back(block);
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    if (!BuildAotCodeCacheImage(plan, options, &image) || !image.valid)
+    {
+        std::cout << "guest_ret_imm16=false message=\"" << image.message
+                  << "\"\n";
+        return false;
+    }
+
+    const repiu::runtime::AotAddressMapEntry* map_entry = nullptr;
+    for (const repiu::runtime::AotAddressMapEntry& entry : image.address_map)
+    {
+        if (entry.guest_address == kGuestBase)
+        {
+            map_entry = &entry;
+            break;
+        }
+    }
+    if (map_entry == nullptr || map_entry->emitted_length != 26U ||
+        static_cast<std::size_t>(map_entry->cache_offset) + 7U >
+            image.bytes.size())
+    {
+        std::cout << "guest_ret_imm16=false map=true\n";
+        return false;
+    }
+
+    const std::uint8_t expected_prefix[] = {
+        0x45U, 0x8BU, 0x37U, 0x45U, 0x8DU, 0x7FU, 0x08U};
+    for (std::size_t index = 0U; index < sizeof(expected_prefix); ++index)
+    {
+        if (image.bytes[map_entry->cache_offset + index] !=
+            expected_prefix[index])
+        {
+            std::cout << "guest_ret_imm16=false prefix=false\n";
+            return false;
+        }
+    }
+    std::cout << "guest_ret_imm16=true adjustment=8\n";
+    return true;
+}
+
 // Task 564. Guest `ESP` named in each of the three encoding places, executed.
 //
 // The third case is the one that needs care. `add esp, 16` re-encoded wrongly
@@ -1953,6 +2010,7 @@ bool RunLinuxX64GuestRegisterProbe()
     const bool call = ProbeDirectCall();
     const bool unresolved = ProbeUnresolvedCall();
     const bool call_return = ProbeCallAndReturn();
+    const bool ret_imm16 = ProbeReturnImmediateStackAdjustment();
     const bool esp = ProbeStackPointerReencode();
     const bool absolute_immediate = ProbeAbsoluteImmediate();
     const bool two_byte_esp = ProbeTwoByteStackPointer();
@@ -1963,7 +2021,7 @@ bool RunLinuxX64GuestRegisterProbe()
     const bool segment_pop = ProbeGuardedSegmentPop();
     const bool all =
         mapping && stack && word_stack && flags && round_trip && branch && call &&
-        unresolved && call_return && esp && absolute_immediate &&
+        unresolved && call_return && ret_imm16 && esp && absolute_immediate &&
         two_byte_esp && indirect_call && indirect_refusals &&
         segment && segment_load && segment_pop;
     std::cout << "linux_x64_guest_register_all=" << (all ? "true" : "false")

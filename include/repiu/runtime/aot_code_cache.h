@@ -387,7 +387,7 @@ struct AotGuardedSegmentLoadSite
     bool has_counter_operands = false;
 };
 
-// A guarded MOV r32,Sreg slot. It compares the physical selector with the
+// A guarded MOV r16/r32,Sreg slot. It compares the physical selector with the
 // shadow before writing the destination and restores entry state at fallback.
 struct AotGuardedSegmentReadSite
 {

@@ -2,6 +2,8 @@
 
 #if !defined(_WIN32)
 
+#include "repiu/engine/guest_write_trace.h"
+
 #include <csignal>
 #include <cstring>
 #include <pthread.h>
@@ -404,6 +406,7 @@ void SignalHandler(int signal_number, siginfo_t* info, void* host_context)
                              event.access.fault_address,
                              event.access.execute_access,
                              registers);
+        repiu::engine::DumpGuestWriteTraceTail(2);
         // Restoring the default and returning lets the fault happen again with
         // nothing to catch it, which is how an unhandled fault should end:
         // returning resumes at the faulting instruction, because this path
@@ -440,6 +443,10 @@ void SignalHandler(int signal_number, siginfo_t* info, void* host_context)
     // Writing the registers back is what makes the return a resume: the kernel
     // restores from this context, so an edited Eip or EFlags takes effect.
     StoreGuestCpuContext(registers, host_context);
+    if (event.host_resume_address != 0U)
+    {
+        StoreHostInstructionPointer(event.host_resume_address, host_context);
+    }
 }
 
 }  // namespace

@@ -12,6 +12,7 @@
 #include <vector>
 #include "repiu/platform/guest_cpu_context.h"
 #include "repiu/platform/atomic_ops.h"
+#include "repiu/platform/host_error_stream.h"
 #include "repiu/platform/host_time.h"
 
 namespace repiu::engine
@@ -103,6 +104,48 @@ std::uint32_t MscdexLbaToMsf(std::uint32_t lba)
 
 namespace
 {
+
+void TraceDpmiSelectorBaseRegisters(
+    const char* phase,
+    const repiu::platform::GuestCpuContext& win32_context,
+    std::uint16_t selector,
+    const repiu::runtime::GuestDescriptor* descriptor)
+{
+    if (std::getenv("REPIU_DOS_INT_TRACE") == nullptr)
+    {
+        return;
+    }
+
+    char line[320] = {};
+    const int length = std::snprintf(
+        line,
+        sizeof(line),
+        "[repiu-dpmi-context] phase=%s eip=0x%08X eax=0x%08X "
+        "ebx=0x%08X ecx=0x%08X edx=0x%08X esi=0x%08X edi=0x%08X "
+        "esp=0x%08X eflags=0x%08X selector=0x%04X base=0x%08X "
+        "present=%u returned_cx=0x%04X returned_dx=0x%04X cf=%u\n",
+        phase,
+        static_cast<std::uint32_t>(win32_context.Eip),
+        static_cast<std::uint32_t>(win32_context.Eax),
+        static_cast<std::uint32_t>(win32_context.Ebx),
+        static_cast<std::uint32_t>(win32_context.Ecx),
+        static_cast<std::uint32_t>(win32_context.Edx),
+        static_cast<std::uint32_t>(win32_context.Esi),
+        static_cast<std::uint32_t>(win32_context.Edi),
+        static_cast<std::uint32_t>(win32_context.Esp),
+        static_cast<std::uint32_t>(win32_context.EFlags),
+        static_cast<unsigned>(selector),
+        descriptor == nullptr ? 0U : descriptor->base,
+        descriptor != nullptr && descriptor->present ? 1U : 0U,
+        static_cast<unsigned>(win32_context.Ecx & 0xFFFFU),
+        static_cast<unsigned>(win32_context.Edx & 0xFFFFU),
+        (win32_context.EFlags & 1U) != 0U ? 1U : 0U);
+    if (length > 0)
+    {
+        repiu::platform::WriteHostErrorStream(
+            line, static_cast<std::size_t>(length));
+    }
+}
 
 // MSCDEX addressing mode byte: 00h = HSG (plain LBA), 01h = Red Book (MSF).
 constexpr std::uint8_t kAddressModeRedBook = 1U;
@@ -460,6 +503,8 @@ bool HandleDpmiInterrupt31(repiu::platform::GuestCpuContext* win32_context, Thre
             win32_context->Ebx & 0xFFFFU);
         const repiu::runtime::GuestDescriptor* descriptor =
             repiu::runtime::FindDescriptor(context->selector_table, selector);
+        TraceDpmiSelectorBaseRegisters(
+            "enter", *win32_context, selector, descriptor);
         RecordHandledDosInterrupt(context, 0x31, ax);
         if (descriptor == nullptr || !descriptor->present)
         {
@@ -478,6 +523,8 @@ bool HandleDpmiInterrupt31(repiu::platform::GuestCpuContext* win32_context, Thre
             win32_context->EFlags &= ~1U;
         }
         win32_context->Eip += 2;
+        TraceDpmiSelectorBaseRegisters(
+            "return", *win32_context, selector, descriptor);
         return true;
     }
 

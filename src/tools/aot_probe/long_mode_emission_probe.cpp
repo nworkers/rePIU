@@ -351,6 +351,49 @@ bool ProbeAllRefusedStillBuilds()
     return ok;
 }
 
+// Task 610. The guest uses the operand-size-prefixed form `MOV BX,DS` while
+// entering LINEXE. The planner must classify its GPR16 destination so a
+// long-mode cache cannot copy the instruction and read the host DS register.
+bool ProbeSegmentReadGpr16Classification()
+{
+    runtime::RelocatedRuntimeImage read_runtime;
+    read_runtime.valid = true;
+    read_runtime.relocated_image_base = 0x00126000U;
+    read_runtime.relocated_entry_linear_address = 0x00126000U;
+    runtime::RelocatedRuntimeObject read_object;
+    read_object.relocated_base_address = 0x00126000U;
+    read_object.memory = {0x66U, 0x8CU, 0xDBU, 0xC3U};
+    read_object.memory.resize(32U, 0x90U);
+    read_object.virtual_size =
+        static_cast<std::uint32_t>(read_object.memory.size());
+    read_runtime.objects.push_back(std::move(read_object));
+
+    runtime::AotTranslationPlan plan;
+    const bool plan_built = runtime::BuildAotTranslationPlanFromEntry(
+        read_runtime, read_runtime.relocated_entry_linear_address, &plan);
+    const bool classified = plan_built && !plan.blocks.empty() &&
+        !plan.blocks[0].instructions.empty() &&
+        plan.blocks[0].instructions[0].kind ==
+            runtime::AotInstructionKind::kGuardedSegmentRead &&
+        plan.blocks[0].instructions[0].segment_register == 3U &&
+        plan.blocks[0].instructions[0].gpr_register == 3U;
+
+    runtime::AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    runtime::AotCodeCacheImage image;
+    const bool image_built = classified &&
+        runtime::BuildAotCodeCacheImage(plan, options, &image) && image.valid;
+    const bool fail_closed = image_built && !image.address_map.empty() &&
+        image.bytes[image.address_map[0].cache_offset] == 0xCCU &&
+        HasBoundaryFixupAt(image, read_runtime.relocated_entry_linear_address);
+    const bool ok = classified && fail_closed;
+    std::cout << "long_mode_segment_read_gpr16_ds_classified="
+              << (classified ? "true" : "false")
+              << ",fail_closed=" << (fail_closed ? "true" : "false")
+              << "\n";
+    return ok;
+}
+
 // Task 592. The pop guard has a dedicated long-mode ABI: it saves guest flags,
 // compares the saved guest-stack selector, and restores flags on both exits.
 // It must validate as a slot rather than being mistaken for the i386 layout or
@@ -398,15 +441,63 @@ bool ProbeLongModeSegmentGuardCoverage()
     }
 
     const bool all = pop_ready && pop_corruption_rejected;
+    runtime::RelocatedRuntimeImage load_runtime;
+    load_runtime.valid = true;
+    load_runtime.relocated_image_base = 0x00125000U;
+    load_runtime.relocated_entry_linear_address = 0x00125000U;
+    runtime::RelocatedRuntimeObject load_object;
+    load_object.relocated_base_address = 0x00125000U;
+    load_object.memory = {0x8EU, 0xC0U, 0x90U, 0xC3U};  // mov es,ax; nop; ret
+    load_object.memory.resize(32U, 0x90U);
+    load_object.virtual_size =
+        static_cast<std::uint32_t>(load_object.memory.size());
+    load_runtime.objects.push_back(std::move(load_object));
+
+    AotTranslationPlan load_plan;
+    AotCodeCacheImage load_image;
+    AotCodeCacheBuildOptions load_options;
+    load_options.enable_long_mode_emission = true;
+    load_options.enable_guarded_segment_load = true;
+    const bool load_plan_built = runtime::BuildAotTranslationPlanFromEntry(
+        load_runtime, load_runtime.relocated_entry_linear_address, &load_plan);
+    const bool load_image_built = load_plan_built &&
+        runtime::BuildAotCodeCacheImage(load_plan, load_options, &load_image);
+    const bool load_site_ready = load_image_built &&
+        load_image.guarded_segment_load_sites.size() == 1U;
+    const bool load_coverage = load_site_ready &&
+        runtime::ValidateAotCodeCacheHleCoverage(load_plan, load_image);
+    bool load_corruption_rejected = false;
+    if (load_coverage)
+    {
+        const runtime::AotGuardedSegmentLoadSite& site =
+            load_image.guarded_segment_load_sites[0];
+        runtime::AotCodeCacheImage broken_load = load_image;
+        broken_load.bytes[site.fallback_offset] = 0x90U;
+        std::uint32_t failure_guest = 0U;
+        load_corruption_rejected =
+            !runtime::ValidateAotCodeCacheHleCoverage(
+                load_plan, broken_load, &failure_guest) &&
+            failure_guest == load_runtime.relocated_entry_linear_address;
+    }
+
+    const bool all_with_load = all && load_coverage && load_corruption_rejected;
     std::cout << "long_mode_segment_guard_coverage="
-              << (all ? "true" : "false")
+              << (all_with_load ? "true" : "false")
               << ",pop_plan=" << (pop_plan_built ? "true" : "false")
               << ",pop_image=" << (pop_image_built ? "true" : "false")
               << ",pop_site=" << (pop_site_ready ? "true" : "false")
               << ",pop_coverage=" << (pop_coverage ? "true" : "false")
               << ",pop_corruption_rejected="
-              << (pop_corruption_rejected ? "true" : "false") << "\n";
-    return all;
+              << (pop_corruption_rejected ? "true" : "false")
+              << ",load_plan=" << (load_plan_built ? "true" : "false")
+              << ",load_image=" << (load_image_built ? "true" : "false")
+              << ",load_image_message=" << load_image.message
+              << ",load_decode_failures=" << load_image.decode_failure_count
+              << ",load_site=" << (load_site_ready ? "true" : "false")
+              << ",load_coverage=" << (load_coverage ? "true" : "false")
+              << ",load_corruption_rejected="
+              << (load_corruption_rejected ? "true" : "false") << "\n";
+    return all_with_load;
 }
 
 }  // namespace
@@ -416,9 +507,11 @@ bool RunLongModeEmissionProbe()
     const bool default_ok = ProbeDefaultIsUnchanged();
     const bool outcomes_ok = ProbeLongModeOutcomes();
     const bool refused_ok = ProbeAllRefusedStillBuilds();
+    const bool segment_read_gpr16_ok = ProbeSegmentReadGpr16Classification();
     const bool segment_guard_coverage_ok = ProbeLongModeSegmentGuardCoverage();
 
     const bool all = default_ok && outcomes_ok && refused_ok &&
+        segment_read_gpr16_ok &&
         segment_guard_coverage_ok;
     std::cout << "long_mode_emission_all=" << (all ? "true" : "false") << "\n";
     return all;

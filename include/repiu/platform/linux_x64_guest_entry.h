@@ -61,6 +61,10 @@ static_assert(sizeof(LinuxX64GuestEntryState::gpr[0]) == 4U);
 extern "C" void RepiuLinuxX64GuestEntry(void* code,
                                         LinuxX64GuestEntryState* state);
 
+// Entered by a Linux signal return, not called by C++. Its ret consumes the
+// host return address left by RepiuLinuxX64GuestEntry's call.
+extern "C" void RepiuLinuxX64GuestExit();
+
 }  // namespace repiu::platform
 
 #endif  // !defined(__ASSEMBLER__)

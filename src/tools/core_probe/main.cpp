@@ -27,6 +27,7 @@
 // keeps that distinction on screen, because "9 of 9 passed" printed alone would
 // read as a complete run.
 #include "code_cache_placement_probe.h"
+#include "dos_console_device_probe.h"
 #include "dos_file_handle_cache_probe.h"
 #include "env_toggle_probe.h"
 #include "far_jump_probe.h"
@@ -82,6 +83,7 @@ constexpr CoreProbe kCoreProbes[] = {
     {"execution_backend", &repiu::tools::RunExecutionBackendProbe},
     {"execution_timeout", &repiu::tools::RunExecutionTimeoutProbe},
     {"dos_file_handle_cache", &repiu::tools::RunDosFileHandleCacheProbe},
+    {"dos_console_device", &repiu::tools::RunDosConsoleDeviceProbe},
     {"pit_timer", &repiu::tools::RunPitTimerProbe},
     {"segment_push", &repiu::tools::RunSegmentPushProbe},
     {"glide_lfb_region", &repiu::tools::RunGlideLfbRegionProbe},

@@ -510,6 +510,104 @@ bool ProbeStackPointerTwoByteOpcode()
     return ok;
 }
 
+// 2e. A REX changes AH/CH/DH/BH into SPL/BPL/SIL/DIL (Task 614). The
+// high-byte source is materialised in R14B by exchanging the source low and
+// high bytes around a REX-using move, and the original byte operation is then
+// re-encoded against guest ESP in R15D.
+bool ProbeStackPointerHighByteSource(const std::uint32_t* data)
+{
+    const std::vector<std::uint8_t> guest = {
+        0x88U, 0x24U, 0x24U,  // mov byte ptr [esp], ah
+    };
+    const std::vector<std::uint8_t> expected = {
+        0x86U, 0xC4U,          // xchg al,ah
+        0x41U, 0x88U, 0xC6U,  // mov r14b,al
+        0x86U, 0xC4U,          // xchg al,ah
+        0x45U, 0x88U, 0x34U, 0x27U,  // mov [r15],r14b
+    };
+    std::vector<std::uint8_t> lowered;
+    const auto verdict = ClassifyLongModeBytes(guest.data(), guest.size());
+    if (verdict.compatibility != LongModeByteCompatibility::kNeedsReencode ||
+        verdict.lowering != LongModeLowering::kStackPointerHighByteToR15 ||
+        !Lower(guest, &lowered) || lowered != expected)
+    {
+        std::cout << "long_mode_lowering_high_byte=false,reason=bytes\n";
+        return false;
+    }
+
+    const std::uint8_t destination[] = {0x8AU, 0x24U, 0x24U};
+    const std::uint8_t exchange[] = {0x86U, 0x24U, 0x24U};
+    const auto destination_verdict = ClassifyLongModeBytes(
+        destination, sizeof(destination));
+    const auto exchange_verdict = ClassifyLongModeBytes(exchange,
+                                                        sizeof(exchange));
+    const bool refusals =
+        destination_verdict.compatibility ==
+            LongModeByteCompatibility::kUnsupported &&
+        destination_verdict.lowering == LongModeLowering::kNone &&
+        exchange_verdict.compatibility ==
+            LongModeByteCompatibility::kUnsupported &&
+        exchange_verdict.lowering == LongModeLowering::kNone;
+    if (!refusals)
+    {
+        std::cout << "long_mode_lowering_high_byte=false,reason=refusal\n";
+        return false;
+    }
+
+    // push r14; push r15; mov r15d,edi; mov eax,0xA1B2C3D4;
+    // cmp ecx,ecx; <lowered>; sete byte [r15+4]; mov eax,[r15];
+    // pop r15; pop r14; ret.
+    //
+    // The data page is below 4 GiB, so the uint32 argument is exactly the
+    // guest ESP value. The byte at +4 records ZF after the lowered MOV; MOV
+    // itself does not change flags, and neither do the scratch instructions.
+    std::vector<std::uint8_t> code = {
+        0x41U, 0x56U,                         // push r14
+        0x41U, 0x57U,                         // push r15
+        0x41U, 0x89U, 0xFFU,                 // mov r15d,edi
+        0xB8U, 0xD4U, 0xC3U, 0xB2U, 0xA1U,  // mov eax,imm32
+        0x39U, 0xC9U,                         // cmp ecx,ecx (ZF=1)
+    };
+    code.insert(code.end(), lowered.begin(), lowered.end());
+    code.insert(code.end(), {
+        0x41U, 0x0FU, 0x94U, 0x4FU, 0x04U,  // sete byte [r15+4]
+        0x41U, 0x8BU, 0x07U,                // mov eax,[r15]
+        0x41U, 0x5FU,                        // pop r15
+        0x41U, 0x5EU,                        // pop r14
+        0xC3U,                               // ret
+    });
+
+    auto* const bytes = const_cast<std::uint8_t*>(
+        reinterpret_cast<const std::uint8_t*>(data));
+    bytes[0] = 0U;
+    bytes[1] = 0U;
+    bytes[2] = 0U;
+    bytes[3] = 0U;
+    bytes[4] = 0U;
+
+    ExecutablePage page;
+    if (!AllocateCodePage(&page) || !WriteAndArm(page, code))
+    {
+        ReleasePage(&page);
+        std::cout << "long_mode_lowering_high_byte=false,reason=page\n";
+        return false;
+    }
+    using Entry = std::uint32_t (*)(std::uint32_t);
+    Entry entry = nullptr;
+    std::memcpy(&entry, &page.base, sizeof(entry));
+    const std::uint32_t observed = entry(static_cast<std::uint32_t>(
+        reinterpret_cast<std::uintptr_t>(data)));
+    ReleasePage(&page);
+
+    const unsigned zf = static_cast<unsigned>(bytes[4]);
+    const bool ok = observed == 0x000000C3U && zf == 1U;
+    *const_cast<std::uint32_t*>(data) = kMarker;
+    std::cout << "long_mode_lowering_high_byte=" << (ok ? "true" : "false")
+              << ",stored=0x" << std::hex << observed << std::dec
+              << ",zf=" << zf << "\n";
+    return ok;
+}
+
 // The classifier and the rewrite must agree about which instructions have a
 // lowering at all, and a segment override must still have none.
 bool ProbeClassification()
@@ -590,6 +688,7 @@ bool RunLongModeLoweringProbe()
 
     const bool refusals_ok = ProbeAbsoluteRefusals();
     const bool two_byte_esp_ok = ProbeStackPointerTwoByteOpcode();
+    const bool high_byte_ok = ProbeStackPointerHighByteSource(data);
     const bool prefix_ok = ProbeAddressSizePrefix(data);
     const bool absolute_ok = ProbeAbsoluteToSib(data);
     const bool absolute_imm_ok = ProbeAbsoluteToSibImmediate(data);
@@ -599,7 +698,7 @@ bool RunLongModeLoweringProbe()
     platform::ReleaseMemory(reserved.base, kPageBytes);
 
     const bool all = classification_ok && refusals_ok &&
-        two_byte_esp_ok && prefix_ok && absolute_ok &&
+        two_byte_esp_ok && high_byte_ok && prefix_ok && absolute_ok &&
         absolute_imm_ok && moffs_ok;
     std::cout << "long_mode_lowering_all=" << (all ? "true" : "false") << "\n";
     return all;

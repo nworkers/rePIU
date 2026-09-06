@@ -181,6 +181,9 @@ struct GuestFaultInfo
 // expects, which a caller must treat as unrecoverable rather than resume from.
 bool LoadGuestCpuContext(const void* host_context, GuestCpuContext* registers);
 bool StoreGuestCpuContext(const GuestCpuContext& registers, void* host_context);
+// Writes the native host instruction pointer without applying the guest
+// context's 32-bit register contract.
+bool StoreHostInstructionPointer(std::uintptr_t address, void* host_context);
 
 // Extracts the fault address and access direction from a POSIX siginfo_t and
 // ucontext_t pair.

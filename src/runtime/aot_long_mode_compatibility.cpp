@@ -246,6 +246,81 @@ bool IsStackPointerRegister(const ZydisRegister reg)
     }
 }
 
+bool IsHighByteRegister(const ZydisRegister reg)
+{
+    switch (reg)
+    {
+        case ZYDIS_REGISTER_AH:
+        case ZYDIS_REGISTER_CH:
+        case ZYDIS_REGISTER_DH:
+        case ZYDIS_REGISTER_BH:
+            return true;
+        default:
+            return false;
+    }
+}
+
+std::uint8_t HighByteSourceGpr(const ZydisRegister reg)
+{
+    switch (reg)
+    {
+        case ZYDIS_REGISTER_AH: return 0U;  // EAX
+        case ZYDIS_REGISTER_CH: return 1U;  // ECX
+        case ZYDIS_REGISTER_DH: return 2U;  // EDX
+        case ZYDIS_REGISTER_BH: return 3U;  // EBX
+        default: return 0xFFU;
+    }
+}
+
+// A REX prefix changes the meaning of the four legacy high-byte register
+// encodings. Keep this separate from the ESP field classification because the
+// two transforms have different output shapes: the high-byte source needs a
+// scratch materialisation before the instruction, while ESP only changes the
+// REX and ModRM/SIB fields.
+struct HighByteFields
+{
+    bool present = false;
+    bool source_only = false;
+    std::uint8_t source_gpr = 0xFFU;
+};
+
+HighByteFields ClassifyHighByteFields(
+    const ZydisDecodedInstruction& instruction,
+    const ZydisDecodedOperand* operands)
+{
+    HighByteFields fields;
+    for (std::uint8_t index = 0; index < instruction.operand_count; ++index)
+    {
+        const ZydisDecodedOperand& operand = operands[index];
+        if (operand.type != ZYDIS_OPERAND_TYPE_REGISTER ||
+            !IsHighByteRegister(operand.reg.value))
+        {
+            continue;
+        }
+        if (fields.present)
+        {
+            fields.source_only = false;
+            fields.source_gpr = 0xFFU;
+            return fields;
+        }
+        fields.present = true;
+        const bool read =
+            (operand.actions & ZYDIS_OPERAND_ACTION_MASK_READ) != 0U;
+        const bool write =
+            (operand.actions & ZYDIS_OPERAND_ACTION_MASK_WRITE) != 0U;
+        const std::uint8_t source_gpr = HighByteSourceGpr(operand.reg.value);
+        if (!read || write ||
+            operand.encoding != ZYDIS_OPERAND_ENCODING_MODRM_REG ||
+            source_gpr == 0xFFU)
+        {
+            return fields;
+        }
+        fields.source_only = true;
+        fields.source_gpr = source_gpr;
+    }
+    return fields;
+}
+
 // Task 555. Whether the instruction names the stack pointer in any role.
 //
 // Task 546's decision 3 keeps host RSP as the SysV stack and holds guest ESP as
@@ -364,6 +439,21 @@ bool TouchesStackPointer(const ZydisDecodedInstruction& instruction,
         // case that occurs.
         if (IsStackPointerRegister(operand.mem.base) ||
             IsStackPointerRegister(operand.mem.index))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool HasStackPointerMemoryBase(const ZydisDecodedInstruction& instruction,
+                              const ZydisDecodedOperand* operands)
+{
+    for (std::uint8_t index = 0; index < instruction.operand_count; ++index)
+    {
+        const ZydisDecodedOperand& operand = operands[index];
+        if (operand.type == ZYDIS_OPERAND_TYPE_MEMORY &&
+            IsStackPointerRegister(operand.mem.base))
         {
             return true;
         }
@@ -539,6 +629,30 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
     // and Task 563 measured that these are what hold execution to one block.
     if (TouchesStackPointer(instruction, operands))
     {
+        const StackPointerFields stack_fields =
+            ClassifyStackPointerFields(instruction, operands);
+        const HighByteFields high_byte_fields =
+            ClassifyHighByteFields(instruction, operands);
+        if (!stack_fields.supported)
+        {
+            return Refuse(LongModeDivergence::kStackPointerRegister);
+        }
+        if (high_byte_fields.present)
+        {
+            // The high-byte form is admitted only when it is a source-only
+            // ModRM.reg operand and ESP is the base of a memory operand. A
+            // destination or read/write form needs a result merge back into
+            // AH/CH/DH/BH, which this lowering does not claim to implement.
+            if (high_byte_fields.source_only &&
+                !stack_fields.rex_r && stack_fields.rex_b &&
+                HasStackPointerMemoryBase(instruction, operands))
+            {
+                return Reencode(
+                    LongModeDivergence::kStackPointerRegister,
+                    LongModeLowering::kStackPointerHighByteToR15);
+            }
+            return Refuse(LongModeDivergence::kStackPointerRegister);
+        }
         if (CanReencodeStackPointer(instruction, operands))
         {
             return Reencode(LongModeDivergence::kStackPointerRegister,
@@ -931,6 +1045,95 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
         if (instruction_count != nullptr)
         {
             *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 614. A REX changes ModRM reg=100..111 from AH/CH/DH/BH to
+    // SPL/BPL/SIL/DIL. Materialise the source high byte in R14B without
+    // changing flags: exchange the source low and high bytes using legacy
+    // encodings, copy the exposed low byte to R14B, and exchange them back.
+    //
+    // The original legacy prefixes stay immediately before the opcode. The
+    // scratch sequence is placed before those prefixes, and the transformed
+    // instruction then gets one combined REX.R (R14B) + REX.B (R15 base).
+    if (verdict.lowering == LongModeLowering::kStackPointerHighByteToR15)
+    {
+        const StackPointerFields stack_fields =
+            ClassifyStackPointerFields(instruction, operands);
+        const HighByteFields high_byte_fields =
+            ClassifyHighByteFields(instruction, operands);
+        const std::size_t opcode_offset = instruction.raw.prefix_count;
+        const std::size_t scratch_bytes = 7U;
+        const bool unsupported_opcode_map =
+            instruction.opcode_map != ZYDIS_OPCODE_MAP_DEFAULT &&
+            instruction.opcode_map != ZYDIS_OPCODE_MAP_0F;
+        const std::size_t expected_modrm_offset =
+            instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT
+                ? opcode_offset + 1U
+                : opcode_offset + 2U;
+        if (!stack_fields.supported || !stack_fields.rex_b ||
+            stack_fields.rex_r || !high_byte_fields.present ||
+            !high_byte_fields.source_only ||
+            high_byte_fields.source_gpr > 3U ||
+            !HasStackPointerMemoryBase(instruction, operands) ||
+            instruction.raw.modrm.offset == 0U ||
+            opcode_offset >= length ||
+            instruction.raw.modrm.offset <= opcode_offset ||
+            unsupported_opcode_map ||
+            instruction.raw.modrm.offset != expected_modrm_offset ||
+            instruction.raw.modrm.mod == 3U ||
+            length + scratch_bytes + 1U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+
+        std::size_t out = 0U;
+        // xchg low,high: 86 /r with low in ModRM.reg and high in rm. No REX
+        // is used here, so the legacy high-byte register names remain valid.
+        const std::uint8_t low_high_exchange = static_cast<std::uint8_t>(
+            0xC4U + high_byte_fields.source_gpr * 9U);
+        lowered[out++] = 0x86U;
+        lowered[out++] = low_high_exchange;
+        // mov r14b, low: 41 88 /r, mod=11, rm=R14.
+        lowered[out++] = 0x41U;
+        lowered[out++] = 0x88U;
+        lowered[out++] = static_cast<std::uint8_t>(
+            0xC6U | (high_byte_fields.source_gpr << 3U));
+        // Restore the source GPR before running the original operation.
+        lowered[out++] = 0x86U;
+        lowered[out++] = low_high_exchange;
+
+        for (std::size_t index = 0; index < opcode_offset; ++index)
+        {
+            lowered[out++] = bytes[index];
+        }
+        lowered[out++] = 0x45U;  // REX.R for R14B and REX.B for R15.
+        for (std::size_t index = opcode_offset; index < length; ++index)
+        {
+            lowered[out++] = bytes[index];
+        }
+
+        const std::size_t modrm_out =
+            scratch_bytes + static_cast<std::size_t>(
+                                instruction.raw.modrm.offset) + 1U;
+        // ModRM reg=110 plus REX.R names R14B instead of the original high
+        // byte register. The classifier only admits a source in this field.
+        lowered[modrm_out] = static_cast<std::uint8_t>(
+            (lowered[modrm_out] & 0xC7U) | 0x30U);
+        const std::size_t sib_out = modrm_out + 1U;
+        if (sib_out >= out)
+        {
+            return false;
+        }
+        lowered[sib_out] = static_cast<std::uint8_t>(
+            (lowered[sib_out] & 0xF8U) | 0x07U);
+
+        *lowered_count = out;
+        if (instruction_count != nullptr)
+        {
+            // xchg, mov, xchg, and the re-encoded guest instruction.
+            *instruction_count = 4U;
         }
         return true;
     }

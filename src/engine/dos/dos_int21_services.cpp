@@ -4,6 +4,7 @@
 #include "guest_memory_access.h"
 #include "dpmi_mscdex_services.h"
 #include "repiu/hle/dos_date.h"
+#include "repiu/platform/host_environment.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -19,6 +20,15 @@
 
 namespace repiu::engine
 {
+
+bool Dos4gwPharlapMemoryPathProbeEnabled()
+{
+    const repiu::platform::EnvironmentSetting setting =
+        repiu::platform::ReadEnvironmentSetting(
+            "REPIU_DOS4GW_MEMORY_PATH_PROBE", 16U);
+    return setting.present && !setting.too_long &&
+           setting.value == "pharlap";
+}
 
 void RecordDosChangeDirectory(ThreadContext* context,
                               const std::string& guest_path,
@@ -638,6 +648,135 @@ void CaptureDosTermination(repiu::platform::GuestCpuContext* win32_context,
                     stack,
                     sizeof(context->dos_termination_stack));
     }
+
+    if (std::getenv("REPIU_DOS_INT_TRACE") != nullptr)
+    {
+        const repiu::runtime::GuestDescriptor* descriptor =
+            repiu::runtime::FindDescriptor(context->selector_table,
+                                           context->guest_ss);
+        if (descriptor != nullptr && descriptor->present)
+        {
+            // The allocator globals are object-relative offsets in the
+            // original LE auto-data object 4. The selector base is the
+            // relocated object base, so adding the offsets keeps this
+            // diagnostic valid when the image placement changes.
+            constexpr std::uint32_t kFreeListHead = 0x00096388U;
+            constexpr std::uint32_t kFreeListCursor = 0x0009638CU;
+            constexpr std::uint32_t kFreeListLimit = 0x00096390U;
+            constexpr std::uint32_t kMemoryExtensionGate = 0x00096720U;
+            constexpr std::uint32_t kMemoryExtensionLimit = 0x00096724U;
+            constexpr std::uint32_t kMemorySelectorLimit = 0x0009662CU;
+            constexpr std::uint32_t kMemoryBase = 0x00096640U;
+            constexpr std::uint32_t kMemoryMode = 0x0009665AU;
+            const auto relocated_address =
+                [&](std::uint32_t object_offset) {
+                    return descriptor->base + object_offset;
+                };
+            const auto read_u32 = [&](std::uint32_t address,
+                                      std::uint32_t* value) {
+                if (value == nullptr ||
+                    !IsGuestRangeReadable(
+                        context,
+                        reinterpret_cast<const void*>(
+                            static_cast<std::uintptr_t>(address)),
+                        sizeof(*value)))
+                {
+                    return false;
+                }
+                *value = *reinterpret_cast<const std::uint32_t*>(
+                    static_cast<std::uintptr_t>(address));
+                return true;
+            };
+            const std::uint32_t head_address =
+                relocated_address(kFreeListHead);
+            const std::uint32_t cursor_address =
+                relocated_address(kFreeListCursor);
+            const std::uint32_t limit_address =
+                relocated_address(kFreeListLimit);
+            const std::uint32_t gate_address =
+                relocated_address(kMemoryExtensionGate);
+            const std::uint32_t extension_limit_address =
+                relocated_address(kMemoryExtensionLimit);
+            const std::uint32_t selector_limit_address =
+                relocated_address(kMemorySelectorLimit);
+            const std::uint32_t memory_base_address =
+                relocated_address(kMemoryBase);
+            const std::uint32_t mode_address =
+                relocated_address(kMemoryMode);
+            std::uint32_t head = 0;
+            std::uint32_t cursor = 0;
+            std::uint32_t limit = 0;
+            std::uint32_t gate = 0;
+            std::uint32_t extension_limit = 0;
+            std::uint32_t selector_limit = 0;
+            std::uint32_t memory_base = 0;
+            std::uint32_t mode = 0;
+            std::uint8_t mode_flag = 0;
+            const bool values_valid =
+                read_u32(head_address, &head) &&
+                read_u32(cursor_address, &cursor) &&
+                read_u32(limit_address, &limit) &&
+                read_u32(gate_address, &gate) &&
+                read_u32(extension_limit_address, &extension_limit) &&
+                read_u32(selector_limit_address, &selector_limit) &&
+                read_u32(memory_base_address, &memory_base) &&
+                read_u32(mode_address, &mode);
+            if (IsGuestRangeReadable(
+                    context,
+                    reinterpret_cast<const void*>(
+                        static_cast<std::uintptr_t>(mode_address + 1U)),
+                    sizeof(mode_flag)))
+            {
+                mode_flag = *reinterpret_cast<const std::uint8_t*>(
+                    static_cast<std::uintptr_t>(mode_address + 1U));
+            }
+            std::fprintf(
+                stderr,
+                "[repiu-dos-allocator] valid=%s ss=0x%04X base=0x%08X "
+                "head=0x%08X cursor=0x%08X limit=0x%08X gate=0x%08X "
+                "extension_limit=0x%08X selector_limit=0x%08X "
+                "memory_base=0x%08X mode=0x%08X mode_flag=0x%02X "
+                "addresses=0x%08X/0x%08X/0x%08X/0x%08X/0x%08X/"
+                "0x%08X/0x%08X/0x%08X",
+                values_valid ? "true" : "false",
+                static_cast<unsigned>(context->guest_ss), descriptor->base,
+                head, cursor, limit, gate, extension_limit, selector_limit,
+                memory_base, mode, static_cast<unsigned>(mode_flag),
+                head_address, cursor_address, limit_address, gate_address,
+                extension_limit_address, selector_limit_address,
+                memory_base_address, mode_address);
+            std::fputc('\n', stderr);
+
+            // The current pumpit2a frontier reaches the original allocator
+            // through AOT, so the execution probe may not see its original
+            // entry. Capture the relocated code window here instead; the
+            // immediate operands reveal which addresses the guest actually
+            // uses after LE relocation.
+            constexpr std::uint32_t kAllocatorRuntimeAddress = 0x010F1D74U;
+            const void* allocator_code = reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(kAllocatorRuntimeAddress));
+            if (IsGuestRangeReadable(context, allocator_code, 96U))
+            {
+                std::fprintf(stderr, "[repiu-dos-allocator-code] address=0x%08X bytes=",
+                             kAllocatorRuntimeAddress);
+                const auto* bytes = static_cast<const std::uint8_t*>(
+                    allocator_code);
+                for (std::size_t index = 0; index < 96U; ++index)
+                {
+                    std::fprintf(stderr, "%s%02X", index == 0 ? "" : " ",
+                                 static_cast<unsigned>(bytes[index]));
+                }
+                std::fputc('\n', stderr);
+            }
+        }
+        else
+        {
+            std::fprintf(
+                stderr,
+                "[repiu-dos-allocator] valid=false ss=0x%04X\n",
+                static_cast<unsigned>(context->guest_ss));
+        }
+    }
 }
 
 DosFileIoTraceEntry& AllocateDosFileIoTrace(
@@ -817,10 +956,22 @@ void RecordDosWrite(const repiu::platform::GuestCpuContext* win32_context,
                     bytes->size() > limit ? " ..." : "");
         }
     }
+    if (std::getenv("REPIU_DOS_INT_TRACE") != nullptr &&
+        win32_context != nullptr)
+    {
+        fprintf(stderr,
+                "[repiu-dos-io] op=write eip=0x%08X eax=0x%08X "
+                "handle=0x%04X buffer=0x%08X requested=%u actual=%u "
+                "error=0x%04X\n",
+                static_cast<std::uint32_t>(win32_context->Eip),
+                static_cast<std::uint32_t>(win32_context->Eax),
+                static_cast<unsigned>(handle), buffer, requested_bytes,
+                actual_bytes, static_cast<unsigned>(error));
+    }
 }
 
-// INT 21h AH=40h against a writable VFS handle. The console fallback for every
-// other handle stays at the call site.
+// INT 21h AH=40h against a writable VFS handle or the DOS CON device. The
+// standard-handle fallback stays at the call site.
 bool HandleDosWriteFile(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     const std::uint16_t handle =
@@ -847,9 +998,16 @@ bool HandleDosWriteFile(repiu::platform::GuestCpuContext* win32_context, ThreadC
         bytes.assign(source, source + byte_count);
     }
 
-    if (!repiu::hle::WriteDosFile(&context->dos_file_system, handle,
-                                  bytes.data(), byte_count, &actual_bytes,
-                                  &dos_error))
+    const bool console_device = repiu::hle::IsDosConsoleFileHandle(
+        context->dos_file_system, handle);
+    if (console_device)
+    {
+        AppendConsoleOutput(context, bytes.data(), byte_count);
+        actual_bytes = byte_count;
+    }
+    else if (!repiu::hle::WriteDosFile(&context->dos_file_system, handle,
+                                       bytes.data(), byte_count, &actual_bytes,
+                                       &dos_error))
     {
         return false;
     }
@@ -1320,6 +1478,20 @@ bool HandleDosResizeMemoryBlock(repiu::platform::GuestCpuContext* win32_context,
             // 32-bit paragraph count.
             win32_context->Ebx = max_paragraphs;
             win32_context->EFlags |= 1U;
+            if (std::getenv("REPIU_DOS_INT_TRACE") != nullptr)
+            {
+                std::fprintf(
+                    stderr,
+                    "[repiu-dos-resize] eip=0x%08X selector=0x%04X "
+                    "requested_ebx=0x%08X requested_end=0x%08X "
+                    "allocator_end=0x%08X success=0 error=0x%04X cf=1\n",
+                    static_cast<std::uint32_t>(win32_context->Eip),
+                    static_cast<unsigned>(resize_selector),
+                    full_ebx,
+                    static_cast<std::uint32_t>(requested_end & 0xFFFFFFFFU),
+                    final_allocator_end,
+                    static_cast<unsigned>(kInsufficientMemory));
+            }
             return true;
         }
     }
@@ -1332,6 +1504,19 @@ bool HandleDosResizeMemoryBlock(repiu::platform::GuestCpuContext* win32_context,
                     static_cast<std::uint32_t>(requested_end & 0xFFFFFFFFU),
                     allocator_end);
     win32_context->EFlags &= ~1U;
+    if (std::getenv("REPIU_DOS_INT_TRACE") != nullptr)
+    {
+        std::fprintf(
+            stderr,
+            "[repiu-dos-resize] eip=0x%08X selector=0x%04X "
+            "requested_ebx=0x%08X requested_end=0x%08X "
+            "allocator_end=0x%08X success=1 error=0x0000 cf=0\n",
+            static_cast<std::uint32_t>(win32_context->Eip),
+            static_cast<unsigned>(resize_selector),
+            full_ebx,
+            static_cast<std::uint32_t>(requested_end & 0xFFFFFFFFU),
+            allocator_end);
+    }
     return true;
 }
 
@@ -1440,6 +1625,10 @@ bool HandleDosInterrupt21(repiu::platform::GuestCpuContext* win32_context, Threa
             RecordHandledDosInterrupt(context, 0x21, ax);
             win32_context->Eax =
                 (win32_context->Eax & 0xFFFF0000U) | 0x0007U;
+            if (Dos4gwPharlapMemoryPathProbeEnabled())
+            {
+                win32_context->Eax |= 0x44580000U;
+            }
             win32_context->Ebx = 0;
             win32_context->Ecx = 0;
             break;
@@ -1520,6 +1709,18 @@ bool HandleDosInterrupt21(repiu::platform::GuestCpuContext* win32_context, Threa
             const std::uint32_t byte_count = win32_context->Ecx;
             AppendConsoleOutput(
                 context, text, byte_count, win32_context->Ebx == 2U);
+            if (std::getenv("REPIU_DOS_INT_TRACE") != nullptr)
+            {
+                fprintf(stderr,
+                        "[repiu-dos-io] op=console-write eip=0x%08X "
+                        "eax=0x%08X handle=0x%04X buffer=0x%08X "
+                        "requested=%u actual=%u error=0x0000\n",
+                        static_cast<std::uint32_t>(win32_context->Eip),
+                        static_cast<std::uint32_t>(win32_context->Eax),
+                        static_cast<unsigned>(write_handle),
+                        static_cast<std::uint32_t>(win32_context->Edx),
+                        byte_count, byte_count);
+            }
             win32_context->Eax = byte_count;
             win32_context->EFlags &= ~1U;
             break;

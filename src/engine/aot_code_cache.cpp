@@ -26,6 +26,82 @@ namespace repiu::engine
 namespace
 {
 
+bool DynamicAotTraceMatches(const std::uint32_t guest_address)
+{
+    const char* const value = std::getenv("REPIU_AOT_DYNAMIC_TRACE");
+    if (value == nullptr || *value == '\0')
+    {
+        return false;
+    }
+    if (std::strcmp(value, "1") == 0 || std::strcmp(value, "all") == 0)
+    {
+        return true;
+    }
+    errno = 0;
+    char* parse_end = nullptr;
+    const unsigned long parsed = std::strtoul(value, &parse_end, 0);
+    return errno == 0 && parse_end != value && *parse_end == '\0' &&
+           parsed <= std::numeric_limits<std::uint32_t>::max() &&
+           static_cast<std::uint32_t>(parsed) == guest_address;
+}
+
+void TraceDynamicAotBytes(const char* const label,
+                          const std::uint32_t guest_address,
+                          const std::uint8_t* const bytes,
+                          const std::size_t byte_count)
+{
+    std::fprintf(stderr,
+                 "[repiu-aot-dynamic] stage=%s guest=0x%08X bytes=",
+                 label == nullptr ? "unknown" : label,
+                 static_cast<unsigned>(guest_address));
+    if (bytes == nullptr)
+    {
+        std::fprintf(stderr, "unreadable\n");
+        return;
+    }
+    const std::size_t count = std::min<std::size_t>(byte_count, 32U);
+    for (std::size_t index = 0U; index < count; ++index)
+    {
+        std::fprintf(stderr, "%02X", bytes[index]);
+    }
+    if (count == 0U)
+    {
+        std::fprintf(stderr, "empty");
+    }
+    std::fprintf(stderr, " length=%zu\n", byte_count);
+}
+
+void TraceDynamicAotPlanEntry(const runtime::AotTranslationPlan& plan,
+                              const std::uint32_t guest_address)
+{
+    for (const runtime::AotBasicBlock& block : plan.blocks)
+    {
+        for (const runtime::AotInstructionRecord& instruction :
+             block.instructions)
+        {
+            if (instruction.guest_address != guest_address)
+            {
+                continue;
+            }
+            TraceDynamicAotBytes(
+                "plan-entry", guest_address, instruction.bytes.data(),
+                instruction.bytes.size());
+            std::fprintf(stderr,
+                         "[repiu-aot-dynamic] stage=plan-entry-meta "
+                         "guest=0x%08X kind=%u length=%u mnemonic=%u\n",
+                         static_cast<unsigned>(guest_address),
+                         static_cast<unsigned>(instruction.kind),
+                         static_cast<unsigned>(instruction.length),
+                         static_cast<unsigned>(instruction.mnemonic));
+            return;
+        }
+    }
+    std::fprintf(stderr,
+                 "[repiu-aot-dynamic] stage=plan-entry guest=0x%08X "
+                 "match=none\n",
+                 static_cast<unsigned>(guest_address));
+}
+
 void IndexAotBreakpointProvenance(
     const runtime::AotCodeCacheImage& image,
     std::uint32_t append_offset,
@@ -1032,6 +1108,18 @@ bool AppendDynamicAotTranslation(
         result->message = "failed to translate dynamic guest target";
         return true;
     }
+    const bool dynamic_trace = DynamicAotTraceMatches(guest_entry);
+    if (dynamic_trace)
+    {
+        const std::uint32_t guest_offset = guest_entry - runtime_base;
+        const auto* const raw_bytes =
+            reinterpret_cast<const std::uint8_t*>(
+                static_cast<std::uintptr_t>(guest_entry));
+        TraceDynamicAotBytes(
+            "raw", guest_entry, raw_bytes,
+            static_cast<std::size_t>(runtime_size - guest_offset));
+        TraceDynamicAotPlanEntry(plan, guest_entry);
+    }
     std::uint32_t unsafe_hle_address = 0U;
     const bool hle_covered = runtime::ValidateAotCodeCacheHleCoverage(
         plan, image, &unsafe_hle_address);
@@ -1040,6 +1128,37 @@ bool AppendDynamicAotTranslation(
         AotWorkerTimingDelta(timing, validate_start, placement_phase_start);
     if (!hle_covered)
     {
+        // Task 607: expose the plan record that made a dynamic image
+        // ineligible. The public failure text intentionally stays stable, but
+        // this opt-in detail distinguishes a segment slot, an HLE boundary,
+        // and a verifier mismatch without making normal runs noisy.
+        if (std::getenv("REPIU_AOT_FALLBACK_TRACE") != nullptr &&
+            unsafe_hle_address != 0U)
+        {
+            for (const runtime::AotBasicBlock& block : plan.blocks)
+            {
+                for (const runtime::AotInstructionRecord& candidate : block.instructions)
+                {
+                    if (candidate.guest_address != unsafe_hle_address)
+                    {
+                        continue;
+                    }
+                    std::fprintf(
+                        stderr,
+                        "[repiu-aot-coverage-failure] guest=0x%08X kind=%u length=%u bytes=%02X %02X %02X %02X %02X %02X\n",
+                        candidate.guest_address,
+                        static_cast<unsigned>(candidate.kind),
+                        static_cast<unsigned>(candidate.length),
+                        candidate.bytes.size() > 0U ? candidate.bytes[0] : 0U,
+                        candidate.bytes.size() > 1U ? candidate.bytes[1] : 0U,
+                        candidate.bytes.size() > 2U ? candidate.bytes[2] : 0U,
+                        candidate.bytes.size() > 3U ? candidate.bytes[3] : 0U,
+                        candidate.bytes.size() > 4U ? candidate.bytes[4] : 0U,
+                        candidate.bytes.size() > 5U ? candidate.bytes[5] : 0U);
+                    break;
+                }
+            }
+        }
         if (unsafe_hle_address != 0U)
         {
             char message[112] = {};
@@ -1132,6 +1251,25 @@ bool AppendDynamicAotTranslation(
     {
         result->message = "dynamic AOT entry was not active in the new image";
         return true;
+    }
+    if (dynamic_trace)
+    {
+        const runtime::AotAddressMapEntry& entry =
+            image.address_map[entry_index];
+        TraceDynamicAotBytes(
+            "image-entry", entry.guest_address,
+            image.bytes.data() + entry.cache_offset,
+            entry.emitted_length);
+        std::fprintf(stderr,
+                     "[repiu-aot-dynamic] stage=image-entry-meta "
+                     "guest=0x%08X cache=0x%08X append_offset=0x%08X "
+                     "guest_len=%u emitted_len=%u active=1\n",
+                     static_cast<unsigned>(entry.guest_address),
+                     static_cast<unsigned>(placement->base_address +
+                                           append_offset + entry.cache_offset),
+                     static_cast<unsigned>(append_offset),
+                     static_cast<unsigned>(entry.guest_length),
+                     static_cast<unsigned>(entry.emitted_length));
     }
     if (write_watch_set != nullptr &&
         !InstallAotGuestPageWriteWatches(
@@ -1945,6 +2083,64 @@ bool InstallAotProbeSentinel(AotCodeCachePlacement* placement,
         repiu::platform::MemoryProtection::kExecuteRead, nullptr);
     repiu::platform::FlushInstructionCacheRange(
         reinterpret_cast<void*>(static_cast<std::uintptr_t>(cache_address)), 1);
+    return restored;
+}
+
+bool InstallAotProbeSentinelInLatestAppend(
+    AotCodeCachePlacement* placement,
+    std::uint32_t guest_address,
+    std::uint32_t added_bytes)
+{
+    if (placement == nullptr || !placement->placed || added_bytes == 0U ||
+        added_bytes > placement->size)
+    {
+        return false;
+    }
+    const std::uint32_t append_offset = placement->size - added_bytes;
+    std::vector<std::uint32_t> cache_addresses;
+    for (std::size_t index = 0U;
+         index < placement->address_map.size(); ++index)
+    {
+        const runtime::AotAddressMapEntry& entry = placement->address_map[index];
+        if (entry.guest_address != guest_address ||
+            entry.cache_offset < append_offset ||
+            entry.cache_offset >= placement->size || entry.emitted_length == 0U)
+        {
+            continue;
+        }
+        if (index < placement->address_map_states.size() &&
+            !placement->address_map_states[index].active)
+        {
+            continue;
+        }
+        cache_addresses.push_back(placement->base_address + entry.cache_offset);
+    }
+    if (cache_addresses.empty())
+    {
+        return false;
+    }
+    void* cache = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(placement->base_address));
+    if (!repiu::platform::ProtectMemory(
+            cache, placement->capacity,
+            repiu::platform::MemoryProtection::kReadWrite, nullptr))
+    {
+        return false;
+    }
+    for (const std::uint32_t cache_address : cache_addresses)
+    {
+        *reinterpret_cast<std::uint8_t*>(
+            static_cast<std::uintptr_t>(cache_address)) = 0xCCU;
+    }
+    const bool restored = repiu::platform::ProtectMemory(
+        cache, placement->capacity,
+        repiu::platform::MemoryProtection::kExecuteRead, nullptr);
+    for (const std::uint32_t cache_address : cache_addresses)
+    {
+        repiu::platform::FlushInstructionCacheRange(
+            reinterpret_cast<void*>(
+                static_cast<std::uintptr_t>(cache_address)), 1U);
+    }
     return restored;
 }
 

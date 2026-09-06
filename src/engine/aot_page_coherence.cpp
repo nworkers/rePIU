@@ -1,5 +1,6 @@
 #include "repiu/engine/aot_page_coherence.h"
 #include "repiu/engine/aot_code_cache.h"
+#include "repiu/engine/guest_write_trace.h"
 #include "repiu/platform/atomic_ops.h"
 #include "repiu/platform/virtual_memory.h"
 

@@ -81,4 +81,12 @@ RepiuLinuxX64GuestEntry:
     ret
     .size RepiuLinuxX64GuestEntry, .-RepiuLinuxX64GuestEntry
 
+    .globl RepiuLinuxX64GuestExit
+    .type RepiuLinuxX64GuestExit, @function
+RepiuLinuxX64GuestExit:
+    // The interrupted cache run has the return address from the host call at
+    // host RSP. Returning reaches the bridge's state writeback.
+    ret
+    .size RepiuLinuxX64GuestExit, .-RepiuLinuxX64GuestExit
+
     .section .note.GNU-stack,"",@progbits

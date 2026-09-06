@@ -19,6 +19,7 @@ bool IsGuestRangeWritable(ThreadContext* context, void* destination, std::uint32
 bool WriteGuestUInt16(ThreadContext* context, void* destination, std::uint16_t value);
 bool WriteGuestUInt8(ThreadContext* context, void* destination, std::uint8_t value);
 bool WriteGuestUInt32(ThreadContext* context, void* destination, std::uint32_t value);
+bool ReadGuestUInt8(ThreadContext* context, const void* source, std::uint8_t* value);
 bool ReadGuestUInt32(ThreadContext* context, const void* source, std::uint32_t* value);
 
 void WriteShadowMemory(ThreadContext* context, std::uint32_t destination, std::uint32_t value, std::uint32_t byte_count);

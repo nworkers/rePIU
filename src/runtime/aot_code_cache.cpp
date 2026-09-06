@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstring>
+#include <cstdlib>
 #include <limits>
 #include <unordered_map>
 
@@ -20,6 +21,15 @@ namespace
 {
 
 constexpr std::uint32_t kInlineCacheEntryCount = 4U;
+constexpr std::uint32_t kLongModeIndirectProducerBit = 0x80000000U;
+
+#if !defined(_WIN32) && defined(__x86_64__)
+bool EmitLinuxX64StackWriteTrace(
+    const AotInstructionRecord& instruction,
+    std::uint32_t return_address,
+    std::vector<std::uint8_t>* bytes,
+    std::size_t* emitted_instructions);
+#endif
 
 bool IsBackwardEdge(const AotInstructionRecord& instruction)
 {
@@ -140,6 +150,49 @@ void AppendRel32(std::vector<std::uint8_t>* bytes, std::uint8_t opcode)
     bytes->insert(bytes->end(), 4U, 0U);
 }
 
+bool LongModeReturnStackAdjustment(const AotInstructionRecord& instruction,
+                                   std::uint32_t* adjustment)
+{
+    if (adjustment == nullptr)
+    {
+        return false;
+    }
+    if (instruction.bytes.size() == 1U && instruction.bytes[0] == 0xC3U)
+    {
+        *adjustment = 4U;
+        return true;
+    }
+    if (instruction.bytes.size() != 3U || instruction.bytes[0] != 0xC2U)
+    {
+        return false;
+    }
+    const std::uint32_t immediate =
+        static_cast<std::uint32_t>(instruction.bytes[1]) |
+        (static_cast<std::uint32_t>(instruction.bytes[2]) << 8U);
+    *adjustment = 4U + immediate;
+    return true;
+}
+
+void EmitLongModeReturnStackAdjustment(std::uint32_t adjustment,
+                                       std::vector<std::uint8_t>* bytes)
+{
+    if (adjustment <= 0x7FU)
+    {
+        // lea r15d, [r15+disp8]
+        bytes->insert(bytes->end(),
+                      {0x45U, 0x8DU, 0x7FU,
+                       static_cast<std::uint8_t>(adjustment)});
+        return;
+    }
+    // lea r15d, [r15+disp32]
+    bytes->insert(bytes->end(), {0x45U, 0x8DU, 0xBFU});
+    for (std::size_t index = 0U; index < 4U; ++index)
+    {
+        bytes->push_back(static_cast<std::uint8_t>(
+            (adjustment >> (index * 8U)) & 0xFFU));
+    }
+}
+
 
 // Task 562. Where an emitted return goes to ask where a guest address lives.
 //
@@ -205,15 +258,16 @@ bool EmitLongModeDirectBranch(const AotInstructionRecord& instruction,
     if (instruction.kind == AotInstructionKind::kReturn)
     {
         const std::uintptr_t thunk = LongModeReturnThunkAddress();
-        if (thunk == 0U)
+        std::uint32_t stack_adjustment = 0U;
+        if (thunk == 0U ||
+            !LongModeReturnStackAdjustment(instruction, &stack_adjustment))
         {
             return false;
         }
         // mov r14d, dword ptr [r15]
         image->bytes.insert(image->bytes.end(), {0x45U, 0x8BU, 0x37U});
-        // lea r15d, [r15+4]
-        image->bytes.insert(image->bytes.end(),
-                            {0x45U, 0x8DU, 0x7FU, 0x04U});
+        // lea r15d, [r15+guest return stack adjustment]
+        EmitLongModeReturnStackAdjustment(stack_adjustment, &image->bytes);
         // movabs r12, <thunk>
         image->bytes.insert(image->bytes.end(), {0x49U, 0xBCU});
         for (std::size_t index = 0; index < 8U; ++index)
@@ -221,10 +275,19 @@ bool EmitLongModeDirectBranch(const AotInstructionRecord& instruction,
             image->bytes.push_back(static_cast<std::uint8_t>(
                 (static_cast<std::uint64_t>(thunk) >> (index * 8U)) & 0xFFU));
         }
+        // Producer tag consumed by the shared x64 thunk: the guest RET site
+        // identifies an ordinary return. R10D is caller-saved and this MOV
+        // changes no flags.
+        image->bytes.insert(image->bytes.end(), {0x41U, 0xBAU});
+        for (std::size_t index = 0U; index < 4U; ++index)
+        {
+            image->bytes.push_back(static_cast<std::uint8_t>(
+                (instruction.guest_address >> (index * 8U)) & 0xFFU));
+        }
         // jmp r12
         image->bytes.insert(image->bytes.end(), {0x41U, 0xFFU, 0xE4U});
         ++image->long_mode_return_count;
-        *emitted_instructions = 4U;
+        *emitted_instructions = 5U;
         return true;
     }
     // Task 603. `kFarReturn` is deliberately not sent through the near-return
@@ -262,6 +325,12 @@ bool EmitLongModeDirectBranch(const AotInstructionRecord& instruction,
         }
         image->bytes.insert(image->bytes.end(), lowered,
                             lowered + lowered_count);
+        std::size_t stack_trace_instructions = 0U;
+#if !defined(_WIN32) && defined(__x86_64__)
+        EmitLinuxX64StackWriteTrace(
+            instruction, instruction.fallthrough_target, &image->bytes,
+            &stack_trace_instructions);
+#endif
         const std::uint32_t branch_offset =
             static_cast<std::uint32_t>(image->bytes.size());
         AppendRel32(&image->bytes, 0xE9U);
@@ -270,7 +339,8 @@ bool EmitLongModeDirectBranch(const AotInstructionRecord& instruction,
                                  instruction.direct_target,
                                  branch_offset + 1U, false});
         ++image->long_mode_branch_count;
-        *emitted_instructions = lowered_instructions + 1U;
+        *emitted_instructions = lowered_instructions +
+            stack_trace_instructions + 1U;
         return true;
     }
     if (instruction.kind != AotInstructionKind::kConditionalBranch)
@@ -386,6 +456,106 @@ void AppendImmediate32(std::vector<std::uint8_t>* bytes, std::uint32_t value)
         bytes->push_back(static_cast<std::uint8_t>(value >> shift));
     }
 }
+
+#if !defined(_WIN32) && defined(__x86_64__)
+bool LinuxX64StackTraceEnabled()
+{
+    static const bool enabled = [] {
+        const char* const value =
+            std::getenv("REPIU_LINUX_X64_STACK_TRACE");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+// Task 619. Record an AOT guest-stack write without changing guest flags. The
+// emitted code uses only upper host registers that are not part of the guest
+// register mapping and writes into the temporary dispatch frame. A nonzero
+// return address identifies a direct CALL; zero identifies an ordinary PUSH.
+bool EmitLinuxX64StackWriteTrace(
+    const AotInstructionRecord& instruction,
+    const std::uint32_t return_address,
+    std::vector<std::uint8_t>* const bytes,
+    std::size_t* const emitted_instructions)
+{
+    if (bytes == nullptr || emitted_instructions == nullptr ||
+        !LinuxX64StackTraceEnabled())
+    {
+        return false;
+    }
+    const std::uintptr_t frame_pointer_address =
+        repiu::platform::LinuxX64DispatchFramePointerAddress();
+    if (frame_pointer_address == 0U)
+    {
+        return false;
+    }
+
+    const std::size_t start = bytes->size();
+    // Preserve guest-visible flags while using TEST, AND, and the stores below.
+    bytes->push_back(0x9CU);  // pushfq
+    bytes->insert(bytes->end(), {0x49U, 0xBBU});  // movabs r11, global
+    for (std::size_t index = 0U; index < 8U; ++index)
+    {
+        bytes->push_back(static_cast<std::uint8_t>(
+            (static_cast<std::uint64_t>(frame_pointer_address) >>
+             (index * 8U)) & 0xFFU));
+    }
+    bytes->insert(bytes->end(), {0x4DU, 0x8BU, 0x1BU});  // mov r11, [r11]
+    bytes->insert(bytes->end(), {0x4DU, 0x85U, 0xDBU});  // test r11, r11
+    bytes->push_back(0x74U);  // jz .Lstack_trace_restore_flags
+    const std::size_t skip_offset = bytes->size();
+    bytes->push_back(0U);
+
+    // Allocate the next ring slot. The sequence itself is not stored in the
+    // record; its only role is to make the ring overwrite bounded and cheap.
+    bytes->insert(bytes->end(), {0x45U, 0x8BU, 0x93U,
+                                 static_cast<std::uint8_t>(
+                                     REPIU_LINUX_X64_FRAME_STACK_TRACE_SEQUENCE),
+                                 0x00U, 0x00U, 0x00U});
+    bytes->insert(bytes->end(), {0x45U, 0x8DU, 0x42U, 0x01U});
+    bytes->insert(bytes->end(), {0x45U, 0x89U, 0x83U,
+                                 static_cast<std::uint8_t>(
+                                     REPIU_LINUX_X64_FRAME_STACK_TRACE_SEQUENCE),
+                                 0x00U, 0x00U, 0x00U});
+    bytes->insert(bytes->end(), {0x41U, 0x81U, 0xE2U,
+                                 static_cast<std::uint8_t>(
+                                     (REPIU_LINUX_X64_FRAME_STACK_TRACE_CAPACITY -
+                                      1U) & 0xFFU),
+                                 static_cast<std::uint8_t>(
+                                     (REPIU_LINUX_X64_FRAME_STACK_TRACE_CAPACITY -
+                                      1U) >> 8U),
+                                 0x00U, 0x00U});
+    // A shift is safe here because PUSHFQ saved the guest flags.
+    bytes->insert(bytes->end(), {0x49U, 0xC1U, 0xE2U, 0x04U});
+    bytes->insert(bytes->end(), {0x4DU, 0x8DU, 0x9BU,
+                                 static_cast<std::uint8_t>(
+                                     REPIU_LINUX_X64_FRAME_STACK_TRACE_RECORDS),
+                                 0x00U, 0x00U, 0x00U});
+    bytes->insert(bytes->end(), {0x4DU, 0x01U, 0xD3U});  // add r11, r10
+
+    bytes->insert(bytes->end(), {0x41U, 0xB8U});  // mov r8d, site
+    AppendImmediate32(bytes, instruction.guest_address);
+    bytes->insert(bytes->end(), {0x45U, 0x89U, 0x03U});
+    bytes->insert(bytes->end(), {0x41U, 0xB8U});  // mov r8d, fallthrough
+    AppendImmediate32(bytes, return_address);
+    bytes->insert(bytes->end(), {0x45U, 0x89U, 0x43U, 0x04U});
+    bytes->insert(bytes->end(), {0x45U, 0x89U, 0x7BU, 0x08U});
+    bytes->insert(bytes->end(), {0x45U, 0x8BU, 0x07U});
+    bytes->insert(bytes->end(), {0x45U, 0x89U, 0x43U, 0x0CU});
+
+    const std::size_t restore_offset = bytes->size();
+    bytes->push_back(0x9DU);  // popfq
+    const std::size_t displacement = restore_offset - (skip_offset + 1U);
+    if (displacement > 0x7FU)
+    {
+        bytes->resize(start);
+        return false;
+    }
+    (*bytes)[skip_offset] = static_cast<std::uint8_t>(displacement);
+    *emitted_instructions = 20U;
+    return true;
+}
+#endif
 
 // Task 568. Snapshot a segment-override slot's opening bytes so re-resolution
 // can restore what HLE routing overwrites.
@@ -1041,6 +1211,18 @@ bool EmitLongModeIndirectCall(const AotInstructionRecord& instruction,
     image->bytes.insert(image->bytes.end(), push_lowered,
                         push_lowered + push_count);
 
+    // Producer tag consumed by the shared x64 thunk: the high bit identifies
+    // an indirect-call target transfer and the remaining bits name its site.
+    // R10D is caller-saved and this MOV changes no flags.
+    image->bytes.insert(image->bytes.end(), {0x41U, 0xBAU});
+    const std::uint32_t producer_tag =
+        instruction.guest_address | kLongModeIndirectProducerBit;
+    for (std::size_t index = 0U; index < 4U; ++index)
+    {
+        image->bytes.push_back(static_cast<std::uint8_t>(
+            (producer_tag >> (index * 8U)) & 0xFFU));
+    }
+
     // 3. The transfer, the same bytes Task 562's return slot uses.
     image->bytes.insert(image->bytes.end(), {0x49U, 0xBCU});  // movabs r12
     for (std::size_t index = 0; index < 8U; ++index)
@@ -1051,7 +1233,7 @@ bool EmitLongModeIndirectCall(const AotInstructionRecord& instruction,
     image->bytes.insert(image->bytes.end(), {0x41U, 0xFFU, 0xE4U});  // jmp r12
 
     ++image->long_mode_indirect_call_count;
-    *emitted_instructions = 1U + push_instructions + 2U;
+    *emitted_instructions = 1U + push_instructions + 3U;
     return true;
 }
 
@@ -2115,9 +2297,11 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                         static_cast<std::uint32_t>(emitted_instructions));
                     continue;
                 }
-                if (instruction.kind != AotInstructionKind::kCopy ||
-                    !EmitLongModeCopy(instruction, image,
-                                      &emitted_instructions))
+                const bool emitted_copy =
+                    instruction.kind == AotInstructionKind::kCopy &&
+                    EmitLongModeCopy(instruction, image,
+                                     &emitted_instructions);
+                if (!emitted_copy)
                 {
                     ++image->long_mode_refused_count;
                     image->bytes.push_back(0xCCU);
@@ -2125,6 +2309,22 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                                              instruction.guest_address, 0U,
                                              cache_offset, false});
                     emitted_instructions = 1U;  // the INT3
+                }
+                else
+                {
+#if !defined(_WIN32) && defined(__x86_64__)
+                    if (static_cast<ZydisMnemonic>(instruction.mnemonic) ==
+                        ZYDIS_MNEMONIC_PUSH)
+                    {
+                        std::size_t stack_trace_instructions = 0U;
+                        if (EmitLinuxX64StackWriteTrace(
+                                instruction, 0U, &image->bytes,
+                                &stack_trace_instructions))
+                        {
+                            emitted_instructions += stack_trace_instructions;
+                        }
+                    }
+#endif
                 }
                 map.emitted_length = static_cast<std::uint8_t>(
                     image->bytes.size() - cache_offset);
@@ -2700,6 +2900,84 @@ bool ValidateAotCodeCacheHleCoverage(
                 const std::uint32_t slot = site !=
                     image.guarded_segment_load_sites.end()
                         ? site->cache_offset : 0U;
+                if (image.long_mode_emission_enabled)
+                {
+                    std::uint8_t flags_save[kMaxLoweredBytes] = {};
+                    std::uint8_t flags_restore[kMaxLoweredBytes] = {};
+                    std::size_t save_count = 0U;
+                    std::size_t restore_count = 0U;
+                    const std::uint8_t pushfd = 0x9CU;
+                    const std::uint8_t popfd = 0x9DU;
+                    if (!LowerLongModeBytes(&pushfd, 1U, flags_save,
+                                            &save_count, nullptr) ||
+                        !LowerLongModeBytes(&popfd, 1U, flags_restore,
+                                            &restore_count, nullptr))
+                    {
+                        return fail(instruction.guest_address);
+                    }
+                    const std::uint32_t compare_offset =
+                        slot + static_cast<std::uint32_t>(save_count);
+                    const std::uint32_t shadow_offset = compare_offset + 5U;
+                    const std::uint32_t equality_branch_offset =
+                        compare_offset + 9U;
+                    const std::uint32_t mismatch_restore_offset =
+                        equality_branch_offset + 2U;
+                    const std::uint32_t fallback_offset =
+                        mismatch_restore_offset +
+                        static_cast<std::uint32_t>(restore_count);
+                    const std::uint32_t success_restore_offset =
+                        fallback_offset + 1U;
+                    const std::uint32_t jump_offset =
+                        success_restore_offset +
+                        static_cast<std::uint32_t>(restore_count);
+                    const std::uint32_t slot_end = jump_offset + 5U;
+                    const auto fallthrough_fixup = std::find_if(
+                        image.fixups.begin(), image.fixups.end(),
+                        [&instruction, jump_offset](
+                            const AotCodeCacheFixup& fixup) {
+                            return fixup.kind ==
+                                    AotFixupKind::kBlockFallthrough &&
+                                fixup.guest_source == instruction.guest_address &&
+                                fixup.guest_target ==
+                                    instruction.fallthrough_target &&
+                                fixup.cache_patch_offset == jump_offset + 1U &&
+                                fixup.resolved;
+                        });
+                    const std::uint8_t expected_source_modrm =
+                        static_cast<std::uint8_t>(
+                            0x04U | (instruction.gpr_register << 3U));
+                    if (site == image.guarded_segment_load_sites.end() ||
+                        fallthrough_fixup == image.fixups.end() ||
+                        slot != map->cache_offset ||
+                        map->emitted_length != slot_end - slot ||
+                        slot_end > image.bytes.size() ||
+                        site->shadow_address_offset != shadow_offset ||
+                        site->fallback_offset != fallback_offset ||
+                        !std::equal(flags_save, flags_save + save_count,
+                                    image.bytes.data() + slot) ||
+                        image.bytes[compare_offset] != 0x67U ||
+                        image.bytes[compare_offset + 1U] != 0x66U ||
+                        image.bytes[compare_offset + 2U] != 0x39U ||
+                        image.bytes[compare_offset + 3U] !=
+                            expected_source_modrm ||
+                        image.bytes[compare_offset + 4U] != 0x25U ||
+                        image.bytes[equality_branch_offset] != 0x74U ||
+                        image.bytes[equality_branch_offset + 1U] !=
+                            static_cast<std::uint8_t>(restore_count + 1U) ||
+                        !std::equal(flags_restore,
+                                    flags_restore + restore_count,
+                                    image.bytes.data() +
+                                        mismatch_restore_offset) ||
+                        image.bytes[fallback_offset] != 0xCCU ||
+                        !std::equal(flags_restore,
+                                    flags_restore + restore_count,
+                                    image.bytes.data() + success_restore_offset) ||
+                        image.bytes[jump_offset] != 0xE9U)
+                    {
+                        return fail(instruction.guest_address);
+                    }
+                    continue;
+                }
                 const auto fallthrough_fixup = std::find_if(
                     image.fixups.begin(), image.fixups.end(),
                     [&instruction, slot](const AotCodeCacheFixup& fixup) {
@@ -2861,6 +3139,144 @@ bool ValidateAotCodeCacheHleCoverage(
             if (instruction.kind != AotInstructionKind::kSegmentOverrideMem)
             {
                 return fail(instruction.guest_address);
+            }
+            if (image.long_mode_emission_enabled)
+            {
+                std::uint8_t segment_prefix = 0U;
+                ZydisDecodedInstruction decoded{};
+                std::uint8_t flags_save[kMaxLoweredBytes] = {};
+                std::uint8_t flags_restore[kMaxLoweredBytes] = {};
+                std::size_t save_count = 0U;
+                std::size_t restore_count = 0U;
+                const std::uint8_t pushfd = 0x9CU;
+                const std::uint8_t popfd = 0x9DU;
+                if (!LongModeSegmentOverrideEmittable(
+                        instruction, &segment_prefix, &decoded) ||
+                    !LowerLongModeBytes(&pushfd,
+                                        1U, flags_save, &save_count, nullptr) ||
+                    !LowerLongModeBytes(&popfd,
+                                        1U, flags_restore, &restore_count,
+                                        nullptr))
+                {
+                    return fail(instruction.guest_address);
+                }
+                const auto segment_site = std::find_if(
+                    image.segment_override_sites.begin(),
+                    image.segment_override_sites.end(),
+                    [&instruction](const AotSegmentOverrideSite& candidate) {
+                        return candidate.guest_source ==
+                            instruction.guest_address;
+                    });
+                const std::uint32_t slot = segment_site !=
+                    image.segment_override_sites.end()
+                        ? segment_site->cache_offset : 0U;
+                const std::uint32_t compare_offset =
+                    slot + static_cast<std::uint32_t>(save_count);
+                const std::uint32_t guard_address_offset = compare_offset + 5U;
+                const std::uint32_t guard_selector_offset =
+                    guard_address_offset + 4U;
+                const std::uint32_t equality_branch_offset =
+                    guard_selector_offset + 2U;
+                const std::uint32_t mismatch_restore_offset =
+                    equality_branch_offset + 2U;
+                const std::uint32_t boundary_offset =
+                    mismatch_restore_offset +
+                    static_cast<std::uint32_t>(restore_count);
+                const std::uint32_t access_restore_offset = boundary_offset + 1U;
+                const std::uint32_t access_offset =
+                    access_restore_offset +
+                    static_cast<std::uint32_t>(restore_count);
+                std::vector<std::uint8_t> expected_access;
+                expected_access.reserve(instruction.bytes.size() + 8U);
+                for (std::uint32_t index = 0U;
+                     index < decoded.raw.prefix_count; ++index)
+                {
+                    if (instruction.bytes[index] != segment_prefix)
+                    {
+                        expected_access.push_back(instruction.bytes[index]);
+                    }
+                }
+                expected_access.push_back(0x67U);
+                for (std::uint32_t index = decoded.raw.prefix_count;
+                     index < decoded.raw.modrm.offset; ++index)
+                {
+                    expected_access.push_back(instruction.bytes[index]);
+                }
+                const bool absolute_disp32 = decoded.raw.modrm.mod == 0U;
+                if (absolute_disp32)
+                {
+                    expected_access.push_back(static_cast<std::uint8_t>(
+                        (instruction.bytes[decoded.raw.modrm.offset] & 0x38U) |
+                        0x04U));
+                    expected_access.push_back(0x25U);
+                }
+                else
+                {
+                    expected_access.push_back(static_cast<std::uint8_t>(
+                        (instruction.bytes[decoded.raw.modrm.offset] & 0x3FU) |
+                        0x80U));
+                }
+                const std::uint32_t displacement_offset =
+                    access_offset +
+                    static_cast<std::uint32_t>(expected_access.size());
+                expected_access.insert(expected_access.end(), 4U, 0U);
+                const std::size_t displacement_bytes =
+                    decoded.raw.disp.size / 8U;
+                for (std::size_t index = decoded.raw.disp.offset +
+                                          displacement_bytes;
+                     index < instruction.bytes.size(); ++index)
+                {
+                    expected_access.push_back(instruction.bytes[index]);
+                }
+                const std::uint32_t jump_offset = access_offset +
+                    static_cast<std::uint32_t>(expected_access.size());
+                const std::uint32_t slot_end = jump_offset + 5U;
+                const auto fallthrough_fixup = std::find_if(
+                    image.fixups.begin(), image.fixups.end(),
+                    [&instruction, jump_offset](
+                        const AotCodeCacheFixup& fixup) {
+                        return fixup.kind == AotFixupKind::kBlockFallthrough &&
+                            fixup.guest_source == instruction.guest_address &&
+                            fixup.guest_target ==
+                                instruction.guest_address + instruction.length &&
+                            fixup.cache_patch_offset == jump_offset + 1U &&
+                            fixup.resolved;
+                    });
+                const bool layout_safe = segment_site !=
+                    image.segment_override_sites.end() &&
+                    fallthrough_fixup != image.fixups.end() &&
+                    slot == map->cache_offset &&
+                    map->emitted_length == slot_end - slot &&
+                    slot_end <= image.bytes.size() &&
+                    segment_site->guard_address_offset == guard_address_offset &&
+                    segment_site->guard_selector_offset == guard_selector_offset &&
+                    segment_site->displacement_offset == displacement_offset &&
+                    segment_site->dispatch_cache_offset == 0U;
+                if (!layout_safe ||
+                    !std::equal(flags_save, flags_save + save_count,
+                                image.bytes.data() + slot) ||
+                    image.bytes[compare_offset] != 0x67U ||
+                    image.bytes[compare_offset + 1U] != 0x66U ||
+                    image.bytes[compare_offset + 2U] != 0x81U ||
+                    image.bytes[compare_offset + 3U] != 0x3CU ||
+                    image.bytes[compare_offset + 4U] != 0x25U ||
+                    image.bytes[equality_branch_offset] != 0x74U ||
+                    image.bytes[equality_branch_offset + 1U] !=
+                        static_cast<std::uint8_t>(restore_count + 1U) ||
+                    !std::equal(flags_restore,
+                                flags_restore + restore_count,
+                                image.bytes.data() + mismatch_restore_offset) ||
+                    image.bytes[boundary_offset] != 0xCCU ||
+                    !std::equal(flags_restore,
+                                flags_restore + restore_count,
+                                image.bytes.data() + access_restore_offset) ||
+                    !std::equal(expected_access.begin(), expected_access.end(),
+                                image.bytes.data() + access_offset) ||
+                    image.bytes[jump_offset] != 0xE9U)
+                {
+                    return fail(instruction.guest_address);
+                }
+                continue;
             }
             const auto site = std::find_if(
                 image.segment_override_sites.begin(),

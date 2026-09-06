@@ -291,6 +291,29 @@ bool StoreGuestCpuContext(const GuestCpuContext& registers, void* host_context)
 #endif
 }
 
+bool StoreHostInstructionPointer(const std::uintptr_t address,
+                                 void* host_context)
+{
+    if (host_context == nullptr || !kSupportedMachineContext ||
+        address == 0U)
+    {
+        return false;
+    }
+#if defined(__i386__)
+    auto* context = static_cast<ucontext_t*>(host_context);
+    context->uc_mcontext.gregs[REG_EIP] = static_cast<greg_t>(address);
+    return true;
+#elif defined(__x86_64__)
+    auto* context = static_cast<ucontext_t*>(host_context);
+    context->uc_mcontext.gregs[REG_RIP] = static_cast<greg_t>(address);
+    return true;
+#else
+    (void)address;
+    (void)host_context;
+    return false;
+#endif
+}
+
 GuestFaultInfo ReadGuestFaultInfo(const void* signal_info,
                                   const void* host_context)
 {

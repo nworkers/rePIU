@@ -22,6 +22,7 @@
 #include "repiu/engine/glide_opengl_backend.h"
 #include "repiu/engine/cd_audio_wave_out.h"
 #include "repiu/engine/aot_page_coherence.h"
+#include "repiu/engine/guest_write_trace.h"
 #include "repiu/engine/aot_ff_target_timing.h"
 #include "repiu/media/chd_cd_image.h"
 #include "repiu/runtime/dos_low_memory.h"
@@ -77,6 +78,7 @@
 #include "repiu/platform/guest_cpu_context.h"
 #include "repiu/platform/atomic_ops.h"
 #include "repiu/platform/host_time.h"
+#include "repiu/platform/safe_memory_copy.h"
 #include "repiu/platform/fault_handler.h"
 #include "repiu/platform/worker_signal.h"
 
@@ -131,6 +133,235 @@ bool IsCodeCacheEntrySupported()
 #else
     return false;
 #endif
+}
+
+const char* AotFixupKindName(const runtime::AotFixupKind kind)
+{
+    switch (kind)
+    {
+        case runtime::AotFixupKind::kDirectCall: return "direct-call";
+        case runtime::AotFixupKind::kDirectJump: return "direct-jump";
+        case runtime::AotFixupKind::kBlockFallthrough:
+            return "block-fallthrough";
+        case runtime::AotFixupKind::kConditionalBranch:
+            return "conditional-branch";
+        case runtime::AotFixupKind::kHleBoundary: return "hle-boundary";
+        case runtime::AotFixupKind::kIndirectExit: return "indirect-exit";
+    }
+    return "unknown";
+}
+
+bool ParseAotGuestMapTraceOffset(const std::string_view token,
+                                 std::uint32_t* const offset)
+{
+    if (offset == nullptr)
+    {
+        return false;
+    }
+    std::size_t begin = 0U;
+    while (begin < token.size() &&
+           std::isspace(static_cast<unsigned char>(token[begin])) != 0)
+    {
+        ++begin;
+    }
+    std::size_t end_index = token.size();
+    while (end_index > begin &&
+           std::isspace(static_cast<unsigned char>(token[end_index - 1U])) != 0)
+    {
+        --end_index;
+    }
+    if (begin == end_index || end_index - begin >= 32U)
+    {
+        return false;
+    }
+    char text[32] = {};
+    std::memcpy(text, token.data() + begin, end_index - begin);
+    char* parse_end = nullptr;
+    const unsigned long value = std::strtoul(text, &parse_end, 0);
+    if (parse_end == text || *parse_end != '\0' || value > UINT32_MAX)
+    {
+        return false;
+    }
+    *offset = static_cast<std::uint32_t>(value);
+    return true;
+}
+
+void TraceAotGuestMap(const AotCodeCachePlacement& placement,
+                      const std::uint32_t runtime_base,
+                      const char* const phase)
+{
+    constexpr std::size_t kEnvironmentCapacity = 1024U;
+    const auto setting = repiu::platform::ReadEnvironmentSetting(
+        "REPIU_AOT_GUEST_MAP_TRACE", kEnvironmentCapacity);
+    if (!setting.present)
+    {
+        return;
+    }
+    if (setting.too_long)
+    {
+        std::fprintf(stderr,
+                     "[repiu-aot-map] invalid=environment-too-long\n");
+        return;
+    }
+
+    std::size_t token_begin = 0U;
+    while (token_begin <= setting.value.size())
+    {
+        const std::size_t separator = setting.value.find(',', token_begin);
+        const std::size_t token_end = separator == std::string_view::npos
+            ? setting.value.size() : separator;
+        const std::string_view token = setting.value.substr(
+            token_begin, token_end - token_begin);
+        std::uint32_t offset = 0U;
+        if (!ParseAotGuestMapTraceOffset(token, &offset))
+        {
+            std::fprintf(stderr,
+                         "[repiu-aot-map] token-invalid value='%.*s'\n",
+                         static_cast<int>(token.size()), token.data());
+        }
+        else if (offset > UINT32_MAX - runtime_base)
+        {
+            std::fprintf(stderr,
+                         "[repiu-aot-map] offset-invalid offset=0x%08X "
+                         "reason=guest-address-overflow\n",
+                         offset);
+        }
+        else
+        {
+            const std::uint32_t guest_address = runtime_base + offset;
+            std::vector<std::size_t> exact_indices;
+            std::vector<std::size_t> covering_indices;
+            const runtime::AotAddressMapEntry* previous = nullptr;
+            const runtime::AotAddressMapEntry* next = nullptr;
+            std::size_t previous_index = 0U;
+            std::size_t next_index = 0U;
+            for (std::size_t index = 0U;
+                 index < placement.address_map.size(); ++index)
+            {
+                const runtime::AotAddressMapEntry& entry =
+                    placement.address_map[index];
+                if (entry.guest_address == guest_address)
+                {
+                    exact_indices.push_back(index);
+                }
+                const std::uint64_t entry_end =
+                    static_cast<std::uint64_t>(entry.guest_address) +
+                    entry.guest_length;
+                if (static_cast<std::uint64_t>(guest_address) >=
+                        entry.guest_address &&
+                    static_cast<std::uint64_t>(guest_address) < entry_end)
+                {
+                    covering_indices.push_back(index);
+                }
+                if (entry.guest_address < guest_address &&
+                    (previous == nullptr ||
+                     entry.guest_address > previous->guest_address))
+                {
+                    previous = &entry;
+                    previous_index = index;
+                }
+                if (entry.guest_address > guest_address &&
+                    (next == nullptr ||
+                     entry.guest_address < next->guest_address))
+                {
+                    next = &entry;
+                    next_index = index;
+                }
+            }
+
+            const std::vector<std::size_t>& matches =
+                exact_indices.empty() ? covering_indices : exact_indices;
+            std::fprintf(stderr,
+                         "[repiu-aot-map] offset=0x%08X guest=0x%08X "
+                         "phase=%s match=%s matches=%zu map_entries=%zu\n",
+                         offset, guest_address,
+                         phase == nullptr ? "unknown" : phase,
+                         matches.empty() ? "none" :
+                             (exact_indices.empty() ? "covering" : "exact"),
+                         matches.size(),
+                         placement.address_map.size());
+            for (const std::size_t match_index : matches)
+            {
+                const runtime::AotAddressMapEntry& match =
+                    placement.address_map[match_index];
+                const bool bytes_readable =
+                    placement.placed && placement.base_address != 0U &&
+                    match.cache_offset <= placement.size &&
+                    match.emitted_length <=
+                        placement.size - match.cache_offset;
+                const bool inactive = std::find(
+                    placement.inactive_map_indices.begin(),
+                    placement.inactive_map_indices.end(),
+                    static_cast<std::uint32_t>(match_index)) !=
+                    placement.inactive_map_indices.end();
+                std::fprintf(stderr,
+                             "[repiu-aot-map-entry] target=0x%08X index=%zu "
+                             "guest=0x%08X cache=0x%08X guest_len=%u "
+                             "emitted_len=%u inactive=%u bytes=",
+                             guest_address, match_index, match.guest_address,
+                             placement.base_address + match.cache_offset,
+                             static_cast<unsigned>(match.guest_length),
+                             static_cast<unsigned>(match.emitted_length),
+                             inactive ? 1U : 0U);
+                if (bytes_readable)
+                {
+                    const std::size_t byte_count = std::min<std::size_t>(
+                        match.emitted_length, 16U);
+                    const auto* bytes = reinterpret_cast<const std::uint8_t*>(
+                        static_cast<std::uintptr_t>(placement.base_address) +
+                        match.cache_offset);
+                    for (std::size_t byte_index = 0U;
+                         byte_index < byte_count; ++byte_index)
+                    {
+                        std::fprintf(stderr, "%02X", bytes[byte_index]);
+                    }
+                }
+                else
+                {
+                    std::fprintf(stderr, "unreadable");
+                }
+                std::fprintf(stderr, "\n");
+                for (const runtime::AotCodeCacheFixup& fixup :
+                     placement.fixups)
+                {
+                    if (fixup.guest_source == match.guest_address)
+                    {
+                        std::fprintf(
+                            stderr,
+                            "[repiu-aot-map-fixup] source=0x%08X "
+                            "kind=%s target=0x%08X patch=0x%08X resolved=%u\n",
+                            fixup.guest_source, AotFixupKindName(fixup.kind),
+                            fixup.guest_target, fixup.cache_patch_offset,
+                            fixup.resolved ? 1U : 0U);
+                    }
+                }
+            }
+            if (matches.empty())
+            {
+                if (previous != nullptr)
+                {
+                    std::fprintf(stderr,
+                                 "[repiu-aot-map-neighbor] side=previous "
+                                 "index=%zu guest=0x%08X guest_len=%u\n",
+                                 previous_index, previous->guest_address,
+                                 static_cast<unsigned>(previous->guest_length));
+                }
+                if (next != nullptr)
+                {
+                    std::fprintf(stderr,
+                                 "[repiu-aot-map-neighbor] side=next "
+                                 "index=%zu guest=0x%08X guest_len=%u\n",
+                                 next_index, next->guest_address,
+                                 static_cast<unsigned>(next->guest_length));
+                }
+            }
+        }
+        if (separator == std::string_view::npos)
+        {
+            break;
+        }
+        token_begin = separator + 1U;
+    }
 }
 
 bool IsGuestStackSwitchSupported()
@@ -749,6 +980,41 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
         offset = 1U;
     }
     const std::uint8_t opcode = ptr[offset];
+    const std::uint8_t second_opcode = offset == 0U ? ptr[1] : 0U;
+    const bool segment_push_candidate =
+        (opcode == 0x06U || opcode == 0x0EU || opcode == 0x16U ||
+         opcode == 0x1EU ||
+         (opcode == 0x0FU &&
+          (second_opcode == 0xA0U || second_opcode == 0xA8U)));
+    const char* const segment_hle_trace_value =
+        std::getenv("REPIU_SEGMENT_HLE_TRACE");
+    const bool segment_hle_trace_enabled =
+        segment_hle_trace_value != nullptr &&
+        std::strcmp(segment_hle_trace_value, "0") != 0;
+    static std::atomic<std::uint32_t> segment_hle_trace_count{0U};
+    const std::uint32_t segment_hle_trace_index =
+        segment_hle_trace_enabled && segment_push_candidate
+            ? segment_hle_trace_count.fetch_add(
+                  1U, std::memory_order_relaxed) + 1U
+            : 0U;
+    if (segment_hle_trace_index != 0U && segment_hle_trace_index <= 16U)
+    {
+        std::fprintf(
+            stderr,
+            "[repiu-segment-hle] stage=shared-dispatch n=%u eip=0x%08X "
+            "opcode=%02X second=%02X offset=%u enabled=%u cache_active=%u "
+            "call_state=%u esp=0x%08X es=0x%04X\n",
+            segment_hle_trace_index,
+            static_cast<std::uint32_t>(win32_context->Eip),
+            static_cast<unsigned>(opcode),
+            static_cast<unsigned>(second_opcode),
+            static_cast<unsigned>(offset),
+            context->enable_segment_load_hle ? 1U : 0U,
+            context->cache_entry_active ? 1U : 0U,
+            context->active_call_state != nullptr ? 1U : 0U,
+            static_cast<std::uint32_t>(win32_context->Esp),
+            static_cast<unsigned>(context->guest_es));
+    }
 
     // Opcode-directed Fast Dispatcher (Task 312)
     switch (opcode)
@@ -763,13 +1029,47 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
             if (context->enable_segment_load_hle && HandleSegmentStoreInstruction(win32_context, context)) return true;
             break;
         case 0x06U: case 0x16U: case 0x1EU:
-            if (context->enable_segment_load_hle && HandleSegmentPushInstruction(win32_context, context)) return true;
+            if (context->enable_segment_load_hle)
+            {
+                const bool handled =
+                    HandleSegmentPushInstruction(win32_context, context);
+                if (segment_hle_trace_index != 0U &&
+                    segment_hle_trace_index <= 16U)
+                {
+                    std::fprintf(
+                        stderr,
+                        "[repiu-segment-hle] stage=shared-handler n=%u "
+                        "handled=%u eip_after=0x%08X esp_after=0x%08X\n",
+                        segment_hle_trace_index,
+                        handled ? 1U : 0U,
+                        static_cast<std::uint32_t>(win32_context->Eip),
+                        static_cast<std::uint32_t>(win32_context->Esp));
+                }
+                if (handled) return true;
+            }
             break;
         case 0x07U: case 0x1FU:
             if (context->enable_segment_load_hle && HandleSegmentPopInstruction(win32_context, context)) return true;
             break;
         case 0x0FU:
-            if (context->enable_segment_load_hle && HandleSegmentPushInstruction(win32_context, context)) return true;
+            if (context->enable_segment_load_hle)
+            {
+                const bool handled =
+                    HandleSegmentPushInstruction(win32_context, context);
+                if (segment_hle_trace_index != 0U &&
+                    segment_hle_trace_index <= 16U)
+                {
+                    std::fprintf(
+                        stderr,
+                        "[repiu-segment-hle] stage=shared-handler n=%u "
+                        "handled=%u eip_after=0x%08X esp_after=0x%08X\n",
+                        segment_hle_trace_index,
+                        handled ? 1U : 0U,
+                        static_cast<std::uint32_t>(win32_context->Eip),
+                        static_cast<std::uint32_t>(win32_context->Esp));
+                }
+                if (handled) return true;
+            }
             break;
         case 0xEAU:
             if (context->enable_segment_load_hle && HandleFarJumpInstruction(win32_context, context)) return true;
@@ -2170,18 +2470,326 @@ bool LinuxX64ReturnTraceEnabled()
 }
 
 void TraceLinuxX64ReturnResolver(const char* const result,
-                                 const std::uint32_t guest_source,
+                                 const std::uint32_t guest_target,
                                  const std::uint32_t cache_address,
-                                 const char* const detail = "")
+                                 const char* const detail = "",
+                                 const std::uint32_t producer_tag = 0U,
+                                 const std::uint32_t guest_esp = 0U)
 {
     if (!LinuxX64ReturnTraceEnabled())
     {
         return;
     }
     std::fprintf(stderr,
-                 "[repiu-x64-return] result=%s source=0x%08X cache=0x%08X detail=%s\n",
-                 result, static_cast<unsigned>(guest_source),
-                 static_cast<unsigned>(cache_address), detail);
+                 "[repiu-x64-return] result=%s source=0x%08X cache=0x%08X "
+                 "producer=0x%08X guest_esp=0x%08X detail=%s\n",
+                 result, static_cast<unsigned>(guest_target),
+                 static_cast<unsigned>(cache_address),
+                 static_cast<unsigned>(producer_tag),
+                 static_cast<unsigned>(guest_esp), detail);
+}
+
+bool LinuxX64ReturnFrameTraceEnabled()
+{
+    static const bool enabled = [] {
+        const char* const value =
+            std::getenv("REPIU_LINUX_X64_RETURN_FRAME_TRACE");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+// Task 616. Capture the two stack layouts that share the x64 return thunk:
+// ordinary RET leaves its caller at [ESP] after consuming [ESP-4], while an
+// indirect call leaves its pushed fallthrough at [ESP] before resolving the
+// loaded target in R14D. This is diagnostics only; it does not choose a path.
+void TraceLinuxX64ZeroReturnFrame(
+    ThreadContext* const context,
+    const repiu::platform::LinuxX64AotDispatchFrame& frame)
+{
+    if (!LinuxX64ReturnFrameTraceEnabled() || context == nullptr)
+    {
+        return;
+    }
+    static std::atomic<std::uint32_t> trace_count{0U};
+    const std::uint32_t sequence =
+        trace_count.fetch_add(1U, std::memory_order_relaxed) + 1U;
+    if (sequence > 8U)
+    {
+        return;
+    }
+
+    std::uint32_t stack_words[4] = {};
+    std::uint32_t valid_mask = 0U;
+    const std::uint32_t guest_esp = frame.guest.esp;
+    const std::uint32_t stack_base = guest_esp >= 8U ? guest_esp - 8U : 0U;
+    if (guest_esp >= 8U)
+    {
+        for (std::uint32_t index = 0U; index < 4U; ++index)
+        {
+            const std::uint32_t address = stack_base + index * 4U;
+            const void* const source = reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(address));
+            if (!IsGuestRangeReadable(context, source, sizeof(std::uint32_t)) ||
+                !repiu::platform::CopyMemoryWithoutFaulting(
+                    &stack_words[index], source, sizeof(stack_words[index]))
+                     .complete)
+            {
+                continue;
+            }
+            valid_mask |= 1U << index;
+        }
+    }
+    std::uint32_t source_match_mask = 0U;
+    for (std::uint32_t index = 0U; index < 4U; ++index)
+    {
+        if ((valid_mask & (1U << index)) != 0U &&
+            stack_words[index] == frame.guest_source)
+        {
+            source_match_mask |= 1U << index;
+        }
+    }
+    const std::uint32_t consumed_slot =
+        guest_esp >= 4U ? guest_esp - 4U : 0U;
+    std::uint32_t stack_write_match_count = 0U;
+    for (std::uint32_t index = 0U;
+         index < REPIU_LINUX_X64_FRAME_STACK_TRACE_CAPACITY; ++index)
+    {
+        const auto& record = frame.stack_trace[index];
+        if (record.site != 0U && record.guest_esp == consumed_slot)
+        {
+            ++stack_write_match_count;
+        }
+    }
+    std::uint32_t top_call_source = 0U;
+    std::uint32_t top_call_target = 0U;
+    std::uint32_t top_call_fallthrough = 0U;
+    std::uint32_t top_call_entry_esp = 0U;
+    std::uint32_t top_call_origin = 0U;
+    if (context->aot_call_depth != 0U)
+    {
+        const ThreadContext::AotCallFrame& top_call =
+            context->aot_call_frames[context->aot_call_depth - 1U];
+        top_call_source = top_call.source;
+        top_call_target = top_call.target;
+        top_call_fallthrough = top_call.fallthrough;
+        top_call_entry_esp = top_call.entry_esp;
+        top_call_origin = static_cast<std::uint32_t>(top_call.origin);
+    }
+    std::fprintf(
+        stderr,
+        "[repiu-x64-return-frame] n=%u source=0x%08X guest_eip=0x%08X "
+        "guest_esp=0x%08X eflags=0x%08X continuation=0x%08X "
+        "metadata_esp=0x%08X status=0x%08X stack_base=0x%08X valid=0x%X "
+        "m8=0x%08X m4=0x%08X p0=0x%08X p4=0x%08X matches=0x%X "
+        "producer=%s producer_site=0x%08X "
+        "last_indirect=0x%08X/0x%08X last_return=0x%08X/0x%08X "
+        "call_depth=%u top_call=0x%08X/0x%08X/0x%08X/0x%08X/%u\n",
+        sequence,
+        static_cast<unsigned>(frame.guest_source),
+        static_cast<unsigned>(frame.guest.eip),
+        static_cast<unsigned>(frame.guest.esp),
+        static_cast<unsigned>(frame.guest.eflags),
+        static_cast<unsigned>(frame.guest_continuation),
+        static_cast<unsigned>(frame.guest_metadata_esp),
+        static_cast<unsigned>(frame.status),
+        static_cast<unsigned>(stack_base),
+        static_cast<unsigned>(valid_mask),
+        static_cast<unsigned>(stack_words[0]),
+        static_cast<unsigned>(stack_words[1]),
+        static_cast<unsigned>(stack_words[2]),
+        static_cast<unsigned>(stack_words[3]),
+        static_cast<unsigned>(source_match_mask),
+        (frame.status & 0x80000000U) != 0U ? "indirect-call" : "ret",
+        static_cast<unsigned>(frame.status & 0x7FFFFFFFU),
+        static_cast<unsigned>(context->aot_last_indirect_source.load(
+            std::memory_order_relaxed)),
+        static_cast<unsigned>(context->aot_last_indirect_target.load(
+            std::memory_order_relaxed)),
+        static_cast<unsigned>(context->aot_last_return_source.load(
+            std::memory_order_relaxed)),
+        static_cast<unsigned>(context->aot_last_return_target.load(
+            std::memory_order_relaxed)),
+        static_cast<unsigned>(context->aot_call_depth),
+        static_cast<unsigned>(top_call_source),
+        static_cast<unsigned>(top_call_target),
+        static_cast<unsigned>(top_call_fallthrough),
+        static_cast<unsigned>(top_call_entry_esp),
+        static_cast<unsigned>(top_call_origin));
+    std::fprintf(stderr,
+                 "[repiu-x64-stack-write] consumed=0x%08X sequence=%u "
+                 "matches=%u\n",
+                 static_cast<unsigned>(consumed_slot),
+                 static_cast<unsigned>(frame.stack_trace_sequence),
+                 static_cast<unsigned>(stack_write_match_count));
+    for (std::uint32_t index = 0U;
+         index < REPIU_LINUX_X64_FRAME_STACK_TRACE_CAPACITY; ++index)
+    {
+        const auto& record = frame.stack_trace[index];
+        if (record.site == 0U || record.guest_esp != consumed_slot)
+        {
+            continue;
+        }
+        const char* const writer = record.fallthrough != 0U
+            ? "direct-call" : "guest-push";
+        std::fprintf(stderr,
+                     "[repiu-x64-stack-write] slot=0x%08X index=%u "
+                     "writer=%s "
+                     "site=0x%08X fallthrough=0x%08X esp=0x%08X "
+                     "value=0x%08X\n",
+                     static_cast<unsigned>(consumed_slot),
+                     static_cast<unsigned>(index),
+                     writer,
+                     static_cast<unsigned>(record.site),
+                     static_cast<unsigned>(record.fallthrough),
+                     static_cast<unsigned>(record.guest_esp),
+                     static_cast<unsigned>(record.value));
+    }
+}
+
+// Task 626. Select one resolved return target for a read-only register/frame
+// snapshot at the x64 resolver boundary.
+std::uint32_t LinuxX64ReturnRegisterTraceAddress()
+{
+    static const std::uint32_t address = [] {
+        const auto setting = repiu::platform::ReadEnvironmentSetting(
+            "REPIU_LINUX_X64_RETURN_REG_TRACE", 32U);
+        if (!setting.present || setting.too_long || setting.value.empty())
+        {
+            return 0U;
+        }
+        char text[33] = {};
+        std::memcpy(text, setting.value.data(), setting.value.size());
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(text, &end, 0);
+        if (end == text || *end != '\0' ||
+            parsed > std::numeric_limits<std::uint32_t>::max())
+        {
+            return 0U;
+        }
+        return static_cast<std::uint32_t>(parsed);
+    }();
+    return address;
+}
+
+void TraceLinuxX64ReturnRegisters(
+    ThreadContext* const context,
+    const repiu::platform::LinuxX64AotDispatchFrame& frame)
+{
+    const std::uint32_t watched = LinuxX64ReturnRegisterTraceAddress();
+    if (watched == 0U || frame.guest_source != watched)
+    {
+        return;
+    }
+    static std::atomic<std::uint32_t> trace_count{0U};
+    const std::uint32_t sequence =
+        trace_count.fetch_add(1U, std::memory_order_relaxed) + 1U;
+    if (sequence > 8U)
+    {
+        return;
+    }
+
+    std::uint32_t stack_words[4] = {};
+    std::uint32_t valid_mask = 0U;
+    const std::uint32_t guest_esp = frame.guest.esp;
+    const std::uint32_t stack_base = guest_esp >= 4U ? guest_esp - 4U : 0U;
+    if (context != nullptr && guest_esp >= 4U)
+    {
+        for (std::uint32_t index = 0U; index < 4U; ++index)
+        {
+            const std::uint32_t address = stack_base + index * 4U;
+            const void* const source = reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(address));
+            if (!IsGuestRangeReadable(context, source, sizeof(std::uint32_t)) ||
+                !repiu::platform::CopyMemoryWithoutFaulting(
+                    &stack_words[index], source, sizeof(stack_words[index]))
+                     .complete)
+            {
+                continue;
+            }
+            valid_mask |= 1U << index;
+        }
+    }
+
+    std::fprintf(
+        stderr,
+        "[repiu-x64-return-reg] n=%u target=0x%08X "
+        "edi=0x%08X esi=0x%08X ebx=0x%08X edx=0x%08X "
+        "ecx=0x%08X eax=0x%08X ebp=0x%08X eip=0x%08X "
+        "esp=0x%08X eflags=0x%08X status=0x%08X "
+        "continuation=0x%08X metadata_esp=0x%08X "
+        "stack_base=0x%08X valid=0x%X m4=0x%08X m0=0x%08X "
+        "p4=0x%08X p8=0x%08X\n",
+        sequence,
+        static_cast<unsigned>(frame.guest_source),
+        static_cast<unsigned>(frame.guest.edi),
+        static_cast<unsigned>(frame.guest.esi),
+        static_cast<unsigned>(frame.guest.ebx),
+        static_cast<unsigned>(frame.guest.edx),
+        static_cast<unsigned>(frame.guest.ecx),
+        static_cast<unsigned>(frame.guest.eax),
+        static_cast<unsigned>(frame.guest.ebp),
+        static_cast<unsigned>(frame.guest.eip),
+        static_cast<unsigned>(frame.guest.esp),
+        static_cast<unsigned>(frame.guest.eflags),
+        static_cast<unsigned>(frame.status),
+        static_cast<unsigned>(frame.guest_continuation),
+        static_cast<unsigned>(frame.guest_metadata_esp),
+        static_cast<unsigned>(stack_base),
+        static_cast<unsigned>(valid_mask),
+        static_cast<unsigned>(stack_words[0]),
+        static_cast<unsigned>(stack_words[1]),
+        static_cast<unsigned>(stack_words[2]),
+        static_cast<unsigned>(stack_words[3]));
+}
+
+void TraceLinuxX64ReturnStackWriters(
+    const repiu::platform::LinuxX64AotDispatchFrame& frame)
+{
+    if (!LinuxX64ReturnTraceEnabled())
+    {
+        return;
+    }
+    const std::uint32_t consumed_slot = frame.guest.esp >= 4U
+        ? frame.guest.esp - 4U : 0U;
+    std::uint32_t match_count = 0U;
+    for (std::uint32_t index = 0U;
+         index < REPIU_LINUX_X64_FRAME_STACK_TRACE_CAPACITY; ++index)
+    {
+        const auto& record = frame.stack_trace[index];
+        if (record.site != 0U && record.guest_esp == consumed_slot)
+        {
+            ++match_count;
+        }
+    }
+    std::fprintf(stderr,
+                 "[repiu-x64-return-stack] source=0x%08X "
+                 "producer=0x%08X consumed=0x%08X sequence=%u matches=%u\n",
+                 static_cast<unsigned>(frame.guest_source),
+                 static_cast<unsigned>(frame.status),
+                 static_cast<unsigned>(consumed_slot),
+                 static_cast<unsigned>(frame.stack_trace_sequence),
+                 static_cast<unsigned>(match_count));
+    for (std::uint32_t index = 0U;
+         index < REPIU_LINUX_X64_FRAME_STACK_TRACE_CAPACITY; ++index)
+    {
+        const auto& record = frame.stack_trace[index];
+        if (record.site == 0U || record.guest_esp != consumed_slot)
+        {
+            continue;
+        }
+        const char* const writer = record.fallthrough != 0U
+            ? "direct-call" : "guest-push";
+        std::fprintf(stderr,
+                     "[repiu-x64-return-stack] index=%u writer=%s "
+                     "site=0x%08X fallthrough=0x%08X esp=0x%08X "
+                     "value=0x%08X\n",
+                     static_cast<unsigned>(index), writer,
+                     static_cast<unsigned>(record.site),
+                     static_cast<unsigned>(record.fallthrough),
+                     static_cast<unsigned>(record.guest_esp),
+                     static_cast<unsigned>(record.value));
+    }
 }
 
 // Task 578. Where an x64 host asks how to continue.
@@ -2203,6 +2811,15 @@ std::uintptr_t LinuxX64EngineResolver(
                                    0U);
         return 0U;
     }
+    if (frame->guest_source == 0U)
+    {
+        TraceLinuxX64ZeroReturnFrame(context, *frame);
+    }
+    else
+    {
+        TraceLinuxX64ReturnRegisters(context, *frame);
+        TraceLinuxX64ReturnStackWriters(*frame);
+    }
     std::uint32_t cache_address = 0U;
     const std::uint64_t dynamic_attempts_before =
         context->aot_dynamic_attempt_count.load(std::memory_order_relaxed);
@@ -2217,11 +2834,13 @@ std::uintptr_t LinuxX64EngineResolver(
             frame->guest_source, 0U,
             attempted_dynamic_translation
                 ? context->aot_translation_result.message.c_str()
-                : "");
+                : "",
+            frame->status, frame->guest.esp);
         return 0U;
     }
     TraceLinuxX64ReturnResolver("resolved", frame->guest_source,
-                                cache_address);
+                                cache_address, "", frame->status,
+                                frame->guest.esp);
     return static_cast<std::uintptr_t>(cache_address);
 }
 
@@ -2406,6 +3025,18 @@ repiu::platform::FaultDisposition GuestThreadFaultCallback(
         DispatchGuestFault(*fault);
     if (disposition == repiu::platform::FaultDisposition::kResume)
     {
+#if defined(__x86_64__)
+        auto* context = static_cast<ThreadContext*>(user_data);
+        if (context != nullptr && context->cache_entry_active &&
+            context->process_exit)
+        {
+            fault->registers->EFlags &= ~0x00000100U;
+            fault->registers->EFlags &= ~0x00000400U;
+            fault->host_resume_address =
+                reinterpret_cast<std::uintptr_t>(
+                    &repiu::platform::RepiuLinuxX64GuestExit);
+        }
+#endif
         return disposition;
     }
 
@@ -2962,6 +3593,14 @@ void RecoverFromHleExit(repiu::platform::GuestCpuContext* win32_context,
 {
     thread_context->process_exit = true;
     thread_context->returned = true;
+#if defined(__x86_64__)
+    // Linux x64 leaves host RSP on the cache call frame. The signal callback
+    // installs the full-width host RIP for RepiuLinuxX64GuestExit, so writing
+    // the 32-bit guest EIP to an x64 recovery symbol here would be wrong.
+    win32_context->EFlags &= ~0x00000100U;
+    win32_context->EFlags &= ~0x00000400U;
+    return;
+#else
     if (thread_context->use_guest_stack)
     {
         RecoverToHost(win32_context, thread_context);
@@ -2971,6 +3610,7 @@ void RecoverFromHleExit(repiu::platform::GuestCpuContext* win32_context,
         win32_context->Eip = static_cast<decltype(win32_context->Eip)>(
             reinterpret_cast<std::uintptr_t>(&RecoverHostStackException));
     }
+#endif
 }
 
 void RecordHandledDosInterrupt(ThreadContext* context,
@@ -3070,6 +3710,15 @@ std::uint16_t ReadGuestSegmentSelector(const ThreadContext& context,
             host_entry = g_recovery_host_es;
             break;
         case 2:
+#if defined(_M_X64) || defined(__x86_64__)
+            // Linux x64 does not report SS in ucontext_t. The logical guest
+            // selector is therefore authoritative once the execution setup
+            // has seeded it from the LE stack object.
+            if (shadow != 0)
+            {
+                return shadow;
+            }
+#endif
             return static_cast<std::uint16_t>(win32_context->SegSs);
         case 3:
             physical = static_cast<std::uint16_t>(win32_context->SegDs);
@@ -4182,11 +4831,67 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         ExecutionTimeBucket::kVehHleChain);
     AotHleTranslationScope aot_hle_translation_scope(win32_context, context);
     constexpr std::uint32_t kMaximumX86InstructionBytes = 15U;
+    const char* const segment_hle_trace_value =
+        std::getenv("REPIU_SEGMENT_HLE_TRACE");
+    const bool segment_hle_trace_enabled =
+        segment_hle_trace_value != nullptr &&
+        std::strcmp(segment_hle_trace_value, "0") != 0;
+    static std::atomic<std::uint32_t> segment_hle_trace_count{0U};
+    const bool guest_instruction_readable = IsGuestRangeReadable(
+        context,
+        reinterpret_cast<const void*>(
+            static_cast<std::uintptr_t>(win32_context->Eip)),
+        1U);
+    const std::uint8_t guest_opcode = guest_instruction_readable
+        ? *reinterpret_cast<const std::uint8_t*>(
+            static_cast<std::uintptr_t>(win32_context->Eip))
+        : 0U;
+    const bool guest_two_byte_readable = IsGuestRangeReadable(
+        context,
+        reinterpret_cast<const void*>(
+            static_cast<std::uintptr_t>(win32_context->Eip)),
+        2U);
+    const std::uint8_t guest_second_opcode = guest_two_byte_readable
+        ? reinterpret_cast<const std::uint8_t*>(
+            static_cast<std::uintptr_t>(win32_context->Eip))[1]
+        : 0U;
+    const bool segment_push_candidate =
+        guest_instruction_readable &&
+        (guest_opcode == 0x06U || guest_opcode == 0x0EU ||
+         guest_opcode == 0x16U || guest_opcode == 0x1EU ||
+         (guest_opcode == 0x0FU &&
+          (guest_second_opcode == 0xA0U ||
+           guest_second_opcode == 0xA8U)));
+    const std::uint32_t segment_hle_trace_index =
+        segment_hle_trace_enabled && segment_push_candidate
+            ? segment_hle_trace_count.fetch_add(
+                  1U, std::memory_order_relaxed) + 1U
+            : 0U;
     const bool guest_decode_window_readable = IsGuestRangeReadable(
         context,
         reinterpret_cast<const void*>(
             static_cast<std::uintptr_t>(win32_context->Eip)),
         kMaximumX86InstructionBytes);
+    if (segment_hle_trace_index != 0U && segment_hle_trace_index <= 16U)
+    {
+        std::fprintf(
+            stderr,
+            "[repiu-segment-hle] stage=dispatch n=%u kind=%u eip=0x%08X "
+            "opcode=%02X instruction_readable=%u decode_window=%u "
+            "enabled=%u cache_active=%u call_state=%u esp=0x%08X "
+            "es=0x%04X\n",
+            segment_hle_trace_index,
+            static_cast<unsigned>(fault.kind),
+            static_cast<std::uint32_t>(win32_context->Eip),
+            static_cast<unsigned>(guest_opcode),
+            guest_instruction_readable ? 1U : 0U,
+            guest_decode_window_readable ? 1U : 0U,
+            context->enable_segment_load_hle ? 1U : 0U,
+            context->cache_entry_active ? 1U : 0U,
+            context->active_call_state != nullptr ? 1U : 0U,
+            static_cast<std::uint32_t>(win32_context->Esp),
+            static_cast<unsigned>(context->guest_es));
+    }
     if (context->use_guest_stack && !guest_decode_window_readable)
     {
         // Task 583: question B, asked where it is actually needed. The entry
@@ -4242,10 +4947,25 @@ repiu::platform::FaultDisposition DispatchGuestFault(
     // point sets its own site, and the last call before the return wins, so a
     // fall-through past the family cannot be misread as one of its handlers.
     NoteVehExitSite(context, VehExitSite::kHleChainSegment);
-    if (context->enable_segment_load_hle &&
-        HandleSegmentPushInstruction(win32_context, context))
+    if (context->enable_segment_load_hle && segment_push_candidate)
     {
-        return repiu::platform::FaultDisposition::kResume;
+        const bool handled =
+            HandleSegmentPushInstruction(win32_context, context);
+        if (segment_hle_trace_index != 0U && segment_hle_trace_index <= 16U)
+        {
+            std::fprintf(
+                stderr,
+                "[repiu-segment-hle] stage=handler n=%u handled=%u "
+                "eip_after=0x%08X esp_after=0x%08X\n",
+                segment_hle_trace_index,
+                handled ? 1U : 0U,
+                static_cast<std::uint32_t>(win32_context->Eip),
+                static_cast<std::uint32_t>(win32_context->Esp));
+        }
+        if (handled)
+        {
+            return repiu::platform::FaultDisposition::kResume;
+        }
     }
     if (context->enable_segment_load_hle &&
         HandleFarJumpInstruction(win32_context, context))
@@ -4644,11 +5364,20 @@ bool WriteGuestBytes(ThreadContext* context,
     {
         return false;
     }
-    return NoteSuccessfulAotGuestWrite(
+    const bool noted = NoteSuccessfulAotGuestWrite(
         context,
         static_cast<std::uint32_t>(
             reinterpret_cast<std::uintptr_t>(destination)),
         static_cast<std::uint32_t>(byte_count));
+    RecordGuestWriteTrace(
+        GuestWriteTraceEvent::kHle,
+        0U,
+        0U,
+        static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(destination)),
+        static_cast<std::uint32_t>(byte_count),
+        source);
+    return noted;
 }
 
 bool IsAotCacheAddress(const ThreadContext* context, std::uint32_t address)
@@ -4718,10 +5447,53 @@ void RecoverGuestThreadForShutdown(repiu::platform::GuestCpuContext* registers,
     request->recovered = true;
 }
 
+std::uint16_t FindGuestStackSelector(
+    const RelocatedImagePlacement& placement,
+    const runtime::GuestStackSwitchPlan& stack_plan)
+{
+    if (!stack_plan.valid)
+    {
+        return 0;
+    }
+    for (const runtime::RelocatedSelectorBinding& binding :
+         placement.selector_bindings)
+    {
+        if (binding.relocated_base_address == stack_plan.stack_base &&
+            binding.selector != 0)
+        {
+            return binding.selector;
+        }
+    }
+    return 0;
+}
+
+std::uint16_t FindGuestSelectorForLinearAddress(
+    const RelocatedImagePlacement& placement,
+    std::uint32_t linear_address)
+{
+    for (const runtime::RelocatedSelectorBinding& binding :
+         placement.selector_bindings)
+    {
+        if (binding.selector == 0 || linear_address < binding.relocated_base_address)
+        {
+            continue;
+        }
+        const std::uint64_t offset =
+            static_cast<std::uint64_t>(linear_address) -
+            binding.relocated_base_address;
+        if (offset <= binding.limit)
+        {
+            return binding.selector;
+        }
+    }
+    return 0;
+}
+
 bool RunExecutionThread(
     const RelocatedImagePlacement& placement,
     std::uint32_t entry_address,
     std::uint32_t guest_initial_esp,
+    std::uint16_t guest_initial_ss,
     bool use_guest_stack,
     bool enable_privileged_trap_hle,
     bool enable_traced_dos_hle,
@@ -4851,6 +5623,9 @@ bool RunExecutionThread(
     context.runtime_base = placement.placed_base;
     context.runtime_size = placement.placed_size;
     context.guest_initial_esp = guest_initial_esp;
+    context.guest_ss = guest_initial_ss;
+    context.guest_ds = FindGuestSelectorForLinearAddress(
+        placement, entry_address);
     context.use_guest_stack = use_guest_stack;
     context.enable_privileged_trap_hle = enable_privileged_trap_hle;
     context.enable_traced_dos_hle = enable_traced_dos_hle;
@@ -4925,6 +5700,10 @@ bool RunExecutionThread(
     };
     read_hex_env("REPIU_EXECUTION_PROBE_MEMORY_OFFSET",
                  &context.execution_probe_memory_offset);
+    if (aot_placement != nullptr)
+    {
+        TraceAotGuestMap(*aot_placement, context.runtime_base, "initial");
+    }
     // The capture buffer is reserved here, before the guest thread starts, so
     // the first-hit recorder never allocates inside the exception handler.
     context.execution_probe_dump_request =
@@ -5180,6 +5959,22 @@ bool RunExecutionThread(
     context.shadow_selector_reservation =
         repiu::runtime::ReserveAotShadowSelectorBlock();
     context.shadow_selectors = context.shadow_selector_reservation.block;
+    if (context.shadow_selectors != nullptr)
+    {
+        context.shadow_selectors->selectors[2] = context.guest_ss;
+        context.shadow_selectors->selectors[3] = context.guest_ds;
+    }
+    if (std::getenv("REPIU_LINEXE_INIT_TRACE") != nullptr)
+    {
+        std::fprintf(
+            stderr,
+            "[repiu-guest-segments] initial_ds=%s selector=0x%04X "
+            "initial_ss=%s selector=0x%04X\n",
+            context.guest_ds != 0 ? "true" : "false",
+            static_cast<unsigned>(context.guest_ds),
+            context.guest_ss != 0 ? "true" : "false",
+            static_cast<unsigned>(context.guest_ss));
+    }
     // Task 586. Reported rather than assumed. A failure here is not fatal --
     // `BuildAotSegmentTable` closes every guard slot when there is no shadow --
     // but it silently converts a natively-folded run into an all-boundary one,
@@ -5251,7 +6046,9 @@ bool RunExecutionThread(
     const bool extracted_linexe_valid = linexe_module != nullptr &&
         extracted_code != nullptr && extracted_bss != nullptr &&
         extracted_data != nullptr;
-    if (repiu::hle::BuildLinexeCallGatePlan(&context.linexe_gate_plan) &&
+    bool linexe_plan_built = repiu::hle::BuildLinexeCallGatePlan(
+        &context.linexe_gate_plan);
+    bool linexe_layout_built = linexe_plan_built &&
         repiu::hle::BuildLinexeArenaLayout(
             placement.hle_reserve_base,
             placement.arena_end_address,
@@ -5266,12 +6063,29 @@ bool RunExecutionThread(
                 ? static_cast<std::uint32_t>(extracted_data->image.size())
                 : static_cast<std::uint32_t>(
                       context.linexe_gate_plan.private_data_image.size()),
-            &context.linexe_arena_layout))
+            &context.linexe_arena_layout);
+    bool glide_gate_fits = false;
+    bool direct_glide_dispatch_requested = false;
+    bool direct_glide_dispatch_capable = false;
+    bool direct_glide_dispatch = false;
+    bool client_image_written = false;
+    bool gate_code_written = false;
+    bool glide_gate_written = false;
+    bool bss_image_written = false;
+    bool images_written = false;
+    bool direct_glide_image_verified = false;
+    bool descriptors_registered = false;
+    bool client_protected = false;
+    bool private_protected = false;
+    bool gates_protected = false;
+    bool bss_protected = false;
+    bool gates_flushed = false;
+    if (linexe_layout_built)
     {
         const auto address = [](std::uint32_t value) {
             return reinterpret_cast<void*>(static_cast<std::uintptr_t>(value));
         };
-        bool glide_gate_fits =
+        glide_gate_fits =
             context.linexe_arena_layout.gate_code_size >
                 kGlideFirstGateOffset &&
             repiu::hle::BuildGlideGatePlan(
@@ -5281,11 +6095,15 @@ bool RunExecutionThread(
                 context.linexe_arena_layout.gate_code_size -
                     kGlideFirstGateOffset,
                 &context.glide_gate_plan);
-        const bool direct_glide_dispatch =
+        direct_glide_dispatch_requested =
             repiu::runtime::ExecutionBackendUsesDynamicTranslation(
                 context.execution_backend) &&
             ResolveGlideGateDirectDispatchEnabled(
                 std::getenv("REPIU_AOT_DBT_GLIDE_GATE_DISPATCH"));
+        direct_glide_dispatch_capable =
+            GetGlideGateDirectDispatchThunkAddress() != nullptr;
+        direct_glide_dispatch = direct_glide_dispatch_requested &&
+            direct_glide_dispatch_capable;
         context.aot_dbt_glide_direct_dispatch = direct_glide_dispatch;
         if (glide_gate_fits && direct_glide_dispatch)
         {
@@ -5298,12 +6116,12 @@ bool RunExecutionThread(
         // Folded into one expression they were indistinguishable, and the
         // whole DOS/4G environment -- and with it INT 21h AX=FF00h -- hangs
         // off their conjunction.
-        const bool client_image_written =
+        client_image_written =
             WriteGuestBytes(&context,
                             address(context.linexe_arena_layout.client_data_base),
                             context.linexe_gate_plan.client_data_image.data(),
                             context.linexe_gate_plan.client_data_image.size());
-        const bool gate_code_written =
+        gate_code_written =
             client_image_written &&
             WriteGuestBytes(&context,
                             address(context.linexe_arena_layout.gate_code_base),
@@ -5313,7 +6131,7 @@ bool RunExecutionThread(
                             extracted_linexe_valid
                                 ? extracted_code->image.size()
                                 : context.linexe_gate_plan.gate_image.size());
-        const bool glide_gate_written =
+        glide_gate_written =
             gate_code_written && glide_gate_fits &&
             WriteGuestBytes(
                 &context,
@@ -5321,14 +6139,14 @@ bool RunExecutionThread(
                         kGlideFirstGateOffset),
                 context.glide_gate_plan.image.data(),
                 context.glide_gate_plan.image.size());
-        const bool bss_image_written =
+        bss_image_written =
             glide_gate_written &&
             (!extracted_linexe_valid || WriteGuestBytes(
                 &context,
                 address(context.linexe_arena_layout.bss_base),
                 extracted_bss->image.data(),
                 extracted_bss->image.size()));
-        const bool images_written =
+        images_written =
             bss_image_written &&
             WriteGuestBytes(&context,
                             address(context.linexe_arena_layout.private_data_base),
@@ -5338,12 +6156,12 @@ bool RunExecutionThread(
                             extracted_linexe_valid
                                 ? extracted_data->image.size()
                                 : context.linexe_gate_plan.private_data_image.size());
-        const bool direct_glide_image_verified =
+        direct_glide_image_verified =
             !direct_glide_dispatch ||
             (images_written && VerifyGlideGateDirectDispatchImage(
                 context.linexe_arena_layout.gate_code_base,
                 context.glide_gate_plan));
-        const bool descriptors_registered =
+        descriptors_registered =
             direct_glide_image_verified && images_written &&
             repiu::runtime::RegisterDescriptor(
                 &context.selector_table,
@@ -5371,16 +6189,16 @@ bool RunExecutionThread(
         if (descriptors_registered)
         {
             using repiu::platform::MemoryProtection;
-            const bool client_protected = repiu::platform::ProtectMemory(
+            client_protected = repiu::platform::ProtectMemory(
                 address(context.linexe_arena_layout.client_data_base),
                 0x1000U, MemoryProtection::kReadOnly, nullptr);
-            const bool private_protected = repiu::platform::ProtectMemory(
+            private_protected = repiu::platform::ProtectMemory(
                 address(context.linexe_arena_layout.private_data_base),
                 context.linexe_arena_layout.private_data_size,
                 extracted_linexe_valid ? MemoryProtection::kReadWrite
                                        : MemoryProtection::kReadOnly,
                 nullptr);
-            const bool gates_protected = repiu::platform::ProtectMemory(
+            gates_protected = repiu::platform::ProtectMemory(
                 address(context.linexe_arena_layout.gate_code_base),
                 context.linexe_arena_layout.gate_code_size,
                 direct_glide_dispatch
@@ -5389,12 +6207,12 @@ bool RunExecutionThread(
                            ? MemoryProtection::kReadWrite
                            : MemoryProtection::kExecuteRead),
                 nullptr);
-            const bool bss_protected = !extracted_linexe_valid ||
+            bss_protected = !extracted_linexe_valid ||
                 repiu::platform::ProtectMemory(
                     address(context.linexe_arena_layout.bss_base),
                     context.linexe_arena_layout.bss_size,
                     MemoryProtection::kReadWrite, nullptr);
-            const bool gates_flushed = !direct_glide_dispatch ||
+            gates_flushed = !direct_glide_dispatch ||
                 (gates_protected && repiu::platform::FlushInstructionCacheRange(
                     address(context.linexe_arena_layout.gate_code_base),
                     context.linexe_arena_layout.gate_code_size));
@@ -5402,6 +6220,44 @@ bool RunExecutionThread(
                 client_protected && private_protected && gates_protected &&
                 bss_protected && gates_flushed;
         }
+    }
+    if (std::getenv("REPIU_LINEXE_INIT_TRACE") != nullptr)
+    {
+        std::fprintf(
+            stderr,
+            "[repiu-linexe-init] extracted=%u plan=%u layout=%u "
+            "glide_fits=%u requested=%u capable=%u direct=%u "
+            "writes=%u/%u/%u/%u/%u "
+            "verify=%u descriptors=%u protect=%u/%u/%u/%u/%u active=%u "
+            "bases=0x%08X/0x%08X/0x%08X/0x%08X sizes=0x%08X/0x%08X/0x%08X/0x%08X\n",
+            extracted_linexe_valid ? 1U : 0U,
+            linexe_plan_built ? 1U : 0U,
+            linexe_layout_built ? 1U : 0U,
+            glide_gate_fits ? 1U : 0U,
+            direct_glide_dispatch_requested ? 1U : 0U,
+            direct_glide_dispatch_capable ? 1U : 0U,
+            direct_glide_dispatch ? 1U : 0U,
+            client_image_written ? 1U : 0U,
+            gate_code_written ? 1U : 0U,
+            glide_gate_written ? 1U : 0U,
+            bss_image_written ? 1U : 0U,
+            images_written ? 1U : 0U,
+            direct_glide_image_verified ? 1U : 0U,
+            descriptors_registered ? 1U : 0U,
+            client_protected ? 1U : 0U,
+            private_protected ? 1U : 0U,
+            gates_protected ? 1U : 0U,
+            bss_protected ? 1U : 0U,
+            gates_flushed ? 1U : 0U,
+            context.linexe_environment_active ? 1U : 0U,
+            context.linexe_arena_layout.client_data_base,
+            context.linexe_arena_layout.gate_code_base,
+            context.linexe_arena_layout.bss_base,
+            context.linexe_arena_layout.private_data_base,
+            context.linexe_arena_layout.client_data_size,
+            context.linexe_arena_layout.gate_code_size,
+            context.linexe_arena_layout.bss_size,
+            context.linexe_arena_layout.private_data_size);
     }
     if (context.linexe_environment_active)
     {
@@ -5469,9 +6325,26 @@ bool RunExecutionThread(
             attempt->message = "failed to create AOT translation worker";
             return false;
         }
+        const std::uint32_t trace_address = GuestWriteTraceAddress();
+        const std::uint64_t runtime_end =
+            static_cast<std::uint64_t>(context.runtime_base) +
+            context.runtime_size;
+        const bool trace_address_in_runtime =
+            trace_address != 0U &&
+            trace_address >= context.runtime_base &&
+            static_cast<std::uint64_t>(trace_address) < runtime_end;
+        const std::uint32_t trace_page = trace_address & 0xFFFFF000U;
+        const std::vector<std::uint32_t> trace_pages =
+            trace_address_in_runtime
+                ? std::vector<std::uint32_t>{trace_page}
+                : std::vector<std::uint32_t>{};
         if (!InstallAotGuestPageWriteWatches(
                 *context.aot_placement, nullptr,
-                &context.aot_page_write_watch))
+                &context.aot_page_write_watch) ||
+            (trace_address_in_runtime &&
+             !InstallAotGuestPageWriteWatches(
+                 *context.aot_placement, &trace_pages,
+                 &context.aot_page_write_watch)))
         {
             RestoreAotGuestPageWriteWatches(
                 &context.aot_page_write_watch);
@@ -5881,6 +6754,10 @@ bool RunExecutionThread(
         // stopped, so the join is once again the correct call rather than a
         // choice between two.
         repiu::platform::CloseHostThread(&thread);
+        if (aot_placement != nullptr)
+        {
+            TraceAotGuestMap(*aot_placement, context.runtime_base, "final");
+        }
         mark_shutdown_step("done");
         return true;
     }
@@ -5904,6 +6781,10 @@ bool RunExecutionThread(
     set_teardown_phase(13);
     repiu::platform::CloseHostThread(&thread);
     set_teardown_phase(14);
+    if (aot_placement != nullptr)
+    {
+        TraceAotGuestMap(*aot_placement, context.runtime_base, "final");
+    }
 
     attempt->returned = context.returned;
     attempt->exception_caught = context.exception_caught;
@@ -6018,6 +6899,7 @@ bool AttemptGuestStackTrapExecution(
         placement,
         stack_plan.entry_eip,
         stack_plan.initial_esp,
+        FindGuestStackSelector(placement, stack_plan),
         true,
         true,
         true,
@@ -6067,6 +6949,7 @@ bool AttemptGuestStackHleExecution(
         placement,
         stack_plan.entry_eip,
         stack_plan.initial_esp,
+        FindGuestStackSelector(placement, stack_plan),
         true,
         true,
         true,
@@ -6122,6 +7005,7 @@ bool AttemptGuestStackAotExecution(
     }
     return RunExecutionThread(
         placement, stack_plan.entry_eip, stack_plan.initial_esp,
+        FindGuestStackSelector(placement, stack_plan),
         true, true, true, true, false, false, &dos_file_system,
         linexe_module, glide_exports, cd_chd_path, sound_rom_zip_path,
         enable_piu_jamma_board,

@@ -170,6 +170,12 @@ bool FindAotCacheAddress(const AotCodeCachePlacement& placement,
                          std::uint32_t* cache_address);
 bool InstallAotProbeSentinel(AotCodeCachePlacement* placement,
                                   std::uint32_t guest_address);
+// Install the same opt-in probe in active entries belonging to the latest
+// dynamic append. `added_bytes` identifies the append range in the placement.
+bool InstallAotProbeSentinelInLatestAppend(
+    AotCodeCachePlacement* placement,
+    std::uint32_t guest_address,
+    std::uint32_t added_bytes);
 // Task 264 Phase 3a: per-segment resolution the translation path folds into
 // natively-emitted segment-override accesses. Indexed by segment register
 // (0=ES,2=SS,3=DS,4=FS,5=GS); CS (1) is unused. shadow_address is the absolute

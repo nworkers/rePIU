@@ -2,8 +2,9 @@
 //
 // Reached by `jmp` from an emitted return slot, with:
 //
-//   R14D  the guest return address the slot popped
-//   R15D  guest ESP, already advanced past it
+//   R14D  the guest address to resolve (return address or indirect target)
+//   R15D  guest ESP after the producer's stack operation
+//   R10D  producer tag (RET site, or high-bit | indirect-call site)
 //   guest GPRs in host GPRs, per the Task 558 mapping
 //
 // It fills the named frame, asks the resolver where that guest address lives in
@@ -38,11 +39,19 @@ RepiuLinuxX64ReturnThunk:
     mov dword ptr [r11 + 20], eax
     mov dword ptr [r11 + 24], ebp
     mov dword ptr [r11 + 32], r15d
+    // Capture the guest flags before the resolver call. The push/pop pair is
+    // balanced on the host stack, and EAX is restored from the saved guest
+    // slot after the flags have been copied.
+    pushfq
+    pop rax
+    mov dword ptr [r11 + 36], eax
+    mov eax, dword ptr [r11 + 20]
     // The guest address being asked about, and the same value as the frame's
     // guest EIP: the resolver is being asked where the guest would be.
     mov dword ptr [r11 + 28], r14d
     mov dword ptr [r11 + REPIU_LINUX_X64_FRAME_GUEST_SOURCE], r14d
-    mov dword ptr [r11 + REPIU_LINUX_X64_FRAME_STATUS], 0
+    // Preserve the producer tag for the resolver's provenance diagnostic.
+    mov dword ptr [r11 + REPIU_LINUX_X64_FRAME_STATUS], r10d
 
     // SysV AMD64: RDI is the context, RSI the frame.
     mov rdi, qword ptr [rip + repiu_linux_x64_dispatch_context]

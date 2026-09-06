@@ -3,6 +3,7 @@
 
 #include "repiu/platform/host_error_stream.h"
 #include "repiu/platform/virtual_memory.h"
+#include "repiu/engine/guest_write_trace.h"
 
 #include <cstdint>
 #include <cstdlib>
@@ -78,11 +79,20 @@ bool WriteGuestUInt16(ThreadContext* context,
     {
         return false;
     }
-    return NoteSuccessfulAotGuestWrite(
+    const bool noted = NoteSuccessfulAotGuestWrite(
         context,
         static_cast<std::uint32_t>(
             reinterpret_cast<std::uintptr_t>(destination)),
         sizeof(value));
+    RecordGuestWriteTrace(
+        GuestWriteTraceEvent::kHle,
+        0U,
+        0U,
+        static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(destination)),
+        sizeof(value),
+        &value);
+    return noted;
 }
 
 bool WriteGuestUInt8(ThreadContext* context,
@@ -124,11 +134,20 @@ bool WriteGuestUInt8(ThreadContext* context,
     {
         return false;
     }
-    return NoteSuccessfulAotGuestWrite(
+    const bool noted = NoteSuccessfulAotGuestWrite(
         context,
         static_cast<std::uint32_t>(
             reinterpret_cast<std::uintptr_t>(destination)),
         sizeof(value));
+    RecordGuestWriteTrace(
+        GuestWriteTraceEvent::kHle,
+        0U,
+        0U,
+        static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(destination)),
+        sizeof(value),
+        &value);
+    return noted;
 }
 
 bool WriteGuestUInt32(ThreadContext* context,
@@ -170,13 +189,36 @@ bool WriteGuestUInt32(ThreadContext* context,
     {
         return false;
     }
-    return NoteSuccessfulAotGuestWrite(
+    const bool noted = NoteSuccessfulAotGuestWrite(
         context,
         static_cast<std::uint32_t>(
             reinterpret_cast<std::uintptr_t>(destination)),
         sizeof(value));
+    RecordGuestWriteTrace(
+        GuestWriteTraceEvent::kHle,
+        0U,
+        0U,
+        static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(destination)),
+        sizeof(value),
+        &value);
+    return noted;
 }
 
+
+bool ReadGuestUInt8(ThreadContext* context,
+                    const void* source,
+                    std::uint8_t* value)
+{
+    if (value == nullptr ||
+        !IsGuestRangeReadable(context, source, sizeof(*value)))
+    {
+        return false;
+    }
+
+    std::memcpy(value, source, sizeof(*value));
+    return true;
+}
 
 bool ReadGuestUInt32(ThreadContext* context,
                      const void* source,

@@ -5228,11 +5228,15 @@ int main(int argc, char** argv)
     const bool use_dynamic_backend =
         repiu::runtime::ExecutionBackendUsesDynamicTranslation(
             execution_backend);
-    const bool direct_glide_dispatch_enabled =
+    const bool direct_glide_dispatch_requested =
         use_dynamic_backend &&
         repiu::engine::
             ResolveGlideGateDirectDispatchEnabled(
                 std::getenv("REPIU_AOT_DBT_GLIDE_GATE_DISPATCH"));
+    const bool direct_glide_dispatch_capable =
+        repiu::engine::GetGlideGateDirectDispatchThunkAddress() != nullptr;
+    const bool direct_glide_dispatch_enabled =
+        direct_glide_dispatch_requested && direct_glide_dispatch_capable;
     repiu::runtime::AotCodeCacheBuildOptions aot_build_options;
     // Task 424: these three were decided by the backend value alone from the
     // day they were introduced, leaving no way to A/B them on pumpit3 -- the
@@ -5389,8 +5393,11 @@ int main(int argc, char** argv)
                      aot_build_options.enable_dbt_port_io_dispatch);
         logger->info("Win32 AOT-DBT segment-override dispatch enabled: {}",
                      aot_build_options.enable_dbt_segment_override_dispatch);
-        logger->info("Win32 AOT-DBT Glide gate direct dispatch enabled: {}",
-                     direct_glide_dispatch_enabled);
+        logger->info(
+            "Win32 AOT-DBT Glide gate direct dispatch requested/capable/enabled: {}/{}/{}",
+            direct_glide_dispatch_requested,
+            direct_glide_dispatch_capable,
+            direct_glide_dispatch_enabled);
         logger->info("Win32 AOT timer safe points enabled/sites: {}/{}",
                      aot_build_options.enable_timer_safe_points,
                      aot_image.timer_safe_point_sites.size());

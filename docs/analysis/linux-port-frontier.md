@@ -8030,6 +8030,1566 @@ original binary flow establishes that ABI.
 | Ownership of `0x402AD3DC` / `0x402AD3DD` | **Confirmed**: return sentinel / recovery `UD2` |
 | `1E7Fh` private success ABI | **Unresolved** |
 
+## 3.51 Task 614 — Linux x64 high-byte source is explicitly re-encoded
+
+The previous dynamic-generation evidence identified the guest instruction
+`mov byte ptr [esp],ah` as the immediate source of the wrong allocator branch.
+The normal `ESP -> R15` rewrite necessarily adds a REX prefix, which changes
+the legacy ModRM high-byte name `AH` into host `SPL`.
+
+**Confirmed:** the new lowering admits only source-only `AH/CH/DH/BH` in a
+ModRM `reg` field when the memory base is guest `ESP`. It preserves the source
+GPR and flags by using legacy `XCHG`, copies the high byte to `R14B`, and
+re-encodes the operation with `R14B` and `R15`. For `mov [esp],ah`, the exact
+bytes are:
+
+```text
+86 C4 41 88 C6 86 C4 45 88 34 27
+```
+
+**Confirmed:** the synthetic execution probe stores `AH=0xC3` to guest stack
+memory and keeps `ZF=1`. The Linux x64 core probe passes with 24 total probes
+and zero failures. AOT image decode verification reports zero decode failures.
+
+**Confirmed:** `pumpit2a` no longer stops at the former high-byte corruption
+point and progresses to the later guest segment-instruction boundary. The
+subsequent `PUSH ES` attribution and the current x64 return-sentinel frontier
+are recorded by Task 615.
+
+**Unresolved:** the x64 return resolver can still receive `guest_source=0` and
+fail closed at its intentional `INT3`/`UD2` recovery boundary. This task does
+not infer a return address or alter that recovery contract.
+
+| Question | Status |
+|---|---|
+| `mov [esp],ah` high-byte semantics | **Confirmed**: explicit re-encoding |
+| Guest source GPR and flags preservation | **Confirmed**: synthetic probe |
+| High-byte destination/read-write lowering | **Confirmed**: refused |
+| AOT image decode after expansion | **Confirmed**: zero failures |
+| Prior allocator high-byte corruption | **Resolved** |
+| x64 return resolver `guest_source=0` | **Unresolved** |
+
+---
+
+## 3.52 Task 615 — `PUSH ES` is handled by the shared HLE path
+
+Task 615 added bounded, opt-in segment diagnostics to both the shared
+single-step HLE dispatcher and the later fault-chain location. The first
+runtime result explains why the later fault-chain trace was empty: the guest
+instruction is consumed earlier by the shared dispatcher.
+
+**Confirmed:** at guest `0x010F4A96`, the watch sequence is a fault at AOT
+`0x2004F95A`, followed by single-step reentry at the original guest EIP. The
+shared dispatcher then reports:
+
+```text
+[repiu-segment-hle] stage=shared-dispatch n=1 eip=0x010F4A96 opcode=06 second=89 offset=0 enabled=1 cache_active=1 call_state=0 esp=0x0158CC7C es=0x0024
+[repiu-segment-hle] stage=shared-handler n=1 handled=1 eip_after=0x010F4A97 esp_after=0x0158CC78
+```
+
+This confirms that `HandleSegmentPushInstruction` recognized `PUSH ES`, wrote
+the selector to the guest stack, advanced the guest EIP/ESP, and returned
+handled. The same run reports other segment pushes as handled, up to the
+diagnostic bound of 16 events.
+
+**Confirmed:** the Linux x64 core probe still passes with 24 total probes and
+zero failures. Execution continues past `0x010F4A96` and later stops at the
+host `0x401C94F5` `no-host-frame-to-unwind` / `UD2` fail-closed boundary.
+
+**Conclusion:** segment HLE is not the current Linux x64 cause. The next
+frontier is the x64 return thunk receiving `guest_source=0`; frame state and
+the guest stack word must be captured at resolver entry before any return
+policy is changed.
+
+| Question | Status |
+|---|---|
+| `PUSH ES` shared dispatch reached | **Confirmed** |
+| `HandleSegmentPushInstruction` result | **Confirmed**: `handled=1` |
+| Guest EIP/ESP update | **Confirmed**: `0x010F4A97` / `0x0158CC78` |
+| Segment HLE as current cause | **Rejected** |
+| x64 return `guest_source=0` provenance | **Unresolved** |
+
+---
+
+## 3.53 Task 616 — x64 `guest_source=0` is a direct `RET` zero word
+
+Task 616 added an opt-in frame provenance trace and a producer tag to the
+shared Linux x64 return thunk. The emitter writes a tag through caller-saved
+`R10D`: zero for an ordinary `RET`, one for an indirect-call target transfer.
+The thunk copies that tag to the existing frame `status` field without
+changing guest registers, flags, or resolver policy.
+
+**Confirmed:** the zero-source event is:
+
+```text
+[repiu-x64-return-frame] n=1 source=0x00000000 guest_eip=0x00000000 guest_esp=0x0158CC4C eflags=0x00000000 continuation=0x00000000 metadata_esp=0x00000000 status=0x00000000 stack_base=0x0158CC44 valid=0xF m8=0x0128E488 m4=0x00000000 p0=0x010F1026 p4=0x011A7AE0 matches=0x2 producer=ret last_indirect=0x010F4ACF/0x0103B140 last_return=0x00000000/0x00000000 call_depth=12 top_call=0x010F4ACF/0x0103B140/0x010F4AD1/0x0158CC74/0
+```
+
+`producer=ret` proves that this is not an indirect-call zero target. The
+frame guest ESP is `0x0158CC4C`, which is the post-pop ESP, and `matches=0x2`
+shows that the consumed word at `ESP-4` is zero. The next words are
+`0x010F1026` and `0x011A7AE0`, both readable. The tracked top call expects
+fallthrough `0x010F4AD1`, so the observed zero return word is not the expected
+return of that tracked call.
+
+**Confirmed:** the Linux x64 core probe passes with 24 total probes and zero
+failures. The run still reaches the intentional x64 fail-closed `INT3`/`UD2`
+boundary after the resolver returns zero.
+
+**Unresolved:** which guest `RET` site consumed the zero word, and which prior
+guest stack writer created it. No return policy or zero-target behavior should
+be changed until that site-level provenance is captured.
+
+| Question | Status |
+|---|---|
+| Shared thunk producer classification | **Confirmed**: direct `RET` |
+| Consumed return word | **Confirmed**: zero at `ESP-4` |
+| Indirect-call zero target hypothesis | **Rejected for this event** |
+| Guest `RET` site | **Unresolved** |
+| Preceding zero stack writer | **Unresolved** |
+
+---
+
+## 3.54 Task 617 — zero return word의 guest `RET` site는 `0x010F101D`
+
+Task 617 extended the x64 thunk producer tag so the direct `RET` emitter carries
+its guest instruction address in frame metadata. The zero-source trace now
+reports:
+
+```text
+producer=ret producer_site=0x010F101D
+guest_esp=0x0158CC4C stack_base=0x0158CC44 valid=0xF
+m8=0x0128E488 m4=0x00000000 p0=0x010F1026 p4=0x011A7AE0 matches=0x2
+```
+
+**Confirmed:** the guest `RET` consumes the word at `0x0158CC48`, because the
+frame ESP is the post-pop value `0x0158CC4C`. The consumed word is zero, while
+the tracked top-call expected fallthrough remains `0x010F4AD1`.
+
+**Confirmed:** `REPIU_AOT_GUEST_MAP_TRACE=0xF101D` finds one exact initial map
+entry at index `13859`, cache `0x2001487D`, with `guest_len=1` and
+`emitted_len=26`. The producer site is therefore a real guest return record.
+
+**Unresolved:** which guest stack writer created zero at `0x0158CC48`. The
+remaining hypotheses are a missing/invalid direct-call return slot, an HLE/DOS
+path that altered the stack, or an initial guest-stack value. No zero-return
+repair is justified yet.
+
+| Question | Status |
+|---|---|
+| Zero-source direct RET site | **Confirmed**: `0x010F101D` |
+| Consumed guest stack slot | **Confirmed**: `0x0158CC48` |
+| Zero-word origin | **Unresolved** |
+
+## 3.55 Task 618 — direct `CALL`은 zero `RET` 슬롯을 정상적으로 기록함
+
+Task 618은 `REPIU_LINUX_X64_STACK_TRACE=1`에서 long-mode AOT direct `CALL`
+직후의 게스트 스택 기록을 고정 크기 ring에 남기도록 했다. 기록에는 CALL site,
+fallthrough 반환 주소, 기록 후 guest ESP, 실제 슬롯 값이 포함된다. flags를
+보존하는 opt-in 진단이며 반환 주소나 resolver 정책은 변경하지 않는다.
+
+**확인됨:** Linux x64 image decode 검증과 core probe는 통과했다. 첫 구현에서
+trace 명령 수 대신 바이트 길이를 `emitted_instructions`에 넣어 image 검증이
+실패했으나, 이를 20개 명령으로 고친 뒤 image가 정상적으로 빌드됐다.
+
+**확인됨:** terminal zero `RET` 실행에서 consumed slot과 일치하는 direct-call
+기록이 세 건 있었다.
+
+```text
+[repiu-x64-stack-write] consumed=0x0158CC48 sequence=70 matches=3
+[repiu-x64-stack-write] slot=0x0158CC48 index=26 site=0x010F729A fallthrough=0x010F729F esp=0x0158CC48 value=0x010F729F
+[repiu-x64-stack-write] slot=0x0158CC48 index=27 site=0x010F72BC fallthrough=0x010F72C1 esp=0x0158CC48 value=0x010F72C1
+[repiu-x64-stack-write] slot=0x0158CC48 index=29 site=0x010F7304 fallthrough=0x010F7309 esp=0x0158CC48 value=0x010F7309
+```
+
+세 기록 모두 `ESP=0x0158CC48`에 올바른 nonzero 반환 주소를 썼다. 따라서
+`0x010F101D`의 최종 0은 direct `CALL`의 push 실패로 설명되지 않는다. 마지막
+direct `CALL` 이후 `RET` 사이에 다른 게스트 stack writer 또는 stack-frame
+계약 위반이 남아 있다. 기존과 같이 zero target을 추측해 보정하지 않는다.
+
+| 질문 | 상태 |
+|---|---|
+| direct `CALL`이 consumed slot에 기록했는가 | **확인됨**: 세 건, 모두 올바른 값 |
+| direct `CALL` push 자체의 실패 | **배제됨** |
+| 마지막 direct `CALL` 이후 zero writer | **미확정** |
+| zero target 자동 복구 | **범위 밖 / 수행하지 않음** |
+
+## 3.55 (English) Task 618 — direct `CALL` writes the zero `RET` slot correctly
+
+Task 618 records long-mode AOT direct-call guest-stack writes in a fixed-size
+ring when `REPIU_LINUX_X64_STACK_TRACE=1`. Each record contains the CALL site,
+fallthrough return address, post-write guest ESP, and observed slot value. The
+trace preserves flags and is opt-in; it does not change the return target or
+resolver policy.
+
+**Confirmed:** Linux x64 image decode verification and the core probe passed. An
+initial implementation reported the trace byte length as `emitted_instructions`,
+which failed image verification; changing it to the actual 20 instructions made
+the image build normally.
+
+**Confirmed:** the terminal zero `RET` had three direct-call records matching its
+consumed slot:
+
+```text
+[repiu-x64-stack-write] consumed=0x0158CC48 sequence=70 matches=3
+[repiu-x64-stack-write] slot=0x0158CC48 index=26 site=0x010F729A fallthrough=0x010F729F esp=0x0158CC48 value=0x010F729F
+[repiu-x64-stack-write] slot=0x0158CC48 index=27 site=0x010F72BC fallthrough=0x010F72C1 esp=0x0158CC48 value=0x010F72C1
+[repiu-x64-stack-write] slot=0x0158CC48 index=29 site=0x010F7304 fallthrough=0x010F7309 esp=0x0158CC48 value=0x010F7309
+```
+
+All three records wrote a correct nonzero return address at
+`ESP=0x0158CC48`. The final zero consumed by `0x010F101D` therefore is not
+explained by a failed direct-call push. A different guest stack writer or a
+stack-frame contract violation remains between the last direct CALL and RET.
+As before, no zero target is guessed or repaired.
+
+| Question | Status |
+|---|---|
+| Did direct `CALL` write the consumed slot? | **Confirmed**: three correct records |
+| Direct-call push failure | **Ruled out** |
+| Zero writer after the last direct CALL | **Unresolved** |
+| Automatic zero-target repair | **Out of scope / not performed** |
+
+## 3.56 Task 619 — ordinary AOT `PUSH` identifies the final zero writer
+
+Task 619 extended the opt-in Linux x64 stack-write ring from direct `CALL`
+emission to ordinary AOT `PUSH` lowering. The ring was increased to 512
+records because the reproduced run reached sequence 321; the initial 64-record
+ring would have overwritten the beginning of the relevant history.
+
+The terminal return still consumed `0x00000000` from slot `0x0158CC48`, but the
+trace now showed eleven matching writes. Three were the already-confirmed
+direct-call writes. The last matching ordinary push was:
+
+```text
+[repiu-x64-stack-write] slot=0x0158CC48 index=11 writer=guest-push site=0x010F0FE5 fallthrough=0x00000000 esp=0x0158CC48 value=0x00000000
+```
+
+The AOT map entry for `0x010F0FE5` is `45 8D 7F FC 41 89 0F`, which is the
+long-mode lowering of guest `PUSH ECX`. The preceding map entry,
+`0x010F0FE2`, has guest length three and original bytes `C2 04 00`; it is
+guest `RET 4`. Therefore the zero write is a legitimate later `PUSH ECX`, and
+the stronger defect is that the x64 return emitter currently advances guest
+ESP by only four bytes for `RET 4`, ignoring its immediate stack adjustment.
+
+**Confirmed:** direct `CALL` writes are correct, the final zero writer is an
+ordinary guest push, and the preceding instruction is `RET 4`.
+
+**Next:** make the long-mode near-return emitter apply the unsigned `imm16` of
+`C2 iw` to guest ESP while preserving flags. Do not repair the zero target.
+
+## 3.56 (English) Task 619 — ordinary AOT `PUSH` identifies the final zero writer
+
+Task 619 extended the opt-in Linux x64 stack-write ring from direct `CALL`
+emission to ordinary AOT `PUSH` lowering. The ring was increased to 512
+records because the reproduced run reached sequence 321; the initial 64-record
+ring would have overwritten the beginning of the relevant history.
+
+The terminal return still consumed `0x00000000` from slot `0x0158CC48`, but the
+trace now showed eleven matching writes. Three were the already-confirmed
+direct-call writes. The last matching ordinary push was:
+
+```text
+[repiu-x64-stack-write] slot=0x0158CC48 index=11 writer=guest-push site=0x010F0FE5 fallthrough=0x00000000 esp=0x0158CC48 value=0x00000000
+```
+
+The AOT map entry for `0x010F0FE5` is `45 8D 7F FC 41 89 0F`, the long-mode
+lowering of guest `PUSH ECX`. The preceding map entry, `0x010F0FE2`, has guest
+length three and original bytes `C2 04 00`; it is guest `RET 4`. Therefore the
+zero write is a legitimate later `PUSH ECX`, and the stronger defect is that
+the x64 return emitter currently advances guest ESP by only four bytes for
+`RET 4`, ignoring its immediate stack adjustment.
+
+**Confirmed:** direct `CALL` writes are correct, the final zero writer is an
+ordinary guest push, and the preceding instruction is `RET 4`.
+
+**Next:** make the long-mode near-return emitter apply the unsigned `imm16` of
+`C2 iw` to guest ESP while preserving flags. Do not repair the zero target.
+
+---
+
+## 3.57 Task 620 — x64 `RET 4` stack adjustment is corrected
+
+Task 620 decoded the original return bytes in the long-mode emitter instead of
+assuming that every near return has only the four-byte pop effect. `C3` keeps
+the adjustment at four bytes, while `C2 iw` now advances guest `R15D` by
+`4 + unsigned imm16` using a flags-preserving `LEA`.
+
+The new core probe reports:
+
+```text
+guest_ret_imm16=true adjustment=8
+core_probe_total=24
+core_probe_failures=0
+core_probe_all=true
+```
+
+The reproduced map entry changed from the old `+4` sequence to the `RET 4`
+sequence containing `LEA R15D,[R15+8]`:
+
+```text
+[repiu-aot-map-entry] target=0x010F0FE2 index=13908 guest=0x010F0FE2 cache=0x200149C8 guest_len=3 emitted_len=26 inactive=0 bytes=458B37458D7F0849BCCCAC1C40000000
+```
+
+The previous zero-return frontier at `0x010F101D` no longer occurs. Execution
+now reaches a later return target `0x011A643A`, which resolves to dynamic AOT
+cache code, and then faults at `0x011A6440`. That address is not an initial AOT
+map entry and its observed instruction bytes are zero/data-like, so the next
+investigation is the return or indirect control-flow path that produced target
+`0x011A643A`, not another zero-target repair.
+
+## 3.57 (English) Task 620 — the x64 `RET 4` stack adjustment is corrected
+
+Task 620 made the long-mode emitter decode original return bytes instead of
+assuming that every near return has only the four-byte pop effect. `C3` keeps a
+four-byte adjustment, while `C2 iw` now advances guest `R15D` by
+`4 + unsigned imm16` with a flags-preserving `LEA`.
+
+The new core probe reports:
+
+```text
+guest_ret_imm16=true adjustment=8
+core_probe_total=24
+core_probe_failures=0
+core_probe_all=true
+```
+
+The reproduced map entry changed to the `RET 4` sequence containing
+`LEA R15D,[R15+8]`:
+
+```text
+[repiu-aot-map-entry] target=0x010F0FE2 index=13908 guest=0x010F0FE2 cache=0x200149C8 guest_len=3 emitted_len=26 inactive=0 bytes=458B37458D7F0849BCCCAC1C40000000
+```
+
+The old zero-return frontier at `0x010F101D` no longer occurs. Execution now
+reaches a later return target `0x011A643A`, resolves it to dynamic AOT cache
+code, and then faults at `0x011A6440`. That address is not an initial AOT map
+entry and its observed instruction bytes are zero/data-like. The next
+investigation is therefore the return or indirect control-flow path that
+produced target `0x011A643A`, not another zero-target repair.
+
+---
+
+## 3.58 Task 621 — Linux x64 return target provenance is narrowed
+
+Task 621 extended the opt-in `REPIU_LINUX_X64_RETURN_TRACE` output with the
+return producer tag and post-`RET` guest ESP. It also printed AOT stack-write
+records whose guest ESP matches the return's consumed slot. The diagnostic ring
+was expanded to 16384 records so the reproduced run's sequence 13676 was not
+overwritten.
+
+The reproduced return is now attributed as follows:
+
+```text
+[repiu-x64-return] result=resolved source=0x011A643A cache=0x20126E56 producer=0x010F1AF8 guest_esp=0x0158CC48 detail=
+[repiu-x64-return-stack] source=0x011A643A producer=0x010F1AF8 consumed=0x0158CC44 sequence=13676 matches=15
+```
+
+The producer map entry at `0x010F1AF8` is a one-byte plain `RET`; its emitted
+code advances guest ESP by four bytes. The consumed slot therefore is
+`0x0158CC44`. Among the 15 retained AOT records, site `0x010F12BF` wrote
+`0x011A643A` to that slot at one point:
+
+```text
+[repiu-x64-return-stack] index=485 writer=guest-push site=0x010F12BF fallthrough=0x00000000 esp=0x0158CC44 value=0x011A643A
+```
+
+This is historical provenance, not a last-writer proof: later records for the
+same slot exist (the highest retained matching index is 2784), and the final
+value may also be written through an HLE or otherwise uninstrumented path.
+Consequently, the target word's complete last-writer attribution remains
+unresolved.
+
+The resolved target `0x011A643A` has no initial AOT map entry because it lies
+just beyond the `PIU.EXE` file image and is dynamically translated. Execution
+still faults at `0x011A6440`, whose bytes are data-like. The next task should
+instrument guest-memory writes outside the AOT stack-write ring and dump the
+dynamic translation for `0x011A643A`; it must not repair or reinterpret the
+return target.
+
+| Question | Status |
+|---|---|
+| Return producer for `0x011A643A` | **Confirmed**: `0x010F1AF8` plain `RET` |
+| Post-`RET` guest ESP | **Confirmed**: `0x0158CC48` |
+| Consumed return slot | **Confirmed**: `0x0158CC44` |
+| Historical AOT write of `0x011A643A` | **Confirmed**: `0x010F12BF` |
+| Final last writer of the slot | **Unresolved** |
+| Dynamic target `0x011A643A` | **Confirmed**: no initial map entry |
+| Fault at `0x011A6440` | **Confirmed**: data-like bytes; cause unresolved |
+
+## 3.58 (English) Task 621 — Linux x64 return target provenance is narrowed
+
+Task 621 extended the opt-in `REPIU_LINUX_X64_RETURN_TRACE` output with the
+return producer tag and post-`RET` guest ESP. It also printed AOT stack-write
+records whose guest ESP matches the return's consumed slot. The diagnostic ring
+was expanded to 16384 records so the reproduced run's sequence 13676 was not
+overwritten.
+
+The reproduced return is now attributed as follows:
+
+```text
+[repiu-x64-return] result=resolved source=0x011A643A cache=0x20126E56 producer=0x010F1AF8 guest_esp=0x0158CC48 detail=
+[repiu-x64-return-stack] source=0x011A643A producer=0x010F1AF8 consumed=0x0158CC44 sequence=13676 matches=15
+```
+
+The producer map entry at `0x010F1AF8` is a one-byte plain `RET`; its emitted
+code advances guest ESP by four bytes. The consumed slot is therefore
+`0x0158CC44`. Among the 15 retained AOT records, site `0x010F12BF` wrote
+`0x011A643A` to that slot at one point:
+
+```text
+[repiu-x64-return-stack] index=485 writer=guest-push site=0x010F12BF fallthrough=0x00000000 esp=0x0158CC44 value=0x011A643A
+```
+
+This is historical provenance, not a last-writer proof: later records for the
+same slot exist (the highest retained matching index is 2784), and the final
+value may also be written through an HLE or otherwise uninstrumented path.
+Therefore, complete last-writer attribution for the target word remains
+unresolved.
+
+The resolved target `0x011A643A` has no initial AOT map entry because it lies
+just beyond the `PIU.EXE` file image and is dynamically translated. Execution
+still faults at `0x011A6440`, whose bytes are data-like. The next task should
+instrument guest-memory writes outside the AOT stack-write ring and dump the
+dynamic translation for `0x011A643A`; it must not repair or reinterpret the
+return target.
+
+| Question | Status |
+|---|---|
+| Return producer for `0x011A643A` | **Confirmed**: `0x010F1AF8` plain `RET` |
+| Post-`RET` guest ESP | **Confirmed**: `0x0158CC48` |
+| Consumed return slot | **Confirmed**: `0x0158CC44` |
+| Historical AOT write of `0x011A643A` | **Confirmed**: `0x010F12BF` |
+| Final last writer of the slot | **Unresolved** |
+| Dynamic target `0x011A643A` | **Confirmed**: no initial map entry |
+| Fault at `0x011A6440` | **Confirmed**: data-like bytes; cause unresolved |
+
+---
+
+## 3.59 Task 622 — dynamic target is a five-byte code fragment followed by HLE
+
+Task 622 added the opt-in `REPIU_AOT_DYNAMIC_TRACE=<guest-address>` diagnostic.
+For `0x011A643A`, one reproduced dynamic append reported:
+
+```text
+[repiu-aot-dynamic] stage=raw guest=0x011A643A bytes=0DE96B0137060000F0E36B010900000005000000001000000000000000000000 length=138611654
+[repiu-aot-dynamic] stage=plan-entry guest=0x011A643A bytes=0DE96B0137 length=5
+[repiu-aot-dynamic] stage=plan-entry-meta guest=0x011A643A kind=0 length=5 mnemonic=489
+[repiu-aot-dynamic] stage=image-entry guest=0x011A643A bytes=0DE96B0137 length=5
+[repiu-aot-dynamic] stage=image-entry-meta guest=0x011A643A cache=0x20126E56 append_offset=0x00126E56 guest_len=5 emitted_len=5 active=1
+```
+
+The first five bytes are `OR EAX,0x37016BE9`. The next byte at
+`0x011A643F` is `PUSH ES` (`06`), and the next two bytes at
+`0x011A6440` are `00 00`. The dynamic plan therefore emits the first
+five-byte copy and leaves the segment instruction at the existing HLE boundary.
+
+The guest watch confirms that the boundary is reached from the dynamic cache
+and then single-stepped at the guest address:
+
+```text
+[repiu-watch] event=fault guest=0x011A643F n=1 at=0x20126E5B esi=0x00000001 esp=0x0158CC48 ebx=0x00000004 eflags=0x00200202
+[repiu-watch] event=step guest=0x011A643F n=1 at=0x011A643F le_bytes=0x09016BE3F0000006 esi=0x00000001 esp=0x0158CC48 ebx=0x00000004 eflags=0x00200302
+```
+
+After `PUSH ES` HLE, guest ESP is `0x0158CC44`. The unhandled fault at
+`0x011A6440` then sees `00 00` and attempts access `0x37016BE9` with
+`EAX=0x37016BE9`. The same stack/return trace run without the dynamic dump
+resolved the target to `0x20126E56` and reached the same `0x011A6440` fault.
+
+**Confirmed:** Task 622 did not find an x64 emitted-byte mismatch at the
+dynamic entry. The current frontier is the guest control flow after the
+legitimate `PUSH ES` HLE, specifically why execution at `0x011A6440` uses
+`EAX=0x37016BE9` as a memory address. This is not a reason to fabricate a
+return target or to skip the guest memory fault.
+
+| Question | Status |
+|---|---|
+| Raw bytes at `0x011A643A` | **Confirmed**: `0D E9 6B 01 37 ...` |
+| Dynamic plan entry | **Confirmed**: five-byte copy, kind `0` |
+| `0x011A643F` instruction | **Confirmed**: guest `PUSH ES` HLE boundary |
+| HLE stack effect | **Confirmed**: ESP `0x0158CC48 -> 0x0158CC44` |
+| `0x011A6440` instruction | **Confirmed**: `00 00` |
+| Fault access | **Confirmed**: `EAX=0x37016BE9`; cause unresolved |
+| Dynamic dump side effect | **Ruled out**: target/cache/fault unchanged |
+
+## 3.59 (English) Task 622 — dynamic target is a five-byte code fragment followed by HLE
+
+Task 622 added the opt-in `REPIU_AOT_DYNAMIC_TRACE=<guest-address>` diagnostic.
+For `0x011A643A`, one reproduced dynamic append reported:
+
+```text
+[repiu-aot-dynamic] stage=raw guest=0x011A643A bytes=0DE96B0137060000F0E36B010900000005000000001000000000000000000000 length=138611654
+[repiu-aot-dynamic] stage=plan-entry guest=0x011A643A bytes=0DE96B0137 length=5
+[repiu-aot-dynamic] stage=plan-entry-meta guest=0x011A643A kind=0 length=5 mnemonic=489
+[repiu-aot-dynamic] stage=image-entry guest=0x011A643A bytes=0DE96B0137 length=5
+[repiu-aot-dynamic] stage=image-entry-meta guest=0x011A643A cache=0x20126E56 append_offset=0x00126E56 guest_len=5 emitted_len=5 active=1
+```
+
+The first five bytes are `OR EAX,0x37016BE9`. The next byte at
+`0x011A643F` is `PUSH ES` (`06`), and the next two bytes at
+`0x011A6440` are `00 00`. The dynamic plan consequently emits the first
+five-byte copy and leaves the segment instruction at the existing HLE boundary.
+
+The guest watch confirms that the boundary is reached from the dynamic cache
+and then single-stepped at the guest address:
+
+```text
+[repiu-watch] event=fault guest=0x011A643F n=1 at=0x20126E5B esi=0x00000001 esp=0x0158CC48 ebx=0x00000004 eflags=0x00200202
+[repiu-watch] event=step guest=0x011A643F n=1 at=0x011A643F le_bytes=0x09016BE3F0000006 esi=0x00000001 esp=0x0158CC48 ebx=0x00000004 eflags=0x00200302
+```
+
+After `PUSH ES` HLE, guest ESP is `0x0158CC44`. The unhandled fault at
+`0x011A6440` then sees `00 00` and attempts access `0x37016BE9` with
+`EAX=0x37016BE9`. The same stack/return trace run without the dynamic dump
+resolved the target to `0x20126E56` and reached the same `0x011A6440` fault.
+
+**Confirmed:** Task 622 found no x64 emitted-byte mismatch at the dynamic
+entry. The current frontier is guest control flow after the legitimate
+`PUSH ES` HLE, specifically why execution at `0x011A6440` uses
+`EAX=0x37016BE9` as a memory address. This does not justify fabricating a
+return target or skipping the guest memory fault.
+
+| Question | Status |
+|---|---|
+| Raw bytes at `0x011A643A` | **Confirmed**: `0D E9 6B 01 37 ...` |
+| Dynamic plan entry | **Confirmed**: five-byte copy, kind `0` |
+| `0x011A643F` instruction | **Confirmed**: guest `PUSH ES` HLE boundary |
+| HLE stack effect | **Confirmed**: ESP `0x0158CC48 -> 0x0158CC44` |
+| `0x011A6440` instruction | **Confirmed**: `00 00` |
+| Fault access | **Confirmed**: `EAX=0x37016BE9`; cause unresolved |
+| Dynamic dump side effect | **Ruled out**: target/cache/fault unchanged |
+
+## 3.60 Task 623 — segment HLE write is not the x64 fault source
+
+Task 623 added an opt-in line tied to the existing `REPIU_GUEST_WATCH` address.
+It records the segment-push HLE operation after the existing guest write and
+register updates.
+
+With `REPIU_GUEST_WATCH=0x011A643F`, the Linux x64 reproduction reported:
+
+```text
+[repiu-segment-hle-watch] eip=0x011A643F opcode=0x06 selector=0x0024 destination=0x0158CC44 value=0x00000024 esp=0x0158CC48->0x0158CC44 next_eip=0x011A6440 size=1
+[repiu-fault] unhandled signal=0xb rip=0x11a6440 eip=0x11a6440 access=0x37016be9 bytes=00 00 f0 e3 6b 01 09 00 00 00 05 00 00 00 00 10 guest_stack_m8=0x128cc2c guest_stack_m4=0x4 guest_stack_0=0x24 guest_stack_p4=0x0 eax=0x37016be9 ebx=0x4 ecx=0x128cc2c edx=0x0 esi=0x1 edi=0x128cc2c esp=0x158cc44 eflags=0x210302
+```
+
+**Confirmed:** the HLE interprets opcode `06` as guest `PUSH ES`, obtains the
+guest ES selector `0x0024`, writes its zero-extended dword `0x00000024` to the
+expected destination `0x0158CC44`, and advances EIP to `0x011A6440`. The next
+fault therefore occurs after the legitimate segment-push semantics have
+completed. The trace does not show a write of `EAX=0x37016BE9` to the stack or
+an incorrect ESP transition.
+
+**Unresolved:** the original guest path still reaches `00 00` at
+`0x011A6440` and uses `EAX=0x37016BE9` as a memory address. The next useful
+diagnostic is an instruction/register provenance trace for the value loaded
+into EAX before `0x011A643A`; changing the segment HLE or suppressing this
+guest memory fault is not justified.
+
+| Question | Status |
+|---|---|
+| `PUSH ES` selector | **Confirmed**: `0x0024` |
+| HLE destination/value | **Confirmed**: `0x0158CC44 <- 0x00000024` |
+| HLE ESP transition | **Confirmed**: `0x0158CC48 -> 0x0158CC44` |
+| HLE EIP transition | **Confirmed**: `0x011A643F -> 0x011A6440` |
+| HLE as fault cause | **Ruled out** for this reproduction |
+| `EAX=0x37016BE9` provenance | **Unresolved** |
+
+## 3.60 (English) Task 623 — segment HLE write is not the x64 fault source
+
+Task 623 added an opt-in line tied to the existing `REPIU_GUEST_WATCH` address.
+It records the segment-push HLE operation after the existing guest write and
+register updates.
+
+With `REPIU_GUEST_WATCH=0x011A643F`, the Linux x64 reproduction reported:
+
+```text
+[repiu-segment-hle-watch] eip=0x011A643F opcode=0x06 selector=0x0024 destination=0x0158CC44 value=0x00000024 esp=0x0158CC48->0x0158CC44 next_eip=0x011A6440 size=1
+[repiu-fault] unhandled signal=0xb rip=0x11a6440 eip=0x11a6440 access=0x37016be9 bytes=00 00 f0 e3 6b 01 09 00 00 00 05 00 00 00 00 10 guest_stack_m8=0x128cc2c guest_stack_m4=0x4 guest_stack_0=0x24 guest_stack_p4=0x0 eax=0x37016be9 ebx=0x4 ecx=0x128cc2c edx=0x0 esi=0x1 edi=0x128cc2c esp=0x158cc44 eflags=0x210302
+```
+
+**Confirmed:** the HLE decodes opcode `06` as guest `PUSH ES`, obtains guest
+ES selector `0x0024`, writes the zero-extended dword `0x00000024` to the
+expected destination `0x0158CC44`, and advances EIP to `0x011A6440`. The next
+fault occurs after the legitimate segment-push semantics have completed. The
+trace shows neither a write of `EAX=0x37016BE9` to the stack nor an incorrect
+ESP transition.
+
+**Unresolved:** the original guest path still reaches `00 00` at
+`0x011A6440` and uses `EAX=0x37016BE9` as a memory address. The next useful
+diagnostic is instruction/register provenance for the value loaded into EAX
+before `0x011A643A`; changing segment HLE or suppressing this guest memory
+fault is not justified.
+
+| Question | Status |
+|---|---|
+| `PUSH ES` selector | **Confirmed**: `0x0024` |
+| HLE destination/value | **Confirmed**: `0x0158CC44 <- 0x00000024` |
+| HLE ESP transition | **Confirmed**: `0x0158CC48 -> 0x0158CC44` |
+| HLE EIP transition | **Confirmed**: `0x011A643F -> 0x011A6440` |
+| HLE as fault cause | **Ruled out** for this reproduction |
+| `EAX=0x37016BE9` provenance | **Unresolved** |
+
+---
+
+## 3.61 Task 624 — target page의 first/final writer가 guest AOT로 확인됨
+
+Task 624는 `REPIU_GUEST_WRITE_TRACE=<guest-address>`를 추가하여 선택된
+guest page를 초기 AOT write-watch에 강제로 포함하고, native fault/completion과
+HLE write를 같은 target 기준으로 기록하게 했습니다. 긴 write sequence 때문에
+즉시 출력은 처음 32건으로 제한하고, Linux unhandled fault 경로에서는 최근
+64건의 writer ring을 직접 `write(2)`로 출력하도록 했습니다. trace 환경 변수가
+없으면 이 경로는 활성화되지 않습니다.
+
+정적 분석에서 target `0x011A643A`는 object 4의 `0x01110000 + 0x9643A`이며,
+원본 `PIU.EXE`의 대응 file offset `0x1A4A3A`는 0입니다. 따라서 이 값은
+원본 파일에 있던 정적 instruction이 아니라 실행 중 guest AOT writer가 만드는
+동적 code fragment입니다.
+
+재현 결과 첫 writer는 다음과 같습니다.
+
+```text
+[repiu-guest-write-trace] event=native-fault n=1 execution=0x2000B13D source=0x010F29FA destination=0x011A643A
+[repiu-guest-write-trace] event=native-complete n=2 execution=0x2000B13D source=0x010F29FA destination=0x011A643A size=1 bytes=00
+```
+
+마지막 writer tail은 총 2642개 event 뒤 `0x010F2469`에서 확인되었습니다.
+해당 initial AOT map entry는 다음과 같습니다.
+
+```text
+[repiu-aot-map-entry] target=0x010F2469 index=13521 guest=0x010F2469 cache=0x200140A3 guest_len=2 emitted_len=3 inactive=0 bytes=67891A
+[repiu-aot-map-fixup] source=0x010F2469 kind=block-fallthrough target=0x010F246B patch=0x000140A7 resolved=1
+[repiu-guest-write-trace-tail] event=native-complete n=0x00000A52 execution=0x200140A3 source=0x010F2469 destination=0x011A643A size=0x00000004 bytes=0DE96B01 ... ebx=0x016BE90D edx=0x011A643A
+```
+
+`67 89 1A`는 32-bit address-size `MOV [EDX],EBX`이므로 마지막 write는
+`EBX=0x016BE90D`의 little-endian bytes `0D E9 6B 01`을 target에 기록합니다.
+동적 append의 raw/plan/image entry는 모두 `0D E9 6B 01 37`을 보고했습니다.
+이는 target bytes와 dynamic AOT append 사이의 writer mismatch 가설을
+기각합니다.
+
+같은 실행에서 `0x011A643F`의 `PUSH ES` HLE는 기존과 같이 `0x0024`를
+`0x0158CC44`에 기록하고 EIP를 `0x011A6440`으로 진행시켰습니다. 이후
+`0x011A6440`의 `00 00`이 EAX=`0x37016BE9`를 access하여 SIGSEGV가
+발생했습니다. 따라서 현재 남은 frontier는 target page의 writer가 아니라,
+정상적으로 생성된 dynamic code fragment 이후 `EAX`가 유효 guest address가
+아닌 값을 갖는 이유와 HLE boundary 다음 재진입 경로입니다.
+
+검증 결과 `repiu_core_probe`는 `24/24`를 통과했습니다.
+
+| 항목 | 상태 |
+|---|---|
+| target page first writer | **확인됨**: `0x010F29FA`, byte `00` |
+| target page final writer | **확인됨**: `0x010F2469`, `EBX=0x016BE90D` |
+| final target bytes | **확인됨**: `0D E9 6B 01` |
+| dynamic append bytes | **확인됨**: `0D E9 6B 01 37` |
+| writer/append mismatch | **기각됨** |
+| `PUSH ES` HLE | **기존 동작 유지** |
+| `0x011A6440` fault cause | **미확정**: HLE boundary 이후 EAX/address 경로 |
+
+## 3.61 (English) Task 624 — first and final target-page writers are guest AOT
+
+Task 624 added `REPIU_GUEST_WRITE_TRACE=<guest-address>`. The selected guest
+page is forced into the initial AOT write-watch set, and native fault/completion
+and HLE writes are recorded against the same target. Immediate output is limited
+to the first 32 events because the write sequence is long; the Linux unhandled
+fault path dumps the most recent 64 writer records directly with `write(2)`.
+The path is inactive when the trace environment variable is absent.
+
+Static analysis places target `0x011A643A` in object 4 at
+`0x01110000 + 0x9643A`. The corresponding original `PIU.EXE` file offset
+`0x1A4A3A` is zero. The target is therefore a dynamic code fragment constructed
+by guest execution, not a static instruction from the file image.
+
+The first writer in the reproduction was:
+
+```text
+[repiu-guest-write-trace] event=native-fault n=1 execution=0x2000B13D source=0x010F29FA destination=0x011A643A
+[repiu-guest-write-trace] event=native-complete n=2 execution=0x2000B13D source=0x010F29FA destination=0x011A643A size=1 bytes=00
+```
+
+The final writer appeared after 2642 events at `0x010F2469`. Its initial AOT
+map entry was:
+
+```text
+[repiu-aot-map-entry] target=0x010F2469 index=13521 guest=0x010F2469 cache=0x200140A3 guest_len=2 emitted_len=3 inactive=0 bytes=67891A
+[repiu-aot-map-fixup] source=0x010F2469 kind=block-fallthrough target=0x010F246B patch=0x000140A7 resolved=1
+[repiu-guest-write-trace-tail] event=native-complete n=0x00000A52 execution=0x200140A3 source=0x010F2469 destination=0x011A643A size=0x00000004 bytes=0DE96B01 ... ebx=0x016BE90D edx=0x011A643A
+```
+
+`67 89 1A` is 32-bit address-size `MOV [EDX],EBX`, so the final write stores
+the little-endian bytes `0D E9 6B 01` from `EBX=0x016BE90D`. The dynamic raw,
+plan, and image-entry traces all report `0D E9 6B 01 37`. This rejects a
+writer-versus-dynamic-append byte mismatch.
+
+The same run preserved the existing `PUSH ES` HLE: selector `0x0024` was
+written to `0x0158CC44` and EIP advanced to `0x011A6440`. The `00 00` bytes at
+that address then accessed `EAX=0x37016BE9` and raised SIGSEGV. The remaining
+frontier is therefore not the target-page writer; it is why EAX is not a valid
+guest address after the correctly generated dynamic fragment and how execution
+re-enters after the HLE boundary.
+
+`repiu_core_probe` passed `24/24`.
+
+| Item | Status |
+|---|---|
+| First target-page writer | **Confirmed**: `0x010F29FA`, byte `00` |
+| Final target-page writer | **Confirmed**: `0x010F2469`, `EBX=0x016BE90D` |
+| Final target bytes | **Confirmed**: `0D E9 6B 01` |
+| Dynamic append bytes | **Confirmed**: `0D E9 6B 01 37` |
+| Writer/append mismatch | **Rejected** |
+| `PUSH ES` HLE | **Existing behavior preserved** |
+| `0x011A6440` fault cause | **Unresolved**: EAX/address path after HLE boundary |
+
+---
+
+## 3.62 Task 625 — HLE 이후 cache hit이 span decode에서 거부됨
+
+Task 625는 `REPIU_AOT_HLE_REENTRY_TRACE=<guest-address>`를 추가하여 특정
+HLE boundary의 `TryResumeAotAfterHandledHle` 상태를 기록했습니다. 이 trace는
+실행 정책을 바꾸지 않으며, 환경 변수가 없으면 비활성화됩니다.
+
+`REPIU_AOT_HLE_REENTRY_TRACE=0x011A643F` 재현에서 다음 상태가 확인되었습니다.
+
+```text
+[repiu-hle-reentry] stage=entry n=1 watch=0x011A643F
+  handled=0x011A643F current=0x011A6440 pending=1
+  cache_hit=0 span_safe=0 posthle=0 translated=0 cache_target=0x00000000 detail=pending
+[repiu-hle-reentry] stage=cache-hit-span-unsafe n=2
+  watch=0x011A643F handled=0x011A643F current=0x011A6440 pending=1
+  cache_hit=1 span_safe=0 posthle=0 translated=0 cache_target=0x200611A5 detail=decode
+```
+
+즉 `PUSH ES` HLE가 `0x011A6440`으로 EIP를 진행한 뒤 해당 주소에는 이미
+`0x200611A5` cache hit가 있습니다. 그러나 immediate re-entry safety scan은
+guest bytes를 연속적으로 decode하다가 `decode` 사유로 span을 거부합니다.
+따라서 이 실행에서는 cache-miss 분기와 `REPIU_DBT_POST_HLE_TRANSLATE` gate가
+호출되지 않습니다. gate를 켠 A/B 실행에서도 dynamic append가 발생하지 않고
+동일한 fault가 유지된 것은 gate가 무시된 것이 아니라 cache-hit/span-unsafe
+분기보다 뒤에 있기 때문입니다.
+
+span 거부 후 기존 정책은 single-step re-entry로 돌아가며, fault 직전 EIP는
+`0x011A6440`, EAX는 `0x37016BE9`입니다. 해당 위치의 dynamic bytes는
+`00 00`이고, AOT cache를 강제로 선택해도 주소 계산 문제 자체를 해결하지
+않습니다. 현재 fault는 HLE selector write나 dynamic writer/append 불일치가
+아니라, HLE 다음 guest state에서 유효하지 않은 EAX를 사용하는 경로입니다.
+
+| 항목 | 상태 |
+|---|---|
+| HLE 이후 current EIP | **확인됨**: `0x011A6440` |
+| current EIP cache lookup | **확인됨**: hit `0x200611A5` |
+| immediate re-entry span | **확인됨**: `decode` 사유로 거부 |
+| post-HLE translation gate | **확인됨**: 이번 경로에서는 도달하지 않음 |
+| 기존 fault frontier | **유지됨**: `0x011A6440`, EAX=`0x37016BE9` |
+| EAX의 최초 원인 | **미확정** |
+
+## 3.62 (English) Task 625 — cache hit is rejected by span decoding after HLE
+
+Task 625 added `REPIU_AOT_HLE_REENTRY_TRACE=<guest-address>` to record the
+state of `TryResumeAotAfterHandledHle` at one selected HLE boundary. The trace
+does not change execution policy and is inactive when the environment variable
+is absent.
+
+With `REPIU_AOT_HLE_REENTRY_TRACE=0x011A643F`, the reproduction reported:
+
+```text
+[repiu-hle-reentry] stage=entry n=1 watch=0x011A643F
+  handled=0x011A643F current=0x011A6440 pending=1
+  cache_hit=0 span_safe=0 posthle=0 translated=0 cache_target=0x00000000 detail=pending
+[repiu-hle-reentry] stage=cache-hit-span-unsafe n=2
+  watch=0x011A643F handled=0x011A643F current=0x011A6440 pending=1
+  cache_hit=1 span_safe=0 posthle=0 translated=0 cache_target=0x200611A5 detail=decode
+```
+
+After the `PUSH ES` HLE advances EIP to `0x011A6440`, that address already has
+an AOT cache hit at `0x200611A5`. The immediate re-entry safety scan rejects
+the span with reason `decode` while decoding consecutive guest bytes.
+Therefore this execution does not reach the cache-miss branch or the
+`REPIU_DBT_POST_HLE_TRANSLATE` gate. An A/B run with the gate enabled still
+produced no dynamic append and the same fault; this is because the gate follows
+the cache-hit/span-unsafe branch, not because the setting was ignored.
+
+After the span rejection, the existing policy returns to single-step re-entry.
+Immediately before the fault, EIP is `0x011A6440` and EAX is `0x37016BE9`.
+The dynamic bytes at that location are `00 00`; forcing the AOT cache entry would
+not fix the invalid address calculation itself. The frontier is therefore not
+the HLE selector write or a dynamic writer/append mismatch. It is the guest
+state path that leaves EAX invalid after HLE.
+
+| Item | Status |
+|---|---|
+| EIP after HLE | **Confirmed**: `0x011A6440` |
+| Cache lookup for current EIP | **Confirmed**: hit `0x200611A5` |
+| Immediate re-entry span | **Confirmed**: rejected with `decode` |
+| Post-HLE translation gate | **Confirmed**: not reached on this path |
+| Existing fault frontier | **Preserved**: `0x011A6440`, EAX=`0x37016BE9` |
+| First cause of EAX | **Unresolved** |
+
+---
+
+## 3.63 Task 626 — return thunk 진입 시 EAX는 0이며 target stack slot은 오염되어 있음
+
+Task 626은 `REPIU_LINUX_X64_RETURN_REG_TRACE=<guest-address>`를 추가하여
+x64 return resolver가 받은 frame의 guest register와 stack window를
+기록했습니다. 또한 return thunk가 resolver 호출 전에 진입 시점 EFLAGS를
+frame에 저장하도록 보완했습니다. trace는 선택된 return target에만
+적용되며 실행 정책을 변경하지 않습니다.
+
+`REPIU_LINUX_X64_RETURN_REG_TRACE=0x011A643A`에서 정상 target frame은
+다음과 같이 관측되었습니다.
+
+```text
+[repiu-x64-return-reg] n=1 target=0x011A643A
+  edi=0x0128CC2C esi=0x00000001 ebx=0x00000004 edx=0x00000000
+  ecx=0x0128CC2C eax=0x00000000 ebp=0x0128DA68 eip=0x011A643A
+  esp=0x0158CC48 eflags=0x00200246 status=0x010F1AF8
+  stack_base=0x0158CC44 valid=0xF m4=0x011A643A m0=0x00000000
+  p4=0x011A7B28 p8=0x00000000
+```
+
+`status=0x010F1AF8`는 일반 `RET` producer를 나타내고, `m4`는 RET가
+소비하는 `0x0158CC44`의 값입니다. 따라서 `0x011A643A`는 return thunk가
+만든 주소가 아니라 guest stack에서 실제로 읽은 target입니다. 동시에
+resolver 진입 시 EAX는 0이므로 thunk의 GPR 저장·복원 단계가
+`0x37016BE9`를 만든 증거는 없습니다.
+
+Task 624에서 확인한 dynamic bytes `0D E9 6B 01 37`는
+`OR EAX,0x37016BE9`로 decode됩니다. 따라서 return target으로 진입한 뒤
+이 instruction이 EAX를 정확히 `0x37016BE9`로 만들고, 다음 `00 00`이 그
+주소를 memory operand로 사용하면서 기존 SIGSEGV가 발생합니다.
+
+이번 결과로 fault의 성격이 다시 좁혀졌습니다. 문제는 HLE selector write,
+return thunk의 EAX 보존, 또는 post-HLE cache re-entry가 아닙니다. 잘못된
+값은 `RET`가 stack에서 동적 data fragment 주소 `0x011A643A`를 target으로
+소비한 뒤, 그 fragment가 의도하지 않은 code로 실행되는 경로에서 발생합니다.
+`0x0158CC44` stack slot에 target을 기록한 최초 writer는 아직 확인되지
+않았습니다.
+
+| 항목 | 상태 |
+|---|---|
+| return thunk frame EAX | **확인됨**: `0x00000000` |
+| RET consumed target | **확인됨**: stack `0x0158CC44 -> 0x011A643A` |
+| thunk GPR corruption | **기각됨** |
+| dynamic fragment EAX effect | **확인됨**: `OR EAX,0x37016BE9` |
+| final `0x011A6440` fault | **재현됨** |
+| stack target 최초 writer | **미확정** |
+
+## 3.63 (English) Task 626 — EAX is zero at thunk entry and the target stack slot is tainted
+
+Task 626 added `REPIU_LINUX_X64_RETURN_REG_TRACE=<guest-address>` to record
+the guest registers and stack window received by the x64 return resolver. The
+return thunk also now saves entry EFLAGS in the frame before calling the
+resolver. The trace is restricted to the selected return target and does not
+change execution policy.
+
+With `REPIU_LINUX_X64_RETURN_REG_TRACE=0x011A643A`, the valid target frame was:
+
+```text
+[repiu-x64-return-reg] n=1 target=0x011A643A
+  edi=0x0128CC2C esi=0x00000001 ebx=0x00000004 edx=0x00000000
+  ecx=0x0128CC2C eax=0x00000000 ebp=0x0128DA68 eip=0x011A643A
+  esp=0x0158CC48 eflags=0x00200246 status=0x010F1AF8
+  stack_base=0x0158CC44 valid=0xF m4=0x011A643A m0=0x00000000
+  p4=0x011A7B28 p8=0x00000000
+```
+
+`status=0x010F1AF8` identifies an ordinary `RET`, and `m4` is the value at
+the consumed stack slot `0x0158CC44`. Thus `0x011A643A` was read from guest
+stack by the return path; it was not fabricated by the thunk. EAX is zero at
+resolver entry, so there is no evidence that the thunk's GPR save/restore
+created `0x37016BE9`.
+
+Task 624 established that the dynamic bytes `0D E9 6B 01 37` decode as
+`OR EAX,0x37016BE9`. After entering that return target, this instruction sets
+EAX to exactly `0x37016BE9`, and the following `00 00` uses that value as a
+memory operand, producing the existing SIGSEGV.
+
+The fault is therefore not the HLE selector write, return-thunk EAX
+preservation, or post-HLE cache re-entry. The invalid value appears because
+`RET` consumes the dynamic data-fragment address `0x011A643A` from the stack
+and executes it as code. The first writer of target `0x011A643A` into stack
+slot `0x0158CC44` remains unresolved.
+
+| Item | Status |
+|---|---|
+| EAX in return-thunk frame | **Confirmed**: `0x00000000` |
+| RET-consumed target | **Confirmed**: stack `0x0158CC44 -> 0x011A643A` |
+| Thunk GPR corruption | **Rejected** |
+| Dynamic fragment EAX effect | **Confirmed**: `OR EAX,0x37016BE9` |
+| Final `0x011A6440` fault | **Reproduced** |
+| First writer of stack target | **Unresolved** |
+
+---
+
+## 3.64 Task 627 — stack-page write watch가 HLE store에서 중단되지 않음
+
+Task 627은 `REPIU_GUEST_WRITE_TRACE=0x0158CC44`로 stack page를 감시할 때
+segment HLE의 `PUSH ES`가 보호된 guest page에 직접 store하여 host fault를
+일으키는 진단 간섭을 수정했습니다. 감시 대상 destination일 때만 기존
+`WriteGuestUInt32` 경로를 사용하므로 page protection을 임시로 writable로
+바꾸고 복원하며, HLE writer를 trace ring에 기록합니다. 감시가 없을 때의
+기존 직접 store 경로와 guest stack semantics는 유지됩니다.
+
+다음 조합으로 재현했습니다.
+
+```text
+REPIU_GUEST_WRITE_TRACE=0x0158CC44 \
+REPIU_LINUX_X64_STACK_TRACE=1 \
+REPIU_LINUX_X64_RETURN_TRACE=1 \
+REPIU_LINUX_X64_RETURN_REG_TRACE=0x011A643A \
+./build/linux_x64_repiu/repiu pumpit2a
+```
+
+관측 결과는 다음과 같습니다.
+
+```text
+[repiu-x64-return-reg] ... target=0x011A643A ... eax=0x00000000 ... esp=0x0158CC48 ...
+[repiu-x64-return-stack] source=0x011A643A producer=0x010F1AF8 consumed=0x0158CC44 sequence=13676 matches=15
+[repiu-fault] ... eip=0x011A6440 access=0x37016BE9 ... eax=0x37016BE9 ...
+[repiu-guest-write-trace-tail] event=hle ... destination=0x0158CC44 size=4 bytes=24000000
+```
+
+따라서 HLE store는 더 이상 watch fault로 실행을 중단시키지 않고,
+`0x0158CC44 <- 0x00000024`가 HLE writer로 기록됩니다. 최종 fault는
+이전과 동일하게 `0x011A6440`에서 발생하며, `0x0158CC44`에
+`0x011A643A`를 쓴 native AOT writer event는 이번 실행에서 별도로
+관측되지 않았습니다. 기존 AOT stack trace의 `0x010F12BF PUSH EBX`는
+동일 ESP slot을 과거에 쓴 기록이지만 slot 재사용이 있으므로 최종 writer의
+증거로 확정할 수 없습니다.
+
+| 항목 | 상태 |
+|---|---|
+| watched stack page에서 HLE store 진행 | **확인됨** |
+| HLE selector writer trace | **확인됨**: `0x0158CC44 <- 0x00000024` |
+| final fault 재현 | **확인됨**: `0x011A6440`, access `0x37016BE9` |
+| native exact writer event | **이번 실행에서 미관측** |
+| stack target 최종 writer | **미확정** |
+
+## 3.64 (English) Task 627 — stack-page write watch survives the HLE store
+
+Task 627 fixed diagnostic interference caused by the segment-HLE `PUSH ES`
+when `REPIU_GUEST_WRITE_TRACE=0x0158CC44` watches the stack page. For a
+watched destination only, the handler now uses the existing
+`WriteGuestUInt32` path, which temporarily enables write access, restores the
+page protection, and records the HLE writer in the trace ring. The unobserved
+path keeps its existing direct store and guest stack semantics.
+
+The reproduction used:
+
+```text
+REPIU_GUEST_WRITE_TRACE=0x0158CC44 \
+REPIU_LINUX_X64_STACK_TRACE=1 \
+REPIU_LINUX_X64_RETURN_TRACE=1 \
+REPIU_LINUX_X64_RETURN_REG_TRACE=0x011A643A \
+./build/linux_x64_repiu/repiu pumpit2a
+```
+
+Observed output included:
+
+```text
+[repiu-x64-return-reg] ... target=0x011A643A ... eax=0x00000000 ... esp=0x0158CC48 ...
+[repiu-x64-return-stack] source=0x011A643A producer=0x010F1AF8 consumed=0x0158CC44 sequence=13676 matches=15
+[repiu-fault] ... eip=0x011A6440 access=0x37016BE9 ... eax=0x37016BE9 ...
+[repiu-guest-write-trace-tail] event=hle ... destination=0x0158CC44 size=4 bytes=24000000
+```
+
+The HLE store now survives the write watch and is recorded as
+`0x0158CC44 <- 0x00000024`. The final fault remains unchanged at
+`0x011A6440`, accessing `0x37016BE9`. No native AOT event for the exact write
+of `0x011A643A` to `0x0158CC44` was observed in this run. The existing AOT
+stack trace records `PUSH EBX` at `0x010F12BF` writing the same slot in an
+earlier reuse of the guest ESP, but that is not proof of the final writer.
+
+| Item | Status |
+|---|---|
+| HLE store through watched stack page | **Confirmed** |
+| HLE selector writer trace | **Confirmed**: `0x0158CC44 <- 0x00000024` |
+| Final fault reproduced | **Confirmed**: `0x011A6440`, access `0x37016BE9` |
+| Native exact-writer event | **Not observed in this run** |
+| Final writer of stack target | **Unresolved** |
+
+---
+
+---
+
+## 3.47 (한국어) Task 612 — AOT guest 주소 맵과 동적 세대 확인
+
+Task 612에서는 초기 AOT 배치와 guest/translation worker 종료 후 최종 배치를
+비교하는 `REPIU_AOT_GUEST_MAP_TRACE`를 추가했습니다. 이 진단은 map/cache를
+변경하지 않으며, 환경 변수가 없으면 기본 실행에 영향을 주지 않습니다.
+
+### 확인됨
+
+초기 map entry 수는 `51866`, 최종 map entry 수는 `55194`였습니다. allocator
+본체 `0x010F1D74`와 helper `0x010F4FE8`, `0x010F5134`, `0x010F849D`는 최종
+배치에서 각각 3개 세대가 존재했고 모든 출력 entry는 `inactive=0`이었습니다.
+이는 초기 배치에만 설치한 execution sentinel이 동적 세대에서 hit하지 않을 수
+있음을 보여줍니다. 실제 allocator 호출 source인 `0x010F1E17`도 각 세대에
+존재했으며, `0x010F4FE8`로 가는 direct-call fixup은 모든 세대에서
+`resolved=1`이었습니다. 초기 patch offset은 `0x26F0`, 동적 세대의 patch
+offset은 `0x50788`과 `0x51AA9`였습니다.
+
+호출 source의 x64 emitted bytes는
+`458D7FFC41C7071C1E0F01E95E000000`, helper는
+`458D7FFC41891F`, 호출 직후 `TEST EAX,EAX`인 `0x010F1E1C`도 매핑되어
+있었습니다. allocator prologue watch가 동적 cache 주소에서 3회 발생했으므로,
+초기 entry sentinel의 miss만으로 해당 호출 경로가 실행되지 않았다고 결론낼 수
+없습니다.
+
+### 결론
+
+`allocator/helper map 누락`과 `direct-call fixup 미해결` 가설은 기각되었습니다.
+남은 핵심 미확정 사항은 동적 AOT 세대가 helper까지 실제로 도달하는지, 그리고
+helper 반환값이 무엇인지입니다. 다음 관찰은 host stack에서 원본 guest stack
+instruction을 실행하지 않도록 post-call 지점 또는 세대별 slot-level trace를
+사용해야 합니다.
+
+기본 `pumpit2a`는 기존 오류 메시지와 `AX=4C01` 종료를 유지했고 SIGSEGV/SIGILL은
+없었습니다. `repiu_core_probe`는 `24/24`를 통과했습니다.
+
+### 미확정 표
+
+| 항목 | 상태 |
+|---|---|
+| allocator/helper가 AOT map에 존재 | **확인됨** |
+| `0x010F1E17 -> 0x010F4FE8` direct-call fixup | **확인됨**, 모든 세대 `resolved=1` |
+| 동적 세대 수 | **확인됨**, 대상별 3개 |
+| 동적 세대에서 helper 실제 도달 여부 | **미확정** |
+| helper 반환값과 allocator 진행 조건 | **미확정** |
+
+## 3.47 (English) Task 612 — AOT guest map and dynamic generations
+
+Task 612 added `REPIU_AOT_GUEST_MAP_TRACE`, which compares the initial AOT
+placement with the final placement after the guest and translation workers stop.
+The diagnostic is read-only and has no default-path effect when unset.
+
+### Confirmed
+
+The initial placement had `51866` map entries and the final placement had
+`55194`. The allocator body at `0x010F1D74` and helpers at `0x010F4FE8`,
+`0x010F5134`, and `0x010F849D` each had three generations in the final
+placement, all reported with `inactive=0`. This explains why an execution
+sentinel installed only in the initial placement can miss a dynamically active
+generation. The actual allocator call source at `0x010F1E17` was present in all
+generations, and every direct-call fixup to `0x010F4FE8` reported `resolved=1`.
+The initial patch offset was `0x26F0`; dynamic generations used `0x50788` and
+`0x51AA9`.
+
+The call source emitted
+`458D7FFC41C7071C1E0F01E95E000000`; the helper emitted
+`458D7FFC41891F`; and the post-call `TEST EAX,EAX` at `0x010F1E1C` was mapped
+as well. The allocator prologue watch fired three times at dynamic cache
+addresses, so a miss from the initial entry sentinel does not prove that the
+call path was not executed.
+
+### Conclusion
+
+The hypotheses that the allocator/helper was absent from the AOT map or that the
+direct-call fixup was unresolved are rejected. The remaining questions are
+whether dynamic AOT generations actually reach the helper and what value the
+helper returns. The next observation must use a safe post-call point or a
+per-generation slot-level trace, rather than executing original guest stack
+instructions on the host stack.
+
+The default `pumpit2a` run retained the existing error message and `AX=4C01`
+termination without SIGSEGV or SIGILL. `repiu_core_probe` passed `24/24` checks.
+
+### Open questions
+
+| Item | Status |
+|---|---|
+| Allocator/helper present in AOT map | **Confirmed** |
+| `0x010F1E17 -> 0x010F4FE8` direct-call fixup | **Confirmed**, `resolved=1` in every generation |
+| Dynamic generation count | **Confirmed**, three per target |
+| Helper reached by a dynamic generation | **Unresolved** |
+| Helper return value and allocator continuation condition | **Unresolved** |
+
+---
+
+## 3.48 (한국어) Task 613 — 동적 generation probe와 x64 snapshot 확인
+
+Task 613은 기존 `REPIU_EXECUTION_PROBE_OFFSET`가 초기 AOT map에만 설치되는
+문제를 보완하여, dynamic append 직후 최신 generation의 active exact entry에도
+INT3를 설치하도록 했습니다. 또한 Linux x64의 fixed-width guest context를
+probe snapshot으로 복사하도록 수정했습니다.
+
+### 확인됨
+
+`REPIU_EXECUTION_PROBE_OFFSET=0xF1D79` 실행에서 generation 9와 10에 probe가
+설치되었고, probe는 `hit=true`를 보고했습니다. snapshot은 다음과 같이 실제
+값을 보존했습니다.
+
+```text
+EIP=0x010F1D79 ESP=0x0158CC3C EFLAGS=0x00200246
+EAX=0x00000001 EBX=0x011A7B16 ECX=0x00000000 EDX=0x00000000
+```
+
+안전한 branch probe는 `0x010F1DAC`, `0x010F1DB9`, `0x010F1DC3`,
+`0x010F1DD1`, `0x010F1E0D`, `0x010F1E13`에서 hit했습니다. 그러나
+`0x010F1E17` direct-call, `0x010F1E1C` post-call TEST,
+`0x010F4FE8` helper entry는 hit하지 않았습니다.
+
+`0x010F1E13`에서 EAX=`0x0000000C`, EFLAGS=`0x00200286`이었고 JNZ는
+ZF=0으로 taken 되었습니다. `0x010F1E0F` 앞의 local 비교가 기대와 다르게
+분기한 원인은 map trace에서 확인된 다음 emitted bytes입니다.
+
+```text
+guest:  mov byte ptr [esp],ah
+cache:  41 88 24 27
+```
+
+REX prefix가 있는 long mode에서는 ModRM reg=4가 AH가 아니라 SPL을
+지정합니다. 따라서 이 lowering은 EAX의 AH를 저장하지 않고 host RSP의
+low byte를 guest stack local에 기록할 수 있습니다. 현재 `0x00000088` local
+값과 direct-call 이전의 taken branch는 이 인코딩 오류와 일치합니다.
+
+### 결론
+
+동적 probe와 x64 snapshot은 정상 동작하며, allocator/helper map 누락이
+원인이 아닙니다. 현재 Linux x64 blocker는 REX가 필요한 메모리 operand에서
+AH/CH/DH/BH high-byte register를 그대로 재사용하는 lowering입니다. 다음
+Task 614에서 high-byte source를 보존하는 별도 re-encoding과 synthetic/runtime
+검증을 추가해야 합니다.
+
+`repiu_core_probe`는 `24/24`를 통과했고, 기본 실행은 기존 오류 메시지와
+`AX=4C01` fault-free 종료를 유지했습니다.
+
+## 3.48 (English) Task 613 — dynamic-generation probes and x64 snapshots
+
+Task 613 extended `REPIU_EXECUTION_PROBE_OFFSET` beyond the initial AOT map:
+after each dynamic append, INT3 is installed in active exact entries of the
+latest generation. It also makes Linux x64 copy its fixed-width guest context
+into probe snapshots.
+
+### Confirmed
+
+With `REPIU_EXECUTION_PROBE_OFFSET=0xF1D79`, generations 9 and 10 installed the
+probe and the run reported `hit=true`. The snapshot retained actual values:
+
+```text
+EIP=0x010F1D79 ESP=0x0158CC3C EFLAGS=0x00200246
+EAX=0x00000001 EBX=0x011A7B16 ECX=0x00000000 EDX=0x00000000
+```
+
+Safe branch probes hit at `0x010F1DAC`, `0x010F1DB9`, `0x010F1DC3`,
+`0x010F1DD1`, `0x010F1E0D`, and `0x010F1E13`. The
+`0x010F1E17` direct call, `0x010F1E1C` post-call TEST, and `0x010F4FE8`
+helper entry did not hit.
+
+At `0x010F1E13`, EAX was `0x0000000C` and EFLAGS was `0x00200286`, so the JNZ
+was taken with ZF clear. The map trace identifies the preceding lowering:
+
+```text
+guest:  mov byte ptr [esp],ah
+cache:  41 88 24 27
+```
+
+In long mode with a REX prefix, ModRM reg=4 names SPL rather than AH. The
+lowering therefore stores the low byte of host RSP into the guest stack local
+instead of storing EAX's AH. The observed local value `0x00000088` and the
+taken branch before the direct call match this encoding defect.
+
+### Conclusion
+
+Dynamic probing and x64 snapshots work; missing allocator/helper map entries are
+not the cause. The current Linux x64 blocker is reusing AH/CH/DH/BH high-byte
+register encodings in a memory operand that requires REX. Task 614 should add a
+dedicated high-byte source re-encoding and synthetic/runtime verification.
+
+`repiu_core_probe` passed `24/24`, and the default run retained the existing
+error message and fault-free `AX=4C01` termination.
+
+---
+
+## 3.49 Task 610 — DPMI selector context is fixed; the remaining frontier is allocator headroom
+
+### 확인된 사실
+
+Task 610에서 Linux x64 `pumpit2a` 실행의 `MOV BX,DS` 경계를 보정하고,
+논리 DS와 SS를 LE placement selector에서 초기화했다. 최신 실행 증거는
+다음과 같다.
+
+```text
+[repiu-dpmi-context] phase=enter ... selector=0x0024 base=0x01010000 present=1 ... cf=0
+[repiu-dpmi-context] phase=return ... ecx=0x00000101 edx=0x00000000 ... cf=0
+[repiu-dos-io] op=console-write ... handle=0x0005 ... requested=47 actual=47 error=0x0000
+```
+
+따라서 DPMI `AX=0006`, `CON` open/write, 그리고 표준 DOS 종료 `AX=4C01h`는
+현재 Linux x64 경로에서 정상이다. 원본 오류 문구는 `CON` HLE 실패의 증거가
+아니다.
+
+`pumpit2a`의 원본 file-structure allocator 상태는 object 4 기준으로 다음과
+같다.
+
+```text
+head=0 cursor=0 limit=0
+gate=1 extension_limit=0x10
+selector_limit=memory_base=0x0158CC90
+mode=0x101 mode_flag=1
+```
+
+allocator는 요청 크기 8을 `0x1000`으로 올린다. 확장 경로의 요청 끝은
+`0x0158DC90`이지만 `memory_base=0x0158CC90`보다 크므로
+`0x109A9D`의 경계 비교에서 먼저 실패한다. 이 실행은 DOS `AH=4Ah`까지
+도달하지 않으며, 현재의 다음 문제는 `CON`, DPMI selector, 또는 resize
+HLE가 아니라 DOS/4GW가 기대하는 동적 메모리 경계와 guest stack top 사이의
+headroom 계약이다.
+
+`pumpit1`도 같은 원본 오류 문구와 정상 종료까지 도달했다. 다만 allocator
+진단의 auto-data/code 오프셋은 `pumpit2a`에 맞춘 것이므로 다른 대상의 수치는
+비교 근거로 사용하지 않는다. `pumpit2`는 이 환경에 CHD mount directory가
+없어 비교하지 못했다.
+
+### 구현 및 검증
+
+* x64 AOT planner가 `66 8C DB`를 DS에서 BX로 읽는 guarded GPR16
+  segment-read로 분류하고 HLE 경계로 fail-closed한다.
+* 실행 문맥은 guest entry를 포함하는 object 2의 selector `0x0024`를 DS로,
+  stack object 4의 selector `0x0034`를 SS로 사용한다.
+* opt-in DPMI, segment, DOS write, allocator 진단을 추가했다. 기본 guest
+  실행 계약은 변경하지 않았다.
+* `repiu` 및 `repiu_core_probe` 재빌드가 성공했다.
+* `repiu_core_probe` 결과는 `core_probe_total=24`,
+  `core_probe_failures=0`, `core_probe_all=true`이다.
+* `pumpit2a`는 SIGSEGV/SIGILL 없이 `AX=4C01h`로 종료했으며, allocator
+  headroom 부족 문구를 원본 코드 경로에서 출력했다.
+
+### 미확정 사항
+
+다음 작업에서는 임의의 free-list node를 주입하거나 특정 EIP를 우회하지
+않고, LE stack/object 배치와 DOS/4GW memory-boundary 계약을 먼저 설계해야
+한다. 특히 동적 allocator 범위를 stack top보다 위로 확장할지, 원본이
+기대하는 PharLap/DPMI 초기화 결과를 별도 HLE 계약으로 제공할지, 또는 두
+계약을 공용 runtime memory plan으로 연결할지를 정해야 한다.
+
+## 3.49 Task 610 — DPMI selector context is fixed; allocator headroom is the remaining frontier
+
+### Confirmed facts
+
+Task 610 fixed the Linux x64 `MOV BX,DS` boundary and initialized logical DS
+and SS from LE placement selectors. The latest `pumpit2a` evidence is:
+
+```text
+[repiu-dpmi-context] phase=enter ... selector=0x0024 base=0x01010000 present=1 ... cf=0
+[repiu-dpmi-context] phase=return ... ecx=0x00000101 edx=0x00000000 ... cf=0
+[repiu-dos-io] op=console-write ... handle=0x0005 ... requested=47 actual=47 error=0x0000
+```
+
+Therefore DPMI `AX=0006`, `CON` open/write, and standard DOS termination
+`AX=4C01h` are working on the current Linux x64 path. The original error text
+is not evidence of a `CON` HLE failure.
+
+The `pumpit2a` original file-structure allocator state, interpreted relative
+to object 4, is:
+
+```text
+head=0 cursor=0 limit=0
+gate=1 extension_limit=0x10
+selector_limit=memory_base=0x0158CC90
+mode=0x101 mode_flag=1
+```
+
+The allocator rounds request size 8 up to `0x1000`. Its extension request ends
+at `0x0158DC90`, which exceeds `memory_base=0x0158CC90` and is rejected by the
+boundary comparison at `0x109A9D`. The run does not reach DOS `AH=4Ah`. The
+next problem is therefore the DOS/4GW dynamic-memory boundary and guest-stack
+headroom contract, not `CON`, DPMI selector handling, or resize HLE.
+
+`pumpit1` also reaches the same original error text and normal termination, but
+the allocator diagnostic auto-data/code offsets are specific to `pumpit2a` and
+are not cross-target evidence. `pumpit2` could not be compared because its CHD
+mount directory is absent in this environment.
+
+### Implementation and verification
+
+* The x64 AOT planner classifies `66 8C DB` as a guarded GPR16 segment read
+  from DS into BX and fails closed to the HLE boundary.
+* The execution context uses selector `0x0024` from object 2 containing the
+  guest entry as DS, and selector `0x0034` from stack object 4 as SS.
+* Opt-in DPMI, segment, DOS-write, and allocator diagnostics were added;
+  default guest-visible behavior remains unchanged.
+* `repiu` and `repiu_core_probe` rebuilt successfully.
+* `repiu_core_probe` reports `core_probe_total=24`,
+  `core_probe_failures=0`, and `core_probe_all=true`.
+* `pumpit2a` terminates without SIGSEGV or SIGILL at `AX=4C01h`, while the
+  original guest path reports the allocator headroom failure.
+
+### Unresolved
+
+The next task must first design the LE stack/object placement and DOS/4GW
+memory-boundary contract without injecting an arbitrary free-list node or
+bypassing a guest EIP. It must decide whether to extend dynamic allocation
+above the stack top, expose the original PharLap/DPMI initialization result as
+a separate HLE contract, or connect both through a shared runtime memory plan.
+
+---
+
+## 3.50 Task 611 — PharLap memory-path probe reaches AH=4Ah but does not solve allocation
+
+Task 611 added an opt-in probe only. With
+`REPIU_DOS4GW_MEMORY_PATH_PROBE=pharlap`, `AX=3000h` returns
+`0x44580007`, selecting the original PharLap-style branch. The run then
+reaches:
+
+```text
+[repiu-dos-int] #2 int=21 ax=4A24
+[repiu-dos-resize] ... selector=0x0024 requested_ebx=0x000011A8
+  requested_end=0x01021A80 allocator_end=0x01021A80 success=1 error=0x0000 cf=0
+```
+
+The resize HLE accepts the request, but the guest immediately follows the same
+file-structure error path and terminates with `AX=4C01h`. The opt-in signature
+therefore proves branch selection and `AH=4Ah` reachability only; it is not a
+valid default response and remains disabled by default. No guest EIP bypass or
+allocator metadata injection was used.
+
+The next frontier is the allocator state transition after the successful
+resize: identify which original call returns zero, and whether the resize
+updates the expected block/global state. The investigation must stay at the
+original call/return and DOS/4GW memory contract level.
+
+## 3.50 Task 611 — PharLap memory-path probe reaches AH=4Ah but does not solve allocation
+
+Task 611 adds an opt-in probe only. With
+`REPIU_DOS4GW_MEMORY_PATH_PROBE=pharlap`, `AX=3000h` returns
+`0x44580007`, selecting the original PharLap-style branch. The run reaches:
+
+```text
+[repiu-dos-int] #2 int=21 ax=4A24
+[repiu-dos-resize] ... selector=0x0024 requested_ebx=0x000011A8
+  requested_end=0x01021A80 allocator_end=0x01021A80 success=1 error=0x0000 cf=0
+```
+
+The resize HLE accepts the request, but the guest immediately follows the same
+file-structure error path and terminates with `AX=4C01h`. The opt-in signature
+therefore proves branch selection and `AH=4Ah` reachability only. It is not a
+valid default response and remains disabled. No guest-EIP bypass or allocator
+metadata injection was used.
+
+The next frontier is the allocator state transition after successful resize:
+identify which original call returns zero and whether resize updates the
+expected block/global state. The investigation remains at the original
+call/return and DOS/4GW memory-contract level.
+
+---
+
+## Task 608 — Linux x64 DOS `CON` device and LINEXE initialization evidence
+
+### 한국어
+
+**확인됨:** `INT 21h AH=3Dh`의 guest path `con`은 일반 파일이 아니라 DOS
+`CON` character device로 처리되어야 합니다. 수정 후 handle `0x0005`가
+반환되고 host `CON` 파일은 생성되지 않으며, 이어지는 `AH=40h` 쓰기는
+console sink로 전달됩니다.
+
+**확인됨:** 초기화 단계 진단에서 `extracted=1`, `plan=1`, `layout=1`은
+성공했지만 Linux x64 기본 direct-dispatch 설정에서는
+`glide_fits=0`, `direct=1`, `active=0`이었습니다. 실패는 32비트 guest
+image에 넣을 Linux x64 Glide direct-dispatch thunk가 없는 상태에서
+선택적 patch를 필수 LINEXE 초기화 결과처럼 취급한 데서 발생합니다.
+
+**확인됨:** direct dispatch를 끄면 `glide_fits=1`, 모든 image write와
+descriptor/protection 단계가 성공하고 `active=1`이 됩니다. 같은 실행의
+`AX=FF00h`는 `EAX=0000FFFFh`, `GS=0x20`으로 반환되므로 DOS/4GW 식별
+서비스는 정상화됩니다.
+
+**미확정:** direct dispatch를 끈 뒤에도 guest는 `CON`을 열고 `0x2F` 바이트를
+성공적으로 쓴 다음 `Not enough memory to allocate file structures`를
+출력하고 `AX=4C01h`로 종료합니다. 이 메시지는 더 이상 `CON` open 실패의
+증거가 아니며, 다음 LINEXE/DPMI 또는 guest initialization frontier로
+분리해야 합니다.
+
+| 질문 | 상태 |
+|---|---|
+| `con` open 결과 | **확인됨**: DOS handle `0x0005` |
+| host `CON` regular file 생성 | **확인됨**: 생성하지 않음 |
+| `CON` `AH=40h` write | **확인됨**: console sink, `0x2F` bytes |
+| LINEXE 실패 첫 단계 | **확인됨**: x64 direct Glide patch capability |
+| `AX=FF00h` with direct off | **확인됨**: `EAX=FFFFh`, `GS=0020h` |
+| 남은 `Not enough memory...` 원인 | **미확정**: DPMI/guest initialization |
+
+### English
+
+**Confirmed:** the guest path `con` requested by `INT 21h AH=3Dh` is a DOS
+`CON` character device, not a host regular file. The fixed path returns user
+handle `0x0005`, creates no host `CON` file, and routes the following
+`AH=40h` write to the console sink.
+
+**Confirmed:** initialization diagnostics show `extracted=1`, `plan=1`, and
+`layout=1`, but the Linux x64 default direct-dispatch setting produced
+`glide_fits=0`, `direct=1`, and `active=0`. The failure occurs because the
+optional Glide direct-dispatch patch has no thunk that can be embedded in the
+32-bit guest image on Linux x64, while its failure currently invalidates the
+whole LINEXE initialization.
+
+**Confirmed:** with direct dispatch disabled, `glide_fits=1`, all image writes,
+descriptor registration, and protection stages succeed, and `active=1`. The
+same run returns `EAX=0000FFFFh` and `GS=0x20` from `AX=FF00h`, restoring the
+DOS/4GW identification service contract.
+
+**Unresolved:** after direct dispatch is disabled, the guest still opens `CON`,
+writes `0x2F` bytes successfully, prints `Not enough memory to allocate file
+structures`, and exits with `AX=4C01h`. That message is no longer evidence of
+the `CON` open failure; it is a separate LINEXE/DPMI or guest-initialization
+frontier.
+
+| Question | Status |
+|---|---|
+| `con` open result | **Confirmed**: DOS handle `0x0005` |
+| Host `CON` regular-file creation | **Confirmed**: none |
+| `CON` `AH=40h` write | **Confirmed**: console sink, `0x2F` bytes |
+| First LINEXE failure stage | **Confirmed**: x64 direct Glide patch capability |
+| `AX=FF00h` with direct dispatch off | **Confirmed**: `EAX=FFFFh`, `GS=0020h` |
+| Remaining `Not enough memory...` cause | **Unresolved**: DPMI/guest initialization |
+
+---
+
+## Task 609 — Linux x64 direct-dispatch capability fallback
+
+### 한국어
+
+**해결됨:** Linux x64 기본 실행에서 선택적 Glide direct-dispatch thunk가
+없어도 LINEXE 전체를 실패 처리하지 않습니다. loader는
+`requested/capable/enabled=true/false/false`를 기록하고, 초기화 단계는
+`glide_fits=1`, `direct=0`, `active=1`로 완료됩니다.
+
+**해결됨:** `AX=FF00h`는 `EAX=0000FFFFh`, `GS=0x20`으로 반환됩니다.
+원본 guest image는 수정되지 않았고, direct patch가 불가능한 host에서는
+검증된 trap/HLE Glide gate image가 유지됩니다.
+
+**확인됨:** fallback 이후 guest는 `INT 31h AX=0006`을 실행하고 `CON`을
+`0x0005` handle로 열어 `0x2F` 바이트를 씁니다. 이후에도
+`Not enough memory to allocate file structures`와 `AX=4C01h` 종료가
+남아 있으므로, 다음 frontier는 DPMI `AX=0006` 또는 그 결과를 사용하는
+guest 초기화 경로입니다.
+
+### English
+
+**Resolved:** the Linux x64 default run no longer fails the entire LINEXE
+environment when the optional Glide direct-dispatch thunk is unavailable. The
+loader reports `requested/capable/enabled=true/false/false`, while
+initialization completes with `glide_fits=1`, `direct=0`, and `active=1`.
+
+**Resolved:** `AX=FF00h` returns `EAX=0000FFFFh` with `GS=0x20`. The original
+guest image is unchanged, and hosts without a usable direct thunk retain the
+validated trap/HLE Glide gate image.
+
+**Confirmed:** after fallback, the guest executes `INT 31h AX=0006`, opens
+`CON` as handle `0x0005`, and writes `0x2F` bytes. It still prints
+`Not enough memory to allocate file structures` and exits with `AX=4C01h`, so
+the next frontier is DPMI `AX=0006` or the guest initialization path using its
+result.
+
+---
+
+## 3.47 Task 607 — ESP 비교와 Linux x64 HLE 종료 경계 해결
+
+**확인됨:** Task 606 직후의 guest `0x010F1E0F` fault는 `80 3C 24 00`, 즉
+`CMP byte ptr [ESP],0`입니다. runtime 진단에서 fault 직전 재진입 주소
+`0x010F920C`는 AOT cache에 매핑되지 않은 legacy fallback으로 확인되었고,
+원본 바이트를 x64 long mode에서 직접 실행하면서 host `RSP`를 참조했습니다.
+반면 compatibility probe와 lowerer는 이미 이를 `kStackPointerToR15`로 분류하고
+`41 80 3C 27 00`을 생성하고 있었습니다. 따라서 결함은 해당 명령의 lowerer가
+아니라 fallback fault HLE가 `/7 CMP r/m8,imm8`을 처리하지 못한 것이었습니다.
+
+공용 traced memory-compare 경로가 이제 guest ESP로 계산한 주소를 읽고,
+기존 8비트 subtraction flags를 갱신하며 opcode와 immediate 길이만큼 guest EIP를
+전진시킵니다. 특정 EIP 예외나 원본 코드 수정은 추가하지 않았습니다.
+
+**확인됨:** 같은 실행에서 long-mode `MOV Sreg,r/m16` guarded slot과 segment-override
+memory-load slot의 coverage validator가 실제 emitted layout을 검증하도록 보강되었습니다.
+이에 따라 해당 두 경계가 잘못된 image를 조용히 통과시키지 않고 거절하며, probe의
+의도적인 byte corruption도 거절합니다.
+
+**확인됨:** Linux x64 Debug 재빌드와 core probe 결과는 다음과 같습니다.
+
+```text
+core_probe_total=23
+core_probe_failures=0
+core_probe_all=true
+core_probe_skipped=2 stack_bridge guest_stack_switch
+core_probe_host=x64 (Task 545: i386 assembly probes are not built)
+```
+
+**확인됨:** ESP fault와 두 long-mode validator 경계를 통과한 뒤 실제
+`pumpit2a` 실행은 DOS `INT 21h AX=4C01`에 도달했습니다. 최초 종료 구현은
+Linux x64 signal resume에서 32비트 guest EIP를 i386 recovery `ud2` 주소에
+겹쳐 SIGILL을 만들었지만, `FaultEvent`에 full-width host RIP override를
+추가하고 `RepiuLinuxX64GuestExit`의 `ret` trampoline으로 host cache call
+frame을 소비하도록 수정했습니다. single-step trace가 종료 후 다시 TF를
+설정하지 않도록 TF/DF도 종료 resume 시 제거했습니다.
+
+최종 실행은 SIGSEGV, SIGILL, core dump 없이 종료되었습니다.
+
+```text
+[repiu-dos-int] #5 int=21 ax=4C01
+minimal execution thread exit code: 0
+DOS termination captured: true
+DOS termination AX/EIP/ESP: 0x4C01/0x010F1977/0x0158CC54
+minimal execution message: original entry returned to host trampoline
+```
+
+**미확정:** 이것은 현재 `pumpit2a` minimal execution이 DOS 종료 경계까지
+안전하게 도달했다는 의미이며, 전체 게임플레이·입력·화면 루프의 Linux x64
+완료를 의미하지 않습니다. 다음 작업은 종료 후 상태가 아니라, 정상 종료를
+제외한 다음 guest 실행 frontier와 실제 게임 실행 경로를 별도로 관찰해야 합니다.
+
+## 3.47 Task 607 — the ESP compare and Linux x64 HLE exit boundary are resolved
+
+**Confirmed:** The guest fault immediately after Task 606 was at
+`0x010F1E0F`, bytes `80 3C 24 00`, or `CMP byte ptr [ESP],0`. Runtime
+diagnostics identified the pre-fault re-entry address `0x010F920C` as an unmapped
+legacy-fallback entry. Executing the original bytes in x64 long mode therefore
+used host `RSP`. The compatibility probe and lowerer already classified the
+instruction as `kStackPointerToR15` and emitted `41 80 3C 27 00`, so the defect
+was in the fallback fault HLE: it did not handle the `/7` `CMP r/m8,imm8` form.
+
+The shared traced memory-compare path now reads the address calculated from
+guest ESP, reuses the existing 8-bit subtraction-flag update, and advances guest
+EIP by the opcode, ModRM/SIB, and immediate length. No EIP-specific exception
+or original-code patch was added.
+
+**Confirmed:** The same run strengthened the long-mode coverage validator for
+the guarded `MOV Sreg,r/m16` slot and the segment-override memory-load slot.
+The validator now checks the emitted layout and rejects deliberate byte
+corruption instead of allowing an invalid image to pass silently.
+
+**Confirmed:** The Linux x64 Debug rebuild and core probe reported:
+
+```text
+core_probe_total=23
+core_probe_failures=0
+core_probe_all=true
+core_probe_skipped=2 stack_bridge guest_stack_switch
+core_probe_host=x64 (Task 545: i386 assembly probes are not built)
+```
+
+**Confirmed:** After passing the ESP fault and both long-mode validator
+boundaries, the real `pumpit2a` run reached DOS `INT 21h AX=4C01`. The first
+exit implementation still produced SIGILL because Linux x64 signal resume
+overlaid the 32-bit guest EIP with the i386 recovery `ud2` address. The fix adds
+an optional full-width host RIP override to `FaultEvent` and uses the
+`ret`-only `RepiuLinuxX64GuestExit` trampoline to consume the host cache-call
+frame. The exit resume also clears TF/DF so the single-step trace does not
+re-arm itself after termination.
+
+The final run exited without SIGSEGV, SIGILL, or a core dump:
+
+```text
+[repiu-dos-int] #5 int=21 ax=4C01
+minimal execution thread exit code: 0
+DOS termination captured: true
+DOS termination AX/EIP/ESP: 0x4C01/0x010F1977/0x0158CC54
+minimal execution message: original entry returned to host trampoline
+```
+
+**Unresolved:** This confirms that the current `pumpit2a` minimal execution
+reaches the DOS termination boundary safely; it does not claim completion of
+the full Linux x64 gameplay, input, or presentation loop. The next task should
+observe the next guest execution frontier and the real game path separately from
+the now-resolved termination path.
+
 ---
 
 ## 3.47 (한국어) Task 605 — `0x010F0107`은 유효한 중첩 엔트리이며 `1E7Fh` ABI가 실제 blocker임

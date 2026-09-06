@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <initializer_list>
 #include <iostream>
 #include <vector>
@@ -191,6 +192,7 @@ bool ProbeStackPointerRefusal()
              StackCase{"mov_esp_disp_ecx", {0x89U, 0x4CU, 0x24U, 0x04U}},
              StackCase{"mov_esp_eax", {0x89U, 0xC4U}},
              StackCase{"lea_eax_esp_disp", {0x8DU, 0x44U, 0x24U, 0x08U}},
+             StackCase{"cmp_byte_esp_imm8", {0x80U, 0x3CU, 0x24U, 0x00U}},
          })
     {
         const LongModeCompatibilityResult result =
@@ -209,6 +211,26 @@ bool ProbeStackPointerRefusal()
         ok = ok && reencoded;
     }
 
+    // The runtime frontier is a memory compare with an immediate. Keep the
+    // immediate in the assertion: changing only the SIB base must not turn
+    // `cmp byte [esp],0` into a different compare or lose its final byte.
+    const std::uint8_t cmp_byte_esp[] = {
+        0x80U, 0x3CU, 0x24U, 0x00U};
+    const std::uint8_t cmp_byte_esp_expected[] = {
+        0x41U, 0x80U, 0x3CU, 0x27U, 0x00U};
+    std::uint8_t cmp_byte_esp_lowered[
+        repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t cmp_byte_esp_count = 0U;
+    const bool cmp_byte_esp_lowered_ok =
+        repiu::runtime::LowerLongModeBytes(
+            cmp_byte_esp, sizeof(cmp_byte_esp), cmp_byte_esp_lowered,
+            &cmp_byte_esp_count, nullptr) &&
+        cmp_byte_esp_count == sizeof(cmp_byte_esp_expected) &&
+        std::memcmp(cmp_byte_esp_lowered, cmp_byte_esp_expected,
+                    sizeof(cmp_byte_esp_expected)) == 0;
+    std::cout << "long_mode_cmp_byte_esp_lowered="
+              << (cmp_byte_esp_lowered_ok ? "true" : "false") << "\n";
+
     // The control: a base register the project has decided nothing against is
     // still lowered with the ordinary prefix, so the R15 rewrite above is
     // targeted rather than swallowing every memory operand.
@@ -222,7 +244,7 @@ bool ProbeStackPointerRefusal()
     std::cout << "long_mode_stack_pointer_reencoded=" << (ok ? "true" : "false")
               << ",non_stack_base_still_lowered="
               << (control_ok ? "true" : "false") << "\n";
-    return ok && control_ok;
+    return ok && control_ok && cmp_byte_esp_lowered_ok;
 }
 
 // Task 557. INC/DEC r32 becomes the ModRM group form.

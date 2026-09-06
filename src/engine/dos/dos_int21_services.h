@@ -12,6 +12,9 @@
 namespace repiu::engine
 {
 
+// Task 611: opt-in observation of the original DOS/4GW PharLap memory path.
+bool Dos4gwPharlapMemoryPathProbeEnabled();
+
 void RecordDosChangeDirectory(ThreadContext* context,
                               const std::string& guest_path,
                               const repiu::hle::DosResolvedPath& resolved);
