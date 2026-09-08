@@ -140,7 +140,8 @@ void* GetAotDbtDirectEdgeDispatchThunkAddress()
 bool FindAotDbtDirectEdgeFallbackTarget(
     const ThreadContext* context,
     std::uint32_t cache_address,
-    std::uint32_t* guest_target)
+    std::uint32_t* guest_target,
+    std::uint32_t* guest_source)
 {
     if (context == nullptr || context->aot_placement == nullptr ||
         guest_target == nullptr ||
@@ -156,6 +157,10 @@ bool FindAotDbtDirectEdgeFallbackTarget(
         if (site.fallback_cache_offset == offset)
         {
             *guest_target = site.guest_target;
+            if (guest_source != nullptr)
+            {
+                *guest_source = site.guest_source;
+            }
             return true;
         }
     }

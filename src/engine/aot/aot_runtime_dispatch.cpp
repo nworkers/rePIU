@@ -23,10 +23,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <vector>
 #include "repiu/platform/guest_cpu_context.h"
 #include "repiu/platform/atomic_ops.h"
@@ -371,6 +373,167 @@ bool SameAotSegmentResolution(
         left.policy == right.policy;
 }
 
+std::uint32_t AotTransferTargetTraceAddress()
+{
+    static const std::uint32_t address = [] {
+        const char* const value =
+            std::getenv("REPIU_AOT_TRANSFER_TARGET_TRACE");
+        if (value == nullptr || *value == '\0')
+        {
+            return 0U;
+        }
+        errno = 0;
+        char* parse_end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &parse_end, 0);
+        if (errno != 0 || parse_end == value || *parse_end != '\0' ||
+            parsed > std::numeric_limits<std::uint32_t>::max())
+        {
+            return 0U;
+        }
+        return static_cast<std::uint32_t>(parsed);
+    }();
+    return address;
+}
+
+bool AotTransferTargetTraceMatches(const std::uint32_t target)
+{
+    return target != 0U && target == AotTransferTargetTraceAddress();
+}
+
+void TraceAotIndirectTransferTarget(
+    const ThreadContext* context,
+    const repiu::platform::GuestCpuContext& registers,
+    std::uint32_t source,
+    std::uint32_t target,
+    bool is_call,
+    std::uint32_t instruction_size,
+    AotTransferOrigin origin)
+{
+    if (!AotTransferTargetTraceMatches(target))
+    {
+        return;
+    }
+    const auto* const instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(source));
+    const std::uint8_t byte1 = instruction_size > 1U ? instruction[1] : 0U;
+    const std::uint8_t byte2 = instruction_size > 2U ? instruction[2] : 0U;
+    const std::uint8_t byte3 = instruction_size > 3U ? instruction[3] : 0U;
+    const std::uint8_t byte4 = instruction_size > 4U ? instruction[4] : 0U;
+    std::fprintf(
+        stderr,
+        "[repiu-aot-transfer-target] kind=%s origin=%u source=0x%08X "
+        "target=0x%08X bytes=%02X%02X%02X%02X%02X length=%u "
+        "esp=0x%08X eax=0x%08X ebx=0x%08X ecx=0x%08X edx=0x%08X "
+        "esi=0x%08X edi=0x%08X ebp=0x%08X miss=0x%08X\n",
+        is_call ? "call" : "jump", static_cast<unsigned>(origin), source,
+        target, instruction[0], byte1, byte2, byte3, byte4,
+        instruction_size,
+        static_cast<std::uint32_t>(registers.Esp),
+        static_cast<std::uint32_t>(registers.Eax),
+        static_cast<std::uint32_t>(registers.Ebx),
+        static_cast<std::uint32_t>(registers.Ecx),
+        static_cast<std::uint32_t>(registers.Edx),
+        static_cast<std::uint32_t>(registers.Esi),
+        static_cast<std::uint32_t>(registers.Edi),
+        static_cast<std::uint32_t>(registers.Ebp),
+        context != nullptr ? context->aot_reentry_cache_address : 0U);
+}
+
+void TraceAotReturnTransferTarget(
+    const ThreadContext* context,
+    const repiu::platform::GuestCpuContext& registers,
+    std::uint32_t source,
+    std::uint32_t target,
+    const ThreadContext::AotCallFrame* expected_frame,
+    AotTransferOrigin origin)
+{
+    if (!AotTransferTargetTraceMatches(target))
+    {
+        return;
+    }
+    const auto* const instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(source));
+    const bool has_immediate = instruction[0] == 0xC2U;
+    std::fprintf(
+        stderr,
+        "[repiu-aot-transfer-target] kind=return origin=%u source=0x%08X "
+        "target=0x%08X bytes=%02X%02X%02X esp=0x%08X miss=0x%08X "
+        "expected_valid=%u expected_source=0x%08X expected_target=0x%08X "
+        "expected_return=0x%08X expected_entry_esp=0x%08X match=%u\n",
+        static_cast<unsigned>(origin), source, target, instruction[0],
+        has_immediate ? instruction[1] : 0U,
+        has_immediate ? instruction[2] : 0U,
+        static_cast<std::uint32_t>(registers.Esp),
+        context != nullptr ? context->aot_reentry_cache_address : 0U,
+        expected_frame != nullptr ? 1U : 0U,
+        expected_frame != nullptr ? expected_frame->source : 0U,
+        expected_frame != nullptr ? expected_frame->target : 0U,
+        expected_frame != nullptr ? expected_frame->fallthrough : 0U,
+        expected_frame != nullptr ? expected_frame->entry_esp : 0U,
+        expected_frame != nullptr && target == expected_frame->fallthrough
+            ? 1U : 0U);
+}
+
+void TraceAotBreakpointTarget(
+    ThreadContext* context,
+    const repiu::platform::GuestCpuContext& registers,
+    const char* lookup_kind,
+    std::uint32_t source,
+    std::uint32_t target,
+    std::uint32_t cache_address)
+{
+    if (!AotTransferTargetTraceMatches(target))
+    {
+        return;
+    }
+    const auto* const instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(source));
+    const bool readable = IsGuestRangeReadable(context, instruction, 6U);
+    std::fprintf(
+        stderr,
+        "[repiu-aot-transfer-target] kind=breakpoint lookup=%s "
+        "source=0x%08X target=0x%08X "
+        "bytes=%02X%02X%02X%02X%02X%02X cache=0x%08X esp=0x%08X\n",
+        lookup_kind != nullptr ? lookup_kind : "unknown", source, target,
+        readable ? instruction[0] : 0U,
+        readable ? instruction[1] : 0U,
+        readable ? instruction[2] : 0U,
+        readable ? instruction[3] : 0U,
+        readable ? instruction[4] : 0U,
+        readable ? instruction[5] : 0U,
+        cache_address,
+        static_cast<std::uint32_t>(registers.Esp));
+}
+
+void TraceAotSegmentResolutions(const AotSegmentTable& table)
+{
+    const char* const value =
+        std::getenv("REPIU_AOT_SEGMENT_RESOLUTION_TRACE");
+    if (value == nullptr || std::strcmp(value, "0") == 0)
+    {
+        return;
+    }
+
+    constexpr const char* kSegmentNames[6] = {
+        "ES", "CS", "SS", "DS", "FS", "GS"};
+    for (std::uint8_t seg = 0; seg < 6U; ++seg)
+    {
+        const AotSegmentResolution& resolution = table.segments[seg];
+        std::fprintf(
+            stderr,
+            "[repiu-aot-segment-resolution] segment=%s index=%u "
+            "shadow=0x%08X selector=0x%04X base=0x%08X limit=0x%08X "
+            "flags=0x%08X policy=%u\n",
+            kSegmentNames[seg], static_cast<unsigned>(seg),
+            static_cast<unsigned>(resolution.shadow_address),
+            static_cast<unsigned>(resolution.selector),
+            static_cast<unsigned>(resolution.base),
+            static_cast<unsigned>(resolution.limit),
+            static_cast<unsigned>(resolution.flags),
+            static_cast<unsigned>(resolution.policy));
+    }
+}
+
 void ReResolveAotSegmentOverrides(ThreadContext* context)
 {
     if (context == nullptr || context->aot_placement == nullptr ||
@@ -397,6 +560,7 @@ void ReResolveAotSegmentOverrides(ThreadContext* context)
     {
         return;
     }
+    TraceAotSegmentResolutions(table);
     AotSegmentPatchStats stats{};
     if (ReResolveWin32AotSegmentOverrides(
             context->aot_placement, &table, &stats) != 0U)
@@ -1433,6 +1597,9 @@ bool HandleAotIndirectTransfer(const repiu::platform::FaultEvent& fault,
             }
         }
     }
+    TraceAotIndirectTransferTarget(
+        context, *win32_context, source, target, is_call, instruction_size,
+        origin);
     std::uint32_t cache_target = target;
     AotDbtDispatchFallbackReason target_failure =
         AotDbtDispatchFallbackReason::kTranslationFailure;
@@ -1637,6 +1804,10 @@ bool HandleAotReturnTransfer(const repiu::platform::FaultEvent& fault,
             --context->aot_call_depth;
         }
     }
+    TraceAotReturnTransferTarget(
+        context, *win32_context,
+        static_cast<std::uint32_t>(win32_context->Eip), target,
+        expected_frame, origin);
     RecordAotDbtCallReturnReturn(
         context, origin, static_cast<std::uint32_t>(win32_context->Eip),
         target, static_cast<std::uint32_t>(win32_context->Esp),
@@ -1952,19 +2123,44 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
         // Task 334 interval 1. `FindAotGuestAddress` scans the whole address
         // map, which Task 324 fixed only in the opposite direction.
         bool located = false;
+        const char* lookup_kind = nullptr;
+        std::uint32_t lookup_source = 0U;
         {
             const ExecutionTimeScope guest_lookup_scope(
                 context->execution_time_profile.get(),
                 ExecutionTimeBucket::kAotReentryGuestLookup);
-            located = FindAotDbtDirectEdgeFallbackTarget(
-                context, cache_address, &guest_address) ||
-                FindAotGuestAddress(*context->aot_placement,
-                                    cache_address, &guest_address);
+            const bool direct_edge_fallback =
+                FindAotDbtDirectEdgeFallbackTarget(
+                context, cache_address, &guest_address,
+                &lookup_source);
+            if (direct_edge_fallback)
+            {
+                located = true;
+                lookup_kind = "direct-edge";
+            }
+            else if (FindAotGuestAddress(*context->aot_placement,
+                                         cache_address, &guest_address))
+            {
+                located = true;
+                lookup_kind = "address-map";
+            }
+            else if (runtime::FindAotBlockFallthroughTarget(
+                    context->aot_placement->fixups,
+                    context->aot_placement->base_address,
+                    context->aot_placement->size,
+                    cache_address, &guest_address, &lookup_source))
+            {
+                located = true;
+                lookup_kind = "block-fallthrough";
+            }
         }
         if (!located)
         {
             return false;
         }
+        TraceAotBreakpointTarget(
+            context, *win32_context, lookup_kind, lookup_source,
+            guest_address, cache_address);
         context->aot_reentry_cache_address = cache_address;
         if (ActivateGlideGateDirectTarget(
                 context, cache_address, guest_address))

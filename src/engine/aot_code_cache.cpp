@@ -45,6 +45,40 @@ bool DynamicAotTraceMatches(const std::uint32_t guest_address)
            static_cast<std::uint32_t>(parsed) == guest_address;
 }
 
+std::uint32_t DynamicAotContainsAddress()
+{
+    static const std::uint32_t address = [] {
+        const char* const value =
+            std::getenv("REPIU_AOT_DYNAMIC_CONTAINS");
+        if (value == nullptr || *value == '\0')
+        {
+            return 0U;
+        }
+        errno = 0;
+        char* parse_end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &parse_end, 0);
+        if (errno != 0 || parse_end == value || *parse_end != '\0' ||
+            parsed > std::numeric_limits<std::uint32_t>::max())
+        {
+            return 0U;
+        }
+        return static_cast<std::uint32_t>(parsed);
+    }();
+    return address;
+}
+
+bool AotImageContainsGuestAddress(
+    const runtime::AotCodeCacheImage& image,
+    std::uint32_t guest_address)
+{
+    return guest_address != 0U &&
+        std::any_of(
+            image.address_map.begin(), image.address_map.end(),
+            [guest_address](const runtime::AotAddressMapEntry& entry) {
+                return entry.guest_address == guest_address;
+            });
+}
+
 void TraceDynamicAotBytes(const char* const label,
                           const std::uint32_t guest_address,
                           const std::uint8_t* const bytes,
@@ -76,9 +110,12 @@ void TraceDynamicAotPlanEntry(const runtime::AotTranslationPlan& plan,
 {
     for (const runtime::AotBasicBlock& block : plan.blocks)
     {
-        for (const runtime::AotInstructionRecord& instruction :
-             block.instructions)
+        for (std::size_t instruction_index = 0U;
+             instruction_index < block.instructions.size();
+             ++instruction_index)
         {
+            const runtime::AotInstructionRecord& instruction =
+                block.instructions[instruction_index];
             if (instruction.guest_address != guest_address)
             {
                 continue;
@@ -88,8 +125,13 @@ void TraceDynamicAotPlanEntry(const runtime::AotTranslationPlan& plan,
                 instruction.bytes.size());
             std::fprintf(stderr,
                          "[repiu-aot-dynamic] stage=plan-entry-meta "
-                         "guest=0x%08X kind=%u length=%u mnemonic=%u\n",
+                         "guest=0x%08X block=0x%08X index=%zu tail=%u "
+                         "kind=%u length=%u mnemonic=%u\n",
                          static_cast<unsigned>(guest_address),
+                         static_cast<unsigned>(block.guest_address),
+                         instruction_index,
+                         instruction_index + 1U == block.instructions.size()
+                             ? 1U : 0U,
                          static_cast<unsigned>(instruction.kind),
                          static_cast<unsigned>(instruction.length),
                          static_cast<unsigned>(instruction.mnemonic));
@@ -100,6 +142,33 @@ void TraceDynamicAotPlanEntry(const runtime::AotTranslationPlan& plan,
                  "[repiu-aot-dynamic] stage=plan-entry guest=0x%08X "
                  "match=none\n",
                  static_cast<unsigned>(guest_address));
+}
+
+void TraceDynamicAotFixups(const runtime::AotCodeCacheImage& image,
+                           std::uint32_t guest_address)
+{
+    std::uint32_t count = 0U;
+    for (const runtime::AotCodeCacheFixup& fixup : image.fixups)
+    {
+        if (fixup.guest_source != guest_address &&
+            fixup.guest_target != guest_address)
+        {
+            continue;
+        }
+        ++count;
+        std::fprintf(
+            stderr,
+            "[repiu-aot-dynamic] stage=related-fixup guest=0x%08X "
+            "source=0x%08X target=0x%08X kind=%u patch=0x%08X "
+            "resolved=%u\n",
+            guest_address, fixup.guest_source, fixup.guest_target,
+            static_cast<unsigned>(fixup.kind), fixup.cache_patch_offset,
+            fixup.resolved ? 1U : 0U);
+    }
+    std::fprintf(stderr,
+                 "[repiu-aot-dynamic] stage=related-fixup-count "
+                 "guest=0x%08X count=%u\n",
+                 guest_address, count);
 }
 
 void IndexAotBreakpointProvenance(
@@ -115,7 +184,13 @@ void IndexAotBreakpointProvenance(
     for (const runtime::AotCodeCacheFixup& fixup : image.fixups)
     {
         const std::uint32_t offset = append_offset + fixup.cache_patch_offset;
-        if (fixup.kind == runtime::AotFixupKind::kHleBoundary)
+        if (fixup.kind == runtime::AotFixupKind::kBlockFallthrough &&
+            !fixup.resolved && fixup.cache_patch_offset != 0U)
+        {
+            index[offset - 1U] =
+                AotCacheBreakpointProvenance::kOtherPlannerFixup;
+        }
+        else if (fixup.kind == runtime::AotFixupKind::kHleBoundary)
         {
             index[offset] = AotCacheBreakpointProvenance::kPlannerHle;
         }
@@ -1108,9 +1183,18 @@ bool AppendDynamicAotTranslation(
         result->message = "failed to translate dynamic guest target";
         return true;
     }
-    const bool dynamic_trace = DynamicAotTraceMatches(guest_entry);
+    const std::uint32_t contains_address = DynamicAotContainsAddress();
+    const bool contains_match =
+        AotImageContainsGuestAddress(image, contains_address);
+    const bool dynamic_trace = DynamicAotTraceMatches(guest_entry) ||
+        contains_match;
     if (dynamic_trace)
     {
+        std::fprintf(stderr,
+                     "[repiu-aot-dynamic] stage=request entry=0x%08X "
+                     "contains=0x%08X matched=%u\n",
+                     guest_entry, contains_address,
+                     contains_match ? 1U : 0U);
         const std::uint32_t guest_offset = guest_entry - runtime_base;
         const auto* const raw_bytes =
             reinterpret_cast<const std::uint8_t*>(
@@ -1119,6 +1203,14 @@ bool AppendDynamicAotTranslation(
             "raw", guest_entry, raw_bytes,
             static_cast<std::size_t>(runtime_size - guest_offset));
         TraceDynamicAotPlanEntry(plan, guest_entry);
+        if (contains_match && contains_address != guest_entry)
+        {
+            TraceDynamicAotPlanEntry(plan, contains_address);
+        }
+        if (contains_match)
+        {
+            TraceDynamicAotFixups(image, contains_address);
+        }
     }
     std::uint32_t unsafe_hle_address = 0U;
     const bool hle_covered = runtime::ValidateAotCodeCacheHleCoverage(

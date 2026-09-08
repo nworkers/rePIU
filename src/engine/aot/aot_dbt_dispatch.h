@@ -9,10 +9,10 @@
 namespace repiu::engine
 {
 
-// Task 276: after a DBT-mode HLE handler fully emulates a boundary and advances
-// guest EIP, resume directly at an existing shared AOT cache entry instead of
-// executing one additional guest instruction under TF. A cache miss or other
-// failure leaves the caller's TF fallback state unchanged.
+// After a DBT-mode HLE handler fully emulates an instruction and advances guest
+// EIP, resume directly at an existing shared AOT cache entry from either a
+// cache boundary or legacy fallback. A cache miss or other failure leaves the
+// caller's TF fallback state unchanged.
 bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context,
                                  std::uint32_t handled_guest_eip);

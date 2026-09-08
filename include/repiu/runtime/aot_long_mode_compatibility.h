@@ -171,7 +171,11 @@ struct LongModeCompatibilityResult
 // every `kIdenticalBytes` instruction: those are copied rather than lowered,
 // and asking this function to "lower" one would blur the distinction the
 // classifier exists to draw.
-inline constexpr std::size_t kMaxLoweredBytes = 24;
+// Task 634 raised this from 24. `PUSHAD` is the longest sequence at
+// thirty-nine bytes -- one scratch move, one stack adjustment, and eight
+// stores -- and every use of this constant is a stack buffer or a `<=`,
+// so the headroom costs nothing that runs.
+inline constexpr std::size_t kMaxLoweredBytes = 48;
 
 // `instruction_count` reports how many instructions the lowered bytes are, and
 // may be null when the caller does not care. It exists because Task 553's

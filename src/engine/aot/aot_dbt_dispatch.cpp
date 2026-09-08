@@ -46,7 +46,8 @@ bool HleReentryTraceMatches(const std::uint32_t handled_guest_eip,
 {
     const std::uint32_t watched = HleReentryTraceAddress();
     return watched != 0U &&
-        (watched == handled_guest_eip || watched == current_guest_eip);
+        (watched == std::numeric_limits<std::uint32_t>::max() ||
+         watched == handled_guest_eip || watched == current_guest_eip);
 }
 
 void TraceHleReentry(const char* stage,
@@ -67,14 +68,18 @@ void TraceHleReentry(const char* stage,
     static std::atomic<std::uint32_t> trace_count{0U};
     const std::uint32_t occurrence =
         trace_count.fetch_add(1U, std::memory_order_relaxed) + 1U;
-    if (occurrence > 32U)
+    // A wildcard trace can exhaust its ordinary sample budget before the
+    // first legacy fallback. Preserve that one recovery decision so its exact
+    // guest address can be selected in a focused follow-up run.
+    if (occurrence > 32U &&
+        (context == nullptr || !context->aot_legacy_fallback))
     {
         return;
     }
     std::fprintf(
         stderr,
         "[repiu-hle-reentry] stage=%s n=%u watch=0x%08X "
-        "handled=0x%08X current=0x%08X pending=%u cache_hit=%u "
+        "handled=0x%08X current=0x%08X pending=%u legacy=%u cache_hit=%u "
         "span_safe=%u posthle=%u translated=%u cache_target=0x%08X "
         "detail=%s\n",
         stage == nullptr ? "unknown" : stage,
@@ -83,6 +88,7 @@ void TraceHleReentry(const char* stage,
         handled_guest_eip,
         current_guest_eip,
         context != nullptr && context->aot_reentry_pending ? 1U : 0U,
+        context != nullptr && context->aot_legacy_fallback ? 1U : 0U,
         cache_hit ? 1U : 0U,
         span_safe ? 1U : 0U,
         post_hle_enabled ? 1U : 0U,
@@ -267,8 +273,16 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
     TraceHleReentry(
         "entry", context, handled_guest_eip, current, false, false,
         false, false, 0U,
-        context->aot_reentry_pending ? "pending" : "not-pending");
-    if (!context->aot_reentry_pending)
+        context->aot_reentry_pending
+            ? "pending"
+            : (context->aot_legacy_fallback
+                   ? "legacy-fallback"
+                   : "not-pending"));
+    // A handled instruction may also be the first safe bridge out of a legacy
+    // fallback that began at an unmapped target. The original AOT contract
+    // permits returning to the cache once execution reaches a known address;
+    // the same lookup and span gates below still decide whether that is safe.
+    if (!context->aot_reentry_pending && !context->aot_legacy_fallback)
     {
         ++context->hle_reentry_reject_not_pending;
         return false;

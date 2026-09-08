@@ -154,14 +154,17 @@ bool RunAotDbtDirectEdgeDispatchProbe()
     auto context = std::make_unique<engine::ThreadContext>();
     context->aot_placement = &placement;
     std::uint32_t fallback_target = 0U;
+    std::uint32_t fallback_source = 0U;
     const bool fallback = placed &&
         engine::FindAotDbtDirectEdgeFallbackTarget(
             context.get(),
             placement.base_address +
                 placement.dbt_direct_edge_dispatch_sites[0]
                     .fallback_cache_offset,
-            &fallback_target) &&
-        fallback_target == kGuestTarget;
+            &fallback_target,
+            &fallback_source) &&
+        fallback_target == kGuestTarget &&
+        fallback_source == kGuestSource;
 
     const bool all = disabled_rejects && emitted && mapped_stays_direct &&
         placed && fallback;

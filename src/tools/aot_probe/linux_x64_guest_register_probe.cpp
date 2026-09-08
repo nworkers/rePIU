@@ -1297,6 +1297,236 @@ bool ProbeIndirectCallRefusals()
     return ok;
 }
 
+// Task 632. The jump-table slot, run through the emitter.
+//
+// Three claims, and only running it separates them:
+//
+//   * the resolver is asked about the value the *table entry held*, not the
+//     table's address, not the index, and not the instruction's own address;
+//   * the index is scaled by four, which a table read at the wrong stride would
+//     get wrong by a value rather than by trapping; and
+//   * guest ESP does not move. That is the whole difference between this slot
+//     and Task 573's, and it is the one a copy-paste of the call slot breaks.
+bool ProbeJumpTable()
+{
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = kGuestBase;
+
+    const std::uint32_t jump_address = kGuestBase + 0x05U;
+    const std::uint32_t first_target = kGuestBase + 0x20U;
+    const std::uint32_t second_target = kGuestBase + 0x30U;
+
+    AotBasicBlock head;
+    head.guest_address = kGuestBase;
+    AotInstructionRecord index_load;
+    index_load.guest_address = kGuestBase;
+    index_load.kind = AotInstructionKind::kCopy;
+    index_load.bytes = {0xBBU, 0x01U, 0x00U, 0x00U, 0x00U};  // mov ebx, 1
+    index_load.length = 5U;
+    head.instructions.push_back(index_load);
+    // jmp cs:[ebx*4 + abs32]. The displacement is filled in once the region is
+    // placed, for the reason Task 573's probe records: the operand has to name
+    // a real address below 4 GiB, and the emitter runs before the region does.
+    AotInstructionRecord table_jump;
+    table_jump.guest_address = jump_address;
+    table_jump.kind = AotInstructionKind::kJumpTable;
+    table_jump.length = 8U;
+    table_jump.bytes = {0x2EU, 0xFFU, 0x24U, 0x9DU, 0U, 0U, 0U, 0U};
+    table_jump.table_index_register = 3U;  // EBX
+    table_jump.table_targets = {first_target, second_target};
+    head.instructions.push_back(table_jump);
+    plan.blocks.push_back(head);
+
+    // Two targets with different markers. A stride of one instead of four
+    // reads between them and asks about something that resolves to neither, and
+    // an index dropped entirely lands on the first.
+    AotBasicBlock first;
+    first.guest_address = first_target;
+    AotInstructionRecord first_marker;
+    first_marker.guest_address = first_target;
+    first_marker.kind = AotInstructionKind::kCopy;
+    first_marker.bytes = {0xB8U, 0x22U, 0x22U, 0x00U, 0x00U};
+    first_marker.length = 5U;
+    first.instructions.push_back(first_marker);
+    AotInstructionRecord first_ret;
+    first_ret.guest_address = first_target + 5U;
+    first_ret.kind = AotInstructionKind::kReturn;
+    first_ret.length = 1U;
+    first_ret.bytes = {0xC3U};
+    first.instructions.push_back(first_ret);
+    plan.blocks.push_back(first);
+
+    AotBasicBlock second;
+    second.guest_address = second_target;
+    AotInstructionRecord second_marker;
+    second_marker.guest_address = second_target;
+    second_marker.kind = AotInstructionKind::kCopy;
+    second_marker.bytes = {0xB8U, 0x33U, 0x33U, 0x00U, 0x00U};
+    second_marker.length = 5U;
+    second.instructions.push_back(second_marker);
+    AotInstructionRecord second_ret;
+    second_ret.guest_address = second_target + 5U;
+    second_ret.kind = AotInstructionKind::kReturn;
+    second_ret.length = 1U;
+    second_ret.bytes = {0xC3U};
+    second.instructions.push_back(second_ret);
+    plan.blocks.push_back(second);
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    if (!BuildAotCodeCacheImage(plan, options, &image) || !image.valid ||
+        image.long_mode_jump_table_count != 1U ||
+        image.long_mode_refused_count != 0U)
+    {
+        std::cout << "guest_jump_table=false tables="
+                  << image.long_mode_jump_table_count << " refused="
+                  << image.long_mode_refused_count << " message=\""
+                  << image.message << "\"\n";
+        return false;
+    }
+
+    // Placed up to the second target's marker, so the probe's own `ret` follows
+    // it and the run comes back to C++ instead of standing on the block's
+    // return.
+    const PlacedProgram placed = PlaceImage("jump_table", image, second_target);
+    if (!placed.valid)
+    {
+        std::cout << "guest_jump_table=false\n";
+        return false;
+    }
+
+    const std::uint32_t stack_top = placed.data_address + 0x800U;
+    const std::uint32_t table_address = placed.data_address + 0x100U;
+    std::memcpy(placed.data + 0x100U, &first_target, sizeof(first_target));
+    std::memcpy(placed.data + 0x104U, &second_target, sizeof(second_target));
+
+    // The emitted target load is `67 44 8B 34 9D <disp32>`: `9D` is the SIB
+    // that says scale four, index EBX, and no base.
+    std::uint32_t slot_offset = 0U;
+    bool found = false;
+    for (const repiu::runtime::AotAddressMapEntry& entry : image.address_map)
+    {
+        if (entry.guest_address == jump_address)
+        {
+            slot_offset = entry.cache_offset;
+            found = true;
+            break;
+        }
+    }
+    if (!found || placed.code[slot_offset] != 0x67U ||
+        placed.code[slot_offset + 1U] != 0x44U ||
+        placed.code[slot_offset + 2U] != 0x8BU ||
+        placed.code[slot_offset + 3U] != 0x34U ||
+        placed.code[slot_offset + 4U] != 0x9DU)
+    {
+        std::cout << "guest_jump_table=false,reason=slot_layout\n";
+        Release(placed);
+        return false;
+    }
+    repiu::platform::MemoryProtection previous =
+        repiu::platform::MemoryProtection::kNoAccess;
+    if (!repiu::platform::ProtectMemory(
+            placed.code, kCodeBytes,
+            repiu::platform::MemoryProtection::kReadWrite, &previous))
+    {
+        std::cout << "guest_jump_table=false,reason=unprotect\n";
+        Release(placed);
+        return false;
+    }
+    std::memcpy(placed.code + slot_offset + 5U, &table_address,
+                sizeof(table_address));
+    if (!repiu::platform::ProtectMemory(
+            placed.code, kCodeBytes,
+            repiu::platform::MemoryProtection::kExecuteRead, &previous) ||
+        !repiu::platform::FlushInstructionCacheRange(placed.code, kCodeBytes))
+    {
+        std::cout << "guest_jump_table=false,reason=reprotect\n";
+        Release(placed);
+        return false;
+    }
+
+    g_resolver_context = ResolverContext{};
+    g_resolver_context.image = &image;
+    g_resolver_context.code = placed.code;
+    repiu::platform::LinuxX64AotDispatchFrame frame;
+    repiu::platform::InstallLinuxX64Dispatch(&frame, &g_resolver_context,
+                                             &TestResolver);
+
+    GuestRegisterProbeState state;
+    state.gpr[kEsp] = stack_top;
+    RepiuLinuxX64GuestRegisterProbe(placed.code, &state);
+    repiu::platform::ClearLinuxX64Dispatch();
+
+    // The table's second entry, because EBX was one and the stride is four.
+    bool ok = Check("jump_table_first_asked", g_resolver_context.first_asked,
+                    second_target);
+    // One question. A pushed return address would make a second.
+    ok = Check("jump_table_resolver_calls", g_resolver_context.calls, 1U) && ok;
+    // 0x3333 is the second target. 0x2222 would mean the index was dropped.
+    ok = Check("jump_table_landed", state.gpr[kEax], 0x3333U) && ok;
+    // And the stack never moved, which is what makes this a jump.
+    ok = Check("jump_table_esp_untouched", state.observed_r15,
+               static_cast<std::uint64_t>(stack_top)) && ok;
+
+    std::cout << "guest_jump_table=" << (ok ? "true" : "false")
+              << " tables=" << image.long_mode_jump_table_count << "\n";
+    Release(placed);
+    return ok;
+}
+
+// Task 632. What the jump-table slot refuses. Each of these would emit
+// something that runs; what they lack is a reason to believe it means what the
+// guest meant.
+bool ProbeJumpTableRefusals()
+{
+    const auto make = [](const std::vector<std::uint8_t>& bytes,
+                         const std::uint8_t index_register) {
+        AotInstructionRecord record;
+        record.guest_address = kGuestBase;
+        record.kind = AotInstructionKind::kJumpTable;
+        record.length = static_cast<std::uint8_t>(bytes.size());
+        record.bytes = bytes;
+        record.table_index_register = index_register;
+        record.table_targets = {kGuestBase + 0x20U};
+        return record;
+    };
+    using repiu::runtime::LongModeJumpTableEmittable;
+
+    // jmp cs:[ebx*4 + abs32] -- admitted, so the refusals below mean something.
+    const bool admits_cs = LongModeJumpTableEmittable(
+        make({0x2EU, 0xFFU, 0x24U, 0x9DU, 0U, 0U, 0U, 0U}, 3U));
+    // The same without the CS prefix.
+    const bool admits_bare = LongModeJumpTableEmittable(
+        make({0xFFU, 0x24U, 0x9DU, 0U, 0U, 0U, 0U}, 3U));
+    // A DS override, which is not free to drop the way CS is.
+    const bool refuses_other_segment = !LongModeJumpTableEmittable(
+        make({0x3EU, 0xFFU, 0x24U, 0x9DU, 0U, 0U, 0U, 0U}, 3U));
+    // `/2`, a call rather than a jump.
+    const bool refuses_call = !LongModeJumpTableEmittable(
+        make({0xFFU, 0x14U, 0x9DU, 0U, 0U, 0U, 0U}, 3U));
+    // ESP as the index, which a SIB cannot even spell -- a record claiming it
+    // is a disagreement worth refusing.
+    const bool refuses_esp_index = !LongModeJumpTableEmittable(
+        make({0xFFU, 0x24U, 0xA5U, 0U, 0U, 0U, 0U}, 4U));
+    // A SIB naming a base register, so the displacement is not the whole table
+    // address.
+    const bool refuses_base = !LongModeJumpTableEmittable(
+        make({0xFFU, 0x24U, 0x98U, 0U, 0U, 0U, 0U}, 3U));
+
+    const bool ok = admits_cs && admits_bare && refuses_other_segment &&
+        refuses_call && refuses_esp_index && refuses_base;
+    std::cout << "guest_jump_table_refusals=" << (ok ? "true" : "false")
+              << ",cs=" << (admits_cs ? 1 : 0)
+              << ",bare=" << (admits_bare ? 1 : 0)
+              << ",segment=" << (refuses_other_segment ? 1 : 0)
+              << ",call=" << (refuses_call ? 1 : 0)
+              << ",esp_index=" << (refuses_esp_index ? 1 : 0)
+              << ",base=" << (refuses_base ? 1 : 0) << "\n";
+    return ok;
+}
+
 // Task 572. The absolute form with an immediate, run through the emitter.
 //
 // The lowering probe already runs these bytes standalone. What this adds is the
@@ -1420,7 +1650,8 @@ repiu::platform::FaultDisposition OnSegmentBoundary(
     return repiu::platform::FaultDisposition::kResume;
 }
 
-// Tasks 567 and 570. The segment-override slots, patched and run both ways.
+// Tasks 567, 570, and 636. The segment-override slots, patched and run both
+// ways.
 //
 // The guard is the whole point of the slot, and a probe that only ran the
 // matching case would not be able to tell a guard from its absence -- the
@@ -1433,49 +1664,84 @@ repiu::platform::FaultDisposition OnSegmentBoundary(
 // by doing the patch in the test that claims correctness.
 bool ProbeSegmentOverride()
 {
-    // Put Task 570's base+disp8 form first. A mismatch therefore traps in the
-    // new slot before either access, while a match also reaches Task 567's
-    // absolute form and keeps that earlier contract covered.
+    // Put Task 636's exact GS compare first. A mismatch therefore traps in the
+    // new slot before any access, while a match reaches both the second GS form
+    // and the ES forms retained from Tasks 567 and 570.
     AotTranslationPlan plan;
     plan.valid = true;
     plan.entry_address = kGuestBase;
     AotBasicBlock block;
     block.guest_address = kGuestBase;
+    AotInstructionRecord gs_compare;
+    gs_compare.guest_address = kGuestBase;
+    gs_compare.kind = AotInstructionKind::kSegmentOverrideMem;
+    gs_compare.segment_override_register = 5U;  // GS
+    gs_compare.bytes = {0x65U, 0x80U, 0x38U, 0x6AU};
+    gs_compare.length = 4U;
+    block.instructions.push_back(gs_compare);
+    AotInstructionRecord observe_compare;
+    observe_compare.guest_address = kGuestBase + 4U;
+    observe_compare.kind = AotInstructionKind::kCopy;
+    observe_compare.bytes = {0x0FU, 0x94U, 0xC2U};  // setz dl
+    observe_compare.length = 3U;
+    block.instructions.push_back(observe_compare);
+    AotInstructionRecord gs_access;
+    gs_access.guest_address = kGuestBase + 7U;
+    gs_access.kind = AotInstructionKind::kSegmentOverrideMem;
+    gs_access.segment_override_register = 5U;  // GS
+    gs_access.bytes = {0x65U, 0x8AU, 0x18U};  // mov bl,gs:[eax]
+    gs_access.length = 3U;
+    block.instructions.push_back(gs_access);
     AotInstructionRecord access;
-    access.guest_address = kGuestBase;
+    access.guest_address = kGuestBase + 10U;
     access.kind = AotInstructionKind::kSegmentOverrideMem;
     access.segment_override_register = 0U;  // ES
     access.bytes = {0x26U, 0x8AU, 0x4FU, 0xFFU};  // mov cl,es:[edi-1]
     access.length = 4U;
     block.instructions.push_back(access);
     AotInstructionRecord absolute;
-    absolute.guest_address = kGuestBase + 4U;
+    absolute.guest_address = kGuestBase + 14U;
     absolute.kind = AotInstructionKind::kSegmentOverrideMem;
     absolute.segment_override_register = 0U;  // ES
-    absolute.bytes = {0x26U, 0x8BU, 0x1DU, 0x40U, 0x00U, 0x00U, 0x00U};
+    absolute.bytes = {0x26U, 0x8BU, 0x35U, 0x40U, 0x00U, 0x00U, 0x00U};
     absolute.length = 7U;
     block.instructions.push_back(absolute);
     AotInstructionRecord tail;
-    tail.guest_address = kGuestBase + 11U;
+    tail.guest_address = kGuestBase + 21U;
     tail.kind = AotInstructionKind::kCopy;
     tail.bytes = {0x90U};
     tail.length = 1U;
     block.instructions.push_back(tail);
     AotInstructionRecord closing;
-    closing.guest_address = kGuestBase + 12U;
+    closing.guest_address = kGuestBase + 22U;
     closing.kind = AotInstructionKind::kReturn;
     closing.bytes = {0xC3U};
     closing.length = 1U;
     block.instructions.push_back(closing);
     plan.blocks.push_back(block);
 
+    AotInstructionRecord fs_access = gs_access;
+    fs_access.segment_override_register = 4U;
+    fs_access.bytes[0] = 0x64U;
+    AotInstructionRecord sib_access = gs_access;
+    sib_access.bytes = {0x65U, 0x8AU, 0x1CU, 0x20U};
+    sib_access.length = 4U;
+    AotInstructionRecord base_disp32 = gs_access;
+    base_disp32.bytes = {
+        0x65U, 0x8AU, 0x98U, 0x00U, 0x00U, 0x00U, 0x00U};
+    base_disp32.length = 7U;
+    const bool refusals_kept =
+        !LongModeSegmentOverrideEmittable(fs_access) &&
+        !LongModeSegmentOverrideEmittable(sib_access) &&
+        !LongModeSegmentOverrideEmittable(base_disp32);
+
     AotCodeCacheBuildOptions options;
     options.enable_long_mode_emission = true;
     options.enable_long_mode_segment_override = true;
     AotCodeCacheImage image;
     if (!BuildAotCodeCacheImage(plan, options, &image) || !image.valid ||
-        image.long_mode_segment_override_count != 2U ||
-        image.segment_override_sites.size() != 2U)
+        image.long_mode_segment_override_count != 4U ||
+        image.segment_override_sites.size() != 4U)
     {
         std::cout << "guest_segment_override=false slots="
                   << image.long_mode_segment_override_count << " message=\""
@@ -1484,7 +1750,7 @@ bool ProbeSegmentOverride()
     }
 
     const PlacedProgram placed =
-        PlaceImage("segment", image, kGuestBase + 11U);
+        PlaceImage("segment", image, kGuestBase + 21U);
     if (!placed.valid)
     {
         std::cout << "guest_segment_override=false\n";
@@ -1497,7 +1763,11 @@ bool ProbeSegmentOverride()
     constexpr std::uint16_t kSelector = 0x0024U;
     constexpr std::uint32_t kValue = 0xFEEDFACEU;
     constexpr std::uint8_t kByteValue = 0x5AU;
+    constexpr std::uint16_t kGsSelector = 0x0080U;
+    constexpr std::uint8_t kGsByteValue = 0x6AU;
+    constexpr std::uint32_t kGuestEax = 0x80U;
     const std::uint32_t shadow_address = placed.data_address;
+    const std::uint32_t gs_shadow_address = placed.data_address + 2U;
     const std::uint32_t absolute_data_address =
         placed.data_address + 0x200U;
     // The fold: the access must reach base + displacement, so the base is
@@ -1506,10 +1776,15 @@ bool ProbeSegmentOverride()
         absolute_data_address - kGuestDisplacement;
     const std::uint32_t byte_data_address = placed.data_address + 0x240U;
     const std::uint32_t guest_edi = byte_data_address - folded + 1U;
+    const std::uint32_t gs_data_address = placed.data_address + 0x260U;
+    const std::uint32_t gs_folded = gs_data_address - kGuestEax;
     std::memcpy(placed.data + 0x200U, &kValue, sizeof(kValue));
     std::memcpy(placed.data + 0x240U, &kByteValue, sizeof(kByteValue));
+    std::memcpy(placed.data + 0x260U, &kGsByteValue, sizeof(kGsByteValue));
     std::uint16_t shadow = kSelector;
     std::memcpy(placed.data, &shadow, sizeof(shadow));
+    std::uint16_t gs_shadow = kGsSelector;
+    std::memcpy(placed.data + 2U, &gs_shadow, sizeof(gs_shadow));
 
     // Task 568. Patch with the engine's own patcher, not by hand.
     //
@@ -1532,23 +1807,29 @@ bool ProbeSegmentOverride()
     }
 
     repiu::runtime::AotSegmentTable segment_table;
-    repiu::runtime::AotSegmentResolution& resolution =
-        segment_table.segments[
-            image.segment_override_sites.front().segment_register];
+    repiu::runtime::AotSegmentResolution& resolution = segment_table.segments[0];
     resolution.shadow_address = shadow_address;
     resolution.selector = kSelector;
     // A base, not a pre-folded address: folding it into the guest displacement
     // is the patcher's job and therefore part of what is under test.
     resolution.base = folded;
     resolution.policy = repiu::runtime::AotSegmentAccessPolicy::kNativeFolded;
+    repiu::runtime::AotSegmentResolution& gs_resolution =
+        segment_table.segments[5];
+    gs_resolution.shadow_address = gs_shadow_address;
+    gs_resolution.selector = kGsSelector;
+    gs_resolution.base = gs_folded;
+    gs_resolution.policy =
+        repiu::runtime::AotSegmentAccessPolicy::kNativeFolded;
 
     repiu::runtime::AotSegmentOverridePatchStats patch_stats;
     const std::uint32_t patched =
         repiu::runtime::PatchAotSegmentOverrideSites(
             placed.code, image.segment_override_sites, segment_table,
             &patch_stats);
-    bool ok = Check("segment_patcher_sites", patched, 2U);
-    ok = Check("segment_patcher_native", patch_stats.native_site_count, 2U) &&
+    bool ok = Check("segment_patcher_sites", patched, 4U);
+    ok = Check("segment_refusals_kept", refusals_kept ? 1U : 0U, 1U) && ok;
+    ok = Check("segment_patcher_native", patch_stats.native_site_count, 4U) &&
          ok;
     if (!repiu::platform::FlushInstructionCacheRange(placed.code, kCodeBytes))
     {
@@ -1559,14 +1840,22 @@ bool ProbeSegmentOverride()
 
     const std::uint32_t stack_top = placed.data_address + 0x800U;
     GuestRegisterProbeState matched;
+    matched.gpr[kEax] = kGuestEax;
     matched.gpr[kEsp] = stack_top;
+    matched.gpr[kEdx] = 0U;
+    matched.gpr[kEbx] = 0U;
     matched.gpr[kEcx] = 0xAABBCCDDU;
+    matched.gpr[kEsi] = 0U;
     matched.gpr[kEdi] = guest_edi;
     RepiuLinuxX64GuestRegisterProbe(placed.code, &matched);
 
+    ok = Check("segment_gs_compare_equal", matched.gpr[kEdx] & 0xFFU, 1U) &&
+         ok;
+    ok = Check("segment_gs_access_value", matched.gpr[kEbx] & 0xFFU,
+               kGsByteValue) && ok;
     ok = Check("segment_base_disp8_value", matched.gpr[kEcx],
                0xAABBCC5AU) && ok;
-    ok = Check("segment_access_value", matched.gpr[kEbx], kValue) && ok;
+    ok = Check("segment_access_value", matched.gpr[kEsi], kValue) && ok;
     // Flags and the guest stack came back as they went in: the guard's compare
     // is bracketed by the lowered pushfd/popfd, and neither may leak.
     ok = Check("segment_esp_balanced", matched.observed_r15,
@@ -1584,21 +1873,26 @@ bool ProbeSegmentOverride()
         Release(placed);
         return false;
     }
-    shadow = static_cast<std::uint16_t>(kSelector + 1U);
-    std::memcpy(placed.data, &shadow, sizeof(shadow));
+    gs_shadow = static_cast<std::uint16_t>(kGsSelector + 1U);
+    std::memcpy(placed.data + 2U, &gs_shadow, sizeof(gs_shadow));
     GuestRegisterProbeState mismatched;
+    mismatched.gpr[kEax] = kGuestEax;
     mismatched.gpr[kEsp] = stack_top;
+    mismatched.gpr[kEdx] = 0U;
     mismatched.gpr[kEbx] = 0U;
     mismatched.gpr[kEcx] = 0xAABBCCDDU;
+    mismatched.gpr[kEsi] = 0U;
     mismatched.gpr[kEdi] = guest_edi;
     RepiuLinuxX64GuestRegisterProbe(placed.code, &mismatched);
     repiu::platform::RemoveFaultHandler();
 
     ok = Check("segment_guard_boundary", g_boundary_hits, 1U) && ok;
-    // The access must not have run: EBX is still what it went in as.
+    // No access or observation after the first GS guard may have run.
+    ok = Check("segment_guard_no_compare", mismatched.gpr[kEdx], 0U) && ok;
     ok = Check("segment_guard_no_access", mismatched.gpr[kEbx], 0U) && ok;
     ok = Check("segment_guard_no_base_disp8", mismatched.gpr[kEcx],
                0xAABBCCDDU) && ok;
+    ok = Check("segment_guard_no_absolute", mismatched.gpr[kEsi], 0U) && ok;
     // And the fallback restored flags before trapping, so guest ESP balances
     // on this path too.
     ok = Check("segment_guard_esp", mismatched.observed_r15,
@@ -1615,17 +1909,21 @@ bool ProbeSegmentOverride()
     // its i386 constant.
     repiu::runtime::AotSegmentOverridePatchStats hle_stats;
     resolution.policy = repiu::runtime::AotSegmentAccessPolicy::kHleLowMemory;
+    gs_resolution.policy =
+        repiu::runtime::AotSegmentAccessPolicy::kHleLowMemory;
     repiu::runtime::PatchAotSegmentOverrideSites(
         placed.code, image.segment_override_sites, segment_table, &hle_stats);
-    ok = Check("segment_hle_routed", hle_stats.hle_site_count, 2U) && ok;
+    ok = Check("segment_hle_routed", hle_stats.hle_site_count, 4U) && ok;
     ok = Check("segment_hle_trapped", placed.code[0], 0xCCU) && ok;
 
     repiu::runtime::AotSegmentOverridePatchStats restore_stats;
     resolution.policy = repiu::runtime::AotSegmentAccessPolicy::kNativeFolded;
+    gs_resolution.policy =
+        repiu::runtime::AotSegmentAccessPolicy::kNativeFolded;
     repiu::runtime::PatchAotSegmentOverrideSites(
         placed.code, image.segment_override_sites, segment_table,
         &restore_stats);
-    ok = Check("segment_restore_native", restore_stats.native_site_count, 2U) &&
+    ok = Check("segment_restore_native", restore_stats.native_site_count, 4U) &&
          ok;
     if (!repiu::platform::FlushInstructionCacheRange(placed.code, kCodeBytes))
     {
@@ -1635,16 +1933,24 @@ bool ProbeSegmentOverride()
     }
     // Executed, not merely compared: the whole slot has to work again, which a
     // byte-by-byte comparison against a remembered head would not establish.
-    shadow = kSelector;
-    std::memcpy(placed.data, &shadow, sizeof(shadow));
+    gs_shadow = kGsSelector;
+    std::memcpy(placed.data + 2U, &gs_shadow, sizeof(gs_shadow));
     GuestRegisterProbeState restored;
+    restored.gpr[kEax] = kGuestEax;
     restored.gpr[kEsp] = stack_top;
+    restored.gpr[kEdx] = 0U;
+    restored.gpr[kEbx] = 0U;
     restored.gpr[kEcx] = 0xAABBCCDDU;
+    restored.gpr[kEsi] = 0U;
     restored.gpr[kEdi] = guest_edi;
     RepiuLinuxX64GuestRegisterProbe(placed.code, &restored);
+    ok = Check("segment_restored_gs_compare", restored.gpr[kEdx] & 0xFFU,
+               1U) && ok;
+    ok = Check("segment_restored_gs_access", restored.gpr[kEbx] & 0xFFU,
+               kGsByteValue) && ok;
     ok = Check("segment_restored_base_disp8", restored.gpr[kEcx],
                0xAABBCC5AU) && ok;
-    ok = Check("segment_restored_value", restored.gpr[kEbx], kValue) && ok;
+    ok = Check("segment_restored_value", restored.gpr[kEsi], kValue) && ok;
 
     std::cout << "guest_segment_override=" << (ok ? "true" : "false")
               << " slots=" << image.long_mode_segment_override_count << "\n";
@@ -2016,6 +2322,8 @@ bool RunLinuxX64GuestRegisterProbe()
     const bool two_byte_esp = ProbeTwoByteStackPointer();
     const bool indirect_call = ProbeIndirectCall();
     const bool indirect_refusals = ProbeIndirectCallRefusals();
+    const bool jump_table = ProbeJumpTable();
+    const bool jump_table_refusals = ProbeJumpTableRefusals();
     const bool segment = ProbeSegmentOverride();
     const bool segment_load = ProbeGuardedSegmentLoad();
     const bool segment_pop = ProbeGuardedSegmentPop();
@@ -2023,6 +2331,7 @@ bool RunLinuxX64GuestRegisterProbe()
         mapping && stack && word_stack && flags && round_trip && branch && call &&
         unresolved && call_return && ret_imm16 && esp && absolute_immediate &&
         two_byte_esp && indirect_call && indirect_refusals &&
+        jump_table && jump_table_refusals &&
         segment && segment_load && segment_pop;
     std::cout << "linux_x64_guest_register_all=" << (all ? "true" : "false")
               << "\n";

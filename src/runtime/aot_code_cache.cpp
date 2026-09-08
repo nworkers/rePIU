@@ -17,6 +17,40 @@
 
 namespace repiu::runtime
 {
+
+bool FindAotBlockFallthroughTarget(
+    const std::vector<AotCodeCacheFixup>& fixups,
+    std::uint32_t cache_base,
+    std::uint32_t cache_size,
+    std::uint32_t cache_address,
+    std::uint32_t* guest_target,
+    std::uint32_t* guest_source)
+{
+    if (guest_target == nullptr || cache_address < cache_base)
+    {
+        return false;
+    }
+    const std::uint32_t offset = cache_address - cache_base;
+    for (const AotCodeCacheFixup& fixup : fixups)
+    {
+        if (fixup.kind != AotFixupKind::kBlockFallthrough ||
+            fixup.resolved || fixup.cache_patch_offset == 0U ||
+            cache_size < 4U ||
+            fixup.cache_patch_offset > cache_size - 4U ||
+            offset != fixup.cache_patch_offset - 1U)
+        {
+            continue;
+        }
+        *guest_target = fixup.guest_target;
+        if (guest_source != nullptr)
+        {
+            *guest_source = fixup.guest_source;
+        }
+        return true;
+    }
+    return false;
+}
+
 namespace
 {
 
@@ -631,19 +665,23 @@ bool IsLongModeStackPointerRegister(const ZydisRegister reg)
 // Returns the lowered bytes *without* the REX; the caller inserts it, because
 // where it goes is a fact about the lowering's output that this function
 // verifies rather than assumes.
-bool LowerLongModeIndirectTargetLoad(const AotInstructionRecord& instruction,
-                                     std::uint8_t* const lowered,
-                                     std::size_t* const lowered_count)
+// Task 632. The byte-range form, so the jump-table slot can reach the same
+// rewrite. `expected_reg` is the ModRM extension the caller requires: `/2` for
+// a near indirect call, `/4` for an indirect jump.
+bool LowerLongModeTargetLoad(const std::uint8_t* const bytes,
+                             const std::size_t byte_count,
+                             const std::uint8_t expected_reg,
+                             std::uint8_t* const lowered,
+                             std::size_t* const lowered_count)
 {
-    if (instruction.kind != AotInstructionKind::kIndirectExit ||
-        instruction.bytes.size() < 2U || instruction.bytes[0] != 0xFFU)
+    if (bytes == nullptr || byte_count < 2U || bytes[0] != 0xFFU)
     {
         return false;
     }
-    const std::uint8_t modrm = instruction.bytes[1];
-    if (((modrm >> 3U) & 0x07U) != 2U)
+    const std::uint8_t modrm = bytes[1];
+    if (((modrm >> 3U) & 0x07U) != expected_reg)
     {
-        return false;  // not `/2`, so not a near indirect call
+        return false;  // not the extension the caller asked for
     }
     if ((modrm >> 6U) == 3U)
     {
@@ -653,11 +691,10 @@ bool LowerLongModeIndirectTargetLoad(const AotInstructionRecord& instruction,
         return false;
     }
 
-    // Opcode `FF` becomes `8B`, and ModRM's `reg` goes from `010` to `110`.
-    // Everything that describes the address -- mod, rm, SIB, displacement --
-    // is carried over untouched, which is the point.
-    std::vector<std::uint8_t> synthesised(instruction.bytes.begin(),
-                                          instruction.bytes.end());
+    // Opcode `FF` becomes `8B`, and ModRM's `reg` becomes `110`. Everything
+    // that describes the address -- mod, rm, SIB, displacement -- is carried
+    // over untouched, which is the point.
+    std::vector<std::uint8_t> synthesised(bytes, bytes + byte_count);
     synthesised[0] = 0x8BU;
     synthesised[1] = static_cast<std::uint8_t>((modrm & 0xC7U) | 0x30U);
 
@@ -692,6 +729,19 @@ bool LowerLongModeIndirectTargetLoad(const AotInstructionRecord& instruction,
     return true;
 }
 
+bool LowerLongModeIndirectTargetLoad(const AotInstructionRecord& instruction,
+                                     std::uint8_t* const lowered,
+                                     std::size_t* const lowered_count)
+{
+    if (instruction.kind != AotInstructionKind::kIndirectExit)
+    {
+        return false;
+    }
+    return LowerLongModeTargetLoad(instruction.bytes.data(),
+                                   instruction.bytes.size(), 2U, lowered,
+                                   lowered_count);
+}
+
 bool LongModeIndirectCallEmittableImpl(
     const AotInstructionRecord& instruction)
 {
@@ -712,14 +762,16 @@ bool LongModeSegmentOverrideEmittable(const AotInstructionRecord& instruction,
                                       std::uint8_t* const segment_prefix,
                                       ZydisDecodedInstruction* const decoded)
 {
-    // FS and GS are refused: host TLS uses FS, and Task 546's decision 5 says
-    // raw guest segments are never installed into host FS or GS.
+    // FS stays refused because the host uses it for TLS. GS is safe here only
+    // because Task 636 measured a native-folded descriptor and this slot drops
+    // the prefix rather than installing the guest selector into host GS.
     std::uint8_t prefix = 0;
     switch (instruction.segment_override_register)
     {
         case 0U: prefix = 0x26U; break;  // ES
         case 2U: prefix = 0x36U; break;  // SS
         case 3U: prefix = 0x3EU; break;  // DS
+        case 5U: prefix = 0x65U; break;  // GS
         default: return false;
     }
 
@@ -740,16 +792,18 @@ bool LongModeSegmentOverrideEmittable(const AotInstructionRecord& instruction,
     {
         return false;
     }
-    // Task 570. Keep the proven absolute form and admit the first base form the
-    // reachable chain needs: non-SIB mod=01 disp8. It is widened to mod=10
-    // disp32 by the emitter so the live segment base has somewhere to be
-    // folded. Other ModRM shapes stay closed until reachability asks for one.
+    // Tasks 570 and 636. Base forms are widened to mod=10 disp32 so the live
+    // segment base has somewhere to be folded. SIB and base+disp32 stay closed
+    // until reachability asks for them.
     const bool absolute_disp32 = insn.raw.modrm.mod == 0U &&
         insn.raw.modrm.rm == 5U && insn.raw.disp.size == 32U;
+    const bool base_no_displacement = insn.raw.modrm.mod == 0U &&
+        insn.raw.modrm.rm != 4U && insn.raw.modrm.rm != 5U &&
+        insn.raw.disp.size == 0U;
     const bool base_disp8 = insn.raw.modrm.mod == 1U &&
         insn.raw.modrm.rm != 4U && insn.raw.disp.size == 8U;
     if ((insn.attributes & ZYDIS_ATTRIB_HAS_MODRM) == 0U ||
-        (!absolute_disp32 && !base_disp8) ||
+        (!absolute_disp32 && !base_no_displacement && !base_disp8) ||
         insn.opcode_map != ZYDIS_OPCODE_MAP_DEFAULT ||
         insn.raw.disp.offset + insn.raw.disp.size / 8U > insn.length)
     {
@@ -788,11 +842,11 @@ bool LongModeSegmentOverrideEmittable(const AotInstructionRecord& instruction,
 
 // Task 567. The x64 segment-override slot.
 //
-// Task 566 measured the guest's segment bases and they are the relocated object
-// bases, not zero -- so long mode ignoring the `CS`/`DS`/`ES`/`SS` overrides is
-// not a convenience but the wrong address, silently. The i386 slot's answer is
-// the right one here too: drop the prefix, fold the base into a `disp32`, and
-// guard on the shadow selector still being what the fold assumed.
+// Task 566 measured the guest's segment bases and they are relocated object
+// bases, not zero -- so long mode ignoring a guest segment override is not a
+// convenience but the wrong address, silently. The i386 slot's answer is the
+// right one here too: drop the prefix, fold the base into a `disp32`, and guard
+// on the shadow selector still being what the fold assumed.
 //
 // What differs is that three of that slot's pieces are 32-bit-only, and each
 // already has an answer this port built earlier:
@@ -845,7 +899,11 @@ bool EmitLongModeSegmentOverride(const AotInstructionRecord& instruction,
     site.guest_source = instruction.guest_address;
     site.cache_offset = static_cast<std::uint32_t>(image->bytes.size());
     site.segment_register = instruction.segment_override_register;
-    if (insn.raw.disp.size == 32U)
+    if (insn.raw.disp.size == 0U)
+    {
+        site.original_displacement = 0;
+    }
+    else if (insn.raw.disp.size == 32U)
     {
         std::memcpy(&site.original_displacement,
                     instruction.bytes.data() + insn.raw.disp.offset,
@@ -902,8 +960,8 @@ bool EmitLongModeSegmentOverride(const AotInstructionRecord& instruction,
 
     // The access itself: every prefix but the override, then `0x67`, then the
     // opcode. The absolute form moves `rm` to a no-base SIB so it does not turn
-    // RIP-relative. Task 570's base+disp8 form keeps `rm` and widens `mod` to
-    // disp32, preserving the guest base register.
+    // RIP-relative. Tasks 570 and 636 keep `rm` for base forms and widen `mod`
+    // to disp32, preserving the guest base register.
     for (std::uint32_t index = 0; index < prefix_count; ++index)
     {
         if (instruction.bytes[index] != segment_prefix)
@@ -916,7 +974,8 @@ bool EmitLongModeSegmentOverride(const AotInstructionRecord& instruction,
     {
         image->bytes.push_back(instruction.bytes[index]);
     }
-    const bool absolute_disp32 = insn.raw.modrm.mod == 0U;
+    const bool absolute_disp32 = insn.raw.modrm.mod == 0U &&
+        insn.raw.modrm.rm == 5U;
     if (absolute_disp32)
     {
         image->bytes.push_back(static_cast<std::uint8_t>(
@@ -930,9 +989,10 @@ bool EmitLongModeSegmentOverride(const AotInstructionRecord& instruction,
     }
     site.displacement_offset = static_cast<std::uint32_t>(image->bytes.size());
     AppendImmediate32(&image->bytes, 0U);
-    const std::size_t original_displacement_bytes = insn.raw.disp.size / 8U;
-    for (std::size_t index =
-             insn.raw.disp.offset + original_displacement_bytes;
+    const std::size_t suffix_offset = insn.raw.disp.size == 0U
+        ? modrm_offset + 1U
+        : insn.raw.disp.offset + insn.raw.disp.size / 8U;
+    for (std::size_t index = suffix_offset;
          index < instruction.bytes.size(); ++index)
     {
         image->bytes.push_back(instruction.bytes[index]);
@@ -1234,6 +1294,106 @@ bool EmitLongModeIndirectCall(const AotInstructionRecord& instruction,
 
     ++image->long_mode_indirect_call_count;
     *emitted_instructions = 1U + push_instructions + 3U;
+    return true;
+}
+
+// Task 632. The jump table's target load, and what the form has to be.
+//
+// The i386 slot copies the guest's targets into a table inside the cache and
+// jumps through that. This reads the guest's own table instead and hands the
+// value to the resolver, which is what the return thunk already does for every
+// other target no static analysis knows. Nothing has to be copied ahead of
+// execution, and a table the guest rewrites is followed rather than snapshotted.
+//
+// One leading `2E` is accepted and dropped. LE fixups have already rewritten
+// the guest's absolute addresses into placed linear ones, so every selector
+// base in this image is zero and `CS:` is a no-op on a data reference --
+// `EmitJumpTableSlot` has always dropped it for the same reason. No other
+// segment override is admitted, because for those the assumption is not free.
+bool LowerLongModeJumpTableTargetLoad(const AotInstructionRecord& instruction,
+                                      std::uint8_t* const lowered,
+                                      std::size_t* const lowered_count)
+{
+    if (instruction.kind != AotInstructionKind::kJumpTable ||
+        instruction.table_index_register > 7U ||
+        instruction.table_index_register == 4U ||
+        instruction.table_targets.empty())
+    {
+        return false;
+    }
+    const std::vector<std::uint8_t>& bytes = instruction.bytes;
+    const std::size_t prefix = !bytes.empty() && bytes[0] == 0x2EU ? 1U : 0U;
+    // `FF /4` with a SIB: mod=00, rm=100, and the SIB's own base=101 meaning
+    // "disp32, no base". Scale 4 and the index the planner named. Anything else
+    // is a shape the census has not costed, and stays a boundary.
+    if (bytes.size() != prefix + 7U || bytes[prefix] != 0xFFU ||
+        bytes[prefix + 1U] != 0x24U)
+    {
+        return false;
+    }
+    const std::uint8_t sib = bytes[prefix + 2U];
+    if ((sib >> 6U) != 2U || ((sib >> 3U) & 0x07U) !=
+            instruction.table_index_register ||
+        (sib & 0x07U) != 5U)
+    {
+        return false;
+    }
+    return LowerLongModeTargetLoad(bytes.data() + prefix,
+                                   bytes.size() - prefix, 4U, lowered,
+                                   lowered_count);
+}
+
+// Task 632. The jump-table slot: the indirect-call slot without its push.
+//
+// The thunk reads R14D as "the guest address to resolve" and touches no stack,
+// so the same three closing instructions turn a call into a jump the moment the
+// return-address push is left out. A resolver that cannot place the target
+// answers zero and reaches the thunk's INT3, which is where an unknown target
+// belongs.
+bool EmitLongModeJumpTable(const AotInstructionRecord& instruction,
+                           AotCodeCacheImage* const image,
+                           std::size_t* const emitted_instructions)
+{
+    const std::uintptr_t thunk = LongModeReturnThunkAddress();
+    std::uint8_t target_load[kMaxLoweredBytes] = {};
+    std::size_t target_load_count = 0U;
+    if (image == nullptr || thunk == 0U ||
+        !LowerLongModeJumpTableTargetLoad(instruction, target_load,
+                                          &target_load_count))
+    {
+        return false;
+    }
+
+    // 1. The target, into R14D. The REX.R goes after the `0x67` and before the
+    // opcode, exactly as the indirect-call slot places it.
+    image->bytes.push_back(target_load[0]);  // 0x67
+    image->bytes.push_back(0x44U);           // REX.R, so reg 110 means R14
+    image->bytes.insert(image->bytes.end(), target_load + 1U,
+                        target_load + target_load_count);
+
+    // 2. The producer tag. The high bit says this transfer came from a loaded
+    // target rather than the guest stack; the rest names the site.
+    image->bytes.insert(image->bytes.end(), {0x41U, 0xBAU});
+    const std::uint32_t producer_tag =
+        instruction.guest_address | kLongModeIndirectProducerBit;
+    for (std::size_t index = 0U; index < 4U; ++index)
+    {
+        image->bytes.push_back(static_cast<std::uint8_t>(
+            (producer_tag >> (index * 8U)) & 0xFFU));
+    }
+
+    // 3. The transfer. No push comes before it, which is the whole difference
+    // between this slot and Task 573's.
+    image->bytes.insert(image->bytes.end(), {0x49U, 0xBCU});  // movabs r12
+    for (std::size_t index = 0; index < 8U; ++index)
+    {
+        image->bytes.push_back(static_cast<std::uint8_t>(
+            (static_cast<std::uint64_t>(thunk) >> (index * 8U)) & 0xFFU));
+    }
+    image->bytes.insert(image->bytes.end(), {0x41U, 0xFFU, 0xE4U});  // jmp r12
+
+    ++image->long_mode_jump_table_count;
+    *emitted_instructions = 4U;
     return true;
 }
 
@@ -2181,6 +2341,14 @@ bool LongModeIndirectCallEmittable(const AotInstructionRecord& instruction)
     return LongModeIndirectCallEmittableImpl(instruction);
 }
 
+bool LongModeJumpTableEmittable(const AotInstructionRecord& instruction)
+{
+    std::uint8_t lowered[kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    return LongModeReturnThunkAddress() != 0U &&
+        LowerLongModeJumpTableTargetLoad(instruction, lowered, &lowered_count);
+}
+
 bool HostRequiresLongModeEmission()
 {
 #if defined(__x86_64__) || defined(_M_X64)
@@ -2239,6 +2407,32 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
     // lines below in this same function and nothing after placement wants it.
     std::vector<std::uint32_t> long_mode_entry_instructions;
 
+    // Task 630. A conditional branch's not-taken edge was implicit: the emitter
+    // appended a fallthrough branch only for a `kCopy` tail and let a
+    // conditional tail rely on its fallthrough being the bytes that physically
+    // follow. Nothing guarantees that. A dynamic append whose entry is the
+    // fallthrough emits that block first, so the branch's block lands later and
+    // the bytes after it belong to something else -- in the run that found
+    // this, a second copy of the called function's prologue, which is how a
+    // guest `CALL` came to be entered with no return address pushed.
+    //
+    // Whether the fallthrough is next is not knowable when the block closes, so
+    // the decision waits one emission step: the branch leaves a pending edge,
+    // and the next instruction to actually emit bytes either satisfies it or
+    // makes it explicit.
+    bool pending_fallthrough = false;
+    std::uint32_t pending_fallthrough_source = 0U;
+    std::uint32_t pending_fallthrough_target = 0U;
+    const auto emit_block_fallthrough = [&](const std::uint32_t source,
+                                            const std::uint32_t target) {
+        image->bytes.push_back(0xE9U);
+        const std::uint32_t patch_offset =
+            static_cast<std::uint32_t>(image->bytes.size());
+        image->bytes.insert(image->bytes.end(), 4U, 0U);
+        image->fixups.push_back({AotFixupKind::kBlockFallthrough,
+                                 source, target, patch_offset, false});
+    };
+
     for (const AotBasicBlock& block : plan.blocks)
     {
         for (std::size_t instruction_index = 0;
@@ -2246,13 +2440,26 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
         {
             const AotInstructionRecord& instruction =
                 block.instructions[instruction_index];
-            const std::uint32_t cache_offset =
-                static_cast<std::uint32_t>(image->bytes.size());
-            if (!guest_to_cache.emplace(
-                    instruction.guest_address, cache_offset).second)
+            // The lookup moves ahead of the pending edge below: an address
+            // already in the map emits nothing, so it is not what physically
+            // follows the branch and must not satisfy the edge.
+            if (guest_to_cache.find(instruction.guest_address) !=
+                guest_to_cache.end())
             {
                 continue;
             }
+            if (pending_fallthrough)
+            {
+                if (pending_fallthrough_target != instruction.guest_address)
+                {
+                    emit_block_fallthrough(pending_fallthrough_source,
+                                           pending_fallthrough_target);
+                }
+                pending_fallthrough = false;
+            }
+            const std::uint32_t cache_offset =
+                static_cast<std::uint32_t>(image->bytes.size());
+            guest_to_cache.emplace(instruction.guest_address, cache_offset);
             AotAddressMapEntry map;
             map.guest_address = instruction.guest_address;
             map.cache_offset = cache_offset;
@@ -2284,6 +2491,10 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                          AotInstructionKind::kIndirectExit &&
                      EmitLongModeIndirectCall(instruction, image,
                                               &emitted_instructions)) ||
+                    (instruction.kind ==
+                         AotInstructionKind::kJumpTable &&
+                     EmitLongModeJumpTable(instruction, image,
+                                           &emitted_instructions)) ||
                     (instruction.kind ==
                          AotInstructionKind::kSegmentOverrideMem &&
                      options.enable_long_mode_segment_override &&
@@ -2520,9 +2731,7 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                 image->bytes.size() - cache_offset);
             image->address_map.push_back(map);
         }
-        if (block.instructions.empty() ||
-            block.instructions.back().kind != AotInstructionKind::kCopy ||
-            image->address_map.empty() ||
+        if (block.instructions.empty() || image->address_map.empty() ||
             image->address_map.back().guest_address !=
                 block.instructions.back().guest_address)
         {
@@ -2530,6 +2739,23 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
         }
         const AotInstructionRecord& tail = block.instructions.back();
         const std::uint32_t target = tail.guest_address + tail.length;
+        if (tail.kind == AotInstructionKind::kConditionalBranch)
+        {
+            // A condition the emitter has no opcode for became a fail-closed
+            // INT3. That slot traps rather than falling through, so it has no
+            // not-taken edge to name.
+            if (image->bytes[image->address_map.back().cache_offset] != 0xCCU)
+            {
+                pending_fallthrough = true;
+                pending_fallthrough_source = tail.guest_address;
+                pending_fallthrough_target = target;
+            }
+            continue;
+        }
+        if (tail.kind != AotInstructionKind::kCopy)
+        {
+            continue;
+        }
         // The `E9 rel32` below is emitted in both modes: its encoding and its
         // meaning are the same in long mode. The timer safe point in front of
         // it is not -- it is a hand-built 32-bit `pushfd`/`popfd` sequence, so
@@ -2540,13 +2766,15 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
         {
             EmitTimerSafePoint(tail, image);
         }
-        image->bytes.push_back(0xE9U);
-        const std::uint32_t patch_offset =
-            static_cast<std::uint32_t>(image->bytes.size());
-        image->bytes.insert(image->bytes.end(), 4U, 0U);
-        image->fixups.push_back({AotFixupKind::kBlockFallthrough,
-                                 tail.guest_address, target,
-                                 patch_offset, false});
+        emit_block_fallthrough(tail.guest_address, target);
+    }
+    // Nothing follows the last block, so a pending edge there is never
+    // satisfied by adjacency and always has to be written out.
+    if (pending_fallthrough)
+    {
+        emit_block_fallthrough(pending_fallthrough_source,
+                               pending_fallthrough_target);
+        pending_fallthrough = false;
     }
 
     for (AotCodeCacheFixup& fixup : image->fixups)

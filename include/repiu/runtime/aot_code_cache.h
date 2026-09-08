@@ -176,6 +176,12 @@ struct AotAddressMapEntry
 [[nodiscard]] bool LongModeIndirectCallEmittable(
     const AotInstructionRecord& instruction);
 
+// Task 632. Whether the long-mode jump-table slot can be emitted for
+// this record. Asked rather than reimplemented, for the reason the
+// indirect-call predicate above records.
+[[nodiscard]] bool LongModeJumpTableEmittable(
+    const AotInstructionRecord& instruction);
+
 struct AotCodeCacheFixup
 {
     AotFixupKind kind = AotFixupKind::kDirectJump;
@@ -184,6 +190,16 @@ struct AotCodeCacheFixup
     std::uint32_t cache_patch_offset = 0;
     bool resolved = false;
 };
+
+// Resolves the INT3 that replaces an unresolved E9 block-fallthrough slot.
+// cache_patch_offset names the rel32, so the sentinel is one byte earlier.
+bool FindAotBlockFallthroughTarget(
+    const std::vector<AotCodeCacheFixup>& fixups,
+    std::uint32_t cache_base,
+    std::uint32_t cache_size,
+    std::uint32_t cache_address,
+    std::uint32_t* guest_target,
+    std::uint32_t* guest_source = nullptr);
 
 struct AotInlineCacheEntry
 {
@@ -507,6 +523,7 @@ struct AotCodeCacheImage
     // cache for a target no static analysis knows -- the return slot leaves for
     // one the guest stack holds, and every other slot stays inside.
     std::uint32_t long_mode_indirect_call_count = 0;
+    std::uint32_t long_mode_jump_table_count = 0;
     std::uint32_t resolved_fixup_count = 0;
     std::uint32_t external_fixup_count = 0;
     std::uint32_t unsupported_branch_count = 0;

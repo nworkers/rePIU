@@ -613,6 +613,9 @@ endif()
 target_include_directories(repiu_core_probe
     PRIVATE
         src/tools/aot_probe
+        src/engine
+        src/engine/cpu_emul
+        src/engine/execution
 )
 
 # Task 557 added repiu_zydis. The classifier's probe now decodes the bytes its
@@ -657,12 +660,15 @@ if(UNIX AND NOT EMSCRIPTEN AND CMAKE_SIZEOF_VOID_P GREATER 4)
     target_sources(repiu_core_probe
         PRIVATE
             src/tools/aot_probe/linux_x64_guest_register_probe.cpp
+            src/tools/aot_probe/general_stack_probe.cpp
             src/tools/aot_probe/linux_x64_guest_register_probe.S
     )
     target_compile_definitions(repiu_core_probe
         PRIVATE
             REPIU_LINUX_X64_GUEST_REGISTER_PROBE=1
+            REPIU_LINUX_X64_GENERAL_STACK_PROBE=1
     )
+    target_link_libraries(repiu_core_probe PRIVATE GL)
 endif()
 
 # Task 552: the memory-operand lowering, checked by executing it. Linux x64-only

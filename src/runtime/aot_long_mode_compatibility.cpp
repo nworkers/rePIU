@@ -153,6 +153,40 @@ bool NeedsWidthReencode(const std::uint8_t opcode,
     }
 }
 
+// Task 631. The `POP r/m32` memory form this unit will rewrite.
+//
+// The register form is `58+r` spelled differently and was always here. The
+// memory form was refused, which made it an HLE boundary, and the boundary path
+// single-steps the guest instruction at its guest address -- executing a
+// 32-bit `POP m32` as a 64-bit one, off the host stack, leaving guest ESP
+// untouched. The guest's own `POP DWORD PTR [EDI+0x14]` is where that was
+// found.
+//
+// Three forms stay refused rather than guessed:
+//
+//  - Anything with a prefix. `66` is `POP m16` with a different stack width,
+//    and a segment override needs the guest's segment HLE, not this.
+//  - A destination addressed through ESP. The SDM computes that effective
+//    address *after* the increment, so its ordering differs from the sequence
+//    written below. An operand that does not name ESP has an address that does
+//    not depend on it, which is what makes load-then-raise-then-store safe.
+//  - `mod == 3`, which is the register form and belongs to the case above.
+bool PopMemoryFormLowerable(const ZydisDecodedInstruction& instruction)
+{
+    if (instruction.raw.prefix_count != 0U ||
+        instruction.raw.modrm.mod == 3U)
+    {
+        return false;
+    }
+    // `rm == 100` is the SIB escape; every other `rm` names a base register
+    // directly, and ESP cannot be spelled without a SIB.
+    if (instruction.raw.modrm.rm == 4U)
+    {
+        return instruction.raw.sib.base != 4U;
+    }
+    return true;
+}
+
 // Task 559. The stack instructions this unit knows how to rewrite.
 //
 // Not the whole of `NeedsWidthReencode`: `CALL`, `RET` and the `FF` group also
@@ -175,14 +209,21 @@ bool HasStackSequenceLowering(const std::uint8_t opcode,
     }
     switch (opcode)
     {
+        case 0x60U:
+        case 0x61U:
+            // The 32-bit forms only. A `0x66` prefix makes them `PUSHA` and
+            // `POPA` over sixteen-bit halves, which is a different stack
+            // layout and not a form the measured stops ask for.
+            return length == 1U;
         case 0x68U:
             return length == 5U;  // PUSH imm32
         case 0x6AU:
             return length == 2U;  // PUSH imm8, sign-extended
         case 0x8FU:
-            // Only the register form, which is `58+r` spelled differently. The
-            // memory form is refused above.
-            return length == 2U && instruction.raw.modrm.mod == 3U;
+            // The register form is `58+r` spelled differently. Task 631 added
+            // the memory form, under the conditions the helper above names.
+            return (length == 2U && instruction.raw.modrm.mod == 3U) ||
+                PopMemoryFormLowerable(instruction);
         case 0x9CU:
         case 0x9DU:
         case 0xC9U:
@@ -575,7 +616,22 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
         }
         if (IsInvalidInLongMode(opcode))
         {
-            return Refuse(LongModeDivergence::kInvalidInLongMode);
+            // Task 634. Invalid is not the same as unbuildable. `PUSHAD` and
+            // `POPAD` have no long-mode encoding at all, which is why the
+            // divergence stays `kInvalidInLongMode` -- but their effect is
+            // eight moves and one stack adjustment, and the sequence writer can
+            // spell that. Every other opcode here keeps `kNone` and stays
+            // refused, `PUSH ES` among them: it is serviced by the guest
+            // segment HLE rather than rewritten.
+            const LongModeLowering lowering =
+                HasStackSequenceLowering(opcode, instruction)
+                    ? LongModeLowering::kStackSequence
+                    : LongModeLowering::kNone;
+            if (lowering == LongModeLowering::kNone)
+            {
+                return Refuse(LongModeDivergence::kInvalidInLongMode);
+            }
+            return Reencode(LongModeDivergence::kInvalidInLongMode, lowering);
         }
         if (NeedsWidthReencode(opcode, instruction))
         {
@@ -766,6 +822,40 @@ struct SequenceWriter
         ++instructions;
     }
 
+    // Task 634. The same two moves with a displacement, which is all the
+    // register-array forms need beyond what is already here.
+    // mov [r15 + disp8], r32
+    void StoreGuestRegisterAt(const std::uint8_t reg,
+                              const std::int8_t displacement)
+    {
+        Byte(0x41U);  // REX.B for r15 as the base
+        Byte(0x89U);
+        Byte(static_cast<std::uint8_t>(0x47U | (reg << 3U)));
+        Byte(static_cast<std::uint8_t>(displacement));
+        ++instructions;
+    }
+
+    // mov r32, [r15 + disp8]
+    void LoadGuestRegisterAt(const std::uint8_t reg,
+                             const std::int8_t displacement)
+    {
+        Byte(0x41U);
+        Byte(0x8BU);
+        Byte(static_cast<std::uint8_t>(0x47U | (reg << 3U)));
+        Byte(static_cast<std::uint8_t>(displacement));
+        ++instructions;
+    }
+
+    // mov [r15 + disp8], r14d. REX.R names r14 and REX.B names r15.
+    void StoreScratchAt(const std::int8_t displacement)
+    {
+        Byte(0x45U);
+        Byte(0x89U);
+        Byte(0x77U);  // mod=01, reg=110 (r14), rm=111 (r15)
+        Byte(static_cast<std::uint8_t>(displacement));
+        ++instructions;
+    }
+
     // mov dword ptr [r15], imm32
     void StoreImmediate(const std::uint32_t value)
     {
@@ -877,6 +967,42 @@ bool WriteStackSequence(const std::uint8_t* const bytes,
 
     switch (opcode)
     {
+        case 0x60U:
+        {
+            // PUSHAD. The entry ESP is captured before the adjustment, because
+            // the SDM pushes the value ESP held on entry and reading it after
+            // the `lea` would store one thirty-two lower. `PUSH ESP` above
+            // takes the same shape for the same reason.
+            //
+            // The slots, in the order the SDM leaves them: EDI at +0 and EAX
+            // at +28, with the captured ESP at +12.
+            writer->ExtendedMove(0x45U, 0x89U, 0xFEU);  // mov r14d, r15d
+            writer->AdjustGuestEsp(-32);
+            writer->StoreGuestRegisterAt(7U, 0);    // edi
+            writer->StoreGuestRegisterAt(6U, 4);    // esi
+            writer->StoreGuestRegisterAt(5U, 8);    // ebp
+            writer->StoreScratchAt(12);             // the entry ESP
+            writer->StoreGuestRegisterAt(3U, 16);   // ebx
+            writer->StoreGuestRegisterAt(2U, 20);   // edx
+            writer->StoreGuestRegisterAt(1U, 24);   // ecx
+            writer->StoreGuestRegisterAt(0U, 28);   // eax
+            return true;
+        }
+        case 0x61U:
+        {
+            // POPAD. The +12 slot is read by nobody: the SDM discards the
+            // stored ESP rather than restoring it, and the final `lea` is what
+            // moves the stack pointer instead.
+            writer->LoadGuestRegisterAt(7U, 0);     // edi
+            writer->LoadGuestRegisterAt(6U, 4);     // esi
+            writer->LoadGuestRegisterAt(5U, 8);     // ebp
+            writer->LoadGuestRegisterAt(3U, 16);    // ebx
+            writer->LoadGuestRegisterAt(2U, 20);    // edx
+            writer->LoadGuestRegisterAt(1U, 24);    // ecx
+            writer->LoadGuestRegisterAt(0U, 28);    // eax
+            writer->AdjustGuestEsp(32);
+            return true;
+        }
         case 0x68U:
         {
             std::uint32_t immediate = 0U;
@@ -903,6 +1029,28 @@ bool WriteStackSequence(const std::uint8_t* const bytes,
         }
         case 0x8FU:
         {
+            if (instruction.raw.modrm.mod != 3U)
+            {
+                // Load, raise, then store. The guest's ModRM, SIB, and
+                // displacement are carried over byte for byte; only the `reg`
+                // field changes, to `110`, so the store's source is the scratch
+                // the load filled. `67` restores 32-bit addressing and `44` is
+                // the REX.R that makes `110` mean R14 rather than ESI.
+                writer->ExtendedMove(0x45U, 0x8BU, 0x37U);  // mov r14d, [r15]
+                writer->AdjustGuestEsp(4);
+                writer->Byte(0x67U);
+                writer->Byte(0x44U);
+                writer->Byte(0x89U);
+                writer->Byte(static_cast<std::uint8_t>(
+                    (bytes[1] & 0xC7U) | (6U << 3U)));
+                for (std::size_t index = 2U; index < instruction.length;
+                     ++index)
+                {
+                    writer->Byte(bytes[index]);
+                }
+                ++writer->instructions;
+                return true;
+            }
             const std::uint8_t reg = instruction.raw.modrm.rm;
             if (reg == 4U)
             {

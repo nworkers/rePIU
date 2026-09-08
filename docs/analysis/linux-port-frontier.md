@@ -9008,7 +9008,2089 @@ earlier reuse of the guest ESP, but that is not proof of the final writer.
 | Native exact-writer event | **Not observed in this run** |
 | Final writer of stack target | **Unresolved** |
 
+## 3.65 Task 628 — 실패하는 `RET` 직전에 direct-call push가 실행되지 않음
+
+Task 628은 `REPIU_LINUX_X64_RETURN_STACK_TAIL=<count>`를 추가했습니다. Task
+619의 slot 필터는 "이 slot을 누가 썼는가"에만 답하고, 실패 직전의 write는
+대부분 다른 slot으로 가기 때문에 보이지 않았습니다. 새 진단은 선택된 return
+target에서 ring의 최근 `count`개를 기록 순서대로 출력합니다. 환경 변수가
+없으면 기존 출력과 실행 경로가 같습니다.
+
+### 확인됨: guest 이미지 배치
+
+LE object는 균일한 `+0x00FF0000` delta로 적재되며 `runtime_base`는
+`0x01000000`입니다.
+
+| object | 파일 base | runtime base |
+|---:|---:|---:|
+| 1 | `0x00010000` | `0x01000000` |
+| 2 | `0x00020000` | `0x01010000` |
+| 3 | `0x00110000` | `0x01100000` |
+| 4 | `0x00120000` | `0x01110000` |
+
+`REPIU_AOT_GUEST_MAP_TRACE=0x2A07D`가 `guest=0x0102A07D`를 보고하여
+`runtime_base`를 확인했습니다.
+
+### 확인됨: 관련 guest 코드
+
+원본 `PIU.EXE` object 2 이미지를 그대로 디스어셈블하면 다음과 같습니다.
+
+```text
+010f1a80: 53                   push %ebx
+010f1a81: 51                   push %ecx
+010f1a82: 89 c3                mov  %eax,%ebx
+010f1a84: 39 d0                cmp  %edx,%eax
+010f1a86: 74 6c                je   0x10f1af4
+...
+010f1af4: 29 c0                sub  %eax,%eax
+010f1af6: 59                   pop  %ecx
+010f1af7: 5b                   pop  %ebx
+010f1af8: c3                   ret
+```
+
+`0x010F1A80`은 `EAX`/`EDX`를 인자로 받는 문자열 비교 함수이고,
+`0x010F1AF8`은 "같음" 경로의 `RET`입니다. 호출자는 다음 5회 반복 루프입니다.
+
+```text
+0102a065: inc  %esi
+0102a066: add  $0x4,%ebx
+0102a069: cmp  $0x5,%esi
+0102a06c: jge  0x1029f54
+0102a072: mov  0x17e098,%eax
+0102a077: mov  0xbbec(%ebx),%edx
+0102a07d: call 0x10f1a80
+0102a082: test %eax,%eax
+0102a084: jne  0x102a065
+```
+
+`0x0102A065`, `0x0102A072`, `0x0102A07D`는 초기 AOT map에 entry가 없고
+(`match=none`, 이웃은 `0x010296F5`와 `0x0102A480`), 동적으로 번역됩니다.
+
+```mermaid
+flowchart TD
+    L["0x0102A065 loop head"] --> M["0x0102A072 / 0x0102A077 argument loads"]
+    M --> C["0x0102A07D call 0x010F1A80"]
+    C -->|"first iteration: push 0x0102A082 at 0x0158CC40"| S["0x010F1A80 push ebx / push ecx"]
+    S --> R["0x010F1AF8 ret"]
+    R -->|"resolved 0x0102A082"| T["0x0102A082 test eax,eax"]
+    T --> L
+    M -.->|"second iteration: no push recorded"| S2["0x010F1A80 entered with ESP=0x0158CC44"]
+    S2 --> R2["0x010F1AF8 ret consumes stale 0x011A643A"]
+```
+
+### 확인됨: 같은 `RET` site가 연속 두 번 resolver에 도달함
+
+```text
+[repiu-x64-return] result=resolved source=0x0102A082 cache=0x20119F1E producer=0x010F1AF8 guest_esp=0x0158CC44
+[repiu-x64-return] result=resolved source=0x011A643A cache=0x20126E56 producer=0x010F1AF8 guest_esp=0x0158CC48
+```
+
+첫 번째는 `0x0158CC40`에서 정상적인 return 주소 `0x0102A082`를 소비했습니다.
+두 번째는 한 dword 위 `0x0158CC44`의 오래된 값을 소비했습니다.
+
+### 확인됨: 두 번째 진입에 direct-call push가 없음
+
+새 tail 출력의 마지막 다섯 건입니다.
+
+```text
+[repiu-x64-return-stack-tail] index=13671 writer=direct-call site=0x0102A07D fallthrough=0x0102A082 esp=0x0158CC40 value=0x0102A082
+[repiu-x64-return-stack-tail] index=13672 writer=guest-push  site=0x010F1A80 esp=0x0158CC3C value=0x00000000
+[repiu-x64-return-stack-tail] index=13673 writer=guest-push  site=0x010F1A81 esp=0x0158CC38 value=0x0128CC2C
+[repiu-x64-return-stack-tail] index=13674 writer=guest-push  site=0x010F1A80 esp=0x0158CC40 value=0x00000004
+[repiu-x64-return-stack-tail] index=13675 writer=guest-push  site=0x010F1A81 esp=0x0158CC3C value=0x0128CC2C
+```
+
+첫 진입(`13672`/`13673`)은 `0x0158CC3C`/`0x0158CC38`에 `push ebx`/`push ecx`를
+기록했으므로 진입 시 ESP는 `0x0158CC40`이었습니다. 두 번째 진입
+(`13674`/`13675`)은 `0x0158CC40`/`0x0158CC3C`에 기록했으므로 진입 시 ESP는
+`0x0158CC44`, 즉 한 dword 높습니다. 두 진입 사이에 `0x0102A07D`의
+direct-call record는 없습니다. `EBX`가 `0`에서 `4`로 바뀐 것도 루프가 한 번
+더 돌았음을 확인해 줍니다.
+
+따라서 두 번째 반복에서 guest는 `call 0x010F1A80`의 return 주소 push 없이
+`0x010F1A80`으로 진입했습니다. 이것이 ESP를 4만큼 올렸고, 이어지는
+`0x010F1AF8`의 `RET`이 `0x0158CC44`의 오래된 값을 소비했습니다.
+
+### 확인됨: 소비된 값은 오래된 stack 잔여물
+
+`0x011A643A`는 object 4 offset `0x9643A`의 `FILE` 구조체 주소입니다.
+`0x010F245F`~`0x010F2469`의 `mov (%edx),%ebx; mov (%ebx),%al; inc %ebx;
+mov %ebx,(%edx)`는 buffer pointer를 갱신하는 `getc` 형태이고, `0x4(%edx)`는
+잔여 개수, `0xc(%edx)`는 flag입니다. 같은 값이 ring index `485`에서
+`0x010F12BF`의 `push ebx`로 `0x0158CC44`에 기록되었으며, 실패 시점의 ring
+sequence는 `13676`입니다. 즉 실패한 `RET`이 소비한 값은 오래전에 남은 stack
+잔여물이며, 인접한 writer가 아닙니다.
+
+### 미확정
+
+두 번째 반복에서 push가 실행되지 않은 이유는 아직 확정되지 않았습니다.
+후보는 동적 세대에서의 call site 번역, 그 direct-call fixup, 그리고 push
+뒤쪽 cache 주소로의 재진입입니다.
+
+| 항목 | 상태 |
+|---|---|
+| object runtime 배치와 `runtime_base` | **확인됨** |
+| `0x010F1A80` / `0x010F1AF8` 식별 | **확인됨** |
+| 호출 루프 `0x0102A065`~`0x0102A084` | **확인됨** |
+| 해당 블록의 초기 AOT map entry | **확인됨**: 없음 |
+| 같은 `RET` site 연속 두 번 도달 | **확인됨** |
+| 두 번째 진입 시 direct-call push | **확인됨**: 실행되지 않음 |
+| 소비된 `0x011A643A`의 성격 | **확인됨**: 오래된 stack 잔여물 |
+| push 누락의 원인 | **미확정** |
+
+## 3.65 (English) Task 628 — the direct-call push does not run before the failing `RET`
+
+Task 628 added `REPIU_LINUX_X64_RETURN_STACK_TAIL=<count>`. Task 619's slot
+filter answers only "who wrote this slot", and the writes just before a failure
+usually land on other slots, so they were invisible. The new diagnostic prints
+the most recent `count` ring records in write order at a selected return target.
+With the variable unset, output and execution path are unchanged.
+
+### Confirmed: guest image placement
+
+LE objects load with a uniform `+0x00FF0000` delta and `runtime_base` is
+`0x01000000`.
+
+| object | file base | runtime base |
+|---:|---:|---:|
+| 1 | `0x00010000` | `0x01000000` |
+| 2 | `0x00020000` | `0x01010000` |
+| 3 | `0x00110000` | `0x01100000` |
+| 4 | `0x00120000` | `0x01110000` |
+
+`REPIU_AOT_GUEST_MAP_TRACE=0x2A07D` reported `guest=0x0102A07D`, which confirms
+`runtime_base`.
+
+### Confirmed: the guest code involved
+
+Disassembling the original `PIU.EXE` object 2 image directly gives:
+
+```text
+010f1a80: 53                   push %ebx
+010f1a81: 51                   push %ecx
+010f1a82: 89 c3                mov  %eax,%ebx
+010f1a84: 39 d0                cmp  %edx,%eax
+010f1a86: 74 6c                je   0x10f1af4
+...
+010f1af4: 29 c0                sub  %eax,%eax
+010f1af6: 59                   pop  %ecx
+010f1af7: 5b                   pop  %ebx
+010f1af8: c3                   ret
+```
+
+`0x010F1A80` is a string-compare function taking `EAX` and `EDX`, and
+`0x010F1AF8` is the `RET` on its "equal" path. The caller is this five-iteration
+loop:
+
+```text
+0102a065: inc  %esi
+0102a066: add  $0x4,%ebx
+0102a069: cmp  $0x5,%esi
+0102a06c: jge  0x1029f54
+0102a072: mov  0x17e098,%eax
+0102a077: mov  0xbbec(%ebx),%edx
+0102a07d: call 0x10f1a80
+0102a082: test %eax,%eax
+0102a084: jne  0x102a065
+```
+
+`0x0102A065`, `0x0102A072`, and `0x0102A07D` have no initial AOT map entry
+(`match=none`, neighbors `0x010296F5` and `0x0102A480`); the block is translated
+dynamically.
+
+```mermaid
+flowchart TD
+    L2["0x0102A065 loop head"] --> M2["0x0102A072 / 0x0102A077 argument loads"]
+    M2 --> C2["0x0102A07D call 0x010F1A80"]
+    C2 -->|"first iteration: push 0x0102A082 at 0x0158CC40"| S3["0x010F1A80 push ebx / push ecx"]
+    S3 --> R3["0x010F1AF8 ret"]
+    R3 -->|"resolved 0x0102A082"| T2["0x0102A082 test eax,eax"]
+    T2 --> L2
+    M2 -.->|"second iteration: no push recorded"| S4["0x010F1A80 entered with ESP=0x0158CC44"]
+    S4 --> R4["0x010F1AF8 ret consumes stale 0x011A643A"]
+```
+
+### Confirmed: the same `RET` site reaches the resolver twice in a row
+
+```text
+[repiu-x64-return] result=resolved source=0x0102A082 cache=0x20119F1E producer=0x010F1AF8 guest_esp=0x0158CC44
+[repiu-x64-return] result=resolved source=0x011A643A cache=0x20126E56 producer=0x010F1AF8 guest_esp=0x0158CC48
+```
+
+The first consumed the correct return address `0x0102A082` from `0x0158CC40`.
+The second consumed a stale value one dword higher, at `0x0158CC44`.
+
+### Confirmed: the second entry has no direct-call push
+
+The last five tail records:
+
+```text
+[repiu-x64-return-stack-tail] index=13671 writer=direct-call site=0x0102A07D fallthrough=0x0102A082 esp=0x0158CC40 value=0x0102A082
+[repiu-x64-return-stack-tail] index=13672 writer=guest-push  site=0x010F1A80 esp=0x0158CC3C value=0x00000000
+[repiu-x64-return-stack-tail] index=13673 writer=guest-push  site=0x010F1A81 esp=0x0158CC38 value=0x0128CC2C
+[repiu-x64-return-stack-tail] index=13674 writer=guest-push  site=0x010F1A80 esp=0x0158CC40 value=0x00000004
+[repiu-x64-return-stack-tail] index=13675 writer=guest-push  site=0x010F1A81 esp=0x0158CC3C value=0x0128CC2C
+```
+
+The first entry (`13672`/`13673`) wrote `push ebx`/`push ecx` at `0x0158CC3C`
+and `0x0158CC38`, so ESP on entry was `0x0158CC40`. The second entry
+(`13674`/`13675`) wrote at `0x0158CC40` and `0x0158CC3C`, so ESP on entry was
+`0x0158CC44` — one dword higher. No direct-call record for `0x0102A07D` lies
+between them. `EBX` moving from `0` to `4` confirms the loop advanced one
+iteration.
+
+The guest therefore entered `0x010F1A80` on the second iteration without the
+return-address push of `call 0x010F1A80`. That raised ESP by four, and the
+following `RET` at `0x010F1AF8` consumed the stale value at `0x0158CC44`.
+
+### Confirmed: the consumed value is old stack residue
+
+`0x011A643A` is a `FILE` structure address at object 4 offset `0x9643A`. The
+sequence `mov (%edx),%ebx; mov (%ebx),%al; inc %ebx; mov %ebx,(%edx)` at
+`0x010F245F`-`0x010F2469` is a `getc` advancing the buffer pointer, with the
+remaining count at `0x4(%edx)` and flags at `0xc(%edx)`. The same value was
+written to `0x0158CC44` at ring index `485` by `push ebx` at `0x010F12BF`, while
+the ring sequence at the failure was `13676`. The value the failing `RET`
+consumed is therefore long-stale residue, not an adjacent writer.
+
+### Unresolved
+
+Why the push did not run on the second iteration is not yet established.
+Candidates are the dynamic-generation translation of the call site, its
+direct-call fixup, and re-entry at a cache address past the push.
+
+| Item | Status |
+|---|---|
+| Object runtime placement and `runtime_base` | **Confirmed** |
+| Identity of `0x010F1A80` / `0x010F1AF8` | **Confirmed** |
+| Calling loop `0x0102A065`-`0x0102A084` | **Confirmed** |
+| Initial AOT map entry for that block | **Confirmed**: none |
+| Same `RET` site reached twice in a row | **Confirmed** |
+| Direct-call push on the second entry | **Confirmed**: did not run |
+| Nature of the consumed `0x011A643A` | **Confirmed**: stale stack residue |
+| Cause of the missing push | **Unresolved** |
+
+## 3.66 Task 629 — 조건 분기 블록의 fallthrough가 emit되지 않음
+
+Task 629는 Task 626의 return-register trace 지점에서 기존 AOT guest map dump를
+`phase=return-trace`로 한 번 더 실행하게 했습니다. 실패한 실행은 SIGSEGV로
+끝나므로 기존 `final` phase가 오지 않고, 문제의 블록은 초기 map에 entry가
+없어 `initial` 출력도 비어 있었습니다.
+
+### 확인됨: 실패 시점의 cache 배치
+
+```text
+REPIU_AOT_GUEST_MAP_TRACE=0x2A065,0x2A066,0x2A069,0x2A06C,0x2A072,0x2A07D,0x2A0A0,0xF1A80 \
+REPIU_LINUX_X64_RETURN_REG_TRACE=0x011A643A \
+./build/linux_x64/repiu pumpit2a
+```
+
+```text
+[repiu-aot-map-entry] target=0x0102A072 index=59405 cache=0x2005C238 guest_len=5 emitted_len=8 bytes=678B042598E02801
+[repiu-aot-map-entry] target=0x0102A07D index=59407 cache=0x2005C247 guest_len=5 emitted_len=16 bytes=458D7FFC41C70782A00201E939000000
+[repiu-aot-map-fixup] source=0x0102A07D kind=direct-call target=0x010F1A80 patch=0x0005C253 resolved=1
+[repiu-aot-map-entry] target=0x0102A0A0 index=59416 cache=0x2005C27D guest_len=2 emitted_len=5 bytes=E900000000
+[repiu-aot-map-fixup] source=0x0102A0A0 kind=direct-jump target=0x0102A065 patch=0x0005C27E resolved=1
+[repiu-aot-map-entry] target=0x0102A065 index=59417 cache=0x2005C282 guest_len=1 emitted_len=2 bytes=FFC6
+[repiu-aot-map-entry] target=0x0102A066 index=59418 cache=0x2005C284 guest_len=3 emitted_len=3 bytes=83C304
+[repiu-aot-map-entry] target=0x0102A069 index=59419 cache=0x2005C287 guest_len=3 emitted_len=3 bytes=83FE05
+[repiu-aot-map-entry] target=0x0102A06C index=59420 cache=0x2005C28A guest_len=6 emitted_len=6 bytes=0F8D0CF8FFFF
+[repiu-aot-map-fixup] source=0x0102A06C kind=conditional-branch target=0x01029F54 patch=0x0005C28C resolved=1
+[repiu-aot-map-entry] target=0x010F1A80 index=59421 cache=0x2005C290 guest_len=1 emitted_len=7 bytes=458D7FFC41891F
+```
+
+`0x0102A06C`의 `jge`는 `0F 8D 0C F8 FF FF`로 `0x2005C28A`에서 시작해
+`0x2005C290`에서 끝납니다. 이 entry의 fixup은 taken edge
+(`0x01029F54`) 하나뿐이고, not-taken fallthrough인 `0x0102A072`로 가는
+`E9`가 없습니다. `0x2005C290`에 있는 것은 같은 append에 emit된
+`0x010F1A80`의 두 번째 사본, 즉 `push ebx`입니다.
+
+따라서 `jge`가 성립하지 않으면 실행은 `0x0102A072`의 번역
+(`0x2005C238`)이 아니라 `0x010F1A80`의 prologue로 그대로 흘러갑니다. 이것이
+Task 628에서 관측한 "return 주소 push 없는 함수 진입"의 원인입니다.
+
+같은 append의 `0x0102A0A0` 무조건 분기는 `E9`와 direct-jump fixup을 정상적으로
+가지고 있으므로, 문제는 direct jump가 아니라 조건 분기의 fallthrough edge에
+한정됩니다.
+
+### 확인됨: emitter 조건
+
+`src/runtime/aot_code_cache.cpp`의 block fallthrough emission은 블록의 마지막
+명령이 `AotInstructionKind::kCopy`일 때만 `E9`와 `kBlockFallthrough` fixup을
+추가합니다. 마지막 명령이 조건 분기인 블록은 fallthrough branch를 받지
+않습니다. guest 순서대로 붙여 쓰는 i386 배치에서는 fallthrough가 물리적으로
+다음이라 문제가 없었지만, 이 동적 append는 `0x0102A072`를 먼저 emit하고
+`0x0102A065` 블록을 나중에 emit했으므로 물리적 다음이 fallthrough가 아닙니다.
+
+### 확인됨: 재현 안정성
+
+같은 명령이 매번 이 지점에 도달하지는 않습니다. 한 번은 `0x200008CB`에서
+다른 fault로 끝났고, 다음 시도에서 원래 fault가 재현되었습니다. 이 절의
+수치는 원래 fault를 재현한 실행의 것입니다.
+
+### 미확정
+
+수정 범위는 아직 정하지 않았습니다. 조건 분기 블록에 항상 fallthrough
+branch를 붙일 것인지, 다음에 emit되는 명령이 fallthrough target일 때만
+생략할 것인지, 그리고 i386 배치에 대한 영향이 다음 작업의 질문입니다.
+
+| 항목 | 상태 |
+|---|---|
+| return 시점 map dump | **확인됨** |
+| `0x0102A06C` fixup 목록 | **확인됨**: taken edge 하나뿐 |
+| `jge` 다음 바이트의 소유자 | **확인됨**: `0x010F1A80` prologue 사본 |
+| push 누락의 원인 | **확인됨**: 조건 분기 fallthrough 미emit |
+| direct jump edge | **확인됨**: 정상 |
+| 수정 범위 | **미확정** |
+
+## 3.66 (English) Task 629 — a conditional-branch block emits no fallthrough
+
+Task 629 runs the existing AOT guest map dump a second time, as
+`phase=return-trace`, at Task 626's return-register trace point. The failing run
+ends on SIGSEGV, so the existing `final` phase never arrives, and the block that
+fails has no initial map entry, so the `initial` output was empty for it.
+
+### Confirmed: the cache layout at the failure
+
+```text
+REPIU_AOT_GUEST_MAP_TRACE=0x2A065,0x2A066,0x2A069,0x2A06C,0x2A072,0x2A07D,0x2A0A0,0xF1A80 \
+REPIU_LINUX_X64_RETURN_REG_TRACE=0x011A643A \
+./build/linux_x64/repiu pumpit2a
+```
+
+```text
+[repiu-aot-map-entry] target=0x0102A072 index=59405 cache=0x2005C238 guest_len=5 emitted_len=8 bytes=678B042598E02801
+[repiu-aot-map-entry] target=0x0102A07D index=59407 cache=0x2005C247 guest_len=5 emitted_len=16 bytes=458D7FFC41C70782A00201E939000000
+[repiu-aot-map-fixup] source=0x0102A07D kind=direct-call target=0x010F1A80 patch=0x0005C253 resolved=1
+[repiu-aot-map-entry] target=0x0102A0A0 index=59416 cache=0x2005C27D guest_len=2 emitted_len=5 bytes=E900000000
+[repiu-aot-map-fixup] source=0x0102A0A0 kind=direct-jump target=0x0102A065 patch=0x0005C27E resolved=1
+[repiu-aot-map-entry] target=0x0102A065 index=59417 cache=0x2005C282 guest_len=1 emitted_len=2 bytes=FFC6
+[repiu-aot-map-entry] target=0x0102A066 index=59418 cache=0x2005C284 guest_len=3 emitted_len=3 bytes=83C304
+[repiu-aot-map-entry] target=0x0102A069 index=59419 cache=0x2005C287 guest_len=3 emitted_len=3 bytes=83FE05
+[repiu-aot-map-entry] target=0x0102A06C index=59420 cache=0x2005C28A guest_len=6 emitted_len=6 bytes=0F8D0CF8FFFF
+[repiu-aot-map-fixup] source=0x0102A06C kind=conditional-branch target=0x01029F54 patch=0x0005C28C resolved=1
+[repiu-aot-map-entry] target=0x010F1A80 index=59421 cache=0x2005C290 guest_len=1 emitted_len=7 bytes=458D7FFC41891F
+```
+
+The `jge` at `0x0102A06C` is `0F 8D 0C F8 FF FF`, starting at `0x2005C28A` and
+ending at `0x2005C290`. Its only fixup is the taken edge to `0x01029F54`; there
+is no `E9` for the not-taken fallthrough to `0x0102A072`. What sits at
+`0x2005C290` is the second copy of `0x010F1A80` emitted by the same append —
+the `push ebx`.
+
+When the `jge` is not taken, execution therefore runs into the prologue of
+`0x010F1A80` rather than the translation of `0x0102A072` at `0x2005C238`. That
+is the cause of the "function entered without a return-address push" Task 628
+observed.
+
+The unconditional branch at `0x0102A0A0` in the same append carries its `E9` and
+a direct-jump fixup, so the defect is confined to the conditional branch's
+fallthrough edge, not to direct jumps.
+
+### Confirmed: the emitter condition
+
+The block-fallthrough emission in `src/runtime/aot_code_cache.cpp` appends the
+`E9` and its `kBlockFallthrough` fixup only when the block's last instruction is
+an `AotInstructionKind::kCopy`. A block whose last instruction is a conditional
+branch receives no fallthrough branch. In the i386 layout, which lays
+instructions down in guest order, the fallthrough was physically next, so this
+never showed. This dynamic append emitted `0x0102A072` first and the
+`0x0102A065` block later, so what is physically next is not the fallthrough.
+
+### Confirmed: reproduction stability
+
+The same command does not reach this point every time. One attempt ended in a
+different fault at `0x200008CB`, and the next reproduced the original one. The
+figures in this section come from a run that reproduced the original fault.
+
+### Unresolved
+
+The scope of the fix is not yet decided. Whether to always append a fallthrough
+branch to a conditional-branch block, to omit it only when the next emitted
+instruction is the fallthrough target, and what this means for the i386 layout
+are the questions for the next task.
+
+| Item | Status |
+|---|---|
+| Map dump at the return | **Confirmed** |
+| Fixup list for `0x0102A06C` | **Confirmed**: taken edge only |
+| Owner of the bytes after the `jge` | **Confirmed**: a `0x010F1A80` prologue copy |
+| Cause of the missing push | **Confirmed**: conditional-branch fallthrough not emitted |
+| Direct jump edges | **Confirmed**: correct |
+| Scope of the fix | **Unresolved** |
+
+## 3.67 Task 630 — 조건 분기 fallthrough를 emit하고, frontier가 `0x010F6062`로 이동함
+
+Task 630은 Task 629가 확정한 결함을 고쳤습니다. `BuildAotCodeCacheImage`에서
+조건 분기로 끝나는 블록은 이제 pending fallthrough를 남기고, 실제로 바이트를
+만드는 다음 명령이 그 target이 아니거나 뒤에 아무것도 없으면 `E9`와
+`kBlockFallthrough` fixup을 emit합니다. fallthrough가 물리적으로 다음인
+image의 바이트는 바뀌지 않습니다.
+
+### 확인됨: edge가 생김
+
+```text
+[repiu-aot-map-entry] target=0x0102A06C index=59420 cache=0x2005C497 guest_len=6 emitted_len=6 bytes=0F8D0CF8FFFF
+[repiu-aot-map-fixup] source=0x0102A06C kind=conditional-branch target=0x01029F54 patch=0x0005C499 resolved=1
+[repiu-aot-map-fixup] source=0x0102A06C kind=block-fallthrough target=0x0102A072 patch=0x0005C49E resolved=1
+```
+
+같은 실행에서 호출 루프도 정상 동작했습니다. `0x0102A082`로의 return이
+`edx=0x0111128B`, `eax=0x00000001`, `status=0x010F1B20`으로 관측되었습니다.
+이전에는 `edx`가 `0`이고 비교가 항상 같음으로 나왔습니다.
+
+### 확인됨: 기존 fault 소멸과 새 frontier
+
+`0x011A6440`의 fault는 사라졌습니다. 다섯 번 연속 실행에서 모두 같은 새
+지점에서 멈췄습니다.
+
+```text
+[repiu-fault] unhandled signal=0xb rip=0x200008cb eip=0x200008cb access=0x2a
+  bytes=67 66 89 43 06 cc ... eax=0x5 ebx=0x24 ecx=0x0 edx=0x158cc40
+  esi=0x3a98 edi=0x158cc28 esp=0x158cbf0
+```
+
+emitted bytes `67 66 89 43 06`은 guest `66 89 43 06`, 즉
+`MOV [EBX+6],AX`의 lowering입니다. 원본 object 2에서 이 인코딩은 한 곳
+`0x010F6062`에만 있습니다.
+
+```text
+010f605e: 58                pop  %eax
+010f605f: 5b                pop  %ebx
+010f6060: 5b                pop  %ebx
+010f6061: 5b                pop  %ebx
+010f6062: 66 89 43 06       mov  %ax,0x6(%ebx)
+010f6066: 66 8c 03          mov  %es,(%ebx)
+010f6069: 07                pop  %es
+010f606a: 5d                pop  %ebp
+010f606b: c3                ret
+```
+
+`EBX`는 far pointer를 기록할 대상 포인터여야 하는데 `0x24`였습니다. `0x24`는
+segment HLE가 `PUSH ES`로 stack에 기록하는 ES selector 값이고, fault 시
+`guest_stack_m4`와 `guest_stack_p4`도 `0x24`였습니다. 따라서 이 epilogue의
+세 `POP EBX`가 소비한 stack 내용이 의도한 것과 어긋나 있습니다.
+
+### 확인됨: emitter 회귀 항목
+
+`long_mode_emission` 코어 프로브에 두 항목을 추가했습니다.
+
+```text
+long_mode_emission_conditional_fallthrough_adjacent=true,reordered=true
+long_mode_emission_all=true
+core_probe_total=24
+core_probe_failures=0
+```
+
+인접 항목은 fallthrough가 다음 블록일 때 `kBlockFallthrough`가 생기지 않음을,
+reordered 항목은 fallthrough가 앞쪽에 이미 emit되었을 때 해소된 fixup이 그
+cache offset을 가리킴을 확인합니다.
+
+### 미확정
+
+`0x010F6062` 앞의 stack 내용이 왜 어긋나는지는 확정되지 않았습니다. 후보는
+`PUSH ES`/`POP ES` segment HLE의 stack 폭과 순서, 그리고 이 routine을 호출한
+경로의 frame 구성입니다.
+
+| 항목 | 상태 |
+|---|---|
+| `0x0102A06C`의 block-fallthrough fixup | **확인됨**: 해소됨 |
+| 호출 루프 정상 동작 | **확인됨** |
+| `0x011A6440` fault | **해소됨** |
+| 새 frontier | **확인됨**: guest `0x010F6062`, cache `0x200008CB` |
+| `EBX=0x24`의 출처 | **미확정** |
+| i386 배치 바이트 변화 | **없음**: 인접 항목으로 확인 |
+
+## 3.67 (English) Task 630 — the conditional fallthrough is emitted, and the frontier moves to `0x010F6062`
+
+Task 630 fixed the defect Task 629 established. In `BuildAotCodeCacheImage`, a
+block ending in a conditional branch now leaves a pending fallthrough, and an
+`E9` with a `kBlockFallthrough` fixup is emitted when the next instruction that
+actually emits bytes is not its target, or when nothing follows. Images whose
+fallthrough is physically next keep their bytes.
+
+### Confirmed: the edge now exists
+
+```text
+[repiu-aot-map-entry] target=0x0102A06C index=59420 cache=0x2005C497 guest_len=6 emitted_len=6 bytes=0F8D0CF8FFFF
+[repiu-aot-map-fixup] source=0x0102A06C kind=conditional-branch target=0x01029F54 patch=0x0005C499 resolved=1
+[repiu-aot-map-fixup] source=0x0102A06C kind=block-fallthrough target=0x0102A072 patch=0x0005C49E resolved=1
+```
+
+The calling loop also behaves correctly in the same run. The return to
+`0x0102A082` was observed with `edx=0x0111128B`, `eax=0x00000001`, and
+`status=0x010F1B20`. Previously `edx` was `0` and every comparison reported
+equal.
+
+### Confirmed: the old fault is gone and a new frontier appears
+
+The `0x011A6440` fault is gone. Five consecutive runs all stopped at the same
+new point.
+
+```text
+[repiu-fault] unhandled signal=0xb rip=0x200008cb eip=0x200008cb access=0x2a
+  bytes=67 66 89 43 06 cc ... eax=0x5 ebx=0x24 ecx=0x0 edx=0x158cc40
+  esi=0x3a98 edi=0x158cc28 esp=0x158cbf0
+```
+
+The emitted bytes `67 66 89 43 06` are the lowering of guest `66 89 43 06`,
+`MOV [EBX+6],AX`. That encoding appears exactly once in the original object 2,
+at `0x010F6062`.
+
+```text
+010f605e: 58                pop  %eax
+010f605f: 5b                pop  %ebx
+010f6060: 5b                pop  %ebx
+010f6061: 5b                pop  %ebx
+010f6062: 66 89 43 06       mov  %ax,0x6(%ebx)
+010f6066: 66 8c 03          mov  %es,(%ebx)
+010f6069: 07                pop  %es
+010f606a: 5d                pop  %ebp
+010f606b: c3                ret
+```
+
+`EBX` should be the pointer this far pointer is written through, and it was
+`0x24`. That is the ES selector value the segment HLE writes to the stack for
+`PUSH ES`, and at the fault both `guest_stack_m4` and `guest_stack_p4` were
+`0x24` as well. The stack this epilogue's three `POP EBX` instructions consume is
+therefore not what the guest intended.
+
+### Confirmed: emitter regression items
+
+Two items were added to the `long_mode_emission` core probe.
+
+```text
+long_mode_emission_conditional_fallthrough_adjacent=true,reordered=true
+long_mode_emission_all=true
+core_probe_total=24
+core_probe_failures=0
+```
+
+The adjacent item confirms that no `kBlockFallthrough` appears when the
+fallthrough is the next block; the reordered item confirms that a resolved fixup
+points at the earlier cache offset when the fallthrough was emitted first.
+
+### Unresolved
+
+Why the stack in front of `0x010F6062` is misaligned is not established.
+Candidates are the width and ordering of the `PUSH ES` / `POP ES` segment HLE,
+and the frame built by the path that called this routine.
+
+| Item | Status |
+|---|---|
+| Block-fallthrough fixup at `0x0102A06C` | **Confirmed**: resolved |
+| Calling loop behavior | **Confirmed**: correct |
+| `0x011A6440` fault | **Resolved** |
+| New frontier | **Confirmed**: guest `0x010F6062`, cache `0x200008CB` |
+| Origin of `EBX=0x24` | **Unresolved** |
+| Byte changes in the i386 layout | **None**: confirmed by the adjacent item |
+
+## 3.68 Task 631 — `POP r/m32` 메모리 형식에 lowering이 없었고, 경계는 guest 주소에서 그대로 실행됨
+
+### 확인됨: 진입 프레임은 정상
+
+`REPIU_GUEST_WRITE_TRACE=0x0158CBEC`로 얻은 push 타임라인입니다.
+
+| guest | 명령 | 기록된 stack slot |
+|---|---|---|
+| `0x010F6034` | `PUSH EBP` | `0x0158CBF8` |
+| `0x010F6035` | `PUSH ES` (HLE) | `0x0158CBF4` |
+| `0x010F6036` | `PUSH EBX` | `0x0158CBF0` |
+| `0x010F6037` | `PUSH DS` (HLE) | `0x0158CBEC`, 값 `0x24` |
+| `0x010F6038` | `PUSH EDX` | `0x0158CBE8` |
+| `0x010F6039` | `CALL 0x010F606C` | `0x0158CBE4` |
+
+segment HLE의 stack 폭은 정확히 4바이트입니다. Task 630이 남긴 "`PUSH ES` /
+`POP ES`의 폭과 순서" 후보는 **기각**되었습니다.
+
+### 확인됨: 원인은 `POP DWORD PTR [EDI+0x14]`
+
+`0x010F6034`의 함수는 Watcom `int386x` 계열 wrapper이며, 되돌아온 뒤
+`0x010F6056`의 `8F 47 14`로 한 dword를 꺼내 `[EDI+0x14]`에 저장합니다.
+
+```text
+[repiu-watch] event=fault guest=0x010F6056 n=1 at=0x200008A8 esp=0x0158CBE0
+[repiu-watch] event=step  guest=0x010F6056 n=1 at=0x010F6056 le_bytes=0x184789C01914478F
+[repiu-watch] event=dispatch_req guest=0x010F6059 n=1
+[repiu-watch] event=cache_enter guest=0x010F6059 n=1 at=0x200008A9
+```
+
+`ClassifyLongModeBytes`는 `0x8F`를 `NeedsWidthReencode`로 판정하지만,
+`HasStackSequenceLowering`은 `mod == 3`인 레지스터 형식만 받았습니다. 메모리
+형식은 lowering이 없어 `INT3` 경계가 되었고, 해석기에도 `POP r/m32` 처리가
+없습니다. 결과적으로 guest ESP가 4만큼 오르지 않아 뒤따르는 `POP EAX`와 세
+번의 `POP EBX`가 한 슬롯씩 어긋난 값을 소비했고, `EBX`가 진입 시 `PUSH DS`가
+남긴 `0x24`를 받았습니다.
+
+### 수정과 확인
+
+메모리 형식에 세 명령 sequence를 추가했습니다.
+
+```text
+mov  r14d, [r15]
+lea  r15d, [r15+4]
+mov  [<guest mem>], r14d      ; 8F 47 14 -> 67 44 89 77 14
+```
+
+ESP를 base로 쓰는 목적지와 prefix가 붙은 형식은 fail-closed로 남겼습니다.
+
+```text
+long_mode_stack_sequences=true,push_imm8_sign_extended=true,
+control_flow_still_refused=true,pop_memory_store_encoding=true,
+pop_memory_refusals_kept=true
+core_probe_total=24
+core_probe_failures=0
+```
+
+`REPIU_GUEST_WATCH=0x010F6056`은 더 이상 아무 event도 내지 않습니다.
+`0x010F6062` fault는 사라졌습니다.
+
+### 확인됨: 일반적 위험 — 처리기 없는 경계는 guest 주소에서 단일 실행됨
+
+이번 측정으로 x64 실행 모델의 넓은 위험이 드러났습니다. AOT가 거부한 명령은
+`INT3` 경계가 되고, 해석기에 처리가 없으면 runtime은 EIP를 guest 주소로 두고
+trap flag를 세워 **원본 32비트 명령을 64비트로 한 번 실행**한 뒤 다음 guest
+주소로 재진입합니다. 두 모드에서 의미가 같은 명령에만 우연히 안전하며,
+스택을 건드리는 명령은 host RSP를 쓰고 guest ESP를 그대로 둡니다.
+
+### 확인됨: 다음 frontier는 jump table
+
+수정 후 세 번 연속 실행이 모두 같은 지점에서 멈췄습니다.
+
+```text
+[repiu-fault] unhandled signal=0xb rip=0x105547d eip=0x105547d access=0x0
+  bytes=2e ff 24 9d 10 54 05 01 ...
+[repiu-watch] event=fault guest=0x0105547D n=1 at=0x2004B0AF ebx=0x00000000
+[repiu-watch] event=step  guest=0x0105547D n=1 at=0x0105547D
+[repiu-aot-map-entry] target=0x0105547D index=48424 cache=0x2004B0AF guest_len=8 emitted_len=1 bytes=CC
+[repiu-aot-map-fixup] source=0x0105547D kind=hle-boundary target=0x00000000 resolved=0
+```
+
+`2E FF 24 9D 10 54 05 01`은 `JMP CS:[EBX*4+0x01055410]`, 즉 jump table입니다.
+long mode 경로에는 `AotInstructionKind::kJumpTable` 슬롯이 없어 초기 map에서
+이미 `CC` 한 바이트로 emit되어 있습니다. 위의 일반적 위험이 그대로 드러난
+경우이며, 64비트에서 이 인코딩은 qword를 읽는 간접 분기가 됩니다.
+
+| 항목 | 상태 |
+|---|---|
+| segment HLE stack 폭 | **확인됨**: 4바이트, 후보에서 기각 |
+| `0x010F6056` 경계 원인 | **확인됨**: `POP r/m32` 메모리 형식 lowering 없음 |
+| 메모리 형식 lowering | **추가됨**: `67 44 89 <modrm> ...` |
+| ESP base / prefix 형식 | **fail-closed 유지** |
+| `0x010F6062` fault | **해소됨** |
+| 경계 명령의 native 단일 실행 | **확인됨**: 일반적 위험 |
+| 다음 frontier | **확인됨**: `0x0105547D` jump table, long mode 슬롯 없음 |
+
+## 3.68 (English) Task 631 — the `POP r/m32` memory form had no lowering, and a boundary runs at its guest address
+
+### Confirmed: the entry frame is correct
+
+The push timeline from `REPIU_GUEST_WRITE_TRACE=0x0158CBEC`:
+
+| guest | instruction | recorded stack slot |
+|---|---|---|
+| `0x010F6034` | `PUSH EBP` | `0x0158CBF8` |
+| `0x010F6035` | `PUSH ES` (HLE) | `0x0158CBF4` |
+| `0x010F6036` | `PUSH EBX` | `0x0158CBF0` |
+| `0x010F6037` | `PUSH DS` (HLE) | `0x0158CBEC`, value `0x24` |
+| `0x010F6038` | `PUSH EDX` | `0x0158CBE8` |
+| `0x010F6039` | `CALL 0x010F606C` | `0x0158CBE4` |
+
+The segment HLE's stack width is exactly four bytes. Task 630's candidate, "the
+width and ordering of `PUSH ES` / `POP ES`", is **rejected**.
+
+### Confirmed: the cause is `POP DWORD PTR [EDI+0x14]`
+
+The function at `0x010F6034` is a Watcom `int386x`-style wrapper. After the
+inner call returns, `8F 47 14` at `0x010F6056` takes one dword off the stack and
+stores it at `[EDI+0x14]`.
+
+```text
+[repiu-watch] event=fault guest=0x010F6056 n=1 at=0x200008A8 esp=0x0158CBE0
+[repiu-watch] event=step  guest=0x010F6056 n=1 at=0x010F6056 le_bytes=0x184789C01914478F
+[repiu-watch] event=dispatch_req guest=0x010F6059 n=1
+[repiu-watch] event=cache_enter guest=0x010F6059 n=1 at=0x200008A9
+```
+
+`ClassifyLongModeBytes` sends `0x8F` through `NeedsWidthReencode`, but
+`HasStackSequenceLowering` accepted only the register form with `mod == 3`. The
+memory form had no lowering, so it became an `INT3` boundary, and the interpreter
+has no `POP r/m32` case either. Guest ESP was therefore never raised by four, so
+the following `POP EAX` and three `POP EBX` consumed values one slot off and
+`EBX` received the `0x24` the entry `PUSH DS` had left.
+
+### The fix and its verification
+
+The memory form now emits a three-instruction sequence:
+
+```text
+mov  r14d, [r15]
+lea  r15d, [r15+4]
+mov  [<guest mem>], r14d      ; 8F 47 14 -> 67 44 89 77 14
+```
+
+Destinations addressed through ESP, and any prefixed form, stay fail-closed.
+
+```text
+long_mode_stack_sequences=true,push_imm8_sign_extended=true,
+control_flow_still_refused=true,pop_memory_store_encoding=true,
+pop_memory_refusals_kept=true
+core_probe_total=24
+core_probe_failures=0
+```
+
+`REPIU_GUEST_WATCH=0x010F6056` now reports no events at all, and the
+`0x010F6062` fault is gone.
+
+### Confirmed: the general hazard — an unhandled boundary runs at its guest address
+
+The measurement exposes a wider hazard in the x64 execution model. An
+instruction the AOT refuses becomes an `INT3` boundary, and when the interpreter
+has no case for it the runtime leaves EIP at the guest address, sets the trap
+flag, and **executes the original 32-bit instruction once as 64-bit code**
+before re-entering at the next guest address. That is only accidentally safe for
+instructions whose meaning is the same in both modes; anything touching the stack
+uses the host RSP and leaves guest ESP untouched.
+
+### Confirmed: the next frontier is a jump table
+
+After the fix, three consecutive runs stopped at the same point.
+
+```text
+[repiu-fault] unhandled signal=0xb rip=0x105547d eip=0x105547d access=0x0
+  bytes=2e ff 24 9d 10 54 05 01 ...
+[repiu-watch] event=fault guest=0x0105547D n=1 at=0x2004B0AF ebx=0x00000000
+[repiu-watch] event=step  guest=0x0105547D n=1 at=0x0105547D
+[repiu-aot-map-entry] target=0x0105547D index=48424 cache=0x2004B0AF guest_len=8 emitted_len=1 bytes=CC
+[repiu-aot-map-fixup] source=0x0105547D kind=hle-boundary target=0x00000000 resolved=0
+```
+
+`2E FF 24 9D 10 54 05 01` is `JMP CS:[EBX*4+0x01055410]`, a jump table. The
+long-mode path has no `AotInstructionKind::kJumpTable` slot, so the initial map
+already holds one `CC` byte for it. This is the general hazard above in plain
+view: in 64-bit mode that encoding is an indirect branch through a qword.
+
+| Item | Status |
+|---|---|
+| Segment HLE stack width | **Confirmed**: four bytes; candidate rejected |
+| Cause of the `0x010F6056` boundary | **Confirmed**: no `POP r/m32` memory lowering |
+| Memory-form lowering | **Added**: `67 44 89 <modrm> ...` |
+| ESP-base and prefixed forms | **Kept fail-closed** |
+| `0x010F6062` fault | **Resolved** |
+| Native single-step of a boundary | **Confirmed**: general hazard |
+| Next frontier | **Confirmed**: `0x0105547D` jump table, no long-mode slot |
+
+## 3.69 Task 632 — long mode jump table 슬롯, 그리고 세 번째 경계 사례
+
+### 확인됨: frontier는 슬롯이 없어서 생긴 경계였음
+
+```text
+[repiu-aot-map-entry] target=0x0105547D index=48424 cache=0x2004B0AF guest_len=8 emitted_len=1 bytes=CC
+[repiu-aot-map-fixup] source=0x0105547D kind=hle-boundary target=0x00000000 resolved=0
+```
+
+planner는 `2E FF 24 9D 10 54 05 01`을 `kJumpTable`로 분류하지만 long mode emit
+경로에는 해당 슬롯이 없었습니다. i386에는 `EmitJumpTableSlot`이 있습니다.
+
+### 설계 선택
+
+두 선택지를 비교했습니다. 처리기 없는 경계의 native 단일 실행을 fail-closed로
+바꾸는 것은 Task 631이 기록한 일반적 위험을 없애지만 도달 범위를 크게 되돌리고
+census가 먼저 필요합니다. long mode 슬롯을 만드는 쪽은 frontier를 직접 없애고
+다른 경계의 동작을 바꾸지 않습니다. 후자를 택했습니다.
+
+### 구현
+
+i386처럼 표를 cache에 복사하지 않고 guest의 표를 실행 시점에 읽습니다.
+
+```text
+67 44 8B 34 9D <disp32>          ; mov r14d, [ebx*4 + table]
+41 BA <guest addr | 0x80000000>  ; producer tag
+49 BC <thunk>                    ; movabs r12, RepiuLinuxX64ReturnThunk
+41 FF E4                         ; jmp r12
+```
+
+thunk은 R14D를 해석 대상 guest 주소로만 쓰고 스택을 건드리지 않으므로, Task
+573의 indirect call 슬롯에서 return 주소 push만 빼면 그대로 indirect jump가
+됩니다. 주소 재작성은 `LowerLongModeTargetLoad`로 일반화하여 두 슬롯이
+공유합니다.
+
+선행 `2E`(CS) 하나는 무시합니다. LE fixup이 절대 주소를 배치된 선형 주소로
+이미 바꾸므로 이 이미지에서 selector base는 0이고 `CS:`는 데이터 참조에
+무연산입니다. i386 슬롯도 같은 이유로 이 prefix를 버립니다. 다른 segment
+override, `/2`, ESP index, base를 쓰는 SIB는 거부합니다.
+
+### 검증
+
+실행 프로브가 네 가지를 확인합니다.
+
+```text
+  jump_table_first_asked observed=0x140030 expected=0x140030
+  jump_table_resolver_calls observed=0x1 expected=0x1
+  jump_table_landed observed=0x3333 expected=0x3333
+  jump_table_esp_untouched observed=0x20001800 expected=0x20001800
+guest_jump_table=true tables=1
+guest_jump_table_refusals=true,cs=1,bare=1,segment=1,call=1,esp_index=1,base=1
+core_probe_total=24
+core_probe_failures=0
+```
+
+`jump_table_esp_untouched`가 call 슬롯과 구별되는 핵심입니다. resolver 질문이
+한 번뿐이라는 것도 push가 없었음을 말합니다.
+
+`REPIU_GUEST_WATCH=0x0105547D`는 더 이상 event를 내지 않고, 해당 fault는
+사라졌습니다.
+
+### 확인됨: 다음 frontier도 같은 위험의 세 번째 사례
+
+세 번 연속 실행이 모두 같은 지점에서 멈췄습니다.
+
+```text
+[repiu-fault] unhandled signal=0x4 rip=0x10efe38 eip=0x10efe38 access=0x0
+  bytes=60 89 c7 81 3d 4c 62 1a 01 ff ff 00 00 75 2b e8
+[repiu-aot-map-entry] target=0x010EFE38 index=653 cache=0x200016DE guest_len=1 emitted_len=1 bytes=CC
+[repiu-aot-map-fixup] source=0x010EFE38 kind=hle-boundary target=0x00000000 resolved=0
+```
+
+`60`은 `PUSHAD`이고 64비트 모드에는 없는 인코딩이므로 SIGILL입니다. Task 631이
+기록한 "처리기 없는 경계는 guest 주소에서 그대로 단일 실행된다"의 세 번째
+사례이며, 앞의 두 건과 달리 조용히 잘못 실행되지 않고 즉시 죽습니다.
+
+`0x010EFE38`은 초기 map에서 이미 `CC` 한 바이트입니다. 즉 이 경계는 동적
+번역이 아니라 초기 배치에서부터 존재했습니다.
+
+| 항목 | 상태 |
+|---|---|
+| `0x0105547D` 경계 원인 | **확인됨**: long mode `kJumpTable` 슬롯 없음 |
+| long mode jump table 슬롯 | **추가됨** |
+| guest ESP 불변 | **확인됨**: 실행 프로브 |
+| 거부 형식 | **확인됨**: segment, `/2`, ESP index, base |
+| `0x0105547D` fault | **해소됨** |
+| 다음 frontier | **확인됨**: `0x010EFE38` `PUSHAD`, SIGILL |
+| 경계의 native 단일 실행 | **미해결**: 세 번째 사례 |
+
+## 3.69 (English) Task 632 — a long-mode jump-table slot, and the hazard's third case
+
+### Confirmed: the frontier was a boundary for want of a slot
+
+```text
+[repiu-aot-map-entry] target=0x0105547D index=48424 cache=0x2004B0AF guest_len=8 emitted_len=1 bytes=CC
+[repiu-aot-map-fixup] source=0x0105547D kind=hle-boundary target=0x00000000 resolved=0
+```
+
+The planner classifies `2E FF 24 9D 10 54 05 01` as `kJumpTable`, but the
+long-mode emit path had no such slot. The i386 path has `EmitJumpTableSlot`.
+
+### The design choice
+
+Two options were compared. Making the native single-step of an unhandled
+boundary fail closed removes the general hazard Task 631 recorded, but it gives
+up a great deal of reach and needs a census first. Building the long-mode slot
+removes the frontier directly and changes no other boundary's behavior. The
+second was taken.
+
+### Implementation
+
+Rather than copying a table into the cache as i386 does, the guest's own table
+is read at run time.
+
+```text
+67 44 8B 34 9D <disp32>          ; mov r14d, [ebx*4 + table]
+41 BA <guest addr | 0x80000000>  ; producer tag
+49 BC <thunk>                    ; movabs r12, RepiuLinuxX64ReturnThunk
+41 FF E4                         ; jmp r12
+```
+
+The thunk treats R14D purely as the guest address to resolve and touches no
+stack, so Task 573's indirect-call slot becomes an indirect jump the moment its
+return-address push is left out. The address rewrite was generalized into
+`LowerLongModeTargetLoad` so both slots share it.
+
+One leading `2E` (CS) is ignored. LE fixups have already rewritten absolute
+addresses into placed linear ones, so selector bases in this image are zero and
+`CS:` is a no-op on a data reference; the i386 slot drops the same prefix for
+the same reason. Other segment overrides, `/2`, an ESP index, and a SIB naming a
+base register are refused.
+
+### Verification
+
+The executing probe checks four things:
+
+```text
+  jump_table_first_asked observed=0x140030 expected=0x140030
+  jump_table_resolver_calls observed=0x1 expected=0x1
+  jump_table_landed observed=0x3333 expected=0x3333
+  jump_table_esp_untouched observed=0x20001800 expected=0x20001800
+guest_jump_table=true tables=1
+guest_jump_table_refusals=true,cs=1,bare=1,segment=1,call=1,esp_index=1,base=1
+core_probe_total=24
+core_probe_failures=0
+```
+
+`jump_table_esp_untouched` is what separates this slot from the call slot, and
+the single resolver question says the same thing from the other side.
+
+`REPIU_GUEST_WATCH=0x0105547D` now reports no events and that fault is gone.
+
+### Confirmed: the next frontier is the hazard's third case
+
+Three consecutive runs stopped at the same point.
+
+```text
+[repiu-fault] unhandled signal=0x4 rip=0x10efe38 eip=0x10efe38 access=0x0
+  bytes=60 89 c7 81 3d 4c 62 1a 01 ff ff 00 00 75 2b e8
+[repiu-aot-map-entry] target=0x010EFE38 index=653 cache=0x200016DE guest_len=1 emitted_len=1 bytes=CC
+[repiu-aot-map-fixup] source=0x010EFE38 kind=hle-boundary target=0x00000000 resolved=0
+```
+
+`60` is `PUSHAD`, an encoding 64-bit mode does not have, so the single step
+raises SIGILL. This is the third case of "an unhandled boundary is executed at
+its guest address" that Task 631 recorded, and unlike the first two it dies at
+once rather than running something wrong quietly.
+
+`0x010EFE38` is already a single `CC` in the initial map, so this boundary comes
+from the initial placement rather than a dynamic translation.
+
+| Item | Status |
+|---|---|
+| Cause of the `0x0105547D` boundary | **Confirmed**: no long-mode `kJumpTable` slot |
+| Long-mode jump-table slot | **Added** |
+| Guest ESP unchanged | **Confirmed**: executing probe |
+| Refused forms | **Confirmed**: segment, `/2`, ESP index, base |
+| `0x0105547D` fault | **Resolved** |
+| Next frontier | **Confirmed**: `0x010EFE38` `PUSHAD`, SIGILL |
+| Native single-step of a boundary | **Unresolved**: third case |
+
+## 3.70 Task 633 — census가 Task 632의 슬롯을 놓치고 있었고, boundary 지형이 드러남
+
+### 확인됨: `agrees=`가 제 일을 함
+
+`repiu_instruction_census`는 emit 가능 여부를 emitter에게 묻고, 마지막에
+emitter의 자체 카운터와 자기 집계를 비교합니다. Task 632 직후 그 비교가
+어긋났습니다.
+
+```text
+emitter counters ... indcalls=75 refused=740  agrees=false
+refused             761
+  kJumpTable                            21  (5.16% of non-copy)
+```
+
+census의 `RecordIsEmitted`가 `kJumpTable`을 `default: return false`로 보내고
+있었습니다. 761 - 740 = 21이 정확히 새 슬롯이 emit하는 건수입니다. 소스 주석이
+"emit 규칙의 사본이 낡아 두 번 잡혔다"고 적어 둔 그 장치가 세 번째로 잡은
+것입니다.
+
+`kJumpTable` 분기를 넣어 emitter에게 묻게 하고, `jump tables` 집계와
+`tables=` 출력, `agrees` 비교를 추가했습니다.
+
+```text
+  jump tables         21  (0.04%)
+  emittable           51126  (98.57%)
+  refused             740  (1.43%)
+  blocks complete     11117  (88.87%)
+  emitter counters    ... indcalls=75 tables=21 refused=740  agrees=true
+```
+
+`blocks complete`가 88.70%에서 88.87%로 올라간 것은 Task 632가 실제로 늘린
+값이며, census가 그동안 이를 반영하지 못하고 있었습니다.
+
+### 확인됨: 남은 740건의 지형
+
+정책 판단의 입력입니다. `pumpit2a`의 `PIU.EXE`, 명령 51,866건 기준입니다.
+
+| 구분 | 건수 |
+|---|---:|
+| 전체 refused | 740 (1.43%) |
+| non-copy 레코드 | 386 |
+| kCopy 레코드 | 354 |
+
+non-copy 386건의 종류별 분포입니다.
+
+| kind | 건수 | non-copy 대비 |
+|---|---:|---:|
+| `kPortIo` | 138 | 35.75% |
+| `kHleBoundary` | 105 | 27.20% |
+| `kGuardedSegmentRead` | 71 | 18.39% |
+| `kSegmentOverrideMem` | 57 | 14.77% |
+| `kIndirectExit` | 15 | 3.89% |
+
+kCopy 354건의 mnemonic과 사유입니다.
+
+| mnemonic | 사유 | 건수 |
+|---|---|---:|
+| `push` | stack-pointer | 277 |
+| `push` | invalid-in-long-mode | 56 |
+| `mov` | stack-pointer | 15 |
+| `push` | operand-width | 2 |
+| `enter` | stack-pointer | 1 |
+| `inc` | silently-different | 1 |
+| `popad` | invalid-in-long-mode | 1 |
+| `pushad` | invalid-in-long-mode | 1 |
+
+### 판단: 경계 자체가 위험한 것이 아님
+
+이 수치는 Task 631이 기록한 위험을 다시 읽게 합니다. 경계가 되는 것 자체는
+문제가 아닙니다. `PUSH ES`는 `invalid-in-long-mode`로 경계가 되지만 해석기의
+segment HLE가 처리하며, Task 631의 push 타임라인은 그 stack 폭이 정확히
+4바이트임을 확인했습니다. `kPortIo`도 처리기가 있습니다.
+
+위험한 것은 **처리기가 없는 경계**입니다. 그때만 runtime이 guest 주소에서
+32비트 명령을 64비트로 한 번 실행합니다. 지금까지 나온 세 사례가 모두
+그것입니다.
+
+* `POP r/m32` 메모리 형식 — 조용히 guest ESP를 그대로 둠 (Task 631에서 수정)
+* jump table — 조용히 qword 간접 분기 (Task 632에서 수정)
+* `PUSHAD` — 64비트에 없는 인코딩이므로 SIGILL
+
+census는 `PUSHAD`와 `POPAD`가 각 1건임을 말해 줍니다. 즉 다음 단계는 정책을
+전면 교체하는 것이 아니라, 처리기 없는 경계를 하나씩 없애는 쪽이 여전히
+비용 대비 효과가 큽니다. `stack-pointer` 사유의 `push` 277건은 그다음으로 큰
+덩어리이며, 이들은 ESP를 피연산자로 쓰는 형식이라 별도 설계가 필요합니다.
+
+| 항목 | 상태 |
+|---|---|
+| census의 `kJumpTable` 규칙 | **수정됨** |
+| `agrees=` | **복구됨**: true |
+| refused 총계 | **확인됨**: 740 (1.43%) |
+| non-copy 분포 | **확인됨** |
+| kCopy 거부 mnemonic | **확인됨** |
+| 경계 자체의 위험성 | **기각됨**: 처리기 있는 경계는 정상 |
+| 처리기 없는 경계 | **미해결**: 다음 후보는 `PUSHAD`/`POPAD` |
+
+## 3.70 (English) Task 633 — the census had missed Task 632's slot, and the boundary terrain shows
+
+### Confirmed: `agrees=` did its job
+
+`repiu_instruction_census` asks the emitter whether a record can be emitted and
+compares the emitter's own counters against its tally at the end. Straight after
+Task 632 that comparison disagreed:
+
+```text
+emitter counters ... indcalls=75 refused=740  agrees=false
+refused             761
+  kJumpTable                            21  (5.16% of non-copy)
+```
+
+The census's `RecordIsEmitted` was sending `kJumpTable` to
+`default: return false`. 761 - 740 = 21 is exactly what the new slot emits. The
+guard whose comment records that it has already caught a stale rule twice caught
+one a third time.
+
+A `kJumpTable` arm now asks the emitter, and a `jump tables` tally, a `tables=`
+counter, and the `agrees` comparison were added.
+
+```text
+  jump tables         21  (0.04%)
+  emittable           51126  (98.57%)
+  refused             740  (1.43%)
+  blocks complete     11117  (88.87%)
+  emitter counters    ... indcalls=75 tables=21 refused=740  agrees=true
+```
+
+`blocks complete` rising from 88.70% to 88.87% is what Task 632 actually bought;
+the census had not been reporting it.
+
+### Confirmed: the terrain of the remaining 740
+
+This is the input to the policy decision. `pumpit2a`'s `PIU.EXE`, 51,866
+instructions.
+
+| Group | Count |
+|---|---:|
+| Refused overall | 740 (1.43%) |
+| Non-copy records | 386 |
+| kCopy records | 354 |
+
+The 386 non-copy records by kind:
+
+| Kind | Count | Of non-copy |
+|---|---:|---:|
+| `kPortIo` | 138 | 35.75% |
+| `kHleBoundary` | 105 | 27.20% |
+| `kGuardedSegmentRead` | 71 | 18.39% |
+| `kSegmentOverrideMem` | 57 | 14.77% |
+| `kIndirectExit` | 15 | 3.89% |
+
+The 354 kCopy records by mnemonic and reason:
+
+| Mnemonic | Reason | Count |
+|---|---|---:|
+| `push` | stack-pointer | 277 |
+| `push` | invalid-in-long-mode | 56 |
+| `mov` | stack-pointer | 15 |
+| `push` | operand-width | 2 |
+| `enter` | stack-pointer | 1 |
+| `inc` | silently-different | 1 |
+| `popad` | invalid-in-long-mode | 1 |
+| `pushad` | invalid-in-long-mode | 1 |
+
+### Assessment: a boundary is not the hazard
+
+These numbers reframe what Task 631 recorded. Becoming a boundary is not itself
+a problem. `PUSH ES` becomes one as `invalid-in-long-mode`, and the
+interpreter's segment HLE services it -- Task 631's push timeline confirmed its
+stack width is exactly four bytes. `kPortIo` has a handler too.
+
+What is dangerous is a boundary **with no handler**. Only then does the runtime
+execute a 32-bit instruction once as 64-bit code at its guest address. All three
+cases so far are that:
+
+* the `POP r/m32` memory form, which quietly left guest ESP alone (fixed in
+  Task 631);
+* the jump table, which quietly became a qword indirect branch (fixed in Task
+  632); and
+* `PUSHAD`, an encoding 64-bit mode does not have, which raises SIGILL.
+
+The census says `PUSHAD` and `POPAD` are one record each. So the next step is
+still to remove unhandled boundaries one at a time rather than to replace the
+policy wholesale. The 277 `push` records refused for `stack-pointer` are the
+next largest block, and those name ESP as an operand, which needs its own
+design.
+
+| Item | Status |
+|---|---|
+| The census's `kJumpTable` rule | **Fixed** |
+| `agrees=` | **Restored**: true |
+| Total refused | **Confirmed**: 740 (1.43%) |
+| Non-copy distribution | **Confirmed** |
+| kCopy refusal mnemonics | **Confirmed** |
+| Boundaries as such being dangerous | **Rejected**: a handled boundary is fine |
+| Boundaries with no handler | **Unresolved**: `PUSHAD` / `POPAD` are next |
+
+## 3.71 Task 634 — `PUSHAD` / `POPAD` lowering, 그리고 GS override로 이동한 frontier
+
+### 확인됨: 분류가 먼저 막고 있었음
+
+`0x60`은 초기 map에서 이미 `CC` 한 바이트였고, 처리기 없는 경계를 guest
+주소에서 단일 실행하는 경로가 SIGILL을 냈습니다. 해당 위치는 평범한 함수
+prologue입니다.
+
+```text
+010efe38: 60           pusha
+010efe39: 89 c7        mov  %eax,%edi
+010efe3b: 81 3d ...    cmpl $0xffff,0x9624c
+```
+
+구현 중에 분류 순서가 드러났습니다. `ClassifyLongModeBytes`는
+`IsInvalidInLongMode`를 `NeedsWidthReencode`보다 먼저 검사하고 그 자리에서
+`Refuse`합니다. `0x60`/`0x61`은 invalid 목록에 있으므로, width 경로에 추가하는
+것만으로는 도달하지 못했습니다.
+
+**교정:** invalid 분기가 `HasStackSequenceLowering`을 함께 묻도록 했습니다.
+divergence는 `kInvalidInLongMode` 그대로 두고 lowering만 붙입니다. 64비트에
+인코딩이 없다는 사실과, 그 효과를 다른 명령들로 쓸 수 있다는 사실은 다른
+문제이기 때문입니다. 같은 목록의 `PUSH ES`는 계속 `kNone`으로 남아 guest
+segment HLE가 처리합니다.
+
+### 구현
+
+```text
+PUSHAD                          POPAD
+  mov  r14d, r15d                 mov  edi, [r15+0]
+  lea  r15d, [r15-32]             mov  esi, [r15+4]
+  mov  [r15+0],  edi              mov  ebp, [r15+8]
+  mov  [r15+4],  esi              ;    [r15+12] 버림
+  mov  [r15+8],  ebp              mov  ebx, [r15+16]
+  mov  [r15+12], r14d             mov  edx, [r15+20]
+  mov  [r15+16], ebx              mov  ecx, [r15+24]
+  mov  [r15+20], edx              mov  eax, [r15+28]
+  mov  [r15+24], ecx              lea  r15d, [r15+32]
+  mov  [r15+28], eax
+```
+
+진입 ESP를 `lea` 이전에 R14D로 붙듭니다. 이후에 읽으면 32가 빠진 값이 되어
+guest가 `+12`에서 다른 값을 보게 되고, 아무것도 raise하지 않습니다.
+`PUSHAD`는 39바이트를 emit하므로 `kMaxLoweredBytes`를 24에서 48로 올렸습니다.
+이 상수의 모든 사용처는 스택 버퍼이거나 `<=` 비교입니다.
+
+### 검증
+
+```text
+long_mode_stack_sequences=true,...,pushad_entry_esp=true
+long_mode_invalid=true,refused=a/a
+long_mode_divergence_reasons=true
+core_probe_total=24
+core_probe_failures=0
+```
+
+기존 `long_mode_invalid`와 `long_mode_divergence_reasons`는 그대로
+통과합니다. 앞의 것은 `compatibility != kIdenticalBytes`만 보고, 뒤의 것은
+divergence만 보기 때문입니다. 둘 다 이번 변경이 지켜야 할 성질입니다.
+
+census도 따라 움직였습니다.
+
+```text
+  lowered             23565
+  emittable           51128  (98.58%)
+  refused             738  (1.42%)
+  blocks complete     11118  (88.88%)
+  agrees=true
+```
+
+`pushad`와 `popad` 행은 거부 목록에서 사라졌습니다.
+
+### 확인됨: 다음 frontier는 GS override
+
+세 번 연속 실행이 모두 같은 지점에서 멈췄습니다.
+
+```text
+[repiu-fault] unhandled signal=0xb rip=0x10f06d0 eip=0x10f06d0 access=0x9fdd
+  bytes=65 80 38 6a 75 4d 8d 45 ff b6 01 65 8a 18 88 35
+```
+
+`65 80 38 6A`는 `GS: CMP BYTE PTR [EAX], 0x6A`입니다. `rip == eip`이므로 다시
+처리기 없는 경계의 native 단일 실행이며, 64비트에서 `65`는 host의 GS base를
+씁니다. 이 Linux 스레드의 GS base는 0이어서 access `0x9FDD`가 나왔습니다.
+
+이는 기계적인 lowering으로 풀 문제가 아닙니다. Task 546 결정 5는 guest
+segment를 host FS/GS에 설치하지 않는다고 못박고 있으므로, GS override는
+설계 판단이 필요한 항목입니다. census의 `kSegmentOverrideMem` 57건이 그
+덩어리입니다.
+
+| 항목 | 상태 |
+|---|---|
+| `0x60`이 width 경로에 도달하지 못함 | **확인됨**: invalid 검사가 먼저 |
+| invalid + lowering 조합 | **추가됨**: divergence는 유지 |
+| `PUSHAD` / `POPAD` sequence | **추가됨**: 10 / 8 명령 |
+| 진입 ESP가 `+12` | **확인됨**: 바이트 검사 |
+| `kMaxLoweredBytes` | **48로 상향** |
+| `0x010EFE38` SIGILL | **해소됨** |
+| 다음 frontier | **확인됨**: `0x010F06D0` GS override |
+
+## 3.71 (English) Task 634 — `PUSHAD` / `POPAD` lowering, and a frontier that moves to a GS override
+
+### Confirmed: the classification was what blocked it
+
+`0x60` was already one `CC` byte in the initial map, and the path that
+single-steps an unhandled boundary at its guest address raised SIGILL. The site
+is an ordinary function prologue.
+
+```text
+010efe38: 60           pusha
+010efe39: 89 c7        mov  %eax,%edi
+010efe3b: 81 3d ...    cmpl $0xffff,0x9624c
+```
+
+Implementing it exposed the classifier's ordering. `ClassifyLongModeBytes` tests
+`IsInvalidInLongMode` before `NeedsWidthReencode` and `Refuse`s there. `0x60`
+and `0x61` are on the invalid list, so adding them to the width path alone never
+reached them.
+
+**Corrected:** the invalid branch now also asks `HasStackSequenceLowering`. The
+divergence stays `kInvalidInLongMode` and only a lowering is attached, because
+"64-bit mode has no encoding for this" and "its effect can be written with other
+instructions" are different facts. `PUSH ES`, on the same list, keeps `kNone`
+and is still serviced by the guest segment HLE.
+
+### Implementation
+
+```text
+PUSHAD                          POPAD
+  mov  r14d, r15d                 mov  edi, [r15+0]
+  lea  r15d, [r15-32]             mov  esi, [r15+4]
+  mov  [r15+0],  edi              mov  ebp, [r15+8]
+  mov  [r15+4],  esi              ;    [r15+12] discarded
+  mov  [r15+8],  ebp              mov  ebx, [r15+16]
+  mov  [r15+12], r14d             mov  edx, [r15+20]
+  mov  [r15+16], ebx              mov  ecx, [r15+24]
+  mov  [r15+20], edx              mov  eax, [r15+28]
+  mov  [r15+24], ecx              lea  r15d, [r15+32]
+  mov  [r15+28], eax
+```
+
+The entry ESP is captured into R14D before the `lea`. Read after it, the value
+would be thirty-two lower, the guest would find the wrong dword at `+12`, and
+nothing would raise. `PUSHAD` emits thirty-nine bytes, so `kMaxLoweredBytes`
+rose from 24 to 48; every use of that constant is a stack buffer or a `<=`.
+
+### Verification
+
+```text
+long_mode_stack_sequences=true,...,pushad_entry_esp=true
+long_mode_invalid=true,refused=a/a
+long_mode_divergence_reasons=true
+core_probe_total=24
+core_probe_failures=0
+```
+
+The existing `long_mode_invalid` and `long_mode_divergence_reasons` items still
+pass: the first only checks `compatibility != kIdenticalBytes` and the second
+only the divergence. Both are properties this change had to preserve.
+
+The census moved with it:
+
+```text
+  lowered             23565
+  emittable           51128  (98.58%)
+  refused             738  (1.42%)
+  blocks complete     11118  (88.88%)
+  agrees=true
+```
+
+The `pushad` and `popad` rows are gone from the refusal list.
+
+### Confirmed: the next frontier is a GS override
+
+Three consecutive runs stopped at the same point.
+
+```text
+[repiu-fault] unhandled signal=0xb rip=0x10f06d0 eip=0x10f06d0 access=0x9fdd
+  bytes=65 80 38 6a 75 4d 8d 45 ff b6 01 65 8a 18 88 35
+```
+
+`65 80 38 6A` is `GS: CMP BYTE PTR [EAX], 0x6A`. `rip == eip`, so this is again
+an unhandled boundary single-stepped natively, and in 64-bit mode `65` uses the
+host's GS base. This Linux thread has a zero GS base, producing the `0x9FDD`
+access.
+
+This is not a mechanical lowering. Task 546's decision 5 states that raw guest
+segments are never installed into host FS or GS, so a GS override is a design
+question. The census's 57 `kSegmentOverrideMem` records are that block.
+
+| Item | Status |
+|---|---|
+| `0x60` never reached the width path | **Confirmed**: the invalid test runs first |
+| Invalid plus a lowering | **Added**: divergence preserved |
+| `PUSHAD` / `POPAD` sequences | **Added**: 10 and 8 instructions |
+| Entry ESP at `+12` | **Confirmed**: byte check |
+| `kMaxLoweredBytes` | **Raised to 48** |
+| `0x010EFE38` SIGILL | **Resolved** |
+| Next frontier | **Confirmed**: `0x010F06D0` GS override |
+
 ---
+
+## 3.72 Task 635 — GS selector 해석은 native-folded LINEXE code segment
+
+Task 635는 `ReResolveAotSegmentOverrides`가 live segment table을 갱신할 때
+ES~GS의 shadow address, selector, base, limit, flags, policy를 출력하는
+`REPIU_AOT_SEGMENT_RESOLUTION_TRACE` 진단을 추가했습니다. 환경 변수가 없거나
+`0`이면 출력하지 않습니다. 기본 `pumpit2a` 실행에서 새 trace는 0행이었고 기존
+frontier는 그대로 재현됐습니다.
+
+### 확인됨: fault 직전 GS는 selector `0x0080`
+
+추적 실행의 fault 직전 상태는 반복해서 동일했습니다.
+
+```text
+[repiu-aot-segment-resolution] segment=GS index=5 shadow=0x1F00000A
+  selector=0x0080 base=0x095C7000 limit=0x00009FFF
+  flags=0x00000000 policy=1
+[repiu-fault] unhandled signal=0xb rip=0x10f06d0 eip=0x10f06d0
+  access=0x9fdd ... eax=0x9fdd ... edx=0x80
+```
+
+`policy=1`은 `AotSegmentAccessPolicy::kNativeFolded`입니다. 따라서 Task 635
+설계의 갈래 A가 확인됐고, low-memory HLE 부재는 이 frontier의 원인이 아닙니다.
+
+설계가 후보 표에 적은 extracted code limit `0x914F`와 live limit `0x9FFF`의
+차이도 코드로 설명됩니다. extracted image 크기 `37200`은 `0x9150`바이트이고,
+`BuildLinexeArenaLayout`은 code 영역을 4 KiB 단위 `0xA000`으로 올림합니다.
+selector `0x0080` 등록은 extracted header limit가 아니라
+`gate_code_size - 1`을 사용하므로 live descriptor limit는 `0x9FFF`입니다.
+접근 offset `0x9FDD`는 limit보다 `0x22` 작아 descriptor 안쪽입니다.
+
+### 다음 작업
+
+다음 구현 단위는 기존 base-fold + shadow-selector guard slot을 GS까지 확장하는
+것입니다. frontier의 두 접근은 `65 80 38 6A`와 `65 8A 18`, 즉 둘 다
+`mod=00` base-register/no-displacement 형식입니다. 현재 emitter는 absolute
+disp32와 base+disp8만 받으므로 GS prefix 허용과 함께 이 형식을 disp32로
+넓혀 base를 접어야 합니다. guest GS를 host GS에 설치할 필요는 없으며 그렇게
+해서도 안 됩니다.
+
+| 항목 | 상태 |
+|---|---|
+| fault 직전 GS selector | **확인됨**: `0x0080` |
+| GS base | **확인됨**: `0x095C7000` |
+| GS limit | **확인됨**: `0x9FFF` (page-aligned gate code) |
+| GS policy | **확인됨**: `kNativeFolded` |
+| offset `0x9FDD` | **확인됨**: descriptor 안쪽 |
+| low-memory HLE 필요 가설 | **기각됨**: 이 frontier에는 해당 없음 |
+| 다음 구현 | **확인됨**: GS + mod=00 base-register fold slot |
+
+## 3.72 (English) Task 635 — GS resolves to the native-folded LINEXE code segment
+
+Task 635 added `REPIU_AOT_SEGMENT_RESOLUTION_TRACE`, which prints the shadow
+address, selector, base, limit, flags, and policy for ES through GS whenever
+`ReResolveAotSegmentOverrides` updates the live segment table. An absent value
+or `0` emits nothing. A default `pumpit2a` run produced zero new trace lines and
+reproduced the existing frontier unchanged.
+
+### Confirmed: GS is selector `0x0080` immediately before the fault
+
+The traced run repeatedly reported the same state immediately before the
+fault.
+
+```text
+[repiu-aot-segment-resolution] segment=GS index=5 shadow=0x1F00000A
+  selector=0x0080 base=0x095C7000 limit=0x00009FFF
+  flags=0x00000000 policy=1
+[repiu-fault] unhandled signal=0xb rip=0x10f06d0 eip=0x10f06d0
+  access=0x9fdd ... eax=0x9fdd ... edx=0x80
+```
+
+`policy=1` is `AotSegmentAccessPolicy::kNativeFolded`. This settles branch A
+from the Task 635 design; a missing low-memory HLE route is not the cause of
+this frontier.
+
+The code also explains why the live limit is `0x9FFF` rather than the extracted
+code limit `0x914F` used in the design's candidate table. The extracted image
+size is 37,200 (`0x9150`) bytes, and `BuildLinexeArenaLayout` rounds the code
+region up to the 4 KiB-aligned size `0xA000`. Selector `0x0080` is registered
+with `gate_code_size - 1`, not the extracted header limit, making the live
+descriptor limit `0x9FFF`. Offset `0x9FDD` is `0x22` below that limit and is
+inside the descriptor.
+
+### Next task
+
+The next implementation unit is to extend the existing base-fold plus shadow
+selector guard slot to GS. Both frontier accesses, `65 80 38 6A` and
+`65 8A 18`, use the `mod=00` base-register/no-displacement form. The current
+emitter admits only absolute disp32 and base+disp8, so that form must be widened
+to disp32 while admitting the GS prefix and folding its base. Guest GS need not
+and must not be installed into host GS.
+
+| Item | Status |
+|---|---|
+| GS selector before the fault | **Confirmed**: `0x0080` |
+| GS base | **Confirmed**: `0x095C7000` |
+| GS limit | **Confirmed**: `0x9FFF` (page-aligned gate code) |
+| GS policy | **Confirmed**: `kNativeFolded` |
+| Offset `0x9FDD` | **Confirmed**: inside the descriptor |
+| Low-memory HLE hypothesis | **Rejected**: not applicable to this frontier |
+| Next implementation | **Confirmed**: GS plus mod=00 base-register fold slot |
+
+---
+
+## 3.73 Task 636 — GS base/no-displacement fold와 새 direct-CALL frontier
+
+Task 635가 확정한 결론에 따라 x64 segment-override slot을 GS와 비-SIB
+`mod=00` base/no-displacement 형식까지 확장했습니다. emitted access는 GS prefix를
+버리고 ModRM을 `mod=10`으로 넓힌 뒤 live GS base를 disp32에 접습니다. host GS는
+읽거나 변경하지 않습니다. FS, SIB, base+disp32는 계속 거부합니다.
+
+변위가 없는 형식은 `original_displacement=0`을 기록하고 원본 suffix를 ModRM
+바로 뒤에서 복사합니다. 실제 frontier의 `65 80 38 6A`를 probe에 넣어 immediate
+`0x6A`가 새 disp32 뒤에 한 번만 남고 CMP 결과가 맞는지 실행으로 확인했습니다.
+`65 8A 18` GS load와 기존 ES base+disp8/absolute 형식도 같은 image에서
+검증했습니다.
+
+```text
+segment_gs_compare_equal observed=0x1 expected=0x1
+segment_gs_access_value observed=0x6a expected=0x6a
+segment_refusals_kept observed=0x1 expected=0x1
+segment_guard_boundary observed=0x1 expected=0x1
+segment_hle_routed observed=0x4 expected=0x4
+segment_restore_native observed=0x4 expected=0x4
+guest_segment_override=true slots=4
+core_probe_failures=0
+```
+
+census는 `agrees=true`를 유지했고 x64 방출 범위가 넓어졌습니다.
+
+| 수치 | Task 634 | Task 636 |
+|---|---:|---:|
+| emittable | 51,128 (98.58%) | 51,184 (98.69%) |
+| refused | 738 (1.42%) | 682 (1.31%) |
+| blocks complete | 11,118 (88.88%) | 11,174 (89.33%) |
+| emitted segment overrides | 7 | 64 |
+| 남은 `kSegmentOverrideMem` refusal | - | 1 |
+
+### 확인됨: GS fault 해소, 다음 정지는 `0x010F1E17`
+
+세 번의 실행 모두 `0x010F06D0` fault 없이 진행했고 다음과 같이 같은 guest
+주소에서 멈췄습니다.
+
+```text
+[repiu-fault] unhandled signal=0xb rip=0x10f1e17 eip=0x10f1e17
+  bytes=e8 cc 31 00 00 85 c0 75 15 ... esp=0x158cc68
+```
+
+fault access 주소는 실행마다 달랐고 guest ESP와 일치하지 않습니다. 원본
+`E8 CC 31 00 00`은 `CALL 0x010F4FE8`입니다. 초기 AOT map에는 source와 target이
+모두 있고 fixup도 해결되어 있습니다.
+
+```text
+guest=0x010F1E17 cache=0x20002841 guest_len=5 emitted_len=16
+bytes=458D7FFC41C7071C1E0F01E964000000
+kind=direct-call target=0x010F4FE8 resolved=1
+guest=0x010F4FE8 cache=0x200028B5 guest_len=1 emitted_len=7
+```
+
+그럼에도 `rip == eip == 0x010F1E17`이므로 faulting call은 cache의 lowered call이
+아니라 guest 주소에서 raw 64비트 명령으로 실행됐습니다. 다음 작업은 이미 해결된
+direct-call fixup을 다시 바꾸는 것이 아니라, 어떤 boundary/reentry 경로가
+`0x010F1E17`의 유효한 cache entry를 건너뛰고 guest 주소 단일 실행으로 보냈는지
+측정해야 합니다.
+
+| 항목 | 상태 |
+|---|---|
+| `0x010F06D0` GS fault | **해소됨** |
+| GS CMP/MOV 의미 | **실행 검증됨** |
+| host GS 사용 | **없음** |
+| census agreement | **유지됨**: `agrees=true` |
+| 다음 frontier | **확인됨**: raw `CALL` at `0x010F1E17` |
+| source/target AOT map | **확인됨**: 존재, fixup resolved |
+| cache entry를 건너뛴 경로 | **미확정** |
+
+## 3.73 (English) Task 636 — GS base/no-displacement folding and a new direct-CALL frontier
+
+Following Task 635's result, the x64 segment-override slot now admits GS and
+the non-SIB `mod=00` base/no-displacement form. The emitted access drops the GS
+prefix, widens ModRM to `mod=10`, and folds the live GS base into disp32. Host
+GS is neither read nor modified. FS, SIB, and base+disp32 remain refused.
+
+The no-displacement form records `original_displacement=0` and copies the
+original suffix from immediately after ModRM. The probe executes the actual
+frontier form `65 80 38 6A`, proving that the trailing `0x6A` immediate appears
+once after the new disp32 and that the comparison result is correct. It also
+executes the `65 8A 18` GS load and the existing ES base+disp8 and absolute
+forms in the same image.
+
+```text
+segment_gs_compare_equal observed=0x1 expected=0x1
+segment_gs_access_value observed=0x6a expected=0x6a
+segment_refusals_kept observed=0x1 expected=0x1
+segment_guard_boundary observed=0x1 expected=0x1
+segment_hle_routed observed=0x4 expected=0x4
+segment_restore_native observed=0x4 expected=0x4
+guest_segment_override=true slots=4
+core_probe_failures=0
+```
+
+The census retains `agrees=true` while widening x64 emission coverage.
+
+| Metric | Task 634 | Task 636 |
+|---|---:|---:|
+| emittable | 51,128 (98.58%) | 51,184 (98.69%) |
+| refused | 738 (1.42%) | 682 (1.31%) |
+| blocks complete | 11,118 (88.88%) | 11,174 (89.33%) |
+| emitted segment overrides | 7 | 64 |
+| remaining `kSegmentOverrideMem` refusal | - | 1 |
+
+### Confirmed: the GS fault is gone; the next stop is `0x010F1E17`
+
+All three runs passed `0x010F06D0` and stopped at the same new guest address.
+
+```text
+[repiu-fault] unhandled signal=0xb rip=0x10f1e17 eip=0x10f1e17
+  bytes=e8 cc 31 00 00 85 c0 75 15 ... esp=0x158cc68
+```
+
+The fault access address varied between runs and did not match guest ESP. The
+original `E8 CC 31 00 00` is `CALL 0x010F4FE8`. Both source and target exist in
+the initial AOT map, and the fixup is resolved.
+
+```text
+guest=0x010F1E17 cache=0x20002841 guest_len=5 emitted_len=16
+bytes=458D7FFC41C7071C1E0F01E964000000
+kind=direct-call target=0x010F4FE8 resolved=1
+guest=0x010F4FE8 cache=0x200028B5 guest_len=1 emitted_len=7
+```
+
+Nevertheless, `rip == eip == 0x010F1E17`, so the faulting call is the raw
+64-bit instruction at the guest address, not the lowered call in the cache.
+The next task should not revisit the already-resolved direct-call fixup. It
+must measure which boundary or reentry route skipped the valid cache entry and
+sent `0x010F1E17` through native single-instruction execution.
+
+| Item | Status |
+|---|---|
+| GS fault at `0x010F06D0` | **Resolved** |
+| GS CMP/MOV semantics | **Execution-tested** |
+| Host GS use | **None** |
+| Census agreement | **Preserved**: `agrees=true` |
+| Next frontier | **Confirmed**: raw `CALL` at `0x010F1E17` |
+| Source/target AOT map | **Confirmed**: present, fixup resolved |
+| Route that skipped the cache entry | **Unresolved** |
+
+---
+
+## 3.74 Task 637 — legacy fallback의 HLE 후 cache 재진입 복구
+
+Task 636의 raw direct-CALL fault를 역추적한 결과, source/target map이 아니라
+legacy fallback 상태 gate가 원인이었습니다.
+
+**확인됨:** 최초 fallback은 미매핑 guest `0x010F920C`에서 시작했습니다.
+그 뒤 `0x010F1E0B`, `0x010F1E0D`, `0x010F1E0F`, `0x010F1E15`,
+`0x010F1E17`이 TF 원본 실행 연쇄에 들어갔습니다. 수정 전 HLE reentry 추적은
+guest-ESP 비교가 `0x010F1E0F`을 처리하고 다음 EIP `0x010F1E13`을 계산했지만,
+유효한 cache entry를 조회하기도 전에 `pending=0`으로 거절했음을 보여 줍니다.
+
+```text
+[repiu-aot-fallback] #1 guest=0x010F920C mapped=0 ... bytes=53 51 52 56
+[repiu-hle-reentry] stage=entry handled=0x010F1E0F current=0x010F1E13
+  pending=0 ... detail=not-pending
+```
+
+**해소됨:** `TryResumeAotAfterHandledHle`는 이제 `aot_reentry_pending` 또는
+`aot_legacy_fallback` 중 하나가 참이면 기존 안전 검사를 수행합니다. 실제 첫 복구는
+그보다 앞선 HLE `0x010F1D79` 직후 `0x010F1D7A`에서 일어났습니다. 정확한 cache hit와
+span preflight를 통과하여 `0x200026B6`으로 복귀했고 legacy와 TF 상태를 해제했습니다.
+
+```text
+stage=entry handled=0x010F1D79 current=0x010F1D7A pending=0 legacy=1
+stage=cache-hit-span-safe ... cache_target=0x200026B6
+stage=resumed ... pending=0 legacy=0 cache_target=0x200026B6
+```
+
+세 번의 반복 실행 모두 기존 raw `CALL 0x010F1E17` fault를 재현하지 않았습니다.
+Linux x64 core probe는 `24/24`를 통과했습니다.
+
+**새 frontier:** 실행은 동적 cache `0x200829C5`의 breakpoint(SIGTRAP,
+보고 RIP `0x200829C6`)까지 진행한 뒤 실행 주소 `0x21000000`에서 SIGSEGV로
+종료됩니다. 이 cache breakpoint의 guest 역매핑과 `0x21000000` 전이 주체는 아직
+확정되지 않았습니다. 따라서 게임은 아직 정상 실행되지 않습니다.
+
+| 항목 | 상태 |
+|---|---|
+| raw `CALL 0x010F1E17` | **해소됨** |
+| 최초 legacy fallback | **확인됨**: 미매핑 `0x010F920C` |
+| legacy에서 cache 복귀 | **확인됨**: `0x010F1D7A -> 0x200026B6` |
+| 기존 안전 gate | **유지됨** |
+| 다음 cache breakpoint | **확인됨**: `0x200829C5` |
+| `0x21000000` 전이 원인 | **미확정** |
+
+## 3.74 (English) Task 637 — post-HLE cache re-entry from legacy fallback
+
+Tracing the raw direct-CALL fault from Task 636 showed that the cause was the
+legacy-fallback state gate, not the source or target map.
+
+**Confirmed:** the first fallback starts at unmapped guest `0x010F920C`.
+Addresses `0x010F1E0B`, `0x010F1E0D`, `0x010F1E0F`, `0x010F1E15`, and
+`0x010F1E17` then enter a TF original-code chain. Before the fix, HLE re-entry
+tracing showed that the guest-ESP compare handled `0x010F1E0F` and computed
+next EIP `0x010F1E13`, but rejected it as `pending=0` before looking up its
+valid cache entry.
+
+**Resolved:** `TryResumeAotAfterHandledHle` now runs the existing safety checks
+when either `aot_reentry_pending` or `aot_legacy_fallback` is true. The actual
+first recovery occurs earlier, after HLE at `0x010F1D79`, with next EIP
+`0x010F1D7A`. Its exact cache hit passes span preflight, resumes at
+`0x200026B6`, and clears legacy and TF state.
+
+All three repeated runs avoid the former raw `CALL 0x010F1E17` fault. The Linux
+x64 core probe passes `24/24`.
+
+**New frontier:** execution reaches a breakpoint in dynamic cache
+`0x200829C5` (SIGTRAP with reported RIP `0x200829C6`) and then terminates with
+SIGSEGV while attempting to execute `0x21000000`. The guest reverse mapping of
+that cache breakpoint and the component selecting `0x21000000` remain
+unresolved. The game therefore still does not run normally.
+
+| Item | Status |
+|---|---|
+| Raw `CALL 0x010F1E17` | **Resolved** |
+| First legacy fallback | **Confirmed**: unmapped `0x010F920C` |
+| Return from legacy to cache | **Confirmed**: `0x010F1D7A -> 0x200026B6` |
+| Existing safety gates | **Preserved** |
+| Next cache breakpoint | **Confirmed**: `0x200829C5` |
+| Cause of transfer to `0x21000000` | **Unresolved** |
+
+## 3.75 (한국어) Task 638 — 첫 cache breakpoint는 미해결 block-fallthrough tail
+
+Task 637의 첫 SIGTRAP을 주소 필터가 있는 `REPIU_AOT_FAULT_TRACE`로 직접
+역매핑했습니다. Linux fault handler가 되감은 cache EIP `0x200829C5` 자체에는
+guest map이 없고 provenance도 `unknown`입니다. 바로 앞 바이트
+`0x200829C4`는 guest `0x011C8E0E`에 매핑되지만 provenance는 역시
+`unknown`입니다.
+
+```text
+[repiu-aot-fault] kind=breakpoint cache=0x200829C5
+  exact=0/0x00000000/7 previous=1/0x011C8E0E/7
+  size=534986 tail=5 maps=117523 n=1
+```
+
+**확인됨:** cache base `0x20000000`, size `0x829CA`에서 fault offset은
+`0x829C5`이므로 breakpoint는 현재 동적 append의 정확히 마지막 5바이트 시작입니다.
+emitter가 마지막 block의 미해결 fallthrough를 `E9 + rel32` 다섯 바이트로 만든 뒤,
+long-mode `NeutraliseLongModeBranch`가 첫 `E9`만 `INT3`로 바꾸는 형태와 정확히
+일치합니다. 이 fallthrough slot은 address-map entry가 아니며 provenance index도
+`kBlockFallthrough`를 등록하지 않기 때문에 exact map/provenance가 모두 비어 있습니다.
+
+따라서 첫 SIGTRAP은 guest-owned breakpoint나 planner HLE가 아니라, guest
+`0x011C8E0E` 다음 주소로 가야 하는 미해결 block-fallthrough 경계입니다. Task 638은
+진단만 추가했으며 실행 제어는 바꾸지 않았습니다. 다음 구현 경계는 이 sentinel에서
+fixup의 guest target을 복원하여 기존 fail-closed 원본 실행 경로로 넘기는 것입니다.
+뒤따르는 `0x21000000` SIGSEGV는 미처리 breakpoint 복구 중의 2차 fault로 보는 해석이
+강해졌지만, sentinel 복구 후 사라지는지로 최종 확인해야 합니다.
+
+| 항목 | 상태 |
+|---|---|
+| exact guest map | **없음**: `0x200829C5` |
+| previous guest map | **확인됨**: `0x200829C4 -> 0x011C8E0E` |
+| cache tail 위치 | **확인됨**: 끝에서 5바이트 |
+| 구조적 출처 | **확인됨**: 미해결 `kBlockFallthrough` slot |
+| 실행 제어 변경 | **없음** |
+| `0x21000000`의 독립 원인 여부 | **미확정** |
+
+## 3.75 (English) Task 638 — the first cache breakpoint is an unresolved block-fallthrough tail
+
+The address-filtered `REPIU_AOT_FAULT_TRACE` reverse-mapped Task 637's first
+SIGTRAP directly. The Linux handler's rewound cache EIP `0x200829C5` has no
+guest mapping and unknown provenance. The preceding byte `0x200829C4` maps to
+guest `0x011C8E0E`, also with unknown provenance.
+
+Cache base `0x20000000` and size `0x829CA` put the fault offset at `0x829C5`,
+exactly the first of the current dynamic append's final five bytes. This
+matches the emitter's unresolved final-block fallthrough: an `E9 + rel32`
+five-byte slot whose first byte is changed to `INT3` by
+`NeutraliseLongModeBranch`. A fallthrough slot has no address-map entry, and
+the provenance index does not register `kBlockFallthrough`, explaining both
+empty exact classifications.
+
+The first SIGTRAP is therefore neither a guest-owned breakpoint nor planner
+HLE. It is the unresolved block-fallthrough boundary after guest
+`0x011C8E0E`. Task 638 changes diagnostics only. The next implementation
+boundary is to recover the fixup's guest target at this sentinel and enter the
+existing fail-closed original-execution path. The following `0x21000000`
+SIGSEGV is now likely secondary unhandled-breakpoint recovery, but disappearance
+after sentinel recovery remains the deciding test.
+
+| Item | Status |
+|---|---|
+| Exact guest map | **Absent** at `0x200829C5` |
+| Previous guest map | **Confirmed**: `0x200829C4 -> 0x011C8E0E` |
+| Cache-tail position | **Confirmed**: five bytes from the end |
+| Structural source | **Confirmed**: unresolved `kBlockFallthrough` slot |
+| Execution-control change | **None** |
+| Independent cause at `0x21000000` | **Unresolved** |
+
+## 3.76 (한국어) Task 639 — 미해결 fallthrough target 복구
+
+Task 638에서 확인한 address-map 밖 `kBlockFallthrough` sentinel을 fixup metadata로
+복구하도록 변경했습니다. runtime의 `FindAotBlockFallthroughTarget`은 미해결
+`kBlockFallthrough`에 한해 `cache_address + 1 == cache_patch_offset`인 exact sentinel을
+찾고 `guest_target`을 반환합니다. AOT reentry는 이 결과를 기존 TF 원본 실행 경로에
+전달합니다. resolved fixup, 다른 kind, 인접 주소는 synthetic probe에서 모두
+거절됐습니다.
+
+실제 주소 필터 trace는 기존 `0x200829C5`가 이제 `kOtherPlannerFixup(6)`으로
+분류되고 target `0x011C8E10`을 복원함을 확인했습니다.
+
+```text
+[repiu-aot-fault] kind=breakpoint cache=0x200829C5
+  exact=0/0x00000000/6 previous=1/0x011C8E0E/7
+  fallthrough=1/0x011C8E10 size=534986 tail=5 maps=117523 n=1
+```
+
+**해소됨:** 네 번의 실제 실행에서 기존 미처리 `0x200829C5`와 뒤따르던
+`0x21000000` SIGSEGV는 한 번도 재현되지 않았습니다. 따라서 `0x21000000`은 독립
+guest 전이가 아니라 미처리 breakpoint 복구가 만든 2차 fault였음이 확인됐습니다.
+
+**새 frontier:** 복구된 실행은 `0x011C8E10`에서 시작해 guest 주소를 길게 순차
+진행합니다. 네 번 모두 guest-owned `INT3 0x0138C781`을 한 번 소비한 뒤 cache
+`0x20328014`에서 address-zero access violation으로 끝났습니다. 새 cache 주소는 guest
+`0x0138C783`에 정확히 매핑되고 bytes는 `67 01 00 67 00 00 ...`입니다. 이 반복 가능한
+진행은 fallthrough 복구 자체가 작동했음을 보여주지만, `0x011C8E10` target이 유효한
+코드 경로인지 또는 이미 앞선 상태 손상 때문에 데이터 영역을 실행하는지는 아직
+미확정입니다. 게임은 여전히 정상 실행되지 않습니다.
+
+| 항목 | 상태 |
+|---|---|
+| sentinel 분류 | **확인됨**: `kOtherPlannerFixup` |
+| 복원 guest target | **확인됨**: `0x011C8E10` |
+| 기존 `0x200829C5 -> 0x21000000` 종료 | **해소됨**: 4/4 미재현 |
+| 새 guest frontier | **확인됨**: `INT3 0x0138C781` |
+| 새 cache fault | **확인됨**: `0x20328014 -> 0x0138C783`, access `0` |
+| `0x011C8E10`으로 향한 상위 제어 흐름의 타당성 | **미확정** |
+
+## 3.76 (English) Task 639 — recover the unresolved fallthrough target
+
+The out-of-map `kBlockFallthrough` sentinel identified by Task 638 now recovers
+through fixup metadata. Runtime `FindAotBlockFallthroughTarget` accepts only an
+unresolved `kBlockFallthrough` whose exact sentinel satisfies
+`cache_address + 1 == cache_patch_offset`, and returns `guest_target`. AOT
+reentry feeds that result into the existing TF original-execution path. The
+synthetic probe rejects a resolved fixup, another kind, and adjacent addresses.
+
+The real address-filtered trace classifies former `0x200829C5` as
+`kOtherPlannerFixup(6)` and recovers target `0x011C8E10`.
+
+Across four real runs, neither the former unhandled `0x200829C5` nor its
+following `0x21000000` SIGSEGV recurred. This confirms `0x21000000` was a
+secondary consequence of unhandled-breakpoint recovery rather than an
+independent guest transfer.
+
+The recovered execution advances sequentially through guest addresses from
+`0x011C8E10`. All four runs consume guest-owned `INT3 0x0138C781` once and
+then stop on an address-zero access violation at cache `0x20328014`. That cache
+address maps exactly to guest `0x0138C783` and holds bytes
+`67 01 00 67 00 00 ...`. This repeatable progress shows that fallthrough
+recovery works, but whether target `0x011C8E10` is valid code flow or execution
+has already entered data because of earlier state damage remains unresolved.
+The game still does not run normally.
+
+| Item | Status |
+|---|---|
+| Sentinel classification | **Confirmed**: `kOtherPlannerFixup` |
+| Recovered guest target | **Confirmed**: `0x011C8E10` |
+| Former `0x200829C5 -> 0x21000000` stop | **Resolved**: absent in 4/4 runs |
+| New guest frontier | **Confirmed**: `INT3 0x0138C781` |
+| New cache fault | **Confirmed**: `0x20328014 -> 0x0138C783`, access `0` |
+| Validity of upstream control flow into `0x011C8E10` | **Unresolved** |
+
+## 3.77 (한국어) Task 640 — fallthrough은 128 KiB zero block의 끝
+
+기존 `REPIU_AOT_DYNAMIC_TRACE`는 번역 요청 entry만 선택하므로 내부 instruction
+`0x011C8E0E`를 지정해도 출력되지 않았습니다. Task 640은 opt-in
+`REPIU_AOT_DYNAMIC_CONTAINS`를 추가하여 address map이 지정 주소를 포함하는 동적
+image를 선택하고, 실제 요청 entry와 block 위치 및 관련 fixup을 함께 기록합니다.
+
+실제 캡처는 zero-filled 실행의 구조를 확정했습니다.
+
+```text
+stage=request entry=0x011A8E10 contains=0x011C8E0E matched=1
+stage=raw guest=0x011A8E10 bytes=00000000000000000000000000000000...
+stage=plan-entry-meta guest=0x011A8E10 block=0x011A8E10 index=0 tail=0 kind=0 length=2
+stage=plan-entry-meta guest=0x011C8E0E block=0x011A8E10 index=65535 tail=1 kind=0 length=2
+stage=related-fixup source=0x011C8E0E target=0x011C8E10 kind=2 patch=0x00030001 resolved=0
+stage=image-entry guest=0x011A8E10 bytes=670000 length=3
+```
+
+**확인됨:** 동적 번역 요청은 `0x011C8E0E`가 아니라 `0x011A8E10`에서 시작합니다.
+plan은 `00 00` 명령 65,536개, 즉 정확히 `0x20000`바이트를 하나의 block으로
+해석했습니다. `0x011C8E0E`는 index 65,535인 마지막 instruction이고 Task 639가
+복구한 `0x011C8E10`은 그 직후입니다. 따라서 긴 순차 실행은 fallthrough 복구가 새로
+만든 현상이 아니라, 이미 `0x011A8E10` zero-filled 영역을 코드로 선택한 앞선 transfer의
+연속입니다.
+
+Task 640은 실행 제어를 바꾸지 않습니다. 다음 진단 경계는 최초 동적 번역 target
+`0x011A8E10`을 요청한 cache/guest source와 transfer 종류를 기록하는 것입니다.
+
+| 항목 | 상태 |
+|---|---|
+| 실제 동적 요청 entry | **확인됨**: `0x011A8E10` |
+| 원본 시작 bytes | **확인됨**: zero-filled |
+| block 크기 | **확인됨**: 65,536 instructions / `0x20000` guest bytes |
+| `0x011C8E0E` 위치 | **확인됨**: 마지막 instruction |
+| zero block을 선택한 상위 transfer source | **미확정** |
+
+## 3.77 (English) Task 640 — the fallthrough closes a 128-KiB zero block
+
+The existing `REPIU_AOT_DYNAMIC_TRACE` selects only a translation request
+entry, so naming internal instruction `0x011C8E0E` produced no output. Task 640
+adds opt-in `REPIU_AOT_DYNAMIC_CONTAINS`, selecting a dynamic image whose
+address map contains the watched address and reporting its actual request
+entry, block position, and related fixups.
+
+The real capture confirms the structure of the zero-filled execution. The
+dynamic translation request starts at `0x011A8E10`, not `0x011C8E0E`. The plan
+interprets 65,536 `00 00` instructions—exactly `0x20000` guest bytes—as one
+block. `0x011C8E0E` is its final instruction at index 65,535, and Task 639's
+recovered `0x011C8E10` is immediately after it. The long sequential execution
+was therefore not introduced by fallthrough recovery; it continues an earlier
+transfer that had already selected zero-filled `0x011A8E10` as code.
+
+Task 640 does not alter execution control. The next diagnostic boundary is the
+cache/guest source and transfer kind that requested initial dynamic target
+`0x011A8E10`.
+
+| Item | Status |
+|---|---|
+| Actual dynamic request entry | **Confirmed**: `0x011A8E10` |
+| Original starting bytes | **Confirmed**: zero-filled |
+| Block size | **Confirmed**: 65,536 instructions / `0x20000` guest bytes |
+| Position of `0x011C8E0E` | **Confirmed**: final instruction |
+| Upstream transfer source selecting the zero block | **Unresolved** |
+
+## 3.78 (한국어) Task 641 — zero block target은 `0x010F1E56` RET stack 값
+
+`REPIU_AOT_TRANSFER_TARGET_TRACE`를 추가해 공용 간접 CALL/JMP, 공용 RET, Linux x64
+thunk resolver가 특정 guest target을 선택할 때 종류별 source와 상태를 기록했습니다.
+실행 제어는 바꾸지 않습니다.
+
+실제 `pumpit2a`의 `0x011A8E10` 캡처는 다음과 같습니다.
+
+```text
+[repiu-aot-transfer-target] kind=return origin=x64-thunk
+  source=0x010F1E56 target=0x011A8E10
+  bytes=C35156575583EC04 valid=1
+  esp=0x0158CC88 consumed=0x0158CC84 stack_target=0x011A8E10
+  eax=0x0158CCC0 ebx=0x0158CC90 ecx=0x01380000 edx=0x00000024
+  esi=0x000000FF edi=0x00000024 ebp=0x00000000
+```
+
+**확인됨:** zero block을 선택한 전이는 guest `0x010F1E56`의 near `RET(C3)`입니다.
+Linux x64 thunk는 guest stack 슬롯 `0x0158CC84`에서 `0x011A8E10`을 이미 읽은 상태로
+resolver에 들어왔습니다. source의 원본 bytes도 `C3`로 시작하므로 producer tag와 실제
+명령이 일치합니다. 공용 handler trace가 나오지 않은 것은 이 전이가 Linux x64 전용
+thunk 경로였기 때문입니다.
+
+첫 보조 캡처의 `sequence=0`, `matches=0`은 필요한
+`REPIU_LINUX_X64_STACK_TRACE=1`을 켜지 않은 결과였습니다. writer 부재의 근거가
+아니며, 아래 Task 642 결과가 이를 대체합니다. 게임은 아직 정상 실행되지 않습니다.
+
+| 항목 | 상태 |
+|---|---|
+| transfer 종류 | **확인됨**: near RET (`C3`) |
+| guest source | **확인됨**: `0x010F1E56` |
+| 소비 stack 슬롯 | **확인됨**: `0x0158CC84` |
+| 소비 값 | **확인됨**: `0x011A8E10` |
+| 최초 writer ring 캡처 | **무효**: ring 활성화 옵션 누락 |
+| stack 값의 실제 writer | **Task 642에서 확인** |
+
+## 3.78 (English) Task 641 — the zero-block target is a RET stack value at `0x010F1E56`
+
+Added `REPIU_AOT_TRANSFER_TARGET_TRACE` so the shared indirect CALL/JMP and RET
+handlers and the Linux x64 thunk resolver report kind-specific source state for
+a selected guest target. It does not change execution control.
+
+The real `pumpit2a` capture confirms that the transfer selecting the zero block
+is the near `RET` (`C3`) at guest `0x010F1E56`. The Linux x64 thunk entered the
+resolver after reading `0x011A8E10` from guest stack slot `0x0158CC84`. The
+source bytes begin with `C3`, independently agreeing with the producer tag.
+No shared-handler line appeared because this transfer used the Linux x64
+dedicated thunk path.
+
+The first companion capture's `sequence=0` and `matches=0` resulted from
+omitting the required `REPIU_LINUX_X64_STACK_TRACE=1`. It is not evidence that
+the writer was absent; Task 642 below supersedes that conclusion. The game
+still does not run normally.
+
+| Item | Status |
+|---|---|
+| Transfer kind | **Confirmed**: near RET (`C3`) |
+| Guest source | **Confirmed**: `0x010F1E56` |
+| Consumed stack slot | **Confirmed**: `0x0158CC84` |
+| Consumed value | **Confirmed**: `0x011A8E10` |
+| Initial writer-ring capture | **Invalid**: ring-enable setting omitted |
+| Actual writer of the stack value | **Confirmed in Task 642** |
+
+## 3.79 (한국어) Task 642 — 반환 슬롯 writer는 `0x010F4A93 PUSH EDI`
+
+`REPIU_LINUX_X64_STACK_TRACE=1`을 포함해 Task 641의 target 캡처를 다시 실행했습니다.
+이번에는 writer ring sequence가 62였고, 소비 슬롯 `0x0158CC84`와 정확히 일치하는
+기록이 하나 나왔습니다.
+
+```text
+[repiu-x64-return-stack] source=0x011A8E10 producer=0x010F1E56
+  consumed=0x0158CC84 sequence=62 matches=1
+[repiu-x64-return-stack] index=5 writer=guest-push site=0x010F4A93
+  esp=0x0158CC84 value=0x011A8E10
+```
+
+guest-write page 감시도 같은 source에서 exact destination fault를 확인했습니다. 당시
+`EDI=0x011A8E10`, `ESP=0x0158CC84`였습니다. AOT map의 emitted bytes는 다음과
+같습니다.
+
+```text
+guest=0x010F4A93 guest_len=1 emitted_len=7 bytes=458D7FFC41893F
+```
+
+이는 `LEA R15D,[R15D-4]` 뒤 `MOV [R15],EDI`인 Linux x64 `PUSH EDI` lowering과
+일치합니다. 따라서 값 자체는 손상된 동적 target이나 resolver 산출물이 아니라 정상
+guest register-save push가 남긴 값입니다. 이후 `0x010F1E56 RET`가 오래된 저장
+register 슬롯을 반환 주소로 소비했으므로, 새 원인 경계는 두 지점 사이 guest ESP
+복원의 부족 또는 과도한 감소입니다.
+
+| 항목 | 상태 |
+|---|---|
+| slot writer | **확인됨**: guest `0x010F4A93` |
+| writer 명령 | **확인됨**: `PUSH EDI` |
+| write 당시 EDI | **확인됨**: `0x011A8E10` |
+| lowering | **확인됨**: R15D 감소 + dword store |
+| RET가 값을 소비한 직접 원인 | **확인됨**: stale saved-register slot 노출 |
+| writer 이후 ESP 불균형의 최초 지점 | **미확정** |
+
+## 3.79 (English) Task 642 — the return-slot writer is `PUSH EDI` at `0x010F4A93`
+
+Repeated Task 641's target capture with
+`REPIU_LINUX_X64_STACK_TRACE=1`. The writer ring reached sequence 62 and had
+exactly one record matching consumed slot `0x0158CC84`: guest push at
+`0x010F4A93`, value `0x011A8E10`.
+
+Guest-write page watching independently caught an exact-destination fault at
+the same source with `EDI=0x011A8E10` and `ESP=0x0158CC84`. The AOT map emits
+`45 8D 7F FC 41 89 3F`, the Linux x64 lowering of `PUSH EDI`: decrement R15D by
+four, then store EDI through R15.
+
+The value is therefore neither a corrupted dynamic target nor a resolver
+product. It was left by an ordinary guest register-save push. The later RET at
+`0x010F1E56` consumes this stale saved-register slot as a return address, moving
+the cause boundary to insufficient ESP restoration or excess decrement between
+the two sites.
+
+| Item | Status |
+|---|---|
+| Slot writer | **Confirmed**: guest `0x010F4A93` |
+| Writer instruction | **Confirmed**: `PUSH EDI` |
+| EDI at write | **Confirmed**: `0x011A8E10` |
+| Lowering | **Confirmed**: R15D decrement plus dword store |
+| Direct reason RET consumes the value | **Confirmed**: exposed stale saved-register slot |
+| First ESP imbalance after the writer | **Unresolved** |
+
+## 3.80 (한국어) Task 643 — 최초 ESP 불일치는 legacy `PUSH EBX`
+
+`REPIU_AOT_GUEST_MAP_CONTEXT`를 추가하여 선택한 address-map entry 앞뒤의 원본 guest
+bytes와 emitted cache bytes를 함께 캡처했습니다. `0x010F1D74`부터
+`0x010F1E56`까지의 prologue/epilogue는 정확히 대칭입니다.
+
+```text
+prologue: PUSH EBX,ECX,EDX,ESI,EDI,ES,FS,GS,EBP; SUB ESP,4
+epilogue: ADD ESP,4; POP EBP,GS,FS,ES,EDI,ESI,EDX,ECX,EBX; RET
+```
+
+따라서 원본 함수 자체의 stack layout은 10 dword 감소와 10 dword 복원으로
+일치합니다. 실제 single-step watch는 다른 결과를 보였습니다.
+
+```text
+0x010F1D74 PUSH EBX: ESP=0x0158CC70
+0x010F1D78 PUSH EDI: ESP=0x0158CC70
+0x010F1D79 PUSH ES : ESP=0x0158CC70
+segment HLE result : ESP=0x0158CC70 -> 0x0158CC6C
+```
+
+**확인됨:** legacy original-code chain에서 실행된 일반 `PUSH` 다섯 개
+`0x010F1D74..0x010F1D78`은 guest ESP를 한 번도 감소시키지 않았습니다. 첫 segment
+push인 `0x010F1D79`부터는 HLE가 guest ESP를 정확히 4 감소시켰습니다. 따라서 최초
+불일치는 `0x010F1D74 PUSH EBX`이며 누락 합계는 정확히 20바이트입니다. epilogue는
+모든 pop을 guest stack에 적용하므로 ESP를 20바이트 과도하게 복원하고, 최종 RET가
+`0x0158CC84`의 오래된 `PUSH EDI` 값을 소비합니다.
+
+이는 x64 legacy fallback이 silently-different stack instruction을 원본 long mode에서
+직접 실행하게 해서는 안 된다는 증거입니다. 다음 구현 경계는 특정 주소 보정이 아니라,
+legacy fallback의 일반 PUSH/POP을 기존 guest-stack 의미 계층으로 보내는 공용 정책과
+회귀 probe입니다. 게임은 아직 정상 실행되지 않습니다.
+
+| 항목 | 상태 |
+|---|---|
+| 원본 prologue/epilogue 균형 | **확인됨**: 40 bytes / 40 bytes |
+| 최초 guest ESP 불일치 | **확인됨**: `0x010F1D74 PUSH EBX` |
+| 누락된 stack 감소 | **확인됨**: 5 pushes / 20 bytes |
+| segment PUSH HLE | **정상**: `ESP -= 4` |
+| 최종 stale slot 노출량 | **일치**: 20 bytes |
+
+## 3.80 (English) Task 643 — the first ESP mismatch is legacy `PUSH EBX`
+
+Added `REPIU_AOT_GUEST_MAP_CONTEXT` to capture original guest and emitted cache
+bytes around a selected address-map entry. The prologue and epilogue from
+`0x010F1D74` through `0x010F1E56` are exactly symmetric: nine pushes plus a
+four-byte local allocation, followed by the inverse adjustment and nine pops.
+
+Real single-step watches show that the five general-register pushes from
+`0x010F1D74` through `0x010F1D78` all leave guest ESP at `0x0158CC70`.
+The first segment push at `0x010F1D79` then enters HLE and correctly changes ESP
+to `0x0158CC6C`.
+
+The first mismatch is therefore `PUSH EBX` at `0x010F1D74`, and the missing
+decrement totals exactly 20 bytes. The epilogue applies all pops to the guest
+stack, over-restores ESP by those same 20 bytes, and exposes the stale
+`PUSH EDI` value at `0x0158CC84` to the final RET.
+
+This confirms that x64 legacy fallback must not directly execute silently
+different stack instructions in long mode. The next implementation boundary
+is a shared policy routing legacy general PUSH/POP through existing guest-stack
+semantics, with regression coverage—not an address-specific correction. The
+game still does not run normally.
+
+| Item | Status |
+|---|---|
+| Original prologue/epilogue balance | **Confirmed**: 40 bytes / 40 bytes |
+| First guest-ESP mismatch | **Confirmed**: `PUSH EBX` at `0x010F1D74` |
+| Missing stack decrement | **Confirmed**: 5 pushes / 20 bytes |
+| Segment PUSH HLE | **Correct**: `ESP -= 4` |
+| Final stale-slot exposure | **Matches**: 20 bytes |
 
 ---
 
@@ -10379,3 +12461,225 @@ original binary flow establishes that ABI.
 | Return source consumed by `RET` | **Confirmed**: `0x000000FF` |
 | Ownership of `0x402AD3DC` / `0x402AD3DD` | **Confirmed**: return sentinel / recovery `UD2` |
 | `1E7Fh` private success ABI | **Unresolved** |
+## 3.81 Task 644 — legacy 일반 PUSH/POP의 guest-stack 의미 복구
+
+**확인됨:** Linux x64 `aot_legacy_fallback`의 shared HLE dispatch가 이제 한 바이트
+`50h..5Fh` register PUSH/POP을 guest `ESP`와 guest memory에 적용합니다. 적용 범위는
+x64 legacy fallback뿐이며 i386 직접 실행과 AOT cache 실행은 바뀌지 않습니다.
+core probe는 일반 push/pop, `PUSH ESP`, `POP ESP`, arena 밖 접근 거부를 모두 통과했습니다.
+
+**확인됨:** 실제 `0x010F1D74..0x010F1D78`의 다섯 일반 PUSH 뒤
+`0x010F1D79 PUSH ES` 진입 ESP는 `0x0158CC50`입니다. Task 643의 같은 지점
+`0x0158CC70`보다 정확히 20바이트 낮으므로, 확인했던 다섯 누락이 모두 복구됐습니다.
+뒤따르는 segment push 세 건도 `0x0158CC4C`, `0x0158CC48`, `0x0158CC44`로 정상
+감소했습니다.
+
+**확인됨:** `0x010F1E56 RET`가 더 이상 `0x011A8E10` zero block을 반환 주소로
+소비하지 않습니다. 새 소비 슬롯은 `0x0158CC64`, 값은 `0x00000024`이며 이후 guest
+ESP는 `0x0158CC68`입니다. 따라서 Task 642/643의 saved-register slot 노출은
+해결됐고 frontier가 함수 진입 전 return-address 형성으로 이동했습니다.
+
+**미확정:** `0x00000024` 슬롯의 정확한 writer와 `0x010F1D74` 진입 transfer가 guest
+return address를 만들지 못한 이유는 아직 확인되지 않았습니다. 값이 selector처럼 보인다는
+사실만으로 segment frame이라고 단정하지 않습니다. 다음 분석은 함수 진입 직전 transfer와
+`0x0158CC64` writer를 함께 추적해야 합니다.
+
+| 질문 | 상태 |
+|---|---|
+| 다섯 일반 PUSH의 guest ESP 반영 | **확인됨**: 총 `-20`바이트 |
+| `PUSH/POP ESP` 순서 의미 | **확인됨**: core probe 통과 |
+| 기존 `0x011A8E10` 반환 | **해결됨** |
+| 새 RET source/slot | **확인됨**: `0x00000024` / `0x0158CC64` |
+| 새 슬롯 writer와 진입 transfer | **미확정** |
+
+---
+
+## 3.81 (English) Task 644 — restoring guest-stack semantics for legacy general PUSH/POP
+
+**Confirmed:** shared HLE dispatch now applies one-byte `50h..5Fh` register
+PUSH/POP to guest `ESP` and guest memory during Linux x64
+`aot_legacy_fallback`. The scope is x64 legacy fallback only; i386 direct
+execution and AOT-cache execution are unchanged. The core probe passes ordinary
+push/pop, `PUSH ESP`, `POP ESP`, and out-of-arena rejection.
+
+**Confirmed:** after the five general pushes at `0x010F1D74..0x010F1D78`, ESP
+on entry to `0x010F1D79 PUSH ES` is `0x0158CC50`. This is exactly 20 bytes below
+the `0x0158CC70` seen at the same point in Task 643, recovering all five missing
+decrements. The following three segment pushes continue normally through
+`0x0158CC4C`, `0x0158CC48`, and `0x0158CC44`.
+
+**Confirmed:** `RET` at `0x010F1E56` no longer consumes the `0x011A8E10` zero
+block as its return address. Its new consumed slot is `0x0158CC64`, containing
+`0x00000024`, and guest ESP becomes `0x0158CC68`. The saved-register exposure
+from Tasks 642/643 is resolved; the frontier has moved to return-address
+formation before entry to the function.
+
+**Unresolved:** the exact writer of the `0x00000024` slot and why the transfer
+into `0x010F1D74` did not establish a guest return address remain unknown. The
+value merely resembles a selector and is not enough to classify the frame.
+The next analysis must correlate the pre-entry transfer with the writer of
+`0x0158CC64`.
+
+| Question | Status |
+|---|---|
+| Guest ESP effect of five general pushes | **Confirmed**: total `-20` bytes |
+| `PUSH/POP ESP` ordering | **Confirmed**: core probe passed |
+| Former `0x011A8E10` return | **Resolved** |
+| New RET source/slot | **Confirmed**: `0x00000024` / `0x0158CC64` |
+| New slot writer and entry transfer | **Unresolved** |
+
+---
+## 3.82 Task 645 — 새 반환 슬롯은 `PUSH ES`가 쓰고 다음 `PUSH FS`가 guest stack을 이탈
+
+**확인됨:** `0x010F1E56 RET`가 소비한 `0x0158CC64 = 0x00000024`는
+`0x010F9211 PUSH ES` HLE가 기록했습니다. segment trace는 ESP
+`0x0158CC68 -> 0x0158CC64`, selector `ES=0x0024`를 보였고 guest-write trace는
+같은 슬롯에 little-endian `24000000`을 기록한 HLE event를 보였습니다.
+
+**확인됨:** `PUSH ES` handler가 EIP를 `0x010F9212`로 전진시킨 직후 원본 bytes는
+`0F A0 83 3D 98 66 ...`입니다. 첫 명령은 `PUSH FS`입니다. x64에서 유효한 이 명령은
+예외를 내지 않고 host stack에 실행되므로, fault 기반 segment HLE가 선점하지 못합니다.
+다음 guest watch `0x010F1D74`의 ESP는 여전히 `0x0158CC64`였습니다.
+
+**확인됨:** 기존 target trace와 이번에 확장한 breakpoint lookup trace 모두
+target `0x010F1D74`를 보고하지 않았습니다. 따라서 이 진입은 공용 간접
+CALL/JMP/RET handler나 cache breakpoint의 direct-edge/address-map/block-fallthrough
+역조회가 만든 것이 아닙니다. `PUSH FS` 뒤 원본 legacy span이 Trap Flag 아래 실행되는
+동안 발생한 전이입니다.
+
+**미확정:** 그 span 안의 정확한 전이 source는 아직 확인되지 않았습니다. 그러나 다음
+교정 경계는 더 앞에서 확정됐습니다. HLE가 처리한 명령 직후 또 다른 HLE-sensitive
+명령이 연속되면, 다음 명령이 host 의미로 실행되기 전에 같은 예외 안에서 계속 처리해야
+합니다. 특히 현재 재현에서는 `PUSH ES` 뒤 `PUSH FS`입니다.
+
+| 질문 | 상태 |
+|---|---|
+| `0x0158CC64`의 `0x24` writer | **확인됨**: `0x010F9211 PUSH ES` HLE |
+| HLE 직후 명령 | **확인됨**: `0x010F9212 PUSH FS` |
+| `PUSH FS` guest ESP 반영 | **실패 확인**: `0x0158CC64` 유지 |
+| `0x010F1D74` cache-breakpoint 진입 | **기각됨** |
+| legacy span 내부 정확한 transfer source | **미확정** |
+
+---
+
+## 3.82 (English) Task 645 — `PUSH ES` writes the new return slot and following `PUSH FS` escapes the guest stack
+
+**Confirmed:** the `0x0158CC64 = 0x00000024` slot consumed by `RET` at
+`0x010F1E56` was written by HLE for `PUSH ES` at `0x010F9211`. Segment trace
+shows ESP changing from `0x0158CC68` to `0x0158CC64` with `ES=0x0024`, and the
+guest-write trace records HLE bytes `24000000` at the same slot.
+
+**Confirmed:** immediately after the `PUSH ES` handler advances EIP to
+`0x010F9212`, the original bytes are `0F A0 83 3D 98 66 ...`. The first
+instruction is `PUSH FS`. It is valid on x64, executes on the host stack
+without faulting, and therefore cannot be intercepted by fault-driven segment
+HLE. Guest ESP is still `0x0158CC64` at the next watch, `0x010F1D74`.
+
+**Confirmed:** neither the existing target trace nor the newly extended
+breakpoint-lookup trace reports target `0x010F1D74`. The entry therefore did
+not come from a shared indirect CALL/JMP/RET handler or from direct-edge,
+address-map, or block-fallthrough cache-breakpoint reverse lookup. It occurs
+while the original legacy span after `PUSH FS` runs under Trap Flag.
+
+**Unresolved:** the exact transfer source inside that span remains unknown.
+The next correction boundary is nevertheless established earlier: when
+another HLE-sensitive instruction immediately follows one handled by HLE, it
+must be consumed in the same exception before it can execute with host
+semantics. In this reproduction the pair is `PUSH ES` followed by `PUSH FS`.
+
+| Question | Status |
+|---|---|
+| Writer of `0x24` at `0x0158CC64` | **Confirmed**: HLE for `PUSH ES` at `0x010F9211` |
+| Instruction immediately after HLE | **Confirmed**: `PUSH FS` at `0x010F9212` |
+| Guest ESP effect of `PUSH FS` | **Failed as confirmed**: remains `0x0158CC64` |
+| Cache-breakpoint entry to `0x010F1D74` | **Rejected** |
+| Exact transfer source inside legacy span | **Unresolved** |
+
+---
+
+## 3.83 Task 646 — 연속 스택 HLE가 `PUSH FS`의 guest-stack 의미를 복구
+
+**확인됨:** x64 `aot_legacy_fallback`에서 첫 스택 HLE가 성공하면
+`PUSH/POP r32`와 지원 중인 segment push/pop을 같은 예외 안에서 최대 16개까지
+연속 처리합니다. helper는 매 반복마다 guest code 범위를 확인하고 EIP가 전진하지
+않으면 중단합니다. i386 직접 실행과 AOT cache 실행에는 적용하지 않습니다.
+
+**확인됨:** core probe의 `PUSH EBX; PUSH ES; PUSH FS; NOP` 혼합열은 세 스택
+명령만 처리하고 NOP에서 멈췄습니다. 별도의 세 register-push 열은 요청한 상한
+2개에서 정확히 멈췄습니다. 전체 core probe는 `25/25`, 실패 0입니다.
+
+**확인됨:** 실제 `pumpit2a` 실행에서 원본 연속열의 segment push 둘이 모두 guest
+stack에 반영됐습니다.
+
+```text
+0x010F1D79 PUSH ES: ESP 0x0158CC44 -> 0x0158CC40, next 0x010F1D7A
+0x010F1D7A PUSH FS: ESP 0x0158CC40 -> 0x0158CC3C, next 0x010F1D7C
+```
+
+따라서 Task 645에서 확인한 “`PUSH ES` 뒤의 `PUSH FS`가 host 의미로 실행됨”
+경계는 해소됐습니다. `REPIU_SEGMENT_HLE_TRACE=1` 실행에서도 이전의
+`0x010F9211/0x010F9212` 단일 처리 경계는 더 이상 나타나지 않았습니다.
+
+**미확정:** 게임은 아직 실행 완료에 이르지 않습니다. 현재 마지막 관측은 host
+`RecoverGuestStackException`의 의도적 `UD2`(`0x401D0BEC`)이며 guest ESP는
+`0x0158CC5C`입니다. `REPIU_FAULT_EXIT_TRACE=1`은
+`site=no-host-frame-to-unwind`, `guest_stack=1`, `call_state=0`을 보고합니다.
+이는 `PUSH FS` 자체가 아니라 더 뒤의 guest fault가 기존 x64 fail-closed 복구
+경계로 들어간 결과입니다. 다음 작업은 복구 주소로 덮어쓰기 전의 원래 guest fault
+EIP와 종료 분기를 보존해 귀속해야 합니다.
+
+| 질문 | 상태 |
+|---|---|
+| 혼합 register/segment 연속 처리 | **확인됨**: 3개 처리 후 NOP에서 중단 |
+| 처리 상한 | **확인됨**: 요청한 2개에서 중단 |
+| `0x010F1D79 PUSH ES` guest ESP 반영 | **확인됨**: `0x0158CC44 -> 0x0158CC40` |
+| `0x010F1D7A PUSH FS` guest ESP 반영 | **확인됨**: `0x0158CC40 -> 0x0158CC3C` |
+| 다음 종료 경계 | **확인됨**: x64 `RecoverGuestStackException` UD2 |
+| 복구 전 원래 guest fault | **미확정** |
+
+---
+
+## 3.83 (English) Task 646 — consecutive stack HLE restores guest-stack semantics for `PUSH FS`
+
+**Confirmed:** after the first successful stack HLE in x64
+`aot_legacy_fallback`, the runtime consumes up to 16 consecutive `PUSH/POP r32`
+and supported segment push/pop instructions in the same exception. The helper
+checks the guest code range before every iteration and stops if EIP does not
+advance. It does not affect native i386 or AOT-cache execution.
+
+**Confirmed:** the core probe sequence `PUSH EBX; PUSH ES; PUSH FS; NOP`
+consumed exactly the three stack instructions and stopped at NOP. A separate
+three-register-push sequence stopped exactly at the requested limit of two.
+The full core probe passed `25/25` with zero failures.
+
+**Confirmed:** both segment pushes in the original sequence now affect the
+guest stack during a real `pumpit2a` run.
+
+```text
+0x010F1D79 PUSH ES: ESP 0x0158CC44 -> 0x0158CC40, next 0x010F1D7A
+0x010F1D7A PUSH FS: ESP 0x0158CC40 -> 0x0158CC3C, next 0x010F1D7C
+```
+
+The Task 645 boundary where `PUSH FS` after `PUSH ES` executed with host
+semantics is therefore resolved. A run with `REPIU_SEGMENT_HLE_TRACE=1` also no
+longer shows the former one-instruction `0x010F9211/0x010F9212` boundary.
+
+**Unresolved:** the game still does not complete execution. The latest final
+observation is the intentional `UD2` in host `RecoverGuestStackException`
+(`0x401D0BEC`) with guest ESP `0x0158CC5C`.
+`REPIU_FAULT_EXIT_TRACE=1` reports `site=no-host-frame-to-unwind`,
+`guest_stack=1`, and `call_state=0`. This is a later guest fault reaching the
+existing x64 fail-closed recovery boundary, not the `PUSH FS` instruction
+itself. The next task must retain and attribute the original guest fault EIP
+before the recovery destination overwrites it.
+
+| Question | Status |
+|---|---|
+| Mixed register/segment run | **Confirmed**: three consumed, stopped at NOP |
+| Processing bound | **Confirmed**: stopped at requested count two |
+| Guest ESP effect of `0x010F1D79 PUSH ES` | **Confirmed**: `0x0158CC44 -> 0x0158CC40` |
+| Guest ESP effect of `0x010F1D7A PUSH FS` | **Confirmed**: `0x0158CC40 -> 0x0158CC3C` |
+| Next exit boundary | **Confirmed**: x64 `RecoverGuestStackException` UD2 |
+| Original guest fault before recovery | **Unresolved** |
+
+---

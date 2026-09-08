@@ -476,6 +476,57 @@ void WriteGeneralRegister32(repiu::platform::GuestCpuContext* win32_context,
     }
 }
 
+bool HandleGeneralRegisterStackInstruction(
+    repiu::platform::GuestCpuContext* win32_context,
+    ThreadContext* context)
+{
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return false;
+    }
+
+    const auto* const instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(win32_context->Eip));
+    const std::uint8_t opcode = instruction[0];
+    if (opcode >= 0x50U && opcode <= 0x57U)
+    {
+        const std::uint8_t source_register = opcode - 0x50U;
+        const std::uint32_t value =
+            ReadGeneralRegister32(win32_context, source_register);
+        const std::uint32_t destination = win32_context->Esp - 4U;
+        void* const destination_pointer = reinterpret_cast<void*>(
+            static_cast<std::uintptr_t>(destination));
+        if (!WriteGuestUInt32(context, destination_pointer, value))
+        {
+            return false;
+        }
+
+        win32_context->Esp = destination;
+        win32_context->Eip += 1U;
+        return true;
+    }
+
+    if (opcode >= 0x58U && opcode <= 0x5FU)
+    {
+        const std::uint8_t destination_register = opcode - 0x58U;
+        const std::uint32_t source = win32_context->Esp;
+        const void* const source_pointer = reinterpret_cast<const void*>(
+            static_cast<std::uintptr_t>(source));
+        std::uint32_t value = 0U;
+        if (!ReadGuestUInt32(context, source_pointer, &value))
+        {
+            return false;
+        }
+
+        win32_context->Esp = source + 4U;
+        WriteGeneralRegister32(win32_context, destination_register, value);
+        win32_context->Eip += 1U;
+        return true;
+    }
+
+    return false;
+}
+
 bool DecodeModRmMemoryAddress(
     const repiu::platform::GuestCpuContext* win32_context,
     const std::uint8_t* instruction,
@@ -793,6 +844,42 @@ bool HandleSegmentPushInstruction(repiu::platform::GuestCpuContext* win32_contex
             instruction_size);
     }
     return true;
+}
+
+std::uint32_t HandleConsecutiveLegacyStackInstructions(
+    repiu::platform::GuestCpuContext* win32_context,
+    ThreadContext* context,
+    std::uint32_t maximum_instruction_count)
+{
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return 0U;
+    }
+
+    std::uint32_t handled_count = 0U;
+    while (handled_count < maximum_instruction_count)
+    {
+        const auto* const instruction = reinterpret_cast<const std::uint8_t*>(
+            static_cast<std::uintptr_t>(win32_context->Eip));
+        if (!IsGuestRangeReadable(context, instruction, 2U))
+        {
+            break;
+        }
+
+        const std::uint32_t eip_before =
+            static_cast<std::uint32_t>(win32_context->Eip);
+        const bool handled =
+            HandleGeneralRegisterStackInstruction(win32_context, context) ||
+            (context->enable_segment_load_hle &&
+             (HandleSegmentPushInstruction(win32_context, context) ||
+              HandleSegmentPopInstruction(win32_context, context)));
+        if (!handled || win32_context->Eip <= eip_before)
+        {
+            break;
+        }
+        ++handled_count;
+    }
+    return handled_count;
 }
 
 bool HandleFarJumpInstruction(repiu::platform::GuestCpuContext* win32_context,

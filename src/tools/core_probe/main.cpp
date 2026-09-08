@@ -62,6 +62,9 @@
 #if defined(REPIU_LINUX_X64_GUEST_REGISTER_PROBE)
 #include "linux_x64_guest_register_probe.h"
 #endif
+#if defined(REPIU_LINUX_X64_GENERAL_STACK_PROBE)
+#include "general_stack_probe.h"
+#endif
 #endif
 
 #include <cstddef>
@@ -133,6 +136,9 @@ constexpr CoreProbe kCoreProbes[] = {
     {"linux_x64_guest_register",
      &repiu::tools::RunLinuxX64GuestRegisterProbe},
 #endif
+#if defined(REPIU_LINUX_X64_GENERAL_STACK_PROBE)
+    {"general_stack", &repiu::tools::RunGeneralStackProbe},
+#endif
     {"host_thread", &repiu::tools::RunHostThreadProbe},
 #endif
     {"launcher", &repiu::tools::RunLauncherProbe},
@@ -160,6 +166,9 @@ constexpr const char* kSkippedProbes[] = {
 #endif
 #if !defined(REPIU_LINUX_X64_GUEST_REGISTER_PROBE)
     "linux_x64_guest_register",
+#endif
+#if !defined(REPIU_LINUX_X64_GENERAL_STACK_PROBE)
+    "general_stack",
 #endif
 };
 

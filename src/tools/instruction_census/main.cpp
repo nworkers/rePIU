@@ -139,6 +139,10 @@ struct LongModeTally
     std::uint64_t guarded_segment_pops = 0;
     // Task 573. Indirect calls the long-mode slot admits.
     std::uint64_t indirect_calls = 0;
+    // Task 633. Counted apart for the same reason as every kind above, and
+    // added when Task 632's slot made `agrees=` false by being emitted while
+    // the census still called it a refusal.
+    std::uint64_t jump_tables = 0;
     std::uint64_t refused = 0;
     // Refused because the plan record is not `kCopy` at all -- every control
     // flow record, every guarded segment slot, every port I/O record. Counted
@@ -274,6 +278,8 @@ bool RecordIsEmitted(const repiu::runtime::AotInstructionRecord& record)
             return repiu::runtime::LongModeGuardedSegmentPopEmittable(record);
         case AotInstructionKind::kIndirectExit:
             return repiu::runtime::LongModeIndirectCallEmittable(record);
+        case AotInstructionKind::kJumpTable:
+            return repiu::runtime::LongModeJumpTableEmittable(record);
         default:
             return false;
     }
@@ -1108,6 +1114,16 @@ int main(int argc, char** argv)
                     ++long_mode.indirect_calls;
                     continue;
                 }
+                // Task 632's slot, asked the same way. Without this the census
+                // counts twenty-one emitted records as refusals and `agrees=`
+                // goes false, which is what happened.
+                if (record.kind ==
+                        repiu::runtime::AotInstructionKind::kJumpTable &&
+                    repiu::runtime::LongModeJumpTableEmittable(record))
+                {
+                    ++long_mode.jump_tables;
+                    continue;
+                }
                 if (record.kind !=
                     repiu::runtime::AotInstructionKind::kCopy)
                 {
@@ -1351,7 +1367,7 @@ int main(int argc, char** argv)
         long_mode.copied + long_mode.lowered + long_mode.branches +
         long_mode.returns + long_mode.segment_overrides +
         long_mode.guarded_segment_loads + long_mode.guarded_segment_pops +
-        long_mode.indirect_calls;
+        long_mode.indirect_calls + long_mode.jump_tables;
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "  considered          " << long_mode.considered << "\n";
     std::cout << "  copied              " << long_mode.copied << "  ("
@@ -1376,6 +1392,10 @@ int main(int argc, char** argv)
     std::cout << "  indirect calls      "
               << long_mode.indirect_calls << "  ("
               << percent(long_mode.indirect_calls, long_mode.considered)
+              << "%)\n";
+    std::cout << "  jump tables         "
+              << long_mode.jump_tables << "  ("
+              << percent(long_mode.jump_tables, long_mode.considered)
               << "%)\n";
     std::cout << "  emittable           " << emitted << "  ("
               << percent(emitted, long_mode.considered) << "%)\n";
@@ -1407,6 +1427,8 @@ int main(int argc, char** argv)
             long_mode.guarded_segment_pops &&
         long_mode_image.long_mode_indirect_call_count ==
             long_mode.indirect_calls &&
+        long_mode_image.long_mode_jump_table_count ==
+            long_mode.jump_tables &&
         long_mode_image.long_mode_refused_count == long_mode.refused;
     std::cout << "  emitter counters    copied="
               << long_mode_image.long_mode_copied_count
@@ -1421,6 +1443,8 @@ int main(int argc, char** argv)
               << long_mode_image.long_mode_guarded_segment_pop_count
               << " indcalls="
               << long_mode_image.long_mode_indirect_call_count
+              << " tables="
+              << long_mode_image.long_mode_jump_table_count
               << " refused=" << long_mode_image.long_mode_refused_count
               << "  agrees=" << (agrees ? "true" : "false") << "\n";
     // Task 560. The edges that had to become boundaries after all, because

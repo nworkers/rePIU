@@ -22,6 +22,7 @@
 #include "repiu/engine/glide_opengl_backend.h"
 #include "repiu/engine/cd_audio_wave_out.h"
 #include "repiu/engine/aot_page_coherence.h"
+#include "repiu/engine/aot_boundary_provenance.h"
 #include "repiu/engine/guest_write_trace.h"
 #include "repiu/engine/aot_ff_target_timing.h"
 #include "repiu/media/chd_cd_image.h"
@@ -87,6 +88,25 @@ namespace repiu::engine
 
 namespace
 {
+std::uint32_t AotFaultTraceAddressFilter()
+{
+    static const std::uint32_t address = [] {
+        const char* setting = std::getenv("REPIU_AOT_FAULT_TRACE_ADDRESS");
+        if (setting == nullptr || *setting == '\0')
+        {
+            return 0U;
+        }
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(setting, &end, 0);
+        if (end == setting || *end != '\0' || parsed > UINT32_MAX)
+        {
+            return 0U;
+        }
+        return static_cast<std::uint32_t>(parsed);
+    }();
+    return address;
+}
+
 // Task 503d-6 wrote this thunk because CreateThread dictated its signature.
 // Task 503d-18: the thread layer takes `std::uint32_t(void*)` instead, so the
 // shape is the engine's own and the fence around it is gone. What is left is a
@@ -184,6 +204,94 @@ bool ParseAotGuestMapTraceOffset(const std::string_view token,
     }
     *offset = static_cast<std::uint32_t>(value);
     return true;
+}
+
+std::uint32_t AotGuestMapContextRadius()
+{
+    static const std::uint32_t radius = [] {
+        const auto setting = repiu::platform::ReadEnvironmentSetting(
+            "REPIU_AOT_GUEST_MAP_CONTEXT", 31U);
+        if (!setting.present || setting.too_long || setting.value.empty())
+        {
+            return 0U;
+        }
+        char text[32] = {};
+        std::memcpy(text, setting.value.data(), setting.value.size());
+        char* parse_end = nullptr;
+        const unsigned long parsed = std::strtoul(text, &parse_end, 0);
+        if (parse_end == text || *parse_end != '\0')
+        {
+            return 0U;
+        }
+        return static_cast<std::uint32_t>(std::min(parsed, 64UL));
+    }();
+    return radius;
+}
+
+void TraceAotGuestMapContextEntry(
+    const AotCodeCachePlacement& placement,
+    const std::size_t index,
+    const std::size_t match_index)
+{
+    const runtime::AotAddressMapEntry& entry = placement.address_map[index];
+    const bool emitted_readable =
+        placement.placed && placement.base_address != 0U &&
+        entry.cache_offset <= placement.size &&
+        entry.emitted_length <= placement.size - entry.cache_offset;
+    const bool inactive = std::find(
+        placement.inactive_map_indices.begin(),
+        placement.inactive_map_indices.end(),
+        static_cast<std::uint32_t>(index)) !=
+        placement.inactive_map_indices.end();
+    const std::size_t guest_byte_count = std::min<std::size_t>(
+        entry.guest_length, 16U);
+    std::uint8_t guest_bytes[16] = {};
+    const void* const guest_pointer = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(entry.guest_address));
+    const bool guest_readable = guest_byte_count != 0U &&
+        repiu::platform::CopyMemoryWithoutFaulting(
+            guest_bytes, guest_pointer, guest_byte_count).complete;
+    std::fprintf(
+        stderr,
+        "[repiu-aot-map-context] index=%zu relative=%lld guest=0x%08X "
+        "cache=0x%08X guest_len=%u emitted_len=%u inactive=%u guest_bytes=",
+        index,
+        static_cast<long long>(index) - static_cast<long long>(match_index),
+        entry.guest_address, placement.base_address + entry.cache_offset,
+        static_cast<unsigned>(entry.guest_length),
+        static_cast<unsigned>(entry.emitted_length), inactive ? 1U : 0U);
+    if (guest_readable)
+    {
+        for (std::size_t byte_index = 0U;
+             byte_index < guest_byte_count; ++byte_index)
+        {
+            std::fprintf(stderr, "%02X", guest_bytes[byte_index]);
+        }
+    }
+    else
+    {
+        std::fprintf(stderr, "unreadable");
+    }
+    std::fprintf(stderr, " emitted_bytes=");
+    if (emitted_readable)
+    {
+        const std::size_t byte_count = std::min<std::size_t>(
+            entry.emitted_length, 16U);
+        const auto* const emitted_bytes =
+            reinterpret_cast<const std::uint8_t*>(
+                static_cast<std::uintptr_t>(placement.base_address) +
+                entry.cache_offset);
+        for (std::size_t byte_index = 0U;
+             byte_index < byte_count; ++byte_index)
+        {
+            std::fprintf(stderr, "%02X", emitted_bytes[byte_index]);
+        }
+    }
+    else
+    {
+        std::fprintf(stderr, "unreadable");
+    }
+    std::fprintf(stderr, "\n");
 }
 
 void TraceAotGuestMap(const AotCodeCachePlacement& placement,
@@ -333,6 +441,23 @@ void TraceAotGuestMap(const AotCodeCachePlacement& placement,
                             fixup.guest_source, AotFixupKindName(fixup.kind),
                             fixup.guest_target, fixup.cache_patch_offset,
                             fixup.resolved ? 1U : 0U);
+                    }
+                }
+                const std::size_t context_radius =
+                    AotGuestMapContextRadius();
+                if (context_radius != 0U)
+                {
+                    const std::size_t first_index =
+                        match_index > context_radius
+                            ? match_index - context_radius : 0U;
+                    const std::size_t last_index = std::min(
+                        placement.address_map.size() - 1U,
+                        match_index + context_radius);
+                    for (std::size_t context_index = first_index;
+                         context_index <= last_index; ++context_index)
+                    {
+                        TraceAotGuestMapContextEntry(
+                            placement, context_index, match_index);
                     }
                 }
             }
@@ -952,6 +1077,21 @@ bool HandleGuestLowMemoryReadFault(repiu::platform::GuestCpuContext* win32_conte
 bool HandleDosMemoryAccess(repiu::platform::GuestCpuContext* win32_context,
                            ThreadContext* context);
 
+std::uint32_t DrainFollowingLegacyStackInstructions(
+    repiu::platform::GuestCpuContext* win32_context,
+    ThreadContext* context)
+{
+#if defined(_M_X64) || defined(__x86_64__)
+    constexpr std::uint32_t kMaximumFollowingStackInstructions = 16U;
+    if (context != nullptr && context->aot_legacy_fallback)
+    {
+        return HandleConsecutiveLegacyStackInstructions(
+            win32_context, context, kMaximumFollowingStackInstructions);
+    }
+#endif
+    return 0U;
+}
+
 
 
 // Shared guest-instruction HLE dispatch (Task 266). Runs the same handler chain
@@ -981,6 +1121,18 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
     }
     const std::uint8_t opcode = ptr[offset];
     const std::uint8_t second_opcode = offset == 0U ? ptr[1] : 0U;
+#if defined(_M_X64) || defined(__x86_64__)
+    // Original 32-bit PUSH/POP bytes would silently use host RSP in long mode.
+    // Only legacy fallback reaches original bytes; emitted cache code already
+    // lowers these operations to the R15D guest stack pointer.
+    if (context->aot_legacy_fallback && offset == 0U &&
+        opcode >= 0x50U && opcode <= 0x5FU &&
+        HandleGeneralRegisterStackInstruction(win32_context, context))
+    {
+        DrainFollowingLegacyStackInstructions(win32_context, context);
+        return true;
+    }
+#endif
     const bool segment_push_candidate =
         (opcode == 0x06U || opcode == 0x0EU || opcode == 0x16U ||
          opcode == 0x1EU ||
@@ -1033,38 +1185,65 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
             {
                 const bool handled =
                     HandleSegmentPushInstruction(win32_context, context);
+                const std::uint32_t drained = handled
+                    ? DrainFollowingLegacyStackInstructions(
+                          win32_context, context)
+                    : 0U;
                 if (segment_hle_trace_index != 0U &&
                     segment_hle_trace_index <= 16U)
                 {
+                    const auto* const next =
+                        reinterpret_cast<const std::uint8_t*>(
+                            static_cast<std::uintptr_t>(win32_context->Eip));
+                    const bool next_readable = handled &&
+                        IsGuestRangeReadable(context, next, 6U);
                     std::fprintf(
                         stderr,
                         "[repiu-segment-hle] stage=shared-handler n=%u "
-                        "handled=%u eip_after=0x%08X esp_after=0x%08X\n",
+                        "handled=%u drained=%u eip_after=0x%08X esp_after=0x%08X "
+                        "next=%02X%02X%02X%02X%02X%02X\n",
                         segment_hle_trace_index,
                         handled ? 1U : 0U,
+                        drained,
                         static_cast<std::uint32_t>(win32_context->Eip),
-                        static_cast<std::uint32_t>(win32_context->Esp));
+                        static_cast<std::uint32_t>(win32_context->Esp),
+                        next_readable ? next[0] : 0U,
+                        next_readable ? next[1] : 0U,
+                        next_readable ? next[2] : 0U,
+                        next_readable ? next[3] : 0U,
+                        next_readable ? next[4] : 0U,
+                        next_readable ? next[5] : 0U);
                 }
                 if (handled) return true;
             }
             break;
         case 0x07U: case 0x1FU:
-            if (context->enable_segment_load_hle && HandleSegmentPopInstruction(win32_context, context)) return true;
+            if (context->enable_segment_load_hle &&
+                HandleSegmentPopInstruction(win32_context, context))
+            {
+                DrainFollowingLegacyStackInstructions(win32_context, context);
+                return true;
+            }
             break;
         case 0x0FU:
             if (context->enable_segment_load_hle)
             {
                 const bool handled =
                     HandleSegmentPushInstruction(win32_context, context);
+                const std::uint32_t drained = handled
+                    ? DrainFollowingLegacyStackInstructions(
+                          win32_context, context)
+                    : 0U;
                 if (segment_hle_trace_index != 0U &&
                     segment_hle_trace_index <= 16U)
                 {
                     std::fprintf(
                         stderr,
                         "[repiu-segment-hle] stage=shared-handler n=%u "
-                        "handled=%u eip_after=0x%08X esp_after=0x%08X\n",
+                        "handled=%u drained=%u eip_after=0x%08X esp_after=0x%08X\n",
                         segment_hle_trace_index,
                         handled ? 1U : 0U,
+                        drained,
                         static_cast<std::uint32_t>(win32_context->Eip),
                         static_cast<std::uint32_t>(win32_context->Esp));
                 }
@@ -2672,12 +2851,91 @@ std::uint32_t LinuxX64ReturnRegisterTraceAddress()
     return address;
 }
 
+// Task 628. How many of the most recent guest stack writes to print beside a
+// selected return. The slot filter Task 619 added answers "who wrote this
+// slot"; it cannot answer "what did the stack do just before this return",
+// because the writes immediately before a failure usually land on other slots.
+std::uint32_t LinuxX64ReturnStackTailCount()
+{
+    static const std::uint32_t count = [] {
+        const auto setting = repiu::platform::ReadEnvironmentSetting(
+            "REPIU_LINUX_X64_RETURN_STACK_TAIL", 32U);
+        if (!setting.present || setting.too_long || setting.value.empty())
+        {
+            return 0U;
+        }
+        char text[33] = {};
+        std::memcpy(text, setting.value.data(), setting.value.size());
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(text, &end, 0);
+        if (end == text || *end != '\0')
+        {
+            return 0U;
+        }
+        if (parsed > REPIU_LINUX_X64_FRAME_STACK_TRACE_CAPACITY)
+        {
+            return static_cast<std::uint32_t>(
+                REPIU_LINUX_X64_FRAME_STACK_TRACE_CAPACITY);
+        }
+        return static_cast<std::uint32_t>(parsed);
+    }();
+    return count;
+}
+
+// Task 628. The ring in write order, oldest of the requested window first, so
+// a correct return and the failing one that follows it read as one sequence.
+void TraceLinuxX64ReturnStackTail(
+    const repiu::platform::LinuxX64AotDispatchFrame& frame,
+    const std::uint32_t sequence)
+{
+    const std::uint32_t requested = LinuxX64ReturnStackTailCount();
+    if (requested == 0U)
+    {
+        return;
+    }
+    const std::uint32_t written = frame.stack_trace_sequence;
+    const std::uint32_t printed = std::min(requested, written);
+    std::fprintf(stderr,
+                 "[repiu-x64-return-stack-tail] n=%u target=0x%08X "
+                 "sequence=%u printed=%u\n",
+                 static_cast<unsigned>(sequence),
+                 static_cast<unsigned>(frame.guest_source),
+                 static_cast<unsigned>(written),
+                 static_cast<unsigned>(printed));
+    for (std::uint32_t offset = printed; offset != 0U; --offset)
+    {
+        const std::uint32_t record_sequence = written - offset;
+        const std::uint32_t index = record_sequence &
+            (REPIU_LINUX_X64_FRAME_STACK_TRACE_CAPACITY - 1U);
+        const auto& record = frame.stack_trace[index];
+        if (record.site == 0U)
+        {
+            continue;
+        }
+        const char* const writer = record.fallthrough != 0U
+            ? "direct-call" : "guest-push";
+        std::fprintf(stderr,
+                     "[repiu-x64-return-stack-tail] index=%u writer=%s "
+                     "site=0x%08X fallthrough=0x%08X esp=0x%08X "
+                     "value=0x%08X\n",
+                     static_cast<unsigned>(index), writer,
+                     static_cast<unsigned>(record.site),
+                     static_cast<unsigned>(record.fallthrough),
+                     static_cast<unsigned>(record.guest_esp),
+                     static_cast<unsigned>(record.value));
+    }
+}
+
 void TraceLinuxX64ReturnRegisters(
     ThreadContext* const context,
     const repiu::platform::LinuxX64AotDispatchFrame& frame)
 {
     const std::uint32_t watched = LinuxX64ReturnRegisterTraceAddress();
-    if (watched == 0U || frame.guest_source != watched)
+    const bool legacy_match =
+        watched != 0U && frame.guest_source == watched;
+    const bool transfer_match =
+        AotTransferTargetTraceMatches(frame.guest_source);
+    if (!legacy_match && !transfer_match)
     {
         return;
     }
@@ -2711,6 +2969,47 @@ void TraceLinuxX64ReturnRegisters(
         }
     }
 
+    const bool indirect_call = (frame.status & 0x80000000U) != 0U;
+    const std::uint32_t producer = frame.status & 0x7FFFFFFFU;
+    std::uint8_t producer_bytes[8] = {};
+    std::uint32_t producer_bytes_valid = 0U;
+    const void* const producer_pointer = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(producer));
+    if (context != nullptr &&
+        IsGuestRangeReadable(context, producer_pointer,
+                             sizeof(producer_bytes)) &&
+        repiu::platform::CopyMemoryWithoutFaulting(
+            producer_bytes, producer_pointer, sizeof(producer_bytes)).complete)
+    {
+        producer_bytes_valid = 1U;
+    }
+    if (transfer_match)
+    {
+        std::fprintf(
+            stderr,
+            "[repiu-aot-transfer-target] kind=%s origin=x64-thunk "
+            "source=0x%08X target=0x%08X "
+            "bytes=%02X%02X%02X%02X%02X%02X%02X%02X valid=%u "
+            "esp=0x%08X consumed=0x%08X stack_target=0x%08X "
+            "eax=0x%08X ebx=0x%08X ecx=0x%08X edx=0x%08X "
+            "esi=0x%08X edi=0x%08X ebp=0x%08X\n",
+            indirect_call ? "call" : "return", producer,
+            static_cast<unsigned>(frame.guest_source), producer_bytes[0],
+            producer_bytes[1], producer_bytes[2], producer_bytes[3],
+            producer_bytes[4], producer_bytes[5], producer_bytes[6],
+            producer_bytes[7], producer_bytes_valid,
+            static_cast<unsigned>(frame.guest.esp),
+            static_cast<unsigned>(stack_base),
+            static_cast<unsigned>(stack_words[0]),
+            static_cast<unsigned>(frame.guest.eax),
+            static_cast<unsigned>(frame.guest.ebx),
+            static_cast<unsigned>(frame.guest.ecx),
+            static_cast<unsigned>(frame.guest.edx),
+            static_cast<unsigned>(frame.guest.esi),
+            static_cast<unsigned>(frame.guest.edi),
+            static_cast<unsigned>(frame.guest.ebp));
+    }
+
     std::fprintf(
         stderr,
         "[repiu-x64-return-reg] n=%u target=0x%08X "
@@ -2741,6 +3040,19 @@ void TraceLinuxX64ReturnRegisters(
         static_cast<unsigned>(stack_words[1]),
         static_cast<unsigned>(stack_words[2]),
         static_cast<unsigned>(stack_words[3]));
+    TraceLinuxX64ReturnStackTail(frame, sequence);
+    // Task 629. The same map dump the initial and final phases print, taken at
+    // this return instead. The failing run dies on SIGSEGV, so the final phase
+    // never arrives, and the block that fails has no initial entry to print.
+    // Reading the map here is safe for the reason the worker handshake gives:
+    // the translation worker only runs while the guest thread is parked, and
+    // this is the guest thread.
+    if (legacy_match && context != nullptr &&
+        context->aot_placement != nullptr)
+    {
+        TraceAotGuestMap(*context->aot_placement, context->runtime_base,
+                         "return-trace");
+    }
 }
 
 void TraceLinuxX64ReturnStackWriters(
@@ -4251,7 +4563,19 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         // opt-in line identifies whether that address belongs to a registered
         // guest instruction range. Keep it outside the normal path because a
         // reverse lookup and formatted output are diagnostic-only costs.
-        if (fault.kind == repiu::platform::FaultKind::kAccessViolation &&
+        const bool trace_aot_fault =
+            fault.kind == repiu::platform::FaultKind::kAccessViolation ||
+            (fault.kind == repiu::platform::FaultKind::kBreakpoint &&
+             IsAotCacheAddress(
+                 context,
+                 static_cast<std::uint32_t>(fault.registers->Eip)));
+        const std::uint32_t trace_cache_address =
+            static_cast<std::uint32_t>(fault.registers->Eip);
+        const std::uint32_t trace_address_filter =
+            AotFaultTraceAddressFilter();
+        if (trace_aot_fault &&
+            (trace_address_filter == 0U ||
+             trace_address_filter == trace_cache_address) &&
             std::getenv("REPIU_AOT_FAULT_TRACE") != nullptr)
         {
             static std::atomic<std::uint32_t> aot_fault_trace_count{0U};
@@ -4260,19 +4584,53 @@ repiu::platform::FaultDisposition DispatchGuestFault(
                 1U;
             if (occurrence <= 16U)
             {
-                const std::uint32_t cache_address =
-                    static_cast<std::uint32_t>(fault.registers->Eip);
+                const std::uint32_t cache_address = trace_cache_address;
                 std::uint32_t guest_address = 0U;
                 const bool mapped = FindAotGuestAddress(
                     *context->aot_placement, cache_address, &guest_address);
+                const std::uint32_t previous_cache_address =
+                    cache_address != 0U ? cache_address - 1U : 0U;
+                std::uint32_t previous_guest_address = 0U;
+                const bool previous_mapped = cache_address != 0U &&
+                    FindAotGuestAddress(
+                        *context->aot_placement, previous_cache_address,
+                        &previous_guest_address);
+                const AotCacheBreakpointProvenance provenance =
+                    ClassifyAotCacheBreakpointProvenance(
+                        *context->aot_placement, cache_address, false);
+                const AotCacheBreakpointProvenance previous_provenance =
+                    ClassifyAotCacheBreakpointProvenance(
+                        *context->aot_placement, previous_cache_address,
+                        false);
+                std::uint32_t fallthrough_guest_address = 0U;
+                const bool fallthrough_mapped =
+                    runtime::FindAotBlockFallthroughTarget(
+                        context->aot_placement->fixups,
+                        context->aot_placement->base_address,
+                        context->aot_placement->size,
+                        cache_address, &fallthrough_guest_address);
                 std::fprintf(
                     stderr,
-                    "[repiu-aot-fault] cache=0x%08X mapped=%u guest=0x%08X "
-                    "size=%u maps=%zu n=%u\n",
+                    "[repiu-aot-fault] kind=%s cache=0x%08X "
+                    "exact=%u/0x%08X/%u previous=%u/0x%08X/%u "
+                    "fallthrough=%u/0x%08X size=%u tail=%u maps=%zu n=%u\n",
+                    fault.kind == repiu::platform::FaultKind::kBreakpoint
+                        ? "breakpoint" : "access",
                     cache_address,
                     mapped ? 1U : 0U,
                     guest_address,
+                    static_cast<std::uint32_t>(provenance),
+                    previous_mapped ? 1U : 0U,
+                    previous_guest_address,
+                    static_cast<std::uint32_t>(previous_provenance),
+                    fallthrough_mapped ? 1U : 0U,
+                    fallthrough_guest_address,
                     context->aot_placement->size,
+                    context->aot_placement->base_address +
+                            context->aot_placement->size >= cache_address
+                        ? context->aot_placement->base_address +
+                              context->aot_placement->size - cache_address
+                        : 0U,
                     context->aot_placement->address_map.size(),
                     occurrence);
             }
@@ -4951,16 +5309,31 @@ repiu::platform::FaultDisposition DispatchGuestFault(
     {
         const bool handled =
             HandleSegmentPushInstruction(win32_context, context);
+        const std::uint32_t drained = handled
+            ? DrainFollowingLegacyStackInstructions(win32_context, context)
+            : 0U;
         if (segment_hle_trace_index != 0U && segment_hle_trace_index <= 16U)
         {
+            const auto* const next = reinterpret_cast<const std::uint8_t*>(
+                static_cast<std::uintptr_t>(win32_context->Eip));
+            const bool next_readable = handled &&
+                IsGuestRangeReadable(context, next, 6U);
             std::fprintf(
                 stderr,
                 "[repiu-segment-hle] stage=handler n=%u handled=%u "
-                "eip_after=0x%08X esp_after=0x%08X\n",
+                "drained=%u eip_after=0x%08X esp_after=0x%08X "
+                "next=%02X%02X%02X%02X%02X%02X\n",
                 segment_hle_trace_index,
                 handled ? 1U : 0U,
+                drained,
                 static_cast<std::uint32_t>(win32_context->Eip),
-                static_cast<std::uint32_t>(win32_context->Esp));
+                static_cast<std::uint32_t>(win32_context->Esp),
+                next_readable ? next[0] : 0U,
+                next_readable ? next[1] : 0U,
+                next_readable ? next[2] : 0U,
+                next_readable ? next[3] : 0U,
+                next_readable ? next[4] : 0U,
+                next_readable ? next[5] : 0U);
         }
         if (handled)
         {
@@ -4985,6 +5358,7 @@ repiu::platform::FaultDisposition DispatchGuestFault(
     if (context->enable_segment_load_hle &&
         HandleSegmentPopInstruction(win32_context, context))
     {
+        DrainFollowingLegacyStackInstructions(win32_context, context);
         return repiu::platform::FaultDisposition::kResume;
     }
     if (context->enable_segment_load_hle &&

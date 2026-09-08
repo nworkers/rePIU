@@ -71,6 +71,8 @@ void DumpZeroReturnEvidence(const repiu::platform::GuestCpuContext* win32_contex
                             const char* reason,
                             std::uint32_t code_center);
 
+bool AotTransferTargetTraceMatches(std::uint32_t target);
+
 // Task 503d-6. Was a Win32 thread procedure, guarded so it could name DWORD
 // and WINAPI; now an ordinary function, and the Win32 shim at the creation site
 // casts its result back into a thread exit code. The guard went with the

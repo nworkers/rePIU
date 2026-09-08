@@ -3,8 +3,11 @@
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/aot_translation_plan.h"
 
+#include <Zydis.h>
+
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <utility>
 #include <vector>
@@ -500,6 +503,223 @@ bool ProbeLongModeSegmentGuardCoverage()
     return all_with_load;
 }
 
+// Task 630. A conditional branch's not-taken edge.
+//
+// The emitter used to append a fallthrough branch only for a `kCopy` tail and
+// let a conditional tail rely on its fallthrough being the bytes that
+// physically follow. That held for as long as block order matched guest order,
+// and a dynamic append whose entry is the fallthrough breaks it: the
+// fallthrough is emitted first, the branch's block lands later, and the bytes
+// after the branch belong to whatever came next in the image.
+//
+// Two plans over the same three instructions, differing only in block order, so
+// what is measured is the edge rather than the encoding.
+struct ConditionalFallthroughPlan
+{
+    AotTranslationPlan plan;
+    std::uint32_t branch_address = 0U;
+    std::uint32_t fallthrough_address = 0U;
+};
+
+// `mov eax, [ebx+4]`, `jnz`, then a port I/O tail. Port I/O closes its block
+// without an edge of its own, so any `kBlockFallthrough` in these images is the
+// one being measured.
+ConditionalFallthroughPlan MakeConditionalFallthroughPlan(
+    const bool fallthrough_first)
+{
+    ConditionalFallthroughPlan built;
+    const std::vector<std::uint8_t> branch_bytes = {0x75U, 0x02U};
+
+    AotInstructionRecord head;
+    head.guest_address = kBase;
+    head.kind = AotInstructionKind::kCopy;
+    head.length = static_cast<std::uint8_t>(kBaseRelative.size());
+    head.bytes = kBaseRelative;
+
+    AotInstructionRecord branch;
+    branch.guest_address = kBase + head.length;
+    branch.kind = AotInstructionKind::kConditionalBranch;
+    branch.length = static_cast<std::uint8_t>(branch_bytes.size());
+    branch.bytes = branch_bytes;
+    branch.mnemonic = static_cast<std::uint16_t>(ZYDIS_MNEMONIC_JNZ);
+    branch.direct_target = kBase;
+
+    AotInstructionRecord tail;
+    tail.guest_address = branch.guest_address + branch.length;
+    tail.kind = AotInstructionKind::kPortIo;
+    tail.length = static_cast<std::uint8_t>(kPortIo.size());
+    tail.bytes = kPortIo;
+
+    AotBasicBlock branch_block;
+    branch_block.guest_address = head.guest_address;
+    branch_block.instructions.push_back(head);
+    branch_block.instructions.push_back(branch);
+
+    AotBasicBlock fallthrough_block;
+    fallthrough_block.guest_address = tail.guest_address;
+    fallthrough_block.instructions.push_back(tail);
+
+    built.plan.valid = true;
+    built.branch_address = branch.guest_address;
+    built.fallthrough_address = tail.guest_address;
+    if (fallthrough_first)
+    {
+        built.plan.entry_address = fallthrough_block.guest_address;
+        built.plan.blocks.push_back(fallthrough_block);
+        built.plan.blocks.push_back(branch_block);
+    }
+    else
+    {
+        built.plan.entry_address = branch_block.guest_address;
+        built.plan.blocks.push_back(branch_block);
+        built.plan.blocks.push_back(fallthrough_block);
+    }
+    return built;
+}
+
+bool CacheOffsetOf(const AotCodeCacheImage& image,
+                   const std::uint32_t guest_address,
+                   std::uint32_t* offset)
+{
+    for (const repiu::runtime::AotAddressMapEntry& map : image.address_map)
+    {
+        if (map.guest_address == guest_address)
+        {
+            *offset = map.cache_offset;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool ProbeConditionalBranchFallthrough()
+{
+    // The fallthrough is the next block, so adjacency already carries the edge
+    // and nothing is added. This is the item that says the fix costs the common
+    // case nothing.
+    const ConditionalFallthroughPlan adjacent =
+        MakeConditionalFallthroughPlan(false);
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage adjacent_image;
+    bool adjacent_ok =
+        BuildAotCodeCacheImage(adjacent.plan, options, &adjacent_image) &&
+        adjacent_image.valid;
+    for (const repiu::runtime::AotCodeCacheFixup& fixup :
+         adjacent_image.fixups)
+    {
+        if (fixup.kind == AotFixupKind::kBlockFallthrough)
+        {
+            adjacent_ok = false;
+        }
+    }
+
+    // The same three instructions with the fallthrough emitted first. Adjacency
+    // no longer carries the edge, so it has to be written and resolved back to
+    // the earlier offset.
+    const ConditionalFallthroughPlan reordered =
+        MakeConditionalFallthroughPlan(true);
+    AotCodeCacheImage reordered_image;
+    bool reordered_ok =
+        BuildAotCodeCacheImage(reordered.plan, options, &reordered_image) &&
+        reordered_image.valid;
+    std::uint32_t fallthrough_offset = 0U;
+    reordered_ok = reordered_ok &&
+        CacheOffsetOf(reordered_image, reordered.fallthrough_address,
+                      &fallthrough_offset);
+    bool edge_resolved = false;
+    for (const repiu::runtime::AotCodeCacheFixup& fixup :
+         reordered_image.fixups)
+    {
+        if (fixup.kind != AotFixupKind::kBlockFallthrough ||
+            fixup.guest_source != reordered.branch_address ||
+            fixup.guest_target != reordered.fallthrough_address ||
+            !fixup.resolved || fixup.cache_patch_offset == 0U ||
+            fixup.cache_patch_offset + 4U > reordered_image.bytes.size())
+        {
+            continue;
+        }
+        std::int32_t displacement = 0;
+        std::memcpy(&displacement,
+                    reordered_image.bytes.data() + fixup.cache_patch_offset,
+                    sizeof(displacement));
+        const std::int64_t landing =
+            static_cast<std::int64_t>(fixup.cache_patch_offset) + 4 +
+            displacement;
+        edge_resolved =
+            reordered_image.bytes[fixup.cache_patch_offset - 1U] == 0xE9U &&
+            landing == static_cast<std::int64_t>(fallthrough_offset);
+    }
+    reordered_ok = reordered_ok && edge_resolved;
+
+    const bool ok = adjacent_ok && reordered_ok;
+    std::cout << "long_mode_emission_conditional_fallthrough_adjacent="
+              << (adjacent_ok ? "true" : "false")
+              << ",reordered=" << (reordered_ok ? "true" : "false") << "\n";
+    return ok;
+}
+
+bool ProbeUnresolvedBlockFallthroughLookup()
+{
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = kBase;
+    AotBasicBlock block;
+    block.guest_address = kBase;
+    AotInstructionRecord instruction;
+    instruction.guest_address = kBase;
+    instruction.kind = AotInstructionKind::kCopy;
+    instruction.length = 1U;
+    instruction.bytes = {0x90U};
+    block.instructions.push_back(instruction);
+    plan.blocks.push_back(block);
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    const bool built = BuildAotCodeCacheImage(plan, options, &image) &&
+        image.valid && image.fixups.size() == 1U;
+    if (!built)
+    {
+        std::cout << "long_mode_fallthrough_lookup=false\n";
+        return false;
+    }
+
+    const repiu::runtime::AotCodeCacheFixup& fixup = image.fixups[0];
+    constexpr std::uint32_t cache_base = 0x20000000U;
+    const std::uint32_t cache_size =
+        static_cast<std::uint32_t>(image.bytes.size());
+    std::vector<repiu::runtime::AotCodeCacheFixup> fixups = image.fixups;
+    const std::uint32_t sentinel =
+        cache_base + fixup.cache_patch_offset - 1U;
+    std::uint32_t target = 0U;
+    const bool exact =
+        fixup.kind == AotFixupKind::kBlockFallthrough && !fixup.resolved &&
+        image.bytes[fixup.cache_patch_offset - 1U] == 0xCCU &&
+        repiu::runtime::FindAotBlockFallthroughTarget(
+            fixups, cache_base, cache_size, sentinel, &target) &&
+        target == kBase + 1U;
+    const bool adjacent_rejected =
+        !repiu::runtime::FindAotBlockFallthroughTarget(
+            fixups, cache_base, cache_size, sentinel + 1U, &target);
+
+    fixups[0].resolved = true;
+    const bool resolved_rejected =
+        !repiu::runtime::FindAotBlockFallthroughTarget(
+            fixups, cache_base, cache_size, sentinel, &target);
+    fixups[0].resolved = false;
+    fixups[0].kind = AotFixupKind::kDirectJump;
+    const bool other_kind_rejected =
+        !repiu::runtime::FindAotBlockFallthroughTarget(
+            fixups, cache_base, cache_size, sentinel, &target);
+
+    const bool ok = exact && adjacent_rejected && resolved_rejected &&
+        other_kind_rejected;
+    std::cout << "long_mode_fallthrough_lookup="
+              << (ok ? "true" : "false") << "\n";
+    return ok;
+}
+
 }  // namespace
 
 bool RunLongModeEmissionProbe()
@@ -509,10 +729,16 @@ bool RunLongModeEmissionProbe()
     const bool refused_ok = ProbeAllRefusedStillBuilds();
     const bool segment_read_gpr16_ok = ProbeSegmentReadGpr16Classification();
     const bool segment_guard_coverage_ok = ProbeLongModeSegmentGuardCoverage();
+    const bool conditional_fallthrough_ok =
+        ProbeConditionalBranchFallthrough();
+    const bool unresolved_fallthrough_ok =
+        ProbeUnresolvedBlockFallthroughLookup();
 
     const bool all = default_ok && outcomes_ok && refused_ok &&
         segment_read_gpr16_ok &&
-        segment_guard_coverage_ok;
+        segment_guard_coverage_ok &&
+        conditional_fallthrough_ok &&
+        unresolved_fallthrough_ok;
     std::cout << "long_mode_emission_all=" << (all ? "true" : "false") << "\n";
     return all;
 }

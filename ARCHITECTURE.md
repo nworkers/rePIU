@@ -731,6 +731,22 @@ HLE 또는 간접 경계는 외부 sentinel fixup으로 남깁니다. basic-bloc
 copy 명령에는 명시적인 `rel32` fall-through를 추가하므로 cache layout이 guest의
 선형 제어 흐름을 바꾸지 않습니다.
 
+Task 630부터 조건 분기로 끝나는 블록의 not-taken edge도 같은 규칙을 따릅니다.
+분기는 pending fall-through를 남기고, 실제로 바이트를 만드는 다음 명령이 그
+target이면 인접성이 edge를 대신하므로 아무것도 추가하지 않습니다. target이
+아니거나 뒤에 emit할 명령이 없으면 `rel32` fall-through를 명시적으로
+추가합니다. 따라서 block 배치 순서가 guest 순서와 달라도 not-taken edge가
+유지되며, fall-through가 물리적으로 다음인 image의 바이트는 바뀌지 않습니다.
+
+Task 632부터 long mode는 jump table도 emit합니다. i386처럼 target 표를 cache
+안에 복사하지 않고, guest의 표를 실행 시점에 읽어 target을 return thunk
+resolver에 넘깁니다. 즉 indirect call 슬롯에서 return 주소 push만 뺀
+형태입니다. 받는 형식은 `FF /4` + SIB(scale 4, base 없음, index가 ESP가 아님)
++ disp32이며, 선행 `2E`(CS) 하나는 무시합니다. LE fixup이 절대 주소를 이미
+배치된 선형 주소로 바꾸므로 이 이미지에서 `CS:`는 데이터 참조에 무연산이고,
+i386 슬롯도 같은 이유로 이 prefix를 버립니다. 그 밖의 형식은 거부되어 기존처럼
+경계로 남습니다.
+
 ```mermaid
 flowchart LR
     PLAN["Instruction plan"] --> EMIT["Two-pass emitter"]
@@ -746,6 +762,24 @@ instructions and returns, normalizes direct call/jump/Jcc edges to `rel32`,
 resolves internal edges through a guest-address/cache-offset map, and leaves HLE
 or indirect boundaries as external sentinel fixups. Explicit `rel32` fall-through
 links preserve guest linear control flow independently of cache layout.
+
+Since Task 630 the not-taken edge of a block ending in a conditional branch
+follows the same rule. The branch leaves a pending fall-through: if the next
+instruction that actually emits bytes is its target, adjacency carries the edge
+and nothing is added; otherwise, or when nothing follows, an explicit `rel32`
+fall-through is written. The not-taken edge therefore survives a block order
+that differs from guest order, and images whose fall-through is physically next
+keep their bytes.
+
+Since Task 632 long mode also emits jump tables. Rather than copying a table of
+targets into the cache as i386 does, it reads the guest's own table at run time
+and hands the target to the return-thunk resolver -- the indirect-call slot
+without its return-address push. The accepted form is `FF /4` with a SIB of
+scale four, no base, and an index that is not ESP, plus a disp32; one leading
+`2E` (CS) is ignored. LE fixups have already rewritten absolute addresses into
+placed linear ones, so `CS:` is a no-op on a data reference in this image, and
+the i386 slot drops the same prefix for the same reason. Every other form is
+refused and stays a boundary.
 
 `platform::win32::PlaceWin32AotCodeCache`는 별도 Win32 cache allocation과
 RW copy 후 RX 전환, instruction-cache flush, 양방향 guest/cache lookup을
@@ -1845,6 +1879,34 @@ Task 606 lowers exact `66 50..5F` register PUSH/POP with word MOV and ESP ±2.
 It preserves upper register bits and adjacent return addresses. SP uses R14
 scratch for the pre-decrement value and post-increment low-word update.
 
+Task 644부터 x64 `aot_legacy_fallback`에서 원본 바이트를 single-step할 때도
+한 바이트 `50h..5Fh` register PUSH/POP은 `instruction_emulation`의 공용 HLE가
+guest `ESP`와 guest memory에 적용합니다. long mode에서 같은 바이트가 host
+`RSP`를 사용해 의미가 조용히 달라지는 것을 막기 위한 경계이며, i386 직접 실행과
+AOT cache 실행에는 적용하지 않습니다. `PUSH ESP`는 감소 전 값을 저장하고
+`POP ESP`는 증가 뒤 레지스터 기록이 최종 ESP를 정하는 32-bit x86 순서를 보존합니다.
+
+From Task 644, while x64 `aot_legacy_fallback` single-steps original bytes, the
+one-byte `50h..5Fh` register PUSH/POP forms are applied to guest `ESP` and guest
+memory by shared `instruction_emulation` HLE. This boundary prevents the same
+bytes from silently using host `RSP` in long mode and does not affect i386
+direct execution or AOT-cache execution. It preserves 32-bit x86 ordering:
+`PUSH ESP` stores the pre-decrement value, while `POP ESP` takes its final ESP
+from the register write after the conceptual increment.
+
+Task 646부터 x64 `aot_legacy_fallback`에서 첫 스택 HLE가 성공하면 뒤따르는
+지원 대상 register/segment push/pop도 같은 예외 안에서 최대 16개까지 연속
+처리합니다. 각 반복은 guest code 범위와 EIP 전진을 확인하며, 비스택 명령이나
+거부된 접근에서 즉시 기존 실행 경로로 돌아갑니다. 이 경계는 유효한 x64 명령인
+`PUSH FS/GS`가 다음 fault 전에 host `RSP`를 바꾸는 틈을 막습니다.
+
+From Task 646, after the first successful stack HLE in x64
+`aot_legacy_fallback`, up to 16 following supported register/segment push/pop
+instructions are consumed in the same exception. Every iteration validates the
+guest code range and EIP progress, and stops immediately at a non-stack
+instruction or rejected access. This closes the gap in which valid long-mode
+`PUSH FS/GS` instructions could change host `RSP` before another fault.
+
 emitter는 long mode 호스트를 위한 방출 모드를 하나 갖습니다(Task 553).
 `AotCodeCacheBuildOptions::enable_long_mode_emission`이 켜지면 `kCopy`마다
 `ClassifyLongModeBytes`(Task 550)로 판정하고 `LowerLongModeBytes`(Task 552)로 낮추며,
@@ -1866,6 +1928,21 @@ slots and execution probes. The default is `false`, so i386 emission
 never enters that judgement. It is an option rather than a host macro because emission is
 computation: the answer for a given plan must be the same on every host, which is what
 keeps it observable on Windows.
+
+Task 639부터 long-mode에서 cache 밖을 향해 중립화된 `kBlockFallthrough`도 fixup
+metadata로 복구됩니다. 이 slot은 address-map entry가 아니므로 runtime의
+`FindAotBlockFallthroughTarget`이 `INT3` 위치와 미해결 fixup의 rel32 위치를 대조하여
+guest target을 반환합니다. execution engine은 그 target을 기존 AOT boundary의 TF
+원본 실행 경로로 전달합니다. 잘못된 주소, 이미 해결된 fixup, 다른 direct-edge kind는
+거절되며 sentinel provenance는 `kOtherPlannerFixup`입니다.
+
+Since Task 639, long mode also recovers a neutralized out-of-cache
+`kBlockFallthrough` through fixup metadata. Because this slot has no address-map
+entry, runtime `FindAotBlockFallthroughTarget` matches the `INT3` position against
+the unresolved fixup's rel32 position and returns its guest target. The execution
+engine feeds that target into the existing AOT-boundary TF original-execution
+path. Wrong addresses, resolved fixups, and other direct-edge kinds are rejected;
+the sentinel provenance is `kOtherPlannerFixup`.
 
 Task 569부터 `kGuardedSegmentLoad`도 x64 전용 slot을 갖습니다. x64는 guest
 selector를 host `ES`/`DS`/`FS`/`GS`에 설치하지 않으므로 i386 slot의 물리
@@ -1910,6 +1987,36 @@ site contract of `original displacement + live segment base`. The access's
 mode. Instructions naming guest `ESP` in another operand remain fail-closed
 because it lives in `R15D`; SIB and the other displacement forms remain closed
 as well.
+
+Task 636부터 x64 segment-override slot은 GS와 비-SIB `mod=00`
+base/no-displacement 형식도 허용합니다. GS prefix는 emitted access에서 제거되고
+live GS base가 새 disp32에 접히므로 host GS를 읽거나 변경하지 않습니다. 변위가
+없는 형식의 `original_displacement`는 0이며 원본 suffix는 ModRM 바로 뒤에서
+복사합니다. 따라서 trailing immediate가 prefix나 원본 명령과 중복되지 않습니다.
+FS, SIB, base+disp32는 계속 fail-closed합니다.
+
+Since Task 636, the x64 segment-override slot also admits GS and the non-SIB
+`mod=00` base/no-displacement form. The emitted access drops the GS prefix and
+folds the live GS base into a new disp32, so host GS is neither read nor
+modified. A no-displacement site records zero as `original_displacement` and
+copies the original suffix from immediately after ModRM, preventing a trailing
+immediate from being confused with the prefix or duplicated instruction bytes.
+FS, SIB, and base+disp32 remain fail-closed.
+
+Task 637부터 HLE가 원본 명령을 완전히 처리하고 EIP를 전진시킨 뒤의 즉시 cache
+재진입은 `aot_reentry_pending`뿐 아니라 `aot_legacy_fallback`에서도 허용됩니다.
+미매핑 동적 target에서 시작한 fallback이 나중에 알려진 cache 주소에 도달하면 AOT로
+복귀한다는 초기 backend 계약을 복원한 것입니다. 두 상태는 자격만 부여하며,
+segment-write, guest arena, quarantine, 정확한 cache hit와 span preflight 검사는 기존과
+동일하게 적용됩니다. cache miss의 post-HLE 동적 번역은 계속 opt-in입니다.
+
+Since Task 637, immediate cache re-entry after HLE fully handles an original
+instruction and advances EIP is eligible from either `aot_reentry_pending` or
+`aot_legacy_fallback`. This restores the original backend contract that a
+fallback begun at an unmapped dynamic target returns to AOT after reaching a
+known cache address. These states grant eligibility only; the existing
+segment-write, guest-arena, quarantine, exact-cache-hit, and span-preflight
+gates still apply. Post-HLE translation on a cache miss remains opt-in.
 
 Task 571부터 `kGuardedSegmentPop`도 x64 전용 slot을 갖습니다. i386 slot은 host의
 물리 segment selector를 비교하지만 x64는 guest selector를 host `DS`에 설치하지

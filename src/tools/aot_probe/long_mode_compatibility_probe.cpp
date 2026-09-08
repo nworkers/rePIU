@@ -297,6 +297,25 @@ bool ProbeStackSequenceLowering()
           ZYDIS_MNEMONIC_POPFQ}},
         {"leave", {0xC9U}, 3,
          {ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_LEA}},
+        // Task 631. `POP DWORD PTR [EDI+0x14]` and the absolute form. Load the
+        // stacked value, raise guest ESP, then store through the guest's own
+        // memory operand.
+        {"pop_mem_disp8", {0x8FU, 0x47U, 0x14U}, 3,
+         {ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_LEA, ZYDIS_MNEMONIC_MOV}},
+        {"pop_mem_disp32", {0x8FU, 0x05U, 0x78U, 0x56U, 0x34U, 0x12U}, 3,
+         {ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_LEA, ZYDIS_MNEMONIC_MOV}},
+        // Task 634. The register-array forms. `PUSHAD` captures the entry ESP
+        // first, adjusts once, and fills eight slots; `POPAD` restores seven
+        // and adjusts last, because the stored ESP is discarded.
+        {"pushad", {0x60U}, 10,
+         {ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_LEA, ZYDIS_MNEMONIC_MOV,
+          ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_MOV,
+          ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_MOV,
+          ZYDIS_MNEMONIC_MOV}},
+        {"popad", {0x61U}, 8,
+         {ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_MOV,
+          ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_MOV,
+          ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_LEA}},
     };
 
     bool ok = true;
@@ -355,6 +374,69 @@ bool ProbeStackSequenceLowering()
             immediate[2] == 0xFFU && immediate[3] == 0xFFU;
     }
 
+    // Task 631. The store's encoding, byte for byte, because the whole point of
+    // the sequence is that the guest's memory operand survives it. `67` for
+    // 32-bit addressing, `44` as the REX.R that makes ModRM `reg=110` name R14
+    // rather than ESI, then `89` and the guest's own ModRM and displacement.
+    const std::uint8_t pop_mem[] = {0x8FU, 0x47U, 0x14U};
+    std::uint8_t pop_lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t pop_count = 0;
+    const std::uint8_t expected_store[] = {0x67U, 0x44U, 0x89U, 0x77U, 0x14U};
+    bool pop_bytes_ok = repiu::runtime::LowerLongModeBytes(
+        pop_mem, sizeof(pop_mem), pop_lowered, &pop_count, nullptr) &&
+        pop_count >= sizeof(expected_store);
+    if (pop_bytes_ok)
+    {
+        const std::uint8_t* store = pop_lowered + pop_count -
+            sizeof(expected_store);
+        pop_bytes_ok = std::memcmp(store, expected_store,
+                                   sizeof(expected_store)) == 0;
+    }
+
+    // Task 631. The two forms deliberately left as boundaries: an ESP-based
+    // destination, whose effective address the SDM computes after the
+    // increment, and the operand-size-prefixed `POP m16`.
+    const std::uint8_t pop_esp_mem[] = {0x8FU, 0x44U, 0x24U, 0x04U};
+    const std::uint8_t pop_mem16[] = {0x66U, 0x8FU, 0x47U, 0x14U};
+    const bool pop_refusals_kept =
+        ClassifyLongModeBytes(pop_esp_mem, sizeof(pop_esp_mem)).lowering ==
+            repiu::runtime::LongModeLowering::kNone &&
+        ClassifyLongModeBytes(pop_mem16, sizeof(pop_mem16)).lowering ==
+            repiu::runtime::LongModeLowering::kNone;
+
+    // Task 634. `PUSHAD` opens with `mov r14d, r15d` and closes the `+12` slot
+    // from that scratch, which is the entry ESP. Read after the `lea` it would
+    // be thirty-two lower and the guest would find the wrong value there, and
+    // nothing would raise -- so the two bytes that make it the scratch, and the
+    // store that spends it, are checked rather than assumed.
+    const std::uint8_t pushad_bytes[] = {0x60U};
+    std::uint8_t pushad_lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t pushad_count = 0;
+    const std::uint8_t expected_capture[] = {0x45U, 0x89U, 0xFEU};
+    const std::uint8_t expected_entry_esp_store[] = {0x45U, 0x89U, 0x77U,
+                                                     0x0CU};
+    bool pushad_ok = repiu::runtime::LowerLongModeBytes(
+        pushad_bytes, sizeof(pushad_bytes), pushad_lowered, &pushad_count,
+        nullptr) &&
+        pushad_count == 39U &&
+        std::memcmp(pushad_lowered, expected_capture,
+                    sizeof(expected_capture)) == 0;
+    if (pushad_ok)
+    {
+        bool found = false;
+        for (std::size_t index = 0;
+             index + sizeof(expected_entry_esp_store) <= pushad_count; ++index)
+        {
+            if (std::memcmp(pushad_lowered + index, expected_entry_esp_store,
+                            sizeof(expected_entry_esp_store)) == 0)
+            {
+                found = true;
+                break;
+            }
+        }
+        pushad_ok = found;
+    }
+
     // Still refused, because they change EIP as well as the stack.
     const std::uint8_t ret_bytes[] = {0xC3U};
     const std::uint8_t call_bytes[] = {0xE8U, 0x00U, 0x00U, 0x00U, 0x00U};
@@ -367,8 +449,15 @@ bool ProbeStackSequenceLowering()
     std::cout << "long_mode_stack_sequences=" << (ok ? "true" : "false")
               << ",push_imm8_sign_extended=" << (sign_ok ? "true" : "false")
               << ",control_flow_still_refused="
-              << (control_still_refused ? "true" : "false") << "\n";
-    return ok && sign_ok && control_still_refused;
+              << (control_still_refused ? "true" : "false")
+              << ",pop_memory_store_encoding="
+              << (pop_bytes_ok ? "true" : "false")
+              << ",pop_memory_refusals_kept="
+              << (pop_refusals_kept ? "true" : "false")
+              << ",pushad_entry_esp=" << (pushad_ok ? "true" : "false")
+              << "\n";
+    return ok && sign_ok && control_still_refused && pop_bytes_ok &&
+        pop_refusals_kept && pushad_ok;
 }
 
 bool ProbeIncDecLowering()

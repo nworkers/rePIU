@@ -76,6 +76,15 @@ void WriteGeneralRegister32(repiu::platform::GuestCpuContext* win32_context,
                             std::uint8_t register_index,
                             std::uint32_t value);
 
+bool HandleGeneralRegisterStackInstruction(
+    repiu::platform::GuestCpuContext* win32_context,
+    ThreadContext* context);
+
+std::uint32_t HandleConsecutiveLegacyStackInstructions(
+    repiu::platform::GuestCpuContext* win32_context,
+    ThreadContext* context,
+    std::uint32_t maximum_instruction_count);
+
 bool DecodeModRmMemoryAddress(
     const repiu::platform::GuestCpuContext* win32_context,
     const std::uint8_t* instruction,
