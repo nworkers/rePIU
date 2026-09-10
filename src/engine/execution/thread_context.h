@@ -1,6 +1,8 @@
 #pragma once
 
 #include "repiu/engine/execution_trampoline.h"
+#include "repiu/engine/fault_recovery_provenance.h"
+#include "repiu/engine/linux_x64_transfer_failure_provenance.h"
 #include "repiu/engine/execution_probe_memory_dump.h"
 #include "repiu/engine/runtime_memory_policy.h"
 #include "repiu/engine/aot_code_cache.h"
@@ -616,6 +618,14 @@ struct ThreadContext
     std::uint32_t exception_stack_base = 0;
     std::uint32_t exception_stack_dwords[kExceptionStackDwordCapacity] = {};
     std::uint32_t exception_stack_dword_count = 0;
+    // Task 647. A recovery callback can replace the source EIP with a host
+    // recovery destination. Keep the source and the path so a later fault at
+    // that destination can still be attributed.
+    FaultRecoveryProvenance fault_recovery_provenance;
+    // Task 648. Preserve the latest failed x64 transfer across the unresolved
+    // thunk's INT3/UD2 boundary for the final fault trace.
+    LinuxX64TransferFailureProvenance
+        linux_x64_transfer_failure_provenance;
     UnhandledBreakpointEvidence unhandled_breakpoint_evidence;
     std::uint32_t aot_probe_guest_address = 0;
     std::uint32_t aot_probe_cache_address = 0;

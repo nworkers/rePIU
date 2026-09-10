@@ -6,6 +6,7 @@
 // trampoline and is declared in execution_internal.h.
 
 #include "thread_context.h"
+#include "repiu/platform/guest_cpu_context.h"
 
 #include <cstdint>
 #include <string>
@@ -16,9 +17,21 @@ namespace repiu::engine
 bool IsGuestRangeReadable(ThreadContext* context, const void* source, std::uint32_t byte_count);
 bool IsGuestRangeWritable(ThreadContext* context, void* destination, std::uint32_t byte_count);
 
-bool WriteGuestUInt16(ThreadContext* context, void* destination, std::uint16_t value);
-bool WriteGuestUInt8(ThreadContext* context, void* destination, std::uint8_t value);
-bool WriteGuestUInt32(ThreadContext* context, void* destination, std::uint32_t value);
+bool WriteGuestUInt16(
+    ThreadContext* context,
+    void* destination,
+    std::uint16_t value,
+    const repiu::platform::GuestCpuContext* guest_context = nullptr);
+bool WriteGuestUInt8(
+    ThreadContext* context,
+    void* destination,
+    std::uint8_t value,
+    const repiu::platform::GuestCpuContext* guest_context = nullptr);
+bool WriteGuestUInt32(
+    ThreadContext* context,
+    void* destination,
+    std::uint32_t value,
+    const repiu::platform::GuestCpuContext* guest_context = nullptr);
 bool ReadGuestUInt8(ThreadContext* context, const void* source, std::uint8_t* value);
 bool ReadGuestUInt32(ThreadContext* context, const void* source, std::uint32_t* value);
 

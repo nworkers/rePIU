@@ -720,6 +720,66 @@ bool ProbeUnresolvedBlockFallthroughLookup()
     return ok;
 }
 
+bool ProbeIndirectFallbackStackCleanup()
+{
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = kBase;
+
+    const auto append_block = [&](const std::uint32_t address,
+                                  const std::uint8_t modrm) {
+        AotBasicBlock block;
+        block.guest_address = address;
+        AotInstructionRecord instruction;
+        instruction.guest_address = address;
+        instruction.kind = AotInstructionKind::kIndirectExit;
+        instruction.length = 2U;
+        instruction.bytes = {0xFFU, modrm};
+        block.instructions.push_back(std::move(instruction));
+        plan.blocks.push_back(std::move(block));
+    };
+    append_block(kBase, 0xD0U);          // call eax
+    append_block(kBase + 0x20U, 0xE0U);  // jmp eax
+
+    AotCodeCacheBuildOptions options;
+    options.enable_dbt_indirect_miss_dispatch = true;
+    AotCodeCacheImage image;
+    const bool built = BuildAotCodeCacheImage(plan, options, &image) &&
+        image.valid && image.dbt_indirect_dispatch_sites.size() == 2U;
+    bool call_ok = false;
+    bool jump_ok = false;
+    if (built)
+    {
+        for (const repiu::runtime::AotDbtIndirectDispatchSite& site :
+             image.dbt_indirect_dispatch_sites)
+        {
+            if (site.fallback_cache_offset + 5U > image.bytes.size())
+            {
+                continue;
+            }
+            const std::uint8_t* const fallback =
+                image.bytes.data() + site.fallback_cache_offset;
+            const bool shape = fallback[0] == 0x8DU &&
+                fallback[1] == 0x64U && fallback[2] == 0x24U &&
+                fallback[4] == 0xCCU;
+            if (site.is_call)
+            {
+                call_ok = shape && fallback[3] == 0x04U;
+            }
+            else
+            {
+                jump_ok = shape && fallback[3] == 0x08U;
+            }
+        }
+    }
+    const bool ok = built && call_ok && jump_ok;
+    std::cout << "indirect_fallback_call_return_preserved="
+              << (call_ok ? "true" : "false")
+              << ",jump_metadata_removed="
+              << (jump_ok ? "true" : "false") << "\n";
+    return ok;
+}
+
 }  // namespace
 
 bool RunLongModeEmissionProbe()
@@ -733,12 +793,15 @@ bool RunLongModeEmissionProbe()
         ProbeConditionalBranchFallthrough();
     const bool unresolved_fallthrough_ok =
         ProbeUnresolvedBlockFallthroughLookup();
+    const bool indirect_fallback_stack_ok =
+        ProbeIndirectFallbackStackCleanup();
 
     const bool all = default_ok && outcomes_ok && refused_ok &&
         segment_read_gpr16_ok &&
         segment_guard_coverage_ok &&
         conditional_fallthrough_ok &&
-        unresolved_fallthrough_ok;
+        unresolved_fallthrough_ok &&
+        indirect_fallback_stack_ok;
     std::cout << "long_mode_emission_all=" << (all ? "true" : "false") << "\n";
     return all;
 }

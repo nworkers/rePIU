@@ -350,7 +350,7 @@ Originally a single 12,117-line file, `execution_trampoline.cpp` was decomposed 
 | `cpu_emul/` | `instruction_emulation`, `guest_memory_access` | 레지스터/플래그/디코드·세그먼트·traced 메모리·REP 명령 에뮬, 게스트/섀도 메모리 접근 |
 | `aot/` | `aot_runtime_dispatch`, `aot_ff_boundary_attribution`, `aot_ff_boundary_target_attribution` | AOT 번역 워커·전이/재진입 디스패치·코드쓰기 watch·bounded `FF /4` site/target 관측 |
 | `boundary/` | `linexe_glide_boundary` | linexe far-transfer·Glide 게이트·allocator 제어흐름 |
-| `telemetry/` | `live_telemetry_snapshot`, `guest_address_watch`, `fault_exit_trace` | 라이브 텔레메트리 매핑·실행 스냅샷, guest 주소 하나의 실행 경로 관측(`REPIU_GUEST_WATCH`, Task 581), 거절된 폴트의 exit site 출력(`REPIU_FAULT_EXIT_TRACE`, Task 582) |
+| `telemetry/` | `live_telemetry_snapshot`, `guest_address_watch`, `fault_exit_trace`, `fault_recovery_provenance`, `linux_x64_transfer_failure_provenance` | 라이브 텔레메트리 매핑·실행 스냅샷, guest 주소 하나의 실행 경로 관측(`REPIU_GUEST_WATCH`, Task 581), 거절된 폴트의 exit site·복구 전 원인·unresolved Linux x64 transfer producer 출력(`REPIU_FAULT_EXIT_TRACE`, Tasks 582, 647, 648) |
 
 ```mermaid
 flowchart TD
@@ -2147,6 +2147,51 @@ the stack switch and the direct call.
   32-bit projection. Linux had no equivalent of Windows's unhandled-exception
   filter.
 
+Task 647 adds bounded recovery provenance to `ThreadContext`. Immediately
+before a fault callback or shutdown interrupt redirects execution through
+`RecoverToHost`, it records the source EIP, whether that source belongs to the
+guest image or the AOT cache, and the recovery path. `REPIU_FAULT_EXIT_TRACE`
+prints these as `recovery_source_eip`, `recovery_source`, and `recovery_path`
+next to the current exit EIP, so a later x64 `UD2` at the recovery destination
+can still be attributed to the original executable location. This is telemetry
+only: it does not alter execution or recovery policy, and the default behavior
+is unchanged when the environment toggle is unset.
+
+Task 648 adds a separate `LinuxX64TransferFailureProvenance` record to the
+same `ThreadContext`. When the Linux x64 return resolver cannot resolve a
+target, it stores the producer kind/site from frame `status`, the
+`guest_source` target, guest `ESP` after the transfer, and the failure reason
+in a fixed-size record. Target `0` is retained as a valid observation rather
+than discarded as an invalid sentinel. The previous record is cleared at the
+next resolver entry, so the final fault trace links only the most recent
+failure. `REPIU_FAULT_EXIT_TRACE` prints `x64_transfer_valid`,
+`x64_transfer_producer_eip`, `x64_transfer_target_eip`,
+`x64_transfer_guest_esp`, `x64_transfer_kind`, and `x64_transfer_failure`.
+The resolver's `return 0`, the unresolved thunk's `INT3/UD2`, guest state, and
+AOT policy remain unchanged.
+
+Task 647은 `ThreadContext`에 bounded 복구 provenance를 추가합니다. fault
+callback 또는 shutdown interrupt가 `RecoverToHost`를 통해 실행을 재지정하기
+직전에 원인 EIP, 해당 위치가 guest image인지 AOT cache인지, 복구 경로를
+기록합니다. `REPIU_FAULT_EXIT_TRACE`는 현재 exit EIP 옆에
+`recovery_source_eip`, `recovery_source`, `recovery_path`를 출력하므로, x64
+복구 목적지의 후속 `UD2`도 원래 실행 위치에 연결할 수 있습니다. 이는
+telemetry 전용이며 실행·복구 정책을 바꾸지 않고, 환경 변수가 꺼져 있으면
+기존 동작을 그대로 유지합니다.
+
+Task 648은 별도의 `LinuxX64TransferFailureProvenance`를 같은
+`ThreadContext`에 둡니다. Linux x64 return resolver가 target을 해석하지
+못하면 frame `status`의 producer kind/site, `guest_source` target,
+transfer 후 `guest.esp`, 실패 이유를 고정 크기 record에 저장합니다. target
+`0`은 invalid sentinel로 버리지 않고 유효한 관측값으로 보존합니다. 다음
+resolver 진입 때 이전 record를 지우므로 최종 fault trace에는 가장 최근
+실패만 연결됩니다. `REPIU_FAULT_EXIT_TRACE`는
+`x64_transfer_valid`, `x64_transfer_producer_eip`,
+`x64_transfer_target_eip`, `x64_transfer_guest_esp`,
+`x64_transfer_kind`, `x64_transfer_failure`를 출력합니다. resolver의
+`return 0`, unresolved thunk의 `INT3/UD2`, guest 상태와 AOT policy는
+변경하지 않습니다.
+
 **Known gap**: nothing translates an access-violation fault raised inside the
 cache back to a guest address. `HandleAotReentry` does that only for
 `kBreakpoint`, and the HLE handlers that read bytes at `Eip` require `Eip` to be
@@ -3556,5 +3601,165 @@ Injection is the single `SetEepromBackingPath()`. `g_eeprom` is created lazily o
 EEPROM port access, so the path must be set before the guest runs; a call after the device
 has opened is ignored and reported, which stops the destructor from saving this run's
 contents over a different image.
+
+---
+
+## Linux x64 HLE 게스트 쓰기 provenance / Linux x64 HLE guest-write provenance
+
+Linux x64의 bounded guest-write trace는 이제 현재 `GuestCpuContext`를 가진 HLE
+`WriteGuestUInt8/16/32` 호출에서 guest EIP와 쓰기 직전 레지스터를 함께 보존한다.
+컨텍스트가 없는 host utility 호출은 기존의 zero provenance를 유지한다. 이 계측은
+page watch가 활성화된 경우에만 ring에 기록되며, guest memory protection, `memcpy`,
+반환값 및 원본 guest code 실행 경로를 변경하지 않는다.
+
+Task 649 당시 `pumpit2a`에서 이 경로는 `0x010F9212 PUSH FS`가 `FS=0`을
+당시 반환 slot에 기록했음을 확인했다. Task 652는 이 slot이 allocator의 저장 frame에
+속하며, 실제 결함은 앞선 legacy direct CALL이 guest 반환 주소를 만들지 않은 데
+있었음을 후속 확인했다. 이 계측 계층 자체는 guest 값을 보정하지 않는다.
+
+The bounded Linux x64 guest-write trace now preserves the guest EIP and
+pre-write registers for HLE `WriteGuestUInt8/16/32` calls that have a current
+`GuestCpuContext`. Host utility calls without a context retain the previous zero
+provenance. The instrumentation records only when the page watch is enabled and
+does not change guest memory protection, `memcpy`, return values, or the original
+guest-code execution path.
+
+In the Task 649 `pumpit2a` run, this path established that `PUSH FS` at
+`0x010F9212` wrote `FS=0` into what was then the consumed return slot. Task 652
+subsequently established that the slot belongs to the allocator's saved frame
+and that the actual defect was a preceding legacy direct CALL that did not form
+its guest return address. This telemetry layer does not repair guest values.
+
+---
+
+## 간접 CALL fallback stack 의미 / Indirect CALL fallback stack semantics
+
+간접 CALL/JMP의 cache miss는 대상 해석 성공 여부와 무관하게 원본 x86 stack 의미를
+보존합니다. 공용 `HandleAotIndirectTransfer`는 CALL 대상의 cache 해석 전에 guest 반환
+주소 write, ESP 감소, call-frame 기록을 완료합니다. 따라서 해석 실패 후 legacy guest
+code로 넘어가도 피호출 함수는 정상적인 반환 slot 위에서 실행됩니다.
+
+선택형 host-dispatch miss tail도 같은 계약을 유지합니다. thunk가 source metadata를
+제거한 뒤 CALL fallback은 miss-address slot 하나만 제거하는 `LEA ESP,[ESP+4]`를 사용해
+이미 push된 반환 주소를 남기고, JMP fallback은 기존 `LEA ESP,[ESP+8]`로 두 metadata
+slot을 모두 제거합니다. 이 정책은 원본 guest code를 수정하지 않으며 DBT/HLE 경계에서
+CALL/JMP의 stack 효과만 재현합니다.
+
+An indirect CALL/JMP cache miss preserves the original x86 stack semantics regardless of
+target-resolution success. The shared `HandleAotIndirectTransfer` commits a CALL's guest
+return-address write, ESP decrement, and call-frame record before resolving the target into
+the cache. A failed resolution can therefore enter legacy guest code with a valid return
+slot.
+
+The optional host-dispatch miss tail follows the same contract. After its thunk removes
+source metadata, CALL fallback removes only the miss-address slot with
+`LEA ESP,[ESP+4]`, preserving the already-pushed return address. JMP fallback retains
+`LEA ESP,[ESP+8]` and removes both metadata slots. This policy changes no original guest
+code; it reproduces only CALL/JMP stack effects at the DBT/HLE boundary.
+
+---
+
+## Legacy stack run 할당 및 epilogue drain / Legacy stack run allocation and epilogue drain
+
+x64 legacy stack-run helper는 일반/segment PUSH·POP에 이어지는 직접형 `SUB ESP, imm8` 및
+`SUB ESP, imm32` 연산을 guest ESP에 직접 적용하고 산술 flag(CF/PF/AF/ZF/SF/OF)를
+`SetCompareFlags`로 갱신합니다. 이를 통해 legacy fallback prologue의 지역 변수 공간 할당이
+host RSP 대신 guest ESP에서 이루어지도록 보장하여, 후속 epilogue 복원 시 저장 슬롯 레이아웃이
+어긋나지 않도록 유지합니다.
+
+또한 segment HLE 처리 후 이어지는 stack 명령 drain을 AOT 상태 flag에 종속되지 않고
+연속 처리하도록 허용하며, opcode `0F` directed dispatch에 POP FS/GS를 포함하여 prologue뿐
+아니라 epilogue의 segment 및 general POP run도 단일 경계에서 완결되도록 지원합니다.
+
+The x64 legacy stack-run helper applies direct `SUB ESP, imm8` and `SUB ESP, imm32`
+operations that follow general or segment PUSH/POP instructions directly to the guest ESP,
+updating arithmetic flags (CF/PF/AF/ZF/SF/OF) via `SetCompareFlags`. This ensures that local
+stack space allocations in legacy fallback prologues adjust guest ESP rather than host RSP,
+preventing slot misalignment during subsequent epilogue restoration.
+
+Furthermore, following segment HLE operations, subsequent stack instructions are drained
+in a bounded sequence without dependency on AOT state flags, and opcode `0F` directed
+dispatch includes POP FS/GS so that both prologue sequences and epilogue POP runs complete
+cleanly at the HLE boundary.
+
+---
+
+## Legacy fallback direct CALL HLE / Legacy fallback direct CALL HLE
+
+Linux x64에서 AOT coverage가 거절된 original span은 Trap Flag 아래 실행됩니다. 이때
+`E8 rel32`를 CPU에 직접 실행시키면 long mode CALL이 host call stack만 변경하고 별도로
+유지되는 guest ESP에는 32-bit 반환 주소를 만들지 않습니다. shared HLE dispatcher는
+`aot_legacy_fallback`에서 이 형식을 선점하여 target을 계산하고 guest `[ESP-4]`에
+fallthrough를 기록한 뒤 guest ESP와 EIP를 갱신합니다.
+
+이 handler는 기존 AOT call-frame 및 call/return trace도 기록합니다. 처리 후에는 공용
+post-HLE reentry가 target cache를 선택하거나 guest target에서 TF bridge를 계속합니다.
+i386 직접 실행과 AOT cache가 이미 lowering한 CALL은 이 경로를 사용하지 않습니다.
+
+On Linux x64, an original span rejected by AOT coverage executes under Trap Flag.
+Executing `E8 rel32` directly there would let long-mode CALL modify only the host
+call stack, without creating a 32-bit return address in the separately maintained
+guest ESP. The shared HLE dispatcher intercepts this form during
+`aot_legacy_fallback`, calculates its target, writes the fallthrough to guest
+`[ESP-4]`, and updates guest ESP and EIP.
+
+The handler also records the existing AOT call frame and call/return trace. The
+common post-HLE reentry then selects a target cache entry or keeps the TF bridge
+at the guest target. Native i386 execution and CALLs already lowered in the AOT
+cache do not use this path.
+
+---
+
+## Linux x64 미해석 반환 legacy bridge / Linux x64 unresolved-return legacy bridge
+
+Linux x64 return resolver가 guest 반환 target을 cache로 해석하지 못해도 곧바로 모든
+경우를 종료하지는 않습니다. target이 guest arena 안에 있고 공용 long-mode classifier가
+첫 명령을 `kIdenticalBytes`로 증명한 경우에만, resolver는 target을 dispatch frame의
+`guest_continuation`에 기록하고 전용 legacy-resume thunk를 선택합니다. 이 제한은 stack,
+segment, 상대 제어 전송처럼 long mode에서 의미가 달라지는 명령을 원본 주소에서 실행하지
+못하게 합니다.
+
+legacy-resume thunk는 guest EAX를 먼저 복원하고, resolver 호출 전에 저장된 guest
+EFLAGS에 TF를 설정한 뒤 연속된 `POPFQ; JMP guest_continuation`으로 끝납니다. jump가
+새로 설정된 TF를 소비하는 host 명령이 되므로 #DB는 guest target 경계를 보고하고 기존
+single-step/HLE 경로가 뒤의 민감한 guest 명령 실행 전에 제어를 넘겨받습니다. target이
+0이거나 arena 밖이거나 첫 명령의 동일성이 증명되지 않으면 기존 zero 반환과 INT3
+fail-closed 동작을 유지합니다.
+
+When the Linux x64 return resolver cannot map a guest return target into the
+cache, it does not relax every failure. Only a target inside the guest arena
+whose first instruction the shared long-mode classifier proves to be
+`kIdenticalBytes` is stored in the dispatch frame's `guest_continuation` and
+directed to a dedicated legacy-resume thunk. This excludes stack, segment, and
+relative-control instructions whose long-mode behavior differs.
+
+The legacy-resume thunk restores guest EAX before activating TF, then ends with
+the consecutive `POPFQ; JMP guest_continuation` sequence. The jump is the host
+instruction that consumes the newly activated TF, so #DB reports the guest
+target boundary and the existing single-step/HLE path takes over before later
+guest-sensitive instructions execute. A zero target, a target outside the arena,
+or an unproven first instruction keeps the existing zero result and INT3
+fail-closed behavior.
+
+---
+
+## Legacy fallback moffs32 store HLE
+
+동적 AOT 계획이 뒤쪽 경계 때문에 전체 거절된 원본 span에서는, AOT cache가 이미
+지원하는 일부 재인코딩 대상이 다시 legacy single-step 경로에 나타날 수 있습니다.
+prefix 없는 `A3 disp32`는 32-bit guest에서 5바이트 `MOV [moffs32],EAX`이지만 long
+mode에서는 8바이트 주소를 소비하므로 원본 bytes를 직접 실행할 수 없습니다. 공용
+memory-store HLE는 이 형식을 명시적으로 decode하여 기존 guest writable 검사와
+`WriteGuestUInt32`를 통해 32-bit 주소에 기록하고 EIP를 5 증가시킵니다. MOV의 EFLAGS는
+보존되며, arena 밖 destination은 기존처럼 거부됩니다.
+
+When a dynamic AOT plan is rejected as a whole by a later boundary, original
+legacy single-step can encounter an instruction whose re-encoding is already
+supported in the cache. Unprefixed `A3 disp32` is a five-byte
+`MOV [moffs32],EAX` in the 32-bit guest, but long mode consumes an eight-byte
+address, so its original bytes cannot execute directly. Shared memory-store HLE
+decodes this form explicitly, writes to the 32-bit address through the existing
+guest-writable check and `WriteGuestUInt32`, and advances EIP by five. MOV flags
+are preserved, and an out-of-arena destination remains refused.
 
 ---

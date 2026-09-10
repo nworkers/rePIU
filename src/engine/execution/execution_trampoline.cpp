@@ -15,6 +15,7 @@
 #include "repiu/platform/linux_x64_guest_entry.h"
 #endif
 #include "repiu/runtime/execution_timeout.h"
+#include "repiu/runtime/aot_long_mode_compatibility.h"
 #include "repiu/platform/thunk_calling_convention.h"
 #include "repiu/hle/linexe_call_gate.h"
 #include "repiu/hle/glide_hle.h"
@@ -24,6 +25,8 @@
 #include "repiu/engine/aot_page_coherence.h"
 #include "repiu/engine/aot_boundary_provenance.h"
 #include "repiu/engine/guest_write_trace.h"
+#include "repiu/engine/fault_recovery_provenance.h"
+#include "repiu/engine/linux_x64_transfer_failure_provenance.h"
 #include "repiu/engine/aot_ff_target_timing.h"
 #include "repiu/media/chd_cd_image.h"
 #include "repiu/runtime/dos_low_memory.h"
@@ -85,6 +88,10 @@
 
 namespace repiu::engine
 {
+
+void RecordFaultRecoveryProvenance(ThreadContext* context,
+                                   std::uint32_t source_eip,
+                                   FaultRecoveryPath path);
 
 namespace
 {
@@ -1083,7 +1090,7 @@ std::uint32_t DrainFollowingLegacyStackInstructions(
 {
 #if defined(_M_X64) || defined(__x86_64__)
     constexpr std::uint32_t kMaximumFollowingStackInstructions = 16U;
-    if (context != nullptr && context->aot_legacy_fallback)
+    if (context != nullptr)
     {
         return HandleConsecutiveLegacyStackInstructions(
             win32_context, context, kMaximumFollowingStackInstructions);
@@ -1122,6 +1129,11 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
     const std::uint8_t opcode = ptr[offset];
     const std::uint8_t second_opcode = offset == 0U ? ptr[1] : 0U;
 #if defined(_M_X64) || defined(__x86_64__)
+    if (context->aot_legacy_fallback && offset == 0U && opcode == 0xE8U &&
+        HandleAotLegacyDirectCall(win32_context, context))
+    {
+        return true;
+    }
     // Original 32-bit PUSH/POP bytes would silently use host RSP in long mode.
     // Only legacy fallback reaches original bytes; emitted cache code already
     // lowers these operations to the R15D guest stack pointer.
@@ -1133,11 +1145,12 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
         return true;
     }
 #endif
-    const bool segment_push_candidate =
+    const bool segment_stack_candidate =
         (opcode == 0x06U || opcode == 0x0EU || opcode == 0x16U ||
-         opcode == 0x1EU ||
+         opcode == 0x1EU || opcode == 0x07U || opcode == 0x1FU ||
          (opcode == 0x0FU &&
-          (second_opcode == 0xA0U || second_opcode == 0xA8U)));
+          (second_opcode == 0xA0U || second_opcode == 0xA1U ||
+           second_opcode == 0xA8U || second_opcode == 0xA9U)));
     const char* const segment_hle_trace_value =
         std::getenv("REPIU_SEGMENT_HLE_TRACE");
     const bool segment_hle_trace_enabled =
@@ -1145,7 +1158,7 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
         std::strcmp(segment_hle_trace_value, "0") != 0;
     static std::atomic<std::uint32_t> segment_hle_trace_count{0U};
     const std::uint32_t segment_hle_trace_index =
-        segment_hle_trace_enabled && segment_push_candidate
+        segment_hle_trace_enabled && segment_stack_candidate
             ? segment_hle_trace_count.fetch_add(
                   1U, std::memory_order_relaxed) + 1U
             : 0U;
@@ -1155,7 +1168,7 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
             stderr,
             "[repiu-segment-hle] stage=shared-dispatch n=%u eip=0x%08X "
             "opcode=%02X second=%02X offset=%u enabled=%u cache_active=%u "
-            "call_state=%u esp=0x%08X es=0x%04X\n",
+            "call_state=%u pending=%u legacy=%u esp=0x%08X es=0x%04X\n",
             segment_hle_trace_index,
             static_cast<std::uint32_t>(win32_context->Eip),
             static_cast<unsigned>(opcode),
@@ -1164,6 +1177,8 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
             context->enable_segment_load_hle ? 1U : 0U,
             context->cache_entry_active ? 1U : 0U,
             context->active_call_state != nullptr ? 1U : 0U,
+            context->aot_reentry_pending ? 1U : 0U,
+            context->aot_legacy_fallback ? 1U : 0U,
             static_cast<std::uint32_t>(win32_context->Esp),
             static_cast<unsigned>(context->guest_es));
     }
@@ -1229,7 +1244,8 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
             if (context->enable_segment_load_hle)
             {
                 const bool handled =
-                    HandleSegmentPushInstruction(win32_context, context);
+                    HandleSegmentPushInstruction(win32_context, context) ||
+                    HandleSegmentPopInstruction(win32_context, context);
                 const std::uint32_t drained = handled
                     ? DrainFollowingLegacyStackInstructions(
                           win32_context, context)
@@ -3115,6 +3131,10 @@ std::uintptr_t LinuxX64EngineResolver(
     void* resolver_context, repiu::platform::LinuxX64AotDispatchFrame* frame)
 {
     auto* const context = static_cast<ThreadContext*>(resolver_context);
+    if (context != nullptr)
+    {
+        context->linux_x64_transfer_failure_provenance = {};
+    }
     if (context == nullptr || frame == nullptr ||
         context->aot_placement == nullptr)
     {
@@ -3137,9 +3157,31 @@ std::uintptr_t LinuxX64EngineResolver(
         context->aot_dynamic_attempt_count.load(std::memory_order_relaxed);
     if (!ResolveAotTransferTarget(context, frame->guest_source, &cache_address))
     {
+        if (CanResumeLinuxX64LegacyTarget(context, frame->guest_source))
+        {
+            frame->guest_continuation = frame->guest_source;
+            frame->guest.eip = frame->guest_source;
+            context->aot_reentry_pending = false;
+            context->aot_legacy_fallback = true;
+            context->enable_single_step_trace = true;
+            TraceLinuxX64ReturnResolver(
+                "legacy-fallback", frame->guest_source,
+                static_cast<std::uint32_t>(
+                    repiu::platform::LinuxX64LegacyResumeThunkAddress()),
+                "byte-identical first instruction", frame->status,
+                frame->guest.esp);
+            return repiu::platform::LinuxX64LegacyResumeThunkAddress();
+        }
         const bool attempted_dynamic_translation =
             context->aot_dynamic_attempt_count.load(std::memory_order_relaxed) !=
             dynamic_attempts_before;
+        const auto failure_reason = attempted_dynamic_translation
+            ? LinuxX64TransferFailureReason::kTranslationFailed
+            : LinuxX64TransferFailureReason::kPolicyRefused;
+        context->linux_x64_transfer_failure_provenance =
+            MakeLinuxX64TransferFailureProvenance(
+                frame->status, frame->guest_source, frame->guest.esp,
+                failure_reason);
         TraceLinuxX64ReturnResolver(
             attempted_dynamic_translation ? "translation-failed"
                                           : "policy-refused",
@@ -3368,6 +3410,9 @@ repiu::platform::FaultDisposition GuestThreadFaultCallback(
         return disposition;
     }
     CaptureException(*fault, context);
+    RecordFaultRecoveryProvenance(
+        context, fault->instruction_address,
+        FaultRecoveryPath::kFaultCallback);
     RecoverToHost(fault->registers, context);
     return repiu::platform::FaultDisposition::kResume;
 }
@@ -3482,6 +3527,29 @@ bool DispatchGuestHleInstruction(repiu::platform::GuestCpuContext* win32_context
                                  ThreadContext* context)
 {
     return DispatchGuestHleHandlers(win32_context, context);
+}
+
+bool CanResumeLinuxX64LegacyTarget(ThreadContext* context,
+                                   const std::uint32_t guest_target)
+{
+#if defined(__x86_64__)
+    constexpr std::size_t kMaximumX86InstructionBytes = 15U;
+    const auto* const instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(guest_target));
+    if (context == nullptr || !IsGuestInstructionPointer(context, guest_target) ||
+        !IsGuestRangeReadable(
+            context, instruction, kMaximumX86InstructionBytes))
+    {
+        return false;
+    }
+    return runtime::ClassifyLongModeBytes(
+               instruction, kMaximumX86InstructionBytes).compatibility ==
+        runtime::LongModeByteCompatibility::kIdenticalBytes;
+#else
+    (void)context;
+    (void)guest_target;
+    return false;
+#endif
 }
 
 // Execution probe/trace + guest-IP helpers promoted to external linkage for
@@ -4829,6 +4897,9 @@ repiu::platform::FaultDisposition DispatchGuestFault(
             static_cast<std::uint32_t>(win32_context->Esp);
         if (context->use_guest_stack)
         {
+            RecordFaultRecoveryProvenance(
+                context, fault.instruction_address,
+                FaultRecoveryPath::kFaultCallback);
             RecoverToHost(win32_context, context);
         }
         else
@@ -5274,6 +5345,9 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         context->guest_return_esp =
             static_cast<std::uint32_t>(win32_context->Esp);
         context->host_esp = context->active_call_state->host_esp;
+        RecordFaultRecoveryProvenance(
+            context, fault.instruction_address,
+            FaultRecoveryPath::kFaultCallback);
         RecoverToHost(win32_context, context);
         return repiu::platform::FaultDisposition::kResume;
     }
@@ -5678,6 +5752,9 @@ repiu::platform::FaultDisposition DispatchGuestFault(
     if (context->use_guest_stack)
     {
         context->host_esp = context->active_call_state->host_esp;
+        RecordFaultRecoveryProvenance(
+            context, fault.instruction_address,
+            FaultRecoveryPath::kFaultCallback);
         RecoverToHost(fault.registers, context);
     }
     else
@@ -5767,6 +5844,25 @@ bool IsAotCacheAddress(const ThreadContext* context, std::uint32_t address)
     return address >= context->aot_placement->base_address && address < end;
 }
 
+void RecordFaultRecoveryProvenance(ThreadContext* context,
+                                   const std::uint32_t source_eip,
+                                   const FaultRecoveryPath path)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+    const FaultRecoveryProvenance provenance = MakeFaultRecoveryProvenance(
+        source_eip,
+        IsGuestInstructionPointer(context, source_eip),
+        IsAotCacheAddress(context, source_eip),
+        path);
+    if (provenance.valid)
+    {
+        context->fault_recovery_provenance = provenance;
+    }
+}
+
 // Task 507. What the shutdown path asks of the guest thread, and what it gets
 // back. One structure rather than captures, because this crosses a callback the
 // platform layer defines with a `void*`.
@@ -5817,6 +5913,8 @@ void RecoverGuestThreadForShutdown(repiu::platform::GuestCpuContext* registers,
     {
         return;
     }
+    RecordFaultRecoveryProvenance(
+        request->context, eip, FaultRecoveryPath::kShutdownInterrupt);
     RecoverToHost(registers, request->context);
     request->recovered = true;
 }

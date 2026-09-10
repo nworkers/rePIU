@@ -8,9 +8,10 @@
 //   guest GPRs in host GPRs, per the Task 558 mapping
 //
 // It fills the named frame, asks the resolver where that guest address lives in
-// the cache, and jumps there. A resolver that answers zero gets an INT3, which
-// is Task 553's rule: what long mode cannot complete reaches a boundary rather
-// than being guessed at.
+// the cache, and jumps there. The resolver may instead select the guarded
+// legacy-resume thunk for a proven byte-identical instruction. A zero answer
+// still gets an INT3: what long mode cannot complete safely reaches a boundary
+// rather than being guessed at.
 
 #include "repiu/platform/linux_x64_aot_frame.h"
 
@@ -92,5 +93,23 @@ RepiuLinuxX64ReturnThunk:
 .Lreturn_thunk_unresolved:
     int3
     .size RepiuLinuxX64ReturnThunk, .-RepiuLinuxX64ReturnThunk
+
+    .globl RepiuLinuxX64LegacyResumeThunk
+    .type RepiuLinuxX64LegacyResumeThunk, @function
+RepiuLinuxX64LegacyResumeThunk:
+    // The resolver has already proved that the first guest instruction has
+    // identical 32-bit and long-mode behavior. Finish register restoration
+    // before activating TF, then make the guest jump the instruction that
+    // consumes TF. The resulting #DB names the guest target, where the existing
+    // single-step/HLE path can take over.
+    mov r11, qword ptr [rip + repiu_linux_x64_dispatch_frame]
+    mov r10d, dword ptr [r11 + REPIU_LINUX_X64_FRAME_GUEST_CONTINUATION]
+    mov eax, dword ptr [r11 + 20]
+    mov r11d, dword ptr [r11 + 36]
+    or r11d, 0x100
+    push r11
+    popfq
+    jmp r10
+    .size RepiuLinuxX64LegacyResumeThunk, .-RepiuLinuxX64LegacyResumeThunk
 
     .section .note.GNU-stack,"",@progbits

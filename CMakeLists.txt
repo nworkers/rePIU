@@ -317,6 +317,8 @@ target_sources(repiu_exe
         src/engine/telemetry/guest_address_watch.cpp
         src/engine/telemetry/guest_write_trace.cpp
         src/engine/telemetry/fault_exit_trace.cpp
+        src/engine/telemetry/fault_recovery_provenance.cpp
+        src/engine/telemetry/linux_x64_transfer_failure_provenance.cpp
         src/engine/telemetry/aot_residency_sample.cpp
         src/engine/telemetry/aot_return_stage_profile.cpp
         src/engine/aot/aot_boundary_opcode_census.cpp
@@ -578,9 +580,11 @@ add_executable(repiu_core_probe
     src/tools/aot_probe/launcher_probe.cpp
     src/tools/aot_probe/long_mode_compatibility_probe.cpp
     src/tools/aot_probe/long_mode_emission_probe.cpp
+    src/tools/aot_probe/linux_x64_transfer_failure_provenance_probe.cpp
     src/tools/aot_probe/nvram_path_probe.cpp
     src/tools/aot_probe/pit_timer_probe.cpp
     src/tools/aot_probe/segment_push_probe.cpp
+    src/engine/telemetry/linux_x64_transfer_failure_provenance.cpp
 )
 
 # Task 513: the six that ask the platform layer for something wasm does not
@@ -591,6 +595,7 @@ if(NOT EMSCRIPTEN)
     target_sources(repiu_core_probe
         PRIVATE
             src/tools/aot_probe/fault_handler_probe.cpp
+            src/tools/aot_probe/fault_recovery_provenance_probe.cpp
             src/tools/aot_probe/guest_cpu_context_probe.cpp
             src/tools/aot_probe/host_thread_probe.cpp
             src/tools/aot_probe/virtual_memory_probe.cpp

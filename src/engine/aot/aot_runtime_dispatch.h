@@ -141,6 +141,13 @@ bool ResolveAotTransferTarget(ThreadContext* context,
 
 bool EvaluateAotCondition(std::uint8_t condition, std::uint32_t eflags);
 
+// Applies a 32-bit E8 rel32 CALL before an x64 legacy fallback can execute it
+// with host-stack semantics. Returns false for every other execution mode or
+// instruction form.
+bool HandleAotLegacyDirectCall(
+    repiu::platform::GuestCpuContext* guest_context,
+    ThreadContext* context);
+
 bool HandleAotConditionalTransfer(const repiu::platform::FaultEvent& fault,
                                   ThreadContext* context);
 

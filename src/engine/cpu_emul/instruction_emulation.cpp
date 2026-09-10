@@ -496,7 +496,8 @@ bool HandleGeneralRegisterStackInstruction(
         const std::uint32_t destination = win32_context->Esp - 4U;
         void* const destination_pointer = reinterpret_cast<void*>(
             static_cast<std::uintptr_t>(destination));
-        if (!WriteGuestUInt32(context, destination_pointer, value))
+        if (!WriteGuestUInt32(
+                context, destination_pointer, value, win32_context))
         {
             return false;
         }
@@ -817,7 +818,8 @@ bool HandleSegmentPushInstruction(repiu::platform::GuestCpuContext* win32_contex
         // A diagnostic write-watch makes the guest page execute-read. Reuse
         // the ordinary HLE write helper so this opt-in path temporarily
         // restores write access and then re-arms the watch protection.
-        if (!WriteGuestUInt32(context, destination_pointer, value))
+        if (!WriteGuestUInt32(
+                context, destination_pointer, value, win32_context))
         {
             return false;
         }
@@ -868,11 +870,43 @@ std::uint32_t HandleConsecutiveLegacyStackInstructions(
 
         const std::uint32_t eip_before =
             static_cast<std::uint32_t>(win32_context->Eip);
-        const bool handled =
+        bool handled =
             HandleGeneralRegisterStackInstruction(win32_context, context) ||
             (context->enable_segment_load_hle &&
              (HandleSegmentPushInstruction(win32_context, context) ||
               HandleSegmentPopInstruction(win32_context, context)));
+        // A legacy prologue commonly terminates a PUSH run with
+        // `sub esp, imm`. Executing that byte natively on an x64 host adjusts
+        // RSP instead of the R15D-backed guest stack and shifts every saved
+        // selector/register slot. Keep this narrow: only the two 32-bit
+        // immediate encodings whose ModRM names ESP directly.
+        if (!handled && instruction[0] == 0x83U &&
+            instruction[1] == 0xECU &&
+            IsGuestRangeReadable(context, instruction, 3U))
+        {
+            const std::uint32_t left =
+                static_cast<std::uint32_t>(win32_context->Esp);
+            const std::uint32_t right = static_cast<std::uint32_t>(
+                static_cast<std::int32_t>(
+                    static_cast<std::int8_t>(instruction[2])));
+            SetCompareFlags(win32_context, left, right, 4U);
+            win32_context->Esp = left - right;
+            win32_context->Eip += 3U;
+            handled = true;
+        }
+        else if (!handled && instruction[0] == 0x81U &&
+                 instruction[1] == 0xECU &&
+                 IsGuestRangeReadable(context, instruction, 6U))
+        {
+            std::uint32_t right = 0U;
+            std::memcpy(&right, instruction + 2U, sizeof(right));
+            const std::uint32_t left =
+                static_cast<std::uint32_t>(win32_context->Esp);
+            SetCompareFlags(win32_context, left, right, 4U);
+            win32_context->Esp = left - right;
+            win32_context->Eip += 6U;
+            handled = true;
+        }
         if (!handled || win32_context->Eip <= eip_before)
         {
             break;
@@ -1187,7 +1221,8 @@ bool HandleSegmentStoreInstruction(repiu::platform::GuestCpuContext* win32_conte
         void* destination_pointer = reinterpret_cast<void*>(
             static_cast<std::uintptr_t>(destination));
         if (!IsGuestRangeWritable(context, destination_pointer, 2) ||
-            !WriteGuestUInt16(context, destination_pointer, selector))
+            !WriteGuestUInt16(
+                context, destination_pointer, selector, win32_context))
         {
             return false;
         }
@@ -1234,7 +1269,8 @@ bool HandleSegmentStoreInstruction(repiu::platform::GuestCpuContext* win32_conte
 
     const std::uint16_t selector =
         ReadGuestSegmentSelector(*context, segment_register, win32_context);
-    if (!WriteGuestUInt16(context, destination_pointer, selector))
+    if (!WriteGuestUInt16(
+            context, destination_pointer, selector, win32_context))
     {
         return false;
     }
@@ -2006,7 +2042,7 @@ bool HandleSegmentMemoryLoadInstruction(repiu::platform::GuestCpuContext* win32_
         const std::uint32_t destination_address = win32_context->Edi;
         void* destination = reinterpret_cast<void*>(
             static_cast<std::uintptr_t>(destination_address));
-        if (!WriteGuestUInt8(context, destination, value))
+        if (!WriteGuestUInt8(context, destination, value, win32_context))
         {
             return false;
         }
@@ -2102,7 +2138,9 @@ bool HandleTracedMemoryStoreInstruction(repiu::platform::GuestCpuContext* win32_
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
     const std::uint32_t modrm_offset = instruction[0] == 0x66 ? 2U : 1U;
-    if ((instruction[modrm_offset] & 0xC0U) == 0xC0U)
+    const bool moffs32_store = instruction[0] == 0xA3U;
+    if (!moffs32_store &&
+        (instruction[modrm_offset] & 0xC0U) == 0xC0U)
     {
         return false;
     }
@@ -2113,7 +2151,18 @@ bool HandleTracedMemoryStoreInstruction(repiu::platform::GuestCpuContext* win32_
     std::uint32_t store_opcode = instruction[0];
     const char* source_kind = "unknown";
 
-    if (instruction[0] == 0xC7)
+    if (moffs32_store)
+    {
+        source_kind = "mov-eax-moffs32";
+        destination =
+            static_cast<std::uint32_t>(instruction[1]) |
+            (static_cast<std::uint32_t>(instruction[2]) << 8U) |
+            (static_cast<std::uint32_t>(instruction[3]) << 16U) |
+            (static_cast<std::uint32_t>(instruction[4]) << 24U);
+        value = static_cast<std::uint32_t>(win32_context->Eax);
+        instruction_size = 5U;
+    }
+    else if (instruction[0] == 0xC7)
     {
         source_kind = "mov-imm32";
         const std::uint8_t operation = (instruction[1] >> 3) & 0x07U;
@@ -2261,8 +2310,12 @@ bool HandleTracedMemoryStoreInstruction(repiu::platform::GuestCpuContext* win32_
             : value_width == 2
                 ? WriteGuestUInt16(context,
                                    destination_pointer,
-                                   static_cast<std::uint16_t>(value))
-                : WriteGuestUInt32(context, destination_pointer, value);
+                                   static_cast<std::uint16_t>(value),
+                                   win32_context)
+                : WriteGuestUInt32(context,
+                                   destination_pointer,
+                                   value,
+                                   win32_context);
         if (!written)
         {
             return false;
@@ -2851,7 +2904,8 @@ bool HandleTracedMemoryOrInstruction(repiu::platform::GuestCpuContext* win32_con
     const std::uint32_t result = destination_value | immediate;
     if (real_destination)
     {
-        if (!WriteGuestUInt32(context, destination_pointer, result))
+        if (!WriteGuestUInt32(
+                context, destination_pointer, result, win32_context))
         {
             return false;
         }
@@ -3058,7 +3112,8 @@ bool HandleTracedFpuMemoryInstruction(repiu::platform::GuestCpuContext* win32_co
     const std::uint32_t value = context->last_traced_fpu_m32_value;
     if (IsGuestRangeWritable(context, destination_pointer, sizeof(value)))
     {
-        if (!WriteGuestUInt32(context, destination_pointer, value))
+        if (!WriteGuestUInt32(
+                context, destination_pointer, value, win32_context))
         {
             return false;
         }

@@ -3,6 +3,7 @@
 
 #include "repiu/platform/host_error_stream.h"
 #include "repiu/platform/virtual_memory.h"
+#include "repiu/platform/guest_cpu_context.h"
 #include "repiu/engine/guest_write_trace.h"
 
 #include <cstdint>
@@ -14,6 +15,31 @@
 
 namespace repiu::engine
 {
+
+namespace
+{
+
+void RecordHleGuestWriteTrace(
+    const repiu::platform::GuestCpuContext* guest_context,
+    const void* destination,
+    std::uint32_t byte_count,
+    const void* bytes)
+{
+    const std::uint32_t guest_eip = guest_context == nullptr
+        ? 0U
+        : static_cast<std::uint32_t>(guest_context->Eip);
+    RecordGuestWriteTrace(
+        GuestWriteTraceEvent::kHle,
+        guest_eip,
+        guest_eip,
+        static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(destination)),
+        byte_count,
+        bytes,
+        guest_context);
+}
+
+}  // namespace
 
 bool IsGuestRangeReadable(ThreadContext* context,
                           const void* source,
@@ -42,7 +68,8 @@ bool IsGuestRangeWritable(ThreadContext* context,
 
 bool WriteGuestUInt16(ThreadContext* context,
                       void* destination,
-                      std::uint16_t value)
+                      std::uint16_t value,
+                      const repiu::platform::GuestCpuContext* guest_context)
 {
     if (!IsGuestRangeWritable(context, destination, sizeof(value)))
     {
@@ -84,20 +111,14 @@ bool WriteGuestUInt16(ThreadContext* context,
         static_cast<std::uint32_t>(
             reinterpret_cast<std::uintptr_t>(destination)),
         sizeof(value));
-    RecordGuestWriteTrace(
-        GuestWriteTraceEvent::kHle,
-        0U,
-        0U,
-        static_cast<std::uint32_t>(
-            reinterpret_cast<std::uintptr_t>(destination)),
-        sizeof(value),
-        &value);
+    RecordHleGuestWriteTrace(guest_context, destination, sizeof(value), &value);
     return noted;
 }
 
 bool WriteGuestUInt8(ThreadContext* context,
                      void* destination,
-                     std::uint8_t value)
+                     std::uint8_t value,
+                     const repiu::platform::GuestCpuContext* guest_context)
 {
     if (!IsGuestRangeWritable(context, destination, sizeof(value)))
     {
@@ -139,20 +160,14 @@ bool WriteGuestUInt8(ThreadContext* context,
         static_cast<std::uint32_t>(
             reinterpret_cast<std::uintptr_t>(destination)),
         sizeof(value));
-    RecordGuestWriteTrace(
-        GuestWriteTraceEvent::kHle,
-        0U,
-        0U,
-        static_cast<std::uint32_t>(
-            reinterpret_cast<std::uintptr_t>(destination)),
-        sizeof(value),
-        &value);
+    RecordHleGuestWriteTrace(guest_context, destination, sizeof(value), &value);
     return noted;
 }
 
 bool WriteGuestUInt32(ThreadContext* context,
                       void* destination,
-                      std::uint32_t value)
+                      std::uint32_t value,
+                      const repiu::platform::GuestCpuContext* guest_context)
 {
     if (!IsGuestRangeWritable(context, destination, sizeof(value)))
     {
@@ -194,14 +209,7 @@ bool WriteGuestUInt32(ThreadContext* context,
         static_cast<std::uint32_t>(
             reinterpret_cast<std::uintptr_t>(destination)),
         sizeof(value));
-    RecordGuestWriteTrace(
-        GuestWriteTraceEvent::kHle,
-        0U,
-        0U,
-        static_cast<std::uint32_t>(
-            reinterpret_cast<std::uintptr_t>(destination)),
-        sizeof(value),
-        &value);
+    RecordHleGuestWriteTrace(guest_context, destination, sizeof(value), &value);
     return noted;
 }
 

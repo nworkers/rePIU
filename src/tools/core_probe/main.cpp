@@ -40,12 +40,14 @@
 #include "launcher_probe.h"
 #include "long_mode_compatibility_probe.h"
 #include "long_mode_emission_probe.h"
+#include "linux_x64_transfer_failure_provenance_probe.h"
 #include "nvram_path_probe.h"
 #include "pit_timer_probe.h"
 #include "segment_push_probe.h"
 
 #if !defined(__EMSCRIPTEN__)
 #include "fault_handler_probe.h"
+#include "fault_recovery_provenance_probe.h"
 #include "guest_cpu_context_probe.h"
 #include "host_thread_probe.h"
 #include "virtual_memory_probe.h"
@@ -104,6 +106,8 @@ constexpr CoreProbe kCoreProbes[] = {
     // run disagreeing with a Linux x64 one would mean the emitter and the
     // classifier had drifted apart.
     {"long_mode_emission", &repiu::tools::RunLongModeEmissionProbe},
+    {"linux_x64_transfer_failure_provenance",
+     &repiu::tools::RunLinuxX64TransferFailureProvenanceProbe},
     {"nvram_path", &repiu::tools::RunNvramPathProbe},
     // Task 551. Reserves real address ranges, so it belongs after the probes
     // that only compute -- but before the ones that fault, because what it
@@ -118,6 +122,8 @@ constexpr CoreProbe kCoreProbes[] = {
     {"guest_cpu_context", &repiu::tools::RunGuestCpuContextProbe},
     {"virtual_memory", &repiu::tools::RunVirtualMemoryProbe},
     {"fault_handler", &repiu::tools::RunFaultHandlerProbe},
+    {"fault_recovery_provenance",
+     &repiu::tools::RunFaultRecoveryProvenanceProbe},
 #if !defined(__EMSCRIPTEN__) && !defined(REPIU_NO_I386_PROBES)
     {"stack_bridge", &repiu::tools::RunStackBridgeProbe},
     {"guest_stack_switch", &repiu::tools::RunGuestStackSwitchProbe},
@@ -153,7 +159,8 @@ constexpr CoreProbe kCoreProbes[] = {
 // other side.
 constexpr const char* kSkippedProbes[] = {
 #if defined(__EMSCRIPTEN__)
-    "guest_cpu_context", "virtual_memory", "fault_handler", "stack_bridge",
+    "guest_cpu_context", "virtual_memory", "fault_handler",
+    "fault_recovery_provenance", "stack_bridge",
     "guest_stack_switch", "host_thread",
 #elif defined(REPIU_NO_I386_PROBES)
     "stack_bridge", "guest_stack_switch",

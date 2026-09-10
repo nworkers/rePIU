@@ -49,7 +49,9 @@ runtime::AotInstructionRecord MakeIndirectInstruction(
 }
 
 // The host-dispatch miss tail: popfd, three pushes, jmp thunk, the fallback
-// continuation (lea esp,[esp+8]; int3), then the per-kind success ret.
+// continuation, then the per-kind success ret. A call keeps its first pushed
+// slot as the guest return address; a jump removes both remaining metadata
+// slots.
 bool ValidateDispatchLayout(const runtime::AotCodeCacheImage& image,
                             const runtime::AotDbtIndirectDispatchSite& site,
                             bool is_call)
@@ -76,12 +78,14 @@ bool ValidateDispatchLayout(const runtime::AotCodeCacheImage& image,
     {
         return false;
     }
-    // Fallback continuation removes the two remaining slots then int3.
+    // Fallback continuation preserves a call's return slot and removes both
+    // remaining slots for a jump, then traps into legacy fallback.
     if (site.fallback_cache_offset + 5U > image.bytes.size() ||
         b[site.fallback_cache_offset] != 0x8DU ||
         b[site.fallback_cache_offset + 1U] != 0x64U ||
         b[site.fallback_cache_offset + 2U] != 0x24U ||
-        b[site.fallback_cache_offset + 3U] != 0x08U ||
+        b[site.fallback_cache_offset + 3U] !=
+            static_cast<std::uint8_t>(is_call ? 0x04U : 0x08U) ||
         b[site.fallback_cache_offset + 4U] != 0xCCU)
     {
         return false;

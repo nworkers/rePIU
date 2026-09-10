@@ -34,7 +34,9 @@ bool FaultExitTraceEnabled();
 // state that decide whether it could have been taken: `use_guest_stack` and
 // whether an active call state exists. Those two decompose the guest-stack
 // exit's condition and also decide whether the callback can turn the decline
-// into a recovery, so one line reads out the whole question.
+// into a recovery, so one line reads out the whole question. If a recovery
+// callback previously redirected this thread, the line also carries the source
+// EIP and path that were saved before the redirect.
 //
 // Call before recovery runs; recovery rewrites the state this reports.
 void RecordFaultExit(const ThreadContext* context,

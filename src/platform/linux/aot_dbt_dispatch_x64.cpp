@@ -14,6 +14,7 @@ void* repiu_linux_x64_dispatch_context = nullptr;
 void* repiu_linux_x64_dispatch_resolver = nullptr;
 
 void RepiuLinuxX64ReturnThunk();
+void RepiuLinuxX64LegacyResumeThunk();
 }
 
 namespace repiu::platform
@@ -44,6 +45,11 @@ std::uintptr_t LinuxX64DispatchFramePointerAddress()
 std::uintptr_t LinuxX64ReturnThunkAddress()
 {
     return reinterpret_cast<std::uintptr_t>(&RepiuLinuxX64ReturnThunk);
+}
+
+std::uintptr_t LinuxX64LegacyResumeThunkAddress()
+{
+    return reinterpret_cast<std::uintptr_t>(&RepiuLinuxX64LegacyResumeThunk);
 }
 
 }  // namespace repiu::platform

@@ -1436,6 +1436,72 @@ bool EvaluateAotCondition(std::uint8_t condition, std::uint32_t eflags)
     return false;
 }
 
+bool HandleAotLegacyDirectCall(
+    repiu::platform::GuestCpuContext* guest_context,
+    ThreadContext* context)
+{
+#if defined(_M_X64) || defined(__x86_64__)
+    constexpr std::uint32_t kDirectCallSize = 5U;
+    if (guest_context == nullptr || context == nullptr ||
+        !context->aot_legacy_fallback)
+    {
+        return false;
+    }
+    const std::uint32_t source =
+        static_cast<std::uint32_t>(guest_context->Eip);
+    const auto* const instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(source));
+    if (!IsGuestRangeReadable(context, instruction, kDirectCallSize) ||
+        instruction[0] != 0xE8U)
+    {
+        return false;
+    }
+    std::int32_t displacement = 0;
+    std::memcpy(&displacement, instruction + 1U, sizeof(displacement));
+    const std::uint32_t return_address = source + kDirectCallSize;
+    const std::uint32_t target = return_address + displacement;
+    if (!IsGuestInstructionPointer(context, target) || guest_context->Esp < 4U)
+    {
+        return false;
+    }
+    const std::uint32_t entry_esp =
+        static_cast<std::uint32_t>(guest_context->Esp);
+    const std::uint32_t stack_address = entry_esp - 4U;
+    if (!WriteGuestUInt32(
+            context,
+            reinterpret_cast<void*>(
+                static_cast<std::uintptr_t>(stack_address)),
+            return_address,
+            guest_context))
+    {
+        return false;
+    }
+    const std::uint32_t trace_sequence = RecordAotDbtCallReturnCall(
+        context, AotTransferOrigin::kVeh, source, target, return_address,
+        entry_esp);
+    guest_context->Esp = stack_address;
+    guest_context->Eip = target;
+    if (context->aot_call_depth < ThreadContext::kAotCallFrameCapacity)
+    {
+        ThreadContext::AotCallFrame& frame =
+            context->aot_call_frames[context->aot_call_depth++];
+        frame.source = source;
+        frame.target = target;
+        frame.fallthrough = return_address;
+        frame.trace_sequence = trace_sequence;
+        frame.entry_esp = entry_esp;
+        frame.origin = AotTransferOrigin::kVeh;
+        context->aot_last_call_source = source;
+        context->aot_last_call_target = target;
+    }
+    return true;
+#else
+    (void)guest_context;
+    (void)context;
+    return false;
+#endif
+}
+
 bool HandleAotConditionalTransfer(const repiu::platform::FaultEvent& fault,
                                   ThreadContext* context)
 {
@@ -1600,6 +1666,48 @@ bool HandleAotIndirectTransfer(const repiu::platform::FaultEvent& fault,
     TraceAotIndirectTransferTarget(
         context, *win32_context, source, target, is_call, instruction_size,
         origin);
+    // CALL commits its stack effect before the target is fetched. Preserve
+    // that ordering when cache resolution fails and execution continues in
+    // legacy fallback; otherwise the callee's first push overwrites the
+    // missing return slot.
+    if (is_call)
+    {
+        const std::uint32_t return_address = source + instruction_size;
+        const std::uint32_t entry_esp =
+            static_cast<std::uint32_t>(win32_context->Esp);
+        const std::uint32_t stack_address = win32_context->Esp - 4U;
+        if (!WriteGuestUInt32(
+                context,
+                reinterpret_cast<void*>(
+                    static_cast<std::uintptr_t>(stack_address)),
+                return_address,
+                win32_context))
+        {
+            if (fallback_reason != nullptr)
+            {
+                *fallback_reason =
+                    AotDbtDispatchFallbackReason::kUnreadableSource;
+            }
+            return false;
+        }
+        const std::uint32_t trace_sequence =
+            RecordAotDbtCallReturnCall(
+                context, origin, source, target, return_address, entry_esp);
+        win32_context->Esp = stack_address;
+        if (context->aot_call_depth < ThreadContext::kAotCallFrameCapacity)
+        {
+            ThreadContext::AotCallFrame& frame =
+                context->aot_call_frames[context->aot_call_depth++];
+            frame.source = source;
+            frame.target = target;
+            frame.fallthrough = return_address;
+            frame.trace_sequence = trace_sequence;
+            frame.entry_esp = entry_esp;
+            frame.origin = origin;
+            context->aot_last_call_source = source;
+            context->aot_last_call_target = target;
+        }
+    }
     std::uint32_t cache_target = target;
     AotDbtDispatchFallbackReason target_failure =
         AotDbtDispatchFallbackReason::kTranslationFailure;
@@ -1643,43 +1751,6 @@ bool HandleAotIndirectTransfer(const repiu::platform::FaultEvent& fault,
         {
             context->aot_inline_cache_patch_success_count.fetch_add(
                 1, std::memory_order_relaxed);
-        }
-    }
-    if (is_call)
-    {
-        const std::uint32_t return_address = source + instruction_size;
-        const std::uint32_t entry_esp =
-            static_cast<std::uint32_t>(win32_context->Esp);
-        const std::uint32_t stack_address = win32_context->Esp - 4U;
-        if (!WriteGuestUInt32(
-                context,
-                reinterpret_cast<void*>(
-                    static_cast<std::uintptr_t>(stack_address)),
-                return_address))
-        {
-            if (fallback_reason != nullptr)
-            {
-                *fallback_reason =
-                    AotDbtDispatchFallbackReason::kUnreadableSource;
-            }
-            return false;
-        }
-        const std::uint32_t trace_sequence =
-            RecordAotDbtCallReturnCall(
-                context, origin, source, target, return_address, entry_esp);
-        win32_context->Esp = stack_address;
-        if (context->aot_call_depth < ThreadContext::kAotCallFrameCapacity)
-        {
-            ThreadContext::AotCallFrame& frame =
-                context->aot_call_frames[context->aot_call_depth++];
-            frame.source = source;
-            frame.target = target;
-            frame.fallthrough = return_address;
-            frame.trace_sequence = trace_sequence;
-            frame.entry_esp = entry_esp;
-            frame.origin = origin;
-            context->aot_last_call_source = source;
-            context->aot_last_call_target = target;
         }
     }
     win32_context->Eip = cache_target;

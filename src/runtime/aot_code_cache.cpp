@@ -1595,7 +1595,14 @@ bool EmitIndirectInlineCacheSlot(const AotInstructionRecord& instruction,
             static_cast<std::uint32_t>(image->bytes.size() - 4U);
         dispatch_site.fallback_cache_offset =
             static_cast<std::uint32_t>(image->bytes.size());
-        image->bytes.insert(image->bytes.end(), {0x8DU, 0x64U, 0x24U, 0x08U});
+        // The thunk RET has already removed guest-source metadata. A CALL
+        // fallback must discard only the miss address so the return address
+        // pushed above remains at [ESP]; a JMP has no guest return address and
+        // discards both remaining metadata slots.
+        image->bytes.insert(
+            image->bytes.end(),
+            {0x8DU, 0x64U, 0x24U,
+             static_cast<std::uint8_t>(site.is_call ? 0x04U : 0x08U)});
         image->bytes.push_back(0xCCU);
         dispatch_site.success_cache_offset =
             static_cast<std::uint32_t>(image->bytes.size());

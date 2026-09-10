@@ -58,6 +58,9 @@ std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_co
 bool DispatchGuestHleInstruction(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context);
 
+bool CanResumeLinuxX64LegacyTarget(ThreadContext* context,
+                                   std::uint32_t guest_target);
+
 void RecordExecutionProbe(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 void RecordExecutionTrace(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context);
 

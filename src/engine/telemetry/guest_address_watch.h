@@ -17,10 +17,7 @@
 #include <cstdint>
 #include <optional>
 
-namespace repiu::platform
-{
-struct GuestCpuContext;
-}
+#include "repiu/platform/guest_cpu_context.h"
 
 namespace repiu::engine
 {

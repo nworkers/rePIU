@@ -1575,7 +1575,7 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
         {
             void* configuration = reinterpret_cast<void*>(
                 static_cast<std::uintptr_t>(context->glide_gate_stack[1]));
-            if (!WriteGuestUInt32(context, configuration, 1U))
+            if (!WriteGuestUInt32(context, configuration, 1U, win32_context))
             {
                 return decline_gate("query-hardware-unwritable-memory");
             }

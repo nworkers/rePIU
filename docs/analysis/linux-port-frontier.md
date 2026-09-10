@@ -12683,3 +12683,609 @@ before the recovery destination overwrites it.
 | Original guest fault before recovery | **Unresolved** |
 
 ---
+
+## 3.84 Task 647 — x64 복구 목적지 fault를 원래 guest EIP에 연결
+
+**구현 확인:** x64 fault callback 및 shutdown-interrupt 복구 경로가
+`RecoverToHost`를 호출하기 직전에 `ThreadContext::fault_recovery_provenance`에
+원인 EIP, 원인 영역(`guest` 또는 `aot-cache`), 복구 경로를 기록합니다.
+원인 EIP가 guest/AOT 어느 영역에도 속하지 않거나 두 영역에 동시에 속하면
+기록을 무효화하여 잘못된 attribution을 피합니다.
+
+**구현 확인:** `REPIU_FAULT_EXIT_TRACE=1`의 기존 `[repiu-exit]` 한 줄은
+현재 fault의 `eip`를 유지하면서 `recovery_source_eip`, `recovery_source`,
+`recovery_path`를 추가로 출력합니다. 따라서 x64 `RecoverGuestStackException`
+같은 복구 목적지에서 후속 `UD2`가 발생해도 직전 복구가 어느 원인 위치와
+경로에서 시작됐는지 확인할 수 있습니다. 환경 변수가 꺼져 있으면 이 telemetry는
+실행되지 않습니다.
+
+**검증 확인:** WSL 복구 후 `CMAKE_BUILD_PARALLEL_LEVEL=2`로 Linux x64
+Debug headless `repiu_core_probe` 및 `repiu`를 다시 빌드했고,
+`core_probe_total=26`, `core_probe_failures=0`, `core_probe_all=true`를
+확인했습니다.
+
+**실행 확인:** 실제 `pumpit2a`에서 x64 return resolver가
+`guest_source=0`, `producer=0x010F1E56`을 받고
+`dynamic AOT target is outside the guest arena`로 zero를 반환했습니다.
+따라서 unresolved thunk의 `INT3` `0x402BCF61` 뒤
+`RecoverGuestStackException`의 `UD2` `0x402BCF62`가 발생했습니다. 이
+경로에는 `RecoverToHost`가 없으므로 `recovery_source_eip=0`,
+`recovery_source=none`, `recovery_path=none`은 provenance 누락이 아니라
+정확한 결과입니다.
+
+**미확정:** `0x010F1E56 RET`가 zero return target을 만든 원인과, unresolved
+x64 return 경계의 producer/target을 최종 exit trace에 연결하는 방법은 다음
+작업에서 설계·관측해야 합니다.
+
+## 3.84 (English) Task 647 — attribute an x64 recovery-destination fault to the original guest EIP
+
+**Implementation confirmed:** the x64 fault-callback and shutdown-interrupt
+recovery paths record the source EIP, its owning region (`guest` or
+`aot-cache`), and the recovery path in
+`ThreadContext::fault_recovery_provenance` immediately before calling
+`RecoverToHost`. Sources outside both regions, or sources that ambiguously
+belong to both, are left invalid so they cannot produce a false attribution.
+
+**Implementation confirmed:** the existing `[repiu-exit]` line emitted by
+`REPIU_FAULT_EXIT_TRACE=1` keeps the current fault `eip` and adds
+`recovery_source_eip`, `recovery_source`, and `recovery_path`. A later `UD2` at
+an x64 destination such as `RecoverGuestStackException` can therefore be
+connected to the source location and path that initiated the preceding
+recovery. With the environment toggle off, this telemetry does not execute.
+
+**Verification confirmed:** after WSL recovered, Linux x64 Debug headless
+`repiu_core_probe` and `repiu` were rebuilt with
+`CMAKE_BUILD_PARALLEL_LEVEL=2`. The full result was
+`core_probe_total=26`, `core_probe_failures=0`, `core_probe_all=true`.
+
+**Execution confirmed:** the real `pumpit2a` run showed the x64 return resolver
+receiving `guest_source=0`, `producer=0x010F1E56`, and returning zero with
+`dynamic AOT target is outside the guest arena`. The unresolved thunk's
+`INT3` at `0x402BCF61` was followed by the `UD2` at
+`RecoverGuestStackException`, `0x402BCF62`. This path does not call
+`RecoverToHost`, so `recovery_source_eip=0`, `recovery_source=none`, and
+`recovery_path=none` are the correct result, not a missing record.
+
+**Unresolved:** why RET at `0x010F1E56` produces a zero return target, and how
+to connect producer/target data from the unresolved x64 return boundary to the
+final exit trace, require the next design and observation task.
+
+---
+
+## 3.85 Task 648 — unresolved x64 return producer를 최종 fault trace에 연결
+
+**구현 확인:** `LinuxX64TransferFailureProvenance`가 x64 resolver 실패 시
+producer EIP, target EIP, transfer 후 guest ESP, `ret`/`indirect-call` 종류,
+`translation-failed`/`policy-refused` 이유를 고정 크기 per-thread record에
+저장합니다. target `0`은 실패를 설명하는 관측값이므로 유효한 record에서
+보존합니다. 다음 resolver 진입 때 이전 record를 무효화하여 성공한 후의
+fault가 오래된 실패를 재사용하지 않게 했습니다.
+
+**구현 확인:** `REPIU_FAULT_EXIT_TRACE=1`의 `[repiu-exit]`가 기존 fault
+EIP와 recovery provenance를 유지하면서 x64 transfer provenance를 함께
+출력합니다. resolver의 `return 0`, unresolved thunk의 `INT3`, 뒤따르는
+`UD2`, guest register/stack, AOT policy는 변경하지 않았습니다.
+
+**검증 확인:** WSL Linux x64 Debug에서 `CMAKE_BUILD_PARALLEL_LEVEL=2`로
+`repiu_core_probe`와 `repiu`를 빌드했습니다. 새 probe를 포함한 결과는
+`core_probe_total=27`, `core_probe_failures=0`, `core_probe_all=true`입니다.
+
+**실행 확인:** 실제 `pumpit2a`에서 다음 resolver 실패가 관측되었습니다.
+
+```text
+[repiu-x64-return] result=translation-failed source=0x00000000 cache=0x00000000 producer=0x010F1E56 guest_esp=0x0158CC5C detail=dynamic AOT target is outside the guest arena
+[repiu-exit] ... eip=0x402BD30D code=0x00000005 ... x64_transfer_valid=1 x64_transfer_producer_eip=0x010F1E56 x64_transfer_target_eip=0x00000000 x64_transfer_guest_esp=0x0158CC5C x64_transfer_kind=ret x64_transfer_failure=translation-failed ...
+[repiu-exit] ... eip=0x402BD30E code=0x00000004 ... x64_transfer_valid=1 x64_transfer_producer_eip=0x010F1E56 x64_transfer_target_eip=0x00000000 x64_transfer_guest_esp=0x0158CC5C x64_transfer_kind=ret x64_transfer_failure=translation-failed ...
+```
+
+따라서 첫 `INT3`와 뒤따른 `UD2` 모두 원본 `0x010F1E56 RET`가 선택한
+zero target에 연결됩니다. 프로세스는 의도된 fail-closed `UD2`로 종료되며,
+이 작업은 zero word를 만든 stack writer를 특정하거나 수정하지 않았습니다.
+
+| 질문 | 상태 |
+|---|---|
+| 최종 fault에서 unresolved transfer producer 확인 | **확인됨**: `0x010F1E56`, `ret` |
+| 최종 fault에서 zero target 확인 | **확인됨**: `0x00000000` |
+| 실패 이유와 transfer 후 ESP | **확인됨**: `translation-failed`, `0x0158CC5C` |
+| zero target을 만든 stack writer | **미확정** |
+
+## 3.85 (English) Task 648 — connect the unresolved x64 return producer to the final fault trace
+
+**Implementation confirmed:** `LinuxX64TransferFailureProvenance` stores the
+producer EIP, target EIP, guest ESP after the transfer, `ret`/`indirect-call`
+kind, and `translation-failed`/`policy-refused` reason in a fixed-size
+per-thread record when the x64 resolver fails. Target `0` is retained as a
+valid observation because it is the failure being explained. The previous
+record is invalidated at the next resolver entry, so a later fault after a
+successful transfer cannot reuse an old failure.
+
+**Implementation confirmed:** with `REPIU_FAULT_EXIT_TRACE=1`,
+`[repiu-exit]` keeps the existing fault EIP and recovery provenance and adds
+the x64 transfer provenance. The resolver's `return 0`, the unresolved
+thunk's `INT3`, the following `UD2`, guest registers/stack, and AOT policy were
+not changed.
+
+**Verification confirmed:** Linux x64 Debug `repiu_core_probe` and `repiu`
+were built in WSL with `CMAKE_BUILD_PARALLEL_LEVEL=2`. Including the new probe,
+the result was `core_probe_total=27`, `core_probe_failures=0`, and
+`core_probe_all=true`.
+
+**Execution confirmed:** the real `pumpit2a` run observed this resolver
+failure:
+
+```text
+[repiu-x64-return] result=translation-failed source=0x00000000 cache=0x00000000 producer=0x010F1E56 guest_esp=0x0158CC5C detail=dynamic AOT target is outside the guest arena
+[repiu-exit] ... eip=0x402BD30D code=0x00000005 ... x64_transfer_valid=1 x64_transfer_producer_eip=0x010F1E56 x64_transfer_target_eip=0x00000000 x64_transfer_guest_esp=0x0158CC5C x64_transfer_kind=ret x64_transfer_failure=translation-failed ...
+[repiu-exit] ... eip=0x402BD30E code=0x00000004 ... x64_transfer_valid=1 x64_transfer_producer_eip=0x010F1E56 x64_transfer_target_eip=0x00000000 x64_transfer_guest_esp=0x0158CC5C x64_transfer_kind=ret x64_transfer_failure=translation-failed ...
+```
+
+Both the first `INT3` and the following `UD2` are therefore connected to the
+zero target selected by the original `RET` at `0x010F1E56`. The process still
+ends at the intentional fail-closed `UD2`; this task does not identify or
+modify the stack writer that produced the zero word.
+
+| Question | Status |
+|---|---|
+| Unresolved transfer producer at final fault | **Confirmed**: `0x010F1E56`, `ret` |
+| Zero target at final fault | **Confirmed**: `0x00000000` |
+| Failure reason and post-transfer ESP | **Confirmed**: `translation-failed`, `0x0158CC5C` |
+| Stack writer that produced the zero target | **Unresolved** |
+
+---
+
+## 3.86 Task 649 — zero return slot의 실제 writer는 HLE `PUSH FS`
+
+**확인됨:** 기존 `REPIU_GUEST_WRITE_TRACE=0x0158CC58` page watch가 정확히
+`event=hle`, `size=4`, `bytes=00000000`인 쓰기를 관찰했습니다. Task 649는 HLE
+`WriteGuestUInt8/16/32` helper에 선택적인 `GuestCpuContext`를 전달하고, 현재
+guest EIP와 쓰기 직전 레지스터를 trace에 보존했습니다.
+
+**확인됨:** 수정 후 실제 기록은 다음과 같습니다.
+
+```text
+[repiu-guest-write-trace-tail] event=hle n=0x0000002A watch=0x0158CC58 execution=0x010F9212 source=0x010F9212 destination=0x0158CC58 size=0x00000004 bytes=00000000 eax=0x010F920C ebx=0x011A7B16 ecx=0x00000000 edx=0x000000FF esi=0x011A7B28 edi=0x00000000 esp=0x0158CC5C eflags=0x00200306
+```
+
+`0x010F9212`는 Task 645에서 원본 연속 명령으로 확인한 `PUSH FS`입니다. segment
+HLE handler는 이 명령에서 `context->guest_fs`를 dword로 확장해 `[ESP-4]`에 쓰며,
+이번 실행의 `FS`는 0이었습니다. 따라서 `0x0158CC58`의 zero word를 만든 직접
+writer는 HLE `PUSH FS`입니다. LE stack object 4의 파일 복사 범위 밖 tail이 처음부터
+0이었다는 사실은 초기 상태를 설명하지만, 최종 zero 값의 직접 원인은 아닙니다.
+
+**구현 경계:** 진단 인자가 없는 host utility 쓰기는 이전과 같이 provenance를
+기록하지 않습니다. page watch가 비활성화된 일반 실행에는 추가 trace 동작이 없으며,
+guest memory semantics, RET resolver, zero target 및 unresolved `INT3/UD2` 정책은
+변경하지 않았습니다.
+
+**검증됨:** WSL Linux x64 Debug에서 `repiu_core_probe`와 `repiu`를
+`CMAKE_BUILD_PARALLEL_LEVEL=2`로 빌드했고, `core_probe_total=27`,
+`core_probe_failures=0`, `core_probe_all=true`를 확인했습니다. 실제 실행은 기존과
+같이 unresolved x64 transfer provenance를 출력하고 intentional `UD2`에서 종료했습니다.
+
+| 질문 | 상태 |
+|---|---|
+| exact HLE zero-dword write | **확인됨**: `0x0158CC58`, `bytes=00000000` |
+| HLE writer guest EIP | **확인됨**: `0x010F9212` |
+| writer instruction | **확인됨**: `PUSH FS` |
+| writer value/source | **확인됨**: `FS=0` |
+| Task 648 RET zero target provenance | **유지됨**: `0x010F1E56`, target `0` |
+| zero target correction | **미수행**: 별도 의미 분석 필요 |
+
+## 3.86 (English) Task 649 — the actual zero return-slot writer is HLE `PUSH FS`
+
+**Confirmed:** the existing `REPIU_GUEST_WRITE_TRACE=0x0158CC58` page watch
+observed an exact `event=hle`, `size=4`, `bytes=00000000` write. Task 649 passed
+an optional `GuestCpuContext` into the HLE `WriteGuestUInt8/16/32` helpers and
+preserved the current guest EIP and pre-write registers in the trace.
+
+**Confirmed:** the post-change real record was:
+
+```text
+[repiu-guest-write-trace-tail] event=hle n=0x0000002A watch=0x0158CC58 execution=0x010F9212 source=0x010F9212 destination=0x0158CC58 size=0x00000004 bytes=00000000 eax=0x010F920C ebx=0x011A7B16 ecx=0x00000000 edx=0x000000FF esi=0x011A7B28 edi=0x00000000 esp=0x0158CC5C eflags=0x00200306
+```
+
+`0x010F9212` is the `PUSH FS` in the original consecutive instruction pair
+established by Task 645. The segment HLE handler zero-extends `context->guest_fs`
+and writes it to `[ESP-4]`; `FS` was zero in this run. The direct writer of the
+zero word at `0x0158CC58` is therefore HLE `PUSH FS`. The fact that stack object 4
+was initially zero outside its file-copy range describes the initial state, not
+the direct cause of the final zero value.
+
+**Implementation boundary:** host utility writes without a diagnostic context keep
+the previous zero provenance. With the page watch disabled, there is no additional
+trace behavior. Guest memory semantics, the RET resolver, the zero target, and the
+unresolved `INT3/UD2` policy are unchanged.
+
+**Verified:** WSL Linux x64 Debug built `repiu_core_probe` and `repiu` with
+`CMAKE_BUILD_PARALLEL_LEVEL=2`; the result was `core_probe_total=27`,
+`core_probe_failures=0`, `core_probe_all=true`. The real run retained the existing
+unresolved x64 transfer provenance and ended at the intentional `UD2`.
+
+| Question | Status |
+|---|---|
+| Exact HLE zero-dword write | **Confirmed**: `0x0158CC58`, `bytes=00000000` |
+| HLE writer guest EIP | **Confirmed**: `0x010F9212` |
+| Writer instruction | **Confirmed**: `PUSH FS` |
+| Writer value/source | **Confirmed**: `FS=0` |
+| Task 648 RET zero-target provenance | **Preserved**: `0x010F1E56`, target `0` |
+| Zero-target correction | **Not performed**: requires separate semantic analysis |
+
+---
+
+## 3.89 Task 652 — legacy direct CALL의 guest 반환 주소 복구
+
+**기존 결론 정정:** Task 651이 `0x010F920C`를 아홉 PUSH와 `SUB ESP,4`를 가진
+allocator prologue로 본 것은 잘못된 연결이었습니다. 실제 bytes는
+`PUSH EBX/ECX/EDX/ESI/EDI/ES/FS` 뒤 `0x010F9214 CMP`이며, `SUB ESP,4`를 포함한
+대칭 frame은 별도 함수 `0x010F1D74..0x010F1E56`입니다. `0x010F1E48`부터의
+epilogue를 추적한 결과 이 함수는 자체 frame을 정확히 복원했고, 실패 지점의 slot은
+함수 진입 전에 있어야 할 반환 주소였습니다.
+
+**확인됨:** 정적 xref는 `0x010F920C` 함수 안에서 allocator를 호출하는 후보
+`0x010F9258`과 `0x010F9273`을 찾았습니다. 실제 address watch는 첫 후보만 실행되며,
+진입 guest ESP가 `0x0158CC54`임을 확인했습니다. 이 original span의 direct CALL은
+long mode host stack만 변경하여 guest `[0x0158CC50]`에 `0x010F925D`를 쓰지 못했습니다.
+
+**구현 및 검증됨:** x64 `aot_legacy_fallback` shared HLE가 `E8 rel32`를 선점하여
+guest 반환 주소, ESP/EIP, AOT call frame을 기록합니다. 합성 정상/범위 거부 probe를
+포함한 Linux x64 core probe는 `27/27`, failures `0`으로 통과했습니다. 실제 실행은
+다음 값을 기록했습니다.
+
+```text
+[repiu-guest-write-trace] event=hle execution=0x010F9258 destination=0x0158CC50 size=4 bytes=5D920F01 esp=0x0158CC54
+[repiu-x64-return-stack] source=0x010F925D producer=0x010F1E56 consumed=0x0158CC50
+```
+
+기존 zero target은 해소됐습니다. 새 frontier는 올바른 반환 target `0x010F925D`의
+동적 번역이 `0x010F928B`의 segment-override coverage 때문에 실패하고 unresolved
+return thunk로 끝나는 경계입니다. 게임은 아직 정상 실행되지 않습니다.
+
+| 질문 | 상태 |
+|---|---|
+| allocator 진입 CALL | **확인됨**: `0x010F9258 -> 0x010F1D74` |
+| guest 반환 주소 기록 | **해결됨**: `0x010F925D` at `0x0158CC50` |
+| allocator RET target | **해결됨**: `0x010F1E56 -> 0x010F925D` |
+| core probe | **통과**: 27/27 |
+| 새 frontier | **미해결**: return target translation rejected at `0x010F928B` |
+
+## 3.89 (English) Task 652 — restore the guest return address for a legacy direct CALL
+
+**Earlier conclusion corrected:** Task 651 incorrectly connected `0x010F920C`
+to an allocator prologue with nine PUSH instructions and `SUB ESP,4`. Its actual
+bytes are `PUSH EBX/ECX/EDX/ESI/EDI/ES/FS` followed by the CMP at
+`0x010F9214`. The symmetric frame containing `SUB ESP,4` belongs to the separate
+function `0x010F1D74..0x010F1E56`. Tracing from its epilogue at `0x010F1E48`
+showed that the function restores its own frame exactly; the failing slot was
+the return address that should have existed before entry.
+
+**Confirmed:** static xrefs found two allocator calls inside the `0x010F920C`
+function, at `0x010F9258` and `0x010F9273`. The live address watch reached only
+the first, with guest ESP `0x0158CC54`. This direct CALL in the original span
+changed only the long-mode host stack and failed to write `0x010F925D` to guest
+`[0x0158CC50]`.
+
+**Implemented and verified:** the shared x64 `aot_legacy_fallback` HLE now
+intercepts `E8 rel32` and records its guest return address, ESP/EIP, and AOT call
+frame. Linux x64 core probes, including synthetic success and range-refusal
+cases, passed 27/27 with zero failures. The real run recorded the write and the
+matching RET shown above.
+
+The former zero target is resolved. The new frontier is rejection of dynamic
+translation for the correct return target `0x010F925D`, caused by segment-
+override coverage at `0x010F928B`, followed by the unresolved-return thunk. The
+game still does not run normally.
+
+| Question | Status |
+|---|---|
+| Allocator entry CALL | **Confirmed**: `0x010F9258 -> 0x010F1D74` |
+| Guest return-address write | **Resolved**: `0x010F925D` at `0x0158CC50` |
+| Allocator RET target | **Resolved**: `0x010F1E56 -> 0x010F925D` |
+| Core probe | **Passed**: 27/27 |
+| New frontier | **Unresolved**: return-target translation rejected at `0x010F928B` |
+
+---
+
+## 3.87 Task 650 — 간접 CALL fallback이 guest 반환 주소를 보존
+
+**확인됨:** `0x010F4ACF CALL EAX`가 미매핑 대상 `0x010F920C`로 향할 때 공용
+간접 전송 handler는 이전에는 대상 cache 해석에 실패한 뒤 반환 주소를 push하지 않고
+종료했습니다. `0x0158CC70` writer trace에서 대상 함수의 첫 `PUSH EBX`가 그 slot에
+`0x011A7B16`을 기록한 것이 확인됐습니다.
+
+CALL stack 효과를 대상 해석 앞으로 옮긴 뒤 같은 trace는 `0x010F4ACF`가
+`0x0158CC70`에 little-endian `D1 4A 0F 01` (`0x010F4AD1`)을 기록하며,
+`0x010F920C PUSH EBX`는 더 낮은 slot을 사용함을 확인했습니다. 선택형 host-dispatch
+miss tail도 CALL fallback에서는 한 metadata slot만 제거하고 JMP에서는 두 slot을
+제거하도록 생성됩니다. 공용 emitter probe가 CALL `ESP += 4`, JMP `ESP += 8` layout을
+검증합니다.
+
+**확인됨:** 기존 zero-return frontier는 아직 남아 있지만 guest ESP가
+`0x0158CC5C`에서 `0x0158CC58`로 정확히 4바이트 이동했습니다. 새 소비 slot
+`0x0158CC54`의 writer는 다시 `0x010F9212 PUSH FS` (`FS=0`)입니다. 따라서 누락된
+CALL 반환 주소는 독립적으로 해결됐고, 다음 문제는 왜 `0x010F1E56` epilogue가
+`PUSH FS` slot까지 복원하지 못하는지입니다. 게임은 아직 정상 실행되지 않습니다.
+
+| 질문 | 상태 |
+|---|---|
+| CALL 반환 주소 기록 | **확인됨**: `0x010F4AD1` at `0x0158CC70` |
+| 대상 첫 PUSH의 반환 slot 덮어쓰기 | **해결됨** |
+| host-dispatch CALL/JMP fallback cleanup | **검증됨**: `+4` / `+8` |
+| core probe | **통과**: 27/27 |
+| 현재 RET target | **미해결**: `0`, writer `0x010F9212 PUSH FS` |
+
+## 3.87 (English) Task 650 — indirect CALL fallback preserves the guest return address
+
+**Confirmed:** when `0x010F4ACF CALL EAX` targets unmapped `0x010F920C`, the
+shared indirect-transfer handler previously returned after target-cache resolution failed
+without pushing the return address. The `0x0158CC70` writer trace showed the target
+function's first `PUSH EBX` writing `0x011A7B16` into that slot.
+
+After moving CALL stack effects before target resolution, the same trace shows
+`0x010F4ACF` writing little-endian `D1 4A 0F 01` (`0x010F4AD1`) at
+`0x0158CC70`, while `0x010F920C PUSH EBX` uses a lower slot. The optional
+host-dispatch miss tail now also removes one metadata slot for CALL fallback and two for
+JMP fallback. The shared emitter probe verifies the CALL `ESP += 4` and JMP `ESP += 8`
+layouts.
+
+**Confirmed:** the zero-return frontier remains, but guest ESP moved exactly four bytes
+from `0x0158CC5C` to `0x0158CC58`. The writer of the newly consumed slot
+`0x0158CC54` is again `0x010F9212 PUSH FS` with `FS=0`. The missing CALL return
+address is therefore independently fixed; the next question is why the `0x010F1E56`
+epilogue fails to restore past the `PUSH FS` slot. The game still does not run normally.
+
+| Question | Status |
+|---|---|
+| CALL return-address write | **Confirmed**: `0x010F4AD1` at `0x0158CC70` |
+| Callee first PUSH overwriting return slot | **Resolved** |
+| Host-dispatch CALL/JMP fallback cleanup | **Verified**: `+4` / `+8` |
+| Core probe | **Passed**: 27/27 |
+| Current RET target | **Unresolved**: `0`, writer `0x010F9212 PUSH FS` |
+
+---
+
+## 3.88 Task 651 — Linux x64 legacy stack run 완결 및 prologue allocation
+
+**확인됨:** 간접 CALL 대상 `0x010F920C`의 prologue `PUSH EBX/ECX/EDX/ESI/EDI/ES/FS/GS/EBP; SUB ESP,4`가
+x64 legacy fallback에서 실행될 때, 연속 stack HLE helper가 `SUB ESP,4`를 처리하지 않고
+남겨두어 long mode 원본 바이트가 host RSP를 조작하고 guest ESP를 갱신하지 못했습니다.
+이로 인해 이후 epilogue 복원 시 slot 정렬이 4바이트 어긋나 있었음이 규명되었습니다.
+
+**해결책 및 확인:**
+1. legacy stack-run helper에 `SUB ESP, imm8` (0x83 0xEC) 및 `SUB ESP, imm32` (0x81 0xEC) 연산을
+   guest ESP에 32-bit 모듈로 연산으로 반영하고 `SetCompareFlags`를 통해 플래그를 동기화하는 로직을 추가했습니다.
+2. segment HLE 이후 후속 stack 명령 drain을 AOT 상태 플래그와 무관하게 허용하고, opcode `0F` directed dispatch에
+   POP FS/GS를 포함하여 epilogue POP run도 완전하게 drain되도록 연결했습니다.
+3. synthetic probe(`RunGeneralStackProbe`)를 통해 general/segment PUSH에 이은 `SUB ESP,4` 처리 및
+   상태 독립적인 segment/general POP epilogue drain을 검증했습니다.
+
+| 질문 | 상태 |
+|---|---|
+| legacy prologue SUB ESP 처리 | **해결됨**: guest ESP 및 flag 정상 갱신 |
+| segment HLE 후속 stack drain 조건 완화 | **해결됨**: AOT 상태 flag 무관 drain 허용 |
+| opcode 0F POP FS/GS directed dispatch | **해결됨** |
+| core probe / synthetic stack probe | **통과** |
+
+## 3.88 (English) Task 651 — Linux x64 legacy stack run drainage and prologue allocation
+
+**Confirmed:** when the indirect CALL target `0x010F920C` executes its prologue
+`PUSH EBX/ECX/EDX/ESI/EDI/ES/FS/GS/EBP; SUB ESP,4` in the x64 legacy fallback path, the
+consecutive stack HLE helper previously stopped before `SUB ESP,4`. The unhandled original
+instruction executed natively in long mode, adjusting host RSP instead of guest ESP. This
+caused saved stack slots to shift by 4 bytes during subsequent epilogue restoration.
+
+**Resolution and Confirmation:**
+1. Extended the legacy stack-run helper to execute direct `SUB ESP, imm8` (0x83 0xEC) and
+   `SUB ESP, imm32` (0x81 0xEC) directly on guest ESP with 32-bit wrapping and updated
+   arithmetic flags via `SetCompareFlags`.
+2. Relaxed bounded draining following segment HLE to execute regardless of AOT state flags,
+   and added POP FS/GS to opcode `0F` directed dispatch so epilogue POP runs also drain cleanly.
+3. Verified via synthetic probe (`RunGeneralStackProbe`) that general/segment PUSH followed by
+   `SUB ESP,4` and flag-independent segment/general POP epilogues drain correctly.
+
+| Question | Status |
+|---|---|
+| Legacy prologue SUB ESP handling | **Resolved**: guest ESP and flags updated correctly |
+| Segment HLE subsequent stack drain relaxation | **Resolved**: drain permitted regardless of AOT flags |
+| Opcode 0F POP FS/GS directed dispatch | **Resolved** |
+| Core probe / synthetic stack probe | **Passed** |
+
+---
+
+## 3.90 Task 653 — 미해석 반환 target의 제한적 legacy bridge
+
+**확인됨:** Task 652가 복구한 `0x010F1E56 RET -> 0x010F925D`는 올바른 guest
+stack 의미를 가졌지만, `0x010F925D`에서 시작한 동적 AOT 번역은 뒤쪽
+`0x010F928B`의 segment-override coverage 때문에 거절됐습니다. 첫 명령
+`89 C2` (`MOV EDX,EAX`) 자체는 공용 long-mode classifier가 `kIdenticalBytes`로
+분류합니다.
+
+**구현 및 검증됨:** Linux x64 return resolver는 cache 해석 실패 뒤 target이 guest
+arena 안에 있고 첫 명령이 `kIdenticalBytes`일 때만 전용 legacy-resume thunk를
+반환합니다. thunk는 저장된 guest EFLAGS에 TF를 설정해 복원하고 guest EAX를 복원한 뒤
+원본 target으로 jump합니다. 합성 probe는 `89 C2` 승인, `53` (`PUSH EBX`) 거부와
+thunk 심볼 연결을 확인했고 전체 core probe는 27/27을 통과했습니다. 실제 실행은 다음
+bridge 선택을 기록하고 `0x010F925D` 뒤로 진행했습니다.
+
+```text
+[repiu-x64-return] result=legacy-fallback source=0x010F925D cache=0x402BD957 producer=0x010F1E56 guest_esp=0x0158CC54 detail=byte-identical first instruction
+```
+
+**새 frontier:** 이후 같은 `0x010F1E56` RET가 다시 실행되어 post-pop guest ESP
+`0x0158CC6C`에서 target 0을 소비했습니다. `0x010F9273` watch는 실행되지 않았고
+`0x010F9258`은 한 번만 확인됐으므로, 두 번째 allocator epilogue에 도달한 별도 진입
+경로는 아직 미확정입니다. 기존 call-frame top은 legacy 복귀 시 pop되지 않은 진단
+기록일 수 있어 두 번째 CALL의 증거로 사용하지 않습니다. 게임은 아직 정상 실행되지
+않습니다.
+
+| 질문 | 상태 |
+|---|---|
+| `0x010F925D` bridge 진입 | **해결됨**: byte-identical 첫 명령만 허용 |
+| unproven target | **보존됨**: 기존 fail-closed |
+| core probe | **통과**: 27/27 |
+| 새 zero RET | **확인됨**: `0x010F1E56`, post ESP `0x0158CC6C` |
+| 두 번째 epilogue 진입 경로 | **미확정** |
+
+## 3.90 (English) Task 653 — guarded legacy bridge for an unresolved return target
+
+**Confirmed:** the corrected `0x010F1E56 RET -> 0x010F925D` from Task 652 had
+the right guest-stack semantics, but dynamic AOT translation beginning at
+`0x010F925D` was rejected by segment-override coverage later at `0x010F928B`.
+The shared long-mode classifier identifies the first instruction, `89 C2`
+(`MOV EDX,EAX`), as `kIdenticalBytes`.
+
+**Implemented and verified:** after cache resolution fails, the Linux x64 return
+resolver selects a dedicated legacy-resume thunk only when the target is inside
+the guest arena and its first instruction is `kIdenticalBytes`. The thunk restores
+saved guest EFLAGS with TF set, restores guest EAX, and jumps to the original
+target. The synthetic probe admitted `89 C2`, refused `53` (`PUSH EBX`), and
+confirmed thunk linkage. All 27 core probes passed. The real run logged the bridge
+selection above and progressed beyond `0x010F925D`.
+
+**New frontier:** the same `0x010F1E56` RET later ran again and consumed a zero
+target at post-pop guest ESP `0x0158CC6C`. A watch on `0x010F9273` did not fire,
+while `0x010F9258` fired once, so the separate entry path that reaches this second
+allocator epilogue is not yet known. The existing call-frame top may be stale
+diagnostic state because the legacy return path does not pop it, so it is not
+evidence of a second CALL. The game still does not run normally.
+
+| Question | Status |
+|---|---|
+| Bridge entry at `0x010F925D` | **Resolved**: only a byte-identical first instruction is admitted |
+| Unproven target | **Preserved**: existing fail-closed behavior |
+| Core probe | **Passed**: 27/27 |
+| New zero RET | **Confirmed**: `0x010F1E56`, post ESP `0x0158CC6C` |
+| Second epilogue entry path | **Unresolved** |
+
+---
+
+## 3.91 Task 654 — legacy bridge의 TF 전이를 guest 경계로 이동
+
+**Task 653 결론 보완:** resolver가 `legacy-fallback`을 선택했다는 로그만으로 guest
+single-step 재진입이 증명되지는 않았습니다. 최초 thunk는 TF를 설정한 `POPFQ` 뒤 guest
+EAX 복원 `MOV`를 실행하고 나서 jump했습니다. 실제 watch는 `0x010F925F`,
+`0x010F926E`, `0x010F9271`, `0x010F9273` 어디에서도 #DB를 관찰하지 못했고,
+`0x010F9273 CALL`이 guest 반환 주소 없이 실행됐습니다.
+
+**구현 및 검증됨:** guest EAX 복원을 TF 설정 앞으로 옮기고 thunk 끝을 연속된
+`POPFQ; JMP guest_continuation`으로 만들었습니다. 교정 후 `0x010F925F`와
+`0x010F9273` watch가 각각 한 번씩 single-step을 기록했습니다. Task 652의 direct CALL
+HLE는 다음 반환 주소 write를 남겼고 allocator RET가 같은 값을 소비했습니다.
+
+```text
+[repiu-watch] event=step guest=0x010F925F ... esp=0x0158CC54
+[repiu-watch] event=step guest=0x010F9273 ... esp=0x0158CC54
+[repiu-guest-write-trace-tail] event=hle execution=0x010F9273 destination=0x0158CC50 size=0x00000004 bytes=78920F01
+[repiu-x64-return-stack] source=0x010F9278 producer=0x010F1E56 consumed=0x0158CC50
+```
+
+**새 frontier:** `0x010F9278 TEST EAX,EAX`와 not-taken `0x010F927A JZ` 뒤
+`0x010F927C`의 bytes는 `A3 98 66 1A 01`입니다. 32-bit guest에서는
+`MOV [0x011A6698],EAX`이지만 long mode의 `A3`는 64-bit moffs 주소를 소비하므로 원본
+bytes를 직접 실행할 수 없습니다. 실제 실행은 이 주소에서 SIGSEGV를 냈습니다. 다음
+작업은 이 이미 알려진 address-width 차이를 공용 HLE 또는 안전한 lowering 경계에서
+처리해야 합니다. 게임은 아직 정상 실행되지 않습니다.
+
+| 질문 | 상태 |
+|---|---|
+| bridge 직후 guest #DB | **해결됨**: `0x010F925F` watch |
+| 두 번째 direct CALL guest return | **해결됨**: `0x010F9278` at `0x0158CC50` |
+| 두 번째 allocator RET | **해결됨**: `0x010F1E56 -> 0x010F9278` |
+| core probe | **통과**: 27/27 |
+| 새 frontier | **미해결**: `0x010F927C A3 moffs32` long-mode address width |
+
+## 3.91 (English) Task 654 — move legacy-bridge TF transfer to the guest boundary
+
+**Task 653 conclusion refined:** a resolver log selecting `legacy-fallback` did
+not by itself prove guest single-step reentry. The initial thunk executed the
+guest-EAX restoration `MOV` after `POPFQ` activated TF and before jumping.
+Watches saw no #DB at `0x010F925F`, `0x010F926E`, `0x010F9271`, or
+`0x010F9273`, and the `0x010F9273` CALL executed without a guest return address.
+
+**Implemented and verified:** guest EAX restoration now precedes TF activation,
+and the thunk ends with consecutive `POPFQ; JMP guest_continuation` instructions.
+After the correction, watches at `0x010F925F` and `0x010F9273` each recorded a
+single-step. Task 652's direct-CALL HLE wrote the return address shown above, and
+the allocator RET consumed the same value.
+
+**New frontier:** after `0x010F9278 TEST EAX,EAX` and the not-taken
+`0x010F927A JZ`, the bytes at `0x010F927C` are `A3 98 66 1A 01`. This is
+`MOV [0x011A6698],EAX` in the 32-bit guest, while long-mode `A3` consumes a
+64-bit moffs address and cannot execute from the original bytes. The real run
+raised SIGSEGV at this address. The next task must handle this known address-
+width difference at a shared HLE or safe lowering boundary. The game still does
+not run normally.
+
+| Question | Status |
+|---|---|
+| Guest #DB after bridge | **Resolved**: watch at `0x010F925F` |
+| Second direct CALL guest return | **Resolved**: `0x010F9278` at `0x0158CC50` |
+| Second allocator RET | **Resolved**: `0x010F1E56 -> 0x010F9278` |
+| Core probe | **Passed**: 27/27 |
+| New frontier | **Unresolved**: long-mode address width of `0x010F927C A3 moffs32` |
+
+---
+
+## 3.92 Task 655 — legacy fallback의 `A3 moffs32` store 복구
+
+**확인됨:** `0x010F927C`의 `A3 98 66 1A 01`은 32-bit guest에서
+`MOV [0x011A6698],EAX`인 5바이트 명령입니다. Task 654 뒤 이 원본 bytes가 long
+mode에서 8바이트 moffs 주소로 해석되어 SIGSEGV를 냈습니다. 이는 Task 550/565가
+분류하고 AOT cache에서 재인코딩한 것과 같은 일반적인 address-width 차이입니다.
+
+**구현 및 검증됨:** 공용 `HandleTracedMemoryStoreInstruction`이 prefix 없는 `A3`를
+32-bit destination, guest EAX, 4바이트 write로 처리합니다. 기존 guest writable 검사,
+`WriteGuestUInt32`, provenance를 재사용하며 EFLAGS를 바꾸지 않습니다. 합성 정상/범위
+거부 probe와 전체 core probe 27/27이 통과했습니다. 실제 실행은 다음 write를 기록한 뒤
+이전 `0x010F927C` SIGSEGV를 넘어 진행했습니다.
+
+```text
+[repiu-guest-write-trace] event=hle execution=0x010F927C destination=0x011A6698 size=4 bytes=D0CC5801 eax=0x0158CCD0
+```
+
+**새 frontier:** 여러 후속 allocator 및 AOT 반환이 성공한 뒤
+`0x010F1D71 RET -> 0x0103B1DB` 해석에서 동적 CFG가 `0x010F44E6`의 완전한
+HLE/selector-guard coverage를 갖지 못해 거절됐습니다. resolver의 첫 명령 동일성
+검사도 이 target을 승인하지 않아 기존 fail-closed INT3에서 멈춥니다. target 첫 명령과
+coverage 거절 지점의 관계는 다음 작업에서 분석해야 합니다. 게임은 아직 정상 실행되지
+않습니다.
+
+| 질문 | 상태 |
+|---|---|
+| `A3 disp32` destination/value | **확인됨**: `0x011A6698` / `0x0158CCD0` |
+| EFLAGS 및 EIP 계약 | **검증됨**: flags 보존, `+5` |
+| arena 밖 write | **거부됨** |
+| core probe | **통과**: 27/27 |
+| 새 frontier | **미해결**: `0x0103B1DB`, coverage reject `0x010F44E6` |
+
+## 3.92 (English) Task 655 — restore `A3 moffs32` stores in legacy fallback
+
+**Confirmed:** `A3 98 66 1A 01` at `0x010F927C` is the five-byte
+`MOV [0x011A6698],EAX` in the 32-bit guest. After Task 654, executing these
+original bytes in long mode interpreted an eight-byte moffs address and raised
+SIGSEGV. This is the same general address-width difference classified and
+re-encoded for the AOT cache by Tasks 550 and 565.
+
+**Implemented and verified:** shared `HandleTracedMemoryStoreInstruction` now
+handles unprefixed `A3` as a 32-bit destination, guest-EAX source, and four-byte
+write. It reuses the existing guest-writable check, `WriteGuestUInt32`, and
+provenance path without changing EFLAGS. Synthetic success/range-refusal cases
+and all 27 core probes passed. The real run recorded the write above and
+continued beyond the former `0x010F927C` SIGSEGV.
+
+**New frontier:** after many subsequent allocator and AOT returns succeeded,
+resolution of `0x010F1D71 RET -> 0x0103B1DB` was rejected because the dynamic
+CFG lacks complete HLE/selector-guard coverage at `0x010F44E6`. The resolver's
+first-instruction identity check also refused this target, so execution stopped
+at the existing fail-closed INT3. The relation between the target's first
+instruction and that coverage rejection remains for the next task. The game
+still does not run normally.
+
+| Question | Status |
+|---|---|
+| `A3 disp32` destination/value | **Confirmed**: `0x011A6698` / `0x0158CCD0` |
+| EFLAGS and EIP contract | **Verified**: flags preserved, `+5` |
+| Out-of-arena write | **Refused** |
+| Core probe | **Passed**: 27/27 |
+| New frontier | **Unresolved**: `0x0103B1DB`, coverage reject `0x010F44E6` |
+
+---

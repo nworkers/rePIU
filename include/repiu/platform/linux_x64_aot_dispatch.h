@@ -17,11 +17,12 @@
 namespace repiu::platform
 {
 
-// What a resolver answers with: the host address to continue at, or zero.
+// What a resolver answers with: the host address to continue at, a dedicated
+// legacy-resume bridge for a proven byte-identical guest instruction, or zero.
 //
-// Zero is not an error channel, it is the fail-closed answer -- the thunk traps
-// on it, which is Task 553's rule that anything long mode cannot complete
-// reaches a boundary rather than guessing.
+// Zero is not an error channel, it is the fail-closed answer -- the return
+// thunk traps on it when neither cache execution nor the guarded bridge can
+// preserve the instruction's semantics.
 using LinuxX64DispatchResolver = std::uintptr_t (*)(
     void* context, LinuxX64AotDispatchFrame* frame);
 
@@ -52,6 +53,10 @@ void ClearLinuxX64Dispatch();
 // distance from the code cache to this function is not something the placement
 // policy guarantees.
 [[nodiscard]] std::uintptr_t LinuxX64ReturnThunkAddress();
+
+// Continuation used only when the resolver has selected a proven byte-identical
+// guest instruction as a legacy single-step bridge.
+[[nodiscard]] std::uintptr_t LinuxX64LegacyResumeThunkAddress();
 
 }  // namespace repiu::platform
 

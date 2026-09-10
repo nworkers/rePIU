@@ -1,6 +1,8 @@
 #include "general_stack_probe.h"
 
+#include "execution_internal.h"
 #include "instruction_emulation.h"
+#include "repiu/platform/linux_x64_aot_dispatch.h"
 #include "repiu/platform/virtual_memory.h"
 
 #include <cstdint>
@@ -90,7 +92,7 @@ bool RunGeneralStackProbe()
         cpu.Eip == kRequestedBase + kCodeOffset;
 
     const std::uint8_t sequence[] = {
-        0x53U, 0x06U, 0x0FU, 0xA0U, 0x90U};
+        0x53U, 0x06U, 0x0FU, 0xA0U, 0x83U, 0xECU, 0x04U, 0x90U};
     std::memcpy(bytes + kCodeOffset, sequence, sizeof(sequence));
     context.enable_segment_load_hle = true;
     context.guest_es = 0x0024U;
@@ -104,12 +106,13 @@ bool RunGeneralStackProbe()
     std::uint32_t sequence_values[3]{};
     std::memcpy(sequence_values, bytes + kStackOffset - 12U,
                 sizeof(sequence_values));
-    const bool mixed_sequence = sequence_count == 3U &&
-        cpu.Eip == kRequestedBase + kCodeOffset + 4U &&
-        cpu.Esp == kRequestedBase + kStackOffset - 12U &&
+    const bool mixed_sequence = sequence_count == 4U &&
+        cpu.Eip == kRequestedBase + kCodeOffset + 7U &&
+        cpu.Esp == kRequestedBase + kStackOffset - 16U &&
         sequence_values[0] == 0x00000034U &&
         sequence_values[1] == 0x00000024U &&
-        sequence_values[2] == 0x11223344U;
+        sequence_values[2] == 0x11223344U &&
+        (cpu.EFlags & 0x00000001U) == 0U;
 
     const std::uint8_t bounded_sequence[] = {0x53U, 0x53U, 0x53U};
     std::memcpy(bytes + kCodeOffset, bounded_sequence,
@@ -123,10 +126,144 @@ bool RunGeneralStackProbe()
         cpu.Eip == kRequestedBase + kCodeOffset + 2U &&
         cpu.Esp == kRequestedBase + kStackOffset - 8U;
 
+    bool legacy_direct_call = true;
+    bool legacy_direct_call_range_rejected = true;
+    bool legacy_resume_policy = true;
+    bool legacy_resume_thunk = true;
+    bool legacy_moffs_store = true;
+    bool legacy_moffs_store_range_rejected = true;
+#if defined(_M_X64) || defined(__x86_64__)
+    constexpr std::uint32_t kCallTargetOffset = 0x180U;
+    constexpr std::uint32_t kCallSize = 5U;
+    bytes[kCodeOffset] = 0xE8U;
+    const std::int32_t call_displacement =
+        static_cast<std::int32_t>(kCallTargetOffset -
+                                  (kCodeOffset + kCallSize));
+    std::memcpy(bytes + kCodeOffset + 1U, &call_displacement,
+                sizeof(call_displacement));
+    context.aot_legacy_fallback = true;
+    context.aot_call_depth = 0U;
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    const bool call_dispatched =
+        repiu::engine::DispatchGuestHleInstruction(&cpu, &context);
+    std::uint32_t call_return = 0U;
+    std::memcpy(&call_return, bytes + kStackOffset - 4U,
+                sizeof(call_return));
+    legacy_direct_call = call_dispatched &&
+        cpu.Eip == kRequestedBase + kCallTargetOffset &&
+        cpu.Esp == kRequestedBase + kStackOffset - 4U &&
+        call_return == kRequestedBase + kCodeOffset + kCallSize &&
+        context.aot_call_depth == 1U &&
+        context.aot_call_frames[0].source ==
+            kRequestedBase + kCodeOffset &&
+        context.aot_call_frames[0].target ==
+            kRequestedBase + kCallTargetOffset &&
+        context.aot_call_frames[0].fallthrough == call_return;
+
+    const std::int32_t outside_displacement =
+        static_cast<std::int32_t>(kArenaSize + 0x100U -
+                                  (kCodeOffset + kCallSize));
+    std::memcpy(bytes + kCodeOffset + 1U, &outside_displacement,
+                sizeof(outside_displacement));
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    legacy_direct_call_range_rejected =
+        !repiu::engine::DispatchGuestHleInstruction(&cpu, &context) &&
+        cpu.Eip == kRequestedBase + kCodeOffset &&
+        cpu.Esp == kRequestedBase + kStackOffset;
+
+    const std::uint8_t identical_instruction[] = {0x89U, 0xC2U};
+    std::memcpy(bytes + kCodeOffset, identical_instruction,
+                sizeof(identical_instruction));
+    const bool identical_allowed =
+        repiu::engine::CanResumeLinuxX64LegacyTarget(
+            &context, kRequestedBase + kCodeOffset);
+    bytes[kCodeOffset] = 0x53U;
+    const bool stack_refused =
+        !repiu::engine::CanResumeLinuxX64LegacyTarget(
+            &context, kRequestedBase + kCodeOffset);
+    legacy_resume_policy = identical_allowed && stack_refused;
+#if defined(__x86_64__) && !defined(_WIN32)
+    legacy_resume_thunk =
+        repiu::platform::LinuxX64LegacyResumeThunkAddress() != 0U;
+#endif
+
+    constexpr std::uint32_t kMoffsDestinationOffset = 0x500U;
+    const std::uint8_t moffs_store[] = {
+        0xA3U,
+        static_cast<std::uint8_t>(
+            (kRequestedBase + kMoffsDestinationOffset) & 0xFFU),
+        static_cast<std::uint8_t>(
+            ((kRequestedBase + kMoffsDestinationOffset) >> 8U) & 0xFFU),
+        static_cast<std::uint8_t>(
+            ((kRequestedBase + kMoffsDestinationOffset) >> 16U) & 0xFFU),
+        static_cast<std::uint8_t>(
+            ((kRequestedBase + kMoffsDestinationOffset) >> 24U) & 0xFFU)};
+    std::memcpy(bytes + kCodeOffset, moffs_store, sizeof(moffs_store));
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Eax = 0xA1B2C3D4U;
+    cpu.EFlags = 0x000008D5U;
+    const bool moffs_dispatched =
+        repiu::engine::HandleTracedMemoryStoreInstruction(&cpu, &context);
+    std::uint32_t moffs_value = 0U;
+    std::memcpy(&moffs_value, bytes + kMoffsDestinationOffset,
+                sizeof(moffs_value));
+    legacy_moffs_store = moffs_dispatched &&
+        moffs_value == 0xA1B2C3D4U &&
+        cpu.Eip == kRequestedBase + kCodeOffset + sizeof(moffs_store) &&
+        cpu.EFlags == 0x000008D5U;
+
+    const std::uint32_t outside_destination =
+        static_cast<std::uint32_t>(kRequestedBase + kArenaSize + 0x100U);
+    std::memcpy(bytes + kCodeOffset + 1U, &outside_destination,
+                sizeof(outside_destination));
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.EFlags = 0x000008D5U;
+    legacy_moffs_store_range_rejected =
+        !repiu::engine::HandleTracedMemoryStoreInstruction(&cpu, &context) &&
+        cpu.Eip == kRequestedBase + kCodeOffset &&
+        cpu.EFlags == 0x000008D5U;
+#endif
+
+    const std::uint8_t boundary_epilogue[] = {
+        0x0FU, 0xA9U,  // pop gs
+        0x0FU, 0xA1U,  // pop fs
+        0x07U,         // pop es
+        0x5FU,         // pop edi
+        0x5EU,         // pop esi
+        0x5AU,         // pop edx
+        0x59U,         // pop ecx
+        0x5BU,         // pop ebx
+        0xC3U};        // ret
+    std::memcpy(bytes + kCodeOffset, boundary_epilogue,
+                sizeof(boundary_epilogue));
+    const std::uint32_t boundary_values[] = {
+        0U, 0U, 0U, 0x11111111U, 0x22222222U, 0x33333333U,
+        0x44444444U, 0x55555555U};
+    std::memcpy(bytes + kStackOffset, boundary_values,
+                sizeof(boundary_values));
+    context.aot_reentry_pending = false;
+    context.aot_legacy_fallback = false;
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    const bool boundary_dispatched =
+        repiu::engine::DispatchGuestHleInstruction(&cpu, &context);
+    const bool boundary_epilogue_drained = boundary_dispatched &&
+        cpu.Eip == kRequestedBase + kCodeOffset + 10U &&
+        cpu.Esp == kRequestedBase + kStackOffset + 32U &&
+        cpu.Edi == boundary_values[3] && cpu.Esi == boundary_values[4] &&
+        cpu.Edx == boundary_values[5] && cpu.Ecx == boundary_values[6] &&
+        cpu.Ebx == boundary_values[7];
+
     const bool released =
         repiu::platform::ReleaseMemory(reservation.base, kArenaSize);
     const bool all = ordinary_push && ordinary_pop && push_esp_order &&
-        pop_esp_order && rejected && mixed_sequence && bounded && released;
+        pop_esp_order && rejected && mixed_sequence && bounded &&
+        legacy_direct_call && legacy_direct_call_range_rejected &&
+        legacy_resume_policy && legacy_resume_thunk &&
+        legacy_moffs_store && legacy_moffs_store_range_rejected &&
+        boundary_epilogue_drained && released;
     std::cout << "general_stack_push=" << (ordinary_push ? "true" : "false")
               << ",pop=" << (ordinary_pop ? "true" : "false")
               << ",push_esp=" << (push_esp_order ? "true" : "false")
@@ -134,6 +271,20 @@ bool RunGeneralStackProbe()
               << ",range_rejected=" << (rejected ? "true" : "false")
               << ",mixed_sequence=" << (mixed_sequence ? "true" : "false")
               << ",bounded=" << (bounded ? "true" : "false")
+              << ",legacy_direct_call="
+              << (legacy_direct_call ? "true" : "false")
+              << ",legacy_direct_call_range_rejected="
+              << (legacy_direct_call_range_rejected ? "true" : "false")
+              << ",legacy_resume_policy="
+              << (legacy_resume_policy ? "true" : "false")
+              << ",legacy_resume_thunk="
+              << (legacy_resume_thunk ? "true" : "false")
+              << ",legacy_moffs_store="
+              << (legacy_moffs_store ? "true" : "false")
+              << ",legacy_moffs_store_range_rejected="
+              << (legacy_moffs_store_range_rejected ? "true" : "false")
+              << ",boundary_epilogue="
+              << (boundary_epilogue_drained ? "true" : "false")
               << "\n";
     return all;
 }
