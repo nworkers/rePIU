@@ -13289,3 +13289,154 @@ still does not run normally.
 | New frontier | **Unresolved**: `0x0103B1DB`, coverage reject `0x010F44E6` |
 
 ---
+
+## 3.93 Task 656 — Linux x64 segment coverage image slot trace
+
+**확인됨:** Task 655의 새 frontier를 같은 조건으로 재현하면서 dynamic AOT plan record와
+실제 emitted image slot을 함께 출력하도록 진단 trace를 추가했습니다. `0x0103B1DB`의
+첫 명령 `8B 46 04`는 계속 `kCopy`로 기록되며, coverage reject 지점
+`0x010F44E6`는 `66 36 89 07` (`MOV SS:[EDI],AX`)인
+`kSegmentOverrideMem`입니다.
+
+실제 생성된 slot은 존재하며 long-mode emission도 활성화되어 있습니다.
+
+```text
+[repiu-aot-dynamic] stage=image-entry guest=0x010F44E6 cache=0x00002102 guest_length=4 emitted_length=57 long_mode=1 bytes=9C415E458D7FFC4589376766813C25000000000000740B458B37458D7F0441569DCC458B37458D7F0441569D6667898700000000E900000000
+[repiu-aot-dynamic] stage=image-segment-site guest=0x010F44E6 segment=2 slot=0x00002102 guard_address=0x00002111 guard_selector=0x00002115 displacement=0x00002132 dispatch=0x00000000 original_displacement=0 prologue_size=5 prologue=9C415E458D
+[repiu-aot-coverage-failure] guest=0x010F44E6 kind=9 length=4 bytes=66 36 89 07 00 00
+```
+
+따라서 현재 중단은 “segment slot이 생성되지 않음”이 아니라, slot과 site metadata가
+생성된 뒤 coverage validator가 완전한 HLE/selector-guard coverage로 인정하지 않는
+경계입니다. 이번 작업에서는 validator나 segment semantics를 변경하지 않고 실제
+emission layout을 관찰 가능하게만 했습니다. 다음 작업에서는 위의 실제 slot layout과
+validator의 기대 layout을 대조하여 validation 판단을 수정할지, `SS` memory store의
+guest 의미를 별도 HLE 경계로 유지할지 결정해야 합니다. 게임은 아직 정상 실행되지
+않습니다.
+
+| 질문 | 상태 |
+|---|---|
+| `0x0103B1DB` 첫 명령 | **확인됨**: `8B 46 04`, `kCopy` |
+| `0x010F44E6` plan record | **확인됨**: `66 36 89 07`, `kSegmentOverrideMem` |
+| emitted segment slot | **확인됨**: cache `0x2102`, 길이 `57`, long mode |
+| segment site metadata | **확인됨**: SS(`segment=2`), guard/selector/displacement offset 출력 |
+| coverage validation | **미해결**: slot 생성 후에도 `0x010F44E6`에서 거절 |
+| core probe | **통과**: 27/27 |
+
+## 3.93 (English) Task 656 — Linux x64 segment coverage image slot trace
+
+**Confirmed:** the new Task 655 frontier was reproduced with an opt-in diagnostic
+trace that prints the dynamic AOT plan record and its emitted image slot together.
+The first instruction at `0x0103B1DB`, `8B 46 04`, remains a `kCopy` record. The
+coverage boundary at `0x010F44E6` is `66 36 89 07` (`MOV SS:[EDI],AX`), classified
+as `kSegmentOverrideMem`.
+
+The emitted slot exists and long-mode emission is enabled:
+
+```text
+[repiu-aot-dynamic] stage=image-entry guest=0x010F44E6 cache=0x00002102 guest_length=4 emitted_length=57 long_mode=1 bytes=9C415E458D7FFC4589376766813C25000000000000740B458B37458D7F0441569DCC458B37458D7F0441569D6667898700000000E900000000
+[repiu-aot-dynamic] stage=image-segment-site guest=0x010F44E6 segment=2 slot=0x00002102 guard_address=0x00002111 guard_selector=0x00002115 displacement=0x00002132 dispatch=0x00000000 original_displacement=0 prologue_size=5 prologue=9C415E458D
+[repiu-aot-coverage-failure] guest=0x010F44E6 kind=9 length=4 bytes=66 36 89 07 00 00
+```
+
+The current stop is therefore not “no segment slot was emitted.” It is a boundary
+where the coverage validator still refuses complete HLE/selector-guard coverage after
+the slot and site metadata have been created. This task only made the actual emission
+layout observable; it did not change the validator or segment semantics. The next task
+must compare the emitted layout with the validator's expected layout and decide whether
+to change validation or keep the `SS` memory store at a separate guest-semantic HLE
+boundary. The game does not run normally yet.
+
+| Question | Status |
+|---|---|
+| First instruction at `0x0103B1DB` | **Confirmed**: `8B 46 04`, `kCopy` |
+| `0x010F44E6` plan record | **Confirmed**: `66 36 89 07`, `kSegmentOverrideMem` |
+| Emitted segment slot | **Confirmed**: cache `0x2102`, length `57`, long mode |
+| Segment site metadata | **Confirmed**: SS (`segment=2`), guard/selector/displacement offsets printed |
+| Coverage validation | **Unresolved**: still rejects `0x010F44E6` after slot creation |
+| Core probe | **Passed**: 27/27 |
+
+---
+
+## 3.94 Task 657 — Linux x64 segment coverage predicate parity
+
+**확인됨:** Task 656의 실제 slot layout과 `ValidateAotCodeCacheHleCoverage`의
+기대 layout을 대조한 결과, validator에 두 가지 불일치가 있었습니다. validator는
+`mod=00`인 모든 명령을 absolute disp32로 보았지만 emitter는 `mod=00 && rm=5`만
+absolute로 취급합니다. 또한 `disp.size=0`인 `66 36 89 07` 형식에서 validator는
+Zydis의 무의미한 displacement offset 뒤에서 suffix를 시작했지만, emitter는 ModRM
+바이트 다음에서 시작합니다.
+
+두 조건을 emitter와 일치시키고, `66 36 89 07` EDI-base regression probe를
+추가했습니다. probe는 실제 emitted access `66 67 89 87 disp32`, segment site,
+address map을 확인하고, access ModRM을 훼손한 복사본이 coverage validator에서
+거절되는지도 확인합니다.
+
+```text
+long_mode_segment_override_base_coverage=true,built=true,site=true,map=true,layout=true,coverage=true,corruption_rejected=true
+long_mode_segment_guard_coverage=true,built=true,site=true,map=true,layout=true,coverage=true,corruption_rejected=true
+long_mode_emission_all=true
+core_probe_total=27
+core_probe_failures=0
+core_probe_all=true
+```
+
+실제 `pumpit2a` bounded run에서도 `0x010F44E6` slot이 반복적으로 생성되었고
+더 이상 `repiu-aot-coverage-failure` 또는 `repiu-aot-translation-failure`가
+발생하지 않았습니다. 관찰된 대표 slot은 cache `0x0816`, emitted length `57`,
+SS(`segment=2`), guard `0x0825`, selector `0x0829`, displacement `0x0846`이며,
+fallthrough fixup도 resolved 상태였습니다. 실행은 coverage reject를 지나 hot loop에
+진입했으며, bounded test의 timeout으로 종료했습니다. 이는 새 crash가 아니라
+다음 semantic/progress frontier가 아직 특정되지 않았음을 뜻합니다. 게임은 아직
+정상 실행 상태가 아닙니다.
+
+| 질문 | 상태 |
+|---|---|
+| validator absolute predicate | **수정됨**: `mod=00 && rm=5` |
+| zero-displacement suffix offset | **수정됨**: `modrm.offset + 1` |
+| EDI-base segment coverage probe | **통과**: build/layout/coverage/corruption rejection |
+| core probe | **통과**: 27/27 |
+| `0x010F44E6` coverage frontier | **해소됨**: coverage/translation failure 미발생 |
+| 다음 실행 frontier | **미해결**: coverage 이후 hot loop의 의미론적 진행 지점 |
+
+## 3.94 (English) Task 657 — Linux x64 segment coverage predicate parity
+
+**Confirmed:** comparing the Task 656 emitted slot layout with
+`ValidateAotCodeCacheHleCoverage` found two validator mismatches. The validator treated
+every `mod=00` instruction as absolute disp32, while the emitter treats only
+`mod=00 && rm=5` as absolute. For the zero-displacement `66 36 89 07` form, the validator
+also started the suffix after Zydis's unused displacement offset, while the emitter
+starts it immediately after the ModRM byte.
+
+Both conditions now match the emitter, and an EDI-base `66 36 89 07` regression probe
+was added. The probe checks the emitted `66 67 89 87 disp32` access, segment site,
+address map, and rejection after corrupting the access ModRM in a copy.
+
+```text
+long_mode_segment_override_base_coverage=true,built=true,site=true,map=true,layout=true,coverage=true,corruption_rejected=true
+long_mode_segment_guard_coverage=true,built=true,site=true,map=true,layout=true,coverage=true,corruption_rejected=true
+long_mode_emission_all=true
+core_probe_total=27
+core_probe_failures=0
+core_probe_all=true
+```
+
+In a bounded real `pumpit2a` run, the `0x010F44E6` slot was emitted repeatedly and no
+`repiu-aot-coverage-failure` or `repiu-aot-translation-failure` occurred. The
+representative slot used cache `0x0816`, emitted length `57`, SS (`segment=2`), guard
+`0x0825`, selector `0x0829`, and displacement `0x0846`; its fallthrough fixup was
+resolved. Execution passed the coverage rejection and entered a hot loop before the
+test timeout ended the bounded run. This was controlled test termination, not a newly
+observed crash. The next semantic/progress frontier is not yet identified, and the game
+does not run normally yet.
+
+| Question | Status |
+|---|---|
+| Validator absolute predicate | **Fixed**: `mod=00 && rm=5` |
+| Zero-displacement suffix offset | **Fixed**: `modrm.offset + 1` |
+| EDI-base segment coverage probe | **Passed**: build/layout/coverage/corruption rejection |
+| Core probe | **Passed**: 27/27 |
+| `0x010F44E6` coverage frontier | **Cleared**: no coverage/translation failure |
+| Next execution frontier | **Unresolved**: semantic progress point in the post-coverage hot loop |
+
+---

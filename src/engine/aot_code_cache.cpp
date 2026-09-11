@@ -144,6 +144,82 @@ void TraceDynamicAotPlanEntry(const runtime::AotTranslationPlan& plan,
                  static_cast<unsigned>(guest_address));
 }
 
+void TraceDynamicAotImageEntry(const runtime::AotCodeCacheImage& image,
+                               const std::uint32_t guest_address)
+{
+    const auto map = std::find_if(
+        image.address_map.begin(), image.address_map.end(),
+        [guest_address](const runtime::AotAddressMapEntry& entry) {
+            return entry.guest_address == guest_address;
+        });
+    if (map == image.address_map.end() ||
+        map->cache_offset >= image.bytes.size())
+    {
+        std::fprintf(stderr,
+                     "[repiu-aot-dynamic] stage=image-entry "
+                     "guest=0x%08X match=none\n",
+                     static_cast<unsigned>(guest_address));
+        return;
+    }
+
+    const std::size_t available = image.bytes.size() - map->cache_offset;
+    const std::size_t byte_count = std::min<std::size_t>(
+        static_cast<std::size_t>(map->emitted_length), available);
+    std::fprintf(stderr,
+                 "[repiu-aot-dynamic] stage=image-entry "
+                 "guest=0x%08X cache=0x%08X guest_length=%u "
+                 "emitted_length=%u long_mode=%u bytes=",
+                 static_cast<unsigned>(guest_address), map->cache_offset,
+                 static_cast<unsigned>(map->guest_length),
+                 static_cast<unsigned>(map->emitted_length),
+                 image.long_mode_emission_enabled ? 1U : 0U);
+    const std::size_t trace_count = std::min<std::size_t>(byte_count, 96U);
+    for (std::size_t index = 0U; index < trace_count; ++index)
+    {
+        std::fprintf(stderr, "%02X", image.bytes[map->cache_offset + index]);
+    }
+    if (trace_count < byte_count)
+    {
+        std::fprintf(stderr, "...");
+    }
+    std::fprintf(stderr, "\n");
+
+    const auto site = std::find_if(
+        image.segment_override_sites.begin(),
+        image.segment_override_sites.end(),
+        [guest_address](const runtime::AotSegmentOverrideSite& candidate) {
+            return candidate.guest_source == guest_address;
+        });
+    if (site == image.segment_override_sites.end())
+    {
+        std::fprintf(stderr,
+                     "[repiu-aot-dynamic] stage=image-segment-site "
+                     "guest=0x%08X match=none\n",
+                     static_cast<unsigned>(guest_address));
+        return;
+    }
+    std::fprintf(stderr,
+                 "[repiu-aot-dynamic] stage=image-segment-site "
+                 "guest=0x%08X segment=%u slot=0x%08X "
+                 "guard_address=0x%08X guard_selector=0x%08X "
+                 "displacement=0x%08X dispatch=0x%08X "
+                 "original_displacement=%d prologue_size=%u prologue=",
+                 static_cast<unsigned>(guest_address),
+                 static_cast<unsigned>(site->segment_register),
+                 site->cache_offset, site->guard_address_offset,
+                 site->guard_selector_offset, site->displacement_offset,
+                 site->dispatch_cache_offset,
+                 static_cast<int>(site->original_displacement),
+                 static_cast<unsigned>(site->guard_prologue_size));
+    const std::size_t prologue_count = std::min<std::size_t>(
+        site->guard_prologue_size, sizeof(site->guard_prologue));
+    for (std::size_t index = 0U; index < prologue_count; ++index)
+    {
+        std::fprintf(stderr, "%02X", site->guard_prologue[index]);
+    }
+    std::fprintf(stderr, "\n");
+}
+
 void TraceDynamicAotFixups(const runtime::AotCodeCacheImage& image,
                            std::uint32_t guest_address)
 {
@@ -1209,6 +1285,7 @@ bool AppendDynamicAotTranslation(
         }
         if (contains_match)
         {
+            TraceDynamicAotImageEntry(image, contains_address);
             TraceDynamicAotFixups(image, contains_address);
         }
     }

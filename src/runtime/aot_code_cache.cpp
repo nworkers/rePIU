@@ -3437,7 +3437,8 @@ bool ValidateAotCodeCacheHleCoverage(
                 {
                     expected_access.push_back(instruction.bytes[index]);
                 }
-                const bool absolute_disp32 = decoded.raw.modrm.mod == 0U;
+                const bool absolute_disp32 = decoded.raw.modrm.mod == 0U &&
+                    decoded.raw.modrm.rm == 5U;
                 if (absolute_disp32)
                 {
                     expected_access.push_back(static_cast<std::uint8_t>(
@@ -3457,8 +3458,11 @@ bool ValidateAotCodeCacheHleCoverage(
                 expected_access.insert(expected_access.end(), 4U, 0U);
                 const std::size_t displacement_bytes =
                     decoded.raw.disp.size / 8U;
-                for (std::size_t index = decoded.raw.disp.offset +
-                                          displacement_bytes;
+                const std::size_t suffix_offset =
+                    decoded.raw.disp.size == 0U
+                        ? decoded.raw.modrm.offset + 1U
+                        : decoded.raw.disp.offset + displacement_bytes;
+                for (std::size_t index = suffix_offset;
                      index < instruction.bytes.size(); ++index)
                 {
                     expected_access.push_back(instruction.bytes[index]);

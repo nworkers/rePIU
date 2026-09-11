@@ -3684,6 +3684,62 @@ cleanly at the HLE boundary.
 
 ---
 
+## Linux x64 dynamic AOT emitted-slot trace / Linux x64 dynamic AOT emitted-slot trace
+
+Linux x64 dynamic AOT translation에는 거절된 `contains` 주소를 진단하기 위한 선택형
+image trace가 있습니다. `REPIU_AOT_FALLBACK_TRACE`와 일치하는
+`REPIU_AOT_DYNAMIC_CONTAINS`를 함께 설정하면 `src/engine/aot_code_cache.cpp`가 해당
+address-map entry, bounded emitted bytes, 그리고 존재할 경우 대응하는
+`AotSegmentOverrideSite` offset을 출력합니다. 이 trace는 coverage validator가 검사한
+실제 cache slot과 guard layout을 식별하지만 emission, validation, guest semantics,
+fallback 선택, 기본 quiet path는 변경하지 않습니다.
+
+이 진단은 image 생성 후 dynamic append 지점에 연결되어 한 번의 실행에서 plan record와
+emitted representation을 비교할 수 있게 합니다. 원본 guest code를 실행의 기준으로
+유지하면서 다음 호환성 결정을 위해 필요한 HLE 경계 상태만 노출합니다.
+
+Linux x64 dynamic AOT translation has an opt-in image trace for diagnosing a rejected
+`contains` address. When both `REPIU_AOT_FALLBACK_TRACE` and a matching
+`REPIU_AOT_DYNAMIC_CONTAINS` are set, `src/engine/aot_code_cache.cpp` prints the matching
+address-map entry, a bounded copy of its emitted bytes, and the corresponding
+`AotSegmentOverrideSite` offsets when one exists. The trace identifies the actual cache slot
+and guard layout that coverage validation examined; it does not alter emission, validation,
+guest semantics, fallback selection, or the default quiet path.
+
+The diagnostic is intentionally attached to dynamic append after image construction, so a
+plan record and its emitted representation can be compared in one run. This keeps the
+original guest code as the execution source while exposing only HLE boundary state needed
+for the next compatibility decision.
+
+---
+
+## Linux x64 segment coverage predicate parity / Linux x64 segment coverage predicate parity
+
+Linux x64 segment-override coverage validation은 해당 slot을 생성하는 emitter와
+동일한 주소 형식 및 suffix layout 규칙을 사용해야 합니다. `mod=00 && rm=5`만
+absolute disp32 형식이며, `rm=7`인 `EDI` base 형식은 base register를 보존한
+disp32 형식입니다. 원본 displacement가 없는 형식의 suffix 시작점은
+`ModRM + 1`이고, displacement가 있는 형식은 displacement 끝입니다.
+
+이 predicate parity는 `ValidateAotCodeCacheHleCoverage`가 실제 emitted access
+bytes를 잘못된 absolute/SIB 형식으로 해석하거나 suffix를 중복 복사하는 것을
+막습니다. 변경은 validator와 regression probe에 한정되며, 원본 guest 명령,
+segment selector guard, memory semantics, 기본 i386 emission은 유지됩니다.
+
+On Linux x64, segment-override coverage validation must use the same address-form and
+suffix-layout rules as the emitter that creates the slot. Only `mod=00 && rm=5` is the
+absolute disp32 form; `rm=7` preserves `EDI` as the base register in the widened disp32
+form. When the original form has no displacement, the suffix begins at `ModRM + 1`; when
+it has a displacement, the suffix begins after that displacement.
+
+This predicate parity prevents `ValidateAotCodeCacheHleCoverage` from interpreting the
+actual emitted access bytes as the wrong absolute/SIB form or from copying a suffix twice.
+The change is limited to the validator and its regression probe; the original guest
+instruction, segment selector guard, memory semantics, and default i386 emission remain
+unchanged.
+
+---
+
 ## Legacy fallback direct CALL HLE / Legacy fallback direct CALL HLE
 
 Linux x64에서 AOT coverage가 거절된 original span은 Trap Flag 아래 실행됩니다. 이때
@@ -3761,5 +3817,57 @@ address, so its original bytes cannot execute directly. Shared memory-store HLE
 decodes this form explicitly, writes to the 32-bit address through the existing
 guest-writable check and `WriteGuestUInt32`, and advances EIP by five. MOV flags
 are preserved, and an out-of-arena destination remains refused.
+
+---
+
+## 간접 CALL fallback stack 의미 / Indirect CALL fallback stack semantics
+
+간접 CALL/JMP의 cache miss는 대상 해석 성공 여부와 무관하게 원본 x86 stack 의미를
+보존합니다. 공용 `HandleAotIndirectTransfer`는 CALL 대상의 cache 해석 전에 guest 반환
+주소 write, ESP 감소, call-frame 기록을 완료합니다. 따라서 해석 실패 후 legacy guest
+code로 넘어가도 피호출 함수는 정상적인 반환 slot 위에서 실행됩니다.
+
+선택형 host-dispatch miss tail도 같은 계약을 유지합니다. thunk가 source metadata를
+제거한 뒤 CALL fallback은 miss-address slot 하나만 제거하는 `LEA ESP,[ESP+4]`를 사용해
+이미 push된 반환 주소를 남기고, JMP fallback은 기존 `LEA ESP,[ESP+8]`로 두 metadata
+slot을 모두 제거합니다. 이 정책은 원본 guest code를 수정하지 않으며 DBT/HLE 경계에서
+CALL/JMP의 stack 효과만 재현합니다.
+
+An indirect CALL/JMP cache miss preserves the original x86 stack semantics regardless of
+target-resolution success. The shared `HandleAotIndirectTransfer` commits a CALL's guest
+return-address write, ESP decrement, and call-frame record before resolving the target into
+the cache. A failed resolution can therefore enter legacy guest code with a valid return
+slot.
+
+The optional host-dispatch miss tail follows the same contract. After its thunk removes
+source metadata, CALL fallback removes only the miss-address slot with
+`LEA ESP,[ESP+4]`, preserving the already-pushed return address. JMP fallback retains
+`LEA ESP,[ESP+8]` and removes both metadata slots. This policy changes no original guest
+code; it reproduces only CALL/JMP stack effects at the DBT/HLE boundary.
+
+---
+
+## Legacy stack run 할당 및 epilogue drain / Legacy stack run allocation and epilogue drain
+
+x64 legacy stack-run helper는 일반/segment PUSH·POP에 이어지는 직접형 `SUB ESP, imm8` 및
+`SUB ESP, imm32` 연산을 guest ESP에 직접 적용하고 산술 flag(CF/PF/AF/ZF/SF/OF)를
+`SetCompareFlags`로 갱신합니다. 이를 통해 legacy fallback prologue의 지역 변수 공간 할당이
+host RSP 대신 guest ESP에서 이루어지도록 보장하여, 후속 epilogue 복원 시 저장 슬롯 레이아웃이
+어긋나지 않도록 유지합니다.
+
+또한 segment HLE 처리 후 이어지는 stack 명령 drain을 AOT 상태 flag에 종속되지 않고
+연속 처리하도록 허용하며, opcode `0F` directed dispatch에 POP FS/GS를 포함하여 prologue뿐
+아니라 epilogue의 segment 및 general POP run도 단일 경계에서 완결되도록 지원합니다.
+
+The x64 legacy stack-run helper applies direct `SUB ESP, imm8` and `SUB ESP, imm32`
+operations that follow general or segment PUSH/POP instructions directly to the guest ESP,
+updating arithmetic flags (CF/PF/AF/ZF/SF/OF) via `SetCompareFlags`. This ensures that local
+stack space allocations in legacy fallback prologues adjust guest ESP rather than host RSP,
+preventing slot misalignment during subsequent epilogue restoration.
+
+Furthermore, following segment HLE operations, subsequent stack instructions are drained
+in a bounded sequence without dependency on AOT state flags, and opcode `0F` directed
+dispatch includes POP FS/GS so that both prologue sequences and epilogue POP runs complete
+cleanly at the HLE boundary.
 
 ---

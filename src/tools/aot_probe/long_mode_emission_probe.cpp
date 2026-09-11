@@ -397,6 +397,104 @@ bool ProbeSegmentReadGpr16Classification()
     return ok;
 }
 
+// Task 657. The validator must use the same absolute-form predicate as the
+// emitter: mod=00, rm=5 is absolute, while rm=7 preserves EDI as the base.
+bool ProbeLongModeSegmentOverrideCoverage()
+{
+    constexpr std::uint32_t kSegmentBase = 0x00127000U;
+    AotInstructionRecord segment_record;
+    segment_record.guest_address = kSegmentBase;
+    segment_record.kind = AotInstructionKind::kSegmentOverrideMem;
+    segment_record.length = 4U;
+    segment_record.segment_override_register = 2U;
+    segment_record.fallthrough_target = kSegmentBase + 4U;
+    segment_record.bytes = {0x66U, 0x36U, 0x89U, 0x07U};
+
+    AotInstructionRecord return_record;
+    return_record.guest_address = kSegmentBase + 4U;
+    return_record.kind = AotInstructionKind::kReturn;
+    return_record.length = 1U;
+    return_record.bytes = {0xC3U};
+
+    AotBasicBlock block;
+    block.guest_address = kSegmentBase;
+    block.instructions.push_back(segment_record);
+    block.instructions.push_back(return_record);
+
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = kSegmentBase;
+    plan.hle_boundary_count = 1U;
+    plan.return_count = 1U;
+    plan.instruction_count = 2U;
+    plan.source_code_bytes = 5U;
+    plan.blocks.push_back(std::move(block));
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    const bool built = BuildAotCodeCacheImage(plan, options, &image) &&
+        image.valid;
+
+    const runtime::AotSegmentOverrideSite* site = nullptr;
+    if (built && image.segment_override_sites.size() == 1U)
+    {
+        site = &image.segment_override_sites[0];
+    }
+    const runtime::AotAddressMapEntry* map = nullptr;
+    if (built)
+    {
+        for (const runtime::AotAddressMapEntry& candidate :
+             image.address_map)
+        {
+            if (candidate.guest_address == segment_record.guest_address)
+            {
+                map = &candidate;
+                break;
+            }
+        }
+    }
+
+    bool access_layout = false;
+    bool coverage = false;
+    bool corruption_rejected = false;
+    if (site != nullptr && map != nullptr &&
+        site->displacement_offset >= site->cache_offset + 4U &&
+        site->displacement_offset + 4U <= image.bytes.size())
+    {
+        const std::uint32_t access_offset = site->displacement_offset - 4U;
+        access_layout = map->cache_offset == site->cache_offset &&
+            image.bytes[access_offset] == 0x66U &&
+            image.bytes[access_offset + 1U] == 0x67U &&
+            image.bytes[access_offset + 2U] == 0x89U &&
+            image.bytes[access_offset + 3U] == 0x87U;
+        coverage = runtime::ValidateAotCodeCacheHleCoverage(plan, image);
+        if (coverage)
+        {
+            AotCodeCacheImage broken = image;
+            broken.bytes[access_offset + 3U] = 0x86U;
+            std::uint32_t failure_guest = 0U;
+            corruption_rejected =
+                !runtime::ValidateAotCodeCacheHleCoverage(
+                    plan, broken, &failure_guest) &&
+                failure_guest == segment_record.guest_address;
+        }
+    }
+
+    const bool ok = built && site != nullptr && map != nullptr &&
+        access_layout && coverage && corruption_rejected;
+    std::cout << "long_mode_segment_override_base_coverage="
+              << (ok ? "true" : "false")
+              << ",built=" << (built ? "true" : "false")
+              << ",site=" << (site != nullptr ? "true" : "false")
+              << ",map=" << (map != nullptr ? "true" : "false")
+              << ",layout=" << (access_layout ? "true" : "false")
+              << ",coverage=" << (coverage ? "true" : "false")
+              << ",corruption_rejected="
+              << (corruption_rejected ? "true" : "false") << "\n";
+    return ok;
+}
+
 // Task 592. The pop guard has a dedicated long-mode ABI: it saves guest flags,
 // compares the saved guest-stack selector, and restores flags on both exits.
 // It must validate as a slot rather than being mistaken for the i386 layout or
@@ -788,6 +886,8 @@ bool RunLongModeEmissionProbe()
     const bool outcomes_ok = ProbeLongModeOutcomes();
     const bool refused_ok = ProbeAllRefusedStillBuilds();
     const bool segment_read_gpr16_ok = ProbeSegmentReadGpr16Classification();
+    const bool segment_override_coverage_ok =
+        ProbeLongModeSegmentOverrideCoverage();
     const bool segment_guard_coverage_ok = ProbeLongModeSegmentGuardCoverage();
     const bool conditional_fallthrough_ok =
         ProbeConditionalBranchFallthrough();
@@ -798,6 +898,7 @@ bool RunLongModeEmissionProbe()
 
     const bool all = default_ok && outcomes_ok && refused_ok &&
         segment_read_gpr16_ok &&
+        segment_override_coverage_ok &&
         segment_guard_coverage_ok &&
         conditional_fallthrough_ok &&
         unresolved_fallthrough_ok &&
