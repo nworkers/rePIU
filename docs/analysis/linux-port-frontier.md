@@ -1313,6 +1313,924 @@ cause of the shared `pit_timer` hang.
 
 ---
 
+## 3.99 Tasks 669–677 — Linux x64 공통 명령 호환성과 재진입 경계
+
+### 한국어
+
+이번 연속 작업은 특정 EIP를 예외 처리하는 대신, 원본 32-bit 명령을 x64에서
+그대로 실행할 수 있는지 공통 판정하고, 불가능한 경우 의미가 보존되는 lowering,
+HLE, 또는 기존 transfer handler로 보내는 경계를 정리했다.
+
+확인된 내용은 다음과 같다.
+
+- stack-effect census는 51,866개 명령을 검사했고, emitted copy 중 host `RSP`를
+  guest stack처럼 사용하는 일반 `CALL`/`RET`/`MOV ESP` 경로를 찾지 못했다.
+  `PUSHFD`/`POPFD` 변환에서 사용하는 host stack은 balanced temporary이며,
+  guest ESP는 `R15D`로 유지된다.
+- 초기 low native `RSP`의 원인은 원본 `ADD ESP,4` 경계에서 x64 legacy-byte
+  재진입을 허용한 것이었다. non-identical x64 continuation은 이제 fail-closed하고,
+  planner HLE는 guest 주소에서 공통 dispatcher로 직접 처리한다.
+- `FF /2`, `FF /4`, `RET` 등 transfer-shaped boundary는 원본 bytes를
+  single-step하지 않고 기존 indirect/conditional/return resolver로 보낸다.
+- `66 8C /r` memory store는 selector table과 segment descriptor를 이용해
+  linear destination을 계산한다. `MOV AX,CS`의 CS source는 host CS가 아니라
+  현재 guest EIP를 포함하는 guest code selector로 reverse-resolve하며, 조회 실패
+  시 HLE도 거부한다.
+- `MOV AH/CH/DH/BH,[ESP+disp]`는 `R15D` 기반 임시 변환으로 처리하고,
+  high-byte read/write 형태는 일반 lowering 대상에서 계속 거부한다.
+
+```mermaid
+flowchart LR
+    A[Original 32-bit instruction] --> B{Long-mode meaning identical?}
+    B -->|Yes| C[Copy or ordinary lowering]
+    B -->|No, data/stack effect proven| D[Generic x64 lowering]
+    B -->|HLE family| E[Guest HLE dispatcher]
+    B -->|Transfer family| F[Existing transfer handler]
+    B -->|Unproven| G[Fail closed]
+    D --> H[Guest ESP remains in R15D]
+    E --> I[Resume active cache entry]
+    F --> I
+```
+
+15초 Linux x64 smoke에서는 이 경계들에서 SIGTRAP/SIGSEGV가 재발하지 않았다.
+  다만 heartbeat는 24에서 멈췄고 마지막 host EIP는 `0x20053955`였다. 실행 중
+  동적 cache를 읽어 보니 이 위치는 `0x200539EC`의 명시적인 `JMP`로 다시
+  `0x20053955`에 도달하는 guest loop를 포함한 정상 번역 블록이었다. 따라서
+  현재 결과는 충돌 제거와 초기 frontier 통과를 확인하지만, 게임의 정상적인
+  화면/입력 진행 또는 정상 종료까지 확인한 것은 아니다.
+
+| 항목 | 상태 |
+|---|---|
+| core probe | **확인됨**: 27/27 통과 |
+| x64 guest stack 보존 | **확인됨**: 공통 `R15D` lowering 및 fail-closed 경계 |
+| CS source segment store | **확인됨**: selector-table 기반 HLE 경로 |
+| 초기 low native RSP/SIGTRAP | **확인됨**: non-identical legacy reentry 차단 후 재발 없음 |
+| 동적 `0x20053955` loop | **확인됨**: 명시적인 guest back-edge, 원인은 미확정 |
+| 정상 게임 진행/종료 | **미확정** |
+
+### English
+
+This sequence of tasks does not add address-specific exceptions. It classifies
+whether the original 32-bit instruction can execute with the same meaning in
+long mode, then routes an unsafe instruction to a proven lowering, the shared
+guest HLE dispatcher, or an existing transfer handler.
+
+Confirmed findings:
+
+- The stack-effect census examined 51,866 instructions and found no ordinary
+  emitted `CALL`/`RET`/`MOV ESP` path that uses host `RSP` as the guest stack.
+  The host stack used temporarily by `PUSHFD`/`POPFD` lowering is balanced;
+  guest ESP remains in `R15D`.
+- The first low native `RSP` came from allowing legacy-byte reentry at the
+  original `ADD ESP,4` boundary. Non-identical x64 continuations now fail
+  closed, while planner HLE entries dispatch directly at the guest address.
+- `FF /2`, `FF /4`, and `RET` transfer-shaped boundaries use the existing
+  indirect/conditional/return resolvers instead of single-stepping original
+  bytes.
+- `66 8C /r` memory stores resolve a linear destination through the selector
+  table and segment descriptor. `MOV AX,CS` resolves logical CS from the guest
+  code selector containing the current guest EIP, never from host CS; lookup
+  failure refuses the HLE operation.
+- `MOV AH/CH/DH/BH,[ESP+disp]` uses a generic `R15D` temporary lowering, while
+  high-byte read/write forms remain refused.
+
+The 15-second Linux x64 smoke run did not reproduce SIGTRAP or SIGSEGV at these
+frontiers. Heartbeat nevertheless stopped at 24 with host EIP `0x20053955`.
+Reading the dynamic cache while it was running showed an explicit guest loop
+back-edge from `0x200539EC` to `0x20053955`; this is a translated loop, not
+evidence of a corrupted return thunk. The current result therefore confirms
+crash removal and passage through the earlier frontier, but not normal game
+screen/input progress or clean game termination.
+
+| Item | Status |
+|---|---|
+| Core probe | **Confirmed**: 27/27 passed |
+| x64 guest stack preservation | **Confirmed**: common `R15D` lowering and fail-closed boundaries |
+| CS-source segment store | **Confirmed**: selector-table-based HLE path |
+| Initial low native RSP/SIGTRAP | **Confirmed**: no recurrence after blocking non-identical legacy reentry |
+| Dynamic `0x20053955` loop | **Confirmed**: explicit guest back-edge; cause unresolved |
+| Normal game progress/termination | **Unresolved** |
+
+## 3.100 Task 663 — Linux x64 LINEXE far-transfer frame trace
+
+### 한국어
+
+Task 663은 `REPIU_LINEXE_FAR_TRANSFER_TRACE=1` 선택 trace를 추가하여
+`HandleLinexeFarTransferBoundary`와 `HandleFarJumpInstruction`의 실제 진입
+여부를 분리했습니다. 첫 번째 boundary는 `FF 1D` 또는 정확한
+`66 EA 04 00 2C 00` 후보에서만 bounded sequence를 소비하고, 입력 ESP와
+제한된 stack window, LINEXE service decode, frame return의 old/new ESP를
+기록합니다. far-jump HLE도 selector/offset, 입력 ESP, translated target을
+기록합니다. 환경 변수가 없거나 `0`이면 기본 guest semantics는 변하지
+않습니다.
+
+Debug `repiu` 전체 링크와 `repiu_core_probe`는 통과했습니다.
+
+```text
+[100%] Built target repiu
+core_probe_total=27
+core_probe_failures=0
+core_probe_all=true
+core_probe_skipped=2 stack_bridge guest_stack_switch
+```
+
+`REPIU_LINEXE_FAR_TRANSFER_TRACE=1`을 기존
+`REPIU_LINUX_X64_GUEST_ENTRY_TRACE=0x010F0232` 및 return-frame trace와 함께
+실행했지만 `[repiu-linexe-far]`와 `[repiu-linexe-far-jump]`는 출력되지
+않았습니다. 같은 실행에서는 다음 경로가 계속 확인되었습니다.
+
+```text
+[repiu-x64-guest-entry] n=1 target=0x010F0232 fault_kind=breakpoint fault_eip=0x200018E7 entry_guest=0x010F0232 exit_eip=0x20001917 exit_guest=0x010F0237 entry_esp=0x0158C84C exit_esp=0x0158C860
+[repiu-x64-return-frame] n=1 guest_eip=0x00000000 guest_esp=0x0158C864 status=0x010F0237 producer=ret
+[repiu-fault] unhandled signal=0x5
+```
+
+따라서 이번 bounded failure 경로는 LINEXE far-transfer boundary와
+`66 EA` far-jump HLE을 통과하지 않았다고 **확인됨**으로 기록합니다.
+Task 661의 4바이트 ESP delta를 이 두 경계의 service cleanup 또는 far-jump
+EIP translation에 직접 귀속할 근거는 없습니다. `0x010F0232`의 AOT
+breakpoint/HLE reentry와 `0x010F0237 RET` 이후 zero-return fail-closed
+경계는 그대로 **확인됨**입니다. delta의 실제 원인은 **미확정**이며,
+다음 frontier는 AOT/HLE 재진입 전후 guest ESP입니다.
+
+| 질문 | 상태 |
+|---|---|
+| LINEXE boundary 통과 여부 | **확인됨**: 이번 bounded failure 경로에서는 미통과 |
+| `66 EA` far-jump HLE 통과 여부 | **확인됨**: 이번 bounded failure 경로에서는 미관찰 |
+| `0x010F0232` AOT/HLE reentry | **확인됨** |
+| `0x010F0232` → `0x010F0237` 진행 | **확인됨** |
+| Task 661의 4-byte ESP delta 원인 | **미확정** |
+| 정상 게임 실행 | **미확정** |
+
+### English
+
+Task 663 added the opt-in `REPIU_LINEXE_FAR_TRANSFER_TRACE=1` capture to
+separate actual entry into `HandleLinexeFarTransferBoundary` and
+`HandleFarJumpInstruction`. The boundary allocates a bounded sequence only for
+an `FF 1D` or exact `66 EA 04 00 2C 00` candidate, then records input ESP, a
+bounded stack window, LINEXE service decoding, and old/new ESP on frame return.
+The far-jump HLE records selector/offset, input ESP, and the translated target.
+With no variable, or with value `0`, guest semantics remain unchanged.
+
+The Debug `repiu` link and `repiu_core_probe` passed:
+
+```text
+[100%] Built target repiu
+core_probe_total=27
+core_probe_failures=0
+core_probe_all=true
+core_probe_skipped=2 stack_bridge guest_stack_switch
+```
+
+A bounded runtime enabled the new trace together with
+`REPIU_LINUX_X64_GUEST_ENTRY_TRACE=0x010F0232` and the return-frame trace, but
+printed no `[repiu-linexe-far]` or `[repiu-linexe-far-jump]` records. The same
+run continued to confirm:
+
+```text
+[repiu-x64-guest-entry] n=1 target=0x010F0232 fault_kind=breakpoint fault_eip=0x200018E7 entry_guest=0x010F0232 exit_eip=0x20001917 exit_guest=0x010F0237 entry_esp=0x0158C84C exit_esp=0x0158C860
+[repiu-x64-return-frame] n=1 guest_eip=0x00000000 guest_esp=0x0158C864 status=0x010F0237 producer=ret
+[repiu-fault] unhandled signal=0x5
+```
+
+The bounded failure path therefore **confirmedly did not pass through** the
+LINEXE far-transfer boundary or the `66 EA` far-jump HLE. The evidence does not
+support attributing Task 661's four-byte ESP delta directly to either service
+cleanup or far-jump EIP translation. The AOT breakpoint/HLE reentry at
+`0x010F0232` and progress to `0x010F0237 RET` remain **confirmed**, while the
+actual cause of the delta remains **unresolved**. The next frontier is guest
+ESP immediately before and after AOT/HLE reentry.
+
+| Question | Status |
+|---|---|
+| LINEXE boundary passage | **Confirmed**: not on this bounded failure path |
+| `66 EA` far-jump HLE passage | **Confirmed**: not observed on this bounded failure path |
+| AOT/HLE reentry at `0x010F0232` | **Confirmed** |
+| Progress from `0x010F0232` to `0x010F0237` | **Confirmed** |
+| Cause of Task 661's four-byte ESP delta | **Unresolved** |
+| Normal game execution | **Unresolved** |
+
+## 3.99 Task 667 — Linux x64 native write provenance
+
+### 한국어
+
+**확인됨:** Task 666에서 확인한 zero-return 슬롯 `0x0158C860`에 대해,
+페이지 단위 write-watch가 선택된 페이지의 모든 쓰기를 가로채지 않도록 진단
+모드에서 해당 페이지를 일시적으로 제외하고, Linux x64 AOT `kCopy` 명령의
+명시적 memory-write 뒤에 공통 observer를 연결했습니다. observer는 원본
+LEGACY_32 명령을 디코드하여 실제 guest 목적지를 계산하므로 특정 EIP에 대한
+예외 규칙이 아닙니다.
+
+초기 observer 실행에서는 dispatch frame의 `context`가 채워지지 않아 디코드가
+실패했습니다. 이를 공통 dispatch 설치 단계에서 초기화한 뒤, 다음 실행에서
+observer가 정상적으로 guest runtime을 확인하고 호출되는 것을 확인했습니다.
+`verbose` 설정에서 확인된 runtime 범위는 `0x01000000+0x085D7000`입니다.
+
+최종 bounded 실행은 다음의 정확한 writer를 기록했습니다.
+
+```text
+[repiu-guest-write-trace] event=native-aot n=1 watch=0x0158C860 execution=0x010EFEDC source=0x010EFEDC destination=0x0158C860 size=4 bytes=00000000
+```
+
+매칭 상세 로그는 다음과 같습니다.
+
+```text
+[repiu-native-write-match] guest=0x010EFEDC bytes=89451885C0587442 destination=0x0158C860 size=4 eax=0x00000000 ebx=0x0158C92C ecx=0xFFFFFFEC edx=0x0138C679 esi=0x00000001 edi=0x010FB81E ebp=0x0158C848 esp=0x0158C848
+```
+
+앞의 `89 45 18`은 일반적인 `MOV [EBP+0x18], EAX`입니다. 당시 `EAX=0`이고
+`EBP=ESP=0x0158C848`이므로 이 명령의 목적지가 `0x0158C860`이 됩니다.
+따라서 zero writer는 반환 주소를 합성하는 예외 경로가 아니라, 공통 AOT가
+원본 명령을 실행한 결과입니다. `0x010EFEDC` 다음의 정적 명령열은
+`TEST EAX,EAX`와 인자 정리용 `POP EAX`(`0x010EFEE1`) 뒤에 오류·성공 공통
+경로인 `JMP 0x010F0232`를 포함합니다. 그러므로 이번 실행에서 관찰된
+`ESP=0x0158C84C`는 AOT/HLE 재진입기가 임의로 더한 값이라고 단정할 수 없고,
+원본 호출 규약 및 DOS 파일 조회 결과와 함께 추적해야 합니다.
+
+이 결과는 `0x010EFEDC`가 명시적 AOT memory-write로 해당 반환 슬롯에 0을
+기록한 사실을 확인합니다. 이후 `0x010F0237 RET`가 0을 읽었고, 기존 return
+resolver의 0 응답 및 fail-closed `SIGTRAP`으로 종료했습니다. 반환 주소를
+합성하거나 ESP를 보정하는 수정은 하지 않았습니다.
+
+observer를 처음 연결했을 때는 C++ 호출이 guest XMM/FPU 상태를 보존하지 않아
+`SIGSEGV`가 발생했습니다. 이는 특정 명령의 예외가 아니라 ABI 경계에서 원본
+실행 상태를 보존하지 않은 공통 결함이므로, observer 호출 전후에 동적 host
+stack 정렬과 `FXSAVE64/FXRSTOR64`를 적용했습니다. 수정 후 동일 실행은
+`SIGSEGV` 없이 원래의 unresolved return `SIGTRAP`까지 도달했습니다.
+
+추가로 `REPIU_AOT_TRANSFER_TARGET_TRACE=0x010F0232`를 켠 bounded 실행에서
+다음 공통 address-map breakpoint가 확인되었습니다.
+
+```text
+[repiu-aot-transfer-target] kind=breakpoint lookup=address-map source=0x00000000 target=0x010F0232 bytes=000000000000 cache=0x20002CAB esp=0x0158C84C
+```
+
+이 기록의 `source=0`은 address-map 조회의 `lookup_source` 값이며, 원본에
+직접 분기 명령이 없다는 뜻은 아닙니다. 정적 xref에는 `0x010EFF2A`와
+`0x010EFFE4`에서 `0x010F0232`로 가는 직접 `JMP`가 있고, 두 명령은 guest
+stack을 변경하지 않습니다. 따라서 현재 증거상 AOT direct-branch emitter나
+공통 HLE 재진입기가 네 바이트를 추가한 흔적은 없습니다. `0x010F0232`의
+`POP ES; POP EBX; POP ESI; POP EDI; POP EBP; RET`는 진입한 ESP에서 정상적인
+공통 epilogue semantics로 처리되었습니다.
+
+writer 직전의 정적 호출 흐름은 `0x010EFEDC MOV [EBP+0x18],EAX` 뒤에
+`0x010EFEE1 POP EAX`가 있고, zero 값은 그보다 앞선 `0x010F0B50` 계열의
+호출 결과에서 왔습니다. 해당 함수는 `INT 21h`의 `AH=43h` 파일 속성 조회를
+수행합니다. 다음 조사 대상은 특정 guest 주소 보정이 아니라 이 DOS/HLE 파일
+조회가 `EAX=0`을 반환하게 된 공통 경로입니다.
+
+```mermaid
+flowchart LR
+    A[공통 AOT kCopy memory-write] --> B[LEGACY_32 decode observer]
+    B --> C[native-aot: 0x010EFEDC -> 0x0158C860 = 0]
+    C --> D[0x010F0237 RET reads zero]
+    D --> E[공통 return thunk fail-closed SIGTRAP]
+```
+
+| 질문 | 상태 |
+|---|---|
+| observer 실제 도달 | **확인됨** |
+| zero return-slot writer | **확인됨**: `native-aot`, `0x010EFEDC` |
+| writer의 성격 | **확인됨**: 공통 AOT `kCopy` 명시적 memory-write |
+| observer가 guest 상태를 보존 | **확인됨**: GPR/flags 및 XMM/FPU |
+| 특정 EIP 예외 처리 여부 | **아님** |
+| zero-return 원인 이후의 정상 게임 실행 | **미확정** |
+
+### English
+
+**Confirmed:** For the zero-return slot `0x0158C860` identified by Task 666,
+the diagnostic mode temporarily excludes only the selected page from the
+page-granular write watch and attaches a common observer after explicit memory
+writes in Linux x64 AOT `kCopy` instructions. The observer decodes the original
+LEGACY_32 instruction and computes its guest destination; it is not an exception
+for one guest EIP.
+
+The first observer run failed to decode because the dispatch frame's `context`
+field was unset. Initializing it in the common dispatch-install step allowed the
+observer to validate the active guest runtime. The `verbose` run confirmed the
+runtime range as `0x01000000+0x085D7000`.
+
+The final bounded run recorded this exact writer:
+
+```text
+[repiu-guest-write-trace] event=native-aot n=1 watch=0x0158C860 execution=0x010EFEDC source=0x010EFEDC destination=0x0158C860 size=4 bytes=00000000
+```
+
+The match detail was:
+
+```text
+[repiu-native-write-match] guest=0x010EFEDC bytes=89451885C0587442 destination=0x0158C860 size=4 eax=0x00000000 ebx=0x0158C92C ecx=0xFFFFFFEC edx=0x0138C679 esi=0x00000001 edi=0x010FB81E ebp=0x0158C848 esp=0x0158C848
+```
+
+The leading `89 45 18` is the ordinary `MOV [EBP+0x18], EAX`. At that point
+`EAX=0` and `EBP=ESP=0x0158C848`, so the instruction computes destination
+`0x0158C860`. It is followed by `TEST EAX,EAX`, the argument-cleanup `POP EAX`
+at `0x010EFEE1`, and a shared `JMP 0x010F0232`. Therefore the observed
+`ESP=0x0158C84C` cannot yet be attributed to an arbitrary correction by common
+AOT/HLE reentry; the original call convention and DOS/HLE result must be checked
+together.
+
+This confirms that `0x010EFEDC` is an explicit AOT memory write that stores zero
+into the return slot. The later `RET` at `0x010F0237` reads zero and the existing
+return resolver returns zero, reaching its fail-closed `SIGTRAP`. No fabricated
+return address or ESP correction was added.
+
+The first observer version caused `SIGSEGV` because the C++ call did not preserve
+the guest's XMM/FPU state. This was a common ABI-boundary state-preservation
+defect, not an exception for one instruction. Dynamic host-stack alignment and
+`FXSAVE64/FXRSTOR64` now bracket the observer call. The same run then reached the
+original unresolved-return `SIGTRAP` without the observer causing `SIGSEGV`.
+
+With `REPIU_AOT_TRANSFER_TARGET_TRACE=0x010F0232`, a bounded run also recorded
+the common address-map breakpoint:
+
+```text
+[repiu-aot-transfer-target] kind=breakpoint lookup=address-map source=0x00000000 target=0x010F0232 bytes=000000000000 cache=0x20002CAB esp=0x0158C84C
+```
+
+Here `source=0` is the address-map lookup-source field; it does not mean that the
+original executable has no direct branch. Static xrefs include direct `JMP`s from
+`0x010EFF2A` and `0x010EFFE4` to `0x010F0232`, and those instructions do not change
+guest ESP. The current evidence therefore shows no four-byte addition by the AOT
+direct-branch emitter or common HLE reentry. The `POP ES; POP EBX; POP ESI; POP EDI;
+POP EBP; RET` sequence at `0x010F0232` was handled with its ordinary common-epilogue
+semantics from the ESP it received.
+
+The static flow around the writer is `MOV [EBP+0x18],EAX` at `0x010EFEDC`, followed
+by `POP EAX` at `0x010EFEE1` and then a shared `JMP 0x010F0232`. The zero value comes
+from the preceding `0x010F0B50`-family call, which performs a DOS `INT 21h` `AH=43h`
+file-attribute query. The next investigation is therefore the common DOS/HLE file
+query result that produces `EAX=0`, not an EIP-specific stack correction.
+
+| Question | Status |
+|---|---|
+| Observer actually reached | **Confirmed** |
+| Zero return-slot writer | **Confirmed**: `native-aot`, `0x010EFEDC` |
+| Writer classification | **Confirmed**: common AOT `kCopy` explicit memory write |
+| Guest state preserved by observer | **Confirmed**: GPRs/flags and XMM/FPU |
+| EIP-specific exception handling | **No** |
+| Normal game execution after the zero return | **Unresolved** |
+
+## 3.100 Task 668 — DOS AH=43h file-attribute result
+
+### 한국어
+
+Task 667의 native writer 이후 값을 만드는 공통 HLE 결과를 확인하기 위해
+`REPIU_DOS_ATTR_TRACE=1`을 추가했습니다. 기존 `REPIU_DOS_INT_TRACE=1`은
+반복 호출을 전부 출력해 로그가 폭증했지만, 새 trace는 성공 8회·실패 64회로
+제한됩니다.
+
+bounded 실행에서 다음 실패가 확인되었습니다.
+
+```text
+[repiu-dos-attr] kind=failure n=1 eip=0x010F310B subfunction=0x00 guest_path=".ovl" dos_path="\\PIU\\.OVL" host_path="/mnt/e/MYWORK/Projects/rePIU/build/runtime_mounts/pumpit2a/PIU/.OVL" success=0 readable=1 error=0x0002 eax=0x00000002 ecx=0xFFFFFFFE edx=0x0138C679 cf=1
+[repiu-dos-attr] kind=failure n=2 eip=0x010F310B subfunction=0x00 guest_path=".ovl" dos_path="\\PIU\\.OVL" host_path="/mnt/e/MYWORK/Projects/rePIU/build/runtime_mounts/pumpit2a/PIU/.OVL" success=0 readable=1 error=0x0002 eax=0x00000002 ecx=0x0158C828 edx=0x0158C828 cf=1
+[repiu-dos-attr] kind=failure n=3 eip=0x010F310B subfunction=0x00 guest_path="C:\\WINDOWS\\SYSTEM\\.ovl" dos_path="\\WINDOWS\\SYSTEM\\.OVL" host_path="/mnt/e/MYWORK/Projects/rePIU/build/runtime_mounts/pumpit2a/WINDOWS/SYSTEM/.OVL" success=0 readable=1 error=0x0002 eax=0x00000002 ecx=0xFFFFFFEC edx=0x0138C679 cf=1
+```
+
+따라서 AH=43h는 DOS 오류 코드 `0x0002`를 `EAX`와 CF=1로 반환하고,
+F0B50 계열 wrapper가 그 실패를 zero 결과로 변환한 뒤 `0x010EFEDC`의
+`MOV [EBP+0x18],EAX`가 그 zero를 저장하여 이후 실패 경로를 만듭니다. VFS가 경로를
+잘라낸 것이 아니라, AH=43h에 진입할 때 guest buffer가 이미 `.ovl` 또는
+`C:\\WINDOWS\\SYSTEM\\.ovl`입니다.
+
+경로 buffer provenance도 확인되었습니다.
+
+```text
+[repiu-native-write-match] guest=0x010F0B9D bytes=88073C0074108A46 destination=0x0158C828 size=1 eax=0x0000002E ebx=0x0158C92C ecx=0xFFFFFFFE edx=0x011A6250 esi=0x01119BDC edi=0x0158C828 ebp=0x0158C848 esp=0x0158C824
+[repiu-native-write-match] guest=0x010F0BC0 bytes=88073C0074108A46 destination=0x0138C679 size=1 eax=0x0000002E ebx=0x0158C92C ecx=0xFFFFFFFE edx=0x00000000 esi=0x0158C828 edi=0x0138C679 ebp=0x0158C848 esp=0x0158C824
+```
+
+`0x010F0B9D`는 원본 `.ovl` 상수(`0x01119BDC`)의 첫 바이트를 local
+buffer에 쓰고, `0x010F0BC0`은 그 buffer의 첫 바이트를 전역 path buffer
+`0x0138C679`로 복사합니다. 정적 호출부의 `0x010EFE55 PUSH 0x010EFE2C`는
+`0x010EFE2C`를 기록하지만, F0B50 내부에는 `PUSH [EBP+0x18]`(`0x010EFED4`)
+가 있습니다. 이 memory-source PUSH가 guest ESP/R15D를 사용하는 공통
+stack lowering이 아니라 일반 memory lowering으로 처리되면 F0B50이 읽는
+인자가 잘못될 수 있습니다. 다음 Task 669는 이 일반 `PUSH r/m32` lowering을
+확인하고 수정합니다.
+
+### English
+
+Task 668 added `REPIU_DOS_ATTR_TRACE=1` to identify the common HLE result after
+Task 667's native writer. The existing `REPIU_DOS_INT_TRACE=1` prints every
+repeated call and can flood the log; the new trace caps successes at 8 and
+failures at 64.
+
+The bounded run recorded these failures:
+
+```text
+[repiu-dos-attr] kind=failure n=1 eip=0x010F310B subfunction=0x00 guest_path=".ovl" dos_path="\\PIU\\.OVL" host_path="/mnt/e/MYWORK/Projects/rePIU/build/runtime_mounts/pumpit2a/PIU/.OVL" success=0 readable=1 error=0x0002 eax=0x00000002 ecx=0xFFFFFFFE edx=0x0138C679 cf=1
+[repiu-dos-attr] kind=failure n=2 eip=0x010F310B subfunction=0x00 guest_path=".ovl" dos_path="\\PIU\\.OVL" host_path="/mnt/e/MYWORK/Projects/rePIU/build/runtime_mounts/pumpit2a/PIU/.OVL" success=0 readable=1 error=0x0002 eax=0x00000002 ecx=0x0158C828 edx=0x0158C828 cf=1
+[repiu-dos-attr] kind=failure n=3 eip=0x010F310B subfunction=0x00 guest_path="C:\\WINDOWS\\SYSTEM\\.ovl" dos_path="\\WINDOWS\\SYSTEM\\.OVL" host_path="/mnt/e/MYWORK/Projects/rePIU/build/runtime_mounts/pumpit2a/WINDOWS/SYSTEM/.OVL" success=0 readable=1 error=0x0002 eax=0x00000002 ecx=0xFFFFFFEC edx=0x0138C679 cf=1
+```
+
+AH=43h returns DOS error `0x0002` in `EAX` with CF=1, and the F0B50-family wrapper
+converts that failure to zero before `MOV [EBP+0x18],EAX` at `0x010EFEDC` stores
+the zero that drives the later error path. The VFS did not truncate the name: the guest buffer already contains
+`.ovl` or `C:\\WINDOWS\\SYSTEM\\.ovl` when AH=43h is entered.
+
+Path-buffer provenance was also observed:
+
+```text
+[repiu-native-write-match] guest=0x010F0B9D bytes=88073C0074108A46 destination=0x0158C828 size=1 eax=0x0000002E ebx=0x0158C92C ecx=0xFFFFFFFE edx=0x011A6250 esi=0x01119BDC edi=0x0158C828 ebp=0x0158C848 esp=0x0158C824
+[repiu-native-write-match] guest=0x010F0BC0 bytes=88073C0074108A46 destination=0x0138C679 size=1 eax=0x0000002E ebx=0x0158C92C ecx=0xFFFFFFFE edx=0x00000000 esi=0x0158C828 edi=0x0138C679 ebp=0x0158C848 esp=0x0158C824
+```
+
+`0x010F0B9D` writes the first byte of the original `.ovl` constant at
+`0x01119BDC` into the local buffer, and `0x010F0BC0` copies that first byte into
+the global path buffer at `0x0138C679`. The static caller's
+`0x010EFE55 PUSH 0x010EFE2C` writes the expected `0x010EFE2C`, but F0B50 also
+contains `PUSH [EBP+0x18]` at `0x010EFED4`. If this memory-source PUSH is treated
+as ordinary memory lowering instead of a common guest-ESP/R15D stack sequence,
+F0B50 can read a wrong argument. Task 669 will verify and fix this general
+`PUSH r/m32` lowering.
+
+| Question | Status |
+|---|---|
+| AH=43h HLE result | **Confirmed failure**: missing file, DOS error `0x0002`, CF=1 |
+| Guest path at AH=43h | **Confirmed**: `.ovl` / `C:\\WINDOWS\\SYSTEM\\.ovl` |
+| VFS truncation | **Not observed** |
+| Candidate common cause | **Confirmed in code path**: `PUSH [EBP+0x18]` is not in stack-sequence lowering |
+| EIP-specific exception required | **No** |
+
+---
+
+## 3.99 Task 662 — Linux x64 guest entry provenance
+
+### 한국어
+
+Task 662는 `REPIU_LINUX_X64_GUEST_ENTRY_TRACE=<guest-address>` 선택 필터를
+추가했습니다. 이 기능은 `VehExitRecorder`의 dispatcher 진입/종료 snapshot을
+관찰하기 위한 Linux x64 전용 진단이며, 기본 실행 경로·guest semantics·stack
+width·RET target·resolver 정책은 변경하지 않습니다. 출력은 일치 항목에 대해
+최대 32회로 제한됩니다.
+
+정적 AOT map에서 `0x010F0232`의 entry는 cache `0x200018C3`에 있으며
+`emitted_len=56`입니다. 같은 entry의 HLE boundary fixup은 patch offset
+`0x18E7`, fallthrough `0x010F0233` fixup은 patch offset `0x18F7`로
+확인되었습니다. 따라서 정적 entry 시작 주소 `0x200018C3`와 동적 fault가
+발생한 HLE boundary 위치 `0x200018E7`는 같은 주소가 아닙니다.
+
+`REPIU_LINUX_X64_GUEST_ENTRY_TRACE=0x010F0232` 및 기존 bounded trace를
+함께 실행한 결과는 다음과 같습니다.
+
+```text
+[repiu-aot-map] offset=0x000F0232 guest=0x010F0232 phase=initial match=exact matches=1 map_entries=51866
+[repiu-exec-trace] #0 eip=0x010F0232 esp=0x0158C84C stack=0x0158C92C eax=0x0000FFFF ebx=0x0158C92C edx=0x0138C679 ebp=0x0158C848 eflags=0x00200346
+[repiu-x64-guest-entry] n=1 target=0x010F0232 fault_kind=breakpoint fault_eip=0x200018E7 entry_eip=0x200018E7 entry_guest=0x010F0232 exit_eip=0x20001917 exit_guest=0x010F0237 entry_esp=0x0158C84C exit_esp=0x0158C860 eflags=0x00200246 pending=0 legacy=0 exit_site=step-trace-hle-resumed
+[repiu-x64-return-frame] n=1 source=0x00000000 guest_eip=0x00000000 guest_esp=0x0158C864 eflags=0x00200246 continuation=0x00000000 metadata_esp=0x00000000 status=0x010F0237 stack_base=0x0158C85C valid=0xF m8=0x010EFE5F m4=0x00000000 p0=0x00000001 p4=0x00000001 matches=0x2 producer=ret producer_site=0x010F0237 last_indirect=0x010F4ACF/0x01010000 last_return=0x00000000/0x00000000 call_depth=1024 top_call=0x010F1A3B/0x01017E70/0x010F1A3F/0x0158CC2C/0
+[repiu-fault] unhandled signal=0x5
+```
+
+이 결과로 다음을 확인했습니다.
+
+1. 동적 fault EIP `0x200018E7`은 AOT reverse-map을 통해 guest
+   `0x010F0232`로 해석되었고, fault 종류는 `breakpoint`였습니다.
+2. dispatcher 종료 cache EIP `0x20001917`은 guest `0x010F0237`로
+   역매핑되었습니다. `exit_site=step-trace-hle-resumed`이고
+   `pending=0`, `legacy=0`이므로 대상 boundary를 처리한 뒤
+   `0x010F0237 RET`까지 진행한 HLE/reentry 경로가 확인되었습니다.
+3. guest ESP는 진입 `0x0158C84C`에서 종료 `0x0158C860`으로 `0x14`만큼
+   증가했습니다. 이는 `POP ES`와 뒤따르는 네 개의 일반 레지스터 pop을
+   지나 `0x010F0237`에 도달한 관찰과 일치합니다.
+4. 이어진 zero-return frame은 기존과 동일하게 `status=0x010F0237` 및
+   `guest_eip=0`을 기록했고, 최종 실행은 기존 fail-closed `SIGTRAP`으로
+   끝났습니다.
+
+다만 이 trace는 dispatcher boundary의 실제 fault/reentry를 확정할 뿐,
+그 breakpoint를 만든 upstream guest instruction을 식별하지는 않습니다.
+`0x010F022C`의 guest INT3가 실행되었다는 것도 이 실행에서는 증명되지
+않았습니다. 따라서 `0x010F022C` producer와 이전 Task 661에서 분리된
+`PUSH ES` 경로의 4-byte delta 원인은 여전히 미확정입니다.
+
+필터를 지정하지 않은 최신 binary의 bounded 비교 실행에서는
+`[repiu-x64-guest-entry]`가 출력되지 않았고, 기존 zero-return frame과
+fail-closed fault만 관찰되었습니다. `repiu_core_probe`는 `27/27` 통과,
+실패 `0`이었습니다.
+
+```mermaid
+sequenceDiagram
+    participant C as AOT cache
+    participant D as fault dispatcher
+    participant H as HLE/reentry
+    participant Z as zero-return path
+
+    C->>D: breakpoint 0x200018E7
+    D->>D: reverse-map to guest 0x010F0232
+    D->>H: handle boundary
+    H-->>D: exit 0x20001917 -> guest 0x010F0237
+    Note over H,D: guest ESP 0x0158C84C -> 0x0158C860
+    D->>Z: RET at guest 0x010F0237
+    Z-->>Z: zero target -> existing fail-closed SIGTRAP
+```
+
+| 질문 | 상태 |
+|---|---|
+| `0x010F0232` dispatcher 진입 관찰 | **확인됨**: cache breakpoint `0x200018E7` reverse-map |
+| dispatcher 종료 주소 | **확인됨**: cache `0x20001917` → guest `0x010F0237` |
+| 진입→종료 guest ESP 변화 | **확인됨**: `0x0158C84C` → `0x0158C860` (`+0x14`) |
+| `0x010F022C` guest INT3 producer | **미확정** |
+| Task 661의 4-byte delta 원인 | **미확정** |
+| 정상 게임 실행 | **미확정** |
+
+### English
+
+Task 662 added the opt-in filter
+`REPIU_LINUX_X64_GUEST_ENTRY_TRACE=<guest-address>`. It is a Linux x64
+diagnostic around the `VehExitRecorder` dispatcher entry/exit snapshot. The
+default path, guest semantics, stack width, RET target, and resolver policy
+are unchanged. Matching output is capped at 32 records.
+
+The static AOT map places the `0x010F0232` entry at cache `0x200018C3` with
+`emitted_len=56`. Its HLE-boundary fixup is at patch offset `0x18E7`, while
+the `0x010F0233` fallthrough fixup is at patch offset `0x18F7`. The static
+entry start `0x200018C3` must therefore be distinguished from the dynamic
+HLE-boundary fault location `0x200018E7`.
+
+The combined bounded run with
+`REPIU_LINUX_X64_GUEST_ENTRY_TRACE=0x010F0232` recorded:
+
+```text
+[repiu-aot-map] offset=0x000F0232 guest=0x010F0232 phase=initial match=exact matches=1 map_entries=51866
+[repiu-exec-trace] #0 eip=0x010F0232 esp=0x0158C84C stack=0x0158C92C eax=0x0000FFFF ebx=0x0158C92C edx=0x0138C679 ebp=0x0158C848 eflags=0x00200346
+[repiu-x64-guest-entry] n=1 target=0x010F0232 fault_kind=breakpoint fault_eip=0x200018E7 entry_eip=0x200018E7 entry_guest=0x010F0232 exit_eip=0x20001917 exit_guest=0x010F0237 entry_esp=0x0158C84C exit_esp=0x0158C860 eflags=0x00200246 pending=0 legacy=0 exit_site=step-trace-hle-resumed
+[repiu-x64-return-frame] n=1 source=0x00000000 guest_eip=0x00000000 guest_esp=0x0158C864 eflags=0x00200246 continuation=0x00000000 metadata_esp=0x00000000 status=0x010F0237 stack_base=0x0158C85C valid=0xF m8=0x010EFE5F m4=0x00000000 p0=0x00000001 p4=0x00000001 matches=0x2 producer=ret producer_site=0x010F0237 last_indirect=0x010F4ACF/0x01010000 last_return=0x00000000/0x00000000 call_depth=1024 top_call=0x010F1A3B/0x01017E70/0x010F1A3F/0x0158CC2C/0
+[repiu-fault] unhandled signal=0x5
+```
+
+This confirms:
+
+1. Dynamic fault EIP `0x200018E7` reverse-maps to guest `0x010F0232`,
+   and the fault kind is `breakpoint`.
+2. Dispatcher exit cache EIP `0x20001917` reverse-maps to guest
+   `0x010F0237`. `exit_site=step-trace-hle-resumed`, `pending=0`, and
+   `legacy=0` show that the boundary was handled and execution advanced to
+   the `0x010F0237 RET` path.
+3. Guest ESP advances from `0x0158C84C` to `0x0158C860` (`+0x14`),
+   consistent with passing `POP ES` and four following general-register
+   pops before reaching `0x010F0237`.
+4. The following zero-return frame is unchanged: it records
+   `status=0x010F0237` and `guest_eip=0`, then terminates at the existing
+   fail-closed `SIGTRAP`.
+
+The trace establishes the dispatcher boundary's actual fault/reentry, but
+does not identify the upstream guest instruction that produced the breakpoint.
+This run also does not prove that the guest INT3 at `0x010F022C` executed.
+The producer of `0x010F022C` and the four-byte delta from Task 661 therefore
+remain unresolved.
+
+In the latest bounded comparison without the new filter, no
+`[repiu-x64-guest-entry]` line appeared; only the existing zero-return frame
+and fail-closed fault were observed. `repiu_core_probe` passed `27/27` with
+zero failures.
+
+```mermaid
+sequenceDiagram
+    participant C as AOT cache
+    participant D as fault dispatcher
+    participant H as HLE/reentry
+    participant Z as zero-return path
+
+    C->>D: breakpoint 0x200018E7
+    D->>D: reverse-map to guest 0x010F0232
+    D->>H: handle boundary
+    H-->>D: exit 0x20001917 -> guest 0x010F0237
+    Note over H,D: guest ESP 0x0158C84C -> 0x0158C860
+    D->>Z: RET at guest 0x010F0237
+    Z-->>Z: zero target -> existing fail-closed SIGTRAP
+```
+
+| Question | Status |
+|---|---|
+| Dispatcher entry at `0x010F0232` | **Confirmed**: cache breakpoint `0x200018E7` reverse-map |
+| Dispatcher exit | **Confirmed**: cache `0x20001917` → guest `0x010F0237` |
+| Entry-to-exit guest ESP delta | **Confirmed**: `0x0158C84C` → `0x0158C860` (`+0x14`) |
+| Guest INT3 producer at `0x010F022C` | **Unresolved** |
+| Cause of Task 661's four-byte delta | **Unresolved** |
+| Normal game execution | **Unresolved** |
+
+## 3.101 Task 664 — Linux x64 AOT/HLE re-entry guest ESP trace
+
+### 한국어
+
+Task 664는 기존 `REPIU_AOT_HLE_REENTRY_TRACE=<guest-address>`에
+`guest_esp`를 추가하고, HLE dispatcher 전후와 AOT resume 전후를 기록했습니다.
+새 stage는 `hle-before`, `hle-after`, 기존 `entry`/`resumed`, 그리고
+`reentry-after`입니다. 환경 변수가 없을 때 guest state와 control flow는
+변경되지 않습니다.
+
+Linux x64 Debug 빌드와 core probe는 통과했습니다.
+
+```text
+[100%] Built target repiu_core_probe
+core_probe_total=27
+core_probe_failures=0
+core_probe_all=true
+core_probe_skipped=2 stack_bridge guest_stack_switch
+```
+
+`0x010F0232` 필터에서 HLE 직전 guest ESP는 `0x0158C84C`였고, HLE 직후
+`0x010F0237`에 도달하면서 `0x0158C860`이 되었습니다. `entry`, `resumed`,
+`reentry-after` 모두 `0x0158C860`을 유지했습니다. 기존 provenance trace의
+`entry_esp=0x0158C84C`, `exit_esp=0x0158C860`도 일치했습니다.
+
+별도 `0x010EFEC4` 필터에서는 `PUSH ES`가 `0x0158C84C`에서
+`0x0158C848`로 정확히 감소했고, HLE after와 AOT resume 후에도
+`0x0158C848`이 유지되었습니다.
+
+따라서 `0x010F0232` AOT resume가 4바이트를 추가하거나 복구한 것은
+아닙니다. 해당 경계는 ESP를 `0x010F0232` HLE 후의
+`0x0158C860`으로 보존합니다. 4바이트 delta는 `0x010F0232` 진입 전에
+이미 존재하며, `0x010EFEC4` 이후 어느 CALL/return resolver 또는 다른
+경계가 만들었는지는 **미확정**입니다. zero-return `0x010F0237`와
+fail-closed `SIGTRAP`은 계속 재현됩니다.
+
+| 질문 | 상태 |
+|---|---|
+| `PUSH ES` ESP effect | **확인됨**: `0x0158C84C → 0x0158C848` |
+| `0x010F0232` HLE ESP effect | **확인됨**: `0x0158C84C → 0x0158C860` |
+| AOT resume ESP adjustment | **확인됨**: 추가 조정 없음 |
+| 4-byte delta가 `0x010F0232` resume에서 발생하는지 | **해소됨**: 발생하지 않음 |
+| upstream delta 경계 | **미확정** |
+| 정상 게임 실행 | **미확정** |
+
+### English
+
+Task 664 added `guest_esp` to the existing
+`REPIU_AOT_HLE_REENTRY_TRACE=<guest-address>` and recorded state around HLE
+dispatch and AOT resume. The new stages are `hle-before`, `hle-after`, the
+existing `entry`/`resumed`, and `reentry-after`. With no environment variable,
+guest state and control flow remain unchanged.
+
+The Linux x64 Debug build and core probe passed:
+
+```text
+[100%] Built target repiu_core_probe
+core_probe_total=27
+core_probe_failures=0
+core_probe_all=true
+core_probe_skipped=2 stack_bridge guest_stack_switch
+```
+
+With the `0x010F0232` filter, guest ESP was `0x0158C84C` immediately before
+HLE and `0x0158C860` after HLE reached `0x010F0237`. `entry`, `resumed`, and
+`reentry-after` all preserved `0x0158C860`. The existing provenance trace
+matched this with `entry_esp=0x0158C84C` and `exit_esp=0x0158C860`.
+
+A separate `0x010EFEC4` filter showed `PUSH ES` decreasing ESP exactly from
+`0x0158C84C` to `0x0158C848`, with the same value preserved after HLE and AOT
+resume.
+
+The `0x010F0232` AOT resume therefore does not add or restore the four bytes.
+That boundary preserves ESP at `0x0158C860`; the four-byte delta already
+exists before entry to `0x010F0232`. Which CALL, return resolver, or other
+boundary after `0x010EFEC4` creates it remains **unresolved**. The zero-return
+at `0x010F0237` and the fail-closed `SIGTRAP` still reproduce.
+
+| Question | Status |
+|---|---|
+| `PUSH ES` ESP effect | **Confirmed**: `0x0158C84C → 0x0158C848` |
+| `0x010F0232` HLE ESP effect | **Confirmed**: `0x0158C84C → 0x0158C860` |
+| AOT resume ESP adjustment | **Confirmed**: no additional adjustment |
+| Whether the four-byte delta occurs at `0x010F0232` resume | **Cleared**: it does not |
+| Upstream delta boundary | **Unresolved** |
+| Normal game execution | **Unresolved** |
+
+## 3.102 Task 665 — Linux x64 AOT incoming fixup trace
+
+### 한국어
+
+Task 665는 `REPIU_AOT_MAP_TRACE=<guest-address>`의 기존 map trace에
+target-side incoming fixup 출력을 추가했습니다. source-side fixup과 구분하기
+위해 `[repiu-aot-map-incoming-fixup]` prefix를 사용하며, 한 번의 trace에서
+최대 32개로 제한합니다. trace가 비활성화되면 기존 map 출력, cache image,
+fixup resolution, guest state는 변경되지 않습니다.
+
+Linux x64 Debug `repiu`와 `repiu_core_probe`는 통과했습니다.
+
+```text
+[100%] Built target repiu
+[100%] Built target repiu_core_probe
+core_probe_total=27
+core_probe_failures=0
+core_probe_all=true
+core_probe_skipped=2 stack_bridge guest_stack_switch
+```
+
+`REPIU_AOT_MAP_TRACE=0x0F0232 REPIU_AOT_MAP_CONTEXT=8` 실행에서 target
+`0x010F0232`에 대한 정적 incoming 후보가 하나 출력되었습니다.
+
+```text
+[repiu-aot-map-incoming-fixup] filter=0x010F0232 source=0x010EFF2A target=0x010F0232 kind=direct-jump patch=0x00001936 resolved=1
+```
+
+같은 map context에서 `0x010EFF2A`는 `E9 03 03 00 00` direct jump의 시작이며,
+`0x010F0232`는 `POP ES` (`07`) map entry입니다. target entry의 기존
+source-side fixup은 HLE boundary target `0x00000000`과 block fallthrough
+target `0x010F0233`으로 각각 출력되었습니다.
+
+이 결과는 `0x010EFF2A → 0x010F0232` 연결이 AOT metadata에 등록되어 있고
+cache patch가 resolved 상태라는 것을 **확인**합니다. 그러나 incoming fixup
+출력은 정적 후보이지 source가 실제로 동적으로 실행되었다는 증거는
+아닙니다. Task 664의 동적 trace에서는 여전히 `0x010F0232` HLE 진입 전
+guest ESP `0x0158C84C`, HLE/AOT resume 후 `0x0158C860`,
+`0x010F0237` zero-return 및 fail-closed `SIGTRAP`이 재현됩니다.
+
+따라서 4바이트 delta가 `0x010F0232` 진입 이전에 존재한다는 결론은
+유지되며, `0x010EFF2A`가 실제 실행된 동적 경계인지와 정상 게임 실행
+경로는 **미확정**입니다.
+
+| 질문 | 상태 |
+|---|---|
+| target-side incoming fixup 출력 | **확인됨**: bounded prefix로 최대 32개 |
+| `0x010EFF2A → 0x010F0232` AOT 연결 | **확인됨**: direct-jump, resolved=1 |
+| incoming fixup의 동적 실행 | **미확정**: 정적 후보만 확인 |
+| `0x010F0232` 이전 4바이트 delta 원인 | **미확정** |
+| 정상 게임 실행 | **미확정** |
+
+### English
+
+Task 665 extended `REPIU_AOT_MAP_TRACE=<guest-address>` with target-side
+incoming-fixup output. The new records use the distinct
+`[repiu-aot-map-incoming-fixup]` prefix and are capped at 32 entries per trace.
+When tracing is disabled, existing map output, cache image, fixup resolution,
+and guest state are unchanged.
+
+The Linux x64 Debug `repiu` build and `repiu_core_probe` passed:
+
+```text
+[100%] Built target repiu
+[100%] Built target repiu_core_probe
+core_probe_total=27
+core_probe_failures=0
+core_probe_all=true
+core_probe_skipped=2 stack_bridge guest_stack_switch
+```
+
+With `REPIU_AOT_MAP_TRACE=0x0F0232 REPIU_AOT_MAP_CONTEXT=8`, one static
+incoming candidate was printed for target `0x010F0232`:
+
+```text
+[repiu-aot-map-incoming-fixup] filter=0x010F0232 source=0x010EFF2A target=0x010F0232 kind=direct-jump patch=0x00001936 resolved=1
+```
+
+The same map context shows `0x010EFF2A` as the start of
+`E9 03 03 00 00`, a direct jump, while `0x010F0232` is the `POP ES` (`07`)
+map entry. The target entry's existing source-side fixups remain visible as
+the HLE boundary target `0x00000000` and block fallthrough target
+`0x010F0233`.
+
+This confirms that the `0x010EFF2A → 0x010F0232` connection is registered in
+AOT metadata and that its cache patch is resolved. The incoming-fixup output is
+static metadata, however, and is not proof that the source executed
+dynamically. Task 664's dynamic trace still reproduces guest ESP
+`0x0158C84C` before HLE at `0x010F0232`, `0x0158C860` after HLE/AOT resume,
+the zero-return at `0x010F0237`, and the fail-closed `SIGTRAP`.
+
+The conclusion that the four-byte delta already exists before entry to
+`0x010F0232` therefore remains. Whether `0x010EFF2A` is the dynamically
+executed boundary and whether normal game execution can proceed remain
+**unresolved**.
+
+| Question | Status |
+|---|---|
+| Target-side incoming-fixup output | **Confirmed**: bounded distinct prefix, max 32 |
+| `0x010EFF2A → 0x010F0232` AOT connection | **Confirmed**: direct jump, resolved=1 |
+| Dynamic execution of the incoming fixup | **Unresolved**: static candidate only |
+| Cause of the four-byte delta before `0x010F0232` | **Unresolved** |
+| Normal game execution | **Unresolved** |
+
+## 3.103 Task 666 — Linux x64 direct-edge dynamic execution confirmation
+
+### 한국어
+
+Task 665의 정적 incoming candidate `0x010EFF2A -> 0x010F0232`가 실제
+bounded failure 경로에서 실행되는지 확인하기 위해 기존 범용 execution
+sentinel과 HLE/return trace를 같은 실행에 적용했습니다. 이번 작업은
+코드나 guest semantics를 변경하지 않은 진단 작업입니다.
+
+`REPIU_EXECUTION_TRACE_START=0x000EFF2A`를 사용한 실행에서 다음 기록이
+출력되었습니다.
+
+```text
+[repiu-watch] event=fault guest=0x010EFF2A n=1 at=0x20001935 esi=0x00000001 esp=0x0158C84C ebx=0x0158C92C eflags=0x00200246
+```
+
+이는 static map의 direct-jump source 후보가 실제로 도달했음을 **확인됨**으로
+만듭니다. sentinel은 AOT cache `0x20001935`에서 발생했으며, 이 기록 자체는
+생산 실행 경로에 영구 breakpoint를 추가했다는 뜻이 아닙니다.
+
+같은 실행의 HLE/return trace는 다음과 같습니다.
+
+```text
+[repiu-hle-reentry] stage=hle-before ... current=0x010F0232 ... guest_esp=0x0158C84C ...
+[repiu-hle-reentry] stage=hle-after ... current=0x010F0237 ... guest_esp=0x0158C860 ...
+[repiu-hle-reentry] stage=resumed ... cache_target=0x20001917 guest_esp=0x0158C860 ...
+[repiu-x64-return-frame] n=1 source=0x00000000 guest_eip=0x00000000 guest_esp=0x0158C864 ... status=0x010F0237 ... m4=0x00000000 p0=0x00000001 p4=0x00000001 ... producer=ret producer_site=0x010F0237 ...
+[repiu-fault] unhandled signal=0x5 ... guest_stack_m4=0x0 guest_stack_0=0x1 ... esp=0x158c864 ...
+```
+
+`0x010F0232`의 원본 바이트는 `POP ES; POP EBX; POP ESI; POP EDI; POP EBP;
+RET`입니다. 따라서 ESP `0x0158C84C -> 0x0158C860`의 `+0x14`는 다섯 개의
+pop과 일치하는 정상적인 epilogue stack effect입니다. 문제는 그 뒤
+`0x010F0237 RET`가 읽는 슬롯이 zero라는 점입니다. resolver가 zero target을
+cache address로 해석하지 못하고 기존 fail-closed x64 return thunk의
+`SIGTRAP` 경계에 도달하는 흐름도 재확인되었습니다.
+
+이번 결과로 다음을 구분합니다.
+
+| 질문 | 상태 |
+|---|---|
+| `0x010EFF2A -> 0x010F0232` 정적 연결 | **확인됨** |
+| 정적 source candidate의 동적 도달 | **확인됨**: cache `0x20001935` |
+| HLE 전후 ESP | **확인됨**: `0x0158C84C -> 0x0158C860` |
+| epilogue `+0x14`가 비정상 보정인가 | **해소됨**: 원본 다섯 pop과 일치 |
+| `RET` 반환 슬롯 zero | **확인됨** |
+| zero-return upstream producer | **미확정** |
+| 정상 게임 실행 | **미확정** |
+
+따라서 다음 구현 단계는 `EIP == ...` 조건으로 ESP를 보정하는 방식이
+아니라, 공통 AOT call/return frame 또는 반환 슬롯 producer가 이 경로에서
+유효한 값을 만들고 보존하는지 확인하는 방향이어야 합니다.
+
+```mermaid
+sequenceDiagram
+    participant S as source 0x010EFF2A
+    participant H as HLE target 0x010F0232
+    participant R as RET 0x010F0237
+    participant F as x64 fail-closed thunk
+
+    S->>S: cache sentinel hit at 0x20001935
+    S->>H: direct edge reaches target
+    H->>H: ESP 0x0158C84C -> 0x0158C860
+    H->>R: five pops complete
+    R->>F: read return slot = 0
+    F-->>F: intentional SIGTRAP
+```
+
+### English
+
+Task 666 combined the existing generic execution sentinel with the HLE and
+return traces to determine whether Task 665's static incoming candidate
+`0x010EFF2A -> 0x010F0232` executes on the bounded failure path. This was a
+diagnostic-only task; no code or guest semantics changed.
+
+With `REPIU_EXECUTION_TRACE_START=0x000EFF2A`, the run recorded:
+
+```text
+[repiu-watch] event=fault guest=0x010EFF2A n=1 at=0x20001935 esi=0x00000001 esp=0x0158C84C ebx=0x0158C92C eflags=0x00200246
+```
+
+This **confirms** dynamic arrival at the static direct-jump source candidate.
+The sentinel was hit at AOT cache `0x20001935`; the line is observation evidence,
+not a permanent breakpoint added to production execution.
+
+The same run recorded:
+
+```text
+[repiu-hle-reentry] stage=hle-before ... current=0x010F0232 ... guest_esp=0x0158C84C ...
+[repiu-hle-reentry] stage=hle-after ... current=0x010F0237 ... guest_esp=0x0158C860 ...
+[repiu-hle-reentry] stage=resumed ... cache_target=0x20001917 guest_esp=0x0158C860 ...
+[repiu-x64-return-frame] n=1 source=0x00000000 guest_eip=0x00000000 guest_esp=0x0158C864 ... status=0x010F0237 ... m4=0x00000000 p0=0x00000001 p4=0x00000001 ... producer=ret producer_site=0x010F0237 ...
+[repiu-fault] unhandled signal=0x5 ... guest_stack_m4=0x0 guest_stack_0=0x1 ... esp=0x158c864 ...
+```
+
+The original bytes at `0x010F0232` are `POP ES; POP EBX; POP ESI; POP EDI;
+POP EBP; RET`. The ESP change `0x0158C84C -> 0x0158C860` is therefore the
+expected `+0x14` effect of five pops. The fault is that the slot consumed by
+`0x010F0237 RET` is zero. The resolver cannot map target zero and reaches the
+existing fail-closed x64 return-thunk `SIGTRAP`.
+
+| Question | Status |
+|---|---|
+| Static `0x010EFF2A -> 0x010F0232` edge | **Confirmed** |
+| Dynamic arrival at source candidate | **Confirmed**: cache `0x20001935` |
+| ESP before/after HLE | **Confirmed**: `0x0158C84C -> 0x0158C860` |
+| Whether epilogue `+0x14` is an ad-hoc correction | **Cleared**: matches five original pops |
+| Zero `RET` return slot | **Confirmed** |
+| Upstream zero-return producer | **Unresolved** |
+| Normal game execution | **Unresolved** |
+
+The next implementation step should therefore inspect the common AOT call/return
+frame or return-slot producer that should create and preserve a valid value, not
+adjust ESP under an `EIP == ...` condition.
+
+```mermaid
+sequenceDiagram
+    participant S as source 0x010EFF2A
+    participant H as HLE target 0x010F0232
+    participant R as RET 0x010F0237
+    participant F as x64 fail-closed thunk
+
+    S->>S: cache sentinel hit at 0x20001935
+    S->>H: direct edge reaches target
+    H->>H: ESP 0x0158C84C -> 0x0158C860
+    H->>R: five pops complete
+    R->>F: return slot = 0
+    F-->>F: intentional SIGTRAP
+```
+
 # Linux port frontier
 
 Design: [20260822-503](../design/20260822-503-linux-execution-engine.md) ·
@@ -13438,5 +14356,335 @@ does not run normally yet.
 | Core probe | **Passed**: 27/27 |
 | `0x010F44E6` coverage frontier | **Cleared**: no coverage/translation failure |
 | Next execution frontier | **Unresolved**: semantic progress point in the post-coverage hot loop |
+
+## 3.95 Task 658 — Linux x64 frontier frame-state trace
+
+**확인됨:** `0x010F316C`의 AOT fault 직전과 fault 시점의 `EBP`가 모두
+`0x5E7BBC68`이었습니다. 같은 실행에서 guest `ESP`는 `0x0158C818`이고,
+faulting `MOV [EBP-4],EAX`의 실제 접근 주소는 `0x5E7BBC64`였습니다. 이는
+접근 대상이 guest stack arena가 아니라 host stack이라는 뜻이며, 해당 `MOV`
+lowering이 `EBP`를 손상시킨 것이 아님을 확인합니다.
+
+정적 reverse map은 `0x010F3159`의 원본 bytes가 `C8 04 00 00`
+(`ENTER 4,0`)임을 보여줍니다. long-mode AOT slot에는 이 명령이 `CC`로
+표시되고, reentry fallback이 원본 bytes를 host long mode에서 실행합니다.
+따라서 host `RSP`/`RBP` 기반의 `ENTER` frame이 guest 실행 상태로 유입된 것이
+현재 frontier의 원인으로 확정되었습니다.
+
+이 작업은 진단 출력만 변경했으며, `MOV` lowering이나 fault resume 정책은
+수정하지 않았습니다. 다음 작업은 `ENTER`를 guest `ESP`/`EBP`와 guest memory
+기준으로 HLE 처리해야 합니다. `ENTER` nesting level에 대한 일반성은 아직
+후속 작업에서 검증할 미확정 항목입니다.
+
+| 질문 | 상태 |
+|---|---|
+| Fault 전후 `EBP` | **확인됨**: `0x5E7BBC68` |
+| Guest stack과 fault access 관계 | **확인됨**: access `0x5E7BBC64`는 guest arena 외부 |
+| 원인 경계 | **확인됨**: `ENTER 4,0` fallback의 host long-mode 실행 |
+| `MOV [EBP-4],EAX` lowering | **원인 아님** |
+| `ENTER` nesting level 지원 범위 | **미확정** |
+| Core probe | **통과**: 27/27 |
+
+## 3.95 (English) Task 658 — Linux x64 frontier frame-state trace
+
+**Confirmed:** `EBP` was `0x5E7BBC68` both immediately before the
+`0x010F316C` AOT fault and at fault time. In the same run, guest `ESP` was
+`0x0158C818`, and the faulting `MOV [EBP-4],EAX` accessed `0x5E7BBC64`.
+The access therefore targeted the host stack rather than the guest stack arena;
+the `MOV` lowering did not corrupt `EBP`.
+
+The static reverse map shows original bytes `C8 04 00 00` (`ENTER 4,0`) at
+`0x010F3159`. The long-mode AOT slot marks this instruction with `CC`, after
+which reentry fallback executes the original bytes in host long mode. The
+resulting host `RSP`/`RBP`-based frame enters guest execution state and is the
+confirmed cause of the current frontier.
+
+This task changed diagnostic output only; it did not change `MOV` lowering or
+fault-resume policy. The next task must handle `ENTER` using guest `ESP`/`EBP`
+and guest memory. Support for all `ENTER` nesting levels remains unresolved and
+will be verified by the follow-up task.
+
+| Question | Status |
+|---|---|
+| `EBP` before/at fault | **Confirmed**: `0x5E7BBC68` |
+| Guest-stack relation | **Confirmed**: access `0x5E7BBC64` is outside guest arena |
+| Causal boundary | **Confirmed**: host long-mode execution of fallback `ENTER 4,0` |
+| `MOV [EBP-4],EAX` lowering | **Not causal** |
+| `ENTER` nesting-level coverage | **Unresolved** |
+| Core probe | **Passed**: 27/27 |
+
+## 3.96 Task 659 — Linux x64 guest ENTER HLE
+
+**확인됨:** `ENTER 4,0`(`C8 04 00 00`)을 shared HLE dispatch에서 guest
+32비트 의미론으로 처리했습니다. 실행 trace는 기존 guest `ESP=0x0158C818`에
+대해 `EBP=0x0158C814`, `ESP=0x0158C810`을 기록했고, frame 저장은 guest
+stack arena에서 수행되었습니다. `0x010F316C`의 이전 host-stack access fault는
+재발하지 않았습니다.
+
+실행은 더 진행하여 guest `EIP=0x010EFE5F`에 대응하는 `83 C4 04`
+(`ADD ESP,4`) 주변까지 도달했습니다. 이후 `RepiuLinuxX64ReturnThunk`의
+unresolved `INT3`에서 `SIGTRAP`으로 중단되었습니다. 이는 `ENTER` HLE가
+제거한 fault와 다른 return-dispatch frontier이며, 다음 작업에서 resolver가
+null을 반환하는 경로를 귀속해야 합니다.
+
+`ENTER`의 nested frame-chain 순서는 Intel SDM Volume 1의 pseudocode에 맞춰
+구현했습니다. nesting level 0~31과 allocation `imm16`을 처리하되, 무접두
+4바이트 형식만 현재 dispatcher에서 직접 처리합니다.
+
+| 질문 | 상태 |
+|---|---|
+| `ENTER 4,0` guest frame | **확인됨**: EBP `0x0158C814`, ESP `0x0158C810` |
+| 이전 `0x010F316C` fault | **해결됨**: host-stack access 재발 없음 |
+| Core probe | **통과**: 27/27 |
+| 다음 frontier | **확인됨**: `0x010EFE5F` 이후 return thunk unresolved `INT3` |
+| 게임 정상 실행 | **미확정** |
+
+## 3.96 (English) Task 659 — Linux x64 guest ENTER HLE
+
+**Confirmed:** `ENTER 4,0` (`C8 04 00 00`) is now handled by shared HLE
+dispatch using 32-bit guest semantics. The execution trace records
+`EBP=0x0158C814` and `ESP=0x0158C810` from the prior guest
+`ESP=0x0158C818`, and the frame is stored in the guest stack arena. The prior
+host-stack access fault at `0x010F316C` does not recur.
+
+Execution progresses to the area around guest `EIP=0x010EFE5F`, whose original
+bytes are `83 C4 04` (`ADD ESP,4`). It then stops on `SIGTRAP` at the unresolved
+`INT3` in `RepiuLinuxX64ReturnThunk`. This is a different return-dispatch
+frontier from the cleared `ENTER` fault; the next task must attribute the path
+that returns null from the resolver.
+
+The nested `ENTER` frame-chain order follows the pseudocode in Intel SDM
+Volume 1. Nesting levels 0–31 and the `imm16` allocation are handled, while the
+current dispatcher directly handles only the unprefixed four-byte form.
+
+| Question | Status |
+|---|---|
+| Guest frame for `ENTER 4,0` | **Confirmed**: EBP `0x0158C814`, ESP `0x0158C810` |
+| Previous `0x010F316C` fault | **Cleared**: no host-stack access recurrence |
+| Core probe | **Passed**: 27/27 |
+| Next frontier | **Confirmed**: unresolved return-thunk `INT3` after `0x010EFE5F` |
+| Normal game execution | **Unresolved** |
+
+## 3.97 Task 660 — Linux x64 zero-return stack tail
+
+### 한국어
+
+**확인됨:** Task 659 이후의 zero-return frame은 `guest EIP=0x010F0237`의
+`RET`에서 guest target `0`을 보고 있습니다. frame trace의 대표 상태는
+`guest_esp=0x0158C864`, `status=0x010F0237`, `[ESP-8]=0x010EFE5F`,
+`[ESP-4]=0`, `[ESP]=0`, `[ESP+4]=1`, `matches=0x2`입니다. 이 상태는
+기존의 fail-closed return thunk `SIGTRAP`으로 이어집니다.
+
+Task 660은 기존 `REPIU_LINUX_X64_RETURN_STACK_TAIL` ring 출력을
+zero-return frame 경로에 연결했습니다. `REPIU_LINUX_X64_RETURN_STACK_TAIL=96`
+실행에서 다음 출력이 확인되었습니다.
+
+```text
+[repiu-x64-return-stack-tail] n=1 target=0x00000000 sequence=14497674 printed=96
+```
+
+tail의 시간 순서 기록에는 `0x010EFE55`의 guest push와
+`0x010EFE5A`의 direct-call fallthrough `0x010EFE5F`,
+`0x010EFEC0`–`0x010EFEC3`의 연속 push, `0x010EFEC7`의 direct-call
+fallthrough `0x010EFECC`가 포함되었습니다. 이 결과는 반환 슬롯을 직접
+쓴 writer만이 아니라 슬롯 재사용 직전의 bounded stack operation 순서도
+확인할 수 있게 하지만, zero target의 원인을 결정하지는 않습니다.
+
+```mermaid
+sequenceDiagram
+    participant C as x64 cache
+    participant T as return thunk
+    participant F as zero-return frame
+    participant S as stack-tail ring
+
+    C->>T: RET at 0x010F0237, target 0
+    T->>F: frame.guest_source = 0
+    F->>S: request bounded recent writes
+    S-->>F: sequence 14497674, 96 records
+    F-->>T: preserve fail-closed unresolved transfer
+```
+
+`call_depth=1024`는 추적 깊이가 포화되었음을 보여 주는 관찰값이지만,
+현재 원인으로 확정하지 않았습니다. 다음 frontier는
+`0x010F022D`–`0x010F0237` 함수 epilogue와 `RET` 직전 guest stack 상태입니다.
+`0x010F0237`의 zero target 원인과 정상 게임 실행은 아직 미확정입니다.
+
+| 질문 | 상태 |
+|---|---|
+| Zero-return target | **확인됨**: `0x00000000` |
+| Return producer | **확인됨**: `RET` at `0x010F0237` |
+| Recent stack-tail visibility | **해결**: bounded 96-record tail 출력 |
+| Zero target 원인 | **미확정** |
+| `call_depth=1024`의 인과성 | **미확정** |
+| Core probe | **통과**: 27/27 |
+| 정상 게임 실행 | **미확정** |
+
+### English
+
+**Confirmed:** After Task 659, the zero-return frame sees guest target `0` at
+the `RET` at guest `EIP=0x010F0237`. The representative frame state is
+`guest_esp=0x0158C864`, `status=0x010F0237`, `[ESP-8]=0x010EFE5F`,
+`[ESP-4]=0`, `[ESP]=0`, `[ESP+4]=1`, and `matches=0x2`. The state reaches the
+existing fail-closed return-thunk `SIGTRAP`.
+
+Task 660 connected the existing `REPIU_LINUX_X64_RETURN_STACK_TAIL` ring to
+the zero-return frame path. With `REPIU_LINUX_X64_RETURN_STACK_TAIL=96`, the
+run printed:
+
+```text
+[repiu-x64-return-stack-tail] n=1 target=0x00000000 sequence=14497674 printed=96
+```
+
+The chronological tail included the guest push at `0x010EFE55`, the direct
+call fallthrough `0x010EFE5F` at `0x010EFE5A`, the consecutive pushes at
+`0x010EFEC0`–`0x010EFEC3`, and the direct-call fallthrough `0x010EFECC` at
+`0x010EFEC7`. This makes the bounded stack-operation sequence before return
+slot reuse observable in addition to the slot's direct writers, but it does
+not determine the root cause of the zero target.
+
+The `call_depth=1024` value is an observation that tracing depth saturated;
+it has not been established as causal. The next frontier is the function
+epilogue at `0x010F022D`–`0x010F0237` and guest stack state immediately before
+the `RET`. The cause of the zero target and normal game execution remain
+unresolved.
+
+| Question | Status |
+|---|---|
+| Zero-return target | **Confirmed**: `0x00000000` |
+| Return producer | **Confirmed**: `RET` at `0x010F0237` |
+| Recent stack-tail visibility | **Cleared**: bounded 96-record tail output |
+| Cause of zero target | **Unresolved** |
+| Causality of `call_depth=1024` | **Unresolved** |
+| Core probe | **Passed**: 27/27 |
+| Normal game execution | **Unresolved** |
+
+## 3.98 Task 661 — Linux x64 epilogue stack delta diagnosis
+
+### 한국어
+
+**확인됨:** `0x010EFEC4`의 `PUSH ES` HLE는 selector `0x0024`를 destination
+`0x0158C848`에 저장하고 guest ESP를 `0x0158C84C`에서 `0x0158C848`로
+정확히 감소시킵니다.
+
+```text
+[repiu-segment-hle-watch] eip=0x010EFEC4 opcode=0x06 selector=0x0024 destination=0x0158C848 value=0x00000024 esp=0x0158C84C->0x0158C848 next_eip=0x010EFEC5 size=1
+```
+
+정적 map은 `0x010EFEC7`이 `0x010F09F0`으로 direct CALL하고
+fallthrough `0x010EFECC`를 사용함을 보여 줍니다. callee는
+`0x010F0A14 POP ESI` 뒤 `0x010F0A15 RET`인 plain return 경로를 갖습니다.
+
+반면 `0x010F0232`의 bounded execution trace는 다음을 기록했습니다.
+
+```text
+[repiu-exec-trace] #0 eip=0x010F0232 esp=0x0158C84C stack=0x0158C92C eax=0x0000FFFF ebx=0x0158C92C edx=0x0138C679 ebp=0x0158C848 eflags=0x00200346
+```
+
+따라서 `PUSH ES` 이후 기대되는 `0x0158C848`과 `POP ES` 직전 관측값
+`0x0158C84C` 사이의 4바이트 차이는 `PUSH ES` 자체의 stack-width 오류로
+설명되지 않습니다. Task 660의 256-record tail은 다음 call/push 순서를
+보여 줍니다.
+
+```text
+0x010EFE55 push -> esp=0x0158C860 value=0x010EFE2C
+0x010EFE5A call -> esp=0x0158C85C value=0x010EFE5F
+0x010EFEC0 push -> esp=0x0158C858 value=0x00000000
+0x010EFEC1 push -> esp=0x0158C854 value=0x010FB81E
+0x010EFEC2 push -> esp=0x0158C850 value=0x00000001
+0x010EFEC3 push -> esp=0x0158C84C value=0x0158C92C
+0x010EFEC7 call -> esp=0x0158C844 value=0x010EFECC
+```
+
+현재 증거로는 차이가 `0x010EFEC7` 호출/복귀 또는
+`0x010F022C` guest `INT3`에서 `0x010F0232` HLE boundary로 재진입하는
+경계에 있을 가능성이 있지만, 어느 경계가 실제로 ESP를 올렸는지는
+미확정입니다. trace의 `EAX=0x0000FFFF`와 정적 `0x010F022D MOV EAX,8BADF00D`
+사이의 동적 포함 여부도 미확정입니다.
+
+```mermaid
+sequenceDiagram
+    participant P as 0x010EFEC4 PUSH ES
+    participant C as 0x010EFEC7 CALL
+    participant R as 0x010F09F0 RET
+    participant E as 0x010F0232 POP ES
+
+    P->>P: ESP 0x0158C84C -> 0x0158C848
+    C->>C: fallthrough 0x010EFECC at ESP 0x0158C844
+    C->>R: enter callee
+    R-->>C: plain RET
+    C->>E: observed ESP 0x0158C84C
+```
+
+다음 frontier는 `0x010F022C→0x010F022D→0x010F0232` reentry와
+`0x010EFEC7→0x010F09F0` return resolver를 각각 분리해 포착하는 것입니다.
+stack width, return semantics, zero target 복구는 변경하지 않았습니다.
+
+추가 bounded 실행에서 `REPIU_GUEST_WATCH=0x010F022C`를 사용했지만
+`[repiu-watch]` 또는 `[repiu-guest-int3]`가 출력되지 않고 zero-return
+frame으로 진행했습니다. 따라서 현재 실행이 `0x010F022C`를 실제로
+통과했다는 것은 확인되지 않았으며, 해당 reentry는 후보 경계로만
+기록합니다. 다음에는 `0x010F0232`로 들어오는 실제 transfer origin을
+먼저 확정해야 합니다.
+
+| 질문 | 상태 |
+|---|---|
+| `PUSH ES` guest stack effect | **확인됨**: `-4`, destination `0x0158C848` |
+| `0x010EFEC7` CALL fallthrough | **확인됨**: `0x010EFECC` |
+| `0x010F09F0` return encoding | **확인됨**: plain `RET` path |
+| `0x010F0232` pre-POP ESP | **확인됨**: `0x0158C84C` |
+| 4-byte delta의 실제 경계 | **미확정** |
+| `F022D MOV`의 동적 포함 여부 | **미확정** |
+| `0x010F022C` guest INT3 통과 여부 | **미확정**: bounded watch에서 미관찰 |
+| 정상 게임 실행 | **미확정** |
+
+### English
+
+**Confirmed:** the `PUSH ES` HLE at `0x010EFEC4` stores selector `0x0024` at
+`0x0158C848` and decreases guest ESP exactly from `0x0158C84C` to
+`0x0158C848`.
+
+The static map shows a direct CALL at `0x010EFEC7` to `0x010F09F0` with
+fallthrough `0x010EFECC`. The callee has a plain return path at
+`0x010F0A15` after `POP ESI`.
+
+The bounded execution trace at `0x010F0232` recorded:
+
+```text
+[repiu-exec-trace] #0 eip=0x010F0232 esp=0x0158C84C stack=0x0158C92C eax=0x0000FFFF ebx=0x0158C92C edx=0x0138C679 ebp=0x0158C848 eflags=0x00200346
+```
+
+The four-byte difference between expected post-`PUSH ES` ESP `0x0158C848`
+and observed pre-`POP ES` ESP `0x0158C84C` is therefore not explained by a
+`PUSH ES` stack-width error. The 256-record Task 660 tail shows the relevant
+pushes followed by the `0x010EFEC7` fallthrough write at guest ESP
+`0x0158C844`.
+
+The current evidence only narrows the difference to the
+`0x010EFEC7` CALL/return path or the reentry boundary from guest `INT3` at
+`0x010F022C` to the `0x010F0232` HLE boundary. Which boundary actually
+increases ESP by four remains unresolved. Whether the dynamic path with
+`EAX=0x0000FFFF` included the static `0x010F022D MOV EAX,8BADF00D` slot also
+remains unresolved.
+
+The next frontier is to capture `0x010F022C`→`0x010F022D`→`0x010F0232`
+reentry separately from the `0x010EFEC7`→`0x010F09F0` return resolver. No
+stack-width, return-semantics, or zero-target correction was applied.
+
+An additional bounded run with `REPIU_GUEST_WATCH=0x010F022C` emitted neither
+`[repiu-watch]` nor `[repiu-guest-int3]` before the zero-return frame. The
+current run therefore does not confirm that execution passed through
+`0x010F022C`; that reentry remains a candidate edge. The actual transfer origin
+entering `0x010F0232` must be identified first.
+
+| Question | Status |
+|---|---|
+| `PUSH ES` guest stack effect | **Confirmed**: `-4`, destination `0x0158C848` |
+| `0x010EFEC7` CALL fallthrough | **Confirmed**: `0x010EFECC` |
+| `0x010F09F0` return encoding | **Confirmed**: plain `RET` path |
+| Pre-`POP` ESP at `0x010F0232` | **Confirmed**: `0x0158C84C` |
+| Actual boundary of the four-byte delta | **Unresolved** |
+| Dynamic inclusion of the `F022D MOV` | **Unresolved** |
+| Passage through guest `INT3` at `0x010F022C` | **Unresolved**: not observed in bounded watch |
+| Normal game execution | **Unresolved** |
 
 ---

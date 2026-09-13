@@ -136,6 +136,14 @@ enum class LongModeLowering
     // the `REX` byte it inserts and changes nothing else: no displacement, no
     // immediate, no opcode.
     kStackPointerToR15,
+    // Task 674. `MOV ESP, imm32` has no ModRM field, so it cannot use the
+    // field-rewrite above. Emit the opcode-embedded destination as `MOV R15D,
+    // imm32`, preserving the guest stack value without touching host RSP.
+    kStackPointerImmediateToR15,
+    // Task 676. A destination AH/CH/DH/BH cannot be encoded with a REX prefix.
+    // Load through DL using R15D, copy into the legacy high byte, and restore
+    // DL so the guest GPR mapping remains unchanged.
+    kStackPointerHighByteDestinationToR15,
     // Task 614. A REX makes ModRM high-byte registers (`AH`/`CH`/`DH`/`BH`)
     // name the low-byte registers (`SPL`/`BPL`/`SIL`/`DIL`) instead. When the
     // instruction also names guest ESP through memory, materialise the source

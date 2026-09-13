@@ -27,6 +27,7 @@
     .globl RepiuLinuxX64GuestEntry
     .type RepiuLinuxX64GuestEntry, @function
 RepiuLinuxX64GuestEntry:
+    mov qword ptr [rip + repiu_linux_x64_guest_entry_rsp], rsp
     // Every callee-saved register is saved, not only the ones the guest is
     // known to touch. Emitted code holds guest EBX, EBP and guest ESP in
     // RBX, RBP and R15, and a boundary can leave any of them anywhere.
@@ -54,6 +55,7 @@ RepiuLinuxX64GuestEntry:
     // hardware -- the same thing the emitter's `lea r15d, ...` relies on.
     mov r15d, dword ptr [r11 + REPIU_X64_ENTRY_GUEST_ESP]
 
+    mov qword ptr [rip + repiu_linux_x64_cache_call_rsp], rsp
     call r10
 
     // The state block address is back off the stack rather than kept in a

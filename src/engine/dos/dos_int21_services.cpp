@@ -542,6 +542,54 @@ bool HandleDosCreateFile(repiu::platform::GuestCpuContext* win32_context, Thread
     return true;
 }
 
+void TraceDosFileAttributesResult(
+    const repiu::platform::GuestCpuContext& win32_context,
+    std::uint8_t subfunction,
+    const std::string& guest_path,
+    const repiu::hle::DosResolvedPath& resolved,
+    bool success,
+    bool path_readable)
+{
+    const char* const trace_value = std::getenv("REPIU_DOS_ATTR_TRACE");
+    if (trace_value == nullptr || std::strcmp(trace_value, "0") == 0)
+    {
+        return;
+    }
+
+    static volatile long success_trace_count = 0;
+    static volatile long failure_trace_count = 0;
+    const long sequence = success
+        ? repiu::platform::AtomicIncrement(&success_trace_count)
+        : repiu::platform::AtomicIncrement(&failure_trace_count);
+    const long maximum = success ? 8L : 64L;
+    if (sequence > maximum)
+    {
+        return;
+    }
+
+    std::fprintf(
+        stderr,
+        "[repiu-dos-attr] kind=%s n=%ld eip=0x%08X subfunction=0x%02X "
+        "guest_path=\"%s\" dos_path=\"%s\" host_path=\"%s\" "
+        "success=%u readable=%u error=0x%04X eax=0x%08X ecx=0x%08X "
+        "edx=0x%08X cf=%u\n",
+        success ? "success" : "failure",
+        sequence,
+        static_cast<std::uint32_t>(win32_context.Eip),
+        static_cast<unsigned>(subfunction),
+        guest_path.c_str(),
+        resolved.dos_path.c_str(),
+        resolved.host_path.string().c_str(),
+        success ? 1U : 0U,
+        path_readable ? 1U : 0U,
+        static_cast<unsigned>(
+            repiu::hle::DosPathResultToErrorCode(resolved.result)),
+        static_cast<std::uint32_t>(win32_context.Eax),
+        static_cast<std::uint32_t>(win32_context.Ecx),
+        static_cast<std::uint32_t>(win32_context.Edx),
+        (win32_context.EFlags & 1U) != 0U ? 1U : 0U);
+}
+
 bool HandleDosFileAttributes(repiu::platform::GuestCpuContext* win32_context,
                              ThreadContext* context)
 {
@@ -551,9 +599,17 @@ bool HandleDosFileAttributes(repiu::platform::GuestCpuContext* win32_context,
     repiu::hle::DosResolvedPath resolved;
     if (!ReadGuestAsciz(context, win32_context->Edx, 260, &guest_path))
     {
+        resolved.result = repiu::hle::DosPathResult::kPathNotFound;
+        resolved.message = "DOS file attribute path is outside runtime memory";
         win32_context->Eax =
             (win32_context->Eax & 0xFFFF0000U) | 0x0003U;
         win32_context->EFlags |= 1U;
+        TraceDosFileAttributesResult(*win32_context,
+                                     subfunction,
+                                     guest_path,
+                                     resolved,
+                                     false,
+                                     false);
         return true;
     }
 
@@ -606,6 +662,12 @@ bool HandleDosFileAttributes(repiu::platform::GuestCpuContext* win32_context,
             repiu::hle::DosPathResultToErrorCode(resolved.result);
         win32_context->EFlags |= 1U;
     }
+    TraceDosFileAttributesResult(*win32_context,
+                                 subfunction,
+                                 guest_path,
+                                 resolved,
+                                 success,
+                                 true);
     return true;
 }
 

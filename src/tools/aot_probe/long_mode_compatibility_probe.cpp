@@ -241,10 +241,84 @@ bool ProbeStackPointerRefusal()
             LongModeByteCompatibility::kNeedsReencode &&
         control.lowering ==
             repiu::runtime::LongModeLowering::kAddressSizePrefix;
+
+    // Task 674. The opcode-embedded `MOV ESP,imm32` form has no ModRM field,
+    // so it needs its own lowering to the guest stack register R15D.
+    const std::uint8_t mov_esp_immediate[] = {
+        0xBCU, 0x00U, 0x20U, 0xFBU, 0x8DU};
+    const std::uint8_t expected_mov_esp_immediate[] = {
+        0x41U, 0xBFU, 0x00U, 0x20U, 0xFBU, 0x8DU};
+    std::uint8_t mov_esp_immediate_lowered[
+        repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t mov_esp_immediate_count = 0U;
+    const LongModeCompatibilityResult mov_esp_immediate_verdict =
+        ClassifyLongModeBytes(mov_esp_immediate,
+                              sizeof(mov_esp_immediate));
+    const bool mov_esp_immediate_ok =
+        mov_esp_immediate_verdict.compatibility ==
+            LongModeByteCompatibility::kNeedsReencode &&
+        mov_esp_immediate_verdict.divergence ==
+            LongModeDivergence::kStackPointerRegister &&
+        mov_esp_immediate_verdict.lowering ==
+            repiu::runtime::LongModeLowering::kStackPointerImmediateToR15 &&
+        repiu::runtime::LowerLongModeBytes(
+            mov_esp_immediate, sizeof(mov_esp_immediate),
+            mov_esp_immediate_lowered, &mov_esp_immediate_count, nullptr) &&
+        mov_esp_immediate_count == sizeof(expected_mov_esp_immediate) &&
+        std::memcmp(mov_esp_immediate_lowered,
+                    expected_mov_esp_immediate,
+                    sizeof(expected_mov_esp_immediate)) == 0;
+    // Task 676. `MOV AH,[ESP+0x2C]` cannot keep AH as the ModRM destination
+    // once a REX prefix is needed for the guest stack base. The lowering uses
+    // DL as a temporary byte and restores it around the R15-based load.
+    const std::uint8_t high_byte_destination[] = {
+        0x8AU, 0x64U, 0x24U, 0x2CU};
+    const std::uint8_t expected_high_byte_destination[] = {
+        0x44U, 0x88U, 0xF2U,
+        0x41U, 0x8AU, 0x54U, 0x27U, 0x2CU,
+        0x8AU, 0xE2U,
+        0x44U, 0x88U, 0xF2U};
+    std::uint8_t high_byte_destination_lowered[
+        repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t high_byte_destination_count = 0U;
+    const LongModeCompatibilityResult high_byte_destination_verdict =
+        ClassifyLongModeBytes(high_byte_destination,
+                              sizeof(high_byte_destination));
+    const bool high_byte_destination_ok =
+        high_byte_destination_verdict.compatibility ==
+            LongModeByteCompatibility::kNeedsReencode &&
+        high_byte_destination_verdict.divergence ==
+            LongModeDivergence::kStackPointerRegister &&
+        high_byte_destination_verdict.lowering ==
+            repiu::runtime::LongModeLowering::
+                kStackPointerHighByteDestinationToR15 &&
+        repiu::runtime::LowerLongModeBytes(
+            high_byte_destination, sizeof(high_byte_destination),
+            high_byte_destination_lowered, &high_byte_destination_count,
+            nullptr) &&
+        high_byte_destination_count == sizeof(expected_high_byte_destination) &&
+        std::memcmp(high_byte_destination_lowered,
+                    expected_high_byte_destination,
+                    sizeof(expected_high_byte_destination)) == 0;
+    const std::uint8_t high_byte_read_write[] = {
+        0x86U, 0x64U, 0x24U, 0x2CU};
+    const bool high_byte_read_write_refused =
+        ClassifyLongModeBytes(high_byte_read_write,
+                              sizeof(high_byte_read_write)).compatibility ==
+            LongModeByteCompatibility::kUnsupported;
     std::cout << "long_mode_stack_pointer_reencoded=" << (ok ? "true" : "false")
               << ",non_stack_base_still_lowered="
-              << (control_ok ? "true" : "false") << "\n";
-    return ok && control_ok && cmp_byte_esp_lowered_ok;
+              << (control_ok ? "true" : "false")
+              << ",mov_esp_immediate_lowered="
+              << (mov_esp_immediate_ok ? "true" : "false")
+              << ",high_byte_destination_lowered="
+              << (high_byte_destination_ok ? "true" : "false")
+              << ",high_byte_read_write_refused="
+              << (high_byte_read_write_refused ? "true" : "false")
+              << "\n";
+    return ok && control_ok && cmp_byte_esp_lowered_ok &&
+        mov_esp_immediate_ok && high_byte_destination_ok &&
+        high_byte_read_write_refused;
 }
 
 // Task 557. INC/DEC r32 becomes the ModRM group form.
@@ -289,6 +363,17 @@ bool ProbeStackSequenceLowering()
          {ZYDIS_MNEMONIC_LEA, ZYDIS_MNEMONIC_MOV}},
         {"push_imm8", {0x6AU, 0xFFU}, 2,
          {ZYDIS_MNEMONIC_LEA, ZYDIS_MNEMONIC_MOV}},
+        // Task 669. FF /6 must use the guest stack even when its source is a
+        // memory operand. The source load precedes the guest ESP decrement.
+        {"push_rm32_register", {0xFFU, 0xF6U}, 2,
+         {ZYDIS_MNEMONIC_LEA, ZYDIS_MNEMONIC_MOV}},
+        {"push_rm32_memory", {0xFFU, 0x75U, 0x18U}, 3,
+         {ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_LEA, ZYDIS_MNEMONIC_MOV}},
+        {"push_rm32_esp_memory", {0xFFU, 0x74U, 0x24U, 0x04U}, 3,
+         {ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_LEA, ZYDIS_MNEMONIC_MOV}},
+        {"push_rm32_absolute_memory",
+         {0xFFU, 0x35U, 0x78U, 0x56U, 0x34U, 0x12U}, 3,
+         {ZYDIS_MNEMONIC_MOV, ZYDIS_MNEMONIC_LEA, ZYDIS_MNEMONIC_MOV}},
         {"pushfd", {0x9CU}, 4,
          {ZYDIS_MNEMONIC_PUSHFQ, ZYDIS_MNEMONIC_POP, ZYDIS_MNEMONIC_LEA,
           ZYDIS_MNEMONIC_MOV}},
@@ -393,6 +478,56 @@ bool ProbeStackSequenceLowering()
                                    sizeof(expected_store)) == 0;
     }
 
+    // Task 669. `PUSH [EBP+0x18]` first loads the source into R14D, then
+    // adjusts guest ESP, and finally stores the dword through R15D. The
+    // ESP-based form additionally rewrites the source SIB base to R15D.
+    const std::uint8_t push_mem[] = {0xFFU, 0x75U, 0x18U};
+    const std::uint8_t expected_push_load[] = {
+        0x67U, 0x44U, 0x8BU, 0x75U, 0x18U};
+    const std::uint8_t expected_push_store[] = {
+        0x45U, 0x89U, 0x37U};
+    std::uint8_t push_lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t push_count = 0;
+    bool push_bytes_ok = repiu::runtime::LowerLongModeBytes(
+        push_mem, sizeof(push_mem), push_lowered, &push_count, nullptr) &&
+        push_count == 12U &&
+        std::memcmp(push_lowered, expected_push_load,
+                    sizeof(expected_push_load)) == 0 &&
+        std::memcmp(push_lowered + push_count - sizeof(expected_push_store),
+                    expected_push_store, sizeof(expected_push_store)) == 0;
+
+    const std::uint8_t push_esp_mem[] = {
+        0xFFU, 0x74U, 0x24U, 0x04U};
+    const std::uint8_t expected_push_esp_load[] = {
+        0x67U, 0x45U, 0x8BU, 0x74U, 0x27U, 0x04U};
+    std::uint8_t push_esp_lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t push_esp_count = 0;
+    const bool push_esp_bytes_ok = repiu::runtime::LowerLongModeBytes(
+        push_esp_mem, sizeof(push_esp_mem), push_esp_lowered,
+        &push_esp_count, nullptr) &&
+        push_esp_count == 13U &&
+        std::memcmp(push_esp_lowered, expected_push_esp_load,
+                    sizeof(expected_push_esp_load)) == 0;
+
+    // A 0x67 prefix alone still leaves ModRM rm=101 RIP-relative in long
+    // mode. The absolute guest disp32 must therefore be rewritten to SIB.
+    const std::uint8_t push_absolute_mem[] = {
+        0xFFU, 0x35U, 0x78U, 0x56U, 0x34U, 0x12U};
+    const std::uint8_t expected_push_absolute_load[] = {
+        0x67U, 0x44U, 0x8BU, 0x34U, 0x25U, 0x78U, 0x56U, 0x34U, 0x12U};
+    std::uint8_t push_absolute_lowered[
+        repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t push_absolute_count = 0;
+    const bool push_absolute_bytes_ok = repiu::runtime::LowerLongModeBytes(
+        push_absolute_mem, sizeof(push_absolute_mem), push_absolute_lowered,
+        &push_absolute_count, nullptr) &&
+        push_absolute_count == 16U &&
+        std::memcmp(push_absolute_lowered, expected_push_absolute_load,
+                    sizeof(expected_push_absolute_load)) == 0 &&
+        std::memcmp(push_absolute_lowered + push_absolute_count -
+                        sizeof(expected_push_store),
+                    expected_push_store, sizeof(expected_push_store)) == 0;
+
     // Task 631. The two forms deliberately left as boundaries: an ESP-based
     // destination, whose effective address the SDM computes after the
     // increment, and the operand-size-prefixed `POP m16`.
@@ -452,11 +587,18 @@ bool ProbeStackSequenceLowering()
               << (control_still_refused ? "true" : "false")
               << ",pop_memory_store_encoding="
               << (pop_bytes_ok ? "true" : "false")
+              << ",push_rm32_memory_encoding="
+              << (push_bytes_ok ? "true" : "false")
+              << ",push_rm32_esp_encoding="
+              << (push_esp_bytes_ok ? "true" : "false")
+              << ",push_rm32_absolute_encoding="
+              << (push_absolute_bytes_ok ? "true" : "false")
               << ",pop_memory_refusals_kept="
               << (pop_refusals_kept ? "true" : "false")
               << ",pushad_entry_esp=" << (pushad_ok ? "true" : "false")
               << "\n";
     return ok && sign_ok && control_still_refused && pop_bytes_ok &&
+        push_bytes_ok && push_esp_bytes_ok && push_absolute_bytes_ok &&
         pop_refusals_kept && pushad_ok;
 }
 

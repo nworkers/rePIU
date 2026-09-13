@@ -21,6 +21,7 @@
     .globl RepiuLinuxX64ReturnThunk
     .type RepiuLinuxX64ReturnThunk, @function
 RepiuLinuxX64ReturnThunk:
+    mov qword ptr [rip + repiu_linux_x64_return_thunk_rsp], rsp
     // R11 and R10 are caller-saved and are not guest registers, so they are
     // free here and free to lose across the call below.
     mov r11, qword ptr [rip + repiu_linux_x64_dispatch_frame]

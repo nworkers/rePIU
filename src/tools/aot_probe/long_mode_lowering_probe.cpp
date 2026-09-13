@@ -535,16 +535,34 @@ bool ProbeStackPointerHighByteSource(const std::uint32_t* data)
         return false;
     }
 
+    // Task 676. A destination high byte now has a common lowering when the
+    // memory source is based on ESP. It uses DL around the R15-based load,
+    // because a REX prefix cannot name AH/CH/DH/BH.
     const std::uint8_t destination[] = {0x8AU, 0x24U, 0x24U};
     const std::uint8_t exchange[] = {0x86U, 0x24U, 0x24U};
     const auto destination_verdict = ClassifyLongModeBytes(
         destination, sizeof(destination));
     const auto exchange_verdict = ClassifyLongModeBytes(exchange,
                                                         sizeof(exchange));
-    const bool refusals =
+    const std::uint8_t destination_expected[] = {
+        0x44U, 0x88U, 0xF2U,
+        0x41U, 0x8AU, 0x14U, 0x27U,
+        0x8AU, 0xE2U,
+        0x44U, 0x88U, 0xF2U};
+    std::uint8_t destination_lowered[kMaxLoweredBytes] = {};
+    std::size_t destination_count = 0U;
+    const bool destination_lowered_ok =
         destination_verdict.compatibility ==
-            LongModeByteCompatibility::kUnsupported &&
-        destination_verdict.lowering == LongModeLowering::kNone &&
+            LongModeByteCompatibility::kNeedsReencode &&
+        destination_verdict.lowering ==
+            LongModeLowering::kStackPointerHighByteDestinationToR15 &&
+        LowerLongModeBytes(destination, sizeof(destination),
+                            destination_lowered, &destination_count) &&
+        destination_count == sizeof(destination_expected) &&
+        std::memcmp(destination_lowered, destination_expected,
+                    sizeof(destination_expected)) == 0;
+    const bool refusals =
+        destination_lowered_ok &&
         exchange_verdict.compatibility ==
             LongModeByteCompatibility::kUnsupported &&
         exchange_verdict.lowering == LongModeLowering::kNone;

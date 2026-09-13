@@ -52,6 +52,7 @@ bool HleReentryTraceMatches(const std::uint32_t handled_guest_eip,
 
 void TraceHleReentry(const char* stage,
                      const ThreadContext* context,
+                     const repiu::platform::GuestCpuContext* registers,
                      const std::uint32_t handled_guest_eip,
                      const std::uint32_t current_guest_eip,
                      const bool cache_hit,
@@ -81,7 +82,7 @@ void TraceHleReentry(const char* stage,
         "[repiu-hle-reentry] stage=%s n=%u watch=0x%08X "
         "handled=0x%08X current=0x%08X pending=%u legacy=%u cache_hit=%u "
         "span_safe=%u posthle=%u translated=%u cache_target=0x%08X "
-        "detail=%s\n",
+        "guest_esp=0x%08X detail=%s\n",
         stage == nullptr ? "unknown" : stage,
         occurrence,
         HleReentryTraceAddress(),
@@ -94,6 +95,9 @@ void TraceHleReentry(const char* stage,
         post_hle_enabled ? 1U : 0U,
         translation_resolved ? 1U : 0U,
         cache_target,
+        registers == nullptr
+            ? 0U
+            : static_cast<unsigned>(registers->Esp),
         detail == nullptr ? "" : detail);
 }
 
@@ -271,7 +275,7 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
     const std::uint32_t current =
         static_cast<std::uint32_t>(win32_context->Eip);
     TraceHleReentry(
-        "entry", context, handled_guest_eip, current, false, false,
+        "entry", context, win32_context, handled_guest_eip, current, false, false,
         false, false, 0U,
         context->aot_reentry_pending
             ? "pending"
@@ -358,11 +362,28 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
         const char* span_reason = nullptr;
         const bool span_safe = IsImmediateHleReentrySpanSafe(
             context, current, &span_reason);
+#if defined(__x86_64__)
+        // A cache hit is already a long-mode-safe lowering. The span guard is
+        // still useful for the original-byte bridge, but it must not force a
+        // non-identical x64 continuation back through guest bytes merely
+        // because another HLE boundary appears nearby.
+        const bool long_mode_identical =
+            CanResumeLinuxX64LegacyTarget(context, current);
+        const bool non_identical_cache_resume =
+            !span_safe && !long_mode_identical;
+#else
+        const bool non_identical_cache_resume = false;
+#endif
         TraceHleReentry(
             span_safe ? "cache-hit-span-safe" : "cache-hit-span-unsafe",
-            context, handled_guest_eip, current, true, span_safe, false, false,
-            cache_address, span_safe ? "resume-candidate" : span_reason);
-        if (!span_safe)
+            context, win32_context, handled_guest_eip, current, true, span_safe, false, false,
+            cache_address,
+            span_safe
+                ? "resume-candidate"
+                : (non_identical_cache_resume
+                       ? "resume-non-identical-cache"
+                       : span_reason));
+        if (!span_safe && !non_identical_cache_resume)
         {
             ++context->hle_reentry_reject_span_unsafe;
             return false;
@@ -378,7 +399,7 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
         TraceHleReentry(
             post_hle_enabled ? "cache-miss-gate-enabled"
                              : "cache-miss-gate-disabled",
-            context, handled_guest_eip, current, false, false,
+            context, win32_context, handled_guest_eip, current, false, false,
             post_hle_enabled, false, 0U,
             post_hle_enabled ? "translate" : "reject");
         if (!post_hle_enabled)
@@ -391,13 +412,13 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
                 context, current, &cache_address))
         {
             TraceHleReentry(
-                "translation-failed", context, handled_guest_eip, current,
+                "translation-failed", context, win32_context, handled_guest_eip, current,
                 false, false, true, false, 0U,
                 context->aot_translation_result.message.c_str());
             return false;
         }
         TraceHleReentry(
-            "translation-success", context, handled_guest_eip, current,
+            "translation-success", context, win32_context, handled_guest_eip, current,
             false, false, true, true, cache_address, "resume-candidate");
         context->aot_dbt_hle_translation_success_count.fetch_add(
             1U, std::memory_order_relaxed);
@@ -412,11 +433,23 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
     context->aot_dbt_hle_reentry_success_count.fetch_add(
         1, std::memory_order_relaxed);
     TraceHleReentry(
-        "resumed", context, handled_guest_eip, current, cache_hit, true,
+        "resumed", context, win32_context, handled_guest_eip, current, cache_hit, true,
         !cache_hit, true, cache_address, "resume");
     AccumulateAotResidency(context, current);
     BumpAotReentryCount(context);
     return true;
+}
+
+void TraceAotHleReentryState(
+    const char* stage,
+    const ThreadContext* context,
+    const repiu::platform::GuestCpuContext* registers,
+    const std::uint32_t handled_guest_eip,
+    const std::uint32_t current_guest_eip)
+{
+    TraceHleReentry(
+        stage, context, registers, handled_guest_eip, current_guest_eip,
+        false, false, false, false, 0U, "dispatcher-state");
 }
 
 }  // namespace repiu::engine

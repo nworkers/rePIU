@@ -3,6 +3,7 @@
 #include "aot_generation_failure_policy.h"
 #include "aot_dbt_glide_gate_dispatch.h"
 #include "aot_dbt_direct_edge_dispatch.h"
+#include "aot_dbt_dispatch.h"
 
 #include "native_linear_span.h"
 #include "aot_residency_sample.h"
@@ -37,6 +38,65 @@
 
 namespace repiu::engine
 {
+
+namespace
+{
+
+bool AotReentryCompatibilityTraceMatches(
+    const std::uint32_t guest_address)
+{
+    const char* const value =
+        std::getenv("REPIU_AOT_REENTRY_COMPAT_TRACE");
+    if (value == nullptr || *value == '\0')
+    {
+        return false;
+    }
+    if (std::strcmp(value, "1") == 0 || std::strcmp(value, "all") == 0)
+    {
+        return true;
+    }
+    errno = 0;
+    char* parse_end = nullptr;
+    const unsigned long parsed = std::strtoul(value, &parse_end, 0);
+    return errno == 0 && parse_end != value && *parse_end == '\0' &&
+           parsed <= std::numeric_limits<std::uint32_t>::max() &&
+           static_cast<std::uint32_t>(parsed) == guest_address;
+}
+
+bool HasAotTransferHandlerInstruction(
+    ThreadContext* context,
+    const std::uint32_t guest_address)
+{
+    if (context == nullptr || !IsGuestRangeReadable(
+            context,
+            reinterpret_cast<const void*>(
+                static_cast<std::uintptr_t>(guest_address)),
+            1U))
+    {
+        return false;
+    }
+
+    const auto* const instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(guest_address));
+    const std::uint8_t opcode = instruction[0];
+    if (opcode == 0xE8U || opcode == 0xE9U || opcode == 0xEBU ||
+        opcode == 0xFFU || opcode == 0xC2U || opcode == 0xC3U)
+    {
+        return true;
+    }
+    if (opcode >= 0x70U && opcode <= 0x7FU)
+    {
+        return true;
+    }
+    return opcode == 0x0FU && IsGuestRangeReadable(
+               context,
+               reinterpret_cast<const void*>(
+                   static_cast<std::uintptr_t>(guest_address) + 1U),
+               1U) &&
+        instruction[1] >= 0x80U && instruction[1] <= 0x8FU;
+}
+
+}  // namespace
 
 void BumpAotBoundaryCount(ThreadContext* context)
 {
@@ -2242,6 +2302,215 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
             context->enable_single_step_trace = false;
             return true;
         }
+#if defined(__x86_64__)
+        // Task 674. The original-byte single-step bridge is valid only when
+        // the guest instruction has identical long-mode semantics. On x64 a
+        // non-identical instruction such as `ADD ESP,4` would write the host
+        // RSP, even though its cache entry already lowers the guest stack
+        // operation to R15D. Planner HLE boundaries are dispatched directly;
+        // transfer fixups remain available to the specialised transfer
+        // handlers below.
+        const bool long_mode_identical =
+            CanResumeLinuxX64LegacyTarget(context, guest_address);
+        const AotCacheBreakpointProvenance breakpoint_provenance =
+            ClassifyAotCacheBreakpointProvenance(
+                *context->aot_placement, cache_address, false);
+        const bool planner_hle_boundary =
+            breakpoint_provenance == AotCacheBreakpointProvenance::kPlannerHle;
+        const bool transfer_boundary =
+            breakpoint_provenance ==
+                AotCacheBreakpointProvenance::kOtherPlannerFixup ||
+            breakpoint_provenance ==
+                AotCacheBreakpointProvenance::kInlineCacheFallback ||
+            breakpoint_provenance ==
+                AotCacheBreakpointProvenance::kJumpTableFallback ||
+            HasAotTransferHandlerInstruction(context, guest_address);
+        const bool known_hle_boundary =
+            planner_hle_boundary ||
+            IsAotHleBoundaryAddress(context, guest_address);
+        const bool compatibility_trace =
+            AotReentryCompatibilityTraceMatches(guest_address);
+        static std::atomic<std::uint32_t> compatibility_trace_count{0U};
+        const std::uint32_t compatibility_trace_occurrence =
+            compatibility_trace
+                ? compatibility_trace_count.fetch_add(
+                      1U, std::memory_order_relaxed) + 1U
+                : 0U;
+        const std::uint32_t compatibility_trace_index =
+            compatibility_trace_occurrence <= 32U
+                ? compatibility_trace_occurrence
+                : 0U;
+        if (compatibility_trace_index != 0U)
+        {
+            std::fprintf(
+                stderr,
+                "[repiu-aot-reentry-compat] n=%u cache=0x%08X guest=0x%08X "
+                "identical=%u hle=%u transfer=%u eax=0x%08X edx=0x%08X "
+                "esp=0x%08X\n",
+                static_cast<unsigned>(compatibility_trace_index),
+                static_cast<unsigned>(cache_address),
+                static_cast<unsigned>(guest_address),
+                long_mode_identical ? 1U : 0U,
+                known_hle_boundary ? 1U : 0U,
+                transfer_boundary ? 1U : 0U,
+                static_cast<unsigned>(win32_context->Eax),
+                static_cast<unsigned>(win32_context->Edx),
+                static_cast<unsigned>(win32_context->Esp));
+        }
+        if (planner_hle_boundary)
+        {
+            // Planner HLE entries contain an engine INT3 rather than a
+            // translated copy of the guest instruction. Run the shared guest
+            // HLE dispatcher directly, then use the same post-HLE cache
+            // resume policy as the single-step bridge. This avoids executing
+            // a host instruction at a cache address while the context still
+            // names the engine boundary.
+            win32_context->Eip = guest_address;
+            context->aot_reentry_pending = true;
+            context->aot_legacy_fallback = false;
+            context->enable_single_step_trace = true;
+            const bool handled_hle =
+                DispatchGuestHleInstruction(win32_context, context);
+            if (compatibility_trace_index != 0U)
+            {
+                std::fprintf(
+                    stderr,
+                    "[repiu-aot-reentry-compat] n=%u action=planner-hle "
+                    "handled=%u eip_after=0x%08X\n",
+                    static_cast<unsigned>(compatibility_trace_index),
+                    handled_hle ? 1U : 0U,
+                    static_cast<unsigned>(win32_context->Eip));
+            }
+            if (handled_hle)
+            {
+                bool resumed = false;
+                if (static_cast<std::uint32_t>(win32_context->Eip) !=
+                    guest_address)
+                {
+                    resumed = TryResumeAotAfterHandledHle(
+                        win32_context, context, guest_address);
+                }
+                if (compatibility_trace_index != 0U)
+                {
+                    std::fprintf(
+                        stderr,
+                        "[repiu-aot-reentry-compat] n=%u action=planner-hle-result "
+                        "resumed=%u eip_after=0x%08X\n",
+                        static_cast<unsigned>(compatibility_trace_index),
+                        resumed ? 1U : 0U,
+                        static_cast<unsigned>(win32_context->Eip));
+                }
+                if (resumed)
+                {
+                    NoteVehExitSite(
+                        context, VehExitSite::kSingleStepTraceHleResumed);
+                    return true;
+                }
+#if defined(__x86_64__)
+                // Do not arm the original-byte single-step bridge for a
+                // continuation whose 32-bit bytes are not identical in long
+                // mode. A cache miss or an earlier HLE resume rejection must
+                // fail closed instead of handing guest ESP to host RSP.
+                if (!CanResumeLinuxX64LegacyTarget(
+                        context,
+                        static_cast<std::uint32_t>(win32_context->Eip)))
+                {
+                    if (compatibility_trace_index != 0U)
+                    {
+                        std::fprintf(
+                            stderr,
+                            "[repiu-aot-reentry-compat] n=%u action=refuse-"
+                            "non-identical-hle-continuation\n",
+                            static_cast<unsigned>(compatibility_trace_index));
+                    }
+                    context->aot_reentry_pending = false;
+                    context->aot_legacy_fallback = false;
+                    context->enable_single_step_trace = false;
+                    win32_context->EFlags &= ~0x00000100U;
+                    return false;
+                }
+#endif
+                NoteVehExitSite(
+                    context, VehExitSite::kSingleStepTraceHleStepped);
+                win32_context->EFlags |= 0x00000100U;
+                return true;
+            }
+            if (!handled_hle && !long_mode_identical &&
+                !transfer_boundary)
+            {
+                if (compatibility_trace_index != 0U)
+                {
+                    std::fprintf(
+                        stderr,
+                        "[repiu-aot-reentry-compat] n=%u action=refuse-"
+                        "unhandled-planner-hle\n",
+                        static_cast<unsigned>(compatibility_trace_index));
+                }
+                // A planner HLE entry is an explicit boundary, not permission
+                // to execute an unhandled non-identical guest instruction in
+                // long mode. Leave no pass-through state armed for a later
+                // breakpoint or single-step callback.
+                context->aot_reentry_pending = false;
+                context->aot_legacy_fallback = false;
+                context->enable_single_step_trace = false;
+                win32_context->EFlags &= ~0x00000100U;
+                return false;
+            }
+            win32_context->Eip = cache_address;
+            context->aot_reentry_pending = false;
+            context->enable_single_step_trace = false;
+        }
+        if (!long_mode_identical && !known_hle_boundary &&
+            !transfer_boundary)
+        {
+            std::uint32_t long_mode_cache_address = 0U;
+            if (ResolveAotTransferTarget(
+                    context, guest_address, &long_mode_cache_address) &&
+                long_mode_cache_address != cache_address)
+            {
+                if (compatibility_trace_index != 0U)
+                {
+                    std::fprintf(
+                        stderr,
+                        "[repiu-aot-reentry-compat] n=%u action=cache "
+                        "target=0x%08X\n",
+                        static_cast<unsigned>(compatibility_trace_index),
+                        static_cast<unsigned>(long_mode_cache_address));
+                }
+                NoteVehExitSite(context, VehExitSite::kAotReentryResolved);
+                win32_context->Eip = long_mode_cache_address;
+                win32_context->EFlags &= ~0x00000100U;
+                context->aot_reentry_pending = false;
+                context->aot_legacy_fallback = false;
+                context->enable_single_step_trace = false;
+                AccumulateAotResidency(context, guest_address);
+                BumpAotReentryCount(context);
+                return true;
+            }
+            if (compatibility_trace_index != 0U &&
+                long_mode_cache_address == cache_address)
+            {
+                std::fprintf(
+                    stderr,
+                    "[repiu-aot-reentry-compat] n=%u action=defer-same-cache\n",
+                    static_cast<unsigned>(compatibility_trace_index));
+            }
+            if (compatibility_trace_index != 0U)
+            {
+                std::fprintf(
+                    stderr,
+                    "[repiu-aot-reentry-compat] n=%u action=refuse\n",
+                    static_cast<unsigned>(compatibility_trace_index));
+            }
+            // Do not leave the later breakpoint pass-through guard armed: it
+            // would otherwise resume the same non-identical original bytes.
+            context->aot_reentry_pending = false;
+            context->aot_legacy_fallback = false;
+            context->enable_single_step_trace = false;
+            win32_context->EFlags &= ~0x00000100U;
+            return false;
+        }
+#endif
         // A tracked execution-trace sentinel byte can stop being hit again on
         // later calls to the same guest address for reasons that go beyond
         // formal cache-entry retirement (empirically, the retirement check

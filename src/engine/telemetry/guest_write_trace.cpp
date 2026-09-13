@@ -57,6 +57,8 @@ const char* GuestWriteTraceEventName(GuestWriteTraceEvent event)
             return "native-fault";
         case GuestWriteTraceEvent::kNativeComplete:
             return "native-complete";
+        case GuestWriteTraceEvent::kNativeAot:
+            return "native-aot";
     }
     return "unknown";
 }
@@ -171,6 +173,16 @@ bool GuestWriteTracePageMatches(std::uint32_t guest_address)
     const std::uint32_t watched = GuestWriteTraceAddress();
     return watched != 0U &&
         (guest_address & kGuestPageMask) == (watched & kGuestPageMask);
+}
+
+bool GuestWriteTraceNativeObserverEnabled()
+{
+    static const bool enabled = [] {
+        const char* const value =
+            std::getenv("REPIU_LINUX_X64_MEMORY_WRITE_TRACE");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
 }
 
 void RecordGuestWriteTrace(

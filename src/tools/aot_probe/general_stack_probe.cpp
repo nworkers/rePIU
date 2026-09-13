@@ -4,6 +4,7 @@
 #include "instruction_emulation.h"
 #include "repiu/platform/linux_x64_aot_dispatch.h"
 #include "repiu/platform/virtual_memory.h"
+#include "repiu/runtime/selector_table.h"
 
 #include <cstdint>
 #include <cstring>
@@ -47,6 +48,101 @@ bool RunGeneralStackProbe()
     cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
     cpu.Ebx = 0x11223344U;
 
+    const std::uint32_t cs_store_eip = cpu.Eip;
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    const bool cs_descriptor_registered =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x24U, static_cast<std::uint32_t>(kRequestedBase),
+             static_cast<std::uint32_t>(kArenaSize - 1U), 0U, true,
+             repiu::runtime::kLeObjectExecutable, true,
+             repiu::runtime::GuestCodeDefaultOperandSize::k32});
+    const std::uint8_t cs_store[] = {0x8CU, 0xC8U};
+    std::memcpy(bytes + kCodeOffset, cs_store, sizeof(cs_store));
+    cpu.Eax = 0xABCD0000U;
+    const bool cs_store_handled =
+        repiu::engine::HandleSegmentStoreInstruction(&cpu, &context);
+    const bool cs_source_store = cs_descriptor_registered && cs_store_handled &&
+        cpu.Eax == 0xABCD0024U &&
+        cpu.Eip == cs_store_eip + sizeof(cs_store);
+
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    cpu.Eip = cs_store_eip;
+    cpu.Eax = 0xABCD0000U;
+    const bool cs_source_missing_refused =
+        !repiu::engine::HandleSegmentStoreInstruction(&cpu, &context) &&
+        cpu.Eax == 0xABCD0000U && cpu.Eip == cs_store_eip;
+
+    const std::uint8_t enter_nonnested_bytes[] = {
+        0xC8U, 0x04U, 0x00U, 0x00U};
+    std::memcpy(bytes + kCodeOffset, enter_nonnested_bytes,
+                sizeof(enter_nonnested_bytes));
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.Ebp = 0xCAFEBABEU;
+    cpu.EFlags = 0x00000246U;
+    const bool enter_nonnested_handled =
+        repiu::engine::HandleEnterInstruction(&cpu, &context);
+    std::uint32_t enter_saved_ebp = 0U;
+    std::memcpy(&enter_saved_ebp, bytes + kStackOffset - 4U,
+                sizeof(enter_saved_ebp));
+    const bool enter_nonnested = enter_nonnested_handled &&
+        enter_saved_ebp == 0xCAFEBABEU &&
+        cpu.Ebp == kRequestedBase + kStackOffset - 4U &&
+        cpu.Esp == kRequestedBase + kStackOffset - 8U &&
+        cpu.Eip == kRequestedBase + kCodeOffset + 4U &&
+        cpu.EFlags == 0x00000246U;
+
+    const std::uint32_t nested_old_ebp =
+        static_cast<std::uint32_t>(kRequestedBase + 0x700U);
+    const std::uint32_t nested_display_1 = 0xAABBCCDDU;
+    const std::uint32_t nested_display_2 = 0x11223344U;
+    std::memcpy(bytes + 0x6FCU, &nested_display_1,
+                sizeof(nested_display_1));
+    std::memcpy(bytes + 0x6F8U, &nested_display_2,
+                sizeof(nested_display_2));
+    const std::uint8_t enter_nested_bytes[] = {
+        0xC8U, 0x0CU, 0x00U, 0x03U};
+    std::memcpy(bytes + kCodeOffset, enter_nested_bytes,
+                sizeof(enter_nested_bytes));
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.Ebp = nested_old_ebp;
+    cpu.EFlags = 0x000002D7U;
+    const bool enter_nested_handled =
+        repiu::engine::HandleEnterInstruction(&cpu, &context);
+    std::uint32_t nested_values[4] = {};
+    std::memcpy(nested_values, bytes + kStackOffset - 16U,
+                sizeof(nested_values));
+    const bool enter_nested = enter_nested_handled &&
+        nested_values[0] == kRequestedBase + kStackOffset - 4U &&
+        nested_values[1] == nested_display_2 &&
+        nested_values[2] == nested_display_1 &&
+        nested_values[3] == nested_old_ebp &&
+        cpu.Ebp == kRequestedBase + kStackOffset - 4U &&
+        cpu.Esp == kRequestedBase + kStackOffset - 28U &&
+        cpu.Eip == kRequestedBase + kCodeOffset + 4U &&
+        cpu.EFlags == 0x000002D7U;
+
+    const std::uint8_t enter_rejected_bytes[] = {
+        0xC8U, 0x00U, 0x00U, 0x00U};
+    std::memcpy(bytes + kCodeOffset, enter_rejected_bytes,
+                sizeof(enter_rejected_bytes));
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + 2U);
+    cpu.Ebp = 0x12345678U;
+    cpu.EFlags = 0x00000246U;
+    const bool enter_range_rejected =
+        !repiu::engine::HandleEnterInstruction(&cpu, &context) &&
+        cpu.Eip == kRequestedBase + kCodeOffset &&
+        cpu.Esp == kRequestedBase + 2U &&
+        cpu.Ebp == 0x12345678U &&
+        cpu.EFlags == 0x00000246U;
+
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.Ebp = 0U;
+    cpu.Ebx = 0x11223344U;
     set_opcode(0x53U);
     const bool push_ebx =
         repiu::engine::HandleGeneralRegisterStackInstruction(&cpu, &context);
@@ -260,9 +356,11 @@ bool RunGeneralStackProbe()
         repiu::platform::ReleaseMemory(reservation.base, kArenaSize);
     const bool all = ordinary_push && ordinary_pop && push_esp_order &&
         pop_esp_order && rejected && mixed_sequence && bounded &&
+        enter_nonnested && enter_nested && enter_range_rejected &&
         legacy_direct_call && legacy_direct_call_range_rejected &&
         legacy_resume_policy && legacy_resume_thunk &&
         legacy_moffs_store && legacy_moffs_store_range_rejected &&
+        cs_source_store && cs_source_missing_refused &&
         boundary_epilogue_drained && released;
     std::cout << "general_stack_push=" << (ordinary_push ? "true" : "false")
               << ",pop=" << (ordinary_pop ? "true" : "false")
@@ -271,6 +369,12 @@ bool RunGeneralStackProbe()
               << ",range_rejected=" << (rejected ? "true" : "false")
               << ",mixed_sequence=" << (mixed_sequence ? "true" : "false")
               << ",bounded=" << (bounded ? "true" : "false")
+              << ",enter_nonnested="
+              << (enter_nonnested ? "true" : "false")
+              << ",enter_nested="
+              << (enter_nested ? "true" : "false")
+              << ",enter_range_rejected="
+              << (enter_range_rejected ? "true" : "false")
               << ",legacy_direct_call="
               << (legacy_direct_call ? "true" : "false")
               << ",legacy_direct_call_range_rejected="
@@ -283,6 +387,10 @@ bool RunGeneralStackProbe()
               << (legacy_moffs_store ? "true" : "false")
               << ",legacy_moffs_store_range_rejected="
               << (legacy_moffs_store_range_rejected ? "true" : "false")
+              << ",cs_source_store="
+              << (cs_source_store ? "true" : "false")
+              << ",cs_source_missing_refused="
+              << (cs_source_missing_refused ? "true" : "false")
               << ",boundary_epilogue="
               << (boundary_epilogue_drained ? "true" : "false")
               << "\n";

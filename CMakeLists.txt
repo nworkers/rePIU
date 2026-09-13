@@ -316,6 +316,7 @@ target_sources(repiu_exe
         src/engine/telemetry/timer_tick_delivery.cpp
         src/engine/telemetry/guest_address_watch.cpp
         src/engine/telemetry/guest_write_trace.cpp
+        src/engine/telemetry/linux_x64_native_write_trace.cpp
         src/engine/telemetry/fault_exit_trace.cpp
         src/engine/telemetry/fault_recovery_provenance.cpp
         src/engine/telemetry/linux_x64_transfer_failure_provenance.cpp

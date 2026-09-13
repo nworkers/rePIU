@@ -80,6 +80,17 @@ bool IsMoffsOpcode(const std::uint8_t opcode)
     return opcode >= 0xA0U && opcode <= 0xA3U;
 }
 
+// Task 674. `MOV r32, imm32` embeds the destination register in the opcode,
+// so `MOV ESP, imm32` has no ModRM field for the ordinary stack-pointer
+// re-encoder to rewrite. This is the exact bare form emitted by the legacy
+// guest path; prefixed forms remain subject to the normal fail-closed rules.
+bool IsMovStackPointerImmediate(const ZydisDecodedInstruction& instruction)
+{
+    return instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT &&
+        instruction.opcode == 0xBCU && instruction.length == 5U &&
+        instruction.operand_width == 32U && instruction.raw.prefix_count == 0U;
+}
+
 // The ModRM-form opcode that means the same thing. `A0`/`A2` move a byte and
 // `A1`/`A3` a dword; the low bit of the moffs opcode is that width and the
 // second bit is the direction, which is the same layout `88`-`8B` uses.
@@ -144,10 +155,11 @@ bool NeedsWidthReencode(const std::uint8_t opcode,
         case 0xE8U:              // CALL rel32, which pushes eight bytes
             return true;
         case 0xFFU:
-            // Only the CALL and JMP extensions of the group; `/0` INC and `/1`
-            // DEC through this encoding are ordinary and stay eligible.
+            // `/2` and `/3` are CALL/JMP and `/6` is PUSH. The other group
+            // extensions are ordinary operations and stay eligible.
             return instruction.raw.modrm.reg == 2U ||
-                instruction.raw.modrm.reg == 3U;
+                instruction.raw.modrm.reg == 3U ||
+                instruction.raw.modrm.reg == 6U;
         default:
             return false;
     }
@@ -189,10 +201,10 @@ bool PopMemoryFormLowerable(const ZydisDecodedInstruction& instruction)
 
 // Task 559. The stack instructions this unit knows how to rewrite.
 //
-// Not the whole of `NeedsWidthReencode`: `CALL`, `RET` and the `FF` group also
-// change EIP, so they belong with the dispatch resolver rather than here, and
-// `PUSH r/m` reaches a second memory operand that may name ESP itself -- the
-// general re-encoder's problem.
+// Not the whole of `NeedsWidthReencode`: `CALL`, `RET` and the control-flow
+// members of the `FF` group also change EIP, so they belong with the dispatch
+// resolver rather than here. `PUSH r/m32` is handled below as a stack sequence;
+// its source memory operand is loaded before guest ESP is adjusted.
 //
 // Task 606 also admits a single operand-size prefix on register PUSH/POP.
 // Its two-byte stack effect is emitted explicitly below.
@@ -224,6 +236,14 @@ bool HasStackSequenceLowering(const std::uint8_t opcode,
             // the memory form, under the conditions the helper above names.
             return (length == 2U && instruction.raw.modrm.mod == 3U) ||
                 PopMemoryFormLowerable(instruction);
+        case 0xFFU:
+            // Task 669. Only the bare 32-bit PUSH member of the FF group. The
+            // CALL/JMP members are resolved as control flow, and prefixed PUSH
+            // forms remain boundaries until their width/address semantics are
+            // separately proven.
+            return length >= 2U && instruction.operand_width == 32U &&
+                instruction.raw.prefix_count == 0U &&
+                instruction.raw.modrm.reg == 6U;
         case 0x9CU:
         case 0x9DU:
         case 0xC9U:
@@ -350,6 +370,7 @@ HighByteFields ClassifyHighByteFields(
         const bool write =
             (operand.actions & ZYDIS_OPERAND_ACTION_MASK_WRITE) != 0U;
         const std::uint8_t source_gpr = HighByteSourceGpr(operand.reg.value);
+        fields.source_gpr = source_gpr;
         if (!read || write ||
             operand.encoding != ZYDIS_OPERAND_ENCODING_MODRM_REG ||
             source_gpr == 0xFFU)
@@ -357,7 +378,6 @@ HighByteFields ClassifyHighByteFields(
             return fields;
         }
         fields.source_only = true;
-        fields.source_gpr = source_gpr;
     }
     return fields;
 }
@@ -502,6 +522,20 @@ bool HasStackPointerMemoryBase(const ZydisDecodedInstruction& instruction,
     return false;
 }
 
+bool IsHighByteMemoryDestination(const ZydisDecodedInstruction& instruction,
+                                 const ZydisDecodedOperand* operands,
+                                 const HighByteFields& high_byte_fields,
+                                 const StackPointerFields& stack_fields)
+{
+    return instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT &&
+        instruction.opcode == 0x8AU && instruction.raw.prefix_count == 0U &&
+        instruction.raw.modrm.mod != 3U &&
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_SEGMENT) == 0U &&
+        high_byte_fields.present && !high_byte_fields.source_only &&
+        high_byte_fields.source_gpr < 4U && stack_fields.rex_b &&
+        !stack_fields.rex_r && HasStackPointerMemoryBase(instruction, operands);
+}
+
 bool HasMemoryOperand(const ZydisDecodedInstruction& instruction,
                       const ZydisDecodedOperand* operands)
 {
@@ -610,6 +644,11 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
             return Reencode(LongModeDivergence::kSilentlyDifferent,
                             LongModeLowering::kMoffsToSib);
         }
+        if (IsMovStackPointerImmediate(instruction))
+        {
+            return Reencode(LongModeDivergence::kStackPointerRegister,
+                            LongModeLowering::kStackPointerImmediateToR15);
+        }
         if (IsSilentlyDifferentOpcode(opcode))
         {
             return Refuse(LongModeDivergence::kSilentlyDifferent);
@@ -706,6 +745,13 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
                 return Reencode(
                     LongModeDivergence::kStackPointerRegister,
                     LongModeLowering::kStackPointerHighByteToR15);
+            }
+            if (IsHighByteMemoryDestination(
+                    instruction, operands, high_byte_fields, stack_fields))
+            {
+                return Reencode(
+                    LongModeDivergence::kStackPointerRegister,
+                    LongModeLowering::kStackPointerHighByteDestinationToR15);
             }
             return Refuse(LongModeDivergence::kStackPointerRegister);
         }
@@ -846,6 +892,50 @@ struct SequenceWriter
         ++instructions;
     }
 
+    // mov r14d, [guest memory operand]. Keep the source addressing bytes except
+    // for ModRM.reg, which must name the R14D scratch, an ESP base, which must
+    // name the guest ESP register held in R15D, and an absolute disp32 form,
+    // which must become the long-mode SIB absolute encoding. A 0x67 prefix
+    // narrows the address calculation but does not turn long-mode RIP-relative
+    // ModRM rm=101 back into a legacy absolute address.
+    void LoadScratchFromMemory(const std::uint8_t* const bytes,
+                               const ZydisDecodedInstruction& instruction,
+                               const bool guest_esp_base)
+    {
+        const std::size_t modrm_offset = instruction.raw.modrm.offset;
+        const std::uint8_t modrm = bytes[modrm_offset];
+        const bool absolute_disp32 = (modrm & 0xC7U) == 0x05U;
+        Byte(0x67U);
+        Byte(guest_esp_base ? 0x45U : 0x44U);
+        Byte(0x8BU);
+        if (absolute_disp32)
+        {
+            // mod=00, reg=110 (R14D), rm=100 (SIB follows).
+            Byte(static_cast<std::uint8_t>((modrm & 0xF8U) | 0x04U));
+            Byte(0x25U);  // scale=0, index=none, base=disp32.
+        }
+        else
+        {
+            Byte(static_cast<std::uint8_t>((modrm & 0xC7U) | 0x30U));
+        }
+
+        std::size_t tail_offset = modrm_offset + 1U;
+        if (!absolute_disp32 && (modrm & 0x07U) == 4U)
+        {
+            std::uint8_t sib = bytes[tail_offset++];
+            if (guest_esp_base)
+            {
+                sib = static_cast<std::uint8_t>((sib & 0xF8U) | 0x07U);
+            }
+            Byte(sib);
+        }
+        while (tail_offset < instruction.length)
+        {
+            Byte(bytes[tail_offset++]);
+        }
+        ++instructions;
+    }
+
     // mov [r15 + disp8], r14d. REX.R names r14 and REX.B names r15.
     void StoreScratchAt(const std::int8_t displacement)
     {
@@ -967,6 +1057,47 @@ bool WriteStackSequence(const std::uint8_t* const bytes,
 
     switch (opcode)
     {
+        case 0xFFU:
+        {
+            if (instruction.operand_width != 32U ||
+                instruction.raw.prefix_count != 0U ||
+                instruction.raw.modrm.reg != 6U)
+            {
+                return false;
+            }
+            if (instruction.raw.modrm.mod == 3U)
+            {
+                const std::uint8_t source_register =
+                    instruction.raw.modrm.rm;
+                if (source_register == 4U)
+                {
+                    // PUSH ESP reads the pre-decrement value.
+                    writer->ExtendedMove(0x45U, 0x89U, 0xFEU);
+                    writer->AdjustGuestEsp(-4);
+                    writer->ExtendedMove(0x45U, 0x89U, 0x37U);
+                    return true;
+                }
+                writer->AdjustGuestEsp(-4);
+                writer->StoreGuestRegister(source_register);
+                return true;
+            }
+
+            const std::uint8_t modrm =
+                bytes[instruction.raw.modrm.offset];
+            bool guest_esp_base = false;
+            if ((modrm & 0x07U) == 4U)
+            {
+                const std::uint8_t sib =
+                    bytes[instruction.raw.modrm.offset + 1U];
+                // In mod=00, SIB base=101 means no base and is not ESP.
+                guest_esp_base = (sib & 0x07U) == 4U;
+            }
+            writer->LoadScratchFromMemory(bytes, instruction,
+                                          guest_esp_base);
+            writer->AdjustGuestEsp(-4);
+            writer->ExtendedMove(0x45U, 0x89U, 0x37U);
+            return true;
+        }
         case 0x60U:
         {
             // PUSHAD. The entry ESP is captured before the adjustment, because
@@ -1383,6 +1514,94 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
         if (instruction_count != nullptr)
         {
             *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 674. The opcode-embedded `ESP` destination has no ModRM field.
+    // Re-encode `BC imm32` as `41 BF imm32`, which writes guest ESP's host
+    // register R15D and leaves the SysV host stack pointer in RSP untouched.
+    if (verdict.lowering == LongModeLowering::kStackPointerImmediateToR15)
+    {
+        if (!IsMovStackPointerImmediate(instruction) ||
+            length + 1U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+        lowered[0] = 0x41U;  // REX.B selects R15D.
+        lowered[1] = 0xBFU;  // MOV r32, imm32 with register field 111.
+        for (std::size_t index = 1U; index < 5U; ++index)
+        {
+            lowered[index + 1U] = bytes[index];
+        }
+        *lowered_count = 6U;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 676. A REX prefix cannot preserve an AH/CH/DH/BH destination. Save
+    // DL in the non-guest scratch R14B, load through the guest stack pointer
+    // into DL, copy DL into the legacy high byte without a REX prefix, and
+    // restore DL. The admitted form is deliberately restricted to MOV r8,
+    // r/m8 with a SIB ESP base and no segment override.
+    if (verdict.lowering ==
+        LongModeLowering::kStackPointerHighByteDestinationToR15)
+    {
+        const StackPointerFields stack_fields =
+            ClassifyStackPointerFields(instruction, operands);
+        const HighByteFields high_byte_fields =
+            ClassifyHighByteFields(instruction, operands);
+        const std::size_t opcode_offset = instruction.raw.prefix_count;
+        const std::size_t modrm_offset = instruction.raw.modrm.offset;
+        const std::size_t expected_modrm_offset = opcode_offset + 1U;
+        if (!IsHighByteMemoryDestination(
+                instruction, operands, high_byte_fields, stack_fields) ||
+            modrm_offset != expected_modrm_offset ||
+            modrm_offset + 1U >= length ||
+            (bytes[modrm_offset] & 0x07U) != 4U ||
+            (bytes[modrm_offset + 1U] & 0x07U) != 4U ||
+            length + 7U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+
+        std::size_t out = 0U;
+        // mov r14b, dl
+        lowered[out++] = 0x44U;
+        lowered[out++] = 0x88U;
+        lowered[out++] = 0xF2U;
+
+        // mov dl, [r15 + displacement]
+        lowered[out++] = 0x41U;
+        for (std::size_t index = opcode_offset; index < length; ++index)
+        {
+            lowered[out++] = bytes[index];
+        }
+        const std::size_t modrm_out =
+            4U + modrm_offset - opcode_offset;
+        lowered[modrm_out] = static_cast<std::uint8_t>(
+            (lowered[modrm_out] & 0xC7U) | 0x10U);
+        const std::size_t sib_out = modrm_out + 1U;
+        lowered[sib_out] = static_cast<std::uint8_t>(
+            (lowered[sib_out] & 0xF8U) | 0x07U);
+
+        // mov AH/CH/DH/BH, dl, with no REX so the legacy high-byte name stays.
+        lowered[out++] = 0x8AU;
+        lowered[out++] = static_cast<std::uint8_t>(
+            0xE2U | (high_byte_fields.source_gpr << 3U));
+
+        // mov dl, r14b
+        lowered[out++] = 0x44U;
+        lowered[out++] = 0x88U;
+        lowered[out++] = 0xF2U;
+
+        *lowered_count = out;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 4U;
         }
         return true;
     }

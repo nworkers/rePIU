@@ -11,6 +11,7 @@
 #include <Zydis.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -528,6 +529,121 @@ bool HandleGeneralRegisterStackInstruction(
     return false;
 }
 
+bool HandleEnterInstruction(repiu::platform::GuestCpuContext* win32_context,
+                            ThreadContext* context)
+{
+    if (win32_context == nullptr || context == nullptr)
+    {
+        return false;
+    }
+
+    const auto* const instruction = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(win32_context->Eip));
+    if (!IsGuestRangeReadable(context, instruction, 4U) ||
+        instruction[0] != 0xC8U)
+    {
+        return false;
+    }
+
+    const std::uint16_t allocation_size =
+        static_cast<std::uint16_t>(instruction[1]) |
+        (static_cast<std::uint16_t>(instruction[2]) << 8U);
+    const std::uint8_t nesting_level = instruction[3] & 0x1FU;
+    const std::uint32_t old_ebp =
+        static_cast<std::uint32_t>(win32_context->Ebp);
+    const std::uint32_t initial_esp =
+        static_cast<std::uint32_t>(win32_context->Esp);
+    const std::uint32_t push_count =
+        nesting_level == 0U
+            ? 1U
+            : static_cast<std::uint32_t>(nesting_level) + 1U;
+    const std::uint32_t frame_bytes = push_count * 4U;
+    if (initial_esp < frame_bytes)
+    {
+        return false;
+    }
+
+    const std::uint32_t frame_destination = initial_esp - frame_bytes;
+    if (!IsGuestRangeWritable(
+            context,
+            reinterpret_cast<void*>(
+                static_cast<std::uintptr_t>(frame_destination)),
+            frame_bytes))
+    {
+        return false;
+    }
+
+    // Read the complete display before writing the new frame. This keeps a
+    // failed nested source read from leaving a partially constructed frame.
+    std::uint32_t frame_values[32] = {};
+    frame_values[0] = old_ebp;
+    for (std::uint32_t index = 1U;
+         index < static_cast<std::uint32_t>(nesting_level);
+         ++index)
+    {
+        const std::uint32_t source_offset = index * 4U;
+        if (old_ebp < source_offset ||
+            !ReadGuestUInt32(
+                context,
+                reinterpret_cast<const void*>(static_cast<std::uintptr_t>(
+                    old_ebp - source_offset)),
+                &frame_values[index]))
+        {
+            return false;
+        }
+    }
+
+    const std::uint32_t frame_pointer = initial_esp - 4U;
+    if (nesting_level != 0U)
+    {
+        frame_values[nesting_level] = frame_pointer;
+    }
+
+    std::uint32_t destination = initial_esp;
+    for (std::uint32_t index = 0U; index < push_count; ++index)
+    {
+        destination -= 4U;
+        if (!WriteGuestUInt32(
+                context,
+                reinterpret_cast<void*>(
+                    static_cast<std::uintptr_t>(destination)),
+                frame_values[index],
+                win32_context))
+        {
+            return false;
+        }
+    }
+
+    win32_context->Ebp = frame_pointer;
+    win32_context->Esp = destination - allocation_size;
+    win32_context->Eip += 4U;
+
+    const char* const trace_value = std::getenv("REPIU_ENTER_HLE_TRACE");
+    const bool trace_enabled =
+        trace_value != nullptr && std::strcmp(trace_value, "0") != 0;
+    static std::atomic<std::uint32_t> trace_count{0U};
+    const std::uint32_t trace_index = trace_enabled
+        ? trace_count.fetch_add(1U, std::memory_order_relaxed) + 1U
+        : 0U;
+    if (trace_index != 0U && trace_index <= 32U)
+    {
+        std::fprintf(
+            stderr,
+            "[repiu-enter-hle] n=%u eip=0x%08X allocation=%u nesting=%u "
+            "old_ebp=0x%08X new_ebp=0x%08X esp=0x%08X->0x%08X next_eip=0x%08X\n",
+            trace_index,
+            static_cast<std::uint32_t>(win32_context->Eip - 4U),
+            static_cast<unsigned>(allocation_size),
+            static_cast<unsigned>(nesting_level),
+            old_ebp,
+            static_cast<std::uint32_t>(win32_context->Ebp),
+            initial_esp,
+            static_cast<std::uint32_t>(win32_context->Esp),
+            static_cast<std::uint32_t>(win32_context->Eip));
+    }
+    return true;
+}
+
 bool DecodeModRmMemoryAddress(
     const repiu::platform::GuestCpuContext* win32_context,
     const std::uint8_t* instruction,
@@ -938,13 +1054,49 @@ bool HandleFarJumpInstruction(repiu::platform::GuestCpuContext* win32_context,
     const std::uint16_t selector = static_cast<std::uint16_t>(
         static_cast<std::uint16_t>(instruction[4]) |
         (static_cast<std::uint16_t>(instruction[5]) << 8U));
+    std::uint32_t trace_sequence = 0U;
+    if (const char* const trace_value =
+            std::getenv("REPIU_LINEXE_FAR_TRANSFER_TRACE");
+        trace_value != nullptr && std::strcmp(trace_value, "0") != 0)
+    {
+        static std::atomic<std::uint32_t> trace_count{0U};
+        const std::uint32_t sequence =
+            trace_count.fetch_add(1U, std::memory_order_relaxed) + 1U;
+        trace_sequence = sequence <= 64U ? sequence : 0U;
+    }
+    if (trace_sequence != 0U)
+    {
+        std::fprintf(stderr,
+                     "[repiu-linexe-far-jump] n=%u event=entry "
+                     "eip=0x%08X esp=0x%08X offset=0x%04X selector=0x%04X\n",
+                     static_cast<unsigned>(trace_sequence),
+                     static_cast<unsigned>(win32_context->Eip),
+                     static_cast<unsigned>(win32_context->Esp),
+                     static_cast<unsigned>(offset),
+                     static_cast<unsigned>(selector));
+    }
     std::uint32_t target = 0;
     if (!repiu::runtime::TranslateSelectorOffset(
             context->selector_table, selector, offset, 1U, &target))
     {
+        if (trace_sequence != 0U)
+        {
+            std::fprintf(stderr,
+                         "[repiu-linexe-far-jump] n=%u event=rejected\n",
+                         static_cast<unsigned>(trace_sequence));
+        }
         return false;
     }
     win32_context->Eip = target;
+    if (trace_sequence != 0U)
+    {
+        std::fprintf(stderr,
+                     "[repiu-linexe-far-jump] n=%u event=resolved "
+                     "target=0x%08X new_esp=0x%08X\n",
+                     static_cast<unsigned>(trace_sequence),
+                     static_cast<unsigned>(target),
+                     static_cast<unsigned>(win32_context->Esp));
+    }
     return true;
 }
 
@@ -1119,6 +1271,20 @@ bool HandleRepStosdInstruction(repiu::platform::GuestCpuContext* win32_context,
     if (byte_count != 0)
     {
         std::memset(destination, 0, static_cast<std::size_t>(byte_count));
+        const std::uint32_t destination_address =
+            static_cast<std::uint32_t>(win32_context->Edi);
+        if (GuestWriteTraceMatches(destination_address,
+                                   static_cast<std::uint32_t>(byte_count)))
+        {
+            RecordGuestWriteTrace(
+                GuestWriteTraceEvent::kHle,
+                static_cast<std::uint32_t>(win32_context->Eip),
+                static_cast<std::uint32_t>(win32_context->Eip),
+                destination_address,
+                static_cast<std::uint32_t>(byte_count),
+                destination,
+                win32_context);
+        }
     }
     win32_context->Edi += static_cast<std::uint32_t>(byte_count);
     win32_context->Ecx = 0;
@@ -1157,69 +1323,58 @@ bool HandleSegmentStoreInstruction(repiu::platform::GuestCpuContext* win32_conte
 {
     const std::uint8_t* instruction = reinterpret_cast<const std::uint8_t*>(
         win32_context->Eip);
-    if (instruction[0] == 0x66 && instruction[1] == 0x8C)
+    const std::uint32_t opcode_offset =
+        instruction[0] == 0x66U && instruction[1] == 0x8CU ? 1U : 0U;
+    if (instruction[opcode_offset] == 0x8C)
     {
-        const std::uint8_t modrm = instruction[2];
+        const std::uint8_t modrm = instruction[opcode_offset + 1U];
         const std::uint8_t mod = (modrm >> 6) & 0x03U;
         const std::uint8_t segment_register = (modrm >> 3) & 0x07U;
         const std::uint8_t destination_register = modrm & 0x07U;
-        if (mod != 0x03 || segment_register == 1 ||
-            segment_register > 5)
-        {
-            return false;
-        }
-        const std::uint16_t selector =
-            ReadGuestSegmentSelector(*context, segment_register, win32_context);
-        WriteRegister16(win32_context, destination_register, selector);
-        RecordGuestSegmentStore(win32_context,
-                                context,
-                                segment_register,
-                                selector,
-                                destination_register);
-        win32_context->Eip += 3;
-        return true;
-    }
-    if (instruction[0] == 0x8C)
-    {
-        const std::uint8_t modrm = instruction[1];
-        const std::uint8_t mod =
-            static_cast<std::uint8_t>((modrm >> 6) & 0x03);
-        const std::uint8_t segment_register =
-            static_cast<std::uint8_t>((modrm >> 3) & 0x07);
-        if (segment_register == 1 || segment_register > 5)
+        if (segment_register > 5)
         {
             return false;
         }
 
         const std::uint16_t selector =
             ReadGuestSegmentSelector(*context, segment_register, win32_context);
+        if (segment_register == 1U && selector == 0U)
+        {
+            return false;
+        }
         if (mod == 0x03)
         {
-            const std::uint8_t destination_register =
-                static_cast<std::uint8_t>(modrm & 0x07);
-            WriteRegister16(win32_context,
-                            destination_register,
-                            selector);
+            WriteRegister16(win32_context, destination_register, selector);
             RecordGuestSegmentStore(win32_context,
                                     context,
                                     segment_register,
                                     selector,
                                     destination_register);
-            win32_context->Eip += 2;
+            win32_context->Eip += opcode_offset + 2U;
             return true;
         }
 
         std::uint32_t destination = 0;
         std::uint32_t instruction_size = 0;
         if (!DecodeModRmMemoryAddress(win32_context,
-                                      instruction,
+                                      instruction + opcode_offset,
                                       &destination,
                                       &instruction_size))
         {
             return false;
         }
+        std::uint32_t linear_destination = 0U;
+        if (!ResolveSegmentLinearRange(context,
+                                       context->guest_ds,
+                                       destination,
+                                       2U,
+                                       true,
+                                       &linear_destination))
+        {
+            return false;
+        }
         void* destination_pointer = reinterpret_cast<void*>(
-            static_cast<std::uintptr_t>(destination));
+            static_cast<std::uintptr_t>(linear_destination));
         if (!IsGuestRangeWritable(context, destination_pointer, 2) ||
             !WriteGuestUInt16(
                 context, destination_pointer, selector, win32_context))
@@ -1230,8 +1385,8 @@ bool HandleSegmentStoreInstruction(repiu::platform::GuestCpuContext* win32_conte
                                 context,
                                 segment_register,
                                 selector,
-                                destination);
-        win32_context->Eip += instruction_size;
+                                linear_destination);
+        win32_context->Eip += opcode_offset + instruction_size;
         return true;
     }
     if (instruction[0] != 0x66 || instruction[1] != 0x26 ||
@@ -1250,7 +1405,7 @@ bool HandleSegmentStoreInstruction(repiu::platform::GuestCpuContext* win32_conte
         return false;
     }
 
-    if (segment_register == 1 || segment_register > 5)
+    if (segment_register > 5)
     {
         return false;
     }
@@ -1260,15 +1415,25 @@ bool HandleSegmentStoreInstruction(repiu::platform::GuestCpuContext* win32_conte
         (static_cast<std::uint32_t>(instruction[5]) << 8) |
         (static_cast<std::uint32_t>(instruction[6]) << 16) |
         (static_cast<std::uint32_t>(instruction[7]) << 24);
-    void* destination_pointer = reinterpret_cast<void*>(
-        static_cast<std::uintptr_t>(destination));
-    if (!IsGuestRangeWritable(context, destination_pointer, 2))
+    std::uint32_t linear_destination = 0U;
+    if (!ResolveSegmentLinearRange(context,
+                                   context->guest_es,
+                                   destination,
+                                   2U,
+                                   true,
+                                   &linear_destination))
     {
         return false;
     }
+    void* destination_pointer = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(linear_destination));
 
     const std::uint16_t selector =
         ReadGuestSegmentSelector(*context, segment_register, win32_context);
+    if (segment_register == 1U && selector == 0U)
+    {
+        return false;
+    }
     if (!WriteGuestUInt16(
             context, destination_pointer, selector, win32_context))
     {
@@ -1279,7 +1444,7 @@ bool HandleSegmentStoreInstruction(repiu::platform::GuestCpuContext* win32_conte
                             context,
                             segment_register,
                             selector,
-                            destination);
+                            linear_destination);
     win32_context->Eip += 8;
     return true;
 }
@@ -3786,6 +3951,19 @@ bool HandleRepMovsInstruction(repiu::platform::GuestCpuContext* win32_context,
                 context->last_rep_movs_copy_bytes = byte_count;
                 return false;
             }
+        }
+        if (GuestWriteTraceMatches(destination, byte_count) &&
+            !destination_is_low_memory)
+        {
+            RecordGuestWriteTrace(
+                GuestWriteTraceEvent::kHle,
+                static_cast<std::uint32_t>(win32_context->Eip),
+                static_cast<std::uint32_t>(win32_context->Eip),
+                destination,
+                byte_count,
+                reinterpret_cast<const void*>(
+                    static_cast<std::uintptr_t>(destination)),
+                win32_context);
         }
     }
     win32_context->Esi += byte_count;

@@ -85,6 +85,167 @@ const char* AotInstructionKindName(const repiu::runtime::AotInstructionKind kind
     return "kUnknown";
 }
 
+std::string HexBytes(const std::uint8_t* bytes, const std::size_t count)
+{
+    std::string text;
+    const char digits[] = "0123456789ABCDEF";
+    text.reserve(count * 2U);
+    for (std::size_t index = 0U; index < count; ++index)
+    {
+        text += digits[(bytes[index] >> 4U) & 0x0FU];
+        text += digits[bytes[index] & 0x0FU];
+    }
+    return text;
+}
+
+bool IsLongModeStackRegister(const ZydisRegister reg)
+{
+    return reg == ZYDIS_REGISTER_RSP || reg == ZYDIS_REGISTER_ESP ||
+        reg == ZYDIS_REGISTER_SP || reg == ZYDIS_REGISTER_SPL;
+}
+
+bool HasLongModeStackOperand(
+    const ZydisDecodedInstruction& instruction,
+    const ZydisDecodedOperand* operands)
+{
+    if (instruction.mnemonic == ZYDIS_MNEMONIC_LEAVE)
+    {
+        return true;
+    }
+    for (std::uint8_t index = 0U; index < instruction.operand_count; ++index)
+    {
+        const ZydisDecodedOperand& operand = operands[index];
+        if (operand.type == ZYDIS_OPERAND_TYPE_REGISTER &&
+            IsLongModeStackRegister(operand.reg.value))
+        {
+            return true;
+        }
+        if (operand.type == ZYDIS_OPERAND_TYPE_MEMORY &&
+            (IsLongModeStackRegister(operand.mem.base) ||
+             IsLongModeStackRegister(operand.mem.index)))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsLongModeStackEffect(const ZydisDecodedInstruction& instruction,
+                           const ZydisDecodedOperand* operands)
+{
+    return instruction.meta.category == ZYDIS_CATEGORY_PUSH ||
+        instruction.meta.category == ZYDIS_CATEGORY_POP ||
+        instruction.meta.category == ZYDIS_CATEGORY_CALL ||
+        instruction.meta.category == ZYDIS_CATEGORY_RET ||
+        HasLongModeStackOperand(instruction, operands);
+}
+
+void AuditLongModeStackEffects(
+    const repiu::runtime::AotTranslationPlan& plan,
+    const repiu::runtime::AotCodeCacheImage& image)
+{
+    const char* const setting = std::getenv("REPIU_CENSUS_STACK_AUDIT");
+    if (setting == nullptr || std::string_view(setting) == "0" ||
+        !image.valid || !image.long_mode_emission_enabled)
+    {
+        return;
+    }
+
+    std::map<std::uint32_t, const repiu::runtime::AotInstructionRecord*>
+        records;
+    for (const repiu::runtime::AotBasicBlock& block : plan.blocks)
+    {
+        for (const repiu::runtime::AotInstructionRecord& record :
+             block.instructions)
+        {
+            records.emplace(record.guest_address, &record);
+        }
+    }
+
+    ZydisDecoder decoder;
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(
+            &decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64)))
+    {
+        std::cout << "long_mode_stack_audit=decoder-init-failed\n";
+        return;
+    }
+
+    constexpr std::size_t kPrintCapacity = 64U;
+    std::size_t candidate_count = 0U;
+    std::size_t printed_count = 0U;
+    std::size_t decode_failure_count = 0U;
+    std::map<std::string, std::size_t> candidate_mnemonics;
+    for (const repiu::runtime::AotAddressMapEntry& entry : image.address_map)
+    {
+        if (entry.cache_offset > image.bytes.size() ||
+            entry.emitted_length > image.bytes.size() - entry.cache_offset)
+        {
+            ++decode_failure_count;
+            continue;
+        }
+        const auto record = records.find(entry.guest_address);
+        const char* const kind = record != records.end()
+            ? AotInstructionKindName(record->second->kind) : "unknown";
+        const std::uint8_t* const emitted = image.bytes.data() +
+            entry.cache_offset;
+        std::size_t offset = 0U;
+        while (offset < entry.emitted_length)
+        {
+            ZydisDecodedInstruction instruction{};
+            ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+            const std::size_t available = entry.emitted_length - offset;
+            if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(
+                    &decoder, emitted + offset, available,
+                    &instruction, operands)) || instruction.length == 0U)
+            {
+                ++decode_failure_count;
+                break;
+            }
+            if (IsLongModeStackEffect(instruction, operands))
+            {
+                ++candidate_count;
+                ++candidate_mnemonics[
+                    ZydisMnemonicGetString(instruction.mnemonic)];
+                if (printed_count < kPrintCapacity)
+                {
+                    const std::string original = record != records.end()
+                        ? HexBytes(record->second->bytes.data(),
+                                   record->second->bytes.size())
+                        : "";
+                    std::cout << "long_mode_stack_candidate="
+                              << "guest=0x" << std::hex << entry.guest_address
+                              << " cache_offset=0x" << entry.cache_offset
+                              << std::dec << " kind=" << kind
+                              << " mnemonic="
+                              << ZydisMnemonicGetString(instruction.mnemonic)
+                              << " offset=" << offset
+                              << " original=" << original
+                              << " emitted="
+                              << HexBytes(emitted, entry.emitted_length)
+                              << "\n";
+                    ++printed_count;
+                }
+            }
+            offset += instruction.length;
+        }
+    }
+    std::cout << "long_mode_stack_audit_candidates=" << candidate_count
+              << " printed=" << printed_count
+              << " decode_failures=" << decode_failure_count << "\n";
+    std::cout << "long_mode_stack_audit_mnemonics=";
+    bool first_mnemonic = true;
+    for (const auto& [mnemonic, count] : candidate_mnemonics)
+    {
+        if (!first_mnemonic)
+        {
+            std::cout << ",";
+        }
+        first_mnemonic = false;
+        std::cout << mnemonic << ":" << count;
+    }
+    std::cout << "\n";
+}
+
 // Task 560. Whether the emitter can spell this condition. A `Jcc` whose
 // mnemonic has no `0F 8x` here is a boundary on both hosts, so the census must
 // ask the same question the emitter asks rather than counting every
@@ -839,14 +1000,14 @@ void PrintEmittedWindow(const repiu::runtime::AotTranslationPlan& plan,
     // purpose" open, and that was exactly the question.
     //
     // The address map carries no kind, so it is looked up in the plan.
-    std::map<std::uint32_t, std::string> kinds;
+    std::map<std::uint32_t,
+             const repiu::runtime::AotInstructionRecord*> records;
     for (const repiu::runtime::AotBasicBlock& block : plan.blocks)
     {
         for (const repiu::runtime::AotInstructionRecord& record :
              block.instructions)
         {
-            kinds.emplace(record.guest_address,
-                          AotInstructionKindName(record.kind));
+            records.emplace(record.guest_address, &record);
         }
     }
 
@@ -896,11 +1057,19 @@ void PrintEmittedWindow(const repiu::runtime::AotTranslationPlan& plan,
                   << static_cast<unsigned>(entry.emitted_length)
                   << "  guest=0x" << std::hex << entry.guest_address
                   << std::dec;
-        const auto kind = kinds.find(entry.guest_address);
+        const auto record = records.find(entry.guest_address);
         std::cout << "  kind="
-                  << (kind != kinds.end() ? kind->second
-                                          : std::string("?"))
+                  << (record != records.end()
+                          ? AotInstructionKindName(record->second->kind)
+                          : "?")
                   << "\n";
+        if (record != records.end())
+        {
+            std::cout << "        original: "
+                      << hex_bytes(record->second->bytes.data(),
+                                   record->second->bytes.size())
+                      << "\n";
+        }
         if (entry.cache_offset + entry.emitted_length <= image.bytes.size())
         {
             std::cout << "        emitted: "
@@ -1199,6 +1368,10 @@ int main(int argc, char** argv)
     repiu::runtime::AotCodeCacheImage long_mode_image;
     const bool long_mode_built = repiu::runtime::BuildAotCodeCacheImage(
         plan, long_mode_options, &long_mode_image);
+    if (long_mode_built)
+    {
+        AuditLongModeStackEffects(plan, long_mode_image);
+    }
 
     LinearSweep sweep;
     std::uint64_t swept_bytes = 0;

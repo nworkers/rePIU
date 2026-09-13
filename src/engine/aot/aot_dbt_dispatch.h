@@ -17,6 +17,14 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
                                  ThreadContext* context,
                                  std::uint32_t handled_guest_eip);
 
+// Emit the existing opt-in HLE re-entry trace at a dispatcher boundary.
+void TraceAotHleReentryState(
+    const char* stage,
+    const ThreadContext* context,
+    const repiu::platform::GuestCpuContext* registers,
+    std::uint32_t handled_guest_eip,
+    std::uint32_t current_guest_eip);
+
 bool ResolveAotDbtPostHleTranslationEnabled(std::string_view setting);
 
 }  // namespace repiu::engine

@@ -63,6 +63,11 @@ bool EmitLinuxX64StackWriteTrace(
     std::uint32_t return_address,
     std::vector<std::uint8_t>* bytes,
     std::size_t* emitted_instructions);
+
+bool EmitLinuxX64NativeMemoryWriteTrace(
+    const AotInstructionRecord& instruction,
+    std::vector<std::uint8_t>* bytes,
+    std::size_t* emitted_instructions);
 #endif
 
 bool IsBackwardEdge(const AotInstructionRecord& instruction)
@@ -587,6 +592,149 @@ bool EmitLinuxX64StackWriteTrace(
     }
     (*bytes)[skip_offset] = static_cast<std::uint8_t>(displacement);
     *emitted_instructions = 20U;
+    return true;
+}
+
+bool LinuxX64NativeMemoryWriteTraceEnabled()
+{
+    static const bool enabled = [] {
+        const char* const value =
+            std::getenv("REPIU_LINUX_X64_MEMORY_WRITE_TRACE");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+bool HasExplicitMemoryWrite(const AotInstructionRecord& instruction)
+{
+    if (instruction.bytes.empty())
+    {
+        return false;
+    }
+    ZydisDecoder decoder;
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(
+            &decoder, ZYDIS_MACHINE_MODE_LEGACY_32, ZYDIS_STACK_WIDTH_32)))
+    {
+        return false;
+    }
+    ZydisDecodedInstruction decoded{};
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+    if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(
+            &decoder, instruction.bytes.data(), instruction.bytes.size(),
+            &decoded, operands)))
+    {
+        return false;
+    }
+    for (std::uint8_t index = 0U;
+         index < decoded.operand_count_visible; ++index)
+    {
+        if (operands[index].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+            (operands[index].actions & ZYDIS_OPERAND_ACTION_MASK_WRITE) != 0U)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Task 667. Call the native-write observer without exposing guest state to the
+// SysV ABI. The observer receives a frame snapshot, decodes the original guest
+// bytes, and filters the existing guest write watch there. The x87/SSE state is
+// part of the original program's state too: a C++ observer is allowed to use
+// XMM registers, so FXSAVE/FXRSTOR brackets the call as well.
+bool EmitLinuxX64NativeMemoryWriteTrace(
+    const AotInstructionRecord& instruction,
+    std::vector<std::uint8_t>* const bytes,
+    std::size_t* const emitted_instructions)
+{
+    if (bytes == nullptr || emitted_instructions == nullptr ||
+        !LinuxX64NativeMemoryWriteTraceEnabled() ||
+        !HasExplicitMemoryWrite(instruction))
+    {
+        return false;
+    }
+    const std::uintptr_t frame_pointer_address =
+        repiu::platform::LinuxX64DispatchFramePointerAddress();
+    const std::uintptr_t observer_address = reinterpret_cast<std::uintptr_t>(
+        &RepiuLinuxX64NativeMemoryWriteTrace);
+    if (frame_pointer_address == 0U || observer_address == 0U)
+    {
+        return false;
+    }
+
+    const std::size_t start = bytes->size();
+    bytes->push_back(0x9CU);  // pushfq
+    bytes->push_back(0x50U);  // push rax
+    bytes->push_back(0x51U);  // push rcx
+    bytes->push_back(0x52U);  // push rdx
+    bytes->push_back(0x56U);  // push rsi
+    bytes->push_back(0x57U);  // push rdi
+
+    bytes->insert(bytes->end(), {0x49U, 0xBBU});  // movabs r11, global
+    for (std::size_t index = 0U; index < 8U; ++index)
+    {
+        bytes->push_back(static_cast<std::uint8_t>(
+            (static_cast<std::uint64_t>(frame_pointer_address) >>
+             (index * 8U)) & 0xFFU));
+    }
+    bytes->insert(bytes->end(), {0x4DU, 0x8BU, 0x1BU});  // mov r11, [r11]
+    bytes->insert(bytes->end(), {0x4DU, 0x85U, 0xDBU});  // test r11, r11
+    bytes->push_back(0x74U);  // jz .Lnative_write_trace_restore
+    const std::size_t skip_offset = bytes->size();
+    bytes->push_back(0U);
+
+    bytes->insert(bytes->end(), {0x41U, 0x89U, 0x7BU, 0x00U});  // edi
+    bytes->insert(bytes->end(), {0x41U, 0x89U, 0x73U, 0x04U});  // esi
+    bytes->insert(bytes->end(), {0x41U, 0x89U, 0x5BU, 0x08U});  // ebx
+    bytes->insert(bytes->end(), {0x41U, 0x89U, 0x53U, 0x0CU});  // edx
+    bytes->insert(bytes->end(), {0x41U, 0x89U, 0x4BU, 0x10U});  // ecx
+    bytes->insert(bytes->end(), {0x41U, 0x89U, 0x43U, 0x14U});  // eax
+    bytes->insert(bytes->end(), {0x41U, 0x89U, 0x6BU, 0x18U});  // ebp
+    bytes->insert(bytes->end(), {0x45U, 0x89U, 0x7BU, 0x20U});  // r15d
+    bytes->insert(bytes->end(), {0x41U, 0xBAU});  // mov r10d, guest EIP
+    AppendImmediate32(bytes, instruction.guest_address);
+    bytes->insert(bytes->end(), {0x45U, 0x89U, 0x53U, 0x1CU});  // eip
+
+    bytes->insert(bytes->end(), {0x4CU, 0x89U, 0xDFU});  // mov rdi, r11
+    bytes->insert(bytes->end(), {0x49U, 0xBAU});  // movabs r10, observer
+    for (std::size_t index = 0U; index < 8U; ++index)
+    {
+        bytes->push_back(static_cast<std::uint8_t>(
+            (static_cast<std::uint64_t>(observer_address) >>
+             (index * 8U)) & 0xFFU));
+    }
+    // Preserve and realign the host stack dynamically. The observer may be
+    // reached from more than one cache-entry phase, so assuming one RSP phase
+    // here would make FXSAVE fault on an unaligned address. R12 is not a guest
+    // register in the x86-to-x64 mapping and the outer guest-entry bridge
+    // restores its host value when the cache exits.
+    bytes->insert(bytes->end(), {0x49U, 0x89U, 0xE4U});  // mov r12, rsp
+    bytes->insert(bytes->end(), {0x48U, 0x83U, 0xE4U, 0xF0U});
+                                                               // and rsp, -16
+    bytes->insert(bytes->end(), {0x48U, 0x81U, 0xECU, 0x00U, 0x02U,
+                                 0x00U, 0x00U});  // sub rsp, 0x200
+    bytes->insert(bytes->end(), {0x48U, 0x0FU, 0xAEU, 0x04U, 0x24U});
+                                                               // fxsave64 [rsp]
+    bytes->insert(bytes->end(), {0x41U, 0xFFU, 0xD2U});  // call r10
+    bytes->insert(bytes->end(), {0x48U, 0x0FU, 0xAEU, 0x0CU, 0x24U});
+                                                               // fxrstor64 [rsp]
+    bytes->insert(bytes->end(), {0x4CU, 0x89U, 0xE4U});  // mov rsp, r12
+
+    const std::size_t restore_offset = bytes->size();
+    bytes->push_back(0x5FU);  // pop rdi
+    bytes->push_back(0x5EU);  // pop rsi
+    bytes->push_back(0x5AU);  // pop rdx
+    bytes->push_back(0x59U);  // pop rcx
+    bytes->push_back(0x58U);  // pop rax
+    bytes->push_back(0x9DU);  // popfq
+    const std::size_t displacement = restore_offset - (skip_offset + 1U);
+    if (displacement > 0x7FU)
+    {
+        bytes->resize(start);
+        return false;
+    }
+    (*bytes)[skip_offset] = static_cast<std::uint8_t>(displacement);
+    *emitted_instructions = 35U;
     return true;
 }
 #endif
@@ -2541,6 +2689,13 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                         {
                             emitted_instructions += stack_trace_instructions;
                         }
+                    }
+                    std::size_t memory_trace_instructions = 0U;
+                    if (EmitLinuxX64NativeMemoryWriteTrace(
+                            instruction, &image->bytes,
+                            &memory_trace_instructions))
+                    {
+                        emitted_instructions += memory_trace_instructions;
                     }
 #endif
                 }

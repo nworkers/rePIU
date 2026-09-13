@@ -306,6 +306,8 @@ void TraceAotGuestMap(const AotCodeCachePlacement& placement,
                       const char* const phase)
 {
     constexpr std::size_t kEnvironmentCapacity = 1024U;
+    constexpr std::size_t kIncomingFixupTraceCapacity = 32U;
+    std::size_t incoming_fixups_printed = 0U;
     const auto setting = repiu::platform::ReadEnvironmentSetting(
         "REPIU_AOT_GUEST_MAP_TRACE", kEnvironmentCapacity);
     if (!setting.present)
@@ -448,6 +450,23 @@ void TraceAotGuestMap(const AotCodeCachePlacement& placement,
                             fixup.guest_source, AotFixupKindName(fixup.kind),
                             fixup.guest_target, fixup.cache_patch_offset,
                             fixup.resolved ? 1U : 0U);
+                    }
+                    if (fixup.guest_target == match.guest_address &&
+                        incoming_fixups_printed <
+                            kIncomingFixupTraceCapacity)
+                    {
+                        std::fprintf(
+                            stderr,
+                            "[repiu-aot-map-incoming-fixup] "
+                            "filter=0x%08X source=0x%08X "
+                            "target=0x%08X kind=%s patch=0x%08X "
+                            "resolved=%u\n",
+                            guest_address, fixup.guest_source,
+                            fixup.guest_target,
+                            AotFixupKindName(fixup.kind),
+                            fixup.cache_patch_offset,
+                            fixup.resolved ? 1U : 0U);
+                        ++incoming_fixups_printed;
                     }
                 }
                 const std::size_t context_radius =
@@ -1186,6 +1205,12 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
     // Opcode-directed Fast Dispatcher (Task 312)
     switch (opcode)
     {
+        case 0xC8U:
+            if (offset == 0U && HandleEnterInstruction(win32_context, context))
+            {
+                return true;
+            }
+            break;
         case 0xECU: case 0xEDU: case 0xEEU: case 0xEFU:
             if (context->enable_privileged_trap_hle && HandlePortIoInstruction(win32_context, context)) return true;
             break;
@@ -1958,12 +1983,17 @@ bool HandleSingleStepTrace(repiu::platform::GuestCpuContext* win32_context, Thre
 
     const std::uint32_t hle_entry_eip =
         static_cast<std::uint32_t>(win32_context->Eip);
+    TraceAotHleReentryState(
+        "hle-before", context, win32_context, hle_entry_eip, hle_entry_eip);
     bool handled_hle = false;
     {
         SingleStepHotspotStageScope stage_scope(
             hotspot_scope, SingleStepProfileStage::kHleDispatch);
         handled_hle = DispatchGuestHleHandlers(win32_context, context);
     }
+    TraceAotHleReentryState(
+        "hle-after", context, win32_context, hle_entry_eip,
+        static_cast<std::uint32_t>(win32_context->Eip));
     if (handled_hle)
     {
         hotspot_scope.SetOutcome(
@@ -1977,12 +2007,32 @@ bool HandleSingleStepTrace(repiu::platform::GuestCpuContext* win32_context, Thre
                 resumed = TryResumeAotAfterHandledHle(
                     win32_context, context, hle_entry_eip);
             }
+            TraceAotHleReentryState(
+                "reentry-after", context, win32_context, hle_entry_eip,
+                static_cast<std::uint32_t>(win32_context->Eip));
             if (resumed)
             {
                 NoteVehExitSite(context,
                                 VehExitSite::kSingleStepTraceHleResumed);
                 return true;
             }
+#if defined(__x86_64__)
+            // A failed HLE-to-AOT lookup may not fall through to original guest
+            // bytes when the continuation has different long-mode semantics.
+            // The cache path is the common lowering for stack, width,
+            // addressing, and privileged-instruction differences; if it is
+            // unavailable, decline the event instead of corrupting host RSP.
+            if (!CanResumeLinuxX64LegacyTarget(
+                    context,
+                    static_cast<std::uint32_t>(win32_context->Eip)))
+            {
+                context->aot_reentry_pending = false;
+                context->aot_legacy_fallback = false;
+                context->enable_single_step_trace = false;
+                win32_context->EFlags &= ~0x00000100U;
+                return false;
+            }
+#endif
         }
         NoteVehExitSite(context, VehExitSite::kSingleStepTraceHleStepped);
         win32_context->EFlags |= 0x00000100U;
@@ -2684,6 +2734,127 @@ void TraceLinuxX64ReturnResolver(const char* const result,
                  static_cast<unsigned>(guest_esp), detail);
 }
 
+std::uint32_t LinuxX64GuestEntryTraceAddress()
+{
+    static const std::uint32_t address = [] {
+        const char* const value =
+            std::getenv("REPIU_LINUX_X64_GUEST_ENTRY_TRACE");
+        if (value == nullptr || *value == '\0')
+        {
+            return 0U;
+        }
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &end, 0);
+        if (end == value || *end != '\0' ||
+            parsed > std::numeric_limits<std::uint32_t>::max())
+        {
+            return 0U;
+        }
+        return static_cast<std::uint32_t>(parsed);
+    }();
+    return address;
+}
+
+const char* LinuxX64FaultKindName(
+    const repiu::platform::FaultKind kind)
+{
+    switch (kind)
+    {
+        case repiu::platform::FaultKind::kAccessViolation:
+            return "access";
+        case repiu::platform::FaultKind::kSingleStep:
+            return "single-step";
+        case repiu::platform::FaultKind::kBreakpoint:
+            return "breakpoint";
+        case repiu::platform::FaultKind::kIllegalInstruction:
+            return "illegal";
+        case repiu::platform::FaultKind::kIntegerDivideByZero:
+            return "divide-by-zero";
+        case repiu::platform::FaultKind::kPrivilegedInstruction:
+            return "privileged";
+        case repiu::platform::FaultKind::kOther:
+            return "other";
+    }
+    return "unknown";
+}
+
+std::uint32_t ResolveLinuxX64GuestEntryAddress(
+    ThreadContext* const context,
+    const std::uint32_t eip)
+{
+    if (context == nullptr || context->aot_placement == nullptr ||
+        !IsAotCacheAddress(context, eip))
+    {
+        return eip;
+    }
+    std::uint32_t guest_address = 0U;
+    return FindAotGuestAddress(
+               *context->aot_placement, eip, &guest_address)
+        ? guest_address : eip;
+}
+
+void TraceLinuxX64GuestEntry(
+    ThreadContext* const context,
+    const std::uint32_t fault_eip,
+    const repiu::platform::FaultKind fault_kind,
+    const std::uint32_t entry_eip,
+    const std::uint32_t exit_eip,
+    const std::uint32_t entry_esp,
+    const std::uint32_t exit_esp,
+    const std::uint32_t exit_eflags)
+{
+    if (context == nullptr)
+    {
+        return;
+    }
+    const std::uint32_t target = LinuxX64GuestEntryTraceAddress();
+    if (target == 0U)
+    {
+        return;
+    }
+    const std::uint32_t entry_guest_eip =
+        ResolveLinuxX64GuestEntryAddress(context, entry_eip);
+    const std::uint32_t exit_guest_eip =
+        ResolveLinuxX64GuestEntryAddress(context, exit_eip);
+    if (target != entry_guest_eip && target != exit_guest_eip)
+    {
+        return;
+    }
+    static std::atomic<std::uint32_t> trace_count{0U};
+    const std::uint32_t sequence =
+        trace_count.fetch_add(1U, std::memory_order_relaxed) + 1U;
+    if (sequence > 32U)
+    {
+        return;
+    }
+    char line[512] = {};
+    const int length = std::snprintf(
+        line, sizeof(line),
+        "[repiu-x64-guest-entry] n=%u target=0x%08X fault_kind=%s "
+        "fault_eip=0x%08X entry_eip=0x%08X entry_guest=0x%08X "
+        "exit_eip=0x%08X exit_guest=0x%08X entry_esp=0x%08X "
+        "exit_esp=0x%08X "
+        "eflags=0x%08X pending=%u legacy=%u exit_site=%s\n",
+        static_cast<unsigned>(sequence), static_cast<unsigned>(target),
+        LinuxX64FaultKindName(fault_kind), static_cast<unsigned>(fault_eip),
+        static_cast<unsigned>(entry_eip),
+        static_cast<unsigned>(entry_guest_eip),
+        static_cast<unsigned>(exit_eip), static_cast<unsigned>(exit_guest_eip),
+        static_cast<unsigned>(entry_esp), static_cast<unsigned>(exit_esp),
+        static_cast<unsigned>(exit_eflags),
+        context->aot_reentry_pending ? 1U : 0U,
+        context->aot_legacy_fallback ? 1U : 0U,
+        VehExitSiteName(context->last_veh_exit_site));
+    if (length > 0)
+    {
+        repiu::platform::WriteHostErrorStream(
+            line,
+            static_cast<std::size_t>(length) < sizeof(line)
+                ? static_cast<std::size_t>(length)
+                : sizeof(line) - 1U);
+    }
+}
+
 bool LinuxX64ReturnFrameTraceEnabled()
 {
     static const bool enabled = [] {
@@ -2693,6 +2864,10 @@ bool LinuxX64ReturnFrameTraceEnabled()
     }();
     return enabled;
 }
+
+void TraceLinuxX64ReturnStackTail(
+    const repiu::platform::LinuxX64AotDispatchFrame& frame,
+    std::uint32_t sequence);
 
 // Task 616. Capture the two stack layouts that share the x64 return thunk:
 // ordinary RET leaves its caller at [ESP] after consuming [ESP-4], while an
@@ -2840,6 +3015,7 @@ void TraceLinuxX64ZeroReturnFrame(
                      static_cast<unsigned>(record.guest_esp),
                      static_cast<unsigned>(record.value));
     }
+    TraceLinuxX64ReturnStackTail(frame, sequence);
 }
 
 // Task 626. Select one resolved return target for a read-only register/frame
@@ -3897,7 +4073,8 @@ void RecordExecutionTrace(repiu::platform::GuestCpuContext* win32_context, Threa
         const int length = std::snprintf(
             line, sizeof(line),
             "[repiu-exec-trace] #%u eip=0x%08X esp=0x%08X stack=0x%08X "
-            "eax=0x%08X ebx=0x%08X edx=0x%08X eflags=0x%08X\n",
+            "eax=0x%08X ebx=0x%08X edx=0x%08X ebp=0x%08X "
+            "eflags=0x%08X\n",
             static_cast<unsigned>(entry.sequence),
             static_cast<unsigned>(entry.eip),
             static_cast<unsigned>(entry.esp),
@@ -3905,6 +4082,7 @@ void RecordExecutionTrace(repiu::platform::GuestCpuContext* win32_context, Threa
             static_cast<unsigned>(win32_context->Eax),
             static_cast<unsigned>(win32_context->Ebx),
             static_cast<unsigned>(win32_context->Edx),
+            static_cast<unsigned>(win32_context->Ebp),
             static_cast<unsigned>(win32_context->EFlags));
         if (length > 0)
         {
@@ -4055,6 +4233,20 @@ std::uint16_t ReadGuestSegmentSelector(const ThreadContext& context,
                                        std::uint8_t segment_register,
                                        const repiu::platform::GuestCpuContext* win32_context)
 {
+    if (segment_register == 1U)
+    {
+        std::uint16_t selector = 0U;
+        if (win32_context != nullptr &&
+            repiu::runtime::FindSelectorForLinearAddress(
+                context.selector_table,
+                static_cast<std::uint32_t>(win32_context->Eip),
+                &selector))
+        {
+            return selector;
+        }
+        return 0U;
+    }
+
     std::uint16_t shadow = 0;
     switch (segment_register)
     {
@@ -4408,9 +4600,22 @@ struct VehExitRecorder
     repiu::platform::GuestCpuContext* win32_context;
     ThreadContext* context;
     bool arena_single_step;
+    std::uint32_t fault_eip;
+    repiu::platform::FaultKind fault_kind;
+    std::uint32_t entry_eip;
+    std::uint32_t entry_esp;
 
-    VehExitRecorder(repiu::platform::GuestCpuContext* wc, ThreadContext* ctx, bool arena_step)
-        : win32_context(wc), context(ctx), arena_single_step(arena_step)
+    VehExitRecorder(repiu::platform::GuestCpuContext* wc,
+                    ThreadContext* ctx,
+                    const repiu::platform::FaultEvent& fault,
+                    bool arena_step)
+        : win32_context(wc),
+          context(ctx),
+          arena_single_step(arena_step),
+          fault_eip(fault.instruction_address),
+          fault_kind(fault.kind),
+          entry_eip(static_cast<std::uint32_t>(wc->Eip)),
+          entry_esp(static_cast<std::uint32_t>(wc->Esp))
     {
     }
 
@@ -4430,6 +4635,13 @@ struct VehExitRecorder
             (context->aot_reentry_pending ? 0x04U : 0U) |
             (context->aot_legacy_fallback ? 0x08U : 0U) |
             (context->enable_single_step_trace ? 0x10U : 0U));
+#if defined(__x86_64__)
+        TraceLinuxX64GuestEntry(
+            context, fault_eip, fault_kind, entry_eip, exit_eip,
+            entry_esp,
+            static_cast<std::uint32_t>(win32_context->Esp),
+            static_cast<std::uint32_t>(win32_context->EFlags));
+#endif
         if (!arena_single_step)
         {
             return;
@@ -4814,7 +5026,7 @@ repiu::platform::FaultDisposition DispatchGuestFault(
     // the class the `0x0301F7CE` question is about. Fixed here rather than in
     // the destructor because handlers rewrite EIP on the way out.
     const VehExitRecorder veh_exit_recorder(
-        win32_context, context,
+        win32_context, context, fault,
         fault.kind == repiu::platform::FaultKind::kSingleStep &&
             IsGuestInstructionPointer(context, context->last_veh_eip));
     // Task 526: classify what followed the last trap-free reentry.
@@ -6824,6 +7036,16 @@ bool RunExecutionThread(
             attempt->message =
                 "failed to install AOT guest code write watches";
             return false;
+        }
+        if (trace_address_in_runtime &&
+            GuestWriteTraceNativeObserverEnabled())
+        {
+            // The native observer sees the watched slot after each emitted
+            // explicit write. Disarm only this diagnostic page so the
+            // observer does not turn the guest stack into a write fault; all
+            // other AOT coherence watches remain active.
+            RemoveAotPageWriteWatch(
+                &context.aot_page_write_watch, trace_page);
         }
     }
 

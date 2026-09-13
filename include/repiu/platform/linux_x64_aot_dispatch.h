@@ -60,4 +60,10 @@ void ClearLinuxX64Dispatch();
 
 }  // namespace repiu::platform
 
+// Optional observer called by emitted explicit memory-write instructions.
+// The implementation is supplied by the engine telemetry layer; keeping the
+// ABI here lets the runtime emitter remain independent of its C++ internals.
+extern "C" void RepiuLinuxX64NativeMemoryWriteTrace(
+    repiu::platform::LinuxX64AotDispatchFrame* frame);
+
 #endif  // REPIU_PLATFORM_LINUX_X64_AOT_DISPATCH_H_

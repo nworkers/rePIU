@@ -13,8 +13,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -51,6 +53,88 @@ bool DecodeGlideTexDownloadTableCall(const std::uint32_t* guest_stack,
 
 namespace
 {
+
+constexpr std::uint32_t kLinexeFarTransferTraceCapacity = 64U;
+
+const char* LinexeServiceName(const repiu::hle::LinexeService service)
+{
+    switch (service)
+    {
+        case repiu::hle::LinexeService::kLoadModule: return "load-module";
+        case repiu::hle::LinexeService::kFreeModule: return "free-module";
+        case repiu::hle::LinexeService::kGetLoadTable: return "get-load-table";
+        case repiu::hle::LinexeService::kGetLoadName: return "get-load-name";
+        case repiu::hle::LinexeService::kGetModuleHandle: return "get-module-handle";
+        case repiu::hle::LinexeService::kGetProcedureAddress: return "get-proc";
+        case repiu::hle::LinexeService::kRelocate: return "relocate";
+        case repiu::hle::LinexeService::kUnrelocate: return "unrelocate";
+    }
+    return "unknown";
+}
+
+std::uint32_t BeginLinexeFarTransferTrace()
+{
+    const char* const value =
+        std::getenv("REPIU_LINEXE_FAR_TRANSFER_TRACE");
+    if (value == nullptr || std::strcmp(value, "0") == 0)
+    {
+        return 0U;
+    }
+    static std::atomic<std::uint32_t> trace_count{0U};
+    const std::uint32_t sequence =
+        trace_count.fetch_add(1U, std::memory_order_relaxed) + 1U;
+    return sequence <= kLinexeFarTransferTraceCapacity ? sequence : 0U;
+}
+
+void TraceLinexeFarTransferStack(ThreadContext* context,
+                                 const std::uint32_t sequence,
+                                 const std::uint32_t esp)
+{
+    constexpr std::size_t kTraceWordCount = 16U;
+    std::array<std::uint32_t, kTraceWordCount> words{};
+    const auto* const stack = reinterpret_cast<const void*>(
+        static_cast<std::uintptr_t>(esp));
+    if (context != nullptr &&
+        IsGuestRangeReadable(context,
+                             stack,
+                             words.size() * sizeof(words[0])))
+    {
+        std::memcpy(words.data(), stack, sizeof(words));
+    }
+    else
+    {
+        std::fprintf(stderr,
+                     "[repiu-linexe-far] n=%u event=stack-unreadable "
+                     "esp=0x%08X\n",
+                     static_cast<unsigned>(sequence),
+                     static_cast<unsigned>(esp));
+        return;
+    }
+    std::fprintf(stderr,
+                 "[repiu-linexe-far] n=%u event=stack esp=0x%08X "
+                 "w0=0x%08X w1=0x%08X w2=0x%08X w3=0x%08X "
+                 "w4=0x%08X w5=0x%08X w6=0x%08X w7=0x%08X "
+                 "w8=0x%08X w9=0x%08X w10=0x%08X w11=0x%08X "
+                 "w12=0x%08X w13=0x%08X w14=0x%08X w15=0x%08X\n",
+                 static_cast<unsigned>(sequence),
+                 static_cast<unsigned>(esp),
+                 static_cast<unsigned>(words[0]),
+                 static_cast<unsigned>(words[1]),
+                 static_cast<unsigned>(words[2]),
+                 static_cast<unsigned>(words[3]),
+                 static_cast<unsigned>(words[4]),
+                 static_cast<unsigned>(words[5]),
+                 static_cast<unsigned>(words[6]),
+                 static_cast<unsigned>(words[7]),
+                 static_cast<unsigned>(words[8]),
+                 static_cast<unsigned>(words[9]),
+                 static_cast<unsigned>(words[10]),
+                 static_cast<unsigned>(words[11]),
+                 static_cast<unsigned>(words[12]),
+                 static_cast<unsigned>(words[13]),
+                 static_cast<unsigned>(words[14]),
+                 static_cast<unsigned>(words[15]));
+}
 
 // DOS names arrive in whatever case the guest wrote them, so this comparison
 // has to ignore case. `_stricmp` is MSVC's name for it and `strcasecmp` is
@@ -875,9 +959,45 @@ bool HandleLinexeFarTransferBoundary(repiu::platform::GuestCpuContext* win32_con
 
     const auto* instruction = reinterpret_cast<const std::uint8_t*>(
         static_cast<std::uintptr_t>(win32_context->Eip));
+    const bool instruction_readable =
+        IsGuestRangeReadable(context, instruction, 6U);
     constexpr std::size_t kFarPointerSize = 6U;
-    if (IsGuestRangeReadable(context, instruction, kFarPointerSize) &&
-        instruction[0] == 0xFFU && instruction[1] == 0x1DU)
+    constexpr std::uint8_t kFarTransferPrefix[] =
+        {0x66U, 0xEAU, 0x04U, 0x00U, 0x2CU, 0x00U};
+    const bool indirect_candidate = instruction_readable &&
+        instruction[0] == 0xFFU && instruction[1] == 0x1DU;
+    const bool far_transfer_candidate = instruction_readable &&
+        std::memcmp(instruction,
+                    kFarTransferPrefix,
+                    sizeof(kFarTransferPrefix)) == 0;
+    const std::uint32_t trace_sequence =
+        indirect_candidate || far_transfer_candidate
+            ? BeginLinexeFarTransferTrace()
+            : 0U;
+    if (trace_sequence != 0U)
+    {
+        std::fprintf(stderr,
+                     "[repiu-linexe-far] n=%u event=entry eip=0x%08X "
+                     "bytes=%02X%02X%02X%02X%02X%02X esp=0x%08X "
+                     "ebp=0x%08X eax=0x%08X edi=0x%08X es=0x%04X\n",
+                     static_cast<unsigned>(trace_sequence),
+                     static_cast<unsigned>(win32_context->Eip),
+                     instruction_readable ? instruction[0] : 0U,
+                     instruction_readable ? instruction[1] : 0U,
+                     instruction_readable ? instruction[2] : 0U,
+                     instruction_readable ? instruction[3] : 0U,
+                     instruction_readable ? instruction[4] : 0U,
+                     instruction_readable ? instruction[5] : 0U,
+                     static_cast<unsigned>(win32_context->Esp),
+                     static_cast<unsigned>(win32_context->Ebp),
+                     static_cast<unsigned>(win32_context->Eax),
+                     static_cast<unsigned>(win32_context->Edi),
+                     static_cast<unsigned>(win32_context->SegEs));
+        TraceLinexeFarTransferStack(
+            context, trace_sequence, static_cast<std::uint32_t>(
+                win32_context->Esp));
+    }
+    if (indirect_candidate)
     {
         const std::uint32_t pointer_address =
             static_cast<std::uint32_t>(instruction[2]) |
@@ -909,16 +1029,24 @@ bool HandleLinexeFarTransferBoundary(repiu::platform::GuestCpuContext* win32_con
                     target_selector,
                     static_cast<std::uint16_t>(target_offset),
                     &service);
+            if (trace_sequence != 0U)
+            {
+                std::fprintf(stderr,
+                             "[repiu-linexe-far] n=%u event=indirect "
+                             "pointer=0x%08X target=0x%08X selector=0x%04X "
+                             "service=%s known=%u\n",
+                             static_cast<unsigned>(trace_sequence),
+                             static_cast<unsigned>(pointer_address),
+                             static_cast<unsigned>(target_offset),
+                             static_cast<unsigned>(target_selector),
+                             LinexeServiceName(service),
+                             context->linexe_indirect_far_call_known_export
+                                 ? 1U : 0U);
+            }
         }
         return false;
     }
-    constexpr std::uint8_t kFarTransferPrefix[] =
-        {0x66U, 0xEAU, 0x04U, 0x00U};
-    if (!IsGuestRangeReadable(
-            context, instruction, sizeof(kFarTransferPrefix) + 2U) ||
-        std::memcmp(instruction,
-                    kFarTransferPrefix,
-                    sizeof(kFarTransferPrefix)) != 0)
+    if (!far_transfer_candidate)
     {
         return false;
     }
@@ -934,7 +1062,27 @@ bool HandleLinexeFarTransferBoundary(repiu::platform::GuestCpuContext* win32_con
             target_offset,
             &service))
     {
+        if (trace_sequence != 0U)
+        {
+            std::fprintf(stderr,
+                         "[repiu-linexe-far] n=%u event=decode-rejected "
+                         "target=0x%04X selector=0x%04X\n",
+                         static_cast<unsigned>(trace_sequence),
+                         static_cast<unsigned>(target_offset),
+                         static_cast<unsigned>(target_selector));
+        }
         return false;
+    }
+
+    if (trace_sequence != 0U)
+    {
+        std::fprintf(stderr,
+                     "[repiu-linexe-far] n=%u event=decoded target=0x%04X "
+                     "selector=0x%04X service=%s\n",
+                     static_cast<unsigned>(trace_sequence),
+                     static_cast<unsigned>(target_offset),
+                     static_cast<unsigned>(target_selector),
+                     LinexeServiceName(service));
     }
 
     ++context->linexe_bridge_entry_count;
@@ -1031,6 +1179,8 @@ bool HandleLinexeFarTransferBoundary(repiu::platform::GuestCpuContext* win32_con
         context->linexe_bridge_stack[11] == kVirtualGlideModuleHandle &&
         glide_export != nullptr)
     {
+        const std::uint32_t old_esp =
+            static_cast<std::uint32_t>(win32_context->Esp);
         const std::uint32_t result_pointer =
             context->linexe_bridge_stack[13];
         const std::uint32_t gate_address =
@@ -1065,6 +1215,24 @@ bool HandleLinexeFarTransferBoundary(repiu::platform::GuestCpuContext* win32_con
         win32_context->Ebp = context->linexe_bridge_stack[9];
         win32_context->Eip = context->linexe_bridge_stack[10];
         win32_context->Esp += 11U * sizeof(std::uint32_t);
+        if (trace_sequence != 0U)
+        {
+            std::fprintf(stderr,
+                         "[repiu-linexe-far] n=%u event=return "
+                         "service=%s old_esp=0x%08X new_esp=0x%08X "
+                         "eip=0x%08X eax=0x%08X ebx=0x%08X esi=0x%08X "
+                         "edi=0x%08X ebp=0x%08X\n",
+                         static_cast<unsigned>(trace_sequence),
+                         LinexeServiceName(service),
+                         static_cast<unsigned>(old_esp),
+                         static_cast<unsigned>(win32_context->Esp),
+                         static_cast<unsigned>(win32_context->Eip),
+                         static_cast<unsigned>(win32_context->Eax),
+                         static_cast<unsigned>(win32_context->Ebx),
+                         static_cast<unsigned>(win32_context->Esi),
+                         static_cast<unsigned>(win32_context->Edi),
+                         static_cast<unsigned>(win32_context->Ebp));
+        }
         return true;
     }
     if (service != repiu::hle::LinexeService::kLoadModule ||
@@ -1084,7 +1252,27 @@ bool HandleLinexeFarTransferBoundary(repiu::platform::GuestCpuContext* win32_con
     win32_context->Edi = context->linexe_bridge_stack[6];
     win32_context->Ebp = context->linexe_bridge_stack[7];
     win32_context->Eip = context->linexe_bridge_stack[8];
+    const std::uint32_t old_esp =
+        static_cast<std::uint32_t>(win32_context->Esp);
     win32_context->Esp += 9U * sizeof(std::uint32_t);
+    if (trace_sequence != 0U)
+    {
+        std::fprintf(stderr,
+                     "[repiu-linexe-far] n=%u event=return "
+                     "service=%s old_esp=0x%08X new_esp=0x%08X "
+                     "eip=0x%08X eax=0x%08X ebx=0x%08X esi=0x%08X "
+                     "edi=0x%08X ebp=0x%08X\n",
+                     static_cast<unsigned>(trace_sequence),
+                     LinexeServiceName(service),
+                     static_cast<unsigned>(old_esp),
+                     static_cast<unsigned>(win32_context->Esp),
+                     static_cast<unsigned>(win32_context->Eip),
+                     static_cast<unsigned>(win32_context->Eax),
+                     static_cast<unsigned>(win32_context->Ebx),
+                     static_cast<unsigned>(win32_context->Esi),
+                     static_cast<unsigned>(win32_context->Edi),
+                     static_cast<unsigned>(win32_context->Ebp));
+    }
     return true;
 }
 

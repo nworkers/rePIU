@@ -12,6 +12,9 @@ extern "C"
 void* repiu_linux_x64_dispatch_frame = nullptr;
 void* repiu_linux_x64_dispatch_context = nullptr;
 void* repiu_linux_x64_dispatch_resolver = nullptr;
+volatile std::uint64_t repiu_linux_x64_guest_entry_rsp = 0U;
+volatile std::uint64_t repiu_linux_x64_cache_call_rsp = 0U;
+volatile std::uint64_t repiu_linux_x64_return_thunk_rsp = 0U;
 
 void RepiuLinuxX64ReturnThunk();
 void RepiuLinuxX64LegacyResumeThunk();
@@ -24,6 +27,13 @@ void InstallLinuxX64Dispatch(LinuxX64AotDispatchFrame* const frame,
                              void* const context,
                              const LinuxX64DispatchResolver resolver)
 {
+    if (frame != nullptr)
+    {
+        // Native observers run between return-dispatch calls, so seed the
+        // frame's context once instead of requiring each observer to recover
+        // it from a separate platform global.
+        frame->context = reinterpret_cast<std::uintptr_t>(context);
+    }
     repiu_linux_x64_dispatch_frame = frame;
     repiu_linux_x64_dispatch_context = context;
     repiu_linux_x64_dispatch_resolver =

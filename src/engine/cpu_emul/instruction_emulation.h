@@ -80,6 +80,9 @@ bool HandleGeneralRegisterStackInstruction(
     repiu::platform::GuestCpuContext* win32_context,
     ThreadContext* context);
 
+bool HandleEnterInstruction(repiu::platform::GuestCpuContext* win32_context,
+                            ThreadContext* context);
+
 std::uint32_t HandleConsecutiveLegacyStackInstructions(
     repiu::platform::GuestCpuContext* win32_context,
     ThreadContext* context,
