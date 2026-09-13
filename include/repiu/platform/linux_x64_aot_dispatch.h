@@ -58,6 +58,12 @@ void ClearLinuxX64Dispatch();
 // guest instruction as a legacy single-step bridge.
 [[nodiscard]] std::uintptr_t LinuxX64LegacyResumeThunkAddress();
 
+// Addresses of the optional x64 guest-ESP trace slots. The emitter uses these
+// only when REPIU_LINUX_X64_GUEST_ESP_TRACE is enabled; the slots are kept
+// outside the guest register frame so tracing cannot change guest state.
+[[nodiscard]] std::uintptr_t LinuxX64GuestEspTraceSiteAddress();
+[[nodiscard]] std::uintptr_t LinuxX64GuestEspTraceValueAddress();
+
 }  // namespace repiu::platform
 
 // Optional observer called by emitted explicit memory-write instructions.

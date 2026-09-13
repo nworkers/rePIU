@@ -449,6 +449,7 @@ struct AotCodeCacheImage
     bool executable = false;
     std::uint32_t entry_cache_offset = 0;
     std::vector<std::uint8_t> bytes;
+    std::vector<RuntimeCodeModeRange> code_mode_ranges;
     std::vector<AotAddressMapEntry> address_map;
     std::vector<AotCodeCacheFixup> fixups;
     std::vector<AotIndirectInlineCacheSite> indirect_inline_cache_sites;

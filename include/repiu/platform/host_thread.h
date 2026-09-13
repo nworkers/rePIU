@@ -125,6 +125,15 @@ void DetachHostThread(HostThread* thread);
 using ThreadInterruptCallback = void (*)(GuestCpuContext* registers,
                                          void* user_data);
 
+// Variant for the rare callback that must edit a native register which does
+// not fit in GuestCpuContext. On Linux the third argument is the signal's
+// ucontext_t; on Windows it is the temporary CONTEXT used by the suspend /
+// resume implementation. The callback still has the same async-signal-safe
+// constraints as ThreadInterruptCallback.
+using ThreadInterruptContextCallback = void (*)(GuestCpuContext* registers,
+                                                 void* user_data,
+                                                 void* host_context);
+
 // Why an interrupt did not happen. A diagnostic that can only say "it failed"
 // is half a diagnostic, and these three want different responses: a refusal is
 // a caller's bug, a delivery failure means the thread is gone, and a timeout
@@ -154,6 +163,16 @@ enum class ThreadInterruptFailure : std::uint8_t
                                        std::uint32_t timeout_milliseconds,
                                        ThreadInterruptFailure* failure =
                                            nullptr);
+
+// Same interrupt handshake, with access to the native machine context. This
+// is needed on x86-64 because GuestCpuContext::Eip is only the low 32 bits of
+// the native RIP, while a recovery trampoline may live above 4 GiB.
+[[nodiscard]] bool InterruptHostThreadWithContext(
+    const HostThread& thread,
+    ThreadInterruptContextCallback callback,
+    void* user_data,
+    std::uint32_t timeout_milliseconds,
+    ThreadInterruptFailure* failure = nullptr);
 
 }  // namespace repiu::platform
 

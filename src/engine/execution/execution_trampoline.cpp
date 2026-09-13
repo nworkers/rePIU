@@ -5606,9 +5606,9 @@ repiu::platform::FaultDisposition DispatchGuestFault(
                 IsGuestRangeReadable(context, next, 6U);
             std::fprintf(
                 stderr,
-                "[repiu-segment-hle] stage=handler n=%u handled=%u "
-                "drained=%u eip_after=0x%08X esp_after=0x%08X "
-                "next=%02X%02X%02X%02X%02X%02X\n",
+                        "[repiu-segment-hle] stage=handler n=%u handled=%u "
+                        "drained=%u eip_after=0x%08X esp_after=0x%08X "
+                        "next=%02X%02X%02X%02X%02X%02X\n",
                 segment_hle_trace_index,
                 handled ? 1U : 0U,
                 drained,
@@ -6100,8 +6100,10 @@ struct GuestShutdownRecoveryRequest
 // constraints -- it allocates nothing, takes no lock, and blocks on nothing. The
 // message that used to be written here now belongs to the requesting thread,
 // because assigning a std::string is an allocation.
-void RecoverGuestThreadForShutdown(repiu::platform::GuestCpuContext* registers,
-                                   void* user_data)
+void RecoverGuestThreadForShutdownCommon(
+    repiu::platform::GuestCpuContext* registers,
+    void* user_data,
+    void* host_context)
 {
     auto* request = static_cast<GuestShutdownRecoveryRequest*>(user_data);
     if (request == nullptr || registers == nullptr ||
@@ -6127,8 +6129,40 @@ void RecoverGuestThreadForShutdown(repiu::platform::GuestCpuContext* registers,
     }
     RecordFaultRecoveryProvenance(
         request->context, eip, FaultRecoveryPath::kShutdownInterrupt);
+#if defined(__x86_64__) && !defined(_WIN32)
+    // The x64 cache runs with the host stack in RSP. Returning through the
+    // cache-exit trampoline is therefore the only valid shutdown unwind. Eip
+    // cannot carry its full address, so prime native RIP first and then leave
+    // the low half in GuestCpuContext for StoreGuestCpuContext's merge.
+    const std::uintptr_t resume_address = reinterpret_cast<std::uintptr_t>(
+        &repiu::platform::RepiuLinuxX64GuestExit);
+    if (host_context == nullptr ||
+        !repiu::platform::StoreHostInstructionPointer(
+            resume_address, host_context))
+    {
+        return;
+    }
+    registers->Eip = static_cast<decltype(registers->Eip)>(resume_address);
+    registers->EFlags &= ~0x00000100U;
+    registers->EFlags &= ~0x00000400U;
+#else
     RecoverToHost(registers, request->context);
+#endif
     request->recovered = true;
+}
+
+void RecoverGuestThreadForShutdown(repiu::platform::GuestCpuContext* registers,
+                                   void* user_data)
+{
+    RecoverGuestThreadForShutdownCommon(registers, user_data, nullptr);
+}
+
+void RecoverGuestThreadForShutdownWithContext(
+    repiu::platform::GuestCpuContext* registers,
+    void* user_data,
+    void* host_context)
+{
+    RecoverGuestThreadForShutdownCommon(registers, user_data, host_context);
 }
 
 std::uint16_t FindGuestStackSelector(
@@ -7174,9 +7208,10 @@ bool RunExecutionThread(
         while (recovery_attempts < kShutdownRecoveryAttempts)
         {
             ++recovery_attempts;
-            interrupt_answered = repiu::platform::InterruptHostThread(
-                thread, &RecoverGuestThreadForShutdown, &recovery_request,
-                kShutdownInterruptTimeoutMilliseconds, &interrupt_failure);
+            interrupt_answered = repiu::platform::InterruptHostThreadWithContext(
+                thread, &RecoverGuestThreadForShutdownWithContext,
+                &recovery_request, kShutdownInterruptTimeoutMilliseconds,
+                &interrupt_failure);
             if (!interrupt_answered || recovery_request.recovered)
             {
                 break;

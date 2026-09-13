@@ -635,6 +635,7 @@ bool ProbeClassification()
                                      0x34U, 0x12U};
     const std::uint8_t gs_override[] = {0x65U, 0x8BU, 0x03U};
     const std::uint8_t register_only[] = {0x31U, 0xC0U};
+    const std::uint8_t sixteen_bit_memory[] = {0x67U, 0x32U, 0x00U};
 
     const auto memory_result =
         ClassifyLongModeBytes(register_memory, sizeof(register_memory));
@@ -644,6 +645,15 @@ bool ProbeClassification()
         ClassifyLongModeBytes(gs_override, sizeof(gs_override));
     const auto register_result =
         ClassifyLongModeBytes(register_only, sizeof(register_only));
+    const auto sixteen_bit_result = ClassifyLongModeBytes(
+        sixteen_bit_memory, sizeof(sixteen_bit_memory));
+
+    std::cout << "long_mode_lowering_16bit_probe=compat="
+              << static_cast<unsigned>(sixteen_bit_result.compatibility)
+              << ",divergence="
+              << static_cast<unsigned>(sixteen_bit_result.divergence)
+              << ",lowering="
+              << static_cast<unsigned>(sixteen_bit_result.lowering) << "\n";
 
     const bool ok =
         memory_result.compatibility ==

@@ -5214,6 +5214,47 @@ int main(int argc, char** argv)
             relocated_arena_reservation);
         return 1;
     }
+    if (const char* const trace_address_text =
+            std::getenv("REPIU_AOT_PLAN_TRACE");
+        trace_address_text != nullptr &&
+        std::strcmp(trace_address_text, "0x01100027") == 0)
+    {
+        constexpr std::uint32_t trace_address = 0x01100027U;
+        std::fprintf(stderr,
+                     "[repiu-runtime-image-trace] address=0x%08X\n",
+                     trace_address);
+        for (const repiu::runtime::RelocatedRuntimeObject& object :
+             relocated_image.objects)
+        {
+            if (trace_address < object.relocated_base_address)
+            {
+                continue;
+            }
+            const std::uint64_t offset =
+                static_cast<std::uint64_t>(trace_address) -
+                object.relocated_base_address;
+            if (offset >= repiu::runtime::RelocatedRuntimeObjectByteCount(
+                              object))
+            {
+                continue;
+            }
+            const std::uint8_t* const bytes =
+                repiu::runtime::RelocatedRuntimeObjectBytes(object) + offset;
+            std::fprintf(stderr,
+                         "[repiu-runtime-image-trace-object] index=%u "
+                         "base=0x%08X size=0x%08X offset=0x%llX "
+                         "bytes=%02X%02X%02X flags=0x%08X\n",
+                         static_cast<unsigned>(object.object_index),
+                         static_cast<unsigned>(object.relocated_base_address),
+                         static_cast<unsigned>(object.virtual_size),
+                         static_cast<unsigned long long>(offset), bytes[0],
+                         offset + 1U < repiu::runtime::RelocatedRuntimeObjectByteCount(object)
+                             ? bytes[1] : 0U,
+                         offset + 2U < repiu::runtime::RelocatedRuntimeObjectByteCount(object)
+                             ? bytes[2] : 0U,
+                         static_cast<unsigned>(object.flags));
+        }
+    }
 
     repiu::runtime::ExecutionBackend execution_backend =
         repiu::runtime::kDefaultExecutionBackend;
@@ -5460,6 +5501,18 @@ int main(int argc, char** argv)
         repiu::engine::ReleaseRuntimeAddressRange(
             relocated_arena_reservation);
         return 1;
+    }
+    if (const char* const trace_address_text =
+            std::getenv("REPIU_AOT_PLAN_TRACE");
+        trace_address_text != nullptr &&
+        std::strcmp(trace_address_text, "0x01100027") == 0)
+    {
+        const auto* const bytes = reinterpret_cast<const std::uint8_t*>(
+            static_cast<std::uintptr_t>(0x01100027U));
+        std::fprintf(stderr,
+                     "[repiu-runtime-placement-trace] address=0x01100027 "
+                     "bytes=%02X%02X%02X\n",
+                     bytes[0], bytes[1], bytes[2]);
     }
 
     PrintPlacement(*logger, placement);

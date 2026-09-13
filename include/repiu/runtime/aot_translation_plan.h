@@ -2,6 +2,7 @@
 #define REPIU_RUNTIME_AOT_TRANSLATION_PLAN_H_
 
 #include "repiu/runtime/runtime_memory.h"
+#include "repiu/runtime/selector_table.h"
 
 #include <cstdint>
 #include <string>
@@ -53,6 +54,8 @@ struct AotInstructionRecord
     std::uint8_t segment_register = 0xFFU;
     std::uint8_t gpr_register = 0xFFU;
     std::uint16_t mnemonic = 0;
+    GuestCodeDefaultOperandSize guest_code_default_operand_size =
+        GuestCodeDefaultOperandSize::k32;
     std::vector<std::uint8_t> bytes;
     std::vector<std::uint32_t> table_targets;
 };
@@ -91,6 +94,7 @@ struct AotTranslationPlan
     std::uint32_t decode_failure_count = 0;
     std::uint32_t analysis_limit_count = 0;
     std::uint64_t elapsed_microseconds = 0;
+    std::vector<RuntimeCodeModeRange> code_mode_ranges;
     std::vector<AotBasicBlock> blocks;
     std::string message;
 };

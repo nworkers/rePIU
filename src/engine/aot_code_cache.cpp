@@ -1051,6 +1051,7 @@ bool PlaceAotCodeCache(const runtime::AotCodeCacheImage& image,
     placement->capacity = static_cast<std::uint32_t>(capacity);
     placement->entry_address = placement->base_address +
                                image.entry_cache_offset;
+    placement->code_mode_ranges = image.code_mode_ranges;
     placement->address_map = image.address_map;
     InitializeAotPageCoherence(placement, 1U);
     placement->fixups = image.fixups;
@@ -1179,6 +1180,7 @@ bool AppendDynamicAotTranslation(
     arena_view.valid = true;
     arena_view.relocated_image_base = runtime_base;
     arena_view.relocated_entry_linear_address = guest_entry;
+    arena_view.code_mode_ranges = placement->code_mode_ranges;
     runtime::RelocatedRuntimeObject object;
     object.relocated_base_address = runtime_base;
     object.virtual_size = runtime_size;

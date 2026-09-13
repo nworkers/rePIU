@@ -111,7 +111,8 @@ void TraceDpmiSelectorBaseRegisters(
     std::uint16_t selector,
     const repiu::runtime::GuestDescriptor* descriptor)
 {
-    if (std::getenv("REPIU_DOS_INT_TRACE") == nullptr)
+    if (std::getenv("REPIU_DOS_INT_TRACE") == nullptr &&
+        std::getenv("REPIU_DPMI_SEGMENT_TRACE") == nullptr)
     {
         return;
     }
@@ -123,7 +124,8 @@ void TraceDpmiSelectorBaseRegisters(
         "[repiu-dpmi-context] phase=%s eip=0x%08X eax=0x%08X "
         "ebx=0x%08X ecx=0x%08X edx=0x%08X esi=0x%08X edi=0x%08X "
         "esp=0x%08X eflags=0x%08X selector=0x%04X base=0x%08X "
-        "present=%u returned_cx=0x%04X returned_dx=0x%04X cf=%u\n",
+        "limit=0x%08X flags=0x%04X present=%u returned_cx=0x%04X "
+        "returned_dx=0x%04X cf=%u\n",
         phase,
         static_cast<std::uint32_t>(win32_context.Eip),
         static_cast<std::uint32_t>(win32_context.Eax),
@@ -136,6 +138,8 @@ void TraceDpmiSelectorBaseRegisters(
         static_cast<std::uint32_t>(win32_context.EFlags),
         static_cast<unsigned>(selector),
         descriptor == nullptr ? 0U : descriptor->base,
+        descriptor == nullptr ? 0U : descriptor->limit,
+        descriptor == nullptr ? 0U : descriptor->flags & 0xFFFFU,
         descriptor != nullptr && descriptor->present ? 1U : 0U,
         static_cast<unsigned>(win32_context.Ecx & 0xFFFFU),
         static_cast<unsigned>(win32_context.Edx & 0xFFFFU),
@@ -534,6 +538,8 @@ bool HandleDpmiInterrupt31(repiu::platform::GuestCpuContext* win32_context, Thre
             win32_context->Ebx & 0xFFFFU);
         const repiu::runtime::GuestDescriptor* existing =
             repiu::runtime::FindDescriptor(context->selector_table, selector);
+        TraceDpmiSelectorBaseRegisters(
+            "set-enter", *win32_context, selector, existing);
         RecordHandledDosInterrupt(context, 0x31, ax);
         if (existing == nullptr || !existing->present)
         {
@@ -555,6 +561,10 @@ bool HandleDpmiInterrupt31(repiu::platform::GuestCpuContext* win32_context, Thre
             win32_context->EFlags &= ~1U;
         }
         win32_context->Eip += 2;
+        const repiu::runtime::GuestDescriptor* updated_descriptor =
+            repiu::runtime::FindDescriptor(context->selector_table, selector);
+        TraceDpmiSelectorBaseRegisters(
+            "set-return", *win32_context, selector, updated_descriptor);
         return true;
     }
     if (ax == 0x0008 || ax == 0x0009)
@@ -563,6 +573,9 @@ bool HandleDpmiInterrupt31(repiu::platform::GuestCpuContext* win32_context, Thre
             win32_context->Ebx & 0xFFFFU);
         const repiu::runtime::GuestDescriptor* existing =
             repiu::runtime::FindDescriptor(context->selector_table, selector);
+        TraceDpmiSelectorBaseRegisters(
+            ax == 0x0008 ? "limit-enter" : "flags-enter",
+            *win32_context, selector, existing);
         RecordHandledDosInterrupt(context, 0x31, ax);
         if (existing == nullptr || !existing->present)
         {
@@ -591,6 +604,11 @@ bool HandleDpmiInterrupt31(repiu::platform::GuestCpuContext* win32_context, Thre
             win32_context->EFlags &= ~1U;
         }
         win32_context->Eip += 2;
+        const repiu::runtime::GuestDescriptor* updated_descriptor =
+            repiu::runtime::FindDescriptor(context->selector_table, selector);
+        TraceDpmiSelectorBaseRegisters(
+            ax == 0x0008 ? "limit-return" : "flags-return",
+            *win32_context, selector, updated_descriptor);
         return true;
     }
     if (ax == 0x0400)

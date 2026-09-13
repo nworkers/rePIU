@@ -122,6 +122,15 @@ bool EmitLongModeCopy(const AotInstructionRecord& instruction,
     {
         return false;
     }
+    // A 16-bit source instruction cannot be judged by the legacy-32
+    // compatibility classifier. Until a dedicated 16-bit lowering exists,
+    // keep it fail-closed rather than reinterpreting its immediate and
+    // consuming bytes from the following instruction.
+    if (instruction.guest_code_default_operand_size !=
+        GuestCodeDefaultOperandSize::k32)
+    {
+        return false;
+    }
     const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
         instruction.bytes.data(), instruction.bytes.size());
     if (verdict.compatibility == LongModeByteCompatibility::kIdenticalBytes)
@@ -505,6 +514,61 @@ bool LinuxX64StackTraceEnabled()
         return value != nullptr && std::strcmp(value, "0") != 0;
     }();
     return enabled;
+}
+
+bool LinuxX64GuestEspTraceEnabled()
+{
+    static const bool enabled = [] {
+        const char* const value =
+            std::getenv("REPIU_LINUX_X64_GUEST_ESP_TRACE");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+bool EmitLinuxX64GuestEspTrace(
+    const AotInstructionRecord& instruction,
+    std::vector<std::uint8_t>* const bytes,
+    std::size_t* const emitted_instructions)
+{
+    if (bytes == nullptr || emitted_instructions == nullptr ||
+        !LinuxX64GuestEspTraceEnabled())
+    {
+        return false;
+    }
+    const std::uintptr_t site_address =
+        repiu::platform::LinuxX64GuestEspTraceSiteAddress();
+    const std::uintptr_t value_address =
+        repiu::platform::LinuxX64GuestEspTraceValueAddress();
+    if (site_address == 0U || value_address == 0U)
+    {
+        return false;
+    }
+
+    // R10 and R11 are not guest registers in the x64 mapping. MOV does not
+    // change flags, so this observer can be placed after a translated guest
+    // instruction without affecting its successor.
+    bytes->insert(bytes->end(), {0x49U, 0xBAU});  // movabs r10, site
+    for (std::size_t index = 0U; index < 8U; ++index)
+    {
+        bytes->push_back(static_cast<std::uint8_t>(
+            (static_cast<std::uint64_t>(site_address) >> (index * 8U)) &
+            0xFFU));
+    }
+    bytes->insert(bytes->end(), {0x41U, 0xBBU});  // mov r11d, guest site
+    AppendImmediate32(bytes, instruction.guest_address);
+    bytes->insert(bytes->end(), {0x45U, 0x89U, 0x1AU});
+
+    bytes->insert(bytes->end(), {0x49U, 0xBAU});  // movabs r10, value
+    for (std::size_t index = 0U; index < 8U; ++index)
+    {
+        bytes->push_back(static_cast<std::uint8_t>(
+            (static_cast<std::uint64_t>(value_address) >> (index * 8U)) &
+            0xFFU));
+    }
+    bytes->insert(bytes->end(), {0x45U, 0x89U, 0x3AU});
+    *emitted_instructions += 5U;
+    return true;
 }
 
 // Task 619. Record an AOT guest-stack write without changing guest flags. The
@@ -2548,6 +2612,7 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
         options.enable_dbt_direct_edge_dispatch;
     image->timer_safe_points_enabled = options.enable_timer_safe_points;
     image->long_mode_emission_enabled = options.enable_long_mode_emission;
+    image->code_mode_ranges = plan.code_mode_ranges;
     const auto started = std::chrono::steady_clock::now();
     image->guarded_segment_pop_enabled =
         options.enable_guarded_segment_pop;
@@ -2696,6 +2761,13 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                             &memory_trace_instructions))
                     {
                         emitted_instructions += memory_trace_instructions;
+                    }
+                    std::size_t guest_esp_trace_instructions = 0U;
+                    if (EmitLinuxX64GuestEspTrace(
+                            instruction, &image->bytes,
+                            &guest_esp_trace_instructions))
+                    {
+                        emitted_instructions += guest_esp_trace_instructions;
                     }
 #endif
                 }

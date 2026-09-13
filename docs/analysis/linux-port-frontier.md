@@ -14688,3 +14688,48 @@ entering `0x010F0232` must be identified first.
 | Normal game execution | **Unresolved** |
 
 ---
+
+## 2026-09-14: Linux x64 mixed-mode decode checkpoint
+
+### 한국어
+
+Task 678의 종료 복구 수정과 Task 679의 혼합 모드 조사 중 다음 사실을
+확인했다.
+
+* Linux x64 AOT planner가 모든 LE code object를 `LEGACY_32`로 디코드하던
+  것이 `OBJALIAS16` object 3의 `BC 00 20`을 `MOV ESP,0x8DFB2000`으로
+  오인하게 만든 직접 원인이었다.
+* object 3의 LE flags는 `0x1045`이며 `OBJBIGDEF`가 없으므로 기본 code
+  operand size는 16-bit이다. object 2는 32-bit code object로 유지된다.
+* 수정된 planner는 executable object 범위에서 `LEGACY_16`/`LEGACY_32`
+  decoder를 선택하고 mode를 `AotInstructionRecord` 및 dynamic AOT append
+  metadata에 전달한다.
+* 아직 검증되지 않은 16-bit 명령은 x64 cache에서 32-bit로 재인코딩하지
+  않고 fail-closed HLE 경계로 남긴다. 따라서 이 checkpoint만으로 정상 게임
+  실행이 완료된 것은 아니다.
+
+### English
+
+During the Task 678 shutdown-recovery work and Task 679 mixed-mode
+investigation, the following facts were confirmed.
+
+* The Linux x64 AOT planner decoded every LE code object as `LEGACY_32`. This
+  made object 3's `BC 00 20` become the false `MOV ESP,0x8DFB2000` and was the
+  direct cause of the malformed guest stack state.
+* Object 3 has LE flags `0x1045` and no `OBJBIGDEF`, so its default code operand
+  size is 16-bit. Object 2 remains a 32-bit code object.
+* The updated planner selects a `LEGACY_16` or `LEGACY_32` decoder from the
+  executable object range and carries that mode into `AotInstructionRecord`
+  and dynamic AOT append metadata.
+* 16-bit instructions without a proven x64 lowering are kept at a fail-closed
+  HLE boundary instead of being re-encoded as 32-bit instructions. This
+  checkpoint does not yet mean that normal game execution is complete.
+
+### Next session
+
+The next session should first inspect the object-3 dynamic AOT trace after the
+mode change. The expected plan entry at `0x01100022` is `BC 00 20` with length
+3, and the old `41 BF 00 20 FB 8D` emission must be absent. Then implement the
+general 16-bit lowering/HLE path required by the first fail-closed instruction;
+do not add an address-specific exception. The 16-bit stack width/base/limit and
+far-return ABI remain unresolved and must be handled as shared semantics.

@@ -5,7 +5,11 @@
 #include <Zydis.h>
 
 #include <chrono>
+#include <cerrno>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -15,6 +19,27 @@ namespace repiu::runtime
 {
 namespace
 {
+
+std::uint32_t PlanTraceAddress()
+{
+    static const std::uint32_t address = [] {
+        const char* const value = std::getenv("REPIU_AOT_PLAN_TRACE");
+        if (value == nullptr || *value == '\0')
+        {
+            return 0U;
+        }
+        errno = 0;
+        char* parse_end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &parse_end, 0);
+        if (errno != 0 || parse_end == value || *parse_end != '\0' ||
+            parsed > std::numeric_limits<std::uint32_t>::max())
+        {
+            return 0U;
+        }
+        return static_cast<std::uint32_t>(parsed);
+    }();
+    return address;
+}
 
 const std::uint8_t* FindBytes(const RelocatedRuntimeImage& image,
                               std::uint32_t address,
@@ -36,6 +61,48 @@ const std::uint8_t* FindBytes(const RelocatedRuntimeImage& image,
         }
     }
     return nullptr;
+}
+
+GuestCodeDefaultOperandSize GuestCodeDefaultOperandSizeForAddress(
+    const RelocatedRuntimeImage& image,
+    std::uint32_t address)
+{
+    for (const RuntimeCodeModeRange& range : image.code_mode_ranges)
+    {
+        if (range.virtual_size == 0U ||
+            address < range.relocated_base_address)
+        {
+            continue;
+        }
+        const std::uint64_t offset =
+            static_cast<std::uint64_t>(address) -
+            range.relocated_base_address;
+        if (offset < range.virtual_size)
+        {
+            return (range.object_flags & kLeObjectBigDefault) != 0U
+                ? GuestCodeDefaultOperandSize::k32
+                : GuestCodeDefaultOperandSize::k16;
+        }
+    }
+    for (const RelocatedRuntimeObject& object : image.objects)
+    {
+        if ((object.flags & kLeObjectExecutable) == 0U ||
+            object.virtual_size == 0U ||
+            address < object.relocated_base_address)
+        {
+            continue;
+        }
+        const std::uint64_t offset =
+            static_cast<std::uint64_t>(address) -
+            object.relocated_base_address;
+        if (offset < object.virtual_size)
+        {
+            return (object.flags & kLeObjectBigDefault) != 0U
+                ? GuestCodeDefaultOperandSize::k32
+                : GuestCodeDefaultOperandSize::k16;
+        }
+    }
+    return GuestCodeDefaultOperandSize::k32;
 }
 
 bool ReadDirectTarget(const ZydisDecodedInstruction& instruction,
@@ -692,6 +759,22 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
     }
     *plan = AotTranslationPlan{};
     plan->entry_address = entry_address;
+    plan->code_mode_ranges = image.code_mode_ranges;
+    if (plan->code_mode_ranges.empty())
+    {
+        for (const RelocatedRuntimeObject& object : image.objects)
+        {
+            if ((object.flags & kLeObjectExecutable) != 0U &&
+                object.virtual_size != 0U)
+            {
+                plan->code_mode_ranges.push_back({
+                    object.relocated_base_address,
+                    object.virtual_size,
+                    object.flags,
+                });
+            }
+        }
+    }
     if (profile != nullptr)
     {
         *profile = AotPlanBuildProfile{};
@@ -701,16 +784,25 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
     // shows whether the partition covered the build.
     PlanBuildPhaseTimer total_timer(profile, PlanBuildPhase::kTotal);
     const auto started = std::chrono::steady_clock::now();
-    ZydisDecoder decoder;
+    ZydisDecoder decoder32;
+    ZydisDecoder decoder16;
     {
         PlanBuildPhaseTimer decoder_init_timer(
             profile, PlanBuildPhase::kDecoderInit);
         if (!ZYAN_SUCCESS(ZydisDecoderInit(
-                &decoder, ZYDIS_MACHINE_MODE_LEGACY_32,
+                &decoder32, ZYDIS_MACHINE_MODE_LEGACY_32,
                 ZYDIS_STACK_WIDTH_32)))
         {
             decoder_init_timer.Close();
             plan->message = "failed to initialize Zydis legacy-32 decoder";
+            return false;
+        }
+        if (!ZYAN_SUCCESS(ZydisDecoderInit(
+                &decoder16, ZYDIS_MACHINE_MODE_LEGACY_16,
+                ZYDIS_STACK_WIDTH_16)))
+        {
+            decoder_init_timer.Close();
+            plan->message = "failed to initialize Zydis legacy-16 decoder";
             return false;
         }
     }
@@ -797,8 +889,13 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                                                  PlanBuildPhase::kDecode);
                 ZydisDecodedInstruction instruction{};
                 ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+                const GuestCodeDefaultOperandSize code_mode =
+                    GuestCodeDefaultOperandSizeForAddress(image, address);
+                ZydisDecoder* const decoder =
+                    code_mode == GuestCodeDefaultOperandSize::k16
+                        ? &decoder16 : &decoder32;
                 const bool decoded = ZYAN_SUCCESS(ZydisDecoderDecodeFull(
-                        &decoder, bytes, ZYDIS_MAX_INSTRUCTION_LENGTH,
+                        decoder, bytes, ZYDIS_MAX_INSTRUCTION_LENGTH,
                         &instruction, operands)) && instruction.length != 0U;
                 decode_timer.Close();
                 if (profile != nullptr)
@@ -825,11 +922,67 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                 record.guest_address = address;
                 record.length = instruction.length;
                 record.mnemonic = static_cast<std::uint16_t>(instruction.mnemonic);
+                record.guest_code_default_operand_size = code_mode;
                 record.bytes.assign(bytes, bytes + instruction.length);
                 record_timer.Close();
                 if (profile != nullptr)
                 {
                     ++profile->record_count;
+                }
+                if (PlanTraceAddress() == address)
+                {
+                    std::fprintf(
+                        stderr,
+                        "[repiu-aot-plan-trace] guest=0x%08X bytes=",
+                        static_cast<unsigned>(address));
+                    for (std::size_t index = 0U;
+                         index < record.bytes.size(); ++index)
+                    {
+                        std::fprintf(stderr, "%02X", record.bytes[index]);
+                    }
+                    std::fprintf(
+                        stderr,
+                        " length=%u mnemonic=%u category=%u attrs=0x%08X "
+                        "address_width=%u modrm=%u segment=%u hle=%u\n",
+                        static_cast<unsigned>(record.length),
+                        static_cast<unsigned>(record.mnemonic),
+                        static_cast<unsigned>(instruction.meta.category),
+                        static_cast<unsigned>(instruction.attributes),
+                        static_cast<unsigned>(instruction.address_width),
+                        (instruction.attributes & ZYDIS_ATTRIB_HAS_MODRM) != 0U
+                            ? 1U : 0U,
+                        (instruction.attributes & ZYDIS_ATTRIB_HAS_SEGMENT) != 0U
+                            ? 1U : 0U,
+                        IsHleBoundary(instruction, operands) ? 1U : 0U);
+                    for (const RelocatedRuntimeObject& object : image.objects)
+                    {
+                        if (address < object.relocated_base_address)
+                        {
+                            continue;
+                        }
+                        const std::uint64_t offset =
+                            static_cast<std::uint64_t>(address) -
+                            object.relocated_base_address;
+                        if (offset >= RelocatedRuntimeObjectByteCount(object))
+                        {
+                            continue;
+                        }
+                        const std::uint8_t* const object_bytes =
+                            RelocatedRuntimeObjectBytes(object) + offset;
+                        std::fprintf(
+                            stderr,
+                            "[repiu-aot-plan-trace-object] index=%u base=0x%08X "
+                            "size=0x%08X offset=0x%llX bytes=%02X%02X%02X\n",
+                            static_cast<unsigned>(object.object_index),
+                            static_cast<unsigned>(object.relocated_base_address),
+                            static_cast<unsigned>(object.virtual_size),
+                            static_cast<unsigned long long>(offset),
+                            object_bytes[0],
+                            offset + 1U < RelocatedRuntimeObjectByteCount(object)
+                                ? object_bytes[1] : 0U,
+                            offset + 2U < RelocatedRuntimeObjectByteCount(object)
+                                ? object_bytes[2] : 0U);
+                    }
                 }
                 // Task 330 stage 4: classification runs to the end of this
                 // iteration on every path, so the timer closes in its
@@ -1005,7 +1158,7 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                             !block.instructions.empty())
                         {
                             JumpTableGuard table_guard;
-                            if (ReadJumpTableGuard(decoder,
+                            if (ReadJumpTableGuard(*decoder,
                                                    block.instructions.back(),
                                                    &table_guard))
                             {
@@ -1055,12 +1208,19 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                         ++profile->sweep_record_visit_count;
                     }
                     if (TryPropagateLowByteJumpTableGuard(
-                            decoder, jump_table_guards, swept_record,
+                            swept_record.guest_code_default_operand_size ==
+                                    GuestCodeDefaultOperandSize::k16
+                                ? decoder16 : decoder32,
+                            jump_table_guards, swept_record,
                             &jump_table_guards))
                     {
                         sweep_jump_table_guards = true;
                     }
-                    if (!TryReclassifyJumpTable(image, decoder,
+                    const ZydisDecoder& swept_decoder =
+                        swept_record.guest_code_default_operand_size ==
+                                GuestCodeDefaultOperandSize::k16
+                            ? decoder16 : decoder32;
+                    if (!TryReclassifyJumpTable(image, swept_decoder,
                                                 jump_table_guards,
                                                 &swept_record))
                     {
