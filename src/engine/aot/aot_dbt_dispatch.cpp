@@ -396,13 +396,27 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
         // found this branch unreachable in practice; this proves it per run.
         ++context->hle_reentry_reject_cache_miss;
         const bool post_hle_enabled = PostHleTranslationEnabled();
+#if defined(__x86_64__)
+        // A disabled post-HLE translation setting may retain the original-byte
+        // path only when the first instruction has identical long-mode bytes.
+        // Non-identical code must use the resolver, otherwise a mode16 guest
+        // can silently change the host instruction boundary.
+        const bool non_identical_target =
+            !CanResumeLinuxX64LegacyTarget(context, current);
+#else
+        const bool non_identical_target = false;
+#endif
         TraceHleReentry(
-            post_hle_enabled ? "cache-miss-gate-enabled"
-                             : "cache-miss-gate-disabled",
+            post_hle_enabled
+                ? "cache-miss-gate-enabled"
+                : (non_identical_target ? "cache-miss-non-identical"
+                                        : "cache-miss-gate-disabled"),
             context, win32_context, handled_guest_eip, current, false, false,
             post_hle_enabled, false, 0U,
-            post_hle_enabled ? "translate" : "reject");
-        if (!post_hle_enabled)
+            post_hle_enabled || non_identical_target
+                ? "translate"
+                : "reject");
+        if (!post_hle_enabled && !non_identical_target)
         {
             return false;
         }

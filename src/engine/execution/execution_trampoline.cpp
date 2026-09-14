@@ -3705,6 +3705,97 @@ bool DispatchGuestHleInstruction(repiu::platform::GuestCpuContext* win32_context
     return DispatchGuestHleHandlers(win32_context, context);
 }
 
+std::optional<runtime::GuestCodeDefaultOperandSize>
+LegacyResumeCodeMode(const ThreadContext* context,
+                     const std::uint32_t guest_target)
+{
+    if (context == nullptr)
+    {
+        return runtime::GuestCodeDefaultOperandSize::k32;
+    }
+
+    std::optional<runtime::GuestCodeDefaultOperandSize> placement_mode;
+    bool placement_ambiguous = false;
+    if (context->aot_placement != nullptr)
+    {
+        for (const runtime::RuntimeCodeModeRange& range :
+             context->aot_placement->code_mode_ranges)
+        {
+            if (range.virtual_size == 0U ||
+                guest_target < range.relocated_base_address)
+            {
+                continue;
+            }
+            const std::uint64_t offset =
+                static_cast<std::uint64_t>(guest_target) -
+                range.relocated_base_address;
+            if (offset >= range.virtual_size)
+            {
+                continue;
+            }
+            const runtime::GuestCodeDefaultOperandSize candidate =
+                (range.object_flags & runtime::kLeObjectBigDefault) != 0U
+                    ? runtime::GuestCodeDefaultOperandSize::k32
+                    : runtime::GuestCodeDefaultOperandSize::k16;
+            if (placement_mode.has_value())
+            {
+                placement_ambiguous = true;
+            }
+            else
+            {
+                placement_mode = candidate;
+            }
+        }
+    }
+
+    std::optional<runtime::GuestCodeDefaultOperandSize> selector_mode;
+    bool selector_ambiguous = false;
+    for (const runtime::GuestDescriptor& descriptor :
+         context->selector_table.descriptors)
+    {
+        if (!descriptor.present || !descriptor.executable ||
+            descriptor.code_default_operand_size ==
+                runtime::GuestCodeDefaultOperandSize::kUnknown ||
+            guest_target < descriptor.base)
+        {
+            continue;
+        }
+        const std::uint64_t offset =
+            static_cast<std::uint64_t>(guest_target) - descriptor.base;
+        if (offset > descriptor.limit)
+        {
+            continue;
+        }
+        if (selector_mode.has_value())
+        {
+            selector_ambiguous = true;
+        }
+        else
+        {
+            selector_mode = descriptor.code_default_operand_size;
+        }
+    }
+
+    if (placement_ambiguous || selector_ambiguous)
+    {
+        return runtime::GuestCodeDefaultOperandSize::kUnknown;
+    }
+    if (placement_mode.has_value() && selector_mode.has_value() &&
+        *placement_mode != *selector_mode)
+    {
+        return runtime::GuestCodeDefaultOperandSize::kUnknown;
+    }
+    if (placement_mode.has_value())
+    {
+        return placement_mode;
+    }
+    if (selector_mode.has_value())
+    {
+        return selector_mode;
+    }
+    return runtime::GuestCodeDefaultOperandSize::k32;
+}
+
 bool CanResumeLinuxX64LegacyTarget(ThreadContext* context,
                                    const std::uint32_t guest_target)
 {
@@ -3718,8 +3809,16 @@ bool CanResumeLinuxX64LegacyTarget(ThreadContext* context,
     {
         return false;
     }
+    const std::optional<runtime::GuestCodeDefaultOperandSize> code_mode =
+        LegacyResumeCodeMode(context, guest_target);
+    if (!code_mode.has_value() ||
+        *code_mode == runtime::GuestCodeDefaultOperandSize::kUnknown)
+    {
+        return false;
+    }
     return runtime::ClassifyLongModeBytes(
-               instruction, kMaximumX86InstructionBytes).compatibility ==
+               instruction, kMaximumX86InstructionBytes, *code_mode)
+               .compatibility ==
         runtime::LongModeByteCompatibility::kIdenticalBytes;
 #else
     (void)context;

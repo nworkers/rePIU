@@ -14932,3 +14932,97 @@ Task 684 will make `CanResumeLinuxX64LegacyTarget` use the AOT placement's
 continuations from executing original long-mode bytes regardless of the
 post-HLE setting. The resulting `0x01100004` dynamic entry will then provide
 the next shared mode16 lowering frontier.
+
+## 2026-09-15: Task 684 mode-aware Linux x64 re-entry
+
+### 확인된 사실
+
+`CanResumeLinuxX64LegacyTarget`가 AOT placement의
+`RuntimeCodeModeRange`를 우선 사용하고 executable selector descriptor를
+보조로 사용하도록 수정했다. placement와 selector metadata가 충돌하거나
+여러 항목이 겹치면 `kUnknown`으로 처리하여 원본 byte resume을 허용하지
+않는다. metadata가 전혀 없는 기존 synthetic context는 legacy-32 기본값을
+유지한다.
+
+cache miss에서 compatibility gate가 non-identical을 반환하면
+`REPIU_AOT_DBT_POST_HLE_TRANSLATE`가 꺼져 있어도 dynamic resolver를
+호출한다. 이 변경은 안전한 identical original-byte 경로의 opt-in 정책은
+유지하면서, non-identical bytes만 long mode에서 직접 실행되지 않게 한다.
+
+general stack probe는 placement mode16과 selector-only mode16에서
+`66 85 FF`가 resume되지 않는 것을 확인했고, 전체 core probe는
+`core_probe_failures=0`, `core_probe_all=true`로 통과했다.
+
+실제 object-3 trace는 다음 전환을 확인했다.
+
+```text
+[repiu-linexe-far-jump] ... resolved target=0x01100004
+[repiu-hle-reentry] stage=cache-miss-non-identical ... detail=translate
+[repiu-aot-plan-trace] guest=0x01100004 bytes=6685FF ... code_mode=16
+[repiu-aot-dynamic] stage=image-entry guest=0x01100004 bytes=CC ...
+```
+
+이제 원본 mode16 `B8 07 00`을 x64 long mode에서 소비하여
+`0x0110000E`로 넘어가는 경로는 관찰되지 않는다. 현재 SIGTRAP은
+`66 85 FF`를 dynamic image에서 아직 지원하지 않아 INT3 fail-closed
+경계에 도달한 결과이다.
+
+### 상태 구분
+
+* **확인됨:** mode-aware gate가 object-3 target을 non-identical로 판정하고
+  post-HLE 설정과 무관하게 dynamic translation을 요청한다.
+* **확인됨:** 기존 원본-byte misdecode에 의한 `0x0110000E` 진입은 제거됐다.
+* **미확정:** mode16 `TEST` 이후의 Jcc, immediate, stack/segment/far-return
+  lowering을 추가하면 게임 실행이 coredump 없이 완료되는지 여부.
+
+### 다음 frontier
+
+다음 공용 lowering 후보는 object 3의 `0x01100004: 66 85 FF`인 mode16
+`TEST EDI,EDI`이다. 이 instruction은 operand-size override를 제거한
+`85 FF`로 x64에서 동일한 flags 의미를 만들 수 있다. 이어지는
+`74 39`/`72 23`의 direct CFG edge와 `B8 07 00`의 `66 B8 iw`를 순차적으로
+다루되, 특정 주소 예외는 추가하지 않는다.
+
+### English
+
+`CanResumeLinuxX64LegacyTarget` now uses AOT placement
+`RuntimeCodeModeRange` metadata first and executable selector descriptors as
+a fallback. Conflicting or overlapping metadata resolves to `kUnknown`, which
+does not permit original-byte resume. Contexts with no metadata retain the
+legacy-32 default for compatibility.
+
+When the compatibility gate reports a cache-miss instruction as non-identical,
+the dynamic resolver now runs even if `REPIU_AOT_DBT_POST_HLE_TRANSLATE` is
+disabled. The opt-in behavior for safe identical original-byte paths remains;
+only non-identical bytes are prevented from executing directly in long mode.
+
+The general stack probe confirms that `66 85 FF` is not admitted with either a
+placement mode16 range or selector-only mode16 metadata. The full core probe
+passes with `core_probe_failures=0` and `core_probe_all=true`.
+
+The object-3 trace now shows:
+
+```text
+[repiu-linexe-far-jump] ... resolved target=0x01100004
+[repiu-hle-reentry] stage=cache-miss-non-identical ... detail=translate
+[repiu-aot-plan-trace] guest=0x01100004 bytes=6685FF ... code_mode=16
+[repiu-aot-dynamic] stage=image-entry guest=0x01100004 bytes=CC ...
+```
+
+The original mode16 `B8 07 00` is no longer consumed as a long-mode
+instruction, so the erroneous advance to `0x0110000E` is gone. The remaining
+SIGTRAP is the INT3 fail-closed boundary because the dynamic image does not yet
+support `66 85 FF`.
+
+* **Confirmed:** the mode-aware gate classifies the object-3 target as
+  non-identical and requests dynamic translation regardless of post-HLE.
+* **Confirmed:** the original-byte misdecode and resulting `0x0110000E` entry
+  are removed.
+* **Unresolved:** whether adding mode16 TEST, Jcc, immediate, stack/segment,
+  and far-return lowerings completes the game without a coredump.
+
+The next shared lowering is object 3's `0x01100004: 66 85 FF`, mode16
+`TEST EDI,EDI`; removing the operand-size override produces `85 FF` with the
+same x64 flags semantics. The following `74 39`/`72 23` direct CFG edges and
+`B8 07 00` -> `66 B8 iw` should be handled in sequence, with no address-specific
+exception.

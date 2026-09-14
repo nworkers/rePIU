@@ -280,6 +280,37 @@ bool RunGeneralStackProbe()
         !repiu::engine::CanResumeLinuxX64LegacyTarget(
             &context, kRequestedBase + kCodeOffset);
     legacy_resume_policy = identical_allowed && stack_refused;
+    bool legacy_resume_mode_aware = true;
+#if defined(__x86_64__)
+    repiu::engine::AotCodeCachePlacement mode16_placement;
+    mode16_placement.code_mode_ranges.push_back({
+        static_cast<std::uint32_t>(kRequestedBase),
+        static_cast<std::uint32_t>(kArenaSize),
+        0U});
+    context.aot_placement = &mode16_placement;
+    const std::uint8_t mode16_test[] = {0x66U, 0x85U, 0xFFU};
+    std::memcpy(bytes + kCodeOffset, mode16_test, sizeof(mode16_test));
+    const bool mode16_range_refused =
+        !repiu::engine::CanResumeLinuxX64LegacyTarget(
+            &context, kRequestedBase + kCodeOffset);
+
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    const bool mode16_selector_registered =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x24U, static_cast<std::uint32_t>(kRequestedBase),
+             static_cast<std::uint32_t>(kArenaSize - 1U), 0U, true,
+             repiu::runtime::kLeObjectExecutable, true,
+             repiu::runtime::GuestCodeDefaultOperandSize::k16});
+    context.aot_placement = nullptr;
+    const bool mode16_selector_refused =
+        !repiu::engine::CanResumeLinuxX64LegacyTarget(
+            &context, kRequestedBase + kCodeOffset);
+    legacy_resume_mode_aware = mode16_range_refused &&
+        mode16_selector_registered && mode16_selector_refused;
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+#endif
+    context.aot_placement = nullptr;
 #if defined(__x86_64__) && !defined(_WIN32)
     legacy_resume_thunk =
         repiu::platform::LinuxX64LegacyResumeThunkAddress() != 0U;
@@ -358,7 +389,8 @@ bool RunGeneralStackProbe()
         pop_esp_order && rejected && mixed_sequence && bounded &&
         enter_nonnested && enter_nested && enter_range_rejected &&
         legacy_direct_call && legacy_direct_call_range_rejected &&
-        legacy_resume_policy && legacy_resume_thunk &&
+        legacy_resume_policy && legacy_resume_mode_aware &&
+        legacy_resume_thunk &&
         legacy_moffs_store && legacy_moffs_store_range_rejected &&
         cs_source_store && cs_source_missing_refused &&
         boundary_epilogue_drained && released;
@@ -381,6 +413,8 @@ bool RunGeneralStackProbe()
               << (legacy_direct_call_range_rejected ? "true" : "false")
               << ",legacy_resume_policy="
               << (legacy_resume_policy ? "true" : "false")
+              << ",legacy_resume_mode_aware="
+              << (legacy_resume_mode_aware ? "true" : "false")
               << ",legacy_resume_thunk="
               << (legacy_resume_thunk ? "true" : "false")
               << ",legacy_moffs_store="
