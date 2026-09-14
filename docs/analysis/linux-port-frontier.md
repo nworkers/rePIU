@@ -15026,3 +15026,85 @@ The next shared lowering is object 3's `0x01100004: 66 85 FF`, mode16
 same x64 flags semantics. The following `74 39`/`72 23` direct CFG edges and
 `B8 07 00` -> `66 B8 iw` should be handled in sequence, with no address-specific
 exception.
+
+## 2026-09-15: Task 685 mode16 TEST lowering
+
+### 확인된 사실
+
+object 3의 첫 dynamic frontier `0x01100004: 66 85 FF`를 특정 주소 예외가
+아닌 mode16 register-register TEST class로 분류했다. mode16의 `66`은
+32비트 operand-size override이므로 x64 long mode에서 이를 제거한 `85 FF`를
+emit하면 `TEST EDI,EDI`의 flags 동작과 GPR state를 유지할 수 있다.
+
+memory, ESP, segment, address-size 변형은 이번 lowering에 포함하지 않고
+기존 boundary로 남겼다. compatibility/lowering probe와 Linux x64 core
+probe는 모두 통과했다.
+
+```text
+long_mode_16bit_test32=true,length=3,lowered=2,unsupported_variants=true
+long_mode_lowering_16bit_test32=true,flags=true,register=true
+core_probe_failures=0
+core_probe_all=true
+```
+
+실제 trace에서도 다음과 같이 dynamic image가 바뀌었다.
+
+```text
+[repiu-aot-plan-trace] guest=0x01100004 bytes=6685FF ... code_mode=16
+[repiu-aot-dynamic] stage=image-entry guest=0x01100004 bytes=85FF length=2
+[repiu-fault] unhandled signal=0x5 ... eip=0x01100009
+```
+
+### 상태 구분
+
+* **확인됨:** mode16 TEST lowering이 x64 cache에서 `85 /r`로 실행되며
+  classifier·lowering·runtime 경계가 일치한다.
+* **확인됨:** 이전 `0x01100004` INT3은 제거되고 다음 frontier가
+  `0x01100009: 74 39`로 이동했다.
+* **미확정:** mode16 Jcc target rebasing과 direct-branch slot을 추가한 뒤
+  `0x01100009` 이후 실행이 계속되는지 여부.
+
+### 다음 frontier
+
+다음 후보는 mode16 `74 39` JZ이다. 조건 자체는 long mode와 동일하지만,
+mode16 IP-relative displacement와 code-object base를 사용한 target 계산,
+그리고 mode16 record를 32비트 전용 control-flow slot에서 제외하는 현재
+gate를 공용 방식으로 연결해야 한다.
+
+### English
+
+The first object-3 dynamic frontier, `0x01100004: 66 85 FF`, is now classified
+as a mode16 register-register TEST class rather than an address-specific
+exception. In mode16, `66` selects a 32-bit operand-size override, so removing
+it and emitting `85 FF` in long mode preserves `TEST EDI,EDI` flags and GPR
+state.
+
+Memory, ESP, segment, and address-size variants remain boundaries. The
+compatibility/lowering probes and Linux x64 core probe pass:
+
+```text
+long_mode_16bit_test32=true,length=3,lowered=2,unsupported_variants=true
+long_mode_lowering_16bit_test32=true,flags=true,register=true
+core_probe_failures=0
+core_probe_all=true
+```
+
+The live trace now shows:
+
+```text
+[repiu-aot-plan-trace] guest=0x01100004 bytes=6685FF ... code_mode=16
+[repiu-aot-dynamic] stage=image-entry guest=0x01100004 bytes=85FF length=2
+[repiu-fault] unhandled signal=0x5 ... eip=0x01100009
+```
+
+* **Confirmed:** the mode16 TEST lowering executes as `85 /r` in the x64 cache
+  and classifier/lowering/runtime boundaries agree.
+* **Confirmed:** the previous `0x01100004` INT3 is removed and the next
+  frontier is `0x01100009: 74 39`.
+* **Unresolved:** whether execution continues after adding mode16 Jcc target
+  rebasing and the direct-branch slot.
+
+The next candidate is mode16 `74 39` JZ. Its condition is identical in long
+mode, but target calculation must use the mode16 IP-relative displacement and
+code-object base, and the mode16 record must connect to control-flow emission
+without reopening the 32-bit-only path.

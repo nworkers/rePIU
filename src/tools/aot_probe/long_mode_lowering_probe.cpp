@@ -697,6 +697,113 @@ bool Probe16BitLea16()
     return ok;
 }
 
+// Task 685. Remove the mode16 operand-size override from register TEST, then
+// execute the result to check flags and the untouched upper register state.
+bool Probe16BitTest32()
+{
+    const std::vector<std::uint8_t> guest = {
+        0x66U, 0x85U, 0xFFU,  // test edi,edi in mode16
+    };
+    const std::vector<std::uint8_t> expected = {0x85U, 0xFFU};
+    const auto verdict = ClassifyLongModeBytes(
+        guest.data(), guest.size(), GuestCodeDefaultOperandSize::k16);
+    std::vector<std::uint8_t> lowered;
+    std::uint8_t lowered_buffer[kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    std::size_t lowered_instructions = 0U;
+    const bool lowered_ok = LowerLongModeBytes(
+        guest.data(), guest.size(), lowered_buffer, &lowered_count,
+        &lowered_instructions, GuestCodeDefaultOperandSize::k16);
+    if (lowered_ok)
+    {
+        lowered.assign(lowered_buffer, lowered_buffer + lowered_count);
+    }
+    if (verdict.compatibility != LongModeByteCompatibility::kNeedsReencode ||
+        verdict.lowering != LongModeLowering::k16BitTest32ToGuestGprs ||
+        !lowered_ok || lowered != expected || lowered_instructions != 1U)
+    {
+        std::cout << "long_mode_lowering_16bit_test32=false,reason=bytes\n";
+        return false;
+    }
+
+    // The function receives its test operand in RDI. Capture EFLAGS before
+    // any result-building instruction changes them; the low result word keeps
+    // the guest operand so the TEST destination register can be checked too.
+    std::vector<std::uint8_t> flags_code = lowered;
+    flags_code.insert(flags_code.end(), {
+        0x9CU,                    // pushfq
+        0x58U,                    // pop rax
+        0x48U, 0x89U, 0xC2U,      // mov rdx,rax
+        0x89U, 0xF8U,              // mov eax,edi
+        0x48U, 0xC1U, 0xE2U, 0x20U,  // shl rdx,32
+        0x48U, 0x09U, 0xD0U,      // or rax,rdx
+        0xC3U,                    // ret
+    });
+    ExecutablePage flags_page;
+    if (!AllocateCodePage(&flags_page) || !WriteAndArm(flags_page, flags_code))
+    {
+        ReleasePage(&flags_page);
+        std::cout << "long_mode_lowering_16bit_test32=false,reason=flags_page\n";
+        return false;
+    }
+    using FlagsEntry = std::uint64_t (*)(std::uint64_t);
+    FlagsEntry flags_entry = nullptr;
+    std::memcpy(&flags_entry, &flags_page.base, sizeof(flags_entry));
+    const std::uint64_t zero_result = flags_entry(0U);
+    const std::uint64_t nonzero_result = flags_entry(0x80000001U);
+    ReleasePage(&flags_page);
+
+    constexpr std::uint64_t kFlagsMask =
+        UINT64_C(0x1) | UINT64_C(0x40) | UINT64_C(0x800);
+    const std::uint64_t zero_flags = zero_result >> 32U;
+    const std::uint64_t nonzero_flags = nonzero_result >> 32U;
+    const bool flags_ok =
+        static_cast<std::uint32_t>(zero_result) == 0U &&
+        (zero_flags & kFlagsMask) == UINT64_C(0x40) &&
+        static_cast<std::uint32_t>(nonzero_result) == 0x80000001U &&
+        (nonzero_flags & kFlagsMask) == 0U;
+
+    // A second invocation returns the complete RDI value, proving that the
+    // 32-bit TEST did not accidentally narrow or rewrite the guest register.
+    constexpr std::uint64_t kRegisterValue = UINT64_C(0xA5A5A5A512340000);
+    std::vector<std::uint8_t> register_code = {
+        0x48U, 0xBFU,  // mov rdi, imm64
+    };
+    for (std::size_t index = 0U; index < 8U; ++index)
+    {
+        register_code.push_back(static_cast<std::uint8_t>(
+            (kRegisterValue >> (index * 8U)) & 0xFFU));
+    }
+    register_code.insert(register_code.end(), lowered.begin(), lowered.end());
+    register_code.insert(register_code.end(), {
+        0x48U, 0x89U, 0xF8U,  // mov rax,rdi
+        0xC3U,                // ret
+    });
+    ExecutablePage register_page;
+    if (!AllocateCodePage(&register_page) ||
+        !WriteAndArm(register_page, register_code))
+    {
+        ReleasePage(&register_page);
+        std::cout << "long_mode_lowering_16bit_test32=false,reason=register_page\n";
+        return false;
+    }
+    using RegisterEntry = std::uint64_t (*)();
+    RegisterEntry register_entry = nullptr;
+    std::memcpy(&register_entry, &register_page.base,
+                sizeof(register_entry));
+    const std::uint64_t register_result = register_entry();
+    ReleasePage(&register_page);
+
+    const bool ok = flags_ok && register_result == kRegisterValue;
+    std::cout << "long_mode_lowering_16bit_test32="
+              << (ok ? "true" : "false")
+              << ",flags=" << (flags_ok ? "true" : "false")
+              << ",register="
+              << (register_result == kRegisterValue ? "true" : "false")
+              << "\n";
+    return ok;
+}
+
 // 2e. A REX changes AH/CH/DH/BH into SPL/BPL/SIL/DIL (Task 614). The
 // high-byte source is materialised in R14B by exchanging the source low and
 // high bytes around a REX-using move, and the original byte operation is then
@@ -1011,6 +1118,7 @@ bool RunLongModeLoweringProbe()
     const bool sixteen_bit_stack_ok = Probe16BitStackPointerImmediate();
     const bool sixteen_bit_lea_ok = Probe16BitLea32();
     const bool sixteen_bit_lea16_ok = Probe16BitLea16();
+    const bool sixteen_bit_test_ok = Probe16BitTest32();
     const bool sixteen_bit_loopnz_ok = Probe16BitLoopNz();
     const bool high_byte_ok = ProbeStackPointerHighByteSource(data);
     const bool prefix_ok = ProbeAddressSizePrefix(data);
@@ -1023,7 +1131,8 @@ bool RunLongModeLoweringProbe()
 
     const bool all = classification_ok && refusals_ok &&
         two_byte_esp_ok && sixteen_bit_stack_ok && sixteen_bit_lea_ok &&
-        sixteen_bit_lea16_ok && sixteen_bit_loopnz_ok &&
+        sixteen_bit_lea16_ok && sixteen_bit_test_ok &&
+        sixteen_bit_loopnz_ok &&
         high_byte_ok &&
         prefix_ok && absolute_ok &&
         absolute_imm_ok && moffs_ok;

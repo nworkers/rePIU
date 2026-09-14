@@ -626,6 +626,28 @@ bool IsMode16Lea32(const std::uint8_t* const bytes,
         ClassifyStackPointerFields(instruction, operands).supported;
 }
 
+// Task 685. In mode16, `66 85 /r` selects a 32-bit register TEST. Long mode
+// already defaults to 32-bit operands, so this narrow register-only form can
+// remove its operand-size prefix without remapping the guest stack register.
+bool IsMode16Test32(const std::uint8_t* const bytes,
+                    const ZydisDecodedInstruction& instruction,
+                    const ZydisDecodedOperand* const operands)
+{
+    return bytes != nullptr && operands != nullptr &&
+        instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT &&
+        instruction.opcode == 0x85U &&
+        instruction.mnemonic == ZYDIS_MNEMONIC_TEST &&
+        instruction.operand_width == 32U &&
+        instruction.address_width == 16U && instruction.length == 3U &&
+        instruction.raw.prefix_count == 1U &&
+        instruction.raw.prefixes[0].value == 0x66U &&
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_MODRM) != 0U &&
+        instruction.raw.modrm.offset == 2U &&
+        instruction.raw.modrm.mod == 3U &&
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_SEGMENT) == 0U &&
+        !TouchesStackPointer(instruction, operands);
+}
+
 struct Mode16Lea16AddressFields
 {
     std::uint8_t first_register = 0xFFU;
@@ -773,6 +795,11 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
             return Reencode(
                 LongModeDivergence::kStackPointerRegister,
                 LongModeLowering::k16BitStackPointerImmediateToR15);
+        }
+        if (IsMode16Test32(bytes, instruction, operands))
+        {
+            return Reencode(LongModeDivergence::kOperandWidth,
+                            LongModeLowering::k16BitTest32ToGuestGprs);
         }
         if (IsMode16Lea32(bytes, instruction, operands))
         {
@@ -1482,6 +1509,26 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
         lowered[3] = bytes[1];
         lowered[4] = bytes[2];
         *lowered_count = 5U;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 685. The mode16 operand-size override selects the guest's 32-bit
+    // TEST. Long mode's default is already 32 bits, so copy the opcode and
+    // register ModRM after dropping only the `66` prefix.
+    if (verdict.lowering == LongModeLowering::k16BitTest32ToGuestGprs)
+    {
+        if (!guest_is_16_bit || !IsMode16Test32(bytes, instruction, operands) ||
+            length != 3U || length - 1U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+        lowered[0] = bytes[1U];
+        lowered[1] = bytes[2U];
+        *lowered_count = 2U;
         if (instruction_count != nullptr)
         {
             *instruction_count = 1U;

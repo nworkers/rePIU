@@ -172,6 +172,9 @@ enum class LongModeLowering
     // fallthrough metadata, so the AOT cache emits it as a dedicated
     // control-flow slot rather than through the byte-only lowerer.
     k16BitLoopNzToGuestCx,
+    // Task 685. A mode16 `66 85 /r` register TEST is a 32-bit operation; the
+    // x64 default is already 32 bits, so the operand-size prefix is removed.
+    k16BitTest32ToGuestGprs,
 };
 
 struct LongModeCompatibilityResult

@@ -878,6 +878,61 @@ bool Probe16BitLea16()
     return ok;
 }
 
+// Task 685. A mode16 operand-size override makes TEST a 32-bit register
+// operation; removing the override is safe only for the register/no-ESP form.
+bool Probe16BitTest32()
+{
+    const std::uint8_t guest[] = {0x66U, 0x85U, 0xFFU};
+    const std::uint8_t expected[] = {0x85U, 0xFFU};
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        guest, sizeof(guest),
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    std::uint8_t lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    std::size_t lowered_instructions = 0U;
+    const bool lowered_ok = repiu::runtime::LowerLongModeBytes(
+        guest, sizeof(guest), lowered, &lowered_count,
+        &lowered_instructions,
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    const std::uint8_t no_override[] = {0x85U, 0xFFU};
+    const std::uint8_t address_override[] = {
+        0x67U, 0x66U, 0x85U, 0xFFU};
+    const std::uint8_t memory_form[] = {0x66U, 0x85U, 0x07U};
+    const std::uint8_t stack_form[] = {0x66U, 0x85U, 0xE4U};
+    const bool unsupported_variants =
+        ClassifyLongModeBytes(
+            no_override, sizeof(no_override),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            repiu::runtime::LongModeLowering::k16BitTest32ToGuestGprs &&
+        ClassifyLongModeBytes(
+            address_override, sizeof(address_override),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            repiu::runtime::LongModeLowering::k16BitTest32ToGuestGprs &&
+        ClassifyLongModeBytes(
+            memory_form, sizeof(memory_form),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            repiu::runtime::LongModeLowering::k16BitTest32ToGuestGprs &&
+        ClassifyLongModeBytes(
+            stack_form, sizeof(stack_form),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            repiu::runtime::LongModeLowering::k16BitTest32ToGuestGprs;
+    const bool ok =
+        verdict.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict.divergence == LongModeDivergence::kOperandWidth &&
+        verdict.lowering ==
+            repiu::runtime::LongModeLowering::k16BitTest32ToGuestGprs &&
+        lowered_ok && lowered_count == sizeof(expected) &&
+        lowered_instructions == 1U &&
+        std::memcmp(lowered, expected, sizeof(expected)) == 0 &&
+        unsupported_variants;
+    std::cout << "long_mode_16bit_test32=" << (ok ? "true" : "false")
+              << ",length=" << (ok ? 3U : 0U)
+              << ",lowered=" << (ok ? lowered_count : 0U)
+              << ",unsupported_variants="
+              << (unsupported_variants ? "true" : "false") << "\n";
+    return ok;
+}
+
 // Task 683. LOOPNZ is a control-flow lowering rather than a byte-only
 // lowering, because its direct target comes from the translation plan.
 // Address-size and opcode variants remain refused until their counter
@@ -961,12 +1016,14 @@ bool RunLongModeCompatibilityProbe()
     const bool sixteen_bit_ok = Probe16BitStackPointerImmediate();
     const bool sixteen_bit_lea_ok = Probe16BitLea32();
     const bool sixteen_bit_lea16_ok = Probe16BitLea16();
+    const bool sixteen_bit_test_ok = Probe16BitTest32();
     const bool sixteen_bit_loopnz_ok = Probe16BitLoopNz();
 
     const bool all = silent_ok && invalid_ok && width_ok && width_kind_ok &&
         reasons_ok && stack_ok && inc_dec_ok && stack_seq_ok && subset_ok &&
         refusals_ok && sixteen_bit_ok && sixteen_bit_lea_ok &&
-        sixteen_bit_lea16_ok && sixteen_bit_loopnz_ok;
+        sixteen_bit_lea16_ok && sixteen_bit_test_ok &&
+        sixteen_bit_loopnz_ok;
     std::cout << "long_mode_compatibility_all=" << (all ? "true" : "false")
               << "\n";
     return all;
