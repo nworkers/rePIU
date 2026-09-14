@@ -181,6 +181,9 @@ enum class LongModeLowering
     // Task 688. In a 16-bit code object, register-only `89/8B /r` moves a
     // guest GPR word. Add `66` while leaving guest-SP forms closed.
     k16BitMovRegisterToGuestGprs,
+    // Task 689. In a 16-bit code object, `66 C1 /r ib` selects a 32-bit
+    // register shift. Remove `66` so long mode keeps that width.
+    k16BitShift32ToGuestGprs,
 };
 
 struct LongModeCompatibilityResult

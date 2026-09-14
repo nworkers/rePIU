@@ -15350,3 +15350,75 @@ The next frontier is `0x01100017: 66 C1 E9 10`. In mode16, `66` selects a
 32-bit operand-size override, so removing it to produce `C1 E9 10` may preserve
 the same 32-bit shift semantics in long mode; this must be verified as a shared
 rule.
+
+## 2026-09-15: Task 689 mode16 32-bit shift lowering
+
+### 확인된 사실
+
+object 3의 `0x01100017: 66 C1 E9 10`은 mode16 `SHR ECX,16`으로 확인되었습니다.
+공통 classifier는 단일 `66` prefix, `C1` opcode, operand width 32, address
+width 16, register-only ModRM을 확인하고 r/m=4 guest SP 및 memory 형식은
+제외합니다. lowerer는 `66`을 제거해 `C1 E9 10`을 생성합니다.
+
+```text
+long_mode_16bit_shift32=true,length=4,lowered=3,unsupported_variants=true
+long_mode_lowering_16bit_shift32=true,observed=0x1234
+core_probe_failures=0
+core_probe_all=true
+```
+
+실제 runtime에서는 shift 이후 `CD 31`이 `hle=1`로 계획되어 HLE 경로를
+통과했습니다. 다음 미지원 경계는 `0x0110002A: 25 FF 0F`입니다.
+
+```text
+[repiu-aot-plan-trace] guest=0x0110001B bytes=CD31 length=2 ... code_mode=16 ... hle=1
+[repiu-fault] unhandled signal=0x5 ... eip=0x0110002A
+```
+
+* **확인됨:** mode16 32비트 shift의 `66` prefix를 유지할 때 발생하는
+  long-mode 16비트 narrowing이 제거되었습니다.
+* **확인됨:** `CD 31`은 이번 경계에서 fail-closed INT3가 아니라 기존 HLE
+  dispatch 경로로 연결됩니다.
+* **미확정:** mode16 `25 FF 0F` accumulator immediate 이후의 AND, stack,
+  segment, far-return semantics가 정상 게임 종료까지 이어지는지입니다.
+
+### 다음 frontier
+
+다음 frontier는 `0x0110002A: 25 FF 0F`, mode16 `AND AX,0FFF`입니다. long
+mode에서 `66 25 FF 0F`를 사용하면 mode16의 accumulator word semantics를
+유지할 수 있는지 공통 immediate lowering으로 검증해야 합니다.
+
+### English
+
+Object 3's `0x01100017: 66 C1 E9 10` is confirmed as mode16 `SHR ECX,16`.
+The shared classifier checks the single `66` prefix, `C1` opcode, operand width
+32, address width 16, and register-only ModRM form; it excludes r/m=4 guest SP
+and memory forms. The lowerer removes `66` and emits `C1 E9 10`.
+
+```text
+long_mode_16bit_shift32=true,length=4,lowered=3,unsupported_variants=true
+long_mode_lowering_16bit_shift32=true,observed=0x1234
+core_probe_failures=0
+core_probe_all=true
+```
+
+At runtime, `CD 31` is planned with `hle=1` and passes through the HLE path.
+The next unsupported boundary is `0x0110002A: 25 FF 0F`:
+
+```text
+[repiu-aot-plan-trace] guest=0x0110001B bytes=CD31 length=2 ... code_mode=16 ... hle=1
+[repiu-fault] unhandled signal=0x5 ... eip=0x0110002A
+```
+
+* **Confirmed:** the long-mode 16-bit narrowing caused by retaining `66` on
+  the mode16 32-bit shift is removed.
+* **Confirmed:** `CD 31` uses the existing HLE dispatch path rather than a
+  fail-closed INT3 boundary at this frontier.
+* **Unresolved:** whether accumulator `25 FF 0F`, stack, segment, and
+  far-return semantics after the AND carry execution to normal game exit.
+
+### Next frontier
+
+The next frontier is `0x0110002A: 25 FF 0F`, mode16 `AND AX,0FFF`. Verify as a
+shared immediate lowering whether `66 25 FF 0F` preserves the accumulator word
+semantics in long mode.

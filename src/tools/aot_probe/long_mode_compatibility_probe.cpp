@@ -927,6 +927,62 @@ bool Probe16BitMovRegister()
     return ok;
 }
 
+// Task 689. A mode16 66-prefixed C1 register shift is 32-bit; removing 66
+// restores that width in long mode while stack and memory forms stay closed.
+bool Probe16BitShift32()
+{
+    const std::uint8_t guest[] = {0x66U, 0xC1U, 0xE9U, 0x10U};
+    const std::uint8_t expected[] = {0xC1U, 0xE9U, 0x10U};
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        guest, sizeof(guest),
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    std::uint8_t lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    std::size_t lowered_instructions = 0U;
+    const bool lowered_ok = repiu::runtime::LowerLongModeBytes(
+        guest, sizeof(guest), lowered, &lowered_count,
+        &lowered_instructions,
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+
+    const std::uint8_t no_override[] = {0xC1U, 0xE9U, 0x10U};
+    const std::uint8_t address_override[] = {
+        0x67U, 0x66U, 0xC1U, 0xE9U, 0x10U};
+    const std::uint8_t memory_form[] = {0x66U, 0xC1U, 0x29U, 0x10U};
+    const std::uint8_t stack_form[] = {0x66U, 0xC1U, 0xE4U, 0x10U};
+    const auto new_lowering =
+        repiu::runtime::LongModeLowering::k16BitShift32ToGuestGprs;
+    const bool unsupported_variants =
+        ClassifyLongModeBytes(
+            no_override, sizeof(no_override),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering &&
+        ClassifyLongModeBytes(
+            address_override, sizeof(address_override),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering &&
+        ClassifyLongModeBytes(
+            memory_form, sizeof(memory_form),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering &&
+        ClassifyLongModeBytes(
+            stack_form, sizeof(stack_form),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering;
+    const bool ok =
+        verdict.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict.divergence == LongModeDivergence::kOperandWidth &&
+        verdict.lowering == new_lowering && lowered_ok &&
+        lowered_count == sizeof(expected) && lowered_instructions == 1U &&
+        std::memcmp(lowered, expected, sizeof(expected)) == 0 &&
+        unsupported_variants;
+    std::cout << "long_mode_16bit_shift32=" << (ok ? "true" : "false")
+              << ",length=" << (ok ? 4U : 0U)
+              << ",lowered=" << (ok ? lowered_count : 0U)
+              << ",unsupported_variants="
+              << (unsupported_variants ? "true" : "false") << "\n";
+    return ok;
+}
+
 // Task 681. In a 16-bit code object, explicit 67+66 LEA selects 32-bit
 // addressing and a 32-bit destination. The mode-aware classifier must remove
 // only the source operand-size override and remap guest ESP when lowering.
@@ -1171,6 +1227,7 @@ bool RunLongModeCompatibilityProbe()
     const bool sixteen_bit_ok = Probe16BitStackPointerImmediate();
     const bool sixteen_bit_mov_ok = Probe16BitMovImmediate();
     const bool sixteen_bit_mov_register_ok = Probe16BitMovRegister();
+    const bool sixteen_bit_shift_ok = Probe16BitShift32();
     const bool sixteen_bit_lea_ok = Probe16BitLea32();
     const bool sixteen_bit_lea16_ok = Probe16BitLea16();
     const bool sixteen_bit_test_ok = Probe16BitTest32();
@@ -1180,7 +1237,7 @@ bool RunLongModeCompatibilityProbe()
     const bool all = silent_ok && invalid_ok && width_ok && width_kind_ok &&
         reasons_ok && stack_ok && inc_dec_ok && stack_seq_ok && subset_ok &&
         refusals_ok && sixteen_bit_ok && sixteen_bit_mov_ok &&
-        sixteen_bit_mov_register_ok &&
+        sixteen_bit_mov_register_ok && sixteen_bit_shift_ok &&
         sixteen_bit_lea_ok &&
         sixteen_bit_lea16_ok && sixteen_bit_test_ok &&
         sixteen_bit_jcc_ok && sixteen_bit_loopnz_ok;

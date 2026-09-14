@@ -134,6 +134,23 @@ bool IsMode16MovRegister(const ZydisDecodedInstruction& instruction)
         instruction.raw.modrm.rm != 4U;
 }
 
+// Task 689. In mode16, `66 C1 /r ib` is a 32-bit register shift. Remove only
+// the operand-size prefix; r/m=4 names guest SP and remains fail-closed.
+bool IsMode16Shift32(const ZydisDecodedInstruction& instruction)
+{
+    return instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT &&
+        instruction.opcode == 0xC1U && instruction.length == 4U &&
+        instruction.operand_width == 32U &&
+        instruction.address_width == 16U &&
+        instruction.raw.prefix_count == 1U &&
+        instruction.raw.prefixes[0].value == 0x66U &&
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_MODRM) != 0U &&
+        instruction.raw.modrm.offset == 2U &&
+        instruction.raw.modrm.mod == 3U &&
+        instruction.raw.modrm.rm != 4U &&
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_SEGMENT) == 0U;
+}
+
 // The ModRM-form opcode that means the same thing. `A0`/`A2` move a byte and
 // `A1`/`A3` a dword; the low bit of the moffs opcode is that width and the
 // second bit is the direction, which is the same layout `88`-`8B` uses.
@@ -837,6 +854,11 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
         {
             return Reencode(LongModeDivergence::kOperandWidth,
                             LongModeLowering::k16BitMovRegisterToGuestGprs);
+        }
+        if (IsMode16Shift32(instruction))
+        {
+            return Reencode(LongModeDivergence::kOperandWidth,
+                            LongModeLowering::k16BitShift32ToGuestGprs);
         }
         if (IsMode16Test32(bytes, instruction, operands))
         {
@@ -1593,6 +1615,26 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
         lowered[0] = 0x66U;
         lowered[1] = bytes[0U];
         lowered[2] = bytes[1U];
+        *lowered_count = 3U;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 689. The mode16 66 prefix selects a 32-bit C1 group shift. Remove
+    // it so the long-mode default width is the same 32-bit operation.
+    if (verdict.lowering == LongModeLowering::k16BitShift32ToGuestGprs)
+    {
+        if (!guest_is_16_bit || !IsMode16Shift32(instruction) ||
+            length != 4U || length - 1U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+        lowered[0] = bytes[1U];
+        lowered[1] = bytes[2U];
+        lowered[2] = bytes[3U];
         *lowered_count = 3U;
         if (instruction_count != nullptr)
         {
