@@ -973,6 +973,123 @@ bool Probe16BitModeEmission()
     return ok;
 }
 
+// Task 681. A mode16 67+66 LEA uses the same cache path as object 3. The
+// operand-size prefix is removed, the address-size prefix remains, and ESP is
+// remapped to R15. A following non-copy mode16 record stays a boundary.
+bool Probe16BitLeaModeEmission()
+{
+    constexpr std::uint32_t base = kBase + 0x200U;
+    const std::vector<std::uint8_t> lea_bytes = {
+        0x67U, 0x66U, 0x8DU, 0x8CU, 0x24U,
+        0x00U, 0xE0U, 0xFFU, 0xFFU,
+    };
+    const std::vector<std::uint8_t> expected = {
+        0x67U, 0x41U, 0x8DU, 0x8CU, 0x27U,
+        0x00U, 0xE0U, 0xFFU, 0xFFU,
+    };
+
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = base;
+    AotBasicBlock block;
+    block.guest_address = base;
+    AotInstructionRecord lea;
+    lea.guest_address = base;
+    lea.kind = AotInstructionKind::kCopy;
+    lea.length = static_cast<std::uint8_t>(lea_bytes.size());
+    lea.guest_code_default_operand_size = GuestCodeDefaultOperandSize::k16;
+    lea.bytes = lea_bytes;
+    block.instructions.push_back(lea);
+
+    AotInstructionRecord boundary;
+    boundary.guest_address = base + static_cast<std::uint32_t>(lea_bytes.size());
+    boundary.kind = AotInstructionKind::kPortIo;
+    boundary.length = 1U;
+    boundary.guest_code_default_operand_size =
+        GuestCodeDefaultOperandSize::k16;
+    boundary.bytes = {0xEDU};
+    block.instructions.push_back(boundary);
+    plan.blocks.push_back(block);
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    const bool built = BuildAotCodeCacheImage(plan, options, &image) &&
+        image.valid;
+    std::vector<std::uint8_t> emitted;
+    const bool lea_ok = built && EmittedBytes(image, base, &emitted) &&
+        emitted == expected;
+    const bool boundary_ok = built &&
+        EmittedBytes(image, boundary.guest_address, &emitted) &&
+        emitted == std::vector<std::uint8_t>{0xCCU} &&
+        HasBoundaryFixupAt(image, boundary.guest_address);
+    const bool ok = lea_ok && boundary_ok;
+    std::cout << "long_mode_emission_16bit_lea32="
+              << (ok ? "true" : "false") << ",lowered="
+              << (lea_ok ? 1 : 0) << ",boundary="
+              << (boundary_ok ? 1 : 0) << "\n";
+    return ok;
+}
+
+// Task 682. The actual object-3 frontier is a prefix-free mode16 LEA with a
+// 16-bit address calculation. Its multi-instruction scratch lowering must be
+// decoded as one cache entry, and a following mode16 non-copy record remains a
+// separate boundary.
+bool Probe16BitLea16ModeEmission()
+{
+    constexpr std::uint32_t base = kBase + 0x300U;
+    const std::vector<std::uint8_t> lea_bytes = {
+        0x8DU, 0x8CU, 0x24U, 0x00U,
+    };
+    const std::vector<std::uint8_t> expected = {
+        0x44U, 0x0FU, 0xB7U, 0xF6U,
+        0x67U, 0x66U, 0x41U, 0x8DU, 0x8EU,
+        0x24U, 0x00U, 0x00U, 0x00U,
+    };
+
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = base;
+    AotBasicBlock block;
+    block.guest_address = base;
+    AotInstructionRecord lea;
+    lea.guest_address = base;
+    lea.kind = AotInstructionKind::kCopy;
+    lea.length = static_cast<std::uint8_t>(lea_bytes.size());
+    lea.guest_code_default_operand_size = GuestCodeDefaultOperandSize::k16;
+    lea.bytes = lea_bytes;
+    block.instructions.push_back(lea);
+
+    AotInstructionRecord boundary;
+    boundary.guest_address = base + static_cast<std::uint32_t>(lea_bytes.size());
+    boundary.kind = AotInstructionKind::kPortIo;
+    boundary.length = 1U;
+    boundary.guest_code_default_operand_size =
+        GuestCodeDefaultOperandSize::k16;
+    boundary.bytes = {0xEDU};
+    block.instructions.push_back(boundary);
+    plan.blocks.push_back(block);
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    const bool built = BuildAotCodeCacheImage(plan, options, &image) &&
+        image.valid;
+    std::vector<std::uint8_t> emitted;
+    const bool lea_ok = built && EmittedBytes(image, base, &emitted) &&
+        emitted == expected;
+    const bool boundary_ok = built &&
+        EmittedBytes(image, boundary.guest_address, &emitted) &&
+        emitted == std::vector<std::uint8_t>{0xCCU} &&
+        HasBoundaryFixupAt(image, boundary.guest_address);
+    const bool ok = lea_ok && boundary_ok;
+    std::cout << "long_mode_emission_16bit_lea16="
+              << (ok ? "true" : "false") << ",lowered="
+              << (lea_ok ? 1 : 0) << ",boundary="
+              << (boundary_ok ? 1 : 0) << "\n";
+    return ok;
+}
+
 }  // namespace
 
 bool RunLongModeEmissionProbe()
@@ -981,6 +1098,8 @@ bool RunLongModeEmissionProbe()
     const bool outcomes_ok = ProbeLongModeOutcomes();
     const bool refused_ok = ProbeAllRefusedStillBuilds();
     const bool sixteen_bit_mode_ok = Probe16BitModeEmission();
+    const bool sixteen_bit_lea_ok = Probe16BitLeaModeEmission();
+    const bool sixteen_bit_lea16_ok = Probe16BitLea16ModeEmission();
     const bool segment_read_gpr16_ok = ProbeSegmentReadGpr16Classification();
     const bool segment_override_coverage_ok =
         ProbeLongModeSegmentOverrideCoverage();
@@ -994,6 +1113,8 @@ bool RunLongModeEmissionProbe()
 
     const bool all = default_ok && outcomes_ok && refused_ok &&
         sixteen_bit_mode_ok &&
+        sixteen_bit_lea_ok &&
+        sixteen_bit_lea16_ok &&
         segment_read_gpr16_ok &&
         segment_override_coverage_ok &&
         segment_guard_coverage_ok &&

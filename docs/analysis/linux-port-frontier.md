@@ -14800,3 +14800,64 @@ The object-3 trace was also checked with all dynamic AOT requests enabled. The
 observed requests stayed in the `0x010xxxxx` code range; none contained
 `0x01100022`, so absence of the old `41BF0020FB8D` sequence cannot yet be
 claimed from a real object-3 dynamic image.
+## 2026-09-15: Task 681 runtime correction and next 16-bit LEA frontier
+
+### 확인된 사실
+
+Task 681의 공용 lowering은 명시적인 `67 66 LEA r32,m32`에 대해
+`67 41 ...` x64 바이트를 생성하며 core probe에서 통과했다. 그러나 최신
+debug runtime trace가 실제로 요청한 object 3 entry는
+`0x0110000E: 8D 8C 24 00`이었다. 이는 mode16의
+`LEA CX,[SI+disp16]`이며 Task 681의 32비트 명시형 LEA와 다른 형식이다.
+
+해당 명령은 현재 x64 cache에서 INT3 boundary가 되었고, mode16 비동일
+명령을 HLE가 처리하지 못해 `SIGTRAP`이 unhandled로 남았다. 따라서 현재
+coredump는 Task 679에서 확인한 잘못된 ESP immediate decode와는 별개의
+후속 frontier이며, 원본 bytes를 실행하도록 우회해서는 안 된다.
+
+### 미확정 및 다음 작업
+
+16비트 effective-address 계산과 목적지 word 보존을 함께 구현할 공용
+lowering subset은 Task 682의 설계 대상으로 남긴다. 주소 `0x0110000E`나
+displacement `0x0024`에 종속된 예외처리는 허용하지 않는다.
+
+### English
+
+Task 681's shared lowering emits `67 41 ...` x64 bytes for explicit
+`67 66 LEA r32,m32`, and the core probe passes. The latest debug runtime trace,
+however, requested object-3 entry `0x0110000E: 8D 8C 24 00`. In mode16 this is
+`LEA CX,[SI+disp16]`, a different form from Task 681's explicit 32-bit LEA.
+
+The instruction currently becomes an INT3 boundary in the x64 cache, and the
+boundary remains unhandled because HLE does not execute a non-identical mode16
+instruction. This is a later frontier distinct from Task 679's malformed
+32-bit decode of the stack-pointer immediate; raw guest execution must not be
+used as a workaround.
+
+The shared lowering subset for 16-bit effective-address calculation and word
+destination preservation is deferred to Task 682. No exception keyed to
+`0x0110000E` or displacement `0x0024` is allowed.
+
+## 2026-09-15: Task 682 mode16 LEA16 lowering
+
+### 확인된 사실
+
+`0x0110000E: 8D 8C 24 00`은 mode16 `LEA CX,[SI+0x0024]`로 확인되었다.
+공용 lowering은 source `SI`의 low word를 `R14D`에 zero-extend하고,
+`67 66 LEA CX,[R14D+0x24]`를 생성한다. 이 sequence는 flags를 변경하지
+않으며 `ECX`의 상위 word를 보존한다.
+
+runtime trace에서 해당 dynamic image는 `guest_length=4`,
+`emitted_length=13`으로 기록되었고, 1바이트 INT3 boundary가 제거되었다.
+다음 frontier는 `0x01100012: E0 FF`, mode16 `LOOPNZ`이다.
+
+### English
+
+`0x0110000E: 8D 8C 24 00` is confirmed as mode16
+`LEA CX,[SI+0x0024]`. The shared lowering zero-extends the source `SI` low
+word into `R14D` and emits `67 66 LEA CX,[R14D+0x24]`. The sequence preserves
+flags and the upper word of `ECX`.
+
+The runtime trace records `guest_length=4` and `emitted_length=13` for the
+dynamic image, replacing the one-byte INT3 boundary. The next frontier is
+`0x01100012: E0 FF`, mode16 `LOOPNZ`.

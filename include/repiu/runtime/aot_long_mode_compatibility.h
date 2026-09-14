@@ -161,6 +161,13 @@ enum class LongModeLowering
     // Task 680. In a 16-bit code object, `BC iw` is `MOV SP,iw`. Write the
     // guest stack pointer's low word in R15 without touching host RSP.
     k16BitStackPointerImmediateToR15,
+    // Task 681. In a 16-bit code object, an explicit 67+66 LEA computes a
+    // 32-bit guest address and writes a 32-bit guest GPR. Keep 67, remove 66,
+    // and remap guest ESP fields to the x64 guest-state register R15.
+    k16BitLea32ToGuestGprs,
+    // Task 682. In a 16-bit code object, lower the proven 16-bit address and
+    // word-destination LEA subset through x64 scratch registers.
+    k16BitLea16ToGuestGprs,
 };
 
 struct LongModeCompatibilityResult

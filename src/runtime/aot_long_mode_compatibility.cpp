@@ -575,6 +575,140 @@ bool IsAbsoluteDisplacementForm(const ZydisDecodedInstruction& instruction)
         instruction.raw.modrm.mod == 0U && instruction.raw.modrm.rm == 5U;
 }
 
+// Task 681. A 16-bit code object can opt into both 32-bit address and operand
+// sizes for LEA. Long mode keeps the 32-bit address-size prefix, but its
+// default operand size is already 32 bits, so the guest's 66 prefix must be
+// removed. The only guest register mapping that changes is ESP -> R15.
+bool IsMode16Lea32(const std::uint8_t* const bytes,
+                   const ZydisDecodedInstruction& instruction,
+                   const ZydisDecodedOperand* const operands)
+{
+    if (bytes == nullptr || operands == nullptr ||
+        instruction.opcode_map != ZYDIS_OPCODE_MAP_DEFAULT ||
+        instruction.opcode != 0x8DU ||
+        instruction.mnemonic != ZYDIS_MNEMONIC_LEA ||
+        instruction.operand_width != 32U ||
+        instruction.address_width != 32U ||
+        instruction.raw.prefix_count == 0U ||
+        !HasMemoryOperand(instruction, operands) ||
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_SEGMENT) != 0U ||
+        instruction.raw.modrm.mod == 3U)
+    {
+        return false;
+    }
+
+    bool has_operand_size = false;
+    bool has_address_size = false;
+    for (std::size_t index = 0U;
+         index < instruction.raw.prefix_count; ++index)
+    {
+        if (bytes[index] == 0x66U)
+        {
+            has_operand_size = true;
+        }
+        else if (bytes[index] == 0x67U)
+        {
+            has_address_size = true;
+        }
+        else
+        {
+            return false;
+        }
+    }
+    if (!has_operand_size || !has_address_size)
+    {
+        return false;
+    }
+
+    // A valid ESP base is remappable. Any other stack-pointer shape is kept
+    // out of this lowering rather than relying on an incomplete field rewrite.
+    return !TouchesStackPointer(instruction, operands) ||
+        ClassifyStackPointerFields(instruction, operands).supported;
+}
+
+struct Mode16Lea16AddressFields
+{
+    std::uint8_t first_register = 0xFFU;
+    std::uint8_t second_register = 0xFFU;
+    std::int32_t displacement = 0;
+};
+
+bool IsMode16Lea16(const std::uint8_t* const bytes,
+                   const ZydisDecodedInstruction& instruction,
+                   const ZydisDecodedOperand* const operands,
+                   Mode16Lea16AddressFields* const address_fields)
+{
+    if (bytes == nullptr || operands == nullptr ||
+        instruction.opcode_map != ZYDIS_OPCODE_MAP_DEFAULT ||
+        instruction.opcode != 0x8DU ||
+        instruction.mnemonic != ZYDIS_MNEMONIC_LEA ||
+        instruction.operand_width != 16U ||
+        instruction.address_width != 16U ||
+        instruction.raw.prefix_count != 0U ||
+        !HasMemoryOperand(instruction, operands) ||
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_SEGMENT) != 0U ||
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_MODRM) == 0U ||
+        instruction.raw.modrm.mod == 3U ||
+        instruction.raw.modrm.offset != 1U)
+    {
+        return false;
+    }
+
+    Mode16Lea16AddressFields fields;
+    const std::uint8_t mod = instruction.raw.modrm.mod;
+    const std::uint8_t rm = instruction.raw.modrm.rm;
+    switch (rm)
+    {
+        case 0U: fields.first_register = 3U; fields.second_register = 6U; break;
+        case 1U: fields.first_register = 3U; fields.second_register = 7U; break;
+        case 4U: fields.first_register = 6U; break;
+        case 5U: fields.first_register = 7U; break;
+        case 6U:
+            if (mod != 0U)
+            {
+                // BP defaults to SS in 16-bit addressing. The current x64
+                // lowering has not proven the default-SS base contract.
+                return false;
+            }
+            break;
+        case 7U: fields.first_register = 3U; break;
+        default: return false;
+    }
+
+    std::size_t displacement_bytes = 0U;
+    if (mod == 1U)
+    {
+        displacement_bytes = 1U;
+        fields.displacement = static_cast<std::int8_t>(
+            bytes[instruction.raw.disp.offset]);
+    }
+    else if (mod == 2U || (mod == 0U && rm == 6U))
+    {
+        displacement_bytes = 2U;
+        fields.displacement = static_cast<std::int32_t>(
+            static_cast<std::uint16_t>(bytes[instruction.raw.disp.offset]) |
+            (static_cast<std::uint16_t>(
+                 bytes[instruction.raw.disp.offset + 1U]) << 8U));
+    }
+    if (instruction.raw.disp.offset + displacement_bytes !=
+            instruction.length ||
+        instruction.raw.disp.size != displacement_bytes * 8U)
+    {
+        return false;
+    }
+
+    if (TouchesStackPointer(instruction, operands) &&
+        !ClassifyStackPointerFields(instruction, operands).supported)
+    {
+        return false;
+    }
+    if (address_fields != nullptr)
+    {
+        *address_fields = fields;
+    }
+    return true;
+}
+
 }  // namespace
 
 LongModeCompatibilityResult ClassifyLongModeBytes(
@@ -626,6 +760,16 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
             return Reencode(
                 LongModeDivergence::kStackPointerRegister,
                 LongModeLowering::k16BitStackPointerImmediateToR15);
+        }
+        if (IsMode16Lea32(bytes, instruction, operands))
+        {
+            return Reencode(LongModeDivergence::kAddressSize,
+                            LongModeLowering::k16BitLea32ToGuestGprs);
+        }
+        if (IsMode16Lea16(bytes, instruction, operands, nullptr))
+        {
+            return Reencode(LongModeDivergence::kAddressSize,
+                            LongModeLowering::k16BitLea16ToGuestGprs);
         }
         return Refuse(LongModeDivergence::kOperandWidth);
     }
@@ -1323,6 +1467,168 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
         if (instruction_count != nullptr)
         {
             *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 681. Remove the source-only operand-size override from a 32-bit
+    // LEA in a 16-bit code object. Keep the address-size override and rewrite
+    // only the ModRM/SIB fields that name guest ESP. All other guest GPRs keep
+    // their established host-register mapping.
+    if (verdict.lowering == LongModeLowering::k16BitLea32ToGuestGprs)
+    {
+        if (!guest_is_16_bit ||
+            !IsMode16Lea32(bytes, instruction, operands) ||
+            instruction.raw.modrm.offset != instruction.raw.prefix_count + 1U)
+        {
+            return false;
+        }
+        const StackPointerFields fields =
+            ClassifyStackPointerFields(instruction, operands);
+        const bool needs_rex = fields.rex_r || fields.rex_b;
+        if (needs_rex && length + 1U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+
+        std::size_t out = 0U;
+        for (std::size_t index = 0U;
+             index < instruction.raw.prefix_count; ++index)
+        {
+            if (bytes[index] != 0x66U)
+            {
+                lowered[out++] = bytes[index];
+            }
+        }
+        if (needs_rex)
+        {
+            std::uint8_t rex = 0x40U;
+            rex |= fields.rex_r ? 0x04U : 0x00U;
+            rex |= fields.rex_b ? 0x01U : 0x00U;
+            lowered[out++] = rex;
+        }
+        const std::size_t output_opcode_offset = out;
+        for (std::size_t index = instruction.raw.prefix_count;
+             index < length; ++index)
+        {
+            lowered[out++] = bytes[index];
+        }
+
+        const std::size_t modrm_out = output_opcode_offset + 1U;
+        if (modrm_out >= out)
+        {
+            return false;
+        }
+        if (fields.rex_r)
+        {
+            lowered[modrm_out] = static_cast<std::uint8_t>(
+                (lowered[modrm_out] & 0xC7U) | 0x38U);
+        }
+        if (fields.rex_b)
+        {
+            if ((instruction.attributes & ZYDIS_ATTRIB_HAS_SIB) == 0U ||
+                instruction.raw.modrm.rm != 4U ||
+                modrm_out + 1U >= out)
+            {
+                return false;
+            }
+            lowered[modrm_out + 1U] = static_cast<std::uint8_t>(
+                (lowered[modrm_out + 1U] & 0xF8U) | 0x07U);
+        }
+        *lowered_count = out;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 682. x64 has no 16-bit address-size mode. Materialize the proven
+    // 16-bit address form in scratch registers, then use a 32-bit address-size
+    // word LEA. MOVZX and LEA preserve flags, and the final word write keeps
+    // the guest's low-word destination semantics.
+    if (verdict.lowering == LongModeLowering::k16BitLea16ToGuestGprs)
+    {
+        Mode16Lea16AddressFields address_fields;
+        if (!guest_is_16_bit ||
+            !IsMode16Lea16(bytes, instruction, operands, &address_fields) ||
+            instruction.raw.modrm.offset != 1U)
+        {
+            return false;
+        }
+
+        const StackPointerFields stack_fields =
+            ClassifyStackPointerFields(instruction, operands);
+        const std::uint8_t destination = instruction.raw.modrm.reg;
+        const bool destination_is_stack_pointer = stack_fields.rex_r;
+        const std::size_t final_length = 2U + 1U + 1U + 1U + 4U;
+        const std::size_t first_load_length =
+            address_fields.first_register != 0xFFU ? 4U : 0U;
+        const std::size_t second_load_length =
+            address_fields.second_register != 0xFFU ? 4U : 0U;
+        const std::size_t sum_length =
+            address_fields.second_register != 0xFFU ? 5U : 0U;
+        const std::size_t zero_length =
+            address_fields.first_register == 0xFFU ? 6U : 0U;
+        if (destination > 7U ||
+            (!destination_is_stack_pointer && destination == 4U) ||
+            first_load_length + second_load_length + sum_length +
+                    zero_length + final_length > kMaxLoweredBytes)
+        {
+            return false;
+        }
+
+        std::size_t out = 0U;
+        if (address_fields.first_register != 0xFFU)
+        {
+            lowered[out++] = 0x44U;  // REX.R selects R14D.
+            lowered[out++] = 0x0FU;
+            lowered[out++] = 0xB7U;
+            lowered[out++] = static_cast<std::uint8_t>(
+                0xF0U | address_fields.first_register);
+        }
+        else
+        {
+            lowered[out++] = 0x41U;  // REX.B selects R14D.
+            lowered[out++] = 0xBEU;  // MOV R14D,0.
+            lowered[out++] = 0x00U;
+            lowered[out++] = 0x00U;
+            lowered[out++] = 0x00U;
+            lowered[out++] = 0x00U;
+        }
+        if (address_fields.second_register != 0xFFU)
+        {
+            lowered[out++] = 0x44U;  // REX.R selects R10D.
+            lowered[out++] = 0x0FU;
+            lowered[out++] = 0xB7U;
+            lowered[out++] = static_cast<std::uint8_t>(
+                0xD0U | address_fields.second_register);
+            lowered[out++] = 0x67U;
+            lowered[out++] = 0x47U;  // R14D destination/base, R10D index.
+            lowered[out++] = 0x8DU;
+            lowered[out++] = 0x34U;
+            lowered[out++] = 0x16U;
+        }
+
+        lowered[out++] = 0x67U;  // Select 32-bit address calculation.
+        lowered[out++] = 0x66U;  // Select the guest word destination.
+        lowered[out++] = destination_is_stack_pointer ? 0x45U : 0x41U;
+        lowered[out++] = 0x8DU;
+        lowered[out++] = static_cast<std::uint8_t>(
+            0x80U | ((destination_is_stack_pointer ? 7U : destination) << 3U) |
+            6U);  // [R14D + disp32], with REX.B.
+        const std::uint32_t displacement = static_cast<std::uint32_t>(
+            address_fields.displacement);
+        for (std::size_t index = 0U; index < 4U; ++index)
+        {
+            lowered[out++] = static_cast<std::uint8_t>(
+                (displacement >> (index * 8U)) & 0xFFU);
+        }
+        *lowered_count = out;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = address_fields.second_register != 0xFFU
+                ? 4U : 2U;
         }
         return true;
     }

@@ -805,6 +805,77 @@ bool Probe16BitStackPointerImmediate()
     return ok;
 }
 
+// Task 681. In a 16-bit code object, explicit 67+66 LEA selects 32-bit
+// addressing and a 32-bit destination. The mode-aware classifier must remove
+// only the source operand-size override and remap guest ESP when lowering.
+bool Probe16BitLea32()
+{
+    const std::uint8_t guest[] = {
+        0x67U, 0x66U, 0x8DU, 0x8CU, 0x24U,
+        0x00U, 0xE0U, 0xFFU, 0xFFU,
+    };
+    const std::uint8_t expected[] = {
+        0x67U, 0x41U, 0x8DU, 0x8CU, 0x27U,
+        0x00U, 0xE0U, 0xFFU, 0xFFU,
+    };
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        guest, sizeof(guest),
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    std::uint8_t lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    const bool lowered_ok = repiu::runtime::LowerLongModeBytes(
+        guest, sizeof(guest), lowered, &lowered_count, nullptr,
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    const bool ok =
+        verdict.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict.divergence == LongModeDivergence::kAddressSize &&
+        verdict.lowering ==
+            repiu::runtime::LongModeLowering::k16BitLea32ToGuestGprs &&
+        lowered_ok && lowered_count == sizeof(expected) &&
+        std::memcmp(lowered, expected, sizeof(expected)) == 0;
+    std::cout << "long_mode_16bit_lea32=" << (ok ? "true" : "false")
+              << ",length=" << (ok ? 9U : 0U)
+              << ",lowered=" << (ok ? lowered_count : 0U) << "\n";
+    return ok;
+}
+
+// Task 682. The runtime frontier is a prefix-free mode16 LEA with a 16-bit
+// address calculation. It must be admitted only through the dedicated
+// scratch-register lowering, while a BP-based form remains refused.
+bool Probe16BitLea16()
+{
+    const std::uint8_t guest[] = {0x8DU, 0x8CU, 0x24U, 0x00U};
+    const std::uint8_t expected[] = {
+        0x44U, 0x0FU, 0xB7U, 0xF6U,
+        0x67U, 0x66U, 0x41U, 0x8DU, 0x8EU,
+        0x24U, 0x00U, 0x00U, 0x00U,
+    };
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        guest, sizeof(guest),
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    std::uint8_t lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    const bool lowered_ok = repiu::runtime::LowerLongModeBytes(
+        guest, sizeof(guest), lowered, &lowered_count, nullptr,
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    const std::uint8_t bp_form[] = {0x8DU, 0x4EU, 0x00U};
+    const bool ok =
+        verdict.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict.divergence == LongModeDivergence::kAddressSize &&
+        verdict.lowering ==
+            repiu::runtime::LongModeLowering::k16BitLea16ToGuestGprs &&
+        lowered_ok && lowered_count == sizeof(expected) &&
+        std::memcmp(lowered, expected, sizeof(expected)) == 0 &&
+        ClassifyLongModeBytes(
+            bp_form, sizeof(bp_form),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).compatibility !=
+            LongModeByteCompatibility::kIdenticalBytes;
+    std::cout << "long_mode_16bit_lea16=" << (ok ? "true" : "false")
+              << ",length=" << (ok ? 4U : 0U)
+              << ",lowered=" << (ok ? lowered_count : 0U) << "\n";
+    return ok;
+}
+
 }  // namespace
 
 bool RunLongModeCompatibilityProbe()
@@ -820,10 +891,13 @@ bool RunLongModeCompatibilityProbe()
     const bool subset_ok = ProbeAdmittedSubset();
     const bool refusals_ok = ProbeRefusals();
     const bool sixteen_bit_ok = Probe16BitStackPointerImmediate();
+    const bool sixteen_bit_lea_ok = Probe16BitLea32();
+    const bool sixteen_bit_lea16_ok = Probe16BitLea16();
 
     const bool all = silent_ok && invalid_ok && width_ok && width_kind_ok &&
         reasons_ok && stack_ok && inc_dec_ok && stack_seq_ok && subset_ok &&
-        refusals_ok && sixteen_bit_ok;
+        refusals_ok && sixteen_bit_ok && sixteen_bit_lea_ok &&
+        sixteen_bit_lea16_ok;
     std::cout << "long_mode_compatibility_all=" << (all ? "true" : "false")
               << "\n";
     return all;
