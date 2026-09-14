@@ -14757,12 +14757,12 @@ width/base/limit semantics는 미확정으로 유지한다.
 
 | 질문 | 상태 |
 |---|---|
-| mode16 `BC iw` decode length | **구현됨, Linux 실행 미확인** |
-| `BC iw` -> `66 41 BF iw` lowering | **구현됨, 실행 probe 미확인** |
-| mode16 non-copy native slot 차단 | **구현됨, Linux 실행 미확인** |
-| Linux x64 build/core probe | **미실행**: cmake/WSL 접근 blocker |
-| object 3 dynamic trace | **미실행**: WSL 접근 blocker |
-| 정상 게임 실행 및 coredump 부재 | **미확정** |
+| mode16 `BC iw` decode length | **확인됨**: core probe planner mode/length 통과 |
+| `BC iw` -> `66 41 BF iw` lowering | **확인됨**: bytes 및 x64 R15 실행 probe 통과 |
+| mode16 non-copy native slot 차단 | **확인됨**: emission boundary probe 통과 |
+| Linux x64 build/core probe | **통과**: `repiu`, `repiu_core_probe`, failures=0 |
+| object 3 dynamic trace | **미도달**: 짧은 smoke에서 `0x01100022` request 미발생 |
+| 정상 게임 실행 및 coredump 부재 | **부분 확인**: timeout cleanup은 failure=0, full run은 미확정 |
 
 ### English
 
@@ -14777,16 +14777,26 @@ branch/return/selector slots and become INT3 boundaries. Other 16-bit
 instructions remain `kUnsupported`; 16-bit push/pop, segment, and far-return
 stack width/base/limit semantics remain unresolved.
 
-In this environment, `cmake` is not on the Windows PATH and the WSL service
-returns `E_ACCESSDENIED`, so the Linux build and runtime smoke could not run.
-The implementation and probe results therefore remain to be confirmed by the
-next Linux execution.
+The WSL service became available for this verification. The Linux x64 Debug
+build of `repiu` and `repiu_core_probe` passed, and the core probe reported zero
+failures, including the mode16 planner, emission, and execution checks. A short
+dynamic runtime smoke reached timeout cleanup with `failure=0`, `recovered=1`,
+and `stopped=1`; however, that run did not request a dynamic translation
+containing object 3 address `0x01100022`, so the real object-3 trace remains
+unobserved.
 
 | Question | Status |
 |---|---|
-| mode16 `BC iw` decode length | **Implemented, Linux run unconfirmed** |
-| `BC iw` -> `66 41 BF iw` lowering | **Implemented, execution probe unconfirmed** |
-| mode16 non-copy native-slot exclusion | **Implemented, Linux run unconfirmed** |
-| Linux x64 build/core probe | **Not run**: cmake/WSL access blocker |
-| Object-3 dynamic trace | **Not run**: WSL access blocker |
-| Normal game execution and absence of coredump | **Unresolved** |
+| mode16 `BC iw` decode length | **Confirmed**: core-probe planner mode/length check passed |
+| `BC iw` -> `66 41 BF iw` lowering | **Confirmed**: bytes and x64 R15 execution checks passed |
+| mode16 non-copy native-slot exclusion | **Confirmed**: emission boundary check passed |
+| Linux x64 build/core probe | **Passed**: `repiu`, `repiu_core_probe`, failures=0 |
+| Object-3 dynamic trace | **Not reached**: no request for `0x01100022` in short smoke |
+| Normal game execution and absence of coredump | **Partially checked**: timeout cleanup failure=0; full run unresolved |
+
+### Verification addendum
+
+The object-3 trace was also checked with all dynamic AOT requests enabled. The
+observed requests stayed in the `0x010xxxxx` code range; none contained
+`0x01100022`, so absence of the old `41BF0020FB8D` sequence cannot yet be
+claimed from a real object-3 dynamic image.

@@ -94,3 +94,42 @@ stack ABI remain unimplemented. The next run must confirm that object 3's
 Work was performed on `work/20260913-678-linux-x64-coredump-investigation`; no
 merge into `main` was requested. This work log and implementation are recorded
 in one commit.
+
+---
+
+## 검증 추가 기록 — WSL 재빌드 및 runtime smoke
+
+사용자 요청에 따라 WSL 접근 복구 후 다음 검증을 수행했습니다.
+
+* `cmake --build build/linux_x64 --target repiu repiu_core_probe -j2`
+  **통과**.
+* `repiu_core_probe` 실행 결과 `core_probe_total=27`,
+  `core_probe_failures=0`, `core_probe_all=true`.
+* mode16 관련 결과는 `long_mode_16bit_stack_pointer_immediate=true`,
+  `long_mode_emission_16bit_mode=true,planner_mode=true`,
+  `long_mode_lowering_16bit_stack_pointer=true`였습니다.
+* `REPIU_EXECUTION_BACKEND=dynamic` 짧은 smoke는 coredump 없이
+  `reason=timeout`, `recovered=1`, `stopped=1`, `failure=0`으로 cleanup됐습니다.
+* 모든 dynamic request trace도 확인했지만 관찰된 요청은 `0x010xxxxx`
+  범위였고 object 3의 `0x01100022` 요청은 발생하지 않았습니다. 따라서
+  실제 object 3 trace에서 이전 `41BF0020FB8D`가 사라졌다는 결론은 아직
+  내리지 않습니다.
+
+### Verification addendum — WSL rebuild and runtime smoke
+
+At the user's request, after WSL access was restored:
+
+* `cmake --build build/linux_x64 --target repiu repiu_core_probe -j2`
+  **passed**.
+* `repiu_core_probe` reported `core_probe_total=27`,
+  `core_probe_failures=0`, and `core_probe_all=true`.
+* Mode16 results were `long_mode_16bit_stack_pointer_immediate=true`,
+  `long_mode_emission_16bit_mode=true,planner_mode=true`, and
+  `long_mode_lowering_16bit_stack_pointer=true`.
+* A short `REPIU_EXECUTION_BACKEND=dynamic` smoke ended without a coredump;
+  shutdown reported `reason=timeout`, `recovered=1`, `stopped=1`, and
+  `failure=0`.
+* The all-request dynamic trace was also checked. Observed requests stayed in
+  the `0x010xxxxx` range; no request for object 3 address `0x01100022` occurred.
+  Therefore the real object-3 dynamic image has not yet confirmed removal of
+  the old `41BF0020FB8D` sequence.

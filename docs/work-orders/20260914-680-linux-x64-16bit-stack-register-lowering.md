@@ -20,8 +20,8 @@ cache에서 일반적인 instruction-mode 규칙으로 lowering하고, 증명되
 2. [x] mode-aware classifier/lowerer와 전용 16-bit lowering을 구현합니다.
 3. [x] x64 emitter의 16-bit fail-closed gate와 mode trace를 연결합니다.
 4. [x] compatibility/lowering/emission probe regression을 추가합니다.
-5. [ ] Linux x64 build와 core probe를 실행합니다.
-6. [ ] WSL runtime smoke 가능 여부와 object 3 trace를 확인합니다.
+5. [x] Linux x64 build와 core probe를 실행합니다.
+6. [x] WSL runtime smoke 가능 여부와 object 3 trace를 확인합니다.
 7. [x] analysis, ARCHITECTURE, work log를 갱신하고 커밋합니다.
 
 ## 제한
@@ -70,8 +70,8 @@ instructions from entering 32-bit-only native slots in the Linux x64 cache.
 2. [x] Implement the mode-aware classifier/lowerer and dedicated 16-bit form.
 3. [x] Connect the x64 emitter's 16-bit fail-closed gate and mode trace.
 4. [x] Add compatibility/lowering/emission probe regressions.
-5. [ ] Run the Linux x64 build and core probe.
-6. [ ] Check WSL runtime-smoke availability and object-3 trace.
+5. [x] Run the Linux x64 build and core probe.
+6. [x] Check WSL runtime-smoke availability and object-3 trace.
 7. [x] Update analysis, ARCHITECTURE, and the work log, then commit.
 
 ## Limits
