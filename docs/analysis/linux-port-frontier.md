@@ -15494,3 +15494,81 @@ The next boundary is `0x0110002D: 0E`:
 The next frontier is `0x0110002D: 0E`, mode16 `PUSH CS`. It is not equivalent to
 the valid long-mode encoding, so determine whether it belongs to existing HLE or
 to a separate fail-closed policy that preserves the guest segment stack.
+
+## 2026-09-15: Task 691 mode16 segment-push HLE boundary
+
+### 확인된 사실
+
+기존 `HandleSegmentPushInstruction`은 `PUSH CS` (`0E`)의 selector 조회와
+guest-stack 기록을 이미 지원하고 있었습니다. 문제는 mode16 AOT planner의
+`IsHleBoundary`가 native segment push를 의도적으로 제외하여 `0E`를 copy
+record로 만들고, long-mode emitter가 이를 INT3로 바꾸고 있던 점입니다.
+
+planner에 code mode가 mode16이고 prefix 없는 PUSH의 visible operand가 segment
+register인지 확인하는 `IsMode16SegmentPushHle`를 추가했습니다. 이 조건이면
+새 semantics를 만들지 않고 기존 `kHleBoundary`/HLE dispatch를 사용합니다.
+
+```text
+long_mode_16bit_segment_push_hle=true,boundary=1
+core_probe_failures=0
+core_probe_all=true
+```
+
+실제 runtime trace는 `0E`를 `hle=1`로 계획했고, 기존 HLE를 통과해
+`0x0110002E: 50`에서 멈췄습니다.
+
+```text
+[repiu-aot-plan-trace] guest=0x0110002D bytes=0E length=1 ... code_mode=16 ... hle=1
+[repiu-fault] unhandled signal=0x5 ... eip=0x0110002E
+```
+
+* **확인됨:** mode16 `PUSH CS`가 long mode INT3 boundary가 아니라 기존
+  segment-push HLE 경로로 연결되었습니다.
+* **확인됨:** mode32 native segment-push 정책과 selector/guest-stack 구현은
+  변경되지 않았습니다.
+* **미확정:** 다음 mode16 `PUSH AX`와 이어지는 `PUSH DI`/far return의
+  guest-stack semantics입니다.
+
+### 다음 frontier
+
+다음 frontier는 `0x0110002E: 50`, mode16 `PUSH AX`입니다. 기존 general
+stack lowering이 mode16 word push와 guest ESP state를 안전하게 처리할 수
+있는지 별도 설계·probe가 필요합니다.
+
+### English
+
+The existing `HandleSegmentPushInstruction` already supported selector lookup
+and guest-stack writes for `PUSH CS` (`0E`). The issue was that the mode16 AOT
+planner's `IsHleBoundary` deliberately excluded native segment pushes, leaving
+`0E` as a copy record that the long-mode emitter converted to INT3.
+
+Added `IsMode16SegmentPushHle`, which checks for a mode16, prefix-free PUSH with
+a visible segment-register operand. Matching instructions use the existing
+`kHleBoundary` and HLE dispatch without new semantics:
+
+```text
+long_mode_16bit_segment_push_hle=true,boundary=1
+core_probe_failures=0
+core_probe_all=true
+```
+
+The live trace plans `0E` with `hle=1`, passes the existing HLE, and stops at
+`0x0110002E: 50`:
+
+```text
+[repiu-aot-plan-trace] guest=0x0110002D bytes=0E length=1 ... code_mode=16 ... hle=1
+[repiu-fault] unhandled signal=0x5 ... eip=0x0110002E
+```
+
+* **Confirmed:** mode16 `PUSH CS` now uses the existing segment-push HLE rather
+  than a long-mode INT3 boundary.
+* **Confirmed:** the mode32 native segment-push policy and selector/guest-stack
+  implementation are unchanged.
+* **Unresolved:** guest-stack semantics for the next mode16 `PUSH AX`, the
+  following `PUSH DI`, and far return.
+
+### Next frontier
+
+The next frontier is `0x0110002E: 50`, mode16 `PUSH AX`. Determine through a
+separate design and probe whether the existing general stack lowering can safely
+handle a mode16 word push and guest ESP state.

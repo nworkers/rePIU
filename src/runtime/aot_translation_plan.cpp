@@ -407,6 +407,34 @@ bool IsHleBoundary(const ZydisDecodedInstruction& instruction,
     }
 }
 
+// Task 691. Segment pushes are normally allowed to execute natively because
+// the single-step path proved their host selector value. In a mode16 AOT
+// object, however, one-byte segment pushes are invalid in long mode and must
+// enter the existing segment-push HLE instead of being emitted as a copy.
+bool IsMode16SegmentPushHle(
+    const ZydisDecodedInstruction& instruction,
+    const ZydisDecodedOperand* operands,
+    const GuestCodeDefaultOperandSize code_mode)
+{
+    if (code_mode != GuestCodeDefaultOperandSize::k16 ||
+        operands == nullptr || instruction.mnemonic != ZYDIS_MNEMONIC_PUSH ||
+        instruction.raw.prefix_count != 0U)
+    {
+        return false;
+    }
+    for (std::uint8_t index = 0U;
+         index < instruction.operand_count_visible; ++index)
+    {
+        if (operands[index].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+            ZydisRegisterGetClass(operands[index].reg.value) ==
+                ZYDIS_REGCLASS_SEGMENT)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Watcom emits switch statements as `cmp reg, imm` + `ja default` followed
 // by `jmp dword ptr cs:[reg*4 + table]`. The guard records the fallthrough
 // address and bound so the table branch can be translated natively.
@@ -1007,7 +1035,9 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                             ? 1U : 0U,
                         (instruction.attributes & ZYDIS_ATTRIB_HAS_SEGMENT) != 0U
                             ? 1U : 0U,
-                        IsHleBoundary(instruction, operands) ? 1U : 0U);
+                        (IsHleBoundary(instruction, operands) ||
+                         IsMode16SegmentPushHle(
+                             instruction, operands, code_mode)) ? 1U : 0U);
                     for (const RelocatedRuntimeObject& object : image.objects)
                     {
                         if (address < object.relocated_base_address)
@@ -1147,7 +1177,8 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                     pending.push_back(next);
                     break;
                 }
-                if (IsHleBoundary(instruction, operands))
+                if (IsHleBoundary(instruction, operands) ||
+                    IsMode16SegmentPushHle(instruction, operands, code_mode))
                 {
                     record.kind = AotInstructionKind::kHleBoundary;
                     block.instructions.push_back(std::move(record));

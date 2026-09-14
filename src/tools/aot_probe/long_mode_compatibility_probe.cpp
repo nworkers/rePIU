@@ -1196,6 +1196,40 @@ bool Probe16BitConditionalBranch()
     return ok;
 }
 
+// Task 691. The existing segment-push HLE already handles PUSH CS, but the
+// mode16 planner must mark the invalid-in-long-mode opcode as an HLE boundary
+// rather than leaving it as a copy that becomes an INT3 at emission.
+bool Probe16BitSegmentPushHle()
+{
+    constexpr std::uint32_t base = 0x00240000U;
+    repiu::runtime::RelocatedRuntimeImage runtime_image;
+    runtime_image.valid = true;
+    repiu::runtime::RelocatedRuntimeObject object;
+    object.relocated_base_address = base;
+    object.virtual_size = 16U;
+    object.flags = repiu::runtime::kLeObjectExecutable;
+    object.memory.assign(object.virtual_size, 0x90U);
+    object.memory[0] = 0x0EU;
+    runtime_image.objects.push_back(std::move(object));
+    runtime_image.code_mode_ranges.push_back({base, 16U, 0U});
+
+    repiu::runtime::AotTranslationPlan plan;
+    const bool built = repiu::runtime::BuildAotTranslationPlanFromEntry(
+        runtime_image, base, &plan);
+    const bool record_ok = built && !plan.blocks.empty() &&
+        !plan.blocks.front().instructions.empty() &&
+        plan.blocks.front().instructions.front().kind ==
+            repiu::runtime::AotInstructionKind::kHleBoundary &&
+        plan.blocks.front().instructions.front().length == 1U &&
+        plan.blocks.front().instructions.front().
+            guest_code_default_operand_size ==
+            repiu::runtime::GuestCodeDefaultOperandSize::k16;
+    std::cout << "long_mode_16bit_segment_push_hle="
+              << (record_ok ? "true" : "false") << ",boundary="
+              << (record_ok ? 1U : 0U) << "\n";
+    return record_ok;
+}
+
 // Task 683. LOOPNZ is a control-flow lowering rather than a byte-only
 // lowering, because its direct target comes from the translation plan.
 // Address-size and opcode variants remain refused until their counter
@@ -1285,6 +1319,7 @@ bool RunLongModeCompatibilityProbe()
     const bool sixteen_bit_lea16_ok = Probe16BitLea16();
     const bool sixteen_bit_test_ok = Probe16BitTest32();
     const bool sixteen_bit_jcc_ok = Probe16BitConditionalBranch();
+    const bool sixteen_bit_segment_push_ok = Probe16BitSegmentPushHle();
     const bool sixteen_bit_loopnz_ok = Probe16BitLoopNz();
 
     const bool all = silent_ok && invalid_ok && width_ok && width_kind_ok &&
@@ -1294,7 +1329,8 @@ bool RunLongModeCompatibilityProbe()
         sixteen_bit_and_ok &&
         sixteen_bit_lea_ok &&
         sixteen_bit_lea16_ok && sixteen_bit_test_ok &&
-        sixteen_bit_jcc_ok && sixteen_bit_loopnz_ok;
+        sixteen_bit_jcc_ok && sixteen_bit_segment_push_ok &&
+        sixteen_bit_loopnz_ok;
     std::cout << "long_mode_compatibility_all=" << (all ? "true" : "false")
               << "\n";
     return all;
