@@ -151,6 +151,19 @@ bool IsMode16Shift32(const ZydisDecodedInstruction& instruction)
         (instruction.attributes & ZYDIS_ATTRIB_HAS_SEGMENT) == 0U;
 }
 
+// Task 690. Prefix-free mode16 opcode 25 is AND AX,iw. Add the operand-size
+// prefix in long mode so the accumulator remains a word rather than a dword.
+bool IsMode16AndAccumulatorImmediate(
+    const ZydisDecodedInstruction& instruction)
+{
+    return instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT &&
+        instruction.opcode == 0x25U &&
+        instruction.mnemonic == ZYDIS_MNEMONIC_AND &&
+        instruction.length == 3U && instruction.operand_width == 16U &&
+        instruction.address_width == 16U &&
+        instruction.raw.prefix_count == 0U;
+}
+
 // The ModRM-form opcode that means the same thing. `A0`/`A2` move a byte and
 // `A1`/`A3` a dword; the low bit of the moffs opcode is that width and the
 // second bit is the direction, which is the same layout `88`-`8B` uses.
@@ -859,6 +872,12 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
         {
             return Reencode(LongModeDivergence::kOperandWidth,
                             LongModeLowering::k16BitShift32ToGuestGprs);
+        }
+        if (IsMode16AndAccumulatorImmediate(instruction))
+        {
+            return Reencode(
+                LongModeDivergence::kOperandWidth,
+                LongModeLowering::k16BitAndAccumulatorImmediate);
         }
         if (IsMode16Test32(bytes, instruction, operands))
         {
@@ -1636,6 +1655,28 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
         lowered[1] = bytes[2U];
         lowered[2] = bytes[3U];
         *lowered_count = 3U;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 690. Long mode defaults opcode 25 to a dword accumulator. Add 66
+    // to retain the mode16 word operation and immediate boundary.
+    if (verdict.lowering == LongModeLowering::k16BitAndAccumulatorImmediate)
+    {
+        if (!guest_is_16_bit ||
+            !IsMode16AndAccumulatorImmediate(instruction) ||
+            length != 3U || length + 1U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+        lowered[0] = 0x66U;
+        lowered[1] = bytes[0U];
+        lowered[2] = bytes[1U];
+        lowered[3] = bytes[2U];
+        *lowered_count = 4U;
         if (instruction_count != nullptr)
         {
             *instruction_count = 1U;

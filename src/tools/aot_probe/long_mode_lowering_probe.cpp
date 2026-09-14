@@ -984,6 +984,60 @@ bool Probe16BitShift32()
     return ok;
 }
 
+// Task 690. Add the operand-size prefix to a mode16 accumulator AND and
+// execute it to check the word result and preserved upper RAX bits.
+bool Probe16BitAndAccumulatorImmediate()
+{
+    const std::vector<std::uint8_t> guest = {
+        0x25U, 0xFFU, 0x0FU,  // and ax,0x0fff in mode16
+    };
+    const std::vector<std::uint8_t> expected = {
+        0x66U, 0x25U, 0xFFU, 0x0FU,
+    };
+    const auto verdict = ClassifyLongModeBytes(
+        guest.data(), guest.size(), GuestCodeDefaultOperandSize::k16);
+    std::vector<std::uint8_t> lowered;
+    if (verdict.compatibility != LongModeByteCompatibility::kNeedsReencode ||
+        verdict.lowering != LongModeLowering::k16BitAndAccumulatorImmediate ||
+        !Lower(guest, &lowered, GuestCodeDefaultOperandSize::k16) ||
+        lowered != expected)
+    {
+        std::cout << "long_mode_lowering_16bit_and_accumulator=false,"
+                     "reason=bytes\n";
+        return false;
+    }
+
+    constexpr std::uint64_t kSeed = UINT64_C(0xA5A5A5A51234F0F0);
+    std::vector<std::uint8_t> code = {0x48U, 0xB8U};
+    for (std::size_t index = 0U; index < 8U; ++index)
+    {
+        code.push_back(static_cast<std::uint8_t>(
+            (kSeed >> (index * 8U)) & 0xFFU));
+    }
+    code.insert(code.end(), lowered.begin(), lowered.end());
+    code.insert(code.end(), {0xC3U});  // ret
+
+    ExecutablePage page;
+    if (!AllocateCodePage(&page) || !WriteAndArm(page, code))
+    {
+        ReleasePage(&page);
+        std::cout << "long_mode_lowering_16bit_and_accumulator=false,"
+                     "reason=page\n";
+        return false;
+    }
+    using Entry = std::uint64_t (*)();
+    Entry entry = nullptr;
+    std::memcpy(&entry, &page.base, sizeof(entry));
+    const std::uint64_t observed = entry();
+    ReleasePage(&page);
+
+    const bool ok = observed == UINT64_C(0xA5A5A5A5123400F0);
+    std::cout << "long_mode_lowering_16bit_and_accumulator="
+              << (ok ? "true" : "false") << ",observed=0x" << std::hex
+              << observed << std::dec << "\n";
+    return ok;
+}
+
 // 2e. A REX changes AH/CH/DH/BH into SPL/BPL/SIL/DIL (Task 614). The
 // high-byte source is materialised in R14B by exchanging the source low and
 // high bytes around a REX-using move, and the original byte operation is then
@@ -1302,6 +1356,7 @@ bool RunLongModeLoweringProbe()
     const bool sixteen_bit_mov_ok = Probe16BitMovImmediate();
     const bool sixteen_bit_mov_register_ok = Probe16BitMovRegister();
     const bool sixteen_bit_shift_ok = Probe16BitShift32();
+    const bool sixteen_bit_and_ok = Probe16BitAndAccumulatorImmediate();
     const bool sixteen_bit_loopnz_ok = Probe16BitLoopNz();
     const bool high_byte_ok = ProbeStackPointerHighByteSource(data);
     const bool prefix_ok = ProbeAddressSizePrefix(data);
@@ -1316,7 +1371,7 @@ bool RunLongModeLoweringProbe()
         two_byte_esp_ok && sixteen_bit_stack_ok && sixteen_bit_lea_ok &&
         sixteen_bit_lea16_ok && sixteen_bit_test_ok && sixteen_bit_mov_ok &&
         sixteen_bit_mov_register_ok && sixteen_bit_shift_ok &&
-        sixteen_bit_loopnz_ok &&
+        sixteen_bit_and_ok && sixteen_bit_loopnz_ok &&
         high_byte_ok &&
         prefix_ok && absolute_ok &&
         absolute_imm_ok && moffs_ok;

@@ -184,6 +184,9 @@ enum class LongModeLowering
     // Task 689. In a 16-bit code object, `66 C1 /r ib` selects a 32-bit
     // register shift. Remove `66` so long mode keeps that width.
     k16BitShift32ToGuestGprs,
+    // Task 690. In a 16-bit code object, `25 iw` is a word accumulator AND.
+    // Add `66` so long mode preserves the 16-bit accumulator semantics.
+    k16BitAndAccumulatorImmediate,
 };
 
 struct LongModeCompatibilityResult

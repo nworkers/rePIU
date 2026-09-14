@@ -15422,3 +15422,75 @@ The next unsupported boundary is `0x0110002A: 25 FF 0F`:
 The next frontier is `0x0110002A: 25 FF 0F`, mode16 `AND AX,0FFF`. Verify as a
 shared immediate lowering whether `66 25 FF 0F` preserves the accumulator word
 semantics in long mode.
+
+## 2026-09-15: Task 690 mode16 AND accumulator lowering
+
+### 확인된 사실
+
+object 3의 `0x0110002A: 25 FF 0F`는 mode16 `AND AX,0FFF`로 확인되었습니다.
+공통 classifier는 prefix-free opcode `25`, mnemonic `AND`, operand/address
+width 16, 길이 3을 확인하고 `k16BitAndAccumulatorImmediate`로 분류합니다.
+lowerer는 `66 25 FF 0F`를 생성하여 long mode의 accumulator word semantics와
+instruction boundary를 보존합니다.
+
+```text
+long_mode_16bit_and_accumulator=true,length=3,lowered=4,unsupported_variants=true
+long_mode_lowering_16bit_and_accumulator=true,observed=0xa5a5a5a5123400f0
+core_probe_failures=0
+core_probe_all=true
+```
+
+실제 runtime에서는 AND를 통과하고 `CD 31` HLE도 통과했으며, 다음 경계는
+`0x0110002D: 0E`로 관측되었습니다.
+
+```text
+[repiu-aot-plan-trace] guest=0x0110002D bytes=0E length=1 ... code_mode=16 ... hle=0
+[repiu-fault] unhandled signal=0x5 ... eip=0x0110002E
+```
+
+* **확인됨:** mode16 accumulator immediate가 long mode에서 32비트 immediate로
+  widening되는 문제와 다음 bytes 침범이 제거되었습니다.
+* **확인됨:** `CD 31`은 기존 HLE 경로를 통해 실행되었습니다.
+* **미확정:** mode16 `0E`의 segment-stack semantics와 이후 `PUSH AX`,
+  `PUSH DI`, far return 경계가 정상 게임 종료까지 이어지는지입니다.
+
+### 다음 frontier
+
+다음 frontier는 `0x0110002D: 0E`, mode16 `PUSH CS`입니다. 이 opcode는 long
+mode에서 유효한 동일 semantics가 아니므로, guest segment stack을 보존하는
+기존 HLE 또는 별도 fail-closed 정책과 연결할 수 있는지 확인해야 합니다.
+
+### English
+
+Object 3's `0x0110002A: 25 FF 0F` is confirmed as mode16 `AND AX,0FFF`.
+The shared classifier checks prefix-free opcode `25`, mnemonic `AND`, operand
+and address widths of 16, and length three, then returns
+`k16BitAndAccumulatorImmediate`. The lowerer emits `66 25 FF 0F`, preserving
+long-mode accumulator word semantics and the instruction boundary.
+
+```text
+long_mode_16bit_and_accumulator=true,length=3,lowered=4,unsupported_variants=true
+long_mode_lowering_16bit_and_accumulator=true,observed=0xa5a5a5a5123400f0
+core_probe_failures=0
+core_probe_all=true
+```
+
+At runtime, the AND passes and `CD 31` also passes through the existing HLE path.
+The next boundary is `0x0110002D: 0E`:
+
+```text
+[repiu-aot-plan-trace] guest=0x0110002D bytes=0E length=1 ... code_mode=16 ... hle=0
+[repiu-fault] unhandled signal=0x5 ... eip=0x0110002E
+```
+
+* **Confirmed:** the long-mode 32-bit immediate widening and overrun into the
+  following bytes are removed for the mode16 accumulator AND.
+* **Confirmed:** `CD 31` executes through the existing HLE path.
+* **Unresolved:** mode16 `0E` segment-stack semantics and the following `PUSH
+  AX`, `PUSH DI`, and far-return boundaries.
+
+### Next frontier
+
+The next frontier is `0x0110002D: 0E`, mode16 `PUSH CS`. It is not equivalent to
+the valid long-mode encoding, so determine whether it belongs to existing HLE or
+to a separate fail-closed policy that preserves the guest segment stack.
