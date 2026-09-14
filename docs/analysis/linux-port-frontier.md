@@ -15269,3 +15269,84 @@ The next frontier is `0x01100015: 89 CA`, mode16 `MOV DX,CX`. The following
 `0x01100017: 66 C1 E9 10` is a mode16 word shift, while `0x0110001B: CD 31` is
 a DOS interrupt boundary; they should be investigated as separate register-
 width and HLE paths.
+
+## 2026-09-15: Task 688 mode16 MOV register lowering
+
+### 확인된 사실
+
+object 3의 `0x01100015: 89 CA`는 mode16 `MOV DX,CX`로 확인되었습니다.
+공통 classifier는 prefix-free `89`/`8B` register-only 형식에서 operand
+width와 address width가 16이고 ModRM mod=3인 경우를 분류합니다. ModRM의
+reg 또는 r/m이 4인 guest SP 형식은 host RSP 매핑 문제 때문에 제외합니다.
+
+lowering은 원본 2바이트 앞에 `66`을 붙여 `66 89 /r` 또는 `66 8B /r`를
+생성합니다. `89 CA`/`8B D1` byte probe와 upper GPR 보존 실행 probe,
+core probe가 모두 통과했습니다.
+
+```text
+long_mode_16bit_mov_register=true,length=2,lowered=3,unsupported_variants=true
+long_mode_lowering_16bit_mov_register=true,observed=0xa5a5a5a512340007
+core_probe_failures=0
+core_probe_all=true
+```
+
+실제 trace는 해당 경계를 통과하고 다음 mode16 shift에서 멈췄습니다.
+
+```text
+[repiu-aot-plan-trace] guest=0x01100017 bytes=66C1E910 length=4 ... code_mode=16
+[repiu-fault] unhandled signal=0x5 ... eip=0x01100017
+```
+
+* **확인됨:** mode16 `89 CA`의 x64 32비트 widening과 destination upper-bit
+  손상이 제거되었습니다.
+* **확인됨:** 변경은 특정 주소나 레지스터 값이 아닌 opcode/폭/prefix/
+  register-only/guest-SP 제외 조건에 기반합니다.
+* **미확정:** mode16 `66 C1 E9 10`, `CD 31`, 이후 stack/segment/far-return
+  경계가 정상 게임 종료까지 이어지는지입니다.
+
+### 다음 frontier
+
+다음 frontier는 `0x01100017: 66 C1 E9 10`입니다. mode16에서는 `66`이
+32비트 operand-size override이므로, long mode에서는 해당 prefix를 제거한
+`C1 E9 10`이 같은 32비트 shift semantics를 가질 가능성을 공통 규칙으로
+검증해야 합니다.
+
+### English
+
+Object 3's `0x01100015: 89 CA` is confirmed as mode16 `MOV DX,CX`. The shared
+classifier admits prefix-free `89`/`8B` register-only forms with operand and
+address widths of 16 and ModRM mod=3. Forms whose ModRM reg or r/m is 4 are
+excluded because they name guest SP and cannot use host RSP directly.
+
+The lowering prepends `66` to produce `66 89 /r` or `66 8B /r`. Byte probes for
+`89 CA`/`8B D1`, an upper-GPR-preservation execution probe, and the core probe
+all pass:
+
+```text
+long_mode_16bit_mov_register=true,length=2,lowered=3,unsupported_variants=true
+long_mode_lowering_16bit_mov_register=true,observed=0xa5a5a5a512340007
+core_probe_failures=0
+core_probe_all=true
+```
+
+The live trace passes that boundary and stops at the next mode16 shift:
+
+```text
+[repiu-aot-plan-trace] guest=0x01100017 bytes=66C1E910 length=4 ... code_mode=16
+[repiu-fault] unhandled signal=0x5 ... eip=0x01100017
+```
+
+* **Confirmed:** the x64 32-bit widening and destination upper-bit corruption
+  for mode16 `89 CA` are removed.
+* **Confirmed:** the change is based on opcode, widths, prefix state,
+  register-only form, and guest-SP exclusion rather than an address or register
+  value.
+* **Unresolved:** whether mode16 `66 C1 E9 10`, `CD 31`, and later
+  stack/segment/far-return boundaries lead to normal game exit.
+
+### Next frontier
+
+The next frontier is `0x01100017: 66 C1 E9 10`. In mode16, `66` selects a
+32-bit operand-size override, so removing it to produce `C1 E9 10` may preserve
+the same 32-bit shift semantics in long mode; this must be verified as a shared
+rule.

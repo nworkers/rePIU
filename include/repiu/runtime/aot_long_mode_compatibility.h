@@ -178,6 +178,9 @@ enum class LongModeLowering
     // Task 687. In a 16-bit code object, prefix-free `B8+r iw` writes a
     // guest GPR low word. Add `66` so the x64 encoding keeps that width.
     k16BitMovImmediateToGuestGprs,
+    // Task 688. In a 16-bit code object, register-only `89/8B /r` moves a
+    // guest GPR word. Add `66` while leaving guest-SP forms closed.
+    k16BitMovRegisterToGuestGprs,
 };
 
 struct LongModeCompatibilityResult

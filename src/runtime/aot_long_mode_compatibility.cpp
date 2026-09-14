@@ -116,6 +116,24 @@ bool IsMode16MovImmediate(const ZydisDecodedInstruction& instruction)
         instruction.opcode != 0xBCU;
 }
 
+// Task 688. Prefix-free mode16 register-only `89/8B /r` moves 16-bit guest
+// GPRs. Reject ModRM register 4 because it names guest SP, whose host mapping
+// is R15 rather than RSP.
+bool IsMode16MovRegister(const ZydisDecodedInstruction& instruction)
+{
+    return instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT &&
+        (instruction.opcode == 0x89U || instruction.opcode == 0x8BU) &&
+        instruction.mnemonic == ZYDIS_MNEMONIC_MOV &&
+        instruction.length == 2U && instruction.operand_width == 16U &&
+        instruction.address_width == 16U &&
+        instruction.raw.prefix_count == 0U &&
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_MODRM) != 0U &&
+        instruction.raw.modrm.offset == 1U &&
+        instruction.raw.modrm.mod == 3U &&
+        instruction.raw.modrm.reg != 4U &&
+        instruction.raw.modrm.rm != 4U;
+}
+
 // The ModRM-form opcode that means the same thing. `A0`/`A2` move a byte and
 // `A1`/`A3` a dword; the low bit of the moffs opcode is that width and the
 // second bit is the direction, which is the same layout `88`-`8B` uses.
@@ -814,6 +832,11 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
         {
             return Reencode(LongModeDivergence::kOperandWidth,
                             LongModeLowering::k16BitMovImmediateToGuestGprs);
+        }
+        if (IsMode16MovRegister(instruction))
+        {
+            return Reencode(LongModeDivergence::kOperandWidth,
+                            LongModeLowering::k16BitMovRegisterToGuestGprs);
         }
         if (IsMode16Test32(bytes, instruction, operands))
         {
@@ -1550,6 +1573,27 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
         lowered[2] = bytes[1U];
         lowered[3] = bytes[2U];
         *lowered_count = 4U;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 688. A mode16 register-register word MOV needs only the x64
+    // operand-size prefix; the original opcode and ModRM mapping are safe to
+    // reuse for the proven no-guest-SP register subset.
+    if (verdict.lowering == LongModeLowering::k16BitMovRegisterToGuestGprs)
+    {
+        if (!guest_is_16_bit || !IsMode16MovRegister(instruction) ||
+            length != 2U || length + 1U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+        lowered[0] = 0x66U;
+        lowered[1] = bytes[0U];
+        lowered[2] = bytes[1U];
+        *lowered_count = 3U;
         if (instruction_count != nullptr)
         {
             *instruction_count = 1U;

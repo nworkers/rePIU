@@ -862,6 +862,71 @@ bool Probe16BitMovImmediate()
     return ok;
 }
 
+// Task 688. Register-only mode16 word MOV forms need an operand-size prefix;
+// memory and guest-SP forms remain outside this lowering.
+bool Probe16BitMovRegister()
+{
+    const std::uint8_t guest_89[] = {0x89U, 0xCAU};
+    const std::uint8_t expected_89[] = {0x66U, 0x89U, 0xCAU};
+    const std::uint8_t guest_8B[] = {0x8BU, 0xD1U};
+    const std::uint8_t expected_8B[] = {0x66U, 0x8BU, 0xD1U};
+    const auto new_lowering =
+        repiu::runtime::LongModeLowering::k16BitMovRegisterToGuestGprs;
+
+    const LongModeCompatibilityResult verdict_89 = ClassifyLongModeBytes(
+        guest_89, sizeof(guest_89),
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    const LongModeCompatibilityResult verdict_8B = ClassifyLongModeBytes(
+        guest_8B, sizeof(guest_8B),
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    std::uint8_t lowered_89[repiu::runtime::kMaxLoweredBytes] = {};
+    std::uint8_t lowered_8B[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t lowered_89_count = 0U;
+    std::size_t lowered_8B_count = 0U;
+    const bool lowered_ok =
+        repiu::runtime::LowerLongModeBytes(
+            guest_89, sizeof(guest_89), lowered_89, &lowered_89_count,
+            nullptr, repiu::runtime::GuestCodeDefaultOperandSize::k16) &&
+        repiu::runtime::LowerLongModeBytes(
+            guest_8B, sizeof(guest_8B), lowered_8B, &lowered_8B_count,
+            nullptr, repiu::runtime::GuestCodeDefaultOperandSize::k16);
+
+    const std::uint8_t stack_pointer[] = {0x89U, 0xC4U};
+    const std::uint8_t memory_form[] = {0x89U, 0x0CU};
+    const std::uint8_t operand_override[] = {0x66U, 0x89U, 0xCAU};
+    const bool unsupported_variants =
+        ClassifyLongModeBytes(
+            stack_pointer, sizeof(stack_pointer),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering &&
+        ClassifyLongModeBytes(
+            memory_form, sizeof(memory_form),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering &&
+        ClassifyLongModeBytes(
+            operand_override, sizeof(operand_override),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering;
+    const bool ok =
+        verdict_89.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict_89.divergence == LongModeDivergence::kOperandWidth &&
+        verdict_89.lowering == new_lowering &&
+        verdict_8B.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict_8B.divergence == LongModeDivergence::kOperandWidth &&
+        verdict_8B.lowering == new_lowering && lowered_ok &&
+        lowered_89_count == sizeof(expected_89) &&
+        lowered_8B_count == sizeof(expected_8B) &&
+        std::memcmp(lowered_89, expected_89, sizeof(expected_89)) == 0 &&
+        std::memcmp(lowered_8B, expected_8B, sizeof(expected_8B)) == 0 &&
+        unsupported_variants;
+    std::cout << "long_mode_16bit_mov_register=" << (ok ? "true" : "false")
+              << ",length=" << (ok ? 2U : 0U)
+              << ",lowered=" << (ok ? lowered_89_count : 0U)
+              << ",unsupported_variants="
+              << (unsupported_variants ? "true" : "false") << "\n";
+    return ok;
+}
+
 // Task 681. In a 16-bit code object, explicit 67+66 LEA selects 32-bit
 // addressing and a 32-bit destination. The mode-aware classifier must remove
 // only the source operand-size override and remap guest ESP when lowering.
@@ -1105,6 +1170,7 @@ bool RunLongModeCompatibilityProbe()
     const bool refusals_ok = ProbeRefusals();
     const bool sixteen_bit_ok = Probe16BitStackPointerImmediate();
     const bool sixteen_bit_mov_ok = Probe16BitMovImmediate();
+    const bool sixteen_bit_mov_register_ok = Probe16BitMovRegister();
     const bool sixteen_bit_lea_ok = Probe16BitLea32();
     const bool sixteen_bit_lea16_ok = Probe16BitLea16();
     const bool sixteen_bit_test_ok = Probe16BitTest32();
@@ -1114,6 +1180,7 @@ bool RunLongModeCompatibilityProbe()
     const bool all = silent_ok && invalid_ok && width_ok && width_kind_ok &&
         reasons_ok && stack_ok && inc_dec_ok && stack_seq_ok && subset_ok &&
         refusals_ok && sixteen_bit_ok && sixteen_bit_mov_ok &&
+        sixteen_bit_mov_register_ok &&
         sixteen_bit_lea_ok &&
         sixteen_bit_lea16_ok && sixteen_bit_test_ok &&
         sixteen_bit_jcc_ok && sixteen_bit_loopnz_ok;
