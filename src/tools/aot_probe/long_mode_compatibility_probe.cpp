@@ -772,6 +772,39 @@ bool ProbeRefusals()
     return ok;
 }
 
+// Task 680. The same opcode has two different source instructions depending
+// on the LE code object's default operand size. The mode-aware API must decode
+// the three-byte word form and lower it without consuming the next instruction.
+bool Probe16BitStackPointerImmediate()
+{
+    const std::uint8_t guest[] = {0xBCU, 0x00U, 0x20U};
+    const std::uint8_t expected[] = {
+        0x66U, 0x41U, 0xBFU, 0x00U, 0x20U};
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        guest, sizeof(guest),
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    std::uint8_t lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    const bool lowered_ok = repiu::runtime::LowerLongModeBytes(
+        guest, sizeof(guest), lowered, &lowered_count, nullptr,
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    const bool ok =
+        verdict.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict.divergence == LongModeDivergence::kStackPointerRegister &&
+        verdict.lowering ==
+            repiu::runtime::LongModeLowering::
+                k16BitStackPointerImmediateToR15 &&
+        lowered_ok && lowered_count == sizeof(expected) &&
+        std::memcmp(lowered, expected, sizeof(expected)) == 0 &&
+        ClassifyLongModeBytes(guest, sizeof(guest)).compatibility !=
+            LongModeByteCompatibility::kIdenticalBytes;
+    std::cout << "long_mode_16bit_stack_pointer_immediate="
+              << (ok ? "true" : "false") << ",length="
+              << (ok ? 3U : 0U) << ",lowered="
+              << (ok ? lowered_count : 0U) << "\n";
+    return ok;
+}
+
 }  // namespace
 
 bool RunLongModeCompatibilityProbe()
@@ -786,10 +819,11 @@ bool RunLongModeCompatibilityProbe()
     const bool stack_seq_ok = ProbeStackSequenceLowering();
     const bool subset_ok = ProbeAdmittedSubset();
     const bool refusals_ok = ProbeRefusals();
+    const bool sixteen_bit_ok = Probe16BitStackPointerImmediate();
 
     const bool all = silent_ok && invalid_ok && width_ok && width_kind_ok &&
         reasons_ok && stack_ok && inc_dec_ok && stack_seq_ok && subset_ok &&
-        refusals_ok;
+        refusals_ok && sixteen_bit_ok;
     std::cout << "long_mode_compatibility_all=" << (all ? "true" : "false")
               << "\n";
     return all;

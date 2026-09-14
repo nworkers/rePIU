@@ -91,6 +91,17 @@ bool IsMovStackPointerImmediate(const ZydisDecodedInstruction& instruction)
         instruction.operand_width == 32U && instruction.raw.prefix_count == 0U;
 }
 
+// Task 680. In a 16-bit code object the same opcode embeds a word immediate
+// and names SP rather than ESP. Keep the form narrow until the other 16-bit
+// operand and stack semantics have their own proven lowerings.
+bool IsMovStackPointerImmediate16(
+    const ZydisDecodedInstruction& instruction)
+{
+    return instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT &&
+        instruction.opcode == 0xBCU && instruction.length == 3U &&
+        instruction.operand_width == 16U && instruction.raw.prefix_count == 0U;
+}
+
 // The ModRM-form opcode that means the same thing. `A0`/`A2` move a byte and
 // `A1`/`A3` a dword; the low bit of the moffs opcode is that width and the
 // second bit is the direction, which is the same layout `88`-`8B` uses.
@@ -567,20 +578,28 @@ bool IsAbsoluteDisplacementForm(const ZydisDecodedInstruction& instruction)
 }  // namespace
 
 LongModeCompatibilityResult ClassifyLongModeBytes(
-    const std::uint8_t* const bytes, const std::size_t byte_count)
+    const std::uint8_t* const bytes,
+    const std::size_t byte_count,
+    const GuestCodeDefaultOperandSize guest_code_default_operand_size)
 {
     if (bytes == nullptr || byte_count == 0U)
     {
         return Refuse(LongModeDivergence::kNone);
     }
 
-    // The guest's ISA is the source, so the decode stays LEGACY_32. This asks
-    // what these bytes mean where they came from; what they would mean in long
-    // mode is the judgement below, and decoding them as 64-bit would answer a
-    // different question.
+    // The guest's ISA is the source, so the decode stays in its legacy mode.
+    // This asks what these bytes mean where they came from; what they would
+    // mean in long mode is the judgement below, and decoding them as 64-bit
+    // would answer a different question. Unknown mode keeps the historical
+    // legacy-32 default used by existing callers.
+    const bool guest_is_16_bit = guest_code_default_operand_size ==
+        GuestCodeDefaultOperandSize::k16;
     ZydisDecoder decoder;
-    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LEGACY_32,
-                                       ZYDIS_STACK_WIDTH_32)))
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(
+            &decoder,
+            guest_is_16_bit ? ZYDIS_MACHINE_MODE_LEGACY_16
+                            : ZYDIS_MACHINE_MODE_LEGACY_32,
+            guest_is_16_bit ? ZYDIS_STACK_WIDTH_16 : ZYDIS_STACK_WIDTH_32)))
     {
         return Refuse(LongModeDivergence::kNone);
     }
@@ -595,6 +614,21 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
     }
 
     const std::uint8_t opcode = instruction.opcode;
+
+    // Task 680. Do not send a 16-bit decode through the 32-bit classifier. A
+    // word stack-pointer write is the one proven form; every other 16-bit
+    // instruction remains a boundary until its operand and stack semantics are
+    // separately established.
+    if (guest_is_16_bit)
+    {
+        if (IsMovStackPointerImmediate16(instruction))
+        {
+            return Reencode(
+                LongModeDivergence::kStackPointerRegister,
+                LongModeLowering::k16BitStackPointerImmediateToR15);
+        }
+        return Refuse(LongModeDivergence::kOperandWidth);
+    }
 
     if (instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT)
     {
@@ -1223,7 +1257,9 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
                         const std::size_t byte_count,
                         std::uint8_t* const lowered,
                         std::size_t* const lowered_count,
-                        std::size_t* const instruction_count)
+                        std::size_t* const instruction_count,
+                        const GuestCodeDefaultOperandSize
+                            guest_code_default_operand_size)
 {
     if (bytes == nullptr || lowered == nullptr || lowered_count == nullptr)
     {
@@ -1236,7 +1272,8 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
     }
 
     const LongModeCompatibilityResult verdict =
-        ClassifyLongModeBytes(bytes, byte_count);
+        ClassifyLongModeBytes(bytes, byte_count,
+                              guest_code_default_operand_size);
     if (verdict.lowering == LongModeLowering::kNone)
     {
         return false;
@@ -1246,9 +1283,14 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
     // cost is one decode on a path that emits, and what it buys is that the
     // classifier's answer stays a judgement about bytes rather than a carrier
     // for a decode nobody else can check.
+    const bool guest_is_16_bit = guest_code_default_operand_size ==
+        GuestCodeDefaultOperandSize::k16;
     ZydisDecoder decoder;
-    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LEGACY_32,
-                                       ZYDIS_STACK_WIDTH_32)))
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(
+            &decoder,
+            guest_is_16_bit ? ZYDIS_MACHINE_MODE_LEGACY_16
+                            : ZYDIS_MACHINE_MODE_LEGACY_32,
+            guest_is_16_bit ? ZYDIS_STACK_WIDTH_16 : ZYDIS_STACK_WIDTH_32)))
     {
         return false;
     }
@@ -1261,6 +1303,30 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
     }
 
     const std::size_t length = instruction.length;
+
+    // Task 680. `BC iw` in a 16-bit code object writes only SP. R15W is the
+    // low word of the guest ESP state, while the host stack remains in RSP.
+    if (verdict.lowering ==
+        LongModeLowering::k16BitStackPointerImmediateToR15)
+    {
+        if (!guest_is_16_bit || !IsMovStackPointerImmediate16(instruction) ||
+            length != 3U || length + 2U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+        lowered[0] = 0x66U;  // Select R15W rather than R15D.
+        lowered[1] = 0x41U;  // REX.B selects R15.
+        lowered[2] = 0xBFU;  // MOV r16, imm16 with register field 111.
+        lowered[3] = bytes[1];
+        lowered[4] = bytes[2];
+        *lowered_count = 5U;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
+        return true;
+    }
+
     if (verdict.lowering == LongModeLowering::kAddressSizePrefix)
     {
         if (length + 1U > kMaxLoweredBytes)

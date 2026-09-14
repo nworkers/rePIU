@@ -1,6 +1,8 @@
 #ifndef REPIU_RUNTIME_AOT_LONG_MODE_COMPATIBILITY_H_
 #define REPIU_RUNTIME_AOT_LONG_MODE_COMPATIBILITY_H_
 
+#include "repiu/runtime/selector_table.h"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -156,6 +158,9 @@ enum class LongModeLowering
     // encoding with no ModRM at all, which is why it is its own lowering rather
     // than a branch inside that one.
     kMoffsToSib,
+    // Task 680. In a 16-bit code object, `BC iw` is `MOV SP,iw`. Write the
+    // guest stack pointer's low word in R15 without touching host RSP.
+    k16BitStackPointerImmediateToR15,
 };
 
 struct LongModeCompatibilityResult
@@ -166,11 +171,15 @@ struct LongModeCompatibilityResult
     LongModeLowering lowering = LongModeLowering::kNone;
 };
 
-// Decodes `bytes` as a 32-bit instruction and judges it. A sequence that does
-// not decode is `kUnsupported`, not an error: the caller is asking whether it
-// may copy these bytes, and "they are not an instruction" is a "no".
+// Decodes `bytes` in the supplied legacy guest mode and judges it. A sequence
+// that does not decode is `kUnsupported`, not an error: the caller is asking
+// whether it may copy these bytes, and "they are not an instruction" is a
+// "no". The default mode is legacy-32 for compatibility with existing callers.
 [[nodiscard]] LongModeCompatibilityResult ClassifyLongModeBytes(
-    const std::uint8_t* bytes, std::size_t byte_count);
+    const std::uint8_t* bytes,
+    std::size_t byte_count,
+    GuestCodeDefaultOperandSize guest_code_default_operand_size =
+        GuestCodeDefaultOperandSize::k32);
 
 // Produces the lowered bytes for an instruction `ClassifyLongModeBytes` named a
 // lowering for. Writes at most `kMaxLoweredBytes` and reports how many.
@@ -196,7 +205,10 @@ inline constexpr std::size_t kMaxLoweredBytes = 48;
                                       std::size_t byte_count,
                                       std::uint8_t* lowered,
                                       std::size_t* lowered_count,
-                                      std::size_t* instruction_count = nullptr);
+                                      std::size_t* instruction_count = nullptr,
+                                      GuestCodeDefaultOperandSize
+                                          guest_code_default_operand_size =
+                                              GuestCodeDefaultOperandSize::k32);
 
 }  // namespace repiu::runtime
 

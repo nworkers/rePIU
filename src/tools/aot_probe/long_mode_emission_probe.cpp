@@ -25,6 +25,7 @@ using repiu::runtime::AotInstructionKind;
 using repiu::runtime::AotInstructionRecord;
 using repiu::runtime::AotTranslationPlan;
 using repiu::runtime::BuildAotCodeCacheImage;
+using repiu::runtime::GuestCodeDefaultOperandSize;
 
 // Task 553. What the emitter does with one plan, under both settings.
 //
@@ -878,6 +879,100 @@ bool ProbeIndirectFallbackStackCleanup()
     return ok;
 }
 
+// Task 680. A 16-bit copy record may use a dedicated lowering, while a
+// 16-bit control-flow record must not enter a 32-bit long-mode slot.
+bool Probe16BitModeEmission()
+{
+    constexpr std::uint32_t base = kBase + 0x100U;
+
+    // First exercise the same object-mode metadata path used by the real
+    // planner. The extra bytes keep the planner's bounded decode window
+    // readable while the first record must still stop at the word immediate.
+    repiu::runtime::RelocatedRuntimeImage guest_image;
+    guest_image.valid = true;
+    repiu::runtime::RelocatedRuntimeObject guest_object;
+    guest_object.object_index = 3U;
+    guest_object.relocated_base_address = base;
+    guest_object.virtual_size = 15U;
+    guest_object.flags = repiu::runtime::kLeObjectExecutable;
+    guest_object.memory.assign(15U, 0x90U);
+    guest_object.memory[0] = 0xBCU;
+    guest_object.memory[1] = 0x00U;
+    guest_object.memory[2] = 0x20U;
+    guest_image.objects.push_back(std::move(guest_object));
+    guest_image.code_mode_ranges.push_back({
+        base, 15U, repiu::runtime::kLeObjectExecutable});
+    AotTranslationPlan planned_from_object;
+    const bool plan_built =
+        repiu::runtime::BuildAotTranslationPlanFromEntry(
+            guest_image, base, &planned_from_object);
+    const AotInstructionRecord* first_planned = nullptr;
+    if (plan_built)
+    {
+        for (const AotBasicBlock& planned_block : planned_from_object.blocks)
+        {
+            if (!planned_block.instructions.empty())
+            {
+                first_planned = &planned_block.instructions.front();
+                break;
+            }
+        }
+    }
+    const bool planner_mode = first_planned != nullptr &&
+        first_planned->guest_address == base &&
+        first_planned->length == 3U &&
+        first_planned->bytes == std::vector<std::uint8_t>{
+            0xBCU, 0x00U, 0x20U} &&
+        first_planned->guest_code_default_operand_size ==
+            GuestCodeDefaultOperandSize::k16;
+
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = base;
+    AotBasicBlock block;
+    block.guest_address = base;
+
+    AotInstructionRecord stack_pointer;
+    stack_pointer.guest_address = base;
+    stack_pointer.kind = AotInstructionKind::kCopy;
+    stack_pointer.length = 3U;
+    stack_pointer.guest_code_default_operand_size =
+        GuestCodeDefaultOperandSize::k16;
+    stack_pointer.bytes = {0xBCU, 0x00U, 0x20U};
+    block.instructions.push_back(stack_pointer);
+
+    AotInstructionRecord branch;
+    branch.guest_address = base + 3U;
+    branch.kind = AotInstructionKind::kDirectJump;
+    branch.length = 2U;
+    branch.direct_target = base;
+    branch.guest_code_default_operand_size =
+        GuestCodeDefaultOperandSize::k16;
+    branch.bytes = {0xEBU, 0xFBU};
+    block.instructions.push_back(branch);
+    plan.blocks.push_back(block);
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    const bool built = BuildAotCodeCacheImage(plan, options, &image) &&
+        image.valid;
+    std::vector<std::uint8_t> emitted;
+    const bool stack_bytes = built && EmittedBytes(image, base, &emitted) &&
+        emitted == std::vector<std::uint8_t>{
+            0x66U, 0x41U, 0xBFU, 0x00U, 0x20U};
+    const bool branch_boundary = built &&
+        EmittedBytes(image, base + 3U, &emitted) &&
+        emitted == std::vector<std::uint8_t>{0xCCU} &&
+        HasBoundaryFixupAt(image, base + 3U);
+    const bool ok = planner_mode && stack_bytes && branch_boundary;
+    std::cout << "long_mode_emission_16bit_mode="
+              << (ok ? "true" : "false") << ",planner_mode="
+              << (planner_mode ? "true" : "false") << ",refused="
+              << image.long_mode_refused_count << "\n";
+    return ok;
+}
+
 }  // namespace
 
 bool RunLongModeEmissionProbe()
@@ -885,6 +980,7 @@ bool RunLongModeEmissionProbe()
     const bool default_ok = ProbeDefaultIsUnchanged();
     const bool outcomes_ok = ProbeLongModeOutcomes();
     const bool refused_ok = ProbeAllRefusedStillBuilds();
+    const bool sixteen_bit_mode_ok = Probe16BitModeEmission();
     const bool segment_read_gpr16_ok = ProbeSegmentReadGpr16Classification();
     const bool segment_override_coverage_ok =
         ProbeLongModeSegmentOverrideCoverage();
@@ -897,6 +993,7 @@ bool RunLongModeEmissionProbe()
         ProbeIndirectFallbackStackCleanup();
 
     const bool all = default_ok && outcomes_ok && refused_ok &&
+        sixteen_bit_mode_ok &&
         segment_read_gpr16_ok &&
         segment_override_coverage_ok &&
         segment_guard_coverage_ok &&

@@ -3684,6 +3684,57 @@ cleanly at the HLE boundary.
 
 ---
 
+## Linux x64 혼합 모드 AOT 및 16-bit 스택 레지스터 lowering
+
+LE 실행 파일 object flag가 공용 AOT planner의 `LEGACY_16` 또는
+`LEGACY_32`를 선택하며, 선택된 `GuestCodeDefaultOperandSize`는 모든
+`AotInstructionRecord`에 담겨 cache emission과 dynamic append까지 전달됩니다.
+따라서 16-bit object가 다음 명령의 바이트를 잘못된 32-bit immediate로
+소비하지 않습니다.
+
+현재 증명된 첫 16-bit long-mode lowering은 `MOV SP, imm16` (`BC iw`)입니다.
+x64에서 guest ESP는 R15D에 보관되므로 cache는 `66 41 BF iw`를 방출하여
+R15W만 갱신하고 host RSP는 건드리지 않습니다. 전용 증명이 없는 16-bit
+record는 32-bit native slot에 들어가지 않고 INT3 boundary가 됩니다. 나머지
+16-bit push/pop, segment, far-return stack ABI는 이후 공용 설계 단위에서
+다룹니다.
+
+```mermaid
+flowchart LR
+    FLAGS[LE object flags] --> MODE[Guest code mode]
+    MODE --> RECORD[AotInstructionRecord]
+    RECORD -->|16-bit BC iw| R15W[66 41 BF iw -> R15W]
+    RECORD -->|unproven 16-bit| INT3[INT3 HLE boundary]
+    RECORD -->|32-bit| X64[Existing x64 lowering]
+```
+
+---
+
+## Linux x64 mixed-mode AOT and 16-bit stack-register lowering
+
+LE executable object flags now select `LEGACY_16` or `LEGACY_32` for the shared
+AOT planner, and the selected `GuestCodeDefaultOperandSize` travels with every
+`AotInstructionRecord` into cache emission and dynamic append. This prevents a
+16-bit object from consuming the following bytes as a false 32-bit immediate.
+
+The first proven 16-bit long-mode lowering is `MOV SP, imm16` (`BC iw`). Since
+guest ESP is held in R15D on x64, the cache emits `66 41 BF iw`, which updates
+R15W and leaves host RSP untouched. 16-bit records without a dedicated proof,
+including non-copy control-flow records, are emitted as INT3 boundaries rather
+than entering 32-bit native slots. The remaining 16-bit push/pop, segment, and
+far-return stack ABI is intentionally a later shared design unit.
+
+```mermaid
+flowchart LR
+    FLAGS[LE object flags] --> MODE[Guest code mode]
+    MODE --> RECORD[AotInstructionRecord]
+    RECORD -->|16-bit BC iw| R15W[66 41 BF iw -> R15W]
+    RECORD -->|unproven 16-bit| INT3[INT3 HLE boundary]
+    RECORD -->|32-bit| X64[Existing x64 lowering]
+```
+
+---
+
 ## Linux x64 dynamic AOT emitted-slot trace / Linux x64 dynamic AOT emitted-slot trace
 
 Linux x64 dynamic AOT translation에는 거절된 `contains` 주소를 진단하기 위한 선택형

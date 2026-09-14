@@ -126,7 +126,7 @@ void TraceDynamicAotPlanEntry(const runtime::AotTranslationPlan& plan,
             std::fprintf(stderr,
                          "[repiu-aot-dynamic] stage=plan-entry-meta "
                          "guest=0x%08X block=0x%08X index=%zu tail=%u "
-                         "kind=%u length=%u mnemonic=%u\n",
+                         "kind=%u length=%u mnemonic=%u code_mode=%u\n",
                          static_cast<unsigned>(guest_address),
                          static_cast<unsigned>(block.guest_address),
                          instruction_index,
@@ -134,7 +134,9 @@ void TraceDynamicAotPlanEntry(const runtime::AotTranslationPlan& plan,
                              ? 1U : 0U,
                          static_cast<unsigned>(instruction.kind),
                          static_cast<unsigned>(instruction.length),
-                         static_cast<unsigned>(instruction.mnemonic));
+                         static_cast<unsigned>(instruction.mnemonic),
+                         static_cast<unsigned>(
+                             instruction.guest_code_default_operand_size));
             return;
         }
     }

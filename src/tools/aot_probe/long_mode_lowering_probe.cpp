@@ -17,6 +17,7 @@ namespace
 using repiu::platform::MemoryProtection;
 using repiu::platform::MemoryReservation;
 using repiu::runtime::ClassifyLongModeBytes;
+using repiu::runtime::GuestCodeDefaultOperandSize;
 using repiu::runtime::kMaxLoweredBytes;
 using repiu::runtime::LongModeByteCompatibility;
 using repiu::runtime::LongModeLowering;
@@ -510,6 +511,68 @@ bool ProbeStackPointerTwoByteOpcode()
     return ok;
 }
 
+// Task 680. `BC iw` in a 16-bit code object writes SP, not ESP. The lowering
+// must therefore select R15W and preserve the upper bits of the guest state.
+bool Probe16BitStackPointerImmediate()
+{
+    const std::vector<std::uint8_t> guest = {0xBCU, 0x00U, 0x20U};
+    const std::vector<std::uint8_t> expected = {
+        0x66U, 0x41U, 0xBFU, 0x00U, 0x20U};
+    const auto verdict = ClassifyLongModeBytes(
+        guest.data(), guest.size(), GuestCodeDefaultOperandSize::k16);
+    std::uint8_t lowered_buffer[kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    std::size_t lowered_instructions = 0U;
+    const bool lowered_ok = LowerLongModeBytes(
+        guest.data(), guest.size(), lowered_buffer, &lowered_count,
+        &lowered_instructions, GuestCodeDefaultOperandSize::k16);
+    const std::vector<std::uint8_t> lowered(
+        lowered_buffer, lowered_buffer + lowered_count);
+    if (verdict.compatibility != LongModeByteCompatibility::kNeedsReencode ||
+        verdict.lowering !=
+            LongModeLowering::k16BitStackPointerImmediateToR15 ||
+        !lowered_ok || lowered != expected || lowered_instructions != 1U)
+    {
+        std::cout << "long_mode_lowering_16bit_stack_pointer=false,"
+                     "reason=bytes\n";
+        return false;
+    }
+
+    // Save the callee-saved R15, seed it with a value whose upper word is
+    // visible, execute the lowered bytes, and return the resulting R15 value.
+    std::vector<std::uint8_t> code = {
+        0x41U, 0x57U,  // push r15
+        0x49U, 0xBFU,  // mov r15, imm64
+        0x01U, 0x00U, 0xCDU, 0xABU, 0x78U, 0x56U, 0x34U, 0x12U,
+    };
+    code.insert(code.end(), lowered.begin(), lowered.end());
+    code.insert(code.end(), {
+        0x4CU, 0x89U, 0xF8U,  // mov rax, r15
+        0x41U, 0x5FU,          // pop r15
+        0xC3U,                 // ret
+    });
+
+    ExecutablePage page;
+    if (!AllocateCodePage(&page) || !WriteAndArm(page, code))
+    {
+        ReleasePage(&page);
+        std::cout << "long_mode_lowering_16bit_stack_pointer=false,"
+                     "reason=page\n";
+        return false;
+    }
+    using Entry = std::uint64_t (*)();
+    Entry entry = nullptr;
+    std::memcpy(&entry, &page.base, sizeof(entry));
+    const std::uint64_t observed = entry();
+    ReleasePage(&page);
+
+    const bool ok = observed == UINT64_C(0x12345678ABCD2000);
+    std::cout << "long_mode_lowering_16bit_stack_pointer="
+              << (ok ? "true" : "false") << ",observed=0x" << std::hex
+              << observed << std::dec << "\n";
+    return ok;
+}
+
 // 2e. A REX changes AH/CH/DH/BH into SPL/BPL/SIL/DIL (Task 614). The
 // high-byte source is materialised in R14B by exchanging the source low and
 // high bytes around a REX-using move, and the original byte operation is then
@@ -716,6 +779,7 @@ bool RunLongModeLoweringProbe()
 
     const bool refusals_ok = ProbeAbsoluteRefusals();
     const bool two_byte_esp_ok = ProbeStackPointerTwoByteOpcode();
+    const bool sixteen_bit_stack_ok = Probe16BitStackPointerImmediate();
     const bool high_byte_ok = ProbeStackPointerHighByteSource(data);
     const bool prefix_ok = ProbeAddressSizePrefix(data);
     const bool absolute_ok = ProbeAbsoluteToSib(data);
@@ -726,7 +790,8 @@ bool RunLongModeLoweringProbe()
     platform::ReleaseMemory(reserved.base, kPageBytes);
 
     const bool all = classification_ok && refusals_ok &&
-        two_byte_esp_ok && high_byte_ok && prefix_ok && absolute_ok &&
+        two_byte_esp_ok && sixteen_bit_stack_ok && high_byte_ok &&
+        prefix_ok && absolute_ok &&
         absolute_imm_ok && moffs_ok;
     std::cout << "long_mode_lowering_all=" << (all ? "true" : "false") << "\n";
     return all;

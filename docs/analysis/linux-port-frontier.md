@@ -14727,9 +14727,66 @@ investigation, the following facts were confirmed.
 
 ### Next session
 
-The next session should first inspect the object-3 dynamic AOT trace after the
-mode change. The expected plan entry at `0x01100022` is `BC 00 20` with length
-3, and the old `41 BF 00 20 FB 8D` emission must be absent. Then implement the
-general 16-bit lowering/HLE path required by the first fail-closed instruction;
-do not add an address-specific exception. The 16-bit stack width/base/limit and
-far-return ABI remain unresolved and must be handled as shared semantics.
+Task 680 now implements the first general 16-bit lowering/HLE boundary policy.
+The next session should inspect the object-3 dynamic AOT trace after the mode
+change. The expected plan entry at `0x01100022` is `BC 00 20` with length 3 and
+mode16, and the old `41 BF 00 20 FB 8D` emission must be absent. The next
+fail-closed 16-bit instruction, if any, should be handled by another shared
+lowering or HLE unit rather than an address-specific exception. The 16-bit
+stack width/base/limit and far-return ABI remain unresolved.
+
+## 2026-09-14: Task 680 16-bit MOV SP lowering
+
+### 한국어
+
+Task 680은 Task 679에서 분리한 첫 16-bit 명령 범위를 `MOV SP, imm16`
+(`BC iw`)로 한정했다. mode-aware compatibility API는 `LEGACY_16`으로
+`BC 00 20`을 길이 3으로 decode하고, x64 cache는 이를
+`66 41 BF 00 20`으로 lowering한다. 이 encoding은 guest ESP를 보관하는
+R15의 low word만 기록하므로 host RSP를 건드리지 않는다.
+
+16-bit non-copy record는 기존 32-bit 전용 branch/return/selector slot에
+들어가지 않고 INT3 boundary로 닫는다. 다른 16-bit 명령도 아직
+`kUnsupported`이며, 16-bit push/pop, segment, far-return의 stack
+width/base/limit semantics는 미확정으로 유지한다.
+
+이번 환경에서는 `cmake`가 Windows PATH에 없고 WSL service가
+`E_ACCESSDENIED`를 반환하여 Linux build와 runtime smoke를 실행하지 못했다.
+따라서 아래 구현·probe 결과는 소스 검토 및 다음 Linux 실행에서 확인해야
+하는 상태로 남긴다.
+
+| 질문 | 상태 |
+|---|---|
+| mode16 `BC iw` decode length | **구현됨, Linux 실행 미확인** |
+| `BC iw` -> `66 41 BF iw` lowering | **구현됨, 실행 probe 미확인** |
+| mode16 non-copy native slot 차단 | **구현됨, Linux 실행 미확인** |
+| Linux x64 build/core probe | **미실행**: cmake/WSL 접근 blocker |
+| object 3 dynamic trace | **미실행**: WSL 접근 blocker |
+| 정상 게임 실행 및 coredump 부재 | **미확정** |
+
+### English
+
+Task 680 limits the first 16-bit instruction split from Task 679 to
+`MOV SP, imm16` (`BC iw`). The mode-aware compatibility API decodes
+`BC 00 20` as a three-byte `LEGACY_16` instruction, and the x64 cache lowers
+it to `66 41 BF 00 20`. This writes only the low word of R15, which stores
+guest ESP, and leaves host RSP untouched.
+
+16-bit non-copy records are kept out of the existing 32-bit-only
+branch/return/selector slots and become INT3 boundaries. Other 16-bit
+instructions remain `kUnsupported`; 16-bit push/pop, segment, and far-return
+stack width/base/limit semantics remain unresolved.
+
+In this environment, `cmake` is not on the Windows PATH and the WSL service
+returns `E_ACCESSDENIED`, so the Linux build and runtime smoke could not run.
+The implementation and probe results therefore remain to be confirmed by the
+next Linux execution.
+
+| Question | Status |
+|---|---|
+| mode16 `BC iw` decode length | **Implemented, Linux run unconfirmed** |
+| `BC iw` -> `66 41 BF iw` lowering | **Implemented, execution probe unconfirmed** |
+| mode16 non-copy native-slot exclusion | **Implemented, Linux run unconfirmed** |
+| Linux x64 build/core probe | **Not run**: cmake/WSL access blocker |
+| Object-3 dynamic trace | **Not run**: WSL access blocker |
+| Normal game execution and absence of coredump | **Unresolved** |

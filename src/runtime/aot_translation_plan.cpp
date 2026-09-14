@@ -943,11 +943,14 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                     std::fprintf(
                         stderr,
                         " length=%u mnemonic=%u category=%u attrs=0x%08X "
-                        "address_width=%u modrm=%u segment=%u hle=%u\n",
+                        "code_mode=%u address_width=%u modrm=%u segment=%u "
+                        "hle=%u\n",
                         static_cast<unsigned>(record.length),
                         static_cast<unsigned>(record.mnemonic),
                         static_cast<unsigned>(instruction.meta.category),
                         static_cast<unsigned>(instruction.attributes),
+                        static_cast<unsigned>(
+                            record.guest_code_default_operand_size),
                         static_cast<unsigned>(instruction.address_width),
                         (instruction.attributes & ZYDIS_ATTRIB_HAS_MODRM) != 0U
                             ? 1U : 0U,

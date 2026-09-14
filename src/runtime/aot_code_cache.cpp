@@ -122,17 +122,9 @@ bool EmitLongModeCopy(const AotInstructionRecord& instruction,
     {
         return false;
     }
-    // A 16-bit source instruction cannot be judged by the legacy-32
-    // compatibility classifier. Until a dedicated 16-bit lowering exists,
-    // keep it fail-closed rather than reinterpreting its immediate and
-    // consuming bytes from the following instruction.
-    if (instruction.guest_code_default_operand_size !=
-        GuestCodeDefaultOperandSize::k32)
-    {
-        return false;
-    }
     const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
-        instruction.bytes.data(), instruction.bytes.size());
+        instruction.bytes.data(), instruction.bytes.size(),
+        instruction.guest_code_default_operand_size);
     if (verdict.compatibility == LongModeByteCompatibility::kIdenticalBytes)
     {
         image->bytes.insert(image->bytes.end(), instruction.bytes.begin(),
@@ -149,7 +141,8 @@ bool EmitLongModeCopy(const AotInstructionRecord& instruction,
     std::size_t lowered_count = 0U;
     std::size_t lowered_instructions = 0U;
     if (!LowerLongModeBytes(instruction.bytes.data(), instruction.bytes.size(),
-                            lowered, &lowered_count, &lowered_instructions) ||
+                            lowered, &lowered_count, &lowered_instructions,
+                            instruction.guest_code_default_operand_size) ||
         lowered_count == 0U || lowered_instructions == 0U)
     {
         // A named lowering that the rewriter declines is still a refusal. It
@@ -2697,29 +2690,37 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
             if (options.enable_long_mode_emission)
             {
                 std::size_t emitted_instructions = 0U;
-                if (EmitLongModeDirectBranch(instruction, image,
-                                             &emitted_instructions) ||
-                    (instruction.kind ==
-                         AotInstructionKind::kGuardedSegmentLoad &&
-                     EmitLongModeGuardedSegmentLoad(
-                         instruction, image, &emitted_instructions)) ||
-                    (instruction.kind ==
-                         AotInstructionKind::kGuardedSegmentPop &&
-                     EmitLongModeGuardedSegmentPop(
-                         instruction, image, &emitted_instructions)) ||
-                    (instruction.kind ==
-                         AotInstructionKind::kIndirectExit &&
-                     EmitLongModeIndirectCall(instruction, image,
-                                              &emitted_instructions)) ||
-                    (instruction.kind ==
-                         AotInstructionKind::kJumpTable &&
-                     EmitLongModeJumpTable(instruction, image,
-                                           &emitted_instructions)) ||
-                    (instruction.kind ==
-                         AotInstructionKind::kSegmentOverrideMem &&
-                     options.enable_long_mode_segment_override &&
-                     EmitLongModeSegmentOverride(instruction, image,
-                                                 &emitted_instructions)))
+                // Task 680. The existing non-copy slots encode 32-bit guest
+                // control-flow and selector semantics. Keep every 16-bit
+                // record out of them until those semantics have dedicated
+                // lowerings; the proven 16-bit copy form is handled below.
+                const bool allow_legacy32_long_mode_slot =
+                    instruction.guest_code_default_operand_size !=
+                    GuestCodeDefaultOperandSize::k16;
+                if (allow_legacy32_long_mode_slot &&
+                    (EmitLongModeDirectBranch(instruction, image,
+                                               &emitted_instructions) ||
+                     (instruction.kind ==
+                          AotInstructionKind::kGuardedSegmentLoad &&
+                      EmitLongModeGuardedSegmentLoad(
+                          instruction, image, &emitted_instructions)) ||
+                     (instruction.kind ==
+                          AotInstructionKind::kGuardedSegmentPop &&
+                      EmitLongModeGuardedSegmentPop(
+                          instruction, image, &emitted_instructions)) ||
+                     (instruction.kind ==
+                          AotInstructionKind::kIndirectExit &&
+                      EmitLongModeIndirectCall(instruction, image,
+                                               &emitted_instructions)) ||
+                     (instruction.kind ==
+                          AotInstructionKind::kJumpTable &&
+                      EmitLongModeJumpTable(instruction, image,
+                                            &emitted_instructions)) ||
+                     (instruction.kind ==
+                          AotInstructionKind::kSegmentOverrideMem &&
+                      options.enable_long_mode_segment_override &&
+                      EmitLongModeSegmentOverride(instruction, image,
+                                                  &emitted_instructions))))
                 {
                     map.emitted_length = static_cast<std::uint8_t>(
                         image->bytes.size() - cache_offset);

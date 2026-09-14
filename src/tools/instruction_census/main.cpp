@@ -376,7 +376,9 @@ bool ClassifyEmittable(const repiu::runtime::AotInstructionRecord& record,
 {
     const repiu::runtime::LongModeCompatibilityResult verdict =
         repiu::runtime::ClassifyLongModeBytes(record.bytes.data(),
-                                              record.bytes.size());
+                                              record.bytes.size(),
+                                              record
+                                                  .guest_code_default_operand_size);
     *lowered = false;
     if (verdict.compatibility ==
         repiu::runtime::LongModeByteCompatibility::kIdenticalBytes)
@@ -389,7 +391,10 @@ bool ClassifyEmittable(const repiu::runtime::AotInstructionRecord& record,
         std::size_t count = 0;
         if (repiu::runtime::LowerLongModeBytes(record.bytes.data(),
                                                record.bytes.size(), bytes,
-                                               &count) && count != 0U)
+                                               &count, nullptr,
+                                               record
+                                                   .guest_code_default_operand_size) &&
+            count != 0U)
         {
             *lowered = true;
             return true;
@@ -410,6 +415,15 @@ bool ClassifyEmittable(const repiu::runtime::AotInstructionRecord& record,
 bool RecordIsEmitted(const repiu::runtime::AotInstructionRecord& record)
 {
     using repiu::runtime::AotInstructionKind;
+    // Task 680. The long-mode emitter keeps 16-bit non-copy records out of
+    // 32-bit branch/return/selector slots until their guest semantics are
+    // proven. A 16-bit copy can only be admitted by its mode-aware classifier.
+    if (record.guest_code_default_operand_size ==
+        repiu::runtime::GuestCodeDefaultOperandSize::k16 &&
+        record.kind != AotInstructionKind::kCopy)
+    {
+        return false;
+    }
     switch (record.kind)
     {
         case AotInstructionKind::kCopy:
