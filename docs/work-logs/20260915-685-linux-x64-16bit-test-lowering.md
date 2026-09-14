@@ -39,8 +39,9 @@ core_probe_all=true
 ```
 
 따라서 Task 684의 잘못된 원본 byte fallback에 이어 Task 685의 TEST
-boundary도 제거되었습니다. 현재 SIGTRAP은 다음 mode16 `74 39` Jcc이며,
-동적 이미지에는 아직 mode16 Jcc lowering이 없습니다.
+boundary도 제거되었습니다. object 3에서 다음 mode16 Jcc는
+`0x01100007: 74 39`이며, 동적 이미지에는 아직 mode16 Jcc lowering이
+없습니다.
 
 ## 결론 및 다음 작업
 
@@ -91,8 +92,9 @@ core_probe_all=true
 ```
 
 Task 684's incorrect original-byte fallback and Task 685's TEST boundary are
-therefore both removed. The current SIGTRAP is the next mode16 `74 39` Jcc;
-the dynamic image does not yet lower mode16 conditional branches.
+therefore both removed. The next object-3 mode16 Jcc is
+`0x01100007: 74 39`; the dynamic image does not yet lower mode16 conditional
+branches.
 
 ## Conclusion and next task
 

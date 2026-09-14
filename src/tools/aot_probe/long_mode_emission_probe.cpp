@@ -1228,6 +1228,125 @@ bool Probe16BitLoopNzUnresolvedTarget()
     return ok;
 }
 
+// Task 686. A mode16 short Jcc uses the shared long-mode direct-branch slot;
+// the planner has already supplied the rebased target and fallthrough edges.
+bool Probe16BitConditionalBranchModeEmission()
+{
+    constexpr std::uint32_t base = kBase + 0x600U;
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = base;
+
+    AotBasicBlock branch_block;
+    branch_block.guest_address = base;
+    AotInstructionRecord branch;
+    branch.guest_address = base;
+    branch.kind = AotInstructionKind::kConditionalBranch;
+    branch.length = 2U;
+    branch.mnemonic = static_cast<std::uint16_t>(ZYDIS_MNEMONIC_JZ);
+    branch.direct_target = base + 0x20U;
+    branch.fallthrough_target = base + 2U;
+    branch.guest_code_default_operand_size = GuestCodeDefaultOperandSize::k16;
+    branch.bytes = {0x74U, 0x01U};
+    branch_block.instructions.push_back(branch);
+    plan.blocks.push_back(std::move(branch_block));
+
+    AotBasicBlock target_block;
+    target_block.guest_address = base + 0x20U;
+    AotInstructionRecord target;
+    target.guest_address = base + 0x20U;
+    target.kind = AotInstructionKind::kPortIo;
+    target.length = 1U;
+    target.guest_code_default_operand_size = GuestCodeDefaultOperandSize::k16;
+    target.bytes = {0xEDU};
+    target_block.instructions.push_back(target);
+    plan.blocks.push_back(std::move(target_block));
+
+    AotBasicBlock fallthrough_block;
+    fallthrough_block.guest_address = base + 2U;
+    AotInstructionRecord fallthrough;
+    fallthrough.guest_address = base + 2U;
+    fallthrough.kind = AotInstructionKind::kPortIo;
+    fallthrough.length = 1U;
+    fallthrough.guest_code_default_operand_size =
+        GuestCodeDefaultOperandSize::k16;
+    fallthrough.bytes = {0xEDU};
+    fallthrough_block.instructions.push_back(fallthrough);
+    plan.blocks.push_back(std::move(fallthrough_block));
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    const bool built = BuildAotCodeCacheImage(plan, options, &image) &&
+        image.valid;
+    std::vector<std::uint8_t> emitted;
+    const bool slot_bytes = built && EmittedBytes(image, base, &emitted) &&
+        emitted.size() == 6U && emitted[0] == 0x0FU &&
+        emitted[1] == 0x84U;
+    bool conditional_fixup = false;
+    bool fallthrough_fixup = false;
+    for (const repiu::runtime::AotCodeCacheFixup& fixup : image.fixups)
+    {
+        conditional_fixup = conditional_fixup ||
+            (fixup.kind == AotFixupKind::kConditionalBranch &&
+             fixup.guest_source == base &&
+             fixup.guest_target == base + 0x20U && fixup.resolved &&
+             fixup.cache_patch_offset == 2U);
+        fallthrough_fixup = fallthrough_fixup ||
+            (fixup.kind == AotFixupKind::kBlockFallthrough &&
+             fixup.guest_source == base && fixup.guest_target == base + 2U &&
+             fixup.resolved && fixup.cache_patch_offset == 7U);
+    }
+    const bool ok = slot_bytes && conditional_fixup && fallthrough_fixup;
+    std::cout << "long_mode_emission_16bit_jcc="
+              << (ok ? "true" : "false") << ",slot="
+              << (slot_bytes ? 1 : 0) << ",conditional_fixup="
+              << (conditional_fixup ? 1 : 0) << ",fallthrough_fixup="
+              << (fallthrough_fixup ? 1 : 0) << "\n";
+    return ok;
+}
+
+bool Probe16BitConditionalBranchUnresolvedTarget()
+{
+    constexpr std::uint32_t base = kBase + 0x700U;
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = base;
+    AotBasicBlock block;
+    block.guest_address = base;
+    AotInstructionRecord branch;
+    branch.guest_address = base;
+    branch.kind = AotInstructionKind::kConditionalBranch;
+    branch.length = 2U;
+    branch.mnemonic = static_cast<std::uint16_t>(ZYDIS_MNEMONIC_JZ);
+    branch.direct_target = base + 0x20U;
+    branch.fallthrough_target = base + 2U;
+    branch.guest_code_default_operand_size = GuestCodeDefaultOperandSize::k16;
+    branch.bytes = {0x74U, 0x01U};
+    block.instructions.push_back(branch);
+    plan.blocks.push_back(std::move(block));
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    const bool built = BuildAotCodeCacheImage(plan, options, &image) &&
+        image.valid;
+    std::vector<std::uint8_t> emitted;
+    const bool entry_neutralised = built && EmittedBytes(image, base, &emitted) &&
+        emitted.size() == 6U &&
+        std::all_of(emitted.begin(), emitted.end(),
+                    [](const std::uint8_t byte) { return byte == 0xCCU; });
+    const bool fallthrough_neutralised = built && image.bytes.size() >= 7U &&
+        image.bytes[6U] == 0xCCU;
+    const bool ok = entry_neutralised && fallthrough_neutralised &&
+        image.long_mode_unresolved_branch_count == 2U;
+    std::cout << "long_mode_emission_16bit_jcc_unresolved="
+              << (ok ? "true" : "false") << ",entry="
+              << (entry_neutralised ? 1 : 0) << ",fallthrough="
+              << (fallthrough_neutralised ? 1 : 0) << "\n";
+    return ok;
+}
+
 }  // namespace
 
 bool RunLongModeEmissionProbe()
@@ -1241,6 +1360,9 @@ bool RunLongModeEmissionProbe()
     const bool sixteen_bit_loopnz_ok = Probe16BitLoopNzModeEmission();
     const bool sixteen_bit_loopnz_unresolved_ok =
         Probe16BitLoopNzUnresolvedTarget();
+    const bool sixteen_bit_jcc_ok = Probe16BitConditionalBranchModeEmission();
+    const bool sixteen_bit_jcc_unresolved_ok =
+        Probe16BitConditionalBranchUnresolvedTarget();
     const bool segment_read_gpr16_ok = ProbeSegmentReadGpr16Classification();
     const bool segment_override_coverage_ok =
         ProbeLongModeSegmentOverrideCoverage();
@@ -1258,6 +1380,8 @@ bool RunLongModeEmissionProbe()
         sixteen_bit_lea16_ok &&
         sixteen_bit_loopnz_ok &&
         sixteen_bit_loopnz_unresolved_ok &&
+        sixteen_bit_jcc_ok &&
+        sixteen_bit_jcc_unresolved_ok &&
         segment_read_gpr16_ok &&
         segment_override_coverage_ok &&
         segment_guard_coverage_ok &&

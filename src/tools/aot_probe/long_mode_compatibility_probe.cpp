@@ -933,6 +933,41 @@ bool Probe16BitTest32()
     return ok;
 }
 
+// Task 686. The planner must rebase a mode16 short conditional target from its
+// 16-bit code-object IP offset to the relocated linear guest address.
+bool Probe16BitConditionalBranch()
+{
+    constexpr std::uint32_t base = 0x00230000U;
+    repiu::runtime::RelocatedRuntimeImage runtime_image;
+    runtime_image.valid = true;
+    repiu::runtime::RelocatedRuntimeObject object;
+    object.relocated_base_address = base;
+    object.virtual_size = 16U;
+    object.flags = repiu::runtime::kLeObjectExecutable;
+    object.memory.assign(object.virtual_size, 0x90U);
+    object.memory[0] = 0x74U;
+    object.memory[1] = 0x01U;
+    runtime_image.objects.push_back(std::move(object));
+    runtime_image.code_mode_ranges.push_back({base, 16U, 0U});
+
+    repiu::runtime::AotTranslationPlan plan;
+    const bool built = repiu::runtime::BuildAotTranslationPlanFromEntry(
+        runtime_image, base, &plan);
+    const bool record_ok = built && !plan.blocks.empty() &&
+        !plan.blocks.front().instructions.empty() &&
+        plan.blocks.front().instructions.front().kind ==
+            repiu::runtime::AotInstructionKind::kConditionalBranch &&
+        plan.blocks.front().instructions.front().length == 2U &&
+        plan.blocks.front().instructions.front().direct_target == base + 3U &&
+        plan.blocks.front().instructions.front().fallthrough_target == base + 2U;
+    const bool ok = record_ok;
+    std::cout << "long_mode_16bit_jcc_plan=" << (ok ? "true" : "false")
+              << ",length=" << (record_ok ? 2U : 0U)
+              << ",target_rebased="
+              << (record_ok ? "true" : "false") << "\n";
+    return ok;
+}
+
 // Task 683. LOOPNZ is a control-flow lowering rather than a byte-only
 // lowering, because its direct target comes from the translation plan.
 // Address-size and opcode variants remain refused until their counter
@@ -1017,13 +1052,14 @@ bool RunLongModeCompatibilityProbe()
     const bool sixteen_bit_lea_ok = Probe16BitLea32();
     const bool sixteen_bit_lea16_ok = Probe16BitLea16();
     const bool sixteen_bit_test_ok = Probe16BitTest32();
+    const bool sixteen_bit_jcc_ok = Probe16BitConditionalBranch();
     const bool sixteen_bit_loopnz_ok = Probe16BitLoopNz();
 
     const bool all = silent_ok && invalid_ok && width_ok && width_kind_ok &&
         reasons_ok && stack_ok && inc_dec_ok && stack_seq_ok && subset_ok &&
         refusals_ok && sixteen_bit_ok && sixteen_bit_lea_ok &&
         sixteen_bit_lea16_ok && sixteen_bit_test_ok &&
-        sixteen_bit_loopnz_ok;
+        sixteen_bit_jcc_ok && sixteen_bit_loopnz_ok;
     std::cout << "long_mode_compatibility_all=" << (all ? "true" : "false")
               << "\n";
     return all;

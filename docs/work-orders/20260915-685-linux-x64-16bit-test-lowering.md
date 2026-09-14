@@ -42,7 +42,7 @@ image의 첫 unsupported instruction은 `0x01100004: 66 85 FF`가 되었습니�
 * 실제 x64 실행에서 TEST의 ZF/CF/OF와 upper register state가 보존됩니다.
 * unsupported memory/ESP/prefix 변형은 새 lowering을 사용하지 않습니다.
 * core probe가 failure 없이 통과합니다.
-* runtime의 다음 SIGTRAP이 TEST 이후 `0x01100009: 74 39` Jcc boundary로
+* runtime의 다음 SIGTRAP이 TEST 이후 `0x01100007: 74 39` Jcc boundary로
   이동합니다.
 * 특정 주소 예외가 추가되지 않습니다.
 
@@ -100,7 +100,7 @@ copied directly into long mode.
 * Actual x64 execution preserves TEST ZF/CF/OF and upper register state.
 * Unsupported memory/ESP/prefix variants do not use the new lowering.
 * The core probe passes with zero failures.
-* The next runtime SIGTRAP moves to the `0x01100009: 74 39` Jcc boundary after
+* The next runtime SIGTRAP moves to the `0x01100007: 74 39` Jcc boundary after
   TEST.
 * No address-specific exception is added.
 

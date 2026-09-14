@@ -15060,9 +15060,9 @@ core_probe_all=true
 * **확인됨:** mode16 TEST lowering이 x64 cache에서 `85 /r`로 실행되며
   classifier·lowering·runtime 경계가 일치한다.
 * **확인됨:** 이전 `0x01100004` INT3은 제거되고 다음 frontier가
-  `0x01100009: 74 39`로 이동했다.
+  `0x01100007: 74 39`로 이동했다.
 * **미확정:** mode16 Jcc target rebasing과 direct-branch slot을 추가한 뒤
-  `0x01100009` 이후 실행이 계속되는지 여부.
+  `0x01100007` 이후 실행이 계속되는지 여부.
 
 ### 다음 frontier
 
@@ -15100,7 +15100,7 @@ The live trace now shows:
 * **Confirmed:** the mode16 TEST lowering executes as `85 /r` in the x64 cache
   and classifier/lowering/runtime boundaries agree.
 * **Confirmed:** the previous `0x01100004` INT3 is removed and the next
-  frontier is `0x01100009: 74 39`.
+  frontier is `0x01100007: 74 39`.
 * **Unresolved:** whether execution continues after adding mode16 Jcc target
   rebasing and the direct-branch slot.
 
@@ -15108,3 +15108,79 @@ The next candidate is mode16 `74 39` JZ. Its condition is identical in long
 mode, but target calculation must use the mode16 IP-relative displacement and
 code-object base, and the mode16 record must connect to control-flow emission
 without reopening the 32-bit-only path.
+
+## 2026-09-15: Task 686 mode16 conditional branch lowering
+
+### 확인된 사실
+
+mode16 short conditional branch의 planner target rebasing은 Task 683의
+기존 공용 경로를 사용하고, long-mode emitter는 mode16
+`kConditionalBranch`에 한해 기존 `0F 8x rel32` direct-branch slot을
+허용하도록 수정했다. mode16 direct jump/call/return과 다른 non-copy
+record는 여전히 열지 않았다.
+
+synthetic probe는 `74 01`을 length 2, code-object base를 포함한 target,
+fallthrough target으로 확인했다. emission probe는 conditional target과
+block-fallthrough fixup을 각각 resolve하고, unresolved target에서는 전체
+branch slot을 INT3로 neutralise했다.
+
+```text
+long_mode_16bit_jcc_plan=true,length=2,target_rebased=true
+long_mode_emission_16bit_jcc=true,slot=1,conditional_fixup=1,fallthrough_fixup=1
+long_mode_emission_16bit_jcc_unresolved=true,entry=1,fallthrough=1
+core_probe_failures=0
+core_probe_all=true
+```
+
+실제 object-3 trace에서 정적 bytes 기준 Jcc는
+`0x01100007: 74 39`이고, `ZF=0` not-taken 경로가 다음 instruction
+`0x01100009: B8 07 00`에 도달했다.
+
+### 상태 구분
+
+* **확인됨:** mode16 Jcc가 `0F 8x rel32`와 rebased target fixup으로 실행된다.
+* **확인됨:** Jcc INT3 boundary가 제거되고 다음 frontier가 mode16
+  `MOV AX,7`로 이동했다.
+* **미확정:** mode16 immediate lowering 이후의 mixed-address/stack/segment
+  semantics와 정상 게임 종료 여부.
+
+### 다음 frontier
+
+`0x01100009: B8 07 00`은 mode16 `MOV AX,7`이다. x64 cache에서는
+`66 B8 07 00`으로 emit해야 하며, 이후 `0x0110000C`의 이미 지원된 mixed
+mode LEA로 이어져야 한다.
+
+### English
+
+Mode16 short conditional branches now use Task 683's existing planner target
+rebasing, and the long-mode emitter allows mode16 `kConditionalBranch` records
+through the existing `0F 8x rel32` direct-branch slot. Mode16 direct
+jump/call/return and other non-copy records remain closed.
+
+The synthetic probe verifies `74 01` length two, its code-object-base-inclusive
+target, and its fallthrough target. The emission probe independently resolves
+the conditional-target and block-fallthrough fixups, and unresolved targets
+neutralise the complete branch slot with INT3.
+
+```text
+long_mode_16bit_jcc_plan=true,length=2,target_rebased=true
+long_mode_emission_16bit_jcc=true,slot=1,conditional_fixup=1,fallthrough_fixup=1
+long_mode_emission_16bit_jcc_unresolved=true,entry=1,fallthrough=1
+core_probe_failures=0
+core_probe_all=true
+```
+
+In the live object-3 trace, the static object bytes identify the Jcc as
+`0x01100007: 74 39`; with `ZF=0`, its not-taken path reaches the next
+instruction `0x01100009: B8 07 00`.
+
+* **Confirmed:** mode16 Jcc executes through `0F 8x rel32` with a rebased
+  target fixup.
+* **Confirmed:** the Jcc INT3 boundary is removed and the next frontier is the
+  mode16 `MOV AX,7`.
+* **Unresolved:** mixed-address/stack/segment semantics after mode16 immediate
+  lowering and whether the game exits normally.
+
+The next frontier is `0x01100009: B8 07 00`, mode16 `MOV AX,7`; the x64 cache
+should emit `66 B8 07 00` before continuing to the already-supported mixed-mode
+LEA at `0x0110000C`.

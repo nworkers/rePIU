@@ -2765,18 +2765,20 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
             if (options.enable_long_mode_emission)
             {
                 std::size_t emitted_instructions = 0U;
-                // Task 680. The existing non-copy slots encode 32-bit guest
-                // control-flow and selector semantics. Keep every 16-bit
-                // record out of them until those semantics have dedicated
-                // lowerings; the proven 16-bit copy form is handled below.
-                const bool allow_legacy32_long_mode_slot =
+                // Task 686. The existing non-copy slots encode 32-bit guest
+                // control-flow and selector semantics. A plain mode16 Jcc
+                // needs only its already-rebased target and condition opcode,
+                // so it may use the shared direct-branch slot. Keep other
+                // mode16 records out until their semantics have lowerings.
+                const bool allow_long_mode_direct_branch_slot =
                     instruction.guest_code_default_operand_size !=
-                    GuestCodeDefaultOperandSize::k16;
+                        GuestCodeDefaultOperandSize::k16 ||
+                    instruction.kind == AotInstructionKind::kConditionalBranch;
                 const bool emitted_mode16_control_flow =
                     EmitLongMode16BitLoopNz(
                         instruction, image, &emitted_instructions);
                 const bool emitted_legacy32_control_flow =
-                    allow_legacy32_long_mode_slot &&
+                    allow_long_mode_direct_branch_slot &&
                     (EmitLongModeDirectBranch(instruction, image,
                                                &emitted_instructions) ||
                      (instruction.kind ==
