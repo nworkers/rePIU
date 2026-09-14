@@ -102,6 +102,20 @@ bool IsMovStackPointerImmediate16(
         instruction.operand_width == 16U && instruction.raw.prefix_count == 0U;
 }
 
+// Task 687. In a mode16 code object, prefix-free `B8+r iw` writes a 16-bit
+// GPR. Exclude `BC iw` because opcode register 4 is guest SP and has its own
+// R15W lowering that must not write the host stack pointer.
+bool IsMode16MovImmediate(const ZydisDecodedInstruction& instruction)
+{
+    return instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT &&
+        instruction.opcode >= 0xB8U && instruction.opcode <= 0xBFU &&
+        instruction.mnemonic == ZYDIS_MNEMONIC_MOV &&
+        instruction.length == 3U && instruction.operand_width == 16U &&
+        instruction.address_width == 16U &&
+        instruction.raw.prefix_count == 0U &&
+        instruction.opcode != 0xBCU;
+}
+
 // The ModRM-form opcode that means the same thing. `A0`/`A2` move a byte and
 // `A1`/`A3` a dword; the low bit of the moffs opcode is that width and the
 // second bit is the direction, which is the same layout `88`-`8B` uses.
@@ -795,6 +809,11 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
             return Reencode(
                 LongModeDivergence::kStackPointerRegister,
                 LongModeLowering::k16BitStackPointerImmediateToR15);
+        }
+        if (IsMode16MovImmediate(instruction))
+        {
+            return Reencode(LongModeDivergence::kOperandWidth,
+                            LongModeLowering::k16BitMovImmediateToGuestGprs);
         }
         if (IsMode16Test32(bytes, instruction, operands))
         {
@@ -1509,6 +1528,28 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
         lowered[3] = bytes[1];
         lowered[4] = bytes[2];
         *lowered_count = 5U;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 687. A mode16 `B8+r iw` writes a guest GPR low word. Prefixing the
+    // original opcode and immediate with 66 selects the same operand width in
+    // long mode without changing the encoded destination register.
+    if (verdict.lowering == LongModeLowering::k16BitMovImmediateToGuestGprs)
+    {
+        if (!guest_is_16_bit || !IsMode16MovImmediate(instruction) ||
+            length != 3U || length + 1U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+        lowered[0] = 0x66U;
+        lowered[1] = bytes[0U];
+        lowered[2] = bytes[1U];
+        lowered[3] = bytes[2U];
+        *lowered_count = 4U;
         if (instruction_count != nullptr)
         {
             *instruction_count = 1U;

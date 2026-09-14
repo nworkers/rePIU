@@ -15184,3 +15184,88 @@ instruction `0x01100009: B8 07 00`.
 The next frontier is `0x01100009: B8 07 00`, mode16 `MOV AX,7`; the x64 cache
 should emit `66 B8 07 00` before continuing to the already-supported mixed-mode
 LEA at `0x0110000C`.
+
+## 2026-09-15: Task 687 mode16 MOV immediate lowering
+
+### 확인된 사실
+
+object 3의 `0x01100009: B8 07 00`은 mode16 `MOV AX,7`로 확인되었습니다.
+공통 classifier는 prefix-free `B8`–`BF` opcode, operand width 16, address
+width 16, 길이 3을 확인하고 guest SP인 `BC`는 제외합니다. 나머지 GPR
+형식은 `k16BitMovImmediateToGuestGprs`로 분류되어 원본 3바이트 앞에
+`66`만 추가한 `66 B8+r iw`로 lower됩니다.
+
+`BC 00 20`은 기존 `k16BitStackPointerImmediateToR15` 경로를 유지하며,
+`66`/`67` prefix 및 잘린 입력은 새 규칙에 포함되지 않습니다. compatibility
+probe, x64 lowering probe, core probe 모두 통과했습니다.
+
+```text
+long_mode_16bit_mov_immediate=true,length=3,lowered=4,unsupported_variants=true
+long_mode_lowering_16bit_mov_immediate=true,observed=0xa5a5a5a512340007
+core_probe_failures=0
+core_probe_all=true
+```
+
+실제 runtime trace에서는 TEST/Jcc/MOV immediate를 통과하고 다음 경계에서
+멈췄습니다.
+
+```text
+[repiu-aot-plan-trace] guest=0x01100015 bytes=89CA length=2 ... code_mode=16
+[repiu-fault] unhandled signal=0x5 ... eip=0x01100015
+```
+
+* **확인됨:** `B8 07 00`의 잘못된 long-mode immediate 해석과 다음 instruction
+  침범이 제거되었습니다.
+* **확인됨:** lowering은 특정 주소나 immediate 값이 아니라 opcode 범위,
+  mode16 폭, prefix 상태, guest SP 분리를 기준으로 합니다.
+* **미확정:** mode16 `89 CA` 이후의 word GPR 이동, `66 C1 E9 10`, `CD 31` 및
+  이후 stack/segment/far-return 경계가 정상 게임 종료까지 이어지는지입니다.
+
+### 다음 frontier
+
+다음 frontier는 `0x01100015: 89 CA` mode16 `MOV DX,CX`입니다. 이후
+`0x01100017: 66 C1 E9 10`은 mode16 word shift이고, `0x0110001B: CD 31`은
+DOS interrupt 경계이므로 각각 register-width lowering과 HLE 경로를
+분리해 조사해야 합니다.
+
+### English
+
+Object 3's `0x01100009: B8 07 00` is confirmed as mode16 `MOV AX,7`. The
+shared classifier admits prefix-free `B8`–`BF` forms only when operand width is
+16, address width is 16, and the instruction length is 3. It excludes guest SP
+`BC`; the other GPR forms use `k16BitMovImmediateToGuestGprs` and lower by
+prepending `66`, producing `66 B8+r iw` without modifying the original bytes.
+
+`BC 00 20` remains on the existing `k16BitStackPointerImmediateToR15` path.
+`66`/`67` prefixed forms and truncated input remain outside the new rule. The
+compatibility probe, x64 lowering probe, and core probe all pass:
+
+```text
+long_mode_16bit_mov_immediate=true,length=3,lowered=4,unsupported_variants=true
+long_mode_lowering_16bit_mov_immediate=true,observed=0xa5a5a5a512340007
+core_probe_failures=0
+core_probe_all=true
+```
+
+The live runtime trace passes TEST, Jcc, and the immediate MOV, then stops at
+the next boundary:
+
+```text
+[repiu-aot-plan-trace] guest=0x01100015 bytes=89CA length=2 ... code_mode=16
+[repiu-fault] unhandled signal=0x5 ... eip=0x01100015
+```
+
+* **Confirmed:** the incorrect long-mode immediate interpretation of
+  `B8 07 00` and its overrun into the next instruction are removed.
+* **Confirmed:** the lowering is a shared rule based on opcode range, mode16
+  widths, prefix state, and guest-SP separation rather than a specific address
+  or immediate value.
+* **Unresolved:** whether mode16 `89 CA`, `66 C1 E9 10`, `CD 31`, and later
+  stack/segment/far-return boundaries carry execution to normal game exit.
+
+### Next frontier
+
+The next frontier is `0x01100015: 89 CA`, mode16 `MOV DX,CX`. The following
+`0x01100017: 66 C1 E9 10` is a mode16 word shift, while `0x0110001B: CD 31` is
+a DOS interrupt boundary; they should be investigated as separate register-
+width and HLE paths.

@@ -175,6 +175,9 @@ enum class LongModeLowering
     // Task 685. A mode16 `66 85 /r` register TEST is a 32-bit operation; the
     // x64 default is already 32 bits, so the operand-size prefix is removed.
     k16BitTest32ToGuestGprs,
+    // Task 687. In a 16-bit code object, prefix-free `B8+r iw` writes a
+    // guest GPR low word. Add `66` so the x64 encoding keeps that width.
+    k16BitMovImmediateToGuestGprs,
 };
 
 struct LongModeCompatibilityResult
