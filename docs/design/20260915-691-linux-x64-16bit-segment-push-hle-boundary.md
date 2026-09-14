@@ -1,5 +1,15 @@
 # 설계 20260915-691 — Linux x64 mode16 segment push HLE boundary
 
+> Task 692 정정: Task 690에서도 실제 중단은 0110002E였습니다. 아래 설계의
+> runtime 진전 해석은 철회합니다. x64 emitter는 EmitHleDispatchSlot이 아니라
+> INT3와 kHleBoundary fixup을 사용하며 copy 거부 경로도 같은 HLE에 도달합니다.
+> 기존 segment push는 mode16 폭과 SS base를 처리하지 못했습니다.
+>
+> Task 692 correction: Task 690 already stopped at 0110002E. The runtime progress
+> interpretation below is withdrawn. The x64 emitter uses INT3 and a kHleBoundary
+> fixup, not EmitHleDispatchSlot; rejected copies reach the same HLE. The existing
+> segment push did not implement mode16 width or SS base handling.
+
 ## 목적
 
 Task 690 이후 object 3의 다음 frontier는 `0x0110002D: 0E`입니다. mode16에서

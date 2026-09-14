@@ -67,6 +67,7 @@
 #include "guest_address_watch.h"
 #include "fault_exit_trace.h"
 #include "instruction_emulation.h"
+#include "mode16_stack_push.h"
 #include "dpmi_mscdex_services.h"
 #include "bios_keyboard_services.h"
 #include "dos_int21_services.h"
@@ -1136,6 +1137,16 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
             kMaximumX86InstructionBytes))
     {
         return false;
+    }
+
+    if (context->enable_segment_load_hle)
+    {
+        const std::optional<bool> mode16_push =
+            HandleMode16StackPush(win32_context, context);
+        if (mode16_push.has_value())
+        {
+            return *mode16_push;
+        }
     }
 
     const std::uint8_t* ptr = reinterpret_cast<const std::uint8_t*>(

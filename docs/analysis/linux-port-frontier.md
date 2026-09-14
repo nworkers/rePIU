@@ -15497,6 +15497,13 @@ to a separate fail-closed policy that preserves the guest segment stack.
 
 ## 2026-09-15: Task 691 mode16 segment-push HLE boundary
 
+> Task 692 정정 / correction: Task 690과 691의 실제 stop은 모두 0110002E입니다.
+> copy 거부 INT3도 HLE fixup으로 이어지므로 planner hle=1은 새 runtime 경로를
+> 입증하지 않습니다. 아래 기존 해석은 이 정정과 Task 692 결과로 대체합니다.
+> Both tasks stopped at 0110002E. Rejected-copy INT3 also reaches an HLE fixup;
+> planner hle=1 does not establish a new runtime path. The interpretation below
+> is superseded by this correction and Task 692 results.
+
 ### 확인된 사실
 
 기존 `HandleSegmentPushInstruction`은 `PUSH CS` (`0E`)의 selector 조회와
@@ -15572,3 +15579,31 @@ The live trace plans `0E` with `hle=1`, passes the existing HLE, and stops at
 The next frontier is `0x0110002E: 50`, mode16 `PUSH AX`. Determine through a
 separate design and probe whether the existing general stack lowering can safely
 handle a mode16 word push and guest ESP state.
+
+## 2026-09-15: Task 692 segmented mode16 PUSH
+
+**확인됨:** DPMI trace에서 SS=B4, base=0158A83C, limit=FFFF, flags=0092입니다.
+기존 PUSH CS는 mode16/SS.B=0 상태에서도 01581FFC에 4바이트를 기록했습니다.
+SS:1FFE의 올바른 word 주소는 0158C83A입니다. 공용 stack access 정책을 통해
+operand size와 SS.B를 분리하고 SS.base를 더하도록 수정했습니다.
+
+**검증:** 공용 geometry와 실제 메모리 PUSH probe를 포함한 core 27개 그룹이
+통과했습니다. 실제 실행은 0110002E에서 01100031의 bare RETF로 진행했으며
+ESP=01581FF8입니다. `66 57`은 PUSH DI가 아니라 PUSH EDI입니다. 이전 fault의
+guest_stack dump는 ESP를 선형 주소로 읽으므로 SS 기반 stack 내용이 아닙니다.
+
+**미해결:** 정상 실행과 SIGTRAP 종료 해결. 다음 경계는 SS-relative 16-bit
+far-return frame입니다. 현재 handler의 66 CB 전용 dword frame과 구분해야 합니다.
+
+**Confirmed:** DPMI trace gives SS=B4, base=0158A83C, limit=FFFF, flags=0092.
+The old mode16 PUSH CS wrote four bytes to 01581FFC instead of a word at
+SS:1FFE, linear 0158C83A. Shared access planning now separates operand size
+from SS.B and incorporates SS.base.
+
+**Verified:** All 27 core groups pass, including geometry and real-memory PUSH
+probes. Live execution advances from 0110002E to bare RETF at 01100031 with
+ESP=01581FF8. 66 57 is PUSH EDI, not PUSH DI. Existing fault stack dumps read
+ESP as linear and do not describe the SS-relative stack.
+
+**Unresolved:** Successful execution and SIGTRAP termination. Next is the
+SS-relative word far-return frame, distinct from the current 66 CB dword handler.

@@ -1,5 +1,13 @@
 # 작업 로그 20260915-691 — Linux x64 mode16 segment push HLE boundary
 
+> Task 692 정정: 아래 trace의 0110002E는 Task 690과 동일한 중단 주소입니다.
+> 검증된 변경은 planner의 hle=0→1이며 실행 경계 진전이나 올바른 mode16
+> PUSH semantics를 입증하지 않습니다. core-dump 메시지는 여전히 발생했습니다.
+>
+> Task 692 correction: 0110002E below is the same stop as Task 690. The confirmed
+> change is planner hle=0 to 1, not runtime advancement or correct mode16 PUSH
+> semantics. The core-dump termination message still occurred.
+
 ## 결과 요약
 
 기존 `HandleSegmentPushInstruction`이 이미 지원하는 `PUSH CS`를 mode16 AOT

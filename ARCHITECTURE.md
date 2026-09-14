@@ -3686,6 +3686,18 @@ cleanly at the HLE boundary.
 
 ## Linux x64 혼합 모드 AOT 및 16-bit 스택 레지스터 lowering
 
+Task 692는 확인된 mode16 register PUSH의 HLE 처리를 `mode16_stack_push`로
+분리합니다. 공용 `guest_stack_access`가 SS.B에 따른 SP/ESP 갱신, SS.base 주소
+변환, descriptor 권한/limit 검사를 수행합니다. 기존 R15D에는 guest ESP 값을
+유지하며 mode16에서 이 값을 곧바로 선형 메모리 주소로 사용하지 않습니다.
+일반 POP/RETF 및 expand-down stack 지원은 이 PUSH 구현에 포함되지 않습니다.
+
+Task 692 separates confirmed mode16 register PUSH handling into mode16_stack_push.
+Shared guest_stack_access computes SP/ESP updates from SS.B, translates through
+SS.base and validates descriptor permissions/limits. R15D retains guest ESP;
+the mode16 PUSH adapter does not treat it directly as a linear memory address.
+General POP/RETF and expand-down stacks are outside this PUSH implementation.
+
 LE 실행 파일 object flag가 공용 AOT planner의 `LEGACY_16` 또는
 `LEGACY_32`를 선택하며, 선택된 `GuestCodeDefaultOperandSize`는 모든
 `AotInstructionRecord`에 담겨 cache emission과 dynamic append까지 전달됩니다.
