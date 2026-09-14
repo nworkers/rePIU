@@ -1303,6 +1303,10 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
             }
             break;
         case 0xEAU:
+            if (HandleLinexeFarTransferBoundary(win32_context, context))
+            {
+                return true;
+            }
             if (context->enable_segment_load_hle && HandleFarJumpInstruction(win32_context, context)) return true;
             break;
         case 0xCBU:

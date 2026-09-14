@@ -3686,6 +3686,16 @@ cleanly at the HLE boundary.
 
 ## Linux x64 혼합 모드 AOT 및 16-bit 스택 레지스터 lowering
 
+Task 693에서 공용 guest HLE dispatcher의 EA 분기는 기존 LINEXE service
+boundary를 먼저 확인합니다. AOT에서 guest EIP가 복원된 경우에도 fault-level
+경로와 같은 loader 서비스가 적용됩니다. 미처리 전이는 일반 far-jump로
+넘기며, 읽을 수 없는 bridge frame은 이전 관측 frame으로 대체하지 않습니다.
+
+In Task 693, shared guest HLE EA dispatch checks the existing LINEXE service
+boundary first. AOT-restored guest EIPs receive the same loader service handling
+as the fault-level path. Unhandled transfers continue to generic far-jump
+handling; unreadable bridge frames never reuse an earlier observed frame.
+
 Task 692는 확인된 mode16 register PUSH의 HLE 처리를 `mode16_stack_push`로
 분리합니다. 공용 `guest_stack_access`가 SS.B에 따른 SP/ESP 갱신, SS.base 주소
 변환, descriptor 권한/limit 검사를 수행합니다. 기존 R15D에는 guest ESP 값을

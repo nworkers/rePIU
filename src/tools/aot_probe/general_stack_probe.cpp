@@ -383,6 +383,55 @@ bool RunGeneralStackProbe()
         cpu.Edx == boundary_values[5] && cpu.Ecx == boundary_values[6] &&
         cpu.Ebx == boundary_values[7];
 
+    // AOT shared dispatch must offer the existing loader service before the
+    // generic far jump enters the original mode16 bridge.
+    const std::uint8_t loader_transfer[] = {0x66U, 0xEAU, 0x04U, 0U, 0x2CU, 0U};
+    std::memcpy(bytes + kCodeOffset, loader_transfer, sizeof(loader_transfer));
+    const char module_name[] = "glide2x.ovl";
+    std::memcpy(bytes + 0x700U, module_name, sizeof(module_name));
+    const std::uint32_t loader_values[] = {
+        0U, 0U, 0U, 0x24U, 0x11223344U, 0x55667788U, 0x99AABBCCU,
+        0x12345678U, static_cast<std::uint32_t>(kRequestedBase + 0x200U),
+        static_cast<std::uint32_t>(kRequestedBase + 0x700U)};
+    std::memcpy(bytes + kStackOffset, loader_values, sizeof(loader_values));
+    context.linexe_environment_active = true;
+    repiu::hle::BuildLinexeCallGatePlan(&context.linexe_gate_plan);
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    repiu::runtime::RegisterDescriptor(&context.selector_table,
+        {0x2CU, static_cast<std::uint32_t>(kRequestedBase + 0x300U),
+         0xFFU, 0U, true});
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.Edi = 0x00801B28U;
+    const bool loader_dispatch =
+        repiu::engine::DispatchGuestHleInstruction(&cpu, &context) &&
+        context.linexe_virtual_module_load_count == 1U && cpu.Eax == 1U &&
+        cpu.Eip == loader_values[8] &&
+        cpu.Esp == kRequestedBase + kStackOffset + 36U &&
+        context.guest_es == loader_values[3] && cpu.Ebx == loader_values[4] &&
+        cpu.Esi == loader_values[5] && cpu.Edi == loader_values[6] &&
+        cpu.Ebp == loader_values[7];
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.Edi = 0x0080FFFFU;
+    const bool loader_fallback =
+        repiu::engine::DispatchGuestHleInstruction(&cpu, &context) &&
+        cpu.Eip == kRequestedBase + 0x304U &&
+        cpu.Esp == kRequestedBase + kStackOffset &&
+        context.linexe_virtual_module_load_count == 1U;
+    // A valid previous frame must not be replayed when the next is unreadable.
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kArenaSize - 4U);
+    cpu.Edi = 0x00801B28U;
+    const bool loader_bad_frame =
+        repiu::engine::DispatchGuestHleInstruction(&cpu, &context) &&
+        cpu.Eip == kRequestedBase + 0x304U &&
+        cpu.Esp == kRequestedBase + kArenaSize - 4U &&
+        context.linexe_virtual_module_load_count == 1U;
+    std::cout << "linexe_shared_dispatch=" << loader_dispatch
+              << ",fallback=" << loader_fallback
+              << ",bad_frame=" << loader_bad_frame << "\n";
+
     const bool released =
         repiu::platform::ReleaseMemory(reservation.base, kArenaSize);
     const bool all = ordinary_push && ordinary_pop && push_esp_order &&
@@ -393,7 +442,8 @@ bool RunGeneralStackProbe()
         legacy_resume_thunk &&
         legacy_moffs_store && legacy_moffs_store_range_rejected &&
         cs_source_store && cs_source_missing_refused &&
-        boundary_epilogue_drained && released;
+        boundary_epilogue_drained && loader_dispatch && loader_fallback &&
+        loader_bad_frame && released;
     std::cout << "general_stack_push=" << (ordinary_push ? "true" : "false")
               << ",pop=" << (ordinary_pop ? "true" : "false")
               << ",push_esp=" << (push_esp_order ? "true" : "false")

@@ -1094,14 +1094,15 @@ bool HandleLinexeFarTransferBoundary(repiu::platform::GuestCpuContext* win32_con
     context->linexe_bridge_ebp = win32_context->Ebp;
     const auto* stack = reinterpret_cast<const std::uint32_t*>(
         static_cast<std::uintptr_t>(win32_context->Esp));
-    if (IsGuestRangeReadable(context,
-                             stack,
-                             sizeof(context->linexe_bridge_stack)))
+    if (!IsGuestRangeReadable(context,
+                              stack,
+                              sizeof(context->linexe_bridge_stack)))
     {
-        std::memcpy(context->linexe_bridge_stack,
-                    stack,
-                    sizeof(context->linexe_bridge_stack));
+        return false;
     }
+    std::memcpy(context->linexe_bridge_stack,
+                stack,
+                sizeof(context->linexe_bridge_stack));
     std::memset(context->linexe_bridge_argument_text,
                 0,
                 sizeof(context->linexe_bridge_argument_text));
