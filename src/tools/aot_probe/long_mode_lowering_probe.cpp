@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 namespace repiu::tools
@@ -812,6 +813,111 @@ bool ProbeStackPointerHighByteSource(const std::uint32_t* data)
     return ok;
 }
 
+// Task 683. Execute the semantic body of the mode16 LOOPNZ cache slot. The
+// direct E9 target is patched to a local label here because this lower-level
+// probe has no translation-plan edge metadata; the emission probe checks that
+// the real cache uses those fixups.
+bool Probe16BitLoopNz()
+{
+    struct Case
+    {
+        std::uint16_t initial_cx;
+        bool initial_zf;
+        std::uint64_t expected;
+    };
+    bool ok = true;
+    for (const Case& item : {
+             Case{2U, false, UINT64_C(0x100000001)},
+             Case{1U, false, UINT64_C(0x100000000)},
+             Case{2U, true, UINT64_C(0x000000001)},
+         })
+    {
+        std::vector<std::uint8_t> code = {
+            0x41U, 0x56U,  // push r14
+            0xB9U,
+            static_cast<std::uint8_t>(item.initial_cx), 0x00U, 0x00U, 0x00U,
+        };
+        if (item.initial_zf)
+        {
+            code.insert(code.end(), {0x31U, 0xC0U});  // xor eax,eax
+        }
+        else
+        {
+            code.insert(code.end(),
+                        {0xB8U, 0x01U, 0x00U, 0x00U, 0x00U,
+                         0x85U, 0xC0U});  // mov eax,1; test eax,eax
+        }
+
+        const std::size_t branch_opcode_offset = code.size() + 21U;
+        code.insert(code.end(), {
+            0x9CU,                         // pushfq
+            0x66U, 0xFFU, 0xC9U,           // dec cx
+            0x66U, 0x85U, 0xC9U,           // test cx,cx
+            0x74U, 0x11U,                  // jz restore
+            0x4CU, 0x8BU, 0x34U, 0x24U,    // mov r14,[rsp]
+            0x49U, 0x0FU, 0xBAU, 0xE6U, 0x06U, // bt r14,6
+            0x72U, 0x06U,                  // jc restore
+            0x9DU,                         // popfq
+            0xE9U, 0x00U, 0x00U, 0x00U, 0x00U, // jmp target
+            0x9DU,                         // restore: popfq
+        });
+        const std::size_t target_displacement_offset =
+            branch_opcode_offset + 1U;
+
+        const auto append_result = [&code] {
+            code.insert(code.end(), {
+                0x89U, 0xC8U,                  // mov eax,ecx
+                0xBAU, 0x00U, 0x00U, 0x00U, 0x00U,
+                0x0FU, 0x95U, 0xC2U,           // setnz dl
+                0x48U, 0xC1U, 0xE2U, 0x20U,    // shl rdx,32
+                0x48U, 0x09U, 0xD0U,           // or rax,rdx
+                0x41U, 0x5EU,                  // pop r14
+                0xC3U,                         // ret
+            });
+        };
+        append_result();
+        const std::size_t target_offset = code.size();
+        append_result();
+        const std::int64_t displacement =
+            static_cast<std::int64_t>(target_offset) -
+            static_cast<std::int64_t>(target_displacement_offset + 4U);
+        if (displacement < std::numeric_limits<std::int32_t>::min() ||
+            displacement > std::numeric_limits<std::int32_t>::max())
+        {
+            ok = false;
+            continue;
+        }
+        for (std::size_t index = 0U; index < 4U; ++index)
+        {
+            code[target_displacement_offset + index] =
+                static_cast<std::uint8_t>(
+                    (static_cast<std::uint32_t>(displacement) >>
+                     (index * 8U)) & 0xFFU);
+        }
+
+        ExecutablePage page;
+        if (!AllocateCodePage(&page) || !WriteAndArm(page, code))
+        {
+            ReleasePage(&page);
+            ok = false;
+            continue;
+        }
+        using Entry = std::uint64_t (*)();
+        Entry entry = nullptr;
+        std::memcpy(&entry, &page.base, sizeof(entry));
+        const std::uint64_t observed = entry();
+        ReleasePage(&page);
+        ok = ok && observed == item.expected;
+        std::cout << "  long_mode_loopnz_case_cx=" << item.initial_cx
+                  << ",zf=" << (item.initial_zf ? 1 : 0)
+                  << ",observed=0x" << std::hex << observed << std::dec
+                  << "\n";
+    }
+    std::cout << "long_mode_lowering_16bit_loopnz="
+              << (ok ? "true" : "false") << "\n";
+    return ok;
+}
+
 // The classifier and the rewrite must agree about which instructions have a
 // lowering at all, and a segment override must still have none.
 bool ProbeClassification()
@@ -905,6 +1011,7 @@ bool RunLongModeLoweringProbe()
     const bool sixteen_bit_stack_ok = Probe16BitStackPointerImmediate();
     const bool sixteen_bit_lea_ok = Probe16BitLea32();
     const bool sixteen_bit_lea16_ok = Probe16BitLea16();
+    const bool sixteen_bit_loopnz_ok = Probe16BitLoopNz();
     const bool high_byte_ok = ProbeStackPointerHighByteSource(data);
     const bool prefix_ok = ProbeAddressSizePrefix(data);
     const bool absolute_ok = ProbeAbsoluteToSib(data);
@@ -916,7 +1023,7 @@ bool RunLongModeLoweringProbe()
 
     const bool all = classification_ok && refusals_ok &&
         two_byte_esp_ok && sixteen_bit_stack_ok && sixteen_bit_lea_ok &&
-        sixteen_bit_lea16_ok &&
+        sixteen_bit_lea16_ok && sixteen_bit_loopnz_ok &&
         high_byte_ok &&
         prefix_ok && absolute_ok &&
         absolute_imm_ok && moffs_ok;

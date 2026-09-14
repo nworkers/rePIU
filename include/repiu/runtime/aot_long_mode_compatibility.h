@@ -168,6 +168,10 @@ enum class LongModeLowering
     // Task 682. In a 16-bit code object, lower the proven 16-bit address and
     // word-destination LEA subset through x64 scratch registers.
     k16BitLea16ToGuestGprs,
+    // Task 683. A mode16 LOOPNZ needs the plan's direct target and
+    // fallthrough metadata, so the AOT cache emits it as a dedicated
+    // control-flow slot rather than through the byte-only lowerer.
+    k16BitLoopNzToGuestCx,
 };
 
 struct LongModeCompatibilityResult

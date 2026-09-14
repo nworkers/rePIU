@@ -105,9 +105,39 @@ GuestCodeDefaultOperandSize GuestCodeDefaultOperandSizeForAddress(
     return GuestCodeDefaultOperandSize::k32;
 }
 
+bool FindCodeSegmentBase(
+    const std::vector<RuntimeCodeModeRange>& code_mode_ranges,
+    const std::uint32_t address,
+    std::uint32_t* const base)
+{
+    if (base == nullptr)
+    {
+        return false;
+    }
+    for (const RuntimeCodeModeRange& range : code_mode_ranges)
+    {
+        if (range.virtual_size == 0U ||
+            address < range.relocated_base_address)
+        {
+            continue;
+        }
+        const std::uint64_t offset =
+            static_cast<std::uint64_t>(address) -
+            range.relocated_base_address;
+        if (offset < range.virtual_size)
+        {
+            *base = range.relocated_base_address;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool ReadDirectTarget(const ZydisDecodedInstruction& instruction,
                       const ZydisDecodedOperand* operands,
                       std::uint32_t address,
+                      GuestCodeDefaultOperandSize code_mode,
+                      std::uint32_t code_segment_base,
                       std::uint32_t* target)
 {
     if (operands == nullptr || target == nullptr ||
@@ -124,6 +154,27 @@ bool ReadDirectTarget(const ZydisDecodedInstruction& instruction,
         absolute > UINT32_MAX)
     {
         return false;
+    }
+    if (code_mode == GuestCodeDefaultOperandSize::k16)
+    {
+        // Zydis reports a near target in a 16-bit code segment as an IP
+        // offset. The runtime image and AOT address map use linear guest
+        // addresses, so restore the relocated code-object base here. A
+        // non-16-bit address attribute has no established segment contract
+        // in this planner and remains fail-closed.
+        if (instruction.address_width != 16U)
+        {
+            return false;
+        }
+        const std::uint64_t linear =
+            static_cast<std::uint64_t>(code_segment_base) +
+            static_cast<std::uint32_t>(absolute & 0xFFFFU);
+        if (linear > UINT32_MAX)
+        {
+            return false;
+        }
+        *target = static_cast<std::uint32_t>(linear);
+        return true;
     }
     *target = static_cast<std::uint32_t>(absolute);
     return true;
@@ -1126,9 +1177,16 @@ bool BuildAotTranslationPlanFromEntry(const RelocatedRuntimeImage& image,
                     category == ZYDIS_CATEGORY_COND_BR ||
                     category == ZYDIS_CATEGORY_UNCOND_BR)
                 {
+                    std::uint32_t code_segment_base = 0U;
+                    const bool has_code_segment_base =
+                        code_mode != GuestCodeDefaultOperandSize::k16 ||
+                        FindCodeSegmentBase(plan->code_mode_ranges, address,
+                                             &code_segment_base);
                     std::uint32_t target = 0;
-                    if (!ReadDirectTarget(
-                            instruction, operands, address, &target))
+                    if (!has_code_segment_base ||
+                        !ReadDirectTarget(instruction, operands, address,
+                                          code_mode, code_segment_base,
+                                          &target))
                     {
                         record.kind = AotInstructionKind::kIndirectExit;
                         block.instructions.push_back(std::move(record));

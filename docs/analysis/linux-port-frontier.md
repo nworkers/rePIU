@@ -14861,3 +14861,74 @@ flags and the upper word of `ECX`.
 The runtime trace records `guest_length=4` and `emitted_length=13` for the
 dynamic image, replacing the one-byte INT3 boundary. The next frontier is
 `0x01100012: E0 FF`, mode16 `LOOPNZ`.
+
+## 2026-09-15: Task 683 mode16 LOOPNZ lowering and re-entry boundary
+
+### 확인된 사실
+
+Task 683의 공용 classifier, x64 control-flow slot, mode16 relative-target
+rebasing, compatibility/emission/lowering probe는 모두 통과했다. mode16
+`E0 FF`의 decoder target은 segment-relative IP offset이므로 현재 executable
+code-mode range의 relocated base를 더해 `0x01100013`으로 기록된다.
+
+실제 실행 trace에서는 far transfer가 `0x010EFF20`에서 `0x01100004`로
+정상 해석되었지만, 해당 주소가 정적 AOT map에 없었다. 기존 post-HLE dynamic
+translation opt-in이 꺼진 상태에서 공용 re-entry gate가 legacy-32 기본 모드로
+첫 instruction만 검사했고, mode16 `66 85 FF`를 byte-identical로 잘못
+허용했다. 그 결과 원본 mode16 `B8 07 00`이 x64 long mode에서
+`MOV EAX,0x66670007`로 5바이트 decode되어 `0x0110000E`로 진행했다.
+
+따라서 이번 실행에서 `LOOPNZ` slot까지 도달하지 못한 원인은 `E0 FF`의
+주소별 예외가 아니라, code-mode metadata를 모르는 공용 re-entry 정책이다.
+
+### 상태 구분
+
+* **확인됨:** Task 683의 classifier/emitter/planner/probe 구현 및 Linux x64
+  core probe는 통과했다.
+* **확인됨:** mode16 object-3 원본 byte fallback이 long-mode instruction
+  boundary를 바꾸어 `0x0110000E` dynamic entry를 만들었다.
+* **추론:** re-entry gate가 code-mode 16을 사용하고 non-identical instruction을
+  dynamic translation으로 보내면, 다음 실패 지점은 mode16 `TEST`/`Jcc` 같은
+  일반 operand-width/control-flow lowering 경계가 된다.
+* **미확정:** 해당 lowering들을 순차적으로 추가한 뒤 object 3이 정상 실행을
+  완료하는지 여부.
+
+### 다음 작업
+
+Task 684에서 `CanResumeLinuxX64LegacyTarget`가 AOT placement의
+`RuntimeCodeModeRange`를 사용해 code-mode를 판정하도록 바꾸고, non-identical
+mode16 continuation이 post-HLE 설정과 무관하게 원본 long-mode bytes를
+실행하지 않도록 공용 re-entry 정책을 수정한다. 이후 dynamic entry
+`0x01100004`에서 발견되는 일반 mode16 lowering frontier를 별도 분류한다.
+
+### English
+
+Task 683's shared classifier, x64 control-flow slot, mode16 relative-target
+rebasing, and compatibility/emission/lowering probes all pass. A mode16
+`E0 FF` decoder target is a segment-relative IP offset, so the planner adds
+the relocated base of the current executable code-mode range and records
+`0x01100013` as the linear guest target.
+
+The live trace resolved the far transfer from `0x010EFF20` to `0x01100004`, but
+that address was absent from the static AOT map. With post-HLE dynamic
+translation disabled, the shared re-entry gate checked only the first
+instruction using the legacy-32 default and incorrectly admitted mode16
+`66 85 FF` as byte-identical. Original mode16 `B8 07 00` then decoded in x64
+long mode as the five-byte `MOV EAX,0x66670007`, advancing to `0x0110000E`.
+
+The live boundary is therefore a generic code-mode-aware re-entry problem, not
+an address-specific exception for `E0 FF` or `0x01100012`.
+
+* **Confirmed:** Task 683 implementation and the Linux x64 core probe pass.
+* **Confirmed:** mode16 object-3 original-byte fallback changed the long-mode
+  instruction boundary and created the `0x0110000E` dynamic entry.
+* **Inferred:** after the re-entry gate uses code mode 16 and routes
+  non-identical instructions through dynamic translation, the next frontier
+  will be the generic mode16 `TEST`/`Jcc` and operand-width lowerings.
+* **Unresolved:** whether object 3 completes after those lowerings are added.
+
+Task 684 will make `CanResumeLinuxX64LegacyTarget` use the AOT placement's
+`RuntimeCodeModeRange` metadata and will prevent non-identical mode16
+continuations from executing original long-mode bytes regardless of the
+post-HLE setting. The resulting `0x01100004` dynamic entry will then provide
+the next shared mode16 lowering frontier.

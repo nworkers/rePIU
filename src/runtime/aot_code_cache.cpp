@@ -234,6 +234,81 @@ void EmitLongModeReturnStackAdjustment(std::uint32_t adjustment,
     }
 }
 
+// Task 683. A mode16 LOOPNZ cannot be copied into long mode: its counter is
+// guest CX, while long mode has no 16-bit address-size form for the copied
+// opcode. The slot keeps the direct target as the one external fixup and lets
+// the enclosing block provide the ordinary fallthrough edge after the slot.
+bool EmitLongMode16BitLoopNz(const AotInstructionRecord& instruction,
+                             AotCodeCacheImage* image,
+                             std::size_t* const emitted_instructions)
+{
+    if (image == nullptr || emitted_instructions == nullptr ||
+        instruction.kind != AotInstructionKind::kConditionalBranch ||
+        instruction.guest_code_default_operand_size !=
+            GuestCodeDefaultOperandSize::k16 || instruction.bytes.empty())
+    {
+        return false;
+    }
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        instruction.bytes.data(), instruction.bytes.size(),
+        instruction.guest_code_default_operand_size);
+    if (verdict.lowering != LongModeLowering::k16BitLoopNzToGuestCx)
+    {
+        return false;
+    }
+
+    // pushfq; dec cx; test cx,cx; jz restore_and_fallthrough
+    image->bytes.push_back(0x9CU);
+    image->bytes.insert(image->bytes.end(), {0x66U, 0xFFU, 0xC9U});
+    image->bytes.insert(image->bytes.end(), {0x66U, 0x85U, 0xC9U});
+    const std::size_t zero_branch_offset = image->bytes.size();
+    image->bytes.insert(image->bytes.end(), {0x74U, 0x00U});
+    // mov r14, qword ptr [rsp]; bt r14, 6; jc restore_and_fallthrough
+    image->bytes.insert(image->bytes.end(),
+                        {0x4CU, 0x8BU, 0x34U, 0x24U});
+    image->bytes.insert(image->bytes.end(),
+                        {0x49U, 0x0FU, 0xBAU, 0xE6U, 0x06U});
+    const std::size_t saved_zf_branch_offset = image->bytes.size();
+    image->bytes.insert(image->bytes.end(), {0x72U, 0x00U});
+    image->bytes.push_back(0x9DU);  // popfq
+    const std::uint32_t target_branch_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendRel32(&image->bytes, 0xE9U);
+    const std::size_t restore_offset = image->bytes.size();
+    image->bytes.push_back(0x9DU);  // popfq
+
+    const auto patch_short_branch =
+        [&image](const std::size_t branch_offset,
+                 const std::size_t target_offset) {
+            const std::int64_t displacement =
+                static_cast<std::int64_t>(target_offset) -
+                static_cast<std::int64_t>(branch_offset + 2U);
+            if (displacement < std::numeric_limits<std::int8_t>::min() ||
+                displacement > std::numeric_limits<std::int8_t>::max())
+            {
+                return false;
+            }
+            (*image).bytes[branch_offset + 1U] =
+                static_cast<std::uint8_t>(displacement);
+            return true;
+        };
+    if (!patch_short_branch(zero_branch_offset, restore_offset) ||
+        !patch_short_branch(saved_zf_branch_offset, restore_offset))
+    {
+        return false;
+    }
+
+    image->fixups.push_back({AotFixupKind::kConditionalBranch,
+                             instruction.guest_address,
+                             instruction.direct_target,
+                             target_branch_offset + 1U, false});
+    ++image->long_mode_branch_count;
+    // The verifier decodes both paths in the map entry, including the restore
+    // instruction after the taken-path E9.
+    *emitted_instructions = 10U;
+    return true;
+}
+
 
 // Task 562. Where an emitted return goes to ask where a guest address lives.
 //
@@ -2697,7 +2772,11 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                 const bool allow_legacy32_long_mode_slot =
                     instruction.guest_code_default_operand_size !=
                     GuestCodeDefaultOperandSize::k16;
-                if (allow_legacy32_long_mode_slot &&
+                const bool emitted_mode16_control_flow =
+                    EmitLongMode16BitLoopNz(
+                        instruction, image, &emitted_instructions);
+                const bool emitted_legacy32_control_flow =
+                    allow_legacy32_long_mode_slot &&
                     (EmitLongModeDirectBranch(instruction, image,
                                                &emitted_instructions) ||
                      (instruction.kind ==
@@ -2720,7 +2799,9 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                           AotInstructionKind::kSegmentOverrideMem &&
                       options.enable_long_mode_segment_override &&
                       EmitLongModeSegmentOverride(instruction, image,
-                                                  &emitted_instructions))))
+                                                  &emitted_instructions)));
+                if (emitted_mode16_control_flow ||
+                    emitted_legacy32_control_flow)
                 {
                     map.emitted_length = static_cast<std::uint8_t>(
                         image->bytes.size() - cache_offset);

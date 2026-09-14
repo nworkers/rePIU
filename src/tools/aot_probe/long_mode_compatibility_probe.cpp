@@ -1,6 +1,7 @@
 #include "long_mode_compatibility_probe.h"
 
 #include "repiu/runtime/aot_long_mode_compatibility.h"
+#include "repiu/runtime/aot_translation_plan.h"
 
 #include <Zydis.h>
 
@@ -9,6 +10,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <iostream>
+#include <utility>
 #include <vector>
 
 namespace repiu::tools
@@ -876,6 +878,72 @@ bool Probe16BitLea16()
     return ok;
 }
 
+// Task 683. LOOPNZ is a control-flow lowering rather than a byte-only
+// lowering, because its direct target comes from the translation plan.
+// Address-size and opcode variants remain refused until their counter
+// semantics have separate proof.
+bool Probe16BitLoopNz()
+{
+    const std::uint8_t guest[] = {0xE0U, 0xFFU};
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        guest, sizeof(guest),
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    const bool target_free_lowerer_refuses = [&] {
+        std::uint8_t lowered[repiu::runtime::kMaxLoweredBytes] = {};
+        std::size_t lowered_count = 0U;
+        return !repiu::runtime::LowerLongModeBytes(
+            guest, sizeof(guest), lowered, &lowered_count, nullptr,
+            repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    }();
+    const std::uint8_t address_override[] = {0x67U, 0xE0U, 0xFFU};
+    const std::uint8_t loopz[] = {0xE1U, 0xFFU};
+    const bool unsupported_variants =
+        ClassifyLongModeBytes(
+            address_override, sizeof(address_override),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            repiu::runtime::LongModeLowering::k16BitLoopNzToGuestCx &&
+        ClassifyLongModeBytes(
+            loopz, sizeof(loopz),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            repiu::runtime::LongModeLowering::k16BitLoopNzToGuestCx;
+    constexpr std::uint32_t planner_base = 0x00220000U;
+    repiu::runtime::RelocatedRuntimeImage runtime_image;
+    runtime_image.valid = true;
+    repiu::runtime::RelocatedRuntimeObject object;
+    object.relocated_base_address = planner_base;
+    object.virtual_size = 16U;
+    object.flags = repiu::runtime::kLeObjectExecutable;
+    object.memory.assign(object.virtual_size, 0x90U);
+    object.memory[0] = 0xE0U;
+    object.memory[1] = 0x01U;
+    runtime_image.objects.push_back(std::move(object));
+    runtime_image.code_mode_ranges.push_back({
+        planner_base, 16U, repiu::runtime::kLeObjectExecutable});
+    repiu::runtime::AotTranslationPlan plan;
+    const bool plan_built = repiu::runtime::BuildAotTranslationPlanFromEntry(
+        runtime_image, planner_base, &plan);
+    const bool planner_target_rebased = plan_built && !plan.blocks.empty() &&
+        !plan.blocks.front().instructions.empty() &&
+        plan.blocks.front().instructions.front().kind ==
+            repiu::runtime::AotInstructionKind::kConditionalBranch &&
+        plan.blocks.front().instructions.front().direct_target ==
+            planner_base + 3U;
+    const bool ok =
+        verdict.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict.divergence == LongModeDivergence::kAddressSize &&
+        verdict.lowering ==
+            repiu::runtime::LongModeLowering::k16BitLoopNzToGuestCx &&
+        target_free_lowerer_refuses && unsupported_variants &&
+        planner_target_rebased;
+    std::cout << "long_mode_16bit_loopnz=" << (ok ? "true" : "false")
+              << ",length=" << (ok ? 2U : 0U)
+              << ",target_free_lowerer_refused="
+              << (target_free_lowerer_refuses ? "true" : "false")
+              << ",planner_target_rebased="
+              << (planner_target_rebased ? "true" : "false") << "\n";
+    return ok;
+}
+
 }  // namespace
 
 bool RunLongModeCompatibilityProbe()
@@ -893,11 +961,12 @@ bool RunLongModeCompatibilityProbe()
     const bool sixteen_bit_ok = Probe16BitStackPointerImmediate();
     const bool sixteen_bit_lea_ok = Probe16BitLea32();
     const bool sixteen_bit_lea16_ok = Probe16BitLea16();
+    const bool sixteen_bit_loopnz_ok = Probe16BitLoopNz();
 
     const bool all = silent_ok && invalid_ok && width_ok && width_kind_ok &&
         reasons_ok && stack_ok && inc_dec_ok && stack_seq_ok && subset_ok &&
         refusals_ok && sixteen_bit_ok && sixteen_bit_lea_ok &&
-        sixteen_bit_lea16_ok;
+        sixteen_bit_lea16_ok && sixteen_bit_loopnz_ok;
     std::cout << "long_mode_compatibility_all=" << (all ? "true" : "false")
               << "\n";
     return all;

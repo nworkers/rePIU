@@ -5,6 +5,7 @@
 
 #include <Zydis.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -1090,6 +1091,143 @@ bool Probe16BitLea16ModeEmission()
     return ok;
 }
 
+// Task 683. A mode16 LOOPNZ gets a dedicated long-mode slot. Its taken edge
+// is an ordinary conditional fixup, while the not-taken path exits the slot so
+// the enclosing block can provide an explicit block-fallthrough edge.
+bool Probe16BitLoopNzModeEmission()
+{
+    constexpr std::uint32_t base = kBase + 0x400U;
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = base;
+
+    AotBasicBlock loop_block;
+    loop_block.guest_address = base;
+    AotInstructionRecord loop;
+    loop.guest_address = base;
+    loop.kind = AotInstructionKind::kConditionalBranch;
+    loop.length = 2U;
+    loop.direct_target = base + 0x20U;
+    loop.fallthrough_target = base + 2U;
+    loop.guest_code_default_operand_size = GuestCodeDefaultOperandSize::k16;
+    loop.bytes = {0xE0U, 0x01U};
+    loop_block.instructions.push_back(loop);
+    plan.blocks.push_back(std::move(loop_block));
+
+    // Emit the target first so the loop's fallthrough cannot be satisfied by
+    // adjacency. This makes the two edge contracts visible independently.
+    AotBasicBlock target_block;
+    target_block.guest_address = base + 0x20U;
+    AotInstructionRecord target_boundary;
+    target_boundary.guest_address = base + 0x20U;
+    target_boundary.kind = AotInstructionKind::kPortIo;
+    target_boundary.length = 1U;
+    target_boundary.guest_code_default_operand_size =
+        GuestCodeDefaultOperandSize::k16;
+    target_boundary.bytes = {0xEDU};
+    target_block.instructions.push_back(target_boundary);
+    plan.blocks.push_back(std::move(target_block));
+
+    AotBasicBlock fallthrough_block;
+    fallthrough_block.guest_address = base + 2U;
+    AotInstructionRecord fallthrough_boundary;
+    fallthrough_boundary.guest_address = base + 2U;
+    fallthrough_boundary.kind = AotInstructionKind::kPortIo;
+    fallthrough_boundary.length = 1U;
+    fallthrough_boundary.guest_code_default_operand_size =
+        GuestCodeDefaultOperandSize::k16;
+    fallthrough_boundary.bytes = {0xEDU};
+    fallthrough_block.instructions.push_back(fallthrough_boundary);
+    plan.blocks.push_back(std::move(fallthrough_block));
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    const bool built = BuildAotCodeCacheImage(plan, options, &image) &&
+        image.valid;
+    const std::vector<std::uint8_t> expected = {
+        0x9CU,
+        0x66U, 0xFFU, 0xC9U,
+        0x66U, 0x85U, 0xC9U,
+        0x74U, 0x11U,
+        0x4CU, 0x8BU, 0x34U, 0x24U,
+        0x49U, 0x0FU, 0xBAU, 0xE6U, 0x06U,
+        0x72U, 0x06U,
+        0x9DU,
+        0xE9U, 0x06U, 0x00U, 0x00U, 0x00U,
+        0x9DU,
+    };
+    std::vector<std::uint8_t> emitted;
+    const bool slot_bytes = built && EmittedBytes(image, base, &emitted) &&
+        emitted == expected;
+    bool conditional_fixup = false;
+    bool block_fallthrough_fixup = false;
+    for (const repiu::runtime::AotCodeCacheFixup& fixup : image.fixups)
+    {
+        conditional_fixup = conditional_fixup ||
+            (fixup.kind == AotFixupKind::kConditionalBranch &&
+             fixup.guest_source == base &&
+             fixup.guest_target == base + 0x20U && fixup.resolved &&
+             fixup.cache_patch_offset == 22U);
+        block_fallthrough_fixup = block_fallthrough_fixup ||
+            (fixup.kind == AotFixupKind::kBlockFallthrough &&
+             fixup.guest_source == base &&
+             fixup.guest_target == base + 2U && fixup.resolved &&
+             fixup.cache_patch_offset == 28U);
+    }
+    const bool ok = slot_bytes && conditional_fixup &&
+        block_fallthrough_fixup;
+    std::cout << "long_mode_emission_16bit_loopnz="
+              << (ok ? "true" : "false") << ",slot="
+              << (slot_bytes ? 1 : 0) << ",conditional_fixup="
+              << (conditional_fixup ? 1 : 0) << ",fallthrough_fixup="
+              << (block_fallthrough_fixup ? 1 : 0) << "\n";
+    return ok;
+}
+
+// An unresolved taken target must neutralise only the complete loop entry;
+// its separate block-fallthrough edge must not patch bytes back into that
+// entry.
+bool Probe16BitLoopNzUnresolvedTarget()
+{
+    constexpr std::uint32_t base = kBase + 0x500U;
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = base;
+    AotBasicBlock block;
+    block.guest_address = base;
+    AotInstructionRecord loop;
+    loop.guest_address = base;
+    loop.kind = AotInstructionKind::kConditionalBranch;
+    loop.length = 2U;
+    loop.direct_target = base + 0x20U;
+    loop.fallthrough_target = base + 2U;
+    loop.guest_code_default_operand_size = GuestCodeDefaultOperandSize::k16;
+    loop.bytes = {0xE0U, 0x01U};
+    block.instructions.push_back(loop);
+    plan.blocks.push_back(std::move(block));
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    const bool built = BuildAotCodeCacheImage(plan, options, &image) &&
+        image.valid;
+    std::vector<std::uint8_t> emitted;
+    const bool neutralised = built && EmittedBytes(image, base, &emitted) &&
+        emitted.size() == 27U &&
+        std::all_of(emitted.begin(), emitted.end(),
+                    [](const std::uint8_t byte) { return byte == 0xCCU; });
+    const bool fallthrough_tail_neutralised = built && image.bytes.size() >=
+        28U && image.bytes[27U] == 0xCCU;
+    const bool ok = neutralised && fallthrough_tail_neutralised &&
+        image.long_mode_unresolved_branch_count == 2U;
+    std::cout << "long_mode_emission_16bit_loopnz_unresolved="
+              << (ok ? "true" : "false") << ",entry="
+              << (neutralised ? 1 : 0) << ",fallthrough="
+              << (fallthrough_tail_neutralised ? 1 : 0) << "\n";
+    return ok;
+}
+
 }  // namespace
 
 bool RunLongModeEmissionProbe()
@@ -1100,6 +1238,9 @@ bool RunLongModeEmissionProbe()
     const bool sixteen_bit_mode_ok = Probe16BitModeEmission();
     const bool sixteen_bit_lea_ok = Probe16BitLeaModeEmission();
     const bool sixteen_bit_lea16_ok = Probe16BitLea16ModeEmission();
+    const bool sixteen_bit_loopnz_ok = Probe16BitLoopNzModeEmission();
+    const bool sixteen_bit_loopnz_unresolved_ok =
+        Probe16BitLoopNzUnresolvedTarget();
     const bool segment_read_gpr16_ok = ProbeSegmentReadGpr16Classification();
     const bool segment_override_coverage_ok =
         ProbeLongModeSegmentOverrideCoverage();
@@ -1115,6 +1256,8 @@ bool RunLongModeEmissionProbe()
         sixteen_bit_mode_ok &&
         sixteen_bit_lea_ok &&
         sixteen_bit_lea16_ok &&
+        sixteen_bit_loopnz_ok &&
+        sixteen_bit_loopnz_unresolved_ok &&
         segment_read_gpr16_ok &&
         segment_override_coverage_ok &&
         segment_guard_coverage_ok &&

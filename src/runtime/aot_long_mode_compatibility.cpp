@@ -709,6 +709,19 @@ bool IsMode16Lea16(const std::uint8_t* const bytes,
     return true;
 }
 
+// Task 683. LOOPNZ selects its counter width from the address-size attribute.
+// The prefix-free mode16 form therefore names CX, while long mode has no
+// 16-bit address-size encoding for the copied opcode to retain.
+bool IsMode16LoopNz(const ZydisDecodedInstruction& instruction)
+{
+    return instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT &&
+        instruction.opcode == 0xE0U &&
+        instruction.mnemonic == ZYDIS_MNEMONIC_LOOPNE &&
+        instruction.meta.category == ZYDIS_CATEGORY_COND_BR &&
+        instruction.length == 2U && instruction.address_width == 16U &&
+        instruction.raw.prefix_count == 0U;
+}
+
 }  // namespace
 
 LongModeCompatibilityResult ClassifyLongModeBytes(
@@ -770,6 +783,11 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
         {
             return Reencode(LongModeDivergence::kAddressSize,
                             LongModeLowering::k16BitLea16ToGuestGprs);
+        }
+        if (IsMode16LoopNz(instruction))
+        {
+            return Reencode(LongModeDivergence::kAddressSize,
+                            LongModeLowering::k16BitLoopNzToGuestCx);
         }
         return Refuse(LongModeDivergence::kOperandWidth);
     }
@@ -1631,6 +1649,15 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
                 ? 4U : 2U;
         }
         return true;
+    }
+
+    // Task 683. The LOOPNZ sequence needs direct-target and fallthrough
+    // addresses from an AOT instruction record. The cache emitter owns that
+    // control-flow lowering, so the byte-only API deliberately does not emit
+    // a target-free pseudo-branch.
+    if (verdict.lowering == LongModeLowering::k16BitLoopNzToGuestCx)
+    {
+        return false;
     }
 
     if (verdict.lowering == LongModeLowering::kAddressSizePrefix)
