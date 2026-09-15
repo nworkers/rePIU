@@ -2778,6 +2778,27 @@ std::uint32_t LinuxX64GuestEntryTraceAddress()
     return address;
 }
 
+std::uint32_t LinuxX64GuestEntryTraceEndAddress()
+{
+    static const std::uint32_t address = [] {
+        const char* const value =
+            std::getenv("REPIU_LINUX_X64_GUEST_ENTRY_TRACE_END");
+        if (value == nullptr || *value == '\0')
+        {
+            return 0U;
+        }
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &end, 0);
+        if (end == value || *end != '\0' ||
+            parsed > std::numeric_limits<std::uint32_t>::max())
+        {
+            return 0U;
+        }
+        return static_cast<std::uint32_t>(parsed);
+    }();
+    return address;
+}
+
 const char* LinuxX64FaultKindName(
     const repiu::platform::FaultKind kind)
 {
@@ -2835,11 +2856,19 @@ void TraceLinuxX64GuestEntry(
     {
         return;
     }
+    const std::uint32_t configured_end =
+        LinuxX64GuestEntryTraceEndAddress();
+    const std::uint32_t range_end = configured_end >= target
+        ? configured_end : target;
     const std::uint32_t entry_guest_eip =
         ResolveLinuxX64GuestEntryAddress(context, entry_eip);
     const std::uint32_t exit_guest_eip =
         ResolveLinuxX64GuestEntryAddress(context, exit_eip);
-    if (target != entry_guest_eip && target != exit_guest_eip)
+    const bool entry_matched =
+        entry_guest_eip >= target && entry_guest_eip <= range_end;
+    const bool exit_matched =
+        exit_guest_eip >= target && exit_guest_eip <= range_end;
+    if (!entry_matched && !exit_matched)
     {
         return;
     }
@@ -2853,12 +2882,13 @@ void TraceLinuxX64GuestEntry(
     char line[512] = {};
     const int length = std::snprintf(
         line, sizeof(line),
-        "[repiu-x64-guest-entry] n=%u target=0x%08X fault_kind=%s "
+        "[repiu-x64-guest-entry] n=%u target=0x%08X end=0x%08X fault_kind=%s "
         "fault_eip=0x%08X entry_eip=0x%08X entry_guest=0x%08X "
         "exit_eip=0x%08X exit_guest=0x%08X entry_esp=0x%08X "
         "exit_esp=0x%08X "
         "eflags=0x%08X pending=%u legacy=%u exit_site=%s\n",
         static_cast<unsigned>(sequence), static_cast<unsigned>(target),
+        static_cast<unsigned>(range_end),
         LinuxX64FaultKindName(fault_kind), static_cast<unsigned>(fault_eip),
         static_cast<unsigned>(entry_eip),
         static_cast<unsigned>(entry_guest_eip),

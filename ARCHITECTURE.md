@@ -3895,6 +3895,17 @@ guest-sensitive instructions execute. A zero target, a target outside the arena,
 or an unproven first instruction keeps the existing zero result and INT3
 fail-closed behavior.
 
+Linux x64의 `REPIU_LINUX_X64_GUEST_ENTRY_TRACE=<start>` 진단은 선택적
+`REPIU_LINUX_X64_GUEST_ENTRY_TRACE_END=<end>`와 함께 inclusive guest 주소 범위를
+선택할 수 있습니다. cache 주소는 guest map으로 역변환한 뒤 범위와 비교하며, 끝 주소가
+없거나 시작보다 작으면 기존 exact 선택으로 동작합니다.
+
+On Linux x64, the `REPIU_LINUX_X64_GUEST_ENTRY_TRACE=<start>` diagnostic can
+select an inclusive guest-address range with the optional
+`REPIU_LINUX_X64_GUEST_ENTRY_TRACE_END=<end>`. Cache addresses are reverse
+mapped before matching; an absent or smaller end retains the original exact
+selection.
+
 ---
 
 ## Legacy fallback moffs32 store HLE

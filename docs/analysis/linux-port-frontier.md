@@ -15796,3 +15796,68 @@ Baseline smoke shutdown:
 The next frontier is to reach the actual object-3 mode16 return or LINEXE export
 through a runtime path and to isolate the cause of timeout-cleanup recovery
 failure.
+
+---
+
+## 2026-09-15 Task 695 — fatal breakpoint raw continuation 확인
+
+### 확인됨
+
+* `0x010F0D96` fault의 host RSP 손상은 AOT lowering 실패가 아닙니다. 해당 함수의
+  `PUSH`, `SUB ESP`, ESP-relative access, direct CALL은 모두 cache에서 R15D 기반으로
+  올바르게 lowering되어 있습니다.
+* guest-entry 범위 trace의 최초 low-RSP callback은 raw `0x010F0D6E` access fault이며,
+  그 뒤 `0x010F0D78`, `0x010F0D7C`, `0x010F0D83`, `0x010F0D8F`가 연속 access HLE로
+  진행됩니다.
+* 호출자 범위 trace에서 cache `0x20001805` breakpoint가 guest `0x010EFEB8`로
+  역변환되고, `HandleOriginalFatalBreakpoint`가 raw `0x010EFEB9`로 복귀하며 exit
+  site가 `fatal-breakpoint`인 것이 확인되었습니다.
+* 이 복귀의 EFLAGS `0x00200216`에는 TF가 없습니다. raw continuation은
+  `PUSH EDX; CALL 0x010F0D68; HLT` fatal-message sequence이므로 PUSH와 callee prologue가
+  host RSP를 직접 변경합니다.
+* signal RF 제거와 standalone `SUB ESP` HLE 실험은 live fault를 바꾸지 않았고 최종
+  코드에서 제거했습니다.
+
+### 미확정
+
+* fatal-message callback이 이후 DOS console/HLE 종료로 이어져야 하는지, 아니면
+  즉시 host failure로 회수되어야 하는지는 다음 작업에서 기존 i386 의미와 함께
+  결정해야 합니다.
+
+### 다음 frontier
+
+`HandleOriginalFatalBreakpoint`의 `0x010EFEB9` continuation을 raw guest 주소로 직접
+복귀시키지 말고, Linux x64에서는 기존 HLE-to-AOT resume 정책으로 cache에 연결한 뒤
+fatal-message sequence와 종료 결과를 확인합니다.
+
+## English
+
+### Confirmed
+
+* Host-RSP corruption at `0x010F0D96` is not an AOT lowering failure. The
+  function's PUSH, `SUB ESP`, ESP-relative accesses, and direct CALL are all
+  correctly lowered through R15D in the cache.
+* The first low-RSP callback in the guest-entry range trace is an access fault
+  at raw `0x010F0D6E`, followed by access HLE at `0x010F0D78`, `0x010F0D7C`,
+  `0x010F0D83`, and `0x010F0D8F`.
+* The caller-range trace shows cache breakpoint `0x20001805` reverse-mapped to
+  guest `0x010EFEB8`; `HandleOriginalFatalBreakpoint` resumes at raw
+  `0x010EFEB9` with exit site `fatal-breakpoint`.
+* Resume EFLAGS `0x00200216` does not contain TF. The raw continuation is the
+  `PUSH EDX; CALL 0x010F0D68; HLT` fatal-message sequence, so the PUSH and
+  callee prologue directly modify host RSP.
+* Signal RF clearing and standalone `SUB ESP` HLE experiments did not change
+  the live fault and were removed from the final code.
+
+### Unresolved
+
+The next task must determine from the existing i386 behavior whether the fatal
+message should continue through DOS console/HLE termination or be recovered to
+the host immediately.
+
+### Next frontier
+
+Do not resume `HandleOriginalFatalBreakpoint` directly at raw guest
+`0x010EFEB9` on Linux x64. Connect that continuation through the existing
+HLE-to-AOT resume policy, then observe the fatal-message sequence and shutdown
+result.
