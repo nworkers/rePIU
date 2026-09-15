@@ -15607,3 +15607,82 @@ ESP as linear and do not describe the SS-relative stack.
 
 **Unresolved:** Successful execution and SIGTRAP termination. Next is the
 SS-relative word far-return frame, distinct from the current 66 CB dword handler.
+
+## 2026-09-15: Task 693 shared LINEXE far-jump dispatch
+
+**확인됨:** 공용 guest HLE dispatcher의 `EA` 분기가 기존
+`HandleLinexeFarTransferBoundary`를 generic far jump보다 먼저 호출합니다.
+기존 LINEXE matcher와 service semantics는 그대로 사용하며, handler가
+bridge frame을 읽지 못하면 이전에 저장된 frame을 소비하지 않고 거부합니다.
+미지원 export는 generic far-jump fallback으로 진행합니다.
+
+공용 probe가 세 경로를 모두 통과했습니다.
+
+```text
+linexe_shared_dispatch=1,fallback=1,bad_frame=1
+core_probe_total=27
+core_probe_failures=0
+core_probe_all=true
+```
+
+WSL Linux x64에서 최신 `repiu_core_probe`와 `repiu`를 재빌드했습니다.
+실제 `pumpit2a` smoke는 selector `002C`가 object 3, base `01100000`,
+limit `00000047`에 바인딩된 사실을 확인했지만, 동적 요청은 `0x010...`
+영역에 머물렀습니다. `0x01100022` LINEXE export 요청이나 공용 dispatch의
+live entry는 관측하지 못했습니다.
+
+```text
+[loader] Win32 relocated selector binding: selector=0x002C object=3 base=0x01100000 limit=0x00000047
+[repiu-shutdown] reason=timeout attempts=15 answered=1 recovered=1 stopped=1 failure=0 eip=0x200633EA gate=0 frames=0 span_ms=0
+```
+
+* **확인됨:** 공용 dispatch의 LOADMODULE/fallback/unreadable-frame probe
+  semantics와 Linux x64 빌드가 통과했습니다.
+* **확인됨:** smoke에서 coredump failure는 재현되지 않았습니다.
+* **미확정:** 실제 object 3 LINEXE 경계 진입과 정상 게임 종료입니다.
+
+### 다음 frontier
+
+다음 frontier는 SS-relative mode16 far-return frame과 bare `RETF`입니다.
+이를 검증한 뒤 object 3의 실제 LINEXE export 경계까지 도달하는 실행
+경로를 확인해야 합니다.
+
+### English
+
+**Confirmed:** the shared guest HLE dispatcher's `EA` branch tries the existing
+`HandleLinexeFarTransferBoundary` before generic far-jump handling. Existing
+LINEXE matching and service semantics remain unchanged. If the bridge frame is
+unreadable, the handler declines without consuming a previously saved frame;
+unsupported exports use the generic far-jump fallback.
+
+The shared probe passes all three paths:
+
+```text
+linexe_shared_dispatch=1,fallback=1,bad_frame=1
+core_probe_total=27
+core_probe_failures=0
+core_probe_all=true
+```
+
+The latest `repiu_core_probe` and `repiu` were rebuilt on Linux x64 under WSL.
+The live `pumpit2a` smoke confirmed selector `002C` bound to object 3 with base
+`01100000` and limit `00000047`, but dynamic requests remained in the
+`0x010...` region. The `0x01100022` LINEXE export request and a live entry into
+the shared dispatch were not observed.
+
+```text
+[loader] Win32 relocated selector binding: selector=0x002C object=3 base=0x01100000 limit=0x00000047
+[repiu-shutdown] reason=timeout attempts=15 answered=1 recovered=1 stopped=1 failure=0 eip=0x200633EA gate=0 frames=0 span_ms=0
+```
+
+* **Confirmed:** shared-dispatch LOADMODULE, fallback, and unreadable-frame
+  probe semantics pass, as does the Linux x64 build.
+* **Confirmed:** the smoke did not reproduce a coredump failure.
+* **Unresolved:** reaching the actual object-3 LINEXE boundary and normal game
+  termination.
+
+### Next frontier
+
+The next frontier is the SS-relative mode16 far-return frame and bare `RETF`.
+After validating it, find an execution path that reaches the actual object-3
+LINEXE export boundary.
