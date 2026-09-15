@@ -259,7 +259,8 @@ bool ResolveAotDbtPostHleTranslationEnabled(std::string_view setting)
 
 bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context,
-                                 std::uint32_t handled_guest_eip)
+                                 std::uint32_t handled_guest_eip,
+                                 AotHleResumeOrigin origin)
 {
     if (win32_context == nullptr || context == nullptr ||
         context->aot_placement == nullptr)
@@ -281,12 +282,15 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
             ? "pending"
             : (context->aot_legacy_fallback
                    ? "legacy-fallback"
-                   : "not-pending"));
+                   : (origin == AotHleResumeOrigin::kHandledGuestBoundary
+                          ? "handled-boundary"
+                          : "not-pending")));
     // A handled instruction may also be the first safe bridge out of a legacy
     // fallback that began at an unmapped target. The original AOT contract
     // permits returning to the cache once execution reaches a known address;
     // the same lookup and span gates below still decide whether that is safe.
-    if (!context->aot_reentry_pending && !context->aot_legacy_fallback)
+    if (!context->aot_reentry_pending && !context->aot_legacy_fallback &&
+        origin != AotHleResumeOrigin::kHandledGuestBoundary)
     {
         ++context->hle_reentry_reject_not_pending;
         return false;

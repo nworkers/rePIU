@@ -6038,9 +6038,29 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         win32_context->EFlags &= ~0x00000100U;
         return repiu::platform::FaultDisposition::kNotHandled;
     }
+    const std::uint32_t fatal_breakpoint_eip =
+        static_cast<std::uint32_t>(win32_context->Eip);
     if (HandleOriginalFatalBreakpoint(fault, context))
     {
         NoteVehExitSite(context, VehExitSite::kFatalBreakpoint);
+#if defined(__x86_64__)
+        if (context->aot_placement != nullptr &&
+            static_cast<std::uint32_t>(win32_context->Eip) !=
+                fatal_breakpoint_eip)
+        {
+            const bool resumed = TryResumeAotAfterHandledHle(
+                win32_context, context, fatal_breakpoint_eip,
+                AotHleResumeOrigin::kHandledGuestBoundary);
+            if (!resumed &&
+                !CanResumeLinuxX64LegacyTarget(
+                    context,
+                    static_cast<std::uint32_t>(win32_context->Eip)))
+            {
+                win32_context->EFlags &= ~0x00000100U;
+                return repiu::platform::FaultDisposition::kNotHandled;
+            }
+        }
+#endif
         return repiu::platform::FaultDisposition::kResume;
     }
 

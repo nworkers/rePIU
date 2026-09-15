@@ -15861,3 +15861,63 @@ Do not resume `HandleOriginalFatalBreakpoint` directly at raw guest
 `0x010EFEB9` on Linux x64. Connect that continuation through the existing
 HLE-to-AOT resume policy, then observe the fatal-message sequence and shutdown
 result.
+
+---
+
+## 2026-09-15 Task 696 — fatal breakpoint continuation AOT 재진입
+
+### 확인됨
+
+* `TryResumeAotAfterHandledHle`는 일반 pending/legacy 실행과 dispatcher가 이미
+  확인한 guest boundary를 구분합니다. 후자만 초기 pending-state gate를 우회하고
+  나머지 arena, quarantine, cache/translation, span 검사는 공유합니다.
+* `HandleOriginalFatalBreakpoint`가 EIP를 진행시킨 Linux x64 AOT 경로는 이
+  handled-boundary 정책으로 continuation을 cache에 연결합니다. 재진입 실패 뒤의
+  명령이 long-mode 비동일이면 raw guest code로 복귀하지 않습니다.
+* 실제 `pumpit2a`에서 `handled=0x010EFEB8`, `current=0x010EFEB9`가 기존 cache
+  `0x20001806`에 hit했고 `stage=resumed`를 기록했습니다.
+* Task 695의 raw `0x010F0D96` host-RSP 손상은 재발하지 않았습니다. 실행은 guest
+  `0x010F777C`에 대응하는 cache `0x200695A3`의 새 미처리 SIGTRAP까지 진행했습니다.
+
+### 미확정
+
+* 새 cache SIGTRAP의 앞 바이트 provenance와 boundary 종류는 아직 분류하지
+  않았습니다.
+* fatal printer가 원본 HLT/DOS terminate까지 완주하는지는 아직 확인되지
+  않았습니다.
+
+### 다음 frontier
+
+cache `0x200695A3`의 SIGTRAP을 guest `0x010F777C` 주변 address map, 이전 cache
+byte, fixup provenance와 대조해 어떤 AOT boundary가 처리되지 않았는지 확인합니다.
+
+## English
+
+### Confirmed
+
+* `TryResumeAotAfterHandledHle` now distinguishes ordinary pending/legacy
+  execution from a guest boundary already recognized by the dispatcher. Only
+  the latter bypasses the initial pending-state gate; arena, quarantine,
+  cache/translation, and span checks remain shared.
+* When `HandleOriginalFatalBreakpoint` advances EIP under Linux x64 AOT, that
+  continuation uses the handled-boundary policy. If re-entry fails and the next
+  instruction is not long-mode identical, execution does not return to raw
+  guest code.
+* Real `pumpit2a` recorded a cache hit at `0x20001806` for
+  `handled=0x010EFEB8`, `current=0x010EFEB9`, followed by `stage=resumed`.
+* The raw `0x010F0D96` host-RSP corruption from Task 695 did not recur. Execution
+  advanced to a new unhandled SIGTRAP at cache `0x200695A3`, corresponding to
+  guest `0x010F777C`.
+
+### Unresolved
+
+* The preceding-byte provenance and boundary kind of the new cache SIGTRAP are
+  not yet classified.
+* The fatal printer has not yet been observed completing through original HLT
+  or DOS termination.
+
+### Next frontier
+
+Correlate the SIGTRAP at cache `0x200695A3` with the address map, preceding
+cache byte, and fixup provenance around guest `0x010F777C` to identify the
+unhandled AOT boundary.
