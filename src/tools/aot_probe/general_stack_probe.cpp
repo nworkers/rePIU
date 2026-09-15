@@ -432,6 +432,88 @@ bool RunGeneralStackProbe()
               << ",fallback=" << loader_fallback
               << ",bad_frame=" << loader_bad_frame << "\n";
 
+    // A bare mode16 RETF reads a word IP and word CS through SS.base and
+    // advances the guest stack by four bytes.
+    const std::uint8_t mode16_return[] = {0xCBU};
+    std::memcpy(bytes + kCodeOffset, mode16_return, sizeof(mode16_return));
+    std::uint16_t return_offset = 0x0020U;
+    std::uint16_t return_selector = 0x0024U;
+    std::memcpy(bytes + kStackOffset, &return_offset,
+                sizeof(return_offset));
+    std::memcpy(bytes + kStackOffset + 2U, &return_selector,
+                sizeof(return_selector));
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    const bool mode16_return_cs =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x002CU, static_cast<std::uint32_t>(kRequestedBase),
+             static_cast<std::uint32_t>(kArenaSize - 1U), 0U, true,
+             repiu::runtime::kLeObjectExecutable, true,
+             repiu::runtime::GuestCodeDefaultOperandSize::k16});
+    const bool mode16_return_target =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x0024U, static_cast<std::uint32_t>(kRequestedBase + 0x200U),
+             0xFFU, 0U, true, repiu::runtime::kLeObjectExecutable, true,
+             repiu::runtime::GuestCodeDefaultOperandSize::k32});
+    const bool mode16_return_ss =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x00B4U, static_cast<std::uint32_t>(kRequestedBase),
+             static_cast<std::uint32_t>(kArenaSize - 1U), 0x92U, true});
+    context.guest_ss = 0x00B4U;
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.SegCs = 0x002CU;
+    const bool mode16_return_handled =
+        mode16_return_cs && mode16_return_target && mode16_return_ss &&
+        repiu::engine::DispatchGuestHleInstruction(&cpu, &context) &&
+        cpu.Eip == kRequestedBase + 0x220U && cpu.SegCs == 0x0024U &&
+        cpu.Esp == kRequestedBase + kStackOffset + 4U;
+
+    return_offset = 0x0020U;
+    return_selector = 0x00FFU;
+    std::memcpy(bytes + kStackOffset, &return_offset,
+                sizeof(return_offset));
+    std::memcpy(bytes + kStackOffset + 2U, &return_selector,
+                sizeof(return_selector));
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.SegCs = 0x002CU;
+    const bool mode16_return_bad_selector =
+        !repiu::engine::DispatchGuestHleInstruction(&cpu, &context) &&
+        cpu.Eip == kRequestedBase + kCodeOffset &&
+        cpu.Esp == kRequestedBase + kStackOffset && cpu.SegCs == 0x002CU;
+
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kArenaSize - 2U);
+    cpu.SegCs = 0x002CU;
+    const bool mode16_return_bad_frame =
+        !repiu::engine::DispatchGuestHleInstruction(&cpu, &context) &&
+        cpu.Eip == kRequestedBase + kCodeOffset &&
+        cpu.Esp == kRequestedBase + kArenaSize - 2U && cpu.SegCs == 0x002CU;
+
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    const bool mode32_return_cs =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x002CU, static_cast<std::uint32_t>(kRequestedBase),
+             static_cast<std::uint32_t>(kArenaSize - 1U), 0U, true,
+             repiu::runtime::kLeObjectExecutable, true,
+             repiu::runtime::GuestCodeDefaultOperandSize::k32});
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.SegCs = 0x002CU;
+    const bool mode32_return_refused =
+        mode32_return_cs &&
+        !repiu::engine::DispatchGuestHleInstruction(&cpu, &context) &&
+        cpu.Eip == kRequestedBase + kCodeOffset &&
+        cpu.Esp == kRequestedBase + kStackOffset && cpu.SegCs == 0x002CU;
+    std::cout << "mode16_far_return=" << mode16_return_handled
+              << ",bad_selector=" << mode16_return_bad_selector
+              << ",bad_frame=" << mode16_return_bad_frame
+              << ",mode32_refused=" << mode32_return_refused << "\n";
+
     const bool released =
         repiu::platform::ReleaseMemory(reservation.base, kArenaSize);
     const bool all = ordinary_push && ordinary_pop && push_esp_order &&
@@ -443,7 +525,9 @@ bool RunGeneralStackProbe()
         legacy_moffs_store && legacy_moffs_store_range_rejected &&
         cs_source_store && cs_source_missing_refused &&
         boundary_epilogue_drained && loader_dispatch && loader_fallback &&
-        loader_bad_frame && released;
+        loader_bad_frame && mode16_return_handled &&
+        mode16_return_bad_selector && mode16_return_bad_frame &&
+        mode32_return_refused && released;
     std::cout << "general_stack_push=" << (ordinary_push ? "true" : "false")
               << ",pop=" << (ordinary_pop ? "true" : "false")
               << ",push_esp=" << (push_esp_order ? "true" : "false")

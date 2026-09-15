@@ -296,6 +296,7 @@ target_sources(repiu_exe
         src/engine/exception/host_crash_report.cpp
         src/engine/cpu_emul/guest_memory_access.cpp
         src/engine/cpu_emul/instruction_emulation.cpp
+        src/engine/cpu_emul/mode16_far_return.cpp
         src/engine/cpu_emul/mode16_stack_push.cpp
         src/engine/cpu_emul/low_memory_string_access.cpp
         src/engine/boundary/linexe_glide_boundary.cpp

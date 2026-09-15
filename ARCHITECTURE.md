@@ -3700,13 +3700,38 @@ Task 692는 확인된 mode16 register PUSH의 HLE 처리를 `mode16_stack_push`�
 분리합니다. 공용 `guest_stack_access`가 SS.B에 따른 SP/ESP 갱신, SS.base 주소
 변환, descriptor 권한/limit 검사를 수행합니다. 기존 R15D에는 guest ESP 값을
 유지하며 mode16에서 이 값을 곧바로 선형 메모리 주소로 사용하지 않습니다.
-일반 POP/RETF 및 expand-down stack 지원은 이 PUSH 구현에 포함되지 않습니다.
+일반 POP 및 expand-down stack 지원은 이 PUSH 구현에 포함되지 않습니다.
 
 Task 692 separates confirmed mode16 register PUSH handling into mode16_stack_push.
 Shared guest_stack_access computes SP/ESP updates from SS.B, translates through
 SS.base and validates descriptor permissions/limits. R15D retains guest ESP;
 the mode16 PUSH adapter does not treat it directly as a linear memory address.
-General POP/RETF and expand-down stacks are outside this PUSH implementation.
+General POP and expand-down stacks are outside this PUSH implementation.
+
+Task 694는 별도의 mode16 bare RETF handler를 추가합니다. `GuestStackReadAccess`는
+동일한 present/writable 정책, SS.B width 규칙, SS.base 변환, descriptor limit
+검사를 사용해 현재 SS:SP read window를 계산합니다. EIP를 포함하는 유효한
+guest `SegCs`를 현재 code 식별에 우선 사용하고, guest CS를 제공하지 않는
+AOT 문맥에서는 기존의 유일한 EIP 역조회를 사용합니다. handler는 executable
+mode16 code의 prefix 없는 `CB`만 받아 SS를 통해 4바이트 word IP/CS frame을
+읽고, executable selector-relative descriptor를 통해서만 target을 해석합니다.
+공용 guest dispatcher와 fault HLE chain 모두 이 adapter를 사용하며, 기존
+mode16 `66 CB` 8바이트 resolver와 generic 32-bit return 경로는 변경하지
+않습니다. 잘못된 selector, stack geometry, unreadable frame, non-mode16 code는
+context를 변경하지 않습니다.
+
+Task 694 adds a separate mode16 bare RETF handler. `GuestStackReadAccess`
+computes the current SS:SP read window with the same present/writable policy,
+SS.B width rules, SS.base translation, and descriptor-limit checks. A valid
+guest `SegCs` covering EIP is preferred for current-code identification; AOT
+contexts that omit guest CS use the existing unique EIP reverse lookup. The
+handler accepts only prefix-free `CB` in executable mode16 code, reads a
+four-byte word IP/CS frame through SS, and resolves the target only through an
+executable selector-relative descriptor. The shared guest dispatcher and fault
+HLE chain both use this adapter, while the existing mode16 `66 CB` eight-byte
+resolver and generic 32-bit return path remain unchanged. Invalid selectors,
+stack geometry, unreadable frames, and non-mode16 code leave the context
+unchanged.
 
 LE 실행 파일 object flag가 공용 AOT planner의 `LEGACY_16` 또는
 `LEGACY_32`를 선택하며, 선택된 `GuestCodeDefaultOperandSize`는 모든
@@ -3717,8 +3742,8 @@ LE 실행 파일 object flag가 공용 AOT planner의 `LEGACY_16` 또는
 현재 증명된 첫 16-bit long-mode lowering은 `MOV SP, imm16` (`BC iw`)입니다.
 x64에서 guest ESP는 R15D에 보관되므로 cache는 `66 41 BF iw`를 방출하여
 R15W만 갱신하고 host RSP는 건드리지 않습니다. 전용 증명이 없는 16-bit
-record는 32-bit native slot에 들어가지 않고 INT3 boundary가 됩니다. 나머지
-16-bit push/pop, segment, far-return stack ABI는 이후 공용 설계 단위에서
+record는 32-bit native slot에 들어가지 않고 INT3 boundary가 됩니다. 일반
+16-bit POP, segment, expand-down stack ABI는 별도 공용 설계 단위에서
 다룹니다.
 
 ```mermaid
@@ -3743,8 +3768,8 @@ The first proven 16-bit long-mode lowering is `MOV SP, imm16` (`BC iw`). Since
 guest ESP is held in R15D on x64, the cache emits `66 41 BF iw`, which updates
 R15W and leaves host RSP untouched. 16-bit records without a dedicated proof,
 including non-copy control-flow records, are emitted as INT3 boundaries rather
-than entering 32-bit native slots. The remaining 16-bit push/pop, segment, and
-far-return stack ABI is intentionally a later shared design unit.
+than entering 32-bit native slots. General 16-bit POP, segment, and
+expand-down stack ABI remain separate shared design work.
 
 ```mermaid
 flowchart LR

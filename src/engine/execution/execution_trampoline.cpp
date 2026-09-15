@@ -67,6 +67,7 @@
 #include "guest_address_watch.h"
 #include "fault_exit_trace.h"
 #include "instruction_emulation.h"
+#include "mode16_far_return.h"
 #include "mode16_stack_push.h"
 #include "dpmi_mscdex_services.h"
 #include "bios_keyboard_services.h"
@@ -1310,7 +1311,13 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
             if (context->enable_segment_load_hle && HandleFarJumpInstruction(win32_context, context)) return true;
             break;
         case 0xCBU:
-            if (context->enable_segment_load_hle && HandleFarReturnInstruction(win32_context, context)) return true;
+            if (context->enable_segment_load_hle)
+            {
+                const std::optional<bool> mode16_return =
+                    HandleMode16FarReturn(win32_context, context);
+                if (mode16_return.has_value()) return *mode16_return;
+                if (HandleFarReturnInstruction(win32_context, context)) return true;
+            }
             break;
         case 0xCDU:
             if (context->enable_traced_dos_hle &&
@@ -1359,6 +1366,7 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
         (HandleSegmentLoadInstruction(win32_context, context) ||
          HandleSegmentPushInstruction(win32_context, context) ||
          HandleFarJumpInstruction(win32_context, context) ||
+         (HandleMode16FarReturn(win32_context, context).value_or(false)) ||
          HandleFarReturnInstruction(win32_context, context) ||
          HandleSegmentPopInstruction(win32_context, context) ||
          HandleRepStosdInstruction(win32_context, context) ||
@@ -5745,10 +5753,21 @@ repiu::platform::FaultDisposition DispatchGuestFault(
     {
         return repiu::platform::FaultDisposition::kResume;
     }
-    if (context->enable_segment_load_hle &&
-        HandleFarReturnInstruction(win32_context, context))
+    if (context->enable_segment_load_hle)
     {
-        return repiu::platform::FaultDisposition::kResume;
+        const std::optional<bool> mode16_return =
+            HandleMode16FarReturn(win32_context, context);
+        if (mode16_return.has_value())
+        {
+            if (*mode16_return)
+            {
+                return repiu::platform::FaultDisposition::kResume;
+            }
+        }
+        else if (HandleFarReturnInstruction(win32_context, context))
+        {
+            return repiu::platform::FaultDisposition::kResume;
+        }
     }
     if (context->enable_segment_load_hle &&
         HandleSegmentLoadInstruction(win32_context, context))

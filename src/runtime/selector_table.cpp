@@ -210,4 +210,50 @@ bool ResolveGuestFarReturn32Frame(
     return true;
 }
 
+bool ResolveGuestFarReturn16Frame(
+    const SelectorTable& table,
+    std::uint16_t current_selector,
+    std::uint16_t target_offset,
+    std::uint16_t target_selector,
+    GuestFarReturnResolution* resolution)
+{
+    if (resolution == nullptr)
+    {
+        return false;
+    }
+    *resolution = GuestFarReturnResolution{};
+
+    const GuestDescriptor* current =
+        FindDescriptor(table, current_selector);
+    if (current == nullptr || !current->executable ||
+        current->code_default_operand_size !=
+            GuestCodeDefaultOperandSize::k16)
+    {
+        return false;
+    }
+
+    const GuestDescriptor* target = FindDescriptor(table, target_selector);
+    if (target == nullptr || !target->executable)
+    {
+        return false;
+    }
+
+    std::uint32_t target_linear = 0U;
+    if (!TranslateSelectorOffset(table,
+                                 target_selector,
+                                 target_offset,
+                                 1U,
+                                 &target_linear))
+    {
+        return false;
+    }
+
+    resolution->valid = true;
+    resolution->target_offset = target_offset;
+    resolution->target_selector = target_selector;
+    resolution->target_linear = target_linear;
+    resolution->stack_bytes = kGuestFarReturn16FrameBytes;
+    return true;
+}
+
 }  // namespace repiu::runtime

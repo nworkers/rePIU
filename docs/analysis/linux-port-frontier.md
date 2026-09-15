@@ -15686,3 +15686,113 @@ the shared dispatch were not observed.
 The next frontier is the SS-relative mode16 far-return frame and bare `RETF`.
 After validating it, find an execution path that reaches the actual object-3
 LINEXE export boundary.
+
+## 2026-09-15: Task 694 mode16 bare RETF HLE
+
+**확인됨:** mode16 bare `CB`는 기존 mode16 `66 CB` dword frame과 분리된
+handler에서 처리됩니다. `GuestStackReadAccess`가 SS.B=0의 low-word SP
+geometry, SS.base translation, descriptor limit, linear overflow를 검사하고
+4바이트 IP/CS frame을 읽습니다. 유효한 `SegCs`가 현재 EIP를 포함하면 이를
+우선 사용하며, AOT 문맥처럼 guest CS가 비어 있을 때만 기존 EIP 역조회를
+사용합니다. target은 executable selector-relative offset으로만 해석합니다.
+shared guest dispatcher와 fault HLE chain 양쪽에 adapter를 연결했고,
+실패 시 EIP/SegCs/ESP를 변경하지 않습니다.
+
+**검증:** Linux x64 `repiu_core_probe` 재빌드와 실행이 통과했습니다.
+mode16 valid return, invalid selector, unreadable frame, mode32 refusal이
+모두 통과했고 전체 결과는 다음과 같습니다.
+
+```text
+[repiu-mode16-far-return] current_cs=0x002C target_ip=0x0020 target_cs=0x0024 target=0x18000220 esp=0x18000900 new_esp=0x18000904
+mode16_far_return=1,bad_selector=1,bad_frame=1,mode32_refused=1
+core_probe_total=27
+core_probe_failures=0
+core_probe_all=true
+```
+
+`repiu` 본체도 WSL Ubuntu 24.04에서 빌드되었습니다. `pumpit2a` 동적
+smoke에서는 selector `002C`가 object 3, base `01100000`, limit `00000047`에
+바인딩된 사실을 재확인했지만, mode16 handler live trace와 `0x01100022`
+dynamic request는 관측하지 못했습니다. coredump는 재현되지 않았으나 이번
+재실행의 timeout cleanup은 `recovered=0`, `stopped=0`이어서 정상 게임
+종료의 증거로 사용하지 않습니다. 진단 trace를 끈 별도 bounded smoke에서는
+`recovered=1`, `stopped=1`, `failure=0`이었지만 timeout 기반 실행이므로
+정상 게임 종료와는 구분합니다.
+
+```text
+[loader] Win32 relocated selector binding: selector=0x002C object=3 base=0x01100000 limit=0x00000047
+[repiu-shutdown] reason=timeout attempts=40 answered=1 recovered=0 stopped=0 failure=0 eip=0x401F41E9 gate=0 frames=0 span_ms=0
+```
+
+기본 smoke의 shutdown 결과:
+
+```text
+[repiu-shutdown] reason=timeout attempts=39 answered=1 recovered=1 stopped=1 failure=0 eip=0x200633EA gate=0 frames=0 span_ms=0
+```
+
+* **확인됨:** mode16 SS-relative 4-byte far-return HLE와 fail-closed probe
+  semantics, shared/fault chain 연결, Linux x64 두 binary 빌드입니다.
+* **미확정:** 실제 object 3 bare `RETF` 진입, `0x01100022` LINEXE export
+  경계, 정상 게임 종료입니다.
+
+### 다음 frontier
+
+새 다음 frontier는 실제 object 3의 mode16 return 또는 LINEXE export까지
+도달하는 runtime 경로와, timeout cleanup의 recovery 실패 원인을 분리하는
+것입니다.
+
+### English
+
+**Confirmed:** mode16 bare `CB` is handled by a dedicated path separate from
+the existing mode16 `66 CB` dword frame. `GuestStackReadAccess` validates
+SS.B=0 low-word SP geometry, SS.base translation, descriptor limits, and linear
+overflow before reading a four-byte IP/CS frame. A valid `SegCs` covering the
+current EIP is preferred, and the existing EIP reverse lookup is used only when
+an AOT context does not provide guest CS. The target is resolved only as an
+executable selector-relative offset. The adapter is connected to both the
+shared guest dispatcher and the fault HLE chain, and failures leave EIP,
+SegCs, and ESP unchanged.
+
+**Verification:** the Linux x64 `repiu_core_probe` was rebuilt and passed.
+Valid mode16 return, invalid selector, unreadable frame, and mode32 refusal all
+passed:
+
+```text
+[repiu-mode16-far-return] current_cs=0x002C target_ip=0x0020 target_cs=0x0024 target=0x18000220 esp=0x18000900 new_esp=0x18000904
+mode16_far_return=1,bad_selector=1,bad_frame=1,mode32_refused=1
+core_probe_total=27
+core_probe_failures=0
+core_probe_all=true
+```
+
+The `repiu` executable also built on WSL Ubuntu 24.04. The `pumpit2a` dynamic
+smoke reconfirmed selector `002C` bound to object 3 with base `01100000` and
+limit `00000047`, but did not observe a live mode16-handler trace or a dynamic
+request for `0x01100022`. No coredump was reproduced, but this rerun's timeout
+cleanup reported `recovered=0` and `stopped=0`, so it is not evidence of normal
+game termination. A separate bounded smoke with diagnostic tracing disabled
+reported `recovered=1`, `stopped=1`, and `failure=0`; it is still distinguished
+from normal game termination because it is timeout-based.
+
+```text
+[loader] Win32 relocated selector binding: selector=0x002C object=3 base=0x01100000 limit=0x00000047
+[repiu-shutdown] reason=timeout attempts=40 answered=1 recovered=0 stopped=0 failure=0 eip=0x401F41E9 gate=0 frames=0 span_ms=0
+```
+
+Baseline smoke shutdown:
+
+```text
+[repiu-shutdown] reason=timeout attempts=39 answered=1 recovered=1 stopped=1 failure=0 eip=0x200633EA gate=0 frames=0 span_ms=0
+```
+
+* **Confirmed:** mode16 SS-relative four-byte far-return HLE and fail-closed
+  probe semantics, shared/fault chain integration, and both Linux x64 binary
+  builds.
+* **Unresolved:** reaching the real object-3 bare `RETF`, the `0x01100022`
+  LINEXE export boundary, and normal game termination.
+
+### Next frontier
+
+The next frontier is to reach the actual object-3 mode16 return or LINEXE export
+through a runtime path and to isolate the cause of timeout-cleanup recovery
+failure.
