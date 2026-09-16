@@ -517,6 +517,77 @@ void TraceAotGuestMap(const AotCodeCachePlacement& placement,
     }
 }
 
+void TraceAotCacheMap(const AotCodeCachePlacement& placement,
+                      const char* const phase)
+{
+    const auto setting = repiu::platform::ReadEnvironmentSetting(
+        "REPIU_AOT_CACHE_MAP_TRACE", 31U);
+    if (!setting.present)
+    {
+        return;
+    }
+    std::uint32_t cache_address = 0U;
+    if (setting.too_long ||
+        !ParseAotGuestMapTraceOffset(setting.value, &cache_address))
+    {
+        std::fprintf(stderr, "[repiu-aot-cache-map] invalid=address\n");
+        return;
+    }
+    if (!placement.placed || cache_address < placement.base_address ||
+        cache_address - placement.base_address >= placement.size)
+    {
+        std::fprintf(stderr,
+                     "[repiu-aot-cache-map] cache=0x%08X phase=%s "
+                     "in_range=0\n",
+                     cache_address,
+                     phase == nullptr ? "unknown" : phase);
+        return;
+    }
+
+    const std::uint32_t previous_address =
+        cache_address == placement.base_address
+            ? cache_address : cache_address - 1U;
+    std::uint32_t guest_address = 0U;
+    std::uint32_t previous_guest_address = 0U;
+    const bool mapped = FindAotGuestAddress(
+        placement, cache_address, &guest_address);
+    const bool previous_mapped = FindAotGuestAddress(
+        placement, previous_address, &previous_guest_address);
+    const AotCacheBreakpointProvenance provenance =
+        ClassifyAotCacheBreakpointProvenance(
+            placement, cache_address, false);
+    const AotCacheBreakpointProvenance previous_provenance =
+        ClassifyAotCacheBreakpointProvenance(
+            placement, previous_address, false);
+    const auto* const bytes = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(placement.base_address));
+    const std::uint32_t offset = cache_address - placement.base_address;
+    const std::uint32_t previous_offset =
+        previous_address - placement.base_address;
+    const std::uint32_t first_offset = offset > 8U ? offset - 8U : 0U;
+    const std::uint32_t byte_count = std::min<std::uint32_t>(
+        17U, placement.size - first_offset);
+
+    std::fprintf(
+        stderr,
+        "[repiu-aot-cache-map] cache=0x%08X phase=%s in_range=1 "
+        "byte=0x%02X previous=0x%08X previous_byte=0x%02X "
+        "mapped=%u guest=0x%08X previous_mapped=%u previous_guest=0x%08X "
+        "provenance=%u previous_provenance=%u bytes_start=0x%08X bytes=",
+        cache_address, phase == nullptr ? "unknown" : phase,
+        static_cast<unsigned>(bytes[offset]), previous_address,
+        static_cast<unsigned>(bytes[previous_offset]), mapped ? 1U : 0U,
+        guest_address, previous_mapped ? 1U : 0U, previous_guest_address,
+        static_cast<unsigned>(provenance),
+        static_cast<unsigned>(previous_provenance),
+        placement.base_address + first_offset);
+    for (std::uint32_t index = 0U; index < byte_count; ++index)
+    {
+        std::fprintf(stderr, "%02X", bytes[first_offset + index]);
+    }
+    std::fprintf(stderr, "\n");
+}
+
 bool IsGuestStackSwitchSupported()
 {
 // Task 503d-19: what this asks is whether the stack switch exists, and since
@@ -6604,6 +6675,7 @@ bool RunExecutionThread(
     if (aot_placement != nullptr)
     {
         TraceAotGuestMap(*aot_placement, context.runtime_base, "initial");
+        TraceAotCacheMap(*aot_placement, "initial");
     }
     // The capture buffer is reserved here, before the guest thread starts, so
     // the first-hit recorder never allocates inside the exception handler.
@@ -7669,6 +7741,7 @@ bool RunExecutionThread(
         if (aot_placement != nullptr)
         {
             TraceAotGuestMap(*aot_placement, context.runtime_base, "final");
+            TraceAotCacheMap(*aot_placement, "final");
         }
         mark_shutdown_step("done");
         return true;
@@ -7696,6 +7769,7 @@ bool RunExecutionThread(
     if (aot_placement != nullptr)
     {
         TraceAotGuestMap(*aot_placement, context.runtime_base, "final");
+        TraceAotCacheMap(*aot_placement, "final");
     }
 
     attempt->returned = context.returned;

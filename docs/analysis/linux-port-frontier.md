@@ -15921,3 +15921,63 @@ byte, fixup provenance와 대조해 어떤 AOT boundary가 처리되지 않았�
 Correlate the SIGTRAP at cache `0x200695A3` with the address map, preceding
 cache byte, and fixup provenance around guest `0x010F777C` to identify the
 unhandled AOT boundary.
+
+---
+
+## 2026-09-16 Task 697 — transient cache boundary provenance
+
+### 확인됨
+
+* `REPIU_AOT_CACHE_MAP_TRACE=<cache-address>` 읽기 전용 진단을 추가했습니다. 초기와
+  정상 회수된 최종 placement에서 주소 범위 여부를 확인하고, 범위 안이면 현재/직전
+  byte, 양쪽 reverse map 및 `AotCacheBreakpointProvenance`를 출력합니다.
+* 두 번의 재실행에서 guest `0x010F777C`는 초기 map에 없었습니다. 30초 실행의 최종
+  map이 51,866개에서 65,632개 entry로 증가한 뒤에도 정확하거나 covering하는 entry가
+  없었고, 이웃은 `0x010F7743`과 `0x010F77AC`였습니다.
+* cache `0x200695A3`도 두 실행의 초기와 정상 회수된 최종 placement 범위 밖이었습니다.
+  Task 696에서 기록한 host cache 주소는 특정 동적 append 순서와 세대에서만 유효했던
+  transient 주소이며, 후속 실행의 정적 주소로 재사용할 수 없습니다.
+* core probe 27개 그룹은 모두 통과했고 Linux x64 본체는 변경 object 재컴파일과
+  CMake 생성 link script를 통해 재링크되었습니다.
+
+### 미확정
+
+Task 696 당시 trap의 정확한 planner/fixup provenance는 그 실행의 placement가 남아
+있지 않고 같은 동적 경로가 재현되지 않아 소급 분류할 수 없습니다. 따라서 이를
+고정된 planner HLE 또는 transfer 결함으로 간주할 근거도 없습니다.
+
+### 다음 frontier
+
+동적 cache 주소 자체가 아니라 같은 실행에서 얻은 guest 주소, append generation,
+cache offset 및 provenance를 하나의 원자적 증거로 수집해야 합니다. 현재 기본 실행은
+기존에 확인된 동적 `0x20053955` guest back-edge loop로 돌아가며, 정상 게임 화면·입력
+진행과 종료는 아직 확인되지 않았습니다.
+
+### English
+
+Added the read-only `REPIU_AOT_CACHE_MAP_TRACE=<cache-address>` diagnostic. It
+checks whether an address belongs to the initial and cleanly recovered final
+placements and, when in range, reports current/previous bytes, both reverse
+maps, and `AotCacheBreakpointProvenance` values.
+
+In two reruns, guest `0x010F777C` was absent from the initial map. It still had
+no exact or covering entry after the 30-second run grew the final map from
+51,866 to 65,632 entries; its neighbors were `0x010F7743` and `0x010F77AC`.
+Cache `0x200695A3` was also outside both runs' initial and cleanly recovered
+final placements. The host cache address recorded by Task 696 was therefore
+transient to that dynamic-append order and generation and cannot be reused as a
+static address in a later run.
+
+All 27 core-probe groups passed. The Linux x64 executable was relinked after
+recompiling the changed object with the CMake-generated link scripts.
+
+The exact planner/fixup provenance of Task 696's trap cannot be reconstructed:
+that run's placement no longer exists and the same dynamic path did not recur.
+There is consequently no evidence to treat it as a fixed planner-HLE or
+transfer defect.
+
+The next capture must record guest address, append generation, cache offset,
+and provenance atomically in the same run instead of carrying a dynamic host
+cache address across runs. The current default execution returns to the known
+dynamic `0x20053955` guest back-edge loop; normal game screen/input progress and
+termination remain unverified.
