@@ -2,7 +2,9 @@
 
 #include "execution_internal.h"
 #include "instruction_emulation.h"
+#include "../../engine/boundary/linexe_glide_boundary.h"
 #include "../../engine/aot/aot_runtime_dispatch.h"
+#include "repiu/hle/glide_hle.h"
 #include "repiu/platform/linux_x64_aot_dispatch.h"
 #include "repiu/platform/virtual_memory.h"
 #include "repiu/runtime/selector_table.h"
@@ -485,6 +487,103 @@ bool RunGeneralStackProbe()
               << ",fallback=" << loader_fallback
               << ",bad_frame=" << loader_bad_frame << "\n";
 
+    const char procedure_name[] = "_GRGLIDEINIT@0";
+    constexpr std::uint32_t kProcedureNameOffset = 0x740U;
+    constexpr std::uint32_t kProcedureResultOffset = 0x780U;
+    constexpr std::uint32_t kGateCodeOffset = 0xA00U;
+    constexpr std::uint32_t kGlideInitGateOffset = 0x300U;
+    std::memcpy(bytes + kProcedureNameOffset,
+                procedure_name,
+                sizeof(procedure_name));
+    const std::uint32_t getproc_values[] = {
+        0U, 0U, 0U, 0U, 0U, 0x24U, 0x11223344U, 0x55667788U,
+        0x99AABBCCU, 0x12345678U,
+        static_cast<std::uint32_t>(kRequestedBase + 0x200U),
+        1U,
+        static_cast<std::uint32_t>(kRequestedBase + kProcedureNameOffset),
+        static_cast<std::uint32_t>(kRequestedBase + kProcedureResultOffset),
+        0U, 0U};
+    std::memcpy(bytes + kStackOffset,
+                getproc_values,
+                sizeof(getproc_values));
+    context.glide_gate_plan = {};
+    context.glide_gate_plan.valid = true;
+    context.glide_gate_plan.exports.push_back(
+        {procedure_name,
+         32U,
+         repiu::hle::GlideGateId::kGrGlideInit,
+         0U,
+         kGlideInitGateOffset});
+    context.linexe_arena_layout.gate_code_base =
+        static_cast<std::uint32_t>(kRequestedBase + kGateCodeOffset);
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    const bool getproc_bridge_descriptor =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x2CU, static_cast<std::uint32_t>(kRequestedBase + 0x300U),
+             0xFFU, 0U, true});
+    const bool getproc_client_descriptor =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x24U, static_cast<std::uint32_t>(kRequestedBase),
+             0x2FFU, 0U, true, repiu::runtime::kLeObjectExecutable, true,
+             repiu::runtime::GuestCodeDefaultOperandSize::k32});
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.SegCs = 0x33U;
+    cpu.Edi = 0x00801B5AU;
+    const bool getproc_dispatch = getproc_bridge_descriptor &&
+        getproc_client_descriptor &&
+        repiu::engine::HandleLinexeFarTransferBoundary(&cpu, &context);
+    std::uint32_t procedure_pointer[2] = {};
+    std::memcpy(procedure_pointer,
+                bytes + kProcedureResultOffset,
+                sizeof(procedure_pointer));
+    const bool getproc_guest_cs = getproc_dispatch && cpu.Eax == 1U &&
+        procedure_pointer[0] ==
+            kRequestedBase + kGateCodeOffset + kGlideInitGateOffset &&
+        procedure_pointer[1] == 0x24U &&
+        cpu.Eip == getproc_values[10] &&
+        cpu.Esp == kRequestedBase + kStackOffset + 44U;
+
+    constexpr std::uint32_t kResultSentinel0 = 0xA5A5A5A5U;
+    constexpr std::uint32_t kResultSentinel1 = 0x5A5A5A5AU;
+    const std::uint32_t result_sentinel[] = {
+        kResultSentinel0, kResultSentinel1};
+    std::memcpy(bytes + kProcedureResultOffset,
+                result_sentinel,
+                sizeof(result_sentinel));
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    const bool missing_bridge_descriptor =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x2CU, static_cast<std::uint32_t>(kRequestedBase + 0x300U),
+             0xFFU, 0U, true});
+    std::memcpy(bytes + kStackOffset,
+                getproc_values,
+                sizeof(getproc_values));
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.Eax = 0xCAFEBABEU;
+    cpu.SegCs = 0x33U;
+    cpu.Edi = 0x00801B5AU;
+    const bool getproc_missing_selector_refused =
+        missing_bridge_descriptor &&
+        !repiu::engine::HandleLinexeFarTransferBoundary(&cpu, &context);
+    std::memcpy(procedure_pointer,
+                bytes + kProcedureResultOffset,
+                sizeof(procedure_pointer));
+    const bool getproc_missing_selector_unchanged =
+        getproc_missing_selector_refused &&
+        procedure_pointer[0] == kResultSentinel0 &&
+        procedure_pointer[1] == kResultSentinel1 &&
+        cpu.Eip == kRequestedBase + kCodeOffset &&
+        cpu.Esp == kRequestedBase + kStackOffset &&
+        cpu.Eax == 0xCAFEBABEU;
+    std::cout << "linexe_getproc_guest_cs=" << getproc_guest_cs
+              << ",missing_selector_refused="
+              << getproc_missing_selector_unchanged << "\n";
+
     // A bare mode16 RETF reads a word IP and word CS through SS.base and
     // advances the guest stack by four bytes.
     const std::uint8_t mode16_return[] = {0xCBU};
@@ -578,7 +677,8 @@ bool RunGeneralStackProbe()
         legacy_moffs_store && legacy_moffs_store_range_rejected &&
         cs_source_store && cs_source_missing_refused &&
         boundary_epilogue_drained && loader_dispatch && loader_fallback &&
-        loader_bad_frame && mode16_return_handled &&
+        loader_bad_frame && getproc_guest_cs &&
+        getproc_missing_selector_unchanged && mode16_return_handled &&
         mode16_return_bad_selector && mode16_return_bad_frame &&
         mode32_return_refused && cs_indirect_jump_handled && released;
     std::cout << "general_stack_push=" << (ordinary_push ? "true" : "false")

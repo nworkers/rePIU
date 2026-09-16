@@ -10,6 +10,7 @@
 #include "repiu/hle/glide_lfb.h"
 #include "repiu/hle/glide_lfb_region.h"
 #include "repiu/hle/glide_vertex.h"
+#include "repiu/runtime/selector_table.h"
 
 #include <algorithm>
 #include <array>
@@ -1187,9 +1188,25 @@ bool HandleLinexeFarTransferBoundary(repiu::platform::GuestCpuContext* win32_con
         const std::uint32_t gate_address =
             context->linexe_arena_layout.gate_code_base +
             glide_export->gate_offset;
+        std::uint16_t client_code_selector = 0U;
+        if (!repiu::runtime::FindSelectorForLinearAddress(
+                context->selector_table,
+                context->linexe_bridge_stack[10],
+                &client_code_selector))
+        {
+            return false;
+        }
+        const repiu::runtime::GuestDescriptor* client_code_descriptor =
+            repiu::runtime::FindDescriptor(
+                context->selector_table, client_code_selector);
+        if (client_code_descriptor == nullptr ||
+            !client_code_descriptor->executable)
+        {
+            return false;
+        }
         const std::uint32_t procedure_pointer[2] = {
             gate_address,
-            static_cast<std::uint32_t>(win32_context->SegCs),
+            static_cast<std::uint32_t>(client_code_selector),
         };
         if (!WriteGuestBytes(
                 context,
