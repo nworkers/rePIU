@@ -6677,12 +6677,13 @@ bool RunExecutionThread(
                 static_cast<std::uint32_t>(value);
         }
     }
-    if (context.execution_probe_configured && aot_placement != nullptr &&
-        !InstallAotProbeSentinel(
-            aot_placement,
-            context.runtime_base + context.execution_probe_offset))
+    if (context.execution_probe_configured && aot_placement != nullptr)
     {
-        context.execution_probe_configured = false;
+        // A miss is expected for a dynamic-only target. Keep the probe armed;
+        // the append path installs it after publishing the matching entry.
+        (void)InstallAotProbeSentinel(
+            aot_placement,
+            context.runtime_base + context.execution_probe_offset);
     }
     const auto read_hex_env = [](const char* name, std::uint32_t* out) {
         char text[32] = {};

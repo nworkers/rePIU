@@ -2293,6 +2293,10 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
             context, *win32_context, lookup_kind, lookup_source,
             guest_address, cache_address);
         context->aot_reentry_cache_address = cache_address;
+        const std::uint32_t cache_context_eip = win32_context->Eip;
+        win32_context->Eip = guest_address;
+        RecordExecutionProbe(win32_context, context);
+        win32_context->Eip = cache_context_eip;
         if (ActivateGlideGateDirectTarget(
                 context, cache_address, guest_address))
         {
