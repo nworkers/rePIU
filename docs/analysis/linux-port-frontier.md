@@ -15981,3 +15981,60 @@ and provenance atomically in the same run instead of carrying a dynamic host
 cache address across runs. The current default execution returns to the known
 dynamic `0x20053955` guest back-edge loop; normal game screen/input progress and
 termination remain unverified.
+
+---
+
+## 2026-09-16 Task 698 — guest-filtered AOT fault provenance
+
+### 확인됨
+
+* `REPIU_AOT_FAULT_TRACE_GUEST_ADDRESS=<guest-address>`를 추가했습니다. 기존
+  `REPIU_AOT_FAULT_TRACE=1` 안에서 exact, previous, block-fallthrough reverse
+  map을 먼저 계산하고 하나라도 지정 guest와 일치할 때만 기존 provenance line의
+  16건 제한을 소비합니다.
+* 기존 cache-address filter와 함께 쓰면 두 필터를 모두 만족해야 합니다. guest
+  filter가 없으면 기존 출력 선택과 형식은 유지됩니다.
+* 실제 `pumpit2a`에서 `0x010F1728` filter는 다음 한 줄만 선택했습니다.
+
+```text
+[repiu-aot-fault] kind=access cache=0x20000005 exact=1/0x010F1728/7 previous=1/0x010F16B0/7 fallthrough=0/0x00000000 size=341056 tail=341051 maps=51866 n=1
+```
+
+* `0xDEADBEEF` filter 실행은 같은 초기 fault들의 provenance line을 하나도 출력하지
+  않았습니다. Linux x64 core probe 27개 그룹도 모두 통과했습니다.
+
+### 미확정
+
+`0x010F777C` transient 경로는 이번 bounded 실행들에서 재현되지 않았습니다. 두 번째
+filter 실행의 timeout cleanup은 `recovered=0`, `stopped=0`이었으므로 정상 종료의
+증거가 아닙니다.
+
+### 다음 frontier
+
+이제 `REPIU_AOT_FAULT_TRACE=1`과 guest filter `0x010F777C`를 장시간 또는 해당
+fatal-tail 재현 조건에서 사용하면 동적 cache 주소를 미리 알지 못해도 같은 fault
+순간의 exact/previous/fallthrough provenance를 확보할 수 있습니다. 기본 게임 진행은
+여전히 알려진 guest back-edge loop에서 정체됩니다.
+
+### English
+
+Added `REPIU_AOT_FAULT_TRACE_GUEST_ADDRESS=<guest-address>`. Within the existing
+`REPIU_AOT_FAULT_TRACE=1` gate, the trace now computes exact, previous, and
+block-fallthrough reverse maps first. Only a matching fault consumes the
+existing 16-line limit. When combined with the cache-address filter, both
+filters must match; behavior and output format without the guest filter remain
+unchanged.
+
+A real `pumpit2a` run filtered to `0x010F1728` selected exactly the expected
+initial access-fault provenance line at cache `0x20000005`. A run filtered to
+`0xDEADBEEF` emitted no AOT fault-provenance lines. All 27 Linux x64 core-probe
+groups passed.
+
+The transient `0x010F777C` path did not recur in these bounded runs. The second
+filter run's timeout cleanup reported `recovered=0` and `stopped=0`, so it is not
+evidence of normal termination.
+
+Future long or fatal-tail reproductions can pair `REPIU_AOT_FAULT_TRACE=1` with
+guest filter `0x010F777C` to capture exact/previous/fallthrough provenance at
+the same fault instant without predicting its dynamic cache address. Default
+game progress still stalls in the known guest back-edge loop.

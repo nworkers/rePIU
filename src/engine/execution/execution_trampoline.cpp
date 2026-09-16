@@ -116,6 +116,26 @@ std::uint32_t AotFaultTraceAddressFilter()
     return address;
 }
 
+std::uint32_t AotFaultTraceGuestAddressFilter()
+{
+    static const std::uint32_t address = [] {
+        const char* setting =
+            std::getenv("REPIU_AOT_FAULT_TRACE_GUEST_ADDRESS");
+        if (setting == nullptr || *setting == '\0')
+        {
+            return 0U;
+        }
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(setting, &end, 0);
+        if (end == setting || *end != '\0' || parsed > UINT32_MAX)
+        {
+            return 0U;
+        }
+        return static_cast<std::uint32_t>(parsed);
+    }();
+    return address;
+}
+
 // Task 503d-6 wrote this thunk because CreateThread dictated its signature.
 // Task 503d-18: the thread layer takes `std::uint32_t(void*)` instead, so the
 // shape is the engine's own and the fence around it is gone. What is left is a
@@ -5081,61 +5101,73 @@ repiu::platform::FaultDisposition DispatchGuestFault(
              trace_address_filter == trace_cache_address) &&
             std::getenv("REPIU_AOT_FAULT_TRACE") != nullptr)
         {
-            static std::atomic<std::uint32_t> aot_fault_trace_count{0U};
-            const std::uint32_t occurrence =
-                aot_fault_trace_count.fetch_add(1U, std::memory_order_relaxed) +
-                1U;
-            if (occurrence <= 16U)
-            {
-                const std::uint32_t cache_address = trace_cache_address;
-                std::uint32_t guest_address = 0U;
-                const bool mapped = FindAotGuestAddress(
-                    *context->aot_placement, cache_address, &guest_address);
-                const std::uint32_t previous_cache_address =
-                    cache_address != 0U ? cache_address - 1U : 0U;
-                std::uint32_t previous_guest_address = 0U;
-                const bool previous_mapped = cache_address != 0U &&
-                    FindAotGuestAddress(
-                        *context->aot_placement, previous_cache_address,
-                        &previous_guest_address);
-                const AotCacheBreakpointProvenance provenance =
-                    ClassifyAotCacheBreakpointProvenance(
-                        *context->aot_placement, cache_address, false);
-                const AotCacheBreakpointProvenance previous_provenance =
-                    ClassifyAotCacheBreakpointProvenance(
-                        *context->aot_placement, previous_cache_address,
-                        false);
-                std::uint32_t fallthrough_guest_address = 0U;
-                const bool fallthrough_mapped =
-                    runtime::FindAotBlockFallthroughTarget(
-                        context->aot_placement->fixups,
-                        context->aot_placement->base_address,
-                        context->aot_placement->size,
-                        cache_address, &fallthrough_guest_address);
-                std::fprintf(
-                    stderr,
-                    "[repiu-aot-fault] kind=%s cache=0x%08X "
-                    "exact=%u/0x%08X/%u previous=%u/0x%08X/%u "
-                    "fallthrough=%u/0x%08X size=%u tail=%u maps=%zu n=%u\n",
-                    fault.kind == repiu::platform::FaultKind::kBreakpoint
-                        ? "breakpoint" : "access",
-                    cache_address,
-                    mapped ? 1U : 0U,
-                    guest_address,
-                    static_cast<std::uint32_t>(provenance),
-                    previous_mapped ? 1U : 0U,
-                    previous_guest_address,
-                    static_cast<std::uint32_t>(previous_provenance),
-                    fallthrough_mapped ? 1U : 0U,
-                    fallthrough_guest_address,
+            const std::uint32_t cache_address = trace_cache_address;
+            std::uint32_t guest_address = 0U;
+            const bool mapped = FindAotGuestAddress(
+                *context->aot_placement, cache_address, &guest_address);
+            const std::uint32_t previous_cache_address =
+                cache_address != 0U ? cache_address - 1U : 0U;
+            std::uint32_t previous_guest_address = 0U;
+            const bool previous_mapped = cache_address != 0U &&
+                FindAotGuestAddress(
+                    *context->aot_placement, previous_cache_address,
+                    &previous_guest_address);
+            std::uint32_t fallthrough_guest_address = 0U;
+            const bool fallthrough_mapped =
+                runtime::FindAotBlockFallthroughTarget(
+                    context->aot_placement->fixups,
+                    context->aot_placement->base_address,
                     context->aot_placement->size,
-                    context->aot_placement->base_address +
-                            context->aot_placement->size >= cache_address
-                        ? context->aot_placement->base_address +
-                              context->aot_placement->size - cache_address
-                        : 0U,
-                    context->aot_placement->address_map.size(),
-                    occurrence);
+                    cache_address, &fallthrough_guest_address);
+            const std::uint32_t guest_address_filter =
+                AotFaultTraceGuestAddressFilter();
+            const bool guest_filter_matches = guest_address_filter == 0U ||
+                (mapped && guest_address == guest_address_filter) ||
+                (previous_mapped &&
+                 previous_guest_address == guest_address_filter) ||
+                (fallthrough_mapped &&
+                 fallthrough_guest_address == guest_address_filter);
+            if (guest_filter_matches)
+            {
+                static std::atomic<std::uint32_t> aot_fault_trace_count{0U};
+                const std::uint32_t occurrence =
+                    aot_fault_trace_count.fetch_add(
+                        1U, std::memory_order_relaxed) + 1U;
+                if (occurrence <= 16U)
+                {
+                    const AotCacheBreakpointProvenance provenance =
+                        ClassifyAotCacheBreakpointProvenance(
+                            *context->aot_placement, cache_address, false);
+                    const AotCacheBreakpointProvenance previous_provenance =
+                        ClassifyAotCacheBreakpointProvenance(
+                            *context->aot_placement, previous_cache_address,
+                            false);
+                    std::fprintf(
+                        stderr,
+                        "[repiu-aot-fault] kind=%s cache=0x%08X "
+                        "exact=%u/0x%08X/%u previous=%u/0x%08X/%u "
+                        "fallthrough=%u/0x%08X size=%u tail=%u maps=%zu "
+                        "n=%u\n",
+                        fault.kind == repiu::platform::FaultKind::kBreakpoint
+                            ? "breakpoint" : "access",
+                        cache_address,
+                        mapped ? 1U : 0U,
+                        guest_address,
+                        static_cast<std::uint32_t>(provenance),
+                        previous_mapped ? 1U : 0U,
+                        previous_guest_address,
+                        static_cast<std::uint32_t>(previous_provenance),
+                        fallthrough_mapped ? 1U : 0U,
+                        fallthrough_guest_address,
+                        context->aot_placement->size,
+                        context->aot_placement->base_address +
+                                context->aot_placement->size >= cache_address
+                            ? context->aot_placement->base_address +
+                                  context->aot_placement->size - cache_address
+                            : 0U,
+                        context->aot_placement->address_map.size(),
+                        occurrence);
+                }
             }
         }
         // Task 586. Hooked beside the watch for the same reason: a fault inside
