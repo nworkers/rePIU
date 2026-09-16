@@ -2,6 +2,7 @@
 
 #include "execution_internal.h"
 #include "instruction_emulation.h"
+#include "../../engine/aot/aot_runtime_dispatch.h"
 #include "repiu/platform/linux_x64_aot_dispatch.h"
 #include "repiu/platform/virtual_memory.h"
 #include "repiu/runtime/selector_table.h"
@@ -316,6 +317,58 @@ bool RunGeneralStackProbe()
         repiu::platform::LinuxX64LegacyResumeThunkAddress() != 0U;
 #endif
 
+    constexpr std::uint32_t kIndirectPointerOffset = 0x500U;
+    constexpr std::uint32_t kIndirectTargetOffset = 0x600U;
+    constexpr std::uint32_t kIndirectCacheOffset = 0x20U;
+    constexpr std::uint32_t kCacheBaseOffset = 0xA00U;
+    const std::uint32_t indirect_pointer =
+        static_cast<std::uint32_t>(kRequestedBase + kIndirectPointerOffset);
+    const std::uint32_t indirect_target =
+        static_cast<std::uint32_t>(kRequestedBase + kIndirectTargetOffset);
+    std::uint8_t cs_indirect_jump[] = {
+        0x2EU, 0xFFU, 0x24U, 0x9DU, 0U, 0U, 0U, 0U};
+    std::memcpy(cs_indirect_jump + 4U, &indirect_pointer,
+                sizeof(indirect_pointer));
+    std::memcpy(bytes + kCodeOffset, cs_indirect_jump,
+                sizeof(cs_indirect_jump));
+    std::memcpy(bytes + kIndirectPointerOffset, &indirect_target,
+                sizeof(indirect_target));
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    const bool cs_indirect_selector_registered =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x24U, static_cast<std::uint32_t>(kRequestedBase),
+             static_cast<std::uint32_t>(kArenaSize - 1U), 0U, true,
+             repiu::runtime::kLeObjectExecutable, true,
+             repiu::runtime::GuestCodeDefaultOperandSize::k32});
+    repiu::engine::AotCodeCachePlacement indirect_placement;
+    indirect_placement.placed = true;
+    indirect_placement.base_address =
+        static_cast<std::uint32_t>(kRequestedBase + kCacheBaseOffset);
+    indirect_placement.size = 0x100U;
+    repiu::runtime::AotAddressMapEntry indirect_map;
+    indirect_map.guest_address = indirect_target;
+    indirect_map.cache_offset = kIndirectCacheOffset;
+    indirect_map.emitted_length = 1U;
+    indirect_placement.address_map.push_back(indirect_map);
+    context.aot_placement = &indirect_placement;
+    context.aot_reentry_pending = true;
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Ebx = 0U;
+    cpu.EFlags = 0x00000346U;
+    repiu::platform::FaultEvent indirect_fault;
+    indirect_fault.kind = repiu::platform::FaultKind::kBreakpoint;
+    indirect_fault.registers = &cpu;
+    repiu::engine::AotDbtDispatchFallbackReason indirect_reason{};
+    const bool cs_indirect_jump_handled =
+        cs_indirect_selector_registered &&
+        repiu::engine::HandleAotIndirectTransfer(
+            indirect_fault, &context, &indirect_reason) &&
+        cpu.Eip == kRequestedBase + kCacheBaseOffset + kIndirectCacheOffset &&
+        !context.aot_reentry_pending && (cpu.EFlags & 0x100U) == 0U;
+    std::cout << "cs_indirect_jump=" << cs_indirect_jump_handled << "\n";
+    context.aot_placement = nullptr;
+
     constexpr std::uint32_t kMoffsDestinationOffset = 0x500U;
     const std::uint8_t moffs_store[] = {
         0xA3U,
@@ -527,7 +580,7 @@ bool RunGeneralStackProbe()
         boundary_epilogue_drained && loader_dispatch && loader_fallback &&
         loader_bad_frame && mode16_return_handled &&
         mode16_return_bad_selector && mode16_return_bad_frame &&
-        mode32_return_refused && released;
+        mode32_return_refused && cs_indirect_jump_handled && released;
     std::cout << "general_stack_push=" << (ordinary_push ? "true" : "false")
               << ",pop=" << (ordinary_pop ? "true" : "false")
               << ",push_esp=" << (push_esp_order ? "true" : "false")

@@ -16094,3 +16094,65 @@ The instruction `67 0F B6 50 01` at `0x010F777C` is a byte load using 16-bit
 addressing in the 32-bit guest; the same bytes have different long-mode
 semantics. Support this planner-HLE boundary, then resume the `0x010F928B`
 execution-probe verification.
+
+---
+
+## 2026-09-17 Task 700 — CS override 간접 점프 경계 정정 및 통과
+
+### 정정된 사실
+
+`0x010F777C`의 raw guest bytes는 `2E FF 24 9D 44 77 0F 01`이다. Task 699에서
+기록한 `67 0F B6 50 01`은 cache breakpoint 뒤의 host instruction bytes였으며
+guest instruction으로 해석하면 안 된다. 실제 명령은 CS override가 붙은
+`JMP dword ptr [EBX*4+0x010F7744]`이다.
+
+### 구현 및 확인
+
+재진입 분류기가 `2E FF`를 전송 경계로 인식하고, planner HLE provenance보다 기존
+간접 전송 handler를 우선하도록 변경했다. handler는 ModRM/SIB offset을 source code
+selector와 공용 segment-linear 정책으로 해석하고 jump-table dword를 기존 AOT target
+resolver에 전달한다.
+
+실제 실행에서 같은 경계는 `transfer=1`로 반복 분류됐고 더 이상 SIGTRAP으로
+종료되지 않았다. Task 699의 dynamic-only probe도 다음 snapshot을 수집했다.
+
+```text
+[repiu-aot-probe] dynamic guest=0x010F928B generation=9 added_bytes=6259 installed=1
+execution probe configured/hit/offset: true/true/0x000F928B
+EIP/ESP/EFLAGS: 0x010F928B/0x0158CC54/0x00200246
+EAX/EBX/ECX/EDX: 0x00000000/0x0158CCC0/0x00000000/0x0158CCC0
+ESI/EDI/EBP: 0x00000000/0x00000000/0x00000000
+```
+
+Linux x64 Debug core probe는 `cs_indirect_jump=1`, 전체 27/27로 통과했다. 실제
+`pumpit2a`는 `0x010F928B`까지 실행한 뒤 원본의 `Fatal error: unable to find entry
+point in DLL.` 경로에서 DOS `4C01` 종료를 호출했고 host trampoline으로 정상
+회수됐다. 따라서 다음 기능 frontier는 SIGTRAP 복구가 아니라 DLL entry-point
+해석/제공 범위이다.
+
+## English
+
+### Corrected fact
+
+The raw guest bytes at `0x010F777C` are `2E FF 24 9D 44 77 0F 01`. The
+`67 0F B6 50 01` bytes recorded in Task 699 belong to host instructions after
+the cache breakpoint and must not be decoded as guest code. The real guest
+instruction is `JMP dword ptr [EBX*4+0x010F7744]` with a CS override.
+
+### Implementation and confirmation
+
+Reentry classification now recognizes `2E FF` as a transfer boundary and gives
+the existing indirect-transfer handler precedence over planner-HLE provenance.
+The handler resolves the ModRM/SIB offset through the source code selector and
+the shared segment-linear policy, then sends the jump-table dword to the
+existing AOT target resolver.
+
+The real run repeatedly classified the boundary with `transfer=1` and no
+longer terminated with SIGTRAP. The Task 699 dynamic-only probe also captured
+the register snapshot shown above.
+
+The Linux x64 Debug core probe passed with `cs_indirect_jump=1` and 27/27 groups.
+Real `pumpit2a` executed through `0x010F928B`, then followed the original
+`Fatal error: unable to find entry point in DLL.` path, issued DOS termination
+`4C01`, and returned through the host trampoline. The next functional frontier
+is therefore DLL entry-point resolution/coverage rather than SIGTRAP recovery.

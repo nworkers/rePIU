@@ -3657,6 +3657,22 @@ source metadata, CALL fallback removes only the miss-address slot with
 `LEA ESP,[ESP+8]` and removes both metadata slots. This policy changes no original guest
 code; it reproduces only CALL/JMP stack effects at the DBT/HLE boundary.
 
+Linux x64 AOT 재진입에서 planner HLE provenance와 원본 전송 명령 판별이 겹치면
+전송 명령을 우선한다. 기존 간접 전송 decoder는 단일 CS override(`2E`)가 붙은
+`FF /2`와 `FF /4`를 처리하며, ModRM/SIB effective offset을 현재 source를 포함하는
+code selector와 `ResolveSegmentLinearRange`로 해석한다. 이 정책은 LE relocation으로
+selector limit을 벗어난 absolute offset에 기존의 검증된 direct-linear fallback을
+그대로 적용한 뒤, 읽은 guest target을 공용 AOT target resolver에 전달한다.
+
+When planner-HLE provenance overlaps an original transfer instruction during
+Linux x64 AOT reentry, transfer handling takes precedence. The existing
+indirect-transfer decoder accepts `FF /2` and `FF /4` with one CS override
+(`2E`), resolves the ModRM/SIB effective offset through the code selector that
+contains the current source and `ResolveSegmentLinearRange`, and then passes the
+loaded guest target to the shared AOT target resolver. This preserves the
+existing validated direct-linear fallback for relocated LE absolute offsets
+that exceed the selector limit.
+
 ---
 
 ## Legacy stack run 할당 및 epilogue drain / Legacy stack run allocation and epilogue drain

@@ -44,3 +44,16 @@ and cache `0x200695A2` before executing the target entry. Configuration and
 dynamic installation are therefore confirmed, but the hit and register
 snapshot are not. The next task must handle the 16-bit-addressing byte load
 `67 0F B6 50 01`, then resume this verification.
+
+## 2026-09-17 추가 확인
+
+Task 700이 중간의 CS override 간접 점프 경계를 처리한 뒤 같은 probe를 다시 실행하여
+`configured/hit=true`와 `EIP=0x010F928B`, `ESP=0x0158CC54` register snapshot을
+확인했습니다. 따라서 이 작업의 남은 실제 hit 검증도 완료됐습니다.
+
+## 2026-09-17 verification addendum
+
+After Task 700 handled the intervening CS-override indirect-jump boundary, a
+rerun confirmed `configured/hit=true` and captured the register snapshot at
+`EIP=0x010F928B`, `ESP=0x0158CC54`. This closes the remaining real-hit
+verification for this task.
