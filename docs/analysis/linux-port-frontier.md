@@ -16038,3 +16038,59 @@ Future long or fatal-tail reproductions can pair `REPIU_AOT_FAULT_TRACE=1` with
 guest filter `0x010F777C` to capture exact/previous/fallthrough provenance at
 the same fault instant without predicting its dynamic cache address. Default
 game progress still stalls in the known guest back-edge loop.
+
+---
+
+## 2026-09-17 Task 699 — dynamic-only execution probe arming
+
+### 확인됨
+
+* 유효한 `REPIU_EXECUTION_PROBE_OFFSET` 요청은 초기 AOT map miss 뒤에도 configured
+  상태를 유지합니다. dynamic append가 대상 entry를 게시하면 기존 최신-generation
+  sentinel 설치 경로가 요청을 소비합니다.
+* 실제 `pumpit2a` 실행 두 번에서 `0x010F928B`는 generation 9, added bytes 6,259에
+  설치됐습니다.
+
+```text
+[repiu-aot-probe] dynamic guest=0x010F928B generation=9 added_bytes=6259 installed=1
+```
+
+* Linux x64 Debug `repiu`와 core probe를 다시 빌드했으며 27개 그룹이 모두
+  통과했습니다.
+
+### 미확정
+
+두 실행 모두 sentinel 대상이 실행되기 전에 guest `0x010F777C`의 planner-HLE
+경계에서 fail-closed SIGTRAP으로 끝났습니다. 따라서 `execution_probe_hit`와
+`0x010F928B` register snapshot은 아직 수집되지 않았습니다.
+
+### 다음 frontier
+
+`0x010F777C`의 `67 0F B6 50 01`은 32-bit guest에서 16-bit addressing을 사용하는
+byte load이며 long mode에서 같은 바이트 의미가 달라집니다. 이 planner-HLE 경계를
+지원한 뒤 `0x010F928B` probe snapshot 검증을 재개합니다.
+
+## English
+
+### Confirmed
+
+* A valid `REPIU_EXECUTION_PROBE_OFFSET` request remains configured after an
+  initial AOT-map miss. Once a dynamic append publishes the target entry, the
+  existing latest-generation sentinel path consumes the request.
+* Two real `pumpit2a` runs installed `0x010F928B` in generation 9 with 6,259
+  added bytes.
+* Linux x64 Debug `repiu` rebuilt successfully and all 27 core-probe groups
+  passed.
+
+### Unresolved
+
+Both runs ended at the fail-closed planner-HLE boundary for guest `0x010F777C`
+before executing the sentinel target. Consequently `execution_probe_hit` and
+the `0x010F928B` register snapshot remain unobserved.
+
+### Next frontier
+
+The instruction `67 0F B6 50 01` at `0x010F777C` is a byte load using 16-bit
+addressing in the 32-bit guest; the same bytes have different long-mode
+semantics. Support this planner-HLE boundary, then resume the `0x010F928B`
+execution-probe verification.
