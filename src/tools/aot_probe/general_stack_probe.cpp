@@ -2,6 +2,9 @@
 
 #include "execution_internal.h"
 #include "instruction_emulation.h"
+#include "../../engine/boundary/linexe_glide_boundary.h"
+#include "../../engine/aot/aot_runtime_dispatch.h"
+#include "repiu/hle/glide_hle.h"
 #include "repiu/platform/linux_x64_aot_dispatch.h"
 #include "repiu/platform/virtual_memory.h"
 #include "repiu/runtime/selector_table.h"
@@ -280,10 +283,93 @@ bool RunGeneralStackProbe()
         !repiu::engine::CanResumeLinuxX64LegacyTarget(
             &context, kRequestedBase + kCodeOffset);
     legacy_resume_policy = identical_allowed && stack_refused;
+    bool legacy_resume_mode_aware = true;
+#if defined(__x86_64__)
+    repiu::engine::AotCodeCachePlacement mode16_placement;
+    mode16_placement.code_mode_ranges.push_back({
+        static_cast<std::uint32_t>(kRequestedBase),
+        static_cast<std::uint32_t>(kArenaSize),
+        0U});
+    context.aot_placement = &mode16_placement;
+    const std::uint8_t mode16_test[] = {0x66U, 0x85U, 0xFFU};
+    std::memcpy(bytes + kCodeOffset, mode16_test, sizeof(mode16_test));
+    const bool mode16_range_refused =
+        !repiu::engine::CanResumeLinuxX64LegacyTarget(
+            &context, kRequestedBase + kCodeOffset);
+
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    const bool mode16_selector_registered =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x24U, static_cast<std::uint32_t>(kRequestedBase),
+             static_cast<std::uint32_t>(kArenaSize - 1U), 0U, true,
+             repiu::runtime::kLeObjectExecutable, true,
+             repiu::runtime::GuestCodeDefaultOperandSize::k16});
+    context.aot_placement = nullptr;
+    const bool mode16_selector_refused =
+        !repiu::engine::CanResumeLinuxX64LegacyTarget(
+            &context, kRequestedBase + kCodeOffset);
+    legacy_resume_mode_aware = mode16_range_refused &&
+        mode16_selector_registered && mode16_selector_refused;
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+#endif
+    context.aot_placement = nullptr;
 #if defined(__x86_64__) && !defined(_WIN32)
     legacy_resume_thunk =
         repiu::platform::LinuxX64LegacyResumeThunkAddress() != 0U;
 #endif
+
+    constexpr std::uint32_t kIndirectPointerOffset = 0x500U;
+    constexpr std::uint32_t kIndirectTargetOffset = 0x600U;
+    constexpr std::uint32_t kIndirectCacheOffset = 0x20U;
+    constexpr std::uint32_t kCacheBaseOffset = 0xA00U;
+    const std::uint32_t indirect_pointer =
+        static_cast<std::uint32_t>(kRequestedBase + kIndirectPointerOffset);
+    const std::uint32_t indirect_target =
+        static_cast<std::uint32_t>(kRequestedBase + kIndirectTargetOffset);
+    std::uint8_t cs_indirect_jump[] = {
+        0x2EU, 0xFFU, 0x24U, 0x9DU, 0U, 0U, 0U, 0U};
+    std::memcpy(cs_indirect_jump + 4U, &indirect_pointer,
+                sizeof(indirect_pointer));
+    std::memcpy(bytes + kCodeOffset, cs_indirect_jump,
+                sizeof(cs_indirect_jump));
+    std::memcpy(bytes + kIndirectPointerOffset, &indirect_target,
+                sizeof(indirect_target));
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    const bool cs_indirect_selector_registered =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x24U, static_cast<std::uint32_t>(kRequestedBase),
+             static_cast<std::uint32_t>(kArenaSize - 1U), 0U, true,
+             repiu::runtime::kLeObjectExecutable, true,
+             repiu::runtime::GuestCodeDefaultOperandSize::k32});
+    repiu::engine::AotCodeCachePlacement indirect_placement;
+    indirect_placement.placed = true;
+    indirect_placement.base_address =
+        static_cast<std::uint32_t>(kRequestedBase + kCacheBaseOffset);
+    indirect_placement.size = 0x100U;
+    repiu::runtime::AotAddressMapEntry indirect_map;
+    indirect_map.guest_address = indirect_target;
+    indirect_map.cache_offset = kIndirectCacheOffset;
+    indirect_map.emitted_length = 1U;
+    indirect_placement.address_map.push_back(indirect_map);
+    context.aot_placement = &indirect_placement;
+    context.aot_reentry_pending = true;
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Ebx = 0U;
+    cpu.EFlags = 0x00000346U;
+    repiu::platform::FaultEvent indirect_fault;
+    indirect_fault.kind = repiu::platform::FaultKind::kBreakpoint;
+    indirect_fault.registers = &cpu;
+    repiu::engine::AotDbtDispatchFallbackReason indirect_reason{};
+    const bool cs_indirect_jump_handled =
+        cs_indirect_selector_registered &&
+        repiu::engine::HandleAotIndirectTransfer(
+            indirect_fault, &context, &indirect_reason) &&
+        cpu.Eip == kRequestedBase + kCacheBaseOffset + kIndirectCacheOffset &&
+        !context.aot_reentry_pending && (cpu.EFlags & 0x100U) == 0U;
+    std::cout << "cs_indirect_jump=" << cs_indirect_jump_handled << "\n";
+    context.aot_placement = nullptr;
 
     constexpr std::uint32_t kMoffsDestinationOffset = 0x500U;
     const std::uint8_t moffs_store[] = {
@@ -352,16 +438,249 @@ bool RunGeneralStackProbe()
         cpu.Edx == boundary_values[5] && cpu.Ecx == boundary_values[6] &&
         cpu.Ebx == boundary_values[7];
 
+    // AOT shared dispatch must offer the existing loader service before the
+    // generic far jump enters the original mode16 bridge.
+    const std::uint8_t loader_transfer[] = {0x66U, 0xEAU, 0x04U, 0U, 0x2CU, 0U};
+    std::memcpy(bytes + kCodeOffset, loader_transfer, sizeof(loader_transfer));
+    const char module_name[] = "glide2x.ovl";
+    std::memcpy(bytes + 0x700U, module_name, sizeof(module_name));
+    const std::uint32_t loader_values[] = {
+        0U, 0U, 0U, 0x24U, 0x11223344U, 0x55667788U, 0x99AABBCCU,
+        0x12345678U, static_cast<std::uint32_t>(kRequestedBase + 0x200U),
+        static_cast<std::uint32_t>(kRequestedBase + 0x700U)};
+    std::memcpy(bytes + kStackOffset, loader_values, sizeof(loader_values));
+    context.linexe_environment_active = true;
+    repiu::hle::BuildLinexeCallGatePlan(&context.linexe_gate_plan);
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    repiu::runtime::RegisterDescriptor(&context.selector_table,
+        {0x2CU, static_cast<std::uint32_t>(kRequestedBase + 0x300U),
+         0xFFU, 0U, true});
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.Edi = 0x00801B28U;
+    const bool loader_dispatch =
+        repiu::engine::DispatchGuestHleInstruction(&cpu, &context) &&
+        context.linexe_virtual_module_load_count == 1U && cpu.Eax == 1U &&
+        cpu.Eip == loader_values[8] &&
+        cpu.Esp == kRequestedBase + kStackOffset + 36U &&
+        context.guest_es == loader_values[3] && cpu.Ebx == loader_values[4] &&
+        cpu.Esi == loader_values[5] && cpu.Edi == loader_values[6] &&
+        cpu.Ebp == loader_values[7];
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.Edi = 0x0080FFFFU;
+    const bool loader_fallback =
+        repiu::engine::DispatchGuestHleInstruction(&cpu, &context) &&
+        cpu.Eip == kRequestedBase + 0x304U &&
+        cpu.Esp == kRequestedBase + kStackOffset &&
+        context.linexe_virtual_module_load_count == 1U;
+    // A valid previous frame must not be replayed when the next is unreadable.
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kArenaSize - 4U);
+    cpu.Edi = 0x00801B28U;
+    const bool loader_bad_frame =
+        repiu::engine::DispatchGuestHleInstruction(&cpu, &context) &&
+        cpu.Eip == kRequestedBase + 0x304U &&
+        cpu.Esp == kRequestedBase + kArenaSize - 4U &&
+        context.linexe_virtual_module_load_count == 1U;
+    std::cout << "linexe_shared_dispatch=" << loader_dispatch
+              << ",fallback=" << loader_fallback
+              << ",bad_frame=" << loader_bad_frame << "\n";
+
+    const char procedure_name[] = "_GRGLIDEINIT@0";
+    constexpr std::uint32_t kProcedureNameOffset = 0x740U;
+    constexpr std::uint32_t kProcedureResultOffset = 0x780U;
+    constexpr std::uint32_t kGateCodeOffset = 0xA00U;
+    constexpr std::uint32_t kGlideInitGateOffset = 0x300U;
+    std::memcpy(bytes + kProcedureNameOffset,
+                procedure_name,
+                sizeof(procedure_name));
+    const std::uint32_t getproc_values[] = {
+        0U, 0U, 0U, 0U, 0U, 0x24U, 0x11223344U, 0x55667788U,
+        0x99AABBCCU, 0x12345678U,
+        static_cast<std::uint32_t>(kRequestedBase + 0x200U),
+        1U,
+        static_cast<std::uint32_t>(kRequestedBase + kProcedureNameOffset),
+        static_cast<std::uint32_t>(kRequestedBase + kProcedureResultOffset),
+        0U, 0U};
+    std::memcpy(bytes + kStackOffset,
+                getproc_values,
+                sizeof(getproc_values));
+    context.glide_gate_plan = {};
+    context.glide_gate_plan.valid = true;
+    context.glide_gate_plan.exports.push_back(
+        {procedure_name,
+         32U,
+         repiu::hle::GlideGateId::kGrGlideInit,
+         0U,
+         kGlideInitGateOffset});
+    context.linexe_arena_layout.gate_code_base =
+        static_cast<std::uint32_t>(kRequestedBase + kGateCodeOffset);
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    const bool getproc_bridge_descriptor =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x2CU, static_cast<std::uint32_t>(kRequestedBase + 0x300U),
+             0xFFU, 0U, true});
+    const bool getproc_client_descriptor =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x24U, static_cast<std::uint32_t>(kRequestedBase),
+             0x2FFU, 0U, true, repiu::runtime::kLeObjectExecutable, true,
+             repiu::runtime::GuestCodeDefaultOperandSize::k32});
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.SegCs = 0x33U;
+    cpu.Edi = 0x00801B5AU;
+    const bool getproc_dispatch = getproc_bridge_descriptor &&
+        getproc_client_descriptor &&
+        repiu::engine::HandleLinexeFarTransferBoundary(&cpu, &context);
+    std::uint32_t procedure_pointer[2] = {};
+    std::memcpy(procedure_pointer,
+                bytes + kProcedureResultOffset,
+                sizeof(procedure_pointer));
+    const bool getproc_guest_cs = getproc_dispatch && cpu.Eax == 1U &&
+        procedure_pointer[0] ==
+            kRequestedBase + kGateCodeOffset + kGlideInitGateOffset &&
+        procedure_pointer[1] == 0x24U &&
+        cpu.Eip == getproc_values[10] &&
+        cpu.Esp == kRequestedBase + kStackOffset + 44U;
+
+    constexpr std::uint32_t kResultSentinel0 = 0xA5A5A5A5U;
+    constexpr std::uint32_t kResultSentinel1 = 0x5A5A5A5AU;
+    const std::uint32_t result_sentinel[] = {
+        kResultSentinel0, kResultSentinel1};
+    std::memcpy(bytes + kProcedureResultOffset,
+                result_sentinel,
+                sizeof(result_sentinel));
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    const bool missing_bridge_descriptor =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x2CU, static_cast<std::uint32_t>(kRequestedBase + 0x300U),
+             0xFFU, 0U, true});
+    std::memcpy(bytes + kStackOffset,
+                getproc_values,
+                sizeof(getproc_values));
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.Eax = 0xCAFEBABEU;
+    cpu.SegCs = 0x33U;
+    cpu.Edi = 0x00801B5AU;
+    const bool getproc_missing_selector_refused =
+        missing_bridge_descriptor &&
+        !repiu::engine::HandleLinexeFarTransferBoundary(&cpu, &context);
+    std::memcpy(procedure_pointer,
+                bytes + kProcedureResultOffset,
+                sizeof(procedure_pointer));
+    const bool getproc_missing_selector_unchanged =
+        getproc_missing_selector_refused &&
+        procedure_pointer[0] == kResultSentinel0 &&
+        procedure_pointer[1] == kResultSentinel1 &&
+        cpu.Eip == kRequestedBase + kCodeOffset &&
+        cpu.Esp == kRequestedBase + kStackOffset &&
+        cpu.Eax == 0xCAFEBABEU;
+    std::cout << "linexe_getproc_guest_cs=" << getproc_guest_cs
+              << ",missing_selector_refused="
+              << getproc_missing_selector_unchanged << "\n";
+
+    // A bare mode16 RETF reads a word IP and word CS through SS.base and
+    // advances the guest stack by four bytes.
+    const std::uint8_t mode16_return[] = {0xCBU};
+    std::memcpy(bytes + kCodeOffset, mode16_return, sizeof(mode16_return));
+    std::uint16_t return_offset = 0x0020U;
+    std::uint16_t return_selector = 0x0024U;
+    std::memcpy(bytes + kStackOffset, &return_offset,
+                sizeof(return_offset));
+    std::memcpy(bytes + kStackOffset + 2U, &return_selector,
+                sizeof(return_selector));
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    const bool mode16_return_cs =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x002CU, static_cast<std::uint32_t>(kRequestedBase),
+             static_cast<std::uint32_t>(kArenaSize - 1U), 0U, true,
+             repiu::runtime::kLeObjectExecutable, true,
+             repiu::runtime::GuestCodeDefaultOperandSize::k16});
+    const bool mode16_return_target =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x0024U, static_cast<std::uint32_t>(kRequestedBase + 0x200U),
+             0xFFU, 0U, true, repiu::runtime::kLeObjectExecutable, true,
+             repiu::runtime::GuestCodeDefaultOperandSize::k32});
+    const bool mode16_return_ss =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x00B4U, static_cast<std::uint32_t>(kRequestedBase),
+             static_cast<std::uint32_t>(kArenaSize - 1U), 0x92U, true});
+    context.guest_ss = 0x00B4U;
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.SegCs = 0x002CU;
+    const bool mode16_return_handled =
+        mode16_return_cs && mode16_return_target && mode16_return_ss &&
+        repiu::engine::DispatchGuestHleInstruction(&cpu, &context) &&
+        cpu.Eip == kRequestedBase + 0x220U && cpu.SegCs == 0x0024U &&
+        cpu.Esp == kRequestedBase + kStackOffset + 4U;
+
+    return_offset = 0x0020U;
+    return_selector = 0x00FFU;
+    std::memcpy(bytes + kStackOffset, &return_offset,
+                sizeof(return_offset));
+    std::memcpy(bytes + kStackOffset + 2U, &return_selector,
+                sizeof(return_selector));
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.SegCs = 0x002CU;
+    const bool mode16_return_bad_selector =
+        !repiu::engine::DispatchGuestHleInstruction(&cpu, &context) &&
+        cpu.Eip == kRequestedBase + kCodeOffset &&
+        cpu.Esp == kRequestedBase + kStackOffset && cpu.SegCs == 0x002CU;
+
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kArenaSize - 2U);
+    cpu.SegCs = 0x002CU;
+    const bool mode16_return_bad_frame =
+        !repiu::engine::DispatchGuestHleInstruction(&cpu, &context) &&
+        cpu.Eip == kRequestedBase + kCodeOffset &&
+        cpu.Esp == kRequestedBase + kArenaSize - 2U && cpu.SegCs == 0x002CU;
+
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    const bool mode32_return_cs =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x002CU, static_cast<std::uint32_t>(kRequestedBase),
+             static_cast<std::uint32_t>(kArenaSize - 1U), 0U, true,
+             repiu::runtime::kLeObjectExecutable, true,
+             repiu::runtime::GuestCodeDefaultOperandSize::k32});
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.SegCs = 0x002CU;
+    const bool mode32_return_refused =
+        mode32_return_cs &&
+        !repiu::engine::DispatchGuestHleInstruction(&cpu, &context) &&
+        cpu.Eip == kRequestedBase + kCodeOffset &&
+        cpu.Esp == kRequestedBase + kStackOffset && cpu.SegCs == 0x002CU;
+    std::cout << "mode16_far_return=" << mode16_return_handled
+              << ",bad_selector=" << mode16_return_bad_selector
+              << ",bad_frame=" << mode16_return_bad_frame
+              << ",mode32_refused=" << mode32_return_refused << "\n";
+
     const bool released =
         repiu::platform::ReleaseMemory(reservation.base, kArenaSize);
     const bool all = ordinary_push && ordinary_pop && push_esp_order &&
         pop_esp_order && rejected && mixed_sequence && bounded &&
         enter_nonnested && enter_nested && enter_range_rejected &&
         legacy_direct_call && legacy_direct_call_range_rejected &&
-        legacy_resume_policy && legacy_resume_thunk &&
+        legacy_resume_policy && legacy_resume_mode_aware &&
+        legacy_resume_thunk &&
         legacy_moffs_store && legacy_moffs_store_range_rejected &&
         cs_source_store && cs_source_missing_refused &&
-        boundary_epilogue_drained && released;
+        boundary_epilogue_drained && loader_dispatch && loader_fallback &&
+        loader_bad_frame && getproc_guest_cs &&
+        getproc_missing_selector_unchanged && mode16_return_handled &&
+        mode16_return_bad_selector && mode16_return_bad_frame &&
+        mode32_return_refused && cs_indirect_jump_handled && released;
     std::cout << "general_stack_push=" << (ordinary_push ? "true" : "false")
               << ",pop=" << (ordinary_pop ? "true" : "false")
               << ",push_esp=" << (push_esp_order ? "true" : "false")
@@ -381,6 +700,8 @@ bool RunGeneralStackProbe()
               << (legacy_direct_call_range_rejected ? "true" : "false")
               << ",legacy_resume_policy="
               << (legacy_resume_policy ? "true" : "false")
+              << ",legacy_resume_mode_aware="
+              << (legacy_resume_mode_aware ? "true" : "false")
               << ",legacy_resume_thunk="
               << (legacy_resume_thunk ? "true" : "false")
               << ",legacy_moffs_store="

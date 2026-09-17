@@ -14688,3 +14688,1528 @@ entering `0x010F0232` must be identified first.
 | Normal game execution | **Unresolved** |
 
 ---
+
+## 2026-09-14: Linux x64 mixed-mode decode checkpoint
+
+### 한국어
+
+Task 678의 종료 복구 수정과 Task 679의 혼합 모드 조사 중 다음 사실을
+확인했다.
+
+* Linux x64 AOT planner가 모든 LE code object를 `LEGACY_32`로 디코드하던
+  것이 `OBJALIAS16` object 3의 `BC 00 20`을 `MOV ESP,0x8DFB2000`으로
+  오인하게 만든 직접 원인이었다.
+* object 3의 LE flags는 `0x1045`이며 `OBJBIGDEF`가 없으므로 기본 code
+  operand size는 16-bit이다. object 2는 32-bit code object로 유지된다.
+* 수정된 planner는 executable object 범위에서 `LEGACY_16`/`LEGACY_32`
+  decoder를 선택하고 mode를 `AotInstructionRecord` 및 dynamic AOT append
+  metadata에 전달한다.
+* 아직 검증되지 않은 16-bit 명령은 x64 cache에서 32-bit로 재인코딩하지
+  않고 fail-closed HLE 경계로 남긴다. 따라서 이 checkpoint만으로 정상 게임
+  실행이 완료된 것은 아니다.
+
+### English
+
+During the Task 678 shutdown-recovery work and Task 679 mixed-mode
+investigation, the following facts were confirmed.
+
+* The Linux x64 AOT planner decoded every LE code object as `LEGACY_32`. This
+  made object 3's `BC 00 20` become the false `MOV ESP,0x8DFB2000` and was the
+  direct cause of the malformed guest stack state.
+* Object 3 has LE flags `0x1045` and no `OBJBIGDEF`, so its default code operand
+  size is 16-bit. Object 2 remains a 32-bit code object.
+* The updated planner selects a `LEGACY_16` or `LEGACY_32` decoder from the
+  executable object range and carries that mode into `AotInstructionRecord`
+  and dynamic AOT append metadata.
+* 16-bit instructions without a proven x64 lowering are kept at a fail-closed
+  HLE boundary instead of being re-encoded as 32-bit instructions. This
+  checkpoint does not yet mean that normal game execution is complete.
+
+### Next session
+
+Task 680 now implements the first general 16-bit lowering/HLE boundary policy.
+The next session should inspect the object-3 dynamic AOT trace after the mode
+change. The expected plan entry at `0x01100022` is `BC 00 20` with length 3 and
+mode16, and the old `41 BF 00 20 FB 8D` emission must be absent. The next
+fail-closed 16-bit instruction, if any, should be handled by another shared
+lowering or HLE unit rather than an address-specific exception. The 16-bit
+stack width/base/limit and far-return ABI remain unresolved.
+
+## 2026-09-14: Task 680 16-bit MOV SP lowering
+
+### 한국어
+
+Task 680은 Task 679에서 분리한 첫 16-bit 명령 범위를 `MOV SP, imm16`
+(`BC iw`)로 한정했다. mode-aware compatibility API는 `LEGACY_16`으로
+`BC 00 20`을 길이 3으로 decode하고, x64 cache는 이를
+`66 41 BF 00 20`으로 lowering한다. 이 encoding은 guest ESP를 보관하는
+R15의 low word만 기록하므로 host RSP를 건드리지 않는다.
+
+16-bit non-copy record는 기존 32-bit 전용 branch/return/selector slot에
+들어가지 않고 INT3 boundary로 닫는다. 다른 16-bit 명령도 아직
+`kUnsupported`이며, 16-bit push/pop, segment, far-return의 stack
+width/base/limit semantics는 미확정으로 유지한다.
+
+이번 환경에서는 `cmake`가 Windows PATH에 없고 WSL service가
+`E_ACCESSDENIED`를 반환하여 Linux build와 runtime smoke를 실행하지 못했다.
+따라서 아래 구현·probe 결과는 소스 검토 및 다음 Linux 실행에서 확인해야
+하는 상태로 남긴다.
+
+| 질문 | 상태 |
+|---|---|
+| mode16 `BC iw` decode length | **확인됨**: core probe planner mode/length 통과 |
+| `BC iw` -> `66 41 BF iw` lowering | **확인됨**: bytes 및 x64 R15 실행 probe 통과 |
+| mode16 non-copy native slot 차단 | **확인됨**: emission boundary probe 통과 |
+| Linux x64 build/core probe | **통과**: `repiu`, `repiu_core_probe`, failures=0 |
+| object 3 dynamic trace | **미도달**: 짧은 smoke에서 `0x01100022` request 미발생 |
+| 정상 게임 실행 및 coredump 부재 | **부분 확인**: timeout cleanup은 failure=0, full run은 미확정 |
+
+### English
+
+Task 680 limits the first 16-bit instruction split from Task 679 to
+`MOV SP, imm16` (`BC iw`). The mode-aware compatibility API decodes
+`BC 00 20` as a three-byte `LEGACY_16` instruction, and the x64 cache lowers
+it to `66 41 BF 00 20`. This writes only the low word of R15, which stores
+guest ESP, and leaves host RSP untouched.
+
+16-bit non-copy records are kept out of the existing 32-bit-only
+branch/return/selector slots and become INT3 boundaries. Other 16-bit
+instructions remain `kUnsupported`; 16-bit push/pop, segment, and far-return
+stack width/base/limit semantics remain unresolved.
+
+The WSL service became available for this verification. The Linux x64 Debug
+build of `repiu` and `repiu_core_probe` passed, and the core probe reported zero
+failures, including the mode16 planner, emission, and execution checks. A short
+dynamic runtime smoke reached timeout cleanup with `failure=0`, `recovered=1`,
+and `stopped=1`; however, that run did not request a dynamic translation
+containing object 3 address `0x01100022`, so the real object-3 trace remains
+unobserved.
+
+| Question | Status |
+|---|---|
+| mode16 `BC iw` decode length | **Confirmed**: core-probe planner mode/length check passed |
+| `BC iw` -> `66 41 BF iw` lowering | **Confirmed**: bytes and x64 R15 execution checks passed |
+| mode16 non-copy native-slot exclusion | **Confirmed**: emission boundary check passed |
+| Linux x64 build/core probe | **Passed**: `repiu`, `repiu_core_probe`, failures=0 |
+| Object-3 dynamic trace | **Not reached**: no request for `0x01100022` in short smoke |
+| Normal game execution and absence of coredump | **Partially checked**: timeout cleanup failure=0; full run unresolved |
+
+### Verification addendum
+
+The object-3 trace was also checked with all dynamic AOT requests enabled. The
+observed requests stayed in the `0x010xxxxx` code range; none contained
+`0x01100022`, so absence of the old `41BF0020FB8D` sequence cannot yet be
+claimed from a real object-3 dynamic image.
+## 2026-09-15: Task 681 runtime correction and next 16-bit LEA frontier
+
+### 확인된 사실
+
+Task 681의 공용 lowering은 명시적인 `67 66 LEA r32,m32`에 대해
+`67 41 ...` x64 바이트를 생성하며 core probe에서 통과했다. 그러나 최신
+debug runtime trace가 실제로 요청한 object 3 entry는
+`0x0110000E: 8D 8C 24 00`이었다. 이는 mode16의
+`LEA CX,[SI+disp16]`이며 Task 681의 32비트 명시형 LEA와 다른 형식이다.
+
+해당 명령은 현재 x64 cache에서 INT3 boundary가 되었고, mode16 비동일
+명령을 HLE가 처리하지 못해 `SIGTRAP`이 unhandled로 남았다. 따라서 현재
+coredump는 Task 679에서 확인한 잘못된 ESP immediate decode와는 별개의
+후속 frontier이며, 원본 bytes를 실행하도록 우회해서는 안 된다.
+
+### 미확정 및 다음 작업
+
+16비트 effective-address 계산과 목적지 word 보존을 함께 구현할 공용
+lowering subset은 Task 682의 설계 대상으로 남긴다. 주소 `0x0110000E`나
+displacement `0x0024`에 종속된 예외처리는 허용하지 않는다.
+
+### English
+
+Task 681's shared lowering emits `67 41 ...` x64 bytes for explicit
+`67 66 LEA r32,m32`, and the core probe passes. The latest debug runtime trace,
+however, requested object-3 entry `0x0110000E: 8D 8C 24 00`. In mode16 this is
+`LEA CX,[SI+disp16]`, a different form from Task 681's explicit 32-bit LEA.
+
+The instruction currently becomes an INT3 boundary in the x64 cache, and the
+boundary remains unhandled because HLE does not execute a non-identical mode16
+instruction. This is a later frontier distinct from Task 679's malformed
+32-bit decode of the stack-pointer immediate; raw guest execution must not be
+used as a workaround.
+
+The shared lowering subset for 16-bit effective-address calculation and word
+destination preservation is deferred to Task 682. No exception keyed to
+`0x0110000E` or displacement `0x0024` is allowed.
+
+## 2026-09-15: Task 682 mode16 LEA16 lowering
+
+### 확인된 사실
+
+`0x0110000E: 8D 8C 24 00`은 mode16 `LEA CX,[SI+0x0024]`로 확인되었다.
+공용 lowering은 source `SI`의 low word를 `R14D`에 zero-extend하고,
+`67 66 LEA CX,[R14D+0x24]`를 생성한다. 이 sequence는 flags를 변경하지
+않으며 `ECX`의 상위 word를 보존한다.
+
+runtime trace에서 해당 dynamic image는 `guest_length=4`,
+`emitted_length=13`으로 기록되었고, 1바이트 INT3 boundary가 제거되었다.
+다음 frontier는 `0x01100012: E0 FF`, mode16 `LOOPNZ`이다.
+
+### English
+
+`0x0110000E: 8D 8C 24 00` is confirmed as mode16
+`LEA CX,[SI+0x0024]`. The shared lowering zero-extends the source `SI` low
+word into `R14D` and emits `67 66 LEA CX,[R14D+0x24]`. The sequence preserves
+flags and the upper word of `ECX`.
+
+The runtime trace records `guest_length=4` and `emitted_length=13` for the
+dynamic image, replacing the one-byte INT3 boundary. The next frontier is
+`0x01100012: E0 FF`, mode16 `LOOPNZ`.
+
+## 2026-09-15: Task 683 mode16 LOOPNZ lowering and re-entry boundary
+
+### 확인된 사실
+
+Task 683의 공용 classifier, x64 control-flow slot, mode16 relative-target
+rebasing, compatibility/emission/lowering probe는 모두 통과했다. mode16
+`E0 FF`의 decoder target은 segment-relative IP offset이므로 현재 executable
+code-mode range의 relocated base를 더해 `0x01100013`으로 기록된다.
+
+실제 실행 trace에서는 far transfer가 `0x010EFF20`에서 `0x01100004`로
+정상 해석되었지만, 해당 주소가 정적 AOT map에 없었다. 기존 post-HLE dynamic
+translation opt-in이 꺼진 상태에서 공용 re-entry gate가 legacy-32 기본 모드로
+첫 instruction만 검사했고, mode16 `66 85 FF`를 byte-identical로 잘못
+허용했다. 그 결과 원본 mode16 `B8 07 00`이 x64 long mode에서
+`MOV EAX,0x66670007`로 5바이트 decode되어 `0x0110000E`로 진행했다.
+
+따라서 이번 실행에서 `LOOPNZ` slot까지 도달하지 못한 원인은 `E0 FF`의
+주소별 예외가 아니라, code-mode metadata를 모르는 공용 re-entry 정책이다.
+
+### 상태 구분
+
+* **확인됨:** Task 683의 classifier/emitter/planner/probe 구현 및 Linux x64
+  core probe는 통과했다.
+* **확인됨:** mode16 object-3 원본 byte fallback이 long-mode instruction
+  boundary를 바꾸어 `0x0110000E` dynamic entry를 만들었다.
+* **추론:** re-entry gate가 code-mode 16을 사용하고 non-identical instruction을
+  dynamic translation으로 보내면, 다음 실패 지점은 mode16 `TEST`/`Jcc` 같은
+  일반 operand-width/control-flow lowering 경계가 된다.
+* **미확정:** 해당 lowering들을 순차적으로 추가한 뒤 object 3이 정상 실행을
+  완료하는지 여부.
+
+### 다음 작업
+
+Task 684에서 `CanResumeLinuxX64LegacyTarget`가 AOT placement의
+`RuntimeCodeModeRange`를 사용해 code-mode를 판정하도록 바꾸고, non-identical
+mode16 continuation이 post-HLE 설정과 무관하게 원본 long-mode bytes를
+실행하지 않도록 공용 re-entry 정책을 수정한다. 이후 dynamic entry
+`0x01100004`에서 발견되는 일반 mode16 lowering frontier를 별도 분류한다.
+
+### English
+
+Task 683's shared classifier, x64 control-flow slot, mode16 relative-target
+rebasing, and compatibility/emission/lowering probes all pass. A mode16
+`E0 FF` decoder target is a segment-relative IP offset, so the planner adds
+the relocated base of the current executable code-mode range and records
+`0x01100013` as the linear guest target.
+
+The live trace resolved the far transfer from `0x010EFF20` to `0x01100004`, but
+that address was absent from the static AOT map. With post-HLE dynamic
+translation disabled, the shared re-entry gate checked only the first
+instruction using the legacy-32 default and incorrectly admitted mode16
+`66 85 FF` as byte-identical. Original mode16 `B8 07 00` then decoded in x64
+long mode as the five-byte `MOV EAX,0x66670007`, advancing to `0x0110000E`.
+
+The live boundary is therefore a generic code-mode-aware re-entry problem, not
+an address-specific exception for `E0 FF` or `0x01100012`.
+
+* **Confirmed:** Task 683 implementation and the Linux x64 core probe pass.
+* **Confirmed:** mode16 object-3 original-byte fallback changed the long-mode
+  instruction boundary and created the `0x0110000E` dynamic entry.
+* **Inferred:** after the re-entry gate uses code mode 16 and routes
+  non-identical instructions through dynamic translation, the next frontier
+  will be the generic mode16 `TEST`/`Jcc` and operand-width lowerings.
+* **Unresolved:** whether object 3 completes after those lowerings are added.
+
+Task 684 will make `CanResumeLinuxX64LegacyTarget` use the AOT placement's
+`RuntimeCodeModeRange` metadata and will prevent non-identical mode16
+continuations from executing original long-mode bytes regardless of the
+post-HLE setting. The resulting `0x01100004` dynamic entry will then provide
+the next shared mode16 lowering frontier.
+
+## 2026-09-15: Task 684 mode-aware Linux x64 re-entry
+
+### 확인된 사실
+
+`CanResumeLinuxX64LegacyTarget`가 AOT placement의
+`RuntimeCodeModeRange`를 우선 사용하고 executable selector descriptor를
+보조로 사용하도록 수정했다. placement와 selector metadata가 충돌하거나
+여러 항목이 겹치면 `kUnknown`으로 처리하여 원본 byte resume을 허용하지
+않는다. metadata가 전혀 없는 기존 synthetic context는 legacy-32 기본값을
+유지한다.
+
+cache miss에서 compatibility gate가 non-identical을 반환하면
+`REPIU_AOT_DBT_POST_HLE_TRANSLATE`가 꺼져 있어도 dynamic resolver를
+호출한다. 이 변경은 안전한 identical original-byte 경로의 opt-in 정책은
+유지하면서, non-identical bytes만 long mode에서 직접 실행되지 않게 한다.
+
+general stack probe는 placement mode16과 selector-only mode16에서
+`66 85 FF`가 resume되지 않는 것을 확인했고, 전체 core probe는
+`core_probe_failures=0`, `core_probe_all=true`로 통과했다.
+
+실제 object-3 trace는 다음 전환을 확인했다.
+
+```text
+[repiu-linexe-far-jump] ... resolved target=0x01100004
+[repiu-hle-reentry] stage=cache-miss-non-identical ... detail=translate
+[repiu-aot-plan-trace] guest=0x01100004 bytes=6685FF ... code_mode=16
+[repiu-aot-dynamic] stage=image-entry guest=0x01100004 bytes=CC ...
+```
+
+이제 원본 mode16 `B8 07 00`을 x64 long mode에서 소비하여
+`0x0110000E`로 넘어가는 경로는 관찰되지 않는다. 현재 SIGTRAP은
+`66 85 FF`를 dynamic image에서 아직 지원하지 않아 INT3 fail-closed
+경계에 도달한 결과이다.
+
+### 상태 구분
+
+* **확인됨:** mode-aware gate가 object-3 target을 non-identical로 판정하고
+  post-HLE 설정과 무관하게 dynamic translation을 요청한다.
+* **확인됨:** 기존 원본-byte misdecode에 의한 `0x0110000E` 진입은 제거됐다.
+* **미확정:** mode16 `TEST` 이후의 Jcc, immediate, stack/segment/far-return
+  lowering을 추가하면 게임 실행이 coredump 없이 완료되는지 여부.
+
+### 다음 frontier
+
+다음 공용 lowering 후보는 object 3의 `0x01100004: 66 85 FF`인 mode16
+`TEST EDI,EDI`이다. 이 instruction은 operand-size override를 제거한
+`85 FF`로 x64에서 동일한 flags 의미를 만들 수 있다. 이어지는
+`74 39`/`72 23`의 direct CFG edge와 `B8 07 00`의 `66 B8 iw`를 순차적으로
+다루되, 특정 주소 예외는 추가하지 않는다.
+
+### English
+
+`CanResumeLinuxX64LegacyTarget` now uses AOT placement
+`RuntimeCodeModeRange` metadata first and executable selector descriptors as
+a fallback. Conflicting or overlapping metadata resolves to `kUnknown`, which
+does not permit original-byte resume. Contexts with no metadata retain the
+legacy-32 default for compatibility.
+
+When the compatibility gate reports a cache-miss instruction as non-identical,
+the dynamic resolver now runs even if `REPIU_AOT_DBT_POST_HLE_TRANSLATE` is
+disabled. The opt-in behavior for safe identical original-byte paths remains;
+only non-identical bytes are prevented from executing directly in long mode.
+
+The general stack probe confirms that `66 85 FF` is not admitted with either a
+placement mode16 range or selector-only mode16 metadata. The full core probe
+passes with `core_probe_failures=0` and `core_probe_all=true`.
+
+The object-3 trace now shows:
+
+```text
+[repiu-linexe-far-jump] ... resolved target=0x01100004
+[repiu-hle-reentry] stage=cache-miss-non-identical ... detail=translate
+[repiu-aot-plan-trace] guest=0x01100004 bytes=6685FF ... code_mode=16
+[repiu-aot-dynamic] stage=image-entry guest=0x01100004 bytes=CC ...
+```
+
+The original mode16 `B8 07 00` is no longer consumed as a long-mode
+instruction, so the erroneous advance to `0x0110000E` is gone. The remaining
+SIGTRAP is the INT3 fail-closed boundary because the dynamic image does not yet
+support `66 85 FF`.
+
+* **Confirmed:** the mode-aware gate classifies the object-3 target as
+  non-identical and requests dynamic translation regardless of post-HLE.
+* **Confirmed:** the original-byte misdecode and resulting `0x0110000E` entry
+  are removed.
+* **Unresolved:** whether adding mode16 TEST, Jcc, immediate, stack/segment,
+  and far-return lowerings completes the game without a coredump.
+
+The next shared lowering is object 3's `0x01100004: 66 85 FF`, mode16
+`TEST EDI,EDI`; removing the operand-size override produces `85 FF` with the
+same x64 flags semantics. The following `74 39`/`72 23` direct CFG edges and
+`B8 07 00` -> `66 B8 iw` should be handled in sequence, with no address-specific
+exception.
+
+## 2026-09-15: Task 685 mode16 TEST lowering
+
+### 확인된 사실
+
+object 3의 첫 dynamic frontier `0x01100004: 66 85 FF`를 특정 주소 예외가
+아닌 mode16 register-register TEST class로 분류했다. mode16의 `66`은
+32비트 operand-size override이므로 x64 long mode에서 이를 제거한 `85 FF`를
+emit하면 `TEST EDI,EDI`의 flags 동작과 GPR state를 유지할 수 있다.
+
+memory, ESP, segment, address-size 변형은 이번 lowering에 포함하지 않고
+기존 boundary로 남겼다. compatibility/lowering probe와 Linux x64 core
+probe는 모두 통과했다.
+
+```text
+long_mode_16bit_test32=true,length=3,lowered=2,unsupported_variants=true
+long_mode_lowering_16bit_test32=true,flags=true,register=true
+core_probe_failures=0
+core_probe_all=true
+```
+
+실제 trace에서도 다음과 같이 dynamic image가 바뀌었다.
+
+```text
+[repiu-aot-plan-trace] guest=0x01100004 bytes=6685FF ... code_mode=16
+[repiu-aot-dynamic] stage=image-entry guest=0x01100004 bytes=85FF length=2
+[repiu-fault] unhandled signal=0x5 ... eip=0x01100009
+```
+
+### 상태 구분
+
+* **확인됨:** mode16 TEST lowering이 x64 cache에서 `85 /r`로 실행되며
+  classifier·lowering·runtime 경계가 일치한다.
+* **확인됨:** 이전 `0x01100004` INT3은 제거되고 다음 frontier가
+  `0x01100007: 74 39`로 이동했다.
+* **미확정:** mode16 Jcc target rebasing과 direct-branch slot을 추가한 뒤
+  `0x01100007` 이후 실행이 계속되는지 여부.
+
+### 다음 frontier
+
+다음 후보는 mode16 `74 39` JZ이다. 조건 자체는 long mode와 동일하지만,
+mode16 IP-relative displacement와 code-object base를 사용한 target 계산,
+그리고 mode16 record를 32비트 전용 control-flow slot에서 제외하는 현재
+gate를 공용 방식으로 연결해야 한다.
+
+### English
+
+The first object-3 dynamic frontier, `0x01100004: 66 85 FF`, is now classified
+as a mode16 register-register TEST class rather than an address-specific
+exception. In mode16, `66` selects a 32-bit operand-size override, so removing
+it and emitting `85 FF` in long mode preserves `TEST EDI,EDI` flags and GPR
+state.
+
+Memory, ESP, segment, and address-size variants remain boundaries. The
+compatibility/lowering probes and Linux x64 core probe pass:
+
+```text
+long_mode_16bit_test32=true,length=3,lowered=2,unsupported_variants=true
+long_mode_lowering_16bit_test32=true,flags=true,register=true
+core_probe_failures=0
+core_probe_all=true
+```
+
+The live trace now shows:
+
+```text
+[repiu-aot-plan-trace] guest=0x01100004 bytes=6685FF ... code_mode=16
+[repiu-aot-dynamic] stage=image-entry guest=0x01100004 bytes=85FF length=2
+[repiu-fault] unhandled signal=0x5 ... eip=0x01100009
+```
+
+* **Confirmed:** the mode16 TEST lowering executes as `85 /r` in the x64 cache
+  and classifier/lowering/runtime boundaries agree.
+* **Confirmed:** the previous `0x01100004` INT3 is removed and the next
+  frontier is `0x01100007: 74 39`.
+* **Unresolved:** whether execution continues after adding mode16 Jcc target
+  rebasing and the direct-branch slot.
+
+The next candidate is mode16 `74 39` JZ. Its condition is identical in long
+mode, but target calculation must use the mode16 IP-relative displacement and
+code-object base, and the mode16 record must connect to control-flow emission
+without reopening the 32-bit-only path.
+
+## 2026-09-15: Task 686 mode16 conditional branch lowering
+
+### 확인된 사실
+
+mode16 short conditional branch의 planner target rebasing은 Task 683의
+기존 공용 경로를 사용하고, long-mode emitter는 mode16
+`kConditionalBranch`에 한해 기존 `0F 8x rel32` direct-branch slot을
+허용하도록 수정했다. mode16 direct jump/call/return과 다른 non-copy
+record는 여전히 열지 않았다.
+
+synthetic probe는 `74 01`을 length 2, code-object base를 포함한 target,
+fallthrough target으로 확인했다. emission probe는 conditional target과
+block-fallthrough fixup을 각각 resolve하고, unresolved target에서는 전체
+branch slot을 INT3로 neutralise했다.
+
+```text
+long_mode_16bit_jcc_plan=true,length=2,target_rebased=true
+long_mode_emission_16bit_jcc=true,slot=1,conditional_fixup=1,fallthrough_fixup=1
+long_mode_emission_16bit_jcc_unresolved=true,entry=1,fallthrough=1
+core_probe_failures=0
+core_probe_all=true
+```
+
+실제 object-3 trace에서 정적 bytes 기준 Jcc는
+`0x01100007: 74 39`이고, `ZF=0` not-taken 경로가 다음 instruction
+`0x01100009: B8 07 00`에 도달했다.
+
+### 상태 구분
+
+* **확인됨:** mode16 Jcc가 `0F 8x rel32`와 rebased target fixup으로 실행된다.
+* **확인됨:** Jcc INT3 boundary가 제거되고 다음 frontier가 mode16
+  `MOV AX,7`로 이동했다.
+* **미확정:** mode16 immediate lowering 이후의 mixed-address/stack/segment
+  semantics와 정상 게임 종료 여부.
+
+### 다음 frontier
+
+`0x01100009: B8 07 00`은 mode16 `MOV AX,7`이다. x64 cache에서는
+`66 B8 07 00`으로 emit해야 하며, 이후 `0x0110000C`의 이미 지원된 mixed
+mode LEA로 이어져야 한다.
+
+### English
+
+Mode16 short conditional branches now use Task 683's existing planner target
+rebasing, and the long-mode emitter allows mode16 `kConditionalBranch` records
+through the existing `0F 8x rel32` direct-branch slot. Mode16 direct
+jump/call/return and other non-copy records remain closed.
+
+The synthetic probe verifies `74 01` length two, its code-object-base-inclusive
+target, and its fallthrough target. The emission probe independently resolves
+the conditional-target and block-fallthrough fixups, and unresolved targets
+neutralise the complete branch slot with INT3.
+
+```text
+long_mode_16bit_jcc_plan=true,length=2,target_rebased=true
+long_mode_emission_16bit_jcc=true,slot=1,conditional_fixup=1,fallthrough_fixup=1
+long_mode_emission_16bit_jcc_unresolved=true,entry=1,fallthrough=1
+core_probe_failures=0
+core_probe_all=true
+```
+
+In the live object-3 trace, the static object bytes identify the Jcc as
+`0x01100007: 74 39`; with `ZF=0`, its not-taken path reaches the next
+instruction `0x01100009: B8 07 00`.
+
+* **Confirmed:** mode16 Jcc executes through `0F 8x rel32` with a rebased
+  target fixup.
+* **Confirmed:** the Jcc INT3 boundary is removed and the next frontier is the
+  mode16 `MOV AX,7`.
+* **Unresolved:** mixed-address/stack/segment semantics after mode16 immediate
+  lowering and whether the game exits normally.
+
+The next frontier is `0x01100009: B8 07 00`, mode16 `MOV AX,7`; the x64 cache
+should emit `66 B8 07 00` before continuing to the already-supported mixed-mode
+LEA at `0x0110000C`.
+
+## 2026-09-15: Task 687 mode16 MOV immediate lowering
+
+### 확인된 사실
+
+object 3의 `0x01100009: B8 07 00`은 mode16 `MOV AX,7`로 확인되었습니다.
+공통 classifier는 prefix-free `B8`–`BF` opcode, operand width 16, address
+width 16, 길이 3을 확인하고 guest SP인 `BC`는 제외합니다. 나머지 GPR
+형식은 `k16BitMovImmediateToGuestGprs`로 분류되어 원본 3바이트 앞에
+`66`만 추가한 `66 B8+r iw`로 lower됩니다.
+
+`BC 00 20`은 기존 `k16BitStackPointerImmediateToR15` 경로를 유지하며,
+`66`/`67` prefix 및 잘린 입력은 새 규칙에 포함되지 않습니다. compatibility
+probe, x64 lowering probe, core probe 모두 통과했습니다.
+
+```text
+long_mode_16bit_mov_immediate=true,length=3,lowered=4,unsupported_variants=true
+long_mode_lowering_16bit_mov_immediate=true,observed=0xa5a5a5a512340007
+core_probe_failures=0
+core_probe_all=true
+```
+
+실제 runtime trace에서는 TEST/Jcc/MOV immediate를 통과하고 다음 경계에서
+멈췄습니다.
+
+```text
+[repiu-aot-plan-trace] guest=0x01100015 bytes=89CA length=2 ... code_mode=16
+[repiu-fault] unhandled signal=0x5 ... eip=0x01100015
+```
+
+* **확인됨:** `B8 07 00`의 잘못된 long-mode immediate 해석과 다음 instruction
+  침범이 제거되었습니다.
+* **확인됨:** lowering은 특정 주소나 immediate 값이 아니라 opcode 범위,
+  mode16 폭, prefix 상태, guest SP 분리를 기준으로 합니다.
+* **미확정:** mode16 `89 CA` 이후의 word GPR 이동, `66 C1 E9 10`, `CD 31` 및
+  이후 stack/segment/far-return 경계가 정상 게임 종료까지 이어지는지입니다.
+
+### 다음 frontier
+
+다음 frontier는 `0x01100015: 89 CA` mode16 `MOV DX,CX`입니다. 이후
+`0x01100017: 66 C1 E9 10`은 mode16 word shift이고, `0x0110001B: CD 31`은
+DOS interrupt 경계이므로 각각 register-width lowering과 HLE 경로를
+분리해 조사해야 합니다.
+
+### English
+
+Object 3's `0x01100009: B8 07 00` is confirmed as mode16 `MOV AX,7`. The
+shared classifier admits prefix-free `B8`–`BF` forms only when operand width is
+16, address width is 16, and the instruction length is 3. It excludes guest SP
+`BC`; the other GPR forms use `k16BitMovImmediateToGuestGprs` and lower by
+prepending `66`, producing `66 B8+r iw` without modifying the original bytes.
+
+`BC 00 20` remains on the existing `k16BitStackPointerImmediateToR15` path.
+`66`/`67` prefixed forms and truncated input remain outside the new rule. The
+compatibility probe, x64 lowering probe, and core probe all pass:
+
+```text
+long_mode_16bit_mov_immediate=true,length=3,lowered=4,unsupported_variants=true
+long_mode_lowering_16bit_mov_immediate=true,observed=0xa5a5a5a512340007
+core_probe_failures=0
+core_probe_all=true
+```
+
+The live runtime trace passes TEST, Jcc, and the immediate MOV, then stops at
+the next boundary:
+
+```text
+[repiu-aot-plan-trace] guest=0x01100015 bytes=89CA length=2 ... code_mode=16
+[repiu-fault] unhandled signal=0x5 ... eip=0x01100015
+```
+
+* **Confirmed:** the incorrect long-mode immediate interpretation of
+  `B8 07 00` and its overrun into the next instruction are removed.
+* **Confirmed:** the lowering is a shared rule based on opcode range, mode16
+  widths, prefix state, and guest-SP separation rather than a specific address
+  or immediate value.
+* **Unresolved:** whether mode16 `89 CA`, `66 C1 E9 10`, `CD 31`, and later
+  stack/segment/far-return boundaries carry execution to normal game exit.
+
+### Next frontier
+
+The next frontier is `0x01100015: 89 CA`, mode16 `MOV DX,CX`. The following
+`0x01100017: 66 C1 E9 10` is a mode16 word shift, while `0x0110001B: CD 31` is
+a DOS interrupt boundary; they should be investigated as separate register-
+width and HLE paths.
+
+## 2026-09-15: Task 688 mode16 MOV register lowering
+
+### 확인된 사실
+
+object 3의 `0x01100015: 89 CA`는 mode16 `MOV DX,CX`로 확인되었습니다.
+공통 classifier는 prefix-free `89`/`8B` register-only 형식에서 operand
+width와 address width가 16이고 ModRM mod=3인 경우를 분류합니다. ModRM의
+reg 또는 r/m이 4인 guest SP 형식은 host RSP 매핑 문제 때문에 제외합니다.
+
+lowering은 원본 2바이트 앞에 `66`을 붙여 `66 89 /r` 또는 `66 8B /r`를
+생성합니다. `89 CA`/`8B D1` byte probe와 upper GPR 보존 실행 probe,
+core probe가 모두 통과했습니다.
+
+```text
+long_mode_16bit_mov_register=true,length=2,lowered=3,unsupported_variants=true
+long_mode_lowering_16bit_mov_register=true,observed=0xa5a5a5a512340007
+core_probe_failures=0
+core_probe_all=true
+```
+
+실제 trace는 해당 경계를 통과하고 다음 mode16 shift에서 멈췄습니다.
+
+```text
+[repiu-aot-plan-trace] guest=0x01100017 bytes=66C1E910 length=4 ... code_mode=16
+[repiu-fault] unhandled signal=0x5 ... eip=0x01100017
+```
+
+* **확인됨:** mode16 `89 CA`의 x64 32비트 widening과 destination upper-bit
+  손상이 제거되었습니다.
+* **확인됨:** 변경은 특정 주소나 레지스터 값이 아닌 opcode/폭/prefix/
+  register-only/guest-SP 제외 조건에 기반합니다.
+* **미확정:** mode16 `66 C1 E9 10`, `CD 31`, 이후 stack/segment/far-return
+  경계가 정상 게임 종료까지 이어지는지입니다.
+
+### 다음 frontier
+
+다음 frontier는 `0x01100017: 66 C1 E9 10`입니다. mode16에서는 `66`이
+32비트 operand-size override이므로, long mode에서는 해당 prefix를 제거한
+`C1 E9 10`이 같은 32비트 shift semantics를 가질 가능성을 공통 규칙으로
+검증해야 합니다.
+
+### English
+
+Object 3's `0x01100015: 89 CA` is confirmed as mode16 `MOV DX,CX`. The shared
+classifier admits prefix-free `89`/`8B` register-only forms with operand and
+address widths of 16 and ModRM mod=3. Forms whose ModRM reg or r/m is 4 are
+excluded because they name guest SP and cannot use host RSP directly.
+
+The lowering prepends `66` to produce `66 89 /r` or `66 8B /r`. Byte probes for
+`89 CA`/`8B D1`, an upper-GPR-preservation execution probe, and the core probe
+all pass:
+
+```text
+long_mode_16bit_mov_register=true,length=2,lowered=3,unsupported_variants=true
+long_mode_lowering_16bit_mov_register=true,observed=0xa5a5a5a512340007
+core_probe_failures=0
+core_probe_all=true
+```
+
+The live trace passes that boundary and stops at the next mode16 shift:
+
+```text
+[repiu-aot-plan-trace] guest=0x01100017 bytes=66C1E910 length=4 ... code_mode=16
+[repiu-fault] unhandled signal=0x5 ... eip=0x01100017
+```
+
+* **Confirmed:** the x64 32-bit widening and destination upper-bit corruption
+  for mode16 `89 CA` are removed.
+* **Confirmed:** the change is based on opcode, widths, prefix state,
+  register-only form, and guest-SP exclusion rather than an address or register
+  value.
+* **Unresolved:** whether mode16 `66 C1 E9 10`, `CD 31`, and later
+  stack/segment/far-return boundaries lead to normal game exit.
+
+### Next frontier
+
+The next frontier is `0x01100017: 66 C1 E9 10`. In mode16, `66` selects a
+32-bit operand-size override, so removing it to produce `C1 E9 10` may preserve
+the same 32-bit shift semantics in long mode; this must be verified as a shared
+rule.
+
+## 2026-09-15: Task 689 mode16 32-bit shift lowering
+
+### 확인된 사실
+
+object 3의 `0x01100017: 66 C1 E9 10`은 mode16 `SHR ECX,16`으로 확인되었습니다.
+공통 classifier는 단일 `66` prefix, `C1` opcode, operand width 32, address
+width 16, register-only ModRM을 확인하고 r/m=4 guest SP 및 memory 형식은
+제외합니다. lowerer는 `66`을 제거해 `C1 E9 10`을 생성합니다.
+
+```text
+long_mode_16bit_shift32=true,length=4,lowered=3,unsupported_variants=true
+long_mode_lowering_16bit_shift32=true,observed=0x1234
+core_probe_failures=0
+core_probe_all=true
+```
+
+실제 runtime에서는 shift 이후 `CD 31`이 `hle=1`로 계획되어 HLE 경로를
+통과했습니다. 다음 미지원 경계는 `0x0110002A: 25 FF 0F`입니다.
+
+```text
+[repiu-aot-plan-trace] guest=0x0110001B bytes=CD31 length=2 ... code_mode=16 ... hle=1
+[repiu-fault] unhandled signal=0x5 ... eip=0x0110002A
+```
+
+* **확인됨:** mode16 32비트 shift의 `66` prefix를 유지할 때 발생하는
+  long-mode 16비트 narrowing이 제거되었습니다.
+* **확인됨:** `CD 31`은 이번 경계에서 fail-closed INT3가 아니라 기존 HLE
+  dispatch 경로로 연결됩니다.
+* **미확정:** mode16 `25 FF 0F` accumulator immediate 이후의 AND, stack,
+  segment, far-return semantics가 정상 게임 종료까지 이어지는지입니다.
+
+### 다음 frontier
+
+다음 frontier는 `0x0110002A: 25 FF 0F`, mode16 `AND AX,0FFF`입니다. long
+mode에서 `66 25 FF 0F`를 사용하면 mode16의 accumulator word semantics를
+유지할 수 있는지 공통 immediate lowering으로 검증해야 합니다.
+
+### English
+
+Object 3's `0x01100017: 66 C1 E9 10` is confirmed as mode16 `SHR ECX,16`.
+The shared classifier checks the single `66` prefix, `C1` opcode, operand width
+32, address width 16, and register-only ModRM form; it excludes r/m=4 guest SP
+and memory forms. The lowerer removes `66` and emits `C1 E9 10`.
+
+```text
+long_mode_16bit_shift32=true,length=4,lowered=3,unsupported_variants=true
+long_mode_lowering_16bit_shift32=true,observed=0x1234
+core_probe_failures=0
+core_probe_all=true
+```
+
+At runtime, `CD 31` is planned with `hle=1` and passes through the HLE path.
+The next unsupported boundary is `0x0110002A: 25 FF 0F`:
+
+```text
+[repiu-aot-plan-trace] guest=0x0110001B bytes=CD31 length=2 ... code_mode=16 ... hle=1
+[repiu-fault] unhandled signal=0x5 ... eip=0x0110002A
+```
+
+* **Confirmed:** the long-mode 16-bit narrowing caused by retaining `66` on
+  the mode16 32-bit shift is removed.
+* **Confirmed:** `CD 31` uses the existing HLE dispatch path rather than a
+  fail-closed INT3 boundary at this frontier.
+* **Unresolved:** whether accumulator `25 FF 0F`, stack, segment, and
+  far-return semantics after the AND carry execution to normal game exit.
+
+### Next frontier
+
+The next frontier is `0x0110002A: 25 FF 0F`, mode16 `AND AX,0FFF`. Verify as a
+shared immediate lowering whether `66 25 FF 0F` preserves the accumulator word
+semantics in long mode.
+
+## 2026-09-15: Task 690 mode16 AND accumulator lowering
+
+### 확인된 사실
+
+object 3의 `0x0110002A: 25 FF 0F`는 mode16 `AND AX,0FFF`로 확인되었습니다.
+공통 classifier는 prefix-free opcode `25`, mnemonic `AND`, operand/address
+width 16, 길이 3을 확인하고 `k16BitAndAccumulatorImmediate`로 분류합니다.
+lowerer는 `66 25 FF 0F`를 생성하여 long mode의 accumulator word semantics와
+instruction boundary를 보존합니다.
+
+```text
+long_mode_16bit_and_accumulator=true,length=3,lowered=4,unsupported_variants=true
+long_mode_lowering_16bit_and_accumulator=true,observed=0xa5a5a5a5123400f0
+core_probe_failures=0
+core_probe_all=true
+```
+
+실제 runtime에서는 AND를 통과하고 `CD 31` HLE도 통과했으며, 다음 경계는
+`0x0110002D: 0E`로 관측되었습니다.
+
+```text
+[repiu-aot-plan-trace] guest=0x0110002D bytes=0E length=1 ... code_mode=16 ... hle=0
+[repiu-fault] unhandled signal=0x5 ... eip=0x0110002E
+```
+
+* **확인됨:** mode16 accumulator immediate가 long mode에서 32비트 immediate로
+  widening되는 문제와 다음 bytes 침범이 제거되었습니다.
+* **확인됨:** `CD 31`은 기존 HLE 경로를 통해 실행되었습니다.
+* **미확정:** mode16 `0E`의 segment-stack semantics와 이후 `PUSH AX`,
+  `PUSH DI`, far return 경계가 정상 게임 종료까지 이어지는지입니다.
+
+### 다음 frontier
+
+다음 frontier는 `0x0110002D: 0E`, mode16 `PUSH CS`입니다. 이 opcode는 long
+mode에서 유효한 동일 semantics가 아니므로, guest segment stack을 보존하는
+기존 HLE 또는 별도 fail-closed 정책과 연결할 수 있는지 확인해야 합니다.
+
+### English
+
+Object 3's `0x0110002A: 25 FF 0F` is confirmed as mode16 `AND AX,0FFF`.
+The shared classifier checks prefix-free opcode `25`, mnemonic `AND`, operand
+and address widths of 16, and length three, then returns
+`k16BitAndAccumulatorImmediate`. The lowerer emits `66 25 FF 0F`, preserving
+long-mode accumulator word semantics and the instruction boundary.
+
+```text
+long_mode_16bit_and_accumulator=true,length=3,lowered=4,unsupported_variants=true
+long_mode_lowering_16bit_and_accumulator=true,observed=0xa5a5a5a5123400f0
+core_probe_failures=0
+core_probe_all=true
+```
+
+At runtime, the AND passes and `CD 31` also passes through the existing HLE path.
+The next boundary is `0x0110002D: 0E`:
+
+```text
+[repiu-aot-plan-trace] guest=0x0110002D bytes=0E length=1 ... code_mode=16 ... hle=0
+[repiu-fault] unhandled signal=0x5 ... eip=0x0110002E
+```
+
+* **Confirmed:** the long-mode 32-bit immediate widening and overrun into the
+  following bytes are removed for the mode16 accumulator AND.
+* **Confirmed:** `CD 31` executes through the existing HLE path.
+* **Unresolved:** mode16 `0E` segment-stack semantics and the following `PUSH
+  AX`, `PUSH DI`, and far-return boundaries.
+
+### Next frontier
+
+The next frontier is `0x0110002D: 0E`, mode16 `PUSH CS`. It is not equivalent to
+the valid long-mode encoding, so determine whether it belongs to existing HLE or
+to a separate fail-closed policy that preserves the guest segment stack.
+
+## 2026-09-15: Task 691 mode16 segment-push HLE boundary
+
+> Task 692 정정 / correction: Task 690과 691의 실제 stop은 모두 0110002E입니다.
+> copy 거부 INT3도 HLE fixup으로 이어지므로 planner hle=1은 새 runtime 경로를
+> 입증하지 않습니다. 아래 기존 해석은 이 정정과 Task 692 결과로 대체합니다.
+> Both tasks stopped at 0110002E. Rejected-copy INT3 also reaches an HLE fixup;
+> planner hle=1 does not establish a new runtime path. The interpretation below
+> is superseded by this correction and Task 692 results.
+
+### 확인된 사실
+
+기존 `HandleSegmentPushInstruction`은 `PUSH CS` (`0E`)의 selector 조회와
+guest-stack 기록을 이미 지원하고 있었습니다. 문제는 mode16 AOT planner의
+`IsHleBoundary`가 native segment push를 의도적으로 제외하여 `0E`를 copy
+record로 만들고, long-mode emitter가 이를 INT3로 바꾸고 있던 점입니다.
+
+planner에 code mode가 mode16이고 prefix 없는 PUSH의 visible operand가 segment
+register인지 확인하는 `IsMode16SegmentPushHle`를 추가했습니다. 이 조건이면
+새 semantics를 만들지 않고 기존 `kHleBoundary`/HLE dispatch를 사용합니다.
+
+```text
+long_mode_16bit_segment_push_hle=true,boundary=1
+core_probe_failures=0
+core_probe_all=true
+```
+
+실제 runtime trace는 `0E`를 `hle=1`로 계획했고, 기존 HLE를 통과해
+`0x0110002E: 50`에서 멈췄습니다.
+
+```text
+[repiu-aot-plan-trace] guest=0x0110002D bytes=0E length=1 ... code_mode=16 ... hle=1
+[repiu-fault] unhandled signal=0x5 ... eip=0x0110002E
+```
+
+* **확인됨:** mode16 `PUSH CS`가 long mode INT3 boundary가 아니라 기존
+  segment-push HLE 경로로 연결되었습니다.
+* **확인됨:** mode32 native segment-push 정책과 selector/guest-stack 구현은
+  변경되지 않았습니다.
+* **미확정:** 다음 mode16 `PUSH AX`와 이어지는 `PUSH DI`/far return의
+  guest-stack semantics입니다.
+
+### 다음 frontier
+
+다음 frontier는 `0x0110002E: 50`, mode16 `PUSH AX`입니다. 기존 general
+stack lowering이 mode16 word push와 guest ESP state를 안전하게 처리할 수
+있는지 별도 설계·probe가 필요합니다.
+
+### English
+
+The existing `HandleSegmentPushInstruction` already supported selector lookup
+and guest-stack writes for `PUSH CS` (`0E`). The issue was that the mode16 AOT
+planner's `IsHleBoundary` deliberately excluded native segment pushes, leaving
+`0E` as a copy record that the long-mode emitter converted to INT3.
+
+Added `IsMode16SegmentPushHle`, which checks for a mode16, prefix-free PUSH with
+a visible segment-register operand. Matching instructions use the existing
+`kHleBoundary` and HLE dispatch without new semantics:
+
+```text
+long_mode_16bit_segment_push_hle=true,boundary=1
+core_probe_failures=0
+core_probe_all=true
+```
+
+The live trace plans `0E` with `hle=1`, passes the existing HLE, and stops at
+`0x0110002E: 50`:
+
+```text
+[repiu-aot-plan-trace] guest=0x0110002D bytes=0E length=1 ... code_mode=16 ... hle=1
+[repiu-fault] unhandled signal=0x5 ... eip=0x0110002E
+```
+
+* **Confirmed:** mode16 `PUSH CS` now uses the existing segment-push HLE rather
+  than a long-mode INT3 boundary.
+* **Confirmed:** the mode32 native segment-push policy and selector/guest-stack
+  implementation are unchanged.
+* **Unresolved:** guest-stack semantics for the next mode16 `PUSH AX`, the
+  following `PUSH DI`, and far return.
+
+### Next frontier
+
+The next frontier is `0x0110002E: 50`, mode16 `PUSH AX`. Determine through a
+separate design and probe whether the existing general stack lowering can safely
+handle a mode16 word push and guest ESP state.
+
+## 2026-09-15: Task 692 segmented mode16 PUSH
+
+**확인됨:** DPMI trace에서 SS=B4, base=0158A83C, limit=FFFF, flags=0092입니다.
+기존 PUSH CS는 mode16/SS.B=0 상태에서도 01581FFC에 4바이트를 기록했습니다.
+SS:1FFE의 올바른 word 주소는 0158C83A입니다. 공용 stack access 정책을 통해
+operand size와 SS.B를 분리하고 SS.base를 더하도록 수정했습니다.
+
+**검증:** 공용 geometry와 실제 메모리 PUSH probe를 포함한 core 27개 그룹이
+통과했습니다. 실제 실행은 0110002E에서 01100031의 bare RETF로 진행했으며
+ESP=01581FF8입니다. `66 57`은 PUSH DI가 아니라 PUSH EDI입니다. 이전 fault의
+guest_stack dump는 ESP를 선형 주소로 읽으므로 SS 기반 stack 내용이 아닙니다.
+
+**미해결:** 정상 실행과 SIGTRAP 종료 해결. 다음 경계는 SS-relative 16-bit
+far-return frame입니다. 현재 handler의 66 CB 전용 dword frame과 구분해야 합니다.
+
+**Confirmed:** DPMI trace gives SS=B4, base=0158A83C, limit=FFFF, flags=0092.
+The old mode16 PUSH CS wrote four bytes to 01581FFC instead of a word at
+SS:1FFE, linear 0158C83A. Shared access planning now separates operand size
+from SS.B and incorporates SS.base.
+
+**Verified:** All 27 core groups pass, including geometry and real-memory PUSH
+probes. Live execution advances from 0110002E to bare RETF at 01100031 with
+ESP=01581FF8. 66 57 is PUSH EDI, not PUSH DI. Existing fault stack dumps read
+ESP as linear and do not describe the SS-relative stack.
+
+**Unresolved:** Successful execution and SIGTRAP termination. Next is the
+SS-relative word far-return frame, distinct from the current 66 CB dword handler.
+
+## 2026-09-15: Task 693 shared LINEXE far-jump dispatch
+
+**확인됨:** 공용 guest HLE dispatcher의 `EA` 분기가 기존
+`HandleLinexeFarTransferBoundary`를 generic far jump보다 먼저 호출합니다.
+기존 LINEXE matcher와 service semantics는 그대로 사용하며, handler가
+bridge frame을 읽지 못하면 이전에 저장된 frame을 소비하지 않고 거부합니다.
+미지원 export는 generic far-jump fallback으로 진행합니다.
+
+공용 probe가 세 경로를 모두 통과했습니다.
+
+```text
+linexe_shared_dispatch=1,fallback=1,bad_frame=1
+core_probe_total=27
+core_probe_failures=0
+core_probe_all=true
+```
+
+WSL Linux x64에서 최신 `repiu_core_probe`와 `repiu`를 재빌드했습니다.
+실제 `pumpit2a` smoke는 selector `002C`가 object 3, base `01100000`,
+limit `00000047`에 바인딩된 사실을 확인했지만, 동적 요청은 `0x010...`
+영역에 머물렀습니다. `0x01100022` LINEXE export 요청이나 공용 dispatch의
+live entry는 관측하지 못했습니다.
+
+```text
+[loader] Win32 relocated selector binding: selector=0x002C object=3 base=0x01100000 limit=0x00000047
+[repiu-shutdown] reason=timeout attempts=15 answered=1 recovered=1 stopped=1 failure=0 eip=0x200633EA gate=0 frames=0 span_ms=0
+```
+
+* **확인됨:** 공용 dispatch의 LOADMODULE/fallback/unreadable-frame probe
+  semantics와 Linux x64 빌드가 통과했습니다.
+* **확인됨:** smoke에서 coredump failure는 재현되지 않았습니다.
+* **미확정:** 실제 object 3 LINEXE 경계 진입과 정상 게임 종료입니다.
+
+### 다음 frontier
+
+다음 frontier는 SS-relative mode16 far-return frame과 bare `RETF`입니다.
+이를 검증한 뒤 object 3의 실제 LINEXE export 경계까지 도달하는 실행
+경로를 확인해야 합니다.
+
+### English
+
+**Confirmed:** the shared guest HLE dispatcher's `EA` branch tries the existing
+`HandleLinexeFarTransferBoundary` before generic far-jump handling. Existing
+LINEXE matching and service semantics remain unchanged. If the bridge frame is
+unreadable, the handler declines without consuming a previously saved frame;
+unsupported exports use the generic far-jump fallback.
+
+The shared probe passes all three paths:
+
+```text
+linexe_shared_dispatch=1,fallback=1,bad_frame=1
+core_probe_total=27
+core_probe_failures=0
+core_probe_all=true
+```
+
+The latest `repiu_core_probe` and `repiu` were rebuilt on Linux x64 under WSL.
+The live `pumpit2a` smoke confirmed selector `002C` bound to object 3 with base
+`01100000` and limit `00000047`, but dynamic requests remained in the
+`0x010...` region. The `0x01100022` LINEXE export request and a live entry into
+the shared dispatch were not observed.
+
+```text
+[loader] Win32 relocated selector binding: selector=0x002C object=3 base=0x01100000 limit=0x00000047
+[repiu-shutdown] reason=timeout attempts=15 answered=1 recovered=1 stopped=1 failure=0 eip=0x200633EA gate=0 frames=0 span_ms=0
+```
+
+* **Confirmed:** shared-dispatch LOADMODULE, fallback, and unreadable-frame
+  probe semantics pass, as does the Linux x64 build.
+* **Confirmed:** the smoke did not reproduce a coredump failure.
+* **Unresolved:** reaching the actual object-3 LINEXE boundary and normal game
+  termination.
+
+### Next frontier
+
+The next frontier is the SS-relative mode16 far-return frame and bare `RETF`.
+After validating it, find an execution path that reaches the actual object-3
+LINEXE export boundary.
+
+## 2026-09-15: Task 694 mode16 bare RETF HLE
+
+**확인됨:** mode16 bare `CB`는 기존 mode16 `66 CB` dword frame과 분리된
+handler에서 처리됩니다. `GuestStackReadAccess`가 SS.B=0의 low-word SP
+geometry, SS.base translation, descriptor limit, linear overflow를 검사하고
+4바이트 IP/CS frame을 읽습니다. 유효한 `SegCs`가 현재 EIP를 포함하면 이를
+우선 사용하며, AOT 문맥처럼 guest CS가 비어 있을 때만 기존 EIP 역조회를
+사용합니다. target은 executable selector-relative offset으로만 해석합니다.
+shared guest dispatcher와 fault HLE chain 양쪽에 adapter를 연결했고,
+실패 시 EIP/SegCs/ESP를 변경하지 않습니다.
+
+**검증:** Linux x64 `repiu_core_probe` 재빌드와 실행이 통과했습니다.
+mode16 valid return, invalid selector, unreadable frame, mode32 refusal이
+모두 통과했고 전체 결과는 다음과 같습니다.
+
+```text
+[repiu-mode16-far-return] current_cs=0x002C target_ip=0x0020 target_cs=0x0024 target=0x18000220 esp=0x18000900 new_esp=0x18000904
+mode16_far_return=1,bad_selector=1,bad_frame=1,mode32_refused=1
+core_probe_total=27
+core_probe_failures=0
+core_probe_all=true
+```
+
+`repiu` 본체도 WSL Ubuntu 24.04에서 빌드되었습니다. `pumpit2a` 동적
+smoke에서는 selector `002C`가 object 3, base `01100000`, limit `00000047`에
+바인딩된 사실을 재확인했지만, mode16 handler live trace와 `0x01100022`
+dynamic request는 관측하지 못했습니다. coredump는 재현되지 않았으나 이번
+재실행의 timeout cleanup은 `recovered=0`, `stopped=0`이어서 정상 게임
+종료의 증거로 사용하지 않습니다. 진단 trace를 끈 별도 bounded smoke에서는
+`recovered=1`, `stopped=1`, `failure=0`이었지만 timeout 기반 실행이므로
+정상 게임 종료와는 구분합니다.
+
+```text
+[loader] Win32 relocated selector binding: selector=0x002C object=3 base=0x01100000 limit=0x00000047
+[repiu-shutdown] reason=timeout attempts=40 answered=1 recovered=0 stopped=0 failure=0 eip=0x401F41E9 gate=0 frames=0 span_ms=0
+```
+
+기본 smoke의 shutdown 결과:
+
+```text
+[repiu-shutdown] reason=timeout attempts=39 answered=1 recovered=1 stopped=1 failure=0 eip=0x200633EA gate=0 frames=0 span_ms=0
+```
+
+* **확인됨:** mode16 SS-relative 4-byte far-return HLE와 fail-closed probe
+  semantics, shared/fault chain 연결, Linux x64 두 binary 빌드입니다.
+* **미확정:** 실제 object 3 bare `RETF` 진입, `0x01100022` LINEXE export
+  경계, 정상 게임 종료입니다.
+
+### 다음 frontier
+
+새 다음 frontier는 실제 object 3의 mode16 return 또는 LINEXE export까지
+도달하는 runtime 경로와, timeout cleanup의 recovery 실패 원인을 분리하는
+것입니다.
+
+### English
+
+**Confirmed:** mode16 bare `CB` is handled by a dedicated path separate from
+the existing mode16 `66 CB` dword frame. `GuestStackReadAccess` validates
+SS.B=0 low-word SP geometry, SS.base translation, descriptor limits, and linear
+overflow before reading a four-byte IP/CS frame. A valid `SegCs` covering the
+current EIP is preferred, and the existing EIP reverse lookup is used only when
+an AOT context does not provide guest CS. The target is resolved only as an
+executable selector-relative offset. The adapter is connected to both the
+shared guest dispatcher and the fault HLE chain, and failures leave EIP,
+SegCs, and ESP unchanged.
+
+**Verification:** the Linux x64 `repiu_core_probe` was rebuilt and passed.
+Valid mode16 return, invalid selector, unreadable frame, and mode32 refusal all
+passed:
+
+```text
+[repiu-mode16-far-return] current_cs=0x002C target_ip=0x0020 target_cs=0x0024 target=0x18000220 esp=0x18000900 new_esp=0x18000904
+mode16_far_return=1,bad_selector=1,bad_frame=1,mode32_refused=1
+core_probe_total=27
+core_probe_failures=0
+core_probe_all=true
+```
+
+The `repiu` executable also built on WSL Ubuntu 24.04. The `pumpit2a` dynamic
+smoke reconfirmed selector `002C` bound to object 3 with base `01100000` and
+limit `00000047`, but did not observe a live mode16-handler trace or a dynamic
+request for `0x01100022`. No coredump was reproduced, but this rerun's timeout
+cleanup reported `recovered=0` and `stopped=0`, so it is not evidence of normal
+game termination. A separate bounded smoke with diagnostic tracing disabled
+reported `recovered=1`, `stopped=1`, and `failure=0`; it is still distinguished
+from normal game termination because it is timeout-based.
+
+```text
+[loader] Win32 relocated selector binding: selector=0x002C object=3 base=0x01100000 limit=0x00000047
+[repiu-shutdown] reason=timeout attempts=40 answered=1 recovered=0 stopped=0 failure=0 eip=0x401F41E9 gate=0 frames=0 span_ms=0
+```
+
+Baseline smoke shutdown:
+
+```text
+[repiu-shutdown] reason=timeout attempts=39 answered=1 recovered=1 stopped=1 failure=0 eip=0x200633EA gate=0 frames=0 span_ms=0
+```
+
+* **Confirmed:** mode16 SS-relative four-byte far-return HLE and fail-closed
+  probe semantics, shared/fault chain integration, and both Linux x64 binary
+  builds.
+* **Unresolved:** reaching the real object-3 bare `RETF`, the `0x01100022`
+  LINEXE export boundary, and normal game termination.
+
+### Next frontier
+
+The next frontier is to reach the actual object-3 mode16 return or LINEXE export
+through a runtime path and to isolate the cause of timeout-cleanup recovery
+failure.
+
+---
+
+## 2026-09-15 Task 695 — fatal breakpoint raw continuation 확인
+
+### 확인됨
+
+* `0x010F0D96` fault의 host RSP 손상은 AOT lowering 실패가 아닙니다. 해당 함수의
+  `PUSH`, `SUB ESP`, ESP-relative access, direct CALL은 모두 cache에서 R15D 기반으로
+  올바르게 lowering되어 있습니다.
+* guest-entry 범위 trace의 최초 low-RSP callback은 raw `0x010F0D6E` access fault이며,
+  그 뒤 `0x010F0D78`, `0x010F0D7C`, `0x010F0D83`, `0x010F0D8F`가 연속 access HLE로
+  진행됩니다.
+* 호출자 범위 trace에서 cache `0x20001805` breakpoint가 guest `0x010EFEB8`로
+  역변환되고, `HandleOriginalFatalBreakpoint`가 raw `0x010EFEB9`로 복귀하며 exit
+  site가 `fatal-breakpoint`인 것이 확인되었습니다.
+* 이 복귀의 EFLAGS `0x00200216`에는 TF가 없습니다. raw continuation은
+  `PUSH EDX; CALL 0x010F0D68; HLT` fatal-message sequence이므로 PUSH와 callee prologue가
+  host RSP를 직접 변경합니다.
+* signal RF 제거와 standalone `SUB ESP` HLE 실험은 live fault를 바꾸지 않았고 최종
+  코드에서 제거했습니다.
+
+### 미확정
+
+* fatal-message callback이 이후 DOS console/HLE 종료로 이어져야 하는지, 아니면
+  즉시 host failure로 회수되어야 하는지는 다음 작업에서 기존 i386 의미와 함께
+  결정해야 합니다.
+
+### 다음 frontier
+
+`HandleOriginalFatalBreakpoint`의 `0x010EFEB9` continuation을 raw guest 주소로 직접
+복귀시키지 말고, Linux x64에서는 기존 HLE-to-AOT resume 정책으로 cache에 연결한 뒤
+fatal-message sequence와 종료 결과를 확인합니다.
+
+## English
+
+### Confirmed
+
+* Host-RSP corruption at `0x010F0D96` is not an AOT lowering failure. The
+  function's PUSH, `SUB ESP`, ESP-relative accesses, and direct CALL are all
+  correctly lowered through R15D in the cache.
+* The first low-RSP callback in the guest-entry range trace is an access fault
+  at raw `0x010F0D6E`, followed by access HLE at `0x010F0D78`, `0x010F0D7C`,
+  `0x010F0D83`, and `0x010F0D8F`.
+* The caller-range trace shows cache breakpoint `0x20001805` reverse-mapped to
+  guest `0x010EFEB8`; `HandleOriginalFatalBreakpoint` resumes at raw
+  `0x010EFEB9` with exit site `fatal-breakpoint`.
+* Resume EFLAGS `0x00200216` does not contain TF. The raw continuation is the
+  `PUSH EDX; CALL 0x010F0D68; HLT` fatal-message sequence, so the PUSH and
+  callee prologue directly modify host RSP.
+* Signal RF clearing and standalone `SUB ESP` HLE experiments did not change
+  the live fault and were removed from the final code.
+
+### Unresolved
+
+The next task must determine from the existing i386 behavior whether the fatal
+message should continue through DOS console/HLE termination or be recovered to
+the host immediately.
+
+### Next frontier
+
+Do not resume `HandleOriginalFatalBreakpoint` directly at raw guest
+`0x010EFEB9` on Linux x64. Connect that continuation through the existing
+HLE-to-AOT resume policy, then observe the fatal-message sequence and shutdown
+result.
+
+---
+
+## 2026-09-15 Task 696 — fatal breakpoint continuation AOT 재진입
+
+### 확인됨
+
+* `TryResumeAotAfterHandledHle`는 일반 pending/legacy 실행과 dispatcher가 이미
+  확인한 guest boundary를 구분합니다. 후자만 초기 pending-state gate를 우회하고
+  나머지 arena, quarantine, cache/translation, span 검사는 공유합니다.
+* `HandleOriginalFatalBreakpoint`가 EIP를 진행시킨 Linux x64 AOT 경로는 이
+  handled-boundary 정책으로 continuation을 cache에 연결합니다. 재진입 실패 뒤의
+  명령이 long-mode 비동일이면 raw guest code로 복귀하지 않습니다.
+* 실제 `pumpit2a`에서 `handled=0x010EFEB8`, `current=0x010EFEB9`가 기존 cache
+  `0x20001806`에 hit했고 `stage=resumed`를 기록했습니다.
+* Task 695의 raw `0x010F0D96` host-RSP 손상은 재발하지 않았습니다. 실행은 guest
+  `0x010F777C`에 대응하는 cache `0x200695A3`의 새 미처리 SIGTRAP까지 진행했습니다.
+
+### 미확정
+
+* 새 cache SIGTRAP의 앞 바이트 provenance와 boundary 종류는 아직 분류하지
+  않았습니다.
+* fatal printer가 원본 HLT/DOS terminate까지 완주하는지는 아직 확인되지
+  않았습니다.
+
+### 다음 frontier
+
+cache `0x200695A3`의 SIGTRAP을 guest `0x010F777C` 주변 address map, 이전 cache
+byte, fixup provenance와 대조해 어떤 AOT boundary가 처리되지 않았는지 확인합니다.
+
+## English
+
+### Confirmed
+
+* `TryResumeAotAfterHandledHle` now distinguishes ordinary pending/legacy
+  execution from a guest boundary already recognized by the dispatcher. Only
+  the latter bypasses the initial pending-state gate; arena, quarantine,
+  cache/translation, and span checks remain shared.
+* When `HandleOriginalFatalBreakpoint` advances EIP under Linux x64 AOT, that
+  continuation uses the handled-boundary policy. If re-entry fails and the next
+  instruction is not long-mode identical, execution does not return to raw
+  guest code.
+* Real `pumpit2a` recorded a cache hit at `0x20001806` for
+  `handled=0x010EFEB8`, `current=0x010EFEB9`, followed by `stage=resumed`.
+* The raw `0x010F0D96` host-RSP corruption from Task 695 did not recur. Execution
+  advanced to a new unhandled SIGTRAP at cache `0x200695A3`, corresponding to
+  guest `0x010F777C`.
+
+### Unresolved
+
+* The preceding-byte provenance and boundary kind of the new cache SIGTRAP are
+  not yet classified.
+* The fatal printer has not yet been observed completing through original HLT
+  or DOS termination.
+
+### Next frontier
+
+Correlate the SIGTRAP at cache `0x200695A3` with the address map, preceding
+cache byte, and fixup provenance around guest `0x010F777C` to identify the
+unhandled AOT boundary.
+
+---
+
+## 2026-09-16 Task 697 — transient cache boundary provenance
+
+### 확인됨
+
+* `REPIU_AOT_CACHE_MAP_TRACE=<cache-address>` 읽기 전용 진단을 추가했습니다. 초기와
+  정상 회수된 최종 placement에서 주소 범위 여부를 확인하고, 범위 안이면 현재/직전
+  byte, 양쪽 reverse map 및 `AotCacheBreakpointProvenance`를 출력합니다.
+* 두 번의 재실행에서 guest `0x010F777C`는 초기 map에 없었습니다. 30초 실행의 최종
+  map이 51,866개에서 65,632개 entry로 증가한 뒤에도 정확하거나 covering하는 entry가
+  없었고, 이웃은 `0x010F7743`과 `0x010F77AC`였습니다.
+* cache `0x200695A3`도 두 실행의 초기와 정상 회수된 최종 placement 범위 밖이었습니다.
+  Task 696에서 기록한 host cache 주소는 특정 동적 append 순서와 세대에서만 유효했던
+  transient 주소이며, 후속 실행의 정적 주소로 재사용할 수 없습니다.
+* core probe 27개 그룹은 모두 통과했고 Linux x64 본체는 변경 object 재컴파일과
+  CMake 생성 link script를 통해 재링크되었습니다.
+
+### 미확정
+
+Task 696 당시 trap의 정확한 planner/fixup provenance는 그 실행의 placement가 남아
+있지 않고 같은 동적 경로가 재현되지 않아 소급 분류할 수 없습니다. 따라서 이를
+고정된 planner HLE 또는 transfer 결함으로 간주할 근거도 없습니다.
+
+### 다음 frontier
+
+동적 cache 주소 자체가 아니라 같은 실행에서 얻은 guest 주소, append generation,
+cache offset 및 provenance를 하나의 원자적 증거로 수집해야 합니다. 현재 기본 실행은
+기존에 확인된 동적 `0x20053955` guest back-edge loop로 돌아가며, 정상 게임 화면·입력
+진행과 종료는 아직 확인되지 않았습니다.
+
+### English
+
+Added the read-only `REPIU_AOT_CACHE_MAP_TRACE=<cache-address>` diagnostic. It
+checks whether an address belongs to the initial and cleanly recovered final
+placements and, when in range, reports current/previous bytes, both reverse
+maps, and `AotCacheBreakpointProvenance` values.
+
+In two reruns, guest `0x010F777C` was absent from the initial map. It still had
+no exact or covering entry after the 30-second run grew the final map from
+51,866 to 65,632 entries; its neighbors were `0x010F7743` and `0x010F77AC`.
+Cache `0x200695A3` was also outside both runs' initial and cleanly recovered
+final placements. The host cache address recorded by Task 696 was therefore
+transient to that dynamic-append order and generation and cannot be reused as a
+static address in a later run.
+
+All 27 core-probe groups passed. The Linux x64 executable was relinked after
+recompiling the changed object with the CMake-generated link scripts.
+
+The exact planner/fixup provenance of Task 696's trap cannot be reconstructed:
+that run's placement no longer exists and the same dynamic path did not recur.
+There is consequently no evidence to treat it as a fixed planner-HLE or
+transfer defect.
+
+The next capture must record guest address, append generation, cache offset,
+and provenance atomically in the same run instead of carrying a dynamic host
+cache address across runs. The current default execution returns to the known
+dynamic `0x20053955` guest back-edge loop; normal game screen/input progress and
+termination remain unverified.
+
+---
+
+## 2026-09-16 Task 698 — guest-filtered AOT fault provenance
+
+### 확인됨
+
+* `REPIU_AOT_FAULT_TRACE_GUEST_ADDRESS=<guest-address>`를 추가했습니다. 기존
+  `REPIU_AOT_FAULT_TRACE=1` 안에서 exact, previous, block-fallthrough reverse
+  map을 먼저 계산하고 하나라도 지정 guest와 일치할 때만 기존 provenance line의
+  16건 제한을 소비합니다.
+* 기존 cache-address filter와 함께 쓰면 두 필터를 모두 만족해야 합니다. guest
+  filter가 없으면 기존 출력 선택과 형식은 유지됩니다.
+* 실제 `pumpit2a`에서 `0x010F1728` filter는 다음 한 줄만 선택했습니다.
+
+```text
+[repiu-aot-fault] kind=access cache=0x20000005 exact=1/0x010F1728/7 previous=1/0x010F16B0/7 fallthrough=0/0x00000000 size=341056 tail=341051 maps=51866 n=1
+```
+
+* `0xDEADBEEF` filter 실행은 같은 초기 fault들의 provenance line을 하나도 출력하지
+  않았습니다. Linux x64 core probe 27개 그룹도 모두 통과했습니다.
+
+### 미확정
+
+`0x010F777C` transient 경로는 이번 bounded 실행들에서 재현되지 않았습니다. 두 번째
+filter 실행의 timeout cleanup은 `recovered=0`, `stopped=0`이었으므로 정상 종료의
+증거가 아닙니다.
+
+### 다음 frontier
+
+이제 `REPIU_AOT_FAULT_TRACE=1`과 guest filter `0x010F777C`를 장시간 또는 해당
+fatal-tail 재현 조건에서 사용하면 동적 cache 주소를 미리 알지 못해도 같은 fault
+순간의 exact/previous/fallthrough provenance를 확보할 수 있습니다. 기본 게임 진행은
+여전히 알려진 guest back-edge loop에서 정체됩니다.
+
+### English
+
+Added `REPIU_AOT_FAULT_TRACE_GUEST_ADDRESS=<guest-address>`. Within the existing
+`REPIU_AOT_FAULT_TRACE=1` gate, the trace now computes exact, previous, and
+block-fallthrough reverse maps first. Only a matching fault consumes the
+existing 16-line limit. When combined with the cache-address filter, both
+filters must match; behavior and output format without the guest filter remain
+unchanged.
+
+A real `pumpit2a` run filtered to `0x010F1728` selected exactly the expected
+initial access-fault provenance line at cache `0x20000005`. A run filtered to
+`0xDEADBEEF` emitted no AOT fault-provenance lines. All 27 Linux x64 core-probe
+groups passed.
+
+The transient `0x010F777C` path did not recur in these bounded runs. The second
+filter run's timeout cleanup reported `recovered=0` and `stopped=0`, so it is not
+evidence of normal termination.
+
+Future long or fatal-tail reproductions can pair `REPIU_AOT_FAULT_TRACE=1` with
+guest filter `0x010F777C` to capture exact/previous/fallthrough provenance at
+the same fault instant without predicting its dynamic cache address. Default
+game progress still stalls in the known guest back-edge loop.
+
+---
+
+## 2026-09-17 Task 699 — dynamic-only execution probe arming
+
+### 확인됨
+
+* 유효한 `REPIU_EXECUTION_PROBE_OFFSET` 요청은 초기 AOT map miss 뒤에도 configured
+  상태를 유지합니다. dynamic append가 대상 entry를 게시하면 기존 최신-generation
+  sentinel 설치 경로가 요청을 소비합니다.
+* 실제 `pumpit2a` 실행 두 번에서 `0x010F928B`는 generation 9, added bytes 6,259에
+  설치됐습니다.
+
+```text
+[repiu-aot-probe] dynamic guest=0x010F928B generation=9 added_bytes=6259 installed=1
+```
+
+* Linux x64 Debug `repiu`와 core probe를 다시 빌드했으며 27개 그룹이 모두
+  통과했습니다.
+
+### 미확정
+
+두 실행 모두 sentinel 대상이 실행되기 전에 guest `0x010F777C`의 planner-HLE
+경계에서 fail-closed SIGTRAP으로 끝났습니다. 따라서 `execution_probe_hit`와
+`0x010F928B` register snapshot은 아직 수집되지 않았습니다.
+
+### 다음 frontier
+
+`0x010F777C`의 `67 0F B6 50 01`은 32-bit guest에서 16-bit addressing을 사용하는
+byte load이며 long mode에서 같은 바이트 의미가 달라집니다. 이 planner-HLE 경계를
+지원한 뒤 `0x010F928B` probe snapshot 검증을 재개합니다.
+
+## English
+
+### Confirmed
+
+* A valid `REPIU_EXECUTION_PROBE_OFFSET` request remains configured after an
+  initial AOT-map miss. Once a dynamic append publishes the target entry, the
+  existing latest-generation sentinel path consumes the request.
+* Two real `pumpit2a` runs installed `0x010F928B` in generation 9 with 6,259
+  added bytes.
+* Linux x64 Debug `repiu` rebuilt successfully and all 27 core-probe groups
+  passed.
+
+### Unresolved
+
+Both runs ended at the fail-closed planner-HLE boundary for guest `0x010F777C`
+before executing the sentinel target. Consequently `execution_probe_hit` and
+the `0x010F928B` register snapshot remain unobserved.
+
+### Next frontier
+
+The instruction `67 0F B6 50 01` at `0x010F777C` is a byte load using 16-bit
+addressing in the 32-bit guest; the same bytes have different long-mode
+semantics. Support this planner-HLE boundary, then resume the `0x010F928B`
+execution-probe verification.
+
+---
+
+## 2026-09-17 Task 700 — CS override 간접 점프 경계 정정 및 통과
+
+### 정정된 사실
+
+`0x010F777C`의 raw guest bytes는 `2E FF 24 9D 44 77 0F 01`이다. Task 699에서
+기록한 `67 0F B6 50 01`은 cache breakpoint 뒤의 host instruction bytes였으며
+guest instruction으로 해석하면 안 된다. 실제 명령은 CS override가 붙은
+`JMP dword ptr [EBX*4+0x010F7744]`이다.
+
+### 구현 및 확인
+
+재진입 분류기가 `2E FF`를 전송 경계로 인식하고, planner HLE provenance보다 기존
+간접 전송 handler를 우선하도록 변경했다. handler는 ModRM/SIB offset을 source code
+selector와 공용 segment-linear 정책으로 해석하고 jump-table dword를 기존 AOT target
+resolver에 전달한다.
+
+실제 실행에서 같은 경계는 `transfer=1`로 반복 분류됐고 더 이상 SIGTRAP으로
+종료되지 않았다. Task 699의 dynamic-only probe도 다음 snapshot을 수집했다.
+
+```text
+[repiu-aot-probe] dynamic guest=0x010F928B generation=9 added_bytes=6259 installed=1
+execution probe configured/hit/offset: true/true/0x000F928B
+EIP/ESP/EFLAGS: 0x010F928B/0x0158CC54/0x00200246
+EAX/EBX/ECX/EDX: 0x00000000/0x0158CCC0/0x00000000/0x0158CCC0
+ESI/EDI/EBP: 0x00000000/0x00000000/0x00000000
+```
+
+Linux x64 Debug core probe는 `cs_indirect_jump=1`, 전체 27/27로 통과했다. 실제
+`pumpit2a`는 `0x010F928B`까지 실행한 뒤 원본의 `Fatal error: unable to find entry
+point in DLL.` 경로에서 DOS `4C01` 종료를 호출했고 host trampoline으로 정상
+회수됐다. 따라서 다음 기능 frontier는 SIGTRAP 복구가 아니라 DLL entry-point
+해석/제공 범위이다.
+
+## English
+
+### Corrected fact
+
+The raw guest bytes at `0x010F777C` are `2E FF 24 9D 44 77 0F 01`. The
+`67 0F B6 50 01` bytes recorded in Task 699 belong to host instructions after
+the cache breakpoint and must not be decoded as guest code. The real guest
+instruction is `JMP dword ptr [EBX*4+0x010F7744]` with a CS override.
+
+### Implementation and confirmation
+
+Reentry classification now recognizes `2E FF` as a transfer boundary and gives
+the existing indirect-transfer handler precedence over planner-HLE provenance.
+The handler resolves the ModRM/SIB offset through the source code selector and
+the shared segment-linear policy, then sends the jump-table dword to the
+existing AOT target resolver.
+
+The real run repeatedly classified the boundary with `transfer=1` and no
+longer terminated with SIGTRAP. The Task 699 dynamic-only probe also captured
+the register snapshot shown above.
+
+The Linux x64 Debug core probe passed with `cs_indirect_jump=1` and 27/27 groups.
+Real `pumpit2a` executed through `0x010F928B`, then followed the original
+`Fatal error: unable to find entry point in DLL.` path, issued DOS termination
+`4C01`, and returned through the host trampoline. The next functional frontier
+is therefore DLL entry-point resolution/coverage rather than SIGTRAP recovery.
+
+---
+
+## 2026-09-18 Task 701 — LINEXE GETPROCADDR guest CS 복원
+
+### 확인됨
+
+Linux x64 signal context의 물리 `SegCs=0x33`은 guest selector가 아니다. 기존
+`GETPROCADDR` 성공 경로가 이 값을 gate 주소 옆에 기록하여 원본 loader가 entry
+point를 거부했다. wrapper continuation `0x010EFE98`을 포함하는 실행 가능 guest
+descriptor는 selector `0x24`이다.
+
+성공 결과 selector를 continuation 기반 selector-table lookup으로 바꾼 실제
+`pumpit2a` 실행에서 첫 결과 버퍼는 다음 `GETPROCADDR` frame의 `w14/w15`로
+`0x095D0300/0x00000024`가 확인됐다. 원본은 즉시 `_GRGLIDEINIT@0` ordinal 32
+gate에 진입했고 기존 `unable to find entry point in DLL` 메시지는 나타나지 않았다.
+그 뒤 `_GRSSTQUERYHARDWARE@4` ordinal 37도 resolve되어 gate에 진입했다.
+
+Linux x64 Debug core probe는 새 성공/실패 검증
+`linexe_getproc_guest_cs=1,missing_selector_refused=1`을 포함해 27/27 통과했다.
+
+### 다음 frontier
+
+`_GRSSTQUERYHARDWARE@4` gate가 인자 포인터를 `0`으로 읽어
+`query-hardware-unwritable-memory`를 기록했다. `action=continue` 이후 host
+주소 `0x402CBDA3`에서 SIGTRAP이 처리되지 않았다. 다음 작업은 원본 call site의
+인자 frame과 Glide gate의 guest-stack decode/return geometry를 비교하여 null
+인자의 발생 지점을 구분해야 한다. 이 SIGTRAP은 GETPROCADDR selector 수정 이후
+도달한 별도 frontier이다.
+
+## English
+
+### Confirmed
+
+Physical `SegCs=0x33` in a Linux x64 signal context is not a guest selector.
+The former successful `GETPROCADDR` path wrote it beside the gate address,
+causing the original loader to reject the entry point. The executable guest
+descriptor containing wrapper continuation `0x010EFE98` has selector `0x24`.
+
+After switching the successful result selector to a continuation-based selector
+table lookup, a real `pumpit2a` run exposed the first result as
+`0x095D0300/0x00000024` in `w14/w15` of the following `GETPROCADDR` frame. The
+original code immediately entered ordinal 32 `_GRGLIDEINIT@0`, and the previous
+`unable to find entry point in DLL` message did not occur. It subsequently
+resolved and entered ordinal 37 `_GRSSTQUERYHARDWARE@4` as well.
+
+The Linux x64 Debug core probe passed all 27 groups, including the new
+`linexe_getproc_guest_cs=1,missing_selector_refused=1` checks.
+
+### Next frontier
+
+The `_GRSSTQUERYHARDWARE@4` gate decoded its argument pointer as zero and
+reported `query-hardware-unwritable-memory`. After `action=continue`, an
+unhandled SIGTRAP occurred at host address `0x402CBDA3`. The next task should
+compare the original call-site argument frame with Glide-gate guest-stack
+decode and return geometry to locate where the null argument originates. This
+SIGTRAP is a separate frontier reached after the GETPROCADDR selector fix.

@@ -69,6 +69,7 @@ struct HostThreadRecord
     };
     std::atomic<InterruptState> interrupt_state{InterruptState::kIdle};
     ThreadInterruptCallback interrupt_callback = nullptr;
+    ThreadInterruptContextCallback interrupt_context_callback = nullptr;
     void* interrupt_user_data = nullptr;
 #endif
 };
@@ -176,9 +177,19 @@ void InterruptSignalHandler(int, siginfo_t*, void* host_context)
 
     GuestCpuContext registers;
     if (LoadGuestCpuContext(host_context, &registers) &&
-        record->interrupt_callback != nullptr)
+        (record->interrupt_callback != nullptr ||
+         record->interrupt_context_callback != nullptr))
     {
-        record->interrupt_callback(&registers, record->interrupt_user_data);
+        if (record->interrupt_context_callback != nullptr)
+        {
+            record->interrupt_context_callback(
+                &registers, record->interrupt_user_data, host_context);
+        }
+        else
+        {
+            record->interrupt_callback(&registers,
+                                       record->interrupt_user_data);
+        }
         // Written back unconditionally. The callback may have changed nothing,
         // and storing an unchanged context costs less than asking it.
         StoreGuestCpuContext(registers, host_context);
@@ -383,11 +394,12 @@ bool JoinHostThread(const HostThread& thread,
 #endif
 }
 
-bool InterruptHostThread(const HostThread& thread,
-                         ThreadInterruptCallback callback,
-                         void* user_data,
-                         const std::uint32_t timeout_milliseconds,
-                         ThreadInterruptFailure* failure)
+bool InterruptHostThreadImpl(const HostThread& thread,
+                             ThreadInterruptCallback callback,
+                             ThreadInterruptContextCallback context_callback,
+                             void* user_data,
+                             const std::uint32_t timeout_milliseconds,
+                             ThreadInterruptFailure* failure)
 {
     const auto fail = [failure](const ThreadInterruptFailure reason) {
         if (failure != nullptr)
@@ -400,7 +412,8 @@ bool InterruptHostThread(const HostThread& thread,
     {
         *failure = ThreadInterruptFailure::kNone;
     }
-    if (!thread.valid || thread.handle == nullptr || callback == nullptr)
+    if (!thread.valid || thread.handle == nullptr ||
+        (callback == nullptr && context_callback == nullptr))
     {
         return fail(ThreadInterruptFailure::kRefused);
     }
@@ -420,7 +433,14 @@ bool InterruptHostThread(const HostThread& thread,
     bool sampled = false;
     if (GetThreadContext(handle, &registers))
     {
-        callback(&registers, user_data);
+        if (context_callback != nullptr)
+        {
+            context_callback(&registers, user_data, &registers);
+        }
+        else
+        {
+            callback(&registers, user_data);
+        }
         sampled = SetThreadContext(handle, &registers) != 0;
     }
     ResumeThread(handle);
@@ -453,6 +473,7 @@ bool InterruptHostThread(const HostThread& thread,
     }
 
     record->interrupt_callback = callback;
+    record->interrupt_context_callback = context_callback;
     record->interrupt_user_data = user_data;
     record->interrupt_state.store(HostThreadRecord::InterruptState::kRequested,
                                   std::memory_order_release);
@@ -513,6 +534,27 @@ bool InterruptHostThread(const HostThread& thread,
     }
     return true;
 #endif
+}
+
+bool InterruptHostThread(const HostThread& thread,
+                         ThreadInterruptCallback callback,
+                         void* user_data,
+                         const std::uint32_t timeout_milliseconds,
+                         ThreadInterruptFailure* failure)
+{
+    return InterruptHostThreadImpl(thread, callback, nullptr, user_data,
+                                   timeout_milliseconds, failure);
+}
+
+bool InterruptHostThreadWithContext(
+    const HostThread& thread,
+    ThreadInterruptContextCallback callback,
+    void* user_data,
+    const std::uint32_t timeout_milliseconds,
+    ThreadInterruptFailure* failure)
+{
+    return InterruptHostThreadImpl(thread, nullptr, callback, user_data,
+                                   timeout_milliseconds, failure);
 }
 
 void CloseHostThread(HostThread* thread)

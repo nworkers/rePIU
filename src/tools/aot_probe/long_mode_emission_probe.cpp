@@ -5,6 +5,7 @@
 
 #include <Zydis.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -25,6 +26,7 @@ using repiu::runtime::AotInstructionKind;
 using repiu::runtime::AotInstructionRecord;
 using repiu::runtime::AotTranslationPlan;
 using repiu::runtime::BuildAotCodeCacheImage;
+using repiu::runtime::GuestCodeDefaultOperandSize;
 
 // Task 553. What the emitter does with one plan, under both settings.
 //
@@ -878,6 +880,473 @@ bool ProbeIndirectFallbackStackCleanup()
     return ok;
 }
 
+// Task 680. A 16-bit copy record may use a dedicated lowering, while a
+// 16-bit control-flow record must not enter a 32-bit long-mode slot.
+bool Probe16BitModeEmission()
+{
+    constexpr std::uint32_t base = kBase + 0x100U;
+
+    // First exercise the same object-mode metadata path used by the real
+    // planner. The extra bytes keep the planner's bounded decode window
+    // readable while the first record must still stop at the word immediate.
+    repiu::runtime::RelocatedRuntimeImage guest_image;
+    guest_image.valid = true;
+    repiu::runtime::RelocatedRuntimeObject guest_object;
+    guest_object.object_index = 3U;
+    guest_object.relocated_base_address = base;
+    guest_object.virtual_size = 15U;
+    guest_object.flags = repiu::runtime::kLeObjectExecutable;
+    guest_object.memory.assign(15U, 0x90U);
+    guest_object.memory[0] = 0xBCU;
+    guest_object.memory[1] = 0x00U;
+    guest_object.memory[2] = 0x20U;
+    guest_image.objects.push_back(std::move(guest_object));
+    guest_image.code_mode_ranges.push_back({
+        base, 15U, repiu::runtime::kLeObjectExecutable});
+    AotTranslationPlan planned_from_object;
+    const bool plan_built =
+        repiu::runtime::BuildAotTranslationPlanFromEntry(
+            guest_image, base, &planned_from_object);
+    const AotInstructionRecord* first_planned = nullptr;
+    if (plan_built)
+    {
+        for (const AotBasicBlock& planned_block : planned_from_object.blocks)
+        {
+            if (!planned_block.instructions.empty())
+            {
+                first_planned = &planned_block.instructions.front();
+                break;
+            }
+        }
+    }
+    const bool planner_mode = first_planned != nullptr &&
+        first_planned->guest_address == base &&
+        first_planned->length == 3U &&
+        first_planned->bytes == std::vector<std::uint8_t>{
+            0xBCU, 0x00U, 0x20U} &&
+        first_planned->guest_code_default_operand_size ==
+            GuestCodeDefaultOperandSize::k16;
+
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = base;
+    AotBasicBlock block;
+    block.guest_address = base;
+
+    AotInstructionRecord stack_pointer;
+    stack_pointer.guest_address = base;
+    stack_pointer.kind = AotInstructionKind::kCopy;
+    stack_pointer.length = 3U;
+    stack_pointer.guest_code_default_operand_size =
+        GuestCodeDefaultOperandSize::k16;
+    stack_pointer.bytes = {0xBCU, 0x00U, 0x20U};
+    block.instructions.push_back(stack_pointer);
+
+    AotInstructionRecord branch;
+    branch.guest_address = base + 3U;
+    branch.kind = AotInstructionKind::kDirectJump;
+    branch.length = 2U;
+    branch.direct_target = base;
+    branch.guest_code_default_operand_size =
+        GuestCodeDefaultOperandSize::k16;
+    branch.bytes = {0xEBU, 0xFBU};
+    block.instructions.push_back(branch);
+    plan.blocks.push_back(block);
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    const bool built = BuildAotCodeCacheImage(plan, options, &image) &&
+        image.valid;
+    std::vector<std::uint8_t> emitted;
+    const bool stack_bytes = built && EmittedBytes(image, base, &emitted) &&
+        emitted == std::vector<std::uint8_t>{
+            0x66U, 0x41U, 0xBFU, 0x00U, 0x20U};
+    const bool branch_boundary = built &&
+        EmittedBytes(image, base + 3U, &emitted) &&
+        emitted == std::vector<std::uint8_t>{0xCCU} &&
+        HasBoundaryFixupAt(image, base + 3U);
+    const bool ok = planner_mode && stack_bytes && branch_boundary;
+    std::cout << "long_mode_emission_16bit_mode="
+              << (ok ? "true" : "false") << ",planner_mode="
+              << (planner_mode ? "true" : "false") << ",refused="
+              << image.long_mode_refused_count << "\n";
+    return ok;
+}
+
+// Task 681. A mode16 67+66 LEA uses the same cache path as object 3. The
+// operand-size prefix is removed, the address-size prefix remains, and ESP is
+// remapped to R15. A following non-copy mode16 record stays a boundary.
+bool Probe16BitLeaModeEmission()
+{
+    constexpr std::uint32_t base = kBase + 0x200U;
+    const std::vector<std::uint8_t> lea_bytes = {
+        0x67U, 0x66U, 0x8DU, 0x8CU, 0x24U,
+        0x00U, 0xE0U, 0xFFU, 0xFFU,
+    };
+    const std::vector<std::uint8_t> expected = {
+        0x67U, 0x41U, 0x8DU, 0x8CU, 0x27U,
+        0x00U, 0xE0U, 0xFFU, 0xFFU,
+    };
+
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = base;
+    AotBasicBlock block;
+    block.guest_address = base;
+    AotInstructionRecord lea;
+    lea.guest_address = base;
+    lea.kind = AotInstructionKind::kCopy;
+    lea.length = static_cast<std::uint8_t>(lea_bytes.size());
+    lea.guest_code_default_operand_size = GuestCodeDefaultOperandSize::k16;
+    lea.bytes = lea_bytes;
+    block.instructions.push_back(lea);
+
+    AotInstructionRecord boundary;
+    boundary.guest_address = base + static_cast<std::uint32_t>(lea_bytes.size());
+    boundary.kind = AotInstructionKind::kPortIo;
+    boundary.length = 1U;
+    boundary.guest_code_default_operand_size =
+        GuestCodeDefaultOperandSize::k16;
+    boundary.bytes = {0xEDU};
+    block.instructions.push_back(boundary);
+    plan.blocks.push_back(block);
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    const bool built = BuildAotCodeCacheImage(plan, options, &image) &&
+        image.valid;
+    std::vector<std::uint8_t> emitted;
+    const bool lea_ok = built && EmittedBytes(image, base, &emitted) &&
+        emitted == expected;
+    const bool boundary_ok = built &&
+        EmittedBytes(image, boundary.guest_address, &emitted) &&
+        emitted == std::vector<std::uint8_t>{0xCCU} &&
+        HasBoundaryFixupAt(image, boundary.guest_address);
+    const bool ok = lea_ok && boundary_ok;
+    std::cout << "long_mode_emission_16bit_lea32="
+              << (ok ? "true" : "false") << ",lowered="
+              << (lea_ok ? 1 : 0) << ",boundary="
+              << (boundary_ok ? 1 : 0) << "\n";
+    return ok;
+}
+
+// Task 682. The actual object-3 frontier is a prefix-free mode16 LEA with a
+// 16-bit address calculation. Its multi-instruction scratch lowering must be
+// decoded as one cache entry, and a following mode16 non-copy record remains a
+// separate boundary.
+bool Probe16BitLea16ModeEmission()
+{
+    constexpr std::uint32_t base = kBase + 0x300U;
+    const std::vector<std::uint8_t> lea_bytes = {
+        0x8DU, 0x8CU, 0x24U, 0x00U,
+    };
+    const std::vector<std::uint8_t> expected = {
+        0x44U, 0x0FU, 0xB7U, 0xF6U,
+        0x67U, 0x66U, 0x41U, 0x8DU, 0x8EU,
+        0x24U, 0x00U, 0x00U, 0x00U,
+    };
+
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = base;
+    AotBasicBlock block;
+    block.guest_address = base;
+    AotInstructionRecord lea;
+    lea.guest_address = base;
+    lea.kind = AotInstructionKind::kCopy;
+    lea.length = static_cast<std::uint8_t>(lea_bytes.size());
+    lea.guest_code_default_operand_size = GuestCodeDefaultOperandSize::k16;
+    lea.bytes = lea_bytes;
+    block.instructions.push_back(lea);
+
+    AotInstructionRecord boundary;
+    boundary.guest_address = base + static_cast<std::uint32_t>(lea_bytes.size());
+    boundary.kind = AotInstructionKind::kPortIo;
+    boundary.length = 1U;
+    boundary.guest_code_default_operand_size =
+        GuestCodeDefaultOperandSize::k16;
+    boundary.bytes = {0xEDU};
+    block.instructions.push_back(boundary);
+    plan.blocks.push_back(block);
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    const bool built = BuildAotCodeCacheImage(plan, options, &image) &&
+        image.valid;
+    std::vector<std::uint8_t> emitted;
+    const bool lea_ok = built && EmittedBytes(image, base, &emitted) &&
+        emitted == expected;
+    const bool boundary_ok = built &&
+        EmittedBytes(image, boundary.guest_address, &emitted) &&
+        emitted == std::vector<std::uint8_t>{0xCCU} &&
+        HasBoundaryFixupAt(image, boundary.guest_address);
+    const bool ok = lea_ok && boundary_ok;
+    std::cout << "long_mode_emission_16bit_lea16="
+              << (ok ? "true" : "false") << ",lowered="
+              << (lea_ok ? 1 : 0) << ",boundary="
+              << (boundary_ok ? 1 : 0) << "\n";
+    return ok;
+}
+
+// Task 683. A mode16 LOOPNZ gets a dedicated long-mode slot. Its taken edge
+// is an ordinary conditional fixup, while the not-taken path exits the slot so
+// the enclosing block can provide an explicit block-fallthrough edge.
+bool Probe16BitLoopNzModeEmission()
+{
+    constexpr std::uint32_t base = kBase + 0x400U;
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = base;
+
+    AotBasicBlock loop_block;
+    loop_block.guest_address = base;
+    AotInstructionRecord loop;
+    loop.guest_address = base;
+    loop.kind = AotInstructionKind::kConditionalBranch;
+    loop.length = 2U;
+    loop.direct_target = base + 0x20U;
+    loop.fallthrough_target = base + 2U;
+    loop.guest_code_default_operand_size = GuestCodeDefaultOperandSize::k16;
+    loop.bytes = {0xE0U, 0x01U};
+    loop_block.instructions.push_back(loop);
+    plan.blocks.push_back(std::move(loop_block));
+
+    // Emit the target first so the loop's fallthrough cannot be satisfied by
+    // adjacency. This makes the two edge contracts visible independently.
+    AotBasicBlock target_block;
+    target_block.guest_address = base + 0x20U;
+    AotInstructionRecord target_boundary;
+    target_boundary.guest_address = base + 0x20U;
+    target_boundary.kind = AotInstructionKind::kPortIo;
+    target_boundary.length = 1U;
+    target_boundary.guest_code_default_operand_size =
+        GuestCodeDefaultOperandSize::k16;
+    target_boundary.bytes = {0xEDU};
+    target_block.instructions.push_back(target_boundary);
+    plan.blocks.push_back(std::move(target_block));
+
+    AotBasicBlock fallthrough_block;
+    fallthrough_block.guest_address = base + 2U;
+    AotInstructionRecord fallthrough_boundary;
+    fallthrough_boundary.guest_address = base + 2U;
+    fallthrough_boundary.kind = AotInstructionKind::kPortIo;
+    fallthrough_boundary.length = 1U;
+    fallthrough_boundary.guest_code_default_operand_size =
+        GuestCodeDefaultOperandSize::k16;
+    fallthrough_boundary.bytes = {0xEDU};
+    fallthrough_block.instructions.push_back(fallthrough_boundary);
+    plan.blocks.push_back(std::move(fallthrough_block));
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    const bool built = BuildAotCodeCacheImage(plan, options, &image) &&
+        image.valid;
+    const std::vector<std::uint8_t> expected = {
+        0x9CU,
+        0x66U, 0xFFU, 0xC9U,
+        0x66U, 0x85U, 0xC9U,
+        0x74U, 0x11U,
+        0x4CU, 0x8BU, 0x34U, 0x24U,
+        0x49U, 0x0FU, 0xBAU, 0xE6U, 0x06U,
+        0x72U, 0x06U,
+        0x9DU,
+        0xE9U, 0x06U, 0x00U, 0x00U, 0x00U,
+        0x9DU,
+    };
+    std::vector<std::uint8_t> emitted;
+    const bool slot_bytes = built && EmittedBytes(image, base, &emitted) &&
+        emitted == expected;
+    bool conditional_fixup = false;
+    bool block_fallthrough_fixup = false;
+    for (const repiu::runtime::AotCodeCacheFixup& fixup : image.fixups)
+    {
+        conditional_fixup = conditional_fixup ||
+            (fixup.kind == AotFixupKind::kConditionalBranch &&
+             fixup.guest_source == base &&
+             fixup.guest_target == base + 0x20U && fixup.resolved &&
+             fixup.cache_patch_offset == 22U);
+        block_fallthrough_fixup = block_fallthrough_fixup ||
+            (fixup.kind == AotFixupKind::kBlockFallthrough &&
+             fixup.guest_source == base &&
+             fixup.guest_target == base + 2U && fixup.resolved &&
+             fixup.cache_patch_offset == 28U);
+    }
+    const bool ok = slot_bytes && conditional_fixup &&
+        block_fallthrough_fixup;
+    std::cout << "long_mode_emission_16bit_loopnz="
+              << (ok ? "true" : "false") << ",slot="
+              << (slot_bytes ? 1 : 0) << ",conditional_fixup="
+              << (conditional_fixup ? 1 : 0) << ",fallthrough_fixup="
+              << (block_fallthrough_fixup ? 1 : 0) << "\n";
+    return ok;
+}
+
+// An unresolved taken target must neutralise only the complete loop entry;
+// its separate block-fallthrough edge must not patch bytes back into that
+// entry.
+bool Probe16BitLoopNzUnresolvedTarget()
+{
+    constexpr std::uint32_t base = kBase + 0x500U;
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = base;
+    AotBasicBlock block;
+    block.guest_address = base;
+    AotInstructionRecord loop;
+    loop.guest_address = base;
+    loop.kind = AotInstructionKind::kConditionalBranch;
+    loop.length = 2U;
+    loop.direct_target = base + 0x20U;
+    loop.fallthrough_target = base + 2U;
+    loop.guest_code_default_operand_size = GuestCodeDefaultOperandSize::k16;
+    loop.bytes = {0xE0U, 0x01U};
+    block.instructions.push_back(loop);
+    plan.blocks.push_back(std::move(block));
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    const bool built = BuildAotCodeCacheImage(plan, options, &image) &&
+        image.valid;
+    std::vector<std::uint8_t> emitted;
+    const bool neutralised = built && EmittedBytes(image, base, &emitted) &&
+        emitted.size() == 27U &&
+        std::all_of(emitted.begin(), emitted.end(),
+                    [](const std::uint8_t byte) { return byte == 0xCCU; });
+    const bool fallthrough_tail_neutralised = built && image.bytes.size() >=
+        28U && image.bytes[27U] == 0xCCU;
+    const bool ok = neutralised && fallthrough_tail_neutralised &&
+        image.long_mode_unresolved_branch_count == 2U;
+    std::cout << "long_mode_emission_16bit_loopnz_unresolved="
+              << (ok ? "true" : "false") << ",entry="
+              << (neutralised ? 1 : 0) << ",fallthrough="
+              << (fallthrough_tail_neutralised ? 1 : 0) << "\n";
+    return ok;
+}
+
+// Task 686. A mode16 short Jcc uses the shared long-mode direct-branch slot;
+// the planner has already supplied the rebased target and fallthrough edges.
+bool Probe16BitConditionalBranchModeEmission()
+{
+    constexpr std::uint32_t base = kBase + 0x600U;
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = base;
+
+    AotBasicBlock branch_block;
+    branch_block.guest_address = base;
+    AotInstructionRecord branch;
+    branch.guest_address = base;
+    branch.kind = AotInstructionKind::kConditionalBranch;
+    branch.length = 2U;
+    branch.mnemonic = static_cast<std::uint16_t>(ZYDIS_MNEMONIC_JZ);
+    branch.direct_target = base + 0x20U;
+    branch.fallthrough_target = base + 2U;
+    branch.guest_code_default_operand_size = GuestCodeDefaultOperandSize::k16;
+    branch.bytes = {0x74U, 0x01U};
+    branch_block.instructions.push_back(branch);
+    plan.blocks.push_back(std::move(branch_block));
+
+    AotBasicBlock target_block;
+    target_block.guest_address = base + 0x20U;
+    AotInstructionRecord target;
+    target.guest_address = base + 0x20U;
+    target.kind = AotInstructionKind::kPortIo;
+    target.length = 1U;
+    target.guest_code_default_operand_size = GuestCodeDefaultOperandSize::k16;
+    target.bytes = {0xEDU};
+    target_block.instructions.push_back(target);
+    plan.blocks.push_back(std::move(target_block));
+
+    AotBasicBlock fallthrough_block;
+    fallthrough_block.guest_address = base + 2U;
+    AotInstructionRecord fallthrough;
+    fallthrough.guest_address = base + 2U;
+    fallthrough.kind = AotInstructionKind::kPortIo;
+    fallthrough.length = 1U;
+    fallthrough.guest_code_default_operand_size =
+        GuestCodeDefaultOperandSize::k16;
+    fallthrough.bytes = {0xEDU};
+    fallthrough_block.instructions.push_back(fallthrough);
+    plan.blocks.push_back(std::move(fallthrough_block));
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    const bool built = BuildAotCodeCacheImage(plan, options, &image) &&
+        image.valid;
+    std::vector<std::uint8_t> emitted;
+    const bool slot_bytes = built && EmittedBytes(image, base, &emitted) &&
+        emitted.size() == 6U && emitted[0] == 0x0FU &&
+        emitted[1] == 0x84U;
+    bool conditional_fixup = false;
+    bool fallthrough_fixup = false;
+    for (const repiu::runtime::AotCodeCacheFixup& fixup : image.fixups)
+    {
+        conditional_fixup = conditional_fixup ||
+            (fixup.kind == AotFixupKind::kConditionalBranch &&
+             fixup.guest_source == base &&
+             fixup.guest_target == base + 0x20U && fixup.resolved &&
+             fixup.cache_patch_offset == 2U);
+        fallthrough_fixup = fallthrough_fixup ||
+            (fixup.kind == AotFixupKind::kBlockFallthrough &&
+             fixup.guest_source == base && fixup.guest_target == base + 2U &&
+             fixup.resolved && fixup.cache_patch_offset == 7U);
+    }
+    const bool ok = slot_bytes && conditional_fixup && fallthrough_fixup;
+    std::cout << "long_mode_emission_16bit_jcc="
+              << (ok ? "true" : "false") << ",slot="
+              << (slot_bytes ? 1 : 0) << ",conditional_fixup="
+              << (conditional_fixup ? 1 : 0) << ",fallthrough_fixup="
+              << (fallthrough_fixup ? 1 : 0) << "\n";
+    return ok;
+}
+
+bool Probe16BitConditionalBranchUnresolvedTarget()
+{
+    constexpr std::uint32_t base = kBase + 0x700U;
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = base;
+    AotBasicBlock block;
+    block.guest_address = base;
+    AotInstructionRecord branch;
+    branch.guest_address = base;
+    branch.kind = AotInstructionKind::kConditionalBranch;
+    branch.length = 2U;
+    branch.mnemonic = static_cast<std::uint16_t>(ZYDIS_MNEMONIC_JZ);
+    branch.direct_target = base + 0x20U;
+    branch.fallthrough_target = base + 2U;
+    branch.guest_code_default_operand_size = GuestCodeDefaultOperandSize::k16;
+    branch.bytes = {0x74U, 0x01U};
+    block.instructions.push_back(branch);
+    plan.blocks.push_back(std::move(block));
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    const bool built = BuildAotCodeCacheImage(plan, options, &image) &&
+        image.valid;
+    std::vector<std::uint8_t> emitted;
+    const bool entry_neutralised = built && EmittedBytes(image, base, &emitted) &&
+        emitted.size() == 6U &&
+        std::all_of(emitted.begin(), emitted.end(),
+                    [](const std::uint8_t byte) { return byte == 0xCCU; });
+    const bool fallthrough_neutralised = built && image.bytes.size() >= 7U &&
+        image.bytes[6U] == 0xCCU;
+    const bool ok = entry_neutralised && fallthrough_neutralised &&
+        image.long_mode_unresolved_branch_count == 2U;
+    std::cout << "long_mode_emission_16bit_jcc_unresolved="
+              << (ok ? "true" : "false") << ",entry="
+              << (entry_neutralised ? 1 : 0) << ",fallthrough="
+              << (fallthrough_neutralised ? 1 : 0) << "\n";
+    return ok;
+}
+
 }  // namespace
 
 bool RunLongModeEmissionProbe()
@@ -885,6 +1354,15 @@ bool RunLongModeEmissionProbe()
     const bool default_ok = ProbeDefaultIsUnchanged();
     const bool outcomes_ok = ProbeLongModeOutcomes();
     const bool refused_ok = ProbeAllRefusedStillBuilds();
+    const bool sixteen_bit_mode_ok = Probe16BitModeEmission();
+    const bool sixteen_bit_lea_ok = Probe16BitLeaModeEmission();
+    const bool sixteen_bit_lea16_ok = Probe16BitLea16ModeEmission();
+    const bool sixteen_bit_loopnz_ok = Probe16BitLoopNzModeEmission();
+    const bool sixteen_bit_loopnz_unresolved_ok =
+        Probe16BitLoopNzUnresolvedTarget();
+    const bool sixteen_bit_jcc_ok = Probe16BitConditionalBranchModeEmission();
+    const bool sixteen_bit_jcc_unresolved_ok =
+        Probe16BitConditionalBranchUnresolvedTarget();
     const bool segment_read_gpr16_ok = ProbeSegmentReadGpr16Classification();
     const bool segment_override_coverage_ok =
         ProbeLongModeSegmentOverrideCoverage();
@@ -897,6 +1375,13 @@ bool RunLongModeEmissionProbe()
         ProbeIndirectFallbackStackCleanup();
 
     const bool all = default_ok && outcomes_ok && refused_ok &&
+        sixteen_bit_mode_ok &&
+        sixteen_bit_lea_ok &&
+        sixteen_bit_lea16_ok &&
+        sixteen_bit_loopnz_ok &&
+        sixteen_bit_loopnz_unresolved_ok &&
+        sixteen_bit_jcc_ok &&
+        sixteen_bit_jcc_unresolved_ok &&
         segment_read_gpr16_ok &&
         segment_override_coverage_ok &&
         segment_guard_coverage_ok &&

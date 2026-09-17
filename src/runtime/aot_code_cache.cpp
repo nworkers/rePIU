@@ -123,7 +123,8 @@ bool EmitLongModeCopy(const AotInstructionRecord& instruction,
         return false;
     }
     const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
-        instruction.bytes.data(), instruction.bytes.size());
+        instruction.bytes.data(), instruction.bytes.size(),
+        instruction.guest_code_default_operand_size);
     if (verdict.compatibility == LongModeByteCompatibility::kIdenticalBytes)
     {
         image->bytes.insert(image->bytes.end(), instruction.bytes.begin(),
@@ -140,7 +141,8 @@ bool EmitLongModeCopy(const AotInstructionRecord& instruction,
     std::size_t lowered_count = 0U;
     std::size_t lowered_instructions = 0U;
     if (!LowerLongModeBytes(instruction.bytes.data(), instruction.bytes.size(),
-                            lowered, &lowered_count, &lowered_instructions) ||
+                            lowered, &lowered_count, &lowered_instructions,
+                            instruction.guest_code_default_operand_size) ||
         lowered_count == 0U || lowered_instructions == 0U)
     {
         // A named lowering that the rewriter declines is still a refusal. It
@@ -230,6 +232,81 @@ void EmitLongModeReturnStackAdjustment(std::uint32_t adjustment,
         bytes->push_back(static_cast<std::uint8_t>(
             (adjustment >> (index * 8U)) & 0xFFU));
     }
+}
+
+// Task 683. A mode16 LOOPNZ cannot be copied into long mode: its counter is
+// guest CX, while long mode has no 16-bit address-size form for the copied
+// opcode. The slot keeps the direct target as the one external fixup and lets
+// the enclosing block provide the ordinary fallthrough edge after the slot.
+bool EmitLongMode16BitLoopNz(const AotInstructionRecord& instruction,
+                             AotCodeCacheImage* image,
+                             std::size_t* const emitted_instructions)
+{
+    if (image == nullptr || emitted_instructions == nullptr ||
+        instruction.kind != AotInstructionKind::kConditionalBranch ||
+        instruction.guest_code_default_operand_size !=
+            GuestCodeDefaultOperandSize::k16 || instruction.bytes.empty())
+    {
+        return false;
+    }
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        instruction.bytes.data(), instruction.bytes.size(),
+        instruction.guest_code_default_operand_size);
+    if (verdict.lowering != LongModeLowering::k16BitLoopNzToGuestCx)
+    {
+        return false;
+    }
+
+    // pushfq; dec cx; test cx,cx; jz restore_and_fallthrough
+    image->bytes.push_back(0x9CU);
+    image->bytes.insert(image->bytes.end(), {0x66U, 0xFFU, 0xC9U});
+    image->bytes.insert(image->bytes.end(), {0x66U, 0x85U, 0xC9U});
+    const std::size_t zero_branch_offset = image->bytes.size();
+    image->bytes.insert(image->bytes.end(), {0x74U, 0x00U});
+    // mov r14, qword ptr [rsp]; bt r14, 6; jc restore_and_fallthrough
+    image->bytes.insert(image->bytes.end(),
+                        {0x4CU, 0x8BU, 0x34U, 0x24U});
+    image->bytes.insert(image->bytes.end(),
+                        {0x49U, 0x0FU, 0xBAU, 0xE6U, 0x06U});
+    const std::size_t saved_zf_branch_offset = image->bytes.size();
+    image->bytes.insert(image->bytes.end(), {0x72U, 0x00U});
+    image->bytes.push_back(0x9DU);  // popfq
+    const std::uint32_t target_branch_offset =
+        static_cast<std::uint32_t>(image->bytes.size());
+    AppendRel32(&image->bytes, 0xE9U);
+    const std::size_t restore_offset = image->bytes.size();
+    image->bytes.push_back(0x9DU);  // popfq
+
+    const auto patch_short_branch =
+        [&image](const std::size_t branch_offset,
+                 const std::size_t target_offset) {
+            const std::int64_t displacement =
+                static_cast<std::int64_t>(target_offset) -
+                static_cast<std::int64_t>(branch_offset + 2U);
+            if (displacement < std::numeric_limits<std::int8_t>::min() ||
+                displacement > std::numeric_limits<std::int8_t>::max())
+            {
+                return false;
+            }
+            (*image).bytes[branch_offset + 1U] =
+                static_cast<std::uint8_t>(displacement);
+            return true;
+        };
+    if (!patch_short_branch(zero_branch_offset, restore_offset) ||
+        !patch_short_branch(saved_zf_branch_offset, restore_offset))
+    {
+        return false;
+    }
+
+    image->fixups.push_back({AotFixupKind::kConditionalBranch,
+                             instruction.guest_address,
+                             instruction.direct_target,
+                             target_branch_offset + 1U, false});
+    ++image->long_mode_branch_count;
+    // The verifier decodes both paths in the map entry, including the restore
+    // instruction after the taken-path E9.
+    *emitted_instructions = 10U;
+    return true;
 }
 
 
@@ -505,6 +582,61 @@ bool LinuxX64StackTraceEnabled()
         return value != nullptr && std::strcmp(value, "0") != 0;
     }();
     return enabled;
+}
+
+bool LinuxX64GuestEspTraceEnabled()
+{
+    static const bool enabled = [] {
+        const char* const value =
+            std::getenv("REPIU_LINUX_X64_GUEST_ESP_TRACE");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
+bool EmitLinuxX64GuestEspTrace(
+    const AotInstructionRecord& instruction,
+    std::vector<std::uint8_t>* const bytes,
+    std::size_t* const emitted_instructions)
+{
+    if (bytes == nullptr || emitted_instructions == nullptr ||
+        !LinuxX64GuestEspTraceEnabled())
+    {
+        return false;
+    }
+    const std::uintptr_t site_address =
+        repiu::platform::LinuxX64GuestEspTraceSiteAddress();
+    const std::uintptr_t value_address =
+        repiu::platform::LinuxX64GuestEspTraceValueAddress();
+    if (site_address == 0U || value_address == 0U)
+    {
+        return false;
+    }
+
+    // R10 and R11 are not guest registers in the x64 mapping. MOV does not
+    // change flags, so this observer can be placed after a translated guest
+    // instruction without affecting its successor.
+    bytes->insert(bytes->end(), {0x49U, 0xBAU});  // movabs r10, site
+    for (std::size_t index = 0U; index < 8U; ++index)
+    {
+        bytes->push_back(static_cast<std::uint8_t>(
+            (static_cast<std::uint64_t>(site_address) >> (index * 8U)) &
+            0xFFU));
+    }
+    bytes->insert(bytes->end(), {0x41U, 0xBBU});  // mov r11d, guest site
+    AppendImmediate32(bytes, instruction.guest_address);
+    bytes->insert(bytes->end(), {0x45U, 0x89U, 0x1AU});
+
+    bytes->insert(bytes->end(), {0x49U, 0xBAU});  // movabs r10, value
+    for (std::size_t index = 0U; index < 8U; ++index)
+    {
+        bytes->push_back(static_cast<std::uint8_t>(
+            (static_cast<std::uint64_t>(value_address) >> (index * 8U)) &
+            0xFFU));
+    }
+    bytes->insert(bytes->end(), {0x45U, 0x89U, 0x3AU});
+    *emitted_instructions += 5U;
+    return true;
 }
 
 // Task 619. Record an AOT guest-stack write without changing guest flags. The
@@ -2548,6 +2680,7 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
         options.enable_dbt_direct_edge_dispatch;
     image->timer_safe_points_enabled = options.enable_timer_safe_points;
     image->long_mode_emission_enabled = options.enable_long_mode_emission;
+    image->code_mode_ranges = plan.code_mode_ranges;
     const auto started = std::chrono::steady_clock::now();
     image->guarded_segment_pop_enabled =
         options.enable_guarded_segment_pop;
@@ -2632,29 +2765,45 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
             if (options.enable_long_mode_emission)
             {
                 std::size_t emitted_instructions = 0U;
-                if (EmitLongModeDirectBranch(instruction, image,
-                                             &emitted_instructions) ||
-                    (instruction.kind ==
-                         AotInstructionKind::kGuardedSegmentLoad &&
-                     EmitLongModeGuardedSegmentLoad(
-                         instruction, image, &emitted_instructions)) ||
-                    (instruction.kind ==
-                         AotInstructionKind::kGuardedSegmentPop &&
-                     EmitLongModeGuardedSegmentPop(
-                         instruction, image, &emitted_instructions)) ||
-                    (instruction.kind ==
-                         AotInstructionKind::kIndirectExit &&
-                     EmitLongModeIndirectCall(instruction, image,
-                                              &emitted_instructions)) ||
-                    (instruction.kind ==
-                         AotInstructionKind::kJumpTable &&
-                     EmitLongModeJumpTable(instruction, image,
-                                           &emitted_instructions)) ||
-                    (instruction.kind ==
-                         AotInstructionKind::kSegmentOverrideMem &&
-                     options.enable_long_mode_segment_override &&
-                     EmitLongModeSegmentOverride(instruction, image,
-                                                 &emitted_instructions)))
+                // Task 686. The existing non-copy slots encode 32-bit guest
+                // control-flow and selector semantics. A plain mode16 Jcc
+                // needs only its already-rebased target and condition opcode,
+                // so it may use the shared direct-branch slot. Keep other
+                // mode16 records out until their semantics have lowerings.
+                const bool allow_long_mode_direct_branch_slot =
+                    instruction.guest_code_default_operand_size !=
+                        GuestCodeDefaultOperandSize::k16 ||
+                    instruction.kind == AotInstructionKind::kConditionalBranch;
+                const bool emitted_mode16_control_flow =
+                    EmitLongMode16BitLoopNz(
+                        instruction, image, &emitted_instructions);
+                const bool emitted_legacy32_control_flow =
+                    allow_long_mode_direct_branch_slot &&
+                    (EmitLongModeDirectBranch(instruction, image,
+                                               &emitted_instructions) ||
+                     (instruction.kind ==
+                          AotInstructionKind::kGuardedSegmentLoad &&
+                      EmitLongModeGuardedSegmentLoad(
+                          instruction, image, &emitted_instructions)) ||
+                     (instruction.kind ==
+                          AotInstructionKind::kGuardedSegmentPop &&
+                      EmitLongModeGuardedSegmentPop(
+                          instruction, image, &emitted_instructions)) ||
+                     (instruction.kind ==
+                          AotInstructionKind::kIndirectExit &&
+                      EmitLongModeIndirectCall(instruction, image,
+                                               &emitted_instructions)) ||
+                     (instruction.kind ==
+                          AotInstructionKind::kJumpTable &&
+                      EmitLongModeJumpTable(instruction, image,
+                                            &emitted_instructions)) ||
+                     (instruction.kind ==
+                          AotInstructionKind::kSegmentOverrideMem &&
+                      options.enable_long_mode_segment_override &&
+                      EmitLongModeSegmentOverride(instruction, image,
+                                                  &emitted_instructions)));
+                if (emitted_mode16_control_flow ||
+                    emitted_legacy32_control_flow)
                 {
                     map.emitted_length = static_cast<std::uint8_t>(
                         image->bytes.size() - cache_offset);
@@ -2696,6 +2845,13 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                             &memory_trace_instructions))
                     {
                         emitted_instructions += memory_trace_instructions;
+                    }
+                    std::size_t guest_esp_trace_instructions = 0U;
+                    if (EmitLinuxX64GuestEspTrace(
+                            instruction, &image->bytes,
+                            &guest_esp_trace_instructions))
+                    {
+                        emitted_instructions += guest_esp_trace_instructions;
                     }
 #endif
                 }

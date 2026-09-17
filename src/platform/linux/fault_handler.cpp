@@ -19,6 +19,8 @@
 extern "C" volatile std::uint64_t repiu_linux_x64_guest_entry_rsp;
 extern "C" volatile std::uint64_t repiu_linux_x64_cache_call_rsp;
 extern "C" volatile std::uint64_t repiu_linux_x64_return_thunk_rsp;
+extern "C" volatile std::uint32_t repiu_linux_x64_guest_esp_trace_site;
+extern "C" volatile std::uint32_t repiu_linux_x64_guest_esp_trace_value;
 #endif
 
 namespace repiu::platform
@@ -478,6 +480,10 @@ void ReportUnhandledFault(const int signal_number,
                     repiu_linux_x64_cache_call_rsp);
     WriteNamedHex64(line, &length, " thunk_rsp=",
                     repiu_linux_x64_return_thunk_rsp);
+    WriteNamedHex64(line, &length, " trace_site=",
+                    repiu_linux_x64_guest_esp_trace_site);
+    WriteNamedHex64(line, &length, " trace_esp=",
+                    repiu_linux_x64_guest_esp_trace_value);
     WriteNamedHex64(line, &length, " last_signal=",
                     g_last_resumed_signal);
     WriteNamedHex64(line, &length, " last_kind=",

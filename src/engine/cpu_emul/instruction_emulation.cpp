@@ -202,17 +202,27 @@ void TraceGuestSegmentEvent(const char* event,
                             std::uint16_t selector,
                             std::uint32_t address_or_register)
 {
-    if (std::getenv("REPIU_DOS_INT_TRACE") == nullptr)
+    if (std::getenv("REPIU_DOS_INT_TRACE") == nullptr &&
+        std::getenv("REPIU_DPMI_SEGMENT_TRACE") == nullptr)
     {
         return;
     }
 
-    char line[256] = {};
+    const repiu::runtime::GuestDescriptor* descriptor =
+        segment_register == 2U
+            ? repiu::runtime::FindDescriptor(context.selector_table, selector)
+            : nullptr;
+    const std::uint64_t effective = descriptor == nullptr
+        ? static_cast<std::uint64_t>(win32_context.Esp)
+        : static_cast<std::uint64_t>(descriptor->base) +
+          static_cast<std::uint32_t>(win32_context.Esp);
+    char line[384] = {};
     const int length = std::snprintf(
         line,
         sizeof(line),
         "[repiu-segment-%s] eip=0x%08X segment=%u selector=0x%04X "
-        "value=0x%08X ds=0x%04X es=0x%04X ss=0x%04X fs=0x%04X gs=0x%04X\n",
+        "value=0x%08X ds=0x%04X es=0x%04X ss=0x%04X fs=0x%04X gs=0x%04X "
+        "base=0x%08X limit=0x%08X effective=0x%08llX\n",
         event,
         static_cast<std::uint32_t>(win32_context.Eip),
         static_cast<unsigned>(segment_register),
@@ -222,7 +232,10 @@ void TraceGuestSegmentEvent(const char* event,
         static_cast<unsigned>(context.guest_es),
         static_cast<unsigned>(context.guest_ss),
         static_cast<unsigned>(context.guest_fs),
-        static_cast<unsigned>(context.guest_gs));
+        static_cast<unsigned>(context.guest_gs),
+        descriptor == nullptr ? 0U : descriptor->base,
+        descriptor == nullptr ? 0U : descriptor->limit,
+        static_cast<unsigned long long>(effective));
     if (length > 0)
     {
         repiu::platform::WriteHostErrorStream(
@@ -923,6 +936,21 @@ bool HandleSegmentPushInstruction(repiu::platform::GuestCpuContext* win32_contex
     if (!IsGuestRangeWritable(context, destination_pointer,
                               sizeof(std::uint32_t)))
     {
+        if (std::getenv("REPIU_SEGMENT_HLE_TRACE") != nullptr)
+        {
+            const std::uint64_t runtime_end =
+                static_cast<std::uint64_t>(context->runtime_base) +
+                context->runtime_size;
+            std::fprintf(
+                stderr,
+                "[repiu-segment-hle] stage=push-range-failed "
+                "eip=0x%08X esp=0x%08X destination=0x%08X "
+                "runtime_base=0x%08X runtime_size=0x%08X "
+                "runtime_end=0x%llX\n",
+                instruction_address, esp_before, destination,
+                context->runtime_base, context->runtime_size,
+                static_cast<unsigned long long>(runtime_end));
+        }
         return false;
     }
 

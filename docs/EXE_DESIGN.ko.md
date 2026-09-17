@@ -368,3 +368,12 @@ out dx,al; pop ebx; ret`이며, 실제 privileged instruction 주소는 `0x030EC
 `OUT` 시점의 guest stack에는 `[ESP]`에 저장된 EBX, `[ESP+4]`에 feeder 반환 주소
 `0x03019466`이 있다. 이 구조는 원본 실행 파일의 hardware-call ABI 사실이며 HLE matcher는
 주소 자체가 아니라 이 call/return 및 상태 갱신 관계를 검증한다.
+
+## pumpit2a object 3의 스택 전환 (Task 692)
+
+Linux 재배치 실행에서 object 3은 DPMI AX=0007로 SS selector B4의 base를
+0158A83C로 설정한 뒤 MOV SS,BX; MOV SP,2000을 실행합니다. descriptor
+flags=0092, limit=FFFF로 관측되어 SS.B=0입니다. 이어지는 0E 50 66 57은
+PUSH CS, PUSH AX, PUSH EDI이며 각각 2, 2, 4바이트를 저장합니다. 01100031의
+CB는 word far return입니다. 주소/selector 값은 관측값이며 공용 구현 조건이
+아닙니다. 근거와 미해결 상태는 docs/analysis/linux-port-frontier.md Task 692에 있습니다.

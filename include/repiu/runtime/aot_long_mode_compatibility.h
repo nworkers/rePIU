@@ -1,6 +1,8 @@
 #ifndef REPIU_RUNTIME_AOT_LONG_MODE_COMPATIBILITY_H_
 #define REPIU_RUNTIME_AOT_LONG_MODE_COMPATIBILITY_H_
 
+#include "repiu/runtime/selector_table.h"
+
 #include <cstddef>
 #include <cstdint>
 
@@ -156,6 +158,35 @@ enum class LongModeLowering
     // encoding with no ModRM at all, which is why it is its own lowering rather
     // than a branch inside that one.
     kMoffsToSib,
+    // Task 680. In a 16-bit code object, `BC iw` is `MOV SP,iw`. Write the
+    // guest stack pointer's low word in R15 without touching host RSP.
+    k16BitStackPointerImmediateToR15,
+    // Task 681. In a 16-bit code object, an explicit 67+66 LEA computes a
+    // 32-bit guest address and writes a 32-bit guest GPR. Keep 67, remove 66,
+    // and remap guest ESP fields to the x64 guest-state register R15.
+    k16BitLea32ToGuestGprs,
+    // Task 682. In a 16-bit code object, lower the proven 16-bit address and
+    // word-destination LEA subset through x64 scratch registers.
+    k16BitLea16ToGuestGprs,
+    // Task 683. A mode16 LOOPNZ needs the plan's direct target and
+    // fallthrough metadata, so the AOT cache emits it as a dedicated
+    // control-flow slot rather than through the byte-only lowerer.
+    k16BitLoopNzToGuestCx,
+    // Task 685. A mode16 `66 85 /r` register TEST is a 32-bit operation; the
+    // x64 default is already 32 bits, so the operand-size prefix is removed.
+    k16BitTest32ToGuestGprs,
+    // Task 687. In a 16-bit code object, prefix-free `B8+r iw` writes a
+    // guest GPR low word. Add `66` so the x64 encoding keeps that width.
+    k16BitMovImmediateToGuestGprs,
+    // Task 688. In a 16-bit code object, register-only `89/8B /r` moves a
+    // guest GPR word. Add `66` while leaving guest-SP forms closed.
+    k16BitMovRegisterToGuestGprs,
+    // Task 689. In a 16-bit code object, `66 C1 /r ib` selects a 32-bit
+    // register shift. Remove `66` so long mode keeps that width.
+    k16BitShift32ToGuestGprs,
+    // Task 690. In a 16-bit code object, `25 iw` is a word accumulator AND.
+    // Add `66` so long mode preserves the 16-bit accumulator semantics.
+    k16BitAndAccumulatorImmediate,
 };
 
 struct LongModeCompatibilityResult
@@ -166,11 +197,15 @@ struct LongModeCompatibilityResult
     LongModeLowering lowering = LongModeLowering::kNone;
 };
 
-// Decodes `bytes` as a 32-bit instruction and judges it. A sequence that does
-// not decode is `kUnsupported`, not an error: the caller is asking whether it
-// may copy these bytes, and "they are not an instruction" is a "no".
+// Decodes `bytes` in the supplied legacy guest mode and judges it. A sequence
+// that does not decode is `kUnsupported`, not an error: the caller is asking
+// whether it may copy these bytes, and "they are not an instruction" is a
+// "no". The default mode is legacy-32 for compatibility with existing callers.
 [[nodiscard]] LongModeCompatibilityResult ClassifyLongModeBytes(
-    const std::uint8_t* bytes, std::size_t byte_count);
+    const std::uint8_t* bytes,
+    std::size_t byte_count,
+    GuestCodeDefaultOperandSize guest_code_default_operand_size =
+        GuestCodeDefaultOperandSize::k32);
 
 // Produces the lowered bytes for an instruction `ClassifyLongModeBytes` named a
 // lowering for. Writes at most `kMaxLoweredBytes` and reports how many.
@@ -196,7 +231,10 @@ inline constexpr std::size_t kMaxLoweredBytes = 48;
                                       std::size_t byte_count,
                                       std::uint8_t* lowered,
                                       std::size_t* lowered_count,
-                                      std::size_t* instruction_count = nullptr);
+                                      std::size_t* instruction_count = nullptr,
+                                      GuestCodeDefaultOperandSize
+                                          guest_code_default_operand_size =
+                                              GuestCodeDefaultOperandSize::k32);
 
 }  // namespace repiu::runtime
 

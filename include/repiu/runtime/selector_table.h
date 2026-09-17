@@ -10,6 +10,7 @@ namespace repiu::runtime
 
 constexpr std::uint32_t kLeObjectExecutable = 0x00000004U;
 constexpr std::uint32_t kLeObjectBigDefault = 0x00002000U;
+constexpr std::uint32_t kGuestFarReturn16FrameBytes = 4U;
 constexpr std::uint32_t kGuestFarReturn32FrameBytes = 8U;
 
 enum class GuestCodeDefaultOperandSize : std::uint8_t
@@ -84,6 +85,13 @@ bool ResolveGuestFarReturn32Frame(
     std::uint16_t current_selector,
     std::uint32_t target_offset,
     std::uint32_t raw_selector_slot,
+    GuestFarReturnResolution* resolution);
+
+bool ResolveGuestFarReturn16Frame(
+    const SelectorTable& table,
+    std::uint16_t current_selector,
+    std::uint16_t target_offset,
+    std::uint16_t target_selector,
     GuestFarReturnResolution* resolution);
 
 }  // namespace repiu::runtime

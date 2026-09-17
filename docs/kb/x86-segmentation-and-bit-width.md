@@ -43,6 +43,20 @@ x86 memory operand는 일반적으로 `segment:offset` 논리 주소다. protect
 
 # x86 Segmentation and 16/32-Bit Behavior
 
+## PUSH의 두 가지 폭 / Two PUSH widths
+
+PUSH의 저장 크기는 CS 기본 operand size와 66 prefix로 결정되고, 스택 포인터의
+폭은 SS descriptor의 B bit로 결정됩니다. SS.B=0이면 SP를 갱신하며 ESP 상위
+word를 보존합니다. 저장 주소는 SS.base+SP입니다. 따라서 16-bit stack에서도
+32-bit operand를 push할 수 있습니다. PUSH SP/ESP는 감소 전 값을 저장합니다.
+[Intel SDM Volume 2, PUSH](https://cdrdv2-public.intel.com/789581/325383-sdm-vol-2abcd.pdf).
+
+PUSH storage width follows CS operand defaults and prefix 66, while SS.B chooses
+SP or ESP for stack arithmetic. With SS.B=0, preserve the upper word of ESP and
+address the write through SS.base+SP. A 16-bit stack can hold a 32-bit operand.
+PUSH SP/ESP saves the value before decrementing the pointer. See the Intel PUSH
+reference linked above.
+
 x86 memory operands use a segment and offset. In protected mode, a selector chooses a descriptor whose base contributes to the linear address. Consequently, `ESI=0` in `mov edx,[esi]` means `DS:0`, not automatically host pointer zero.
 
 Operand size, address size, and the segment default size are separate concepts. `0x66` overrides operand size and `0x67` overrides address size. Refer to Intel’s [architecture manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html) for the normative rules.

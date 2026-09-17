@@ -30,6 +30,7 @@ struct AotCodeCachePlacement
     std::uint32_t size = 0;
     std::uint32_t capacity = 0;
     std::uint32_t entry_address = 0;
+    std::vector<runtime::RuntimeCodeModeRange> code_mode_ranges;
     std::uint32_t windows_error = 0;
     std::vector<runtime::AotAddressMapEntry> address_map;
     std::vector<AotAddressMapState> address_map_states;

@@ -221,6 +221,7 @@ add_library(repiu_exe
     src/runtime/runtime_memory_arena.cpp
     src/runtime/runtime_memory.cpp
     src/runtime/selector_table.cpp
+    src/runtime/guest_stack_access.cpp
     src/storage/nvram_path.cpp
     src/target/target_profile.cpp
     src/platform/guest_stack_switch_state.cpp
@@ -295,6 +296,8 @@ target_sources(repiu_exe
         src/engine/exception/host_crash_report.cpp
         src/engine/cpu_emul/guest_memory_access.cpp
         src/engine/cpu_emul/instruction_emulation.cpp
+        src/engine/cpu_emul/mode16_far_return.cpp
+        src/engine/cpu_emul/mode16_stack_push.cpp
         src/engine/cpu_emul/low_memory_string_access.cpp
         src/engine/boundary/linexe_glide_boundary.cpp
         src/engine/boundary/timer_interrupt_boundary.cpp

@@ -1,6 +1,7 @@
 #include "long_mode_compatibility_probe.h"
 
 #include "repiu/runtime/aot_long_mode_compatibility.h"
+#include "repiu/runtime/aot_translation_plan.h"
 
 #include <Zydis.h>
 
@@ -9,6 +10,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <iostream>
+#include <utility>
 #include <vector>
 
 namespace repiu::tools
@@ -772,6 +774,528 @@ bool ProbeRefusals()
     return ok;
 }
 
+// Task 680. The same opcode has two different source instructions depending
+// on the LE code object's default operand size. The mode-aware API must decode
+// the three-byte word form and lower it without consuming the next instruction.
+bool Probe16BitStackPointerImmediate()
+{
+    const std::uint8_t guest[] = {0xBCU, 0x00U, 0x20U};
+    const std::uint8_t expected[] = {
+        0x66U, 0x41U, 0xBFU, 0x00U, 0x20U};
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        guest, sizeof(guest),
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    std::uint8_t lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    const bool lowered_ok = repiu::runtime::LowerLongModeBytes(
+        guest, sizeof(guest), lowered, &lowered_count, nullptr,
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    const bool ok =
+        verdict.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict.divergence == LongModeDivergence::kStackPointerRegister &&
+        verdict.lowering ==
+            repiu::runtime::LongModeLowering::
+                k16BitStackPointerImmediateToR15 &&
+        lowered_ok && lowered_count == sizeof(expected) &&
+        std::memcmp(lowered, expected, sizeof(expected)) == 0 &&
+        ClassifyLongModeBytes(guest, sizeof(guest)).compatibility !=
+            LongModeByteCompatibility::kIdenticalBytes;
+    std::cout << "long_mode_16bit_stack_pointer_immediate="
+              << (ok ? "true" : "false") << ",length="
+              << (ok ? 3U : 0U) << ",lowered="
+              << (ok ? lowered_count : 0U) << "\n";
+    return ok;
+}
+
+// Task 687. A prefix-free mode16 B8+r iw writes a low GPR word. The guest-SP
+// opcode must remain on the dedicated Task 680 R15W lowering.
+bool Probe16BitMovImmediate()
+{
+    const std::uint8_t guest[] = {0xB8U, 0x07U, 0x00U};
+    const std::uint8_t expected[] = {0x66U, 0xB8U, 0x07U, 0x00U};
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        guest, sizeof(guest),
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    std::uint8_t lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    std::size_t lowered_instructions = 0U;
+    const bool lowered_ok = repiu::runtime::LowerLongModeBytes(
+        guest, sizeof(guest), lowered, &lowered_count,
+        &lowered_instructions,
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+
+    const std::uint8_t stack_pointer[] = {0xBCU, 0x00U, 0x20U};
+    const std::uint8_t operand_override[] = {0x66U, 0xB8U, 0x07U, 0x00U};
+    const std::uint8_t address_override[] = {0x67U, 0xB8U, 0x07U, 0x00U};
+    const std::uint8_t truncated[] = {0xB8U, 0x07U};
+    const auto new_lowering =
+        repiu::runtime::LongModeLowering::k16BitMovImmediateToGuestGprs;
+    const bool unsupported_variants =
+        ClassifyLongModeBytes(
+            stack_pointer, sizeof(stack_pointer),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering &&
+        ClassifyLongModeBytes(
+            operand_override, sizeof(operand_override),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering &&
+        ClassifyLongModeBytes(
+            address_override, sizeof(address_override),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering &&
+        ClassifyLongModeBytes(
+            truncated, sizeof(truncated),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering;
+    const bool ok =
+        verdict.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict.divergence == LongModeDivergence::kOperandWidth &&
+        verdict.lowering == new_lowering && lowered_ok &&
+        lowered_count == sizeof(expected) && lowered_instructions == 1U &&
+        std::memcmp(lowered, expected, sizeof(expected)) == 0 &&
+        unsupported_variants;
+    std::cout << "long_mode_16bit_mov_immediate="
+              << (ok ? "true" : "false") << ",length="
+              << (ok ? 3U : 0U) << ",lowered="
+              << (ok ? lowered_count : 0U) << ",unsupported_variants="
+              << (unsupported_variants ? "true" : "false") << "\n";
+    return ok;
+}
+
+// Task 688. Register-only mode16 word MOV forms need an operand-size prefix;
+// memory and guest-SP forms remain outside this lowering.
+bool Probe16BitMovRegister()
+{
+    const std::uint8_t guest_89[] = {0x89U, 0xCAU};
+    const std::uint8_t expected_89[] = {0x66U, 0x89U, 0xCAU};
+    const std::uint8_t guest_8B[] = {0x8BU, 0xD1U};
+    const std::uint8_t expected_8B[] = {0x66U, 0x8BU, 0xD1U};
+    const auto new_lowering =
+        repiu::runtime::LongModeLowering::k16BitMovRegisterToGuestGprs;
+
+    const LongModeCompatibilityResult verdict_89 = ClassifyLongModeBytes(
+        guest_89, sizeof(guest_89),
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    const LongModeCompatibilityResult verdict_8B = ClassifyLongModeBytes(
+        guest_8B, sizeof(guest_8B),
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    std::uint8_t lowered_89[repiu::runtime::kMaxLoweredBytes] = {};
+    std::uint8_t lowered_8B[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t lowered_89_count = 0U;
+    std::size_t lowered_8B_count = 0U;
+    const bool lowered_ok =
+        repiu::runtime::LowerLongModeBytes(
+            guest_89, sizeof(guest_89), lowered_89, &lowered_89_count,
+            nullptr, repiu::runtime::GuestCodeDefaultOperandSize::k16) &&
+        repiu::runtime::LowerLongModeBytes(
+            guest_8B, sizeof(guest_8B), lowered_8B, &lowered_8B_count,
+            nullptr, repiu::runtime::GuestCodeDefaultOperandSize::k16);
+
+    const std::uint8_t stack_pointer[] = {0x89U, 0xC4U};
+    const std::uint8_t memory_form[] = {0x89U, 0x0CU};
+    const std::uint8_t operand_override[] = {0x66U, 0x89U, 0xCAU};
+    const bool unsupported_variants =
+        ClassifyLongModeBytes(
+            stack_pointer, sizeof(stack_pointer),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering &&
+        ClassifyLongModeBytes(
+            memory_form, sizeof(memory_form),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering &&
+        ClassifyLongModeBytes(
+            operand_override, sizeof(operand_override),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering;
+    const bool ok =
+        verdict_89.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict_89.divergence == LongModeDivergence::kOperandWidth &&
+        verdict_89.lowering == new_lowering &&
+        verdict_8B.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict_8B.divergence == LongModeDivergence::kOperandWidth &&
+        verdict_8B.lowering == new_lowering && lowered_ok &&
+        lowered_89_count == sizeof(expected_89) &&
+        lowered_8B_count == sizeof(expected_8B) &&
+        std::memcmp(lowered_89, expected_89, sizeof(expected_89)) == 0 &&
+        std::memcmp(lowered_8B, expected_8B, sizeof(expected_8B)) == 0 &&
+        unsupported_variants;
+    std::cout << "long_mode_16bit_mov_register=" << (ok ? "true" : "false")
+              << ",length=" << (ok ? 2U : 0U)
+              << ",lowered=" << (ok ? lowered_89_count : 0U)
+              << ",unsupported_variants="
+              << (unsupported_variants ? "true" : "false") << "\n";
+    return ok;
+}
+
+// Task 689. A mode16 66-prefixed C1 register shift is 32-bit; removing 66
+// restores that width in long mode while stack and memory forms stay closed.
+bool Probe16BitShift32()
+{
+    const std::uint8_t guest[] = {0x66U, 0xC1U, 0xE9U, 0x10U};
+    const std::uint8_t expected[] = {0xC1U, 0xE9U, 0x10U};
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        guest, sizeof(guest),
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    std::uint8_t lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    std::size_t lowered_instructions = 0U;
+    const bool lowered_ok = repiu::runtime::LowerLongModeBytes(
+        guest, sizeof(guest), lowered, &lowered_count,
+        &lowered_instructions,
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+
+    const std::uint8_t no_override[] = {0xC1U, 0xE9U, 0x10U};
+    const std::uint8_t address_override[] = {
+        0x67U, 0x66U, 0xC1U, 0xE9U, 0x10U};
+    const std::uint8_t memory_form[] = {0x66U, 0xC1U, 0x29U, 0x10U};
+    const std::uint8_t stack_form[] = {0x66U, 0xC1U, 0xE4U, 0x10U};
+    const auto new_lowering =
+        repiu::runtime::LongModeLowering::k16BitShift32ToGuestGprs;
+    const bool unsupported_variants =
+        ClassifyLongModeBytes(
+            no_override, sizeof(no_override),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering &&
+        ClassifyLongModeBytes(
+            address_override, sizeof(address_override),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering &&
+        ClassifyLongModeBytes(
+            memory_form, sizeof(memory_form),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering &&
+        ClassifyLongModeBytes(
+            stack_form, sizeof(stack_form),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering;
+    const bool ok =
+        verdict.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict.divergence == LongModeDivergence::kOperandWidth &&
+        verdict.lowering == new_lowering && lowered_ok &&
+        lowered_count == sizeof(expected) && lowered_instructions == 1U &&
+        std::memcmp(lowered, expected, sizeof(expected)) == 0 &&
+        unsupported_variants;
+    std::cout << "long_mode_16bit_shift32=" << (ok ? "true" : "false")
+              << ",length=" << (ok ? 4U : 0U)
+              << ",lowered=" << (ok ? lowered_count : 0U)
+              << ",unsupported_variants="
+              << (unsupported_variants ? "true" : "false") << "\n";
+    return ok;
+}
+
+// Task 690. A prefix-free mode16 accumulator AND needs 66 in long mode;
+// prefixed, address-size, and truncated variants remain fail-closed.
+bool Probe16BitAndAccumulatorImmediate()
+{
+    const std::uint8_t guest[] = {0x25U, 0xFFU, 0x0FU};
+    const std::uint8_t expected[] = {0x66U, 0x25U, 0xFFU, 0x0FU};
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        guest, sizeof(guest),
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    std::uint8_t lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    std::size_t lowered_instructions = 0U;
+    const bool lowered_ok = repiu::runtime::LowerLongModeBytes(
+        guest, sizeof(guest), lowered, &lowered_count,
+        &lowered_instructions,
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+
+    const std::uint8_t operand_override[] = {
+        0x66U, 0x25U, 0xFFU, 0x0FU};
+    const std::uint8_t address_override[] = {
+        0x67U, 0x25U, 0xFFU, 0x0FU};
+    const std::uint8_t truncated[] = {0x25U, 0xFFU};
+    const auto new_lowering =
+        repiu::runtime::LongModeLowering::k16BitAndAccumulatorImmediate;
+    const bool unsupported_variants =
+        ClassifyLongModeBytes(
+            operand_override, sizeof(operand_override),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering &&
+        ClassifyLongModeBytes(
+            address_override, sizeof(address_override),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering &&
+        ClassifyLongModeBytes(
+            truncated, sizeof(truncated),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            new_lowering;
+    const bool ok =
+        verdict.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict.divergence == LongModeDivergence::kOperandWidth &&
+        verdict.lowering == new_lowering && lowered_ok &&
+        lowered_count == sizeof(expected) && lowered_instructions == 1U &&
+        std::memcmp(lowered, expected, sizeof(expected)) == 0 &&
+        unsupported_variants;
+    std::cout << "long_mode_16bit_and_accumulator="
+              << (ok ? "true" : "false") << ",length="
+              << (ok ? 3U : 0U) << ",lowered="
+              << (ok ? lowered_count : 0U) << ",unsupported_variants="
+              << (unsupported_variants ? "true" : "false") << "\n";
+    return ok;
+}
+
+// Task 681. In a 16-bit code object, explicit 67+66 LEA selects 32-bit
+// addressing and a 32-bit destination. The mode-aware classifier must remove
+// only the source operand-size override and remap guest ESP when lowering.
+bool Probe16BitLea32()
+{
+    const std::uint8_t guest[] = {
+        0x67U, 0x66U, 0x8DU, 0x8CU, 0x24U,
+        0x00U, 0xE0U, 0xFFU, 0xFFU,
+    };
+    const std::uint8_t expected[] = {
+        0x67U, 0x41U, 0x8DU, 0x8CU, 0x27U,
+        0x00U, 0xE0U, 0xFFU, 0xFFU,
+    };
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        guest, sizeof(guest),
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    std::uint8_t lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    const bool lowered_ok = repiu::runtime::LowerLongModeBytes(
+        guest, sizeof(guest), lowered, &lowered_count, nullptr,
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    const bool ok =
+        verdict.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict.divergence == LongModeDivergence::kAddressSize &&
+        verdict.lowering ==
+            repiu::runtime::LongModeLowering::k16BitLea32ToGuestGprs &&
+        lowered_ok && lowered_count == sizeof(expected) &&
+        std::memcmp(lowered, expected, sizeof(expected)) == 0;
+    std::cout << "long_mode_16bit_lea32=" << (ok ? "true" : "false")
+              << ",length=" << (ok ? 9U : 0U)
+              << ",lowered=" << (ok ? lowered_count : 0U) << "\n";
+    return ok;
+}
+
+// Task 682. The runtime frontier is a prefix-free mode16 LEA with a 16-bit
+// address calculation. It must be admitted only through the dedicated
+// scratch-register lowering, while a BP-based form remains refused.
+bool Probe16BitLea16()
+{
+    const std::uint8_t guest[] = {0x8DU, 0x8CU, 0x24U, 0x00U};
+    const std::uint8_t expected[] = {
+        0x44U, 0x0FU, 0xB7U, 0xF6U,
+        0x67U, 0x66U, 0x41U, 0x8DU, 0x8EU,
+        0x24U, 0x00U, 0x00U, 0x00U,
+    };
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        guest, sizeof(guest),
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    std::uint8_t lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    const bool lowered_ok = repiu::runtime::LowerLongModeBytes(
+        guest, sizeof(guest), lowered, &lowered_count, nullptr,
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    const std::uint8_t bp_form[] = {0x8DU, 0x4EU, 0x00U};
+    const bool ok =
+        verdict.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict.divergence == LongModeDivergence::kAddressSize &&
+        verdict.lowering ==
+            repiu::runtime::LongModeLowering::k16BitLea16ToGuestGprs &&
+        lowered_ok && lowered_count == sizeof(expected) &&
+        std::memcmp(lowered, expected, sizeof(expected)) == 0 &&
+        ClassifyLongModeBytes(
+            bp_form, sizeof(bp_form),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).compatibility !=
+            LongModeByteCompatibility::kIdenticalBytes;
+    std::cout << "long_mode_16bit_lea16=" << (ok ? "true" : "false")
+              << ",length=" << (ok ? 4U : 0U)
+              << ",lowered=" << (ok ? lowered_count : 0U) << "\n";
+    return ok;
+}
+
+// Task 685. A mode16 operand-size override makes TEST a 32-bit register
+// operation; removing the override is safe only for the register/no-ESP form.
+bool Probe16BitTest32()
+{
+    const std::uint8_t guest[] = {0x66U, 0x85U, 0xFFU};
+    const std::uint8_t expected[] = {0x85U, 0xFFU};
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        guest, sizeof(guest),
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    std::uint8_t lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    std::size_t lowered_instructions = 0U;
+    const bool lowered_ok = repiu::runtime::LowerLongModeBytes(
+        guest, sizeof(guest), lowered, &lowered_count,
+        &lowered_instructions,
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    const std::uint8_t no_override[] = {0x85U, 0xFFU};
+    const std::uint8_t address_override[] = {
+        0x67U, 0x66U, 0x85U, 0xFFU};
+    const std::uint8_t memory_form[] = {0x66U, 0x85U, 0x07U};
+    const std::uint8_t stack_form[] = {0x66U, 0x85U, 0xE4U};
+    const bool unsupported_variants =
+        ClassifyLongModeBytes(
+            no_override, sizeof(no_override),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            repiu::runtime::LongModeLowering::k16BitTest32ToGuestGprs &&
+        ClassifyLongModeBytes(
+            address_override, sizeof(address_override),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            repiu::runtime::LongModeLowering::k16BitTest32ToGuestGprs &&
+        ClassifyLongModeBytes(
+            memory_form, sizeof(memory_form),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            repiu::runtime::LongModeLowering::k16BitTest32ToGuestGprs &&
+        ClassifyLongModeBytes(
+            stack_form, sizeof(stack_form),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            repiu::runtime::LongModeLowering::k16BitTest32ToGuestGprs;
+    const bool ok =
+        verdict.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict.divergence == LongModeDivergence::kOperandWidth &&
+        verdict.lowering ==
+            repiu::runtime::LongModeLowering::k16BitTest32ToGuestGprs &&
+        lowered_ok && lowered_count == sizeof(expected) &&
+        lowered_instructions == 1U &&
+        std::memcmp(lowered, expected, sizeof(expected)) == 0 &&
+        unsupported_variants;
+    std::cout << "long_mode_16bit_test32=" << (ok ? "true" : "false")
+              << ",length=" << (ok ? 3U : 0U)
+              << ",lowered=" << (ok ? lowered_count : 0U)
+              << ",unsupported_variants="
+              << (unsupported_variants ? "true" : "false") << "\n";
+    return ok;
+}
+
+// Task 686. The planner must rebase a mode16 short conditional target from its
+// 16-bit code-object IP offset to the relocated linear guest address.
+bool Probe16BitConditionalBranch()
+{
+    constexpr std::uint32_t base = 0x00230000U;
+    repiu::runtime::RelocatedRuntimeImage runtime_image;
+    runtime_image.valid = true;
+    repiu::runtime::RelocatedRuntimeObject object;
+    object.relocated_base_address = base;
+    object.virtual_size = 16U;
+    object.flags = repiu::runtime::kLeObjectExecutable;
+    object.memory.assign(object.virtual_size, 0x90U);
+    object.memory[0] = 0x74U;
+    object.memory[1] = 0x01U;
+    runtime_image.objects.push_back(std::move(object));
+    runtime_image.code_mode_ranges.push_back({base, 16U, 0U});
+
+    repiu::runtime::AotTranslationPlan plan;
+    const bool built = repiu::runtime::BuildAotTranslationPlanFromEntry(
+        runtime_image, base, &plan);
+    const bool record_ok = built && !plan.blocks.empty() &&
+        !plan.blocks.front().instructions.empty() &&
+        plan.blocks.front().instructions.front().kind ==
+            repiu::runtime::AotInstructionKind::kConditionalBranch &&
+        plan.blocks.front().instructions.front().length == 2U &&
+        plan.blocks.front().instructions.front().direct_target == base + 3U &&
+        plan.blocks.front().instructions.front().fallthrough_target == base + 2U;
+    const bool ok = record_ok;
+    std::cout << "long_mode_16bit_jcc_plan=" << (ok ? "true" : "false")
+              << ",length=" << (record_ok ? 2U : 0U)
+              << ",target_rebased="
+              << (record_ok ? "true" : "false") << "\n";
+    return ok;
+}
+
+// Task 691. The existing segment-push HLE already handles PUSH CS, but the
+// mode16 planner must mark the invalid-in-long-mode opcode as an HLE boundary
+// rather than leaving it as a copy that becomes an INT3 at emission.
+bool Probe16BitSegmentPushHle()
+{
+    constexpr std::uint32_t base = 0x00240000U;
+    repiu::runtime::RelocatedRuntimeImage runtime_image;
+    runtime_image.valid = true;
+    repiu::runtime::RelocatedRuntimeObject object;
+    object.relocated_base_address = base;
+    object.virtual_size = 16U;
+    object.flags = repiu::runtime::kLeObjectExecutable;
+    object.memory.assign(object.virtual_size, 0x90U);
+    object.memory[0] = 0x0EU;
+    runtime_image.objects.push_back(std::move(object));
+    runtime_image.code_mode_ranges.push_back({base, 16U, 0U});
+
+    repiu::runtime::AotTranslationPlan plan;
+    const bool built = repiu::runtime::BuildAotTranslationPlanFromEntry(
+        runtime_image, base, &plan);
+    const bool record_ok = built && !plan.blocks.empty() &&
+        !plan.blocks.front().instructions.empty() &&
+        plan.blocks.front().instructions.front().kind ==
+            repiu::runtime::AotInstructionKind::kHleBoundary &&
+        plan.blocks.front().instructions.front().length == 1U &&
+        plan.blocks.front().instructions.front().
+            guest_code_default_operand_size ==
+            repiu::runtime::GuestCodeDefaultOperandSize::k16;
+    std::cout << "long_mode_16bit_segment_push_hle="
+              << (record_ok ? "true" : "false") << ",boundary="
+              << (record_ok ? 1U : 0U) << "\n";
+    return record_ok;
+}
+
+// Task 683. LOOPNZ is a control-flow lowering rather than a byte-only
+// lowering, because its direct target comes from the translation plan.
+// Address-size and opcode variants remain refused until their counter
+// semantics have separate proof.
+bool Probe16BitLoopNz()
+{
+    const std::uint8_t guest[] = {0xE0U, 0xFFU};
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        guest, sizeof(guest),
+        repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    const bool target_free_lowerer_refuses = [&] {
+        std::uint8_t lowered[repiu::runtime::kMaxLoweredBytes] = {};
+        std::size_t lowered_count = 0U;
+        return !repiu::runtime::LowerLongModeBytes(
+            guest, sizeof(guest), lowered, &lowered_count, nullptr,
+            repiu::runtime::GuestCodeDefaultOperandSize::k16);
+    }();
+    const std::uint8_t address_override[] = {0x67U, 0xE0U, 0xFFU};
+    const std::uint8_t loopz[] = {0xE1U, 0xFFU};
+    const bool unsupported_variants =
+        ClassifyLongModeBytes(
+            address_override, sizeof(address_override),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            repiu::runtime::LongModeLowering::k16BitLoopNzToGuestCx &&
+        ClassifyLongModeBytes(
+            loopz, sizeof(loopz),
+            repiu::runtime::GuestCodeDefaultOperandSize::k16).lowering !=
+            repiu::runtime::LongModeLowering::k16BitLoopNzToGuestCx;
+    constexpr std::uint32_t planner_base = 0x00220000U;
+    repiu::runtime::RelocatedRuntimeImage runtime_image;
+    runtime_image.valid = true;
+    repiu::runtime::RelocatedRuntimeObject object;
+    object.relocated_base_address = planner_base;
+    object.virtual_size = 16U;
+    object.flags = repiu::runtime::kLeObjectExecutable;
+    object.memory.assign(object.virtual_size, 0x90U);
+    object.memory[0] = 0xE0U;
+    object.memory[1] = 0x01U;
+    runtime_image.objects.push_back(std::move(object));
+    runtime_image.code_mode_ranges.push_back({
+        planner_base, 16U, repiu::runtime::kLeObjectExecutable});
+    repiu::runtime::AotTranslationPlan plan;
+    const bool plan_built = repiu::runtime::BuildAotTranslationPlanFromEntry(
+        runtime_image, planner_base, &plan);
+    const bool planner_target_rebased = plan_built && !plan.blocks.empty() &&
+        !plan.blocks.front().instructions.empty() &&
+        plan.blocks.front().instructions.front().kind ==
+            repiu::runtime::AotInstructionKind::kConditionalBranch &&
+        plan.blocks.front().instructions.front().direct_target ==
+            planner_base + 3U;
+    const bool ok =
+        verdict.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict.divergence == LongModeDivergence::kAddressSize &&
+        verdict.lowering ==
+            repiu::runtime::LongModeLowering::k16BitLoopNzToGuestCx &&
+        target_free_lowerer_refuses && unsupported_variants &&
+        planner_target_rebased;
+    std::cout << "long_mode_16bit_loopnz=" << (ok ? "true" : "false")
+              << ",length=" << (ok ? 2U : 0U)
+              << ",target_free_lowerer_refused="
+              << (target_free_lowerer_refuses ? "true" : "false")
+              << ",planner_target_rebased="
+              << (planner_target_rebased ? "true" : "false") << "\n";
+    return ok;
+}
+
 }  // namespace
 
 bool RunLongModeCompatibilityProbe()
@@ -786,10 +1310,27 @@ bool RunLongModeCompatibilityProbe()
     const bool stack_seq_ok = ProbeStackSequenceLowering();
     const bool subset_ok = ProbeAdmittedSubset();
     const bool refusals_ok = ProbeRefusals();
+    const bool sixteen_bit_ok = Probe16BitStackPointerImmediate();
+    const bool sixteen_bit_mov_ok = Probe16BitMovImmediate();
+    const bool sixteen_bit_mov_register_ok = Probe16BitMovRegister();
+    const bool sixteen_bit_shift_ok = Probe16BitShift32();
+    const bool sixteen_bit_and_ok = Probe16BitAndAccumulatorImmediate();
+    const bool sixteen_bit_lea_ok = Probe16BitLea32();
+    const bool sixteen_bit_lea16_ok = Probe16BitLea16();
+    const bool sixteen_bit_test_ok = Probe16BitTest32();
+    const bool sixteen_bit_jcc_ok = Probe16BitConditionalBranch();
+    const bool sixteen_bit_segment_push_ok = Probe16BitSegmentPushHle();
+    const bool sixteen_bit_loopnz_ok = Probe16BitLoopNz();
 
     const bool all = silent_ok && invalid_ok && width_ok && width_kind_ok &&
         reasons_ok && stack_ok && inc_dec_ok && stack_seq_ok && subset_ok &&
-        refusals_ok;
+        refusals_ok && sixteen_bit_ok && sixteen_bit_mov_ok &&
+        sixteen_bit_mov_register_ok && sixteen_bit_shift_ok &&
+        sixteen_bit_and_ok &&
+        sixteen_bit_lea_ok &&
+        sixteen_bit_lea16_ok && sixteen_bit_test_ok &&
+        sixteen_bit_jcc_ok && sixteen_bit_segment_push_ok &&
+        sixteen_bit_loopnz_ok;
     std::cout << "long_mode_compatibility_all=" << (all ? "true" : "false")
               << "\n";
     return all;

@@ -259,7 +259,8 @@ bool ResolveAotDbtPostHleTranslationEnabled(std::string_view setting)
 
 bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context,
-                                 std::uint32_t handled_guest_eip)
+                                 std::uint32_t handled_guest_eip,
+                                 AotHleResumeOrigin origin)
 {
     if (win32_context == nullptr || context == nullptr ||
         context->aot_placement == nullptr)
@@ -281,12 +282,15 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
             ? "pending"
             : (context->aot_legacy_fallback
                    ? "legacy-fallback"
-                   : "not-pending"));
+                   : (origin == AotHleResumeOrigin::kHandledGuestBoundary
+                          ? "handled-boundary"
+                          : "not-pending")));
     // A handled instruction may also be the first safe bridge out of a legacy
     // fallback that began at an unmapped target. The original AOT contract
     // permits returning to the cache once execution reaches a known address;
     // the same lookup and span gates below still decide whether that is safe.
-    if (!context->aot_reentry_pending && !context->aot_legacy_fallback)
+    if (!context->aot_reentry_pending && !context->aot_legacy_fallback &&
+        origin != AotHleResumeOrigin::kHandledGuestBoundary)
     {
         ++context->hle_reentry_reject_not_pending;
         return false;
@@ -396,13 +400,27 @@ bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context
         // found this branch unreachable in practice; this proves it per run.
         ++context->hle_reentry_reject_cache_miss;
         const bool post_hle_enabled = PostHleTranslationEnabled();
+#if defined(__x86_64__)
+        // A disabled post-HLE translation setting may retain the original-byte
+        // path only when the first instruction has identical long-mode bytes.
+        // Non-identical code must use the resolver, otherwise a mode16 guest
+        // can silently change the host instruction boundary.
+        const bool non_identical_target =
+            !CanResumeLinuxX64LegacyTarget(context, current);
+#else
+        const bool non_identical_target = false;
+#endif
         TraceHleReentry(
-            post_hle_enabled ? "cache-miss-gate-enabled"
-                             : "cache-miss-gate-disabled",
+            post_hle_enabled
+                ? "cache-miss-gate-enabled"
+                : (non_identical_target ? "cache-miss-non-identical"
+                                        : "cache-miss-gate-disabled"),
             context, win32_context, handled_guest_eip, current, false, false,
             post_hle_enabled, false, 0U,
-            post_hle_enabled ? "translate" : "reject");
-        if (!post_hle_enabled)
+            post_hle_enabled || non_identical_target
+                ? "translate"
+                : "reject");
+        if (!post_hle_enabled && !non_identical_target)
         {
             return false;
         }

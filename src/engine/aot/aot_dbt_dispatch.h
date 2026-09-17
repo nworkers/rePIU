@@ -9,13 +9,21 @@
 namespace repiu::engine
 {
 
-// After a DBT-mode HLE handler fully emulates an instruction and advances guest
-// EIP, resume directly at an existing shared AOT cache entry from either a
-// cache boundary or legacy fallback. A cache miss or other failure leaves the
-// caller's TF fallback state unchanged.
+enum class AotHleResumeOrigin
+{
+    kPendingExecution,
+    kHandledGuestBoundary,
+};
+
+// After a DBT-mode HLE handler or an explicitly recognized guest boundary
+// advances EIP, resume directly at a shared AOT cache entry. Ordinary callers
+// require a pending boundary or legacy fallback; a handled boundary may opt in
+// explicitly. A cache miss or other failure leaves TF fallback state unchanged.
 bool TryResumeAotAfterHandledHle(repiu::platform::GuestCpuContext* win32_context,
                                  ThreadContext* context,
-                                 std::uint32_t handled_guest_eip);
+                                 std::uint32_t handled_guest_eip,
+                                 AotHleResumeOrigin origin =
+                                     AotHleResumeOrigin::kPendingExecution);
 
 // Emit the existing opt-in HLE re-entry trace at a dispatcher boundary.
 void TraceAotHleReentryState(

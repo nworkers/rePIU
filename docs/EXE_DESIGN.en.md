@@ -373,3 +373,12 @@ out dx,al; pop ebx; ret`; the privileged instruction is at `0x030EC755`. At the 
 stack therefore contains saved EBX at `[ESP]` and feeder return address `0x03019466` at `[ESP+4]`.
 This is an original-executable hardware-call ABI fact. The HLE matcher validates the call/return
 and state-update relationships rather than these particular addresses.
+
+## pumpit2a object-3 stack transition (Task 692)
+
+In the relocated Linux run, object 3 sets SS selector B4's base to 0158A83C via
+DPMI AX=0007, then executes MOV SS,BX; MOV SP,2000. Observed descriptor flags
+0092 and limit FFFF imply SS.B=0. The following 0E 50 66 57 are PUSH CS,
+PUSH AX and PUSH EDI, storing 2, 2 and 4 bytes. CB at 01100031 is a word far
+return. Addresses/selectors are observations, not shared implementation rules.
+Evidence and open questions are recorded in linux-port-frontier.md, Task 692.

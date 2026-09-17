@@ -423,9 +423,9 @@ Descriptor-backed segment byte reads translate selector+offset through `Selector
 
 ## 원본 fatal tail 실행 / Original fatal-tail execution
 
-guest breakpoint는 기본적으로 중단한다. 단, 원본 image 내부에서 `CC 52 E8 rel32 F4` fatal-tail signature가 확인되면 breakpoint 주소와 `EDX` ASCIZ message를 기록한 뒤 원본 `push edx; call error-printer`로 재개한다. 이 경로에서 관찰된 DOS `AH=09h`, low-memory register-frame `REP MOVS`, 제한된 DPMI `AX=0300h/BL=2Fh`를 HLE하고, 원본 DOS terminate를 우선한다.
+guest breakpoint는 기본적으로 중단한다. 단, 원본 image 내부에서 `CC 52 E8 rel32 F4` fatal-tail signature가 확인되면 breakpoint 주소와 `EDX` ASCIZ message를 기록한 뒤 원본 `push edx; call error-printer`로 재개한다. Linux x64 AOT 실행에서는 처리된 breakpoint 다음 주소를 명시적인 guest boundary로 분류해 기존 cache entry 또는 동적 translation으로 재진입하며, 재진입할 수 없는 long-mode 비동일 명령은 raw guest code로 실행하지 않는다. 이 경로에서 관찰된 DOS `AH=09h`, low-memory register-frame `REP MOVS`, 제한된 DPMI `AX=0300h/BL=2Fh`를 HLE하고, 원본 DOS terminate를 우선한다.
 
-Guest breakpoints stop by default. Only a confirmed `CC 52 E8 rel32 F4` fatal-tail signature inside the original image records the breakpoint and bounded `EDX` ASCIZ message, then resumes the original `push edx; call error-printer`. The observed DOS `AH=09h`, low-memory register-frame `REP MOVS`, and narrowly scoped DPMI `AX=0300h/BL=2Fh` path are handled while preserving the original DOS termination path.
+Guest breakpoints stop by default. Only a confirmed `CC 52 E8 rel32 F4` fatal-tail signature inside the original image records the breakpoint and bounded `EDX` ASCIZ message, then resumes the original `push edx; call error-printer`. Under Linux x64 AOT execution, the address after the handled breakpoint is classified as an explicit guest boundary and re-enters an existing cache entry or dynamic translation; a long-mode-non-identical instruction that cannot re-enter is never executed as raw guest code. The observed DOS `AH=09h`, low-memory register-frame `REP MOVS`, and narrowly scoped DPMI `AX=0300h/BL=2Fh` path are handled while preserving the original DOS termination path.
 
 ## Win32 VEH and host recovery boundary
 
@@ -3657,6 +3657,22 @@ source metadata, CALL fallback removes only the miss-address slot with
 `LEA ESP,[ESP+8]` and removes both metadata slots. This policy changes no original guest
 code; it reproduces only CALL/JMP stack effects at the DBT/HLE boundary.
 
+Linux x64 AOT 재진입에서 planner HLE provenance와 원본 전송 명령 판별이 겹치면
+전송 명령을 우선한다. 기존 간접 전송 decoder는 단일 CS override(`2E`)가 붙은
+`FF /2`와 `FF /4`를 처리하며, ModRM/SIB effective offset을 현재 source를 포함하는
+code selector와 `ResolveSegmentLinearRange`로 해석한다. 이 정책은 LE relocation으로
+selector limit을 벗어난 absolute offset에 기존의 검증된 direct-linear fallback을
+그대로 적용한 뒤, 읽은 guest target을 공용 AOT target resolver에 전달한다.
+
+When planner-HLE provenance overlaps an original transfer instruction during
+Linux x64 AOT reentry, transfer handling takes precedence. The existing
+indirect-transfer decoder accepts `FF /2` and `FF /4` with one CS override
+(`2E`), resolves the ModRM/SIB effective offset through the code selector that
+contains the current source and `ResolveSegmentLinearRange`, and then passes the
+loaded guest target to the shared AOT target resolver. This preserves the
+existing validated direct-linear fallback for relocated LE absolute offsets
+that exceed the selector limit.
+
 ---
 
 ## Legacy stack run 할당 및 epilogue drain / Legacy stack run allocation and epilogue drain
@@ -3681,6 +3697,117 @@ Furthermore, following segment HLE operations, subsequent stack instructions are
 in a bounded sequence without dependency on AOT state flags, and opcode `0F` directed
 dispatch includes POP FS/GS so that both prologue sequences and epilogue POP runs complete
 cleanly at the HLE boundary.
+
+---
+
+## Linux x64 혼합 모드 AOT 및 16-bit 스택 레지스터 lowering
+
+Task 693에서 공용 guest HLE dispatcher의 EA 분기는 기존 LINEXE service
+boundary를 먼저 확인합니다. AOT에서 guest EIP가 복원된 경우에도 fault-level
+경로와 같은 loader 서비스가 적용됩니다. 미처리 전이는 일반 far-jump로
+넘기며, 읽을 수 없는 bridge frame은 이전 관측 frame으로 대체하지 않습니다.
+
+In Task 693, shared guest HLE EA dispatch checks the existing LINEXE service
+boundary first. AOT-restored guest EIPs receive the same loader service handling
+as the fault-level path. Unhandled transfers continue to generic far-jump
+handling; unreadable bridge frames never reuse an earlier observed frame.
+
+Task 701부터 LINEXE `GETPROCADDR`가 만드는 guest-visible far pointer의 selector는
+물리 `GuestCpuContext::SegCs`가 아니라 wrapper continuation을 포함하는 유일한
+실행 가능 guest descriptor에서 구합니다. Linux x64의 물리 CS는 host selector
+`0x33`이므로 guest ABI에 노출할 수 없습니다. descriptor가 없거나 모호하거나
+실행 불가이면 결과 버퍼와 성공 반환 상태를 확정하지 않고 fail closed합니다.
+
+Starting with Task 701, the selector in a guest-visible far pointer produced by
+LINEXE `GETPROCADDR` comes from the unique executable guest descriptor that
+contains the wrapper continuation, rather than physical
+`GuestCpuContext::SegCs`. Linux x64 physical CS is host selector `0x33` and must
+not cross the guest ABI. A missing, ambiguous, or non-executable descriptor
+fails closed before committing the result buffer or successful return state.
+
+Task 692는 확인된 mode16 register PUSH의 HLE 처리를 `mode16_stack_push`로
+분리합니다. 공용 `guest_stack_access`가 SS.B에 따른 SP/ESP 갱신, SS.base 주소
+변환, descriptor 권한/limit 검사를 수행합니다. 기존 R15D에는 guest ESP 값을
+유지하며 mode16에서 이 값을 곧바로 선형 메모리 주소로 사용하지 않습니다.
+일반 POP 및 expand-down stack 지원은 이 PUSH 구현에 포함되지 않습니다.
+
+Task 692 separates confirmed mode16 register PUSH handling into mode16_stack_push.
+Shared guest_stack_access computes SP/ESP updates from SS.B, translates through
+SS.base and validates descriptor permissions/limits. R15D retains guest ESP;
+the mode16 PUSH adapter does not treat it directly as a linear memory address.
+General POP and expand-down stacks are outside this PUSH implementation.
+
+Task 694는 별도의 mode16 bare RETF handler를 추가합니다. `GuestStackReadAccess`는
+동일한 present/writable 정책, SS.B width 규칙, SS.base 변환, descriptor limit
+검사를 사용해 현재 SS:SP read window를 계산합니다. EIP를 포함하는 유효한
+guest `SegCs`를 현재 code 식별에 우선 사용하고, guest CS를 제공하지 않는
+AOT 문맥에서는 기존의 유일한 EIP 역조회를 사용합니다. handler는 executable
+mode16 code의 prefix 없는 `CB`만 받아 SS를 통해 4바이트 word IP/CS frame을
+읽고, executable selector-relative descriptor를 통해서만 target을 해석합니다.
+공용 guest dispatcher와 fault HLE chain 모두 이 adapter를 사용하며, 기존
+mode16 `66 CB` 8바이트 resolver와 generic 32-bit return 경로는 변경하지
+않습니다. 잘못된 selector, stack geometry, unreadable frame, non-mode16 code는
+context를 변경하지 않습니다.
+
+Task 694 adds a separate mode16 bare RETF handler. `GuestStackReadAccess`
+computes the current SS:SP read window with the same present/writable policy,
+SS.B width rules, SS.base translation, and descriptor-limit checks. A valid
+guest `SegCs` covering EIP is preferred for current-code identification; AOT
+contexts that omit guest CS use the existing unique EIP reverse lookup. The
+handler accepts only prefix-free `CB` in executable mode16 code, reads a
+four-byte word IP/CS frame through SS, and resolves the target only through an
+executable selector-relative descriptor. The shared guest dispatcher and fault
+HLE chain both use this adapter, while the existing mode16 `66 CB` eight-byte
+resolver and generic 32-bit return path remain unchanged. Invalid selectors,
+stack geometry, unreadable frames, and non-mode16 code leave the context
+unchanged.
+
+LE 실행 파일 object flag가 공용 AOT planner의 `LEGACY_16` 또는
+`LEGACY_32`를 선택하며, 선택된 `GuestCodeDefaultOperandSize`는 모든
+`AotInstructionRecord`에 담겨 cache emission과 dynamic append까지 전달됩니다.
+따라서 16-bit object가 다음 명령의 바이트를 잘못된 32-bit immediate로
+소비하지 않습니다.
+
+현재 증명된 첫 16-bit long-mode lowering은 `MOV SP, imm16` (`BC iw`)입니다.
+x64에서 guest ESP는 R15D에 보관되므로 cache는 `66 41 BF iw`를 방출하여
+R15W만 갱신하고 host RSP는 건드리지 않습니다. 전용 증명이 없는 16-bit
+record는 32-bit native slot에 들어가지 않고 INT3 boundary가 됩니다. 일반
+16-bit POP, segment, expand-down stack ABI는 별도 공용 설계 단위에서
+다룹니다.
+
+```mermaid
+flowchart LR
+    FLAGS[LE object flags] --> MODE[Guest code mode]
+    MODE --> RECORD[AotInstructionRecord]
+    RECORD -->|16-bit BC iw| R15W[66 41 BF iw -> R15W]
+    RECORD -->|unproven 16-bit| INT3[INT3 HLE boundary]
+    RECORD -->|32-bit| X64[Existing x64 lowering]
+```
+
+---
+
+## Linux x64 mixed-mode AOT and 16-bit stack-register lowering
+
+LE executable object flags now select `LEGACY_16` or `LEGACY_32` for the shared
+AOT planner, and the selected `GuestCodeDefaultOperandSize` travels with every
+`AotInstructionRecord` into cache emission and dynamic append. This prevents a
+16-bit object from consuming the following bytes as a false 32-bit immediate.
+
+The first proven 16-bit long-mode lowering is `MOV SP, imm16` (`BC iw`). Since
+guest ESP is held in R15D on x64, the cache emits `66 41 BF iw`, which updates
+R15W and leaves host RSP untouched. 16-bit records without a dedicated proof,
+including non-copy control-flow records, are emitted as INT3 boundaries rather
+than entering 32-bit native slots. General 16-bit POP, segment, and
+expand-down stack ABI remain separate shared design work.
+
+```mermaid
+flowchart LR
+    FLAGS[LE object flags] --> MODE[Guest code mode]
+    MODE --> RECORD[AotInstructionRecord]
+    RECORD -->|16-bit BC iw| R15W[66 41 BF iw -> R15W]
+    RECORD -->|unproven 16-bit| INT3[INT3 HLE boundary]
+    RECORD -->|32-bit| X64[Existing x64 lowering]
+```
 
 ---
 
@@ -3796,6 +3923,17 @@ target boundary and the existing single-step/HLE path takes over before later
 guest-sensitive instructions execute. A zero target, a target outside the arena,
 or an unproven first instruction keeps the existing zero result and INT3
 fail-closed behavior.
+
+Linux x64의 `REPIU_LINUX_X64_GUEST_ENTRY_TRACE=<start>` 진단은 선택적
+`REPIU_LINUX_X64_GUEST_ENTRY_TRACE_END=<end>`와 함께 inclusive guest 주소 범위를
+선택할 수 있습니다. cache 주소는 guest map으로 역변환한 뒤 범위와 비교하며, 끝 주소가
+없거나 시작보다 작으면 기존 exact 선택으로 동작합니다.
+
+On Linux x64, the `REPIU_LINUX_X64_GUEST_ENTRY_TRACE=<start>` diagnostic can
+select an inclusive guest-address range with the optional
+`REPIU_LINUX_X64_GUEST_ENTRY_TRACE_END=<end>`. Cache addresses are reverse
+mapped before matching; an absent or smaller end retains the original exact
+selection.
 
 ---
 

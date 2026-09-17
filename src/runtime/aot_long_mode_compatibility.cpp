@@ -91,6 +91,79 @@ bool IsMovStackPointerImmediate(const ZydisDecodedInstruction& instruction)
         instruction.operand_width == 32U && instruction.raw.prefix_count == 0U;
 }
 
+// Task 680. In a 16-bit code object the same opcode embeds a word immediate
+// and names SP rather than ESP. Keep the form narrow until the other 16-bit
+// operand and stack semantics have their own proven lowerings.
+bool IsMovStackPointerImmediate16(
+    const ZydisDecodedInstruction& instruction)
+{
+    return instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT &&
+        instruction.opcode == 0xBCU && instruction.length == 3U &&
+        instruction.operand_width == 16U && instruction.raw.prefix_count == 0U;
+}
+
+// Task 687. In a mode16 code object, prefix-free `B8+r iw` writes a 16-bit
+// GPR. Exclude `BC iw` because opcode register 4 is guest SP and has its own
+// R15W lowering that must not write the host stack pointer.
+bool IsMode16MovImmediate(const ZydisDecodedInstruction& instruction)
+{
+    return instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT &&
+        instruction.opcode >= 0xB8U && instruction.opcode <= 0xBFU &&
+        instruction.mnemonic == ZYDIS_MNEMONIC_MOV &&
+        instruction.length == 3U && instruction.operand_width == 16U &&
+        instruction.address_width == 16U &&
+        instruction.raw.prefix_count == 0U &&
+        instruction.opcode != 0xBCU;
+}
+
+// Task 688. Prefix-free mode16 register-only `89/8B /r` moves 16-bit guest
+// GPRs. Reject ModRM register 4 because it names guest SP, whose host mapping
+// is R15 rather than RSP.
+bool IsMode16MovRegister(const ZydisDecodedInstruction& instruction)
+{
+    return instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT &&
+        (instruction.opcode == 0x89U || instruction.opcode == 0x8BU) &&
+        instruction.mnemonic == ZYDIS_MNEMONIC_MOV &&
+        instruction.length == 2U && instruction.operand_width == 16U &&
+        instruction.address_width == 16U &&
+        instruction.raw.prefix_count == 0U &&
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_MODRM) != 0U &&
+        instruction.raw.modrm.offset == 1U &&
+        instruction.raw.modrm.mod == 3U &&
+        instruction.raw.modrm.reg != 4U &&
+        instruction.raw.modrm.rm != 4U;
+}
+
+// Task 689. In mode16, `66 C1 /r ib` is a 32-bit register shift. Remove only
+// the operand-size prefix; r/m=4 names guest SP and remains fail-closed.
+bool IsMode16Shift32(const ZydisDecodedInstruction& instruction)
+{
+    return instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT &&
+        instruction.opcode == 0xC1U && instruction.length == 4U &&
+        instruction.operand_width == 32U &&
+        instruction.address_width == 16U &&
+        instruction.raw.prefix_count == 1U &&
+        instruction.raw.prefixes[0].value == 0x66U &&
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_MODRM) != 0U &&
+        instruction.raw.modrm.offset == 2U &&
+        instruction.raw.modrm.mod == 3U &&
+        instruction.raw.modrm.rm != 4U &&
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_SEGMENT) == 0U;
+}
+
+// Task 690. Prefix-free mode16 opcode 25 is AND AX,iw. Add the operand-size
+// prefix in long mode so the accumulator remains a word rather than a dword.
+bool IsMode16AndAccumulatorImmediate(
+    const ZydisDecodedInstruction& instruction)
+{
+    return instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT &&
+        instruction.opcode == 0x25U &&
+        instruction.mnemonic == ZYDIS_MNEMONIC_AND &&
+        instruction.length == 3U && instruction.operand_width == 16U &&
+        instruction.address_width == 16U &&
+        instruction.raw.prefix_count == 0U;
+}
+
 // The ModRM-form opcode that means the same thing. `A0`/`A2` move a byte and
 // `A1`/`A3` a dword; the low bit of the moffs opcode is that width and the
 // second bit is the direction, which is the same layout `88`-`8B` uses.
@@ -564,23 +637,200 @@ bool IsAbsoluteDisplacementForm(const ZydisDecodedInstruction& instruction)
         instruction.raw.modrm.mod == 0U && instruction.raw.modrm.rm == 5U;
 }
 
+// Task 681. A 16-bit code object can opt into both 32-bit address and operand
+// sizes for LEA. Long mode keeps the 32-bit address-size prefix, but its
+// default operand size is already 32 bits, so the guest's 66 prefix must be
+// removed. The only guest register mapping that changes is ESP -> R15.
+bool IsMode16Lea32(const std::uint8_t* const bytes,
+                   const ZydisDecodedInstruction& instruction,
+                   const ZydisDecodedOperand* const operands)
+{
+    if (bytes == nullptr || operands == nullptr ||
+        instruction.opcode_map != ZYDIS_OPCODE_MAP_DEFAULT ||
+        instruction.opcode != 0x8DU ||
+        instruction.mnemonic != ZYDIS_MNEMONIC_LEA ||
+        instruction.operand_width != 32U ||
+        instruction.address_width != 32U ||
+        instruction.raw.prefix_count == 0U ||
+        !HasMemoryOperand(instruction, operands) ||
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_SEGMENT) != 0U ||
+        instruction.raw.modrm.mod == 3U)
+    {
+        return false;
+    }
+
+    bool has_operand_size = false;
+    bool has_address_size = false;
+    for (std::size_t index = 0U;
+         index < instruction.raw.prefix_count; ++index)
+    {
+        if (bytes[index] == 0x66U)
+        {
+            has_operand_size = true;
+        }
+        else if (bytes[index] == 0x67U)
+        {
+            has_address_size = true;
+        }
+        else
+        {
+            return false;
+        }
+    }
+    if (!has_operand_size || !has_address_size)
+    {
+        return false;
+    }
+
+    // A valid ESP base is remappable. Any other stack-pointer shape is kept
+    // out of this lowering rather than relying on an incomplete field rewrite.
+    return !TouchesStackPointer(instruction, operands) ||
+        ClassifyStackPointerFields(instruction, operands).supported;
+}
+
+// Task 685. In mode16, `66 85 /r` selects a 32-bit register TEST. Long mode
+// already defaults to 32-bit operands, so this narrow register-only form can
+// remove its operand-size prefix without remapping the guest stack register.
+bool IsMode16Test32(const std::uint8_t* const bytes,
+                    const ZydisDecodedInstruction& instruction,
+                    const ZydisDecodedOperand* const operands)
+{
+    return bytes != nullptr && operands != nullptr &&
+        instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT &&
+        instruction.opcode == 0x85U &&
+        instruction.mnemonic == ZYDIS_MNEMONIC_TEST &&
+        instruction.operand_width == 32U &&
+        instruction.address_width == 16U && instruction.length == 3U &&
+        instruction.raw.prefix_count == 1U &&
+        instruction.raw.prefixes[0].value == 0x66U &&
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_MODRM) != 0U &&
+        instruction.raw.modrm.offset == 2U &&
+        instruction.raw.modrm.mod == 3U &&
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_SEGMENT) == 0U &&
+        !TouchesStackPointer(instruction, operands);
+}
+
+struct Mode16Lea16AddressFields
+{
+    std::uint8_t first_register = 0xFFU;
+    std::uint8_t second_register = 0xFFU;
+    std::int32_t displacement = 0;
+};
+
+bool IsMode16Lea16(const std::uint8_t* const bytes,
+                   const ZydisDecodedInstruction& instruction,
+                   const ZydisDecodedOperand* const operands,
+                   Mode16Lea16AddressFields* const address_fields)
+{
+    if (bytes == nullptr || operands == nullptr ||
+        instruction.opcode_map != ZYDIS_OPCODE_MAP_DEFAULT ||
+        instruction.opcode != 0x8DU ||
+        instruction.mnemonic != ZYDIS_MNEMONIC_LEA ||
+        instruction.operand_width != 16U ||
+        instruction.address_width != 16U ||
+        instruction.raw.prefix_count != 0U ||
+        !HasMemoryOperand(instruction, operands) ||
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_SEGMENT) != 0U ||
+        (instruction.attributes & ZYDIS_ATTRIB_HAS_MODRM) == 0U ||
+        instruction.raw.modrm.mod == 3U ||
+        instruction.raw.modrm.offset != 1U)
+    {
+        return false;
+    }
+
+    Mode16Lea16AddressFields fields;
+    const std::uint8_t mod = instruction.raw.modrm.mod;
+    const std::uint8_t rm = instruction.raw.modrm.rm;
+    switch (rm)
+    {
+        case 0U: fields.first_register = 3U; fields.second_register = 6U; break;
+        case 1U: fields.first_register = 3U; fields.second_register = 7U; break;
+        case 4U: fields.first_register = 6U; break;
+        case 5U: fields.first_register = 7U; break;
+        case 6U:
+            if (mod != 0U)
+            {
+                // BP defaults to SS in 16-bit addressing. The current x64
+                // lowering has not proven the default-SS base contract.
+                return false;
+            }
+            break;
+        case 7U: fields.first_register = 3U; break;
+        default: return false;
+    }
+
+    std::size_t displacement_bytes = 0U;
+    if (mod == 1U)
+    {
+        displacement_bytes = 1U;
+        fields.displacement = static_cast<std::int8_t>(
+            bytes[instruction.raw.disp.offset]);
+    }
+    else if (mod == 2U || (mod == 0U && rm == 6U))
+    {
+        displacement_bytes = 2U;
+        fields.displacement = static_cast<std::int32_t>(
+            static_cast<std::uint16_t>(bytes[instruction.raw.disp.offset]) |
+            (static_cast<std::uint16_t>(
+                 bytes[instruction.raw.disp.offset + 1U]) << 8U));
+    }
+    if (instruction.raw.disp.offset + displacement_bytes !=
+            instruction.length ||
+        instruction.raw.disp.size != displacement_bytes * 8U)
+    {
+        return false;
+    }
+
+    if (TouchesStackPointer(instruction, operands) &&
+        !ClassifyStackPointerFields(instruction, operands).supported)
+    {
+        return false;
+    }
+    if (address_fields != nullptr)
+    {
+        *address_fields = fields;
+    }
+    return true;
+}
+
+// Task 683. LOOPNZ selects its counter width from the address-size attribute.
+// The prefix-free mode16 form therefore names CX, while long mode has no
+// 16-bit address-size encoding for the copied opcode to retain.
+bool IsMode16LoopNz(const ZydisDecodedInstruction& instruction)
+{
+    return instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT &&
+        instruction.opcode == 0xE0U &&
+        instruction.mnemonic == ZYDIS_MNEMONIC_LOOPNE &&
+        instruction.meta.category == ZYDIS_CATEGORY_COND_BR &&
+        instruction.length == 2U && instruction.address_width == 16U &&
+        instruction.raw.prefix_count == 0U;
+}
+
 }  // namespace
 
 LongModeCompatibilityResult ClassifyLongModeBytes(
-    const std::uint8_t* const bytes, const std::size_t byte_count)
+    const std::uint8_t* const bytes,
+    const std::size_t byte_count,
+    const GuestCodeDefaultOperandSize guest_code_default_operand_size)
 {
     if (bytes == nullptr || byte_count == 0U)
     {
         return Refuse(LongModeDivergence::kNone);
     }
 
-    // The guest's ISA is the source, so the decode stays LEGACY_32. This asks
-    // what these bytes mean where they came from; what they would mean in long
-    // mode is the judgement below, and decoding them as 64-bit would answer a
-    // different question.
+    // The guest's ISA is the source, so the decode stays in its legacy mode.
+    // This asks what these bytes mean where they came from; what they would
+    // mean in long mode is the judgement below, and decoding them as 64-bit
+    // would answer a different question. Unknown mode keeps the historical
+    // legacy-32 default used by existing callers.
+    const bool guest_is_16_bit = guest_code_default_operand_size ==
+        GuestCodeDefaultOperandSize::k16;
     ZydisDecoder decoder;
-    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LEGACY_32,
-                                       ZYDIS_STACK_WIDTH_32)))
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(
+            &decoder,
+            guest_is_16_bit ? ZYDIS_MACHINE_MODE_LEGACY_16
+                            : ZYDIS_MACHINE_MODE_LEGACY_32,
+            guest_is_16_bit ? ZYDIS_STACK_WIDTH_16 : ZYDIS_STACK_WIDTH_32)))
     {
         return Refuse(LongModeDivergence::kNone);
     }
@@ -595,6 +845,62 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
     }
 
     const std::uint8_t opcode = instruction.opcode;
+
+    // Task 680. Do not send a 16-bit decode through the 32-bit classifier. A
+    // word stack-pointer write is the one proven form; every other 16-bit
+    // instruction remains a boundary until its operand and stack semantics are
+    // separately established.
+    if (guest_is_16_bit)
+    {
+        if (IsMovStackPointerImmediate16(instruction))
+        {
+            return Reencode(
+                LongModeDivergence::kStackPointerRegister,
+                LongModeLowering::k16BitStackPointerImmediateToR15);
+        }
+        if (IsMode16MovImmediate(instruction))
+        {
+            return Reencode(LongModeDivergence::kOperandWidth,
+                            LongModeLowering::k16BitMovImmediateToGuestGprs);
+        }
+        if (IsMode16MovRegister(instruction))
+        {
+            return Reencode(LongModeDivergence::kOperandWidth,
+                            LongModeLowering::k16BitMovRegisterToGuestGprs);
+        }
+        if (IsMode16Shift32(instruction))
+        {
+            return Reencode(LongModeDivergence::kOperandWidth,
+                            LongModeLowering::k16BitShift32ToGuestGprs);
+        }
+        if (IsMode16AndAccumulatorImmediate(instruction))
+        {
+            return Reencode(
+                LongModeDivergence::kOperandWidth,
+                LongModeLowering::k16BitAndAccumulatorImmediate);
+        }
+        if (IsMode16Test32(bytes, instruction, operands))
+        {
+            return Reencode(LongModeDivergence::kOperandWidth,
+                            LongModeLowering::k16BitTest32ToGuestGprs);
+        }
+        if (IsMode16Lea32(bytes, instruction, operands))
+        {
+            return Reencode(LongModeDivergence::kAddressSize,
+                            LongModeLowering::k16BitLea32ToGuestGprs);
+        }
+        if (IsMode16Lea16(bytes, instruction, operands, nullptr))
+        {
+            return Reencode(LongModeDivergence::kAddressSize,
+                            LongModeLowering::k16BitLea16ToGuestGprs);
+        }
+        if (IsMode16LoopNz(instruction))
+        {
+            return Reencode(LongModeDivergence::kAddressSize,
+                            LongModeLowering::k16BitLoopNzToGuestCx);
+        }
+        return Refuse(LongModeDivergence::kOperandWidth);
+    }
 
     if (instruction.opcode_map == ZYDIS_OPCODE_MAP_DEFAULT)
     {
@@ -1223,7 +1529,9 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
                         const std::size_t byte_count,
                         std::uint8_t* const lowered,
                         std::size_t* const lowered_count,
-                        std::size_t* const instruction_count)
+                        std::size_t* const instruction_count,
+                        const GuestCodeDefaultOperandSize
+                            guest_code_default_operand_size)
 {
     if (bytes == nullptr || lowered == nullptr || lowered_count == nullptr)
     {
@@ -1236,7 +1544,8 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
     }
 
     const LongModeCompatibilityResult verdict =
-        ClassifyLongModeBytes(bytes, byte_count);
+        ClassifyLongModeBytes(bytes, byte_count,
+                              guest_code_default_operand_size);
     if (verdict.lowering == LongModeLowering::kNone)
     {
         return false;
@@ -1246,9 +1555,14 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
     // cost is one decode on a path that emits, and what it buys is that the
     // classifier's answer stays a judgement about bytes rather than a carrier
     // for a decode nobody else can check.
+    const bool guest_is_16_bit = guest_code_default_operand_size ==
+        GuestCodeDefaultOperandSize::k16;
     ZydisDecoder decoder;
-    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LEGACY_32,
-                                       ZYDIS_STACK_WIDTH_32)))
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(
+            &decoder,
+            guest_is_16_bit ? ZYDIS_MACHINE_MODE_LEGACY_16
+                            : ZYDIS_MACHINE_MODE_LEGACY_32,
+            guest_is_16_bit ? ZYDIS_STACK_WIDTH_16 : ZYDIS_STACK_WIDTH_32)))
     {
         return false;
     }
@@ -1261,6 +1575,306 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
     }
 
     const std::size_t length = instruction.length;
+
+    // Task 680. `BC iw` in a 16-bit code object writes only SP. R15W is the
+    // low word of the guest ESP state, while the host stack remains in RSP.
+    if (verdict.lowering ==
+        LongModeLowering::k16BitStackPointerImmediateToR15)
+    {
+        if (!guest_is_16_bit || !IsMovStackPointerImmediate16(instruction) ||
+            length != 3U || length + 2U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+        lowered[0] = 0x66U;  // Select R15W rather than R15D.
+        lowered[1] = 0x41U;  // REX.B selects R15.
+        lowered[2] = 0xBFU;  // MOV r16, imm16 with register field 111.
+        lowered[3] = bytes[1];
+        lowered[4] = bytes[2];
+        *lowered_count = 5U;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 687. A mode16 `B8+r iw` writes a guest GPR low word. Prefixing the
+    // original opcode and immediate with 66 selects the same operand width in
+    // long mode without changing the encoded destination register.
+    if (verdict.lowering == LongModeLowering::k16BitMovImmediateToGuestGprs)
+    {
+        if (!guest_is_16_bit || !IsMode16MovImmediate(instruction) ||
+            length != 3U || length + 1U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+        lowered[0] = 0x66U;
+        lowered[1] = bytes[0U];
+        lowered[2] = bytes[1U];
+        lowered[3] = bytes[2U];
+        *lowered_count = 4U;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 688. A mode16 register-register word MOV needs only the x64
+    // operand-size prefix; the original opcode and ModRM mapping are safe to
+    // reuse for the proven no-guest-SP register subset.
+    if (verdict.lowering == LongModeLowering::k16BitMovRegisterToGuestGprs)
+    {
+        if (!guest_is_16_bit || !IsMode16MovRegister(instruction) ||
+            length != 2U || length + 1U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+        lowered[0] = 0x66U;
+        lowered[1] = bytes[0U];
+        lowered[2] = bytes[1U];
+        *lowered_count = 3U;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 689. The mode16 66 prefix selects a 32-bit C1 group shift. Remove
+    // it so the long-mode default width is the same 32-bit operation.
+    if (verdict.lowering == LongModeLowering::k16BitShift32ToGuestGprs)
+    {
+        if (!guest_is_16_bit || !IsMode16Shift32(instruction) ||
+            length != 4U || length - 1U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+        lowered[0] = bytes[1U];
+        lowered[1] = bytes[2U];
+        lowered[2] = bytes[3U];
+        *lowered_count = 3U;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 690. Long mode defaults opcode 25 to a dword accumulator. Add 66
+    // to retain the mode16 word operation and immediate boundary.
+    if (verdict.lowering == LongModeLowering::k16BitAndAccumulatorImmediate)
+    {
+        if (!guest_is_16_bit ||
+            !IsMode16AndAccumulatorImmediate(instruction) ||
+            length != 3U || length + 1U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+        lowered[0] = 0x66U;
+        lowered[1] = bytes[0U];
+        lowered[2] = bytes[1U];
+        lowered[3] = bytes[2U];
+        *lowered_count = 4U;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 685. The mode16 operand-size override selects the guest's 32-bit
+    // TEST. Long mode's default is already 32 bits, so copy the opcode and
+    // register ModRM after dropping only the `66` prefix.
+    if (verdict.lowering == LongModeLowering::k16BitTest32ToGuestGprs)
+    {
+        if (!guest_is_16_bit || !IsMode16Test32(bytes, instruction, operands) ||
+            length != 3U || length - 1U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+        lowered[0] = bytes[1U];
+        lowered[1] = bytes[2U];
+        *lowered_count = 2U;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 681. Remove the source-only operand-size override from a 32-bit
+    // LEA in a 16-bit code object. Keep the address-size override and rewrite
+    // only the ModRM/SIB fields that name guest ESP. All other guest GPRs keep
+    // their established host-register mapping.
+    if (verdict.lowering == LongModeLowering::k16BitLea32ToGuestGprs)
+    {
+        if (!guest_is_16_bit ||
+            !IsMode16Lea32(bytes, instruction, operands) ||
+            instruction.raw.modrm.offset != instruction.raw.prefix_count + 1U)
+        {
+            return false;
+        }
+        const StackPointerFields fields =
+            ClassifyStackPointerFields(instruction, operands);
+        const bool needs_rex = fields.rex_r || fields.rex_b;
+        if (needs_rex && length + 1U > kMaxLoweredBytes)
+        {
+            return false;
+        }
+
+        std::size_t out = 0U;
+        for (std::size_t index = 0U;
+             index < instruction.raw.prefix_count; ++index)
+        {
+            if (bytes[index] != 0x66U)
+            {
+                lowered[out++] = bytes[index];
+            }
+        }
+        if (needs_rex)
+        {
+            std::uint8_t rex = 0x40U;
+            rex |= fields.rex_r ? 0x04U : 0x00U;
+            rex |= fields.rex_b ? 0x01U : 0x00U;
+            lowered[out++] = rex;
+        }
+        const std::size_t output_opcode_offset = out;
+        for (std::size_t index = instruction.raw.prefix_count;
+             index < length; ++index)
+        {
+            lowered[out++] = bytes[index];
+        }
+
+        const std::size_t modrm_out = output_opcode_offset + 1U;
+        if (modrm_out >= out)
+        {
+            return false;
+        }
+        if (fields.rex_r)
+        {
+            lowered[modrm_out] = static_cast<std::uint8_t>(
+                (lowered[modrm_out] & 0xC7U) | 0x38U);
+        }
+        if (fields.rex_b)
+        {
+            if ((instruction.attributes & ZYDIS_ATTRIB_HAS_SIB) == 0U ||
+                instruction.raw.modrm.rm != 4U ||
+                modrm_out + 1U >= out)
+            {
+                return false;
+            }
+            lowered[modrm_out + 1U] = static_cast<std::uint8_t>(
+                (lowered[modrm_out + 1U] & 0xF8U) | 0x07U);
+        }
+        *lowered_count = out;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = 1U;
+        }
+        return true;
+    }
+
+    // Task 682. x64 has no 16-bit address-size mode. Materialize the proven
+    // 16-bit address form in scratch registers, then use a 32-bit address-size
+    // word LEA. MOVZX and LEA preserve flags, and the final word write keeps
+    // the guest's low-word destination semantics.
+    if (verdict.lowering == LongModeLowering::k16BitLea16ToGuestGprs)
+    {
+        Mode16Lea16AddressFields address_fields;
+        if (!guest_is_16_bit ||
+            !IsMode16Lea16(bytes, instruction, operands, &address_fields) ||
+            instruction.raw.modrm.offset != 1U)
+        {
+            return false;
+        }
+
+        const StackPointerFields stack_fields =
+            ClassifyStackPointerFields(instruction, operands);
+        const std::uint8_t destination = instruction.raw.modrm.reg;
+        const bool destination_is_stack_pointer = stack_fields.rex_r;
+        const std::size_t final_length = 2U + 1U + 1U + 1U + 4U;
+        const std::size_t first_load_length =
+            address_fields.first_register != 0xFFU ? 4U : 0U;
+        const std::size_t second_load_length =
+            address_fields.second_register != 0xFFU ? 4U : 0U;
+        const std::size_t sum_length =
+            address_fields.second_register != 0xFFU ? 5U : 0U;
+        const std::size_t zero_length =
+            address_fields.first_register == 0xFFU ? 6U : 0U;
+        if (destination > 7U ||
+            (!destination_is_stack_pointer && destination == 4U) ||
+            first_load_length + second_load_length + sum_length +
+                    zero_length + final_length > kMaxLoweredBytes)
+        {
+            return false;
+        }
+
+        std::size_t out = 0U;
+        if (address_fields.first_register != 0xFFU)
+        {
+            lowered[out++] = 0x44U;  // REX.R selects R14D.
+            lowered[out++] = 0x0FU;
+            lowered[out++] = 0xB7U;
+            lowered[out++] = static_cast<std::uint8_t>(
+                0xF0U | address_fields.first_register);
+        }
+        else
+        {
+            lowered[out++] = 0x41U;  // REX.B selects R14D.
+            lowered[out++] = 0xBEU;  // MOV R14D,0.
+            lowered[out++] = 0x00U;
+            lowered[out++] = 0x00U;
+            lowered[out++] = 0x00U;
+            lowered[out++] = 0x00U;
+        }
+        if (address_fields.second_register != 0xFFU)
+        {
+            lowered[out++] = 0x44U;  // REX.R selects R10D.
+            lowered[out++] = 0x0FU;
+            lowered[out++] = 0xB7U;
+            lowered[out++] = static_cast<std::uint8_t>(
+                0xD0U | address_fields.second_register);
+            lowered[out++] = 0x67U;
+            lowered[out++] = 0x47U;  // R14D destination/base, R10D index.
+            lowered[out++] = 0x8DU;
+            lowered[out++] = 0x34U;
+            lowered[out++] = 0x16U;
+        }
+
+        lowered[out++] = 0x67U;  // Select 32-bit address calculation.
+        lowered[out++] = 0x66U;  // Select the guest word destination.
+        lowered[out++] = destination_is_stack_pointer ? 0x45U : 0x41U;
+        lowered[out++] = 0x8DU;
+        lowered[out++] = static_cast<std::uint8_t>(
+            0x80U | ((destination_is_stack_pointer ? 7U : destination) << 3U) |
+            6U);  // [R14D + disp32], with REX.B.
+        const std::uint32_t displacement = static_cast<std::uint32_t>(
+            address_fields.displacement);
+        for (std::size_t index = 0U; index < 4U; ++index)
+        {
+            lowered[out++] = static_cast<std::uint8_t>(
+                (displacement >> (index * 8U)) & 0xFFU);
+        }
+        *lowered_count = out;
+        if (instruction_count != nullptr)
+        {
+            *instruction_count = address_fields.second_register != 0xFFU
+                ? 4U : 2U;
+        }
+        return true;
+    }
+
+    // Task 683. The LOOPNZ sequence needs direct-target and fallthrough
+    // addresses from an AOT instruction record. The cache emitter owns that
+    // control-flow lowering, so the byte-only API deliberately does not emit
+    // a target-free pseudo-branch.
+    if (verdict.lowering == LongModeLowering::k16BitLoopNzToGuestCx)
+    {
+        return false;
+    }
+
     if (verdict.lowering == LongModeLowering::kAddressSizePrefix)
     {
         if (length + 1U > kMaxLoweredBytes)

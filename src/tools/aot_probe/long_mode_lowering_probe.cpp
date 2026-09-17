@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 namespace repiu::tools
@@ -17,6 +18,7 @@ namespace
 using repiu::platform::MemoryProtection;
 using repiu::platform::MemoryReservation;
 using repiu::runtime::ClassifyLongModeBytes;
+using repiu::runtime::GuestCodeDefaultOperandSize;
 using repiu::runtime::kMaxLoweredBytes;
 using repiu::runtime::LongModeByteCompatibility;
 using repiu::runtime::LongModeLowering;
@@ -92,11 +94,14 @@ bool WriteAndArm(const ExecutablePage& page,
 }
 
 bool Lower(const std::vector<std::uint8_t>& guest,
-           std::vector<std::uint8_t>* lowered)
+           std::vector<std::uint8_t>* lowered,
+           const GuestCodeDefaultOperandSize mode =
+               GuestCodeDefaultOperandSize::k32)
 {
     std::uint8_t buffer[kMaxLoweredBytes] = {};
     std::size_t produced = 0U;
-    if (!LowerLongModeBytes(guest.data(), guest.size(), buffer, &produced))
+    if (!LowerLongModeBytes(guest.data(), guest.size(), buffer, &produced,
+                            nullptr, mode))
     {
         return false;
     }
@@ -510,6 +515,529 @@ bool ProbeStackPointerTwoByteOpcode()
     return ok;
 }
 
+// Task 680. `BC iw` in a 16-bit code object writes SP, not ESP. The lowering
+// must therefore select R15W and preserve the upper bits of the guest state.
+bool Probe16BitStackPointerImmediate()
+{
+    const std::vector<std::uint8_t> guest = {0xBCU, 0x00U, 0x20U};
+    const std::vector<std::uint8_t> expected = {
+        0x66U, 0x41U, 0xBFU, 0x00U, 0x20U};
+    const auto verdict = ClassifyLongModeBytes(
+        guest.data(), guest.size(), GuestCodeDefaultOperandSize::k16);
+    std::uint8_t lowered_buffer[kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    std::size_t lowered_instructions = 0U;
+    const bool lowered_ok = LowerLongModeBytes(
+        guest.data(), guest.size(), lowered_buffer, &lowered_count,
+        &lowered_instructions, GuestCodeDefaultOperandSize::k16);
+    const std::vector<std::uint8_t> lowered(
+        lowered_buffer, lowered_buffer + lowered_count);
+    if (verdict.compatibility != LongModeByteCompatibility::kNeedsReencode ||
+        verdict.lowering !=
+            LongModeLowering::k16BitStackPointerImmediateToR15 ||
+        !lowered_ok || lowered != expected || lowered_instructions != 1U)
+    {
+        std::cout << "long_mode_lowering_16bit_stack_pointer=false,"
+                     "reason=bytes\n";
+        return false;
+    }
+
+    // Save the callee-saved R15, seed it with a value whose upper word is
+    // visible, execute the lowered bytes, and return the resulting R15 value.
+    std::vector<std::uint8_t> code = {
+        0x41U, 0x57U,  // push r15
+        0x49U, 0xBFU,  // mov r15, imm64
+        0x01U, 0x00U, 0xCDU, 0xABU, 0x78U, 0x56U, 0x34U, 0x12U,
+    };
+    code.insert(code.end(), lowered.begin(), lowered.end());
+    code.insert(code.end(), {
+        0x4CU, 0x89U, 0xF8U,  // mov rax, r15
+        0x41U, 0x5FU,          // pop r15
+        0xC3U,                 // ret
+    });
+
+    ExecutablePage page;
+    if (!AllocateCodePage(&page) || !WriteAndArm(page, code))
+    {
+        ReleasePage(&page);
+        std::cout << "long_mode_lowering_16bit_stack_pointer=false,"
+                     "reason=page\n";
+        return false;
+    }
+    using Entry = std::uint64_t (*)();
+    Entry entry = nullptr;
+    std::memcpy(&entry, &page.base, sizeof(entry));
+    const std::uint64_t observed = entry();
+    ReleasePage(&page);
+
+    const bool ok = observed == UINT64_C(0x12345678ABCD2000);
+    std::cout << "long_mode_lowering_16bit_stack_pointer="
+              << (ok ? "true" : "false") << ",observed=0x" << std::hex
+              << observed << std::dec << "\n";
+    return ok;
+}
+
+// Task 681. The first real object-3 boundary after MOV SP is a mode16 LEA with
+// both address- and operand-size overrides. Execute the generic lowering and
+// check the destination without reading memory; LEA is an address computation.
+bool Probe16BitLea32()
+{
+    const std::vector<std::uint8_t> guest = {
+        0x67U, 0x66U, 0x8DU, 0x8CU, 0x24U,
+        0x00U, 0xE0U, 0xFFU, 0xFFU,
+    };
+    const std::vector<std::uint8_t> expected = {
+        0x67U, 0x41U, 0x8DU, 0x8CU, 0x27U,
+        0x00U, 0xE0U, 0xFFU, 0xFFU,
+    };
+    std::vector<std::uint8_t> lowered;
+    const auto verdict = ClassifyLongModeBytes(
+        guest.data(), guest.size(), GuestCodeDefaultOperandSize::k16);
+    if (verdict.compatibility != LongModeByteCompatibility::kNeedsReencode ||
+        verdict.lowering != LongModeLowering::k16BitLea32ToGuestGprs ||
+        !Lower(guest, &lowered, GuestCodeDefaultOperandSize::k16) ||
+        lowered != expected)
+    {
+        std::cout << "long_mode_lowering_16bit_lea32=false,reason=bytes\n";
+        return false;
+    }
+
+    std::vector<std::uint8_t> code = {
+        0x41U, 0x57U,                         // push r15
+        0x41U, 0xBFU, 0x00U, 0x20U, 0x00U, 0x30U, // mov r15d,0x30002000
+    };
+    code.insert(code.end(), lowered.begin(), lowered.end());
+    code.insert(code.end(), {
+        0x89U, 0xC8U,  // mov eax, ecx
+        0x41U, 0x5FU,  // pop r15
+        0xC3U,         // ret
+    });
+
+    ExecutablePage page;
+    if (!AllocateCodePage(&page) || !WriteAndArm(page, code))
+    {
+        ReleasePage(&page);
+        std::cout << "long_mode_lowering_16bit_lea32=false,reason=page\n";
+        return false;
+    }
+    using Entry = std::uint32_t (*)();
+    Entry entry = nullptr;
+    std::memcpy(&entry, &page.base, sizeof(entry));
+    const std::uint32_t observed = entry();
+    ReleasePage(&page);
+
+    const bool ok = observed == 0x30000000U;
+    std::cout << "long_mode_lowering_16bit_lea32="
+              << (ok ? "true" : "false") << ",observed=0x" << std::hex
+              << observed << std::dec << "\n";
+    return ok;
+}
+
+// Task 682. Lower the runtime frontier `LEA CX,[SI+disp16]`. The sequence
+// must mask the source to its low word, preserve the destination upper word,
+// wrap the effective address at 16 bits, and leave ZF unchanged.
+bool Probe16BitLea16()
+{
+    const std::vector<std::uint8_t> guest = {
+        0x8DU, 0x8CU, 0x24U, 0x00U,
+    };
+    const std::vector<std::uint8_t> expected = {
+        0x44U, 0x0FU, 0xB7U, 0xF6U,
+        0x67U, 0x66U, 0x41U, 0x8DU, 0x8EU,
+        0x24U, 0x00U, 0x00U, 0x00U,
+    };
+    const auto verdict = ClassifyLongModeBytes(
+        guest.data(), guest.size(), GuestCodeDefaultOperandSize::k16);
+    std::vector<std::uint8_t> lowered;
+    if (verdict.compatibility != LongModeByteCompatibility::kNeedsReencode ||
+        verdict.lowering != LongModeLowering::k16BitLea16ToGuestGprs ||
+        !Lower(guest, &lowered, GuestCodeDefaultOperandSize::k16) ||
+        lowered != expected)
+    {
+        std::cout << "long_mode_lowering_16bit_lea16=false,reason=bytes\n";
+        return false;
+    }
+
+    std::vector<std::uint8_t> code = {
+        0x41U, 0x56U,                         // push r14
+        0x56U,                                // push rsi
+        0x48U, 0x89U, 0xFEU,                 // mov rsi,rdi
+        0xB9U, 0x00U, 0x00U, 0x34U, 0x12U,  // mov ecx,0x12340000
+        0x31U, 0xC0U,                         // xor eax,eax (ZF=1)
+    };
+    code.insert(code.end(), lowered.begin(), lowered.end());
+    code.insert(code.end(), {
+        0x0FU, 0x94U, 0xC2U,                 // sete dl
+        0x0FU, 0xB6U, 0xD2U,                 // movzx edx,dl
+        0x48U, 0xC1U, 0xE2U, 0x20U,          // shl rdx,32
+        0x89U, 0xC8U,                         // mov eax,ecx
+        0x48U, 0x09U, 0xD0U,                 // or rax,rdx
+        0x5EU,                                // pop rsi
+        0x41U, 0x5EU,                         // pop r14
+        0xC3U,                                // ret
+    });
+
+    ExecutablePage page;
+    if (!AllocateCodePage(&page) || !WriteAndArm(page, code))
+    {
+        ReleasePage(&page);
+        std::cout << "long_mode_lowering_16bit_lea16=false,reason=page\n";
+        return false;
+    }
+    using Entry = std::uint64_t (*)(std::uint64_t);
+    Entry entry = nullptr;
+    std::memcpy(&entry, &page.base, sizeof(entry));
+    const std::uint64_t observed = entry(UINT64_C(0xFFFF000000000010));
+    ReleasePage(&page);
+
+    const bool ok = observed == UINT64_C(0x112340034);
+    std::cout << "long_mode_lowering_16bit_lea16="
+              << (ok ? "true" : "false") << ",observed=0x" << std::hex
+              << observed << std::dec << "\n";
+    return ok;
+}
+
+// Task 685. Remove the mode16 operand-size override from register TEST, then
+// execute the result to check flags and the untouched upper register state.
+bool Probe16BitTest32()
+{
+    const std::vector<std::uint8_t> guest = {
+        0x66U, 0x85U, 0xFFU,  // test edi,edi in mode16
+    };
+    const std::vector<std::uint8_t> expected = {0x85U, 0xFFU};
+    const auto verdict = ClassifyLongModeBytes(
+        guest.data(), guest.size(), GuestCodeDefaultOperandSize::k16);
+    std::vector<std::uint8_t> lowered;
+    std::uint8_t lowered_buffer[kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    std::size_t lowered_instructions = 0U;
+    const bool lowered_ok = LowerLongModeBytes(
+        guest.data(), guest.size(), lowered_buffer, &lowered_count,
+        &lowered_instructions, GuestCodeDefaultOperandSize::k16);
+    if (lowered_ok)
+    {
+        lowered.assign(lowered_buffer, lowered_buffer + lowered_count);
+    }
+    if (verdict.compatibility != LongModeByteCompatibility::kNeedsReencode ||
+        verdict.lowering != LongModeLowering::k16BitTest32ToGuestGprs ||
+        !lowered_ok || lowered != expected || lowered_instructions != 1U)
+    {
+        std::cout << "long_mode_lowering_16bit_test32=false,reason=bytes\n";
+        return false;
+    }
+
+    // The function receives its test operand in RDI. Capture EFLAGS before
+    // any result-building instruction changes them; the low result word keeps
+    // the guest operand so the TEST destination register can be checked too.
+    std::vector<std::uint8_t> flags_code = lowered;
+    flags_code.insert(flags_code.end(), {
+        0x9CU,                    // pushfq
+        0x58U,                    // pop rax
+        0x48U, 0x89U, 0xC2U,      // mov rdx,rax
+        0x89U, 0xF8U,              // mov eax,edi
+        0x48U, 0xC1U, 0xE2U, 0x20U,  // shl rdx,32
+        0x48U, 0x09U, 0xD0U,      // or rax,rdx
+        0xC3U,                    // ret
+    });
+    ExecutablePage flags_page;
+    if (!AllocateCodePage(&flags_page) || !WriteAndArm(flags_page, flags_code))
+    {
+        ReleasePage(&flags_page);
+        std::cout << "long_mode_lowering_16bit_test32=false,reason=flags_page\n";
+        return false;
+    }
+    using FlagsEntry = std::uint64_t (*)(std::uint64_t);
+    FlagsEntry flags_entry = nullptr;
+    std::memcpy(&flags_entry, &flags_page.base, sizeof(flags_entry));
+    const std::uint64_t zero_result = flags_entry(0U);
+    const std::uint64_t nonzero_result = flags_entry(0x80000001U);
+    ReleasePage(&flags_page);
+
+    constexpr std::uint64_t kFlagsMask =
+        UINT64_C(0x1) | UINT64_C(0x40) | UINT64_C(0x800);
+    const std::uint64_t zero_flags = zero_result >> 32U;
+    const std::uint64_t nonzero_flags = nonzero_result >> 32U;
+    const bool flags_ok =
+        static_cast<std::uint32_t>(zero_result) == 0U &&
+        (zero_flags & kFlagsMask) == UINT64_C(0x40) &&
+        static_cast<std::uint32_t>(nonzero_result) == 0x80000001U &&
+        (nonzero_flags & kFlagsMask) == 0U;
+
+    // A second invocation returns the complete RDI value, proving that the
+    // 32-bit TEST did not accidentally narrow or rewrite the guest register.
+    constexpr std::uint64_t kRegisterValue = UINT64_C(0xA5A5A5A512340000);
+    std::vector<std::uint8_t> register_code = {
+        0x48U, 0xBFU,  // mov rdi, imm64
+    };
+    for (std::size_t index = 0U; index < 8U; ++index)
+    {
+        register_code.push_back(static_cast<std::uint8_t>(
+            (kRegisterValue >> (index * 8U)) & 0xFFU));
+    }
+    register_code.insert(register_code.end(), lowered.begin(), lowered.end());
+    register_code.insert(register_code.end(), {
+        0x48U, 0x89U, 0xF8U,  // mov rax,rdi
+        0xC3U,                // ret
+    });
+    ExecutablePage register_page;
+    if (!AllocateCodePage(&register_page) ||
+        !WriteAndArm(register_page, register_code))
+    {
+        ReleasePage(&register_page);
+        std::cout << "long_mode_lowering_16bit_test32=false,reason=register_page\n";
+        return false;
+    }
+    using RegisterEntry = std::uint64_t (*)();
+    RegisterEntry register_entry = nullptr;
+    std::memcpy(&register_entry, &register_page.base,
+                sizeof(register_entry));
+    const std::uint64_t register_result = register_entry();
+    ReleasePage(&register_page);
+
+    const bool ok = flags_ok && register_result == kRegisterValue;
+    std::cout << "long_mode_lowering_16bit_test32="
+              << (ok ? "true" : "false")
+              << ",flags=" << (flags_ok ? "true" : "false")
+              << ",register="
+              << (register_result == kRegisterValue ? "true" : "false")
+              << "\n";
+    return ok;
+}
+
+// Task 687. Prefix-free mode16 B8+r iw needs only an operand-size prefix in
+// long mode. Execute it after seeding RAX to prove that the low word changes
+// while the upper register bits remain intact.
+bool Probe16BitMovImmediate()
+{
+    const std::vector<std::uint8_t> guest = {
+        0xB8U, 0x07U, 0x00U,  // mov ax,7 in mode16
+    };
+    const std::vector<std::uint8_t> expected = {
+        0x66U, 0xB8U, 0x07U, 0x00U,
+    };
+    const auto verdict = ClassifyLongModeBytes(
+        guest.data(), guest.size(), GuestCodeDefaultOperandSize::k16);
+    std::vector<std::uint8_t> lowered;
+    if (verdict.compatibility != LongModeByteCompatibility::kNeedsReencode ||
+        verdict.lowering != LongModeLowering::k16BitMovImmediateToGuestGprs ||
+        !Lower(guest, &lowered, GuestCodeDefaultOperandSize::k16) ||
+        lowered != expected)
+    {
+        std::cout << "long_mode_lowering_16bit_mov_immediate=false,"
+                     "reason=bytes\n";
+        return false;
+    }
+
+    constexpr std::uint64_t kSeed = UINT64_C(0xA5A5A5A512340000);
+    std::vector<std::uint8_t> code = {0x48U, 0xB8U};
+    for (std::size_t index = 0U; index < 8U; ++index)
+    {
+        code.push_back(static_cast<std::uint8_t>(
+            (kSeed >> (index * 8U)) & 0xFFU));
+    }
+    code.insert(code.end(), lowered.begin(), lowered.end());
+    code.insert(code.end(), {0xC3U});  // ret
+
+    ExecutablePage page;
+    if (!AllocateCodePage(&page) || !WriteAndArm(page, code))
+    {
+        ReleasePage(&page);
+        std::cout << "long_mode_lowering_16bit_mov_immediate=false,"
+                     "reason=page\n";
+        return false;
+    }
+    using Entry = std::uint64_t (*)();
+    Entry entry = nullptr;
+    std::memcpy(&entry, &page.base, sizeof(entry));
+    const std::uint64_t observed = entry();
+    ReleasePage(&page);
+
+    const std::uint64_t expected_value = UINT64_C(0xA5A5A5A512340007);
+    const bool ok = observed == expected_value;
+    std::cout << "long_mode_lowering_16bit_mov_immediate="
+              << (ok ? "true" : "false") << ",observed=0x" << std::hex
+              << observed << std::dec << "\n";
+    return ok;
+}
+
+// Task 688. Execute a mode16 register-register word MOV after seeding the
+// destination with visible upper bits. The 66-prefixed form must change only
+// the destination low word.
+bool Probe16BitMovRegister()
+{
+    const std::vector<std::uint8_t> guest = {
+        0x89U, 0xCAU,  // mov dx,cx in mode16
+    };
+    const std::vector<std::uint8_t> expected = {
+        0x66U, 0x89U, 0xCAU,
+    };
+    const auto verdict = ClassifyLongModeBytes(
+        guest.data(), guest.size(), GuestCodeDefaultOperandSize::k16);
+    std::vector<std::uint8_t> lowered;
+    if (verdict.compatibility != LongModeByteCompatibility::kNeedsReencode ||
+        verdict.lowering != LongModeLowering::k16BitMovRegisterToGuestGprs ||
+        !Lower(guest, &lowered, GuestCodeDefaultOperandSize::k16) ||
+        lowered != expected)
+    {
+        std::cout << "long_mode_lowering_16bit_mov_register=false,"
+                     "reason=bytes\n";
+        return false;
+    }
+
+    constexpr std::uint64_t kDestination = UINT64_C(0xA5A5A5A512340000);
+    constexpr std::uint64_t kSource = UINT64_C(0x5A5A5A5A00000007);
+    std::vector<std::uint8_t> code = {0x48U, 0xBAU};
+    for (std::size_t index = 0U; index < 8U; ++index)
+    {
+        code.push_back(static_cast<std::uint8_t>(
+            (kDestination >> (index * 8U)) & 0xFFU));
+    }
+    code.push_back(0x48U);
+    code.push_back(0xB9U);
+    for (std::size_t index = 0U; index < 8U; ++index)
+    {
+        code.push_back(static_cast<std::uint8_t>(
+            (kSource >> (index * 8U)) & 0xFFU));
+    }
+    code.insert(code.end(), lowered.begin(), lowered.end());
+    code.insert(code.end(), {
+        0x48U, 0x89U, 0xD0U,  // mov rax,rdx
+        0xC3U,                 // ret
+    });
+
+    ExecutablePage page;
+    if (!AllocateCodePage(&page) || !WriteAndArm(page, code))
+    {
+        ReleasePage(&page);
+        std::cout << "long_mode_lowering_16bit_mov_register=false,"
+                     "reason=page\n";
+        return false;
+    }
+    using Entry = std::uint64_t (*)();
+    Entry entry = nullptr;
+    std::memcpy(&entry, &page.base, sizeof(entry));
+    const std::uint64_t observed = entry();
+    ReleasePage(&page);
+
+    const std::uint64_t expected_value = UINT64_C(0xA5A5A5A512340007);
+    const bool ok = observed == expected_value;
+    std::cout << "long_mode_lowering_16bit_mov_register="
+              << (ok ? "true" : "false") << ",observed=0x" << std::hex
+              << observed << std::dec << "\n";
+    return ok;
+}
+
+// Task 689. Remove the mode16 operand-size prefix from a register-only C1
+// shift and execute the result to verify the 32-bit operation.
+bool Probe16BitShift32()
+{
+    const std::vector<std::uint8_t> guest = {
+        0x66U, 0xC1U, 0xE9U, 0x10U,  // shr ecx,16 in mode16
+    };
+    const std::vector<std::uint8_t> expected = {
+        0xC1U, 0xE9U, 0x10U,
+    };
+    const auto verdict = ClassifyLongModeBytes(
+        guest.data(), guest.size(), GuestCodeDefaultOperandSize::k16);
+    std::vector<std::uint8_t> lowered;
+    if (verdict.compatibility != LongModeByteCompatibility::kNeedsReencode ||
+        verdict.lowering != LongModeLowering::k16BitShift32ToGuestGprs ||
+        !Lower(guest, &lowered, GuestCodeDefaultOperandSize::k16) ||
+        lowered != expected)
+    {
+        std::cout << "long_mode_lowering_16bit_shift32=false,"
+                     "reason=bytes\n";
+        return false;
+    }
+
+    constexpr std::uint64_t kSeed = UINT64_C(0xA5A5A5A512340000);
+    std::vector<std::uint8_t> code = {0x48U, 0xB9U};
+    for (std::size_t index = 0U; index < 8U; ++index)
+    {
+        code.push_back(static_cast<std::uint8_t>(
+            (kSeed >> (index * 8U)) & 0xFFU));
+    }
+    code.insert(code.end(), lowered.begin(), lowered.end());
+    code.insert(code.end(), {
+        0x48U, 0x89U, 0xC8U,  // mov rax,rcx
+        0xC3U,                 // ret
+    });
+
+    ExecutablePage page;
+    if (!AllocateCodePage(&page) || !WriteAndArm(page, code))
+    {
+        ReleasePage(&page);
+        std::cout << "long_mode_lowering_16bit_shift32=false,"
+                     "reason=page\n";
+        return false;
+    }
+    using Entry = std::uint64_t (*)();
+    Entry entry = nullptr;
+    std::memcpy(&entry, &page.base, sizeof(entry));
+    const std::uint64_t observed = entry();
+    ReleasePage(&page);
+
+    const bool ok = observed == UINT64_C(0x0000000000001234);
+    std::cout << "long_mode_lowering_16bit_shift32="
+              << (ok ? "true" : "false") << ",observed=0x" << std::hex
+              << observed << std::dec << "\n";
+    return ok;
+}
+
+// Task 690. Add the operand-size prefix to a mode16 accumulator AND and
+// execute it to check the word result and preserved upper RAX bits.
+bool Probe16BitAndAccumulatorImmediate()
+{
+    const std::vector<std::uint8_t> guest = {
+        0x25U, 0xFFU, 0x0FU,  // and ax,0x0fff in mode16
+    };
+    const std::vector<std::uint8_t> expected = {
+        0x66U, 0x25U, 0xFFU, 0x0FU,
+    };
+    const auto verdict = ClassifyLongModeBytes(
+        guest.data(), guest.size(), GuestCodeDefaultOperandSize::k16);
+    std::vector<std::uint8_t> lowered;
+    if (verdict.compatibility != LongModeByteCompatibility::kNeedsReencode ||
+        verdict.lowering != LongModeLowering::k16BitAndAccumulatorImmediate ||
+        !Lower(guest, &lowered, GuestCodeDefaultOperandSize::k16) ||
+        lowered != expected)
+    {
+        std::cout << "long_mode_lowering_16bit_and_accumulator=false,"
+                     "reason=bytes\n";
+        return false;
+    }
+
+    constexpr std::uint64_t kSeed = UINT64_C(0xA5A5A5A51234F0F0);
+    std::vector<std::uint8_t> code = {0x48U, 0xB8U};
+    for (std::size_t index = 0U; index < 8U; ++index)
+    {
+        code.push_back(static_cast<std::uint8_t>(
+            (kSeed >> (index * 8U)) & 0xFFU));
+    }
+    code.insert(code.end(), lowered.begin(), lowered.end());
+    code.insert(code.end(), {0xC3U});  // ret
+
+    ExecutablePage page;
+    if (!AllocateCodePage(&page) || !WriteAndArm(page, code))
+    {
+        ReleasePage(&page);
+        std::cout << "long_mode_lowering_16bit_and_accumulator=false,"
+                     "reason=page\n";
+        return false;
+    }
+    using Entry = std::uint64_t (*)();
+    Entry entry = nullptr;
+    std::memcpy(&entry, &page.base, sizeof(entry));
+    const std::uint64_t observed = entry();
+    ReleasePage(&page);
+
+    const bool ok = observed == UINT64_C(0xA5A5A5A5123400F0);
+    std::cout << "long_mode_lowering_16bit_and_accumulator="
+              << (ok ? "true" : "false") << ",observed=0x" << std::hex
+              << observed << std::dec << "\n";
+    return ok;
+}
+
 // 2e. A REX changes AH/CH/DH/BH into SPL/BPL/SIL/DIL (Task 614). The
 // high-byte source is materialised in R14B by exchanging the source low and
 // high bytes around a REX-using move, and the original byte operation is then
@@ -626,6 +1154,111 @@ bool ProbeStackPointerHighByteSource(const std::uint32_t* data)
     return ok;
 }
 
+// Task 683. Execute the semantic body of the mode16 LOOPNZ cache slot. The
+// direct E9 target is patched to a local label here because this lower-level
+// probe has no translation-plan edge metadata; the emission probe checks that
+// the real cache uses those fixups.
+bool Probe16BitLoopNz()
+{
+    struct Case
+    {
+        std::uint16_t initial_cx;
+        bool initial_zf;
+        std::uint64_t expected;
+    };
+    bool ok = true;
+    for (const Case& item : {
+             Case{2U, false, UINT64_C(0x100000001)},
+             Case{1U, false, UINT64_C(0x100000000)},
+             Case{2U, true, UINT64_C(0x000000001)},
+         })
+    {
+        std::vector<std::uint8_t> code = {
+            0x41U, 0x56U,  // push r14
+            0xB9U,
+            static_cast<std::uint8_t>(item.initial_cx), 0x00U, 0x00U, 0x00U,
+        };
+        if (item.initial_zf)
+        {
+            code.insert(code.end(), {0x31U, 0xC0U});  // xor eax,eax
+        }
+        else
+        {
+            code.insert(code.end(),
+                        {0xB8U, 0x01U, 0x00U, 0x00U, 0x00U,
+                         0x85U, 0xC0U});  // mov eax,1; test eax,eax
+        }
+
+        const std::size_t branch_opcode_offset = code.size() + 21U;
+        code.insert(code.end(), {
+            0x9CU,                         // pushfq
+            0x66U, 0xFFU, 0xC9U,           // dec cx
+            0x66U, 0x85U, 0xC9U,           // test cx,cx
+            0x74U, 0x11U,                  // jz restore
+            0x4CU, 0x8BU, 0x34U, 0x24U,    // mov r14,[rsp]
+            0x49U, 0x0FU, 0xBAU, 0xE6U, 0x06U, // bt r14,6
+            0x72U, 0x06U,                  // jc restore
+            0x9DU,                         // popfq
+            0xE9U, 0x00U, 0x00U, 0x00U, 0x00U, // jmp target
+            0x9DU,                         // restore: popfq
+        });
+        const std::size_t target_displacement_offset =
+            branch_opcode_offset + 1U;
+
+        const auto append_result = [&code] {
+            code.insert(code.end(), {
+                0x89U, 0xC8U,                  // mov eax,ecx
+                0xBAU, 0x00U, 0x00U, 0x00U, 0x00U,
+                0x0FU, 0x95U, 0xC2U,           // setnz dl
+                0x48U, 0xC1U, 0xE2U, 0x20U,    // shl rdx,32
+                0x48U, 0x09U, 0xD0U,           // or rax,rdx
+                0x41U, 0x5EU,                  // pop r14
+                0xC3U,                         // ret
+            });
+        };
+        append_result();
+        const std::size_t target_offset = code.size();
+        append_result();
+        const std::int64_t displacement =
+            static_cast<std::int64_t>(target_offset) -
+            static_cast<std::int64_t>(target_displacement_offset + 4U);
+        if (displacement < std::numeric_limits<std::int32_t>::min() ||
+            displacement > std::numeric_limits<std::int32_t>::max())
+        {
+            ok = false;
+            continue;
+        }
+        for (std::size_t index = 0U; index < 4U; ++index)
+        {
+            code[target_displacement_offset + index] =
+                static_cast<std::uint8_t>(
+                    (static_cast<std::uint32_t>(displacement) >>
+                     (index * 8U)) & 0xFFU);
+        }
+
+        ExecutablePage page;
+        if (!AllocateCodePage(&page) || !WriteAndArm(page, code))
+        {
+            ReleasePage(&page);
+            ok = false;
+            continue;
+        }
+        using Entry = std::uint64_t (*)();
+        Entry entry = nullptr;
+        std::memcpy(&entry, &page.base, sizeof(entry));
+        const std::uint64_t observed = entry();
+        ReleasePage(&page);
+        ok = ok && observed == item.expected;
+        std::cout << "  long_mode_loopnz_case_cx=" << item.initial_cx
+                  << ",zf=" << (item.initial_zf ? 1 : 0)
+                  << ",observed=0x" << std::hex << observed << std::dec
+                  << "\n";
+    }
+    std::cout << "long_mode_lowering_16bit_loopnz="
+              << (ok ? "true" : "false") << "\n";
+    return ok;
+}
+
 // The classifier and the rewrite must agree about which instructions have a
 // lowering at all, and a segment override must still have none.
 bool ProbeClassification()
@@ -635,6 +1268,7 @@ bool ProbeClassification()
                                      0x34U, 0x12U};
     const std::uint8_t gs_override[] = {0x65U, 0x8BU, 0x03U};
     const std::uint8_t register_only[] = {0x31U, 0xC0U};
+    const std::uint8_t sixteen_bit_memory[] = {0x67U, 0x32U, 0x00U};
 
     const auto memory_result =
         ClassifyLongModeBytes(register_memory, sizeof(register_memory));
@@ -644,6 +1278,15 @@ bool ProbeClassification()
         ClassifyLongModeBytes(gs_override, sizeof(gs_override));
     const auto register_result =
         ClassifyLongModeBytes(register_only, sizeof(register_only));
+    const auto sixteen_bit_result = ClassifyLongModeBytes(
+        sixteen_bit_memory, sizeof(sixteen_bit_memory));
+
+    std::cout << "long_mode_lowering_16bit_probe=compat="
+              << static_cast<unsigned>(sixteen_bit_result.compatibility)
+              << ",divergence="
+              << static_cast<unsigned>(sixteen_bit_result.divergence)
+              << ",lowering="
+              << static_cast<unsigned>(sixteen_bit_result.lowering) << "\n";
 
     const bool ok =
         memory_result.compatibility ==
@@ -706,6 +1349,15 @@ bool RunLongModeLoweringProbe()
 
     const bool refusals_ok = ProbeAbsoluteRefusals();
     const bool two_byte_esp_ok = ProbeStackPointerTwoByteOpcode();
+    const bool sixteen_bit_stack_ok = Probe16BitStackPointerImmediate();
+    const bool sixteen_bit_lea_ok = Probe16BitLea32();
+    const bool sixteen_bit_lea16_ok = Probe16BitLea16();
+    const bool sixteen_bit_test_ok = Probe16BitTest32();
+    const bool sixteen_bit_mov_ok = Probe16BitMovImmediate();
+    const bool sixteen_bit_mov_register_ok = Probe16BitMovRegister();
+    const bool sixteen_bit_shift_ok = Probe16BitShift32();
+    const bool sixteen_bit_and_ok = Probe16BitAndAccumulatorImmediate();
+    const bool sixteen_bit_loopnz_ok = Probe16BitLoopNz();
     const bool high_byte_ok = ProbeStackPointerHighByteSource(data);
     const bool prefix_ok = ProbeAddressSizePrefix(data);
     const bool absolute_ok = ProbeAbsoluteToSib(data);
@@ -716,7 +1368,12 @@ bool RunLongModeLoweringProbe()
     platform::ReleaseMemory(reserved.base, kPageBytes);
 
     const bool all = classification_ok && refusals_ok &&
-        two_byte_esp_ok && high_byte_ok && prefix_ok && absolute_ok &&
+        two_byte_esp_ok && sixteen_bit_stack_ok && sixteen_bit_lea_ok &&
+        sixteen_bit_lea16_ok && sixteen_bit_test_ok && sixteen_bit_mov_ok &&
+        sixteen_bit_mov_register_ok && sixteen_bit_shift_ok &&
+        sixteen_bit_and_ok && sixteen_bit_loopnz_ok &&
+        high_byte_ok &&
+        prefix_ok && absolute_ok &&
         absolute_imm_ok && moffs_ok;
     std::cout << "long_mode_lowering_all=" << (all ? "true" : "false") << "\n";
     return all;

@@ -76,8 +76,16 @@ bool HasAotTransferHandlerInstruction(
         return false;
     }
 
-    const auto* const instruction = reinterpret_cast<const std::uint8_t*>(
+    const auto* instruction = reinterpret_cast<const std::uint8_t*>(
         static_cast<std::uintptr_t>(guest_address));
+    if (instruction[0] == 0x2EU)
+    {
+        if (!IsGuestRangeReadable(context, instruction, 2U))
+        {
+            return false;
+        }
+        ++instruction;
+    }
     const std::uint8_t opcode = instruction[0];
     if (opcode == 0xE8U || opcode == 0xE9U || opcode == 0xEBU ||
         opcode == 0xFFU || opcode == 0xC2U || opcode == 0xC3U)
@@ -89,10 +97,7 @@ bool HasAotTransferHandlerInstruction(
         return true;
     }
     return opcode == 0x0FU && IsGuestRangeReadable(
-               context,
-               reinterpret_cast<const void*>(
-                   static_cast<std::uintptr_t>(guest_address) + 1U),
-               1U) &&
+               context, instruction + 1U, 1U) &&
         instruction[1] >= 0x80U && instruction[1] <= 0x8FU;
 }
 
@@ -1656,6 +1661,9 @@ bool HandleAotIndirectTransfer(const repiu::platform::FaultEvent& fault,
     const std::uint32_t source = static_cast<std::uint32_t>(win32_context->Eip);
     const auto* instruction = reinterpret_cast<const std::uint8_t*>(
         static_cast<std::uintptr_t>(source));
+    const bool cs_override = instruction[0] == 0x2EU;
+    const std::uint32_t prefix_size = cs_override ? 1U : 0U;
+    instruction += prefix_size;
     bool is_call = false;
     std::uint32_t target = 0;
     std::uint32_t instruction_size = 0;
@@ -1663,13 +1671,13 @@ bool HandleAotIndirectTransfer(const repiu::platform::FaultEvent& fault,
     {
         std::int32_t displacement = 0;
         std::memcpy(&displacement, instruction + 1, sizeof(displacement));
-        instruction_size = 5U;
+        instruction_size = prefix_size + 5U;
         target = source + instruction_size + displacement;
         is_call = instruction[0] == 0xE8U;
     }
     else if (instruction[0] == 0xEBU)
     {
-        instruction_size = 2U;
+        instruction_size = prefix_size + 2U;
         target = source + instruction_size +
             static_cast<std::int8_t>(instruction[1]);
     }
@@ -1697,18 +1705,46 @@ bool HandleAotIndirectTransfer(const repiu::platform::FaultEvent& fault,
         }
         const std::uint8_t mod = instruction[1] >> 6;
         const std::uint8_t rm = instruction[1] & 0x07U;
-        instruction_size = 2U;
+        instruction_size = prefix_size + 2U;
         if (mod == 3U)
         {
             target = ReadGeneralRegister32(win32_context, rm);
         }
         else
         {
-            std::uint32_t pointer_address = 0;
+            std::uint32_t pointer_offset = 0;
+            std::uint32_t unprefixed_size = 0;
             if (!DecodeModRmMemoryAddress(win32_context, instruction,
-                                          &pointer_address,
-                                          &instruction_size) ||
-                !ReadGuestUInt32(
+                                          &pointer_offset,
+                                          &unprefixed_size))
+            {
+                if (fallback_reason != nullptr)
+                {
+                    *fallback_reason =
+                        AotDbtDispatchFallbackReason::kUnreadableSource;
+                }
+                return false;
+            }
+            instruction_size = prefix_size + unprefixed_size;
+            std::uint32_t pointer_address = pointer_offset;
+            if (cs_override)
+            {
+                std::uint16_t selector = 0U;
+                if (!repiu::runtime::FindSelectorForLinearAddress(
+                        context->selector_table, source, &selector) ||
+                    !ResolveSegmentLinearRange(
+                        context, selector, pointer_offset,
+                        sizeof(target), false, &pointer_address))
+                {
+                    if (fallback_reason != nullptr)
+                    {
+                        *fallback_reason =
+                            AotDbtDispatchFallbackReason::kUnreadableSource;
+                    }
+                    return false;
+                }
+            }
+            if (!ReadGuestUInt32(
                     context,
                     reinterpret_cast<const void*>(
                         static_cast<std::uintptr_t>(pointer_address)),
@@ -2293,6 +2329,10 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
             context, *win32_context, lookup_kind, lookup_source,
             guest_address, cache_address);
         context->aot_reentry_cache_address = cache_address;
+        const std::uint32_t cache_context_eip = win32_context->Eip;
+        win32_context->Eip = guest_address;
+        RecordExecutionProbe(win32_context, context);
+        win32_context->Eip = cache_context_eip;
         if (ActivateGlideGateDirectTarget(
                 context, cache_address, guest_address))
         {
@@ -2342,11 +2382,15 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
                 : 0U;
         if (compatibility_trace_index != 0U)
         {
+            const auto* guest_bytes = reinterpret_cast<const std::uint8_t*>(
+                static_cast<std::uintptr_t>(guest_address));
+            const bool guest_bytes_readable = IsGuestRangeReadable(
+                context, guest_bytes, 6U);
             std::fprintf(
                 stderr,
                 "[repiu-aot-reentry-compat] n=%u cache=0x%08X guest=0x%08X "
                 "identical=%u hle=%u transfer=%u eax=0x%08X edx=0x%08X "
-                "esp=0x%08X\n",
+                "esp=0x%08X bytes=%02X%02X%02X%02X%02X%02X\n",
                 static_cast<unsigned>(compatibility_trace_index),
                 static_cast<unsigned>(cache_address),
                 static_cast<unsigned>(guest_address),
@@ -2355,9 +2399,15 @@ bool HandleAotReentry(const repiu::platform::FaultEvent& fault,
                 transfer_boundary ? 1U : 0U,
                 static_cast<unsigned>(win32_context->Eax),
                 static_cast<unsigned>(win32_context->Edx),
-                static_cast<unsigned>(win32_context->Esp));
+                static_cast<unsigned>(win32_context->Esp),
+                guest_bytes_readable ? guest_bytes[0] : 0U,
+                guest_bytes_readable ? guest_bytes[1] : 0U,
+                guest_bytes_readable ? guest_bytes[2] : 0U,
+                guest_bytes_readable ? guest_bytes[3] : 0U,
+                guest_bytes_readable ? guest_bytes[4] : 0U,
+                guest_bytes_readable ? guest_bytes[5] : 0U);
         }
-        if (planner_hle_boundary)
+        if (planner_hle_boundary && !transfer_boundary)
         {
             // Planner HLE entries contain an engine INT3 rather than a
             // translated copy of the guest instruction. Run the shared guest

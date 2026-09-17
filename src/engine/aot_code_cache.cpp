@@ -126,7 +126,7 @@ void TraceDynamicAotPlanEntry(const runtime::AotTranslationPlan& plan,
             std::fprintf(stderr,
                          "[repiu-aot-dynamic] stage=plan-entry-meta "
                          "guest=0x%08X block=0x%08X index=%zu tail=%u "
-                         "kind=%u length=%u mnemonic=%u\n",
+                         "kind=%u length=%u mnemonic=%u code_mode=%u\n",
                          static_cast<unsigned>(guest_address),
                          static_cast<unsigned>(block.guest_address),
                          instruction_index,
@@ -134,7 +134,9 @@ void TraceDynamicAotPlanEntry(const runtime::AotTranslationPlan& plan,
                              ? 1U : 0U,
                          static_cast<unsigned>(instruction.kind),
                          static_cast<unsigned>(instruction.length),
-                         static_cast<unsigned>(instruction.mnemonic));
+                         static_cast<unsigned>(instruction.mnemonic),
+                         static_cast<unsigned>(
+                             instruction.guest_code_default_operand_size));
             return;
         }
     }
@@ -1051,6 +1053,7 @@ bool PlaceAotCodeCache(const runtime::AotCodeCacheImage& image,
     placement->capacity = static_cast<std::uint32_t>(capacity);
     placement->entry_address = placement->base_address +
                                image.entry_cache_offset;
+    placement->code_mode_ranges = image.code_mode_ranges;
     placement->address_map = image.address_map;
     InitializeAotPageCoherence(placement, 1U);
     placement->fixups = image.fixups;
@@ -1179,6 +1182,7 @@ bool AppendDynamicAotTranslation(
     arena_view.valid = true;
     arena_view.relocated_image_base = runtime_base;
     arena_view.relocated_entry_linear_address = guest_entry;
+    arena_view.code_mode_ranges = placement->code_mode_ranges;
     runtime::RelocatedRuntimeObject object;
     object.relocated_base_address = runtime_base;
     object.virtual_size = runtime_size;

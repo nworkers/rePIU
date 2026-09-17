@@ -67,6 +67,8 @@
 #include "guest_address_watch.h"
 #include "fault_exit_trace.h"
 #include "instruction_emulation.h"
+#include "mode16_far_return.h"
+#include "mode16_stack_push.h"
 #include "dpmi_mscdex_services.h"
 #include "bios_keyboard_services.h"
 #include "dos_int21_services.h"
@@ -99,6 +101,26 @@ std::uint32_t AotFaultTraceAddressFilter()
 {
     static const std::uint32_t address = [] {
         const char* setting = std::getenv("REPIU_AOT_FAULT_TRACE_ADDRESS");
+        if (setting == nullptr || *setting == '\0')
+        {
+            return 0U;
+        }
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(setting, &end, 0);
+        if (end == setting || *end != '\0' || parsed > UINT32_MAX)
+        {
+            return 0U;
+        }
+        return static_cast<std::uint32_t>(parsed);
+    }();
+    return address;
+}
+
+std::uint32_t AotFaultTraceGuestAddressFilter()
+{
+    static const std::uint32_t address = [] {
+        const char* setting =
+            std::getenv("REPIU_AOT_FAULT_TRACE_GUEST_ADDRESS");
         if (setting == nullptr || *setting == '\0')
         {
             return 0U;
@@ -513,6 +535,77 @@ void TraceAotGuestMap(const AotCodeCachePlacement& placement,
         }
         token_begin = separator + 1U;
     }
+}
+
+void TraceAotCacheMap(const AotCodeCachePlacement& placement,
+                      const char* const phase)
+{
+    const auto setting = repiu::platform::ReadEnvironmentSetting(
+        "REPIU_AOT_CACHE_MAP_TRACE", 31U);
+    if (!setting.present)
+    {
+        return;
+    }
+    std::uint32_t cache_address = 0U;
+    if (setting.too_long ||
+        !ParseAotGuestMapTraceOffset(setting.value, &cache_address))
+    {
+        std::fprintf(stderr, "[repiu-aot-cache-map] invalid=address\n");
+        return;
+    }
+    if (!placement.placed || cache_address < placement.base_address ||
+        cache_address - placement.base_address >= placement.size)
+    {
+        std::fprintf(stderr,
+                     "[repiu-aot-cache-map] cache=0x%08X phase=%s "
+                     "in_range=0\n",
+                     cache_address,
+                     phase == nullptr ? "unknown" : phase);
+        return;
+    }
+
+    const std::uint32_t previous_address =
+        cache_address == placement.base_address
+            ? cache_address : cache_address - 1U;
+    std::uint32_t guest_address = 0U;
+    std::uint32_t previous_guest_address = 0U;
+    const bool mapped = FindAotGuestAddress(
+        placement, cache_address, &guest_address);
+    const bool previous_mapped = FindAotGuestAddress(
+        placement, previous_address, &previous_guest_address);
+    const AotCacheBreakpointProvenance provenance =
+        ClassifyAotCacheBreakpointProvenance(
+            placement, cache_address, false);
+    const AotCacheBreakpointProvenance previous_provenance =
+        ClassifyAotCacheBreakpointProvenance(
+            placement, previous_address, false);
+    const auto* const bytes = reinterpret_cast<const std::uint8_t*>(
+        static_cast<std::uintptr_t>(placement.base_address));
+    const std::uint32_t offset = cache_address - placement.base_address;
+    const std::uint32_t previous_offset =
+        previous_address - placement.base_address;
+    const std::uint32_t first_offset = offset > 8U ? offset - 8U : 0U;
+    const std::uint32_t byte_count = std::min<std::uint32_t>(
+        17U, placement.size - first_offset);
+
+    std::fprintf(
+        stderr,
+        "[repiu-aot-cache-map] cache=0x%08X phase=%s in_range=1 "
+        "byte=0x%02X previous=0x%08X previous_byte=0x%02X "
+        "mapped=%u guest=0x%08X previous_mapped=%u previous_guest=0x%08X "
+        "provenance=%u previous_provenance=%u bytes_start=0x%08X bytes=",
+        cache_address, phase == nullptr ? "unknown" : phase,
+        static_cast<unsigned>(bytes[offset]), previous_address,
+        static_cast<unsigned>(bytes[previous_offset]), mapped ? 1U : 0U,
+        guest_address, previous_mapped ? 1U : 0U, previous_guest_address,
+        static_cast<unsigned>(provenance),
+        static_cast<unsigned>(previous_provenance),
+        placement.base_address + first_offset);
+    for (std::uint32_t index = 0U; index < byte_count; ++index)
+    {
+        std::fprintf(stderr, "%02X", bytes[first_offset + index]);
+    }
+    std::fprintf(stderr, "\n");
 }
 
 bool IsGuestStackSwitchSupported()
@@ -1138,6 +1231,16 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
         return false;
     }
 
+    if (context->enable_segment_load_hle)
+    {
+        const std::optional<bool> mode16_push =
+            HandleMode16StackPush(win32_context, context);
+        if (mode16_push.has_value())
+        {
+            return *mode16_push;
+        }
+    }
+
     const std::uint8_t* ptr = reinterpret_cast<const std::uint8_t*>(
         static_cast<std::uintptr_t>(win32_context->Eip));
     std::uint32_t offset = 0U;
@@ -1292,10 +1395,20 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
             }
             break;
         case 0xEAU:
+            if (HandleLinexeFarTransferBoundary(win32_context, context))
+            {
+                return true;
+            }
             if (context->enable_segment_load_hle && HandleFarJumpInstruction(win32_context, context)) return true;
             break;
         case 0xCBU:
-            if (context->enable_segment_load_hle && HandleFarReturnInstruction(win32_context, context)) return true;
+            if (context->enable_segment_load_hle)
+            {
+                const std::optional<bool> mode16_return =
+                    HandleMode16FarReturn(win32_context, context);
+                if (mode16_return.has_value()) return *mode16_return;
+                if (HandleFarReturnInstruction(win32_context, context)) return true;
+            }
             break;
         case 0xCDU:
             if (context->enable_traced_dos_hle &&
@@ -1344,6 +1457,7 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
         (HandleSegmentLoadInstruction(win32_context, context) ||
          HandleSegmentPushInstruction(win32_context, context) ||
          HandleFarJumpInstruction(win32_context, context) ||
+         (HandleMode16FarReturn(win32_context, context).value_or(false)) ||
          HandleFarReturnInstruction(win32_context, context) ||
          HandleSegmentPopInstruction(win32_context, context) ||
          HandleRepStosdInstruction(win32_context, context) ||
@@ -2755,6 +2869,27 @@ std::uint32_t LinuxX64GuestEntryTraceAddress()
     return address;
 }
 
+std::uint32_t LinuxX64GuestEntryTraceEndAddress()
+{
+    static const std::uint32_t address = [] {
+        const char* const value =
+            std::getenv("REPIU_LINUX_X64_GUEST_ENTRY_TRACE_END");
+        if (value == nullptr || *value == '\0')
+        {
+            return 0U;
+        }
+        char* end = nullptr;
+        const unsigned long parsed = std::strtoul(value, &end, 0);
+        if (end == value || *end != '\0' ||
+            parsed > std::numeric_limits<std::uint32_t>::max())
+        {
+            return 0U;
+        }
+        return static_cast<std::uint32_t>(parsed);
+    }();
+    return address;
+}
+
 const char* LinuxX64FaultKindName(
     const repiu::platform::FaultKind kind)
 {
@@ -2812,11 +2947,19 @@ void TraceLinuxX64GuestEntry(
     {
         return;
     }
+    const std::uint32_t configured_end =
+        LinuxX64GuestEntryTraceEndAddress();
+    const std::uint32_t range_end = configured_end >= target
+        ? configured_end : target;
     const std::uint32_t entry_guest_eip =
         ResolveLinuxX64GuestEntryAddress(context, entry_eip);
     const std::uint32_t exit_guest_eip =
         ResolveLinuxX64GuestEntryAddress(context, exit_eip);
-    if (target != entry_guest_eip && target != exit_guest_eip)
+    const bool entry_matched =
+        entry_guest_eip >= target && entry_guest_eip <= range_end;
+    const bool exit_matched =
+        exit_guest_eip >= target && exit_guest_eip <= range_end;
+    if (!entry_matched && !exit_matched)
     {
         return;
     }
@@ -2830,12 +2973,13 @@ void TraceLinuxX64GuestEntry(
     char line[512] = {};
     const int length = std::snprintf(
         line, sizeof(line),
-        "[repiu-x64-guest-entry] n=%u target=0x%08X fault_kind=%s "
+        "[repiu-x64-guest-entry] n=%u target=0x%08X end=0x%08X fault_kind=%s "
         "fault_eip=0x%08X entry_eip=0x%08X entry_guest=0x%08X "
         "exit_eip=0x%08X exit_guest=0x%08X entry_esp=0x%08X "
         "exit_esp=0x%08X "
         "eflags=0x%08X pending=%u legacy=%u exit_site=%s\n",
         static_cast<unsigned>(sequence), static_cast<unsigned>(target),
+        static_cast<unsigned>(range_end),
         LinuxX64FaultKindName(fault_kind), static_cast<unsigned>(fault_eip),
         static_cast<unsigned>(entry_eip),
         static_cast<unsigned>(entry_guest_eip),
@@ -3705,6 +3849,97 @@ bool DispatchGuestHleInstruction(repiu::platform::GuestCpuContext* win32_context
     return DispatchGuestHleHandlers(win32_context, context);
 }
 
+std::optional<runtime::GuestCodeDefaultOperandSize>
+LegacyResumeCodeMode(const ThreadContext* context,
+                     const std::uint32_t guest_target)
+{
+    if (context == nullptr)
+    {
+        return runtime::GuestCodeDefaultOperandSize::k32;
+    }
+
+    std::optional<runtime::GuestCodeDefaultOperandSize> placement_mode;
+    bool placement_ambiguous = false;
+    if (context->aot_placement != nullptr)
+    {
+        for (const runtime::RuntimeCodeModeRange& range :
+             context->aot_placement->code_mode_ranges)
+        {
+            if (range.virtual_size == 0U ||
+                guest_target < range.relocated_base_address)
+            {
+                continue;
+            }
+            const std::uint64_t offset =
+                static_cast<std::uint64_t>(guest_target) -
+                range.relocated_base_address;
+            if (offset >= range.virtual_size)
+            {
+                continue;
+            }
+            const runtime::GuestCodeDefaultOperandSize candidate =
+                (range.object_flags & runtime::kLeObjectBigDefault) != 0U
+                    ? runtime::GuestCodeDefaultOperandSize::k32
+                    : runtime::GuestCodeDefaultOperandSize::k16;
+            if (placement_mode.has_value())
+            {
+                placement_ambiguous = true;
+            }
+            else
+            {
+                placement_mode = candidate;
+            }
+        }
+    }
+
+    std::optional<runtime::GuestCodeDefaultOperandSize> selector_mode;
+    bool selector_ambiguous = false;
+    for (const runtime::GuestDescriptor& descriptor :
+         context->selector_table.descriptors)
+    {
+        if (!descriptor.present || !descriptor.executable ||
+            descriptor.code_default_operand_size ==
+                runtime::GuestCodeDefaultOperandSize::kUnknown ||
+            guest_target < descriptor.base)
+        {
+            continue;
+        }
+        const std::uint64_t offset =
+            static_cast<std::uint64_t>(guest_target) - descriptor.base;
+        if (offset > descriptor.limit)
+        {
+            continue;
+        }
+        if (selector_mode.has_value())
+        {
+            selector_ambiguous = true;
+        }
+        else
+        {
+            selector_mode = descriptor.code_default_operand_size;
+        }
+    }
+
+    if (placement_ambiguous || selector_ambiguous)
+    {
+        return runtime::GuestCodeDefaultOperandSize::kUnknown;
+    }
+    if (placement_mode.has_value() && selector_mode.has_value() &&
+        *placement_mode != *selector_mode)
+    {
+        return runtime::GuestCodeDefaultOperandSize::kUnknown;
+    }
+    if (placement_mode.has_value())
+    {
+        return placement_mode;
+    }
+    if (selector_mode.has_value())
+    {
+        return selector_mode;
+    }
+    return runtime::GuestCodeDefaultOperandSize::k32;
+}
+
 bool CanResumeLinuxX64LegacyTarget(ThreadContext* context,
                                    const std::uint32_t guest_target)
 {
@@ -3718,8 +3953,16 @@ bool CanResumeLinuxX64LegacyTarget(ThreadContext* context,
     {
         return false;
     }
+    const std::optional<runtime::GuestCodeDefaultOperandSize> code_mode =
+        LegacyResumeCodeMode(context, guest_target);
+    if (!code_mode.has_value() ||
+        *code_mode == runtime::GuestCodeDefaultOperandSize::kUnknown)
+    {
+        return false;
+    }
     return runtime::ClassifyLongModeBytes(
-               instruction, kMaximumX86InstructionBytes).compatibility ==
+               instruction, kMaximumX86InstructionBytes, *code_mode)
+               .compatibility ==
         runtime::LongModeByteCompatibility::kIdenticalBytes;
 #else
     (void)context;
@@ -4858,61 +5101,73 @@ repiu::platform::FaultDisposition DispatchGuestFault(
              trace_address_filter == trace_cache_address) &&
             std::getenv("REPIU_AOT_FAULT_TRACE") != nullptr)
         {
-            static std::atomic<std::uint32_t> aot_fault_trace_count{0U};
-            const std::uint32_t occurrence =
-                aot_fault_trace_count.fetch_add(1U, std::memory_order_relaxed) +
-                1U;
-            if (occurrence <= 16U)
-            {
-                const std::uint32_t cache_address = trace_cache_address;
-                std::uint32_t guest_address = 0U;
-                const bool mapped = FindAotGuestAddress(
-                    *context->aot_placement, cache_address, &guest_address);
-                const std::uint32_t previous_cache_address =
-                    cache_address != 0U ? cache_address - 1U : 0U;
-                std::uint32_t previous_guest_address = 0U;
-                const bool previous_mapped = cache_address != 0U &&
-                    FindAotGuestAddress(
-                        *context->aot_placement, previous_cache_address,
-                        &previous_guest_address);
-                const AotCacheBreakpointProvenance provenance =
-                    ClassifyAotCacheBreakpointProvenance(
-                        *context->aot_placement, cache_address, false);
-                const AotCacheBreakpointProvenance previous_provenance =
-                    ClassifyAotCacheBreakpointProvenance(
-                        *context->aot_placement, previous_cache_address,
-                        false);
-                std::uint32_t fallthrough_guest_address = 0U;
-                const bool fallthrough_mapped =
-                    runtime::FindAotBlockFallthroughTarget(
-                        context->aot_placement->fixups,
-                        context->aot_placement->base_address,
-                        context->aot_placement->size,
-                        cache_address, &fallthrough_guest_address);
-                std::fprintf(
-                    stderr,
-                    "[repiu-aot-fault] kind=%s cache=0x%08X "
-                    "exact=%u/0x%08X/%u previous=%u/0x%08X/%u "
-                    "fallthrough=%u/0x%08X size=%u tail=%u maps=%zu n=%u\n",
-                    fault.kind == repiu::platform::FaultKind::kBreakpoint
-                        ? "breakpoint" : "access",
-                    cache_address,
-                    mapped ? 1U : 0U,
-                    guest_address,
-                    static_cast<std::uint32_t>(provenance),
-                    previous_mapped ? 1U : 0U,
-                    previous_guest_address,
-                    static_cast<std::uint32_t>(previous_provenance),
-                    fallthrough_mapped ? 1U : 0U,
-                    fallthrough_guest_address,
+            const std::uint32_t cache_address = trace_cache_address;
+            std::uint32_t guest_address = 0U;
+            const bool mapped = FindAotGuestAddress(
+                *context->aot_placement, cache_address, &guest_address);
+            const std::uint32_t previous_cache_address =
+                cache_address != 0U ? cache_address - 1U : 0U;
+            std::uint32_t previous_guest_address = 0U;
+            const bool previous_mapped = cache_address != 0U &&
+                FindAotGuestAddress(
+                    *context->aot_placement, previous_cache_address,
+                    &previous_guest_address);
+            std::uint32_t fallthrough_guest_address = 0U;
+            const bool fallthrough_mapped =
+                runtime::FindAotBlockFallthroughTarget(
+                    context->aot_placement->fixups,
+                    context->aot_placement->base_address,
                     context->aot_placement->size,
-                    context->aot_placement->base_address +
-                            context->aot_placement->size >= cache_address
-                        ? context->aot_placement->base_address +
-                              context->aot_placement->size - cache_address
-                        : 0U,
-                    context->aot_placement->address_map.size(),
-                    occurrence);
+                    cache_address, &fallthrough_guest_address);
+            const std::uint32_t guest_address_filter =
+                AotFaultTraceGuestAddressFilter();
+            const bool guest_filter_matches = guest_address_filter == 0U ||
+                (mapped && guest_address == guest_address_filter) ||
+                (previous_mapped &&
+                 previous_guest_address == guest_address_filter) ||
+                (fallthrough_mapped &&
+                 fallthrough_guest_address == guest_address_filter);
+            if (guest_filter_matches)
+            {
+                static std::atomic<std::uint32_t> aot_fault_trace_count{0U};
+                const std::uint32_t occurrence =
+                    aot_fault_trace_count.fetch_add(
+                        1U, std::memory_order_relaxed) + 1U;
+                if (occurrence <= 16U)
+                {
+                    const AotCacheBreakpointProvenance provenance =
+                        ClassifyAotCacheBreakpointProvenance(
+                            *context->aot_placement, cache_address, false);
+                    const AotCacheBreakpointProvenance previous_provenance =
+                        ClassifyAotCacheBreakpointProvenance(
+                            *context->aot_placement, previous_cache_address,
+                            false);
+                    std::fprintf(
+                        stderr,
+                        "[repiu-aot-fault] kind=%s cache=0x%08X "
+                        "exact=%u/0x%08X/%u previous=%u/0x%08X/%u "
+                        "fallthrough=%u/0x%08X size=%u tail=%u maps=%zu "
+                        "n=%u\n",
+                        fault.kind == repiu::platform::FaultKind::kBreakpoint
+                            ? "breakpoint" : "access",
+                        cache_address,
+                        mapped ? 1U : 0U,
+                        guest_address,
+                        static_cast<std::uint32_t>(provenance),
+                        previous_mapped ? 1U : 0U,
+                        previous_guest_address,
+                        static_cast<std::uint32_t>(previous_provenance),
+                        fallthrough_mapped ? 1U : 0U,
+                        fallthrough_guest_address,
+                        context->aot_placement->size,
+                        context->aot_placement->base_address +
+                                context->aot_placement->size >= cache_address
+                            ? context->aot_placement->base_address +
+                                  context->aot_placement->size - cache_address
+                            : 0U,
+                        context->aot_placement->address_map.size(),
+                        occurrence);
+                }
             }
         }
         // Task 586. Hooked beside the watch for the same reason: a fault inside
@@ -5606,9 +5861,9 @@ repiu::platform::FaultDisposition DispatchGuestFault(
                 IsGuestRangeReadable(context, next, 6U);
             std::fprintf(
                 stderr,
-                "[repiu-segment-hle] stage=handler n=%u handled=%u "
-                "drained=%u eip_after=0x%08X esp_after=0x%08X "
-                "next=%02X%02X%02X%02X%02X%02X\n",
+                        "[repiu-segment-hle] stage=handler n=%u handled=%u "
+                        "drained=%u eip_after=0x%08X esp_after=0x%08X "
+                        "next=%02X%02X%02X%02X%02X%02X\n",
                 segment_hle_trace_index,
                 handled ? 1U : 0U,
                 drained,
@@ -5631,10 +5886,21 @@ repiu::platform::FaultDisposition DispatchGuestFault(
     {
         return repiu::platform::FaultDisposition::kResume;
     }
-    if (context->enable_segment_load_hle &&
-        HandleFarReturnInstruction(win32_context, context))
+    if (context->enable_segment_load_hle)
     {
-        return repiu::platform::FaultDisposition::kResume;
+        const std::optional<bool> mode16_return =
+            HandleMode16FarReturn(win32_context, context);
+        if (mode16_return.has_value())
+        {
+            if (*mode16_return)
+            {
+                return repiu::platform::FaultDisposition::kResume;
+            }
+        }
+        else if (HandleFarReturnInstruction(win32_context, context))
+        {
+            return repiu::platform::FaultDisposition::kResume;
+        }
     }
     if (context->enable_segment_load_hle &&
         HandleSegmentLoadInstruction(win32_context, context))
@@ -5875,9 +6141,29 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         win32_context->EFlags &= ~0x00000100U;
         return repiu::platform::FaultDisposition::kNotHandled;
     }
+    const std::uint32_t fatal_breakpoint_eip =
+        static_cast<std::uint32_t>(win32_context->Eip);
     if (HandleOriginalFatalBreakpoint(fault, context))
     {
         NoteVehExitSite(context, VehExitSite::kFatalBreakpoint);
+#if defined(__x86_64__)
+        if (context->aot_placement != nullptr &&
+            static_cast<std::uint32_t>(win32_context->Eip) !=
+                fatal_breakpoint_eip)
+        {
+            const bool resumed = TryResumeAotAfterHandledHle(
+                win32_context, context, fatal_breakpoint_eip,
+                AotHleResumeOrigin::kHandledGuestBoundary);
+            if (!resumed &&
+                !CanResumeLinuxX64LegacyTarget(
+                    context,
+                    static_cast<std::uint32_t>(win32_context->Eip)))
+            {
+                win32_context->EFlags &= ~0x00000100U;
+                return repiu::platform::FaultDisposition::kNotHandled;
+            }
+        }
+#endif
         return repiu::platform::FaultDisposition::kResume;
     }
 
@@ -6100,8 +6386,10 @@ struct GuestShutdownRecoveryRequest
 // constraints -- it allocates nothing, takes no lock, and blocks on nothing. The
 // message that used to be written here now belongs to the requesting thread,
 // because assigning a std::string is an allocation.
-void RecoverGuestThreadForShutdown(repiu::platform::GuestCpuContext* registers,
-                                   void* user_data)
+void RecoverGuestThreadForShutdownCommon(
+    repiu::platform::GuestCpuContext* registers,
+    void* user_data,
+    void* host_context)
 {
     auto* request = static_cast<GuestShutdownRecoveryRequest*>(user_data);
     if (request == nullptr || registers == nullptr ||
@@ -6127,8 +6415,40 @@ void RecoverGuestThreadForShutdown(repiu::platform::GuestCpuContext* registers,
     }
     RecordFaultRecoveryProvenance(
         request->context, eip, FaultRecoveryPath::kShutdownInterrupt);
+#if defined(__x86_64__) && !defined(_WIN32)
+    // The x64 cache runs with the host stack in RSP. Returning through the
+    // cache-exit trampoline is therefore the only valid shutdown unwind. Eip
+    // cannot carry its full address, so prime native RIP first and then leave
+    // the low half in GuestCpuContext for StoreGuestCpuContext's merge.
+    const std::uintptr_t resume_address = reinterpret_cast<std::uintptr_t>(
+        &repiu::platform::RepiuLinuxX64GuestExit);
+    if (host_context == nullptr ||
+        !repiu::platform::StoreHostInstructionPointer(
+            resume_address, host_context))
+    {
+        return;
+    }
+    registers->Eip = static_cast<decltype(registers->Eip)>(resume_address);
+    registers->EFlags &= ~0x00000100U;
+    registers->EFlags &= ~0x00000400U;
+#else
     RecoverToHost(registers, request->context);
+#endif
     request->recovered = true;
+}
+
+void RecoverGuestThreadForShutdown(repiu::platform::GuestCpuContext* registers,
+                                   void* user_data)
+{
+    RecoverGuestThreadForShutdownCommon(registers, user_data, nullptr);
+}
+
+void RecoverGuestThreadForShutdownWithContext(
+    repiu::platform::GuestCpuContext* registers,
+    void* user_data,
+    void* host_context)
+{
+    RecoverGuestThreadForShutdownCommon(registers, user_data, host_context);
 }
 
 std::uint16_t FindGuestStackSelector(
@@ -6357,12 +6677,13 @@ bool RunExecutionThread(
                 static_cast<std::uint32_t>(value);
         }
     }
-    if (context.execution_probe_configured && aot_placement != nullptr &&
-        !InstallAotProbeSentinel(
-            aot_placement,
-            context.runtime_base + context.execution_probe_offset))
+    if (context.execution_probe_configured && aot_placement != nullptr)
     {
-        context.execution_probe_configured = false;
+        // A miss is expected for a dynamic-only target. Keep the probe armed;
+        // the append path installs it after publishing the matching entry.
+        (void)InstallAotProbeSentinel(
+            aot_placement,
+            context.runtime_base + context.execution_probe_offset);
     }
     const auto read_hex_env = [](const char* name, std::uint32_t* out) {
         char text[32] = {};
@@ -6387,6 +6708,7 @@ bool RunExecutionThread(
     if (aot_placement != nullptr)
     {
         TraceAotGuestMap(*aot_placement, context.runtime_base, "initial");
+        TraceAotCacheMap(*aot_placement, "initial");
     }
     // The capture buffer is reserved here, before the guest thread starts, so
     // the first-hit recorder never allocates inside the exception handler.
@@ -7174,9 +7496,10 @@ bool RunExecutionThread(
         while (recovery_attempts < kShutdownRecoveryAttempts)
         {
             ++recovery_attempts;
-            interrupt_answered = repiu::platform::InterruptHostThread(
-                thread, &RecoverGuestThreadForShutdown, &recovery_request,
-                kShutdownInterruptTimeoutMilliseconds, &interrupt_failure);
+            interrupt_answered = repiu::platform::InterruptHostThreadWithContext(
+                thread, &RecoverGuestThreadForShutdownWithContext,
+                &recovery_request, kShutdownInterruptTimeoutMilliseconds,
+                &interrupt_failure);
             if (!interrupt_answered || recovery_request.recovered)
             {
                 break;
@@ -7451,6 +7774,7 @@ bool RunExecutionThread(
         if (aot_placement != nullptr)
         {
             TraceAotGuestMap(*aot_placement, context.runtime_base, "final");
+            TraceAotCacheMap(*aot_placement, "final");
         }
         mark_shutdown_step("done");
         return true;
@@ -7478,6 +7802,7 @@ bool RunExecutionThread(
     if (aot_placement != nullptr)
     {
         TraceAotGuestMap(*aot_placement, context.runtime_base, "final");
+        TraceAotCacheMap(*aot_placement, "final");
     }
 
     attempt->returned = context.returned;

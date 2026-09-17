@@ -482,6 +482,14 @@ bool BuildRelocatedRuntimeImage(
         object.flags = region.flags;
         object.memory = mapped_object.memory;
         image->objects.push_back(object);
+        if ((region.flags & kLeObjectExecutable) != 0U)
+        {
+            image->code_mode_ranges.push_back({
+                region.relocated_base_address,
+                region.virtual_size,
+                region.flags,
+            });
+        }
 
         std::uint16_t selector = 0;
         if (region.virtual_size == 0 ||

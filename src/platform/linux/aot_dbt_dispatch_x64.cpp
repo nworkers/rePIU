@@ -15,6 +15,8 @@ void* repiu_linux_x64_dispatch_resolver = nullptr;
 volatile std::uint64_t repiu_linux_x64_guest_entry_rsp = 0U;
 volatile std::uint64_t repiu_linux_x64_cache_call_rsp = 0U;
 volatile std::uint64_t repiu_linux_x64_return_thunk_rsp = 0U;
+volatile std::uint32_t repiu_linux_x64_guest_esp_trace_site = 0U;
+volatile std::uint32_t repiu_linux_x64_guest_esp_trace_value = 0U;
 
 void RepiuLinuxX64ReturnThunk();
 void RepiuLinuxX64LegacyResumeThunk();
@@ -60,6 +62,18 @@ std::uintptr_t LinuxX64ReturnThunkAddress()
 std::uintptr_t LinuxX64LegacyResumeThunkAddress()
 {
     return reinterpret_cast<std::uintptr_t>(&RepiuLinuxX64LegacyResumeThunk);
+}
+
+std::uintptr_t LinuxX64GuestEspTraceSiteAddress()
+{
+    return reinterpret_cast<std::uintptr_t>(
+        &repiu_linux_x64_guest_esp_trace_site);
+}
+
+std::uintptr_t LinuxX64GuestEspTraceValueAddress()
+{
+    return reinterpret_cast<std::uintptr_t>(
+        &repiu_linux_x64_guest_esp_trace_value);
 }
 
 }  // namespace repiu::platform

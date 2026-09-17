@@ -102,6 +102,16 @@ struct RelocatedRuntimeObject
     std::uint32_t external_byte_count = 0;
 };
 
+// The LE code-mode metadata that must survive into a dynamic AOT append. The
+// object flags retain the original LE record, so the default operand size is
+// derived from the same OBJBIGDEF bit as the initial image.
+struct RuntimeCodeModeRange
+{
+    std::uint32_t relocated_base_address = 0;
+    std::uint32_t virtual_size = 0;
+    std::uint32_t object_flags = 0;
+};
+
 // Readers go through these so an owning object and an external view are read
 // the same way. Returns nullptr for an empty owning object, which callers
 // already have to handle through the size.
@@ -137,6 +147,7 @@ struct RelocatedRuntimeImage
     std::uint32_t relocated_entry_linear_address = 0;
     std::uint32_t relocated_stack_top_linear_address = 0;
     std::vector<RelocatedRuntimeObject> objects;
+    std::vector<RuntimeCodeModeRange> code_mode_ranges;
     std::vector<RelocatedSelectorBinding> selector_bindings;
     std::uint32_t selector_binding_record_count = 0;
     std::uint32_t selector_binding_conflict_count = 0;
