@@ -15,6 +15,7 @@
 #include "repiu/platform/linux_x64_guest_entry.h"
 #endif
 #include "repiu/runtime/execution_timeout.h"
+#include "repiu/runtime/timer_safe_point_injection.h"
 #include "repiu/runtime/aot_long_mode_compatibility.h"
 #include "repiu/platform/thunk_calling_convention.h"
 #include "repiu/hle/linexe_call_gate.h"
@@ -4882,13 +4883,13 @@ std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_co
     // guest's own IRET runs natively and returns to the cache address directly,
     // so that host is left as it was.
     //
-    // Opt-in for now: with it on, a 30-second pumpit2a run injects at safe
-    // points and gets past the IRET, then dies at about 28 seconds on a
-    // transient int3 inside the cache that no handler claims. Off keeps the
-    // behavior every run has had -- safe-point ticks deferred and dropped --
-    // until that is understood.
+    // Task 718: on by default. It was opt-in while runs with it on died at
+    // about 28 seconds -- first on the CS-override boundary Task 716 removed,
+    // then on the ES fold Task 717 fixed. `=0` restores the old behavior, in
+    // which safe-point ticks are deferred and dropped.
     static const bool safe_point_injection =
-        std::getenv("REPIU_LINUX_X64_SAFE_POINT_INJECTION") != nullptr;
+        runtime::ResolveTimerSafePointInjection(
+            std::getenv("REPIU_LINUX_X64_SAFE_POINT_INJECTION"));
     if (safe_point_injection && context->aot_placement != nullptr &&
         IsAotCacheAddress(context, eip))
     {

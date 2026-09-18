@@ -17167,3 +17167,20 @@ SS rule now covers every segment register and the initial data selector. With
 injection on the guest now runs 90 seconds without faults, drawing 3,913 frames with
 the scenes changing throughout; Win32 figures are within noise. Next: turn injection
 on by default.
+
+---
+
+## 2026-09-19 Task 718 — safe point 틱 주입 기본값 on
+
+Linux x64 safe point 틱 주입을 기본값으로 켰다(`REPIU_LINUX_X64_SAFE_POINT_INJECTION=0`만
+off). 기본 설정으로 게임 시계가 흐르고, 180초 동안 폴트 없이 9,994프레임을 그렸다. 게임이
+주기마다 되돌리는 틱 카운터가 두 host에서 같은 자리에서 초기화되며, 간격은 Win32 77초,
+Linux 84초다. 다음은 장면별 시각 비교.
+
+## English
+
+Linux x64 safe-point tick injection is on by default (off only with
+`REPIU_LINUX_X64_SAFE_POINT_INJECTION=0`). With default settings the game clock
+runs, and a 180-second run drew 9,994 frames without faults. The tick counter the
+game winds back each cycle resets at the same point on both hosts, 77 seconds apart
+on Win32 and 84 on Linux. Next: per-scene timing compared.

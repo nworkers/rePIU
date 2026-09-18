@@ -2,6 +2,7 @@
 
 #include "repiu/runtime/aot_code_cache.h"
 #include "repiu/runtime/aot_translation_plan.h"
+#include "repiu/runtime/timer_safe_point_injection.h"
 
 #include <Zydis.h>
 
@@ -1559,6 +1560,26 @@ bool ProbeCsDataBoundaryEmission()
     return ok;
 }
 
+// Task 718. How REPIU_LINUX_X64_SAFE_POINT_INJECTION reads. On when unset, and
+// on for the `=1` every earlier run used; off for `0` alone. The variable was
+// once tested for presence, which made `=0` mean on -- the last case below is
+// the one that would pass under that rule and must not.
+bool ProbeTimerSafePointInjectionSetting()
+{
+    using repiu::runtime::ResolveTimerSafePointInjection;
+    const bool unset_on = ResolveTimerSafePointInjection(nullptr);
+    const bool one_on = ResolveTimerSafePointInjection("1");
+    const bool empty_on = ResolveTimerSafePointInjection("");
+    const bool zero_off = !ResolveTimerSafePointInjection("0");
+    const bool ok = unset_on && one_on && empty_on && zero_off;
+    std::cout << "timer_safe_point_injection_setting="
+              << (ok ? "true" : "false")
+              << ",unset=" << (unset_on ? "on" : "off")
+              << ",one=" << (one_on ? "on" : "off")
+              << ",zero=" << (zero_off ? "off" : "on") << "\n";
+    return ok;
+}
+
 bool RunLongModeEmissionProbe()
 {
     const bool default_ok = ProbeDefaultIsUnchanged();
@@ -1585,6 +1606,7 @@ bool RunLongModeEmissionProbe()
         ProbeIndirectFallbackStackCleanup();
     const bool timer_safe_points_ok = ProbeTimerSafePointsInLongMode();
     const bool cs_data_boundary_ok = ProbeCsDataBoundaryEmission();
+    const bool injection_setting_ok = ProbeTimerSafePointInjectionSetting();
 
     const bool all = default_ok && outcomes_ok && refused_ok &&
         sixteen_bit_mode_ok &&
@@ -1601,7 +1623,8 @@ bool RunLongModeEmissionProbe()
         unresolved_fallthrough_ok &&
         indirect_fallback_stack_ok &&
         timer_safe_points_ok &&
-        cs_data_boundary_ok;
+        cs_data_boundary_ok &&
+        injection_setting_ok;
     std::cout << "long_mode_emission_all=" << (all ? "true" : "false") << "\n";
     return all;
 }
