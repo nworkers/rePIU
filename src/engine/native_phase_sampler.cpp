@@ -83,7 +83,7 @@ struct NativePhaseCaptureRequest
 // The AOT address mapping is deliberately *not* here: it is a pure function of
 // the sampled EIP and can degrade to a scan of a hundred thousand entries, so
 // it runs after the target is moving again.
-void CaptureNativePhaseRegisters(repiu::platform::GuestCpuContext* registers,
+bool CaptureNativePhaseRegisters(repiu::platform::GuestCpuContext* registers,
                                  void* user_data)
 {
     auto* request = static_cast<NativePhaseCaptureRequest*>(user_data);
@@ -109,6 +109,7 @@ void CaptureNativePhaseRegisters(repiu::platform::GuestCpuContext* registers,
             &scan_failed);
         sample->host_scan_failed = scan_failed;
     }
+    return false;
 }
 #endif
 

@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 
 #if !defined(_WIN32)
@@ -103,19 +104,6 @@ bool FloatSaveMatches(const GuestCpuContext& registers)
     return true;
 }
 
-bool FloatRegisterBytesMatch(const GuestCpuContext& registers)
-{
-    for (std::size_t index = 0; index < kRegisterAreaSize; ++index)
-    {
-        if (registers.FloatSave.RegisterArea[index] != RegisterByte(index))
-        {
-            return false;
-        }
-    }
-    return registers.FloatSave.ControlWord == kControlWord &&
-        registers.FloatSave.StatusWord == kStatusWord;
-}
-
 // The shared half: every host must expose the same field names holding the
 // values written to them. On Windows this is CONTEXT itself, which is the point
 // -- the engine's existing field accesses have to keep compiling.
@@ -164,13 +152,12 @@ bool ProbeUcontextRoundTrip()
     {
         return false;
     }
-    if (!Matches(read) ||
-#if defined(__x86_64__)
-        !FloatRegisterBytesMatch(read)
-#else
-        !FloatSaveMatches(read)
-#endif
-    )
+    // Task 707. x86-64 is held to the same comparison as i386, tag word and
+    // all. It used to compare register bytes only, and that exemption is how a
+    // conversion that could never say `empty` reached a real run: it marked all
+    // eight registers in use on every signal return, so the guest's next FLD
+    // overflowed the x87 stack and every later result was a NaN.
+    if (!Matches(read) || !FloatSaveMatches(read))
     {
         return false;
     }
@@ -230,6 +217,95 @@ bool ProbeUcontextRoundTrip()
         !repiu::platform::StoreGuestCpuContext(written, nullptr);
 }
 
+// Task 707. One x87 state where the tag differs per register and the stack top
+// is not zero, which is what separates a conversion that works from one that
+// only looks like it does.
+//
+// Both save formats index the tag by physical register R0..R7 and store the
+// register contents in stack-relative ST(0)..ST(7) order, so the contents of
+// physical register `j` live at `_st[(j - top) & 7]`. A conversion that skips
+// that rotation passes every all-empty and all-valid case and still describes
+// the wrong register the moment a guest leaves a value on the x87 stack -- and
+// a guest computing screen coordinates always has.
+#if defined(__x86_64__)
+
+// TOP = 3, so physical register j is at stack index (j - 3) & 7.
+constexpr std::uint32_t kMixedStatusWord = 0x00001800U;
+
+// R0 empty (11), R1 zero (01), R2 special (10), R3 valid (00), R4..R7 empty.
+constexpr std::uint32_t kMixedTagWord = 0x0000FF27U;
+
+// Every state but empty, so R1, R2 and R3 are in use and nothing else is.
+constexpr std::uint16_t kMixedAbridgedTag = 0x000EU;
+
+void WriteFloatingRegister(GuestCpuContext* registers,
+                           const std::size_t stack_index,
+                           const std::uint64_t significand,
+                           const std::uint16_t exponent)
+{
+    std::uint8_t* const slot =
+        registers->FloatSave.RegisterArea + stack_index * 10U;
+    std::memcpy(slot, &significand, sizeof(significand));
+    std::memcpy(slot + sizeof(significand), &exponent, sizeof(exponent));
+}
+
+bool ProbeMixedFloatingTagRoundTrip()
+{
+    GuestCpuContext written{};
+    written.FloatSave.ControlWord = kControlWord;
+    written.FloatSave.StatusWord = kMixedStatusWord;
+    written.FloatSave.TagWord = kMixedTagWord;
+    // Physical 1 -> stack 6: zero. Left as the zeroed structure already has it.
+    // Physical 2 -> stack 7: special, an exponent of all ones.
+    WriteFloatingRegister(&written, 7U, UINT64_C(0x4000000000000000), 0x7FFFU);
+    // Physical 3 -> stack 0: valid, an exponent in range with the explicit
+    // integer bit set.
+    WriteFloatingRegister(&written, 0U, UINT64_C(0x8000000000000000), 0x4000U);
+    // Physical 0 -> stack 5, and physicals 4..7 -> stack indices 1..4, are
+    // empty. Their bytes are deliberately non-zero: an implementation that
+    // classified contents instead of reading the abridged tag would call them
+    // valid, and this is what makes it say so.
+    for (const std::size_t stack_index : {1U, 2U, 3U, 4U, 5U})
+    {
+        WriteFloatingRegister(&written, stack_index,
+                              UINT64_C(0x8000000000000000), 0x4000U);
+    }
+
+    ucontext_t host{};
+    _libc_fpstate x87{};
+    host.uc_mcontext.fpregs = &x87;
+    if (!repiu::platform::StoreGuestCpuContext(written, &host))
+    {
+        return false;
+    }
+    if (x87.ftw != kMixedAbridgedTag)
+    {
+        return false;
+    }
+    GuestCpuContext read{};
+    if (!repiu::platform::LoadGuestCpuContext(&host, &read))
+    {
+        return false;
+    }
+    if (read.FloatSave.TagWord != kMixedTagWord ||
+        read.FloatSave.StatusWord != kMixedStatusWord ||
+        read.FloatSave.ControlWord != kControlWord)
+    {
+        return false;
+    }
+    for (std::size_t index = 0; index < kRegisterAreaSize; ++index)
+    {
+        if (read.FloatSave.RegisterArea[index] !=
+            written.FloatSave.RegisterArea[index])
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+#endif  // defined(__x86_64__)
+
 bool ProbeFaultInfo()
 {
     ucontext_t host{};
@@ -263,6 +339,10 @@ bool RunGuestCpuContextProbe()
     // hands the engine one directly.
     const bool round_trip_ok = true;
     const bool fault_info_ok = true;
+#elif defined(__x86_64__)
+    const bool round_trip_ok =
+        ProbeUcontextRoundTrip() && ProbeMixedFloatingTagRoundTrip();
+    const bool fault_info_ok = ProbeFaultInfo();
 #else
     const bool round_trip_ok = ProbeUcontextRoundTrip();
     const bool fault_info_ok = ProbeFaultInfo();

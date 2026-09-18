@@ -240,5 +240,39 @@ std::uint32_t PatchAotGuardedSegmentReadSites(
     return processed;
 }
 
+void ApplyFlatStackSegmentFold(const std::uint16_t flat_stack_selector,
+                               AotSegmentResolution* const ss_resolution)
+{
+    if (ss_resolution == nullptr || flat_stack_selector == 0U ||
+        ss_resolution->selector != flat_stack_selector ||
+        ss_resolution->policy != AotSegmentAccessPolicy::kNativeFolded)
+    {
+        return;
+    }
+    // Only the base the fold adds changes. The limit is not used by the fold,
+    // and the descriptor in the selector table is left as it is because the DOS
+    // allocator and the mode16 paths read that base for their own purposes.
+    ss_resolution->base = 0U;
+}
+
+void ApplyFlatSegmentFolds(const std::uint16_t flat_stack_selector,
+                           const std::uint16_t flat_data_selector,
+                           AotSegmentTable* const table)
+{
+    if (table == nullptr)
+    {
+        return;
+    }
+    for (std::uint8_t seg = 0U; seg < 6U; ++seg)
+    {
+        if (seg == 1U)
+        {
+            continue;  // CS has no shadow
+        }
+        ApplyFlatStackSegmentFold(flat_stack_selector, &table->segments[seg]);
+        ApplyFlatStackSegmentFold(flat_data_selector, &table->segments[seg]);
+    }
+}
+
 }  // namespace repiu::runtime
 

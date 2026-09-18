@@ -759,6 +759,97 @@ bool ProbeConditionalBranchFallthrough()
     return ok;
 }
 
+// Task 710. Timer safe points under long mode.
+//
+// The emitter planted a safe point on every backward edge for i386 and on none
+// at all for long mode, because the long-mode branch continued past the switch
+// that planted them. A guest spinning in long-mode AOT code could therefore not
+// take a timer request, and pumpit2a's zero-length PIU.BIN retry -- which Win32
+// leaves after 37 reads -- ran 769,639 times in ten seconds on Linux x64.
+//
+// Three claims, each on the same plan so only the host mode varies: long mode
+// plants the same number of safe points as i386; its compare uses the SIB form,
+// because `83 3D disp32` is RIP-relative there; and the image still passes the
+// emitter's own decode verification, which counts each entry's instructions.
+bool ProbeTimerSafePointsInLongMode()
+{
+    const ConditionalFallthroughPlan built =
+        MakeConditionalFallthroughPlan(false);
+
+    // The i386 image of this plan is not a valid cache on its own -- its
+    // branch target resolves outside the image, and that is so with safe points
+    // off too, because the plan was written for the long-mode path (Task 630).
+    // What is compared from it is what the emitter planted and wrote, which is
+    // decided before resolution and is what every Win32 run executes.
+    AotCodeCacheBuildOptions i386_options;
+    i386_options.enable_timer_safe_points = true;
+    AotCodeCacheImage i386_image;
+    BuildAotCodeCacheImage(built.plan, i386_options, &i386_image);
+
+    // The long-mode image has to be valid outright: its verifier decodes every
+    // entry and compares the instruction count with the emitter's own, so a
+    // safe point counted wrong fails here.
+    AotCodeCacheBuildOptions long_options;
+    long_options.enable_long_mode_emission = true;
+    long_options.enable_timer_safe_points = true;
+    AotCodeCacheImage long_image;
+    const bool long_built =
+        BuildAotCodeCacheImage(built.plan, long_options, &long_image) &&
+        long_image.valid;
+
+    const bool planted = long_built &&
+        !i386_image.timer_safe_point_sites.empty() &&
+        long_image.timer_safe_point_sites.size() ==
+            i386_image.timer_safe_point_sites.size();
+
+    bool long_encoding = planted;
+    for (const auto& site : long_image.timer_safe_point_sites)
+    {
+        const std::vector<std::uint8_t>& bytes = long_image.bytes;
+        long_encoding = long_encoding &&
+            site.request_address_offset >= 3U &&
+            site.request_address_offset + 5U <= bytes.size() &&
+            bytes[site.cache_offset] == 0x9CU &&
+            bytes[site.request_address_offset - 3U] == 0x83U &&
+            bytes[site.request_address_offset - 2U] == 0x3CU &&
+            bytes[site.request_address_offset - 1U] == 0x25U &&
+            bytes[site.request_address_offset + 4U] == 0x00U &&
+            bytes[site.breakpoint_offset] == 0xCCU;
+    }
+    // The i386 bytes are the ones every Win32 run has executed; they must not
+    // have moved.
+    bool i386_encoding = planted;
+    for (const auto& site : i386_image.timer_safe_point_sites)
+    {
+        const std::vector<std::uint8_t>& bytes = i386_image.bytes;
+        i386_encoding = i386_encoding &&
+            site.request_address_offset >= 2U &&
+            bytes[site.cache_offset] == 0x9CU &&
+            bytes[site.request_address_offset - 2U] == 0x83U &&
+            bytes[site.request_address_offset - 1U] == 0x3DU &&
+            bytes[site.breakpoint_offset] == 0xCCU;
+    }
+
+    // Disabled stays disabled: the long-mode branch plants nothing unless asked.
+    AotCodeCacheBuildOptions off_options;
+    off_options.enable_long_mode_emission = true;
+    AotCodeCacheImage off_image;
+    const bool off_ok =
+        BuildAotCodeCacheImage(built.plan, off_options, &off_image) &&
+        off_image.valid && off_image.timer_safe_point_sites.empty();
+
+    const bool all = planted && long_encoding && i386_encoding && off_ok;
+    std::cout << "long_mode_emission_timer_safe_points=planted="
+              << (planted ? "true" : "false")
+              << ",long_valid=" << (long_built ? "true" : "false")
+              << ",i386_sites=" << i386_image.timer_safe_point_sites.size()
+              << ",long_sites=" << long_image.timer_safe_point_sites.size()
+              << ",long_encoding=" << (long_encoding ? "true" : "false")
+              << ",i386_encoding=" << (i386_encoding ? "true" : "false")
+              << ",disabled=" << (off_ok ? "true" : "false") << "\n";
+    return all;
+}
+
 bool ProbeUnresolvedBlockFallthroughLookup()
 {
     AotTranslationPlan plan;
@@ -1349,6 +1440,125 @@ bool Probe16BitConditionalBranchUnresolvedTarget()
 
 }  // namespace
 
+// Task 716. The planner makes a `CS:` data access an HLE boundary on every
+// host, and x64 has nothing that services one; pumpit2a's timer-driven `itoa`
+// died on its first `mov al, cs:[edx+table]`. Long mode emits exactly that
+// case as a copy and nothing else that shares the boundary kind: the other
+// three records here are boundaries for a reason besides their prefix.
+//
+// Each record is its own block, as the planner leaves a boundary. The admitted
+// one has to carry its own jump to the next guest instruction, so the check
+// follows that jump to where it lands rather than looking at its opcode alone.
+bool ProbeCsDataBoundaryEmission()
+{
+    constexpr std::uint32_t kCsBase = 0x00130000U;
+    const std::vector<std::uint8_t> itoa_load = {
+        0x2EU, 0x8AU, 0x82U, 0x58U, 0x74U, 0x0EU, 0x00U};
+    const std::vector<std::uint8_t> itoa_lowered = {
+        0x67U, 0x2EU, 0x8AU, 0x82U, 0x58U, 0x74U, 0x0EU, 0x00U};
+    // Another segment keeps its boundary.
+    const std::vector<std::uint8_t> es_load = {0x26U, 0x8AU, 0x02U};
+    // Port I/O through a CS-overridden source is still port I/O.
+    const std::vector<std::uint8_t> cs_outsb = {0x2EU, 0x6EU};
+    // 16-bit code has a real CS base.
+    const std::vector<std::uint8_t> cs_sixteen = {0x2EU, 0x8AU, 0x07U};
+
+    struct Entry
+    {
+        const std::vector<std::uint8_t>* bytes;
+        GuestCodeDefaultOperandSize mode;
+        std::uint32_t address;
+    };
+    std::vector<Entry> entries = {
+        {&itoa_load, GuestCodeDefaultOperandSize::k32, 0U},
+        {&es_load, GuestCodeDefaultOperandSize::k32, 0U},
+        {&cs_outsb, GuestCodeDefaultOperandSize::k32, 0U},
+        {&cs_sixteen, GuestCodeDefaultOperandSize::k16, 0U},
+    };
+    AotTranslationPlan plan;
+    plan.valid = true;
+    plan.entry_address = kCsBase;
+    std::uint32_t address = kCsBase;
+    for (Entry& entry : entries)
+    {
+        entry.address = address;
+        AotBasicBlock block;
+        block.guest_address = address;
+        AotInstructionRecord record;
+        record.guest_address = address;
+        record.kind = AotInstructionKind::kHleBoundary;
+        record.length = static_cast<std::uint8_t>(entry.bytes->size());
+        record.bytes = *entry.bytes;
+        record.guest_code_default_operand_size = entry.mode;
+        block.instructions.push_back(record);
+        plan.blocks.push_back(block);
+        ++plan.hle_boundary_count;
+        address += static_cast<std::uint32_t>(entry.bytes->size());
+    }
+
+    AotCodeCacheBuildOptions options;
+    options.enable_long_mode_emission = true;
+    AotCodeCacheImage image;
+    const bool built =
+        BuildAotCodeCacheImage(plan, options, &image) && image.valid;
+
+    std::vector<std::uint8_t> emitted;
+    bool admitted = built &&
+        EmittedBytes(image, entries[0].address, &emitted) &&
+        emitted.size() == itoa_lowered.size() + 5U &&
+        std::equal(itoa_lowered.begin(), itoa_lowered.end(),
+                   emitted.begin()) &&
+        emitted[itoa_lowered.size()] == 0xE9U &&
+        !HasBoundaryFixupAt(image, entries[0].address);
+    std::uint32_t next_offset = 0U;
+    bool lands = admitted &&
+        CacheOffsetOf(image, entries[1].address, &next_offset);
+    bool jump_found = false;
+    for (const repiu::runtime::AotCodeCacheFixup& fixup : image.fixups)
+    {
+        if (fixup.kind != AotFixupKind::kBlockFallthrough ||
+            fixup.guest_source != entries[0].address)
+        {
+            continue;
+        }
+        std::int32_t displacement = 0;
+        std::memcpy(&displacement,
+                    image.bytes.data() + fixup.cache_patch_offset,
+                    sizeof(displacement));
+        jump_found = fixup.resolved &&
+            fixup.guest_target == entries[1].address &&
+            static_cast<std::int64_t>(fixup.cache_patch_offset) + 4 +
+                    displacement ==
+                static_cast<std::int64_t>(next_offset);
+    }
+    lands = lands && jump_found;
+
+    bool kept = built;
+    for (std::size_t index = 1U; index < entries.size(); ++index)
+    {
+        std::vector<std::uint8_t> boundary;
+        kept = kept && EmittedBytes(image, entries[index].address, &boundary) &&
+            boundary == std::vector<std::uint8_t>{0xCCU} &&
+            HasBoundaryFixupAt(image, entries[index].address);
+    }
+    const bool counted = image.long_mode_cs_data_boundary_count == 1U;
+    // The engine refuses the whole image when this fails, and the first cut of
+    // the change failed it: the emitted bytes were right and the game stopped
+    // one second in, with no AOT code at all.
+    const bool covered =
+        built && repiu::runtime::ValidateAotCodeCacheHleCoverage(plan, image);
+
+    const bool ok = admitted && lands && kept && counted && covered;
+    std::cout << "long_mode_emission_cs_data_boundary="
+              << (ok ? "true" : "false")
+              << ",admitted=" << (admitted ? "true" : "false")
+              << ",lands=" << (lands ? "true" : "false")
+              << ",kept=" << (kept ? "true" : "false")
+              << ",covered=" << (covered ? "true" : "false")
+              << ",count=" << image.long_mode_cs_data_boundary_count << "\n";
+    return ok;
+}
+
 bool RunLongModeEmissionProbe()
 {
     const bool default_ok = ProbeDefaultIsUnchanged();
@@ -1373,6 +1583,8 @@ bool RunLongModeEmissionProbe()
         ProbeUnresolvedBlockFallthroughLookup();
     const bool indirect_fallback_stack_ok =
         ProbeIndirectFallbackStackCleanup();
+    const bool timer_safe_points_ok = ProbeTimerSafePointsInLongMode();
+    const bool cs_data_boundary_ok = ProbeCsDataBoundaryEmission();
 
     const bool all = default_ok && outcomes_ok && refused_ok &&
         sixteen_bit_mode_ok &&
@@ -1387,7 +1599,9 @@ bool RunLongModeEmissionProbe()
         segment_guard_coverage_ok &&
         conditional_fallthrough_ok &&
         unresolved_fallthrough_ok &&
-        indirect_fallback_stack_ok;
+        indirect_fallback_stack_ok &&
+        timer_safe_points_ok &&
+        cs_data_boundary_ok;
     std::cout << "long_mode_emission_all=" << (all ? "true" : "false") << "\n";
     return all;
 }

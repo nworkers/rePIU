@@ -180,19 +180,21 @@ void InterruptSignalHandler(int, siginfo_t*, void* host_context)
         (record->interrupt_callback != nullptr ||
          record->interrupt_context_callback != nullptr))
     {
+        bool write_back = false;
         if (record->interrupt_context_callback != nullptr)
         {
-            record->interrupt_context_callback(
+            write_back = record->interrupt_context_callback(
                 &registers, record->interrupt_user_data, host_context);
         }
         else
         {
-            record->interrupt_callback(&registers,
-                                       record->interrupt_user_data);
+            write_back = record->interrupt_callback(
+                &registers, record->interrupt_user_data);
         }
-        // Written back unconditionally. The callback may have changed nothing,
-        // and storing an unchanged context costs less than asking it.
-        StoreGuestCpuContext(registers, host_context);
+        if (write_back)
+        {
+            StoreGuestCpuContext(registers, host_context);
+        }
     }
     record->interrupt_state.store(HostThreadRecord::InterruptState::kDone,
                                   std::memory_order_release);
@@ -433,15 +435,16 @@ bool InterruptHostThreadImpl(const HostThread& thread,
     bool sampled = false;
     if (GetThreadContext(handle, &registers))
     {
+        bool write_back = false;
         if (context_callback != nullptr)
         {
-            context_callback(&registers, user_data, &registers);
+            write_back = context_callback(&registers, user_data, &registers);
         }
         else
         {
-            callback(&registers, user_data);
+            write_back = callback(&registers, user_data);
         }
-        sampled = SetThreadContext(handle, &registers) != 0;
+        sampled = !write_back || SetThreadContext(handle, &registers) != 0;
     }
     ResumeThread(handle);
     if (!sampled)

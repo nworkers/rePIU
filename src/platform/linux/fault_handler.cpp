@@ -5,10 +5,15 @@
 #include "repiu/engine/guest_write_trace.h"
 
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <pthread.h>
 #if defined(__linux__)
+#include <fcntl.h>
+#include <linux/hw_breakpoint.h>
+#include <linux/perf_event.h>
+#include <sys/ioctl.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #endif
@@ -442,6 +447,53 @@ void WriteFaultGuestStack(char* out, std::size_t* length,
     }
 }
 
+// Task 717. Sixty-four guest stack words from ESP on a line of their own, so
+// the return addresses above an unhandled fault name the call chain that led to
+// it. Read through process_vm_readv like the four words above, which returns a
+// short count rather than faulting when the range runs off mapped memory.
+void WriteFaultGuestStackDump(const std::uint32_t guest_esp)
+{
+    constexpr std::size_t kWords = 64U;
+    std::uint32_t words[kWords] = {};
+    std::size_t count = 0U;
+#if defined(__linux__) && defined(SYS_process_vm_readv)
+    struct iovec local = {};
+    local.iov_base = words;
+    local.iov_len = sizeof(words);
+    struct iovec remote = {};
+    remote.iov_base = reinterpret_cast<void*>(
+        static_cast<std::uintptr_t>(guest_esp));
+    remote.iov_len = sizeof(words);
+    const long copied = syscall(
+        SYS_process_vm_readv, static_cast<long>(getpid()), &local, 1U,
+        &remote, 1U, 0U);
+    if (copied > 0L)
+    {
+        count = static_cast<std::size_t>(copied) / sizeof(std::uint32_t);
+    }
+#endif
+    if (count == 0U)
+    {
+        return;
+    }
+    char line[kWords * 12U + 64U];
+    std::size_t length = 0;
+    const char prefix[] = "[repiu-fault-stack] esp=";
+    for (std::size_t index = 0; index + 1U < sizeof(prefix); ++index)
+    {
+        line[length++] = prefix[index];
+    }
+    WriteHex(line, &length, guest_esp);
+    for (std::size_t index = 0; index < count; ++index)
+    {
+        line[length++] = ' ';
+        WriteHex(line, &length, words[index]);
+    }
+    line[length++] = static_cast<char>(10);  // newline
+    const ssize_t written = write(2, line, length);
+    (void)written;
+}
+
 void ReportUnhandledFault(const int signal_number,
                           const std::uintptr_t host_instruction_address,
                           const std::uintptr_t host_stack_pointer,
@@ -451,7 +503,9 @@ void ReportUnhandledFault(const int signal_number,
                           const std::uint32_t instruction_address,
                           const std::uint32_t access_address,
                           const bool execute_access,
-                          const GuestCpuContext& registers)
+                          const GuestCpuContext& registers,
+                          const std::uint32_t fault_kind,
+                          const int signal_code)
 {
     char line[1024];
     std::size_t length = 0;
@@ -536,10 +590,95 @@ void ReportUnhandledFault(const int signal_number,
     WriteNamedHex(line, &length, " ebp=", registers.Ebp);
     WriteNamedHex(line, &length, " esp=", registers.Esp);
     WriteNamedHex(line, &length, " eflags=", registers.EFlags);
+    // Task 714. Which kind of fault this was, and the kernel's reason for it.
+    // A SIGTRAP is either a breakpoint -- whose instruction pointer this
+    // handler rewinds onto the int3 -- or a trap-flag single step, whose
+    // pointer it leaves at the next instruction. Without the kind, a report
+    // whose `rip` lands on a non-int3 byte cannot say which it was.
+    WriteNamedHex(line, &length, " kind=", fault_kind);
+    WriteNamedHex(line, &length, " si_code=",
+                  static_cast<std::uint32_t>(signal_code));
     line[length++] = static_cast<char>(10);  // newline
     const ssize_t written = write(2, line, length);
     (void)written;
+    WriteFaultGuestStackDump(registers.Esp);
 }
+
+#if defined(__linux__) && defined(__x86_64__)
+// Task 717. A hardware write watchpoint on one guest address, reported and
+// resumed. The kernel delivers it as SIGTRAP with si_code TRAP_PERF, after the
+// write, with RIP on the next instruction -- so the report names the writing
+// host instruction by the bytes just before RIP, and the guest registers as
+// they stand after it.
+constexpr int kTrapPerf = 6;  // TRAP_PERF, absent from older headers
+constexpr std::uint32_t kDataWatchPrintLimit = 16U;
+volatile std::uint32_t g_data_watch_hits = 0U;
+
+bool IsDataWatchTrap(const int signal_number, const siginfo_t& info)
+{
+    return signal_number == SIGTRAP && info.si_code == kTrapPerf;
+}
+
+void ReportDataWatchHit(void* host_context, const GuestCpuContext& registers)
+{
+    const std::uint32_t hit = ++g_data_watch_hits;
+    if (hit > kDataWatchPrintLimit)
+    {
+        return;
+    }
+    char line[512];
+    std::size_t length = 0;
+    const char prefix[] = "[repiu-data-watch] hit=";
+    for (std::size_t index = 0; index + 1U < sizeof(prefix); ++index)
+    {
+        line[length++] = prefix[index];
+    }
+    WriteHex(line, &length, hit);
+    const std::uintptr_t rip = HostInstructionPointer(host_context);
+    WriteNamedHex64(line, &length, " rip=", rip);
+    // Sixteen bytes before RIP, read without faulting.
+    std::uint8_t before[16] = {};
+    std::size_t before_count = 0U;
+    if (rip >= sizeof(before))
+    {
+        struct iovec local = {before, sizeof(before)};
+        struct iovec remote = {reinterpret_cast<void*>(rip - sizeof(before)),
+                               sizeof(before)};
+        const long copied = syscall(SYS_process_vm_readv,
+                                    static_cast<long>(getpid()), &local, 1U,
+                                    &remote, 1U, 0U);
+        before_count = copied > 0L ? static_cast<std::size_t>(copied) : 0U;
+    }
+    const char bytes_text[] = " before=";
+    for (std::size_t index = 0; index + 1U < sizeof(bytes_text); ++index)
+    {
+        line[length++] = bytes_text[index];
+    }
+    for (std::size_t index = 0; index < before_count; ++index)
+    {
+        WriteByteHex(line, &length, before[index]);
+    }
+    std::uint64_t host_r10 = 0U;
+    std::uint64_t host_r14 = 0U;
+    std::uint64_t host_r15 = 0U;
+    HostDispatchRegisters(host_context, &host_r10, &host_r14, &host_r15);
+    WriteNamedHex64(line, &length, " r15=", host_r15);
+    WriteNamedHex(line, &length, " eax=", registers.Eax);
+    WriteNamedHex(line, &length, " ebx=", registers.Ebx);
+    WriteNamedHex(line, &length, " ecx=", registers.Ecx);
+    WriteNamedHex(line, &length, " edx=", registers.Edx);
+    WriteNamedHex(line, &length, " esi=", registers.Esi);
+    WriteNamedHex(line, &length, " edi=", registers.Edi);
+    WriteNamedHex(line, &length, " ebp=", registers.Ebp);
+    line[length++] = static_cast<char>(10);  // newline
+    const ssize_t written = write(2, line, length);
+    (void)written;
+    if (host_r15 != 0U)
+    {
+        WriteFaultGuestStackDump(static_cast<std::uint32_t>(host_r15));
+    }
+}
+#endif
 
 void SignalHandler(int signal_number, siginfo_t* info, void* host_context)
 {
@@ -555,6 +694,13 @@ void SignalHandler(int signal_number, siginfo_t* info, void* host_context)
         // from registers that were never read would be worse than dying here.
         return;
     }
+#if defined(__linux__) && defined(__x86_64__)
+    if (IsDataWatchTrap(signal_number, *info))
+    {
+        ReportDataWatchHit(host_context, registers);
+        return;
+    }
+#endif
 
     FaultEvent event;
     event.kind = ClassifySignal(signal_number, *info);
@@ -599,7 +745,9 @@ void SignalHandler(int signal_number, siginfo_t* info, void* host_context)
                              registers.Eip,
                              event.access.fault_address,
                              event.access.execute_access,
-                             registers);
+                             registers,
+                             static_cast<std::uint32_t>(event.kind),
+                             info != nullptr ? info->si_code : 0);
         repiu::engine::DumpGuestWriteTraceTail(2);
         // Restoring the default and returning lets the fault happen again with
         // nothing to catch it, which is how an unhandled fault should end:
@@ -651,6 +799,50 @@ void SignalHandler(int signal_number, siginfo_t* info, void* host_context)
 }
 
 }  // namespace
+
+// Task 717. REPIU_LINUX_X64_DATA_WATCH=<address>: a four-byte hardware write
+// watchpoint on the calling thread, reported by the handler above. Diagnostic
+// only; nothing is armed when the variable is unset.
+bool ArmLinuxDataWatchFromEnvironment()
+{
+#if defined(__linux__) && defined(__x86_64__)
+    const char* const text = std::getenv("REPIU_LINUX_X64_DATA_WATCH");
+    if (text == nullptr || *text == 0)
+    {
+        return false;
+    }
+    const unsigned long address = std::strtoul(text, nullptr, 0);
+    if (address == 0UL)
+    {
+        return false;
+    }
+    struct perf_event_attr attr = {};
+    attr.type = PERF_TYPE_BREAKPOINT;
+    attr.size = sizeof(attr);
+    attr.bp_type = HW_BREAKPOINT_W;
+    attr.bp_addr = address;
+    attr.bp_len = HW_BREAKPOINT_LEN_4;
+    attr.sample_period = 1U;
+    attr.exclude_kernel = 1U;
+    attr.exclude_hv = 1U;
+    attr.sigtrap = 1U;
+    attr.remove_on_exec = 1U;
+    const long fd = syscall(SYS_perf_event_open, &attr, 0, -1, -1,
+                            PERF_FLAG_FD_CLOEXEC);
+    char line[128];
+    const int length = std::snprintf(
+        line, sizeof(line), "[repiu-data-watch] armed address=0x%08lX fd=%ld\n",
+        address, fd);
+    if (length > 0)
+    {
+        const ssize_t written = write(2, line, static_cast<std::size_t>(length));
+        (void)written;
+    }
+    return fd >= 0;
+#else
+    return false;
+#endif
+}
 
 bool InstallFaultHandler(FaultCallback callback, void* user_data)
 {

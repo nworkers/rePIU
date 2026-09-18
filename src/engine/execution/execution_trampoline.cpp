@@ -67,6 +67,7 @@
 #include "guest_address_watch.h"
 #include "fault_exit_trace.h"
 #include "instruction_emulation.h"
+#include "interrupt_return.h"
 #include "mode16_far_return.h"
 #include "mode16_stack_push.h"
 #include "dpmi_mscdex_services.h"
@@ -81,6 +82,7 @@
 #include "repiu/engine/exception_rescue_win32.h"
 #include "guest_owned_breakpoint.h"
 #include "live_telemetry_snapshot.h"
+#include "repiu/engine/final_execution_report.h"
 #include "repiu/platform/guest_cpu_context.h"
 #include "repiu/platform/atomic_ops.h"
 #include "repiu/platform/host_time.h"
@@ -1418,6 +1420,13 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
                  HandleTracedMouseInterrupt33(win32_context, context) ||
                  HandleTracedBiosInterrupt16(win32_context, context))) return true;
             break;
+        case 0xCFU:
+        {
+            const std::optional<bool> iretd =
+                HandleIretdInstruction(win32_context, context);
+            if (iretd.has_value()) return *iretd;
+            break;
+        }
         case 0xFAU: case 0xFBU:
             if (context->enable_privileged_trap_hle && HandlePrivilegedTrapInstruction(win32_context, context)) return true;
             break;
@@ -1459,6 +1468,7 @@ bool DispatchGuestHleHandlers(repiu::platform::GuestCpuContext* win32_context, T
          HandleFarJumpInstruction(win32_context, context) ||
          (HandleMode16FarReturn(win32_context, context).value_or(false)) ||
          HandleFarReturnInstruction(win32_context, context) ||
+         HandleIretdInstruction(win32_context, context).value_or(false) ||
          HandleSegmentPopInstruction(win32_context, context) ||
          HandleRepStosdInstruction(win32_context, context) ||
          HandleRepMovsInstruction(win32_context, context) ||
@@ -3822,6 +3832,7 @@ std::uint32_t GuestCacheEntryThreadProc(void* parameter)
         return 5;
     }
     context->vectored_handler = context;
+    repiu::platform::ArmLinuxDataWatchFromEnvironment();
     // Task 583: the window in which a guest is executing by this mechanism.
     // The fault guard reads it to answer "is a guest running", which on this
     // host cannot be answered by `active_call_state` -- there is no switch to
@@ -4223,13 +4234,91 @@ void RecordExecutionProbeDump(repiu::platform::GuestCpuContext* win32_context, T
     result.captured = true;
 }
 
+// Task 713. One line per arrival, for the first N. Registers, then the first
+// sixteen bytes of each register's memory window when a memory offset is set.
+// Written with snprintf and one unbuffered write, because this runs inside the
+// fault handler.
+void LogExecutionProbeArrival(const repiu::platform::GuestCpuContext& registers,
+                              ThreadContext* context)
+{
+    const std::uint32_t arrival = ++context->execution_probe_arrival_count;
+    if (arrival > context->execution_probe_log_arrivals)
+    {
+        return;
+    }
+    const std::uint32_t values[kExecutionProbeRegisterCount] = {
+        registers.Eax, registers.Ebx, registers.Ecx, registers.Edx,
+        registers.Esi, registers.Edi, registers.Ebp,
+    };
+    static const char* const kNames[kExecutionProbeRegisterCount] = {
+        "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp",
+    };
+    char line[1024] = {};
+    int length = std::snprintf(
+        line, sizeof(line),
+        "[repiu-probe-arrival] n=%u eip=0x%08X esp=0x%08X eflags=0x%08X",
+        arrival, static_cast<std::uint32_t>(registers.Eip),
+        static_cast<std::uint32_t>(registers.Esp),
+        static_cast<std::uint32_t>(registers.EFlags));
+    for (std::uint32_t index = 0; index < kExecutionProbeRegisterCount &&
+         length > 0 && static_cast<std::size_t>(length) < sizeof(line);
+         ++index)
+    {
+        length += std::snprintf(line + length, sizeof(line) - length,
+                                " %s=0x%08X", kNames[index], values[index]);
+    }
+    if (context->execution_probe_memory_offset != 0U)
+    {
+        for (std::uint32_t index = 0; index < kExecutionProbeRegisterCount &&
+             length > 0 && static_cast<std::size_t>(length) < sizeof(line);
+             ++index)
+        {
+            if (values[index] >
+                UINT32_MAX - context->execution_probe_memory_offset)
+            {
+                continue;
+            }
+            const std::uint32_t address =
+                values[index] + context->execution_probe_memory_offset;
+            const auto* bytes = reinterpret_cast<const std::uint8_t*>(
+                static_cast<std::uintptr_t>(address));
+            if (!IsGuestRangeReadable(context, bytes, 16U))
+            {
+                continue;
+            }
+            length += std::snprintf(line + length, sizeof(line) - length,
+                                    " [%s+off]=", kNames[index]);
+            for (std::uint32_t k = 0; k < 16U && length > 0 &&
+                 static_cast<std::size_t>(length) + 3U < sizeof(line); ++k)
+            {
+                length += std::snprintf(line + length, sizeof(line) - length,
+                                        "%02X", bytes[k]);
+            }
+        }
+    }
+    if (length > 0 && static_cast<std::size_t>(length) + 1U < sizeof(line))
+    {
+        line[length++] = '\n';
+        repiu::platform::WriteHostErrorStream(
+            line, static_cast<std::size_t>(length));
+    }
+}
+
 void RecordExecutionProbe(repiu::platform::GuestCpuContext* win32_context, ThreadContext* context)
 {
     if (win32_context == nullptr || context == nullptr ||
-        !context->execution_probe_configured || context->execution_probe_hit ||
+        !context->execution_probe_configured ||
         win32_context->Eip < context->runtime_base ||
         static_cast<std::uint32_t>(win32_context->Eip) -
                 context->runtime_base != context->execution_probe_offset)
+    {
+        return;
+    }
+    if (context->execution_probe_log_arrivals != 0U)
+    {
+        LogExecutionProbeArrival(*win32_context, context);
+    }
+    if (context->execution_probe_hit)
     {
         return;
     }
@@ -4769,6 +4858,66 @@ std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_co
         return 0U;
     }
 
+    std::uint32_t eflags = win32_context->EFlags;
+    std::uint32_t segcs = win32_context->SegCs;
+    std::uint32_t eip = win32_context->Eip;
+#if defined(__x86_64__)
+    // Task 714. On this host the interrupt frame holds a guest address, always.
+    //
+    // At a handled boundary EIP already is one. At an AOT timer safe point it is
+    // not: EIP is the cache byte after the int3. That broke delivery twice over.
+    // Looking a cache address up in the guest selector table found nothing, so
+    // every safe-point tick was deferred and then dropped -- 0 of 3,859 injected
+    // in a 30-second pumpit2a run, against 5,667 of 5,719 on Win32, which left
+    // the guest's clock about 3.3 times slow. And once the lookup was made to
+    // succeed, the frame still carried the cache address, which Task 704's IRETD
+    // HLE rightly refuses as a return target outside every guest code
+    // descriptor, so the ISR died on its IRET.
+    //
+    // So the cache address is mapped to the guest instruction it executes -- at
+    // a safe point, the backward edge it guards -- and that is used for both the
+    // selector and the frame. Returning there re-runs the safe point, finds the
+    // request already cleared, and falls into the branch with the guest's flags
+    // intact, which is what resuming after the int3 would have done. On i386 the
+    // guest's own IRET runs natively and returns to the cache address directly,
+    // so that host is left as it was.
+    //
+    // Opt-in for now: with it on, a 30-second pumpit2a run injects at safe
+    // points and gets past the IRET, then dies at about 28 seconds on a
+    // transient int3 inside the cache that no handler claims. Off keeps the
+    // behavior every run has had -- safe-point ticks deferred and dropped --
+    // until that is understood.
+    static const bool safe_point_injection =
+        std::getenv("REPIU_LINUX_X64_SAFE_POINT_INJECTION") != nullptr;
+    if (safe_point_injection && context->aot_placement != nullptr &&
+        IsAotCacheAddress(context, eip))
+    {
+        std::uint32_t guest_address = 0U;
+        if (!FindAotGuestAddress(*context->aot_placement, eip,
+                                 &guest_address))
+        {
+            RecordTimerTickDeferred(&context->timer_tick_delivery);
+            return 0U;
+        }
+        eip = guest_address;
+    }
+    std::uint16_t logical_cs = 0U;
+    if (!runtime::FindSelectorForLinearAddress(
+            context->selector_table, eip, &logical_cs))
+    {
+        RecordTimerTickDeferred(&context->timer_tick_delivery);
+        return 0U;
+    }
+    const runtime::GuestDescriptor* const code_descriptor =
+        runtime::FindDescriptor(context->selector_table, logical_cs);
+    if (code_descriptor == nullptr || !code_descriptor->executable)
+    {
+        RecordTimerTickDeferred(&context->timer_tick_delivery);
+        return 0U;
+    }
+    segcs = logical_cs;
+#endif
+
     // Task 366: with the backlog opt-in off this returns false and the two lines
     // below behave exactly as before -- one injection, flag cleared. With it on,
     // a still-owed tick keeps delivery armed so the backlog drains one interrupt
@@ -4792,10 +4941,6 @@ std::uint32_t InjectPendingInterrupts(repiu::platform::GuestCpuContext* win32_co
     const std::uint32_t consumed_ticks =
         context->timer_interrupt_due_ticks.exchange(
             0U, std::memory_order_acq_rel);
-
-    std::uint32_t eflags = win32_context->EFlags;
-    std::uint32_t segcs = win32_context->SegCs;
-    std::uint32_t eip = win32_context->Eip;
 
     std::uint32_t esp = win32_context->Esp;
     esp -= 4;
@@ -5483,9 +5628,43 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         {
             return repiu::platform::FaultDisposition::kNotHandled;
         }
-        if (HandleAotTimerSafePoint(aot_fault, context))
+        std::uint32_t safe_point_guest_source = 0U;
+        if (HandleAotTimerSafePoint(aot_fault, context,
+                                    &safe_point_guest_source))
         {
             NoteVehExitSite(context, VehExitSite::kAotTimerSafePoint);
+#if defined(__x86_64__)
+            // Task 710. When no tick was due, EIP is the cache byte after the
+            // int3 and resuming there is ordinary. When INT 8 was injected, EIP
+            // is now the guest's handler -- a raw guest address that long mode
+            // cannot run -- so it has to enter the cache the way Tasks 702 and
+            // 703 made the Glide gate and the timer chain enter it. The IRET
+            // frame's return address is the cache byte after the int3, which
+            // the IRETD HLE from Task 704 already knows how to resume.
+            const std::uint32_t resumed_eip =
+                static_cast<std::uint32_t>(win32_context->Eip);
+            AotCodeCachePlacement* const safe_point_placement =
+                context->aot_placement;
+            const bool eip_in_cache =
+                safe_point_placement != nullptr &&
+                resumed_eip >= safe_point_placement->base_address &&
+                resumed_eip < safe_point_placement->base_address +
+                    safe_point_placement->size;
+            if (safe_point_placement != nullptr && !eip_in_cache)
+            {
+                const bool resumed = TryResumeAotAfterHandledHle(
+                    win32_context,
+                    context,
+                    safe_point_guest_source,
+                    AotHleResumeOrigin::kHandledGuestBoundary);
+                if (!resumed &&
+                    !CanResumeLinuxX64LegacyTarget(context, resumed_eip))
+                {
+                    win32_context->EFlags &= ~0x00000100U;
+                    return repiu::platform::FaultDisposition::kNotHandled;
+                }
+            }
+#endif
             return repiu::platform::FaultDisposition::kResume;
         }
         if (stop_for_aot_terminal_failure())
@@ -5668,10 +5847,31 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         static_cast<std::uint32_t>(win32_context->Eip));
     RecordAllocatorControlFlowException(fault, context);
     telemetry_time_scope.reset();
+    const std::uint32_t glide_gate_eip =
+        static_cast<std::uint32_t>(win32_context->Eip);
     if (HandleGlideGateBoundary(win32_context, context))
     {
         InjectPendingInterrupts(win32_context, context);
         NoteVehExitSite(context, VehExitSite::kGlideGateBoundary);
+#if defined(__x86_64__)
+        if (context->aot_placement != nullptr &&
+            static_cast<std::uint32_t>(win32_context->Eip) != glide_gate_eip)
+        {
+            const bool resumed = TryResumeAotAfterHandledHle(
+                win32_context,
+                context,
+                glide_gate_eip,
+                AotHleResumeOrigin::kHandledGuestBoundary);
+            if (!resumed &&
+                !CanResumeLinuxX64LegacyTarget(
+                    context,
+                    static_cast<std::uint32_t>(win32_context->Eip)))
+            {
+                win32_context->EFlags &= ~0x00000100U;
+                return repiu::platform::FaultDisposition::kNotHandled;
+            }
+        }
+#endif
         return repiu::platform::FaultDisposition::kResume;
     }
     // Task 325: the non-Glide boundary gates. Glide keeps its own bucket from
@@ -5680,9 +5880,31 @@ repiu::platform::FaultDisposition DispatchGuestFault(
         const ExecutionTimeScope boundary_gate_time_scope(
             context->execution_time_profile.get(),
             ExecutionTimeBucket::kVehBoundaryGates);
+        const std::uint32_t timer_chain_eip =
+            static_cast<std::uint32_t>(win32_context->Eip);
         if (HandleTimerInterruptChainBoundary(win32_context, context))
         {
             NoteVehExitSite(context, VehExitSite::kTimerChainBoundary);
+#if defined(__x86_64__)
+            if (context->aot_placement != nullptr &&
+                static_cast<std::uint32_t>(win32_context->Eip) !=
+                    timer_chain_eip)
+            {
+                const bool resumed = TryResumeAotAfterHandledHle(
+                    win32_context,
+                    context,
+                    timer_chain_eip,
+                    AotHleResumeOrigin::kHandledGuestBoundary);
+                if (!resumed &&
+                    !CanResumeLinuxX64LegacyTarget(
+                        context,
+                        static_cast<std::uint32_t>(win32_context->Eip)))
+                {
+                    win32_context->EFlags &= ~0x00000100U;
+                    return repiu::platform::FaultDisposition::kNotHandled;
+                }
+            }
+#endif
             return repiu::platform::FaultDisposition::kResume;
         }
         if (HandleLinexeFarTransferBoundary(win32_context, context))
@@ -5816,6 +6038,35 @@ repiu::platform::FaultDisposition DispatchGuestFault(
             context, fault.instruction_address,
             FaultRecoveryPath::kFaultCallback);
         RecoverToHost(win32_context, context);
+        return repiu::platform::FaultDisposition::kResume;
+    }
+
+    const std::uint32_t iretd_eip =
+        static_cast<std::uint32_t>(win32_context->Eip);
+    const std::optional<bool> iretd =
+        HandleIretdInstruction(win32_context, context);
+    if (iretd.has_value() && *iretd)
+    {
+        NoteVehExitSite(context, VehExitSite::kHleChainPrivileged);
+#if defined(__x86_64__)
+        if (context->aot_placement != nullptr &&
+            static_cast<std::uint32_t>(win32_context->Eip) != iretd_eip)
+        {
+            const bool resumed = TryResumeAotAfterHandledHle(
+                win32_context,
+                context,
+                iretd_eip,
+                AotHleResumeOrigin::kHandledGuestBoundary);
+            if (!resumed &&
+                !CanResumeLinuxX64LegacyTarget(
+                    context,
+                    static_cast<std::uint32_t>(win32_context->Eip)))
+            {
+                win32_context->EFlags &= ~0x00000100U;
+                return repiu::platform::FaultDisposition::kNotHandled;
+            }
+        }
+#endif
         return repiu::platform::FaultDisposition::kResume;
     }
 
@@ -6386,7 +6637,7 @@ struct GuestShutdownRecoveryRequest
 // constraints -- it allocates nothing, takes no lock, and blocks on nothing. The
 // message that used to be written here now belongs to the requesting thread,
 // because assigning a std::string is an allocation.
-void RecoverGuestThreadForShutdownCommon(
+bool RecoverGuestThreadForShutdownCommon(
     repiu::platform::GuestCpuContext* registers,
     void* user_data,
     void* host_context)
@@ -6395,7 +6646,7 @@ void RecoverGuestThreadForShutdownCommon(
     if (request == nullptr || registers == nullptr ||
         request->context == nullptr)
     {
-        return;
+        return false;
     }
     if (request->snapshot != nullptr)
     {
@@ -6411,7 +6662,7 @@ void RecoverGuestThreadForShutdownCommon(
     if (!IsGuestInstructionPointer(request->context, eip) &&
         !IsAotCacheAddress(request->context, eip))
     {
-        return;
+        return false;
     }
     RecordFaultRecoveryProvenance(
         request->context, eip, FaultRecoveryPath::kShutdownInterrupt);
@@ -6426,7 +6677,7 @@ void RecoverGuestThreadForShutdownCommon(
         !repiu::platform::StoreHostInstructionPointer(
             resume_address, host_context))
     {
-        return;
+        return false;
     }
     registers->Eip = static_cast<decltype(registers->Eip)>(resume_address);
     registers->EFlags &= ~0x00000100U;
@@ -6435,20 +6686,22 @@ void RecoverGuestThreadForShutdownCommon(
     RecoverToHost(registers, request->context);
 #endif
     request->recovered = true;
+    return true;
 }
 
-void RecoverGuestThreadForShutdown(repiu::platform::GuestCpuContext* registers,
+bool RecoverGuestThreadForShutdown(repiu::platform::GuestCpuContext* registers,
                                    void* user_data)
 {
-    RecoverGuestThreadForShutdownCommon(registers, user_data, nullptr);
+    return RecoverGuestThreadForShutdownCommon(registers, user_data, nullptr);
 }
 
-void RecoverGuestThreadForShutdownWithContext(
+bool RecoverGuestThreadForShutdownWithContext(
     repiu::platform::GuestCpuContext* registers,
     void* user_data,
     void* host_context)
 {
-    RecoverGuestThreadForShutdownCommon(registers, user_data, host_context);
+    return RecoverGuestThreadForShutdownCommon(
+        registers, user_data, host_context);
 }
 
 std::uint16_t FindGuestStackSelector(
@@ -6628,8 +6881,10 @@ bool RunExecutionThread(
     context.runtime_size = placement.placed_size;
     context.guest_initial_esp = guest_initial_esp;
     context.guest_ss = guest_initial_ss;
+    context.flat_stack_selector = guest_initial_ss;
     context.guest_ds = FindGuestSelectorForLinearAddress(
         placement, entry_address);
+    context.flat_data_selector = context.guest_ds;
     context.use_guest_stack = use_guest_stack;
     context.enable_privileged_trap_hle = enable_privileged_trap_hle;
     context.enable_traced_dos_hle = enable_traced_dos_hle;
@@ -6705,6 +6960,8 @@ bool RunExecutionThread(
     };
     read_hex_env("REPIU_EXECUTION_PROBE_MEMORY_OFFSET",
                  &context.execution_probe_memory_offset);
+    read_hex_env("REPIU_EXECUTION_PROBE_LOG_ARRIVALS",
+                 &context.execution_probe_log_arrivals);
     if (aot_placement != nullptr)
     {
         TraceAotGuestMap(*aot_placement, context.runtime_base, "initial");
@@ -7734,6 +7991,33 @@ bool RunExecutionThread(
             // the half of the pair 507 built against `CloseHostThread`'s join,
             // and dropping it would leave that function with no caller.
             repiu::platform::DetachHostThread(&thread);
+            // Task 709. The loader never sees this arm's `attempt`, because
+            // `_Exit` below does not return -- so the report goes out from
+            // here instead. Without it a run that refused recovery leaves no
+            // summary at all, and Linux x64 refuses on every run: the DOS
+            // path and file-I/O traces, the Glide ordinal counts and the rest
+            // of what a run is read by afterwards have never once been printed
+            // there.
+            //
+            // Only what is safe to read beside a live guest thread is filled
+            // in. `CopyThreadObservationToAttempt` copies scalars and POD
+            // arrays and touches no `std::string`, so the worst it can produce
+            // is a counter read mid-update -- a stale or torn diagnostic value,
+            // which is plainly better than printing nothing. The string members
+            // are deliberately left alone: the guest thread writes those while
+            // servicing HLE, and copying one concurrently would let a
+            // diagnostic kill the process.
+            //
+            // Nothing else about this arm changes. The fault handler, the
+            // Glide close, the worker join and the page protections are still
+            // not touched, for the reason recorded above.
+            CopyThreadObservationToAttempt(context, attempt);
+            attempt->valid = true;
+            attempt->message =
+                "guest thread was not recovered; summary reported from the "
+                "immediate-exit path";
+            mark_shutdown_step("final-report");
+            EmitFinalExecutionReport(*attempt);
             mark_shutdown_step("immediate-exit");
             // Task 507's reasoning, unchanged: once recovery has been refused,
             // nothing this process does afterwards can be trusted not to race

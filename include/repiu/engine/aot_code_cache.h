@@ -1,6 +1,7 @@
 #ifndef REPIU_ENGINE_AOT_CODE_CACHE_H_
 #define REPIU_ENGINE_AOT_CODE_CACHE_H_
 
+#include "repiu/runtime/low_address_reservation.h"
 #include "repiu/engine/aot_page_coherence.h"
 #include "repiu/engine/aot_boundary_provenance.h"
 #include "repiu/engine/aot_cache_address_index.h"
@@ -127,12 +128,32 @@ struct AotCodeCachePlacement
     // static cache and the appended blocks would come to disagree.
     bool long_mode_emission_enabled = false;
     // Written by the telemetry poller and consumed only on the guest thread.
+    //
+    // Read through `AotTimerSafePointRequestWord`, never directly: on a 64-bit
+    // host this member sits above 4 GiB where the safe point's disp32 cannot
+    // name it, and the word the emitted code reads is the one in
+    // `timer_safe_point_request_page` instead.
     volatile std::uint32_t timer_safe_point_request = 0;
+    // Task 710. One read/write page below 4 GiB holding the request word, used
+    // only when the member above cannot be named in 32 bits. Not inside the
+    // code cache: the cache is execute-read once placed, and the poller writes
+    // this word at any moment from another thread.
+    runtime::LowAddressReservation timer_safe_point_request_page;
     volatile std::uint32_t timer_safe_point_trap_count = 0;
     volatile std::uint32_t timer_safe_point_injected_count = 0;
     volatile std::uint32_t timer_safe_point_deferred_count = 0;
     std::string message;
 };
+
+// Task 710. The request word the emitted timer safe points compare against.
+//
+// The placement's own member on a host whose pointers fit 32 bits -- which is
+// what every safe point has always read on i386 -- and the low page on one
+// whose do not. Computed on every call rather than stored, because the
+// placement is reset by assignment and a pointer into the old value would
+// outlive it.
+volatile std::uint32_t* AotTimerSafePointRequestWord(
+    AotCodeCachePlacement* placement);
 
 struct AotDynamicAppendResult
 {

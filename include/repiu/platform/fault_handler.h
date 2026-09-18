@@ -136,6 +136,10 @@ using FaultCallback = FaultDisposition (*)(FaultEvent* event, void* user_data);
 // the callback is responsible for ignoring threads it does not own.
 bool InstallFaultHandler(FaultCallback callback, void* user_data);
 
+// Task 717. Linux x64 only: arms REPIU_LINUX_X64_DATA_WATCH on the calling
+// thread. Returns false when unset or unsupported.
+bool ArmLinuxDataWatchFromEnvironment();
+
 // Removes the handler and, on Linux, restores the previous signal actions.
 bool RemoveFaultHandler();
 

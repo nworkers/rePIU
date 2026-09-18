@@ -377,3 +377,36 @@ flags=0092, limit=FFFF로 관측되어 SS.B=0입니다. 이어지는 0E 50 66 57
 PUSH CS, PUSH AX, PUSH EDI이며 각각 2, 2, 4바이트를 저장합니다. 01100031의
 CB는 word far return입니다. 주소/selector 값은 관측값이며 공용 구현 조건이
 아닙니다. 근거와 미해결 상태는 docs/analysis/linux-port-frontier.md Task 692에 있습니다.
+
+## pumpit2a PIU.BIN 레코드 로더와 C 런타임 파일 함수 (확인됨, Task 711)
+
+주소는 object 2 기준 오프셋이다. 실행 주소는 Linux `0x01010000`, Win32 `0x04010000`을
+더한다.
+
+| object 2 오프셋 | 함수 | 확인한 동작 |
+|---|---|---|
+| `0x2DB28` | PIU.BIN 로더 | `count = filelength(h) >> 4`, `fread(table+i*16, 1, 16, fp)`를 `count`번 |
+| `0xE1B97` | `fread` | Watcom 레지스터 규약(`eax`=buf, `edx`=size, `ebx`=n, `ecx`=FILE), fill이 0이면 반환 |
+| `0xE24B2` | 버퍼 fill | read count 0 → `_EOF`(`0x10`), 음수 → error(`0x20`) |
+| `0xE33BD` | `filelength` | `lseek` SEEK_CUR → SEEK_END → SEEK_SET 복원, SEEK_END 값을 반환 |
+| `0xE44D0` | `lseek` | `INT 21h AH=42h` 뒤 `mov ss:[edi],ax` / `mov ss:[edi+2],dx`(`edi=esp`)로 결과를 쓰고 `[esp]`를 읽음 |
+| `0xE4BD8` | `read` | `INT 21h AH=3Fh` |
+
+`lseek`이 결과를 **명시적 `SS:` override**로 스택에 쓴다는 것이 핵심이다. 게스트
+`ESP`는 linear인데 SS 선택자 `0x0034`(object 4)의 base가 `0x01110000`이라, 그 base를
+fold하는 실행 경로에서는 저장이 `[esp]`에 닿지 않는다. 자세한 것은
+[Task 711 작업 로그](work-logs/20260918-711-piu-bin-loop-ss-override.md)에 있다.
+
+`SS:` override 수정(Task 712) 뒤에는 loader 초기 스택 선택자 아래에서 이 저장이 `[esp]`에 닿고, Win32와 Linux 모두 PIU.BIN 560바이트를 한 번에 읽는다.
+
+## pumpit2a의 GL식 래퍼층과 재질 선택 (확인됨, Task 713)
+
+pumpit2a는 Glide 위에 OpenGL식 래퍼층을 갖고 있다. object 2 오프셋 기준:
+
+| 오프셋 | 함수 | 확인한 동작 |
+|---|---|---|
+| `0xB92B0` | visual 생성 | `calloc(1,0x28)`, visual[0] = 첫 인자(RGBA 모드 플래그) |
+| `0xB954C` | GL 컨텍스트 생성 | `calloc(1,0xEA1C)`, `ctx[0x8F8]` = visual |
+| `0xAE120` | `glEnable`/`glDisable` | GL enum 비교 체인. `GL_TEXTURE_2D`(`0x0DE1`)는 `*(ctx[0x8F8])`가 0이 아니고 렌더 모드가 `GL_RENDER`(`0x1A00`)일 때 `scene[0xDEFC]`에 `2 << unit*4`를 세움 |
+| `0x3B520` | 재질 선택 | `scene[0xDEFC]&2 && !(&4) && materials[0][0x488]` → 텍스처 재질, 아니면 텍스처 없는 재질 |
+| `0x3ABCC` | 텍스처 상주 | `[tex+0xC4]`가 0이면 `grTexTextureMemRequired`/`grTexDownloadMipMapLevel` |

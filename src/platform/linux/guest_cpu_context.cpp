@@ -3,6 +3,7 @@
 #if !defined(_WIN32)
 
 #include <csignal>
+#include <cstddef>
 #include <cstring>
 #include <ucontext.h>
 
@@ -59,6 +60,23 @@ void StoreFloatingSave(const GuestFloatingSaveArea& source,
 
 #elif defined(__x86_64__)
 
+// The x87 stack top, from status-word bits 11..13. Both save formats store the
+// register *contents* in stack-relative ST(0)..ST(7) order while indexing the
+// tag by *physical* register R0..R7, so the contents of physical register `j`
+// are at `_st[(j - top) & 7]`.
+std::size_t FloatingStackTop(const _libc_fpstate& source)
+{
+    return static_cast<std::size_t>((source.swd >> 11U) & 0x07U);
+}
+
+// The FSAVE tag for one register's contents. The caller has already decided the
+// register is in use; this only says which kind of value it holds.
+//
+// The sign bit is masked out of the exponent first. It is bit 15 of the same
+// word, and leaving it in would misread every negative value: -0.0 would miss
+// the zero case and a negative NaN or infinity would miss the special case.
+// The three rules below are the ones the Linux kernel's `twd_fxsr_to_i387`
+// applies to the same bytes.
 std::uint16_t ClassifyFloatingTag(const _libc_fpxreg& source)
 {
     const auto* bytes = reinterpret_cast<const std::uint8_t*>(&source);
@@ -66,16 +84,19 @@ std::uint16_t ClassifyFloatingTag(const _libc_fpxreg& source)
     std::uint16_t exponent = 0;
     std::memcpy(&significand, bytes, sizeof(significand));
     std::memcpy(&exponent, bytes + sizeof(significand), sizeof(exponent));
-    if (exponent == 0U && significand == 0U)
+    exponent &= 0x7FFFU;
+    if (exponent == 0x7FFFU)
     {
-        return 0x01U;
+        return 0x02U;  // Special: infinity or NaN.
     }
-    if (exponent == 0U || exponent == 0x7FFFU ||
-        (significand & (UINT64_C(1) << 63U)) == 0U)
+    if (exponent == 0U)
     {
-        return 0x02U;
+        return significand == 0U ? 0x01U   // Zero.
+                                 : 0x02U;  // Special: denormal.
     }
-    return 0x00U;
+    return (significand & (UINT64_C(1) << 63U)) != 0U
+        ? 0x00U   // Valid.
+        : 0x02U;  // Special: unnormal.
 }
 
 void LoadFloatingSave(const _libc_fpstate& source,
@@ -85,13 +106,31 @@ void LoadFloatingSave(const _libc_fpstate& source,
     target->StatusWord = source.swd;
     target->ErrorOffset = static_cast<std::uint32_t>(source.rip);
     target->DataOffset = static_cast<std::uint32_t>(source.rdp);
+    // Task 707. The abridged tag is read before anything is classified.
+    //
+    // FXSAVE keeps one bit per physical register -- set for in use, clear for
+    // empty -- where FSAVE keeps two bits with four states. Expanding the
+    // four-state word from the register contents alone cannot recover `empty`,
+    // because an empty register and a register holding zero hold the same
+    // bytes. Reading `ftw` first is what keeps that distinction, and losing it
+    // is what marked all eight registers in use, overflowed the guest's x87
+    // stack on its next FLD, and turned every later result into a NaN.
+    const std::size_t top = FloatingStackTop(source);
     target->TagWord = 0U;
+    for (std::size_t physical = 0; physical < 8U; ++physical)
+    {
+        const bool in_use =
+            ((source.ftw >> physical) & 0x01U) != 0U;
+        const std::size_t stack_index = (physical - top) & 0x07U;
+        const std::uint16_t tag = in_use
+            ? ClassifyFloatingTag(source._st[stack_index])
+            : 0x03U;
+        target->TagWord |= static_cast<std::uint32_t>(tag) << (physical * 2U);
+    }
     for (std::size_t index = 0; index < 8U; ++index)
     {
         std::memcpy(target->RegisterArea + index * 10U,
                     &source._st[index], 10U);
-        const std::uint16_t tag = ClassifyFloatingTag(source._st[index]);
-        target->TagWord |= static_cast<std::uint32_t>(tag) << (index * 2U);
     }
 }
 
@@ -100,17 +139,23 @@ void StoreFloatingSave(const GuestFloatingSaveArea& source,
 {
     target->cwd = static_cast<std::uint16_t>(source.ControlWord);
     target->swd = static_cast<std::uint16_t>(source.StatusWord);
-    target->ftw = 0U;
     target->rip = source.ErrorOffset;
     target->rdp = source.DataOffset;
-    for (std::size_t index = 0; index < 8U; ++index)
+    // The reverse direction needs no rotation: both tag words index the same
+    // physical registers, and only the width changes. This is the kernel's
+    // `twd_i387_to_fxsr` rule -- every state but `empty` becomes in use.
+    target->ftw = 0U;
+    for (std::size_t physical = 0; physical < 8U; ++physical)
     {
         const std::uint16_t tag = static_cast<std::uint16_t>(
-            (source.TagWord >> (index * 2U)) & 0x03U);
+            (source.TagWord >> (physical * 2U)) & 0x03U);
         if (tag != 0x03U)
         {
-            target->ftw |= static_cast<std::uint16_t>(1U << index);
+            target->ftw |= static_cast<std::uint16_t>(1U << physical);
         }
+    }
+    for (std::size_t index = 0; index < 8U; ++index)
+    {
         std::memset(&target->_st[index], 0, sizeof(target->_st[index]));
         std::memcpy(&target->_st[index],
                     source.RegisterArea + index * 10U,

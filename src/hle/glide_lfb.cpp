@@ -17,18 +17,58 @@ void WriteLittleEndianUInt32(std::uint8_t* destination, std::uint32_t value)
 
 }  // namespace
 
+bool GlideLfbSurface::UseExternalStorage(std::uint8_t* const base,
+                                         const std::size_t byte_count)
+{
+    if (base == nullptr || byte_count == 0U)
+    {
+        return false;
+    }
+    external_base_ = base;
+    external_byte_count_ = byte_count;
+    // The heap buffer is given back rather than left shadowing the external
+    // storage: keeping it would hold a second copy of a 600 KB surface that
+    // nothing can reach any more.
+    pixels_.clear();
+    pixels_.shrink_to_fit();
+    // The dimensions are dropped so the next Resize does its work rather than
+    // matching against sizes that described the buffer just released.
+    width_ = 0;
+    height_ = 0;
+    locked_ = false;
+    return true;
+}
+
 bool GlideLfbSurface::Resize(std::uint32_t width, std::uint32_t height)
 {
     if (width == 0U || height == 0U)
     {
         return false;
     }
+    const std::size_t required = static_cast<std::size_t>(width) * height *
+        kGlideLfb565BytesPerTexel;
+    if (external_base_ != nullptr)
+    {
+        // Nothing is allocated here. The caller placed this storage where a
+        // 32-bit field can name it, and growing it would mean moving it, which
+        // would invalidate an address the guest may already hold.
+        if (required > external_byte_count_)
+        {
+            return false;
+        }
+        if (width == width_ && height == height_)
+        {
+            return true;
+        }
+        std::memset(external_base_, 0, required);
+        width_ = width;
+        height_ = height;
+        return true;
+    }
     if (width == width_ && height == height_ && !pixels_.empty())
     {
         return true;
     }
-    const std::size_t required = static_cast<std::size_t>(width) * height *
-        kGlideLfb565BytesPerTexel;
     pixels_.assign(required, 0U);
     width_ = width;
     height_ = height;
@@ -40,7 +80,7 @@ bool GlideLfbSurface::BeginLock(std::uint32_t type,
                                 std::uint32_t write_mode,
                                 std::uint32_t origin)
 {
-    if (locked_ || pixels_.empty())
+    if (locked_ || byte_count() == 0U)
     {
         return false;
     }

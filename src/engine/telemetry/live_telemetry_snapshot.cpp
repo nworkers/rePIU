@@ -22,6 +22,7 @@
 #include "repiu/platform/guest_cpu_context.h"
 #include "repiu/platform/host_error_stream.h"
 #include "repiu/platform/host_time.h"
+#include "repiu/platform/virtual_memory.h"
 
 namespace repiu::engine
 {
@@ -58,6 +59,192 @@ void SaturatingAtomicAdd(std::atomic<std::uint32_t>* value,
         {
             return;
         }
+    }
+}
+
+// Task 715. A few guest dwords beside the elapsed time, once per poll.
+//
+// Some questions are about the guest's own state over wall time -- whether its
+// timer-driven counters advance as fast on one host as on the other -- and the
+// engine's counters cannot answer them. REPIU_LIVE_GUEST_PEEK names a runtime
+// offset (relative to the runtime base, so one value means the same guest
+// variable on every host) and optionally a dword count:
+// `REPIU_LIVE_GUEST_PEEK=0x16FA0C,6`. The read is from the host thread and
+// unsynchronized with the guest, which is what a counter sample needs.
+void WriteLiveGuestPeek(const ThreadContext& context,
+                        const std::uint32_t elapsed_milliseconds)
+{
+    struct PeekSetting
+    {
+        bool enabled = false;
+        std::uint32_t offset = 0U;
+        std::uint32_t count = 1U;
+    };
+    static const PeekSetting setting = [] {
+        PeekSetting parsed;
+        const char* const text = std::getenv("REPIU_LIVE_GUEST_PEEK");
+        if (text == nullptr || *text == 0)
+        {
+            return parsed;
+        }
+        char* end = nullptr;
+        const unsigned long offset = std::strtoul(text, &end, 0);
+        if (end == text || offset > 0xFFFFFFFFUL)
+        {
+            return parsed;
+        }
+        parsed.offset = static_cast<std::uint32_t>(offset);
+        if (*end == ',')
+        {
+            const unsigned long count = std::strtoul(end + 1, nullptr, 0);
+            parsed.count = count == 0UL ? 1U
+                : static_cast<std::uint32_t>(std::min(count, 16UL));
+        }
+        parsed.enabled = true;
+        return parsed;
+    }();
+    if (!setting.enabled || context.runtime_base == 0U ||
+        setting.offset > 0xFFFFFFFFU - context.runtime_base)
+    {
+        return;
+    }
+    const std::uint32_t address = context.runtime_base + setting.offset;
+    const auto* const words = reinterpret_cast<const std::uint32_t*>(
+        static_cast<std::uintptr_t>(address));
+    if (!repiu::platform::IsRangeReadable(
+            words, setting.count * sizeof(std::uint32_t)))
+    {
+        return;
+    }
+    char line[256] = {};
+    int length = std::snprintf(
+        line, sizeof(line),
+        "[repiu-live-peek] elapsed_ms=%lu offset=0x%08X values=",
+        static_cast<unsigned long>(elapsed_milliseconds), setting.offset);
+    for (std::uint32_t index = 0U; index < setting.count && length > 0 &&
+         static_cast<std::size_t>(length) + 12U < sizeof(line); ++index)
+    {
+        length += std::snprintf(line + length, sizeof(line) - length,
+                                index == 0U ? "%08X" : " %08X",
+                                words[index]);
+    }
+    if (length > 0 && static_cast<std::size_t>(length) + 1U < sizeof(line))
+    {
+        line[length++] = '\n';
+        repiu::platform::WriteHostErrorStream(
+            line, static_cast<std::size_t>(length));
+    }
+}
+
+// Task 717. REPIU_LIVE_GUEST_SCAN=<runtime offset>,<bytes>,<dword> reports,
+// beside each live line, where in the range the dword occurs: how many times,
+// and the first few runs of consecutive occurrences. A fill that overwrites a
+// structure shows up here as the run that covers it, and its ends say where the
+// fill began and stopped, which a fixed peek cannot.
+void WriteLiveGuestScan(const ThreadContext& context,
+                        const std::uint32_t elapsed_milliseconds)
+{
+    struct ScanSetting
+    {
+        bool enabled = false;
+        std::uint32_t offset = 0U;
+        std::uint32_t bytes = 0U;
+        std::uint32_t pattern = 0U;
+    };
+    static const ScanSetting setting = [] {
+        ScanSetting parsed;
+        const char* const text = std::getenv("REPIU_LIVE_GUEST_SCAN");
+        if (text == nullptr || *text == 0)
+        {
+            return parsed;
+        }
+        char* end = nullptr;
+        const unsigned long offset = std::strtoul(text, &end, 0);
+        if (end == text || *end != ',')
+        {
+            return parsed;
+        }
+        char* bytes_end = nullptr;
+        const unsigned long bytes = std::strtoul(end + 1, &bytes_end, 0);
+        if (bytes_end == end + 1 || *bytes_end != ',')
+        {
+            return parsed;
+        }
+        parsed.offset = static_cast<std::uint32_t>(offset);
+        parsed.bytes = static_cast<std::uint32_t>(bytes) & ~3U;
+        parsed.pattern = static_cast<std::uint32_t>(
+            std::strtoul(bytes_end + 1, nullptr, 0));
+        parsed.enabled = parsed.bytes != 0U;
+        return parsed;
+    }();
+    if (!setting.enabled || context.runtime_base == 0U ||
+        setting.offset > 0xFFFFFFFFU - context.runtime_base ||
+        setting.bytes > 0xFFFFFFFFU - context.runtime_base - setting.offset)
+    {
+        return;
+    }
+    const std::uint32_t address = context.runtime_base + setting.offset;
+    const auto* const words = reinterpret_cast<const std::uint32_t*>(
+        static_cast<std::uintptr_t>(address));
+    if (!repiu::platform::IsRangeReadable(words, setting.bytes))
+    {
+        return;
+    }
+    constexpr std::uint32_t kMaxRuns = 6U;
+    std::uint32_t run_start[kMaxRuns] = {};
+    std::uint32_t run_end[kMaxRuns] = {};
+    std::uint32_t runs = 0U;
+    std::uint32_t matches = 0U;
+    bool in_run = false;
+    const std::uint32_t count = setting.bytes / 4U;
+    for (std::uint32_t index = 0U; index < count; ++index)
+    {
+        const bool hit = words[index] == setting.pattern;
+        if (hit)
+        {
+            ++matches;
+            if (!in_run)
+            {
+                if (runs < kMaxRuns)
+                {
+                    run_start[runs] = setting.offset + index * 4U;
+                }
+                in_run = true;
+            }
+            if (runs < kMaxRuns)
+            {
+                run_end[runs] = setting.offset + index * 4U + 4U;
+            }
+        }
+        else if (in_run)
+        {
+            in_run = false;
+            ++runs;
+        }
+    }
+    if (in_run)
+    {
+        ++runs;
+    }
+    char line[512] = {};
+    int length = std::snprintf(
+        line, sizeof(line),
+        "[repiu-live-scan] elapsed_ms=%lu pattern=0x%08X matches=%u runs=%u",
+        static_cast<unsigned long>(elapsed_milliseconds), setting.pattern,
+        matches, runs);
+    for (std::uint32_t index = 0U; index < std::min(runs, kMaxRuns) &&
+         length > 0 && static_cast<std::size_t>(length) + 40U < sizeof(line);
+         ++index)
+    {
+        length += std::snprintf(line + length, sizeof(line) - length,
+                                " 0x%08X-0x%08X", run_start[index],
+                                run_end[index]);
+    }
+    if (length > 0 && static_cast<std::size_t>(length) + 1U < sizeof(line))
+    {
+        line[length++] = '\n';
+        repiu::platform::WriteHostErrorStream(
+            line, static_cast<std::size_t>(length));
     }
 }
 
@@ -255,6 +442,8 @@ void WriteLiveTelemetrySnapshot(const ThreadContext& context,
             ? static_cast<std::size_t>(length)
             : sizeof(buffer) - 1U;
     repiu::platform::WriteHostErrorStream(buffer, byte_count);
+    WriteLiveGuestPeek(context, elapsed_milliseconds);
+    WriteLiveGuestScan(context, elapsed_milliseconds);
 }
 
 // Task 503d-17. The host spells "no limit" with a neutral constant, and on

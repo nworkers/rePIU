@@ -36,10 +36,15 @@ void ArmAotTimerSafePoint(ThreadContext* context)
     {
         return;
     }
-    repiu::platform::AtomicExchange(
-        reinterpret_cast<volatile std::uint32_t*>(
-            &context->aot_placement->timer_safe_point_request),
-        1L);
+    // Task 710. Through the accessor: on x86-64 the word the safe points read
+    // is the low page, not this member.
+    volatile std::uint32_t* const request =
+        AotTimerSafePointRequestWord(context->aot_placement);
+    if (request == nullptr)
+    {
+        return;
+    }
+    repiu::platform::AtomicExchange(request, 1L);
 }
 
 void ClearAotTimerSafePointRequest(ThreadContext* context)
@@ -48,14 +53,20 @@ void ClearAotTimerSafePointRequest(ThreadContext* context)
     {
         return;
     }
-    repiu::platform::AtomicExchange(
-        reinterpret_cast<volatile std::uint32_t*>(
-            &context->aot_placement->timer_safe_point_request),
-        0L);
+    // Task 710. Through the accessor: on x86-64 the word the safe points read
+    // is the low page, not this member.
+    volatile std::uint32_t* const request =
+        AotTimerSafePointRequestWord(context->aot_placement);
+    if (request == nullptr)
+    {
+        return;
+    }
+    repiu::platform::AtomicExchange(request, 0L);
 }
 
 bool HandleAotTimerSafePoint(const repiu::platform::FaultEvent& fault,
-                             ThreadContext* context)
+                             ThreadContext* context,
+                             std::uint32_t* handled_guest_source)
 {
     repiu::platform::GuestCpuContext* win32_context = fault.registers;
     if (win32_context == nullptr || context == nullptr ||
@@ -89,6 +100,10 @@ bool HandleAotTimerSafePoint(const repiu::platform::FaultEvent& fault,
                     ->timer_safe_point_guest_source_by_breakpoint_offset.end()
             ? source->second
             : 0U;
+    if (handled_guest_source != nullptr)
+    {
+        *handled_guest_source = guest_source;
+    }
 
     ClearAotTimerSafePointRequest(context);
     repiu::platform::AtomicIncrement(reinterpret_cast<volatile std::uint32_t*>(

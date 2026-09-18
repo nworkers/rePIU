@@ -14,6 +14,7 @@
 #include "repiu/engine/mscdex_command_trace.h"
 #include "repiu/engine/ymz280b_audio_out.h"
 #include "repiu/engine/piu10_mp3_audio_out.h"
+#include "repiu/engine/glide_lfb_guest_storage.h"
 #include "repiu/engine/glide_opengl_backend.h"
 #include "repiu/engine/glide_ordinal_timing.h"
 #include "repiu/engine/glide_setter_state_census.h"
@@ -516,6 +517,12 @@ struct ThreadContext
     bool execution_probe_hit = false;
     std::uint32_t execution_probe_offset = 0;
     std::uint32_t execution_probe_memory_offset = 0;
+    // Task 713. Log the first N arrivals at the probe offset instead of
+    // capturing only the first. A branch that goes one way on its first few
+    // calls and another later -- a material selector called once per draw state
+    // -- cannot be read from its first arrival alone. Zero means off.
+    std::uint32_t execution_probe_log_arrivals = 0;
+    std::uint32_t execution_probe_arrival_count = 0;
     X86ExecutionSnapshot execution_probe_snapshot;
     std::uint32_t execution_probe_stack[8] = {};
     ExecutionProbeMemoryWindow execution_probe_memory[
@@ -804,9 +811,21 @@ struct ThreadContext
     std::uint32_t mscdex_last_seek_target = 0;
     repiu::hle::GlideLogicalState glide_state;
     GlideOpenGlBackend glide_backend;
+    // Task 708. The memory behind the surface below, placed where a 32-bit
+    // field can name it. Released in this object's destructor body, which runs
+    // before any member is destroyed and so before the surface that points into
+    // it -- the surface reads nothing on the way down. It is declared ahead of
+    // the surface as well, so that the two are read in the order they depend on
+    // each other.
+    GlideLfbGuestStorage glide_lfb_guest_storage;
     // R4 LFB staging surface handed to the guest by grLfbLock. Host-owned (see
     // design 257 3.1): the guest writes it with native instructions under the
     // flat DS, so it does not need to live inside the runtime arena.
+    //
+    // Task 708 added the one condition that is not about the arena: grLfbLock
+    // reports its address in a 32-bit `GrLfbInfo_t::lfbPtr`, so on a 64-bit
+    // host the storage has to be placed below 4 GiB rather than left to the
+    // heap. `glide_lfb_guest_storage` above is that placement.
     repiu::hle::GlideLfbSurface glide_lfb_surface;
     std::uint32_t glide_lfb_lock_count = 0;
     std::uint32_t glide_lfb_present_count = 0;
@@ -1107,6 +1126,12 @@ struct ThreadContext
     std::uint64_t boundary_object_chain_limit = 0;
     std::uint16_t guest_es = 0;
     std::uint16_t guest_ss = 0;
+    // Task 712. The loader's initial stack selector, under which the loader's
+    // own `ESP` is linear. An explicit `SS:` override folds base 0 while the
+    // guest is on it, and the descriptor base on any stack it switches to.
+    std::uint16_t flat_stack_selector = 0;
+    // Task 717. The loader's initial data selector, flat in the same sense.
+    std::uint16_t flat_data_selector = 0;
     std::uint16_t guest_ds = 0;
     std::uint16_t guest_fs = 0;
     std::uint16_t guest_gs = 0;
@@ -1170,6 +1195,7 @@ struct ThreadContext
             shadow_selector_reservation);
         shadow_selector_reservation = {};
         shadow_selectors = nullptr;
+        ReleaseGlideLfbGuestStorage(&glide_lfb_guest_storage);
     }
 };
 } // namespace repiu::engine

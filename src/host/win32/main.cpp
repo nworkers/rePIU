@@ -12,6 +12,7 @@
 #include <SDL3/SDL_error.h>
 #include "repiu/engine/eeprom_backing_path.h"
 #include "repiu/engine/execution_trampoline.h"
+#include "repiu/engine/final_execution_report.h"
 #include "repiu/engine/aot_code_cache.h"
 #include "../../engine/aot/aot_dbt_glide_gate_dispatch.h"
 #include "../../engine/telemetry/aot_residency_sample.h"
@@ -5572,6 +5573,32 @@ int main(int argc, char** argv)
         logger->info("Win32 guest stall timeout: {} ms",
                      stall_timeout_milliseconds);
     }
+    // Task 709. How to report, registered before the guest starts.
+    //
+    // The shutdown arm that refuses to recover the guest thread ends in
+    // `_Exit` and never returns `attempt` here, so on that arm this is the
+    // only way the summary gets printed. Linux x64 takes it on every run.
+    struct FinalReportContext
+    {
+        spdlog::logger* logger;
+        std::string executable_name;
+    };
+    static FinalReportContext final_report_context{
+        logger.get(), profile->executable_path.filename().string()};
+    repiu::engine::SetFinalExecutionReport(
+        [](const repiu::engine::MinimalExecutionAttempt& reported,
+           void* user) {
+            auto* const reporting =
+                static_cast<FinalReportContext*>(user);
+            if (reporting == nullptr || reporting->logger == nullptr)
+            {
+                return;
+            }
+            PrintExecutionAttempt(*reporting->logger, reported,
+                                  reporting->executable_name);
+        },
+        &final_report_context);
+
     const bool attempted_execution = use_dynamic_backend
         ? repiu::engine::AttemptGuestStackAotExecution(
               placement,
@@ -5631,9 +5658,9 @@ int main(int argc, char** argv)
         }
     }
 
-    PrintExecutionAttempt(*logger,
-                          attempt,
-                          profile->executable_path.filename().string());
+    // Through the same emit as the immediate-exit arm, so a run that already
+    // reported on the way out does not print a second copy here.
+    repiu::engine::EmitFinalExecutionReport(attempt);
     const auto glide_dispatch_stats = repiu::engine::
         ReadGlideGateDirectDispatchStats();
     logger->info(

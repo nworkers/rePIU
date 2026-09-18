@@ -511,6 +511,9 @@ struct AotCodeCacheImage
     // operands are zero here. A count rising without the patcher means the
     // census sees emission where execution would read a base of zero.
     std::uint32_t long_mode_segment_override_count = 0;
+    // Task 716. CS-override data accesses emitted as copies instead of the
+    // HLE boundary the planner made them, which x64 has nothing to service.
+    std::uint32_t long_mode_cs_data_boundary_count = 0;
     // Task 569. Only a source equal to the shadow is admitted as a no-op; a
     // mismatch reaches the existing segment-load HLE boundary.
     std::uint32_t long_mode_guarded_segment_load_count = 0;

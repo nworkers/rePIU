@@ -16213,3 +16213,957 @@ unhandled SIGTRAP occurred at host address `0x402CBDA3`. The next task should
 compare the original call-site argument frame with Glide-gate guest-stack
 decode and return geometry to locate where the null argument originates. This
 SIGTRAP is a separate frontier reached after the GETPROCADDR selector fix.
+
+---
+
+## 2026-09-18 Task 702 — Glide gate 반환 AOT 재진입
+
+### 확인됨
+
+원본 caller의 `0x01055B03`은 relocation 대상 `PUSH 0x0017FB30`이고,
+`0x01055B08`은 query stub call이다. 수정 전 init과 query gate ESP는 모두
+`0x0158C884`였고 query stack은 `[0x01055B0D, 0]`이었다. 이는 Glide handler가
+continuation을 cache로 옮기지 않아 `PUSH imm32`가 guest stack 대신 long-mode
+host RSP에 실행된 결과다.
+
+fault-level Glide 성공 뒤 `kHandledGuestBoundary` AOT 재진입을 적용한 실행은 다음
+결정을 직접 기록했다.
+
+```text
+handled=0x095D0300 current=0x01055B03 guest_esp=0x0158C888 detail=pending
+cache_target=0x200521DE detail=resume-candidate
+stage=resumed current=0x01055B03 guest_esp=0x0158C888
+```
+
+그 뒤 query gate는 ESP `0x0158C880`, 인자 `0x0128FB30`으로 진입했다. query
+memory 오류 없이 `_GRSSTSELECT@4`, `_GRSSTWINOPEN@28`과 후속 state gate들로
+진행했으며, 실제 실행은 총 50회 Glide gate 진입까지 도달했다. Linux x64 Debug
+core probe도 27/27 통과했다.
+
+### 다음 frontier
+
+50번째 gate인 두 번째 `_GRDITHERMODE@4` 반환 이후 host
+`0x402CBE6B`에서 SIGTRAP이 보고됐다. 이 주소는
+`RepiuLinuxX64LegacyResumeThunk`의 시작이며 직전 byte `0x402CBE6A`는
+`RepiuLinuxX64ReturnThunk`의 unresolved `INT3`이다. 따라서 다음 작업은 이
+시점의 guest `RET` target과 resolver가 zero를 반환한 이유를 attribution해야 한다.
+초기 query argument 손실과는 분리된 이후 frontier이다.
+
+## English
+
+### Confirmed
+
+The original caller at `0x01055B03` is a relocated `PUSH 0x0017FB30`, followed
+by the query-stub call at `0x01055B08`. Before the fix, both init and query gates
+entered with ESP `0x0158C884`, and the query stack was `[0x01055B0D, 0]`. The
+Glide handler had returned to original bytes rather than the cache, so long
+mode executed `PUSH imm32` against host RSP instead of the guest stack.
+
+After applying `kHandledGuestBoundary` AOT re-entry to successful fault-level
+Glide returns, a focused trace recorded a cache hit and resume for continuation
+`0x01055B03` at guest ESP `0x0158C888`. The query gate then entered at ESP
+`0x0158C880` with argument `0x0128FB30`. Execution passed query without a memory
+failure, entered `_GRSSTSELECT@4`, `_GRSSTWINOPEN@28`, and later state gates,
+and reached 50 total Glide-gate entries. All 27 Linux x64 Debug core-probe
+groups passed.
+
+### Next frontier
+
+After the 50th gate, the second `_GRDITHERMODE@4`, an unhandled SIGTRAP was
+reported at host `0x402CBE6B`. That address begins
+`RepiuLinuxX64LegacyResumeThunk`; the preceding byte at `0x402CBE6A` is the
+unresolved `INT3` in `RepiuLinuxX64ReturnThunk`. The next task must attribute
+the guest `RET` target at this point and why its resolver returned zero. This is
+a later frontier separate from the initial query-argument loss.
+
+---
+
+## 2026-09-18 Task 703 — 타이머 체인 경계 뒤 AOT 재진입
+
+### 확인됨
+
+`0x010F2773`의 실패한 `RET`는 `0x00000080`을 소비했고, producer 직전 ESP는
+`0x0158CBB4`였습니다. 원본 명령열과 좁힌 경계 추적은 다음 순서를 확인했습니다.
+
+```text
+0x0103F132 PUSHFD
+0x0103F133 CALL FAR [0x0117FA24]
+0x0103F139 CALL 0x010F2772
+0x010F2772 CLI
+0x010F2773 RET
+```
+
+타이머 체인 HLE는 첫 `PUSHFD`를 의도대로 폐기하여 ESP를 `0x0158CBAC`에서
+`0x0158CBB0`으로 복원하고 `0x0103F139`로 진행했습니다. 그러나 기존 fault-level
+경로는 이 continuation을 cache로 복귀시키지 않아 다음 direct `CALL`이 host RSP를
+사용했고, guest return address `0x0103F13E`가 누락되었습니다.
+
+handled-boundary AOT 재진입을 적용한 실행에서는 cache miss가 동적 번역
+`0x202A4571`로 해결되었습니다. 이어서 `0x010F2773`의 return trace가
+`target=0x0103F13E`, `consumed=0x0158CBAC`, `esp=0x0158CBB0`을 기록해 guest call/return
+geometry가 복구됐음을 확인했습니다.
+
+### 다음 frontier
+
+기존 `0x00000080` unresolved-return SIGTRAP은 제거됐습니다. 다음 정지의 보고 RIP
+`0x202B4F0C`는 cache `INT3` 실행 후 주소이고 실제 breakpoint는 직전
+`0x202B4F0B`입니다. 이 boundary는 guest `0x0103F1F5`의 `IRETD` (`CF`)에 대응합니다.
+fault 시점 guest ESP는 `0x0158CBE0`입니다. 보고 RIP에서 보이는 `FB`는 다음 cache
+byte이며 guest opcode가 아닙니다. 다음 작업에서 IRETD boundary가 처리되지 않은
+원인을 추적해야 합니다.
+
+## English
+
+### Confirmed
+
+The failing `RET` at `0x010F2773` consumed `0x00000080`. The original sequence
+is `PUSHFD`, the absent-predecessor INT 8 far-chain call, a direct call to
+`0x010F2772`, then `CLI; RET`. Timer-chain HLE correctly discarded the saved
+EFLAGS and restored ESP from `0x0158CBAC` to `0x0158CBB0`, but returned to guest
+continuation `0x0103F139` without entering the cache. The following original
+direct `CALL` therefore used host RSP and omitted guest return address
+`0x0103F13E`.
+
+With handled-boundary AOT reentry, a cache miss dynamically translated the
+continuation to `0x202A4571`. The `RET` trace then recorded
+`target=0x0103F13E`, `consumed=0x0158CBAC`, and `esp=0x0158CBB0`, confirming
+restored guest call/return geometry.
+
+### Next frontier
+
+The `0x00000080` unresolved-return SIGTRAP is gone. The reported next RIP,
+`0x202B4F0C`, is the address after a cache `INT3`; the actual breakpoint is
+`0x202B4F0B`. This boundary corresponds to guest `0x0103F1F5`, whose original
+opcode is `IRETD` (`CF`), with guest ESP `0x0158CBE0`. The `FB` visible at the
+reported RIP is the next cache byte, not the guest opcode. The next task should
+determine why this IRETD boundary remains unhandled.
+
+---
+
+## 2026-09-18 Task 704 — Linux x64 IRETD HLE
+
+### 확인됨
+
+Task 703의 INT 8 frame은 복귀 EIP `0x01054480`, CS `0x00000033`, EFLAGS
+`0x00200206`을 포함했습니다. `0x33`은 Linux x64 signal context의 host CS이고,
+복귀 EIP를 포함하는 guest executable descriptor의 logical selector는 `0x24`입니다.
+또한 guest `0x0103F1F5`의 원본 opcode `CF`는 cache INT3 boundary였지만 이를
+처리할 Linux x64 IRETD CPU-effect handler가 없어 `no-host-frame-to-unwind`로
+종료됐습니다.
+
+### 수정 및 검증
+
+Linux x64 INT 8 주입기는 중단 EIP의 executable guest selector를 frame 기록 전에
+해석하며, 해석할 수 없으면 pending tick을 유지하고 주입을 보류합니다. 새 IRETD
+handler는 32-bit code의 prefix 없는 `CF`와 12-byte EIP/CS/EFLAGS frame, executable
+k32 target을 검증하고 성공할 때만 EIP/CS/EFLAGS/ESP를 확정합니다. 공용 HLE와
+fault-level chain이 같은 handler를 사용하며, fault-level 성공은 AOT cache로
+재진입합니다.
+
+Linux x64 Debug `repiu`와 `repiu_core_probe`가 빌드됐고 core probe 27/27이
+통과했습니다. 새 probe는 `iretd_hle=1,bad_selector=1,bad_frame=1`을 기록했습니다.
+실제 `pumpit2a` trace는 첫 IRQ0 frame `0x0158CBE0`에서 IRETD 후 ESP
+`0x0158CBEC`, guest EIP `0x01054480`, cache target `0x200C85FB`를 기록했고,
+`exit_site=step-trace-hle-resumed`로 복귀했습니다. 실행은 45초 동안 약 800회의
+INT 8 주입과 지속적인 heartbeat/dispatch 진행을 보였으므로 기존 IRETD의
+`no-host-frame-to-unwind` frontier는 제거됐습니다.
+
+### 다음 frontier
+
+45초 제한은 `timeout`의 강제 종료로 끝났고, 종료 과정에서 guest stack 범위 밖
+host-side SIGSEGV가 한 번 기록됐습니다. 이는 반복 IRETD 실행 중의 정지가 아니며,
+정상 사용자 종료와 제한 종료를 분리하는 shutdown 경로 진단이 후속 과제입니다.
+
+## English
+
+### Confirmed
+
+The Task 703 INT 8 frame contained return EIP `0x01054480`, CS `0x00000033`,
+and EFLAGS `0x00200206`. Selector `0x33` is the Linux x64 signal-context host
+CS; the logical selector of the guest executable descriptor containing the
+return EIP is `0x24`. Guest opcode `CF` at `0x0103F1F5` was an INT3 cache
+boundary with no Linux x64 IRETD CPU-effect handler, causing
+`no-host-frame-to-unwind`.
+
+### Correction and verification
+
+The Linux x64 injector now resolves an executable guest selector before writing
+the INT 8 frame and defers delivery without consuming the pending tick if it
+cannot. The new IRETD handler validates unprefixed `CF` in 32-bit code, the
+12-byte EIP/CS/EFLAGS frame, and an executable k32 target, committing
+EIP/CS/EFLAGS/ESP only after all checks pass. Shared HLE and the fault-level
+chain use the same handler; a successful fault-level return re-enters the AOT
+cache.
+
+Linux x64 Debug `repiu` and `repiu_core_probe` built successfully, and all 27
+core-probe groups passed. The new probe reported
+`iretd_hle=1,bad_selector=1,bad_frame=1`. In real `pumpit2a`, the first IRQ0
+frame at `0x0158CBE0` returned with ESP `0x0158CBEC`, guest EIP `0x01054480`,
+cache target `0x200C85FB`, and `exit_site=step-trace-hle-resumed`. Execution
+continued for 45 seconds with roughly 800 INT 8 injections and advancing
+heartbeat/dispatch counters, removing the former IRETD
+`no-host-frame-to-unwind` frontier.
+
+### Next frontier
+
+The 45-second run ended through forced `timeout` termination and recorded one
+host-side SIGSEGV outside the guest-stack range during shutdown. It did not stop
+the repeating IRETD path. Separating graceful user exit from forced-limit
+shutdown is the next diagnostic task.
+
+---
+
+## 2026-09-18 Task 705 — no-op thread interrupt의 native context 보존
+
+### 확인된 원인
+
+Task 704 뒤 30초와 45초 execution-timeout은 예산 만료 시 동일한 native opcode
+`41 8B 07` (`MOV EAX,[R15]`)에서 SIGSEGV를 재현했습니다. 두 실행 모두 R15가 host
+stack pointer의 하위 32비트 값만 가진 상태였습니다. shutdown signal callback은 당시
+RIP가 guest/AOT 밖 host code라서 recovery를 거절했지만, `InterruptSignalHandler`는
+변경 없는 32-bit `GuestCpuContext`를 무조건 native `ucontext_t`에 저장했습니다.
+`StoreGuestCpuContext`는 guest ESP ABI를 위해 R15를 zero-extend하므로 host의 64-bit
+R15 포인터가 손상됐습니다.
+
+### 수정 및 검증
+
+interrupt callback은 native context write-back 필요 여부를 bool로 반환합니다. sampler와
+recovery 거절은 false, 실제 guest/AOT recovery는 true를 반환합니다. Linux signal
+handler와 Windows suspend/resume backend는 true일 때만 context를 저장합니다. interrupt가
+응답했는지와 register를 편집했는지는 이제 별도 계약입니다.
+
+Linux x64 Debug `repiu`와 `repiu_core_probe`가 빌드됐고 core probe 27/27이
+통과했습니다. 수정 전 30초 실행은 R15 SIGSEGV와 core dump로 종료됐습니다. 같은 조건의
+수정 후 실행은 SIGSEGV 없이 다음 표식을 출력하고 외부 40초 제한 전에 스스로 끝났습니다.
+
+```text
+[repiu-shutdown] reason=timeout attempts=40 answered=1 recovered=0 stopped=0 ... gate=1
+[repiu-shutdown] step=probe-dump
+[repiu-shutdown] step=immediate-exit
+```
+
+host Glide gate 문맥에서 recovery를 거절해 즉시 종료하는 Task 507/508 정책은 그대로이며,
+no-op callback의 register 손상만 제거됐습니다.
+
+## English
+
+### Confirmed cause
+
+Both 30-second and 45-second execution-timeout runs after Task 704 reproduced a
+SIGSEGV at native opcode `41 8B 07` (`MOV EAX,[R15]`) when the budget expired.
+R15 held only the low 32 bits of a host-stack pointer in both runs. The shutdown
+signal callback correctly refused recovery because RIP was in host code outside
+guest/AOT ranges, but `InterruptSignalHandler` unconditionally stored the
+unchanged 32-bit `GuestCpuContext` back into native `ucontext_t`.
+`StoreGuestCpuContext` zero-extends R15 for the guest-ESP ABI, corrupting the
+host's 64-bit R15 pointer.
+
+### Correction and verification
+
+Interrupt callbacks now return a bool stating whether native context write-back
+is required. Samplers and refused recovery return false; actual guest/AOT
+recovery returns true. The Linux signal handler and Windows suspend/resume
+backend store context only for true. An answered interrupt and a register edit
+are now separate parts of the contract.
+
+Linux x64 Debug `repiu` and `repiu_core_probe` built successfully, and all 27
+core-probe groups passed. Before the fix, the 30-second run ended with the R15
+SIGSEGV and a core dump. Under identical conditions after the fix, it printed
+the timeout, probe-dump, and immediate-exit shutdown markers shown above and
+ended by itself before the outer 40-second limit. Task 507/508 still deliberately
+refuses recovery from a host Glide-gate context and exits immediately; only the
+no-op callback's register corruption was removed.
+
+---
+
+## 2026-09-18 Task 706 — Linux x64 telemetry source 플랫폼 편성
+
+### 확인된 원인과 수정
+
+Win32 x86 전체 빌드 실패는 Task 705 callback 변경 자체가 아니라
+`linux_x64_native_write_trace.cpp`가 공용 `repiu_exe` source 목록에 포함된 구성
+결함이었습니다. 이 파일은 구현부의 platform guard보다 먼저 Linux x64 frame header를
+include하므로, Win32 x86에서도 64-bit host pointer와 dispatch-frame layout assertion을
+평가했습니다. `main`에도 같은 문제가 있음을 확인했습니다.
+
+해당 source를 공용 목록에서 제거하고 기존 Linux x64 dispatch/assembly source와 같은
+`UNIX AND NOT EMSCRIPTEN AND pointer-size > 4` 조건으로 이동했습니다. ABI assertion은
+약화하지 않았습니다.
+
+### 검증
+
+Win32 x86 Debug 전체 빌드는 종료 코드 0으로 완료되어 `repiu.exe`, supervisor 및 모든
+probe/tool target이 링크됐습니다. Win32 `repiu_core_probe`는 적용 가능한 25개 group이
+모두 성공했고 Linux x64 전용 4개 group은 의도대로 skip됐습니다. Linux x64 Debug
+`repiu`와 `repiu_core_probe`도 다시 빌드됐으며 core probe 27/27이 성공했습니다.
+
+## English
+
+### Confirmed cause and correction
+
+The complete Win32 x86 build failure was not caused by the Task 705 callback
+change. It was a configuration defect: `linux_x64_native_write_trace.cpp` was
+listed in the common `repiu_exe` sources. Because that file includes the Linux
+x64 frame header before its implementation platform guard, Win32 x86 evaluated
+the 64-bit host-pointer and dispatch-frame layout assertions. The same defect
+was confirmed on `main`.
+
+The source was removed from the common list and moved under the existing
+`UNIX AND NOT EMSCRIPTEN AND pointer-size > 4` condition beside the Linux x64
+dispatch and assembly sources. No ABI assertion was weakened.
+
+### Verification
+
+The full Win32 x86 Debug build completed with exit code 0, linking `repiu.exe`,
+the supervisor, and every probe/tool target. The Win32 `repiu_core_probe` passed
+all 25 applicable groups and intentionally skipped four Linux x64-only groups.
+Linux x64 Debug `repiu` and `repiu_core_probe` also rebuilt successfully, with
+all 27 core-probe groups passing.
+
+---
+
+## 2026-09-18 Task 707 — x87 tag word 변환과 NaN 정점 좌표
+
+### 확인된 사실
+
+Task 706 상태의 Linux x64 `pumpit2a`는 Glide 렌더 루프에 도달하지만 게스트가
+제출하는 첫 삼각형의 세 정점 x/y가 모두 `0x7FC00000`(QNaN)이었다. Task 254가
+확인한 정상 동작은 640x480 화면 좌표이므로, 좌표를 만드는 x87 연산이 깨져
+있다는 뜻이다.
+
+근인은 `src/platform/linux/guest_cpu_context.cpp`의 x86-64 전용 x87 변환이다.
+`ClassifyFloatingTag`는 `empty`(`0x03`)를 반환하는 경로가 없었고,
+`StoreFloatingSave`는 `tag != 0x03`인 레지스터의 `ftw` 비트를 세웠다. 따라서
+signal 문맥을 통과한 x87 상태는 **항상 `ftw = 0xFF`**가 되어 여덟 레지스터가
+전부 사용 중으로 복원됐다. 게스트의 다음 `FLD`는 x87 stack overflow가 되고,
+IE가 마스킹돼 있으므로 예외 없이 QNaN indefinite가 목적지에 들어간다.
+
+기전은 이 저장소 밖 독립 프로그램으로 확인했다. signal handler에서 `ftw`만
+`0xFF`로 바꾸고 돌아오면 직후의 `3.0 * 4.0`이 `0xFFC00000`이 되고 `fnstsw`가
+`0x0041`(IE + C1)을 보고한다. 관측된 `0x7FC00000`은 부호만 다른 같은 QNaN이며
+게스트 투영식 안의 부호 반전 한 번으로 설명된다.
+
+i386 host에는 이 결함이 없다. i386 `_libc_fpstate`는 FSAVE 이미지라 tag word가
+필드 대 필드로 복사된다. 형식 차이와 변환 규칙은
+[x87 상태와 tag word](../kb/x87-state-and-tag-words.md)에 정리했다.
+
+### 수정과 결과
+
+`LoadFloatingSave`는 abridged `ftw`를 먼저 읽고 비트가 0인 물리 레지스터를
+내용과 무관하게 `empty`로 확장하며, 사용 중인 레지스터만
+`_st[(j - TOP) & 7]`을 분류한다. `StoreFloatingSave`는 tag가 `empty`일 때만
+`ftw` 비트를 0으로 둔다. `guest_cpu_context` probe는 x86-64에서도 `TagWord`를
+비교하고, `TOP = 3`에 물리 레지스터별 tag가 다른 사례를 추가했다. 이 probe는
+수정 전 구현에서 실패하고 수정 후 통과한다.
+
+수정 뒤 같은 실행의 첫 삼각형은 화면 좌표다.
+
+```text
+vertex 0  x=42A00000 (80.0)     y=43BDF800 (379.9375)
+vertex 1  x=43A7F800 (335.9375) y=43BDF800 (379.9375)
+vertex 2  x=42A00000 (80.0)     y=42F80000 (124.0)
+```
+
+### 다음 frontier — LFB staging pointer의 32비트 절단
+
+정점이 정상화되자 실행은 처음으로 LFB 경로에 들어갔고 거기서 멈춘다.
+
+```text
+[repiu-live-debug] grLfbLock granted #1 type=1 buffer=1 writeMode=0 origin=0
+                   lfbPtr=0xEC02A530 stride=1280 640x480
+[repiu-fault] unhandled signal=0xb rip=0x201b4c1f eip=0x201b4c1f
+              access=0xec02a530 ebx=0xec02a534
+              bytes=67 89 7b fc 83 c1 04 67 89 13 ...
+```
+
+`linexe_glide_boundary.cpp`의 `grLfbLock` handler는 게스트에게 건네는
+`lfbPtr`을 `static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(
+context->glide_lfb_surface.pixels()))`로 만든다. Win32 x86에서는 무손실이지만
+x64에서는 host 할당 주소가 32비트로 잘린다. 게스트는 잘린 주소에 기록하고
+(`67 89 13` = 32비트 주소 크기 접두어가 붙은 `MOV [EBX],EDX`) 즉시 SIGSEGV가
+난다. LFB staging surface를 게스트 arena 안에 두는 것이 다음 작업이다.
+
+이 실행은 종료가 아니라 폴트로 끝났다. Task 706 상태에서 30초 예산을
+채우던 것과 비교하면 회귀처럼 보이지만, 그때는 정점이 NaN이라 LFB 경로에
+도달하지 못했을 뿐이다.
+
+## English
+
+### Confirmed facts
+
+At the Task 706 state the Linux x64 `pumpit2a` run reached the Glide render
+loop, but the x and y of all three vertices of the first triangle the guest
+submitted were `0x7FC00000`, a QNaN. Task 254 confirmed the correct behavior is
+640x480 screen coordinates, so the x87 arithmetic producing them was broken.
+
+The cause is the x86-64 x87 conversion in
+`src/platform/linux/guest_cpu_context.cpp`. `ClassifyFloatingTag` had no path
+returning `empty` (`0x03`), and `StoreFloatingSave` set the `ftw` bit for every
+register whose tag was not `0x03`. x87 state passing through a signal context
+therefore came back with **`ftw = 0xFF` every time**, restoring all eight
+registers as in use. The guest's next `FLD` became an x87 stack overflow, and
+with IE masked the destination silently received the QNaN indefinite.
+
+The mechanism was reproduced with a standalone program outside this
+repository: changing only `ftw` to `0xFF` in a signal handler turns the
+`3.0 * 4.0` right after the return into `0xFFC00000`, with `fnstsw` reporting
+`0x0041` (IE + C1). The observed `0x7FC00000` is the same QNaN with the
+opposite sign, which one negation inside the guest's projection accounts for.
+
+The i386 host does not have the defect: its `_libc_fpstate` is the FSAVE image,
+so the tag word is copied field for field. The format difference and the
+conversion rules are written up in
+[x87 state and tag words](../kb/x87-state-and-tag-words.md).
+
+### Correction and result
+
+`LoadFloatingSave` now reads the abridged `ftw` first and expands a register
+whose bit is clear to `empty` regardless of its contents, classifying
+`_st[(j - TOP) & 7]` only for registers in use. `StoreFloatingSave` clears the
+`ftw` bit only for an `empty` tag. The `guest_cpu_context` probe now compares
+`TagWord` on x86-64 as well and adds a case with `TOP = 3` and a different tag
+per physical register; that probe fails against the pre-fix implementation and
+passes after it.
+
+After the fix the same run's first triangle carries screen coordinates: 80.0,
+379.9375 / 335.9375, 379.9375 / 80.0, 124.0.
+
+### Next frontier — the LFB staging pointer truncated to 32 bits
+
+With the vertices correct, execution entered the LFB path for the first time
+and stopped there. The `grLfbLock` handler in `linexe_glide_boundary.cpp`
+builds the `lfbPtr` it hands the guest as
+`static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(
+context->glide_lfb_surface.pixels()))`. That is lossless on Win32 x86, but on
+x64 the host allocation's address is truncated to 32 bits. The guest writes
+through the truncated pointer — `67 89 13`, a `MOV [EBX],EDX` with the 32-bit
+address-size prefix — and takes an immediate SIGSEGV at `0xEC02A530`. Placing
+the LFB staging surface inside the guest arena is the next task.
+
+This run ended in a fault rather than a shutdown. Against the Task 706 state,
+which used its whole 30-second budget, that looks like a regression; it is not.
+The earlier run never reached the LFB path because its vertices were NaNs.
+
+---
+
+## 2026-09-18 Task 708 — LFB staging pointer의 32비트 배치
+
+### 확인된 사실
+
+Task 707이 정점 좌표를 정상화한 뒤 실행이 처음 들어간 LFB 경로에서, 게스트는
+`grLfbLock`이 건넨 `lfbPtr=0xEC02A530`에 기록하다 SIGSEGV로 끝났다. 근인은
+`linexe_glide_boundary.cpp`가 host staging surface 포인터를
+`std::uint32_t`로 잘라 건네는 것이었다. `GlideLfbSurface`의 저장소는
+`std::vector<std::uint8_t>`, 즉 host 힙이고, x86-64에서 614,400바이트 할당은
+4 GiB 위에 놓인다.
+
+이것은 이 저장소에서 같은 모양의 세 번째 사례다 — **host 소유 메모리의 주소를
+32비트 필드에 넣어야 하는데 x86-64의 기본 할당이 4 GiB 위에 있다.** 앞의 둘은
+AOT code cache(Task 554, `AotCodeCachePlacement::base_address`)와 shadow
+selector block(Task 585/586, 가드 슬롯의 `cmp word ptr [disp32]`)이고, 각자
+같은 후보 사다리를 복사해 갖고 있었다.
+
+### 수정과 결과
+
+사다리를 공용 `repiu::runtime::ReserveLowAddressMemory`로 뽑고 기존 두 소비자를
+그 위에 다시 얹었다. 공개 API, 후보 목록, 메시지, 최후수단 정책은 유지했다.
+적합성 판정은 첫 바이트가 아니라 마지막 바이트를 본다.
+
+`GlideLfbSurface`는 저장소를 받기만 하고(`UseExternalStorage`), 배치는 새
+`GlideLfbGuestStorage`가 후보 `0x1D000000`부터의 사다리로 한다. 게스트가
+역참조할 주소이므로 4 GiB 위로 가는 최후수단은 두지 않았다.
+
+같은 30초 실행의 결과가 바뀌었다.
+
+```text
+전: lfbPtr=0xEC02A530  →  [repiu-fault] signal=0xb access=0xec02a530, run_exit=139
+후: lfbPtr=0x1D000000  →  grLfbUnlock #1 non-zero staging bytes=219918/614400
+    [repiu-shutdown] reason=timeout frames=1672 span_ms=10372, run_exit=3
+```
+
+게스트는 614,400바이트 중 219,918바이트를 0이 아닌 값으로 채웠다. telemetry의
+`progress`는 12에서 22로 올라갔다.
+
+### 다음 frontier
+
+`grLfbUnlock`이 보고한 `first-texels=0000 0000 0000`은 게스트가 기록한 내용의
+왼쪽 위 세 texel이 검다는 것이다. Task 708은 게스트가 LFB에 **기록할 수 있게**
+했을 뿐이고, 그 내용이 화면에 옳게 나타나는지는 확인되지 않았다. 함께 남아
+있는 관찰은 `grLfbLock GrLfbInfo_t caller size=0 (expected 20)`으로, 이
+작업 전후로 동일하다.
+
+## English
+
+### Confirmed facts
+
+With the vertex coordinates corrected by Task 707, the run entered the LFB path
+for the first time and ended in a SIGSEGV as the guest wrote through the
+`lfbPtr=0xEC02A530` that `grLfbLock` had handed it. The cause was
+`linexe_glide_boundary.cpp` truncating the host staging-surface pointer to
+`std::uint32_t`: `GlideLfbSurface` is backed by a `std::vector<std::uint8_t>`,
+and on x86-64 a 614,400-byte allocation lands above 4 GiB.
+
+This is the third instance of one shape in this repository — **host-owned memory
+whose address has to fit a 32-bit field, where the x86-64 default allocation is
+above 4 GiB.** The other two are the AOT code cache (Task 554,
+`AotCodeCachePlacement::base_address`) and the shadow selector block (Tasks
+585/586, a guard slot's `cmp word ptr [disp32]`), each carrying its own copy of
+the same candidate ladder.
+
+### Correction and result
+
+The ladder moved into a shared `repiu::runtime::ReserveLowAddressMemory` and
+both existing consumers were put back on top of it, with their public APIs,
+candidate lists, messages and last-resort policies unchanged. The fit test now
+looks at the last byte rather than the first.
+
+`GlideLfbSurface` only accepts storage, through `UseExternalStorage`; the
+placement is done by the new `GlideLfbGuestStorage` from a ladder starting at
+`0x1D000000`. There is deliberately no last resort above 4 GiB, because the
+guest dereferences this address.
+
+The same 30-second run changed outcome: `lfbPtr=0xEC02A530` with an unhandled
+SIGSEGV at that address and `run_exit=139` before, against
+`lfbPtr=0x1D000000`, `grLfbUnlock #1 non-zero staging bytes=219918/614400`, a
+timeout shutdown with `frames=1672 span_ms=10372` and `run_exit=3` after. The
+guest filled 219,918 of 614,400 bytes with non-zero values, and the telemetry
+`progress` counter moved from 12 to 22.
+
+### Next frontier
+
+The `first-texels=0000 0000 0000` that `grLfbUnlock` reports says the top-left
+three texels of what the guest wrote are black. Task 708 only made the LFB
+**writable** by the guest; whether that content reaches the screen correctly is
+unestablished. The `grLfbLock GrLfbInfo_t caller size=0 (expected 20)`
+diagnostic stands alongside it, unchanged by this task.
+
+---
+
+## 2026-09-18 Task 709 — 텍스처 블록 생략 확인과 최종 요약 복구
+
+### 확인된 사실: 갈라지는 지점
+
+Task 708 뒤 Linux x64는 30초를 완주하지만 화면은 검다. `REPIU_GLIDE_DRAW_DIAG=1`
+로 Win32 x86과 같은 장면을 비교하면 Glide gate 열이 **#1부터 #50까지 ordinal과
+반환 주소가 완전히 일치**하다가 #51에서 갈라진다.
+
+```text
+Win32 #51 ordinal=46  _GRTEXTEXTUREMEMREQUIRED@8
+Win32 #52 ordinal=49  _GRTEXDOWNLOADMIPMAPLEVEL@32
+Win32 #53..#58        TEXCLAMPMODE / TEXFILTERMODE / TEXMIPMAPMODE /
+                      TEXSOURCE / TEXCOMBINE / HINTS
+Linux #51 ordinal=80  _GRALPHACOMBINE@20
+```
+
+**Linux x64는 게스트의 텍스처 업로드 블록 전체를 건너뛴다.** 결과로 나타나는
+차이는 전부 그 하나에서 나온다.
+
+| | Win32 x86 | Linux x64 |
+|---|---|---|
+| 정점 dword 8 (oow) | `3F800000` = 1.0 | `00000000` |
+| 정점 dword 9/10 (s/t) | `0` / `43800000` = 256.0 | `0` / `0` |
+| `combine` | `3/other=1` | `1/other=2` |
+| `texEnabled` | `1` | `0` |
+| 삼각형 #3 뒤 non-black 픽셀 | 28,230 | **0** |
+
+게스트 스택 포인터는 gate #1부터 두 host가 8바이트 차이나지만 그 차이는 일정하고
+반환 주소는 #50까지 동일하다. 누적 표류가 아니므로 이 분기의 원인이 아니다.
+
+### 왜 거기서 더 못 갔는가
+
+다음 질문은 게스트의 DOS 파일 접근인데, Linux 로그에는 그 증거가 한 줄도 없었다.
+종료 블록의 회수 거절 갈래가 `_Exit`로 끝나 `attempt`를 호출자에게 돌려주지
+않으므로 loader의 최종 요약이 출력되지 않는다. Linux x64는 모든 실행에서 이
+갈래로 내려간다(`recovered=0`). Task 249부터 관측돼 있던 공백이다.
+
+Task 507/508이 이 갈래를 `_Exit`로 만든 이유는 옳다 — 실행 중인 게스트 스레드
+아래에서 fault handler를 떼면 커널 기본 처분이 코어를 덤프한다. 바꿔야 했던 것은
+정리 작업이 아니라 보고였다. 새 `FinalExecutionReport` seam이 어느 갈래로
+내려가든 떠나기 전에 한 번 보고하게 했고, 거절 갈래에서는 게스트 스레드가 살아
+있어도 안전한 스칼라/POD만 채운다(`std::string`은 손대지 않는다).
+
+Linux 실행 stderr가 133줄에서 968줄이 됐고 DOS trace가 보이기 시작했다.
+
+### 다음 frontier — 파일 읽기 루프
+
+instrument를 켜자마자 대상이 나왔다. 두 host의 DOS 경로 해석은 완전히 동일하고
+(`chdir` 성공 9건 / 실패 7건, 같은 경로), 파일 내용도 동일하다 — 마지막 64개
+read의 offset과 prefix 바이트가 바이트 단위로 같다. 다른 것은 **횟수**다.
+
+| | Win32 x86 | Linux x64 |
+|---|---:|---:|
+| `DOS file I/O trace observed` | 147 | **1,110,383** |
+
+같은 30초 동안 Win32는 파일 연산 147회로 텍스처를 올리고 렌더하는데, Linux는
+110만 회를 수행하고도 텍스처 블록에 닿지 못한다. 마지막으로 읽던 파일은 두 host
+모두 `PIU\DATAS\MODEL\NONSTOP.CAM`이고, 게스트 EIP와 스택도 (base와 8바이트 차이를 빼면) 같다.
+게스트가 파일 읽기 루프에서 빠져나오지 못하는 것으로 보인다.
+
+또한 Task 708이 미해결로 남겼던 `grLfbLock GrLfbInfo_t caller size=0
+(expected 20)`은 **결함이 아니다.** Win32도 첫 lock에서 `size=0`을 보고하고 두
+번째 lock부터 `size=20`이 된다. 동작하는 host와 같은 동작이므로 이 관찰은 닫는다.
+
+## English
+
+### Confirmed: where the two hosts diverge
+
+After Task 708 the Linux x64 run completes its 30 seconds with a black screen.
+Under `REPIU_GLIDE_DRAW_DIAG=1` against Win32 x86, the Glide gate sequence
+matches **exactly, ordinal and return address, for the first 50 gates**, then
+diverges at #51: Windows uploads a texture through
+`_GRTEXTEXTUREMEMREQUIRED@8`, `_GRTEXDOWNLOADMIPMAPLEVEL@32` and the
+clamp/filter/mipmap/source/combine/hint block, and **Linux x64 skips that block
+entirely.** Every downstream difference follows from that one: vertex `oow` is 0
+against 1.0, s/t are 0/0 against 0/256.0, the combine is `1/other=2` against
+`3/other=1`, texturing is disabled, and the third triangle leaves 0 non-black
+pixels against 28,230.
+
+The guest stack pointer differs by 8 bytes from gate #1, but that difference is
+constant and the return addresses agree through gate #50, so it is not drift and
+not the cause.
+
+### Why the investigation could not continue
+
+The next question is the guest's DOS file access, and the Linux log contained
+none of it. The refused-recovery arm of the shutdown block ends in `_Exit`
+without returning `attempt`, so the loader's final summary never prints, and
+Linux x64 takes that arm on every run (`recovered=0`). The gap had been observed
+since Task 249.
+
+The reason Tasks 507/508 made that arm exit is correct — removing the fault
+handler under a live guest thread lets the kernel dump core — so what changed is
+the reporting rather than the cleanup. A new `FinalExecutionReport` seam reports
+once before leaving on whichever arm is taken, and the refused arm fills in only
+scalars and POD arrays, leaving the strings the guest thread owns alone. Linux
+stderr went from 133 lines to 968, with the DOS traces visible.
+
+### Next frontier — a file-reading loop
+
+DOS path resolution is **identical** on both hosts (nine `chdir` successes and
+seven failures, the same paths), and so is the file content: the last 64 reads
+agree byte for byte in offset and prefix. What differs is the **count** —
+`DOS file I/O trace observed` is 147 on Win32 and **1,110,383** on Linux x64. In
+the same thirty seconds Win32 uploads its texture and renders after 147 file
+operations while Linux performs over a million and never reaches the texture
+block. Both hosts were last reading `PIU\DATAS\MODEL\NONSTOP.CAM`, from the same guest EIP and stack
+once the image base and the constant 8-byte ESP offset are taken out. The guest
+appears not to leave a file-reading loop.
+
+Separately, the `grLfbLock GrLfbInfo_t caller size=0 (expected 20)` that Task
+708 left open is **not a defect**: Win32 reports `size=0` on its first lock too
+and `size=20` from the second onward. It matches the working host, so that
+observation is closed.
+
+---
+
+## 2026-09-18 Task 710 — long-mode timer safe point, 그리고 반증된 가설
+
+### 확인된 사실
+
+long-mode emission은 `EmitTimerSafePoint`를 부르는 `switch`에 닿기 전에
+`continue`로 빠졌으므로 Linux x64는 timer safe point를 **하나도** 심지 않았다
+(`true/0`). 이제 i386과 같은 규칙으로 심고, 그 수가 Win32와 같다(1,067). long
+mode에서는 compare를 `83 3C 25 disp32`로 쓰고(i386의 `83 3D`는 RIP 상대),
+요청 플래그는 64비트 host에서만 4 GiB 아래 RW 페이지에 둔다.
+
+### 반증된 가설
+
+Task 709 요약에서 `true/0`과 PIU.BIN 읽기 폭증이 나란히 보여서 "루프는 시간으로
+끝나고 Linux에서는 시간이 도달하지 않는다"고 설계했다. **틀렸다.** 루프 구간만 두
+host에서 비교하면 타이머 상태가 똑같다.
+
+| 루프 구간 | Win32 (1.5초) | Linux (10초) |
+|---|---|---|
+| tick due / injected / dropped | 27 / 0 / 27 | 171 / 0 / 171 |
+| safe point trap / injected | 25 / 0 | 171 / 0 |
+| INT 8 chain HLE count | 0 | 0 |
+| DOS read count | **37** | **754,759** |
+
+이 시점에는 두 host 모두 게스트가 INT 8 처리기를 설치하지 않아 틱이 버려진다.
+Win32가 루프를 빠져나오는 이유는 **타이머와 무관하다.** safe point 복구 뒤에도
+Linux 30초 읽기 횟수는 1,110,356으로 그대로다.
+
+### 발견했지만 되돌린 것
+
+x64 `InjectPendingInterrupts`는 게스트 논리 CS를 `eip`로 selector 표에서 찾는데,
+safe point에서 `eip`는 cache 주소라 조회가 실패하고 루프 이후에도 주입이 막힌다
+(`trap/injected=781/0`). cache 주소를 게스트 주소로 되돌려 조회하게 하면 주입이
+시작되지만, 주입된 INT 8 처리기의 epilogue `STI`(게스트 `0x0103F1F5`, cache
+`0x20127B00`)에서 처리되지 않은 SIGTRAP으로 `exit=133`이 난다. 완주하던 실행을
+크래시로 바꾸므로 되돌렸다.
+
+### 다음 frontier
+
+1. **Win32가 PIU.BIN 0바이트 읽기 루프를 무엇으로 빠져나오는가.** 두 host 모두
+   쓰레기 offset(Win32 `0x0458CC60`, Linux `0x010F0FDF`)으로 seek하고 같은
+   게스트 EIP `…F4BDF`에서 읽는다. 타이머는 배제됐으므로 루프의 탈출 조건을 게스트
+   코드에서 직접 읽는다.
+2. safe point 주입 뒤 ISR 경로의 SIGTRAP.
+
+## English
+
+### Confirmed
+
+Long-mode emission continued past the `switch` holding every
+`EmitTimerSafePoint` call, so Linux x64 planted **no** timer safe points
+(`true/0`). It now plants them under the i386 rule, matching Win32's count of
+1,067, writes the compare as `83 3C 25 disp32` under long mode (the i386
+`83 3D` is RIP-relative there), and keeps the request flag in a RW page below
+4 GiB on 64-bit hosts only.
+
+### The falsified hypothesis
+
+Task 709's summary showed `true/0` next to the PIU.BIN read explosion, and the
+design concluded that the loop ends on time and time never reaches the guest on
+Linux. **That was wrong.** Over the loop alone, the two hosts' timer state is
+identical — every due tick dropped (27 on Win32 at 1.5 s, 171 on Linux at
+10 s), none injected, safe points all deferred, INT 8 chain count zero — because
+neither guest has installed its INT 8 handler yet. Win32 leaves the loop after 37
+reads for a reason **unrelated to the timer**, and with safe points restored the
+Linux 30-second read count is still 1,110,356.
+
+### Found but reverted
+
+x64 `InjectPendingInterrupts` looks up the guest's logical CS by `eip`, which is
+a cache address at a safe point, so the lookup fails and blocks injection even
+after the loop (`trap/injected=781/0`). Mapping the cache address back to its
+guest address starts injection, but the injected INT 8 handler then dies with an
+unhandled SIGTRAP at the `STI` in its epilogue (guest `0x0103F1F5`, cache
+`0x20127B00`), `exit=133`. It turned a completing run into a crash and was
+reverted.
+
+### Next frontier
+
+1. **What makes Win32 leave the PIU.BIN zero-length read loop.** Both hosts seek
+   to a garbage offset (Win32 `0x0458CC60`, Linux `0x010F0FDF`) and read from the
+   same guest EIP `…F4BDF`. The timer is ruled out, so the loop's exit condition
+   is read from the guest code directly.
+2. The SIGTRAP in the ISR path after a safe-point injection.
+
+---
+
+## 2026-09-18 Task 711 — PIU.BIN 루프 근인: SS override fold
+
+### 확인된 사실
+
+PIU.BIN 루프는 게임 코드 `count = filelength(h) >> 4` 뒤의 `fread` 반복이고,
+`filelength`는 `lseek` 세 번이다. `lseek` wrapper는 `INT 21h AH=42h`의 결과를
+**명시적 `SS:` override**(`mov ss:[edi],ax` / `mov ss:[edi+2],dx`, `edi=esp`)로
+스택에 쓰고 `[esp]`를 읽는다. 게스트 SS 선택자 `0x0034`는 object 4 base
+`0x01110000`인데 `ESP`는 linear라서, 그 base를 fold하면 저장이 `[esp]`에 닿지 않고
+`lseek`은 낡은 슬롯 값을 돌려준다. Linux에서는 `cur`와 `end`가 모두
+`0x010F0FDF`였고 `count = 0x0010F0FD`(1,110,269)가 됐다. 우리 `AH=42h` HLE는
+올바르다.
+
+커밋하지 않은 실험(SS fold base = 0)에서 Linux 30초 읽기가 1,110,356 → **91**
+(Win32 122)로 떨어졌다. 근인 확인. 그러나 Glide gate #51은 여전히
+`_GRALPHACOMBINE@20`이고 화면은 여전히 검다. **루프는 텍스처 생략의 원인이 아니다.**
+
+Win32도 복원 seek가 쓰레기 offset으로 가므로 같은 결함을 적어도 한 번 겪는 것으로
+추정한다(미측정).
+
+### 다음 frontier
+
+1. SS(와 아마 DS/ES) override fold의 의미 — 선택자 모델 결정, Win32에도 영향.
+2. 텍스처 블록 생략의 진짜 원인 — 두 host 비교를 다시 한다.
+
+## English
+
+The PIU.BIN loop is the game's `fread` loop bounded by
+`count = filelength(h) >> 4`, and `filelength` is three `lseek` calls. The
+`lseek` wrapper stores the `INT 21h AH=42h` result through an **explicit `SS:`
+override** (`mov ss:[edi],ax` / `mov ss:[edi+2],dx`, `edi=esp`) and reads `[esp]`.
+Guest SS selector `0x0034` has object-4 base `0x01110000` while `ESP` is linear,
+so folding that base sends the store elsewhere and `lseek` returns a stale slot
+value; on Linux both `cur` and `end` were `0x010F0FDF`, giving
+`count = 0x0010F0FD` (1,110,269). Our `AH=42h` HLE is correct.
+
+An uncommitted experiment folding SS with base 0 cut the Linux 30-second read count
+from 1,110,356 to **91** (Win32: 122), confirming the cause. Glide gate #51 is
+still `_GRALPHACOMBINE@20` and the screen is still black: **the loop is not why
+the texture is skipped.** Win32 appears to hit the same defect at least once,
+since its restore seek also goes to a garbage offset (not measured directly).
+
+Next: what an SS (and probably DS/ES) override should fold — a selector-model
+decision that also affects Win32 — and the real cause of the skipped texture
+block, by comparing the hosts again.
+
+---
+
+## 2026-09-18 Task 712 — flat 스택의 명시적 SS override
+
+명시적 `SS:` override를 같은 SS 아래의 암묵적 스택 접근과 같은 주소로 보낸다.
+loader 초기 스택 선택자(`0x0034`)에서는 base 0, 게스트가 만든 스택(`B4`)에서는
+descriptor base. `BuildAotSegmentTable`에서 `ApplyFlatStackSegmentFold`로 적용.
+
+결과: Linux 30초 DOS read 1,110,356 → **91**, seek 25. **두 host의 파일 연산이
+이제 같다(91 / 25 / 11).** Win32도 PIU.BIN 복원 seek가 쓰레기에서 0이 되어 처음으로
+560바이트를 읽는다. Win32 gate 96개·LFB·삼각형 12개의 좌표와 픽셀은 전후 동일.
+설명되지 않은 차이는 Win32 첫 삼각형 정점 색 dword가 0에서 반복 바이트로 바뀐 것
+(초기화되지 않은 필드의 잔여 메모리로 추정, 측정한 12 draw 픽셀 영향 없음).
+
+**gate #51은 여전히 갈라진다.** 파일 연산이 같아졌으므로 텍스처 생략의 원인은 파일
+쪽이 아니다 — Task 713.
+
+## English
+
+An explicit `SS:` override now reaches the address an implicit stack access under
+the same SS would: base 0 on the loader's initial stack selector (`0x0034`), the
+descriptor base on a guest-built stack (`B4`), applied through
+`ApplyFlatStackSegmentFold` in `BuildAotSegmentTable`. Linux 30-second DOS reads
+fell from 1,110,356 to **91** with 25 seeks, and **file activity is now identical
+on both hosts (91 / 25 / 11)**. Win32's PIU.BIN restore seek went from garbage to
+0 and it reads the full 560 bytes for the first time; its 96 gates, LFB, and the
+coordinates and pixels of 12 triangles are unchanged. One unexplained difference:
+the first triangle's vertex color dwords on Win32 went from zero to repeating
+bytes, inferred to be leftover memory in uninitialized fields, with no pixel effect
+in the 12 measured draws. **Gate #51 still diverges**; with file activity equal,
+the texture skip is not a file problem — Task 713.
+
+---
+
+## 2026-09-18 Task 713 — 텍스처 경로 복구: 상위 바이트 lowering의 DL 저장 방향
+
+### 확인된 사실
+
+텍스처 생략의 인과 사슬(Linux 주소):
+
+1. `0x010C92B0`(visual 생성)이 `calloc` 결과를 `EDX`에 들고 `mov bh,[esp]`를
+   실행한다.
+2. 그 명령의 long-mode lowering(Task 676 `kStackPointerHighByteDestinationToR15`)
+   첫 명령이 `44 88 F2` = `mov dl, r14b`라 DL을 저장하지 않고 덮어쓴다.
+   `EDX` 하위 바이트가 R14B가 되어 visual 포인터가 `0x0158DAA0` → `0x0158DA11`.
+3. GL 컨텍스트 생성(`0x010C954C`)이 그것을 `ctx[0x8F8]`로 저장한다.
+4. 게임 안의 OpenGL식 `glEnable(GL_TEXTURE_2D)`(`0x010BEB7A`)가
+   `*(ctx[0x8F8]) == 0`을 보고 `scene[0xDEFC]` 비트 2를 세우지 않는다.
+5. 재질 선택(`0x0104B520`)이 텍스처 없는 재질을 고르고 gate #51이 갈라진다.
+
+올바른 저장은 `41 88 D6`(`mov r14b, dl`)이다. 수정 뒤 Linux의 Glide gate 96개가
+Win32와 **전부** 일치하고, 삼각형의 텍스처 좌표·combine·texture enable이 같다.
+두 probe가 틀린 바이트를 기대값으로 갖고 있어 결함을 못 잡았다. 해독 검사와 실행
+검사를 더했고, 수정 전 emitter에서 실행 검사는 `dl=0xef`(R14 하위 바이트)를
+보고한다.
+
+### 다음 frontier
+
+gate 열이 96개까지 일치하므로 다음은 **화면에 실제로 무엇이 그려지는지**다. 지금까지의
+비교는 gate와 처음 12개 draw의 픽셀 수까지다. 이후 프레임과 장면 전환에서 두 host가
+같은지는 확인하지 않았다.
+
+## English
+
+The chain behind the skipped texture (Linux addresses): the visual creator
+`0x010C92B0` holds its `calloc` result in `EDX` across `mov bh,[esp]`; that
+instruction's long-mode lowering (Task 676's
+`kStackPointerHighByteDestinationToR15`) began with `44 88 F2`, which is
+`mov dl, r14b` — an overwrite, not a save — so `EDX`'s low byte became R14B and the
+visual pointer went from `0x0158DAA0` to `0x0158DA11`; the GL context creator
+`0x010C954C` stored it as `ctx[0x8F8]`; the game's OpenGL-style
+`glEnable(GL_TEXTURE_2D)` at `0x010BEB7A` read a zero through it and did not set
+bit 2 of `scene[0xDEFC]`; and the material selector `0x0104B520` chose the
+untextured material, so gate #51 diverged. The correct save is `41 88 D6`
+(`mov r14b, dl`). After the fix **all 96** Linux Glide gates match Win32, and the
+triangles' texture coordinates, combine and texture enable are the same. Two probes
+had held the wrong bytes as their expected values; a decode check and an execution
+check were added, and against the pre-fix emitter the execution check reports
+`dl=0xef`, R14's low byte.
+
+Next: with the gate sequence matching through 96 gates, the question becomes **what
+actually reaches the screen**. Comparisons so far stop at the gates and the pixel
+counts of the first 12 draws; later frames and scene transitions have not been
+compared across the hosts.
+
+---
+
+## 2026-09-18 Task 714 — 화면 진행 비교와 safe point 틱 주입
+
+두 host는 같은 장면을 같은 순서로 그리지만 Linux x64가 느리게 진행한다(두 번째
+장면 도달: Win32 스왑 200, Linux 600). Win32는 틱 5,729개를 주입하고(safe point
+5,667), Linux는 1,754개(safe point 0/3,859)만 주입한다. 원인은 x64 주입 경로가
+cache `eip`로 선택자를 찾고 IRET 프레임에 cache 주소를 넣는 것이었다. 둘 다 게스트
+주소를 쓰도록 고쳤으나, 켜면 27–28초에 일시적 `int3`로, 또는 20초 전에 SIGSEGV로
+죽으므로 opt-in(`REPIU_LINUX_X64_SAFE_POINT_INJECTION`)이다. 켠 실행에서도 장면
+진행이 빨라지지 않아 틱 부족 가설은 미확정이다.
+
+## English
+
+Both hosts draw the same scenes in the same order, but Linux x64 progresses more
+slowly (second scene at swap 200 on Win32, 600 on Linux). Win32 injects 5,729 ticks
+(5,667 at safe points); Linux injects 1,754 (0 of 3,859 at safe points). The x64
+injection path looked the selector up by a cache `eip` and put the cache address in
+the IRET frame; both now use the guest address, but with that on the run dies at
+27–28 s on a transient `int3` or before 20 s on a SIGSEGV, so it is opt-in
+(`REPIU_LINUX_X64_SAFE_POINT_INJECTION`). Scene progression was not faster with it
+on, so the tick-starvation hypothesis is unconfirmed.
+
+---
+
+## 2026-09-18 Task 715 — 게스트 시계는 렌더 단계에서 멈춘다
+
+INT 8 ISR이 모든 틱에서 올리는 카운터(runtime offset `0x28FA20`)를 벽시계와 함께
+기록했다. Win32는 초당 약 240으로 꾸준히 오른다. Linux x64는 로딩 중 같은 속도로
+오르다가 **17초부터 1,755에서 멈춘다**. Task 714의 opt-in safe point 주입을 켜면
+29초까지 초당 약 231로 계속 오른다. 렌더 단계의 틱은 거의 전부 safe point로
+들어가므로(Win32 5,667/5,729), Linux에서 그 경로가 막혀 게임 시계가 정지한 것이다.
+남은 장애물은 주입을 켰을 때의 크래시(일시적 `int3`)다.
+
+## English
+
+The counter the INT 8 ISR increments on every tick (runtime offset `0x28FA20`) was
+recorded against wall time. Win32 climbs about 240 per second throughout. Linux x64
+climbs at the same rate during loading and **stops at 1,755 from 17 seconds on**;
+with Task 714's opt-in safe-point injection on it keeps climbing about 231 per
+second to 29 seconds. Render-phase ticks enter almost entirely through safe points
+(5,667 of 5,729 on Win32), so with that path blocked on Linux the game clock stops.
+The remaining obstacle is the crash with injection on (the transient `int3`).
+
+---
+
+## 2026-09-18 Task 716 — `CS:` 데이터 접근을 long mode에서 복사로 방출
+
+주입을 켰을 때의 27–28초 크래시는 "일시적 `int3`"가 아니라 게스트 `0x010F74A1`
+(`mov al, cs:[edx+table]`, ISR이 부르는 `itoa`)의 HLE boundary였다. 계획기는 모든
+segment prefix 명령을 boundary로 만들고, x64에는 그것을 처리하는 곳이 없다. long
+mode는 CS override를 무시하므로 이 경우를 `67` 복사 + fallthrough 점프로 방출하고,
+HLE 커버리지 검증이 그 복사를 인식하도록 했다(인식하지 못하면 AOT 이미지 전체가
+거부되어 게임이 1초에 멈춘다). 주입 on 실행은 이제 `0x010F74A1`을 지나며, 27–28초에
+GL 텍스처 바인드의 해시 테이블 포인터가 `0xF186F186`(RGB565 주황)으로 덮여
+SIGSEGV로 죽는다. 픽셀 쓰기의 힙 침범으로 추정한다.
+
+## English
+
+The 27–28-second crash with injection on was not a "transient `int3`" but the HLE
+boundary for guest `0x010F74A1` (`mov al, cs:[edx+table]`, an `itoa` called from the
+ISR). The planner makes every segment-prefixed instruction a boundary, and x64 has
+nothing to service it. Long mode ignores a CS override, so this case is now emitted
+as a `67` copy plus a fallthrough jump, and HLE coverage validation recognizes the
+copy (without that the whole AOT image is refused and the game stops at one
+second). Runs with injection on now pass `0x010F74A1` and die at 27–28 seconds on a
+SIGSEGV: a GL texture bind's hash-table pointer has been overwritten with
+`0xF186F186` (orange in RGB565), presumably a pixel write straying into the heap.
+
+---
+
+## 2026-09-19 Task 717 — loader 데이터 선택자도 flat으로 fold
+
+주입 on의 27–28초 SIGSEGV는 `sprintf("%d")`의 힙 침범이었다. 숫자 문자열을
+`es:[ebx]`로 복사하는데, 게스트가 DS를 읽어 ES에 넣은 값이 Win32는 host flat
+선택자 `0x2B`, Linux는 loader 선택자 `0x0024`(base `0x01010000`)다. Linux ES fold가
+그 base를 더해 텍스처 픽셀을 읽었고 NUL이 없어 스택과 힙을 덮었다. 하드웨어 쓰기
+감시점(`REPIU_LINUX_X64_DATA_WATCH`)이 쓰는 명령을 잡았다. Task 712의 SS 규칙을
+모든 segment 레지스터와 초기 데이터 선택자로 넓혔다. 주입 on은 이제 90초 동안
+폴트 없이 3,913프레임을 그리며 장면이 계속 바뀐다. Win32 수치는 잡음 범위. 다음은
+주입을 기본값으로 켜는 것.
+
+## English
+
+The 27–28-second SIGSEGV with injection on was `sprintf("%d")` overrunning into the
+heap. It copies the number string through `es:[ebx]`, and the value the guest reads
+from DS and loads into ES is the host's flat `0x2B` on Win32 but loader selector
+`0x0024` (base `0x01010000`) on Linux. The Linux ES fold added that base, read
+texture pixels, found no NUL, and overwrote the stack and heap. A hardware write
+watchpoint (`REPIU_LINUX_X64_DATA_WATCH`) caught the writing instruction. Task 712's
+SS rule now covers every segment register and the initial data selector. With
+injection on the guest now runs 90 seconds without faults, drawing 3,913 frames with
+the scenes changing throughout; Win32 figures are within noise. Next: turn injection
+on by default.

@@ -1042,6 +1042,84 @@ bool Probe16BitAndAccumulatorImmediate()
 // high-byte source is materialised in R14B by exchanging the source low and
 // high bytes around a REX-using move, and the original byte operation is then
 // re-encoded against guest ESP in R15D.
+// Task 713. Execute the destination high-byte lowering and check what it did,
+// not which bytes it is.
+//
+// `mov ah,[esp]` has to load AH and leave everything else as it was. The
+// sequence borrows DL around the R15-based load, so the thing most worth
+// checking is that DL comes back -- the defect here was a save written
+// backwards, which replaced DL with R14B and so the low byte of EDX, and a byte
+// comparison written from the same code agreed with it. R14 is loaded with a
+// value whose low byte differs from DL's, so a reversed save cannot pass by
+// coincidence.
+//
+// push r14; push r15; mov r15d,edi; xor eax,eax; mov edx,0x11223344;
+// mov r14d,0xDEADBEEF; <lowered mov ah,[esp]>; mov ecx,eax; shr ecx,8;
+// mov [r15+4],cl; mov [r15+5],dl; pop r15; pop r14; ret.
+bool ProbeStackPointerHighByteDestination(const std::uint32_t* data)
+{
+    const std::uint8_t source[] = {0x8AU, 0x24U, 0x24U};  // mov ah,[esp]
+    std::uint8_t lowered[kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    if (!LowerLongModeBytes(source, sizeof(source), lowered, &lowered_count))
+    {
+        std::cout << "long_mode_lowering_high_byte_destination=false,"
+                     "reason=lowering" << "\n";
+        return false;
+    }
+    std::vector<std::uint8_t> code = {
+        0x41U, 0x56U,                                // push r14
+        0x41U, 0x57U,                                // push r15
+        0x41U, 0x89U, 0xFFU,                         // mov r15d,edi
+        0x31U, 0xC0U,                                // xor eax,eax
+        0xBAU, 0x44U, 0x33U, 0x22U, 0x11U,           // mov edx,0x11223344
+        0x41U, 0xBEU, 0xEFU, 0xBEU, 0xADU, 0xDEU,    // mov r14d,0xDEADBEEF
+    };
+    code.insert(code.end(), lowered, lowered + lowered_count);
+    code.insert(code.end(), {
+        0x89U, 0xC1U,                   // mov ecx,eax
+        0xC1U, 0xE9U, 0x08U,            // shr ecx,8
+        0x41U, 0x88U, 0x4FU, 0x04U,     // mov [r15+4],cl   (AH)
+        0x41U, 0x88U, 0x57U, 0x05U,     // mov [r15+5],dl
+        0x41U, 0x5FU,                   // pop r15
+        0x41U, 0x5EU,                   // pop r14
+        0xC3U,                          // ret
+    });
+
+    auto* const bytes = const_cast<std::uint8_t*>(
+        reinterpret_cast<const std::uint8_t*>(data));
+    bytes[0] = 0x5AU;  // what [esp] holds, and so what AH must become
+    bytes[1] = 0U;
+    bytes[2] = 0U;
+    bytes[3] = 0U;
+    bytes[4] = 0U;
+    bytes[5] = 0U;
+
+    ExecutablePage page;
+    if (!AllocateCodePage(&page) || !WriteAndArm(page, code))
+    {
+        ReleasePage(&page);
+        std::cout << "long_mode_lowering_high_byte_destination=false,"
+                     "reason=page" << "\n";
+        return false;
+    }
+    using Entry = std::uint32_t (*)(std::uint32_t);
+    Entry entry = nullptr;
+    std::memcpy(&entry, &page.base, sizeof(entry));
+    (void)entry(static_cast<std::uint32_t>(
+        reinterpret_cast<std::uintptr_t>(data)));
+    ReleasePage(&page);
+
+    const unsigned ah = bytes[4];
+    const unsigned dl = bytes[5];
+    const bool ok = ah == 0x5AU && dl == 0x44U;
+    *const_cast<std::uint32_t*>(data) = kMarker;
+    std::cout << "long_mode_lowering_high_byte_destination="
+              << (ok ? "true" : "false") << ",ah=0x" << std::hex << ah
+              << ",dl=0x" << dl << std::dec << "\n";
+    return ok;
+}
+
 bool ProbeStackPointerHighByteSource(const std::uint32_t* data)
 {
     const std::vector<std::uint8_t> guest = {
@@ -1072,8 +1150,12 @@ bool ProbeStackPointerHighByteSource(const std::uint32_t* data)
         destination, sizeof(destination));
     const auto exchange_verdict = ClassifyLongModeBytes(exchange,
                                                         sizeof(exchange));
+    // Task 713. The save was `44 88 F2`, identical to the restore and in fact
+    // `mov dl, r14b`. This array agreed with it because it was written from
+    // the same code; `ProbeStackPointerHighByteDestination` below executes the
+    // sequence and is what checks the direction.
     const std::uint8_t destination_expected[] = {
-        0x44U, 0x88U, 0xF2U,
+        0x41U, 0x88U, 0xD6U,
         0x41U, 0x8AU, 0x14U, 0x27U,
         0x8AU, 0xE2U,
         0x44U, 0x88U, 0xF2U};
@@ -1359,6 +1441,8 @@ bool RunLongModeLoweringProbe()
     const bool sixteen_bit_and_ok = Probe16BitAndAccumulatorImmediate();
     const bool sixteen_bit_loopnz_ok = Probe16BitLoopNz();
     const bool high_byte_ok = ProbeStackPointerHighByteSource(data);
+    const bool high_byte_destination_ok =
+        ProbeStackPointerHighByteDestination(data);
     const bool prefix_ok = ProbeAddressSizePrefix(data);
     const bool absolute_ok = ProbeAbsoluteToSib(data);
     const bool absolute_imm_ok = ProbeAbsoluteToSibImmediate(data);
@@ -1372,7 +1456,7 @@ bool RunLongModeLoweringProbe()
         sixteen_bit_lea16_ok && sixteen_bit_test_ok && sixteen_bit_mov_ok &&
         sixteen_bit_mov_register_ok && sixteen_bit_shift_ok &&
         sixteen_bit_and_ok && sixteen_bit_loopnz_ok &&
-        high_byte_ok &&
+        high_byte_ok && high_byte_destination_ok &&
         prefix_ok && absolute_ok &&
         absolute_imm_ok && moffs_ok;
     std::cout << "long_mode_lowering_all=" << (all ? "true" : "false") << "\n";

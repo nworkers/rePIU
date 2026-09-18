@@ -32,6 +32,8 @@
 #include "env_toggle_probe.h"
 #include "far_jump_probe.h"
 #include "far_return_probe.h"
+#include "final_execution_report_probe.h"
+#include "flat_stack_segment_fold_probe.h"
 #include "execution_backend_probe.h"
 #include "execution_timeout_probe.h"
 #include "glide_lfb_region_probe.h"
@@ -40,6 +42,7 @@
 #include "launcher_probe.h"
 #include "long_mode_compatibility_probe.h"
 #include "long_mode_emission_probe.h"
+#include "low_address_reservation_probe.h"
 #include "linux_x64_transfer_failure_provenance_probe.h"
 #include "nvram_path_probe.h"
 #include "pit_timer_probe.h"
@@ -106,6 +109,22 @@ constexpr CoreProbe kCoreProbes[] = {
     // run disagreeing with a Linux x64 one would mean the emitter and the
     // classifier had drifted apart.
     {"long_mode_emission", &repiu::tools::RunLongModeEmissionProbe},
+    // Task 709. The seam that lets a shutdown which cannot return still
+    // report. Pure registration and dispatch -- it reserves nothing and faults
+    // nothing -- so it sits with the computations rather than the placements.
+    // Task 712. Which base an explicit SS override folds. A pure rule over one
+    // resolution, so it runs everywhere; the fold table itself is built from a
+    // live ThreadContext and is measured by the runs instead.
+    {"flat_stack_segment_fold",
+     &repiu::tools::RunFlatStackSegmentFoldProbe},
+    {"final_execution_report",
+     &repiu::tools::RunFinalExecutionReportProbe},
+    // Task 708. The shared candidate ladder behind the AOT code cache, the
+    // shadow selector block, and the Glide LFB staging surface. It reserves
+    // real address ranges, so it sits with the other placement probes and ahead
+    // of them: if this one fails, theirs fail for the same reason.
+    {"low_address_reservation",
+     &repiu::tools::RunLowAddressReservationProbe},
     {"linux_x64_transfer_failure_provenance",
      &repiu::tools::RunLinuxX64TransferFailureProvenanceProbe},
     {"nvram_path", &repiu::tools::RunNvramPathProbe},

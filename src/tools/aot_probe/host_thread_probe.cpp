@@ -260,7 +260,7 @@ std::uint32_t InterruptSpinEntry(void* parameter)
     return kExitMarker;
 }
 
-void SampleEip(repiu::platform::GuestCpuContext* registers, void* user_data)
+bool SampleEip(repiu::platform::GuestCpuContext* registers, void* user_data)
 {
     auto* witness = static_cast<InterruptWitness*>(user_data);
     witness->callback_count.fetch_add(1, std::memory_order_relaxed);
@@ -268,12 +268,13 @@ void SampleEip(repiu::platform::GuestCpuContext* registers, void* user_data)
                                       std::memory_order_relaxed);
     witness->sampled_eip.store(static_cast<std::uint32_t>(registers->Eip),
                                std::memory_order_release);
+    return false;
 }
 
-// The edit, which is also how the loop is stopped. Windows runs this on the
-// caller's thread with the target frozen and Linux on the target itself, so the
-// store below is what both have to make visible.
-void RequestStopThroughRegisters(repiu::platform::GuestCpuContext* registers,
+// The interrupt callback stops the loop through external atomic state without
+// editing the native register snapshot. Returning false is the contract under
+// test: an answered callback does not imply context write-back.
+bool RequestStopThroughInterrupt(repiu::platform::GuestCpuContext* registers,
                                  void* user_data)
 {
     auto* witness = static_cast<InterruptWitness*>(user_data);
@@ -281,6 +282,7 @@ void RequestStopThroughRegisters(repiu::platform::GuestCpuContext* registers,
                                std::memory_order_release);
     witness->edit_observed.store(true, std::memory_order_release);
     witness->stop.store(true, std::memory_order_release);
+    return false;
 }
 
 bool WaitUntilSpinning(const InterruptWitness& witness)
@@ -358,7 +360,7 @@ bool ProbeInterruptSamplesAndEdits()
     ok = ok && moved;
 
     ok = ok && repiu::platform::InterruptHostThread(
-                   thread, &RequestStopThroughRegisters, &witness, 2000U);
+                   thread, &RequestStopThroughInterrupt, &witness, 2000U);
     ok = ok && witness.edit_observed.load(std::memory_order_acquire);
 
     std::uint32_t exit_code = 0;
@@ -432,10 +434,11 @@ struct BlockedInterruptWitness
     std::uint32_t unblock_delay_milliseconds = 0;
 };
 
-void CountInterruptCallback(repiu::platform::GuestCpuContext*, void* user_data)
+bool CountInterruptCallback(repiu::platform::GuestCpuContext*, void* user_data)
 {
     auto* witness = static_cast<BlockedInterruptWitness*>(user_data);
     witness->callback_count.fetch_add(1, std::memory_order_relaxed);
+    return false;
 }
 
 // A thread that cannot answer, made the way the stalled guest was found: with

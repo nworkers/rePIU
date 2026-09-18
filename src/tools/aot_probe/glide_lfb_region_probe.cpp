@@ -263,8 +263,45 @@ bool RunGlideLfbRegionProbe()
         SurfaceTexel(rows, 0U, 3U) == 0xF800U &&
         SurfaceTexel(rows, 0U, 0U) == 0x1234U;
 
+    // Task 708. Storage the caller owns, which is how grLfbLock's `lfbPtr`
+    // comes to be an address a 32-bit field can name: on a 64-bit host the
+    // surface's own heap buffer sits above 4 GiB and the guest receives it
+    // truncated. The surface only accepts storage; it places none.
+    std::vector<std::uint8_t> external(2U * 2U * 2U, 0xCCU);
+    GlideLfbSurface adopted;
+    adopted.Resize(4U, 4U);
+    const bool external_storage =
+        !adopted.uses_external_storage() &&
+        // A null base or an empty range is refused rather than installed.
+        !adopted.UseExternalStorage(nullptr, external.size()) &&
+        !adopted.UseExternalStorage(external.data(), 0U) &&
+        adopted.UseExternalStorage(external.data(), external.size()) &&
+        adopted.uses_external_storage() &&
+        adopted.external_byte_count() == external.size() &&
+        // Installation drops the previous image, so nothing reports a size
+        // describing a buffer that has just been given back.
+        adopted.byte_count() == 0U &&
+        // A size that does not fit is refused rather than reallocated: the
+        // storage was placed by its owner, and moving it would invalidate an
+        // address the guest may already hold.
+        !adopted.Resize(4U, 4U) &&
+        adopted.Resize(2U, 2U) &&
+        adopted.pixels() == external.data() &&
+        adopted.byte_count() == external.size() &&
+        // Resize clears the image it is about to hand out.
+        external[0] == 0x00U && external[external.size() - 1U] == 0x00U;
+
+    // And what the surface path writes lands in the caller's storage rather
+    // than in a buffer of the surface's own.
+    SetSurfaceTexel(&adopted, 1U, 1U, 0xBEEFU);
+    const bool external_writes =
+        external_storage &&
+        external[6] == 0xEFU && external[7] == 0xBEU &&
+        SurfaceTexel(adopted, 1U, 1U) == 0xBEEFU;
+
     const bool all = format_table && stride_rule && conversion &&
-        color_order && clipping && round_trip && row_mapping;
+        color_order && clipping && round_trip && row_mapping &&
+        external_writes;
 
     std::cout << "glide_lfb_region_format_table="
               << (format_table ? "true" : "false")
@@ -280,6 +317,8 @@ bool RunGlideLfbRegionProbe()
               << (round_trip ? "true" : "false")
               << "\nglide_lfb_region_row_mapping="
               << (row_mapping ? "true" : "false")
+              << "\nglide_lfb_region_external_storage="
+              << (external_writes ? "true" : "false")
               << "\nglide_lfb_region_all=" << (all ? "true" : "false") << "\n";
     return all;
 }

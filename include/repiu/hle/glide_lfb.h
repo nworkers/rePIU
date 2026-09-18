@@ -94,7 +94,28 @@ class GlideLfbSurface
 public:
     // Size the surface for a width x height 565 image. Safe to call repeatedly;
     // it only reallocates when the dimensions actually change.
+    //
+    // With external storage installed nothing is allocated: the size is checked
+    // against that storage and refused when it does not fit.
     bool Resize(std::uint32_t width, std::uint32_t height);
+
+    // Task 708. Use storage the caller owns instead of this object's own
+    // buffer.
+    //
+    // grLfbLock hands `pixels()` to the guest as a 32-bit `GrLfbInfo_t::lfbPtr`
+    // and the guest writes through it. On a 64-bit host the heap buffer this
+    // class allocates for itself sits above 4 GiB, so that pointer arrives
+    // truncated and the first write faults. The caller that knows how to place
+    // memory a 32-bit field can name installs it here; this layer names no
+    // operating system and does no placement of its own.
+    //
+    // The storage must outlive the surface, and installing it discards whatever
+    // the surface held. Returns false for a null base or an empty range.
+    bool UseExternalStorage(std::uint8_t* base, std::size_t byte_count);
+
+    // Whether external storage is installed, which is what separates "the guest
+    // may be given this address" from "this is an ordinary heap buffer".
+    bool uses_external_storage() const { return external_base_ != nullptr; }
 
     // Mark the surface locked. `type` is GrLock_t. Returns false when a lock is
     // already outstanding, which Glide treats as a caller error.
@@ -102,9 +123,30 @@ public:
                    std::uint32_t write_mode, std::uint32_t origin);
     void EndLock();
 
-    std::uint8_t* pixels() { return pixels_.data(); }
-    const std::uint8_t* pixels() const { return pixels_.data(); }
-    std::size_t byte_count() const { return pixels_.size(); }
+    std::uint8_t* pixels()
+    {
+        return external_base_ != nullptr ? external_base_ : pixels_.data();
+    }
+    const std::uint8_t* pixels() const
+    {
+        return external_base_ != nullptr ? external_base_ : pixels_.data();
+    }
+    // The bytes of the current image, not the capacity behind it. External
+    // storage may be larger -- a host reserves in pages, and Windows in 64 KiB
+    // granules -- and every caller of this uses it as the length of the image
+    // to convert or copy, which is what it meant before external storage
+    // existed.
+    std::size_t byte_count() const
+    {
+        return external_base_ != nullptr
+            ? static_cast<std::size_t>(width_) * height_ *
+                  kGlideLfb565BytesPerTexel
+            : pixels_.size();
+    }
+
+    // The capacity installed behind the image, which is what a Resize is
+    // measured against.
+    std::size_t external_byte_count() const { return external_byte_count_; }
 
     std::uint32_t width() const { return width_; }
     std::uint32_t height() const { return height_; }
@@ -121,6 +163,9 @@ public:
 
 private:
     std::vector<std::uint8_t> pixels_;
+    // Not owned. Null means this object's own buffer above is the storage.
+    std::uint8_t* external_base_ = nullptr;
+    std::size_t external_byte_count_ = 0;
     std::uint32_t width_ = 0;
     std::uint32_t height_ = 0;
     bool locked_ = false;

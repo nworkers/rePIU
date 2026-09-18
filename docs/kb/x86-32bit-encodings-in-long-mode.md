@@ -58,6 +58,20 @@ long mode에서 절대 주소를 쓰려면 SIB로 `base=101`, `index=100`, `mod=
 합니다. 전역 변수를 절대 주소로 읽는 코드에서는 이 형태가 압도적으로 흔하므로,
 발산 한 줄이 코드 전체에 퍼집니다.
 
+#### 상위 바이트 레지스터 `AH`/`CH`/`DH`/`BH`와 REX
+
+REX prefix가 하나라도 붙으면 8비트 레지스터 번호 4–7은 `AH/CH/DH/BH`가 아니라
+`SPL/BPL/SIL/DIL`이 된다. 그래서 `R8`–`R15`를 써야 하는 명령(이 프로젝트에서는 게스트
+`ESP`가 `R15`)과 상위 바이트 레지스터는 한 명령에 함께 올 수 없고, 임시 하위 바이트
+레지스터를 거치는 여러 명령으로 나눠야 한다.
+
+그 sequence를 쓸 때 **`88 /r`과 `8A /r`의 방향**이 흔한 함정이다. `88 /r`은
+`MOV r/m8, r8`이라 ModRM의 **r/m이 목적지**이고, `8A /r`은 `MOV r8, r/m8`이라 **reg가
+목적지**다. 레지스터끼리 옮길 때는 두 형식이 모두 유효하므로 방향을 뒤집어도 인코딩
+오류가 나지 않는다. `44 88 F2`는 `mov dl, r14b`이고 `41 88 D6`이 `mov r14b, dl`이다.
+Task 713은 저장해야 할 자리에 복원 명령이 들어가 있던 결함이었다. 이런 sequence는
+바이트 비교가 아니라 **해독하거나 실행해서** 검증해야 한다.
+
 ### 폭이 바뀌는 encoding
 
 long mode에서 **stack 관련 명령의 기본 operand size는 64비트**이고, 32비트로 낮출
@@ -155,6 +169,21 @@ In 32-bit mode this combination is an absolute address with no base register.
 Long mode needs a SIB byte with `base=101`, `index=100`, `mod=00` to express an absolute
 address. Code that reads globals by absolute address uses this form constantly, so a
 single divergence spreads across the whole program.
+
+#### High-byte registers `AH`/`CH`/`DH`/`BH` and REX
+
+Once any REX prefix is present, 8-bit register numbers 4–7 mean `SPL/BPL/SIL/DIL`
+rather than `AH/CH/DH/BH`. An instruction that needs `R8`–`R15` (here, the guest
+`ESP` held in `R15`) therefore cannot also name a high-byte register, and has to be
+split into a sequence through a temporary low-byte register.
+
+A common trap in writing that sequence is **the direction of `88 /r` versus
+`8A /r`**. `88 /r` is `MOV r/m8, r8`, so ModRM's **r/m is the destination**; `8A /r`
+is `MOV r8, r/m8`, so **reg is the destination**. For a register-to-register move
+both forms are valid, so reversing the direction raises no encoding error:
+`44 88 F2` is `mov dl, r14b` and `41 88 D6` is `mov r14b, dl`. Task 713 was a restore
+standing where a save belonged. Such sequences should be verified by **decoding or
+executing them**, not by comparing bytes.
 
 ### Encodings whose width changes
 

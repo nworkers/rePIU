@@ -345,6 +345,76 @@ void IndexAotBreakpointProvenance(
     }
 }
 
+// Task 710. Fixed addresses for the request page, clear of the other low
+// placements: the shadow selector block from 0x1F000000 (Task 586), the AOT
+// code cache from 0x20000000 (Task 554), and the Glide LFB storage from
+// 0x1D000000 (Task 708).
+constexpr std::uintptr_t kTimerSafePointRequestCandidateBases[] = {
+    0x1E000000U,
+    0x26000000U,
+    0x2E000000U,
+    0x36000000U,
+    0x3E000000U,
+};
+
+constexpr std::size_t kTimerSafePointRequestPageBytes = 4096U;
+
+// Places the request word where a 32-bit disp32 can name it, once.
+//
+// Only a host whose pointers exceed 32 bits needs this: on i386 the
+// placement's own member always fits, and that path is left exactly as it was.
+// There is no fallback above 4 GiB, for the reason Task 586 recorded for the
+// shadow selector block -- the emitted compare would read someone else's
+// memory, which is worse than having no safe points at all.
+bool EnsureAotTimerSafePointRequestPage(AotCodeCachePlacement* placement)
+{
+    const std::uintptr_t member = reinterpret_cast<std::uintptr_t>(
+        &placement->timer_safe_point_request);
+    if (runtime::LowAddressFits32Bit(
+            reinterpret_cast<const void*>(member), sizeof(std::uint32_t)) ||
+        placement->timer_safe_point_request_page.valid)
+    {
+        return true;
+    }
+    runtime::LowAddressReservationRequest request;
+    request.candidate_bases = kTimerSafePointRequestCandidateBases;
+    request.candidate_count =
+        sizeof(kTimerSafePointRequestCandidateBases) /
+        sizeof(kTimerSafePointRequestCandidateBases[0]);
+    request.capacity = kTimerSafePointRequestPageBytes;
+    request.allow_unhinted_fallback = false;
+    runtime::LowAddressReservation page =
+        runtime::ReserveLowAddressMemory(request);
+    if (!page.valid || !page.fits_32bit)
+    {
+        runtime::ReleaseLowAddressMemory(page);
+        return false;
+    }
+    *static_cast<volatile std::uint32_t*>(page.base) = 0U;
+    placement->timer_safe_point_request_page = page;
+    return true;
+}
+
+}  // namespace
+
+volatile std::uint32_t* AotTimerSafePointRequestWord(
+    AotCodeCachePlacement* placement)
+{
+    if (placement == nullptr)
+    {
+        return nullptr;
+    }
+    if (placement->timer_safe_point_request_page.valid)
+    {
+        return static_cast<volatile std::uint32_t*>(
+            placement->timer_safe_point_request_page.base);
+    }
+    return &placement->timer_safe_point_request;
+}
+
+namespace
+{
+
 bool ResolveAotTimerSafePoints(
     const runtime::AotCodeCacheImage& image,
     std::uint8_t* image_bytes,
@@ -358,8 +428,14 @@ bool ResolveAotTimerSafePoints(
     {
         return false;
     }
+    if (!EnsureAotTimerSafePointRequestPage(placement))
+    {
+        return false;
+    }
     const std::uintptr_t request_value = reinterpret_cast<std::uintptr_t>(
-        &placement->timer_safe_point_request);
+        AotTimerSafePointRequestWord(placement));
+    // Kept as the last guard. On i386 the member always passes it; on x86-64
+    // the page above is what makes it pass, by placement rather than by luck.
     if (request_value > std::numeric_limits<std::uint32_t>::max())
     {
         return false;
@@ -2100,6 +2176,9 @@ void ReleaseAotCodeCache(AotCodeCachePlacement* placement)
                 static_cast<std::uintptr_t>(placement->base_address)),
             placement->capacity);
     }
+    // Task 710. Released after the cache, whose safe points read it.
+    runtime::ReleaseLowAddressMemory(
+        placement->timer_safe_point_request_page);
     *placement = AotCodeCachePlacement{};
 }
 

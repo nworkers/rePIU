@@ -511,6 +511,15 @@ bool EnsureGlideLfbRegionShadow(ThreadContext* context, std::uint32_t buffer)
 {
     const std::uint32_t width = context->glide_state.width;
     const std::uint32_t height = context->glide_state.height;
+    // Task 708. Idempotent, and ahead of every Resize rather than at an
+    // initialization point of its own: the guest is handed this surface's
+    // address as a 32-bit lfbPtr, so the storage has to be the placed one
+    // before anything sizes it.
+    if (!EnsureGlideLfbGuestStorage(&context->glide_lfb_guest_storage,
+                                    &context->glide_lfb_surface))
+    {
+        return false;
+    }
     if (!context->glide_lfb_surface.Resize(width, height))
     {
         return false;
@@ -3681,6 +3690,13 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
             }
             const std::uint32_t width = context->glide_state.width;
             const std::uint32_t height = context->glide_state.height;
+            // Task 708. The same idempotent placement as the region shadow
+            // path: this is the call whose result reaches the guest.
+            if (!EnsureGlideLfbGuestStorage(&context->glide_lfb_guest_storage,
+                                            &context->glide_lfb_surface))
+            {
+                return fail_lock("lfb-storage-placement-failure");
+            }
             if (!context->glide_lfb_surface.Resize(width, height))
             {
                 return fail_lock("surface-resize-failure");

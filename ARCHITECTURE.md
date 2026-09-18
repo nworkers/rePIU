@@ -78,7 +78,7 @@ DOS/4G binaries as native x86 while providing DOS, DPMI, and hardware boundaries
 * `Win32ExecutionTrampoline`은 Glide 구현을 직접 소유하지 않고 guest stack/register ABI를 공용 Glide HLE와 platform backend에 연결한다.
 * `GlideSignatureCatalog`: 실제 관찰된 API의 stack byte count와 void/EAX/x87 반환 kind를 중앙에서 관리하며 asset `@N`과 교차 검증한다.
 * `GlideLogicalState`는 lazy OpenGL texture object와 독립적으로 8 MiB virtual TMU 범위(`0..0x007FFFF8`)와 LFB pixel-format 상태를 보존한다.
-* `GlideLfb` (`include/repiu/hle/glide_lfb.h`, `src/hle/glide_lfb.cpp`): LFB staging surface, `GrLfbInfo_t` 직렬화, color-format 인식 565↔RGBA8 변환을 담당하는 플랫폼 공용 계층이다. `grLfbLock`은 게스트가 네이티브 명령으로 직접 기록할 실제 주소를 건네므로, HLE 경계가 함수가 아니라 **메모리 표면**이 되는 유일한 Glide 경로다. staging buffer는 아레나가 아닌 호스트 소유 할당이며(게스트는 flat DS로 네이티브 실행), 모든 lock에서 현재 framebuffer로 seeding해 write lock이 기존 화면을 지우지 않게 한다. ARGB/RGBA lock은 RGB565, ABGR/BGRA lock은 BGR565로 encode/decode하며 `grSstWinOpen`의 color format을 기본값으로, `grLfbWriteColorFormat` 상태를 write lock override로 사용한다.
+* `GlideLfb` (`include/repiu/hle/glide_lfb.h`, `src/hle/glide_lfb.cpp`): LFB staging surface, `GrLfbInfo_t` 직렬화, color-format 인식 565↔RGBA8 변환을 담당하는 플랫폼 공용 계층이다. `grLfbLock`은 게스트가 네이티브 명령으로 직접 기록할 실제 주소를 건네므로, HLE 경계가 함수가 아니라 **메모리 표면**이 되는 유일한 Glide 경로다. staging buffer는 아레나가 아닌 호스트 소유 할당이며(게스트는 flat DS로 네이티브 실행), 64비트 host에서는 `GrLfbInfo_t::lfbPtr`이 32비트이므로 `GlideLfbGuestStorage`(Task 708)가 공용 `ReserveLowAddressMemory` 사다리로 4 GiB 아래에 두고 surface에 설치한다. surface 자체는 저장소를 배치하지 않고 받기만 해 `repiu::hle`가 플랫폼을 이름 부르지 않게 한다. 모든 lock에서 현재 framebuffer로 seeding해 write lock이 기존 화면을 지우지 않게 한다. ARGB/RGBA lock은 RGB565, ABGR/BGRA lock은 BGR565로 encode/decode하며 `grSstWinOpen`의 color format을 기본값으로, `grLfbWriteColorFormat` 상태를 write lock override로 사용한다.
 * `GlideLfbRegion` (`include/repiu/hle/glide_lfb_region.h`, `src/hle/glide_lfb_region.cpp`): lock 없이 사각형을 옮기는 `grLfbWriteRegion`/`grLfbReadRegion`의 플랫폼 공용 계층이다. `GrLfbSrcFmt_t` 표(565=`0x00`, 555, 1555, 888, 8888), stride 규칙(0이면 `width * bpp`), 사각형 클립, 565 staging surface와의 픽셀 변환을 담당한다. `GrLfbSrcFmt_t`는 픽셀 크기만 정하고 채널 순서는 `grLfbWriteColorFormat`(기본값은 `grSstWinOpen`의 cFormat)이 정하므로, 변환은 source 색 형식으로 풀어 목적지 색 형식으로 싼다. region의 `y`는 origin 상대가 아니라 프레임 버퍼 native 행 번호이므로 lock과 달리 뒤집지 않는다. 두 gate는 staging surface를 프레임 버퍼 shadow로 공유하며, region이 아닌 gate 진입 전에 한 번만 present한다. 행마다 present하면 seeding되지 않은 화면을 덮어써 그림을 파괴하고 프레임당 전체 화면 왕복이 행 수만큼 발생한다.
 * Glide 텍스처 크기 규약(`GrLOD_t`는 열거값이며 `GR_LOD_256`=0)은 `docs/kb/glide-texture-lod-and-formats.md`에서 관리한다. `grTexTextureMemRequired`의 반환값은 게스트가 자기 TMU 배치를 결정하는 입력이므로 정확성이 게스트 동작에 직접 전파된다.
 * `Win32X87Context` (`include/repiu/engine/x87_context.h`, `src/engine/x87_context.cpp`): SEH `CONTEXT`의 x87 TOP/tag/80-bit register를 갱신하여 guest float 반환을 독립적으로 처리한다.
@@ -170,7 +170,7 @@ Planned major modules:
 * `Win32ExecutionTrampoline` does not own Glide implementation details; it connects guest stack/register ABI to shared Glide HLE and the platform backend.
 * `GlideSignatureCatalog` centrally records observed API stack-byte counts and void/EAX/x87 return kinds, cross-checked against asset `@N` metadata.
 * `GlideLogicalState` exposes an 8 MiB virtual TMU range (`0..0x007FFFF8`) independently of lazy OpenGL texture objects and retains LFB pixel-format state.
-* `GlideLfb` (`include/repiu/hle/glide_lfb.h`, `src/hle/glide_lfb.cpp`) is the platform-neutral LFB layer: staging surface, `GrLfbInfo_t` serialization, and color-format-aware 565↔RGBA8 conversion. `grLfbLock` hands the guest a real address it writes with native instructions, making this the one Glide path whose HLE boundary is a **memory surface** rather than a function. The staging buffer is a host-owned allocation rather than an arena carve (the guest executes natively under a flat DS) and is seeded from the current framebuffer on every lock so a write lock never erases existing content. ARGB/RGBA locks encode and decode RGB565, while ABGR/BGRA locks use BGR565; `grSstWinOpen` supplies the default and `grLfbWriteColorFormat` overrides write-lock state.
+* `GlideLfb` (`include/repiu/hle/glide_lfb.h`, `src/hle/glide_lfb.cpp`) is the platform-neutral LFB layer: staging surface, `GrLfbInfo_t` serialization, and color-format-aware 565↔RGBA8 conversion. `grLfbLock` hands the guest a real address it writes with native instructions, making this the one Glide path whose HLE boundary is a **memory surface** rather than a function. The staging buffer is a host-owned allocation rather than an arena carve (the guest executes natively under a flat DS). Because `GrLfbInfo_t::lfbPtr` is 32 bits, `GlideLfbGuestStorage` (Task 708) places it below 4 GiB on a 64-bit host through the shared `ReserveLowAddressMemory` ladder and installs it into the surface; the surface accepts storage but places none, which keeps `repiu::hle` from naming an operating system. It is seeded from the current framebuffer on every lock so a write lock never erases existing content. ARGB/RGBA locks encode and decode RGB565, while ABGR/BGRA locks use BGR565; `grSstWinOpen` supplies the default and `grLfbWriteColorFormat` overrides write-lock state.
 * `GlideLfbRegion` (`include/repiu/hle/glide_lfb_region.h`, `src/hle/glide_lfb_region.cpp`) is the platform-neutral layer for the lock-free rectangle transfers `grLfbWriteRegion` and `grLfbReadRegion`: the `GrLfbSrcFmt_t` table (565 = `0x00`, 555, 1555, 888, 8888), the stride rule (0 means `width * bpp`), rectangle clipping, and conversion against the 565 staging surface. `GrLfbSrcFmt_t` fixes only the pixel size; the channel order comes from `grLfbWriteColorFormat` (defaulting to `grSstWinOpen`'s cFormat), so conversion unpacks in the source format and packs in the destination one. Region `y` is a native frame buffer row rather than an origin-relative one, so unlike a lock it never flips. Both gates share the staging surface as a frame buffer shadow presented once before the next non-region gate; presenting per row would blit an unseeded screen over the picture and cost one full-screen round trip per scanline.
 * Glide texture sizing rules (`GrLOD_t` is an enumeration with `GR_LOD_256` = 0) are maintained in `docs/kb/glide-texture-lod-and-formats.md`. `grTexTextureMemRequired`'s return value is an input to the guest's own TMU layout, so its accuracy propagates directly into guest behavior.
 * `Win32X87Context` (`include/repiu/engine/x87_context.h`, `src/engine/x87_context.cpp`) independently updates x87 TOP, tags, and 80-bit registers in an SEH `CONTEXT` for guest float returns.
@@ -394,6 +394,34 @@ The external DOS4GW `LINEXE.EXP` loader dynamically allocates one DPMI descripto
 Single-step PIU 실행은 guest/host 공유 atomic heartbeat를 사용한다. host poll은 시작 시점과 1초 간격으로 stderr snapshot을 출력할 수 있다. Task 490부터 wall-clock 예산과 무진행 감시는 독립적이다. `REPIU_EXECUTION_TIMEOUT_MS`는 전체 실행시간만 제한하고, `REPIU_STALL_TIMEOUT_MS`는 diagnostic, single-step, AOT boundary/reentry와 Glide direct-dispatch 진입이 모두 변하지 않은 시간을 제한한다. 두 설정 모두 `0`이 기본값이며 비활성이다. 실행 결과는 wall timeout과 stall timeout을 구분하고, timeout observation은 guest thread를 종료하고 join한 뒤 복사하여 guest가 수정 중인 비원자 container와의 data race를 방지한다.
 
 Single-step PIU execution uses atomic heartbeat state shared by the guest and host. The host poll can emit stderr snapshots at startup and once per second. Since Task 490, the wall-clock budget and no-progress watchdog are independent. `REPIU_EXECUTION_TIMEOUT_MS` limits total execution time, while `REPIU_STALL_TIMEOUT_MS` limits the interval during which diagnostic, single-step, AOT boundary/reentry, and Glide direct-dispatch entry all remain unchanged. Both settings default to `0`, disabled. The result distinguishes wall and stall timeouts, and timeout observations are copied only after terminating and joining the guest, preventing races with non-atomic containers still being modified by the guest.
+
+Task 705부터 host-thread interrupt callback은 native context write-back 필요 여부를
+반환합니다. 순수 sampler와 guest/AOT 밖에서 복귀를 거절한 shutdown callback은 false를
+반환하여 32-bit `GuestCpuContext`를 native register에 다시 쓰지 않습니다. 실제 recovery처럼
+register를 편집한 callback만 true를 반환합니다. 이는 Linux x64 host code의 64-bit R15
+값이 guest ESP용 R15D zero-extension에 의해 잘리는 것을 막으면서, signal 전달과 응답
+성공 여부는 기존대로 유지합니다.
+
+Starting with Task 705, host-thread interrupt callbacks report whether native
+context write-back is required. Pure samplers and shutdown callbacks that refuse
+recovery outside guest/AOT code return false, so the 32-bit `GuestCpuContext` is
+not stored back into native registers. Only callbacks that edit registers, such
+as successful recovery, return true. This prevents a Linux x64 host-code R15
+pointer from being truncated by guest-ESP R15D zero-extension while preserving
+the existing signal-delivery and answered-interrupt contract.
+
+Linux x64 native-write telemetry는 Linux SysV x64 dispatch frame ABI에 종속되므로
+공용 `repiu_exe` source 목록이 아니라 `UNIX AND NOT EMSCRIPTEN`이며 host pointer가
+64-bit인 target에만 편성합니다. Win32 x86은 이 translation unit과 Linux x64 frame
+header를 컴파일하지 않으며, Linux x64 ABI의 pointer-width 및 layout assertion은 그대로
+유지합니다.
+
+Linux x64 native-write telemetry depends on the Linux SysV x64 dispatch-frame
+ABI, so it is compiled only for `UNIX AND NOT EMSCRIPTEN` targets with 64-bit
+host pointers rather than being part of the common `repiu_exe` source list.
+Win32 x86 therefore does not compile this translation unit or its Linux x64
+frame header, while the Linux x64 ABI pointer-width and layout assertions remain
+intact.
 
 Child 내부 telemetry를 회수할 수 없는 경우 `repiu_supervisor_win32`가 named shared memory를 생성하고 mapping 이름을 환경 변수로 전달한다. loader의 host/guest는 고정 버전 POD에 interlocked write하고 supervisor는 child 출력과 독립적으로 snapshot을 읽고 deadline에 child를 terminate/join한다.
 
@@ -3724,6 +3752,54 @@ contains the wrapper continuation, rather than physical
 `GuestCpuContext::SegCs`. Linux x64 physical CS is host selector `0x33` and must
 not cross the guest ABI. A missing, ambiguous, or non-executable descriptor
 fails closed before committing the result buffer or successful return state.
+
+Task 702부터 fault-level Glide gate가 guest continuation으로 반환하면 Linux x64는
+이를 handled guest boundary로 분류하고 공용 post-HLE AOT 재진입을 수행합니다.
+따라서 `PUSH`, operand width, address-size처럼 long mode와 의미가 다른 다음 guest
+명령은 원본 bytes로 실행되지 않고 검증된 cache lowering을 사용합니다. 재진입에
+실패한 non-identical continuation은 기존 정책대로 fail closed하며, i386과 AOT
+미사용 경로는 변경하지 않습니다.
+
+Starting with Task 702, when a fault-level Glide gate returns to a guest
+continuation, Linux x64 classifies it as a handled guest boundary and performs
+the shared post-HLE AOT re-entry. The following guest instruction therefore
+uses verified cache lowering instead of executing original bytes when `PUSH`,
+operand width, address size, or other semantics differ in long mode. A failed
+non-identical continuation remains fail-closed; i386 and non-AOT paths are
+unchanged.
+
+Task 703부터 실행할 이전 INT 8 handler가 없는 타이머 체인 경계도 EFLAGS stack
+정리를 마친 guest continuation을 handled guest boundary로 재진입시킵니다. 따라서
+경계 직후의 `CALL`, `PUSHFD` 같은 stack 명령은 원본 long-mode bytes가 아니라 R15D
+guest stack lowering을 사용합니다. 타이머 체인의 selector 판정과 EFLAGS 폐기 규칙은
+그대로이며, 재진입할 수 없는 non-identical continuation은 fail closed합니다.
+
+Starting with Task 703, the timer-chain boundary for an absent predecessor INT 8
+handler also re-enters its post-cleanup guest continuation as a handled guest
+boundary. Stack instructions such as `CALL` and `PUSHFD` immediately after the
+boundary therefore use R15D guest-stack lowering rather than original long-mode
+bytes. Timer-chain selector classification and EFLAGS cleanup are unchanged,
+and a non-identical continuation that cannot re-enter still fails closed.
+
+Task 704부터 Linux x64 INT 8 주입 frame은 signal context의 물리 host CS가 아니라
+중단된 EIP를 포함하는 유일한 실행 가능 guest descriptor의 logical selector를
+기록합니다. lookup 실패는 frame을 쓰거나 pending tick을 소비하기 전에 주입을
+보류합니다. 원본 ISR 끝의 prefix 없는 32-bit `IRETD`는 전용 HLE가 12바이트
+EIP/CS/EFLAGS frame과 executable k32 복귀 target을 검증한 뒤 EIP, CS, EFLAGS,
+ESP를 원자적으로 복원합니다. 성공한 fault-level 복귀는 handled-boundary AOT
+재진입을 사용하며, 잘못된 frame은 guest context를 변경하지 않고 fail closed합니다.
+16-bit IRET, privilege 전환, i386 native 경로는 이 정책의 대상이 아닙니다.
+
+Starting with Task 704, Linux x64 INT 8 injection records the logical selector
+of the unique executable guest descriptor containing the interrupted EIP,
+rather than the physical host CS from the signal context. A failed lookup
+defers delivery before writing a frame or consuming the pending tick. Dedicated
+HLE for the original ISR's unprefixed 32-bit `IRETD` validates the 12-byte
+EIP/CS/EFLAGS frame and executable k32 return target, then atomically restores
+EIP, CS, EFLAGS, and ESP. A successful fault-level return uses handled-boundary
+AOT re-entry, while an invalid frame fails closed without changing guest state.
+16-bit IRET, privilege transitions, and the native i386 path are outside this
+policy.
 
 Task 692는 확인된 mode16 register PUSH의 HLE 처리를 `mode16_stack_push`로
 분리합니다. 공용 `guest_stack_access`가 SS.B에 따른 SP/ESP 갱신, SS.base 주소

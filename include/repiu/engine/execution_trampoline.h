@@ -312,7 +312,12 @@ struct DosFileIoTraceEntry
     std::uint32_t prefix_size = 0;
     std::uint32_t guest_eip = 0;
     std::uint32_t guest_esp = 0;
-    std::uint32_t guest_stack[8] = {};
+    // Task 711. Twenty-four words rather than eight. Eight reached the C
+    // runtime's own frames -- the read wrapper, the buffer fill, and fread's
+    // saved registers -- and stopped six words short of fread's return into the
+    // game, which is the frame a file-reading loop actually lives in. The fill
+    // and the report both take the array's size, so this is the only change.
+    std::uint32_t guest_stack[24] = {};
 };
 
 struct DosFileIoObservation

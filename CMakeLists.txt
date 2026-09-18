@@ -212,6 +212,7 @@ add_library(repiu_exe
     src/launcher/launcher_settings.cpp
     src/runtime/aot_translation_plan.cpp
     src/runtime/aot_code_cache_reservation.cpp
+    src/runtime/low_address_reservation.cpp
     src/runtime/aot_long_mode_compatibility.cpp
     src/runtime/dos_low_memory.cpp
     src/runtime/env_toggle.cpp
@@ -296,11 +297,14 @@ target_sources(repiu_exe
         src/engine/exception/host_crash_report.cpp
         src/engine/cpu_emul/guest_memory_access.cpp
         src/engine/cpu_emul/instruction_emulation.cpp
+        src/engine/cpu_emul/interrupt_return.cpp
         src/engine/cpu_emul/mode16_far_return.cpp
         src/engine/cpu_emul/mode16_stack_push.cpp
         src/engine/cpu_emul/low_memory_string_access.cpp
+        src/engine/boundary/glide_lfb_guest_storage.cpp
         src/engine/boundary/linexe_glide_boundary.cpp
         src/engine/boundary/timer_interrupt_boundary.cpp
+        src/engine/telemetry/final_execution_report.cpp
         src/engine/telemetry/live_telemetry_snapshot.cpp
         src/engine/telemetry/execution_time_profile.cpp
         src/engine/telemetry/live_execution_profile_report.cpp
@@ -319,7 +323,6 @@ target_sources(repiu_exe
         src/engine/telemetry/timer_tick_delivery.cpp
         src/engine/telemetry/guest_address_watch.cpp
         src/engine/telemetry/guest_write_trace.cpp
-        src/engine/telemetry/linux_x64_native_write_trace.cpp
         src/engine/telemetry/fault_exit_trace.cpp
         src/engine/telemetry/fault_recovery_provenance.cpp
         src/engine/telemetry/linux_x64_transfer_failure_provenance.cpp
@@ -445,6 +448,7 @@ if(UNIX AND NOT EMSCRIPTEN)
     if(CMAKE_SIZEOF_VOID_P GREATER 4)
         target_sources(repiu_exe
             PRIVATE
+                src/engine/telemetry/linux_x64_native_write_trace.cpp
                 src/platform/linux/aot_dbt_dispatch_x64.cpp
                 src/platform/linux/aot_dbt_return_thunk_x64.S
                 # Task 575: the two fault-recovery symbols the fence above
@@ -584,10 +588,14 @@ add_executable(repiu_core_probe
     src/tools/aot_probe/launcher_probe.cpp
     src/tools/aot_probe/long_mode_compatibility_probe.cpp
     src/tools/aot_probe/long_mode_emission_probe.cpp
+    src/tools/aot_probe/final_execution_report_probe.cpp
+    src/tools/aot_probe/flat_stack_segment_fold_probe.cpp
+    src/tools/aot_probe/low_address_reservation_probe.cpp
     src/tools/aot_probe/linux_x64_transfer_failure_provenance_probe.cpp
     src/tools/aot_probe/nvram_path_probe.cpp
     src/tools/aot_probe/pit_timer_probe.cpp
     src/tools/aot_probe/segment_push_probe.cpp
+    src/engine/telemetry/final_execution_report.cpp
     src/engine/telemetry/linux_x64_transfer_failure_provenance.cpp
 )
 

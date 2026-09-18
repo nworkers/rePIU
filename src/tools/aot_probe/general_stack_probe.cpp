@@ -2,6 +2,7 @@
 
 #include "execution_internal.h"
 #include "instruction_emulation.h"
+#include "interrupt_return.h"
 #include "../../engine/boundary/linexe_glide_boundary.h"
 #include "../../engine/aot/aot_runtime_dispatch.h"
 #include "repiu/hle/glide_hle.h"
@@ -666,6 +667,69 @@ bool RunGeneralStackProbe()
               << ",bad_frame=" << mode16_return_bad_frame
               << ",mode32_refused=" << mode32_return_refused << "\n";
 
+    // A 32-bit IRETD frame uses relocated linear EIP, a logical guest CS
+    // dword, and EFLAGS. Invalid frames leave all guest state untouched.
+    set_opcode(0xCFU);
+    repiu::runtime::InitializeSelectorTable(&context.selector_table);
+    const bool iretd_descriptor =
+        repiu::runtime::RegisterDescriptor(
+            &context.selector_table,
+            {0x0024U, static_cast<std::uint32_t>(kRequestedBase),
+             static_cast<std::uint32_t>(kArenaSize - 1U), 0U, true,
+             repiu::runtime::kLeObjectExecutable, true,
+             repiu::runtime::GuestCodeDefaultOperandSize::k32});
+    const std::uint32_t iretd_frame[] = {
+        static_cast<std::uint32_t>(kRequestedBase + 0x300U),
+        0x00000024U,
+        0x00200204U};
+    std::memcpy(bytes + kStackOffset, iretd_frame, sizeof(iretd_frame));
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.SegCs = 0x0033U;
+    cpu.EFlags = 0x00000002U;
+    const std::optional<bool> iretd_result =
+        repiu::engine::HandleIretdInstruction(&cpu, &context);
+    const bool iretd_handled = iretd_descriptor &&
+        iretd_result.has_value() && *iretd_result &&
+        cpu.Eip == kRequestedBase + 0x300U && cpu.SegCs == 0x0024U &&
+        cpu.Esp == kRequestedBase + kStackOffset + sizeof(iretd_frame) &&
+        cpu.EFlags == 0x00200206U;
+
+    const std::uint32_t bad_selector_frame[] = {
+        static_cast<std::uint32_t>(kRequestedBase + 0x300U),
+        0x00000033U,
+        0x00200246U};
+    std::memcpy(bytes + kStackOffset,
+                bad_selector_frame,
+                sizeof(bad_selector_frame));
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kStackOffset);
+    cpu.SegCs = 0x0024U;
+    cpu.EFlags = 0x00000002U;
+    const std::optional<bool> iretd_bad_selector_result =
+        repiu::engine::HandleIretdInstruction(&cpu, &context);
+    const bool iretd_bad_selector =
+        iretd_bad_selector_result.has_value() &&
+        !*iretd_bad_selector_result &&
+        cpu.Eip == kRequestedBase + kCodeOffset &&
+        cpu.Esp == kRequestedBase + kStackOffset &&
+        cpu.SegCs == 0x0024U && cpu.EFlags == 0x00000002U;
+
+    cpu.Eip = static_cast<std::uint32_t>(kRequestedBase + kCodeOffset);
+    cpu.Esp = static_cast<std::uint32_t>(kRequestedBase + kArenaSize - 8U);
+    cpu.SegCs = 0x0024U;
+    cpu.EFlags = 0x00000002U;
+    const std::optional<bool> iretd_bad_frame_result =
+        repiu::engine::HandleIretdInstruction(&cpu, &context);
+    const bool iretd_bad_frame = iretd_bad_frame_result.has_value() &&
+        !*iretd_bad_frame_result &&
+        cpu.Eip == kRequestedBase + kCodeOffset &&
+        cpu.Esp == kRequestedBase + kArenaSize - 8U &&
+        cpu.SegCs == 0x0024U && cpu.EFlags == 0x00000002U;
+    std::cout << "iretd_hle=" << iretd_handled
+              << ",bad_selector=" << iretd_bad_selector
+              << ",bad_frame=" << iretd_bad_frame << "\n";
+
     const bool released =
         repiu::platform::ReleaseMemory(reservation.base, kArenaSize);
     const bool all = ordinary_push && ordinary_pop && push_esp_order &&
@@ -680,7 +744,8 @@ bool RunGeneralStackProbe()
         loader_bad_frame && getproc_guest_cs &&
         getproc_missing_selector_unchanged && mode16_return_handled &&
         mode16_return_bad_selector && mode16_return_bad_frame &&
-        mode32_return_refused && cs_indirect_jump_handled && released;
+        mode32_return_refused && iretd_handled && iretd_bad_selector &&
+        iretd_bad_frame && cs_indirect_jump_handled && released;
     std::cout << "general_stack_push=" << (ordinary_push ? "true" : "false")
               << ",pop=" << (ordinary_pop ? "true" : "false")
               << ",push_esp=" << (push_esp_order ? "true" : "false")

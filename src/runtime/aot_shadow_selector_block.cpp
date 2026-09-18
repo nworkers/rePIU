@@ -1,6 +1,6 @@
 #include "repiu/runtime/aot_shadow_selector_block.h"
 
-#include "repiu/platform/virtual_memory.h"
+#include "repiu/runtime/low_address_reservation.h"
 
 #include <new>
 
@@ -11,17 +11,17 @@ namespace
 
 constexpr std::size_t kShadowSelectorPageBytes = 4096U;
 
-// A reservation is usable only if a 32-bit operand can name every byte of the
-// block. The last word is what has to fit, not the first.
-bool AddressableByAbs32(const void* const base)
-{
-    const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(base);
-    return address <= UINT32_MAX &&
-        (UINT32_MAX - address) >= sizeof(AotShadowSelectorBlock);
-}
+constexpr std::size_t kCandidateCount =
+    sizeof(kAotShadowSelectorCandidateBases) /
+    sizeof(kAotShadowSelectorCandidateBases[0]);
+
+// Whether this host's pointers can name an address the guard operand cannot.
+// A value rather than a preprocessor branch, so both messages below stay
+// compiled on every host.
+constexpr bool kHostPointerExceeds32Bit = sizeof(void*) > 4U;
 
 AotShadowSelectorReservation AdoptReservation(
-    const repiu::platform::MemoryReservation& reservation)
+    const LowAddressReservation& reservation)
 {
     AotShadowSelectorReservation result;
     result.valid = true;
@@ -37,48 +37,37 @@ AotShadowSelectorReservation AdoptReservation(
 
 AotShadowSelectorReservation ReserveAotShadowSelectorBlock()
 {
-    AotShadowSelectorReservation result;
+    // Task 708 moved the ladder into `low_address_reservation`; the policy
+    // stays here. There is deliberately no unhinted last resort on a 64-bit
+    // host: Task 586 measured that an unhinted `mmap` there answers above
+    // 4 GiB, so it is not a fallback but a failure that also has to release.
+    // On a 32-bit host the shared unit skips the ladder and makes that one
+    // unhinted request, which is the whole policy there.
+    LowAddressReservationRequest request;
+    request.candidate_bases = kAotShadowSelectorCandidateBases;
+    request.candidate_count = kCandidateCount;
+    // A whole page, because the host reserves in pages regardless and asking
+    // for the block's size alone would leave the rest of it unaccounted for at
+    // release. The fit test then covers the page, which is stricter than the
+    // block Task 586 tested and correct for the same reason.
+    request.capacity = kShadowSelectorPageBytes;
+    request.allow_unhinted_fallback = false;
 
-    if constexpr (sizeof(void*) > 4U)
-    {
-        for (const std::uintptr_t candidate : kAotShadowSelectorCandidateBases)
-        {
-            const repiu::platform::MemoryReservation reservation =
-                repiu::platform::ReserveMemory(
-                    reinterpret_cast<void*>(candidate),
-                    kShadowSelectorPageBytes, true,
-                    repiu::platform::MemoryProtection::kReadWrite);
-            if (reservation.base == nullptr)
-            {
-                continue;
-            }
-            if (AddressableByAbs32(reservation.base))
-            {
-                return AdoptReservation(reservation);
-            }
-            // The host ignored the requested address and answered with one the
-            // guard operand cannot name. Keeping it would be worse than having
-            // none, because the guard would read someone else's memory.
-            repiu::platform::ReleaseMemory(reservation.base, reservation.size);
-        }
-        result.message =
-            "no address below 4GiB was available for the shadow selector block";
-        return result;
-    }
-
-    const repiu::platform::MemoryReservation reservation =
-        repiu::platform::ReserveMemory(
-            nullptr, kShadowSelectorPageBytes, true,
-            repiu::platform::MemoryProtection::kReadWrite);
-    if (reservation.base != nullptr && AddressableByAbs32(reservation.base))
+    const LowAddressReservation reservation =
+        ReserveLowAddressMemory(request);
+    if (reservation.valid && reservation.fits_32bit)
     {
         return AdoptReservation(reservation);
     }
-    if (reservation.base != nullptr)
+    if (reservation.valid)
     {
-        repiu::platform::ReleaseMemory(reservation.base, reservation.size);
+        ReleaseLowAddressMemory(reservation);
     }
-    result.message = "shadow selector block reservation failed";
+
+    AotShadowSelectorReservation result;
+    result.message = kHostPointerExceeds32Bit
+        ? "no address below 4GiB was available for the shadow selector block"
+        : "shadow selector block reservation failed";
     return result;
 }
 
@@ -89,7 +78,11 @@ void ReleaseAotShadowSelectorBlock(
     {
         return;
     }
-    repiu::platform::ReleaseMemory(reservation.base, reservation.size);
+    LowAddressReservation released;
+    released.valid = true;
+    released.base = reservation.base;
+    released.size = reservation.size;
+    ReleaseLowAddressMemory(released);
 }
 
 }  // namespace repiu::runtime

@@ -117,12 +117,11 @@ void DetachHostThread(HostThread* thread);
 // block, must not allocate, and must not take a lock the target might already
 // hold -- the same constraints 3c's fault callback carries, for the same reason.
 //
-// Edits to `registers` take effect when the target resumes. On Linux that is the
-// signal return; on Windows it is SetThreadContext. The context is written back
-// unconditionally on both, because asking whether the callback changed anything
-// would mean comparing the whole structure -- which costs more than the write it
-// would save.
-using ThreadInterruptCallback = void (*)(GuestCpuContext* registers,
+// Return true only when edits to `registers` must take effect when the target
+// resumes. On Linux that commits through the signal return; on Windows it uses
+// SetThreadContext. A sampler or a callback that refuses an edit returns false,
+// preserving native registers that do not fit in the 32-bit guest contract.
+using ThreadInterruptCallback = bool (*)(GuestCpuContext* registers,
                                          void* user_data);
 
 // Variant for the rare callback that must edit a native register which does
@@ -130,7 +129,7 @@ using ThreadInterruptCallback = void (*)(GuestCpuContext* registers,
 // ucontext_t; on Windows it is the temporary CONTEXT used by the suspend /
 // resume implementation. The callback still has the same async-signal-safe
 // constraints as ThreadInterruptCallback.
-using ThreadInterruptContextCallback = void (*)(GuestCpuContext* registers,
+using ThreadInterruptContextCallback = bool (*)(GuestCpuContext* registers,
                                                  void* user_data,
                                                  void* host_context);
 

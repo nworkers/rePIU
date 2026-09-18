@@ -609,6 +609,28 @@ bool IsHighByteMemoryDestination(const ZydisDecodedInstruction& instruction,
         !stack_fields.rex_r && HasStackPointerMemoryBase(instruction, operands);
 }
 
+// Task 716. Whether every memory operand of the instruction names CS as its
+// segment. Used only after the instruction is known to carry a segment prefix,
+// so a memory operand defaulting to DS or SS disqualifies it.
+bool HasOnlyCsSegmentMemory(const ZydisDecodedOperand* operands,
+                            const ZydisDecodedInstruction& instruction)
+{
+    bool any = false;
+    for (std::uint8_t index = 0; index < instruction.operand_count; ++index)
+    {
+        if (operands[index].type != ZYDIS_OPERAND_TYPE_MEMORY)
+        {
+            continue;
+        }
+        if (operands[index].mem.segment != ZYDIS_REGISTER_CS)
+        {
+            return false;
+        }
+        any = true;
+    }
+    return any;
+}
+
 bool HasMemoryOperand(const ZydisDecodedInstruction& instruction,
                       const ZydisDecodedOperand* operands)
 {
@@ -1085,7 +1107,34 @@ LongModeCompatibilityResult ClassifyLongModeBytes(
     {
         if ((instruction.attributes & ZYDIS_ATTRIB_HAS_SEGMENT) != 0U)
         {
-            return Refuse(LongModeDivergence::kSegmentRegister);
+            // Task 716. A `CS:` override on a memory operand of 32-bit code
+            // is the one segment prefix that means nothing here. The guest's
+            // code runs flat -- on Win32 natively under the host's CS, whose
+            // base is 0 -- so `cs:[edx+disp]` is the linear `edx+disp` there,
+            // and long mode ignores a CS override outright, giving the same
+            // address. The prefix can therefore ride along unchanged behind
+            // the ordinary `67`.
+            //
+            // The planner makes such an instruction an HLE boundary, which
+            // nothing on this host services; the long-mode emitter hands the
+            // CS-only case back here as a copy (IsLongModeCsDataBoundary).
+            // pumpit2a reaches one -- a Watcom `itoa` reading its digit table
+            // as `mov al, cs:[edx+table]` -- only once its timer clock runs
+            // during rendering, and died on the first execution.
+            //
+            // Kept narrow on purpose. ES, SS and DS carry bases the engine
+            // folds (Tasks 585, 712); FS and GS are the host's. 16-bit code has
+            // a real CS base (Task 692's object 3). And the absolute `disp32`
+            // form needs its ModRM rewritten as well, which this lowering does
+            // not do.
+            if (guest_is_16_bit || !HasOnlyCsSegmentMemory(operands,
+                                                            instruction) ||
+                IsAbsoluteDisplacementForm(instruction))
+            {
+                return Refuse(LongModeDivergence::kSegmentRegister);
+            }
+            return Reencode(LongModeDivergence::kAddressSize,
+                            LongModeLowering::kAddressSizePrefix);
         }
         // Checked apart from the ordinary case, and lowered differently: a
         // prefix does not turn RIP-relative off, only truncate it, so this form
@@ -2183,10 +2232,19 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
         }
 
         std::size_t out = 0U;
-        // mov r14b, dl
-        lowered[out++] = 0x44U;
+        // mov r14b, dl. `88 /r` is MOV r/m8, r8, so the ModRM r/m field is the
+        // destination: rm = R14B through REX.B, reg = DL.
+        //
+        // Task 713. This was `44 88 F2`, which puts R14B in reg and DL in r/m and
+        // so is `mov dl, r14b` -- the restore below, not a save. The sequence
+        // then overwrote DL with R14B on the way in and again on the way out,
+        // leaving EDX's low byte replaced. pumpit2a's visual constructor holds
+        // its calloc result in EDX across `mov bh,[esp]`, so the pointer came
+        // back 0x0158DA11 instead of 0x0158DAA0, glEnable(GL_TEXTURE_2D) read a
+        // zero through it, and every textured material fell back to untextured.
+        lowered[out++] = 0x41U;
         lowered[out++] = 0x88U;
-        lowered[out++] = 0xF2U;
+        lowered[out++] = 0xD6U;
 
         // mov dl, [r15 + displacement]
         lowered[out++] = 0x41U;
@@ -2207,7 +2265,7 @@ bool LowerLongModeBytes(const std::uint8_t* const bytes,
         lowered[out++] = static_cast<std::uint8_t>(
             0xE2U | (high_byte_fields.source_gpr << 3U));
 
-        // mov dl, r14b
+        // mov dl, r14b: rm = DL, reg = R14B through REX.R.
         lowered[out++] = 0x44U;
         lowered[out++] = 0x88U;
         lowered[out++] = 0xF2U;

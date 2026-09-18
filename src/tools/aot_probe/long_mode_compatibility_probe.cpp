@@ -275,8 +275,12 @@ bool ProbeStackPointerRefusal()
     // DL as a temporary byte and restores it around the R15-based load.
     const std::uint8_t high_byte_destination[] = {
         0x8AU, 0x64U, 0x24U, 0x2CU};
+    // Task 713. The first three bytes were `44 88 F2`, the same as the restore:
+    // `mov dl, r14b`, not the save its comment named. This array was written
+    // from the implementation and so agreed with it; the decode below is what
+    // checks the direction.
     const std::uint8_t expected_high_byte_destination[] = {
-        0x44U, 0x88U, 0xF2U,
+        0x41U, 0x88U, 0xD6U,
         0x41U, 0x8AU, 0x54U, 0x27U, 0x2CU,
         0x8AU, 0xE2U,
         0x44U, 0x88U, 0xF2U};
@@ -302,6 +306,74 @@ bool ProbeStackPointerRefusal()
         std::memcmp(high_byte_destination_lowered,
                     expected_high_byte_destination,
                     sizeof(expected_high_byte_destination)) == 0;
+    // Task 713. What the four instructions do, rather than what bytes they
+    // are: decoded in long mode, the first must write R14B from DL, the second
+    // load DL, the third write AH from DL with no REX, and the last write DL
+    // back from R14B. A reversed save passes every byte comparison written
+    // from the same code, and leaves the guest's EDX with R14B in its low byte.
+    bool high_byte_destination_semantics = high_byte_destination_ok;
+    {
+        ZydisDecoder decoder;
+        high_byte_destination_semantics =
+            high_byte_destination_semantics &&
+            ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64,
+                                          ZYDIS_STACK_WIDTH_64));
+        struct Expected
+        {
+            ZydisRegister destination;
+            ZydisRegister source;  // NONE for the memory load
+        };
+        const Expected expected[] = {
+            {ZYDIS_REGISTER_R14B, ZYDIS_REGISTER_DL},
+            {ZYDIS_REGISTER_DL, ZYDIS_REGISTER_NONE},
+            {ZYDIS_REGISTER_AH, ZYDIS_REGISTER_DL},
+            {ZYDIS_REGISTER_DL, ZYDIS_REGISTER_R14B},
+        };
+        std::size_t offset = 0U;
+        for (const Expected& want : expected)
+        {
+            if (!high_byte_destination_semantics)
+            {
+                break;
+            }
+            ZydisDecodedInstruction instruction{};
+            ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+            if (offset >= high_byte_destination_count ||
+                !ZYAN_SUCCESS(ZydisDecoderDecodeFull(
+                    &decoder, high_byte_destination_lowered + offset,
+                    high_byte_destination_count - offset, &instruction,
+                    operands)) ||
+                instruction.mnemonic != ZYDIS_MNEMONIC_MOV ||
+                operands[0].type != ZYDIS_OPERAND_TYPE_REGISTER ||
+                operands[0].reg.value != want.destination)
+            {
+                high_byte_destination_semantics = false;
+                break;
+            }
+            if (want.source == ZYDIS_REGISTER_NONE)
+            {
+                high_byte_destination_semantics =
+                    operands[1].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+                    operands[1].mem.base == ZYDIS_REGISTER_R15;
+            }
+            else
+            {
+                high_byte_destination_semantics =
+                    operands[1].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+                    operands[1].reg.value == want.source;
+            }
+            // The high-byte move must carry no REX, or AH would read as SPL.
+            if (want.destination == ZYDIS_REGISTER_AH)
+            {
+                high_byte_destination_semantics =
+                    high_byte_destination_semantics &&
+                    (instruction.attributes & ZYDIS_ATTRIB_HAS_REX) == 0U;
+            }
+            offset += instruction.length;
+        }
+        high_byte_destination_semantics = high_byte_destination_semantics &&
+            offset == high_byte_destination_count;
+    }
     const std::uint8_t high_byte_read_write[] = {
         0x86U, 0x64U, 0x24U, 0x2CU};
     const bool high_byte_read_write_refused =
@@ -315,12 +387,14 @@ bool ProbeStackPointerRefusal()
               << (mov_esp_immediate_ok ? "true" : "false")
               << ",high_byte_destination_lowered="
               << (high_byte_destination_ok ? "true" : "false")
+              << ",high_byte_destination_semantics="
+              << (high_byte_destination_semantics ? "true" : "false")
               << ",high_byte_read_write_refused="
               << (high_byte_read_write_refused ? "true" : "false")
               << "\n";
     return ok && control_ok && cmp_byte_esp_lowered_ok &&
         mov_esp_immediate_ok && high_byte_destination_ok &&
-        high_byte_read_write_refused;
+        high_byte_destination_semantics && high_byte_read_write_refused;
 }
 
 // Task 557. INC/DEC r32 becomes the ModRM group form.
@@ -1298,6 +1372,86 @@ bool Probe16BitLoopNz()
 
 }  // namespace
 
+// Task 716. A `CS:` override on a data access in 32-bit code rides along
+// behind the ordinary `67`; everything that only looks similar stays refused.
+//
+// The admitted case is the instruction pumpit2a actually died on -- a Watcom
+// `itoa` reading its digit table -- and the check decodes the lowered bytes in
+// long mode rather than comparing them, so it says what the instruction does:
+// a byte load through EDX plus the table offset, with the CS override present
+// and inert. Each refusal is here because the admission sits next to it in the
+// classifier and would be easy to widen by accident.
+bool ProbeCsOverrideDataAccess()
+{
+    using repiu::runtime::GuestCodeDefaultOperandSize;
+    using repiu::runtime::LongModeLowering;
+    const std::uint8_t itoa_load[] = {
+        0x2EU, 0x8AU, 0x82U, 0x58U, 0x74U, 0x0EU, 0x00U};  // mov al,cs:[edx+d]
+    const LongModeCompatibilityResult verdict = ClassifyLongModeBytes(
+        itoa_load, sizeof(itoa_load), GuestCodeDefaultOperandSize::k32);
+    std::uint8_t lowered[repiu::runtime::kMaxLoweredBytes] = {};
+    std::size_t lowered_count = 0U;
+    bool admitted =
+        verdict.compatibility == LongModeByteCompatibility::kNeedsReencode &&
+        verdict.divergence == LongModeDivergence::kAddressSize &&
+        verdict.lowering == LongModeLowering::kAddressSizePrefix &&
+        repiu::runtime::LowerLongModeBytes(
+            itoa_load, sizeof(itoa_load), lowered, &lowered_count, nullptr,
+            GuestCodeDefaultOperandSize::k32) &&
+        lowered_count == sizeof(itoa_load) + 1U && lowered[0] == 0x67U;
+    if (admitted)
+    {
+        ZydisDecoder decoder;
+        ZydisDecodedInstruction instruction{};
+        ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+        admitted =
+            ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64,
+                                          ZYDIS_STACK_WIDTH_64)) &&
+            ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder, lowered,
+                                                lowered_count, &instruction,
+                                                operands)) &&
+            instruction.length == lowered_count &&
+            instruction.mnemonic == ZYDIS_MNEMONIC_MOV &&
+            instruction.address_width == 32U &&
+            operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+            operands[0].reg.value == ZYDIS_REGISTER_AL &&
+            operands[1].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+            operands[1].mem.base == ZYDIS_REGISTER_EDX &&
+            operands[1].mem.index == ZYDIS_REGISTER_NONE &&
+            operands[1].mem.disp.value == 0x000E7458;
+    }
+
+    const auto refused = [](const std::uint8_t* bytes, std::size_t count,
+                            GuestCodeDefaultOperandSize mode) {
+        return ClassifyLongModeBytes(bytes, count, mode).lowering !=
+            LongModeLowering::kAddressSizePrefix;
+    };
+    // ES carries a base the engine folds; so do SS and DS.
+    const std::uint8_t es_load[] = {0x26U, 0x8AU, 0x02U};
+    // The absolute form needs a ModRM rewrite this lowering does not do.
+    const std::uint8_t cs_absolute[] = {
+        0x2EU, 0x8AU, 0x05U, 0x58U, 0x74U, 0x0EU, 0x00U};
+    // 16-bit code has a real CS base.
+    const std::uint8_t cs_sixteen[] = {0x2EU, 0x8AU, 0x07U};
+    // A jump table through CS is control flow and belongs to the dispatch.
+    const std::uint8_t cs_jump_table[] = {
+        0x2EU, 0xFFU, 0x24U, 0x95U, 0x10U, 0x00U, 0x00U, 0x00U};
+    const bool refusals =
+        refused(es_load, sizeof(es_load), GuestCodeDefaultOperandSize::k32) &&
+        refused(cs_absolute, sizeof(cs_absolute),
+                GuestCodeDefaultOperandSize::k32) &&
+        refused(cs_sixteen, sizeof(cs_sixteen),
+                GuestCodeDefaultOperandSize::k16) &&
+        refused(cs_jump_table, sizeof(cs_jump_table),
+                GuestCodeDefaultOperandSize::k32);
+
+    const bool ok = admitted && refusals;
+    std::cout << "long_mode_cs_override_data=" << (ok ? "true" : "false")
+              << ",admitted=" << (admitted ? "true" : "false")
+              << ",refusals=" << (refusals ? "true" : "false") << "\n";
+    return ok;
+}
+
 bool RunLongModeCompatibilityProbe()
 {
     const bool silent_ok = ProbeSilentlyDifferent();
@@ -1321,6 +1475,7 @@ bool RunLongModeCompatibilityProbe()
     const bool sixteen_bit_jcc_ok = Probe16BitConditionalBranch();
     const bool sixteen_bit_segment_push_ok = Probe16BitSegmentPushHle();
     const bool sixteen_bit_loopnz_ok = Probe16BitLoopNz();
+    const bool cs_override_data_ok = ProbeCsOverrideDataAccess();
 
     const bool all = silent_ok && invalid_ok && width_ok && width_kind_ok &&
         reasons_ok && stack_ok && inc_dec_ok && stack_seq_ok && subset_ok &&
@@ -1330,7 +1485,7 @@ bool RunLongModeCompatibilityProbe()
         sixteen_bit_lea_ok &&
         sixteen_bit_lea16_ok && sixteen_bit_test_ok &&
         sixteen_bit_jcc_ok && sixteen_bit_segment_push_ok &&
-        sixteen_bit_loopnz_ok;
+        sixteen_bit_loopnz_ok && cs_override_data_ok;
     std::cout << "long_mode_compatibility_all=" << (all ? "true" : "false")
               << "\n";
     return all;

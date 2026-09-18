@@ -795,6 +795,44 @@ depth exactly equals 264 injections minus 258 retired frames.
 **Confirmed by user run:** the final run ended by SDL exit request and reported `replays=27814`,
 `replay-reads=275350`, `frames-retired=27812`, `frame-overflow=0`, and `active-depth=2`. The two
 active frames exactly match the difference between injected and retired frames at shutdown.
+
+## 2026-09-18 Task 704: Linux x64 INT 8 frame과 IRETD HLE
+
+**확인됨:** Linux x64 signal context의 `SegCs=0x33`은 host selector이므로 guest INT 8
+frame에 기록할 수 없습니다. 실제 실패 frame의 복귀 EIP `0x01054480`은 logical guest
+selector `0x24`의 executable descriptor에 속했습니다. 원본 ISR 끝의 `IRETD`는 AOT
+cache boundary로 남았지만 그 32-bit CPU 효과를 수행할 Linux x64 handler가 없었습니다.
+
+**수정됨:** 주입 전에 interrupted EIP의 유일한 executable guest selector를 해석해
+EIP/CS/EFLAGS frame에 기록합니다. lookup 실패 시 tick을 소비하지 않고 보류합니다.
+전용 IRETD HLE는 prefix 없는 32-bit `CF`, 읽을 수 있는 12-byte frame, executable k32
+복귀 target을 모두 확인한 뒤 EIP, logical CS, EFLAGS, ESP를 복원합니다. 실패는 context를
+변경하지 않습니다. 원본 ISR body, timer cadence, i386 native IRETD는 유지합니다.
+
+**검증됨:** synthetic 정상/잘못된 selector/읽을 수 없는 frame 검증과 전체 Linux x64
+core probe 27/27이 통과했습니다. 실제 실행은 첫 frame `0x0158CBE0`을 소비해 ESP
+`0x0158CBEC`, EIP `0x01054480`으로 AOT 재진입했고, 45초 동안 약 800회의 후속 INT 8을
+계속 처리했습니다.
+
+## 2026-09-18 Task 704: Linux x64 INT 8 frame and IRETD HLE
+
+**Confirmed:** `SegCs=0x33` in a Linux x64 signal context is a host selector and
+must not be written into a guest INT 8 frame. The failed frame's return EIP
+`0x01054480` belonged to the executable descriptor for logical guest selector
+`0x24`. The original ISR's `IRETD` remained an AOT cache boundary, but Linux x64
+had no handler for its 32-bit CPU effect.
+
+**Corrected:** before injection, the unique executable guest selector for the
+interrupted EIP is written into the EIP/CS/EFLAGS frame. A failed lookup defers
+delivery without consuming the tick. Dedicated IRETD HLE validates unprefixed
+32-bit `CF`, a readable 12-byte frame, and an executable k32 return target before
+restoring EIP, logical CS, EFLAGS, and ESP. Failure leaves the context unchanged.
+The original ISR body, timer cadence, and native i386 IRETD remain unchanged.
+
+**Verified:** synthetic valid, bad-selector, and unreadable-frame cases and all
+27 Linux x64 core-probe groups passed. The real run consumed the first frame at
+`0x0158CBE0`, re-entered AOT at EIP `0x01054480` with ESP `0x0158CBEC`, and
+continued processing roughly 800 subsequent INT 8 injections over 45 seconds.
 ## 2026-08-19 Task 494: 2P 숫자패드 keycode 별칭
 
 **확인됨:** Task 493 사용자 로그는 전체 timeline 유실 계수가 0이고

@@ -402,6 +402,12 @@ void BuildAotSegmentTable(ThreadContext* context,
             context->selector_table, addresses[seg], selectors[seg],
             &table->segments[seg]);
     }
+    // Tasks 712 and 717. Applied here, in the one place the fold table is
+    // built, so that Task 289's fingerprint comparison compares like with like
+    // and a re-resolution never sees a different answer than the fold it
+    // replaces.
+    runtime::ApplyFlatSegmentFolds(context->flat_stack_selector,
+                                   context->flat_data_selector, table);
 }
 
 void RecordAotBreakpointProvenance(

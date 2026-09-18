@@ -84,15 +84,37 @@ bool IsBackwardEdge(const AotInstructionRecord& instruction)
     return false;
 }
 
+// Task 710. The host instructions one safe point decodes as: pushf, cmp, jne,
+// popf, jmp, popf, int3. The long-mode verifier checks every entry's decoded
+// instruction count against the emitter's own, so this has to be exact.
+constexpr std::size_t kTimerSafePointInstructionCount = 7U;
+
 void EmitTimerSafePoint(const AotInstructionRecord& instruction,
-                        AotCodeCacheImage* image)
+                        AotCodeCacheImage* image,
+                        const bool long_mode = false)
 {
     const std::uint32_t cache_offset =
         static_cast<std::uint32_t>(image->bytes.size());
     // pushfd; cmp dword ptr [abs32],0; jne trap; popfd; jmp continue;
     // trap: popfd; int3; continue:
     image->bytes.push_back(0x9CU);
-    image->bytes.insert(image->bytes.end(), {0x83U, 0x3DU});
+    if (long_mode)
+    {
+        // Task 710. `83 3D disp32` is an absolute disp32 in 32-bit mode and
+        // RIP-relative in long mode, so the i386 bytes would compare whatever
+        // happened to sit that far past the instruction. The SIB form names the
+        // absolute address in both modes: mod=00 rm=100 selects a SIB byte,
+        // and SIB 0x25 is scale=0, index=none, base=disp32. It is the same
+        // substitution `aot_long_mode_compatibility.cpp` makes for copied
+        // instructions, applied to bytes the emitter writes itself. The rest of
+        // the sequence is unchanged: pushf/popf are pushfq/popfq on the host
+        // stack, which is balanced on both paths before the int3.
+        image->bytes.insert(image->bytes.end(), {0x83U, 0x3CU, 0x25U});
+    }
+    else
+    {
+        image->bytes.insert(image->bytes.end(), {0x83U, 0x3DU});
+    }
     const std::uint32_t request_address_offset =
         static_cast<std::uint32_t>(image->bytes.size());
     image->bytes.insert(image->bytes.end(), 4U, 0U);
@@ -104,6 +126,80 @@ void EmitTimerSafePoint(const AotInstructionRecord& instruction,
     image->timer_safe_point_sites.push_back({
         instruction.guest_address, cache_offset, request_address_offset,
         breakpoint_offset});
+}
+
+// Task 716. Whether an HLE boundary record is only there for a `CS:` override
+// on a data access in 32-bit code -- the one boundary whose meaning long mode
+// keeps as it is.
+//
+// The planner makes every segment-prefixed instruction a boundary on both
+// hosts. Win32 services it by single-stepping the original, which is right
+// because the guest's CS is the host's flat one. Nothing services it on x64, so
+// pumpit2a's timer-driven `itoa` (`mov al, cs:[edx+table]`) died there the
+// first time it ran. Long mode ignores a CS override, so the instruction can be
+// emitted as a copy -- which asks the long-mode classifier, the one place that
+// decides how it is lowered. This screen only keeps out the boundaries that are
+// boundaries for another reason as well.
+bool IsLongModeCsDataBoundary(const AotInstructionRecord& instruction)
+{
+    if (instruction.kind != AotInstructionKind::kHleBoundary ||
+        instruction.bytes.empty() ||
+        instruction.guest_code_default_operand_size !=
+            GuestCodeDefaultOperandSize::k32)
+    {
+        return false;
+    }
+    ZydisDecoder decoder;
+    ZydisDecodedInstruction insn{};
+    ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT] = {};
+    if (!ZYAN_SUCCESS(ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LEGACY_32,
+                                       ZYDIS_STACK_WIDTH_32)) ||
+        !ZYAN_SUCCESS(ZydisDecoderDecodeFull(&decoder,
+                                             instruction.bytes.data(),
+                                             instruction.bytes.size(), &insn,
+                                             operands)) ||
+        insn.length != instruction.bytes.size() ||
+        (insn.attributes & ZYDIS_ATTRIB_HAS_SEGMENT) == 0U ||
+        (insn.attributes & ZYDIS_ATTRIB_IS_PRIVILEGED) != 0U)
+    {
+        return false;
+    }
+    switch (insn.meta.category)
+    {
+        case ZYDIS_CATEGORY_INTERRUPT:
+        case ZYDIS_CATEGORY_IO:
+        case ZYDIS_CATEGORY_IOSTRINGOP:
+        case ZYDIS_CATEGORY_RDWRFSGS:
+        case ZYDIS_CATEGORY_SEGOP:
+        case ZYDIS_CATEGORY_SYSCALL:
+        case ZYDIS_CATEGORY_CALL:
+        case ZYDIS_CATEGORY_RET:
+        case ZYDIS_CATEGORY_UNCOND_BR:
+        case ZYDIS_CATEGORY_COND_BR:
+            return false;
+        default:
+            break;
+    }
+    bool any_memory = false;
+    for (std::uint8_t index = 0; index < insn.operand_count; ++index)
+    {
+        const ZydisDecodedOperand& operand = operands[index];
+        if (operand.type == ZYDIS_OPERAND_TYPE_REGISTER &&
+            ZydisRegisterGetClass(operand.reg.value) == ZYDIS_REGCLASS_SEGMENT)
+        {
+            return false;
+        }
+        if (operand.type != ZYDIS_OPERAND_TYPE_MEMORY)
+        {
+            continue;
+        }
+        if (operand.mem.segment != ZYDIS_REGISTER_CS)
+        {
+            return false;
+        }
+        any_memory = true;
+    }
+    return any_memory;
 }
 
 // Task 553. The `kCopy` path for a long-mode host.
@@ -2765,6 +2861,35 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
             if (options.enable_long_mode_emission)
             {
                 std::size_t emitted_instructions = 0U;
+                // Task 710. The safe points the switch below plants for i386
+                // were never reached here, because this branch continues past
+                // the switch. So a guest spinning inside long-mode AOT code
+                // could not take a timer request: ticks backed up to their
+                // limit and were dropped, and a guest loop that ends on time --
+                // pumpit2a's zero-length PIU.BIN retry, which Win32 leaves
+                // after 37 reads -- ran 769,639 times in ten seconds.
+                //
+                // The same rule as i386, so the two hosts plant safe points on
+                // the same guest edges: a backward direct jump, or a backward
+                // conditional branch whose condition has a Jcc opcode.
+                // Everything else i386 turns into a boundary gets none there
+                // either.
+                std::uint8_t safe_point_condition = 0U;
+                const bool plant_safe_point =
+                    options.enable_timer_safe_points &&
+                    IsBackwardEdge(instruction) &&
+                    (instruction.kind == AotInstructionKind::kDirectJump ||
+                     (instruction.kind ==
+                          AotInstructionKind::kConditionalBranch &&
+                      ReadConditionOpcode(instruction.mnemonic,
+                                          &safe_point_condition)));
+                std::size_t safe_point_instructions = 0U;
+                if (plant_safe_point)
+                {
+                    EmitTimerSafePoint(instruction, image, true);
+                    safe_point_instructions =
+                        kTimerSafePointInstructionCount;
+                }
                 // Task 686. The existing non-copy slots encode 32-bit guest
                 // control-flow and selector semantics. A plain mode16 Jcc
                 // needs only its already-rebased target and condition opcode,
@@ -2809,13 +2934,45 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                         image->bytes.size() - cache_offset);
                     image->address_map.push_back(map);
                     long_mode_entry_instructions.push_back(
-                        static_cast<std::uint32_t>(emitted_instructions));
+                        static_cast<std::uint32_t>(
+                            emitted_instructions + safe_point_instructions));
                     continue;
                 }
+                // The branch slot refused, so this entry becomes a copy or an
+                // INT3 boundary -- and the boundary's fixup is recorded at the
+                // entry's start, which is where the safe point now sits. Take it
+                // back out so those paths see exactly the entry they saw before
+                // Task 710: a safe point belongs only in front of a branch this
+                // emitter actually lowered.
+                if (plant_safe_point)
+                {
+                    image->bytes.resize(cache_offset);
+                    image->timer_safe_point_sites.pop_back();
+                    safe_point_instructions = 0U;
+                }
+                // Task 716. A CS-override data access is a boundary only
+                // because of its prefix; emitted as a copy it ends its block
+                // as the boundary did, so it carries the jump on.
+                const bool cs_data_boundary =
+                    IsLongModeCsDataBoundary(instruction);
                 const bool emitted_copy =
-                    instruction.kind == AotInstructionKind::kCopy &&
+                    (instruction.kind == AotInstructionKind::kCopy ||
+                     cs_data_boundary) &&
                     EmitLongModeCopy(instruction, image,
                                      &emitted_instructions);
+                if (emitted_copy && cs_data_boundary)
+                {
+                    const std::uint32_t branch_offset =
+                        static_cast<std::uint32_t>(image->bytes.size());
+                    AppendRel32(&image->bytes, 0xE9U);
+                    image->fixups.push_back(
+                        {AotFixupKind::kBlockFallthrough,
+                         instruction.guest_address,
+                         instruction.guest_address + instruction.length,
+                         branch_offset + 1U, false});
+                    ++emitted_instructions;
+                    ++image->long_mode_cs_data_boundary_count;
+                }
                 if (!emitted_copy)
                 {
                     ++image->long_mode_refused_count;
@@ -2858,8 +3015,11 @@ bool BuildAotCodeCacheImage(const AotTranslationPlan& plan,
                 map.emitted_length = static_cast<std::uint8_t>(
                     image->bytes.size() - cache_offset);
                 image->address_map.push_back(map);
+                // The refusal path above assigns rather than adds, so the safe
+                // point's share is added here, after whichever path completed.
                 long_mode_entry_instructions.push_back(
-                    static_cast<std::uint32_t>(emitted_instructions));
+                    static_cast<std::uint32_t>(
+                        emitted_instructions + safe_point_instructions));
                 continue;
             }
             switch (instruction.kind)
@@ -3278,6 +3438,25 @@ bool ValidateAotCodeCacheHleCoverage(
             }
             if (image.bytes[map->cache_offset] == 0xCCU)
             {
+                continue;
+            }
+            // Task 716. A long-mode CS data access is emitted as a copy that
+            // jumps on to the next guest instruction; it has no HLE to cover.
+            if (image.long_mode_emission_enabled &&
+                IsLongModeCsDataBoundary(instruction))
+            {
+                const bool jumps_on = std::any_of(
+                    image.fixups.begin(), image.fixups.end(),
+                    [&instruction](const AotCodeCacheFixup& fixup) {
+                        return fixup.kind == AotFixupKind::kBlockFallthrough &&
+                            fixup.guest_source == instruction.guest_address &&
+                            fixup.guest_target ==
+                                instruction.guest_address + instruction.length;
+                    });
+                if (!jumps_on)
+                {
+                    return fail(instruction.guest_address);
+                }
                 continue;
             }
             if (instruction.kind == AotInstructionKind::kGuardedSegmentPop)

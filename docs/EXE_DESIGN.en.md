@@ -382,3 +382,37 @@ DPMI AX=0007, then executes MOV SS,BX; MOV SP,2000. Observed descriptor flags
 PUSH AX and PUSH EDI, storing 2, 2 and 4 bytes. CB at 01100031 is a word far
 return. Addresses/selectors are observations, not shared implementation rules.
 Evidence and open questions are recorded in linux-port-frontier.md, Task 692.
+
+## pumpit2a PIU.BIN record loader and C runtime file functions (confirmed, Task 711)
+
+Addresses are object-2 offsets; add `0x01010000` for a Linux run and `0x04010000` for
+Win32.
+
+| Object 2 offset | Function | Confirmed behavior |
+|---|---|---|
+| `0x2DB28` | PIU.BIN loader | `count = filelength(h) >> 4`, then `fread(table+i*16, 1, 16, fp)` `count` times |
+| `0xE1B97` | `fread` | Watcom register convention (`eax`=buf, `edx`=size, `ebx`=n, `ecx`=FILE); returns on a zero fill |
+| `0xE24B2` | buffer fill | read count 0 → `_EOF` (`0x10`); negative → error (`0x20`) |
+| `0xE33BD` | `filelength` | `lseek` SEEK_CUR → SEEK_END → SEEK_SET restore; returns the SEEK_END value |
+| `0xE44D0` | `lseek` | after `INT 21h AH=42h`, stores the result with `mov ss:[edi],ax` / `mov ss:[edi+2],dx` (`edi=esp`) and reads `[esp]` |
+| `0xE4BD8` | `read` | `INT 21h AH=3Fh` |
+
+The key point is that `lseek` writes its result through an **explicit `SS:`
+override**. The guest `ESP` is linear, but SS selector `0x0034` (object 4) has base
+`0x01110000`, so on an execution path that folds that base the store never reaches
+`[esp]`. Details are in the
+[Task 711 work log](work-logs/20260918-711-piu-bin-loop-ss-override.md).
+
+Since the `SS:` override fix (Task 712), this store reaches `[esp]` under the loader's initial stack selector, and both Win32 and Linux read all 560 bytes of PIU.BIN at once.
+
+## pumpit2a's GL-style wrapper and material selection (confirmed, Task 713)
+
+pumpit2a carries an OpenGL-style wrapper over Glide. Object-2 offsets:
+
+| Offset | Function | Confirmed behavior |
+|---|---|---|
+| `0xB92B0` | visual creation | `calloc(1,0x28)`; visual[0] = first argument (RGBA-mode flag) |
+| `0xB954C` | GL context creation | `calloc(1,0xEA1C)`; `ctx[0x8F8]` = visual |
+| `0xAE120` | `glEnable`/`glDisable` | compare chain over GL enums; `GL_TEXTURE_2D` (`0x0DE1`) sets `2 << unit*4` in `scene[0xDEFC]` only when `*(ctx[0x8F8])` is nonzero and the render mode is `GL_RENDER` (`0x1A00`) |
+| `0x3B520` | material selection | `scene[0xDEFC]&2 && !(&4) && materials[0][0x488]` → textured material, else untextured |
+| `0x3ABCC` | texture residency | if `[tex+0xC4]` is zero, `grTexTextureMemRequired` / `grTexDownloadMipMapLevel` |

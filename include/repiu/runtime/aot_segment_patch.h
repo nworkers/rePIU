@@ -44,6 +44,51 @@ struct AotSegmentTable
     AotSegmentResolution segments[6];
 };
 
+// Task 712. The segment-table index of SS, in the order `AotSegmentTable`
+// keeps: 0=ES, 1=CS, 2=SS, 3=DS, 4=FS, 5=GS.
+inline constexpr std::uint8_t kAotSegmentIndexSs = 2U;
+
+// Task 712. What an explicit `SS:` override folds when the guest is on the
+// loader's own stack.
+//
+// On x86, `push`, `pop`, `[esp]` and `ss:[esp]` are the same memory, so an
+// explicit SS override has to reach the address an implicit stack access under
+// the same SS reaches. Under the loader's initial stack selector, 32-bit
+// implicit stack accesses run natively on the host's flat segments and the
+// loader hands out a linear `ESP` -- which makes the effective base 0, whatever
+// the selector's descriptor says. Folding that descriptor base instead is what
+// sent Watcom `lseek`'s `mov ss:[edi],ax` past `[esp]` and made pumpit2a's
+// PIU.BIN loader read 1,110,269 records from a 560-byte file.
+//
+// Any other SS keeps its descriptor base. The guest does switch stacks itself
+// -- Task 692's object 3 loads selector B4 with base 0x0158A83C and a 16-bit
+// `SP` -- and there the base is real, and the mode16 PUSH HLE adds it too.
+//
+// Only a natively folded SS entry is touched; selector 0 and DOS low-memory
+// resolutions route to the HLE boundary and mean something else. A zero
+// `flat_stack_selector` means none is known, and nothing changes.
+void ApplyFlatStackSegmentFold(std::uint16_t flat_stack_selector,
+                               AotSegmentResolution* ss_resolution);
+
+// Task 717. Task 712's rule, for every segment register and for the loader's
+// data selector as well as its stack selector.
+//
+// The two selectors are the loader's bindings for the guest's 32-bit objects:
+// the initial DS (object 2) and the initial SS (object 4). Under either one the
+// guest's implicit accesses run natively on the host's flat segments with
+// linear offsets, so an explicit override naming the same selector has to fold
+// base 0 too -- whichever register carries it. pumpit2a reads DS into DX, loads
+// it into ES, and formats `%d` through `es:[ebx]` into a stack buffer. Win32
+// hands the guest the host's flat selector there; Linux x64 hands it 0x0024,
+// whose descriptor base 0x01010000 sent the read into texture pixels, and the
+// unterminated "number" overwrote the stack and the heap above it.
+//
+// Other selectors keep their descriptor base, as Task 712's do. CS has no
+// shadow and is not touched. A zero selector means none is known.
+void ApplyFlatSegmentFolds(std::uint16_t flat_stack_selector,
+                           std::uint16_t flat_data_selector,
+                           AotSegmentTable* table);
+
 struct AotSegmentOverridePatchStats
 {
     std::uint32_t native_site_count = 0;
