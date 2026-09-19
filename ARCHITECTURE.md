@@ -410,6 +410,21 @@ as successful recovery, return true. This prevents a Linux x64 host-code R15
 pointer from being truncated by guest-ESP R15D zero-extension while preserving
 the existing signal-delivery and answered-interrupt contract.
 
+Task 721부터 Linux x64의 wall-clock guest-position census는
+`REPIU_LINUX_X64_NATIVE_SAMPLE=1`일 때만 target-thread interrupt를 사용합니다. 이
+callback은 guest ABI의 32-bit register snapshot만 복사하고 false를 반환하므로 native
+context는 write-back하지 않습니다. Win32/i386의 host stack scan은 Linux signal handler에서
+제외됩니다. Linux x64 host RIP는 guest ABI 폭을 넘으므로 현재 census의 host 항목은 위치
+분포의 보조 증거일 뿐 symbolizable native call site가 아닙니다.
+
+Starting with Task 721, the Linux x64 wall-clock guest-position census uses a
+target-thread interrupt only when `REPIU_LINUX_X64_NATIVE_SAMPLE=1`. Its callback
+copies only the guest ABI's 32-bit register snapshot and returns false, so native
+context is never written back. The Win32/i386 host stack scan is excluded from the
+Linux signal handler. Since a Linux x64 host RIP exceeds the guest ABI width, the
+current census host entries are supporting distribution evidence, not symbolizable
+native call sites.
+
 Linux x64 native-write telemetry는 Linux SysV x64 dispatch frame ABI에 종속되므로
 공용 `repiu_exe` source 목록이 아니라 `UNIX AND NOT EMSCRIPTEN`이며 host pointer가
 64-bit인 target에만 편성합니다. Win32 x86은 이 translation unit과 Linux x64 frame

@@ -12,6 +12,7 @@
 #include "repiu/platform/safe_memory_copy.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include "repiu/platform/guest_cpu_context.h"
 #include "repiu/platform/atomic_ops.h"
 
@@ -20,7 +21,16 @@ namespace repiu::engine
 namespace
 {
 
-#if defined(_M_IX86) || defined(__i386__)
+// Task 721. Linux x64 can interrupt the guest thread too (Task 705), so the
+// capture is built there as well, behind an opt-in: every sample is a signal
+// delivered to the guest thread, and a default run should not start taking
+// them without a reason.
+#if defined(_M_IX86) || defined(__i386__) || \
+    (!defined(_WIN32) && defined(__x86_64__))
+#define REPIU_NATIVE_PHASE_CAPTURE 1
+#endif
+
+#if defined(REPIU_NATIVE_PHASE_CAPTURE)
 // Task 412. Scans the interrupted thread's stack for the first value inside
 // [module_base, module_base + module_size) and returns it, or zero when none is
 // found.
@@ -100,6 +110,13 @@ bool CaptureNativePhaseRegisters(repiu::platform::GuestCpuContext* registers,
     sample->ebp = registers->Ebp;
     sample->eflags = registers->EFlags;
 
+    // The Linux x64 callback runs inside a signal handler. The census needs the
+    // interrupted guest/cache EIP, not a host stack walk; keep process_vm_readv
+    // and module-range scanning out of that handler.
+#if !defined(_WIN32) && defined(__x86_64__)
+    (void)request->module_base;
+    (void)request->module_size;
+#else
     if (request->module_size != 0U)
     {
         bool scan_failed = false;
@@ -109,6 +126,7 @@ bool CaptureNativePhaseRegisters(repiu::platform::GuestCpuContext* registers,
             &scan_failed);
         sample->host_scan_failed = scan_failed;
     }
+#endif
     return false;
 }
 #endif
@@ -134,11 +152,24 @@ bool CaptureNativePhaseSample(const repiu::platform::HostThread& thread,
         }
     };
 
-#if defined(_M_IX86) || defined(__i386__)
+#if defined(REPIU_NATIVE_PHASE_CAPTURE)
     // Task 503d-21: a bounded wait. This is a diagnostic sampling a thread that
     // may be in trouble, and one that hangs waiting for an answer stops the
     // loop whose job is to notice the trouble.
     constexpr std::uint32_t kSampleTimeoutMilliseconds = 200U;
+#if !defined(_WIN32) && defined(__x86_64__)
+    static const bool x64_capture_enabled = [] {
+        const char* const value = std::getenv("REPIU_LINUX_X64_NATIVE_SAMPLE");
+        return value != nullptr && value[0] == '1' && value[1] == '\0';
+    }();
+    if (!x64_capture_enabled)
+    {
+        (void)placement;
+        sample->failure_stage = 3;
+        mark_stage(0);
+        return false;
+    }
+#endif
 
     NativePhaseCaptureRequest request;
     request.sample = sample;

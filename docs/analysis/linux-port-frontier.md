@@ -17223,3 +17223,65 @@ boundaries fell from 2.42 million to 0, exception dispatches from 2.55 million t
 did not change, refuting Task 719's inference that they come from Glide traps. With
 only about 700 exceptions per second during a stall, the guest appears to be waiting
 for something. Next: what it waits for.
+
+---
+
+## 2026-09-19 Task 721 — Linux x64 정지 위치 census opt-in
+
+### 확인됨
+
+Task 705의 read-only target-thread interrupt를 이용해 Linux x64에서도 wall-clock
+`GuestPositionCensus`를 켰습니다. `REPIU_LINUX_X64_NATIVE_SAMPLE=1`과
+`REPIU_GUEST_POSITION_CENSUS=1`이 함께 있어야 signal capture가 시작되며, 기본 실행은
+capture를 `stage=3`에서 즉시 거절해 signal을 보내지 않습니다. signal callback은 register를
+복사한 뒤 false를 반환하므로 Task 705의 no-write-back 계약을 지킵니다. Win32/i386의
+`process_vm_readv` host-stack scan은 Linux x64 signal handler에서 제외했습니다.
+
+35초 제한 `pumpit2a` 관찰(100ms census, 일반 native sampler off)은 345회 capture,
+200개 distinct 위치, overflow 0, capture failure 0으로 완료됐고 shutdown은 timeout
+immediate-exit 경로로 깨끗이 끝났습니다. Linux x64와 Win32 x86 core probe는 각각
+30/30 및 28/28이며 Win32 x86 전체 빌드도 성공했습니다.
+
+### 새 제한과 다음 frontier
+
+표본 대부분은 host로 분류되었습니다. 이는 실패가 아니라 `GuestCpuContext::Eip`가
+guest ABI의 32-bit 값이기 때문입니다. cache 안일 때는 guest EIP로 역매핑되지만, 64-bit
+host RIP는 하위 32-bit만 남아 module/symbol과 안정적으로 연결할 수 없습니다. 짧은
+opt-in 관찰에서 117개 중 host 112, cache-mapped 5였고, host stack scan은 의도대로
+0 site였습니다.
+
+따라서 Task 720의 로딩 정지에서 게스트가 무엇을 기다리는지는 아직 확정되지 않았습니다.
+다음 frontier는 signal callback에서 full host RIP와 monotonic sample time을 별도 관찰
+필드로 보존하고, 정지 구간 표본만 시간 순으로 덤프하는 것입니다. 이 정보는 guest ABI
+context와 섞지 않아야 합니다.
+
+## English
+
+### Confirmed
+
+Using Task 705's read-only target-thread interrupt, Linux x64 can now enable the
+wall-clock `GuestPositionCensus`. Signal capture starts only when both
+`REPIU_LINUX_X64_NATIVE_SAMPLE=1` and `REPIU_GUEST_POSITION_CENSUS=1` are set; a
+default run refuses capture at `stage=3` before sending a signal. The callback copies
+registers and returns false, retaining Task 705's no-write-back contract. The
+Win32/i386 `process_vm_readv` host-stack scan is excluded from the Linux x64 signal
+handler.
+
+A 35-second bounded `pumpit2a` observation (100ms census, normal native sampler off)
+completed with 345 captures, 200 distinct positions, zero overflow, and zero capture
+failures; shutdown followed the clean timeout immediate-exit path. Linux x64 and
+Win32 x86 core probes passed 30/30 and 28/28 respectively, and the full Win32 x86
+build succeeded.
+
+### New limitation and next frontier
+
+Most samples classify as host. This is not a capture failure: `GuestCpuContext::Eip`
+is a 32-bit guest-ABI value. Cache samples reverse-map to a guest EIP, but a 64-bit
+host RIP retains only its low 32 bits and cannot be reliably joined to a module or
+symbol. In a short opt-in observation, 112 of 117 samples were host and five were
+cache-mapped; host stack scanning intentionally reported zero sites.
+
+Task 720's loading wait is therefore still unconfirmed. The next frontier is to
+preserve full host RIP and monotonic sample time in separate observation fields inside
+the signal callback, then dump only the time-ordered stall samples. That information
+must not be mixed into the guest ABI context.
