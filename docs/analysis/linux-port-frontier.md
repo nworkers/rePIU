@@ -17367,3 +17367,59 @@ the cause is understood.
 - Linux x64 Debug `repiu_core_probe`: 30/30 passed.
 - Full Win32 x86 Debug build and `repiu_core_probe`: 28/28 passed.
 - Linux x64 500ms traced `pumpit2a`: full RIP, monotonic elapsed time, zero capture failures.
+
+---
+
+## 2026-09-19 Task 723 — Linux x64 Glide host-work ordinal 분해
+
+### 확인됨
+
+Task 722 뒤의 Linux x64 `pumpit2a` 30초 관찰에서 기존
+`REPIU_EXECUTION_TIME_PROFILE=1` 및 `REPIU_GLIDE_ORDINAL_TIME_PROFILE=1` 계측을
+사용해 host command 작업을 ordinal별로 분해했습니다. 39개 ordinal, 161,867개 완료 gate의
+backend total은 29,245,612,348 cycles, 실제 host work는 25,768,579,029 cycles였습니다.
+전체 gate의 wake는 2,258,755,174 cycles로, 이 관찰에서도 rendezvous wake가 지배항이
+아니라는 기존 결론을 확인합니다.
+
+`grBufferSwap`은 host work 16,206,075,482 cycles(62.9%), backend total
+16,827,287,865 cycles(57.5%)로 첫째입니다. `grLfbLock`은 host work
+6,272,964,560 cycles(24.3%), backend total 6,352,359,460 cycles(21.7%)로 둘째입니다.
+두 호출은 host work의 87.2%를 차지합니다. `grLfbUnlock`은 440,437,599 cycles(1.7%)여서
+LFB staging copy의 비용은 lock 쪽, 즉 lock 시의 read/encode 또는 host-side 준비에
+집중되어 있습니다.
+
+### 미확정 및 다음 frontier
+
+이는 30초 전체 집계이므로 특정 수초 정지의 직접 원인을 증명하지 않습니다. 다만 다음
+계측/최적화 후보는 일반 rendezvous spin이 아니라 `BufferSwapOnHostThread`의 present 경로와
+`grLfbLock`의 staging read/encode 경로입니다. `REPIU_GLIDE_SWAP_TIME_PROFILE=1`을 함께 켠
+추가 관찰은 초기 loader 출력 뒤 제한 시간보다 오래 진행되어 중단했고, 완결 summary가 없으므로
+그 실행의 수치는 사용하지 않았습니다. 이 profile 조합의 종료 지연도 별도 재현 대상으로 남습니다.
+
+## English
+
+### Confirmed
+
+After Task 722, a 30-second Linux x64 `pumpit2a` run used the existing
+`REPIU_EXECUTION_TIME_PROFILE=1` and `REPIU_GLIDE_ORDINAL_TIME_PROFILE=1`
+instrumentation to split host-command work by ordinal. Across 39 ordinals and 161,867
+completed gates, backend total was 29,245,612,348 cycles and actual host work was
+25,768,579,029 cycles. Wake consumed 2,258,755,174 cycles, confirming that rendezvous
+wake is not dominant in this observation either.
+
+`grBufferSwap` is first with 16,206,075,482 host-work cycles (62.9%) and
+16,827,287,865 backend-total cycles (57.5%). `grLfbLock` is second with
+6,272,964,560 host-work cycles (24.3%) and 6,352,359,460 backend-total cycles (21.7%).
+Together they account for 87.2% of host work. `grLfbUnlock` costs only 440,437,599
+cycles (1.7%), so LFB staging-copy cost is concentrated on lock-side read/encode or
+host-side preparation.
+
+### Unresolved and next frontier
+
+This is a 30-second aggregate and does not prove the direct cause of a particular
+multi-second stall. It does make `BufferSwapOnHostThread`'s present path and
+`grLfbLock`'s staging read/encode path the next instrumentation/optimization targets,
+not general rendezvous spinning. A further observation also enabling
+`REPIU_GLIDE_SWAP_TIME_PROFILE=1` exceeded its bounded observation time after initial
+loader output and was interrupted; because it has no complete summary, none of its
+numbers are used. Its exit delay remains a separate reproduction target.
