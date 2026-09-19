@@ -12,6 +12,8 @@ extern "C"
 void* repiu_linux_x64_dispatch_frame = nullptr;
 void* repiu_linux_x64_dispatch_context = nullptr;
 void* repiu_linux_x64_dispatch_resolver = nullptr;
+// Task 720. The Glide gate thunk's resolver, installed beside the dispatch.
+void* repiu_linux_x64_glide_gate_resolver = nullptr;
 volatile std::uint64_t repiu_linux_x64_guest_entry_rsp = 0U;
 volatile std::uint64_t repiu_linux_x64_cache_call_rsp = 0U;
 volatile std::uint64_t repiu_linux_x64_return_thunk_rsp = 0U;
@@ -20,6 +22,7 @@ volatile std::uint32_t repiu_linux_x64_guest_esp_trace_value = 0U;
 
 void RepiuLinuxX64ReturnThunk();
 void RepiuLinuxX64LegacyResumeThunk();
+void RepiuLinuxX64GlideGateThunk();
 }
 
 namespace repiu::platform
@@ -47,6 +50,18 @@ void ClearLinuxX64Dispatch()
     repiu_linux_x64_dispatch_frame = nullptr;
     repiu_linux_x64_dispatch_context = nullptr;
     repiu_linux_x64_dispatch_resolver = nullptr;
+    repiu_linux_x64_glide_gate_resolver = nullptr;
+}
+
+void InstallLinuxX64GlideGateResolver(
+    const LinuxX64GlideGateResolver resolver)
+{
+    repiu_linux_x64_glide_gate_resolver = reinterpret_cast<void*>(resolver);
+}
+
+std::uintptr_t LinuxX64GlideGateThunkAddress()
+{
+    return reinterpret_cast<std::uintptr_t>(&RepiuLinuxX64GlideGateThunk);
 }
 
 std::uintptr_t LinuxX64DispatchFramePointerAddress()

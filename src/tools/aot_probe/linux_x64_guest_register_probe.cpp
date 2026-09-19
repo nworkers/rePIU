@@ -3,6 +3,7 @@
 
 #include "repiu/platform/fault_handler.h"
 #include "repiu/platform/linux_x64_aot_dispatch.h"
+#include "repiu/platform/linux_x64_guest_entry.h"
 #include "repiu/platform/linux_x64_guest_registers.h"
 #include "repiu/platform/virtual_memory.h"
 #include "repiu/runtime/aot_code_cache.h"
@@ -2305,6 +2306,146 @@ bool ProbeGuardedSegmentPop()
 
 }  // namespace
 
+// Task 720. The Glide gate direct-dispatch thunk, executed.
+//
+// A placed page holds a patched gate -- `E8 rel32` to the thunk -- and a
+// landing `ret`. The run enters at the gate as emitted cache code would, with
+// the guest return address already consumed into the stack the resolver sees.
+// A stand-in Glide resolver checks what the thunk recorded and plays a stdcall
+// export: it sets EAX, pops the return address and eight argument bytes, and
+// names a guest return address. The return thunk then asks a stand-in dispatch
+// resolver for that address, which answers with the landing `ret`, and that
+// `ret` leaves the cache through the guest entry bridge.
+//
+// What it holds the thunk to: the guest registers and ESP it recorded, an
+// empty x87 stack and default MXCSR while the resolver runs, the resolver's
+// EAX and ESP coming back, an untouched EBX, the return address handed to the
+// return thunk, and a value the caller left on the x87 stack surviving.
+struct GlideThunkObservation
+{
+    std::uint32_t eax = 0U;
+    std::uint32_t ebx = 0U;
+    std::uint32_t esp = 0U;
+    std::uint32_t eip = 0U;
+    std::uint32_t fpu_tags = 0xFFU;
+    std::uint32_t mxcsr = 0U;
+    std::uint32_t dispatched_source = 0U;
+    std::uint32_t dispatched_eax = 0U;
+    std::uint32_t dispatched_esp = 0U;
+};
+
+GlideThunkObservation g_glide_observation;
+std::uintptr_t g_glide_landing = 0U;
+constexpr std::uint32_t kGlideProbeReturn = 0x00150000U;
+constexpr std::uint32_t kGlideProbeResult = 0x600D600DU;
+
+std::uint32_t ProbeGlideResolver(
+    void*, repiu::platform::LinuxX64AotDispatchFrame* frame)
+{
+    alignas(16) std::uint8_t fx[512] = {};
+    asm volatile("fxsave64 %0" : "=m"(fx));
+    g_glide_observation.fpu_tags = fx[4];  // abridged tag byte: 0 = empty
+    std::memcpy(&g_glide_observation.mxcsr, fx + 24, sizeof(std::uint32_t));
+    g_glide_observation.eax = frame->guest.eax;
+    g_glide_observation.ebx = frame->guest.ebx;
+    g_glide_observation.esp = frame->guest.esp;
+    g_glide_observation.eip = frame->guest.eip;
+    frame->guest.eax = kGlideProbeResult;
+    frame->guest.esp += 4U + 8U;
+    frame->guest.eip = kGlideProbeReturn;
+    frame->guest_source = kGlideProbeReturn;
+    return 1U;
+}
+
+std::uintptr_t ProbeGlideDispatchResolver(
+    void*, repiu::platform::LinuxX64AotDispatchFrame* frame)
+{
+    g_glide_observation.dispatched_source = frame->guest_source;
+    g_glide_observation.dispatched_eax = frame->guest.eax;
+    g_glide_observation.dispatched_esp = frame->guest.esp;
+    return g_glide_landing;
+}
+
+bool ProbeGlideGateThunk()
+{
+    const std::uintptr_t thunk =
+        repiu::platform::LinuxX64GlideGateThunkAddress();
+    runtime::AotCodeCacheReservation reservation =
+        runtime::ReserveAotCodeCacheMemory(kRegionBytes);
+    if (!reservation.valid || reservation.base == nullptr)
+    {
+        std::cout << "linux_x64_glide_gate_thunk=false,reservation=false" << "\n";
+        return false;
+    }
+    auto* const code = static_cast<std::uint8_t*>(reservation.base);
+    const std::uintptr_t gate = reinterpret_cast<std::uintptr_t>(code);
+    const std::int64_t displacement =
+        static_cast<std::int64_t>(thunk) - static_cast<std::int64_t>(gate + 5U);
+    const bool reachable = thunk != 0U && thunk <= 0xFFFFFFFFU &&
+        displacement >= INT32_MIN && displacement <= INT32_MAX;
+    bool ok = reachable;
+    if (reachable)
+    {
+        const std::int32_t rel32 = static_cast<std::int32_t>(displacement);
+        code[0] = 0xE8U;
+        std::memcpy(code + 1U, &rel32, sizeof(rel32));
+        code[5] = 0xCCU;  // never reached: the thunk does not return here
+        code[0x40] = 0xC3U;
+        g_glide_landing = gate + 0x40U;
+        repiu::platform::MemoryProtection previous =
+            repiu::platform::MemoryProtection::kNoAccess;
+        ok = repiu::platform::ProtectMemory(
+            code, kCodeBytes, repiu::platform::MemoryProtection::kExecuteRead,
+            &previous);
+    }
+    if (ok)
+    {
+        static repiu::platform::LinuxX64AotDispatchFrame frame;
+        int resolver_context = 0;
+        repiu::platform::InstallLinuxX64Dispatch(
+            &frame, &resolver_context, &ProbeGlideDispatchResolver);
+        repiu::platform::InstallLinuxX64GlideGateResolver(&ProbeGlideResolver);
+        const std::uint32_t guest_esp = static_cast<std::uint32_t>(
+            reinterpret_cast<std::uintptr_t>(code + kCodeBytes + 0x100U));
+        repiu::platform::LinuxX64GuestEntryState state;
+        state.gpr[kEax] = 0x11111111U;
+        state.gpr[kEbx] = 0x22222222U;
+        state.guest_esp = guest_esp;
+        double survived = 0.0;
+        asm volatile("fld1" ::: "st");
+        repiu::platform::RepiuLinuxX64GuestEntry(code, &state);
+        asm volatile("fstpl %0" : "=m"(survived) :: "st");
+        repiu::platform::ClearLinuxX64Dispatch();
+
+        const GlideThunkObservation& seen = g_glide_observation;
+        ok = seen.eax == 0x11111111U && seen.ebx == 0x22222222U &&
+            seen.esp == guest_esp &&
+            seen.eip == static_cast<std::uint32_t>(gate) &&
+            seen.fpu_tags == 0U && (seen.mxcsr & 0xFFC0U) == 0x1F80U &&
+            seen.dispatched_source == kGlideProbeReturn &&
+            seen.dispatched_eax == kGlideProbeResult &&
+            seen.dispatched_esp == guest_esp + 12U &&
+            state.gpr[kEax] == kGlideProbeResult &&
+            state.gpr[kEbx] == 0x22222222U &&
+            state.guest_esp == guest_esp + 12U && survived == 1.0;
+        std::cout << "linux_x64_glide_gate_thunk=" << (ok ? "true" : "false")
+                  << std::hex << ",seen_eip=0x" << seen.eip
+                  << ",seen_esp=0x" << seen.esp << ",fpu_tags=0x"
+                  << seen.fpu_tags << ",mxcsr=0x" << seen.mxcsr
+                  << ",dispatched=0x" << seen.dispatched_source
+                  << ",eax=0x" << state.gpr[kEax] << ",esp=0x"
+                  << state.guest_esp << std::dec << ",x87_survived="
+                  << (survived == 1.0 ? "true" : "false") << "\n";
+    }
+    else
+    {
+        std::cout << "linux_x64_glide_gate_thunk=false,reachable="
+                  << (reachable ? "true" : "false") << "\n";
+    }
+    runtime::ReleaseAotCodeCacheMemory(reservation);
+    return ok;
+}
+
 bool RunLinuxX64GuestRegisterProbe()
 {
     const bool mapping = ProbeMapping();
@@ -2327,12 +2468,13 @@ bool RunLinuxX64GuestRegisterProbe()
     const bool segment = ProbeSegmentOverride();
     const bool segment_load = ProbeGuardedSegmentLoad();
     const bool segment_pop = ProbeGuardedSegmentPop();
+    const bool glide_gate_thunk = ProbeGlideGateThunk();
     const bool all =
         mapping && stack && word_stack && flags && round_trip && branch && call &&
         unresolved && call_return && ret_imm16 && esp && absolute_immediate &&
         two_byte_esp && indirect_call && indirect_refusals &&
         jump_table && jump_table_refusals &&
-        segment && segment_load && segment_pop;
+        segment && segment_load && segment_pop && glide_gate_thunk;
     std::cout << "linux_x64_guest_register_all=" << (all ? "true" : "false")
               << "\n";
     return all;

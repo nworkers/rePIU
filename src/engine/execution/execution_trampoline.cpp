@@ -3550,6 +3550,7 @@ void CallGuestCacheEntryTimed(ThreadContext* context)
     repiu::platform::LinuxX64AotDispatchFrame frame;
     repiu::platform::InstallLinuxX64Dispatch(&frame, context,
                                              &LinuxX64EngineResolver);
+    InstallGlideGateDirectDispatchResolver();
     repiu::platform::LinuxX64GuestEntryState state;
     state.guest_esp = static_cast<std::uint64_t>(context->guest_initial_esp);
     void* const entry = reinterpret_cast<void*>(

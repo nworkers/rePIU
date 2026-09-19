@@ -17203,3 +17203,23 @@ loading stretches where swaps stop for 1–3.6 seconds (Win32 one, 0.8 s). Linux
 all 2.42 million Glide calls through a `ud2` trap, while Win32 dispatches 2.52 million
 directly; x64 has no direct-dispatch thunk (`capable=false`). Next: Task 720, direct
 Glide gate dispatch on Linux x64.
+
+---
+
+## 2026-09-19 Task 720 — Linux x64 Glide gate 직접 디스패치
+
+x64 thunk(`RepiuLinuxX64GlideGateThunk`)로 Glide gate를 trap 없이 호출한다. 180초 동안
+Glide 호출 348만 번이 모두 직접 디스패치로 성공했고 `ud2` boundary 242만 → 0, 예외 처리
+진입 255만 → 12만, swap 10,344 → 15,832. 그러나 로딩 정지(합계 약 8초)는 그대로여서
+Task 719의 "정지는 Glide trap 때문" 추정은 반증됐다. 정지 중 예외는 초당 약 700뿐이라
+게스트가 무언가를 기다리는 것으로 보인다. 다음은 그 대기의 정체.
+
+## English
+
+An x64 thunk (`RepiuLinuxX64GlideGateThunk`) calls the Glide gates without a trap. In
+180 seconds all 3.48 million Glide calls succeeded through direct dispatch; `ud2`
+boundaries fell from 2.42 million to 0, exception dispatches from 2.55 million to
+123,000, and swaps rose from 10,344 to 15,832. The loading stalls (about 8 s in total)
+did not change, refuting Task 719's inference that they come from Glide traps. With
+only about 700 exceptions per second during a stall, the guest appears to be waiting
+for something. Next: what it waits for.

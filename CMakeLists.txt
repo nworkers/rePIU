@@ -451,6 +451,7 @@ if(UNIX AND NOT EMSCRIPTEN)
                 src/engine/telemetry/linux_x64_native_write_trace.cpp
                 src/platform/linux/aot_dbt_dispatch_x64.cpp
                 src/platform/linux/aot_dbt_return_thunk_x64.S
+                src/platform/linux/aot_dbt_glide_gate_thunk_x64.S
                 # Task 575: the two fault-recovery symbols the fence above
                 # takes away. They are the only ones an x64 `repiu` link was
                 # missing, and they are `ud2` here rather than a return --

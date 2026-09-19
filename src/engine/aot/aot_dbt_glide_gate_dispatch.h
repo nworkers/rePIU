@@ -53,4 +53,9 @@ ReadGlideGateDirectDispatchStats();
 
 void* GetGlideGateDirectDispatchThunkAddress();
 
+// Task 720. Linux x64: installs the resolver the gate thunk calls. Done at
+// guest entry, beside the dispatch frame. A no-op on other hosts, whose
+// thunks reach the engine directly.
+void InstallGlideGateDirectDispatchResolver();
+
 }  // namespace repiu::engine

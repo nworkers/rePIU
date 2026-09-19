@@ -54,6 +54,21 @@ void ClearLinuxX64Dispatch();
 // policy guarantees.
 [[nodiscard]] std::uintptr_t LinuxX64ReturnThunkAddress();
 
+// Task 720. The Glide gate direct-dispatch contract. A patched gate calls
+// the thunk, which records the guest state in the installed dispatch frame and
+// asks this resolver to run the export. Nonzero means the frame now holds the
+// state after the call, with the guest return address in `guest_source`, and
+// the thunk continues through the return thunk; zero traps.
+using LinuxX64GlideGateResolver = std::uint32_t (*)(
+    void* context, LinuxX64AotDispatchFrame* frame);
+
+// Installed by the engine at guest entry, beside the dispatch; cleared with it.
+void InstallLinuxX64GlideGateResolver(LinuxX64GlideGateResolver resolver);
+
+// Where patched gates call. It lives in the executable image, below 4 GiB, so
+// a gate's rel32 reaches it.
+[[nodiscard]] std::uintptr_t LinuxX64GlideGateThunkAddress();
+
 // Continuation used only when the resolver has selected a proven byte-identical
 // guest instruction as a legacy single-step bridge.
 [[nodiscard]] std::uintptr_t LinuxX64LegacyResumeThunkAddress();
