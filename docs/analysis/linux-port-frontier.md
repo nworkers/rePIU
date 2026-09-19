@@ -17184,3 +17184,22 @@ Linux x64 safe-point tick injection is on by default (off only with
 runs, and a 180-second run drew 9,994 frames without faults. The tick counter the
 game winds back each cycle resets at the same point on both hosts, 77 seconds apart
 on Win32 and 84 on Linux. Next: per-scene timing compared.
+
+---
+
+## 2026-09-19 Task 719 — 장면별 시각: 차이는 로딩 정지와 Glide trap
+
+시간 기준 장면 표본(`REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS`)으로 두 host를 180초씩 비교했다.
+장면 순서와 평상시 swap 속도는 같고, Linux에만 swap이 1–3.6초 멈추는 로딩 구간이 다섯 곳
+있다(Win32는 한 곳 0.8초). Linux는 Glide 호출 242만 번을 전부 `ud2` trap으로 처리하고,
+Win32는 252만 번을 직접 디스패치로 처리한다. x64에는 직접 디스패치 thunk가 없다
+(`capable=false`). 다음은 Task 720, Linux x64 Glide gate 직접 디스패치.
+
+## English
+
+Time-based scene sampling (`REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS`) compared both hosts
+over 180 seconds. Scene order and ordinary swap rate match; only Linux has five
+loading stretches where swaps stop for 1–3.6 seconds (Win32 one, 0.8 s). Linux takes
+all 2.42 million Glide calls through a `ud2` trap, while Win32 dispatches 2.52 million
+directly; x64 has no direct-dispatch thunk (`capable=false`). Next: Task 720, direct
+Glide gate dispatch on Linux x64.

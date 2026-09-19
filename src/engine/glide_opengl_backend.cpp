@@ -1227,7 +1227,70 @@ bool GlideOpenGlBackend::BufferSwapOnHostThread(std::uint32_t swap_interval,
       std::getenv("REPIU_GLIDE_PIXEL_DIAG") != nullptr;
   static std::atomic<long> swap_diag_count{0};
   const long swap_index = swap_diag_count.fetch_add(1) + 1;
-  if (pixel_diagnostic_enabled && (swap_index <= 60 || swap_index % 200 == 0) &&
+  // Task 719. With REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS the sample is taken by
+  // time rather than by swap number, because the hosts swap at different rates
+  // and the same swap number is not the same moment on both. Each sample also
+  // carries a 4x4 brightness grid, which tells apart scenes whose average
+  // colour is close. The swap-numbered output below is unchanged without it.
+  static const long scene_interval_ms = [] {
+    const char *const text = std::getenv("REPIU_GLIDE_PIXEL_DIAG_INTERVAL_MS");
+    return text == nullptr ? 0L : std::max(0L, std::strtol(text, nullptr, 10));
+  }();
+  if (scene_interval_ms > 0 && logical_width_ > 0 && logical_height_ > 0) {
+    static const auto first_swap = std::chrono::steady_clock::now();
+    static long next_sample_ms = 0;
+    const long elapsed_ms = static_cast<long>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - first_swap)
+            .count());
+    if (elapsed_ms >= next_sample_ms) {
+      next_sample_ms =
+          elapsed_ms - elapsed_ms % scene_interval_ms + scene_interval_ms;
+      const int width = static_cast<int>(logical_width_);
+      const int height = static_cast<int>(logical_height_);
+      std::vector<unsigned char> pixels(static_cast<std::size_t>(width) *
+                                        height * 3U);
+      glReadBuffer(GL_BACK);
+      glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE,
+                   pixels.data());
+      std::uint64_t cell_luma[16] = {};
+      std::uint64_t cell_count[16] = {};
+      std::size_t non_black = 0;
+      std::uint64_t sum[3] = {};
+      for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+          const unsigned char *const pixel =
+              pixels.data() + (static_cast<std::size_t>(y) * width + x) * 3U;
+          const int cell = (y * 4 / height) * 4 + x * 4 / width;
+          cell_luma[cell] += (pixel[0] * 299U + pixel[1] * 587U +
+                              pixel[2] * 114U) / 1000U;
+          ++cell_count[cell];
+          if (pixel[0] > 8U || pixel[1] > 8U || pixel[2] > 8U) {
+            ++non_black;
+            sum[0] += pixel[0];
+            sum[1] += pixel[1];
+            sum[2] += pixel[2];
+          }
+        }
+      }
+      char grid[17] = {};
+      for (int cell = 0; cell < 16; ++cell) {
+        const std::uint64_t mean =
+            cell_count[cell] == 0U ? 0U : cell_luma[cell] / cell_count[cell];
+        grid[cell] = "0123456789ABCDEF"[std::min<std::uint64_t>(mean / 16U, 15U)];
+      }
+      const std::size_t denom = non_black == 0 ? 1U : non_black;
+      fprintf(stderr,
+              "[repiu-scene] t_ms=%ld swap=%ld non_black=%zu avg=%llu,%llu,%llu"
+              " grid=%s\n",
+              elapsed_ms, swap_index, non_black,
+              static_cast<unsigned long long>(sum[0] / denom),
+              static_cast<unsigned long long>(sum[1] / denom),
+              static_cast<unsigned long long>(sum[2] / denom), grid);
+    }
+  }
+  if (pixel_diagnostic_enabled && scene_interval_ms == 0 &&
+      (swap_index <= 60 || swap_index % 200 == 0) &&
       swap_index <= 4000 && logical_width_ > 0 && logical_height_ > 0) {
     const int width = static_cast<int>(logical_width_);
     const int height = static_cast<int>(logical_height_);
