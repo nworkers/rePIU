@@ -181,6 +181,9 @@ struct GuestFaultInfo
 // expects, which a caller must treat as unrecoverable rather than resume from.
 bool LoadGuestCpuContext(const void* host_context, GuestCpuContext* registers);
 bool StoreGuestCpuContext(const GuestCpuContext& registers, void* host_context);
+// Reads the native instruction pointer without reducing it to the guest ABI's
+// 32-bit Eip field. Intended for read-only signal-context diagnostics.
+[[nodiscard]] std::uintptr_t ReadHostInstructionPointer(const void* host_context);
 // Writes the native host instruction pointer without applying the guest
 // context's 32-bit register contract.
 bool StoreHostInstructionPointer(std::uintptr_t address, void* host_context);

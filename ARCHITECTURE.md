@@ -425,6 +425,21 @@ Linux signal handler. Since a Linux x64 host RIP exceeds the guest ABI width, th
 current census host entries are supporting distribution evidence, not symbolizable
 native call sites.
 
+Task 722부터 Linux x64 opt-in census는 signal `ucontext_t`의 full native RIP를
+`NativePhaseSample::native_instruction_pointer`에 별도로 보존합니다. 이는 고정 32-bit
+guest ABI를 바꾸지 않으며 read-only callback의 no-write-back 계약도 유지합니다.
+`REPIU_LINUX_X64_NATIVE_SAMPLE_TRACE=1`일 때만 poll thread가 capture 뒤에 경과 시간,
+full RIP, guest EIP 및 cache mapping 여부를 한 줄로 기록합니다. formatting과 I/O는 signal
+handler 밖에서만 수행하므로 trace는 진단용이며 기본 실행 및 Win32 x86 동작은 바꾸지 않습니다.
+
+Starting with Task 722, the Linux x64 opt-in census retains the signal `ucontext_t`'s
+full native RIP separately in `NativePhaseSample::native_instruction_pointer`. This
+does not alter the fixed 32-bit guest ABI and preserves the read-only callback's
+no-write-back contract. Only with `REPIU_LINUX_X64_NATIVE_SAMPLE_TRACE=1` does the
+poll thread write one post-capture line with elapsed time, full RIP, guest EIP, and
+cache-mapping status. Formatting and I/O remain outside the signal handler, so the
+trace is diagnostic only and leaves default execution and Win32 x86 unchanged.
+
 Linux x64 native-write telemetry는 Linux SysV x64 dispatch frame ABI에 종속되므로
 공용 `repiu_exe` source 목록이 아니라 `UNIX AND NOT EMSCRIPTEN`이며 host pointer가
 64-bit인 target에만 편성합니다. Win32 x86은 이 translation unit과 Linux x64 frame

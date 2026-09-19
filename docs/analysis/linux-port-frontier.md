@@ -17285,3 +17285,85 @@ Task 720's loading wait is therefore still unconfirmed. The next frontier is to
 preserve full host RIP and monotonic sample time in separate observation fields inside
 the signal callback, then dump only the time-ordered stall samples. That information
 must not be mixed into the guest ABI context.
+
+---
+
+## 2026-09-19 Task 722 — Linux x64 full RIP 정지 trace
+
+### 확인됨
+
+Task 722는 Linux `ucontext_t`에서 `REG_RIP`를 `uintptr_t`로 읽는 read-only helper를
+추가하고, 이를 guest ABI의 `Eip`와 별개인 `NativePhaseSample::native_instruction_pointer`에
+보존했습니다. Linux x64의 opt-in capture만 context callback을 사용하며 callback은 계속
+false를 반환하므로 native context를 write-back하지 않습니다. core probe는 host RIP의 상위
+32-bit marker와 store 뒤의 guest EIP 하위 32-bit가 함께 유지되는 것을 확인합니다.
+
+`REPIU_LINUX_X64_NATIVE_SAMPLE_TRACE=1`은 성공 capture 뒤 poll thread에서만
+`elapsed_ms`, full RIP, guest EIP, mapping 여부를 출력합니다. 500ms census `pumpit2a`
+관찰은 49 capture, 41 distinct, overflow 0, failure 0으로 timeout immediate-exit까지
+완료했습니다. trace의 RIP는 0x20068B6A, 0x7F82A5E43E4F, 0x20120793처럼 전체 폭으로
+기록됐으며 elapsed time은 500ms부터 24,500ms까지 단조 증가했습니다.
+
+### 해석 — 아직 인과관계는 미확정
+
+Task 720에서 보인 첫 로딩 정지 창과 겹치는 6.5–9초 표본은 단일 guest busy loop가 아니었습니다.
+shared-library 범위 RIP, cache-mapped guest EIP `0x0103F139`, 그리고 executable 내부의
+`GlideOpenGlBackend::SpinForRendezvousHint` 및 LFB encode/fault-handler 인접 위치가
+혼재했습니다. `SpinForRendezvousHint`는 host-command rendezvous의 짧은 hint spin이므로,
+이 관찰은 renderer/host-command rendezvous와 LFB 처리 영역을 다음 조사 대상으로 좁히지만
+정지 원인을 증명하지는 않습니다.
+
+100ms trace 출력은 약 25초에서 `repiu-fault`를 노출했습니다. 동일한 100ms census에서
+trace를 끈 실행은 246 capture, 152 distinct, overflow 0, failure 0으로 약 17초 timeout
+immediate-exit까지 fault 없이 완료했고, 500ms trace도 완료했습니다. 그러므로 현재 증거는
+고빈도 diagnostic output이 timing을 교란해 잠재 문제를 드러낸다는 것이며, callback 회귀나
+일반 실행 회귀로 단정할 수 없습니다. 고빈도 trace는 원인 분석 전에는 제품 검증 수단으로
+사용하지 않습니다.
+
+### 검증
+
+- Linux x64 Debug `repiu_core_probe`: 30/30 passed
+- Win32 x86 Debug 전체 빌드 성공 및 `repiu_core_probe`: 28/28 passed
+- Linux x64 500ms trace `pumpit2a`: full RIP 및 monotonic elapsed time 확인, capture failure 0
+
+## English
+
+### Confirmed
+
+Task 722 adds a read-only helper that reads `REG_RIP` from Linux `ucontext_t` as a
+`uintptr_t`, retaining it in `NativePhaseSample::native_instruction_pointer` separately
+from guest-ABI `Eip`. Only Linux x64 opt-in capture uses the context callback, which
+still returns false and never writes native context back. The core probe verifies that
+the upper 32-bit host-RIP marker remains alongside the guest-EIP low 32 bits after a
+store.
+
+`REPIU_LINUX_X64_NATIVE_SAMPLE_TRACE=1` writes elapsed milliseconds, full RIP, guest
+EIP, and mapping status only on the poll thread after a successful capture. A 500ms
+`pumpit2a` census completed through timeout immediate-exit with 49 captures, 41
+distinct positions, zero overflow, and zero failures. The trace retained full-width
+RIPs such as 0x20068B6A, 0x7F82A5E43E4F, and 0x20120793; elapsed time increased
+monotonically from 500ms through 24,500ms.
+
+### Interpretation — causality still unresolved
+
+Samples overlapping Task 720's first loading-stall window, from 6.5 to 9 seconds,
+were not one guest busy loop. They mix shared-library-range RIPs, cache-mapped guest
+EIP `0x0103F139`, and executable locations adjacent to
+`GlideOpenGlBackend::SpinForRendezvousHint`, LFB encoding, and fault handling.
+`SpinForRendezvousHint` is a short host-command rendezvous hint spin, so the evidence
+narrows the next investigation to renderer/host-command rendezvous and LFB work; it
+does not prove the stall's cause.
+
+A 100ms trace output run exposed `repiu-fault` at about 25 seconds. The equivalent
+100ms census with trace disabled completed fault-free through roughly 17-second timeout
+immediate-exit (246 captures, 152 distinct, zero overflow, zero failures), and the
+500ms trace completed too. Current evidence therefore says high-rate diagnostic output
+perturbs timing and exposes a latent problem; it does not establish a callback or
+normal-execution regression. Do not use high-rate trace as product verification before
+the cause is understood.
+
+### Verification
+
+- Linux x64 Debug `repiu_core_probe`: 30/30 passed.
+- Full Win32 x86 Debug build and `repiu_core_probe`: 28/28 passed.
+- Linux x64 500ms traced `pumpit2a`: full RIP, monotonic elapsed time, zero capture failures.

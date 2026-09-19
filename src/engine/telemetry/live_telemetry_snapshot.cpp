@@ -835,6 +835,9 @@ HostPollOutcome PollThreadUntilExit(const repiu::platform::HostThread& thread,
                         census_sample.host_call_site,
                         census_sample.host_scan_failed);
                 }
+                WriteLinuxX64NativeSampleTraceLine(
+                    census_sample,
+                    static_cast<std::uint32_t>(current_tick - start_tick));
             }
             else
             {

@@ -29,6 +29,9 @@ struct NativePhaseSample
     std::uint32_t esp = 0;
     std::uint32_t ebp = 0;
     std::uint32_t eflags = 0;
+    // Full native RIP is separate from the fixed 32-bit guest EIP ABI. It is
+    // filled only by the Linux x64 context-callback sampling path.
+    std::uintptr_t native_instruction_pointer = 0;
     // Latest lightweight-VEH transfer endpoints, filled in by the caller:
     // they attribute a host-code (unmapped) sample to a guest location.
     std::uint32_t last_indirect_source = 0;
@@ -86,6 +89,12 @@ void RecordNativePhaseSample(const NativePhaseSample& sample,
 void WriteNativePhaseSampleLine(
     const NativePhaseSample& sample,
     const NativePhaseSamplerState& state,
+    std::uint32_t elapsed_milliseconds);
+
+// Linux x64-only opt-in per-census trace. Formatting and I/O occur on the poll
+// thread, never inside the signal callback.
+void WriteLinuxX64NativeSampleTraceLine(
+    const NativePhaseSample& sample,
     std::uint32_t elapsed_milliseconds);
 
 }  // namespace repiu::engine

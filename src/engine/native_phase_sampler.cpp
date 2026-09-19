@@ -93,8 +93,10 @@ struct NativePhaseCaptureRequest
 // The AOT address mapping is deliberately *not* here: it is a pure function of
 // the sampled EIP and can degrade to a scan of a hundred thousand entries, so
 // it runs after the target is moving again.
-bool CaptureNativePhaseRegisters(repiu::platform::GuestCpuContext* registers,
-                                 void* user_data)
+bool CaptureNativePhaseRegistersImpl(
+    repiu::platform::GuestCpuContext* registers,
+    void* user_data,
+    void* host_context)
 {
     auto* request = static_cast<NativePhaseCaptureRequest*>(user_data);
     NativePhaseSample* sample = request->sample;
@@ -109,6 +111,13 @@ bool CaptureNativePhaseRegisters(repiu::platform::GuestCpuContext* registers,
     sample->esp = registers->Esp;
     sample->ebp = registers->Ebp;
     sample->eflags = registers->EFlags;
+
+#if !defined(_WIN32) && defined(__x86_64__)
+    sample->native_instruction_pointer =
+        repiu::platform::ReadHostInstructionPointer(host_context);
+#else
+    (void)host_context;
+#endif
 
     // The Linux x64 callback runs inside a signal handler. The census needs the
     // interrupted guest/cache EIP, not a host stack walk; keep process_vm_readv
@@ -128,6 +137,20 @@ bool CaptureNativePhaseRegisters(repiu::platform::GuestCpuContext* registers,
     }
 #endif
     return false;
+}
+
+bool CaptureNativePhaseRegisters(repiu::platform::GuestCpuContext* registers,
+                                 void* user_data)
+{
+    return CaptureNativePhaseRegistersImpl(registers, user_data, nullptr);
+}
+
+bool CaptureNativePhaseRegistersWithContext(
+    repiu::platform::GuestCpuContext* registers,
+    void* user_data,
+    void* host_context)
+{
+    return CaptureNativePhaseRegistersImpl(registers, user_data, host_context);
 }
 #endif
 
@@ -179,11 +202,16 @@ bool CaptureNativePhaseSample(const repiu::platform::HostThread& thread,
     mark_stage(1);
     repiu::platform::ThreadInterruptFailure failure =
         repiu::platform::ThreadInterruptFailure::kNone;
-    if (!repiu::platform::InterruptHostThread(thread,
-                                              &CaptureNativePhaseRegisters,
-                                              &request,
-                                              kSampleTimeoutMilliseconds,
-                                              &failure))
+#if !defined(_WIN32) && defined(__x86_64__)
+    const bool interrupted = repiu::platform::InterruptHostThreadWithContext(
+        thread, &CaptureNativePhaseRegistersWithContext, &request,
+        kSampleTimeoutMilliseconds, &failure);
+#else
+    const bool interrupted = repiu::platform::InterruptHostThread(
+        thread, &CaptureNativePhaseRegisters, &request,
+        kSampleTimeoutMilliseconds, &failure);
+#endif
+    if (!interrupted)
     {
         sample->failure_stage = 1;
         // Reported where the Windows error used to go: "it failed" is not a
@@ -350,6 +378,43 @@ void WriteNativePhaseSampleLine(
         length < static_cast<int>(sizeof(buffer)) ? length
                                                   : sizeof(buffer) - 1U);
     repiu::platform::WriteHostErrorStream(buffer, byte_count);
+}
+
+void WriteLinuxX64NativeSampleTraceLine(
+    const NativePhaseSample& sample,
+    const std::uint32_t elapsed_milliseconds)
+{
+#if !defined(_WIN32) && defined(__x86_64__)
+    static const bool enabled = [] {
+        const char* const value =
+            std::getenv("REPIU_LINUX_X64_NATIVE_SAMPLE_TRACE");
+        return value != nullptr && value[0] == '1' && value[1] == '\0';
+    }();
+    if (!enabled || !sample.captured ||
+        sample.native_instruction_pointer == 0U)
+    {
+        return;
+    }
+    char buffer[192] = {};
+    const int length = std::snprintf(
+        buffer, sizeof(buffer),
+        "[repiu-x64-sample] elapsed_ms=%lu native_rip=0x%llX "
+        "guest_eip=0x%08X mapped=%u\n",
+        static_cast<unsigned long>(elapsed_milliseconds),
+        static_cast<unsigned long long>(sample.native_instruction_pointer),
+        sample.guest_eip, sample.mapped ? 1U : 0U);
+    if (length <= 0)
+    {
+        return;
+    }
+    const std::size_t byte_count = static_cast<std::size_t>(
+        length < static_cast<int>(sizeof(buffer)) ? length
+                                                  : sizeof(buffer) - 1U);
+    repiu::platform::WriteHostErrorStream(buffer, byte_count);
+#else
+    (void)sample;
+    (void)elapsed_milliseconds;
+#endif
 }
 
 }  // namespace repiu::engine
