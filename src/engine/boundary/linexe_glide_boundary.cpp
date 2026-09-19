@@ -3816,6 +3816,15 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                 return fail_lock("info-write-failure");
             }
 
+            if (type == repiu::hle::kGlideLfbWriteOnly &&
+                GlideLfbWriteFootprintEnabled())
+            {
+                BeginGlideLfbWriteFootprint(
+                    &context->glide_lfb_write_footprint,
+                    context->glide_lfb_surface.pixels(),
+                    context->glide_lfb_surface.byte_count(), width, height);
+            }
+
             ++context->glide_lfb_lock_count;
             if (context->glide_lfb_lock_count <= 4U)
             {
@@ -3843,6 +3852,15 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
             if (context->glide_lfb_surface.locked() &&
                 type == repiu::hle::kGlideLfbWriteOnly)
             {
+                if (GlideLfbWriteFootprintEnabled())
+                {
+                    CompareGlideLfbWriteFootprint(
+                        &context->glide_lfb_write_footprint,
+                        context->glide_lfb_surface.pixels(),
+                        context->glide_lfb_surface.byte_count(),
+                        context->glide_lfb_surface.width(),
+                        context->glide_lfb_surface.height());
+                }
                 {
                     // Did the guest actually write into the surface we handed it? A
                     // non-zero count proves the lfbPtr round-trip works end to end and

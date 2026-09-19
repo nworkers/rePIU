@@ -2162,6 +2162,22 @@ void PrintExecutionAttempt(
                 lfb.max_total_cycles);
         }
         {
+            const auto& footprint = attempt.glide_lfb_write_footprint;
+            logger.info(
+                "Win32 Glide LFB write census enabled/locks/compared/unchanged/"
+                "partial-extent/full-extent/all-pixels/malformed: {}/{}/{}/{}/{}/{}/{}/{}",
+                footprint.enabled, footprint.write_lock_count,
+                footprint.compared_lock_count, footprint.unchanged_lock_count,
+                footprint.partial_extent_lock_count,
+                footprint.full_extent_lock_count,
+                footprint.all_pixels_changed_lock_count,
+                footprint.malformed_baseline_count);
+            logger.info(
+                "Win32 Glide LFB write census changed/max-changed/max-bbox pixels: {}/{}/{}",
+                footprint.changed_pixel_count, footprint.max_changed_pixel_count,
+                footprint.max_bounding_box_pixel_count);
+        }
+        {
             const auto& census = attempt.glide_setter_census;
             logger.info(
                 "Win32 Glide setter census enabled/entries/calls/first/same/"

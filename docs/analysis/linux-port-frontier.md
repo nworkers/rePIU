@@ -17474,3 +17474,72 @@ partial, zero-filling, reusing stale staging, or skipping readback without proof
 erase already rendered pixels.
 
 Linux x64 core probe passed 30/30; full Win32 x86 build and core probe passed 28/28.
+
+---
+
+## 2026-09-20 Task 725 — Linux x64 LFB write footprint census
+
+### 확인됨
+
+Task 725는 기본 OFF `REPIU_GLIDE_LFB_WRITE_CENSUS=1|on|true`를 추가했습니다. 성공한
+write `grLfbLock`이 guest에 `lfbPtr`을 반환하기 직전, seeded RGB565 staging surface를 private
+host baseline으로 복사합니다. 대응 `grLfbUnlock`은 기존 decode/present 전에 baseline과 pixel 단위로
+비교하여 unchanged, partial extent, full extent, every-pixel-changed와 changed pixel 수를 집계합니다.
+profile OFF에서는 baseline 할당, 복사, 비교를 하지 않으며 guest ABI, staging surface, decode/present
+호출 순서 및 반환값을 변경하지 않습니다.
+
+30초 Linux x64 `pumpit2a` bounded run은 304 write lock을 비교했습니다. 19 lock은 byte-difference가
+없고, 285 lock은 partial extent였으며 full extent와 all-pixels-changed는 모두 0이었습니다. 누적
+changed pixel은 21,659,082, 한 lock 최대 changed pixel은 115,200(640×480의 37.5%), 최대 bounding box는
+306,081 pixels(화면의 약 99.6%)였습니다. 같은 값을 다시 쓰는 guest store는 baseline과 같으므로 이
+census에 나타나지 않습니다.
+
+### 결론과 다음 frontier
+
+관찰된 byte 변화는 대다수 lock이 full-surface overwrite가 아님을 보이지만, 거의 전체 화면을 가로지르는
+bounding box와 동일값 재기록의 비가시성 때문에 이를 full readback 생략 근거로 사용하면 안 됩니다.
+다음 frontier는 guest store 자체를 보존적으로 추적하거나, 원본 호출부의 write 범위·preceding draw
+소유권을 검증하여 어떤 lock에서 이전 framebuffer pixel이 필요 없는지 증명하는 것입니다.
+
+### 검증 상태
+
+Linux x64 Debug `repiu`와 core probe는 재빌드됐고 core probe는 30/30 통과했습니다. bounded run은
+timeout immediate-exit와 fault 없음으로 summary를 남겼습니다. Win32 x86 Debug 전체 build와 전용
+`repiu_aot_probe --glide-lfb-write-footprint`는 통과했습니다. 전체 build 뒤 Win32 core probe는 기존
+`mode16_push_writes=false` synthetic group 하나로 28개 중 1개 실패했습니다. LFB profile의 결정적
+probe와 Linux core는 통과했지만, 이 Win32 core failure는 별도 재현·수정 대상으로 남깁니다.
+
+## English
+
+### Confirmed
+
+Task 725 adds default-off `REPIU_GLIDE_LFB_WRITE_CENSUS=1|on|true`. Immediately before a
+successful write `grLfbLock` returns its `lfbPtr`, it copies the seeded RGB565 staging
+surface into a private host baseline. The matching `grLfbUnlock` compares it per pixel
+before the existing decode/present path and aggregates unchanged, partial-extent,
+full-extent, every-pixel-changed, and changed-pixel results. When disabled it neither
+allocates nor copies nor compares a baseline, and it changes no guest ABI, staging surface,
+decode/present order, or return value.
+
+A 30-second Linux x64 bounded `pumpit2a` run compared 304 write locks. Nineteen locks had
+no byte difference and 285 had partial extent; full extent and all-pixels-changed were both
+zero. Total changed pixels were 21,659,082; a single lock changed at most 115,200 pixels
+(37.5% of 640×480), while the maximum bounding box covered 306,081 pixels (about 99.6% of
+the screen). A guest store that rewrites an identical value remains invisible to this census.
+
+### Conclusion and next frontier
+
+The observed byte changes show that most locks are not full-surface overwrites, but a
+near-full-screen bounding box and invisible identical rewrites mean this is not evidence to
+skip full readback. The next frontier is conservatively tracking guest stores, or proving
+the write range and preceding-draw ownership of original call sites, to establish when a
+lock cannot need previous framebuffer pixels.
+
+### Verification status
+
+Linux x64 Debug `repiu` and core probe were rebuilt; the core probe passed 30/30. The
+bounded run reached timeout immediate-exit without a fault and emitted its summary. The full
+Win32 x86 Debug build and dedicated `repiu_aot_probe --glide-lfb-write-footprint` passed.
+After the full build, the Win32 core probe failed one of 28 groups: the pre-existing
+`mode16_push_writes=false` synthetic group. The LFB deterministic probe and Linux core pass,
+but the Win32 core failure remains a separate reproduction and repair target.

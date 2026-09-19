@@ -453,6 +453,21 @@ the profile does not alter OpenGL call order, guest memory, or lock return value
 After shutdown, the `MinimalExecutionAttempt` snapshot and final report expose success
 and failure counts, phase aggregate/maximum cycles, and backward-counter clamps.
 
+Task 725는 별도 opt-in `GlideLfbWriteFootprintProfile`을 추가합니다.
+`REPIU_GLIDE_LFB_WRITE_CENSUS=1|on|true`일 때 성공한 write lock은 seeded RGB565 staging
+bytes를 private host storage에 복사하고, 대응 unlock은 기존 decode/present 전에 pixel을
+비교합니다. report는 unchanged, partial-extent, full-extent, every-pixel-changed lock과
+누적/최대 changed·bounding-box pixel을 구분합니다. 이는 byte-difference 관찰일 뿐이므로
+guest가 같은 값을 다시 쓴 경우는 보이지 않으며, 이 결과만으로 필수 readback을 생략할 수 없습니다.
+
+Task 725 adds a separate, opt-in `GlideLfbWriteFootprintProfile`. With
+`REPIU_GLIDE_LFB_WRITE_CENSUS=1|on|true`, a successful write lock copies its seeded
+RGB565 staging bytes into private host storage and its matching unlock compares pixels
+before the existing decode/present path. The report distinguishes unchanged, partial-
+extent, full-extent, and every-pixel-changed locks, plus aggregate and maximum changed/
+bounding-box pixels. This is byte-difference evidence only: an identical guest rewrite
+is invisible, so it cannot by itself justify skipping the required readback.
+
 Linux x64 native-write telemetry는 Linux SysV x64 dispatch frame ABI에 종속되므로
 공용 `repiu_exe` source 목록이 아니라 `UNIX AND NOT EMSCRIPTEN`이며 host pointer가
 64-bit인 target에만 편성합니다. Win32 x86은 이 translation unit과 Linux x64 frame
