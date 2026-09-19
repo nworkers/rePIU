@@ -17423,3 +17423,54 @@ not general rendezvous spinning. A further observation also enabling
 `REPIU_GLIDE_SWAP_TIME_PROFILE=1` exceeded its bounded observation time after initial
 loader output and was interrupted; because it has no complete summary, none of its
 numbers are used. Its exit delay remains a separate reproduction target.
+
+---
+
+## 2026-09-19 Task 724 — Linux x64 LFB lock 단계 timing
+
+### 확인됨
+
+Task 724는 기본 OFF `REPIU_GLIDE_LFB_TIME_PROFILE=1|on|true` 계측을 추가해
+`grLfbLock` staging seed의 `ReadbackFramebuffer`와 `EncodeRgba8ToGlideLfb565`를
+별도로 기록합니다. 계측은 성공/실패, 누적/최대 cycles, 역행 counter clamp만 관찰하며
+OpenGL 호출 순서, staging memory, guest ABI 또는 lock 반환값을 바꾸지 않습니다.
+
+30초 Linux x64 `pumpit2a` run은 LFB lock 304회 모두 readback 및 encode에 성공했고 clamp와
+실패는 0이었습니다. seed 총 10,454,401,712 cycles 중 readback은 6,496,580,582 cycles
+(62.1%), encode는 3,957,821,130 cycles(37.9%)였습니다. 최대 단일 lock은 readback
+34,962,404, encode 17,475,576, total 47,920,248 cycles였습니다.
+
+### 결론과 다음 frontier
+
+`grLfbLock`의 큰 비용은 CPU 565 packing보다 GPU→CPU framebuffer readback에 더 많이
+집중됩니다. 따라서 다음 작업은 full framebuffer readback을 피할 수 있는 정확한 dirty/ownership
+조건을 원본 Glide 의미와 비교해 증명하는 것입니다. write lock이 부분 쓰기를 할 수 있으므로
+증거 없이 zero-fill, 오래된 staging 재사용, 또는 readback 생략을 적용하면 이미 그려진 픽셀이
+사라질 수 있습니다.
+
+Linux x64 core probe 30/30과 Win32 x86 전체 빌드/core probe 28/28이 통과했습니다.
+
+## English
+
+### Confirmed
+
+Task 724 adds default-off `REPIU_GLIDE_LFB_TIME_PROFILE=1|on|true` instrumentation that
+records `ReadbackFramebuffer` and `EncodeRgba8ToGlideLfb565` separately in the
+`grLfbLock` staging seed. It observes only success/failure, aggregate/maximum cycles,
+and backward-counter clamps; it does not alter OpenGL call order, staging memory, guest
+ABI, or lock return values.
+
+A 30-second Linux x64 `pumpit2a` run completed all 304 LFB locks with successful
+readback and encoding, zero failures, and zero clamps. Of 10,454,401,712 seed cycles,
+readback consumed 6,496,580,582 (62.1%) and encoding 3,957,821,130 (37.9%). The maximum
+single lock used 34,962,404 readback, 17,475,576 encode, and 47,920,248 total cycles.
+
+### Conclusion and next frontier
+
+`grLfbLock` cost is more concentrated in GPU-to-CPU framebuffer readback than CPU 565
+packing. The next task is to prove precise dirty/ownership conditions under original
+Glide semantics that can avoid a full framebuffer readback. Because a write lock can be
+partial, zero-filling, reusing stale staging, or skipping readback without proof can
+erase already rendered pixels.
+
+Linux x64 core probe passed 30/30; full Win32 x86 build and core probe passed 28/28.

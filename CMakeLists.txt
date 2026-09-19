@@ -314,6 +314,7 @@ target_sources(repiu_exe
         src/engine/telemetry/glide_gate_timing.cpp
         src/engine/telemetry/glide_ordinal_timing.cpp
         src/engine/telemetry/glide_buffer_swap_timing.cpp
+        src/engine/telemetry/glide_lfb_timing.cpp
         src/engine/telemetry/glide_setter_state_model.cpp
         src/engine/telemetry/glide_setter_state_census.cpp
         src/engine/telemetry/glide_async_present.cpp
@@ -790,6 +791,7 @@ if(WIN32)
         src/tools/aot_probe/glide_gate_timing_probe.cpp
         src/tools/aot_probe/glide_ordinal_timing_probe.cpp
         src/tools/aot_probe/glide_buffer_swap_timing_probe.cpp
+        src/tools/aot_probe/glide_lfb_timing_probe.cpp
         src/tools/aot_probe/glide_setter_state_census_probe.cpp
         src/tools/aot_probe/glide_async_present_probe.cpp
         src/tools/aot_probe/glide_draw_batch_probe.cpp

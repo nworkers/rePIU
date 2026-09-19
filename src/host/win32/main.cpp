@@ -2147,6 +2147,21 @@ void PrintExecutionAttempt(
                 swap.observed_sdl_interval);
         }
         {
+            const auto& lfb = attempt.glide_lfb_timing;
+            logger.info(
+                "Win32 Glide LFB timing enabled/locks/read-ok/read-fail/"
+                "encode-ok/encode-fail/clamped: {}/{}/{}/{}/{}/{}/{}",
+                lfb.enabled, lfb.lock_count, lfb.readback_success_count,
+                lfb.readback_failure_count, lfb.encode_success_count,
+                lfb.encode_failure_count, lfb.clamped_sample_count);
+            logger.info(
+                "Win32 Glide LFB timing cycles readback/encode/total/"
+                "max-readback/max-encode/max-total: {}/{}/{}/{}/{}/{}",
+                lfb.readback_cycles, lfb.encode_cycles, lfb.total_cycles,
+                lfb.max_readback_cycles, lfb.max_encode_cycles,
+                lfb.max_total_cycles);
+        }
+        {
             const auto& census = attempt.glide_setter_census;
             logger.info(
                 "Win32 Glide setter census enabled/entries/calls/first/same/"

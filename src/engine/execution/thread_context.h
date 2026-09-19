@@ -17,6 +17,7 @@
 #include "repiu/engine/glide_lfb_guest_storage.h"
 #include "repiu/engine/glide_opengl_backend.h"
 #include "repiu/engine/glide_ordinal_timing.h"
+#include "repiu/engine/glide_lfb_timing.h"
 #include "repiu/engine/glide_setter_state_census.h"
 #include "repiu/engine/glide_draw_batch.h"
 #include "repiu/engine/glide_setter_state_cache.h"
@@ -745,6 +746,8 @@ struct ThreadContext
     std::array<std::string, 256> glide_call_names = {};
     // Task 353: decoded gate and existing backend rendezvous time by ordinal.
     GlideOrdinalTimingProfile glide_ordinal_timing;
+    // Task 724: guest-thread LFB seed timing; read after guest shutdown only.
+    GlideLfbTimingProfile glide_lfb_timing;
     // Task 364: exact repeated-versus-changing state-setter arguments. Guest
     // thread only, and observation only — it never changes a dispatch result.
     GlideSetterCensusProfile glide_setter_census;

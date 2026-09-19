@@ -440,6 +440,19 @@ poll thread write one post-capture line with elapsed time, full RIP, guest EIP, 
 cache-mapping status. Formatting and I/O remain outside the signal handler, so the
 trace is diagnostic only and leaves default execution and Win32 x86 unchanged.
 
+Task 724부터 `grLfbLock`의 staging seed는 `GlideLfbTimingProfile`로 readback과
+RGBA8→565 encode를 분리 관찰할 수 있습니다. `REPIU_GLIDE_LFB_TIME_PROFILE=1|on|true`일
+때만 gate handler가 cycle counter를 읽으며, profile은 OpenGL 호출 순서·guest memory·lock
+반환값을 바꾸지 않습니다. 종료 뒤 `MinimalExecutionAttempt` snapshot과 final report가
+성공·실패 수, 각 단계 누적/최대 cycles 및 역행 counter clamp 수를 보고합니다.
+
+Starting with Task 724, `GlideLfbTimingProfile` can separately observe readback and
+RGBA8-to-565 encoding in the `grLfbLock` staging seed. Only with
+`REPIU_GLIDE_LFB_TIME_PROFILE=1|on|true` does the gate handler read cycle counters;
+the profile does not alter OpenGL call order, guest memory, or lock return values.
+After shutdown, the `MinimalExecutionAttempt` snapshot and final report expose success
+and failure counts, phase aggregate/maximum cycles, and backward-counter clamps.
+
 Linux x64 native-write telemetry는 Linux SysV x64 dispatch frame ABI에 종속되므로
 공용 `repiu_exe` source 목록이 아니라 `UNIX AND NOT EMSCRIPTEN`이며 host pointer가
 64-bit인 target에만 편성합니다. Win32 x86은 이 translation unit과 Linux x64 frame

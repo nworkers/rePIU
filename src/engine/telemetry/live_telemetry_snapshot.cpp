@@ -1342,6 +1342,8 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         SnapshotGlideOrdinalTiming(context.glide_ordinal_timing);
     attempt->glide_buffer_swap_timing =
         context.glide_backend.glide_buffer_swap_timing();
+    attempt->glide_lfb_timing =
+        SnapshotGlideLfbTiming(context.glide_lfb_timing);
     attempt->glide_setter_census =
         SnapshotGlideSetterCensus(context.glide_setter_census);
     attempt->glide_setter_phase_timing =

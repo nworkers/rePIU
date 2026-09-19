@@ -3713,12 +3713,23 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                 // rest untouched. Handing out a zero-filled buffer instead makes unlock
                 // blit black over everything already drawn -- observed erasing the
                 // triangles submitted immediately before the lock.
+                auto* const lfb_timing = GlideLfbTimingProfileEnabled()
+                    ? &context->glide_lfb_timing
+                    : nullptr;
+                const std::uint64_t seed_entry_cycles = lfb_timing != nullptr
+                    ? ReadGlideLfbTimingCycles()
+                    : 0U;
                 std::vector<std::uint8_t> rgba8;
                 const bool read_ok = context->glide_backend.ReadbackFramebuffer(
                     width, height, &rgba8);
+                const std::uint64_t readback_end_cycles = lfb_timing != nullptr
+                    ? ReadGlideLfbTimingCycles()
+                    : 0U;
                 bool encode_ok = false;
+                bool encode_attempted = false;
                 if (read_ok)
                 {
+                    encode_attempted = true;
                     const std::uint32_t lfb_color_format =
                         type == repiu::hle::kGlideLfbWriteOnly
                             ? context->glide_state.lfb_write_color_format
@@ -3729,6 +3740,12 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                         context->glide_lfb_surface.pixels(),
                         context->glide_lfb_surface.byte_count());
                 }
+                const std::uint64_t encode_end_cycles = lfb_timing != nullptr
+                    ? ReadGlideLfbTimingCycles()
+                    : 0U;
+                RecordGlideLfbTiming(
+                    lfb_timing, read_ok, encode_attempted, encode_ok,
+                    seed_entry_cycles, readback_end_cycles, encode_end_cycles);
                 static long seed_log_count = 0;
                 const long seed_index = repiu::platform::AtomicIncrement(&seed_log_count);
                 if (seed_index <= 4)

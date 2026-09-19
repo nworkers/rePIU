@@ -12,6 +12,7 @@
 #include "repiu/engine/execution_time_profile.h"
 #include "repiu/engine/aot_worker_timing.h"
 #include "repiu/engine/glide_buffer_swap_timing.h"
+#include "repiu/engine/glide_lfb_timing.h"
 #include "repiu/engine/glide_gate_timing.h"
 #include "repiu/engine/aot_return_stage_profile.h"
 #include "repiu/engine/glide_ordinal_timing.h"
@@ -713,6 +714,8 @@ struct MinimalExecutionAttempt
     GlideOrdinalTimingSnapshot glide_ordinal_timing;
     // Task 354: guest grBufferSwap host work split around SDL presentation.
     GlideBufferSwapTimingSnapshot glide_buffer_swap_timing;
+    // Task 724: grLfbLock staging seed split into readback and 565 encoding.
+    GlideLfbTimingSnapshot glide_lfb_timing;
     // Task 364: repeated-versus-changing state-setter arguments, and the
     // OpenGL interval of the two leading setters split by phase.
     GlideSetterCensusSnapshot glide_setter_census;
