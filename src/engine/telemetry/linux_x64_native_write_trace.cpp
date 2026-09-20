@@ -3,6 +3,7 @@
 #if !defined(_WIN32) && defined(__x86_64__)
 
 #include "../cpu_emul/guest_memory_access.h"
+#include "repiu/engine/glide_lfb_native_store_census.h"
 #include "repiu/engine/guest_write_trace.h"
 
 #include <Zydis.h>
@@ -141,8 +142,9 @@ bool DecodeNativeMemoryWrite(
 extern "C" void RepiuLinuxX64NativeMemoryWriteTrace(
     repiu::platform::LinuxX64AotDispatchFrame* const frame)
 {
-    if (frame == nullptr ||
-        !repiu::engine::GuestWriteTraceNativeObserverEnabled())
+    const bool legacy_trace = repiu::engine::GuestWriteTraceNativeObserverEnabled();
+    const bool lfb_census = repiu::engine::GlideLfbNativeStoreCensusEnabled();
+    if (frame == nullptr || (!legacy_trace && !lfb_census))
     {
         return;
     }
@@ -161,6 +163,12 @@ extern "C" void RepiuLinuxX64NativeMemoryWriteTrace(
     std::uint32_t decoded_byte_count = 0U;
     const bool decoded = DecodeNativeMemoryWrite(
         *frame, &decoded_destination, &decoded_byte_count);
+    if (lfb_census && context != nullptr)
+    {
+        repiu::engine::RecordGlideLfbNativeStoreCensus(
+            &context->glide_lfb_native_store_census, decoded,
+            decoded_destination, decoded_byte_count);
+    }
     const bool matches = decoded && repiu::engine::GuestWriteTraceMatches(
         decoded_destination, decoded_byte_count);
     if (NativeMemoryWriteTraceVerboseEnabled() &&

@@ -3824,6 +3824,14 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                     context->glide_lfb_surface.pixels(),
                     context->glide_lfb_surface.byte_count(), width, height);
             }
+            if (type == repiu::hle::kGlideLfbWriteOnly &&
+                GlideLfbNativeStoreCensusEnabled())
+            {
+                BeginGlideLfbNativeStoreCensus(
+                    &context->glide_lfb_native_store_census, staging_pointer,
+                    static_cast<std::uint32_t>(
+                        context->glide_lfb_surface.byte_count()));
+            }
 
             ++context->glide_lfb_lock_count;
             if (context->glide_lfb_lock_count <= 4U)
@@ -3852,6 +3860,11 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
             if (context->glide_lfb_surface.locked() &&
                 type == repiu::hle::kGlideLfbWriteOnly)
             {
+                if (GlideLfbNativeStoreCensusEnabled())
+                {
+                    EndGlideLfbNativeStoreCensus(
+                        &context->glide_lfb_native_store_census);
+                }
                 if (GlideLfbWriteFootprintEnabled())
                 {
                     CompareGlideLfbWriteFootprint(

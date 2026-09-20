@@ -31,6 +31,7 @@
 #include "glide_buffer_swap_timing_probe.h"
 #include "glide_lfb_timing_probe.h"
 #include "glide_lfb_write_footprint_probe.h"
+#include "glide_lfb_native_store_census_probe.h"
 #include "glide_setter_state_census_probe.h"
 #include "glide_async_present_probe.h"
 #include "glide_draw_batch_probe.h"
@@ -645,6 +646,10 @@ int main(int argc, char** argv)
     {
         return repiu::tools::RunGlideLfbWriteFootprintProbe() ? 0 : 1;
     }
+    if (argc == 2 && std::strcmp(argv[1], "--glide-lfb-native-store-census") == 0)
+    {
+        return repiu::tools::RunGlideLfbNativeStoreCensusProbe() ? 0 : 1;
+    }
     if (argc == 2 && std::strcmp(argv[1], "--piu10") == 0)
     {
         return repiu::tools::RunPiu10IsaBoardProbe() ? 0 : 1;
@@ -1050,6 +1055,10 @@ int main(int argc, char** argv)
         return 1;
     }
     if (!repiu::tools::RunGlideLfbWriteFootprintProbe())
+    {
+        return 1;
+    }
+    if (!repiu::tools::RunGlideLfbNativeStoreCensusProbe())
     {
         return 1;
     }

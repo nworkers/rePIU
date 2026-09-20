@@ -2178,6 +2178,20 @@ void PrintExecutionAttempt(
                 footprint.max_bounding_box_pixel_count);
         }
         {
+            const auto& stores = attempt.glide_lfb_native_store_census;
+            logger.info(
+                "Win32 Glide LFB native-store census enabled/locks/completed/"
+                "malformed/observer/decoded/active-decoded: {}/{}/{}/{}/{}/{}/{}",
+                stores.enabled, stores.write_lock_count,
+                stores.completed_write_lock_count, stores.malformed_range_count,
+                stores.observer_call_count, stores.decoded_store_count,
+                stores.active_decoded_store_count);
+            logger.info(
+                "Win32 Glide LFB native-store census overlap stores/bytes/max-bytes: "
+                "{}/{}/{}", stores.overlapping_store_count,
+                stores.overlapping_byte_count, stores.max_overlapping_byte_count);
+        }
+        {
             const auto& census = attempt.glide_setter_census;
             logger.info(
                 "Win32 Glide setter census enabled/entries/calls/first/same/"

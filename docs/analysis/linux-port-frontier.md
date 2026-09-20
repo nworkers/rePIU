@@ -17543,3 +17543,74 @@ Win32 x86 Debug build and dedicated `repiu_aot_probe --glide-lfb-write-footprint
 After the full build, the Win32 core probe failed one of 28 groups: the pre-existing
 `mode16_push_writes=false` synthetic group. The LFB deterministic probe and Linux core pass,
 but the Win32 core failure remains a separate reproduction and repair target.
+
+---
+
+## 2026-09-20 Task 726 — Linux x64 LFB native-store census
+
+### 확인됨
+
+Task 726은 기본 OFF인 `REPIU_LINUX_X64_LFB_STORE_CENSUS=1|on|true`를 추가했습니다.
+write `grLfbLock`이 guest에 staging `lfbPtr`를 공개할 때에만 Linux x64 AOT의 native
+write observer를 활성화하고, unlock 직전에 비활성화합니다. 따라서 lock 밖의 모든 AOT
+store는 observer 호출 자체를 건너뜁니다. profile은 decode된 명시적 store의 staging-range
+교집합 store 수·byte 수·최대 겹침 byte 수와 lock lifecycle만 합산하며, guest memory,
+guest ABI, 기존 decode/present 순서와 반환값을 바꾸지 않습니다.
+
+30초 bounded `pumpit2a` run은 28회 write lock을 열고 27회를 정상 unlock했습니다. 마지막
+lock은 timeout teardown 중 열려 있어 완료 수가 하나 작습니다. 활성 구간에서 observer와
+decoded store는 모두 17,975,875건이고, LFB와 겹친 store는 2,073,600건, 겹친 byte는
+8,294,400이며 한 store의 최대 겹침은 4 byte였습니다. run은 timeout clean teardown까지
+도달했고 `repiu-fault`는 발생하지 않았습니다.
+
+### 미확정 및 다음 frontier
+
+이 수치는 명시적으로 decode되는 AOT memory-store만 포함합니다. string/implicit store,
+decode 실패, boundary/HLE 또는 비-AOT write는 빠지므로 모든 guest write의 총량이나 실제
+변경된 pixel 수를 뜻하지 않습니다. 동일 값을 다시 쓰는 store까지 포함한다는 점에서
+Task 725 byte-difference census를 보완하지만, 이것만으로 readback 생략 조건을 증명하지는
+못합니다. 다음 단계는 observed store call-site와 draw ownership을 연결해 이전 framebuffer
+pixel이 필요 없는 lock 조건을 원본 ABI 의미와 함께 증명하는 것입니다.
+
+### 검증 상태
+
+Linux x64 Debug `repiu`와 core probe를 clean rebuild했고 core probe는 30/30 통과했습니다.
+Win32 x86 Debug 전체 build도 오류 없이 완료했고 전용 native-store census probe는 통과했습니다.
+다만 Win32 core probe는 기존 `mode16_push_writes=false` synthetic group 하나로 28개 중 1개가
+실패했습니다. 이는 Linux x64 전용 observer의 실행 경로와 무관하며 별도 재현·수정 대상으로
+계속 남깁니다.
+
+## English
+
+### Confirmed
+
+Task 726 adds default-off `REPIU_LINUX_X64_LFB_STORE_CENSUS=1|on|true`. It activates the
+Linux x64 native AOT write observer only after a write `grLfbLock` exposes its staging
+`lfbPtr`, and deactivates it immediately before unlock. Therefore AOT stores outside a
+lock skip the observer call itself. The profile aggregates only lifecycle data and the
+store count, byte count, and maximum overlap for decoded explicit stores intersecting the
+staging range; it changes neither guest memory nor guest ABI nor the existing decode/present
+order or return values.
+
+A 30-second bounded `pumpit2a` run opened 28 write locks and normally unlocked 27. The
+final lock remained open during timeout teardown, hence one fewer completed lock. In the
+active ranges, observer and decoded-store counts were both 17,975,875; 2,073,600 stores
+overlapped LFB for 8,294,400 bytes, with a maximum overlap of 4 bytes per store. The run
+reached clean timeout teardown without a `repiu-fault`.
+
+### Unresolved and next frontier
+
+This counts only explicitly decoded AOT memory stores. String/implicit stores, decode
+failures, and boundary/HLE or non-AOT writes are excluded, so it is neither the total guest
+write count nor a changed-pixel count. It complements Task 725's byte-difference census by
+also observing same-value stores, but does not prove that framebuffer readback can be
+skipped. The next step is connecting observed store call sites to draw ownership, then
+proving under original ABI semantics which locks cannot require preceding framebuffer pixels.
+
+### Verification status
+
+Linux x64 Debug `repiu` and core probe were clean-rebuilt; the core probe passed 30/30.
+The full Win32 x86 Debug build also completed without errors, and the dedicated native-store
+census probe passed. However, the Win32 core probe failed one of 28 groups, the existing
+`mode16_push_writes=false` synthetic group. It remains a separate reproduction and repair
+target, unrelated to the Linux x64-only observer execution path.

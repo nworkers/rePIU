@@ -19,6 +19,7 @@
 #include "repiu/engine/glide_ordinal_timing.h"
 #include "repiu/engine/glide_lfb_timing.h"
 #include "repiu/engine/glide_lfb_write_footprint.h"
+#include "repiu/engine/glide_lfb_native_store_census.h"
 #include "repiu/engine/glide_setter_state_census.h"
 #include "repiu/engine/glide_draw_batch.h"
 #include "repiu/engine/glide_setter_state_cache.h"
@@ -751,6 +752,8 @@ struct ThreadContext
     GlideLfbTimingProfile glide_lfb_timing;
     // Task 725: private baseline and aggregate guest LFB write footprint.
     GlideLfbWriteFootprintProfile glide_lfb_write_footprint;
+    // Task 726: explicit AOT stores observed while a write LFB range is active.
+    GlideLfbNativeStoreCensusProfile glide_lfb_native_store_census;
     // Task 364: exact repeated-versus-changing state-setter arguments. Guest
     // thread only, and observation only — it never changes a dispatch result.
     GlideSetterCensusProfile glide_setter_census;

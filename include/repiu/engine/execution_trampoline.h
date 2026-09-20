@@ -14,6 +14,7 @@
 #include "repiu/engine/glide_buffer_swap_timing.h"
 #include "repiu/engine/glide_lfb_timing.h"
 #include "repiu/engine/glide_lfb_write_footprint.h"
+#include "repiu/engine/glide_lfb_native_store_census.h"
 #include "repiu/engine/glide_gate_timing.h"
 #include "repiu/engine/aot_return_stage_profile.h"
 #include "repiu/engine/glide_ordinal_timing.h"
@@ -719,6 +720,8 @@ struct MinimalExecutionAttempt
     GlideLfbTimingSnapshot glide_lfb_timing;
     // Task 725: byte-difference footprint of a write lock's staging bytes.
     GlideLfbWriteFootprintSnapshot glide_lfb_write_footprint;
+    // Task 726: decoded explicit AOT stores overlapping a write-lock range.
+    GlideLfbNativeStoreCensusSnapshot glide_lfb_native_store_census;
     // Task 364: repeated-versus-changing state-setter arguments, and the
     // OpenGL interval of the two leading setters split by phase.
     GlideSetterCensusSnapshot glide_setter_census;
