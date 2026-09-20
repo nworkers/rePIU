@@ -2190,6 +2190,33 @@ void PrintExecutionAttempt(
                 "Win32 Glide LFB native-store census overlap stores/bytes/max-bytes: "
                 "{}/{}/{}", stores.overlapping_store_count,
                 stores.overlapping_byte_count, stores.max_overlapping_byte_count);
+            logger.info(
+                "Win32 Glide LFB native-store census source samples/stride/"
+                "overflow-samples/overflow-bytes: {}/{}/{}/{}",
+                stores.source_sample_count,
+                repiu::engine::kGlideLfbNativeStoreCensusSourceSampleStride,
+                stores.source_overflow_sample_count,
+                stores.source_overflow_sampled_byte_count);
+            repiu::engine::GlideLfbNativeStoreCensusSourceEntry ranks[
+                repiu::engine::kGlideLfbNativeStoreCensusReportCapacity] = {};
+            repiu::engine::RankGlideLfbNativeStoreCensusSources(
+                stores.source_entries.data(), stores.source_entries.size(), ranks,
+                repiu::engine::kGlideLfbNativeStoreCensusReportCapacity);
+            for (std::size_t index = 0U; index < std::size(ranks); ++index)
+            {
+                const auto& source = ranks[index];
+                if (source.sample_count == 0U)
+                {
+                    break;
+                }
+                logger.info(
+                    "Win32 Glide LFB native-store census source #{} eip=0x{:08X} "
+                    "samples/bytes/max-bytes: {}/{}/{}",
+                    index + 1U, source.guest_eip,
+                    source.sample_count,
+                    source.sampled_byte_count,
+                    source.max_sampled_byte_count);
+            }
         }
         {
             const auto& census = attempt.glide_setter_census;

@@ -144,6 +144,8 @@ extern "C" void RepiuLinuxX64NativeMemoryWriteTrace(
 {
     const bool legacy_trace = repiu::engine::GuestWriteTraceNativeObserverEnabled();
     const bool lfb_census = repiu::engine::GlideLfbNativeStoreCensusEnabled();
+    static const bool lfb_source_census =
+        repiu::engine::GlideLfbNativeStoreSourceCensusEnabled();
     if (frame == nullptr || (!legacy_trace && !lfb_census))
     {
         return;
@@ -168,6 +170,12 @@ extern "C" void RepiuLinuxX64NativeMemoryWriteTrace(
         repiu::engine::RecordGlideLfbNativeStoreCensus(
             &context->glide_lfb_native_store_census, decoded,
             decoded_destination, decoded_byte_count);
+        if (lfb_source_census)
+        {
+            repiu::engine::RecordGlideLfbNativeStoreCensusSource(
+                &context->glide_lfb_native_store_census, decoded,
+                frame->guest.eip, decoded_destination, decoded_byte_count);
+        }
     }
     const bool matches = decoded && repiu::engine::GuestWriteTraceMatches(
         decoded_destination, decoded_byte_count);

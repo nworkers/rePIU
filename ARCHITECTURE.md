@@ -3561,6 +3561,20 @@ game logic is modified.
 
 ---
 
+## Linux x64 LFB native-store source census
+
+Linux x64에서는 `REPIU_LINUX_X64_LFB_STORE_SOURCE_CENSUS=1|on|true`가 독립적으로
+native write observer와 write-LFB active-range gate를 활성화합니다. guest EIP별 표본은
+`ThreadContext` 밖의 고정 64-entry 상태에 보관하며, positive overlap 4,096건마다 하나만
+기록합니다. 종료 snapshot은 동률 EIP를 오름차순으로 정렬한 상위 8개를 보고합니다.
+
+On Linux x64, `REPIU_LINUX_X64_LFB_STORE_SOURCE_CENSUS=1|on|true` independently enables
+the native write observer and the write-LFB active-range gate. Per-guest-EIP samples live in
+fixed 64-entry state outside `ThreadContext` and record one of every 4,096 positive overlaps.
+The shutdown snapshot reports the top eight, breaking equal counts by ascending EIP.
+
+---
+
 ## 롬셋별 설정 파일 / Per-ROM-set configuration files
 
 Task 497부터 PIUIO(JAMMA) 입력의 호스트 키 매핑은 하드코딩이 아니라 `cfg/<롬셋 ID>.ini`에서

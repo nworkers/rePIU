@@ -17614,3 +17614,43 @@ The full Win32 x86 Debug build also completed without errors, and the dedicated 
 census probe passed. However, the Win32 core probe failed one of 28 groups, the existing
 `mode16_push_writes=false` synthetic group. It remains a separate reproduction and repair
 target, unrelated to the Linux x64-only observer execution path.
+
+---
+
+## 2026-09-20 Task 727 — Linux x64 LFB native-store source census
+
+### 확인됨
+
+`REPIU_LINUX_X64_LFB_STORE_SOURCE_CENSUS=1|on|true`는 aggregate census 설정 없이도 필요한
+native observer와 write-LFB range gate를 활성화합니다. source 표본은 `ThreadContext` 밖의
+고정 64-entry 표에 저장되며, decoded explicit AOT store가 LFB 범위와 양수로 겹친 횟수가
+4,096의 배수일 때만 guest EIP, 겹친 byte 수, EIP별 최대 byte 수를 갱신합니다. 같은 EIP는
+누적하고 표가 가득 찬 뒤의 새 EIP는 overflow aggregate로 기록합니다. 종료 시에는 count 내림차순,
+동률 EIP 오름차순의 상위 8개만 정렬해 보고합니다.
+
+### 미확정
+
+source-only bounded Linux 실행은 Glide 초기화와 write `grLfbLock` 진입까지 확인했지만, 이
+터미널의 외부 종료 경로는 final shutdown report를 남기지 않았습니다. 따라서 실제 게임에서의
+top-EIP 순위와 overflow 수치는 아직 확인된 증거가 아닙니다. 다음 관찰은 final report를 보존하는
+supervised 종료 경로로 수행해야 하며, EIP를 원본 함수나 draw ownership으로 해석해서는 안 됩니다.
+
+## English
+
+### Confirmed
+
+`REPIU_LINUX_X64_LFB_STORE_SOURCE_CENSUS=1|on|true` enables the prerequisite native observer
+and write-LFB range gate without also setting aggregate census. Samples live in a fixed
+64-entry table outside `ThreadContext`. A guest EIP, overlap-byte count, and EIP-local maximum
+are updated only when a decoded explicit AOT store makes the positive LFB-overlap count a
+multiple of 4,096. Equal EIPs accumulate; a new EIP after the table fills contributes to an
+overflow aggregate. Shutdown ranks only the top eight by descending count and then ascending
+EIP.
+
+### Unresolved
+
+A source-only bounded Linux run reached Glide initialization and write `grLfbLock`, but the
+terminal's external-stop route did not emit a final shutdown report. It is therefore not
+evidence for an in-game top-EIP ranking or overflow total. A future observation must use a
+supervised termination path that preserves the final report, and must not interpret an EIP as
+an original function or draw owner.
