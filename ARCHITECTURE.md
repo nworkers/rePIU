@@ -3575,6 +3575,48 @@ The shutdown snapshot reports the top eight, breaking equal counts by ascending 
 
 ---
 
+## LFB staging shadow / LFB staging shadow
+
+Task 728은 `grLfbLock`의 staging surface에 두 번째 shadow 상태를 붙입니다. `grLfbUnlock`은
+write lock의 staging surface 전체를 framebuffer에 present하므로, 성공한 unlock 직후에는
+surface가 곧 framebuffer입니다. `GlideLfbStagingShadowState`는 그 사실을 buffer, color
+format, width, height와 함께 기록하고, framebuffer pixel을 바꿀 수 있는 gate에서 소멸시킵니다.
+무효화 술어 `GlideOrdinalPreservesLfbStagingShadow`는 **기본값이 무효화**인 allowlist이므로,
+분류되지 않은 gate와 나중에 추가되는 gate는 자동으로 기존 seed 경로로 돌아갑니다.
+
+Task 476의 region shadow가 같은 surface를 region gate 연속 호출에 대해 다루는 것과 달리, 이
+shadow는 두 lock 사이의 state setter를 견디도록 설계되었습니다.
+`REPIU_GLIDE_LFB_STAGING_SHADOW_CENSUS=1|on|true`는 동작을 바꾸지 않고 재사용 가능했던 lock을
+계수하고, `REPIU_GLIDE_LFB_STAGING_REUSE=1|on|true`는 실제로 readback과 565 encode를 건너뜁니다.
+후자는 전자를 함의하며 둘 다 기본 OFF입니다.
+
+`ReadbackFramebuffer`는 window drawable을 읽어 논리 해상도로 nearest-neighbor 축소하고
+`PresentLfbSurface`는 다시 확대하므로, drawable이 논리 해상도의 정수배가 아니면 present →
+readback 왕복은 원래 pixel을 복원하지 못합니다. 따라서 shadow 재사용은 정확도를 희생하는
+최적화가 아니라 그 왕복 resample을 제거합니다.
+
+Task 728 attaches a second shadow state to the `grLfbLock` staging surface. Because
+`grLfbUnlock` presents the entire staging surface of a write lock to the framebuffer, right
+after a successful unlock the surface *is* the framebuffer. `GlideLfbStagingShadowState`
+records that fact together with buffer, color format, width and height, and destroys it at any
+gate that may change framebuffer pixels. The predicate
+`GlideOrdinalPreservesLfbStagingShadow` is an allowlist whose **default is to invalidate**, so
+an unclassified gate, or one added later, falls back to the existing seed path automatically.
+
+Unlike Task 476's region shadow, which covers the same surface across a burst of region gates,
+this shadow is built to survive the state setters a guest issues between two locks.
+`REPIU_GLIDE_LFB_STAGING_SHADOW_CENSUS=1|on|true` counts reusable locks without changing
+behavior, and `REPIU_GLIDE_LFB_STAGING_REUSE=1|on|true` actually skips the readback and the 565
+encode. The latter implies the former, and both are off by default.
+
+`ReadbackFramebuffer` reads the window drawable and nearest-neighbor downsamples it to the
+logical resolution, while `PresentLfbSurface` upscales it again, so when the drawable is not an
+integer multiple of the logical resolution the present-then-readback round trip does not restore
+the original pixel. Reusing the shadow therefore removes that resampling round trip rather than
+trading accuracy for speed.
+
+---
+
 ## 롬셋별 설정 파일 / Per-ROM-set configuration files
 
 Task 497부터 PIUIO(JAMMA) 입력의 호스트 키 매핑은 하드코딩이 아니라 `cfg/<롬셋 ID>.ini`에서

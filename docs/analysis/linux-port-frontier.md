@@ -17654,3 +17654,112 @@ terminal's external-stop route did not emit a final shutdown report. It is there
 evidence for an in-game top-EIP ranking or overflow total. A future observation must use a
 supervised termination path that preserves the final report, and must not interpret an EIP as
 an original function or draw owner.
+
+---
+
+## 2026-09-22 Task 728 — LFB staging shadow 재사용과 손실 있는 readback 왕복
+
+### 확인됨 — readback은 무손실 복사가 아니다
+
+`GlideOpenGlBackend::ReadbackFramebuffer`는 논리 framebuffer를 그대로 읽지 않습니다. window
+drawable 전체를 `glReadPixels`로 읽은 뒤 nearest-neighbor로 논리 해상도(640×480)로 축소합니다.
+짝이 되는 `PresentLfbSurface`는 `GL_NEAREST` 텍스처로 drawable 크기에 맞춰 다시 확대합니다.
+drawable이 논리 해상도의 정수배가 아니면 이 왕복은 **원래 pixel을 복원하지 못합니다**. 예를
+들어 drawable 폭 1000, 논리 폭 640에서 논리 x=5는 present 뒤 readback하면 x=4의 값이 됩니다.
+
+이는 코드 판독으로 확인한 사실이며, 게임 관찰로 측정한 값이 아닙니다. 결과적으로 write
+`grLfbLock`의 seed는 "직전에 그린 것의 정확한 사본"이 아니라 window 크기에 따라 달라지는
+재표본입니다. Tasks 724~727이 seed 비용을 다루면서 전제한 "seed가 framebuffer를 정확히
+가져온다"는 가정은 정수배 drawable에서만 성립합니다.
+
+### 구현됨 — staging shadow
+
+Task 728은 Task 725·726·727의 질문을 뒤집었습니다. "어떤 lock이 이전 pixel을 필요로 하지
+않는가"를 census로 추정하는 대신, **host가 그 pixel을 이미 정확히 들고 있는 조건**을
+상태로 추적합니다. `grLfbUnlock`이 staging surface 전체를 present하므로 성공한 unlock 직후의
+surface는 framebuffer와 같고, 그 다음 lock은 GPU에 되물을 필요가 없습니다.
+
+`GlideLfbStagingShadowState`는 buffer, color format, width, height와 함께 그 사실을 들고,
+`GlideOrdinalPreservesLfbStagingShadow`가 false인 모든 gate에서 소멸합니다. 이 술어는
+기본값이 무효화인 allowlist이므로 미분류 gate와 이후 추가되는 gate는 자동으로 기존 seed
+경로를 씁니다. flip된 present, 실패한 present, 해상도·format·buffer 불일치도 모두 무효화입니다.
+
+`REPIU_GLIDE_LFB_STAGING_SHADOW_CENSUS=1|on|true`는 동작을 바꾸지 않고 재사용 가능했던 lock을
+계수하고, `REPIU_GLIDE_LFB_STAGING_REUSE=1|on|true`는 실제로 readback과 encode를 건너뜁니다.
+둘 다 기본 OFF입니다.
+
+### 미확정 — 실제 재사용 비율은 아직 측정되지 않았다
+
+이 작업은 Linux VM에 접근할 수 없는 상태에서 수행됐습니다(`192.168.198.132` 연결 시간 초과).
+따라서 게임에서 두 lock 사이에 무효화 gate가 실제로 얼마나 자주 끼어드는지, 즉 재사용 가능
+비율은 **측정된 바 없습니다**. 프레임마다 `grBufferSwap`이 들어가는 구간에서는 재사용이
+거의 일어나지 않을 수 있습니다. 다음 관찰은 census 모드로 비율을 먼저 측정해야 하며, 그
+수치를 보기 전에는 이 경로의 이득을 주장해서는 안 됩니다.
+
+Task 727이 남긴 top-EIP 관찰도 여전히 미완입니다. 두 관찰 모두 `REPIU_EXECUTION_TIMEOUT_MS`
+예산 만료 또는 SIGTERM으로 끝내야 final report가 남습니다(`docs/guides/linux-shutdown-check.md`).
+
+### 검증 상태
+
+Win32 x86 Debug 전체 빌드가 성공했고 `repiu_aot_probe --glide-lfb-staging-shadow`의 9개 그룹이
+모두 통과했습니다. 인접 probe(`--glide-lfb-timing`, `--glide-lfb-write-footprint`,
+`--glide-lfb-native-store-census`)도 통과했습니다. Win32 core probe는 28개 중 실패 0이었고,
+Tasks 725~727이 기록한 `mode16_push_writes=false` 실패는 이 빌드에서 재현되지 않았습니다.
+그 그룹을 고친 변경은 없으므로 이는 해결의 증거가 아니라 재현되지 않았다는 기록입니다.
+Linux x64 빌드와 게임 관찰은 수행하지 못했습니다.
+
+## English
+
+### Confirmed — readback is not a lossless copy
+
+`GlideOpenGlBackend::ReadbackFramebuffer` does not read the logical framebuffer directly. It
+reads the whole window drawable with `glReadPixels` and nearest-neighbor downsamples it to the
+logical resolution (640x480). Its counterpart `PresentLfbSurface` upscales through a
+`GL_NEAREST` texture back to drawable size. When the drawable is not an integer multiple of the
+logical resolution, the round trip **does not restore the original pixel**: with a 1000-pixel
+drawable width and a 640-pixel logical width, logical x=5 comes back as the value of x=4.
+
+This is established by reading the code, not measured from a run. It means the seed of a write
+`grLfbLock` is not an exact copy of what was just drawn but a resample that depends on window
+size. The assumption underlying Tasks 724 through 727, that the seed fetches the framebuffer
+exactly, holds only for integer-multiple drawables.
+
+### Implemented — the staging shadow
+
+Task 728 inverts the question asked by Tasks 725, 726 and 727. Instead of using a census to
+infer which locks do not need the previous pixels, it tracks as state **when the host already
+holds those pixels exactly**. Because `grLfbUnlock` presents the entire staging surface, right
+after a successful unlock the surface equals the framebuffer, and the next lock need not ask the
+GPU for it back.
+
+`GlideLfbStagingShadowState` holds that fact together with buffer, color format, width and
+height, and loses it at every gate for which `GlideOrdinalPreservesLfbStagingShadow` is false.
+That predicate is an allowlist whose default is to invalidate, so unclassified gates and gates
+added later fall back to the existing seed path. A flipped present, a failed present, and any
+resolution, format or buffer mismatch all invalidate as well.
+
+`REPIU_GLIDE_LFB_STAGING_SHADOW_CENSUS=1|on|true` counts reusable locks without changing
+behavior; `REPIU_GLIDE_LFB_STAGING_REUSE=1|on|true` actually skips the readback and the encode.
+Both are off by default.
+
+### Unresolved — the real reuse rate has not been measured
+
+This work was done without access to the Linux VM (`192.168.198.132` timed out). How often an
+invalidating gate actually falls between two locks in the game -- that is, the reusable
+fraction -- is therefore **unmeasured**. In stretches where a `grBufferSwap` lands every frame,
+reuse may almost never fire. The next observation must measure that fraction in census mode
+first, and no benefit from this path should be claimed before seeing it.
+
+Task 727's top-EIP observation also remains outstanding. Both observations must be ended
+through `REPIU_EXECUTION_TIMEOUT_MS` budget expiry or SIGTERM for the final report to survive
+(`docs/guides/linux-shutdown-check.md`).
+
+### Verification status
+
+The full Win32 x86 Debug build succeeded and all nine groups of
+`repiu_aot_probe --glide-lfb-staging-shadow` passed, as did the neighboring
+`--glide-lfb-timing`, `--glide-lfb-write-footprint` and `--glide-lfb-native-store-census`
+probes. The Win32 core probe reported zero failures of 28; the `mode16_push_writes=false`
+failure recorded by Tasks 725 through 727 did not reproduce in this build. Nothing in this task
+changed that group, so this records a non-reproduction rather than evidence of a fix. The Linux
+x64 build and in-game observation were not performed.

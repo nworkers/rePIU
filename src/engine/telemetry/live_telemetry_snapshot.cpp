@@ -1348,6 +1348,8 @@ void CopyThreadObservationToAttempt(const ThreadContext& context,
         SnapshotGlideLfbWriteFootprint(context.glide_lfb_write_footprint);
     attempt->glide_lfb_native_store_census =
         SnapshotGlideLfbNativeStoreCensus(context.glide_lfb_native_store_census);
+    attempt->glide_lfb_staging_shadow =
+        SnapshotGlideLfbStagingShadow(context.glide_lfb_staging_shadow);
     attempt->glide_setter_census =
         SnapshotGlideSetterCensus(context.glide_setter_census);
     attempt->glide_setter_phase_timing =

@@ -20,6 +20,7 @@
 #include "repiu/engine/glide_lfb_timing.h"
 #include "repiu/engine/glide_lfb_write_footprint.h"
 #include "repiu/engine/glide_lfb_native_store_census.h"
+#include "repiu/engine/glide_lfb_staging_shadow.h"
 #include "repiu/engine/glide_setter_state_census.h"
 #include "repiu/engine/glide_draw_batch.h"
 #include "repiu/engine/glide_setter_state_cache.h"
@@ -850,6 +851,10 @@ struct ThreadContext
     std::uint32_t glide_lfb_region_shadow_buffer = 0;
     std::uint32_t glide_lfb_region_seed_count = 0;
     std::uint32_t glide_lfb_region_flush_count = 0;
+    // Task 728: the second shadow of the same staging surface, this one for the
+    // lock/unlock path. It survives the state setters between two locks, so a
+    // write lock whose pixels the host still holds can skip its readback.
+    GlideLfbStagingShadowState glide_lfb_staging_shadow;
     std::uint32_t glide_lfb_region_read_count = 0;
     std::uint32_t glide_lfb_region_write_count = 0;
     std::uint32_t linexe_scan_return_eax = 0;

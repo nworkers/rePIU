@@ -2219,6 +2219,27 @@ void PrintExecutionAttempt(
             }
         }
         {
+            const auto& shadow = attempt.glide_lfb_staging_shadow;
+            logger.info(
+                "Win32 Glide LFB staging shadow census/reuse/locks/reusable/"
+                "reused/seeds/validated: {}/{}/{}/{}/{}/{}/{}",
+                shadow.census_enabled, shadow.reuse_enabled, shadow.lock_count,
+                shadow.reusable_lock_count, shadow.reused_lock_count,
+                shadow.seed_count, shadow.validate_count);
+            for (std::size_t index = 0U;
+                 index < repiu::engine::kGlideLfbStagingShadowReasonCount;
+                 ++index)
+            {
+                const auto reason =
+                    static_cast<repiu::engine::GlideLfbStagingShadowInvalidation>(
+                        index);
+                logger.info(
+                    "Win32 Glide LFB staging shadow invalidation {}: {}",
+                    repiu::engine::GlideLfbStagingShadowInvalidationName(reason),
+                    shadow.invalidate_counts[index]);
+            }
+        }
+        {
             const auto& census = attempt.glide_setter_census;
             logger.info(
                 "Win32 Glide setter census enabled/entries/calls/first/same/"

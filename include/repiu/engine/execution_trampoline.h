@@ -15,6 +15,7 @@
 #include "repiu/engine/glide_lfb_timing.h"
 #include "repiu/engine/glide_lfb_write_footprint.h"
 #include "repiu/engine/glide_lfb_native_store_census.h"
+#include "repiu/engine/glide_lfb_staging_shadow.h"
 #include "repiu/engine/glide_gate_timing.h"
 #include "repiu/engine/aot_return_stage_profile.h"
 #include "repiu/engine/glide_ordinal_timing.h"
@@ -722,6 +723,9 @@ struct MinimalExecutionAttempt
     GlideLfbWriteFootprintSnapshot glide_lfb_write_footprint;
     // Task 726: decoded explicit AOT stores overlapping a write-lock range.
     GlideLfbNativeStoreCensusSnapshot glide_lfb_native_store_census;
+    // Task 728: whether the staging surface already held the frame buffer at
+    // each write lock, and why the shadow was lost when it did not.
+    GlideLfbStagingShadowSnapshot glide_lfb_staging_shadow;
     // Task 364: repeated-versus-changing state-setter arguments, and the
     // OpenGL interval of the two leading setters split by phase.
     GlideSetterCensusSnapshot glide_setter_census;

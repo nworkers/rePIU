@@ -5,6 +5,7 @@
 #include "guest_memory_access.h"
 #include "instruction_emulation.h"
 
+#include "repiu/engine/glide_lfb_staging_shadow.h"
 #include "repiu/hle/glide_texture_decode.h"
 #include "repiu/hle/glide_implementation_issue.h"
 #include "repiu/hle/glide_lfb.h"
@@ -1708,6 +1709,26 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
     {
         FlushGlideLfbRegionShadow(context);
         context->glide_lfb_region_shadow_valid = false;
+        // A flush presents pixels and rewrites the shared surface. The region
+        // gates that made the shadow live already invalidated the lock shadow
+        // below, so this cannot be reached with both live; it is stated anyway
+        // so the two shadows of one surface do not depend on that ordering.
+        InvalidateGlideLfbStagingShadow(
+            &context->glide_lfb_staging_shadow,
+            GlideLfbStagingShadowInvalidation::kGate);
+    }
+    // Task 728: the lock/unlock shadow of the same staging surface. Unlike the
+    // region shadow above it survives the state setters a guest issues between
+    // two locks, so the predicate is consulted rather than invalidating on
+    // every gate. It runs after the region flush because that flush presents
+    // pixels, which is exactly the kind of change the shadow must not outlive
+    // -- and the region gates that produced it are themselves invalidating.
+    if (GlideLfbStagingShadowCensusEnabled() &&
+        !GlideOrdinalPreservesLfbStagingShadow(glide_export->gate_id))
+    {
+        InvalidateGlideLfbStagingShadow(
+            &context->glide_lfb_staging_shadow,
+            GlideLfbStagingShadowInvalidation::kGate);
     }
     if (draw_batch != nullptr && !IsGlideDrawBatchGate(glide_export->gate_id))
     {
@@ -3719,36 +3740,72 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                 const std::uint64_t seed_entry_cycles = lfb_timing != nullptr
                     ? ReadGlideLfbTimingCycles()
                     : 0U;
+                // Task 728. The staging surface may already hold this buffer's
+                // frame buffer image, because the previous unlock presented all
+                // of it and nothing since then could have changed it. Reuse is
+                // decided before the seed and recorded either way, so a census
+                // run measures the opportunity without taking it.
+                const std::uint32_t seed_color_format =
+                    type == repiu::hle::kGlideLfbWriteOnly
+                        ? context->glide_state.lfb_write_color_format
+                        : context->glide_state.color_format;
+                const bool shadow_census =
+                    GlideLfbStagingShadowCensusEnabled();
+                const bool shadow_reusable = shadow_census &&
+                    CanReuseGlideLfbStagingShadow(
+                        context->glide_lfb_staging_shadow, buffer,
+                        seed_color_format, width, height);
+                const bool reuse_shadow =
+                    shadow_reusable && GlideLfbStagingReuseEnabled();
+                if (shadow_census)
+                {
+                    NoteGlideLfbStagingShadowLock(
+                        &context->glide_lfb_staging_shadow, shadow_reusable,
+                        reuse_shadow);
+                    // The guest owns the surface from here until unlock,
+                    // whether it was seeded or reused.
+                    InvalidateGlideLfbStagingShadow(
+                        &context->glide_lfb_staging_shadow,
+                        GlideLfbStagingShadowInvalidation::kLockHandoff);
+                }
                 std::vector<std::uint8_t> rgba8;
-                const bool read_ok = context->glide_backend.ReadbackFramebuffer(
-                    width, height, &rgba8);
+                const bool read_ok = reuse_shadow
+                    ? true
+                    : context->glide_backend.ReadbackFramebuffer(
+                          width, height, &rgba8);
                 const std::uint64_t readback_end_cycles = lfb_timing != nullptr
                     ? ReadGlideLfbTimingCycles()
                     : 0U;
-                bool encode_ok = false;
+                // A reused shadow is already 565 in the surface, so there is
+                // nothing to encode; the encode is the inverse of the readback
+                // that was skipped above, and running it over an empty `rgba8`
+                // would clear what is being reused.
+                bool encode_ok = reuse_shadow;
                 bool encode_attempted = false;
-                if (read_ok)
+                if (read_ok && !reuse_shadow)
                 {
                     encode_attempted = true;
-                    const std::uint32_t lfb_color_format =
-                        type == repiu::hle::kGlideLfbWriteOnly
-                            ? context->glide_state.lfb_write_color_format
-                            : context->glide_state.color_format;
                     encode_ok = repiu::hle::EncodeRgba8ToGlideLfb565(
                         rgba8.data(), rgba8.size(), width, height,
-                        lfb_color_format,
+                        seed_color_format,
                         context->glide_lfb_surface.pixels(),
                         context->glide_lfb_surface.byte_count());
                 }
                 const std::uint64_t encode_end_cycles = lfb_timing != nullptr
                     ? ReadGlideLfbTimingCycles()
                     : 0U;
-                RecordGlideLfbTiming(
-                    lfb_timing, read_ok, encode_attempted, encode_ok,
-                    seed_entry_cycles, readback_end_cycles, encode_end_cycles);
+                // A reused shadow performed no seed, so recording one would
+                // report a readback and an encode that never ran.
+                if (!reuse_shadow)
+                {
+                    RecordGlideLfbTiming(
+                        lfb_timing, read_ok, encode_attempted, encode_ok,
+                        seed_entry_cycles, readback_end_cycles,
+                        encode_end_cycles);
+                }
                 static long seed_log_count = 0;
                 const long seed_index = repiu::platform::AtomicIncrement(&seed_log_count);
-                if (seed_index <= 4)
+                if (seed_index <= 4 && !reuse_shadow)
                 {
                     std::size_t seed_non_black = 0;
                     for (std::size_t i = 0; i + 3U < rgba8.size(); i += 4U)
@@ -3933,6 +3990,37 @@ bool HandleGlideGateBoundary(repiu::platform::GuestCpuContext* win32_context,
                             present_to_front);
                     context->glide_backend_message =
                         context->glide_backend.message();
+                    // Task 728. This present wrote the whole staging surface to
+                    // the frame buffer, so the surface now mirrors it -- but
+                    // only when the blit was row-for-row. A flipped present
+                    // leaves the frame buffer upside down relative to the
+                    // surface, which is not a shadow of it.
+                    if (GlideLfbStagingShadowCensusEnabled())
+                    {
+                        if (!presented)
+                        {
+                            InvalidateGlideLfbStagingShadow(
+                                &context->glide_lfb_staging_shadow,
+                                GlideLfbStagingShadowInvalidation::
+                                    kPresentFailed);
+                        }
+                        else if (flip_v)
+                        {
+                            InvalidateGlideLfbStagingShadow(
+                                &context->glide_lfb_staging_shadow,
+                                GlideLfbStagingShadowInvalidation::
+                                    kFlippedPresent);
+                        }
+                        else
+                        {
+                            ValidateGlideLfbStagingShadow(
+                                &context->glide_lfb_staging_shadow,
+                                context->glide_lfb_surface.lock_buffer(),
+                                context->glide_state.lfb_write_color_format,
+                                context->glide_lfb_surface.width(),
+                                context->glide_lfb_surface.height());
+                        }
+                    }
                     if (presented)
                     {
                         ++context->glide_lfb_present_count;
